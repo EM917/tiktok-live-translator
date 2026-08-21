@@ -8,11 +8,69 @@
 """
 import argparse
 import asyncio
-import shutil
+import os
+import subprocess
 import sys
 import webbrowser
+from pathlib import Path
 
-from app.translator import TRANSLATOR_CHOICES
+ROOT = Path(__file__).resolve().parent
+
+if sys.version_info < (3, 9):
+    sys.exit("需要 Python 3.9 或更高版本（当前 {}.{}）".format(*sys.version_info[:2]))
+
+
+def _deps_ok():
+    try:
+        import aiohttp  # noqa: F401
+        import faster_whisper  # noqa: F401
+        import numpy  # noqa: F401
+        import yt_dlp  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _venv_python():
+    sub = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    return ROOT / ".venv" / sub
+
+
+def ensure_env():
+    """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。"""
+    if _deps_ok():
+        return
+    vpy = _venv_python()
+    in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
+    try:
+        if not in_project_venv and not vpy.exists():
+            print("[初始化] 首次运行：正在创建虚拟环境（仅需一次）…")
+            import venv
+
+            venv.create(ROOT / ".venv", with_pip=True)
+        pip_python = sys.executable if in_project_venv else str(vpy)
+        check = subprocess.run(
+            [pip_python, "-c", "import aiohttp, numpy, faster_whisper, yt_dlp"],
+            capture_output=True,
+        )
+        if check.returncode != 0:
+            print("[初始化] 正在安装依赖（含内置 ffmpeg，需要几分钟，仅首次）…")
+            subprocess.run(
+                [pip_python, "-m", "pip", "install", "--disable-pip-version-check",
+                 "-r", str(ROOT / "requirements.txt")],
+                check=True,
+            )
+        if not in_project_venv:
+            os.execv(str(vpy), [str(vpy), str(ROOT / "main.py")] + sys.argv[1:])
+    except Exception as exc:
+        print("⚠️ 自动安装依赖失败（{}）。请手动执行 setup.sh / setup.ps1，"
+              "或 pip install -r requirements.txt".format(exc))
+
+
+if "--doctor" not in sys.argv:
+    ensure_env()
+
+from app.translator import TRANSLATOR_CHOICES  # noqa: E402
 
 
 def parse_args():
@@ -87,14 +145,6 @@ async def main_async(args):
     await asyncio.Event().wait()
 
 
-def _ffmpeg_hint():
-    if sys.platform == "darwin":
-        return "brew install ffmpeg"
-    if sys.platform.startswith("linux"):
-        return "sudo apt install ffmpeg（Debian/Ubuntu，其他发行版用对应包管理器）"
-    return "参考 https://ffmpeg.org/download.html"
-
-
 def main():
     args = parse_args()
     if args.doctor:
@@ -102,8 +152,10 @@ def main():
         sys.exit(doctor())
     if not args.demo:
         missing = []
-        if shutil.which("ffmpeg") is None:
-            missing.append("未找到 ffmpeg，请安装：" + _ffmpeg_hint())
+        from app.ffmpeg_bin import find_ffmpeg
+        if find_ffmpeg() is None:
+            missing.append("未找到 ffmpeg——请执行 pip install -r requirements.txt"
+                           "（会自动带上内置版），或安装系统 ffmpeg")
         try:
             import faster_whisper  # noqa: F401
         except ImportError:

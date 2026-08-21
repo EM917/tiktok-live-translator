@@ -2,5 +2,7 @@ aiohttp>=3.9
 numpy>=1.24
 faster-whisper>=1.0
 yt-dlp
+# 静态 ffmpeg（系统没装 ffmpeg 时自动使用，免手动安装）
+imageio-ffmpeg>=0.5
 # Apple Silicon 专属：GPU 识别后端（其他平台自动跳过，用 faster-whisper CPU/CUDA）
 mlx-whisper; platform_machine == 'arm64' and sys_platform == 'darwin'

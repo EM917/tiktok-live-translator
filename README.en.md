@@ -17,38 +17,26 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 
 ## Quick Start
 
-**macOS / Linux:**
+All you need installed is [Python 3.9+](https://www.python.org/downloads/). Then:
 
 ```bash
 git clone https://github.com/EM917/tiktok-live-translator.git
-cd tiktok-live-translator
-bash setup.sh
+cd tiktok-live-translator && python3 main.py
 ```
 
-**Windows (PowerShell):**
+(On Windows use `python main.py`.)
 
-```powershell
-git clone https://github.com/EM917/tiktok-live-translator.git
-cd tiktok-live-translator
-powershell -ExecutionPolicy Bypass -File setup.ps1
-```
-
-The setup script automatically: checks for Python/ffmpeg (installs them if missing) → creates a virtual environment and installs dependencies → downloads the denoising model → **runs a hardware check and prints a recommended configuration**.
-
-Then start it (**no flags to remember**):
-
-```bash
-.venv/bin/python main.py
-```
-
-Your browser opens `http://127.0.0.1:8765` — **paste the live-room URL into the page, pick the streamer's language, and hit Start**. You can stop or switch rooms anytime from the page. On Windows, replace `.venv/bin/python` with `.venv\Scripts\python.exe`.
+**Everything else is automatic**: the first run creates a virtual environment, installs all dependencies (including a bundled static ffmpeg and the denoising model), then opens `http://127.0.0.1:8765` in your browser — **paste the live-room URL into the page, pick the streamer's language, and hit Start**. You can stop or switch rooms anytime from the page. The first run takes a few minutes to install; every run after that starts instantly.
 
 CLI flags still work if you prefer:
 
 ```bash
-.venv/bin/python main.py "https://www.tiktok.com/@streamer_username/live" --source es
-.venv/bin/python main.py --demo    # preview the UI without connecting to a stream
+python3 main.py "https://www.tiktok.com/@streamer_username/live" --source es
+python3 main.py --demo      # preview the UI without connecting to a stream
+python3 main.py --doctor    # print the hardware check and recommended config
 ```
+
+> Prefer to control the install yourself? `bash setup.sh` (macOS/Linux) or `powershell -ExecutionPolicy Bypass -File setup.ps1` (Windows) does the same steps explicitly.
 
 ## Automatic Hardware Tuning (how it picks a config for your machine)
 

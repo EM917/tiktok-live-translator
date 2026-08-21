@@ -15,27 +15,11 @@ fi
 echo "    ✅ $("$PY" --version)"
 
 echo "==> [2/5] 检查 ffmpeg ..."
-if ! command -v ffmpeg >/dev/null; then
-  if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null; then
-    echo "    未安装，用 Homebrew 安装 ffmpeg ..."
-    brew install ffmpeg
-  elif command -v apt-get >/dev/null; then
-    echo "    未安装，用 apt 安装 ffmpeg ..."
-    if [ "$(id -u)" -eq 0 ]; then
-      apt-get update -y && apt-get install -y ffmpeg
-    elif command -v sudo >/dev/null; then
-      sudo apt-get update -y && sudo apt-get install -y ffmpeg
-    else
-      echo "❌ 没有 sudo 权限，请手动安装 ffmpeg 后重跑本脚本"
-      exit 1
-    fi
-  else
-    echo "❌ 请先手动安装 ffmpeg: https://ffmpeg.org/download.html"
-    exit 1
-  fi
-  command -v ffmpeg >/dev/null || { echo "❌ ffmpeg 安装失败，请手动安装后重跑"; exit 1; }
+if command -v ffmpeg >/dev/null; then
+  echo "    ✅ 使用系统 ffmpeg: $(ffmpeg -version 2>/dev/null | head -1)"
+else
+  echo "    未检测到系统 ffmpeg——没关系，依赖里自带静态版（imageio-ffmpeg），无需手动安装"
 fi
-echo "    ✅ $(ffmpeg -version 2>/dev/null | head -1)"
 
 echo "==> [3/5] 创建虚拟环境并安装依赖（Apple Silicon 会自动包含 MLX GPU 后端）..."
 "$PY" -m venv .venv

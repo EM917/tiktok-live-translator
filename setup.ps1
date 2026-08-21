@@ -15,22 +15,11 @@ Write-Host "    ✅ $(python --version)"
 
 Write-Host "==> [2/5] 检查 ffmpeg ..."
 $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
-if (-not $ff) {
-  $wg = Get-Command winget -ErrorAction SilentlyContinue
-  if (-not $wg) {
-    Write-Host "❌ 未检测到 winget，请手动安装 ffmpeg（https://www.gyan.dev/ffmpeg/builds/ 下载后加入 PATH），然后重跑本脚本"
-    exit 1
-  }
-  Write-Host "    未安装，尝试用 winget 安装 ffmpeg ..."
-  winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ winget 安装 ffmpeg 失败，请手动安装后重跑本脚本: https://www.gyan.dev/ffmpeg/builds/"
-    exit 1
-  }
-  Write-Host "    ✅ 已安装。请重新打开终端再运行一次本脚本（PATH 需要刷新）"
-  exit 0
+if ($ff) {
+  Write-Host "    ✅ 使用系统 ffmpeg"
+} else {
+  Write-Host "    未检测到系统 ffmpeg——没关系，依赖里自带静态版（imageio-ffmpeg），无需手动安装"
 }
-Write-Host "    ✅ ffmpeg 已安装"
 
 Write-Host "==> [3/5] 创建虚拟环境并安装依赖 ..."
 python -m venv .venv

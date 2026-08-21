@@ -2,6 +2,8 @@
 import asyncio
 from collections import deque
 
+from .ffmpeg_bin import find_ffmpeg
+
 SAMPLE_RATE = 16000
 FRAME_SEC = 0.1
 FRAME_BYTES = int(SAMPLE_RATE * FRAME_SEC) * 2  # 0.1 秒 @ 16 kHz mono s16le
@@ -17,7 +19,10 @@ class FFmpegAudioSource:
 
     async def frames(self):
         """异步生成固定长度（0.1 秒）的 PCM 帧，流结束后返回。"""
-        cmd = ["ffmpeg", "-nostdin", "-loglevel", "error"]
+        ffmpeg = find_ffmpeg()
+        if ffmpeg is None:
+            raise RuntimeError("未找到 ffmpeg（系统未安装且缺少 imageio-ffmpeg 包）")
+        cmd = [ffmpeg, "-nostdin", "-loglevel", "error"]
         if self.media_url.startswith("http"):
             cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
         cmd += ["-i", self.media_url, "-vn", "-ac", "1"]

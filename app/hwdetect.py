@@ -55,6 +55,8 @@ def detect():
             has_mlx = True
         except ImportError:
             pass
+    from .ffmpeg_bin import find_ffmpeg
+
     return {
         "os": {"darwin": "macOS", "win32": "Windows"}.get(sys.platform, sys.platform),
         "machine": machine,
@@ -63,7 +65,7 @@ def detect():
         "has_cuda": shutil.which("nvidia-smi") is not None,
         "cores": os.cpu_count() or 4,
         "ram_gb": round(_ram_gb(), 1),
-        "has_ffmpeg": shutil.which("ffmpeg") is not None,
+        "has_ffmpeg": find_ffmpeg() is not None,
     }
 
 
@@ -123,7 +125,11 @@ def doctor():
                                         ("⚠️ 未安装（建议 pip install mlx-whisper）"
                                          if info["apple_silicon"] else "—")))
     print("NVIDIA CUDA     : {}".format("✅" if info["has_cuda"] else "—"))
-    print("ffmpeg          : {}".format("✅" if info["has_ffmpeg"] else "❌ 未安装（必需）"))
+    from .ffmpeg_bin import ffmpeg_source
+    src = ffmpeg_source()
+    print("ffmpeg          : {}".format(
+        "✅ {}".format(src) if src else
+        "❌ 未找到（运行 setup 脚本，或 pip install imageio-ffmpeg）"))
 
     # 翻译引擎探测（依赖未装时跳过，doctor 本身必须零依赖可运行）
     try:
@@ -157,7 +163,7 @@ def doctor():
     print("以上即默认值——直接运行即可，无需手动传参：")
     print("  python main.py https://www.tiktok.com/@主播/live")
     if not info["has_ffmpeg"]:
-        print("\n⚠️ 请先安装 ffmpeg 再运行。")
+        print("\n⚠️ 未找到 ffmpeg——运行 setup 脚本或 pip install -r requirements.txt 即可自动获得。")
         return 1
     try:
         import aiohttp  # noqa: F401

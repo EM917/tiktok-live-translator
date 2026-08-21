@@ -17,38 +17,26 @@
 
 ## 快速开始
 
-**macOS / Linux：**
+只需要装好 [Python 3.9+](https://www.python.org/downloads/)，然后两条命令：
 
 ```bash
 git clone https://github.com/EM917/tiktok-live-translator.git
-cd tiktok-live-translator
-bash setup.sh
+cd tiktok-live-translator && python3 main.py
 ```
 
-**Windows（PowerShell）：**
+（Windows 用 `python main.py`）
 
-```powershell
-git clone https://github.com/EM917/tiktok-live-translator.git
-cd tiktok-live-translator
-powershell -ExecutionPolicy Bypass -File setup.ps1
-```
-
-安装脚本会自动：检查 Python/ffmpeg（缺了帮你装）→ 建虚拟环境装依赖 → 下载降噪模型 → **体检你的硬件并打印推荐配置**。
-
-然后启动（**不用记任何参数**）：
-
-```bash
-.venv/bin/python main.py
-```
-
-浏览器自动打开 `http://127.0.0.1:8765`——**在页面里粘贴直播间地址、选主播语言、点「开始翻译」即可**，随时可停止/换房间。Windows 下把 `.venv/bin/python` 换成 `.venv\Scripts\python.exe`。
+**其余全自动**：首次运行会自动创建虚拟环境、安装全部依赖（含内置 ffmpeg 和降噪模型），然后自动打开浏览器 `http://127.0.0.1:8765`——**在页面里粘贴直播间地址、选主播语言、点「开始翻译」即可**，随时可停止/换房间。首次安装依赖需要几分钟，之后秒开。
 
 命令行党也可以直接传参：
 
 ```bash
-.venv/bin/python main.py "https://www.tiktok.com/@主播用户名/live" --source es
-.venv/bin/python main.py --demo    # 不连直播，先看看界面效果
+python3 main.py "https://www.tiktok.com/@主播用户名/live" --source es
+python3 main.py --demo      # 不连直播，先看看界面效果
+python3 main.py --doctor    # 看看硬件体检和推荐配置
 ```
+
+> 想手动控制安装过程？`bash setup.sh`（macOS/Linux）或 `powershell -ExecutionPolicy Bypass -File setup.ps1`（Windows）做的是同样的事。
 
 ## 硬件自动配置（它是怎么根据你的电脑选配置的）
 

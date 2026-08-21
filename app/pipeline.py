@@ -11,6 +11,8 @@ from pathlib import Path
 from .translator import create_translator
 
 DENOISE_MODEL = Path(__file__).resolve().parent.parent / "models" / "bd.rnnn"
+RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/"
+               "beguiling-drafter-2018-08-30/bd.rnnn")
 
 # 演示模式的内置台词（英文原文 + 中文译文），用于在没有直播时验证 UI / 浏览器插件
 DEMO_SCRIPT = [
@@ -142,7 +144,7 @@ class Pipeline:
             self._transcriber_key = key
         transcriber = self._transcriber
 
-        denoise = self._denoise_model()
+        denoise = await self._ensure_denoise_model()
         await self.server.status(
             "live", "已连接直播间，开始实时识别" + ("（人声降噪已开启）" if denoise else "")
         )
@@ -191,13 +193,29 @@ class Pipeline:
         await self.server.status("ended", "直播流已结束" + ("（{}）".format(tail) if tail else ""))
         print("[信息] 直播流已结束。可在网页里输入新地址继续。")
 
-    def _denoise_model(self):
+    async def _ensure_denoise_model(self):
         if self.args.denoise == "off":
             return None
         if DENOISE_MODEL.exists():
             return str(DENOISE_MODEL)
-        if self.args.denoise == "on":
-            print("[警告] 未找到降噪模型 models/bd.rnnn，降噪已跳过")
+        # 自动下载（约 300 KB）；失败则本次不降噪，不阻塞直播启动
+        try:
+            import aiohttp
+
+            DENOISE_MODEL.parent.mkdir(parents=True, exist_ok=True)
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as session:
+                async with session.get(RNNOISE_URL) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        if data.startswith(b"rnnoise"):
+                            DENOISE_MODEL.write_bytes(data)
+                            print("[信息] 已自动下载人声降噪模型")
+                            return str(DENOISE_MODEL)
+        except Exception:
+            pass
+        print("[警告] 降噪模型不可用（下载失败），本次不降噪")
         return None
 
     async def _emit(self, text, lang):
