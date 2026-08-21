@@ -1,0 +1,29 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16213a"/>
+      <stop offset="1" stop-color="#0a0d15"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角方块底 -->
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#bg)"/>
+
+  <!-- 对话气泡：青/品红错位残影 + 白色主体（TikTok 色彩语言） -->
+  <g>
+    <path transform="translate(-16,-12)" fill="#25F4EE" opacity="0.95"
+      d="M340,240 L684,240 A90 90 0 0 1 774,330 L774,550 A90 90 0 0 1 684,640 L470,640 L360,724 L360,640 L340,640 A90 90 0 0 1 250,550 L250,330 A90 90 0 0 1 340,240 Z"/>
+    <path transform="translate(16,14)" fill="#FE2C55" opacity="0.95"
+      d="M340,240 L684,240 A90 90 0 0 1 774,330 L774,550 A90 90 0 0 1 684,640 L470,640 L360,724 L360,640 L340,640 A90 90 0 0 1 250,550 L250,330 A90 90 0 0 1 340,240 Z"/>
+    <path fill="#ffffff"
+      d="M340,240 L684,240 A90 90 0 0 1 774,330 L774,550 A90 90 0 0 1 684,640 L470,640 L360,724 L360,640 L340,640 A90 90 0 0 1 250,550 L250,330 A90 90 0 0 1 340,240 Z"/>
+  </g>
+
+  <!-- 译 -->
+  <text x="512" y="543" font-size="286" font-weight="700" text-anchor="middle"
+        font-family="PingFang SC, Hiragino Sans GB, sans-serif" fill="#10151f">译</text>
+
+  <!-- 底部字幕线 -->
+  <rect x="272" y="762" width="480" height="46" rx="23" fill="#ffffff" opacity="0.94"/>
+  <rect x="352" y="840" width="320" height="34" rx="17" fill="#8fa0b8" opacity="0.85"/>
+</svg>
