@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+# RNNoise 模型由 setup.sh / setup.ps1 下载（来自 GregorR/rnnoise-models）
+models/

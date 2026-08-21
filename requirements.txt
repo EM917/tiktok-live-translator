@@ -1,0 +1,6 @@
+aiohttp>=3.9
+numpy>=1.24
+faster-whisper>=1.0
+yt-dlp
+# Apple Silicon 专属：GPU 识别后端（其他平台自动跳过，用 faster-whisper CPU/CUDA）
+mlx-whisper; platform_machine == 'arm64' and sys_platform == 'darwin'

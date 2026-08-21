@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TikTok 直播同传</title>
+  <link rel="stylesheet" href="/static/style.css?v=4">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span id="status-dot" class="dot idle"></span>
+      <h1>TikTok 直播同传</h1>
+      <span id="status-text" class="status-text">等待连接…</span>
+    </div>
+    <div class="controls">
+      <label class="ctl">
+        目标语言
+        <select id="target-lang">
+          <option value="zh-CN">中文（简体）</option>
+          <option value="zh-TW">中文（繁體）</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+          <option value="ko">한국어</option>
+          <option value="es">Español</option>
+          <option value="fr">Français</option>
+          <option value="de">Deutsch</option>
+          <option value="ru">Русский</option>
+          <option value="pt">Português</option>
+          <option value="vi">Tiếng Việt</option>
+          <option value="th">ไทย</option>
+          <option value="id">Bahasa Indonesia</option>
+        </select>
+      </label>
+      <label class="ctl">
+        字号
+        <input type="range" id="font-size" min="20" max="60" step="2">
+      </label>
+      <button id="clear-btn" class="btn" title="清空历史字幕">清空</button>
+      <button id="stop-btn" class="btn hidden" title="停止当前直播间">停止</button>
+    </div>
+  </header>
+
+  <div id="status-banner" class="status-banner hidden"></div>
+
+  <main id="history" class="history">
+    <div id="start-panel" class="start-panel">
+      <div class="empty-icon">🎙️</div>
+      <h2>输入 TikTok 直播间地址</h2>
+      <div class="start-row">
+        <input id="room-input" type="text" spellcheck="false"
+               placeholder="https://www.tiktok.com/@主播用户名/live">
+        <button id="start-btn" class="btn primary">开始翻译</button>
+      </div>
+      <div class="start-row secondary">
+        <label>主播语言
+          <select id="source-lang">
+            <option value="auto">自动检测</option>
+            <option value="es">西班牙语</option>
+            <option value="en">英语</option>
+            <option value="ja">日语</option>
+            <option value="ko">韩语</option>
+            <option value="pt">葡萄牙语</option>
+            <option value="fr">法语</option>
+            <option value="de">德语</option>
+            <option value="ru">俄语</option>
+            <option value="ar">阿拉伯语</option>
+            <option value="th">泰语</option>
+            <option value="vi">越南语</option>
+            <option value="id">印尼语</option>
+            <option value="zh">中文</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint">也支持直接粘贴 .flv / .m3u8 流地址 · 首次识别需下载模型，请耐心等待</p>
+    </div>
+  </main>
+
+  <footer id="live-bar" class="live-bar hidden">
+    <div id="live-translated" class="live-translated"></div>
+    <div id="live-original" class="live-original"></div>
+  </footer>
+
+  <div class="copyright">© 2026 Elon Mei · 著作权所有 · <a href="https://github.com/EM917/tiktok-live-translator" target="_blank" rel="noopener">MIT 许可发布</a></div>
+
+  <script src="/static/app.js?v=4"></script>
+</body>
+</html>

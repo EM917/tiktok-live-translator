@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "TikTok 直播同传字幕",
+  "version": "0.2.0",
+  "description": "把本地 tiktok-live-translator 的实时翻译字幕叠加到 TikTok 直播页面上（需要本地服务已启动）。",
+  "permissions": ["storage"],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.tiktok.com/*"],
+      "js": ["content.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
