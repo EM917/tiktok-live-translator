@@ -177,6 +177,12 @@
     statusDot.className = "dot " + state;
     statusText.textContent = STATUS_TEXT[state] || state;
 
+    // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
+    if (state === "error" || state === "idle") {
+      updateBtn.disabled = false;
+      updateBtn.textContent = "一键更新";
+    }
+
     var active = state === "live" || state === "connecting";
     startPanel.classList.toggle("hidden", active);
     stopBtn.classList.toggle("hidden", !active);

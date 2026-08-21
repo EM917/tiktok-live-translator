@@ -55,11 +55,20 @@ def ensure_env():
         )
         if check.returncode != 0:
             print("[初始化] 正在安装依赖（含内置 ffmpeg，需要几分钟，仅首次）…")
-            subprocess.run(
+            full = subprocess.run(
                 [pip_python, "-m", "pip", "install", "--disable-pip-version-check",
                  "-r", str(ROOT / "requirements.txt")],
-                check=True,
             )
+            if full.returncode != 0:
+                # 个别可选包（如 mlx-whisper）在老 Python/老系统上可能没有轮子——
+                # 退一步只装核心依赖，工具仍可用（识别走 faster-whisper CPU 后端）
+                print("[初始化] 完整安装失败，改装核心依赖…")
+                subprocess.run(
+                    [pip_python, "-m", "pip", "install", "--disable-pip-version-check",
+                     "aiohttp>=3.9", "numpy>=1.24", "faster-whisper>=1.0",
+                     "yt-dlp", "imageio-ffmpeg>=0.5"],
+                    check=True,
+                )
         if not in_project_venv:
             os.execv(str(vpy), [str(vpy), str(ROOT / "main.py")] + sys.argv[1:])
     except Exception as exc:
