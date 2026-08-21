@@ -165,6 +165,6 @@ WebSocket broadcast ──► Browser subtitle UI (http://127.0.0.1:8765)
 - [rnnoise-models](https://github.com/GregorR/rnnoise-models) — denoising model (beguiling-drafter)
 - [Ollama](https://github.com/ollama/ollama) + [TranslateGemma](https://ollama.com/library/translategemma) — local translation
 
-## License
+## Author & License
 
-[MIT](LICENSE)
+Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under the [MIT License](LICENSE).

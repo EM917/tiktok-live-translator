@@ -167,4 +167,4 @@ WebSocket 广播 ──► 浏览器字幕 UI（http://127.0.0.1:8765）
 
 ## 作者与许可
 
-Copyright © 2026 [Elon Mei](https://github.com/EM917)，以 [MIT 许可](LICENSE) 发布。
+Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917)，以 [MIT 许可](LICENSE) 发布。
