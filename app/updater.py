@@ -102,6 +102,17 @@ class Updater:
             tail = err.strip().splitlines()[-2:]
             await self.server.status("error", "更新失败：{}".format(" / ".join(tail)))
             return
+        # 新版本可能带来新依赖——重启前先装上（失败不阻塞，重启后 bootstrap 兜底）
+        await self.server.status("connecting", "正在安装新版本的依赖…")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "pip", "install",
+                "--disable-pip-version-check", "-r", str(ROOT / "requirements.txt"),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+        except Exception:
+            pass
         await self.server.status("idle", "更新完成，正在自动重启…")
         print("[信息] 已更新到最新版本，重启进程…")
         await asyncio.sleep(0.6)

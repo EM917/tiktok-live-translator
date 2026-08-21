@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# macOS 应用启动器：.app 位于项目根目录，向上三级即项目根
+DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$DIR"
+exec /usr/bin/env python3 main.py

@@ -42,11 +42,11 @@ python3 main.py --doctor    # print the hardware check and recommended config
 
 ### Everyday startup (after reboot / after closing it)
 
-- **macOS**: open the project folder in Finder and **double-click `Start.command`** (on first launch, right-click → Open if Gatekeeper complains);
+- **macOS**: double-click **`TikTok Live Translator.app`** in the project folder (right-click → Open on first launch if Gatekeeper complains; drag it to the Dock to keep it handy). `Start.command` works too;
 - **Windows**: **double-click `Start.bat`**;
 - CLI: `cd ~/tiktok-live-translator && python3 main.py`.
 
-The browser opens automatically and the room URL you used last time is still in the input box — just hit Start. To stop, close the terminal window (or Ctrl-C).
+The UI opens in its **own app window** (no browser tab), with the room URL you used last time still in the input box — just hit Start. Closing the window quits the app. Pass `--browser` if you prefer the browser UI.
 
 ## Automatic Hardware Tuning (how it picks a config for your machine)
 

@@ -117,11 +117,13 @@ def parse_args():
                    help="演示模式：不连直播，用内置台词驱动 UI（用来验证界面和浏览器插件）")
     p.add_argument("--doctor", action="store_true",
                    help="环境体检：检测本机硬件并打印推荐配置，不启动服务")
-    p.add_argument("--no-open", action="store_true", help="启动后不要自动打开浏览器")
+    p.add_argument("--browser", action="store_true",
+                   help="在浏览器里打开界面（默认在独立应用窗口中打开）")
+    p.add_argument("--no-open", action="store_true", help="启动后不要自动打开浏览器/窗口")
     return p.parse_args()
 
 
-async def main_async(args):
+async def main_async(args, state=None):
     from app.pipeline import Pipeline
     from app.server import CaptionServer
     from app.updater import Updater, local_version
@@ -136,10 +138,13 @@ async def main_async(args):
     pipeline.updater = updater
     server.on_control = pipeline.handle_control
     await server.start()
+    if state is not None:
+        state["loop"] = asyncio.get_running_loop()
+        state["pipeline"] = pipeline
     update_check = asyncio.ensure_future(updater.check_and_notify())  # noqa: F841
     url = f"http://127.0.0.1:{args.port}"
     print(f"字幕界面已启动: {url}")
-    if not args.no_open:
+    if state is None and not args.no_open:
         webbrowser.open(url)
 
     if args.demo:
@@ -175,10 +180,75 @@ def main():
                 sys.exit("\n".join(missing))
             for m in missing:
                 print("⚠️ " + m)
+    use_window = not args.browser and not args.no_open
+    if use_window:
+        try:
+            import webview  # noqa: F401
+        except ImportError:
+            use_window = False
     try:
-        asyncio.run(main_async(args))
+        if use_window:
+            run_with_window(args)
+        else:
+            asyncio.run(main_async(args))
     except KeyboardInterrupt:
         print("\n已退出。")
+
+
+def run_with_window(args):
+    """桌面应用模式：后台线程跑服务，主线程开原生窗口（pywebview 要求主线程）。"""
+    import socket
+    import threading
+    import time
+
+    import webview
+
+    state = {}
+
+    def backend():
+        try:
+            asyncio.run(main_async(args, state))
+        except SystemExit as exc:
+            print(str(exc))
+            os._exit(1)
+        except Exception as exc:
+            print("[错误] 后台服务异常退出: {}".format(exc))
+            os._exit(1)
+
+    thread = threading.Thread(target=backend, daemon=True)
+    thread.start()
+
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        with socket.socket() as probe:
+            probe.settimeout(0.5)
+            if probe.connect_ex(("127.0.0.1", args.port)) == 0:
+                break
+        time.sleep(0.3)
+
+    url = "http://127.0.0.1:{}".format(args.port)
+    try:
+        webview.create_window("TikTok 直播同传", url,
+                              width=1000, height=760, min_size=(420, 480))
+        webview.start()
+    except Exception as exc:
+        # 本机没有可用的 webview 后端（如部分 Linux 桌面）——退回浏览器
+        print("[信息] 无法创建应用窗口（{}），改在浏览器中打开".format(exc))
+        webbrowser.open(url)
+        thread.join()
+        return
+
+    # 窗口被关闭：停掉直播管线（终止 ffmpeg 子进程）后退出
+    loop = state.get("loop")
+    pipeline = state.get("pipeline")
+    if loop is not None and pipeline is not None:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                pipeline.stop_stream(quiet=True), loop
+            ).result(timeout=5)
+        except Exception:
+            pass
+    os._exit(0)
 
 
 if __name__ == "__main__":

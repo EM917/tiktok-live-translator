@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>TikTok Live Translator</string>
+  <key>CFBundleDisplayName</key>
+  <string>TikTok 直播同传</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.em917.tiktok-live-translator</string>
+  <key>CFBundleVersion</key>
+  <string>0.5.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.5.0</string>
+  <key>CFBundleExecutable</key>
+  <string>TikTokLiveTranslator</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>
