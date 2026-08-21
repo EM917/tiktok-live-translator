@@ -17,6 +17,11 @@
   var targetSel = document.getElementById("target-lang");
   var fontSlider = document.getElementById("font-size");
   var clearBtn = document.getElementById("clear-btn");
+  var updateBar = document.getElementById("update-bar");
+  var updateText = document.getElementById("update-text");
+  var updateBtn = document.getElementById("update-btn");
+  var updateLink = document.getElementById("update-link");
+  var versionEl = document.getElementById("app-version");
 
   var STATUS_TEXT = {
     idle: "待机",
@@ -83,6 +88,20 @@
   });
   stopBtn.addEventListener("click", function () { send({ type: "stop" }); });
 
+  updateBtn.addEventListener("click", function () {
+    updateBtn.disabled = true;
+    updateBtn.textContent = "更新中…";
+    send({ type: "apply_update" });
+  });
+
+  function showUpdate(info) {
+    if (!info || !info.version) return;
+    updateText.textContent = "🔄 发现新版本 " + info.version +
+      (info.can_auto ? "" : "（ZIP 安装需手动下载）");
+    updateLink.href = info.url || "#";
+    updateBar.classList.remove("hidden");
+  }
+
   function applyFont(size) {
     document.documentElement.style.setProperty("--sub-size", size + "px");
   }
@@ -123,7 +142,21 @@
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
           if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
+          if (msg.config.version) versionEl.textContent = " · v" + msg.config.version;
+          if (msg.config.update) showUpdate(msg.config.update);
+          else {
+            updateBar.classList.add("hidden");
+            updateBtn.disabled = false;
+            updateBtn.textContent = "一键更新";
+          }
         }
+        break;
+      case "update_available":
+        showUpdate(msg);
+        break;
+      case "updating":
+        updateBtn.disabled = true;
+        updateBtn.textContent = "更新中…";
         break;
       case "status":
         setStatus(msg);

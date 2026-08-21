@@ -76,6 +76,20 @@ select:hover, .btn:hover { border-color: var(--text-dim); }
 
 input[type="range"] { accent-color: var(--accent); width: 110px; }
 
+/* ---------- 更新横幅 ---------- */
+.update-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 20px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+.update-bar a { color: var(--accent); font-size: 12px; }
+.update-bar .btn.primary { padding: 5px 12px; font-size: 12px; }
+
 /* ---------- 状态横幅 ---------- */
 .status-banner {
   padding: 6px 20px;

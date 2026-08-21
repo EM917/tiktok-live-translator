@@ -57,14 +57,19 @@ def parse_args():
 async def main_async(args):
     from app.pipeline import Pipeline
     from app.server import CaptionServer
+    from app.updater import Updater, local_version
 
     server = CaptionServer(port=args.port)
+    server.config["version"] = local_version()
     try:
         pipeline = Pipeline(args, server)
     except RuntimeError as exc:   # 例如缺少翻译引擎的 API Key
         sys.exit(str(exc))
+    updater = Updater(server)
+    pipeline.updater = updater
     server.on_control = pipeline.handle_control
     await server.start()
+    update_check = asyncio.ensure_future(updater.check_and_notify())  # noqa: F841
     url = f"http://127.0.0.1:{args.port}"
     print(f"字幕界面已启动: {url}")
     if not args.no_open:

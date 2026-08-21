@@ -60,7 +60,14 @@ class Pipeline:
                 return self.start_stream(url)
         elif mtype == "stop":
             return self.stop_stream()
+        elif mtype == "apply_update":
+            if getattr(self, "updater", None) is not None:
+                return self._apply_update()
         return None
+
+    async def _apply_update(self):
+        await self.stop_stream(quiet=True)
+        await self.updater.apply()
 
     # ---- 直播任务管理 ----
     async def start_stream(self, url):

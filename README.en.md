@@ -143,6 +143,15 @@ WebSocket broadcast ──► Browser subtitle UI (http://127.0.0.1:8765)
               └──► Chrome extension subtitle overlay (optional)
 ```
 
+## Auto-update
+
+On every launch the app silently checks GitHub for the latest release (network failures are silently ignored). When a new version exists, a banner appears at the top of the page:
+
+- **git install** (cloned via `git clone`) → click "Update" to run `git pull --ff-only` and restart automatically. If you have uncommitted local changes, the update is refused to avoid overwriting them;
+- **ZIP install** → the banner links to the download page instead.
+
+The current version is shown in the page footer.
+
 ## FAQ
 
 - **`yt-dlp failed to resolve the live stream`** — if the streamer is genuinely live, the tool automatically falls back to parsing the page HTML (you'll see this noted in the logs). If it still fails, either the streamer isn't actually live, or your region requires login — export `cookies.txt` with a browser extension and add `--cookies cookies.txt`.
