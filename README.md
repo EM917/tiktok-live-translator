@@ -38,6 +38,8 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 
 > 想手动控制安装过程？`bash setup.sh`（macOS/Linux）或 `powershell -ExecutionPolicy Bypass -File setup.ps1`（Windows）做的是同样的事。
 
+> **之前克隆过旧版本？** 不要重新 clone（会报 `destination path already exists`）——进目录执行 `git pull` 再启动即可；v0.2.0 起页面里就能一键更新，不再需要命令行。
+
 ## 硬件自动配置（它是怎么根据你的电脑选配置的）
 
 运行 `python main.py --doctor` 随时查看体检结果。启动时未显式指定的参数按下表自动补齐：
