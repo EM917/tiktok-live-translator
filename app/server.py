@@ -39,7 +39,27 @@ class CaptionServer:
     async def _index(self, request):
         return web.FileResponse(WEB_DIR / "index.html")
 
+    def _origin_ok(self, request):
+        """WS 来源校验：浏览器里任意网页都能发起 ws://127.0.0.1 连接（不受同源
+        策略限制），必须挡掉——只放行本机页面/应用窗口，以及 TikTok 页
+        （Chrome 插件的 content script 以页面身份连接）。无 Origin 头的
+        非浏览器客户端放行（本机攻击者本来就有本机执行权，无需经此绕道）。"""
+        origin = request.headers.get("Origin")
+        if not origin:
+            return True
+        from urllib.parse import urlparse
+
+        parsed = urlparse(origin)
+        host = (parsed.hostname or "").lower()
+        if host in ("127.0.0.1", "localhost", "::1"):
+            return True
+        if parsed.scheme == "https" and (host == "tiktok.com" or host.endswith(".tiktok.com")):
+            return True
+        return False
+
     async def _ws(self, request):
+        if not self._origin_ok(request):
+            raise web.HTTPForbidden(text="origin not allowed")
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         try:

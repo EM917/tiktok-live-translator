@@ -65,6 +65,9 @@ class Pipeline:
         elif mtype == "apply_update":
             if getattr(self, "updater", None) is not None:
                 return self._apply_update()
+        elif mtype == "check_update":
+            if getattr(self, "updater", None) is not None:
+                return self.updater.check_and_notify(delay=0, manual=True)
         return None
 
     async def _apply_update(self):
@@ -92,6 +95,19 @@ class Pipeline:
 
     # ---- 实际的直播管线 ----
     async def _run_stream(self, url):
+        """外层兜底：任何未预料的异常都要反映到 UI，绝不无声卡死在「直播中」。"""
+        try:
+            await self._run_stream_inner(url)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[错误] 直播管线异常: {}".format(exc))
+            try:
+                await self.server.status("error", "内部错误，已停止：{}".format(exc))
+            except Exception:
+                pass
+
+    async def _run_stream_inner(self, url):
         from .asr import create_transcriber
         from .audio import FFmpegAudioSource
         from .resolver import ResolveError, resolve_stream_url

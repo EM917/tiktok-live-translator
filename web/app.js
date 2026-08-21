@@ -35,6 +35,7 @@
   var ws = null;
   var retries = 0;
   var maxHistory = 300;
+  var currentVersion = "";
 
   // ---- 设置 ----
   // 只有用户显式调过字号才覆盖 CSS 默认值（否则会压掉移动端媒体查询的 26px）
@@ -71,6 +72,10 @@
   });
 
   function startStream() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setStatus({ state: "offline", detail: "与本地服务断开，正在重连——稍候再点「开始翻译」" });
+      return;
+    }
     var url = roomInput.value.trim();
     if (!url) { roomInput.focus(); return; }
     if (!/^https?:\/\//.test(url)) {
@@ -100,6 +105,22 @@
       (info.can_auto ? "" : "（ZIP 安装需手动下载）");
     updateLink.href = info.url || "#";
     updateBar.classList.remove("hidden");
+    document.title = "有新版本 · TikTok 直播同传";
+  }
+
+  // 点底部版本号即可手动检查更新
+  versionEl.addEventListener("click", function () {
+    if (!send({ type: "check_update" })) {
+      versionEl.textContent = " · 未连接到本地服务";
+      setTimeout(restoreVersion, 3000);
+      return;
+    }
+    versionEl.textContent = " · 检查更新中…";
+    setTimeout(restoreVersion, 4000);
+  });
+
+  function restoreVersion() {
+    if (currentVersion) versionEl.textContent = " · v" + currentVersion;
   }
 
   function applyFont(size) {
@@ -129,8 +150,13 @@
     };
   }
 
+  // 返回是否真的发出去了——连接断开时调用方需要告诉用户，而不是静默失败
   function send(obj) {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(obj));
+      return true;
+    }
+    return false;
   }
 
   function handle(msg) {
@@ -142,7 +168,10 @@
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
           if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
-          if (msg.config.version) versionEl.textContent = " · v" + msg.config.version;
+          if (msg.config.version) {
+            currentVersion = msg.config.version;
+            versionEl.textContent = " · v" + msg.config.version;
+          }
           if (msg.config.update) showUpdate(msg.config.update);
           else {
             updateBar.classList.add("hidden");

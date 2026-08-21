@@ -195,6 +195,8 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 }
 .copyright a { color: var(--text-faint); text-decoration: none; }
 .copyright a:hover { color: var(--text-dim); text-decoration: underline; }
+#app-version { cursor: pointer; }
+#app-version:hover { color: var(--text-dim); text-decoration: underline; }
 
 .live-translated {
   font-size: var(--sub-size);

@@ -137,11 +137,15 @@ async def main_async(args, state=None):
     updater = Updater(server)
     pipeline.updater = updater
     server.on_control = pipeline.handle_control
-    await server.start()
+    try:
+        await server.start()
+    except OSError as exc:
+        sys.exit("端口 {} 被占用（程序可能已经在运行）。关掉旧实例，"
+                 "或用 --port 换一个端口。（{}）".format(args.port, exc))
     if state is not None:
         state["loop"] = asyncio.get_running_loop()
         state["pipeline"] = pipeline
-    update_check = asyncio.ensure_future(updater.check_and_notify())  # noqa: F841
+    update_watch = asyncio.ensure_future(updater.watch())  # noqa: F841
     url = f"http://127.0.0.1:{args.port}"
     print(f"字幕界面已启动: {url}")
     if state is None and not args.no_open:
@@ -202,6 +206,22 @@ def run_with_window(args):
     import time
 
     import webview
+
+    url = "http://127.0.0.1:{}".format(args.port)
+
+    # 已有实例在跑（比如双击了两次）？直接把窗口开到现有实例上，不再起后端
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(url, timeout=1.5) as resp:
+            if "直播同传" in resp.read(4096).decode(errors="replace"):
+                print("[信息] 检测到程序已在运行，打开已有实例的窗口")
+                webview.create_window("TikTok 直播同传", url,
+                                      width=1000, height=760, min_size=(420, 480))
+                webview.start()
+                return
+    except Exception:
+        pass
 
     state = {}
 

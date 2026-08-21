@@ -37,9 +37,18 @@ class Updater:
         self.server = server
         self.latest = None
 
-    async def check_and_notify(self, delay=2.0):
-        """启动后静默检查一次；网络失败/限流一律无声跳过。"""
-        await asyncio.sleep(delay)
+    async def watch(self, first_delay=2.0, interval=6 * 3600):
+        """启动后检查一次，之后每 6 小时复查——常开不关的用户也能及时看到新版本。"""
+        await self.check_and_notify(delay=first_delay)
+        while True:
+            await asyncio.sleep(interval)
+            if self.latest is None:      # 已经提示过就不再重复打扰
+                await self.check_and_notify(delay=0)
+
+    async def check_and_notify(self, delay=2.0, manual=False):
+        """检查一次最新版本；网络失败/限流一律无声跳过（手动检查时会回报结果）。"""
+        if delay:
+            await asyncio.sleep(delay)
         try:
             import aiohttp
 
@@ -50,12 +59,20 @@ class Updater:
                     API_LATEST, headers={"Accept": "application/vnd.github+json"}
                 ) as resp:
                     if resp.status != 200:
+                        if manual:
+                            await self.server.status(
+                                "idle", "检查更新失败（GitHub 返回 {}），稍后再试".format(resp.status))
                         return
                     data = await resp.json()
         except Exception:
+            if manual:
+                await self.server.status("idle", "检查更新失败（网络不可达），稍后再试")
             return
         tag = str(data.get("tag_name") or "")
         if not tag or _parse(tag) <= _parse(local_version()):
+            if manual:
+                await self.server.status(
+                    "idle", "已是最新版本 v{}".format(local_version()))
             return
         self.latest = {
             "version": tag,
