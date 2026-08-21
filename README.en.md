@@ -40,6 +40,14 @@ python3 main.py --doctor    # print the hardware check and recommended config
 
 > **Cloned an older version before?** Don't re-clone (it fails with `destination path already exists`) — just `cd` into the folder, run `git pull`, and start it; from v0.2.0 on you can update with one click from the page itself.
 
+### Everyday startup (after reboot / after closing it)
+
+- **macOS**: open the project folder in Finder and **double-click `Start.command`** (on first launch, right-click → Open if Gatekeeper complains);
+- **Windows**: **double-click `Start.bat`**;
+- CLI: `cd ~/tiktok-live-translator && python3 main.py`.
+
+The browser opens automatically and the room URL you used last time is still in the input box — just hit Start. To stop, close the terminal window (or Ctrl-C).
+
 ## Automatic Hardware Tuning (how it picks a config for your machine)
 
 Run `python main.py --doctor` anytime to see the hardware-check results. Any flag you don't explicitly set at startup is auto-filled per the table below:

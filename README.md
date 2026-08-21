@@ -40,6 +40,14 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 
 > **之前克隆过旧版本？** 不要重新 clone（会报 `destination path already exists`）——进目录执行 `git pull` 再启动即可；v0.2.0 起页面里就能一键更新，不再需要命令行。
 
+### 日常启动（关机重启 / 关闭之后）
+
+- **macOS**：在 Finder 里打开项目文件夹，**双击 `Start.command`**（首次双击如提示安全性问题，右键 → 打开）；
+- **Windows**：**双击 `Start.bat`**；
+- 命令行党：`cd ~/tiktok-live-translator && python3 main.py`。
+
+启动后浏览器自动打开，上次填过的直播间地址还在输入框里，点「开始翻译」即可。停止就直接关掉终端窗口（或 Ctrl-C）。
+
 ## 硬件自动配置（它是怎么根据你的电脑选配置的）
 
 运行 `python main.py --doctor` 随时查看体检结果。启动时未显式指定的参数按下表自动补齐：
