@@ -80,10 +80,16 @@ class CaptionServer:
                     data = json.loads(msg.data)
                 except ValueError:
                     continue
+                if not isinstance(data, dict):   # 非对象 JSON 会让下游 .get 崩掉
+                    continue
                 if self.on_control is not None:
-                    result = self.on_control(data)
-                    if asyncio.iscoroutine(result):
-                        await result
+                    try:
+                        result = self.on_control(data)
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception as exc:
+                        # 单条控制消息出错不该断开整个连接
+                        print("[警告] 处理控制消息失败: {}".format(exc))
         finally:
             self.clients.discard(ws)
         return ws

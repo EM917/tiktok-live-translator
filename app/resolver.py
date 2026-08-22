@@ -30,7 +30,9 @@ async def _resolve_from_page(url):
             timeout=aiohttp.ClientTimeout(total=15)
         ) as session:
             async with session.get(url, headers=_BROWSER_HEADERS) as resp:
-                html = await resp.text(errors="replace")
+                # 限制读取上限：直播页正常几百 KB，别让异常/恶意响应撑爆内存
+                raw = await resp.content.read(8 * 1024 * 1024)
+        html = raw.decode(resp.charset or "utf-8", errors="replace")
     except Exception:
         return None
     candidates = []
@@ -60,9 +62,10 @@ async def resolve_stream_url(url, cookies=None):
     # 优先纯音频 FLV（TikTok 的 flv-ao：省带宽、延迟低，且 HLS 地址对 ffmpeg 直连常返回 5XX），
     # 逐级回退到普通 FLV / best
     fmt = "flv-ao/bestaudio/flv-hd/flv-hd1/best"
-    cmd = [sys.executable, "-m", "yt_dlp", "-g", "-f", fmt, "--no-warnings", url]
+    cmd = [sys.executable, "-m", "yt_dlp", "-g", "-f", fmt, "--no-warnings"]
     if cookies:
         cmd += ["--cookies", cookies]
+    cmd += ["--", url]      # `--` 之后一律当作地址，防止 "-xxx" 形式的地址被当成选项
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )

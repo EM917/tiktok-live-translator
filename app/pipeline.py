@@ -224,9 +224,12 @@ class Pipeline:
             ) as session:
                 async with session.get(RNNOISE_URL) as resp:
                     if resp.status == 200:
-                        data = await resp.read()
+                        data = await resp.content.read(8 * 1024 * 1024)
                         if data.startswith(b"rnnoise"):
-                            DENOISE_MODEL.write_bytes(data)
+                            # 先写临时文件再原子改名：中途断网不会留下半个模型文件
+                            tmp = DENOISE_MODEL.with_suffix(".rnnn.part")
+                            tmp.write_bytes(data)
+                            tmp.replace(DENOISE_MODEL)
                             print("[信息] 已自动下载人声降噪模型")
                             return str(DENOISE_MODEL)
         except Exception:

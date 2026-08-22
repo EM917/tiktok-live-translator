@@ -36,18 +36,61 @@ def _venv_python():
     return ROOT / ".venv" / sub
 
 
+def _venv_usable(vpy):
+    """光看路径存在不够——上次安装被中断会留下残缺的 venv，必须实际跑一下确认。"""
+    if not vpy.exists():
+        return False
+    try:
+        return subprocess.run([str(vpy), "-c", "import sys"],
+                              capture_output=True, timeout=30).returncode == 0
+    except Exception:
+        return False
+
+
+def _acquire_bootstrap_lock():
+    """首次安装要几分钟且窗口模式下毫无提示，用户很容易再双击一次。
+    用锁文件串行化：第二个进程等第一个装完，而不是并发写坏同一个 .venv。"""
+    import time
+
+    lock = ROOT / ".venv.lock"
+    deadline = time.time() + 900     # 最多等 15 分钟
+    while time.time() < deadline:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return lock
+        except FileExistsError:
+            try:                      # 陈旧锁（上次安装崩溃残留）超过 20 分钟就抢占
+                if time.time() - lock.stat().st_mtime > 1200:
+                    lock.unlink()
+                    continue
+            except OSError:
+                continue
+            print("[初始化] 另一个实例正在安装依赖，等待它完成…")
+            time.sleep(3)
+            if _deps_ok():
+                return None
+        except OSError:
+            return None
+    return None
+
+
 def ensure_env():
     """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。"""
     if _deps_ok():
         return
     vpy = _venv_python()
     in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
+    lock = None if in_project_venv else _acquire_bootstrap_lock()
     try:
-        if not in_project_venv and not vpy.exists():
-            print("[初始化] 首次运行：正在创建虚拟环境（仅需一次）…")
+        if _deps_ok():        # 等锁期间别的实例已经装好了
+            return
+        if not in_project_venv and not _venv_usable(vpy):
+            print("[初始化] 首次运行：正在创建虚拟环境（仅需一次，可能几分钟）…")
             import venv
 
-            venv.create(ROOT / ".venv", with_pip=True)
+            venv.create(ROOT / ".venv", with_pip=True, clear=True)
         pip_python = sys.executable if in_project_venv else str(vpy)
         check = subprocess.run(
             [pip_python, "-c", "import aiohttp, numpy, faster_whisper, yt_dlp"],
@@ -70,10 +113,22 @@ def ensure_env():
                     check=True,
                 )
         if not in_project_venv:
+            if lock is not None:      # execv 不会执行 finally，先手动释放锁
+                try:
+                    lock.unlink()
+                except OSError:
+                    pass
+                lock = None
             os.execv(str(vpy), [str(vpy), str(ROOT / "main.py")] + sys.argv[1:])
     except Exception as exc:
         print("⚠️ 自动安装依赖失败（{}）。请手动执行 setup.sh / setup.ps1，"
               "或 pip install -r requirements.txt".format(exc))
+    finally:
+        if lock is not None:
+            try:
+                lock.unlink()
+            except OSError:
+                pass
 
 
 if "--doctor" not in sys.argv:

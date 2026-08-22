@@ -36,6 +36,7 @@ class Updater:
     def __init__(self, server):
         self.server = server
         self.latest = None
+        self._applying = False
 
     async def watch(self, first_delay=2.0, interval=6 * 3600):
         """启动后检查一次，之后每 6 小时复查——常开不关的用户也能及时看到新版本。"""
@@ -97,8 +98,15 @@ class Updater:
 
     async def apply(self):
         """一键更新：仅 fast-forward pull，成功后原地重启进程。"""
-        if self.latest is None:
-            return
+        if self.latest is None or self._applying:
+            return   # 重复点击「一键更新」不能并发跑两次 git/pip
+        self._applying = True
+        try:
+            await self._apply_inner()
+        finally:
+            self._applying = False
+
+    async def _apply_inner(self):
         if not self.latest.get("can_auto"):
             await self.server.status(
                 "idle", "当前是 ZIP 安装，无法自动更新——请到 GitHub 下载新版本：{}".format(
@@ -133,5 +141,10 @@ class Updater:
         await self.server.status("idle", "更新完成，正在自动重启…")
         print("[信息] 已更新到最新版本，重启进程…")
         await asyncio.sleep(0.6)
-        os.execv(sys.executable,
-                 [sys.executable, str(ROOT / "main.py")] + sys.argv[1:])
+        try:
+            os.execv(sys.executable,
+                     [sys.executable, str(ROOT / "main.py")] + sys.argv[1:])
+        except Exception as exc:
+            # execv 失败（极少见）不能让用户以为更新丢了——代码其实已经拉下来了
+            await self.server.status(
+                "idle", "更新已下载完成，但自动重启失败（{}）——请手动关掉再重新打开程序".format(exc))
