@@ -39,26 +39,37 @@ class CaptionServer:
     async def _index(self, request):
         return web.FileResponse(WEB_DIR / "index.html")
 
-    def _origin_ok(self, request):
-        """WS 来源校验：浏览器里任意网页都能发起 ws://127.0.0.1 连接（不受同源
-        策略限制），必须挡掉——只放行本机页面/应用窗口，以及 TikTok 页
-        （Chrome 插件的 content script 以页面身份连接）。无 Origin 头的
-        非浏览器客户端放行（本机攻击者本来就有本机执行权，无需经此绕道）。"""
+    def _classify_origin(self, request):
+        """WS 来源分级。浏览器里任意网页都能发起 ws://127.0.0.1 连接（不受同源
+        策略限制），必须挡掉。分三级：
+
+          "control" —— 本机页面/应用窗口，或非浏览器客户端（无 Origin 头）：
+                       可收字幕，也可下发 start/stop/更新等控制指令；
+          "view"    —— TikTok 页面（Chrome 插件的 content script 以页面身份
+                       连接）：只收字幕。插件本身是纯显示端，不需要控制权；
+                       给它控制权等于让任何 tiktok.com 上的脚本能驱动本机程序；
+          None      —— 其余一律拒绝。
+        """
         origin = request.headers.get("Origin")
         if not origin:
-            return True
+            return "control"
         from urllib.parse import urlparse
 
         parsed = urlparse(origin)
         host = (parsed.hostname or "").lower()
         if host in ("127.0.0.1", "localhost", "::1"):
-            return True
+            # 精确到本服务端口：本机上跑的其他网页（别人的开发服务器、
+            # 某个本地应用的内置页面）不该能驱动本程序
+            if (parsed.port or (443 if parsed.scheme == "https" else 80)) == self.port:
+                return "control"
+            return "view"
         if parsed.scheme == "https" and (host == "tiktok.com" or host.endswith(".tiktok.com")):
-            return True
-        return False
+            return "view"
+        return None
 
     async def _ws(self, request):
-        if not self._origin_ok(request):
+        access = self._classify_origin(request)
+        if access is None:
             raise web.HTTPForbidden(text="origin not allowed")
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
@@ -81,6 +92,8 @@ class CaptionServer:
                 except ValueError:
                     continue
                 if not isinstance(data, dict):   # 非对象 JSON 会让下游 .get 崩掉
+                    continue
+                if access != "control":          # 只看不许动（TikTok 页面）
                     continue
                 if self.on_control is not None:
                     try:

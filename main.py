@@ -49,7 +49,14 @@ def _venv_usable(vpy):
 
 def _acquire_bootstrap_lock():
     """首次安装要几分钟且窗口模式下毫无提示，用户很容易再双击一次。
-    用锁文件串行化：第二个进程等第一个装完，而不是并发写坏同一个 .venv。"""
+    用锁文件串行化：第二个进程等第一个装完，而不是并发写坏同一个 .venv。
+
+    返回 (状态, 锁路径)：
+      ("acquired", path) 拿到锁，可以安装，用完要删；
+      ("ready", None)    等待期间别的实例已装好，直接用；
+      ("busy", None)     等太久还没轮到——绝不能自己再跑一遍 pip；
+      ("nolock", None)   建不了锁文件（只读目录等），退化为尽力而为。
+    """
     import time
 
     lock = ROOT / ".venv.lock"
@@ -59,7 +66,7 @@ def _acquire_bootstrap_lock():
             fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(fd, str(os.getpid()).encode())
             os.close(fd)
-            return lock
+            return ("acquired", lock)
         except FileExistsError:
             try:                      # 陈旧锁（上次安装崩溃残留）超过 20 分钟就抢占
                 if time.time() - lock.stat().st_mtime > 1200:
@@ -70,10 +77,10 @@ def _acquire_bootstrap_lock():
             print("[初始化] 另一个实例正在安装依赖，等待它完成…")
             time.sleep(3)
             if _deps_ok():
-                return None
+                return ("ready", None)
         except OSError:
-            return None
-    return None
+            return ("nolock", None)
+    return ("busy", None)
 
 
 def ensure_env():
@@ -82,7 +89,13 @@ def ensure_env():
         return
     vpy = _venv_python()
     in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
-    lock = None if in_project_venv else _acquire_bootstrap_lock()
+    lock = None
+    if not in_project_venv:
+        state, lock = _acquire_bootstrap_lock()
+        if state == "busy":
+            print("⚠️ 另一个实例仍在安装依赖（已等待 15 分钟）。请等它装完后再打开本程序，"
+                  "避免两边同时安装把环境写坏。")
+            return
     try:
         if _deps_ok():        # 等锁期间别的实例已经装好了
             return

@@ -37,10 +37,12 @@ class Pipeline:
         self.translator = create_translator(args.translator)
         self.server.config["target_lang"] = self.target
         self._counter = 0
-        self._asr_pool = ThreadPoolExecutor(max_workers=1)
+        self._asr_pool = None            # 每条直播一个独立线程池，停止时整个丢弃
         self._stream_task = None
+        self._stream_lock = asyncio.Lock()
         self._transcriber = None
         self._transcriber_key = None
+        self._transcriber_future = None  # 正在加载中的模型，避免重复加载
 
     # ---- 来自 UI 的控制消息 ----
     def handle_control(self, msg):
@@ -75,13 +77,22 @@ class Pipeline:
         await self.updater.apply()
 
     # ---- 直播任务管理 ----
+    # 加锁的原因：多个页面/标签页可能同时连着服务，两条 start 消息并发进来时，
+    # 「读旧任务→取消→建新任务」如果不是原子的，后一条会覆盖 _stream_task，
+    # 把前一条的管线（连同它的 ffmpeg 进程）变成谁也停不掉的孤儿。
     async def start_stream(self, url):
-        await self.stop_stream(quiet=True)
-        self.server.config["room_url"] = url
-        await self.server.broadcast({"type": "config", "room_url": url})
-        self._stream_task = asyncio.create_task(self._run_stream(url))
+        async with self._stream_lock:
+            await self._stop_locked(quiet=True)
+            self.server.config["room_url"] = url
+            await self.server.broadcast({"type": "config", "room_url": url})
+            self._stream_task = asyncio.create_task(self._run_stream(url))
 
     async def stop_stream(self, quiet=False):
+        async with self._stream_lock:
+            await self._stop_locked(quiet=quiet)
+
+    async def _stop_locked(self, quiet=False):
+        """调用方必须已持有 _stream_lock。"""
         task = self._stream_task
         self._stream_task = None
         if task is not None and not task.done():
@@ -90,6 +101,11 @@ class Pipeline:
                 await task
             except asyncio.CancelledError:
                 pass
+        pool, self._asr_pool = self._asr_pool, None
+        if pool is not None:
+            # 已排队的段直接丢弃；正在跑的那段让它自己跑完（无法安全打断），
+            # 但它跑在旧线程池上，不会占住下一条直播的识别线程
+            pool.shutdown(wait=False, cancel_futures=True)
         if not quiet:
             await self.server.status("idle", "已停止。输入直播间地址可重新开始。")
 
@@ -139,8 +155,13 @@ class Pipeline:
         if self._transcriber is None or self._transcriber_key != key:
             await self.server.status(
                 "connecting", "正在加载语音识别模型（首次运行需要下载，可能要几分钟）…")
-            try:
-                transcriber = await loop.run_in_executor(
+            # 关键：把「正在加载」这件事本身记下来。模型要几分钟，用户等不及
+            # 点停止再开始时，取消只会解绑协程、线程仍在后台加载；若不认这个
+            # 在途任务，每次重来都会再起一个数 GB 的模型，几轮就把内存吃光。
+            if (self._transcriber_future is None or self._transcriber_future.done()
+                    or self._transcriber_key != key):
+                self._transcriber_key = key
+                self._transcriber_future = loop.run_in_executor(
                     None,
                     lambda: create_transcriber(
                         backend=backend,
@@ -152,12 +173,19 @@ class Pipeline:
                         use_context=not self.args.no_context,
                     ),
                 )
+            try:
+                # shield：本任务被取消时不要连带取消底层加载，
+                # 下一次启动可以直接复用同一个在途结果
+                transcriber = await asyncio.shield(self._transcriber_future)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
+                self._transcriber_future = None
+                self._transcriber_key = None
                 await self.server.status("error", "加载语音识别模型失败：{}".format(exc))
                 print("[错误] 加载模型失败: {}".format(exc))
                 return
             self._transcriber = transcriber
-            self._transcriber_key = key
         transcriber = self._transcriber
 
         denoise = await self._ensure_denoise_model()
@@ -165,6 +193,8 @@ class Pipeline:
             "live", "已连接直播间，开始实时识别" + ("（人声降噪已开启）" if denoise else "")
         )
         queue = asyncio.Queue(maxsize=3)
+        asr_pool = ThreadPoolExecutor(max_workers=1)   # 本条直播专用，停止时随之丢弃
+        self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
         segmenter = SilenceSegmenter()
 
@@ -192,7 +222,7 @@ class Pipeline:
                     break
                 try:
                     text, lang = await loop.run_in_executor(
-                        self._asr_pool, transcriber.transcribe, segment
+                        asr_pool, transcriber.transcribe, segment
                     )
                 except Exception as exc:
                     print("[警告] 识别一段音频失败: {}".format(exc))
