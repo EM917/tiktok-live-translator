@@ -62,6 +62,9 @@ class Pipeline:
                 elif source == "auto":
                     self.args.source = None
                 return self.start_stream(url)
+            # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
+            return self.server.status(
+                "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
         elif mtype == "stop":
             return self.stop_stream()
         elif mtype == "apply_update":
@@ -212,6 +215,8 @@ class Pipeline:
                 async for frame in source.frames():
                     for segment in segmenter.feed(frame):
                         _put(segment)
+                for segment in segmenter.flush():   # 别丢掉最后一段话
+                    _put(segment)
             finally:
                 _put(None)
 

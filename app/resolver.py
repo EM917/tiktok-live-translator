@@ -50,15 +50,24 @@ async def _host_is_private(host):
     return False
 
 
-async def _check_media_url(url):
-    """媒体地址安全校验：只允许 http(s)，且不得指向内网/环回地址。"""
+async def _check_media_url(url, trusted=False):
+    """媒体地址安全校验，分两档信任级别：
+
+    trusted=True —— 用户自己输入的地址（命令行参数，或 UI 里手动粘贴的）。
+        用户本来就能在自己电脑上运行任何东西，放行本机/内网地址不构成提权，
+        而且本地文件、自建的局域网推流服务器都是合理用法。
+    trusted=False —— 派生地址：yt-dlp 的输出、以及从直播页 HTML 里正则提取的
+        地址。后者内容不可信，必须挡住指向环回/内网的地址，否则一个恶意页面就能
+        让本程序去探测用户的内网服务（SSRF）。
+    """
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
+    allowed = ("http", "https", "file") if trusted else ("http", "https")
+    if parsed.scheme not in allowed:
         raise ResolveError("不支持的地址协议：{}（只接受 http/https 直播流）"
                            .format(parsed.scheme or "(空)"))
-    if await _host_is_private(parsed.hostname):
+    if not trusted and await _host_is_private(parsed.hostname):
         raise ResolveError("拒绝访问内网/本机地址的流媒体地址（安全限制）")
     return url
 
@@ -96,7 +105,8 @@ async def resolve_stream_url(url, cookies=None):
     """返回直播流媒体地址。已经是 .flv/.m3u8 的直接放行，否则用 yt-dlp 解析。
     所有返回给 ffmpeg 的地址都先过 _check_media_url（协议 + 内网拦截）。"""
     if _DIRECT_RE.search(url):
-        return await _check_media_url(url)
+        # 用户直接给的流地址：按可信处理（详见 _check_media_url 的说明）
+        return await _check_media_url(url, trusted=True)
 
     try:
         import yt_dlp  # noqa: F401

@@ -43,6 +43,20 @@ class SilenceSegmenter:
             self._reset()
         return out
 
+    def flush(self):
+        """流结束时把缓冲里剩下的语音吐出来。
+
+        没有这一步，最后一段话会被直接丢弃：切段只在「攒够 9 秒」或「说完停顿
+        0.7 秒」时触发，而直播断流/结束时这两个条件通常都没满足。对短音频来说
+        更极端——可能一条字幕都出不来。
+        """
+        out = []
+        duration = len(self._buf) / 2 / SAMPLE_RATE
+        if self._has_speech and duration >= 0.5:   # 太短的残片没有识别价值
+            out.append(bytes(self._buf))
+        self._reset()
+        return out
+
     def _reset(self):
         self._buf = bytearray()
         self._trailing_silence = 0.0
