@@ -101,6 +101,33 @@ async def _resolve_from_page(url):
     return None
 
 
+def _friendly_resolve_error(err_text):
+    """把 yt-dlp 的英文报错归类成用户能行动的中文话术；技术细节只留最后一行。"""
+    lowered = err_text.lower()
+    lines = [ln.strip() for ln in err_text.strip().splitlines() if ln.strip()]
+    detail = "\n技术细节：{}".format(lines[-1][:200]) if lines else ""
+    if "not currently live" in lowered or "room is offline" in lowered:
+        return "主播现在没有开播。等开播后再试；也可以检查一下地址拼写是否正确。"
+    if ("unable to find room" in lowered or "http error 404" in lowered
+            or "unsupported url" in lowered or "does not exist" in lowered):
+        return ("没有找到这个直播间——请确认地址形如 "
+                "https://www.tiktok.com/@用户名/live，"
+                "或在直播间里点「分享 → 复制链接」粘贴过来。")
+    if ("log in" in lowered or "login" in lowered or "cookies" in lowered
+            or "authentication" in lowered or "private" in lowered):
+        return ("这个直播间需要登录后才能观看（可能是私密或有观看限制），"
+                "换一个直播间试试吧。（进阶：若你在浏览器里能看这个直播，"
+                "可用 --cookies 导入登录信息，见 README 常见问题）" + detail)
+    if ("timed out" in lowered or "connection" in lowered
+            or "network" in lowered or "temporary failure" in lowered
+            or "getaddrinfo" in lowered or "nodename" in lowered
+            or "name resolution" in lowered or "unreachable" in lowered
+            or "reset by peer" in lowered or "urlopen error" in lowered):
+        return "网络连接不畅，暂时访问不到 TikTok——请检查网络后重试。" + detail
+    return ("无法连接这个直播间：主播可能没在播，也可能是网络问题或地址有误。"
+            "请检查后重试。" + detail)
+
+
 async def resolve_stream_url(url, cookies=None):
     """返回直播流媒体地址。已经是 .flv/.m3u8 的直接放行，否则用 yt-dlp 解析。
     所有返回给 ffmpeg 的地址都先过 _check_media_url（协议 + 内网拦截）。"""
@@ -111,7 +138,8 @@ async def resolve_stream_url(url, cookies=None):
     try:
         import yt_dlp  # noqa: F401
     except ImportError:
-        raise ResolveError("缺少 yt-dlp，请先执行：pip install -r requirements.txt")
+        raise ResolveError("组件 yt-dlp 缺失：请关闭程序后重新打开，会自动补装。"
+                           "（进阶：pip install -r requirements.txt）")
 
     # 优先纯音频 FLV（TikTok 的 flv-ao：省带宽、延迟低，且 HLS 地址对 ffmpeg 直连常返回 5XX），
     # 逐级回退到普通 FLV / best
@@ -143,10 +171,10 @@ async def resolve_stream_url(url, cookies=None):
         if fallback:
             print("[信息] yt-dlp 解析失败，已从直播页面直接找到流地址")
             return await _check_media_url(fallback)
-        tail = err.decode(errors="replace").strip().splitlines()[-3:]
-        raise ResolveError(
-            "yt-dlp 未能解析直播流（主播可能没在播，或该地区需要登录 cookies）：\n" + "\n".join(tail)
-        )
+        err_text = err.decode(errors="replace")
+        tail = err_text.strip().splitlines()[-3:]
+        print("[错误] yt-dlp: " + " | ".join(tail))    # 英文原始输出只进终端
+        raise ResolveError(_friendly_resolve_error(err_text))
     lines = [line.strip() for line in out.decode(errors="replace").splitlines() if line.strip()]
     if not lines:
         raise ResolveError("yt-dlp 没有返回流地址（直播可能尚未开始）")

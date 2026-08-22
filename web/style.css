@@ -89,6 +89,8 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 }
 .update-bar a { color: var(--accent); font-size: 12px; }
 .update-bar .btn.primary { padding: 5px 12px; font-size: 12px; }
+/* ZIP 安装时「前往下载新版本」链接升级为主按钮 */
+.update-bar a.btn.primary { color: #ffffff; text-decoration: none; }
 
 /* ---------- 状态横幅 ---------- */
 .status-banner {
@@ -171,6 +173,7 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 .btn.primary:disabled { opacity: 0.5; cursor: default; }
 
 .start-panel .hint { font-size: 12px; color: var(--text-faint); margin-top: 14px; }
+.start-panel .hint a { color: var(--accent); }
 
 /* ---------- 底部大字幕 ---------- */
 .live-bar {

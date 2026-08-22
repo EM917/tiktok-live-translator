@@ -26,9 +26,15 @@ def _deps_ok():
         import faster_whisper  # noqa: F401
         import numpy  # noqa: F401
         import yt_dlp  # noqa: F401
-        return True
     except ImportError:
         return False
+    # ffmpeg 也是硬依赖：不查它的话，安装中途断掉会让「重开自动补装」的承诺落空
+    try:
+        import imageio_ffmpeg  # noqa: F401
+        return True
+    except ImportError:
+        import shutil
+        return shutil.which("ffmpeg") is not None
 
 
 def _venv_python():
@@ -45,6 +51,72 @@ def _venv_usable(vpy):
                               capture_output=True, timeout=30).returncode == 0
     except Exception:
         return False
+
+
+def _has_console():
+    """stdout 或 stderr 任一连着终端就算有终端——`| tee log` 这类重定向下
+    不该弹系统对话框。"""
+    try:
+        for stream in (sys.stdout, sys.stderr):
+            if stream is not None and stream.isatty():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _esc_osa(text):
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+_INFO_DIALOG = None
+
+
+def _info_dialog(message):
+    """无终端可看时（双击 .app 启动）弹一个非阻塞的系统提示框；有终端只打印。"""
+    global _INFO_DIALOG
+    print(message)
+    if _has_console() or sys.platform != "darwin":
+        return   # Windows 走 Start.bat，有黑窗口能看到 print
+    try:
+        _INFO_DIALOG = subprocess.Popen(
+            ["osascript", "-e",
+             'display dialog "{}" with title "TikTok 直播同传" buttons {{"知道了"}} '
+             'default button 1 with icon note giving up after 600'.format(_esc_osa(message))],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        _INFO_DIALOG = None
+
+
+def _close_info_dialog():
+    global _INFO_DIALOG
+    if _INFO_DIALOG is not None and _INFO_DIALOG.poll() is None:
+        try:
+            _INFO_DIALOG.terminate()
+        except Exception:
+            pass
+    _INFO_DIALOG = None
+
+
+def _fail_alert(message):
+    """报告致命问题：终端打印之外，无终端时必须弹系统对话框——否则用户只会看到
+    程序无声消失。"""
+    print("⚠️ " + message)
+    if _has_console():
+        return
+    try:
+        if sys.platform == "darwin":
+            _close_info_dialog()
+            subprocess.run(
+                ["osascript", "-e",
+                 'display dialog "{}" with title "TikTok 直播同传" buttons {{"好"}} '
+                 'default button 1 with icon caution'.format(_esc_osa(message))],
+                capture_output=True, timeout=60)
+        elif os.name == "nt":
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, message, "TikTok 直播同传", 0x30)
+    except Exception:
+        pass
 
 
 def _acquire_bootstrap_lock():
@@ -87,14 +159,16 @@ def ensure_env():
     """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。"""
     if _deps_ok():
         return
+    _info_dialog("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n"
+                 "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。")
     vpy = _venv_python()
     in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
     lock = None
     if not in_project_venv:
         state, lock = _acquire_bootstrap_lock()
         if state == "busy":
-            print("⚠️ 另一个实例仍在安装依赖（已等待 15 分钟）。请等它装完后再打开本程序，"
-                  "避免两边同时安装把环境写坏。")
+            _fail_alert("另一个实例仍在安装组件（已等待 15 分钟）。请等它装完后再打开本程序，"
+                        "避免两边同时安装把环境写坏。")
             return
     try:
         if _deps_ok():        # 等锁期间别的实例已经装好了
@@ -106,7 +180,8 @@ def ensure_env():
             venv.create(ROOT / ".venv", with_pip=True, clear=True)
         pip_python = sys.executable if in_project_venv else str(vpy)
         check = subprocess.run(
-            [pip_python, "-c", "import aiohttp, numpy, faster_whisper, yt_dlp"],
+            [pip_python, "-c",
+             "import aiohttp, numpy, faster_whisper, yt_dlp, imageio_ffmpeg"],
             capture_output=True,
         )
         if check.returncode != 0:
@@ -132,10 +207,13 @@ def ensure_env():
                 except OSError:
                     pass
                 lock = None
+            _close_info_dialog()      # 马上换进新环境开窗口，安装提示框可以收了
             os.execv(str(vpy), [str(vpy), str(ROOT / "main.py")] + sys.argv[1:])
     except Exception as exc:
-        print("⚠️ 自动安装依赖失败（{}）。请手动执行 setup.sh / setup.ps1，"
-              "或 pip install -r requirements.txt".format(exc))
+        _fail_alert("自动安装未完成（{}）。\n"
+                    "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
+                    "（进阶：也可手动运行 setup.sh / setup.ps1，"
+                    "或 pip install -r requirements.txt）".format(exc))
     finally:
         if lock is not None:
             try:
@@ -147,7 +225,22 @@ def ensure_env():
 if "--doctor" not in sys.argv:
     ensure_env()
 
-from app.translator import TRANSLATOR_CHOICES  # noqa: E402
+try:
+    from app.translator import TRANSLATOR_CHOICES  # noqa: E402
+except ImportError as exc:
+    _fail_alert("组件尚未安装完成，程序暂时无法启动（{}）。\n"
+                "请检查网络后重新打开本程序，会自动继续安装。".format(exc))
+    sys.exit(1)
+
+
+def _load_settings():
+    """settings.json：界面里改过的偏好（如目标语言）跨重启保留。损坏/缺失都静默忽略。"""
+    import json
+    try:
+        data = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def parse_args():
@@ -158,7 +251,8 @@ def parse_args():
     p.add_argument("url", nargs="?", default=None,
                    help="直播间地址（可选——不填则启动后在网页里输入），"
                         "例如 https://www.tiktok.com/@user/live；也可以直接给 .flv/.m3u8 流地址")
-    p.add_argument("--target", default="zh-CN", help="目标语言代码，默认 zh-CN（简体中文）")
+    p.add_argument("--target", default=None,
+                   help="目标语言代码，默认 zh-CN（简体中文）；界面里改过的话记住上次的选择")
     p.add_argument("--source", default=None, help="主播语言代码（默认自动检测），例如 en/ja/ko")
     p.add_argument("--model", default=None,
                    help="whisper 模型：tiny/base/small/medium/large-v3/large-v3-turbo。"
@@ -191,28 +285,72 @@ def parse_args():
     return p.parse_args()
 
 
+def _existing_instance_url(base_port):
+    """本程序是否已在运行。是则返回其 UI 地址，否则 None。
+    用于双击两次的场景：复用已有实例，而不是再起一个后端。
+    必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
+    base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
+    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹，扫描耗时可忽略。"""
+    import socket
+    import urllib.request
+    for port in range(base_port, base_port + 10):
+        with socket.socket() as probe:
+            probe.settimeout(0.3)
+            if probe.connect_ex(("127.0.0.1", port)) != 0:
+                continue
+        url = "http://127.0.0.1:{}".format(port)
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as resp:
+                if "直播同传" in resp.read(4096).decode(errors="replace"):
+                    return url
+        except Exception:
+            pass
+    return None
+
+
 async def main_async(args, state=None):
     from app.pipeline import Pipeline
     from app.server import CaptionServer
     from app.updater import Updater, local_version
 
-    server = CaptionServer(port=args.port)
+    # 端口被占用（常见于别的软件恰好占了 8765）时自动向后找空闲端口，
+    # 不让用户接触 --port 这种命令行概念
+    server = None
+    last_exc = None
+    for port in range(args.port, args.port + 10):
+        candidate = CaptionServer(port=port)
+        try:
+            await candidate.start()
+        except OSError as exc:
+            last_exc = exc
+            continue
+        server = candidate
+        if port != args.port:
+            print("[信息] 端口 {} 被占用，已自动改用 {}".format(args.port, port))
+        args.port = port
+        break
+    if server is None:
+        if state is not None:
+            state["failed"] = True   # 告诉窗口线程别开窗口了
+        _fail_alert("无法启动本地服务：端口 {}–{} 全部被占用（{}）。\n"
+                    "请关闭占用这些端口的程序后重新打开。".format(
+                        args.port, args.port + 9, last_exc))
+        sys.exit(1)
     server.config["version"] = local_version()
     try:
         pipeline = Pipeline(args, server)
     except RuntimeError as exc:   # 例如缺少翻译引擎的 API Key
-        sys.exit(str(exc))
+        if state is not None:
+            state["failed"] = True
+        _fail_alert(str(exc))
+        sys.exit(1)
     updater = Updater(server)
     pipeline.updater = updater
     server.on_control = pipeline.handle_control
-    try:
-        await server.start()
-    except OSError as exc:
-        sys.exit("端口 {} 被占用（程序可能已经在运行）。关掉旧实例，"
-                 "或用 --port 换一个端口。（{}）".format(args.port, exc))
     if state is not None:
         state["loop"] = asyncio.get_running_loop()
         state["pipeline"] = pipeline
+        state["ready_port"] = args.port   # 窗口线程以此为准（端口可能已自动切换）
     update_watch = asyncio.ensure_future(updater.watch())  # noqa: F841
     url = f"http://127.0.0.1:{args.port}"
     print(f"字幕界面已启动: {url}")
@@ -233,6 +371,9 @@ async def main_async(args, state=None):
 
 def main():
     args = parse_args()
+    if args.target is None:   # 未显式传参：用界面里上次选的语言，都没有则简体中文
+        saved = _load_settings().get("target_lang")
+        args.target = (str(saved)[:12] if saved else "zh-CN")
     if args.doctor:
         from app.hwdetect import doctor
         sys.exit(doctor())
@@ -240,16 +381,17 @@ def main():
         missing = []
         from app.ffmpeg_bin import find_ffmpeg
         if find_ffmpeg() is None:
-            missing.append("未找到 ffmpeg——请执行 pip install -r requirements.txt"
-                           "（会自动带上内置版），或安装系统 ffmpeg")
+            missing.append("组件 ffmpeg 缺失：请关闭程序后重新打开，会自动补装。"
+                           "（进阶：pip install -r requirements.txt）")
         try:
             import faster_whisper  # noqa: F401
         except ImportError:
-            missing.append("缺少依赖 faster-whisper，请执行：pip install -r requirements.txt"
-                           "（或运行 setup.sh / setup.ps1）")
+            missing.append("组件 faster-whisper 缺失：请关闭程序后重新打开，会自动补装。"
+                           "（进阶：pip install -r requirements.txt 或运行 setup 脚本）")
         if missing:
             if args.url:
-                sys.exit("\n".join(missing))
+                _fail_alert("\n".join(missing))
+                sys.exit(1)
             for m in missing:
                 print("⚠️ " + m)
     use_window = not args.browser and not args.no_open
@@ -262,6 +404,13 @@ def main():
         if use_window:
             run_with_window(args)
         else:
+            # 浏览器模式下双击两次：同样复用已有实例（窗口模式在 run_with_window 里处理）
+            if not args.no_open and args.url is None:
+                existing = _existing_instance_url(args.port)
+                if existing:
+                    print("[信息] 检测到程序已在运行，直接打开现有界面 " + existing)
+                    webbrowser.open(existing)
+                    return
             asyncio.run(main_async(args))
     except KeyboardInterrupt:
         print("\n已退出。")
@@ -269,27 +418,19 @@ def main():
 
 def run_with_window(args):
     """桌面应用模式：后台线程跑服务，主线程开原生窗口（pywebview 要求主线程）。"""
-    import socket
     import threading
     import time
 
     import webview
 
-    url = "http://127.0.0.1:{}".format(args.port)
-
     # 已有实例在跑（比如双击了两次）？直接把窗口开到现有实例上，不再起后端
-    try:
-        import urllib.request
-
-        with urllib.request.urlopen(url, timeout=1.5) as resp:
-            if "直播同传" in resp.read(4096).decode(errors="replace"):
-                print("[信息] 检测到程序已在运行，打开已有实例的窗口")
-                webview.create_window("TikTok 直播同传", url,
-                                      width=1000, height=760, min_size=(420, 480))
-                webview.start()
-                return
-    except Exception:
-        pass
+    existing = _existing_instance_url(args.port)
+    if existing:
+        print("[信息] 检测到程序已在运行，打开已有实例的窗口")
+        webview.create_window("TikTok 直播同传", existing,
+                              width=1000, height=760, min_size=(420, 480))
+        webview.start()
+        return
 
     state = {}
 
@@ -300,21 +441,26 @@ def run_with_window(args):
             print(str(exc))
             os._exit(1)
         except Exception as exc:
-            print("[错误] 后台服务异常退出: {}".format(exc))
+            _fail_alert("后台服务异常退出：{}".format(exc))
             os._exit(1)
 
     thread = threading.Thread(target=backend, daemon=True)
     thread.start()
 
+    # 等后端真正就绪。不能用「端口能连上」判断：8765 可能被别的软件占着
+    # （后端会自动换端口），连上的未必是我们自己的服务。
     deadline = time.time() + 60
-    while time.time() < deadline:
-        with socket.socket() as probe:
-            probe.settimeout(0.5)
-            if probe.connect_ex(("127.0.0.1", args.port)) == 0:
-                break
+    while time.time() < deadline and thread.is_alive():
+        if state.get("ready_port") or state.get("failed"):
+            break
         time.sleep(0.3)
 
-    url = "http://127.0.0.1:{}".format(args.port)
+    if not state.get("ready_port"):
+        # 后端没起来（失败对话框已经弹了/正在弹）：不开窗口，等它自己退出
+        thread.join()
+        return
+
+    url = "http://127.0.0.1:{}".format(state["ready_port"])
     try:
         webview.create_window("TikTok 直播同传", url,
                               width=1000, height=760, min_size=(420, 480))

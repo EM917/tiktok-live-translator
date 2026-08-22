@@ -1,5 +1,6 @@
 .venv/
 .venv.lock
+settings.json
 __pycache__/
 *.pyc
 .DS_Store

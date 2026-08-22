@@ -23,18 +23,26 @@
 
 ## 快速开始
 
-只需要装好 [Python 3.9+](https://www.python.org/downloads/)，然后两条命令：
+### 不会用终端？三步开始（推荐）
+
+1. **下载**：点本页右上方绿色的 **Code** 按钮 → **Download ZIP**，下载后解压到任意位置（例如桌面）。
+2. **装 Python**（免费，只装一次）：到 [python.org/downloads](https://www.python.org/downloads/) 下载安装包，按默认选项装完即可。忘了装也没关系——启动器发现没有 Python 时会自动打开下载页提示你。
+3. **启动**：
+   - **macOS**：双击文件夹里的 **`TikTok Live Translator.app`**。首次打开如提示「无法打开」：旧系统右键 → 打开；**macOS 15 及以后**要到 **系统设置 → 隐私与安全性**，拉到页面底部点 **「仍要打开」**（只需一次）。可以把它拖到 Dock 常驻，但**不要把它拖出这个文件夹**。
+   - **Windows**：双击 **`Start.bat`**。若弹出「发布者未知」的安全警告，点「运行」即可（本工具完全开源，代码就在这个文件夹里）。运行期间会有一个黑色文字窗口——**它是翻译引擎，请保持打开**，字幕显示在另外弹出的应用窗口里。
+
+首次启动会自动安装全部组件（需要几分钟，屏幕上有提示；首次识别还会自动下载语音模型，页面上能看到进度），之后每次秒开。窗口打开后：**粘贴直播间地址（或只输入主播用户名）→ 选主播语言 → 点「开始翻译」**，随时可以停止或换房间。
+
+### 命令行方式
+
+装好 [Python 3.9+](https://www.python.org/downloads/) 后两条命令：
 
 ```bash
 git clone https://github.com/EM917/tiktok-live-translator.git
 cd tiktok-live-translator && python3 main.py
 ```
 
-（Windows 用 `python main.py`）
-
-**其余全自动**：首次运行会自动创建虚拟环境、安装全部依赖（含内置 ffmpeg 和降噪模型），然后自动打开浏览器 `http://127.0.0.1:8765`——**在页面里粘贴直播间地址、选主播语言、点「开始翻译」即可**，随时可停止/换房间。首次安装依赖需要几分钟，之后秒开。
-
-命令行党也可以直接传参：
+（Windows 用 `python main.py`）其余全自动：首次运行自动创建虚拟环境、安装全部依赖（含内置 ffmpeg 和降噪模型）。也可以直接传参：
 
 ```bash
 python3 main.py "https://www.tiktok.com/@主播用户名/live" --source es
@@ -48,11 +56,11 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 
 ### 日常启动（关机重启 / 关闭之后）
 
-- **macOS**：双击项目文件夹里的 **`TikTok Live Translator.app`**（首次启动如被系统拦截，右键 → 打开；可拖到 Dock 常驻）；也可以双击 `Start.command`；
-- **Windows**：**双击 `Start.bat`**；
+- **macOS**：双击 **`TikTok Live Translator.app`**（或 `Start.command`）；
+- **Windows**：双击 **`Start.bat`**；
 - 命令行党：`cd ~/tiktok-live-translator && python3 main.py`。
 
-界面在**独立应用窗口**中打开（不占浏览器标签页），上次填过的直播间地址还在输入框里，点「开始翻译」即可；关掉窗口就是退出。想改回浏览器界面加 `--browser`。
+界面在**独立应用窗口**中打开（不占浏览器标签页），上次填过的直播间地址和选过的目标语言都会记住，点「开始翻译」即可；关掉窗口就是退出。想改回浏览器界面加 `--browser`。
 
 ## 硬件自动配置（它是怎么根据你的电脑选配置的）
 
@@ -120,13 +128,14 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 | *tengo un sueño*（我好困） | ❌ 我做了一个梦 | ✅ 现在感觉很困 |
 | *Es vegano*（纯素产品） | ❌ 它是素食主义者 | ✅ 纯素的 |
 
+<a name="extension"></a>
 ## Chrome 插件（把字幕叠加到 TikTok 页面上）
 
 1. 打开 `chrome://extensions`，右上角开启「开发者模式」；
 2. 点「加载已解压的扩展程序」，选择本项目的 `extension/` 文件夹；
-3. 保持 `main.py` 在运行，打开任意 `tiktok.com` 页面，字幕到达时出现悬浮字幕条。
+3. 保持程序在运行，打开 TikTok **直播间**页面（地址含 `/live`），字幕到达时出现悬浮字幕条。
 
-字幕条支持**拖动**移动位置、**双击**折叠/展开。改过 `--port` 的话在扩展「选项」页同步修改。插件只是显示端——音频抓取和识别由本地 `main.py` 完成。
+字幕条支持**拖动**移动位置、**双击**折叠/展开、悬停出现 **×** 可隐藏。插件会自动尝试程序可能用到的端口（8765–8774），一般无需配置。插件只是显示端——音频抓取和识别由本地程序完成。
 
 ## 架构
 
@@ -158,11 +167,11 @@ WebSocket 广播 ──► 浏览器字幕 UI（http://127.0.0.1:8765）
 
 ## 常见问题
 
-- **`yt-dlp 未能解析直播流`** —— 若主播确实在播，工具会自动改从页面 HTML 解析（日志有提示）；仍失败说明主播没播，或该地区需要登录，用浏览器插件导出 cookies.txt 后加 `--cookies cookies.txt`。
-- **首次启动卡在「正在加载语音识别模型」** —— 正在从 Hugging Face 下载模型（large-v3 约 3GB），只需一次。
+- **提示「主播现在没有开播」但主播明明在播** —— 工具会自动改从页面 HTML 解析（日志有提示）；仍失败多半是该直播间需要登录/地区受限，可用浏览器插件导出 cookies.txt 后加 `--cookies cookies.txt`。
+- **首次点「开始翻译」卡在下载识别模型** —— 正在从 Hugging Face 下载（large-v3 约 3GB），页面上会显示进度，只需一次。
 - **识别追不上直播 / 终端提示丢弃音频** —— 换小一档模型（`--model small`），或 `--beam 1`；Apple Silicon 用户确认 `pip install mlx-whisper` 后走 GPU。
 - **背景音乐里的歌声被当成主播的话** —— RNNoise 对器乐抑制好，但对歌曲里的**演唱人声**只能部分抑制；置信度过滤会兜住大部分，个别漏网属正常。
-- **插件没显示字幕** —— 确认 `main.py` 在运行，刷新 TikTok 页面；改过端口的在扩展选项页同步。
+- **插件没显示字幕** —— 确认程序在运行、当前打开的是**直播间页面**（地址含 `/live`）而不是普通视频页，然后刷新 TikTok 页面。
 - **翻译显示「翻译失败」** —— 当前引擎不可达（断网/Ollama 没启动），会自动显示原文；`auto` 模式下重启工具会自动回退到可用引擎。
 
 ## 隐私与使用边界
@@ -203,18 +212,26 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 
 ## Quick Start
 
-All you need installed is [Python 3.9+](https://www.python.org/downloads/). Then:
+### Never used a terminal? Three steps (recommended)
+
+1. **Download**: click the green **Code** button at the top of this page → **Download ZIP**, then unzip it anywhere (e.g. your Desktop).
+2. **Install Python** (free, one time only): grab the installer from [python.org/downloads](https://www.python.org/downloads/) and install with the default options. Forgot? No problem — the launcher will detect it and open the download page for you.
+3. **Launch**:
+   - **macOS**: double-click **`TikTok Live Translator.app`** in the folder. If the first launch is blocked ("cannot be opened"): on older systems right-click → Open; on **macOS 15 and later** go to **System Settings → Privacy & Security**, scroll to the bottom and click **"Open Anyway"** (one time only). Feel free to drag it to the Dock — but **don't move it out of this folder**.
+   - **Windows**: double-click **`Start.bat`**. If a "publisher unknown" security warning pops up, click "Run" (this tool is fully open source — the code is right there in the folder). A black text window stays open while running — **that's the translation engine, keep it open**; subtitles appear in the separate app window.
+
+The first launch installs everything automatically (a few minutes, with on-screen progress; the first recognition also downloads the speech model, with progress shown on the page). Every launch after that is instant. Once the window opens: **paste the live-room URL (or just the streamer's username) → pick the streamer's language → hit Start**. Stop or switch rooms anytime.
+
+### Command line
+
+With [Python 3.9+](https://www.python.org/downloads/) installed, two commands:
 
 ```bash
 git clone https://github.com/EM917/tiktok-live-translator.git
 cd tiktok-live-translator && python3 main.py
 ```
 
-(On Windows use `python main.py`.)
-
-**Everything else is automatic**: the first run creates a virtual environment, installs all dependencies (including a bundled static ffmpeg and the denoising model), then opens `http://127.0.0.1:8765` in your browser — **paste the live-room URL into the page, pick the streamer's language, and hit Start**. You can stop or switch rooms anytime from the page. The first run takes a few minutes to install; every run after that starts instantly.
-
-CLI flags still work if you prefer:
+(On Windows use `python main.py`.) Everything else is automatic: the first run creates a virtual environment and installs all dependencies (including a bundled static ffmpeg and the denoising model). CLI flags work too:
 
 ```bash
 python3 main.py "https://www.tiktok.com/@streamer_username/live" --source es
@@ -228,11 +245,11 @@ python3 main.py --doctor    # print the hardware check and recommended config
 
 ### Everyday startup (after reboot / after closing it)
 
-- **macOS**: double-click **`TikTok Live Translator.app`** in the project folder (right-click → Open on first launch if Gatekeeper complains; drag it to the Dock to keep it handy). `Start.command` works too;
-- **Windows**: **double-click `Start.bat`**;
+- **macOS**: double-click **`TikTok Live Translator.app`** (or `Start.command`);
+- **Windows**: double-click **`Start.bat`**;
 - CLI: `cd ~/tiktok-live-translator && python3 main.py`.
 
-The UI opens in its **own app window** (no browser tab), with the room URL you used last time still in the input box — just hit Start. Closing the window quits the app. Pass `--browser` if you prefer the browser UI.
+The UI opens in its **own app window** (no browser tab), remembering the room URL and target language from last time — just hit Start. Closing the window quits the app. Pass `--browser` if you prefer the browser UI.
 
 ## Automatic Hardware Tuning (how it picks a config for your machine)
 
@@ -304,9 +321,9 @@ Real-world comparison (colloquial Spanish → Chinese):
 
 1. Open `chrome://extensions` and enable "Developer mode" in the top right.
 2. Click "Load unpacked" and select this project's `extension/` folder.
-3. Keep `main.py` running, open any `tiktok.com` page, and a floating subtitle bar appears as subtitles arrive.
+3. Keep the app running, open a TikTok **live-room** page (URL contains `/live`), and a floating subtitle bar appears as subtitles arrive.
 
-The subtitle bar supports **dragging** to reposition it and **double-clicking** to collapse/expand. If you changed `--port`, update it to match on the extension's "Options" page too. The extension is just a display layer — audio capture and recognition are handled by the local `main.py`.
+The subtitle bar supports **dragging** to reposition it, **double-clicking** to collapse/expand, and hovering reveals an **×** to hide it. The extension automatically tries the ports the app may use (8765–8774), so it normally needs no configuration. The extension is just a display layer — audio capture and recognition are handled by the local app.
 
 ## Architecture
 
@@ -338,11 +355,11 @@ The current version is shown in the page footer.
 
 ## FAQ
 
-- **`yt-dlp failed to resolve the live stream`** — if the streamer is genuinely live, the tool automatically falls back to parsing the page HTML (you'll see this noted in the logs). If it still fails, either the streamer isn't actually live, or your region requires login — export `cookies.txt` with a browser extension and add `--cookies cookies.txt`.
-- **First launch stuck on "Loading speech recognition model"** — it's downloading the model from Hugging Face (large-v3 is about 3GB); this only happens once.
+- **It says "the streamer isn't live right now" but they clearly are** — the tool automatically falls back to parsing the page HTML (you'll see this noted in the logs). If it still fails, the room likely requires login / is region-restricted — export `cookies.txt` with a browser extension and add `--cookies cookies.txt`.
+- **First "Start" stuck downloading the recognition model** — it's downloading from Hugging Face (large-v3 is about 3GB); progress is shown on the page, and it only happens once.
 - **Recognition can't keep up with the stream / terminal shows dropped audio** — switch to a smaller model (`--model small`), or use `--beam 1`; Apple Silicon users should confirm `pip install mlx-whisper` succeeded so it runs on the GPU.
 - **Singing in background music gets picked up as the streamer talking** — RNNoise suppresses instrumental music well, but can only partially suppress **sung vocals** in a song; confidence filtering catches most of these, and the occasional slip-through is normal.
-- **Extension isn't showing subtitles** — confirm `main.py` is running and refresh the TikTok page; if you changed the port, update it on the extension's Options page too.
+- **Extension isn't showing subtitles** — confirm the app is running and that you're on a **live-room page** (URL contains `/live`) rather than a regular video page, then refresh the TikTok page.
 - **Translation shows "translation failed"** — the current engine is unreachable (no network / Ollama not running); it automatically falls back to showing the raw text. In `auto` mode, restarting the tool falls back to whichever engine is available.
 
 ## Privacy and Usage Boundaries

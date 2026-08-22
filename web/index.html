@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=8">
+  <link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body>
   <header class="topbar">
@@ -79,7 +79,8 @@
           </select>
         </label>
       </div>
-      <p class="hint">也支持直接粘贴 .flv / .m3u8 流地址 · 首次识别需下载模型，请耐心等待</p>
+      <p class="hint">也可以只输入主播用户名（如 @somebody），或直接粘贴 .flv / .m3u8 流地址 · 首次识别需下载模型，进度会显示在页面上</p>
+      <p class="hint">想把字幕直接叠加到 TikTok 直播画面上？<a href="https://github.com/EM917/tiktok-live-translator#extension" target="_blank" rel="noopener">安装自带的 Chrome 插件 →</a></p>
     </div>
   </main>
 
@@ -90,6 +91,23 @@
 
   <div class="copyright">Copyright &copy; 2026 Elon Mei (EM917). All rights reserved. &middot; <a href="https://github.com/EM917/tiktok-live-translator" target="_blank" rel="noopener">MIT License</a><span id="app-version" title="点击检查更新"></span></div>
 
-  <script src="/static/app.js?v=9"></script>
+  <script>
+    // 有人会解压后直接双击本文件——file:// 下 /static/ 绝对路径全部失效
+    //（样式和上面的 app.js 都加载不出来），必须用内联脚本给出指引
+    if (location.protocol === "file:") {
+      document.body.innerHTML = "";
+      var __note = document.createElement("div");
+      __note.style.cssText = "max-width:520px;margin:80px auto;padding:28px;" +
+        "font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;" +
+        "font-size:15px;line-height:1.9;color:#333;border:1px solid #ddd;" +
+        "border-radius:12px;text-align:center;background:#fff;";
+      __note.innerHTML = "<div style='font-size:34px'>🚪</div>" +
+        "<b>请不要直接打开这个文件</b><br>" +
+        "回到解压出来的文件夹，双击 <b>TikTok Live Translator.app</b>（Mac）" +
+        "或 <b>Start.bat</b>（Windows）启动程序，字幕界面会自动打开。";
+      document.body.appendChild(__note);
+    }
+  </script>
+  <script src="/static/app.js?v=13"></script>
 </body>
 </html>

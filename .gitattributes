@@ -1,0 +1,7 @@
+# cmd.exe 只认 CRLF——LF 行尾的批处理里 goto/label 会随机失效，
+# 必须保证 GitHub Download ZIP 交付的也是 CRLF 版本
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+# shell 脚本保持 LF
+*.command text eol=lf
+*.sh text eol=lf

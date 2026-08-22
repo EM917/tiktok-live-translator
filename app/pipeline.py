@@ -4,11 +4,19 @@
 同一时间只跑一个直播间；切换房间时旧任务被取消，识别模型跨房间复用不重复加载。
 """
 import asyncio
+import json
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .translator import create_translator
+
+SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
+
+# whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
+MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
+                  "large-v3": 3100, "large-v3-turbo": 1620}
 
 DENOISE_MODEL = Path(__file__).resolve().parent.parent / "models" / "bd.rnnn"
 RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/"
@@ -36,6 +44,14 @@ class Pipeline:
         self.target = args.target
         self.translator = create_translator(args.translator)
         self.server.config["target_lang"] = self.target
+        # 上次的直播间地址由服务端记住（浏览器 localStorage 按端口隔离，
+        # 端口自动漂移时会拿不到），启动时回填给 UI
+        try:
+            saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            if isinstance(saved, dict) and saved.get("room_url"):
+                self.server.config["room_url"] = str(saved["room_url"])[:500]
+        except Exception:
+            pass
         self._counter = 0
         self._asr_pool = None            # 每条直播一个独立线程池，停止时整个丢弃
         self._stream_task = None
@@ -51,6 +67,7 @@ class Pipeline:
             value = str(msg.get("value", ""))[:12]
             if value:
                 self.target = value
+                self._save_setting("target_lang", value)
                 return self.server.broadcast({"type": "config", "target_lang": value})
         elif mtype == "start":
             url = str(msg.get("url", "")).strip()
@@ -61,7 +78,7 @@ class Pipeline:
                     self.args.source = source
                 elif source == "auto":
                     self.args.source = None
-                return self.start_stream(url)
+                return self._start_with_ack(url)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
                 "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
@@ -79,6 +96,31 @@ class Pipeline:
         await self.stop_stream(quiet=True)
         await self.updater.apply()
 
+    async def _start_with_ack(self, url):
+        """UI 点「开始」后立刻回执——停掉旧管线可能要好几秒（等 ffmpeg 退出），
+        期间不给任何反馈的话，用户会以为点了没反应而反复点。"""
+        await self.server.status("connecting", "已收到指令，正在连接…")
+        await self.start_stream(url)
+
+    def _save_setting(self, key, value):
+        """把界面偏好写进 settings.json（重启后 main.py 读回）。写失败静默忽略。"""
+        data = {}
+        try:
+            loaded = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            pass
+        data[key] = value
+        try:
+            # 临时文件 + 原子改名：并发/中断都不会留下写坏的 settings.json
+            tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            os.replace(tmp, SETTINGS_FILE)
+        except OSError:
+            pass
+
     # ---- 直播任务管理 ----
     # 加锁的原因：多个页面/标签页可能同时连着服务，两条 start 消息并发进来时，
     # 「读旧任务→取消→建新任务」如果不是原子的，后一条会覆盖 _stream_task，
@@ -87,6 +129,7 @@ class Pipeline:
         async with self._stream_lock:
             await self._stop_locked(quiet=True)
             self.server.config["room_url"] = url
+            self._save_setting("room_url", url)
             await self.server.broadcast({"type": "config", "room_url": url})
             self._stream_task = asyncio.create_task(self._run_stream(url))
 
@@ -156,8 +199,17 @@ class Pipeline:
         key = (backend, model, device, compute, self.args.source,
                self.args.beam, self.args.no_context)
         if self._transcriber is None or self._transcriber_key != key:
+            size_mb = MODEL_SIZES_MB.get(model)
+            if size_mb and size_mb >= 1000:
+                size_note = "约 {:.1f} GB".format(size_mb / 1000)
+            elif size_mb:
+                size_note = "约 {} MB".format(size_mb)
+            else:
+                size_note = "可能较大"
             await self.server.status(
-                "connecting", "正在加载语音识别模型（首次运行需要下载，可能要几分钟）…")
+                "connecting",
+                "正在加载语音识别模型 {}（仅首次使用需下载，{}，进度会显示在这里）…"
+                .format(model, size_note))
             # 关键：把「正在加载」这件事本身记下来。模型要几分钟，用户等不及
             # 点停止再开始时，取消只会解绑协程、线程仍在后台加载；若不认这个
             # 在途任务，每次重来都会再起一个数 GB 的模型，几轮就把内存吃光。
@@ -176,6 +228,7 @@ class Pipeline:
                         use_context=not self.args.no_context,
                     ),
                 )
+            watcher = asyncio.ensure_future(self._model_download_progress(model))
             try:
                 # shield：本任务被取消时不要连带取消底层加载，
                 # 下一次启动可以直接复用同一个在途结果
@@ -185,16 +238,23 @@ class Pipeline:
             except Exception as exc:
                 self._transcriber_future = None
                 self._transcriber_key = None
-                await self.server.status("error", "加载语音识别模型失败：{}".format(exc))
+                watcher.cancel()   # 先停进度播报，别让它把下面的 error 状态盖回去
+                await self.server.status(
+                    "error", "下载/加载识别模型失败——请检查网络后点「开始翻译」重试。\n"
+                             "技术细节：{}".format(str(exc)[:200]))
                 print("[错误] 加载模型失败: {}".format(exc))
                 return
+            finally:
+                watcher.cancel()
             self._transcriber = transcriber
         transcriber = self._transcriber
 
         denoise = await self._ensure_denoise_model()
-        await self.server.status(
-            "live", "已连接直播间，开始实时识别" + ("（人声降噪已开启）" if denoise else "")
-        )
+        await self.server.status("connecting", "正在连接直播音频流…")
+        live_note = ("已连接直播间，开始实时识别"
+                     + ("（人声降噪已开启）" if denoise else ""))
+        stream_started = time.time()
+        got_audio = False
         queue = asyncio.Queue(maxsize=3)
         asr_pool = ThreadPoolExecutor(max_workers=1)   # 本条直播专用，停止时随之丢弃
         self._asr_pool = asr_pool
@@ -211,8 +271,13 @@ class Pipeline:
             queue.put_nowait(segment)
 
         async def reader():
+            # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
+            nonlocal got_audio
             try:
                 async for frame in source.frames():
+                    if not got_audio:
+                        got_audio = True
+                        await self.server.status("live", live_note)
                     for segment in segmenter.feed(frame):
                         _put(segment)
                 for segment in segmenter.flush():   # 别丢掉最后一段话
@@ -241,8 +306,60 @@ class Pipeline:
             await source.stop()
             raise
         tail = source.stderr_tail()
-        await self.server.status("ended", "直播流已结束" + ("（{}）".format(tail) if tail else ""))
+        if tail:
+            print("[信息] ffmpeg 输出: {}".format(tail))   # 英文技术输出只进终端，不上 UI
+        # 几秒内就断开的不是「直播结束」而是连接失败——错报成正常结束的话，
+        # 用户会以为主播下播了，不会想到去重试
+        if not got_audio or time.time() - stream_started < 15:
+            await self.server.status(
+                "error", "连接直播流失败：刚连上就断开了。可能是网络波动或直播刚刚结束"
+                         "——请稍等片刻，点「开始翻译」重试。")
+        else:
+            await self.server.status(
+                "ended", "直播已结束。可以继续翻看上面的字幕，或输入新的直播间地址。")
         print("[信息] 直播流已结束。可在网页里输入新地址继续。")
+
+    async def _model_download_progress(self, model):
+        """模型加载期间轮询 HuggingFace 缓存目录的增量，把下载进度推到 UI。
+        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。"""
+        try:
+            hf_home = os.environ.get("HF_HOME")
+            cache = (Path(hf_home) / "hub" if hf_home
+                     else Path.home() / ".cache" / "huggingface" / "hub")
+
+            def _du():
+                # lstat 不跟随符号链接：HF 缓存里 snapshots/ 是指向 blobs/ 的
+                # 软链，跟着算会把每个文件记两遍，进度条显示 200%
+                total = 0
+                for root, _dirs, files in os.walk(cache):
+                    for name in files:
+                        try:
+                            total += os.lstat(os.path.join(root, name)).st_size
+                        except OSError:
+                            pass
+                return total
+
+            loop = asyncio.get_running_loop()
+            baseline = await loop.run_in_executor(None, _du)
+            expected = MODEL_SIZES_MB.get(model)
+            while True:
+                await asyncio.sleep(3)
+                done_mb = (await loop.run_in_executor(None, _du) - baseline) / 1e6
+                if done_mb < 20:      # 没在下载（或刚开始），别闪一条 0% 出来
+                    continue
+                if expected:
+                    done_mb = min(done_mb, expected)   # Windows 无软链权限时是真副本，仍可能翻倍
+                    pct = min(99, int(done_mb * 100 / expected))
+                    text = ("正在下载识别模型 {}：{}%（{:.0f} / {} MB，仅首次需要，"
+                            "请保持窗口打开）…".format(model, pct, done_mb, expected))
+                else:
+                    text = ("正在下载识别模型 {}：已下载 {:.0f} MB（仅首次需要，"
+                            "请保持窗口打开）…".format(model, done_mb))
+                await self.server.status("connecting", text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass      # 进度显示是锦上添花，任何失败都不能影响加载本身
 
     async def _ensure_denoise_model(self):
         if self.args.denoise == "off":

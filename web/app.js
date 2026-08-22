@@ -36,6 +36,8 @@
   var retries = 0;
   var maxHistory = 300;
   var currentVersion = "";
+  var startWatchdog = null;
+  var pendingStart = null;   // 已发出但服务器还没回执的「开始」指令（重连后补发）
 
   // ---- 设置 ----
   // 只有用户显式调过字号才覆盖 CSS 默认值（否则会压掉移动端媒体查询的 26px）
@@ -71,27 +73,85 @@
     liveBar.classList.add("hidden");
   });
 
+  // 对输入宽容：接受完整链接、带文字的分享内容（挖出其中的链接）、
+  // 「@用户名」或裸用户名（自动补成直播间地址）。
+  // 认不出的输入返回 null，由调用方报错——瞎拼一个地址发给后端只会
+  // 换来一条方向完全错误的报错。
+  function normalizeRoomInput(raw) {
+    raw = raw.trim();
+    // URL 只含 ASCII：遇到中文/全角标点即截断（分享文本是"快看…/live！超好看"这种）
+    var m = raw.match(/https?:\/\/[\x21-\x7e]+/);
+    if (m) {
+      return m[0].replace(/[!?.,;:)\]'"<>]+$/, "");   // 再剥掉粘在结尾的标点/引号
+    }
+    var name = raw.replace(/^@/, "");
+    var domainLike = /\.(com|net|org|tv|cn|co|io|me|app|xyz|live)$/i.test(name) ||
+                     raw.indexOf("/") !== -1;
+    if (/^[A-Za-z0-9._]+$/.test(name) && !domainLike) {
+      return "https://www.tiktok.com/@" + name + "/live";
+    }
+    if (raw.indexOf(".") !== -1 || raw.indexOf("/") !== -1) {
+      if (!/^https?:\/\//.test(raw)) {
+        return "https://" + raw.replace(/^\/+/, "");
+      }
+      return raw;
+    }
+    return null;   // 中文昵称、带空格的文字等——不是地址也不是用户名
+  }
+
   function startStream() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setStatus({ state: "offline", detail: "与本地服务断开，正在重连——稍候再点「开始翻译」" });
       return;
     }
-    var url = roomInput.value.trim();
-    if (!url) { roomInput.focus(); return; }
-    if (!/^https?:\/\//.test(url)) {
-      roomInput.value = "https://" + url.replace(/^\/+/, "");
-      url = roomInput.value;
+    var raw = roomInput.value.trim();
+    if (!raw) { roomInput.focus(); return; }
+    var url = normalizeRoomInput(raw);
+    if (!url) {
+      setStatus({ state: "error",
+                  detail: "认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名" +
+                          "（到主播主页复制 @ 后面的部分，中文昵称不行）。" });
+      return;
     }
+    roomInput.value = url;
     localStorage.setItem("roomUrl", url);
     localStorage.setItem("sourceLang", sourceSel.value);
-    send({ type: "start", url: url, source: sourceSel.value });
+    // 「开始」指令必须确认送达：半死连接上 send 会无声进黑洞（readyState 还是
+    // OPEN），随后自动重连成功、页面若无其事地回到待机——用户点了却毫无反应。
+    // 服务器收到 start 后会立刻回执 connecting 状态；在那之前指令算「在途」，
+    // 重连后的 hello 里补发一次，超时仍无回执才提示用户手点。
+    pendingStart = { payload: { type: "start", url: url, source: sourceSel.value },
+                     retried: false };
+    send(pendingStart.payload);
+    armStartWatchdog();
+  }
+
+  function armStartWatchdog() {
+    if (startWatchdog) clearTimeout(startWatchdog);
+    startWatchdog = setTimeout(function () {
+      if (!pendingStart) return;                     // 服务器已接管
+      if (!pendingStart.retried && ws && ws.readyState === WebSocket.OPEN) {
+        pendingStart.retried = true;                 // 连接还在（或已重连好）：补发一次
+        send(pendingStart.payload);
+        armStartWatchdog();
+        return;
+      }
+      pendingStart = null;
+      try { ws.close(); } catch (e) { /* noop */ }   // 强制换一条新连接
+      stickyOfflineDetail = "指令未送达（连接中断），已自动重连——请再点一次「开始翻译」。";
+      setStatus({ state: "offline", detail: stickyOfflineDetail });
+    }, 8000);
   }
 
   startBtn.addEventListener("click", startStream);
   roomInput.addEventListener("keydown", function (e) {
     if (e.key === "Enter") startStream();
   });
-  stopBtn.addEventListener("click", function () { send({ type: "stop" }); });
+  stopBtn.addEventListener("click", function () {
+    pendingStart = null;                             // 在途的「开始」随之作废
+    if (startWatchdog) clearTimeout(startWatchdog);
+    send({ type: "stop" });
+  });
 
   updateBtn.addEventListener("click", function () {
     updateBtn.disabled = true;
@@ -101,8 +161,17 @@
 
   function showUpdate(info) {
     if (!info || !info.version) return;
-    updateText.textContent = "🔄 发现新版本 " + info.version +
-      (info.can_auto ? "" : "（ZIP 安装需手动下载）");
+    updateText.textContent = "🔄 发现新版本 " + info.version;
+    if (info.can_auto) {
+      updateBtn.classList.remove("hidden");
+      updateLink.textContent = "更新说明";
+      updateLink.className = "";
+    } else {
+      // ZIP 安装无法自动更新——别摆一个点了必失败的按钮，直接给下载入口
+      updateBtn.classList.add("hidden");
+      updateLink.textContent = "前往下载新版本";
+      updateLink.className = "btn primary";
+    }
     updateLink.href = info.url || "#";
     updateBar.classList.remove("hidden");
     document.title = "有新版本 · TikTok 直播同传";
@@ -128,13 +197,25 @@
   }
 
   // ---- WebSocket ----
+  var offlineSince = 0;
+  var stickyOfflineDetail = "";   // 看门狗留下的行动指引，重连成功前不许被空 detail 抹掉
+
   function connect() {
     ws = new WebSocket("ws://" + location.host + "/ws");
 
-    ws.onopen = function () { retries = 0; };
+    ws.onopen = function () { retries = 0; offlineSince = 0; stickyOfflineDetail = ""; };
 
     ws.onclose = function () {
-      setStatus({ state: "offline", detail: "" });
+      // 断开 20 秒还连不回来，多半是本地程序被关掉了——告诉用户怎么办，
+      // 而不是永远「重连中…」
+      if (!offlineSince) offlineSince = Date.now();
+      var gone = Date.now() - offlineSince > 20000;
+      setStatus({
+        state: "offline",
+        detail: gone
+          ? "本地程序似乎已经关闭——请重新双击打开：macOS 双击「TikTok Live Translator.app」，Windows 双击「Start.bat」。"
+          : stickyOfflineDetail,
+      });
       var delay = Math.min(5000, 700 * Math.pow(2, retries++));
       setTimeout(connect, delay);
     };
@@ -162,7 +243,16 @@
   function handle(msg) {
     switch (msg.type) {
       case "hello":
-        // 重连时服务器会重发历史，先清掉本地已有的，避免重复
+        // 重连成功：上一条连接上可能丢了「开始」指令，在这条新连接上补发
+        if (pendingStart && !pendingStart.retried) {
+          pendingStart.retried = true;
+          send(pendingStart.payload);
+          armStartWatchdog();
+        }
+        // 重连时服务器会重发历史，先清掉本地已有的，避免重复；
+        // 失败连击也归零——回放的陈旧字幕不该累积成新警告
+        failStreak = 0;
+        transBannerOn = false;
         clearBtn.click();
         if (msg.config) {
           if (msg.config.status) setStatus(msg.config.status);
@@ -188,6 +278,12 @@
         updateBtn.textContent = "更新中…";
         break;
       case "status":
+        // connecting/live/error 任一状态到达即视为服务器已接管「开始」指令
+        if (pendingStart && (msg.state === "connecting" || msg.state === "live"
+                             || msg.state === "error")) {
+          pendingStart = null;
+          if (startWatchdog) clearTimeout(startWatchdog);
+        }
         setStatus(msg);
         break;
       case "config":
@@ -227,7 +323,34 @@
     }
   }
 
+  // 翻译连续失败时给一条全局解释——每条字幕角落的小标签太容易被忽略，
+  // 用户面对满屏外文会以为整个程序坏了
+  var failStreak = 0;
+  var transBannerOn = false;
+
+  function trackTranslateHealth(msg) {
+    if (msg.translate_state === "failed") {
+      failStreak++;
+      // >= 且每条都重刷：状态横幅是共用的，中途被别的 status 覆盖后，
+      // 只要翻译还在持续失败，警告就要顶回来
+      if (failStreak >= 4) {
+        transBannerOn = true;
+        statusBanner.textContent =
+          "⚠️ 连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。";
+        statusBanner.classList.remove("hidden");
+        statusBanner.classList.remove("info");
+      }
+    } else if (msg.translate_state === "ok") {
+      failStreak = 0;
+      if (transBannerOn) {
+        transBannerOn = false;
+        statusBanner.classList.add("hidden");
+      }
+    }
+  }
+
   function renderCaption(msg) {
+    if (!msg.replay) trackTranslateHealth(msg);
     var main = msg.translated || msg.original || "";
     var hasBoth = Boolean(msg.translated && msg.original);
 

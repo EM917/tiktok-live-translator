@@ -1,5 +1,55 @@
 #!/usr/bin/env bash
-# macOS 应用启动器：.app 位于项目根目录，向上三级即项目根
+# macOS 应用启动器：.app 位于项目根目录，向上三级即项目根。
+# 由 Finder 启动时没有终端、PATH 也只有系统目录，所以 Python 必须按安装位置
+# 逐个探测，出问题时用系统对话框说话（print 没人看得见）。
 DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+
+dialog() {  # $1=文本 $2=图标（note/caution，默认 note）
+  osascript -e "display dialog \"$1\" with title \"TikTok 直播同传\" buttons {\"好\"} default button 1 with icon ${2:-note}" >/dev/null 2>&1
+}
+
+if [ ! -f "$DIR/main.py" ]; then
+  dialog "找不到程序文件。\n\n请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击。想常驻可以把它拖到 Dock——但不要把它拖出文件夹。" caution
+  exit 1
+fi
 cd "$DIR"
-exec /usr/bin/env python3 main.py
+
+# 与 Start.command 相同的探测逻辑：真实安装优先，/usr/bin/python3 垫片必须
+# 确认装过 Xcode 命令行工具才能执行（否则会弹「安装开发者工具」对话框）。
+find_python() {
+  local candidates=() p v devdir
+  # python.org 官方框架：全部版本按新到旧依次候选（老版本过不了 ≥3.9 检查时
+  # 还能落到下一个，不能只挑一个）
+  for v in $(ls /Library/Frameworks/Python.framework/Versions 2>/dev/null \
+             | grep -E '^3\.[0-9]+$' | sort -t. -k2,2nr); do
+    candidates+=("/Library/Frameworks/Python.framework/Versions/$v/bin/python3")
+  done
+  candidates+=(/opt/homebrew/bin/python3 /usr/local/bin/python3)
+  # /usr/bin/python3 垫片：必须确认它真正派发到的文件存在才能执行——
+  # xcode-select -p 只回显配置路径、不校验目录还在不在
+  devdir="$(xcode-select -p 2>/dev/null)"
+  if [ -n "$devdir" ] && [ -x "$devdir/usr/bin/python3" ]; then
+    candidates+=(/usr/bin/python3)
+  fi
+  for p in "${candidates[@]}"; do
+    if [ -x "$p" ] && "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+      echo "$p"
+      return 0
+    fi
+  done
+  p="$(command -v python3 2>/dev/null)"
+  if [ -n "$p" ] && [ "$p" != "/usr/bin/python3" ] && \
+     "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+    echo "$p"
+    return 0
+  fi
+  return 1
+}
+
+PY="$(find_python)" || {
+  open "https://www.python.org/downloads/"
+  dialog "需要先安装 Python 才能运行本工具（免费，约 2 分钟）。\n\n已为你打开下载页面 python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。"
+  exit 1
+}
+
+exec "$PY" main.py

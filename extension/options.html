@@ -11,10 +11,10 @@
   </style>
 </head>
 <body>
-  <label for="port">本地服务端口（与 main.py 的 --port 一致，默认 8765）</label>
+  <label for="port">本地程序的端口号（插件会自动尝试 8765–8774，一般不用改）</label>
   <input type="number" id="port" min="1" max="65535">
   <button id="save">保存</button>
-  <span id="saved">已保存 ✓</span>
+  <span id="saved">已保存 ✓ 刷新 TikTok 页面后生效</span>
   <script src="options.js"></script>
 </body>
 </html>
