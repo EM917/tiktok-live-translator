@@ -43,7 +43,14 @@ class Updater:
         self._applying = False
         self._freshening = False
         self._freshen_attempted_at = 0.0     # 失败也要冷却，别反复拉起注定失败的 pip
-        self._pip_lock = asyncio.Lock()      # freshen 与一键更新共用：pip 不能并发写环境
+        # freshen 与一键更新共用：pip 不能并发写环境。惰性初始化——
+        # 3.9 的 asyncio.Lock() 构造时就要绑事件循环
+        self._pip_lock = None
+
+    def _get_pip_lock(self):
+        if self._pip_lock is None:
+            self._pip_lock = asyncio.Lock()
+        return self._pip_lock
 
     async def watch(self, first_delay=2.0, interval=6 * 3600):
         """启动后检查一次，之后每 6 小时复查——常开不关的用户也能及时看到新版本。"""
@@ -81,7 +88,7 @@ class Updater:
         self._freshening = True
         self._freshen_attempted_at = now
         try:
-            async with self._pip_lock:
+            async with self._get_pip_lock():
                 proc = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "pip", "install", "-U",
                     "--disable-pip-version-check", "yt-dlp",
@@ -198,7 +205,7 @@ class Updater:
         # 与 freshen_ytdlp 共用 _pip_lock：两个 pip 并发写环境会装出残缺的包，
         # execv 也不能在另一个 pip 半途时重启进程（孤儿 pip 会继续改写新环境）
         await self.server.status("connecting", "正在安装新版本的依赖…")
-        async with self._pip_lock:
+        async with self._get_pip_lock():
             try:
                 proc = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "pip", "install",

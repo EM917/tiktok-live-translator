@@ -50,7 +50,9 @@ class Pipeline:
         self._counter = 0
         self._asr_pool = None            # 每条直播一个独立线程池，停止时整个丢弃
         self._stream_task = None
-        self._stream_lock = asyncio.Lock()
+        # Python 3.9 的 asyncio.Lock() 构造时就要绑事件循环，而 Pipeline 可能
+        # 在循环外构造（如测试）——惰性初始化，首次使用时必然已在循环内
+        self._stream_lock = None
         self._transcriber = None
         self._transcriber_key = None
         self._transcriber_future = None  # 正在加载中的模型，避免重复加载
@@ -106,8 +108,13 @@ class Pipeline:
     # 加锁的原因：多个页面/标签页可能同时连着服务，两条 start 消息并发进来时，
     # 「读旧任务→取消→建新任务」如果不是原子的，后一条会覆盖 _stream_task，
     # 把前一条的管线（连同它的 ffmpeg 进程）变成谁也停不掉的孤儿。
+    def _lock(self):
+        if self._stream_lock is None:
+            self._stream_lock = asyncio.Lock()
+        return self._stream_lock
+
     async def start_stream(self, url):
-        async with self._stream_lock:
+        async with self._lock():
             await self._stop_locked(quiet=True)
             self.server.config["room_url"] = url
             self._save_setting("room_url", url)
@@ -115,7 +122,7 @@ class Pipeline:
             self._stream_task = asyncio.create_task(self._run_stream(url))
 
     async def stop_stream(self, quiet=False):
-        async with self._stream_lock:
+        async with self._lock():
             await self._stop_locked(quiet=quiet)
 
     async def _stop_locked(self, quiet=False):
