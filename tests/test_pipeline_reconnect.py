@@ -338,16 +338,17 @@ def test_cancelled_model_load_does_not_poison_key(monkeypatch, tmp_path):
     p._transcriber = object()                  # 假装上一场已加载好模型 T1
     p._transcriber_key = ("old-key",)
 
-    started = asyncio.Event()
-
-    async def never_finishes():
-        started.set()
-        await asyncio.sleep(3600)
-
-    def fake_executor(_none, fn):              # 加载永不完成
-        return asyncio.ensure_future(never_finishes())
-
     async def scenario():
+        # asyncio.Event() 在 3.9 上构造即绑定当前事件循环，必须在协程里创建
+        started = asyncio.Event()
+
+        async def never_finishes():
+            started.set()
+            await asyncio.sleep(3600)
+
+        def fake_executor(_none, fn):          # 加载永不完成
+            return asyncio.ensure_future(never_finishes())
+
         loop = asyncio.get_running_loop()
         monkeypatch.setattr(loop, "run_in_executor", fake_executor)
 
