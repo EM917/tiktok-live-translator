@@ -9,9 +9,9 @@
   <key>CFBundleIdentifier</key>
   <string>io.github.em917.tiktok-live-translator</string>
   <key>CFBundleVersion</key>
-  <string>0.8.0</string>
+  <string>0.9.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.8.0</string>
+  <string>0.9.0</string>
   <key>CFBundleExecutable</key>
   <string>TikTokLiveTranslator</string>
   <key>CFBundleIconFile</key>

@@ -42,12 +42,28 @@ class GoogleWebTranslator(BaseTranslator):
 
     name = "google"
     URL = "https://translate.googleapis.com/translate_a/single"
+    COOLDOWN_SEC = 120
+
+    def __init__(self):
+        super().__init__()
+        self._cooldown_until = 0.0
 
     async def translate(self, text, target, source="auto"):
+        import time
+
+        # 免费接口会按 IP 限流（429）：冷却期间直接跳过，别在每条字幕上
+        # 继续撞——既是无谓请求，也会加重限流
+        if time.time() < self._cooldown_until:
+            return None
         params = {"client": "gtx", "sl": source or "auto", "tl": target, "dt": "t", "q": text}
         try:
             session = await self.session()
             async with session.get(self.URL, params=params) as resp:
+                if resp.status == 429:
+                    self._cooldown_until = time.time() + self.COOLDOWN_SEC
+                    print("[警告] Google 翻译接口被限流（429），"
+                          "暂停请求 {} 秒后自动恢复".format(self.COOLDOWN_SEC))
+                    return None
                 if resp.status != 200:
                     return None
                 data = await resp.json(content_type=None)

@@ -356,7 +356,7 @@ async def main_async(args, state=None):
         webbrowser.open(url)
 
     if args.demo:
-        await pipeline.run_demo()
+        await pipeline.start_demo()
     elif args.url:
         await pipeline.start_stream(args.url)
     else:
@@ -412,6 +412,11 @@ def main():
             asyncio.run(main_async(args))
     except KeyboardInterrupt:
         print("\n已退出。")
+        # 模型加载跑在默认执行器的非 daemon 线程上（且被 shield 刻意保活），
+        # 正常退出要 join 它——首次下载时按 Ctrl-C 会静默卡住好几分钟。
+        # 与窗口模式（run_with_window 末尾）一致，直接硬退。
+        sys.stdout.flush()
+        os._exit(0)
 
 
 def run_with_window(args):

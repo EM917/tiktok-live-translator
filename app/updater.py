@@ -62,6 +62,12 @@ class Updater:
                 await self.check_and_notify(delay=0)
             await self.freshen_ytdlp(reason="periodic")
 
+    async def _notice(self, text):
+        """一次性提示（手动检查更新的结果等）。刻意不走 status 通道：status 会
+        切换整个 UI 状态机并被持久化进 config——直播中点一下「检查更新」就会把
+        页面打回「待机」、停止按钮消失，而管线其实还在跑。"""
+        await self.server.broadcast({"type": "notice", "text": text})
+
     async def freshen_ytdlp(self, reason="periodic"):
         """后台升级 yt-dlp。它的 TikTok 提取器是全项目最易腐坏的一环，而常规
         更新通道（跟随本项目发版的 pip install -r）不会主动升它——老安装会
@@ -135,19 +141,18 @@ class Updater:
                 ) as resp:
                     if resp.status != 200:
                         if manual:
-                            await self.server.status(
-                                "idle", "检查更新失败（GitHub 返回 {}），稍后再试".format(resp.status))
+                            await self._notice(
+                                "检查更新失败（GitHub 返回 {}）".format(resp.status))
                         return
                     data = await resp.json()
         except Exception:
             if manual:
-                await self.server.status("idle", "检查更新失败（网络不可达），稍后再试")
+                await self._notice("检查更新失败（网络不可达）")
             return
         tag = str(data.get("tag_name") or "")
         if not tag or _parse(tag) <= _parse(local_version()):
             if manual:
-                await self.server.status(
-                    "idle", "已是最新版本 v{}".format(local_version()))
+                await self._notice("已是最新版本 v{}".format(local_version()))
             return
         self.latest = {
             "version": tag,

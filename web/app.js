@@ -38,6 +38,7 @@
   var currentVersion = "";
   var startWatchdog = null;
   var pendingStart = null;   // 已发出但服务器还没回执的「开始」指令（重连后补发）
+  var versionNoticeTimer = null;
 
   // ---- 设置 ----
   // 只有用户显式调过字号才覆盖 CSS 默认值（否则会压掉移动端媒体查询的 26px）
@@ -157,15 +158,23 @@
   // 点底部版本号即可手动检查更新
   versionEl.addEventListener("click", function () {
     if (!send({ type: "check_update" })) {
-      versionEl.textContent = " · 未连接到本地服务";
-      setTimeout(restoreVersion, 3000);
+      showVersionNote("未连接到本地服务", 3000);
       return;
     }
-    versionEl.textContent = " · 检查更新中…";
-    setTimeout(restoreVersion, 4000);
+    // 「检查中…」的恢复定时器要能被随后到达的结果提示接管，
+    // 否则结果刚显示就被这个定时器抹回版本号
+    showVersionNote("检查更新中…", 8000);
   });
 
+  function showVersionNote(text, ms) {
+    if (versionNoticeTimer) clearTimeout(versionNoticeTimer);
+    versionEl.textContent = " · " + text;
+    versionNoticeTimer = setTimeout(restoreVersion, ms);
+  }
+
   function restoreVersion() {
+    if (versionNoticeTimer) clearTimeout(versionNoticeTimer);
+    versionNoticeTimer = null;
     if (currentVersion) versionEl.textContent = " · v" + currentVersion;
   }
 
@@ -262,6 +271,11 @@
           if (startWatchdog) clearTimeout(startWatchdog);
         }
         setStatus(msg);
+        break;
+      // 一次性提示（如手动检查更新的结果）：只改版本号处的文案，
+      // 不碰状态机——直播中收到它不该影响「停止」按钮等 UI
+      case "notice":
+        if (msg.text) showVersionNote(msg.text, 6000);
         break;
       case "config":
         if (msg.target_lang) targetSel.value = msg.target_lang;
@@ -373,8 +387,9 @@
 
     if (nearBottom || msg.replay) historyEl.scrollTop = historyEl.scrollHeight;
 
-    // 底部大字幕（回放历史时不更新，避免闪一串旧字幕）
-    if (!msg.replay) {
+    // 底部大字幕：回放历史时不逐条更新（避免闪一串旧字幕），
+    // 但最后一条带 restore 标记，用它把大字幕恢复成断线前的样子
+    if (!msg.replay || msg.restore) {
       liveBar.classList.remove("hidden");
       liveTranslated.textContent = main;
       liveOriginal.textContent = hasBoth ? msg.original : "";

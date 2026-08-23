@@ -179,10 +179,17 @@ The current version is shown in the page footer.
 
 - **It says "the streamer isn't live right now" but they clearly are** — the tool automatically falls back to parsing the page HTML (you'll see this noted in the logs). If it still fails, the room likely requires login / is region-restricted — export `cookies.txt` with a browser extension and add `--cookies cookies.txt`.
 - **First "Start" stuck downloading the recognition model** — it's downloading from Hugging Face (large-v3 is about 3GB); progress is shown on the page, and it only happens once.
+- **Translations suddenly fail across the board and captions show only the original language** — the default free Google endpoint rate-limits per IP and starts returning 429 under sustained use. The app pauses requests for two minutes and recovers automatically, with a banner on the page; **speech recognition is unaffected**. For long viewing sessions, switch to local TranslateGemma (offline, no rate limit — see "Translation Engines") or use an API key with `--translator claude` / `openai`. No network or a stopped Ollama causes the same symptom.
+- **Status says "live" but no captions appear for a long time** — usually normal: while the streamer plays music or isn't talking, silent and low-confidence segments are dropped on purpose (better nothing than guessing words out of background music). If the streamer is clearly talking and nothing ever appears, try `--denoise off` (denoising occasionally over-trims some audio) or a different model size.
+- **Captions stop after closing the laptop lid / switching Wi-Fi** — when the stream drops, the app re-resolves the URL and reconnects automatically (up to 5 attempts with growing backoff), so it usually recovers on its own. If you see "repeatedly interrupted and auto-reconnect failed", just hit Start once more.
 - **Recognition can't keep up with the stream / terminal shows dropped audio** — switch to a smaller model (`--model small`), or use `--beam 1`; Apple Silicon users should confirm `pip install mlx-whisper` succeeded so it runs on the GPU.
+- **Sluggish on a Mac with only 8GB of RAM** — Apple Silicon defaults to the most accurate `large-v3` (~3GB). If memory is tight, use `--model large-v3-turbo` (about half the size and faster) or `--model small`.
 - **Singing in background music gets picked up as the streamer talking** — RNNoise suppresses instrumental music well, but can only partially suppress **sung vocals** in a song; confidence filtering catches most of these, and the occasional slip-through is normal.
 - **Extension isn't showing subtitles** — confirm the app is running and that you're on a **live-room page** (URL contains `/live`) rather than a regular video page, then refresh the TikTok page.
-- **Translation shows "translation failed"** — the current engine is unreachable (no network / Ollama not running); it automatically falls back to showing the raw text. In `auto` mode, restarting the tool falls back to whichever engine is available.
+- **The UI address isn't 8765** — that's expected: if something else occupies 8765, the app moves to the next free port (8766–8774), and the Chrome extension scans that same range, so nothing needs configuring.
+- **I want to save the captions / my history disappeared** — there is no export button yet; select and copy the text from the page. The page keeps the most recent 300 lines, and after a refresh or reconnect the server replays only the last 100.
+- **Can I close that black text window / how do I fully quit?** — on Windows that console window *is* the translation engine, so **closing it quits the app**; on macOS closing the app window quits it (if you launched via `Start.command`, close the Terminal window or press Ctrl-C).
+- **Won't install on a work computer / not enough space** — the first install needs about 5GB (runtime environment plus the speech model) and access to PyPI and Hugging Face; corporate security policies often block this, so a personal machine is the easier route.
 
 ## Privacy and Usage Boundaries
 
@@ -367,10 +374,17 @@ flowchart TD
 
 - **提示「主播现在没有开播」但主播明明在播** —— 工具会自动改从页面 HTML 解析（日志有提示）；仍失败多半是该直播间需要登录/地区受限，可用浏览器插件导出 cookies.txt 后加 `--cookies cookies.txt`。
 - **首次点「开始翻译」卡在下载识别模型** —— 正在从 Hugging Face 下载（large-v3 约 3GB），页面上会显示进度，只需一次。
+- **翻译突然大面积失败，字幕只剩外文原文** —— 默认的 Google 免费接口按 IP 限流，长时间高频请求会被挡（返回 429）。程序会自动暂停请求 2 分钟再恢复，页面顶部也会给出提示，**语音识别不受影响**。常看长直播建议换成本地 TranslateGemma（离线、不限流，见「翻译引擎」），或配 API Key 用 `--translator claude` / `openai`。另外断网、Ollama 没启动同样会导致翻译失败。
+- **状态显示「直播中」但很久不出字幕** —— 多数情况正常：主播放音乐或没说话时，静音段和低置信度片段会被直接丢弃（宁缺毋滥，免得把背景音乐瞎猜成人话）。若主播明明一直在说话却始终没字幕，可试 `--denoise off`（个别音频会被降噪削得过狠），或换一档模型。
+- **合上笔记本睡眠 / 切换 WiFi 后字幕停了** —— 直播流断开后程序会自动重新解析地址并重连（最多 5 次，间隔逐次拉长），通常自己就恢复。若看到「多次中断且自动重连失败」，点一次「开始翻译」重来即可。
 - **识别追不上直播 / 终端提示丢弃音频** —— 换小一档模型（`--model small`），或 `--beam 1`；Apple Silicon 用户确认 `pip install mlx-whisper` 后走 GPU。
+- **Mac 只有 8GB 内存，跑起来很卡** —— Apple Silicon 默认用最准的 `large-v3`（约 3GB）。内存吃紧时用 `--model large-v3-turbo`（体积约一半、更快）或 `--model small`。
 - **背景音乐里的歌声被当成主播的话** —— RNNoise 对器乐抑制好，但对歌曲里的**演唱人声**只能部分抑制；置信度过滤会兜住大部分，个别漏网属正常。
 - **插件没显示字幕** —— 确认程序在运行、当前打开的是**直播间页面**（地址含 `/live`）而不是普通视频页，然后刷新 TikTok 页面。
-- **翻译显示「翻译失败」** —— 当前引擎不可达（断网/Ollama 没启动），会自动显示原文；`auto` 模式下重启工具会自动回退到可用引擎。
+- **界面地址不是 8765** —— 正常现象：8765 被别的软件占用时会自动往后找空闲端口（8766–8774），Chrome 插件也会自动扫描这一段，无需手动配置。
+- **想把字幕保存下来 / 历史字幕不见了** —— 目前没有导出按钮，需要就在页面上选中复制；页面最多保留最近 300 条，刷新或重连后服务端只回放最近 100 条。
+- **那个黑色文字窗口能关吗 / 怎么彻底退出** —— Windows 上那个黑窗口就是翻译引擎，**关掉它等于退出程序**；macOS 关掉应用窗口即退出（用 `Start.command` 启动的话，关终端窗口或按 Ctrl-C）。
+- **公司电脑装不上 / 提示空间不足** —— 首次安装约需 5GB 空间（运行环境 + 语音模型），并需要访问 PyPI 和 Hugging Face；公司电脑的安全策略常会拦截，建议换台个人电脑。
 
 ## 隐私与使用边界
 

@@ -5,6 +5,7 @@
 """
 import asyncio
 import os
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -17,6 +18,30 @@ MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
                   "large-v3": 3100, "large-v3-turbo": 1620}
 
 DENOISE_MODEL = Path(__file__).resolve().parent.parent / "models" / "bd.rnnn"
+DENOISE_MIN_BYTES = 100_000   # 完整模型约 300 KB；明显小于此值 = 下载被截断
+
+
+def _arnndn_probe(model_path):
+    """用 0.1 秒静音实测 arnndn 滤镜 + 模型能否初始化。
+
+    一次探测同时覆盖两种真实故障：模型文件损坏（自动下载被截断——只验文件头
+    magic 挡不住），以及 ffmpeg 不支持 arnndn（imageio-ffmpeg 的静态版没编译
+    librnnoise）。两种情况下直接把坏参数交给拉流 ffmpeg，会让每一轮会话都
+    「Error initializing filters」失败，再被自动重连放大成误导报错。"""
+    from .ffmpeg_bin import find_ffmpeg
+    ffmpeg = find_ffmpeg()
+    if ffmpeg is None:
+        return False
+    try:
+        r = subprocess.run(
+            [ffmpeg, "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=0.1",
+             "-af", "arnndn=m={}".format(model_path),
+             "-f", "null", "-"],
+            capture_output=True, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
 RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/"
                "beguiling-drafter-2018-08-30/bd.rnnn")
 
@@ -54,7 +79,8 @@ class Pipeline:
         # 在循环外构造（如测试）——惰性初始化，首次使用时必然已在循环内
         self._stream_lock = None
         self._transcriber = None
-        self._transcriber_key = None
+        self._transcriber_key = None     # 已就绪模型对应的配置 key
+        self._loading_key = None         # 在途加载对应的配置 key（可能被取消）
         self._transcriber_future = None  # 正在加载中的模型，避免重复加载
         self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
 
@@ -201,9 +227,13 @@ class Pipeline:
             # 关键：把「正在加载」这件事本身记下来。模型要几分钟，用户等不及
             # 点停止再开始时，取消只会解绑协程、线程仍在后台加载；若不认这个
             # 在途任务，每次重来都会再起一个数 GB 的模型，几轮就把内存吃光。
+            #
+            # 在途 key（_loading_key）与已就绪 key（_transcriber_key）必须分开记：
+            # 合用一个字段的话，加载中被取消会留下「key 是新的、模型还是旧的」的
+            # 错配，之后外层判断永远成立不了，新参数至死不生效（静默用旧模型）。
             if (self._transcriber_future is None or self._transcriber_future.done()
-                    or self._transcriber_key != key):
-                self._transcriber_key = key
+                    or self._loading_key != key):
+                self._loading_key = key
                 self._transcriber_future = loop.run_in_executor(
                     None,
                     lambda: create_transcriber(
@@ -225,7 +255,7 @@ class Pipeline:
                 raise
             except Exception as exc:
                 self._transcriber_future = None
-                self._transcriber_key = None
+                self._loading_key = None
                 watcher.cancel()   # 先停进度播报，别让它把下面的 error 状态盖回去
                 await self.server.status(
                     "error", "下载/加载识别模型失败——请检查网络后点「开始翻译」重试。\n"
@@ -234,7 +264,9 @@ class Pipeline:
                 return
             finally:
                 watcher.cancel()
+            # 模型和它的 key 一起提交：中途取消时两者都不动，下次重来还会重新加载
             self._transcriber = transcriber
+            self._transcriber_key = key
         transcriber = self._transcriber
 
         denoise = await self._ensure_denoise_model()
@@ -417,8 +449,19 @@ class Pipeline:
     async def _ensure_denoise_model(self):
         if self.args.denoise == "off":
             return None
+        loop = asyncio.get_running_loop()
         if DENOISE_MODEL.exists():
-            return str(DENOISE_MODEL)
+            if await loop.run_in_executor(None, _arnndn_probe, str(DENOISE_MODEL)):
+                return str(DENOISE_MODEL)
+            # 实测起不来：模型损坏（截断下载）或 ffmpeg 不支持 arnndn。
+            # 明显截断的坏文件必须删掉——留着会毒害之后的每一次启动
+            print("[警告] 降噪不可用（模型损坏或 ffmpeg 不支持 arnndn），本次不降噪")
+            try:
+                if DENOISE_MODEL.stat().st_size < DENOISE_MIN_BYTES:
+                    DENOISE_MODEL.unlink()
+            except OSError:
+                pass
+            return None
         # 自动下载（约 300 KB）；失败则本次不降噪，不阻塞直播启动
         try:
             import aiohttp
@@ -430,16 +473,22 @@ class Pipeline:
                 async with session.get(RNNOISE_URL) as resp:
                     if resp.status == 200:
                         data = await resp.content.read(8 * 1024 * 1024)
-                        if data.startswith(b"rnnoise"):
+                        # 只验文件头不够：截断的下载同样带正确 magic，
+                        # 长度下限 + 落盘后实测初始化才算数
+                        if (data.startswith(b"rnnoise")
+                                and len(data) >= DENOISE_MIN_BYTES):
                             # 先写临时文件再原子改名：中途断网不会留下半个模型文件
                             tmp = DENOISE_MODEL.with_suffix(".rnnn.part")
                             tmp.write_bytes(data)
                             tmp.replace(DENOISE_MODEL)
-                            print("[信息] 已自动下载人声降噪模型")
-                            return str(DENOISE_MODEL)
+                            if await loop.run_in_executor(
+                                    None, _arnndn_probe, str(DENOISE_MODEL)):
+                                print("[信息] 已自动下载人声降噪模型")
+                                return str(DENOISE_MODEL)
+                            DENOISE_MODEL.unlink()   # 实测失败：删掉别留隐患
         except Exception:
             pass
-        print("[警告] 降噪模型不可用（下载失败），本次不降噪")
+        print("[警告] 降噪模型不可用（下载失败或校验未过），本次不降噪")
         return None
 
     async def _emit(self, text, lang):
@@ -465,6 +514,13 @@ class Pipeline:
         })
 
     # ---- 演示模式 ----
+    async def start_demo(self):
+        """演示同样挂到 _stream_task 上：这样「停止」能真的停下来，
+        换成真实直播时旧循环也会被先取消（否则真假字幕会交错广播）。"""
+        async with self._lock():
+            await self._stop_locked(quiet=True)
+            self._stream_task = asyncio.create_task(self.run_demo())
+
     async def run_demo(self):
         await self.server.status("connecting", "演示模式启动中…")
         await asyncio.sleep(1.0)

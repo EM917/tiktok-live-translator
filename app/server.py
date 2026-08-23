@@ -10,6 +10,25 @@ from aiohttp import WSMsgType, web
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 
+def replay_payloads(history):
+    """把历史字幕转成回放消息。
+
+    每一条都带 replay=True——只显示实时字幕的客户端（Chrome 插件）据此整段跳过。
+    以前为了让网页端恢复底部大字幕，最后一条刻意不加标记，结果插件把它当成新
+    字幕：翻译过一场直播后再打开任意直播页，画面上就会浮出上一场的最后一句。
+    改由单独的 restore 标记承担「恢复大字幕」这件事，两个用途各归各的字段。
+    """
+    items = list(history)
+    payloads = []
+    for i, item in enumerate(items):
+        payload = dict(item)
+        payload["replay"] = True
+        if i == len(items) - 1:
+            payload["restore"] = True
+        payloads.append(payload)
+    return payloads
+
+
 class CaptionServer:
     def __init__(self, port=8765):
         self.port = port
@@ -75,14 +94,9 @@ class CaptionServer:
         await ws.prepare(request)
         try:
             await ws.send_json({"type": "hello", "config": self.config})
-            # 最后一条不带 replay 标记，让客户端用它恢复底部大字幕；
             # 回放完成后才加入广播集合，避免新字幕插进回放序列中间
-            items = list(self.history)
-            for i, item in enumerate(items):
-                replay = dict(item)
-                if i < len(items) - 1:
-                    replay["replay"] = True
-                await ws.send_json(replay)
+            for payload in replay_payloads(self.history):
+                await ws.send_json(payload)
             self.clients.add(ws)
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:

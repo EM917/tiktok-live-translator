@@ -288,3 +288,99 @@ def test_offline_failures_do_not_trigger_freshen(monkeypatch, tmp_path):
     run(scenario())
     assert freshened == []
     assert p._resolve_fail_streak == 0
+
+
+def test_corrupt_denoise_model_deleted_and_disabled(monkeypatch, tmp_path):
+    """截断的降噪模型（下载中断留下的）必须被删除并禁用降噪——
+    留着会让之后每一轮 ffmpeg 都起不来。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    bad = tmp_path / "bd.rnnn"
+    bad.write_bytes(b"rnnoise" + b"x" * 50_000)      # 带正确 magic 的截断文件
+    monkeypatch.setattr(pipeline_mod, "DENOISE_MODEL", bad)
+    monkeypatch.setattr(pipeline_mod, "_arnndn_probe", lambda path: False)
+
+    p.args.denoise = "auto"
+    result = run(p._ensure_denoise_model())
+    assert result is None
+    assert not bad.exists()                          # 坏文件已清除
+
+
+def test_valid_denoise_model_passes_probe(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    good = tmp_path / "bd.rnnn"
+    good.write_bytes(b"rnnoise" + b"x" * 300_000)
+    monkeypatch.setattr(pipeline_mod, "DENOISE_MODEL", good)
+    monkeypatch.setattr(pipeline_mod, "_arnndn_probe", lambda path: True)
+
+    p.args.denoise = "auto"
+    assert run(p._ensure_denoise_model()) == str(good)
+    assert good.exists()
+
+
+def test_fullsize_model_failing_probe_kept_but_disabled(monkeypatch, tmp_path):
+    """完整大小但探针失败（如 ffmpeg 不含 arnndn）：禁用降噪但保留文件——
+    换一个带 arnndn 的 ffmpeg 后它还能用。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    good = tmp_path / "bd.rnnn"
+    good.write_bytes(b"rnnoise" + b"x" * 300_000)
+    monkeypatch.setattr(pipeline_mod, "DENOISE_MODEL", good)
+    monkeypatch.setattr(pipeline_mod, "_arnndn_probe", lambda path: False)
+
+    p.args.denoise = "auto"
+    assert run(p._ensure_denoise_model()) is None
+    assert good.exists()
+
+
+def test_cancelled_model_load_does_not_poison_key(monkeypatch, tmp_path):
+    """模型加载中被取消后，「已就绪 key」不能被在途 key 污染——否则换了识别
+    参数再启动会静默复用旧模型，新参数至死不生效。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p._transcriber = object()                  # 假装上一场已加载好模型 T1
+    p._transcriber_key = ("old-key",)
+
+    started = asyncio.Event()
+
+    async def never_finishes():
+        started.set()
+        await asyncio.sleep(3600)
+
+    def fake_executor(_none, fn):              # 加载永不完成
+        return asyncio.ensure_future(never_finishes())
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "run_in_executor", fake_executor)
+
+        import app.resolver
+        async def fake_resolve(url, cookies=None):
+            return "http://cdn/s.flv"
+        monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
+
+        p.args.source = "en"                   # 换参数 → key 变化，进入加载分支
+        task = asyncio.ensure_future(p._run_stream_inner("https://www.tiktok.com/@x/live"))
+        await started.wait()
+        task.cancel()                          # 加载中取消（用户点了停止）
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    run(scenario())
+    # 已就绪 key 仍是旧模型的 key：下次同参数启动会重新走加载分支
+    assert p._transcriber_key == ("old-key",)
+    assert p._loading_key is not None and p._loading_key != ("old-key",)
+
+
+def test_demo_runs_as_cancellable_task(monkeypatch, tmp_path):
+    """演示模式必须挂到 _stream_task 上：点「停止」要能真的停下来。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        await p.start_demo()
+        assert p._stream_task is not None and not p._stream_task.done()
+        await asyncio.sleep(0)
+        await p.stop_stream()                  # 用户点「停止」
+        assert p._stream_task is None
+
+    run(scenario())
+    assert server.statuses[-1][0] == "idle"
