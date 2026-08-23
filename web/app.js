@@ -495,11 +495,11 @@
     var asr = msg.asr || {};
     var tr = msg.translate || {};
     var seg = msg.segment || {};
-    // 用户真实体感 = 等这句话切完（片段时长）+ 识别耗时
-    var feltP50 = (seg.p50 != null && e2e.p50 != null) ? seg.p50 + e2e.p50 : null;
-    var feltP95 = (seg.p95 != null && e2e.p95 != null) ? seg.p95 + e2e.p95 : null;
+    var det = msg.detect_worst || {};
+    // 第一指标是检测延迟（最坏情况）：违禁词说出口到报警最久要多少秒。
+    // 字幕延迟只是副产品，合规上该被考核的是这个数。
     var parts = [
-      "首字等待 P50 " + fmtMs(feltP50) + " / P95 " + fmtMs(feltP95),
+      "违禁词最迟 " + fmtMs(det.p50) + " / P95 " + fmtMs(det.p95) + " 内报警",
       "其中 切段 " + fmtMs(seg.p50) + " + 识别 " + fmtMs(asr.p50),
       "译文再等 " + fmtMs(tr.p50),
     ];

@@ -29,6 +29,10 @@ class Telemetry:
         # 片段时长：用户看到一句话的真实等待 ≈ 片段时长 + e2e。
         # 调切段参数（下一批）必须先有这个基线，否则改完不知道改善了多少。
         self.segment_ms = deque(maxlen=window)
+        # 检测延迟（最坏情况）：违禁词若说在片段最开头，从说出口到报警要多久。
+        # 这跟字幕延迟是两个数——同一套系统，词在片段头尾能差出整整一个片段，
+        # 而合规上该被考核的是最坏值，不是平均值。
+        self.detect_ms = deque(maxlen=window)
         self.audio_segments_total = 0
         self.audio_segments_dropped = 0
         self.translation_jobs_dropped = 0
@@ -42,6 +46,7 @@ class Telemetry:
         self.translate_ms.clear()
         self.e2e_ms.clear()
         self.segment_ms.clear()
+        self.detect_ms.clear()
         self.audio_segments_total = 0
         self.audio_segments_dropped = 0
         self.translation_jobs_dropped = 0
@@ -54,6 +59,8 @@ class Telemetry:
         self.e2e_ms.append(e2e_ms)
         if segment_ms:
             self.segment_ms.append(segment_ms)
+            # 最坏情况 = 片段时长（词在最开头）+ 从片段结束到检测完成
+            self.detect_ms.append(segment_ms + e2e_ms)
 
     def record_translation(self, translate_ms):
         self.translate_ms.append(translate_ms)
@@ -75,6 +82,7 @@ class Telemetry:
             "translate": stats(self.translate_ms),
             "e2e": stats(self.e2e_ms),
             "segment": stats(self.segment_ms),
+            "detect_worst": stats(self.detect_ms),
             "audio_segments_total": self.audio_segments_total,
             "audio_segments_dropped": self.audio_segments_dropped,
             "translation_jobs_dropped": self.translation_jobs_dropped,
