@@ -2,8 +2,15 @@
 
 精度策略：
   * beam search（默认 beam_size=5）代替贪心解码；
-  * 滚动上下文：把最近识别出的文本作为 initial_prompt 传给下一段，
-    帮助模型接住被切断的句子和领域词汇（可用 --no-context 关闭）;
+  * 滚动上下文：把最近识别出的文本作为 initial_prompt 传给下一段。
+    **默认关闭**——本意是帮模型接住被切断的句子，实测却是净损害：模型自己的
+    输出被喂回去后，一旦开始重复就自我强化，在 4 分钟真实西语直播上实测
+    （mlx large-v3，同一段音频对照）：
+        重复率 30–95%  → 2–6%
+        词召回 35–78%  → 84–89%
+        最慢单次识别 38.9s → 5.2s
+    那个 38.9 秒是复读死循环：一个 4.5 秒的片段解码了 39 秒，生产中足以让
+    音频队列溢出、丢段漏词。需要它的场景可用 --context 打开;
   * 质量过滤：压缩比过高（复读机式垃圾）或平均置信度过低（多为背景音乐
     误识别）的段直接丢弃，宁缺毋滥。
 """
@@ -54,7 +61,7 @@ _MLX_REPOS = {
 
 
 def create_transcriber(backend, model_size, device="auto", compute_type="auto",
-                       language=None, beam_size=5, use_context=True):
+                       language=None, beam_size=5, use_context=False):
     """backend: ct2（faster-whisper，CPU/CUDA）或 mlx（Apple GPU）。auto 优先 mlx。"""
     if backend == "auto":
         try:
@@ -115,7 +122,7 @@ class Transcriber(_FilterMixin):
     """faster-whisper（CTranslate2）后端：CPU / CUDA。"""
 
     def __init__(self, model_size="large-v3-turbo", device="auto", compute_type="auto",
-                 language=None, beam_size=5, use_context=True):
+                 language=None, beam_size=5, use_context=False):
         from faster_whisper import WhisperModel
 
         self.language = language
@@ -147,7 +154,7 @@ class Transcriber(_FilterMixin):
 class MLXTranscriber(_FilterMixin):
     """mlx-whisper 后端：跑在 Apple Silicon GPU 上，large-v3 也能数倍实时。"""
 
-    def __init__(self, model_size="large-v3", language=None, use_context=True):
+    def __init__(self, model_size="large-v3", language=None, use_context=False):
         import mlx_whisper  # 提前失败好过跑到一半失败
 
         self._mlx = mlx_whisper

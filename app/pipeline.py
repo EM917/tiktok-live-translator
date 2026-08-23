@@ -301,7 +301,7 @@ class Pipeline:
             backend, model, device, rec["note"]))
 
         key = (backend, model, device, compute, self.args.source,
-               self.args.beam, self.args.no_context)
+               self.args.beam, self.args.context)
         if self._transcriber is None or self._transcriber_key != key:
             size_mb = MODEL_SIZES_MB.get(model)
             if size_mb and size_mb >= 1000:
@@ -333,7 +333,7 @@ class Pipeline:
                         compute_type=compute,
                         language=self.args.source,
                         beam_size=self.args.beam,
-                        use_context=not self.args.no_context,
+                        use_context=self.args.context,
                     ),
                 )
             watcher = asyncio.ensure_future(self._model_download_progress(model))

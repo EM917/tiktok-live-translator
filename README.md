@@ -109,7 +109,7 @@ Any auto-selected value can be overridden with a command-line flag (see below).
 | `--device` | `auto`/`cpu`/`cuda` | auto by hardware |
 | `--compute-type` | ct2 precision (`int8`/`float16`/…) | auto by hardware |
 | `--beam` | Beam search width (larger = more accurate but slower; `1` = greedy; ct2 backend only) | `5` |
-| `--no-context` | Disable rolling context (on by default; improves sentence-boundary coherence) | off |
+| `--context` | Enable rolling context. **Off by default**: measured to trigger repetition loops that badly hurt recall | off |
 | `--translator` | Translation engine: `auto`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
 | `--denoise` | RNNoise voice denoising: `auto`/`on`/`off` | `auto` (on) |
 | `--port` | Local UI port | `8765` |
@@ -305,7 +305,7 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 | `--device` | `auto`/`cpu`/`cuda` | 按硬件自动 |
 | `--compute-type` | ct2 精度（`int8`/`float16`/…） | 按硬件自动 |
 | `--beam` | beam search 宽度（越大越准越慢，`1`=贪心；仅 ct2 后端） | `5` |
-| `--no-context` | 关闭滚动上下文（默认开启，提升断句连贯性） | 关 |
+| `--context` | 开启滚动上下文。**默认关闭**：实测它会诱发复读死循环，反而大幅拉低召回率 | 关 |
 | `--translator` | 翻译引擎：`auto`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
 | `--denoise` | RNNoise 人声降噪：`auto`/`on`/`off` | `auto`（开） |
 | `--port` | 本地 UI 端口 | `8765` |

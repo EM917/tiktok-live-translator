@@ -150,6 +150,8 @@ def main():
     ap.add_argument("--source", default="es", help="主播语言（锁定可省掉语言检测）")
     ap.add_argument("--model", default=None, help="whisper 模型，默认按硬件推荐")
     ap.add_argument("--backend", default="auto")
+    ap.add_argument("--context", action="store_true",
+                    help="开启滚动上下文（默认关闭，实测它会诱发复读死循环）")
     args = ap.parse_args()
 
     if args.capture:
@@ -165,11 +167,13 @@ def main():
     audio_sec = len(pcm) / BYTES_PER_SEC
     rec = recommend(backend=args.backend)
     model = args.model or rec["model"]
-    print("音频 {:.0f} 秒 | 后端 {} | 模型 {} | 语言 {}\n".format(
-        audio_sec, rec["backend"], model, args.source))
+    print("音频 {:.0f} 秒 | 后端 {} | 模型 {} | 语言 {} | 滚动上下文 {}\n".format(
+        audio_sec, rec["backend"], model, args.source,
+        "开" if args.context else "关"))
 
     def make_transcriber():
-        return create_transcriber(rec["backend"], model, language=args.source)
+        return create_transcriber(rec["backend"], model, language=args.source,
+                                  use_context=args.context)
 
     # 基准真值：用大窗口跑一遍，拿词级时间戳。大窗口的识别质量最好，
     # 用它当「主播到底说了什么、什么时候说的」的参照

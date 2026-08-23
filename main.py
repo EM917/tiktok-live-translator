@@ -260,8 +260,9 @@ def parse_args():
                         "auto=装了 mlx-whisper 就用 mlx")
     p.add_argument("--beam", type=int, default=5,
                    help="beam search 宽度，越大越准越慢，默认 5（设 1 即贪心解码）")
-    p.add_argument("--no-context", action="store_true",
-                   help="关闭滚动上下文（默认开启：把最近的识别结果喂给下一段提升连贯性）")
+    p.add_argument("--context", action="store_true",
+                   help="开启滚动上下文（把上一段识别结果喂给下一段）。默认关闭："
+                        "实测它会诱发复读死循环，反而大幅拉低召回率")
     p.add_argument("--device", default="auto", help="识别设备，默认 auto（Mac 上即 CPU）")
     p.add_argument("--compute-type", default="auto", dest="compute_type",
                    help="faster-whisper compute_type，默认 auto；CPU 上想更快可用 int8")

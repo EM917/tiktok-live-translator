@@ -37,7 +37,7 @@ def make_pipeline(monkeypatch, tmp_path, translator=None, terms=()):
 
     args = SimpleNamespace(
         cookies=None, target="zh-CN", translator="none", source="es",
-        beam=5, no_context=False, backend="auto", model=None,
+        beam=5, context=False, backend="auto", model=None,
         device="auto", compute_type="auto", denoise="off", banned_terms=None,
     )
     server = StubServer()
