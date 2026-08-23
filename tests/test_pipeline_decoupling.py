@@ -264,3 +264,25 @@ def test_stats_task_stops_when_stream_ends(monkeypatch, tmp_path):
         assert p.audit is None
 
     run(scenario())
+
+
+def test_asr_overrun_counted_and_audited(monkeypatch, tmp_path):
+    """识别耗时超过片段时长 = 复读跑飞，是丢音频的前兆，必须计数并留痕。"""
+    from app.telemetry import Telemetry
+    t = Telemetry()
+    assert t.snapshot()["asr_overruns"] == 0
+    t.note_overrun()
+    assert t.snapshot()["asr_overruns"] == 1
+    t.reset()
+    assert t.snapshot()["asr_overruns"] == 0        # 按场重置
+
+
+def test_audit_records_overrun(tmp_path):
+    import json
+    from app.audit import AuditLog
+    log = AuditLog(room_url="x", log_dir=tmp_path)
+    log.asr_overrun(asr_ms=37700, segment_ms=4500)
+    log.close()
+    lines = [json.loads(ln) for ln in log.path.read_text(encoding="utf-8").splitlines()]
+    overruns = [ln for ln in lines if ln["type"] == "asr_overrun"]
+    assert overruns and overruns[0]["asr_ms"] == 37700

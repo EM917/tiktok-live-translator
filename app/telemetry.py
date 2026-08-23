@@ -36,6 +36,9 @@ class Telemetry:
         self.audio_segments_total = 0
         self.audio_segments_dropped = 0
         self.translation_jobs_dropped = 0
+        # 识别耗时超过片段时长的调用：Whisper 在音乐/噪声段上会复读跑飞，
+        # 实测能让 4.5 秒的片段解码 39 秒——那正是队列溢出丢音频的前兆
+        self.asr_overruns = 0
         self.asr_queue_depth = 0
         self.translation_queue_depth = 0
 
@@ -50,6 +53,7 @@ class Telemetry:
         self.audio_segments_total = 0
         self.audio_segments_dropped = 0
         self.translation_jobs_dropped = 0
+        self.asr_overruns = 0
         self.asr_queue_depth = 0
         self.translation_queue_depth = 0
 
@@ -64,6 +68,9 @@ class Telemetry:
 
     def record_translation(self, translate_ms):
         self.translate_ms.append(translate_ms)
+
+    def note_overrun(self):
+        self.asr_overruns += 1
 
     def drop_audio(self):
         self.audio_segments_dropped += 1
@@ -86,6 +93,7 @@ class Telemetry:
             "audio_segments_total": self.audio_segments_total,
             "audio_segments_dropped": self.audio_segments_dropped,
             "translation_jobs_dropped": self.translation_jobs_dropped,
+            "asr_overruns": self.asr_overruns,
             "asr_queue_depth": self.asr_queue_depth,
             "translation_queue_depth": self.translation_queue_depth,
         }

@@ -64,6 +64,15 @@ class AuditLog:
             "queue_depth": queue_depth,
         })
 
+    def asr_overrun(self, asr_ms, segment_ms):
+        """识别耗时超过音频时长的调用——复读跑飞的痕迹，事后排查丢段用。"""
+        self._write({
+            "type": "asr_overrun",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "asr_ms": round(asr_ms, 1),
+            "segment_ms": round(segment_ms, 1),
+        })
+
     def alert(self, hit):
         self._write({"type": "alert",
                      "at": datetime.now().isoformat(timespec="milliseconds"),

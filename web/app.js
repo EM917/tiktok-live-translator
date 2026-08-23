@@ -504,6 +504,8 @@
       "译文再等 " + fmtMs(tr.p50),
     ];
     if (msg.audio_segments_dropped) parts.push("丢音频 " + msg.audio_segments_dropped);
+    // 识别跑飞是丢音频的前兆，出现就该看见
+    if (msg.asr_overruns) parts.push("识别超时 " + msg.asr_overruns);
     if (msg.translation_jobs_dropped) parts.push("跳过翻译 " + msg.translation_jobs_dropped);
     if (msg.asr_queue_depth || msg.translation_queue_depth) {
       parts.push("积压 " + msg.asr_queue_depth + "/" + msg.translation_queue_depth);

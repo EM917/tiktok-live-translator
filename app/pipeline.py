@@ -502,9 +502,16 @@ class Pipeline:
                     print("[警告] 识别一段音频失败: {}".format(exc))
                     continue
                 asr_ms = (time.time() - t0) * 1000.0
+                segment_ms = len(segment) / 2.0 / SAMPLE_RATE * 1000.0
+                if asr_ms > segment_ms:
+                    # 解码比音频本身还久：多半是复读跑飞，继续下去队列就会溢出
+                    self.telemetry.note_overrun()
+                    print("[警告] 识别耗时 {:.1f}s 超过片段时长 {:.1f}s（疑似复读跑飞）"
+                          .format(asr_ms / 1000, segment_ms / 1000))
+                    if self.audit is not None:
+                        self.audit.asr_overrun(asr_ms=asr_ms, segment_ms=segment_ms)
                 self.telemetry.asr_queue_depth = queue.qsize()
                 self.telemetry.translation_queue_depth = trans_queue.qsize()
-                segment_ms = len(segment) / 2.0 / SAMPLE_RATE * 1000.0
                 job = await self._emit_original(result, audio_end_ts, asr_ms,
                                                 segment_ms=segment_ms)
                 if job is not None:
