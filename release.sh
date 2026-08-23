@@ -9,6 +9,11 @@ NAME="TikTok-Live-Translator-${TAG}"
 command -v gh >/dev/null || { echo "需要 GitHub CLI（brew install gh）"; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "gh 未登录：先运行 gh auth login"; exit 1; }
 
+# tag 可能是 gh release create 在服务端建的，本地还没有
+git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || git fetch --tags --quiet
+git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || {
+  echo "找不到 tag $TAG（本地和远端都没有）"; exit 1; }
+
 trap 'rm -f "${NAME}.zip"' EXIT   # 失败也不留残余 zip 在仓库根目录
 git archive --format=zip --prefix="TikTok Live Translator/" -o "${NAME}.zip" "$TAG"
 gh release upload "$TAG" "${NAME}.zip" --clobber
