@@ -178,3 +178,89 @@ def test_no_translator_skips_translation_job(monkeypatch, tmp_path):
 
     assert run(scenario()) is None                 # 无需翻译 → 不入翻译队列
     assert server.of_type("caption")[0]["translate_state"] == "skipped"
+
+
+def test_word_list_reloaded_every_session(monkeypatch, tmp_path):
+    """词表必须每场重读：模板生成出来是空的，用户填好后点「停止→开始」
+    如果不生效，头号卖点就是 100% 静默漏报。"""
+    p, server = make_pipeline(monkeypatch, tmp_path, translator=None, terms=[])
+    assert not p.detector.enabled                      # 首场：空表
+
+    # 用户编辑词表后重新开始
+    (tmp_path / "banned_terms.txt").write_text("cura el cancer\n", encoding="utf-8")
+
+    async def scenario():
+        await p._begin_session("https://www.tiktok.com/@x/live")
+        await p._emit_original(result("este producto cura el cancer"),
+                               audio_end_ts=100.0, asr_ms=150)
+        await p._end_session()
+
+    run(scenario())
+    assert p.detector.enabled
+    assert len(server.of_type("alert")) == 1           # 新词表真的生效了
+
+
+def test_empty_word_list_warns_the_operator(monkeypatch, tmp_path):
+    """空词表 = 这场不会有任何报警，必须让运维在界面上看到。"""
+    p, server = make_pipeline(monkeypatch, tmp_path, translator=None, terms=[])
+
+    async def scenario():
+        await p._begin_session("https://www.tiktok.com/@x/live")
+        await p._end_session()
+
+    run(scenario())
+    notices = [m for m in server.of_type("notice") if "词表为空" in m.get("text", "")]
+    assert notices
+
+
+def test_detector_state_reset_between_rooms(monkeypatch, tmp_path):
+    """换直播间要清冷却：否则 A 房间的 30 秒冷却会吞掉 B 房间的同词报警。"""
+    p, server = make_pipeline(monkeypatch, tmp_path, translator=None,
+                              terms=["cura el cancer"])
+    p.detector.cooldown_sec = 30
+
+    async def scenario():
+        await p._begin_session("https://www.tiktok.com/@a/live")
+        await p._emit_original(result("esto cura el cancer"),
+                               audio_end_ts=100.0, asr_ms=100)
+        await p._end_session()
+        await p._begin_session("https://www.tiktok.com/@b/live")   # 换房间
+        await p._emit_original(result("esto cura el cancer"),
+                               audio_end_ts=110.0, asr_ms=100)     # 仅隔 10 秒
+        await p._end_session()
+
+    run(scenario())
+    assert len(server.of_type("alert")) == 2           # 两场各报一次
+
+
+def test_telemetry_reset_between_sessions(monkeypatch, tmp_path):
+    """统计按场计：上一场的「丢音频 7」不能挂在这一场的面板上。"""
+    p, server = make_pipeline(monkeypatch, tmp_path, translator=None)
+
+    async def scenario():
+        await p._begin_session("https://www.tiktok.com/@a/live")
+        await p._emit_original(result("hola"), audio_end_ts=100.0, asr_ms=100)
+        p.telemetry.drop_audio()
+        assert p.telemetry.snapshot()["audio_segments_dropped"] == 1
+        await p._end_session()
+        await p._begin_session("https://www.tiktok.com/@b/live")
+        snap = p.telemetry.snapshot()
+        assert snap["audio_segments_dropped"] == 0
+        assert snap["audio_segments_total"] == 0
+        await p._end_session()
+
+    run(scenario())
+
+
+def test_stats_task_stops_when_stream_ends(monkeypatch, tmp_path):
+    """直播自然结束后统计循环必须停——否则界面继续刷新冻结的数字。"""
+    p, server = make_pipeline(monkeypatch, tmp_path, translator=None)
+
+    async def scenario():
+        await p._begin_session("https://www.tiktok.com/@x/live")
+        assert p._stats_task is not None and not p._stats_task.done()
+        await p._end_session()
+        assert p._stats_task is None
+        assert p.audit is None
+
+    run(scenario())

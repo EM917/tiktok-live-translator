@@ -89,6 +89,15 @@ class BannedTermDetector:
         self._window = deque()      # [(ts, normalized_text)]
         self._last_hit = {}         # term.raw -> ts，命中冷却，避免刷屏
 
+    def reset_state(self):
+        """换直播间时清空滑动窗口与命中冷却（词表保留）。
+
+        不清的话有两个真实后果：上一场的冷却会把新一场同一个词的报警直接吞掉
+        （真漏报），上一场残留的文本还会混进新一场第一条报警的上下文里，让审计
+        证据失真。"""
+        self._window.clear()
+        self._last_hit.clear()
+
     @property
     def enabled(self):
         return bool(self.terms)

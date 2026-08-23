@@ -55,6 +55,15 @@ class AuditLog:
             "hits": hits,
         })
 
+    def dropped_audio(self, queue_depth=None):
+        """识别跟不上时丢掉的音频段。漏报的第四种成因——这一段压根没进 ASR，
+        不记下来事后就无法归因。"""
+        self._write({
+            "type": "audio_dropped",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "queue_depth": queue_depth,
+        })
+
     def alert(self, hit):
         self._write({"type": "alert",
                      "at": datetime.now().isoformat(timespec="milliseconds"),

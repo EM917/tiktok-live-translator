@@ -35,6 +35,19 @@ class Telemetry:
         self.asr_queue_depth = 0
         self.translation_queue_depth = 0
 
+    def reset(self):
+        """每场直播重新计数。统计条上的「丢音频 7」如果来自三小时前的另一个
+        房间，运维就无法判断当前这场到底有没有丢词——而这正是本工具的 KPI。"""
+        self.asr_ms.clear()
+        self.translate_ms.clear()
+        self.e2e_ms.clear()
+        self.segment_ms.clear()
+        self.audio_segments_total = 0
+        self.audio_segments_dropped = 0
+        self.translation_jobs_dropped = 0
+        self.asr_queue_depth = 0
+        self.translation_queue_depth = 0
+
     def record_asr(self, asr_ms, e2e_ms, segment_ms=None):
         self.audio_segments_total += 1
         self.asr_ms.append(asr_ms)

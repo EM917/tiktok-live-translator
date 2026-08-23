@@ -230,15 +230,52 @@ class Pipeline:
             pass
 
     async def _run_stream_inner(self, url):
-        from .asr import create_transcriber
-        from .audit import AuditLog
-        from .resolver import ResolveError, is_direct_url, resolve_stream_url
+        await self._begin_session(url)
+        try:
+            await self._run_session(url)
+        finally:
+            # 无论怎么结束（下播、预算耗尽、解析失败、模型加载失败、被取消），
+            # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字
+            await self._end_session()
 
+    async def _begin_session(self, url):
+        from .audit import AuditLog
+
+        # 词表每场重新读：模板生成出来是空的，用户按提示填好后点「停止→开始」
+        # 必须真的生效，否则头号卖点就是 100% 静默漏报
+        self.detector = load_detector(getattr(self.args, "banned_terms", None))
+        self.detector.reset_state()
+        self.telemetry.reset()          # 统计按场计，不跨房间累计
         if self.audit is not None:
             self.audit.close()
         self.audit = AuditLog(room_url=url)
         if self._stats_task is None or self._stats_task.done():
             self._stats_task = asyncio.ensure_future(self._stats_loop())
+        if self.detector.enabled:
+            print("[信息] 违禁词检测已启用：{} 个词条".format(len(self.detector.terms)))
+        else:
+            # 词表为空是「这场不会有任何报警」，必须让运维在界面上看到
+            print("[警告] 违禁词表为空，本场不会有任何报警")
+            await self.server.broadcast({
+                "type": "notice",
+                "text": "违禁词表为空，本场不会报警——编辑 banned_terms.txt 后重新开始",
+            })
+
+    async def _end_session(self):
+        if self._stats_task is not None and not self._stats_task.done():
+            try:      # 收尾前推一次终值，别让界面停在半截数据上
+                await self.server.broadcast({"type": "stats", **self.telemetry.snapshot()})
+            except Exception:
+                pass
+            self._stats_task.cancel()
+            self._stats_task = None
+        if self.audit is not None:
+            self.audit.close()
+            self.audit = None
+
+    async def _run_session(self, url):
+        from .asr import create_transcriber
+        from .resolver import ResolveError, is_direct_url, resolve_stream_url
 
         await self.server.status("connecting", "正在解析直播流地址…")
         try:
@@ -401,10 +438,23 @@ class Pipeline:
                 try:
                     queue.get_nowait()
                     self.telemetry.drop_audio()
+                    # 丢音频 = 可能漏词，必须留痕：审计里少了这一类，事后就无法
+                    # 把「主播明明说了却没报警」归因到背压丢段
+                    if self.audit is not None:
+                        self.audit.dropped_audio(queue_depth=queue.qsize())
                     print("[提示] 识别速度跟不上直播，丢弃一段音频以保持实时")
                 except asyncio.QueueEmpty:
                     pass
             queue.put_nowait(segment)
+            self.telemetry.asr_queue_depth = queue.qsize()
+
+        def _drop_job(job):
+            """告诉界面这条不会有译文了——否则它永远停在「翻译中…」。"""
+            self.telemetry.drop_translation()
+            asyncio.ensure_future(self.server.broadcast({
+                "type": "caption_update", "id": job["id"], "translated": None,
+                "translate_state": "dropped",
+            }))
 
         def _put_translation(job):
             """翻译积压时丢最旧的任务：中控不需要 30 秒前那句话的中文，
@@ -412,11 +462,14 @@ class Pipeline:
             while trans_queue.full():
                 try:
                     stale = trans_queue.get_nowait()
-                    if stale is not None:
-                        self.telemetry.drop_translation()
                 except asyncio.QueueEmpty:
                     break
+                if stale is None:        # 退出哨兵不能被当成积压丢掉
+                    trans_queue.put_nowait(None)
+                    break
+                _drop_job(stale)
             trans_queue.put_nowait(job)
+            self.telemetry.translation_queue_depth = trans_queue.qsize()
 
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
@@ -466,25 +519,43 @@ class Pipeline:
 
         async def run_workers():
             trans_task = asyncio.ensure_future(translation_worker())
+            reader_task = asyncio.ensure_future(reader())
+            asr_task = asyncio.ensure_future(asr_worker())
             try:
-                await asyncio.gather(reader(), asr_worker())
-            finally:
-                # 识别链路收尾后让翻译工作线程自然退出（不打断在途的那一条）
+                # return_exceptions：一条协程出错时不能把另一条丢成孤儿
+                #（孤儿 asr_worker 会继续给已结束的会话广播字幕）
+                results = await asyncio.gather(reader_task, asr_task,
+                                               return_exceptions=True)
+                for r in results:
+                    if isinstance(r, BaseException) and not isinstance(
+                            r, asyncio.CancelledError):
+                        raise r
+                # 流自然结束：让翻译把在途那条跑完（最多等 5 秒）
+                trans_queue.put_nowait(None)
                 try:
-                    trans_queue.put_nowait(None)
-                except asyncio.QueueFull:
-                    trans_task.cancel()
-                try:
-                    await asyncio.wait_for(trans_task, timeout=5)
+                    await asyncio.wait_for(asyncio.shield(trans_task), timeout=5)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     trans_task.cancel()
+            finally:
+                for task in (reader_task, asr_task, trans_task):
+                    if not task.done():
+                        task.cancel()
+                # 被取消（用户点停止/换房间）时不 drain 队列：等积压的翻译跑完
+                # 最多要 5 秒，而停止应当立刻生效——剩下的直接告知界面已跳过
+                while True:
+                    try:
+                        pending = trans_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if pending is not None:
+                        _drop_job(pending)
 
         try:
             await run_workers()
-        except asyncio.CancelledError:
+        finally:
+            # 先切 ffmpeg 再收尾，任何退出路径（含异常）都不留子进程
             await source.stop()
-            raise
-        asr_pool.shutdown(wait=False)
+            asr_pool.shutdown(wait=False)
         tail = source.stderr_tail()
         if tail:
             print("[信息] ffmpeg 输出: {}".format(tail))   # 英文技术输出只进终端，不上 UI
