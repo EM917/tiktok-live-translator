@@ -2,11 +2,211 @@
 
 <p align="center"><img src="assets/icon-1024.png" width="128" alt="icon"></p>
 
-**语言 / Language：[中文](#chinese) | [English](#english)**
+<p align="center">
+  <a href="https://github.com/EM917/tiktok-live-translator/releases/latest"><img src="https://img.shields.io/github/v/release/EM917/tiktok-live-translator" alt="release"></a>
+  <a href="https://github.com/EM917/tiktok-live-translator/actions/workflows/ci.yml"><img src="https://github.com/EM917/tiktok-live-translator/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="python 3.9+">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="platform">
+  <img src="https://img.shields.io/badge/privacy-100%25_local,_no_API_key-success" alt="100% local">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/EM917/tiktok-live-translator" alt="license"></a>
+</p>
+
+<p align="center"><img src="assets/demo.gif" width="720" alt="Live demo: real-time bilingual subtitles"></p>
+
+**Language / 语言：[English](#english) | [中文](#chinese)**
+
+---
+
+<a name="english"></a>
+
+# TikTok Live Translator (English)
+
+Listens to a TikTok livestream, transcribes what the **streamer says** in real time, translates it, and shows bilingual subtitles in a local browser UI. Comes with a Chrome extension that overlays the subtitles directly on the TikTok live page.
+
+**Runs entirely locally**: stream capture, speech recognition, and (optionally) translation all happen on your own machine — no API key needed, zero cost.
+
+## Features
+
+- 🎙️ **Real-time speech recognition** — OpenAI Whisper (dual backend: faster-whisper / MLX), auto-detects the streamer's language, supports 90+ languages
+- 🌐 **Three-tier translation engine** — local TranslateGemma (recommended, offline and free) / Google's free API (default fallback) / Claude · OpenAI API
+- 🎵 **Voice-focused denoising** — RNNoise neural denoising suppresses background music, tuned for streams with BGM
+- ⚡ **Automatic hardware tuning** — detects your chip (Apple Silicon GPU / NVIDIA CUDA / plain CPU) and automatically picks the best model that can still run in real time — zero-config out of the box
+- 📺 **Two display modes** — a local web UI (scrolling bilingual subtitle history + a large caption at the bottom), or a Chrome extension overlay on the TikTok page
+- 🔄 **Fault-tolerant** — auto-reconnects with a fresh stream URL when the stream drops (and can tell a network blip from the streamer actually ending); falls back to scraping the stream URL straight from the live page when yt-dlp resolution fails; drops segments automatically to stay real-time when recognition falls behind; keeps yt-dlp fresh automatically in the background
+
+## Quick Start
+
+### Never used a terminal? Three steps (recommended)
+
+1. **Download**: grab **TikTok-Live-Translator-vX.Y.Z.zip** from the [latest release](https://github.com/EM917/tiktok-live-translator/releases/latest)'s Assets and unzip it anywhere (e.g. your Desktop) — "Source code (zip)" works too. The green **Code** button → **Download ZIP** also works (latest dev snapshot).
+2. **Install Python** (free, one time only): grab the installer from [python.org/downloads](https://www.python.org/downloads/) and install with the default options. Forgot? No problem — the launcher will detect it and open the download page for you.
+3. **Launch**:
+   - **macOS**: double-click **`TikTok Live Translator.app`** in the folder. If the first launch is blocked ("cannot be opened"): on older systems right-click → Open; on **macOS 15 and later** go to **System Settings → Privacy & Security**, scroll to the bottom and click **"Open Anyway"** (one time only). Feel free to drag it to the Dock — but **don't move it out of this folder**.
+   - **Windows**: double-click **`Start.bat`**. If a "publisher unknown" security warning pops up, click "Run" (this tool is fully open source — the code is right there in the folder). A black text window stays open while running — **that's the translation engine, keep it open**; subtitles appear in the separate app window.
+
+The first launch installs everything automatically (a few minutes, with on-screen progress; the first recognition also downloads the speech model, with progress shown on the page). Every launch after that is instant. Once the window opens: **paste the live-room URL (or just the streamer's username) → pick the streamer's language → hit Start**. Stop or switch rooms anytime.
+
+### Command line
+
+With [Python 3.9+](https://www.python.org/downloads/) installed, two commands:
+
+```bash
+git clone https://github.com/EM917/tiktok-live-translator.git
+cd tiktok-live-translator && python3 main.py
+```
+
+(On Windows use `python main.py`.) Everything else is automatic: the first run creates a virtual environment and installs all dependencies (including a bundled static ffmpeg and the denoising model). CLI flags work too:
+
+```bash
+python3 main.py "https://www.tiktok.com/@streamer_username/live" --source es
+python3 main.py --demo      # preview the UI without connecting to a stream
+python3 main.py --doctor    # print the hardware check and recommended config
+```
+
+> Prefer to control the install yourself? `bash setup.sh` (macOS/Linux) or `powershell -ExecutionPolicy Bypass -File setup.ps1` (Windows) does the same steps explicitly.
+
+> **Cloned an older version before?** Don't re-clone (it fails with `destination path already exists`) — just `cd` into the folder, run `git pull`, and start it; from v0.2.0 on you can update with one click from the page itself.
+
+### Everyday startup (after reboot / after closing it)
+
+- **macOS**: double-click **`TikTok Live Translator.app`** (or `Start.command`);
+- **Windows**: double-click **`Start.bat`**;
+- CLI: `cd ~/tiktok-live-translator && python3 main.py`.
+
+The UI opens in its **own app window** (no browser tab), remembering the room URL and target language from last time — just hit Start. Closing the window quits the app. Pass `--browser` if you prefer the browser UI.
+
+## Automatic Hardware Tuning (how it picks a config for your machine)
+
+Run `python main.py --doctor` anytime to see the hardware-check results. Any flag you don't explicitly set at startup is auto-filled per the table below:
+
+| Your machine | Auto-selected | Result |
+|---|---|---|
+| Apple Silicon (M1 or later) | MLX GPU backend + `large-v3` | Most accurate model, runs ~5x faster than real time |
+| NVIDIA GPU | CUDA + `large-v3` (float16) | Most accurate model, plenty of speed headroom |
+| Plain CPU (≥8 cores & ≥8GB RAM) | CPU + `small` (int8) | Keeps up in real time, moderate accuracy |
+| Low-end CPU | CPU + `base` (int8) | Prioritizes keeping subtitles from falling behind |
+
+Benchmark reference (M3 Pro, 90 seconds of real livestream footage; RTF = recognition time / audio duration — needs to be < 1 to avoid dropping subtitles):
+
+| Config | RTF |
+|---|---|
+| MLX GPU + large-v3 | **0.21** ✅ |
+| CPU + large-v3-turbo | 0.99 ⚠️ borderline |
+| CPU + large-v3 | 1.22 ❌ drops segments |
+
+Any auto-selected value can be overridden with a command-line flag (see below).
+
+## Command-Line Flags
+
+| Flag | Description | Default |
+|------|------|------|
+| `--target` | Target language (`zh-CN`/`en`/`ja`/`ko`/…; can also be switched anytime in the UI) | `zh-CN` |
+| `--source` | Streamer's language; auto-detected if omitted (specify it for better accuracy when known, e.g. `es`/`en`/`ja`) | auto |
+| `--backend` | Recognition backend: `mlx` (Apple GPU) / `ct2` (faster-whisper) / `auto` | `auto` |
+| `--model` | Whisper model: `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` | auto by hardware |
+| `--device` | `auto`/`cpu`/`cuda` | auto by hardware |
+| `--compute-type` | ct2 precision (`int8`/`float16`/…) | auto by hardware |
+| `--beam` | Beam search width (larger = more accurate but slower; `1` = greedy; ct2 backend only) | `5` |
+| `--no-context` | Disable rolling context (on by default; improves sentence-boundary coherence) | off |
+| `--translator` | Translation engine: `auto`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
+| `--denoise` | RNNoise voice denoising: `auto`/`on`/`off` | `auto` (on) |
+| `--port` | Local UI port | `8765` |
+| `--cookies` | Path to a yt-dlp cookies.txt file (may be needed for region-restricted streams) | none |
+| `--demo` | Demo mode — drives only the UI | off |
+| `--doctor` | Print the hardware check and recommended config, then exit | off |
+| `--no-open` | Don't auto-open the browser on startup | off |
+
+## Translation Engines
+
+- `auto` (default) — uses `gemma` if TranslateGemma is installed in local Ollama, otherwise falls back to `google`.
+- `gemma` — **Recommended**: TranslateGemma, Google's open-source translation-specialized model. Runs on your local GPU, fully offline and free, and handles colloquial speech/slang far better than Google's web API. Install:
+
+  ```bash
+  brew install ollama          # See https://ollama.com/download for Windows/Linux
+  ollama pull translategemma:4b
+  brew services start ollama   # or run ollama serve manually
+  ```
+
+  You can switch models via the `OLLAMA_TRANSLATE_MODEL` environment variable to `translategemma:12b`/`27b` (more accurate, slower).
+- `google` — Google Translate's free web API, no key required. **Note: subtitle text is sent to Google**, and it tends to mistranslate colloquial speech more often.
+- `claude` — requires the `ANTHROPIC_API_KEY` environment variable (defaults to Claude Haiku; override with `CLAUDE_TRANSLATE_MODEL`).
+- `openai` — requires `OPENAI_API_KEY` (optionally `OPENAI_BASE_URL`, `OPENAI_MODEL`); compatible with any OpenAI-style API, including local LM Studio / vLLM.
+- `none` — shows only the raw transcription, no translation, fully offline.
+
+Real-world comparison (colloquial Spanish → Chinese):
+
+| Original | Google | TranslateGemma |
+|---|---|---|
+| *Se mueren lo rico* (so good it's unreal) | ❌ 有钱人死 (the rich people die) | ✅ 味道非常好 (tastes amazing) |
+| *tengo un sueño* (I'm sleepy) | ❌ 我做了一个梦 (I had a dream) | ✅ 现在感觉很困 (feeling very sleepy right now) |
+| *Es vegano* (it's a vegan product) | ❌ 它是素食主义者 (he/she is a vegetarian) | ✅ 纯素的 (vegan) |
+
+## Chrome Extension (overlay subtitles on the TikTok page)
+
+1. Open `chrome://extensions` and enable "Developer mode" in the top right.
+2. Click "Load unpacked" and select this project's `extension/` folder.
+3. Keep the app running, open a TikTok **live-room** page (URL contains `/live`), and a floating subtitle bar appears as subtitles arrive.
+
+The subtitle bar supports **dragging** to reposition it, **double-clicking** to collapse/expand, and hovering reveals an **×** to hide it. The extension automatically tries the ports the app may use (8765–8774), so it normally needs no configuration. The extension is just a display layer — audio capture and recognition are handled by the local app.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    URL["TikTok live-room URL"] --> RESOLVE["yt-dlp stream resolver"]
+    RESOLVE -->|"media URL"| FF["ffmpeg → RNNoise denoise → 16 kHz PCM"]
+    RESOLVE -.->|"extractor down: scrape the page HTML"| FF
+    FF --> VAD["energy-VAD segmenter (2.5–9 s)"]
+    VAD --> ASR["Whisper ASR<br/>MLX GPU / faster-whisper<br/>rolling context + confidence filter"]
+    ASR --> TR["translation<br/>TranslateGemma (local) / Google / Claude / OpenAI / off"]
+    TR --> WS(("WebSocket"))
+    WS --> UI["browser subtitle UI"]
+    WS --> OV["Chrome-extension overlay<br/>on the TikTok page"]
+    FF -.->|"stream drops: auto re-resolve + reconnect"| RESOLVE
+    VAD -.->|"ASR falls behind: drop a segment, stay real-time"| ASR
+```
+
+## Auto-update
+
+On every launch the app silently checks GitHub for the latest release (network failures are silently ignored). When a new version exists, a banner appears at the top of the page:
+
+- **git install** (cloned via `git clone`) → click "Update" to run `git pull --ff-only` and restart automatically. If you have uncommitted local changes, the update is refused to avoid overwriting them;
+- **ZIP install** → the banner links to the download page instead.
+
+The current version is shown in the page footer.
+
+## FAQ
+
+- **It says "the streamer isn't live right now" but they clearly are** — the tool automatically falls back to parsing the page HTML (you'll see this noted in the logs). If it still fails, the room likely requires login / is region-restricted — export `cookies.txt` with a browser extension and add `--cookies cookies.txt`.
+- **First "Start" stuck downloading the recognition model** — it's downloading from Hugging Face (large-v3 is about 3GB); progress is shown on the page, and it only happens once.
+- **Recognition can't keep up with the stream / terminal shows dropped audio** — switch to a smaller model (`--model small`), or use `--beam 1`; Apple Silicon users should confirm `pip install mlx-whisper` succeeded so it runs on the GPU.
+- **Singing in background music gets picked up as the streamer talking** — RNNoise suppresses instrumental music well, but can only partially suppress **sung vocals** in a song; confidence filtering catches most of these, and the occasional slip-through is normal.
+- **Extension isn't showing subtitles** — confirm the app is running and that you're on a **live-room page** (URL contains `/live`) rather than a regular video page, then refresh the TikTok page.
+- **Translation shows "translation failed"** — the current engine is unreachable (no network / Ollama not running); it automatically falls back to showing the raw text. In `auto` mode, restarting the tool falls back to whichever engine is available.
+
+## Privacy and Usage Boundaries
+
+- Recognition always runs locally. Translation is fully offline when using `gemma`/`none`; with `google`/`claude`/`openai`, subtitle text is sent to the corresponding provider.
+- This tool is for personal learning and language-assistance use only. Please comply with TikTok's Terms of Service and local laws — don't use it to rebroadcast or redistribute recordings of other people's content.
+
+## Acknowledgments
+
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) / [mlx-whisper](https://github.com/ml-explore/mlx-examples) — speech recognition
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — livestream resolution
+- [FFmpeg](https://ffmpeg.org/) — audio processing (built-in RNNoise `arnndn` filter)
+- [rnnoise-models](https://github.com/GregorR/rnnoise-models) — denoising model (beguiling-drafter)
+- [Ollama](https://github.com/ollama/ollama) + [TranslateGemma](https://ollama.com/library/translategemma) — local translation
+
+## Author & License
+
+Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under the [MIT License](LICENSE).
 
 ---
 
 <a name="chinese"></a>
+
+# TikTok 直播同传（中文）
+
 
 监听 TikTok 直播间，把**主播说的话**实时转写并翻译成字幕，在本地浏览器 UI 中双语显示。附带一个 Chrome 插件，可以把字幕直接叠加在 TikTok 直播页面上。
 
@@ -19,13 +219,13 @@
 - 🎵 **人声降噪** —— RNNoise 神经降噪抑制背景音乐，专为带 BGM 的直播间优化
 - ⚡ **硬件自动配置** —— 检测你的芯片（Apple Silicon GPU / NVIDIA CUDA / 普通 CPU）自动选择能实时跑的最优模型，零配置开箱即用
 - 📺 **双显示端** —— 本地网页 UI（历史双语字幕 + 底部大字幕），或 Chrome 插件叠加在 TikTok 页面上
-- 🔄 **抗故障** —— yt-dlp 解析失效时自动从直播页面直接挖流地址；识别跟不上时自动丢段保实时
+- 🔄 **抗故障** —— 直播流中断自动换新地址重连（能区分网络抖动与主播真下播）；yt-dlp 解析失效时自动从直播页面直接挖流地址；识别跟不上时自动丢段保实时；后台自动保持 yt-dlp 为最新版
 
 ## 快速开始
 
 ### 不会用终端？三步开始（推荐）
 
-1. **下载**：点本页右上方绿色的 **Code** 按钮 → **Download ZIP**，下载后解压到任意位置（例如桌面）。
+1. **下载**：到[最新 Release](https://github.com/EM917/tiktok-live-translator/releases/latest) 的 Assets 里下载 **TikTok-Live-Translator-vX.Y.Z.zip**，解压到任意位置（例如桌面）——下载「Source code (zip)」也一样能用。也可以点仓库页绿色 **Code** 按钮 → **Download ZIP**（取的是最新开发版）。
 2. **装 Python**（免费，只装一次）：到 [python.org/downloads](https://www.python.org/downloads/) 下载安装包，按默认选项装完即可。忘了装也没关系——启动器发现没有 Python 时会自动打开下载页提示你。
 3. **启动**：
    - **macOS**：双击文件夹里的 **`TikTok Live Translator.app`**。首次打开如提示「无法打开」：旧系统右键 → 打开；**macOS 15 及以后**要到 **系统设置 → 隐私与安全性**，拉到页面底部点 **「仍要打开」**（只需一次）。可以把它拖到 Dock 常驻，但**不要把它拖出这个文件夹**。
@@ -139,21 +339,19 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 
 ## 架构
 
-```
-TikTok 直播间 URL
-      │  yt-dlp 解析直播流（失效时自动从页面 HTML 挖流地址，优先纯音频流）
-      ▼
-   ffmpeg ──► RNNoise 人声降噪 ──► 16 kHz 单声道 PCM
-      │  能量 VAD 切段（2.5–9 秒）
-      ▼
- Whisper 语音识别（MLX GPU / faster-whisper，滚动上下文 + 置信度过滤）
-      │
-      ▼
-   翻译引擎（TranslateGemma 本地 / Google / Claude / OpenAI / 关闭）
-      │
-      ▼
-WebSocket 广播 ──► 浏览器字幕 UI（http://127.0.0.1:8765）
-              └──► Chrome 插件叠加字幕（可选）
+```mermaid
+flowchart TD
+    URL["TikTok 直播间地址"] --> RESOLVE["yt-dlp 解析直播流"]
+    RESOLVE -->|"媒体地址"| FF["ffmpeg → RNNoise 人声降噪 → 16 kHz PCM"]
+    RESOLVE -.->|"提取器失效：直接从页面 HTML 挖流地址"| FF
+    FF --> VAD["能量 VAD 切段（2.5–9 秒）"]
+    VAD --> ASR["Whisper 语音识别<br/>MLX GPU / faster-whisper<br/>滚动上下文 + 置信度过滤"]
+    ASR --> TR["翻译引擎<br/>TranslateGemma（本地）/ Google / Claude / OpenAI / 关闭"]
+    TR --> WS(("WebSocket"))
+    WS --> UI["浏览器字幕界面"]
+    WS --> OV["Chrome 插件叠加字幕<br/>（TikTok 页面上）"]
+    FF -.->|"断流：自动重新解析地址重连"| RESOLVE
+    VAD -.->|"识别跟不上：丢段保实时"| ASR
 ```
 
 ## 自动更新
@@ -190,191 +388,3 @@ WebSocket 广播 ──► 浏览器字幕 UI（http://127.0.0.1:8765）
 ## 作者与许可
 
 Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917)，以 [MIT 许可](LICENSE) 发布。
-
----
-
-<a name="english"></a>
-
-# TikTok Live Translator (English)
-
-Listens to a TikTok livestream, transcribes what the **streamer says** in real time, translates it, and shows bilingual subtitles in a local browser UI. Comes with a Chrome extension that overlays the subtitles directly on the TikTok live page.
-
-**Runs entirely locally**: stream capture, speech recognition, and (optionally) translation all happen on your own machine — no API key needed, zero cost.
-
-## Features
-
-- 🎙️ **Real-time speech recognition** — OpenAI Whisper (dual backend: faster-whisper / MLX), auto-detects the streamer's language, supports 90+ languages
-- 🌐 **Three-tier translation engine** — local TranslateGemma (recommended, offline and free) / Google's free API (default fallback) / Claude · OpenAI API
-- 🎵 **Voice-focused denoising** — RNNoise neural denoising suppresses background music, tuned for streams with BGM
-- ⚡ **Automatic hardware tuning** — detects your chip (Apple Silicon GPU / NVIDIA CUDA / plain CPU) and automatically picks the best model that can still run in real time — zero-config out of the box
-- 📺 **Two display modes** — a local web UI (scrolling bilingual subtitle history + a large caption at the bottom), or a Chrome extension overlay on the TikTok page
-- 🔄 **Fault-tolerant** — falls back to scraping the stream URL straight from the live page when yt-dlp resolution fails; drops segments automatically to stay real-time when recognition falls behind
-
-## Quick Start
-
-### Never used a terminal? Three steps (recommended)
-
-1. **Download**: click the green **Code** button at the top of this page → **Download ZIP**, then unzip it anywhere (e.g. your Desktop).
-2. **Install Python** (free, one time only): grab the installer from [python.org/downloads](https://www.python.org/downloads/) and install with the default options. Forgot? No problem — the launcher will detect it and open the download page for you.
-3. **Launch**:
-   - **macOS**: double-click **`TikTok Live Translator.app`** in the folder. If the first launch is blocked ("cannot be opened"): on older systems right-click → Open; on **macOS 15 and later** go to **System Settings → Privacy & Security**, scroll to the bottom and click **"Open Anyway"** (one time only). Feel free to drag it to the Dock — but **don't move it out of this folder**.
-   - **Windows**: double-click **`Start.bat`**. If a "publisher unknown" security warning pops up, click "Run" (this tool is fully open source — the code is right there in the folder). A black text window stays open while running — **that's the translation engine, keep it open**; subtitles appear in the separate app window.
-
-The first launch installs everything automatically (a few minutes, with on-screen progress; the first recognition also downloads the speech model, with progress shown on the page). Every launch after that is instant. Once the window opens: **paste the live-room URL (or just the streamer's username) → pick the streamer's language → hit Start**. Stop or switch rooms anytime.
-
-### Command line
-
-With [Python 3.9+](https://www.python.org/downloads/) installed, two commands:
-
-```bash
-git clone https://github.com/EM917/tiktok-live-translator.git
-cd tiktok-live-translator && python3 main.py
-```
-
-(On Windows use `python main.py`.) Everything else is automatic: the first run creates a virtual environment and installs all dependencies (including a bundled static ffmpeg and the denoising model). CLI flags work too:
-
-```bash
-python3 main.py "https://www.tiktok.com/@streamer_username/live" --source es
-python3 main.py --demo      # preview the UI without connecting to a stream
-python3 main.py --doctor    # print the hardware check and recommended config
-```
-
-> Prefer to control the install yourself? `bash setup.sh` (macOS/Linux) or `powershell -ExecutionPolicy Bypass -File setup.ps1` (Windows) does the same steps explicitly.
-
-> **Cloned an older version before?** Don't re-clone (it fails with `destination path already exists`) — just `cd` into the folder, run `git pull`, and start it; from v0.2.0 on you can update with one click from the page itself.
-
-### Everyday startup (after reboot / after closing it)
-
-- **macOS**: double-click **`TikTok Live Translator.app`** (or `Start.command`);
-- **Windows**: double-click **`Start.bat`**;
-- CLI: `cd ~/tiktok-live-translator && python3 main.py`.
-
-The UI opens in its **own app window** (no browser tab), remembering the room URL and target language from last time — just hit Start. Closing the window quits the app. Pass `--browser` if you prefer the browser UI.
-
-## Automatic Hardware Tuning (how it picks a config for your machine)
-
-Run `python main.py --doctor` anytime to see the hardware-check results. Any flag you don't explicitly set at startup is auto-filled per the table below:
-
-| Your machine | Auto-selected | Result |
-|---|---|---|
-| Apple Silicon (M1 or later) | MLX GPU backend + `large-v3` | Most accurate model, runs ~5x faster than real time |
-| NVIDIA GPU | CUDA + `large-v3` (float16) | Most accurate model, plenty of speed headroom |
-| Plain CPU (≥8 cores & ≥8GB RAM) | CPU + `small` (int8) | Keeps up in real time, moderate accuracy |
-| Low-end CPU | CPU + `base` (int8) | Prioritizes keeping subtitles from falling behind |
-
-Benchmark reference (M3 Pro, 90 seconds of real livestream footage; RTF = recognition time / audio duration — needs to be < 1 to avoid dropping subtitles):
-
-| Config | RTF |
-|---|---|
-| MLX GPU + large-v3 | **0.21** ✅ |
-| CPU + large-v3-turbo | 0.99 ⚠️ borderline |
-| CPU + large-v3 | 1.22 ❌ drops segments |
-
-Any auto-selected value can be overridden with a command-line flag (see below).
-
-## Command-Line Flags
-
-| Flag | Description | Default |
-|------|------|------|
-| `--target` | Target language (`zh-CN`/`en`/`ja`/`ko`/…; can also be switched anytime in the UI) | `zh-CN` |
-| `--source` | Streamer's language; auto-detected if omitted (specify it for better accuracy when known, e.g. `es`/`en`/`ja`) | auto |
-| `--backend` | Recognition backend: `mlx` (Apple GPU) / `ct2` (faster-whisper) / `auto` | `auto` |
-| `--model` | Whisper model: `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` | auto by hardware |
-| `--device` | `auto`/`cpu`/`cuda` | auto by hardware |
-| `--compute-type` | ct2 precision (`int8`/`float16`/…) | auto by hardware |
-| `--beam` | Beam search width (larger = more accurate but slower; `1` = greedy; ct2 backend only) | `5` |
-| `--no-context` | Disable rolling context (on by default; improves sentence-boundary coherence) | off |
-| `--translator` | Translation engine: `auto`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
-| `--denoise` | RNNoise voice denoising: `auto`/`on`/`off` | `auto` (on) |
-| `--port` | Local UI port | `8765` |
-| `--cookies` | Path to a yt-dlp cookies.txt file (may be needed for region-restricted streams) | none |
-| `--demo` | Demo mode — drives only the UI | off |
-| `--doctor` | Print the hardware check and recommended config, then exit | off |
-| `--no-open` | Don't auto-open the browser on startup | off |
-
-## Translation Engines
-
-- `auto` (default) — uses `gemma` if TranslateGemma is installed in local Ollama, otherwise falls back to `google`.
-- `gemma` — **Recommended**: TranslateGemma, Google's open-source translation-specialized model. Runs on your local GPU, fully offline and free, and handles colloquial speech/slang far better than Google's web API. Install:
-
-  ```bash
-  brew install ollama          # See https://ollama.com/download for Windows/Linux
-  ollama pull translategemma:4b
-  brew services start ollama   # or run ollama serve manually
-  ```
-
-  You can switch models via the `OLLAMA_TRANSLATE_MODEL` environment variable to `translategemma:12b`/`27b` (more accurate, slower).
-- `google` — Google Translate's free web API, no key required. **Note: subtitle text is sent to Google**, and it tends to mistranslate colloquial speech more often.
-- `claude` — requires the `ANTHROPIC_API_KEY` environment variable (defaults to Claude Haiku; override with `CLAUDE_TRANSLATE_MODEL`).
-- `openai` — requires `OPENAI_API_KEY` (optionally `OPENAI_BASE_URL`, `OPENAI_MODEL`); compatible with any OpenAI-style API, including local LM Studio / vLLM.
-- `none` — shows only the raw transcription, no translation, fully offline.
-
-Real-world comparison (colloquial Spanish → Chinese):
-
-| Original | Google | TranslateGemma |
-|---|---|---|
-| *Se mueren lo rico* (so good it's unreal) | ❌ 有钱人死 (the rich people die) | ✅ 味道非常好 (tastes amazing) |
-| *tengo un sueño* (I'm sleepy) | ❌ 我做了一个梦 (I had a dream) | ✅ 现在感觉很困 (feeling very sleepy right now) |
-| *Es vegano* (it's a vegan product) | ❌ 它是素食主义者 (he/she is a vegetarian) | ✅ 纯素的 (vegan) |
-
-## Chrome Extension (overlay subtitles on the TikTok page)
-
-1. Open `chrome://extensions` and enable "Developer mode" in the top right.
-2. Click "Load unpacked" and select this project's `extension/` folder.
-3. Keep the app running, open a TikTok **live-room** page (URL contains `/live`), and a floating subtitle bar appears as subtitles arrive.
-
-The subtitle bar supports **dragging** to reposition it, **double-clicking** to collapse/expand, and hovering reveals an **×** to hide it. The extension automatically tries the ports the app may use (8765–8774), so it normally needs no configuration. The extension is just a display layer — audio capture and recognition are handled by the local app.
-
-## Architecture
-
-```
-TikTok live room URL
-      │  yt-dlp resolves the live stream (falls back to scraping the stream URL from page HTML if it fails; prefers audio-only streams)
-      ▼
-   ffmpeg ──► RNNoise voice denoising ──► 16 kHz mono PCM
-      │  Energy-based VAD segmentation (2.5–9 sec)
-      ▼
- Whisper speech recognition (MLX GPU / faster-whisper, rolling context + confidence filtering)
-      │
-      ▼
-   Translation engine (local TranslateGemma / Google / Claude / OpenAI / off)
-      │
-      ▼
-WebSocket broadcast ──► Browser subtitle UI (http://127.0.0.1:8765)
-              └──► Chrome extension subtitle overlay (optional)
-```
-
-## Auto-update
-
-On every launch the app silently checks GitHub for the latest release (network failures are silently ignored). When a new version exists, a banner appears at the top of the page:
-
-- **git install** (cloned via `git clone`) → click "Update" to run `git pull --ff-only` and restart automatically. If you have uncommitted local changes, the update is refused to avoid overwriting them;
-- **ZIP install** → the banner links to the download page instead.
-
-The current version is shown in the page footer.
-
-## FAQ
-
-- **It says "the streamer isn't live right now" but they clearly are** — the tool automatically falls back to parsing the page HTML (you'll see this noted in the logs). If it still fails, the room likely requires login / is region-restricted — export `cookies.txt` with a browser extension and add `--cookies cookies.txt`.
-- **First "Start" stuck downloading the recognition model** — it's downloading from Hugging Face (large-v3 is about 3GB); progress is shown on the page, and it only happens once.
-- **Recognition can't keep up with the stream / terminal shows dropped audio** — switch to a smaller model (`--model small`), or use `--beam 1`; Apple Silicon users should confirm `pip install mlx-whisper` succeeded so it runs on the GPU.
-- **Singing in background music gets picked up as the streamer talking** — RNNoise suppresses instrumental music well, but can only partially suppress **sung vocals** in a song; confidence filtering catches most of these, and the occasional slip-through is normal.
-- **Extension isn't showing subtitles** — confirm the app is running and that you're on a **live-room page** (URL contains `/live`) rather than a regular video page, then refresh the TikTok page.
-- **Translation shows "translation failed"** — the current engine is unreachable (no network / Ollama not running); it automatically falls back to showing the raw text. In `auto` mode, restarting the tool falls back to whichever engine is available.
-
-## Privacy and Usage Boundaries
-
-- Recognition always runs locally. Translation is fully offline when using `gemma`/`none`; with `google`/`claude`/`openai`, subtitle text is sent to the corresponding provider.
-- This tool is for personal learning and language-assistance use only. Please comply with TikTok's Terms of Service and local laws — don't use it to rebroadcast or redistribute recordings of other people's content.
-
-## Acknowledgments
-
-- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) / [mlx-whisper](https://github.com/ml-explore/mlx-examples) — speech recognition
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — livestream resolution
-- [FFmpeg](https://ffmpeg.org/) — audio processing (built-in RNNoise `arnndn` filter)
-- [rnnoise-models](https://github.com/GregorR/rnnoise-models) — denoising model (beguiling-drafter)
-- [Ollama](https://github.com/ollama/ollama) + [TranslateGemma](https://ollama.com/library/translategemma) — local translation
-
-## Author & License
-
-Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under the [MIT License](LICENSE).

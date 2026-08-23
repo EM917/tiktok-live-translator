@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    timeout-minutes: 15   # 测试里有靠预算收敛的循环，回归成死循环时要红而不是挂 6 小时
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 3.9 是对外承诺的最低版本（main.py / 启动器都写明 3.9+），必须验证。
+          # 3.9 已 EOL，固定到具体镜像（latest 迁移后 setup-python 不再提供）；
+          # 放弃 3.9 支持时删除此行并同步改 README 与 main.py 的版本声明
+          - os: ubuntu-24.04
+            python: "3.9"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: macos-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.13"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # 测试只依赖轻量三件套——被测模块的重型导入（faster-whisper/yt-dlp）
+      # 都是函数内延迟进行的，CI 不装它们
+      - name: Install test deps
+        run: pip install pytest numpy aiohttp
+      - name: Unit tests
+        run: pytest tests/ -q
+      - name: Byte-compile all sources
+        run: python -m compileall -q main.py app
+      - name: JS unit tests
+        shell: bash
+        run: node --test tests/*.test.mjs
+
+  lint:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Ruff (pinned)
+        run: |
+          pip install ruff==0.14.1
+          ruff check .
+      - name: Shell launcher syntax
+        run: |
+          bash -n Start.command
+          bash -n setup.sh
+          bash -n "TikTok Live Translator.app/Contents/MacOS/TikTokLiveTranslator"
+      - name: PowerShell setup script parses
+        shell: pwsh
+        run: |
+          $tokens = $null; $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("setup.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+      - name: JS syntax
+        run: |
+          node --check web/app.js
+          node --check web/normalize.js
+          node --check extension/content.js
+          node --check extension/options.js
+      - name: Extension manifest is valid JSON
+        run: python -m json.tool extension/manifest.json > /dev/null

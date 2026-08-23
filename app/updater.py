@@ -5,8 +5,12 @@ ZIP 下载（无 .git）的安装只提示去下载页，不尝试自动更新�
 """
 import asyncio
 import os
+import re
 import sys
+import time
 from pathlib import Path
+
+from .settings import load_settings, save_setting
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "EM917/tiktok-live-translator"
@@ -37,14 +41,77 @@ class Updater:
         self.server = server
         self.latest = None
         self._applying = False
+        self._freshening = False
+        self._freshen_attempted_at = 0.0     # 失败也要冷却，别反复拉起注定失败的 pip
+        self._pip_lock = asyncio.Lock()      # freshen 与一键更新共用：pip 不能并发写环境
 
     async def watch(self, first_delay=2.0, interval=6 * 3600):
         """启动后检查一次，之后每 6 小时复查——常开不关的用户也能及时看到新版本。"""
         await self.check_and_notify(delay=first_delay)
+        await self.freshen_ytdlp(reason="periodic")   # 顺带保鲜最易腐坏的组件
         while True:
             await asyncio.sleep(interval)
             if self.latest is None:      # 已经提示过就不再重复打扰
                 await self.check_and_notify(delay=0)
+            await self.freshen_ytdlp(reason="periodic")
+
+    async def freshen_ytdlp(self, reason="periodic"):
+        """后台升级 yt-dlp。它的 TikTok 提取器是全项目最易腐坏的一环，而常规
+        更新通道（跟随本项目发版的 pip install -r）不会主动升它——老安装会
+        在某天集体拉流失败。两个触发源：
+
+          periodic          —— 启动/每 6 小时检查时，距上次升级超过 7 天就升；
+          resolve-failures  —— 连续解析失败（非「没开播」类）时，6 小时冷却。
+
+        yt-dlp 是每次解析都新起的子进程（resolver.py 用 -m yt_dlp），升级完
+        下一次点「开始翻译」就生效，无需重启本程序。"""
+        if self._freshening:
+            return
+        min_age = 6 * 3600 if reason == "resolve-failures" else 7 * 86400
+        last = load_settings().get("ytdlp_updated_at") or 0
+        try:
+            last = float(last)
+        except (TypeError, ValueError):
+            last = 0
+        now = time.time()
+        if now - last < min_age:
+            return
+        if now - self._freshen_attempted_at < 600:   # 上次尝试（含失败）10 分钟内不重试
+            return
+        self._freshening = True
+        self._freshen_attempted_at = now
+        try:
+            async with self._pip_lock:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "pip", "install", "-U",
+                    "--disable-pip-version-check", "yt-dlp",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                )
+                try:
+                    out, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
+                except asyncio.TimeoutError:
+                    proc.kill()          # pip 卡死不能拖垮 watch 循环
+                    print("[警告] yt-dlp 自动更新超时，已放弃本次尝试")
+                    return
+            if proc.returncode != 0:
+                print("[警告] yt-dlp 自动更新失败（pip 返回 {}）".format(proc.returncode))
+                return
+            save_setting("ytdlp_updated_at", time.time())
+            text = out.decode(errors="replace")
+            m = re.search(r"Successfully installed .*?yt.dlp-(\S+)", text)
+            if m:
+                print("[信息] 已自动更新 yt-dlp 到 {}（{}）".format(m.group(1), reason))
+                # 只有在没有活跃直播时才广播提示——绝不能把 live/connecting
+                # 状态顶掉，误导用户去重启一条正常工作的管线
+                current = (self.server.config.get("status") or {}).get("state")
+                if reason == "resolve-failures" and current in (None, "idle", "error"):
+                    await self.server.status(
+                        "idle", "已自动更新直播解析组件（yt-dlp {}）——"
+                                "请重新点「开始翻译」试试。".format(m.group(1)))
+        except Exception as exc:
+            print("[警告] yt-dlp 自动更新异常: {}".format(exc))
+        finally:
+            self._freshening = False
 
     async def check_and_notify(self, delay=2.0, manual=False):
         """检查一次最新版本；网络失败/限流一律无声跳过（手动检查时会回报结果）。"""
@@ -127,24 +194,28 @@ class Updater:
             tail = err.strip().splitlines()[-2:]
             await self.server.status("error", "更新失败：{}".format(" / ".join(tail)))
             return
-        # 新版本可能带来新依赖——重启前先装上（失败不阻塞，重启后 bootstrap 兜底）
+        # 新版本可能带来新依赖——重启前先装上（失败不阻塞，重启后 bootstrap 兜底）。
+        # 与 freshen_ytdlp 共用 _pip_lock：两个 pip 并发写环境会装出残缺的包，
+        # execv 也不能在另一个 pip 半途时重启进程（孤儿 pip 会继续改写新环境）
         await self.server.status("connecting", "正在安装新版本的依赖…")
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pip", "install",
-                "--disable-pip-version-check", "-r", str(ROOT / "requirements.txt"),
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-            )
-            await proc.wait()
-        except Exception:
-            pass
-        await self.server.status("idle", "更新完成，正在自动重启…")
-        print("[信息] 已更新到最新版本，重启进程…")
-        await asyncio.sleep(0.6)
-        try:
-            os.execv(sys.executable,
-                     [sys.executable, str(ROOT / "main.py")] + sys.argv[1:])
-        except Exception as exc:
-            # execv 失败（极少见）不能让用户以为更新丢了——代码其实已经拉下来了
-            await self.server.status(
-                "idle", "更新已下载完成，但自动重启失败（{}）——请手动关掉再重新打开程序".format(exc))
+        async with self._pip_lock:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "pip", "install",
+                    "--disable-pip-version-check", "-r", str(ROOT / "requirements.txt"),
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
+            except Exception:
+                pass
+            await self.server.status("idle", "更新完成，正在自动重启…")
+            print("[信息] 已更新到最新版本，重启进程…")
+            await asyncio.sleep(0.6)
+            try:
+                os.execv(sys.executable,
+                         [sys.executable, str(ROOT / "main.py")] + sys.argv[1:])
+            except Exception as exc:
+                # execv 失败（极少见）不能让用户以为更新丢了——代码其实已经拉下来了
+                await self.server.status(
+                    "idle", "更新已下载完成，但自动重启失败（{}）——"
+                            "请手动关掉再重新打开程序".format(exc))

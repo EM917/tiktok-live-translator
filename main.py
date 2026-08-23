@@ -76,6 +76,8 @@ def _info_dialog(message):
     """无终端可看时（双击 .app 启动）弹一个非阻塞的系统提示框；有终端只打印。"""
     global _INFO_DIALOG
     print(message)
+    if os.environ.get("CI"):
+        return   # CI/无头自动化环境：只留打印，不能弹阻塞对话框
     if _has_console() or sys.platform != "darwin":
         return   # Windows 走 Start.bat，有黑窗口能看到 print
     try:
@@ -102,7 +104,7 @@ def _fail_alert(message):
     """报告致命问题：终端打印之外，无终端时必须弹系统对话框——否则用户只会看到
     程序无声消失。"""
     print("⚠️ " + message)
-    if _has_console():
+    if os.environ.get("CI") or _has_console():
         return
     try:
         if sys.platform == "darwin":
@@ -234,13 +236,9 @@ except ImportError as exc:
 
 
 def _load_settings():
-    """settings.json：界面里改过的偏好（如目标语言）跨重启保留。损坏/缺失都静默忽略。"""
-    import json
-    try:
-        data = json.loads((ROOT / "settings.json").read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    """settings.json：界面里改过的偏好（如目标语言）跨重启保留。"""
+    from app.settings import load_settings
+    return load_settings()
 
 
 def parse_args():

@@ -4,15 +4,13 @@
 同一时间只跑一个直播间；切换房间时旧任务被取消，识别模型跨房间复用不重复加载。
 """
 import asyncio
-import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from .settings import load_settings, save_setting
 from .translator import create_translator
-
-SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
 
 # whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
 MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
@@ -46,12 +44,9 @@ class Pipeline:
         self.server.config["target_lang"] = self.target
         # 上次的直播间地址由服务端记住（浏览器 localStorage 按端口隔离，
         # 端口自动漂移时会拿不到），启动时回填给 UI
-        try:
-            saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            if isinstance(saved, dict) and saved.get("room_url"):
-                self.server.config["room_url"] = str(saved["room_url"])[:500]
-        except Exception:
-            pass
+        saved_room = load_settings().get("room_url")
+        if saved_room:
+            self.server.config["room_url"] = str(saved_room)[:500]
         self._counter = 0
         self._asr_pool = None            # 每条直播一个独立线程池，停止时整个丢弃
         self._stream_task = None
@@ -59,6 +54,7 @@ class Pipeline:
         self._transcriber = None
         self._transcriber_key = None
         self._transcriber_future = None  # 正在加载中的模型，避免重复加载
+        self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
 
     # ---- 来自 UI 的控制消息 ----
     def handle_control(self, msg):
@@ -103,23 +99,8 @@ class Pipeline:
         await self.start_stream(url)
 
     def _save_setting(self, key, value):
-        """把界面偏好写进 settings.json（重启后 main.py 读回）。写失败静默忽略。"""
-        data = {}
-        try:
-            loaded = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        except Exception:
-            pass
-        data[key] = value
-        try:
-            # 临时文件 + 原子改名：并发/中断都不会留下写坏的 settings.json
-            tmp = SETTINGS_FILE.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
-            os.replace(tmp, SETTINGS_FILE)
-        except OSError:
-            pass
+        """把界面偏好写进 settings.json（重启后 main.py 读回）。"""
+        save_setting(key, value)
 
     # ---- 直播任务管理 ----
     # 加锁的原因：多个页面/标签页可能同时连着服务，两条 start 消息并发进来时，
@@ -171,14 +152,14 @@ class Pipeline:
 
     async def _run_stream_inner(self, url):
         from .asr import create_transcriber
-        from .audio import FFmpegAudioSource
-        from .resolver import ResolveError, resolve_stream_url
-        from .segmenter import SilenceSegmenter
+        from .resolver import ResolveError, is_direct_url, resolve_stream_url
 
         await self.server.status("connecting", "正在解析直播流地址…")
         try:
             media = await resolve_stream_url(url, cookies=self.args.cookies)
+            self._resolve_fail_streak = 0
         except ResolveError as exc:
+            self._note_resolve_failure(exc)
             await self.server.status("error", str(exc))
             print("[错误] {}".format(exc))
             return
@@ -250,13 +231,72 @@ class Pipeline:
         transcriber = self._transcriber
 
         denoise = await self._ensure_denoise_model()
-        await self.server.status("connecting", "正在连接直播音频流…")
         live_note = ("已连接直播间，开始实时识别"
                      + ("（人声降噪已开启）" if denoise else ""))
-        stream_started = time.time()
+
+        # ---- 断流自动重连 ----
+        # TikTok 的流地址会过期、网络会抖动，ffmpeg 一断不等于主播下播了。
+        # 中断后重新解析地址重连；只有解析结果明确说「没在播」（kind=offline）
+        # 才真正宣布直播结束。连续多次重连都拉不到音频才放弃。
+        # 直连 .flv/.m3u8 地址无法重新解析出「是否还在播」：播过一阵后结束
+        # 就按正常收尾处理，重试预算也压到 1 次，别对着过期地址空耗。
+        direct = is_direct_url(url)
+        budget = 1 if direct else 5
+        reconnects = 0
+        while True:
+            await self.server.status("connecting", "正在连接直播音频流…")
+            got_audio, audio_secs = await self._stream_session(
+                media, transcriber, denoise, live_note, loop)
+            if audio_secs >= 30:
+                if direct:
+                    await self.server.status(
+                        "ended", "直播流已结束。可以继续翻看上面的字幕，"
+                                 "或输入新的地址。")
+                    print("[信息] 直播流已结束。")
+                    return
+                reconnects = 0        # 刚才播得好好的：重置重连预算
+
+            media = None
+            while media is None:
+                reconnects += 1
+                if reconnects > budget:
+                    await self.server.status(
+                        "error", "直播流多次中断且自动重连失败——可能直播已结束，"
+                                 "或网络不稳。请稍后点「开始翻译」重试。")
+                    print("[信息] 自动重连预算用尽，放弃。")
+                    return
+                delay = min(30, 2 ** reconnects)
+                await self.server.status(
+                    "connecting",
+                    "直播流中断，{} 秒后自动重连（第 {}/{} 次）…".format(
+                        delay, reconnects, budget))
+                await asyncio.sleep(delay)
+                try:
+                    media = await resolve_stream_url(url, cookies=self.args.cookies)
+                    self._resolve_fail_streak = 0
+                except ResolveError as exc:
+                    if exc.kind == "offline":
+                        await self.server.status(
+                            "ended", "直播已结束。可以继续翻看上面的字幕，"
+                                     "或输入新的直播间地址。")
+                        print("[信息] 直播已结束。可在网页里输入新地址继续。")
+                        return
+                    self._note_resolve_failure(exc)
+                    print("[错误] 重连解析失败: {}".format(exc))
+
+    async def _stream_session(self, media, transcriber, denoise, live_note, loop):
+        """跑一轮拉流→识别→翻译，直到流断开。返回 (是否收到过音频, 音频时长秒)。
+
+        音频时长按真实收到的帧数累计，不用墙钟——网络劣化时 ffmpeg 可能连着
+        30 秒只吐 2 秒音频，用墙钟会把这种「假连接」当成播得好好的，
+        重连预算被错误重置后放弃分支永远走不到。"""
+        from .audio import FRAME_SEC, FFmpegAudioSource
+        from .segmenter import SilenceSegmenter
+
         got_audio = False
+        audio_secs = 0.0
         queue = asyncio.Queue(maxsize=3)
-        asr_pool = ThreadPoolExecutor(max_workers=1)   # 本条直播专用，停止时随之丢弃
+        asr_pool = ThreadPoolExecutor(max_workers=1)   # 本轮会话专用，停止时随之丢弃
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
         segmenter = SilenceSegmenter()
@@ -272,12 +312,13 @@ class Pipeline:
 
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
-            nonlocal got_audio
+            nonlocal got_audio, audio_secs
             try:
                 async for frame in source.frames():
                     if not got_audio:
                         got_audio = True
                         await self.server.status("live", live_note)
+                    audio_secs += FRAME_SEC
                     for segment in segmenter.feed(frame):
                         _put(segment)
                 for segment in segmenter.flush():   # 别丢掉最后一段话
@@ -305,19 +346,24 @@ class Pipeline:
         except asyncio.CancelledError:
             await source.stop()
             raise
+        asr_pool.shutdown(wait=False)
         tail = source.stderr_tail()
         if tail:
             print("[信息] ffmpeg 输出: {}".format(tail))   # 英文技术输出只进终端，不上 UI
-        # 几秒内就断开的不是「直播结束」而是连接失败——错报成正常结束的话，
-        # 用户会以为主播下播了，不会想到去重试
-        if not got_audio or time.time() - stream_started < 15:
-            await self.server.status(
-                "error", "连接直播流失败：刚连上就断开了。可能是网络波动或直播刚刚结束"
-                         "——请稍等片刻，点「开始翻译」重试。")
-        else:
-            await self.server.status(
-                "ended", "直播已结束。可以继续翻看上面的字幕，或输入新的直播间地址。")
-        print("[信息] 直播流已结束。可在网页里输入新地址继续。")
+        return got_audio, audio_secs
+
+    def _note_resolve_failure(self, exc):
+        """连续两次「不是主播下播」的解析失败，多半是 yt-dlp 的 TikTok 提取器
+        坏了——触发后台自动升级 yt-dlp（见 updater.freshen_ytdlp）。"""
+        kind = getattr(exc, "kind", "unknown")
+        if kind in ("offline", "login"):
+            self._resolve_fail_streak = 0
+            return
+        if kind == "network":
+            return   # 断网与提取器无关：不计数也不清零，更不能拉起注定失败的 pip
+        self._resolve_fail_streak += 1
+        if self._resolve_fail_streak >= 2 and getattr(self, "updater", None) is not None:
+            asyncio.ensure_future(self.updater.freshen_ytdlp(reason="resolve-failures"))
 
     async def _model_download_progress(self, model):
         """模型加载期间轮询 HuggingFace 缓存目录的增量，把下载进度推到 UI。

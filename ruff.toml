@@ -1,0 +1,14 @@
+# 锁定 3.9 兼容承诺（main.py / 启动器都写明支持 3.9+），并抓真 bug 类问题。
+# 暂不开 isort/format，避免一次性格式 churn 淹没真实改动。
+target-version = "py39"
+line-length = 100
+
+[lint]
+select = [
+    "E",   # pycodestyle 错误
+    "F",   # pyflakes（未定义名、未用导入/变量）
+    "W",   # pycodestyle 警告
+    "B",   # bugbear（可变默认参数、循环闭包等真 bug 温床）
+]
+# E501 行宽在中文注释场景误报率高（中文字符宽度），先不强制
+ignore = ["E501"]
