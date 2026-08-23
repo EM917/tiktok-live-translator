@@ -32,6 +32,8 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 - 🎵 **Voice-focused denoising** — RNNoise neural denoising suppresses background music, tuned for streams with BGM
 - ⚡ **Automatic hardware tuning** — detects your chip (Apple Silicon GPU / NVIDIA CUDA / plain CPU) and automatically picks the best model that can still run in real time — zero-config out of the box
 - 📺 **Two display modes** — a local web UI (scrolling bilingual subtitle history + a large caption at the bottom), or a Chrome extension overlay on the TikTok page
+- 🚨 **Real-time banned-term alerts** — three-tier matching (exact / morphological variant / fuzzy) over the **recognized original text**, independent of translation, and matching across caption boundaries; edit `banned_terms.txt`
+- ⚡ **Observable latency** — a live footer readout of time-to-first-caption (P50/P95) broken down into segmentation + recognition + translation, plus an audit log recording every segment including candidates the quality filter dropped
 - 🔄 **Fault-tolerant** — auto-reconnects with a fresh stream URL when the stream drops (and can tell a network blip from the streamer actually ending); falls back to scraping the stream URL straight from the live page when yt-dlp resolution fails; drops segments automatically to stay real-time when recognition falls behind; keeps yt-dlp fresh automatically in the background
 
 ## Quick Start
@@ -226,6 +228,8 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 - 🎵 **人声降噪** —— RNNoise 神经降噪抑制背景音乐，专为带 BGM 的直播间优化
 - ⚡ **硬件自动配置** —— 检测你的芯片（Apple Silicon GPU / NVIDIA CUDA / 普通 CPU）自动选择能实时跑的最优模型，零配置开箱即用
 - 📺 **双显示端** —— 本地网页 UI（历史双语字幕 + 底部大字幕），或 Chrome 插件叠加在 TikTok 页面上
+- 🚨 **违禁词实时报警** —— 在**识别原文**上做三级匹配（精确/形态变体/模糊），完全不依赖翻译，短语被切在两段字幕之间也能命中；词表见 `banned_terms.txt`
+- ⚡ **延迟可观测** —— 界面底部实时显示「首字等待 P50/P95」及其构成（切段 + 识别 + 翻译），配套审计日志逐段记录识别原文与被过滤的候选
 - 🔄 **抗故障** —— 直播流中断自动换新地址重连（能区分网络抖动与主播真下播）；yt-dlp 解析失效时自动从直播页面直接挖流地址；识别跟不上时自动丢段保实时；后台自动保持 yt-dlp 为最新版
 
 ## 快速开始

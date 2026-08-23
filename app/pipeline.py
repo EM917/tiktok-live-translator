@@ -10,8 +10,29 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from .detector import BannedTermDetector, load_terms
 from .settings import load_settings, save_setting
+from .telemetry import Telemetry
 from .translator import create_translator
+
+ROOT = Path(__file__).resolve().parent.parent
+TERMS_FILE = ROOT / "banned_terms.txt"
+TERMS_EXAMPLE = ROOT / "banned_terms.example.txt"
+
+
+def load_detector(path=None):
+    """读取违禁词表。首次运行时从模板复制一份用户可编辑的副本——
+    模板入库、副本不入库，用户编辑不会挡住一键更新。"""
+    target = Path(path) if path else TERMS_FILE
+    if not target.exists() and target == TERMS_FILE and TERMS_EXAMPLE.exists():
+        try:
+            target.write_text(TERMS_EXAMPLE.read_text(encoding="utf-8"),
+                              encoding="utf-8")
+            print("[信息] 已生成违禁词表 {}（当前为空，按文件里的说明填写即可）"
+                  .format(target.name))
+        except OSError:
+            pass
+    return BannedTermDetector(load_terms(target))
 
 # whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
 MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
@@ -83,6 +104,14 @@ class Pipeline:
         self._loading_key = None         # 在途加载对应的配置 key（可能被取消）
         self._transcriber_future = None  # 正在加载中的模型，避免重复加载
         self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
+        self.telemetry = Telemetry()
+        self.detector = load_detector(getattr(args, "banned_terms", None))
+        self.audit = None                # 每条直播一个审计日志文件
+        self._stats_task = None
+        if self.detector.enabled:
+            print("[信息] 违禁词检测已启用：{} 个词条".format(len(self.detector.terms)))
+        else:
+            print("[信息] 违禁词表为空——编辑 banned_terms.txt 后重新「开始翻译」即可启用")
 
     # ---- 来自 UI 的控制消息 ----
     def handle_control(self, msg):
@@ -161,6 +190,12 @@ class Pipeline:
                 await task
             except asyncio.CancelledError:
                 pass
+        if self._stats_task is not None and not self._stats_task.done():
+            self._stats_task.cancel()
+            self._stats_task = None
+        if self.audit is not None:
+            self.audit.close()
+            self.audit = None
         pool, self._asr_pool = self._asr_pool, None
         if pool is not None:
             # 已排队的段直接丢弃；正在跑的那段让它自己跑完（无法安全打断），
@@ -183,9 +218,27 @@ class Pipeline:
             except Exception:
                 pass
 
+    async def _stats_loop(self, interval=10):
+        """定期把延迟分位数和丢弃计数推给界面——中控能一眼看出链路是否健康。"""
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                await self.server.broadcast({"type": "stats", **self.telemetry.snapshot()})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
     async def _run_stream_inner(self, url):
         from .asr import create_transcriber
+        from .audit import AuditLog
         from .resolver import ResolveError, is_direct_url, resolve_stream_url
+
+        if self.audit is not None:
+            self.audit.close()
+        self.audit = AuditLog(room_url=url)
+        if self._stats_task is None or self._stats_task.done():
+            self._stats_task = asyncio.ensure_future(self._stats_loop())
 
         await self.server.status("connecting", "正在解析直播流地址…")
         try:
@@ -329,12 +382,15 @@ class Pipeline:
         音频时长按真实收到的帧数累计，不用墙钟——网络劣化时 ffmpeg 可能连着
         30 秒只吐 2 秒音频，用墙钟会把这种「假连接」当成播得好好的，
         重连预算被错误重置后放弃分支永远走不到。"""
-        from .audio import FRAME_SEC, FFmpegAudioSource
+        from .audio import FRAME_SEC, SAMPLE_RATE, FFmpegAudioSource
         from .segmenter import SilenceSegmenter
 
         got_audio = False
         audio_secs = 0.0
         queue = asyncio.Queue(maxsize=3)
+        # 翻译独立成队列：翻译慢/卡住绝不能反压到识别链路上——那会让音频被丢弃，
+        # 直接变成漏词。积压时丢的是**旧的翻译任务**，音频一段都不丢。
+        trans_queue = asyncio.Queue(maxsize=4)
         asr_pool = ThreadPoolExecutor(max_workers=1)   # 本轮会话专用，停止时随之丢弃
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
@@ -344,10 +400,23 @@ class Pipeline:
             if queue.full():
                 try:
                     queue.get_nowait()
+                    self.telemetry.drop_audio()
                     print("[提示] 识别速度跟不上直播，丢弃一段音频以保持实时")
                 except asyncio.QueueEmpty:
                     pass
             queue.put_nowait(segment)
+
+        def _put_translation(job):
+            """翻译积压时丢最旧的任务：中控不需要 30 秒前那句话的中文，
+            西语原文早就显示了、违禁词也早就扫过了。"""
+            while trans_queue.full():
+                try:
+                    stale = trans_queue.get_nowait()
+                    if stale is not None:
+                        self.telemetry.drop_translation()
+                except asyncio.QueueEmpty:
+                    break
+            trans_queue.put_nowait(job)
 
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
@@ -359,29 +428,59 @@ class Pipeline:
                         await self.server.status("live", live_note)
                     audio_secs += FRAME_SEC
                     for segment in segmenter.feed(frame):
-                        _put(segment)
+                        _put((segment, time.time()))
                 for segment in segmenter.flush():   # 别丢掉最后一段话
-                    _put(segment)
+                    _put((segment, time.time()))
             finally:
                 _put(None)
 
-        async def worker():
+        async def asr_worker():
             while True:
-                segment = await queue.get()
-                if segment is None:
+                item = await queue.get()
+                if item is None:
                     break
+                segment, audio_end_ts = item
+                t0 = time.time()
                 try:
-                    text, lang = await loop.run_in_executor(
+                    result = await loop.run_in_executor(
                         asr_pool, transcriber.transcribe, segment
                     )
                 except Exception as exc:
                     print("[警告] 识别一段音频失败: {}".format(exc))
                     continue
-                if text:
-                    await self._emit(text, lang)
+                asr_ms = (time.time() - t0) * 1000.0
+                self.telemetry.asr_queue_depth = queue.qsize()
+                self.telemetry.translation_queue_depth = trans_queue.qsize()
+                segment_ms = len(segment) / 2.0 / SAMPLE_RATE * 1000.0
+                job = await self._emit_original(result, audio_end_ts, asr_ms,
+                                                segment_ms=segment_ms)
+                if job is not None:
+                    _put_translation(job)
+
+        async def translation_worker():
+            while True:
+                job = await trans_queue.get()
+                if job is None:
+                    break
+                await self._translate_and_update(job)
+
+        async def run_workers():
+            trans_task = asyncio.ensure_future(translation_worker())
+            try:
+                await asyncio.gather(reader(), asr_worker())
+            finally:
+                # 识别链路收尾后让翻译工作线程自然退出（不打断在途的那一条）
+                try:
+                    trans_queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    trans_task.cancel()
+                try:
+                    await asyncio.wait_for(trans_task, timeout=5)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    trans_task.cancel()
 
         try:
-            await asyncio.gather(reader(), worker())
+            await run_workers()
         except asyncio.CancelledError:
             await source.stop()
             raise
@@ -491,26 +590,76 @@ class Pipeline:
         print("[警告] 降噪模型不可用（下载失败或校验未过），本次不降噪")
         return None
 
-    async def _emit(self, text, lang):
-        translated = None
-        state = "skipped"
+    async def _emit_original(self, result, audio_end_ts, asr_ms, segment_ms=None):
+        """识别一出结果就立刻做两件事：扫违禁词、把西语原文推给界面。
+        两者都不等翻译——翻译是可降级的，报警和原文不是。
+        返回待翻译任务（无需翻译时返回 None）。"""
+        # 违禁词扫的是 raw_text（含被质量过滤丢掉的部分）：宁可多报，不能漏报
+        hits = []
+        if self.detector is not None and self.detector.enabled:
+            scan_text = result.raw_text or result.text
+            if scan_text:
+                hits = self.detector.scan(scan_text, ts=audio_end_ts)
+
+        self._counter += 1
+        seq = self._counter
+        if self.audit is not None:
+            self.audit.segment(seq, result, audio_end_ts, asr_ms, hits)
+
+        for hit in hits:
+            if self.audit is not None:
+                self.audit.alert(hit)
+            print("[警报] 疑似违禁词「{}」（{}）：{}".format(
+                hit["term"], hit["tier"], hit["context"][-80:]))
+            await self.server.broadcast({"type": "alert", **hit})
+
+        if not result.text:
+            return None
+
+        lang = result.language
         # 只有目标语言与检测语言完全一致才跳过翻译；zh-TW 这类带地区的目标
         # 仍要走翻译做简繁转换（whisper 只会返回裸 "zh"）
         same_lang = bool(lang) and self.target.lower() == str(lang).lower()
-        if self.translator is not None and not same_lang:
-            translated = await self.translator.translate(text, self.target,
-                                                         source=lang or "auto")
-            state = "ok" if translated else "failed"
-        self._counter += 1
+        needs_translation = self.translator is not None and not same_lang
+
+        now = time.time()
+        self.telemetry.record_asr(asr_ms, (now - audio_end_ts) * 1000.0, segment_ms)
         await self.server.broadcast({
             "type": "caption",
-            "id": self._counter,
-            "ts": time.time(),
-            "original": text,
-            "translated": translated,
-            "translate_state": state,
+            "id": seq,
+            "ts": now,
+            "original": result.text,
+            "translated": None,
+            "translate_state": "pending" if needs_translation else "skipped",
             "src_lang": lang,
             "target_lang": self.target,
+            "asr_ms": round(asr_ms),
+            "e2e_ms": round((now - audio_end_ts) * 1000.0),
+        })
+        if not needs_translation:
+            return None
+        return {"id": seq, "text": result.text, "lang": lang,
+                "target": self.target, "audio_end_ts": audio_end_ts}
+
+    async def _translate_and_update(self, job):
+        """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""
+        t0 = time.time()
+        try:
+            translated = await self.translator.translate(
+                job["text"], job["target"], source=job["lang"] or "auto")
+        except Exception as exc:
+            print("[警告] 翻译失败: {}".format(exc))
+            translated = None
+        translate_ms = (time.time() - t0) * 1000.0
+        self.telemetry.record_translation(translate_ms)
+        await self.server.broadcast({
+            "type": "caption_update",
+            "id": job["id"],
+            "translated": translated,
+            "translate_state": "ok" if translated else "failed",
+            "target_lang": job["target"],
+            "translate_ms": round(translate_ms),
+            "e2e_translated_ms": round((time.time() - job["audio_end_ts"]) * 1000.0),
         })
 
     # ---- 演示模式 ----
@@ -528,15 +677,26 @@ class Pipeline:
         while True:
             for original, translated in DEMO_SCRIPT:
                 self._counter += 1
+                seq = self._counter
+                # 与真实链路一致：先出原文，再补翻译（顺便演示 caption_update）
                 await self.server.broadcast({
                     "type": "caption",
-                    "id": self._counter,
+                    "id": seq,
                     "ts": time.time(),
                     "original": original,
-                    "translated": translated,
-                    "translate_state": "ok",
+                    "translated": None,
+                    "translate_state": "pending",
                     "src_lang": "en",
                     "target_lang": self.target,
                     "demo": True,
                 })
-                await asyncio.sleep(2.8)
+                await asyncio.sleep(0.4)
+                await self.server.broadcast({
+                    "type": "caption_update",
+                    "id": seq,
+                    "translated": translated,
+                    "translate_state": "ok",
+                    "target_lang": self.target,
+                    "translate_ms": 400,
+                })
+                await asyncio.sleep(2.4)

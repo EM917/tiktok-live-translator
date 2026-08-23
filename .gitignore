@@ -6,3 +6,8 @@ __pycache__/
 .DS_Store
 # RNNoise 模型由 setup.sh / setup.ps1 下载（来自 GregorR/rnnoise-models）
 models/
+# 用户自己的违禁词表（模板见 banned_terms.example.txt）——不入库，
+# 以免用户编辑后工作区变脏、挡住一键更新
+banned_terms.txt
+# 审计日志
+logs/

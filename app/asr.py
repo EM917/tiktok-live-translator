@@ -8,8 +8,31 @@
     误识别）的段直接丢弃，宁缺毋滥。
 """
 import string
+from dataclasses import dataclass, field
+from typing import List
 
 import numpy as np
+
+
+@dataclass
+class ASRResult:
+    """一段音频的识别结果。
+
+    text     —— 通过质量过滤的文本，用于字幕展示；
+    raw_text —— 含被过滤掉的部分，**违禁词检测用这个**：漏报的代价远高于误报，
+                宁可扫到一句置信度低的疑似违禁词，也不要因为过滤而漏掉；
+    rejected —— 被丢弃的候选及原因，用于审计（事后能区分「没听出来」和
+                「听出来了但被过滤」——这是两个完全不同的问题）。
+    """
+
+    text: str = ""
+    language: str = ""
+    raw_text: str = ""
+    rejected: List[dict] = field(default_factory=list)
+
+    def __iter__(self):
+        """兼容旧的 `text, lang = transcribe(...)` 解包写法。"""
+        return iter((self.text, self.language))
 
 # whisper 在静音/纯音乐段上常见的幻觉输出，直接丢弃
 _HALLUCINATIONS = {
@@ -51,27 +74,41 @@ class _FilterMixin:
     def _fold(self, seg_iter, detected_lang):
         parts = []
         logprobs = []
+        rejected = []
+        all_parts = []          # 含被过滤掉的，供违禁词检测与审计使用
         for no_speech, comp_ratio, avg_lp, text in seg_iter:
-            if no_speech is not None and no_speech > 0.85:
-                continue
-            if comp_ratio is not None and comp_ratio > 2.4:   # 复读机式重复
-                continue
-            if avg_lp is not None and avg_lp < -1.6:          # 置信度过低（背景音乐）
-                continue
             text = text.strip()
+            if text:
+                all_parts.append(text)
+            reason = None
+            if no_speech is not None and no_speech > 0.85:
+                reason = "no_speech"
+            elif comp_ratio is not None and comp_ratio > 2.4:   # 复读机式重复
+                reason = "repetition"
+            elif avg_lp is not None and avg_lp < -1.6:          # 置信度过低（背景音乐）
+                reason = "low_confidence"
+            if reason:
+                if text:
+                    rejected.append({"text": text, "reason": reason})
+                continue
             if text:
                 parts.append(text)
                 if avg_lp is not None:
                     logprobs.append(avg_lp)
         text = " ".join(parts).strip()
+        raw_text = " ".join(all_parts).strip()
         normalized = text.lower().strip(string.punctuation + string.whitespace + "！。，、？")
         if normalized.replace(" ", "") in {h.replace(" ", "") for h in _HALLUCINATIONS}:
             mean_logprob = sum(logprobs) / len(logprobs) if logprobs else -10.0
             if mean_logprob < -0.6:
-                return "", detected_lang
+                if text:
+                    rejected.append({"text": text, "reason": "hallucination"})
+                return ASRResult(text="", language=detected_lang,
+                                 raw_text=raw_text, rejected=rejected)
         if text:
             self._context = (self._context + " " + text).strip()[-400:]
-        return text, detected_lang
+        return ASRResult(text=text, language=detected_lang,
+                         raw_text=raw_text, rejected=rejected)
 
 
 class Transcriber(_FilterMixin):

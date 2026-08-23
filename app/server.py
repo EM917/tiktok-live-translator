@@ -34,6 +34,9 @@ class CaptionServer:
         self.port = port
         self.clients = set()
         self.history = deque(maxlen=100)
+        # 违禁词警报必须跨刷新/重连留存：中控没看到就等于漏报，
+        # 不能因为页面重载而消失
+        self.alerts = deque(maxlen=50)
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
         self._runner = None
@@ -94,6 +97,9 @@ class CaptionServer:
         await ws.prepare(request)
         try:
             await ws.send_json({"type": "hello", "config": self.config})
+            # 先补发历史警报（刷新页面不能丢报警），再回放字幕
+            for alert in list(self.alerts):
+                await ws.send_json(dict(alert, replay=True))
             # 回放完成后才加入广播集合，避免新字幕插进回放序列中间
             for payload in replay_payloads(self.history):
                 await ws.send_json(payload)
@@ -124,6 +130,15 @@ class CaptionServer:
     async def broadcast(self, msg):
         if msg.get("type") == "caption" and not msg.get("replay"):
             self.history.append(msg)
+        elif msg.get("type") == "caption_update":
+            # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文
+            for item in reversed(self.history):
+                if item.get("id") == msg.get("id"):
+                    item["translated"] = msg.get("translated")
+                    item["translate_state"] = msg.get("translate_state")
+                    break
+        elif msg.get("type") == "alert":
+            self.alerts.append(msg)
         elif msg.get("type") == "status":
             self.config["status"] = {"state": msg.get("state"), "detail": msg.get("detail", "")}
         elif msg.get("type") == "config":

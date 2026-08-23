@@ -273,6 +273,9 @@ def parse_args():
                    help="RNNoise 人声降噪，抑制背景音乐/噪声（auto=模型文件存在即开启，默认）")
     p.add_argument("--cookies", default=None,
                    help="可选：传给 yt-dlp 的 cookies.txt 路径（地区受限的直播间可能需要）")
+    p.add_argument("--banned-terms", default=None, dest="banned_terms",
+                   help="违禁词表路径，默认项目目录下的 banned_terms.txt"
+                        "（首次运行会从 banned_terms.example.txt 生成）")
     p.add_argument("--demo", action="store_true",
                    help="演示模式：不连直播，用内置台词驱动 UI（用来验证界面和浏览器插件）")
     p.add_argument("--doctor", action="store_true",
