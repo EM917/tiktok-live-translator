@@ -28,12 +28,19 @@ def normalize(text):
 
     西语 ASR 的重音符号很不稳定（sí/si、está/esta），必须先抹平；
     否则词表里写 "prohibido" 就匹配不到识别成 "prohíbido" 的输出。
+
+    但 **ñ 要保留**：它在西语里是独立字母，不是 n 加个符号。把它并成 n 会
+    制造语义完全不同的碰撞——最典型的是 año（年，高频口语）↔ ano（粗俗词，
+    很可能出现在合规词表里），主播每说一次「一年」就误报一次，几轮下来中控
+    就不再相信报警了。Whisper 对 ñ 的输出相当稳定，保留它几乎不损召回。
     """
     if not text:
         return ""
+    text = text.lower().replace("ñ", "\x00")     # 占位，躲开下面的 NFD 分解
     text = unicodedata.normalize("NFD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = _PUNCT_RE.sub(" ", text.lower())
+    text = text.replace("\x00", "ñ")
+    text = _PUNCT_RE.sub(" ", text)
     return _SPACE_RE.sub(" ", text).strip()
 
 

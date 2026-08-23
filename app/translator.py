@@ -2,6 +2,7 @@
 Google 网页免费接口；也可显式指定 gemma / google / claude / openai / none。"""
 import json
 import os
+from collections import OrderedDict
 
 TRANSLATOR_CHOICES = ["auto", "gemma", "google", "claude", "openai", "none"]
 
@@ -11,6 +12,43 @@ LANG_NAMES = {
     "fr": "French", "de": "German", "ru": "Russian", "pt": "Portuguese",
     "vi": "Vietnamese", "th": "Thai", "id": "Indonesian", "ar": "Arabic",
 }
+
+
+class CachedTranslator:
+    """给任意翻译引擎套一层重复句缓存。
+
+    带货直播的话术重复率极高（"envío gratis"、"solo por hoy"、口头禅、
+    以及主播念同一段广告词），命中即 0ms 返回。缓存只存成功结果——失败
+    不缓存，否则一次网络抖动会把这句话永久钉死成「翻译失败」。
+    """
+
+    def __init__(self, inner, capacity=512):
+        self.inner = inner
+        self.capacity = capacity
+        self._cache = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+
+    @property
+    def name(self):
+        return self.inner.name
+
+    async def translate(self, text, target, source="auto"):
+        key = (text.strip(), target, source)
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            self.hits += 1
+            return self._cache[key]
+        self.misses += 1
+        out = await self.inner.translate(text, target, source=source)
+        if out:
+            self._cache[key] = out
+            if len(self._cache) > self.capacity:
+                self._cache.popitem(last=False)
+        return out
+
+    async def close(self):
+        await self.inner.close()
 
 
 class BaseTranslator:
@@ -169,32 +207,34 @@ class OllamaGemmaTranslator(BaseTranslator):
         self.model = os.environ.get("OLLAMA_TRANSLATE_MODEL", "translategemma:4b")
 
     def _prompt(self, text, target, source):
-        tgt_code = _GEMMA_CODES.get(target, target)
+        """短指令。实测（M 系列 + translategemma:4b，6 句带货话术中位数）：
+        原来 92 token 的长指令总耗时 494ms（预填充 244ms），换成这版 35 token
+        的短指令后 344ms（预填充 84ms），译文质量无差别——指令每句都要重新
+        预填充一遍，是纯粹的固定成本。再往下砍收益趋零（预填充有 ~80ms 地板），
+        砍成 "es→zh:" 这种标签式反而会让模型把提示词回显出来。"""
         tgt_name = LANG_NAMES.get(target, target)
         if source and source != "auto":
-            src_code = _GEMMA_CODES.get(source, source)
             src_name = LANG_NAMES.get(source, source)
-            head = (
-                "You are a professional {sn} ({sc}) to {tn} ({tc}) translator. "
-                "Your goal is to accurately convey the meaning and nuances of the original {sn} text "
-                "while adhering to {tn} grammar, vocabulary, and cultural sensitivities. "
-                "Produce only the {tn} translation, without any additional explanations or commentary. "
-                "Please translate the following {sn} text into {tn}:"
-            ).format(sn=src_name, sc=src_code, tn=tgt_name, tc=tgt_code)
+            head = ("Translate this {sn} text into {tn}. "
+                    "Output only the translation.").format(sn=src_name, tn=tgt_name)
         else:
-            head = (
-                "You are a professional translator into {tn} ({tc}). "
-                "Produce only the {tn} translation, without any additional explanations or commentary. "
-                "Please translate the following text into {tn}:"
-            ).format(tn=tgt_name, tc=tgt_code)
-        return head + "\n\n\n" + text
+            head = ("Translate this text into {tn}. "
+                    "Output only the translation.").format(tn=tgt_name)
+        return head + "\n\n" + text
+
+    # 选项必须逐次完全一致：Ollama 一旦发现 options 变了就会重新加载模型，
+    # 实测会带来 ~4 秒停顿。所以这里定成常量，不做动态调整。
+    _OPTIONS = {"temperature": 0, "num_predict": 200}
 
     async def translate(self, text, target, source="auto"):
         body = {
             "model": self.model,
             "prompt": self._prompt(text, target, source),
             "stream": False,
-            "options": {"temperature": 0},
+            "options": self._OPTIONS,
+            # 常驻显存：默认空闲 5 分钟就卸载，主播放一段音乐回来后
+            # 第一句要多等约 5 秒重新载入
+            "keep_alive": os.environ.get("OLLAMA_KEEP_ALIVE", "30m"),
         }
         try:
             session = await self.session()
@@ -222,17 +262,20 @@ def _ollama_has_gemma():
 
 
 def create_translator(name):
+    """返回带重复句缓存的翻译引擎（none 除外）。"""
     if name == "auto":
         name = "gemma" if _ollama_has_gemma() else "google"
         print("[信息] 翻译引擎 auto → {}".format(name))
-    if name == "gemma":
-        return OllamaGemmaTranslator()
-    if name == "google":
-        return GoogleWebTranslator()
-    if name == "claude":
-        return ClaudeTranslator()
-    if name == "openai":
-        return OpenAITranslator()
     if name == "none":
         return None
-    raise ValueError("未知的翻译引擎: " + str(name))
+    if name == "gemma":
+        inner = OllamaGemmaTranslator()
+    elif name == "google":
+        inner = GoogleWebTranslator()
+    elif name == "claude":
+        inner = ClaudeTranslator()
+    elif name == "openai":
+        inner = OpenAITranslator()
+    else:
+        raise ValueError("未知的翻译引擎: " + str(name))
+    return CachedTranslator(inner)

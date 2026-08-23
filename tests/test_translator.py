@@ -68,3 +68,80 @@ def test_cooldown_expires(monkeypatch):
     tr._cooldown_until = time.time() - 1     # 冷却已过期
     assert asyncio.run(tr.translate("ok", "zh-CN")) == "好"
     assert fake.calls == 1
+
+
+# ---- 重复句缓存：带货直播话术重复率极高，命中即 0ms ----
+
+class CountingTranslator:
+    name = "counting"
+
+    def __init__(self, out="译文"):
+        self.calls = 0
+        self.out = out
+
+    async def translate(self, text, target, source="auto"):
+        self.calls += 1
+        return self.out
+
+    async def close(self):
+        pass
+
+
+def test_cache_returns_same_result_without_calling_engine():
+    from app.translator import CachedTranslator
+    inner = CountingTranslator()
+    tr = CachedTranslator(inner)
+    assert asyncio.run(tr.translate("envío gratis", "zh-CN", source="es")) == "译文"
+    assert asyncio.run(tr.translate("envío gratis", "zh-CN", source="es")) == "译文"
+    assert inner.calls == 1                      # 第二次没打引擎
+    assert (tr.hits, tr.misses) == (1, 1)
+
+
+def test_cache_key_includes_target_and_source():
+    from app.translator import CachedTranslator
+    inner = CountingTranslator()
+    tr = CachedTranslator(inner)
+    asyncio.run(tr.translate("hola", "zh-CN", source="es"))
+    asyncio.run(tr.translate("hola", "en", source="es"))      # 目标语言不同
+    asyncio.run(tr.translate("hola", "zh-CN", source="auto"))  # 源语言不同
+    assert inner.calls == 3
+
+
+def test_failures_are_not_cached():
+    """失败不能进缓存——否则一次网络抖动会把这句话永久钉成「翻译失败」。"""
+    from app.translator import CachedTranslator
+
+    class FlakyTranslator(CountingTranslator):
+        async def translate(self, text, target, source="auto"):
+            self.calls += 1
+            return None if self.calls == 1 else "成功了"
+
+    inner = FlakyTranslator()
+    tr = CachedTranslator(inner)
+    assert asyncio.run(tr.translate("hola", "zh-CN")) is None
+    assert asyncio.run(tr.translate("hola", "zh-CN")) == "成功了"   # 会重试
+
+
+def test_cache_evicts_oldest_beyond_capacity():
+    from app.translator import CachedTranslator
+    inner = CountingTranslator()
+    tr = CachedTranslator(inner, capacity=2)
+    for word in ("a", "b", "c"):
+        asyncio.run(tr.translate(word, "zh-CN"))
+    asyncio.run(tr.translate("a", "zh-CN"))       # a 已被挤出
+    assert inner.calls == 4
+
+
+def test_gemma_prompt_is_short():
+    """长指令每句都要重新预填充，是纯固定成本：实测 92→35 token 省了 150ms。"""
+    from app.translator import OllamaGemmaTranslator
+    p = OllamaGemmaTranslator()._prompt("hola", "zh-CN", "es")
+    head = p.split("\n\n")[0]
+    assert len(head.split()) <= 15
+    assert "Spanish" in head and "Simplified Chinese" in head
+
+
+def test_gemma_options_are_constant():
+    """options 逐次必须完全一致——变了 Ollama 会重载模型（实测约 4 秒停顿）。"""
+    from app.translator import OllamaGemmaTranslator
+    assert OllamaGemmaTranslator._OPTIONS == {"temperature": 0, "num_predict": 200}

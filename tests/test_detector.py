@@ -114,3 +114,18 @@ def test_exact_tier_does_not_substring_match():
     d = det(["cura"])
     assert d.scan("la curacion natural del cuerpo", ts=100) == []
     assert d.scan("esto cura todo", ts=200)          # 整词出现才命中
+
+
+def test_enye_is_not_folded_into_n():
+    """ñ 是西语独立字母，不能并成 n——año（年）↔ ano（粗俗词）这类碰撞
+    会让高频口语反复误报，几轮下来中控就不信报警了。"""
+    assert normalize("año") == "año"
+    assert normalize("ano") == "ano"
+    assert normalize("niño") == "niño"
+    # 其它重音照常抹平（ASR 的重音很不稳定）
+    assert normalize("está sí") == "esta si"
+    assert normalize("pingüino") == "pinguino"
+
+    d = det(["ano"])
+    assert d.scan("hace un año que vendo esto", ts=100) == []   # 不再误报
+    assert d.scan("dijo la palabra ano", ts=200)                # 真出现才报

@@ -45,6 +45,8 @@
   var pendingStart = null;   // 已发出但服务器还没回执的「开始」指令（重连后补发）
   var versionNoticeTimer = null;
   var liveBarId = null;      // 底部大字幕当前显示的是哪一条（译文回来要就地替换）
+  // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
+  var cardsById = {};
 
   // ---- 设置 ----
   // 只有用户显式调过字号才覆盖 CSS 默认值（否则会压掉移动端媒体查询的 26px）
@@ -77,6 +79,8 @@
   clearBtn.addEventListener("click", function () {
     var caps = historyEl.querySelectorAll(".cap");
     for (var i = 0; i < caps.length; i++) caps[i].remove();
+    cardsById = {};              // 卡片没了，id 映射也要清，否则一直涨
+    liveBarId = null;
     liveBar.classList.add("hidden");
   });
 
@@ -357,9 +361,6 @@
       }
     }
   }
-
-  // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
-  var cardsById = {};
 
   function renderCaption(msg) {
     if (!msg.replay) trackTranslateHealth(msg);
