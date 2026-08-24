@@ -55,6 +55,21 @@ class AuditLog:
             "hits": hits,
         })
 
+    def translation(self, seq, translated, translate_ms, ok):
+        """译文是后到的，单独记一条，按 seq 与上面的 segment 对应。
+
+        不合并进 segment 是因为 segment 必须在识别一出来就落盘——报警证据
+        不能等翻译。但审计只有西语原文是残的：事后复查一条报警时，中控要看
+        的是「这句被翻成了什么」。翻译失败也记，否则日志里会静默缺一条。"""
+        self._write({
+            "type": "translation",
+            "seq": seq,
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "translated": translated,
+            "translate_ms": round(translate_ms, 1),
+            "ok": bool(ok),
+        })
+
     def dropped_audio(self, queue_depth=None):
         """识别跟不上时丢掉的音频段。漏报的第四种成因——这一段压根没进 ASR，
         不记下来事后就无法归因。"""

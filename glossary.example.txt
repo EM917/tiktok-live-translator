@@ -22,7 +22,10 @@
 Bella All Natural | Bella | Bella Natural | Bella al Natural => Bella All Natural  # 品牌名保留原文，不要译成「美丽全天然」
 
 # ==================== 招牌产品（主播高频口语）====================
-el detox | extreme detox | el deto | detox de mango | detox de papaya => 排毒粉  # Extreme Detox Powder，冲剂
+el detox | extreme detox | el deto | detox de mango | detox de papaya | la limpieza | la limpiecita => 排毒粉  # Extreme Detox Powder，冲剂
+# ↑ la limpieza 是她对这款的口语叫法。不加的话会被直译成「清洁」：实录里
+#   "ya pagó la limpieza por separado" 译成了「单独支付了清洁费用」——凭空
+#   变出一笔服务费；"me paso a la limpieza" 译成了「我现在去清洗」。
 las gotitas | las gotas | goticas | D3 K2 | de tres ka dos => D3 K2 维生素滴剂  # 每日 20 滴，舌下含服；夜间版加洋甘菊
 la moringa | moringa | el jugo de moringa | morenga | morinca => 辣木  # 有果汁 / 胶囊 / 粉三种剂型
 el cafecito | skinny iced coffee | el skinny | esquini | eskini => 瘦身冰咖啡  # 招牌线，多口味
@@ -75,7 +78,7 @@ se agotó | agotado | se acabó | sold out => 售罄
 el carrito | carrito naranja | el carrito amarillo => 小黄车
 dale al carrito | denle al carrito | pícale al carrito => 点小黄车下单
 el número uno | el número dos | el primero del carrito => 小黄车第几个链接
-la orden | su orden | el pedido => 订单
+la orden | su orden | sus órdenes | sus ordenes | tus órdenes | el pedido => 订单
 días hábiles | de 3 a 5 días hábiles => 工作日
 número de rastreo | el tracking | número de seguimiento => 物流单号
 
@@ -103,3 +106,34 @@ antes de dormir | en la noche => 睡前
 en la mañana | por la mañana => 早上
 
 # ==================== 在下面补充你们自己的词 ====================
+
+# ---- 以下来自 2026-08-24 一场实录的逐句复核（37 处确认错误）----
+
+# 「做特价」。只收动词框架，不收裸的 en especial——后者在西语里同时保有
+# 「尤其」的通用义（en especial las gotas de noche），裸词会误伤。
+# 实录："Ahorita todos los tenemos en especial, chicos" 被译成「特别是对于年轻人」，
+# 一句全场特价的价格承诺就此消失。
+lo tenemos en especial | los tenemos en especial | está en especial | están en especial | en especialito => 在做特价
+
+# 金额门槛，不是件数。实录："una orden de 30" 被译成「订购 30 瓶」——单品才 $21，
+# 门槛被谎报了十几倍。
+# 右侧写成「下单满（金额，美元）」是实测选出来的：写「订单满（美元）」模型照旧
+# 输出「订购 30 支」，写「订单金额满」会掉成「30 元」。带上「金额」和「美元」
+# 两个词才稳定把数字读成钱。变体必须带动词，裸的 orden de 命中率低且易误伤。
+hacen una orden de | haces una orden de | hagan una orden de | con una orden de | una orden de => 下单满（金额，美元）
+
+# 对观众的称呼，与年龄无关。实录里被译成「年轻人」，凭空捏造了一个人群定向。
+chicos | chicas | muchachos | mi gente => 家人们
+
+# 滴剂分日夜两版，是二选一的产品款式，不是服用时间。
+# 实录："puedes elegir entre día o noche" 被译成「可以选择白天或晚上使用」。
+entre día o noche | de día o de noche | versión de día | versión de noche => 日间版还是夜间版
+las gotas de día | gotitas de día => 日间版滴剂
+las gotas de noche | gotitas de noche => 夜间版滴剂
+
+# 咖啡口味。horchata 是墨西哥米浆，不是杏仁奶；hongos 是三菌复配的蘑菇咖啡，
+# 不能标成「灵芝」（上面第 44 行的灵芝是成分条目，不是商品名）；nuez 在这条
+# 产品线里是碧根果。实录里 hongos 被吞掉、错成了「杏仁奶口味」。
+la horchata | horchata | de horchata => 墨西哥米浆
+el de hongos | de hongos | café de hongos | mushroom coffee => 蘑菇咖啡
+el de nuez | de nuez | café de nuez => 碧根果

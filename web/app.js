@@ -30,6 +30,11 @@
   var healthBar = document.getElementById("health-bar");
   var watchState = document.getElementById("watch-state");
   var watchDesc = document.getElementById("watch-desc");
+  var scBox = document.getElementById("selfcheck");
+  var scHead = document.getElementById("sc-head");
+  var scSummary = document.getElementById("sc-summary");
+  var scToggle = document.getElementById("sc-toggle");
+  var scList = document.getElementById("sc-list");
 
   var STATUS_TEXT = {
     idle: "待机",
@@ -258,6 +263,7 @@
         clearBtn.click();
         if (msg.config) {
           if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
+          if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
           if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
@@ -315,6 +321,9 @@
         break;
       case "watchlist":
         renderWatchlist(msg);
+        break;
+      case "selfcheck":
+        renderSelfcheck(msg);
         break;
     }
   }
@@ -551,6 +560,64 @@
       watchState.className = "watch-state off";
       watchDesc.textContent = "当前词表为空，本工具不会发出任何违禁词报警。";
     }
+  }
+
+  // 自检结果。有失败项时默认展开——「功能悄悄坏了」必须让人一眼看到，
+  // 全绿时收起来不打扰
+  var ICONS = { ok: "✅", warn: "⚠️", fail: "❌" };
+  var scLastSig = null;   // 结论没变就别动展开状态
+
+  function renderSelfcheck(msg) {
+    if (!scBox || !msg.checks) return;
+    var sum = msg.summary || {};
+    scBox.classList.remove("hidden");
+    scHead.classList.toggle("has-fail", sum.fail > 0);
+    scHead.classList.toggle("has-warn", !sum.fail && sum.warn > 0);
+    if (sum.fail) {
+      scSummary.textContent = "❌ 自检发现 " + sum.fail + " 项功能未生效";
+    } else if (sum.warn) {
+      scSummary.textContent = "⚠️ 自检通过，" + sum.warn + " 项提醒";
+    } else {
+      scSummary.textContent = "✅ 自检全部通过（" + sum.total + " 项）";
+    }
+    scList.innerHTML = "";
+    msg.checks.forEach(function (c) {
+      var li = document.createElement("li");
+      li.className = "sc-item " + c.level;
+      var name = document.createElement("span");
+      name.className = "sc-name";
+      name.textContent = (ICONS[c.level] || "") + " " + c.name;
+      var detail = document.createElement("span");
+      detail.className = "sc-detail";
+      detail.textContent = c.detail;
+      if (c.fix) {
+        var fix = document.createElement("span");
+        fix.className = "sc-fix";
+        fix.textContent = "→ " + c.fix;
+        detail.appendChild(fix);
+      }
+      li.appendChild(name);
+      li.appendChild(detail);
+      scList.appendChild(li);
+    });
+    // 只有结论真的变了才自动展开/收起。重连会重放一次 hello，
+    // 那时若无条件重置，正在看明细的人会被收起来
+    var sig = sum.fail + "/" + sum.warn + "/" + sum.total;
+    if (sig !== scLastSig) {
+      scLastSig = sig;
+      setSelfcheckOpen(sum.fail > 0);
+    }
+  }
+
+  function setSelfcheckOpen(open) {
+    scList.classList.toggle("hidden", !open);
+    scToggle.textContent = open ? "收起" : "展开";
+  }
+
+  if (scHead) {
+    scHead.addEventListener("click", function () {
+      setSelfcheckOpen(scList.classList.contains("hidden"));
+    });
   }
 
   function pad(n) { return (n < 10 ? "0" : "") + n; }
