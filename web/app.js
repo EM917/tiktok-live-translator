@@ -30,6 +30,9 @@
   var healthBar = document.getElementById("health-bar");
   var watchState = document.getElementById("watch-state");
   var watchDesc = document.getElementById("watch-desc");
+  var fixCmd = document.getElementById("fix-command");
+  var fixCmdText = document.getElementById("fix-command-text");
+  var fixCmdCopy = document.getElementById("fix-command-copy");
   var scBox = document.getElementById("selfcheck");
   var scHead = document.getElementById("sc-head");
   var scSummary = document.getElementById("sc-summary");
@@ -345,6 +348,16 @@
     stopBtn.classList.toggle("hidden", !active);
     startBtn.disabled = state === "connecting";
 
+    // 附带的命令：程序自己已经帮不上忙时，至少让用户有一条能照做的路
+    if (fixCmd) {
+      if (msg.command) {
+        fixCmdText.textContent = msg.command;
+        fixCmd.classList.remove("hidden");
+      } else {
+        fixCmd.classList.add("hidden");
+      }
+    }
+
     var detail = msg.detail || "";
     if (detail) {
       statusBanner.textContent = detail;
@@ -618,6 +631,33 @@
     scHead.addEventListener("click", function () {
       setSelfcheckOpen(scList.classList.contains("hidden"));
     });
+  }
+
+  if (fixCmdCopy) {
+    fixCmdCopy.addEventListener("click", function () {
+      var text = fixCmdText.textContent;
+      var done = function () {
+        fixCmdCopy.textContent = "已复制";
+        setTimeout(function () { fixCmdCopy.textContent = "复制"; }, 2000);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {
+          selectCommand();   // 剪贴板被拒（非 https 等）：至少帮用户选中
+        });
+      } else {
+        selectCommand();
+      }
+    });
+  }
+
+  function selectCommand() {
+    var range = document.createRange();
+    range.selectNodeContents(fixCmdText);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    fixCmdCopy.textContent = "已选中，按 ⌘C";
+    setTimeout(function () { fixCmdCopy.textContent = "复制"; }, 3000);
   }
 
   function pad(n) { return (n < 10 ? "0" : "") + n; }

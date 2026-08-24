@@ -221,6 +221,7 @@ The current version is shown in the page footer.
 
 ## FAQ
 
+- **The update button says something is blocking it** — the message now names the files and shows a complete command with your actual project path, plus a Copy button; paste it into Terminal and you are done. If you are on a build older than v0.10.4, that machine cannot fix itself — the repair ships *in* an update, and the update is what is blocked. Run `git pull --ff-only` in the project folder once and it recovers.
 - **Everything got slow and audio started backing up** — check `ollama ps`. Ollama keeps a model in VRAM for 30 minutes after its last use, so switching translation tiers used to leave the previous model squatting there; combined with Whisper large-v3 that can exhaust a 16–18 GB machine and push it into swapping, which shows up as slower recognition and a growing backlog banner. The app now unloads the tiers it is not using at startup. If you hit it on an older build, `ollama stop <model>` frees it immediately.
 - **It can't get the stream but you can watch the room in your browser** — this used to be common and should now be rare. yt-dlp reports a blocked TikTok extractor as "the channel is not currently live", which is simply false, and that was the only thing the app had to go on. Since v0.10.0 it tries four independent routes: TikTok's own live API (which does not involve yt-dlp at all and answers anonymously), yt-dlp, yt-dlp borrowing the TikTok session already in your browser, and the live page itself. **Being logged into TikTok in Chrome/Safari helps but is usually not required**, and there is no file to export; cookies stay between your machine and TikTok. The app also no longer claims the streamer is offline unless TikTok explicitly says the room ended — if every route failed it says so and suggests retrying, because a temporary block is the usual cause. You can still pin a browser with `--cookies-browser safari` or supply `--cookies cookies.txt`.
 - **First "Start" stuck downloading the recognition model** — it's downloading from Hugging Face (large-v3 is about 3GB); progress is shown on the page, and it only happens once.
@@ -461,6 +462,7 @@ flowchart TD
 
 ## 常见问题
 
+- **一键更新提示有东西挡着** —— 现在提示会写清是哪几个文件，并给出一条**带你机器上真实路径**的完整命令和「复制」按钮，粘进「终端」执行即可。如果那台机器还停在 v0.10.4 之前的版本，它**没法自己修好**——修复是随更新一起送达的，而挡住的正是更新；在项目文件夹里手动跑一次 `git pull --ff-only` 就能恢复。
 - **整体变慢、音频开始积压** —— 先看 `ollama ps`。Ollama 会在模型最后一次使用后把它在显存里留 30 分钟，所以换翻译档位时旧模型会继续霸着显存；和 Whisper large-v3 叠在一起足以把 16–18 GB 的机器撑到换页，表现就是识别变慢、界面弹出积压提示。现在程序启动时会把没在用的档位卸掉。老版本上遇到的话，`ollama stop <模型名>` 可以立刻释放。
 - **提示没能获取到直播流，但你在浏览器里看得到** —— 以前很常见，现在应该很少了。根因是 yt-dlp 的 TikTok 提取器一被挡就报「主播未开播」，那句话是错的，而程序以前只能听它的。v0.10.0 起改成四条互相独立的路：TikTok 官方直播接口（完全不经过 yt-dlp，匿名就能用）、yt-dlp、yt-dlp 借用你浏览器里的 TikTok 登录态、直播页面本身。**平时在 Chrome/Safari 里登录过 TikTok 会有帮助，但通常已经不是必需**，也不用导出任何文件；cookie 只在本机与 TikTok 之间使用。另外程序不再替 TikTok 断言主播没在播——只有接口明确说房间已结束才这么讲，四条路都失败时会如实说「没拿到」并建议过会儿再试，因为临时被挡是最常见的原因。仍可用 `--cookies-browser safari` 指定浏览器，或 `--cookies cookies.txt` 自带凭据。
 - **首次点「开始翻译」卡在下载识别模型** —— 正在从 Hugging Face 下载（large-v3 约 3GB），页面上会显示进度，只需一次。

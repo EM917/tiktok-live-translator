@@ -185,6 +185,17 @@ class Updater:
         finally:
             self._applying = False
 
+    def _manual_command(self, discard=False):
+        """一条可以原样粘进终端的完整命令，路径是这台机器上的真实路径。
+
+        不写成「请自行 git pull」——那句话假设用户知道项目在哪、知道要先 cd。
+        真实案例里，一台机器就因为这句话卡在旧版本上，而它需要的正是能修好
+        这个判断的那次更新。"""
+        path = str(ROOT)
+        if discard:
+            return 'cd "{}" && git checkout -- . && git pull --ff-only'.format(path)
+        return 'cd "{}" && git pull --ff-only'.format(path)
+
     async def _apply_inner(self):
         if not self.latest.get("can_auto"):
             await self.server.status(
@@ -200,7 +211,10 @@ class Updater:
         # 报错，那时再把 git 的原话转述给用户。
         code, out, _ = await self._git("status", "--porcelain", "--untracked-files=no")
         if code != 0:
-            await self.server.status("error", "git 不可用，无法自动更新，请手动 git pull")
+            await self.server.status(
+                "idle", "这台电脑上找不到 git，程序没法自己更新。"
+                        "可以到 GitHub 下载新版压缩包，或者装好 git 后执行：",
+                command=self._manual_command())
             return
         if out.strip():
             # porcelain 是「两位状态 + 空格 + 文件名」，而未暂存修改的第一位
@@ -210,13 +224,18 @@ class Updater:
             await self.server.status(
                 "idle",                      # 只是没更新，程序本身好好的，别报「出错了」
                 "本次没有自动更新：这几个程序文件被改过，直接更新会覆盖掉它们——{}。"
-                "如果不是你有意改的，把它们删掉或改回去再点一次「一键更新」即可。"
-                .format("、".join(files) or "（若干文件）"))
+                "如果不是你有意改的，复制下面这行到「终端」里执行，"
+                "就能放弃这些改动并完成更新："
+                .format("、".join(files) or "（若干文件）"),
+                command=self._manual_command(discard=True))
             return
         code, _, err = await self._git("pull", "--ff-only")
         if code != 0:
             tail = err.strip().splitlines()[-2:]
-            await self.server.status("error", "更新失败：{}".format(" / ".join(tail)))
+            await self.server.status(
+                "idle", "更新没能完成（{}）。复制下面这行到「终端」里执行通常就能解决："
+                        .format(" / ".join(tail)),
+                command=self._manual_command())
             return
         # 新版本可能带来新依赖——重启前先装上（失败不阻塞，重启后 bootstrap 兜底）。
         # 与 freshen_ytdlp 共用 _pip_lock：两个 pip 并发写环境会装出残缺的包，
