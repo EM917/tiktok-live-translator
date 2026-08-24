@@ -109,6 +109,22 @@ async def check_asr(args):
     cached = _model_cached(model, rec["backend"])
     detail = "{} + {}（{}）".format(rec["backend"], model,
                                    "模型已下载" if cached else "首次开播需先下载模型")
+
+    # Apple Silicon 却在用 CPU 后端 = 这台机器的能力只发挥了一小部分。
+    # 实测（hwdetect）CPU 跑 turbo 的 RTF 是 0.99——勉强跟得上，跑久了必然积压，
+    # 而且只能用较小的模型。以前这里只如实报「ct2 + large-v3-turbo」，不说
+    # 「你本可以快一倍」，用户看不出有什么不对。一台 M4 就这样一直跑在慢路径上。
+    try:
+        from .hwdetect import detect
+        info = detect()
+    except Exception:
+        info = {}
+    if info.get("apple_silicon") and rec["backend"] != "mlx":
+        return _check("语音识别", WARN,
+                      "这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）"
+                      "——慢一倍以上，长时间监听容易积压".format(detail),
+                      "关闭程序后重新打开，会自动补装 GPU 加速组件；"
+                      "若反复出现请把这句话反馈给开发者")
     return _check("语音识别", OK if cached else WARN, detail)
 
 
