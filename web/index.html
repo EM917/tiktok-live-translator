@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=15">
+  <link rel="stylesheet" href="/static/style.css?v=16">
 </head>
 <body>
   <header class="topbar">
@@ -126,6 +126,10 @@
     </div>
   </main>
 
+  <!-- 回到最新。自动跟随依赖几何量判断，而页面不可渲染时那些值不可信；
+       这个按钮是用户随时可用的直接出口，不依赖任何启发式判断。 -->
+  <button id="jump-latest" class="jump-latest hidden" type="button">↓ 回到最新</button>
+
   <footer id="live-bar" class="live-bar hidden">
     <div id="live-translated" class="live-translated"></div>
     <div id="live-original" class="live-original"></div>
@@ -153,6 +157,7 @@
     }
   </script>
   <script src="/static/normalize.js?v=1"></script>
-  <script src="/static/app.js?v=25"></script>
+  <script src="/static/follow.js?v=1"></script>
+  <script src="/static/app.js?v=28"></script>
 </body>
 </html>

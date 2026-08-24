@@ -12,6 +12,7 @@
   var statusText = document.getElementById("status-text");
   var statusBanner = document.getElementById("status-banner");
   var liveBar = document.getElementById("live-bar");
+  var jumpBtn = document.getElementById("jump-latest");
   var liveTranslated = document.getElementById("live-translated");
   var liveOriginal = document.getElementById("live-original");
   var targetSel = document.getElementById("target-lang");
@@ -428,7 +429,6 @@
     trans.className = "trans";
     card.appendChild(trans);
 
-    var nearBottom = historyEl.scrollHeight - historyEl.scrollTop - historyEl.clientHeight < 120;
     historyEl.appendChild(card);
     cardsById[msg.id] = card;
 
@@ -440,7 +440,7 @@
     }
 
     applyTranslation(card, msg);
-    if (nearBottom || msg.replay) historyEl.scrollTop = historyEl.scrollHeight;
+    stickToBottom(msg.replay);
 
     // 底部大字幕：回放历史时不逐条更新（避免闪一串旧字幕），
     // 但最后一条带 restore 标记，用它把大字幕恢复成断线前的样子
@@ -659,6 +659,99 @@
     fixCmdCopy.textContent = "已选中，按 ⌘C";
     setTimeout(function () { fixCmdCopy.textContent = "复制"; }, 3000);
   }
+
+  // ---- 字幕跟随 ----
+  // 「跟随最新」是一个**用户意图**，不是每次都从几何量现算的结论。
+  // 现算会在页面不可见时出错：那时 scrollHeight 和 clientHeight 都是 0，
+  // `scrollTop = scrollHeight` 变成给 0 赋 0（空操作），而 0-0-0 < 120 又让
+  // 判定看起来是「在底部」。于是离开页面期间到达的每一条字幕都没能滚动，
+  // 回来时停在旧位置，必须手动往下拖。
+  var following = true;
+
+  // 记下最近一次真实的用户输入。浏览器在元素重新可渲染时会把 scrollTop
+  // 重置为 0 并抛出 scroll 事件，不区分来源的话那次重置会被当成
+  // 「用户翻到了顶部」，跟随就此永久关闭。
+  var lastUserInput = 0;
+  ["wheel", "touchstart", "touchmove", "keydown", "mousedown"].forEach(
+    function (name) {
+      historyEl.addEventListener(name, function () {
+        lastUserInput = Date.now();
+      }, { passive: true });
+    });
+
+  historyEl.addEventListener("scroll", function () {
+    following = nextFollowing(historyEl, following,
+                              Date.now() - lastUserInput < 700);
+    updateJumpButton();
+  }, { passive: true });
+
+  // 程序化滚到底必须是**瞬时**的。
+  //
+  // .history 上有 `scroll-behavior: smooth`，于是 `scrollTop = …` 是一次动画；
+  // 而字幕在不断追加，每来一条就重启一次动画，动画永远追不上——实测赋值
+  // 999999 之后 scrollTop 仍停在 9。页面不可渲染时更糟：动画连帧都不跑。
+  // 这才是「离开页面一会儿回来后停在旧位置」的真正原因。
+  //
+  // `scrollTo({behavior:"auto"})` 实测也压不住已在进行的动画，所以直接把
+  // scroll-behavior 临时关掉再赋值——这一步实测有效（落在精确的最大值上）。
+  // 用户自己拖动仍然是平滑的，CSS 原样保留。
+  function scrollToBottomNow() {
+    var prev = historyEl.style.scrollBehavior;
+    historyEl.style.scrollBehavior = "auto";
+    historyEl.scrollTop = historyEl.scrollHeight;
+    historyEl.style.scrollBehavior = prev;
+  }
+
+  function stickToBottom(force) {
+    if (force) following = true;
+    if (following) scrollToBottomNow();
+    updateJumpButton();
+  }
+
+  // 按钮只在「确实有内容在下面」时出现。不可测量时不显示——那时什么都判断不了，
+  // 摆一个按不动的按钮只会添乱。
+  function updateJumpButton() {
+    if (!jumpBtn) return;
+    var show = isMeasurable(historyEl) && !atBottom(historyEl);
+    if (show) {
+      // 底部大字幕是 fixed 且高度随字号变化，按钮得让开它。
+      // 上限夹在视口 40% 处：布局异常时测出的 barTop 可能贴近顶部，
+      // 不夹的话按钮会被顶到屏幕上方，看起来像个飞出来的东西。
+      var vh = window.innerHeight || 800;
+      var barTop = (liveBar && !liveBar.classList.contains("hidden"))
+        ? liveBar.getBoundingClientRect().top : vh - 56;
+      var offset = vh - barTop + 12;
+      if (!(offset > 0)) offset = 68;                 // NaN / 负数兜底
+      jumpBtn.style.bottom = Math.min(Math.max(offset, 56), vh * 0.4) + "px";
+    }
+    jumpBtn.classList.toggle("hidden", !show);
+  }
+
+  if (jumpBtn) {
+    jumpBtn.addEventListener("click", function () {
+      following = true;                 // 点了就是要看最新，恢复跟随
+      scrollToBottomNow();
+      updateJumpButton();
+    });
+  }
+
+  // 重新可见/重新获得焦点时补一次：不可见期间的滚动请求全部落空了。
+  // rAF 等布局稳定后再滚——刚显示出来时尺寸还没算完。
+  function resync() {
+    if (document.hidden || !following) return;
+    requestAnimationFrame(scrollToBottomNow);
+  }
+
+  document.addEventListener("visibilitychange", resync);
+  window.addEventListener("focus", resync);
+  window.addEventListener("resize", resync);
+  // 兜底：桌面窗口被遮挡时 visibilitychange 未必触发。跟随状态下若发现
+  // 不在底部就补上，代价是每 2 秒读一次几何量。
+  setInterval(function () {
+    if (document.hidden) return;
+    if (needsResync(historyEl, following)) scrollToBottomNow();
+    updateJumpButton();
+  }, 2000);
 
   function pad(n) { return (n < 10 ? "0" : "") + n; }
 

@@ -346,3 +346,15 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
   color: var(--text); word-break: break-all; user-select: all;
 }
 .btn.small { padding: 4px 12px; font-size: 12px; flex: none; }
+
+/* ---------- 回到最新 ---------- */
+/* bottom 由脚本按底部大字幕的实际高度算出——字号可调，写死会被盖住 */
+.jump-latest {
+  position: fixed; right: 20px; z-index: 5;
+  padding: 7px 15px; font-size: 13px; font-family: inherit; line-height: 1.4;
+  color: #fff; background: var(--accent);
+  border: none; border-radius: 999px; cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .3);
+}
+.jump-latest:hover { filter: brightness(1.08); }
+.jump-latest:active { transform: translateY(1px); }
