@@ -388,3 +388,7 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
   color: var(--text);
 }
 .alert-zh.pending { color: var(--text-faint); font-style: italic; }
+
+/* 短时间内已提示过：条目仍在、按钮可用，但不抢注意力 */
+.update-bar.quiet { opacity: .62; }
+.update-bar.quiet:hover { opacity: 1; }

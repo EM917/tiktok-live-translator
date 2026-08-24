@@ -174,7 +174,10 @@
     }
     updateLink.href = info.url || "#";
     updateBar.classList.remove("hidden");
-    document.title = "有新版本 · TikTok 直播同传";
+    // 静默模式：短时间内已经提示过了。按钮照常可用，但不再改标题——
+    // 标题会闪在任务栏/标签页上，连续几个 patch 的日子那是纯粹的骚扰。
+    if (!info.quiet) document.title = "有新版本 · TikTok 直播同传";
+    updateBar.classList.toggle("quiet", !!info.quiet);
   }
 
   // 点底部版本号即可手动检查更新
