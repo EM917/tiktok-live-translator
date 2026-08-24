@@ -47,6 +47,13 @@ DENOISE_MIN_BYTES = 100_000   # 完整模型约 300 KB；明显小于此值 = �
 
 # 音频积压预算（秒）。软阈值只是告警，硬上限才丢——丢一段就等于可能漏词，
 # 所以硬上限给得很宽：60 秒 PCM 不到 2 MB，内存从来不是限制因素。
+# 译文质量等级。低等级的结果**不得覆盖已生效的高等级结果**——
+# 强模型重译走的是独立协程，不经过翻译队列，而队列可积压 4 条且单 worker
+# 顺序处理，所以「快译一定先到」是赌执行顺序，不成立：队列一堵，2.3 秒的
+# 强译就会先落地，随后排到的快译再把它盖回去。用等级判断从逻辑上消灭这个竞态。
+QUALITY_FAST = 1
+QUALITY_STRONG = 2
+
 AUDIO_BACKLOG_WARN_SEC = 10.0
 AUDIO_BACKLOG_DEGRADED_SEC = 30.0
 AUDIO_BACKLOG_HARD_SEC = 60.0
@@ -126,6 +133,7 @@ class Pipeline:
         self._recent = OrderedDict()
         self._strong = None              # 按需创建，用完不常驻
         self._upgrade_tasks = []         # 报警触发的重译，持有引用防 GC
+        self._quality = {}               # seq -> 当前已生效译文的质量等级
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -310,6 +318,7 @@ class Pipeline:
         # 必须真的生效，否则头号卖点就是 100% 静默漏报
         self.detector = load_detector(getattr(self.args, "banned_terms", None))
         self.detector.reset_state()
+        self._quality.clear()            # 等级按 seq 记，换场后 seq 会重号
         self.telemetry.reset()          # 统计按场计，不跨房间累计
         if self.audit is not None:
             self.audit.close()
@@ -914,11 +923,37 @@ class Pipeline:
         if hits:
             self._upgrade_tasks = [t for t in getattr(self, "_upgrade_tasks", [])
                                    if not t.done()]
-            self._upgrade_tasks.append(asyncio.ensure_future(self.retranslate(seq)))
+            self._upgrade_tasks.append(
+                asyncio.ensure_future(self.retranslate(seq, "banned_term")))
 
         return job
 
-    async def retranslate(self, seq):
+    async def _publish_translation(self, seq, translated, ok, ms, level,
+                                   target, extra=None):
+        """发布译文，并保证低等级不覆盖已生效的高等级结果。
+
+        失败不占等级：强模型对约 2% 的句子返回空，若失败也占住等级，那一条
+        就会被永久挡成空白，快译再也上不去。所以只有**成功**的结果才记等级。
+        """
+        current = self._quality.get(seq, 0)
+        if ok and level < current:
+            return False                  # 已有更好的结果在屏幕上，不倒退
+        if not ok and current > 0:
+            return False                  # 已有可用译文，别用一次失败把它擦掉
+        if ok:
+            self._quality[seq] = level
+            while len(self._quality) > 300:
+                self._quality.pop(next(iter(self._quality)))
+        msg = {"type": "caption_update", "id": seq, "translated": translated,
+               "translate_state": "ok" if ok else "failed",
+               "target_lang": target, "translate_ms": round(ms),
+               "quality": level}
+        if extra:
+            msg.update(extra)
+        await self.server.broadcast(msg)
+        return True
+
+    async def retranslate(self, seq, trigger="manual"):
         """用本机最强的翻译模型重译某一条字幕。
 
         为什么是「按条」而不是「按时段」：值得动用强模型的是**具体某句话**
@@ -938,6 +973,8 @@ class Pipeline:
                 "type": "notice",
                 "text": "没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）"})
             return
+        if self._quality.get(seq, 0) >= QUALITY_STRONG:
+            return                        # 这一条已经是强模型译的，不重复
         await self.server.broadcast({"type": "caption_update", "id": seq,
                                      "translate_state": "pending"})
         t0 = time.time()
@@ -954,13 +991,11 @@ class Pipeline:
             out = None
         ms = (time.time() - t0) * 1000.0
         if self.audit is not None:
-            self.audit.translation(seq, out, ms, bool(out))
-        await self.server.broadcast({
-            "type": "caption_update", "id": seq, "translated": out,
-            "translate_state": "ok" if out else "failed",
-            "target_lang": job["target"], "translate_ms": round(ms),
-            "strong": True,
-        })
+            self.audit.translation_strong(seq, out, ms, bool(out),
+                                          self._strong.model, trigger)
+        await self._publish_translation(seq, out, bool(out), ms,
+                                        QUALITY_STRONG, job["target"],
+                                        {"strong": True})
 
     async def _translate_and_update(self, job):
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""
@@ -984,15 +1019,10 @@ class Pipeline:
         if self.audit is not None:
             self.audit.translation(job["id"], translated, translate_ms,
                                    bool(translated))
-        await self.server.broadcast({
-            "type": "caption_update",
-            "id": job["id"],
-            "translated": translated,
-            "translate_state": "ok" if translated else "failed",
-            "target_lang": job["target"],
-            "translate_ms": round(translate_ms),
-            "e2e_translated_ms": round((time.time() - job["audio_end_ts"]) * 1000.0),
-        })
+        await self._publish_translation(
+            job["id"], translated, bool(translated), translate_ms,
+            QUALITY_FAST, job["target"],
+            {"e2e_translated_ms": round((time.time() - job["audio_end_ts"]) * 1000.0)})
 
     # ---- 演示模式 ----
     async def start_demo(self):

@@ -56,8 +56,14 @@ async def main():
     segments = [r for r in rows if r.get("type") == "segment" and (r.get("text") or "").strip()]
     if alerts_only:
         segments = [r for r in segments if r.get("hits")]
-    done = {r.get("seq") for r in rows if r.get("type") == "translation_strong"}
+    # 直播中命中违禁词、或中控手动点过「重译」的段落，已经是强模型译的了，
+    # 跳过——两条路径写的是同一种记录类型，正是为了这里能认出来。
+    done = {r.get("seq") for r in rows
+            if r.get("type") == "translation_strong" and r.get("ok")}
     todo = [r for r in segments if r.get("seq") not in done]
+    # baseline 只能取 type == "translation"（快译）。曾经这里把强译也算进来，
+    # 而同一个 seq 有两条时字典推导取的是后者——于是强译被当成了「原译文」，
+    # 比对结果永远是「没有变化」，恰好在最该复核的那些段落上失效。
     old = {r["seq"]: r.get("translated") for r in rows
            if r.get("type") == "translation" and r.get("ok")}
 
