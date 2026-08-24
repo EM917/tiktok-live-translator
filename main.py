@@ -275,6 +275,10 @@ def parse_args():
     p.add_argument("--port", type=int, default=8765, help="本地 UI 端口，默认 8765")
     p.add_argument("--denoise", choices=["auto", "on", "off"], default="auto",
                    help="RNNoise 人声降噪，抑制背景音乐/噪声（auto=模型文件存在即开启，默认）")
+    p.add_argument("--cookies-browser", default="auto", dest="cookies_browser",
+                   help="匿名解析失败时借用哪个浏览器的 TikTok 登录状态："
+                        "auto（默认，依次尝试并记住有效的那个）/ chrome / safari / "
+                        "firefox / edge / none（完全不读浏览器 cookie）")
     p.add_argument("--cookies", default=None,
                    help="可选：传给 yt-dlp 的 cookies.txt 路径（地区受限的直播间可能需要）")
     p.add_argument("--banned-terms", default=None, dest="banned_terms",

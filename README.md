@@ -180,7 +180,7 @@ The current version is shown in the page footer.
 
 ## FAQ
 
-- **It says "the streamer isn't live right now" but they clearly are** — the tool automatically falls back to parsing the page HTML (you'll see this noted in the logs). If it still fails, the room likely requires login / is region-restricted — export `cookies.txt` with a browser extension and add `--cookies cookies.txt`.
+- **It can't get the stream but you can watch the room in your browser** — TikTok now reports live rooms as "not currently live" to **unauthenticated** requests (measured: of six rooms live at the same moment, only one resolved anonymously). The app automatically retries by borrowing the TikTok session already in your browser, so **being logged into TikTok in Chrome/Safari is all that's needed — no file to export**. Cookies stay between your machine and TikTok. If it still fails, open the room in your browser once to confirm you can watch it, then retry; you can also pin a browser with `--cookies-browser safari` or supply your own `--cookies cookies.txt`.
 - **First "Start" stuck downloading the recognition model** — it's downloading from Hugging Face (large-v3 is about 3GB); progress is shown on the page, and it only happens once.
 - **Translations suddenly fail across the board and captions show only the original language** — the default free Google endpoint rate-limits per IP and starts returning 429 under sustained use. The app pauses requests for two minutes and recovers automatically, with a banner on the page; **speech recognition is unaffected**. For long viewing sessions, switch to local TranslateGemma (offline, no rate limit — see "Translation Engines") or use an API key with `--translator claude` / `openai`. No network or a stopped Ollama causes the same symptom.
 - **Status says "live" but no captions appear for a long time** — usually normal: while the streamer plays music or isn't talking, silent and low-confidence segments are dropped on purpose (better nothing than guessing words out of background music). If the streamer is clearly talking and nothing ever appears, try `--denoise off` (denoising occasionally over-trims some audio) or a different model size.
@@ -378,7 +378,7 @@ flowchart TD
 
 ## 常见问题
 
-- **提示「主播现在没有开播」但主播明明在播** —— 工具会自动改从页面 HTML 解析（日志有提示）；仍失败多半是该直播间需要登录/地区受限，可用浏览器插件导出 cookies.txt 后加 `--cookies cookies.txt`。
+- **提示没能获取到直播流，但你在浏览器里看得到** —— TikTok 现在对**未登录**请求会把在播的直播间报成「未开播」（实测同一时刻 6 个在播房间只有 1 个能匿名解析）。程序会自动借用你浏览器里现成的 TikTok 登录状态重试，**你只要平时在 Chrome/Safari 里登录过 TikTok 就行，不用导出任何文件**。cookie 只在本机与 TikTok 之间使用。若仍失败：先在浏览器里打开一次该直播间确认能看，再重试；也可以用 `--cookies-browser safari` 指定浏览器，或 `--cookies cookies.txt` 自带凭据。
 - **首次点「开始翻译」卡在下载识别模型** —— 正在从 Hugging Face 下载（large-v3 约 3GB），页面上会显示进度，只需一次。
 - **翻译突然大面积失败，字幕只剩外文原文** —— 默认的 Google 免费接口按 IP 限流，长时间高频请求会被挡（返回 429）。程序会自动暂停请求 2 分钟再恢复，页面顶部也会给出提示，**语音识别不受影响**。常看长直播建议换成本地 TranslateGemma（离线、不限流，见「翻译引擎」），或配 API Key 用 `--translator claude` / `openai`。另外断网、Ollama 没启动同样会导致翻译失败。
 - **状态显示「直播中」但很久不出字幕** —— 多数情况正常：主播放音乐或没说话时，静音段和低置信度片段会被直接丢弃（宁缺毋滥，免得把背景音乐瞎猜成人话）。若主播明明一直在说话却始终没字幕，可试 `--denoise off`（个别音频会被降噪削得过狠），或换一档模型。

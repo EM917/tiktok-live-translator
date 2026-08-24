@@ -317,7 +317,9 @@ class Pipeline:
 
         await self.server.status("connecting", "正在解析直播流地址…")
         try:
-            media = await resolve_stream_url(url, cookies=self.args.cookies)
+            media = await resolve_stream_url(
+                url, cookies=self.args.cookies,
+                cookies_browser=getattr(self.args, 'cookies_browser', 'auto'))
             self._resolve_fail_streak = 0
         except ResolveError as exc:
             self._note_resolve_failure(exc)
@@ -443,7 +445,9 @@ class Pipeline:
                         delay, reconnects, budget))
                 await asyncio.sleep(delay)
                 try:
-                    media = await resolve_stream_url(url, cookies=self.args.cookies)
+                    media = await resolve_stream_url(
+                url, cookies=self.args.cookies,
+                cookies_browser=getattr(self.args, 'cookies_browser', 'auto'))
                     self._resolve_fail_streak = 0
                 except ResolveError as exc:
                     if exc.kind == "offline":

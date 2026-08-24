@@ -65,7 +65,7 @@ def test_offline_resolve_ends_stream(monkeypatch, tmp_path):
 
     resolves = []
 
-    async def fake_resolve(url, cookies=None):
+    async def fake_resolve(url, cookies=None, cookies_browser="auto"):
         resolves.append(url)
         if len(resolves) == 1:
             return "http://cdn/stream.flv"
@@ -92,7 +92,7 @@ def test_reconnect_resumes_with_fresh_url(monkeypatch, tmp_path):
 
     calls = []
 
-    async def fake_resolve(url, cookies=None):
+    async def fake_resolve(url, cookies=None, cookies_browser="auto"):
         calls.append(url)
         try:
             return next(urls)
@@ -118,7 +118,7 @@ def test_reconnect_budget_exhausts(monkeypatch, tmp_path):
         sessions.append(media)
         return False, 0.0            # 每轮都立刻失败（连不上音频）
 
-    async def fake_resolve(url, cookies=None):
+    async def fake_resolve(url, cookies=None, cookies_browser="auto"):
         return "http://cdn/dead.flv"   # 地址能解析但流拉不动
 
     import app.resolver
@@ -140,7 +140,7 @@ def test_good_run_resets_budget(monkeypatch, tmp_path):
         sessions.append(media)
         return outcomes[len(sessions) - 1]
 
-    async def fake_resolve(url, cookies=None):
+    async def fake_resolve(url, cookies=None, cookies_browser="auto"):
         if len(sessions) >= len(outcomes):     # 剧本演完 → 主播下播收尾
             raise ResolveError("没开播", kind="offline")
         return "http://cdn/s.flv"
@@ -205,7 +205,7 @@ def test_direct_url_ends_cleanly_after_good_run(monkeypatch, tmp_path):
         sessions.append(media)
         return True, 60.0
 
-    async def fake_resolve(url, cookies=None):
+    async def fake_resolve(url, cookies=None, cookies_browser="auto"):
         return url                               # 直连地址原样放行
 
     import app.resolver
@@ -226,7 +226,7 @@ def test_direct_url_dead_stream_gets_one_retry(monkeypatch, tmp_path):
         sessions.append(media)
         return False, 0.0
 
-    async def fake_resolve(url, cookies=None):
+    async def fake_resolve(url, cookies=None, cookies_browser="auto"):
         return url
 
     import app.resolver
@@ -248,7 +248,7 @@ def test_resolve_failures_trigger_ytdlp_freshen(monkeypatch, tmp_path):
 
     p.updater = StubUpdater()
 
-    async def fake_resolve(url, cookies=None):
+    async def fake_resolve(url, cookies=None, cookies_browser="auto"):
         raise ResolveError("HTTP Error 500", kind="unknown")
 
     import app.resolver
@@ -274,7 +274,7 @@ def test_offline_failures_do_not_trigger_freshen(monkeypatch, tmp_path):
 
     p.updater = StubUpdater()
 
-    async def fake_resolve(url, cookies=None):
+    async def fake_resolve(url, cookies=None, cookies_browser="auto"):
         raise ResolveError("没开播", kind="offline")
 
     import app.resolver
@@ -353,7 +353,7 @@ def test_cancelled_model_load_does_not_poison_key(monkeypatch, tmp_path):
         monkeypatch.setattr(loop, "run_in_executor", fake_executor)
 
         import app.resolver
-        async def fake_resolve(url, cookies=None):
+        async def fake_resolve(url, cookies=None, cookies_browser="auto"):
             return "http://cdn/s.flv"
         monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
 

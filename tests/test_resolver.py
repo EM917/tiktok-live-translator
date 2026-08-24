@@ -14,8 +14,10 @@ from app.resolver import (
 # ---- 错误归类：kind 决定断流重连是否收手，话术决定用户下一步动作 ----
 
 @pytest.mark.parametrize("err,kind,expect", [
+    # TikTok 对未登录请求也返回这条，所以文案不能断言「主播下播了」，
+    # 必须同时给出「可能需要登录」这条出路
     ("ERROR: [tiktok:live] user: The channel is not currently live",
-     "offline", "没有开播"),
+     "offline", "如果你在浏览器里看得到这个直播"),
     ("ERROR: Unable to find room ID", "not_found", "没有找到这个直播间"),
     ("ERROR: HTTP Error 404: Not Found", "not_found", "没有找到这个直播间"),
     ("ERROR: Unsupported URL: https://x", "not_found", "没有找到这个直播间"),
@@ -99,3 +101,48 @@ def test_extract_falls_back_to_flv_then_any():
 
 def test_extract_returns_none_when_no_stream():
     assert _extract_stream_urls("<html>no streams here</html>") is None
+
+
+def test_offline_message_does_not_claim_streamer_is_offline():
+    """实测：同一时刻 6 个在播房间里 5 个被 yt-dlp 判为「未开播」——
+    未登录才是主因。文案断言「主播没在播」会把用户引到错误方向。"""
+    _, message = _classify_ytdlp_error("The channel is not currently live")
+    assert "cookies" in message.lower() or "登录" in message
+    assert not message.startswith("主播现在没有开播")
+
+
+# ---- 借用浏览器登录态：TikTok 对未登录请求把在播房间报成「未开播」 ----
+
+def test_browser_order_prefers_remembered(monkeypatch, tmp_path):
+    from app import resolver, settings
+    monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(resolver, "_installed_browsers",
+                        lambda: ("chrome", "safari", "firefox"))
+    assert resolver._browser_order("auto")[0] == "chrome"
+    settings.save_setting("cookies_browser", "firefox")
+    order = resolver._browser_order("auto")
+    assert order[0] == "firefox"                 # 上次成功的排最前
+    assert set(order) == {"chrome", "safari", "firefox"}
+
+
+def test_explicit_browser_preference_wins(monkeypatch, tmp_path):
+    from app import resolver, settings
+    monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
+    assert resolver._browser_order("safari") == ("safari",)
+
+
+def test_safari_tried_last_on_macos():
+    """Safari 的 cookie 需要完全磁盘访问权限，未授权时会卡住——必须排最后。"""
+    import sys as _sys
+    from app import resolver
+    if _sys.platform != "darwin":
+        return
+    order = resolver._installed_browsers()
+    if "safari" in order and len(order) > 1:
+        assert order[-1] == "safari"
+
+
+def test_browser_attempt_timeout_is_short():
+    """单个浏览器读不到 cookie 应快速失败换下一个，不能拖垮整体解析。"""
+    from app.resolver import BROWSER_ATTEMPT_TIMEOUT
+    assert BROWSER_ATTEMPT_TIMEOUT <= 25

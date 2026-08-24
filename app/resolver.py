@@ -131,8 +131,16 @@ def _classify_ytdlp_error(err_text):
     lines = [ln.strip() for ln in err_text.strip().splitlines() if ln.strip()]
     detail = "\n技术细节：{}".format(lines[-1][:200]) if lines else ""
     if "not currently live" in lowered or "room is offline" in lowered:
+        # 注意：TikTok 对**未登录**的请求也经常返回「not currently live」——
+        # 浏览器里明明在播、这里却说没开播，多半是这个原因。实测同一时刻
+        # 6 个在播房间里 5 个被判为未开播，只有 1 个能匿名解析。
+        # 所以不能把这条当成板上钉钉的「主播下播了」。
         return ("offline",
-                "主播现在没有开播。等开播后再试；也可以检查一下地址拼写是否正确。")
+                "没能获取到这个直播间的音频流。\n"
+                "· 如果主播确实没在播：等开播后再试即可；\n"
+                "· 如果你在浏览器里看得到这个直播：TikTok 对未登录访问经常"
+                "返回「未开播」，需要导出登录 cookies 后用 --cookies 指定"
+                "（见 README 常见问题）。")
     if ("unable to find room" in lowered or "http error 404" in lowered
             or "unsupported url" in lowered or "does not exist" in lowered):
         return ("not_found",
@@ -157,8 +165,97 @@ def _classify_ytdlp_error(err_text):
             "请检查后重试。" + detail)
 
 
-async def resolve_stream_url(url, cookies=None):
+# 从浏览器直接借用登录态的候选顺序。TikTok 现在对**未登录**请求把大多数
+# 直播间报成「未开播」（实测同一时刻 6 个在播房间只有 1 个能匿名解析），
+# 而看直播的人浏览器里本来就登录着——读现成的 cookie 比让用户手工导出
+# cookies.txt 友好得多，也不需要额外注册账号。
+BROWSER_CANDIDATES = ("chrome", "safari", "firefox", "edge", "brave", "chromium")
+BROWSER_ATTEMPT_TIMEOUT = 20      # 单个浏览器的尝试预算（秒）
+
+
+def _installed_browsers():
+    """只试本机真的装了的浏览器——为不存在的浏览器各花几秒是纯浪费。"""
+    import shutil
+    from pathlib import Path as _P
+
+    apps = {
+        "chrome": "/Applications/Google Chrome.app",
+        "safari": "/Applications/Safari.app",
+        "firefox": "/Applications/Firefox.app",
+        "edge": "/Applications/Microsoft Edge.app",
+        "brave": "/Applications/Brave Browser.app",
+        "chromium": "/Applications/Chromium.app",
+    }
+    if sys.platform == "darwin":
+        found = [b for b, path in apps.items() if _P(path).exists()]
+        # Safari 的 cookie 需要「完全磁盘访问权限」，没授权时会卡住——排在最后
+        return tuple(b for b in found if b != "safari") + \
+               tuple(b for b in found if b == "safari")
+    if sys.platform == "win32":
+        return ("chrome", "edge", "firefox", "brave")
+    return tuple(b for b in ("chrome", "firefox", "chromium", "brave")
+                 if shutil.which(b) or shutil.which(b + "-browser"))
+
+
+def _browser_order(preference):
+    """要试的浏览器顺序。上次成功的排最前——避免每次都从头逐个试，
+    每次尝试都是一个几秒的 yt-dlp 子进程。"""
+    if preference and preference not in ("auto", "none"):
+        return (preference,)
+    from .settings import load_settings
+    remembered = load_settings().get("cookies_browser")
+    installed = _installed_browsers() or BROWSER_CANDIDATES
+    if remembered in installed:
+        return (remembered,) + tuple(b for b in installed if b != remembered)
+    return installed
+
+
+def _remember_browser(browser):
+    from .settings import load_settings, save_setting
+    if load_settings().get("cookies_browser") != browser:
+        save_setting("cookies_browser", browser)
+
+
+async def _run_ytdlp(url, cookies=None, browser=None, timeout=45):
+    """跑一次 yt-dlp 取流地址，返回 (returncode, stdout, stderr)。"""
+    fmt = "flv-ao/bestaudio/flv-hd/flv-hd1/best"
+    cmd = [sys.executable, "-m", "yt_dlp", "-g", "-f", fmt, "--no-warnings"]
+    if cookies:
+        cmd += ["--cookies", cookies]
+    elif browser:
+        cmd += ["--cookies-from-browser", browser]
+    cmd += ["--", url]      # `--` 之后一律当作地址，防止 "-xxx" 形式的地址被当成选项
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    try:
+        # 限时 + 取消时务必杀掉子进程：否则用户点「停止」或换房间后，
+        # 卡住的 yt-dlp 会永远挂在后台（asyncio 取消只解绑协程，不动进程）
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except (asyncio.CancelledError, asyncio.TimeoutError) as exc:
+        if proc.returncode is None:
+            proc.kill()
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+        if isinstance(exc, asyncio.TimeoutError):
+            raise ResolveError("解析直播流超时（网络不通或该地区无法访问 TikTok）",
+                               kind="network") from None
+        raise
+    return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+
+
+def _first_url(stdout):
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
+    return lines[0] if lines else None
+
+
+async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
     """返回直播流媒体地址。已经是 .flv/.m3u8 的直接放行，否则用 yt-dlp 解析。
+
+    解析顺序：匿名 → （失败时）借用浏览器登录态。cookies 只在本机与
+    TikTok 之间使用，不写入日志、不发往任何第三方。
     所有返回给 ffmpeg 的地址都先过 _check_media_url（协议 + 内网拦截）。"""
     if _DIRECT_RE.search(url):
         # 用户直接给的流地址：按可信处理（详见 _check_media_url 的说明）
@@ -171,43 +268,36 @@ async def resolve_stream_url(url, cookies=None):
                            "（进阶：pip install -r requirements.txt）",
                            kind="internal") from None
 
-    # 优先纯音频 FLV（TikTok 的 flv-ao：省带宽、延迟低，且 HLS 地址对 ffmpeg 直连常返回 5XX），
-    # 逐级回退到普通 FLV / best
-    fmt = "flv-ao/bestaudio/flv-hd/flv-hd1/best"
-    cmd = [sys.executable, "-m", "yt_dlp", "-g", "-f", fmt, "--no-warnings"]
-    if cookies:
-        cmd += ["--cookies", cookies]
-    cmd += ["--", url]      # `--` 之后一律当作地址，防止 "-xxx" 形式的地址被当成选项
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    try:
-        # 限时 + 取消时务必杀掉子进程：否则用户点「停止」或换房间后，
-        # 卡住的 yt-dlp 会永远挂在后台（asyncio 取消只解绑协程，不动进程）
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=45)
-    except (asyncio.CancelledError, asyncio.TimeoutError) as exc:
-        if proc.returncode is None:
-            proc.kill()
+    code, out, err = await _run_ytdlp(url, cookies=cookies)
+
+    # 匿名失败且用户没自带 cookies.txt：依次试各浏览器的现成登录态。
+    # 记住成功的那个，下次直接用，不再逐个试。
+    if code != 0 and not cookies and cookies_browser != "none":
+        for browser in _browser_order(cookies_browser):
             try:
-                await proc.wait()
-            except Exception:
-                pass
-        if isinstance(exc, asyncio.TimeoutError):
-            raise ResolveError("解析直播流超时（网络不通或该地区无法访问 TikTok）",
-                               kind="network") from None
-        raise
-    if proc.returncode != 0:
+                # 单个浏览器给较短预算：读不到 cookie（未授权/未安装/被占用）
+                # 应当快速失败换下一个，而不是把整体解析拖垮
+                b_code, b_out, b_err = await _run_ytdlp(
+                    url, browser=browser, timeout=BROWSER_ATTEMPT_TIMEOUT)
+            except ResolveError:
+                continue          # 这个浏览器超时了：换下一个，别中断整个兜底
+            if b_code == 0 and _first_url(b_out):
+                _remember_browser(browser)
+                print("[信息] 匿名解析失败，已借用 {} 的 TikTok 登录状态".format(browser))
+                code, out, err = b_code, b_out, b_err
+                break
+    if code != 0:
         # yt-dlp 的 TikTok 提取器时不时失灵（接口说没播但页面在播）——先试页面兜底
         fallback = await _resolve_from_page(url)
         if fallback:
             print("[信息] yt-dlp 解析失败，已从直播页面直接找到流地址")
             return await _check_media_url(fallback)
-        err_text = err.decode(errors="replace")
+        err_text = err
         tail = err_text.strip().splitlines()[-3:]
         print("[错误] yt-dlp: " + " | ".join(tail))    # 英文原始输出只进终端
         kind, message = _classify_ytdlp_error(err_text)
         raise ResolveError(message, kind=kind)
-    lines = [line.strip() for line in out.decode(errors="replace").splitlines() if line.strip()]
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
     if not lines:
         raise ResolveError("yt-dlp 没有返回流地址（直播可能尚未开始，或刚刚结束）",
                            kind="offline")
