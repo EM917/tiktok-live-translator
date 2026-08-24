@@ -13,3 +13,8 @@ banned_terms.txt
 glossary.txt
 # 审计日志
 logs/
+# 用户/程序在目录里留下的杂物——它们不入库，也绝不该挡住一键更新
+*.bak
+*.bak-*
+*.log
+.run.log

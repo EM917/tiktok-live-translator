@@ -192,14 +192,26 @@ class Updater:
                     self.latest["url"]))
             return
         await self.server.broadcast({"type": "updating"})
-        code, out, _ = await self._git("status", "--porcelain")
+        # --untracked-files=no 是关键：未跟踪的文件 git pull 根本不会动它，
+        # 拿它们挡住更新纯属误伤。真实案例：用户目录里多了一个 .run.log 和两个
+        # 词表备份，自动更新就此彻底罢工，而给出的提示是「请自行处理后 git pull」
+        # ——对一个不会用终端的人来说这是个死胡同。
+        # 万一某个未跟踪文件真的和新版本里的文件重名，下面的 git pull 会自己
+        # 报错，那时再把 git 的原话转述给用户。
+        code, out, _ = await self._git("status", "--porcelain", "--untracked-files=no")
         if code != 0:
             await self.server.status("error", "git 不可用，无法自动更新，请手动 git pull")
             return
         if out.strip():
+            # porcelain 是「两位状态 + 空格 + 文件名」，而未暂存修改的第一位
+            # 就是空格——所以只能逐行去尾部空白，绝不能对整段 strip()，
+            # 否则第一行会被削掉行首空格，文件名跟着少一个字母（app/ → pp/）。
+            files = [ln[3:].rstrip() for ln in out.splitlines()[:4] if len(ln) > 3]
             await self.server.status(
-                "error", "检测到本地有未提交的修改，为避免覆盖已取消自动更新——"
-                         "请自行处理后 git pull")
+                "idle",                      # 只是没更新，程序本身好好的，别报「出错了」
+                "本次没有自动更新：这几个程序文件被改过，直接更新会覆盖掉它们——{}。"
+                "如果不是你有意改的，把它们删掉或改回去再点一次「一键更新」即可。"
+                .format("、".join(files) or "（若干文件）"))
             return
         code, _, err = await self._git("pull", "--ff-only")
         if code != 0:
