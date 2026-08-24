@@ -155,53 +155,67 @@ def _model_cached(model, backend):
         return False
 
 
-async def check_translator(args):
+async def check_translator(args, translator=None):
+    """报的必须是**管线真正在用的那个引擎**，不是这里重新推导一遍。
+
+    踩过的坑：这里曾经自己复制了一份 auto 的选择逻辑。后来默认档从 7B 改回
+    1.8B，只改了 create_translator，这份副本没跟上——于是程序实际用着 1.8B，
+    面板却写着「本地 Hy-MT2 7B」。自检报错东西，比不自检更糟：它会让人相信
+    一个错误的事实。所以现在直接问已经建好的对象。
+    """
     name = getattr(args, "translator", "auto")
+    if name == "none" or (translator is None and name == "none"):
+        return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
+
+    if translator is not None:
+        engine = getattr(translator, "name", "?")
+        model = getattr(getattr(translator, "inner", translator), "model", "")
+        if engine in ("hymt2", "hymt2-7b"):
+            tier = "7B" if "7B" in model else "1.8B"
+            if not await _to_thread(_ollama_reachable):
+                return _check("翻译引擎", FAIL,
+                              "配置的是本地 Hy-MT2 {}，但 Ollama 没在运行".format(tier),
+                              "打开 Ollama 后重新点「开始翻译」")
+            note = "、术语最准，但更吃内存" if tier == "7B" else ""
+            return _check("翻译引擎", OK,
+                          "本地 Hy-MT2 {}（离线、无限流{}）".format(tier, note))
+        if engine == "gemma":
+            if not await _to_thread(_ollama_reachable):
+                return _check("翻译引擎", FAIL,
+                              "配置的是本地 TranslateGemma，但 Ollama 没在运行",
+                              "打开 Ollama 后重新点「开始翻译」")
+            return _check("翻译引擎", OK, "本地 TranslateGemma（离线、无限流）")
+        if engine == "google":
+            return _check("翻译引擎", WARN,
+                          "正在用 Google 免费接口：会按 IP 限流，长时间监听容易"
+                          "整段翻译失败（违禁词报警不受影响，它不依赖翻译）",
+                          "想换成完全本地、不限流的翻译：装 Ollama（ollama.com），"
+                          "装完执行一次 "
+                          "ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"
+                          "（约 1.1 GB），然后重开本程序即可自动切换")
+        key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(engine)
+        if key and not os.environ.get(key):
+            return _check("翻译引擎", FAIL,
+                          "{} 需要先设置环境变量 {}".format(engine, key),
+                          "没有这个密钥的话，把翻译引擎留在默认的「自动」即可")
+        return _check("翻译引擎", OK, "{}（付费 API）".format(engine))
+
+    # 没有引擎对象（还没建，或翻译被关掉）——只能就配置说话，不假装知道更多
     if name == "none":
         return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
+    return _check("翻译引擎", WARN, "翻译引擎尚未初始化",
+                  "点一次「开始翻译」后本项会重新检查")
+
+
+def _ollama_reachable():
+    import urllib.request
+
+    base = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
     try:
-        from .translator import _ollama_has_gemma, _ollama_has_hymt2
-    except Exception as exc:
-        return _check("翻译引擎", FAIL, "翻译模块加载失败：{}".format(exc))
-    has_big = await _to_thread(_ollama_has_hymt2, True)
-    has_hymt2 = await _to_thread(_ollama_has_hymt2)
-    has_gemma = await _to_thread(_ollama_has_gemma)
-    resolved = name
-    if name == "auto":
-        resolved = ("hymt2-7b" if has_big else
-                    "hymt2" if has_hymt2 else
-                    "gemma" if has_gemma else "google")
-    if resolved == "hymt2-7b":
-        if has_big:
-            return _check("翻译引擎", OK, "本地 Hy-MT2 7B（离线、无限流、术语最准）")
-        return _check("翻译引擎", FAIL, "指定了 Hy-MT2 7B，但 Ollama 里没有这个模型",
-                      "先打开 Ollama，再执行一次 "
-                      "ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M")
-    if resolved == "hymt2":
-        if has_hymt2:
-            return _check("翻译引擎", OK, "本地 Hy-MT2 1.8B（离线、无限流）")
-        return _check("翻译引擎", FAIL, "指定了 Hy-MT2，但 Ollama 里没有这个模型",
-                      "先打开 Ollama，再执行一次 "
-                      "ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M")
-    if resolved == "gemma":
-        if has_gemma:
-            return _check("翻译引擎", OK, "本地 TranslateGemma（离线、无限流）")
-        return _check("翻译引擎", FAIL, "指定了本地翻译，但 Ollama 里没有这个模型",
-                      "先打开 Ollama，再执行一次 ollama pull translategemma:4b")
-    if resolved == "google":
-        return _check("翻译引擎", WARN,
-                      "正在用 Google 免费接口：会按 IP 限流，长时间监听容易"
-                      "整段翻译失败（违禁词报警不受影响，它不依赖翻译）",
-                      "想换成完全本地、不限流的翻译：装 Ollama（ollama.com），"
-                      "装完执行一次 "
-                      "ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"
-                      "（约 1.1 GB），然后重开本程序即可自动切换")
-    key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(resolved)
-    if key and not os.environ.get(key):
-        return _check("翻译引擎", FAIL,
-                      "{} 需要先设置环境变量 {}".format(resolved, key),
-                      "没有这个密钥的话，把翻译引擎留在默认的「自动」即可")
-    return _check("翻译引擎", OK, "{}（付费 API）".format(resolved))
+        urllib.request.urlopen(base + "/api/tags", timeout=2).read()
+        return True
+    except Exception:
+        return False
 
 
 async def check_watchlist(detector):
@@ -263,7 +277,7 @@ async def check_disk():
     return _check("磁盘空间", OK, "剩余 {:.0f} GB".format(free))
 
 
-async def run_all(args, detector=None, glossary=None):
+async def run_all(args, detector=None, glossary=None, translator=None):
     """跑完所有自检。任一项抛异常都不影响其余项——自检自己绝不能拖垮启动。
 
     探测崩了算 **FAIL，不是 WARN**：崩了意味着这项能力压根没被验证过，和
@@ -274,7 +288,7 @@ async def run_all(args, detector=None, glossary=None):
         ("音频组件 ffmpeg", check_ffmpeg()),
         ("人声降噪", check_denoise(args)),
         ("语音识别", check_asr(args)),
-        ("翻译引擎", check_translator(args)),
+        ("翻译引擎", check_translator(args, translator)),
         ("违禁词表", check_watchlist(detector)),
         ("领域词表", check_glossary(glossary)),
         ("审计日志", check_audit()),

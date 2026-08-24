@@ -330,7 +330,8 @@ class Pipeline:
         没人看的日志里说了一句。自检把这类问题变成界面上的红条。"""
         from .selfcheck import run_all, summarize
         try:
-            checks = await run_all(self.args, self.detector, self.glossary)
+            checks = await run_all(self.args, self.detector, self.glossary,
+                                   self.translator)
         except Exception as exc:
             print("[警告] 自检执行失败: {}".format(exc))
             return
