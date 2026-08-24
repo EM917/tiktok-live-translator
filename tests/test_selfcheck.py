@@ -183,3 +183,24 @@ def test_apple_silicon_on_mlx_is_not_flagged(monkeypatch):
     c = run(selfcheck.check_asr(SimpleNamespace(backend="auto", model=None,
                                                device="auto")))
     assert c["level"] == "ok"
+
+
+def test_disk_check_uses_the_documented_requirement(monkeypatch):
+    """README 说完整安装约需 6 GB，程序就该按同一个数字提前拦——
+    不能让用户下到一半才发现放不下。"""
+    import shutil as _sh
+
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+
+    monkeypatch.setattr(_sh, "disk_usage", lambda p: Usage(0, 0, 4 * 1024 ** 3))
+    c = run(selfcheck.check_disk())
+    assert c["level"] == "warn"
+    assert str(selfcheck.INSTALL_NEED_GB) in c["detail"]
+    assert c["fix"]
+
+    monkeypatch.setattr(_sh, "disk_usage", lambda p: Usage(0, 0, 1 * 1024 ** 3))
+    assert run(selfcheck.check_disk())["level"] == "fail"
+
+    monkeypatch.setattr(_sh, "disk_usage", lambda p: Usage(0, 0, 50 * 1024 ** 3))
+    assert run(selfcheck.check_disk())["level"] == "ok"

@@ -280,6 +280,12 @@ async def check_resolver():
                   "在 Chrome/Safari 里登录一次 TikTok")
 
 
+# 一次完整安装的实测占用（见 README「磁盘空间」）：
+#   运行环境 1.4 GB + 语音模型 large-v3 2.9 GB + 翻译模型 1.8B 1.1 GB ≈ 6 GB
+# 门槛按这个来，别让用户下到一半才发现放不下。
+INSTALL_NEED_GB = 6
+
+
 async def check_disk():
     try:
         free = shutil.disk_usage(ROOT).free / 1024 ** 3
@@ -287,9 +293,14 @@ async def check_disk():
         return _check("磁盘空间", WARN, "无法读取磁盘剩余空间")
     if free < 3:
         return _check("磁盘空间", FAIL,
-                      "仅剩 {:.1f} GB——识别模型需要 1–3 GB".format(free))
-    if free < 8:
-        return _check("磁盘空间", WARN, "剩余 {:.1f} GB，偏紧".format(free))
+                      "仅剩 {:.1f} GB——完整安装需要约 {} GB（运行环境 1.4 + "
+                      "语音模型 2.9 + 翻译模型 1.1）".format(free, INSTALL_NEED_GB),
+                      "腾出空间后重开程序；各部分体积见 README「磁盘空间」")
+    if free < INSTALL_NEED_GB:
+        return _check("磁盘空间", WARN,
+                      "剩余 {:.1f} GB，完整安装约需 {} GB——模型可能下不全"
+                      .format(free, INSTALL_NEED_GB),
+                      "腾出空间，或用 --model large-v3-turbo（省约 1.4 GB）")
     return _check("磁盘空间", OK, "剩余 {:.0f} GB".format(free))
 
 

@@ -37,6 +37,41 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 - ✅ **Startup self-check** — each capability is executed rather than inspected: denoising processes a sample through RNNoise, translation queries the engine, the audit log performs a write. Results appear on the home screen with a remediation step for anything failing
 - 🔄 **Fault tolerance** — four independent stream-resolution paths (TikTok's live API → yt-dlp → yt-dlp with browser login → live page parsing), since a blocked yt-dlp extractor reports failures as "not currently live". Each resolved URL is verified before the session starts. Dropped streams reconnect with a freshly resolved URL, distinguishing a network interruption from the broadcast ending; segments are dropped automatically when recognition falls behind; yt-dlp is kept current in the background
 
+## Disk Space
+
+Everything runs locally, so the models live on your machine. Sizes below are
+measured from an actual installation, not estimates.
+
+| Component | Size | When |
+|---|---|---|
+| Runtime environment (`.venv`) | 1.4 GB | First launch |
+| Speech model — `large-v3` (Apple Silicon GPU / CUDA) | 2.9 GB | First recognition |
+| Speech model — `large-v3-turbo` (CPU path) | 1.5 GB | First recognition |
+| Ollama application | 0.2 GB | Manual, once |
+| Translation model — Hy-MT2 1.8B | 1.1 GB | Automatic on first launch after Ollama |
+| Translation model — Hy-MT2 7B (optional) | 4.6 GB | Only if you pull it |
+| Denoising model | 0.3 MB | First stream |
+
+**Reserve about 6 GB** for a typical installation: runtime, `large-v3` and the
+1.8B translation model. Add 4.6 GB if you also want the 7B tier. Machines on
+the CPU path need roughly 4.5 GB, since `large-v3-turbo` is smaller.
+
+Downloads are one-time. Models are shared with any other tool using the same
+caches, and are not duplicated per project.
+
+Where they are stored, if you need to reclaim space:
+
+```
+~/.cache/huggingface/hub     speech models
+~/.ollama/models             translation models
+<project>/.venv              runtime environment
+<project>/logs               audit logs
+```
+
+Audit logs grow by roughly **0.3 MB per hour** of monitoring — about 2 MB for
+an eight-hour day, or 0.1 GB a month. They are plain JSONL and safe to delete
+once a session has been reviewed.
+
 ## Quick Start
 
 ### Installation without a terminal (recommended)
@@ -333,8 +368,8 @@ application window exits it; if launched via `Start.command`, close the Terminal
 window or press Ctrl-C.
 
 **Installation fails on a managed computer, or space is insufficient.** The
-initial installation requires approximately 5 GB (runtime environment and speech
-model) and access to PyPI and Hugging Face. Corporate security policies
+initial installation requires about 6 GB and access to PyPI, Hugging Face and
+ollama.com; see "Disk Space" for the breakdown. Corporate security policies
 frequently block these.
 
 ## Privacy and Usage Boundaries
@@ -376,6 +411,39 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 - 📊 **延迟可观测** —— 实时显示首字等待（P50/P95）及其构成（切段、识别、翻译），并配套审计日志逐段记录：采纳的文本、被质量过滤丢弃的候选、命中的违禁词，以及随后到达的译文
 - ✅ **启动自检** —— 每项能力实际执行而非检查配置：降噪实跑 RNNoise，翻译实际请求引擎，审计日志实际写入。结果显示在首页，异常项附带处理步骤
 - 🔄 **抗故障** —— 四条独立的流地址解析路径（TikTok 官方接口 → yt-dlp → yt-dlp 借用浏览器登录态 → 直播页解析），因为 yt-dlp 提取器被拦截时会将失败报告为「未开播」。每个解析结果在会话开始前先行验证。断流后以重新解析的地址重连，并区分网络中断与直播结束；识别落后时自动丢段保实时；后台保持 yt-dlp 为最新版
+
+## 磁盘空间
+
+全部在本机运行，因此模型也存在本机。以下数值来自一次真实安装的实测，不是估算。
+
+| 组成 | 体积 | 何时下载 |
+|---|---|---|
+| 运行环境（`.venv`） | 1.4 GB | 首次启动 |
+| 语音模型 `large-v3`（Apple Silicon GPU / CUDA） | 2.9 GB | 首次识别 |
+| 语音模型 `large-v3-turbo`（CPU 路径） | 1.5 GB | 首次识别 |
+| Ollama 程序本身 | 0.2 GB | 手动安装一次 |
+| 翻译模型 Hy-MT2 1.8B | 1.1 GB | 装好 Ollama 后由程序自动下载 |
+| 翻译模型 Hy-MT2 7B（可选） | 4.6 GB | 仅在你主动拉取时 |
+| 降噪模型 | 0.3 MB | 首次开播 |
+
+**建议预留约 6 GB**：运行环境 + `large-v3` + 1.8B 翻译模型，这是常规配置。
+额外使用 7B 档再加 4.6 GB。走 CPU 路径的机器约需 4.5 GB，因为
+`large-v3-turbo` 更小。
+
+下载都是一次性的。模型存放在系统级缓存中，与其它使用相同缓存的工具共享，
+不会按项目重复占用。
+
+需要清理时，它们分别在：
+
+```
+~/.cache/huggingface/hub     语音模型
+~/.ollama/models             翻译模型
+<项目目录>/.venv              运行环境
+<项目目录>/logs               审计日志
+```
+
+审计日志的增长约为**每小时 0.3 MB**——按每天监听 8 小时计约 2 MB，一个月约
+0.1 GB。它是纯文本 JSONL，某场复核完毕后可以直接删除。
 
 ## 快速开始
 
@@ -633,8 +701,8 @@ Chrome 插件扫描同一范围，无需配置。
 macOS 上关闭程序窗口即可退出，若通过 `Start.command` 启动则关闭终端窗口或按
 Ctrl-C。
 
-**公司电脑无法安装或空间不足。** 首次安装约需 5 GB（运行环境与语音模型），并需
-访问 PyPI 与 Hugging Face。企业安全策略常会阻断上述访问。
+**公司电脑无法安装或空间不足。** 首次安装约需 6 GB，并需访问 PyPI、Hugging Face
+与 ollama.com，各部分体积见「磁盘空间」一节。企业安全策略常会阻断上述访问。
 
 ## 隐私与使用边界
 
