@@ -119,6 +119,7 @@ class Pipeline:
         self.audit = None                # 每条直播一个审计日志文件
         self._stats_task = None
         self._selfcheck_task = None      # 持有引用，否则任务可能被 GC 掉
+        self._provision_task = None
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -322,6 +323,55 @@ class Pipeline:
                 "type": "notice",
                 "text": "违禁词表为空，本场不会报警——编辑 banned_terms.txt 后重新开始",
             })
+
+    async def ensure_local_translator(self):
+        """开工前把本地翻译准备好，让用户不必为此开终端。
+
+        没装 Ollama 的机器会退回 Google 免费接口——按 IP 限流，长时间监听经常
+        整段翻译失败。以前的提示是「自己去装 Ollama，再敲一行 ollama pull」，
+        对不会用终端的人等于永远用不上本地翻译。
+
+        Ollama 装了没启动就帮他启动；启动了但没有模型就用 HTTP 接口拉下来
+        （3GB 的 Whisper 模型我们本来就自动下，这个 1.1GB 是同一件事）。
+        压根没装的只能引导——那一步需要管理员权限，代劳不了。
+        """
+        from . import localmodel
+        from .translator import HYMT2_SMALL, _ollama_has_gemma, _ollama_has_hymt2
+
+        if getattr(self.args, "translator", "auto") not in ("auto",):
+            return                      # 用户显式指定了引擎，别自作主张
+        if await localmodel.is_running():
+            pass
+        elif localmodel.find_binary() is not None:
+            print("[信息] Ollama 已安装但没在运行，正在启动…")
+            if not await localmodel.start():
+                return
+        else:
+            return                      # 没装：交给自检那一行去引导
+
+        if _ollama_has_hymt2() or _ollama_has_hymt2(large=True) or _ollama_has_gemma():
+            return                      # 已经有本地模型了
+
+        await self.server.status(
+            "idle", "正在准备本地翻译模型（约 1.1 GB，只需这一次）…")
+        last = [-10.0]
+
+        def progress(pct, done_mb, total_mb):
+            if pct - last[0] < 5:       # 别把界面刷爆
+                return
+            last[0] = pct
+            asyncio.ensure_future(self.server.status(
+                "idle", "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
+                        "只需这一次）…".format(pct, done_mb, total_mb)))
+
+        ok = await localmodel.pull(HYMT2_SMALL, on_progress=progress)
+        if ok:
+            print("[信息] 本地翻译模型已就绪")
+            self.translator = create_translator("auto")
+            await self.server.status("idle", "本地翻译已就绪，可以开始了。")
+        else:
+            print("[警告] 本地翻译模型下载失败，本次继续用网络翻译")
+        await self.run_selfcheck()
 
     async def run_selfcheck(self):
         """启动自检：确认每项能力真的在工作，结果推到界面上。
