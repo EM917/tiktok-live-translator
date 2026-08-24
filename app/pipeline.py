@@ -191,14 +191,28 @@ class Pipeline:
         async with self._lock():
             await self._stop_locked(quiet=quiet)
 
+    # 等旧管线收尾的上限。超过就不等了——见 _stop_locked 里的说明。
+    STOP_GRACE_SEC = 3.0
+
     async def _stop_locked(self, quiet=False):
         """调用方必须已持有 _stream_lock。"""
         task = self._stream_task
         self._stream_task = None
         if task is not None and not task.done():
+            # 先让界面立刻回到待机。停止是用户的明确指令，界面不该在这儿干等：
+            # 点了没反应，人只会以为程序死了，然后反复点。
+            if not quiet:
+                await self.server.status("idle", "正在停止…")
             task.cancel()
+            # 等待要有上限。`run_in_executor` 里的识别调用**取消不掉**——线程一旦
+            # 开跑就只能等它自己结束，实测遇到复读跑飞时单次要十几秒。
+            # 以前这里是无限期 await，于是积压严重时点停止会像卡死一样。
+            # 超时就撒手：那条协程会自己走完 finally 收掉 ffmpeg，而它用的线程池
+            # 下面就整个丢弃，不会占住下一场直播。
             try:
-                await task
+                await asyncio.wait_for(asyncio.shield(task), self.STOP_GRACE_SEC)
+            except asyncio.TimeoutError:
+                print("[信息] 识别调用一时停不下来，已放手让它自行收尾")
             except asyncio.CancelledError:
                 pass
         if self._stats_task is not None and not self._stats_task.done():
