@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=10">
+  <link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
   <header class="topbar">
@@ -49,6 +49,9 @@
   </div>
 
   <div id="status-banner" class="status-banner hidden"></div>
+
+  <!-- 识别落后/降级：中控必须看得见「检测正在落后多少秒」 -->
+  <div id="health-bar" class="health-bar hidden"></div>
 
   <!-- 违禁词警报：本工具的核心产出，不自动消失，只能手动清空 -->
   <section id="alert-panel" class="alert-panel hidden">
@@ -120,6 +123,6 @@
     }
   </script>
   <script src="/static/normalize.js?v=1"></script>
-  <script src="/static/app.js?v=20"></script>
+  <script src="/static/app.js?v=21"></script>
 </body>
 </html>

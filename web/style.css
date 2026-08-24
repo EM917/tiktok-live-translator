@@ -272,3 +272,15 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 
 /* 译文未到达时的占位 */
 .cap .trans.pending { color: var(--text-faint); font-style: italic; font-size: 14px; }
+
+/* ---------- 识别落后 / 降级 ---------- */
+.health-bar {
+  padding: 7px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  color: #7a5200;
+  background: #ffeaa7;
+  border-bottom: 1px solid #e6c200;
+}
+.health-bar.degraded { color: #fff; background: var(--fail); border-bottom-color: var(--fail); }

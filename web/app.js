@@ -27,6 +27,7 @@
   var alertCount = document.getElementById("alert-count");
   var clearAlertsBtn = document.getElementById("clear-alerts");
   var statsEl = document.getElementById("stats-line");
+  var healthBar = document.getElementById("health-bar");
 
   var STATUS_TEXT = {
     idle: "待机",
@@ -306,6 +307,9 @@
       case "stats":
         renderStats(msg);
         break;
+      case "health":
+        renderHealth(msg);
+        break;
     }
   }
 
@@ -503,6 +507,9 @@
       "其中 切段 " + fmtMs(seg.p50) + " + 识别 " + fmtMs(asr.p50),
       "译文再等 " + fmtMs(tr.p50),
     ];
+    if (msg.audio_backlog_sec >= 3) {
+      parts.push("积压 " + msg.audio_backlog_sec.toFixed(0) + "s");
+    }
     if (msg.audio_segments_dropped) parts.push("丢音频 " + msg.audio_segments_dropped);
     // 识别跑飞是丢音频的前兆，出现就该看见
     if (msg.asr_overruns) parts.push("识别超时 " + msg.asr_overruns);
@@ -512,6 +519,17 @@
     }
     statsEl.textContent = parts.join(" · ");
     statsEl.classList.remove("hidden");
+  }
+
+  // 识别落后时必须让中控看见——假装一切正常比晚几秒报警危险得多
+  function renderHealth(msg) {
+    if (msg.level === "ok") {
+      healthBar.classList.add("hidden");
+      return;
+    }
+    healthBar.textContent = msg.text || "";
+    healthBar.classList.remove("hidden");
+    healthBar.classList.toggle("degraded", msg.level === "degraded");
   }
 
   function pad(n) { return (n < 10 ? "0" : "") + n; }

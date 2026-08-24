@@ -41,6 +41,12 @@ MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
 DENOISE_MODEL = Path(__file__).resolve().parent.parent / "models" / "bd.rnnn"
 DENOISE_MIN_BYTES = 100_000   # 完整模型约 300 KB；明显小于此值 = 下载被截断
 
+# 音频积压预算（秒）。软阈值只是告警，硬上限才丢——丢一段就等于可能漏词，
+# 所以硬上限给得很宽：60 秒 PCM 不到 2 MB，内存从来不是限制因素。
+AUDIO_BACKLOG_WARN_SEC = 10.0
+AUDIO_BACKLOG_DEGRADED_SEC = 30.0
+AUDIO_BACKLOG_HARD_SEC = 60.0
+
 
 def _arnndn_probe(model_path):
     """用 0.1 秒静音实测 arnndn 滤镜 + 模型能否初始化。
@@ -219,15 +225,46 @@ class Pipeline:
                 pass
 
     async def _stats_loop(self, interval=10):
-        """定期把延迟分位数和丢弃计数推给界面——中控能一眼看出链路是否健康。"""
+        """定期把延迟分位数、积压秒数和降级状态推给界面。
+
+        中控必须能看出「检测正在落后多少秒」——识别卡住时假装一切正常，
+        比晚几秒报警危险得多。"""
+        last_level = "ok"
         try:
             while True:
                 await asyncio.sleep(interval)
-                await self.server.broadcast({"type": "stats", **self.telemetry.snapshot()})
+                snap = self.telemetry.snapshot()
+                level = self._health_level(snap["audio_backlog_sec"])
+                snap["health"] = level
+                await self.server.broadcast({"type": "stats", **snap})
+                if level != last_level:
+                    await self._announce_health(level, snap["audio_backlog_sec"])
+                    last_level = level
         except asyncio.CancelledError:
             raise
         except Exception:
             pass
+
+    @staticmethod
+    def _health_level(backlog_sec):
+        if backlog_sec >= AUDIO_BACKLOG_DEGRADED_SEC:
+            return "degraded"
+        if backlog_sec >= AUDIO_BACKLOG_WARN_SEC:
+            return "lagging"
+        return "ok"
+
+    async def _announce_health(self, level, backlog_sec):
+        if level == "degraded":
+            text = ("🔴 检测已降级：识别落后 {:.0f} 秒，仍在继续处理（不会漏掉这段音频）"
+                    .format(backlog_sec))
+        elif level == "lagging":
+            text = "⚠️ 识别开始落后（积压 {:.0f} 秒），报警会相应延迟".format(backlog_sec)
+        else:
+            text = "✅ 识别已追上，检测恢复正常"
+        print("[健康] " + text)
+        await self.server.broadcast({"type": "health", "level": level,
+                                     "backlog_sec": round(backlog_sec, 1),
+                                     "text": text})
 
     async def _run_stream_inner(self, url):
         await self._begin_session(url)
@@ -424,7 +461,12 @@ class Pipeline:
 
         got_audio = False
         audio_secs = 0.0
-        queue = asyncio.Queue(maxsize=3)
+        # 音频缓冲按**秒数**预算，不按段数——段数上限在 9 秒片段下是 27 秒缓冲、
+        # 在 4 秒片段下只剩 12 秒，同一个数字对不同切段配置含义完全不同。
+        # 而且业务上「晚报警」远好过「永不报警」：识别卡住时先把音频存住，
+        # 60 秒的 16kHz 单声道 PCM 也才 1.9 MB，内存从来不是瓶颈。
+        queue = asyncio.Queue()
+        backlog = {"sec": 0.0}
         # 翻译独立成队列：翻译慢/卡住绝不能反压到识别链路上——那会让音频被丢弃，
         # 直接变成漏词。积压时丢的是**旧的翻译任务**，音频一段都不丢。
         trans_queue = asyncio.Queue(maxsize=4)
@@ -434,19 +476,27 @@ class Pipeline:
         segmenter = SilenceSegmenter()
 
         def _put(segment):
-            if queue.full():
+            if segment is None:
+                queue.put_nowait(None)
+                return
+            chunk, _ts = segment
+            dur = len(chunk) / 2.0 / SAMPLE_RATE
+            # 硬上限之前一律留着：识别慢只该推迟报警，不该让这段话永远消失
+            while backlog["sec"] + dur > AUDIO_BACKLOG_HARD_SEC:
                 try:
-                    queue.get_nowait()
-                    self.telemetry.drop_audio()
-                    # 丢音频 = 可能漏词，必须留痕：审计里少了这一类，事后就无法
-                    # 把「主播明明说了却没报警」归因到背压丢段
-                    if self.audit is not None:
-                        self.audit.dropped_audio(queue_depth=queue.qsize())
-                    print("[提示] 识别速度跟不上直播，丢弃一段音频以保持实时")
+                    stale, _ = queue.get_nowait()
                 except asyncio.QueueEmpty:
-                    pass
+                    break
+                backlog["sec"] -= len(stale) / 2.0 / SAMPLE_RATE
+                self.telemetry.drop_audio()
+                if self.audit is not None:
+                    self.audit.dropped_audio(queue_depth=queue.qsize())
+                print("[严重] 积压超过 {} 秒，被迫丢弃最旧的一段音频——这段可能漏词"
+                      .format(AUDIO_BACKLOG_HARD_SEC))
             queue.put_nowait(segment)
+            backlog["sec"] += dur
             self.telemetry.asr_queue_depth = queue.qsize()
+            self.telemetry.set_backlog(backlog["sec"])
 
         def _drop_job(job):
             """告诉界面这条不会有译文了——否则它永远停在「翻译中…」。"""
@@ -493,6 +543,8 @@ class Pipeline:
                 if item is None:
                     break
                 segment, audio_end_ts = item
+                backlog["sec"] = max(0.0, backlog["sec"] - len(segment) / 2.0 / SAMPLE_RATE)
+                self.telemetry.set_backlog(backlog["sec"])
                 t0 = time.time()
                 try:
                     result = await loop.run_in_executor(

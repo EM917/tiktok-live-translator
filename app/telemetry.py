@@ -41,6 +41,11 @@ class Telemetry:
         self.asr_overruns = 0
         self.asr_queue_depth = 0
         self.translation_queue_depth = 0
+        # 积压按**音频秒数**计，不按段数：maxsize=3 在 9 秒片段下是 27 秒缓冲、
+        # 在 4 秒片段下只剩 12 秒——同一个数字对不同切段配置含义完全不同，
+        # 而运维真正需要知道的是「检测落后了多少秒」
+        self.audio_backlog_sec = 0.0
+        self.max_backlog_sec = 0.0
 
     def reset(self):
         """每场直播重新计数。统计条上的「丢音频 7」如果来自三小时前的另一个
@@ -56,6 +61,8 @@ class Telemetry:
         self.asr_overruns = 0
         self.asr_queue_depth = 0
         self.translation_queue_depth = 0
+        self.audio_backlog_sec = 0.0
+        self.max_backlog_sec = 0.0
 
     def record_asr(self, asr_ms, e2e_ms, segment_ms=None):
         self.audio_segments_total += 1
@@ -68,6 +75,10 @@ class Telemetry:
 
     def record_translation(self, translate_ms):
         self.translate_ms.append(translate_ms)
+
+    def set_backlog(self, seconds):
+        self.audio_backlog_sec = seconds
+        self.max_backlog_sec = max(self.max_backlog_sec, seconds)
 
     def note_overrun(self):
         self.asr_overruns += 1
@@ -94,6 +105,8 @@ class Telemetry:
             "audio_segments_dropped": self.audio_segments_dropped,
             "translation_jobs_dropped": self.translation_jobs_dropped,
             "asr_overruns": self.asr_overruns,
+            "audio_backlog_sec": round(self.audio_backlog_sec, 1),
+            "max_backlog_sec": round(self.max_backlog_sec, 1),
             "asr_queue_depth": self.asr_queue_depth,
             "translation_queue_depth": self.translation_queue_depth,
         }
