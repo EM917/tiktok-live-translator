@@ -33,9 +33,9 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 - ⚡ **Automatic hardware tuning** — detects your chip (Apple Silicon GPU / NVIDIA CUDA / plain CPU) and automatically picks the best model that can still run in real time — zero-config out of the box
 - 📺 **Two display modes** — a local web UI (scrolling bilingual subtitle history + a large caption at the bottom), or a Chrome extension overlay on the TikTok page
 - 🚨 **Real-time banned-term alerts** — three-tier matching (exact / morphological variant / fuzzy) over the **recognized original text**, independent of translation, and matching across caption boundaries; edit `banned_terms.txt`
-- ⚡ **Observable latency** — a live footer readout of time-to-first-caption (P50/P95) broken down into segmentation + recognition + translation, plus an audit log recording every segment including candidates the quality filter dropped
+- ⚡ **Observable latency** — a live footer readout of time-to-first-caption (P50/P95) broken down into segmentation + recognition + translation, plus an audit log recording every segment — the accepted text, the candidates the quality filter dropped, the banned-term hits, and the translation that followed
 - ✅ **Startup self-check** — every capability is *exercised*, not merely configured: denoising actually runs a sample through RNNoise, translation actually pings the engine, the audit log actually writes. Results appear on the home screen with a repair step for anything red. This exists because the denoiser once shipped broken for weeks, announced only in a log line nobody read
-- 🔄 **Fault-tolerant** — auto-reconnects with a fresh stream URL when the stream drops (and can tell a network blip from the streamer actually ending); falls back to scraping the stream URL straight from the live page when yt-dlp resolution fails; drops segments automatically to stay real-time when recognition falls behind; keeps yt-dlp fresh automatically in the background
+- 🔄 **Fault-tolerant** — four independent ways to resolve a stream URL (TikTok's own live API → yt-dlp → yt-dlp with your browser's login → the live page itself), because yt-dlp reports a blocked extractor as "the channel is not currently live"; every resolved URL is probed before the session starts; auto-reconnects with a fresh URL when the stream drops, and can tell a network blip from the streamer actually ending; drops segments automatically to stay real-time when recognition falls behind; keeps yt-dlp fresh automatically in the background
 
 ## Quick Start
 
@@ -112,7 +112,7 @@ Any auto-selected value can be overridden with a command-line flag (see below).
 | `--beam` | Beam search width (larger = more accurate but slower; `1` = greedy; ct2 backend only) | `5` |
 | `--context` | Enable rolling context. **Off by default**: measured to trigger repetition loops that badly hurt recall | off |
 | `--asr-temperature` | Decoding temperature. **Defaults to 0 (single pass)**: Whisper otherwise re-decodes a segment at up to six temperatures when quality checks fail, which measured 25s on music-heavy audio | `0` |
-| `--translator` | Translation engine: `auto`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
+| `--translator` | Translation engine: `auto`/`hymt2-7b`/`hymt2`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
 | `--denoise` | RNNoise voice denoising: `auto`/`on`/`off` | `auto` (on) |
 | `--port` | Local UI port | `8765` |
 | `--cookies` | Path to a yt-dlp cookies.txt file (may be needed for region-restricted streams) | none |
@@ -122,41 +122,45 @@ Any auto-selected value can be overridden with a command-line flag (see below).
 
 ## Translation Engines
 
-- `auto` (default) — uses `gemma` if TranslateGemma is installed in local Ollama, otherwise falls back to `google`.
-- `gemma` — **Recommended**: TranslateGemma, Google's open-source translation-specialized model. Runs on your local GPU, fully offline and free, and handles colloquial speech/slang far better than Google's web API. Install:
+Install a local engine once and everything stays offline and free:
+
+```bash
+brew install ollama          # See https://ollama.com/download for Windows/Linux
+brew services start ollama   # or run ollama serve manually
+
+ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, best accuracy, needs ~16 GB RAM
+# or, on a lighter machine:
+ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB, runs anywhere
+```
+
+- `auto` (default) — picks the best engine actually installed: `hymt2-7b` → `hymt2` → `gemma` → `google`. The home-screen self-check names which one is live, so a silent downgrade to the network engine cannot go unnoticed.
+- `hymt2-7b` — **Recommended**: Hy-MT2 7B (Tencent, Apache 2.0). The most accurate on domain terms; see the measurements below.
+- `hymt2` — Hy-MT2 1.8B. Same family, a third the accuracy gap and a third the size — the right pick under ~16 GB of RAM.
+- `gemma` — TranslateGemma 4B, the previous default. Still supported; `OLLAMA_TRANSLATE_MODEL` switches it to `translategemma:12b`/`27b`.
 
   ```bash
-  brew install ollama          # See https://ollama.com/download for Windows/Linux
   ollama pull translategemma:4b
-  brew services start ollama   # or run ollama serve manually
   ```
-
-  You can switch models via the `OLLAMA_TRANSLATE_MODEL` environment variable to `translategemma:12b`/`27b` (more accurate, slower).
-- `google` — Google Translate's free web API, no key required. **Note: subtitle text is sent to Google**, and it tends to mistranslate colloquial speech more often.
+- `google` — Google Translate's free web API, no key required. **Note: subtitle text is sent to Google**, it rate-limits per IP under sustained use, and it mistranslates colloquial speech far more often.
 - `claude` — requires the `ANTHROPIC_API_KEY` environment variable (defaults to Claude Haiku; override with `CLAUDE_TRANSLATE_MODEL`).
 - `openai` — requires `OPENAI_API_KEY` (optionally `OPENAI_BASE_URL`, `OPENAI_MODEL`); compatible with any OpenAI-style API, including local LM Studio / vLLM.
 - `none` — shows only the raw transcription, no translation, fully offline.
 
-Real-world comparison (colloquial Spanish → Chinese):
+Why a local engine matters, on colloquial Spanish → Chinese:
 
-| Original | Google | TranslateGemma |
+| Original | Google | Local model |
 |---|---|---|
 | *Se mueren lo rico* (so good it's unreal) | ❌ 有钱人死 (the rich people die) | ✅ 味道非常好 (tastes amazing) |
 | *tengo un sueño* (I'm sleepy) | ❌ 我做了一个梦 (I had a dream) | ✅ 现在感觉很困 (feeling very sleepy right now) |
 | *Es vegano* (it's a vegan product) | ❌ 它是素食主义者 (he/she is a vegetarian) | ✅ 纯素的 (vegan) |
 
-### Choosing a translation model
+### How the engines were compared
 
-Both tiers are local, free and Apache 2.0. Pull the one your machine suits —
-whichever is present is picked automatically, larger first.
-
-```bash
-ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB, runs anywhere
-ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, needs ~16 GB RAM
-```
-
-Measured on 280 glossary terms taken from real logged captions, plus a live
-Spanish selling stream on an 18 GB M-series Mac:
+The number that matters here is not fluency — it is whether the model honours
+the domain glossary, because that is what keeps product names, prices and promo
+conditions correct. Measured with `tools/bench_glossary.py` on 280 glossary
+terms taken from real logged captions, plus a live Spanish selling stream on an
+18 GB M-series Mac:
 
 | | glossary adherence | multi-word phrases | translation latency |
 |---|---|---|---|
@@ -183,12 +187,11 @@ The subtitle bar supports **dragging** to reposition it, **double-clicking** to 
 
 ```mermaid
 flowchart TD
-    URL["TikTok live-room URL"] --> RESOLVE["yt-dlp stream resolver"]
+    URL["TikTok live-room URL"] --> RESOLVE["stream resolver<br/>live API → yt-dlp → +browser login → page<br/>(audio-only track preferred)"]
     RESOLVE -->|"media URL"| FF["ffmpeg → RNNoise denoise → 16 kHz PCM"]
-    RESOLVE -.->|"extractor down: scrape the page HTML"| FF
     FF --> VAD["energy-VAD segmenter (2.5–9 s)"]
-    VAD --> ASR["Whisper ASR<br/>MLX GPU / faster-whisper<br/>rolling context + confidence filter"]
-    ASR --> TR["translation<br/>TranslateGemma (local) / Google / Claude / OpenAI / off"]
+    VAD --> ASR["Whisper ASR<br/>MLX GPU / faster-whisper<br/>confidence + hallucination filter"]
+    ASR --> TR["translation<br/>Hy-MT2 7B / 1.8B (local) / TranslateGemma / Google / Claude / OpenAI / off"]
     TR --> WS(("WebSocket"))
     WS --> UI["browser subtitle UI"]
     WS --> OV["Chrome-extension overlay<br/>on the TikTok page"]
@@ -207,9 +210,9 @@ The current version is shown in the page footer.
 
 ## FAQ
 
-- **It can't get the stream but you can watch the room in your browser** — TikTok now reports live rooms as "not currently live" to **unauthenticated** requests (measured: of six rooms live at the same moment, only one resolved anonymously). The app automatically retries by borrowing the TikTok session already in your browser, so **being logged into TikTok in Chrome/Safari is all that's needed — no file to export**. Cookies stay between your machine and TikTok. If it still fails, open the room in your browser once to confirm you can watch it, then retry; you can also pin a browser with `--cookies-browser safari` or supply your own `--cookies cookies.txt`.
+- **It can't get the stream but you can watch the room in your browser** — this used to be common and should now be rare. yt-dlp reports a blocked TikTok extractor as "the channel is not currently live", which is simply false, and that was the only thing the app had to go on. Since v0.10.0 it tries four independent routes: TikTok's own live API (which does not involve yt-dlp at all and answers anonymously), yt-dlp, yt-dlp borrowing the TikTok session already in your browser, and the live page itself. **Being logged into TikTok in Chrome/Safari helps but is usually not required**, and there is no file to export; cookies stay between your machine and TikTok. The app also no longer claims the streamer is offline unless TikTok explicitly says the room ended — if every route failed it says so and suggests retrying, because a temporary block is the usual cause. You can still pin a browser with `--cookies-browser safari` or supply `--cookies cookies.txt`.
 - **First "Start" stuck downloading the recognition model** — it's downloading from Hugging Face (large-v3 is about 3GB); progress is shown on the page, and it only happens once.
-- **Translations suddenly fail across the board and captions show only the original language** — the default free Google endpoint rate-limits per IP and starts returning 429 under sustained use. The app pauses requests for two minutes and recovers automatically, with a banner on the page; **speech recognition is unaffected**. For long viewing sessions, switch to local TranslateGemma (offline, no rate limit — see "Translation Engines") or use an API key with `--translator claude` / `openai`. No network or a stopped Ollama causes the same symptom.
+- **Translations suddenly fail across the board and captions show only the original language** — the default free Google endpoint rate-limits per IP and starts returning 429 under sustained use. The app pauses requests for two minutes and recovers automatically, with a banner on the page; **speech recognition is unaffected**. For long viewing sessions, switch to a local Hy-MT2 model (offline, no rate limit — see "Translation Engines") or use an API key with `--translator claude` / `openai`. No network or a stopped Ollama causes the same symptom.
 - **Status says "live" but no captions appear for a long time** — usually normal: while the streamer plays music or isn't talking, silent and low-confidence segments are dropped on purpose (better nothing than guessing words out of background music). If the streamer is clearly talking and nothing ever appears, try `--denoise off` (denoising occasionally over-trims some audio) or a different model size.
 - **Captions stop after closing the laptop lid / switching Wi-Fi** — when the stream drops, the app re-resolves the URL and reconnects automatically (up to 5 attempts with growing backoff), so it usually recovers on its own. If you see "repeatedly interrupted and auto-reconnect failed", just hit Start once more.
 - **Recognition can't keep up with the stream / terminal shows dropped audio** — switch to a smaller model (`--model small`), or use `--beam 1`; Apple Silicon users should confirm `pip install mlx-whisper` succeeded so it runs on the GPU.
@@ -240,7 +243,7 @@ trusting: it means the capability was actually executed, not merely configured.
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — livestream resolution
 - [FFmpeg](https://ffmpeg.org/) — audio processing (built-in RNNoise `arnndn` filter)
 - [rnnoise-models](https://github.com/GregorR/rnnoise-models) — denoising model (beguiling-drafter)
-- [Ollama](https://github.com/ollama/ollama) + [TranslateGemma](https://ollama.com/library/translategemma) — local translation
+- [Ollama](https://github.com/ollama/ollama) + [Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2) / [TranslateGemma](https://ollama.com/library/translategemma) — local translation
 
 ## Author & License
 
@@ -265,9 +268,9 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 - ⚡ **硬件自动配置** —— 检测你的芯片（Apple Silicon GPU / NVIDIA CUDA / 普通 CPU）自动选择能实时跑的最优模型，零配置开箱即用
 - 📺 **双显示端** —— 本地网页 UI（历史双语字幕 + 底部大字幕），或 Chrome 插件叠加在 TikTok 页面上
 - 🚨 **违禁词实时报警** —— 在**识别原文**上做三级匹配（精确/形态变体/模糊），完全不依赖翻译，短语被切在两段字幕之间也能命中；词表见 `banned_terms.txt`
-- ⚡ **延迟可观测** —— 界面底部实时显示「首字等待 P50/P95」及其构成（切段 + 识别 + 翻译），配套审计日志逐段记录识别原文与被过滤的候选
+- ⚡ **延迟可观测** —— 界面底部实时显示「首字等待 P50/P95」及其构成（切段 + 识别 + 翻译），配套审计日志逐段记录：采纳的识别文本、被质量过滤丢掉的候选、命中的违禁词，以及随后到达的译文
 - ✅ **启动自检** —— 每项能力都**实际跑一遍**，而不是看配置写没写：降噪真的过一遍 RNNoise，翻译真的 ping 一次引擎，审计日志真的写一次。结果显示在首页，红的那项会给出修复步骤。这个功能来自一次真实事故——降噪整整几周没生效，只在一行没人看的日志里说了句话
-- 🔄 **抗故障** —— 直播流中断自动换新地址重连（能区分网络抖动与主播真下播）；yt-dlp 解析失效时自动从直播页面直接挖流地址；识别跟不上时自动丢段保实时；后台自动保持 yt-dlp 为最新版
+- 🔄 **抗故障** —— 拿直播流地址有四条互相独立的路（TikTok 官方直播接口 → yt-dlp → yt-dlp 借用浏览器登录态 → 直播页面本身），因为 yt-dlp 的提取器一被挡就会谎报「主播未开播」；每个拿到的地址都先探活再开始；直播流中断自动换新地址重连，并能区分网络抖动与主播真下播；识别跟不上时自动丢段保实时；后台自动保持 yt-dlp 为最新版
 
 ## 快速开始
 
@@ -344,7 +347,7 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 | `--beam` | beam search 宽度（越大越准越慢，`1`=贪心；仅 ct2 后端） | `5` |
 | `--context` | 开启滚动上下文。**默认关闭**：实测它会诱发复读死循环，反而大幅拉低召回率 | 关 |
 | `--asr-temperature` | 识别解码温度。**默认 0（只解码一次）**：Whisper 默认会在质量不达标时用更高温度重解最多 6 次，音乐段上实测单次识别可达 25 秒 | `0` |
-| `--translator` | 翻译引擎：`auto`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
+| `--translator` | 翻译引擎：`auto`/`hymt2-7b`/`hymt2`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
 | `--denoise` | RNNoise 人声降噪：`auto`/`on`/`off` | `auto`（开） |
 | `--port` | 本地 UI 端口 | `8765` |
 | `--cookies` | yt-dlp cookies.txt 路径（地区受限的直播间可能需要） | 无 |
@@ -354,42 +357,44 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 
 ## 翻译引擎
 
-- `auto`（默认）—— 本地 Ollama 里装了 TranslateGemma 就用 `gemma`，否则退回 `google`。
-- `gemma` —— **推荐**：Google 开源的翻译专用模型 TranslateGemma，跑在本地 GPU 上，完全离线免费，口语/俚语翻译质量远好于谷歌网页接口。安装：
+装一次本地引擎，之后全程离线免费：
+
+```bash
+brew install ollama          # Windows/Linux 见 https://ollama.com/download
+brew services start ollama   # 或手动运行 ollama serve
+
+ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语最准，建议 16 GB 以上内存
+# 机器吃力的话换这个：
+ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB，什么机器都跑得动
+```
+
+- `auto`（默认）—— 在**实际装了**的引擎里挑最好的：`hymt2-7b` → `hymt2` → `gemma` → `google`。首页自检会写明当前用的是哪一个，所以「悄悄退回网络引擎」不会没人发现。
+- `hymt2-7b` —— **推荐**：Hy-MT2 7B（腾讯，Apache 2.0）。领域术语最准，数据见下。
+- `hymt2` —— Hy-MT2 1.8B。同一家族，体积只有 1/4，内存 16 GB 以下选它。
+- `gemma` —— TranslateGemma 4B，上一版的默认。仍然支持，`OLLAMA_TRANSLATE_MODEL` 可换成 `translategemma:12b`/`27b`。
 
   ```bash
-  brew install ollama          # Windows/Linux 见 https://ollama.com/download
   ollama pull translategemma:4b
-  brew services start ollama   # 或手动运行 ollama serve
   ```
-
-  模型可用环境变量 `OLLAMA_TRANSLATE_MODEL` 换成 `translategemma:12b`/`27b`（更准更慢）。
-- `google` —— Google 翻译网页版免费接口，无需密钥。**注意：字幕文本会被发送给 Google**，且口语直译错误较多。
+- `google` —— Google 翻译网页版免费接口，无需密钥。**注意：字幕文本会被发送给 Google**，长时间使用会按 IP 限流，口语直译错误也明显更多。
 - `claude` —— 需要环境变量 `ANTHROPIC_API_KEY`（默认 Claude Haiku，可用 `CLAUDE_TRANSLATE_MODEL` 覆盖）。
 - `openai` —— 需要 `OPENAI_API_KEY`（可选 `OPENAI_BASE_URL`、`OPENAI_MODEL`，兼容各类 OpenAI 风格接口，包括本地 LM Studio / vLLM）。
 - `none` —— 只显示识别原文，不翻译，完全离线。
 
-实测对比（西语口语 → 中文）：
+本地引擎为什么重要（西语口语 → 中文）：
 
-| 原文 | Google | TranslateGemma |
+| 原文 | Google | 本地模型 |
 |---|---|---|
 | *Se mueren lo rico*（好吃到不行） | ❌ 有钱人死 | ✅ 味道非常好 |
 | *tengo un sueño*（我好困） | ❌ 我做了一个梦 | ✅ 现在感觉很困 |
 | *Es vegano*（纯素产品） | ❌ 它是素食主义者 | ✅ 纯素的 |
 
 <a name="extension"></a>
-### 翻译模型怎么选
+### 这几个引擎是怎么比出来的
 
-两档都是本地、免费、Apache 2.0。按机器情况拉一个即可——装了哪个就用哪个，
-大的优先。
-
-```bash
-ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB，什么机器都跑得动
-ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，建议 16 GB 以上内存
-```
-
-实测（280 个词表术语，语料取自真实直播字幕；延迟来自一台 18 GB M 系列 Mac 上
-的西语带货直播实盘）：
+这里要看的不是「译文顺不顺」，而是**模型有没有遵守领域词表**——商品名、价格、
+促销条件靠它保证正确。用 `tools/bench_glossary.py` 在 280 个词表术语上实测
+（语料取自真实直播字幕；延迟来自一台 18 GB M 系列 Mac 上的西语带货直播实盘）：
 
 | | 词表遵从率 | 多词短语 | 翻译延迟 |
 |---|---|---|---|
@@ -413,12 +418,11 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，建议 16 GB 以�
 
 ```mermaid
 flowchart TD
-    URL["TikTok 直播间地址"] --> RESOLVE["yt-dlp 解析直播流"]
+    URL["TikTok 直播间地址"] --> RESOLVE["解析直播流<br/>官方接口 → yt-dlp → 借登录态 → 直播页<br/>（优先纯音频档）"]
     RESOLVE -->|"媒体地址"| FF["ffmpeg → RNNoise 人声降噪 → 16 kHz PCM"]
-    RESOLVE -.->|"提取器失效：直接从页面 HTML 挖流地址"| FF
     FF --> VAD["能量 VAD 切段（2.5–9 秒）"]
-    VAD --> ASR["Whisper 语音识别<br/>MLX GPU / faster-whisper<br/>滚动上下文 + 置信度过滤"]
-    ASR --> TR["翻译引擎<br/>TranslateGemma（本地）/ Google / Claude / OpenAI / 关闭"]
+    VAD --> ASR["Whisper 语音识别<br/>MLX GPU / faster-whisper<br/>置信度过滤 + 幻觉丢弃"]
+    ASR --> TR["翻译引擎<br/>Hy-MT2 7B / 1.8B（本地）/ TranslateGemma / Google / Claude / OpenAI / 关闭"]
     TR --> WS(("WebSocket"))
     WS --> UI["浏览器字幕界面"]
     WS --> OV["Chrome 插件叠加字幕<br/>（TikTok 页面上）"]
@@ -437,9 +441,9 @@ flowchart TD
 
 ## 常见问题
 
-- **提示没能获取到直播流，但你在浏览器里看得到** —— TikTok 现在对**未登录**请求会把在播的直播间报成「未开播」（实测同一时刻 6 个在播房间只有 1 个能匿名解析）。程序会自动借用你浏览器里现成的 TikTok 登录状态重试，**你只要平时在 Chrome/Safari 里登录过 TikTok 就行，不用导出任何文件**。cookie 只在本机与 TikTok 之间使用。若仍失败：先在浏览器里打开一次该直播间确认能看，再重试；也可以用 `--cookies-browser safari` 指定浏览器，或 `--cookies cookies.txt` 自带凭据。
+- **提示没能获取到直播流，但你在浏览器里看得到** —— 以前很常见，现在应该很少了。根因是 yt-dlp 的 TikTok 提取器一被挡就报「主播未开播」，那句话是错的，而程序以前只能听它的。v0.10.0 起改成四条互相独立的路：TikTok 官方直播接口（完全不经过 yt-dlp，匿名就能用）、yt-dlp、yt-dlp 借用你浏览器里的 TikTok 登录态、直播页面本身。**平时在 Chrome/Safari 里登录过 TikTok 会有帮助，但通常已经不是必需**，也不用导出任何文件；cookie 只在本机与 TikTok 之间使用。另外程序不再替 TikTok 断言主播没在播——只有接口明确说房间已结束才这么讲，四条路都失败时会如实说「没拿到」并建议过会儿再试，因为临时被挡是最常见的原因。仍可用 `--cookies-browser safari` 指定浏览器，或 `--cookies cookies.txt` 自带凭据。
 - **首次点「开始翻译」卡在下载识别模型** —— 正在从 Hugging Face 下载（large-v3 约 3GB），页面上会显示进度，只需一次。
-- **翻译突然大面积失败，字幕只剩外文原文** —— 默认的 Google 免费接口按 IP 限流，长时间高频请求会被挡（返回 429）。程序会自动暂停请求 2 分钟再恢复，页面顶部也会给出提示，**语音识别不受影响**。常看长直播建议换成本地 TranslateGemma（离线、不限流，见「翻译引擎」），或配 API Key 用 `--translator claude` / `openai`。另外断网、Ollama 没启动同样会导致翻译失败。
+- **翻译突然大面积失败，字幕只剩外文原文** —— 默认的 Google 免费接口按 IP 限流，长时间高频请求会被挡（返回 429）。程序会自动暂停请求 2 分钟再恢复，页面顶部也会给出提示，**语音识别不受影响**。常看长直播建议换成本地 Hy-MT2（离线、不限流，见「翻译引擎」），或配 API Key 用 `--translator claude` / `openai`。另外断网、Ollama 没启动同样会导致翻译失败。
 - **状态显示「直播中」但很久不出字幕** —— 多数情况正常：主播放音乐或没说话时，静音段和低置信度片段会被直接丢弃（宁缺毋滥，免得把背景音乐瞎猜成人话）。若主播明明一直在说话却始终没字幕，可试 `--denoise off`（个别音频会被降噪削得过狠），或换一档模型。
 - **合上笔记本睡眠 / 切换 WiFi 后字幕停了** —— 直播流断开后程序会自动重新解析地址并重连（最多 5 次，间隔逐次拉长），通常自己就恢复。若看到「多次中断且自动重连失败」，点一次「开始翻译」重来即可。
 - **识别追不上直播 / 终端提示丢弃音频** —— 换小一档模型（`--model small`），或 `--beam 1`；Apple Silicon 用户确认 `pip install mlx-whisper` 后走 GPU。
@@ -468,7 +472,7 @@ flowchart TD
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) —— 直播流解析
 - [FFmpeg](https://ffmpeg.org/) —— 音频处理（内置 RNNoise `arnndn` 滤镜）
 - [rnnoise-models](https://github.com/GregorR/rnnoise-models) —— 降噪模型（beguiling-drafter）
-- [Ollama](https://github.com/ollama/ollama) + [TranslateGemma](https://ollama.com/library/translategemma) —— 本地翻译
+- [Ollama](https://github.com/ollama/ollama) + [Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2) / [TranslateGemma](https://ollama.com/library/translategemma) —— 本地翻译
 
 ## 作者与许可
 
