@@ -352,11 +352,14 @@ class OllamaHyMT2Translator(BaseTranslator):
             return None
 
 
-# 兜底清理。第一版只匹配 <...hy_...>，实盘 88 条字幕里仍漏了 12 条（13.6%）——
-# 模型吐出来的常常**没有尖括号**，就是一个全角竖线加 token 名：
-#     「由于太受欢迎而售罄。｜hy_begin▁of▁sentence」
-# 所以开闭标记全部可选，只认 hy_ 前缀。正常字幕里不会出现 hy_xxx。
-_SPECIAL_RE = re.compile(r"[<｜｠]*\s*hy_[A-Za-z0-9▁_]+\s*[｜｠>]*")
+# 兜底清理。这个正则被实测放宽过两次，每次都是模型吐出了没预料到的写法：
+#   1. 第一版只匹配 <...hy_...>，实盘 88 条里漏了 12 条（13.6%）——模型
+#      多数时候不带尖括号，就是一个全角竖线加 token 名：
+#          「由于太受欢迎而售罄。｜hy_begin▁of▁sentence」
+#   2. 分隔符也不止下划线：实测出现过 `｜hy-Assistant`（连字符）。
+# 教训是别按「已知的几种写法」列举，而是认 hy 前缀加分隔符这个形状。
+# 正常字幕里不会出现 hy_xxx / hy-xxx。
+_SPECIAL_RE = re.compile(r"[<｜｠]*\s*hy[-_][A-Za-z0-9▁_-]+\s*[｜｠>]*")
 
 
 def _strip_special(text):

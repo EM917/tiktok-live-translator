@@ -81,6 +81,8 @@ def test_special_tokens_never_reach_the_caption():
     # 无尖括号（实盘里最常见的形态）
     assert _strip_special("由于太受欢迎而售罄。｜hy_begin▁of▁sentence") == "由于太受欢迎而售罄。"
     assert _strip_special("你实际上是在为自己支付30%的费用。｜hy_User") == "你实际上是在为自己支付30%的费用。"
+    # 分隔符不止下划线：实测出现过连字符写法
+    assert _strip_special("免费获得这些滴剂。｜hy-Assistant") == "免费获得这些滴剂。"
     # 带尖括号，两种竖线变体
     assert _strip_special("索菲亚！<｠hy_end▁of▁sentence｠>") == "索菲亚！"
     assert _strip_special("你好<｜hy_end▁of▁sentence｜>") == "你好"
