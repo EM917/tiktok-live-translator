@@ -28,6 +28,8 @@
   var clearAlertsBtn = document.getElementById("clear-alerts");
   var statsEl = document.getElementById("stats-line");
   var healthBar = document.getElementById("health-bar");
+  var watchState = document.getElementById("watch-state");
+  var watchDesc = document.getElementById("watch-desc");
 
   var STATUS_TEXT = {
     idle: "待机",
@@ -255,6 +257,7 @@
         transBannerOn = false;
         clearBtn.click();
         if (msg.config) {
+          if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
           if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
@@ -309,6 +312,9 @@
         break;
       case "health":
         renderHealth(msg);
+        break;
+      case "watchlist":
+        renderWatchlist(msg);
         break;
     }
   }
@@ -530,6 +536,21 @@
     healthBar.textContent = msg.text || "";
     healthBar.classList.remove("hidden");
     healthBar.classList.toggle("degraded", msg.level === "degraded");
+  }
+
+  // 首页的违禁词监控状态。词表默认为空，用户不看到这个就不知道要去配
+  function renderWatchlist(msg) {
+    if (!watchState) return;
+    if (msg.count > 0) {
+      watchState.textContent = "已启用 · " + msg.count + " 条";
+      watchState.className = "watch-state on";
+      watchDesc.textContent = "开播后会实时监听主播原话，命中立即报警（不依赖翻译，"
+        + "翻译再慢也不影响报警）。";
+    } else {
+      watchState.textContent = "未配置";
+      watchState.className = "watch-state off";
+      watchDesc.textContent = "当前词表为空，本工具不会发出任何违禁词报警。";
+    }
   }
 
   function pad(n) { return (n < 10 ? "0" : "") + n; }

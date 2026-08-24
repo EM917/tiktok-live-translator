@@ -71,7 +71,7 @@ _MLX_REPOS = {
 
 def create_transcriber(backend, model_size, device="auto", compute_type="auto",
                        language=None, beam_size=5, use_context=False,
-                       temperature=DEFAULT_TEMPERATURE):
+                       temperature=DEFAULT_TEMPERATURE, hotwords=None):
     """backend: ct2（faster-whisper，CPU/CUDA）或 mlx（Apple GPU）。auto 优先 mlx。"""
     if backend == "auto":
         try:
@@ -81,10 +81,10 @@ def create_transcriber(backend, model_size, device="auto", compute_type="auto",
             backend = "ct2"
     if backend == "mlx":
         return MLXTranscriber(model_size, language=language, use_context=use_context,
-                              temperature=temperature)
+                              temperature=temperature, hotwords=hotwords)
     return Transcriber(model_size, device=device, compute_type=compute_type,
                        language=language, beam_size=beam_size, use_context=use_context,
-                       temperature=temperature)
+                       temperature=temperature, hotwords=hotwords)
 
 
 class _FilterMixin:
@@ -135,13 +135,16 @@ class Transcriber(_FilterMixin):
 
     def __init__(self, model_size="large-v3-turbo", device="auto", compute_type="auto",
                  language=None, beam_size=5, use_context=False,
-                 temperature=DEFAULT_TEMPERATURE):
+                 temperature=DEFAULT_TEMPERATURE, hotwords=None):
         from faster_whisper import WhisperModel
 
         self.language = language
         self.beam_size = beam_size
         self.use_context = use_context
         self.temperature = temperature
+        # 静态热词（商品名等）。与滚动上下文不同：它不随时间漂移，
+        # 不会把上一段的幻觉传染给下一段
+        self.hotwords = hotwords
         self._context = ""
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
@@ -149,7 +152,9 @@ class Transcriber(_FilterMixin):
         """输入 16 kHz mono s16le PCM，返回 (文本, 识别到的语言代码)。"""
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         kwargs = {}
-        if self.use_context and self._context:
+        if self.hotwords:
+            kwargs["initial_prompt"] = self.hotwords
+        elif self.use_context and self._context:
             kwargs["initial_prompt"] = self._context[-200:]
         segments, info = self.model.transcribe(
             audio,
@@ -170,7 +175,7 @@ class MLXTranscriber(_FilterMixin):
     """mlx-whisper 后端：跑在 Apple Silicon GPU 上，large-v3 也能数倍实时。"""
 
     def __init__(self, model_size="large-v3", language=None, use_context=False,
-                 temperature=DEFAULT_TEMPERATURE):
+                 temperature=DEFAULT_TEMPERATURE, hotwords=None):
         import mlx_whisper  # 提前失败好过跑到一半失败
 
         self._mlx = mlx_whisper
@@ -178,6 +183,9 @@ class MLXTranscriber(_FilterMixin):
         self.language = language
         self.use_context = use_context
         self.temperature = temperature
+        # 静态热词（商品名等）。与滚动上下文不同：它不随时间漂移，
+        # 不会把上一段的幻觉传染给下一段
+        self.hotwords = hotwords
         self._context = ""
         # 预热一次：触发模型下载/编译，让第一段真实音频不用等
         self._mlx.transcribe(np.zeros(16000, dtype=np.float32),
@@ -186,7 +194,9 @@ class MLXTranscriber(_FilterMixin):
     def transcribe(self, pcm):
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         kwargs = {}
-        if self.use_context and self._context:
+        if self.hotwords:
+            kwargs["initial_prompt"] = self.hotwords
+        elif self.use_context and self._context:
             kwargs["initial_prompt"] = self._context[-200:]
         out = self._mlx.transcribe(
             audio,

@@ -1,36 +1,91 @@
 # 违禁词表 —— 一行一个词或短语，# 开头是注释，空行忽略
 #
-# 【怎么用】
-# 程序首次启动会把本文件复制成同目录下的 banned_terms.txt，
+# 【怎么用】程序首次启动会把本文件复制成同目录下的 banned_terms.txt，
 # 请编辑那一份（banned_terms.txt），本文件保持原样即可。
-# 分开两份是为了：你的词表不会被程序更新覆盖，也不会挡住「一键更新」。
 # 改完保存后，点一次「停止」再「开始翻译」即可生效（不用重启程序）。
 #
-# 【匹配规则】写词的时候不用考虑这些，程序会自动处理：
-#   * 大小写、重音符号都会被忽略（escándalo == escandalo == ESCANDALO）
-#   * 单复数、阴阳性、指小词会自动匹配（producto → productos / producta / productito）
+# 【匹配规则】写词时不用考虑这些，程序会自动处理：
+#   * 大小写、重音符号忽略（quemagrasas == QUEMAGRASAS；ñ 保留，año ≠ ano）
+#   * 单复数、阴阳性、指小词自动匹配（kilo → kilos / kilito）
 #   * ASR 听错一两个字母也能命中（5 个字母以上的词才启用模糊匹配）
-#   * 多词短语即使被切在两段字幕之间也能命中（按最近 12 秒的文本匹配）
+#   * 多词短语被切在两段字幕之间也能命中（按最近 12 秒文本匹配）
 #
-# 【写什么】建议直接写主播真实会说出口的说法，包括：
-#   * 平台明令禁止的表述
-#   * 夸大疗效 / 绝对化用语
-#   * 主播为规避审查而使用的谐音、变体、黑话
+# 【正则】以 re: 开头的条目按正则处理，用来抓「换个数字就是新句子」的模式，
+# 例如具体的体重变化数字——这类靠列词永远列不完。
 #
-# 【注意】词表越短越准。先放几十个真正会踩线的高频词，
-# 跑一段时间看误报情况再慢慢加，比一次塞几百个泛词有效得多。
-#
-# 下面按类别给出格式示例（都被注释掉了，取消注释或替换成你们自己的词）：
+# ============================================================
+# 以下为 TikTok LIVE / TikTok Shop 违规规避指南中的**明令禁止**表述
+# （西语带货，保健品/体重管理类目）
+# ============================================================
 
-# ---- 示例：绝对化 / 夸大疗效 ----
-# cura el cáncer
-# garantizado cien por ciento
-# el mejor del mundo
+# ---- 减重/减脂宣称：指南明确写「所有变体都禁止」----
+bajar de peso
+perdida de peso
+perder peso
+perdida de grasa
+eliminar grasa
+quemar grasa
+quemagrasas
+quema grasas
+reduce tallas
+reducir tallas
+bajar tallas
+adelgazar
+adelgazante
+perder kilos
+pierdes kilos
+bajar kilos
+derretir grasa
+derretir la grasa
 
-# ---- 示例：医疗相关 ----
-# medicamento sin receta
+# ---- 具体数字宣称（真实违规案例的句式）----
+# 案例原话: "¡Solo tómalo una vez al día, chicas! Pasé de 97 kilos a 82!"
+re:de \d+\s*kilos?\s*(a|hasta)\s*\d+
+re:pas[eé]\s*de\s*\d+\s*a\s*\d+
+re:baj[eéoó]\s*\d+\s*(kilos?|libras?|tallas?)
+re:perd[ií]\s*\d+\s*(kilos?|libras?)
+re:de\s*talla\s*[a-z]{1,3}\s*a\s*(la\s*)?[a-z]{1,3}
+re:\d+\s*kilos?\s*(menos|en\s*\d+)
 
-# ---- 示例：引流到站外 ----
-# escríbeme a whatsapp
+# ---- 疗效/医疗宣称 ----
+cura
+curar
+curan
+te cura
+elimina la diabetes
+controla la diabetes
+controla la presion
+baja el colesterol
+tratamiento medico
+aprobado por la fda
+sin efectos secundarios
+resultados garantizados
+garantizado cien por ciento
 
-# ==== 在下面写你们自己的词 ====
+# ---- 他人成果背书（指南：❌ "Mi cliente bajó 10 kilos"）----
+mi cliente bajo
+mi clienta bajo
+mis clientes bajaron
+
+# ============================================================
+# 以下为**待业务确认**：在真实直播中实际听到、但指南未明确列出的表述。
+# 保留在这里是因为它们贴近红线，是否报警请你们判断后取舍。
+# 取消注释即启用。
+# ============================================================
+
+# acelerar el metabolismo      # 实录原话: "ayuda a acelerar el metabolismo"
+# balancear las hormonas       # 实录原话: "te apoyan a balancear tus hormonas"
+# no dan rebote                # 实录原话: "Sin cafeína, sin azúcar y no dan rebote"
+# derretir                     # 实录原话: "muchas llantitas, mucho que derretir"
+# desintoxicar
+# limpiar el higado
+# desinflamar
+
+# ============================================================
+# 【指南里的安全说法，仅供参考，不要加进词表】
+#   ✅ "Te mantiene lleno por 4 horas"（让你饱腹 4 小时）
+#   ✅ "Contiene probióticos que apoyan la digestión"（含益生菌助消化）
+#   ✅ "Fibra para saciedad"（纤维带来饱腹感）
+#   ✅ "Algunos usuarios reportan sentirse más ligeros"（部分用户反馈更轻盈）
+#   ✅ "Ideal para tu rutina de bienestar, no es un tratamiento médico"
+# ============================================================

@@ -1,0 +1,105 @@
+# 领域词表 —— 一行一条：西语说法 => 中文译法    #（井号后是备注）
+#
+# 【干什么用】这份表同时用在三个地方，一份数据三处生效：
+#   1. 喂给语音识别做「热词」提示 —— 让 Whisper 别把 moringa 听成 morenga；
+#   2. 拼进翻译提示词 —— 让商品名的译法固定下来；
+#   3. 译文回来后做兜底替换 —— 模型没听话时用规则强制改正。
+#
+# 【怎么用】程序首次启动会把本文件复制成同目录下的 glossary.txt，
+# 请编辑那一份（glossary.txt），本文件保持原样。改完点「停止」再「开始翻译」生效。
+#
+# 【重要】写**主播嘴里真会说的口语形式**，不是官网的书面商品名。
+# 主播说的是 "las gotitas"、"el cafecito"、"el detox"，不会念完整产品名。
+#
+# 【变体】同一条可以用 | 分隔多个西语写法，它们都映射到同一个中文译法。
+# 把 ASR 常听错的形式也写进去（西语口音把 skinny 念成 /esˈkini/，会被听成 esquini）。
+#
+# 【识别热词有上限】喂给 Whisper 的提示词约 244 token 上限，所以只有前
+# 40 条会被用作识别热词（翻译和兜底替换不受此限）。**把最高频、最容易听错的
+# 放在最前面**。换主播/换品类时应当换一份表。
+
+# ==================== 品牌（必须最前）====================
+Bella All Natural | Bella | Bella Natural | Bella al Natural => Bella All Natural  # 品牌名保留原文，不要译成「美丽全天然」
+
+# ==================== 招牌产品（主播高频口语）====================
+el detox | extreme detox | el deto | detox de mango | detox de papaya => 排毒粉  # Extreme Detox Powder，冲剂
+las gotitas | las gotas | goticas | D3 K2 | de tres ka dos => D3 K2 维生素滴剂  # 每日 20 滴，舌下含服；夜间版加洋甘菊
+la moringa | moringa | el jugo de moringa | morenga | morinca => 辣木  # 有果汁 / 胶囊 / 粉三种剂型
+el cafecito | skinny iced coffee | el skinny | esquini | eskini => 瘦身冰咖啡  # 招牌线，多口味
+el tamarindo | tamarindito | iced tamarindo => 罗望子饮  # 墨西哥风味酸角水
+el café con probióticos | probiotics iced coffee => 益生菌冰咖啡  # TikTok Shop 独家款
+el tecito | el té detox | extreme detox tea | tesito => 排毒茶  # 茶包，通便
+el quema lonja | quema lonja | quema loncha | el gelito => Quema Lonja 燃脂凝胶  # 品牌自造词，保留原文
+el colágeno | colágeno | colageno | la colágena => 胶原蛋白
+la cúrcuma | cúrcuma | turmeric | curcuma => 姜黄  # 主播中英混说，两种都会出现
+el sea moss | sea moss | si mos | musgo marino => 爱尔兰海藻
+la sábila | sábila | savila | aloe vera => 芦荟  # 拉美主播说 sábila 远多于 aloe vera
+la limonada | skinny lemonade | limonada de frambuesa => 瘦身柠檬水
+
+# ==================== 成分 ====================
+los probióticos | probióticos | probioticos => 益生菌
+los prebióticos | prebióticos => 益生元
+la maca | maca | la maquita => 玛卡
+la ashwagandha | ashwagandha | ashuaganda | aswaganda => 南非醉茄
+el ganoderma | ganoderma | reishi => 灵芝
+la damiana | damiana => 达米阿那
+el jengibre | jengibre | gengibre => 生姜
+la fibra | fibra => 膳食纤维
+la hoja sen | hoja sen | hojasen | senna => 番泻叶
+el aceite MCT | aceite MCT | emecete => MCT 油
+omega 3 6 9 | omega tres seis nueve | omega con ajo => 欧米伽 3-6-9
+
+# ==================== 剂型与用法 ====================
+las cápsulas | cápsulas | capsulitas | pastillas => 胶囊
+en polvo | el polvito | polvo => 粉剂
+un sobrecito | un sobre | sobres => 独立小袋
+una cucharadita | una cucharada | un scoop => 一小勺
+el batido | licuado | malteada => 冲调饮品
+en ayunas | en ayunitas => 空腹服用
+
+# ==================== 促销 ====================
+tres por sesenta | 3x60 | tres por 60 => 三件 60 美元
+dos por uno | 2x1 | paga uno y llévate dos => 买一送一
+envío gratis | el envío es gratis | free shipping => 包邮
+gratis | de gratis | totalmente gratis => 免费
+de regalo | te lo regalo | un regalito => 赠品
+el descuento | descuentazo | con descuento => 折扣
+la oferta | ofertón | en oferta => 特价
+el combo | combito | el paquete | el kit => 套餐
+el código | mi código | cupón => 优惠码
+solo por el live | nada más por el live | solo por hoy => 仅限本场直播
+quedan poquitas | últimas unidades | quedan pocas => 只剩几件
+se agotó | agotado | se acabó | sold out => 售罄
+
+# ==================== 物流与下单 ====================
+el carrito | carrito naranja | el carrito amarillo => 小黄车
+dale al carrito | denle al carrito | pícale al carrito => 点小黄车下单
+el número uno | el número dos | el primero del carrito => 小黄车第几个链接
+la orden | su orden | el pedido => 订单
+días hábiles | de 3 a 5 días hábiles => 工作日
+número de rastreo | el tracking | número de seguimiento => 物流单号
+
+# ==================== 身材/功效口语（实测最容易翻错的一类）====================
+# 这些是直播里的行话，字面意思和实际意思差很远，通用模型必错：
+las llantitas | llantitas | la llanta | los rollitos => 腰腹赘肉  # 字面「小轮胎」，会被直译成「废旧轮胎」
+no dan rebote | sin rebote | el rebote => 不会反弹  # 减肥语境的「反弹」，会被译成「疲倦」
+derretir la grasa | derretir | quemar la grasita => 燃脂
+la pancita | la barriga | el abdomen => 小腹
+la retención de líquidos | retención => 水肿（体液滞留）
+el estreñimiento | estreñida | ir al baño => 便秘
+el metabolismo lento | metabolismo => 新陈代谢
+la hinchazón | hinchada | inflamada => 腹胀
+la ansiedad por comer | la ansiedad => 食欲焦虑（嘴馋）
+el antojo | los antojos => 嘴馋 / 想吃东西
+bajar tallas | bajé dos tallas => 小了两个尺码
+la celulitis => 橘皮组织
+el colesterol => 胆固醇
+la energía | energía natural => 精力
+
+# ==================== 用法用量 ====================
+una tapadera | la tapadera | una tapita => 一瓶盖（用量）
+agua tibia | agua calientita => 温水
+antes de dormir | en la noche => 睡前
+en la mañana | por la mañana => 早上
+
+# ==================== 在下面补充你们自己的词 ====================

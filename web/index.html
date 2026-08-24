@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=11">
+  <link rel="stylesheet" href="/static/style.css?v=12">
 </head>
 <body>
   <header class="topbar">
@@ -93,6 +93,20 @@
       </div>
       <p class="hint">也可以只输入主播用户名（如 @somebody），或直接粘贴 .flv / .m3u8 流地址 · 首次识别需下载模型，进度会显示在页面上</p>
       <p class="hint">想把字幕直接叠加到 TikTok 直播画面上？<a href="https://github.com/EM917/tiktok-live-translator#extension" target="_blank" rel="noopener">安装自带的 Chrome 插件 →</a></p>
+
+      <!-- 违禁词监控：这是本工具的核心功能，必须在首页可见，
+           否则用户根本不知道有这回事（词表默认是空的） -->
+      <div id="watch-card" class="watch-card">
+        <div class="watch-head">
+          <span class="watch-title">🚨 违禁词实时报警</span>
+          <span id="watch-state" class="watch-state">检查中…</span>
+        </div>
+        <p id="watch-desc" class="watch-desc"></p>
+        <p class="watch-how">
+          编辑项目文件夹里的 <code>banned_terms.txt</code>，一行一个词或短语，
+          保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色警报并写入审计日志。
+        </p>
+      </div>
     </div>
   </main>
 
@@ -123,6 +137,6 @@
     }
   </script>
   <script src="/static/normalize.js?v=1"></script>
-  <script src="/static/app.js?v=21"></script>
+  <script src="/static/app.js?v=22"></script>
 </body>
 </html>

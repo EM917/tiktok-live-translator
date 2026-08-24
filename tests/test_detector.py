@@ -129,3 +129,39 @@ def test_enye_is_not_folded_into_n():
     d = det(["ano"])
     assert d.scan("hace un año que vendo esto", ts=100) == []   # 不再误报
     assert d.scan("dijo la palabra ano", ts=200)                # 真出现才报
+
+
+# ---- 正则条目：平台指南里的真实违规是「换个数字就是新句子」的模式 ----
+
+def test_regex_entries_catch_numeric_weight_claims():
+    """真实违规案例：「Pasé de 97 kilos a 82」——数字组合列不完，只能用模式。"""
+    d = det([r"re:de \d+\s*kilos?\s*(a|hasta)\s*\d+"])
+    hits = d.scan("pase de 97 kilos a 82 santo cielo", ts=100)
+    assert hits and hits[0]["matched"] == "de 97 kilos a 82"
+
+
+def test_regex_and_plain_terms_coexist():
+    d = det(["quemagrasas", r"re:baj[eéoó]\s*\d+\s*kilos?"])
+    assert d.count == 2
+    assert len(d.terms) == 1 and len(d.patterns) == 1
+    assert d.scan("esto es un quemagrasas", ts=100)
+    d.reset_state()
+    assert d.scan("mi cliente bajo 10 kilos", ts=200)
+
+
+def test_invalid_regex_is_skipped_not_fatal():
+    """词表是用户手写的，一个坏正则不能让整个检测挂掉。"""
+    d = det(["re:[unclosed", "quemagrasas"])
+    assert d.count == 1                      # 坏的被跳过，好的仍然生效
+    assert d.scan("un quemagrasas natural", ts=100)
+
+
+def test_safe_phrases_from_the_guide_do_not_alarm():
+    """指南里明确列为「可以说」的表述不能误报——误报多了中控就不信报警了。"""
+    d = det(["bajar de peso", "quemagrasas", r"re:baj[eéoó]\s*\d+\s*kilos?"])
+    for safe in ("Te mantiene lleno por 4 horas",
+                 "Contiene probioticos que apoyan la digestion",
+                 "Fibra para saciedad",
+                 "Algunos usuarios reportan sentirse mas ligeros"):
+        d.reset_state()
+        assert d.scan(safe, ts=100) == [], safe

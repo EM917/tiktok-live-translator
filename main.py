@@ -281,6 +281,9 @@ def parse_args():
                         "firefox / edge / none（完全不读浏览器 cookie）")
     p.add_argument("--cookies", default=None,
                    help="可选：传给 yt-dlp 的 cookies.txt 路径（地区受限的直播间可能需要）")
+    p.add_argument("--glossary", default=None,
+                   help="领域词表路径，默认项目目录下的 glossary.txt"
+                        "（首次运行会从 glossary.example.txt 生成）")
     p.add_argument("--banned-terms", default=None, dest="banned_terms",
                    help="违禁词表路径，默认项目目录下的 banned_terms.txt"
                         "（首次运行会从 banned_terms.example.txt 生成）")
@@ -360,6 +363,7 @@ async def main_async(args, state=None):
         state["loop"] = asyncio.get_running_loop()
         state["pipeline"] = pipeline
         state["ready_port"] = args.port   # 窗口线程以此为准（端口可能已自动切换）
+    await pipeline._publish_watchlist()   # 首页要立刻显示违禁词表状态
     update_watch = asyncio.ensure_future(updater.watch())  # noqa: F841
     url = f"http://127.0.0.1:{args.port}"
     print(f"字幕界面已启动: {url}")

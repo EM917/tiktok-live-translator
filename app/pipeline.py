@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .asr import DEFAULT_TEMPERATURE
 from .detector import BannedTermDetector, load_terms
+from .glossary import load as load_glossary
 from .settings import load_settings, save_setting
 from .telemetry import Telemetry
 from .translator import create_translator
@@ -113,6 +114,7 @@ class Pipeline:
         self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
         self.telemetry = Telemetry()
         self.detector = load_detector(getattr(args, "banned_terms", None))
+        self.glossary = load_glossary(getattr(args, "glossary", None))
         self.audit = None                # 每条直播一个审计日志文件
         self._stats_task = None
         if self.detector.enabled:
@@ -289,8 +291,9 @@ class Pipeline:
         self.audit = AuditLog(room_url=url)
         if self._stats_task is None or self._stats_task.done():
             self._stats_task = asyncio.ensure_future(self._stats_loop())
+        await self._publish_watchlist()
         if self.detector.enabled:
-            print("[信息] 违禁词检测已启用：{} 个词条".format(len(self.detector.terms)))
+            print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
             # 词表为空是「这场不会有任何报警」，必须让运维在界面上看到
             print("[警告] 违禁词表为空，本场不会有任何报警")
@@ -298,6 +301,15 @@ class Pipeline:
                 "type": "notice",
                 "text": "违禁词表为空，本场不会报警——编辑 banned_terms.txt 后重新开始",
             })
+
+    async def _publish_watchlist(self):
+        """把违禁词表状态推给界面并存进 config——首页那张卡片要靠它显示
+        「已启用 N 条」还是「未配置」。词表默认为空，用户看不到这个提示
+        就根本不知道有这个功能，也就不会去配。"""
+        info = {"count": self.detector.count if self.detector else 0,
+                "glossary": len(self.glossary.entries) if self.glossary else 0}
+        self.server.config["watchlist"] = info
+        await self.server.broadcast(dict(info, type="watchlist"))
 
     async def _end_session(self):
         if self._stats_task is not None and not self._stats_task.done():
@@ -344,7 +356,8 @@ class Pipeline:
                        if self.args.asr_temperature is not None
                        else DEFAULT_TEMPERATURE)
         key = (backend, model, device, compute, self.args.source,
-               self.args.beam, self.args.context, temperature)
+               self.args.beam, self.args.context, temperature,
+               self.glossary.asr_prompt())
         if self._transcriber is None or self._transcriber_key != key:
             size_mb = MODEL_SIZES_MB.get(model)
             if size_mb and size_mb >= 1000:
@@ -378,6 +391,7 @@ class Pipeline:
                         beam_size=self.args.beam,
                         use_context=self.args.context,
                         temperature=temperature,
+                        hotwords=self.glossary.asr_prompt(),
                     ),
                 )
             watcher = asyncio.ensure_future(self._model_download_progress(model))
@@ -784,8 +798,15 @@ class Pipeline:
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""
         t0 = time.time()
         try:
+            # 词表两处生效：把本句命中的词条拼进提示词，译文回来再做兜底替换。
+            # 商品名/自造词（Quema Lonja、moringa）通用模型必错，而且换多大的
+            # 模型都不会自动变对——这类错误只能靠词表钉死。
+            hint = self.glossary.translation_hint(job["text"]) if self.glossary else ""
             translated = await self.translator.translate(
-                job["text"], job["target"], source=job["lang"] or "auto")
+                hint + job["text"] if hint else job["text"],
+                job["target"], source=job["lang"] or "auto")
+            if self.glossary:
+                translated = self.glossary.apply(job["text"], translated)
         except Exception as exc:
             print("[警告] 翻译失败: {}".format(exc))
             translated = None

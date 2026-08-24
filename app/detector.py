@@ -70,18 +70,30 @@ class BannedTermDetector:
 
     def __init__(self, terms, window_sec=12.0, cooldown_sec=30.0,
                  fuzzy_ratio=0.86, min_fuzzy_len=5):
+        # 有些违规不是固定词而是**模式**——平台指南里的真实违规案例
+        # "Pasé de 97 kilos a 82"（我从 97 公斤降到 82）就是具体数字的体重变化，
+        # 换个数字就是新的一句话，词表穷举不完。以 `re:` 开头的条目按正则处理。
         self.window_sec = window_sec
         self.cooldown_sec = cooldown_sec
         self.fuzzy_ratio = fuzzy_ratio
         self.min_fuzzy_len = min_fuzzy_len
         self.terms = []
+        self.patterns = []
         for raw in terms:
+            raw = raw.strip()
+            if raw.lower().startswith("re:"):
+                expr = raw[3:].strip()
+                try:
+                    self.patterns.append({"raw": raw, "re": re.compile(expr, re.I)})
+                except re.error as exc:
+                    print("[警告] 违禁词表里的正则无效，已跳过：{}（{}）".format(raw, exc))
+                continue
             norm = normalize(raw)
             if not norm:
                 continue
             tokens = norm.split()
             self.terms.append({
-                "raw": raw.strip(),
+                "raw": raw,
                 "norm": norm,
                 "tokens": tokens,
                 "stems": _stem_tokens(tokens),
@@ -100,7 +112,11 @@ class BannedTermDetector:
 
     @property
     def enabled(self):
-        return bool(self.terms)
+        return bool(self.terms or self.patterns)
+
+    @property
+    def count(self):
+        return len(self.terms) + len(self.patterns)
 
     def scan(self, text, ts=None):
         """喂入一段识别文本，返回本次新命中的列表。
@@ -108,7 +124,7 @@ class BannedTermDetector:
         命中判定在「最近 window_sec 秒的拼接文本」上做——短语被切在两段之间
         （切得越短越常见）时仍然能命中。
         """
-        if not self.terms:
+        if not self.enabled:
             return []
         ts = time.time() if ts is None else ts
         norm = normalize(text)
@@ -125,6 +141,17 @@ class BannedTermDetector:
         stems = _stem_tokens(tokens)
 
         hits = []
+        # 正则条目直接在归一化后的窗口文本上匹配
+        for pat in self.patterns:
+            m = pat["re"].search(haystack)
+            if not m:
+                continue
+            last = self._last_hit.get(pat["raw"], 0)
+            if ts - last < self.cooldown_sec:
+                continue
+            self._last_hit[pat["raw"]] = ts
+            hits.append({"term": pat["raw"], "tier": TIER_EXACT, "ts": ts,
+                         "matched": m.group(0), "context": haystack[-200:]})
         for term in self.terms:
             tier = self._match(term, haystack, tokens, stems)
             if not tier:
