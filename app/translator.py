@@ -4,7 +4,7 @@ import json
 import os
 from collections import OrderedDict
 
-TRANSLATOR_CHOICES = ["auto", "gemma", "google", "claude", "openai", "none"]
+TRANSLATOR_CHOICES = ["auto", "hymt2", "gemma", "google", "claude", "openai", "none"]
 
 LANG_NAMES = {
     "zh-CN": "Simplified Chinese", "zh-TW": "Traditional Chinese", "zh": "Chinese",
@@ -236,8 +236,10 @@ class OllamaGemmaTranslator(BaseTranslator):
         # 单独一句就翻回「清洁」）。glossary.apply() 只能兜住译文里还残留西语
         # 的情况，模型「翻错但翻得像模像样」时救不了。
         # 想再往上走要换有原生术语干预的模型，不是继续调这句话。
-        if glossary:
-            head += " Keep these terms exactly as given: " + glossary + "."
+        pairs = _as_pairs(glossary)
+        if pairs:
+            head += (" Keep these terms exactly as given: "
+                     + "; ".join("{} = {}".format(es, zh) for es, zh in pairs) + ".")
         return head + "\n\n" + text
 
     # 选项必须逐次完全一致：Ollama 一旦发现 options 变了就会重新加载模型，
@@ -265,28 +267,146 @@ class OllamaGemmaTranslator(BaseTranslator):
             return None
 
 
-def _ollama_has_gemma():
-    """启动时的一次性同步探测：Ollama 是否在跑且已拉取 translategemma。"""
+class OllamaHyMT2Translator(BaseTranslator):
+    """本地 Ollama + 腾讯 Hy-MT2-1.8B（Apache 2.0）。
+
+    引进它的理由只有一个，而且是实测出来的：TranslateGemma 对指令区术语表的
+    遵从率只有 46.1%（tools/bench_glossary.py，175 句真实西语 / 269 个术语），
+    而换措辞救不了——试过的三种写法落在 38.3%~48.7%，彼此在噪声范围内。
+    我们最在乎的恰恰是术语（商品名、价格、促销条件），所以要找的是**原生支持
+    术语干预**的模型，而不是继续调那句提示词。
+
+    Hy-MT2 官方给了术语格式，这里照搬：
+        Reference the following translations:
+        {src} translates to {tgt}
+
+        Translate the following text into {lang}. Note that you must ONLY
+        output the translated result without any additional explanation:
+        {text}
+
+    官方还提供了 [Background Information] 上下文格式，这里**故意不用**：
+    背景信息要进 prefill，而 prefill 是本项目翻译耗时的主要固定成本
+    （92 token → 35 token 指令实测 494ms → 344ms）；而且滚动上下文在识别侧
+    实测过是净亏。要用也该单独立项测，不能和术语干预打包。
+    """
+
+    name = "hymt2"
+    TIMEOUT = 60
+
+    # 官方 GGUF 里注册给 Ollama 的 chat template 是坏的——`{{ if .Prompt }}` 块里
+    # 根本没有 `{{ .Prompt }}`，末尾还留着 `onse }}` 这种被截断的残片。结果是
+    # 用户的文本压根没进模型，输出是 `[{ "i": 0, "k": 0, ... }]` 这样的乱码。
+    # 所以这里用 raw 模式，按官方 chat_template.jinja 自己拼对话标记。
+    # 这样用户只要 ollama pull 就能用，不需要额外 ollama create 一个修好的版本。
+    _BOS = "<｜hy_begin▁of▁sentence｜>"
+    _USER = "<｜hy_User｜>"
+    _ASSISTANT = "<｜hy_Assistant｜>"
+    _STOP = ["<｜hy_end▁of▁sentence｜>", "<｜hy_place▁holder▁no▁2｜>"]
+
+    def __init__(self):
+        super().__init__()
+        base = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+        self.url = base + "/api/generate"
+        self.model = os.environ.get(
+            "OLLAMA_HYMT2_MODEL", "hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M")
+
+    def _prompt(self, text, target, source, glossary=None):
+        lang = LANG_NAMES.get(target, target)
+        head = ""
+        if glossary:
+            lines = "\n".join("{} translates to {}".format(es, zh)
+                               for es, zh in _as_pairs(glossary))
+            if lines:
+                head = "Reference the following translations:\n" + lines + "\n\n"
+        return (head + "Translate the following text into {lang}. Note that you "
+                "must ONLY output the translated result without any additional "
+                "explanation:\n{text}".format(lang=lang, text=text))
+
+    _OPTIONS = {"temperature": 0, "num_predict": 200, "stop": _STOP}
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        body = {
+            "model": self.model,
+            "prompt": (self._BOS + self._USER
+                       + self._prompt(text, target, source, glossary)
+                       + self._ASSISTANT),
+            "raw": True,          # 见上：自带模板是坏的，我们自己拼
+            "stream": False,
+            "options": self._OPTIONS,
+            "keep_alive": os.environ.get("OLLAMA_KEEP_ALIVE", "30m"),
+        }
+        try:
+            session = await self.session()
+            async with session.post(self.url, data=json.dumps(body)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+            return (data.get("response") or "").strip() or None
+        except Exception:
+            return None
+
+
+def _as_pairs(glossary):
+    """把词表统一成 (西语, 中文) 列表。
+
+    历史上各引擎收的是一行紧凑串（"a = b; c = d"），新引擎要逐行格式。
+    两种都收，省得调用方为不同引擎准备不同参数。"""
+    if not glossary:
+        return []
+    if isinstance(glossary, str):
+        out = []
+        for chunk in glossary.split("; "):
+            if " = " in chunk:
+                es, zh = chunk.split(" = ", 1)
+                out.append((es.strip(), zh.strip()))
+        return out
+    return list(glossary)
+
+
+def _ollama_models():
+    """启动时的一次性同步探测：Ollama 在跑的话，返回已拉取的模型名列表。"""
     import urllib.request
 
     base = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
     try:
         with urllib.request.urlopen(base + "/api/tags", timeout=1.5) as resp:
             data = json.load(resp)
-        return any(m.get("name", "").startswith("translategemma")
-                   for m in data.get("models", []))
+        return [m.get("name", "") for m in data.get("models", [])]
     except Exception:
-        return False
+        return []
+
+
+def _ollama_has(marker):
+    return any(marker.lower() in name.lower() for name in _ollama_models())
+
+
+def _ollama_has_gemma():
+    return _ollama_has("translategemma")
+
+
+def _ollama_has_hymt2():
+    return _ollama_has("hy-mt2")
 
 
 def create_translator(name):
     """返回带重复句缓存的翻译引擎（none 除外）。"""
     if name == "auto":
-        name = "gemma" if _ollama_has_gemma() else "google"
+        # 顺序由实测定：Hy-MT2 1.8B 在多词术语上的遵从率 64.1%，
+        # TranslateGemma 4B 只有 23.9%（tools/bench_glossary.py，271 个术语；
+        # 单个商品名两者打平，差距全在短语上——而促销条件、价格框架正是短语）。
+        # 它还快 2.5 倍、小 2 GB，所以没有留给旧模型的理由，除非用户已经装了它。
+        if _ollama_has_hymt2():
+            name = "hymt2"
+        elif _ollama_has_gemma():
+            name = "gemma"
+        else:
+            name = "google"
         print("[信息] 翻译引擎 auto → {}".format(name))
     if name == "none":
         return None
-    if name == "gemma":
+    if name == "hymt2":
+        inner = OllamaHyMT2Translator()
+    elif name == "gemma":
         inner = OllamaGemmaTranslator()
     elif name == "google":
         inner = GoogleWebTranslator()

@@ -28,7 +28,7 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 ## Features
 
 - 🎙️ **Real-time speech recognition** — OpenAI Whisper (dual backend: faster-whisper / MLX), auto-detects the streamer's language, supports 90+ languages
-- 🌐 **Three-tier translation engine** — local TranslateGemma (recommended, offline and free) / Google's free API (default fallback) / Claude · OpenAI API
+- 🌐 **Local-first translation** — Hy-MT2 1.8B (default, offline and free, Apache 2.0) / TranslateGemma 4B / Google's free API as a network fallback / Claude · OpenAI API. Hy-MT2 is the default because it honours the domain glossary on multi-word phrases 64% of the time against TranslateGemma's 24% (measured on 271 terms from real logged captions), while being 2.5× faster and 2 GB smaller — and the phrases are exactly where price and promo terms live
 - 🎵 **Voice-focused denoising** — RNNoise neural denoising suppresses background music, tuned for streams with BGM
 - ⚡ **Automatic hardware tuning** — detects your chip (Apple Silicon GPU / NVIDIA CUDA / plain CPU) and automatically picks the best model that can still run in real time — zero-config out of the box
 - 📺 **Two display modes** — a local web UI (scrolling bilingual subtitle history + a large caption at the bottom), or a Chrome extension overlay on the TikTok page
@@ -234,7 +234,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 ## 特性
 
 - 🎙️ **实时语音识别** —— OpenAI Whisper（faster-whisper / MLX 双后端），自动检测主播语言，支持 90+ 语言
-- 🌐 **三档翻译引擎** —— 本地 TranslateGemma（推荐，离线免费）/ Google 免费接口（默认兜底）/ Claude·OpenAI API
+- 🌐 **本地优先的翻译** —— Hy-MT2 1.8B（默认，离线免费，Apache 2.0）/ TranslateGemma 4B / Google 免费接口做网络兜底 / Claude·OpenAI API。默认选 Hy-MT2 是实测出来的：在**多词短语**上它遵守领域词表的比例是 64%，TranslateGemma 只有 24%（271 个术语，语料来自真实直播字幕），同时快 2.5 倍、小 2 GB——而价格和促销条件恰恰都是多词短语
 - 🎵 **人声降噪** —— RNNoise 神经降噪抑制背景音乐，专为带 BGM 的直播间优化
 - ⚡ **硬件自动配置** —— 检测你的芯片（Apple Silicon GPU / NVIDIA CUDA / 普通 CPU）自动选择能实时跑的最优模型，零配置开箱即用
 - 📺 **双显示端** —— 本地网页 UI（历史双语字幕 + 底部大字幕），或 Chrome 插件叠加在 TikTok 页面上

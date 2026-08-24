@@ -69,6 +69,14 @@ class Glossary:
             return ""
         return "; ".join("{} = {}".format(es, zh) for es, zh, _ in hits)
 
+    def translation_pairs(self, text, limit=6):
+        """本句命中的术语，以 (西语, 中文) 列表返回。
+
+        与 translation_hint 的区别只是形态：TranslateGemma 吃一行紧凑串，
+        Hy-MT2 的官方术语格式是逐行的 "X translates to Y"。同一份命中结果，
+        让各引擎按自己的模板拼，别让某一家的格式渗到词表里。"""
+        return [(es, zh) for es, zh, _ in self.matching(text)[:limit]]
+
     def apply(self, source_text, translated):
         """译文兜底：源文里出现过的词条，若译文里没有对应中文，就把该词条的
         西语原样残留替换成中文。只做保守替换——不确定时宁可不动。"""

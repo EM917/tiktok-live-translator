@@ -82,3 +82,47 @@ def test_api_does_not_claim_offline_when_it_simply_failed(monkeypatch):
 def test_unknown_username_is_not_offline():
     url, offline = run(resolver._resolve_via_api("https://example.com/nope"))
     assert url is None and offline is False
+
+
+# ---- 直播页解析：靠状态位把关 ----
+
+def _page(status, with_stream=True):
+    room = {"status": status}
+    if with_stream:
+        room["streamData"] = {"pull_data": {"stream_data": json.dumps(
+            {"data": {"ao": {"main": {"flv": "https://cdn/a.flv?only_audio=1"}}}})}}
+    sigi = {"LiveRoom": {"liveRoomUserInfo": {"liveRoom": room}}}
+    return '<script id="SIGI_STATE" type="application/json">{}</script>'.format(
+        json.dumps(sigi))
+
+
+def test_live_page_yields_the_audio_only_url():
+    url, offline = resolver._parse_live_page(_page(2))
+    assert url == "https://cdn/a.flv?only_audio=1"
+    assert offline is False
+
+
+def test_ended_room_is_reported_offline_not_given_a_stale_url():
+    """已下播的页面里照样残留着上一场的完整流地址（含 only_audio）。
+
+    裸正则会把它当成有效结果拿走，然后要等探活超时 8 秒才发现是 404。
+    状态位一到手就该当场判定。"""
+    url, offline = resolver._parse_live_page(_page(4))
+    assert url is None
+    assert offline is True
+
+
+def test_page_without_sigi_state_falls_back_but_never_claims_offline():
+    """解析不出状态时我们一无所知——绝不能替它断言主播没在播。"""
+    live = "https://pull-flv-l77.tiktokcdn.com/game/stream-1.flv?only_audio=1"
+    url, offline = resolver._parse_live_page("nothing structured " + live + " more")
+    assert url == live
+    assert offline is False
+
+
+def test_malformed_sigi_state_does_not_crash():
+    live = "https://pull-flv-l77.tiktokcdn.com/game/stream-2.flv"
+    url, offline = resolver._parse_live_page(
+        '<script id="SIGI_STATE">{not json</script> ' + live)
+    assert url == live
+    assert offline is False
