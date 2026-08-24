@@ -429,6 +429,18 @@
     trans.className = "trans";
     card.appendChild(trans);
 
+    // 「重译」：用本机最强的模型重来一次。按条触发而不是开一个时段，
+    // 是因为值得动用强模型的是具体某句话，而那只有看着的人知道是哪一句。
+    var redo = document.createElement("button");
+    redo.className = "redo";
+    redo.type = "button";
+    redo.title = "用最强模型重新翻译这一条";
+    redo.textContent = "重译";
+    redo.addEventListener("click", function () {
+      send({ type: "retranslate", id: msg.id });
+    });
+    card.appendChild(redo);
+
     historyEl.appendChild(card);
     cardsById[msg.id] = card;
 
@@ -472,6 +484,8 @@
     if (msg.translated) {
       trans.textContent = msg.translated;
       trans.classList.remove("pending");
+      // 标记这条是强模型重译过的，中控一眼能分辨手上看的是哪一版
+      if (msg.strong) card.classList.add("strong");
     } else if (state === "pending") {
       trans.textContent = "翻译中…";
       trans.classList.add("pending");

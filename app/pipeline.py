@@ -7,6 +7,7 @@ import asyncio
 import os
 import subprocess
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -120,6 +121,11 @@ class Pipeline:
         self._stats_task = None
         self._selfcheck_task = None      # 持有引用，否则任务可能被 GC 掉
         self._provision_task = None
+        # 最近若干条字幕的原文，供「重译」按 id 取回。只留少量：这个功能是
+        # 给中控看到可疑一句时临时用的，不是历史检索。
+        self._recent = OrderedDict()
+        self._strong = None              # 按需创建，用完不常驻
+        self._upgrade_tasks = []         # 报警触发的重译，持有引用防 GC
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -149,6 +155,8 @@ class Pipeline:
                 "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
         elif mtype == "stop":
             return self.stop_stream()
+        elif mtype == "retranslate":
+            return self.retranslate(msg.get("id"))
         elif mtype == "apply_update":
             if getattr(self, "updater", None) is not None:
                 return self._apply_update()
@@ -891,8 +899,68 @@ class Pipeline:
         })
         if not needs_translation:
             return None
-        return {"id": seq, "text": result.text, "lang": lang,
-                "target": self.target, "audio_end_ts": audio_end_ts}
+        job = {"id": seq, "text": result.text, "lang": lang,
+               "target": self.target, "audio_end_ts": audio_end_ts}
+        self._recent[seq] = job
+        while len(self._recent) > 120:
+            self._recent.popitem(last=False)
+
+        # 命中违禁词的这一句自动用最强模型再翻一遍。
+        #
+        # 报警本身就精确指出了「哪一句要紧」——比任何计时器都准，而值得动用
+        # 强模型的恰恰就是这类句子（价格、促销条件、功效宣称）。
+        # 放后台跑而不是替换掉这次翻译：快的那版先上屏，中控立刻有东西看，
+        # 准的那版两秒后原地替换。命中一小时不过几次，代价可以忽略。
+        if hits:
+            self._upgrade_tasks = [t for t in getattr(self, "_upgrade_tasks", [])
+                                   if not t.done()]
+            self._upgrade_tasks.append(asyncio.ensure_future(self.retranslate(seq)))
+
+        return job
+
+    async def retranslate(self, seq):
+        """用本机最强的翻译模型重译某一条字幕。
+
+        为什么是「按条」而不是「按时段」：值得动用强模型的是**具体某句话**
+        （价格、促销条件、功效宣称），而那是内容驱动的，只有看着的人知道是
+        哪一句。实测强模型装卸只要约 2 秒，按需调用完全划算；常驻反而会把
+        识别从 1.4 秒拖到 3.2 秒，直接推高违禁词报警延迟。
+        """
+        from .translator import create_strong_translator
+
+        job = self._recent.get(seq)
+        if job is None:
+            return
+        if self._strong is None:
+            self._strong = create_strong_translator()
+        if self._strong is None:
+            await self.server.broadcast({
+                "type": "notice",
+                "text": "没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）"})
+            return
+        await self.server.broadcast({"type": "caption_update", "id": seq,
+                                     "translate_state": "pending"})
+        t0 = time.time()
+        hint = (tuple(self.glossary.translation_pairs(job["text"]))
+                if self.glossary else ())
+        try:
+            out = await self._strong.translate(
+                job["text"], job["target"], source=job["lang"] or "auto",
+                glossary=hint or None)
+            if out and self.glossary:
+                out = self.glossary.apply(job["text"], out)
+        except Exception as exc:
+            print("[警告] 重译失败: {}".format(exc))
+            out = None
+        ms = (time.time() - t0) * 1000.0
+        if self.audit is not None:
+            self.audit.translation(seq, out, ms, bool(out))
+        await self.server.broadcast({
+            "type": "caption_update", "id": seq, "translated": out,
+            "translate_state": "ok" if out else "failed",
+            "target_lang": job["target"], "translate_ms": round(ms),
+            "strong": True,
+        })
 
     async def _translate_and_update(self, job):
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""

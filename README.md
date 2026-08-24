@@ -155,6 +155,32 @@ Local engines handle colloquial speech substantially better. Spanish → Chinese
 | *tengo un sueño* (I am sleepy) | ❌ 我做了一个梦 (I had a dream) | ✅ 现在感觉很困 |
 | *Es vegano* (it is vegan) | ❌ 它是素食主义者 (he is a vegetarian) | ✅ 纯素的 |
 
+### Re-translating with the strongest model
+
+The strongest local model is applied per sentence rather than for a period of
+time. What justifies it is specific content — prices, promotional conditions,
+health claims — which is episodic, and only the operator or the detector knows
+which sentence that is. Measured cost: loading the model takes 1.9 s and a
+complete one-shot call 2.3 s, after which it is unloaded, leaving recognition
+unaffected. Keeping it resident instead would raise recognition from 1.4 s to
+3.2 s and alert latency from 6.8 s to 10.6 s.
+
+Three ways to invoke it:
+
+- **Per caption** — hover a caption and press 重译. The line is re-translated
+  and marked in the margin
+- **On a banned-term match** — the matched sentence is re-translated
+  automatically. The fast translation appears first so nothing is delayed; the
+  accurate one replaces it about two seconds later
+- **After the session** — `python3 tools/retranslate_audit.py` re-translates a
+  session's audit log, appending `translation_strong` records without altering
+  any existing line, and prints the segments whose translation changed
+
+The larger model is not uniformly better. Its advantage is on terminology and
+promotional conditions; on casual speech it is sometimes worse and can drop a
+clause. The batch tool therefore reports what changed rather than replacing
+anything silently.
+
 ### Engine comparison
 
 The relevant metric is not fluency but glossary adherence, since that determines
@@ -466,6 +492,26 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语准确率�
 | *Se mueren lo rico*（好吃到不行） | ❌ 有钱人死 | ✅ 味道非常好 |
 | *tengo un sueño*（我困了） | ❌ 我做了一个梦 | ✅ 现在感觉很困 |
 | *Es vegano*（纯素产品） | ❌ 它是素食主义者 | ✅ 纯素的 |
+
+### 用最强模型重译
+
+最强的本地模型按**句**调用，而不是按时段。值得动用它的是具体内容——价格、
+促销条件、功效宣称——这类内容是零散出现的，只有中控或检测器知道是哪一句。
+实测代价：载入 1.9 秒，单次调用全程 2.3 秒，之后立即卸载，对识别没有影响。
+若改为常驻，识别会从 1.4 秒升至 3.2 秒，报警延迟从 6.8 秒升至 10.6 秒。
+
+三种触发方式：
+
+- **单条重译** —— 鼠标移到某条字幕上，点「重译」。该条重新翻译并在左侧标记
+- **命中违禁词时自动重译** —— 命中的那一句自动用强模型重来。快的那版先上屏，
+  不延迟任何显示；准的那版约两秒后原地替换
+- **收工后批量重译** —— `python3 tools/retranslate_audit.py` 重译一场的审计
+  日志，仅**追加** `translation_strong` 记录，不改动原有任何一行，并列出译文
+  发生变化的段落
+
+更大的模型并非一律更好。它的优势在术语与促销条件；日常口语上有时反而更差，
+也可能漏掉一个分句。因此批量工具输出的是「有变化的段落」，交由人复核，
+而不是静默覆盖。
 
 ### 引擎对比方法
 
