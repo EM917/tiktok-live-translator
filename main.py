@@ -366,7 +366,7 @@ async def main_async(args, state=None):
     await pipeline._publish_watchlist()   # 首页要立刻显示违禁词表状态
     # 自检放后台跑：有几项要实际执行探测（ffmpeg、Ollama），
     # 不能让它们拖慢界面打开
-    selfcheck_task = asyncio.ensure_future(pipeline.run_selfcheck())  # noqa: F841
+    pipeline._selfcheck_task = asyncio.ensure_future(pipeline.run_selfcheck())
     update_watch = asyncio.ensure_future(updater.watch())  # noqa: F841
     url = f"http://127.0.0.1:{args.port}"
     print(f"字幕界面已启动: {url}")

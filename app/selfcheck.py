@@ -32,12 +32,34 @@ async def _to_thread(fn, *args):
     return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
 
 
+def _ffmpeg_runs(exe):
+    """真的执行一次 ffmpeg -version。
+
+    只解析出路径是不够的：macOS 上 imageio-ffmpeg 带的静态二进制会被 Gatekeeper
+    隔离，下载不全或丢了可执行位也一样——文件在，一跑就失败。那种情况下如果
+    这里报绿，锅会甩到降噪头上（降噪探测真的会跑 ffmpeg，于是它变红），
+    用户按提示去删降噪模型，永远修不好。"""
+    import subprocess
+    try:
+        r = subprocess.run([exe, "-version"], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 async def check_ffmpeg():
     from .ffmpeg_bin import ffmpeg_source, find_ffmpeg
-    if find_ffmpeg() is None:
+    exe = find_ffmpeg()
+    if exe is None:
         return _check("音频组件 ffmpeg", FAIL, "找不到 ffmpeg，无法拉取直播音频",
                       "关闭程序后重新打开，会自动补装")
-    return _check("音频组件 ffmpeg", OK, "可用（{}）".format(ffmpeg_source()))
+    if not await _to_thread(_ffmpeg_runs, exe):
+        return _check("音频组件 ffmpeg", FAIL,
+                      "找到了 ffmpeg 但跑不起来——直播音频拉不下来",
+                      "macOS 若提示「无法验证开发者」，在系统设置→隐私与安全性里放行；"
+                      "或用 brew install ffmpeg 装一个系统版")
+    return _check("音频组件 ffmpeg", OK, "实测可用（{}）".format(ffmpeg_source()))
 
 
 async def check_denoise(args):
@@ -59,7 +81,10 @@ async def check_asr(args):
     backend = getattr(args, "backend", "auto")
     try:
         from .hwdetect import recommend
-        rec = recommend(backend=backend)
+        # device 必须一起传：recommend 把 backend/model/device/compute_type 当成
+        # 一组互相牵连的值重算。少传 device，自检算出的就不是待会儿真正要加载的
+        # 那套配置——报「ct2 + large-v3」而管线加载的是别的，等于白检。
+        rec = recommend(backend=backend, device=getattr(args, "device", "auto"))
     except Exception as exc:
         return _check("语音识别", FAIL, "硬件探测失败：{}".format(exc))
     model = getattr(args, "model", None) or rec["model"]
@@ -67,29 +92,61 @@ async def check_asr(args):
         try:
             import mlx_whisper  # noqa: F401
         except ImportError:
-            return _check("语音识别", FAIL, "mlx 后端不可用", "pip install mlx-whisper")
+            return _check("语音识别", FAIL, "苹果芯片加速组件未装上",
+                          "关闭程序后重新打开，会自动补装；若反复出现请反馈给开发者")
     else:
         try:
             import faster_whisper  # noqa: F401
         except ImportError:
             return _check("语音识别", FAIL, "faster-whisper 不可用",
                           "关闭程序后重新打开，会自动补装")
-    cached = _model_cached(model)
+    cached = _model_cached(model, rec["backend"])
     detail = "{} + {}（{}）".format(rec["backend"], model,
                                    "模型已下载" if cached else "首次开播需先下载模型")
     return _check("语音识别", OK if cached else WARN, detail)
 
 
-def _model_cached(model):
+def _hub_dirs():
+    """HuggingFace 缓存目录。三个环境变量都要认，顺序与 huggingface_hub 一致。"""
+    for var in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        val = os.environ.get(var)
+        if val:
+            return Path(val)
     hf = os.environ.get("HF_HOME")
-    hub = Path(hf) / "hub" if hf else Path.home() / ".cache" / "huggingface" / "hub"
-    if not hub.exists():
+    return Path(hf) / "hub" if hf else Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _model_cached(model, backend):
+    """模型是否真的下全了。
+
+    这里踩过三个坑，都会让界面报绿而第一次开播卡在下载上：
+      * 子串匹配：`"large-v3" in "…large-v3-turbo"` 为真，turbo 的缓存会冒充
+        large-v3；
+      * 后端不分：ct2 的 Systran 仓库和 MLX 的 mlx-community 仓库是两个 3GB
+        的不同东西，名字里都含 large-v3；
+      * 下了一半：HF 一开始传就建好目录结构，得看 snapshots 里有没有落成的
+        文件、以及还有没有 .incomplete 残留。
+    所以按后端解析出**确切的仓库名**，再验完整性。"""
+    from .asr import _MLX_REPOS
+    if backend == "mlx":
+        repo = _MLX_REPOS.get(model, model)
+    else:
+        repo = model if "/" in model else "Systran/faster-whisper-" + model
+    target = "models--" + repo.replace("/", "--")
+    hub = _hub_dirs()
+    entry = hub / target
+    if not entry.is_dir():
         return False
-    key = model.replace("large-v3-turbo", "large-v3-turbo").lower()
-    for entry in hub.iterdir():
-        if key in entry.name.lower():
-            return True
-    return False
+    try:
+        blobs = entry / "blobs"
+        if blobs.is_dir() and any(b.name.endswith(".incomplete") for b in blobs.iterdir()):
+            return False        # 还在下载中
+        snaps = entry / "snapshots"
+        if not snaps.is_dir():
+            return False
+        return any(any(rev.iterdir()) for rev in snaps.iterdir() if rev.is_dir())
+    except OSError:
+        return False
 
 
 async def check_translator(args):
@@ -106,15 +163,20 @@ async def check_translator(args):
     if resolved == "gemma":
         if await _to_thread(_ollama_has_gemma):
             return _check("翻译引擎", OK, "本地 TranslateGemma（离线、无限流）")
-        return _check("翻译引擎", FAIL, "指定了 gemma 但 Ollama 里找不到模型",
-                      "启动 Ollama 并执行 ollama pull translategemma:4b")
+        return _check("翻译引擎", FAIL, "指定了本地翻译，但 Ollama 里没有这个模型",
+                      "先打开 Ollama，再执行一次 ollama pull translategemma:4b")
     if resolved == "google":
         return _check("翻译引擎", WARN,
-                      "Google 免费接口：会按 IP 限流，长时间监听容易整段翻译失败",
-                      "改用 --translator gemma（本地、不限流）")
+                      "正在用 Google 免费接口：会按 IP 限流，长时间监听容易"
+                      "整段翻译失败（违禁词报警不受影响，它不依赖翻译）",
+                      "想换成完全本地、不限流的翻译：装 Ollama（ollama.com），"
+                      "装完执行一次 ollama pull translategemma:4b，"
+                      "然后重开本程序即可自动切换")
     key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(resolved)
     if key and not os.environ.get(key):
-        return _check("翻译引擎", FAIL, "{} 需要环境变量 {}".format(resolved, key))
+        return _check("翻译引擎", FAIL,
+                      "{} 需要先设置环境变量 {}".format(resolved, key),
+                      "没有这个密钥的话，把翻译引擎留在默认的「自动」即可")
     return _check("翻译引擎", OK, "{}（付费 API）".format(resolved))
 
 
@@ -180,17 +242,30 @@ async def check_disk():
 
 
 async def run_all(args, detector=None, glossary=None):
-    """跑完所有自检。任一项抛异常都不影响其余项——自检自己绝不能拖垮启动。"""
-    tasks = [
-        check_ffmpeg(), check_denoise(args), check_asr(args),
-        check_translator(args), check_watchlist(detector),
-        check_glossary(glossary), check_audit(), check_resolver(), check_disk(),
+    """跑完所有自检。任一项抛异常都不影响其余项——自检自己绝不能拖垮启动。
+
+    探测崩了算 **FAIL，不是 WARN**：崩了意味着这项能力压根没被验证过，和
+    「验过了，有点小问题」是两回事。之前记成 WARN，界面上就会出现「✅ 自检
+    通过，1 项提醒」而那一项其实是没检成——这正是本模块要消灭的那种「看起来
+    没事」。名字也必须带上，否则只剩一个「自检项」，用户不知道是哪块没验。"""
+    probes = [
+        ("音频组件 ffmpeg", check_ffmpeg()),
+        ("人声降噪", check_denoise(args)),
+        ("语音识别", check_asr(args)),
+        ("翻译引擎", check_translator(args)),
+        ("违禁词表", check_watchlist(detector)),
+        ("领域词表", check_glossary(glossary)),
+        ("审计日志", check_audit()),
+        ("直播流解析", check_resolver()),
+        ("磁盘空间", check_disk()),
     ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.gather(*(c for _, c in probes), return_exceptions=True)
     checks = []
-    for r in results:
+    for (name, _), r in zip(probes, results):
         if isinstance(r, BaseException):
-            checks.append(_check("自检项", WARN, "检查本身出错：{}".format(r)))
+            checks.append(_check(name, FAIL,
+                                 "这一项没能检查完（{}）——它是好是坏都不知道".format(r),
+                                 "把这条信息反馈给开发者；这不影响其它功能"))
         else:
             checks.append(r)
     return checks

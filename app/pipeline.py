@@ -117,8 +117,9 @@ class Pipeline:
         self.glossary = load_glossary(getattr(args, "glossary", None))
         self.audit = None                # 每条直播一个审计日志文件
         self._stats_task = None
+        self._selfcheck_task = None      # 持有引用，否则任务可能被 GC 掉
         if self.detector.enabled:
-            print("[信息] 违禁词检测已启用：{} 个词条".format(len(self.detector.terms)))
+            print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
             print("[信息] 违禁词表为空——编辑 banned_terms.txt 后重新「开始翻译」即可启用")
 
@@ -292,6 +293,11 @@ class Pipeline:
         if self._stats_task is None or self._stats_task.done():
             self._stats_task = asyncio.ensure_future(self._stats_loop())
         await self._publish_watchlist()
+        # 每场重跑自检：状态会漂。用户按红条的提示改完 banned_terms.txt 点
+        # 「开始翻译」，面板若还挂着「词表为空」的红条，下次他就不信这个红条了；
+        # 反过来更糟——开播时模型被删了、Ollama 停了、磁盘满了，面板还是启动
+        # 时那份绿的。放后台跑，不挡开播。
+        self._selfcheck_task = asyncio.ensure_future(self.run_selfcheck())
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -840,6 +846,9 @@ class Pipeline:
             translated = None
         translate_ms = (time.time() - t0) * 1000.0
         self.telemetry.record_translation(translate_ms)
+        if self.audit is not None:
+            self.audit.translation(job["id"], translated, translate_ms,
+                                   bool(translated))
         await self.server.broadcast({
             "type": "caption_update",
             "id": job["id"],
