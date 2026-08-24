@@ -134,6 +134,7 @@ class Pipeline:
         self._strong = None              # 按需创建，用完不常驻
         self._upgrade_tasks = []         # 报警触发的重译，持有引用防 GC
         self._quality = {}               # seq -> 当前已生效译文的质量等级
+        self._strong_inflight = set()    # 正在跑强模型的 seq，防同一条重复触发
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -319,6 +320,7 @@ class Pipeline:
         self.detector = load_detector(getattr(self.args, "banned_terms", None))
         self.detector.reset_state()
         self._quality.clear()            # 等级按 seq 记，换场后 seq 会重号
+        self._strong_inflight.clear()
         self.telemetry.reset()          # 统计按场计，不跨房间累计
         if self.audit is not None:
             self.audit.close()
@@ -975,8 +977,19 @@ class Pipeline:
             return
         if self._quality.get(seq, 0) >= QUALITY_STRONG:
             return                        # 这一条已经是强模型译的，不重复
+        if seq in self._strong_inflight:
+            return                        # 同一条已经在跑了
+        # 重译用**独立的状态位**，绝不复用普通翻译的 translate_state=pending。
+        #
+        # 复用会造成这样一条死路：已有快译在屏幕上 → 广播 pending → 前端把
+        # 译文换成「翻译中…」→ 强模型恰好返回空（约 2% 会）→ 服务端正确地
+        # 拒绝用失败覆盖已有译文，于是不再广播 → 页面永远停在「翻译中…」，
+        # 而那条本来好好的快译已经被擦掉了。
+        # 「一次失败不得擦掉已在屏幕上的译文」这条规则，必须同时管住中间态。
+        self._strong_inflight.add(seq)
+        had = self._quality.get(seq, 0) > 0
         await self.server.broadcast({"type": "caption_update", "id": seq,
-                                     "translate_state": "pending"})
+                                     "strong_state": "pending"})
         t0 = time.time()
         hint = (tuple(self.glossary.translation_pairs(job["text"]))
                 if self.glossary else ())
@@ -990,12 +1003,22 @@ class Pipeline:
             print("[警告] 重译失败: {}".format(exc))
             out = None
         ms = (time.time() - t0) * 1000.0
+        self._strong_inflight.discard(seq)
         if self.audit is not None:
             self.audit.translation_strong(seq, out, ms, bool(out),
                                           self._strong.model, trigger)
-        await self._publish_translation(seq, out, bool(out), ms,
-                                        QUALITY_STRONG, job["target"],
-                                        {"strong": True})
+        if out:
+            await self._publish_translation(seq, out, True, ms, QUALITY_STRONG,
+                                            job["target"],
+                                            {"strong": True, "strong_state": "ok"})
+        elif had:
+            # 已有译文时：只报告重译失败，屏幕上那一版原样留着
+            await self.server.broadcast({"type": "caption_update", "id": seq,
+                                         "strong_state": "failed"})
+        else:
+            # 连快译都还没有：这时才是真的「这条没有译文」
+            await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
+                                            job["target"], {"strong_state": "failed"})
 
     async def _translate_and_update(self, job):
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""

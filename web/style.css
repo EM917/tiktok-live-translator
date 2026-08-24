@@ -375,3 +375,8 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 /* 强模型重译过的条目：左侧一道细标，可分辨看的是哪一版 */
 .cap.strong { border-left: 2px solid var(--accent); padding-left: 10px; }
 .cap.strong .redo { opacity: .55; }
+
+/* 重译进行中：按钮常驻可见，让人知道自己点的那一下生效了；
+   译文原样留在屏幕上，不被替换成占位文字 */
+.cap.redoing .redo { opacity: 1; color: var(--accent); border-color: var(--accent); }
+.redo:disabled { cursor: default; }

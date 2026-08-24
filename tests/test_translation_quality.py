@@ -115,3 +115,89 @@ def test_audit_distinguishes_fast_from_strong(tmp_path, monkeypatch):
     # 强译必须写明是哪个模型、谁触发的
     assert "7B" in strong[0]["model"]
     assert strong[0]["trigger"] == "banned_term"
+
+
+# ---- 重译的中间态不得擦掉已有译文 ----
+
+class Recorder(FakeServer):
+    pass
+
+
+def make_with_recent(text="Si hacen una orden de 30, van a agarrar las gotas gratis."):
+    p = make()
+    p.audit = None
+    p._strong_inflight = set()
+    p._recent = {7: {"id": 7, "text": text, "lang": "es", "target": "zh-CN"}}
+    p.glossary = None
+    return p
+
+
+class FakeStrong:
+    model = "fake-7b"
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = 0
+
+    async def translate(self, *a, **k):
+        self.calls += 1
+        return self.result
+
+
+def test_pending_never_uses_the_plain_translation_state():
+    """复用 translate_state=pending 会把屏幕上的译文换成「翻译中…」。
+    重译必须用自己的状态位。"""
+    p = make_with_recent()
+    p._strong = FakeStrong("强译")
+    p._quality[7] = QUALITY_FAST                  # 屏幕上已经有快译
+    run(p.retranslate(7))
+    first = p.server.sent[0]
+    assert first.get("strong_state") == "pending"
+    assert "translate_state" not in first          # 关键：不能是普通的 pending
+
+
+def test_failed_strong_leaves_the_existing_translation_alone():
+    """这是那条死路：pending 擦掉译文 → 强模型返回空 → 服务端正确地不再广播
+    → 页面永远停在「翻译中…」。现在失败也要发一条，且不动译文。"""
+    p = make_with_recent()
+    p._strong = FakeStrong(None)                  # 模拟约 2% 的空返回
+    p._quality[7] = QUALITY_FAST
+    run(p.retranslate(7))
+    last = p.server.sent[-1]
+    assert last["strong_state"] == "failed"
+    assert "translated" not in last                # 不覆盖屏幕上那一版
+    assert p._quality[7] == QUALITY_FAST           # 等级不被失败占用
+
+
+def test_failed_strong_reports_failure_when_there_was_nothing():
+    """连快译都没有时，才是真的「这条没有译文」。"""
+    p = make_with_recent()
+    p._strong = FakeStrong(None)
+    run(p.retranslate(7))
+    last = p.server.sent[-1]
+    assert last["translate_state"] == "failed"
+
+
+def test_the_same_sentence_is_not_translated_twice_at_once():
+    """命中违禁词自动重译期间，用户又点了「重译」——不该跑两遍 7B。"""
+    async def scenario():
+        p = make_with_recent()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class Slow(FakeStrong):
+            async def translate(self, *a, **k):
+                self.calls += 1
+                started.set()
+                await release.wait()
+                return "强译"
+
+        p._strong = Slow("强译")
+        first = asyncio.ensure_future(p.retranslate(7, "banned_term"))
+        await started.wait()
+        await p.retranslate(7, "manual")      # 第二次应当直接返回
+        release.set()
+        await first
+        return p._strong.calls
+
+    assert run(scenario()) == 1
