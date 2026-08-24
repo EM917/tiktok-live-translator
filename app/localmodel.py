@@ -1,0 +1,125 @@
+"""本地翻译模型的自动就绪：不让用户为了「离线翻译」去开终端。
+
+背景：没装 Ollama 的机器会退回 Google 免费接口——它按 IP 限流，长时间监听
+经常整段翻译失败。而原来的提示是让用户自己去装 Ollama、再敲一行 ollama pull。
+对一个连终端是什么都不知道的人来说，这等于永远用不上本地翻译。
+
+这里做三件事，按代价从小到大：
+  1. Ollama 在跑但没有模型 —— 直接用它的 HTTP 接口把模型拉下来（免终端）。
+     我们本来就会自动下 3GB 的 Whisper 模型，再下 1.1GB 的翻译模型是同一件事。
+  2. Ollama 装了但没启动 —— 帮他启动。
+  3. Ollama 压根没装 —— 只能引导。macOS 的包 179MB 可以自动装，
+     Windows 的安装器 1.5GB 且要管理员授权，装不了，老实说清楚。
+"""
+import asyncio
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+OLLAMA_DOWNLOAD = {
+    "darwin": "https://ollama.com/download/Ollama-darwin.zip",
+    "win32": "https://ollama.com/download/OllamaSetup.exe",
+}
+
+
+def base_url():
+    return os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+
+
+async def is_running(timeout=2):
+    import aiohttp
+
+    try:
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=timeout)) as s:
+            async with s.get(base_url() + "/api/tags") as r:
+                return r.status == 200
+    except Exception:
+        return False
+
+
+def find_binary():
+    """本机装没装 Ollama。PATH 优先（brew 装的在这里），其次 macOS 的应用包。"""
+    exe = shutil.which("ollama")
+    if exe:
+        return exe
+    app = Path("/Applications/Ollama.app/Contents/Resources/ollama")
+    return str(app) if app.exists() else None
+
+
+async def start(timeout=25):
+    """启动已安装但没在跑的 Ollama，等到接口真的能通为止。"""
+    if await is_running():
+        return True
+    exe = find_binary()
+    if exe is None:
+        return False
+    try:
+        if sys.platform == "darwin" and Path("/Applications/Ollama.app").exists():
+            await asyncio.create_subprocess_exec(
+                "open", "-a", "Ollama",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        else:
+            # serve 要活得比我们久，别绑在本进程的输出上
+            await asyncio.create_subprocess_exec(
+                exe, "serve",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    except Exception:
+        return False
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        await asyncio.sleep(1.0)
+        if await is_running():
+            return True
+    return False
+
+
+async def pull(model, on_progress=None):
+    """通过 HTTP 接口拉模型。on_progress(百分比, 已下载MB, 总MB) 用于界面进度。
+
+    走接口而不是 `ollama pull` 命令：用户不必开终端，我们也能把进度显示在
+    页面上——这和 Whisper 模型的下载进度是同一种体验。
+    """
+    import aiohttp
+
+    body = json.dumps({"model": model, "stream": True})
+    try:
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=None, sock_read=120)) as s:
+            async with s.post(base_url() + "/api/pull", data=body) as r:
+                if r.status != 200:
+                    return False
+                async for raw in r.content:
+                    if not raw.strip():
+                        continue
+                    try:
+                        msg = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if msg.get("error"):
+                        return False
+                    total, done = msg.get("total"), msg.get("completed")
+                    if on_progress and total:
+                        on_progress(100.0 * (done or 0) / total,
+                                    (done or 0) / 1e6, total / 1e6)
+                    if msg.get("status") == "success":
+                        return True
+        return await is_running()
+    except Exception:
+        return False
+
+
+def install_hint():
+    """没装 Ollama 时给用户的话。分平台说实话，别承诺做不到的事。"""
+    url = OLLAMA_DOWNLOAD.get(sys.platform)
+    if sys.platform == "darwin":
+        return ("到 ollama.com 下载 Ollama（约 179 MB），拖进「应用程序」打开一次，"
+                "然后重开本程序——翻译模型会自动下载，不用敲任何命令。", url)
+    if sys.platform == "win32":
+        return ("到 ollama.com 下载并安装 Ollama（安装器约 1.5 GB，需要管理员权限，"
+                "所以本程序无法代劳），装完重开本程序——翻译模型会自动下载。", url)
+    return ("按 ollama.com 上的说明装好 Ollama 后重开本程序，翻译模型会自动下载。",
+            "https://ollama.com/download")

@@ -367,6 +367,9 @@ async def main_async(args, state=None):
     # 自检放后台跑：有几项要实际执行探测（ffmpeg、Ollama），
     # 不能让它们拖慢界面打开
     pipeline._selfcheck_task = asyncio.ensure_future(pipeline.run_selfcheck())
+    # 本地翻译的自动就绪也放后台：下载可能要几分钟，不能挡住界面
+    pipeline._provision_task = asyncio.ensure_future(
+        pipeline.ensure_local_translator())
     update_watch = asyncio.ensure_future(updater.watch())  # noqa: F841
     url = f"http://127.0.0.1:{args.port}"
     print(f"字幕界面已启动: {url}")

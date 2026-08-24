@@ -54,9 +54,16 @@ def test_local_engine_with_ollama_down_is_a_failure(monkeypatch):
 
 
 def test_google_is_a_warning_with_a_way_out(monkeypatch):
+    """退回网络翻译要给出路，但那条出路里不该再有 ollama pull。
+
+    模型现在由程序自己通过 Ollama 的 HTTP 接口拉取——用户装完 Ollama 就完事了。
+    提示里再出现一行要敲的命令，等于把不会用终端的人重新挡在门外。
+    """
     c = check("google", monkeypatch=monkeypatch)
     assert c["level"] == "warn"
-    assert "ollama pull" in c["fix"]
+    assert "ollama.com" in c["fix"]
+    assert "ollama pull" not in c["fix"]
+    assert "违禁词报警不受影响" in c["detail"]      # 别让人以为报警也废了
 
 
 def test_no_translator_object_does_not_guess():

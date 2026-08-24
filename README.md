@@ -122,15 +122,17 @@ Any auto-selected value can be overridden with a command-line flag (see below).
 
 ## Translation Engines
 
-Install a local engine once and everything stays offline and free:
+**Install [Ollama](https://ollama.com/download) and that is the whole setup.**
+On the next launch the app starts it if needed, downloads the 1.1 GB Hy-MT2
+1.8B model over Ollama's API with progress on screen, and switches to it — no
+terminal, no `ollama pull`. The same thing already happens for the Whisper
+model.
+
+To use the larger tier instead, pull it yourself and it is picked up
+automatically:
 
 ```bash
-brew install ollama          # See https://ollama.com/download for Windows/Linux
-brew services start ollama   # or run ollama serve manually
-
-ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, best accuracy, needs ~16 GB RAM
-# or, on a lighter machine:
-ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB, runs anywhere
+ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, best on terminology, needs ~16 GB RAM
 ```
 
 - `auto` (default) — picks the best engine actually installed: `hymt2` → `gemma` → `google`. It does **not** auto-select 7B; see the caveat below. The home-screen self-check names which one is live, so a silent downgrade to the network engine cannot go unnoticed.
@@ -370,15 +372,15 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 
 ## 翻译引擎
 
-装一次本地引擎，之后全程离线免费：
+**装好 [Ollama](https://ollama.com/download) 就完事了**。下次启动时程序会自己
+把它拉起来（如果没在跑），通过 Ollama 的接口下载 1.1 GB 的 Hy-MT2 1.8B 模型、
+进度显示在页面上，然后自动切过去——不用开终端，也不用敲 `ollama pull`。
+Whisper 模型本来就是这么自动下的。
+
+想用更大的那一档，自己拉一次即可，程序会自动选用：
 
 ```bash
-brew install ollama          # Windows/Linux 见 https://ollama.com/download
-brew services start ollama   # 或手动运行 ollama serve
-
 ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语最准，建议 16 GB 以上内存
-# 机器吃力的话换这个：
-ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB，什么机器都跑得动
 ```
 
 - `auto`（默认）—— 在**实际装了**的引擎里挑最好的：`hymt2` → `gemma` → `google`。**不会**自动选 7B，原因见下。首页自检会写明当前用的是哪一个，所以「悄悄退回网络引擎」不会没人发现。

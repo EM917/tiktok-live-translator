@@ -186,13 +186,13 @@ async def check_translator(args, translator=None):
                               "打开 Ollama 后重新点「开始翻译」")
             return _check("翻译引擎", OK, "本地 TranslateGemma（离线、无限流）")
         if engine == "google":
+            from . import localmodel
+            # 装好 Ollama 之后模型是程序自己拉的，不用再让用户敲 ollama pull
+            hint, _url = localmodel.install_hint()
             return _check("翻译引擎", WARN,
                           "正在用 Google 免费接口：会按 IP 限流，长时间监听容易"
                           "整段翻译失败（违禁词报警不受影响，它不依赖翻译）",
-                          "想换成完全本地、不限流的翻译：装 Ollama（ollama.com），"
-                          "装完执行一次 "
-                          "ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"
-                          "（约 1.1 GB），然后重开本程序即可自动切换")
+                          "想换成完全本地、不限流的翻译：" + hint)
         key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(engine)
         if key and not os.environ.get(key):
             return _check("翻译引擎", FAIL,
