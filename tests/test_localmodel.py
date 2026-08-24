@@ -60,3 +60,40 @@ def test_start_is_a_noop_when_already_running(monkeypatch):
 def test_base_url_honours_the_environment(monkeypatch):
     monkeypatch.setenv("OLLAMA_URL", "http://elsewhere:1234/")
     assert localmodel.base_url() == "http://elsewhere:1234"
+
+
+def test_finds_the_app_wherever_the_user_left_it(tmp_path, monkeypatch):
+    """用户未必把 Ollama.app 拖进「应用程序」——留在「下载」里双击也能用。
+
+    只认 /Applications 一个路径，就会对着一台明明装了 Ollama 的机器说「没安装」。
+    """
+    import shutil as _sh
+
+    monkeypatch.setattr(_sh, "which", lambda name: None)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    fake_dl = tmp_path / "Downloads"
+    binary = fake_dl / "Ollama.app" / "Contents" / "Resources" / "ollama"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("x")
+    monkeypatch.setattr(localmodel, "_MAC_APP_DIRS", (str(fake_dl),))
+    assert localmodel.find_binary() == str(binary)
+    assert localmodel.is_installed() is True
+
+
+def test_path_on_the_command_line_wins():
+    """brew 装的、或开过一次装了命令行工具的，直接用 PATH 上那个。"""
+    import shutil as _sh
+
+    if _sh.which("ollama"):
+        assert localmodel.find_binary() == _sh.which("ollama")
+
+
+def test_not_installed_anywhere_is_reported_honestly(monkeypatch):
+    import shutil as _sh
+
+    monkeypatch.setattr(_sh, "which", lambda name: None)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(localmodel, "_MAC_APP_DIRS", ())
+    monkeypatch.setattr(localmodel, "_mac_app_exists", lambda: False)
+    assert localmodel.find_binary() is None
+    assert localmodel.is_installed() is False

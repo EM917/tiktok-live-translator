@@ -40,13 +40,51 @@ async def is_running(timeout=2):
         return False
 
 
+# macOS 上 Ollama 的命令行工具在应用包的 Contents/Resources/ollama。
+# 但用户未必把 app 拖进「应用程序」——留在「下载」里双击也能用，
+# 而且不打开它一次的话，命令行工具根本不会装到 PATH 上。
+_MAC_APP_DIRS = ("/Applications", "~/Applications", "~/Downloads", "~/Desktop")
+
+
 def find_binary():
-    """本机装没装 Ollama。PATH 优先（brew 装的在这里），其次 macOS 的应用包。"""
-    exe = shutil.which("ollama")
+    """本机装没装 Ollama。
+
+    找不到不等于没装：用户可能把 app 放在任何地方。所以 macOS 上还会走
+    LaunchServices（`open -a Ollama`），那条路不依赖我们猜对路径。
+    """
+    exe = shutil.which("ollama")            # brew 装的、或开过一次装了命令行工具的
     if exe:
         return exe
-    app = Path("/Applications/Ollama.app/Contents/Resources/ollama")
-    return str(app) if app.exists() else None
+    if sys.platform != "darwin":
+        return None
+    for d in _MAC_APP_DIRS:
+        cand = Path(d).expanduser() / "Ollama.app" / "Contents" / "Resources" / "ollama"
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def _mac_app_exists():
+    """LaunchServices 认不认识 Ollama——它在哪个目录都算。
+
+    比自己猜路径可靠：用户把 app 放在哪儿都行，只要 macOS 索引过它。
+    """
+    if sys.platform != "darwin":
+        return False
+    if find_binary():
+        return True
+    try:
+        import subprocess
+        r = subprocess.run(["mdfind", "kMDItemCFBundleIdentifier == 'com.electron.ollama'"
+                            " || kMDItemFSName == 'Ollama.app'"],
+                           capture_output=True, timeout=8)
+        return bool(r.stdout.strip())
+    except Exception:
+        return False
+
+
+def is_installed():
+    return find_binary() is not None or _mac_app_exists()
 
 
 async def start(timeout=25):
@@ -54,13 +92,17 @@ async def start(timeout=25):
     if await is_running():
         return True
     exe = find_binary()
-    if exe is None:
+    if exe is None and not _mac_app_exists():
         return False
     try:
-        if sys.platform == "darwin" and Path("/Applications/Ollama.app").exists():
+        if sys.platform == "darwin":
+            # open -a 走 LaunchServices：app 放在哪个目录都能启动，
+            # 不用我们猜路径，也不要求用户先把它拖进「应用程序」
             await asyncio.create_subprocess_exec(
                 "open", "-a", "Ollama",
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        elif exe is None:
+            return False
         else:
             # serve 要活得比我们久，别绑在本进程的输出上
             await asyncio.create_subprocess_exec(

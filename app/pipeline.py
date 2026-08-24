@@ -313,7 +313,9 @@ class Pipeline:
         # 「开始翻译」，面板若还挂着「词表为空」的红条，下次他就不信这个红条了；
         # 反过来更糟——开播时模型被删了、Ollama 停了、磁盘满了，面板还是启动
         # 时那份绿的。放后台跑，不挡开播。
-        self._selfcheck_task = asyncio.ensure_future(self.run_selfcheck())
+        # 备货流程每场也重跑一次：用户可能在程序开着的时候才去装 Ollama，
+        # 不该逼他重启程序才被发现。已经就绪时这里几毫秒就返回。
+        self._provision_task = asyncio.ensure_future(self._provision_then_check())
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -323,6 +325,10 @@ class Pipeline:
                 "type": "notice",
                 "text": "违禁词表为空，本场不会报警——编辑 banned_terms.txt 后重新开始",
             })
+
+    async def _provision_then_check(self):
+        await self.ensure_local_translator()
+        await self.run_selfcheck()
 
     async def ensure_local_translator(self):
         """开工前把本地翻译准备好，让用户不必为此开终端。
@@ -342,7 +348,7 @@ class Pipeline:
             return                      # 用户显式指定了引擎，别自作主张
         if await localmodel.is_running():
             pass
-        elif localmodel.find_binary() is not None:
+        elif localmodel.is_installed():
             print("[信息] Ollama 已安装但没在运行，正在启动…")
             if not await localmodel.start():
                 return
