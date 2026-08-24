@@ -20,6 +20,39 @@ if sys.version_info < (3, 9):
     sys.exit("需要 Python 3.9 或更高版本（当前 {}.{}）".format(*sys.version_info[:2]))
 
 
+_CORE_DEPS = ["aiohttp>=3.9", "numpy>=1.24", "faster-whisper>=1.0",
+              "yt-dlp", "imageio-ffmpeg>=0.5"]
+# mlx-whisper 装不上时留个记号，免得每次启动都重试一遍（老系统上它确实可能
+# 没有轮子）。删掉这个文件就会再试一次。
+_MLX_GIVEUP = ROOT / ".venv" / ".mlx-unavailable"
+
+
+def _wants_mlx():
+    """这台机器是否**应该**用 GPU 后端。
+
+    对 Apple Silicon 来说 mlx-whisper 不是可有可无：没有它就得用 CPU 跑，
+    识别慢一倍以上、还只能用较小的模型（hwdetect 实测 RTF 0.99，勉强跟得上，
+    跑久了必然积压）。所以它要算进「依赖齐不齐」里。"""
+    import platform as _p
+
+    return (sys.platform == "darwin"
+            and _p.machine().lower() in ("arm64", "aarch64")
+            and not _MLX_GIVEUP.exists())
+
+
+def _optional_deps():
+    """可选组件，逐个装——一个失败不该连累其余。"""
+    out = ["mlx-whisper"] if _wants_mlx() else []
+    return out + ["curl_cffi>=0.7", "pywebview>=5"]
+
+
+def _ready_import():
+    mods = "aiohttp, numpy, faster_whisper, yt_dlp, imageio_ffmpeg"
+    if _wants_mlx():
+        mods += ", mlx_whisper"
+    return "import " + mods
+
+
 def _deps_ok():
     try:
         import aiohttp  # noqa: F401
@@ -28,6 +61,14 @@ def _deps_ok():
         import yt_dlp  # noqa: F401
     except ImportError:
         return False
+    # Apple Silicon 上缺 mlx-whisper 也算依赖不全。以前不查，于是一次退化成
+    # 「只装核心依赖」的安装之后，这个闸门永远返回 True，mlx-whisper 再也没有
+    # 机会被补上——机器就一直用着 CPU 路径，而屏幕上什么也没说。
+    if _wants_mlx():
+        try:
+            import mlx_whisper  # noqa: F401
+        except ImportError:
+            return False
     # ffmpeg 也是硬依赖：不查它的话，安装中途断掉会让「重开自动补装」的承诺落空
     try:
         import imageio_ffmpeg  # noqa: F401
@@ -183,7 +224,7 @@ def ensure_env():
         pip_python = sys.executable if in_project_venv else str(vpy)
         check = subprocess.run(
             [pip_python, "-c",
-             "import aiohttp, numpy, faster_whisper, yt_dlp, imageio_ffmpeg"],
+             _ready_import()],
             capture_output=True,
         )
         if check.returncode != 0:
@@ -193,15 +234,34 @@ def ensure_env():
                  "-r", str(ROOT / "requirements.txt")],
             )
             if full.returncode != 0:
-                # 个别可选包（如 mlx-whisper）在老 Python/老系统上可能没有轮子——
-                # 退一步只装核心依赖，工具仍可用（识别走 faster-whisper CPU 后端）
-                print("[初始化] 完整安装失败，改装核心依赖…")
+                # 整份 requirements 装不上时，先保证核心依赖，再**逐个**试可选包。
+                #
+                # 以前这里是「失败就只装核心依赖」，于是一个包装不上会连累其余
+                # 全部落空。真实后果：一台 M4 Mac 因为某个可选包编译失败，
+                # mlx-whisper 跟着没装上，整机掉到 faster-whisper CPU 路径跑
+                # large-v3-turbo——按 hwdetect 的实测那是 RTF 0.99，勉强跟得上，
+                # 跑久了必然积压。而屏幕上什么也没说。
+                print("[初始化] 完整安装失败，改为逐个安装…")
                 subprocess.run(
                     [pip_python, "-m", "pip", "install", "--disable-pip-version-check",
-                     "aiohttp>=3.9", "numpy>=1.24", "faster-whisper>=1.0",
-                     "yt-dlp", "imageio-ffmpeg>=0.5"],
+                     *_CORE_DEPS],
                     check=True,
                 )
+                for optional in _optional_deps():
+                    r = subprocess.run(
+                        [pip_python, "-m", "pip", "install",
+                         "--disable-pip-version-check", optional])
+                    if r.returncode != 0:
+                        print("[初始化] 可选组件 {} 没装上，其余功能不受影响"
+                              .format(optional))
+                        if optional == "mlx-whisper":
+                            # 记下来别每次启动都重试；删掉这个文件会再试一次
+                            try:
+                                _MLX_GIVEUP.parent.mkdir(parents=True, exist_ok=True)
+                                _MLX_GIVEUP.write_text("装不上，改用 CPU 后端\n",
+                                                       encoding="utf-8")
+                            except OSError:
+                                pass
         if not in_project_venv:
             if lock is not None:      # execv 不会执行 finally，先手动释放锁
                 try:

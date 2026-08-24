@@ -143,3 +143,43 @@ def test_check_asr_passes_device_through(monkeypatch):
     monkeypatch.setattr(selfcheck, "_model_cached", lambda m, b: True)
     run(selfcheck.check_asr(SimpleNamespace(backend="auto", model=None, device="cpu")))
     assert seen == {"backend": "auto", "device": "cpu"}
+
+
+def test_apple_silicon_on_the_cpu_backend_is_flagged(monkeypatch):
+    """一台 M4 因为 mlx-whisper 没装上，一直用 CPU 跑 turbo。
+
+    自检当时只如实报了「ct2 + large-v3-turbo」，没说这台机器本可以快一倍——
+    用户看不出有什么不对。能力「在工作」但只发挥了一小部分，同样是静默降级。
+    """
+    from app import hwdetect
+
+    monkeypatch.setattr(hwdetect, "detect",
+                        lambda: {"apple_silicon": True, "has_mlx": False,
+                                 "has_cuda": False, "cores": 10, "ram_gb": 16})
+    monkeypatch.setattr(hwdetect, "recommend",
+                        lambda backend="auto", device="auto": {
+                            "backend": "ct2", "model": "large-v3-turbo",
+                            "device": "cpu", "compute_type": "auto", "reason": ""})
+    monkeypatch.setattr(selfcheck, "_model_cached", lambda m, b: True)
+    monkeypatch.setattr(selfcheck, "_importable", lambda name: True)
+    c = run(selfcheck.check_asr(SimpleNamespace(backend="auto", model=None,
+                                               device="auto")))
+    assert c["level"] == "warn"
+    assert "CPU" in c["detail"]
+    assert c["fix"]
+
+
+def test_apple_silicon_on_mlx_is_not_flagged(monkeypatch):
+    from app import hwdetect
+
+    monkeypatch.setattr(hwdetect, "detect",
+                        lambda: {"apple_silicon": True, "has_mlx": True})
+    monkeypatch.setattr(hwdetect, "recommend",
+                        lambda backend="auto", device="auto": {
+                            "backend": "mlx", "model": "large-v3",
+                            "device": "auto", "compute_type": "auto", "reason": ""})
+    monkeypatch.setattr(selfcheck, "_model_cached", lambda m, b: True)
+    monkeypatch.setattr(selfcheck, "_importable", lambda name: True)
+    c = run(selfcheck.check_asr(SimpleNamespace(backend="auto", model=None,
+                                               device="auto")))
+    assert c["level"] == "ok"
