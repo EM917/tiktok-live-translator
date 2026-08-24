@@ -144,8 +144,42 @@ async def _resolve_from_page(url, browser=None):
             return None
         html = raw.decode(charset or "utf-8", errors="replace")
     except Exception:
-        return None
-    return _extract_stream_urls(html)
+        return None, False
+    return _parse_live_page(html)
+
+
+def _parse_live_page(html):
+    """从直播页 HTML 取 (流地址, 确认已下播)。
+
+    先解析 SIGI_STATE 里的结构化数据，**用 liveRoom.status 把关**：实测一个
+    已经下播的房间，页面里照样残留着上一场的完整流地址（含 only_audio），
+    裸正则会拿到它，然后要等探活超时 8 秒才发现是 404。有了状态位就能当场
+    判定，还能把「确认下播」和「没解析出来」分开。
+
+    SIGI_STATE 缺失或解析不了时才退回裸正则——那时我们对状态一无所知，
+    绝不能替它断言「主播没在播」。"""
+    m = _SIGI_RE.search(html)
+    if m:
+        try:
+            sigi = json.loads(m.group(1))
+            room = ((sigi.get("LiveRoom") or {}).get("liveRoomUserInfo")
+                    or {}).get("liveRoom") or {}
+            status = room.get("status")
+            if status is not None and status != LIVE_STATUS:
+                return None, True                     # 页面明确说已结束
+            picked = _pick_stream({"stream_url": _sigi_stream_url(room)})
+            if picked:
+                return picked, False
+        except (ValueError, AttributeError, TypeError):
+            pass
+    return _extract_stream_urls(html), False
+
+
+def _sigi_stream_url(room):
+    """把 SIGI_STATE 里的 streamData 摆成和 webcast 接口一样的形状，
+    这样 _pick_stream 一份逻辑两处用（含纯音频优先）。"""
+    sd = room.get("streamData") or {}
+    return {"live_core_sdk_data": {"pull_data": (sd.get("pull_data") or {})}}
 
 
 def _extract_stream_urls(html):
@@ -175,6 +209,7 @@ _ROOM_API = ("https://www.tiktok.com/api-live/user/room/"
 _WEBCAST_API = ("https://webcast.tiktok.com/webcast/room/info/"
                 "?aid=1988&room_id={room}")
 _USER_RE = re.compile(r"tiktok\.com/@([\w.\-]+)", re.IGNORECASE)
+_SIGI_RE = re.compile(r'id="SIGI_STATE"[^>]*>(.*?)</script>', re.S)
 
 # TikTok 的房间状态：2=在播，4=已结束。只有拿到明确的非 2 才敢说「主播没在播」，
 # 拿不到就只能说「没解析出来」——两者对重连策略的含义完全不同。
@@ -472,7 +507,10 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
         # 就是不带流地址。
         for browser in (None,) + tuple(_browser_order(cookies_browser)
                                        if cookies_browser != "none" else ()):
-            fallback = await _resolve_from_page(url, browser=browser)
+            fallback, page_offline = await _resolve_from_page(url, browser=browser)
+            if page_offline:
+                raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
+                                   kind="offline")
             if not fallback:
                 continue
             checked = await _check_media_url(fallback)

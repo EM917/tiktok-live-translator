@@ -160,14 +160,31 @@ async def check_translator(args):
     if name == "none":
         return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
     try:
-        from .translator import _ollama_has_gemma
+        from .translator import _ollama_has_gemma, _ollama_has_hymt2
     except Exception as exc:
         return _check("翻译引擎", FAIL, "翻译模块加载失败：{}".format(exc))
+    has_big = await _to_thread(_ollama_has_hymt2, True)
+    has_hymt2 = await _to_thread(_ollama_has_hymt2)
+    has_gemma = await _to_thread(_ollama_has_gemma)
     resolved = name
     if name == "auto":
-        resolved = "gemma" if await _to_thread(_ollama_has_gemma) else "google"
+        resolved = ("hymt2-7b" if has_big else
+                    "hymt2" if has_hymt2 else
+                    "gemma" if has_gemma else "google")
+    if resolved == "hymt2-7b":
+        if has_big:
+            return _check("翻译引擎", OK, "本地 Hy-MT2 7B（离线、无限流、术语最准）")
+        return _check("翻译引擎", FAIL, "指定了 Hy-MT2 7B，但 Ollama 里没有这个模型",
+                      "先打开 Ollama，再执行一次 "
+                      "ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M")
+    if resolved == "hymt2":
+        if has_hymt2:
+            return _check("翻译引擎", OK, "本地 Hy-MT2 1.8B（离线、无限流）")
+        return _check("翻译引擎", FAIL, "指定了 Hy-MT2，但 Ollama 里没有这个模型",
+                      "先打开 Ollama，再执行一次 "
+                      "ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M")
     if resolved == "gemma":
-        if await _to_thread(_ollama_has_gemma):
+        if has_gemma:
             return _check("翻译引擎", OK, "本地 TranslateGemma（离线、无限流）")
         return _check("翻译引擎", FAIL, "指定了本地翻译，但 Ollama 里没有这个模型",
                       "先打开 Ollama，再执行一次 ollama pull translategemma:4b")
@@ -176,8 +193,9 @@ async def check_translator(args):
                       "正在用 Google 免费接口：会按 IP 限流，长时间监听容易"
                       "整段翻译失败（违禁词报警不受影响，它不依赖翻译）",
                       "想换成完全本地、不限流的翻译：装 Ollama（ollama.com），"
-                      "装完执行一次 ollama pull translategemma:4b，"
-                      "然后重开本程序即可自动切换")
+                      "装完执行一次 "
+                      "ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"
+                      "（约 1.1 GB），然后重开本程序即可自动切换")
     key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(resolved)
     if key and not os.environ.get(key):
         return _check("翻译引擎", FAIL,

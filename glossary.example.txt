@@ -137,3 +137,7 @@ las gotas de noche | gotitas de noche => 夜间版滴剂
 la horchata | horchata | de horchata => 墨西哥米浆
 el de hongos | de hongos | café de hongos | mushroom coffee => 蘑菇咖啡
 el de nuez | de nuez | café de nuez => 碧根果
+
+# 实录里 "café helado" 单独成段时被译成「冰激凌咖啡馆」——短句没有上下文，
+# helado 的「冰淇淋」义会盖过「冰镇」义。
+el café helado | café helado | iced coffee | el ice coffee => 冰咖啡

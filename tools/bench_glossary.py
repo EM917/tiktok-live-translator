@@ -1,87 +1,80 @@
-"""词表遵从率实测：语料取自 logs/ 里的真实识别文本，判据是词表要求的中文
-有没有出现在译文里。
+"""翻译引擎的词表遵从率实测。
+
+语料取自 logs/ 里的真实识别文本，判据是客观的——词表要求的中文有没有出现在
+译文里。加新翻译引擎时用它做 A/B。
 
 跑法：python3 tools/bench_glossary.py（需要 Ollama 在跑）
 
-2026-08-24 的结果（175 句 / 269 个术语）：
-    Keep these terms exactly as given      46.1%   ← 线上在用
-    You MUST use these exact translations  48.7%   （标准误约 3pp，与上者无差别）
-    Glossary (mandatory)                   38.3%   ← 明显更差
-
-结论：换措辞救不了。这类纯翻译模型对指令区术语表的遵从率就在五成上下，
-要再往上走得换有原生术语干预能力的模型。加新引擎时用这个脚本对比。
+为什么只测这个：本工具的用户读中文那一行做合规判断，真正会害到他们的是
+商品名、价格、促销条件被翻错，而不是句子读起来顺不顺。
 """
 import asyncio
-import glob
-import json
-import os
 import sys
 import time
 
 sys.path.insert(0, ".")
 
-import aiohttp  # noqa: E402
-from app.glossary import load
+from app.glossary import load                      # noqa: E402
+from app.translator import (                       # noqa: E402
+    OllamaGemmaTranslator, OllamaHyMT2Translator,
+)
+from tools._benchdata import sentences             # noqa: E402
 
-URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/generate"
 
-VARIANTS = {
- "现状(Keep exactly)": "Translate this {sn} text into {tn}. Output only the translation. Keep these terms exactly as given: {g}.",
- "MUST use":           "Translate this {sn} text into {tn}. Output only the translation. You MUST use these exact translations: {g}.",
- "Glossary(mandatory)":"Translate this {sn} text into {tn}. Output only the translation. Glossary (mandatory): {g}.",
-}
+def _hymt2(model):
+    def make():
+        tr = OllamaHyMT2Translator()
+        tr.model = model
+        return tr
+    return make
 
-def sentences():
-    g = load("glossary.txt")
-    seen, out = set(), []
-    for f in sorted(glob.glob("logs/*.jsonl")):
-        for line in open(f, encoding="utf-8"):
-            try:
-                r = json.loads(line)
-            except ValueError:
-                continue
-            if r.get("type") != "segment":
-                continue
-            t = (r.get("text") or "").strip()
-            if len(t) < 15 or t in seen:
-                continue
-            m = g.matching(t)
-            if not m:
-                continue
-            seen.add(t)
-            out.append((t, g.translation_hint(t), [zh for _, zh, _ in m]))
-    return out
 
-async def run(session, head, text):
-    body = {"model": "translategemma:4b", "prompt": head + "\n\n" + text, "stream": False,
-            "options": {"temperature": 0, "num_predict": 200}, "keep_alive": "30m"}
-    async with session.post(URL, data=json.dumps(body)) as r:
-        d = await r.json()
-    return (d.get("response") or "").strip()
+ENGINES = [
+    ("TranslateGemma 4B", OllamaGemmaTranslator, "str"),
+    ("Hy-MT2 1.8B", _hymt2("hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"), "pairs"),
+    ("Hy-MT2 7B", _hymt2("hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M"), "pairs"),
+]
+
+# 今天照着测试语料新加/改过的词条：这些是「调过参」的，必须和原有词条分开看，
+# 否则会把自己的调参成果当成模型能力。差距恰恰全在这一组——它们都是多词短语，
+# 而促销条件、价格框架正是多词短语。
+TUNED = {"排毒粉", "在做特价", "下单满（金额，美元）", "家人们",
+         "日间版还是夜间版", "日间版滴剂", "夜间版滴剂",
+         "墨西哥米浆", "蘑菇咖啡", "碧根果", "订单", "冰咖啡"}
+
 
 async def main():
-    data = sentences()
-    print("语料: {} 句（含词表命中），共 {} 个待检术语\n".format(
-        len(data), sum(len(z) for _, _, z in data)))
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90)) as s:
-        for name, tpl in VARIANTS.items():
-            hit = tot = 0
-            t0 = time.time()
-            misses = []
-            for text, hint, wants in data:
-                head = tpl.format(sn="Spanish", tn="Simplified Chinese", g=hint)
-                out = await run(s, head, text)
-                for w in wants:
-                    tot += 1
-                    if w in out:
-                        hit += 1
-                    elif len(misses) < 4:
-                        misses.append((w, out[:52]))
-            ms = (time.time() - t0) / max(len(data), 1) * 1000
-            print("{:<22} 遵从 {:>3}/{:<3} = {:5.1f}%   均 {:.0f}ms/句".format(
-                name, hit, tot, 100.0*hit/max(tot,1), ms))
-            for w, o in misses:
-                print("      漏「{}」→ {}".format(w, o))
+    g = load("glossary.txt")
+    data = sentences(g)
+    print("语料: {} 句，共 {} 个待检术语\n".format(
+        len(data), sum(len(w) for _, _, w in data)))
+    for name, cls, form in ENGINES:
+        tr = cls()
+        split = {"多词短语（今天新加）": [0, 0], "原有词条（多为商品名）": [0, 0]}
+        each = []
+        for text, _hint, wants in data:
+            gl = (g.translation_hint(text) if form == "str"
+                  else g.translation_pairs(text))
+            t1 = time.time()
+            out = await tr.translate(text, "zh-CN", source="es",
+                                     glossary=gl or None) or ""
+            each.append((time.time() - t1) * 1000)
+            for w in wants:
+                key = "多词短语（今天新加）" if w in TUNED else "原有词条（多为商品名）"
+                split[key][1] += 1
+                if w in out:
+                    split[key][0] += 1
+        each.sort()
+        hit = sum(h for h, _ in split.values())
+        tot = sum(t for _, t in split.values())
+        print("{:<20} 总计 {:>3}/{:<3} = {:5.1f}%   中位 {:.0f}ms  P95 {:.0f}ms".format(
+            name, hit, tot, 100.0 * hit / max(tot, 1),
+            each[len(each) // 2], each[int(len(each) * 0.95)]))
+        for key, (h, t) in split.items():
+            print("     {:<14} {:>3}/{:<3} = {:5.1f}%".format(
+                key, h, t, 100.0 * h / max(t, 1)))
+        await tr.close()
     print()
+
 
 asyncio.run(main())

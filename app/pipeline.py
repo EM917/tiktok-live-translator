@@ -830,7 +830,8 @@ class Pipeline:
             # 词表两处生效：把本句命中的词条拼进提示词，译文回来再做兜底替换。
             # 商品名/自造词（Quema Lonja、moringa）通用模型必错，而且换多大的
             # 模型都不会自动变对——这类错误只能靠词表钉死。
-            hint = self.glossary.translation_hint(job["text"]) if self.glossary else ""
+            hint = (tuple(self.glossary.translation_pairs(job["text"]))
+                    if self.glossary else ())
             translated = await self.translator.translate(
                 job["text"], job["target"], source=job["lang"] or "auto",
                 glossary=hint or None)
