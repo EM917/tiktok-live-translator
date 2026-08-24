@@ -1,7 +1,10 @@
 """把 TikTok 直播间页面地址解析成可供 ffmpeg 拉流的媒体地址（FLV/HLS）。"""
 import asyncio
+import json
 import re
 import sys
+
+from .nethttp import read_all
 
 
 class ResolveError(RuntimeError):
@@ -90,18 +93,48 @@ async def _check_media_url(url, trusted=False):
     return url
 
 
-async def _resolve_from_page(url):
+def _cookie_header(browser):
+    """借用浏览器里现成的 TikTok cookie，拼成一个 Cookie 头。
+
+    cookies 只在本机与 TikTok 之间使用：不写日志、不落盘、不发往任何第三方。
+    读不到就返回 None，调用方按匿名处理。"""
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+    except Exception:
+        return None
+    try:
+        jar = extract_cookies_from_browser(browser)
+    except Exception:
+        return None
+    pairs = []
+    for c in jar:
+        if c.domain and "tiktok.com" in c.domain:
+            pairs.append("{}={}".format(c.name, c.value))
+    return "; ".join(pairs) if pairs else None
+
+
+async def _resolve_from_page(url, browser=None):
     """兜底方案：yt-dlp 的 TikTok 提取器失效时，直接抓直播页 HTML 挖流地址。
-    优先纯音频流（only_audio=1），其次 FLV。找不到返回 None。"""
+    优先纯音频流（only_audio=1），其次 FLV。找不到返回 None。
+
+    browser 非空时借用该浏览器的 TikTok 登录态再抓一次——有些房间的页面
+    对未登录访问就是不带流地址。"""
     import aiohttp
 
     from .nethttp import read_all
 
+    headers = dict(_BROWSER_HEADERS)
+    if browser:
+        loop = asyncio.get_running_loop()
+        cookie = await loop.run_in_executor(None, _cookie_header, browser)
+        if not cookie:
+            return None
+        headers["Cookie"] = cookie
     try:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=15)
         ) as session:
-            async with session.get(url, headers=_BROWSER_HEADERS) as resp:
+            async with session.get(url, headers=headers) as resp:
                 # 必须读到 EOF。这里曾经写成单次 read(8MB)，实测 213KB 的直播页
                 # 只拿到 85KB——流地址在被截掉的那 60% 里，于是每个直播间都
                 # 「解析失败」，而日志上看不出任何异常。
@@ -130,6 +163,131 @@ def _extract_stream_urls(html):
             if pick(u):
                 return u
     return None
+
+
+# ---- TikTok 官方直播接口 ----------------------------------------------
+# 这两个接口匿名可用，且**独立于 yt-dlp 的提取器**。实测过一个确实在播的
+# 房间：yt-dlp 匿名、yt-dlp 带 cookies、带 curl_cffi 伪装，三种都报「未开播」，
+# 而这条链路直接拿到了 status=2 和多档流地址。yt-dlp 的 TikTok 提取器一旦
+# 被挡（HTTP 400），它就会把失败一律翻译成「主播未开播」，那句话是错的。
+_ROOM_API = ("https://www.tiktok.com/api-live/user/room/"
+             "?aid=1988&sourceType=54&uniqueId={user}")
+_WEBCAST_API = ("https://webcast.tiktok.com/webcast/room/info/"
+                "?aid=1988&room_id={room}")
+_USER_RE = re.compile(r"tiktok\.com/@([\w.\-]+)", re.IGNORECASE)
+
+# TikTok 的房间状态：2=在播，4=已结束。只有拿到明确的非 2 才敢说「主播没在播」，
+# 拿不到就只能说「没解析出来」——两者对重连策略的含义完全不同。
+LIVE_STATUS = 2
+
+
+def _username(url):
+    m = _USER_RE.search(url or "")
+    return m.group(1) if m else None
+
+
+async def _get_json(session, url, limit=4 * 1024 * 1024):
+    try:
+        async with session.get(url, headers=_BROWSER_HEADERS) as resp:
+            if resp.status != 200:
+                return None
+            raw = await read_all(resp, limit)
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        return None
+
+
+async def _room_status(session, user):
+    """用户名 → (room_id, status)。拿不到返回 (None, None)。"""
+    j = await _get_json(session, _ROOM_API.format(user=user), limit=1024 * 1024)
+    if not isinstance(j, dict) or j.get("statusCode") not in (0, None):
+        return None, None
+    u = ((j.get("data") or {}).get("user") or {})
+    room = u.get("roomId")
+    status = u.get("status")
+    return (str(room) if room else None), status
+
+
+def _pick_stream(data):
+    """从 webcast 房间信息里挑一个地址，优先纯音频。
+
+    我们只要声音。纯音频档（only_audio=1）省掉整条视频码流——对一个要连着
+    盯几小时的工具，这不是微优化。"""
+    su = (data or {}).get("stream_url") or {}
+    sdk = ((su.get("live_core_sdk_data") or {}).get("pull_data") or {})
+    raw = sdk.get("stream_data")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = None
+    opts = ((raw or {}).get("data") or {})
+    for quality in ("ao",):                      # 纯音频优先
+        flv = ((opts.get(quality) or {}).get("main") or {}).get("flv")
+        if flv:
+            return flv
+    for val in opts.values():                    # 其次任意档的 flv
+        flv = ((val or {}).get("main") or {}).get("flv")
+        if flv:
+            return flv
+    flvs = su.get("flv_pull_url") or {}
+    if isinstance(flvs, dict):
+        for v in flvs.values():
+            if v:
+                return v
+    return su.get("rtmp_pull_url") or su.get("hls_pull_url") or None
+
+
+async def _resolve_via_api(url):
+    """官方接口链路：用户名 → room_id → 流地址。
+
+    返回 (stream_url, live_known_offline)。第二个值只有在接口明确告诉我们
+    房间已结束时才是 True——用来把「确认没播」和「我们没解析出来」分开。"""
+    import aiohttp
+
+    user = _username(url)
+    if not user:
+        return None, False
+    try:
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15)) as session:
+            room, status = await _room_status(session, user)
+            if room is None:
+                return None, False
+            if status is not None and status != LIVE_STATUS:
+                return None, True          # 接口明确说没在播
+            info = await _get_json(session, _WEBCAST_API.format(room=room))
+            data = (info or {}).get("data") or {}
+            if data.get("status") is not None and data["status"] != LIVE_STATUS:
+                return None, True
+            return _pick_stream(data), False
+    except Exception:
+        return None, False
+
+
+async def _media_url_works(url, timeout=8):
+    """真的去拉几个字节，确认这个地址能用。
+
+    签名地址解析得出来不等于拉得动：签名过期、地区限制、CDN 节点故障都会让
+    ffmpeg 在开播那一刻才失败——那时用户已经以为连上了。宁可在这里多花一秒。
+    """
+    if not url:
+        return False
+    import aiohttp
+
+    try:
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+            async with session.get(url, headers=_BROWSER_HEADERS) as resp:
+                if resp.status != 200:
+                    return False
+                # 只取一小口：能出数据就说明流是活的
+                chunk = await resp.content.read(2048)
+                return bool(chunk)
+    except Exception:
+        return False
 
 
 def _classify_ytdlp_error(err_text):
@@ -268,6 +426,21 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
         # 用户直接给的流地址：按可信处理（详见 _check_media_url 的说明）
         return await _check_media_url(url, trusted=True)
 
+    # 第 1 层：TikTok 官方接口。放在最前有两个理由——它给的是**纯音频档**
+    # （only_audio=1，省掉整条视频码流），而且它独立于 yt-dlp 的提取器：
+    # 实测一个确实在播的房间，yt-dlp 的三种方式全报「未开播」，这条链路照样通。
+    api_url, known_offline = await _resolve_via_api(url)
+    if api_url:
+        checked = await _check_media_url(api_url)
+        if await _media_url_works(checked):
+            print("[信息] 已通过 TikTok 直播接口取到纯音频流")
+            return checked
+        print("[信息] 直播接口给的地址拉不动，继续试其它方式")
+    if known_offline:
+        # 接口明确说房间已结束——这是唯一敢下这个断言的地方
+        raise ResolveError("主播当前没有在直播（TikTok 接口确认直播已结束）",
+                           kind="offline")
+
     try:
         import yt_dlp  # noqa: F401
     except ImportError:
@@ -294,15 +467,31 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
                 code, out, err = b_code, b_out, b_err
                 break
     if code != 0:
-        # yt-dlp 的 TikTok 提取器时不时失灵（接口说没播但页面在播）——先试页面兜底
-        fallback = await _resolve_from_page(url)
-        if fallback:
-            print("[信息] yt-dlp 解析失败，已从直播页面直接找到流地址")
-            return await _check_media_url(fallback)
+        # yt-dlp 的 TikTok 提取器时不时失灵（接口说没播但页面在播）——先试页面兜底。
+        # 匿名抓不到时再借用浏览器登录态抓一次：有些房间的页面对未登录访问
+        # 就是不带流地址。
+        for browser in (None,) + tuple(_browser_order(cookies_browser)
+                                       if cookies_browser != "none" else ()):
+            fallback = await _resolve_from_page(url, browser=browser)
+            if not fallback:
+                continue
+            checked = await _check_media_url(fallback)
+            if not await _media_url_works(checked):
+                continue
+            print("[信息] yt-dlp 解析失败，已从直播页面直接找到流地址{}".format(
+                "（借用 {} 的登录状态）".format(browser) if browser else ""))
+            return checked
         err_text = err
         tail = err_text.strip().splitlines()[-3:]
         print("[错误] yt-dlp: " + " | ".join(tail))    # 英文原始输出只进终端
         kind, message = _classify_ytdlp_error(err_text)
+        # yt-dlp 把「提取器被挡」也说成「未开播」。我们已经把每条路都走过了，
+        # 而没有任何一条**确认**过房间结束，所以不能替它下这个断言。
+        if kind == "offline":
+            kind, message = "unknown", (
+                "试过全部 4 种方式都没能拿到这个直播间的音频流。"
+                "如果你在浏览器里看得到这个直播，多半是 TikTok 临时挡了本机请求，"
+                "过一会儿再点一次「开始翻译」通常就好了。")
         raise ResolveError(message, kind=kind)
     lines = [line.strip() for line in out.splitlines() if line.strip()]
     if not lines:
