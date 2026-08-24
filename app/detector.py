@@ -4,11 +4,12 @@
   * 扫的是 ASR 的 raw_text（含被质量过滤丢掉的部分），不是干净字幕；
   * 按**时间**做滑动窗口，而不是「最近 N 段」——切段长度以后还会调，
     用段数定义会让行为跟着变；
-  * 三级命中（精确 / 变体 / 模糊），宁可多报。
+  * 三级命中（精确 / 变体 / 模糊），宁可多报——但模糊那一级要逐词比对，
+    整串比会被公共词抬高相似度（实盘误报过 `bajar los cupones` 命中
+    `bajar kilos`）。
 
 不用 LLM：词表匹配足够快（微秒级），且结果可解释、可审计。
 """
-import difflib
 import re
 import time
 import unicodedata
@@ -188,6 +189,35 @@ class BannedTermDetector:
                     return TIER_FUZZY
         return None
 
+    @staticmethod
+    def _edits_within(a, b, budget):
+        """两个词的编辑距离是否不超过 budget（超了立刻收手，不算完）。"""
+        if abs(len(a) - len(b)) > budget:
+            return False
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            cur = [i]
+            for j, cb in enumerate(b, 1):
+                cur.append(min(prev[j] + 1, cur[j - 1] + 1,
+                               prev[j - 1] + (ca != cb)))
+            if min(cur) > budget:
+                return False
+            prev = cur
+        return prev[-1] <= budget
+
+    def _edit_budget(self, word):
+        """允许错几个字母。按词长给——短词多错一个就成了另一个词。
+
+        用编辑距离而不是相似度比，是因为「ASR 听错一两个字母」本来就是编辑距离
+        的定义。相似度比对短词太苛刻：bajar → baiar 只错一个字母，比值却只有
+        0.80，落在 0.86 阈值之下。实测这会让替换类错字的召回掉到 40%
+        （见 tests/test_fuzzy_recall.py，那个基准就是为了守住这一层）。
+        """
+        n = len(word)
+        if n < self.min_fuzzy_len:
+            return 0        # 短词必须完全相同
+        return 1 if n <= 7 else 2
+
     def _fuzzy_equal(self, term_tokens, window_tokens):
         """逐词比对，而不是把整个短语拼成一个字符串比。
 
@@ -204,9 +234,10 @@ class BannedTermDetector:
         for want, got in zip(term_tokens, window_tokens):
             if want == got:
                 continue
-            if len(want) < self.min_fuzzy_len or len(got) < self.min_fuzzy_len:
+            budget = self._edit_budget(want)
+            if budget == 0 or len(got) < self.min_fuzzy_len:
                 return False
-            if difflib.SequenceMatcher(None, want, got).ratio() < self.fuzzy_ratio:
+            if not self._edits_within(want, got, budget):
                 return False
         return True
 

@@ -39,8 +39,9 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 
 ## Disk Space
 
-Everything runs locally, so the models live on your machine. Sizes below are
-measured from an actual installation, not estimates.
+Everything runs locally, so the models live on your machine. The figures below come
+from a reference installation; exact sizes vary with platform and package
+versions.
 
 | Component | Size | When |
 |---|---|---|
@@ -162,7 +163,7 @@ next launch the application starts it if required, downloads the 1.1 GB Hy-MT2
 1.8B model through Ollama's API with on-screen progress, and switches to it. No
 terminal commands are involved; the Whisper model is provisioned the same way.
 
-To use the larger tier, pull it once and it will be selected automatically:
+Pulling the larger tier makes it available for strong re-translation and for an explicit `--translator hymt2-7b`. It is never selected automatically; see below.
 
 ```bash
 ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, highest terminology accuracy, ~16 GB RAM
@@ -414,7 +415,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 ## 磁盘空间
 
-全部在本机运行，因此模型也存在本机。以下数值来自一次真实安装的实测，不是估算。
+全部在本机运行，因此模型也存在本机。以下数值来自一次实际安装的实测，具体体积会随系统与依赖版本略有出入。
 
 | 组成 | 体积 | 何时下载 |
 |---|---|---|
@@ -534,7 +535,7 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 将其启动，通过 Ollama 接口下载 1.1 GB 的 Hy-MT2 1.8B 模型（页面显示进度）并切换
 至该引擎，全过程无需终端操作。Whisper 模型采用相同方式部署。
 
-如需使用更大档位，拉取一次即可被自动选用：
+拉取更大的档位后，它可用于「重译」以及显式指定 `--translator hymt2-7b`。程序**不会**自动选用它，原因见下。
 
 ```bash
 ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语准确率最高，建议 16 GB 以上内存

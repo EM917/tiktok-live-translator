@@ -201,3 +201,39 @@ def test_the_same_sentence_is_not_translated_twice_at_once():
         return p._strong.calls
 
     assert run(scenario()) == 1
+
+
+def test_one_strong_call_per_alert_group():
+    """一次扫描的多个命中共用同一段上下文——只该翻一遍。
+
+    实测一句话同时命中 3 个词是常事。逐个翻是拿同一段文本跑三遍 temperature 0
+    的模型，输出必然一样；而强模型每跑一次都在和 Whisper 抢内存，
+    识别就在报警链路上。
+    """
+    async def scenario():
+        p = make()
+        p.audit = None
+        p._alert_seq = 0
+        p._alert_tasks = []
+        p.glossary = None
+        p.target = "zh-CN"
+        calls = []
+
+        class Strong:
+            model = "fake"
+
+            async def translate(self, text, *a, **k):
+                calls.append(text)
+                return "中文"
+
+        p._strong = Strong()
+        p.translator = None
+        ctx = "vas a bajar de peso y perder kilos, adelgazar rapido"
+        await p._translate_alert([1, 2, 3], ctx)
+        return calls, p.server.sent
+
+    calls, sent = run(scenario())
+    assert len(calls) == 1, "同一段上下文只该翻一遍，实际 {} 遍".format(len(calls))
+    # 但三条报警都要拿到中文
+    assert sorted(m["alert_id"] for m in sent) == [1, 2, 3]
+    assert all(m["context_zh"] == "中文" for m in sent)

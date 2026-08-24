@@ -880,6 +880,7 @@ class Pipeline:
         if self.audit is not None:
             self.audit.segment(seq, result, audio_end_ts, asr_ms, hits)
 
+        alert_ids = []
         for hit in hits:
             if self.audit is not None:
                 self.audit.alert(hit)
@@ -887,13 +888,22 @@ class Pipeline:
                 hit["term"], hit["tier"], hit["context"][-80:]))
             self._alert_seq += 1
             hit["alert_id"] = self._alert_seq
+            alert_ids.append(self._alert_seq)
             await self.server.broadcast({"type": "alert", **hit})
-            # 报警的上下文是西语原话。中控读不了西语就无从判断该不该处理，
-            # 而报警恰恰是最需要人工复核的地方——所以补一份中文。
-            # 用最强模型：这句话可能要拿去跟平台交涉，值这 2 秒。
+
+        # 报警的上下文是西语原话。中控读不了西语就无从判断该不该处理，
+        # 而报警恰恰是最需要人工复核的地方——所以补一份中文，用最强模型：
+        # 这句话可能要拿去跟平台交涉，值这 2 秒。
+        #
+        # **一次扫描只翻一遍。** 同一次扫描的多个命中共用同一段 context
+        # （实测一句话同时命中 3 个词是常事），逐个翻是拿同一段文本跑三遍
+        # temperature 0 的模型，输出必然一样。强模型的原则是稀疏、按需、
+        # 短暂占内存，不能因为一次报警就成倍放大调用量——它每跑一次都在和
+        # Whisper 抢内存，而识别就在报警链路上。
+        if alert_ids:
             self._alert_tasks = [t for t in self._alert_tasks if not t.done()]
             self._alert_tasks.append(asyncio.ensure_future(
-                self._translate_alert(self._alert_seq, hit.get("context") or "")))
+                self._translate_alert(alert_ids, hits[0].get("context") or "")))
 
         if not result.text:
             return None
@@ -926,22 +936,19 @@ class Pipeline:
         while len(self._recent) > 120:
             self._recent.popitem(last=False)
 
-        # 命中违禁词的这一句自动用最强模型再翻一遍。
+        # 命中时**不再**额外强译这条字幕。
         #
-        # 报警本身就精确指出了「哪一句要紧」——比任何计时器都准，而值得动用
-        # 强模型的恰恰就是这类句子（价格、促销条件、功效宣称）。
-        # 放后台跑而不是替换掉这次翻译：快的那版先上屏，中控立刻有东西看，
-        # 准的那版两秒后原地替换。命中一小时不过几次，代价可以忽略。
-        if hits:
-            self._upgrade_tasks = [t for t in getattr(self, "_upgrade_tasks", [])
-                                   if not t.done()]
-            self._upgrade_tasks.append(
-                asyncio.ensure_future(self.retranslate(seq, "banned_term")))
+        # 报警框里已经有整段上下文的强模型译文了（见上面的 _translate_alert），
+        # 中控出事时看的就是那里；再对同一段话强译一次字幕，等于为一次报警
+        # 付两遍 7B，而每一次都在和 Whisper 抢内存、抬高报警延迟。
+        # 事后复核用的逐段精确译文由 tools/retranslate_audit.py 补齐——
+        # 那时没有识别在争资源，是零代价的。想当场看某条的精确译文，
+        # 「重译」按钮仍然随时可用。
 
         return job
 
-    async def _translate_alert(self, alert_id, context):
-        """把报警上下文翻成中文，回来后补进那一条报警。"""
+    async def _translate_alert(self, alert_ids, context):
+        """把报警上下文翻成中文，回来后补进这一批报警（它们共用同一段上下文）。"""
         from .translator import create_strong_translator
 
         if not context.strip():
@@ -962,9 +969,10 @@ class Pipeline:
             print("[警告] 报警上下文翻译失败: {}".format(exc))
             return
         if out:
-            await self.server.broadcast({"type": "alert_update",
-                                         "alert_id": alert_id,
-                                         "context_zh": out})
+            for alert_id in alert_ids:
+                await self.server.broadcast({"type": "alert_update",
+                                             "alert_id": alert_id,
+                                             "context_zh": out})
 
     async def _publish_translation(self, seq, translated, ok, ms, level,
                                    target, extra=None):
