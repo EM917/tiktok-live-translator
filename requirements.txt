@@ -2,6 +2,10 @@ aiohttp>=3.9
 numpy>=1.24
 faster-whisper>=1.0
 yt-dlp
+# yt-dlp 抓 TikTok 直播需要它做 TLS 指纹伪装。不装的话 yt-dlp 会打印
+# "attempting impersonation, but no impersonate target is available"，
+# 拉房间元数据时被 TikTok 挡成 HTTP 400，最后错报成「主播未开播」。
+curl_cffi>=0.7
 # 静态 ffmpeg（系统没装 ffmpeg 时自动使用，免手动安装）
 imageio-ffmpeg>=0.5
 # 桌面应用窗口（不装也能用，会退回浏览器界面）
