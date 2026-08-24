@@ -70,6 +70,27 @@ class AuditLog:
             "ok": bool(ok),
         })
 
+    def translation_strong(self, seq, translated, translate_ms, ok, model,
+                           trigger):
+        """用最强模型重译的结果，**单独一种记录类型**。
+
+        不复用上面的 translation：同一个 seq 会同时存在快译和强译两条，若类型
+        相同就无法从日志判断哪条是哪个模型翻的——而这正是事后复核最需要区分的
+        东西。收工后的批量重译工具写的也是这个类型，两条路径保持一致。
+
+        trigger 说明这次重译是谁发起的：banned_term（命中违禁词自动升级）
+        或 manual（中控点了「重译」）。"""
+        self._write({
+            "type": "translation_strong",
+            "seq": seq,
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "translated": translated,
+            "translate_ms": round(translate_ms, 1),
+            "ok": bool(ok),
+            "model": model,
+            "trigger": trigger,
+        })
+
     def dropped_audio(self, queue_depth=None):
         """识别跟不上时丢掉的音频段。漏报的第四种成因——这一段压根没进 ASR，
         不记下来事后就无法归因。"""

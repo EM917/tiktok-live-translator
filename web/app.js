@@ -478,14 +478,24 @@
   }
 
   function applyTranslation(card, msg) {
+    // 二次把关：服务端已经不会广播低等级结果，这里再挡一次，
+    // 顺便让「强模型重译」的标记跟着**实际在屏幕上的那一版**走。
+    // 只加不减的话，快译覆盖强译后标记还留着，界面就会撒谎——
+    // 而这个标记存在的全部意义就是让人分辨自己看的是哪一版。
+    if (msg.quality) {
+      var have = Number(card.dataset.quality || 0);
+      if (msg.translated && msg.quality < have) return;
+      if (msg.translated) {
+        card.dataset.quality = msg.quality;
+        card.classList.toggle("strong", msg.quality >= 2);
+      }
+    }
     var trans = card.querySelector(".trans");
     var stateChip = card.querySelector(".state-chip");
     var state = msg.translate_state;
     if (msg.translated) {
       trans.textContent = msg.translated;
       trans.classList.remove("pending");
-      // 标记这条是强模型重译过的，中控一眼能分辨手上看的是哪一版
-      if (msg.strong) card.classList.add("strong");
     } else if (state === "pending") {
       trans.textContent = "翻译中…";
       trans.classList.add("pending");
