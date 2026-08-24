@@ -41,6 +41,15 @@ class ASRResult:
         """兼容旧的 `text, lang = transcribe(...)` 解包写法。"""
         return iter((self.text, self.language))
 
+# Whisper 的温度回退：解码结果压缩比过高或置信度过低时，用更高的 temperature
+# 把整段**重新解码**一遍，默认要试 6 档 (0, 0.2, 0.4, 0.6, 0.8, 1.0)。
+# 音乐/噪声段几乎必然触发全部回退，实测（M 系列 mlx large-v3，真实直播音频）：
+#     默认六档  最慢 25.1s | P95 21.7s | RTF 0.85
+#     单档 0    最慢  5.8s | P95  5.6s | RTF 0.28
+# 对「监听违禁词」这个用途，一次 25 秒的解码会让音频积压、检测落后，
+# 代价远大于那点回退可能挽回的转写质量，所以默认只解码一次。
+DEFAULT_TEMPERATURE = 0.0
+
 # whisper 在静音/纯音乐段上常见的幻觉输出，直接丢弃
 _HALLUCINATIONS = {
     "thank you", "thanks for watching", "thank you for watching", "you",
@@ -61,7 +70,8 @@ _MLX_REPOS = {
 
 
 def create_transcriber(backend, model_size, device="auto", compute_type="auto",
-                       language=None, beam_size=5, use_context=False):
+                       language=None, beam_size=5, use_context=False,
+                       temperature=DEFAULT_TEMPERATURE):
     """backend: ct2（faster-whisper，CPU/CUDA）或 mlx（Apple GPU）。auto 优先 mlx。"""
     if backend == "auto":
         try:
@@ -70,9 +80,11 @@ def create_transcriber(backend, model_size, device="auto", compute_type="auto",
         except ImportError:
             backend = "ct2"
     if backend == "mlx":
-        return MLXTranscriber(model_size, language=language, use_context=use_context)
+        return MLXTranscriber(model_size, language=language, use_context=use_context,
+                              temperature=temperature)
     return Transcriber(model_size, device=device, compute_type=compute_type,
-                       language=language, beam_size=beam_size, use_context=use_context)
+                       language=language, beam_size=beam_size, use_context=use_context,
+                       temperature=temperature)
 
 
 class _FilterMixin:
@@ -122,12 +134,14 @@ class Transcriber(_FilterMixin):
     """faster-whisper（CTranslate2）后端：CPU / CUDA。"""
 
     def __init__(self, model_size="large-v3-turbo", device="auto", compute_type="auto",
-                 language=None, beam_size=5, use_context=False):
+                 language=None, beam_size=5, use_context=False,
+                 temperature=DEFAULT_TEMPERATURE):
         from faster_whisper import WhisperModel
 
         self.language = language
         self.beam_size = beam_size
         self.use_context = use_context
+        self.temperature = temperature
         self._context = ""
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
@@ -142,6 +156,7 @@ class Transcriber(_FilterMixin):
             language=self.language,
             vad_filter=True,
             beam_size=self.beam_size,
+            temperature=self.temperature,
             condition_on_previous_text=False,
             **kwargs
         )
@@ -154,13 +169,15 @@ class Transcriber(_FilterMixin):
 class MLXTranscriber(_FilterMixin):
     """mlx-whisper 后端：跑在 Apple Silicon GPU 上，large-v3 也能数倍实时。"""
 
-    def __init__(self, model_size="large-v3", language=None, use_context=False):
+    def __init__(self, model_size="large-v3", language=None, use_context=False,
+                 temperature=DEFAULT_TEMPERATURE):
         import mlx_whisper  # 提前失败好过跑到一半失败
 
         self._mlx = mlx_whisper
         self.repo = _MLX_REPOS.get(model_size, model_size)  # 允许直接给 HF 仓库名
         self.language = language
         self.use_context = use_context
+        self.temperature = temperature
         self._context = ""
         # 预热一次：触发模型下载/编译，让第一段真实音频不用等
         self._mlx.transcribe(np.zeros(16000, dtype=np.float32),
@@ -175,6 +192,7 @@ class MLXTranscriber(_FilterMixin):
             audio,
             path_or_hf_repo=self.repo,
             language=self.language,
+            temperature=self.temperature,
             condition_on_previous_text=False,
             fp16=True,
             **kwargs

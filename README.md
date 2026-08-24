@@ -110,6 +110,7 @@ Any auto-selected value can be overridden with a command-line flag (see below).
 | `--compute-type` | ct2 precision (`int8`/`float16`/…) | auto by hardware |
 | `--beam` | Beam search width (larger = more accurate but slower; `1` = greedy; ct2 backend only) | `5` |
 | `--context` | Enable rolling context. **Off by default**: measured to trigger repetition loops that badly hurt recall | off |
+| `--asr-temperature` | Decoding temperature. **Defaults to 0 (single pass)**: Whisper otherwise re-decodes a segment at up to six temperatures when quality checks fail, which measured 25s on music-heavy audio | `0` |
 | `--translator` | Translation engine: `auto`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
 | `--denoise` | RNNoise voice denoising: `auto`/`on`/`off` | `auto` (on) |
 | `--port` | Local UI port | `8765` |
@@ -306,6 +307,7 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 | `--compute-type` | ct2 精度（`int8`/`float16`/…） | 按硬件自动 |
 | `--beam` | beam search 宽度（越大越准越慢，`1`=贪心；仅 ct2 后端） | `5` |
 | `--context` | 开启滚动上下文。**默认关闭**：实测它会诱发复读死循环，反而大幅拉低召回率 | 关 |
+| `--asr-temperature` | 识别解码温度。**默认 0（只解码一次）**：Whisper 默认会在质量不达标时用更高温度重解最多 6 次，音乐段上实测单次识别可达 25 秒 | `0` |
 | `--translator` | 翻译引擎：`auto`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
 | `--denoise` | RNNoise 人声降噪：`auto`/`on`/`off` | `auto`（开） |
 | `--port` | 本地 UI 端口 | `8765` |

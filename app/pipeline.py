@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from .asr import DEFAULT_TEMPERATURE
 from .detector import BannedTermDetector, load_terms
 from .settings import load_settings, save_setting
 from .telemetry import Telemetry
@@ -337,8 +338,11 @@ class Pipeline:
         print("[信息] 识别配置: backend={} model={} device={} ({})".format(
             backend, model, device, rec["note"]))
 
+        temperature = (self.args.asr_temperature
+                       if self.args.asr_temperature is not None
+                       else DEFAULT_TEMPERATURE)
         key = (backend, model, device, compute, self.args.source,
-               self.args.beam, self.args.context)
+               self.args.beam, self.args.context, temperature)
         if self._transcriber is None or self._transcriber_key != key:
             size_mb = MODEL_SIZES_MB.get(model)
             if size_mb and size_mb >= 1000:
@@ -371,6 +375,7 @@ class Pipeline:
                         language=self.args.source,
                         beam_size=self.args.beam,
                         use_context=self.args.context,
+                        temperature=temperature,
                     ),
                 )
             watcher = asyncio.ensure_future(self._model_download_progress(model))

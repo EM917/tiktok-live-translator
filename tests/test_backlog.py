@@ -49,3 +49,22 @@ def test_backlog_reset_between_sessions():
     t.set_backlog(40.0)
     t.reset()
     assert t.snapshot()["max_backlog_sec"] == 0.0
+
+
+# ---- 解码温度：长尾的主要来源 ----
+
+def test_default_temperature_is_single_pass():
+    """默认只解码一次。Whisper 默认会在质量不达标时用更高温度重解最多 6 次，
+    音乐段上实测能让单次识别涨到 25 秒——那正是积压和漏词的源头。"""
+    from app.asr import DEFAULT_TEMPERATURE
+    assert DEFAULT_TEMPERATURE == 0.0
+
+
+def test_temperature_is_part_of_model_cache_key():
+    """温度变了必须重建识别器，否则改了参数却仍在用旧配置的模型。"""
+    import inspect
+    from app import pipeline
+    src = inspect.getsource(pipeline.Pipeline._run_session)
+    key_line = [ln for ln in src.splitlines() if "key = (" in ln][0]
+    assert "temperature" in src.split("key = (")[1].split(")")[0] or \
+           "temperature" in key_line + src.split(key_line)[1].split(")")[0]

@@ -150,6 +150,8 @@ def main():
     ap.add_argument("--source", default="es", help="主播语言（锁定可省掉语言检测）")
     ap.add_argument("--model", default=None, help="whisper 模型，默认按硬件推荐")
     ap.add_argument("--backend", default="auto")
+    ap.add_argument("--asr-temperature", type=float, default=None,
+                    dest="asr_temperature", help="识别解码温度（默认取产品默认值 0）")
     ap.add_argument("--context", action="store_true",
                     help="开启滚动上下文（默认关闭，实测它会诱发复读死循环）")
     args = ap.parse_args()
@@ -172,8 +174,11 @@ def main():
         "开" if args.context else "关"))
 
     def make_transcriber():
+        kw = {}
+        if args.asr_temperature is not None:
+            kw["temperature"] = args.asr_temperature
         return create_transcriber(rec["backend"], model, language=args.source,
-                                  use_context=args.context)
+                                  use_context=args.context, **kw)
 
     # 基准真值：用大窗口跑一遍，拿词级时间戳。大窗口的识别质量最好，
     # 用它当「主播到底说了什么、什么时候说的」的参照

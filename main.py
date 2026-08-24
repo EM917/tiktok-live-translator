@@ -260,6 +260,9 @@ def parse_args():
                         "auto=装了 mlx-whisper 就用 mlx")
     p.add_argument("--beam", type=int, default=5,
                    help="beam search 宽度，越大越准越慢，默认 5（设 1 即贪心解码）")
+    p.add_argument("--asr-temperature", type=float, default=None, dest="asr_temperature",
+                   help="识别解码温度，默认 0（只解码一次）。Whisper 默认会在质量不达标时"
+                        "用更高温度重解码最多 6 次，音乐段上实测能让单次识别涨到 25 秒")
     p.add_argument("--context", action="store_true",
                    help="开启滚动上下文（把上一段识别结果喂给下一段）。默认关闭："
                         "实测它会诱发复读死循环，反而大幅拉低召回率")
