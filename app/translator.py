@@ -329,6 +329,8 @@ class OllamaHyMT2Translator(BaseTranslator):
                 "explanation:\n{text}".format(lang=lang, text=text))
 
     _OPTIONS = {"temperature": 0, "num_predict": 200, "stop": _STOP}
+    # 常驻显存的时长。按需调用的实例会把它设成 0，用完立刻卸载。
+    keep_alive = None
 
     async def translate(self, text, target, source="auto", glossary=None):
         body = {
@@ -339,7 +341,8 @@ class OllamaHyMT2Translator(BaseTranslator):
             "raw": True,          # 见上：自带模板是坏的，我们自己拼
             "stream": False,
             "options": self._OPTIONS,
-            "keep_alive": os.environ.get("OLLAMA_KEEP_ALIVE", "30m"),
+            "keep_alive": (self.keep_alive if self.keep_alive is not None
+                           else os.environ.get("OLLAMA_KEEP_ALIVE", "30m")),
         }
         try:
             session = await self.session()
@@ -437,6 +440,36 @@ def _unload_siblings(keep_model):
             urllib.request.urlopen(req, timeout=3).read()
         except Exception:
             pass          # 卸不掉不影响功能，只是内存紧一点
+
+
+def strong_model():
+    """当前本机可用的最强本地翻译引擎；没有则返回 None。"""
+    if _ollama_has_hymt2(large=True):
+        return HYMT2_LARGE
+    if _ollama_has_hymt2():
+        return HYMT2_SMALL
+    return None
+
+
+def create_strong_translator():
+    """按需调用最强模型的实例，**用完立刻卸载**。
+
+    不做成常驻的「专注模式」是实测决定的：7B 常驻会和 Whisper large-v3 抢
+    统一内存，把识别从 1.4 秒拖到 3.2 秒，而识别在违禁词报警的链路上
+    （报警延迟 6.8 秒 → 10.6 秒）。而装卸其实很便宜——载入 1.9 秒、
+    单次调用全程 2.3 秒，keep_alive=0 调完即从显存消失。
+
+    所以代价只落在需要它的那一次调用上，其余时间对识别零影响。这也是为什么
+    这个功能按「哪一句」触发，而不是按「哪一段时间」。
+    """
+    model = strong_model()
+    if model is None:
+        return None
+    tr = OllamaHyMT2Translator()
+    tr.model = model
+    tr.name = "strong"
+    tr.keep_alive = 0
+    return tr
 
 
 def create_translator(name):

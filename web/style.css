@@ -358,3 +358,20 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 }
 .jump-latest:hover { filter: brightness(1.08); }
 .jump-latest:active { transform: translateY(1px); }
+
+/* ---------- 单条重译 ---------- */
+.cap { position: relative; }
+.redo {
+  position: absolute; top: 10px; right: 0;
+  padding: 2px 9px; font-size: 11px; font-family: inherit; line-height: 1.6;
+  color: var(--text-faint); background: transparent;
+  border: 1px solid var(--border); border-radius: 5px;
+  cursor: pointer; opacity: 0;
+  transition: opacity .12s;
+}
+.cap:hover .redo, .redo:focus-visible { opacity: 1; }
+.redo:hover { color: var(--accent); border-color: var(--accent); }
+
+/* 强模型重译过的条目：左侧一道细标，可分辨看的是哪一版 */
+.cap.strong { border-left: 2px solid var(--accent); padding-left: 10px; }
+.cap.strong .redo { opacity: .55; }
