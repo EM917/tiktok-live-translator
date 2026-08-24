@@ -314,6 +314,9 @@
       case "caption_update":
         updateCaption(msg);
         break;
+      case "alert_update":
+        updateAlert(msg);
+        break;
       case "alert":
         renderAlert(msg);
         break;
@@ -548,11 +551,29 @@
     ctx.textContent = msg.context || "";
     item.appendChild(ctx);
 
+    // 中文一行。报警是最需要人工复核的地方，只给西语原话等于让人没法判断。
+    // 译文是后到的（要跑一次强模型），先占位，回来再填。
+    var zh = document.createElement("div");
+    zh.className = "alert-zh";
+    zh.textContent = msg.context_zh || "翻译中…";
+    if (!msg.context_zh) zh.classList.add("pending");
+    item.appendChild(zh);
+    if (msg.alert_id) item.dataset.alertId = msg.alert_id;
+
     alertList.insertBefore(item, alertList.firstChild);
     while (alertList.children.length > 50) {
       alertList.removeChild(alertList.lastChild);
     }
     alertCount.textContent = alertList.children.length;
+  }
+
+  function updateAlert(msg) {
+    var item = alertList.querySelector('[data-alert-id="' + msg.alert_id + '"]');
+    if (!item) return;
+    var zh = item.querySelector(".alert-zh");
+    if (!zh) return;
+    zh.textContent = msg.context_zh || "";
+    zh.classList.remove("pending");
   }
 
   clearAlertsBtn.addEventListener("click", function () {

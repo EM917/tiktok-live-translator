@@ -380,3 +380,11 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
    译文原样留在屏幕上，不被替换成占位文字 */
 .cap.redoing .redo { opacity: 1; color: var(--accent); border-color: var(--accent); }
 .redo:disabled { cursor: default; }
+
+/* 报警里的中文：比西语原话更醒目，中控主要读这一行 */
+.alert-zh {
+  margin-top: 5px;
+  font-size: 14px; line-height: 1.6;
+  color: var(--text);
+}
+.alert-zh.pending { color: var(--text-faint); font-style: italic; }

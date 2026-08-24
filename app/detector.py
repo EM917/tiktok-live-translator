@@ -184,10 +184,31 @@ class BannedTermDetector:
         # 模糊级：ASR 听错一两个字母（词太短时不做，否则误报爆炸）
         if len(term["norm"].replace(" ", "")) >= self.min_fuzzy_len:
             for i in range(len(tokens) - n + 1):
-                window = " ".join(tokens[i:i + n])
-                if difflib.SequenceMatcher(None, term["norm"], window).ratio() >= self.fuzzy_ratio:
+                if self._fuzzy_equal(term["tokens"], tokens[i:i + n]):
                     return TIER_FUZZY
         return None
+
+    def _fuzzy_equal(self, term_tokens, window_tokens):
+        """逐词比对，而不是把整个短语拼成一个字符串比。
+
+        整串比对会被**公共前缀抬高相似度**：实盘误报过一次
+        「bajar los cupones de descuento」（把折扣券降下来）命中了
+        `bajar kilos`——`bajar los` 与 `bajar kilos` 整串相似度 0.900，
+        越过了 0.86 的阈值，而真正有区别的那个词（los / kilos）毫不相干。
+        `bajar` 在带货话术里太常见（bajar precios、bajar cupones、bajar la app），
+        于是所有 `bajar …` 的词条都会对任意「bajar 什么」误报。
+
+        逐词之后，每个词都得自己站得住；短词一律要求完全相同——三四个字母
+        的词做模糊匹配撞车率太高，而 ASR 听错的通常是长词里的一两个字母。
+        """
+        for want, got in zip(term_tokens, window_tokens):
+            if want == got:
+                continue
+            if len(want) < self.min_fuzzy_len or len(got) < self.min_fuzzy_len:
+                return False
+            if difflib.SequenceMatcher(None, want, got).ratio() < self.fuzzy_ratio:
+                return False
+        return True
 
 
 def load_terms(path):
