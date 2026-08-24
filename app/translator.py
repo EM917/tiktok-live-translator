@@ -409,6 +409,33 @@ def _ollama_has_hymt2(large=False):
     return _ollama_has("hy-mt2-7b" if large else "hy-mt2-1.8b")
 
 
+def _unload_siblings(keep_model):
+    """把本机 Ollama 里**没在用的**同族模型从显存里卸掉。
+
+    起因是一次真实故障：默认档从 7B 改回 1.8B 后，用户重启了程序，但 Ollama
+    的 keep_alive=30m 让 7B 又占了半小时显存——1.8B(1.4G) + 7B(5.3G) 加上
+    Whisper large-v3(~3G)，18 GB 的机器只剩 20% 空闲并开始换页，识别从 1.4 秒
+    掉到 2.2 秒、音频积压到 20 秒。keep_alive 在只有一个模型时没问题，有了
+    多档就必须自己清场。只卸载不删除，下次要用会自动重新载入。
+    """
+    import urllib.request
+
+    base = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+    for model in (HYMT2_SMALL, HYMT2_LARGE, "translategemma:4b"):
+        if model == keep_model:
+            continue
+        if not _ollama_has(model.split("/")[-1].split(":")[0]):
+            continue
+        body = json.dumps({"model": model, "keep_alive": 0}).encode()
+        req = urllib.request.Request(
+            base + "/api/generate", data=body,
+            headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=3).read()
+        except Exception:
+            pass          # 卸不掉不影响功能，只是内存紧一点
+
+
 def create_translator(name):
     """返回带重复句缓存的翻译引擎（none 除外）。"""
     if name == "auto":
@@ -446,10 +473,12 @@ def create_translator(name):
         return None
     if name == "hymt2":
         inner = OllamaHyMT2Translator()
+        _unload_siblings(inner.model)
     elif name == "hymt2-7b":
         inner = OllamaHyMT2Translator()
         inner.model = HYMT2_LARGE
         inner.name = "hymt2-7b"      # 两档要能在界面和日志里分得出来
+        _unload_siblings(inner.model)
     elif name == "gemma":
         inner = OllamaGemmaTranslator()
     elif name == "google":
