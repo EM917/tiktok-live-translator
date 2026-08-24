@@ -478,6 +478,24 @@
   }
 
   function applyTranslation(card, msg) {
+    // 重译有自己的状态位，绝不能走普通翻译那条 pending 分支——
+    // 那会把正在阅读的译文换成「翻译中…」，而强模型若返回空（约 2% 会），
+    // 服务端不会再广播，页面就永远停在那里，好译文也没了。
+    if (msg.strong_state) {
+      var redoBtn = card.querySelector(".redo");
+      card.classList.toggle("redoing", msg.strong_state === "pending");
+      if (redoBtn) {
+        redoBtn.disabled = msg.strong_state === "pending";
+        redoBtn.textContent = msg.strong_state === "pending" ? "重译中…"
+          : (msg.strong_state === "failed" ? "重译失败" : "重译");
+        if (msg.strong_state === "failed") {
+          setTimeout(function () { redoBtn.textContent = "重译"; }, 4000);
+        }
+      }
+      // 只带状态位、没有译文和等级的消息到此为止，不动屏幕上的内容
+      if (!msg.translated && !msg.quality) return;
+    }
+
     // 二次把关：服务端已经不会广播低等级结果，这里再挡一次，
     // 顺便让「强模型重译」的标记跟着**实际在屏幕上的那一版**走。
     // 只加不减的话，快译覆盖强译后标记还留着，界面就会撒谎——
