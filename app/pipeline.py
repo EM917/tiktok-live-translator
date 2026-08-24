@@ -135,6 +135,8 @@ class Pipeline:
         self._upgrade_tasks = []         # 报警触发的重译，持有引用防 GC
         self._quality = {}               # seq -> 当前已生效译文的质量等级
         self._strong_inflight = set()    # 正在跑强模型的 seq，防同一条重复触发
+        self._alert_seq = 0              # 报警编号，供译文回来后对上号
+        self._alert_tasks = []
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -883,7 +885,15 @@ class Pipeline:
                 self.audit.alert(hit)
             print("[警报] 疑似违禁词「{}」（{}）：{}".format(
                 hit["term"], hit["tier"], hit["context"][-80:]))
+            self._alert_seq += 1
+            hit["alert_id"] = self._alert_seq
             await self.server.broadcast({"type": "alert", **hit})
+            # 报警的上下文是西语原话。中控读不了西语就无从判断该不该处理，
+            # 而报警恰恰是最需要人工复核的地方——所以补一份中文。
+            # 用最强模型：这句话可能要拿去跟平台交涉，值这 2 秒。
+            self._alert_tasks = [t for t in self._alert_tasks if not t.done()]
+            self._alert_tasks.append(asyncio.ensure_future(
+                self._translate_alert(self._alert_seq, hit.get("context") or "")))
 
         if not result.text:
             return None
@@ -929,6 +939,32 @@ class Pipeline:
                 asyncio.ensure_future(self.retranslate(seq, "banned_term")))
 
         return job
+
+    async def _translate_alert(self, alert_id, context):
+        """把报警上下文翻成中文，回来后补进那一条报警。"""
+        from .translator import create_strong_translator
+
+        if not context.strip():
+            return
+        if self._strong is None:
+            self._strong = create_strong_translator()
+        tr = self._strong or self.translator
+        if tr is None:
+            return
+        try:
+            hint = (tuple(self.glossary.translation_pairs(context))
+                    if self.glossary else ())
+            out = await tr.translate(context, self.target, source="auto",
+                                     glossary=hint or None)
+            if out and self.glossary:
+                out = self.glossary.apply(context, out)
+        except Exception as exc:
+            print("[警告] 报警上下文翻译失败: {}".format(exc))
+            return
+        if out:
+            await self.server.broadcast({"type": "alert_update",
+                                         "alert_id": alert_id,
+                                         "context_zh": out})
 
     async def _publish_translation(self, seq, translated, ok, ms, level,
                                    target, extra=None):

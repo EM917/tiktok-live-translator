@@ -139,6 +139,13 @@ class CaptionServer:
                     break
         elif msg.get("type") == "alert":
             self.alerts.append(msg)
+        elif msg.get("type") == "alert_update":
+            # 补进留存的那一条：报警面板刷新后要能看到中文，
+            # 否则中控一刷新就只剩西语，等于没补
+            for a in self.alerts:
+                if a.get("alert_id") == msg.get("alert_id"):
+                    a["context_zh"] = msg.get("context_zh")
+                    break
         elif msg.get("type") == "status":
             # command 必须一起留存：它常常是用户当下唯一的出路，
             # 刷新一下页面就没了的话，等于没给。
