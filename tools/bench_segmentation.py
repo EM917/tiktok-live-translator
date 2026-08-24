@@ -60,8 +60,28 @@ def capture(url, seconds, out_path):
         out_path.stat().st_size / BYTES_PER_SEC, out_path))
 
 
-def segment_audio(pcm, min_sec, max_sec, trailing):
-    """用真实的 SilenceSegmenter 切段，返回 [(音频字节, 起始秒, 结束秒)]。"""
+def segment_audio(pcm, min_sec, max_sec, trailing, overlap_sec=0.0):
+    """用真实的 SilenceSegmenter 切段，返回 [(音频字节, 起始秒, 结束秒)]。
+
+    overlap_sec > 0 时每段向前多带一段音频：被切在段首的词能在完整语境里
+    重新被听到。注意它救不了「切在段尾」的词——那半个词要等下一段（下一段
+    的前置重叠会覆盖它）。代价是音频总量变多、算力上升、重复文本增加。
+
+    实测结论（两段 4 分钟真实西语直播，mlx large-v3，9 秒切段）：
+
+        样本            重叠    召回     RTF    最慢ASR   重复
+        密集语音        0.0s   81.2%   0.19    8.8s    17.6%
+        （714 参考词）  1.0s   84.6%   0.19    5.9s    18.8%
+                        2.0s   84.5%   0.23    6.6s    23.5%
+        音乐重          0.0s  100.0%   0.28    6.2s    78.3%
+        （42 参考词）   1.0s   95.2%   0.33    6.5s    87.7%
+                        2.0s   47.6%   0.39   17.2s    90.4%
+
+    也就是说：1 秒重叠在密集语音上小赢（+3.4 点、零算力代价），在音乐重的
+    场子上小输；2 秒重叠在音乐场直接崩（重叠把更多音乐喂进模型，幻觉加剧）。
+    收益不稳定且方向依内容而变，**所以没有采用**。真正的边界词错误
+    （cámara 被切成 cama）是切在**段尾**的，前置重叠本来也修不了。
+    准确性改进改走领域词表那条线。"""
     from app.audio import FRAME_BYTES, FRAME_SEC
     from app.segmenter import SilenceSegmenter
 
@@ -73,12 +93,21 @@ def segment_audio(pcm, min_sec, max_sec, trailing):
         frame = pcm[i * FRAME_BYTES:(i + 1) * FRAME_BYTES]
         consumed += FRAME_SEC
         for chunk in seg.feed(frame):
-            dur = len(chunk) / BYTES_PER_SEC
-            out.append((chunk, consumed - dur, consumed))
+            out.append(_with_overlap(pcm, chunk, consumed, overlap_sec))
     for chunk in seg.flush():
-        dur = len(chunk) / BYTES_PER_SEC
-        out.append((chunk, consumed - dur, consumed))
+        out.append(_with_overlap(pcm, chunk, consumed, overlap_sec))
     return out
+
+
+def _with_overlap(pcm, chunk, end_sec, overlap_sec):
+    dur = len(chunk) / BYTES_PER_SEC
+    start = end_sec - dur
+    if overlap_sec <= 0:
+        return (chunk, start, end_sec)
+    lead = max(0.0, start - overlap_sec)
+    lo = (int(lead * BYTES_PER_SEC) // 2) * 2        # 对齐到 16 位样本边界
+    hi = (int(end_sec * BYTES_PER_SEC) // 2) * 2
+    return (pcm[lo:hi], start, end_sec)
 
 
 def tokens_of(text):
@@ -94,11 +123,12 @@ def duplicate_ratio(tokens):
     return 1.0 - len(set(grams)) / len(grams)
 
 
-def run_config(pcm, label, min_sec, max_sec, trailing, make_transcriber, ref_words):
+def run_config(pcm, label, min_sec, max_sec, trailing, make_transcriber, ref_words,
+               overlap_sec=0.0):
     # 每个配置必须用全新的识别器：滚动上下文（initial_prompt）会跨配置累积，
     # 后跑的配置白蹭前面攒下的上下文，召回率直接失真
     transcriber = make_transcriber()
-    segments = segment_audio(pcm, min_sec, max_sec, trailing)
+    segments = segment_audio(pcm, min_sec, max_sec, trailing, overlap_sec)
     audio_sec = len(pcm) / BYTES_PER_SEC
     texts, asr_times, seg_lens = [], [], []
     detect_lat = []
