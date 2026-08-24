@@ -352,9 +352,11 @@ class OllamaHyMT2Translator(BaseTranslator):
             return None
 
 
-# 兜底清理：停止词列表只能挡已知写法，模型偶尔会用别的括号变体。字幕是给人看的，
-# 任何 <...hy_...> 的残留都不该出现在屏幕上。
-_SPECIAL_RE = re.compile(r"<[^<>]{0,8}hy_[^<>]{0,40}>")
+# 兜底清理。第一版只匹配 <...hy_...>，实盘 88 条字幕里仍漏了 12 条（13.6%）——
+# 模型吐出来的常常**没有尖括号**，就是一个全角竖线加 token 名：
+#     「由于太受欢迎而售罄。｜hy_begin▁of▁sentence」
+# 所以开闭标记全部可选，只认 hy_ 前缀。正常字幕里不会出现 hy_xxx。
+_SPECIAL_RE = re.compile(r"[<｜｠]*\s*hy_[A-Za-z0-9▁_]+\s*[｜｠>]*")
 
 
 def _strip_special(text):
@@ -424,10 +426,16 @@ def create_translator(name):
         # 延迟不参与排序。违禁词报警走识别原文，从不等翻译；翻译只要别把队列
         # 堵上就行，而切段是 9 秒，7B 的 P95 才 2.3 秒。
         #
-        # 装了 7B 就用 7B：4.6 GB 是用户自己拉的，那本身就是一次选择。
-        if _ollama_has_hymt2(large=True):
-            name = "hymt2-7b"
-        elif _ollama_has_hymt2():
+        # 默认用 1.8B，**不是** 7B——这条是发布当天被实盘推翻后改回来的。
+        # 7B 的词表遵从率确实高 17pp，但它在 18 GB 统一内存里和 Whisper
+        # large-v3 抢资源，实测识别中位从 1.4s 涨到 3.2s（92 段，四分段
+        # 分别是 3300/3224/3314/2850ms——是稳态争抢，不是跑久了变热）。
+        # 识别在报警路径上，违禁词报警延迟因此从 6.8s 涨到 10.6s，
+        # 而报警延迟正是这个工具存在的理由。翻译准确度是次要目标。
+        # 另外 7B 会对某些句子直接返回空（实盘 90 条里 2 条），
+        # 换温度、换 seed、去掉词表都救不回来，而 1.8B 同样两句翻得好好的。
+        # 想要那 17pp 的可以显式 --translator hymt2-7b，代价写在 README 里。
+        if _ollama_has_hymt2():
             name = "hymt2"
         elif _ollama_has_gemma():
             name = "gemma"
