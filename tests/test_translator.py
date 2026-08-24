@@ -79,7 +79,7 @@ class CountingTranslator:
         self.calls = 0
         self.out = out
 
-    async def translate(self, text, target, source="auto"):
+    async def translate(self, text, target, source="auto", glossary=None):
         self.calls += 1
         return self.out
 
@@ -112,7 +112,7 @@ def test_failures_are_not_cached():
     from app.translator import CachedTranslator
 
     class FlakyTranslator(CountingTranslator):
-        async def translate(self, text, target, source="auto"):
+        async def translate(self, text, target, source="auto", glossary=None):
             self.calls += 1
             return None if self.calls == 1 else "成功了"
 

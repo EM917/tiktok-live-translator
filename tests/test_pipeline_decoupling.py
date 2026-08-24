@@ -57,7 +57,7 @@ class SlowTranslator:
         self.delay = delay
         self.calls = 0
 
-    async def translate(self, text, target, source="auto"):
+    async def translate(self, text, target, source="auto", glossary=None):
         self.calls += 1
         await asyncio.sleep(self.delay)
         return "永远不会返回"
@@ -67,7 +67,7 @@ class FastTranslator:
     def __init__(self):
         self.seen = []
 
-    async def translate(self, text, target, source="auto"):
+    async def translate(self, text, target, source="auto", glossary=None):
         self.seen.append(text)
         return "[zh] " + text
 

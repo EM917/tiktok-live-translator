@@ -724,7 +724,16 @@ class Pipeline:
             ) as session:
                 async with session.get(RNNOISE_URL) as resp:
                     if resp.status == 200:
-                        data = await resp.content.read(8 * 1024 * 1024)
+                        # 必须循环读到 EOF：content.read(n) 只返回缓冲区里**现有**的
+                        # 字节，不保证读满 n。之前用单次 read 拿到的是残缺数据，
+                        # 长度校验必然失败，于是降噪一直是关着的（models/ 始终为空），
+                        # 而日志只说「下载失败或校验未过」，看不出是自己读少了。
+                        data = b""
+                        while len(data) <= 8 * 1024 * 1024:
+                            chunk = await resp.content.read(64 * 1024)
+                            if not chunk:
+                                break
+                            data += chunk
                         # 只验文件头不够：截断的下载同样带正确 magic，
                         # 长度下限 + 落盘后实测初始化才算数
                         if (data.startswith(b"rnnoise")
@@ -803,8 +812,8 @@ class Pipeline:
             # 模型都不会自动变对——这类错误只能靠词表钉死。
             hint = self.glossary.translation_hint(job["text"]) if self.glossary else ""
             translated = await self.translator.translate(
-                hint + job["text"] if hint else job["text"],
-                job["target"], source=job["lang"] or "auto")
+                job["text"], job["target"], source=job["lang"] or "auto",
+                glossary=hint or None)
             if self.glossary:
                 translated = self.glossary.apply(job["text"], translated)
         except Exception as exc:

@@ -60,12 +60,14 @@ class Glossary:
         return hits
 
     def translation_hint(self, text, limit=6):
-        """拼进翻译提示词的词表片段（只放命中的前几条）。"""
+        """本句命中的术语，拼成紧凑的一行交给翻译引擎的**指令区**。
+
+        注意绝不能把它拼进正文——TranslateGemma 是纯翻译模型，正文里的任何
+        文字都会被翻译，指令会原样出现在译文里（实测踩过）。"""
         hits = self.matching(text)[:limit]
         if not hits:
             return ""
-        lines = ["{} = {}".format(es, zh) for es, zh, _ in hits]
-        return "Use these exact translations:\n" + "\n".join(lines) + "\n\n"
+        return "; ".join("{} = {}".format(es, zh) for es, zh, _ in hits)
 
     def apply(self, source_text, translated):
         """译文兜底：源文里出现过的词条，若译文里没有对应中文，就把该词条的

@@ -53,3 +53,29 @@ def test_context_rolls_at_400_chars():
     assert text == "new words"
     assert len(f._context) <= 400
     assert f._context.endswith("new words")
+
+
+# ---- 幻觉过滤：Whisper 会在无人声段吐训练数据里的片尾套话 ----
+
+def test_spanish_youtube_outro_dropped():
+    """实测一场西语带货直播里 14% 的字幕是这种幻觉——而当时词表里
+    只有英文和中文条目，西语的全部漏了过去。"""
+    for text in ("¡Gracias por ver el video!", "¡SUSCRIBETE!",
+                 "Gracias por ver este video", "Suscríbete al canal"):
+        (out, _), _ = fold([(0.1, 1.2, -0.9, text)])
+        assert out == "", text
+
+
+def test_multiple_outros_in_one_segment_dropped():
+    """Whisper 常把几句片尾语粘成一段，只比对整段就会漏掉。"""
+    (out, _), _ = fold([(0.1, 1.2, -0.9,
+                         "¡Gracias por ver el video! ¡Suscríbete al canal!")])
+    assert out == ""
+
+
+def test_real_speech_containing_gracias_survives():
+    """主播真的在句子里说 gracias 不能被误杀——只有整段全是套话才丢。"""
+    (out, _), _ = fold([(0.1, 1.2, -0.9, "Gracias por la rosa, se los agradezco")])
+    assert "Gracias" in out
+    (out2, _), _ = fold([(0.1, 1.2, -0.9, "Gracias por ver. Ahora vamos con la moringa.")])
+    assert "moringa" in out2       # 一半是真话，整段不能丢

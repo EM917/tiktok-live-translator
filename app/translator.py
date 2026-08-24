@@ -33,14 +33,15 @@ class CachedTranslator:
     def name(self):
         return self.inner.name
 
-    async def translate(self, text, target, source="auto"):
-        key = (text.strip(), target, source)
+    async def translate(self, text, target, source="auto", glossary=None):
+        key = (text.strip(), target, source, glossary or "")
         if key in self._cache:
             self._cache.move_to_end(key)
             self.hits += 1
             return self._cache[key]
         self.misses += 1
-        out = await self.inner.translate(text, target, source=source)
+        out = await self.inner.translate(text, target, source=source,
+                                         glossary=glossary)
         if out:
             self._cache[key] = out
             if len(self._cache) > self.capacity:
@@ -71,7 +72,7 @@ class BaseTranslator:
         if self._session is not None and not self._session.closed:
             await self._session.close()
 
-    async def translate(self, text, target, source="auto"):
+    async def translate(self, text, target, source="auto", glossary=None):
         raise NotImplementedError
 
 
@@ -86,9 +87,10 @@ class GoogleWebTranslator(BaseTranslator):
         super().__init__()
         self._cooldown_until = 0.0
 
-    async def translate(self, text, target, source="auto"):
+    async def translate(self, text, target, source="auto", glossary=None):
         import time
 
+        # 免费接口无法接受术语指令，忽略 glossary（靠译文后的兜底替换保证一致）
         # 免费接口会按 IP 限流（429）：冷却期间直接跳过，别在每条字幕上
         # 继续撞——既是无谓请求，也会加重限流
         if time.time() < self._cooldown_until:
@@ -125,7 +127,7 @@ class ClaudeTranslator(BaseTranslator):
         if not self.api_key:
             raise RuntimeError("使用 --translator claude 需要设置环境变量 ANTHROPIC_API_KEY")
 
-    async def translate(self, text, target, source="auto"):
+    async def translate(self, text, target, source="auto", glossary=None):
         lang = LANG_NAMES.get(target, target)
         body = {
             "model": self.MODEL,
@@ -165,7 +167,7 @@ class OpenAITranslator(BaseTranslator):
         self.url = base + "/chat/completions"
         self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
-    async def translate(self, text, target, source="auto"):
+    async def translate(self, text, target, source="auto", glossary=None):
         lang = LANG_NAMES.get(target, target)
         body = {
             "model": self.model,
@@ -206,7 +208,7 @@ class OllamaGemmaTranslator(BaseTranslator):
         self.url = base + "/api/generate"
         self.model = os.environ.get("OLLAMA_TRANSLATE_MODEL", "translategemma:4b")
 
-    def _prompt(self, text, target, source):
+    def _prompt(self, text, target, source, glossary=None):
         """短指令。实测（M 系列 + translategemma:4b，6 句带货话术中位数）：
         原来 92 token 的长指令总耗时 494ms（预填充 244ms），换成这版 35 token
         的短指令后 344ms（预填充 84ms），译文质量无差别——指令每句都要重新
@@ -220,16 +222,22 @@ class OllamaGemmaTranslator(BaseTranslator):
         else:
             head = ("Translate this text into {tn}. "
                     "Output only the translation.").format(tn=tgt_name)
+        # 词表必须留在**指令区**。实测教训：把 "Use these exact translations: …"
+        # 拼在正文前面，TranslateGemma 会把这行指令当成源文一起翻译，
+        # 译文里就冒出「使用这些精确的翻译： 滴剂 = D3 K2 维生素滴剂」这种东西。
+        # 它是纯翻译模型——给它什么就翻什么，指令只认 head 这一段。
+        if glossary:
+            head += " Keep these terms exactly as given: " + glossary + "."
         return head + "\n\n" + text
 
     # 选项必须逐次完全一致：Ollama 一旦发现 options 变了就会重新加载模型，
     # 实测会带来 ~4 秒停顿。所以这里定成常量，不做动态调整。
     _OPTIONS = {"temperature": 0, "num_predict": 200}
 
-    async def translate(self, text, target, source="auto"):
+    async def translate(self, text, target, source="auto", glossary=None):
         body = {
             "model": self.model,
-            "prompt": self._prompt(text, target, source),
+            "prompt": self._prompt(text, target, source, glossary),
             "stream": False,
             "options": self._OPTIONS,
             # 常驻显存：默认空闲 5 分钟就卸载，主播放一段音乐回来后

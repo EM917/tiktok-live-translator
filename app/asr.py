@@ -14,11 +14,43 @@
   * 质量过滤：压缩比过高（复读机式垃圾）或平均置信度过低（多为背景音乐
     误识别）的段直接丢弃，宁缺毋滥。
 """
-import string
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import List
 
 import numpy as np
+
+
+def _norm_for_hallucination(text):
+    """比对幻觉短语用的归一化：去重音、去标点、压空白、转小写。"""
+    text = unicodedata.normalize("NFD", text.lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    # 保留句末标点（拆句要用），只去掉其它标点与首尾空白
+    text = re.sub(r"[^\w\s.!?！？。]", " ", text)
+    return " ".join(text.split()).strip()
+
+
+_HALLUCINATION_KEYS = None
+
+
+def _is_all_hallucination(normalized):
+    """整段是否全部由幻觉套话构成。
+
+    按句拆开逐句判定，因为 Whisper 常把好几句片尾语粘在一段里
+    （"¡Gracias por ver el video! ¡Suscríbete al canal!"）——只比对整段
+    的话这种组合就漏了过去，实测正是这样漏的。
+    只有**每一句**都是幻觉才丢弃，所以主播真的在句子里说 gracias 不会被误杀。
+    """
+    global _HALLUCINATION_KEYS
+    if _HALLUCINATION_KEYS is None:
+        _HALLUCINATION_KEYS = {h.replace(" ", "") for h in _HALLUCINATIONS}
+    if not normalized:
+        return False
+    parts = [p for p in re.split(r"[.!?！？。]+", normalized) if p.strip()]
+    if not parts:
+        return False
+    return all(p.replace(" ", "") in _HALLUCINATION_KEYS for p in parts)
 
 
 @dataclass
@@ -50,11 +82,29 @@ class ASRResult:
 # 代价远大于那点回退可能挽回的转写质量，所以默认只解码一次。
 DEFAULT_TEMPERATURE = 0.0
 
-# whisper 在静音/纯音乐段上常见的幻觉输出，直接丢弃
+# Whisper 在静音/纯音乐段上会吐出训练数据里的 YouTube 片尾套话。实测一场
+# 西语带货直播里 21 段有文本的字幕中有 3 段是这种幻觉（14%）——而当时表里
+# 只有英文和中文条目，西语的全部漏了过去。这类幻觉不只是脏字幕：它会污染
+# 违禁词检测的上下文窗口，还白白占用翻译。
+#
+# 判定是**整段完全等于**这些短语才丢弃（见 _fold），所以不会误伤主播真的
+# 在句子里说「gracias」。
 _HALLUCINATIONS = {
+    # 英文
     "thank you", "thanks for watching", "thank you for watching", "you",
     "please subscribe", "subscribe", "bye", "so",
+    "thanks for watching!", "see you next time",
+    # 西语（带货直播的主力语种，之前完全没覆盖）
+    "gracias por ver", "gracias por ver el video",
+    "gracias por ver este video", "gracias por vernos",
+    "suscribete", "suscribete al canal", "suscribanse",
+    "no olvides suscribirte", "no olviden suscribirse",
+    "hasta la proxima", "nos vemos", "gracias por su atencion",
+    "subtitulos realizados por la comunidad de amara.org",
+    "mas videos", "dale like y suscribete",
+    # 中文
     "字幕由amara.org社区提供", "请不吝点赞订阅转发打赏支持明镜与点点栏目",
+    "谢谢观看", "请订阅",
 }
 
 
@@ -116,8 +166,9 @@ class _FilterMixin:
                     logprobs.append(avg_lp)
         text = " ".join(parts).strip()
         raw_text = " ".join(all_parts).strip()
-        normalized = text.lower().strip(string.punctuation + string.whitespace + "！。，、？")
-        if normalized.replace(" ", "") in {h.replace(" ", "") for h in _HALLUCINATIONS}:
+        # 西语幻觉带重音和倒问叹号（¡Suscríbete!），必须先抹平才能比对
+        normalized = _norm_for_hallucination(text)
+        if _is_all_hallucination(normalized):
             mean_logprob = sum(logprobs) / len(logprobs) if logprobs else -10.0
             if mean_logprob < -0.6:
                 if text:
