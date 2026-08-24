@@ -133,9 +133,9 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, best accuracy, nee
 ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB, runs anywhere
 ```
 
-- `auto` (default) — picks the best engine actually installed: `hymt2-7b` → `hymt2` → `gemma` → `google`. The home-screen self-check names which one is live, so a silent downgrade to the network engine cannot go unnoticed.
-- `hymt2-7b` — **Recommended**: Hy-MT2 7B (Tencent, Apache 2.0). The most accurate on domain terms; see the measurements below.
-- `hymt2` — Hy-MT2 1.8B. Same family, a third the accuracy gap and a third the size — the right pick under ~16 GB of RAM.
+- `auto` (default) — picks the best engine actually installed: `hymt2` → `gemma` → `google`. It does **not** auto-select 7B; see the caveat below. The home-screen self-check names which one is live, so a silent downgrade to the network engine cannot go unnoticed.
+- `hymt2` — **Recommended**: Hy-MT2 1.8B (Tencent, Apache 2.0). The default, and the right pick on almost any machine.
+- `hymt2-7b` — Hy-MT2 7B. The most accurate on domain terms, but **opt-in only** — on a 18 GB Mac it shares memory with Whisper large-v3 and pushes recognition from 1.4 s to 3.2 s, which lands directly on banned-term alert latency (6.8 s → 10.6 s). It also returned an empty translation for about 2% of captions, which 1.8 B handled correctly. Worth it only if alert latency is not your priority.
 - `gemma` — TranslateGemma 4B, the previous default. Still supported; `OLLAMA_TRANSLATE_MODEL` switches it to `translategemma:12b`/`27b`.
 
   ```bash
@@ -155,6 +155,17 @@ Why a local engine matters, on colloquial Spanish → Chinese:
 | *Es vegano* (it's a vegan product) | ❌ 它是素食主义者 (he/she is a vegetarian) | ✅ 纯素的 (vegan) |
 
 ### How the engines were compared
+
+> **Why 7B is not the default.** It wins on glossary accuracy by 17 points, and
+> that was enough to make it the default in the first v0.10.0 build — a decision
+> taken on a 24-caption sample. A 92-caption run on a real stream overturned it:
+> recognition sat at ~3.2 s throughout (1.4 s with the smaller models), flat from
+> the first quarter, so it is steady-state contention for unified memory rather
+> than thermal drift. Recognition is on the alert path and translation is not,
+> so the trade was backwards. Numbers below are still worth reading — if your
+> machine has memory to spare, `--translator hymt2-7b` is a real upgrade in
+> terminology accuracy.
+
 
 The number that matters here is not fluency — it is whether the model honours
 the domain glossary, because that is what keeps product names, prices and promo
@@ -368,9 +379,9 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语最准，�
 ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB，什么机器都跑得动
 ```
 
-- `auto`（默认）—— 在**实际装了**的引擎里挑最好的：`hymt2-7b` → `hymt2` → `gemma` → `google`。首页自检会写明当前用的是哪一个，所以「悄悄退回网络引擎」不会没人发现。
-- `hymt2-7b` —— **推荐**：Hy-MT2 7B（腾讯，Apache 2.0）。领域术语最准，数据见下。
-- `hymt2` —— Hy-MT2 1.8B。同一家族，体积只有 1/4，内存 16 GB 以下选它。
+- `auto`（默认）—— 在**实际装了**的引擎里挑最好的：`hymt2` → `gemma` → `google`。**不会**自动选 7B，原因见下。首页自检会写明当前用的是哪一个，所以「悄悄退回网络引擎」不会没人发现。
+- `hymt2` —— **推荐**：Hy-MT2 1.8B（腾讯，Apache 2.0）。默认引擎，几乎什么机器都合适。
+- `hymt2-7b` —— Hy-MT2 7B。领域术语最准，但**需要显式指定**：在 18 GB 的 Mac 上它和 Whisper large-v3 抢内存，实测识别从 1.4 秒涨到 3.2 秒，而识别直接落在违禁词报警路径上（报警延迟 6.8 秒 → 10.6 秒）。它还会对约 2% 的字幕直接返回空，而 1.8B 同样的句子翻得好好的。只有在你不以报警延迟为先时才值得。
 - `gemma` —— TranslateGemma 4B，上一版的默认。仍然支持，`OLLAMA_TRANSLATE_MODEL` 可换成 `translategemma:12b`/`27b`。
 
   ```bash
@@ -391,6 +402,14 @@ ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB，什么机器都�
 
 <a name="extension"></a>
 ### 这几个引擎是怎么比出来的
+
+> **为什么 7B 不做默认。** 它的词表准确率高 17 个百分点，v0.10.0 最初也确实
+> 把它设成了默认——那个决定基于一次 24 条字幕的样本。一次 92 条的真实直播把它
+> 推翻了：识别全程稳定在约 3.2 秒（换小模型是 1.4 秒），而且**从第一个四分之一
+> 段就是这个值**，说明是统一内存的稳态争抢，不是跑久了变热。识别在报警路径上、
+> 翻译不在，所以这笔交易是反的。下面的数字仍然值得看——机器内存宽裕的话，
+> `--translator hymt2-7b` 在术语准确度上是实打实的提升。
+
 
 这里要看的不是「译文顺不顺」，而是**模型有没有遵守领域词表**——商品名、价格、
 促销条件靠它保证正确。用 `tools/bench_glossary.py` 在 280 个词表术语上实测
