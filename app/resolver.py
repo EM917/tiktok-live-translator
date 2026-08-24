@@ -95,14 +95,21 @@ async def _resolve_from_page(url):
     优先纯音频流（only_audio=1），其次 FLV。找不到返回 None。"""
     import aiohttp
 
+    from .nethttp import read_all
+
     try:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=15)
         ) as session:
             async with session.get(url, headers=_BROWSER_HEADERS) as resp:
-                # 限制读取上限：直播页正常几百 KB，别让异常/恶意响应撑爆内存
-                raw = await resp.content.read(8 * 1024 * 1024)
-        html = raw.decode(resp.charset or "utf-8", errors="replace")
+                # 必须读到 EOF。这里曾经写成单次 read(8MB)，实测 213KB 的直播页
+                # 只拿到 85KB——流地址在被截掉的那 60% 里，于是每个直播间都
+                # 「解析失败」，而日志上看不出任何异常。
+                raw = await read_all(resp, 8 * 1024 * 1024)
+                charset = resp.charset
+        if raw is None:
+            return None
+        html = raw.decode(charset or "utf-8", errors="replace")
     except Exception:
         return None
     return _extract_stream_urls(html)
