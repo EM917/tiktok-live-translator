@@ -27,19 +27,19 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 
 ## Features
 
-- 🎙️ **Real-time speech recognition** — OpenAI Whisper (dual backend: faster-whisper / MLX), auto-detects the streamer's language, supports 90+ languages
-- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline and free) in two tiers, with TranslateGemma 4B, Google's free API, and Claude · OpenAI as fallbacks. Glossary adherence measured on 280 terms from real logged captions: **7B 83%** · **1.8B 66%** · TranslateGemma 4B 48%. On multi-word phrases — where prices and promo conditions live — the spread is 84% / 65% / 26%. Pull whichever tier your machine suits and it is picked automatically
-- 🎵 **Voice-focused denoising** — RNNoise neural denoising suppresses background music, tuned for streams with BGM
-- ⚡ **Automatic hardware tuning** — detects your chip (Apple Silicon GPU / NVIDIA CUDA / plain CPU) and automatically picks the best model that can still run in real time — zero-config out of the box
-- 📺 **Two display modes** — a local web UI (scrolling bilingual subtitle history + a large caption at the bottom), or a Chrome extension overlay on the TikTok page
-- 🚨 **Real-time banned-term alerts** — three-tier matching (exact / morphological variant / fuzzy) over the **recognized original text**, independent of translation, and matching across caption boundaries; edit `banned_terms.txt`
-- ⚡ **Observable latency** — a live footer readout of time-to-first-caption (P50/P95) broken down into segmentation + recognition + translation, plus an audit log recording every segment — the accepted text, the candidates the quality filter dropped, the banned-term hits, and the translation that followed
-- ✅ **Startup self-check** — every capability is *exercised*, not merely configured: denoising actually runs a sample through RNNoise, translation actually pings the engine, the audit log actually writes. Results appear on the home screen with a repair step for anything red. This exists because the denoiser once shipped broken for weeks, announced only in a log line nobody read
-- 🔄 **Fault-tolerant** — four independent ways to resolve a stream URL (TikTok's own live API → yt-dlp → yt-dlp with your browser's login → the live page itself), because yt-dlp reports a blocked extractor as "the channel is not currently live"; every resolved URL is probed before the session starts; auto-reconnects with a fresh URL when the stream drops, and can tell a network blip from the streamer actually ending; drops segments automatically to stay real-time when recognition falls behind; keeps yt-dlp fresh automatically in the background
+- 🎙️ **Real-time speech recognition** — OpenAI Whisper with a dual backend (faster-whisper / MLX), automatic language detection, 90+ languages
+- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two tiers, with TranslateGemma 4B, Google's free API and Claude · OpenAI available as fallbacks. Whichever tier is installed is selected automatically
+- 🚨 **Real-time banned-term alerts** — three-tier matching (exact / morphological variant / fuzzy) against the **recognised source text**, independent of translation, including phrases split across caption boundaries. Configured in `banned_terms.txt`
+- 🎵 **Voice-focused denoising** — RNNoise suppresses background music, tuned for streams with continuous BGM
+- ⚡ **Automatic hardware configuration** — detects the available accelerator (Apple Silicon GPU / NVIDIA CUDA / CPU) and selects the largest model that still runs in real time
+- 📺 **Two display modes** — a local web interface (scrolling bilingual history with a large current caption) or a Chrome extension overlaying the TikTok page
+- 📊 **Observable latency** — a live readout of time-to-first-caption (P50/P95) broken down into segmentation, recognition and translation, alongside an audit log recording each segment: accepted text, candidates rejected by the quality filter, banned-term matches, and the translation that followed
+- ✅ **Startup self-check** — each capability is executed rather than inspected: denoising processes a sample through RNNoise, translation queries the engine, the audit log performs a write. Results appear on the home screen with a remediation step for anything failing
+- 🔄 **Fault tolerance** — four independent stream-resolution paths (TikTok's live API → yt-dlp → yt-dlp with browser login → live page parsing), since a blocked yt-dlp extractor reports failures as "not currently live". Each resolved URL is verified before the session starts. Dropped streams reconnect with a freshly resolved URL, distinguishing a network interruption from the broadcast ending; segments are dropped automatically when recognition falls behind; yt-dlp is kept current in the background
 
 ## Quick Start
 
-### Never used a terminal? Three steps (recommended)
+### Installation without a terminal (recommended)
 
 1. **Download**: grab **TikTok-Live-Translator-vX.Y.Z.zip** from the [latest release](https://github.com/EM917/tiktok-live-translator/releases/latest)'s Assets and unzip it anywhere (e.g. your Desktop) — "Source code (zip)" works too. The green **Code** button → **Download ZIP** also works (latest dev snapshot).
 2. **Install Python** (free, one time only): grab the installer from [python.org/downloads](https://www.python.org/downloads/) and install with the default options. Forgot? No problem — the launcher will detect it and open the download page for you.
@@ -70,7 +70,7 @@ python3 main.py --doctor    # print the hardware check and recommended config
 
 > **Cloned an older version before?** Don't re-clone (it fails with `destination path already exists`) — just `cd` into the folder, run `git pull`, and start it; from v0.2.0 on you can update with one click from the page itself.
 
-### Everyday startup (after reboot / after closing it)
+### Starting the application
 
 - **macOS**: double-click **`TikTok Live Translator.app`** (or `Start.command`);
 - **Windows**: double-click **`Start.bat`**;
@@ -78,18 +78,18 @@ python3 main.py --doctor    # print the hardware check and recommended config
 
 The UI opens in its **own app window** (no browser tab), remembering the room URL and target language from last time — just hit Start. Closing the window quits the app. Pass `--browser` if you prefer the browser UI.
 
-## Automatic Hardware Tuning (how it picks a config for your machine)
+## Automatic Hardware Configuration
 
-Run `python main.py --doctor` anytime to see the hardware-check results. Any flag you don't explicitly set at startup is auto-filled per the table below:
+`python main.py --doctor` reports the hardware detection results. Any flag not set explicitly at startup is filled in according to the table below:
 
-| Your machine | Auto-selected | Result |
+| Hardware | Selected configuration | Result |
 |---|---|---|
 | Apple Silicon (M1 or later) | MLX GPU backend + `large-v3` | Most accurate model, runs ~5x faster than real time |
 | NVIDIA GPU | CUDA + `large-v3` (float16) | Most accurate model, plenty of speed headroom |
-| Plain CPU (≥8 cores & ≥8GB RAM) | CPU + `small` (int8) | Keeps up in real time, moderate accuracy |
-| Low-end CPU | CPU + `base` (int8) | Prioritizes keeping subtitles from falling behind |
+| CPU (≥8 cores, ≥8 GB RAM) | CPU + `small` (int8) | Real-time capable, moderate accuracy |
+| Lower-specification CPU | CPU + `base` (int8) | Prioritises keeping pace over accuracy |
 
-Benchmark reference (M3 Pro, 90 seconds of real livestream footage; RTF = recognition time / audio duration — needs to be < 1 to avoid dropping subtitles):
+Benchmark reference (M3 Pro, 90 seconds of recorded livestream audio; RTF = recognition time / audio duration, which must remain below 1 to avoid dropping segments):
 
 | Config | RTF |
 |---|---|
@@ -97,7 +97,7 @@ Benchmark reference (M3 Pro, 90 seconds of real livestream footage; RTF = recogn
 | CPU + large-v3-turbo | 0.99 ⚠️ borderline |
 | CPU + large-v3 | 1.22 ❌ drops segments |
 
-Any auto-selected value can be overridden with a command-line flag (see below).
+Every selected value can be overridden with a command-line flag.
 
 ## Command-Line Flags
 
@@ -122,73 +122,73 @@ Any auto-selected value can be overridden with a command-line flag (see below).
 
 ## Translation Engines
 
-**Install [Ollama](https://ollama.com/download) and that is the whole setup.**
-On the next launch the app starts it if needed, downloads the 1.1 GB Hy-MT2
-1.8B model over Ollama's API with progress on screen, and switches to it — no
-terminal, no `ollama pull`. The same thing already happens for the Whisper
-model.
+Installing [Ollama](https://ollama.com/download) completes the setup. On the
+next launch the application starts it if required, downloads the 1.1 GB Hy-MT2
+1.8B model through Ollama's API with on-screen progress, and switches to it. No
+terminal commands are involved; the Whisper model is provisioned the same way.
 
-To use the larger tier instead, pull it yourself and it is picked up
-automatically:
+To use the larger tier, pull it once and it will be selected automatically:
 
 ```bash
-ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, best on terminology, needs ~16 GB RAM
+ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, highest terminology accuracy, ~16 GB RAM
 ```
 
-- `auto` (default) — picks the best engine actually installed: `hymt2` → `gemma` → `google`. It does **not** auto-select 7B; see the caveat below. The home-screen self-check names which one is live, so a silent downgrade to the network engine cannot go unnoticed.
-- `hymt2` — **Recommended**: Hy-MT2 1.8B (Tencent, Apache 2.0). The default, and the right pick on almost any machine.
-- `hymt2-7b` — Hy-MT2 7B. The most accurate on domain terms, but **opt-in only** — on a 18 GB Mac it shares memory with Whisper large-v3 and pushes recognition from 1.4 s to 3.2 s, which lands directly on banned-term alert latency (6.8 s → 10.6 s). It also returned an empty translation for about 2% of captions, which 1.8 B handled correctly. Worth it only if alert latency is not your priority.
-- `gemma` — TranslateGemma 4B, the previous default. Still supported; `OLLAMA_TRANSLATE_MODEL` switches it to `translategemma:12b`/`27b`.
+| Value | Engine |
+|---|---|
+| `auto` (default) | Selects the best engine present: `hymt2` → `gemma` → `google`. 7B is never selected automatically; see below |
+| `hymt2` | Hy-MT2 1.8B (Tencent, Apache 2.0). Recommended for most machines |
+| `hymt2-7b` | Hy-MT2 7B. Highest terminology accuracy; opt-in only, see below |
+| `gemma` | TranslateGemma 4B. `OLLAMA_TRANSLATE_MODEL` selects `translategemma:12b`/`27b` |
+| `google` | Google Translate's free endpoint, no key required. Subtitle text is sent to Google; rate-limited per IP |
+| `claude` | Requires `ANTHROPIC_API_KEY`; model overridable via `CLAUDE_TRANSLATE_MODEL` |
+| `openai` | Requires `OPENAI_API_KEY`; optional `OPENAI_BASE_URL`, `OPENAI_MODEL`. Compatible with any OpenAI-style API including local LM Studio / vLLM |
+| `none` | Transcription only, no translation |
 
-  ```bash
-  ollama pull translategemma:4b
-  ```
-- `google` — Google Translate's free web API, no key required. **Note: subtitle text is sent to Google**, it rate-limits per IP under sustained use, and it mistranslates colloquial speech far more often.
-- `claude` — requires the `ANTHROPIC_API_KEY` environment variable (defaults to Claude Haiku; override with `CLAUDE_TRANSLATE_MODEL`).
-- `openai` — requires `OPENAI_API_KEY` (optionally `OPENAI_BASE_URL`, `OPENAI_MODEL`); compatible with any OpenAI-style API, including local LM Studio / vLLM.
-- `none` — shows only the raw transcription, no translation, fully offline.
+The self-check on the home screen reports which engine is in use, so a fallback
+to the network engine is visible rather than silent.
 
-Why a local engine matters, on colloquial Spanish → Chinese:
+Local engines handle colloquial speech substantially better. Spanish → Chinese:
 
-| Original | Google | Local model |
+| Source | Google | Local model |
 |---|---|---|
-| *Se mueren lo rico* (so good it's unreal) | ❌ 有钱人死 (the rich people die) | ✅ 味道非常好 (tastes amazing) |
-| *tengo un sueño* (I'm sleepy) | ❌ 我做了一个梦 (I had a dream) | ✅ 现在感觉很困 (feeling very sleepy right now) |
-| *Es vegano* (it's a vegan product) | ❌ 它是素食主义者 (he/she is a vegetarian) | ✅ 纯素的 (vegan) |
+| *Se mueren lo rico* (extremely good) | ❌ 有钱人死 (the rich die) | ✅ 味道非常好 |
+| *tengo un sueño* (I am sleepy) | ❌ 我做了一个梦 (I had a dream) | ✅ 现在感觉很困 |
+| *Es vegano* (it is vegan) | ❌ 它是素食主义者 (he is a vegetarian) | ✅ 纯素的 |
 
-### How the engines were compared
+### Engine comparison
 
-> **Why 7B is not the default.** It wins on glossary accuracy by 17 points, and
-> that was enough to make it the default in the first v0.10.0 build — a decision
-> taken on a 24-caption sample. A 92-caption run on a real stream overturned it:
-> recognition sat at ~3.2 s throughout (1.4 s with the smaller models), flat from
-> the first quarter, so it is steady-state contention for unified memory rather
-> than thermal drift. Recognition is on the alert path and translation is not,
-> so the trade was backwards. Numbers below are still worth reading — if your
-> machine has memory to spare, `--translator hymt2-7b` is a real upgrade in
-> terminology accuracy.
+The relevant metric is not fluency but glossary adherence, since that determines
+whether product names, prices and promotional conditions are rendered correctly.
+Measured with `tools/bench_glossary.py` over 280 glossary terms taken from
+recorded captions, with latency from a live Spanish selling stream on an 18 GB
+M-series Mac:
 
-
-The number that matters here is not fluency — it is whether the model honours
-the domain glossary, because that is what keeps product names, prices and promo
-conditions correct. Measured with `tools/bench_glossary.py` on 280 glossary
-terms taken from real logged captions, plus a live Spanish selling stream on an
-18 GB M-series Mac:
-
-| | glossary adherence | multi-word phrases | translation latency |
+| | Glossary adherence | Multi-word phrases | Translation latency |
 |---|---|---|---|
 | Hy-MT2 7B | 83% | 84% | 892 ms median, 1.7 s p95 |
 | Hy-MT2 1.8B | 66% | 65% | 358 ms median |
 | TranslateGemma 4B | 48% | 26% | 832 ms median |
 
-The multi-word column is the one that matters: prices and promo conditions
-are phrases, not single nouns, and that is where translations mislead an
-operator. Latency deliberately did not enter the choice — banned-term alerts
-are raised from the recognised Spanish and never wait for translation, so the
-only requirement is that translation not fall behind the 9-second segments,
-which neither tier does.
+The multi-word column is the significant one: prices and promotional conditions
+are phrases rather than single nouns, and that is where a translation misleads
+an operator.
 
-## Chrome Extension (overlay subtitles on the TikTok page)
+Latency was excluded from the selection criteria. Banned-term alerts are raised
+from the recognised source text and never wait for translation; the only
+requirement is that translation keep pace with 9-second segments, which both
+tiers do.
+
+**Why 7B is not the default.** Its 17-point accuracy advantage made it the
+default in the initial v0.10.0 build, a decision based on a 24-caption sample. A
+92-caption live run gave a different result: with 7B resident, recognition held
+at approximately 3.2 s against 1.4 s with the smaller models, flat from the
+first quartile, indicating steady-state contention for unified memory. Since
+recognition is on the alert path and translation is not, the trade ran in the
+wrong direction. Where memory is available and alert latency is not the primary
+metric, `--translator hymt2-7b` is a genuine improvement in terminology
+accuracy.
+
+## Chrome Extension
 
 1. Open `chrome://extensions` and enable "Developer mode" in the top right.
 2. Click "Load unpacked" and select this project's `extension/` folder.
@@ -223,29 +223,93 @@ The current version is shown in the page footer.
 
 ## FAQ
 
-- **The update button says something is blocking it** — the message now names the files and shows a complete command with your actual project path, plus a Copy button; paste it into Terminal and you are done. If you are on a build older than v0.10.4, that machine cannot fix itself — the repair ships *in* an update, and the update is what is blocked. Run `git pull --ff-only` in the project folder once and it recovers.
-- **Everything got slow and audio started backing up** — check `ollama ps`. Ollama keeps a model in VRAM for 30 minutes after its last use, so switching translation tiers used to leave the previous model squatting there; combined with Whisper large-v3 that can exhaust a 16–18 GB machine and push it into swapping, which shows up as slower recognition and a growing backlog banner. The app now unloads the tiers it is not using at startup. If you hit it on an older build, `ollama stop <model>` frees it immediately.
-- **It can't get the stream but you can watch the room in your browser** — this used to be common and should now be rare. yt-dlp reports a blocked TikTok extractor as "the channel is not currently live", which is simply false, and that was the only thing the app had to go on. Since v0.10.0 it tries four independent routes: TikTok's own live API (which does not involve yt-dlp at all and answers anonymously), yt-dlp, yt-dlp borrowing the TikTok session already in your browser, and the live page itself. **Being logged into TikTok in Chrome/Safari helps but is usually not required**, and there is no file to export; cookies stay between your machine and TikTok. The app also no longer claims the streamer is offline unless TikTok explicitly says the room ended — if every route failed it says so and suggests retrying, because a temporary block is the usual cause. You can still pin a browser with `--cookies-browser safari` or supply `--cookies cookies.txt`.
-- **First "Start" stuck downloading the recognition model** — it's downloading from Hugging Face (large-v3 is about 3GB); progress is shown on the page, and it only happens once.
-- **Translations suddenly fail across the board and captions show only the original language** — the default free Google endpoint rate-limits per IP and starts returning 429 under sustained use. The app pauses requests for two minutes and recovers automatically, with a banner on the page; **speech recognition is unaffected**. For long viewing sessions, switch to a local Hy-MT2 model (offline, no rate limit — see "Translation Engines") or use an API key with `--translator claude` / `openai`. No network or a stopped Ollama causes the same symptom.
-- **Status says "live" but no captions appear for a long time** — usually normal: while the streamer plays music or isn't talking, silent and low-confidence segments are dropped on purpose (better nothing than guessing words out of background music). If the streamer is clearly talking and nothing ever appears, try `--denoise off` (denoising occasionally over-trims some audio) or a different model size.
-- **Captions stop after closing the laptop lid / switching Wi-Fi** — when the stream drops, the app re-resolves the URL and reconnects automatically (up to 5 attempts with growing backoff), so it usually recovers on its own. If you see "repeatedly interrupted and auto-reconnect failed", just hit Start once more.
-- **Recognition can't keep up with the stream / terminal shows dropped audio** — switch to a smaller model (`--model small`), or use `--beam 1`; Apple Silicon users should confirm `pip install mlx-whisper` succeeded so it runs on the GPU.
-- **Sluggish on a Mac with only 8GB of RAM** — Apple Silicon defaults to the most accurate `large-v3` (~3GB). If memory is tight, use `--model large-v3-turbo` (about half the size and faster) or `--model small`.
-- **Singing in background music gets picked up as the streamer talking** — RNNoise suppresses instrumental music well, but can only partially suppress **sung vocals** in a song; confidence filtering catches most of these, and the occasional slip-through is normal.
-- **Extension isn't showing subtitles** — confirm the app is running and that you're on a **live-room page** (URL contains `/live`) rather than a regular video page, then refresh the TikTok page.
-- **The UI address isn't 8765** — that's expected: if something else occupies 8765, the app moves to the next free port (8766–8774), and the Chrome extension scans that same range, so nothing needs configuring.
-- **I want to save the captions / my history disappeared** — there is no export button yet; select and copy the text from the page. The page keeps the most recent 300 lines, and after a refresh or reconnect the server replays only the last 100.
-- **Can I close that black text window / how do I fully quit?** — on Windows that console window *is* the translation engine, so **closing it quits the app**; on macOS closing the app window quits it (if you launched via `Start.command`, close the Terminal window or press Ctrl-C).
-- **Won't install on a work computer / not enough space** — the first install needs about 5GB (runtime environment plus the speech model) and access to PyPI and Hugging Face; corporate security policies often block this, so a personal machine is the easier route.
+**The self-check shows a failing row.** Each row carries its remediation step
+directly beneath it. The most frequent causes are an empty `banned_terms.txt`
+(no alerts will be raised at all) and an incompletely downloaded denoise model
+(delete `models/bd.rnnn` and start again; it re-downloads). The panel re-checks
+on every start, so a resolved issue clears on the next run. A passing row
+indicates the capability was executed, not merely configured.
 
-**The home screen shows a red row saying a feature isn't working — what do I do?**
-Each red row carries the repair step right under it; follow that line. The most
-common ones: an empty `banned_terms.txt` (no alerts will fire at all), and a
-denoise model that downloaded incompletely (delete `models/bd.rnnn` and start
-again — it re-downloads). The panel re-checks every time you click 开始翻译, so
-after you fix something it turns green on the next run. A green panel is worth
-trusting: it means the capability was actually executed, not merely configured.
+**The update button reports that something is blocking it.** The message names
+the affected files and provides a complete command with your project path and a
+Copy button. On builds older than v0.10.4 the machine cannot repair itself, as
+the fix is delivered by the update that is being blocked — run
+`git pull --ff-only` once in the project directory.
+
+**Performance degrades and audio begins backing up.** Check `ollama ps`. Ollama
+retains a model in VRAM for 30 minutes after last use, so switching translation
+tiers previously left the earlier model resident; combined with Whisper
+large-v3 this can exhaust a 16–18 GB machine and cause paging, presenting as
+slower recognition and a growing backlog. Unused tiers are now unloaded at
+startup. On older builds, `ollama stop <model>` releases it immediately.
+
+**The stream cannot be resolved although the room plays in a browser.** A
+blocked yt-dlp extractor reports failures as "the channel is not currently
+live", which is incorrect. Since v0.10.0 four independent routes are tried:
+TikTok's live API (which does not involve yt-dlp and answers anonymously),
+yt-dlp, yt-dlp using the TikTok session in your browser, and the live page
+itself. Being signed in to TikTok in Chrome or Safari helps but is usually not
+required, and no file needs exporting; cookies remain between your machine and
+TikTok. The application no longer reports the streamer as offline unless TikTok
+explicitly states the room has ended. A browser can be pinned with
+`--cookies-browser safari`, or credentials supplied via `--cookies cookies.txt`.
+
+**The first start appears stuck downloading the recognition model.** The model
+is being retrieved from Hugging Face (large-v3 is approximately 3 GB). Progress
+is displayed on the page and this occurs only once.
+
+**All translations fail and captions show only the source language.** The
+default Google endpoint rate-limits per IP and returns 429 under sustained use.
+The application pauses requests for two minutes and recovers automatically, with
+a banner on the page. Speech recognition is unaffected. For extended sessions,
+use a local Hy-MT2 model or an API key via `--translator claude` / `openai`. No
+network connection, or a stopped Ollama, produces the same symptom.
+
+**Status reads "live" but no captions appear for some time.** This is normally
+expected: while the streamer plays music or is not speaking, silent and
+low-confidence segments are discarded deliberately. If the streamer is clearly
+speaking and nothing appears, try `--denoise off` or a different model size.
+
+**Captions stop after closing the laptop lid or switching networks.** When the
+stream drops, the URL is re-resolved and the connection re-established
+automatically, up to 5 attempts with increasing backoff. If the interface
+reports repeated interruptions and failed reconnection, press Start again.
+
+**Recognition cannot keep pace with the stream.** Use a smaller model
+(`--model small`) or `--beam 1`. On Apple Silicon, confirm the self-check
+reports the `mlx` backend rather than `ct2` — the CPU path runs at
+approximately real time and accumulates backlog.
+
+**Performance is poor on a Mac with 8 GB of RAM.** Apple Silicon defaults to
+`large-v3` (~3 GB). Where memory is constrained, use `--model large-v3-turbo`
+or `--model small`.
+
+**Sung vocals in background music are transcribed as speech.** RNNoise
+suppresses instrumental music effectively but can only partially suppress sung
+vocals. Confidence filtering removes most such segments; occasional
+false positives are expected.
+
+**The extension does not display subtitles.** Confirm the application is
+running and that the page is a live room (the URL contains `/live`) rather than
+a regular video page, then reload the TikTok page.
+
+**The interface is not on port 8765.** If 8765 is occupied, the application
+moves to the next free port in 8766–8774. The Chrome extension scans the same
+range, so no configuration is required.
+
+**Exporting captions.** There is no export function; select and copy the text
+from the page. The page retains the most recent 300 lines, and the server
+replays the last 100 after a reload or reconnection.
+
+**Closing the console window.** On Windows that console window is the
+translation engine, so closing it exits the application. On macOS, closing the
+application window exits it; if launched via `Start.command`, close the Terminal
+window or press Ctrl-C.
+
+**Installation fails on a managed computer, or space is insufficient.** The
+initial installation requires approximately 5 GB (runtime environment and speech
+model) and access to PyPI and Hugging Face. Corporate security policies
+frequently block these.
 
 ## Privacy and Usage Boundaries
 
@@ -273,23 +337,23 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 监听 TikTok 直播间，把**主播说的话**实时转写并翻译成字幕，在本地浏览器 UI 中双语显示。附带一个 Chrome 插件，可以把字幕直接叠加在 TikTok 直播页面上。
 
-**全程本地运行**：拉流、语音识别、（可选）翻译都在你自己的电脑上完成，无需任何 API Key，零费用。
+**全程本地运行**：拉流、语音识别与翻译均在本机完成，无需 API Key，无使用费用。
 
 ## 特性
 
-- 🎙️ **实时语音识别** —— OpenAI Whisper（faster-whisper / MLX 双后端），自动检测主播语言，支持 90+ 语言
-- 🌐 **本地优先的翻译** —— Hy-MT2（Apache 2.0，离线免费）两档可选，另有 TranslateGemma 4B、Google 免费接口、Claude·OpenAI 兜底。词表遵从率实测（280 个术语，语料来自真实直播字幕）：**7B 83%** · **1.8B 66%** · TranslateGemma 4B 48%；只看**多词短语**（价格与促销条件所在）是 84% / 65% / 26%。按你机器的情况拉哪一档，程序会自动选用
-- 🎵 **人声降噪** —— RNNoise 神经降噪抑制背景音乐，专为带 BGM 的直播间优化
-- ⚡ **硬件自动配置** —— 检测你的芯片（Apple Silicon GPU / NVIDIA CUDA / 普通 CPU）自动选择能实时跑的最优模型，零配置开箱即用
-- 📺 **双显示端** —— 本地网页 UI（历史双语字幕 + 底部大字幕），或 Chrome 插件叠加在 TikTok 页面上
-- 🚨 **违禁词实时报警** —— 在**识别原文**上做三级匹配（精确/形态变体/模糊），完全不依赖翻译，短语被切在两段字幕之间也能命中；词表见 `banned_terms.txt`
-- ⚡ **延迟可观测** —— 界面底部实时显示「首字等待 P50/P95」及其构成（切段 + 识别 + 翻译），配套审计日志逐段记录：采纳的识别文本、被质量过滤丢掉的候选、命中的违禁词，以及随后到达的译文
-- ✅ **启动自检** —— 每项能力都**实际跑一遍**，而不是看配置写没写：降噪真的过一遍 RNNoise，翻译真的 ping 一次引擎，审计日志真的写一次。结果显示在首页，红的那项会给出修复步骤。这个功能来自一次真实事故——降噪整整几周没生效，只在一行没人看的日志里说了句话
-- 🔄 **抗故障** —— 拿直播流地址有四条互相独立的路（TikTok 官方直播接口 → yt-dlp → yt-dlp 借用浏览器登录态 → 直播页面本身），因为 yt-dlp 的提取器一被挡就会谎报「主播未开播」；每个拿到的地址都先探活再开始；直播流中断自动换新地址重连，并能区分网络抖动与主播真下播；识别跟不上时自动丢段保实时；后台自动保持 yt-dlp 为最新版
+- 🎙️ **实时语音识别** —— OpenAI Whisper 双后端（faster-whisper / MLX），自动检测主播语言，支持 90+ 语言
+- 🌐 **本地优先的翻译** —— Hy-MT2（Apache 2.0，离线免费）两档可选，另有 TranslateGemma 4B、Google 免费接口、Claude·OpenAI 作为兜底。按已安装的档位自动选择
+- 🚨 **违禁词实时报警** —— 在**识别原文**上做三级匹配（精确 / 形态变体 / 模糊），不依赖翻译，短语跨字幕边界同样可命中。词表见 `banned_terms.txt`
+- 🎵 **人声降噪** —— RNNoise 抑制背景音乐，针对持续 BGM 的直播间调校
+- ⚡ **硬件自动配置** —— 检测可用加速器（Apple Silicon GPU / NVIDIA CUDA / CPU），选择仍能实时运行的最大模型
+- 📺 **双显示端** —— 本地网页界面（双语历史字幕 + 底部当前字幕大字），或 Chrome 插件叠加于 TikTok 页面
+- 📊 **延迟可观测** —— 实时显示首字等待（P50/P95）及其构成（切段、识别、翻译），并配套审计日志逐段记录：采纳的文本、被质量过滤丢弃的候选、命中的违禁词，以及随后到达的译文
+- ✅ **启动自检** —— 每项能力实际执行而非检查配置：降噪实跑 RNNoise，翻译实际请求引擎，审计日志实际写入。结果显示在首页，异常项附带处理步骤
+- 🔄 **抗故障** —— 四条独立的流地址解析路径（TikTok 官方接口 → yt-dlp → yt-dlp 借用浏览器登录态 → 直播页解析），因为 yt-dlp 提取器被拦截时会将失败报告为「未开播」。每个解析结果在会话开始前先行验证。断流后以重新解析的地址重连，并区分网络中断与直播结束；识别落后时自动丢段保实时；后台保持 yt-dlp 为最新版
 
 ## 快速开始
 
-### 不会用终端？三步开始（推荐）
+### 无需终端的安装方式（推荐）
 
 1. **下载**：到[最新 Release](https://github.com/EM917/tiktok-live-translator/releases/latest) 的 Assets 里下载 **TikTok-Live-Translator-vX.Y.Z.zip**，解压到任意位置（例如桌面）——下载「Source code (zip)」也一样能用。也可以点仓库页绿色 **Code** 按钮 → **Download ZIP**（取的是最新开发版）。
 2. **装 Python**（免费，只装一次）：到 [python.org/downloads](https://www.python.org/downloads/) 下载安装包，按默认选项装完即可。忘了装也没关系——启动器发现没有 Python 时会自动打开下载页提示你。
@@ -320,7 +384,7 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 
 > **之前克隆过旧版本？** 不要重新 clone（会报 `destination path already exists`）——进目录执行 `git pull` 再启动即可；v0.2.0 起页面里就能一键更新，不再需要命令行。
 
-### 日常启动（关机重启 / 关闭之后）
+### 启动方式
 
 - **macOS**：双击 **`TikTok Live Translator.app`**（或 `Start.command`）；
 - **Windows**：双击 **`Start.bat`**；
@@ -328,26 +392,26 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 
 界面在**独立应用窗口**中打开（不占浏览器标签页），上次填过的直播间地址和选过的目标语言都会记住，点「开始翻译」即可；关掉窗口就是退出。想改回浏览器界面加 `--browser`。
 
-## 硬件自动配置（它是怎么根据你的电脑选配置的）
+## 硬件自动配置
 
-运行 `python main.py --doctor` 随时查看体检结果。启动时未显式指定的参数按下表自动补齐：
+`python main.py --doctor` 可查看硬件检测结果。启动时未显式指定的参数按下表填充：
 
-| 你的电脑 | 自动选择 | 效果 |
+| 硬件 | 选定配置 | 结果 |
 |---|---|---|
 | Apple Silicon（M1 及以上） | MLX GPU 后端 + `large-v3` | 最准模型，比实时快约 5 倍 |
 | NVIDIA 显卡 | CUDA + `large-v3` (float16) | 最准模型，速度富余 |
-| 普通 CPU（≥8 核 & ≥8GB） | CPU + `small` (int8) | 保实时，精度中等 |
-| 低配 CPU | CPU + `base` (int8) | 优先保证字幕不掉队 |
+| CPU（≥8 核，≥8 GB 内存） | CPU + `small` (int8) | 可实时运行，精度中等 |
+| 低配置 CPU | CPU + `base` (int8) | 优先保证跟上进度 |
 
-实测锚点（M3 Pro，90 秒真实直播素材，RTF=识别耗时/音频时长，<1 才不丢字幕）：
+实测数据（M3 Pro，90 秒直播录音；RTF = 识别耗时 / 音频时长，需小于 1 才不丢段）：
 
 | 配置 | RTF |
 |---|---|
 | MLX GPU + large-v3 | **0.21** ✅ |
-| CPU + large-v3-turbo | 0.99 ⚠️ 临界 |
+| CPU + large-v3-turbo | 0.99 ⚠️ 临界实时 |
 | CPU + large-v3 | 1.22 ❌ 丢段 |
 
-任何自动选择都可以用命令行参数覆盖（见下表）。
+上述选定值均可通过命令行参数覆盖。
 
 ## 命令行参数
 
@@ -372,64 +436,63 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 
 ## 翻译引擎
 
-**装好 [Ollama](https://ollama.com/download) 就完事了**。下次启动时程序会自己
-把它拉起来（如果没在跑），通过 Ollama 的接口下载 1.1 GB 的 Hy-MT2 1.8B 模型、
-进度显示在页面上，然后自动切过去——不用开终端，也不用敲 `ollama pull`。
-Whisper 模型本来就是这么自动下的。
+安装 [Ollama](https://ollama.com/download) 即完成配置。下次启动时程序会在需要时
+将其启动，通过 Ollama 接口下载 1.1 GB 的 Hy-MT2 1.8B 模型（页面显示进度）并切换
+至该引擎，全过程无需终端操作。Whisper 模型采用相同方式部署。
 
-想用更大的那一档，自己拉一次即可，程序会自动选用：
+如需使用更大档位，拉取一次即可被自动选用：
 
 ```bash
-ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语最准，建议 16 GB 以上内存
+ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语准确率最高，建议 16 GB 以上内存
 ```
 
-- `auto`（默认）—— 在**实际装了**的引擎里挑最好的：`hymt2` → `gemma` → `google`。**不会**自动选 7B，原因见下。首页自检会写明当前用的是哪一个，所以「悄悄退回网络引擎」不会没人发现。
-- `hymt2` —— **推荐**：Hy-MT2 1.8B（腾讯，Apache 2.0）。默认引擎，几乎什么机器都合适。
-- `hymt2-7b` —— Hy-MT2 7B。领域术语最准，但**需要显式指定**：在 18 GB 的 Mac 上它和 Whisper large-v3 抢内存，实测识别从 1.4 秒涨到 3.2 秒，而识别直接落在违禁词报警路径上（报警延迟 6.8 秒 → 10.6 秒）。它还会对约 2% 的字幕直接返回空，而 1.8B 同样的句子翻得好好的。只有在你不以报警延迟为先时才值得。
-- `gemma` —— TranslateGemma 4B，上一版的默认。仍然支持，`OLLAMA_TRANSLATE_MODEL` 可换成 `translategemma:12b`/`27b`。
+| 取值 | 引擎 |
+|---|---|
+| `auto`（默认） | 在已安装的引擎中选择：`hymt2` → `gemma` → `google`。7B 不会被自动选用，原因见下 |
+| `hymt2` | Hy-MT2 1.8B（腾讯，Apache 2.0）。多数机器的推荐档位 |
+| `hymt2-7b` | Hy-MT2 7B。术语准确率最高，需显式指定，原因见下 |
+| `gemma` | TranslateGemma 4B。`OLLAMA_TRANSLATE_MODEL` 可切换至 `translategemma:12b`/`27b` |
+| `google` | Google 翻译免费接口，无需密钥。字幕文本会发送至 Google，且按 IP 限流 |
+| `claude` | 需要 `ANTHROPIC_API_KEY`，模型可由 `CLAUDE_TRANSLATE_MODEL` 覆盖 |
+| `openai` | 需要 `OPENAI_API_KEY`，可选 `OPENAI_BASE_URL`、`OPENAI_MODEL`。兼容各类 OpenAI 风格接口，含本地 LM Studio / vLLM |
+| `none` | 仅显示识别原文，不翻译 |
 
-  ```bash
-  ollama pull translategemma:4b
-  ```
-- `google` —— Google 翻译网页版免费接口，无需密钥。**注意：字幕文本会被发送给 Google**，长时间使用会按 IP 限流，口语直译错误也明显更多。
-- `claude` —— 需要环境变量 `ANTHROPIC_API_KEY`（默认 Claude Haiku，可用 `CLAUDE_TRANSLATE_MODEL` 覆盖）。
-- `openai` —— 需要 `OPENAI_API_KEY`（可选 `OPENAI_BASE_URL`、`OPENAI_MODEL`，兼容各类 OpenAI 风格接口，包括本地 LM Studio / vLLM）。
-- `none` —— 只显示识别原文，不翻译，完全离线。
+首页自检会显示当前使用的引擎，因此回退至网络引擎的情况可见而非静默发生。
 
-本地引擎为什么重要（西语口语 → 中文）：
+本地引擎对口语的处理明显更好。西语 → 中文：
 
 | 原文 | Google | 本地模型 |
 |---|---|---|
 | *Se mueren lo rico*（好吃到不行） | ❌ 有钱人死 | ✅ 味道非常好 |
-| *tengo un sueño*（我好困） | ❌ 我做了一个梦 | ✅ 现在感觉很困 |
+| *tengo un sueño*（我困了） | ❌ 我做了一个梦 | ✅ 现在感觉很困 |
 | *Es vegano*（纯素产品） | ❌ 它是素食主义者 | ✅ 纯素的 |
 
-<a name="extension"></a>
-### 这几个引擎是怎么比出来的
+### 引擎对比方法
 
-> **为什么 7B 不做默认。** 它的词表准确率高 17 个百分点，v0.10.0 最初也确实
-> 把它设成了默认——那个决定基于一次 24 条字幕的样本。一次 92 条的真实直播把它
-> 推翻了：识别全程稳定在约 3.2 秒（换小模型是 1.4 秒），而且**从第一个四分之一
-> 段就是这个值**，说明是统一内存的稳态争抢，不是跑久了变热。识别在报警路径上、
-> 翻译不在，所以这笔交易是反的。下面的数字仍然值得看——机器内存宽裕的话，
-> `--translator hymt2-7b` 在术语准确度上是实打实的提升。
-
-
-这里要看的不是「译文顺不顺」，而是**模型有没有遵守领域词表**——商品名、价格、
-促销条件靠它保证正确。用 `tools/bench_glossary.py` 在 280 个词表术语上实测
-（语料取自真实直播字幕；延迟来自一台 18 GB M 系列 Mac 上的西语带货直播实盘）：
+相关指标不是译文流畅度，而是词表遵从率——它决定商品名、价格与促销条件是否被
+正确呈现。使用 `tools/bench_glossary.py` 在 280 个术语上测量，语料取自真实直播
+字幕；延迟数据来自一台 18 GB M 系列 Mac 上的实盘运行：
 
 | | 词表遵从率 | 多词短语 | 翻译延迟 |
 |---|---|---|---|
-| Hy-MT2 7B | 83% | 84% | 中位 892ms，P95 1.7s |
-| Hy-MT2 1.8B | 66% | 65% | 中位 358ms |
-| TranslateGemma 4B | 48% | 26% | 中位 832ms |
+| Hy-MT2 7B | 83% | 84% | 中位 892 ms，P95 1.7 s |
+| Hy-MT2 1.8B | 66% | 65% | 中位 358 ms |
+| TranslateGemma 4B | 48% | 26% | 中位 832 ms |
 
-要看的是「多词短语」那一列：价格和促销条件都是短语而不是单个名词，译文会误导
-中控的地方全在这里。延迟**刻意没有进入选型**——违禁词报警从识别原文发出，
-从不等翻译，只要翻译别落后于 9 秒的切段就行，两档都做得到。
+其中「多词短语」一列最为关键：价格与促销条件是短语而非单个名词，译文误导操作员
+的情形集中于此。
 
-## Chrome 插件（把字幕叠加到 TikTok 页面上）
+延迟未纳入选型标准。违禁词报警基于识别原文发出，不等待翻译；对翻译的唯一要求是
+跟得上 9 秒的切段，两档均满足。
+
+**7B 不作为默认的原因。** 其 17 个百分点的准确率优势曾使其成为 v0.10.0 首个构建
+的默认档位，该判断基于 24 条字幕的样本。一次 92 条字幕的实盘运行给出不同结果：
+7B 常驻时识别耗时稳定在约 3.2 秒，而使用较小模型为 1.4 秒，且自第一个四分位起
+即为该水平，属统一内存的稳态资源争用。识别位于报警链路上而翻译不在，因此该取舍
+方向相反。内存充裕且不以报警延迟为首要指标时，`--translator hymt2-7b` 在术语
+准确率上确有提升。
+
+## Chrome 插件
 
 1. 打开 `chrome://extensions`，右上角开启「开发者模式」；
 2. 点「加载已解压的扩展程序」，选择本项目的 `extension/` 文件夹；
@@ -464,27 +527,68 @@ flowchart TD
 
 ## 常见问题
 
-- **一键更新提示有东西挡着** —— 现在提示会写清是哪几个文件，并给出一条**带你机器上真实路径**的完整命令和「复制」按钮，粘进「终端」执行即可。如果那台机器还停在 v0.10.4 之前的版本，它**没法自己修好**——修复是随更新一起送达的，而挡住的正是更新；在项目文件夹里手动跑一次 `git pull --ff-only` 就能恢复。
-- **整体变慢、音频开始积压** —— 先看 `ollama ps`。Ollama 会在模型最后一次使用后把它在显存里留 30 分钟，所以换翻译档位时旧模型会继续霸着显存；和 Whisper large-v3 叠在一起足以把 16–18 GB 的机器撑到换页，表现就是识别变慢、界面弹出积压提示。现在程序启动时会把没在用的档位卸掉。老版本上遇到的话，`ollama stop <模型名>` 可以立刻释放。
-- **提示没能获取到直播流，但你在浏览器里看得到** —— 以前很常见，现在应该很少了。根因是 yt-dlp 的 TikTok 提取器一被挡就报「主播未开播」，那句话是错的，而程序以前只能听它的。v0.10.0 起改成四条互相独立的路：TikTok 官方直播接口（完全不经过 yt-dlp，匿名就能用）、yt-dlp、yt-dlp 借用你浏览器里的 TikTok 登录态、直播页面本身。**平时在 Chrome/Safari 里登录过 TikTok 会有帮助，但通常已经不是必需**，也不用导出任何文件；cookie 只在本机与 TikTok 之间使用。另外程序不再替 TikTok 断言主播没在播——只有接口明确说房间已结束才这么讲，四条路都失败时会如实说「没拿到」并建议过会儿再试，因为临时被挡是最常见的原因。仍可用 `--cookies-browser safari` 指定浏览器，或 `--cookies cookies.txt` 自带凭据。
-- **首次点「开始翻译」卡在下载识别模型** —— 正在从 Hugging Face 下载（large-v3 约 3GB），页面上会显示进度，只需一次。
-- **翻译突然大面积失败，字幕只剩外文原文** —— 默认的 Google 免费接口按 IP 限流，长时间高频请求会被挡（返回 429）。程序会自动暂停请求 2 分钟再恢复，页面顶部也会给出提示，**语音识别不受影响**。常看长直播建议换成本地 Hy-MT2（离线、不限流，见「翻译引擎」），或配 API Key 用 `--translator claude` / `openai`。另外断网、Ollama 没启动同样会导致翻译失败。
-- **状态显示「直播中」但很久不出字幕** —— 多数情况正常：主播放音乐或没说话时，静音段和低置信度片段会被直接丢弃（宁缺毋滥，免得把背景音乐瞎猜成人话）。若主播明明一直在说话却始终没字幕，可试 `--denoise off`（个别音频会被降噪削得过狠），或换一档模型。
-- **合上笔记本睡眠 / 切换 WiFi 后字幕停了** —— 直播流断开后程序会自动重新解析地址并重连（最多 5 次，间隔逐次拉长），通常自己就恢复。若看到「多次中断且自动重连失败」，点一次「开始翻译」重来即可。
-- **识别追不上直播 / 终端提示丢弃音频** —— 换小一档模型（`--model small`），或 `--beam 1`；Apple Silicon 用户确认 `pip install mlx-whisper` 后走 GPU。
-- **Mac 只有 8GB 内存，跑起来很卡** —— Apple Silicon 默认用最准的 `large-v3`（约 3GB）。内存吃紧时用 `--model large-v3-turbo`（体积约一半、更快）或 `--model small`。
-- **背景音乐里的歌声被当成主播的话** —— RNNoise 对器乐抑制好，但对歌曲里的**演唱人声**只能部分抑制；置信度过滤会兜住大部分，个别漏网属正常。
-- **插件没显示字幕** —— 确认程序在运行、当前打开的是**直播间页面**（地址含 `/live`）而不是普通视频页，然后刷新 TikTok 页面。
-- **界面地址不是 8765** —— 正常现象：8765 被别的软件占用时会自动往后找空闲端口（8766–8774），Chrome 插件也会自动扫描这一段，无需手动配置。
-- **想把字幕保存下来 / 历史字幕不见了** —— 目前没有导出按钮，需要就在页面上选中复制；页面最多保留最近 300 条，刷新或重连后服务端只回放最近 100 条。
-- **那个黑色文字窗口能关吗 / 怎么彻底退出** —— Windows 上那个黑窗口就是翻译引擎，**关掉它等于退出程序**；macOS 关掉应用窗口即退出（用 `Start.command` 启动的话，关终端窗口或按 Ctrl-C）。
-- **公司电脑装不上 / 提示空间不足** —— 首次安装约需 5GB 空间（运行环境 + 语音模型），并需要访问 PyPI 和 Hugging Face；公司电脑的安全策略常会拦截，建议换台个人电脑。
+**自检出现异常项。** 每一行下方即为对应的处理步骤。最常见的两种情形是
+`banned_terms.txt` 为空（此时不会发出任何报警），以及降噪模型未下载完整
+（删除 `models/bd.rnnn` 后重新开始，程序会重新下载）。面板在每次启动时重新
+检查，问题解决后下一次即恢复正常。通过的项表示该能力已被实际执行，而非仅配置正确。
 
-**首页出现红色的「某项功能未生效」怎么办？**
-每条红的下面就写着怎么修，照着做即可。最常见的两种：`banned_terms.txt` 是空的
-（那样**一条报警都不会发**），以及降噪模型没下全（删掉 `models/bd.rnnn` 重新
-开始，程序会重新下载）。每次点「开始翻译」都会重新自检一遍，修好了下一次就变绿。
-绿色是可信的——它表示这项能力真的被跑过了，不只是配置写对了。
+**一键更新提示有内容阻断。** 提示中会列出受影响的文件，并给出包含项目路径的
+完整命令及「复制」按钮。v0.10.4 之前的版本无法自行修复——修复随更新送达，而被
+阻断的正是更新；在项目目录中执行一次 `git pull --ff-only` 即可。
+
+**性能下降、音频开始积压。** 先查看 `ollama ps`。Ollama 在模型最后一次使用后
+将其保留在显存中 30 分钟，因此切换翻译档位时旧模型此前会继续驻留；与 Whisper
+large-v3 叠加后足以耗尽 16–18 GB 机器的内存并引发换页，表现为识别变慢与积压提示。
+现在未使用的档位会在启动时卸载。旧版本可执行 `ollama stop <模型名>` 立即释放。
+
+**浏览器中可以观看，但程序无法解析直播流。** yt-dlp 的提取器被拦截时会将失败
+报告为「主播未开播」，该结论不成立。自 v0.10.0 起依次尝试四条独立路径：TikTok
+官方直播接口（不经过 yt-dlp，匿名可用）、yt-dlp、yt-dlp 借用浏览器中的 TikTok
+登录态、直播页解析。在 Chrome 或 Safari 中登录 TikTok 有帮助但通常并非必需，
+也无需导出任何文件；cookie 仅在本机与 TikTok 之间使用。程序不再在 TikTok 未
+明确说明房间已结束时判定主播下播。可用 `--cookies-browser safari` 指定浏览器，
+或通过 `--cookies cookies.txt` 提供凭据。
+
+**首次启动长时间停留在下载识别模型。** 模型正从 Hugging Face 下载
+（large-v3 约 3 GB），进度显示在页面上，仅首次需要。
+
+**全部翻译失败，字幕只剩原文。** 默认的 Google 接口按 IP 限流，持续使用会返回
+429。程序会暂停请求两分钟后自动恢复，并在页面给出提示；语音识别不受影响。长时间
+使用建议改用本地 Hy-MT2 模型，或通过 `--translator claude` / `openai` 使用 API
+密钥。断网或 Ollama 未运行会产生相同现象。
+
+**状态显示「直播中」但长时间没有字幕。** 通常属正常情况：主播播放音乐或未讲话
+期间，静音与低置信度片段会被主动丢弃。若主播明确在讲话且始终无输出，可尝试
+`--denoise off` 或更换模型尺寸。
+
+**合上笔记本或切换网络后字幕中断。** 直播流中断时程序会重新解析地址并自动重连
+（最多 5 次，间隔逐次拉长）。若界面提示多次中断且自动重连失败，再次点击「开始翻译」即可。
+
+**识别跟不上直播流。** 改用较小的模型（`--model small`）或 `--beam 1`。Apple
+Silicon 机器请确认自检显示的后端为 `mlx` 而非 `ct2`——CPU 路径仅勉强达到实时，
+长时间运行会产生积压。
+
+**8 GB 内存的 Mac 上运行迟缓。** Apple Silicon 默认使用 `large-v3`（约 3 GB）。
+内存受限时可改用 `--model large-v3-turbo` 或 `--model small`。
+
+**背景音乐中的人声被识别为主播讲话。** RNNoise 对器乐的抑制效果良好，但对歌曲中
+的**人声**只能部分抑制。置信度过滤可滤除大部分此类片段，偶有漏网属预期范围。
+
+**插件不显示字幕。** 确认程序正在运行，且当前页面为直播间（URL 含 `/live`）
+而非普通视频页，然后刷新 TikTok 页面。
+
+**界面地址不是 8765。** 8765 被占用时程序会顺延至 8766–8774 中的空闲端口，
+Chrome 插件扫描同一范围，无需配置。
+
+**导出字幕。** 暂无导出功能，可在页面上选中并复制。页面保留最近 300 行，刷新或
+重连后服务端仅重放最后 100 行。
+
+**关闭黑色命令行窗口。** Windows 上该窗口即翻译程序本身，关闭它等同于退出程序；
+macOS 上关闭程序窗口即可退出，若通过 `Start.command` 启动则关闭终端窗口或按
+Ctrl-C。
+
+**公司电脑无法安装或空间不足。** 首次安装约需 5 GB（运行环境与语音模型），并需
+访问 PyPI 与 Hugging Face。企业安全策略常会阻断上述访问。
 
 ## 隐私与使用边界
 
