@@ -13,6 +13,8 @@ from pathlib import Path
 from .settings import load_settings, save_setting
 
 ROOT = Path(__file__).resolve().parent.parent
+# 距上次提示不足这么久，就只静默刷新版本信息，不再弹醒目提示
+QUIET_NOTICE_SEC = 6 * 3600
 REPO = "EM917/tiktok-live-translator"
 API_LATEST = "https://api.github.com/repos/{}/releases/latest".format(REPO)
 RELEASES_URL = "https://github.com/{}/releases/latest".format(REPO)
@@ -160,12 +162,28 @@ class Updater:
             "url": data.get("html_url") or RELEASES_URL,
             "can_auto": (ROOT / ".git").exists(),
         }
+        # 提示降噪。这个项目的更新提示是**真实的打扰**——它会在直播中控的
+        # 界面上弹出来。连续发几个 patch 的日子（真实发生过：一天 12 个 release，
+        # 全部来自实盘暴露的问题），不降噪就是把用户轰一遍。
+        #
+        # 规则：短时间内已经提示过就只静默刷新版本信息，让「一键更新」按钮
+        # 保持可用，但不再弹醒目提示。手动点「检查更新」永远给回应——
+        # 那是用户主动问的。
+        quiet = False
+        if not manual:
+            last = load_settings().get("update_notice_at") or 0
+            quiet = (time.time() - last) < QUIET_NOTICE_SEC
+            if not quiet:
+                save_setting("update_notice_at", time.time())
+
         payload = dict(self.latest)
         payload["type"] = "update_available"
+        payload["quiet"] = quiet
         self.server.config["update"] = self.latest
         await self.server.broadcast(payload)
-        print("[信息] 发现新版本 {}（当前 v{}）——可在页面上一键更新".format(
-            tag, local_version()))
+        if not quiet:
+            print("[信息] 发现新版本 {}（当前 v{}）——可在页面上一键更新".format(
+                tag, local_version()))
 
     async def _git(self, *args):
         proc = await asyncio.create_subprocess_exec(
