@@ -32,6 +32,15 @@ async def _to_thread(fn, *args):
     return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
 
 
+def _importable(name):
+    import importlib
+    try:
+        importlib.import_module(name)
+        return True
+    except Exception:
+        return False
+
+
 def _ffmpeg_runs(exe):
     """真的执行一次 ffmpeg -version。
 
@@ -88,18 +97,15 @@ async def check_asr(args):
     except Exception as exc:
         return _check("语音识别", FAIL, "硬件探测失败：{}".format(exc))
     model = getattr(args, "model", None) or rec["model"]
+    # 这几个库第一次 import 要几百毫秒到一秒，放线程里做——run_selfcheck 特意
+    # 挂在后台就是为了不挡住界面，在协程里同步 import 等于白挂
     if rec["backend"] == "mlx":
-        try:
-            import mlx_whisper  # noqa: F401
-        except ImportError:
+        if not await _to_thread(_importable, "mlx_whisper"):
             return _check("语音识别", FAIL, "苹果芯片加速组件未装上",
                           "关闭程序后重新打开，会自动补装；若反复出现请反馈给开发者")
-    else:
-        try:
-            import faster_whisper  # noqa: F401
-        except ImportError:
-            return _check("语音识别", FAIL, "faster-whisper 不可用",
-                          "关闭程序后重新打开，会自动补装")
+    elif not await _to_thread(_importable, "faster_whisper"):
+        return _check("语音识别", FAIL, "faster-whisper 不可用",
+                      "关闭程序后重新打开，会自动补装")
     cached = _model_cached(model, rec["backend"])
     detail = "{} + {}（{}）".format(rec["backend"], model,
                                    "模型已下载" if cached else "首次开播需先下载模型")
@@ -211,9 +217,7 @@ async def check_audit():
 
 async def check_resolver():
     """能不能拿到直播流地址。TikTok 对未登录请求会把在播房间报成未开播。"""
-    try:
-        import yt_dlp  # noqa: F401
-    except ImportError:
+    if not await _to_thread(_importable, "yt_dlp"):     # yt-dlp 导入很重
         return _check("直播流解析", FAIL, "缺少 yt-dlp",
                       "关闭程序后重新打开，会自动补装")
     from .resolver import _installed_browsers

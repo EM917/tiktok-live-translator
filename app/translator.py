@@ -226,6 +226,16 @@ class OllamaGemmaTranslator(BaseTranslator):
         # 拼在正文前面，TranslateGemma 会把这行指令当成源文一起翻译，
         # 译文里就冒出「使用这些精确的翻译： 滴剂 = D3 K2 维生素滴剂」这种东西。
         # 它是纯翻译模型——给它什么就翻什么，指令只认 head 这一段。
+        # 实测（2026-08-24，日志里 175 句真实西语、269 个待检术语，判据是
+        # 词表要求的中文有没有出现在译文里）：
+        #   Keep these terms exactly as given  46.1%   ← 现用
+        #   You MUST use these exact translations  48.7%（n=269 时标准误约 3pp，是噪声）
+        #   Glossary (mandatory)               38.3%   ← 明显更差，别用
+        # 也就是说**换措辞救不了**：这类纯翻译模型对指令区术语表的遵从率就在
+        # 五成上下，短句上尤其容易整条无视（"la limpieza" 在长句里认、
+        # 单独一句就翻回「清洁」）。glossary.apply() 只能兜住译文里还残留西语
+        # 的情况，模型「翻错但翻得像模像样」时救不了。
+        # 想再往上走要换有原生术语干预的模型，不是继续调这句话。
         if glossary:
             head += " Keep these terms exactly as given: " + glossary + "."
         return head + "\n\n" + text

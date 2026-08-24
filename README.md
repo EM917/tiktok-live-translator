@@ -34,6 +34,7 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 - 📺 **Two display modes** — a local web UI (scrolling bilingual subtitle history + a large caption at the bottom), or a Chrome extension overlay on the TikTok page
 - 🚨 **Real-time banned-term alerts** — three-tier matching (exact / morphological variant / fuzzy) over the **recognized original text**, independent of translation, and matching across caption boundaries; edit `banned_terms.txt`
 - ⚡ **Observable latency** — a live footer readout of time-to-first-caption (P50/P95) broken down into segmentation + recognition + translation, plus an audit log recording every segment including candidates the quality filter dropped
+- ✅ **Startup self-check** — every capability is *exercised*, not merely configured: denoising actually runs a sample through RNNoise, translation actually pings the engine, the audit log actually writes. Results appear on the home screen with a repair step for anything red. This exists because the denoiser once shipped broken for weeks, announced only in a log line nobody read
 - 🔄 **Fault-tolerant** — auto-reconnects with a fresh stream URL when the stream drops (and can tell a network blip from the streamer actually ending); falls back to scraping the stream URL straight from the live page when yt-dlp resolution fails; drops segments automatically to stay real-time when recognition falls behind; keeps yt-dlp fresh automatically in the background
 
 ## Quick Start
@@ -194,6 +195,14 @@ The current version is shown in the page footer.
 - **Can I close that black text window / how do I fully quit?** — on Windows that console window *is* the translation engine, so **closing it quits the app**; on macOS closing the app window quits it (if you launched via `Start.command`, close the Terminal window or press Ctrl-C).
 - **Won't install on a work computer / not enough space** — the first install needs about 5GB (runtime environment plus the speech model) and access to PyPI and Hugging Face; corporate security policies often block this, so a personal machine is the easier route.
 
+**The home screen shows a red row saying a feature isn't working — what do I do?**
+Each red row carries the repair step right under it; follow that line. The most
+common ones: an empty `banned_terms.txt` (no alerts will fire at all), and a
+denoise model that downloaded incompletely (delete `models/bd.rnnn` and start
+again — it re-downloads). The panel re-checks every time you click 开始翻译, so
+after you fix something it turns green on the next run. A green panel is worth
+trusting: it means the capability was actually executed, not merely configured.
+
 ## Privacy and Usage Boundaries
 
 - Recognition always runs locally. Translation is fully offline when using `gemma`/`none`; with `google`/`claude`/`openai`, subtitle text is sent to the corresponding provider.
@@ -231,6 +240,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 - 📺 **双显示端** —— 本地网页 UI（历史双语字幕 + 底部大字幕），或 Chrome 插件叠加在 TikTok 页面上
 - 🚨 **违禁词实时报警** —— 在**识别原文**上做三级匹配（精确/形态变体/模糊），完全不依赖翻译，短语被切在两段字幕之间也能命中；词表见 `banned_terms.txt`
 - ⚡ **延迟可观测** —— 界面底部实时显示「首字等待 P50/P95」及其构成（切段 + 识别 + 翻译），配套审计日志逐段记录识别原文与被过滤的候选
+- ✅ **启动自检** —— 每项能力都**实际跑一遍**，而不是看配置写没写：降噪真的过一遍 RNNoise，翻译真的 ping 一次引擎，审计日志真的写一次。结果显示在首页，红的那项会给出修复步骤。这个功能来自一次真实事故——降噪整整几周没生效，只在一行没人看的日志里说了句话
 - 🔄 **抗故障** —— 直播流中断自动换新地址重连（能区分网络抖动与主播真下播）；yt-dlp 解析失效时自动从直播页面直接挖流地址；识别跟不上时自动丢段保实时；后台自动保持 yt-dlp 为最新版
 
 ## 快速开始
@@ -391,6 +401,12 @@ flowchart TD
 - **想把字幕保存下来 / 历史字幕不见了** —— 目前没有导出按钮，需要就在页面上选中复制；页面最多保留最近 300 条，刷新或重连后服务端只回放最近 100 条。
 - **那个黑色文字窗口能关吗 / 怎么彻底退出** —— Windows 上那个黑窗口就是翻译引擎，**关掉它等于退出程序**；macOS 关掉应用窗口即退出（用 `Start.command` 启动的话，关终端窗口或按 Ctrl-C）。
 - **公司电脑装不上 / 提示空间不足** —— 首次安装约需 5GB 空间（运行环境 + 语音模型），并需要访问 PyPI 和 Hugging Face；公司电脑的安全策略常会拦截，建议换台个人电脑。
+
+**首页出现红色的「某项功能未生效」怎么办？**
+每条红的下面就写着怎么修，照着做即可。最常见的两种：`banned_terms.txt` 是空的
+（那样**一条报警都不会发**），以及降噪模型没下全（删掉 `models/bd.rnnn` 重新
+开始，程序会重新下载）。每次点「开始翻译」都会重新自检一遍，修好了下一次就变绿。
+绿色是可信的——它表示这项能力真的被跑过了，不只是配置写对了。
 
 ## 隐私与使用边界
 

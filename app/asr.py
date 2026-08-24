@@ -95,7 +95,10 @@ DEFAULT_TEMPERATURE = 0.0
 # 四段确凿的幻觉（¡Suscríbete al canal!）人声占比是 100%/100%/53%/73.5%，
 # VAD 把背景音乐当成了人声；43 段里没有一段低于 6%。
 # 也就是说这道闸门一段都拦不住，还要每段多花 20–90ms。
-# 真正挡住这些幻觉的是下面这张词表 + 逐句判定，VAD 那条路已废弃。
+# 真正挡住这些幻觉的是下面这张词表 + 逐句判定。
+# 注意区分：废弃的是「我们自己在切段后再加一道 VAD 闸门」，不是 ct2 路径里
+# 那个 vad_filter=True——后者是 faster-whisper 在解码内部按段裁剪，作用不同，
+# 别顺手删掉。
 _HALLUCINATIONS = {
     # 英文
     "thank you", "thanks for watching", "thank you for watching", "you",

@@ -565,6 +565,7 @@
   // 自检结果。有失败项时默认展开——「功能悄悄坏了」必须让人一眼看到，
   // 全绿时收起来不打扰
   var ICONS = { ok: "✅", warn: "⚠️", fail: "❌" };
+  var scLastSig = null;   // 结论没变就别动展开状态
 
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
@@ -599,7 +600,13 @@
       li.appendChild(detail);
       scList.appendChild(li);
     });
-    setSelfcheckOpen(sum.fail > 0);
+    // 只有结论真的变了才自动展开/收起。重连会重放一次 hello，
+    // 那时若无条件重置，正在看明细的人会被收起来
+    var sig = sum.fail + "/" + sum.warn + "/" + sum.total;
+    if (sig !== scLastSig) {
+      scLastSig = sig;
+      setSelfcheckOpen(sum.fail > 0);
+    }
   }
 
   function setSelfcheckOpen(open) {
