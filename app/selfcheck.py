@@ -163,11 +163,20 @@ async def check_translator(args):
         from .translator import _ollama_has_gemma, _ollama_has_hymt2
     except Exception as exc:
         return _check("翻译引擎", FAIL, "翻译模块加载失败：{}".format(exc))
+    has_big = await _to_thread(_ollama_has_hymt2, True)
     has_hymt2 = await _to_thread(_ollama_has_hymt2)
     has_gemma = await _to_thread(_ollama_has_gemma)
     resolved = name
     if name == "auto":
-        resolved = "hymt2" if has_hymt2 else ("gemma" if has_gemma else "google")
+        resolved = ("hymt2-7b" if has_big else
+                    "hymt2" if has_hymt2 else
+                    "gemma" if has_gemma else "google")
+    if resolved == "hymt2-7b":
+        if has_big:
+            return _check("翻译引擎", OK, "本地 Hy-MT2 7B（离线、无限流、术语最准）")
+        return _check("翻译引擎", FAIL, "指定了 Hy-MT2 7B，但 Ollama 里没有这个模型",
+                      "先打开 Ollama，再执行一次 "
+                      "ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M")
     if resolved == "hymt2":
         if has_hymt2:
             return _check("翻译引擎", OK, "本地 Hy-MT2 1.8B（离线、无限流）")

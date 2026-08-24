@@ -2,9 +2,11 @@
 Google 网页免费接口；也可显式指定 gemma / google / claude / openai / none。"""
 import json
 import os
+import re
 from collections import OrderedDict
 
-TRANSLATOR_CHOICES = ["auto", "hymt2", "gemma", "google", "claude", "openai", "none"]
+TRANSLATOR_CHOICES = ["auto", "hymt2", "hymt2-7b", "gemma",
+                      "google", "claude", "openai", "none"]
 
 LANG_NAMES = {
     "zh-CN": "Simplified Chinese", "zh-TW": "Traditional Chinese", "zh": "Chinese",
@@ -301,7 +303,11 @@ class OllamaHyMT2Translator(BaseTranslator):
     _BOS = "<｜hy_begin▁of▁sentence｜>"
     _USER = "<｜hy_User｜>"
     _ASSISTANT = "<｜hy_Assistant｜>"
-    _STOP = ["<｜hy_end▁of▁sentence｜>", "<｜hy_place▁holder▁no▁2｜>"]
+    # 两种全角竖线都要列进去：实测模型有时吐的是 ｠（U+FF60）而不是 ｜（U+FF5C），
+    # 只挡一种的话另一种会原样漏进字幕（真的在直播里出现过：
+    # 「索菲亚！<｠hy_end▁of▁sentence｠>」）。
+    _STOP = ["<｜hy_end▁of▁sentence｜>", "<｜hy_place▁holder▁no▁2｜>",
+             "<｠hy_end▁of▁sentence｠>", "<｠hy_place▁holder▁no▁2｠>"]
 
     def __init__(self):
         super().__init__()
@@ -341,9 +347,18 @@ class OllamaHyMT2Translator(BaseTranslator):
                 if resp.status != 200:
                     return None
                 data = await resp.json()
-            return (data.get("response") or "").strip() or None
+            return _strip_special(data.get("response") or "") or None
         except Exception:
             return None
+
+
+# 兜底清理：停止词列表只能挡已知写法，模型偶尔会用别的括号变体。字幕是给人看的，
+# 任何 <...hy_...> 的残留都不该出现在屏幕上。
+_SPECIAL_RE = re.compile(r"<[^<>]{0,8}hy_[^<>]{0,40}>")
+
+
+def _strip_special(text):
+    return _SPECIAL_RE.sub("", text).strip()
 
 
 def _as_pairs(glossary):
@@ -384,18 +399,35 @@ def _ollama_has_gemma():
     return _ollama_has("translategemma")
 
 
-def _ollama_has_hymt2():
-    return _ollama_has("hy-mt2")
+HYMT2_SMALL = "hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M"
+HYMT2_LARGE = "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M"
+
+
+def _ollama_has_hymt2(large=False):
+    return _ollama_has("hy-mt2-7b" if large else "hy-mt2-1.8b")
 
 
 def create_translator(name):
     """返回带重复句缓存的翻译引擎（none 除外）。"""
     if name == "auto":
-        # 顺序由实测定：Hy-MT2 1.8B 在多词术语上的遵从率 64.1%，
-        # TranslateGemma 4B 只有 23.9%（tools/bench_glossary.py，271 个术语；
-        # 单个商品名两者打平，差距全在短语上——而促销条件、价格框架正是短语）。
-        # 它还快 2.5 倍、小 2 GB，所以没有留给旧模型的理由，除非用户已经装了它。
-        if _ollama_has_hymt2():
+        # 顺序由实测定（tools/bench_glossary.py，280 个术语取自真实直播字幕，
+        # 判据是词表要求的中文有没有出现在译文里）：
+        #
+        #                     总计    多词短语   商品名   中位延迟
+        #   TranslateGemma 4B 47.9%    25.8%    64.4%     832ms
+        #   Hy-MT2 1.8B       66.1%    65.0%    66.9%     335ms
+        #   Hy-MT2 7B         83.2%    84.2%    82.5%    1439ms
+        #
+        # 多词短语那一列是关键：价格和促销条件都是短语（"lo tenemos en
+        # especial"、"hacen una orden de"），审计翻出的 critical 错误全在这里。
+        #
+        # 延迟不参与排序。违禁词报警走识别原文，从不等翻译；翻译只要别把队列
+        # 堵上就行，而切段是 9 秒，7B 的 P95 才 2.3 秒。
+        #
+        # 装了 7B 就用 7B：4.6 GB 是用户自己拉的，那本身就是一次选择。
+        if _ollama_has_hymt2(large=True):
+            name = "hymt2-7b"
+        elif _ollama_has_hymt2():
             name = "hymt2"
         elif _ollama_has_gemma():
             name = "gemma"
@@ -406,6 +438,10 @@ def create_translator(name):
         return None
     if name == "hymt2":
         inner = OllamaHyMT2Translator()
+    elif name == "hymt2-7b":
+        inner = OllamaHyMT2Translator()
+        inner.model = HYMT2_LARGE
+        inner.name = "hymt2-7b"      # 两档要能在界面和日志里分得出来
     elif name == "gemma":
         inner = OllamaGemmaTranslator()
     elif name == "google":

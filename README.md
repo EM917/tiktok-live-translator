@@ -28,7 +28,7 @@ Listens to a TikTok livestream, transcribes what the **streamer says** in real t
 ## Features
 
 - 🎙️ **Real-time speech recognition** — OpenAI Whisper (dual backend: faster-whisper / MLX), auto-detects the streamer's language, supports 90+ languages
-- 🌐 **Local-first translation** — Hy-MT2 1.8B (default, offline and free, Apache 2.0) / TranslateGemma 4B / Google's free API as a network fallback / Claude · OpenAI API. Hy-MT2 is the default because it honours the domain glossary on multi-word phrases 64% of the time against TranslateGemma's 24% (measured on 271 terms from real logged captions), while being 2.5× faster and 2 GB smaller — and the phrases are exactly where price and promo terms live
+- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline and free) in two tiers, with TranslateGemma 4B, Google's free API, and Claude · OpenAI as fallbacks. Glossary adherence measured on 280 terms from real logged captions: **7B 83%** · **1.8B 66%** · TranslateGemma 4B 48%. On multi-word phrases — where prices and promo conditions live — the spread is 84% / 65% / 26%. Pull whichever tier your machine suits and it is picked automatically
 - 🎵 **Voice-focused denoising** — RNNoise neural denoising suppresses background music, tuned for streams with BGM
 - ⚡ **Automatic hardware tuning** — detects your chip (Apple Silicon GPU / NVIDIA CUDA / plain CPU) and automatically picks the best model that can still run in real time — zero-config out of the box
 - 📺 **Two display modes** — a local web UI (scrolling bilingual subtitle history + a large caption at the bottom), or a Chrome extension overlay on the TikTok page
@@ -145,6 +145,32 @@ Real-world comparison (colloquial Spanish → Chinese):
 | *tengo un sueño* (I'm sleepy) | ❌ 我做了一个梦 (I had a dream) | ✅ 现在感觉很困 (feeling very sleepy right now) |
 | *Es vegano* (it's a vegan product) | ❌ 它是素食主义者 (he/she is a vegetarian) | ✅ 纯素的 (vegan) |
 
+### Choosing a translation model
+
+Both tiers are local, free and Apache 2.0. Pull the one your machine suits —
+whichever is present is picked automatically, larger first.
+
+```bash
+ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB, runs anywhere
+ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, needs ~16 GB RAM
+```
+
+Measured on 280 glossary terms taken from real logged captions, plus a live
+Spanish selling stream on an 18 GB M-series Mac:
+
+| | glossary adherence | multi-word phrases | translation latency |
+|---|---|---|---|
+| Hy-MT2 7B | 83% | 84% | 892 ms median, 1.7 s p95 |
+| Hy-MT2 1.8B | 66% | 65% | 358 ms median |
+| TranslateGemma 4B | 48% | 26% | 832 ms median |
+
+The multi-word column is the one that matters: prices and promo conditions
+are phrases, not single nouns, and that is where translations mislead an
+operator. Latency deliberately did not enter the choice — banned-term alerts
+are raised from the recognised Spanish and never wait for translation, so the
+only requirement is that translation not fall behind the 9-second segments,
+which neither tier does.
+
 ## Chrome Extension (overlay subtitles on the TikTok page)
 
 1. Open `chrome://extensions` and enable "Developer mode" in the top right.
@@ -234,7 +260,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 ## 特性
 
 - 🎙️ **实时语音识别** —— OpenAI Whisper（faster-whisper / MLX 双后端），自动检测主播语言，支持 90+ 语言
-- 🌐 **本地优先的翻译** —— Hy-MT2 1.8B（默认，离线免费，Apache 2.0）/ TranslateGemma 4B / Google 免费接口做网络兜底 / Claude·OpenAI API。默认选 Hy-MT2 是实测出来的：在**多词短语**上它遵守领域词表的比例是 64%，TranslateGemma 只有 24%（271 个术语，语料来自真实直播字幕），同时快 2.5 倍、小 2 GB——而价格和促销条件恰恰都是多词短语
+- 🌐 **本地优先的翻译** —— Hy-MT2（Apache 2.0，离线免费）两档可选，另有 TranslateGemma 4B、Google 免费接口、Claude·OpenAI 兜底。词表遵从率实测（280 个术语，语料来自真实直播字幕）：**7B 83%** · **1.8B 66%** · TranslateGemma 4B 48%；只看**多词短语**（价格与促销条件所在）是 84% / 65% / 26%。按你机器的情况拉哪一档，程序会自动选用
 - 🎵 **人声降噪** —— RNNoise 神经降噪抑制背景音乐，专为带 BGM 的直播间优化
 - ⚡ **硬件自动配置** —— 检测你的芯片（Apple Silicon GPU / NVIDIA CUDA / 普通 CPU）自动选择能实时跑的最优模型，零配置开箱即用
 - 📺 **双显示端** —— 本地网页 UI（历史双语字幕 + 底部大字幕），或 Chrome 插件叠加在 TikTok 页面上
@@ -352,6 +378,29 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 | *Es vegano*（纯素产品） | ❌ 它是素食主义者 | ✅ 纯素的 |
 
 <a name="extension"></a>
+### 翻译模型怎么选
+
+两档都是本地、免费、Apache 2.0。按机器情况拉一个即可——装了哪个就用哪个，
+大的优先。
+
+```bash
+ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M   # 1.1 GB，什么机器都跑得动
+ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，建议 16 GB 以上内存
+```
+
+实测（280 个词表术语，语料取自真实直播字幕；延迟来自一台 18 GB M 系列 Mac 上
+的西语带货直播实盘）：
+
+| | 词表遵从率 | 多词短语 | 翻译延迟 |
+|---|---|---|---|
+| Hy-MT2 7B | 83% | 84% | 中位 892ms，P95 1.7s |
+| Hy-MT2 1.8B | 66% | 65% | 中位 358ms |
+| TranslateGemma 4B | 48% | 26% | 中位 832ms |
+
+要看的是「多词短语」那一列：价格和促销条件都是短语而不是单个名词，译文会误导
+中控的地方全在这里。延迟**刻意没有进入选型**——违禁词报警从识别原文发出，
+从不等翻译，只要翻译别落后于 9 秒的切段就行，两档都做得到。
+
 ## Chrome 插件（把字幕叠加到 TikTok 页面上）
 
 1. 打开 `chrome://extensions`，右上角开启「开发者模式」；
