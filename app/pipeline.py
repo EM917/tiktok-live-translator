@@ -302,6 +302,25 @@ class Pipeline:
                 "text": "违禁词表为空，本场不会报警——编辑 banned_terms.txt 后重新开始",
             })
 
+    async def run_selfcheck(self):
+        """启动自检：确认每项能力真的在工作，结果推到界面上。
+
+        这个方法存在的原因是降噪那次事故——功能静默降级成关闭，只在一行
+        没人看的日志里说了一句。自检把这类问题变成界面上的红条。"""
+        from .selfcheck import run_all, summarize
+        try:
+            checks = await run_all(self.args, self.detector, self.glossary)
+        except Exception as exc:
+            print("[警告] 自检执行失败: {}".format(exc))
+            return
+        summary = summarize(checks)
+        for c in checks:
+            icon = {"ok": "✅", "warn": "⚠️ ", "fail": "❌"}[c["level"]]
+            print("[自检] {} {}：{}".format(icon, c["name"], c["detail"]))
+        self.server.config["selfcheck"] = {"checks": checks, "summary": summary}
+        await self.server.broadcast({"type": "selfcheck", "checks": checks,
+                                     "summary": summary})
+
     async def _publish_watchlist(self):
         """把违禁词表状态推给界面并存进 config——首页那张卡片要靠它显示
         「已启用 N 条」还是「未配置」。词表默认为空，用户看不到这个提示
