@@ -140,7 +140,11 @@ class CaptionServer:
         elif msg.get("type") == "alert":
             self.alerts.append(msg)
         elif msg.get("type") == "status":
-            self.config["status"] = {"state": msg.get("state"), "detail": msg.get("detail", "")}
+            # command 必须一起留存：它常常是用户当下唯一的出路，
+            # 刷新一下页面就没了的话，等于没给。
+            self.config["status"] = {"state": msg.get("state"),
+                                     "detail": msg.get("detail", ""),
+                                     "command": msg.get("command")}
         elif msg.get("type") == "config":
             self.config.update({k: v for k, v in msg.items() if k != "type"})
         dead = []
@@ -152,5 +156,14 @@ class CaptionServer:
         for ws in dead:
             self.clients.discard(ws)
 
-    async def status(self, state, detail=""):
-        await self.broadcast({"type": "status", "state": state, "detail": detail, "ts": time.time()})
+    async def status(self, state, detail="", command=None):
+        """command：给用户一条可以原样照做的命令（界面会渲染成可复制的一行）。
+
+        存在的理由是一次真实的死局：更新器因为几个未跟踪文件拒绝更新，
+        提示是「请自行处理后 git pull」——而修好这个判断的代码，只能靠更新
+        送达。更新器把自己锁死了。所以任何一条「更新没能完成」的出口，都必须
+        带上一条用户能照做的完整命令，哪怕程序本身已经帮不上忙。"""
+        msg = {"type": "status", "state": state, "detail": detail, "ts": time.time()}
+        if command:
+            msg["command"] = command
+        await self.broadcast(msg)

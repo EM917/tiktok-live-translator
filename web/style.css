@@ -332,3 +332,17 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 .sc-item .sc-detail { flex: 1; }
 .sc-item .sc-fix { display: block; font-size: 11px; color: var(--accent); margin-top: 2px; }
 .sc-item.fail .sc-detail { color: var(--fail); font-weight: 600; }
+
+/* ---------- 走投无路时的可复制命令 ---------- */
+.fix-command {
+  display: flex; align-items: center; gap: 10px;
+  max-width: 760px; margin: 8px auto 0; padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 4%, var(--bg));
+}
+.fix-command code {
+  flex: 1; font-size: 12px; line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text); word-break: break-all; user-select: all;
+}
+.btn.small { padding: 4px 12px; font-size: 12px; flex: none; }
