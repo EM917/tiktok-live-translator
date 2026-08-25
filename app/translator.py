@@ -1,5 +1,7 @@
 """翻译引擎。auto：本地 Ollama 里有 TranslateGemma 就用它（完全本地），否则退回
 Google 网页免费接口；也可显式指定 gemma / google / claude / openai / none。"""
+import asyncio
+import hashlib
 import json
 import os
 import re
@@ -152,25 +154,152 @@ class DeepLTranslator(BaseTranslator):
     **注意字幕会发送给 DeepL**，与 Google 那条一样：我们监听的是别人的直播
     内容，这一点要由业务侧决定能不能接受。
 
-    词表：DeepL 原生支持 ES→ZH 的术语表，但那要先建一个 glossary 再带 id 请求。
-    这里先用与其它引擎一致的做法——译后由 glossary.apply() 做兜底替换，
-    行为可预期。真要上原生术语表，等实测证明 DeepL 值得再说。
+    词表走 DeepL 的原生术语表（见 _ensure_glossary）。60 句真实字幕实测：
+
+        不挂术语表   词表遵从 26.5%   中位 388ms
+        挂上术语表   词表遵从 91.8%   中位 542ms
+        本地 7B 对照 词表遵从 87.4%   中位 2017ms
+
+    差的那 65 个百分点几乎全是商品名。术语表是这条引擎能不能用的分水岭。
     """
 
     name = "deepl"
     # DeepL 的目标语言代码与我们 UI 的差异
     _LANGS = {"zh-CN": "ZH-HANS", "zh-TW": "ZH-HANT", "zh": "ZH",
               "en": "EN-US", "pt": "PT-BR"}
+    # 术语表接口只认不带地区的语言码。中文在那里只有一个 `zh`，而 glossary.txt
+    # 里的译法是简体——实测把它挂到 ZH-HANT 上会把简体词塞进繁体译文
+    # （"quiero las gotas" → "我想要维生素滴剂"），所以繁体目标不挂原生表，
+    # 只留译后兜底替换。
+    _GLOSSARY_TARGET = {"zh-CN": "zh", "zh": "zh"}
+    # 只删我们自己建的表，用户在 DeepL 后台自建的不碰
+    GLOSSARY_PREFIX = "tlt-"
 
     def __init__(self):
         super().__init__()
         self.api_key = api_key("DEEPL_API_KEY")
         if not self.api_key:
             raise RuntimeError("还没有填 DeepL 密钥——在页面上的「翻译引擎」里填一次即可")
-        host = ("https://api-free.deepl.com" if self.api_key.strip().endswith(":fx")
-                else "https://api.deepl.com")
-        self.url = os.environ.get("DEEPL_URL", host).rstrip("/") + "/v2/translate"
+        self.host = ("https://api-free.deepl.com" if self.api_key.strip().endswith(":fx")
+                     else "https://api.deepl.com")
+        self.host = os.environ.get("DEEPL_URL", self.host).rstrip("/")
+        self.url = self.host + "/v2/translate"
         self._cooldown_until = 0.0
+        # (源语言, 目标语言) -> 术语表 id；值为 None 表示试过建不起来，不再重试
+        self._glossary_ids = {}
+        self._glossary_source = None
+        # 锁延迟到协程里建：Python 3.9 的 asyncio.Lock() 会绑到构造时的事件
+        # 循环，而引擎对象是在管线线程之外建的，绑错了会在第一次用时炸。
+        self._glossary_lock = None
+
+    # ---- 原生术语表 ---------------------------------------------------
+
+    @staticmethod
+    def glossary_tsv(entries):
+        """把 glossary.txt 压成 DeepL 要的 TSV：一行一个「西语写法<TAB>中文」。
+
+        每个变体都单独占一行——DeepL 只做字面匹配，`la limpieza` 和
+        `la limpiecita` 对它是两个词。源词重复会让整表创建失败，所以按小写
+        去重，先出现的赢（与 glossary.txt 的优先级一致）。
+        """
+        seen, rows = set(), []
+        for variants, zh in entries:
+            zh = (zh or "").strip()
+            if not zh or "\t" in zh or "\n" in zh:
+                continue
+            for v in variants:
+                v = (v or "").strip()
+                if not v or "\t" in v or "\n" in v or v.lower() in seen:
+                    continue
+                seen.add(v.lower())
+                rows.append(v + "\t" + zh)
+        return "\n".join(rows)
+
+    def glossary_name(self, source, target, tsv):
+        """表名里带词表内容的指纹——改了 glossary.txt 就是另一个名字，
+        下次启动自动重建，不会拿着过期的表继续用。"""
+        fp = hashlib.sha256(tsv.encode("utf-8")).hexdigest()[:12]
+        return "{}{}-{}-{}".format(self.GLOSSARY_PREFIX, source, target, fp)
+
+    async def _ensure_glossary(self, source, target):
+        """拿到这对语言的术语表 id；建不起来就返回 None，且不再重试。
+
+        **免费版只允许同时存在 1 个术语表**——实测建第 2 个直接 456
+        "Too many glossaries"。所以顺序必须是先删我们自己的旧表再建新表，
+        而不是先建后删。也正因为只有一个槽位，源语言认准第一次见到的那个：
+        直播里偶尔蹦出一句被判成英语的字幕，不能让它把西语表挤掉。
+        """
+        gtarget = self._GLOSSARY_TARGET.get(target)
+        if not gtarget:
+            return None
+        if self._glossary_source is None:
+            self._glossary_source = source
+        elif self._glossary_source != source:
+            return None
+        key = (source, gtarget)
+        if key in self._glossary_ids:
+            return self._glossary_ids[key]
+        if self._glossary_lock is None:
+            self._glossary_lock = asyncio.Lock()
+        async with self._glossary_lock:
+            if key in self._glossary_ids:
+                return self._glossary_ids[key]
+            gid = None
+            try:
+                gid = await self._build_glossary(source, gtarget)
+            except Exception as exc:
+                print("[警告] DeepL 术语表建不起来（{}），"
+                      "本次按无术语表翻译——商品名会被直译".format(exc))
+            self._glossary_ids[key] = gid
+            return gid
+
+    async def _build_glossary(self, source, gtarget):
+        from .glossary import load as load_glossary
+
+        tsv = self.glossary_tsv(load_glossary().entries)
+        if not tsv:
+            return None
+        want = self.glossary_name(source, gtarget, tsv)
+        status, data = await self._api("GET", "/v2/glossaries")
+        mine = [g for g in (data.get("glossaries") or [])
+                if str(g.get("name", "")).startswith(self.GLOSSARY_PREFIX)]
+        for g in mine:
+            if g.get("name") == want and g.get("ready"):
+                return g.get("glossary_id")
+        for g in mine:                      # 腾出唯一的槽位
+            await self._api("DELETE", "/v2/glossaries/" + str(g.get("glossary_id")))
+        status, made = await self._api("POST", "/v2/glossaries", form={
+            "name": want, "source_lang": source, "target_lang": gtarget,
+            "entries": tsv, "entries_format": "tsv"})
+        if status >= 400 or not made.get("glossary_id"):
+            raise RuntimeError("HTTP {} {}".format(status, made))
+        print("[信息] DeepL 术语表已就绪：{} 条（{}→{}）".format(
+            made.get("entry_count") or tsv.count("\n") + 1, source, gtarget))
+        return made["glossary_id"]
+
+    # ---- HTTP ---------------------------------------------------------
+
+    async def _api(self, method, path, form=None, body=None):
+        """DeepL 接口的薄封装，返回 (状态码, 解析后的 JSON)。
+
+        单独成一层是为了让测试能整体替换掉它——DeepL 的术语表逻辑有先删后建、
+        指纹复用这些容易写反的分支，那些必须能在不联网的情况下测。
+        """
+        session = await self.session()
+        headers = {"Authorization": "DeepL-Auth-Key " + self.api_key}
+        kw = {}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            kw["data"] = json.dumps(body)
+        elif form is not None:
+            kw["data"] = form
+        async with session.request(method, self.host + path,
+                                   headers=headers, **kw) as resp:
+            status, text = resp.status, await resp.text()
+        try:
+            return status, (json.loads(text) if text.strip() else {})
+        except ValueError:
+            return status, {"message": text[:200]}
 
     async def translate(self, text, target, source="auto", glossary=None):
         import time
@@ -180,23 +309,29 @@ class DeepLTranslator(BaseTranslator):
             return None
         body = {"text": [text],
                 "target_lang": self._LANGS.get(target, target.upper())}
+        gid = None
         if source and source != "auto":
             body["source_lang"] = source.upper()
-        headers = {"Authorization": "DeepL-Auth-Key " + self.api_key,
-                   "Content-Type": "application/json"}
+            gid = await self._ensure_glossary(source.lower(), target)
+            if gid:
+                body["glossary_id"] = gid
         try:
-            session = await self.session()
-            async with session.post(self.url, data=json.dumps(body),
-                                    headers=headers) as resp:
-                if resp.status in (429, 456):
-                    self._cooldown_until = time.time() + 120
-                    print("[警告] DeepL {}（{}），暂停 120 秒".format(
-                        resp.status,
-                        "本月额度已用尽" if resp.status == 456 else "被限流"))
-                    return None
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
+            status, data = await self._api("POST", "/v2/translate", body=body)
+            if status in (429, 456):
+                self._cooldown_until = time.time() + 120
+                print("[警告] DeepL {}（{}），暂停 120 秒".format(
+                    status,
+                    "本月额度已用尽" if status == 456 else "被限流"))
+                return None
+            if status == 400 and gid:
+                # 表可能被人在 DeepL 后台删了。丢掉缓存、这次先不带表翻，
+                # 下一句会重建——不能因为术语表没了就整条引擎哑掉。
+                self._glossary_ids.pop((source.lower(),
+                                        self._GLOSSARY_TARGET.get(target)), None)
+                retry = {k: v for k, v in body.items() if k != "glossary_id"}
+                status, data = await self._api("POST", "/v2/translate", body=retry)
+            if status != 200:
+                return None
             items = data.get("translations") or []
             return (items[0].get("text") or "").strip() or None if items else None
         except Exception:

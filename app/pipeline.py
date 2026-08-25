@@ -906,7 +906,8 @@ class Pipeline:
         if alert_ids:
             self._alert_tasks = [t for t in self._alert_tasks if not t.done()]
             self._alert_tasks.append(asyncio.ensure_future(
-                self._translate_alert(alert_ids, hits[0].get("context") or "")))
+                self._translate_alert(alert_ids, hits[0].get("context") or "",
+                                      result.language)))
 
         if not result.text:
             return None
@@ -1000,8 +1001,12 @@ class Pipeline:
         self.server.config["engine"] = info
         await self.server.broadcast({"type": "engine", **info})
 
-    async def _translate_alert(self, alert_ids, context):
-        """把报警上下文翻成中文，回来后补进这一批报警（它们共用同一段上下文）。"""
+    async def _translate_alert(self, alert_ids, context, lang=None):
+        """把报警上下文翻成中文，回来后补进这一批报警（它们共用同一段上下文）。
+
+        `lang` 是识别出的源语言。别图省事传 "auto"——DeepL 的原生术语表
+        必须带明确的 source_lang 才生效，而报警恰恰是最不能把商品名翻错的
+        地方（实测不挂术语表词表遵从率只有 26.5%）。"""
         from .translator import create_strong_translator, looks_fabricated
 
         if not context.strip():
@@ -1014,13 +1019,14 @@ class Pipeline:
         try:
             hint = (tuple(self.glossary.translation_pairs(context))
                     if self.glossary else ())
-            out = await tr.translate(context, self.target, source="auto",
+            out = await tr.translate(context, self.target, source=lang or "auto",
                                      glossary=hint or None)
             if out and looks_fabricated(context, out):
                 print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
                       "改用常规引擎")
                 out = await self.translator.translate(
-                    context, self.target, source="auto") if self.translator else None
+                    context, self.target,
+                    source=lang or "auto") if self.translator else None
             elif out and self.glossary:
                 out = self.glossary.apply(context, out)
         except Exception as exc:
