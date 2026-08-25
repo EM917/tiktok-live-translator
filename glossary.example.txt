@@ -204,3 +204,26 @@ manzanilla | la manzanilla => 洋甘菊
 # 阿根廷俚语里 mango 是「比索/钱」，但这条产品线里它出现 6 次全是芒果口味
 # （"sabores de piña, mango, papaya"）。按俚语常识加进去会把整批口味说明毁掉。
 # 俚语不能凭常识加，必须看这场语料里实际怎么用。
+
+# ---- 对观众的称呼。只收**误译会让人搞错在跟谁说话**的那两个 ----
+# 第二个主播（2026-08-25 实录）满口爱称，其中只有这两个是真的会误导：
+#   mi niña  → 「我的女儿」  中控会以为主播在跟自己女儿说话
+#   hermosa(s) → 「她们」/整个漏译  把在场的观众变成不在场的第三方
+# 其余（amor / amorcito / reina / preciosa / mi vida）模型本来就译成
+# 「亲爱的」，读得懂，不用管。
+#
+# 试过把它们全收进来映射成「亲」，实测更差：「亲」在句中插不进去，模型半用
+# 不用，吐出 "paquetería amorcito → 爱邮递员"、"¡Vamos amorcitos! → 亲爱的人"、
+# "listo amor → 爱了"。窄的那版把两条真错都修好了，且没有一处副作用。
+# 又一次同样的规律：普通语言绑固定中文词，收得越宽伤得越多。
+#
+# **逐条查过语料才收**，这三个查完排除了：
+#   裸 reina —— "Sintiéndome como una reina"（感觉像个女王），不是称呼
+#   mami    —— "Le ayuda mucho a mi mami"（对我妈妈很有帮助），真的是妈妈
+#   linda   —— 单独出现的 "Linda" 是观众的名字
+mi niña => 亲爱的
+hermosa | hermosas => 亲爱的
+
+# 电商流程词，主播直接说英语。实录里 "Haga su check out" 被译成「请去办理退房吧」
+# ——中控会以为在讲酒店。
+check out | checkout | hacer checkout => 结账
