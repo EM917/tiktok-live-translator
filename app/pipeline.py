@@ -1011,10 +1011,24 @@ class Pipeline:
 
         if not context.strip():
             return
+
+        async def tell(zh=None, why=""):
+            """**每一条路径都要走到这里。** 报警框先画的是「翻译中…」，
+            没有后续消息它就永远停在那儿——实盘里出现过一条卡了两分钟，
+            而报警恰恰是中控最需要立刻做判断的地方。译不出来也要说译不出来，
+            西语原话就在上面一行，中控还能自己看。"""
+            for alert_id in alert_ids:
+                await self.server.broadcast({"type": "alert_update",
+                                             "alert_id": alert_id,
+                                             "context_zh": zh or "",
+                                             "failed": not zh,
+                                             "why": why})
+
         if self._strong is None:
             self._strong = create_strong_translator()
         tr = self._strong or self.translator
         if tr is None:
+            await tell(why="没有可用的翻译引擎")
             return
         try:
             hint = (tuple(self.glossary.translation_pairs(context))
@@ -1031,12 +1045,9 @@ class Pipeline:
                 out = self.glossary.apply(context, out)
         except Exception as exc:
             print("[警告] 报警上下文翻译失败: {}".format(exc))
+            await tell(why="翻译超时或出错")
             return
-        if out:
-            for alert_id in alert_ids:
-                await self.server.broadcast({"type": "alert_update",
-                                             "alert_id": alert_id,
-                                             "context_zh": out})
+        await tell(out, why="" if out else "模型没有返回译文")
 
     async def _publish_translation(self, seq, translated, ok, ms, level,
                                    target, extra=None):
