@@ -77,17 +77,6 @@ class AuditLog:
             "ok": bool(ok),
         })
 
-    def validation(self, seq, findings):
-        """译文校验的**影子记录**：只写日志，不改变屏幕上任何一条字幕。
-
-        第一版故意不接自动升级——先用真实数据量出精确率和召回率，确认它不会
-        把正常字幕成批推给强引擎，再决定开不开。收工后可以拿这些记录复盘：
-        它标出来的那些，人工看是不是真的有问题。
-        """
-        self._write({"type": "translation_check", "seq": seq,
-                     "findings": [{"level": lv, "rule": rule, "why": why}
-                                  for lv, rule, why in findings]})
-
     def translation_strong(self, seq, translated, translate_ms, ok, model,
                            trigger):
         """用最强模型重译的结果，**单独一种记录类型**。

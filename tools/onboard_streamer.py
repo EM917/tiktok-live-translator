@@ -27,6 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, ".")
 
+from app import provenance          # noqa: E402
+
 from app.glossary import Glossary, load, parse        # noqa: E402
 from app.vocative import VOCATIVES, strip             # noqa: E402
 
@@ -201,8 +203,8 @@ async def main():
     print("   {:<12} {:>6} {:>8}  {}".format("候选", "出现", "在边界", "判断"))
     # 反例跨全部日志找，不只看当场
     all_texts = []
-    for f in sorted(Path("logs").glob("session-*.jsonl")):
-        all_texts.extend(captions(f)[0].values())
+    for meta in provenance.corpus():
+        all_texts.extend(captions(meta["path"])[0].values())
     hits = vocative_audit(texts, corpus=all_texts or texts)
     mapped = {v.lower() for vs, _zh in g.entries for v in vs}
     for r in hits[:14]:

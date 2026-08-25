@@ -49,7 +49,6 @@
     python3 tools/bench_live.py score ratings.json
 """
 import asyncio
-import glob
 import json
 import os
 import random
@@ -59,6 +58,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, ".")
+
+from app import provenance          # noqa: E402
 
 from app.glossary import load as load_glossary     # noqa: E402
 from app.translator import create_translator       # noqa: E402
@@ -110,7 +111,9 @@ def build():
     """从全部日志里分层抽样，存成固定的一份。"""
     g = load_glossary("glossary.txt")
     seen, pool = set(), []
-    for f in sorted(glob.glob("logs/session-*.jsonl")):
+    # 用来源清单而不是 glob：测试夹具曾经占到语料的两成，而 glob 分不出来。
+    for meta in provenance.corpus():
+        f = meta["path"]
         for line in open(f, encoding="utf-8"):
             try:
                 d = json.loads(line)
