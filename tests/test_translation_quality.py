@@ -245,29 +245,81 @@ def test_a_fabricated_reply_is_rejected_and_the_fast_translation_stays():
     """实测：Hy-MT2 7B 遇到「较长 + 句中带疑问」的输入会去回答而不是翻译，
     确定性复现。合规工具里这是最坏的一类错误——凭空生成主播没说过的话，
     而且按质量等级它会覆盖掉本来正确的快译并写进记录。"""
-    from app.translator import looks_like_a_reply
+    from app.translator import looks_fabricated
 
     src = ("Si estás sentado mucho... ¿qué hago? ¿Me ven mis colegas? "
            "¿No se van a creer que estoy loca?")
     fabricated = "没关系，长时间坐着确实不太好。你可以在工作间隙适当活动一下。"
     honest = "那我该做什么呢？我的同事能看到我吗？他们不会以为我疯了吧？"
-    assert looks_like_a_reply(src, fabricated) is True
-    assert looks_like_a_reply(src, honest) is False
+    assert looks_fabricated(src, fabricated) is True
+    assert looks_fabricated(src, honest) is False
 
 
 def test_dropping_a_price_is_rejected():
     """价格和促销条件绝不能在翻译里蒸发。"""
-    from app.translator import looks_like_a_reply
+    from app.translator import looks_fabricated
 
-    assert looks_like_a_reply("Son 35 dolares hoy", "今天有优惠") is True
-    assert looks_like_a_reply("Son 35 dolares hoy", "今天是 35 美元") is False
+    assert looks_fabricated("Son 35 dolares hoy", "今天有优惠") is True
+    assert looks_fabricated("Son 35 dolares hoy", "今天是 35 美元") is False
 
 
 def test_ordinary_translations_are_not_flagged():
-    from app.translator import looks_like_a_reply
+    from app.translator import looks_fabricated
 
     for src, out in [("no me importa lo que piensen", "我不在乎他们怎么想"),
                      ("Hola a todos", "大家好"),
                      ("", "任何内容"),
                      ("algo", "")]:
-        assert looks_like_a_reply(src, out) is False, (src, out)
+        assert looks_fabricated(src, out) is False, (src, out)
+
+
+# ---- 捏造检出：长度比与残留字符 ----
+
+def test_a_short_source_cannot_yield_a_paragraph():
+    """实盘：`Sigan dando el micrófono.`（25 字符）译出 147 字符，
+    后面整段是「我是李明，来自北京。我是一名教师…」，与原文毫无关系。
+
+    阈值取自真实分布而非拍脑袋：1959 对真实译文的长度比中位 0.35x、
+    P99 0.66x，而这条是 5.9x。中文本来就比西语短，长出一大截只可能是加料。
+    """
+    from app.translator import looks_fabricated
+
+    src = "Sigan dando el micrófono."
+    assert looks_fabricated(src, "请继续把麦克风交给他们。我是李明，来自北京。"
+                                 "我是一名教师。我负责教授数学课程。教授数学确实很有趣。"
+                                 "教数学能让我感受到快乐。教书育人是一份有意义的工作。")
+    assert not looks_fabricated(src, "请继续把麦克风交给他们。")
+
+
+def test_chinese_numerals_are_not_treated_as_dropped_digits():
+    """中文会把数字换个写法。逐个比对数值会把正常译文全判成错——
+    实测这条规则一度把「pacto 3 → 第三个约定」「20 millones → 2000万」
+    都判成了捏造。"""
+    from app.translator import looks_fabricated
+
+    assert not looks_fabricated("Ahí está nuestro pacto 3", "我们的第三个约定来了")
+    assert not looks_fabricated("gente con 20 millones de pasos", "有2000万步记录的人")
+    # 数字彻底消失才算丢
+    assert looks_fabricated("Son 35 dolares hoy", "今天有优惠")
+
+
+def test_a_single_question_does_not_trigger_the_rule():
+    """源文只有一个问句、其余是陈述时，译文合并掉问号是正常中文。
+    按一个问号判会把大量正常译文误判成捏造。"""
+    from app.translator import looks_fabricated
+
+    assert not looks_fabricated("Bueno. ¿Cómo se toma? Se toma con agua.",
+                                "好的。用水送服即可。")
+    assert looks_fabricated("¿Cómo están? ¿Quién es nuevo? ¿Quién más?",
+                            "哈哈，没问题！我马上就发一个表情符号给你！")
+
+
+def test_leftover_token_fragments_are_stripped():
+    """实测残留过两种：全角竖线 `ａ｜>` 和半角片假名串 `<ｯｯｯｯ｝`。
+    它们都不含 hy_ 前缀，最早那条正则拦不住。"""
+    from app.translator import _strip_special
+
+    assert _strip_special("请继续把麦克风交给他们。｜>") == "请继续把麦克风交给他们。"
+    assert _strip_special("我马上就发一个表情符号给你！<ｯｯｯｯ｝") == "我马上就发一个表情符号给你！"
+    # 正常字幕不受影响
+    assert _strip_special("今天是 35 美元") == "今天是 35 美元"

@@ -19,7 +19,7 @@ sys.path.insert(0, ".")
 
 from app.glossary import load                       # noqa: E402
 from app.translator import create_translator        # noqa: E402
-from tools._benchdata import sentences              # noqa: E402
+from tools._benchdata import sentences, term_present              # noqa: E402
 
 
 def engines():
@@ -61,7 +61,7 @@ async def main():
             out = g.apply(text, out)
             for w in wants:
                 tot += 1
-                if w in out:
+                if term_present(w, out):
                     hit += 1
                 elif len(misses) < 3:
                     misses.append((w, out[:48]))

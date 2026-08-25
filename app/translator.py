@@ -450,22 +450,44 @@ class OllamaHyMT2Translator(BaseTranslator):
 # 教训是别按「已知的几种写法」列举，而是认 hy 前缀加分隔符这个形状。
 # 正常字幕里不会出现 hy_xxx / hy-xxx。
 _SPECIAL_RE = re.compile(r"[<｜｠]*\s*hy[-_][A-Za-z0-9▁_-]+\s*[｜｠>]*")
+# 全角竖线是这个模型词表里的分隔符，正常字幕里不会出现。实测残留过 `ａ｜>`
+# 这种只剩半截的写法——它不含 hy_ 前缀，上面那条正则拦不住。
+_BAR_RE = re.compile(r"[｜｠]+>?")
+# 半角片假名连成一串也是词表残留（实测出现过 `<ｯｯｯｯ｝`）。
+# 中文字幕里不会出现这种东西；要求连续三个以上，避免误伤偶发的单字符。
+_KANA_RE = re.compile(r"[<>{}｛｝]?[ｦ-ﾟ]{3,}[<>{}｛｝]?")
 
 
 def _strip_special(text):
-    return _SPECIAL_RE.sub("", text).strip()
+    out = _SPECIAL_RE.sub("", text)
+    return _KANA_RE.sub("", _BAR_RE.sub("", out)).strip()
 
 
 _DIGITS_RE = re.compile(r"\d+")
+_CN_NUM_RE = re.compile(r"[一二三四五六七八九十百千万两半]")
 
 
-def looks_like_a_reply(source, translated):
+# 中文译文正常只有西语原文的三到六成长。实测 1959 对真实译文：
+# 中位 0.35x、P95 0.52x、P99 0.66x，而唯一一条捏造的是 5.9x。
+# 阈值放在 1.5x：这 1959 对里零误判，离捏造那条还差着四倍。
+MAX_LENGTH_RATIO = 1.5
+_MIN_LEN_FOR_RATIO = 12      # 太短的源文比值没意义（"Nada." 译成一句话很正常）
+
+
+def looks_fabricated(source, translated):
     """译文看起来不是在翻译，而是在**回话**。
 
-    实测的失败模式：Hy-MT2 7B 遇到「较长 + 句中带疑问」的输入时，会把它当成
-    对话轮次去回答，而不是翻译。确定性复现，temperature 0 三次一致：
-        源：…y ¿qué hago? ¿Me ven mis colegas? ¿No se van a creer que estoy loca?
-        出：没关系，长时间坐着确实不太好。你可以在工作间隙适当活动一下…
+    实测到的两种：
+
+    1. 「较长 + 句中带疑问」的输入会被当成对话轮次去回答。确定性复现，
+       temperature 0 三次一致：
+           源：…¿qué hago? ¿Me ven mis colegas? ¿No se van a creer que estoy loca?
+           出：没关系，长时间坐着确实不太好。你可以在工作间隙适当活动一下…
+
+    2. 短句后面接一整段与原文毫无关系的内容：
+           源：Sigan dando el micrófono.（25 字符）
+           出：请继续把麦克风交给他们。ａ｜>我是李明，来自北京。我是一名教师…（147 字符）
+       前半句其实翻对了，后面整段是凭空生成的。
     这在合规工具里是最坏的一类错误——凭空生成主播没说过的话，而且按质量等级
     规则它会覆盖掉本来正确的快译并留在记录里。
 
@@ -473,15 +495,26 @@ def looks_like_a_reply(source, translated):
     不猜语义：
       * 源文有问句而译文一个都没有 —— 回答会把问句吃掉
       * 源文里的数字在译文里消失 —— 价格和促销条件绝不能丢
-    这只挡得住这一类，不是通用的幻觉检测；但它挡住的正是实测见过的那一类。
+      * 译文比源文长出太多 —— 中文本来就比西语短，长出一大截只可能是加料
+    这不是通用的幻觉检测，但每一条都由实盘见过的失败模式反推出来，
+    且阈值取自真实分布而非拍脑袋。
     """
     if not source or not translated:
         return False
-    if "?" in source or "？" in source:
+    # 问句：只在源文**以疑问为主**时才管（两个以上问号）。源文里只有一个问句、
+    # 其余是陈述时，译文合并掉问号是正常的中文表达——实测按一个问号判会把
+    # 大量正常译文误判成捏造。
+    if source.count("?") + source.count("？") >= 2:
         if "?" not in translated and "？" not in translated:
             return True
-    want = set(_DIGITS_RE.findall(source))
-    if want and not (want & set(_DIGITS_RE.findall(translated))):
+    # 数字：只在译文里**一个数字符号都没有**时才算丢。中文会把数字换个写法
+    # （pacto 3 → 第三个约定、20 millones → 2000万），逐个比对数值会把
+    # 这些正常译文全判成错。
+    if _DIGITS_RE.search(source) and not _DIGITS_RE.search(translated) \
+            and not _CN_NUM_RE.search(translated):
+        return True
+    if (len(source) >= _MIN_LEN_FOR_RATIO
+            and len(translated) > len(source) * MAX_LENGTH_RATIO):
         return True
     return False
 
