@@ -141,7 +141,15 @@ def test_gemma_prompt_is_short():
     assert "Spanish" in head and "Simplified Chinese" in head
 
 
-def test_gemma_options_are_constant():
-    """options 逐次必须完全一致——变了 Ollama 会重载模型（实测约 4 秒停顿）。"""
-    from app.translator import OllamaGemmaTranslator
-    assert OllamaGemmaTranslator._OPTIONS == {"temperature": 0, "num_predict": 200}
+def test_sampling_options_stay_constant_across_calls():
+    """采样参数逐次必须一致——变了 Ollama 会重载模型（实测约 4 秒停顿）。
+
+    `num_predict` 是例外，它按源文长度算（见 predict_cap，用来让捏造在生成
+    阶段就吐不出来）。实测过它不触发重载：连续用 48/80/120/200 调用，
+    load_duration 始终不足 1ms，总耗时稳定在 24ms。
+    """
+    from app.translator import OllamaGemmaTranslator, OllamaHyMT2Translator
+
+    for cls in (OllamaGemmaTranslator, OllamaHyMT2Translator):
+        assert "num_predict" not in cls._OPTIONS, cls.__name__
+        assert cls._OPTIONS["temperature"] == 0, cls.__name__
