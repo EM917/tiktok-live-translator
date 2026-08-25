@@ -6,7 +6,7 @@ import re
 from collections import OrderedDict
 
 TRANSLATOR_CHOICES = ["auto", "hymt2", "hymt2-7b", "gemma",
-                      "google", "claude", "openai", "none"]
+                      "deepl", "google", "claude", "openai", "none"]
 
 LANG_NAMES = {
     "zh-CN": "Simplified Chinese", "zh-TW": "Traditional Chinese", "zh": "Chinese",
@@ -117,6 +117,66 @@ class GoogleWebTranslator(BaseTranslator):
             if not data or not data[0]:
                 return None
             return "".join(seg[0] for seg in data[0] if seg and seg[0]).strip() or None
+        except Exception:
+            return None
+
+
+class DeepLTranslator(BaseTranslator):
+    """DeepL API。需要环境变量 DEEPL_API_KEY。
+
+    免费额度的 key 以 `:fx` 结尾，走的是另一个域名——这里按后缀自动分辨，
+    免得用户填对了 key 却因为域名不对一直 403。
+
+    **注意字幕会发送给 DeepL**，与 Google 那条一样：我们监听的是别人的直播
+    内容，这一点要由业务侧决定能不能接受。
+
+    词表：DeepL 原生支持 ES→ZH 的术语表，但那要先建一个 glossary 再带 id 请求。
+    这里先用与其它引擎一致的做法——译后由 glossary.apply() 做兜底替换，
+    行为可预期。真要上原生术语表，等实测证明 DeepL 值得再说。
+    """
+
+    name = "deepl"
+    # DeepL 的目标语言代码与我们 UI 的差异
+    _LANGS = {"zh-CN": "ZH-HANS", "zh-TW": "ZH-HANT", "zh": "ZH",
+              "en": "EN-US", "pt": "PT-BR"}
+
+    def __init__(self):
+        super().__init__()
+        self.api_key = os.environ.get("DEEPL_API_KEY")
+        if not self.api_key:
+            raise RuntimeError("使用 --translator deepl 需要设置环境变量 DEEPL_API_KEY")
+        host = ("https://api-free.deepl.com" if self.api_key.strip().endswith(":fx")
+                else "https://api.deepl.com")
+        self.url = os.environ.get("DEEPL_URL", host).rstrip("/") + "/v2/translate"
+        self._cooldown_until = 0.0
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        import time
+
+        # 额度用尽或被限流时冷却，别在每条字幕上继续撞
+        if time.time() < self._cooldown_until:
+            return None
+        body = {"text": [text],
+                "target_lang": self._LANGS.get(target, target.upper())}
+        if source and source != "auto":
+            body["source_lang"] = source.upper()
+        headers = {"Authorization": "DeepL-Auth-Key " + self.api_key,
+                   "Content-Type": "application/json"}
+        try:
+            session = await self.session()
+            async with session.post(self.url, data=json.dumps(body),
+                                    headers=headers) as resp:
+                if resp.status in (429, 456):
+                    self._cooldown_until = time.time() + 120
+                    print("[警告] DeepL {}（{}），暂停 120 秒".format(
+                        resp.status,
+                        "本月额度已用尽" if resp.status == 456 else "被限流"))
+                    return None
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+            items = data.get("translations") or []
+            return (items[0].get("text") or "").strip() or None if items else None
         except Exception:
             return None
 
@@ -552,6 +612,8 @@ def create_translator(name):
         _unload_siblings(inner.model)
     elif name == "gemma":
         inner = OllamaGemmaTranslator()
+    elif name == "deepl":
+        inner = DeepLTranslator()
     elif name == "google":
         inner = GoogleWebTranslator()
     elif name == "claude":
