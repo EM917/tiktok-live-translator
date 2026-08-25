@@ -36,7 +36,12 @@ class CachedTranslator:
         return self.inner.name
 
     async def translate(self, text, target, source="auto", glossary=None):
-        key = (text.strip(), target, source, glossary or "")
+        # 词表可以是紧凑串，也可以是词对列表（见 _as_pairs）。列表不可哈希，
+        # 直接拿来做缓存键会抛 TypeError 把这次翻译整个打掉——调用方少写一个
+        # tuple() 就会踩到。这里统一成可哈希形式。
+        key = (text.strip(), target, source,
+               tuple(map(tuple, glossary)) if isinstance(glossary, list)
+               else (glossary or ""))
         if key in self._cache:
             self._cache.move_to_end(key)
             self.hits += 1
