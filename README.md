@@ -175,7 +175,7 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, highest terminolog
 | `hymt2` | Hy-MT2 1.8B (Tencent, Apache 2.0). Recommended for most machines |
 | `hymt2-7b` | Hy-MT2 7B. Highest terminology accuracy; opt-in only, see below |
 | `gemma` | TranslateGemma 4B. `OLLAMA_TRANSLATE_MODEL` selects `translategemma:12b`/`27b` |
-| `deepl` | Key entered on the home screen (or `DEEPL_API_KEY`). A key ending in `:fx` is routed to the free endpoint automatically. Subtitle text is sent to DeepL |
+| `deepl` | Key entered on the home screen (or `DEEPL_API_KEY`). A key ending in `:fx` is routed to the free endpoint automatically. Builds and maintains a native DeepL glossary from `glossary.txt`; see below. Subtitle text is sent to DeepL |
 | `google` | Google Translate's free endpoint, no key required. Subtitle text is sent to Google; rate-limited per IP |
 | `claude` | Key entered on the home screen (or `ANTHROPIC_API_KEY`); model overridable via `CLAUDE_TRANSLATE_MODEL` |
 | `openai` | Key entered on the home screen (or `OPENAI_API_KEY`); optional `OPENAI_BASE_URL`, `OPENAI_MODEL`. Compatible with any OpenAI-style API including local LM Studio / vLLM |
@@ -196,6 +196,58 @@ Local engines handle colloquial speech substantially better. Spanish → Chinese
 | *Se mueren lo rico* (extremely good) | ❌ 有钱人死 (the rich die) | ✅ 味道非常好 |
 | *tengo un sueño* (I am sleepy) | ❌ 我做了一个梦 (I had a dream) | ✅ 现在感觉很困 |
 | *Es vegano* (it is vegan) | ❌ 它是素食主义者 (he is a vegetarian) | ✅ 纯素的 |
+
+### DeepL: the native glossary decides everything
+
+DeepL accepts no prompt, so per-sentence glossary injection does nothing for it —
+only a **native glossary** held in the account applies. The application builds one
+from `glossary.txt` on first use. The glossary name carries a fingerprint of the
+file contents, so editing the glossary rebuilds it on the next launch with no
+manual step.
+
+Measured on the same 60 lines of real subtitles:
+
+| | Glossary compliance | Median latency |
+|---|---|---|
+| DeepL, no glossary | 26.5% | 388 ms |
+| DeepL + native glossary | 91.8% | 542 ms |
+
+Nearly all of those 65 points are product names. With no glossary in place DeepL
+still returns fluent Chinese, so nothing looks wrong on screen — which is why the
+home-screen self-check actually builds the glossary and reports its entry count
+instead of merely checking that a key is present.
+
+The following constraints are measured, not assumed:
+
+- **The free tier permits exactly one glossary** (creating a second returns 456).
+  Only glossaries the application created are deleted — their names start with
+  `tlt-`. Glossaries you created in the DeepL dashboard are left alone.
+- **A glossary is a hint, not a substitution.** `las gotas → 维生素滴剂` applies,
+  while `la limpieza → 排毒粉` does not fire inside `me paso a la limpieza`. The
+  post-translation rule-based replacement is therefore retained.
+- **Traditional Chinese gets no native glossary.** DeepL offers a single `zh`
+  glossary target and `glossary.txt` is written in Simplified Chinese; attaching
+  it pushes Simplified terms into Traditional output.
+- **The source language must be explicit.** When transcription reports no
+  language, no glossary is attached rather than guessing — a wrong guess forces
+  the whole line through the wrong language.
+
+Quota is billed on source length. The same real stream (38.4 minutes, 567 lines)
+measures a 175× difference between two ways of using it:
+
+| Usage | Burn rate | Free tier covers |
+|---|---|---|
+| Every subtitle through DeepL | 95,824 chars/hour | 10.4 hours |
+| Alert context only | 546 chars/hour | 1832 hours |
+
+Alert context is sparse — two passages totalling 349 characters in that session —
+and it is the text that must not be mistranslated, since the operator reads it to
+decide whether to act. Price anything beyond the free tier against DeepL's
+current per-character rate.
+
+**Subtitle text is sent to DeepL.** Local engines never leave the machine; this
+one does. The stream being monitored belongs to someone else, and whether that is
+acceptable is a business decision.
 
 ### Re-translating with the strongest model
 
@@ -575,7 +627,7 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语准确率�
 | `hymt2` | Hy-MT2 1.8B（腾讯，Apache 2.0）。多数机器的推荐档位 |
 | `hymt2-7b` | Hy-MT2 7B。术语准确率最高，需显式指定，原因见下 |
 | `gemma` | TranslateGemma 4B。`OLLAMA_TRANSLATE_MODEL` 可切换至 `translategemma:12b`/`27b` |
-| `deepl` | 密钥在首页填写（也可用 `DEEPL_API_KEY`）。以 `:fx` 结尾的免费 key 会自动走对应域名。**字幕文本会发送给 DeepL** |
+| `deepl` | 密钥在首页填写（也可用 `DEEPL_API_KEY`）。以 `:fx` 结尾的免费 key 会自动走对应域名。会按 `glossary.txt` 自动建立并维护 DeepL 原生术语表，见下。**字幕文本会发送给 DeepL** |
 | `google` | Google 翻译免费接口，无需密钥。字幕文本会发送至 Google，且按 IP 限流 |
 | `claude` | 密钥在首页填写（也可用 `ANTHROPIC_API_KEY`），模型可由 `CLAUDE_TRANSLATE_MODEL` 覆盖 |
 | `openai` | 密钥在首页填写（也可用 `OPENAI_API_KEY`），可选 `OPENAI_BASE_URL`、`OPENAI_MODEL`。兼容各类 OpenAI 风格接口，含本地 LM Studio / vLLM |
@@ -594,6 +646,47 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语准确率�
 | *Se mueren lo rico*（好吃到不行） | ❌ 有钱人死 | ✅ 味道非常好 |
 | *tengo un sueño*（我困了） | ❌ 我做了一个梦 | ✅ 现在感觉很困 |
 | *Es vegano*（纯素产品） | ❌ 它是素食主义者 | ✅ 纯素的 |
+
+### DeepL：原生术语表决定成败
+
+DeepL 不接受提示词，逐句注入词表对它无效——它只认账号里的**原生术语表**。程序
+在首次使用时按 `glossary.txt` 自动建表，表名带词表内容的指纹，改了词表下次启动
+自动重建，全程无需手工操作。
+
+同一批 60 句真实字幕实测：
+
+| | 词表遵从率 | 中位延迟 |
+|---|---|---|
+| DeepL（无术语表） | 26.5% | 388 ms |
+| DeepL + 原生术语表 | 91.8% | 542 ms |
+
+差的这 65 个百分点几乎全是商品名。表没建起来时 DeepL 依然返回通顺的中文，屏幕上
+看不出异常——因此首页自检会实际把表建出来并报告条数，而不是只检查密钥是否填了。
+
+以下约束均为实测所得：
+
+- **免费版只允许同时存在 1 个术语表**（建第 2 个直接返回 456）。程序只删除自己
+  建的表（表名以 `tlt-` 开头），你在 DeepL 后台自建的表不会被动。
+- **术语表是提示而非强制**。`las gotas → 维生素滴剂` 会生效，而
+  `me paso a la limpieza` 中的 `la limpieza → 排毒粉` 不触发。因此译后的规则
+  替换仍然保留。
+- **繁体中文不挂原生术语表**。DeepL 的术语表只有一个 `zh`，而 `glossary.txt`
+  的译法是简体，挂上会把简体词塞进繁体译文。
+- **源语言必须明确**。识别未给出语言时不挂术语表，不做猜测——猜错会导致整句
+  按错误的语言解析。
+
+字符额度按源文长度计。同一场真实直播（38.4 分钟、567 句）实测两种用法差 175 倍：
+
+| 用法 | 消耗速率 | 免费额度可用时长 |
+|---|---|---|
+| 全部字幕都走 DeepL | 95,824 字符/小时 | 10.4 小时 |
+| 仅报警上下文走 DeepL | 546 字符/小时 | 1832 小时 |
+
+报警上下文是稀疏的——那场只有 2 段、共 349 字符，而它恰恰是最不能翻错的地方：
+中控就是靠它判断要不要处理。超出免费额度的部分按 DeepL 的按量计价自行核算。
+
+**字幕文本会发送给 DeepL。** 本地引擎全程不出网，这一条出网。本工具监听的是他人
+的直播内容，是否可接受由业务侧决定。
 
 ### 用最强模型重译
 

@@ -209,6 +209,8 @@ async def check_translator(args, translator=None):
                           "正在用 Google 免费接口：会按 IP 限流，长时间监听容易"
                           "整段翻译失败（违禁词报警不受影响，它不依赖翻译）",
                           "想换成完全本地、不限流的翻译：" + hint)
+        if engine == "deepl":
+            return await _check_deepl(args, translator)
         key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(engine)
         if key and not os.environ.get(key):
             return _check("翻译引擎", FAIL,
@@ -221,6 +223,43 @@ async def check_translator(args, translator=None):
         return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
     return _check("翻译引擎", WARN, "翻译引擎尚未初始化",
                   "点一次「开始翻译」后本项会重新检查")
+
+
+async def _check_deepl(args, translator):
+    """DeepL 的成败几乎全系于原生术语表，所以这里真的去把表建出来。
+
+    实测同一批 60 句：不挂术语表词表遵从率 26.5%，挂上 91.8%。表建不起来
+    时 DeepL 照样会返回通顺的中文——商品名全是直译，屏幕上看不出异常。
+    这正是自检要防的那类静默退化，只看配置没有用，必须实际建一次。
+
+    探针用 `--source` 指定的语言，没指定就按西语：glossary.txt 是一份西语
+    商品词表，而且免费版只有一个术语表槽位——与其等第一句字幕来认领（万一
+    那句被判成英语，槽位就被占错了），不如在这里定死。
+    """
+    from .glossary import load as load_glossary
+
+    inner = getattr(translator, "inner", translator)
+    target = getattr(args, "target", "zh-CN")
+    source = (getattr(args, "source", None) or "es").lower()
+    if not hasattr(inner, "_ensure_glossary"):
+        return _check("翻译引擎", OK, "DeepL（付费 API）")
+    if target not in inner._GLOSSARY_TARGET:
+        return _check("翻译引擎", WARN,
+                      "DeepL 已就绪，但 {} 不挂原生术语表（DeepL 的术语表只有"
+                      "简体一档），商品名只能靠译后替换兜底".format(target))
+    try:
+        gid = await inner._ensure_glossary(source, target)
+    except Exception as exc:
+        return _check("翻译引擎", FAIL, "DeepL 连不上：{}".format(exc),
+                      "检查密钥和网络；或把引擎换成本地 Hy-MT2")
+    if not gid:
+        return _check("翻译引擎", WARN,
+                      "DeepL 已就绪，但原生术语表没建起来——商品名会被直译"
+                      "（实测词表遵从率会从 91.8% 掉到 26.5%）",
+                      "多半是额度或权限问题；本地 Hy-MT2 不受影响")
+    n = len(inner.glossary_tsv(load_glossary().entries).splitlines())
+    return _check("翻译引擎", OK,
+                  "DeepL + 原生术语表（{} 条，{}→{}）".format(n, source, target))
 
 
 def _ollama_reachable():
