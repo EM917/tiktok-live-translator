@@ -369,6 +369,36 @@ def _strip_special(text):
     return _SPECIAL_RE.sub("", text).strip()
 
 
+_DIGITS_RE = re.compile(r"\d+")
+
+
+def looks_like_a_reply(source, translated):
+    """译文看起来不是在翻译，而是在**回话**。
+
+    实测的失败模式：Hy-MT2 7B 遇到「较长 + 句中带疑问」的输入时，会把它当成
+    对话轮次去回答，而不是翻译。确定性复现，temperature 0 三次一致：
+        源：…y ¿qué hago? ¿Me ven mis colegas? ¿No se van a creer que estoy loca?
+        出：没关系，长时间坐着确实不太好。你可以在工作间隙适当活动一下…
+    这在合规工具里是最坏的一类错误——凭空生成主播没说过的话，而且按质量等级
+    规则它会覆盖掉本来正确的快译并留在记录里。
+
+    加 system 角色钉不住（实测反而更像回话），所以只能事后检出。用结构信号，
+    不猜语义：
+      * 源文有问句而译文一个都没有 —— 回答会把问句吃掉
+      * 源文里的数字在译文里消失 —— 价格和促销条件绝不能丢
+    这只挡得住这一类，不是通用的幻觉检测；但它挡住的正是实测见过的那一类。
+    """
+    if not source or not translated:
+        return False
+    if "?" in source or "？" in source:
+        if "?" not in translated and "？" not in translated:
+            return True
+    want = set(_DIGITS_RE.findall(source))
+    if want and not (want & set(_DIGITS_RE.findall(translated))):
+        return True
+    return False
+
+
 def _as_pairs(glossary):
     """把词表统一成 (西语, 中文) 列表。
 

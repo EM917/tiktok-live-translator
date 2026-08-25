@@ -237,3 +237,37 @@ def test_one_strong_call_per_alert_group():
     # 但三条报警都要拿到中文
     assert sorted(m["alert_id"] for m in sent) == [1, 2, 3]
     assert all(m["context_zh"] == "中文" for m in sent)
+
+
+# ---- 强模型偶尔会「回话」而不是翻译 ----
+
+def test_a_fabricated_reply_is_rejected_and_the_fast_translation_stays():
+    """实测：Hy-MT2 7B 遇到「较长 + 句中带疑问」的输入会去回答而不是翻译，
+    确定性复现。合规工具里这是最坏的一类错误——凭空生成主播没说过的话，
+    而且按质量等级它会覆盖掉本来正确的快译并写进记录。"""
+    from app.translator import looks_like_a_reply
+
+    src = ("Si estás sentado mucho... ¿qué hago? ¿Me ven mis colegas? "
+           "¿No se van a creer que estoy loca?")
+    fabricated = "没关系，长时间坐着确实不太好。你可以在工作间隙适当活动一下。"
+    honest = "那我该做什么呢？我的同事能看到我吗？他们不会以为我疯了吧？"
+    assert looks_like_a_reply(src, fabricated) is True
+    assert looks_like_a_reply(src, honest) is False
+
+
+def test_dropping_a_price_is_rejected():
+    """价格和促销条件绝不能在翻译里蒸发。"""
+    from app.translator import looks_like_a_reply
+
+    assert looks_like_a_reply("Son 35 dolares hoy", "今天有优惠") is True
+    assert looks_like_a_reply("Son 35 dolares hoy", "今天是 35 美元") is False
+
+
+def test_ordinary_translations_are_not_flagged():
+    from app.translator import looks_like_a_reply
+
+    for src, out in [("no me importa lo que piensen", "我不在乎他们怎么想"),
+                     ("Hola a todos", "大家好"),
+                     ("", "任何内容"),
+                     ("algo", "")]:
+        assert looks_like_a_reply(src, out) is False, (src, out)
