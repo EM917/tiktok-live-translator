@@ -141,3 +141,33 @@ el de nuez | de nuez | café de nuez => 碧根果
 # 实录里 "café helado" 单独成段时被译成「冰激凌咖啡馆」——短句没有上下文，
 # helado 的「冰淇淋」义会盖过「冰镇」义。
 el café helado | café helado | iced coffee | el ice coffee => 冰咖啡
+
+# ---- 高频口语。不是商品词，但错了整句意思就反了 ----
+# 每一条都收窄到不会张冠李戴的写法——这些词的意思取决于后面跟什么，
+# 语料实测同一个词在两种意思上都出现过（见下）。
+
+# `un montón` 修饰**时长/程度**时是「很久、非常」。后面跟 `de + 名词` 时才是
+# 「很多」，那种情况由下一条更长的写法接管（matching 长者优先）。
+# 实录："estoy sentada un montón" 被译成「我坐了很多地方」——un montón 修饰的是
+# 坐了多久，不是坐过几个地方；这一错把整段的前提（久坐所以要爬楼梯）毁了。
+sentada un montón | sentado un montón | sentados un montón => 坐了很久
+un montón de => 很多
+trabajo un montón | estudio un montón | camino un montón => 很久
+
+# 拉美西语里 `de vuelta` 是「再一次」，不是「返回」。
+# 实录："Después lo hago de vuelta" 被译成「之后再反过来做」。
+# 但 `de vuelta acá`（回到这里）确实是方位义，所以只收动词框架。
+lo hago de vuelta | hacerlo de vuelta | lo hacemos de vuelta => 再做一遍
+
+# 主播在对观众说话。拉美西语的第二人称复数是 ustedes，间接宾语正是 les，
+# 所以 `les digo` 是「我跟你们说」。实录被译成「我会告诉他们」，
+# 把观众变成了不在场的第三方，后面的演示也就没了对象。
+les digo | les cuento | les voy a decir | déjenme les digo => 我跟你们说
+
+# 直播/录影的工作场所，不是家里的书房（家里的会说单数带物主词 mi estudio）。
+# 实录："yo acá estoy en los estudios" 被译成「我则在书房里」，
+# 而下一句就是「我同事会看到我吗」——那是共用工作场所。
+en los estudios | en el estudio => 在工作室
+
+# puedas 是「做得到」，不是「想得到」。
+de la forma que puedas | como puedas => 用你力所能及的方式

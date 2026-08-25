@@ -49,7 +49,14 @@ class Glossary:
 
     def matching(self, text):
         """本句里出现的词条，返回 (命中的西语写法, 中文, 该条全部变体)。
-        只注入命中的，避免整表塞进提示词。"""
+        只注入命中的，避免整表塞进提示词。
+
+        **长的写法优先**：短写法被长写法包含时只保留长的。有些口语短语的意思
+        取决于后面跟什么——`un montón de cosas` 是「很多东西」，而
+        `estoy sentada un montón` 是「坐了很久」；`lo hago de vuelta` 是
+        「再做一遍」，而 `de vuelta acá` 是「回到这里」。靠长短区分之后，
+        两个意思可以各写一条，不会同时塞进提示词互相打架。
+        """
         low = text.lower()
         hits = []
         for variants, zh in self.entries:
@@ -57,7 +64,17 @@ class Glossary:
                 if v.lower() in low:
                     hits.append((v, zh, variants))
                     break
-        return hits
+        # 命中的写法之间互为子串时，只留最长的那个。
+        # 只处理包含关系：交叠但不互含的情况（sentada un montón / un montón de
+        # 同时出现在 "sentada un montón de veces" 里）按长短取舍反而会选错，
+        # 那是语言本身的歧义。1044 段真实语料里没出现过，不为它增加复杂度。
+        kept = []
+        for hit in hits:
+            v = hit[0].lower()
+            if any(v != other[0].lower() and v in other[0].lower() for other in hits):
+                continue
+            kept.append(hit)
+        return kept
 
     def translation_hint(self, text, limit=6):
         """本句命中的术语，拼成紧凑的一行交给翻译引擎的**指令区**。
