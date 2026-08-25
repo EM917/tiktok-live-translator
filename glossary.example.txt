@@ -181,3 +181,26 @@ en los estudios | en el estudio => 在工作室
 
 # puedas 是「做得到」，不是「想得到」。
 de la forma que puedas | como puedas => 用你力所能及的方式
+
+# ---- 以下来自 2026-08-24 全部日志（973 句）的口语复核 ----
+# 判据和上面的商品词不同：不看译得漂不漂亮，只看中控会不会理解错
+# （见 tools/bench_meaning.py）。
+
+# plata 在拉美西语里是「钱」。实录里同一个短语两次译得不一样——一次「免费
+# 银币」（看不懂），一次「免费现金」（对）。模型不是不会，是不稳定，钉死它。
+# **只收多词写法**：裸 plata 有「银」的正当义，语料里虽然没出现过，
+# 但普通词绑死的代价见上面 gotitas 那条的教训。
+plata gratis | plata que te está dando | plata que te da => 白给的钱
+
+# vencer 这里是「过期」。实录："no es que te vence" 被译成「并不是它打败了你」。
+te vence | se te vence | no es que te vence => 会过期
+
+# 夜间版滴剂的助眠成分是缬草。实测被译成「洋甘菊」——**成分说错**。这比商品名
+# 译得不规范严重：中控看到的是一个这场直播里根本没提过的东西。
+valeriana | la valeriana => 缬草
+manzanilla | la manzanilla => 洋甘菊
+
+# 【记：不要加 mango => 钱】
+# 阿根廷俚语里 mango 是「比索/钱」，但这条产品线里它出现 6 次全是芒果口味
+# （"sabores de piña, mango, papaya"）。按俚语常识加进去会把整批口味说明毁掉。
+# 俚语不能凭常识加，必须看这场语料里实际怎么用。
