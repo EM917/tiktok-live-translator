@@ -286,3 +286,77 @@ def test_audit_records_overrun(tmp_path):
     lines = [json.loads(ln) for ln in log.path.read_text(encoding="utf-8").splitlines()]
     overruns = [ln for ln in lines if ln["type"] == "asr_overrun"]
     assert overruns and overruns[0]["asr_ms"] == 37700
+
+
+def test_a_failed_alert_translation_still_tells_the_page(monkeypatch):
+    """报警框先画的是「翻译中…」。没有后续消息它就永远停在那儿——实盘出现过
+    卡两分钟的，而报警是中控最需要立刻判断的地方。
+
+    三条失败路径都必须回话：抛异常、译文为空、没有引擎。译不出来也要说，
+    西语原话就在上面一行，中控还能自己看。
+    """
+    import asyncio
+
+    from app import pipeline as P
+
+    sent = []
+
+    class FakeServer:
+        config = {}
+
+        async def broadcast(self, msg):
+            sent.append(msg)
+
+    def run(coro):
+        return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+
+    def make(translate):
+        p = P.Pipeline.__new__(P.Pipeline)
+        p.server = FakeServer()
+        p.glossary = None
+        p.target = "zh-CN"
+        p._strong = type("T", (), {"translate": translate})()
+        p.translator = None
+        return p
+
+    async def boom(*a, **k):
+        raise RuntimeError("超时")
+
+    async def empty(*a, **k):
+        return None
+
+    for translate, why in ((boom, "翻译超时或出错"), (empty, "模型没有返回译文")):
+        sent.clear()
+        run(make(translate)._translate_alert([7], "esto cura el cancer", "es"))
+        assert len(sent) == 1, why
+        assert sent[0]["alert_id"] == 7
+        assert sent[0]["failed"] is True
+        assert sent[0]["why"] == why
+
+
+def test_a_successful_alert_translation_is_not_marked_failed():
+    import asyncio
+
+    from app import pipeline as P
+
+    sent = []
+
+    class FakeServer:
+        config = {}
+
+        async def broadcast(self, msg):
+            sent.append(msg)
+
+    async def ok(*a, **k):
+        return "这句话宣称能治癌症"
+
+    p = P.Pipeline.__new__(P.Pipeline)
+    p.server = FakeServer()
+    p.glossary = None
+    p.target = "zh-CN"
+    p._strong = type("T", (), {"translate": ok})()
+    p.translator = None
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        p._translate_alert([3], "esto cura el cancer", "es"))
+    assert sent[0]["failed"] is False
+    assert sent[0]["context_zh"] == "这句话宣称能治癌症"

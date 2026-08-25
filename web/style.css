@@ -387,6 +387,13 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
   font-size: 14px; line-height: 1.6;
   color: var(--text);
 }
+
+/* 报警译文失败。不能只是留白——中控会以为还在等，而其实永远等不到。 */
+.alert-zh.failed {
+  color: #b45309;
+  font-style: normal;
+  opacity: 1;
+}
 .alert-zh.pending { color: var(--text-faint); font-style: italic; }
 
 /* 短时间内已提示过：条目仍在、按钮可用，但不抢注意力 */

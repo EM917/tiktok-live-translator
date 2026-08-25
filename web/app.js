@@ -584,8 +584,16 @@
     if (!item) return;
     var zh = item.querySelector(".alert-zh");
     if (!zh) return;
-    zh.textContent = msg.context_zh || "";
     zh.classList.remove("pending");
+    if (msg.context_zh) {
+      zh.textContent = msg.context_zh;
+      zh.classList.remove("failed");
+      return;
+    }
+    // 译不出来要说出来。以前这里把整行清空，中控看到一片空白，比停在
+    // 「翻译中…」还糟——上面那行西语原话才是他真正要看的东西。
+    zh.textContent = "译文失败（" + (msg.why || "未知原因") + "）——请看上面的原话";
+    zh.classList.add("failed");
   }
 
   clearAlertsBtn.addEventListener("click", function () {
