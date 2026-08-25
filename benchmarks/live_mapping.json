@@ -1,0 +1,2208 @@
+{
+ "mapping": [
+  {
+   "n": 1,
+   "item": 126,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 2,
+   "item": 52,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 3,
+   "item": 178,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 4,
+   "item": 119,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 5,
+   "item": 69,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 6,
+   "item": 49,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 7,
+   "item": 81,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 8,
+   "item": 80,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 9,
+   "item": 58,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 10,
+   "item": 20,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 11,
+   "item": 124,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 12,
+   "item": 130,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 13,
+   "item": 19,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 14,
+   "item": 10,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 15,
+   "item": 67,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 16,
+   "item": 99,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 17,
+   "item": 15,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 18,
+   "item": 114,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 19,
+   "item": 121,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 20,
+   "item": 140,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 21,
+   "item": 109,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 22,
+   "item": 192,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 23,
+   "item": 54,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 24,
+   "item": 12,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 25,
+   "item": 47,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 26,
+   "item": 190,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 27,
+   "item": 88,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 28,
+   "item": 132,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 29,
+   "item": 186,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 30,
+   "item": 82,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 31,
+   "item": 115,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 32,
+   "item": 198,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 33,
+   "item": 97,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 34,
+   "item": 136,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 35,
+   "item": 25,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 36,
+   "item": 22,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 37,
+   "item": 11,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 38,
+   "item": 39,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 39,
+   "item": 103,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 40,
+   "item": 128,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 41,
+   "item": 24,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 42,
+   "item": 77,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 43,
+   "item": 17,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 44,
+   "item": 197,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 45,
+   "item": 83,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 46,
+   "item": 129,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 47,
+   "item": 142,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 48,
+   "item": 70,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 49,
+   "item": 194,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 50,
+   "item": 29,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 51,
+   "item": 64,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 52,
+   "item": 46,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 53,
+   "item": 48,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 54,
+   "item": 43,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 55,
+   "item": 56,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 56,
+   "item": 38,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 57,
+   "item": 33,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 58,
+   "item": 66,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 59,
+   "item": 37,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 60,
+   "item": 57,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 61,
+   "item": 152,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 62,
+   "item": 138,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 63,
+   "item": 59,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 64,
+   "item": 51,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 65,
+   "item": 13,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 66,
+   "item": 76,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 67,
+   "item": 199,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 68,
+   "item": 69,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 69,
+   "item": 21,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 70,
+   "item": 100,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 71,
+   "item": 133,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 72,
+   "item": 30,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 73,
+   "item": 27,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 74,
+   "item": 146,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 75,
+   "item": 96,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 76,
+   "item": 123,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 77,
+   "item": 87,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 78,
+   "item": 110,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 79,
+   "item": 6,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 80,
+   "item": 176,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 81,
+   "item": 173,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 82,
+   "item": 41,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 83,
+   "item": 145,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 84,
+   "item": 45,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 85,
+   "item": 170,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 86,
+   "item": 153,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 87,
+   "item": 164,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 88,
+   "item": 166,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 89,
+   "item": 4,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 90,
+   "item": 122,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 91,
+   "item": 36,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 92,
+   "item": 104,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 93,
+   "item": 0,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 94,
+   "item": 173,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 95,
+   "item": 3,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 96,
+   "item": 74,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 97,
+   "item": 8,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 98,
+   "item": 193,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 99,
+   "item": 137,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 100,
+   "item": 32,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 101,
+   "item": 174,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 102,
+   "item": 175,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 103,
+   "item": 53,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 104,
+   "item": 155,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 105,
+   "item": 90,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 106,
+   "item": 13,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 107,
+   "item": 34,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 108,
+   "item": 16,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 109,
+   "item": 163,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 110,
+   "item": 63,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 111,
+   "item": 144,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 112,
+   "item": 117,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 113,
+   "item": 195,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 114,
+   "item": 102,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 115,
+   "item": 169,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 116,
+   "item": 71,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 117,
+   "item": 141,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 118,
+   "item": 184,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 119,
+   "item": 42,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 120,
+   "item": 85,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 121,
+   "item": 182,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 122,
+   "item": 107,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 123,
+   "item": 28,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 124,
+   "item": 93,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 125,
+   "item": 81,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 126,
+   "item": 157,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 127,
+   "item": 162,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 128,
+   "item": 160,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 129,
+   "item": 86,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 130,
+   "item": 60,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 131,
+   "item": 180,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 132,
+   "item": 188,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 133,
+   "item": 108,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 134,
+   "item": 46,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 135,
+   "item": 134,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 136,
+   "item": 95,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 137,
+   "item": 84,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 138,
+   "item": 148,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 139,
+   "item": 167,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 140,
+   "item": 50,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 141,
+   "item": 78,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 142,
+   "item": 158,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 143,
+   "item": 106,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 144,
+   "item": 168,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 145,
+   "item": 17,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 146,
+   "item": 18,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 147,
+   "item": 112,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 148,
+   "item": 131,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 149,
+   "item": 62,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 150,
+   "item": 185,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 151,
+   "item": 7,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 152,
+   "item": 156,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 153,
+   "item": 61,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 154,
+   "item": 55,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 155,
+   "item": 191,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 156,
+   "item": 57,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "中英混说"
+  },
+  {
+   "n": 157,
+   "item": 154,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 158,
+   "item": 111,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 159,
+   "item": 171,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 160,
+   "item": 125,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 161,
+   "item": 149,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 162,
+   "item": 98,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 163,
+   "item": 101,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 164,
+   "item": 189,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 165,
+   "item": 1,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 166,
+   "item": 92,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 167,
+   "item": 150,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 168,
+   "item": 169,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 169,
+   "item": 105,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 170,
+   "item": 31,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 171,
+   "item": 1,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 172,
+   "item": 196,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 173,
+   "item": 14,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 174,
+   "item": 151,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 175,
+   "item": 179,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 176,
+   "item": 135,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 177,
+   "item": 2,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 178,
+   "item": 49,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 179,
+   "item": 89,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 180,
+   "item": 116,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 181,
+   "item": 94,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 182,
+   "item": 72,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 183,
+   "item": 88,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 184,
+   "item": 183,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 185,
+   "item": 75,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 186,
+   "item": 91,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 187,
+   "item": 24,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 188,
+   "item": 161,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 189,
+   "item": 71,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 190,
+   "item": 73,
+   "order": [
+    "DeepL",
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 191,
+   "item": 68,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 192,
+   "item": 19,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 193,
+   "item": 163,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 194,
+   "item": 139,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 195,
+   "item": 5,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 196,
+   "item": 177,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 197,
+   "item": 147,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 198,
+   "item": 9,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 199,
+   "item": 172,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 200,
+   "item": 86,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 201,
+   "item": 109,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 202,
+   "item": 120,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 203,
+   "item": 35,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 204,
+   "item": 79,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "口语/俚语"
+  },
+  {
+   "n": 205,
+   "item": 187,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 206,
+   "item": 127,
+   "order": [
+    "DeepL",
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 207,
+   "item": 143,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 208,
+   "item": 159,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 209,
+   "item": 26,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 210,
+   "item": 113,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 211,
+   "item": 23,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "价格/数字"
+  },
+  {
+   "n": 212,
+   "item": 181,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 213,
+   "item": 165,
+   "order": [
+    "Hy-MT2 7B",
+    "Hy-MT2 1.8B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 214,
+   "item": 195,
+   "order": [
+    "Hy-MT2 7B",
+    "DeepL",
+    "Hy-MT2 1.8B"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 215,
+   "item": 44,
+   "order": [
+    "Hy-MT2 1.8B",
+    "DeepL",
+    "Hy-MT2 7B"
+   ],
+   "bucket": "商品名/词表"
+  },
+  {
+   "n": 216,
+   "item": 65,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "残句"
+  },
+  {
+   "n": 217,
+   "item": 118,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "随机"
+  },
+  {
+   "n": 218,
+   "item": 40,
+   "order": [
+    "Hy-MT2 1.8B",
+    "Hy-MT2 7B",
+    "DeepL"
+   ],
+   "bucket": "商品名/词表"
+  }
+ ],
+ "latency": {
+  "Hy-MT2 1.8B": [
+   309.981107711792,
+   480.2680015563965
+  ],
+  "Hy-MT2 7B": [
+   1138.63205909729,
+   1826.7509937286377
+  ],
+  "DeepL": [
+   456.23278617858887,
+   669.8720455169678
+  ]
+ },
+ "failures": {
+  "Hy-MT2 1.8B": 0,
+  "Hy-MT2 7B": 0,
+  "DeepL": 0
+ },
+ "engines": [
+  "Hy-MT2 1.8B",
+  "Hy-MT2 7B",
+  "DeepL"
+ ]
+}
