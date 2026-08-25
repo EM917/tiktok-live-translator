@@ -221,9 +221,28 @@ manzanilla | la manzanilla => 洋甘菊
 #   裸 reina —— "Sintiéndome como una reina"（感觉像个女王），不是称呼
 #   mami    —— "Le ayuda mucho a mi mami"（对我妈妈很有帮助），真的是妈妈
 #   linda   —— 单独出现的 "Linda" 是观众的名字
-mi niña => 亲爱的
-hermosa | hermosas => 亲爱的
+# 这里原来映射成「亲爱的」，现在改由 app/vocative.py 在翻译前直接摘掉。
+# 同一场实录里的对照很清楚：摘掉的那批干净了（"esperamos entonces mi niña"
+# → 「那我们拭目以待吧」），映射的那批还在渗透（"escribir hermosa" →
+# 「给亲爱的发消息」、"A ordenar hermosa" → 「亲爱的 Hermosa」）。
+# 词表提示只是建议，模型可以贴到任何位置；摘掉的词贴不了。
 
 # 电商流程词，主播直接说英语。实录里 "Haga su check out" 被译成「请去办理退房吧」
 # ——中控会以为在讲酒店。
 check out | checkout | hacer checkout => 结账
+
+# ---- 电商动作词。逐条扫过 1057 句语料，只收模型**真的译错**的 ----
+# pedido→订单、repartidor→快递员、almacén→仓库、sorteo→抽奖、envío→运费
+# 这些模型本来就对，不收。
+
+# anclar 是把商品钉到直播小黄车顶上，是这个场景里最高频的动作之一。
+# 实录 5 次全错：「被推荐」「绑定」「与它连接」——中控看不懂在让主播做什么。
+te ancle | te lo anclo | lo anclo | que les ancle | anclar | anclado | anclada => 置顶到小黄车
+
+# TikTok 直播间那个购物袋图标。实录译成「小包」「按钮」，
+# 中控不知道要让观众点哪里。
+la carterita | carterita | la bolsita naranjada => 小黄车图标
+
+# 订单状态。实录 "solamente dice en curso" 译成「只是说在进行中」，
+# 中控看不出这是物流状态。
+dice en curso | está en curso | en curso => 运送中
