@@ -18,3 +18,7 @@ logs/
 *.bak-*
 *.log
 .run.log
+
+# 盲评表和对照表：跑一次就重新生成，且体积大
+benchmarks/live_blind_sheet.md
+benchmarks/live_mapping.json

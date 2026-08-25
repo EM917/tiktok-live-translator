@@ -1,0 +1,1092 @@
+{
+ "1": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "2": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "3": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "4": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "5": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "6": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "7": {
+  "A": "major",
+  "B": "minor",
+  "C": "minor"
+ },
+ "8": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "9": {
+  "A": "omission",
+  "B": "correct",
+  "C": "correct"
+ },
+ "10": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "11": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "12": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "13": {
+  "A": "correct",
+  "B": "major",
+  "C": "correct"
+ },
+ "14": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "15": {
+  "A": "correct",
+  "B": "major",
+  "C": "correct"
+ },
+ "16": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "17": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "18": {
+  "A": "correct",
+  "B": "major",
+  "C": "major"
+ },
+ "19": {
+  "A": "minor",
+  "B": "major",
+  "C": "correct"
+ },
+ "20": {
+  "A": "major",
+  "B": "correct",
+  "C": "minor"
+ },
+ "21": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "22": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "23": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "24": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "25": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "26": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "27": {
+  "A": "correct",
+  "B": "major",
+  "C": "major"
+ },
+ "28": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "29": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "30": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "31": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "32": {
+  "A": "major",
+  "B": "correct",
+  "C": "major"
+ },
+ "33": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "34": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "35": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "36": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "37": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "38": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "39": {
+  "A": "minor",
+  "B": "major",
+  "C": "correct"
+ },
+ "40": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "41": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "42": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "43": {
+  "A": "correct",
+  "B": "minor",
+  "C": "major"
+ },
+ "44": {
+  "A": "correct",
+  "B": "major",
+  "C": "major"
+ },
+ "45": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "46": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "47": {
+  "A": "correct",
+  "B": "correct",
+  "C": "major"
+ },
+ "48": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "49": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "50": {
+  "A": "major",
+  "B": "correct",
+  "C": "correct"
+ },
+ "51": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "52": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "53": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "54": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "55": {
+  "A": "correct",
+  "B": "minor",
+  "C": "major"
+ },
+ "56": {
+  "A": "minor",
+  "B": "major",
+  "C": "correct"
+ },
+ "57": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "58": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "59": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "60": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "61": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "62": {
+  "A": "minor",
+  "B": "minor",
+  "C": "correct"
+ },
+ "63": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "64": {
+  "A": "correct",
+  "B": "minor",
+  "C": "minor"
+ },
+ "65": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "66": {
+  "A": "correct",
+  "B": "minor",
+  "C": "minor"
+ },
+ "67": {
+  "A": "major",
+  "B": "minor",
+  "C": "correct"
+ },
+ "68": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "69": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "70": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "71": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "72": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "73": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "74": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "75": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "76": {
+  "A": "correct",
+  "B": "major",
+  "C": "minor"
+ },
+ "77": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "78": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "79": {
+  "A": "major",
+  "B": "major",
+  "C": "correct"
+ },
+ "80": {
+  "A": "correct",
+  "B": "major",
+  "C": "correct"
+ },
+ "81": {
+  "A": "minor",
+  "B": "minor",
+  "C": "major"
+ },
+ "82": {
+  "A": "minor",
+  "B": "major",
+  "C": "correct"
+ },
+ "83": {
+  "A": "minor",
+  "B": "minor",
+  "C": "major"
+ },
+ "84": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "85": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "86": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "87": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "88": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "89": {
+  "A": "major",
+  "B": "major",
+  "C": "correct"
+ },
+ "90": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "91": {
+  "A": "major",
+  "B": "minor",
+  "C": "correct"
+ },
+ "92": {
+  "A": "major",
+  "B": "minor",
+  "C": "minor"
+ },
+ "93": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "94": {
+  "A": "minor",
+  "B": "minor",
+  "C": "major"
+ },
+ "95": {
+  "A": "correct",
+  "B": "major",
+  "C": "correct"
+ },
+ "96": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "97": {
+  "A": "minor",
+  "B": "minor",
+  "C": "correct"
+ },
+ "98": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "99": {
+  "A": "correct",
+  "B": "major",
+  "C": "major"
+ },
+ "100": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "101": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "102": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "103": {
+  "A": "correct",
+  "B": "minor",
+  "C": "minor"
+ },
+ "104": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "105": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "106": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "107": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "108": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "109": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "110": {
+  "A": "minor",
+  "B": "minor",
+  "C": "correct"
+ },
+ "111": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "112": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "113": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "114": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "115": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "116": {
+  "A": "correct",
+  "B": "major",
+  "C": "major"
+ },
+ "117": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "118": {
+  "A": "correct",
+  "B": "minor",
+  "C": "minor"
+ },
+ "119": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "120": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "121": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "122": {
+  "A": "minor",
+  "B": "minor",
+  "C": "correct"
+ },
+ "123": {
+  "A": "correct",
+  "B": "minor",
+  "C": "minor"
+ },
+ "124": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "125": {
+  "A": "major",
+  "B": "minor",
+  "C": "minor"
+ },
+ "126": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "127": {
+  "A": "correct",
+  "B": "minor",
+  "C": "minor"
+ },
+ "128": {
+  "A": "minor",
+  "B": "minor",
+  "C": "correct"
+ },
+ "129": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "130": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "131": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "132": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "133": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "134": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "135": {
+  "A": "correct",
+  "B": "minor",
+  "C": "minor"
+ },
+ "136": {
+  "A": "minor",
+  "B": "minor",
+  "C": "correct"
+ },
+ "137": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "138": {
+  "A": "major",
+  "B": "major",
+  "C": "minor"
+ },
+ "139": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "140": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "141": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "142": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "143": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "144": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "145": {
+  "A": "major",
+  "B": "correct",
+  "C": "minor"
+ },
+ "146": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "147": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "148": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "149": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "150": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "151": {
+  "A": "major",
+  "B": "minor",
+  "C": "correct"
+ },
+ "152": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "153": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "154": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "155": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "156": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "157": {
+  "A": "correct",
+  "B": "major",
+  "C": "correct"
+ },
+ "158": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "159": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "160": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "161": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "162": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "163": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "164": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "165": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "166": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "167": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "168": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "169": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "170": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "171": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "172": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "173": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "174": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "175": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "176": {
+  "A": "correct",
+  "B": "correct",
+  "C": "major"
+ },
+ "177": {
+  "A": "major",
+  "B": "correct",
+  "C": "major"
+ },
+ "178": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "179": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "180": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "181": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "182": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "183": {
+  "A": "major",
+  "B": "major",
+  "C": "correct"
+ },
+ "184": {
+  "A": "major",
+  "B": "major",
+  "C": "correct"
+ },
+ "185": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "186": {
+  "A": "major",
+  "B": "correct",
+  "C": "major"
+ },
+ "187": {
+  "A": "correct",
+  "B": "correct",
+  "C": "minor"
+ },
+ "188": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "189": {
+  "A": "correct",
+  "B": "major",
+  "C": "major"
+ },
+ "190": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "191": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "192": {
+  "A": "major",
+  "B": "correct",
+  "C": "correct"
+ },
+ "193": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "194": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "195": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "196": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "197": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "198": {
+  "A": "minor",
+  "B": "correct",
+  "C": "minor"
+ },
+ "199": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "200": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "201": {
+  "A": "minor",
+  "B": "correct",
+  "C": "correct"
+ },
+ "202": {
+  "A": "minor",
+  "B": "minor",
+  "C": "correct"
+ },
+ "203": {
+  "A": "minor",
+  "B": "minor",
+  "C": "minor"
+ },
+ "204": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "205": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "206": {
+  "A": "correct",
+  "B": "major",
+  "C": "correct"
+ },
+ "207": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "208": {
+  "A": "correct",
+  "B": "minor",
+  "C": "correct"
+ },
+ "209": {
+  "A": "major",
+  "B": "minor",
+  "C": "minor"
+ },
+ "210": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "211": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "212": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "213": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "214": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "215": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "216": {
+  "A": "major",
+  "B": "correct",
+  "C": "minor"
+ },
+ "217": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ },
+ "218": {
+  "A": "correct",
+  "B": "correct",
+  "C": "correct"
+ }
+}
