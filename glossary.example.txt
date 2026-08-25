@@ -120,7 +120,7 @@ lo tenemos en especial | los tenemos en especial | está en especial | están en
 # 右侧写成「下单满（金额，美元）」是实测选出来的：写「订单满（美元）」模型照旧
 # 输出「订购 30 支」，写「订单金额满」会掉成「30 元」。带上「金额」和「美元」
 # 两个词才稳定把数字读成钱。变体必须带动词，裸的 orden de 命中率低且易误伤。
-hacen una orden de | haces una orden de | hagan una orden de | con una orden de | una orden de => 下单满（金额，美元）
+hacen una orden de | haces una orden de | hagan una orden de | con una orden de | es una orden de | por una orden de | en una orden de | una orden de => 下单满（金额，美元）
 
 # 对观众的称呼，与年龄无关。实录里被译成「年轻人」，凭空捏造了一个人群定向。
 chicos | chicas | muchachos | mi gente => 家人们

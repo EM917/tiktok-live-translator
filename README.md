@@ -217,6 +217,28 @@ promotional conditions; on casual speech it is sometimes worse and can drop a
 clause. The batch tool therefore reports what changed rather than replacing
 anything silently.
 
+### Finding translation errors without reading everything
+
+Scanning a session's captions by eye to find mistranslations is slow and will
+miss things. `tools/retranslate_audit.py` re-translates a session with the
+strongest model and ranks the segments by how much the two models disagree —
+the greater the disagreement, the more likely one of them is wrong. It needs no
+judge and makes no semantic call of its own.
+
+```bash
+python3 tools/retranslate_audit.py
+```
+
+On its first run this surfaced `es una orden de 30` being rendered as "30
+units" rather than a $30 threshold — a glossary gap nobody had noticed.
+
+Two approaches that were measured and rejected, recorded so they are not
+retried: comparing word overlap against a back-translation scores correct and
+incorrect translations identically, because Spanish paraphrases legitimately
+change words; and asking a local model to judge agreement fails outright —
+the 1.8B model called every pair inconsistent, and the 7B model was right four
+times in ten.
+
 ### Engine comparison
 
 The relevant metric is not fluency but glossary adherence, since that determines
@@ -581,6 +603,23 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语准确率�
 更大的模型并非一律更好。它的优势在术语与促销条件；日常口语上有时反而更差，
 也可能漏掉一个分句。因此批量工具输出的是「有变化的段落」，交由人复核，
 而不是静默覆盖。
+
+### 不用逐句读也能找出译错的地方
+
+靠人肉眼扫一整场字幕找译错，慢且必然漏。`tools/retranslate_audit.py` 会用最强
+模型重译一遍，并按**两个模型的分歧程度**排序——分歧越大，其中一个越可能是错的。
+它不需要任何裁判，自己也不做语义判断。
+
+```bash
+python3 tools/retranslate_audit.py
+```
+
+首次运行即翻出 `es una orden de 30` 被译成「30 片」而非「满 30 美元」，
+那是当时词表漏掉的一条促销条件，此前无人察觉。
+
+另有两种做法经实测否决，记在此处以免重走：回译后比对词汇重合度，正确与错误的
+译文得分完全相同（西语同义改写本来就会换词）；让本地模型判断「一致/不一致」
+则直接失效——1.8B 对所有句子都判不一致，7B 十次里只对四次。
 
 ### 引擎对比方法
 
