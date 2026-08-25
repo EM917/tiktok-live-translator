@@ -25,8 +25,15 @@ class AuditLog:
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             self.path = directory / "session-{}.jsonl".format(stamp)
             self._fh = self.path.open("a", encoding="utf-8")
+            # 记下这一场是哪个版本、哪份词表跑的。事后拿数字回来复盘时，
+            # 「这个数是哪几个主播、哪个 commit、哪份词表产生的」要答得出来。
+            from .provenance import code_commit, file_hash
+            root = Path(__file__).resolve().parent.parent
             self._write({"type": "session_start", "room_url": room_url,
-                         "started_at": datetime.now().isoformat(timespec="seconds")})
+                         "started_at": datetime.now().isoformat(timespec="seconds"),
+                         "code_commit": code_commit(),
+                         "glossary_hash": file_hash(root / "glossary.txt"),
+                         "vocative_hash": file_hash(root / "app" / "vocative.py")})
         except OSError:
             self.path = None
 
