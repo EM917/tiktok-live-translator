@@ -1155,6 +1155,20 @@ class Pipeline:
         if self.audit is not None:
             self.audit.translation(job["id"], translated, translate_ms,
                                    bool(translated))
+        # 影子模式：查一遍译文有没有客观破绽，**只记录、不改屏幕上的字**。
+        # 自动升级要等真实数据确认它不会误伤——600 条人工标注上目前是标记 11 条、
+        # 命中 7 条真错，但那是离线语料，先在实盘上看几场再说。
+        # 纯正则，微秒级，不会拖住这个单线的翻译 worker。
+        if translated and self.audit is not None:
+            try:
+                from .validator import check
+                findings = check(job["text"], translated)
+                if findings:
+                    self.audit.validation(job["id"], findings)
+                    print("[校验] 第 {} 条译文可疑：{}".format(
+                        job["id"], findings[0][1]))
+            except Exception as exc:
+                print("[警告] 译文校验本身出错（不影响字幕）: {}".format(exc))
         await self._publish_translation(
             job["id"], translated, bool(translated), translate_ms,
             QUALITY_FAST, job["target"],
