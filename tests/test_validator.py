@@ -166,3 +166,33 @@ def test_shadow_mode_never_changes_the_subtitle(monkeypatch, tmp_path):
     assert published == ["20个一个，或35个两个。"]      # 原样上屏，一个字没动
     assert audited and audited[0][0] == 7               # 但记下来了
     assert any(lv == "commerce" for lv, _r, _w in audited[0][1])
+
+
+def test_the_threshold_rule_covers_pedido_as_well_as_orden():
+    """同一个意思两种说法。语料里 25 处 `orden/pedido de N` **全部**是金额门槛
+    （orden 23 处、pedido 2 处），一处「N 件」都没有；但规则只写了 orden，
+    第四个主播说 pedido，整条就漏了。"""
+    assert "commerce" in _levels(
+        "en pedidos de 40 chicas así que vamos rápidamente",
+        "40个家人们的需求，所以我们赶紧吧")
+    assert "commerce" in _levels(
+        "te vas a llevar 5 dólares extra descuento en pedidos a partir de 40",
+        "从40个订单起，可获得5美元折扣")
+
+
+def test_a_count_of_units_is_not_a_threshold():
+    """不收裸词。`un pedido de 40 unidades` 以后完全可能出现，那才真的是
+    40 件——后面跟单位名词是真正的消歧信号。"""
+    for src, out in [
+        ("un pedido de 40 unidades para la tienda", "一份40件的订单，给店里的"),
+        ("un pedido de 12 botellas", "一份12瓶的订单"),
+        ("llegaron 40 pedidos hoy", "今天来了40个订单"),
+    ]:
+        assert check(src, out) == [], out
+
+
+def test_the_correct_reading_of_a_threshold_passes():
+    assert check("en pedidos de 40 chicas así que vamos",
+                 "满40美元的订单，家人们，我们赶紧吧") == []
+    assert check("Si hacen una orden de 30, van a agarrar las gotas gratis",
+                 "如果下单满30美元，就能免费拿到滴剂") == []

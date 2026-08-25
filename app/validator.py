@@ -47,8 +47,17 @@ _ES_WORD_NUM = re.compile(r"\b(" + "|".join(_ES_COUNTABLE) + r")\b", re.I)
 # "una por 20 o dos por 35" —— 数量与单价的绑定关系
 _BUNDLE = re.compile(
     r"\b(una|uno|un|dos|tres|cuatro|cinco|\d+)\s+por\s+(\d+(?:[.,]\d+)?)", re.I)
-# "en órdenes de 40" / "una orden de 30" —— 门槛金额，不是件数
-_THRESHOLD = re.compile(r"[óo]rden(?:es)?\s+de\s+(\d+)", re.I)
+# "en órdenes de 40" / "una orden de 30" / "en pedidos de 40" —— 门槛金额，
+# 不是件数。25 处真实实例查下来全是金额（orden 23 处、pedido 2 处），一处
+# 「N 件」都没有。但**不收裸词**：`un pedido de 40 unidades` 以后完全可能出现，
+# 那才真的是 40 件。两道收窄——
+#   前面要有限定词/介词（语料里全是 en / una / cualquier / de / con）
+#   后面不能跟单位名词，那是真正的消歧信号
+_THRESHOLD = re.compile(
+    r"(?:en|una?|cualquier|de|con|para|desde)\s+"
+    r"(?:[óo]rden(?:es)?|pedidos?)\s+(?:de|a\s+partir\s+de)\s+(\d+)"
+    r"(?!\s*(?:unidades?|piezas?|productos?|cajas?|botellas?|art[íi]culos?|"
+    r"paquetes?|potes?|frascos?))", re.I)
 # 源文里没有这些概念，译文却冒出来，多半是模型自己补的
 _INVENTED = [
     (re.compile(r"折扣|打折"), re.compile(r"descuento|descontar|oferta|rebaja|off\b", re.I)),
