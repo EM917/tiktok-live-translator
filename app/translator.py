@@ -357,6 +357,10 @@ class OllamaGemmaTranslator(BaseTranslator):
             return None
 
 
+# 模型名 -> 要不要 raw 模式。同一个模型每进程只问 Ollama 一次。
+_RAW_MODE = {}
+
+
 class OllamaHyMT2Translator(BaseTranslator):
     """本地 Ollama + 腾讯 Hy-MT2-1.8B（Apache 2.0）。
 
@@ -383,11 +387,20 @@ class OllamaHyMT2Translator(BaseTranslator):
     name = "hymt2"
     TIMEOUT = 60
 
-    # 官方 GGUF 里注册给 Ollama 的 chat template 是坏的——`{{ if .Prompt }}` 块里
-    # 根本没有 `{{ .Prompt }}`，末尾还留着 `onse }}` 这种被截断的残片。结果是
-    # 用户的文本压根没进模型，输出是 `[{ "i": 0, "k": 0, ... }]` 这样的乱码。
-    # 所以这里用 raw 模式，按官方 chat_template.jinja 自己拼对话标记。
-    # 这样用户只要 ollama pull 就能用，不需要额外 ollama create 一个修好的版本。
+    # 1.8B 的 GGUF 里注册给 Ollama 的 chat template 是坏的——`{{ if .Prompt }}`
+    # 块里根本没有 `{{ .Prompt }}`，末尾还留着 `onse }}` 这种被截断的残片。结果
+    # 是用户的文本压根没进模型，输出是 `[{ "i": 0, "k": 0, ... }]` 这样的乱码。
+    # 对那一档只能用 raw 模式，按官方 chat_template.jinja 自己拼对话标记。
+    #
+    # **但 7B 的模板是好的，而且用的是另一套标记**（`<|startoftext|>`、
+    # `<|extra_0|>`）。把下面这套 1.8B 的标记套给它，等于往正文里塞了一串它
+    # 不认识的普通文本，用户轮次从来没有被闭合——于是它一直以为在聊天：
+    #   "¿Cómo se toman las gotitas?"  →  "服用滴剂的方法如下：首先，用温水…"
+    #   "¿Podemos hacer un giveaway?"  →  "好的，那我们开始吧。请告诉我您希望…"
+    # 一整场 567 段里 7.8% 只译出片段、7.1% 变成了回话、19.2% 换上了「您」的
+    # 客服口吻。换回它自己的模板后这四类样例全部译对。
+    # 所以 raw 模式是**按模型判定**的，判据就是问 Ollama 要模板看看坏没坏——
+    # 哪天官方把 1.8B 的模板修好了，这里会自动跟着改用模板路径。
     _BOS = "<｜hy_begin▁of▁sentence｜>"
     _USER = "<｜hy_User｜>"
     _ASSISTANT = "<｜hy_Assistant｜>"
@@ -395,7 +408,11 @@ class OllamaHyMT2Translator(BaseTranslator):
     # 只挡一种的话另一种会原样漏进字幕（真的在直播里出现过：
     # 「索菲亚！<｠hy_end▁of▁sentence｠>」）。
     _STOP = ["<｜hy_end▁of▁sentence｜>", "<｜hy_place▁holder▁no▁2｜>",
-             "<｠hy_end▁of▁sentence｠>", "<｠hy_place▁holder▁no▁2｠>"]
+             "<｠hy_end▁of▁sentence｠>", "<｠hy_place▁holder▁no▁2｠>",
+             # 7B 走错模板时吐的是这个，名字是 message 不是 sentence——
+             # 只列 sentence 的话它会原样漏进字幕（实测：「价格应该是57.20
+             # 才对。<｠end▁of▁message」）。
+             "<｜end▁of▁message｜>", "<｠end▁of▁message｠>", "<end▁of▁message"]
 
     def __init__(self):
         super().__init__()
@@ -403,6 +420,31 @@ class OllamaHyMT2Translator(BaseTranslator):
         self.url = base + "/api/generate"
         self.model = os.environ.get(
             "OLLAMA_HYMT2_MODEL", "hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M")
+
+    async def _needs_raw(self):
+        """这个模型的自带模板能不能用。问一次就记住。
+
+        判据是模板里有没有 `{{ .Prompt }}`——没有就意味着用户的文本根本不会
+        进到模型里，只能自己拼标记。1.8B 的模板缺这一段，7B 的不缺。
+
+        问不到（Ollama 不通、接口变了）时按 raw 处理：那是这个改动之前的行为，
+        对模板确实坏掉的档位是唯一能出正确结果的路，宁可保守。
+        """
+        cached = _RAW_MODE.get(self.model)
+        if cached is not None:
+            return cached
+        need = True
+        try:
+            session = await self.session()
+            async with session.post(self.url.replace("/api/generate", "/api/show"),
+                                    data=json.dumps({"model": self.model})) as resp:
+                if resp.status == 200:
+                    tpl = (await resp.json()).get("template") or ""
+                    need = "{{ .Prompt }}" not in tpl
+        except Exception:
+            pass
+        _RAW_MODE[self.model] = need
+        return need
 
     def _prompt(self, text, target, source, glossary=None):
         lang = LANG_NAMES.get(target, target)
@@ -422,12 +464,13 @@ class OllamaHyMT2Translator(BaseTranslator):
 
     async def translate(self, text, target, source="auto", glossary=None):
         opts = dict(self._OPTIONS, num_predict=predict_cap(text))
+        prompt = self._prompt(text, target, source, glossary)
+        raw = await self._needs_raw()
         body = {
             "model": self.model,
-            "prompt": (self._BOS + self._USER
-                       + self._prompt(text, target, source, glossary)
-                       + self._ASSISTANT),
-            "raw": True,          # 见上：自带模板是坏的，我们自己拼
+            "prompt": ((self._BOS + self._USER + prompt + self._ASSISTANT)
+                       if raw else prompt),
+            "raw": raw,           # 见上：只在自带模板坏掉时才自己拼标记
             "stream": False,
             "options": opts,
             "keep_alive": (self.keep_alive if self.keep_alive is not None
@@ -460,6 +503,9 @@ _SPECIAL_RE = re.compile(r"[<｜｠]*\s*hy[-_][A-Za-z0-9▁_-]+\s*[｜｠>]*")
 # 全角竖线是这个模型词表里的分隔符，正常字幕里不会出现。实测残留过 `ａ｜>`
 # 这种只剩半截的写法——它不含 hy_ 前缀，上面那条正则拦不住。
 _BAR_RE = re.compile(r"[｜｠]+>?")
+# 3. 还有不带 hy 前缀的：`<｠end▁of▁message`。这一类的形状是「▁ 连接的
+#    token 名」，正常中文字幕里不会出现 ▁（U+2581）。
+_TOKEN_RE = re.compile(r"[<｜｠]*\s*[A-Za-z]+(?:▁[A-Za-z]+)+\s*[｜｠>]*")
 # 半角片假名连成一串也是词表残留（实测出现过 `<ｯｯｯｯ｝`）。
 # 中文字幕里不会出现这种东西；要求连续三个以上，避免误伤偶发的单字符。
 _KANA_RE = re.compile(r"[<>{}｛｝]?[ｦ-ﾟ]{3,}[<>{}｛｝]?")
@@ -467,6 +513,7 @@ _KANA_RE = re.compile(r"[<>{}｛｝]?[ｦ-ﾟ]{3,}[<>{}｛｝]?")
 
 def _strip_special(text):
     out = _SPECIAL_RE.sub("", text)
+    out = _TOKEN_RE.sub("", out)
     return _KANA_RE.sub("", _BAR_RE.sub("", out)).strip()
 
 

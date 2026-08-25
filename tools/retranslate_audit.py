@@ -27,6 +27,7 @@ import difflib
 import glob
 import re
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -106,6 +107,10 @@ async def main():
     if tr is None:
         print("本机没有可用的本地翻译模型——先装 Ollama 并让程序拉一次模型")
         return
+    # 直播时强模型是 keep_alive=0 的：它必须调完就从显存消失，否则会和 Whisper
+    # 抢内存，而识别在报警链路上。但这里是**收工后的批处理**，没有 Whisper 在跑，
+    # 逐句卸载只是把 1.9 秒的载入时间乘以段数白扔掉（实测 567 段跑成了两小时）。
+    tr.keep_alive = os.environ.get("OLLAMA_KEEP_ALIVE", "10m")
     print("{}\n共 {} 段{}，其中 {} 段待重译，使用 {}\n".format(
         path, len(segments), "（仅命中违禁词的）" if alerts_only else "",
         len(todo), tr.model))
@@ -131,6 +136,13 @@ async def main():
             if new and was and new.strip() != was.strip():
                 changed.append((text, was, new))
             print("\r  {}/{}".format(i, len(todo)), end="", flush=True)
+    # 批处理跑完就把它从显存里请出去，别让 keep_alive 继续占着——用户很可能
+    # 紧接着就要开下一场直播。
+    tr.keep_alive = 0
+    try:
+        await tr.translate("ok", "zh-CN", source="es")
+    except Exception:
+        pass
     await tr.close()
 
     print("\r  完成 {} 段，用时 {:.0f} 秒\n".format(len(todo), time.time() - t0))
