@@ -26,7 +26,17 @@ el detox | extreme detox | el deto | detox de mango | detox de papaya | la limpi
 # ↑ la limpieza 是她对这款的口语叫法。不加的话会被直译成「清洁」：实录里
 #   "ya pagó la limpieza por separado" 译成了「单独支付了清洁费用」——凭空
 #   变出一笔服务费；"me paso a la limpieza" 译成了「我现在去清洗」。
-las gotitas | las gotas | goticas | D3 K2 | de tres ka dos => D3 K2 维生素滴剂  # 每日 20 滴，舌下含服；夜间版加洋甘菊
+# 拆成两条是实测逼出来的。原来把 las gotitas / las gotas 这些**普通词**和
+# D3 K2 这个**专有词**绑在同一个商品名上，结果是词表提示会把商品名扩散到整段：
+#   "Por eso se llama gotitas"（所以才叫「小滴」）→「所以叫 D3 K2维生素滴剂」
+#   "Todo el OG ... con las gotitas de regalo"      →「全部都是 D3 K2 维生素滴剂」
+# A/B/C 消融确认过是提示影响生成，不是 apply() 的强制替换（关掉提示就正常）。
+# 但也不能直接删掉普通词那一档——删了模型会退回「那些小颗粒」，比现在更糟。
+# 减到「滴剂」这一档刚好：句子读得懂，商品名不再乱跑。
+# 一般规律：词表管专有名词和业务事实，不管普通语言。把普通词绑成商品名，
+# 等于告诉模型「以后看到滴就往这个商品理解」，短期修一条，长期一定误伤。
+D3 K2 | de tres ka dos => D3 K2 维生素滴剂  # 每日 20 滴，舌下含服
+las gotitas | las gotas | goticas => 滴剂
 la moringa | moringa | el jugo de moringa | morenga | morinca => 辣木  # 有果汁 / 胶囊 / 粉三种剂型
 el cafecito | skinny iced coffee | el skinny | esquini | eskini => 瘦身冰咖啡  # 招牌线，多口味
 el tamarindo | tamarindito | iced tamarindo => 罗望子饮  # 墨西哥风味酸角水
