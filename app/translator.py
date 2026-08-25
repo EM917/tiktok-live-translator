@@ -331,16 +331,17 @@ class OllamaGemmaTranslator(BaseTranslator):
                      + "; ".join("{} = {}".format(es, zh) for es, zh in pairs) + ".")
         return head + "\n\n" + text
 
-    # 选项必须逐次完全一致：Ollama 一旦发现 options 变了就会重新加载模型，
-    # 实测会带来 ~4 秒停顿。所以这里定成常量，不做动态调整。
-    _OPTIONS = {"temperature": 0, "num_predict": 200}
+    # temperature 必须逐次一致：Ollama 一旦发现 options 变了就会重新加载模型，
+    # 实测会带来 ~4 秒停顿。num_predict 是例外——它按源文长度算（见
+    # predict_cap），实测改动它不触发重载。
+    _OPTIONS = {"temperature": 0}
 
     async def translate(self, text, target, source="auto", glossary=None):
         body = {
             "model": self.model,
             "prompt": self._prompt(text, target, source, glossary),
             "stream": False,
-            "options": self._OPTIONS,
+            "options": dict(self._OPTIONS, num_predict=predict_cap(text)),
             # 常驻显存：默认空闲 5 分钟就卸载，主播放一段音乐回来后
             # 第一句要多等约 5 秒重新载入
             "keep_alive": os.environ.get("OLLAMA_KEEP_ALIVE", "30m"),
@@ -415,11 +416,12 @@ class OllamaHyMT2Translator(BaseTranslator):
                 "must ONLY output the translated result without any additional "
                 "explanation:\n{text}".format(lang=lang, text=text))
 
-    _OPTIONS = {"temperature": 0, "num_predict": 200, "stop": _STOP}
+    _OPTIONS = {"temperature": 0, "stop": _STOP}
     # 常驻显存的时长。按需调用的实例会把它设成 0，用完立刻卸载。
     keep_alive = None
 
     async def translate(self, text, target, source="auto", glossary=None):
+        opts = dict(self._OPTIONS, num_predict=predict_cap(text))
         body = {
             "model": self.model,
             "prompt": (self._BOS + self._USER
@@ -427,7 +429,7 @@ class OllamaHyMT2Translator(BaseTranslator):
                        + self._ASSISTANT),
             "raw": True,          # 见上：自带模板是坏的，我们自己拼
             "stream": False,
-            "options": self._OPTIONS,
+            "options": opts,
             "keep_alive": (self.keep_alive if self.keep_alive is not None
                            else os.environ.get("OLLAMA_KEEP_ALIVE", "30m")),
         }
@@ -437,6 +439,11 @@ class OllamaHyMT2Translator(BaseTranslator):
                 if resp.status != 200:
                     return None
                 data = await resp.json()
+            if data.get("done_reason") == "length":
+                # 撞到长度上限。实测 70 句真实翻译无一撞到，所以撞了就说明
+                # 模型正在加料——直接判失败，让调用方保留原来那版译文。
+                print("[警告] 译文撞到长度上限（疑似模型在加料），已丢弃")
+                return None
             return _strip_special(data.get("response") or "") or None
         except Exception:
             return None
@@ -471,6 +478,23 @@ _CN_NUM_RE = re.compile(r"[一二三四五六七八九十百千万两半]")
 # 中位 0.35x、P95 0.52x、P99 0.66x，而唯一一条捏造的是 5.9x。
 # 阈值放在 1.5x：这 1959 对里零误判，离捏造那条还差着四倍。
 MAX_LENGTH_RATIO = 1.5
+
+# 生成阶段的硬上限：按源文长度限制能吐多少 token。
+#
+# 这是比事后检查更强的一层——捏造在物理上就吐不出来，而不是吐出来再判掉。
+# 实测 70 句真实翻译，输出 token / 源文字符的比值最大 0.364（中位 0.22）；
+# 上限取 0.8，留 2.2 倍余量，那 70 句**零截断**。而捏造那条的比值约 3.6，
+# 一定会撞上限。
+#
+# 于是「撞上限」本身成了一个近乎确定的信号：正常翻译从不撞它。
+TOKENS_PER_SOURCE_CHAR = 0.8
+MIN_PREDICT = 48          # 短句的地板，别把正常的短译文卡掉
+MAX_PREDICT = 200
+
+
+def predict_cap(text):
+    return max(MIN_PREDICT, min(MAX_PREDICT,
+                                int(len(text or "") * TOKENS_PER_SOURCE_CHAR)))
 _MIN_LEN_FOR_RATIO = 12      # 太短的源文比值没意义（"Nada." 译成一句话很正常）
 
 
