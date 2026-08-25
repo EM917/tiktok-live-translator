@@ -5,6 +5,28 @@ import os
 import re
 from collections import OrderedDict
 
+def api_key(name):
+    """取密钥：环境变量优先，其次界面里填的（存在 settings.json）。
+
+    界面这条路是为了不逼用户开终端——这个工具的用户里有连终端是什么都不知道
+    的人，而「设个环境变量」对他们等于这个功能不存在。
+    settings.json 已在 .gitignore 里，密钥不会被提交；它也从不出现在
+    发给页面的任何消息里（只回传打码后的尾四位）。
+    """
+    val = os.environ.get(name)
+    if val:
+        return val.strip()
+    from .settings import load_settings
+    return str(load_settings().get("api_keys", {}).get(name, "")).strip() or None
+
+
+def mask_key(val):
+    """给界面看的形态：只留尾四位，其余打码。"""
+    if not val:
+        return ""
+    return "…" + val[-4:] if len(val) > 4 else "…"
+
+
 TRANSLATOR_CHOICES = ["auto", "hymt2", "hymt2-7b", "gemma",
                       "deepl", "google", "claude", "openai", "none"]
 
@@ -142,9 +164,9 @@ class DeepLTranslator(BaseTranslator):
 
     def __init__(self):
         super().__init__()
-        self.api_key = os.environ.get("DEEPL_API_KEY")
+        self.api_key = api_key("DEEPL_API_KEY")
         if not self.api_key:
-            raise RuntimeError("使用 --translator deepl 需要设置环境变量 DEEPL_API_KEY")
+            raise RuntimeError("还没有填 DeepL 密钥——在页面上的「翻译引擎」里填一次即可")
         host = ("https://api-free.deepl.com" if self.api_key.strip().endswith(":fx")
                 else "https://api.deepl.com")
         self.url = os.environ.get("DEEPL_URL", host).rstrip("/") + "/v2/translate"
@@ -190,9 +212,9 @@ class ClaudeTranslator(BaseTranslator):
 
     def __init__(self):
         super().__init__()
-        self.api_key = os.environ.get("ANTHROPIC_API_KEY")
+        self.api_key = api_key("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise RuntimeError("使用 --translator claude 需要设置环境变量 ANTHROPIC_API_KEY")
+            raise RuntimeError("还没有填 Claude 密钥——在页面上的「翻译引擎」里填一次即可")
 
     async def translate(self, text, target, source="auto", glossary=None):
         lang = LANG_NAMES.get(target, target)
@@ -227,9 +249,9 @@ class OpenAITranslator(BaseTranslator):
 
     def __init__(self):
         super().__init__()
-        self.api_key = os.environ.get("OPENAI_API_KEY")
+        self.api_key = api_key("OPENAI_API_KEY")
         if not self.api_key:
-            raise RuntimeError("使用 --translator openai 需要设置环境变量 OPENAI_API_KEY")
+            raise RuntimeError("还没有填 OpenAI 密钥——在页面上的「翻译引擎」里填一次即可")
         base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.url = base + "/chat/completions"
         self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")

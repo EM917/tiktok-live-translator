@@ -175,11 +175,16 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, highest terminolog
 | `hymt2` | Hy-MT2 1.8B (Tencent, Apache 2.0). Recommended for most machines |
 | `hymt2-7b` | Hy-MT2 7B. Highest terminology accuracy; opt-in only, see below |
 | `gemma` | TranslateGemma 4B. `OLLAMA_TRANSLATE_MODEL` selects `translategemma:12b`/`27b` |
-| `deepl` | Requires `DEEPL_API_KEY`. A key ending in `:fx` is routed to the free endpoint automatically. Subtitle text is sent to DeepL |
+| `deepl` | Key entered on the home screen (or `DEEPL_API_KEY`). A key ending in `:fx` is routed to the free endpoint automatically. Subtitle text is sent to DeepL |
 | `google` | Google Translate's free endpoint, no key required. Subtitle text is sent to Google; rate-limited per IP |
-| `claude` | Requires `ANTHROPIC_API_KEY`; model overridable via `CLAUDE_TRANSLATE_MODEL` |
-| `openai` | Requires `OPENAI_API_KEY`; optional `OPENAI_BASE_URL`, `OPENAI_MODEL`. Compatible with any OpenAI-style API including local LM Studio / vLLM |
+| `claude` | Key entered on the home screen (or `ANTHROPIC_API_KEY`); model overridable via `CLAUDE_TRANSLATE_MODEL` |
+| `openai` | Key entered on the home screen (or `OPENAI_API_KEY`); optional `OPENAI_BASE_URL`, `OPENAI_MODEL`. Compatible with any OpenAI-style API including local LM Studio / vLLM |
 | `none` | Transcription only, no translation |
+
+The engine is chosen on the home screen, where API keys are entered too — no
+terminal and no environment variables. Keys are stored in `settings.json`,
+which is git-ignored, and are never sent back to the page; only the last four
+characters are shown so you can tell which key is in place.
 
 The self-check on the home screen reports which engine is in use, so a fallback
 to the network engine is visible rather than silent.
@@ -570,11 +575,15 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，术语准确率�
 | `hymt2` | Hy-MT2 1.8B（腾讯，Apache 2.0）。多数机器的推荐档位 |
 | `hymt2-7b` | Hy-MT2 7B。术语准确率最高，需显式指定，原因见下 |
 | `gemma` | TranslateGemma 4B。`OLLAMA_TRANSLATE_MODEL` 可切换至 `translategemma:12b`/`27b` |
-| `deepl` | 需要 `DEEPL_API_KEY`。以 `:fx` 结尾的免费 key 会自动走对应域名。**字幕文本会发送给 DeepL** |
+| `deepl` | 密钥在首页填写（也可用 `DEEPL_API_KEY`）。以 `:fx` 结尾的免费 key 会自动走对应域名。**字幕文本会发送给 DeepL** |
 | `google` | Google 翻译免费接口，无需密钥。字幕文本会发送至 Google，且按 IP 限流 |
-| `claude` | 需要 `ANTHROPIC_API_KEY`，模型可由 `CLAUDE_TRANSLATE_MODEL` 覆盖 |
-| `openai` | 需要 `OPENAI_API_KEY`，可选 `OPENAI_BASE_URL`、`OPENAI_MODEL`。兼容各类 OpenAI 风格接口，含本地 LM Studio / vLLM |
+| `claude` | 密钥在首页填写（也可用 `ANTHROPIC_API_KEY`），模型可由 `CLAUDE_TRANSLATE_MODEL` 覆盖 |
+| `openai` | 密钥在首页填写（也可用 `OPENAI_API_KEY`），可选 `OPENAI_BASE_URL`、`OPENAI_MODEL`。兼容各类 OpenAI 风格接口，含本地 LM Studio / vLLM |
 | `none` | 仅显示识别原文，不翻译 |
+
+引擎在首页选择，API 密钥也填在那里——不需要终端，也不需要环境变量。密钥保存在
+`settings.json`（已被 git 忽略），**从不回传页面**，界面上只显示尾四位，
+供你确认填的是哪一个。
 
 首页自检会显示当前使用的引擎，因此回退至网络引擎的情况可见而非静默发生。
 

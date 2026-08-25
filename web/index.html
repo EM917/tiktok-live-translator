@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=20">
+  <link rel="stylesheet" href="/static/style.css?v=21">
 </head>
 <body>
   <header class="topbar">
@@ -112,6 +112,33 @@
         <ul id="sc-list" class="sc-list hidden"></ul>
       </div>
 
+      <!-- 翻译引擎。密钥填在这里而不是环境变量——这个工具的用户里
+           有连终端是什么都不知道的人，「设个环境变量」对他们等于功能不存在。 -->
+      <div id="engine-card" class="engine-card">
+        <div class="engine-head">
+          <span class="engine-title">🌐 翻译引擎</span>
+          <span id="engine-active" class="engine-active"></span>
+        </div>
+        <div class="engine-row">
+          <select id="engine-select">
+            <option value="auto">自动（优先本地，离线免费）</option>
+            <option value="hymt2">本地 Hy-MT2 1.8B</option>
+            <option value="hymt2-7b">本地 Hy-MT2 7B（更准，更吃内存）</option>
+            <option value="deepl">DeepL API</option>
+            <option value="claude">Claude API</option>
+            <option value="openai">OpenAI 兼容 API</option>
+            <option value="google">Google 免费接口</option>
+            <option value="none">不翻译，只显示原文</option>
+          </select>
+          <input id="engine-key" type="password" class="hidden"
+                 spellcheck="false" autocomplete="off" placeholder="粘贴 API 密钥">
+          <button id="engine-save" class="btn small">保存</button>
+        </div>
+        <div id="engine-note" class="engine-note">
+          默认用本地模型：完全离线、不限量、字幕不出本机。
+        </div>
+      </div>
+
       <div id="watch-card" class="watch-card">
         <div class="watch-head">
           <span class="watch-title">🚨 违禁词实时报警</span>
@@ -158,6 +185,6 @@
   </script>
   <script src="/static/normalize.js?v=1"></script>
   <script src="/static/follow.js?v=1"></script>
-  <script src="/static/app.js?v=33"></script>
+  <script src="/static/app.js?v=34"></script>
 </body>
 </html>
