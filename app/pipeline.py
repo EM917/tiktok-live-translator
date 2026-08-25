@@ -1002,7 +1002,7 @@ class Pipeline:
 
     async def _translate_alert(self, alert_ids, context):
         """把报警上下文翻成中文，回来后补进这一批报警（它们共用同一段上下文）。"""
-        from .translator import create_strong_translator, looks_like_a_reply
+        from .translator import create_strong_translator, looks_fabricated
 
         if not context.strip():
             return
@@ -1016,7 +1016,7 @@ class Pipeline:
                     if self.glossary else ())
             out = await tr.translate(context, self.target, source="auto",
                                      glossary=hint or None)
-            if out and looks_like_a_reply(context, out):
+            if out and looks_fabricated(context, out):
                 print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
                       "改用常规引擎")
                 out = await self.translator.translate(
@@ -1065,7 +1065,7 @@ class Pipeline:
         哪一句。实测强模型装卸只要约 2 秒，按需调用完全划算；常驻反而会把
         识别从 1.4 秒拖到 3.2 秒，直接推高违禁词报警延迟。
         """
-        from .translator import create_strong_translator, looks_like_a_reply
+        from .translator import create_strong_translator, looks_fabricated
 
         job = self._recent.get(seq)
         if job is None:
@@ -1099,7 +1099,7 @@ class Pipeline:
             out = await self._strong.translate(
                 job["text"], job["target"], source=job["lang"] or "auto",
                 glossary=hint or None)
-            if out and looks_like_a_reply(job["text"], out):
+            if out and looks_fabricated(job["text"], out):
                 # 强模型在「长句 + 带疑问」上会改成回话而不是翻译。
                 # 宁可留着快译，也不能把凭空生成的内容写进屏幕和审计记录。
                 print("[警告] 重译结果不像译文（疑似模型在回话），已丢弃")

@@ -18,7 +18,7 @@ from app.glossary import load                      # noqa: E402
 from app.translator import (                       # noqa: E402
     OllamaGemmaTranslator, OllamaHyMT2Translator,
 )
-from tools._benchdata import sentences             # noqa: E402
+from tools._benchdata import sentences, term_present             # noqa: E402
 
 
 def _hymt2(model):
@@ -62,7 +62,7 @@ async def main():
             for w in wants:
                 key = "多词短语（今天新加）" if w in TUNED else "原有词条（多为商品名）"
                 split[key][1] += 1
-                if w in out:
+                if term_present(w, out):
                     split[key][0] += 1
         each.sort()
         hit = sum(h for h, _ in split.values())
