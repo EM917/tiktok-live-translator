@@ -961,7 +961,7 @@ class Pipeline:
         又不至于让密钥出现在任何一条 WebSocket 消息里。
         """
         from .settings import load_settings, save_setting
-        from .translator import TRANSLATOR_CHOICES, mask_key
+        from .translator import TRANSLATOR_CHOICES
 
         if engine not in TRANSLATOR_CHOICES:
             return
