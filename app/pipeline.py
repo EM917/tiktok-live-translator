@@ -1165,8 +1165,8 @@ class Pipeline:
                 findings = check(job["text"], translated)
                 if findings:
                     self.audit.validation(job["id"], findings)
-                    print("[校验] 第 {} 条译文可疑：{}".format(
-                        job["id"], findings[0][1]))
+                    print("[校验] 第 {} 条译文可疑（{}）：{}".format(
+                        job["id"], findings[0][1], findings[0][2]))
             except Exception as exc:
                 print("[警告] 译文校验本身出错（不影响字幕）: {}".format(exc))
         await self._publish_translation(

@@ -135,15 +135,18 @@ def _present(value, pool):
 
 
 def check(source, translated, glossary=None):
-    """返回 [(层级, 说明)]；空列表表示没查出破绽。
+    """返回 [(层级, 规则名, 说明)]；空列表表示没查出破绽。
 
-    层级是 "hard" / "commerce" / "suspect"，调用方自己决定各层怎么处置。
+    层级是 "hard" / "commerce" / "suspect"，规则名用来把影子数据按**原因**
+    拆开统计。只按层看会把好规则和坏规则捆在一起——实测 commerce 层
+    6 标 6 中零误伤，而 hard 层里各条规则的精确率差得很远。最终多半不是
+    「整层开关」，而是挑出在实盘里稳住高精确的那几条规则单独放行。
     """
     found = []
     if not (translated or "").strip():
-        return [("hard", "译文为空")]
+        return [("hard", "empty_output", "译文为空")]
     if _LEAK.search(translated):
-        found.append(("hard", "译文里残留了模型的特殊 token"))
+        found.append(("hard", "token_leak", "译文里残留了模型的特殊 token"))
 
     src_nums = _numbers(source, es=True)
     out_nums = _numbers(translated, cn=True)
@@ -152,14 +155,14 @@ def check(source, translated, glossary=None):
     extra_pool = _numbers(translated)
     for n in src_nums:
         if not _present(n, out_nums):
-            found.append(("hard", "源文里的数字 {} 在译文里没有了".format(n)))
+            found.append(("hard", "missing_number", "源文里的数字 {} 在译文里没有了".format(n)))
     for n in extra_pool:
         if not _present(n, src_nums):
-            found.append(("hard", "译文里的数字 {} 是源文没有的".format(n)))
+            found.append(("hard", "invented_number", "译文里的数字 {} 是源文没有的".format(n)))
     if _CURRENCY_ES.search(source) and not _CURRENCY_ZH.search(translated):
-        found.append(("hard", "源文提到金额，译文里没有货币单位"))
+        found.append(("hard", "missing_currency", "源文提到金额，译文里没有货币单位"))
     if _PERCENT.search(source) and "%" not in translated and "百分" not in translated:
-        found.append(("hard", "源文的百分比在译文里没有了"))
+        found.append(("hard", "missing_percent", "源文的百分比在译文里没有了"))
 
     # ---- 商业结构：数字都在，但关系被改坏 ----
     for m in _BUNDLE.finditer(source):
@@ -170,7 +173,7 @@ def check(source, translated, glossary=None):
         for pm in re.finditer(re.escape(price.split(".")[0]), translated):
             tail = translated[pm.end():pm.end() + 4].lstrip()
             if _COUNTER.match(tail):
-                found.append(("commerce",
+                found.append(("commerce", "price_read_as_quantity",
                               "「{} por {}」里的单价 {} 在译文里被当成了件数（后面跟着「{}」）"
                               .format(qty_raw, price, price, tail[0])))
                 break
@@ -179,7 +182,7 @@ def check(source, translated, glossary=None):
         for pm in re.finditer(re.escape(amount), translated):
             tail = translated[pm.end():pm.end() + 4].lstrip()
             if _COUNTER.match(tail) and not _CURRENCY_ZH.match(tail):
-                found.append(("commerce",
+                found.append(("commerce", "threshold_read_as_count",
                               "「orden de {}」是门槛金额，译文却把 {} 读成了「{}」"
                               .format(amount, amount, tail[0])))
                 break
@@ -188,7 +191,7 @@ def check(source, translated, glossary=None):
     for zh_re, es_re in _INVENTED:
         m = zh_re.search(translated)
         if m and not es_re.search(source):
-            found.append(("suspect",
+            found.append(("suspect", "invented_promo_concept",
                           "源文没提到，译文却出现了「{}」".format(m.group(0))))
     return found
 
@@ -196,13 +199,18 @@ def check(source, translated, glossary=None):
 LEVELS = ("hard", "commerce", "suspect")
 
 
-def verdict(findings, escalate_from="commerce"):
+def verdict(findings, escalate_from="commerce", rules=None):
     """把 findings 归结成一个动作：ok / escalate。
 
     默认 hard 与 commerce 触发升级，suspect 只记录——第一版宁可少抓，
     也不能把正常字幕成批推给强引擎（那会和 Whisper 抢内存，而识别在报警链路上）。
+
+    `rules` 给的是一份白名单，只有名字在里面的规则才有资格触发升级。等实盘影子
+    数据按规则拆开之后，多半会走这条路：放行那几条稳住高精确的，其余继续观察。
     """
     if not findings:
         return "ok"
+    if rules is not None:
+        return "escalate" if any(rule in rules for _lv, rule, _w in findings) else "ok"
     idx = LEVELS.index(escalate_from)
-    return "escalate" if any(LEVELS.index(lv) <= idx for lv, _ in findings) else "ok"
+    return "escalate" if any(LEVELS.index(lv) <= idx for lv, _r, _w in findings) else "ok"

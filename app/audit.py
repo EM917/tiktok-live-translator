@@ -85,7 +85,8 @@ class AuditLog:
         它标出来的那些，人工看是不是真的有问题。
         """
         self._write({"type": "translation_check", "seq": seq,
-                     "findings": [{"level": lv, "why": why} for lv, why in findings]})
+                     "findings": [{"level": lv, "rule": rule, "why": why}
+                                  for lv, rule, why in findings]})
 
     def translation_strong(self, seq, translated, translate_ms, ok, model,
                            trigger):

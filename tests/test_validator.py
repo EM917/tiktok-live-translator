@@ -12,7 +12,11 @@ from app.validator import check, verdict
 
 
 def _levels(source, translated):
-    return {lv for lv, _ in check(source, translated)}
+    return {lv for lv, _rule, _why in check(source, translated)}
+
+
+def _rules(source, translated):
+    return {rule for _lv, rule, _why in check(source, translated)}
 
 
 # ---- commerce：数字都在，但关系被改坏 --------------------------------
@@ -40,7 +44,7 @@ def test_an_order_threshold_read_as_a_count_is_caught():
 # ---- hard：确定的错 --------------------------------------------------
 
 def test_an_empty_translation_is_a_hard_failure():
-    assert check("hola", "") == [("hard", "译文为空")]
+    assert check("hola", "") == [("hard", "empty_output", "译文为空")]
 
 
 def test_leaked_model_tokens_are_a_hard_failure():
@@ -91,15 +95,33 @@ def test_suspect_alone_does_not_escalate():
     （18 标 1 中），开了会把正常字幕成批推给强引擎。只记录，不升级。"""
     src = "De 25 dólares, chicas y chicos, por los próximos 9 minutos"
     found = check(src, "所有商品均享受25美元折扣，接下来9分钟")
-    assert {lv for lv, _ in found} == {"suspect"}
+    assert {lv for lv, _r, _w in found} == {"suspect"}
     assert verdict(found) == "ok"
     assert verdict(found, escalate_from="suspect") == "escalate"
 
 
 def test_hard_and_commerce_escalate_by_default():
-    assert verdict([("hard", "x")]) == "escalate"
-    assert verdict([("commerce", "x")]) == "escalate"
+    assert verdict([("hard", "missing_number", "x")]) == "escalate"
+    assert verdict([("commerce", "price_read_as_quantity", "x")]) == "escalate"
     assert verdict([]) == "ok"
+
+
+def test_every_finding_carries_a_rule_name():
+    """影子数据要按**原因**拆开统计，不能只按层。实测各条规则的精确率差得
+    很远——commerce 那两条 6 标 6 中，hard 里有的只有 43%。最终多半是挑规则
+    放行，而不是整层开关。"""
+    found = check("Una por 20 o dos por 35.", "20个一个，或35个两个。")
+    assert found and all(len(f) == 3 and f[1] for f in found)
+    assert _rules("Una por 20 o dos por 35.", "20个一个，或35个两个。") == {
+        "price_read_as_quantity"}
+    assert _rules("hola", "") == {"empty_output"}
+
+
+def test_a_rule_whitelist_can_narrow_what_escalates():
+    """等实盘数据出来，多半只放行那几条稳住高精确的规则。"""
+    found = check("Una por 20 o dos por 35.", "20个一个，或35个两个。")
+    assert verdict(found, rules={"price_read_as_quantity"}) == "escalate"
+    assert verdict(found, rules={"token_leak"}) == "ok"
 
 
 # ---- 影子模式：不能改变屏幕上的任何一条字幕 --------------------------
@@ -143,4 +165,4 @@ def test_shadow_mode_never_changes_the_subtitle(monkeypatch, tmp_path):
 
     assert published == ["20个一个，或35个两个。"]      # 原样上屏，一个字没动
     assert audited and audited[0][0] == 7               # 但记下来了
-    assert any(lv == "commerce" for lv, _ in audited[0][1])
+    assert any(lv == "commerce" for lv, _r, _w in audited[0][1])
