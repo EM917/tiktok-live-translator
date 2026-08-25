@@ -13,6 +13,11 @@
   var statusBanner = document.getElementById("status-banner");
   var liveBar = document.getElementById("live-bar");
   var jumpBtn = document.getElementById("jump-latest");
+  var engineSelect = document.getElementById("engine-select");
+  var engineKey = document.getElementById("engine-key");
+  var engineSave = document.getElementById("engine-save");
+  var engineActive = document.getElementById("engine-active");
+  var engineNote = document.getElementById("engine-note");
   var liveTranslated = document.getElementById("live-translated");
   var liveOriginal = document.getElementById("live-original");
   var targetSel = document.getElementById("target-lang");
@@ -271,6 +276,7 @@
         if (msg.config) {
           if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
+          if (msg.config.engine) renderEngine(msg.config.engine);
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
           if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
@@ -331,6 +337,9 @@
         break;
       case "watchlist":
         renderWatchlist(msg);
+        break;
+      case "engine":
+        renderEngine(msg);
         break;
       case "selfcheck":
         renderSelfcheck(msg);
@@ -818,6 +827,60 @@
     if (needsResync(historyEl, following)) scrollToBottomNow();
     updateJumpButton();
   }, 2000);
+
+  // ---- 翻译引擎 ----
+  // 需要密钥的引擎才显示密钥框；已经填过的显示尾四位作为占位，
+  // 用户不重填就沿用旧的（页面永远拿不到完整密钥）。
+  var KEY_ENV = { deepl: "DEEPL_API_KEY", claude: "ANTHROPIC_API_KEY",
+                  openai: "OPENAI_API_KEY" };
+  var NOTES = {
+    auto: "默认用本地模型：完全离线、不限量、字幕不出本机。",
+    hymt2: "本地模型，离线免费。多数机器用这一档就够。",
+    "hymt2-7b": "本地模型，术语更准，但会和语音识别抢内存，可能拖慢报警。",
+    deepl: "⚠️ 字幕文本会发送给 DeepL。免费额度每月 100 万字符，约合 30 小时监听。",
+    claude: "⚠️ 字幕文本会发送给 Anthropic，按用量计费。",
+    openai: "⚠️ 字幕文本会发送给该接口的提供方，按用量计费。",
+    google: "⚠️ 字幕文本会发送给 Google，且会按 IP 限流。",
+    none: "只显示识别原文，不翻译。"
+  };
+  var engineKeys = {};
+
+  function renderEngine(info) {
+    if (!engineSelect) return;
+    engineKeys = info.keys || {};
+    engineSelect.value = info.engine || "auto";
+    engineActive.textContent = info.active ? "当前：" + info.active : "";
+    syncEngineRow();
+  }
+
+  function syncEngineRow() {
+    var env = KEY_ENV[engineSelect.value];
+    engineKey.classList.toggle("hidden", !env);
+    if (env) {
+      var have = engineKeys[env];
+      engineKey.value = "";
+      engineKey.placeholder = have ? "已填 " + have + "（留空则沿用）"
+                                   : "粘贴 API 密钥";
+    }
+    engineNote.textContent = NOTES[engineSelect.value] || "";
+    engineNote.classList.toggle("warn", engineSelect.value in KEY_ENV
+                                        || engineSelect.value === "google");
+  }
+
+  if (engineSelect) {
+    engineSelect.addEventListener("change", syncEngineRow);
+    engineSave.addEventListener("click", function () {
+      engineSave.disabled = true;
+      engineSave.textContent = "切换中…";
+      send({ type: "set_engine", engine: engineSelect.value,
+             api_key: engineKey.value || null });
+      engineKey.value = "";
+      setTimeout(function () {
+        engineSave.disabled = false;
+        engineSave.textContent = "保存";
+      }, 2500);
+    });
+  }
 
   function pad(n) { return (n < 10 ? "0" : "") + n; }
 

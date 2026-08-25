@@ -166,6 +166,8 @@ class Pipeline:
                 "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
         elif mtype == "stop":
             return self.stop_stream()
+        elif mtype == "set_engine":
+            return self.set_engine(msg.get("engine"), msg.get("api_key"))
         elif mtype == "retranslate":
             return self.retranslate(msg.get("id"))
         elif mtype == "apply_update":
@@ -330,6 +332,7 @@ class Pipeline:
         if self._stats_task is None or self._stats_task.done():
             self._stats_task = asyncio.ensure_future(self._stats_loop())
         await self._publish_watchlist()
+        await self._publish_engine()
         # 每场重跑自检：状态会漂。用户按红条的提示改完 banned_terms.txt 点
         # 「开始翻译」，面板若还挂着「词表为空」的红条，下次他就不信这个红条了；
         # 反过来更糟——开播时模型被删了、Ollama 停了、磁盘满了，面板还是启动
@@ -946,6 +949,56 @@ class Pipeline:
         # 「重译」按钮仍然随时可用。
 
         return job
+
+    ENGINE_KEY_ENV = {"deepl": "DEEPL_API_KEY", "claude": "ANTHROPIC_API_KEY",
+                      "openai": "OPENAI_API_KEY"}
+
+    async def set_engine(self, engine, key=None):
+        """从界面切换翻译引擎、并（可选）存下密钥。
+
+        密钥存进 settings.json（已在 .gitignore 里），**从不回传页面**——
+        回传的只有打码后的尾四位，够用户确认「我填的是哪一个」，
+        又不至于让密钥出现在任何一条 WebSocket 消息里。
+        """
+        from .settings import load_settings, save_setting
+        from .translator import TRANSLATOR_CHOICES, mask_key
+
+        if engine not in TRANSLATOR_CHOICES:
+            return
+        if key:
+            env = self.ENGINE_KEY_ENV.get(engine)
+            if env:
+                keys = dict(load_settings().get("api_keys", {}))
+                keys[env] = key.strip()
+                save_setting("api_keys", keys)
+        try:
+            new = create_translator(engine)
+        except RuntimeError as exc:
+            await self.server.broadcast({"type": "notice", "text": str(exc)})
+            return
+        old, self.translator = self.translator, new
+        if old is not None and old is not new:
+            try:
+                await old.close()
+            except Exception:
+                pass
+        self.args.translator = engine
+        save_setting("translator", engine)
+        await self._publish_engine()
+        await self.run_selfcheck()
+
+    async def _publish_engine(self):
+        """把当前引擎和各密钥的填写状态告诉页面（密钥只给尾四位）。"""
+        from .settings import load_settings
+        from .translator import mask_key
+
+        stored = load_settings().get("api_keys", {})
+        info = {"engine": getattr(self.args, "translator", "auto"),
+                "active": getattr(self.translator, "name", None),
+                "keys": {env: mask_key(os.environ.get(env) or stored.get(env, ""))
+                         for env in self.ENGINE_KEY_ENV.values()}}
+        self.server.config["engine"] = info
+        await self.server.broadcast({"type": "engine", **info})
 
     async def _translate_alert(self, alert_ids, context):
         """把报警上下文翻成中文，回来后补进这一批报警（它们共用同一段上下文）。"""
