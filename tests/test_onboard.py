@@ -60,3 +60,58 @@ def test_prepositions_and_articles_are_both_counterexample_signals():
         assert _PREP.search(prefix), prefix
     for plain in ("buenos días ", "vamos ", "gracias "):
         assert not _PREP.search(plain), plain
+
+
+# ---- ⑤ 主播质量抽样 --------------------------------------------------
+
+def test_quality_sampling_shares_one_definition_with_the_benchmark():
+    """分层、种子、评级不能各留一份。漂了之后「这个主播的 14%」和「基准的
+    14%」就不再可比，而那正是这个流程要回答的问题。"""
+    from tools import bench_live, onboard_streamer
+
+    assert onboard_streamer.QUOTA is bench_live.QUOTA
+    assert onboard_streamer.SEED is bench_live.SEED
+    assert onboard_streamer.GRADES is bench_live.GRADES
+    assert onboard_streamer._bucket is bench_live._bucket
+
+
+def test_a_thin_sample_refuses_to_give_a_verdict(capsys, tmp_path, monkeypatch):
+    """2 条错 / 79 条看着很好，但那点样本不足以给一个主播定档。"""
+    import json
+
+    from tools import onboard_streamer as O
+
+    monkeypatch.setattr(O, "QUALITY_DIR", tmp_path)
+    (tmp_path / "quality_x_meta.json").write_text(json.dumps(
+        {"streamer": "x", "engine": "hymt2", "code_commit": "abc",
+         "glossary_hash": "def",
+         "rows": [{"n": i, "bucket": "随机"} for i in range(1, 21)]}),
+        encoding="utf-8")
+    r = tmp_path / "r.json"
+    r.write_text(json.dumps({str(i): "correct" for i in range(1, 21)}),
+                 encoding="utf-8")
+    O.quality_score("x", r)
+    assert "样本不足" in capsys.readouterr().out
+
+
+def test_a_high_error_rate_recommends_a_stronger_engine(capsys, tmp_path,
+                                                        monkeypatch):
+    """实测同一个模型跨主播差 12 倍（2.7% / 14% / 32%），所以「够不够」是
+    逐主播的判断，不是一个全局开关。"""
+    import json
+
+    from tools import onboard_streamer as O
+
+    monkeypatch.setattr(O, "QUALITY_DIR", tmp_path)
+    (tmp_path / "quality_y_meta.json").write_text(json.dumps(
+        {"streamer": "y", "engine": "hymt2", "code_commit": "abc",
+         "glossary_hash": "def",
+         "rows": [{"n": i, "bucket": "随机"} for i in range(1, 121)]}),
+        encoding="utf-8")
+    r = tmp_path / "r.json"
+    r.write_text(json.dumps(
+        {str(i): ("major" if i <= 30 else "correct") for i in range(1, 121)}),
+        encoding="utf-8")
+    O.quality_score("y", r)
+    out = capsys.readouterr().out
+    assert "高风险" in out and "DeepL" in out

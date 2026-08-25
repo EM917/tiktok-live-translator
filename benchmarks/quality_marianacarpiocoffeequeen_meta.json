@@ -1,0 +1,289 @@
+{
+ "streamer": "marianacarpiocoffeequeen",
+ "engine": "hymt2",
+ "code_commit": "b3359f6",
+ "glossary_hash": "35f0edfb95d6",
+ "vocative_hash": "ad12dcbc8318",
+ "rows": [
+  {
+   "n": 1,
+   "bucket": "价格/数字",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 66,
+   "stripped": false
+  },
+  {
+   "n": 2,
+   "bucket": "价格/数字",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 40,
+   "stripped": false
+  },
+  {
+   "n": 3,
+   "bucket": "价格/数字",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 41,
+   "stripped": false
+  },
+  {
+   "n": 4,
+   "bucket": "价格/数字",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 80,
+   "stripped": false
+  },
+  {
+   "n": 5,
+   "bucket": "价格/数字",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 62,
+   "stripped": false
+  },
+  {
+   "n": 6,
+   "bucket": "价格/数字",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 57,
+   "stripped": false
+  },
+  {
+   "n": 7,
+   "bucket": "商品名/词表",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 4,
+   "stripped": false
+  },
+  {
+   "n": 8,
+   "bucket": "商品名/词表",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 3,
+   "stripped": false
+  },
+  {
+   "n": 9,
+   "bucket": "商品名/词表",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 27,
+   "stripped": false
+  },
+  {
+   "n": 10,
+   "bucket": "商品名/词表",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 45,
+   "stripped": false
+  },
+  {
+   "n": 11,
+   "bucket": "残句",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 13,
+   "stripped": false
+  },
+  {
+   "n": 12,
+   "bucket": "残句",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 32,
+   "stripped": false
+  },
+  {
+   "n": 13,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 50,
+   "stripped": false
+  },
+  {
+   "n": 14,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 20,
+   "stripped": false
+  },
+  {
+   "n": 15,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 28,
+   "stripped": false
+  },
+  {
+   "n": 16,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 10,
+   "stripped": false
+  },
+  {
+   "n": 17,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 65,
+   "stripped": false
+  },
+  {
+   "n": 18,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 12,
+   "stripped": false
+  },
+  {
+   "n": 19,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 23,
+   "stripped": false
+  },
+  {
+   "n": 20,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 2,
+   "stripped": false
+  },
+  {
+   "n": 21,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 24,
+   "stripped": false
+  },
+  {
+   "n": 22,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 81,
+   "stripped": false
+  },
+  {
+   "n": 23,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 83,
+   "stripped": false
+  },
+  {
+   "n": 24,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 58,
+   "stripped": false
+  },
+  {
+   "n": 25,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 8,
+   "stripped": false
+  },
+  {
+   "n": 26,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 38,
+   "stripped": false
+  },
+  {
+   "n": 27,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 56,
+   "stripped": false
+  },
+  {
+   "n": 28,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 11,
+   "stripped": false
+  },
+  {
+   "n": 29,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 48,
+   "stripped": false
+  },
+  {
+   "n": 30,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 73,
+   "stripped": false
+  },
+  {
+   "n": 31,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 77,
+   "stripped": false
+  },
+  {
+   "n": 32,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 31,
+   "stripped": false
+  },
+  {
+   "n": 33,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 51,
+   "stripped": false
+  },
+  {
+   "n": 34,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 37,
+   "stripped": false
+  },
+  {
+   "n": 35,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 29,
+   "stripped": false
+  },
+  {
+   "n": 36,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 55,
+   "stripped": false
+  },
+  {
+   "n": 37,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 64,
+   "stripped": false
+  },
+  {
+   "n": 38,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 18,
+   "stripped": false
+  },
+  {
+   "n": 39,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 79,
+   "stripped": false
+  },
+  {
+   "n": 40,
+   "bucket": "随机",
+   "session": "session-20260825-113651.jsonl",
+   "seq": 61,
+   "stripped": false
+  }
+ ]
+}

@@ -10,6 +10,10 @@
 
     发现 → 度量 → 找反例 → A/B → 人工拍板 → 才生效
 
+接一个新主播真正要回答的问题是「**1.8B 对这个人够不够**」，而不是「1.8B 好不好」。
+实测同一个模型同一份词表，跨主播的严重错误率差 12 倍（2.7% / 14% / 32%）——
+所以这应当是逐主播的判断，不是一个全局配置。第 ⑤ 块就是为这个问题准备的。
+
 跑法：
     python3 tools/onboard_streamer.py logs/session-xxx.jsonl
     python3 tools/onboard_streamer.py logs/session-xxx.jsonl --ablate
@@ -187,8 +191,137 @@ async def ablate(src, tr, base_glossary, extra_entries, voc_terms):
     return results
 
 
+
+
+# ---- ⑤ 该主播的翻译质量抽样 ------------------------------------------
+
+QUALITY_DIR = Path("benchmarks")
+# 分层、种子、评级全部**直接引用** bench_live，不复制。两处各留一份迟早会漂，
+# 而一旦漂了，「这个主播的 14%」和「基准的 14%」就不再可比。
+from tools.bench_live import GRADES, QUOTA, SEED, _bucket   # noqa: E402
+
+
+async def quality_sheet(streamer, n=120):
+    """抽这个主播的字幕、翻一遍、出一张盲评表。
+
+    **不自动判断对错。** 判断翻译对不对没有可靠的机器判据——模型当裁判实测
+    否决过（1.8B 对所有句子都判不一致，7B 十次对四次），回译比词汇重合度也
+    否决过（好译文和坏译文得分一样）。工具能做的是把抽样、随机化、成表这些
+    机械步骤固定下来，让人只做最后判断。
+
+    先把流程固定，再去修具体错误——顺序反了的话，会不自觉地按已经看到的错误
+    去调整评估方式。
+    """
+    import random
+
+    from app.translator import create_translator
+
+    sessions = provenance.corpus(streamer=streamer)
+    if not sessions:
+        print("没有 {} 的语料".format(streamer))
+        return
+    g = load("glossary.txt")
+    seen, pool = set(), []
+    for meta in sessions:
+        src, _tr = captions(meta["path"])
+        for seq, t in src.items():
+            if len(t) < 25 or t.lower() in seen:
+                continue
+            seen.add(t.lower())
+            pool.append({"text": t, "session": Path(meta["path"]).name, "seq": seq})
+    rnd = random.Random(SEED)
+    rnd.shuffle(pool)
+    buckets = {}
+    for p in pool:
+        buckets.setdefault(_bucket(p["text"], g), []).append(p)
+    picked, used = [], set()
+    for name, quota in QUOTA:
+        if name == "随机":
+            continue
+        share = max(1, round(quota * n / 200))
+        take = [p for p in buckets.get(name, []) if p["text"] not in used][:share]
+        for p in take:
+            p["bucket"] = name
+            used.add(p["text"])
+        picked += take
+    for p in [p for p in pool if p["text"] not in used][:n - len(picked)]:
+        p["bucket"] = "随机"
+        picked.append(p)
+
+    tr = create_translator("hymt2")
+    inner = getattr(tr, "inner", tr)
+    if hasattr(inner, "keep_alive"):
+        inner.keep_alive = "10m"
+    lines, meta_rows = [], []
+    for i, p in enumerate(picked, 1):
+        t, stripped = strip(p["text"])
+        out = await tr.translate(t, "zh-CN", source="es",
+                                 glossary=tuple(g.translation_pairs(t)) or None)
+        out = g.apply(t, out or "") or "（翻译失败）"
+        lines.append("### {}\n**ES** {}\n\n**ZH** {}\n".format(i, p["text"], out))
+        meta_rows.append({"n": i, "bucket": p["bucket"], "session": p["session"],
+                          "seq": p["seq"], "stripped": stripped})
+        if i % 25 == 0:
+            print("  {}/{}".format(i, len(picked)), flush=True)
+    await tr.close()
+
+    QUALITY_DIR.mkdir(exist_ok=True)
+    sheet = QUALITY_DIR / "quality_{}.md".format(streamer)
+    sheet.write_text("\n".join(lines), encoding="utf-8")
+    (QUALITY_DIR / "quality_{}_meta.json".format(streamer)).write_text(
+        json.dumps({"streamer": streamer, "engine": "hymt2",
+                    "code_commit": provenance.code_commit(),
+                    "glossary_hash": provenance.file_hash("glossary.txt"),
+                    "vocative_hash": provenance.file_hash("app/vocative.py"),
+                    "rows": meta_rows}, ensure_ascii=False, indent=1),
+        encoding="utf-8")
+    print("\n{} 条评分表 → {}".format(len(picked), sheet))
+    print("逐条判 correct / minor / major / omission，存成 {\"1\": \"major\", ...}，"
+          "再跑 --score")
+
+
+def quality_score(streamer, ratings_path):
+    """把人工评分汇总成这个主播的画像。"""
+    meta = json.loads((QUALITY_DIR / "quality_{}_meta.json".format(streamer))
+                      .read_text(encoding="utf-8"))
+    ratings = json.loads(Path(ratings_path).read_text(encoding="utf-8"))
+    by_n = {r["n"]: r for r in meta["rows"]}
+    tally, by_bucket = Counter(), defaultdict(Counter)
+    for k, grade in ratings.items():
+        row = by_n.get(int(k))
+        if not row or grade not in GRADES:
+            continue
+        tally[grade] += 1
+        by_bucket[row["bucket"]][grade] += 1
+    n = sum(tally.values()) or 1
+    major = 100.0 * tally["major"] / n
+    print("主播 {}   引擎 {}   commit {}   词表 {}".format(
+        streamer, meta["engine"], meta["code_commit"], meta["glossary_hash"]))
+    print("  {} 条已评：正确 {:.0f}%  轻微 {:.0f}%  **严重 {:.0f}%**  漏译 {:.0f}%".format(
+        n, 100.0*tally["correct"]/n, 100.0*tally["minor"]/n, major,
+        100.0*tally["omission"]/n))
+    for b, c in by_bucket.items():
+        m = sum(c.values()) or 1
+        print("    {:<14} {:>3} 条  严重 {:.0f}%".format(b, m, 100.0*c["major"]/m))
+    print()
+    if n < 100:
+        print("  样本不足 100 条，**不要据此给这个主播定档**——先攒够再说。")
+    elif major <= 5:
+        print("  初步：低风险，本地 1.8B 大概够用。仍建议再抽一场确认。")
+    elif major <= 12:
+        print("  初步：中等风险，价格/数字那一档要重点看。")
+    else:
+        print("  初步：高风险，建议这个主播默认走 DeepL 或 7B。")
+
+
 async def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--quality" in sys.argv:
+        await quality_sheet(args[0], int(args[1]) if len(args) > 1 else 120)
+        return
+    if "--score" in sys.argv:
+        quality_score(args[0], args[1])
+        return
     if not args:
         print(__doc__)
         return
