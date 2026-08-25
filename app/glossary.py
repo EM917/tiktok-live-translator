@@ -27,10 +27,26 @@ GLOSSARY_EXAMPLE = ROOT / "glossary.example.txt"
 MAX_ASR_TERMS = 18
 
 
+# 词条分两类，因为它们该走的通道不同：
+#
+#   实体  专有名词、商品名、成分名（moringa、D3 K2、Quema Lonja）。
+#         三处都该用：识别热词、翻译提示、译后兜底。
+#   短语  业务动作和促销框架（una orden de、te ancle）。**不该进识别热词**——
+#         Whisper 的 initial_prompt 是当作上文续写的，塞进动词短语会诱导它
+#         把没说的话听出来（实测 99 个词的提示曾让它凭空多识别出一个词）。
+#
+# 不写类型默认算实体，保持既有行为。第三类（称呼）根本不在这个文件里，
+# 它在 app/vocative.py，翻译前直接摘掉——见那个模块开头的说明。
+ENTITY, PHRASE = "实体", "短语"
+_TYPE_RE = re.compile(r"^#\s*\[类型[:：]\s*(实体|短语)\s*\]")
+
+
 class Glossary:
     def __init__(self, entries):
         # entries: [(西语变体列表, 中文译法)]，保持文件顺序（前面的优先级高）
-        self.entries = entries
+        # kinds 与 entries 一一对应；旧调用方不传就全按实体处理。
+        self.entries = [e[:2] for e in entries]
+        self.kinds = [e[2] if len(e) > 2 else ENTITY for e in entries]
 
     @property
     def enabled(self):
@@ -40,9 +56,12 @@ class Glossary:
         """给 Whisper 的热词提示。写成自然的西语句子而不是逗号词表——
         Whisper 的 prompt 是当作「上文」续写的，自然句式的引导效果更好。"""
         names = []
-        for variants, _zh in self.entries[:limit]:
-            if variants:
-                names.append(variants[0])
+        for (variants, _zh), kind in zip(self.entries, self.kinds):
+            if kind != ENTITY or not variants:
+                continue
+            names.append(variants[0])
+            if len(names) >= limit:
+                break
         if not names:
             return None
         return "Productos: " + ", ".join(names) + "."
@@ -132,9 +151,18 @@ def _with_possessives(variant):
 
 
 def parse(text):
-    """解析词表文本。格式：`变体1 | 变体2 => 中文译法   # 备注`"""
+    """解析词表文本。格式：`变体1 | 变体2 => 中文译法   # 备注`
+
+    `# [类型: 短语]` 这样的整行注释会切换后续词条的类型，直到下一个标记。
+    不写默认是实体。
+    """
     entries = []
+    kind = ENTITY
     for line in text.splitlines():
+        marker = _TYPE_RE.match(line.strip())
+        if marker:
+            kind = marker.group(1)
+            continue
         line = line.split("#", 1)[0].strip()
         if not line or "=>" not in line:
             continue
@@ -147,7 +175,7 @@ def parse(text):
                     variants.append(v)
         zh = right.strip()
         if variants and zh:
-            entries.append((variants, zh))
+            entries.append((variants, zh, kind))
     return entries
 
 

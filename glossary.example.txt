@@ -70,6 +70,12 @@ una cucharadita | una cucharada | un scoop => 一小勺
 el batido | licuado | malteada => 冲调饮品
 en ayunas | en ayunitas => 空腹服用
 
+# ---- 以下是「短语」类：业务动作与促销框架，不是专有名词 ----
+# **不进识别热词**：Whisper 的 initial_prompt 是当作上文续写的，塞进动词短语会
+# 诱导它把没说的话听出来（实测 99 个词的提示曾让它凭空多识别出一个词）。
+# 只用于翻译提示和译后兜底。
+# [类型: 短语]
+
 # ==================== 促销 ====================
 tres por sesenta | 3x60 | tres por 60 => 三件 60 美元
 dos por uno | 2x1 | paga uno y llévate dos => 买一送一
@@ -197,8 +203,14 @@ te vence | se te vence | no es que te vence => 会过期
 
 # 夜间版滴剂的助眠成分是缬草。实测被译成「洋甘菊」——**成分说错**。这比商品名
 # 译得不规范严重：中控看到的是一个这场直播里根本没提过的东西。
+# ---- 回到「实体」类：下面是成分名，识别热词可以用 ----
+# [类型: 实体]
+
 valeriana | la valeriana => 缬草
 manzanilla | la manzanilla => 洋甘菊
+# ---- 回到「短语」类 ----
+# [类型: 短语]
+
 
 # 【记：不要加 mango => 钱】
 # 阿根廷俚语里 mango 是「比索/钱」，但这条产品线里它出现 6 次全是芒果口味
