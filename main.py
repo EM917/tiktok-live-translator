@@ -427,6 +427,11 @@ async def main_async(args, state=None):
         state["pipeline"] = pipeline
         state["ready_port"] = args.port   # 窗口线程以此为准（端口可能已自动切换）
     await pipeline._publish_watchlist()   # 首页要立刻显示违禁词表状态
+    # 引擎状态也要在启动时就进 config：以前只在开播/手动切换时发布，
+    # 于是重启后面板显示的是 HTML 里的默认「自动」，恢复的引擎和
+    # 「缺密钥已回退」的提示都要等到开播才看得见——恢复了但看不见，
+    # 等于没恢复
+    await pipeline._publish_engine()
     # 自检放后台跑：有几项要实际执行探测（ffmpeg、Ollama），
     # 不能让它们拖慢界面打开
     pipeline._selfcheck_task = asyncio.ensure_future(pipeline.run_selfcheck())
