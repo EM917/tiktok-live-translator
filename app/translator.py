@@ -32,6 +32,34 @@ def mask_key(val):
 TRANSLATOR_CHOICES = ["auto", "hymt2", "hymt2-7b", "gemma",
                       "deepl", "google", "claude", "openai", "none"]
 
+# 需要密钥的引擎 -> 密钥所在的环境变量名（settings.json 里也用同名字段）
+ENGINE_KEY_ENV = {"deepl": "DEEPL_API_KEY", "claude": "ANTHROPIC_API_KEY",
+                  "openai": "OPENAI_API_KEY"}
+
+
+def restore_engine(cli_value, saved, key_lookup=None):
+    """启动时决定翻译引擎：命令行显式指定 > 界面上次的选择 > auto。
+    返回 (引擎名, 警告文案或 None)。
+
+    界面切换引擎时会 save_setting("translator", ...)，但曾经没有任何地方把它
+    读回来——用户在页面选了 DeepL，重启后被静默重置回 auto。实测一整场直播
+    （2026-08-26）就这样跑在了 1.8B 上，而用户一直按 DeepL 的预期看译文。
+
+    密钥缺失时必须回落 auto 而不是照单恢复：需要密钥的引擎在构造时抛
+    RuntimeError，启动路径据此直接退出——而重新填密钥恰恰得先把界面打开，
+    照单恢复等于把用户锁在门外。
+    """
+    if cli_value:
+        return cli_value, None
+    name = str(saved or "").strip()
+    if name not in TRANSLATOR_CHOICES:
+        return "auto", None          # 没存过，或 settings.json 被改坏
+    env = ENGINE_KEY_ENV.get(name)
+    if env and not (key_lookup or api_key)(env):
+        return "auto", ("上次选的翻译引擎 {} 还没有密钥，本次先用 auto——"
+                        "在页面的「翻译引擎」里重新填一次即可".format(name))
+    return name, None
+
 LANG_NAMES = {
     "zh-CN": "Simplified Chinese", "zh-TW": "Traditional Chinese", "zh": "Chinese",
     "en": "English", "ja": "Japanese", "ko": "Korean", "es": "Spanish",

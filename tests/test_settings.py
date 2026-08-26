@@ -49,3 +49,29 @@ def test_no_stray_tmp_file_left(monkeypatch, tmp_path):
     settings.save_setting("k", "v")
     leftovers = [p.name for p in tmp_path.iterdir()]
     assert leftovers == ["settings.json"]      # 临时文件已原子替换掉
+
+
+# ---- resolve_source：CLI > 界面上次选择 > 西语（产品默认，不是 auto）----
+
+def test_source_first_run_defaults_to_spanish():
+    """首次使用不逐段猜语言：实测 auto 档一场里 22.7% 的段语言标签乱跳。"""
+    assert settings.resolve_source(None, None) == "es"
+    assert settings.resolve_source(None, "") == "es"
+
+
+def test_source_saved_choice_wins_over_default():
+    assert settings.resolve_source(None, "pt") == "pt"
+
+
+def test_source_saved_auto_means_autodetect():
+    """用户在界面里明确选过「自动检测」，不能被产品默认盖掉。"""
+    assert settings.resolve_source(None, "auto") is None
+
+
+def test_source_cli_wins_over_saved():
+    assert settings.resolve_source("en", "es") == "en"
+
+
+def test_source_cli_auto_normalized_to_none():
+    """Whisper 的 language 参数只认语言码或 None，"auto" 字符串会炸。"""
+    assert settings.resolve_source("auto", "es") is None

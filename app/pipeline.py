@@ -17,7 +17,7 @@ from .glossary import load as load_glossary
 from .nethttp import read_all
 from .settings import load_settings, save_setting
 from .telemetry import Telemetry
-from .translator import create_translator
+from .translator import ENGINE_KEY_ENV, create_translator
 
 ROOT = Path(__file__).resolve().parent.parent
 TERMS_FILE = ROOT / "banned_terms.txt"
@@ -110,6 +110,13 @@ class Pipeline:
         saved_room = load_settings().get("room_url")
         if saved_room:
             self.server.config["room_url"] = str(saved_room)[:500]
+        # 主播语言同理走服务端持久化：localStorage 按端口隔离，端口一漂移
+        # 「上次选的西语」就没了。而这一项丢失的代价是整场逐段自动检测语言：
+        # 实测一场里 22.7% 的段被打上非西语标签，纯标点垃圾和按错误语言的
+        # 翻译全从这里来。
+        saved_source = load_settings().get("source_lang")
+        if saved_source:
+            self.server.config["source_lang"] = str(saved_source)[:12]
         self._counter = 0
         self._asr_pool = None            # 每条直播一个独立线程池，停止时整个丢弃
         self._stream_task = None
@@ -160,6 +167,9 @@ class Pipeline:
                     self.args.source = source
                 elif source == "auto":
                     self.args.source = None
+                if source:
+                    self._save_setting("source_lang", source[:12])
+                    self.server.config["source_lang"] = source[:12]
                 return self._start_with_ack(url)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
@@ -206,7 +216,11 @@ class Pipeline:
             await self._stop_locked(quiet=True)
             self.server.config["room_url"] = url
             self._save_setting("room_url", url)
-            await self.server.broadcast({"type": "config", "room_url": url})
+            # source_lang 捎在同一条 config 里：开着的第二个页面也要跟上，
+            # 不能等它重连才看到第一个页面刚选的语言
+            await self.server.broadcast({"type": "config", "room_url": url,
+                                         "source_lang": getattr(self.args, "source",
+                                                                None) or "auto"})
             self._stream_task = asyncio.create_task(self._run_stream(url))
 
     async def stop_stream(self, quiet=False):
@@ -951,8 +965,8 @@ class Pipeline:
 
         return job
 
-    ENGINE_KEY_ENV = {"deepl": "DEEPL_API_KEY", "claude": "ANTHROPIC_API_KEY",
-                      "openai": "OPENAI_API_KEY"}
+    # 定义在 translator.py（启动恢复引擎时也要用），这里保留同名类属性
+    ENGINE_KEY_ENV = ENGINE_KEY_ENV
 
     async def set_engine(self, engine, key=None):
         """从界面切换翻译引擎、并（可选）存下密钥。
@@ -984,6 +998,8 @@ class Pipeline:
             except Exception:
                 pass
         self.args.translator = engine
+        # 用户刚亲手选完引擎，启动时「引擎被回退」的提示不再适用
+        self.args.translator_note = None
         save_setting("translator", engine)
         await self._publish_engine()
         await self.run_selfcheck()
@@ -996,6 +1012,9 @@ class Pipeline:
         stored = load_settings().get("api_keys", {})
         info = {"engine": getattr(self.args, "translator", "auto"),
                 "active": getattr(self.translator, "name", None),
+                # 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」）。
+                # 终端里 print 过一遍，但窗口应用的用户看不到终端
+                "note": getattr(self.args, "translator_note", None),
                 "keys": {env: mask_key(os.environ.get(env) or stored.get(env, ""))
                          for env in self.ENGINE_KEY_ENV.values()}}
         self.server.config["engine"] = info

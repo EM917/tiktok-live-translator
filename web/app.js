@@ -77,10 +77,17 @@
     if (cssSize) fontSlider.value = cssSize;
   }
 
+  // localStorage 里的 "auto" 不回填：老版本默认就是 auto，它大概率是历史
+  // 默认值而非用户的选择——现在默认是西语。真选过自动检测的用户，其选择
+  // 存在服务端（settings.json），随 config 消息回填，不经这里
   var savedSource = localStorage.getItem("sourceLang");
-  if (savedSource) sourceSel.value = savedSource;
+  if (savedSource && savedSource !== "auto") sourceSel.value = savedSource;
   var savedRoom = localStorage.getItem("roomUrl");
   if (savedRoom) roomInput.value = savedRoom;
+  // 服务端记住的主播语言随 config 到达后回填（localStorage 按端口隔离，
+  // 端口漂移就丢了）；但本页里用户已亲手改过的选择不能被盖掉
+  var sourceTouched = false;
+  sourceSel.addEventListener("change", function () { sourceTouched = true; });
 
   fontSlider.addEventListener("input", function () {
     var size = parseInt(fontSlider.value, 10);
@@ -279,6 +286,7 @@
           if (msg.config.engine) renderEngine(msg.config.engine);
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
+          if (msg.config.source_lang && !sourceTouched) sourceSel.value = msg.config.source_lang;
           if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
           if (msg.config.version) {
             currentVersion = msg.config.version;
@@ -315,6 +323,7 @@
         break;
       case "config":
         if (msg.target_lang) targetSel.value = msg.target_lang;
+        if (msg.source_lang && !sourceTouched) sourceSel.value = msg.source_lang;
         if (msg.room_url) roomInput.value = msg.room_url;
         break;
       case "caption":
@@ -859,6 +868,12 @@
     engineSelect.value = info.engine || "auto";
     engineActive.textContent = info.active ? "当前：" + info.active : "";
     syncEngineRow();
+    // 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」），
+    // 压过常规注记——用户上次的选择被改掉了，必须看得见
+    if (info.note) {
+      engineNote.textContent = info.note;
+      engineNote.classList.add("warn");
+    }
   }
 
   function syncEngineRow() {

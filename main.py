@@ -288,7 +288,7 @@ if "--doctor" not in sys.argv:
     ensure_env()
 
 try:
-    from app.translator import TRANSLATOR_CHOICES  # noqa: E402
+    from app.translator import TRANSLATOR_CHOICES, restore_engine  # noqa: E402
 except ImportError as exc:
     _fail_alert("组件尚未安装完成，程序暂时无法启动（{}）。\n"
                 "请检查网络后重新打开本程序，会自动继续安装。".format(exc))
@@ -311,7 +311,9 @@ def parse_args():
                         "例如 https://www.tiktok.com/@user/live；也可以直接给 .flv/.m3u8 流地址")
     p.add_argument("--target", default=None,
                    help="目标语言代码，默认 zh-CN（简体中文）；界面里改过的话记住上次的选择")
-    p.add_argument("--source", default=None, help="主播语言代码（默认自动检测），例如 en/ja/ko")
+    p.add_argument("--source", default=None,
+                   help="主播语言代码，例如 es/en/ja；默认记住界面里上次的选择，"
+                        "从未选过则按西语（想逐段自动检测请传 auto 或在界面里选）")
     p.add_argument("--model", default=None,
                    help="whisper 模型：tiny/base/small/medium/large-v3/large-v3-turbo。"
                         "默认：mlx 后端用 large-v3（GPU 跑得动最准的），ct2 后端用 large-v3-turbo")
@@ -329,9 +331,10 @@ def parse_args():
     p.add_argument("--device", default="auto", help="识别设备，默认 auto（Mac 上即 CPU）")
     p.add_argument("--compute-type", default="auto", dest="compute_type",
                    help="faster-whisper compute_type，默认 auto；CPU 上想更快可用 int8")
-    p.add_argument("--translator", default="auto", choices=TRANSLATOR_CHOICES,
-                   help="翻译引擎：auto=本地有 TranslateGemma 就用它，否则 google（默认）"
-                        "/ gemma / google / claude / openai / none")
+    p.add_argument("--translator", default=None, choices=TRANSLATOR_CHOICES,
+                   help="翻译引擎：auto / hymt2 / hymt2-7b / gemma / deepl / google / "
+                        "claude / openai / none。默认记住界面里上次的选择，"
+                        "没有选过则 auto（本地有模型用本地，否则 google）")
     p.add_argument("--port", type=int, default=8765, help="本地 UI 端口，默认 8765")
     p.add_argument("--denoise", choices=["auto", "on", "off"], default="auto",
                    help="RNNoise 人声降噪，抑制背景音乐/噪声（auto=模型文件存在即开启，默认）")
@@ -424,6 +427,11 @@ async def main_async(args, state=None):
         state["pipeline"] = pipeline
         state["ready_port"] = args.port   # 窗口线程以此为准（端口可能已自动切换）
     await pipeline._publish_watchlist()   # 首页要立刻显示违禁词表状态
+    # 引擎状态也要在启动时就进 config：以前只在开播/手动切换时发布，
+    # 于是重启后面板显示的是 HTML 里的默认「自动」，恢复的引擎和
+    # 「缺密钥已回退」的提示都要等到开播才看得见——恢复了但看不见，
+    # 等于没恢复
+    await pipeline._publish_engine()
     # 自检放后台跑：有几项要实际执行探测（ffmpeg、Ollama），
     # 不能让它们拖慢界面打开
     pipeline._selfcheck_task = asyncio.ensure_future(pipeline.run_selfcheck())
@@ -453,6 +461,19 @@ def main():
     if args.target is None:   # 未显式传参：用界面里上次选的语言，都没有则简体中文
         saved = _load_settings().get("target_lang")
         args.target = (str(saved)[:12] if saved else "zh-CN")
+    # 翻译引擎同理：界面里选过的引擎重启后必须还在。以前只存不读，
+    # 每次重启都静默回到 auto——用户以为在用 DeepL，实际跑的是本地 1.8B
+    args.translator, warn = restore_engine(
+        args.translator, _load_settings().get("translator"))
+    if warn:
+        print("[警告] " + warn)
+    # 只 print 不够：窗口应用没有可见终端，回退提示必须能到界面上。
+    # 挂在 args 上，_publish_engine 会把它带进引擎面板
+    args.translator_note = warn
+    # 主播语言：CLI 显式指定 > 界面上次的选择 > 西语（产品面向西语带货直播，
+    # 首启不该逐段猜语言——为什么，见 resolve_source 的说明）
+    from app.settings import resolve_source
+    args.source = resolve_source(args.source, _load_settings().get("source_lang"))
     if args.doctor:
         from app.hwdetect import doctor
         sys.exit(doctor())
