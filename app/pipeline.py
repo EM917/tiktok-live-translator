@@ -110,6 +110,13 @@ class Pipeline:
         saved_room = load_settings().get("room_url")
         if saved_room:
             self.server.config["room_url"] = str(saved_room)[:500]
+        # 主播语言同理走服务端持久化：localStorage 按端口隔离，端口一漂移
+        # 「上次选的西语」就没了。而这一项丢失的代价是整场逐段自动检测语言：
+        # 实测一场里 22.7% 的段被打上非西语标签，纯标点垃圾和按错误语言的
+        # 翻译全从这里来。
+        saved_source = load_settings().get("source_lang")
+        if saved_source:
+            self.server.config["source_lang"] = str(saved_source)[:12]
         self._counter = 0
         self._asr_pool = None            # 每条直播一个独立线程池，停止时整个丢弃
         self._stream_task = None
@@ -160,6 +167,9 @@ class Pipeline:
                     self.args.source = source
                 elif source == "auto":
                     self.args.source = None
+                if source:
+                    self._save_setting("source_lang", source[:12])
+                    self.server.config["source_lang"] = source[:12]
                 return self._start_with_ack(url)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
@@ -206,7 +216,11 @@ class Pipeline:
             await self._stop_locked(quiet=True)
             self.server.config["room_url"] = url
             self._save_setting("room_url", url)
-            await self.server.broadcast({"type": "config", "room_url": url})
+            # source_lang 捎在同一条 config 里：开着的第二个页面也要跟上，
+            # 不能等它重连才看到第一个页面刚选的语言
+            await self.server.broadcast({"type": "config", "room_url": url,
+                                         "source_lang": getattr(self.args, "source",
+                                                                None) or "auto"})
             self._stream_task = asyncio.create_task(self._run_stream(url))
 
     async def stop_stream(self, quiet=False):

@@ -31,6 +31,11 @@ def _norm_for_hallucination(text):
     return " ".join(text.split()).strip()
 
 
+# 字母或数字（任意文字系统都算）。整段一个都没有——多为 Whisper 在音乐/
+# 噪声段吐出的裸感叹号——就不是话：实测一场里 13 段 "!" 被当成字幕原样
+# 翻译上屏，观感全是「翻错了」。数字要保留：价格和数量是合规要看的内容。
+_WORD_RE = re.compile(r"[^\W_]", re.UNICODE)
+
 _HALLUCINATION_KEYS = None
 
 
@@ -176,6 +181,12 @@ class _FilterMixin:
                     logprobs.append(avg_lp)
         text = " ".join(parts).strip()
         raw_text = " ".join(all_parts).strip()
+        # 一个字母/数字都没有的段（裸 "!" 之类）不值得占一条字幕，更不该送去
+        # 翻译。raw_text 原样保留——违禁词检测的输入不因此少一个字。
+        if text and not _WORD_RE.search(text):
+            rejected.append({"text": text, "reason": "punctuation"})
+            return ASRResult(text="", language=detected_lang,
+                             raw_text=raw_text, rejected=rejected)
         # 西语幻觉带重音和倒问叹号（¡Suscríbete!），必须先抹平才能比对
         normalized = _norm_for_hallucination(text)
         if _is_all_hallucination(normalized):

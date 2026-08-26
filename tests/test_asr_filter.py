@@ -46,6 +46,22 @@ def test_hallucination_text_with_high_confidence_kept():
     assert text == "Thank you."
 
 
+def test_punctuation_only_dropped():
+    """音乐/噪声段 Whisper 常吐一个裸 "!"——不是话，不该占字幕更不该送翻译
+    （实测一场里 13 段 "!" 被原样翻译上屏）。"""
+    result, f = fold([(0.1, 1.2, -0.3, "!")])
+    assert result.text == ""
+    assert result.rejected[0]["reason"] == "punctuation"
+    assert result.raw_text == "!"             # 违禁词检测的输入不受影响
+    assert f._context == ""                   # 垃圾不进滚动上下文
+
+
+def test_digits_survive_punctuation_filter():
+    """价格和数量是合规要看的内容，纯数字段不能当垃圾丢。"""
+    result, _ = fold([(0.1, 1.2, -0.3, "30?")])
+    assert result.text == "30?"
+
+
 def test_context_rolls_at_400_chars():
     f = Filter()
     f._context = "x" * 400

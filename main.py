@@ -311,7 +311,9 @@ def parse_args():
                         "例如 https://www.tiktok.com/@user/live；也可以直接给 .flv/.m3u8 流地址")
     p.add_argument("--target", default=None,
                    help="目标语言代码，默认 zh-CN（简体中文）；界面里改过的话记住上次的选择")
-    p.add_argument("--source", default=None, help="主播语言代码（默认自动检测），例如 en/ja/ko")
+    p.add_argument("--source", default=None,
+                   help="主播语言代码，例如 es/en/ja；默认记住界面里上次的选择，"
+                        "从未选过则按西语（想逐段自动检测请传 auto 或在界面里选）")
     p.add_argument("--model", default=None,
                    help="whisper 模型：tiny/base/small/medium/large-v3/large-v3-turbo。"
                         "默认：mlx 后端用 large-v3（GPU 跑得动最准的），ct2 后端用 large-v3-turbo")
@@ -463,6 +465,10 @@ def main():
     # 只 print 不够：窗口应用没有可见终端，回退提示必须能到界面上。
     # 挂在 args 上，_publish_engine 会把它带进引擎面板
     args.translator_note = warn
+    # 主播语言：CLI 显式指定 > 界面上次的选择 > 西语（产品面向西语带货直播，
+    # 首启不该逐段猜语言——为什么，见 resolve_source 的说明）
+    from app.settings import resolve_source
+    args.source = resolve_source(args.source, _load_settings().get("source_lang"))
     if args.doctor:
         from app.hwdetect import doctor
         sys.exit(doctor())
