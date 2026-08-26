@@ -288,7 +288,7 @@ if "--doctor" not in sys.argv:
     ensure_env()
 
 try:
-    from app.translator import TRANSLATOR_CHOICES  # noqa: E402
+    from app.translator import TRANSLATOR_CHOICES, restore_engine  # noqa: E402
 except ImportError as exc:
     _fail_alert("组件尚未安装完成，程序暂时无法启动（{}）。\n"
                 "请检查网络后重新打开本程序，会自动继续安装。".format(exc))
@@ -329,9 +329,10 @@ def parse_args():
     p.add_argument("--device", default="auto", help="识别设备，默认 auto（Mac 上即 CPU）")
     p.add_argument("--compute-type", default="auto", dest="compute_type",
                    help="faster-whisper compute_type，默认 auto；CPU 上想更快可用 int8")
-    p.add_argument("--translator", default="auto", choices=TRANSLATOR_CHOICES,
-                   help="翻译引擎：auto=本地有 TranslateGemma 就用它，否则 google（默认）"
-                        "/ gemma / google / claude / openai / none")
+    p.add_argument("--translator", default=None, choices=TRANSLATOR_CHOICES,
+                   help="翻译引擎：auto / hymt2 / hymt2-7b / gemma / deepl / google / "
+                        "claude / openai / none。默认记住界面里上次的选择，"
+                        "没有选过则 auto（本地有模型用本地，否则 google）")
     p.add_argument("--port", type=int, default=8765, help="本地 UI 端口，默认 8765")
     p.add_argument("--denoise", choices=["auto", "on", "off"], default="auto",
                    help="RNNoise 人声降噪，抑制背景音乐/噪声（auto=模型文件存在即开启，默认）")
@@ -453,6 +454,15 @@ def main():
     if args.target is None:   # 未显式传参：用界面里上次选的语言，都没有则简体中文
         saved = _load_settings().get("target_lang")
         args.target = (str(saved)[:12] if saved else "zh-CN")
+    # 翻译引擎同理：界面里选过的引擎重启后必须还在。以前只存不读，
+    # 每次重启都静默回到 auto——用户以为在用 DeepL，实际跑的是本地 1.8B
+    args.translator, warn = restore_engine(
+        args.translator, _load_settings().get("translator"))
+    if warn:
+        print("[警告] " + warn)
+    # 只 print 不够：窗口应用没有可见终端，回退提示必须能到界面上。
+    # 挂在 args 上，_publish_engine 会把它带进引擎面板
+    args.translator_note = warn
     if args.doctor:
         from app.hwdetect import doctor
         sys.exit(doctor())

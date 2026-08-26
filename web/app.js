@@ -859,6 +859,12 @@
     engineSelect.value = info.engine || "auto";
     engineActive.textContent = info.active ? "当前：" + info.active : "";
     syncEngineRow();
+    // 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」），
+    // 压过常规注记——用户上次的选择被改掉了，必须看得见
+    if (info.note) {
+      engineNote.textContent = info.note;
+      engineNote.classList.add("warn");
+    }
   }
 
   function syncEngineRow() {
