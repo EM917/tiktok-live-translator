@@ -170,6 +170,7 @@ class Pipeline:
                 if source:
                     self._save_setting("source_lang", source[:12])
                     self.server.config["source_lang"] = source[:12]
+                    self.args.source_requested = source[:12]
                 return self._start_with_ack(url)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
@@ -332,6 +333,7 @@ class Pipeline:
 
     async def _begin_session(self, url):
         from .audit import AuditLog
+        from .provenance import app_version, streamer_of
 
         # 词表每场重新读：模板生成出来是空的，用户按提示填好后点「停止→开始」
         # 必须真的生效，否则头号卖点就是 100% 静默漏报
@@ -342,7 +344,26 @@ class Pipeline:
         self.telemetry.reset()          # 统计按场计，不跨房间累计
         if self.audit is not None:
             self.audit.close()
-        self.audit = AuditLog(room_url=url)
+        # requested 是用户的选择，active 是实际生效的对象——这两列并排记，
+        # 是因为 2026-08-26 它们恰恰不一致：requested=deepl 被启动逻辑静默
+        # 重置，实际整场跑的是 1.8B，事后只能靠延迟指纹反推。有了这两列，
+        # 「以为跑 A 实际跑 B」变成 grep 一行就能发现的事。
+        self.audit = AuditLog(room_url=url, extra={
+            "app_version": app_version(),
+            "streamer": streamer_of(url),
+            # requested 由做决策的那一刻记录（main 启动 / UI 点开始），
+            # 这里只转抄，不重算——重算读到的 settings 可能已经不是当时那份
+            "source_requested": getattr(self.args, "source_requested", "?"),
+            "source_active": getattr(self.args, "source", None) or "auto",
+            "translator_requested": getattr(self.args, "translator", None) or "auto",
+            # 引擎 none 时统一记字符串 "none"，别让下游在 null 和 "none"
+            # 两种写法之间做字符串匹配
+            "translator_active": (self.translator.name
+                                  if self.translator is not None else "none"),
+            # 主播 profile 尚未落地（onboarding 在实验分支），先占位——
+            # 等它进来时这里换成真实指纹，老日志靠 None 区分
+            "profile_hash": None,
+        })
         if self._stats_task is None or self._stats_task.done():
             self._stats_task = asyncio.ensure_future(self._stats_loop())
         await self._publish_watchlist()
@@ -1166,13 +1187,16 @@ class Pipeline:
     async def _translate_and_update(self, job):
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""
         t0 = time.time()
+        # 引擎抓一次快照：中途在界面里换引擎时，这一条从翻译到落日志必须
+        # 始终指同一个对象，否则审计里的 engine 会记成换挡后的那个
+        tr = self.translator
         try:
             # 词表两处生效：把本句命中的词条拼进提示词，译文回来再做兜底替换。
             # 商品名/自造词（Quema Lonja、moringa）通用模型必错，而且换多大的
             # 模型都不会自动变对——这类错误只能靠词表钉死。
             hint = (tuple(self.glossary.translation_pairs(job["text"]))
                     if self.glossary else ())
-            translated = await self.translator.translate(
+            translated = await tr.translate(
                 job["text"], job["target"], source=job["lang"] or "auto",
                 glossary=hint or None)
             if self.glossary:
@@ -1184,7 +1208,8 @@ class Pipeline:
         self.telemetry.record_translation(translate_ms)
         if self.audit is not None:
             self.audit.translation(job["id"], translated, translate_ms,
-                                   bool(translated))
+                                   bool(translated),
+                                   engine=getattr(tr, "name", None))
         await self._publish_translation(
             job["id"], translated, bool(translated), translate_ms,
             QUALITY_FAST, job["target"],

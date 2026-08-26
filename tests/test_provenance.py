@@ -40,6 +40,34 @@ def test_a_session_with_no_captions_is_not_corpus(tmp_path):
     assert provenance.corpus(log_dir=tmp_path) == []
 
 
+def test_session_meta_carries_engine_provenance(tmp_path):
+    """引擎归属字段要能进语料清单——引擎对比实验按它挑会话。"""
+    import json
+
+    from app import provenance
+
+    (tmp_path / "session-1.jsonl").write_text(
+        json.dumps({"type": "session_start",
+                    "room_url": "https://www.tiktok.com/@real/live",
+                    "app_version": "0.14.2",
+                    "source_active": "es",
+                    "translator_requested": "deepl",
+                    "translator_active": "deepl"}) + "\n"
+        + json.dumps({"type": "segment", "text": "hola mundo"}) + "\n",
+        encoding="utf-8")
+    m = provenance.corpus(log_dir=tmp_path)[0]
+    assert m["translator_active"] == "deepl"
+    assert m["source_active"] == "es"
+    assert m["app_version"] == "0.14.2"
+
+
+def test_app_version_reads_the_version_file():
+    from app import provenance
+
+    v = provenance.app_version()
+    assert v and v != "?" and v[0].isdigit()
+
+
 def test_corpus_can_be_narrowed_to_one_streamer(tmp_path):
     """hold-out 评测只看一个主播，别把别人的语料混进去。"""
     import json
