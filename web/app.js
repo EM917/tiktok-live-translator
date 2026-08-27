@@ -866,7 +866,14 @@
     if (!engineSelect) return;
     engineKeys = info.keys || {};
     engineSelect.value = info.engine || "auto";
-    engineActive.textContent = info.active ? "当前：" + info.active : "";
+    var active = info.active ? "当前：" + info.active : "";
+    if (info.usage && info.usage.limit) {
+      var pct = Math.round(info.usage.used * 100 / info.usage.limit);
+      // 35k 字符/小时是实测均值（2026-08-26 场），只做量级提示
+      var hours = Math.max(0, Math.floor((info.usage.limit - info.usage.used) / 35000));
+      active += " · 本月额度已用 " + pct + "%（约可再听 " + hours + " 小时）";
+    }
+    engineActive.textContent = active;
     syncEngineRow();
     // 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」），
     // 压过常规注记——用户上次的选择被改掉了，必须看得见

@@ -39,6 +39,13 @@ def file_hash(path):
         return "?"
 
 
+def app_version():
+    try:
+        return (LOG_DIR.parent / "VERSION").read_text(encoding="utf-8").strip() or "?"
+    except OSError:
+        return "?"
+
+
 def streamer_of(url):
     m = re.search(r"@([\w.]+)", url or "")
     return m.group(1) if m else ""
@@ -57,7 +64,10 @@ def session_meta(path):
                 url = url or d.get("room_url", "")
                 meta = {k: v for k, v in d.items()
                         if k in ("code_commit", "glossary_hash", "vocative_hash",
-                                 "translator", "started_at")} or meta
+                                 "translator", "started_at", "app_version",
+                                 "source_requested", "source_active",
+                                 "translator_requested", "translator_active",
+                                 "profile_hash")} or meta
             elif d.get("type") == "segment" and (d.get("text") or "").strip():
                 segs += 1
     except OSError:

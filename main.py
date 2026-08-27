@@ -471,9 +471,14 @@ def main():
     # 挂在 args 上，_publish_engine 会把它带进引擎面板
     args.translator_note = warn
     # 主播语言：CLI 显式指定 > 界面上次的选择 > 西语（产品面向西语带货直播，
-    # 首启不该逐段猜语言——为什么，见 resolve_source 的说明）
+    # 首启不该逐段猜语言——为什么，见 resolve_source 的说明）。
+    # 「请求了什么」在决策发生的这一刻记下来，供审计并排记录 requested 与
+    # active。事后重算是错的：settings 可能被之后的操作改写，重算会伪造出
+    # 「请求 A 实际跑 B」的假警报——这个字段存在的意义恰恰是抓真警报
     from app.settings import resolve_source
-    args.source = resolve_source(args.source, _load_settings().get("source_lang"))
+    saved_source = _load_settings().get("source_lang")
+    args.source_requested = str(args.source or saved_source or "default")
+    args.source = resolve_source(args.source, saved_source)
     if args.doctor:
         from app.hwdetect import doctor
         sys.exit(doctor())

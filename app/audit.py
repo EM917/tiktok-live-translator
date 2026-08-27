@@ -16,7 +16,7 @@ LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 
 class AuditLog:
-    def __init__(self, room_url="", log_dir=None):
+    def __init__(self, room_url="", log_dir=None, extra=None):
         self._lock = threading.Lock()
         self._fh = None
         directory = Path(log_dir) if log_dir else LOG_DIR
@@ -27,13 +27,19 @@ class AuditLog:
             self._fh = self.path.open("a", encoding="utf-8")
             # 记下这一场是哪个版本、哪份词表跑的。事后拿数字回来复盘时，
             # 「这个数是哪几个主播、哪个 commit、哪份词表产生的」要答得出来。
+            # extra 是调用方掌握、这里拿不到的运行时事实（引擎、语言等）——
+            # 2026-08-26 排查时正因为没记这些，只能靠延迟指纹反推那一场
+            # 到底是 DeepL 还是本地 1.8B 在翻。
             from .provenance import code_commit, file_hash
             root = Path(__file__).resolve().parent.parent
-            self._write({"type": "session_start", "room_url": room_url,
-                         "started_at": datetime.now().isoformat(timespec="seconds"),
-                         "code_commit": code_commit(),
-                         "glossary_hash": file_hash(root / "glossary.txt"),
-                         "vocative_hash": file_hash(root / "app" / "vocative.py")})
+            # 核心字段放后面：extra 与其撞名时核心字段赢。审计的骨架字段
+            # 不能被调用方一个手滑的键名静默改写
+            self._write(dict(extra or {},
+                             **{"type": "session_start", "room_url": room_url,
+                                "started_at": datetime.now().isoformat(timespec="seconds"),
+                                "code_commit": code_commit(),
+                                "glossary_hash": file_hash(root / "glossary.txt"),
+                                "vocative_hash": file_hash(root / "app" / "vocative.py")}))
         except OSError:
             self.path = None
 
@@ -62,12 +68,17 @@ class AuditLog:
             "hits": hits,
         })
 
-    def translation(self, seq, translated, translate_ms, ok):
+    def translation(self, seq, translated, translate_ms, ok, engine=None):
         """译文是后到的，单独记一条，按 seq 与上面的 segment 对应。
 
         不合并进 segment 是因为 segment 必须在识别一出来就落盘——报警证据
         不能等翻译。但审计只有西语原文是残的：事后复查一条报警时，中控要看
-        的是「这句被翻成了什么」。翻译失败也记，否则日志里会静默缺一条。"""
+        的是「这句被翻成了什么」。翻译失败也记，否则日志里会静默缺一条。
+
+        engine 记的是**这一条**实际用的引擎：会话中途可以在界面里换引擎，
+        只看 session_start 会把换挡后的译文归到旧引擎头上。强译那边的
+        translation_strong 从第一天就带 model 字段，快译缺这个，做引擎
+        对比时快译的归属只能靠猜。"""
         self._write({
             "type": "translation",
             "seq": seq,
@@ -75,6 +86,7 @@ class AuditLog:
             "translated": translated,
             "translate_ms": round(translate_ms, 1),
             "ok": bool(ok),
+            "engine": engine,
         })
 
     def translation_strong(self, seq, translated, translate_ms, ok, model,
