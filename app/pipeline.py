@@ -1031,7 +1031,17 @@ class Pipeline:
         from .translator import mask_key
 
         stored = load_settings().get("api_keys", {})
+        # DeepL 的月度用量：中控要能看着额度用（实测约 3.5 万字符/小时，
+        # 免费档 100 万/月 ≈ 29 小时）。拿不到就不显示，最多等 3 秒
+        usage = None
+        inner = getattr(self.translator, "inner", self.translator)
+        if getattr(inner, "name", "") == "deepl" and hasattr(inner, "usage"):
+            try:
+                usage = await asyncio.wait_for(inner.usage(), timeout=3)
+            except Exception:
+                usage = None
         info = {"engine": getattr(self.args, "translator", "auto"),
+                "usage": usage,
                 "active": getattr(self.translator, "name", None),
                 # 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」）。
                 # 终端里 print 过一遍，但窗口应用的用户看不到终端
@@ -1088,6 +1098,55 @@ class Pipeline:
             await tell(why="翻译超时或出错")
             return
         await tell(out, why="" if out else "模型没有返回译文")
+
+    async def _quota_fallback(self, old):
+        """DeepL 额度用尽时一次性切到本地引擎，返回新引擎（切不了返回 None）。
+
+        用户在下拉框里的选择**不动**（settings 仍是 deepl）：额度是按月的，
+        下月第一场直播启动恢复出 deepl、第一条翻译成功，一切自动回到原样；
+        还没恢复的话，第一条 456 会再次走到这里。两种结局都不需要用户操心。
+        """
+        if self.translator is not old:
+            return self.translator          # 已经切过，或用户手动换了引擎
+        # create_translator("auto") 会同步探测 Ollama（urllib，最坏 ~10 秒）。
+        # 它的注释写明是「启动时的一次性探测」——直播中途绝不能在事件循环里
+        # 跑：音频读取、识别调度、报警广播、停止按钮全会被冻住。丢进线程池。
+        loop = asyncio.get_running_loop()
+        try:
+            new = await loop.run_in_executor(None, create_translator, "auto")
+        except Exception as exc:
+            print("[警告] 额度降级失败，没有可用的备用引擎: {}".format(exc))
+            return None
+        if new is None:
+            return None
+        if self.translator is not old:
+            # 探测期间用户手动换了引擎：尊重用户的选择，丢弃我们建的
+            try:
+                await new.close()
+            except Exception:
+                pass
+            return self.translator
+        self.translator = new
+        try:
+            await old.close()
+        except Exception:
+            pass
+        name = getattr(new, "name", "?")
+        if name == "google":
+            # 不是本地引擎，字幕会发给 Google——合规工具的提示绝不能在
+            # 「数据去哪了」这件事上含糊
+            note = ("DeepL 本月免费额度已用完，且本机没有可用的本地模型，"
+                    "已自动改用 Google 免费接口继续翻译——注意：字幕文本会"
+                    "发送给 Google。额度下月重置后会自动回到 DeepL。")
+        else:
+            note = ("DeepL 本月免费额度已用完，本场已自动改用本地引擎（{}）"
+                    "继续翻译。额度每月重置，下月开播会自动回到 DeepL。"
+                    ).format(name)
+        print("[警告] " + note)
+        self.args.translator_note = note
+        await self.server.broadcast({"type": "notice", "text": note})
+        await self._publish_engine()
+        return new
 
     async def _publish_translation(self, seq, translated, ok, ms, level,
                                    target, extra=None):
@@ -1204,6 +1263,27 @@ class Pipeline:
         except Exception as exc:
             print("[警告] 翻译失败: {}".format(exc))
             translated = None
+        # DeepL 月额度用尽（456）不是这一条的问题，是这个月的问题：不切换的话
+        # 后面每条字幕都会「翻译失败」直到月底。切到本地引擎，并用新引擎把
+        # 当前这条立刻补上——它不该成为切换的牺牲品。
+        if translated is None and getattr(tr, "quota_exhausted", False):
+            fallback = await self._quota_fallback(tr)
+            if fallback is not None:
+                tr = fallback
+                # translate_ms 只记翻译本身：引擎切换的开销不该算进这一条的
+                # 翻译耗时去污染延迟统计（e2e_translated_ms 仍如实含全部等待）
+                t0 = time.time()
+                try:
+                    hint = (tuple(self.glossary.translation_pairs(job["text"]))
+                            if self.glossary else ())
+                    translated = await tr.translate(
+                        job["text"], job["target"], source=job["lang"] or "auto",
+                        glossary=hint or None)
+                    if self.glossary:
+                        translated = self.glossary.apply(job["text"], translated)
+                except Exception as exc:
+                    print("[警告] 降级引擎翻译失败: {}".format(exc))
+                    translated = None
         translate_ms = (time.time() - t0) * 1000.0
         self.telemetry.record_translation(translate_ms)
         if self.audit is not None:

@@ -87,6 +87,11 @@ class CachedTranslator:
     def name(self):
         return self.inner.name
 
+    @property
+    def quota_exhausted(self):
+        """内层引擎的额度标志透传出来——管线拿到的是缓存包装后的对象。"""
+        return getattr(self.inner, "quota_exhausted", False)
+
     async def translate(self, text, target, source="auto", glossary=None):
         # 词表可以是紧凑串，也可以是词对列表（见 _as_pairs）。列表不可哈希，
         # 直接拿来做缓存键会抛 TypeError 把这次翻译整个打掉——调用方少写一个
@@ -213,6 +218,10 @@ class DeepLTranslator(BaseTranslator):
         self.host = os.environ.get("DEEPL_URL", self.host).rstrip("/")
         self.url = self.host + "/v2/translate"
         self._cooldown_until = 0.0
+        # 456 = 本月额度用尽。和 429 限流本质不同：限流等两分钟就好，额度
+        # 要等到下个月——继续撞只会让每条字幕都「翻译失败」。这个标志位由
+        # 管线读取，触发一次性自动切换到本地引擎
+        self.quota_exhausted = False
         # (源语言, 目标语言) -> 术语表 id；值为 None 表示试过建不起来，不再重试
         self._glossary_ids = {}
         self._glossary_source = None
@@ -329,6 +338,21 @@ class DeepLTranslator(BaseTranslator):
         except ValueError:
             return status, {"message": text[:200]}
 
+    async def usage(self):
+        """/v2/usage：本月已用/上限字符数。拿不到就返回 None——用量显示是
+        锦上添花，不能因为它把引擎面板拖住。"""
+        try:
+            status, data = await self._api("GET", "/v2/usage")
+            if status != 200:
+                return None
+            used = data.get("character_count")
+            limit = data.get("character_limit")
+            if used is None or not limit:
+                return None
+            return {"used": int(used), "limit": int(limit)}
+        except Exception:
+            return None
+
     async def translate(self, text, target, source="auto", glossary=None):
         import time
 
@@ -347,6 +371,8 @@ class DeepLTranslator(BaseTranslator):
             status, data = await self._api("POST", "/v2/translate", body=body)
             if status in (429, 456):
                 self._cooldown_until = time.time() + 120
+                if status == 456:
+                    self.quota_exhausted = True
                 print("[警告] DeepL {}（{}），暂停 120 秒".format(
                     status,
                     "本月额度已用尽" if status == 456 else "被限流"))
