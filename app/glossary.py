@@ -151,9 +151,51 @@ def parse(text):
     return entries
 
 
-def load(path=None):
+PROFILE_DIR = ROOT / "profiles"
+
+
+def profile_path(streamer):
+    """主播专属词表的路径；首次使用时从同名 .example 生成可编辑副本。
+    没有这个主播的 profile 就返回 None。"""
+    safe = re.sub(r"[^\w.\-]", "", str(streamer or ""))
+    if not safe:
+        return None
+    target = PROFILE_DIR / (safe + ".txt")
+    if not target.exists():
+        example = PROFILE_DIR / (safe + ".example.txt")
+        if not example.exists():
+            return None
+        try:
+            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            target.write_text(example.read_text(encoding="utf-8"),
+                              encoding="utf-8")
+        except OSError:
+            return None
+    return target
+
+
+def _merge(profile_entries, global_entries):
+    """profile 在前、且按变体去重：同一个西语写法两边都有时，profile 赢。
+
+    为什么必须做到变体级：matching() 会收集**所有**命中的条目，同一变体
+    两边各挂一个不同中文的话，两条都会进提示词互相打架。"""
+    claimed = {v.lower() for variants, _ in profile_entries for v in variants}
+    merged = list(profile_entries)
+    for variants, zh in global_entries:
+        rest = [v for v in variants if v.lower() not in claimed]
+        if rest:
+            merged.append((rest, zh))
+    return merged
+
+
+def load(path=None, streamer=None):
     """读取词表；首次运行从模板生成一份用户可编辑的副本（模板入库、副本不入库，
-    这样用户编辑不会挡住一键更新）。"""
+    这样用户编辑不会挡住一键更新）。
+
+    传入 streamer（主播用户名）时，会把 profiles/<主播>.txt 合并进来且优先。
+    商品知识是逐主播的：把 Bella 的品名装进全局表，Elisa 的直播里就会凭空
+    冒出别家商品（实测发生过——「凭空多出 D3 K2」在盲评里被判成捏造）。
+    """
     target = Path(path) if path else GLOSSARY_FILE
     if not target.exists() and target == GLOSSARY_FILE and GLOSSARY_EXAMPLE.exists():
         try:
@@ -162,6 +204,59 @@ def load(path=None):
         except OSError:
             pass
     try:
-        return Glossary(parse(target.read_text(encoding="utf-8")))
+        entries = parse(target.read_text(encoding="utf-8"))
     except OSError:
-        return Glossary([])
+        entries = []
+    prof = profile_path(streamer)
+    if prof is not None:
+        try:
+            entries = _merge(parse(prof.read_text(encoding="utf-8")), entries)
+        except OSError:
+            pass
+    return Glossary(entries)
+
+
+# 当前会话实际生效的词表（全局 + 主播 profile 合并后）。存在的理由：
+# DeepL 的原生术语表在引擎内部自己建表，它不知道现在看的是哪个主播——
+# 让它拿这份，而不是重新 load() 一份只有全局条目的。表名里带内容指纹，
+# 换主播后指纹变化会自动触发重建，不会拿着上一个主播的表继续用。
+_ACTIVE = None
+
+
+def set_active(glossary):
+    global _ACTIVE
+    _ACTIVE = glossary
+
+
+def active():
+    """当前生效的词表；会话还没开始时退回全局表。"""
+    return _ACTIVE if _ACTIVE is not None else load()
+
+
+def misplaced_entries(entries):
+    """全局词表里与某个主播 profile 模板重复的条目。
+
+    它们是老版本全局模板的遗留：模板升级不会改用户已经复制出去的
+    glossary.txt，这些条目会继续污染其他主播的直播。只检测、只提示，
+    永不代改用户的词表。判据取精确档：中文完全一致且至少共享一个西语变体。"""
+    fingerprints = {}          # (variant_lower, zh) -> streamer
+    try:
+        examples = sorted(PROFILE_DIR.glob("*.example.txt"))
+    except OSError:
+        examples = []
+    for example in examples:
+        streamer = example.name[:-len(".example.txt")]
+        try:
+            for variants, zh in parse(example.read_text(encoding="utf-8")):
+                for v in variants:
+                    fingerprints[(v.lower(), zh)] = streamer
+        except OSError:
+            continue
+    out = []
+    for variants, zh in entries:
+        for v in variants:
+            owner = fingerprints.get((v.lower(), zh))
+            if owner:
+                out.append((owner, v, zh))
+                break
+    return out

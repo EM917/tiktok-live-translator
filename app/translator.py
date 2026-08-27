@@ -291,9 +291,12 @@ class DeepLTranslator(BaseTranslator):
             return gid
 
     async def _build_glossary(self, source, gtarget):
-        from .glossary import load as load_glossary
+        from .glossary import active
 
-        tsv = self.glossary_tsv(load_glossary().entries)
+        # 拿**当前会话生效的**词表（全局 + 主播 profile 合并后），不是重新
+        # load 一份只有全局条目的——DeepL 的术语表就是合规机制，主播专属的
+        # 商品名恰恰是最不能缺席的那部分。表名带内容指纹，换主播自动重建。
+        tsv = self.glossary_tsv(active().entries)
         if not tsv:
             return None
         want = self.glossary_name(source, gtarget, tsv)

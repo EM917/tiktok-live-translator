@@ -333,12 +333,23 @@ class Pipeline:
 
     async def _begin_session(self, url):
         from .audit import AuditLog
-        from .provenance import app_version, streamer_of
+        from .glossary import misplaced_entries, profile_path, set_active
+        from .provenance import app_version, file_hash, streamer_of
 
         # 词表每场重新读：模板生成出来是空的，用户按提示填好后点「停止→开始」
         # 必须真的生效，否则头号卖点就是 100% 静默漏报
         self.detector = load_detector(getattr(self.args, "banned_terms", None))
         self.detector.reset_state()
+        # 词表按主播加载：全局表 + profiles/<主播>.txt（后者优先）。商品知识
+        # 是逐主播的——Bella 的品名进了全局表，Elisa 的直播里就会凭空冒出
+        # 别家商品。set_active 让 DeepL 的原生术语表也拿到同一份合并结果。
+        streamer = streamer_of(url)
+        self.glossary = load_glossary(getattr(self.args, "glossary", None),
+                                      streamer=streamer)
+        set_active(self.glossary)
+        prof = profile_path(streamer)
+        misplaced = misplaced_entries(self.glossary.entries)
+        misplaced = [(o, v, zh) for o, v, zh in misplaced if o != streamer]
         self._quality.clear()            # 等级按 seq 记，换场后 seq 会重号
         self._strong_inflight.clear()
         self.telemetry.reset()          # 统计按场计，不跨房间累计
@@ -350,7 +361,7 @@ class Pipeline:
         # 「以为跑 A 实际跑 B」变成 grep 一行就能发现的事。
         self.audit = AuditLog(room_url=url, extra={
             "app_version": app_version(),
-            "streamer": streamer_of(url),
+            "streamer": streamer,
             # requested 由做决策的那一刻记录（main 启动 / UI 点开始），
             # 这里只转抄，不重算——重算读到的 settings 可能已经不是当时那份
             "source_requested": getattr(self.args, "source_requested", "?"),
@@ -360,10 +371,17 @@ class Pipeline:
             # 两种写法之间做字符串匹配
             "translator_active": (self.translator.name
                                   if self.translator is not None else "none"),
-            # 主播 profile 尚未落地（onboarding 在实验分支），先占位——
-            # 等它进来时这里换成真实指纹，老日志靠 None 区分
-            "profile_hash": None,
+            # 本场生效的主播 profile 指纹；没有 profile 的主播记 None
+            "profile_hash": file_hash(prof) if prof else None,
         })
+        if misplaced:
+            owner, variant, zh = misplaced[0]
+            text = ("glossary.txt 里有 {} 条「{}」的专属词条（如 {} => {}），"
+                    "在其他主播的直播里会凭空冒出别家商品——建议把它们移到 "
+                    "profiles/{}.txt").format(len(misplaced), owner, variant,
+                                              zh, owner)
+            print("[警告] " + text)
+            await self.server.broadcast({"type": "notice", "text": text})
         if self._stats_task is None or self._stats_task.done():
             self._stats_task = asyncio.ensure_future(self._stats_loop())
         await self._publish_watchlist()
