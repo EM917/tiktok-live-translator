@@ -222,7 +222,9 @@ class DeepLTranslator(BaseTranslator):
         # 要等到下个月——继续撞只会让每条字幕都「翻译失败」。这个标志位由
         # 管线读取，触发一次性自动切换到本地引擎
         self.quota_exhausted = False
-        # (源语言, 目标语言) -> 术语表 id；值为 None 表示试过建不起来，不再重试
+        # (源语言, 目标语言) -> (内容指纹, 术语表 id)。命中必须比对指纹：
+        # 引擎实例跨场次复用，换主播后词表内容变了，旧 id 不能再用。
+        # id 为 None 表示这份内容试过建不起来，同一指纹不再重试
         self._glossary_ids = {}
         self._glossary_source = None
         # 锁延迟到协程里建：Python 3.9 的 asyncio.Lock() 会绑到构造时的事件
@@ -273,33 +275,36 @@ class DeepLTranslator(BaseTranslator):
             self._glossary_source = source
         elif self._glossary_source != source:
             return None
-        key = (source, gtarget)
-        if key in self._glossary_ids:
-            return self._glossary_ids[key]
-        if self._glossary_lock is None:
-            self._glossary_lock = asyncio.Lock()
-        async with self._glossary_lock:
-            if key in self._glossary_ids:
-                return self._glossary_ids[key]
-            gid = None
-            try:
-                gid = await self._build_glossary(source, gtarget)
-            except Exception as exc:
-                print("[警告] DeepL 术语表建不起来（{}），"
-                      "本次按无术语表翻译——商品名会被直译".format(exc))
-            self._glossary_ids[key] = gid
-            return gid
-
-    async def _build_glossary(self, source, gtarget):
         from .glossary import active
 
-        # 拿**当前会话生效的**词表（全局 + 主播 profile 合并后），不是重新
-        # load 一份只有全局条目的——DeepL 的术语表就是合规机制，主播专属的
-        # 商品名恰恰是最不能缺席的那部分。表名带内容指纹，换主播自动重建。
+        # 词表拿**当前会话生效的**那份（全局 + 主播 profile 合并后）。缓存
+        # 必须按内容指纹命中，不能只按语言对：引擎实例跨场次复用，换主播后
+        # 只看 (source, target) 会永远命中旧表——Elisa 的直播拿着 Bella 的
+        # 术语表翻，恰恰是 profile 系统要杜绝的事在 DeepL 这里悄悄复现。
         tsv = self.glossary_tsv(active().entries)
         if not tsv:
             return None
         want = self.glossary_name(source, gtarget, tsv)
+        key = (source, gtarget)
+        cached = self._glossary_ids.get(key)
+        if cached is not None and cached[0] == want:
+            return cached[1]            # 指纹一致才算命中（含「建不起来」的 None）
+        if self._glossary_lock is None:
+            self._glossary_lock = asyncio.Lock()
+        async with self._glossary_lock:
+            cached = self._glossary_ids.get(key)
+            if cached is not None and cached[0] == want:
+                return cached[1]
+            gid = None
+            try:
+                gid = await self._build_glossary(source, gtarget, tsv, want)
+            except Exception as exc:
+                print("[警告] DeepL 术语表建不起来（{}），"
+                      "本次按无术语表翻译——商品名会被直译".format(exc))
+            self._glossary_ids[key] = (want, gid)
+            return gid
+
+    async def _build_glossary(self, source, gtarget, tsv, want):
         status, data = await self._api("GET", "/v2/glossaries")
         mine = [g for g in (data.get("glossaries") or [])
                 if str(g.get("name", "")).startswith(self.GLOSSARY_PREFIX)]

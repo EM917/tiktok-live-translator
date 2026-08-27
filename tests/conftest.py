@@ -24,3 +24,15 @@ def _keep_audit_out_of_the_real_log_dir(tmp_path, monkeypatch):
     from app import audit
 
     monkeypatch.setattr(audit, "LOG_DIR", tmp_path / "logs")
+
+
+@pytest.fixture(autouse=True)
+def _reset_active_glossary(monkeypatch):
+    """会话词表的模块级全局态不能在测试之间泄漏。
+
+    _begin_session 会 set_active()，很多管线测试都会走到它；DeepL 的术语表
+    测试又会读 active()。现在测试恰好按字母序读在写之前，但那是运气不是
+    设计——并行或乱序执行时就是间歇性失败。"""
+    from app import glossary
+
+    monkeypatch.setattr(glossary, "_ACTIVE", None)

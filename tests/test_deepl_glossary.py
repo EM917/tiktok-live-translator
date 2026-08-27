@@ -236,3 +236,26 @@ def test_the_engine_can_be_built_outside_any_event_loop(monkeypatch):
     built = DeepLTranslator()                      # 此处没有运行中的事件循环
     monkeypatch.setattr(built, "_api", FakeAPI())
     assert run(built._ensure_glossary("es", "zh-CN"))
+
+
+def test_a_streamer_switch_rebuilds_the_glossary(tr):
+    """引擎实例跨场次复用。换主播后 active() 词表的内容变了，缓存的表 id
+    不能按语言对直接命中——否则 Elisa 的直播会拿着 Bella 的术语表翻，
+    profile 系统对默认引擎（DeepL）形同虚设。命中必须比对内容指纹。"""
+    from app import glossary as G
+
+    api = FakeAPI()
+    tr._api = api
+    G.set_active(G.Glossary(G.parse("D3 K2 => D3 K2 维生素滴剂")))
+    gid_a = run(tr._ensure_glossary("es", "zh-CN"))
+    assert gid_a
+    assert run(tr._ensure_glossary("es", "zh-CN")) == gid_a   # 同内容命中缓存
+    posts = [c for c in api.calls if c[0] == "POST"]
+    assert len(posts) == 1                                    # 缓存生效，没重建
+
+    G.set_active(G.Glossary(G.parse("el brillo => 亮发精华")))  # 换了主播
+    gid_b = run(tr._ensure_glossary("es", "zh-CN"))
+    assert gid_b and gid_b != gid_a
+    posts = [c for c in api.calls if c[0] == "POST"]
+    assert len(posts) == 2                                    # 指纹变了，真的重建
+    assert not any(g["glossary_id"] == gid_a for g in api.glossaries)  # 旧表已删

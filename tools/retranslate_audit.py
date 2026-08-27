@@ -120,7 +120,11 @@ async def main():
     t0 = time.time()
     with open(path, "a", encoding="utf-8") as out:
         for i, row in enumerate(todo, 1):
-            text = row["text"].strip()
+            # 快译翻的是摘除称呼后的文本（见 pipeline._for_translation）。
+            # 重译必须吃同一份输入，否则称呼的有无会被当成「模型分歧」，
+            # 在爱称密集的主播身上（实测 38.7% 的句子带称呼）把真问题淹没。
+            from app.vocative import strip as strip_vocative
+            text = strip_vocative(row["text"].strip())[0]
             pairs = tuple(g.translation_pairs(text)) if g else ()
             new = await tr.translate(text, "zh-CN", source=row.get("language") or "auto",
                                      glossary=pairs or None)
