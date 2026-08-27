@@ -1081,10 +1081,9 @@ class Pipeline:
             await tell(why="没有可用的翻译引擎")
             return
         try:
-            hint = (tuple(self.glossary.translation_pairs(context))
-                    if self.glossary else ())
-            out = await tr.translate(context, self.target, source=lang or "auto",
-                                     glossary=hint or None)
+            text, hint = self._for_translation(context)
+            out = await tr.translate(text, self.target, source=lang or "auto",
+                                     glossary=hint)
             if out and looks_fabricated(context, out):
                 print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
                       "改用常规引擎")
@@ -1092,7 +1091,7 @@ class Pipeline:
                     context, self.target,
                     source=lang or "auto") if self.translator else None
             elif out and self.glossary:
-                out = self.glossary.apply(context, out)
+                out = self.glossary.apply(text, out)
         except Exception as exc:
             print("[警告] 报警上下文翻译失败: {}".format(exc))
             await tell(why="翻译超时或出错")
@@ -1209,19 +1208,18 @@ class Pipeline:
         await self.server.broadcast({"type": "caption_update", "id": seq,
                                      "strong_state": "pending"})
         t0 = time.time()
-        hint = (tuple(self.glossary.translation_pairs(job["text"]))
-                if self.glossary else ())
+        text, hint = self._for_translation(job["text"])
         try:
             out = await self._strong.translate(
-                job["text"], job["target"], source=job["lang"] or "auto",
-                glossary=hint or None)
+                text, job["target"], source=job["lang"] or "auto",
+                glossary=hint)
             if out and looks_fabricated(job["text"], out):
                 # 强模型在「长句 + 带疑问」上会改成回话而不是翻译。
                 # 宁可留着快译，也不能把凭空生成的内容写进屏幕和审计记录。
                 print("[警告] 重译结果不像译文（疑似模型在回话），已丢弃")
                 out = None
             elif out and self.glossary:
-                out = self.glossary.apply(job["text"], out)
+                out = self.glossary.apply(text, out)
         except Exception as exc:
             print("[警告] 重译失败: {}".format(exc))
             out = None
@@ -1243,23 +1241,37 @@ class Pipeline:
             await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
                                             job["target"], {"strong_state": "failed"})
 
+    def _for_translation(self, text):
+        """送给翻译器的那一份文本，以及配套的词表提示。
+
+        与屏幕上的西语原文**不是同一份**：称呼会在这里被摘掉（见
+        app/vocative.py，那是「爱邮递员」那一类错误的根治办法）。原文、审计
+        日志、违禁词检测统统用未经改动的文本——报警跑在原文上，这条链路不能被
+        翻译预处理碰。
+        """
+        from .vocative import strip
+
+        cleaned, _hit = strip(text)
+        hint = (tuple(self.glossary.translation_pairs(cleaned))
+                if self.glossary else ())
+        return cleaned, hint or None
+
     async def _translate_and_update(self, job):
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""
         t0 = time.time()
         # 引擎抓一次快照：中途在界面里换引擎时，这一条从翻译到落日志必须
         # 始终指同一个对象，否则审计里的 engine 会记成换挡后的那个
         tr = self.translator
+        # 词表两处生效：把本句命中的词条拼进提示词，译文回来再做兜底替换。
+        # 商品名/自造词（Quema Lonja、moringa）通用模型必错，而且换多大的
+        # 模型都不会自动变对——这类错误只能靠词表钉死。
+        text, hint = self._for_translation(job["text"])
         try:
-            # 词表两处生效：把本句命中的词条拼进提示词，译文回来再做兜底替换。
-            # 商品名/自造词（Quema Lonja、moringa）通用模型必错，而且换多大的
-            # 模型都不会自动变对——这类错误只能靠词表钉死。
-            hint = (tuple(self.glossary.translation_pairs(job["text"]))
-                    if self.glossary else ())
             translated = await tr.translate(
-                job["text"], job["target"], source=job["lang"] or "auto",
-                glossary=hint or None)
+                text, job["target"], source=job["lang"] or "auto",
+                glossary=hint)
             if self.glossary:
-                translated = self.glossary.apply(job["text"], translated)
+                translated = self.glossary.apply(text, translated)
         except Exception as exc:
             print("[警告] 翻译失败: {}".format(exc))
             translated = None
@@ -1274,13 +1286,11 @@ class Pipeline:
                 # 翻译耗时去污染延迟统计（e2e_translated_ms 仍如实含全部等待）
                 t0 = time.time()
                 try:
-                    hint = (tuple(self.glossary.translation_pairs(job["text"]))
-                            if self.glossary else ())
                     translated = await tr.translate(
-                        job["text"], job["target"], source=job["lang"] or "auto",
-                        glossary=hint or None)
+                        text, job["target"], source=job["lang"] or "auto",
+                        glossary=hint)
                     if self.glossary:
-                        translated = self.glossary.apply(job["text"], translated)
+                        translated = self.glossary.apply(text, translated)
                 except Exception as exc:
                     print("[警告] 降级引擎翻译失败: {}".format(exc))
                     translated = None
