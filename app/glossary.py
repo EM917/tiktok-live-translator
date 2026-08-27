@@ -114,6 +114,23 @@ class Glossary:
         return translated
 
 
+# 冠词槽位可以换成物主代词。词条写的是 `las gotitas`，主播嘴里常说的却是
+# `tus gotitas`（实录 11 次）、`tu limpieza`（5 次）、`tu orden`（5 次）——
+# 89 条词条里有 62 条以冠词开头，也就是七成条目对物主结构整个失效。
+# **只换槽位、不去掉槽位**：裸的 `gotitas`、`limpieza` 仍然不命中。去掉槽位
+# 会踩回上面 gotitas 那条的坑（普通词被绑成商品名，把整段拽偏）。
+_DETERMINERS = ("el", "la", "los", "las", "un", "una", "unos", "unas")
+_POSSESSIVES = ("tu", "tus", "su", "sus", "mi", "mis", "nuestro", "nuestra")
+
+
+def _with_possessives(variant):
+    """`las gotitas` → 同时也认 `tus gotitas` / `su gotitas` / …"""
+    head, _, rest = variant.partition(" ")
+    if not rest or head.lower() not in _DETERMINERS:
+        return [variant]
+    return [variant] + [d + " " + rest for d in _POSSESSIVES]
+
+
 def parse(text):
     """解析词表文本。格式：`变体1 | 变体2 => 中文译法   # 备注`"""
     entries = []
@@ -122,7 +139,12 @@ def parse(text):
         if not line or "=>" not in line:
             continue
         left, right = line.split("=>", 1)
-        variants = [v.strip() for v in left.split("|") if v.strip()]
+        seen, variants = set(), []
+        for raw in left.split("|"):
+            for v in _with_possessives(raw.strip()):
+                if v and v.lower() not in seen:
+                    seen.add(v.lower())
+                    variants.append(v)
         zh = right.strip()
         if variants and zh:
             entries.append((variants, zh))
