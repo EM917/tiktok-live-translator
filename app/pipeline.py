@@ -1076,7 +1076,7 @@ class Pipeline:
 
         stored = load_settings().get("api_keys", {})
         # DeepL 的月度用量：中控要能看着额度用（实测约 3.5 万字符/小时，
-        # 免费档 100 万/月 ≈ 29 小时）。拿不到就不显示，最多等 3 秒
+        # Developer 档一次性 100 万字符 ≈ 29 小时）。拿不到就不显示，最多等 3 秒
         usage = None
         inner = getattr(self.translator, "inner", self.translator)
         if getattr(inner, "name", "") == "deepl" and hasattr(inner, "usage"):
@@ -1209,15 +1209,19 @@ class Pipeline:
         except Exception:
             pass
         name = getattr(new, "name", "?")
+        # 措辞不承诺「下月重置」：新的 Developer 档 100 万字符是**一次性**
+        # 额度（用完要升级付费档），只有已下架的老 Free 档才按月刷新。程序
+        # 无法从 API 分辨账户档位，绝不替 DeepL 承诺任何刷新——曾经这里写着
+        # 「额度每月重置」，对一次性额度的账户就是假话
         if name == "google":
             # 不是本地引擎，字幕会发给 Google——合规工具的提示绝不能在
             # 「数据去哪了」这件事上含糊
-            note = ("DeepL 本月免费额度已用完，且本机没有可用的本地模型，"
+            note = ("DeepL 免费额度已用完，且本机没有可用的本地模型，"
                     "已自动改用 Google 免费接口继续翻译——注意：字幕文本会"
-                    "发送给 Google。额度下月重置后会自动回到 DeepL。")
+                    "发送给 Google。在 DeepL 升级/续费后重选 DeepL 即可回来。")
         else:
-            note = ("DeepL 本月免费额度已用完，本场已自动改用本地引擎（{}）"
-                    "继续翻译。额度每月重置，下月开播会自动回到 DeepL。"
+            note = ("DeepL 免费额度已用完，本场已自动改用本地引擎（{}）继续"
+                    "翻译。在 DeepL 升级/续费后重选 DeepL 即可回来。"
                     ).format(name)
         print("[警告] " + note)
         self.args.translator_note = note
