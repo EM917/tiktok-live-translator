@@ -264,6 +264,115 @@ def active():
     return _ACTIVE if _ACTIVE is not None else load()
 
 
+def _template_owners():
+    """profile 模板条目 -> 主播：(frozenset(变体小写), 中文) 为键。"""
+    owners = {}
+    try:
+        examples = sorted(PROFILE_DIR.glob("*.example.txt"))
+    except OSError:
+        examples = []
+    for example in examples:
+        streamer = example.name[:-len(".example.txt")]
+        try:
+            for variants, zh in parse(example.read_text(encoding="utf-8")):
+                owners[(frozenset(v.lower() for v in variants), zh)] = streamer
+        except OSError:
+            continue
+    return owners
+
+
+def _plan_from_lines(lines):
+    owners = _template_owners()
+    plan = []
+    for no, raw in enumerate(lines):
+        parsed = parse(raw)
+        if len(parsed) != 1:
+            continue
+        variants, zh = parsed[0]
+        owner = owners.get((frozenset(v.lower() for v in variants), zh))
+        if owner:
+            plan.append({"line_no": no, "line": raw.strip(), "streamer": owner,
+                         "display": "{} => {}".format(variants[0], zh)})
+    return plan
+
+
+def migration_plan(path=None):
+    """「迁移旧词表」的扫描步：用户全局词表里**整条与某个 profile 模板完全
+    一致**（全部变体 + 中文都相同）的行。
+
+    判据比 misplaced_entries 的「共享一个变体」严一档：迁移会动用户的文件，
+    只动 100% 确定来自旧官方模板的行——用户改过一个字的行都不算，宁可留着
+    继续提示，也绝不猜「这是不是用户自己写的」。"""
+    target = Path(path) if path else GLOSSARY_FILE
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return _plan_from_lines(lines)
+
+
+def migrate_legacy_entries(path=None):
+    """「迁移旧词表」的执行步：备份 → **先写进 profile，写成功的才从全局删**
+    → 全局删行。顺序是铁律：profiles 目录写不进去（只读、被占用）时，条目
+    必须原样留在全局表里继续生效——「从全局删了但没进 profile」是数据丢失，
+    比不迁移糟糕得多（和 DeepL 单槽位先删后建的教训同款道理，方向相反）。
+
+    计划与删行基于**同一次读取**的内容——预览之后用户可能用编辑器改过文件，
+    按旧行号删新文件会删错行。
+    返回 {"backup", "moved", "total", "failed"}；计划为空时返回 None。"""
+    from datetime import datetime
+
+    target = Path(path) if path else GLOSSARY_FILE
+    try:
+        raw = target.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    lines = raw.splitlines()
+    plan = _plan_from_lines(lines)
+    if not plan:
+        return None
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = target.with_name(target.name + ".bak-" + stamp)
+    backup.write_text(raw, encoding="utf-8")
+
+    by_streamer = {}
+    for p in plan:
+        by_streamer.setdefault(p["streamer"], []).append(p)
+    moved, failed, migrated_lines = {}, 0, set()
+    for streamer, items in by_streamer.items():
+        prof = profile_path(streamer)
+        if prof is None:                   # 建不出 profile：整组留在全局
+            failed += len(items)
+            continue
+        try:
+            existing = {(frozenset(v.lower() for v in vs), zh)
+                        for vs, zh in parse(prof.read_text(encoding="utf-8"))}
+        except OSError:
+            existing = set()
+        missing = []
+        for p in items:
+            vs, zh = parse(p["line"])[0]
+            if (frozenset(v.lower() for v in vs), zh) not in existing:
+                missing.append(p["line"])
+        if missing:
+            try:
+                with prof.open("a", encoding="utf-8") as fh:
+                    fh.write("\n# 从 glossary.txt 迁移（{}）\n".format(stamp))
+                    fh.write("\n".join(missing) + "\n")
+            except OSError:
+                failed += len(items)       # 写不进去：整组留在全局
+                continue
+        moved[streamer] = len(items)
+        migrated_lines.update(p["line_no"] for p in items)
+
+    if migrated_lines:
+        kept = [line for i, line in enumerate(lines) if i not in migrated_lines]
+        target.write_text("\n".join(kept) + ("\n" if raw.endswith("\n") else ""),
+                          encoding="utf-8")
+    return {"backup": backup.name, "moved": moved,
+            "total": sum(moved.values()), "failed": failed}
+
+
 def misplaced_entries(entries):
     """全局词表里与某个主播 profile 模板重复的条目。
 

@@ -23,6 +23,9 @@
   var targetSel = document.getElementById("target-lang");
   var fontSlider = document.getElementById("font-size");
   var clearBtn = document.getElementById("clear-btn");
+  var migrateBar = document.getElementById("migrate-bar");
+  var migrateText = document.getElementById("migrate-text");
+  var migrateBtn = document.getElementById("migrate-btn");
   var updateBar = document.getElementById("update-bar");
   var updateText = document.getElementById("update-text");
   var updateBtn = document.getElementById("update-btn");
@@ -203,6 +206,58 @@
     showVersionNote("检查更新中…", 8000);
   });
 
+  // 「迁移旧词表」：扫描 → 展示 → 用户确认 → 服务端备份并迁移。
+  // 只迁移整条与旧官方模板一致的行，用户自己写的内容绝不动。
+  function handleMigration(msg) {
+    if (msg.stage === "available") {
+      migrateText.textContent = "glossary.txt 里有 " + msg.count +
+        " 条旧模板遗留的主播专属词条，会污染其他主播的直播";
+      migrateBar.classList.remove("hidden");
+    } else if (msg.stage === "plan") {
+      if (!msg.entries || !msg.entries.length) {
+        showVersionNote("没有可以安全自动迁移的条目（改动过的条目需手动移到 profiles/）", 8000);
+        migrateBtn.disabled = false;
+        return;
+      }
+      var lines = msg.entries.map(function (e) {
+        return e.display + "  → profiles/" + e.streamer + ".txt";
+      });
+      var ok = window.confirm(
+        "将迁移以下 " + lines.length + " 条（先备份 glossary.txt）：\n\n" +
+        lines.join("\n") + "\n\n只迁移与旧官方模板完全一致的条目，" +
+        "你自己添加或改过的内容不会被改动。继续？");
+      if (ok) {
+        send({ type: "migrate_glossary", confirm: true });
+      } else {
+        migrateBtn.disabled = false;
+      }
+    } else if (msg.stage === "done") {
+      migrateBtn.disabled = false;
+      if (msg.result && msg.result.total) {
+        migrateBar.classList.add("hidden");
+        var note = "已迁移 " + msg.result.total + " 条（备份：" +
+                   msg.result.backup + "）";
+        if (msg.result.failed) {
+          note += "；另有 " + msg.result.failed +
+                  " 条因 profile 写入失败未迁移，仍保留在原词表里";
+        }
+        showVersionNote(note, 10000);
+      } else if (msg.result && msg.result.failed) {
+        showVersionNote("迁移失败：profiles/ 目录写不进去，" + msg.result.failed +
+                        " 条全部保留在原词表（已留备份 " + msg.result.backup + "）", 10000);
+      } else {
+        showVersionNote("没有需要迁移的条目", 6000);
+      }
+    }
+  }
+
+  if (migrateBtn) {
+    migrateBtn.addEventListener("click", function () {
+      migrateBtn.disabled = true;
+      send({ type: "migrate_glossary" });
+    });
+  }
+
   function showVersionNote(text, ms) {
     if (versionNoticeTimer) clearTimeout(versionNoticeTimer);
     versionEl.textContent = " · " + text;
@@ -287,6 +342,10 @@
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
           if (msg.config.source_lang && !sourceTouched) sourceSel.value = msg.config.source_lang;
+          if (msg.config.glossary_migration) {
+            handleMigration({ stage: "available",
+                              count: msg.config.glossary_migration.count });
+          }
           if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
           if (msg.config.version) {
             currentVersion = msg.config.version;
@@ -325,6 +384,9 @@
         if (msg.target_lang) targetSel.value = msg.target_lang;
         if (msg.source_lang && !sourceTouched) sourceSel.value = msg.source_lang;
         if (msg.room_url) roomInput.value = msg.room_url;
+        break;
+      case "glossary_migration":
+        handleMigration(msg);
         break;
       case "caption":
         renderCaption(msg);
