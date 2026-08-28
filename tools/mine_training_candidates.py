@@ -28,6 +28,34 @@ from app.glossary import load as load_glossary                # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 
 _DIGITS = re.compile(r"\d")
+_NUM = re.compile(r"\d+(?:[.,]\d+)?")
+_WORD_NUM = re.compile(
+    r"\b(uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|"
+    r"quince|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|"
+    r"noventa|cien|ciento|mil)\b")
+_PRON = re.compile(r"\b(me|te|le|les|nos|se|lo|la|los|las)\b")
+_DET = re.compile(r"\b(el|la|los|las|un|una|unos|unas|tu|tus|su|sus|mi|mis)\b")
+
+
+def skeleton(src):
+    """近重复判定的骨架：归一化后数字（含拼写数字）/代词/冠词槽位统一。
+
+    "les queda en cincuenta y cinco" 与 "te queda a cincuenta y cinco"
+    骨架相同——对模型的信息量几乎一样，人工只标最难的一条。去重必须发生在
+    **全量命中池**上（top 截选之后近重复早被打散，实测 846 条精选里骨架
+    零重复，去重形同虚设）。"""
+    from app.detector import normalize
+
+    s = normalize(src)
+    s = _NUM.sub("<NUM>", s)
+    s = _WORD_NUM.sub("<NUM>", s)
+    s = _PRON.sub("<PRON>", s)
+    s = _DET.sub("", s)
+    s = re.sub(r"\b(en|a|de|y|que|con)\b", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    # 拼写复合数字（cincuenta y cinco）会折出多个 <NUM>，与数字写法（55）
+    # 的单个 <NUM> 对不上——连续 <NUM> 折叠成一个
+    return re.sub(r"(?:<NUM> ?)+", "<NUM> ", s).strip()
 _PROMO = re.compile(r"\b(cup[oó]n|descuento|oferta|gratis|orden|pedido|compra|"
                     r"pack|especial|promoci[oó]n|env[ií]o|rebaja|d[oó]lare?s?)\b",
                     re.I)
@@ -127,6 +155,13 @@ def main():
                          "session": session, "streamer": meta["streamer"],
                          "seq": r["seq"]})
 
+    # 骨架去重在全量池上做：同骨架只留分数最高的一条
+    by_skel = {}
+    for row in sorted(rows, key=lambda r: -r["score"]):
+        by_skel.setdefault(skeleton(row["src"]), row)
+    merged = len(rows) - len(by_skel)
+    rows = list(by_skel.values())
+
     # 主播内部按分排序、各取头部比例——多样性不靠运气
     picked = []
     by_streamer = {}
@@ -139,15 +174,16 @@ def main():
     picked.sort(key=lambda r: -r["score"])
 
     from datetime import date
-    out = ROOT / "logs" / "training-candidates-{}.jsonl".format(
+    out_dir = Path(args.logs) if args.logs else provenance.LOG_DIR
+    out = out_dir / "training-candidates-{}.jsonl".format(
         date.today().strftime("%Y%m%d"))
     with out.open("w", encoding="utf-8") as fh:
         for row in picked:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     fam_counts = Counter(f for r in picked for f in r["families"])
-    print("候选池 {} 条（全语料命中 {} 条，各主播取前 {:.0%}）→ {}".format(
-        len(picked), len(rows), args.top, out.name))
+    print("候选池 {} 条（命中 {} 条，骨架去重合并 {} 条，各主播取前 {:.0%}）"
+          "→ {}".format(len(picked), len(rows), merged, args.top, out.name))
     print("家族分布:", dict(fam_counts.most_common()))
     print("主播分布:", dict(Counter(r["streamer"] for r in picked)))
     print("有强译对照的:", sum(1 for r in picked if r["strong"]))
