@@ -1,0 +1,32 @@
+# 违禁词模糊匹配的逐词预算 policy —— `词 => fuzzy N`（# 后为注释）
+#
+# 【这是什么】默认预算按词长给（<5 精确；5–7 允许 1 个编辑；>7 允许 2 个）。
+# 当某个词在预算内的邻居本身就是高频合法西语词时，仅凭 ASR 文本无法区分
+# 「听错的违禁词」和「说对的合法词」——这是信息论上的限制，不是阈值不够
+# 聪明。对这类词把预算降到 0：**主动放弃**模糊档召回，exact / variant 两级
+# 照常工作，正则条目不受影响。
+#
+# 【怎么来的】tools/collision_audit.py 离线扫描真实直播语料发现候选，
+# 人工确认后写进这里。生产端只读这份固定文件——检测行为绝不随日志漂移，
+# 报警审计永远能回答「为什么这个词不做模糊匹配」。
+# 本文件随代码入库、随更新分发；新增违禁词前先跑
+#   python3 tools/collision_audit.py --term "候选词"
+#
+# 【证据快照】2026-08-27，语料 = provenance.corpus() 全部真实场次（7165 个
+# 不同 token，跨 3+ 主播）。数字随语料增长会变，但 policy 不自动变——要改，
+# 重跑审计、人工确认、改这个文件。
+
+curar => fuzzy 0    # collision: durar（持续，dist 1，11 次 / 5 场 / 2 主播）——「能用一两个月」是带货高频话术，实盘已误报多次
+quemar => fuzzy 0   # collision: quedar（剩下/留下，dist 1，19 次 / 6 场 / 3 主播）
+quema => fuzzy 0    # collision: queda（dist 1，114 次 / 6 场）——「quedan pocas 只剩几件」是促销核心句式
+medico => fuzzy 0   # collision: medio（dist 1，70 次 / 7 场）与 mexico（dist 1，54 次 / 2 场）双重碰撞
+
+# 【考虑过、决定不收】多词短语不一刀切，逐词各查各的预算：
+# aprobado ↔ probado（dist 1，45 次 / 4 场）：所在词条 "aprobado por la fda"
+#   还有 por / la / fda 三个 anchor 词，fda 是短词必须精确命中——碰撞要成立
+#   得说出 "probado por la fda"，而那句话本身就接近违规宣称，报出来不算冤枉。
+# ciento ↔ siento / cierto / cuento（dist 1，41/21/13 次，跨 3 主播）：所在
+#   词条 "garantizado cien por ciento" 有 garantizado / cien / por 三个
+#   anchor，独立出现的 "me siento bien" 凑不齐短语；而这里的模糊档防的恰恰
+#   是拉美 ASR 最常见的 s/c 混淆（"cien por siento"）——对头号夸大宣称句式，
+#   这档召回不能丢。
