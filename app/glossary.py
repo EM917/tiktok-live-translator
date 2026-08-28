@@ -216,6 +216,37 @@ def load(path=None, streamer=None):
     return Glossary(entries)
 
 
+# profile 文件里的开关行：`选项名: on/off`。parse() 认不出它（没有 =>），
+# 天然互不干扰。目前唯一的选项是 vocative_strip——称呼摘除是按主播验证的
+# 行为（同一份名单在不同主播身上触发率差 60 倍），没验证过的主播必须默认关。
+_OPTION_RE = re.compile(r"^(\w+)\s*:\s*(on|off|true|false)\s*(?:#.*)?$", re.I)
+
+
+def profile_options(streamer):
+    """读主播 profile 里的开关行。没有 profile 或没写开关就是空 dict。"""
+    prof = profile_path(streamer)
+    if prof is None:
+        return {}
+    out = {}
+    try:
+        for line in prof.read_text(encoding="utf-8").splitlines():
+            m = _OPTION_RE.match(line.strip())
+            if m:
+                out[m.group(1).lower()] = m.group(2).lower() in ("on", "true")
+    except OSError:
+        pass
+    return out
+
+
+def fingerprint(entries):
+    """合并后词表的内容指纹。审计要能回答「这一场生效的到底是哪份词表」——
+    引擎归属刚吃过一次「只能靠反推」的亏，词表归属不能再走一遍。"""
+    canon = "\n".join("|".join(v.lower() for v in variants) + "=>" + zh
+                      for variants, zh in entries)
+    import hashlib
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:12]
+
+
 # 当前会话实际生效的词表（全局 + 主播 profile 合并后）。存在的理由：
 # DeepL 的原生术语表在引擎内部自己建表，它不知道现在看的是哪个主播——
 # 让它拿这份，而不是重新 load() 一份只有全局条目的。表名里带内容指纹，

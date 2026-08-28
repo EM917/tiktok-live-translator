@@ -333,7 +333,8 @@ class Pipeline:
 
     async def _begin_session(self, url):
         from .audit import AuditLog
-        from .glossary import misplaced_entries, profile_path, set_active
+        from .glossary import (fingerprint, misplaced_entries, profile_options,
+                               profile_path, set_active)
         from .provenance import app_version, file_hash, streamer_of
 
         # 词表每场重新读：模板生成出来是空的，用户按提示填好后点「停止→开始」
@@ -350,6 +351,11 @@ class Pipeline:
         prof = profile_path(streamer)
         misplaced = misplaced_entries(self.glossary.entries)
         misplaced = [(o, v, zh) for o, v, zh in misplaced if o != streamer]
+        # 称呼摘除是按主播验证的行为（触发率跨主播差 60 倍），profile 里写了
+        # vocative_strip: on 才开。没验证过的新主播默认关——「规则不泛化，
+        # 验证规则的流程泛化」，开关本身就是那个流程的产物
+        self._vocative_strip = bool(profile_options(streamer).get(
+            "vocative_strip", False))
         self._quality.clear()            # 等级按 seq 记，换场后 seq 会重号
         self._strong_inflight.clear()
         self.telemetry.reset()          # 统计按场计，不跨房间累计
@@ -371,8 +377,12 @@ class Pipeline:
             # 两种写法之间做字符串匹配
             "translator_active": (self.translator.name
                                   if self.translator is not None else "none"),
-            # 本场生效的主播 profile 指纹；没有 profile 的主播记 None
+            # 词表归属四件套：加载了谁的 profile、它的指纹、全局表指纹
+            # （AuditLog 里的 glossary_hash）、合并后实际生效那份的指纹。
+            # 引擎归属吃过「只能靠反推」的亏，词表归属不能再走一遍
+            "profile": streamer if prof else None,
             "profile_hash": file_hash(prof) if prof else None,
+            "merged_glossary_hash": fingerprint(self.glossary.entries),
         })
         if misplaced:
             owner, variant, zh = misplaced[0]
@@ -1262,14 +1272,16 @@ class Pipeline:
     def _for_translation(self, text):
         """送给翻译器的那一份文本，以及配套的词表提示。
 
-        与屏幕上的西语原文**不是同一份**：称呼会在这里被摘掉（见
-        app/vocative.py，那是「爱邮递员」那一类错误的根治办法）。原文、审计
-        日志、违禁词检测统统用未经改动的文本——报警跑在原文上，这条链路不能被
-        翻译预处理碰。
+        与屏幕上的西语原文**不是同一份**：profile 开了 vocative_strip 的主播，
+        称呼会在这里被摘掉（见 app/vocative.py，那是「爱邮递员」那一类错误的
+        根治办法；开关按主播验证后才打开）。原文、审计日志、违禁词检测统统用
+        未经改动的文本——报警跑在原文上，这条链路不能被翻译预处理碰。
         """
-        from .vocative import strip
+        cleaned = text
+        if getattr(self, "_vocative_strip", False):
+            from .vocative import strip
 
-        cleaned, _hit = strip(text)
+            cleaned, _hit = strip(text)
         hint = (tuple(self.glossary.translation_pairs(cleaned))
                 if self.glossary else ())
         return cleaned, hint or None

@@ -89,6 +89,14 @@ async def main():
         return
 
     rows = read_rows(path)
+    # 与这一场直播时的预处理保持一致：profile 开了 vocative_strip 的主播，
+    # 快译吃的是摘除称呼的文本，重译也必须吃同一份
+    from app.glossary import profile_options
+    from app.provenance import streamer_of
+    from app.vocative import strip as strip_vocative
+    start = next((r for r in rows if r.get("type") == "session_start"), {})
+    strip_on = bool(profile_options(
+        streamer_of(start.get("room_url", ""))).get("vocative_strip"))
     segments = [r for r in rows if r.get("type") == "segment" and (r.get("text") or "").strip()]
     if alerts_only:
         segments = [r for r in segments if r.get("hits")]
@@ -120,11 +128,13 @@ async def main():
     t0 = time.time()
     with open(path, "a", encoding="utf-8") as out:
         for i, row in enumerate(todo, 1):
-            # 快译翻的是摘除称呼后的文本（见 pipeline._for_translation）。
-            # 重译必须吃同一份输入，否则称呼的有无会被当成「模型分歧」，
-            # 在爱称密集的主播身上（实测 38.7% 的句子带称呼）把真问题淹没。
-            from app.vocative import strip as strip_vocative
-            text = strip_vocative(row["text"].strip())[0]
+            text = row["text"].strip()
+            if strip_on:
+                # 这一场的快译翻的是摘除称呼后的文本（profile 开了
+                # vocative_strip）。重译必须吃同一份输入，否则称呼的有无会被
+                # 当成「模型分歧」，在爱称密集的主播身上（实测 38.7% 的句子
+                # 带称呼）把真问题淹没。
+                text = strip_vocative(text)[0]
             pairs = tuple(g.translation_pairs(text)) if g else ()
             new = await tr.translate(text, "zh-CN", source=row.get("language") or "auto",
                                      glossary=pairs or None)

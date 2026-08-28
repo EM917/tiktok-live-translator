@@ -74,6 +74,7 @@ def test_the_operator_still_sees_the_untouched_spanish(monkeypatch):
     p.translator = FakeTr()
     p.glossary = None
     p.audit = None
+    p._vocative_strip = True       # 摘除按主播验证后由 profile 打开（默认关）
     p.telemetry = type("T", (), {"record_translation": lambda self, ms: None})()
 
     async def publish(*a, **k):

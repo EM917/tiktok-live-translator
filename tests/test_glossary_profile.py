@@ -76,6 +76,40 @@ def test_same_variant_different_meaning_is_not_misplaced(monkeypatch, tmp_path):
     assert G.misplaced_entries(entries) == []
 
 
+def test_profile_options_gate_per_streamer_behaviour(monkeypatch, tmp_path):
+    """vocative_strip 这类行为按主播验证后才开：同一份称呼名单在不同主播
+    身上触发率差 60 倍，没验证过的主播必须默认关。开关写在 profile 里，
+    parse() 认不出它（没有 =>），词条解析不受影响。"""
+    _files(monkeypatch, tmp_path, "x => y\n",
+           {"susan.txt": "vocative_strip: on\nla crema => 面霜\n",
+            "bella.txt": "la limpieza => 排毒粉\n"})
+    assert G.profile_options("susan") == {"vocative_strip": True}
+    assert G.profile_options("bella") == {}
+    assert G.profile_options("nadie") == {}
+    # 开关行不会被当成词条
+    assert len(G.load(streamer="susan").entries) == 2   # la crema + 全局 x
+
+
+def test_pipeline_strips_only_when_the_profile_says_so(monkeypatch, tmp_path):
+    from app.pipeline import Pipeline
+
+    p = Pipeline.__new__(Pipeline)
+    p.glossary = None
+    line = "llevar tres productos mi niña"
+    p._vocative_strip = False
+    assert p._for_translation(line)[0] == line          # 默认：原样送翻
+    p._vocative_strip = True
+    assert p._for_translation(line)[0] == "llevar tres productos"
+
+
+def test_fingerprint_tracks_content_not_identity(monkeypatch, tmp_path):
+    a = G.parse("la limpieza => 排毒粉\n")
+    b = G.parse("la limpieza => 排毒粉\n")
+    c = G.parse("la limpieza => 清洁\n")
+    assert G.fingerprint(a) == G.fingerprint(b)
+    assert G.fingerprint(a) != G.fingerprint(c)
+
+
 def test_active_glossary_roundtrip(monkeypatch, tmp_path):
     """DeepL 的原生术语表从 active() 拿词表——会话开始时 set_active 的
     必须是合并后的那份，没设置过则退回全局。"""

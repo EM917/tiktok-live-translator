@@ -224,8 +224,9 @@ class DeepLTranslator(BaseTranslator):
         self.quota_exhausted = False
         # (源语言, 目标语言) -> (内容指纹, 术语表 id)。命中必须比对指纹：
         # 引擎实例跨场次复用，换主播后词表内容变了，旧 id 不能再用。
-        # id 为 None 表示这份内容试过建不起来，同一指纹不再重试
+        # id 为 None 表示这份内容建不起来了；只在冷却期内认账，之后重试
         self._glossary_ids = {}
+        self._glossary_retry_at = 0.0
         self._glossary_source = None
         # 锁延迟到协程里建：Python 3.9 的 asyncio.Lock() 会绑到构造时的事件
         # 循环，而引擎对象是在管线线程之外建的，绑错了会在第一次用时炸。
@@ -285,22 +286,34 @@ class DeepLTranslator(BaseTranslator):
         if not tsv:
             return None
         want = self.glossary_name(source, gtarget, tsv)
+        import time
+
+        def hit(cached):
+            """指纹一致才算命中；「建不起来」只在冷却期内算数——网络抖动
+            不能把这一整场钉死在无术语表状态（免费版单槽位只能先删后建，
+            删完建失败时旧表已经没了，重试是唯一的恢复路径）。"""
+            if cached is None or cached[0] != want:
+                return False
+            return cached[1] is not None or time.time() < self._glossary_retry_at
+
         key = (source, gtarget)
         cached = self._glossary_ids.get(key)
-        if cached is not None and cached[0] == want:
-            return cached[1]            # 指纹一致才算命中（含「建不起来」的 None）
+        if hit(cached):
+            return cached[1]
         if self._glossary_lock is None:
             self._glossary_lock = asyncio.Lock()
         async with self._glossary_lock:
             cached = self._glossary_ids.get(key)
-            if cached is not None and cached[0] == want:
+            if hit(cached):
                 return cached[1]
             gid = None
             try:
                 gid = await self._build_glossary(source, gtarget, tsv, want)
             except Exception as exc:
                 print("[警告] DeepL 术语表建不起来（{}），"
-                      "本次按无术语表翻译——商品名会被直译".format(exc))
+                      "暂按无术语表翻译，120 秒后自动重试".format(exc))
+            if gid is None:
+                self._glossary_retry_at = time.time() + 120
             self._glossary_ids[key] = (want, gid)
             return gid
 
