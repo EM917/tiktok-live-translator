@@ -35,12 +35,40 @@ def test_streamer_cap_holds_through_quota_fill():
 
 
 def test_holdout_manifest_is_frozen_and_loadable():
-    """holdout 静默失效比没有更糟。清单必须能读出、且两类冻结都在。"""
+    """清单必须能读出，dev_eval 层的冻结项都在（今晚的评级场按
+    『评级前冻结』规则已提前加入）。"""
     from app.provenance import eval_holdout
 
     h = eval_holdout()
     assert "session-20260826-133138.jsonl" in h["sessions"]   # 260 对考卷
-    assert "elisa._martinez" in h["streamers"]                # 未见主播考场
+    assert "session-20260827-192219.jsonl" in h["sessions"]   # 评级前冻结
+    assert "elisa._martinez" in h["streamers"]                # 泛化参考
+
+
+def test_training_side_holdout_is_fail_closed(tmp_path):
+    """训练侧读不到/读不懂冻结清单必须直接退出——今天生成不了队列，
+    好过悄悄污染一次训练集。曾经是 fail-open：警告一声继续跑，holdout
+    全进训练。"""
+    import pytest
+
+    from app.provenance import eval_holdout
+
+    with pytest.raises(SystemExit):
+        eval_holdout(path=tmp_path / "missing.json", strict=True)
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        eval_holdout(path=bad, strict=True)
+
+    flat = tmp_path / "flat.json"                 # 旧的单层 schema 也不认
+    flat.write_text('{"sessions": {}, "streamers": {}}', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        eval_holdout(path=flat, strict=True)
+
+    # 非训练侧（纯分析）：警告 + 空集，不炸
+    assert eval_holdout(path=bad, strict=False) == {"sessions": set(),
+                                                    "streamers": set()}
 
 
 def test_reference_allowlist_not_blacklist():

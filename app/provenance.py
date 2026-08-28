@@ -82,19 +82,37 @@ def session_meta(path):
 HOLDOUT_FILE = LOG_DIR.parent / "eval_holdout.json"
 
 
-def eval_holdout(path=None):
-    """评估 holdout 冻结清单：这些 session / 主播永远不进训练侧管线。
+def eval_holdout(path=None, strict=False):
+    """评估冻结清单（dev_eval + sealed_test 两层），返回合并后的排除集。
 
-    读不出来时返回空集**并打印警告**——holdout 静默失效比没有 holdout 更糟，
-    因为所有人都以为它还在。"""
+    dev_eval 是训练排除的开发基准（调参可看）；sealed_test 是密封终审考卷
+    （评级前冻结、定稿前不开）。两层对训练侧的效力相同：都绝不进训练。
+
+    strict=True 给训练侧工具（mine / annotate / export / train）用：清单
+    缺失、JSON 损坏、schema 不对时**直接退出**——今天生成不了队列，好过
+    悄悄污染一次训练集。strict=False 只用于纯分析场景：警告 + 空集。"""
     p = Path(path) if path else HOLDOUT_FILE
+
+    def fail(why):
+        msg = "eval_holdout.json {}——训练侧管线拒绝在没有冻结清单的情况下运行".format(why)
+        if strict:
+            raise SystemExit("[错误] " + msg)
+        print("[警告] " + msg + "（非训练侧：按空清单继续）")
+        return {"sessions": set(), "streamers": set()}
+
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return {"sessions": set(data.get("sessions", {})),
-                "streamers": set(data.get("streamers", {}))}
     except (OSError, ValueError) as exc:
-        print("[警告] eval_holdout.json 读取失败（{}）——holdout 未生效！".format(exc))
-        return {"sessions": set(), "streamers": set()}
+        return fail("读取失败（{}）".format(exc))
+    if not isinstance(data.get("dev_eval"), dict) \
+            or not isinstance(data.get("sealed_test"), dict):
+        return fail("schema 不合法（缺 dev_eval / sealed_test 两层）")
+    sessions, streamers = set(), set()
+    for tier in ("dev_eval", "sealed_test"):
+        block = data[tier]
+        sessions |= set(block.get("sessions", {}))
+        streamers |= set(block.get("streamers", {}))
+    return {"sessions": sessions, "streamers": streamers}
 
 
 def corpus(log_dir=None, streamer=None):

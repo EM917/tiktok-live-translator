@@ -1,17 +1,34 @@
 {
   "_comment": [
-    "评估 holdout 冻结清单：列在这里的 session / 主播【永远】不得进入",
-    "训练候选挖掘、标注队列、训练集。冻结发生在任何标注开始之前——",
-    "否则随着日志每天增长，考卷内容会不知不觉混进教材，",
-    "『unseen holdout』名存实亡。",
-    "追加规则：任何一场被用于出报告数字的评级 session，评完即加进来。",
-    "移出必须有书面理由并重新评估所有已训练模型。"
+    "评估数据冻结清单，两层，语义不同，不得混用：",
+    "",
+    "dev_eval —— 训练排除的开发基准。永远不进 miner/标注队列/训练集，",
+    "但调 LoRA 参数、选 checkpoint 时可以反复查看。所有被正式评级过的",
+    "session 属于这一层，且必须在评级**开始之前**加入（评完再加只能防",
+    "gradient 泄漏，防不了人对着考卷调参的软泄漏）。",
+    "",
+    "sealed_test —— 密封终审考卷。必须在看任何模型输出、人工评级、错误",
+    "分析**之前**冻结，封存直到训练数据、LoRA 参数、checkpoint 全部定稿，",
+    "之后才第一次打开。现有语料全部被分析过，没有资格进这一层——下一个",
+    "从未分析过的新主播出现时，在任何人工评审开始之前整体标入。",
+    "",
+    "任何一层的移出都必须有书面理由，并重新评估所有已训练模型。",
+    "训练侧工具（mine / annotate / export / train）读不到或读不懂本文件时",
+    "必须直接退出（fail-closed），绝不允许静默继续。"
   ],
   "frozen_at": "2026-08-27",
-  "sessions": {
-    "session-20260826-133138.jsonl": "260 对盲评考卷来源（fidelity 与可读性两轮已评级），是验收一切引擎/LoRA 的标尺"
+  "dev_eval": {
+    "sessions": {
+      "session-20260826-133138.jsonl": "260 对盲评考卷来源（fidelity 与可读性两轮已评级），已被反复分析、据其定过候选家族与权重——training-excluded dev benchmark",
+      "session-20260827-192219.jsonl": "Daisy 晚场，约定将做全场评级——按『评级前冻结』规则在评级开始之前加入"
+    },
+    "streamers": {
+      "elisa._martinez": "推动过 source lock / profile isolation / glossary 重设计的分析对象——training-excluded dev benchmark，兼未见主播泛化参考"
+    }
   },
-  "streamers": {
-    "elisa._martinez": "整体封存为『未见主播』泛化考场——第一版 LoRA 的核心问题就是能否泛化到没训过的主播"
+  "sealed_test": {
+    "sessions": {},
+    "streamers": {},
+    "_policy": "空着是刻意的：等下一个从未分析过的新主播，在任何人工评审开始之前整体冻入。这张考卷比任何 LoRA 超参都重要。"
   }
 }
