@@ -121,7 +121,7 @@ def main():
 
     g = load_glossary()          # 只用全局表判行话，不掺 profile
     hist_all = _historic_labels(args.logs or provenance.LOG_DIR)
-    holdout = provenance.eval_holdout()
+    holdout = provenance.eval_holdout(strict=True)   # 训练侧：清单读不出直接退出
     seen, rows = set(), []
     skipped_holdout = 0
     for meta in provenance.corpus(log_dir=args.logs):

@@ -248,7 +248,7 @@ def main():
             cand_path.read_text(encoding="utf-8").splitlines()]
     rows = [r for r in rows if r.get("selected", True)]     # alternates 不进队列
     # holdout 双保险：miner 排过一次，这里再排一次
-    holdout = provenance.eval_holdout()
+    holdout = provenance.eval_holdout(strict=True)   # 训练侧：清单读不出直接退出
     rows = [r for r in rows
             if r["session"] not in holdout["sessions"]
             and r["streamer"] not in holdout["streamers"]]
