@@ -1,0 +1,160 @@
+"""训练候选挖掘：从真实语料里挑「值得人工标注」的难例——不是字符换配对。
+
+批量拿 DeepL 产训练对的路线因服务条款风险被否：训练目标改由人工 / 许可明确
+的来源构建，瓶颈从额度变成人力。这个工具保证人力花在刀刃上：1.8B 已经完全
+会的（hola chicas、gracias amor 一类）边际价值趋零，值钱的是——
+
+    价格/数字 · 促销条件 · 碎片句 · 行话（词表命中） · 快/强译分歧 ·
+    历史盲评 major · 高摩擦行
+
+输出 JSONL（logs/training-candidates-*.jsonl）：
+    {src, fast, strong, engine, families, score, session, streamer, seq}
+人工确认 target 之后进训练集。无论最终 LoRA、换模型还是不训练，都不浪费。
+
+用法：python3 tools/mine_training_candidates.py [--logs DIR] [--top 0.2]
+"""
+import argparse
+import json
+import re
+import sys
+from collections import Counter
+from pathlib import Path
+
+sys.path.insert(0, ".")
+
+from app import provenance                                    # noqa: E402
+from app.glossary import load as load_glossary                # noqa: E402
+
+ROOT = Path(__file__).resolve().parent.parent
+
+_DIGITS = re.compile(r"\d")
+_PROMO = re.compile(r"\b(cup[oó]n|descuento|oferta|gratis|orden|pedido|compra|"
+                    r"pack|especial|promoci[oó]n|env[ií]o|rebaja|d[oó]lare?s?)\b",
+                    re.I)
+
+# 权重定死在这里，改动要有理由——排序漂移会让两次挖掘结果没法比
+WEIGHTS = {"disagreement": 4, "price_number": 3, "promo": 3,
+           "jargon": 2, "fragment": 2, "hist_major": 5, "hist_friction": 2}
+
+
+def families_of(src, fast, strong, glossary, hist=None):
+    """一条语料命中的难例家族。纯函数，好测。"""
+    fams = []
+    if _DIGITS.search(src):
+        fams.append("price_number")
+    if _PROMO.search(src):
+        fams.append("promo")
+    if len(src) < 20 or src.rstrip().endswith(("...", "…")):
+        fams.append("fragment")
+    if glossary is not None and glossary.matching(src):
+        fams.append("jargon")
+    if strong:
+        from tools.retranslate_audit import suspicion
+        score, _flags = suspicion(src, fast, strong)
+        if score >= 0.5:
+            fams.append("disagreement")
+    if hist:
+        if hist.get("major"):
+            fams.append("hist_major")
+        if hist.get("friction"):
+            fams.append("hist_friction")
+    return fams
+
+
+def score_of(fams):
+    return sum(WEIGHTS[f] for f in fams)
+
+
+def _historic_labels(log_dir):
+    """已归档盲评的逐 seq 标注（只覆盖被评过的那场 bella 0826）。
+    归档和会话日志在同一个目录里——跟着 --logs 走，别锚死在代码目录。"""
+    out = {}
+    def _load(name):
+        p = Path(log_dir) / name
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except OSError:
+            return []
+    for r in _load("blindeval-20260826-blind_rows.json"):
+        if r.get("engine") == "hymt2" and r.get("verdict") == "major":
+            out.setdefault(r["seq"], {})["major"] = True
+    for r in _load("readability-20260827-rows.json"):
+        if r.get("engine") == "hymt2" and r.get("friction"):
+            out.setdefault(r["seq"], {})["friction"] = True
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--logs", default=None)
+    ap.add_argument("--top", type=float, default=0.2,
+                    help="每个主播取分数最高的比例（默认 0.2）")
+    args = ap.parse_args()
+
+    g = load_glossary()          # 只用全局表判行话，不掺 profile
+    hist_all = _historic_labels(args.logs or provenance.LOG_DIR)
+    seen, rows = set(), []
+    for meta in provenance.corpus(log_dir=args.logs):
+        session = Path(meta["path"]).name
+        recs = []
+        for line in Path(meta["path"]).read_text(encoding="utf-8").splitlines():
+            try:
+                recs.append(json.loads(line))
+            except ValueError:
+                continue
+        segs = {r["seq"]: r for r in recs if r.get("type") == "segment"}
+        strong = {r["seq"]: r.get("translated") or ""
+                  for r in recs if r.get("type") == "translation_strong"
+                  and r.get("ok")}
+        hist = hist_all if "20260826-133138" in session else {}
+        for r in recs:
+            if r.get("type") != "translation" or not r.get("ok"):
+                continue
+            s = segs.get(r["seq"], {})
+            src = (s.get("text") or "").strip()
+            if s.get("language") != "es" or len(src) < 15 or src in seen:
+                continue
+            fams = families_of(src, r.get("translated") or "",
+                               strong.get(r["seq"]), g,
+                               hist.get(r["seq"]))
+            if not fams:
+                continue
+            seen.add(src)
+            rows.append({"src": src, "fast": r.get("translated"),
+                         "strong": strong.get(r["seq"]),
+                         "engine": r.get("engine"),
+                         "families": fams, "score": score_of(fams),
+                         "session": session, "streamer": meta["streamer"],
+                         "seq": r["seq"]})
+
+    # 主播内部按分排序、各取头部比例——多样性不靠运气
+    picked = []
+    by_streamer = {}
+    for row in rows:
+        by_streamer.setdefault(row["streamer"], []).append(row)
+    for _streamer, group in sorted(by_streamer.items()):
+        group.sort(key=lambda r: -r["score"])
+        take = max(20, int(len(group) * args.top))
+        picked.extend(group[:take])
+    picked.sort(key=lambda r: -r["score"])
+
+    from datetime import date
+    out = ROOT / "logs" / "training-candidates-{}.jsonl".format(
+        date.today().strftime("%Y%m%d"))
+    with out.open("w", encoding="utf-8") as fh:
+        for row in picked:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    fam_counts = Counter(f for r in picked for f in r["families"])
+    print("候选池 {} 条（全语料命中 {} 条，各主播取前 {:.0%}）→ {}".format(
+        len(picked), len(rows), args.top, out.name))
+    print("家族分布:", dict(fam_counts.most_common()))
+    print("主播分布:", dict(Counter(r["streamer"] for r in picked)))
+    print("有强译对照的:", sum(1 for r in picked if r["strong"]))
+    for r in picked[:5]:
+        print("  [{}] {} | {}".format("+".join(r["families"]),
+                                      r["src"][:60], (r["fast"] or "")[:40]))
+
+
+if __name__ == "__main__":
+    main()
