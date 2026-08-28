@@ -79,6 +79,24 @@ def session_meta(path):
                 streamer=streamer_of(url), segments=segs)
 
 
+HOLDOUT_FILE = LOG_DIR.parent / "eval_holdout.json"
+
+
+def eval_holdout(path=None):
+    """评估 holdout 冻结清单：这些 session / 主播永远不进训练侧管线。
+
+    读不出来时返回空集**并打印警告**——holdout 静默失效比没有 holdout 更糟，
+    因为所有人都以为它还在。"""
+    p = Path(path) if path else HOLDOUT_FILE
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return {"sessions": set(data.get("sessions", {})),
+                "streamers": set(data.get("streamers", {}))}
+    except (OSError, ValueError) as exc:
+        print("[警告] eval_holdout.json 读取失败（{}）——holdout 未生效！".format(exc))
+        return {"sessions": set(), "streamers": set()}
+
+
 def corpus(log_dir=None, streamer=None):
     """真实直播会话的清单。**分析工具应当用它，而不是 glob 整个目录。**"""
     out = []
