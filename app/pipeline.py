@@ -185,6 +185,8 @@ class Pipeline:
             return self.set_engine(msg.get("engine"), msg.get("api_key"))
         elif mtype == "retranslate":
             return self.retranslate(msg.get("id"))
+        elif mtype == "migrate_glossary":
+            return self._migrate_glossary(bool(msg.get("confirm")))
         elif mtype == "apply_update":
             if getattr(self, "updater", None) is not None:
                 return self._apply_update()
@@ -396,6 +398,16 @@ class Pipeline:
                                               zh, owner)
             print("[警告] " + text)
             await self.server.broadcast({"type": "notice", "text": text})
+            # 界面上给一个「迁移旧词表」入口。能一键迁移的只是整条与旧官方
+            # 模板一致的行（migration_plan 的严判据）——可能少于提示条数，
+            # 用户改过的条目仍然只提示、不代改。进 config：页面刷新/重连后
+            # hello 会带上它，入口不消失
+            self.server.config["glossary_migration"] = {"count": len(misplaced)}
+            await self.server.broadcast({"type": "glossary_migration",
+                                         "stage": "available",
+                                         "count": len(misplaced)})
+        else:
+            self.server.config.pop("glossary_migration", None)
         if self._stats_task is None or self._stats_task.done():
             self._stats_task = asyncio.ensure_future(self._stats_loop())
         await self._publish_watchlist()
@@ -1129,6 +1141,40 @@ class Pipeline:
             await tell(why="翻译超时或出错")
             return
         await tell(out, why="" if out else "模型没有返回译文")
+
+    async def _migrate_glossary(self, confirm):
+        """「迁移旧词表」：扫描 → 展示 → 用户确认 → 备份 → 迁移。
+
+        永不自动执行、永不猜测：能迁的只有整条与旧官方模板完全一致的行
+        （migration_plan 的判据），用户自己写的内容一个字节都不动。"""
+        from .glossary import (load as load_glossary, migrate_legacy_entries,
+                               migration_plan, set_active)
+        from .provenance import streamer_of
+
+        gpath = getattr(self.args, "glossary", None)
+        if not confirm:
+            plan = migration_plan(gpath)
+            await self.server.broadcast({
+                "type": "glossary_migration", "stage": "plan",
+                "entries": [{"display": p["display"], "streamer": p["streamer"]}
+                            for p in plan]})
+            return
+        result = migrate_legacy_entries(gpath)
+        if result and result["total"]:
+            # 热重载：正在直播也立刻用干净的词表（audit 的 merged_glossary_hash
+            # 在下一场才会体现，本场以界面提示为准）
+            streamer = streamer_of(self.server.config.get("room_url", ""))
+            self.glossary = load_glossary(gpath, streamer=streamer or None)
+            set_active(self.glossary)
+            await self._publish_watchlist()
+        if not migration_plan(gpath):      # 没有剩余可迁条目才撤掉入口
+            self.server.config.pop("glossary_migration", None)
+        await self.server.broadcast({
+            "type": "glossary_migration", "stage": "done",
+            "result": result and {"backup": result["backup"],
+                                  "total": result["total"],
+                                  "failed": result["failed"],
+                                  "moved": result["moved"]}})
 
     async def _quota_fallback(self, old):
         """DeepL 额度用尽时一次性切到本地引擎，返回新引擎（切不了返回 None）。
