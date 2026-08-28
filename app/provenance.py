@@ -110,6 +110,11 @@ def eval_holdout(path=None, strict=False):
     sessions, streamers = set(), set()
     for tier in ("dev_eval", "sealed_test"):
         block = data[tier]
+        # 第二层也要验：手改成 "sessions": "abc" 时 set("abc") 会悄悄变成
+        # {'a','b','c'}——比报错糟糕得多
+        for key in ("sessions", "streamers"):
+            if not isinstance(block.get(key, {}), dict):
+                return fail("schema 不合法（{}.{} 必须是对象）".format(tier, key))
         sessions |= set(block.get("sessions", {}))
         streamers |= set(block.get("streamers", {}))
     return {"sessions": sessions, "streamers": streamers}
