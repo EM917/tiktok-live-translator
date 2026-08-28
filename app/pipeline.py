@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .asr import DEFAULT_TEMPERATURE
-from .detector import BannedTermDetector, load_terms
+from .detector import BannedTermDetector, load_fuzzy_policy, load_terms
 from .glossary import load as load_glossary
 from .nethttp import read_all
 from .settings import load_settings, save_setting
@@ -22,6 +22,9 @@ from .translator import ENGINE_KEY_ENV, create_translator
 ROOT = Path(__file__).resolve().parent.parent
 TERMS_FILE = ROOT / "banned_terms.txt"
 TERMS_EXAMPLE = ROOT / "banned_terms.example.txt"
+# 逐词模糊预算 policy：随代码入库、随更新分发（不走用户副本——词表模板的
+# 教训：模板升级触达不了用户已复制的文件，而碰撞是全语言事实，不是用户偏好）
+FUZZY_POLICY_FILE = ROOT / "banned_fuzzy_policy.txt"
 
 
 def load_detector(path=None):
@@ -36,7 +39,8 @@ def load_detector(path=None):
                   .format(target.name))
         except OSError:
             pass
-    return BannedTermDetector(load_terms(target))
+    return BannedTermDetector(load_terms(target),
+                              fuzzy_policy=load_fuzzy_policy(FUZZY_POLICY_FILE))
 
 # whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
 MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,

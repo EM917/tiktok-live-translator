@@ -70,14 +70,20 @@ class BannedTermDetector:
     """扫描识别文本里的违禁词。线程/协程内直接调用即可，无 IO。"""
 
     def __init__(self, terms, window_sec=12.0, cooldown_sec=30.0,
-                 fuzzy_ratio=0.86, min_fuzzy_len=5):
+                 min_fuzzy_len=5, fuzzy_policy=None):
         # 有些违规不是固定词而是**模式**——平台指南里的真实违规案例
         # "Pasé de 97 kilos a 82"（我从 97 公斤降到 82）就是具体数字的体重变化，
         # 换个数字就是新的一句话，词表穷举不完。以 `re:` 开头的条目按正则处理。
+        #
+        # fuzzy_policy：逐词的模糊预算覆盖（词 -> 允许的编辑距离），来自
+        # banned_fuzzy_policy.txt——离线碰撞审计发现、人工确认后固定下来。
+        # 生产端只读这份固定 policy，行为绝不随运行时日志漂移。
+        #（曾有 fuzzy_ratio=0.86 参数：相似度比早已换成编辑距离，它没参与
+        # 任何判断，留着只会让人以为调它能改变模糊行为——已删除。）
         self.window_sec = window_sec
         self.cooldown_sec = cooldown_sec
-        self.fuzzy_ratio = fuzzy_ratio
         self.min_fuzzy_len = min_fuzzy_len
+        self.fuzzy_policy = dict(fuzzy_policy or {})
         self.terms = []
         self.patterns = []
         for raw in terms:
@@ -206,13 +212,21 @@ class BannedTermDetector:
         return prev[-1] <= budget
 
     def _edit_budget(self, word):
-        """允许错几个字母。按词长给——短词多错一个就成了另一个词。
+        """允许错几个字母。默认按词长给——短词多错一个就成了另一个词。
 
         用编辑距离而不是相似度比，是因为「ASR 听错一两个字母」本来就是编辑距离
         的定义。相似度比对短词太苛刻：bajar → baiar 只错一个字母，比值却只有
         0.80，落在 0.86 阈值之下。实测这会让替换类错字的召回掉到 40%
         （见 tests/test_fuzzy_recall.py，那个基准就是为了守住这一层）。
+
+        policy 覆盖默认值——按词，不按整条词表。`curar` 距离 1 就是高频合法词
+        `durar`（实录 4 场都有），仅凭 ASR 文本无法区分，这是信息论上的限制，
+        不是阈值不够聪明；对这类词把预算降到 0 是**主动放弃**那一档召回，
+        exact / variant 两级照常。多词短语逐词各查各的预算，exact 命中的词
+        天然是 anchor。
         """
+        if word in self.fuzzy_policy:
+            return self.fuzzy_policy[word]
         n = len(word)
         if n < self.min_fuzzy_len:
             return 0        # 短词必须完全相同
@@ -240,6 +254,34 @@ class BannedTermDetector:
             if not self._edits_within(want, got, budget):
                 return False
         return True
+
+
+_POLICY_RE = re.compile(r"^(.+?)=>\s*fuzzy\s+(\d+)\s*$")
+
+
+def load_fuzzy_policy(path):
+    """读逐词模糊预算 policy：`词 => fuzzy N`，`#` 开头是注释。
+
+    这份 policy 由 tools/collision_audit.py 离线发现、人工确认后写死——
+    生产端只读固定文件，检测行为不随日志变化，报警审计永远能回答
+    「为什么这个词不做模糊匹配」。词在加载时归一化，和检测端一致。"""
+    policy = {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return policy
+    for line in raw.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m = _POLICY_RE.match(line)
+        if not m:
+            print("[警告] fuzzy policy 里有认不出的行，已跳过：{}".format(line))
+            continue
+        token = normalize(m.group(1))
+        if token:
+            policy[token] = int(m.group(2))
+    return policy
 
 
 def load_terms(path):
