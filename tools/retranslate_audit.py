@@ -179,4 +179,5 @@ async def main():
         print("  …另有 {} 段，分歧均低于 {:.2f}".format(len(ranked) - 15, ranked[14][0]))
 
 
-asyncio.run(main())
+if __name__ == "__main__":       # suspicion() 会被挖掘工具 import，别一 import 就开跑
+    asyncio.run(main())

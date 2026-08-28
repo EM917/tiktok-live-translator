@@ -916,7 +916,7 @@
     auto: "默认用本地模型：完全离线、不限量、字幕不出本机。",
     hymt2: "本地模型，离线免费。多数机器用这一档就够。",
     "hymt2-7b": "本地模型，术语更准，但会和语音识别抢内存，可能拖慢报警。",
-    deepl: "⚠️ 字幕文本会发送给 DeepL。新注册的 Developer 档免费额度为一次性 100 万字符（约 30 小时监听），用完需升级付费档。",
+    deepl: "⚠️ 字幕文本会发送给 DeepL。免费额度以此处显示的用量为准；额度周期与续用方式取决于你的 DeepL 账户方案。",
     claude: "⚠️ 字幕文本会发送给 Anthropic，按用量计费。",
     openai: "⚠️ 字幕文本会发送给该接口的提供方，按用量计费。",
     google: "⚠️ 字幕文本会发送给 Google，且会按 IP 限流。",
@@ -933,7 +933,7 @@
       var pct = Math.round(info.usage.used * 100 / info.usage.limit);
       // 35k 字符/小时是实测均值（2026-08-26 场），只做量级提示
       var hours = Math.max(0, Math.floor((info.usage.limit - info.usage.used) / 35000));
-      active += " · 免费额度已用 " + pct + "%（约可再听 " + hours + " 小时）";
+      active += " · 免费额度已用 " + pct + "%（按近期速度约剩 " + hours + " 小时）";
     }
     engineActive.textContent = active;
     syncEngineRow();
