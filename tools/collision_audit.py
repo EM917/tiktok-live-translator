@@ -27,7 +27,8 @@ sys.path.insert(0, ".")
 
 from app import provenance                                    # noqa: E402
 from app.detector import (                                    # noqa: E402
-    BannedTermDetector, _morph_variants, load_terms, normalize,
+    BannedTermDetector, _morph_variants, load_fuzzy_policy, load_terms,
+    normalize,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -100,13 +101,20 @@ def main():
     args = ap.parse_args()
 
     terms_path = Path(args.terms) if args.terms else ROOT / "banned_terms.txt"
-    if args.term:
-        raw_terms = [args.term]
-    else:
-        raw_terms = [t for t in load_terms(terms_path)
-                     if not t.lower().startswith("re:")]
-    banned_tokens = {tok for t in raw_terms for tok in normalize(t).split()}
-    det = BannedTermDetector([])          # 只借它的预算与编辑距离，policy 不载入
+    existing = [t for t in load_terms(terms_path)
+                if not t.lower().startswith("re:")]
+    raw_terms = [args.term] if args.term else existing
+    # is_banned 标签衡量的是「邻居是不是**已有**违禁词」——两种碰撞的风险
+    # 含义完全不同（撞到无关合法词 vs 撞到另一个违禁词）。--term 模式下
+    # 候选词自己不算已有词表，但已有词表必须完整参与判定
+    banned_tokens = {tok for t in existing for tok in normalize(t).split()}
+    # 载入已生效的 policy：已经收紧到 0 的词不再列出、不再重复建议——
+    # 否则每次全表审计都会把处理过的碰撞重新标一遍，新碰撞被噪音淹没
+    policy = load_fuzzy_policy(ROOT / "banned_fuzzy_policy.txt")
+    det = BannedTermDetector([], fuzzy_policy=policy)
+    if policy:
+        print("已生效的 policy（不再列出）：{}".format(
+            ", ".join(sorted(policy))))
     count, sessions, streamers = corpus_tokens(args.logs)
     print("语料：{} 个不同 token（来源 provenance.corpus，非 glob）\n".format(
         len(count)))

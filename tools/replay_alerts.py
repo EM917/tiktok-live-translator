@@ -56,9 +56,14 @@ def main():
 
     removed_total, removed_bad, added_total = 0, 0, 0
     for meta in provenance.corpus(log_dir=args.logs):
-        old = set(session_hits(meta["path"], BannedTermDetector(terms)))
+        # 两边都关掉命中冷却：冷却是跨命中的时间耦合——旧检测器的一次误报
+        # 会占用冷却窗口、吞掉几秒后的真命中；收紧后真命中浮出来，会被
+        # 差集误判成「新增」。gate 比的是匹配行为本身，不是报警节流
+        old = set(session_hits(meta["path"],
+                               BannedTermDetector(terms, cooldown_sec=0)))
         new = set(session_hits(meta["path"],
-                               BannedTermDetector(terms, fuzzy_policy=policy)))
+                               BannedTermDetector(terms, cooldown_sec=0,
+                                                  fuzzy_policy=policy)))
         removed = old - new
         added = new - old
         if not removed and not added:

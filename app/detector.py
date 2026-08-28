@@ -225,12 +225,16 @@ class BannedTermDetector:
         exact / variant 两级照常。多词短语逐词各查各的预算，exact 命中的词
         天然是 anchor。
         """
-        if word in self.fuzzy_policy:
-            return self.fuzzy_policy[word]
         n = len(word)
         if n < self.min_fuzzy_len:
-            return 0        # 短词必须完全相同
-        return 1 if n <= 7 else 2
+            default = 0     # 短词必须完全相同——policy 也抬不高这个下限
+        else:
+            default = 1 if n <= 7 else 2
+        if word in self.fuzzy_policy:
+            # policy 只能收紧，不能放宽：它的存在理由是碰撞证据，而「比默认
+            # 更宽」没有任何一份证据能支持——写大了按默认执行
+            return min(self.fuzzy_policy[word], default)
+        return default
 
     def _fuzzy_equal(self, term_tokens, window_tokens):
         """逐词比对，而不是把整个短语拼成一个字符串比。
@@ -279,8 +283,18 @@ def load_fuzzy_policy(path):
             print("[警告] fuzzy policy 里有认不出的行，已跳过：{}".format(line))
             continue
         token = normalize(m.group(1))
-        if token:
-            policy[token] = int(m.group(2))
+        if not token:
+            continue
+        if " " in token:
+            # 预算按词生效（_edit_budget 只收单词）。多词 key 永远查不中，
+            # 静默收下等于让人以为它生效了——必须出声
+            print("[警告] fuzzy policy 按单词生效，多词行无效（每个词单独"
+                  "写一行）：{}".format(line))
+            continue
+        if token in policy and policy[token] != int(m.group(2)):
+            print("[警告] fuzzy policy 里 {} 出现了两个不同的值，"
+                  "后者生效：{}".format(token, line))
+        policy[token] = int(m.group(2))
     return policy
 
 

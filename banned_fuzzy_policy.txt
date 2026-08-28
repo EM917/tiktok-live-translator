@@ -21,7 +21,12 @@ quemar => fuzzy 0   # collision: quedar（剩下/留下，dist 1，19 次 / 6 �
 quema => fuzzy 0    # collision: queda（dist 1，114 次 / 6 场）——「quedan pocas 只剩几件」是促销核心句式
 medico => fuzzy 0   # collision: medio（dist 1，70 次 / 7 场）与 mexico（dist 1，54 次 / 2 场）双重碰撞
 
-# 【考虑过、决定不收】aprobado ↔ probado（dist 1，45 次 / 4 场）：
-# 所在词条 "aprobado por la fda" 还有 por / la / fda 三个 anchor 词，fda 是
-# 短词必须精确命中——碰撞要成立得说出 "probado por la fda"，而那句话本身
-# 就接近违规宣称，报出来不算冤枉。多词短语不一刀切，逐词各查各的预算。
+# 【考虑过、决定不收】多词短语不一刀切，逐词各查各的预算：
+# aprobado ↔ probado（dist 1，45 次 / 4 场）：所在词条 "aprobado por la fda"
+#   还有 por / la / fda 三个 anchor 词，fda 是短词必须精确命中——碰撞要成立
+#   得说出 "probado por la fda"，而那句话本身就接近违规宣称，报出来不算冤枉。
+# ciento ↔ siento / cierto / cuento（dist 1，41/21/13 次，跨 3 主播）：所在
+#   词条 "garantizado cien por ciento" 有 garantizado / cien / por 三个
+#   anchor，独立出现的 "me siento bien" 凑不齐短语；而这里的模糊档防的恰恰
+#   是拉美 ASR 最常见的 s/c 混淆（"cien por siento"）——对头号夸大宣称句式，
+#   这档召回不能丢。
