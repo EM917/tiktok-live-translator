@@ -1,0 +1,46 @@
+# 词不达意回归集：真实字幕 + 这一句「必须传达到」和「不能说成」的内容。
+#
+# 为什么需要它：本项目此前唯一的翻译指标是词表遵从率（bench_glossary.py），
+# 它只问商品名有没有译成规范写法。可中控真正会被害到的是**读不懂或意思反了**
+# ——「plata gratis」译成「免费银币」不违反任何词条，却让人完全看不明白。
+# 那类错误此前没有任何指标在测，所以也就一直没人管。
+#
+# 判据必须是客观的：只做「包含 / 不包含」，不做语义打分。任何需要模型当裁判
+# 的方案都已实测否决（1.8B 对所有句子都判不一致，7B 十次只对四次）。
+#
+# 格式：  西语原文 | 必须出现（; 分隔，任一即可，可留空） | 不能出现（; 分隔，可留空）
+# 每一条都来自实盘日志里真实出现过的错译，不是构造的例子。
+
+# plata 在拉美西语里是「钱」。译成「银币」中控完全看不懂在说什么。
+Así que aplícalos, no te los pierdas, porque es plata gratis que te está dando TikTok, así que por qué dejarla ahí, vos llévatela, disfrutáte el café. | 钱 | 银币; 银子; 白银
+
+# vencer 这里是「过期」，不是「打败你」。
+Lo que pasa es que no es que te vence, te expira al día siguiente, o sea, vos te llevas los tres, te guardas los dos, empezás a tomar uno y no es que, ah, tengo que tomar | 过期 | 打败
+
+# valeriana 是缬草。实测被译成「洋甘菊」——成分说错，这是要出事的那类错。
+Una ayudita de algo que nos empiece a preparar, a relajarnos y demás como estas gotitas de noche que tienen valeriana y tienen... | 缬草 | 洋甘菊; 甘菊
+
+# cargar el gotero 是「把滴管吸满」。实测译成「给滴剂充电」。
+Por eso se llama gotitas. Ahí lo estoy, se sabe cómo se carga el gotero, lo apretás y lo llenas de líquido. Y esto te lo pones, te tirás las gotitas. | 滴管; 吸; 装满; 挤 | 充电
+
+# irse 这里是「（机会）会没掉」，不是「他们完蛋了」。
+No veo que nadie esté participando y si no participan se les va a ir. A ver, tienen que... |  | 完蛋; 死
+
+# 「dos de Blackberry」是两份黑莓口味的货，不是两个字符。
+Mira, por ejemplo, el número 13 tenés dos de Blackberry, pero si solo querías una, la tenés el número 19. |  | 字符; 字母
+
+# Todo el OG = 原味那款。实测被词表劫持成商品名。
+Todo el OG. Lo puedes preparar frío, también lo podrías preparar calentito si querés. Te está viniendo hoy con las gotitas de regalo a un precio de $1. |  | 全部都是 D3 K2; 全部都是D3 K2
+
+# ---- 对照组 ----------------------------------------------------------
+# 下面这些现在就译对了。只放错例子的回归集是可以被糊弄的——改动只要让那几条
+# 过就算赢，却可能把本来对的句子弄坏。这一组的作用是让那种倒退暴露出来。
+
+Pero bueno, si les está faltando un poco de vitamina D en su vida, este sería el suplemento. ¿Cómo se toman las gotitas? | 维生素 D; 维生素D | 
+Yo te cuento igual, tienen vitamina D3, K2. ¿Para qué ayuda eso? Es para la mejor absorción del calcio y la mejor distribución del calcio. | 吸收 | 排出
+Tiene vitamina A, vitamina C, vitamina D, tiene calcio, tiene hierro y lo que tiene esto es fibra. | 纤维 | 
+Así que esta orden aplica al cupón. Aplicate el cupón, llévate ese descuento, llévate este café con probióticos y disfrútalo. | 优惠码; 优惠券 | 
+Y ponemos dos de estos, los disolvemos en el líquido que quieras, como decías, en agua o con leche y lo disfrutás. | 溶解 | 
+Este viene con las gotas gratis, me encantó, así que este te lo llevas con las gotitas a un precio | 免费; 赠 | 
+Aplicate ese cupón, amiga, amigo, cinco dólares acá que te está dando TikTok. ¿Dónde están los cupones? Están arriba a la izquierda. | 五美元; 5美元 | 
+Menos de 4 dólares. | 4 美元; 4美元 | 

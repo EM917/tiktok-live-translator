@@ -333,12 +333,29 @@ class Pipeline:
 
     async def _begin_session(self, url):
         from .audit import AuditLog
-        from .provenance import app_version, streamer_of
+        from .glossary import (fingerprint, misplaced_entries, profile_options,
+                               profile_path, set_active)
+        from .provenance import app_version, file_hash, streamer_of
 
         # 词表每场重新读：模板生成出来是空的，用户按提示填好后点「停止→开始」
         # 必须真的生效，否则头号卖点就是 100% 静默漏报
         self.detector = load_detector(getattr(self.args, "banned_terms", None))
         self.detector.reset_state()
+        # 词表按主播加载：全局表 + profiles/<主播>.txt（后者优先）。商品知识
+        # 是逐主播的——Bella 的品名进了全局表，Elisa 的直播里就会凭空冒出
+        # 别家商品。set_active 让 DeepL 的原生术语表也拿到同一份合并结果。
+        streamer = streamer_of(url)
+        self.glossary = load_glossary(getattr(self.args, "glossary", None),
+                                      streamer=streamer)
+        set_active(self.glossary)
+        prof = profile_path(streamer)
+        misplaced = misplaced_entries(self.glossary.entries)
+        misplaced = [(o, v, zh) for o, v, zh in misplaced if o != streamer]
+        # 称呼摘除是按主播验证的行为（触发率跨主播差 60 倍），profile 里写了
+        # vocative_strip: on 才开。没验证过的新主播默认关——「规则不泛化，
+        # 验证规则的流程泛化」，开关本身就是那个流程的产物
+        self._vocative_strip = bool(profile_options(streamer).get(
+            "vocative_strip", False))
         self._quality.clear()            # 等级按 seq 记，换场后 seq 会重号
         self._strong_inflight.clear()
         self.telemetry.reset()          # 统计按场计，不跨房间累计
@@ -350,7 +367,7 @@ class Pipeline:
         # 「以为跑 A 实际跑 B」变成 grep 一行就能发现的事。
         self.audit = AuditLog(room_url=url, extra={
             "app_version": app_version(),
-            "streamer": streamer_of(url),
+            "streamer": streamer,
             # requested 由做决策的那一刻记录（main 启动 / UI 点开始），
             # 这里只转抄，不重算——重算读到的 settings 可能已经不是当时那份
             "source_requested": getattr(self.args, "source_requested", "?"),
@@ -360,10 +377,21 @@ class Pipeline:
             # 两种写法之间做字符串匹配
             "translator_active": (self.translator.name
                                   if self.translator is not None else "none"),
-            # 主播 profile 尚未落地（onboarding 在实验分支），先占位——
-            # 等它进来时这里换成真实指纹，老日志靠 None 区分
-            "profile_hash": None,
+            # 词表归属四件套：加载了谁的 profile、它的指纹、全局表指纹
+            # （AuditLog 里的 glossary_hash）、合并后实际生效那份的指纹。
+            # 引擎归属吃过「只能靠反推」的亏，词表归属不能再走一遍
+            "profile": streamer if prof else None,
+            "profile_hash": file_hash(prof) if prof else None,
+            "merged_glossary_hash": fingerprint(self.glossary.entries),
         })
+        if misplaced:
+            owner, variant, zh = misplaced[0]
+            text = ("glossary.txt 里有 {} 条「{}」的专属词条（如 {} => {}），"
+                    "在其他主播的直播里会凭空冒出别家商品——建议把它们移到 "
+                    "profiles/{}.txt").format(len(misplaced), owner, variant,
+                                              zh, owner)
+            print("[警告] " + text)
+            await self.server.broadcast({"type": "notice", "text": text})
         if self._stats_task is None or self._stats_task.done():
             self._stats_task = asyncio.ensure_future(self._stats_loop())
         await self._publish_watchlist()
@@ -1081,10 +1109,9 @@ class Pipeline:
             await tell(why="没有可用的翻译引擎")
             return
         try:
-            hint = (tuple(self.glossary.translation_pairs(context))
-                    if self.glossary else ())
-            out = await tr.translate(context, self.target, source=lang or "auto",
-                                     glossary=hint or None)
+            text, hint = self._for_translation(context)
+            out = await tr.translate(text, self.target, source=lang or "auto",
+                                     glossary=hint)
             if out and looks_fabricated(context, out):
                 print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
                       "改用常规引擎")
@@ -1092,7 +1119,7 @@ class Pipeline:
                     context, self.target,
                     source=lang or "auto") if self.translator else None
             elif out and self.glossary:
-                out = self.glossary.apply(context, out)
+                out = self.glossary.apply(text, out)
         except Exception as exc:
             print("[警告] 报警上下文翻译失败: {}".format(exc))
             await tell(why="翻译超时或出错")
@@ -1209,19 +1236,18 @@ class Pipeline:
         await self.server.broadcast({"type": "caption_update", "id": seq,
                                      "strong_state": "pending"})
         t0 = time.time()
-        hint = (tuple(self.glossary.translation_pairs(job["text"]))
-                if self.glossary else ())
+        text, hint = self._for_translation(job["text"])
         try:
             out = await self._strong.translate(
-                job["text"], job["target"], source=job["lang"] or "auto",
-                glossary=hint or None)
+                text, job["target"], source=job["lang"] or "auto",
+                glossary=hint)
             if out and looks_fabricated(job["text"], out):
                 # 强模型在「长句 + 带疑问」上会改成回话而不是翻译。
                 # 宁可留着快译，也不能把凭空生成的内容写进屏幕和审计记录。
                 print("[警告] 重译结果不像译文（疑似模型在回话），已丢弃")
                 out = None
             elif out and self.glossary:
-                out = self.glossary.apply(job["text"], out)
+                out = self.glossary.apply(text, out)
         except Exception as exc:
             print("[警告] 重译失败: {}".format(exc))
             out = None
@@ -1243,23 +1269,39 @@ class Pipeline:
             await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
                                             job["target"], {"strong_state": "failed"})
 
+    def _for_translation(self, text):
+        """送给翻译器的那一份文本，以及配套的词表提示。
+
+        与屏幕上的西语原文**不是同一份**：profile 开了 vocative_strip 的主播，
+        称呼会在这里被摘掉（见 app/vocative.py，那是「爱邮递员」那一类错误的
+        根治办法；开关按主播验证后才打开）。原文、审计日志、违禁词检测统统用
+        未经改动的文本——报警跑在原文上，这条链路不能被翻译预处理碰。
+        """
+        cleaned = text
+        if getattr(self, "_vocative_strip", False):
+            from .vocative import strip
+
+            cleaned, _hit = strip(text)
+        hint = (tuple(self.glossary.translation_pairs(cleaned))
+                if self.glossary else ())
+        return cleaned, hint or None
+
     async def _translate_and_update(self, job):
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""
         t0 = time.time()
         # 引擎抓一次快照：中途在界面里换引擎时，这一条从翻译到落日志必须
         # 始终指同一个对象，否则审计里的 engine 会记成换挡后的那个
         tr = self.translator
+        # 词表两处生效：把本句命中的词条拼进提示词，译文回来再做兜底替换。
+        # 商品名/自造词（Quema Lonja、moringa）通用模型必错，而且换多大的
+        # 模型都不会自动变对——这类错误只能靠词表钉死。
+        text, hint = self._for_translation(job["text"])
         try:
-            # 词表两处生效：把本句命中的词条拼进提示词，译文回来再做兜底替换。
-            # 商品名/自造词（Quema Lonja、moringa）通用模型必错，而且换多大的
-            # 模型都不会自动变对——这类错误只能靠词表钉死。
-            hint = (tuple(self.glossary.translation_pairs(job["text"]))
-                    if self.glossary else ())
             translated = await tr.translate(
-                job["text"], job["target"], source=job["lang"] or "auto",
-                glossary=hint or None)
+                text, job["target"], source=job["lang"] or "auto",
+                glossary=hint)
             if self.glossary:
-                translated = self.glossary.apply(job["text"], translated)
+                translated = self.glossary.apply(text, translated)
         except Exception as exc:
             print("[警告] 翻译失败: {}".format(exc))
             translated = None
@@ -1274,13 +1316,11 @@ class Pipeline:
                 # 翻译耗时去污染延迟统计（e2e_translated_ms 仍如实含全部等待）
                 t0 = time.time()
                 try:
-                    hint = (tuple(self.glossary.translation_pairs(job["text"]))
-                            if self.glossary else ())
                     translated = await tr.translate(
-                        job["text"], job["target"], source=job["lang"] or "auto",
-                        glossary=hint or None)
+                        text, job["target"], source=job["lang"] or "auto",
+                        glossary=hint)
                     if self.glossary:
-                        translated = self.glossary.apply(job["text"], translated)
+                        translated = self.glossary.apply(text, translated)
                 except Exception as exc:
                     print("[警告] 降级引擎翻译失败: {}".format(exc))
                     translated = None

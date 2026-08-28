@@ -18,26 +18,24 @@
 # 40 条会被用作识别热词（翻译和兜底替换不受此限）。**把最高频、最容易听错的
 # 放在最前面**。换主播/换品类时应当换一份表。
 
-# ==================== 品牌（必须最前）====================
-Bella All Natural | Bella | Bella Natural | Bella al Natural => Bella All Natural  # 品牌名保留原文，不要译成「美丽全天然」
+# 【主播专属词条不要写在这里】品牌名、商品线、口味这类**属于某一个主播**的
+# 词条，放进 profiles/<主播用户名>.txt（模板见 profiles/*.example.txt）。
+# 程序会按直播间地址自动加载对应主播的 profile，且 profile 条目优先。
+# 为什么必须分开：商品知识是逐主播的——把 A 主播的品名装进全局表，
+# B 主播的直播里就会凭空冒出别家商品（盲评实测被判成捏造）。
+# 这份全局表只放**任何西语带货直播都成立**的词条。
 
-# ==================== 招牌产品（主播高频口语）====================
-el detox | extreme detox | el deto | detox de mango | detox de papaya | la limpieza | la limpiecita => 排毒粉  # Extreme Detox Powder，冲剂
-# ↑ la limpieza 是她对这款的口语叫法。不加的话会被直译成「清洁」：实录里
-#   "ya pagó la limpieza por separado" 译成了「单独支付了清洁费用」——凭空
-#   变出一笔服务费；"me paso a la limpieza" 译成了「我现在去清洗」。
-las gotitas | las gotas | goticas | D3 K2 | de tres ka dos => D3 K2 维生素滴剂  # 每日 20 滴，舌下含服；夜间版加洋甘菊
-la moringa | moringa | el jugo de moringa | morenga | morinca => 辣木  # 有果汁 / 胶囊 / 粉三种剂型
-el cafecito | skinny iced coffee | el skinny | esquini | eskini => 瘦身冰咖啡  # 招牌线，多口味
-el tamarindo | tamarindito | iced tamarindo => 罗望子饮  # 墨西哥风味酸角水
-el café con probióticos | probiotics iced coffee => 益生菌冰咖啡  # TikTok Shop 独家款
-el tecito | el té detox | extreme detox tea | tesito => 排毒茶  # 茶包，通便
-el quema lonja | quema lonja | quema loncha | el gelito => Quema Lonja 燃脂凝胶  # 品牌自造词，保留原文
+# ==================== 通用商品语言 ====================
+# 拆开普通词与专有词是实测逼出来的教训：把 las gotitas 这种**普通词**绑到
+# 具体商品名上，词表提示会把商品名扩散到整段（"Por eso se llama gotitas"
+# 译成了「所以叫 <商品名>」）。一般规律：全局表管普通语言的正确译法，
+# 专有名词进主播 profile。
+las gotitas | las gotas | goticas => 滴剂
+la moringa | moringa | morenga | morinca => 辣木
 el colágeno | colágeno | colageno | la colágena => 胶原蛋白
 la cúrcuma | cúrcuma | turmeric | curcuma => 姜黄  # 主播中英混说，两种都会出现
 el sea moss | sea moss | si mos | musgo marino => 爱尔兰海藻
 la sábila | sábila | savila | aloe vera => 芦荟  # 拉美主播说 sábila 远多于 aloe vera
-la limonada | skinny lemonade | limonada de frambuesa => 瘦身柠檬水
 
 # ==================== 成分 ====================
 los probióticos | probióticos | probioticos => 益生菌
@@ -125,18 +123,8 @@ hacen una orden de | haces una orden de | hagan una orden de | con una orden de 
 # 对观众的称呼，与年龄无关。实录里被译成「年轻人」，凭空捏造了一个人群定向。
 chicos | chicas | muchachos | mi gente => 家人们
 
-# 滴剂分日夜两版，是二选一的产品款式，不是服用时间。
-# 实录："puedes elegir entre día o noche" 被译成「可以选择白天或晚上使用」。
-entre día o noche | de día o de noche | versión de día | versión de noche => 日间版还是夜间版
-las gotas de día | gotitas de día => 日间版滴剂
-las gotas de noche | gotitas de noche => 夜间版滴剂
-
-# 咖啡口味。horchata 是墨西哥米浆，不是杏仁奶；hongos 是三菌复配的蘑菇咖啡，
-# 不能标成「灵芝」（上面第 44 行的灵芝是成分条目，不是商品名）；nuez 在这条
-# 产品线里是碧根果。实录里 hongos 被吞掉、错成了「杏仁奶口味」。
+# horchata 是墨西哥米浆，不是杏仁奶。实录里被错成「杏仁奶口味」。
 la horchata | horchata | de horchata => 墨西哥米浆
-el de hongos | de hongos | café de hongos | mushroom coffee => 蘑菇咖啡
-el de nuez | de nuez | café de nuez => 碧根果
 
 # 实录里 "café helado" 单独成段时被译成「冰激凌咖啡馆」——短句没有上下文，
 # helado 的「冰淇淋」义会盖过「冰镇」义。

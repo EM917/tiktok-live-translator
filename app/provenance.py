@@ -67,7 +67,8 @@ def session_meta(path):
                                  "translator", "started_at", "app_version",
                                  "source_requested", "source_active",
                                  "translator_requested", "translator_active",
-                                 "profile_hash")} or meta
+                                 "profile", "profile_hash",
+                                 "merged_glossary_hash")} or meta
             elif d.get("type") == "segment" and (d.get("text") or "").strip():
                 segs += 1
     except OSError:
