@@ -121,9 +121,15 @@ def main():
 
     g = load_glossary()          # 只用全局表判行话，不掺 profile
     hist_all = _historic_labels(args.logs or provenance.LOG_DIR)
+    holdout = provenance.eval_holdout()
     seen, rows = set(), []
+    skipped_holdout = 0
     for meta in provenance.corpus(log_dir=args.logs):
         session = Path(meta["path"]).name
+        # 评估 holdout 硬排除：考卷内容一个字都不进训练侧管线
+        if session in holdout["sessions"] or meta["streamer"] in holdout["streamers"]:
+            skipped_holdout += 1
+            continue
         recs = []
         for line in Path(meta["path"]).read_text(encoding="utf-8").splitlines():
             try:
@@ -131,10 +137,17 @@ def main():
             except ValueError:
                 continue
         segs = {r["seq"]: r for r in recs if r.get("type") == "segment"}
-        strong = {r["seq"]: r.get("translated") or ""
+        strong = {r["seq"]: (r.get("translated") or "", r.get("model"))
                   for r in recs if r.get("type") == "translation_strong"
                   and r.get("ok")}
         hist = hist_all if "20260826-133138" in session else {}
+        # 老日志没有逐条 engine 字段：按延迟指纹做会话级推断（本地模型的
+        # 地板 <100ms，网络 API 光往返就不止）——与排查引擎归属时的判据一致。
+        # 判不清的保持 None，下游按「来源不明」把参考隔离掉
+        ms = sorted(r["translate_ms"] for r in recs
+                    if r.get("type") == "translation" and r.get("ok")
+                    and r.get("translate_ms", 0) > 5)
+        inferred = "hymt2" if ms and ms[0] < 100 else None
         for r in recs:
             if r.get("type") != "translation" or not r.get("ok"):
                 continue
@@ -142,25 +155,39 @@ def main():
             src = (s.get("text") or "").strip()
             if s.get("language") != "es" or len(src) < 15 or src in seen:
                 continue
+            s_text, s_model = strong.get(r["seq"], (None, None))
             fams = families_of(src, r.get("translated") or "",
-                               strong.get(r["seq"]), g,
-                               hist.get(r["seq"]))
+                               s_text, g, hist.get(r["seq"]))
             if not fams:
                 continue
             seen.add(src)
+            engine = r.get("engine") or inferred
             rows.append({"src": src, "fast": r.get("translated"),
-                         "strong": strong.get(r["seq"]),
-                         "engine": r.get("engine"),
+                         "strong": s_text, "strong_model": s_model,
+                         "engine": engine,
+                         "engine_inferred": r.get("engine") is None and engine is not None,
                          "families": fams, "score": score_of(fams),
                          "session": session, "streamer": meta["streamer"],
                          "seq": r["seq"]})
 
-    # 骨架去重在全量池上做：同骨架只留分数最高的一条
-    by_skel = {}
+    # 骨架聚类在全量池上做：同骨架只有分数最高的一条当代表，但 alternates
+    # **保留在输出里**（representative=False）——将来某个 cluster 需要补数字
+    # 变化/句式变化时，材料还在，不是删除而是「先只标一个」
+    import hashlib
+    clusters = {}
     for row in sorted(rows, key=lambda r: -r["score"]):
-        by_skel.setdefault(skeleton(row["src"]), row)
-    merged = len(rows) - len(by_skel)
-    rows = list(by_skel.values())
+        clusters.setdefault(skeleton(row["src"]), []).append(row)
+    reps = []
+    for skel, members in clusters.items():
+        cid = hashlib.sha256(skel.encode("utf-8")).hexdigest()[:10]
+        for i, m in enumerate(members):
+            m["cluster_id"] = cid
+            m["cluster_size"] = len(members)
+            m["representative"] = i == 0
+        reps.append(members[0])
+    merged = len(rows) - len(reps)
+    alternates = [m for members in clusters.values() for m in members[1:]]
+    rows = reps
 
     # 主播内部按分排序、各取头部比例——多样性不靠运气
     picked = []
@@ -177,13 +204,26 @@ def main():
     out_dir = Path(args.logs) if args.logs else provenance.LOG_DIR
     out = out_dir / "training-candidates-{}.jsonl".format(
         date.today().strftime("%Y%m%d"))
+    picked_ids = {id(r) for r in picked}
     with out.open("w", encoding="utf-8") as fh:
         for row in picked:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(dict(row, selected=True),
+                                ensure_ascii=False) + "\n")
+        # 落选代表与 alternates 也归档（selected=False）：队列只消费
+        # selected 行，但材料一条不丢
+        for row in rows:
+            if id(row) not in picked_ids:
+                fh.write(json.dumps(dict(row, selected=False),
+                                    ensure_ascii=False) + "\n")
+        for row in alternates:
+            fh.write(json.dumps(dict(row, selected=False),
+                                ensure_ascii=False) + "\n")
 
     fam_counts = Counter(f for r in picked for f in r["families"])
-    print("候选池 {} 条（命中 {} 条，骨架去重合并 {} 条，各主播取前 {:.0%}）"
-          "→ {}".format(len(picked), len(rows), merged, args.top, out.name))
+    print("候选池 {} 条（命中 {} 条，骨架聚类收拢 {} 条为 alternates，"
+          "holdout 排除 {} 场，各主播取前 {:.0%}）→ {}".format(
+              len(picked), len(rows), merged, skipped_holdout,
+              args.top, out.name))
     print("家族分布:", dict(fam_counts.most_common()))
     print("主播分布:", dict(Counter(r["streamer"] for r in picked)))
     print("有强译对照的:", sum(1 for r in picked if r["strong"]))

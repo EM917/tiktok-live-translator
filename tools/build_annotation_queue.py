@@ -4,11 +4,16 @@
 候选池偏难是刻意的，但训练集不能被单一主播或单一家族主导，人工时间也不能
 花在近重复上（"les queda en 55 / te queda a 55" 标一条就够）。队列铁律：
 
-  * **DeepL 译文不进标注面**：engine=deepl 的行只保留 src + 强译参考，
-    fast 被替换为占位说明。DeepL 输出留在评估档案里没问题，但训练标注的
-    起点不能是它——手工改过一遍也洗不干净 provenance。
-  * 主播软上限（默认 38%）：超出的挤到候补池，第一版 LoRA 要泛化到新主播，
-    不能训成 Daisy specialist。
+  * **参考译文走 allowlist，不走 blacklist**：标注面只显示许可明确的本地/
+    开源引擎（Hy-MT2 / TranslateGemma）的输出；DeepL、来源不明（老日志推断
+    不出引擎）的一律 withheld 并注明原因。将来强译换了模型也不会悄悄把
+    不该当 teacher 的输出送进标注面——手工改过一遍也洗不干净 provenance。
+  * **评估 holdout 硬排除**（eval_holdout.json）：考卷 session / 未见主播
+    一个字不进队列。miner 已排除过一次，这里再排一次做双保险。
+  * 主播软上限（STREAMER_CAP=0.35，按目标规模算的绝对预算）+ 队列成型后
+    再做一次 rebalance，把任何主播的**实际占比**压到 ≤40%——池子填不满就
+    填不满，绝不为凑数放宽。第一版 LoRA 要泛化到新主播，不能训成
+    单主播 specialist。
   * 家族配额（首批 500）：150 价格/促销 · 100 碎片 · 80 行话 · 70 历史
     major/摩擦 · 50 快强分歧 · 50 普通对照。普通对照必须有——训练集全是
     难例会教出「见什么都过度解释」的模型（最终 SFT 语料还要再混大量普通句，
@@ -17,8 +22,10 @@
     context_required 并排除**——推理时模型只看单句，用上下文写出单句推不出
     的完美译文是在教模型猜。
 
-标注动作枚举（UI 按这个做）：accept_fast / accept_strong / manual /
-asr_garbage / context_required / skip。
+标注动作枚举（UI 按这个做）：accept_local / accept_strong / manual /
+asr_garbage / context_required / profile_only / skip。
+profile_only = 内容依赖主播专属品名/SKU：不进 base 训练集，留档给
+profile/glossary 资产。target 硬规则见 benchmarks/annotation_guide.md。
 
 用法：python3 tools/build_annotation_queue.py [--logs DIR] [--batch 500]
 """
@@ -40,6 +47,53 @@ STREAMER_CAP = 0.35
 QUOTAS = [("historic", 70), ("disagreement", 50), ("fragment", 100),
           ("jargon", 80), ("price_promo", 150)]
 CONTROLS = 50
+FINAL_SHARE_MAX = 0.40
+
+# 标注面允许显示的参考来源：本地/开源、许可明确。判据认模型家族标识，
+# 不认「不是 deepl 就行」——来源不明视同不许可
+_ALLOWED_ENGINES = {"hymt2", "hymt2-7b", "gemma"}
+_ALLOWED_MODEL_MARKS = ("hy-mt2", "translategemma")
+
+
+def reference_view(row):
+    """一行候选在标注面上的参考视图：allowlist 之外的一律 withheld 并注明。"""
+    fast, engine = row.get("fast"), row.get("engine")
+    if engine in _ALLOWED_ENGINES:
+        fast_v, fast_w = fast, None
+    else:
+        fast_v, fast_w = None, (engine or "unknown")
+    s_text, s_model = row.get("strong"), row.get("strong_model")
+    if s_text and s_model and any(m in s_model.lower()
+                                  for m in _ALLOWED_MODEL_MARKS):
+        strong_v, strong_w = s_text, None
+    else:
+        strong_v = None
+        strong_w = (s_model or "unknown") if s_text else None
+    return {"fast": fast_v, "fast_engine": engine,
+            "fast_withheld": fast_w,
+            "strong": strong_v, "strong_engine": s_model,
+            "strong_withheld": strong_w}
+
+
+def rebalance(queue, share_max=FINAL_SHARE_MAX):
+    """队列成型后的最终配平：任何主播实际占比压到 share_max 以下。
+    从该主播分数最低的非对照行开始裁——宁可队列短，不凑数。"""
+    queue = list(queue)
+    while queue:
+        dist = Counter(r["streamer"] for r in queue)
+        top, n = dist.most_common(1)[0]
+        second = dist.most_common(2)[1][1] if len(dist) > 1 else 0
+        # 两个终止条件：达标，或已裁到与第二名持平——主播只有 k 个时
+        # 占比下限就是 1/k，硬追 40% 会把队列裁空
+        if n / len(queue) <= share_max or n <= second:
+            break
+        victims = sorted((r for r in queue
+                          if r["streamer"] == top and r["bucket"] != "control"),
+                         key=lambda r: r.get("score", 0))
+        if not victims:
+            break
+        queue.remove(victims[0])
+    return queue
 
 
 def bucket_of(families):
@@ -121,9 +175,15 @@ def load_contexts(log_dir):
     return ctx
 
 
-def ordinary_controls(log_dir, exclude_srcs, taken, limit, n=CONTROLS):
+def ordinary_controls(log_dir, exclude_srcs, n=CONTROLS, cap=STREAMER_CAP,
+                      holdout=None):
     """普通对照句：一个难例家族都不命中的代表性句子，固定种子抽样。
-    延续同一份主播计数——对照组绕开上限的话，总占比又会被顶回去。"""
+
+    用**自己的**主播计数（按 cap 比例摊到对照组规模上）：曾经和难例共用
+    计数，配额跑完把额度吃光，50 条对照只剩 2 条——没有对照组的训练集会
+    教出「见什么都过度解释」的模型。总占比由末端 rebalance 兜底。"""
+    taken = Counter()
+    limit = max(1, int(n * max(cap, 1.0 / 2)))   # 可训主播可能只剩两个
     import random
     from tools.mine_training_candidates import families_of
     from app.glossary import load as load_glossary
@@ -133,6 +193,9 @@ def ordinary_controls(log_dir, exclude_srcs, taken, limit, n=CONTROLS):
     pool = []
     for meta in provenance.corpus(log_dir=log_dir):
         session = Path(meta["path"]).name
+        if holdout and (session in holdout["sessions"]
+                        or meta["streamer"] in holdout["streamers"]):
+            continue
         recs = [json.loads(line) for line in
                 Path(meta["path"]).read_text(encoding="utf-8").splitlines()
                 if line.strip().startswith("{")]
@@ -183,25 +246,28 @@ def main():
         cand_path = cands[-1]
     rows = [json.loads(line) for line in
             cand_path.read_text(encoding="utf-8").splitlines()]
+    rows = [r for r in rows if r.get("selected", True)]     # alternates 不进队列
+    # holdout 双保险：miner 排过一次，这里再排一次
+    holdout = provenance.eval_holdout()
+    rows = [r for r in rows
+            if r["session"] not in holdout["sessions"]
+            and r["streamer"] not in holdout["streamers"]]
 
     picked, taken, used_srcs, limit = fill_queue(rows, args.batch)
-    controls = ordinary_controls(log_dir, used_srcs, taken, limit)
-    queue = picked + controls
+    controls = ordinary_controls(log_dir, used_srcs, holdout=holdout)
+    queue = rebalance(picked + controls)
 
     ctx = load_contexts(log_dir)
     out_rows = []
     for i, r in enumerate(queue, 1):
         prev, nxt = ctx.get((r["session"], r["seq"]), ("", ""))
-        fast, engine = r.get("fast"), r.get("engine")
-        if engine == "deepl":
-            # 训练标注面隔离 DeepL：起点只能是 src + 本地/开源参考
-            fast = None
         out_rows.append({
             "id": i, "src": r["src"], "context_prev": prev,
             "context_next": nxt,
-            "fast": fast,
-            "fast_withheld": "deepl" if engine == "deepl" else None,
-            "strong": r.get("strong"), "bucket": r["bucket"],
+            **reference_view(r),
+            "bucket": r["bucket"],
+            "cluster_id": r.get("cluster_id"),
+            "cluster_size": r.get("cluster_size", 1),
             "families": r["families"], "session": r["session"],
             "streamer": r["streamer"], "seq": r["seq"],
             "label": None, "target": None,
@@ -222,7 +288,9 @@ def main():
     print("  主播分布: {}（最高 {} 占 {:.0%}——软上限按目标规模 {} 算，"
           "池子填不满时实际占比会略高）".format(
               dict(dist), top, top_n / len(out_rows), args.batch))
-    print("  DeepL fast 被隔离的:", sum(1 for r in out_rows if r["fast_withheld"]))
+    print("  参考被隔离的: fast {} 条 / strong {} 条（allowlist 之外）".format(
+        sum(1 for r in out_rows if r["fast_withheld"]),
+        sum(1 for r in out_rows if r["strong_withheld"])))
 
 
 if __name__ == "__main__":
