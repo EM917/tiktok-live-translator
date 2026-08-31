@@ -330,12 +330,18 @@ class Pipeline:
 
     async def _run_stream_inner(self, url):
         await self._begin_session(url)
+        # 记住**本会话自己的** audit：旧流任务可能取消不掉（识别一段要几十秒
+        # 时，3 秒宽限必然超时、_stop_locked 放手让它自行收尾），等它终于走到
+        # finally 时，self.audit 已经是**下一场**的了——关掉它等于让新会话的
+        # 合规证据从头到尾静默丢失（实录：2026-08-31 一场 102 条字幕的直播，
+        # audit 文件只有 544 字节的头）。收尾只许碰自己那一份。
+        my_audit = self.audit
         try:
             await self._run_session(url)
         finally:
             # 无论怎么结束（下播、预算耗尽、解析失败、模型加载失败、被取消），
             # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字
-            await self._end_session()
+            await self._end_session(my_audit)
 
     async def _begin_session(self, url):
         from .audit import AuditLog
@@ -511,17 +517,24 @@ class Pipeline:
         self.server.config["watchlist"] = info
         await self.server.broadcast(dict(info, type="watchlist"))
 
-    async def _end_session(self):
-        if self._stats_task is not None and not self._stats_task.done():
+    async def _end_session(self, my_audit=None):
+        """收尾。my_audit 是调用方会话自己的 audit——凭它判断「我还是不是
+        当前会话」：晚到的旧任务只许关自己的 audit，不许碰 stats 循环等
+        共享状态（那些已经属于下一场了）。"""
+        still_current = my_audit is None or self.audit is my_audit
+        if still_current and self._stats_task is not None \
+                and not self._stats_task.done():
             try:      # 收尾前推一次终值，别让界面停在半截数据上
                 await self.server.broadcast({"type": "stats", **self.telemetry.snapshot()})
             except Exception:
                 pass
             self._stats_task.cancel()
             self._stats_task = None
-        if self.audit is not None:
-            self.audit.close()
-            self.audit = None
+        target = my_audit if my_audit is not None else self.audit
+        if target is not None:
+            target.close()
+            if self.audit is target:
+                self.audit = None
 
     async def _run_session(self, url):
         from .asr import create_transcriber
