@@ -1,0 +1,427 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TikTok Live Translator · Audio Pipeline",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1240,
+      600
+    ],
+    "repository": {
+      "url": "https://github.com/EM917/tiktok-live-translator",
+      "revision": "c409181f6fd0f92f4f1a0558eb2889fc1cb820b4"
+    },
+    "views": [
+      {
+        "id": "capture",
+        "label": "Capture & segment",
+        "focus": [
+          "tiktok",
+          "resolver",
+          "ffmpeg",
+          "segmenter"
+        ],
+        "note": "From live room to speech segments: resolve an audio-only URL, denoise, energy VAD."
+      },
+      {
+        "id": "alert",
+        "label": "Alerts skip translation",
+        "focus": [
+          "asr",
+          "detector",
+          "server"
+        ],
+        "note": "The moment ASR returns, banned terms are scanned and the source caption ships."
+      },
+      {
+        "id": "backpressure",
+        "label": "Two-stage backpressure",
+        "focus": [
+          "audioq",
+          "asr",
+          "transq",
+          "translator"
+        ],
+        "note": "Audio is held to a hard cap; translation jobs are dropped the moment the queue fills."
+      }
+    ],
+    "animation": "trace"
+  },
+  "components": [
+    {
+      "id": "tiktok",
+      "type": "external",
+      "label": "TikTok Live Room",
+      "sublabel": "webcast API · live page",
+      "pos": [
+        70,
+        70
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "resolver",
+      "type": "backend",
+      "label": "Stream resolver",
+      "sublabel": "4 fallback paths",
+      "pos": [
+        370,
+        70
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/resolver.py",
+          "line": 454,
+          "label": "resolve_stream_url"
+        }
+      ]
+    },
+    {
+      "id": "ffmpeg",
+      "type": "backend",
+      "label": "ffmpeg denoise",
+      "sublabel": "16 kHz mono PCM",
+      "tag": "RNNoise",
+      "pos": [
+        670,
+        70
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/audio.py",
+          "line": 20,
+          "label": "FFmpegAudioSource.frames"
+        }
+      ]
+    },
+    {
+      "id": "segmenter",
+      "type": "backend",
+      "label": "Energy VAD",
+      "sublabel": "2.5–9 s · 0.7 s trailing",
+      "pos": [
+        970,
+        70
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/segmenter.py",
+          "line": 24,
+          "label": "SilenceSegmenter.feed"
+        }
+      ]
+    },
+    {
+      "id": "detector",
+      "type": "security",
+      "label": "Banned-term scan",
+      "sublabel": "exact · variant · fuzzy",
+      "pos": [
+        370,
+        260
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/detector.py",
+          "line": 128,
+          "label": "BannedTermDetector.scan"
+        }
+      ]
+    },
+    {
+      "id": "asr",
+      "type": "backend",
+      "label": "Whisper ASR",
+      "sublabel": "faster-whisper / MLX",
+      "tag": "1 thread",
+      "pos": [
+        670,
+        260
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/asr.py",
+          "line": 223,
+          "label": "Transcriber.transcribe"
+        },
+        {
+          "path": "app/pipeline.py",
+          "line": 776,
+          "label": "asr_worker"
+        }
+      ]
+    },
+    {
+      "id": "audioq",
+      "type": "messagebus",
+      "label": "Audio queue",
+      "sublabel": "by seconds · 60 s cap",
+      "pos": [
+        970,
+        260
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/pipeline.py",
+          "line": 704,
+          "label": "queue = asyncio.Queue()"
+        }
+      ]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "Caption surface",
+      "sublabel": "local web · Chrome ext",
+      "pos": [
+        70,
+        450
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "CaptionServer",
+      "sublabel": "aiohttp :8765",
+      "pos": [
+        370,
+        450
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/server.py",
+          "line": 92,
+          "label": "CaptionServer._ws"
+        }
+      ]
+    },
+    {
+      "id": "translator",
+      "type": "backend",
+      "label": "Translation engine",
+      "sublabel": "Hy-MT2 / Gemma / cloud",
+      "pos": [
+        670,
+        450
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/translator.py",
+          "line": 574,
+          "label": "OllamaHyMT2Translator"
+        }
+      ]
+    },
+    {
+      "id": "transq",
+      "type": "messagebus",
+      "label": "Translation queue",
+      "sublabel": "maxsize=4 · drop oldest",
+      "pos": [
+        970,
+        450
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/pipeline.py",
+          "line": 708,
+          "label": "trans_queue maxsize=4"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Local Python process · fully offline, no API key",
+      "wraps": [
+        "resolver",
+        "ffmpeg",
+        "segmenter",
+        "detector",
+        "asr",
+        "audioq",
+        "server",
+        "translator",
+        "transq"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "room-to-resolver",
+      "from": "tiktok",
+      "to": "resolver",
+      "label": "room info",
+      "variant": "emphasis"
+    },
+    {
+      "id": "resolver-to-ffmpeg",
+      "from": "resolver",
+      "to": "ffmpeg",
+      "label": "checked audio-only URL"
+    },
+    {
+      "id": "reconnect",
+      "from": "ffmpeg",
+      "to": "resolver",
+      "label": "reconnect on drop",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          755,
+          200
+        ],
+        [
+          455,
+          200
+        ]
+      ]
+    },
+    {
+      "id": "ffmpeg-to-segmenter",
+      "from": "ffmpeg",
+      "to": "segmenter",
+      "label": "0.1 s PCM frames",
+      "variant": "emphasis"
+    },
+    {
+      "id": "segmenter-to-queue",
+      "from": "segmenter",
+      "to": "audioq",
+      "label": "speech segment",
+      "labelDy": 100
+    },
+    {
+      "id": "queue-to-asr",
+      "from": "audioq",
+      "to": "asr",
+      "label": "sequential decode"
+    },
+    {
+      "id": "asr-to-detector",
+      "from": "asr",
+      "to": "detector",
+      "label": "raw_text (incl. filtered)",
+      "variant": "security"
+    },
+    {
+      "id": "asr-to-server",
+      "from": "asr",
+      "to": "server",
+      "label": "source caption, no wait",
+      "variant": "emphasis"
+    },
+    {
+      "id": "asr-to-transq",
+      "from": "asr",
+      "to": "transq",
+      "label": "translation job"
+    },
+    {
+      "id": "transq-to-translator",
+      "from": "transq",
+      "to": "translator",
+      "label": "drop oldest at 4",
+      "variant": "dashed",
+      "labelDy": 30
+    },
+    {
+      "id": "translator-to-server",
+      "from": "translator",
+      "to": "server",
+      "label": "translation filled in",
+      "labelDy": 30
+    },
+    {
+      "id": "detector-to-server",
+      "from": "detector",
+      "to": "server",
+      "label": "banned-term alert",
+      "variant": "security",
+      "labelDy": 100
+    },
+    {
+      "id": "server-to-ui",
+      "from": "server",
+      "to": "ui",
+      "label": "WebSocket /ws"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Capture & segment",
+      "items": [
+        "Resolves via webcast API → yt-dlp → browser login → live-page fallback",
+        "The webcast API returns an only_audio rendition, skipping the video bitstream",
+        "highpass=70 then arnndn, tuned for streams with constant background music"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Backpressure, two directions",
+      "items": [
+        "Audio is budgeted in seconds; only a 60 s hard cap drops the oldest segment",
+        "Translation queue is maxsize=4 and drops the oldest job rather than stalling ASR",
+        "Both kinds of drop reach the audit log: missed audio vs missed translation"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Alerts never wait on translation",
+      "items": [
+        "Scans raw_text, including quality-filtered text: over-report beats under-report",
+        "Three tiers: literal, morphological variant, and fuzzy for ASR mishearing",
+        "Caption and alert ship as soon as ASR returns; translation is filled in later"
+      ]
+    }
+  ]
+}

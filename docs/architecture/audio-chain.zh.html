@@ -5004,7 +5004,7 @@
     <!-- Main Diagram -->
     <div class="diagram-container" data-detail-level="read"
          data-preset-badge-editorial-plate="ARCHIFY / 图版 04">
-      <svg viewBox="0 0 830 720" role="img" lang="zh-CN" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase">
+      <svg viewBox="0 0 1240 600" role="img" lang="zh-CN" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase">
         <title id="archify-diagram-title">TikTok 直播同传 · 音频链路</title>
         <desc id="archify-diagram-description">由 Archify 生成的架构图。</desc>
         <!-- Definitions -->
@@ -5030,237 +5030,240 @@
         <rect width="100%" height="100%" fill="url(#grid)" />
 
         <!-- Boundaries (behind everything) -->
-
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="0" data-composition-frame-label="本机 Python 进程 · 全程离线，无 API key" x="340" y="40" width="830" height="494" rx="12" class="c-region" stroke-width="1"/>
 
         <!-- Connection paths (before components for correct z-order) -->
-        <path data-edge-from="tiktok" data-edge-to="resolver" data-edge-label="房间信息" data-edge-key="0" data-edge-id="room-to-resolver" data-composition-points="210,92;330,92" d="M 210 92 L 330 92" class="a-emphasis" data-animate="edge" style="--step:0" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="校验后的纯音频地址" data-edge-key="1" data-edge-id="resolver-to-ffmpeg" data-composition-points="500,92;620,92" d="M 500 92 L 620 92" class="a-default" data-animate="edge" style="--step:1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="ffmpeg" data-edge-to="resolver" data-edge-label="断流后重连" data-edge-key="2" data-edge-id="reconnect" data-composition-points="705,124;705,180;415,180;415,124" d="M 705 124 L 705 172 Q 705 180 697 180 L 423 180 Q 415 180 415 172 L 415 124" class="a-dashed" data-animate="edge" style="--step:2" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="ffmpeg" data-edge-to="segmenter" data-edge-label="0.1 s PCM 帧" data-edge-key="3" data-edge-id="ffmpeg-to-segmenter" data-composition-points="705,124;705,240" d="M 705 124 L 705 240" class="a-emphasis" data-animate="edge" style="--step:3" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="segmenter" data-edge-to="audioq" data-edge-label="语音段" data-edge-key="4" data-edge-id="segmenter-to-queue" data-composition-points="620,272;500,272" d="M 620 272 L 500 272" class="a-default" data-animate="edge" style="--step:4" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="audioq" data-edge-to="asr" data-edge-label="顺序解码" data-edge-key="5" data-edge-id="queue-to-asr" data-composition-points="330,265;210,265" d="M 330 265 L 210 265" class="a-default" data-animate="edge" style="--step:5" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="asr" data-edge-to="detector" data-edge-label="raw_text（含被过滤）" data-edge-key="6" data-edge-id="asr-to-detector" data-composition-points="210,279;270,279;270,445;330,445" d="M 210 279 L 262 279 Q 270 279 270 287 L 270 437 Q 270 445 278 445 L 330 445" class="a-security" data-animate="edge" style="--step:6" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="asr" data-edge-to="server" data-edge-label="原文字幕，不等翻译" data-edge-key="7" data-edge-id="asr-to-server" data-composition-points="125,304;125,420" d="M 125 304 L 125 420" class="a-emphasis" data-animate="edge" style="--step:7" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="asr" data-edge-to="transq" data-edge-label="待译任务" data-edge-key="8" data-edge-id="asr-to-transq" data-composition-points="125,304;125,365;705,365;705,420" d="M 125 304 L 125 357 Q 125 365 133 365 L 697 365 Q 705 365 705 373 L 705 420" class="a-default" data-animate="edge" style="--step:8" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="transq" data-edge-to="translator" data-edge-label="满 4 条丢最旧" data-edge-key="9" data-edge-id="transq-to-translator" data-composition-points="620,452;560,452;560,632;500,632" d="M 620 452 L 568 452 Q 560 452 560 460 L 560 624 Q 560 632 552 632 L 500 632" class="a-dashed" data-animate="edge" style="--step:9" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="translator" data-edge-to="server" data-edge-label="译文回填" data-edge-key="10" data-edge-id="translator-to-server" data-composition-points="330,632;270,632;270,459;210,459" d="M 330 632 L 278 632 Q 270 632 270 624 L 270 467 Q 270 459 262 459 L 210 459" class="a-default" data-animate="edge" style="--step:10" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="detector" data-edge-to="server" data-edge-label="违禁词报警" data-edge-key="11" data-edge-id="detector-to-server" data-composition-points="330,459;306,459;306,475;234,475;234,445;210,445" d="M 330 459 L 314 459 Q 306 459 306 467 L 306 467 Q 306 475 298 475 L 242 475 Q 234 475 234 467 L 234 453 Q 234 445 226 445 L 210 445" class="a-security" data-animate="edge" style="--step:11" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="server" data-edge-to="ui" data-edge-label="WebSocket /ws" data-edge-key="12" data-edge-id="server-to-ui" data-composition-points="125,484;125,600" d="M 125 484 L 125 600" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="tiktok" data-edge-to="resolver" data-edge-label="房间信息" data-edge-key="0" data-edge-id="room-to-resolver" data-composition-points="240,102;370,102" d="M 240 102 L 370 102" class="a-emphasis" data-animate="edge" style="--step:0" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="校验后的纯音频地址" data-edge-key="1" data-edge-id="resolver-to-ffmpeg" data-composition-points="540,102;670,102" d="M 540 102 L 670 102" class="a-default" data-animate="edge" style="--step:1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="ffmpeg" data-edge-to="resolver" data-edge-label="断流后重连" data-edge-key="2" data-edge-id="reconnect" data-composition-points="755,134;755,200;455,200;455,134" d="M 755 134 L 755 192 Q 755 200 747 200 L 463 200 Q 455 200 455 192 L 455 134" class="a-dashed" data-animate="edge" style="--step:2" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="ffmpeg" data-edge-to="segmenter" data-edge-label="0.1 s PCM 帧" data-edge-key="3" data-edge-id="ffmpeg-to-segmenter" data-composition-points="840,102;970,102" d="M 840 102 L 970 102" class="a-emphasis" data-animate="edge" style="--step:3" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="segmenter" data-edge-to="audioq" data-edge-label="语音段" data-edge-key="4" data-edge-id="segmenter-to-queue" data-composition-points="1055,134;1055,260" d="M 1055 134 L 1055 260" class="a-default" data-animate="edge" style="--step:4" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="audioq" data-edge-to="asr" data-edge-label="顺序解码" data-edge-key="5" data-edge-id="queue-to-asr" data-composition-points="970,285;840,285" d="M 970 285 L 840 285" class="a-default" data-animate="edge" style="--step:5" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="asr" data-edge-to="detector" data-edge-label="raw_text（含被过滤）" data-edge-key="6" data-edge-id="asr-to-detector" data-composition-points="670,285;540,285" d="M 670 285 L 540 285" class="a-security" data-animate="edge" style="--step:6" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="asr" data-edge-to="server" data-edge-label="原文字幕，不等翻译" data-edge-key="7" data-edge-id="asr-to-server" data-composition-points="670,299;605,299;605,475;540,475" d="M 670 299 L 613 299 Q 605 299 605 307 L 605 467 Q 605 475 597 475 L 540 475" class="a-emphasis" data-animate="edge" style="--step:7" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="asr" data-edge-to="transq" data-edge-label="待译任务" data-edge-key="8" data-edge-id="asr-to-transq" data-composition-points="840,299;905,299;905,475;970,475" d="M 840 299 L 897 299 Q 905 299 905 307 L 905 467 Q 905 475 913 475 L 970 475" class="a-default" data-animate="edge" style="--step:8" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="transq" data-edge-to="translator" data-edge-label="满 4 条丢最旧" data-edge-key="9" data-edge-id="transq-to-translator" data-composition-points="970,489;840,489" d="M 970 489 L 840 489" class="a-dashed" data-animate="edge" style="--step:9" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="translator" data-edge-to="server" data-edge-label="译文回填" data-edge-key="10" data-edge-id="translator-to-server" data-composition-points="670,489;540,489" d="M 670 489 L 540 489" class="a-default" data-animate="edge" style="--step:10" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="detector" data-edge-to="server" data-edge-label="违禁词报警" data-edge-key="11" data-edge-id="detector-to-server" data-composition-points="455,324;455,450" d="M 455 324 L 455 450" class="a-security" data-animate="edge" style="--step:11" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="server" data-edge-to="ui" data-edge-label="WebSocket /ws" data-edge-key="12" data-edge-id="server-to-ui" data-composition-points="370,482;240,482" d="M 370 482 L 240 482" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.5" marker-end="url(#arrowhead)"/>
 
         <!-- Components -->
         <g id="node-tiktok" data-node-id="tiktok" data-node-label="TikTok 直播间" tabindex="0" role="button" aria-label="聚焦TikTok 直播间，webcast 接口 · 直播页, 架构组件" aria-pressed="false" data-node-kind="external" data-node-sublabel="webcast 接口 · 直播页" data-node-context="架构组件">
           <title>TikTok 直播间 · webcast 接口 · 直播页 · 架构组件</title>
-          <rect x="40" y="60" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="40" y="60" width="170" height="64" rx="6" class="c-external" data-animate="node" style="--step:0" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(46 66) scale(0.6875)">
+          <rect x="70" y="70" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="70" y="70" width="170" height="64" rx="6" class="c-external" data-animate="node" style="--step:0" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(76 76) scale(0.6875)">
             <rect x="2.5" y="5" width="8.5" height="8" rx="1.5"/>
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="125" y="90" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">TikTok 直播间</text>
-        <text data-detail="context" x="125" y="106" class="t-muted" font-size="9" text-anchor="middle">webcast 接口 · 直播页</text>
+          <text data-node-label="" data-detail-anchor="" x="155" y="100" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">TikTok 直播间</text>
+        <text data-detail="context" x="155" y="116" class="t-muted" font-size="9" text-anchor="middle">webcast 接口 · 直播页</text>
         </g>
 
-        <g id="node-resolver" data-node-id="resolver" data-node-label="流地址解析" tabindex="0" role="button" aria-label="聚焦流地址解析，4 条兜底路径, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="4 条兜底路径" data-node-context="架构组件">
-          <title>流地址解析 · 4 条兜底路径 · 架构组件</title>
-          <rect x="330" y="60" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="330" y="60" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(336 66) scale(0.6875)">
+        <g id="node-resolver" data-node-id="resolver" data-node-label="流地址解析" tabindex="0" role="button" aria-label="聚焦流地址解析，4 条兜底路径, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="4 条兜底路径" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>流地址解析 · 4 条兜底路径 · 本机 Python 进程 · 全程离线，无 API key</title>
+          <rect x="370" y="70" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="370" y="70" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(376 76) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="415" y="90" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">流地址解析</text>
-        <text data-detail="context" x="415" y="106" class="t-muted" font-size="9" text-anchor="middle">4 条兜底路径</text>
+          <text data-node-label="" data-detail-anchor="" x="455" y="100" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">流地址解析</text>
+        <text data-detail="context" x="455" y="116" class="t-muted" font-size="9" text-anchor="middle">4 条兜底路径</text>
         </g>
 
-        <g id="node-ffmpeg" data-node-id="ffmpeg" data-node-label="ffmpeg 抽音降噪" tabindex="0" role="button" aria-label="聚焦ffmpeg 抽音降噪，16 kHz 单声道 PCM, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="16 kHz 单声道 PCM" data-node-tag="RNNoise" data-node-context="架构组件">
-          <title>ffmpeg 抽音降噪 · 16 kHz 单声道 PCM · 架构组件 · RNNoise</title>
-          <rect x="620" y="60" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="620" y="60" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:2" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(626 66) scale(0.6875)">
+        <g id="node-ffmpeg" data-node-id="ffmpeg" data-node-label="ffmpeg 抽音降噪" tabindex="0" role="button" aria-label="聚焦ffmpeg 抽音降噪，16 kHz 单声道 PCM, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="16 kHz 单声道 PCM" data-node-tag="RNNoise" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>ffmpeg 抽音降噪 · 16 kHz 单声道 PCM · 本机 Python 进程 · 全程离线，无 API key · RNNoise</title>
+          <rect x="670" y="70" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="670" y="70" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:2" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(676 76) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="705" y="90" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">ffmpeg 抽音降噪</text>
-        <text data-detail="context" x="705" y="106" class="t-muted" font-size="9" text-anchor="middle">16 kHz 单声道 PCM</text>
-        <text data-detail="fine" x="705" y="116" class="t-backend" font-size="7" text-anchor="middle">RNNoise</text>
+          <text data-node-label="" data-detail-anchor="" x="755" y="100" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">ffmpeg 抽音降噪</text>
+        <text data-detail="context" x="755" y="116" class="t-muted" font-size="9" text-anchor="middle">16 kHz 单声道 PCM</text>
+        <text data-detail="fine" x="755" y="126" class="t-backend" font-size="7" text-anchor="middle">RNNoise</text>
         </g>
 
-        <g id="node-segmenter" data-node-id="segmenter" data-node-label="能量 VAD 切段" tabindex="0" role="button" aria-label="聚焦能量 VAD 切段，2.5–9 s · 尾静音 0.7 s, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="2.5–9 s · 尾静音 0.7 s" data-node-context="架构组件">
-          <title>能量 VAD 切段 · 2.5–9 s · 尾静音 0.7 s · 架构组件</title>
-          <rect x="620" y="240" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="620" y="240" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:4" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(626 246) scale(0.6875)">
+        <g id="node-segmenter" data-node-id="segmenter" data-node-label="能量 VAD 切段" tabindex="0" role="button" aria-label="聚焦能量 VAD 切段，2.5–9 s · 尾静音 0.7 s, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="2.5–9 s · 尾静音 0.7 s" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>能量 VAD 切段 · 2.5–9 s · 尾静音 0.7 s · 本机 Python 进程 · 全程离线，无 API key</title>
+          <rect x="970" y="70" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="970" y="70" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:4" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(976 76) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="705" y="270" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">能量 VAD 切段</text>
-        <text data-detail="context" x="705" y="286" class="t-muted" font-size="9" text-anchor="middle">2.5–9 s · 尾静音 0.7 s</text>
+          <text data-node-label="" data-detail-anchor="" x="1055" y="100" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">能量 VAD 切段</text>
+        <text data-detail="context" x="1055" y="116" class="t-muted" font-size="9" text-anchor="middle">2.5–9 s · 尾静音 0.7 s</text>
         </g>
 
-        <g id="node-detector" data-node-id="detector" data-node-label="违禁词检测" tabindex="0" role="button" aria-label="聚焦违禁词检测，exact · variant · fuzzy, 架构组件" aria-pressed="false" data-node-kind="security" data-node-sublabel="exact · variant · fuzzy" data-node-context="架构组件">
-          <title>违禁词检测 · exact · variant · fuzzy · 架构组件</title>
-          <rect x="330" y="420" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="330" y="420" width="170" height="64" rx="6" class="c-security" data-animate="node" style="--step:7" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(336 426) scale(0.6875)">
+        <g id="node-detector" data-node-id="detector" data-node-label="违禁词检测" tabindex="0" role="button" aria-label="聚焦违禁词检测，exact · variant · fuzzy, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="security" data-node-sublabel="exact · variant · fuzzy" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>违禁词检测 · exact · variant · fuzzy · 本机 Python 进程 · 全程离线，无 API key</title>
+          <rect x="370" y="260" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="370" y="260" width="170" height="64" rx="6" class="c-security" data-animate="node" style="--step:7" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(376 266) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="415" y="450" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">违禁词检测</text>
-        <text data-detail="context" x="415" y="466" class="t-muted" font-size="9" text-anchor="middle">exact · variant · fuzzy</text>
+          <text data-node-label="" data-detail-anchor="" x="455" y="290" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">违禁词检测</text>
+        <text data-detail="context" x="455" y="306" class="t-muted" font-size="9" text-anchor="middle">exact · variant · fuzzy</text>
         </g>
 
-        <g id="node-asr" data-node-id="asr" data-node-label="Whisper 识别" tabindex="0" role="button" aria-label="聚焦Whisper 识别，faster-whisper / MLX, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="faster-whisper / MLX" data-node-tag="单线程池" data-node-context="架构组件">
-          <title>Whisper 识别 · faster-whisper / MLX · 架构组件 · 单线程池</title>
-          <rect x="40" y="240" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="40" y="240" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:6" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(46 246) scale(0.6875)">
+        <g id="node-asr" data-node-id="asr" data-node-label="Whisper 识别" tabindex="0" role="button" aria-label="聚焦Whisper 识别，faster-whisper / MLX, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="faster-whisper / MLX" data-node-tag="单线程池" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>Whisper 识别 · faster-whisper / MLX · 本机 Python 进程 · 全程离线，无 API key · 单线程池</title>
+          <rect x="670" y="260" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="670" y="260" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:6" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(676 266) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="125" y="270" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Whisper 识别</text>
-        <text data-detail="context" x="125" y="286" class="t-muted" font-size="9" text-anchor="middle">faster-whisper / MLX</text>
-        <text data-detail="fine" x="125" y="296" class="t-backend" font-size="7" text-anchor="middle">单线程池</text>
+          <text data-node-label="" data-detail-anchor="" x="755" y="290" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Whisper 识别</text>
+        <text data-detail="context" x="755" y="306" class="t-muted" font-size="9" text-anchor="middle">faster-whisper / MLX</text>
+        <text data-detail="fine" x="755" y="316" class="t-backend" font-size="7" text-anchor="middle">单线程池</text>
         </g>
 
-        <g id="node-audioq" data-node-id="audioq" data-node-label="音频队列" tabindex="0" role="button" aria-label="聚焦音频队列，按秒计 · 硬顶 60 s, 架构组件" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="按秒计 · 硬顶 60 s" data-node-context="架构组件">
-          <title>音频队列 · 按秒计 · 硬顶 60 s · 架构组件</title>
-          <rect x="330" y="240" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="330" y="240" width="170" height="64" rx="6" class="c-messagebus" data-animate="node" style="--step:5" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(336 246) scale(0.6875)">
+        <g id="node-audioq" data-node-id="audioq" data-node-label="音频队列" tabindex="0" role="button" aria-label="聚焦音频队列，按秒计 · 硬顶 60 s, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="按秒计 · 硬顶 60 s" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>音频队列 · 按秒计 · 硬顶 60 s · 本机 Python 进程 · 全程离线，无 API key</title>
+          <rect x="970" y="260" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="970" y="260" width="170" height="64" rx="6" class="c-messagebus" data-animate="node" style="--step:5" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(976 266) scale(0.6875)">
             <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
             <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
             <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
             <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="415" y="270" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">音频队列</text>
-        <text data-detail="context" x="415" y="286" class="t-muted" font-size="9" text-anchor="middle">按秒计 · 硬顶 60 s</text>
+          <text data-node-label="" data-detail-anchor="" x="1055" y="290" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">音频队列</text>
+        <text data-detail="context" x="1055" y="306" class="t-muted" font-size="9" text-anchor="middle">按秒计 · 硬顶 60 s</text>
         </g>
 
         <g id="node-ui" data-node-id="ui" data-node-label="字幕界面" tabindex="0" role="button" aria-label="聚焦字幕界面，本地网页 · Chrome 扩展, 架构组件" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="本地网页 · Chrome 扩展" data-node-context="架构组件">
           <title>字幕界面 · 本地网页 · Chrome 扩展 · 架构组件</title>
-          <rect x="40" y="600" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="40" y="600" width="170" height="64" rx="6" class="c-frontend" data-animate="node" style="--step:12" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(46 606) scale(0.6875)">
+          <rect x="70" y="450" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="70" y="450" width="170" height="64" rx="6" class="c-frontend" data-animate="node" style="--step:12" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(76 456) scale(0.6875)">
             <rect x="2" y="3" width="12" height="10" rx="2"/>
             <path d="M2 6.5h12"/>
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="125" y="630" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">字幕界面</text>
-        <text data-detail="context" x="125" y="646" class="t-muted" font-size="9" text-anchor="middle">本地网页 · Chrome 扩展</text>
+          <text data-node-label="" data-detail-anchor="" x="155" y="480" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">字幕界面</text>
+        <text data-detail="context" x="155" y="496" class="t-muted" font-size="9" text-anchor="middle">本地网页 · Chrome 扩展</text>
         </g>
 
-        <g id="node-server" data-node-id="server" data-node-label="CaptionServer" tabindex="0" role="button" aria-label="聚焦CaptionServer，aiohttp :8765, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="aiohttp :8765" data-node-context="架构组件">
-          <title>CaptionServer · aiohttp :8765 · 架构组件</title>
-          <rect x="40" y="420" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="40" y="420" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:8" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(46 426) scale(0.6875)">
+        <g id="node-server" data-node-id="server" data-node-label="CaptionServer" tabindex="0" role="button" aria-label="聚焦CaptionServer，aiohttp :8765, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="aiohttp :8765" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>CaptionServer · aiohttp :8765 · 本机 Python 进程 · 全程离线，无 API key</title>
+          <rect x="370" y="450" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="370" y="450" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:8" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(376 456) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="125" y="450" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">CaptionServer</text>
-        <text data-detail="context" x="125" y="466" class="t-muted" font-size="9" text-anchor="middle">aiohttp :8765</text>
+          <text data-node-label="" data-detail-anchor="" x="455" y="480" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">CaptionServer</text>
+        <text data-detail="context" x="455" y="496" class="t-muted" font-size="9" text-anchor="middle">aiohttp :8765</text>
         </g>
 
-        <g id="node-translator" data-node-id="translator" data-node-label="翻译引擎" tabindex="0" role="button" aria-label="聚焦翻译引擎，Hy-MT2 / Gemma / 云端, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Hy-MT2 / Gemma / 云端" data-node-context="架构组件">
-          <title>翻译引擎 · Hy-MT2 / Gemma / 云端 · 架构组件</title>
-          <rect x="330" y="600" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="330" y="600" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:10" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(336 606) scale(0.6875)">
+        <g id="node-translator" data-node-id="translator" data-node-label="翻译引擎" tabindex="0" role="button" aria-label="聚焦翻译引擎，Hy-MT2 / Gemma / 云端, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Hy-MT2 / Gemma / 云端" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>翻译引擎 · Hy-MT2 / Gemma / 云端 · 本机 Python 进程 · 全程离线，无 API key</title>
+          <rect x="670" y="450" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="670" y="450" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:10" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(676 456) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="415" y="630" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">翻译引擎</text>
-        <text data-detail="context" x="415" y="646" class="t-muted" font-size="9" text-anchor="middle">Hy-MT2 / Gemma / 云端</text>
+          <text data-node-label="" data-detail-anchor="" x="755" y="480" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">翻译引擎</text>
+        <text data-detail="context" x="755" y="496" class="t-muted" font-size="9" text-anchor="middle">Hy-MT2 / Gemma / 云端</text>
         </g>
 
-        <g id="node-transq" data-node-id="transq" data-node-label="翻译队列" tabindex="0" role="button" aria-label="聚焦翻译队列，maxsize=4 · 满则丢最旧, 架构组件" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="maxsize=4 · 满则丢最旧" data-node-context="架构组件">
-          <title>翻译队列 · maxsize=4 · 满则丢最旧 · 架构组件</title>
-          <rect x="620" y="420" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="620" y="420" width="170" height="64" rx="6" class="c-messagebus" data-animate="node" style="--step:9" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(626 426) scale(0.6875)">
+        <g id="node-transq" data-node-id="transq" data-node-label="翻译队列" tabindex="0" role="button" aria-label="聚焦翻译队列，maxsize=4 · 满则丢最旧, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="maxsize=4 · 满则丢最旧" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>翻译队列 · maxsize=4 · 满则丢最旧 · 本机 Python 进程 · 全程离线，无 API key</title>
+          <rect x="970" y="450" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="970" y="450" width="170" height="64" rx="6" class="c-messagebus" data-animate="node" style="--step:9" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(976 456) scale(0.6875)">
             <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
             <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
             <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
             <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="705" y="450" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">翻译队列</text>
-        <text data-detail="context" x="705" y="466" class="t-muted" font-size="9" text-anchor="middle">maxsize=4 · 满则丢最旧</text>
+          <text data-node-label="" data-detail-anchor="" x="1055" y="480" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">翻译队列</text>
+        <text data-detail="context" x="1055" y="496" class="t-muted" font-size="9" text-anchor="middle">maxsize=4 · 满则丢最旧</text>
         </g>
 
         <!-- Connection labels -->
         <g data-detail="context" data-edge-from="tiktok" data-edge-to="resolver" data-edge-label="房间信息" data-edge-key="0" data-edge-id="room-to-resolver">
-          <rect x="245.8" y="72" width="48.4" height="14" rx="3" class="c-mask"/>
-          <text x="270" y="82" class="t-backend" font-size="8" text-anchor="middle">房间信息</text>
+          <rect x="280.8" y="82" width="48.4" height="14" rx="3" class="c-mask"/>
+          <text x="305" y="92" class="t-backend" font-size="8" text-anchor="middle">房间信息</text>
         </g>
         <g data-detail="context" data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="校验后的纯音频地址" data-edge-key="1" data-edge-id="resolver-to-ffmpeg">
-          <rect x="511.8" y="72" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="560" y="82" class="t-muted" font-size="8" text-anchor="middle">校验后的纯音频地址</text>
+          <rect x="556.8" y="82" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="605" y="92" class="t-muted" font-size="8" text-anchor="middle">校验后的纯音频地址</text>
         </g>
         <g data-detail="context" data-edge-from="ffmpeg" data-edge-to="resolver" data-edge-label="断流后重连" data-edge-key="2" data-edge-id="reconnect">
-          <rect x="531" y="160" width="58" height="14" rx="3" class="c-mask"/>
-          <text x="560" y="170" class="t-messagebus" font-size="8" text-anchor="middle">断流后重连</text>
+          <rect x="576" y="180" width="58" height="14" rx="3" class="c-mask"/>
+          <text x="605" y="190" class="t-messagebus" font-size="8" text-anchor="middle">断流后重连</text>
         </g>
         <g data-detail="context" data-edge-from="ffmpeg" data-edge-to="segmenter" data-edge-label="0.1 s PCM 帧" data-edge-key="3" data-edge-id="ffmpeg-to-segmenter">
-          <rect x="671.2" y="204" width="67.6" height="14" rx="3" class="c-mask"/>
-          <text x="705" y="214" class="t-backend" font-size="8" text-anchor="middle">0.1 s PCM 帧</text>
+          <rect x="871.2" y="82" width="67.6" height="14" rx="3" class="c-mask"/>
+          <text x="905" y="92" class="t-backend" font-size="8" text-anchor="middle">0.1 s PCM 帧</text>
         </g>
         <g data-detail="context" data-edge-from="segmenter" data-edge-to="audioq" data-edge-label="语音段" data-edge-key="4" data-edge-id="segmenter-to-queue">
-          <rect x="540.6" y="252" width="38.8" height="14" rx="3" class="c-mask"/>
-          <text x="560" y="262" class="t-muted" font-size="8" text-anchor="middle">语音段</text>
+          <rect x="1035.6" y="214" width="38.8" height="14" rx="3" class="c-mask"/>
+          <text x="1055" y="224" class="t-muted" font-size="8" text-anchor="middle">语音段</text>
         </g>
         <g data-detail="context" data-edge-from="audioq" data-edge-to="asr" data-edge-label="顺序解码" data-edge-key="5" data-edge-id="queue-to-asr">
-          <rect x="245.8" y="245" width="48.4" height="14" rx="3" class="c-mask"/>
-          <text x="270" y="255" class="t-muted" font-size="8" text-anchor="middle">顺序解码</text>
+          <rect x="880.8" y="265" width="48.4" height="14" rx="3" class="c-mask"/>
+          <text x="905" y="275" class="t-muted" font-size="8" text-anchor="middle">顺序解码</text>
         </g>
         <g data-detail="context" data-edge-from="asr" data-edge-to="detector" data-edge-label="raw_text（含被过滤）" data-edge-key="6" data-edge-id="asr-to-detector">
-          <rect x="217" y="342" width="106" height="14" rx="3" class="c-mask"/>
-          <text x="270" y="352" class="t-security" font-size="8" text-anchor="middle">raw_text（含被过滤）</text>
+          <rect x="552" y="265" width="106" height="14" rx="3" class="c-mask"/>
+          <text x="605" y="275" class="t-security" font-size="8" text-anchor="middle">raw_text（含被过滤）</text>
         </g>
         <g data-detail="context" data-edge-from="asr" data-edge-to="server" data-edge-label="原文字幕，不等翻译" data-edge-key="7" data-edge-id="asr-to-server">
-          <rect x="76.80000000000001" y="394" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="125" y="404" class="t-backend" font-size="8" text-anchor="middle">原文字幕，不等翻译</text>
+          <rect x="556.8" y="367" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="605" y="377" class="t-backend" font-size="8" text-anchor="middle">原文字幕，不等翻译</text>
         </g>
         <g data-detail="context" data-edge-from="asr" data-edge-to="transq" data-edge-label="待译任务" data-edge-key="8" data-edge-id="asr-to-transq">
-          <rect x="390.8" y="345" width="48.4" height="14" rx="3" class="c-mask"/>
-          <text x="415" y="355" class="t-muted" font-size="8" text-anchor="middle">待译任务</text>
+          <rect x="880.8" y="367" width="48.4" height="14" rx="3" class="c-mask"/>
+          <text x="905" y="377" class="t-muted" font-size="8" text-anchor="middle">待译任务</text>
         </g>
         <g data-detail="context" data-edge-from="transq" data-edge-to="translator" data-edge-label="满 4 条丢最旧" data-edge-key="9" data-edge-id="transq-to-translator">
-          <rect x="523.8" y="522" width="72.4" height="14" rx="3" class="c-mask"/>
-          <text x="560" y="532" class="t-messagebus" font-size="8" text-anchor="middle">满 4 条丢最旧</text>
+          <rect x="868.8" y="499" width="72.4" height="14" rx="3" class="c-mask"/>
+          <text x="905" y="509" class="t-messagebus" font-size="8" text-anchor="middle">满 4 条丢最旧</text>
         </g>
         <g data-detail="context" data-edge-from="translator" data-edge-to="server" data-edge-label="译文回填" data-edge-key="10" data-edge-id="translator-to-server">
-          <rect x="245.8" y="525.5" width="48.4" height="14" rx="3" class="c-mask"/>
-          <text x="270" y="535.5" class="t-muted" font-size="8" text-anchor="middle">译文回填</text>
+          <rect x="580.8" y="499" width="48.4" height="14" rx="3" class="c-mask"/>
+          <text x="605" y="509" class="t-muted" font-size="8" text-anchor="middle">译文回填</text>
         </g>
         <g data-detail="context" data-edge-from="detector" data-edge-to="server" data-edge-label="违禁词报警" data-edge-key="11" data-edge-id="detector-to-server">
-          <rect x="337" y="488" width="58" height="14" rx="3" class="c-mask"/>
-          <text x="366" y="498" class="t-security" font-size="8" text-anchor="middle">违禁词报警</text>
+          <rect x="426" y="404" width="58" height="14" rx="3" class="c-mask"/>
+          <text x="455" y="414" class="t-security" font-size="8" text-anchor="middle">违禁词报警</text>
         </g>
         <g data-detail="context" data-edge-from="server" data-edge-to="ui" data-edge-label="WebSocket /ws" data-edge-key="12" data-edge-id="server-to-ui">
-          <rect x="88.8" y="542" width="72.4" height="14" rx="3" class="c-mask"/>
-          <text x="125" y="552" class="t-muted" font-size="8" text-anchor="middle">WebSocket /ws</text>
+          <rect x="268.8" y="462" width="72.4" height="14" rx="3" class="c-mask"/>
+          <text x="305" y="472" class="t-muted" font-size="8" text-anchor="middle">WebSocket /ws</text>
         </g>
 
         <!-- Boundary labels (foreground masks keep routes out of titles) -->
-
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="0" data-composition-frame-kind="region" data-composition-frame-label="本机 Python 进程 · 全程离线，无 API key">
+          <rect data-graph-role="structural-frame-label-mask" x="344" y="50" width="220.6" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="348" y="63" class="t-cloud" font-size="9" font-weight="600">本机 Python 进程 · 全程离线，无 API key</text>
+        </g>
 
         <!-- Legend -->
         <g data-legend="" data-legend-bridge="">
-          <text x="40" y="684" class="t-primary" font-size="12" font-weight="650">图例</text>
-          <g data-legend-semantic-kind="frontend" data-legend-kind="frontend" data-legend-label="前端" data-legend-x="40" data-legend-baseline="704" data-legend-width="63">
-            <rect x="40" y="695" width="16" height="10" rx="2.5" class="c-frontend" stroke-width="1"/>
-            <text x="62" y="704" class="t-muted" font-size="10" font-weight="500">前端</text>
+          <text x="40" y="564" class="t-primary" font-size="12" font-weight="650">图例</text>
+          <g data-legend-semantic-kind="frontend" data-legend-kind="frontend" data-legend-label="前端" data-legend-x="40" data-legend-baseline="584" data-legend-width="63">
+            <rect x="40" y="575" width="16" height="10" rx="2.5" class="c-frontend" stroke-width="1"/>
+            <text x="62" y="584" class="t-muted" font-size="10" font-weight="500">前端</text>
           </g>
-          <g data-legend-semantic-kind="backend" data-legend-kind="backend" data-legend-label="后端" data-legend-x="125" data-legend-baseline="704" data-legend-width="63">
-            <rect x="125" y="695" width="16" height="10" rx="2.5" class="c-backend" stroke-width="1"/>
-            <text x="147" y="704" class="t-muted" font-size="10" font-weight="500">后端</text>
+          <g data-legend-semantic-kind="backend" data-legend-kind="backend" data-legend-label="后端" data-legend-x="125" data-legend-baseline="584" data-legend-width="63">
+            <rect x="125" y="575" width="16" height="10" rx="2.5" class="c-backend" stroke-width="1"/>
+            <text x="147" y="584" class="t-muted" font-size="10" font-weight="500">后端</text>
           </g>
-          <g data-legend-semantic-kind="security" data-legend-kind="security" data-legend-label="安全" data-legend-x="210" data-legend-baseline="704" data-legend-width="63">
-            <rect x="210" y="695" width="16" height="10" rx="2.5" class="c-security" stroke-width="1"/>
-            <text x="232" y="704" class="t-muted" font-size="10" font-weight="500">安全</text>
+          <g data-legend-semantic-kind="security" data-legend-kind="security" data-legend-label="安全" data-legend-x="210" data-legend-baseline="584" data-legend-width="63">
+            <rect x="210" y="575" width="16" height="10" rx="2.5" class="c-security" stroke-width="1"/>
+            <text x="232" y="584" class="t-muted" font-size="10" font-weight="500">安全</text>
           </g>
-          <g data-legend-semantic-kind="messagebus" data-legend-kind="messagebus" data-legend-label="消息总线" data-legend-x="295" data-legend-baseline="704" data-legend-width="83">
-            <rect x="295" y="695" width="16" height="10" rx="2.5" class="c-messagebus" stroke-width="1"/>
-            <text x="317" y="704" class="t-muted" font-size="10" font-weight="500">消息总线</text>
+          <g data-legend-semantic-kind="messagebus" data-legend-kind="messagebus" data-legend-label="消息总线" data-legend-x="295" data-legend-baseline="584" data-legend-width="83">
+            <rect x="295" y="575" width="16" height="10" rx="2.5" class="c-messagebus" stroke-width="1"/>
+            <text x="317" y="584" class="t-muted" font-size="10" font-weight="500">消息总线</text>
           </g>
-          <g data-legend-semantic-kind="external" data-legend-kind="external" data-legend-label="外部系统" data-legend-x="400" data-legend-baseline="704" data-legend-width="83">
-            <rect x="400" y="695" width="16" height="10" rx="2.5" class="c-external" stroke-width="1"/>
-            <text x="422" y="704" class="t-muted" font-size="10" font-weight="500">外部系统</text>
+          <g data-legend-semantic-kind="external" data-legend-kind="external" data-legend-label="外部系统" data-legend-x="400" data-legend-baseline="584" data-legend-width="83">
+            <rect x="400" y="575" width="16" height="10" rx="2.5" class="c-external" stroke-width="1"/>
+            <text x="422" y="584" class="t-muted" font-size="10" font-weight="500">外部系统</text>
           </g>
         </g>
       </svg>

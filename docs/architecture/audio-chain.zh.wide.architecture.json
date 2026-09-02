@@ -1,0 +1,427 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TikTok 直播同传 · 音频链路",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1240,
+      600
+    ],
+    "repository": {
+      "url": "https://github.com/EM917/tiktok-live-translator",
+      "revision": "c409181f6fd0f92f4f1a0558eb2889fc1cb820b4"
+    },
+    "views": [
+      {
+        "id": "capture",
+        "label": "采集与切段",
+        "focus": [
+          "tiktok",
+          "resolver",
+          "ffmpeg",
+          "segmenter"
+        ],
+        "note": "从直播间到语音段：解析纯音频地址、神经降噪、能量 VAD 切段。"
+      },
+      {
+        "id": "alert",
+        "label": "报警不等翻译",
+        "focus": [
+          "asr",
+          "detector",
+          "server"
+        ],
+        "note": "识别一出结果就扫违禁词并推原文，两条都不等译文。"
+      },
+      {
+        "id": "backpressure",
+        "label": "两级背压",
+        "focus": [
+          "audioq",
+          "asr",
+          "transq",
+          "translator"
+        ],
+        "note": "音频队列留到硬顶才丢；翻译队列满了立刻丢，绝不反压识别。"
+      }
+    ],
+    "animation": "trace"
+  },
+  "components": [
+    {
+      "id": "tiktok",
+      "type": "external",
+      "label": "TikTok 直播间",
+      "sublabel": "webcast 接口 · 直播页",
+      "pos": [
+        70,
+        70
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "resolver",
+      "type": "backend",
+      "label": "流地址解析",
+      "sublabel": "4 条兜底路径",
+      "pos": [
+        370,
+        70
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/resolver.py",
+          "line": 454,
+          "label": "resolve_stream_url"
+        }
+      ]
+    },
+    {
+      "id": "ffmpeg",
+      "type": "backend",
+      "label": "ffmpeg 抽音降噪",
+      "sublabel": "16 kHz 单声道 PCM",
+      "tag": "RNNoise",
+      "pos": [
+        670,
+        70
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/audio.py",
+          "line": 20,
+          "label": "FFmpegAudioSource.frames"
+        }
+      ]
+    },
+    {
+      "id": "segmenter",
+      "type": "backend",
+      "label": "能量 VAD 切段",
+      "sublabel": "2.5–9 s · 尾静音 0.7 s",
+      "pos": [
+        970,
+        70
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/segmenter.py",
+          "line": 24,
+          "label": "SilenceSegmenter.feed"
+        }
+      ]
+    },
+    {
+      "id": "detector",
+      "type": "security",
+      "label": "违禁词检测",
+      "sublabel": "exact · variant · fuzzy",
+      "pos": [
+        370,
+        260
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/detector.py",
+          "line": 128,
+          "label": "BannedTermDetector.scan"
+        }
+      ]
+    },
+    {
+      "id": "asr",
+      "type": "backend",
+      "label": "Whisper 识别",
+      "sublabel": "faster-whisper / MLX",
+      "tag": "单线程池",
+      "pos": [
+        670,
+        260
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/asr.py",
+          "line": 223,
+          "label": "Transcriber.transcribe"
+        },
+        {
+          "path": "app/pipeline.py",
+          "line": 776,
+          "label": "asr_worker"
+        }
+      ]
+    },
+    {
+      "id": "audioq",
+      "type": "messagebus",
+      "label": "音频队列",
+      "sublabel": "按秒计 · 硬顶 60 s",
+      "pos": [
+        970,
+        260
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/pipeline.py",
+          "line": 704,
+          "label": "queue = asyncio.Queue()"
+        }
+      ]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "字幕界面",
+      "sublabel": "本地网页 · Chrome 扩展",
+      "pos": [
+        70,
+        450
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "CaptionServer",
+      "sublabel": "aiohttp :8765",
+      "pos": [
+        370,
+        450
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/server.py",
+          "line": 92,
+          "label": "CaptionServer._ws"
+        }
+      ]
+    },
+    {
+      "id": "translator",
+      "type": "backend",
+      "label": "翻译引擎",
+      "sublabel": "Hy-MT2 / Gemma / 云端",
+      "pos": [
+        670,
+        450
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/translator.py",
+          "line": 574,
+          "label": "OllamaHyMT2Translator"
+        }
+      ]
+    },
+    {
+      "id": "transq",
+      "type": "messagebus",
+      "label": "翻译队列",
+      "sublabel": "maxsize=4 · 满则丢最旧",
+      "pos": [
+        970,
+        450
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/pipeline.py",
+          "line": 708,
+          "label": "trans_queue maxsize=4"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "本机 Python 进程 · 全程离线，无 API key",
+      "wraps": [
+        "resolver",
+        "ffmpeg",
+        "segmenter",
+        "detector",
+        "asr",
+        "audioq",
+        "server",
+        "translator",
+        "transq"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "room-to-resolver",
+      "from": "tiktok",
+      "to": "resolver",
+      "label": "房间信息",
+      "variant": "emphasis"
+    },
+    {
+      "id": "resolver-to-ffmpeg",
+      "from": "resolver",
+      "to": "ffmpeg",
+      "label": "校验后的纯音频地址"
+    },
+    {
+      "id": "reconnect",
+      "from": "ffmpeg",
+      "to": "resolver",
+      "label": "断流后重连",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          755,
+          200
+        ],
+        [
+          455,
+          200
+        ]
+      ]
+    },
+    {
+      "id": "ffmpeg-to-segmenter",
+      "from": "ffmpeg",
+      "to": "segmenter",
+      "label": "0.1 s PCM 帧",
+      "variant": "emphasis"
+    },
+    {
+      "id": "segmenter-to-queue",
+      "from": "segmenter",
+      "to": "audioq",
+      "label": "语音段",
+      "labelDy": 100
+    },
+    {
+      "id": "queue-to-asr",
+      "from": "audioq",
+      "to": "asr",
+      "label": "顺序解码"
+    },
+    {
+      "id": "asr-to-detector",
+      "from": "asr",
+      "to": "detector",
+      "label": "raw_text（含被过滤）",
+      "variant": "security"
+    },
+    {
+      "id": "asr-to-server",
+      "from": "asr",
+      "to": "server",
+      "label": "原文字幕，不等翻译",
+      "variant": "emphasis"
+    },
+    {
+      "id": "asr-to-transq",
+      "from": "asr",
+      "to": "transq",
+      "label": "待译任务"
+    },
+    {
+      "id": "transq-to-translator",
+      "from": "transq",
+      "to": "translator",
+      "label": "满 4 条丢最旧",
+      "variant": "dashed",
+      "labelDy": 30
+    },
+    {
+      "id": "translator-to-server",
+      "from": "translator",
+      "to": "server",
+      "label": "译文回填",
+      "labelDy": 30
+    },
+    {
+      "id": "detector-to-server",
+      "from": "detector",
+      "to": "server",
+      "label": "违禁词报警",
+      "variant": "security",
+      "labelDy": 100
+    },
+    {
+      "id": "server-to-ui",
+      "from": "server",
+      "to": "ui",
+      "label": "WebSocket /ws"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "采集与切段",
+      "items": [
+        "解析依次走 TikTok webcast 接口 → yt-dlp → 借浏览器登录态 → 直播页兜底",
+        "webcast 接口给的是 only_audio 纯音频档，省掉整条视频码流",
+        "ffmpeg 先 highpass=70 再 arnndn 神经降噪，专门压直播的背景音乐"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "两级背压，方向相反",
+      "items": [
+        "音频队列按秒计，到 60 s 硬顶才丢最旧一段——识别慢只推迟报警，不该漏词",
+        "翻译队列 maxsize=4，满了立刻丢最旧任务，绝不反压回识别链路",
+        "被丢的音频段与翻译任务都进审计日志，事后能区分漏听和漏译"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "报警链路不依赖翻译",
+      "items": [
+        "违禁词扫的是 raw_text，含被质量过滤丢掉的部分——宁可多报，不能漏报",
+        "三级匹配：原样命中、形态变化、ASR 听错一两个字母的模糊层",
+        "识别一出结果就推原文并扫词，译文后到再回填字幕"
+      ]
+    }
+  ]
+}
