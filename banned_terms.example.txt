@@ -68,18 +68,53 @@ mi clienta bajo
 mis clientes bajaron
 
 # ============================================================
-# 以下为**待业务确认**：在真实直播中实际听到、但指南未明确列出的表述。
-# 保留在这里是因为它们贴近红线，是否报警请你们判断后取舍。
-# 取消注释即启用。
+# 以下曾是「待业务确认」区，2026-09-02 经用户授权后启用。
+# 依据：指南对减脂宣称写明「所有变体都禁止」，这些正是同一族的实际说法；
+# 且启用前跑过 36 场历史语料回放（生产冷却），逐条看过命中上下文。
+#
+# ⚠️ 注释必须**独立成行**：load_terms 只跳过以 # 开头的行，不剥行尾注释。
+#    写成 `derretir  # 说明` 会让整行连注释一起变成词条，永远匹配不上。
 # ============================================================
 
-# acelerar el metabolismo      # 实录原话: "ayuda a acelerar el metabolismo"
-# balancear las hormonas       # 实录原话: "te apoyan a balancear tus hormonas"
-# no dan rebote                # 实录原话: "Sin cafeína, sin azúcar y no dan rebote"
-# derretir                     # 实录原话: "muchas llantitas, mucho que derretir"
-# desintoxicar
-# limpiar el higado
-# desinflamar
+# 实录: "gotitas...para derritir la manteca, para acelerar el metabolismo"
+acelerar el metabolismo
+# 实录: "te apoyan a balancear tus hormonas"
+balancear las hormonas
+# 实录: "Sin cafeina, sin azucar y no dan rebote"
+no dan rebote
+# 实录: "derretir la llanta / llantita / manteca"（llanta=游泳圈，指腹部脂肪）
+# 已知代价：约 2% 误报是「冰化了」(se derritio el hielito)。保留裸动词而不写成
+# 短语，因为宾语常落在前一段："este producto te la va a derretir" 用短语会漏。
+derretir
+desintoxicar
+limpiar el higado
+desinflamar
+
+# ============================================================
+# 以下为 2026-09-01 漏报审计的产出（全场 2041 段，标注 + 对抗复核）。
+# 现役词表当时在那场 4.4 小时保健品直播上命中为 0；这些是其中证据最硬的
+# 一批，逐条跑过碰撞审计与 36 场回放后启用。
+# ============================================================
+
+# 医疗诊断名。实录: "Perfecto para la gente con un higado graso"
+higado graso
+# 实录: "son bacterias buenas que luchan contra el cancer"
+contra el cancer
+# 实录: "eliminando el exceso de grasa alrededor del higado"
+# 词表已有 eliminar grasa，但中间插了 "el exceso de" 就漏配，故单列
+exceso de grasa
+# 体型宣称，与 reducir tallas 同族
+estomago plano
+# 抑制食欲。实录: "va a quitar todo el apetito"
+quitar el apetito
+# 实录: "cuando se toma esta bebida se quitan todos los antojos"
+quitar los antojos
+
+# 注：碰撞审计曾建议给 limpiar / hormonas / quitar / plano 设 fuzzy 0
+# （撞 limpia / hermosas / quita / plato）。**没有采纳**——那是词级启发式，
+# 而这些都是多词短语，第二个锚点会约束。36 场回放实测这四个词条零误报，
+# 且 quitar 的模糊档正是「quita/quitan el apetito」第三人称变位的唯一命中
+# 途径（变体档不处理动词变位，已实测）。收紧会直接丢掉真命中。
 
 # ============================================================
 # 【指南里的安全说法，仅供参考，不要加进词表】
