@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TikTok Live Translator · Diagrams</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f8fafc; --fg: #0f172a; --muted: #64748b;
+    --card: #ffffff; --line: #e2e8f0; --accent: #0891b2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #060a13; --fg: #e2e8f0; --muted: #94a3b8;
+            --card: #0d1424; --line: #1e293b; --accent: #22d3ee; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 4rem 1.5rem; background: var(--bg); color: var(--fg);
+         font: 16px/1.65 ui-sans-serif, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { max-width: 44rem; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin: 0 0 .4rem; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 2.5rem; }
+  a.card { display: block; padding: 1.15rem 1.35rem; margin-bottom: .85rem;
+           background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+           text-decoration: none; color: inherit; transition: border-color .15s, transform .15s; }
+  a.card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .t { font-weight: 600; }
+  .d { color: var(--muted); font-size: .9rem; margin-top: .2rem; }
+  .note { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line);
+          color: var(--muted); font-size: .875rem; }
+  .note a { color: var(--accent); }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .85em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TikTok 直播同传 · 音频链路</h1>
+  <p class="sub">TikTok Live Translator — interactive architecture diagrams</p>
+
+  <a class="card" href="architecture/audio-chain.zh.html">
+    <div class="t">音频链路（中文）</div>
+    <div class="d">可搜索节点、聚焦上下游、追踪有向路径、深浅主题、导出 PNG / SVG</div>
+  </a>
+
+  <a class="card" href="architecture/audio-chain.en.html">
+    <div class="t">Audio pipeline (English)</div>
+    <div class="d">Search nodes, focus reachability, trace directed routes, dark/light, export PNG / SVG</div>
+  </a>
+
+  <p class="note">
+    图从 <a href="architecture/audio-chain.zh.architecture.json">typed JSON 源</a> 渲染，
+    每个组件带 <code>sources</code> 指向仓库真实位置，渲染时逐条核对。
+    重新生成的方法见 <a href="https://github.com/EM917/tiktok-live-translator/tree/main/docs/architecture">docs/architecture/</a>。
+    <br>
+    Rendered from typed sources; every component's <code>sources</code> reference is verified
+    against the repository at render time.
+  </p>
+</main>
+</body>
+</html>
