@@ -6,8 +6,8 @@
     "locale": "en",
     "quality_profile": "showcase",
     "viewBox": [
-      1240,
-      600
+      830,
+      720
     ],
     "repository": {
       "url": "https://github.com/EM917/tiktok-live-translator",
@@ -55,8 +55,8 @@
       "label": "TikTok Live Room",
       "sublabel": "webcast API · live page",
       "pos": [
-        70,
-        70
+        40,
+        60
       ],
       "size": [
         170,
@@ -69,8 +69,8 @@
       "label": "Stream resolver",
       "sublabel": "4 fallback paths",
       "pos": [
-        370,
-        70
+        330,
+        60
       ],
       "size": [
         170,
@@ -91,8 +91,8 @@
       "sublabel": "16 kHz mono PCM",
       "tag": "RNNoise",
       "pos": [
-        670,
-        70
+        620,
+        60
       ],
       "size": [
         170,
@@ -112,8 +112,8 @@
       "label": "Energy VAD",
       "sublabel": "2.5–9 s · 0.7 s trailing",
       "pos": [
-        970,
-        70
+        620,
+        240
       ],
       "size": [
         170,
@@ -133,8 +133,8 @@
       "label": "Banned-term scan",
       "sublabel": "exact · variant · fuzzy",
       "pos": [
-        370,
-        260
+        330,
+        420
       ],
       "size": [
         170,
@@ -155,8 +155,8 @@
       "sublabel": "faster-whisper / MLX",
       "tag": "1 thread",
       "pos": [
-        670,
-        260
+        40,
+        240
       ],
       "size": [
         170,
@@ -181,8 +181,8 @@
       "label": "Audio queue",
       "sublabel": "by seconds · 60 s cap",
       "pos": [
-        970,
-        260
+        330,
+        240
       ],
       "size": [
         170,
@@ -202,8 +202,8 @@
       "label": "Caption surface",
       "sublabel": "local web · Chrome ext",
       "pos": [
-        70,
-        450
+        40,
+        600
       ],
       "size": [
         170,
@@ -216,8 +216,8 @@
       "label": "CaptionServer",
       "sublabel": "aiohttp :8765",
       "pos": [
-        370,
-        450
+        40,
+        420
       ],
       "size": [
         170,
@@ -237,8 +237,8 @@
       "label": "Translation engine",
       "sublabel": "Hy-MT2 / Gemma / cloud",
       "pos": [
-        670,
-        450
+        330,
+        600
       ],
       "size": [
         170,
@@ -258,8 +258,8 @@
       "label": "Translation queue",
       "sublabel": "maxsize=4 · drop oldest",
       "pos": [
-        970,
-        450
+        620,
+        420
       ],
       "size": [
         170,
@@ -271,23 +271,6 @@
           "line": 708,
           "label": "trans_queue maxsize=4"
         }
-      ]
-    }
-  ],
-  "boundaries": [
-    {
-      "kind": "region",
-      "label": "Local Python process · fully offline, no API key",
-      "wraps": [
-        "resolver",
-        "ffmpeg",
-        "segmenter",
-        "detector",
-        "asr",
-        "audioq",
-        "server",
-        "translator",
-        "transq"
       ]
     }
   ],
@@ -315,12 +298,12 @@
       "toSide": "bottom",
       "via": [
         [
-          755,
-          200
+          705,
+          180
         ],
         [
-          455,
-          200
+          415,
+          180
         ]
       ]
     },
@@ -329,14 +312,14 @@
       "from": "ffmpeg",
       "to": "segmenter",
       "label": "0.1 s PCM frames",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "labelDy": 100
     },
     {
       "id": "segmenter-to-queue",
       "from": "segmenter",
       "to": "audioq",
-      "label": "speech segment",
-      "labelDy": 100
+      "label": "speech segment"
     },
     {
       "id": "queue-to-asr",
@@ -356,28 +339,39 @@
       "from": "asr",
       "to": "server",
       "label": "source caption, no wait",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "labelDy": 110
     },
     {
       "id": "asr-to-transq",
       "from": "asr",
       "to": "transq",
-      "label": "translation job"
+      "label": "translation job",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          125,
+          365
+        ],
+        [
+          705,
+          365
+        ]
+      ]
     },
     {
       "id": "transq-to-translator",
       "from": "transq",
       "to": "translator",
       "label": "drop oldest at 4",
-      "variant": "dashed",
-      "labelDy": 30
+      "variant": "dashed"
     },
     {
       "id": "translator-to-server",
       "from": "translator",
       "to": "server",
-      "label": "translation filled in",
-      "labelDy": 30
+      "label": "translation filled in"
     },
     {
       "id": "detector-to-server",
@@ -385,13 +379,15 @@
       "to": "server",
       "label": "banned-term alert",
       "variant": "security",
-      "labelDy": 100
+      "labelDy": 41,
+      "labelDx": 60
     },
     {
       "id": "server-to-ui",
       "from": "server",
       "to": "ui",
-      "label": "WebSocket /ws"
+      "label": "WebSocket /ws",
+      "labelDy": 78
     }
   ],
   "cards": [

@@ -6,8 +6,8 @@
     "locale": "zh-CN",
     "quality_profile": "showcase",
     "viewBox": [
-      1240,
-      600
+      830,
+      720
     ],
     "repository": {
       "url": "https://github.com/EM917/tiktok-live-translator",
@@ -55,8 +55,8 @@
       "label": "TikTok 直播间",
       "sublabel": "webcast 接口 · 直播页",
       "pos": [
-        70,
-        70
+        40,
+        60
       ],
       "size": [
         170,
@@ -69,8 +69,8 @@
       "label": "流地址解析",
       "sublabel": "4 条兜底路径",
       "pos": [
-        370,
-        70
+        330,
+        60
       ],
       "size": [
         170,
@@ -91,8 +91,8 @@
       "sublabel": "16 kHz 单声道 PCM",
       "tag": "RNNoise",
       "pos": [
-        670,
-        70
+        620,
+        60
       ],
       "size": [
         170,
@@ -112,8 +112,8 @@
       "label": "能量 VAD 切段",
       "sublabel": "2.5–9 s · 尾静音 0.7 s",
       "pos": [
-        970,
-        70
+        620,
+        240
       ],
       "size": [
         170,
@@ -133,8 +133,8 @@
       "label": "违禁词检测",
       "sublabel": "exact · variant · fuzzy",
       "pos": [
-        370,
-        260
+        330,
+        420
       ],
       "size": [
         170,
@@ -155,8 +155,8 @@
       "sublabel": "faster-whisper / MLX",
       "tag": "单线程池",
       "pos": [
-        670,
-        260
+        40,
+        240
       ],
       "size": [
         170,
@@ -181,8 +181,8 @@
       "label": "音频队列",
       "sublabel": "按秒计 · 硬顶 60 s",
       "pos": [
-        970,
-        260
+        330,
+        240
       ],
       "size": [
         170,
@@ -202,8 +202,8 @@
       "label": "字幕界面",
       "sublabel": "本地网页 · Chrome 扩展",
       "pos": [
-        70,
-        450
+        40,
+        600
       ],
       "size": [
         170,
@@ -216,8 +216,8 @@
       "label": "CaptionServer",
       "sublabel": "aiohttp :8765",
       "pos": [
-        370,
-        450
+        40,
+        420
       ],
       "size": [
         170,
@@ -237,8 +237,8 @@
       "label": "翻译引擎",
       "sublabel": "Hy-MT2 / Gemma / 云端",
       "pos": [
-        670,
-        450
+        330,
+        600
       ],
       "size": [
         170,
@@ -258,8 +258,8 @@
       "label": "翻译队列",
       "sublabel": "maxsize=4 · 满则丢最旧",
       "pos": [
-        970,
-        450
+        620,
+        420
       ],
       "size": [
         170,
@@ -271,23 +271,6 @@
           "line": 708,
           "label": "trans_queue maxsize=4"
         }
-      ]
-    }
-  ],
-  "boundaries": [
-    {
-      "kind": "region",
-      "label": "本机 Python 进程 · 全程离线，无 API key",
-      "wraps": [
-        "resolver",
-        "ffmpeg",
-        "segmenter",
-        "detector",
-        "asr",
-        "audioq",
-        "server",
-        "translator",
-        "transq"
       ]
     }
   ],
@@ -315,12 +298,12 @@
       "toSide": "bottom",
       "via": [
         [
-          755,
-          200
+          705,
+          180
         ],
         [
-          455,
-          200
+          415,
+          180
         ]
       ]
     },
@@ -329,14 +312,14 @@
       "from": "ffmpeg",
       "to": "segmenter",
       "label": "0.1 s PCM 帧",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "labelDy": 100
     },
     {
       "id": "segmenter-to-queue",
       "from": "segmenter",
       "to": "audioq",
-      "label": "语音段",
-      "labelDy": 100
+      "label": "语音段"
     },
     {
       "id": "queue-to-asr",
@@ -356,28 +339,39 @@
       "from": "asr",
       "to": "server",
       "label": "原文字幕，不等翻译",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "labelDy": 110
     },
     {
       "id": "asr-to-transq",
       "from": "asr",
       "to": "transq",
-      "label": "待译任务"
+      "label": "待译任务",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          125,
+          365
+        ],
+        [
+          705,
+          365
+        ]
+      ]
     },
     {
       "id": "transq-to-translator",
       "from": "transq",
       "to": "translator",
       "label": "满 4 条丢最旧",
-      "variant": "dashed",
-      "labelDy": 30
+      "variant": "dashed"
     },
     {
       "id": "translator-to-server",
       "from": "translator",
       "to": "server",
-      "label": "译文回填",
-      "labelDy": 30
+      "label": "译文回填"
     },
     {
       "id": "detector-to-server",
@@ -385,13 +379,15 @@
       "to": "server",
       "label": "违禁词报警",
       "variant": "security",
-      "labelDy": 100
+      "labelDy": 41,
+      "labelDx": 60
     },
     {
       "id": "server-to-ui",
       "from": "server",
       "to": "ui",
-      "label": "WebSocket /ws"
+      "label": "WebSocket /ws",
+      "labelDy": 78
     }
   ],
   "cards": [
