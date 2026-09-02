@@ -19,15 +19,19 @@
 
 # TikTok Live Translator
 
-Listens to a TikTok livestream, transcribes what the **streamer says** in real time, translates it, and shows bilingual subtitles in a local browser UI. Comes with a Chrome extension that overlays the subtitles directly on the TikTok live page.
+Real-time bilingual subtitles for TikTok livestreams, built for **compliance monitoring of Spanish-language live commerce**. It transcribes what the **streamer says**, raises an alert the moment a prohibited claim is spoken, and shows the translation alongside so an operator can read the context and decide whether to act. A Chrome extension can overlay the subtitles directly on the TikTok live page.
+
+The alert path is what the design optimises for. Banned-term matching runs on the **recognised source text**, never on the translation, so an alert is never delayed by a translation engine; audio is buffered rather than discarded, because a late alert beats a missed one. Two numbers decide whether it is working: **recall** — a missed violation costs far more than a false alarm — and **time from utterance to alert**.
+
+It also works as a plain live-subtitle translator: leave `banned_terms.txt` empty and the alert layer stays out of the way.
 
 **Runs entirely locally**: stream capture, speech recognition, and (optionally) translation all happen on your own machine — no API key needed, zero cost.
 
 ## Features
 
+- 🚨 **Real-time banned-term alerts** — three-tier matching (exact / morphological variant / fuzzy) against the **recognised source text**, independent of translation, including phrases split across caption boundaries. Configured in `banned_terms.txt`
 - 🎙️ **Real-time speech recognition** — OpenAI Whisper with a dual backend (faster-whisper / MLX), automatic language detection, 90+ languages
 - 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two tiers, with TranslateGemma 4B, Google's free API and Claude · OpenAI available as fallbacks. Whichever tier is installed is selected automatically
-- 🚨 **Real-time banned-term alerts** — three-tier matching (exact / morphological variant / fuzzy) against the **recognised source text**, independent of translation, including phrases split across caption boundaries. Configured in `banned_terms.txt`
 - 🎵 **Voice-focused denoising** — RNNoise suppresses background music, tuned for streams with continuous BGM
 - ⚡ **Automatic hardware configuration** — detects the available accelerator (Apple Silicon GPU / NVIDIA CUDA / CPU) and selects the largest model that still runs in real time
 - 📺 **Two display modes** — a local web interface (scrolling bilingual history with a large current caption) or a Chrome extension overlaying the TikTok page
@@ -230,18 +234,24 @@ The following constraints are measured, not assumed:
   language, no glossary is attached rather than guessing — a wrong guess forces
   the whole line through the wrong language.
 
-Quota is billed on source length. The same real stream (38.4 minutes, 567 lines)
-measures a 175× difference between two ways of using it:
+Quota is billed on source length, and the burn rate depends heavily on how
+densely the streamer talks — two measured sessions differ by 2.3×:
 
-| Usage | Burn rate | Free tier covers |
+| Usage | Burn rate | 1,000,000 characters covers |
 |---|---|---|
-| Every subtitle through DeepL | 95,824 chars/hour | 10.4 hours |
-| Alert context only | 546 chars/hour | 1832 hours |
+| Every subtitle — dense session (38.4 min, 567 lines) | 95,824 chars/hour | ~10 hours |
+| Every subtitle — sparser session (4.4 h, 2,041 lines) | 41,363 chars/hour | ~24 hours |
+| Alert context only | 546 chars/hour | ~1,800 hours |
 
-Alert context is sparse — two passages totalling 349 characters in that session —
-and it is the text that must not be mistranslated, since the operator reads it to
-decide whether to act. Price anything beyond the free tier against DeepL's
-current per-character rate.
+Alert context is sparse — two passages totalling 349 characters in the first
+session — and it is the text that must not be mistranslated, since the operator
+reads it to decide whether to act. Routing only that through DeepL is the
+difference between hours and months of coverage.
+
+Read your own remaining budget from the home screen, which reports the
+`used / limit` your key returns, rather than from this table; DeepL's allowance
+size and renewal terms are theirs to change, so check their current pricing
+before planning around a number here.
 
 **Subtitle text is sent to DeepL.** Local engines never leave the machine; this
 one does. The stream being monitored belongs to someone else, and whether that is
@@ -268,10 +278,14 @@ Three ways to invoke it:
   session's audit log, appending `translation_strong` records without altering
   any existing line, and prints the segments whose translation changed
 
-The larger model is not uniformly better. Its advantage is on terminology and
-promotional conditions; on casual speech it is sometimes worse and can drop a
-clause. The batch tool therefore reports what changed rather than replacing
-anything silently.
+How much better it actually is, measured: 259 captions from a live session,
+each engine's output graded blind by an independent panel. The strong tier beats
+the default on both axes — meaning-changing errors 12.0% against 17.4% and
+first-pass readability 96.1% against 83.4%. Only the readability gap survives
+correction for the number of comparisons made (p<0.0001); the accuracy gap does
+not. So the honest claim is that re-translation is *easier to read*, not
+demonstrably *more correct*. The batch tool still reports what changed rather
+than replacing anything silently.
 
 ### Finding translation errors without reading everything
 
@@ -318,6 +332,28 @@ from the recognised source text and never wait for translation; the only
 requirement is that translation keep pace with 9-second segments, which both
 tiers do.
 
+**Does the paid engine actually win?** Not measurably, on this material. 259
+captions from one live session, all four engines graded blind by the same panel:
+
+| | Hy-MT2 1.8B | Hy-MT2 7B | TranslateGemma 12B | DeepL |
+|---|---|---|---|---|
+| Meaning-changing errors | 17.4% | 12.0% | 11.6% | 10.0% |
+| Understood on first pass | 83.4% | **96.1%** | 87.6% | 91.9% |
+
+Twelve pairwise tests were run on these captions, so a single p<0.05 means
+little. After correcting for that, exactly three results hold, all on
+readability: 7B beats 12B, 7B beats 1.8B, and DeepL beats 1.8B. **No difference
+in meaning-changing errors between any two engines survives correction** —
+including 7B against DeepL, where the paired difference is +1.9% with a 95%
+interval of [-3.1%, +7.0%]. That interval is the honest summary: this test
+cannot tell them apart, and it also cannot rule out DeepL being several points
+better. "No difference measured" is not "equivalent".
+
+Two cautions before generalising. Grading the same 259 captions with a second
+panel moved every absolute percentage and agreed on only about 60% of the
+meaning-changing errors, so treat the paired comparisons as the result and the
+percentages as decoration. And this is one streamer's material.
+
 **Why 7B is not the default.** Its 17-point accuracy advantage made it the
 default in the initial v0.10.0 build, a decision based on a 24-caption sample. A
 92-caption live run gave a different result: with 7B resident, recognition held
@@ -327,6 +363,46 @@ recognition is on the alert path and translation is not, the trade ran in the
 wrong direction. Where memory is available and alert latency is not the primary
 metric, `--translator hymt2-7b` is a genuine improvement in terminology
 accuracy.
+
+## Validating your term list against a recorded session
+
+A term list that never fires looks identical to a clean stream. It is worth
+proving which of the two you have, because the failure is silent — and it is a
+failure of the list, not of the matcher.
+
+`banned_terms.txt` ships as a starting point derived from one company's
+category guide. Two things make it miss on a stream it was not written for: a
+streamer phrases a claim differently from the list (`eliminar grasa` is listed,
+but "eliminando el exceso **de** grasa" inserts words between the anchors and
+misses), and the list has a *pending business review* section of real phrases
+deliberately left commented out.
+
+Replay a recorded session against your list before trusting it:
+
+```bash
+python3 tools/replay_alerts.py                   # re-run a session's audit log through the current list
+python3 tools/collision_audit.py --term <word>   # check a new term for false-positive collisions
+```
+
+A worked example, from a 4.4-hour supplement stream (2,041 segments):
+
+| Term list | Segments alerted |
+|---|---|
+| As shipped, 40 active entries | **0** |
+| With the 7 commented-out *pending review* entries enabled | 62 |
+
+The stream contained `derretir toda la manteca` ("melt away all the fat"),
+`acelerar el metabolismo`, and `desinflamarse y quitar la barriga` — the exact
+family the guide bans "all variants" of. The matcher was working the whole time
+(its fuzzy tier caught the ASR misspelling `derritir`); the entries that would
+have fired were switched off.
+
+A separate pass over the same transcript flagged 126 utterances as worth
+alerting on, of which 99 match neither the active nor the pending entries —
+appetite suppression, body shape, organ fat, fatty liver, cholesterol, and one
+cancer claim. Treat output like that as **candidate terms for human review**,
+never as an automatic list update: what counts as a violation is a business
+judgement, and a list padded with false positives buries the operator in noise.
 
 ## Chrome Extension
 
