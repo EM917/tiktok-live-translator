@@ -1,12 +1,12 @@
 # 音频链路架构图 · Audio pipeline diagram
 
-`assets/audio-chain.{zh,en}.{light,dark}.png` 是由这里的 typed JSON 源渲染出来的。两份源拓扑完全一致，
-只有措辞语言不同；每种语言各出浅色、深色两版，README 用 `<picture>` + `prefers-color-scheme` 自动切换。
+`assets/audio-chain.{zh,en}.svg` 是由这里的 typed JSON 源渲染出来的。两份源拓扑完全一致，
+只有措辞语言不同。SVG 内部自带 `prefers-color-scheme`，一个文件同时提供浅色和深色，随系统主题实时切换。
 每个组件都带 `sources` 字段，指向它在仓库里的实际位置——渲染时会逐条核对，对不上就渲染失败。
 
-The PNGs in `assets/` are rendered from the typed JSON sources here. Both sources share one topology and
-differ only in authored language; each language ships a light and a dark card, switched by `<picture>` and
-`prefers-color-scheme`. Every component carries `sources` pointing at the real code; rendering verifies
+The SVGs in `assets/` are rendered from the typed JSON sources here. Both sources share one topology and
+differ only in authored language. Each SVG carries its own `prefers-color-scheme` rules, so one file serves
+both light and dark and follows the reader's theme live. Every component carries `sources` pointing at the real code; rendering verifies
 each reference against the repository and fails if one no longer resolves.
 
 ## 重新生成 · Regenerate
@@ -28,15 +28,12 @@ node ~/.claude/skills/archify/bin/archify.mjs deliver architecture \
 `deliver` 会做 9 项结构校验、核对全部 `sources` 引用，并给出 spec 与产物的 SHA-256。
 生成的 HTML 可交互（搜索节点、聚焦、追路径、深浅主题）。
 
-README 里那四张 1200×630 PNG 由它的 **Export → 分享卡片** 导出。分享卡取当前主题，
-所以浅色版要先用 `?theme=light` 打开、深色版用 `?theme=dark`，各导一次：
+README 里那两张图由生成的 HTML 用 **Export → SVG 可编辑矢量图** 导出，
+放到 `assets/audio-chain.{zh,en}.svg`。SVG 不需要按主题导两次——深浅规则都在文件里。
 
-```
-/tmp/audio-chain.zh.html?theme=light   →  assets/audio-chain.zh.light.png
-/tmp/audio-chain.zh.html?theme=dark    →  assets/audio-chain.zh.dark.png
-```
-
-英文版同理，用 `audio-chain.en.architecture.json`。
+注意 SVG 的固有宽度等于画布宽（830），README 里要写 `width="1000"` 把它拉到栏宽，
+否则会按 830 渲染、字比预期小。字体用 `local('JetBrains Mono')` 加 fallback 栈，
+没装该字体的机器会走 fallback，实测排版不受影响。
 
 ## 已发布 · Published
 

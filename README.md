@@ -341,11 +341,7 @@ The subtitle bar supports **dragging** to reposition it, **double-clicking** to 
 ## Architecture
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/audio-chain.en.dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/audio-chain.en.light.png">
-    <img src="assets/audio-chain.en.light.png" alt="Audio pipeline: TikTok live room to stream resolver to ffmpeg denoise to energy VAD to audio queue to Whisper ASR, which branches into a banned-term scan and a translation queue, both converging on CaptionServer and the caption surface">
-  </picture>
+  <img src="assets/audio-chain.en.svg" width="1000" alt="Audio pipeline: TikTok live room to stream resolver to ffmpeg denoise to energy VAD to audio queue to Whisper ASR, which branches into a banned-term scan and a translation queue, both converging on CaptionServer and the caption surface">
 </p>
 
 **[Open the explorable version ↗](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.en.html)** — search nodes, focus a component to see its authored upstream and downstream, trace a directed route, play the guided chapters.
@@ -778,11 +774,7 @@ python3 tools/retranslate_audit.py
 ## 架构
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/audio-chain.zh.dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/audio-chain.zh.light.png">
-    <img src="assets/audio-chain.zh.light.png" alt="音频链路：TikTok 直播间 → 流地址解析 → ffmpeg 抽音降噪 → 能量 VAD 切段 → 音频队列 → Whisper 识别，再分出违禁词检测与翻译队列两条支线，最后汇入 CaptionServer 与字幕界面">
-  </picture>
+  <img src="assets/audio-chain.zh.svg" width="1000" alt="音频链路：TikTok 直播间 → 流地址解析 → ffmpeg 抽音降噪 → 能量 VAD 切段 → 音频队列 → Whisper 识别，再分出违禁词检测与翻译队列两条支线，最后汇入 CaptionServer 与字幕界面">
 </p>
 
 **[打开可探索版本 ↗](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.zh.html)** —— 搜索节点、聚焦某个组件看它的上下游、追踪有向路径、播放引导章节。
