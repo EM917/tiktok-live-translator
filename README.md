@@ -348,6 +348,8 @@ The subtitle bar supports **dragging** to reposition it, **double-clicking** to 
   </picture>
 </p>
 
+**[Open the explorable version ↗](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.en.html)** — search nodes, focus a component to see its authored upstream and downstream, trace a directed route, play the guided chapters.
+
 Read from the source at [`c409181`](https://github.com/EM917/tiktok-live-translator/tree/c409181f6fd0f92f4f1a0558eb2889fc1cb820b4). The typed source and regeneration steps are in [`docs/architecture/`](docs/architecture/).
 
 <details>
@@ -782,6 +784,8 @@ python3 tools/retranslate_audit.py
     <img src="assets/audio-chain.zh.light.png" alt="音频链路：TikTok 直播间 → 流地址解析 → ffmpeg 抽音降噪 → 能量 VAD 切段 → 音频队列 → Whisper 识别，再分出违禁词检测与翻译队列两条支线，最后汇入 CaptionServer 与字幕界面">
   </picture>
 </p>
+
+**[打开可探索版本 ↗](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.zh.html)** —— 搜索节点、聚焦某个组件看它的上下游、追踪有向路径、播放引导章节。
 
 图按 [`c409181`](https://github.com/EM917/tiktok-live-translator/tree/c409181f6fd0f92f4f1a0558eb2889fc1cb820b4) 的源码画出，每个组件都核对过实际位置。Typed 源与重新生成的方法见 [`docs/architecture/`](docs/architecture/)。
 
