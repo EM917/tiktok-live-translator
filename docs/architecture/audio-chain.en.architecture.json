@@ -46,7 +46,8 @@
         ],
         "note": "Audio is held to a hard cap; translation jobs are dropped the moment the queue fills."
       }
-    ]
+    ],
+    "animation": "trace"
   },
   "components": [
     {
