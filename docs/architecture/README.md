@@ -37,3 +37,14 @@ README 里那四张 1200×630 PNG 由它的 **Export → 分享卡片** 导出�
 ```
 
 英文版同理，用 `audio-chain.en.architecture.json`。
+
+## 已发布 · Published
+
+- 中文：https://em917.github.io/tiktok-live-translator/architecture/audio-chain.zh.html
+- English: https://em917.github.io/tiktok-live-translator/architecture/audio-chain.en.html
+
+GitHub Pages 从 `main` 分支的 `/docs` 目录发布。改完 JSON 后重新 `deliver` 到
+`docs/architecture/audio-chain.{zh,en}.html`，推上去 Pages 会自动重建。
+
+Served by GitHub Pages from `/docs` on `main`. Re-`deliver` into
+`docs/architecture/` and push; Pages rebuilds on its own.
