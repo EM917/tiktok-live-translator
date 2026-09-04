@@ -8,11 +8,18 @@
     input { width: 100px; padding: 4px 8px; font-size: 14px; }
     button { margin-left: 8px; padding: 4px 12px; font-size: 13px; cursor: pointer; }
     #saved { color: #2fa860; font-size: 12px; margin-left: 8px; visibility: hidden; }
+    .cmt-row { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 14px; }
+    .cmt-row input { width: auto; margin-top: 2px; }
+    .cmt-row label { margin-bottom: 0; }
   </style>
 </head>
 <body>
   <label for="port">本地程序的端口号（插件会自动尝试 8765–8774，一般不用改）</label>
   <input type="number" id="port" min="1" max="65535">
+  <div class="cmt-row">
+    <input type="checkbox" id="comments">
+    <label for="comments">翻译观众评论（译文显示在直播页评论区每条评论下方，需要该浏览器已登录 TikTok）</label>
+  </div>
   <button id="save">保存</button>
   <span id="saved">已保存 ✓ 刷新 TikTok 页面后生效</span>
   <script src="options.js"></script>

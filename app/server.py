@@ -30,6 +30,13 @@ def replay_payloads(history):
 
 
 class CaptionServer:
+    # 单个连接每秒最多处理这么多条 viewer_comments 消息，超出直接丢弃、不广播。
+    # 白名单只按来源（https://*.tiktok.com）放行，不要求走 Chrome 插件，任何
+    # 跑在该来源页面上的脚本都能连上来高频灌消息；广播和字幕/警报共用同一个
+    # 事件循环，洪水会挤占那两样的时间片——弹幕本身允许丢，这道闸门不算回归。
+    CMT_MSG_RATE_LIMIT = 10
+    CMT_MSG_RATE_WINDOW_SEC = 1.0
+
     def __init__(self, port=8765):
         self.port = port
         self.clients = set()
@@ -37,8 +44,15 @@ class CaptionServer:
         # 违禁词警报必须跨刷新/重连留存：中控没看到就等于漏报，
         # 不能因为页面重载而消失
         self.alerts = deque(maxlen=50)
+        # 观众弹幕：同样要跨刷新/重连留存，不然中控重连一次就看不到刚才谁说了什么
+        self.comments = deque(maxlen=100)
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
+        self.on_comments = None  # 由 Pipeline 注入，处理来自 Chrome 插件的观众评论
+        # 插件（TikTok 页面）当前连着几个：中控要能在界面上看出弹幕这条链路
+        # 通没通——面板空着的时候，「没人发弹幕」和「插件根本没连上」必须能区分
+        self._view_clients = 0
+        self.config["extension_clients"] = 0
         self._runner = None
 
     async def start(self):
@@ -70,6 +84,9 @@ class CaptionServer:
           "view"    —— TikTok 页面（Chrome 插件的 content script 以页面身份
                        连接）：只收字幕。插件本身是纯显示端，不需要控制权；
                        给它控制权等于让任何 tiktok.com 上的脚本能驱动本机程序；
+                       唯一例外是 viewer_comments 这一种数据消息（观众弹幕，
+                       见 _ws 里的白名单分支）——它只携带评论文本，不经过
+                       on_control，这道控制权的闸门本身不因此松动；
           None      —— 其余一律拒绝。
         """
         origin = request.headers.get("Origin")
@@ -95,6 +112,8 @@ class CaptionServer:
             raise web.HTTPForbidden(text="origin not allowed")
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
+        cmt_times = deque(maxlen=self.CMT_MSG_RATE_LIMIT)   # 本连接限频用的滑动窗口
+        counted = False          # 这条连接是否已计入插件连接数（finally 里要对称减回去）
         try:
             await ws.send_json({"type": "hello", "config": self.config})
             # 先补发历史警报（刷新页面不能丢报警），再回放字幕
@@ -103,7 +122,13 @@ class CaptionServer:
             # 回放完成后才加入广播集合，避免新字幕插进回放序列中间
             for payload in replay_payloads(self.history):
                 await ws.send_json(payload)
+            # 观众弹幕历史同样要回放，且同样带 replay 标记
+            for c in list(self.comments):
+                await ws.send_json(dict(c, replay=True))
             self.clients.add(ws)
+            if access == "view":
+                counted = True
+                await self._set_extension_clients(self._view_clients + 1)
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     continue
@@ -112,6 +137,23 @@ class CaptionServer:
                 except ValueError:
                     continue
                 if not isinstance(data, dict):   # 非对象 JSON 会让下游 .get 崩掉
+                    continue
+                if data.get("type") == "viewer_comments":
+                    # 唯一允许来自 TikTok 页面（view 来源）的入站消息。它只携带
+                    # 评论文本，由 on_comments 校验、限量，永远不经过
+                    # on_control——下面 access != "control" 这道闸门本身不动。
+                    now = time.time()
+                    if (len(cmt_times) >= self.CMT_MSG_RATE_LIMIT
+                            and now - cmt_times[0] < self.CMT_MSG_RATE_WINDOW_SEC):
+                        continue      # 单连接限频：超频消息静默丢弃，不广播
+                    cmt_times.append(now)
+                    if self.on_comments is not None:
+                        try:
+                            result = self.on_comments(data)
+                            if asyncio.iscoroutine(result):
+                                await result
+                        except Exception as exc:
+                            print("[警告] 处理观众评论失败: {}".format(exc))
                     continue
                 if access != "control":          # 只看不许动（TikTok 页面）
                     continue
@@ -125,7 +167,15 @@ class CaptionServer:
                         print("[警告] 处理控制消息失败: {}".format(exc))
         finally:
             self.clients.discard(ws)
+            if counted:
+                await self._set_extension_clients(self._view_clients - 1)
         return ws
+
+    async def _set_extension_clients(self, n):
+        """插件连接数变化就广播一次；也写进 config，晚打开的页面从 hello 里拿到。"""
+        self._view_clients = max(0, n)
+        await self.broadcast({"type": "comment_source",
+                              "extension_clients": self._view_clients})
 
     async def broadcast(self, msg):
         if msg.get("type") == "caption" and not msg.get("replay"):
@@ -145,6 +195,17 @@ class CaptionServer:
             for a in self.alerts:
                 if a.get("alert_id") == msg.get("alert_id"):
                     a["context_zh"] = msg.get("context_zh")
+                    break
+        elif msg.get("type") == "comment" and not msg.get("replay"):
+            self.comments.append(msg)
+        elif msg.get("type") == "comment_source":
+            self.config["extension_clients"] = msg.get("extension_clients", 0)
+        elif msg.get("type") == "comment_update":
+            # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文/pending
+            for c in reversed(self.comments):
+                if c.get("id") == msg.get("id"):
+                    c["translated"] = msg.get("translated")
+                    c["state"] = msg.get("state")
                     break
         elif msg.get("type") == "status":
             # command 必须一起留存：它常常是用户当下唯一的出路，

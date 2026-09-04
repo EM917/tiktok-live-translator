@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .asr import DEFAULT_TEMPERATURE
+from .comments import CommentTranslator
 from .detector import BannedTermDetector, load_fuzzy_policy, load_terms
 from .glossary import load as load_glossary
 from .nethttp import read_all
@@ -152,6 +153,27 @@ class Pipeline:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
             print("[信息] 违禁词表为空——编辑 banned_terms.txt 后重新「开始翻译」即可启用")
+        # 观众弹幕翻译：独立于字幕主链路的 Pipeline 级协程，跨场次常驻。
+        # 只用当前常驻的快速引擎（下面两个 getter 直接读 self.translator /
+        # self.target，热切换时弹幕翻译立刻跟着变，不用重启）；字幕翻译
+        # 排队或在途时弹幕让路，见 _subtitle_translation_busy。
+        self._subtitle_busy = 0          # 在途的字幕翻译数（弹幕翻译要让路）
+        self.comments = CommentTranslator(
+            broadcast=self.server.broadcast,
+            translator=lambda: self.translator, target=lambda: self.target,
+            glossary=lambda: self.glossary, busy=self._subtitle_translation_busy)
+
+    def _subtitle_translation_busy(self):
+        """字幕翻译是否正忙（在途或排队）——弹幕翻译据此让路，最多等 3 秒。"""
+        return self._subtitle_busy > 0 or self.telemetry.translation_queue_depth > 0
+
+    async def handle_viewer_comments(self, data):
+        """来自 Chrome 插件的观众评论（TikTok 直播页评论区抓取）。
+
+        只翻译、只显示：不做违禁词检测、不进审计日志，也不碰
+        queue/trans_queue/asr_pool/detector/audit 这条音频链路。
+        """
+        return await self.comments.accept(data)
 
     # ---- 来自 UI 的控制消息 ----
     def handle_control(self, msg):
@@ -1354,6 +1376,23 @@ class Pipeline:
         return cleaned, hint or None
 
     async def _translate_and_update(self, job):
+        """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。
+
+        整个调用都算「字幕翻译在途」（self._subtitle_busy 计数）：观众弹幕的
+        翻译 worker 靠这个数让路——字幕永远优先。主引擎与降级引擎两次
+        translate() 之间的记录/审计开销一起算进去也无妨，它只是个「让不让路」
+        的信号，不追求精确到毫秒。
+
+        用 getattr 兜底：测试里常用 Pipeline.__new__(Pipeline) 绕过 __init__
+        搭一个最小 Pipeline，不该因为少了这一个属性就崩掉。
+        """
+        self._subtitle_busy = getattr(self, "_subtitle_busy", 0) + 1
+        try:
+            await self._translate_and_update_inner(job)
+        finally:
+            self._subtitle_busy -= 1
+
+    async def _translate_and_update_inner(self, job):
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""
         t0 = time.time()
         # 引擎抓一次快照：中途在界面里换引擎时，这一条从翻译到落日志必须
