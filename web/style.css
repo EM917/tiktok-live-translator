@@ -107,8 +107,17 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 .status-banner:not(.info) { color: var(--fail); }
 
 /* ---------- 历史字幕 ---------- */
+/* 字幕历史 + 右侧弹幕列的并排容器。min-height:0 让两列各自在内部滚动，
+   而不是把 body 撑高 */
+.workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
 .history {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: 4px 20px 180px;
   scroll-behavior: smooth;
@@ -428,20 +437,27 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 /* 弹幕面板：视觉上跟违禁词警报区分开（那里用 --fail 红，这里用 --accent 蓝），
    免得中控把「观众在聊什么」误当成报警看 */
 .comment-panel {
-  border-bottom: 2px solid var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
-  max-height: 28vh;
+  flex: none;
+  width: 340px;
+  max-width: 42vw;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
   display: flex;
   flex-direction: column;
 }
 .comment-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 20px;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
 }
-.comment-title { font-size: 14px; font-weight: 700; color: var(--accent); }
+.comment-title {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;
+  font-size: 14px; font-weight: 700; color: var(--accent);
+}
 .comment-actions { display: flex; gap: 6px; }
 #comment-count {
   display: inline-block;
@@ -453,7 +469,8 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
   text-align: center;
   font-size: 12px;
 }
-.comment-list { overflow-y: auto; padding: 0 20px 10px; }
+/* 底部留白与 .history 一致：底部通栏大字幕是 fixed 的，不留就会盖住最后几条 */
+.comment-list { flex: 1; overflow-y: auto; padding: 6px 14px 180px; }
 .cmt-item {
   padding: 4px 0 4px 10px;
   border-left: 3px solid var(--accent);
@@ -464,10 +481,21 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 .cmt-zh.pending { color: var(--text-faint); font-style: italic; font-size: 13px; }
 .cmt-zh.failed { color: var(--text-dim); }
 .cmt-orig { font-size: 12px; color: var(--text-dim); }
-.cmt-empty { padding: 0 20px 10px; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
-.cmt-source { margin-left: 8px; font-size: 11px; font-weight: 400; color: var(--text-faint); }
+.cmt-empty { padding: 8px 14px 10px; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+.cmt-source { font-size: 11px; font-weight: 400; color: var(--text-faint); }
 .cmt-source.on { color: #2fa860; }
 .cmt-source.warn { color: var(--warn-fg); }
-/* 折叠：只留标题栏，弹幕继续在后台收，展开时全在 */
-.comment-panel.collapsed .comment-list,
-.comment-panel.collapsed .cmt-empty { display: none; }
+/* 收起：整列让出去（字幕独占整行），弹幕继续在后台收；展开时全在 */
+.comment-panel.collapsed { display: none; }
+/* 收起后的入口按钮：挂在字幕区右上角，带条数 */
+.comment-fab {
+  position: absolute; top: 10px; right: 16px; z-index: 4;
+  padding: 5px 12px; font-size: 13px; font-family: inherit; line-height: 1.5;
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  border: 1px solid var(--accent); border-radius: 999px; cursor: pointer;
+}
+.comment-fab:hover { filter: brightness(1.08); }
+#comment-fab-count {
+  display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--accent); color: #fff; text-align: center; font-size: 11px;
+}

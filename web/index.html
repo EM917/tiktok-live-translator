@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=24">
+  <link rel="stylesheet" href="/static/style.css?v=25">
 </head>
 <body>
   <header class="topbar">
@@ -72,22 +72,10 @@
     <div id="alert-list" class="alert-list"></div>
   </section>
 
-  <!-- 观众弹幕：程序自己通过 TikTokLive 抓取评论流，Chrome 插件抓取仍可用作补充；
-       只翻译、只显示，不进报警链路 -->
-  <section id="comment-panel" class="comment-panel hidden">
-    <div class="comment-bar">
-      <span class="comment-title">💬 观众弹幕 <span id="comment-count">0</span>
-        <span id="comment-source" class="cmt-source">未连接</span></span>
-      <span class="comment-actions">
-        <button id="toggle-comments" class="btn small">收起</button>
-        <button id="clear-comments" class="btn small">清空</button>
-      </span>
-    </div>
-    <!-- 空态要说清楚是「没人发」还是「插件没连上」，两者对中控意义完全不同 -->
-    <div id="comment-empty" class="cmt-empty hidden"></div>
-    <div id="comment-list" class="comment-list"></div>
-  </section>
-
+  <!-- 字幕历史与观众弹幕并排：弹幕放右侧一列，不挤占主播字幕的阅读区
+       （放顶部时中控反映挡住了看主播翻译）。收起后整列让出去，右上角留一个
+       带条数的小按钮随时展开。 -->
+  <div id="workspace" class="workspace">
   <main id="history" class="history">
     <div id="start-panel" class="start-panel">
       <div class="empty-icon">🎙️</div>
@@ -175,6 +163,27 @@
     </div>
   </main>
 
+  <!-- 观众弹幕：程序自己通过 TikTokLive 抓取评论流，Chrome 插件抓取仍可用作补充；
+       只翻译、只显示，不进报警链路 -->
+  <aside id="comment-panel" class="comment-panel hidden">
+    <div class="comment-bar">
+      <span class="comment-title">💬 观众弹幕 <span id="comment-count">0</span>
+        <span id="comment-source" class="cmt-source">未连接</span></span>
+      <span class="comment-actions">
+        <button id="toggle-comments" class="btn small" title="收起弹幕列，字幕独占整行">收起</button>
+        <button id="clear-comments" class="btn small">清空</button>
+      </span>
+    </div>
+    <!-- 空态要说清楚是「没人发」还是「插件没连上」，两者对中控意义完全不同 -->
+    <div id="comment-empty" class="cmt-empty hidden"></div>
+    <div id="comment-list" class="comment-list"></div>
+  </aside>
+  <!-- 弹幕列收起后的入口：带条数，新弹幕来了也能看出来 -->
+  <button id="comment-fab" class="comment-fab hidden" type="button" title="展开观众弹幕">
+    💬 弹幕 <span id="comment-fab-count">0</span>
+  </button>
+  </div>
+
   <!-- 回到最新。自动跟随依赖几何量判断，而页面不可渲染时那些值不可信；
        这个按钮是用户随时可用的直接出口，不依赖任何启发式判断。 -->
   <button id="jump-latest" class="jump-latest hidden" type="button">↓ 回到最新</button>
@@ -207,6 +216,6 @@
   </script>
   <script src="/static/normalize.js?v=1"></script>
   <script src="/static/follow.js?v=1"></script>
-  <script src="/static/app.js?v=38"></script>
+  <script src="/static/app.js?v=39"></script>
 </body>
 </html>

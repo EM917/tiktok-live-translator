@@ -40,6 +40,8 @@
   var commentCount = document.getElementById("comment-count");
   var toggleCommentsBtn = document.getElementById("toggle-comments");
   var clearCommentsBtn = document.getElementById("clear-comments");
+  var commentFab = document.getElementById("comment-fab");
+  var commentFabCount = document.getElementById("comment-fab-count");
   var commentEmpty = document.getElementById("comment-empty");
   var commentSource = document.getElementById("comment-source");
   var extensionClients = 0;    // 连着的 Chrome 插件数（服务端按来源统计）
@@ -717,7 +719,6 @@
   // 弹幕只翻译、只显示，不进报警链路；面板折叠状态与警报面板无关，单独记忆。
   if (localStorage.getItem("commentPanelCollapsed") === "1") {
     commentPanel.classList.add("collapsed");
-    toggleCommentsBtn.textContent = "展开";
   }
 
   // 面板什么时候露面、空着的时候说什么。直播中面板必须在——否则中控分不清
@@ -725,8 +726,15 @@
   function refreshCommentPanel() {
     var has = commentList.children.length > 0;
     var show = has || streamActive || extensionClients > 0;
+    var collapsed = commentPanel.classList.contains("collapsed");
     commentPanel.classList.toggle("hidden", !show);
     commentEmpty.classList.toggle("hidden", has);
+    // 收起时整列不显示，只在字幕区右上角留一个带条数的入口
+    commentFab.classList.toggle("hidden", !(show && collapsed));
+    commentFabCount.textContent = commentList.children.length;
+    // 「回到最新」是 fixed 定位在右下角的，弹幕列展开时把它往左挪，别盖在弹幕上
+    var panelOpen = show && !collapsed;
+    jumpBtn.style.right = (panelOpen ? commentPanel.offsetWidth + 20 : 20) + "px";
 
     // 标题旁的小字状态 + 空态文案：中控要能一眼分清「没人发弹幕」和
     // 「抓取本身出了问题」，两者处理方式完全不同（前者等，后者去修）。
@@ -821,10 +829,18 @@
   }
 
   toggleCommentsBtn.addEventListener("click", function () {
-    var collapsed = commentPanel.classList.toggle("collapsed");
-    toggleCommentsBtn.textContent = collapsed ? "展开" : "收起";
-    localStorage.setItem("commentPanelCollapsed", collapsed ? "1" : "0");
+    commentPanel.classList.add("collapsed");
+    localStorage.setItem("commentPanelCollapsed", "1");
+    refreshCommentPanel();
   });
+
+  commentFab.addEventListener("click", function () {
+    commentPanel.classList.remove("collapsed");
+    localStorage.setItem("commentPanelCollapsed", "0");
+    refreshCommentPanel();
+  });
+
+  window.addEventListener("resize", refreshCommentPanel);
 
   clearCommentsBtn.addEventListener("click", function () {
     commentList.innerHTML = "";
