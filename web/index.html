@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=21">
+  <link rel="stylesheet" href="/static/style.css?v=22">
 </head>
 <body>
   <header class="topbar">
@@ -70,6 +70,18 @@
       <button id="clear-alerts" class="btn">清空警报</button>
     </div>
     <div id="alert-list" class="alert-list"></div>
+  </section>
+
+  <!-- 观众弹幕：由 Chrome 插件从直播页评论区送来，只翻译、只显示，不进报警链路 -->
+  <section id="comment-panel" class="comment-panel hidden">
+    <div class="comment-bar">
+      <span class="comment-title">💬 观众弹幕 <span id="comment-count">0</span></span>
+      <span class="comment-actions">
+        <button id="toggle-comments" class="btn small">收起</button>
+        <button id="clear-comments" class="btn small">清空</button>
+      </span>
+    </div>
+    <div id="comment-list" class="comment-list"></div>
   </section>
 
   <main id="history" class="history">
@@ -191,6 +203,6 @@
   </script>
   <script src="/static/normalize.js?v=1"></script>
   <script src="/static/follow.js?v=1"></script>
-  <script src="/static/app.js?v=34"></script>
+  <script src="/static/app.js?v=35"></script>
 </body>
 </html>

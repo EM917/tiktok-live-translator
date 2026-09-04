@@ -35,6 +35,16 @@
   var alertList = document.getElementById("alert-list");
   var alertCount = document.getElementById("alert-count");
   var clearAlertsBtn = document.getElementById("clear-alerts");
+  var commentPanel = document.getElementById("comment-panel");
+  var commentList = document.getElementById("comment-list");
+  var commentCount = document.getElementById("comment-count");
+  var toggleCommentsBtn = document.getElementById("toggle-comments");
+  var clearCommentsBtn = document.getElementById("clear-comments");
+  // Object.create(null)：commentById 的键直接取自服务端转发的弹幕 id（最终来自
+  // TikTok 页面上任意脚本可控的 viewer_comments.items[].id），普通字面量 {} 遇到
+  // "__proto__" 这个键时会触发 Object.prototype 的存取器而不是新增普通键，
+  // 用无原型对象从根上避免这种协议层面就能触发的原型链篡改。
+  var commentById = Object.create(null);
   var statsEl = document.getElementById("stats-line");
   var healthBar = document.getElementById("health-bar");
   var watchState = document.getElementById("watch-state");
@@ -331,6 +341,11 @@
         alertList.innerHTML = "";
         alertCount.textContent = "0";
         alertPanel.classList.add("hidden");
+        // 弹幕同理：服务器会重放最近的评论，先清掉本地已有的
+        commentList.innerHTML = "";
+        commentById = Object.create(null);
+        commentCount.textContent = "0";
+        commentPanel.classList.add("hidden");
         // 失败连击也归零——回放的陈旧字幕不该累积成新警告
         failStreak = 0;
         transBannerOn = false;
@@ -399,6 +414,12 @@
         break;
       case "alert":
         renderAlert(msg);
+        break;
+      case "comment":
+        renderComment(msg);
+        break;
+      case "comment_update":
+        updateComment(msg);
         break;
       case "stats":
         renderStats(msg);
@@ -671,6 +692,86 @@
     alertList.innerHTML = "";
     alertCount.textContent = "0";
     alertPanel.classList.add("hidden");
+  });
+
+  // ---- 观众弹幕 ----
+  // 弹幕只翻译、只显示，不进报警链路；面板折叠状态与警报面板无关，单独记忆。
+  if (localStorage.getItem("commentPanelCollapsed") === "1") {
+    commentPanel.classList.add("collapsed");
+    toggleCommentsBtn.textContent = "展开";
+  }
+
+  function renderComment(msg) {
+    commentPanel.classList.remove("hidden");
+    var item = document.createElement("div");
+    item.className = "cmt-item";
+    item.dataset.cmtId = msg.id;
+
+    var head = document.createElement("div");
+    head.className = "cmt-head";
+    var ts = new Date((msg.ts || Date.now() / 1000) * 1000);
+    head.textContent = (msg.user || "") + " " +
+      pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds());
+    item.appendChild(head);
+
+    // 译文行：pending 时占位提示，same/skipped 时直接就是原文本身（不会再更新）
+    var zh = document.createElement("div");
+    zh.className = "cmt-zh";
+    if (msg.state === "pending") {
+      zh.textContent = "翻译中…";
+      zh.classList.add("pending");
+    } else {
+      zh.textContent = msg.translated || msg.text || "";
+    }
+    item.appendChild(zh);
+
+    // 原文行：跟译文重复时（same/skipped）没必要再显示一遍
+    var orig = document.createElement("div");
+    orig.className = "cmt-orig";
+    orig.textContent = msg.text || "";
+    if (msg.state === "same" || msg.state === "skipped") orig.classList.add("hidden");
+    item.appendChild(orig);
+
+    commentList.insertBefore(item, commentList.firstChild);
+    commentById[msg.id] = item;
+    while (commentList.children.length > 100) {
+      var last = commentList.lastChild;
+      delete commentById[last.dataset.cmtId];
+      commentList.removeChild(last);
+    }
+    commentCount.textContent = commentList.children.length;
+  }
+
+  function updateComment(msg) {
+    var item = commentById[msg.id];
+    if (!item) return;
+    var zh = item.querySelector(".cmt-zh");
+    var orig = item.querySelector(".cmt-orig");
+    if (!zh) return;
+    zh.classList.remove("pending");
+    if (msg.state === "ok") {
+      zh.textContent = msg.translated || "";
+      zh.classList.remove("failed");
+      return;
+    }
+    // failed/dropped：译不出来就显示原文本身——不显示「失败」字样，
+    // 原文就是内容，中控照样看得懂观众在说什么
+    zh.textContent = orig ? orig.textContent : "";
+    zh.classList.add("failed");
+    if (orig) orig.classList.add("hidden");
+  }
+
+  toggleCommentsBtn.addEventListener("click", function () {
+    var collapsed = commentPanel.classList.toggle("collapsed");
+    toggleCommentsBtn.textContent = collapsed ? "展开" : "收起";
+    localStorage.setItem("commentPanelCollapsed", collapsed ? "1" : "0");
+  });
+
+  clearCommentsBtn.addEventListener("click", function () {
+    commentList.innerHTML = "";
+    commentById = Object.create(null);
+    commentCount.textContent = "0";
+    commentPanel.classList.add("hidden");
   });
 
   // ---- 延迟统计 ----

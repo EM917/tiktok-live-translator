@@ -94,3 +94,7 @@
   font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
+/* 观众评论下方的译文（贴在 TikTok 评论区每条评论内） */
+.tlt-cmt-zh { margin-top: 2px; font-size: 12px; line-height: 1.4; color: rgba(140, 200, 255, 0.95);
+  font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+

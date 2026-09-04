@@ -423,3 +423,46 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
   margin-top: 8px; font-size: 11px; line-height: 1.6; color: var(--text-faint);
 }
 .engine-note.warn { color: var(--warn-fg); }
+
+/* ---------- 观众弹幕 ---------- */
+/* 弹幕面板：视觉上跟违禁词警报区分开（那里用 --fail 红，这里用 --accent 蓝），
+   免得中控把「观众在聊什么」误当成报警看 */
+.comment-panel {
+  border-bottom: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  max-height: 28vh;
+  display: flex;
+  flex-direction: column;
+}
+.comment-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 20px;
+}
+.comment-title { font-size: 14px; font-weight: 700; color: var(--accent); }
+.comment-actions { display: flex; gap: 6px; }
+#comment-count {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  text-align: center;
+  font-size: 12px;
+}
+.comment-list { overflow-y: auto; padding: 0 20px 10px; }
+.cmt-item {
+  padding: 4px 0 4px 10px;
+  border-left: 3px solid var(--accent);
+  margin-bottom: 4px;
+}
+.cmt-head { font-size: 12px; color: var(--text-dim); }
+.cmt-zh { font-size: 15px; line-height: 1.5; }
+.cmt-zh.pending { color: var(--text-faint); font-style: italic; font-size: 13px; }
+.cmt-zh.failed { color: var(--text-dim); }
+.cmt-orig { font-size: 12px; color: var(--text-dim); }
+/* 折叠：只留标题栏，弹幕继续在后台收，展开时全在 */
+.comment-panel.collapsed .comment-list { display: none; }

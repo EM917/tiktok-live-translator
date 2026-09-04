@@ -422,6 +422,7 @@ async def main_async(args, state=None):
     updater = Updater(server)
     pipeline.updater = updater
     server.on_control = pipeline.handle_control
+    server.on_comments = pipeline.handle_viewer_comments
     if state is not None:
         state["loop"] = asyncio.get_running_loop()
         state["pipeline"] = pipeline

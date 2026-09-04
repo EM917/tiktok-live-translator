@@ -38,6 +38,7 @@ It also works as a plain live-subtitle translator: leave `banned_terms.txt` empt
 - 📊 **Observable latency** — a live readout of time-to-first-caption (P50/P95) broken down into segmentation, recognition and translation, alongside an audit log recording each segment: accepted text, candidates rejected by the quality filter, banned-term matches, and the translation that followed
 - ✅ **Startup self-check** — each capability is executed rather than inspected: denoising processes a sample through RNNoise, translation queries the engine, the audit log performs a write. Results appear on the home screen with a remediation step for anything failing
 - 🔄 **Fault tolerance** — four independent stream-resolution paths (TikTok's live API → yt-dlp → yt-dlp with browser login → live page parsing), since a blocked yt-dlp extractor reports failures as "not currently live". Each resolved URL is verified before the session starts. Dropped streams reconnect with a freshly resolved URL, distinguishing a network interruption from the broadcast ending; segments are dropped automatically when recognition falls behind; yt-dlp is kept current in the background
+- 💬 **Viewer comment translation** — the Chrome extension pulls viewer comments from the live page's comment section and posts the translation under each one; the local web UI shows the same feed in its own panel. Translation and display only, never part of the alert pipeline; requires the browser to be logged into TikTok (TikTok stops pushing comments after about 20 seconds when logged out)
 
 ## Disk Space
 
@@ -411,6 +412,8 @@ judgement, and a list padded with false positives buries the operator in noise.
 3. Keep the app running, open a TikTok **live-room** page (URL contains `/live`), and a floating subtitle bar appears as subtitles arrive.
 
 The subtitle bar supports **dragging** to reposition it, **double-clicking** to collapse/expand, and hovering reveals an **×** to hide it. The extension automatically tries the ports the app may use (8765–8774), so it normally needs no configuration. The extension is just a display layer — audio capture and recognition are handled by the local app.
+
+The extension's options page has a "Translate viewer comments" toggle (on by default): when enabled, it posts translations of the live page's viewer comments under each comment, and the local web UI shows the same feed. This requires the browser to be logged into TikTok — logged out, TikTok stops pushing comment-section data after about 20 seconds.
 
 ## Architecture
 
