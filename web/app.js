@@ -40,6 +40,10 @@
   var commentCount = document.getElementById("comment-count");
   var toggleCommentsBtn = document.getElementById("toggle-comments");
   var clearCommentsBtn = document.getElementById("clear-comments");
+  var commentEmpty = document.getElementById("comment-empty");
+  var commentSource = document.getElementById("comment-source");
+  var extensionClients = 0;    // 连着的 Chrome 插件数（服务端按来源统计）
+  var streamActive = false;    // 直播中/连接中：这时面板即使空着也要显示
   // Object.create(null)：commentById 的键直接取自服务端转发的弹幕 id（最终来自
   // TikTok 页面上任意脚本可控的 viewer_comments.items[].id），普通字面量 {} 遇到
   // "__proto__" 这个键时会触发 Object.prototype 的存取器而不是新增普通键，
@@ -351,6 +355,7 @@
         transBannerOn = false;
         clearBtn.click();
         if (msg.config) {
+          if (msg.config.extension_clients != null) extensionClients = msg.config.extension_clients;
           if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
@@ -421,6 +426,10 @@
       case "comment_update":
         updateComment(msg);
         break;
+      case "comment_source":
+        extensionClients = msg.extension_clients || 0;
+        refreshCommentPanel();
+        break;
       case "stats":
         renderStats(msg);
         break;
@@ -455,6 +464,8 @@
     startPanel.classList.toggle("hidden", active);
     stopBtn.classList.toggle("hidden", !active);
     startBtn.disabled = state === "connecting";
+    streamActive = active;
+    refreshCommentPanel();
 
     // 附带的命令：程序自己已经帮不上忙时，至少让用户有一条能照做的路
     if (fixCmd) {
@@ -701,8 +712,24 @@
     toggleCommentsBtn.textContent = "展开";
   }
 
+  // 面板什么时候露面、空着的时候说什么。直播中面板必须在——否则中控分不清
+  // 「今天没人发弹幕」和「插件压根没连上」，而后者是要去处理的。
+  function refreshCommentPanel() {
+    var has = commentList.children.length > 0;
+    var show = has || streamActive || extensionClients > 0;
+    commentPanel.classList.toggle("hidden", !show);
+    commentEmpty.classList.toggle("hidden", has);
+    if (!has) {
+      commentEmpty.textContent = extensionClients > 0
+        ? "插件已连接，等待观众发评论…"
+        : "Chrome 插件未连接：请在 Chrome 里打开这个直播间页面（需已登录 TikTok），" +
+          "观众评论会在这里显示中文";
+    }
+    commentSource.textContent = extensionClients > 0 ? "插件已连接" : "插件未连接";
+    commentSource.classList.toggle("on", extensionClients > 0);
+  }
+
   function renderComment(msg) {
-    commentPanel.classList.remove("hidden");
     var item = document.createElement("div");
     item.className = "cmt-item";
     item.dataset.cmtId = msg.id;
@@ -740,6 +767,7 @@
       commentList.removeChild(last);
     }
     commentCount.textContent = commentList.children.length;
+    refreshCommentPanel();
   }
 
   function updateComment(msg) {
@@ -771,7 +799,7 @@
     commentList.innerHTML = "";
     commentById = Object.create(null);
     commentCount.textContent = "0";
-    commentPanel.classList.add("hidden");
+    refreshCommentPanel();    // 直播中清空后面板留着，只是回到空态
   });
 
   // ---- 延迟统计 ----

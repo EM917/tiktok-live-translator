@@ -181,6 +181,41 @@ def test_viewer_comments_rate_limited_per_connection():
     assert len(comment_calls) == 3
 
 
+def test_extension_connection_is_announced():
+    """面板空着时中控要分得清「没人发弹幕」和「插件没连上」：插件（view 来源）
+    连上/断开都要广播 comment_source，并写进 config 让晚打开的页面从 hello 拿到。"""
+    async def scenario():
+        server = CaptionServer(port=8765)
+        app = web.Application()
+        app.router.add_get("/ws", server._ws)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        seen = []
+
+        async def next_source(ws):
+            for _ in range(20):
+                msg = await ws.receive_json(timeout=2)
+                if msg.get("type") == "comment_source":
+                    return msg["extension_clients"]
+            return None
+
+        try:
+            control = await client.ws_connect("/ws")          # 本地页面，无 Origin
+            hello = await control.receive_json(timeout=2)
+            seen.append(hello["config"].get("extension_clients"))
+            view = await client.ws_connect("/ws", headers={"Origin": "https://www.tiktok.com"})
+            seen.append(await next_source(control))            # 插件连上 → 1
+            seen.append(server.config["extension_clients"])
+            await view.close()
+            seen.append(await next_source(control))            # 插件断开 → 0
+            await control.close()
+        finally:
+            await client.close()
+        return seen
+
+    assert run(scenario()) == [0, 1, 1, 0]
+
+
 # ---------------------------------------------------------------------------
 # 2. CommentTranslator 行为
 # ---------------------------------------------------------------------------

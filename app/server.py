@@ -49,6 +49,10 @@ class CaptionServer:
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
         self.on_comments = None  # 由 Pipeline 注入，处理来自 Chrome 插件的观众评论
+        # 插件（TikTok 页面）当前连着几个：中控要能在界面上看出弹幕这条链路
+        # 通没通——面板空着的时候，「没人发弹幕」和「插件根本没连上」必须能区分
+        self._view_clients = 0
+        self.config["extension_clients"] = 0
         self._runner = None
 
     async def start(self):
@@ -109,6 +113,7 @@ class CaptionServer:
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         cmt_times = deque(maxlen=self.CMT_MSG_RATE_LIMIT)   # 本连接限频用的滑动窗口
+        counted = False          # 这条连接是否已计入插件连接数（finally 里要对称减回去）
         try:
             await ws.send_json({"type": "hello", "config": self.config})
             # 先补发历史警报（刷新页面不能丢报警），再回放字幕
@@ -121,6 +126,9 @@ class CaptionServer:
             for c in list(self.comments):
                 await ws.send_json(dict(c, replay=True))
             self.clients.add(ws)
+            if access == "view":
+                counted = True
+                await self._set_extension_clients(self._view_clients + 1)
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     continue
@@ -159,7 +167,15 @@ class CaptionServer:
                         print("[警告] 处理控制消息失败: {}".format(exc))
         finally:
             self.clients.discard(ws)
+            if counted:
+                await self._set_extension_clients(self._view_clients - 1)
         return ws
+
+    async def _set_extension_clients(self, n):
+        """插件连接数变化就广播一次；也写进 config，晚打开的页面从 hello 里拿到。"""
+        self._view_clients = max(0, n)
+        await self.broadcast({"type": "comment_source",
+                              "extension_clients": self._view_clients})
 
     async def broadcast(self, msg):
         if msg.get("type") == "caption" and not msg.get("replay"):
@@ -182,6 +198,8 @@ class CaptionServer:
                     break
         elif msg.get("type") == "comment" and not msg.get("replay"):
             self.comments.append(msg)
+        elif msg.get("type") == "comment_source":
+            self.config["extension_clients"] = msg.get("extension_clients", 0)
         elif msg.get("type") == "comment_update":
             # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文/pending
             for c in reversed(self.comments):
