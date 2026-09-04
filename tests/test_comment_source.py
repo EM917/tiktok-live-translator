@@ -608,3 +608,59 @@ def test_comment_worker_module_parses_without_import():
     path = ROOT / "app" / "comment_worker.py"
     source = path.read_text(encoding="utf-8")
     ast.parse(source)   # 语法有效即可；真正的行为由子进程集成/人工验证覆盖
+
+
+# ---------------------------------------------------------------------------
+# 子进程的「父进程死了就退」看门狗：模块顶层不 import TikTokLive，可以直接导入
+# ---------------------------------------------------------------------------
+
+def test_worker_exits_when_parent_stdin_closes():
+    from app import comment_worker
+
+    calls = []
+
+    async def scenario():
+        await comment_worker._watch_parent(
+            on_gone=lambda: calls.append("gone"),
+            read=lambda: b"",                 # stdin 立刻 EOF = 父进程已死
+            getppid=lambda: 4242,             # ppid 不变，只靠 stdin 这一路
+            grace=0.01,
+            exit_fn=lambda code: calls.append(("exit", code)),
+        )
+
+    run(scenario())
+    assert calls == ["gone", ("exit", 0)]
+
+
+def test_worker_exits_when_parent_pid_changes():
+    import threading
+    from app import comment_worker
+
+    calls = []
+    ppids = iter([7, 7, 1, 1, 1, 1])
+    block = threading.Event()
+
+    async def scenario():
+        await comment_worker._watch_parent(
+            on_gone=lambda: calls.append("gone"),
+            read=lambda: block.wait(5) and b"",   # stdin 一直读不到 EOF
+            getppid=lambda: next(ppids, 1),
+            grace=0.01,
+            # 顺手放开那根假 stdin，别让 daemon 线程在后面多挂 5 秒
+            exit_fn=lambda code: (calls.append(("exit", code)), block.set()),
+        )
+
+    # ppid 轮询间隔是 2 秒，测试里把它缩短
+    orig_sleep = asyncio.sleep
+
+    async def fast_sleep(sec):
+        await orig_sleep(min(sec, 0.01))
+
+    import app.comment_worker as cw
+    cw.asyncio.sleep = fast_sleep
+    try:
+        run(scenario())
+    finally:
+        cw.asyncio.sleep = orig_sleep
+        block.set()
+    assert calls == ["gone", ("exit", 0)]

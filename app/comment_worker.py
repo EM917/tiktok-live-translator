@@ -20,8 +20,10 @@ stderr 只留 TikTokLive 库自己的日志，父进程会读走它（不读会�
 import argparse
 import asyncio
 import json
+import os
 import signal
 import sys
+import threading
 
 
 def _emit(obj):
@@ -72,6 +74,67 @@ def _detail_of(exc):
     return "{}: {}".format(type(exc).__name__, str(exc)[:200])
 
 
+async def _watch_parent(on_gone, read=None, getppid=os.getppid, grace=5.0, exit_fn=os._exit):
+    """父进程没了就自己退出——否则父进程被强杀（kill -9、崩溃、Windows 上被
+    任务管理器结束）时，这个子进程会带着 WebSocket 一直挂着：实录一次测试
+    结束后 `comment_worker itskainb` 独自活了好几分钟。
+
+    两个信号取先到的：① stdin 到 EOF——父进程用管道接着我们的 stdin、从不
+    写入，它一死操作系统就关管道，各平台都可靠；② ppid 变了（Unix 上孤儿
+    会被过继给 1 号进程）——stdin 不可读的环境靠它兜底。
+    on_gone 负责优雅断开（起 disconnect 任务）；grace 秒后不管断没断都硬退，
+    别让一个「优雅」的收尾变成又一种挂着不走。
+    """
+    loop = asyncio.get_event_loop()
+    if read is None:
+        def read():
+            # 用原始 fd 而不是 sys.stdin.buffer：解释器退出时若有 daemon 线程还
+            # 握着 BufferedReader 的锁，CPython 会直接 Fatal error 收尾（实测退出
+            # 码从 6 变成 -6），父进程就读不到真正的退出码了。os.read 不持锁。
+            fd = sys.stdin.fileno()
+            while os.read(fd, 4096):
+                pass
+            return b""
+
+    async def stdin_eof():
+        # 用 daemon 线程而不是 run_in_executor：executor 线程会让 asyncio.run()
+        # 在退出时等它——而父进程活着时这个 read() 永远不返回，子进程正常
+        # 断开后就会卡在收尾、永远退不出去（父进程也就永远等不到退出码）。
+        # daemon 线程不挡解释器退出。
+        fut = loop.create_future()
+
+        def _reader():
+            try:
+                read()
+            except Exception:
+                return                         # stdin 用不了：把机会留给 ppid 那路
+            try:
+                loop.call_soon_threadsafe(lambda: fut.done() or fut.set_result(None))
+            except RuntimeError:
+                pass                           # 事件循环已经关了：进程本来就在退出
+
+        threading.Thread(target=_reader, name="parent-stdin-watch", daemon=True).start()
+        await fut
+
+    async def ppid_changed():
+        parent = getppid()
+        while getppid() == parent:
+            await asyncio.sleep(2)
+
+    waiters = [asyncio.ensure_future(stdin_eof()), asyncio.ensure_future(ppid_changed())]
+    try:
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for w in waiters:
+            w.cancel()
+    try:
+        on_gone()
+    except Exception:
+        pass
+    await asyncio.sleep(grace)
+    exit_fn(0)
+
+
 async def _run(args):
     from TikTokLive import TikTokLiveClient
     from TikTokLive.events import CommentEvent, ConnectEvent, DisconnectEvent
@@ -110,6 +173,11 @@ async def _run(args):
         except (NotImplementedError, RuntimeError):
             pass   # 不支持注册信号处理器的平台：尽力而为，不是硬需求
 
+    # 父进程死了就跟着退（见 _watch_parent）；正常路径里父进程 terminate 我们
+    # 时走的是上面的信号处理器，这条只兜「父进程来不及 terminate」的情况
+    watchdog = asyncio.ensure_future(_watch_parent(_handle_signal))
+    watchdog.add_done_callback(lambda _t: None)
+
     _status("connecting")
     try:
         is_live = await client.is_live()
@@ -141,7 +209,14 @@ def main(argv=None):
     except Exception as exc:
         _status("error", _detail_of(exc))
         code = 1
-    sys.exit(code)
+    # os._exit 而不是 sys.exit：跳过解释器收尾。看门狗的 daemon 线程还阻塞在
+    # stdin 上，正常收尾会去等/锁它，退出码就不再是我们决定的那个。stdout
+    # 每行都已 flush（_emit），这里再刷一次只是保险。
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    os._exit(code)
 
 
 if __name__ == "__main__":

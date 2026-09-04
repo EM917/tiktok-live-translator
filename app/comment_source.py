@@ -142,6 +142,7 @@ class CommentSource:
         self._unique_id = None
         self._task = None
         self._proc = None
+        self._last_state = None         # 子进程最后一条 status 的 state，退出码不可信时的依据
         self._connect_times = []        # 最近一小时内的连接尝试时间戳，额度限流用
         # start()/stop() 每次调用都自增的世代号：_restart() 里 await self.stop()
         # 会让出事件循环，这段时间内如果有另一次 start()/stop() 插进来，_restart()
@@ -217,7 +218,14 @@ class CommentSource:
             if tt_target_idc:
                 extra += ["--tt-target-idc", tt_target_idc]
             self._connect_times.append(time.time())
+            self._last_state = None
             returncode, healthy = await self._run_once(unique_id, extra)
+            if returncode not in (0, 3, 4, 5, 6):
+                # 退出码不在约定表里（被信号打死、解释器收尾出错……）：子进程
+                # 退出前写的最后一条 status 才是它真正想说的话——「主播不存在」
+                # 就该停，而不是当成普通失败去烧签名额度重试
+                returncode = {"not_found": 6, "login_required": 5, "offline": 3,
+                              "disconnected": 0}.get(self._last_state, returncode)
             if returncode == 0:
                 backoff = self.BACKOFF_MIN_SEC if healthy \
                     else min(backoff * 2, self.BACKOFF_MAX_SEC)
@@ -322,6 +330,7 @@ class CommentSource:
                 kind = obj.get("event")
                 if kind == "status":
                     state = obj.get("state") or "error"
+                    self._last_state = state
                     if state == "connected":
                         connected_at = time.time()
                     await self._set_state(state, obj.get("detail") or "")
@@ -355,9 +364,13 @@ class CommentSource:
 
     async def _spawn(self, args):
         """单独成方法，方便测试 monkeypatch 掉、返回一个假子进程。"""
+        # stdin 也接管道，但从不写：父进程一死操作系统就关掉它，子进程读到
+        # EOF 就自行退出（见 comment_worker._watch_parent）。没有这根管道，
+        # 父进程被强杀时子进程会带着 WebSocket 一直挂着。
         return await asyncio.create_subprocess_exec(
             sys.executable, "-m", "app.comment_worker", *args,
             cwd=str(self._root),
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
