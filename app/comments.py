@@ -102,7 +102,10 @@ class CommentTranslator:
         self._target = target
         self._glossary = glossary if glossary is not None else (lambda: None)
         self._busy = busy if busy is not None else (lambda: False)
-        self._queue = asyncio.Queue()
+        # 队列延迟到协程里建：Python 3.9 的 asyncio.Queue() 会绑到构造时的事件
+        # 循环，循环外构造（测试、或将来在别的线程里搭 Pipeline）直接抛
+        # RuntimeError——与 pipeline.py 里 asyncio.Lock 的处理一致。
+        self._queue = None
         self._worker_task = None
         self._seen_ids = OrderedDict()      # id -> True，LRU，最多 DEDUPE_ID_HISTORY 个
         self._seen_content = {}             # (user, text) -> 上次接受的时间戳
@@ -117,6 +120,11 @@ class CommentTranslator:
         except Exception as exc:
             print("[警告] 处理观众评论失败: {}".format(exc))
             return 0
+
+    def _q(self):
+        if self._queue is None:
+            self._queue = asyncio.Queue()
+        return self._queue
 
     async def _accept(self, data):
         items = data.get("items") if isinstance(data, dict) else None
@@ -174,15 +182,16 @@ class CommentTranslator:
                                "state": state})
         if state != "pending":
             return
-        if self._queue.qsize() >= self.MAX_QUEUE:
+        queue = self._q()
+        if queue.qsize() >= self.MAX_QUEUE:
             try:
-                dropped = self._queue.get_nowait()
+                dropped = queue.get_nowait()
             except asyncio.QueueEmpty:
                 dropped = None
             if dropped is not None:
                 await self._broadcast({"type": "comment_update", "id": dropped["id"],
                                        "translated": None, "state": "dropped"})
-        await self._queue.put({"id": cid, "user": user, "text": text, "ts": ts})
+        await queue.put({"id": cid, "user": user, "text": text, "ts": ts})
         self._ensure_worker()
 
     def _ensure_worker(self):
@@ -203,7 +212,8 @@ class CommentTranslator:
                 print("[警告] 弹幕翻译 worker 异常: {}".format(exc))
 
     async def _process_one_batch(self):
-        first = await self._queue.get()
+        queue = self._q()
+        first = await queue.get()
         batch = [first]
         # 攒批：先等一个固定窗口，再一口气把队列里已有的取走。不用
         # wait_for(queue.get(), 剩余时间)——超时取消 get() 时若恰好有 put()
@@ -212,7 +222,7 @@ class CommentTranslator:
         await asyncio.sleep(self.BATCH_WINDOW_SEC)
         while len(batch) < self.BATCH_MAX:
             try:
-                batch.append(self._queue.get_nowait())
+                batch.append(queue.get_nowait())
             except asyncio.QueueEmpty:
                 break
         # 字幕翻译永远优先：排队或在途时弹幕让路，但最多等这么久，防止字幕
