@@ -12,3 +12,8 @@ imageio-ffmpeg>=0.5
 pywebview>=5
 # Apple Silicon 专属：GPU 识别后端（其他平台自动跳过，用 faster-whisper CPU/CUDA）
 mlx-whisper; platform_machine == 'arm64' and sys_platform == 'darwin'
+# 弹幕后端抓取（可选）：从 TikTok 直播间评论流拿观众弹幕，WebSocket 签名经
+# 第三方 Euler Stream 服务。要求 Python 3.10+，本项目主体承诺 3.9+，所以只在
+# 子进程（app/comment_worker.py）里用；3.9 环境装不上时弹幕来源自动降级为
+# 「不可用」，不影响直播翻译主链路。
+TikTokLive>=7,<8; python_version >= "3.10"

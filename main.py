@@ -350,6 +350,8 @@ def parse_args():
     p.add_argument("--banned-terms", default=None, dest="banned_terms",
                    help="违禁词表路径，默认项目目录下的 banned_terms.txt"
                         "（首次运行会从 banned_terms.example.txt 生成）")
+    p.add_argument("--no-comments", action="store_false", dest="comments",
+                   help="不抓取观众评论（默认抓取）")
     p.add_argument("--demo", action="store_true",
                    help="演示模式：不连直播，用内置台词驱动 UI（用来验证界面和浏览器插件）")
     p.add_argument("--doctor", action="store_true",
@@ -439,6 +441,10 @@ async def main_async(args, state=None):
     # 本地翻译的自动就绪也放后台：下载可能要几分钟，不能挡住界面
     pipeline._provision_task = asyncio.ensure_future(
         pipeline.ensure_local_translator())
+    # 弹幕组件（TikTokLive）同理放后台装：装不上也不耽误开播，弹幕来源会
+    # 自己退化成「不可用」（见 CommentSource._supervise）
+    pipeline._comments_provision_task = asyncio.ensure_future(
+        updater.ensure_tiktoklive())
     update_watch = asyncio.ensure_future(updater.watch())  # noqa: F841
     url = f"http://127.0.0.1:{args.port}"
     print(f"字幕界面已启动: {url}")

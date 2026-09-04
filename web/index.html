@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=23">
+  <link rel="stylesheet" href="/static/style.css?v=24">
 </head>
 <body>
   <header class="topbar">
@@ -72,11 +72,12 @@
     <div id="alert-list" class="alert-list"></div>
   </section>
 
-  <!-- 观众弹幕：由 Chrome 插件从直播页评论区送来，只翻译、只显示，不进报警链路 -->
+  <!-- 观众弹幕：程序自己通过 TikTokLive 抓取评论流，Chrome 插件抓取仍可用作补充；
+       只翻译、只显示，不进报警链路 -->
   <section id="comment-panel" class="comment-panel hidden">
     <div class="comment-bar">
       <span class="comment-title">💬 观众弹幕 <span id="comment-count">0</span>
-        <span id="comment-source" class="cmt-source">插件未连接</span></span>
+        <span id="comment-source" class="cmt-source">未连接</span></span>
       <span class="comment-actions">
         <button id="toggle-comments" class="btn small">收起</button>
         <button id="clear-comments" class="btn small">清空</button>
@@ -206,6 +207,6 @@
   </script>
   <script src="/static/normalize.js?v=1"></script>
   <script src="/static/follow.js?v=1"></script>
-  <script src="/static/app.js?v=36"></script>
+  <script src="/static/app.js?v=38"></script>
 </body>
 </html>

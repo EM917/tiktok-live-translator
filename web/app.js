@@ -43,6 +43,8 @@
   var commentEmpty = document.getElementById("comment-empty");
   var commentSource = document.getElementById("comment-source");
   var extensionClients = 0;    // 连着的 Chrome 插件数（服务端按来源统计）
+  var backendState = "idle";   // 后端 TikTokLive 抓取协程的状态：idle/connecting/connected/disconnected/error/unavailable
+  var backendDetail = "";      // backendState 为 error/unavailable 时的说明文字
   var streamActive = false;    // 直播中/连接中：这时面板即使空着也要显示
   // Object.create(null)：commentById 的键直接取自服务端转发的弹幕 id（最终来自
   // TikTok 页面上任意脚本可控的 viewer_comments.items[].id），普通字面量 {} 遇到
@@ -356,6 +358,8 @@
         clearBtn.click();
         if (msg.config) {
           if (msg.config.extension_clients != null) extensionClients = msg.config.extension_clients;
+          if (msg.config.comment_backend) backendState = msg.config.comment_backend;
+          if (msg.config.comment_detail != null) backendDetail = msg.config.comment_detail;
           if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
@@ -427,7 +431,11 @@
         updateComment(msg);
         break;
       case "comment_source":
-        extensionClients = msg.extension_clients || 0;
+        if (msg.extension_clients != null) extensionClients = msg.extension_clients;
+        if (msg.backend) {
+          backendState = msg.backend;
+          backendDetail = msg.detail || "";
+        }
         refreshCommentPanel();
         break;
       case "stats":
@@ -719,14 +727,37 @@
     var show = has || streamActive || extensionClients > 0;
     commentPanel.classList.toggle("hidden", !show);
     commentEmpty.classList.toggle("hidden", has);
-    if (!has) {
-      commentEmpty.textContent = extensionClients > 0
-        ? "插件已连接，等待观众发评论…"
-        : "Chrome 插件未连接：请在 Chrome 里打开这个直播间页面（需已登录 TikTok），" +
-          "观众评论会在这里显示中文";
+
+    // 标题旁的小字状态 + 空态文案：中控要能一眼分清「没人发弹幕」和
+    // 「抓取本身出了问题」，两者处理方式完全不同（前者等，后者去修）。
+    var title, cls = "cmt-source", emptyText;
+    if (backendState === "connected") {
+      title = "评论流已连接";
+      cls += " on";
+      emptyText = "已连接，等待观众发评论…";
+    } else if (backendState === "connecting") {
+      title = "正在连接评论流…";
+      emptyText = title;
+    } else if (backendState === "disconnected") {
+      title = "评论流断开，重连中…";
+      emptyText = title;
+    } else if (backendState === "error" || backendState === "unavailable") {
+      var detail = backendDetail || "";
+      title = detail.length > 80 ? detail.slice(0, 80) + "…" : detail;
+      cls += " warn";
+      emptyText = detail;
+    } else if (extensionClients > 0) {
+      title = "插件已连接";
+      cls += " on";
+      emptyText = "插件已连接，等待观众发评论…";
+    } else {
+      title = "未连接";
+      emptyText = "开播后自动连接评论流";
     }
-    commentSource.textContent = extensionClients > 0 ? "插件已连接" : "插件未连接";
-    commentSource.classList.toggle("on", extensionClients > 0);
+
+    commentSource.textContent = title;
+    commentSource.className = cls;
+    if (!has) commentEmpty.textContent = emptyText;
   }
 
   function renderComment(msg) {

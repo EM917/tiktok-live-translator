@@ -4,6 +4,7 @@
 ZIP 下载（无 .git）的安装只提示去下载页，不尝试自动更新。
 """
 import asyncio
+import importlib.util
 import os
 import re
 import sys
@@ -127,6 +128,61 @@ class Updater:
             print("[警告] yt-dlp 自动更新异常: {}".format(exc))
         finally:
             self._freshening = False
+
+    async def ensure_tiktoklive(self, reason="startup"):
+        """按需安装弹幕组件 TikTokLive（可选依赖，仅 comment_worker.py 子进程用）。
+
+        仿 freshen_ytdlp：装过/装不了就别反复折腾 pip。与 freshen_ytdlp 不同的是
+        这里的「一小时内不重试」持久化进 settings.json——弹幕来源的供给回调
+        (`CommentSource.on_provision`) 可能在同一场直播里被反复触发（每次
+        `worker_available()` 仍为假），不能靠内存里的时间戳，重启后又能立刻
+        重试是好事，但同一次运行内不该每次都拉一次 pip。
+
+        Python < 3.10 直接放弃——TikTokLive 7.x 要求 3.10+，这是本项目唯一
+        允许高于 3.9 的可选组件，装不上不影响主链路（弹幕来源据此转成
+        `unavailable` 状态，见 comment_source.py 的 _supervise）。
+        """
+        if sys.version_info < (3, 10):
+            return False
+        if importlib.util.find_spec("TikTokLive") is not None:
+            return True
+        last = load_settings().get("tiktoklive_install_attempted_at") or 0
+        try:
+            last = float(last)
+        except (TypeError, ValueError):
+            last = 0
+        now = time.time()
+        if now - last < 3600:
+            return False
+        save_setting("tiktoklive_install_attempted_at", now)
+        async with self._get_pip_lock():
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "pip", "install",
+                    "--disable-pip-version-check", "TikTokLive>=7,<8",
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                )
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=600)
+                except asyncio.TimeoutError:
+                    proc.kill()          # pip 卡死不能拖垮调用方（弹幕来源的监督协程）
+                    try:
+                        await proc.wait()   # 必须 reap，否则残留一个僵尸进程
+                    except Exception:
+                        pass
+                    print("[警告] 弹幕组件 TikTokLive 安装超时，已放弃本次尝试（{}）"
+                          .format(reason))
+                    return False
+            except Exception as exc:
+                print("[警告] 弹幕组件 TikTokLive 安装异常: {}".format(exc))
+                return False
+        importlib.invalidate_caches()   # pip 刚装完，find_spec 的路径缓存可能还是旧的
+        if proc.returncode == 0 and importlib.util.find_spec("TikTokLive") is not None:
+            print("[信息] 已安装弹幕组件 TikTokLive（{}）".format(reason))
+            return True
+        print("[警告] 弹幕组件 TikTokLive 安装失败（pip 返回 {}，{}）"
+              .format(proc.returncode, reason))
+        return False
 
     async def check_and_notify(self, delay=2.0, manual=False):
         """检查一次最新版本；网络失败/限流一律无声跳过（手动检查时会回报结果）。"""
