@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .asr import DEFAULT_TEMPERATURE
+from .comment_source import CommentSource
 from .comments import CommentTranslator
 from .detector import BannedTermDetector, load_fuzzy_policy, load_terms
 from .glossary import load as load_glossary
@@ -140,6 +141,7 @@ class Pipeline:
         self._stats_task = None
         self._selfcheck_task = None      # 持有引用，否则任务可能被 GC 掉
         self._provision_task = None
+        self._comments_provision_task = None   # 弹幕组件（TikTokLive）后台安装任务，main.py 注入
         # 最近若干条字幕的原文，供「重译」按 id 取回。只留少量：这个功能是
         # 给中控看到可疑一句时临时用的，不是历史检索。
         self._recent = OrderedDict()
@@ -162,6 +164,22 @@ class Pipeline:
             broadcast=self.server.broadcast,
             translator=lambda: self.translator, target=lambda: self.target,
             glossary=lambda: self.glossary, busy=self._subtitle_translation_busy)
+        # 弹幕后端抓取（TikTokLive，见 app/comment_source.py）：与上面的
+        # CommentTranslator 是两回事——这里只负责把观众评论从 TikTok 的
+        # WebSocket 弄到本地，弄到后一样喂给 self.comments.accept()，插件
+        # 那条路（handle_viewer_comments）继续保留，两条来源共用同一个
+        # CommentTranslator。出错只影响弹幕，绝不碰音频/检测/审计链路。
+        self.comment_source = CommentSource(
+            on_items=lambda items: self.comments.accept(
+                {"type": "viewer_comments", "items": items}),
+            on_state=self._publish_comment_source,
+            cookies_browser=getattr(args, "cookies_browser", "auto"))
+        # on_provision 惰性读 self.updater：Pipeline 构造时 main.py 还没把
+        # updater 注入进来（见 main.py 里 `pipeline.updater = updater` 那行），
+        # 但这个回调只在真正需要装组件时才会被调用，那时 updater 早已就绪。
+        self.comment_source.on_provision = lambda: (
+            self.updater.ensure_tiktoklive("comments")
+            if getattr(self, "updater", None) is not None else None)
 
     def _subtitle_translation_busy(self):
         """字幕翻译是否正忙（在途或排队）——弹幕翻译据此让路，最多等 3 秒。"""
@@ -456,6 +474,20 @@ class Pipeline:
                 "type": "notice",
                 "text": "违禁词表为空，本场不会报警——编辑 banned_terms.txt 后重新开始",
             })
+        # 弹幕后端抓取：只有 @主播名 / 直播间链接能反查出 unique_id，直接流
+        # 地址（.m3u8/.flv 之类）没有主播身份，没法连 TikTok 的评论 WebSocket。
+        if not getattr(self.args, "comments", True):
+            await self._publish_comment_source("unavailable", "已用 --no-comments 关闭")
+        elif not streamer:
+            await self._publish_comment_source(
+                "unavailable", "直接流地址无法获取评论，请用 @主播名 或直播间链接")
+        else:
+            # getattr 兜底：个别测试用 Pipeline.__new__ 绕过 __init__ 造半成品
+            # 实例，没有 comment_source 属性——这条锦上添花的功能缺了就悄悄
+            # 跳过，不该拖累那些测试本来要验证的东西
+            comment_source = getattr(self, "comment_source", None)
+            if comment_source is not None:
+                comment_source.start(streamer)
 
     async def _provision_then_check(self):
         await self.ensure_local_translator()
@@ -539,11 +571,29 @@ class Pipeline:
         self.server.config["watchlist"] = info
         await self.server.broadcast(dict(info, type="watchlist"))
 
+    async def _publish_comment_source(self, state, detail=""):
+        """广播弹幕后端抓取（TikTokLive）的状态：connecting/connected/
+        disconnected/error/unavailable/idle 之一。extension_clients 捎带一起
+        发——界面靠这一条消息就能同时刷新「插件连没连」和「后端抓没抓到」
+        两块状态，不用等两条消息都到齐。"""
+        await self.server.broadcast({
+            "type": "comment_source", "backend": state, "detail": detail,
+            "extension_clients": getattr(self.server, "_view_clients", 0),
+        })
+
     async def _end_session(self, my_audit=None):
         """收尾。my_audit 是调用方会话自己的 audit——凭它判断「我还是不是
         当前会话」：晚到的旧任务只许关自己的 audit，不许碰 stats 循环等
         共享状态（那些已经属于下一场了）。"""
         still_current = my_audit is None or self.audit is my_audit
+        if still_current:
+            # 弹幕后端抓取是这一场自己起的子进程，晚到的旧任务不该碰
+            # 已经属于下一场的连接——只有「我还是当前会话」才停它。
+            # getattr 兜底：个别测试用 Pipeline.__new__ 绕过 __init__ 造
+            # 半成品实例，没有 comment_source 属性
+            comment_source = getattr(self, "comment_source", None)
+            if comment_source is not None:
+                await comment_source.stop()
         if still_current and self._stats_task is not None \
                 and not self._stats_task.done():
             try:      # 收尾前推一次终值，别让界面停在半截数据上

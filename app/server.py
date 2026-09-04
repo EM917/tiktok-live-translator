@@ -53,6 +53,10 @@ class CaptionServer:
         # 通没通——面板空着的时候，「没人发弹幕」和「插件根本没连上」必须能区分
         self._view_clients = 0
         self.config["extension_clients"] = 0
+        # 弹幕后端抓取（TikTokLive）的状态：中控要能区分「还没开播」「正在连」
+        # 「连上了」「装不上/需要登录」——不能只靠插件连接数猜
+        self.config["comment_backend"] = "idle"
+        self.config["comment_detail"] = ""
         self._runner = None
 
     async def start(self):
@@ -172,10 +176,16 @@ class CaptionServer:
         return ws
 
     async def _set_extension_clients(self, n):
-        """插件连接数变化就广播一次；也写进 config，晚打开的页面从 hello 里拿到。"""
+        """插件连接数变化就广播一次；也写进 config，晚打开的页面从 hello 里拿到。
+
+        顺带把当前的后端抓取状态也带上：界面收到这一条消息就能把「插件」和
+        「后端」两块面板一起刷新，不用等下一条 comment_source 消息才补齐。
+        """
         self._view_clients = max(0, n)
         await self.broadcast({"type": "comment_source",
-                              "extension_clients": self._view_clients})
+                              "extension_clients": self._view_clients,
+                              "backend": self.config.get("comment_backend"),
+                              "detail": self.config.get("comment_detail")})
 
     async def broadcast(self, msg):
         if msg.get("type") == "caption" and not msg.get("replay"):
@@ -199,7 +209,14 @@ class CaptionServer:
         elif msg.get("type") == "comment" and not msg.get("replay"):
             self.comments.append(msg)
         elif msg.get("type") == "comment_source":
-            self.config["extension_clients"] = msg.get("extension_clients", 0)
+            # 两个字段各自独立：_set_extension_clients 只关心插件连接数，
+            # Pipeline._publish_comment_source 只关心后端抓取状态——谁发的
+            # 消息就只更新谁带的字段，不能拿缺省值把另一半覆盖成 0/空
+            if "extension_clients" in msg:
+                self.config["extension_clients"] = msg.get("extension_clients", 0)
+            if "backend" in msg:
+                self.config["comment_backend"] = msg.get("backend")
+                self.config["comment_detail"] = msg.get("detail", "")
         elif msg.get("type") == "comment_update":
             # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文/pending
             for c in reversed(self.comments):
