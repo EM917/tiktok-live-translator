@@ -379,8 +379,12 @@ async def _resolve_via_api(url, cookies_browser="auto"):
     2026-09-05 实录戳穿了这个假设——@itzesantana11 那场直播完全不涉及年龄
     限制，一样固定收到 4003110，把它当年龄闸门抛错纯属编造原因。现在的处理：
     先借浏览器里的 TikTok 登录态重试一次（有些房间登录态确实管用），仍被拒
-    就老实说「程序自己拿不到，需要借用户已登录的 Chrome」（kind="browser_only"），
-    交给上层去开 Chrome 走插件那条路，而不是继续编一个不一定成立的原因。"""
+    就老实说「TikTok 这次不给程序」（kind="browser_only"），交给上层隔一会儿
+    自动重试（见 pipeline._resolve_media），而不是继续编一个不一定成立的原因。
+
+    实测这类房间的表现（2026-09-05）：同一时刻普通房间 2 秒就能解析成功，
+    被限流的房间连系统 WebKit 引擎也拿不到，且恢复要按小时算——所以这里
+    只能如实报告，重试留给上层按节奏做。"""
     import aiohttp
 
     user = _username(url)
