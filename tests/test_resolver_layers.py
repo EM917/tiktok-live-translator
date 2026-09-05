@@ -5,6 +5,8 @@
 那句话是错的，而我们照抄给了用户。
 """
 import asyncio
+
+import pytest
 import json
 
 from app import resolver
@@ -126,3 +128,69 @@ def test_malformed_sigi_state_does_not_crash():
         '<script id="SIGI_STATE">{not json</script> ' + live)
     assert url == live
     assert offline is False
+
+
+def test_page_fallback_always_returns_a_pair_without_cookies(monkeypatch):
+    """借用浏览器登录态抓直播页时读不到 cookie，曾经裸返回 None，调用方按
+    (流地址, 是否确认下播) 拆包直接崩成「内部错误」——一个年龄限制的直播间
+    把前面几条路全走失败后就撞上了它（2026-09-05 实录）。"""
+    import asyncio
+
+    from app import resolver
+
+    monkeypatch.setattr(resolver, "_cookie_header", lambda browser: None)
+    result = asyncio.run(resolver._resolve_from_page(
+        "https://www.tiktok.com/@someone/live", browser="chrome"))
+    assert result == (None, False)
+
+
+# ---- 年龄限制（18+）直播间：借登录态，借不到就把话说清楚 ----
+
+_AGE_GATE = {"status_code": 4003110, "data": {"prompts": "confirm your age"}}
+_WITH_STREAM = {"status_code": 0, "data": {"status": 2, "stream_url": {
+    "flv_pull_url": {"FULL_HD1": "https://pull.example/room.flv"}}}}
+
+
+def _age_gate_setup(monkeypatch, cookie, gated_even_with_cookie=False):
+    async def fake_status(_session, _user):
+        return "123", 2
+
+    async def fake_json(_session, _url, limit=None, headers=None):
+        if headers and headers.get("Cookie") and not gated_even_with_cookie:
+            return _WITH_STREAM
+        return _AGE_GATE
+
+    monkeypatch.setattr(resolver, "_room_status", fake_status)
+    monkeypatch.setattr(resolver, "_get_json", fake_json)
+    monkeypatch.setattr(resolver, "_browser_order", lambda pref: ("chrome",))
+    monkeypatch.setattr(resolver, "_cookie_header", lambda browser: cookie)
+    monkeypatch.setattr(resolver, "_remember_browser", lambda browser: None)
+
+
+def test_age_gated_room_is_resolved_with_browser_login(monkeypatch):
+    _age_gate_setup(monkeypatch, cookie="sessionid=abc")
+    url, offline = run(resolver._resolve_via_api("https://www.tiktok.com/@x/live"))
+    assert url == "https://pull.example/room.flv" and offline is False
+
+
+def test_age_gated_room_without_any_login_explains_itself(monkeypatch):
+    _age_gate_setup(monkeypatch, cookie=None)
+    with pytest.raises(resolver.ResolveError) as exc:
+        run(resolver._resolve_via_api("https://www.tiktok.com/@x/live"))
+    assert exc.value.kind == "login"
+    assert "年龄限制" in str(exc.value)
+
+
+def test_age_gated_room_names_the_browser_it_tried(monkeypatch):
+    _age_gate_setup(monkeypatch, cookie="sessionid=abc", gated_even_with_cookie=True)
+    with pytest.raises(resolver.ResolveError) as exc:
+        run(resolver._resolve_via_api("https://www.tiktok.com/@x/live"))
+    assert exc.value.kind == "login"
+    assert "chrome" in str(exc.value) and "18+" in str(exc.value)
+
+
+def test_age_gate_is_skipped_when_browser_cookies_are_disabled(monkeypatch):
+    _age_gate_setup(monkeypatch, cookie="sessionid=abc")
+    with pytest.raises(resolver.ResolveError) as exc:
+        run(resolver._resolve_via_api("https://www.tiktok.com/@x/live", cookies_browser="none"))
+    assert "Chrome 或 Safari" in str(exc.value)     # 没试任何浏览器，提示去登录

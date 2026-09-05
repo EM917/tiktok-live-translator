@@ -115,7 +115,9 @@ def _cookie_header(browser):
 
 async def _resolve_from_page(url, browser=None):
     """兜底方案：yt-dlp 的 TikTok 提取器失效时，直接抓直播页 HTML 挖流地址。
-    优先纯音频流（only_audio=1），其次 FLV。找不到返回 None。
+    优先纯音频流（only_audio=1），其次 FLV。永远返回 (流地址或 None, 是否确认已下播)
+    二元组——曾经有两个分支裸返回 None，调用方按二元组拆包，于是前面几条
+    路都失败的房间会直接以「内部错误」收场（2026-09-05 实录）。
 
     browser 非空时借用该浏览器的 TikTok 登录态再抓一次——有些房间的页面
     对未登录访问就是不带流地址。"""
@@ -128,7 +130,7 @@ async def _resolve_from_page(url, browser=None):
         loop = asyncio.get_running_loop()
         cookie = await loop.run_in_executor(None, _cookie_header, browser)
         if not cookie:
-            return None
+            return None, False
         headers["Cookie"] = cookie
     try:
         async with aiohttp.ClientSession(
@@ -141,7 +143,7 @@ async def _resolve_from_page(url, browser=None):
                 raw = await read_all(resp, 8 * 1024 * 1024)
                 charset = resp.charset
         if raw is None:
-            return None
+            return None, False
         html = raw.decode(charset or "utf-8", errors="replace")
     except Exception:
         return None, False
@@ -214,6 +216,10 @@ _SIGI_RE = re.compile(r'id="SIGI_STATE"[^>]*>(.*?)</script>', re.S)
 # TikTok 的房间状态：2=在播，4=已结束。只有拿到明确的非 2 才敢说「主播没在播」，
 # 拿不到就只能说「没解析出来」——两者对重连策略的含义完全不同。
 LIVE_STATUS = 2
+# webcast 房间接口对年龄限制（18+）直播间的回应：status_code 4003110，data 里
+# 只有一个 prompts（让你确认年龄的提示），没有 stream_url。匿名请求和未确认
+# 年龄的账号都会撞上它。
+AGE_GATE_CODE = 4003110
 
 
 def _username(url):
@@ -221,9 +227,9 @@ def _username(url):
     return m.group(1) if m else None
 
 
-async def _get_json(session, url, limit=4 * 1024 * 1024):
+async def _get_json(session, url, limit=4 * 1024 * 1024, headers=None):
     try:
-        async with session.get(url, headers=_BROWSER_HEADERS) as resp:
+        async with session.get(url, headers=headers or _BROWSER_HEADERS) as resp:
             if resp.status != 200:
                 return None
             raw = await read_all(resp, limit)
@@ -275,16 +281,34 @@ def _pick_stream(data):
     return su.get("rtmp_pull_url") or su.get("hls_pull_url") or None
 
 
-async def _resolve_via_api(url):
+def _age_gated(info):
+    """房间接口是不是在要求确认年龄（见 AGE_GATE_CODE）。"""
+    if not isinstance(info, dict):
+        return False
+    if info.get("status_code") == AGE_GATE_CODE:
+        return True
+    data = info.get("data")
+    return isinstance(data, dict) and "prompts" in data
+
+
+async def _resolve_via_api(url, cookies_browser="auto"):
     """官方接口链路：用户名 → room_id → 流地址。
 
     返回 (stream_url, live_known_offline)。第二个值只有在接口明确告诉我们
-    房间已结束时才是 True——用来把「确认没播」和「我们没解析出来」分开。"""
+    房间已结束时才是 True——用来把「确认没播」和「我们没解析出来」分开。
+
+    年龄限制（18+）的直播间：匿名请求拿不到流地址，接口只回一个「请确认
+    年龄」的提示。这时借用浏览器里的 TikTok 登录态再问一次；仍被拒就直接
+    抛 ResolveError(kind="login") 说清原因——后面的 yt-dlp / 直播页两条路
+    走的是同一道年龄闸门，实测一样过不去，与其再花十几秒最后报一句
+    「TikTok 临时挡了本机请求」误导人，不如当场把话说明白。
+    （2026-09-05 实录：一个 18+ 房间弹幕连得上、音频流四条路全失败。）"""
     import aiohttp
 
     user = _username(url)
     if not user:
         return None, False
+    tried = []
     try:
         async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=15)) as session:
@@ -294,12 +318,46 @@ async def _resolve_via_api(url):
             if status is not None and status != LIVE_STATUS:
                 return None, True          # 接口明确说没在播
             info = await _get_json(session, _WEBCAST_API.format(room=room))
-            data = (info or {}).get("data") or {}
-            if data.get("status") is not None and data["status"] != LIVE_STATUS:
-                return None, True
-            return _pick_stream(data), False
+            if _age_gated(info):
+                loop = asyncio.get_running_loop()
+                browsers = (_browser_order(cookies_browser)
+                            if cookies_browser != "none" else ())
+                for browser in browsers:
+                    cookie = await loop.run_in_executor(None, _cookie_header, browser)
+                    if not cookie:
+                        continue
+                    tried.append(browser)
+                    headers = dict(_BROWSER_HEADERS)
+                    headers["Cookie"] = cookie
+                    again = await _get_json(session, _WEBCAST_API.format(room=room),
+                                            headers=headers)
+                    if _age_gated(again):
+                        continue
+                    picked = _pick_stream((again or {}).get("data") or {})
+                    if picked:
+                        _remember_browser(browser)
+                        print("[信息] 年龄限制直播间：已借用 {} 的 TikTok 登录状态取到流地址"
+                              .format(browser))
+                        return picked, False
+                info = None                # 走到函数末尾统一抛 ResolveError
+            else:
+                data = (info or {}).get("data") or {}
+                if data.get("status") is not None and data["status"] != LIVE_STATUS:
+                    return None, True
+                return _pick_stream(data), False
     except Exception:
         return None, False
+    # 只有一种情况会走到这里：年龄限制，且登录态没能帮上忙
+    if tried:
+        message = ("这个直播间是年龄限制（18+）内容。已借用 {} 的 TikTok 登录状态"
+                   "仍被拒绝——请在该浏览器里打开这个直播间完成 18+ 确认"
+                   "（或换用已验证年龄的账号），再点「开始翻译」。弹幕不受影响。"
+                   .format(" / ".join(tried)))
+    else:
+        message = ("这个直播间是年龄限制（18+）内容，TikTok 只向已登录并确认年龄的"
+                   "账号提供音频流。请在 Chrome 或 Safari 登录 TikTok、打开这个"
+                   "直播间完成 18+ 确认，再点「开始翻译」。弹幕不受影响。")
+    raise ResolveError(message, kind="login")
 
 
 async def _media_url_works(url, timeout=8):
@@ -464,7 +522,7 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
     # 第 1 层：TikTok 官方接口。放在最前有两个理由——它给的是**纯音频档**
     # （only_audio=1，省掉整条视频码流），而且它独立于 yt-dlp 的提取器：
     # 实测一个确实在播的房间，yt-dlp 的三种方式全报「未开播」，这条链路照样通。
-    api_url, known_offline = await _resolve_via_api(url)
+    api_url, known_offline = await _resolve_via_api(url, cookies_browser=cookies_browser)
     if api_url:
         checked = await _check_media_url(api_url)
         if await _media_url_works(checked):
