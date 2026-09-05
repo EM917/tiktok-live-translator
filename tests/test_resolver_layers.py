@@ -149,7 +149,7 @@ def test_page_fallback_always_returns_a_pair_without_cookies(monkeypatch):
 # PR #9 曾把这个码误判成「年龄限制（18+）」专属信号，据此提前抛错。
 # 2026-09-05 实录戳穿了这个假设：一个完全不涉及年龄限制的直播间
 # （@itzesantana11）一样固定收到 4003110。现在的语义是 kind="browser_only"——
-# 程序自己拿不到，交给上层借用户已登录的 Chrome（见 app/browser_bridge.py），
+# 程序自己拿不到，交给上层隔一会儿自动重试（见 pipeline._resolve_media），
 # 不再编一个不一定成立的「年龄限制」理由。下面三个用例改自 PR #9 的
 # 「年龄限制」用例；「借 cookie 成功」那条语义不变，原样保留。
 
@@ -181,7 +181,7 @@ def test_age_gated_room_is_resolved_with_browser_login(monkeypatch):
     assert url == "https://pull.example/room.flv" and offline is False
 
 
-def test_gated_room_without_any_login_needs_the_browser_bridge(monkeypatch):
+def test_gated_room_without_any_login_is_browser_only(monkeypatch):
     _age_gate_setup(monkeypatch, cookie=None)
     with pytest.raises(resolver.ResolveError) as exc:
         run(resolver._resolve_via_api("https://www.tiktok.com/@x/live"))
@@ -189,7 +189,7 @@ def test_gated_room_without_any_login_needs_the_browser_bridge(monkeypatch):
     assert "4003110" in str(exc.value)
 
 
-def test_gated_room_still_gated_after_cookie_needs_the_browser_bridge(monkeypatch):
+def test_gated_room_still_gated_after_cookie_is_browser_only(monkeypatch):
     _age_gate_setup(monkeypatch, cookie="sessionid=abc", gated_even_with_cookie=True)
     with pytest.raises(resolver.ResolveError) as exc:
         run(resolver._resolve_via_api("https://www.tiktok.com/@x/live"))

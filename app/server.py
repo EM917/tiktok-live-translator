@@ -49,7 +49,7 @@ class CaptionServer:
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
         self.on_comments = None  # 由 Pipeline 注入，处理来自 Chrome 插件的观众评论
-        self.on_browser = None  # 由 Pipeline 注入，处理插件回传的流地址/页面登录状态
+        self.on_browser = None  # 预留：插件回传的 stream_url/page_state 目前无人处理，直接丢弃
         # 插件（TikTok 页面）当前连着几个：中控要能在界面上看出弹幕这条链路
         # 通没通——面板空着的时候，「没人发弹幕」和「插件根本没连上」必须能区分
         self._view_clients = 0

@@ -425,7 +425,6 @@ async def main_async(args, state=None):
     pipeline.updater = updater
     server.on_control = pipeline.handle_control
     server.on_comments = pipeline.handle_viewer_comments
-    server.on_browser = pipeline.handle_browser_message
     if state is not None:
         state["loop"] = asyncio.get_running_loop()
         state["pipeline"] = pipeline

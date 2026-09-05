@@ -1,20 +1,9 @@
 {
   "manifest_version": 3,
   "name": "TikTok 直播同传字幕",
-  "version": "0.4.0",
+  "version": "0.3.0",
   "description": "把本地 tiktok-live-translator 的实时翻译字幕叠加到 TikTok 直播页面上（需要本地服务已启动）。",
-  "permissions": ["storage", "webRequest"],
-  "host_permissions": [
-    "https://*.tiktok.com/*",
-    "https://*.tiktokcdn.com/*",
-    "https://*.tiktokcdn-us.com/*",
-    "https://*.tiktokcdn-eu.com/*",
-    "https://*.tiktokv.com/*",
-    "https://*.byteoversea.com/*"
-  ],
-  "background": {
-    "service_worker": "background.js"
-  },
+  "permissions": ["storage"],
   "options_ui": {
     "page": "options.html",
     "open_in_tab": false
