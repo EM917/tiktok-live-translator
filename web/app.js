@@ -139,21 +139,29 @@
     }
     var raw = roomInput.value.trim();
     if (!raw) { roomInput.focus(); return; }
-    var url = normalizeRoomInput(raw);
+    // 允许一次粘两个地址：直播间链接 + 浏览器里拿到的 .flv/.m3u8 直连地址。
+    // 房间链接决定弹幕、词表和审计归属，直连地址只作音频源——只贴直连地址
+    // 也能用，但那样没有主播身份，弹幕就出不来。
+    var mediaMatch = raw.match(/https?:\/\/[^\s]+?\.(?:flv|m3u8)(?:\?[^\s]*)?/i);
+    var media = mediaMatch ? mediaMatch[0] : null;
+    var roomPart = media ? raw.replace(media, " ").trim() : raw;
+    var url = normalizeRoomInput(roomPart || raw);
+    if (media && !url) { url = media; media = null; }   // 只给了直连地址
     if (!url) {
       setStatus({ state: "error",
                   detail: "认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名" +
                           "（到主播主页复制 @ 后面的部分，中文昵称不行）。" });
       return;
     }
-    roomInput.value = url;
+    roomInput.value = media ? url + " " + media : url;
     localStorage.setItem("roomUrl", url);
     localStorage.setItem("sourceLang", sourceSel.value);
     // 「开始」指令必须确认送达：半死连接上 send 会无声进黑洞（readyState 还是
     // OPEN），随后自动重连成功、页面若无其事地回到待机——用户点了却毫无反应。
     // 服务器收到 start 后会立刻回执 connecting 状态；在那之前指令算「在途」，
     // 重连后的 hello 里补发一次，超时仍无回执才提示用户手点。
-    pendingStart = { payload: { type: "start", url: url, source: sourceSel.value },
+    pendingStart = { payload: { type: "start", url: url, source: sourceSel.value,
+                                media: media || undefined },
                      retried: false };
     send(pendingStart.payload);
     armStartWatchdog();

@@ -89,3 +89,76 @@ def test_other_failures_are_not_retried(monkeypatch, tmp_path, kind):
     with pytest.raises(ResolveError):
         run(p._resolve_media("https://www.tiktok.com/@x/live"))
     assert len(calls) == 1
+
+
+# ---- 用户自带音频源（房间链接 + 直连地址）----
+
+def test_media_override_is_used_and_room_link_keeps_streamer(monkeypatch, tmp_path):
+    """有些直播间 TikTok 只把流地址给真正的浏览器，用户可以自带一个直连地址。
+    这时房间链接仍然是主输入——弹幕、词表、审计都靠它认主播。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p._media_override = "https://pull-flv-x.tiktokcdn-us.com/a.flv?sign=1"
+    called = []
+
+    async def should_not_run(url, cookies=None, cookies_browser="auto"):
+        called.append(url)
+        raise ResolveError("4003110", kind="browser_only")
+
+    import app.resolver as resolver_mod
+    monkeypatch.setattr(resolver_mod, "resolve_stream_url", should_not_run)
+
+    async def ok(url, trusted=False):
+        return url
+
+    async def works(url):
+        return True
+
+    monkeypatch.setattr(resolver_mod, "_check_media_url", ok)
+    monkeypatch.setattr(resolver_mod, "_media_url_works", works)
+    got = run(p._resolve_media("https://www.tiktok.com/@bella2/live"))
+    assert got == "https://pull-flv-x.tiktokcdn-us.com/a.flv?sign=1"
+    assert called == []                       # 自带地址可用时不必再去解析
+    # 房间链接照旧决定主播身份（弹幕/词表/审计都用它）
+    from app.provenance import streamer_of
+    assert streamer_of("https://www.tiktok.com/@bella2/live") == "bella2"
+
+
+def test_expired_media_override_falls_back_to_normal_resolution(monkeypatch, tmp_path):
+    """自带地址过期（签名实测约两周有效）时不能就此卡死：丢掉它，回到正常解析。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p._media_override = "https://pull-flv-x.tiktokcdn-us.com/old.flv?sign=1"
+
+    async def resolved(url, cookies=None, cookies_browser="auto"):
+        return "https://pull-flv-x.tiktokcdn-us.com/new.flv"
+
+    async def ok(url, trusted=False):
+        return url
+
+    async def broken(url):
+        return False
+
+    import app.resolver as resolver_mod
+    monkeypatch.setattr(resolver_mod, "resolve_stream_url", resolved)
+    monkeypatch.setattr(resolver_mod, "_check_media_url", ok)
+    monkeypatch.setattr(resolver_mod, "_media_url_works", broken)
+    got = run(p._resolve_media("https://www.tiktok.com/@bella2/live"))
+    assert got == "https://pull-flv-x.tiktokcdn-us.com/new.flv"
+    assert p._media_override is None          # 失效的地址不再留着拖累重连
+    assert any("过期" in (m.get("detail") or "") for m in server.messages)
+
+
+def test_start_control_message_passes_media_through(monkeypatch, tmp_path):
+    """UI 的 start 消息带 media 时要一路传到本场的 _media_override。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    seen = {}
+
+    async def fake_start(url, media=None):
+        seen["url"] = url
+        seen["media"] = media
+
+    p.start_stream = fake_start
+    run(p.handle_control({"type": "start",
+                          "url": "https://www.tiktok.com/@bella2/live",
+                          "media": "https://pull-flv-x.tiktokcdn-us.com/a.flv"}))
+    assert seen == {"url": "https://www.tiktok.com/@bella2/live",
+                    "media": "https://pull-flv-x.tiktokcdn-us.com/a.flv"}

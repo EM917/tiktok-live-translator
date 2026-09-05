@@ -127,6 +127,7 @@ class Pipeline:
         self._counter = 0
         self._asr_pool = None            # 每条直播一个独立线程池，停止时整个丢弃
         self._stream_task = None
+        self._media_override = None      # 本场用户指定的音频源直连地址（可选）
         # Python 3.9 的 asyncio.Lock() 构造时就要绑事件循环，而 Pipeline 可能
         # 在循环外构造（如测试）——惰性初始化，首次使用时必然已在循环内
         self._stream_lock = None
@@ -206,6 +207,10 @@ class Pipeline:
         elif mtype == "start":
             url = str(msg.get("url", "")).strip()
             source = str(msg.get("source", "") or "").strip()
+            # 可选的音频源直连地址：有些直播间 TikTok 不把流地址给程序（见
+            # _resolve_media），这时用户可以把浏览器里的 .flv/.m3u8 地址一并
+            # 贴进来。房间链接仍然是主输入——弹幕、词表、审计都认它。
+            media = str(msg.get("media", "") or "").strip() or None
             # UI 只允许网络地址（本地 CLI 不受此限制）
             if url.startswith("http://") or url.startswith("https://"):
                 if source and source != "auto":
@@ -216,7 +221,7 @@ class Pipeline:
                     self._save_setting("source_lang", source[:12])
                     self.server.config["source_lang"] = source[:12]
                     self.args.source_requested = source[:12]
-                return self._start_with_ack(url)
+                return self._start_with_ack(url, media=media)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
                 "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
@@ -240,11 +245,11 @@ class Pipeline:
         await self.stop_stream(quiet=True)
         await self.updater.apply()
 
-    async def _start_with_ack(self, url):
+    async def _start_with_ack(self, url, media=None):
         """UI 点「开始」后立刻回执——停掉旧管线可能要好几秒（等 ffmpeg 退出），
         期间不给任何反馈的话，用户会以为点了没反应而反复点。"""
         await self.server.status("connecting", "已收到指令，正在连接…")
-        await self.start_stream(url)
+        await self.start_stream(url, media=media)
 
     def _save_setting(self, key, value):
         """把界面偏好写进 settings.json（重启后 main.py 读回）。"""
@@ -259,9 +264,12 @@ class Pipeline:
             self._stream_lock = asyncio.Lock()
         return self._stream_lock
 
-    async def start_stream(self, url):
+    async def start_stream(self, url, media=None):
         async with self._lock():
             await self._stop_locked(quiet=True)
+            # 本场的音频源直连地址（可选）。设在 _stop_locked 之后：停旧场会把它
+            # 清掉，免得上一场的地址泄漏到这一场。
+            self._media_override = media
             self.server.config["room_url"] = url
             self._save_setting("room_url", url)
             # source_lang 捎在同一条 config 里：开着的第二个页面也要跟上，
@@ -305,6 +313,7 @@ class Pipeline:
         if self.audit is not None:
             self.audit.close()
             self.audit = None
+        self._media_override = None
         pool, self._asr_pool = self._asr_pool, None
         if pool is not None:
             # 已排队的段直接丢弃；正在跑的那段让它自己跑完（无法安全打断），
@@ -621,7 +630,21 @@ class Pipeline:
         在等什么；其它失败（下播、找不到、网络……）原样抛出。
         曾经试过在这一步借用户的 Chrome + 插件拿地址，用户嫌麻烦，撤掉了：
         程序只靠自己，拿不到就明白说「稍后再试」。"""
-        from .resolver import ResolveError, resolve_stream_url
+        from .resolver import (ResolveError, _check_media_url, _media_url_works,
+                               resolve_stream_url)
+
+        # 用户自带的音频源优先。TikTok 对某些直播间只把流地址交给真正的浏览器
+        # （见 resolver 里 4003110 的说明），程序自己怎么伪装都拿不到；而这种
+        # 签名地址实测有效期约两周，用户从浏览器里取一次就够用整场。
+        override = getattr(self, "_media_override", None)
+        if override:
+            checked = await _check_media_url(override, trusted=True)
+            if await _media_url_works(checked):
+                print("[信息] 使用用户指定的音频源")
+                return checked
+            self._media_override = None      # 失效就别再用，回到正常解析
+            await self.server.status(
+                "connecting", "你给的流地址拉不动（可能已过期），改用自动解析…")
 
         last = None
         for attempt in range(1, self.BROWSER_ONLY_RETRIES + 1):
