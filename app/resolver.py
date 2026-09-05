@@ -425,7 +425,7 @@ async def _resolve_via_api(url, cookies_browser="auto"):
         return None, False
     # 只有一种情况会走到这里：接口一直不肯给流地址（4003110），登录态也没帮上忙。
     # 别再编一个「年龄限制」之类不一定成立的原因——老实说程序拿不到，交给上层
-    # 借用户已登录的 Chrome（见 pipeline.BrowserBridge）。
+    # 上层据此隔一会儿自动重试（见 pipeline._resolve_media）。
     raise ResolveError(
         "TikTok 没有把这个直播间的流地址给程序（代码 4003110），"
         "需要通过已登录的 Chrome 获取",
@@ -726,7 +726,7 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
                 "过一会儿再点一次「开始翻译」通常就好了。")
         if browser_only is not None:
             # 接口早就说了「不给程序」，后面各层也都没拿到：把这个明确的原因
-            # 传上去，上层据此改借用户已登录的 Chrome（browser_bridge）
+            # 传上去，上层据此隔一会儿自动重试，而不是当成普通失败
             kind, message = "browser_only", str(browser_only)
         if crashed:
             message += "（另有解析路径内部出错已跳过：{}，详见终端）".format(

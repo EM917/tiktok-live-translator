@@ -26,132 +26,11 @@
   var chatObserver = null;
   var chatContainer = null;
 
-  // ---- Chrome 桥：把「这个浏览器登录了吗」「播放器实际拉的是哪个流地址」报给本地服务 ----
-  var lastStreamUrl = null;        // webRequest/SIGI 快路径拿到的最新流地址
-  var lastSentStreamer;            // 上一次发 page_state 时的 streamer（刻意不初始化，undefined 保证首次必发）
-  var lastSentLoggedIn;            // 上一次发 page_state 时的 logged_in
-
   // TikTok 是单页应用，注入范围只能放宽到全站——但字幕条只该出现在直播页，
   // 不能在用户刷视频时弹别的直播间的字幕
   function onLivePage() {
     return /\/live(\/|$)/.test(location.pathname);
   }
-
-  // 发送前统一判断连接状态：wsRef 可能已断开或还没连上
-  function sendJson(obj) {
-    if (!wsRef || wsRef.readyState !== WebSocket.OPEN) return;
-    try { wsRef.send(JSON.stringify(obj)); } catch (e) { /* noop，尽力而为 */ }
-  }
-
-  // 页面里找一个文本正好是「登录」/"Log in" 的按钮/链接，作为「未登录」的兜底判据
-  function hasLoginButton() {
-    var candidates = document.querySelectorAll("button, a, [role='button']");
-    for (var i = 0; i < candidates.length; i++) {
-      var t = (candidates[i].textContent || "").trim();
-      if (t === "Log in" || t === "登录") return true;
-    }
-    return false;
-  }
-
-  // 登录态优先从页面内嵌的水合数据里读；结构对不上（TikTok 改版很常见）时退回 DOM 兜底；
-  // 两者都判断不出来时明确返回 null（未知），不要瞎猜成已登录或未登录
-  function detectLoggedIn() {
-    try {
-      var el = document.getElementById("__UNIVERSAL_DATA_FOR_REHYDRATION__");
-      if (el && el.textContent) {
-        var data = JSON.parse(el.textContent);
-        var scope = data && data.__DEFAULT_SCOPE__;
-        var ctx = scope && scope["webapp.app-context"];
-        if (ctx && typeof ctx === "object" && "user" in ctx) {
-          var user = ctx.user;
-          return !!(user && (user.uniqueId || user.secUid));
-        }
-      }
-    } catch (e) { /* 解析失败，走下面的 DOM 兜底 */ }
-    if (hasLoginButton()) return false;
-    return null; // 两者都拿不到：未知
-  }
-
-  function pageState() {
-    var m = /\/@([\w.]+)\/live/.exec(location.pathname);
-    return { streamer: m ? m[1] : null, logged_in: detectLoggedIn() };
-  }
-
-  // streamer 或 logged_in 变了才发，避免每秒都刷一遍相同内容
-  function maybeSendPageState() {
-    var st = pageState();
-    if (st.streamer === lastSentStreamer && st.logged_in === lastSentLoggedIn) return;
-    lastSentStreamer = st.streamer;
-    lastSentLoggedIn = st.logged_in;
-    sendJson({ type: "page_state", streamer: st.streamer, logged_in: st.logged_in });
-  }
-
-  // 服务端解析失败、需要借这个浏览器要流地址时会发 need_stream_url
-  function handleNeedStreamUrl(msg) {
-    if (!onLivePage()) return; // 不在该页：忽略，程序会自己打开直播间页面
-    var st = pageState();
-    if (!msg || st.streamer !== msg.streamer) return; // 不是它要的那个主播，忽略
-    sendJson({ type: "page_state", streamer: st.streamer, logged_in: st.logged_in });
-    if (lastStreamUrl) {
-      sendJson({ type: "stream_url", streamer: st.streamer, url: lastStreamUrl, logged_in: st.logged_in });
-      return;
-    }
-    try {
-      chrome.runtime.sendMessage({ type: "tlt_get_stream_url" }, function (resp) {
-        void chrome.runtime.lastError; // 后台没记录时也会正常回调，读一下清掉控制台告警
-        var url = (resp && resp.url) || null;
-        var st2 = pageState();
-        if (url) {
-          lastStreamUrl = url;
-          sendJson({ type: "stream_url", streamer: st2.streamer, url: url, logged_in: st2.logged_in });
-        } else {
-          sendJson({ type: "stream_url", streamer: st2.streamer, url: null, logged_in: st2.logged_in, reason: "not_captured" });
-        }
-      });
-    } catch (e) {
-      sendJson({ type: "stream_url", streamer: st.streamer, url: null, logged_in: st.logged_in, reason: "not_captured" });
-    }
-  }
-
-  // 后台 service worker（webRequest）看到播放器实际请求的流地址后会推过来
-  chrome.runtime.onMessage.addListener(function (msg) {
-    if (!msg || msg.type !== "tlt_stream_url") return;
-    lastStreamUrl = msg.url;
-    if (!onLivePage()) return;
-    var st = pageState();
-    sendJson({ type: "stream_url", streamer: st.streamer, url: lastStreamUrl, logged_in: st.logged_in });
-  });
-
-  // 有些直播间 TikTok 会把流地址直接写进页面初始状态，页面刚加载时试一次；
-  // 这个字段时有时无（TikTok 经常调整），拿不到不算错，主路还是靠 webRequest
-  function trySigiFastPath() {
-    try {
-      var sigi = window.SIGI_STATE;
-      var liveRoom = sigi && sigi.LiveRoom && sigi.LiveRoom.liveRoomUserInfo && sigi.LiveRoom.liveRoomUserInfo.liveRoom;
-      var raw = liveRoom && liveRoom.streamData && liveRoom.streamData.pull_data && liveRoom.streamData.pull_data.stream_data;
-      if (!raw) return;
-      var parsed = JSON.parse(raw);
-      var data = parsed && parsed.data;
-      if (!data) return;
-      var url = null;
-      if (data.ao && data.ao.main && data.ao.main.flv) {
-        url = data.ao.main.flv;
-      } else {
-        for (var key in data) {
-          if (Object.prototype.hasOwnProperty.call(data, key) && data[key] && data[key].main && data[key].main.flv) {
-            url = data[key].main.flv;
-            break;
-          }
-        }
-      }
-      if (!url) return;
-      lastStreamUrl = url;
-      if (!onLivePage()) return;
-      var st = pageState();
-      sendJson({ type: "stream_url", streamer: st.streamer, url: url, logged_in: st.logged_in });
-    } catch (e) { /* SIGI_STATE 时有时无，失败无所谓 */ }
-  }
-  trySigiFastPath();
 
   // SPA 路由变化不会重载页面：离开直播页时必须收走字幕条和提示条，
   // 否则最后一句字幕会永久冻结在信息流上方
@@ -159,8 +38,6 @@
     if (!onLivePage()) {
       if (overlay) overlay.classList.remove("tlt-visible");
       removeHint();
-    } else {
-      maybeSendPageState();
     }
   }, 1000);
 
@@ -446,12 +323,6 @@
         wsRef = ws;
         failedAttempts = 0;
         removeHint();
-        if (onLivePage()) {          // 每次连上都发一次当前页面状态，不等第 1 秒的兜底检查
-          var st0 = pageState();
-          lastSentStreamer = st0.streamer;
-          lastSentLoggedIn = st0.logged_in;
-          sendJson({ type: "page_state", streamer: st0.streamer, logged_in: st0.logged_in });
-        }
         if (hadTroubleConnecting) {   // 只在刚从故障中恢复时提示，平时不打扰
           hadTroubleConnecting = false;
           if (onLivePage()) flashToast("✓ 已连接本地翻译程序");
@@ -462,7 +333,6 @@
         try { msg = JSON.parse(evt.data); } catch (e) { return; }
         if (msg.type === "caption" && !msg.replay) showCaption(msg);
         if (msg.type === "comment_update" && !msg.replay) showCommentZh(msg);
-        if (msg.type === "need_stream_url") handleNeedStreamUrl(msg);
       };
       ws.onclose = function () {
         if (wsRef === ws) wsRef = null;
