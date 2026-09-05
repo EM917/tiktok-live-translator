@@ -1,8 +1,11 @@
 """把 TikTok 直播间页面地址解析成可供 ffmpeg 拉流的媒体地址（FLV/HLS）。"""
 import asyncio
+import os
 import json
 import re
 import sys
+import traceback
+from pathlib import Path
 
 from .nethttp import read_all
 
@@ -15,6 +18,7 @@ class ResolveError(RuntimeError):
       login     —— 需要登录 / 私密限制
       network   —— 网络不通 / DNS 失败 / 超时
       internal  —— 本工具自身的问题（组件缺失等）
+      browser_only —— 程序拿不到、需借用户浏览器
       unknown   —— 其余
     """
 
@@ -216,9 +220,12 @@ _SIGI_RE = re.compile(r'id="SIGI_STATE"[^>]*>(.*?)</script>', re.S)
 # TikTok 的房间状态：2=在播，4=已结束。只有拿到明确的非 2 才敢说「主播没在播」，
 # 拿不到就只能说「没解析出来」——两者对重连策略的含义完全不同。
 LIVE_STATUS = 2
-# webcast 房间接口对年龄限制（18+）直播间的回应：status_code 4003110，data 里
-# 只有一个 prompts（让你确认年龄的提示），没有 stream_url。匿名请求和未确认
-# 年龄的账号都会撞上它。
+# webcast 房间接口在拒绝给出流地址时用的通用代码：status_code 4003110，
+# data 里只有一个 prompts 字段（曾经以为是「确认年龄」的提示），没有
+# stream_url。以前当成年龄限制（18+）直播间的专属信号，但 2026-09-05 实录：
+# 一个完全不涉及年龄限制的直播间（@itzesantana11）一样固定收到这个码——
+# 真实含义更像「这次请求没资格拿流地址」，匿名请求最容易撞上，具体原因
+# TikTok 不说，登录态能不能绕过也要看房间。
 AGE_GATE_CODE = 4003110
 
 
@@ -282,7 +289,7 @@ def _pick_stream(data):
 
 
 def _age_gated(info):
-    """房间接口是不是在要求确认年龄（见 AGE_GATE_CODE）。"""
+    """房间接口是不是回了那个「不给流地址」的通用拒绝码（见 AGE_GATE_CODE）。"""
     if not isinstance(info, dict):
         return False
     if info.get("status_code") == AGE_GATE_CODE:
@@ -291,24 +298,94 @@ def _age_gated(info):
     return isinstance(data, dict) and "prompts" in data
 
 
+# ---- 第 2 层：系统 WebKit 引擎加载直播页（见 app/webkit_fetch.py 的说明） ----
+
+WEBKIT_TIMEOUT_SEC = 30.0
+
+
+def _webkit_available():
+    """只在 macOS 且装了 pywebview 时有这一层；Windows 上 pywebview 走的是
+    Chromium 内核（WebView2），是否被 TikTok 放行没有验证过，先不开。"""
+    import importlib.util
+
+    if sys.platform != "darwin":
+        return False
+    try:
+        return importlib.util.find_spec("webview") is not None
+    except Exception:
+        return False
+
+
+async def _run_webkit_fetch(url, timeout):
+    """起子进程 `python -m app.webkit_fetch`，返回它 stdout 的最后一行 JSON（dict），
+    拿不到返回 None。测试环境下（pytest）绝不真的起浏览器引擎——测试要验证
+    解析逻辑就 monkeypatch 这个函数。"""
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TLT_NO_WEBKIT"):
+        return None
+    root = str(Path(__file__).resolve().parent.parent)
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "app.webkit_fetch", url,
+        "--timeout", str(max(5.0, timeout - 5.0)),
+        cwd=root, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        try:
+            await proc.wait()
+        except Exception:
+            pass
+        return None
+    except asyncio.CancelledError:
+        proc.kill()
+        raise
+    for line in reversed(out.decode("utf-8", errors="replace").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            return obj if isinstance(obj, dict) else None
+    return None
+
+
+async def _resolve_via_webkit(url, timeout=WEBKIT_TIMEOUT_SEC):
+    """返回 (stream_url, live_known_offline)，与 _resolve_via_api 同一形状。
+
+    这一层的存在理由：TikTok 对某些房间只把流地址交给「真正的浏览器」（房间
+    接口回 4003110，直播页 HTML 不带 streamData），而系统的 WebKit 引擎不登录
+    就被放行，实测 2 秒拿到。子进程出任何问题都只当「这层没拿到」。"""
+    if not _webkit_available():
+        return None, False
+    result = await _run_webkit_fetch(url, timeout)
+    if not result:
+        return None, False
+    if result.get("url"):
+        return str(result["url"]), False
+    if result.get("offline"):
+        return None, True
+    return None, False
+
+
 async def _resolve_via_api(url, cookies_browser="auto"):
     """官方接口链路：用户名 → room_id → 流地址。
 
     返回 (stream_url, live_known_offline)。第二个值只有在接口明确告诉我们
     房间已结束时才是 True——用来把「确认没播」和「我们没解析出来」分开。
 
-    年龄限制（18+）的直播间：匿名请求拿不到流地址，接口只回一个「请确认
-    年龄」的提示。这时借用浏览器里的 TikTok 登录态再问一次；仍被拒就直接
-    抛 ResolveError(kind="login") 说清原因——后面的 yt-dlp / 直播页两条路
-    走的是同一道年龄闸门，实测一样过不去，与其再花十几秒最后报一句
-    「TikTok 临时挡了本机请求」误导人，不如当场把话说明白。
-    （2026-09-05 实录：一个 18+ 房间弹幕连得上、音频流四条路全失败。）"""
+    status_code 4003110：接口不肯把流地址给这次请求，data 里只有一个 prompts
+    字段。曾经当成「年龄限制（18+）」的专属信号直接抛 kind="login"，但
+    2026-09-05 实录戳穿了这个假设——@itzesantana11 那场直播完全不涉及年龄
+    限制，一样固定收到 4003110，把它当年龄闸门抛错纯属编造原因。现在的处理：
+    先借浏览器里的 TikTok 登录态重试一次（有些房间登录态确实管用），仍被拒
+    就老实说「程序自己拿不到，需要借用户已登录的 Chrome」（kind="browser_only"），
+    交给上层去开 Chrome 走插件那条路，而不是继续编一个不一定成立的原因。"""
     import aiohttp
 
     user = _username(url)
     if not user:
         return None, False
-    tried = []
     try:
         async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=15)) as session:
@@ -326,7 +403,6 @@ async def _resolve_via_api(url, cookies_browser="auto"):
                     cookie = await loop.run_in_executor(None, _cookie_header, browser)
                     if not cookie:
                         continue
-                    tried.append(browser)
                     headers = dict(_BROWSER_HEADERS)
                     headers["Cookie"] = cookie
                     again = await _get_json(session, _WEBCAST_API.format(room=room),
@@ -336,10 +412,10 @@ async def _resolve_via_api(url, cookies_browser="auto"):
                     picked = _pick_stream((again or {}).get("data") or {})
                     if picked:
                         _remember_browser(browser)
-                        print("[信息] 年龄限制直播间：已借用 {} 的 TikTok 登录状态取到流地址"
-                              .format(browser))
+                        print("[信息] 接口曾拒绝匿名请求（代码 4003110）："
+                              "已借用 {} 的 TikTok 登录状态取到流地址".format(browser))
                         return picked, False
-                info = None                # 走到函数末尾统一抛 ResolveError
+                # 走到这里：借了浏览器登录态也没能绕过，统一在函数末尾抛错
             else:
                 data = (info or {}).get("data") or {}
                 if data.get("status") is not None and data["status"] != LIVE_STATUS:
@@ -347,17 +423,13 @@ async def _resolve_via_api(url, cookies_browser="auto"):
                 return _pick_stream(data), False
     except Exception:
         return None, False
-    # 只有一种情况会走到这里：年龄限制，且登录态没能帮上忙
-    if tried:
-        message = ("这个直播间是年龄限制（18+）内容。已借用 {} 的 TikTok 登录状态"
-                   "仍被拒绝——请在该浏览器里打开这个直播间完成 18+ 确认"
-                   "（或换用已验证年龄的账号），再点「开始翻译」。弹幕不受影响。"
-                   .format(" / ".join(tried)))
-    else:
-        message = ("这个直播间是年龄限制（18+）内容，TikTok 只向已登录并确认年龄的"
-                   "账号提供音频流。请在 Chrome 或 Safari 登录 TikTok、打开这个"
-                   "直播间完成 18+ 确认，再点「开始翻译」。弹幕不受影响。")
-    raise ResolveError(message, kind="login")
+    # 只有一种情况会走到这里：接口一直不肯给流地址（4003110），登录态也没帮上忙。
+    # 别再编一个「年龄限制」之类不一定成立的原因——老实说程序拿不到，交给上层
+    # 借用户已登录的 Chrome（见 pipeline.BrowserBridge）。
+    raise ResolveError(
+        "TikTok 没有把这个直播间的流地址给程序（代码 4003110），"
+        "需要通过已登录的 Chrome 获取",
+        kind="browser_only")
 
 
 async def _media_url_works(url, timeout=8):
@@ -509,20 +581,48 @@ def _first_url(stdout):
     return lines[0] if lines else None
 
 
+def _note_layer_crash(crashed, layer_name, exc):
+    """某一层解析内部出了非 ResolveError 的异常：打印完整 traceback（终端能
+    看到堆栈，而不是像 2026-09-05 那次一样只剩一句「内部错误」），记入
+    crashed 列表后放过——绝不能让一层的 bug 把后面几层一起带崩。"""
+    traceback.print_exc()
+    print("[警告] 解析路径 {} 内部出错，已跳过: {}".format(layer_name, exc))
+    crashed.append(layer_name)
+
+
 async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
     """返回直播流媒体地址。已经是 .flv/.m3u8 的直接放行，否则用 yt-dlp 解析。
 
-    解析顺序：匿名 → （失败时）借用浏览器登录态。cookies 只在本机与
-    TikTok 之间使用，不写入日志、不发往任何第三方。
-    所有返回给 ffmpeg 的地址都先过 _check_media_url（协议 + 内网拦截）。"""
+    解析顺序：官方接口 → 系统 WebKit 引擎加载直播页（macOS）→ yt-dlp 匿名 →
+    （失败时）yt-dlp 借用浏览器登录态 → 直播页兜底。cookies 只在本机与 TikTok 之间使用，不写入日志、不发往任何
+    第三方。所有返回给 ffmpeg 的地址都先过 _check_media_url（协议 + 内网拦截）。
+
+    分层保险：每一层各自 try/except Exception（ResolveError 和 CancelledError
+    除外，前者是层内部主动给出的明确判断、后者是取消信号，两者都要原样往上
+    抛）。一层内部炸了（比如接口返回的结构变了、正则挂了）不能让整条解析链路
+    跟着崩成一句「内部错误」——继续试下一层，最后如果所有层都没拿到结果，
+    再把哪几层内部出过错附在错误消息里，方便定位（详细堆栈在终端）。"""
     if _DIRECT_RE.search(url):
         # 用户直接给的流地址：按可信处理（详见 _check_media_url 的说明）
         return await _check_media_url(url, trusted=True)
 
+    crashed = []
+
     # 第 1 层：TikTok 官方接口。放在最前有两个理由——它给的是**纯音频档**
     # （only_audio=1，省掉整条视频码流），而且它独立于 yt-dlp 的提取器：
     # 实测一个确实在播的房间，yt-dlp 的三种方式全报「未开播」，这条链路照样通。
-    api_url, known_offline = await _resolve_via_api(url, cookies_browser=cookies_browser)
+    api_url, known_offline = None, False
+    browser_only = None      # 接口说「这房间的流地址不给程序」——先记着，后面的层可能拿得到
+    try:
+        api_url, known_offline = await _resolve_via_api(url, cookies_browser=cookies_browser)
+    except ResolveError as exc:
+        if exc.kind != "browser_only":
+            raise
+        browser_only = exc
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _note_layer_crash(crashed, "官方接口", exc)
     if api_url:
         checked = await _check_media_url(api_url)
         if await _media_url_works(checked):
@@ -534,6 +634,24 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
         raise ResolveError("主播当前没有在直播（TikTok 接口确认直播已结束）",
                            kind="offline")
 
+    # 第 2 层：系统 WebKit 引擎加载直播页。TikTok 只把某些房间的流地址交给真正的
+    # 浏览器（接口回 4003110），而 mac 的 WebKit 不登录就放行，实测 2 秒拿到。
+    try:
+        wk_url, wk_offline = await _resolve_via_webkit(url)
+        if wk_url:
+            checked = await _check_media_url(wk_url)
+            if await _media_url_works(checked):
+                print("[信息] 已通过系统 WebKit 引擎从直播页取到流地址")
+                return checked
+            print("[信息] WebKit 拿到的地址拉不动，继续试其它方式")
+        elif wk_offline:
+            raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
+                               kind="offline")
+    except (ResolveError, asyncio.CancelledError):
+        raise
+    except Exception as exc:
+        _note_layer_crash(crashed, "WebKit", exc)
+
     try:
         import yt_dlp  # noqa: F401
     except ImportError:
@@ -541,56 +659,84 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
                            "（进阶：pip install -r requirements.txt）",
                            kind="internal") from None
 
-    code, out, err = await _run_ytdlp(url, cookies=cookies)
+    # 第 2 层：yt-dlp 匿名解析。
+    code, out, err = 1, "", ""
+    try:
+        code, out, err = await _run_ytdlp(url, cookies=cookies)
+    except (ResolveError, asyncio.CancelledError):
+        raise
+    except Exception as exc:
+        _note_layer_crash(crashed, "yt-dlp匿名", exc)
 
-    # 匿名失败且用户没自带 cookies.txt：依次试各浏览器的现成登录态。
+    # 第 3 层：匿名失败且用户没自带 cookies.txt——依次试各浏览器的现成登录态。
     # 记住成功的那个，下次直接用，不再逐个试。
     if code != 0 and not cookies and cookies_browser != "none":
-        for browser in _browser_order(cookies_browser):
-            try:
-                # 单个浏览器给较短预算：读不到 cookie（未授权/未安装/被占用）
-                # 应当快速失败换下一个，而不是把整体解析拖垮
-                b_code, b_out, b_err = await _run_ytdlp(
-                    url, browser=browser, timeout=BROWSER_ATTEMPT_TIMEOUT)
-            except ResolveError:
-                continue          # 这个浏览器超时了：换下一个，别中断整个兜底
-            if b_code == 0 and _first_url(b_out):
-                _remember_browser(browser)
-                print("[信息] 匿名解析失败，已借用 {} 的 TikTok 登录状态".format(browser))
-                code, out, err = b_code, b_out, b_err
-                break
+        try:
+            for browser in _browser_order(cookies_browser):
+                try:
+                    # 单个浏览器给较短预算：读不到 cookie（未授权/未安装/被占用）
+                    # 应当快速失败换下一个，而不是把整体解析拖垮
+                    b_code, b_out, b_err = await _run_ytdlp(
+                        url, browser=browser, timeout=BROWSER_ATTEMPT_TIMEOUT)
+                except ResolveError:
+                    continue          # 这个浏览器超时了：换下一个，别中断整个兜底
+                if b_code == 0 and _first_url(b_out):
+                    _remember_browser(browser)
+                    print("[信息] 匿名解析失败，已借用 {} 的 TikTok 登录状态".format(browser))
+                    code, out, err = b_code, b_out, b_err
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _note_layer_crash(crashed, "yt-dlp借cookie", exc)
     if code != 0:
-        # yt-dlp 的 TikTok 提取器时不时失灵（接口说没播但页面在播）——先试页面兜底。
-        # 匿名抓不到时再借用浏览器登录态抓一次：有些房间的页面对未登录访问
-        # 就是不带流地址。
-        for browser in (None,) + tuple(_browser_order(cookies_browser)
-                                       if cookies_browser != "none" else ()):
-            fallback, page_offline = await _resolve_from_page(url, browser=browser)
-            if page_offline:
-                raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
-                                   kind="offline")
-            if not fallback:
-                continue
-            checked = await _check_media_url(fallback)
-            if not await _media_url_works(checked):
-                continue
-            print("[信息] yt-dlp 解析失败，已从直播页面直接找到流地址{}".format(
-                "（借用 {} 的登录状态）".format(browser) if browser else ""))
-            return checked
+        # 第 4 层：yt-dlp 的 TikTok 提取器时不时失灵（接口说没播但页面在播）——
+        # 先试页面兜底。匿名抓不到时再借用浏览器登录态抓一次：有些房间的页面
+        # 对未登录访问就是不带流地址。
+        try:
+            for browser in (None,) + tuple(_browser_order(cookies_browser)
+                                           if cookies_browser != "none" else ()):
+                fallback, page_offline = await _resolve_from_page(url, browser=browser)
+                if page_offline:
+                    raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
+                                       kind="offline")
+                if not fallback:
+                    continue
+                checked = await _check_media_url(fallback)
+                if not await _media_url_works(checked):
+                    continue
+                print("[信息] yt-dlp 解析失败，已从直播页面直接找到流地址{}".format(
+                    "（借用 {} 的登录状态）".format(browser) if browser else ""))
+                return checked
+        except (ResolveError, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            _note_layer_crash(crashed, "直播页兜底", exc)
         err_text = err
-        tail = err_text.strip().splitlines()[-3:]
-        print("[错误] yt-dlp: " + " | ".join(tail))    # 英文原始输出只进终端
+        tail = err_text.strip().splitlines()[-3:] if err_text.strip() else []
+        if tail:
+            print("[错误] yt-dlp: " + " | ".join(tail))    # 英文原始输出只进终端
         kind, message = _classify_ytdlp_error(err_text)
         # yt-dlp 把「提取器被挡」也说成「未开播」。我们已经把每条路都走过了，
         # 而没有任何一条**确认**过房间结束，所以不能替它下这个断言。
         if kind == "offline":
             kind, message = "unknown", (
-                "试过全部 4 种方式都没能拿到这个直播间的音频流。"
+                "试过全部 5 种方式都没能拿到这个直播间的音频流。"
                 "如果你在浏览器里看得到这个直播，多半是 TikTok 临时挡了本机请求，"
                 "过一会儿再点一次「开始翻译」通常就好了。")
+        if browser_only is not None:
+            # 接口早就说了「不给程序」，后面各层也都没拿到：把这个明确的原因
+            # 传上去，上层据此改借用户已登录的 Chrome（browser_bridge）
+            kind, message = "browser_only", str(browser_only)
+        if crashed:
+            message += "（另有解析路径内部出错已跳过：{}，详见终端）".format(
+                "、".join(crashed))
         raise ResolveError(message, kind=kind)
     lines = [line.strip() for line in out.splitlines() if line.strip()]
     if not lines:
-        raise ResolveError("yt-dlp 没有返回流地址（直播可能尚未开始，或刚刚结束）",
-                           kind="offline")
+        message = "yt-dlp 没有返回流地址（直播可能尚未开始，或刚刚结束）"
+        if crashed:
+            message += "（另有解析路径内部出错已跳过：{}，详见终端）".format(
+                "、".join(crashed))
+        raise ResolveError(message, kind="offline")
     return await _check_media_url(lines[0])

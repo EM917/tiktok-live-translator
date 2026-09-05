@@ -7,11 +7,13 @@ import asyncio
 import os
 import subprocess
 import time
+import traceback
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .asr import DEFAULT_TEMPERATURE
+from .browser_bridge import BrowserBridge
 from .comment_source import CommentSource
 from .comments import CommentTranslator
 from .detector import BannedTermDetector, load_fuzzy_policy, load_terms
@@ -180,6 +182,11 @@ class Pipeline:
         self.comment_source.on_provision = lambda: (
             self.updater.ensure_tiktoklive("comments")
             if getattr(self, "updater", None) is not None else None)
+        # Chrome 桥：某些直播间 TikTok 只把流地址给已登录的浏览器，程序自己
+        # 拿不到时借用户这个已登录的 Chrome 一次（见 app/browser_bridge.py 顶部
+        # 说明）。只负责「给出一个流地址」，之后仍走原有的 ffmpeg/ASR/检测链路。
+        self.browser_bridge = BrowserBridge(
+            broadcast=self.server.broadcast, status=self.server.status)
 
     def _subtitle_translation_busy(self):
         """字幕翻译是否正忙（在途或排队）——弹幕翻译据此让路，最多等 3 秒。"""
@@ -192,6 +199,11 @@ class Pipeline:
         queue/trans_queue/asr_pool/detector/audit 这条音频链路。
         """
         return await self.comments.accept(data)
+
+    async def handle_browser_message(self, data):
+        """来自 Chrome 插件的 stream_url / page_state 数据消息（Chrome 桥，
+        见 app/browser_bridge.py）。note() 自己永不抛，这里不需要再兜底。"""
+        self.browser_bridge.note(data)
 
     # ---- 来自 UI 的控制消息 ----
     def handle_control(self, msg):
@@ -321,6 +333,7 @@ class Pipeline:
             raise
         except Exception as exc:
             print("[错误] 直播管线异常: {}".format(exc))
+            traceback.print_exc()      # 终端要能看到堆栈——这次就是没堆栈才查了半天
             try:
                 await self.server.status("error", "内部错误，已停止：{}".format(exc))
             except Exception:
@@ -608,15 +621,48 @@ class Pipeline:
             if self.audit is target:
                 self.audit = None
 
+    async def _resolve_media(self, url):
+        """解析直播流地址；本机解析不出来又不是「确认下播/找不到/网络/内部」
+        这几种收手就好的情况时，改借用户的 Chrome 拿一次（见 browser_bridge.py）。
+
+        直接给的 .flv/.m3u8 地址不走桥——那种地址本来就不是「TikTok 只给
+        登录浏览器」这个问题，桥帮不上忙，走了也只会白等一轮超时。
+        """
+        from .provenance import streamer_of
+        from .resolver import (ResolveError, _check_media_url, _media_url_works,
+                               is_direct_url, resolve_stream_url)
+
+        try:
+            return await resolve_stream_url(
+                url, cookies=self.args.cookies,
+                cookies_browser=getattr(self.args, "cookies_browser", "auto"))
+        except ResolveError as exc:
+            # 只有「TikTok 明确不给程序」和「需要登录」两种情况才值得去借 Chrome；
+            # 其它失败（网络、下播、yt-dlp 内部错误……）借了也白等一轮超时——
+            # 2026-09-05 一条重连测试就因为 kind=unknown 也走桥，真的打开了用户的浏览器。
+            if exc.kind not in ("browser_only", "login") or is_direct_url(url):
+                raise
+            streamer = streamer_of(url)
+            if not streamer:
+                raise
+            print("[信息] 本机解析失败（{}），改用 Chrome 获取流地址".format(exc.kind))
+            live_url = "https://www.tiktok.com/@{}/live".format(streamer)
+            media = await self.browser_bridge.request_stream(streamer, live_url)
+            checked = await _check_media_url(media)
+            if not await _media_url_works(checked):
+                raise ResolveError(
+                    "Chrome 送来的流地址拉不动，请刷新直播页后重新开始",
+                    kind="unknown") from None
+            print("[信息] 已通过 Chrome 插件取到流地址")
+            return checked
+
     async def _run_session(self, url):
         from .asr import create_transcriber
-        from .resolver import ResolveError, is_direct_url, resolve_stream_url
+        from .resolver import ResolveError, is_direct_url
 
         await self.server.status("connecting", "正在解析直播流地址…")
         try:
-            media = await resolve_stream_url(
-                url, cookies=self.args.cookies,
-                cookies_browser=getattr(self.args, 'cookies_browser', 'auto'))
+            media = await self._resolve_media(url)
             self._resolve_fail_streak = 0
         except ResolveError as exc:
             self._note_resolve_failure(exc)
@@ -744,9 +790,7 @@ class Pipeline:
                         delay, reconnects, budget))
                 await asyncio.sleep(delay)
                 try:
-                    media = await resolve_stream_url(
-                url, cookies=self.args.cookies,
-                cookies_browser=getattr(self.args, 'cookies_browser', 'auto'))
+                    media = await self._resolve_media(url)
                     self._resolve_fail_streak = 0
                 except ResolveError as exc:
                     if exc.kind == "offline":

@@ -49,6 +49,7 @@ class CaptionServer:
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
         self.on_comments = None  # 由 Pipeline 注入，处理来自 Chrome 插件的观众评论
+        self.on_browser = None  # 由 Pipeline 注入，处理插件回传的流地址/页面登录状态
         # 插件（TikTok 页面）当前连着几个：中控要能在界面上看出弹幕这条链路
         # 通没通——面板空着的时候，「没人发弹幕」和「插件根本没连上」必须能区分
         self._view_clients = 0
@@ -88,8 +89,9 @@ class CaptionServer:
           "view"    —— TikTok 页面（Chrome 插件的 content script 以页面身份
                        连接）：只收字幕。插件本身是纯显示端，不需要控制权；
                        给它控制权等于让任何 tiktok.com 上的脚本能驱动本机程序；
-                       唯一例外是 viewer_comments 这一种数据消息（观众弹幕，
-                       见 _ws 里的白名单分支）——它只携带评论文本，不经过
+                       唯一例外是 viewer_comments/stream_url/page_state 这三种
+                       数据消息（观众弹幕、Chrome 桥回传的流地址与登录状态，
+                       见 _ws 里的白名单分支）——它们只携带数据，不经过
                        on_control，这道控制权的闸门本身不因此松动；
           None      —— 其余一律拒绝。
         """
@@ -142,22 +144,26 @@ class CaptionServer:
                     continue
                 if not isinstance(data, dict):   # 非对象 JSON 会让下游 .get 崩掉
                     continue
-                if data.get("type") == "viewer_comments":
-                    # 唯一允许来自 TikTok 页面（view 来源）的入站消息。它只携带
-                    # 评论文本，由 on_comments 校验、限量，永远不经过
-                    # on_control——下面 access != "control" 这道闸门本身不动。
+                msg_type = data.get("type")
+                if msg_type in ("viewer_comments", "stream_url", "page_state"):
+                    # 允许来自 TikTok 页面（view 来源）的三种数据消息：观众弹幕、
+                    # Chrome 桥回传的流地址、页面登录状态。三者共用同一个按连接
+                    # 限频，各自校验、限量，永远不经过 on_control——下面
+                    # access != "control" 这道闸门本身不动。
                     now = time.time()
                     if (len(cmt_times) >= self.CMT_MSG_RATE_LIMIT
                             and now - cmt_times[0] < self.CMT_MSG_RATE_WINDOW_SEC):
                         continue      # 单连接限频：超频消息静默丢弃，不广播
                     cmt_times.append(now)
-                    if self.on_comments is not None:
+                    callback = (self.on_comments if msg_type == "viewer_comments"
+                               else self.on_browser)
+                    if callback is not None:
                         try:
-                            result = self.on_comments(data)
+                            result = callback(data)
                             if asyncio.iscoroutine(result):
                                 await result
                         except Exception as exc:
-                            print("[警告] 处理观众评论失败: {}".format(exc))
+                            print("[警告] 处理{}消息失败: {}".format(msg_type, exc))
                     continue
                 if access != "control":          # 只看不许动（TikTok 页面）
                     continue
