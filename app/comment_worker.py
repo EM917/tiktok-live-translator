@@ -14,8 +14,9 @@ app/comment_source.py 的 CommentSource._supervise）。
 stderr 只留 TikTokLive 库自己的日志，父进程会读走它（不读会堵住管道）。
 
 退出码：0 正常断开；3 未开播；4 签名服务限流/报错；5 需要登录态；
-6 找不到主播；1 其它异常。每种情况退出前都先写一条 status 行，父进程
-据此决定退避多久、要不要带登录态重试、还是直接放弃（见 comment_source.py）。
+6 找不到主播；7 被 TikTok 拦截；1 其它异常。每种情况退出前都先写一条
+status 行，父进程据此决定退避多久、要不要带登录态重试、还是直接放弃
+（见 comment_source.py）。
 """
 import argparse
 import asyncio
@@ -47,7 +48,16 @@ def _parse_args(argv):
 
 def _classify_exc(exc):
     """异常 -> (status_state, exit_code)。分类依据见规格表：
-    未开播/签名服务/需要登录态/找不到主播/其它。"""
+    未开播/需要登录态/被拦截/签名服务/找不到主播/其它。
+
+    **判断顺序有讲究，别按可读性重排**：TikTokLive 里
+    AuthenticatedWebSocketConnectionError 和 SignatureRateLimitError 都是
+    SignAPIError 的**子类**。父类那条如果排在前面，就会把「需要登录态」
+    整条吞掉——2026-09-05 实测到的就是这个：TikTok 明说要登录，我们却退成
+    4 号「签名服务繁忙」，白等 600 秒，而 comment_source 里那条「取浏览器
+    登录态重试」的分支永远走不到。
+    """
+    from TikTokLive.client import errors as tt_errors
     from TikTokLive.client.errors import (
         AgeRestrictedError,
         AuthenticatedWebSocketConnectionError,
@@ -57,14 +67,25 @@ def _classify_exc(exc):
         UserOfflineError,
         WebsocketURLMissingError,
     )
+    # 7.x 中途才加进来的异常：老版本里取不到就退化成「永不匹配」，
+    # 而不是让整个 _classify_exc 在 ImportError 上炸掉。
+    blocked_cls = getattr(tt_errors, "WebcastBlocked200Error", ())
 
     if isinstance(exc, UserOfflineError):
         return "offline", 3
-    if isinstance(exc, (SignatureRateLimitError, SignAPIError)):
-        return "error", 4
+    # 子类必须排在 SignAPIError 前面，理由见上面的 docstring。
+    # AgeRestrictedError 在这条链路上其实够不到（_run 调的是无参 connect()，
+    # fetch_room_info 默认 False），留着是为了防止以后改用带 room_info 的连法
+    # 时忘了分类——别因为「看着是死代码」就删。
     if isinstance(exc, (AuthenticatedWebSocketConnectionError,
                         WebsocketURLMissingError, AgeRestrictedError)):
         return "login_required", 5
+    # TikTok 明确回「你被判定为机器人」。这时候最不该做的就是立刻重连：
+    # 原先它没进分类表，落到 1 号走 2 秒退避，等于顶着人家的风控反复敲门。
+    if blocked_cls and isinstance(exc, blocked_cls):
+        return "blocked", 7
+    if isinstance(exc, (SignatureRateLimitError, SignAPIError)):
+        return "error", 4
     if isinstance(exc, UserNotFoundError):
         return "not_found", 6
     return "error", 1

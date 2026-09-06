@@ -118,6 +118,9 @@ class CommentSource:
     HEALTHY_SEC = 60.0
     OFFLINE_RETRY_SEC = 30.0
     SIGN_ERROR_WAIT_SEC = 600.0
+    # 被 TikTok 风控拦下时的退避。比签名错误还要长：那是「服务忙」，
+    # 这是「你被当成机器人了」，越急着重连越坐实。
+    BLOCKED_WAIT_SEC = 900.0
     MAX_CONNECTS_PER_HOUR = 30
     STOP_GRACE_SEC = 3.0
     # 「一小时」本身也做成常量：额度限流测试要能把这个窗口也调短，
@@ -220,11 +223,12 @@ class CommentSource:
             self._connect_times.append(time.time())
             self._last_state = None
             returncode, healthy = await self._run_once(unique_id, extra)
-            if returncode not in (0, 3, 4, 5, 6):
+            if returncode not in (0, 3, 4, 5, 6, 7):
                 # 退出码不在约定表里（被信号打死、解释器收尾出错……）：子进程
                 # 退出前写的最后一条 status 才是它真正想说的话——「主播不存在」
                 # 就该停，而不是当成普通失败去烧签名额度重试
                 returncode = {"not_found": 6, "login_required": 5, "offline": 3,
+                              "blocked": 7,
                               "disconnected": 0}.get(self._last_state, returncode)
             if returncode == 0:
                 backoff = self.BACKOFF_MIN_SEC if healthy \
@@ -250,6 +254,10 @@ class CommentSource:
             elif returncode == 6:                         # UserNotFoundError
                 await self._set_state("unavailable", "找不到该主播")
                 return
+            elif returncode == 7:                         # TikTok 判定我们是机器人
+                await self._set_state(
+                    "error", "TikTok 暂时拒绝了评论连接，稍后自动重试")
+                await asyncio.sleep(self.BLOCKED_WAIT_SEC)
             else:
                 backoff = min(backoff * 2, self.BACKOFF_MAX_SEC)
                 await asyncio.sleep(backoff)
