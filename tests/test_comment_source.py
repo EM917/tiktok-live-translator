@@ -9,7 +9,10 @@ TikTokLive——唯一 import 它的地方是子进程入口 app/comment_worker.
   3. Pipeline 与 CommentSource 的接线（开播即起、下播即停、直接流地址/
      --no-comments 时不起）；
   4. server.py 对 comment_source 广播的处理（config 落盘 + 插件连接数
-     消息里带上后端状态）。
+     消息里带上后端状态）；
+  5. comment_worker._classify_exc 的异常分类——用一份和真库同构的假异常
+     模块跑，不依赖真的 TikTokLive（测试环境承诺 Python 3.9+，那里装不了
+     TikTokLive 7.x）。
 
 不 import 其它测试文件，避免耦合到别处 fixture 的变化；所有等待用有限
 轮询（wait_until），绝不无限等；CommentSource 的秒级常量全部调到
@@ -18,8 +21,9 @@ TikTokLive——唯一 import 它的地方是子进程入口 app/comment_worker.
 import ast
 import asyncio
 import json
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 from app import comment_source as cs_mod
 from app import pipeline as pipeline_mod
@@ -189,7 +193,8 @@ def make_source(monkeypatch, procs, cookies_browser="none"):
     for name, value in (
         ("BACKOFF_MIN_SEC", 0.01), ("BACKOFF_MAX_SEC", 0.05),
         ("HEALTHY_SEC", 0.02), ("OFFLINE_RETRY_SEC", 0.02),
-        ("SIGN_ERROR_WAIT_SEC", 0.2), ("MAX_CONNECTS_PER_HOUR", 30),
+        ("SIGN_ERROR_WAIT_SEC", 0.2), ("BLOCKED_WAIT_SEC", 0.2),
+        ("MAX_CONNECTS_PER_HOUR", 30),
         ("STOP_GRACE_SEC", 0.05), ("HOUR_WINDOW_SEC", 0.2),
         ("PROVISION_POLL_SEC", 0.02),
     ):
@@ -664,3 +669,158 @@ def test_worker_exits_when_parent_pid_changes():
         cw.asyncio.sleep = orig_sleep
         block.set()
     assert calls == ["gone", ("exit", 0)]
+
+
+# ---------------------------------------------------------------------------
+# 5. comment_worker._classify_exc：异常 -> (状态, 退出码)
+# ---------------------------------------------------------------------------
+
+def _fake_tiktoklive_errors(monkeypatch, with_blocked=True):
+    """造一份和真库**同构**的异常模块塞进 sys.modules。
+
+    重点是复刻真实的继承关系：AuthenticatedWebSocketConnectionError 和
+    SignatureRateLimitError 都是 SignAPIError 的子类。bug 就藏在这里——
+    父类那条 isinstance 排在前面时，会把「需要登录态」整条吞掉。继承关系
+    抄错了，下面这些测试就等于没测。
+    """
+    errors = ModuleType("TikTokLive.client.errors")
+
+    class TikTokLiveError(Exception):
+        pass
+
+    class SignAPIError(TikTokLiveError):
+        pass
+
+    class SignatureRateLimitError(SignAPIError):
+        pass
+
+    class AuthenticatedWebSocketConnectionError(SignAPIError):
+        pass
+
+    class UserOfflineError(TikTokLiveError):
+        pass
+
+    class UserNotFoundError(TikTokLiveError):
+        pass
+
+    class WebsocketURLMissingError(TikTokLiveError):
+        pass
+
+    class AgeRestrictedError(TikTokLiveError):
+        pass
+
+    class WebcastBlocked200Error(TikTokLiveError):
+        pass
+
+    for name, obj in list(locals().items()):
+        if isinstance(obj, type) and issubclass(obj, Exception):
+            setattr(errors, name, obj)
+    if not with_blocked:                       # 模拟老版本 TikTokLive
+        delattr(errors, "WebcastBlocked200Error")
+
+    client = ModuleType("TikTokLive.client")
+    client.errors = errors
+    root = ModuleType("TikTokLive")
+    root.client = client
+    monkeypatch.setitem(sys.modules, "TikTokLive", root)
+    monkeypatch.setitem(sys.modules, "TikTokLive.client", client)
+    monkeypatch.setitem(sys.modules, "TikTokLive.client.errors", errors)
+    return errors
+
+
+def test_login_required_is_not_swallowed_by_its_sign_api_parent(monkeypatch):
+    """回归：AuthenticatedWebSocketConnectionError 是 SignAPIError 的子类，
+    曾被父类那条先截走，退成 4 号白等 600 秒，而「取浏览器登录态重试」的
+    分支永远走不到。"""
+    errors = _fake_tiktoklive_errors(monkeypatch)
+    from app import comment_worker
+
+    assert issubclass(errors.AuthenticatedWebSocketConnectionError, errors.SignAPIError)
+    assert comment_worker._classify_exc(
+        errors.AuthenticatedWebSocketConnectionError("要登录")) == ("login_required", 5)
+
+
+def test_plain_sign_api_errors_still_map_to_four(monkeypatch):
+    """修子类顺序不能把父类那条弄丢。"""
+    errors = _fake_tiktoklive_errors(monkeypatch)
+    from app import comment_worker
+
+    assert comment_worker._classify_exc(errors.SignAPIError("忙")) == ("error", 4)
+    assert comment_worker._classify_exc(errors.SignatureRateLimitError("超额")) == ("error", 4)
+
+
+def test_blocked_gets_its_own_code_instead_of_two_second_retry(monkeypatch):
+    """回归：WebcastBlocked200Error 曾没进分类表，落到 1 号走 2 秒退避——
+    顶着 TikTok 的风控反复敲门。"""
+    errors = _fake_tiktoklive_errors(monkeypatch)
+    from app import comment_worker
+
+    assert comment_worker._classify_exc(
+        errors.WebcastBlocked200Error("bot detected")) == ("blocked", 7)
+
+
+def test_classify_survives_tiktoklive_without_blocked_error(monkeypatch):
+    """requirements 允许 TikTokLive>=7,<8 的任意版本，老版本没有这个异常类：
+    取不到就该退化成「永不匹配」，而不是让整个分类函数炸在 ImportError 上。"""
+    errors = _fake_tiktoklive_errors(monkeypatch, with_blocked=False)
+    from app import comment_worker
+
+    assert not hasattr(errors, "WebcastBlocked200Error")
+    assert comment_worker._classify_exc(RuntimeError("别的错")) == ("error", 1)
+    assert comment_worker._classify_exc(errors.UserOfflineError("")) == ("offline", 3)
+
+
+def test_classify_remaining_codes_unchanged(monkeypatch):
+    errors = _fake_tiktoklive_errors(monkeypatch)
+    from app import comment_worker
+
+    assert comment_worker._classify_exc(errors.UserOfflineError("")) == ("offline", 3)
+    assert comment_worker._classify_exc(errors.UserNotFoundError("")) == ("not_found", 6)
+    assert comment_worker._classify_exc(
+        errors.WebsocketURLMissingError("")) == ("login_required", 5)
+    assert comment_worker._classify_exc(errors.AgeRestrictedError("")) == ("login_required", 5)
+    assert comment_worker._classify_exc(ValueError("啥也不是")) == ("error", 1)
+
+
+def test_supervise_blocked_backs_off_instead_of_reconnecting(monkeypatch):
+    """7 号退出要走 BLOCKED_WAIT_SEC，不能像 1 号那样 2 秒就重连。"""
+    proc1 = FakeProc(stdout_lines=[], returncode=7)
+    proc2 = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
+                     returncode=0, hang_after=True)
+    cs, items_log, state_log, calls = make_source(monkeypatch, [proc1, proc2])
+    monkeypatch.setattr(CommentSource, "BACKOFF_MIN_SEC", 0.01)
+    monkeypatch.setattr(CommentSource, "BLOCKED_WAIT_SEC", 0.3)
+
+    async def scenario():
+        cs.start("abc")
+        assert await wait_until(lambda: any(s == "error" for s, _ in state_log))
+        await asyncio.sleep(0.1)              # 仍在 BLOCKED_WAIT_SEC 窗口内
+        early = len(calls)
+        assert await wait_until(lambda: len(calls) >= 2, limit=100)
+        await cs.stop()
+        return early
+
+    assert run(scenario()) == 1
+
+
+def test_supervise_maps_blocked_status_line_when_exit_code_is_lost(monkeypatch):
+    """子进程被信号打死、退出码不在约定表里时，靠它退出前写的最后一条
+    status 行还原意图——「blocked」必须还原成 7，不能退化成 2 秒重连。"""
+    proc1 = FakeProc(stdout_lines=[jline({"event": "status", "state": "blocked"})],
+                     returncode=-9)
+    proc2 = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
+                     returncode=0, hang_after=True)
+    cs, items_log, state_log, calls = make_source(monkeypatch, [proc1, proc2])
+    monkeypatch.setattr(CommentSource, "BACKOFF_MIN_SEC", 0.01)
+    monkeypatch.setattr(CommentSource, "BLOCKED_WAIT_SEC", 0.3)
+
+    async def scenario():
+        cs.start("abc")
+        assert await wait_until(lambda: any(s == "error" for s, _ in state_log))
+        await asyncio.sleep(0.1)
+        early = len(calls)
+        assert await wait_until(lambda: len(calls) >= 2, limit=100)
+        await cs.stop()
+        return early
+
+    assert run(scenario()) == 1
