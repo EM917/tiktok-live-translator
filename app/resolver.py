@@ -4,6 +4,7 @@ import os
 import json
 import re
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -585,6 +586,22 @@ def _first_url(stdout):
     return lines[0] if lines else None
 
 
+def _mark(trace, layer, outcome, t0, **extra):
+    """解析日志的一条：哪一层、什么结果、花了多久。trace 为 None 时什么也不做。
+
+    outcome 取值：url（拿到且能拉）/ dead_url（拿到但拉不动）/ offline（确认
+    下播）/ browser_only（4003110）/ none（这层没拿到）/ skipped（这层在本机
+    不可用）/ crash（层内部异常，已跳过）/ 或 ResolveError 的 kind。
+    2026-09-06 一场直播前两次解析失败、第三次才成，事后只能靠「只有一个
+    会话文件」+「秒数对得上」倒推——因为解析过程一个字都没记。"""
+    if trace is None:
+        return
+    rec = {"layer": layer, "outcome": outcome,
+           "ms": int(round((time.monotonic() - t0) * 1000))}
+    rec.update(extra)
+    trace.append(rec)
+
+
 def _note_layer_crash(crashed, layer_name, exc):
     """某一层解析内部出了非 ResolveError 的异常：打印完整 traceback（终端能
     看到堆栈，而不是像 2026-09-05 那次一样只剩一句「内部错误」），记入
@@ -594,8 +611,11 @@ def _note_layer_crash(crashed, layer_name, exc):
     crashed.append(layer_name)
 
 
-async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
+async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=None):
     """返回直播流媒体地址。已经是 .flv/.m3u8 的直接放行，否则用 yt-dlp 解析。
+
+    trace：传一个 list 进来，每走过一层就追加一条 {layer, outcome, ms}
+    （见 _mark）。调用方拿它写审计日志；不传就不记。
 
     解析顺序：官方接口 → 系统 WebKit 引擎加载直播页（macOS）→ yt-dlp 匿名 →
     （失败时）yt-dlp 借用浏览器登录态 → 直播页兜底。cookies 只在本机与 TikTok 之间使用，不写入日志、不发往任何
@@ -608,6 +628,7 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
     再把哪几层内部出过错附在错误消息里，方便定位（详细堆栈在终端）。"""
     if _DIRECT_RE.search(url):
         # 用户直接给的流地址：按可信处理（详见 _check_media_url 的说明）
+        _mark(trace, "直连地址", "url", time.monotonic())
         return await _check_media_url(url, trusted=True)
 
     crashed = []
@@ -617,44 +638,59 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
     # 实测一个确实在播的房间，yt-dlp 的三种方式全报「未开播」，这条链路照样通。
     api_url, known_offline = None, False
     browser_only = None      # 接口说「这房间的流地址不给程序」——先记着，后面的层可能拿得到
+    t0, api_outcome = time.monotonic(), "none"
     try:
         api_url, known_offline = await _resolve_via_api(url, cookies_browser=cookies_browser)
     except ResolveError as exc:
         if exc.kind != "browser_only":
+            _mark(trace, "官方接口", exc.kind, t0)
             raise
         browser_only = exc
+        api_outcome = "browser_only"
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         _note_layer_crash(crashed, "官方接口", exc)
+        api_outcome = "crash"
     if api_url:
         checked = await _check_media_url(api_url)
         if await _media_url_works(checked):
             print("[信息] 已通过 TikTok 直播接口取到纯音频流")
+            _mark(trace, "官方接口", "url", t0)
             return checked
         print("[信息] 直播接口给的地址拉不动，继续试其它方式")
+        api_outcome = "dead_url"
     if known_offline:
         # 接口明确说房间已结束——这是唯一敢下这个断言的地方
+        _mark(trace, "官方接口", "offline", t0)
         raise ResolveError("主播当前没有在直播（TikTok 接口确认直播已结束）",
                            kind="offline")
+    _mark(trace, "官方接口", api_outcome, t0)
 
     # 第 2 层：系统 WebKit 引擎加载直播页。TikTok 只把某些房间的流地址交给真正的
     # 浏览器（接口回 4003110），而 mac 的 WebKit 不登录就放行，实测 2 秒拿到。
+    t0 = time.monotonic()
+    wk_outcome = "none" if _webkit_available() else "skipped"
     try:
         wk_url, wk_offline = await _resolve_via_webkit(url)
         if wk_url:
             checked = await _check_media_url(wk_url)
             if await _media_url_works(checked):
                 print("[信息] 已通过系统 WebKit 引擎从直播页取到流地址")
+                _mark(trace, "WebKit", "url", t0)
                 return checked
             print("[信息] WebKit 拿到的地址拉不动，继续试其它方式")
+            wk_outcome = "dead_url"
         elif wk_offline:
+            _mark(trace, "WebKit", "offline", t0)
             raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
                                kind="offline")
     except (ResolveError, asyncio.CancelledError):
         raise
     except Exception as exc:
         _note_layer_crash(crashed, "WebKit", exc)
+        wk_outcome = "crash"
+    _mark(trace, "WebKit", wk_outcome, t0)
 
     try:
         import yt_dlp  # noqa: F401
@@ -665,16 +701,25 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
 
     # 第 2 层：yt-dlp 匿名解析。
     code, out, err = 1, "", ""
+    t0 = time.monotonic()
     try:
         code, out, err = await _run_ytdlp(url, cookies=cookies)
-    except (ResolveError, asyncio.CancelledError):
+    except ResolveError as exc:
+        _mark(trace, "yt-dlp匿名", exc.kind, t0)
+        raise
+    except asyncio.CancelledError:
         raise
     except Exception as exc:
         _note_layer_crash(crashed, "yt-dlp匿名", exc)
+        _mark(trace, "yt-dlp匿名", "crash", t0)
+    else:
+        _mark(trace, "yt-dlp匿名", "url" if code == 0 and _first_url(out) else "none",
+              t0, code=code)
 
     # 第 3 层：匿名失败且用户没自带 cookies.txt——依次试各浏览器的现成登录态。
     # 记住成功的那个，下次直接用，不再逐个试。
     if code != 0 and not cookies and cookies_browser != "none":
+        t0, used_browser, cookie_outcome = time.monotonic(), None, "none"
         try:
             for browser in _browser_order(cookies_browser):
                 try:
@@ -688,34 +733,43 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto"):
                     _remember_browser(browser)
                     print("[信息] 匿名解析失败，已借用 {} 的 TikTok 登录状态".format(browser))
                     code, out, err = b_code, b_out, b_err
+                    used_browser, cookie_outcome = browser, "url"
                     break
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             _note_layer_crash(crashed, "yt-dlp借cookie", exc)
+            cookie_outcome = "crash"
+        _mark(trace, "yt-dlp借cookie", cookie_outcome, t0, browser=used_browser)
     if code != 0:
         # 第 4 层：yt-dlp 的 TikTok 提取器时不时失灵（接口说没播但页面在播）——
         # 先试页面兜底。匿名抓不到时再借用浏览器登录态抓一次：有些房间的页面
         # 对未登录访问就是不带流地址。
+        t0, page_outcome = time.monotonic(), "none"
         try:
             for browser in (None,) + tuple(_browser_order(cookies_browser)
                                            if cookies_browser != "none" else ()):
                 fallback, page_offline = await _resolve_from_page(url, browser=browser)
                 if page_offline:
+                    _mark(trace, "直播页兜底", "offline", t0, browser=browser)
                     raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
                                        kind="offline")
                 if not fallback:
                     continue
                 checked = await _check_media_url(fallback)
                 if not await _media_url_works(checked):
+                    page_outcome = "dead_url"
                     continue
                 print("[信息] yt-dlp 解析失败，已从直播页面直接找到流地址{}".format(
                     "（借用 {} 的登录状态）".format(browser) if browser else ""))
+                _mark(trace, "直播页兜底", "url", t0, browser=browser)
                 return checked
         except (ResolveError, asyncio.CancelledError):
             raise
         except Exception as exc:
             _note_layer_crash(crashed, "直播页兜底", exc)
+            page_outcome = "crash"
+        _mark(trace, "直播页兜底", page_outcome, t0)
         err_text = err
         tail = err_text.strip().splitlines()[-3:] if err_text.strip() else []
         if tail:

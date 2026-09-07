@@ -370,3 +370,93 @@ def test_api_browser_only_survives_to_the_end_when_nothing_else_works(monkeypatc
         run(resolver.resolve_stream_url("https://www.tiktok.com/@x/live", cookies_browser="none"))
     assert exc.value.kind == "browser_only"
     assert "4003110" in str(exc.value)
+
+
+# ---- 解析日志：trace 记下走过的每一层与结果 ----
+
+def test_trace_records_every_layer_walked_and_its_outcome(monkeypatch):
+    _fake_yt_dlp_module(monkeypatch)
+
+    async def gated(_url, cookies_browser="auto"):
+        raise resolver.ResolveError("4003110", kind="browser_only")
+
+    async def fake_run_ytdlp(_url, cookies=None, browser=None, timeout=45):
+        return 1, "", "The channel is not currently live"
+
+    async def fake_resolve_from_page(_url, browser=None):
+        return None, False
+
+    monkeypatch.setattr(resolver, "_resolve_via_api", gated)
+    monkeypatch.setattr(resolver, "_webkit_available", lambda: False)
+    monkeypatch.setattr(resolver, "_run_ytdlp", fake_run_ytdlp)
+    monkeypatch.setattr(resolver, "_resolve_from_page", fake_resolve_from_page)
+
+    trace = []
+    with pytest.raises(resolver.ResolveError) as exc:
+        run(resolver.resolve_stream_url("https://www.tiktok.com/@x/live",
+                                        cookies_browser="none", trace=trace))
+    assert exc.value.kind == "browser_only"
+    assert [(r["layer"], r["outcome"]) for r in trace] == [
+        ("官方接口", "browser_only"), ("WebKit", "skipped"),
+        ("yt-dlp匿名", "none"), ("直播页兜底", "none")]
+    assert all(isinstance(r["ms"], int) and r["ms"] >= 0 for r in trace)
+    assert trace[2]["code"] == 1
+
+
+def test_trace_stops_at_the_layer_that_won(monkeypatch):
+    async def api_ok(_url, cookies_browser="auto"):
+        return "https://pull-flv-x.tiktokcdn-us.com/a.flv", False
+
+    async def ok(url, trusted=False):
+        return url
+
+    async def works(url):
+        return True
+
+    monkeypatch.setattr(resolver, "_resolve_via_api", api_ok)
+    monkeypatch.setattr(resolver, "_check_media_url", ok)
+    monkeypatch.setattr(resolver, "_media_url_works", works)
+    trace = []
+    got = run(resolver.resolve_stream_url("https://www.tiktok.com/@x/live", trace=trace))
+    assert got.endswith("a.flv")
+    assert [(r["layer"], r["outcome"]) for r in trace] == [("官方接口", "url")]
+
+
+def test_trace_marks_a_crashed_layer(monkeypatch):
+    _fake_yt_dlp_module(monkeypatch)
+
+    async def boom(_url, cookies_browser="auto"):
+        raise TypeError("接口层假装崩溃")
+
+    async def fake_run_ytdlp(_url, cookies=None, browser=None, timeout=45):
+        return 1, "", "x"
+
+    async def fake_resolve_from_page(_url, browser=None):
+        return None, False
+
+    monkeypatch.setattr(resolver, "_resolve_via_api", boom)
+    monkeypatch.setattr(resolver, "_webkit_available", lambda: False)
+    monkeypatch.setattr(resolver, "_run_ytdlp", fake_run_ytdlp)
+    monkeypatch.setattr(resolver, "_resolve_from_page", fake_resolve_from_page)
+    trace = []
+    with pytest.raises(resolver.ResolveError):
+        run(resolver.resolve_stream_url("https://www.tiktok.com/@x/live",
+                                        cookies_browser="none", trace=trace))
+    assert (trace[0]["layer"], trace[0]["outcome"]) == ("官方接口", "crash")
+
+
+def test_trace_is_optional(monkeypatch):
+    """不传 trace 就什么都不记——老调用方一个字不用改。"""
+    async def api_ok(_url, cookies_browser="auto"):
+        return "https://pull-flv-x.tiktokcdn-us.com/a.flv", False
+
+    async def ok(url, trusted=False):
+        return url
+
+    async def works(url):
+        return True
+
+    monkeypatch.setattr(resolver, "_resolve_via_api", api_ok)
+    monkeypatch.setattr(resolver, "_check_media_url", ok)
+    monkeypatch.setattr(resolver, "_media_url_works", works)
+    assert run(resolver.resolve_stream_url("https://www.tiktok.com/@x/live")).endswith("a.flv")

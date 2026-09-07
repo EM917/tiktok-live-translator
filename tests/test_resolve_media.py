@@ -1,6 +1,7 @@
 """流地址解析在 Pipeline 层的重试策略：TikTok 明确「不给程序」（browser_only）时
 隔一会儿自动重试几次，其它失败原样抛出、不重试。"""
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -47,7 +48,7 @@ def test_browser_only_is_retried_then_succeeds(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     calls = []
 
-    async def flaky(url, cookies=None, cookies_browser="auto"):
+    async def flaky(url, cookies=None, cookies_browser="auto", trace=None):
         calls.append(url)
         if len(calls) < 3:
             raise ResolveError("4003110", kind="browser_only")
@@ -64,7 +65,7 @@ def test_browser_only_is_retried_then_succeeds(monkeypatch, tmp_path):
 def test_browser_only_gives_up_with_a_plain_message(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
 
-    async def always(url, cookies=None, cookies_browser="auto"):
+    async def always(url, cookies=None, cookies_browser="auto", trace=None):
         raise ResolveError("4003110", kind="browser_only")
 
     import app.resolver as resolver_mod
@@ -80,7 +81,7 @@ def test_other_failures_are_not_retried(monkeypatch, tmp_path, kind):
     p, server = make_pipeline(monkeypatch, tmp_path)
     calls = []
 
-    async def failing(url, cookies=None, cookies_browser="auto"):
+    async def failing(url, cookies=None, cookies_browser="auto", trace=None):
         calls.append(url)
         raise ResolveError("x", kind=kind)
 
@@ -100,7 +101,7 @@ def test_media_override_is_used_and_room_link_keeps_streamer(monkeypatch, tmp_pa
     p._media_override = "https://pull-flv-x.tiktokcdn-us.com/a.flv?sign=1"
     called = []
 
-    async def should_not_run(url, cookies=None, cookies_browser="auto"):
+    async def should_not_run(url, cookies=None, cookies_browser="auto", trace=None):
         called.append(url)
         raise ResolveError("4003110", kind="browser_only")
 
@@ -128,7 +129,7 @@ def test_expired_media_override_falls_back_to_normal_resolution(monkeypatch, tmp
     p, server = make_pipeline(monkeypatch, tmp_path)
     p._media_override = "https://pull-flv-x.tiktokcdn-us.com/old.flv?sign=1"
 
-    async def resolved(url, cookies=None, cookies_browser="auto"):
+    async def resolved(url, cookies=None, cookies_browser="auto", trace=None):
         return "https://pull-flv-x.tiktokcdn-us.com/new.flv"
 
     async def ok(url, trusted=False):
@@ -164,6 +165,131 @@ def test_start_control_message_passes_media_through(monkeypatch, tmp_path):
                     "media": "https://pull-flv-x.tiktokcdn-us.com/a.flv"}
 
 
+# ---- 解析日志：每一次尝试都要落一行审计（type=resolve）----
+#
+# 2026-09-06 一场直播前两次解析失败、第三次才成，事后什么证据都没有：程序
+# stdout 指向 /dev/null，会话日志只记开始/结束。只能靠「只有一个会话文件」
+# +「重试循环只对一种错误生效」+「秒数对得上」倒推——换个失败模式就推不出来。
+
+class StubAudit:
+    def __init__(self):
+        self.records = []
+
+    def resolve(self, record):
+        self.records.append(record)
+
+
+def test_every_attempt_lands_in_the_audit_log(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.audit = StubAudit()
+    calls = []
+
+    async def flaky(url, cookies=None, cookies_browser="auto", trace=None):
+        calls.append(url)
+        trace.append({"layer": "官方接口", "outcome": "browser_only", "ms": 12})
+        if len(calls) < 3:
+            raise ResolveError("4003110", kind="browser_only")
+        trace.append({"layer": "WebKit", "outcome": "url", "ms": 2000})
+        return "https://pull-flv-x.tiktokcdn-us.com/game/a.flv?expire=1&sign=SECRET"
+
+    import app.resolver as resolver_mod
+    monkeypatch.setattr(resolver_mod, "resolve_stream_url", flaky)
+    run(p._resolve_media("https://www.tiktok.com/@x/live"))
+    recs = p.audit.records
+    assert [r["type"] for r in recs] == ["resolve"] * 3
+    assert [(r["attempt"], r["ok"]) for r in recs] == [(1, False), (2, False), (3, True)]
+    assert recs[0]["kind"] == "browser_only" and recs[0]["of"] == 3
+    assert recs[0]["layers"] == [{"layer": "官方接口", "outcome": "browser_only", "ms": 12}]
+    assert recs[2]["layers"][-1] == {"layer": "WebKit", "outcome": "url", "ms": 2000}
+    assert recs[2]["media"] == "pull-flv-x.tiktokcdn-us.com/game/a.flv"
+    assert all(isinstance(r["ms"], int) for r in recs)
+    # 签名地址的 query 里带 sign/expire，拿着两周内就能拉流——不进日志
+    assert "SECRET" not in json.dumps(recs, ensure_ascii=False)
+
+
+def test_non_retried_failure_is_still_logged(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.audit = StubAudit()
+
+    async def offline(url, cookies=None, cookies_browser="auto", trace=None):
+        trace.append({"layer": "官方接口", "outcome": "offline", "ms": 30})
+        raise ResolveError("下播了", kind="offline")
+
+    import app.resolver as resolver_mod
+    monkeypatch.setattr(resolver_mod, "resolve_stream_url", offline)
+    with pytest.raises(ResolveError):
+        run(p._resolve_media("https://www.tiktok.com/@x/live"))
+    assert len(p.audit.records) == 1
+    rec = p.audit.records[0]
+    assert rec["kind"] == "offline" and rec["ok"] is False and rec["attempt"] == 1
+
+
+def test_media_override_is_logged_as_attempt_zero_without_signature(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.audit = StubAudit()
+    p._media_override = "https://pull-flv-x.tiktokcdn-us.com/a.flv?sign=SECRET"
+    import app.resolver as resolver_mod
+
+    async def ok(url, trusted=False):
+        return url
+
+    async def works(url):
+        return True
+
+    monkeypatch.setattr(resolver_mod, "_check_media_url", ok)
+    monkeypatch.setattr(resolver_mod, "_media_url_works", works)
+    run(p._resolve_media("https://www.tiktok.com/@bella2/live"))
+    rec = p.audit.records[0]
+    assert rec["attempt"] == 0 and rec["ok"] is True
+    assert rec["layers"] == [{"layer": "用户直连", "outcome": "url"}]
+    assert rec["media"] == "pull-flv-x.tiktokcdn-us.com/a.flv"
+    assert "SECRET" not in json.dumps(rec)
+
+
+def test_expired_override_then_normal_resolution_are_both_logged(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.audit = StubAudit()
+    p._media_override = "https://pull-flv-x.tiktokcdn-us.com/old.flv?sign=1"
+
+    async def resolved(url, cookies=None, cookies_browser="auto", trace=None):
+        return "https://pull-flv-x.tiktokcdn-us.com/new.flv"
+
+    async def ok(url, trusted=False):
+        return url
+
+    async def broken(url):
+        return False
+
+    import app.resolver as resolver_mod
+    monkeypatch.setattr(resolver_mod, "resolve_stream_url", resolved)
+    monkeypatch.setattr(resolver_mod, "_check_media_url", ok)
+    monkeypatch.setattr(resolver_mod, "_media_url_works", broken)
+    run(p._resolve_media("https://www.tiktok.com/@bella2/live"))
+    assert [(r["attempt"], r["ok"], r.get("kind")) for r in p.audit.records] == [
+        (0, False, "dead_override"), (1, True, None)]
+
+
+def test_resolve_log_without_an_audit_does_not_crash(monkeypatch, tmp_path):
+    """会话还没建起来、或测试里的半成品实例：audit 为 None 时只打终端。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.audit = None
+
+    async def fine(url, cookies=None, cookies_browser="auto", trace=None):
+        return "https://pull-flv-x.tiktokcdn-us.com/a.flv"
+
+    import app.resolver as resolver_mod
+    monkeypatch.setattr(resolver_mod, "resolve_stream_url", fine)
+    assert run(p._resolve_media("https://www.tiktok.com/@x/live")).endswith("a.flv")
+
+
+def test_audit_log_writes_resolve_records_with_a_timestamp(tmp_path):
+    from app.audit import AuditLog
+    log = AuditLog(room_url="https://www.tiktok.com/@x/live", log_dir=tmp_path)
+    log.resolve({"type": "resolve", "attempt": 1, "ok": False, "layers": []})
+    log.close()
+    lines = [json.loads(ln) for ln in log.path.read_text(encoding="utf-8").splitlines()]
+    rec = [d for d in lines if d["type"] == "resolve"][0]
+    assert rec["attempt"] == 1 and rec["ok"] is False and rec["at"]
 # ---- 最近直播间：开播即记录、清空、只记有主播名的 ----
 
 def test_begin_session_records_recent_room(monkeypatch, tmp_path):
