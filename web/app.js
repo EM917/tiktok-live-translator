@@ -7,6 +7,9 @@
   var roomInput = document.getElementById("room-input");
   var sourceSel = document.getElementById("source-lang");
   var startBtn = document.getElementById("start-btn");
+  var recentRooms = document.getElementById("recent-rooms");
+  var recentList = document.getElementById("recent-list");
+  var recentClear = document.getElementById("recent-clear");
   var stopBtn = document.getElementById("stop-btn");
   var statusDot = document.getElementById("status-dot");
   var statusText = document.getElementById("status-text");
@@ -371,6 +374,7 @@
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
           if (msg.config.comment_detail != null) backendDetail = msg.config.comment_detail;
           if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
+          if (msg.config.recent_rooms) renderRecentRooms(msg.config.recent_rooms);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
           if (msg.config.status) setStatus(msg.config.status);
@@ -456,6 +460,9 @@
         break;
       case "watchlist":
         renderWatchlist(msg);
+        break;
+      case "recent_rooms":
+        renderRecentRooms(msg.entries);
         break;
       case "engine":
         renderEngine(msg);
@@ -899,6 +906,38 @@
   }
 
   // 首页的违禁词监控状态。词表默认为空，用户不看到这个就不知道要去配
+  // 「最近直播间」：按用户要求只显示主播名字，不铺一长串地址。点一下就把
+  // 地址填进输入框并开始——中控启动后不必每次重新粘。空列表整块隐藏。
+  function renderRecentRooms(entries) {
+    if (!recentRooms || !recentList) return;
+    entries = Array.isArray(entries) ? entries : [];
+    recentList.innerHTML = "";
+    if (!entries.length) {
+      recentRooms.classList.add("hidden");
+      return;
+    }
+    entries.forEach(function (e) {
+      if (!e || !e.streamer || !e.url) return;
+      var chip = document.createElement("button");
+      chip.className = "recent-chip";
+      chip.type = "button";
+      chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
+      chip.title = "点击开始翻译 @" + e.streamer;
+      chip.addEventListener("click", function () {
+        roomInput.value = e.url;                // 地址在背后填好，界面上只见主播名
+        startStream();
+      });
+      recentList.appendChild(chip);
+    });
+    recentRooms.classList.remove("hidden");
+  }
+
+  if (recentClear) {
+    recentClear.addEventListener("click", function () {
+      send({ type: "clear_recent_rooms" });     // 服务端清空并广播空列表回来
+    });
+  }
+
   function renderWatchlist(msg) {
     if (!watchState) return;
     if (msg.count > 0) {

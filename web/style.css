@@ -499,3 +499,28 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
   display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px;
   background: var(--accent); color: #fff; text-align: center; font-size: 11px;
 }
+
+/* ---------- 最近直播间 ---------- */
+.recent-rooms { margin: 4px auto 16px; max-width: 560px; text-align: left; }
+.recent-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.recent-label { font-size: 12px; color: var(--text-faint); }
+.recent-clear {
+  font-size: 12px; color: var(--text-faint); background: none;
+  border: none; cursor: pointer; padding: 0;
+}
+.recent-clear:hover { color: var(--accent); text-decoration: underline; }
+.recent-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.recent-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%;
+  padding: 6px 12px; font-size: 13px;
+  color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 16px;
+  cursor: pointer; white-space: nowrap;
+}
+.recent-chip:hover { border-color: var(--accent); color: var(--accent); }
+.recent-chip .at { font-size: 11px; color: var(--text-faint); }
+.recent-chip:hover .at { color: var(--accent); }
