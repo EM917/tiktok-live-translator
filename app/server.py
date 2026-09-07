@@ -13,8 +13,9 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 def replay_payloads(history):
     """把历史字幕转成回放消息。
 
-    每一条都带 replay=True——只显示实时字幕的客户端（Chrome 插件）据此整段跳过。
-    以前为了让网页端恢复底部大字幕，最后一条刻意不加标记，结果插件把它当成新
+    每一条都带 replay=True——只显示实时字幕的客户端据此整段跳过（这条约定起于
+    当年的 Chrome 插件，插件已撤、语义保留）。以前为了让网页端恢复底部大字幕，
+    最后一条刻意不加标记，结果插件把它当成新
     字幕：翻译过一场直播后再打开任意直播页，画面上就会浮出上一场的最后一句。
     改由单独的 restore 标记承担「恢复大字幕」这件事，两个用途各归各的字段。
     """
@@ -30,13 +31,6 @@ def replay_payloads(history):
 
 
 class CaptionServer:
-    # 单个连接每秒最多处理这么多条 viewer_comments 消息，超出直接丢弃、不广播。
-    # 白名单只按来源（https://*.tiktok.com）放行，不要求走 Chrome 插件，任何
-    # 跑在该来源页面上的脚本都能连上来高频灌消息；广播和字幕/警报共用同一个
-    # 事件循环，洪水会挤占那两样的时间片——弹幕本身允许丢，这道闸门不算回归。
-    CMT_MSG_RATE_LIMIT = 10
-    CMT_MSG_RATE_WINDOW_SEC = 1.0
-
     def __init__(self, port=8765):
         self.port = port
         self.clients = set()
@@ -48,14 +42,9 @@ class CaptionServer:
         self.comments = deque(maxlen=100)
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
-        self.on_comments = None  # 由 Pipeline 注入，处理来自 Chrome 插件的观众评论
-        self.on_browser = None  # 预留：插件回传的 stream_url/page_state 目前无人处理，直接丢弃
-        # 插件（TikTok 页面）当前连着几个：中控要能在界面上看出弹幕这条链路
-        # 通没通——面板空着的时候，「没人发弹幕」和「插件根本没连上」必须能区分
-        self._view_clients = 0
-        self.config["extension_clients"] = 0
-        # 弹幕后端抓取（TikTokLive）的状态：中控要能区分「还没开播」「正在连」
-        # 「连上了」「装不上/需要登录」——不能只靠插件连接数猜
+        # 弹幕抓取（TikTokLive）的状态：中控要能区分「还没开播」「正在连」
+        # 「连上了」「装不上/需要登录」——面板空着时「没人发」和「没连上」
+        # 对中控的意义完全不同
         self.config["comment_backend"] = "idle"
         self.config["comment_detail"] = ""
         self._runner = None
@@ -81,19 +70,17 @@ class CaptionServer:
         return web.FileResponse(WEB_DIR / "index.html")
 
     def _classify_origin(self, request):
-        """WS 来源分级。浏览器里任意网页都能发起 ws://127.0.0.1 连接（不受同源
-        策略限制），必须挡掉。分三级：
+        """WS 来源判定。浏览器里任意网页都能发起 ws://127.0.0.1 连接（不受同源
+        策略限制），必须挡掉。只有两种结果：
 
           "control" —— 本机页面/应用窗口，或非浏览器客户端（无 Origin 头）：
                        可收字幕，也可下发 start/stop/更新等控制指令；
-          "view"    —— TikTok 页面（Chrome 插件的 content script 以页面身份
-                       连接）：只收字幕。插件本身是纯显示端，不需要控制权；
-                       给它控制权等于让任何 tiktok.com 上的脚本能驱动本机程序；
-                       唯一例外是 viewer_comments/stream_url/page_state 这三种
-                       数据消息（观众弹幕、Chrome 桥回传的流地址与登录状态，
-                       见 _ws 里的白名单分支）——它们只携带数据，不经过
-                       on_control，这道控制权的闸门本身不因此松动；
-          None      —— 其余一律拒绝。
+          None      —— 其余一律拒绝，包括本机其它端口上的网页和 tiktok.com。
+
+        曾有第三级 "view"（Chrome 插件以 TikTok 页面身份连接，只收字幕、只发
+        弹幕数据）。插件整条撤掉之后（2026-09-07），没有任何合法客户端需要
+        以别的来源连进来，那一级连同它的数据消息白名单一起删掉——少一个
+        入口就少一个要守的门。
         """
         origin = request.headers.get("Origin")
         if not origin:
@@ -107,9 +94,6 @@ class CaptionServer:
             # 某个本地应用的内置页面）不该能驱动本程序
             if (parsed.port or (443 if parsed.scheme == "https" else 80)) == self.port:
                 return "control"
-            return "view"
-        if parsed.scheme == "https" and (host == "tiktok.com" or host.endswith(".tiktok.com")):
-            return "view"
         return None
 
     async def _ws(self, request):
@@ -118,8 +102,6 @@ class CaptionServer:
             raise web.HTTPForbidden(text="origin not allowed")
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
-        cmt_times = deque(maxlen=self.CMT_MSG_RATE_LIMIT)   # 本连接限频用的滑动窗口
-        counted = False          # 这条连接是否已计入插件连接数（finally 里要对称减回去）
         try:
             await ws.send_json({"type": "hello", "config": self.config})
             # 先补发历史警报（刷新页面不能丢报警），再回放字幕
@@ -132,9 +114,6 @@ class CaptionServer:
             for c in list(self.comments):
                 await ws.send_json(dict(c, replay=True))
             self.clients.add(ws)
-            if access == "view":
-                counted = True
-                await self._set_extension_clients(self._view_clients + 1)
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     continue
@@ -143,29 +122,6 @@ class CaptionServer:
                 except ValueError:
                     continue
                 if not isinstance(data, dict):   # 非对象 JSON 会让下游 .get 崩掉
-                    continue
-                msg_type = data.get("type")
-                if msg_type in ("viewer_comments", "stream_url", "page_state"):
-                    # 允许来自 TikTok 页面（view 来源）的三种数据消息：观众弹幕、
-                    # Chrome 桥回传的流地址、页面登录状态。三者共用同一个按连接
-                    # 限频，各自校验、限量，永远不经过 on_control——下面
-                    # access != "control" 这道闸门本身不动。
-                    now = time.time()
-                    if (len(cmt_times) >= self.CMT_MSG_RATE_LIMIT
-                            and now - cmt_times[0] < self.CMT_MSG_RATE_WINDOW_SEC):
-                        continue      # 单连接限频：超频消息静默丢弃，不广播
-                    cmt_times.append(now)
-                    callback = (self.on_comments if msg_type == "viewer_comments"
-                               else self.on_browser)
-                    if callback is not None:
-                        try:
-                            result = callback(data)
-                            if asyncio.iscoroutine(result):
-                                await result
-                        except Exception as exc:
-                            print("[警告] 处理{}消息失败: {}".format(msg_type, exc))
-                    continue
-                if access != "control":          # 只看不许动（TikTok 页面）
                     continue
                 if self.on_control is not None:
                     try:
@@ -177,21 +133,7 @@ class CaptionServer:
                         print("[警告] 处理控制消息失败: {}".format(exc))
         finally:
             self.clients.discard(ws)
-            if counted:
-                await self._set_extension_clients(self._view_clients - 1)
         return ws
-
-    async def _set_extension_clients(self, n):
-        """插件连接数变化就广播一次；也写进 config，晚打开的页面从 hello 里拿到。
-
-        顺带把当前的后端抓取状态也带上：界面收到这一条消息就能把「插件」和
-        「后端」两块面板一起刷新，不用等下一条 comment_source 消息才补齐。
-        """
-        self._view_clients = max(0, n)
-        await self.broadcast({"type": "comment_source",
-                              "extension_clients": self._view_clients,
-                              "backend": self.config.get("comment_backend"),
-                              "detail": self.config.get("comment_detail")})
 
     async def broadcast(self, msg):
         if msg.get("type") == "caption" and not msg.get("replay"):
@@ -215,11 +157,7 @@ class CaptionServer:
         elif msg.get("type") == "comment" and not msg.get("replay"):
             self.comments.append(msg)
         elif msg.get("type") == "comment_source":
-            # 两个字段各自独立：_set_extension_clients 只关心插件连接数，
-            # Pipeline._publish_comment_source 只关心后端抓取状态——谁发的
-            # 消息就只更新谁带的字段，不能拿缺省值把另一半覆盖成 0/空
-            if "extension_clients" in msg:
-                self.config["extension_clients"] = msg.get("extension_clients", 0)
+            # 落进 config：晚打开/刷新的页面从 hello 里拿到当前的抓取状态
             if "backend" in msg:
                 self.config["comment_backend"] = msg.get("backend")
                 self.config["comment_detail"] = msg.get("detail", "")

@@ -1,8 +1,7 @@
 """观众弹幕（评论区）翻译 —— 只翻译、只显示，不进检测/审计链路。
 
-弹幕来自 Chrome 插件对 TikTok 直播页评论区的抓取（浏览器以 "view" 身份连接，
-详见 app/server.py 的 `_classify_origin`），与字幕（主播语音）是完全独立的
-两条链路：弹幕不碰 queue/trans_queue/asr_pool/detector/audit，也不参与
+弹幕由程序自己经 TikTokLive 从直播间的评论 WebSocket 抓取（见
+app/comment_source.py），与字幕（主播语音）是完全独立的两条链路：弹幕不碰 queue/trans_queue/asr_pool/detector/audit，也不参与
 `run_workers()` 的 gather——它是 Pipeline 级的独立协程，跨场次常驻，出错
 只记日志，绝不影响直播翻译主链路（这个产品的 KPI 是违禁词召回和检测延迟，
 弹幕翻译再怎么出错都不该波及那两样）。
@@ -85,9 +84,8 @@ class CommentTranslator:
     MAX_ID = 64
     IDLE_WAIT_MAX_SEC = 3.0
     TRANSLATE_TIMEOUT_SEC = 20.0
-    # 去重窗口：最近 500 个 id 精确去重（插件断线重连、MutationObserver 与
-    # 兜底扫描重复命中同一条），同一 (user, text) 60 秒内只收一次
-    # （虚拟列表复用节点时，兜底扫描会把同一条老评论当新的再报一次）。
+    # 去重窗口：最近 500 个 id 精确去重（抓取端断线重连会把同一条再报一次），
+    # 同一 (user, text) 60 秒内只收一次。
     DEDUPE_ID_HISTORY = 500
     DEDUPE_CONTENT_SEC = 60.0
 
@@ -110,7 +108,7 @@ class CommentTranslator:
         self._seen_ids = OrderedDict()      # id -> True，LRU，最多 DEDUPE_ID_HISTORY 个
         self._seen_content = {}             # (user, text) -> 上次接受的时间戳
 
-    # ---- 入站：Chrome 插件发来的一批观众评论 ----
+    # ---- 入站：抓取端送来的一批观众评论 ----
     async def accept(self, data):
         """校验、去重、广播、入队。永不抛异常——弹幕这条链路出错只能吞掉，
         绝不能把异常甩回 server._ws 那个 WebSocket 消息循环里。

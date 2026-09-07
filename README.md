@@ -19,7 +19,7 @@
 
 # TikTok Live Translator
 
-Real-time bilingual subtitles for TikTok livestreams, built for **compliance monitoring of Spanish-language live commerce**. It transcribes what the **streamer says**, raises an alert the moment a prohibited claim is spoken, and shows the translation alongside so an operator can read the context and decide whether to act. A Chrome extension can overlay the subtitles directly on the TikTok live page.
+Real-time bilingual subtitles for TikTok livestreams, built for **compliance monitoring of Spanish-language live commerce**. It transcribes what the **streamer says**, raises an alert the moment a prohibited claim is spoken, and shows the translation alongside so an operator can read the context and decide whether to act.
 
 The alert path is what the design optimises for. Banned-term matching runs on the **recognised source text**, never on the translation, so an alert is never delayed by a translation engine; audio is buffered rather than discarded, because a late alert beats a missed one. Two numbers decide whether it is working: **recall** — a missed violation costs far more than a false alarm — and **time from utterance to alert**.
 
@@ -34,11 +34,11 @@ It also works as a plain live-subtitle translator: leave `banned_terms.txt` empt
 - 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two tiers, with TranslateGemma 4B, Google's free API and Claude · OpenAI available as fallbacks. Whichever tier is installed is selected automatically
 - 🎵 **Voice-focused denoising** — RNNoise suppresses background music, tuned for streams with continuous BGM
 - ⚡ **Automatic hardware configuration** — detects the available accelerator (Apple Silicon GPU / NVIDIA CUDA / CPU) and selects the largest model that still runs in real time
-- 📺 **Two display modes** — a local web interface (scrolling bilingual history with a large current caption) or a Chrome extension overlaying the TikTok page
+- 📺 **Local web interface** — scrolling bilingual history with a large current caption, in the app window or any browser on the machine
 - 📊 **Observable latency** — a live readout of time-to-first-caption (P50/P95) broken down into segmentation, recognition and translation, alongside an audit log recording each segment: accepted text, candidates rejected by the quality filter, banned-term matches, and the translation that followed
 - ✅ **Startup self-check** — each capability is executed rather than inspected: denoising processes a sample through RNNoise, translation queries the engine, the audit log performs a write. Results appear on the home screen with a remediation step for anything failing
 - 🔄 **Fault tolerance** — five independent stream-resolution paths (TikTok's live API → the system WebKit engine loading the live page in the background (macOS; the way in when TikTok only hands a room's stream URL to a real browser, measured at 2 s) → yt-dlp → yt-dlp with browser login → live page parsing), since a blocked yt-dlp extractor reports failures as "not currently live". Each resolved URL is verified before the session starts. Dropped streams reconnect with a freshly resolved URL, distinguishing a network interruption from the broadcast ending; segments are dropped automatically when recognition falls behind; yt-dlp is kept current in the background. When TikTok withholds a room's stream URL from the app, it retries a few times 20 s apart and then says so plainly; for such rooms you can paste **the live-room link and a .flv address from your browser together** (separated by a space) — the link drives comments and the glossary, the address is the audio source. Measured: these signed addresses stay valid for about two weeks, so one capture covers a whole broadcast
-- 💬 **Viewer comment translation** — the app fetches comments itself via TikTokLive from the live room's comment stream (WebSocket signing goes through the third-party Euler Stream service, the only step in this project that doesn't run locally; needs Python 3.10+, and the component installs itself automatically on first stream start; usually works logged out, and retries once using the browser's TikTok login when TikTok requires one); the Chrome extension's own scraping still works as a fallback. Translations are posted under each comment, with the local web UI showing the same feed in its own panel — translation and display only, never part of the alert pipeline. Disable with `--no-comments`
+- 💬 **Viewer comment translation** — the app fetches comments itself via TikTokLive from the live room's comment stream (WebSocket signing goes through the third-party Euler Stream service, the only step in this project that doesn't run locally; needs Python 3.10+, and the component installs itself automatically on first stream start; usually works logged out, and retries once using the browser's TikTok login when TikTok requires one). Translations appear in the web UI's comment panel — translation and display only, never part of the alert pipeline. Disable with `--no-comments`
 
 ## Disk Space
 
@@ -405,17 +405,6 @@ cancer claim. Treat output like that as **candidate terms for human review**,
 never as an automatic list update: what counts as a violation is a business
 judgement, and a list padded with false positives buries the operator in noise.
 
-## Chrome Extension
-
-1. Open `chrome://extensions` and enable "Developer mode" in the top right.
-2. Click "Load unpacked" and select this project's `extension/` folder.
-3. Keep the app running, open a TikTok **live-room** page (URL contains `/live`), and a floating subtitle bar appears as subtitles arrive.
-
-The subtitle bar supports **dragging** to reposition it, **double-clicking** to collapse/expand, and hovering reveals an **×** to hide it. The extension automatically tries the ports the app may use (8765–8774), so it normally needs no configuration. The extension is just a display layer — audio capture and recognition are handled by the local app.
-
-The extension's options page has a "Translate viewer comments" toggle (on by default): when enabled, it posts translations of the live page's viewer comments under each comment, and the local web UI shows the same feed. This requires the browser to be logged into TikTok — logged out, TikTok stops pushing comment-section data after about 20 seconds.
-
-
 ## Architecture
 
 <p align="center">
@@ -438,7 +427,6 @@ flowchart TD
     ASR --> TR["translation<br/>Hy-MT2 7B / 1.8B (local) / TranslateGemma / Google / Claude / OpenAI / off"]
     TR --> WS(("WebSocket"))
     WS --> UI["browser subtitle UI"]
-    WS --> OV["Chrome-extension overlay<br/>on the TikTok page"]
     FF -.->|"stream drops: auto re-resolve + reconnect"| RESOLVE
     VAD -.->|"ASR falls behind: drop a segment, stay real-time"| ASR
 ```
@@ -522,13 +510,8 @@ suppresses instrumental music effectively but can only partially suppress sung
 vocals. Confidence filtering removes most such segments; occasional
 false positives are expected.
 
-**The extension does not display subtitles.** Confirm the application is
-running and that the page is a live room (the URL contains `/live`) rather than
-a regular video page, then reload the TikTok page.
-
 **The interface is not on port 8765.** If 8765 is occupied, the application
-moves to the next free port in 8766–8774. The Chrome extension scans the same
-range, so no configuration is required.
+moves to the next free port in 8766–8774 and says so in the terminal.
 
 **Exporting captions.** There is no export function; select and copy the text
 from the page. The page retains the most recent 300 lines, and the server

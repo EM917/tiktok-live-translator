@@ -118,7 +118,6 @@
       </div>
       <p class="hint">也可以只输入主播用户名（如 @somebody），或直接粘贴 .flv / .m3u8 流地址 · 首次识别需下载模型，进度会显示在页面上</p>
       <p class="hint">个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源</p>
-      <p class="hint">想把字幕直接叠加到 TikTok 直播画面上？<a href="https://github.com/EM917/tiktok-live-translator#extension" target="_blank" rel="noopener">安装自带的 Chrome 插件 →</a></p>
 
       <!-- 违禁词监控：这是本工具的核心功能，必须在首页可见，
            否则用户根本不知道有这回事（词表默认是空的） -->
@@ -173,8 +172,7 @@
     </div>
   </main>
 
-  <!-- 观众弹幕：程序自己通过 TikTokLive 抓取评论流，Chrome 插件抓取仍可用作补充；
-       只翻译、只显示，不进报警链路 -->
+  <!-- 观众弹幕：程序自己通过 TikTokLive 抓取评论流；只翻译、只显示，不进报警链路 -->
   <aside id="comment-panel" class="comment-panel hidden">
     <div class="comment-bar">
       <span class="comment-title">💬 观众弹幕 <span id="comment-count">0</span>
@@ -184,7 +182,7 @@
         <button id="clear-comments" class="btn small">清空</button>
       </span>
     </div>
-    <!-- 空态要说清楚是「没人发」还是「插件没连上」，两者对中控意义完全不同 -->
+    <!-- 空态要说清楚是「没人发」还是「评论流没连上」，两者对中控意义完全不同 -->
     <div id="comment-empty" class="cmt-empty hidden"></div>
     <div id="comment-list" class="comment-list"></div>
   </aside>

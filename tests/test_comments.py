@@ -1,18 +1,14 @@
 """观众弹幕（评论）翻译：只翻译、只显示，绝不进检测/审计链路。
 
-覆盖三件事：
-  1. server 侧的白名单闸门——插件（view 来源）只能发 viewer_comments，
-     绝不能借道 on_control 操控程序（这道闸门本身在 test_server_origin.py 里测）；
-  2. app/comments.py 的批量攒批 / 去重 / 限流 / 让路字幕翻译；
-  3. server 的评论历史留存与回放合并（重连不丢、译文能补）。
+覆盖两件事：
+  1. app/comments.py 的批量攒批 / 去重 / 限流 / 让路字幕翻译；
+  2. server 的评论历史留存与回放合并（重连不丢、译文能补）。
 
 不 import 其它测试文件，避免耦合到别处的 fixture 变化。
 """
 import asyncio
 from types import SimpleNamespace
 
-from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
 
 from app import comments as comments_mod
 from app import pipeline as pipeline_mod
@@ -103,117 +99,6 @@ async def wait_until(cond, limit=200):
             return True
         await asyncio.sleep(0.01)
     return cond()
-
-
-# ---------------------------------------------------------------------------
-# 1. server 白名单闸门：viewer_comments 只进 on_comments，绝不进 on_control
-# ---------------------------------------------------------------------------
-
-def test_view_origin_may_send_comments_but_not_control():
-    control_calls = []
-    comment_calls = []
-
-    async def scenario():
-        server = CaptionServer(port=8765)
-        server.on_control = lambda data: control_calls.append(data)
-        server.on_comments = lambda data: comment_calls.append(data)
-
-        app = web.Application()
-        app.router.add_get("/ws", server._ws)
-        test_server = TestServer(app)
-        client = TestClient(test_server)
-        await client.start_server()
-        try:
-            # view 来源：TikTok 页面，插件以页面身份连接
-            ws = await client.ws_connect("/ws", headers={"Origin": "https://www.tiktok.com"})
-            await ws.send_json({"type": "start", "url": "https://x"})
-            await ws.send_json({"type": "viewer_comments",
-                                "items": [{"id": "c1", "user": "u", "text": "hola"}]})
-            await asyncio.sleep(0.05)
-            await ws.close()
-
-            # 无 Origin 头：非浏览器客户端，走 control
-            ws2 = await client.ws_connect("/ws")
-            await ws2.send_json({"type": "start", "url": "https://x"})
-            await asyncio.sleep(0.05)
-            await ws2.close()
-        finally:
-            await client.close()
-
-    run(scenario())
-    # view 来源发的 start 不能被 on_control 收到；无 Origin 头的那次才能
-    assert len(control_calls) == 1
-    assert control_calls[0]["type"] == "start"
-    assert len(comment_calls) == 1
-    assert comment_calls[0]["type"] == "viewer_comments"
-
-
-def test_viewer_comments_rate_limited_per_connection():
-    """view 来源不需要经过插件，任何跑在 tiktok.com 页面的脚本都能直连高频灌
-    viewer_comments；单条消息条目数虽然被 comments.py 截断，但消息本身的频率
-    没有别的限制会挡，因此 server 侧要按连接限频——超频的直接丢，不进 on_comments。
-    """
-    comment_calls = []
-
-    async def scenario():
-        server = CaptionServer(port=8765)
-        server.CMT_MSG_RATE_LIMIT = 3
-        server.CMT_MSG_RATE_WINDOW_SEC = 1.0
-        server.on_comments = lambda data: comment_calls.append(data)
-
-        app = web.Application()
-        app.router.add_get("/ws", server._ws)
-        test_server = TestServer(app)
-        client = TestClient(test_server)
-        await client.start_server()
-        try:
-            ws = await client.ws_connect("/ws", headers={"Origin": "https://www.tiktok.com"})
-            for i in range(10):
-                await ws.send_json({"type": "viewer_comments",
-                                    "items": [{"id": "c{}".format(i), "user": "u", "text": "hola"}]})
-            await asyncio.sleep(0.05)
-            await ws.close()
-        finally:
-            await client.close()
-
-    run(scenario())
-    # 10 条消息挤在同一秒内，限频为 3 → 只有前 3 条被放行到 on_comments
-    assert len(comment_calls) == 3
-
-
-def test_extension_connection_is_announced():
-    """面板空着时中控要分得清「没人发弹幕」和「插件没连上」：插件（view 来源）
-    连上/断开都要广播 comment_source，并写进 config 让晚打开的页面从 hello 拿到。"""
-    async def scenario():
-        server = CaptionServer(port=8765)
-        app = web.Application()
-        app.router.add_get("/ws", server._ws)
-        client = TestClient(TestServer(app))
-        await client.start_server()
-        seen = []
-
-        async def next_source(ws):
-            for _ in range(20):
-                msg = await ws.receive_json(timeout=2)
-                if msg.get("type") == "comment_source":
-                    return msg["extension_clients"]
-            return None
-
-        try:
-            control = await client.ws_connect("/ws")          # 本地页面，无 Origin
-            hello = await control.receive_json(timeout=2)
-            seen.append(hello["config"].get("extension_clients"))
-            view = await client.ws_connect("/ws", headers={"Origin": "https://www.tiktok.com"})
-            seen.append(await next_source(control))            # 插件连上 → 1
-            seen.append(server.config["extension_clients"])
-            await view.close()
-            seen.append(await next_source(control))            # 插件断开 → 0
-            await control.close()
-        finally:
-            await client.close()
-        return seen
-
-    assert run(scenario()) == [0, 1, 1, 0]
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +230,7 @@ def test_comments_wait_for_subtitle_translation(tmp_path, monkeypatch):
     p._subtitle_busy = 1
 
     async def scenario():
-        await p.handle_viewer_comments({"type": "viewer_comments", "items": [
+        await p.comments.accept({"type": "viewer_comments", "items": [
             {"id": "c1", "user": "a", "text": "hola mundo"},
         ]})
         await asyncio.sleep(0.3)
@@ -397,7 +282,7 @@ def test_no_translator_shows_original(tmp_path, monkeypatch):
     p, server = make_pipeline(monkeypatch, tmp_path, translator=None)
 
     async def scenario():
-        n = await p.handle_viewer_comments({"type": "viewer_comments", "items": [
+        n = await p.comments.accept({"type": "viewer_comments", "items": [
             {"id": "c1", "user": "a", "text": "hola mundo"},
         ]})
         await asyncio.sleep(0.1)
