@@ -75,3 +75,58 @@ def test_source_cli_wins_over_saved():
 def test_source_cli_auto_normalized_to_none():
     """Whisper 的 language 参数只认语言码或 None，"auto" 字符串会炸。"""
     assert settings.resolve_source("auto", "es") is None
+
+
+# ---- 最近直播间：按主播去重、新的在前、只收有主播名的 ----
+
+def test_push_recent_room_keeps_newest_first(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    settings.push_recent_room("bella", "https://www.tiktok.com/@bella/live")
+    settings.push_recent_room("jessy", "https://www.tiktok.com/@jessy/live")
+    got = settings.recent_rooms()
+    assert [x["streamer"] for x in got] == ["jessy", "bella"]
+    assert got[0]["url"] == "https://www.tiktok.com/@jessy/live"
+    assert got[0]["at"]                       # 带时间戳
+
+
+def test_push_recent_room_dedups_by_streamer(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    settings.push_recent_room("bella", "https://www.tiktok.com/@bella/live")
+    settings.push_recent_room("jessy", "https://www.tiktok.com/@jessy/live")
+    settings.push_recent_room("bella", "https://www.tiktok.com/@bella/live?x=1")
+    got = settings.recent_rooms()
+    assert [x["streamer"] for x in got] == ["bella", "jessy"]   # bella 回到最前，不重复
+    assert got[0]["url"].endswith("?x=1")                       # 用最新那次的地址
+
+
+def test_push_recent_room_respects_limit(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    for i in range(12):
+        settings.push_recent_room("s{}".format(i), "https://www.tiktok.com/@s{}/live".format(i))
+    got = settings.recent_rooms()
+    assert len(got) == settings.RECENT_ROOMS_MAX
+    assert got[0]["streamer"] == "s11"        # 最新的在最前
+
+
+def test_push_recent_room_ignores_entries_without_a_streamer(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    settings.push_recent_room("", "https://cdn.example/a.flv")   # 直连地址没有主播身份
+    settings.push_recent_room("bella", "")                        # 缺地址
+    assert settings.recent_rooms() == []
+
+
+def test_recent_rooms_skips_corrupt_entries(monkeypatch, tmp_path):
+    path = _use_tmp(monkeypatch, tmp_path)
+    path.write_text(json.dumps({"recent_rooms": [
+        {"streamer": "ok", "url": "https://www.tiktok.com/@ok/live", "at": "t"},
+        {"streamer": "", "url": "x"},          # 无主播名，丢弃
+        "not a dict",                          # 类型不对，丢弃
+        {"nope": 1},                           # 缺字段，丢弃
+    ]}), encoding="utf-8")
+    got = settings.recent_rooms()
+    assert [x["streamer"] for x in got] == ["ok"]
+
+
+def test_recent_rooms_empty_when_missing(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    assert settings.recent_rooms() == []

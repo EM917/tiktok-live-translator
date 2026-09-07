@@ -85,6 +85,15 @@
                placeholder="https://www.tiktok.com/@主播用户名/live">
         <button id="start-btn" class="btn primary">开始翻译</button>
       </div>
+      <!-- 最近直播间：只显示主播名，点一下就直接开始。空的时候整块隐藏，
+           不在首页留一块空白。 -->
+      <div id="recent-rooms" class="recent-rooms hidden">
+        <div class="recent-head">
+          <span class="recent-label">最近的直播间</span>
+          <button id="recent-clear" class="recent-clear" title="清空最近记录">清空</button>
+        </div>
+        <div id="recent-list" class="recent-list"></div>
+      </div>
       <div class="start-row secondary">
         <label>主播语言
           <!-- 西语是默认：这个产品面向西语带货直播，逐段自动检测实测会让

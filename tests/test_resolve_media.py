@@ -162,3 +162,34 @@ def test_start_control_message_passes_media_through(monkeypatch, tmp_path):
                           "media": "https://pull-flv-x.tiktokcdn-us.com/a.flv"}))
     assert seen == {"url": "https://www.tiktok.com/@bella2/live",
                     "media": "https://pull-flv-x.tiktokcdn-us.com/a.flv"}
+
+
+# ---- 最近直播间：开播即记录、清空、只记有主播名的 ----
+
+def test_begin_session_records_recent_room(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    run(p._publish_recent_rooms("bella", "https://www.tiktok.com/@bella/live"))
+    from app import settings
+    assert [x["streamer"] for x in settings.recent_rooms()] == ["bella"]
+    # 广播出去，且写进 config 供 hello 回填
+    assert server.config["recent_rooms"][0]["streamer"] == "bella"
+    assert any(m.get("type") == "recent_rooms" for m in server.messages)
+
+
+def test_clear_recent_rooms_empties_and_broadcasts(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    run(p._publish_recent_rooms("bella", "https://www.tiktok.com/@bella/live"))
+    server.messages.clear()
+    run(p._clear_recent_rooms())
+    from app import settings
+    assert settings.recent_rooms() == []
+    assert server.config["recent_rooms"] == []
+    assert server.messages[-1] == {"type": "recent_rooms", "entries": []}
+
+
+def test_clear_recent_rooms_via_control_message(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    run(p._publish_recent_rooms("bella", "https://www.tiktok.com/@bella/live"))
+    run(p.handle_control({"type": "clear_recent_rooms"}))
+    from app import settings
+    assert settings.recent_rooms() == []
