@@ -73,7 +73,9 @@ def test_browser_only_gives_up_with_a_plain_message(monkeypatch, tmp_path):
     with pytest.raises(ResolveError) as exc:
         run(p._resolve_media("https://www.tiktok.com/@x/live"))
     assert exc.value.kind == "browser_only"
-    assert "过几分钟" in str(exc.value)
+    # 文案必须说清两件事：这不是限流（曾经的误诊），以及现在就能用的办法
+    assert "不是网络或限流" in str(exc.value)
+    assert ".flv" in str(exc.value)
 
 
 @pytest.mark.parametrize("kind", ["offline", "not_found", "network", "internal", "unknown", "login"])
