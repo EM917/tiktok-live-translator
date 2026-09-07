@@ -655,8 +655,10 @@ class Pipeline:
             if self.audit is target:
                 self.audit = None
 
-    # TikTok 暂时不给流地址（接口回 4003110、WebKit 也没拿到）时的自动重试：
-    # 这种情况常见于同一 IP 短时间内对同一房间请求过多，过一会儿就好。
+    # TikTok 不给流地址（接口回 4003110、后面各层也没拿到）时的自动重试。
+    # 曾以为是同一 IP 短时间内请求过多被限流——2026-09-05 实测推翻：同一分钟
+    # 别的房间正常返回、用户自己的 Chrome 同一 IP 能播，是房间维度的拒绝，
+    # 原因 TikTok 不说明。重试仍值得（09-06 一场第三次成功），但不能保证。
     BROWSER_ONLY_RETRIES = 3
     BROWSER_ONLY_RETRY_SEC = 20.0
 
@@ -711,9 +713,11 @@ class Pipeline:
                                             self.BROWSER_ONLY_RETRIES))
                 await asyncio.sleep(self.BROWSER_ONLY_RETRY_SEC)
         raise ResolveError(
-            "TikTok 暂时没有把这个直播间的流地址给程序（代码 4003110），已自动重试 {} 次。"
-            "这种情况多半是本机在短时间内对这个直播间请求过多被暂时限流，"
-            "过几分钟再点「开始翻译」通常就好了。".format(self.BROWSER_ONLY_RETRIES),
+            "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 {} 次。"
+            "不是网络或限流问题——同一时刻其它直播间正常，原因 TikTok 不说明；"
+            "有时过一会儿再点「开始翻译」就好，有时整场都不给。"
+            "想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
+            "（中间空格隔开），一次约两周有效。".format(self.BROWSER_ONLY_RETRIES),
             kind="browser_only") from last
 
     def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None):
