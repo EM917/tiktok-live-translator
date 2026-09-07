@@ -66,6 +66,16 @@ AUDIO_BACKLOG_DEGRADED_SEC = 30.0
 AUDIO_BACKLOG_HARD_SEC = 60.0
 
 
+def _media_label(url):
+    """流地址只留主机+路径进日志：query 里的 sign/expire 就是能拉流的凭证。"""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(str(url))
+        return (parts.netloc + parts.path) or str(url)[:80]
+    except Exception:
+        return "?"
+
+
 def _arnndn_probe(model_path):
     """用 0.1 秒静音实测 arnndn 滤镜 + 模型能否初始化。
 
@@ -638,24 +648,35 @@ class Pipeline:
         # 签名地址实测有效期约两周，用户从浏览器里取一次就够用整场。
         override = getattr(self, "_media_override", None)
         if override:
+            t0 = time.monotonic()
             checked = await _check_media_url(override, trusted=True)
             if await _media_url_works(checked):
                 print("[信息] 使用用户指定的音频源")
+                self._log_resolve(0, True, t0, [{"layer": "用户直连", "outcome": "url"}],
+                                  media=checked)
                 return checked
+            self._log_resolve(0, False, t0, [{"layer": "用户直连", "outcome": "dead_url"}],
+                              kind="dead_override")
             self._media_override = None      # 失效就别再用，回到正常解析
             await self.server.status(
                 "connecting", "你给的流地址拉不动（可能已过期），改用自动解析…")
 
         last = None
         for attempt in range(1, self.BROWSER_ONLY_RETRIES + 1):
+            layers, t0 = [], time.monotonic()
             try:
-                return await resolve_stream_url(
+                media = await resolve_stream_url(
                     url, cookies=self.args.cookies,
-                    cookies_browser=getattr(self.args, "cookies_browser", "auto"))
+                    cookies_browser=getattr(self.args, "cookies_browser", "auto"),
+                    trace=layers)
             except ResolveError as exc:
+                self._log_resolve(attempt, False, t0, layers, kind=exc.kind)
                 if exc.kind != "browser_only":
                     raise
                 last = exc
+            else:
+                self._log_resolve(attempt, True, t0, layers, media=media)
+                return media
             if attempt < self.BROWSER_ONLY_RETRIES:
                 await self.server.status(
                     "connecting",
@@ -668,6 +689,30 @@ class Pipeline:
             "这种情况多半是本机在短时间内对这个直播间请求过多被暂时限流，"
             "过几分钟再点「开始翻译」通常就好了。".format(self.BROWSER_ONLY_RETRIES),
             kind="browser_only") from last
+
+    def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None):
+        """一次解析尝试：审计文件里一行（type=resolve）+ 终端一行。
+
+        attempt=0 表示用户自带的直连地址；1..N 是自动解析的第几次。media 只记
+        主机和路径——签名地址的 query 里带 sign/expire，两周内拿着就能拉流，
+        不该躺在日志里。audit 为 None（会话还没建起来、或测试里的半成品
+        实例）时只打终端。"""
+        ms = int(round((time.monotonic() - t0) * 1000))
+        rec = {"type": "resolve", "attempt": attempt, "of": self.BROWSER_ONLY_RETRIES,
+               "ok": bool(ok), "ms": ms, "layers": list(layers)}
+        if kind:
+            rec["kind"] = kind
+        if media:
+            rec["media"] = _media_label(media)
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.resolve(rec)
+        label = "用户直连" if attempt == 0 else "第 {}/{} 次".format(
+            attempt, self.BROWSER_ONLY_RETRIES)
+        walked = " ".join("{}→{}".format(r.get("layer"), r.get("outcome")) for r in layers)
+        print("[解析] {} {} {:.1f}s{} {}".format(
+            label, "成功" if ok else "失败", ms / 1000,
+            " kind=" + kind if kind else "", walked).rstrip())
 
     async def _run_session(self, url):
         from .asr import create_transcriber

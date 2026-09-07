@@ -110,6 +110,16 @@ class AuditLog:
             "trigger": trigger,
         })
 
+    def resolve(self, record):
+        """流地址解析的一次尝试：第几次、成没成、走了哪几层、各层结果与耗时。
+
+        record 由 Pipeline._log_resolve 组好（type=resolve）。这条记录存在的
+        理由：2026-09-06 一场直播前两次解析失败、第三次才成功，事后查不到
+        任何证据——程序 stdout 指向 /dev/null，会话日志又只记开始/结束。
+        只能靠「只有一个会话文件」+「重试循环只对一种错误生效」+「秒数
+        对得上」倒推，换个失败模式就推不出来了。"""
+        self._write(dict(record, at=datetime.now().isoformat(timespec="milliseconds")))
+
     def dropped_audio(self, queue_depth=None):
         """识别跟不上时丢掉的音频段。漏报的第四种成因——这一段压根没进 ASR，
         不记下来事后就无法归因。"""
