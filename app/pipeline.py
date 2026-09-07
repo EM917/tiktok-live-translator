@@ -18,7 +18,8 @@ from .comments import CommentTranslator
 from .detector import BannedTermDetector, load_fuzzy_policy, load_terms
 from .glossary import load as load_glossary
 from .nethttp import read_all
-from .settings import load_settings, save_setting
+from .settings import (load_settings, push_recent_room, recent_rooms,
+                       save_setting)
 from .telemetry import Telemetry
 from .translator import ENGINE_KEY_ENV, create_translator
 
@@ -134,6 +135,9 @@ class Pipeline:
         saved_source = load_settings().get("source_lang")
         if saved_source:
             self.server.config["source_lang"] = str(saved_source)[:12]
+        # 「最近直播间」：启动就摆在首页，中控不必每次重新粘地址。只存主播名
+        # 和地址，界面上只显示主播名（见 web/app.js renderRecentRooms）
+        self.server.config["recent_rooms"] = recent_rooms()
         self._counter = 0
         self._asr_pool = None            # 每条直播一个独立线程池，停止时整个丢弃
         self._stream_task = None
@@ -237,6 +241,8 @@ class Pipeline:
                 "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
         elif mtype == "stop":
             return self.stop_stream()
+        elif mtype == "clear_recent_rooms":
+            return self._clear_recent_rooms()
         elif mtype == "set_engine":
             return self.set_engine(msg.get("engine"), msg.get("api_key"))
         elif mtype == "retranslate":
@@ -421,6 +427,11 @@ class Pipeline:
         self.glossary = load_glossary(getattr(self.args, "glossary", None),
                                       streamer=streamer)
         set_active(self.glossary)
+        # 记进「最近直播间」。放在这里而不是解析成功之后：用户「加入过」这个
+        # 房间就该出现在列表里，哪怕这次没拿到流地址——下次点一下就能再试。
+        # 只记有主播名的（直接 .flv 地址没有身份，进列表只是一串地址）。
+        if streamer:
+            await self._publish_recent_rooms(streamer, url)
         prof = profile_path(streamer)
         misplaced = misplaced_entries(self.glossary.entries)
         misplaced = [(o, v, zh) for o, v, zh in misplaced if o != streamer]
@@ -582,6 +593,21 @@ class Pipeline:
         self.server.config["selfcheck"] = {"checks": checks, "summary": summary}
         await self.server.broadcast({"type": "selfcheck", "checks": checks,
                                      "summary": summary})
+
+    async def _clear_recent_rooms(self):
+        """清空「最近直播间」——中控点了首页那个「清空」。"""
+        save_setting("recent_rooms", [])
+        self.server.config["recent_rooms"] = []
+        await self.server.broadcast({"type": "recent_rooms", "entries": []})
+
+    async def _publish_recent_rooms(self, streamer, url):
+        """把刚打开的房间推进「最近直播间」并广播给所有页面。
+
+        存进 server.config，晚打开或刷新的页面从 hello 里就能拿到——
+        localStorage 按端口隔离，端口一漂移就丢，所以持久化走服务端。"""
+        entries = push_recent_room(streamer, url)
+        self.server.config["recent_rooms"] = entries
+        await self.server.broadcast({"type": "recent_rooms", "entries": entries})
 
     async def _publish_watchlist(self):
         """把违禁词表状态推给界面并存进 config——首页那张卡片要靠它显示

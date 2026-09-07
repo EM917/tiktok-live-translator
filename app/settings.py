@@ -39,6 +39,47 @@ def resolve_source(cli_value, saved):
     return s[:12] if s else DEFAULT_SOURCE_LANG
 
 
+# 首页「最近直播间」最多留几个。够一屏点选即可，多了首页反而乱。
+RECENT_ROOMS_MAX = 8
+
+
+def push_recent_room(streamer, url, limit=RECENT_ROOMS_MAX):
+    """把一个刚打开的直播间记进「最近直播间」，返回更新后的列表（新的在前）。
+
+    按主播名去重：同一个主播反复打开只留最近一条，不然列表几分钟就被
+    同一个人刷满。只收有主播名的房间——直接粘 .flv 流地址没有主播身份，
+    进了列表也只能显示一串地址，反而是给中控添乱。写失败静默忽略：
+    这是锦上添花，不能拖累开播。
+    """
+    from datetime import datetime
+    streamer = (streamer or "").strip()
+    url = (url or "").strip()
+    if not streamer or not url:
+        return recent_rooms()
+    data = load_settings()
+    items = data.get("recent_rooms")
+    items = [x for x in items if isinstance(x, dict)] if isinstance(items, list) else []
+    # 同名的旧记录先剔掉，再把这一条放到最前
+    items = [x for x in items if x.get("streamer") != streamer]
+    items.insert(0, {"streamer": streamer, "url": url[:500],
+                     "at": datetime.now().isoformat(timespec="seconds")})
+    items = items[:max(1, int(limit))]
+    save_setting("recent_rooms", items)
+    return items
+
+
+def recent_rooms(limit=RECENT_ROOMS_MAX):
+    """读「最近直播间」，过滤掉结构不对的条目，最多返回 limit 条。"""
+    items = load_settings().get("recent_rooms")
+    if not isinstance(items, list):
+        return []
+    clean = [{"streamer": x.get("streamer", ""), "url": x.get("url", ""),
+              "at": x.get("at", "")}
+             for x in items
+             if isinstance(x, dict) and x.get("streamer") and x.get("url")]
+    return clean[:max(1, int(limit))]
+
+
 def save_setting(key, value):
     """写入单个设置项（读-合并-原子替换）。写失败静默忽略——
     持久化是锦上添花，不能因为磁盘/权限问题影响主流程。"""
