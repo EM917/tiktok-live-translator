@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 
+_KEEP = []   # 图像与通知观察者的引用：回调在启动完成后才触发，之前不能被回收
+
 
 def brand_mac_app(root):
     """macOS：给 Dock 图标和菜单栏名字。
@@ -27,6 +29,7 @@ def brand_mac_app(root):
         info["CFBundleDisplayName"] = "TikTok 直播同传"
     except Exception:
         pass
+    image = None
     for rel in ("TikTok Live Translator.app/Contents/Resources/AppIcon.icns",
                 "assets/icon-1024.png"):
         path = Path(root) / rel
@@ -34,8 +37,34 @@ def brand_mac_app(root):
             continue
         try:
             image = NSImage.alloc().initWithContentsOfFile_(str(path))
-            if image:
-                NSApplication.sharedApplication().setApplicationIconImage_(image)
-                return
         except Exception:
-            continue
+            image = None
+        if image:
+            break
+    if not image:
+        return
+    app = NSApplication.sharedApplication()
+    try:
+        app.setApplicationIconImage_(image)
+    except Exception:
+        pass
+    # Dock 上那块图标是应用「完成启动」时才创建的：在那之前设的图标会被按
+    # bundle 查到的（没有 bundle → 空白文档）盖掉。2026-09-08 实录：菜单栏名字
+    # 改对了，Dock 仍是白板。所以订阅 didFinishLaunching，在主队列上再设一次。
+    try:
+        from AppKit import NSApplicationDidFinishLaunchingNotification
+        from Foundation import NSNotificationCenter, NSOperationQueue
+
+        def reapply(_note):
+            try:
+                app.setApplicationIconImage_(image)
+                app.dockTile().display()
+            except Exception:
+                pass
+
+        token = NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
+            NSApplicationDidFinishLaunchingNotification, None,
+            NSOperationQueue.mainQueue(), reapply)
+        _KEEP.extend([image, token])          # 别让 GC 把图和观察者收走
+    except Exception:
+        pass
