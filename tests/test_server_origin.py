@@ -50,3 +50,48 @@ def test_lookalike_and_http_tiktok_rejected():
 
 def test_arbitrary_sites_rejected():
     assert classify("https://example.com") is None
+
+
+# ---- 端到端：判定结果在 _ws 里怎么落地 ----
+#
+# 上面只测判定函数本身。这条约定曾由 test_comments.py 里一个 view 来源的
+# 测试顺带覆盖；插件撤掉、那个测试删掉后，「control 连接的指令到得了
+# on_control、被拒来源根本握不上手」就没有任何端到端测试钉着了——补上。
+
+def test_ws_control_dispatch_and_rejection_end_to_end():
+    import asyncio
+
+    from aiohttp import web
+    from aiohttp.client_exceptions import WSServerHandshakeError
+    from aiohttp.test_utils import TestClient, TestServer
+
+    control_calls = []
+
+    async def scenario():
+        server = CaptionServer(port=8765)
+        server.on_control = lambda data: control_calls.append(data)
+        app = web.Application()
+        app.router.add_get("/ws", server._ws)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            # 无 Origin：非浏览器客户端 / 应用窗口 —— 指令要到 on_control
+            ws = await client.ws_connect("/ws")
+            await ws.send_json({"type": "start", "url": "https://x"})
+            await ws.send_str("[1, 2]")            # 非对象 JSON：忽略，不能断连
+            await ws.send_json({"type": "stop"})
+            await asyncio.sleep(0.05)
+            await ws.close()
+            # tiktok.com 来源：以前是只读的 view 一级，现在直接拒绝握手
+            rejected = None
+            try:
+                await client.ws_connect("/ws", headers={"Origin": "https://www.tiktok.com"})
+            except WSServerHandshakeError as exc:
+                rejected = exc.status
+            return rejected
+        finally:
+            await client.close()
+
+    status = asyncio.run(scenario())
+    assert [c["type"] for c in control_calls] == ["start", "stop"]
+    assert status == 403
