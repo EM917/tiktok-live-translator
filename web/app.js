@@ -67,6 +67,11 @@
   var scSummary = document.getElementById("sc-summary");
   var scToggle = document.getElementById("sc-toggle");
   var scList = document.getElementById("sc-list");
+  var diskHead = document.getElementById("disk-head");
+  var diskSummary = document.getElementById("disk-summary");
+  var diskBody = document.getElementById("disk-body");
+  var diskList = document.getElementById("disk-list");
+  var diskDelete = document.getElementById("disk-delete");
 
   var STATUS_TEXT = {
     idle: "待机",
@@ -372,6 +377,7 @@
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
           if (msg.config.comment_detail != null) backendDetail = msg.config.comment_detail;
           if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
+          if (msg.config.disk) renderDisk(msg.config.disk);
           if (msg.config.recent_rooms) renderRecentRooms(msg.config.recent_rooms);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
@@ -460,6 +466,9 @@
         break;
       case "recent_rooms":
         renderRecentRooms(msg.entries);
+        break;
+      case "disk":
+        renderDisk(msg);
         break;
       case "engine":
         renderEngine(msg);
@@ -928,6 +937,101 @@
   if (recentClear) {
     recentClear.addEventListener("click", function () {
       send({ type: "clear_recent_rooms" });     // 服务端清空并广播空列表回来
+    });
+  }
+
+  // 磁盘空间卡：展开时才向服务端要盘点（要 walk 几十 GB 的缓存目录），
+  // 勾选后「删除所选」先弹确认，列出每一项和体积——删的是几 GB 的模型和
+  // 合规证据，没有回头路
+  var diskItems = [];
+
+  function humanSize(n) {
+    if (n == null) return "";
+    if (n >= 1024 * 1024 * 1024) return (n / 1073741824).toFixed(1) + " GB";
+    if (n >= 1024 * 1024) return (n / 1048576).toFixed(0) + " MB";
+    return Math.max(1, Math.round(n / 1024)) + " KB";
+  }
+
+  function renderDisk(info) {
+    if (!diskList || !info) return;
+    diskItems = Array.isArray(info.items) ? info.items : [];
+    var total = 0;
+    diskItems.forEach(function (it) { total += it.size || 0; });
+    diskSummary.textContent = (info.free != null ? "剩余 " + humanSize(info.free) + " · " : "")
+      + "本机模型与日志 " + humanSize(total);
+    diskList.innerHTML = "";
+    if (!diskItems.length) {
+      diskList.textContent = "没有找到可管理的模型或日志。";
+      syncDiskButton();
+      return;
+    }
+    var ROLE = { in_use: "正在用", app: "本程序", other: "非本程序" };
+    diskItems.forEach(function (it) {
+      var row = document.createElement("label");
+      row.className = "disk-item role-" + it.role;
+      var box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = it.id;
+      box.disabled = it.role === "in_use";
+      box.addEventListener("change", syncDiskButton);
+      var name = document.createElement("span");
+      name.className = "disk-name";
+      name.textContent = it.label;                 // textContent：模型名当数据，不当 HTML
+      var tag = document.createElement("span");
+      tag.className = "disk-role";
+      tag.textContent = ROLE[it.role] || it.role;
+      var size = document.createElement("span");
+      size.className = "disk-size";
+      size.textContent = humanSize(it.size);
+      var note = document.createElement("span");
+      note.className = "disk-note";
+      note.textContent = it.note || "";
+      row.appendChild(box); row.appendChild(name); row.appendChild(tag);
+      row.appendChild(size); row.appendChild(note);
+      diskList.appendChild(row);
+    });
+    syncDiskButton();
+  }
+
+  function diskSelected() {
+    var out = [];
+    diskList.querySelectorAll("input[type=checkbox]:checked").forEach(function (b) {
+      out.push(b.value);
+    });
+    return out;
+  }
+
+  function syncDiskButton() {
+    if (!diskDelete) return;
+    var ids = diskSelected();
+    var bytes = 0;
+    diskItems.forEach(function (it) { if (ids.indexOf(it.id) !== -1) bytes += it.size || 0; });
+    diskDelete.disabled = ids.length === 0;
+    diskDelete.textContent = ids.length
+      ? "删除所选（" + ids.length + " 项，" + humanSize(bytes) + "）" : "删除所选";
+  }
+
+  if (diskHead) {
+    diskHead.addEventListener("click", function () {
+      var open = diskBody.classList.contains("hidden");
+      diskBody.classList.toggle("hidden", !open);
+      document.getElementById("disk-toggle").textContent = open ? "收起" : "管理";
+      if (open) {
+        diskList.textContent = "正在统计…";
+        send({ type: "disk_inventory" });
+      }
+    });
+  }
+  if (diskDelete) {
+    diskDelete.addEventListener("click", function () {
+      var ids = diskSelected();
+      if (!ids.length) return;
+      var lines = diskItems.filter(function (it) { return ids.indexOf(it.id) !== -1; })
+        .map(function (it) { return "· " + it.label + "（" + humanSize(it.size) + "）"; });
+      if (!window.confirm("确定删除以下内容？删了就没有了。\n\n" + lines.join("\n"))) return;
+      diskDelete.disabled = true;
+      diskDelete.textContent = "删除中…";
+      send({ type: "disk_delete", ids: ids });
     });
   }
 

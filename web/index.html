@@ -169,6 +169,23 @@
           保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色警报并写入审计日志。
         </p>
       </div>
+
+      <!-- 磁盘空间：程序往硬盘放的模型和日志散在三处，用户看不到也没地方删。
+           实测一台用了三周的机器缓存里躺着 50 多 GB，一半是本程序不用的模型。 -->
+      <div id="disk-card" class="disk-card">
+        <div class="disk-head" id="disk-head">
+          <span class="disk-title">💽 磁盘空间</span>
+          <span id="disk-summary" class="disk-summary"></span>
+          <span class="disk-toggle" id="disk-toggle">管理</span>
+        </div>
+        <div id="disk-body" class="disk-body hidden">
+          <div id="disk-list" class="disk-list"></div>
+          <div class="disk-foot">
+            <span id="disk-hint" class="disk-hint">标「正在用」的删不掉；标「本程序」的删了会在下次需要时自动重下；标「非本程序」的可能是别的工具在用，删前自己确认。</span>
+            <button id="disk-delete" class="btn small danger" disabled>删除所选</button>
+          </div>
+        </div>
+      </div>
     </div>
   </main>
 
