@@ -115,7 +115,7 @@ python3 main.py --doctor    # print the hardware check and recommended config
 - **Windows**: double-click **`Start.bat`**;
 - CLI: `cd ~/tiktok-live-translator && python3 main.py`.
 
-The UI opens in its **own app window** (no browser tab), remembering the room URL and target language from last time — just hit Start. Closing the window quits the app. Pass `--browser` if you prefer the browser UI.
+The UI opens in its **own app window** (no browser tab), remembering the room URL and target language from last time — just hit Start. Rooms you opened recently are listed under the input box by streamer name; one click starts them. Closing the window quits the app. Pass `--browser` if you prefer the browser UI.
 
 ## Automatic Hardware Configuration
 
