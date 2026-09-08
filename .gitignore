@@ -21,3 +21,6 @@ logs/
 *.bak-*
 *.log
 .run.log
+# .app 里的 venv 外壳：含本机路径，由 app/macbundle.py 启动时生成
+TikTok Live Translator.app/Contents/pyvenv.cfg
+TikTok Live Translator.app/Contents/lib
