@@ -524,3 +524,34 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 .recent-chip:hover { border-color: var(--accent); color: var(--accent); }
 .recent-chip .at { font-size: 11px; color: var(--text-faint); }
 .recent-chip:hover .at { color: var(--accent); }
+
+/* ---------- 磁盘空间 ---------- */
+.disk-card {
+  max-width: 560px; margin: 12px auto 0; text-align: left;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
+}
+.disk-head {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer;
+}
+.disk-head:hover { background: color-mix(in srgb, var(--text) 4%, var(--bg)); }
+.disk-title { font-size: 13px; font-weight: 600; }
+.disk-summary { flex: 1; font-size: 12px; color: var(--text-dim); }
+.disk-toggle { font-size: 11px; color: var(--text-faint); }
+.disk-body { border-top: 1px solid var(--border); padding: 6px 14px 12px; }
+.disk-list { font-size: 12px; }
+.disk-item {
+  display: grid; grid-template-columns: 18px 1fr auto auto; grid-column-gap: 8px;
+  align-items: center; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  cursor: pointer;
+}
+.disk-item:last-child { border-bottom: none; }
+.disk-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disk-role { font-size: 11px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--text-dim); }
+.disk-item.role-in_use .disk-role { color: #1db954; border-color: #1db954; }
+.disk-item.role-other .disk-role { color: var(--warn-fg); background: var(--warn-bg); border-color: transparent; }
+.disk-size { font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.disk-note { grid-column: 2 / span 3; font-size: 11px; color: var(--text-faint); }
+.disk-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.disk-hint { font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+.btn.danger { color: var(--fail); border-color: var(--fail); }
+.btn.danger:disabled { opacity: 0.5; cursor: default; }
