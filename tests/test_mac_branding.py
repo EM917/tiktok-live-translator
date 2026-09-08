@@ -171,3 +171,34 @@ def test_installs_a_dock_tile_view_after_the_app_finishes_launching(monkeypatch,
     assert isinstance(FakeTile.content, FakeImageView)
     assert FakeTile.content.image is icons[0]
     assert len(icons) == 1
+
+
+def test_skips_runtime_patches_when_already_inside_a_bundle(monkeypatch):
+    """进程住在 .app 里时（app/macbundle.py），系统按 Info.plist 登记名字和图标，
+    这些补丁不该再动任何东西。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    touched = []
+
+    class FakeApp:
+        @staticmethod
+        def sharedApplication():
+            touched.append("app")
+            return FakeApp()
+
+    class FakeBundle:
+        @staticmethod
+        def mainBundle():
+            return FakeBundle()
+
+        def bundlePath(self):
+            return "/x/TikTok Live Translator.app"
+
+    appkit = types.ModuleType("AppKit")
+    appkit.NSApplication = FakeApp
+    appkit.NSImage = object
+    foundation = types.ModuleType("Foundation")
+    foundation.NSBundle = FakeBundle
+    monkeypatch.setitem(sys.modules, "AppKit", appkit)
+    monkeypatch.setitem(sys.modules, "Foundation", foundation)
+    assert macbrand.brand_mac_app("/nonexistent") is None
+    assert touched == []

@@ -463,6 +463,11 @@ async def main_async(args, state=None):
 
 
 def main():
+    # macOS：先住进 .app 再往下走——系统按 Info.plist 登记名字和图标，Dock、
+    # 菜单栏、悬停名原生正确（见 app/macbundle.py）。execve 成功就不会返回。
+    if sys.platform == "darwin":
+        from app.macbundle import relaunch_inside_bundle
+        relaunch_inside_bundle(ROOT)
     args = parse_args()
     if args.target is None:   # 未显式传参：用界面里上次选的语言，都没有则简体中文
         saved = _load_settings().get("target_lang")

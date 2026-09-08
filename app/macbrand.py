@@ -23,6 +23,13 @@ def brand_mac_app(root):
         from Foundation import NSBundle
     except Exception:
         return
+    # 进程已经住在 .app 里（见 app/macbundle.py）：名字和图标由系统按 Info.plist
+    # 登记，下面这些运行时补丁只在没进 bundle 的兜底场景才需要
+    try:
+        if str(NSBundle.mainBundle().bundlePath()).endswith(".app"):
+            return
+    except Exception:
+        pass
     try:
         info = NSBundle.mainBundle().infoDictionary()
         info["CFBundleName"] = "TikTok 直播同传"
