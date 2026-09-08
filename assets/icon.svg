@@ -7,7 +7,10 @@
   </defs>
 
   <!-- 圆角方块底 -->
-  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#bg)"/>
+  <!-- Apple 图标网格：1024 画布里圆角方占 824、四周留 100 透明边距。渲染成 PNG 时
+       必须保留透明底——2026-09-08 之前的 PNG 渲染到了白底上，Dock 里显示成带白框的满幅方块。 -->
+  <rect x="100" y="100" width="824" height="824" rx="188" fill="url(#bg)"/>
+  <g transform="translate(100 100) scale(0.919643) translate(-64 -64)">
 
   <!-- 对话气泡：青/品红错位残影 + 白色主体（TikTok 色彩语言） -->
   <g>
@@ -26,4 +29,5 @@
   <!-- 底部字幕线 -->
   <rect x="272" y="762" width="480" height="46" rx="23" fill="#ffffff" opacity="0.94"/>
   <rect x="352" y="840" width="320" height="34" rx="17" fill="#8fa0b8" opacity="0.85"/>
+  </g>
 </svg>
