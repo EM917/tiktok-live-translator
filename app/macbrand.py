@@ -45,26 +45,36 @@ def brand_mac_app(root):
         return
     app = NSApplication.sharedApplication()
     try:
-        app.setApplicationIconImage_(image)
+        app.setApplicationIconImage_(image)   # 启动弹跳阶段 Dock 画的就是它
     except Exception:
         pass
-    # Dock 上那块图标是应用「完成启动」时才创建的：在那之前设的图标会被按
-    # bundle 查到的（没有 bundle → 空白文档）盖掉。2026-09-08 实录：菜单栏名字
-    # 改对了，Dock 仍是白板。所以订阅 didFinishLaunching，在主队列上再设一次。
+    # 启动完成后 Dock 磁贴的底图换成系统登记给这个进程的图标——没有 bundle 的
+    # python 进程登记到的是那张空白文档（2026-09-08 用 NSRunningApplication.icon
+    # 栅格化验证过）。setApplicationIconImage_ 只是叠在底图上，图标的透明边距
+    # 会透出下面的白，看起来就是「带白框、还变大了」。给磁贴一个 contentView
+    # 才是整块替换：透明处露出的是 Dock 背景，不是文档图。磁贴在完成启动时
+    # 才存在，所以订阅 didFinishLaunching 在主队列上装。
+    def install_tile():
+        try:
+            from AppKit import NSImageScaleProportionallyUpOrDown, NSImageView, NSMakeRect
+            tile = app.dockTile()
+            size = tile.size()
+            view = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, size.width, size.height))
+            view.setImage_(image)
+            view.setImageScaling_(NSImageScaleProportionallyUpOrDown)
+            tile.setContentView_(view)
+            tile.display()
+            _KEEP.append(view)
+        except Exception:
+            pass
+
     try:
         from AppKit import NSApplicationDidFinishLaunchingNotification
         from Foundation import NSNotificationCenter, NSOperationQueue
 
-        def reapply(_note):
-            try:
-                app.setApplicationIconImage_(image)
-                app.dockTile().display()
-            except Exception:
-                pass
-
         token = NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
             NSApplicationDidFinishLaunchingNotification, None,
-            NSOperationQueue.mainQueue(), reapply)
+            NSOperationQueue.mainQueue(), lambda _note: install_tile())
         _KEEP.extend([image, token])          # 别让 GC 把图和观察者收走
     except Exception:
         pass
