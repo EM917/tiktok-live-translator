@@ -66,3 +66,75 @@ def test_sets_icon_and_name_through_fake_appkit(monkeypatch, tmp_path):
     macbrand.brand_mac_app(tmp_path)
     assert info["CFBundleName"] == "TikTok 直播同传"
     assert isinstance(calls["icon"], FakeImage)
+
+
+def test_reapplies_icon_after_the_app_finishes_launching(monkeypatch, tmp_path):
+    """Dock 图标在应用完成启动时才创建，之前设的会被盖掉（2026-09-08 实录：名字对了、
+    图标仍是白板）。订阅 didFinishLaunching 后必须在回调里再设一次。"""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    icons = []
+    observers = []
+
+    class FakeImage:
+        @staticmethod
+        def alloc():
+            return FakeImage()
+
+        def initWithContentsOfFile_(self, path):
+            return self
+
+    class FakeTile:
+        def display(self):
+            pass
+
+    class FakeApp:
+        @staticmethod
+        def sharedApplication():
+            return FakeApp()
+
+        def setApplicationIconImage_(self, image):
+            icons.append(image)
+
+        def dockTile(self):
+            return FakeTile()
+
+    class FakeCenter:
+        @staticmethod
+        def defaultCenter():
+            return FakeCenter()
+
+        def addObserverForName_object_queue_usingBlock_(self, name, obj, queue, block):
+            observers.append((name, block))
+            return "token"
+
+    class FakeQueue:
+        @staticmethod
+        def mainQueue():
+            return "main"
+
+    class FakeBundle:
+        @staticmethod
+        def mainBundle():
+            return FakeBundle()
+
+        def infoDictionary(self):
+            return {}
+
+    appkit = types.ModuleType("AppKit")
+    appkit.NSApplication = FakeApp
+    appkit.NSImage = FakeImage
+    appkit.NSApplicationDidFinishLaunchingNotification = "NSApplicationDidFinishLaunchingNotification"
+    foundation = types.ModuleType("Foundation")
+    foundation.NSBundle = FakeBundle
+    foundation.NSNotificationCenter = FakeCenter
+    foundation.NSOperationQueue = FakeQueue
+    monkeypatch.setitem(sys.modules, "AppKit", appkit)
+    monkeypatch.setitem(sys.modules, "Foundation", foundation)
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "icon-1024.png").write_bytes(b"x")
+
+    macbrand.brand_mac_app(tmp_path)
+    assert len(icons) == 1                                   # 启动前先设一次
+    assert observers and observers[0][0] == "NSApplicationDidFinishLaunchingNotification"
+    observers[0][1](None)                                    # 模拟完成启动的通知
+    assert len(icons) == 2                                   # 回调里再设一次
