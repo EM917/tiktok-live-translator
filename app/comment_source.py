@@ -128,6 +128,11 @@ class CommentSource:
     HOUR_WINDOW_SEC = 3600.0
     # 缺库/Python 版本不够时，多久重查一次 worker_available()
     PROVISION_POLL_SEC = 30.0
+    # 时钟做成可替换的：每小时连接上限、健康判定都按它算。测试注入一个手动
+    # 拨动的假时钟，窗口逻辑就不再依赖真实时间——2026-09-07 Windows CI 上
+    # test_hourly_connect_cap 反复偶发失败，那台跑器的 time.time() 精度是
+    # 15.6 毫秒，而测试把窗口压到了 50 毫秒。
+    _clock = staticmethod(time.time)
 
     def __init__(self, on_items, on_state, cookies_browser="auto", root=ROOT):
         """on_items: async fn(items: list[dict])。
@@ -220,7 +225,7 @@ class CommentSource:
                 extra += ["--session-id", session_id]
             if tt_target_idc:
                 extra += ["--tt-target-idc", tt_target_idc]
-            self._connect_times.append(time.time())
+            self._connect_times.append(self._clock())
             self._last_state = None
             returncode, healthy = await self._run_once(unique_id, extra)
             if returncode not in (0, 3, 4, 5, 6, 7):
@@ -293,7 +298,7 @@ class CommentSource:
     async def _enforce_hourly_limit(self):
         """每小时最多 MAX_CONNECTS_PER_HOUR 次连接尝试——保护 Euler Stream
         的免费签名额度。超过就等最早那次尝试滑出窗口。"""
-        now = time.time()
+        now = self._clock()
         self._connect_times = [t for t in self._connect_times
                                if now - t < self.HOUR_WINDOW_SEC]
         if len(self._connect_times) < self.MAX_CONNECTS_PER_HOUR:
@@ -301,7 +306,7 @@ class CommentSource:
         await self._set_state("error", "连接尝试过多，暂停到下一小时")
         wait = max(0.0, self.HOUR_WINDOW_SEC - (now - min(self._connect_times)))
         await asyncio.sleep(wait)
-        now = time.time()
+        now = self._clock()
         self._connect_times = [t for t in self._connect_times
                                if now - t < self.HOUR_WINDOW_SEC]
 
@@ -340,7 +345,7 @@ class CommentSource:
                     state = obj.get("state") or "error"
                     self._last_state = state
                     if state == "connected":
-                        connected_at = time.time()
+                        connected_at = self._clock()
                     await self._set_state(state, obj.get("detail") or "")
                 elif kind == "comments":
                     items = obj.get("items")
@@ -367,7 +372,7 @@ class CommentSource:
             except Exception:
                 pass
             self._proc = None
-        healthy = connected_at is not None and (time.time() - connected_at) >= self.HEALTHY_SEC
+        healthy = connected_at is not None and (self._clock() - connected_at) >= self.HEALTHY_SEC
         return returncode, healthy
 
     async def _spawn(self, args):
