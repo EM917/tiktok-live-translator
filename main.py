@@ -543,6 +543,8 @@ def run_with_window(args):
     existing = _existing_instance_url(args.port)
     if existing:
         print("[信息] 检测到程序已在运行，打开已有实例的窗口")
+        from app.macbrand import brand_mac_app
+        brand_mac_app(ROOT)
         webview.create_window("TikTok 直播同传", existing,
                               width=1000, height=760, min_size=(420, 480))
         webview.start()
@@ -577,6 +579,8 @@ def run_with_window(args):
         return
 
     url = "http://127.0.0.1:{}".format(state["ready_port"])
+    from app.macbrand import brand_mac_app
+    brand_mac_app(ROOT)
     try:
         webview.create_window("TikTok 直播同传", url,
                               width=1000, height=760, min_size=(420, 480))
