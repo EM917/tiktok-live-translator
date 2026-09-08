@@ -46,7 +46,7 @@ def ensure_bundle_shell(root):
     try:
         (contents / "MacOS").mkdir(parents=True, exist_ok=True)
         _relink(contents / "MacOS" / "python", os.path.join("..", "..", "..", ".venv", "bin", "python"))
-        _relink(contents / "lib", os.path.join("..", "..", ".venv", "lib"))
+        _relink(contents / "lib", os.path.join("..", "..", ".venv", "lib"), is_dir=True)
         target = contents / "pyvenv.cfg"
         text = cfg.read_text(encoding="utf-8")
         if not target.is_file() or target.read_text(encoding="utf-8") != text:
@@ -57,7 +57,9 @@ def ensure_bundle_shell(root):
     return py if py.exists() else None
 
 
-def _relink(link, target):
+def _relink(link, target, is_dir=False):
+    """把 link 指到 target（相对路径）。is_dir 只在 Windows 上有意义——那里目录链接
+    和文件链接是两种东西；这个功能虽只在 macOS 生效，写对了测试才能跨平台跑。"""
     if link.is_symlink():
         if os.readlink(link) == target:
             return
@@ -68,7 +70,7 @@ def _relink(link, target):
             shutil.rmtree(link)
         else:
             link.unlink()
-    os.symlink(target, link)
+    os.symlink(target, link, target_is_directory=is_dir)
 
 
 def inside_bundle(executable=None):

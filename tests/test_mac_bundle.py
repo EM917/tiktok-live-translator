@@ -4,9 +4,16 @@
 变量、不在 pytest、不带无窗口参数、且当前不在 bundle 里时才重新执行；
 execve 的参数形状；壳没备好时静默放弃。测试里绝不真的 exec。"""
 import os
+import sys
 from pathlib import Path
 
+import pytest
+
 from app import macbundle
+
+# 壳靠符号链接工作，功能只在 macOS 生效；Windows 跑器上 readlink 返回反斜杠、
+# 链接权限也不稳定——纯逻辑（should_relaunch）跨平台测，依赖链接的只在 POSIX 上测
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="符号链接语义不同；功能仅 macOS 生效")
 
 
 def _venv(root, version="3.13.5"):
@@ -18,17 +25,19 @@ def _venv(root, version="3.13.5"):
     return v
 
 
+@posix_only
 def test_shell_is_created_and_points_back_into_the_venv(tmp_path):
     _venv(tmp_path)
     py = macbundle.ensure_bundle_shell(tmp_path)
     contents = tmp_path / macbundle.APP_DIR_NAME / "Contents"
     assert py == contents / "MacOS" / "python" and py.exists()
-    assert os.readlink(contents / "MacOS" / "python") == "../../../.venv/bin/python"
-    assert os.readlink(contents / "lib") == "../../.venv/lib"
+    assert Path(os.readlink(contents / "MacOS" / "python")).parts == ("..", "..", "..", ".venv", "bin", "python")
+    assert Path(os.readlink(contents / "lib")).parts == ("..", "..", ".venv", "lib")
     assert (contents / "lib" / "python3.13" / "site-packages").is_dir()   # 经链接落回 venv
     assert (contents / "pyvenv.cfg").read_text() == (tmp_path / ".venv" / "pyvenv.cfg").read_text()
 
 
+@posix_only
 def test_shell_refreshes_cfg_when_the_venv_changes(tmp_path):
     _venv(tmp_path)
     macbundle.ensure_bundle_shell(tmp_path)
@@ -57,6 +66,7 @@ def test_should_relaunch_rules(tmp_path):
     assert not macbundle.should_relaunch(tmp_path, argv, environ={}, platform="darwin", executable=inside)
 
 
+@posix_only
 def test_relaunch_execs_bundle_python_with_guard_and_args(tmp_path, monkeypatch):
     _venv(tmp_path)
     calls = []
@@ -86,6 +96,7 @@ def test_relaunch_gives_up_quietly_without_a_venv(tmp_path, monkeypatch):
     assert calls == []
 
 
+@posix_only
 def test_relaunch_survives_exec_failure(tmp_path, monkeypatch):
     _venv(tmp_path)
     monkeypatch.delenv(macbundle.ENV_GUARD, raising=False)
