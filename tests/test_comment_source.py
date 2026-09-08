@@ -206,7 +206,13 @@ def make_source(monkeypatch, procs, cookies_browser="none"):
 
     async def fake_spawn(self, args):
         calls.append(list(args))
-        return queue.pop(0)
+        if queue:
+            return queue.pop(0)
+        # 剧本演完：给一个永远不退出的子进程，让监督协程安静地挂在 readline
+        # 上等 stop()。以前这里 pop 空列表抛 IndexError，监督协程按「启动
+        # 失败」退避重试，calls 会随时间继续涨——断言精确次数的测试就成了
+        # 和事件循环快慢赛跑。
+        return FakeProc(stdout_lines=[], hang_after=True)
 
     monkeypatch.setattr(CommentSource, "_spawn", fake_spawn)
     return cs, items_log, state_log, calls
@@ -451,11 +457,14 @@ def test_start_after_restart_scheduled_then_stopped_does_not_leak_task(monkeypat
 
 
 def test_hourly_connect_cap(monkeypatch):
+    """每小时连接上限。用注入的假时钟：两次连接落在同一时刻，任何窗口都必然
+    触发上限，不靠真实时间赛跑——Windows CI 的 time.time() 精度 15.6 毫秒，
+    之前把窗口压到 50 毫秒去赛跑，反复偶发失败。"""
     procs = [FakeProc(stdout_lines=[], returncode=3) for _ in range(6)]   # 主播未开播，快速失败重试
     cs, items_log, state_log, calls = make_source(monkeypatch, procs)
     monkeypatch.setattr(CommentSource, "MAX_CONNECTS_PER_HOUR", 2)
     monkeypatch.setattr(CommentSource, "OFFLINE_RETRY_SEC", 0.01)
-    monkeypatch.setattr(CommentSource, "HOUR_WINDOW_SEC", 0.05)
+    cs._clock = lambda: 1_000_000.0          # 冻结：所有连接时间戳相同
 
     async def scenario():
         cs.start("abc")
@@ -470,6 +479,25 @@ def test_hourly_connect_cap(monkeypatch):
     # 达到上限时最多只应该已经尝试过 MAX_CONNECTS_PER_HOUR 次——「过多」的
     # 提示必须出现在第三次尝试之前，不是之后才马后炮
     assert calls_at_cap == 2
+
+
+def test_hourly_cap_releases_once_the_window_has_passed(monkeypatch):
+    """窗口滑过之后要放行：拨表越过 HOUR_WINDOW_SEC，_enforce_hourly_limit
+    必须立即返回、不报「过多」、并把过期的尝试记录清掉。"""
+    cs, items_log, state_log, calls = make_source(monkeypatch, [])
+    monkeypatch.setattr(CommentSource, "MAX_CONNECTS_PER_HOUR", 2)
+    monkeypatch.setattr(CommentSource, "HOUR_WINDOW_SEC", 3600.0)
+    clock = {"t": 1_000_000.0}
+    cs._clock = lambda: clock["t"]
+    cs._connect_times = [clock["t"], clock["t"]]      # 已经用满
+
+    async def scenario():
+        clock["t"] += 3601.0                          # 越过窗口
+        await cs._enforce_hourly_limit()
+
+    run(scenario())
+    assert cs._connect_times == []
+    assert not any(s == "error" for s, _ in state_log)
 
 
 # ---------------------------------------------------------------------------

@@ -32,9 +32,11 @@ jobs:
       # 测试只依赖轻量三件套——被测模块的重型导入（faster-whisper/yt-dlp）
       # 都是函数内延迟进行的，CI 不装它们
       - name: Install test deps
-        run: pip install pytest numpy aiohttp
+        run: pip install pytest pytest-timeout numpy aiohttp
       - name: Unit tests
-        run: pytest tests/ -q
+        # 单个测试超过两分钟就失败并打印所有线程的栈。2026-09-07 Windows 跑器
+        # 三次在同一处停了 14 分半，到点整个 job 被取消——什么信息都没留下。
+        run: pytest tests/ -q --timeout=120 --timeout-method=thread
       - name: Byte-compile all sources
         run: python -m compileall -q main.py app
       - name: JS unit tests
