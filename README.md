@@ -475,6 +475,23 @@ TikTok. The application no longer reports the streamer as offline unless TikTok
 explicitly states the room has ended. A browser can be pinned with
 `--cookies-browser safari`, or credentials supplied via `--cookies cookies.txt`.
 
+**"TikTok did not hand this room's stream address to the app (code 4003110)".**
+That code is TikTok's generic refusal; the response carries no reason, and the
+app does not invent one. Before concluding anything, run the built-in check:
+
+```bash
+python3 tools/diagnose_room.py @streamer
+```
+
+It first aggregates your own `logs/session-*.jsonl` by streamer with zero
+requests — whether this room has ever produced captions on this machine, and
+which rooms did — then probes the target and a recently-working control room
+through the same API in the same minute (four requests in total, no browser).
+The verdict distinguishes "this room is refused while others answer" from "this
+machine gets nothing" and never labels a cause. In the meantime, paste the room
+link together with the `.flv` address from your browser (see Fault tolerance
+above); one capture stays valid for about two weeks.
+
 **The first start appears stuck downloading the recognition model.** The model
 is being retrieved from Hugging Face (large-v3 is approximately 3 GB). Progress
 is displayed on the page and this occurs only once.

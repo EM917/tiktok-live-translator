@@ -221,13 +221,16 @@ _SIGI_RE = re.compile(r'id="SIGI_STATE"[^>]*>(.*?)</script>', re.S)
 # TikTok 的房间状态：2=在播，4=已结束。只有拿到明确的非 2 才敢说「主播没在播」，
 # 拿不到就只能说「没解析出来」——两者对重连策略的含义完全不同。
 LIVE_STATUS = 2
-# webcast 房间接口在拒绝给出流地址时用的通用代码：status_code 4003110，
-# data 里只有一个 prompts 字段（曾经以为是「确认年龄」的提示），没有
-# stream_url。以前当成年龄限制（18+）直播间的专属信号，但 2026-09-05 实录：
-# 一个完全不涉及年龄限制的直播间（@itzesantana11）一样固定收到这个码——
-# 真实含义更像「这次请求没资格拿流地址」，匿名请求最容易撞上，具体原因
-# TikTok 不说，登录态能不能绕过也要看房间。
-AGE_GATE_CODE = 4003110
+# webcast 房间接口拒绝给出流地址时的**通用**代码：status_code 4003110，data 里
+# 只剩一个空的 prompts 字段。TikTok 不说原因，返回体里也没有任何可读的原因。
+#
+# 这个常量曾叫 AGE_GATE_CODE。2026-09-05/06 一天之内它被先后解释成「年龄限制」
+# 「IP 限流」「被我们的探测打坏」，三个都错——每次都是拿单个观察往外推，没有
+# 对照组。定案的证据：同一分钟对照房间正常返回 242 个字段而目标房间只回这个码；
+# 目标房间在程序日志里 12 场全 0 段，第一场早于我们的第一次请求。
+# **规则：代码、注释、界面文案里都只写「接口不给流地址」这个观察，不写原因。**
+# 排查方法在 tools/diagnose_room.py 和 CLAUDE.md 第八条。
+STREAM_WITHHELD_CODE = 4003110
 
 
 def _username(url):
@@ -289,11 +292,11 @@ def _pick_stream(data):
     return su.get("rtmp_pull_url") or su.get("hls_pull_url") or None
 
 
-def _age_gated(info):
-    """房间接口是不是回了那个「不给流地址」的通用拒绝码（见 AGE_GATE_CODE）。"""
+def _stream_withheld(info):
+    """房间接口是不是回了那个「不给流地址」的通用拒绝码（见 STREAM_WITHHELD_CODE）。"""
     if not isinstance(info, dict):
         return False
-    if info.get("status_code") == AGE_GATE_CODE:
+    if info.get("status_code") == STREAM_WITHHELD_CODE:
         return True
     data = info.get("data")
     return isinstance(data, dict) and "prompts" in data
@@ -376,16 +379,11 @@ async def _resolve_via_api(url, cookies_browser="auto"):
     房间已结束时才是 True——用来把「确认没播」和「我们没解析出来」分开。
 
     status_code 4003110：接口不肯把流地址给这次请求，data 里只有一个 prompts
-    字段。曾经当成「年龄限制（18+）」的专属信号直接抛 kind="login"，但
-    2026-09-05 实录戳穿了这个假设——@itzesantana11 那场直播完全不涉及年龄
-    限制，一样固定收到 4003110，把它当年龄闸门抛错纯属编造原因。现在的处理：
-    先借浏览器里的 TikTok 登录态重试一次（有些房间登录态确实管用），仍被拒
-    就老实说「TikTok 这次不给程序」（kind="browser_only"），交给上层隔一会儿
-    自动重试（见 pipeline._resolve_media），而不是继续编一个不一定成立的原因。
-
-    实测这类房间的表现（2026-09-05）：同一时刻普通房间 2 秒就能解析成功，
-    被限流的房间连系统 WebKit 引擎也拿不到，且恢复要按小时算——所以这里
-    只能如实报告，重试留给上层按节奏做。"""
+    字段，原因 TikTok 不说明（见 STREAM_WITHHELD_CODE 上面的说明——别给它编
+    原因）。处理：先借浏览器里的 TikTok 登录态重试一次（有些房间登录态确实
+    管用），仍被拒就如实说「TikTok 这次不给程序」（kind="browser_only"），
+    交给上层隔一会儿自动重试（见 pipeline._resolve_media）。实测过的事实只有：
+    同一房间有时第三次重试就给（2026-09-06 晚），有时三次全不给（次日）。"""
     import aiohttp
 
     user = _username(url)
@@ -400,7 +398,7 @@ async def _resolve_via_api(url, cookies_browser="auto"):
             if status is not None and status != LIVE_STATUS:
                 return None, True          # 接口明确说没在播
             info = await _get_json(session, _WEBCAST_API.format(room=room))
-            if _age_gated(info):
+            if _stream_withheld(info):
                 loop = asyncio.get_running_loop()
                 browsers = (_browser_order(cookies_browser)
                             if cookies_browser != "none" else ())
@@ -412,7 +410,7 @@ async def _resolve_via_api(url, cookies_browser="auto"):
                     headers["Cookie"] = cookie
                     again = await _get_json(session, _WEBCAST_API.format(room=room),
                                             headers=headers)
-                    if _age_gated(again):
+                    if _stream_withheld(again):
                         continue
                     picked = _pick_stream((again or {}).get("data") or {})
                     if picked:
@@ -429,11 +427,9 @@ async def _resolve_via_api(url, cookies_browser="auto"):
     except Exception:
         return None, False
     # 只有一种情况会走到这里：接口一直不肯给流地址（4003110），登录态也没帮上忙。
-    # 别再编一个「年龄限制」之类不一定成立的原因——老实说程序拿不到，交给上层
-    # 上层据此隔一会儿自动重试（见 pipeline._resolve_media）。
+    # 只报观察，不编原因——交给上层隔一会儿自动重试（见 pipeline._resolve_media）。
     raise ResolveError(
-        "TikTok 没有把这个直播间的流地址给程序（代码 4003110），"
-        "需要通过已登录的 Chrome 获取",
+        "TikTok 没有把这个直播间的流地址给程序（代码 4003110）",
         kind="browser_only")
 
 
@@ -778,10 +774,12 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
         # yt-dlp 把「提取器被挡」也说成「未开播」。我们已经把每条路都走过了，
         # 而没有任何一条**确认**过房间结束，所以不能替它下这个断言。
         if kind == "offline":
+            # 只说做了什么、看到什么、能做什么。不说「多半是被挡了」——我们不知道。
             kind, message = "unknown", (
-                "试过全部 5 种方式都没能拿到这个直播间的音频流。"
-                "如果你在浏览器里看得到这个直播，多半是 TikTok 临时挡了本机请求，"
-                "过一会儿再点一次「开始翻译」通常就好了。")
+                "试过全部 5 种方式都没能拿到这个直播间的音频流，也没有任何一种"
+                "确认直播已结束。可以过一会儿再点「开始翻译」；如果你在浏览器里"
+                "看得到这个直播，也可以把直播间链接和浏览器里的 .flv 地址一起"
+                "粘进来（中间空格隔开）。")
         if browser_only is not None:
             # 接口早就说了「不给程序」，后面各层也都没拿到：把这个明确的原因
             # 传上去，上层据此隔一会儿自动重试，而不是当成普通失败
