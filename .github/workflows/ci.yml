@@ -68,7 +68,3 @@ jobs:
         run: |
           node --check web/app.js
           node --check web/normalize.js
-          node --check extension/content.js
-          node --check extension/options.js
-      - name: Extension manifest is valid JSON
-        run: python -m json.tool extension/manifest.json > /dev/null

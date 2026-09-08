@@ -353,7 +353,7 @@ def parse_args():
     p.add_argument("--no-comments", action="store_false", dest="comments",
                    help="不抓取观众评论（默认抓取）")
     p.add_argument("--demo", action="store_true",
-                   help="演示模式：不连直播，用内置台词驱动 UI（用来验证界面和浏览器插件）")
+                   help="演示模式：不连直播，用内置台词驱动 UI（用来验证界面）")
     p.add_argument("--doctor", action="store_true",
                    help="环境体检：检测本机硬件并打印推荐配置，不启动服务")
     p.add_argument("--browser", action="store_true",
@@ -424,7 +424,6 @@ async def main_async(args, state=None):
     updater = Updater(server)
     pipeline.updater = updater
     server.on_control = pipeline.handle_control
-    server.on_comments = pipeline.handle_viewer_comments
     if state is not None:
         state["loop"] = asyncio.get_running_loop()
         state["pipeline"] = pipeline

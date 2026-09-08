@@ -8,8 +8,7 @@ TikTokLive——唯一 import 它的地方是子进程入口 app/comment_worker.
      登录态重试、签名限流等待、stop() 收尾、每小时连接上限；
   3. Pipeline 与 CommentSource 的接线（开播即起、下播即停、直接流地址/
      --no-comments 时不起）；
-  4. server.py 对 comment_source 广播的处理（config 落盘 + 插件连接数
-     消息里带上后端状态）；
+  4. server.py 对 comment_source 广播的处理（config 落盘）；
   5. comment_worker._classify_exc 的异常分类——用一份和真库同构的假异常
      模块跑，不依赖真的 TikTokLive（测试环境承诺 Python 3.9+，那里装不了
      TikTokLive 7.x）。
@@ -565,44 +564,20 @@ def test_begin_session_no_comments_flag_skips_comment_source(monkeypatch, tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# 5. server.py：comment_source 广播落盘 + 插件连接数消息里带上后端状态
+# 5. server.py：comment_source 广播落盘
 # ---------------------------------------------------------------------------
 
 def test_server_broadcast_comment_source_updates_config():
     async def scenario():
         server = CaptionServer(port=8765)
         await server.broadcast({"type": "comment_source", "backend": "connected",
-                                "detail": "", "extension_clients": 2})
+                                "detail": ""})
         return server
 
     server = run(scenario())
-    assert server.config["extension_clients"] == 2
+    assert "extension_clients" not in server.config     # 插件计数连同插件一起没了
     assert server.config["comment_backend"] == "connected"
     assert server.config["comment_detail"] == ""
-
-
-def test_server_set_extension_clients_message_carries_backend():
-    async def scenario():
-        server = CaptionServer(port=8765)
-        server.config["comment_backend"] = "connected"
-        server.config["comment_detail"] = "已连接"
-        sent = []
-        real_broadcast = server.broadcast
-
-        async def spy(msg):
-            sent.append(dict(msg))
-            await real_broadcast(msg)
-
-        server.broadcast = spy
-        await server._set_extension_clients(1)
-        return sent
-
-    sent = run(scenario())
-    assert len(sent) == 1
-    assert sent[0]["type"] == "comment_source"
-    assert sent[0]["extension_clients"] == 1
-    assert sent[0]["backend"] == "connected"
-    assert sent[0]["detail"] == "已连接"
 
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,6 @@
   var commentFabCount = document.getElementById("comment-fab-count");
   var commentEmpty = document.getElementById("comment-empty");
   var commentSource = document.getElementById("comment-source");
-  var extensionClients = 0;    // 连着的 Chrome 插件数（服务端按来源统计）
   var backendState = "idle";   // 后端 TikTokLive 抓取协程的状态：idle/connecting/connected/disconnected/error/unavailable
   var backendDetail = "";      // backendState 为 error/unavailable 时的说明文字
   var streamActive = false;    // 直播中/连接中：这时面板即使空着也要显示
@@ -370,7 +369,6 @@
         transBannerOn = false;
         clearBtn.click();
         if (msg.config) {
-          if (msg.config.extension_clients != null) extensionClients = msg.config.extension_clients;
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
           if (msg.config.comment_detail != null) backendDetail = msg.config.comment_detail;
           if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
@@ -445,7 +443,6 @@
         updateComment(msg);
         break;
       case "comment_source":
-        if (msg.extension_clients != null) extensionClients = msg.extension_clients;
         if (msg.backend) {
           backendState = msg.backend;
           backendDetail = msg.detail || "";
@@ -737,10 +734,10 @@
   }
 
   // 面板什么时候露面、空着的时候说什么。直播中面板必须在——否则中控分不清
-  // 「今天没人发弹幕」和「插件压根没连上」，而后者是要去处理的。
+  // 「今天没人发弹幕」和「评论流压根没连上」，而后者是要去处理的。
   function refreshCommentPanel() {
     var has = commentList.children.length > 0;
-    var show = has || streamActive || extensionClients > 0;
+    var show = has || streamActive;
     var collapsed = commentPanel.classList.contains("collapsed");
     commentPanel.classList.toggle("hidden", !show);
     commentEmpty.classList.toggle("hidden", has);
@@ -769,10 +766,6 @@
       title = detail.length > 80 ? detail.slice(0, 80) + "…" : detail;
       cls += " warn";
       emptyText = detail;
-    } else if (extensionClients > 0) {
-      title = "插件已连接";
-      cls += " on";
-      emptyText = "插件已连接，等待观众发评论…";
     } else {
       title = "未连接";
       emptyText = "开播后自动连接评论流";

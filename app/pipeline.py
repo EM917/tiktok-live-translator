@@ -101,7 +101,7 @@ def _arnndn_probe(model_path):
 RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/"
                "beguiling-drafter-2018-08-30/bd.rnnn")
 
-# 演示模式的内置台词（英文原文 + 中文译文），用于在没有直播时验证 UI / 浏览器插件
+# 演示模式的内置台词（英文原文 + 中文译文），用于在没有直播时验证 UI
 DEMO_SCRIPT = [
     ("Hey everyone, welcome back to my live stream!", "嘿大家好，欢迎回到我的直播间！"),
     ("If you're new here, don't forget to tap the follow button.", "如果你是新来的，别忘了点一下关注按钮。"),
@@ -180,11 +180,10 @@ class Pipeline:
             broadcast=self.server.broadcast,
             translator=lambda: self.translator, target=lambda: self.target,
             glossary=lambda: self.glossary, busy=self._subtitle_translation_busy)
-        # 弹幕后端抓取（TikTokLive，见 app/comment_source.py）：与上面的
+        # 弹幕抓取（TikTokLive，见 app/comment_source.py）：与上面的
         # CommentTranslator 是两回事——这里只负责把观众评论从 TikTok 的
-        # WebSocket 弄到本地，弄到后一样喂给 self.comments.accept()，插件
-        # 那条路（handle_viewer_comments）继续保留，两条来源共用同一个
-        # CommentTranslator。出错只影响弹幕，绝不碰音频/检测/审计链路。
+        # WebSocket 弄到本地，弄到后喂给 self.comments.accept()。
+        # 出错只影响弹幕，绝不碰音频/检测/审计链路。
         self.comment_source = CommentSource(
             on_items=lambda items: self.comments.accept(
                 {"type": "viewer_comments", "items": items}),
@@ -200,14 +199,6 @@ class Pipeline:
     def _subtitle_translation_busy(self):
         """字幕翻译是否正忙（在途或排队）——弹幕翻译据此让路，最多等 3 秒。"""
         return self._subtitle_busy > 0 or self.telemetry.translation_queue_depth > 0
-
-    async def handle_viewer_comments(self, data):
-        """来自 Chrome 插件的观众评论（TikTok 直播页评论区抓取）。
-
-        只翻译、只显示：不做违禁词检测、不进审计日志，也不碰
-        queue/trans_queue/asr_pool/detector/audit 这条音频链路。
-        """
-        return await self.comments.accept(data)
 
     # ---- 来自 UI 的控制消息 ----
     def handle_control(self, msg):
@@ -619,14 +610,10 @@ class Pipeline:
         await self.server.broadcast(dict(info, type="watchlist"))
 
     async def _publish_comment_source(self, state, detail=""):
-        """广播弹幕后端抓取（TikTokLive）的状态：connecting/connected/
-        disconnected/error/unavailable/idle 之一。extension_clients 捎带一起
-        发——界面靠这一条消息就能同时刷新「插件连没连」和「后端抓没抓到」
-        两块状态，不用等两条消息都到齐。"""
+        """广播弹幕抓取（TikTokLive）的状态：connecting/connected/
+        disconnected/error/unavailable/idle 之一。"""
         await self.server.broadcast({
-            "type": "comment_source", "backend": state, "detail": detail,
-            "extension_clients": getattr(self.server, "_view_clients", 0),
-        })
+            "type": "comment_source", "backend": state, "detail": detail})
 
     async def _end_session(self, my_audit=None):
         """收尾。my_audit 是调用方会话自己的 audit——凭它判断「我还是不是
