@@ -45,6 +45,17 @@ def file_hash(path):
 
 
 def _pid_alive(pid):
+    """进程还在吗。Windows 上 os.kill(pid, 0) 不是探活——signal.CTRL_C_EVENT 就是 0，
+    等于给整个控制台进程组发 Ctrl-C（CI 里 pytest 因此收到 KeyboardInterrupt），
+    那边要用 OpenProcess。"""
+    if os.name == "nt":
+        import ctypes
+        SYNCHRONIZE = 0x00100000
+        handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
