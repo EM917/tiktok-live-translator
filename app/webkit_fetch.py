@@ -75,10 +75,10 @@ def _hide_dock_icon():
 
 def _poll(window, timeout, result):
     """在 pywebview 的工作线程里轮询页面，拿到结果就写进 result 并关窗。"""
-    deadline = time.time() + timeout
-    started = time.time()
+    deadline = time.monotonic() + timeout
+    started = time.monotonic()
     last = None
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         time.sleep(0.5)
         try:
             raw = window.evaluate_js(_READ_JS)
@@ -97,7 +97,7 @@ def _poll(window, timeout, result):
             # 页面明确说已下播——比「没拿到」多一层确定性，父进程据此不再重试
             result.update({"offline": True, "status": status})
             break
-        if status is None and time.time() - started > 8:
+        if status is None and time.monotonic() - started > 8:
             # 8 秒了页面里连 LiveRoom 都没有：不是直播页（用户名打错、被封、
             # 地址不对），继续等只是白等
             result.update({"error": "page has no live room data"})

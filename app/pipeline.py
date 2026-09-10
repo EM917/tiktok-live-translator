@@ -84,7 +84,7 @@ def _arnndn_probe(model_path):
     magic 挡不住），以及 ffmpeg 不支持 arnndn（imageio-ffmpeg 的静态版没编译
     librnnoise）。两种情况下直接把坏参数交给拉流 ffmpeg，会让每一轮会话都
     「Error initializing filters」失败，再被自动重连放大成误导报错。"""
-    from .ffmpeg_bin import find_ffmpeg
+    from .ffmpeg_bin import filter_path, find_ffmpeg
     ffmpeg = find_ffmpeg()
     if ffmpeg is None:
         return False
@@ -92,7 +92,7 @@ def _arnndn_probe(model_path):
         r = subprocess.run(
             [ffmpeg, "-hide_banner", "-loglevel", "error",
              "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=0.1",
-             "-af", "arnndn=m={}".format(model_path),
+             "-af", "arnndn=m={}".format(filter_path(model_path)),
              "-f", "null", "-"],
             capture_output=True, timeout=15)
         return r.returncode == 0
@@ -150,6 +150,7 @@ class Pipeline:
         self._loading_key = None         # 在途加载对应的配置 key（可能被取消）
         self._transcriber_future = None  # 正在加载中的模型，避免重复加载
         self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
+        self._bg_tasks = set()           # fire-and-forget 任务的引用，见 _spawn
         self.telemetry = Telemetry()
         self.detector = load_detector(getattr(args, "banned_terms", None))
         self.glossary = load_glossary(getattr(args, "glossary", None))
@@ -262,6 +263,16 @@ class Pipeline:
         期间不给任何反馈的话，用户会以为点了没反应而反复点。"""
         await self.server.status("connecting", "已收到指令，正在连接…")
         await self.start_stream(url, media=media)
+
+    def _spawn(self, coro):
+        """起一个不等结果的任务，但保住引用。事件循环只弱引用任务：不保引用的
+        任务可能在半路被 GC 收走（Python 文档明写）。以前三处裸
+        ensure_future——「这条不会有译文了」的 caption_update 若被收走，界面上那条
+        字幕永远停在「翻译中…」，恰是那段代码想防的事；yt-dlp 保鲜同理会静默失踪。"""
+        task = asyncio.ensure_future(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     def _save_setting(self, key, value):
         """把界面偏好写进 settings.json（重启后 main.py 读回）。"""
@@ -557,7 +568,7 @@ class Pipeline:
             if pct - last[0] < 5:       # 别把界面刷爆
                 return
             last[0] = pct
-            asyncio.ensure_future(self.server.status(
+            self._spawn(self.server.status(
                 "idle", "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
                         "只需这一次）…".format(pct, done_mb, total_mb)))
 
@@ -676,7 +687,7 @@ class Pipeline:
         current_log = getattr(self.audit, "path", None) if self.audit else None
         freed, done, failed = await diskspace.delete(
             ids, ollama_models=models, ollama_delete=self._ollama_delete,
-            current_log=current_log)
+            current_log=current_log, active_asr=asr, active_ollama=ollama)
         text = "已删除 {} 项，释放 {}".format(len(done), diskspace.human(freed))
         if failed:
             text += "；未删除：" + "；".join(failed)[:300]
@@ -1012,7 +1023,7 @@ class Pipeline:
         def _drop_job(job):
             """告诉界面这条不会有译文了——否则它永远停在「翻译中…」。"""
             self.telemetry.drop_translation()
-            asyncio.ensure_future(self.server.broadcast({
+            self._spawn(self.server.broadcast({
                 "type": "caption_update", "id": job["id"], "translated": None,
                 "translate_state": "dropped",
             }))
@@ -1049,6 +1060,7 @@ class Pipeline:
                 _put(None)
 
         async def asr_worker():
+            asr_failures = 0
             while True:
                 item = await queue.get()
                 if item is None:
@@ -1056,15 +1068,32 @@ class Pipeline:
                 segment, audio_end_ts = item
                 backlog["sec"] = max(0.0, backlog["sec"] - len(segment) / 2.0 / SAMPLE_RATE)
                 self.telemetry.set_backlog(backlog["sec"])
-                t0 = time.time()
+                t0 = time.monotonic()
                 try:
                     result = await loop.run_in_executor(
                         asr_pool, transcriber.transcribe, segment
                     )
                 except Exception as exc:
+                    # 这段音频没进检测器也没进审计——漏报的第五种成因，而且以前
+                    # 只有一行 print（打包运行时 stdout 指向 /dev/null，等于没有）。
+                    # 计数、写审计、连续失败就告诉界面，别让识别已死的会话继续
+                    # 显示「直播中」。
+                    asr_failures += 1
+                    self.telemetry.drop_audio()
+                    if self.audit is not None:
+                        self.audit.asr_failed(
+                            segment_ms=len(segment) / 2.0 / SAMPLE_RATE * 1000.0,
+                            error=str(exc)[:200], queue_depth=queue.qsize())
                     print("[警告] 识别一段音频失败: {}".format(exc))
+                    if asr_failures == 3:
+                        await self.server.broadcast({
+                            "type": "health", "level": "degraded",
+                            "backlog_sec": round(backlog["sec"], 1),
+                            "text": "🔴 识别连续失败 3 次，这期间的音频没有检测——"
+                                    "请点「停止」再「开始翻译」"})
                     continue
-                asr_ms = (time.time() - t0) * 1000.0
+                asr_failures = 0
+                asr_ms = (time.monotonic() - t0) * 1000.0
                 segment_ms = len(segment) / 2.0 / SAMPLE_RATE * 1000.0
                 if asr_ms > segment_ms:
                     # 解码比音频本身还久：多半是复读跑飞，继续下去队列就会溢出
@@ -1142,7 +1171,7 @@ class Pipeline:
             return   # 断网与提取器无关：不计数也不清零，更不能拉起注定失败的 pip
         self._resolve_fail_streak += 1
         if self._resolve_fail_streak >= 2 and getattr(self, "updater", None) is not None:
-            asyncio.ensure_future(self.updater.freshen_ytdlp(reason="resolve-failures"))
+            self._spawn(self.updater.freshen_ytdlp(reason="resolve-failures"))
 
     async def _model_download_progress(self, model):
         """模型加载期间轮询 HuggingFace 缓存目录的增量，把下载进度推到 UI。
@@ -1577,7 +1606,7 @@ class Pipeline:
         had = self._quality.get(seq, 0) > 0
         await self.server.broadcast({"type": "caption_update", "id": seq,
                                      "strong_state": "pending"})
-        t0 = time.time()
+        t0 = time.monotonic()
         text, hint = self._for_translation(job["text"])
         try:
             out = await self._strong.translate(
@@ -1593,7 +1622,7 @@ class Pipeline:
         except Exception as exc:
             print("[警告] 重译失败: {}".format(exc))
             out = None
-        ms = (time.time() - t0) * 1000.0
+        ms = (time.monotonic() - t0) * 1000.0
         self._strong_inflight.discard(seq)
         if self.audit is not None:
             self.audit.translation_strong(seq, out, ms, bool(out),
@@ -1647,7 +1676,7 @@ class Pipeline:
 
     async def _translate_and_update_inner(self, job):
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。"""
-        t0 = time.time()
+        t0 = time.monotonic()
         # 引擎抓一次快照：中途在界面里换引擎时，这一条从翻译到落日志必须
         # 始终指同一个对象，否则审计里的 engine 会记成换挡后的那个
         tr = self.translator
@@ -1673,7 +1702,7 @@ class Pipeline:
                 tr = fallback
                 # translate_ms 只记翻译本身：引擎切换的开销不该算进这一条的
                 # 翻译耗时去污染延迟统计（e2e_translated_ms 仍如实含全部等待）
-                t0 = time.time()
+                t0 = time.monotonic()
                 try:
                     translated = await tr.translate(
                         text, job["target"], source=job["lang"] or "auto",
@@ -1683,7 +1712,7 @@ class Pipeline:
                 except Exception as exc:
                     print("[警告] 降级引擎翻译失败: {}".format(exc))
                     translated = None
-        translate_ms = (time.time() - t0) * 1000.0
+        translate_ms = (time.monotonic() - t0) * 1000.0
         self.telemetry.record_translation(translate_ms)
         if self.audit is not None:
             self.audit.translation(job["id"], translated, translate_ms,

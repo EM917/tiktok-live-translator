@@ -149,6 +149,7 @@ class CommentSource:
         self.detail = ""
         self._unique_id = None
         self._task = None
+        self._restart_task = None       # 换主播时在途的 _restart 任务（保引用）
         self._proc = None
         self._last_state = None         # 子进程最后一条 status 的 state，退出码不可信时的依据
         self._connect_times = []        # 最近一小时内的连接尝试时间戳，额度限流用
@@ -166,7 +167,8 @@ class CommentSource:
         if self._unique_id == unique_id and self._task is not None and not self._task.done():
             return
         if self._task is not None and not self._task.done():
-            asyncio.ensure_future(self._restart(unique_id, epoch))
+            # 保住引用：不保引用的任务可能被 GC 收走，换主播就静默失败
+            self._restart_task = asyncio.ensure_future(self._restart(unique_id, epoch))
             return
         self._launch(unique_id)
 
@@ -311,7 +313,7 @@ class CommentSource:
                                if now - t < self.HOUR_WINDOW_SEC]
 
     async def _fetch_session_cookies(self):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(None, session_cookies, self._cookies_browser)
         except Exception:

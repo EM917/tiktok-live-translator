@@ -63,8 +63,12 @@ async def _host_is_private(host):
     try:                                  # 域名：解析后逐个校验
         infos = await asyncio.get_running_loop().getaddrinfo(
             host, None, proto=socket.IPPROTO_TCP)
-    except Exception:
-        return True                       # 解析不了就别用
+    except Exception as exc:
+        # 「解析不了」和「命中内网」是两回事：以前一律 return True，CDN 域名在
+        # 用户网络下解析失败时中控看到的是「安全限制」，而且整条解析链在第一层
+        # 就被终止、审计里 layers=[]。如实说是 DNS 问题，kind=network 可重试。
+        raise ResolveError("流媒体域名解析失败：{}（检查网络 / DNS）".format(host),
+                           kind="network") from exc
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
@@ -96,6 +100,21 @@ async def _check_media_url(url, trusted=False):
     if not trusted and await _host_is_private(parsed.hostname):
         raise ResolveError("拒绝访问内网/本机地址的流媒体地址（安全限制）")
     return url
+
+
+async def _cookie_header_with_budget(browser):
+    """在线程池里读浏览器 cookie，并给它一个预算。yt-dlp 解密 Chrome cookie 要跑
+    macOS 的 security 命令，会弹钥匙串授权对话框——用户没看到就一直阻塞，
+    整条解析停在「正在解析直播流地址…」，点停止也取消不掉线程。超时按
+    「读不到」处理；线程本身收不回来，但协程不再陪它等。"""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _cookie_header, browser),
+                                      timeout=BROWSER_ATTEMPT_TIMEOUT)
+    except asyncio.TimeoutError:
+        print("[信息] 读取 {} 的 TikTok 登录状态 {} 秒没有返回（macOS 可能在等你"
+              "点钥匙串对话框），先按未登录继续".format(browser, BROWSER_ATTEMPT_TIMEOUT))
+        return None
 
 
 def _cookie_header(browser):
@@ -132,8 +151,7 @@ async def _resolve_from_page(url, browser=None):
 
     headers = dict(_BROWSER_HEADERS)
     if browser:
-        loop = asyncio.get_running_loop()
-        cookie = await loop.run_in_executor(None, _cookie_header, browser)
+        cookie = await _cookie_header_with_budget(browser)
         if not cookie:
             return None, False
         headers["Cookie"] = cookie
@@ -399,11 +417,10 @@ async def _resolve_via_api(url, cookies_browser="auto"):
                 return None, True          # 接口明确说没在播
             info = await _get_json(session, _WEBCAST_API.format(room=room))
             if _stream_withheld(info):
-                loop = asyncio.get_running_loop()
                 browsers = (_browser_order(cookies_browser)
                             if cookies_browser != "none" else ())
                 for browser in browsers:
-                    cookie = await loop.run_in_executor(None, _cookie_header, browser)
+                    cookie = await _cookie_header_with_budget(browser)
                     if not cookie:
                         continue
                     headers = dict(_BROWSER_HEADERS)
@@ -598,6 +615,16 @@ def _mark(trace, layer, outcome, t0, **extra):
     trace.append(rec)
 
 
+async def _vet(url, layer, rejected):
+    """派生地址的安全校验（协议、内网、DNS）。失败不该终止整条解析：记下来、
+    返回 None 让这一层按「没拿到」处理，后面的层继续。"""
+    try:
+        return await _check_media_url(url)
+    except ResolveError as exc:
+        rejected.append((layer, exc))
+        return None
+
+
 def _note_layer_crash(crashed, layer_name, exc):
     """某一层解析内部出了非 ResolveError 的异常：打印完整 traceback（终端能
     看到堆栈，而不是像 2026-09-05 那次一样只剩一句「内部错误」），记入
@@ -628,6 +655,7 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
         return await _check_media_url(url, trusted=True)
 
     crashed = []
+    rejected = []      # (层, ResolveError)：派生地址没过安全校验，不算这层拿到
 
     # 第 1 层：TikTok 官方接口。放在最前有两个理由——它给的是**纯音频档**
     # （only_audio=1，省掉整条视频码流），而且它独立于 yt-dlp 的提取器：
@@ -649,13 +677,16 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
         _note_layer_crash(crashed, "官方接口", exc)
         api_outcome = "crash"
     if api_url:
-        checked = await _check_media_url(api_url)
-        if await _media_url_works(checked):
+        checked = await _vet(api_url, "官方接口", rejected)
+        if checked is None:
+            api_outcome = "rejected"
+        elif await _media_url_works(checked):
             print("[信息] 已通过 TikTok 直播接口取到纯音频流")
             _mark(trace, "官方接口", "url", t0)
             return checked
-        print("[信息] 直播接口给的地址拉不动，继续试其它方式")
-        api_outcome = "dead_url"
+        else:
+            print("[信息] 直播接口给的地址拉不动，继续试其它方式")
+            api_outcome = "dead_url"
     if known_offline:
         # 接口明确说房间已结束——这是唯一敢下这个断言的地方
         _mark(trace, "官方接口", "offline", t0)
@@ -670,13 +701,16 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
     try:
         wk_url, wk_offline = await _resolve_via_webkit(url)
         if wk_url:
-            checked = await _check_media_url(wk_url)
-            if await _media_url_works(checked):
+            checked = await _vet(wk_url, "WebKit", rejected)
+            if checked is None:
+                wk_outcome = "rejected"
+            elif await _media_url_works(checked):
                 print("[信息] 已通过系统 WebKit 引擎从直播页取到流地址")
                 _mark(trace, "WebKit", "url", t0)
                 return checked
-            print("[信息] WebKit 拿到的地址拉不动，继续试其它方式")
-            wk_outcome = "dead_url"
+            else:
+                print("[信息] WebKit 拿到的地址拉不动，继续试其它方式")
+                wk_outcome = "dead_url"
         elif wk_offline:
             _mark(trace, "WebKit", "offline", t0)
             raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
@@ -711,6 +745,10 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
     else:
         _mark(trace, "yt-dlp匿名", "url" if code == 0 and _first_url(out) else "none",
               t0, code=code)
+        if code == 0 and not _first_url(out):
+            # 退出码 0 却没有地址：不能据此断言下播（只有接口确认才敢说），
+            # 当失败处理，让后面借 cookie / 直播页兜底的层继续
+            code = 1
 
     # 第 3 层：匿名失败且用户没自带 cookies.txt——依次试各浏览器的现成登录态。
     # 记住成功的那个，下次直接用，不再逐个试。
@@ -752,7 +790,10 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
                                        kind="offline")
                 if not fallback:
                     continue
-                checked = await _check_media_url(fallback)
+                checked = await _vet(fallback, "直播页兜底", rejected)
+                if checked is None:
+                    page_outcome = "rejected"
+                    continue
                 if not await _media_url_works(checked):
                     page_outcome = "dead_url"
                     continue
@@ -784,15 +825,21 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
             # 接口早就说了「不给程序」，后面各层也都没拿到：把这个明确的原因
             # 传上去，上层据此隔一会儿自动重试，而不是当成普通失败
             kind, message = "browser_only", str(browser_only)
+        if rejected:
+            message += "（另有拿到的地址没过安全校验：{}）".format(
+                "；".join("{}：{}".format(layer, exc) for layer, exc in rejected))
+            if kind == "unknown" and any(exc.kind == "network" for _, exc in rejected):
+                kind = "network"          # DNS 解析失败：可重试，别当成谜之失败
         if crashed:
             message += "（另有解析路径内部出错已跳过：{}，详见终端）".format(
                 "、".join(crashed))
         raise ResolveError(message, kind=kind)
     lines = [line.strip() for line in out.splitlines() if line.strip()]
     if not lines:
-        message = "yt-dlp 没有返回流地址（直播可能尚未开始，或刚刚结束）"
+        # 退出码 0 但没有任何输出：我们不知道发生了什么，不能替它说「下播了」
+        message = "yt-dlp 没有返回流地址"
         if crashed:
             message += "（另有解析路径内部出错已跳过：{}，详见终端）".format(
                 "、".join(crashed))
-        raise ResolveError(message, kind="offline")
+        raise ResolveError(message, kind="unknown")
     return await _check_media_url(lines[0])

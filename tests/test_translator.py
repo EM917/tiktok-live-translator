@@ -65,7 +65,7 @@ def test_429_sets_cooldown_and_stops_requests():
 def test_cooldown_expires(monkeypatch):
     tr, fake = make(FakeResp(200, [[["好", "ok", None]]]))
     import time
-    tr._cooldown_until = time.time() - 1     # 冷却已过期
+    tr._cooldown_until = time.monotonic() - 1     # 冷却已过期（冷却按单调时钟计）
     assert asyncio.run(tr.translate("ok", "zh-CN")) == "好"
     assert fake.calls == 1
 

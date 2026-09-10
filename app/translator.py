@@ -157,14 +157,14 @@ class GoogleWebTranslator(BaseTranslator):
         # 免费接口无法接受术语指令，忽略 glossary（靠译文后的兜底替换保证一致）
         # 免费接口会按 IP 限流（429）：冷却期间直接跳过，别在每条字幕上
         # 继续撞——既是无谓请求，也会加重限流
-        if time.time() < self._cooldown_until:
+        if time.monotonic() < self._cooldown_until:
             return None
         params = {"client": "gtx", "sl": source or "auto", "tl": target, "dt": "t", "q": text}
         try:
             session = await self.session()
             async with session.get(self.URL, params=params) as resp:
                 if resp.status == 429:
-                    self._cooldown_until = time.time() + self.COOLDOWN_SEC
+                    self._cooldown_until = time.monotonic() + self.COOLDOWN_SEC
                     print("[警告] Google 翻译接口被限流（429），"
                           "暂停请求 {} 秒后自动恢复".format(self.COOLDOWN_SEC))
                     return None
@@ -378,7 +378,7 @@ class DeepLTranslator(BaseTranslator):
         import time
 
         # 额度用尽或被限流时冷却，别在每条字幕上继续撞
-        if time.time() < self._cooldown_until:
+        if time.monotonic() < self._cooldown_until:
             return None
         body = {"text": [text],
                 "target_lang": self._LANGS.get(target, target.upper())}
@@ -391,7 +391,7 @@ class DeepLTranslator(BaseTranslator):
         try:
             status, data = await self._api("POST", "/v2/translate", body=body)
             if status in (429, 456):
-                self._cooldown_until = time.time() + 120
+                self._cooldown_until = time.monotonic() + 120
                 if status == 456:
                     self.quota_exhausted = True
                 print("[警告] DeepL {}（{}），暂停 120 秒".format(

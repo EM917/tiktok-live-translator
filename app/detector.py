@@ -37,7 +37,9 @@ def normalize(text):
     """
     if not text:
         return ""
-    text = text.lower().replace("ñ", "\x00")     # 占位，躲开下面的 NFD 分解
+    # 先归一到 NFC：输入若是 n + U+0303（NFD），下面的占位替换认不出 ñ，随后
+    # NFD 剥离组合符就把它折成 n——año 命中 ano，正是这段代码要防的误报
+    text = unicodedata.normalize("NFC", text.lower()).replace("ñ", "\x00")     # 占位，躲开下面的 NFD 分解
     text = unicodedata.normalize("NFD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = text.replace("\x00", "ñ")

@@ -26,6 +26,8 @@ import signal
 import sys
 import threading
 
+_PENDING = set()     # 信号处理里起的 disconnect 任务，保引用
+
 
 def _emit(obj):
     print(json.dumps(obj, ensure_ascii=False), flush=True)
@@ -106,7 +108,7 @@ async def _watch_parent(on_gone, read=None, getppid=os.getppid, grace=5.0, exit_
     on_gone 负责优雅断开（起 disconnect 任务）；grace 秒后不管断没断都硬退，
     别让一个「优雅」的收尾变成又一种挂着不走。
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     if read is None:
         def read():
             # 用原始 fd 而不是 sys.stdin.buffer：解释器退出时若有 daemon 线程还
@@ -185,9 +187,9 @@ async def _run(args):
     def _handle_signal():
         # 尽力优雅断开；disconnect() 本身可能耗时，起个任务不阻塞信号处理器。
         # 就算断开失败/超时，进程也会在 finally 里正常退出。
-        asyncio.ensure_future(client.disconnect())
+        _PENDING.add(asyncio.ensure_future(client.disconnect()))   # 保引用，别被 GC 收走
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, _handle_signal)
