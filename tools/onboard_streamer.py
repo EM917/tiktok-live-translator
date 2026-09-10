@@ -201,6 +201,18 @@ QUALITY_DIR = Path("benchmarks")
 from tools.bench_live import GRADES, QUOTA, SEED, _bucket   # noqa: E402
 
 
+def glossary_arg(argv):
+    """`--glossary old.txt` 的值。docstring 一直这么写，以前却被当普通 flag 丢掉，
+    纯靠 old.txt 恰好落在第二个位置参数上才「能用」；写在语料前面时词表会被
+    当成会话日志读。"""
+    for i, a in enumerate(argv):
+        if a == "--glossary" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--glossary="):
+            return a.split("=", 1)[1]
+    return None
+
+
 async def quality_sheet(streamer, n=120):
     """抽这个主播的字幕、翻一遍、出一张盲评表。
 
@@ -244,7 +256,7 @@ async def quality_sheet(streamer, n=120):
             p["bucket"] = name
             used.add(p["text"])
         picked += take
-    for p in [p for p in pool if p["text"] not in used][:n - len(picked)]:
+    for p in [p for p in pool if p["text"] not in used][:max(0, n - len(picked))]:
         p["bucket"] = "随机"
         picked.append(p)
 
@@ -315,7 +327,11 @@ def quality_score(streamer, ratings_path):
 
 
 async def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    argv = list(sys.argv[1:])
+    if "--glossary" in argv:                     # 值不是位置参数
+        i = argv.index("--glossary")
+        del argv[i:i + 2]
+    args = [a for a in argv if not a.startswith("--")]
     if "--quality" in sys.argv:
         await quality_sheet(args[0], int(args[1]) if len(args) > 1 else 120)
         return
@@ -326,10 +342,14 @@ async def main():
         print(__doc__)
         return
     path = args[0]
-    gpath = args[1] if len(args) > 1 else "glossary.txt"
+    gpath = glossary_arg(sys.argv[1:]) or (args[1] if len(args) > 1 else None)
     src, tr = captions(path)
     texts = list(src.values())
-    g = Glossary(parse(Path(gpath).read_text(encoding="utf-8"))) if Path(gpath).exists() else load()
+    if gpath and not Path(gpath).exists():
+        # 以前词表路径打错会静默回落到默认表：用户以为在对比旧词表，
+        # 实际整套审计跑在 glossary.txt 上
+        raise SystemExit("[错误] 词表文件不存在：{}".format(gpath))
+    g = Glossary(parse(Path(gpath).read_text(encoding="utf-8"))) if gpath else load()
     print("语料 {}：{} 句字幕，{} 句有译文\n".format(Path(path).name, len(src), len(tr)))
 
     print("① 称呼审计")

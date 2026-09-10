@@ -87,6 +87,10 @@ def classify(room_status, info):
     """(房间状态接口的 status, 房间信息接口的返回) → (观察类别, 说明)。
 
     类别：withheld（接口不给流地址）/ ok / offline / error。只描述看到的。"""
+    if room_status == "no_room":
+        # 用户名接口没给房间号：用户名不存在、或那个接口失败。房间信息接口根本
+        # 没被请求，不能把锅甩给它
+        return "no_room", "用户名接口没有给出房间号（用户名不存在，或接口失败）"
     if room_status is not None and room_status != LIVE_STATUS:
         return "offline", "房间状态接口 status={}".format(room_status)
     if not isinstance(info, dict):
@@ -112,6 +116,9 @@ def verdict(target, control):
     """配对结论。规则写死，不给人（或 agent）发挥的余地。"""
     t = target[0]
     c = control[0] if control else None
+    if t == "no_room":
+        return ("用户名接口没有给出目标房间的房间号——先核对用户名有没有打错"
+                "（@ 后面的英文用户名，不是昵称）；用户名没错再看网络。")
     if c is None:
         return ("只有目标房间一个观察，**不能下任何结论**。"
                 "找一个当时能用的房间做对照（--control）再说。")
@@ -122,8 +129,13 @@ def verdict(target, control):
                 "原因 TikTok 不说明——**不要贴年龄/限流/封禁之类的标签**。"
                 "能做的：过一会儿再点「开始翻译」；或把直播间链接和浏览器里的 .flv 地址"
                 "并排粘进程序（约两周有效）。")
-    if t == "withheld" and c in ("withheld", "offline"):
-        return ("对照房间也没拿到（{}）。先怀疑本机这边：网络、接口变更、本机被挡——"
+    if c in ("offline", "no_room"):
+        # 对照那两次请求都成功往返、还拿到了明确状态——恰恰证明本机链路正常；
+        # 只是这次配对无效（对照没在播 / 用户名不对），不能推成「本机有问题」
+        return ("对照房间没在播或没查到（{}），这次配对无效，换一个**确定在播**的对照"
+                "重来（--control）。").format(control[1])
+    if t == "withheld" and c == "withheld":
+        return ("对照房间也被拒（{}）。先怀疑本机这边：网络、接口变更、本机被挡——"
                 "**别怪目标房间**。换一个确定在播的对照再验一次。").format(control[1])
     if t == "ok":
         return ("目标房间现在能拿到流地址。如果程序仍然失败，问题在解析之后"
@@ -144,7 +156,7 @@ async def probe(user):
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         room, status = await _room_status(session, user)
         if room is None:
-            return None, None
+            return "no_room", None
         info = await _get_json(session, _WEBCAST_API.format(room=room))
         return status, info
 

@@ -103,6 +103,11 @@ def main():
     terms_path = Path(args.terms) if args.terms else ROOT / "banned_terms.txt"
     existing = [t for t in load_terms(terms_path)
                 if not t.lower().startswith("re:")]
+    if not existing:
+        # 文件缺失时 load_terms 静默返回 []：--term 模式下 banned_tokens 为空，
+        # 本身也是违禁词的邻居会被标成「良性碰撞」并建议写 policy——正是
+        # test_collision_tools 第一条要防的错误分类，只是从「文件不存在」绕过去了
+        raise SystemExit("[错误] 词表为空或读不到：{}——不能按空表出报告".format(terms_path))
     raw_terms = [args.term] if args.term else existing
     # is_banned 标签衡量的是「邻居是不是**已有**违禁词」——两种碰撞的风险
     # 含义完全不同（撞到无关合法词 vs 撞到另一个违禁词）。--term 模式下

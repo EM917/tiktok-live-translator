@@ -175,6 +175,38 @@ def load_contexts(log_dir):
     return ctx
 
 
+def _read_records(path):
+    """逐行读会话日志，坏行跳过——进程被杀时缓冲区边界会留半行，同仓的
+    annotate.load_jsonl / retranslate_audit.read_rows 都这么处理，唯独这里以前
+    裸 json.loads，一场日志尾部一个半行就让整个队列构建中止。"""
+    out = []
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        if not line.strip().startswith("{"):
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def next_queue_path(log_dir, stamp):
+    """同一天重建队列不覆盖旧队列。旧结果文件按 queue_id 匹配、从不校验
+    queue_hash：覆盖后旧句子的 target 会套到新句子上，训练 pair 静默错配。
+    后缀用 '_2'：'_' 排在 '.' 之后，annotate.latest_queue 按名字排序仍能选到最新的。"""
+    for n in range(1, 100):
+        name = ("annotation-queue-{}.jsonl".format(stamp) if n == 1
+                else "annotation-queue-{}_{}.jsonl".format(stamp, n))
+        p = Path(log_dir) / name
+        if not p.exists():
+            return p
+    raise SystemExit("[错误] 同一天已有 99 个队列文件")
+
+
 def ordinary_controls(log_dir, exclude_srcs, n=CONTROLS, cap=STREAMER_CAP,
                       holdout=None):
     """普通对照句：一个难例家族都不命中的代表性句子，固定种子抽样。
@@ -196,9 +228,7 @@ def ordinary_controls(log_dir, exclude_srcs, n=CONTROLS, cap=STREAMER_CAP,
         if holdout and (session in holdout["sessions"]
                         or meta["streamer"] in holdout["streamers"]):
             continue
-        recs = [json.loads(line) for line in
-                Path(meta["path"]).read_text(encoding="utf-8").splitlines()
-                if line.strip().startswith("{")]
+        recs = _read_records(meta["path"])
         segs = {r["seq"]: r for r in recs if r.get("type") == "segment"}
         for r in recs:
             if r.get("type") != "translation" or not r.get("ok"):
@@ -273,8 +303,12 @@ def main():
             "label": None, "target": None,
         })
 
-    out = log_dir / "annotation-queue-{}.jsonl".format(
-        date.today().strftime("%Y%m%d"))
+    if not out_rows:
+        # 先落一个 0 行的队列再在统计处 IndexError：latest_queue 会把空文件当最新，
+        # annotate 打开后页面直接空白。不写文件，说清原因
+        print("[错误] 没有可入队的句子（候选全部落在 holdout 里、或对照组抽不到）——不写文件")
+        sys.exit(2)
+    out = next_queue_path(log_dir, date.today().strftime("%Y%m%d"))
     with out.open("w", encoding="utf-8") as fh:
         for row in out_rows:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")

@@ -53,9 +53,23 @@ def main():
     terms = load_terms(terms_path)
     policy = load_fuzzy_policy(ROOT / "banned_fuzzy_policy.txt")
     print("policy: {}\n".format(policy or "（空）"))
+    # gate 的输入必须摆在台面上：以前语料目录不存在、或词表路径打错，都会打印
+    # 「移除 0 条 … ✅ gate 通过」并 exit 0——从 worktree 跑（logs/ 在 .gitignore
+    # 里）就是零条语料上的空转，任何 policy 回归都拦不住。CLAUDE.md 第五条要求
+    # 改词表前必跑这个 gate，它给假阴性比不跑还糟。
+    sessions = provenance.corpus(log_dir=args.logs)
+    log_dir = Path(args.logs) if args.logs else provenance.LOG_DIR
+    print("目录 {} · 语料 {} 场 · 词条 {} 条\n".format(log_dir, len(sessions), len(terms)))
+    if not terms:
+        print("❌ 词表为空或读不到：{}——空表上的 gate 没有意义".format(terms_path))
+        sys.exit(2)
+    if not sessions:
+        print("❌ 语料为空：{} 下没有真实会话——空转的 gate 没有意义"
+              "（从 worktree 跑？logs/ 不入库，用 --logs 指向主目录）".format(log_dir))
+        sys.exit(2)
 
     removed_total, removed_bad, added_total = 0, 0, 0
-    for meta in provenance.corpus(log_dir=args.logs):
+    for meta in sessions:
         # 两边都关掉命中冷却：冷却是跨命中的时间耦合——旧检测器的一次误报
         # 会占用冷却窗口、吞掉几秒后的真命中；收紧后真命中浮出来，会被
         # 差集误判成「新增」。gate 比的是匹配行为本身，不是报警节流
