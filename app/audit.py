@@ -15,6 +15,20 @@ from pathlib import Path
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 
+def _open_new(directory, stamp):
+    """独占创建审计文件。同一秒起两场（双击「开始」、一秒内换主播）会得到同一个
+    stamp：以前用追加模式，第二场写进第一场的文件，provenance 把两场混成一场归到
+    第一个主播名下，按会话切语料的工具全部错归属。冲突就加 -2/-3 后缀。"""
+    for n in range(1, 100):
+        name = "session-{}{}.jsonl".format(stamp, "" if n == 1 else "-{}".format(n))
+        path = directory / name
+        try:
+            return path, path.open("x", encoding="utf-8")
+        except FileExistsError:
+            continue
+    raise OSError("同一秒内已有 99 个审计文件")
+
+
 class AuditLog:
     def __init__(self, room_url="", log_dir=None, extra=None):
         self._lock = threading.Lock()
@@ -23,8 +37,7 @@ class AuditLog:
         try:
             directory.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            self.path = directory / "session-{}.jsonl".format(stamp)
-            self._fh = self.path.open("a", encoding="utf-8")
+            self.path, self._fh = _open_new(directory, stamp)
             # 记下这一场是哪个版本、哪份词表跑的。事后拿数字回来复盘时，
             # 「这个数是哪几个主播、哪个 commit、哪份词表产生的」要答得出来。
             # extra 是调用方掌握、这里拿不到的运行时事实（引擎、语言等）——
@@ -126,6 +139,17 @@ class AuditLog:
         self._write({
             "type": "audio_dropped",
             "at": datetime.now().isoformat(timespec="milliseconds"),
+            "queue_depth": queue_depth,
+        })
+
+    def asr_failed(self, segment_ms, error, queue_depth=None):
+        """识别本身抛异常、这段音频没有进检测器——漏报的第五种成因。以前只有
+        终端一行 print，打包运行时 stdout 指向 /dev/null，事后无从归因。"""
+        self._write({
+            "type": "asr_failed",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "segment_ms": round(segment_ms, 1),
+            "error": error,
             "queue_depth": queue_depth,
         })
 

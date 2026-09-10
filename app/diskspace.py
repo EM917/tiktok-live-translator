@@ -130,8 +130,8 @@ def _log_files(log_dir, current_log):
 
 def _log_time(path):
     # session-20260905-171803.jsonl -> 2026-09-05 17:18:03
-    try:
-        return datetime.strptime(path.stem[len("session-"):], "%Y%m%d-%H%M%S")
+    try:      # session-20260905-171803[-2].jsonl：同秒第二场带后缀，只取前 15 位
+        return datetime.strptime(path.stem[len("session-"):][:15], "%Y%m%d-%H%M%S")
     except ValueError:
         return None
 
@@ -144,12 +144,14 @@ def _fsize(path):
 
 
 async def delete(item_ids, hf_dir=None, log_dir=None, current_log=None,
-                 ollama_models=(), ollama_delete=None, now=None):
+                 ollama_models=(), ollama_delete=None, now=None,
+                 active_asr=None, active_ollama=None):
     """按 id 删除。id 先回查盘点结果，查不到的一律忽略——不存在「按路径删」这条路。
 
     ollama_delete: async fn(name) -> bool，由调用方提供（这里不联网）。
     返回 (释放的字节数, [删掉的 id], [失败说明])。"""
     known = {it["id"]: it for it in inventory(hf_dir, ollama_models, log_dir,
+                                              active_asr=active_asr, active_ollama=active_ollama,
                                               current_log=current_log, now=now)}
     hub = Path(hf_dir) if hf_dir else hf_hub_dir()
     freed, done, failed = 0, [], []
@@ -157,6 +159,10 @@ async def delete(item_ids, hf_dir=None, log_dir=None, current_log=None,
         it = known.get(str(item_id))
         if it is None:
             failed.append("{}：不在盘点清单里，跳过".format(item_id))
+            continue
+        if it["role"] == "in_use":
+            # 界面上这类勾选框是禁用的，但清单可能是开播前刷出来的——服务端必须自己守
+            failed.append("{}：正在使用中，不删".format(it["label"]))
             continue
         try:
             if it["kind"] == "hf":
