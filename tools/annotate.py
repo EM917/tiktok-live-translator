@@ -44,6 +44,57 @@ def file_hash(path):
         return "?"
 
 
+def _pid_alive(pid):
+    """进程还在吗。Windows 上 os.kill(pid, 0) 不是探活——signal.CTRL_C_EVENT 就是 0，
+    等于给整个控制台进程组发 Ctrl-C（CI 里 pytest 因此收到 KeyboardInterrupt），
+    那边要用 OpenProcess。"""
+    if os.name == "nt":
+        import ctypes
+        SYNCHRONIZE = 0x00100000
+        handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True            # 存在但不是我们的，按活着算
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def acquire_lock(lock_path):
+    """单实例锁。锁里记了 PID 就该用它：关掉终端窗口（SIGHUP 不跑 atexit）会留下
+    死锁文件，以前每次启动都被拒绝直到用户手动 rm——主仓 logs/ 里就躺过一个
+    PID 早已不存在的锁。残留锁自动接管并提示；活着的实例仍然拒绝。"""
+    for _ in range(2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return
+        except FileExistsError:
+            try:
+                pid = int(Path(lock_path).read_text().strip() or "0")
+            except (OSError, ValueError):
+                pid = 0
+            if pid and _pid_alive(pid):
+                raise SystemExit(
+                    "[错误] 另一个标注实例（PID {}）正在使用 {}。"
+                    "确认没有别的实例后删除该锁文件再启动。".format(
+                        pid, Path(lock_path).name)) from None
+            print("[信息] 发现上次异常退出残留的锁（PID {} 已不存在），接管".format(pid or "?"))
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
+    raise SystemExit("[错误] 无法获得锁 {}".format(lock_path))
+
+
 def latest_queue(log_dir):
     files = sorted(Path(log_dir).glob("annotation-queue-*.jsonl"))
     return files[-1] if files else None
@@ -297,15 +348,7 @@ class Annotator:
         import threading
         self._mutex = threading.Lock()
         self.lock_path = self.res_path.with_suffix(".lock")
-        try:
-            fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
-            os.close(fd)
-        except FileExistsError:
-            raise SystemExit(
-                "[错误] 另一个标注实例正在使用 {}（或上次异常退出残留）。"
-                "确认没有别的实例后删除该锁文件再启动。".format(
-                    self.lock_path.name)) from None
+        acquire_lock(self.lock_path)
         import atexit
         atexit.register(lambda: self.lock_path.unlink(missing_ok=True))
         self.records = load_jsonl(self.res_path)
@@ -414,6 +457,8 @@ def serve(annotator, port):
 
     # SIGTERM 默认不跑 atexit，锁会残留；转成正常退出让锁释放
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    if hasattr(signal, "SIGHUP"):        # 关终端窗口也要走 atexit 清锁
+        signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     print("标注界面: http://127.0.0.1:{}  （队列 {}，结果 {}）".format(
         port, annotator.queue_path.name, annotator.res_path.name))
@@ -432,6 +477,8 @@ def main():
 
     if args.compare:
         qp = latest_queue(log_dir)
+        if qp is None:
+            raise SystemExit("[错误] 没有标注队列——先跑 tools/build_annotation_queue.py")
         first = effective_results(load_jsonl(results_path(qp)))
         second = effective_results(load_jsonl(results_path(qp, relabel=True)))
         stats = compare_relabel(first, second)

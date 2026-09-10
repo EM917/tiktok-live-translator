@@ -62,7 +62,10 @@ def suspicion(source, fast, strong):
 
 
 def latest_log():
-    files = sorted(glob.glob("logs/*.jsonl"))
+    # 只认会话日志：logs/ 里还有 miner 的 training-candidates-*.jsonl 和 builder 的
+    # annotation-queue-*.jsonl，字典序 't' > 's'，以前 sorted()[-1] 选中的是候选文件，
+    # 「最近一场」静默变成 0 段
+    files = sorted(glob.glob("logs/session-*.jsonl"))
     return files[-1] if files else None
 
 
@@ -98,6 +101,8 @@ async def main():
     strip_on = bool(profile_options(
         streamer_of(start.get("room_url", ""))).get("vocative_strip"))
     segments = [r for r in rows if r.get("type") == "segment" and (r.get("text") or "").strip()]
+    if not segments:
+        raise SystemExit("[错误] {} 里没有一条字幕段——这不是会话日志，或整场没有识别结果".format(path))
     if alerts_only:
         segments = [r for r in segments if r.get("hits")]
     # 直播中命中违禁词、或中控手动点过「重译」的段落，已经是强模型译的了，
