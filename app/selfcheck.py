@@ -138,6 +138,23 @@ def _hub_dirs():
     return Path(hf) / "hub" if hf else Path.home() / ".cache" / "huggingface" / "hub"
 
 
+# faster-whisper 的短名→仓库映射：turbo 不在 Systran 名下，猜前缀会查错目录，
+# 模型明明下全了自检却一直 WARN「首次开播需先下载模型」
+_CT2_REPOS = {"large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+              "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+              "distil-large-v3": "Systran/faster-distil-whisper-large-v3"}
+
+
+def _ct2_repo(model):
+    try:
+        from faster_whisper.utils import _MODELS
+        if model in _MODELS:
+            return _MODELS[model]
+    except Exception:
+        pass
+    return _CT2_REPOS.get(model, "Systran/faster-whisper-" + model)
+
+
 def _model_cached(model, backend):
     """模型是否真的下全了。
 
@@ -153,7 +170,7 @@ def _model_cached(model, backend):
     if backend == "mlx":
         repo = _MLX_REPOS.get(model, model)
     else:
-        repo = model if "/" in model else "Systran/faster-whisper-" + model
+        repo = model if "/" in model else _ct2_repo(model)
     target = "models--" + repo.replace("/", "--")
     hub = _hub_dirs()
     entry = hub / target

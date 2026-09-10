@@ -225,7 +225,20 @@ async def _run(args):
     return 0
 
 
+def _utf8_stdio():
+    """父进程按 UTF-8 解析每一行。Windows 上管道的默认编码是 ANSI 代码页
+    （cp936/cp1252）：带 emoji 的昵称直接 UnicodeEncodeError 丢掉这条，
+    "niño" 编成 \xf1 让父进程 json.loads 失败——西语弹幕几乎条条带重音，
+    等于弹幕面板在 Windows 上只剩纯 ASCII 的少数评论。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None):
+    _utf8_stdio()
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
         code = asyncio.run(_run(args))

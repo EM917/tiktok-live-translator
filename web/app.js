@@ -1,5 +1,10 @@
 /* TikTok 直播同传 —— 前端逻辑：WebSocket 收字幕、渲染历史 + 底部大字幕、启动/停止直播间 */
 (function () {
+  // 浏览器把 127.0.0.1 的站点数据整个禁掉（隐私开关/企业策略）时，localStorage
+  // 一碰就抛 SecurityError——不兜住的话整个初始化脚本在第一行就断掉，页面停在
+  // 「等待连接…」且没有任何报错。这些值只是本地偏好，真正要紧的都在 settings.json
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 忽略 */ } }
   "use strict";
 
   var historyEl = document.getElementById("history");
@@ -95,7 +100,7 @@
 
   // ---- 设置 ----
   // 只有用户显式调过字号才覆盖 CSS 默认值（否则会压掉移动端媒体查询的 26px）
-  var savedFont = localStorage.getItem("subFontSize");
+  var savedFont = lsGet("subFontSize");
   if (savedFont) {
     fontSlider.value = parseInt(savedFont, 10);
     applyFont(parseInt(savedFont, 10));
@@ -108,9 +113,9 @@
   // localStorage 里的 "auto" 不回填：老版本默认就是 auto，它大概率是历史
   // 默认值而非用户的选择——现在默认是西语。真选过自动检测的用户，其选择
   // 存在服务端（settings.json），随 config 消息回填，不经这里
-  var savedSource = localStorage.getItem("sourceLang");
+  var savedSource = lsGet("sourceLang");
   if (savedSource && savedSource !== "auto") sourceSel.value = savedSource;
-  var savedRoom = localStorage.getItem("roomUrl");
+  var savedRoom = lsGet("roomUrl");
   if (savedRoom) roomInput.value = savedRoom;
   // 服务端记住的主播语言随 config 到达后回填（localStorage 按端口隔离，
   // 端口漂移就丢了）；但本页里用户已亲手改过的选择不能被盖掉
@@ -120,7 +125,7 @@
   fontSlider.addEventListener("input", function () {
     var size = parseInt(fontSlider.value, 10);
     applyFont(size);
-    localStorage.setItem("subFontSize", String(size));
+    lsSet("subFontSize", String(size));
   });
 
   // 目标语言以服务端为准（跟随 --target 启动参数），UI 切换即时生效但不做本地持久化
@@ -139,6 +144,15 @@
   // 地址输入归一化在 normalize.js（独立成文件以便单元测试），
   // 此处使用其暴露的全局函数 normalizeRoomInput
 
+  // 服务端回填直播间地址时保住输入框里的直连地址（房间链接 + .flv/.m3u8 那种
+  // 双地址用法）：开始那一刻 config 广播只带房间链接，整个覆盖掉的话，接口
+  // 不给流地址的房间在「停止→开始」时就没有直连地址可用了
+  var MEDIA_RE = /https?:\/\/[^\s]+?\.(?:flv|m3u8)(?:\?[^\s]*)?/i;
+  function fillRoomInput(roomUrl) {
+    var m = roomInput.value.match(MEDIA_RE);
+    roomInput.value = m ? roomUrl + " " + m[0] : roomUrl;
+  }
+
   function startStream() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setStatus({ state: "offline", detail: "与本地服务断开，正在重连——稍候再点「开始翻译」" });
@@ -149,7 +163,7 @@
     // 允许一次粘两个地址：直播间链接 + 浏览器里拿到的 .flv/.m3u8 直连地址。
     // 房间链接决定弹幕、词表和审计归属，直连地址只作音频源——只贴直连地址
     // 也能用，但那样没有主播身份，弹幕就出不来。
-    var mediaMatch = raw.match(/https?:\/\/[^\s]+?\.(?:flv|m3u8)(?:\?[^\s]*)?/i);
+    var mediaMatch = raw.match(MEDIA_RE);
     var media = mediaMatch ? mediaMatch[0] : null;
     var roomPart = media ? raw.replace(media, " ").trim() : raw;
     var url = normalizeRoomInput(roomPart || raw);
@@ -161,8 +175,8 @@
       return;
     }
     roomInput.value = media ? url + " " + media : url;
-    localStorage.setItem("roomUrl", url);
-    localStorage.setItem("sourceLang", sourceSel.value);
+    lsSet("roomUrl", url);
+    lsSet("sourceLang", sourceSel.value);
     // 「开始」指令必须确认送达：半死连接上 send 会无声进黑洞（readyState 还是
     // OPEN），随后自动重连成功、页面若无其事地回到待机——用户点了却毫无反应。
     // 服务器收到 start 后会立刻回执 connecting 状态；在那之前指令算「在途」，
@@ -393,7 +407,8 @@
             currentVersion = msg.config.version;
             versionEl.textContent = " · v" + msg.config.version;
           }
-          if (msg.config.update) showUpdate(msg.config.update);
+          // 重连/刷新时回放的提示从来不是「新」提示：不许再改标题打扰直播中的中控
+          if (msg.config.update) showUpdate(Object.assign({}, msg.config.update, { quiet: true }));
           else {
             updateBar.classList.add("hidden");
             updateBtn.disabled = false;
@@ -425,7 +440,7 @@
       case "config":
         if (msg.target_lang) targetSel.value = msg.target_lang;
         if (msg.source_lang && !sourceTouched) sourceSel.value = msg.source_lang;
-        if (msg.room_url) roomInput.value = msg.room_url;
+        if (msg.room_url) fillRoomInput(msg.room_url);
         break;
       case "glossary_migration":
         handleMigration(msg);
@@ -619,7 +634,10 @@
     var card = cardsById[msg.id];
     if (card) applyTranslation(card, msg);
     if (liveBarId === msg.id && msg.translated) {
-      liveOriginal.textContent = liveTranslated.textContent;
+      // 小字永远是西语原文（从卡片取）。以前拿当前大字顶上去：第二次译文
+      // （重译）到来时大字已经是中文，顶栏就变成两行中文，原文不见了
+      var origEl = card ? card.querySelector(".orig") : null;
+      liveOriginal.textContent = origEl ? origEl.textContent : liveOriginal.textContent;
       liveOriginal.classList.remove("hidden");
       liveTranslated.textContent = msg.translated;
     }
@@ -738,7 +756,7 @@
 
   // ---- 观众弹幕 ----
   // 弹幕只翻译、只显示，不进报警链路；面板折叠状态与警报面板无关，单独记忆。
-  if (localStorage.getItem("commentPanelCollapsed") === "1") {
+  if (lsGet("commentPanelCollapsed") === "1") {
     commentPanel.classList.add("collapsed");
   }
 
@@ -770,7 +788,11 @@
     } else if (backendState === "disconnected") {
       title = "评论流断开，重连中…";
       emptyText = title;
-    } else if (backendState === "error" || backendState === "unavailable") {
+    } else if (backendState === "error" || backendState === "unavailable"
+               || (backendState && backendState !== "idle" && backendDetail)) {
+      // 后端还会发 offline / not_found / login_required / blocked 之类带原因的
+      // 状态：没有专门分支的一律把 detail 原样给中控看，别显示成「未连接」
+      // 让人以为弹幕功能没启动
       var detail = backendDetail || "";
       title = detail.length > 80 ? detail.slice(0, 80) + "…" : detail;
       cls += " warn";
@@ -847,13 +869,13 @@
 
   toggleCommentsBtn.addEventListener("click", function () {
     commentPanel.classList.add("collapsed");
-    localStorage.setItem("commentPanelCollapsed", "1");
+    lsSet("commentPanelCollapsed", "1");
     refreshCommentPanel();
   });
 
   commentFab.addEventListener("click", function () {
     commentPanel.classList.remove("collapsed");
-    localStorage.setItem("commentPanelCollapsed", "0");
+    lsSet("commentPanelCollapsed", "0");
     refreshCommentPanel();
   });
 

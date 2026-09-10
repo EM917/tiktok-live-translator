@@ -140,10 +140,13 @@ class CaptionServer:
             self.history.append(msg)
         elif msg.get("type") == "caption_update":
             # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文
+            # 只覆盖消息里带的键：重译的「pending/failed」通知不带 translated，
+            # 整段照抄会把快译文抹成 None，下次重连回放这条就只剩西语
             for item in reversed(self.history):
                 if item.get("id") == msg.get("id"):
-                    item["translated"] = msg.get("translated")
-                    item["translate_state"] = msg.get("translate_state")
+                    for k, v in msg.items():
+                        if k not in ("type", "id"):
+                            item[k] = v
                     break
         elif msg.get("type") == "alert":
             self.alerts.append(msg)
@@ -152,7 +155,9 @@ class CaptionServer:
             # 否则中控一刷新就只剩西语，等于没补
             for a in self.alerts:
                 if a.get("alert_id") == msg.get("alert_id"):
-                    a["context_zh"] = msg.get("context_zh")
+                    for k, v in msg.items():   # failed/why 也要留：刷新后不能退回「翻译中…」
+                        if k not in ("type", "alert_id"):
+                            a[k] = v
                     break
         elif msg.get("type") == "comment" and not msg.get("replay"):
             self.comments.append(msg)

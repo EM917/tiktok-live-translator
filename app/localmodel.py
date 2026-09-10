@@ -95,15 +95,20 @@ async def start(timeout=25):
     if exe is None and not _mac_app_exists():
         return False
     try:
+        launched = False
         if sys.platform == "darwin":
             # open -a 走 LaunchServices：app 放在哪个目录都能启动，
             # 不用我们猜路径，也不要求用户先把它拖进「应用程序」
-            await asyncio.create_subprocess_exec(
+            proc = await asyncio.create_subprocess_exec(
                 "open", "-a", "Ollama",
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        elif exe is None:
+            # 没有 .app（Homebrew formula 只装命令行）时 open 立刻返回非 0，
+            # 退回下面的 `ollama serve`；以前这里不看返回值，brew 用户每次
+            # 白等 25 秒再被引导去「下载 Ollama」
+            launched = await proc.wait() == 0
+        if not launched and exe is None:
             return False
-        else:
+        if not launched:
             # serve 要活得比我们久，别绑在本进程的输出上
             await asyncio.create_subprocess_exec(
                 exe, "serve",

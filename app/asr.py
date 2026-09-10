@@ -218,7 +218,16 @@ class Transcriber(_FilterMixin):
         # 不会把上一段的幻觉传染给下一段
         self.hotwords = hotwords
         self._context = ""
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        try:
+            self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        except Exception as exc:
+            if device != "cuda":
+                raise
+            # CUDA 组件缺失（cuBLAS/cuDNN 没装、驱动太旧）在这里才暴露。退回 CPU
+            # 总比整机零识别强——这是合规监听器，识别不跑等于没人听
+            print("[警告] CUDA 加载识别模型失败（{}），改用 CPU int8"
+                  .format(str(exc)[:120]))
+            self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
     def transcribe(self, pcm):
         """输入 16 kHz mono s16le PCM，返回 (文本, 识别到的语言代码)。"""

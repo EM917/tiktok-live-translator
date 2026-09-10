@@ -163,6 +163,7 @@ class Pipeline:
         # 给中控看到可疑一句时临时用的，不是历史检索。
         self._recent = OrderedDict()
         self._strong = None              # 按需创建，用完不常驻
+        self._strong_missing = False     # 本场探测过没有强模型；换场重探
         self._upgrade_tasks = []         # 报警触发的重译，持有引用防 GC
         self._quality = {}               # seq -> 当前已生效译文的质量等级
         self._strong_inflight = set()    # 正在跑强模型的 seq，防同一条重复触发
@@ -255,6 +256,9 @@ class Pipeline:
         return None
 
     async def _apply_update(self):
+        # 先预检（git 在不在、工作区干不干净），过了才停直播：被拒时监听不能白停
+        if not await self.updater.precheck():
+            return
         await self.stop_stream(quiet=True)
         await self.updater.apply()
 
@@ -263,6 +267,18 @@ class Pipeline:
         期间不给任何反馈的话，用户会以为点了没反应而反复点。"""
         await self.server.status("connecting", "已收到指令，正在连接…")
         await self.start_stream(url, media=media)
+
+    async def _strong_translator(self):
+        """按需创建强模型翻译器；本场探测过「没有」就不再探——探测是同步 urllib，
+        直播中每条报警都在事件循环上重探一遍，每次最坏几秒，直接加到检测延迟上。"""
+        from .translator import create_strong_translator
+
+        if self._strong is None and not self._strong_missing:
+            loop = asyncio.get_running_loop()
+            self._strong = await loop.run_in_executor(None, create_strong_translator)
+            if self._strong is None:
+                self._strong_missing = True
+        return self._strong
 
     def _spawn(self, coro):
         """起一个不等结果的任务，但保住引用。事件循环只弱引用任务：不保引用的
@@ -333,6 +349,13 @@ class Pipeline:
         if self._stats_task is not None and not self._stats_task.done():
             self._stats_task.cancel()
             self._stats_task = None
+        # 弹幕来源也在这里停，不能只指望旧任务的 _end_session：识别线程卡住时
+        # 上面的等待会超时撒手，这里随即把 audit 置空，等旧任务终于走到
+        # _end_session 时它已经「不是当前会话」了，于是弹幕子进程和它的
+        # WebSocket 一直挂到下一场——界面早就显示已停止。stop() 可重入。
+        comment_source = getattr(self, "comment_source", None)
+        if comment_source is not None:
+            await comment_source.stop()
         if self.audit is not None:
             self.audit.close()
             self.audit = None
@@ -449,6 +472,12 @@ class Pipeline:
             "vocative_strip", False))
         self._quality.clear()            # 等级按 seq 记，换场后 seq 会重号
         self._strong_inflight.clear()
+        # 上一场的字幕不能再重译：seq 换场重号，旧 job 写进新场的审计会对不上号。
+        # getattr 兜底：个别测试用 Pipeline.__new__ 造半成品实例
+        recent = getattr(self, "_recent", None)
+        if recent is not None:
+            recent.clear()
+        self._strong_missing = False     # 用户可能在两场之间拉好了模型
         self.telemetry.reset()          # 统计按场计，不跨房间累计
         if self.audit is not None:
             self.audit.close()
@@ -560,26 +589,41 @@ class Pipeline:
         if _ollama_has_hymt2() or _ollama_has_hymt2(large=True) or _ollama_has_gemma():
             return                      # 已经有本地模型了
 
-        await self.server.status(
-            "idle", "正在准备本地翻译模型（约 1.1 GB，只需这一次）…")
+        await self._provision_note(
+            "正在准备本地翻译模型（约 1.1 GB，只需这一次）…")
         last = [-10.0]
 
         def progress(pct, done_mb, total_mb):
             if pct - last[0] < 5:       # 别把界面刷爆
                 return
             last[0] = pct
-            self._spawn(self.server.status(
-                "idle", "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
-                        "只需这一次）…".format(pct, done_mb, total_mb)))
+            self._spawn(self._provision_note(
+                "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
+                "只需这一次）…".format(pct, done_mb, total_mb)))
 
         ok = await localmodel.pull(HYMT2_SMALL, on_progress=progress)
         if ok:
             print("[信息] 本地翻译模型已就绪")
-            self.translator = create_translator("auto")
-            await self.server.status("idle", "本地翻译已就绪，可以开始了。")
+            loop = asyncio.get_running_loop()
+            self.translator = await loop.run_in_executor(
+                None, create_translator, "auto")
+            await self._provision_note("本地翻译已就绪，可以开始了。")
         else:
             print("[警告] 本地翻译模型下载失败，本次继续用网络翻译")
         await self.run_selfcheck()
+
+    def _stream_active(self):
+        task = getattr(self, "_stream_task", None)
+        return task is not None and not task.done()
+
+    async def _provision_note(self, text):
+        """后台备模型的进度：待机时走 status（首页大字），直播中只发 notice。
+        这个下载要几分钟，而用户完全可以在它跑着的时候点开始——那时再广播
+        status=idle 会把界面从「直播中」拽回待机、停止按钮消失，每 5% 刷一次。"""
+        if self._stream_active():
+            await self.server.broadcast({"type": "notice", "text": text})
+        else:
+            await self.server.status("idle", text)
 
     async def run_selfcheck(self):
         """启动自检：确认每项能力真的在工作，结果推到界面上。
@@ -741,6 +785,7 @@ class Pipeline:
     # 曾以为是同一 IP 短时间内请求过多被限流——2026-09-05 实测推翻：同一分钟
     # 别的房间正常返回、用户自己的 Chrome 同一 IP 能播，是房间维度的拒绝，
     # 原因 TikTok 不说明。重试仍值得（09-06 一场第三次成功），但不能保证。
+    TRANSLATION_DRAIN_SEC = 5.0       # 流结束后最多等在途翻译这么久
     BROWSER_ONLY_RETRIES = 3
     BROWSER_ONLY_RETRY_SEC = 20.0
 
@@ -878,8 +923,11 @@ class Pipeline:
             # 在途 key（_loading_key）与已就绪 key（_transcriber_key）必须分开记：
             # 合用一个字段的话，加载中被取消会留下「key 是新的、模型还是旧的」的
             # 错配，之后外层判断永远成立不了，新参数至死不生效（静默用旧模型）。
-            if (self._transcriber_future is None or self._transcriber_future.done()
-                    or self._loading_key != key):
+            fut = self._transcriber_future
+            if (fut is not None and fut.done() and not fut.cancelled()
+                    and fut.exception() is None and self._loading_key == key):
+                pass    # 上次被取消的那场加载已经跑完了：直接拿结果，别再载一遍
+            elif fut is None or fut.done() or self._loading_key != key:
                 self._loading_key = key
                 self._transcriber_future = loop.run_in_executor(
                     None,
@@ -930,7 +978,8 @@ class Pipeline:
         # 就按正常收尾处理，重试预算也压到 1 次，别对着过期地址空耗。
         direct = is_direct_url(url)
         budget = 1 if direct else 5
-        reconnects = 0
+        reconnects = 0        # 连续重连次数：决定退避间隔（2、4、…、30 秒）
+        silent = 0            # 连续「一帧音频都没有」的轮次：决定何时放弃
         while True:
             await self.server.status("connecting", "正在连接直播音频流…")
             got_audio, audio_secs = await self._stream_session(
@@ -943,11 +992,15 @@ class Pipeline:
                     print("[信息] 直播流已结束。")
                     return
                 reconnects = 0        # 刚才播得好好的：重置重连预算
+            # 拿到过音频的轮次不算失败：网络劣化时每轮只播二十几秒就断，
+            # 五轮之后主播还在播，监听却宣布「重连失败」放弃了。只有连续几轮
+            # 一帧都没有（地址过期、真下播）才放弃；退避间隔照常增长，不空转
+            silent = 0 if got_audio else silent + 1
 
             media = None
             while media is None:
                 reconnects += 1
-                if reconnects > budget:
+                if silent > budget:
                     await self.server.status(
                         "error", "直播流多次中断且自动重连失败——可能直播已结束，"
                                  "或网络不稳。请稍后点「开始翻译」重试。")
@@ -970,6 +1023,7 @@ class Pipeline:
                         print("[信息] 直播已结束。可在网页里输入新地址继续。")
                         return
                     self._note_resolve_failure(exc)
+                    silent += 1       # 解析不出地址也是一轮没有音频
                     print("[错误] 重连解析失败: {}".format(exc))
 
     async def _stream_session(self, media, transcriber, denoise, live_note, loop):
@@ -1036,12 +1090,27 @@ class Pipeline:
                     stale = trans_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                if stale is None:        # 退出哨兵不能被当成积压丢掉
+                if stale is None:        # 已经在收尾：哨兵放回去，这条不翻了
                     trans_queue.put_nowait(None)
-                    break
+                    _drop_job(job)
+                    return
                 _drop_job(stale)
             trans_queue.put_nowait(job)
             self.telemetry.translation_queue_depth = trans_queue.qsize()
+
+        def _put_sentinel():
+            """收尾哨兵绝不能抛 QueueFull：翻译卡住时队列正好是满的（4 条），
+            裸 put_nowait 会把「流断了→自动重连」变成「内部错误，已停止」，
+            剩下的直播就没人听了。挤掉积压的旧任务给哨兵腾位——反正下面
+            最多只等 5 秒，它们本来也跑不到。"""
+            while trans_queue.full():
+                try:
+                    stale = trans_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if stale is not None:
+                    _drop_job(stale)
+            trans_queue.put_nowait(None)
 
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
@@ -1130,9 +1199,10 @@ class Pipeline:
                             r, asyncio.CancelledError):
                         raise r
                 # 流自然结束：让翻译把在途那条跑完（最多等 5 秒）
-                trans_queue.put_nowait(None)
+                _put_sentinel()
                 try:
-                    await asyncio.wait_for(asyncio.shield(trans_task), timeout=5)
+                    await asyncio.wait_for(asyncio.shield(trans_task),
+                                           timeout=self.TRANSLATION_DRAIN_SEC)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     trans_task.cancel()
             finally:
@@ -1357,19 +1427,22 @@ class Pipeline:
         回传的只有打码后的尾四位，够用户确认「我填的是哪一个」，
         又不至于让密钥出现在任何一条 WebSocket 消息里。
         """
-        from .settings import load_settings, save_setting
-        from .translator import TRANSLATOR_CHOICES
+        from .settings import save_setting
+        from .translator import TRANSLATOR_CHOICES, saved_keys
 
         if engine not in TRANSLATOR_CHOICES:
             return
         if key:
             env = self.ENGINE_KEY_ENV.get(engine)
             if env:
-                keys = dict(load_settings().get("api_keys", {}))
+                keys = saved_keys()
                 keys[env] = key.strip()
                 save_setting("api_keys", keys)
+        # create_translator 会同步探测 Ollama（urllib，最坏 ~10 秒）：直播中在事件
+        # 循环上跑会冻住音频读取、识别调度和报警广播，与 _quota_fallback 同款进线程池
+        loop = asyncio.get_running_loop()
         try:
-            new = create_translator(engine)
+            new = await loop.run_in_executor(None, create_translator, engine)
         except RuntimeError as exc:
             await self.server.broadcast({"type": "notice", "text": str(exc)})
             return
@@ -1418,7 +1491,7 @@ class Pipeline:
         `lang` 是识别出的源语言。别图省事传 "auto"——DeepL 的原生术语表
         必须带明确的 source_lang 才生效，而报警恰恰是最不能把商品名翻错的
         地方（实测不挂术语表词表遵从率只有 26.5%）。"""
-        from .translator import create_strong_translator, looks_fabricated
+        from .translator import looks_fabricated
 
         if not context.strip():
             return
@@ -1435,9 +1508,7 @@ class Pipeline:
                                              "failed": not zh,
                                              "why": why})
 
-        if self._strong is None:
-            self._strong = create_strong_translator()
-        tr = self._strong or self.translator
+        tr = await self._strong_translator() or self.translator
         if tr is None:
             await tell(why="没有可用的翻译引擎")
             return
@@ -1579,14 +1650,12 @@ class Pipeline:
         哪一句。实测强模型装卸只要约 2 秒，按需调用完全划算；常驻反而会把
         识别从 1.4 秒拖到 3.2 秒，直接推高违禁词报警延迟。
         """
-        from .translator import create_strong_translator, looks_fabricated
+        from .translator import looks_fabricated
 
         job = self._recent.get(seq)
         if job is None:
             return
-        if self._strong is None:
-            self._strong = create_strong_translator()
-        if self._strong is None:
+        if await self._strong_translator() is None:
             await self.server.broadcast({
                 "type": "notice",
                 "text": "没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）"})
