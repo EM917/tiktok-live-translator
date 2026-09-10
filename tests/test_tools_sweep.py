@@ -17,8 +17,10 @@ PY = sys.executable
 # ---- replay_alerts：空语料 / 空词表不许假通过 ----
 
 def _gate(*extra, cwd=ROOT):
+    # 子进程输出按 utf-8 解码：Windows 上 text=True 默认用 cp1252，中文文案会变乱码
     return subprocess.run([PY, str(ROOT / "tools" / "replay_alerts.py"), *extra],
-                          cwd=str(cwd), capture_output=True, text=True, timeout=120)
+                          cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=120)
 
 
 def test_replay_gate_refuses_an_empty_corpus(tmp_path):

@@ -45,6 +45,12 @@ def session_hits(path, detector):
 
 
 def main():
+    # Windows 控制台默认 cp1252：打 ✅/❌ 直接 UnicodeEncodeError，gate 以 exit 1 崩掉
+    # 而不是给出结论。输出按 utf-8 走，编不出的字符替换掉，不能让文案编码决定退出码
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--logs", default=None)
     ap.add_argument("--terms", default=None)
