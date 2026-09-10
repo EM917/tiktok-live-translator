@@ -70,6 +70,12 @@ def _asr_in_use(dirname, active_asr):
     backend, model = active_asr
     repo = _hf_label(dirname).lower()
     if backend == "mlx":
+        from .asr import _MLX_REPOS
+        # turbo 的 mlx 仓库名不带 -mlx 后缀（mlx-community/whisper-large-v3-turbo），
+        # 猜后缀会把正在用的模型标成可删；直接对照 asr 的仓库表
+        known = _MLX_REPOS.get(model)
+        if known:
+            return repo == known.lower()
         return repo.endswith(model.lower() + "-mlx")
     return "mlx" not in repo and repo.endswith(model.lower())
 

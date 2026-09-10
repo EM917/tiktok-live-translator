@@ -22,8 +22,11 @@ from app.ffmpeg_bin import filter_path
 # ---- ffmpeg 滤镜参数里的路径转义（Windows 降噪永远起不来的根因）----
 
 def test_filter_path_escapes_windows_and_filter_specials():
-    assert filter_path(r"C:\Users\elon\models\bd.rnnn") == r"C\:/Users/elon/models/bd.rnnn"
-    assert filter_path("/tmp/a:b,c/bd.rnnn") == r"/tmp/a\:b\,c/bd.rnnn"
+    """两级转义：冒号要 `\\\\:`（滤镜图一级、选项一级各吃一个反斜杠），
+    逗号只在滤镜图一级特殊，`\\,` 即可。2026-09-09 用 -f lavfi 实测：单反斜杠
+    的 `a\\:b` 报 "No option name near 'b/x.rnnn'"，双反斜杠才还原成 a:b。"""
+    assert filter_path(r"C:\Users\elon\models\bd.rnnn") == r"C\\:/Users/elon/models/bd.rnnn"
+    assert filter_path("/tmp/a:b,c/bd.rnnn") == r"/tmp/a\\:b\,c/bd.rnnn"
     assert filter_path("/plain/path/bd.rnnn") == "/plain/path/bd.rnnn"
 
 
@@ -90,7 +93,7 @@ def test_local_file_input_gets_no_http_options_and_escaped_filter(monkeypatch):
     src, captured, _ = _run_frames(monkeypatch, "file:///x.flv", model=r"C:\m\bd.rnnn")
     cmd = captured["cmd"]
     assert "-rw_timeout" not in cmd and "-reconnect" not in cmd
-    assert cmd[cmd.index("-af") + 1] == r"highpass=f=70,arnndn=m=C\:/m/bd.rnnn"
+    assert cmd[cmd.index("-af") + 1] == r"highpass=f=70,arnndn=m=C\\:/m/bd.rnnn"
 
 
 # ---- 审计：同秒两场不共用文件；识别异常留痕 ----

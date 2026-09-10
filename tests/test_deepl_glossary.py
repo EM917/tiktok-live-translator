@@ -113,14 +113,36 @@ def test_an_existing_matching_glossary_is_reused_without_creating(tr, monkeypatc
     assert ("POST", "glossaries") not in api.seq()
 
 
-def test_stale_glossaries_are_deleted_before_creating_not_after(tr, monkeypatch):
-    """免费版只放得下 1 个表（实测建第 2 个直接 456）。顺序写反就永远建不出来。"""
+class SlotAPI(FakeAPI):
+    """免费版单槽位：已有表时 POST 回 456，删掉才建得起来。"""
+
+    async def __call__(self, method, path, form=None, body=None):
+        if path == "/v2/glossaries" and method == "POST" and self.glossaries:
+            self.calls.append((method, path, form, body))
+            return 456, {"message": "Too many glossaries"}
+        return await super().__call__(method, path, form=form, body=body)
+
+
+def test_slot_full_deletes_our_old_glossary_then_retries(tr, monkeypatch):
+    """免费版只放得下 1 个表（实测建第 2 个直接 456）：先建、456 才删旧表重建。
+    以前是无条件先删光再建——两台机器共用一把密钥时互相踢表，每句多打三次接口。"""
+    api = SlotAPI(glossaries=[{"glossary_id": "old", "name": "tlt-es-zh-deadbeef",
+                               "ready": True}])
+    monkeypatch.setattr(tr, "_api", api)
+    assert run(tr._ensure_glossary("es", "zh-CN")) == "gid-1"
+    seq = api.seq()
+    assert seq == [("GET", "glossaries"), ("POST", "glossaries"),
+                   ("DELETE", "glossaries"), ("POST", "glossaries")]
+
+
+def test_a_free_slot_never_deletes_anything(tr, monkeypatch):
+    """付费档槽位够（或者另一台机器的表还在用）：直接建，别动别人的表。"""
     api = FakeAPI(glossaries=[{"glossary_id": "old", "name": "tlt-es-zh-deadbeef",
                                "ready": True}])
     monkeypatch.setattr(tr, "_api", api)
     run(tr._ensure_glossary("es", "zh-CN"))
-    seq = api.seq()
-    assert seq.index(("DELETE", "glossaries")) < seq.index(("POST", "glossaries"))
+    assert not [c for c in api.calls if c[0] == "DELETE"]
+    assert "old" in [g["glossary_id"] for g in api.glossaries]
 
 
 def test_glossaries_we_did_not_create_are_never_deleted(tr, monkeypatch):
@@ -258,4 +280,4 @@ def test_a_streamer_switch_rebuilds_the_glossary(tr):
     assert gid_b and gid_b != gid_a
     posts = [c for c in api.calls if c[0] == "POST"]
     assert len(posts) == 2                                    # 指纹变了，真的重建
-    assert not any(g["glossary_id"] == gid_a for g in api.glossaries)  # 旧表已删
+    assert not any(c[0] == "DELETE" for c in api.calls)      # 槽位够就不删旧表

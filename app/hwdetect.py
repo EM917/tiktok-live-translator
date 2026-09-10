@@ -43,6 +43,19 @@ def _ram_gb():
     return 0.0
 
 
+def _cuda_usable():
+    """有 NVIDIA 驱动不等于能跑 CUDA：requirements 不带 cuBLAS/cuDNN，只凭
+    nvidia-smi 就选 device=cuda 的话，装了驱动没装 CUDA 的机器（很常见）每次
+    开播都停在「加载识别模型失败」。问 CTranslate2 自己能不能看到设备。"""
+    if shutil.which("nvidia-smi") is None:
+        return False
+    try:
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
+
+
 def detect():
     """探测当前机器，返回一个 dict。"""
     machine = platform.machine().lower()
@@ -62,7 +75,7 @@ def detect():
         "machine": machine,
         "apple_silicon": apple_silicon,
         "has_mlx": has_mlx,
-        "has_cuda": shutil.which("nvidia-smi") is not None,
+        "has_cuda": _cuda_usable(),
         "cores": os.cpu_count() or 4,
         "ram_gb": round(_ram_gb(), 1),
         "has_ffmpeg": find_ffmpeg() is not None,

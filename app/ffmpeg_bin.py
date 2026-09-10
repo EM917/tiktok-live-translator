@@ -36,17 +36,21 @@ def ffmpeg_source():
     return "系统" if shutil.which("ffmpeg") else "内置（imageio-ffmpeg）"
 
 
-_FILTER_SPECIAL = re.compile(r"([:,'\[\];\\])")
+# ffmpeg 滤镜串解析分两级：先按 `[ ] , ;` 拆滤镜图，再按 `:` 拆每个滤镜的
+# 选项——两级都用 av_get_token，各吃掉一层反斜杠。所以 `:` 要写成 `\\:`
+# （一级留下 `\:`，二级还原成 `:`），只写一层 `\:` 会在二级被当分隔符，
+# 实测报 "No option name near 'b/x.rnnn'"（2026-09-09 用 -f lavfi 复现）。
+_OPTION_SPECIAL = re.compile(r"([:'\\])")        # 选项级：av_opt_set_from_string
+_GRAPH_SPECIAL = re.compile(r"([\[\],;'\\])")    # 滤镜图级：avfilter_graph_parse
 
 
 def filter_path(path):
-    """把文件路径写进 ffmpeg 滤镜参数（如 arnndn=m=…）时的转义。
+    """把文件路径写进 ffmpeg 滤镜参数（如 arnndn=m=…）需要的转义形态。
 
-    滤镜图里 ':' 是选项分隔、',' 是滤镜分隔、'\\' 是转义符。Windows 的
-    C:\\Users\\… 原样塞进去，本机 ffmpeg 9 实测报 "No option name near
-    'Userselon…'"——反斜杠被吃、冒号处截断——于是降噪探测每场必失败、被当成
-    「模型损坏」，Windows 用户的降噪 100% 起不来。先把反斜杠换成 '/'（ffmpeg
-    在 Windows 上照样能开），再给特殊字符加反斜杠：实测 'm=/tmp/a\\:b/x.rnnn'
-    能正确解析出 /tmp/a:b/x.rnnn。"""
+    Windows 路径 `C:\\Users\\x\\bd.rnnn` 里的冒号会被 ffmpeg 当成选项分隔符；
+    反斜杠先统一成正斜杠（ffmpeg 在 Windows 上照样认），再做两级转义：
+    选项级先把 `:` `'` `\\` 各加一个反斜杠，滤镜图级再把结果里的
+    `[ ] , ; ' \\` 各加一个。`C:/x` 最终写成 `C\\\\:/x`。"""
     p = str(path).replace("\\", "/")
-    return _FILTER_SPECIAL.sub(r"\\\1", p)
+    p = _OPTION_SPECIAL.sub(r"\\\1", p)
+    return _GRAPH_SPECIAL.sub(r"\\\1", p)

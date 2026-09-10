@@ -165,45 +165,28 @@ def _fail_alert(message):
 def _acquire_bootstrap_lock():
     """首次安装要几分钟且窗口模式下毫无提示，用户很容易再双击一次。
     用锁文件串行化：第二个进程等第一个装完，而不是并发写坏同一个 .venv。
+    状态含义见 app/bootlock.py（最多等 15 分钟）。"""
+    from app.bootlock import acquire
 
-    返回 (状态, 锁路径)：
-      ("acquired", path) 拿到锁，可以安装，用完要删；
-      ("ready", None)    等待期间别的实例已装好，直接用；
-      ("busy", None)     等太久还没轮到——绝不能自己再跑一遍 pip；
-      ("nolock", None)   建不了锁文件（只读目录等），退化为尽力而为。
-    """
-    import time
+    return acquire(ROOT / ".venv.lock", _deps_ok)
 
-    lock = ROOT / ".venv.lock"
-    deadline = time.time() + 900     # 最多等 15 分钟
-    while time.time() < deadline:
-        try:
-            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
-            os.close(fd)
-            return ("acquired", lock)
-        except FileExistsError:
-            try:                      # 陈旧锁（上次安装崩溃残留）超过 20 分钟就抢占
-                if time.time() - lock.stat().st_mtime > 1200:
-                    lock.unlink()
-                    continue
-            except OSError:
-                continue
-            print("[初始化] 另一个实例正在安装依赖，等待它完成…")
-            time.sleep(3)
-            if _deps_ok():
-                return ("ready", None)
-        except OSError:
-            return ("nolock", None)
-    return ("busy", None)
+
+def _first_run_dialog():
+    """「首次运行：正在安装…」只在真要创建环境/装依赖时弹。以前放在 ensure_env
+    开头：.app 里的 python 没装齐 sys.path 时 _deps_ok() 为假，于是**每次**
+    双击都闪一下这个对话框，两三秒后才发现什么都不用装——用户以为又在重装。"""
+    global _FIRST_RUN_SHOWN
+    if _FIRST_RUN_SHOWN:
+        return
+    _FIRST_RUN_SHOWN = True
+    _info_dialog("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n"
+                 "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。")
 
 
 def ensure_env():
     """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。"""
     if _deps_ok():
         return
-    _info_dialog("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n"
-                 "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。")
     vpy = _venv_python()
     in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
     lock = None
@@ -217,6 +200,7 @@ def ensure_env():
         if _deps_ok():        # 等锁期间别的实例已经装好了
             return
         if not in_project_venv and not _venv_usable(vpy):
+            _first_run_dialog()
             print("[初始化] 首次运行：正在创建虚拟环境（仅需一次，可能几分钟）…")
             import venv
 
@@ -228,6 +212,7 @@ def ensure_env():
             capture_output=True,
         )
         if check.returncode != 0:
+            _first_run_dialog()
             print("[初始化] 正在安装依赖（含内置 ffmpeg，需要几分钟，仅首次）…")
             full = subprocess.run(
                 [pip_python, "-m", "pip", "install", "--disable-pip-version-check",
@@ -270,7 +255,8 @@ def ensure_env():
                     pass
                 lock = None
             _close_info_dialog()      # 马上换进新环境开窗口，安装提示框可以收了
-            os.execv(str(vpy), [str(vpy), str(ROOT / "main.py")] + sys.argv[1:])
+            from app.relaunch import exec_args
+            os.execv(str(vpy), exec_args([str(vpy), str(ROOT / "main.py")] + sys.argv[1:]))
     except Exception as exc:
         _fail_alert("自动安装未完成（{}）。\n"
                     "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
@@ -548,6 +534,10 @@ def run_with_window(args):
     existing = _existing_instance_url(args.port)
     if existing:
         print("[信息] 检测到程序已在运行，打开已有实例的窗口")
+        if args.url:
+            # 地址没有送进那个实例：明说，别让用户以为已经在监听
+            _info_dialog("程序已经在运行，这次给的直播间地址没有自动开始。\n"
+                         "请在已打开的窗口里粘贴地址后点「开始翻译」。")
         from app.macbrand import brand_mac_app
         brand_mac_app(ROOT)
         webview.create_window("TikTok 直播同传", existing,

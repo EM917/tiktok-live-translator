@@ -134,8 +134,8 @@ def test_bella_elisa_bella_round_trip(world):
         name_elisa = deepl._glossary_ids[("es", "zh")][0]
         assert gid_elisa != gid_bella                 # 术语表真的换了
         assert name_elisa != name_bella               # 指纹变了
-        assert not any(g["glossary_id"] == gid_bella  # Bella 的表已被删
-                       for g in api.glossaries)
+        assert any(g["glossary_id"] == gid_bella      # 槽位够就不删旧表：只有
+                   for g in api.glossaries)           # DeepL 回 456 才腾位（免费档）
         assert h2["profile"] is None and h2["profile_hash"] is None
         assert h2["merged_glossary_hash"] != h1["merged_glossary_hash"]
 

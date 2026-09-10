@@ -13,6 +13,7 @@
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -65,8 +66,10 @@ def event_to_item(ev):
     if msg_id:                      # 有且非 0/空——0 和缺失都算「没有」
         cid = str(msg_id)
     else:
+        # 带上进程 id：兜底计数每次子进程重启都从 1 起，光靠 "t1…t300" 会在
+        # 重连后被父进程的 id 去重当成重复弹幕整批丢掉
         _t_counter += 1
-        cid = "t{}".format(_t_counter)
+        cid = "t{}-{}".format(os.getpid(), _t_counter)
     return {"id": cid, "user": str(user), "text": text}
 
 
@@ -312,10 +315,18 @@ class CommentSource:
         self._connect_times = [t for t in self._connect_times
                                if now - t < self.HOUR_WINDOW_SEC]
 
+    COOKIE_READ_TIMEOUT_SEC = 20.0   # 与 resolver.BROWSER_ATTEMPT_TIMEOUT 同量级
+
     async def _fetch_session_cookies(self):
+        """读浏览器登录态要有上限：macOS 上 Chrome 的 cookie 库受钥匙串保护，
+        授权对话框弹在别处没人点，线程会一直等下去，监督协程跟着卡死在这里、
+        面板永远「未连接」。超时按「没拿到」处理，走需要登录的提示。"""
         loop = asyncio.get_running_loop()
+        await self._set_state("connecting", "正在读取浏览器登录态…")
         try:
-            return await loop.run_in_executor(None, session_cookies, self._cookies_browser)
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, session_cookies, self._cookies_browser),
+                timeout=self.COOKIE_READ_TIMEOUT_SEC)
         except Exception:
             return (None, None)
 
@@ -416,21 +427,27 @@ class CommentSource:
         stream = getattr(proc, "stderr", None)
         if stream is None:
             return
-        try:
-            while True:
+        while True:
+            try:
                 line = await stream.readline()
-                if not line:
-                    break
-                try:
-                    text = line.decode(errors="replace").rstrip()
-                except Exception:
-                    continue
-                if text:
-                    print("[弹幕] {}".format(text))
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
+            except asyncio.CancelledError:
+                raise
+            except ValueError:
+                # 单行超过 StreamReader 的 64KiB 上限（依赖库把整个响应体打进
+                # stderr 就会这样）。readline 已经把缓冲清掉，接着读就行；
+                # 这里要是退出循环，子进程再写满管道就会卡死在 write 上，
+                # 父进程永远等在 stdout.readline——正是上面那段事故的样子。
+                continue
+            except Exception:
+                return
+            if not line:
+                break
+            try:
+                text = line.decode(errors="replace").rstrip()
+            except Exception:
+                continue
+            if text:
+                print("[弹幕] {}".format(text))
 
     @staticmethod
     def _parse_line(line):

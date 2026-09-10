@@ -167,9 +167,9 @@ def profile_path(streamer):
             return None
         try:
             PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-            target.write_text(example.read_text(encoding="utf-8"),
+            target.write_text(example.read_text(encoding="utf-8-sig"),
                               encoding="utf-8")
-        except OSError:
+        except _READ_ERRORS:
             return None
     return target
 
@@ -199,18 +199,25 @@ def load(path=None, streamer=None):
     target = Path(path) if path else GLOSSARY_FILE
     if not target.exists() and target == GLOSSARY_FILE and GLOSSARY_EXAMPLE.exists():
         try:
-            target.write_text(GLOSSARY_EXAMPLE.read_text(encoding="utf-8"),
+            target.write_text(GLOSSARY_EXAMPLE.read_text(encoding="utf-8-sig"),
                               encoding="utf-8")
-        except OSError:
+        except _READ_ERRORS:
             pass
     try:
-        entries = parse(target.read_text(encoding="utf-8"))
+        entries = parse(target.read_text(encoding="utf-8-sig"))
+    except UnicodeDecodeError:
+        print("[警告] 词表 {} 不是 UTF-8 编码，本场按空词表处理——请用 UTF-8 重新保存"
+              .format(target))
+        entries = []
     except OSError:
         entries = []
     prof = profile_path(streamer)
     if prof is not None:
         try:
-            entries = _merge(parse(prof.read_text(encoding="utf-8")), entries)
+            entries = _merge(parse(prof.read_text(encoding="utf-8-sig")), entries)
+        except UnicodeDecodeError:
+            print("[警告] 主播 profile {} 不是 UTF-8 编码，已忽略——请用 UTF-8 重新保存"
+                  .format(prof))
         except OSError:
             pass
     return Glossary(entries)
@@ -219,6 +226,12 @@ def load(path=None, streamer=None):
 # profile 文件里的开关行：`选项名: on/off`。parse() 认不出它（没有 =>），
 # 天然互不干扰。目前唯一的选项是 vocative_strip——称呼摘除是按主播验证的
 # 行为（同一份名单在不同主播身上触发率差 60 倍），没验证过的主播必须默认关。
+# 词表/profile 是用户手写的文件：记事本会加 BOM（utf-8-sig 吞掉），ANSI 编辑器
+# 会存成 GBK——解码失败只能算「这份文件没法用」，绝不能让整场监听起不来
+# （翻译在关键路径之外，一个只影响翻译的辅助文件不该挡住违禁词检测）。
+_READ_ERRORS = (OSError, UnicodeDecodeError)
+
+
 _OPTION_RE = re.compile(r"^(\w+)\s*:\s*(on|off|true|false)\s*(?:#.*)?$", re.I)
 
 
@@ -229,11 +242,11 @@ def profile_options(streamer):
         return {}
     out = {}
     try:
-        for line in prof.read_text(encoding="utf-8").splitlines():
+        for line in prof.read_text(encoding="utf-8-sig").splitlines():
             m = _OPTION_RE.match(line.strip())
             if m:
                 out[m.group(1).lower()] = m.group(2).lower() in ("on", "true")
-    except OSError:
+    except _READ_ERRORS:
         pass
     return out
 
@@ -269,14 +282,14 @@ def _template_owners():
     owners = {}
     try:
         examples = sorted(PROFILE_DIR.glob("*.example.txt"))
-    except OSError:
+    except _READ_ERRORS:
         examples = []
     for example in examples:
         streamer = example.name[:-len(".example.txt")]
         try:
-            for variants, zh in parse(example.read_text(encoding="utf-8")):
+            for variants, zh in parse(example.read_text(encoding="utf-8-sig")):
                 owners[(frozenset(v.lower() for v in variants), zh)] = streamer
-        except OSError:
+        except _READ_ERRORS:
             continue
     return owners
 
@@ -305,8 +318,8 @@ def migration_plan(path=None):
     继续提示，也绝不猜「这是不是用户自己写的」。"""
     target = Path(path) if path else GLOSSARY_FILE
     try:
-        lines = target.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        lines = target.read_text(encoding="utf-8-sig").splitlines()
+    except _READ_ERRORS:
         return []
     return _plan_from_lines(lines)
 
@@ -324,8 +337,8 @@ def migrate_legacy_entries(path=None):
 
     target = Path(path) if path else GLOSSARY_FILE
     try:
-        raw = target.read_text(encoding="utf-8")
-    except OSError:
+        raw = target.read_text(encoding="utf-8-sig")
+    except _READ_ERRORS:
         return None
     lines = raw.splitlines()
     plan = _plan_from_lines(lines)
@@ -346,8 +359,8 @@ def migrate_legacy_entries(path=None):
             continue
         try:
             existing = {(frozenset(v.lower() for v in vs), zh)
-                        for vs, zh in parse(prof.read_text(encoding="utf-8"))}
-        except OSError:
+                        for vs, zh in parse(prof.read_text(encoding="utf-8-sig"))}
+        except _READ_ERRORS:
             existing = set()
         missing = []
         for p in items:
@@ -359,7 +372,7 @@ def migrate_legacy_entries(path=None):
                 with prof.open("a", encoding="utf-8") as fh:
                     fh.write("\n# 从 glossary.txt 迁移（{}）\n".format(stamp))
                     fh.write("\n".join(missing) + "\n")
-            except OSError:
+            except _READ_ERRORS:
                 failed += len(items)       # 写不进去：整组留在全局
                 continue
         moved[streamer] = len(items)
@@ -382,15 +395,15 @@ def misplaced_entries(entries):
     fingerprints = {}          # (variant_lower, zh) -> streamer
     try:
         examples = sorted(PROFILE_DIR.glob("*.example.txt"))
-    except OSError:
+    except _READ_ERRORS:
         examples = []
     for example in examples:
         streamer = example.name[:-len(".example.txt")]
         try:
-            for variants, zh in parse(example.read_text(encoding="utf-8")):
+            for variants, zh in parse(example.read_text(encoding="utf-8-sig")):
                 for v in variants:
                     fingerprints[(v.lower(), zh)] = streamer
-        except OSError:
+        except _READ_ERRORS:
             continue
     out = []
     for variants, zh in entries:

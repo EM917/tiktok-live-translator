@@ -18,14 +18,22 @@ def api_key(name):
     val = os.environ.get(name)
     if val:
         return val.strip()
+    return str(saved_keys().get(name, "")).strip() or None
+
+
+def saved_keys():
+    """settings.json 里的 api_keys；用户手改成字符串/null 时按空 dict——
+    一个字段类型错不该让程序连界面都打不开。"""
     from .settings import load_settings
-    return str(load_settings().get("api_keys", {}).get(name, "")).strip() or None
+    keys = load_settings().get("api_keys")
+    return dict(keys) if isinstance(keys, dict) else {}
 
 
 def mask_key(val):
     """给界面看的形态：只留尾四位，其余打码。"""
     if not val:
         return ""
+    val = str(val)
     return "…" + val[-4:] if len(val) > 4 else "…"
 
 
@@ -324,11 +332,17 @@ class DeepLTranslator(BaseTranslator):
         for g in mine:
             if g.get("name") == want and g.get("ready"):
                 return g.get("glossary_id")
-        for g in mine:                      # 腾出唯一的槽位
-            await self._api("DELETE", "/v2/glossaries/" + str(g.get("glossary_id")))
-        status, made = await self._api("POST", "/v2/glossaries", form={
-            "name": want, "source_lang": source, "target_lang": gtarget,
-            "entries": tsv, "entries_format": "tsv"})
+        form = {"name": want, "source_lang": source, "target_lang": gtarget,
+                "entries": tsv, "entries_format": "tsv"}
+        status, made = await self._api("POST", "/v2/glossaries", form=form)
+        if status == 456 and mine:
+            # 槽位满了（免费版只有 1 个）：这时才删本机前缀的旧表再建。
+            # 以前是无条件先删光再建——两台机器共用一把密钥各盯一场直播时会
+            # 互相踢表：A 建、B 开场删掉重建、A 下一句 400 再重建……每句多打
+            # 三次接口，且大量字幕实际是无术语表译出的。付费档槽位够，两边共存。
+            for g in mine:
+                await self._api("DELETE", "/v2/glossaries/" + str(g.get("glossary_id")))
+            status, made = await self._api("POST", "/v2/glossaries", form=form)
         if status >= 400 or not made.get("glossary_id"):
             raise RuntimeError("HTTP {} {}".format(status, made))
         print("[信息] DeepL 术语表已就绪：{} 条（{}→{}）".format(
@@ -643,16 +657,18 @@ class OllamaHyMT2Translator(BaseTranslator):
         cached = _RAW_MODE.get(self.model)
         if cached is not None:
             return cached
-        need = True
         try:
             session = await self.session()
             async with session.post(self.url.replace("/api/generate", "/api/show"),
                                     data=json.dumps({"model": self.model})) as resp:
-                if resp.status == 200:
-                    tpl = (await resp.json()).get("template") or ""
-                    need = "{{ .Prompt }}" not in tpl
+                if resp.status != 200:
+                    return True     # 模型还没拉下来/接口异常：这次按 raw，别记住
+                tpl = (await resp.json()).get("template") or ""
+                need = "{{ .Prompt }}" not in tpl
         except Exception:
-            pass
+            return True
+        # 只有真问到了模板才记：7B 尚未拉取时 /api/show 回 404，若把这次失败
+        # 记成 raw，用户随后拉好 7B 也会一直被喂 1.8B 的标记，译文变成回话体
         _RAW_MODE[self.model] = need
         return need
 
@@ -709,7 +725,9 @@ class OllamaHyMT2Translator(BaseTranslator):
 #   2. 分隔符也不止下划线：实测出现过 `｜hy-Assistant`（连字符）。
 # 教训是别按「已知的几种写法」列举，而是认 hy 前缀加分隔符这个形状。
 # 正常字幕里不会出现 hy_xxx / hy-xxx。
-_SPECIAL_RE = re.compile(r"[<｜｠]*\s*hy[-_][A-Za-z0-9▁_-]+\s*[｜｠>]*")
+# hy 前面不能是字母：Healthy-Life、Shy_Girl 这类保留成 Latin 写法的品牌名
+# 里也有 hy-/hy_，没有左边界会把「Healthy-Life 排毒粉」截成「Healt排毒粉」
+_SPECIAL_RE = re.compile(r"[<｜｠]*\s*(?<![A-Za-z])hy[-_][A-Za-z0-9▁_-]+\s*[｜｠>]*")
 # 全角竖线是这个模型词表里的分隔符，正常字幕里不会出现。实测残留过 `ａ｜>`
 # 这种只剩半截的写法——它不含 hy_ 前缀，上面那条正则拦不住。
 _BAR_RE = re.compile(r"[｜｠]+>?")

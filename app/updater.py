@@ -270,13 +270,17 @@ class Updater:
             return 'cd "{}" && git checkout -- . && git pull --ff-only'.format(path)
         return 'cd "{}" && git pull --ff-only'.format(path)
 
-    async def _apply_inner(self):
+    async def precheck(self):
+        """「能不能更」与「更」分开：调用方先问这个，通过了才停直播管线。
+        以前是先停管线再查工作区，被脏文件挡住时直播已经没人听了，界面上
+        只剩一句「本次没有自动更新」。这里的每条失败出口都自带可照做的命令。"""
+        if self.latest is None:
+            return False
         if not self.latest.get("can_auto"):
             await self.server.status(
                 "idle", "当前是 ZIP 安装，无法自动更新——请到 GitHub 下载新版本：{}".format(
                     self.latest["url"]))
-            return
-        await self.server.broadcast({"type": "updating"})
+            return False
         # --untracked-files=no 是关键：未跟踪的文件 git pull 根本不会动它，
         # 拿它们挡住更新纯属误伤。真实案例：用户目录里多了一个 .run.log 和两个
         # 词表备份，自动更新就此彻底罢工，而给出的提示是「请自行处理后 git pull」
@@ -289,7 +293,7 @@ class Updater:
                 "idle", "这台电脑上找不到 git，程序没法自己更新。"
                         "可以到 GitHub 下载新版压缩包，或者装好 git 后执行：",
                 command=self._manual_command())
-            return
+            return False
         if out.strip():
             # porcelain 是「两位状态 + 空格 + 文件名」，而未暂存修改的第一位
             # 就是空格——所以只能逐行去尾部空白，绝不能对整段 strip()，
@@ -302,7 +306,13 @@ class Updater:
                 "就能放弃这些改动并完成更新："
                 .format("、".join(files) or "（若干文件）"),
                 command=self._manual_command(discard=True))
+            return False
+        return True
+
+    async def _apply_inner(self):
+        if not await self.precheck():
             return
+        await self.server.broadcast({"type": "updating"})
         code, _, err = await self._git("pull", "--ff-only")
         if code != 0:
             tail = err.strip().splitlines()[-2:]
@@ -329,8 +339,9 @@ class Updater:
             print("[信息] 已更新到最新版本，重启进程…")
             await asyncio.sleep(0.6)
             try:
-                os.execv(sys.executable,
-                         [sys.executable, str(ROOT / "main.py")] + sys.argv[1:])
+                from .relaunch import exec_args
+                os.execv(sys.executable, exec_args(
+                    [sys.executable, str(ROOT / "main.py")] + sys.argv[1:]))
             except Exception as exc:
                 # execv 失败（极少见）不能让用户以为更新丢了——代码其实已经拉下来了
                 await self.server.status(
