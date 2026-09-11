@@ -188,6 +188,18 @@ def _model_cached(model, backend):
         return False
 
 
+async def _ollama_down_hint():
+    """Ollama 不通时给用户的话：装了就说程序会自己启动（这一行随后会刷新），
+    没装就给安装引导。以前一律写「打开 Ollama」——brew 装的机器上根本没有
+    可以「打开」的东西。"""
+    from . import localmodel
+    if await _to_thread(localmodel.is_installed):
+        return ("程序会自动把它启动起来，这一行随后会刷新；一直这样的话，"
+                "请手动启动 Ollama，再在「翻译引擎」面板点一次「保存」")
+    hint, _url = localmodel.install_hint()
+    return hint
+
+
 async def check_translator(args, translator=None):
     """报的必须是**管线真正在用的那个引擎**，不是这里重新推导一遍。
 
@@ -208,7 +220,7 @@ async def check_translator(args, translator=None):
             if not await _to_thread(_ollama_reachable):
                 return _check("翻译引擎", FAIL,
                               "配置的是本地 Hy-MT2 {}，但 Ollama 没在运行".format(tier),
-                              "打开 Ollama 后重新点「开始翻译」")
+                              await _ollama_down_hint())
             note = "、术语最准，但更吃内存" if tier == "7B" else ""
             return _check("翻译引擎", OK,
                           "本地 Hy-MT2 {}（离线、无限流{}）".format(tier, note))
@@ -216,7 +228,7 @@ async def check_translator(args, translator=None):
             if not await _to_thread(_ollama_reachable):
                 return _check("翻译引擎", FAIL,
                               "配置的是本地 TranslateGemma，但 Ollama 没在运行",
-                              "打开 Ollama 后重新点「开始翻译」")
+                              await _ollama_down_hint())
             return _check("翻译引擎", OK, "本地 TranslateGemma（离线、无限流）")
         if engine == "google":
             from . import localmodel

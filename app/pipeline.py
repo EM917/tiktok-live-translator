@@ -561,6 +561,9 @@ class Pipeline:
         await self.ensure_local_translator()
         await self.run_selfcheck()
 
+    # 需要 Ollama 的引擎 → 它要的模型、以及「本机有没有这个模型」的探测
+    LOCAL_ENGINES = ("auto", "hymt2", "hymt2-7b", "gemma")
+
     async def ensure_local_translator(self):
         """开工前把本地翻译准备好，让用户不必为此开终端。
 
@@ -571,46 +574,84 @@ class Pipeline:
         Ollama 装了没启动就帮他启动；启动了但没有模型就用 HTTP 接口拉下来
         （3GB 的 Whisper 模型我们本来就自动下，这个 1.1GB 是同一件事）。
         压根没装的只能引导——那一步需要管理员权限，代劳不了。
+
+        用户显式选了 hymt2 / hymt2-7b / gemma 时**同样**要做这些：以前这里
+        「用户指定了引擎就不自作主张」直接返回，于是选了本地 Hy-MT2 的机器
+        Ollama 永远不会被启动，自检一直红着「Ollama 没在运行」、每句翻译
+        0.8 毫秒失败——用户明明就是要这个引擎，把它跑起来才是不自作主张。
         """
         from . import localmodel
-        from .translator import HYMT2_SMALL, _ollama_has_gemma, _ollama_has_hymt2
+        from .translator import (HYMT2_LARGE, HYMT2_SMALL, _ollama_has_gemma,
+                                 _ollama_has_hymt2)
 
-        if getattr(self.args, "translator", "auto") not in ("auto",):
-            return                      # 用户显式指定了引擎，别自作主张
+        engine = getattr(self.args, "translator", "auto")
+        if engine not in self.LOCAL_ENGINES:
+            return                      # deepl/google/claude/openai/none：不碰 Ollama
+        started = False
         if await localmodel.is_running():
             pass
         elif localmodel.is_installed():
             print("[信息] Ollama 已安装但没在运行，正在启动…")
             if not await localmodel.start():
+                print("[警告] Ollama 没能启动，本地翻译暂不可用")
                 return
+            started = True
         else:
             return                      # 没装：交给自检那一行去引导
 
-        if _ollama_has_hymt2() or _ollama_has_hymt2(large=True) or _ollama_has_gemma():
-            return                      # 已经有本地模型了
+        # 探测是同步 urllib，放线程池（直播中也可能走到这里）
+        loop = asyncio.get_running_loop()
+        wanted = {"hymt2": (HYMT2_SMALL, _ollama_has_hymt2),
+                  "hymt2-7b": (HYMT2_LARGE, lambda: _ollama_has_hymt2(large=True)),
+                  "gemma": ("translategemma:4b", _ollama_has_gemma)}
+        if engine == "auto":
+            have = await loop.run_in_executor(
+                None, lambda: _ollama_has_hymt2() or _ollama_has_hymt2(large=True)
+                or _ollama_has_gemma())
+            need = None if have else HYMT2_SMALL
+        else:
+            model, has = wanted[engine]
+            need = None if await loop.run_in_executor(None, has) else model
 
-        await self._provision_note(
-            "正在准备本地翻译模型（约 1.1 GB，只需这一次）…")
-        last = [-10.0]
+        pulled = False
+        if need is not None:
+            size = "约 1.1 GB，" if need == HYMT2_SMALL else "首次需要下载，"
+            await self._provision_note(
+                "正在准备本地翻译模型（{}只需这一次）…".format(size))
+            last = [-10.0]
 
-        def progress(pct, done_mb, total_mb):
-            if pct - last[0] < 5:       # 别把界面刷爆
-                return
-            last[0] = pct
-            self._spawn(self._provision_note(
-                "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
-                "只需这一次）…".format(pct, done_mb, total_mb)))
+            def progress(pct, done_mb, total_mb):
+                if pct - last[0] < 5:       # 别把界面刷爆
+                    return
+                last[0] = pct
+                self._spawn(self._provision_note(
+                    "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
+                    "只需这一次）…".format(pct, done_mb, total_mb)))
 
-        ok = await localmodel.pull(HYMT2_SMALL, on_progress=progress)
-        if ok:
-            print("[信息] 本地翻译模型已就绪")
-            loop = asyncio.get_running_loop()
+            pulled = await localmodel.pull(need, on_progress=progress)
+            if pulled:
+                print("[信息] 本地翻译模型已就绪")
+            else:
+                print("[警告] 本地翻译模型下载失败，本次继续用当前引擎")
+
+        if engine == "auto" and (started or pulled):
+            # 启动时 Ollama 还没起来，auto 已经落到了 Google；现在本地模型能用了
             self.translator = await loop.run_in_executor(
                 None, create_translator, "auto")
+            await self._publish_engine()
+        if pulled:
             await self._provision_note("本地翻译已就绪，可以开始了。")
-        else:
-            print("[警告] 本地翻译模型下载失败，本次继续用网络翻译")
-        await self.run_selfcheck()
+        if started or need is not None:
+            # 启动时的自检和这里是并行跑的，那一行多半是在 Ollama 起来之前
+            # 查的：等它跑完再查一遍，把红条刷掉
+            pending = getattr(self, "_selfcheck_task", None)
+            if pending is not None and pending is not asyncio.current_task() \
+                    and not pending.done():
+                try:
+                    await pending
+                except Exception:
+                    pass
+            await self.run_selfcheck()
 
     def _stream_active(self):
         task = getattr(self, "_stream_task", None)
