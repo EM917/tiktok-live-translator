@@ -155,3 +155,85 @@ def test_find_binary_looks_past_a_gui_launch_path(tmp_path, monkeypatch):
     monkeypatch.setattr(localmodel, "_MAC_APP_DIRS", ())
     assert localmodel.find_binary() == str(brew / "ollama")
     assert localmodel.is_installed() is True
+
+
+# ---- 开播 / 翻译失败时的自愈 ----
+
+def test_heal_starts_provisioning_once_when_ollama_is_down(world):
+    p, calls, state = world
+    p.args.translator = "hymt2"
+    p.translator = SimpleNamespace(name="hymt2")
+    kicked = []
+
+    async def provision_then_check():
+        kicked.append(1)
+
+    p._provision_then_check = provision_then_check
+
+    async def scenario():
+        await p._heal_local_engine()
+        await p._heal_local_engine()          # 冷却期内不重复
+        await asyncio.sleep(0)
+        await p._provision_task
+
+    run(scenario())
+    assert kicked == [1]
+    notices = [m for m in p.server.broadcasts if m.get("type") == "notice"]
+    assert notices and "正在自动启动" in notices[0]["text"]
+
+
+def test_heal_does_nothing_when_ollama_is_up_or_engine_is_cloud(world):
+    p, calls, state = world
+    p.args.translator = "hymt2"
+    p.translator = SimpleNamespace(name="hymt2")
+    state["running"] = True
+    run(p._heal_local_engine())
+    assert p._provision_task is None
+    state["running"] = False
+    p.args.translator = "deepl"
+    p.translator = SimpleNamespace(name="deepl")
+    run(p._heal_local_engine())
+    assert p._provision_task is None and p.server.broadcasts == []
+
+
+def test_a_failed_translation_kicks_the_heal(world):
+    p, calls, state = world
+    healed = []
+
+    async def heal():
+        healed.append(1)
+
+    async def translate(text, target, source="auto", glossary=None):
+        return None                            # Ollama 不通时就是这样：立刻 None
+
+    p._heal_local_engine = heal
+    p.translator = SimpleNamespace(name="hymt2", translate=translate)
+
+    async def scenario():
+        await p._translate_and_update({"id": 1, "text": "hola", "lang": "es",
+                                       "target": "zh-CN", "audio_end_ts": 0.0})
+        await asyncio.sleep(0)
+
+    run(scenario())
+    assert healed == [1]
+
+
+def test_starting_a_stream_kicks_the_heal(world, monkeypatch):
+    p, calls, state = world
+    healed = []
+
+    async def heal():
+        healed.append(1)
+
+    async def run_stream(url):
+        return None
+
+    p._heal_local_engine = heal
+    monkeypatch.setattr(p, "_run_stream", run_stream)
+
+    async def scenario():
+        await p.start_stream("https://www.tiktok.com/@x/live")
+        await asyncio.sleep(0)
+
+    run(scenario())
+    assert healed == [1]
