@@ -316,6 +316,8 @@ class Pipeline:
             await self.server.broadcast({"type": "config", "room_url": url,
                                          "source_lang": getattr(self.args, "source",
                                                                 None) or "auto"})
+            # Ollama 没跑就趁解析地址/加载模型这几秒把它拉起来，别等第一句翻译失败
+            self._spawn(self._heal_local_engine())
             self._stream_task = asyncio.create_task(self._run_stream(url))
 
     async def stop_stream(self, quiet=False):
@@ -560,6 +562,33 @@ class Pipeline:
     async def _provision_then_check(self):
         await self.ensure_local_translator()
         await self.run_selfcheck()
+
+    OLLAMA_HEAL_COOLDOWN_SEC = 60.0
+
+    async def _heal_local_engine(self):
+        """本地引擎在用、Ollama 却不通：后台把它拉起来，不阻塞调用方。
+
+        开播那一刻和每次翻译失败都会来问一次。实录：Ollama 没跑时一场直播
+        每句翻译 0.8 毫秒失败，界面只在第四条之后才提示「翻译服务可能连不上」，
+        程序自己明明能启动它。节流一分钟一次；备模型任务在跑就不重复起。"""
+        from . import localmodel
+
+        if getattr(self.args, "translator", "auto") not in self.LOCAL_ENGINES:
+            return
+        if getattr(self.translator, "name", None) not in ("hymt2", "hymt2-7b", "gemma"):
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_heal_at", -1e9) < self.OLLAMA_HEAL_COOLDOWN_SEC:
+            return
+        task = getattr(self, "_provision_task", None)
+        if task is not None and not task.done():
+            return
+        self._heal_at = now
+        if await localmodel.is_running() or not localmodel.is_installed():
+            return
+        await self.server.broadcast({
+            "type": "notice", "text": "翻译引擎用的 Ollama 没在运行，正在自动启动…"})
+        self._provision_task = asyncio.ensure_future(self._provision_then_check())
 
     # 需要 Ollama 的引擎 → 它要的模型、以及「本机有没有这个模型」的探测
     LOCAL_ENGINES = ("auto", "hymt2", "hymt2-7b", "gemma")
@@ -1822,6 +1851,8 @@ class Pipeline:
                 except Exception as exc:
                     print("[警告] 降级引擎翻译失败: {}".format(exc))
                     translated = None
+        if translated is None and hasattr(self, "_bg_tasks"):
+            self._spawn(self._heal_local_engine())   # Ollama 掉了就拉起来（节流）
         translate_ms = (time.monotonic() - t0) * 1000.0
         self.telemetry.record_translation(translate_ms)
         if self.audit is not None:
