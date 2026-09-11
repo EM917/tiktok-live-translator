@@ -71,6 +71,7 @@ def test_finds_the_app_wherever_the_user_left_it(tmp_path, monkeypatch):
 
     monkeypatch.setattr(_sh, "which", lambda name: None)
     monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(localmodel, "_KNOWN_BIN_DIRS", {})   # 本机可能真装了 brew 版
     fake_dl = tmp_path / "Downloads"
     binary = fake_dl / "Ollama.app" / "Contents" / "Resources" / "ollama"
     binary.parent.mkdir(parents=True)
@@ -93,6 +94,7 @@ def test_not_installed_anywhere_is_reported_honestly(monkeypatch):
 
     monkeypatch.setattr(_sh, "which", lambda name: None)
     monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(localmodel, "_KNOWN_BIN_DIRS", {})   # 本机可能真装了 brew 版
     monkeypatch.setattr(localmodel, "_MAC_APP_DIRS", ())
     monkeypatch.setattr(localmodel, "_mac_app_exists", lambda: False)
     assert localmodel.find_binary() is None

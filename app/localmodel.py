@@ -44,6 +44,12 @@ async def is_running(timeout=2):
 # 但用户未必把 app 拖进「应用程序」——留在「下载」里双击也能用，
 # 而且不打开它一次的话，命令行工具根本不会装到 PATH 上。
 _MAC_APP_DIRS = ("/Applications", "~/Applications", "~/Downloads", "~/Desktop")
+# PATH 之外还要看的安装目录（Homebrew、官方安装器）
+_KNOWN_BIN_DIRS = {
+    "darwin": ("/opt/homebrew/bin", "/usr/local/bin"),
+    "linux": ("/usr/local/bin", "/usr/bin"),
+    "win32": ("~/AppData/Local/Programs/Ollama",),
+}
 
 
 def find_binary():
@@ -55,6 +61,13 @@ def find_binary():
     exe = shutil.which("ollama")            # brew 装的、或开过一次装了命令行工具的
     if exe:
         return exe
+    # 双击 .app 启动时 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，which 找不到
+    # Homebrew 装的 ollama——实录：一台 brew 装了 Ollama 的 Mac，程序每次都
+    # 判成「没安装」，自检一直红着「Ollama 没在运行」，而它明明能自己起
+    for d in _KNOWN_BIN_DIRS.get(sys.platform, ()):
+        cand = Path(d).expanduser() / ("ollama.exe" if sys.platform == "win32" else "ollama")
+        if cand.exists():
+            return str(cand)
     if sys.platform != "darwin":
         return None
     for d in _MAC_APP_DIRS:
