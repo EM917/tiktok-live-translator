@@ -103,6 +103,44 @@ def requirements_file_digest(root):
         return None
 
 
+def recorded_requirements_digest(root):
+    """上次在 .venv 里 `pip install -r` 装成功的那份清单的指纹；没有记录返回 None。"""
+    return (_read_text(Path(root) / ".venv" / REQ_STAMP) or "").strip() or None
+
+
+# 装不上程序照样能跑的组件：mlx-whisper 退回 CPU 识别，TikTokLive 只影响观众弹幕，
+# pywebview 退回浏览器界面。一键更新时整份清单装不上，只要除它们之外的都装上了，
+# 新代码照样可以落地（Updater._install_new_requirements）。
+OPTIONAL_DISTS = ("mlx-whisper", "tiktoklive", "pywebview")
+
+
+def _dist_key(name):
+    return re.sub(r"[-_.]+", "-", str(name)).lower()
+
+
+def requirement_name(line):
+    """清单里一行的包名（小写、连字符规范化）；注释、空行、pip 选项返回 None。"""
+    text = line.split("#", 1)[0].strip()
+    if not text or text.startswith("-"):
+        return None
+    m = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", text)
+    return _dist_key(m.group(0)) if m else None
+
+
+def filter_requirements(content, drop):
+    """去掉 drop 里这些包的行，其余原样保留（注释、pip 选项、环境标记都不动）。"""
+    drop = {_dist_key(d) for d in drop}
+    kept = [ln for ln in str(content).splitlines() if requirement_name(ln) not in drop]
+    return "\n".join(kept) + "\n"
+
+
+def skipped_for_this_machine(root):
+    """这台机器上 `pip install -r` 时要跳过的包。留了 mlx-whisper 放弃记号的，启动和一键
+    更新都不再装它：它要连带下载 torch 等几百 MB，放在启动时会把开播挡上几分钟，放在
+    一键更新里会让暂停的监听一直等着。它由 Updater.retry_mlx_install 在空闲时后台重试。"""
+    return ("mlx-whisper",) if (Path(root) / ".venv" / MLX_GIVEUP).exists() else ()
+
+
 def write_requirements_stamp(root, digest):
     """只在 `pip install -r` 返回 0 之后调用。.venv 不存在（用户自己的 Python）时不写，
     免得凭空建出一个只装着指纹的 .venv 目录。"""
@@ -157,7 +195,7 @@ def requirements_pending(root, now=None):
     if current is None:
         return False
     venv = Path(root) / ".venv"
-    if (_read_text(venv / REQ_STAMP) or "").strip() == current:
+    if recorded_requirements_digest(root) == current:
         return False
     attempt = _read_json(venv / REQ_ATTEMPT)
     if attempt and attempt.get("digest") == current:
@@ -166,6 +204,34 @@ def requirements_pending(root, now=None):
         if at is not None and 0 <= now - at < REQ_RETRY_SEC:
             return False
     return True
+
+
+def requirements_current(root, prefix=None, now=None):
+    """main.py 启动第一道闸门（_deps_ok）的最后一问：清单是不是已经在本项目 .venv 里装好了。
+    用户自己装齐依赖的 Python 不归这里管，判断本身出错也不挡启动——都算「装好了」。"""
+    try:
+        if not managed_env(root, prefix):
+            return True
+        return not requirements_pending(root, now=now)
+    except Exception:
+        return True
+
+
+# 核心模块都在、只是清单变了的时候，已经装着的包 pip 几秒就核对完：过这么久还没结束才弹
+# 「正在补装」，免得每次启动都闪一下提示框
+REQUIREMENTS_DIALOG_DELAY_SEC = 5.0
+
+
+def plan_install(imports_ok, root, recorded=None, actual=None, now=None):
+    """ensure_env 确认 .venv 能跑之后：要不要跑 pip、弹什么话、过多久弹。
+
+    imports_ok 是 .venv 里的 python 能不能 import 核心模块；recorded/actual 是 pyvenv.cfg
+    记的和解释器实际的 Python 主次版本。返回 None（不用装）或 {"text", "delay"}。"""
+    if imports_ok and not requirements_pending(root, now=now):
+        return None
+    text = install_dialog_text(recorded, actual, venv_existed=recorded is not None,
+                               requirements_only=bool(imports_ok))
+    return {"text": text, "delay": REQUIREMENTS_DIALOG_DELAY_SEC if imports_ok else 0.0}
 
 
 # ---- Python 版本漂移 ----------------------------------------------------------------------
@@ -317,26 +383,38 @@ def _free_gb(root):
         return None
 
 
+SUPPORTED_PYTHONS = ("3.12", "3.13")
+
+
 def pip_failure_text(tail, exit_code, log_path=None, python_version=None, root=None):
     """把一次失败的 pip 说成中控看得懂的话。
 
     只按输出里真实出现的字样分类，不猜：断网时 pip 最后一行也是「No matching
-    distribution found」，所以先看有没有连接失败的字样，再谈 Python 版本。认不出的
-    保留原来的网络提示，但一律附上日志位置，不再把 CalledProcessError 原文塞给中控。"""
+    distribution found」，所以先看有没有连接失败的字样。「没找到安装包」也可能来自
+    暂时没同步的镜像或代理，所以只有当前 Python 不在测试过的版本里时才说成 Python 版本
+    的事，说的时候给出真能换掉 Python 的做法（.venv 里的解释器不会自己换）。认不出的
+    给通用说明，一律附上日志位置，不再把 CalledProcessError 原文塞给中控。"""
     low = (tail or "").lower()
+    network = any(m in low for m in _NET_MARKS)
+    no_dist = _PY_MARK in low or any(m in low for m in _NO_DIST_MARKS)
     if any(m in low for m in _DISK_MARKS):
         free = _free_gb(root) if root is not None else None
         head = ("安装运行组件时磁盘空间不够（pip 报告写不进去）。运行环境约需 1.4 GB，"
                 "语音和翻译模型另需约 4 GB{}。\n腾出空间后重新打开本程序，会自动继续安装。"
                 .format("，现在剩余 {:.1f} GB".format(free) if free is not None else ""))
-    elif _PY_MARK in low or (any(m in low for m in _NO_DIST_MARKS)
-                             and not any(m in low for m in _NET_MARKS)):
+    elif (no_dist and (_PY_MARK in low or not network) and python_version
+          and python_version not in SUPPORTED_PYTHONS):
         head = ("pip 找不到适用于当前 Python {} 的安装包。\n"
-                "请到 python.org 安装 Python 3.12 或 3.13，然后重新打开本程序。"
-                .format(python_version or ""))
-    elif any(m in low for m in _NET_MARKS):
+                "本程序在 Python {} 上测试过：装好其中一个后，删掉程序目录里的 .venv 文件夹，"
+                "再用那个 Python 运行一次 main.py（例如 python3.13 main.py），会用它重新安装"
+                "运行组件。".format(python_version, "、".join(SUPPORTED_PYTHONS)))
+    elif network:
         head = ("自动安装未完成：pip 连不上软件包服务器。\n"
                 "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。")
+    elif no_dist:
+        head = ("自动安装未完成：pip 没找到所需组件的安装包（pip 返回 {}）。\n"
+                "重新打开本程序会再试一次；一直这样的话，请把下面的记录发给开发者。"
+                .format(exit_code))
     else:
         head = ("自动安装未完成（pip 返回 {}）。\n"
                 "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。"
@@ -372,11 +450,33 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
 
     整份 -r 返回 0 才写清单指纹；没成就记下这次失败。mlx-whisper 单独也装不上时写放弃
     记号（JSON，程序空闲时由 Updater.retry_mlx_install 在后台重试）。核心依赖都装不上
-    抛 PipFailed。返回 {"full_ok": bool, "failed_optional": [...]}。"""
+    抛 PipFailed。返回 {"full_ok": bool, "failed_optional": [...]}。
+
+    有放弃记号时 -r 用去掉 mlx-whisper 那一行的副本：否则记号机器每 24 小时（清单指纹
+    一直记不上）就在启动时重下一遍 torch，把开播挡上几分钟。指纹照样按真正的
+    requirements.txt 算——装成功了，启动就不再为这份清单补装。"""
     root = Path(root)
     base = [str(pip_python), "-m", "pip", "install", "--disable-pip-version-check"]
     digest = requirements_file_digest(root)
-    code, _tail = run(base + ["-r", str(root / "requirements.txt")], log_path)
+    req_file = root / "requirements.txt"
+    filtered = None
+    skip = skipped_for_this_machine(root)
+    if skip:
+        try:
+            filtered = root / ".venv" / ".requirements-install.txt"
+            filtered.write_text(filter_requirements(req_file.read_text(encoding="utf-8"), skip),
+                                encoding="utf-8")
+            req_file = filtered
+        except (OSError, ValueError):
+            filtered = None          # 写不了副本就用原文件：最多像以前一样多装一次
+    try:
+        code, _tail = run(base + ["-r", str(req_file)], log_path)
+    finally:
+        if filtered is not None:
+            try:
+                filtered.unlink()
+            except OSError:
+                pass
     if code == 0:
         write_requirements_stamp(root, digest)
         return {"full_ok": True, "failed_optional": []}

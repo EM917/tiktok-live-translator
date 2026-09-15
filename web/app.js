@@ -231,7 +231,8 @@
     // 不用 window.confirm——应用窗口（pywebview）里它可能根本弹不出来
     if (streamActive && updateBtn.dataset.confirm !== "1") {
       updateBtn.dataset.confirm = "1";
-      updateBtn.textContent = "再点一次更新：监听暂停约 1 分钟后自动恢复";
+      // 暂停多久要看这次要不要装新组件，页面不知道：不许诺时长，服务端的状态行会说
+      updateBtn.textContent = "再点一次确认更新：更新期间监听暂停，更新完自动恢复";
       updateConfirmTimer = setTimeout(resetUpdateBtn, 6000);
       return;
     }

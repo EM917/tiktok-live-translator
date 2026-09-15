@@ -13,7 +13,7 @@
 """
 import ast
 import asyncio
-import importlib.util
+import importlib
 import json
 import os
 import sys
@@ -73,11 +73,15 @@ def isolated(monkeypatch, tmp_path):
 
 
 def make_updater(monkeypatch, server, events, git_overrides=None, pip_code=0):
+    """pip_code 可以是整数/None，也可以是按调用顺序依次返回的列表。"""
     monkeypatch.setattr(updater_mod, "local_version", lambda: "1.0.0")
+    # 默认不是本项目 .venv（测试进程的 sys.prefix）：清单指纹既不读也不写，要测指纹的自己打开
+    monkeypatch.setattr(updater_mod, "managed_env", lambda root: False)
     results = {
         "status": (0, "", ""),
         "fetch": (0, "", ""),
         "rev-parse": (0, TARGET + "\n", ""),
+        "rev-parse:HEAD": (0, "b" * 40 + "\n", ""),
         "show:VERSION": (0, "9.9.9\n", ""),
         "show:requirements.txt": (0, REQS, ""),
         "merge-base": (0, "", ""),
@@ -89,6 +93,8 @@ def make_updater(monkeypatch, server, events, git_overrides=None, pip_code=0):
         key = args[0]
         if key == "show":
             key = "show:" + args[1].split(":", 1)[1]
+        elif key == "rev-parse" and "HEAD" in args:
+            key = "rev-parse:HEAD"
         events.append((key, args, kw))
         return results[key]
 
@@ -96,13 +102,14 @@ def make_updater(monkeypatch, server, events, git_overrides=None, pip_code=0):
     u.latest = {"can_auto": True, "url": "http://x"}
     u._git = fake_git
     pip_calls = []
+    codes = list(pip_code) if isinstance(pip_code, list) else None
 
     async def fake_pip(args, label, timeout=600, log_path=None, abort_if=None):
         req = Path(args[1]).read_text(encoding="utf-8") if list(args[:1]) == ["-r"] else None
         pip_calls.append({"args": list(args), "timeout": timeout, "log_path": log_path,
                           "requirements": req})
         events.append(("pip", tuple(args), {}))
-        return pip_code
+        return codes.pop(0) if codes is not None else pip_code
 
     u._pip_install = fake_pip
     execs = []
@@ -123,6 +130,7 @@ def make_live_pipeline(server, events, tmp_path, active=True):
     p.args = SimpleNamespace()
     p.audit = AuditLog(room_url=URL, log_dir=tmp_path / "logs")
     p._media_override = MEDIA
+    p._bg_tasks = set()
     server.config["room_url"] = URL
     state = {"active": active, "stops": [], "starts": []}
 
@@ -219,6 +227,7 @@ def test_live_update_fetches_first_then_pauses_installs_merges_and_leaves_a_resu
     (isolated / ".venv").mkdir()
     server, events = RecordingServer(), []
     u, pip_calls, execs = make_updater(monkeypatch, server, events)
+    monkeypatch.setattr(updater_mod, "managed_env", lambda root: True)   # 本项目 .venv：成功后记指纹
     p, state = make_live_pipeline(server, events, isolated)
     audit_path = p.audit.path
     p.updater = u
@@ -237,7 +246,9 @@ def test_live_update_fetches_first_then_pauses_installs_merges_and_leaves_a_resu
     assert state["stops"] == [True] and state["starts"] == []
     assert p._stop_reason == "update"
     details = [s[1] for s in server.statuses()]
-    assert "正在更新，监听已暂停（约 1 分钟后自动恢复）" in details
+    # 这次要先装组件：暂停时说清最长要等多久（不再一律说「约 1 分钟」）
+    assert "正在更新，监听已暂停：先安装新版本需要的组件（最长约 10 分钟），装好后自动重启并恢复监听" \
+        in details
     assert execs and "main.py" in " ".join(execs[0])
 
     records = audit_records(audit_path)
@@ -249,8 +260,9 @@ def test_live_update_fetches_first_then_pauses_installs_merges_and_leaves_a_resu
     marker = settings_mod.load_settings()["resume_after_update"]
     assert marker["url"] == URL and marker["media"] == MEDIA and marker["to_version"] == "9.9.9"
     assert t0 - 1 <= marker["at"] <= time.time() + 1
-    # 新清单装成功、代码也合并了：启动时的清单指纹对得上，不会再补装一遍
-    (isolated / "requirements.txt").write_text(REQS.replace("\n", "\r\n"), encoding="utf-8")
+    # 新清单装成功、代码也合并了：启动时的清单指纹对得上，不会再补装一遍。
+    # 写字节：Windows 上 write_text 会把 \r\n 再翻译成 \r\r\n，那就不是在测 CRLF 了
+    (isolated / "requirements.txt").write_bytes(REQS.replace("\n", "\r\n").encode("utf-8"))
     assert bootstrap.requirements_pending(isolated) is False
 
 
@@ -301,6 +313,7 @@ def test_retrying_the_update_clears_the_previous_failure_banner(monkeypatch, iso
 
 
 def test_update_does_not_pause_monitoring_while_another_pip_holds_the_lock(monkeypatch, isolated):
+    monkeypatch.setattr(updater_mod, "UPDATE_LOCK_WAIT_SEC", 0.3)   # 占着锁的不会撤：等满就放弃
     server, events = RecordingServer(), []
     u, pip_calls, _execs = make_updater(monkeypatch, server, events)
     p, state = make_live_pipeline(server, events, isolated)
@@ -337,6 +350,8 @@ def test_idle_update_success_writes_the_requirements_stamp_then_restarts(monkeyp
     (isolated / ".venv").mkdir()
     server, events = RecordingServer(), []
     u, _pip, execs = make_updater(monkeypatch, server, events)
+
+    monkeypatch.setattr(updater_mod, "managed_env", lambda root: True)
 
     run(u.apply())
 
@@ -542,10 +557,10 @@ def make_mlx_updater(monkeypatch, isolated, live, pip_result, installed):
     monkeypatch.setattr(updater_mod, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(updater_mod, "component_version",
                         lambda name: "2.1.0" if name == "numpy" else None)
-    real_find_spec = importlib.util.find_spec
-    monkeypatch.setattr(updater_mod.importlib.util, "find_spec",
-                        lambda name, *a: (object() if installed["mlx"] else None)
-                        if name == "mlx_whisper" else real_find_spec(name, *a))
+    monkeypatch.setattr(updater_mod, "_mlx_on_disk", lambda: installed["mlx"])
+    # 真的钉会往测试进程的 sys.modules 里放 None：这里只记下钉的时机（真钉单独测）
+    monkeypatch.setattr(updater_mod, "_keep_mlx_out_of_this_process",
+                        lambda: installed.setdefault("pinned_before_pip", not installed.get("pip")))
     server = RecordingServer()
     u = Updater(server)
     incidents = []
@@ -557,6 +572,7 @@ def make_mlx_updater(monkeypatch, isolated, live, pip_result, installed):
     calls = []
 
     async def fake_pip(args, label, timeout=600, log_path=None, abort_if=None):
+        installed["pip"] = True
         calls.append({"args": list(args), "timeout": timeout, "abort_if": abort_if})
         code = pip_result["code"]
         if code == 0:
@@ -585,7 +601,9 @@ def test_mlx_background_retry_waits_a_day_stays_off_live_and_clears_the_marker(m
     live["on"] = True
     assert calls[0]["abort_if"]() is True                                 # 开播就叫停
     assert not marker.exists()
-    assert incidents == [("mlx-ready", "info", "GPU 加速组件已装好，下次停播后重开程序生效")]
+    assert incidents == [("mlx-ready", "info", updater_mod.MLX_READY_TEXT)]
+    assert "重开程序生效" in updater_mod.MLX_READY_TEXT
+    assert installed["pinned_before_pip"] is True        # 装之前就钉住：这个进程不换识别方式
 
 
 def test_mlx_background_retry_failure_and_abort(monkeypatch, isolated):
@@ -611,8 +629,8 @@ def test_mlx_retry_does_nothing_without_the_pipeline_hook_or_off_apple_silicon(m
     marker = isolated / ".venv" / bootstrap.MLX_GIVEUP
     (isolated / ".venv").mkdir()
     bootstrap.write_mlx_giveup(marker, 1, "x", now=time.time() - 2 * 86400)
-    monkeypatch.setattr(updater_mod.importlib.util, "find_spec",
-                        lambda name, *a: None)
+    monkeypatch.setattr(updater_mod, "_mlx_on_disk", lambda: False)
+    monkeypatch.setattr(updater_mod, "_keep_mlx_out_of_this_process", lambda: None)
     u = Updater(RecordingServer())
     monkeypatch.setattr(updater_mod, "is_apple_silicon", lambda: False)
     assert run(u.retry_mlx_install()) == "not-applicable"
@@ -765,7 +783,13 @@ def test_pip_failures_are_described_by_what_pip_actually_printed(tmp_path):
     offline = bootstrap.pip_failure_text(OFFLINE_TAIL, 1, log, "3.14", tmp_path)
     assert "连不上软件包服务器" in offline and "Python" not in offline.split("\n")[0]
     wheel = bootstrap.pip_failure_text(NO_WHEEL_TAIL, 1, log, "3.14", tmp_path)
-    assert "当前 Python 3.14" in wheel and "3.12 或 3.13" in wheel
+    assert "当前 Python 3.14" in wheel and "3.12、3.13" in wheel and ".venv" in wheel
+    # 已经是测试过的 Python（或版本不明）：「没找到安装包」不说成 Python 版本的事——
+    # 暂时没同步的镜像、代理也是这句话，而且让 3.13 的人去装 3.13 没有用
+    for version in ("3.13", "3.12", None):
+        same = bootstrap.pip_failure_text(NO_WHEEL_TAIL, 1, log, version, tmp_path)
+        head = same.split("\n")[0]
+        assert "Python" not in head and "没找到所需组件的安装包" in head and "pip 返回 1" in head
     disk = bootstrap.pip_failure_text("OSError: [Errno 28] No space left on device", 1, log,
                                       "3.13", tmp_path)
     assert "磁盘空间不够" in disk
@@ -887,16 +911,22 @@ def test_update_check_results_are_recorded(monkeypatch, isolated):
     assert saved.get("update_check_error") is None and saved["update_check_ok_at"] >= first["at"]
 
 
-def test_footer_note_only_after_two_weeks_without_reaching_the_server(isolated):
+def test_footer_note_counts_only_the_observed_failure_streak(isolated):
     now = 1_800_000_000.0
     day = 86400
-    never = {"update_check_error": {"at": now, "since": now - 15 * day, "status_or_exc": "HTTP 403"}}
-    assert updater_mod.update_check_note(never, now=now) == "已 15 天没能连上更新服务器（最近一次：HTTP 403）"
-    recent = dict(never, update_check_ok_at=now - 3 * day)
-    assert updater_mod.update_check_note(recent, now=now) is None
+    streak = {"update_check_error": {"at": now, "since": now - 15 * day, "status_or_exc": "HTTP 403"}}
+    assert updater_mod.update_check_note(streak) == "已连续 15 天没能连上更新服务器（最近一次：HTTP 403）"
     young = {"update_check_error": {"at": now, "since": now - 13 * day, "status_or_exc": "超时"}}
-    assert updater_mod.update_check_note(young, now=now) is None
-    assert updater_mod.update_check_note({"update_check_ok_at": now - 90 * day}, now=now) is None
+    assert updater_mod.update_check_note(young) is None
+    # 半个月没打开程序，回来第一次检查就超时：只看到一次失败，不能说成 15 天连不上
+    after_gap = {"update_check_ok_at": now - 15 * day,
+                 "update_check_error": {"at": now, "since": now, "status_or_exc": "超时"}}
+    assert updater_mod.update_check_note(after_gap) is None
+    # 一次失败之后程序关了很久：页面打开时也不能按「到此刻」算天数
+    stale_single = {"update_check_error": {"at": now - 30 * day, "since": now - 30 * day,
+                                           "status_or_exc": "超时"}}
+    assert updater_mod.update_check_note(stale_single) is None
+    assert updater_mod.update_check_note({"update_check_ok_at": now - 90 * day}) is None
 
     server = RecordingServer()
     u = Updater(server)
@@ -912,3 +942,413 @@ def test_footer_note_only_after_two_weeks_without_reaching_the_server(isolated):
 
 def test_update_check_stays_out_of_the_selfcheck_panel():
     assert "版本更新" not in (REPO / "app" / "selfcheck.py").read_text(encoding="utf-8")
+
+
+# ---- 审查后补的几道：暂停多久、可选组件、预检、没有新提交、锁、中控在更新期间的操作 --------------
+
+MLX_LINE = "mlx-whisper; platform_machine == 'arm64' and sys_platform == 'darwin'\n"
+OPTIONAL_REQS = (REQS + "pywebview>=5\n" + MLX_LINE
+                 + 'TikTokLive>=7.0.1,<8; python_version >= "3.10"\n')
+
+
+def test_live_update_skips_pip_when_this_exact_list_is_already_installed(monkeypatch, isolated):
+    (isolated / ".venv").mkdir()
+    bootstrap.write_requirements_stamp(isolated, bootstrap.requirements_digest(REQS))
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events)
+    monkeypatch.setattr(updater_mod, "managed_env", lambda root: True)
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+
+    run(p._apply_update())
+
+    assert pip_calls == [] and execs and state["stops"] == [True]
+    assert "正在更新，监听已暂停（约 1 分钟后自动恢复）" in [s[1] for s in server.statuses()]
+    assert settings_mod.load_settings()["resume_after_update"]["url"] == URL
+
+
+def test_update_on_a_marker_machine_leaves_mlx_whisper_to_the_background_retry(monkeypatch, isolated):
+    (isolated / ".venv").mkdir()
+    bootstrap.write_mlx_giveup(isolated / ".venv" / bootstrap.MLX_GIVEUP, 1, "x")
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events,
+                                       git_overrides={"show:requirements.txt": (0, REQS + MLX_LINE, "")})
+
+    run(u.apply())
+
+    assert len(pip_calls) == 1 and execs
+    assert "mlx-whisper" not in pip_calls[0]["requirements"]
+    assert "brand-new-dep>=1" in pip_calls[0]["requirements"]
+
+
+def test_optional_components_that_fail_do_not_block_the_update(monkeypatch, isolated):
+    (isolated / ".venv").mkdir()
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events, pip_code=[1, 0],
+                                       git_overrides={"show:requirements.txt": (0, OPTIONAL_REQS, "")})
+    monkeypatch.setattr(updater_mod, "managed_env", lambda root: True)
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+
+    run(p._apply_update())
+
+    assert len(pip_calls) == 2 and execs and state["starts"] == []
+    core = pip_calls[1]["requirements"]
+    assert "brand-new-dep>=1" in core and "aiohttp>=3.9" in core
+    for optional in ("pywebview", "mlx-whisper", "TikTokLive"):
+        assert optional in pip_calls[0]["requirements"] and optional not in core
+    assert 0 < pip_calls[1]["timeout"] <= updater_mod.UPDATE_PIP_TIMEOUT_SEC   # 两次共用一个时限
+    assert settings_mod.load_settings()["resume_after_update"]["to_version"] == "9.9.9"
+    # 整份清单没装上：不记成功指纹，但记下失败——启动时 24 小时内不为它重跑 pip
+    (isolated / "requirements.txt").write_text(OPTIONAL_REQS, encoding="utf-8")
+    assert not (isolated / ".venv" / bootstrap.REQ_STAMP).exists()
+    assert bootstrap.requirements_pending(isolated) is False
+
+
+def test_update_still_stops_when_required_components_fail_or_pip_times_out(monkeypatch, isolated):
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events, pip_code=[1, 1],
+                                       git_overrides={"show:requirements.txt": (0, OPTIONAL_REQS, "")})
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+    run(p._apply_update())
+    assert len(pip_calls) == 2 and "merge" not in [e[0] for e in events] and execs == []
+    assert state["starts"] == [(URL, MEDIA)]
+
+    server2, events2 = RecordingServer(), []
+    u2, pip_calls2, execs2 = make_updater(monkeypatch, server2, events2, pip_code=None,
+                                          git_overrides={"show:requirements.txt": (0, OPTIONAL_REQS, "")})
+    run(u2.apply())
+    assert len(pip_calls2) == 1 and execs2 == []            # 超时不再多等一轮
+
+
+def test_startup_install_on_a_marker_machine_does_not_download_mlx_again(tmp_path):
+    venv = tmp_path / ".venv"
+    venv.mkdir()
+    real = "aiohttp>=3.9\n" + MLX_LINE
+    (tmp_path / "requirements.txt").write_text(real, encoding="utf-8")
+    bootstrap.write_mlx_giveup(venv / bootstrap.MLX_GIVEUP, 1, "x")
+    seen = []
+
+    def ok(cmd, log_path):
+        path = Path(cmd[-1])
+        seen.append((path, path.read_text(encoding="utf-8")))
+        return 0, ""
+
+    assert bootstrap.install_requirements("py", tmp_path, ["aiohttp"], [], run=ok)["full_ok"]
+    path, content = seen[0]
+    assert "mlx-whisper" not in content and "aiohttp>=3.9" in content
+    assert path != tmp_path / "requirements.txt" and not path.exists()     # 副本用完即删
+    assert (tmp_path / "requirements.txt").read_text(encoding="utf-8") == real
+    assert bootstrap.requirements_pending(tmp_path) is False                # 指纹按真正的清单记
+
+
+def test_filter_requirements_drops_only_the_named_packages():
+    text = ("# comment\naiohttp>=3.9\n" + MLX_LINE + "MLX_Whisper==0.4\n"
+            "--index-url https://example.com/simple\n"
+            'TikTokLive>=7.0.1,<8; python_version >= "3.10"\n')
+    out = bootstrap.filter_requirements(text, ["mlx-whisper"])
+    assert out.splitlines() == ["# comment", "aiohttp>=3.9",
+                                "--index-url https://example.com/simple",
+                                'TikTokLive>=7.0.1,<8; python_version >= "3.10"']
+    assert bootstrap.filter_requirements(text, ()) == text
+
+
+def test_live_update_blocked_by_modified_files_is_a_notice_not_idle(monkeypatch, isolated):
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events,
+                                       git_overrides={"status": (0, " M app/pipeline.py\n", "")})
+    p, state = make_live_pipeline(server, events, isolated)
+    server.config["status"] = {"state": "live", "detail": "直播中", "command": None}
+    p.updater = u
+
+    run(p._apply_update())
+
+    assert server.statuses() == [] and server.config["status"]["state"] == "live"
+    notice = server.of_type("notice")[-1]["text"]
+    assert "app/pipeline.py" in notice and "监听没有中断" in notice
+    assert server.of_type("update_aborted") and "fetch" not in [e[0] for e in events]
+    assert state["stops"] == [] and pip_calls == [] and execs == []
+
+
+def test_update_with_nothing_newer_on_the_tracked_branch_does_not_pause(monkeypatch, isolated):
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events,
+                                       git_overrides={"rev-parse:HEAD": (0, TARGET + "\n", "")})
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+    run(p._apply_update())
+    assert state["stops"] == [] and pip_calls == [] and execs == []
+    assert "没有比当前更新的提交" in server.of_type("notice")[-1]["text"]
+
+    idle_server, idle_events = RecordingServer(), []
+    u2, pip_calls2, execs2 = make_updater(monkeypatch, idle_server, idle_events,
+                                          git_overrides={"show:VERSION": (0, "1.0.0\n", "")})
+    run(u2.apply())
+    state2, detail, command = idle_server.statuses()[-1]
+    assert state2 == "idle" and "不比当前的 v1.0.0 新" in detail and "http://x" in detail
+    assert command is None and pip_calls2 == [] and execs2 == []   # git pull 也不会有变化，不给命令
+
+
+def test_live_update_that_cannot_fast_forward_keeps_monitoring(monkeypatch, isolated):
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events,
+                                       git_overrides={"merge-base": (1, "", "")})
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+    run(p._apply_update())
+    assert state["stops"] == [] and pip_calls == [] and execs == []
+    assert "没法直接快进" in server.of_type("notice")[-1]["text"]
+
+
+def test_update_makes_the_background_mlx_install_back_off_instead_of_giving_up(monkeypatch, isolated):
+    # 轮询间隔缩到 0.2 秒；等锁上限仍按公式（1.4 秒），留足 Windows 计时器抖动的余量
+    monkeypatch.setattr(updater_mod, "PIP_ABORT_POLL_SEC", 0.2)
+    monkeypatch.setattr(updater_mod, "UPDATE_LOCK_WAIT_SEC", 2 * 0.2 + 1)
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events)
+    u.attach_pipeline(SimpleNamespace(_stream_active=lambda: False))
+    killed = []
+
+    class Proc:
+        returncode = None
+
+        def __init__(self):
+            self.done = asyncio.Event()
+
+        async def wait(self):
+            await self.done.wait()
+            return self.returncode
+
+        def kill(self):
+            killed.append(True)
+            self.returncode = -9
+            self.done.set()
+
+    async def fake_exec(*a, **k):
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    async def scenario():
+        background = asyncio.ensure_future(u._pip_install_locked(
+            ["mlx-whisper"], "后台", updater_mod.MLX_RETRY_TIMEOUT_SEC, None,
+            u._busy_for_background_pip))
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if u._get_pip_lock().locked():
+                break
+        assert u._get_pip_lock().locked()
+        await u.apply(live=lambda: False)
+        if not background.done():          # 更新没等它撤就放弃了：别让测试挂满 30 分钟的时限
+            background.cancel()
+            try:
+                await background
+            except asyncio.CancelledError:
+                pass
+            return "still-running"
+        return background.result()
+
+    assert run(scenario()) == updater_mod.PIP_ABORTED
+    assert killed and execs and len(pip_calls) == 1
+    assert "后台正在安装别的组件" not in json.dumps(server.sent, ensure_ascii=False)
+
+
+def _slow_pip(u, events, gate_box, code=0):
+    async def slow(args, label, timeout=600, log_path=None, abort_if=None):
+        events.append(("pip", tuple(args), {}))
+        await gate_box["gate"].wait()
+        return code
+
+    u._pip_install = slow
+
+
+async def _until(predicate):
+    for _ in range(200):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("条件一直没满足")
+
+
+def test_stop_clicked_while_the_update_installs_is_handled_and_not_undone(monkeypatch, isolated):
+    server, events = RecordingServer(), []
+    u, _pip, execs = make_updater(monkeypatch, server, events)
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+    box = {}
+    _slow_pip(u, events, box)
+
+    async def scenario():
+        box["gate"] = asyncio.Event()
+        assert p.handle_control({"type": "apply_update"}) is None    # 不在页面的消息循环里等
+        await _until(lambda: "pip" in [e[0] for e in events])
+        await p.handle_control({"type": "stop"})                     # 这时候点停止，马上处理
+        assert state["stops"] == [True, False]
+        box["gate"].set()
+        await asyncio.gather(*list(p._bg_tasks))
+
+    run(scenario())
+    assert execs                                                     # 更新照常完成
+    assert settings_mod.load_settings().get("resume_after_update") is None   # 重启后不自动接着听
+    assert server.statuses()[-1][:2] == ("idle", "更新完成，正在自动重启…")
+    assert state["starts"] == []
+
+
+def test_start_clicked_while_the_update_installs_blocks_the_restart(monkeypatch, isolated):
+    server, events = RecordingServer(), []
+    u, _pip, execs = make_updater(monkeypatch, server, events)
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+    box = {}
+    _slow_pip(u, events, box)
+    other = "https://www.tiktok.com/@another/live"
+
+    async def scenario():
+        box["gate"] = asyncio.Event()
+        p.handle_control({"type": "apply_update"})
+        await _until(lambda: "pip" in [e[0] for e in events])
+        await p.handle_control({"type": "start", "url": other})
+        box["gate"].set()
+        await asyncio.gather(*list(p._bg_tasks))
+
+    run(scenario())
+    assert "merge" not in [e[0] for e in events] and execs == []    # 不在中控正听着时重启
+    assert state["starts"] == [(other, None)]                       # 也没有被换回原来的房间
+    assert "又开始了监听" in server.config["incidents"]["update"]["text"]
+
+
+def test_pip_failure_after_the_operator_stopped_does_not_restart_monitoring(monkeypatch, isolated):
+    server, events = RecordingServer(), []
+    u, _pip, execs = make_updater(monkeypatch, server, events)
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+    box = {}
+    _slow_pip(u, events, box, code=1)
+
+    async def scenario():
+        box["gate"] = asyncio.Event()
+        p.handle_control({"type": "apply_update"})
+        await _until(lambda: "pip" in [e[0] for e in events])
+        await p.handle_control({"type": "stop"})
+        box["gate"].set()
+        await asyncio.gather(*list(p._bg_tasks))
+
+    run(scenario())
+    assert state["starts"] == [] and execs == []
+    assert "pip 返回 1" in server.config["incidents"]["update"]["text"]
+
+
+def test_restart_failure_after_merge_drops_the_marker_and_restores_monitoring(monkeypatch, isolated):
+    server, events = RecordingServer(), []
+    u, _pip, _execs = make_updater(monkeypatch, server, events)
+
+    def broken_execv(exe, argv):
+        raise OSError("exec format error")
+
+    monkeypatch.setattr(updater_mod.os, "execv", broken_execv)
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+
+    run(p._apply_update())
+
+    assert "merge" in [e[0] for e in events]
+    assert settings_mod.load_settings().get("resume_after_update") is None   # 这个进程接着听，记号作废
+    assert state["starts"] == [(URL, MEDIA)]
+    assert "自动重启失败" in server.config["incidents"]["update"]["text"]
+
+
+def test_unexpected_error_after_pausing_still_restores_monitoring(monkeypatch, isolated):
+    server, events = RecordingServer(), []
+    u, _pip, execs = make_updater(monkeypatch, server, events)
+
+    async def broken_pip(*a, **k):
+        raise RuntimeError("boom")
+
+    u._pip_install = broken_pip
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+
+    run(p._apply_update())
+
+    assert state["stops"] == [True] and state["starts"] == [(URL, MEDIA)] and execs == []
+    assert "RuntimeError" in server.config["incidents"]["update"]["text"]
+    assert u._applying is False and p._update_pause is None
+
+
+def test_update_pip_output_goes_into_the_log_file(monkeypatch, tmp_path):
+    seen = {}
+
+    class Proc:
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kw):
+        seen["args"], seen["stdout"], seen["stderr"] = args, kw.get("stdout"), kw.get("stderr")
+        kw["stdout"].write(b"Successfully installed brand-new-dep-1.0\n")
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    log = tmp_path / "update-x.log"
+    code = run(Updater(server=None)._pip_install(["-r", "reqs.txt"], "测试", timeout=60, log_path=log))
+    assert code == 0
+    assert getattr(seen["stdout"], "name", None) == str(log)
+    assert seen["stderr"] == asyncio.subprocess.STDOUT
+    text = log.read_text(encoding="utf-8")
+    assert text.startswith("$ pip install -r reqs.txt") and "Successfully installed" in text
+    assert "[pip 结束：返回 0]" in text
+
+
+def test_mlx_installed_in_the_background_is_not_picked_up_by_this_process(monkeypatch):
+    from app import hwdetect
+    monkeypatch.setitem(sys.modules, "mlx_whisper", None)      # 结束时恢复成原来的样子
+    del sys.modules["mlx_whisper"]
+    updater_mod._keep_mlx_out_of_this_process()
+    assert "mlx_whisper" in sys.modules and sys.modules["mlx_whisper"] is None
+    with pytest.raises(ImportError):
+        importlib.import_module("mlx_whisper")
+    # 开播时的硬件推荐走同一个 import：这台 Mac 在这次运行里仍然用 CPU 识别
+    monkeypatch.setattr(hwdetect, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(hwdetect.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(hwdetect, "_ram_gb", lambda: 16.0)
+    monkeypatch.setattr(hwdetect, "_cuda_usable", lambda: False)
+    info = hwdetect.detect()
+    assert info["apple_silicon"] and info["has_mlx"] is False
+    assert hwdetect.recommend(info)["backend"] == "ct2"
+    real = SimpleNamespace(__name__="mlx_whisper")
+    sys.modules["mlx_whisper"] = real
+    updater_mod._keep_mlx_out_of_this_process()
+    assert sys.modules["mlx_whisper"] is real                   # 已经真的 import 过的不动
+
+
+def test_plan_install_decides_whether_and_how_to_announce(tmp_path):
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / "requirements.txt").write_text("aiohttp>=3.9\n", encoding="utf-8")
+    missing = bootstrap.plan_install(False, tmp_path, "3.13", "3.14")
+    assert missing["delay"] == 0 and missing["text"].startswith("Python 版本从 3.13 变成了 3.14")
+    changed = bootstrap.plan_install(True, tmp_path, "3.13", "3.13")
+    assert changed["delay"] == bootstrap.REQUIREMENTS_DIALOG_DELAY_SEC > 0
+    assert "组件清单" in changed["text"]
+    first = bootstrap.plan_install(False, tmp_path, None, "3.13")
+    assert first["text"].startswith("首次运行") and first["delay"] == 0
+    bootstrap.write_requirements_stamp(tmp_path, bootstrap.requirements_file_digest(tmp_path))
+    assert bootstrap.plan_install(True, tmp_path, "3.13", "3.13") is None
+    assert bootstrap.plan_install(False, tmp_path, "3.13", "3.13") is not None   # 缺模块照样装
+
+
+def test_requirements_current_only_polices_the_project_venv(tmp_path):
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / "requirements.txt").write_text("aiohttp>=3.9\n", encoding="utf-8")
+    assert bootstrap.requirements_current(tmp_path, prefix=tmp_path / "elsewhere") is True
+    assert bootstrap.requirements_current(tmp_path, prefix=tmp_path / ".venv") is False
+    bootstrap.write_requirements_stamp(tmp_path, bootstrap.requirements_file_digest(tmp_path))
+    assert bootstrap.requirements_current(tmp_path, prefix=tmp_path / ".venv") is True
+
+
+def test_main_delegates_the_install_decisions_to_bootstrap():
+    """main.py 里测不了（import 就 execv）：两道闸门的判断必须交给 app/bootstrap.py。"""
+    src = (REPO / "main.py").read_text(encoding="utf-8")
+    assert "bootstrap.plan_install(" in src and "bootstrap.requirements_current(" in src
+    assert "bootstrap.requirements_pending(" not in src

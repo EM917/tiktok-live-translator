@@ -88,9 +88,7 @@ def _requirements_current():
     用户自己装齐依赖的 Python 不归这里管；判断本身出错不挡启动。"""
     try:
         from app import bootstrap
-        if not bootstrap.managed_env(ROOT):
-            return True
-        return not bootstrap.requirements_pending(ROOT)
+        return bootstrap.requirements_current(ROOT)
     except Exception:
         return True
 
@@ -237,22 +235,19 @@ def ensure_env():
              _ready_import()],
             capture_output=True,
         )
-        imports_ok = check.returncode == 0
         # 核心模块都在、只是 requirements.txt 和上次装成功的那份不一样（更新带来了
-        # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装
-        if not imports_ok or bootstrap.requirements_pending(ROOT):
-            text = bootstrap.install_dialog_text(recorded, target_version,
-                                                 venv_existed=recorded is not None,
-                                                 requirements_only=imports_ok)
+        # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
+        # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
+        plan = bootstrap.plan_install(check.returncode == 0, ROOT, recorded, target_version)
+        if plan is not None:
             timer = None
-            if imports_ok:
-                # 包多半都在，pip 几秒就结束：过几秒还没完才弹提示，别每次闪一下
+            if plan["delay"] > 0:
                 import threading
-                timer = threading.Timer(5.0, _first_run_dialog, args=(text,))
+                timer = threading.Timer(plan["delay"], _first_run_dialog, args=(plan["text"],))
                 timer.daemon = True
                 timer.start()
             else:
-                _first_run_dialog(text)
+                _first_run_dialog(plan["text"])
             print("[初始化] 正在安装依赖（含内置 ffmpeg，可能需要几分钟）…")
             # pip 的输出同时进终端和 logs/bootstrap-*.log：双击 .app 时 stdout 是
             # /dev/null，以前装失败了什么都不留

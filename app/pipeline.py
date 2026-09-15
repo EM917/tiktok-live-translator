@@ -238,11 +238,13 @@ class Pipeline:
                     self._save_setting("source_lang", source[:12])
                     self.server.config["source_lang"] = source[:12]
                     self.args.source_requested = source[:12]
+                self._note_operator_stream_action()
                 return self._start_with_ack(url, media=media)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
                 "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
         elif mtype == "stop":
+            self._note_operator_stream_action()
             return self.stop_stream()
         elif mtype == "clear_recent_rooms":
             return self._clear_recent_rooms()
@@ -259,7 +261,10 @@ class Pipeline:
             return self._migrate_glossary(bool(msg.get("confirm")))
         elif mtype == "apply_update":
             if getattr(self, "updater", None) is not None:
-                return self._apply_update()
+                # 放后台跑，不在这个页面的消息循环里等：fetch、pip 要好几分钟，等着的话
+                # 这期间点的「停止」要排到更新做完才处理——而更新成功就直接重启了
+                self._spawn(self._apply_update())
+                return None
         elif mtype == "check_update":
             if getattr(self, "updater", None) is not None:
                 return self.updater.check_and_notify(delay=0, manual=True)
@@ -273,33 +278,67 @@ class Pipeline:
         git pull：网络卡住时监听已经停了，界面还显示「直播中」；重启后回到待机，审计里
         只剩一条 session_end。现在：新版本取下来、确认能快进了才暂停监听；装依赖或合并
         失败就在当前版本上恢复；成功就留记号，重启后自动接着听。"""
+        if getattr(self.updater, "_applying", False):
+            return          # 已经有一次在跑：别动它正在用的暂停记录和横幅
         incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
         if "update" in incidents:
             await self._incident("update", "clear")    # 上次没更新成的说明，重试时收起
-        await self.updater.apply(live=self._stream_active, pause=self._pause_for_update,
-                                 resume=self._resume_after_update_failure,
-                                 before_restart=self._save_update_resume)
+        self._update_pause = None
+        try:
+            await self.updater.apply(live=self._stream_active, pause=self._pause_for_update,
+                                     resume=self._resume_after_update_failure,
+                                     before_restart=self._save_update_resume)
+        except Exception as exc:
+            # 更新器里没料到的异常：暂停了的监听不能就这么一直停着
+            print("[警告] 一键更新出错：{!r}".format(exc))
+            pause = getattr(self, "_update_pause", None)
+            if pause is not None:
+                await self._resume_after_update_failure(
+                    pause, "更新过程中程序出错（{}）".format(type(exc).__name__))
+        finally:
+            self._update_pause = None
 
-    async def _pause_for_update(self, from_version, to_version):
+    def _note_operator_stream_action(self):
+        """中控在一键更新暂停监听期间自己点了开始或停止（handle_control 调用）。更新收尾时
+        照中控最后的操作来：失败了不替他恢复监听，成功了也不留「重启后接着监听」的记号。"""
+        pause = getattr(self, "_update_pause", None)
+        if pause is not None:
+            pause["operator_acted"] = True
+
+    async def _pause_for_update(self, from_version, to_version, pip_minutes=None):
         """新版本已经取下来、确认能更新之后才调用：记审计、停监听、告诉中控在更新。
+        pip_minutes 是要先装组件时 pip 的最长时限（分钟），不用装是 None。
         返回恢复监听要用的 {url, media}；没在监听（或演示模式）返回 None。"""
         if not self._stream_active() or getattr(self.args, "demo", False):
             return None
         token = {"url": (self.server.config or {}).get("room_url"),
                  "media": getattr(self, "_media_override", None)}
+        self._update_pause = token
         if self.audit is not None:
             self.audit.update_stop(from_version, to_version)
         self._stop_reason = "update"
         await self.stop_stream(quiet=True)
-        await self.server.status("connecting", "正在更新，监听已暂停（约 1 分钟后自动恢复）")
+        if pip_minutes:
+            text = ("正在更新，监听已暂停：先安装新版本需要的组件（最长约 {} 分钟），"
+                    "装好后自动重启并恢复监听".format(pip_minutes))
+        else:
+            text = "正在更新，监听已暂停（约 1 分钟后自动恢复）"
+        await self.server.status("connecting", text)
         return token
 
     async def _resume_after_update_failure(self, token, text):
         """停了监听之后更新没成：工作区还是旧代码，在当前版本上把监听恢复起来，并用持续
-        提示说清楚（状态行马上会被「连接中/直播中」盖掉，一次性提示几秒就没了）。"""
+        提示说清楚（状态行马上会被「连接中/直播中」盖掉，一次性提示几秒就没了）。
+
+        更新期间中控自己点过开始/停止，或者此刻已经在监听：照中控的意思，不再替他开始。"""
         if load_settings().get("resume_after_update") is not None:
             save_setting("resume_after_update", None)   # 这个进程接着听，不再靠重启后恢复
-        url = (token or {}).get("url")
+        self._update_pause = None
+        token = token or {}
+        url = token.get("url")
+        if token.get("operator_acted") or self._stream_active():
+            await self._incident("update", "warn", "一键更新没完成：{}".format(text))
+            return
         if not url:
             await self.server.status("idle", text)
             return
@@ -309,11 +348,16 @@ class Pipeline:
         await self.start_stream(url, media=token.get("media"))
 
     def _save_update_resume(self, token, to_version):
-        """execv 之前留记号：新进程启动时据此接着监听（见 resume_after_update）。"""
+        """execv 之前留记号：新进程启动时据此接着监听（见 resume_after_update）。
+        返回是否留了记号。更新期间中控点过开始/停止的不留：重启后照他最后的操作来。"""
         if not token or not token.get("url"):
-            return
+            return False
+        if token.get("operator_acted"):
+            print("[信息] 更新期间中控点过开始/停止，重启后不自动接着监听")
+            return False
         save_setting("resume_after_update", {"url": token["url"], "media": token.get("media"),
                                              "at": time.time(), "to_version": to_version})
+        return True
 
     async def resume_after_update(self, now=None):
         """启动时调用（main.py，命令行没给直播间地址时）：上一个进程是一键更新暂停的监听，

@@ -8,6 +8,7 @@ ZIP 下载（无 .git）的安装只提示去下载页，不尝试自动更新�
 任何一步失败，工作区还是旧代码，监听在当前版本上恢复。
 """
 import asyncio
+import importlib.machinery
 import importlib.metadata
 import importlib.util
 import math
@@ -19,9 +20,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .bootstrap import (MLX_GIVEUP, clear_mlx_giveup, is_apple_silicon, mlx_retry_due,
-                        new_log_path, read_mlx_giveup, requirements_digest, write_mlx_giveup,
-                        write_requirements_stamp)
+from .bootstrap import (MLX_GIVEUP, OPTIONAL_DISTS, clear_mlx_giveup, filter_requirements,
+                        is_apple_silicon, managed_env, mlx_retry_due, new_log_path,
+                        read_mlx_giveup, record_requirements_failure,
+                        recorded_requirements_digest, requirements_digest,
+                        skipped_for_this_machine, write_mlx_giveup, write_requirements_stamp)
 from .settings import load_settings, save_setting
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -120,11 +123,41 @@ def _setting_float(key):
 # 跑在监听暂停之后，必须有上限，超时就在当前版本上把监听恢复起来
 FETCH_TIMEOUT_SEC = 90
 GIT_LOCAL_TIMEOUT_SEC = 120
+# 暂停监听之后装新依赖的总时限（整份清单装不上时，只装非可选组件的那次也算在里面）
 UPDATE_PIP_TIMEOUT_SEC = 600
 # 空闲时后台补装 mlx-whisper：要下 torch 等几百 MB；一开始监听就撤
 MLX_RETRY_TIMEOUT_SEC = 1800
 PIP_ABORT_POLL_SEC = 2.0
 PIP_ABORTED = "aborted"
+# 点「一键更新」时 pip 锁被占着，先等这么久：后台的 mlx-whisper 安装每 PIP_ABORT_POLL_SEC
+# 秒看一次有没有在更新，看到就自己撤。等不到的（yt-dlp 保鲜这类不会撤的）这次就不更新
+UPDATE_LOCK_WAIT_SEC = 2 * PIP_ABORT_POLL_SEC + 1
+MLX_READY_TEXT = ("GPU 加速组件已装好，停播后重开程序生效（这次运行不会切换识别方式；"
+                  "还没下载过 GPU 识别模型的话，重开后第一次开始监听要先下载约 3 GB）")
+
+
+def _mlx_on_disk():
+    """mlx_whisper 在不在环境里：按 sys.path 找，不看 sys.modules（下面钉的那个 None），
+    也不 import。"""
+    importlib.invalidate_caches()
+    try:
+        return importlib.machinery.PathFinder.find_spec("mlx_whisper") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _keep_mlx_out_of_this_process():
+    """让这个进程往后 import mlx_whisper 一律失败（sys.modules 里放 None，import 抛
+    ModuleNotFoundError）。已经真的 import 过的不动。
+
+    为什么：hwdetect.detect() 每次点「开始」都 import 一次 mlx_whisper。后台装好之后不钉住，
+    同一个进程里的下一次开始就会换成 mlx + large-v3——在开播那一刻下载几 GB 的模型，而且
+    旧的 CPU 模型在新模型载完之前还占着内存。钉住以后识别方式到重开程序才变，给中控的
+    「重开程序生效」才是真话。自检的「语音识别」一行走同一个 import，看到的也一致。"""
+    if sys.modules.get("mlx_whisper") is None:
+        sys.modules["mlx_whisper"] = None
+
+
 # 带 curl-cffi 扩展：让 pip 按 yt-dlp 自己声明的范围装配 curl_cffi（与 requirements.txt 一致）
 YTDLP_SPEC = "yt-dlp[curl-cffi]"
 # 连续这么多天没能连上更新服务器，就在页脚版本号旁边提一句（不进自检、不进横幅）
@@ -157,28 +190,28 @@ def update_check_ok_iso(settings=None):
         return None
 
 
-def update_check_note(settings=None, now=None):
-    """连续 UPDATE_CHECK_STALE_DAYS 天没能连上更新服务器时，页脚上的那句话；否则 None。
+def update_check_note(settings=None):
+    """这一串连续失败跨了 UPDATE_CHECK_STALE_DAYS 天以上时，页脚上的那句话；否则 None。
 
-    从上次成功算起；从没成功过的机器从第一次失败算起。只写观察到的：多少天、最近
-    一次返回了什么。不进自检面板——连不上 GitHub 的网络上它会一直黄着，把中控训练成
-    无视 WARN。"""
+    天数只算真实记录到的：从这一串里第一次失败（since）到最近一次失败（at）。不从上次
+    成功算起，也不算到此刻——程序可能半个月没打开、一次都没检查，那段时间不能说成
+    「连不上」；中间成功过一次，错误记录就被清掉（_record_check）。不进自检面板——连不上
+    GitHub 的网络上它会一直黄着，把中控训练成无视 WARN。"""
     settings = load_settings() if settings is None else settings
     err = settings.get("update_check_error")
     if not isinstance(err, dict):
         return None
     try:
-        ok_at = float(settings.get("update_check_ok_at") or 0)
-        since = ok_at or float(err.get("since") or 0)
+        since = float(err.get("since") or 0)
+        at = float(err.get("at") or 0)
     except (TypeError, ValueError):
         return None
-    if since <= 0:
+    if since <= 0 or at <= since:
         return None
-    now = time.time() if now is None else now
-    days = int((now - since) // 86400)
+    days = int((at - since) // 86400)
     if days < UPDATE_CHECK_STALE_DAYS:
         return None
-    return "已 {} 天没能连上更新服务器（最近一次：{}）".format(
+    return "已连续 {} 天没能连上更新服务器（最近一次：{}）".format(
         days, err.get("status_or_exc") or "未知")
 
 
@@ -450,14 +483,15 @@ class Updater:
         info = read_mlx_giveup(marker)
         if info is None:
             return "no-marker"
-        importlib.invalidate_caches()
-        if importlib.util.find_spec("mlx_whisper") is not None:
+        if _mlx_on_disk():
             clear_mlx_giveup(marker)          # 已经装上了（比如手动装过），记号过时
             return "present"
         if not mlx_retry_due(info, now=now):
             return "cooldown"
         if self._busy_for_background_pip():
             return "busy"
+        # 装之前就钉住：这个进程往后不 import 它，识别方式到重开程序才变（见函数说明）
+        _keep_mlx_out_of_this_process()
         args = ["mlx-whisper"]
         numpy_version = component_version("numpy")
         if numpy_version:
@@ -468,11 +502,9 @@ class Updater:
         if code == PIP_ABORTED:
             print("[信息] 开始监听或更新了，GPU 加速组件的后台安装已停下，下次空闲时再试")
             return "aborted"
-        importlib.invalidate_caches()
-        if code == 0 and importlib.util.find_spec("mlx_whisper") is not None:
+        if code == 0 and _mlx_on_disk():
             clear_mlx_giveup(marker)
-            await self._persistent_note("mlx-ready", "info",
-                                        "GPU 加速组件已装好，下次停播后重开程序生效")
+            await self._persistent_note("mlx-ready", "info", MLX_READY_TEXT)
             return "installed"
         write_mlx_giveup(marker, code if isinstance(code, int) else None,
                          "后台安装没成功" + ("（超时）" if code is None else ""))
@@ -807,79 +839,112 @@ class Updater:
                 path, sys.executable)
         return 'cd "{}" && git pull --ff-only'.format(path)
 
-    async def precheck(self):
+    async def precheck(self, live=False):
         """「能不能更」与「更」分开：调用方先问这个，通过了才停直播管线。
         以前是先停管线再查工作区，被脏文件挡住时直播已经没人听了，界面上
-        只剩一句「本次没有自动更新」。这里的每条失败出口都自带可照做的命令。"""
+        只剩一句「本次没有自动更新」。这里的每条失败出口都自带可照做的命令。
+
+        live：此刻在监听。那时不能走 status——它会把界面打回待机、停止按钮消失，而监听
+        还在跑（2026-09-15 审查实测）；只发一次性提示，命令等停播后再点时给。"""
         if self.latest is None:
             return False
         if not self.latest.get("can_auto"):
-            await self.server.status(
-                "idle", "当前是 ZIP 安装，无法自动更新——请到 GitHub 下载新版本：{}".format(
-                    self.latest["url"]))
+            await self._refuse(
+                "当前是 ZIP 安装，无法自动更新——请到 GitHub 下载新版本：{}".format(
+                    self.latest["url"]),
+                None, live, "当前是 ZIP 安装，程序没法自己更新")
             return False
         # --untracked-files=no 是关键：未跟踪的文件 git pull 根本不会动它，
         # 拿它们挡住更新纯属误伤。真实案例：用户目录里多了一个 .run.log 和两个
         # 词表备份，自动更新就此彻底罢工，而给出的提示是「请自行处理后 git pull」
         # ——对一个不会用终端的人来说这是个死胡同。
-        # 万一某个未跟踪文件真的和新版本里的文件重名，下面的 git pull 会自己
+        # 万一某个未跟踪文件真的和新版本里的文件重名，下面的 git merge 会自己
         # 报错，那时再把 git 的原话转述给用户。
         code, out, _ = await self._git("status", "--porcelain", "--untracked-files=no")
         if code != 0:
-            await self.server.status(
-                "idle", "这台电脑上找不到 git，程序没法自己更新。"
-                        "可以到 GitHub 下载新版压缩包，或者装好 git 后执行：",
-                command=self._manual_command())
+            await self._refuse(
+                "这台电脑上找不到 git，程序没法自己更新。"
+                "可以到 GitHub 下载新版压缩包，或者装好 git 后执行：",
+                self._manual_command(), live, "这台电脑上找不到 git，程序没法自己更新")
             return False
         if out.strip():
             # porcelain 是「两位状态 + 空格 + 文件名」，而未暂存修改的第一位
             # 就是空格——所以只能逐行去尾部空白，绝不能对整段 strip()，
             # 否则第一行会被削掉行首空格，文件名跟着少一个字母（app/ → pp/）。
             files = [ln[3:].rstrip() for ln in out.splitlines()[:4] if len(ln) > 3]
-            await self.server.status(
-                "idle",                      # 只是没更新，程序本身好好的，别报「出错了」
+            names = "、".join(files) or "（若干文件）"
+            await self._refuse(
                 "本次没有自动更新：这几个程序文件被改过，直接更新会覆盖掉它们——{}。"
                 "如果不是你有意改的，复制下面这行到「终端」里执行，"
-                "就能放弃这些改动并完成更新："
-                .format("、".join(files) or "（若干文件）"),
-                command=self._manual_command(discard=True))
+                "就能放弃这些改动并完成更新：".format(names),
+                self._manual_command(discard=True), live,
+                "本次没有自动更新：这几个程序文件被改过——{}".format(names))
             return False
         return True
 
-    async def _not_updated(self, text, live):
+    async def _refuse(self, text, command, live, live_text):
+        """预检没过的出口。没在监听：状态行加一条能照做的命令（只是没更新，程序本身好好的，
+        所以是 idle 不是 error）。在监听：一次性提示，说清监听没有中断。"""
+        if not live:
+            await self.server.status("idle", text, command=command)
+            return
+        print("[警告] 一键更新没有开始：{}".format(live_text))
+        await self.server.broadcast({"type": "update_aborted"})
+        await self._notice("{}。监听没有中断；停播后再点「一键更新」会给出处理办法".format(live_text))
+
+    async def _not_updated(self, text, live, command=True):
         """还没停监听时的失败出口。直播中只发一次性提示——监听照常，不能把界面状态打回
-        待机；没在监听时照旧给状态和一条能照做的命令（更新器不能把自己锁死）。"""
+        待机；没在监听时照旧给状态和一条能照做的命令（更新器不能把自己锁死）。
+        command=False：手动 git pull 也不会有变化的情形（远端没有新提交），给下载页。"""
         print("[警告] 一键更新没完成：{}（手动更新：{}）".format(text, self._manual_command()))
         await self.server.broadcast({"type": "update_aborted"})
         if live:
-            await self._notice("更新没完成：{}。监听没有中断，停播后可以再点「一键更新」".format(text))
+            await self._notice("更新没完成：{}。监听没有中断{}".format(
+                text, "，停播后可以再点「一键更新」" if command else ""))
+            return
+        if not command:
+            await self.server.status("idle", "本次没有更新（{}）。新版本可以到 GitHub 下载：{}".format(
+                text, (self.latest or {}).get("url") or RELEASES_URL))
             return
         await self.server.status(
             "idle", "更新没能完成（{}）。复制下面这行到「终端」里执行通常就能解决：".format(text),
             command=self._manual_command())
 
-    async def _update_failed(self, text, token, resume, command):
-        """装依赖或合并失败的出口。工作区还是旧代码：停了的监听在当前版本上恢复，
-        没在监听的给状态和手动命令。"""
+    async def _update_failed(self, text, token, resume, command, live=False):
+        """装依赖或合并失败的出口。工作区还是旧代码：停了的监听交给管线在当前版本上恢复
+        （中控期间自己点过开始/停止的，管线照他的意思来）；没停过监听、此刻却在监听的
+        只发一次性提示；都不是的给状态和手动命令。"""
         print("[警告] " + text)
         await self.server.broadcast({"type": "update_aborted"})
         if token is not None and resume is not None:
             await resume(token, text)
             return
+        if live:
+            await self._notice(text + "。监听没有中断")
+            return
         await self.server.status(
             "idle", text + "。复制下面这行到「终端」里执行可以手动更新：", command=command)
 
-    async def _install_new_requirements(self, requirements, log_path):
-        """合并之前，按新版本的清单装依赖（清单来自 `git show`，写成临时文件给 pip -r）。
-        清单是空的就不用装，返回 0。"""
+    def _requirements_to_install(self, requirements):
+        """一键更新要不要按新版本的清单跑 pip：要的话返回交给 pip -r 的清单内容，不用返回 None。
+
+        不用装：清单是空的；或者本项目 .venv 里上次装成功的正是这一份（指纹对得上）。大多数
+        更新不改清单，这时暂停监听只为合并和重启，不必再等 pip 去问软件包服务器。
+        要装时去掉这台机器留了放弃记号的组件（mlx-whisper，见 bootstrap.skipped_for_this_machine）。"""
         if not requirements.strip():
-            return 0
+            return None
+        if managed_env(ROOT) and \
+                recorded_requirements_digest(ROOT) == requirements_digest(requirements):
+            return None
+        return filter_requirements(requirements, skipped_for_this_machine(ROOT))
+
+    async def _pip_requirements(self, content, log_path, timeout, label):
+        """把清单内容写成临时文件交给 `pip install -r`，返回退出码（超时或写不了文件返回 None）。"""
         fd, tmp = tempfile.mkstemp(prefix="tlt-requirements-", suffix=".txt")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(requirements)
-            return await self._pip_install(["-r", tmp], "新版本依赖安装",
-                                           timeout=UPDATE_PIP_TIMEOUT_SEC, log_path=log_path)
+                fh.write(content)
+            return await self._pip_install(["-r", tmp], label, timeout=timeout, log_path=log_path)
         except OSError as exc:
             print("[警告] 写临时组件清单失败: {}".format(exc))
             return None
@@ -889,15 +954,63 @@ class Updater:
             except OSError:
                 pass
 
-    async def _apply_inner(self, live=None, pause=None, resume=None, before_restart=None):
-        if not await self.precheck():
-            return
+    async def _install_new_requirements(self, wanted, log_path):
+        """合并之前按新版本的清单装依赖（清单来自 `git show`）。返回 (退出码, 整份清单那次的
+        退出码)；第二项只在「整份没装上、只装必需组件成功或失败」时不是 None。
 
+        整份清单装不上（pip 返回非 0，不是超时）时再只装去掉可选组件（OPTIONAL_DISTS）的那部分：
+        mlx-whisper、TikTokLive、pywebview 装不上程序照样能跑，不能因为它们让每次更新都
+        白暂停一场监听、最后还不更新（2026-09-15 审查）。两次共用 UPDATE_PIP_TIMEOUT_SEC。"""
+        deadline = time.monotonic() + UPDATE_PIP_TIMEOUT_SEC
+        code = await self._pip_requirements(wanted, log_path, UPDATE_PIP_TIMEOUT_SEC,
+                                            "新版本依赖安装")
+        if code in (0, None):
+            return code, None
+        core = filter_requirements(wanted, OPTIONAL_DISTS)
+        if core == wanted:
+            return code, None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, code
+        print("[信息] 新版本的完整组件清单没装上（pip 返回 {}），改为只装必需的组件…".format(code))
+        core_code = await self._pip_requirements(core, log_path, remaining, "新版本必需组件安装")
+        return core_code, code
+
+    @staticmethod
+    def _record_installed_requirements(requirements, wanted, full_code):
+        """合并成功后记下新清单装到了哪一步，启动时据此决定要不要再跑 pip -r
+        （bootstrap.requirements_pending）。只记本项目自己的 .venv。"""
+        if wanted is None or not managed_env(ROOT):
+            return
+        digest = requirements_digest(requirements)
+        if full_code is None:
+            write_requirements_stamp(ROOT, digest)
+        else:
+            # 只装上了必需的组件：记成「这份清单装失败过」，启动时 24 小时内不为它重跑 pip
+            record_requirements_failure(ROOT, digest, full_code)
+
+    async def _wait_for_pip_lock(self):
+        """pip 锁被占着时等一会儿（UPDATE_LOCK_WAIT_SEC）：后台的 mlx-whisper 安装看到
+        _applying 就自己撤。等到了返回 True（锁马上还回去，后面装依赖时再拿）。"""
+        lock = self._get_pip_lock()
+        if not lock.locked():
+            return True
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=UPDATE_LOCK_WAIT_SEC)
+        except asyncio.TimeoutError:
+            return False
+        lock.release()
+        return True
+
+    async def _apply_inner(self, live=None, pause=None, resume=None, before_restart=None):
         def is_live():
             try:
                 return bool(live()) if live is not None else False
             except Exception:
                 return False
+
+        if not await self.precheck(live=is_live()):
+            return
 
         await self.server.broadcast({"type": "updating"})
         from_version = local_version()
@@ -917,8 +1030,24 @@ class Updater:
             await self._not_updated("找不到这份安装跟踪的远端分支（{}）".format(
                 _git_tail(err) or "git 返回 {}".format(code)), is_live())
             return
-        _, version_text, _ = await self._git("show", "{}:VERSION".format(target))
-        to_version = version_text.strip() or "?"
+        # 跟踪的分支上没有新东西（发版标签不在这个分支上、跟踪着一个旧分支）：合并什么也不会
+        # 变，不能为此暂停监听、重启一遍——重启后检查更新又会提示同一个版本
+        code, head, _ = await self._git("rev-parse", "HEAD")
+        if code == 0 and head.strip() == target:
+            await self._not_updated("这份安装跟踪的远端分支上没有比当前更新的提交",
+                                    is_live(), command=False)
+            return
+        code, version_text, err = await self._git("show", "{}:VERSION".format(target))
+        to_version = version_text.strip()
+        if code != 0 or not to_version:
+            await self._not_updated("读不到远端分支上的版本号（{}）".format(
+                _git_tail(err) or "git 返回 {}".format(code)), is_live())
+            return
+        if _parse(to_version) <= _parse(from_version):
+            await self._not_updated(
+                "这份安装跟踪的远端分支上是 v{}，不比当前的 v{} 新".format(
+                    to_version.lstrip("vV"), from_version), is_live(), command=False)
+            return
         code, requirements, err = await self._git("show", "{}:requirements.txt".format(target))
         if code != 0:
             await self._not_updated("读不到新版本的组件清单（{}）".format(
@@ -929,24 +1058,36 @@ class Updater:
             await self._not_updated("本地代码没法直接快进到新版本（{}）".format(
                 _git_tail(err) or "git 返回 {}".format(code)), is_live())
             return
-        if self._get_pip_lock().locked():
-            await self._not_updated("后台正在安装别的组件，等它装完再点「一键更新」", is_live())
+        if not await self._wait_for_pip_lock():
+            await self._not_updated("后台正在安装别的组件，等了 {} 秒还没装完；等它装完再点"
+                                    "「一键更新」".format(int(UPDATE_LOCK_WAIT_SEC)), is_live())
             return
 
-        # 2. 确认能更新了，才停监听
-        token = await pause(from_version, to_version) if pause is not None else None
-        if token is None:
+        # 2. 确认能更新了，才停监听。要不要先装组件现在就定下来：暂停时告诉中控要等多久
+        wanted = self._requirements_to_install(requirements)
+        pip_minutes = int(math.ceil(UPDATE_PIP_TIMEOUT_SEC / 60.0)) if wanted is not None else None
+        token = await pause(from_version, to_version, pip_minutes) if pause is not None else None
+        if token is None and wanted is not None and not is_live():
             await self.server.status("connecting", "正在安装新版本的依赖…")
 
         # 3. 先按新版本的清单装依赖，装好了才合并：新代码绝不在缺依赖的环境里落地。
         # 以前是先 pull 再装、不看 pip 的退出码，装失败也照样重启进新代码
-        log_path = new_log_path(ROOT, "update")
-        code = await self._install_new_requirements(requirements, log_path)
-        if code != 0:
-            text = "新版本需要的组件没装上（pip 返回 {}{}），继续使用当前版本 v{}".format(
-                "超时" if code is None else code,
-                "，详情见 " + _log_label(log_path) if log_path else "", from_version)
-            await self._update_failed(text, token, resume, self._manual_command(pip=True))
+        full_code = None
+        if wanted is not None:
+            log_path = new_log_path(ROOT, "update")
+            code, full_code = await self._install_new_requirements(wanted, log_path)
+            if code != 0:
+                text = "新版本需要的组件没装上（pip 返回 {}{}），继续使用当前版本 v{}".format(
+                    "超时" if code is None else code,
+                    "，详情见 " + _log_label(log_path) if log_path else "", from_version)
+                await self._update_failed(text, token, resume, self._manual_command(pip=True),
+                                          is_live())
+                return
+        # 装组件那几分钟里中控又开始了监听：不能在他正听着的时候合并、重启
+        if is_live():
+            await self._update_failed(
+                "更新期间又开始了监听，这次没有合并新版本 v{}；停播后可以再点「一键更新」".format(
+                    to_version.lstrip("vV")), token, resume, self._manual_command(), True)
             return
 
         exec_error = None
@@ -954,13 +1095,12 @@ class Updater:
         async with self._get_pip_lock():
             code, _, err = await self._git("merge", "--ff-only", target)
             if code == 0:
-                if requirements.strip():
-                    write_requirements_stamp(ROOT, requirements_digest(requirements))
-                if token is not None and before_restart is not None:
-                    before_restart(token, to_version)
+                self._record_installed_requirements(requirements, wanted, full_code)
+                resuming = bool(token is not None and before_restart is not None
+                                and before_restart(token, to_version))
                 await self.server.status(
-                    "connecting" if token is not None else "idle",
-                    "更新完成，正在自动重启…" + ("重启后自动恢复监听" if token is not None else ""))
+                    "connecting" if resuming else "idle",
+                    "更新完成，正在自动重启…" + ("重启后自动恢复监听" if resuming else ""))
                 print("[信息] 已更新到最新版本，重启进程…")
                 await asyncio.sleep(0.6)
                 try:
@@ -972,7 +1112,7 @@ class Updater:
         if code != 0:
             text = "新版本的代码没能合并（{}），继续使用当前版本 v{}".format(
                 _git_tail(err) or "git 返回 {}".format(code), from_version)
-            await self._update_failed(text, token, resume, self._manual_command())
+            await self._update_failed(text, token, resume, self._manual_command(), is_live())
             return
         if exec_error is None:
             return          # 真的 execv 不会回到这里
@@ -982,5 +1122,7 @@ class Updater:
         await self.server.broadcast({"type": "update_aborted"})
         if token is not None and resume is not None:
             await resume(token, text)
+        elif is_live():
+            await self._notice(text)
         else:
             await self.server.status("idle", text)
