@@ -25,6 +25,14 @@ ROOT = Path(__file__).resolve().parent.parent
 _t_counter = 0
 
 
+def _http_note(http_status):
+    """「（HTTP 400）」这样的状态码说明；没有状态码返回空串。"""
+    try:
+        return "（HTTP {}）".format(int(http_status)) if http_status else ""
+    except (TypeError, ValueError):
+        return ""
+
+
 def worker_available():
     """子进程是否具备运行条件：Python >= 3.10 且已装 TikTokLive。"""
     if sys.version_info < (3, 10):
@@ -124,6 +132,9 @@ class CommentSource:
     # 被 TikTok 风控拦下时的退避。比签名错误还要长：那是「服务忙」，
     # 这是「你被当成机器人了」，越急着重连越坐实。
     BLOCKED_WAIT_SEC = 900.0
+    # 评论服务拒绝握手（HTTP 400 等）之后多久重试。找过组件更新还是被拒，
+    # 马上重连多半还是拒——别再每分钟烧一次签名额度
+    REJECTED_WAIT_SEC = 180.0
     MAX_CONNECTS_PER_HOUR = 30
     STOP_GRACE_SEC = 3.0
     # 「一小时」本身也做成常量：额度限流测试要能把这个窗口也调短，
@@ -148,6 +159,7 @@ class CommentSource:
         self._cookies_browser = cookies_browser
         self._root = root
         self.on_provision = None        # Pipeline 可选注入：updater.ensure_tiktoklive
+        self.on_stale = None            # Pipeline 可选注入：updater.freshen_tiktoklive
         self.state = "idle"
         self.detail = ""
         self._unique_id = None
@@ -155,6 +167,8 @@ class CommentSource:
         self._restart_task = None       # 换主播时在途的 _restart 任务（保引用）
         self._proc = None
         self._last_state = None         # 子进程最后一条 status 的 state，退出码不可信时的依据
+        self._last_detail = ""          # 同一条 status 的 detail（原始报错），换成中文说明时用
+        self._last_http = None          # 同一条 status 带的握手 HTTP 状态码（被拒时才有）
         self._connect_times = []        # 最近一小时内的连接尝试时间戳，额度限流用
         # start()/stop() 每次调用都自增的世代号：_restart() 里 await self.stop()
         # 会让出事件循环，这段时间内如果有另一次 start()/stop() 插进来，_restart()
@@ -232,13 +246,15 @@ class CommentSource:
                 extra += ["--tt-target-idc", tt_target_idc]
             self._connect_times.append(self._clock())
             self._last_state = None
+            self._last_detail = ""
+            self._last_http = None
             returncode, healthy = await self._run_once(unique_id, extra)
-            if returncode not in (0, 3, 4, 5, 6, 7):
+            if returncode not in (0, 3, 4, 5, 6, 7, 8):
                 # 退出码不在约定表里（被信号打死、解释器收尾出错……）：子进程
                 # 退出前写的最后一条 status 才是它真正想说的话——「主播不存在」
                 # 就该停，而不是当成普通失败去烧签名额度重试
                 returncode = {"not_found": 6, "login_required": 5, "offline": 3,
-                              "blocked": 7,
+                              "blocked": 7, "rejected": 8,
                               "disconnected": 0}.get(self._last_state, returncode)
             if returncode == 0:
                 backoff = self.BACKOFF_MIN_SEC if healthy \
@@ -264,13 +280,54 @@ class CommentSource:
             elif returncode == 6:                         # UserNotFoundError
                 await self._set_state("unavailable", "找不到该主播")
                 return
-            elif returncode == 7:                         # TikTok 判定我们是机器人
+            elif returncode == 7:                         # 握手回 200 但没有升级成 WebSocket
+                await self._set_state(
+                    "error", "TikTok 暂时拒绝了评论连接，正在检查弹幕组件有没有更新…")
+                if await self._try_freshen():
+                    backoff = self.BACKOFF_MIN_SEC
+                    continue
                 await self._set_state(
                     "error", "TikTok 暂时拒绝了评论连接，稍后自动重试")
                 await asyncio.sleep(self.BLOCKED_WAIT_SEC)
+            elif returncode == 8:                         # 握手被拒（HTTP 400 等）
+                note = _http_note(self._last_http)
+                await self._set_state(
+                    "error", "评论服务拒绝了连接{}，正在检查弹幕组件有没有更新…".format(note))
+                if await self._try_freshen():
+                    backoff = self.BACKOFF_MIN_SEC
+                    continue
+                await self._set_state(
+                    "error", "评论服务拒绝了连接{}，{} 分钟后自动重试".format(
+                        note, max(1, int(round(self.REJECTED_WAIT_SEC / 60)))))
+                await asyncio.sleep(self.REJECTED_WAIT_SEC)
             else:
                 backoff = min(backoff * 2, self.BACKOFF_MAX_SEC)
+                if self._last_state == "error" and self._last_detail:
+                    # 原始报错是英文异常，中控看不懂；先说程序在做什么，原文留在括号里备查
+                    await self._set_state(
+                        "error", "评论连接出错，稍后自动重试（{}）".format(self._last_detail[:120]))
                 await asyncio.sleep(backoff)
+
+    async def _try_freshen(self):
+        """评论服务拒绝连接后问一次弹幕组件有没有更新（updater.freshen_tiktoklive）。
+        升级了返回 True，调用方立刻重连；没升级、没注入、出错都返回 False。"""
+        stale = getattr(self, "on_stale", None)
+        if stale is None:
+            return False
+        try:
+            result = stale("comment-rejected")
+            if asyncio.iscoroutine(result):
+                result = await result
+        except Exception as exc:
+            print("[警告] 检查弹幕组件更新失败: {}".format(exc))
+            return False
+        try:
+            before, after = result
+        except (TypeError, ValueError):
+            return False
+        await self._set_state(
+            "connecting", "弹幕组件已从 {} 更新到 {}，正在重新连接…".format(before, after))
+        return True
 
     async def _await_provisioned(self):
         """Python 版本不够，或 TikTokLive 还没装：报告状态，必要时触发安装，
@@ -357,8 +414,14 @@ class CommentSource:
                 if kind == "status":
                     state = obj.get("state") or "error"
                     self._last_state = state
+                    self._last_detail = obj.get("detail") or ""
+                    self._last_http = obj.get("http_status")
                     if state == "connected":
                         connected_at = self._clock()
+                    if state in ("rejected", "blocked"):
+                        # 原始英文报错不直接上面板：子进程退出后 _supervise 换成
+                        # 中文说明，并先去找组件更新
+                        continue
                     await self._set_state(state, obj.get("detail") or "")
                 elif kind == "comments":
                     items = obj.get("items")

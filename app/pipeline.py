@@ -116,6 +116,12 @@ DEMO_SCRIPT = [
 ]
 
 
+
+def _tiktoklive_version():
+    """读已安装的弹幕组件版本（只读包元数据）。放成模块函数，测试好替换。"""
+    from .updater import tiktoklive_version
+    return tiktoklive_version()
+
 class Pipeline:
     def __init__(self, args, server):
         self.args = args
@@ -196,6 +202,10 @@ class Pipeline:
         # 但这个回调只在真正需要装组件时才会被调用，那时 updater 早已就绪。
         self.comment_source.on_provision = lambda: (
             self.updater.ensure_tiktoklive("comments")
+            if getattr(self, "updater", None) is not None else None)
+        # 评论连接被服务端拒绝时找组件的补丁版本（和解析失败时升 yt-dlp 同一个思路）
+        self.comment_source.on_stale = lambda reason: (
+            self.updater.freshen_tiktoklive(reason)
             if getattr(self, "updater", None) is not None else None)
 
     def _subtitle_translation_busy(self):
@@ -489,6 +499,8 @@ class Pipeline:
         # 「以为跑 A 实际跑 B」变成 grep 一行就能发现的事。
         self.audit = AuditLog(room_url=url, extra={
             "app_version": app_version(),
+            # 弹幕组件版本：弹幕出问题时第一个要答的问题（2026-09-14 卡在 7.0.0）
+            "tiktoklive_version": _tiktoklive_version(),
             "streamer": streamer,
             # requested 由做决策的那一刻记录（main 启动 / UI 点开始），
             # 这里只转抄，不重算——重算读到的 settings 可能已经不是当时那份
@@ -562,6 +574,26 @@ class Pipeline:
     async def _provision_then_check(self):
         await self.ensure_local_translator()
         await self.run_selfcheck()
+
+    async def provision_comments(self):
+        """启动时在后台备弹幕组件：缺了就装、过旧就升（updater.ensure_tiktoklive）。
+        版本变了就重跑自检：启动自检和这里是并行的，「观众弹幕」那一行多半是按
+        旧版本查的，不刷新就会一直标黄。"""
+        updater = getattr(self, "updater", None)
+        if updater is None:
+            return False
+        before = _tiktoklive_version()
+        ok = await updater.ensure_tiktoklive()
+        if _tiktoklive_version() != before:
+            pending = getattr(self, "_selfcheck_task", None)
+            if pending is not None and pending is not asyncio.current_task() \
+                    and not pending.done():
+                try:
+                    await pending
+                except Exception:
+                    pass
+            await self.run_selfcheck()
+        return ok
 
     OLLAMA_HEAL_COOLDOWN_SEC = 60.0
 
@@ -820,7 +852,16 @@ class Pipeline:
 
     async def _publish_comment_source(self, state, detail=""):
         """广播弹幕抓取（TikTokLive）的状态：connecting/connected/
-        disconnected/error/unavailable/idle 之一。"""
+        disconnected/error/unavailable/idle 之一。
+
+        每次变化也写进本场审计。2026-09-14 弹幕连接每次被拒时，日志里一条弹幕状态
+        都没有，查不出是哪一刻坏的、之前几场好不好。连续相同的状态只记一条；
+        键里带上 audit 对象，换场后第一条状态照记。"""
+        audit = getattr(self, "audit", None)
+        key = (audit, state, detail)
+        if audit is not None and getattr(self, "_last_comment_state", None) != key:
+            self._last_comment_state = key
+            audit.comment_source(state, detail)
         await self.server.broadcast({
             "type": "comment_source", "backend": state, "detail": detail})
 

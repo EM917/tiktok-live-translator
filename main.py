@@ -428,8 +428,9 @@ async def main_async(args, state=None):
         pipeline.ensure_local_translator())
     # 弹幕组件（TikTokLive）同理放后台装：装不上也不耽误开播，弹幕来源会
     # 自己退化成「不可用」（见 CommentSource._supervise）
+    # 已经装了但版本过旧的也在这里升（见 Pipeline.provision_comments）
     pipeline._comments_provision_task = asyncio.ensure_future(
-        updater.ensure_tiktoklive())
+        pipeline.provision_comments())
     update_watch = asyncio.ensure_future(updater.watch())  # noqa: F841
     url = f"http://127.0.0.1:{args.port}"
     print(f"字幕界面已启动: {url}")

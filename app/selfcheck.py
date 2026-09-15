@@ -348,6 +348,36 @@ async def check_resolver():
                   "在 Chrome/Safari 里登录一次 TikTok")
 
 
+async def check_comments(args):
+    """观众弹幕组件 TikTokLive：装没装、版本够不够。只读包元数据，不连 TikTok。
+
+    2026-09-14 弹幕连接每次 HTTP 400，原因是组件停在 7.0.0；那时自检里完全
+    没有弹幕这一行，版本过旧这件事在界面上看不见。"""
+    import sys
+
+    from .updater import TIKTOKLIVE_MIN, tiktoklive_outdated, tiktoklive_version
+
+    name = "观众弹幕"
+    if getattr(args, "comments", True) is False:
+        return _check(name, OK, "已按 --no-comments 关闭")
+    if sys.version_info < (3, 10):
+        return _check(name, WARN,
+                      "弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用"
+                      .format(sys.version_info[0], sys.version_info[1]),
+                      "字幕和违禁词报警不受影响")
+    version = await _to_thread(tiktoklive_version)
+    if version is None:
+        return _check(name, WARN, "弹幕组件 TikTokLive 还没装，程序会在后台自动安装",
+                      "字幕和违禁词报警不受影响")
+    if tiktoklive_outdated(version):
+        need = ".".join(str(x) for x in TIKTOKLIVE_MIN)
+        return _check(name, WARN,
+                      "弹幕组件 TikTokLive {} 低于 {}，评论服务走备用线路时连不上；"
+                      "程序正在后台自动升级".format(version, need),
+                      "一直这样的话，重开本程序会再试一次升级")
+    return _check(name, OK, "弹幕组件 TikTokLive {}".format(version))
+
+
 # 一次完整安装的实测占用（见 README「磁盘空间」）：
 #   运行环境 1.4 GB + 语音模型 large-v3 2.9 GB + 翻译模型 1.8B 1.1 GB ≈ 6 GB
 # 门槛按这个来，别让用户下到一半才发现放不下。
@@ -388,6 +418,7 @@ async def run_all(args, detector=None, glossary=None, translator=None):
         ("领域词表", check_glossary(glossary)),
         ("审计日志", check_audit()),
         ("直播流解析", check_resolver()),
+        ("观众弹幕", check_comments(args)),
         ("磁盘空间", check_disk()),
     ]
     results = await asyncio.gather(*(c for _, c in probes), return_exceptions=True)
