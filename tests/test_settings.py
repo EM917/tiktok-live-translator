@@ -31,11 +31,18 @@ def test_missing_file_returns_empty(monkeypatch, tmp_path):
 
 
 def test_corrupted_file_recovers(monkeypatch, tmp_path):
+    """坏文件不阻止后续写入——但原文件要先改名备份：以前下一次保存直接盖掉它，
+    手填的 DeepL 密钥、引擎选择、最近直播间全没了，连个副本都不剩。"""
+    monkeypatch.setattr(settings, "_corrupt", {"backup": None, "announced": False})
     path = _use_tmp(monkeypatch, tmp_path)
     path.write_text("{ not valid json", encoding="utf-8")
     assert settings.load_settings() == {}
+    backups = list(tmp_path.glob("settings.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{ not valid json"
     settings.save_setting("k", "v")            # 坏文件不阻止后续写入
     assert settings.load_settings() == {"k": "v"}
+    assert backups[0].exists()                 # 备份没有被这次保存碰到
 
 
 def test_non_dict_json_treated_as_empty(monkeypatch, tmp_path):

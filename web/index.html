@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=25">
+  <link rel="stylesheet" href="/static/style.css?v=26">
 </head>
 <body>
   <header class="topbar">
@@ -67,7 +67,7 @@
   <!-- 违禁词警报：本工具的核心产出，不自动消失，只能手动清空 -->
   <section id="alert-panel" class="alert-panel hidden">
     <div class="alert-bar">
-      <span class="alert-title">🚨 疑似违禁词 <span id="alert-count">0</span></span>
+      <span class="alert-title">🚨 疑似违禁词 <span id="alert-count">0</span><span id="alert-note" class="alert-note hidden"></span></span>
       <button id="clear-alerts" class="btn">清空警报</button>
     </div>
     <div id="alert-list" class="alert-list"></div>
@@ -242,6 +242,7 @@
   </script>
   <script src="/static/normalize.js?v=1"></script>
   <script src="/static/follow.js?v=1"></script>
-  <script src="/static/app.js?v=43"></script>
+  <script src="/static/alerts.js?v=2"></script>
+  <script src="/static/app.js?v=45"></script>
 </body>
 </html>

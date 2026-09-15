@@ -410,6 +410,7 @@ async def main_async(args, state=None):
     updater = Updater(server)
     pipeline.updater = updater
     server.on_control = pipeline.handle_control
+    server.on_client_dropped = pipeline.on_ui_client_dropped
     if state is not None:
         state["loop"] = asyncio.get_running_loop()
         state["pipeline"] = pipeline
@@ -540,9 +541,11 @@ def run_with_window(args):
             _info_dialog("程序已经在运行，这次给的直播间地址没有自动开始。\n"
                          "请在已打开的窗口里粘贴地址后点「开始翻译」。")
         from app.macbrand import brand_mac_app
+        from app.window_attention import expose_attention
         brand_mac_app(ROOT)
-        webview.create_window("TikTok 直播同传", existing,
-                              width=1000, height=760, min_size=(420, 480))
+        window = webview.create_window("TikTok 直播同传", existing,
+                                       width=1000, height=760, min_size=(420, 480))
+        expose_attention(window)
         webview.start()
         return
 
@@ -576,11 +579,18 @@ def run_with_window(args):
 
     url = "http://127.0.0.1:{}".format(state["ready_port"])
     from app.macbrand import brand_mac_app
+    from app.window_attention import expose_attention
+    from app.window_close import guard_close, localization_kwargs, stop_after_close
     brand_mac_app(ROOT)
     try:
-        webview.create_window("TikTok 直播同传", url,
-                              width=1000, height=760, min_size=(420, 480))
-        webview.start()
+        # 正在监听时关窗口先确认；待机时直接关（判断和文案见 app/window_close.py）
+        loc = localization_kwargs(webview.create_window)
+        window = webview.create_window("TikTok 直播同传", url,
+                                       width=1000, height=760, min_size=(420, 480), **loc)
+        guard_close(window, state.get("pipeline"))
+        # 窗口被盖住时新报警改原生标题：pywebview 的标题不跟页面的 document.title
+        expose_attention(window)
+        webview.start(**({} if loc else localization_kwargs(webview.start)))
     except Exception as exc:
         # 本机没有可用的 webview 后端（如部分 Linux 桌面）——退回浏览器
         print("[信息] 无法创建应用窗口（{}），改在浏览器中打开".format(exc))
@@ -588,16 +598,9 @@ def run_with_window(args):
         thread.join()
         return
 
-    # 窗口被关闭：停掉直播管线（终止 ffmpeg 子进程）后退出
-    loop = state.get("loop")
-    pipeline = state.get("pipeline")
-    if loop is not None and pipeline is not None:
-        try:
-            asyncio.run_coroutine_threadsafe(
-                pipeline.stop_stream(quiet=True), loop
-            ).result(timeout=5)
-        except Exception:
-            pass
+    # 窗口被关闭：记下原因、停掉直播管线（终止 ffmpeg 子进程）后退出。
+    # 停得慢时先让审计收尾，session_end 不能等进程退出
+    stop_after_close(state.get("loop"), state.get("pipeline"))
     os._exit(0)
 
 

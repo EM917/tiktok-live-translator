@@ -379,6 +379,8 @@
         alertList.innerHTML = "";
         alertCount.textContent = "0";
         alertPanel.classList.add("hidden");
+        // 当前场次先于回放的报警到：回放进来的每一条都要据此判断是不是上一场的
+        setAlertSession(msg.config && msg.config.alerts_session);
         // 弹幕同理：服务器会重放最近的评论，先清掉本地已有的
         commentList.innerHTML = "";
         commentById = Object.create(null);
@@ -451,6 +453,7 @@
         if (msg.target_lang) targetSel.value = msg.target_lang;
         if (msg.source_lang && !sourceTouched) sourceSel.value = msg.source_lang;
         if (msg.room_url) fillRoomInput(msg.room_url);
+        if (msg.alerts_session) setAlertSession(msg.alerts_session);
         break;
       case "glossary_migration":
         handleMigration(msg);
@@ -710,6 +713,14 @@
   // ---- 违禁词警报 ----
   // 警报是这个工具的核心产出，绝不自动消失：中控没看到就等于漏报。
   var TIER_LABEL = { exact: "🔴 命中", variant: "🟠 变体", fuzzy: "🟡 疑似" };
+  var alertNote = document.getElementById("alert-note");
+  var alertSession = null;   // 当前场次 { session, streamer, total }，服务端在 config 里给
+  var sessionTotal = 0;      // 本场报警总数（面板只留最近 50 条）
+  var attention = { unseen: 0, restoreTo: null };   // 窗口在后台时标题上的提醒
+  // 桌面窗口（pywebview）的原生标题不跟 document.title：条数经 JS 桥另外告诉窗口
+  // （app/window_attention.py）。浏览器里没有 window.pywebview，这几行什么都不做
+  var windowBridge = { sent: 0, seq: 0 };
+  var windowPage = Math.random().toString(36).slice(2);
 
   function renderAlert(msg) {
     alertPanel.classList.remove("hidden");
@@ -719,9 +730,14 @@
     var head = document.createElement("div");
     head.className = "alert-head";
     var ts = new Date((msg.ts || Date.now() / 1000) * 1000);
-    head.textContent = (TIER_LABEL[msg.tier] || "命中") + "「" + msg.term + "」 " +
-      pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds());
+    // 带上主播：换过房间后，面板上的旧报警不能被当成眼前这个主播说的
+    head.appendChild(document.createTextNode(
+      (TIER_LABEL[msg.tier] || "命中") + "「" + msg.term + "」 " +
+      pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds()) +
+      (msg.streamer ? " @" + msg.streamer : "")));
     item.appendChild(head);
+    item.dataset.session = msg.session || "";
+    markAlertItem(item);
 
     var ctx = document.createElement("div");
     ctx.className = "alert-ctx";
@@ -738,11 +754,91 @@
     if (msg.alert_id) item.dataset.alertId = msg.alert_id;
 
     alertList.insertBefore(item, alertList.firstChild);
-    while (alertList.children.length > 50) {
+    while (alertList.children.length > ALERT_PANEL_CAP) {
       alertList.removeChild(alertList.lastChild);
     }
     alertCount.textContent = alertList.children.length;
+    if (!msg.replay && alertSession && msg.session === alertSession.session) {
+      sessionTotal = Math.max(sessionTotal, msg.session_total || 0);
+    }
+    drawAlertNote();
+    // 窗口被别的软件盖住时，标题是任务栏/Dock/标签页上唯一看得到的地方。
+    // 回放的报警不改标题（noteAlert 里挡掉）：那是补发的历史，不是新情况
+    attention = noteAlert(attention, msg, pageActive(), document.title);
+    if (attention.title) document.title = attention.title;
+    syncWindowAttention(false);
   }
+
+  function markAlertItem(item) {
+    var other = isOtherSession({ session: item.dataset.session },
+                               alertSession && alertSession.session);
+    item.classList.toggle("prev-session", other);
+    var head = item.querySelector(".alert-head");
+    var tag = item.querySelector(".alert-prev");
+    if (other && !tag && head) {
+      tag = document.createElement("span");
+      tag.className = "alert-prev";
+      tag.textContent = "上一场";
+      head.insertBefore(tag, head.firstChild);
+    } else if (!other && tag) {
+      tag.parentNode.removeChild(tag);
+    }
+  }
+
+  // 换场（或重连拿到当前场次）：旧报警标成「上一场」，不删——上一场可能是断线结束的，
+  // 那几条报警中控可能还没处理
+  function setAlertSession(info) {
+    alertSession = info || null;
+    sessionTotal = alertSession ? (alertSession.total || 0) : 0;
+    for (var i = 0; i < alertList.children.length; i++) markAlertItem(alertList.children[i]);
+    drawAlertNote();
+  }
+
+  function drawAlertNote() {
+    if (!alertNote) return;
+    var current = alertSession && alertSession.session;
+    var shown = 0;
+    for (var i = 0; i < alertList.children.length; i++) {
+      var s = alertList.children[i].dataset.session;
+      if (!current || !s || s === current) shown++;
+    }
+    var text = sessionNote(sessionTotal, shown);
+    alertNote.textContent = text;
+    alertNote.classList.toggle("hidden", !text);
+  }
+
+  function pageActive() {
+    return !document.hidden && (typeof document.hasFocus !== "function" || document.hasFocus());
+  }
+
+  function clearAttention() {
+    if (!attention.unseen || !pageActive()) return;
+    attention = noteActive(attention, document.title);
+    if (attention.title) document.title = attention.title;
+    syncWindowAttention(false);
+  }
+
+  function syncWindowAttention(force) {
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.set_attention !== "function") return;
+    var next = windowAttentionUpdate(windowBridge, attention.unseen, force);
+    windowBridge = { sent: next.sent, seq: next.seq };
+    if (next.send === null) return;
+    try {
+      var pending = api.set_attention(next.send, windowPage, next.seq);
+      if (pending && typeof pending.catch === "function") pending.catch(function () {});
+    } catch (e) { /* 桥出错不影响报警面板本身 */ }
+  }
+
+  document.addEventListener("visibilitychange", clearAttention);
+  window.addEventListener("focus", clearAttention);
+  document.addEventListener("pointerdown", clearAttention);
+  document.addEventListener("keydown", clearAttention);
+  // 兜底：窗口本来就在前台、没有再触发 focus 时，也要把标题换回来
+  setInterval(clearAttention, 2000);
+  // 页面刚加载（含刷新）时照发一次：上一个页面留在窗口标题上的提醒要清掉
+  window.addEventListener("pywebviewready", function () { syncWindowAttention(true); });
+  if (window.pywebview && window.pywebview.api) syncWindowAttention(true);
 
   function updateAlert(msg) {
     var item = alertList.querySelector('[data-alert-id="' + msg.alert_id + '"]');
@@ -765,6 +861,7 @@
     alertList.innerHTML = "";
     alertCount.textContent = "0";
     alertPanel.classList.add("hidden");
+    drawAlertNote();
   });
 
   // ---- 观众弹幕 ----

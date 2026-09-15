@@ -490,6 +490,7 @@ class Pipeline:
                     await self._announce_health(level, snap["audio_backlog_sec"])
                     last_level = level
                 await self._watch_detection(snap)
+                await self._check_audit_health()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -763,7 +764,9 @@ class Pipeline:
             "merged_glossary_hash": fingerprint(self.glossary.entries),
             **self._sleep_guard_extra(),
             **self._banned_terms_provenance(),
+            **self._evidence_session_extras(),
         })
+        await self._watch_audit(streamer)
         if misplaced:
             owner, variant, zh = misplaced[0]
             text = ("glossary.txt 里有 {} 条「{}」的专属词条（如 {} => {}），"
@@ -2789,6 +2792,9 @@ class Pipeline:
 
         alert_ids = []
         for hit in hits:
+            # 主播、场次、此刻连着几个界面：换过房间后认得出哪条是上一场的；事后答得出
+            # 「这条报警响的时候有没有页面开着」。audit.alert 原样带上这几列
+            hit.update(self._alert_stamp())
             if self.audit is not None:
                 self.audit.alert(hit)
             print("[警报] 疑似违禁词「{}」（{}）：{}".format(
@@ -2796,7 +2802,9 @@ class Pipeline:
             self._alert_seq += 1
             hit["alert_id"] = self._alert_seq
             alert_ids.append(self._alert_seq)
-            await self.server.broadcast({"type": "alert", **hit})
+            await self.server.broadcast({"type": "alert", **hit, **self._count_alert()})
+        if alert_ids:
+            self._notify_alert_burst()
 
         # 报警的上下文是西语原话。中控读不了西语就无从判断该不该处理，
         # 而报警恰恰是最需要人工复核的地方——所以补一份中文，用最强模型：
@@ -2854,6 +2862,192 @@ class Pipeline:
         # 「重译」按钮仍然随时可用。
 
         return job
+
+    # ---- 合规证据：审计写入健康、报警的场次戳、界面断开留痕 ----
+    DISK_LOW_BYTES = 1024 ** 3                 # 剩这么多就提醒：满了审计就写不进去
+    DISK_LOW_CLEAR_BYTES = 1536 * 1024 ** 2    # 回到这以上才撤提醒，免得在门槛上反复闪
+
+    def _evidence_session_extras(self):
+        """session_start 的额外列。本次运行 settings.json 损坏被备份过就记下备份名：
+        事后看到 translator_requested=auto 时答得出「设置文件坏过」，而不是去猜。"""
+        from .settings import corrupt_backup_name
+        return {"settings_backup": corrupt_backup_name()}
+
+    async def _watch_audit(self, streamer):
+        """紧跟在 AuditLog 构造之后：记下本场报警的主播和场次戳，挂上审计写失败的回调；
+        审计文件根本没建起来就挂一条持续提示——整场都不会有证据。"""
+        audit = self.audit
+        path = getattr(audit, "path", None)
+        self._session_serial = getattr(self, "_session_serial", 0) + 1
+        stamp = (Path(str(path)).stem if path is not None else "nolog-{}-{}".format(
+            time.strftime("%Y%m%d-%H%M%S"), self._session_serial))
+        self._alert_scope = {"session": stamp, "streamer": streamer or "", "total": 0}
+        self.server.config["alerts_session"] = dict(self._alert_scope)
+        await self.server.broadcast({"type": "config",
+                                     "alerts_session": dict(self._alert_scope)})
+        self._audit_watch = {"audit": audit, "failing": False, "detached": False,
+                             "disk_low": False, "errored": False}
+        if audit is None:
+            return
+        if path is None:
+            await self._incident(
+                "session:audit-open", "error",
+                "本场审计日志没能创建（{}）——报警会显示，但不会留下任何证据（见自检「审计日志」）"
+                .format(getattr(audit, "open_error", None) or "没有拿到错误信息"))
+            return
+        loop = asyncio.get_running_loop()
+
+        def on_write_error(_info, _audit=audit):
+            # 可能在别的线程里被调：只切回事件循环，别的什么都不做
+            try:
+                loop.call_soon_threadsafe(self._audit_write_failed, _audit)
+            except RuntimeError:
+                pass                     # 事件循环已经关了（程序退出途中）
+
+        audit.on_write_error = on_write_error
+        if getattr(audit, "failing", False):   # 会话头就没写进去：发生在回调挂上之前
+            self._audit_write_failed(audit)
+
+    def _audit_write_failed(self, audit):
+        """审计开始写不进去（AuditLog 的回调，已切回事件循环）。只认本场自己的 audit：
+        晚到的旧会话回调不许动这一场的提示。一次中断只提示一次。"""
+        watch = getattr(self, "_audit_watch", None) or {}
+        if (audit is not getattr(self, "audit", None) or watch.get("audit") is not audit
+                or watch.get("failing")):
+            return
+        watch["failing"] = True
+        watch["task"] = asyncio.ensure_future(self._incident(
+            "session:audit-write", "error", self._audit_failing_text(audit)))
+
+    @staticmethod
+    def _audit_failing_text(audit):
+        return ("审计日志写不进去（{}）——报警照常显示，但这段时间没有留下证据。"
+                "程序会继续重试，报警记录先留在内存里，能写入后补写"
+                .format(getattr(audit, "last_error", "") or "没有拿到错误信息"))
+
+    async def _check_audit_health(self):
+        """_stats_loop 每 10 秒调一次：审计写入失败与恢复、审计文件被移走、磁盘快满。
+        只在状态变化时提示。自己出错不能拖垮统计循环。"""
+        watch = getattr(self, "_audit_watch", None)
+        try:
+            audit = getattr(self, "audit", None)
+            if (audit is None or not watch or watch.get("audit") is not audit
+                    or getattr(audit, "path", None) is None):
+                return
+            failing = bool(getattr(audit, "failing", False))
+            if failing and not watch["failing"]:
+                watch["failing"] = True
+                await self._incident("session:audit-write", "error",
+                                     self._audit_failing_text(audit))
+            elif not failing and watch["failing"]:
+                watch["failing"] = False
+                gap = getattr(audit, "last_gap", None) or {}
+                await self._incident(
+                    "session:audit-write", "warn",
+                    "审计日志在 {} 到 {} 之间写不进去：{} 条记录没有留下，{} 条（会话头/报警）"
+                    "已补写。现在已恢复写入，日志里的 audit_gap 记录标出了这一段".format(
+                        str(gap.get("from") or "")[11:19] or "?",
+                        str(gap.get("to") or "")[11:19] or "?",
+                        gap.get("lost_records", "?"), gap.get("retained_records", "?")))
+            detached = bool(audit.detached()) if hasattr(audit, "detached") else False
+            if detached != watch["detached"]:
+                watch["detached"] = detached
+                if detached:
+                    await self._incident(
+                        "session:audit-moved", "error",
+                        "本场审计文件已不在原来的位置（{}）——之后的记录写进的是被移走的那个"
+                        "文件，它若已被删除，这些记录会丢失。点「停止」再「开始翻译」会新建"
+                        "审计文件".format(audit.path))
+                else:
+                    await self._incident("session:audit-moved", "clear")
+            free = self._log_free_bytes(audit)
+            if free is not None:
+                if not watch["disk_low"] and free < self.DISK_LOW_BYTES:
+                    watch["disk_low"] = True
+                    await self._incident(
+                        "session:disk-low", "warn",
+                        "磁盘剩余 {:.1f} GB，满了以后审计日志会写不进去——请腾出磁盘空间"
+                        .format(free / 1024 ** 3))
+                elif watch["disk_low"] and free > self.DISK_LOW_CLEAR_BYTES:
+                    watch["disk_low"] = False
+                    await self._incident("session:disk-low", "clear")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if watch is not None and not watch.get("errored"):
+                watch["errored"] = True
+                print("[警告] 审计健康检查出错: {}".format(exc))
+
+    @staticmethod
+    def _log_free_bytes(audit):
+        import shutil
+        try:
+            return shutil.disk_usage(str(Path(str(audit.path)).parent)).free
+        except (OSError, ValueError):
+            return None
+
+    def on_ui_client_dropped(self, reason, buffered_bytes=None):
+        """服务端断开了一个收不下消息的页面（CaptionServer.on_client_dropped）：打一行、
+        记审计。页面会自己重连并补回报警。"""
+        clients = getattr(self.server, "clients", None)
+        left = len(clients) if clients is not None else None
+        if reason == "buffer_full":
+            what = "积压了 {} KB 消息没读".format(int((buffered_bytes or 0) / 1024))
+        else:
+            what = "{:.0f} 秒内没收下消息".format(
+                getattr(self.server, "SEND_TIMEOUT_SEC", 2.0))
+        print("[警告] 一个界面页面{}，已断开它（页面会自动重连并补回报警），还连着 {} 个页面"
+              .format(what, "?" if left is None else left))
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.ui_client_dropped(reason, buffered_bytes, clients_left=left)
+
+    def _alert_stamp(self):
+        scope = getattr(self, "_alert_scope", None) or {}
+        clients = getattr(getattr(self, "server", None), "clients", None)
+        return {"streamer": scope.get("streamer") or "",
+                "session": scope.get("session") or "",
+                "ui_clients": len(clients) if clients is not None else 0}
+
+    def _count_alert(self):
+        """本场报警计数：面板只留最近 50 条，页面要说得出「本场共 N 条」。
+        只进广播（和 hello 的 config），不进审计——审计里本来就是全量。"""
+        scope = getattr(self, "_alert_scope", None)
+        if scope is None:
+            return {}
+        scope["total"] += 1
+        current = self.server.config.get("alerts_session")
+        if isinstance(current, dict) and current.get("session") == scope["session"]:
+            current["total"] = scope["total"]
+        return {"session_total": scope["total"]}
+
+    def _notify_alert_burst(self):
+        """系统通知（默认关，见 app/alert_notify.py）：一阵报警只发一条，不带词条和声音。
+        读设置、跑命令都放线程池，不占识别循环。"""
+        notifier = getattr(self, "_alert_notifier", None)
+        if notifier is None:
+            from .alert_notify import AlertNotifier
+            notifier = self._alert_notifier = AlertNotifier()
+        if notifier.note_alert():
+            try:
+                asyncio.get_running_loop().run_in_executor(None, notifier.send)
+            except RuntimeError:
+                pass
+
+    async def _announce_settings_backup(self):
+        """settings.json 损坏被备份过（见 settings.load_settings）：挂一条持续提示，
+        本次运行只挂一次；用户在页面上重新选过引擎（设置里又有了 translator）就撤下。"""
+        from .settings import load_settings, take_corrupt_notice
+        name = take_corrupt_notice()
+        if name:
+            self._settings_notice_shown = True
+            await self._incident("settings-corrupt", "warn",
+                                 "设置文件损坏，已备份为 {}；翻译引擎和密钥需要重新填写"
+                                 .format(name))
+        elif getattr(self, "_settings_notice_shown", False) \
+                and "translator" in load_settings():
+            self._settings_notice_shown = False
+            await self._incident("settings-corrupt", "clear")
 
     # 定义在 translator.py（启动恢复引擎时也要用），这里保留同名类属性
     ENGINE_KEY_ENV = ENGINE_KEY_ENV
@@ -2968,6 +3162,7 @@ class Pipeline:
         from .settings import load_settings
         from .translator import mask_key
 
+        await self._announce_settings_backup()
         stored = load_settings().get("api_keys", {})
         # DeepL 的月度用量：中控要能看着额度用（实测约 3.5 万字符/小时，
         # Developer 档一次性 100 万字符 ≈ 29 小时）。拿不到就不显示，最多等 3 秒
