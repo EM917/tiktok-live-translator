@@ -33,10 +33,16 @@ def _emit(obj):
     print(json.dumps(obj, ensure_ascii=False), flush=True)
 
 
-def _status(state, detail="", room_id=None):
+def _status(state, detail="", room_id=None, http_status=None, handshake_msg=None):
     obj = {"event": "status", "state": state, "detail": detail}
     if room_id is not None:
         obj["room_id"] = room_id
+    if http_status is not None:
+        # 状态码单独给：7.0.1 起报错文本里不再有「HTTP 400」字样，父进程别去抠英文
+        obj["http_status"] = http_status
+    if handshake_msg:
+        # 服务端写在 Handshake-Msg 头里的原话：7.0.0 的报错文本不带它，只能从头里取
+        obj["handshake_msg"] = handshake_msg
     _emit(obj)
 
 
@@ -82,6 +88,13 @@ def _classify_exc(exc):
     if isinstance(exc, (AuthenticatedWebSocketConnectionError,
                         WebsocketURLMissingError, AgeRestrictedError)):
         return "login_required", 5
+    # 握手被拒、状态码又不是 200：评论服务明确拒绝了这次连接。单独归一类，
+    # 父进程据此先去找组件更新、再拉长重试间隔，而不是当普通错误每分钟重连。
+    # 必须排在 blocked 前面：TikTokLive 7.0.1 起把 400 也包成 WebcastBlockedError。
+    # 2026-09-14 实录：7.0.0 遇到签名服务的备用线路，每次都是 HTTP 400。
+    status = _handshake_status(exc)
+    if status is not None and status != 200:
+        return "rejected", 8
     # TikTok 明确回「你被判定为机器人」。这时候最不该做的就是立刻重连：
     # 原先它没进分类表，落到 1 号走 2 秒退避，等于顶着人家的风控反复敲门。
     if blocked_cls and isinstance(exc, blocked_cls):
@@ -91,6 +104,55 @@ def _classify_exc(exc):
     if isinstance(exc, UserNotFoundError):
         return "not_found", 6
     return "error", 1
+
+
+def _handshake_info(exc):
+    """WebSocket 握手被拒时的 (HTTP 状态码, 服务端给的 Handshake-Msg)；不是握手被拒返回 (None, None)。
+
+    TikTokLive 7.0.0 直接抛 websockets 的 InvalidStatusCode（带 .status_code、.headers）；
+    7.0.1 起包成 WebcastBlockedError 再抛，原异常挂在 __cause__ 上；新版 websockets
+    的 InvalidStatus 把状态码和头放在 .response 上。按类名认、沿异常链找，
+    不 import websockets——不同版本里这些类的位置不一样。"""
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ in ("InvalidStatusCode", "InvalidStatus"):
+            response = getattr(cur, "response", None)
+            code = getattr(cur, "status_code", None)
+            if code is None:
+                code = getattr(response, "status_code", None)
+            headers = getattr(cur, "headers", None)
+            if headers is None:
+                headers = getattr(response, "headers", None)
+            msg = None
+            try:
+                msg = headers.get("Handshake-Msg") if headers is not None else None
+            except Exception:
+                msg = None
+            try:
+                code = int(code)
+            except (TypeError, ValueError):
+                code = None
+            return code, (str(msg)[:200] if msg else None)
+        cur = cur.__cause__ or cur.__context__
+    return None, None
+
+
+def _handshake_status(exc):
+    """握手被拒时的 HTTP 状态码；不是握手被拒返回 None。"""
+    return _handshake_info(exc)[0]
+
+
+def _handshake_fields(exc):
+    """状态行里要带的握手字段（只放有值的）。"""
+    code, msg = _handshake_info(exc)
+    fields = {}
+    if code is not None:
+        fields["http_status"] = code
+    if msg:
+        fields["handshake_msg"] = msg
+    return fields
 
 
 def _detail_of(exc):
@@ -206,7 +268,7 @@ async def _run(args):
         is_live = await client.is_live()
     except Exception as exc:
         state, code = _classify_exc(exc)
-        _status(state, _detail_of(exc))
+        _status(state, _detail_of(exc), **_handshake_fields(exc))
         return code
     if not is_live:
         _status("offline")
@@ -216,7 +278,7 @@ async def _run(args):
         await client.connect()
     except Exception as exc:
         state, code = _classify_exc(exc)
-        _status(state, _detail_of(exc))
+        _status(state, _detail_of(exc), **_handshake_fields(exc))
         return code
 
     # connect() 正常返回（对方停播/主动断开）：无论 DisconnectEvent 是否已经

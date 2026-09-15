@@ -784,8 +784,10 @@
       cls += " on";
       emptyText = "已连接，等待观众发评论…";
     } else if (backendState === "connecting") {
-      title = "正在连接评论流…";
-      emptyText = title;
+      // 带说明的连接中（读浏览器登录态、组件刚更新完正在重连）要让中控看得见
+      var cdetail = backendDetail || "正在连接评论流…";
+      title = cdetail.length > 80 ? cdetail.slice(0, 80) + "…" : cdetail;
+      emptyText = cdetail;
     } else if (backendState === "disconnected") {
       title = "评论流断开，重连中…";
       emptyText = title;

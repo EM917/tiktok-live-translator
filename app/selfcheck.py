@@ -348,6 +348,50 @@ async def check_resolver():
                   "在 Chrome/Safari 里登录一次 TikTok")
 
 
+def _pip_command(spec, upgrade=True):
+    """给中控复制的手动安装命令。Windows 默认终端是 PowerShell：以带引号的路径开头的一行
+    会被当成表达式报错，前面必须加 &。"""
+    import sys
+    flag = " -U" if upgrade else ""
+    if os.name == "nt":
+        return "在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"".format(sys.executable, flag, spec)
+    return "在终端里执行：\"{}\" -m pip install{} \"{}\"".format(sys.executable, flag, spec)
+
+
+async def check_comments(args):
+    """观众弹幕组件 TikTokLive：装没装、版本够不够。只读包元数据，不连 TikTok。
+
+    2026-09-14 弹幕连接每次 HTTP 400，原因是组件停在 7.0.0；那时自检里完全
+    没有弹幕这一行，版本过旧这件事在界面上看不见。"""
+    import sys
+
+    from .updater import TIKTOKLIVE_MIN, tiktoklive_outdated, tiktoklive_version
+
+    name = "观众弹幕"
+    if getattr(args, "comments", True) is False:
+        return _check(name, OK, "已按 --no-comments 关闭")
+    if sys.version_info < (3, 10):
+        return _check(name, WARN,
+                      "弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用"
+                      .format(sys.version_info[0], sys.version_info[1]),
+                      "字幕和违禁词报警不受影响")
+    from .updater import TIKTOKLIVE_SPEC
+    version = await _to_thread(tiktoklive_version)
+    if version is None:
+        # 只写事实和真实的规则：安装有一小时冷却，这一行不知道此刻有没有在装
+        return _check(name, WARN, "弹幕组件 TikTokLive 还没装（字幕和违禁词报警不受影响）",
+                      "程序每次启动和开播时会尝试安装，一小时内只试一次；也可以关掉程序后"
+                      + _pip_command(TIKTOKLIVE_SPEC, upgrade=False))
+    if tiktoklive_outdated(version):
+        need = ".".join(str(x) for x in TIKTOKLIVE_MIN)
+        # 只写观察到的事实和能做的事：升级此刻是否在跑、下次何时试，这一行都不知道，别说
+        return _check(name, WARN,
+                      "弹幕组件 TikTokLive {} 低于 {}，评论服务走备用线路时连不上".format(version, need),
+                      "程序每次启动会自动尝试升级，一小时内只试一次；也可以关掉程序后"
+                      + _pip_command(TIKTOKLIVE_SPEC, upgrade=True))
+    return _check(name, OK, "弹幕组件 TikTokLive {}".format(version))
+
+
 # 一次完整安装的实测占用（见 README「磁盘空间」）：
 #   运行环境 1.4 GB + 语音模型 large-v3 2.9 GB + 翻译模型 1.8B 1.1 GB ≈ 6 GB
 # 门槛按这个来，别让用户下到一半才发现放不下。
@@ -388,6 +432,7 @@ async def run_all(args, detector=None, glossary=None, translator=None):
         ("领域词表", check_glossary(glossary)),
         ("审计日志", check_audit()),
         ("直播流解析", check_resolver()),
+        ("观众弹幕", check_comments(args)),
         ("磁盘空间", check_disk()),
     ]
     results = await asyncio.gather(*(c for _, c in probes), return_exceptions=True)

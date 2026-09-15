@@ -12,6 +12,7 @@
 """
 import asyncio
 import importlib.util
+import inspect
 import json
 import os
 import sys
@@ -23,6 +24,41 @@ ROOT = Path(__file__).resolve().parent.parent
 # event_to_item 在拿不到 msg_id 时用它编号——模块级、跨调用递增，
 # 保证同一进程生命周期里两条弹幕不会撞 id。
 _t_counter = 0
+
+
+def _http_note(http_status):
+    """「（HTTP 400）」这样的状态码说明；没有状态码返回空串。"""
+    try:
+        return "（HTTP {}）".format(int(http_status)) if http_status else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _installed_tiktoklive():
+    """已安装的 TikTokLive 版本（只读包元数据，父进程不 import 这个库）。"""
+    from .updater import tiktoklive_version
+    return tiktoklive_version()
+
+
+def _accepts_raw(fn):
+    """on_state 回调收不收第三个参数 raw（只进审计的原始报错）。老的两参回调照常能用。"""
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind == p.VAR_POSITIONAL for p in params):
+        return True
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 3 or any(p.name == "raw" for p in params)
+
+
+# 更新检查的结果 -> 面板上说的话。只写发生了什么，不猜原因
+_FRESHEN_NOTES = {
+    "no-update": "弹幕组件已是可用的最新版本",
+    "pip-failed": "弹幕组件更新检查没成功",
+    "cooldown": "近几个小时已检查过弹幕组件更新",
+    "recently-failed": "弹幕组件更新检查刚失败过",
+}
 
 
 def worker_available():
@@ -124,6 +160,9 @@ class CommentSource:
     # 被 TikTok 风控拦下时的退避。比签名错误还要长：那是「服务忙」，
     # 这是「你被当成机器人了」，越急着重连越坐实。
     BLOCKED_WAIT_SEC = 900.0
+    # 评论服务拒绝握手（HTTP 400 等）之后多久重试。找过组件更新还是被拒，
+    # 马上重连多半还是拒——别再每分钟烧一次签名额度
+    REJECTED_WAIT_SEC = 180.0
     MAX_CONNECTS_PER_HOUR = 30
     STOP_GRACE_SEC = 3.0
     # 「一小时」本身也做成常量：额度限流测试要能把这个窗口也调短，
@@ -145,9 +184,11 @@ class CommentSource:
         """
         self._on_items = on_items
         self._on_state = on_state
+        self._on_state_takes_raw = _accepts_raw(on_state)
         self._cookies_browser = cookies_browser
         self._root = root
         self.on_provision = None        # Pipeline 可选注入：updater.ensure_tiktoklive
+        self.on_stale = None            # Pipeline 可选注入：updater.freshen_tiktoklive
         self.state = "idle"
         self.detail = ""
         self._unique_id = None
@@ -155,6 +196,9 @@ class CommentSource:
         self._restart_task = None       # 换主播时在途的 _restart 任务（保引用）
         self._proc = None
         self._last_state = None         # 子进程最后一条 status 的 state，退出码不可信时的依据
+        self._last_detail = ""          # 同一条 status 的 detail（原始报错），换成中文说明时用
+        self._last_http = None          # 同一条 status 带的握手 HTTP 状态码（被拒时才有）
+        self._last_handshake = None     # 同一条 status 带的服务端 Handshake-Msg 原话
         self._connect_times = []        # 最近一小时内的连接尝试时间戳，额度限流用
         # start()/stop() 每次调用都自增的世代号：_restart() 里 await self.stop()
         # 会让出事件循环，这段时间内如果有另一次 start()/stop() 插进来，_restart()
@@ -232,13 +276,19 @@ class CommentSource:
                 extra += ["--tt-target-idc", tt_target_idc]
             self._connect_times.append(self._clock())
             self._last_state = None
+            self._last_detail = ""
+            self._last_http = None
+            self._last_handshake = None
+            # 记下这次子进程用的组件版本：被拒时若已经换了新版本（启动时的升级刚落地、
+            # 上一次被取消的 pip 刚跑完），立刻重连，不去白查一次、更不白等几分钟
+            spawned_version = _installed_tiktoklive()
             returncode, healthy = await self._run_once(unique_id, extra)
-            if returncode not in (0, 3, 4, 5, 6, 7):
+            if returncode not in (0, 3, 4, 5, 6, 7, 8):
                 # 退出码不在约定表里（被信号打死、解释器收尾出错……）：子进程
                 # 退出前写的最后一条 status 才是它真正想说的话——「主播不存在」
                 # 就该停，而不是当成普通失败去烧签名额度重试
                 returncode = {"not_found": 6, "login_required": 5, "offline": 3,
-                              "blocked": 7,
+                              "blocked": 7, "rejected": 8,
                               "disconnected": 0}.get(self._last_state, returncode)
             if returncode == 0:
                 backoff = self.BACKOFF_MIN_SEC if healthy \
@@ -264,13 +314,67 @@ class CommentSource:
             elif returncode == 6:                         # UserNotFoundError
                 await self._set_state("unavailable", "找不到该主播")
                 return
-            elif returncode == 7:                         # TikTok 判定我们是机器人
+            elif returncode in (7, 8):                    # 握手被拒（8：HTTP 400 等；7：回 200 不升级）
+                if returncode == 8:
+                    prefix = "评论服务拒绝了连接{}".format(_http_note(self._last_http))
+                    wait = self.REJECTED_WAIT_SEC
+                else:
+                    prefix = "TikTok 暂时拒绝了评论连接"
+                    wait = self.BLOCKED_WAIT_SEC
+                # 服务端给的原始原因只进审计，不上面板
+                raw = "{} http_status={}{}".format(
+                    self._last_detail, self._last_http,
+                    " handshake_msg={}".format(self._last_handshake) if self._last_handshake else "")
+                now_version = _installed_tiktoklive()
+                if now_version and spawned_version and now_version != spawned_version:
+                    await self._set_state(
+                        "connecting", "弹幕组件已更新到 {}，正在重新连接…".format(now_version), raw=raw)
+                    backoff = self.BACKOFF_MIN_SEC
+                    continue
+                outcome = await self._try_freshen(prefix, raw)
+                if outcome == "upgraded":
+                    backoff = self.BACKOFF_MIN_SEC
+                    continue
+                note = _FRESHEN_NOTES.get(outcome)
                 await self._set_state(
-                    "error", "TikTok 暂时拒绝了评论连接，稍后自动重试")
-                await asyncio.sleep(self.BLOCKED_WAIT_SEC)
+                    "error", "{}{}，{} 分钟后自动重试".format(
+                        prefix, "；" + note if note else "", max(1, int(round(wait / 60)))),
+                    raw=raw)
+                await asyncio.sleep(wait)
             else:
                 backoff = min(backoff * 2, self.BACKOFF_MAX_SEC)
+                if self._last_state == "error" and self._last_detail:
+                    # 原始报错是英文异常，中控看不懂；先说程序在做什么，原文留在括号里备查
+                    await self._set_state(
+                        "error", "评论连接出错，稍后自动重试（{}）".format(self._last_detail[:120]))
                 await asyncio.sleep(backoff)
+
+    async def _try_freshen(self, prefix, raw=""):
+        """评论服务拒绝连接后问一次弹幕组件有没有更新（updater.freshen_tiktoklive）。
+        返回 outcome 字符串；"upgraded" 表示已升级，调用方立刻重连。没注入、出错也不抛。"""
+        stale = getattr(self, "on_stale", None)
+        if stale is None:
+            return "unavailable"
+
+        async def announce():
+            # 只有真的要跑 pip 时 updater 才会调这个：面板说「正在检查」时确实在检查
+            await self._set_state("error", "{}，正在检查弹幕组件有没有更新…".format(prefix), raw=raw)
+
+        try:
+            result = stale("comment-rejected", announce)
+            if asyncio.iscoroutine(result):
+                result = await result
+        except Exception as exc:
+            print("[警告] 检查弹幕组件更新失败: {}".format(exc))
+            return "error"
+        if not isinstance(result, dict):
+            return "unavailable"
+        outcome = result.get("outcome") or "unavailable"
+        if outcome == "upgraded":
+            await self._set_state(
+                "connecting", "弹幕组件已从 {} 更新到 {}，正在重新连接…".format(
+                    result.get("before"), result.get("after")), raw=raw)
+        return outcome
 
     async def _await_provisioned(self):
         """Python 版本不够，或 TikTokLive 还没装：报告状态，必要时触发安装，
@@ -357,8 +461,15 @@ class CommentSource:
                 if kind == "status":
                     state = obj.get("state") or "error"
                     self._last_state = state
+                    self._last_detail = obj.get("detail") or ""
+                    self._last_http = obj.get("http_status")
+                    self._last_handshake = obj.get("handshake_msg")
                     if state == "connected":
                         connected_at = self._clock()
+                    if state in ("rejected", "blocked"):
+                        # 原始英文报错不直接上面板：子进程退出后 _supervise 换成
+                        # 中文说明，并先去找组件更新
+                        continue
                     await self._set_state(state, obj.get("detail") or "")
                 elif kind == "comments":
                     items = obj.get("items")
@@ -463,10 +574,14 @@ class CommentSource:
         except Exception as exc:
             print("[警告] 弹幕转发失败: {}".format(exc))
 
-    async def _set_state(self, state, detail=""):
+    async def _set_state(self, state, detail="", raw=""):
+        """raw：只写进审计的原始报错（服务端给的拒绝原因等），不广播到面板。"""
         self.state = state
         self.detail = detail
         try:
-            await self._on_state(state, detail)
+            if raw and getattr(self, "_on_state_takes_raw", False):
+                await self._on_state(state, detail, raw)
+            else:
+                await self._on_state(state, detail)
         except Exception as exc:
             print("[警告] 弹幕来源状态回调失败: {}".format(exc))
