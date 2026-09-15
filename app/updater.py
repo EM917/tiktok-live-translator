@@ -56,6 +56,50 @@ def _version_tuple(version):
     return tuple(int(x or 0) for x in m.groups()) if m else None
 
 
+def _packaging_version():
+    """packaging 的 Version 类（pytest、pip 都带它）；拿不到返回 None。"""
+    try:
+        from packaging.version import Version
+        return Version
+    except Exception:
+        try:
+            from pip._vendor.packaging.version import Version
+            return Version
+        except Exception:
+            return None
+
+
+def _newest_7x(versions):
+    """索引列出的版本里 7.x 最新的正式版：含 .postN 这样的补丁后续版，不含预发布。"""
+    Version = _packaging_version()
+    if Version is None:
+        for v in versions:                      # pip 按新到旧列出
+            if re.fullmatch(r"7(\.\d+){1,2}(\.post\d+)?", v):
+                return v
+        return None
+    best = None
+    for v in versions:
+        try:
+            pv = Version(v)
+        except Exception:
+            continue
+        if pv.major != 7 or pv.is_prerelease or pv.is_devrelease:
+            continue
+        if best is None or pv > best[0]:
+            best = (pv, v)
+    return best[1] if best else None
+
+
+def _not_newer(candidate, installed):
+    Version = _packaging_version()
+    if Version is not None:
+        try:
+            return Version(candidate) <= Version(installed)
+        except Exception:
+            pass
+    return (_version_tuple(candidate) or ()) <= (_version_tuple(installed) or ())
+
+
 async def _call_announce(announce):
     try:
         await announce()
@@ -235,38 +279,47 @@ class Updater:
             return None, "", str(exc)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
+        except BaseException as exc:
+            # 超时或被取消（例如程序退出时）：子进程一起收掉，别留一个没人等的 pip
             try:
-                await proc.wait()
+                proc.kill()
             except Exception:
                 pass
-            return None, "", "timeout"
+            try:
+                await proc.wait()
+            except BaseException:
+                pass
+            if isinstance(exc, asyncio.TimeoutError):
+                return None, "", "timeout"
+            raise
         return (proc.returncode, out.decode("utf-8", errors="replace"),
                 err.decode("utf-8", errors="replace"))
 
     async def _tiktoklive_index_versions(self):
-        """问包索引：7.x 里最新的正式版 TikTokLive 是哪个。返回 (reachable, latest)。
+        """问包索引：7.x 里最新的正式版 TikTokLive 是哪个。返回 (queried, latest)。
 
         必须先问索引再决定：索引连不上时 `pip install -U` 会退回已装的版本并返回 0，
         看起来和「已是最新」一模一样（2026-09-15 复查实测：重试 5 次后退出码 0）。
-        reachable=False 表示连不上；pip 太旧不认识 index 子命令时返回 (None, None)，
+        queried=False 表示这次没问到（pip index 非零退出或超时；原因不猜，原话记在
+        self._index_query_detail 里）；pip 太旧不认识 index 子命令时返回 (None, None)，
         调用方退回直接 install。"""
         code, out, err = await self._pip_capture(
             ["index", "versions", "TikTokLive", "--disable-pip-version-check"])
+        lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
         if code is None:
+            self._index_query_detail = "pip index 没有返回（{}）".format((err or "")[:80])
             return False, None
         if code != 0:
-            low = err.lower()
+            self._index_query_detail = "pip index 返回 {}：{}".format(
+                code, (lines[-1] if lines else "")[:160])
+            low = (err or "").lower()
             if "unknown command" in low or "no such command" in low:
                 return None, None
             return False, None
+        self._index_query_detail = ""
         m = re.search(r"Available versions:\s*(.+)", out)
         versions = [v.strip() for v in m.group(1).split(",")] if m else []
-        for v in versions:          # pip 按新到旧列出；只认 7.x 正式版（与 TIKTOKLIVE_SPEC 一致）
-            if re.fullmatch(r"7(\.\d+){1,2}", v):
-                return True, v
-        return True, None
+        return True, _newest_7x(versions)
 
     async def ensure_tiktoklive(self, reason="startup"):
         """按需安装弹幕组件 TikTokLive（可选依赖，仅 comment_worker.py 子进程用）。
@@ -373,14 +426,15 @@ class Updater:
             reachable, latest = await self._tiktoklive_index_versions()
             if reachable is False:
                 self._tiktoklive_freshen_failed_at = time.time()
-                print("[警告] 弹幕组件 TikTokLive 更新检查没成功：包索引连不上（当前 {}），{} 分钟后可再试（{}）"
-                      .format(before, TIKTOKLIVE_FRESHEN_RETRY_SEC // 60, reason))
+                # 只记看到的：pip index 的退出码和 stderr 最后一行，不替它下「连不上」的结论
+                print("[警告] 弹幕组件 TikTokLive 更新检查没成功：{}（当前 {}），{} 分钟后可再试（{}）"
+                      .format(getattr(self, "_index_query_detail", "") or "pip index 没有返回结果",
+                              before, TIKTOKLIVE_FRESHEN_RETRY_SEC // 60, reason))
                 return {"outcome": "pip-failed", "before": before, "after": before,
-                        "code": "index-unreachable"}
+                        "code": "index-query-failed"}
             # 只有索引明确给出了 7.x 最新版、且不比已装的新，才跳过 install；
             # 索引通了但读不出版本（格式变了）就交给 pip 自己判断
-            if reachable and latest is not None and \
-                    (_version_tuple(latest) or ()) <= (_version_tuple(before) or ()):
+            if reachable and latest is not None and _not_newer(latest, before):
                 save_setting("tiktoklive_freshen_at", time.time())
                 print("[信息] 弹幕组件 TikTokLive {} 已是可用的最新版本（索引最新 7.x：{}，{}）"
                       .format(before, latest, reason))

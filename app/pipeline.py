@@ -860,10 +860,14 @@ class Pipeline:
         每次变化也写进本场审计。2026-09-14 弹幕连接每次被拒时，日志里一条弹幕状态
         都没有，查不出是哪一刻坏的、之前几场好不好。连续相同的状态只记一条；
         键里带上 audit 对象，换场后第一条状态照记。"""
-        if state == "connected" and hasattr(self, "_selfcheck_tiktoklive") \
-                and hasattr(self, "_bg_tasks") \
-                and _tiktoklive_version() != self._selfcheck_tiktoklive:
-            self._spawn(self.run_selfcheck())   # 组件版本在上次自检之后变了：刷新那一行
+        if hasattr(self, "_selfcheck_tiktoklive") and hasattr(self, "_bg_tasks"):
+            current = _tiktoklive_version()
+            if current != self._selfcheck_tiktoklive:
+                # 组件版本在上次自检之后变了（开播时刚装上、被拒后升级了……）：刷新那一行。
+                # 不只看「已连接」：装上了但主播没开播、升级后仍被拒，那一行也不能停在旧状态。
+                # 先记下新版本，同一轮里连着几次状态变化不会重复起自检
+                self._selfcheck_tiktoklive = current
+                self._spawn(self.run_selfcheck())
         audit = getattr(self, "audit", None)
         key = (audit, state, detail, raw)
         if audit is not None and getattr(self, "_last_comment_state", None) != key:
