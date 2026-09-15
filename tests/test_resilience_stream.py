@@ -307,6 +307,50 @@ def test_natural_end_releases_the_guard_and_the_audit_says_what_was_held(monkeyp
     assert end["reason"] == "offline" and end["status"] == 4
 
 
+def test_a_failure_while_setting_up_the_session_releases_the_guard_and_closes_the_audit(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    guard = FakeGuard()
+    monkeypatch.setattr(power, "hold", lambda reason="": guard)
+
+    async def broken(*a, **k):
+        raise RuntimeError("watchlist broke")
+
+    monkeypatch.setattr(p, "_publish_watchlist", broken)     # 审计已建好、统计循环已起之后才出错
+
+    async def scenario():
+        await p.start_stream(ROOM)
+        await p._stream_task
+
+    run(scenario())
+    assert guard.released == 1 and p._sleep_guard is None
+    assert p._stats_task is None and p.audit is None
+    assert server.statuses[-1][0] == "error" and "内部错误" in server.statuses[-1][1]
+    rows = audit_rows(tmp_path)
+    err = of_type(rows, "internal_error")
+    assert len(err) == 1 and err[0]["message"] == "watchlist broke"
+    assert rows[-1]["type"] == "session_end" and rows[-1]["reason"] == "internal_error"
+
+
+def test_a_failure_before_the_audit_exists_still_releases_the_guard(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    guard = FakeGuard()
+    monkeypatch.setattr(power, "hold", lambda reason="": guard)
+
+    def unreadable(path=None):
+        raise OSError("banned_terms.txt unreadable")
+
+    monkeypatch.setattr(pipeline_mod, "load_detector", unreadable)
+
+    async def scenario():
+        await p.start_stream(ROOM)
+        await p._stream_task
+
+    run(scenario())
+    assert guard.released == 1 and p._sleep_guard is None
+    assert server.statuses[-1][0] == "error"
+    assert audit_rows(tmp_path) == []
+
+
 # ---- 时钟对账：电脑休眠 / 程序没在运行（1/15/21/23）------------------------------------
 
 def _gap_pipeline(monkeypatch, tmp_path):
@@ -331,7 +375,7 @@ def test_clock_gap_with_a_stopped_monotonic_clock_is_recorded_and_stays_on_scree
     text = server.config["incidents"]["session:clock_gap"]["text"]
     assert "电脑休眠或挂起了约 23 分钟" in text and "没有监听" in text
     assert "接电源" in text
-    assert sess["gap"] is not None
+    assert sess["gap"] is not None and sess["gap"]["diverged"] is True
     assert_no_cause_labels([text])
 
 
@@ -344,6 +388,7 @@ def test_clock_gap_on_a_clock_that_keeps_counting_only_says_the_program_did_not_
     assert gap["clocks_diverged"] is False and gap["gap_sec"] == 60.0
     text = server.config["incidents"]["session:clock_gap"]["text"]
     assert "程序约 60 秒没有运行" in text and "休眠或挂起了" not in text
+    assert sess["gap"]["diverged"] is False
 
 
 def test_a_normal_tick_or_someone_elses_session_records_nothing(monkeypatch, tmp_path):
@@ -379,6 +424,25 @@ def test_after_a_sleep_a_source_with_no_fresh_audio_is_dropped_at_once(monkeypat
     assert stops == [1] and sess["gap_stop"] is False
 
 
+def test_the_extra_clock_check_only_trusts_a_reading_from_a_running_stats_loop(monkeypatch, tmp_path):
+    p, server, sess = _gap_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        sess["clock"] = (time.time() - 5000.0, time.monotonic() - 5000.0)
+        p._stats_task = None                      # 统计循环没在跑：上一次读数是旧的，对不出结果
+        await p._recheck_clock(sess)
+        assert sess["gap"] is None
+        p._stats_task = asyncio.ensure_future(asyncio.Event().wait())
+        await p._recheck_clock(p._new_session_state(p.audit))    # 别的会话状态：不碰
+        assert sess["gap"] is None
+        await p._recheck_clock(sess)
+        p._stats_task.cancel()
+
+    run(scenario())
+    gaps = of_type(rows_of(p.audit.path), "clock_gap")
+    assert len(gaps) == 1 and gaps[0]["clocks_diverged"] is False
+
+
 def test_stats_loop_calls_the_clock_check_every_tick(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     ticks = []
@@ -402,8 +466,8 @@ def test_offline_right_after_a_clock_gap_is_rechecked_once_before_ending(monkeyp
 
     async def fake_session(media, *a, sess=None, **k):
         sessions.append(media)
-        if len(sessions) == 1:
-            sess["gap"] = {"from": T0, "to": T0 + 1390, "sec": 1380.0}   # 这一轮里电脑睡过
+        if len(sessions) == 1:     # 这一轮里电脑睡过（单调时钟停住了）
+            sess["gap"] = {"from": T0, "to": T0 + 1390, "sec": 1380.0, "diverged": True}
         return True, 60.0
 
     async def probe(url):
@@ -419,7 +483,9 @@ def test_offline_right_after_a_clock_gap_is_rechecked_once_before_ending(monkeyp
     run(p._run_stream_inner(ROOM))
     assert sessions == ["http://cdn/a.flv", "http://cdn/b.flv"]   # 复查说在播：接着监听
     assert probes == [ROOM]                                        # 只多问了一次房间接口
-    assert any("再查一次" in d for _, d in server.statuses)
+    rechecks = [d for _, d in server.statuses if "再查一次" in d]
+    assert rechecks == ["电脑刚从休眠或挂起中恢复，TikTok 接口返回房间状态 4（已结束）；"
+                        "30 秒后再查一次再下结论…"]
     assert server.statuses[-1][0] == "ended"                       # 第二次（没有休眠）才收手
     rows = audit_rows(tmp_path)
     waits = of_type(rows, "host_wait")
@@ -432,7 +498,7 @@ def test_offline_confirmed_by_the_recheck_ends_the_session(monkeypatch, tmp_path
     p, server = make_pipeline(monkeypatch, tmp_path)
 
     async def fake_session(media, *a, sess=None, **k):
-        sess["gap"] = {"from": T0, "to": T0 + 100, "sec": 90.0}
+        sess["gap"] = {"from": T0, "to": T0 + 70, "sec": 60.0}
         return True, 60.0
 
     async def probe(url):
@@ -444,8 +510,78 @@ def test_offline_confirmed_by_the_recheck_ends_the_session(monkeypatch, tmp_path
     monkeypatch.setattr(p, "_stream_session", fake_session)
     run(p._run_stream_inner(ROOM))
     assert server.statuses[-1][0] == "ended" and "直播已结束" in server.statuses[-1][1]
+    # 两个钟一起走多了（Windows 休眠或事件循环卡住）：不说休眠
+    rechecks = [d for _, d in server.statuses if "再查一次" in d]
+    assert rechecks == ["程序刚才约 60 秒没有运行，TikTok 接口返回房间状态 4（已结束）；"
+                        "30 秒后再查一次再下结论…"]
     rows = audit_rows(tmp_path)
     assert [w["outcome"] for w in of_type(rows, "host_wait")] == ["ended"]
+    assert of_type(rows, "session_end")[0]["reason"] == "offline"
+
+
+def test_an_ended_verdict_that_beats_the_first_stats_tick_after_wake_is_still_rechecked(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def not_ticked_yet(interval=10):
+        await asyncio.Event().wait()     # 醒来后统计循环的计时器还没到点，解析先回来了
+
+    monkeypatch.setattr(p, "_stats_loop", not_ticked_yet)
+    sessions, probes = [], []
+
+    async def fake_session(media, *a, sess=None, **k):
+        sessions.append(media)
+        if len(sessions) == 1:           # 这一轮里合盖 23 分钟：墙钟走了，单调时钟没走
+            wall, mono = sess["clock"]
+            sess["clock"] = (wall - 1380.0, mono)
+        return True, 60.0
+
+    async def probe(url):
+        probes.append(url)
+        return 2, ""
+
+    scripted_resolve(monkeypatch, ["http://cdn/a.flv",
+                                   ResolveError("没开播", kind="offline", status=4),
+                                   "http://cdn/b.flv",
+                                   ResolveError("没开播", kind="offline", status=4)])
+    monkeypatch.setattr(resolver, "probe_room_status", probe)
+    monkeypatch.setattr(p, "_stream_session", fake_session)
+    run(p._run_stream_inner(ROOM))
+    assert probes == [ROOM] and sessions == ["http://cdn/a.flv", "http://cdn/b.flv"]
+    rows = audit_rows(tmp_path)
+    gaps = of_type(rows, "clock_gap")
+    assert len(gaps) == 1 and gaps[0]["clocks_diverged"] is True
+    assert [(w["trigger"], w["outcome"]) for w in of_type(rows, "host_wait")] == [("clock_gap", "live")]
+    assert any(d.startswith("电脑刚从休眠或挂起中恢复") for _, d in server.statuses)
+    assert "session:clock_gap" in server.config["incidents"]      # 已经发生过的事留在屏幕上
+    assert of_type(rows, "session_end")[0]["reason"] == "offline"
+
+
+def test_an_ended_answer_while_waiting_for_the_room_right_after_a_gap_is_rechecked(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    sessions = []
+    answers = iter([(4, ""), (2, "")])
+
+    async def fake_session(media, *a, **k):
+        sessions.append(media)
+        return True, 60.0
+
+    async def probe(url):
+        status, why = next(answers)
+        if status == 4:      # 等房间的这一分钟里电脑睡过，统计循环已经记下了跳变
+            p._session_state["gap"] = {"from": T0, "to": T0 + 700, "sec": 640.0, "diverged": True}
+        return status, why
+
+    scripted_resolve(monkeypatch, ["http://cdn/a.flv",
+                                   ResolveError("没开播", kind="offline", status=3),
+                                   "http://cdn/b.flv",
+                                   ResolveError("没开播", kind="offline", status=4)])
+    monkeypatch.setattr(resolver, "probe_room_status", probe)
+    monkeypatch.setattr(p, "_stream_session", fake_session)
+    run(p._run_stream_inner(ROOM))
+    assert sessions == ["http://cdn/a.flv", "http://cdn/b.flv"]
+    rows = audit_rows(tmp_path)
+    assert [(w["trigger"], w["status"], w["outcome"]) for w in of_type(rows, "host_wait")] == [
+        ("status", 3, "started"), ("clock_gap", 2, "live"), ("status", 2, "live")]
     assert of_type(rows, "session_end")[0]["reason"] == "offline"
 
 
@@ -748,6 +884,93 @@ def test_a_network_that_never_returns_gives_up_at_the_ceiling(monkeypatch, tmp_p
     state, detail = server.statuses[-1]
     assert state == "error" and "本机连不上 www.tiktok.com 已超过 1 分钟" in detail
     assert of_type(audit_rows(tmp_path), "session_end")[0]["reason"] == "network_down"
+
+
+ONGOING = ("session:network", "session:audio_rate", "session:quiet_audio")
+
+
+def test_stopping_during_an_outage_takes_down_the_banners_that_promise_more_listening(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    calls = []
+
+    async def scenario():
+        hang = asyncio.Event()
+
+        async def reachable():
+            calls.append(1)
+            if len(calls) == 1:
+                return False, "timeout"
+            await hang.wait()
+            return True, ""
+
+        async def fake_session(media, *a, sess=None, **k):
+            await p._on_audio_events(sess, [("low", {"audio_sec": 30.0, "wall_sec": 60.0}),
+                                            ("quiet", {"audio_sec": 121.0})])
+            await p._incident("session:clock_gap", "warn", "电脑休眠或挂起了约 23 分钟")
+            return True, 60.0
+
+        scripted_resolve(monkeypatch, ["http://cdn/a.flv"])
+        monkeypatch.setattr(resolver, "tiktok_reachable", reachable)
+        monkeypatch.setattr(p, "_stream_session", fake_session)
+        await p.start_stream(ROOM)
+        for _ in range(2000):
+            await asyncio.sleep(0)
+            if len(calls) >= 2:
+                break
+        before = set(server.config.get("incidents") or {})
+        await p.handle_control({"type": "stop"})
+        return before
+
+    before = run(scenario())
+    assert set(ONGOING) <= before
+    left = server.config.get("incidents") or {}
+    assert server.statuses[-1][0] == "idle"
+    assert not set(ONGOING) & set(left)
+    assert "session:clock_gap" in left            # 已经发生过的事留给中控看
+
+
+def test_a_session_that_ends_by_itself_takes_down_the_ongoing_banners(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def fake_session(media, *a, sess=None, **k):
+        await p._on_audio_events(sess, [("low", {"audio_sec": 30.0, "wall_sec": 60.0}),
+                                        ("quiet", {"audio_sec": 121.0})])
+        return True, 60.0
+
+    scripted_resolve(monkeypatch, ["http://cdn/a.flv",
+                                   ResolveError("没开播", kind="offline", status=4)])
+    monkeypatch.setattr(p, "_stream_session", fake_session)
+    run(p._run_stream_inner(ROOM))
+    assert server.incidents("session:quiet_audio")[0]["level"] == "warn"
+    assert not set(ONGOING) & set(server.config.get("incidents") or {})
+
+
+def test_stop_takes_the_ongoing_banners_down_even_when_the_old_task_is_slow_to_finish(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.STOP_GRACE_SEC = 0.2
+
+    async def scenario():
+        release, entered = asyncio.Event(), asyncio.Event()
+
+        async def stuck_stream(url):
+            await p._incident("session:quiet_audio", "warn", "已收到 121 秒直播音频……程序继续监听")
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()       # 识别线程一时停不下来：宽限期内走不到收尾
+
+        monkeypatch.setattr(p, "_run_stream", stuck_stream)
+        await p.start_stream(ROOM)
+        await entered.wait()
+        task = p._stream_task
+        await p.handle_control({"type": "stop"})
+        left = set(server.config.get("incidents") or {})
+        release.set()
+        await task
+        return left
+
+    assert "session:quiet_audio" not in run(scenario())
 
 
 def test_tcp_probe_works_against_a_local_listener_only():
@@ -1141,4 +1364,74 @@ def test_a_direct_address_that_stopped_serving_ends_with_a_plain_statement(monke
     run(p._run_stream_inner(DIRECT))
     state, detail = server.statuses[-1]
     assert state == "ended" and detail.startswith("这个直连地址已经拉不到数据，监听已停止")
-    assert of_type(audit_rows(tmp_path), "session_end")[0]["reason"] == "stream_ended"
+    assert not [d for _, d in server.statuses if "再试" in d]      # 没有时钟跳变：探一次就下结论
+    end = of_type(audit_rows(tmp_path), "session_end")[0]
+    assert end["reason"] == "stream_ended" and end["probes"] == 1
+
+
+def test_a_direct_address_that_fails_right_after_a_gap_is_tried_again_before_ending(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    sessions, probes = [], []
+    answers = iter([False, False, True])
+
+    async def fake_session(media, *a, sess=None, **k):
+        sessions.append(media)
+        if len(sessions) == 1:     # 醒来时时钟对账断开了这一轮，网络还没连上
+            sess["gap"] = {"from": T0, "to": T0 + 1390, "sec": 1380.0, "diverged": True}
+            return True, 60.0
+        return False, 0.0
+
+    async def flaky(url, timeout=8):
+        probes.append(url)
+        return next(answers)
+
+    async def passthrough(url, cookies=None, cookies_browser="auto", trace=None):
+        return url
+
+    monkeypatch.setattr(resolver, "resolve_stream_url", passthrough)
+    monkeypatch.setattr(resolver, "_media_url_works", flaky)
+    monkeypatch.setattr(p, "_stream_session", fake_session)
+    run(p._run_stream_inner(DIRECT))
+    assert len(probes) == 3 and len(sessions) == 3      # 第三次探到数据：重连（之后的空轮照旧由预算兜底）
+    retries = [d for _, d in server.statuses if "再试" in d]
+    assert retries == ["电脑刚从休眠或挂起中恢复，这个直连地址暂时拉不到数据；2 秒后再试（第 1/4 次）…",
+                       "电脑刚从休眠或挂起中恢复，这个直连地址暂时拉不到数据；4 秒后再试（第 2/4 次）…"]
+    assert "ended" not in [state for state, _ in server.statuses]
+    assert_no_cause_labels(retries)
+    assert of_type(audit_rows(tmp_path), "session_end")[0]["reason"] == "reconnect_exhausted"
+
+
+def test_a_direct_address_still_dead_after_the_retries_ends_and_says_how_often_it_was_tried(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    probes = []
+
+    async def not_ticked_yet(interval=10):
+        await asyncio.Event().wait()     # 跳变只能靠探活之前补对的那一次时钟发现
+
+    monkeypatch.setattr(p, "_stats_loop", not_ticked_yet)
+
+    async def fake_session(media, *a, sess=None, **k):
+        wall, mono = sess["clock"]      # 两个钟一起多走了 60 秒（Windows 休眠或事件循环卡住）
+        sess["clock"] = (wall - 70.0, mono - 70.0)
+        return True, 60.0
+
+    async def dead(url, timeout=8):
+        probes.append(url)
+        return False
+
+    async def passthrough(url, cookies=None, cookies_browser="auto", trace=None):
+        return url
+
+    monkeypatch.setattr(resolver, "resolve_stream_url", passthrough)
+    monkeypatch.setattr(resolver, "_media_url_works", dead)
+    monkeypatch.setattr(p, "_stream_session", fake_session)
+    run(p._run_stream_inner(DIRECT))
+    assert len(probes) == 5
+    retries = [d for _, d in server.statuses if "再试" in d]
+    assert len(retries) == 4 and retries[-1].startswith("程序刚才约 60 秒没有运行，这个直连地址暂时拉不到数据；16 秒后再试")
+    assert all("休眠" not in d for d in retries)
+    assert server.statuses[-1][0] == "ended"
+    rows = audit_rows(tmp_path)
+    assert [g["clocks_diverged"] for g in of_type(rows, "clock_gap")] == [False]
+    end = of_type(rows, "session_end")[0]
+    assert end["reason"] == "stream_ended" and end["probes"] == 5

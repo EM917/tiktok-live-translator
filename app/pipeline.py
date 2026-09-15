@@ -385,6 +385,8 @@ class Pipeline:
             self.audit = None
         self._stop_reason = None
         self._release_sleep_guard()
+        # 旧任务可能超时没走到 _end_session（识别线程停不下来），这里也撤一次
+        await self._clear_ongoing_incidents()
         self._media_override = None
         pool, self._asr_pool = self._asr_pool, None
         if pool is not None:
@@ -472,8 +474,21 @@ class Pipeline:
                                      "text": text})
 
     async def _run_stream_inner(self, url):
-        await self._clear_session_incidents()     # 上一场的持续提示不属于这一场
-        await self._begin_session(url)
+        before = self.audit
+        try:
+            await self._clear_session_incidents()     # 上一场的持续提示不属于这一场
+            await self._begin_session(url)
+        except Exception as exc:
+            # 开场这一步出错（词表读不了、推给界面失败……）时下面的 try 还没进：防睡眠断言
+            # 在 start_stream 里已经拿了，审计也可能已经建好。不在这里收尾，caffeinate 会
+            # 一直挂着、审计文件只剩一个头。只认这一步自己新建的那份审计（my_audit 的道理）
+            mine = self.audit if self.audit is not before else None
+            if mine is not None:
+                self._record_internal_error(mine, exc)
+                await self._end_session(mine, reason="internal_error")
+            else:
+                self._release_sleep_guard(owner=asyncio.current_task())
+            raise
         # 记住**本会话自己的** audit：旧流任务可能取消不掉（识别一段要几十秒
         # 时，3 秒宽限必然超时、_stop_locked 放手让它自行收尾），等它终于走到
         # finally 时，self.audit 已经是**下一场**的了——关掉它等于让新会话的
@@ -493,11 +508,7 @@ class Pipeline:
             # 打包运行时 stdout 指向 /dev/null，外层 _run_stream 打的堆栈没人看得到；
             # 等它接住异常时，下面的 finally 早把审计关了——所以在这里先写进本场审计
             end = {"reason": "internal_error"}
-            if my_audit is not None:
-                try:
-                    my_audit.internal_error(exc, traceback.format_exc())
-                except Exception:
-                    pass
+            self._record_internal_error(my_audit, exc)
             raise
         finally:
             # 无论怎么结束（下播、预算耗尽、解析失败、模型加载失败、被取消），
@@ -938,6 +949,7 @@ class Pipeline:
         still_current = my_audit is None or self.audit is my_audit
         if still_current:
             self._release_sleep_guard(owner=asyncio.current_task())
+            await self._clear_ongoing_incidents()
         if still_current:
             # 弹幕后端抓取是这一场自己起的子进程，晚到的旧任务不该碰
             # 已经属于下一场的连接——只有「我还是当前会话」才停它。
@@ -970,6 +982,8 @@ class Pipeline:
     # ---- 断流之后：时钟对账、网络探测、等房间恢复在播（见 _run_session 的重连循环）----
     CLOCK_GAP_SEC = 15.0          # 一跳统计比预期晚这么多秒（墙钟），记一条 clock_gap
     OFFLINE_RECHECK_SEC = 30.0    # 时钟跳变之后的「已结束」判定：醒着再等这么久复查一次
+    DIRECT_RECHECK_DELAYS = (2.0, 4.0, 8.0, 16.0)   # 时钟跳变之后直连地址拉不到数据：共 30 秒里再试
+    STATS_TICK_SEC = 10.0         # _stats_loop 默认每跳间隔；统计循环还没跳过时补对时钟用它
     HOST_WAIT_POLL_SEC = 60.0     # 房间状态既不是在播也不是已结束：隔这么久问一次房间接口
     HOST_WAIT_MAX_SEC = 600.0     # 一次中断里最多这样等这么久
     NETWORK_RETRY_SEC = 20.0      # 本机连不上 TikTok 时隔这么久再探一次
@@ -1117,6 +1131,30 @@ class Pipeline:
         return {"sleep_guard": list(guard.held) if guard is not None else []}
 
     @staticmethod
+    def _record_internal_error(audit, exc):
+        """把没预料到的异常写进这一场自己的审计。必须在 except 块里调（要取当前堆栈）。"""
+        if audit is None:
+            return
+        try:
+            audit.internal_error(exc, traceback.format_exc())
+        except Exception:
+            pass
+
+    # 描述「正在进行」的持续提示：监听停了它们就不再成立（「网络恢复后自动重连」「程序继续
+    # 监听」），停止或一场结束时撤掉。session:clock_gap 是已经发生过的事，留给中控看
+    ONGOING_INCIDENTS = ("session:network", "session:audio_rate", "session:quiet_audio")
+
+    async def _clear_ongoing_incidents(self):
+        config = getattr(getattr(self, "server", None), "config", None) or {}
+        incidents = config.get("incidents") or {}
+        for key in self.ONGOING_INCIDENTS:
+            if key in incidents:
+                try:
+                    await self._incident(key, "clear")
+                except Exception:
+                    pass
+
+    @staticmethod
     def _close_audit(audit, reason=None, **fields):
         """关审计，结束原因写进 session_end。没有原因时照老样子 close()。"""
         if reason:
@@ -1152,6 +1190,7 @@ class Pipeline:
             if sess is None or audit is None or sess.get("audit") is not audit:
                 return
             wall, mono = now if now is not None else (time.time(), time.monotonic())
+            sess["tick_sec"] = float(interval)
             prev_wall, prev_mono = sess["clock"]
             sess["clock"] = (wall, mono)
             wall_sec, mono_sec = wall - prev_wall, mono - prev_mono
@@ -1159,7 +1198,7 @@ class Pipeline:
             if gap < self.CLOCK_GAP_SEC:
                 return
             diverged = wall_sec - mono_sec >= self.CLOCK_GAP_SEC
-            sess["gap"] = {"from": prev_wall, "to": wall, "sec": gap}
+            sess["gap"] = {"from": prev_wall, "to": wall, "sec": gap, "diverged": diverged}
             sess["gap_count"] = sess.get("gap_count", 0) + 1
             audit.clock_gap(prev_wall, wall, gap_sec=gap, wall_sec=wall_sec,
                             mono_sec=mono_sec, clocks_diverged=diverged)
@@ -1185,6 +1224,24 @@ class Pipeline:
                 self._spawn(source.stop())
         except Exception as exc:
             print("[警告] 时钟对账出错: {}".format(exc))
+
+    async def _recheck_clock(self, sess):
+        """重连循环要下「结束」结论之前，补对一次时钟。
+
+        统计循环醒着每 10 秒才对一次。睡着时它和重连退避、解析的计时器一起停住，醒来后谁
+        剩的时间少谁先跑：解析先回来「已结束」时，统计循环还没发现刚才睡过，复查就被跳过，
+        连 clock_gap 都来不及记（结束时统计循环被取消）。离上一次读数正常不超过一跳，
+        补对不会误报；统计循环没在跑时读数是旧的，不对。"""
+        stats = getattr(self, "_stats_task", None)
+        if stats is None or stats.done() or getattr(self, "_session_state", None) is not sess:
+            return
+        await self._check_clock_gap(sess.get("tick_sec") or self.STATS_TICK_SEC)
+
+    def _gap_lead(self, gap):
+        """时钟跳变之后状态文字的开头。两个钟对不上才说休眠或挂起，否则只说程序没有运行。"""
+        if gap.get("diverged"):
+            return "电脑刚从休眠或挂起中恢复"
+        return "程序刚才约 {}没有运行".format(self._duration_text(gap.get("sec") or 0))
 
     def _note_stream_resumed(self, sess, now):
         """这一轮收到第一帧：上一轮最后一帧之后多久没有音频，记一条 stream_resumed。"""
@@ -1327,20 +1384,8 @@ class Pipeline:
         from .resolver import ENDED_STATUS, LIVE_STATUS
 
         status = getattr(exc, "status", None)
-        audit = sess.get("audit")
-        if status == ENDED_STATUS and sess.get("gap") is not None:
-            sess["gap"] = None
-            await self.server.status(
-                "connecting",
-                "电脑刚从休眠或挂起中恢复，{}；{:.0f} 秒后再查一次再下结论…".format(
-                    self._room_status_text(status), self.OFFLINE_RECHECK_SEC))
-            await asyncio.sleep(self.OFFLINE_RECHECK_SEC)
-            waited += self.OFFLINE_RECHECK_SEC
-            status, why = await self._probe_room_status(url)
-            if audit is not None:
-                audit.host_wait(status, self.OFFLINE_RECHECK_SEC,
-                                {LIVE_STATUS: "live", ENDED_STATUS: "ended"}.get(status, "waiting"),
-                                trigger="clock_gap", why=why)
+        if status == ENDED_STATUS:
+            status, waited, _why = await self._recheck_ended_after_gap(url, status, sess, waited)
             if status == LIVE_STATUS:
                 return "live", waited
         if status == ENDED_STATUS:
@@ -1351,6 +1396,58 @@ class Pipeline:
             sess["end"] = {"reason": "offline", "status": status}
             return "ended", waited
         return await self._host_wait(url, status, sess, waited)
+
+    async def _recheck_ended_after_gap(self, url, status, sess, waited, why=None):
+        """状态 4，而且这次中断里发现过时钟跳变：先不信，醒着再等 OFFLINE_RECHECK_SEC 秒问一次
+        房间接口。返回 (状态, waited, why)；没有跳变时原样返回，不多发请求。"""
+        from .resolver import ENDED_STATUS, LIVE_STATUS
+
+        if status != ENDED_STATUS:
+            return status, waited, why
+        await self._recheck_clock(sess)
+        gap = sess.get("gap")
+        if gap is None:
+            return status, waited, why
+        sess["gap"] = None
+        await self.server.status(
+            "connecting",
+            "{}，{}；{:.0f} 秒后再查一次再下结论…".format(
+                self._gap_lead(gap), self._room_status_text(status), self.OFFLINE_RECHECK_SEC))
+        await asyncio.sleep(self.OFFLINE_RECHECK_SEC)
+        waited += self.OFFLINE_RECHECK_SEC
+        status, why = await self._probe_room_status(url)
+        audit = sess.get("audit")
+        if audit is not None:
+            audit.host_wait(status, self.OFFLINE_RECHECK_SEC,
+                            {LIVE_STATUS: "live", ENDED_STATUS: "ended"}.get(status, "waiting"),
+                            trigger="clock_gap", why=why)
+        return status, waited, why
+
+    async def _direct_media_works(self, media, sess):
+        """直连地址问 CDN 还出不出数据（只拉 2KB，不碰房间接口）。返回 (是否出数据, 探了几次)。
+
+        这次中断里发现过时钟跳变时，一次失败不算数：醒来那一刻网络常常还没连上，而时钟对账
+        可能已经提前断开了这一轮。按 DIRECT_RECHECK_DELAYS 再试，仍拉不到才下结论。"""
+        from .resolver import _media_url_works
+
+        await self._recheck_clock(sess)
+        probes = 1
+        if await _media_url_works(media):
+            return True, probes
+        gap = sess.get("gap")
+        if gap is None:
+            return False, probes
+        sess["gap"] = None
+        total = len(self.DIRECT_RECHECK_DELAYS)
+        for i, delay in enumerate(self.DIRECT_RECHECK_DELAYS, 1):
+            await self.server.status(
+                "connecting", "{}，这个直连地址暂时拉不到数据；{:.0f} 秒后再试（第 {}/{} 次）…".format(
+                    self._gap_lead(gap), delay, i, total))
+            await asyncio.sleep(delay)
+            probes += 1
+            if await _media_url_works(media):
+                return True, probes
+        return False, probes
 
     async def _host_wait(self, url, status, sess, waited):
         from .resolver import ENDED_STATUS, LIVE_STATUS
@@ -1368,6 +1465,9 @@ class Pipeline:
             await asyncio.sleep(self.HOST_WAIT_POLL_SEC)
             waited += self.HOST_WAIT_POLL_SEC
             status, why = await self._probe_room_status(url)
+            if status == ENDED_STATUS:      # 等的这一分钟里睡过的话，4 也先复查
+                status, waited, why = await self._recheck_ended_after_gap(
+                    url, status, sess, waited, why)
             if status in (LIVE_STATUS, ENDED_STATUS):
                 break
         outcome = {LIVE_STATUS: "live", ENDED_STATUS: "ended"}.get(status, "timeout")
@@ -1520,13 +1620,13 @@ class Pipeline:
                     # 直连地址问不出「主播还在不在播」，但问得出「这个地址还出不出数据」。
                     # 以前播过 30 秒就一律按「直播流已结束」收尾：Wi-Fi 抖一下、半开连接被
                     # 看门狗掐断，剩下的直播就没人听了。只向 CDN 拉 2KB，不碰房间接口
-                    from .resolver import _media_url_works
-                    if not await _media_url_works(media):
+                    works, probes = await self._direct_media_works(media, sess)
+                    if not works:
                         await self.server.status(
                             "ended", "这个直连地址已经拉不到数据，监听已停止。"
                                      "可以输入直播间地址或新的流地址继续。")
                         print("[信息] 直连地址已拉不到数据，监听停止。")
-                        sess["end"] = {"reason": "stream_ended"}
+                        sess["end"] = {"reason": "stream_ended", "probes": probes}
                         return
                 reconnects = 0        # 刚才播得好好的：重置重连预算
             # 拿到过音频的轮次不算失败：网络劣化时每轮只播二十几秒就断，
