@@ -120,11 +120,17 @@ async def check_asr(args):
     except Exception:
         info = {}
     if info.get("apple_silicon") and rec["backend"] != "mlx":
+        # 首次安装没装上 mlx-whisper 时留了放弃记号，重开程序不会补装——那时不能再说
+        # 「重新打开会自动补装」，要说哪天没装上、程序接下来会做什么、中控能做什么
+        from .bootstrap import mlx_giveup_note
+        note = mlx_giveup_note(ROOT)
+        fix = ("关闭程序后重新打开，会自动补装 GPU 加速组件；若反复出现请把这句话反馈给开发者"
+               if note is None else
+               note + "。也可以停播后" + _pip_command("mlx-whisper", upgrade=False)
+               + "，装好后重开程序")
         return _check("语音识别", WARN,
                       "这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）"
-                      "——慢一倍以上，长时间监听容易积压".format(detail),
-                      "关闭程序后重新打开，会自动补装 GPU 加速组件；"
-                      "若反复出现请把这句话反馈给开发者")
+                      "——慢一倍以上，长时间监听容易积压".format(detail), fix)
     return _check("语音识别", OK if cached else WARN, detail)
 
 

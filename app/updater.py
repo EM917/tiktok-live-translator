@@ -1,17 +1,27 @@
 """自动更新：启动时检查 GitHub 最新 release，UI 一键更新（git 安装）并自动重启。
 
-安全边界：只做 `git pull --ff-only`，且要求工作区干净——绝不覆盖用户的本地改动；
+安全边界：只做 fast-forward，且要求工作区干净——绝不覆盖用户的本地改动；
 ZIP 下载（无 .git）的安装只提示去下载页，不尝试自动更新。
+
+一键更新的顺序（见 Updater._apply_inner）：先 `git fetch` 取新版本（只动网络，监听
+照常），确认能快进了才暂停监听；先按新版本的清单装依赖，装好了才合并代码并重启。
+任何一步失败，工作区还是旧代码，监听在当前版本上恢复。
 """
 import asyncio
 import importlib.metadata
 import importlib.util
+import math
 import os
 import re
 import sys
+import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
+from .bootstrap import (MLX_GIVEUP, clear_mlx_giveup, is_apple_silicon, mlx_retry_due,
+                        new_log_path, read_mlx_giveup, requirements_digest, write_mlx_giveup,
+                        write_requirements_stamp)
 from .settings import load_settings, save_setting
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,6 +66,42 @@ def _version_tuple(version):
     return tuple(int(x or 0) for x in m.groups()) if m else None
 
 
+async def _reap(proc):
+    """kill 之后必须再 wait 一次去 reap，否则残留僵尸进程。"""
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    try:
+        await proc.wait()
+    except Exception:
+        pass
+
+
+def _open_pip_log(log_path, args):
+    if not log_path:
+        return None
+    try:
+        fh = open(str(log_path), "ab")
+        fh.write("$ pip install {}  ({})\n".format(
+            " ".join(str(a) for a in args),
+            datetime.now().isoformat(timespec="seconds")).encode("utf-8"))
+        fh.flush()        # 子进程接着往同一个文件追加，先把这行落下去
+        return fh
+    except OSError:
+        return None
+
+
+def _close_pip_log(fh, outcome):
+    if fh is None:
+        return
+    try:
+        fh.write("[pip 结束：{}]\n".format(outcome).encode("utf-8"))
+        fh.close()
+    except (OSError, ValueError):
+        pass
+
+
 async def _call_announce(announce):
     try:
         await announce()
@@ -68,6 +114,89 @@ def _setting_float(key):
         return float(load_settings().get(key) or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+# 一键更新各步的时限。fetch 在监听照常进行时跑，卡住也只是这次不更新；合并和 pip
+# 跑在监听暂停之后，必须有上限，超时就在当前版本上把监听恢复起来
+FETCH_TIMEOUT_SEC = 90
+GIT_LOCAL_TIMEOUT_SEC = 120
+UPDATE_PIP_TIMEOUT_SEC = 600
+# 空闲时后台补装 mlx-whisper：要下 torch 等几百 MB；一开始监听就撤
+MLX_RETRY_TIMEOUT_SEC = 1800
+PIP_ABORT_POLL_SEC = 2.0
+PIP_ABORTED = "aborted"
+# 带 curl-cffi 扩展：让 pip 按 yt-dlp 自己声明的范围装配 curl_cffi（与 requirements.txt 一致）
+YTDLP_SPEC = "yt-dlp[curl-cffi]"
+# 连续这么多天没能连上更新服务器，就在页脚版本号旁边提一句（不进自检、不进横幅）
+UPDATE_CHECK_STALE_DAYS = 14
+
+
+def component_version(dist):
+    """已安装组件的版本号（只读包元数据，不 import）；没装返回 None。"""
+    importlib.invalidate_caches()
+    for name in dict.fromkeys((dist, dist.replace("-", "_"), dist.replace("_", "-"))):
+        try:
+            return importlib.metadata.version(name)
+        except Exception:
+            continue
+    return None
+
+
+def update_check_ok_iso(settings=None):
+    """最近一次成功连上更新服务器的时间（ISO），从没成功过返回 None。"""
+    settings = load_settings() if settings is None else settings
+    try:
+        ts = float(settings.get("update_check_ok_at") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(ts).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def update_check_note(settings=None, now=None):
+    """连续 UPDATE_CHECK_STALE_DAYS 天没能连上更新服务器时，页脚上的那句话；否则 None。
+
+    从上次成功算起；从没成功过的机器从第一次失败算起。只写观察到的：多少天、最近
+    一次返回了什么。不进自检面板——连不上 GitHub 的网络上它会一直黄着，把中控训练成
+    无视 WARN。"""
+    settings = load_settings() if settings is None else settings
+    err = settings.get("update_check_error")
+    if not isinstance(err, dict):
+        return None
+    try:
+        ok_at = float(settings.get("update_check_ok_at") or 0)
+        since = ok_at or float(err.get("since") or 0)
+    except (TypeError, ValueError):
+        return None
+    if since <= 0:
+        return None
+    now = time.time() if now is None else now
+    days = int((now - since) // 86400)
+    if days < UPDATE_CHECK_STALE_DAYS:
+        return None
+    return "已 {} 天没能连上更新服务器（最近一次：{}）".format(
+        days, err.get("status_or_exc") or "未知")
+
+
+def _git_tail(err):
+    lines = [ln.strip() for ln in (err or "").strip().splitlines() if ln.strip()]
+    return " / ".join(lines[-2:])
+
+
+def _log_label(path):
+    """给中控看的日志位置：项目目录下的相对路径。"""
+    if not path:
+        return ""
+    try:
+        return Path(path).resolve().relative_to(ROOT.resolve()).as_posix()
+    except (ValueError, OSError):
+        return str(path)
+
+
 REPO = "EM917/tiktok-live-translator"
 API_LATEST = "https://api.github.com/repos/{}/releases/latest".format(REPO)
 RELEASES_URL = "https://github.com/{}/releases/latest".format(REPO)
@@ -106,6 +235,17 @@ class Updater:
         # freshen 与一键更新共用：pip 不能并发写环境。惰性初始化——
         # 3.9 的 asyncio.Lock() 构造时就要绑事件循环
         self._pip_lock = None
+        # 管线提供的钩子（main.py 调 attach_pipeline 接上）：此刻有没有在监听、
+        # 把组件升级写进当前这场审计、持续提示
+        self._stream_active = None
+        self._on_component_updated = None
+        self._incident = None
+
+    def attach_pipeline(self, pipeline):
+        """main.py 在两者都建好后调用。后台装组件不能压在直播上，组件升级要进这场的审计。"""
+        self._stream_active = getattr(pipeline, "_stream_active", None)
+        self._on_component_updated = getattr(pipeline, "note_component_updated", None)
+        self._incident = getattr(pipeline, "_incident", None)
 
     def _get_pip_lock(self):
         if self._pip_lock is None:
@@ -114,13 +254,16 @@ class Updater:
 
     async def watch(self, first_delay=2.0, interval=6 * 3600):
         """启动后检查一次，之后每 6 小时复查——常开不关的用户也能及时看到新版本。"""
+        await self._publish_check_health()     # 很久没连上更新服务器的话，页面一打开就能看到
         await self.check_and_notify(delay=first_delay)
         await self.freshen_ytdlp(reason="periodic")   # 顺带保鲜最易腐坏的组件
+        await self.retry_mlx_install()
         while True:
             await asyncio.sleep(interval)
             if self.latest is None:      # 已经提示过就不再重复打扰
                 await self.check_and_notify(delay=0)
             await self.freshen_ytdlp(reason="periodic")
+            await self.retry_mlx_install()
 
     async def _notice(self, text):
         """一次性提示（手动检查更新的结果等）。刻意不走 status 通道：status 会
@@ -155,9 +298,11 @@ class Updater:
         self._freshen_attempted_at = now
         try:
             async with self._get_pip_lock():
+                # 拿到锁之后再读「升级前」的版本：等锁期间别的 pip（一键更新）可能已经改过
+                before = {name: component_version(name) for name in ("yt-dlp", "curl_cffi")}
                 proc = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "pip", "install", "-U",
-                    "--disable-pip-version-check", "yt-dlp",
+                    "--disable-pip-version-check", YTDLP_SPEC,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 )
                 try:
@@ -170,6 +315,8 @@ class Updater:
                 print("[警告] yt-dlp 自动更新失败（pip 返回 {}）".format(proc.returncode))
                 return
             save_setting("ytdlp_updated_at", time.time())
+            for name, was in before.items():
+                self._note_component_update(name, was, component_version(name), reason)
             text = out.decode(errors="replace")
             m = re.search(r"Successfully installed .*?yt.dlp-(\S+)", text)
             if m:
@@ -186,43 +333,152 @@ class Updater:
         finally:
             self._freshening = False
 
-    async def _pip_install(self, args, label, timeout=600):
-        """跑一次 `pip install <args>`，返回退出码；超时或异常返回 None。
+    async def _pip_install(self, args, label, timeout=600, log_path=None, abort_if=None):
+        """跑一次 `pip install <args>`，返回退出码；超时或异常返回 None；abort_if 叫停时
+        返回 PIP_ABORTED。log_path 给了就把 pip 的输出写进去（默认丢弃）；abort_if 每
+        PIP_ABORT_POLL_SEC 秒问一次，返回真就 kill 掉 pip（后台装大组件时一开始监听就撤）。
 
         pip 跑在独立任务里，从拿锁到 pip 退出都持有 pip 锁；调用方被取消（中控点停止、
         换房间、一键更新会先停直播）只结束「等」，不结束 pip，也不放锁。以前锁随调用方
         的取消一起释放，pip 却还在写环境：一键更新的 pip 紧接着拿到锁并发写同一个 venv，
         随后 execv 重启（2026-09-15 审查实测复现）。"""
-        task = asyncio.ensure_future(self._pip_install_locked(args, label, timeout))
+        task = asyncio.ensure_future(
+            self._pip_install_locked(args, label, timeout, log_path, abort_if))
         self._pip_tasks.add(task)
         task.add_done_callback(self._pip_tasks.discard)
         return await asyncio.shield(task)
 
-    async def _pip_install_locked(self, args, label, timeout):
+    async def _pip_install_locked(self, args, label, timeout, log_path=None, abort_if=None):
         """与 freshen_ytdlp、一键更新共用 pip 锁（pip 不能并发写环境）。超时 kill 之后
         必须再 wait 一次去 reap，否则残留僵尸进程。"""
         async with self._get_pip_lock():
+            if abort_if is not None and abort_if():
+                return PIP_ABORTED       # 等锁的这段时间里情况变了：不开始
+            log = _open_pip_log(log_path, args)
+            outcome = "异常"
             try:
                 proc = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "pip", "install",
                     "--disable-pip-version-check", *args,
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                    stdout=log if log is not None else asyncio.subprocess.DEVNULL,
+                    stderr=(asyncio.subprocess.STDOUT if log is not None
+                            else asyncio.subprocess.DEVNULL),
                 )
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=timeout)
+                    if abort_if is None:
+                        await asyncio.wait_for(proc.wait(), timeout=timeout)
+                    elif await self._wait_or_abort(proc, timeout, abort_if):
+                        outcome = "被叫停"
+                        print("[信息] {}：已停下".format(label))
+                        return PIP_ABORTED
                 except asyncio.TimeoutError:
-                    proc.kill()
-                    try:
-                        await proc.wait()
-                    except Exception:
-                        pass
+                    await _reap(proc)
+                    outcome = "超时"
                     print("[警告] {}超时，已放弃本次尝试".format(label))
                     return None
+                outcome = "返回 {}".format(proc.returncode)
             except Exception as exc:
                 print("[警告] {}异常: {}".format(label, exc))
                 return None
+            finally:
+                _close_pip_log(log, outcome)
         importlib.invalidate_caches()   # pip 刚改完环境，find_spec/元数据的路径缓存可能是旧的
         return proc.returncode
+
+    @staticmethod
+    async def _wait_or_abort(proc, timeout, abort_if):
+        """等 pip 结束，每 PIP_ABORT_POLL_SEC 秒问一次 abort_if。被叫停返回 True（pip 已 kill
+        并 reap）；总时长用完抛 TimeoutError。按轮数计时，测试换掉 wait_for 就不用真等。"""
+        rounds = max(1, int(math.ceil(float(timeout) / PIP_ABORT_POLL_SEC)))
+        for _ in range(rounds):
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=PIP_ABORT_POLL_SEC)
+                return False
+            except asyncio.TimeoutError:
+                try:
+                    stop = abort_if()
+                except Exception:
+                    stop = True
+                if stop:
+                    await _reap(proc)
+                    return True
+        raise asyncio.TimeoutError()
+
+    def _busy_for_background_pip(self):
+        """后台装大组件之前和装的过程中反复问：在监听、或在一键更新，就不装。
+        判断不了（管线钩子没接上、钩子自己出错）按「在忙」算。"""
+        if getattr(self, "_applying", False):
+            return True
+        active = getattr(self, "_stream_active", None)
+        if active is None:
+            return True
+        try:
+            return bool(active())
+        except Exception:
+            return True
+
+    async def _persistent_note(self, key, level, text):
+        hook = getattr(self, "_incident", None)
+        if hook is not None:
+            await hook(key, level, text)
+        else:
+            await self._notice(text)
+
+    def _note_component_update(self, name, before, after, reason):
+        """组件版本真的变了：打一行，并交给管线写进当前这场的审计（有的话）。"""
+        if not after or after == before:
+            return
+        print("[信息] 组件 {} 已从 {} 更新到 {}（{}）".format(name, before, after, reason))
+        hook = getattr(self, "_on_component_updated", None)
+        if hook is None:
+            return
+        try:
+            hook(name, before, after, reason)
+        except Exception as exc:
+            print("[警告] 组件更新没能写进审计: {}".format(exc))
+
+    async def retry_mlx_install(self, now=None):
+        """首次安装时没装上 mlx-whisper（留了放弃记号）的 Apple Silicon 机器：没在监听时，
+        距上次失败满 24 小时就在后台再装一次。返回结果字符串（测试用）。
+
+        不在启动时（ensure_env）重试：torch 等要下几百 MB，会在中控正要开播时把启动挡住
+        几分钟。一开始监听（或点了一键更新）就 kill 掉 pip：CPU 识别本来只是勉强跟得上，
+        再压一个安装上去就会积压丢段。已装的 numpy 钉在当前版本——这个进程正用着它。"""
+        if not is_apple_silicon():
+            return "not-applicable"
+        marker = ROOT / ".venv" / MLX_GIVEUP
+        info = read_mlx_giveup(marker)
+        if info is None:
+            return "no-marker"
+        importlib.invalidate_caches()
+        if importlib.util.find_spec("mlx_whisper") is not None:
+            clear_mlx_giveup(marker)          # 已经装上了（比如手动装过），记号过时
+            return "present"
+        if not mlx_retry_due(info, now=now):
+            return "cooldown"
+        if self._busy_for_background_pip():
+            return "busy"
+        args = ["mlx-whisper"]
+        numpy_version = component_version("numpy")
+        if numpy_version:
+            args.append("numpy=={}".format(numpy_version))
+        code = await self._pip_install(
+            args, "GPU 加速组件 mlx-whisper 后台安装", timeout=MLX_RETRY_TIMEOUT_SEC,
+            log_path=new_log_path(ROOT, "mlx-retry"), abort_if=self._busy_for_background_pip)
+        if code == PIP_ABORTED:
+            print("[信息] 开始监听或更新了，GPU 加速组件的后台安装已停下，下次空闲时再试")
+            return "aborted"
+        importlib.invalidate_caches()
+        if code == 0 and importlib.util.find_spec("mlx_whisper") is not None:
+            clear_mlx_giveup(marker)
+            await self._persistent_note("mlx-ready", "info",
+                                        "GPU 加速组件已装好，下次停播后重开程序生效")
+            return "installed"
+        write_mlx_giveup(marker, code if isinstance(code, int) else None,
+                         "后台安装没成功" + ("（超时）" if code is None else ""))
+        print("[警告] GPU 加速组件 mlx-whisper 后台安装没成功（pip 返回 {}），"
+              "24 小时后空闲时再试".format(code))
+        return "failed"
 
     async def _pip_capture(self, args, timeout=120):
         """跑一次不改环境的 pip 命令（不拿 pip 锁），返回 (退出码, stdout, stderr)；
@@ -417,15 +673,19 @@ class Updater:
                     API_LATEST, headers={"Accept": "application/vnd.github+json"}
                 ) as resp:
                     if resp.status != 200:
+                        await self._record_check("HTTP {}".format(resp.status))
                         if manual:
                             await self._notice(
                                 "检查更新失败（GitHub 返回 {}）".format(resp.status))
                         return
                     data = await resp.json()
-        except Exception:
+        except Exception as exc:
+            await self._record_check(
+                "超时" if isinstance(exc, asyncio.TimeoutError) else type(exc).__name__)
             if manual:
                 await self._notice("检查更新失败（网络不可达）")
             return
+        await self._record_check(None)
         tag = str(data.get("tag_name") or "")
         if not tag or _parse(tag) <= _parse(local_version()):
             if manual:
@@ -460,25 +720,80 @@ class Updater:
             print("[信息] 发现新版本 {}（当前 v{}）——可在页面上一键更新".format(
                 tag, local_version()))
 
-    async def _git(self, *args):
-        proc = await asyncio.create_subprocess_exec(
-            "git", *args, cwd=str(ROOT),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        out, err = await proc.communicate()
+    async def _record_check(self, error):
+        """记下这次检查更新的结果（手动、自动都记）。成功：记时间、清掉错误；失败：记
+        {at, since, status_or_exc}，since 是这一串连续失败里第一次的时间。以前失败一律
+        无声，settings 里也没有成功时间，一台机器几个月连不上更新服务器也没人知道。"""
+        try:
+            now = time.time()
+            if error is None:
+                save_setting("update_check_ok_at", now)
+                if load_settings().get("update_check_error") is not None:
+                    save_setting("update_check_error", None)
+            else:
+                prev = load_settings().get("update_check_error")
+                since = prev.get("since") if isinstance(prev, dict) else None
+                save_setting("update_check_error", {"at": now, "since": since or now,
+                                                    "status_or_exc": str(error)[:80]})
+            await self._publish_check_health()
+        except Exception as exc:
+            print("[警告] 记录更新检查结果失败: {}".format(exc))
+
+    async def _publish_check_health(self):
+        """页脚版本号旁边那句「已 N 天没能连上更新服务器」。存进 config（刷新页面还在），
+        没变化就不广播。"""
+        server = self.server
+        config = getattr(server, "config", None)
+        if server is None or not isinstance(config, dict):
+            return
+        note = update_check_note()
+        value = {"note": note} if note else None
+        if config.get("update_check") == value:
+            return
+        await server.broadcast({"type": "config", "update_check": value})
+
+    async def _git(self, *args, timeout=GIT_LOCAL_TIMEOUT_SEC):
+        """跑一条 git，返回 (退出码, stdout, stderr)；起不来返回 (None, "", 原因)，超时
+        返回 (None, "", "timeout")。
+
+        GIT_TERMINAL_PROMPT=0：要凭据时直接失败，不在 Start.command 的终端里等人输入；
+        http.lowSpeedLimit/lowSpeedTime：连着但 30 秒里每秒不到 1 KB 就放弃。以前
+        `git pull` 没有任何时限：网络卡住时监听早已停下，界面还显示「直播中」。"""
+        env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=30", *args,
+                cwd=str(ROOT), env=env,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as exc:
+            return None, "", str(exc)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await _reap(proc)
+            return None, "", "timeout"
         return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 
-    async def apply(self):
-        """一键更新：仅 fast-forward pull，成功后原地重启进程。"""
+    async def apply(self, live=None, pause=None, resume=None, before_restart=None):
+        """一键更新，成功后原地重启进程。
+
+        管线传入的钩子（见 Pipeline._apply_update），都可以不传：
+          live()                       此刻有没有在监听；
+          await pause(from_v, to_v)    新版本取下来、确认能快进之后才调：停监听，返回
+                                       恢复监听要用的信息（没在监听返回 None）；
+          await resume(token, text)    停了监听之后更新没成：在当前版本上恢复监听并说明；
+          before_restart(token, to_v)  重启前留下「重启后接着监听」的记号。"""
         if self.latest is None or self._applying:
             return   # 重复点击「一键更新」不能并发跑两次 git/pip
         self._applying = True
         try:
-            await self._apply_inner()
+            await self._apply_inner(live=live, pause=pause, resume=resume,
+                                    before_restart=before_restart)
         finally:
             self._applying = False
 
-    def _manual_command(self, discard=False):
+    def _manual_command(self, discard=False, pip=False):
         """一条可以原样粘进终端的完整命令，路径是这台机器上的真实路径。
 
         不写成「请自行 git pull」——那句话假设用户知道项目在哪、知道要先 cd。
@@ -487,6 +802,9 @@ class Updater:
         path = str(ROOT)
         if discard:
             return 'cd "{}" && git checkout -- . && git pull --ff-only'.format(path)
+        if pip:
+            return 'cd "{}" && git pull --ff-only && "{}" -m pip install -r requirements.txt'.format(
+                path, sys.executable)
         return 'cd "{}" && git pull --ff-only'.format(path)
 
     async def precheck(self):
@@ -528,41 +846,141 @@ class Updater:
             return False
         return True
 
-    async def _apply_inner(self):
+    async def _not_updated(self, text, live):
+        """还没停监听时的失败出口。直播中只发一次性提示——监听照常，不能把界面状态打回
+        待机；没在监听时照旧给状态和一条能照做的命令（更新器不能把自己锁死）。"""
+        print("[警告] 一键更新没完成：{}（手动更新：{}）".format(text, self._manual_command()))
+        await self.server.broadcast({"type": "update_aborted"})
+        if live:
+            await self._notice("更新没完成：{}。监听没有中断，停播后可以再点「一键更新」".format(text))
+            return
+        await self.server.status(
+            "idle", "更新没能完成（{}）。复制下面这行到「终端」里执行通常就能解决：".format(text),
+            command=self._manual_command())
+
+    async def _update_failed(self, text, token, resume, command):
+        """装依赖或合并失败的出口。工作区还是旧代码：停了的监听在当前版本上恢复，
+        没在监听的给状态和手动命令。"""
+        print("[警告] " + text)
+        await self.server.broadcast({"type": "update_aborted"})
+        if token is not None and resume is not None:
+            await resume(token, text)
+            return
+        await self.server.status(
+            "idle", text + "。复制下面这行到「终端」里执行可以手动更新：", command=command)
+
+    async def _install_new_requirements(self, requirements, log_path):
+        """合并之前，按新版本的清单装依赖（清单来自 `git show`，写成临时文件给 pip -r）。
+        清单是空的就不用装，返回 0。"""
+        if not requirements.strip():
+            return 0
+        fd, tmp = tempfile.mkstemp(prefix="tlt-requirements-", suffix=".txt")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(requirements)
+            return await self._pip_install(["-r", tmp], "新版本依赖安装",
+                                           timeout=UPDATE_PIP_TIMEOUT_SEC, log_path=log_path)
+        except OSError as exc:
+            print("[警告] 写临时组件清单失败: {}".format(exc))
+            return None
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    async def _apply_inner(self, live=None, pause=None, resume=None, before_restart=None):
         if not await self.precheck():
             return
-        await self.server.broadcast({"type": "updating"})
-        code, _, err = await self._git("pull", "--ff-only")
-        if code != 0:
-            tail = err.strip().splitlines()[-2:]
-            await self.server.status(
-                "idle", "更新没能完成（{}）。复制下面这行到「终端」里执行通常就能解决："
-                        .format(" / ".join(tail)),
-                command=self._manual_command())
-            return
-        # 新版本可能带来新依赖——重启前先装上（失败不阻塞，重启后 bootstrap 兜底）。
-        # 与 freshen_ytdlp 共用 _pip_lock：两个 pip 并发写环境会装出残缺的包，
-        # execv 也不能在另一个 pip 半途时重启进程（孤儿 pip 会继续改写新环境）
-        await self.server.status("connecting", "正在安装新版本的依赖…")
-        async with self._get_pip_lock():
+
+        def is_live():
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "pip", "install",
-                    "--disable-pip-version-check", "-r", str(ROOT / "requirements.txt"),
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-                )
-                await proc.wait()
+                return bool(live()) if live is not None else False
             except Exception:
-                pass
-            await self.server.status("idle", "更新完成，正在自动重启…")
-            print("[信息] 已更新到最新版本，重启进程…")
-            await asyncio.sleep(0.6)
-            try:
-                from .relaunch import exec_args
-                os.execv(sys.executable, exec_args(
-                    [sys.executable, str(ROOT / "main.py")] + sys.argv[1:]))
-            except Exception as exc:
-                # execv 失败（极少见）不能让用户以为更新丢了——代码其实已经拉下来了
+                return False
+
+        await self.server.broadcast({"type": "updating"})
+        from_version = local_version()
+
+        # 1. 取新版本：只动网络和 .git，工作区不变，监听照常
+        code, _, err = await self._git("fetch", timeout=FETCH_TIMEOUT_SEC)
+        if code != 0:
+            why = ("{} 秒内没下载完".format(FETCH_TIMEOUT_SEC) if err == "timeout"
+                   else _git_tail(err) or "git 返回 {}".format(code))
+            await self._not_updated("没能从 GitHub 取到新版本（{}）".format(why), is_live())
+            return
+        # 与 `git pull` 同一个目标：当前分支跟踪的远端分支。解析成提交号，后面几步都认
+        # 这一个提交（本地实测：分离 HEAD 时 FETCH_HEAD 全是 not-for-merge，靠不住）
+        code, target, err = await self._git("rev-parse", "--verify", "@{u}")
+        target = target.strip()
+        if code != 0 or not target:
+            await self._not_updated("找不到这份安装跟踪的远端分支（{}）".format(
+                _git_tail(err) or "git 返回 {}".format(code)), is_live())
+            return
+        _, version_text, _ = await self._git("show", "{}:VERSION".format(target))
+        to_version = version_text.strip() or "?"
+        code, requirements, err = await self._git("show", "{}:requirements.txt".format(target))
+        if code != 0:
+            await self._not_updated("读不到新版本的组件清单（{}）".format(
+                _git_tail(err) or "git 返回 {}".format(code)), is_live())
+            return
+        code, _, err = await self._git("merge-base", "--is-ancestor", "HEAD", target)
+        if code != 0:
+            await self._not_updated("本地代码没法直接快进到新版本（{}）".format(
+                _git_tail(err) or "git 返回 {}".format(code)), is_live())
+            return
+        if self._get_pip_lock().locked():
+            await self._not_updated("后台正在安装别的组件，等它装完再点「一键更新」", is_live())
+            return
+
+        # 2. 确认能更新了，才停监听
+        token = await pause(from_version, to_version) if pause is not None else None
+        if token is None:
+            await self.server.status("connecting", "正在安装新版本的依赖…")
+
+        # 3. 先按新版本的清单装依赖，装好了才合并：新代码绝不在缺依赖的环境里落地。
+        # 以前是先 pull 再装、不看 pip 的退出码，装失败也照样重启进新代码
+        log_path = new_log_path(ROOT, "update")
+        code = await self._install_new_requirements(requirements, log_path)
+        if code != 0:
+            text = "新版本需要的组件没装上（pip 返回 {}{}），继续使用当前版本 v{}".format(
+                "超时" if code is None else code,
+                "，详情见 " + _log_label(log_path) if log_path else "", from_version)
+            await self._update_failed(text, token, resume, self._manual_command(pip=True))
+            return
+
+        exec_error = None
+        # 合并到重启之间不许别的 pip 插进来改环境：execv 不能在另一个 pip 半途时重启进程
+        async with self._get_pip_lock():
+            code, _, err = await self._git("merge", "--ff-only", target)
+            if code == 0:
+                if requirements.strip():
+                    write_requirements_stamp(ROOT, requirements_digest(requirements))
+                if token is not None and before_restart is not None:
+                    before_restart(token, to_version)
                 await self.server.status(
-                    "idle", "更新已下载完成，但自动重启失败（{}）——"
-                            "请手动关掉再重新打开程序".format(exc))
+                    "connecting" if token is not None else "idle",
+                    "更新完成，正在自动重启…" + ("重启后自动恢复监听" if token is not None else ""))
+                print("[信息] 已更新到最新版本，重启进程…")
+                await asyncio.sleep(0.6)
+                try:
+                    from .relaunch import exec_args
+                    os.execv(sys.executable, exec_args(
+                        [sys.executable, str(ROOT / "main.py")] + sys.argv[1:]))
+                except Exception as exc:
+                    exec_error = exc
+        if code != 0:
+            text = "新版本的代码没能合并（{}），继续使用当前版本 v{}".format(
+                _git_tail(err) or "git 返回 {}".format(code), from_version)
+            await self._update_failed(text, token, resume, self._manual_command())
+            return
+        if exec_error is None:
+            return          # 真的 execv 不会回到这里
+        # execv 失败（极少见）：代码已经是新的，这个进程还是旧的——不能让用户以为更新丢了
+        text = "更新已下载完成，但自动重启失败（{}）——请手动关掉再重新打开程序".format(exec_error)
+        print("[警告] " + text)
+        await self.server.broadcast({"type": "update_aborted"})
+        if token is not None and resume is not None:
+            await resume(token, text)
+        else:
+            await self.server.status("idle", text)

@@ -95,6 +95,8 @@
   var startWatchdog = null;
   var pendingStart = null;   // 已发出但服务器还没回执的「开始」指令（重连后补发）
   var versionNoticeTimer = null;
+  var updateCheckNote = "";  // 很久没连上更新服务器时版本号后面那句话（文字由服务端给）
+  var updateConfirmTimer = null;
   var liveBarId = null;      // 底部大字幕当前显示的是哪一条（译文回来要就地替换）
   // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
   var cardsById = {};
@@ -216,7 +218,26 @@
     send({ type: "stop" });
   });
 
+  function resetUpdateBtn() {
+    if (updateConfirmTimer) clearTimeout(updateConfirmTimer);
+    updateConfirmTimer = null;
+    delete updateBtn.dataset.confirm;
+    updateBtn.disabled = false;
+    updateBtn.textContent = "一键更新";
+  }
+
   updateBtn.addEventListener("click", function () {
+    // 监听中点的要再点一次确认：更新会暂停监听，而这个按钮直播中一直摆在中控眼前。
+    // 不用 window.confirm——应用窗口（pywebview）里它可能根本弹不出来
+    if (streamActive && updateBtn.dataset.confirm !== "1") {
+      updateBtn.dataset.confirm = "1";
+      updateBtn.textContent = "再点一次更新：监听暂停约 1 分钟后自动恢复";
+      updateConfirmTimer = setTimeout(resetUpdateBtn, 6000);
+      return;
+    }
+    if (updateConfirmTimer) clearTimeout(updateConfirmTimer);
+    updateConfirmTimer = null;
+    delete updateBtn.dataset.confirm;
     updateBtn.disabled = true;
     updateBtn.textContent = "更新中…";
     send({ type: "apply_update" });
@@ -315,7 +336,15 @@
   function restoreVersion() {
     if (versionNoticeTimer) clearTimeout(versionNoticeTimer);
     versionNoticeTimer = null;
-    if (currentVersion) versionEl.textContent = " · v" + currentVersion;
+    if (currentVersion) {
+      versionEl.textContent = " · v" + currentVersion + (updateCheckNote ? " · " + updateCheckNote : "");
+    }
+  }
+
+  // 连续很多天没连上更新服务器：只在页脚版本号旁边安静地提一句，不进自检、不进横幅
+  function renderUpdateCheck(info) {
+    updateCheckNote = info && info.note ? String(info.note) : "";
+    if (!versionNoticeTimer) restoreVersion();   // 正在显示的一次性提示到点后会带上它
   }
 
   function applyFont(size) {
@@ -413,16 +442,17 @@
                               count: msg.config.glossary_migration.count });
           }
           if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
+          updateCheckNote = msg.config.update_check && msg.config.update_check.note
+            ? String(msg.config.update_check.note) : "";
           if (msg.config.version) {
             currentVersion = msg.config.version;
-            versionEl.textContent = " · v" + msg.config.version;
+            restoreVersion();
           }
           // 重连/刷新时回放的提示从来不是「新」提示：不许再改标题打扰直播中的中控
           if (msg.config.update) showUpdate(Object.assign({}, msg.config.update, { quiet: true }));
           else {
             updateBar.classList.add("hidden");
-            updateBtn.disabled = false;
-            updateBtn.textContent = "一键更新";
+            resetUpdateBtn();
           }
         }
         break;
@@ -432,6 +462,10 @@
       case "updating":
         updateBtn.disabled = true;
         updateBtn.textContent = "更新中…";
+        break;
+      // 这次没更新成（原因另有提示/状态说明）：按钮恢复，可以再试
+      case "update_aborted":
+        resetUpdateBtn();
         break;
       case "status":
         // connecting/live/error 任一状态到达即视为服务器已接管「开始」指令
@@ -451,6 +485,7 @@
         if (msg.target_lang) targetSel.value = msg.target_lang;
         if (msg.source_lang && !sourceTouched) sourceSel.value = msg.source_lang;
         if (msg.room_url) fillRoomInput(msg.room_url);
+        if ("update_check" in msg) renderUpdateCheck(msg.update_check);
         break;
       case "glossary_migration":
         handleMigration(msg);
@@ -514,10 +549,7 @@
     statusText.textContent = STATUS_TEXT[state] || state;
 
     // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
-    if (state === "error" || state === "idle") {
-      updateBtn.disabled = false;
-      updateBtn.textContent = "一键更新";
-    }
+    if (state === "error" || state === "idle") resetUpdateBtn();
 
     var active = state === "live" || state === "connecting";
     startPanel.classList.toggle("hidden", active);
