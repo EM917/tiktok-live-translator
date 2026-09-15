@@ -44,6 +44,39 @@ TRANSLATOR_CHOICES = ["auto", "hymt2", "hymt2-7b", "gemma",
 ENGINE_KEY_ENV = {"deepl": "DEEPL_API_KEY", "claude": "ANTHROPIC_API_KEY",
                   "openai": "OPENAI_API_KEY"}
 
+# 提示文字里称呼引擎用的名字（与页面「翻译引擎」下拉框一致）
+ENGINE_LABELS = {"hymt2": "本地 Hy-MT2 1.8B", "hymt2-7b": "本地 Hy-MT2 7B",
+                 "gemma": "本地 TranslateGemma", "deepl": "DeepL",
+                 "google": "Google 免费接口", "claude": "Claude", "openai": "OpenAI"}
+
+
+def engine_label(name):
+    return ENGINE_LABELS.get(name, str(name)) if name else "不翻译"
+
+
+def model_label(model):
+    """模型名给人看的形态：hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M → Hy-MT2 7B。"""
+    low = str(model or "").lower()
+    if "hy-mt2-7b" in low:
+        return "Hy-MT2 7B"
+    if "hy-mt2-1.8b" in low:
+        return "Hy-MT2 1.8B"
+    if "translategemma" in low:
+        return "TranslateGemma"
+    return str(model)
+
+
+_URL_QUERY_RE = re.compile(r"(https?://[^\s?#\"'<>]+)[?#][^\s\"'<>]*")
+
+
+def clean_error_text(text, limit=200):
+    """别人（Ollama、下载源）给的错误原话，进界面和审计之前的清洗：去掉链接里的
+    query（签名下载地址的 query 本身就是凭证），压成一行，截断。"""
+    if text is None:
+        return None
+    out = " ".join(_URL_QUERY_RE.sub(r"\1", str(text)).split())
+    return out[:limit] or None
+
 
 def restore_engine(cli_value, saved, key_lookup=None):
     """启动时决定翻译引擎：命令行显式指定 > 界面上次的选择 > auto。
@@ -100,6 +133,20 @@ class CachedTranslator:
         """内层引擎的额度标志透传出来——管线拿到的是缓存包装后的对象。"""
         return getattr(self.inner, "quota_exhausted", False)
 
+    # 下面三个同理：管线要看内层引擎自己记下的最近一次 HTTP 回应。缓存命中不改变
+    # 它们——命中只说明这句以前译过，不说明引擎现在还能用
+    @property
+    def last_error(self):
+        return getattr(self.inner, "last_error", None)
+
+    @property
+    def fail_streak(self):
+        return getattr(self.inner, "fail_streak", 0)
+
+    @property
+    def cooldown_until(self):
+        return getattr(self.inner, "cooldown_until", 0.0)
+
     async def translate(self, text, target, source="auto", glossary=None):
         # 词表可以是紧凑串，也可以是词对列表（见 _as_pairs）。列表不可哈希，
         # 直接拿来做缓存键会抛 TypeError 把这次翻译整个打掉——调用方少写一个
@@ -127,9 +174,32 @@ class CachedTranslator:
 class BaseTranslator:
     name = "base"
     TIMEOUT = 10  # 秒
+    # 对方明确不接受这把密钥（401/403）或找不到模型/地址（404）：重试不会自己变好，
+    # 暂停一段时间再试，别在每条字幕上继续撞
+    REJECT_STATUSES = (401, 403, 404)
+    REJECT_COOLDOWN_SEC = 120
 
     def __init__(self):
         self._session = None
+        self._cooldown_until = 0.0
+        # 最近一次失败的 HTTP 回应：(状态码, 对方的原话或 None)。拿到 200 就清空。
+        # 以前任何非 200 都只回 None，状态码和原因当场丢掉，整场翻译失败却查不出为什么
+        self.last_error = None
+        # 连续几次拿到非 200 的 HTTP 回应；拿到 200 归零。连不上（没有回应）不计也不清
+        self.fail_streak = 0
+
+    @property
+    def cooldown_until(self):
+        """暂停请求到哪一刻（time.monotonic() 的读数）；不在暂停时是过去的某个值。"""
+        return getattr(self, "_cooldown_until", 0.0)
+
+    def _note_ok(self):
+        self.last_error = None
+        self.fail_streak = 0
+
+    def _note_http_error(self, status, text=None):
+        self.last_error = (int(status), clean_error_text(text))
+        self.fail_streak = getattr(self, "fail_streak", 0) + 1
 
     async def session(self):
         import aiohttp  # 延迟导入：让 --doctor 在依赖未装时也能运行
@@ -173,11 +243,14 @@ class GoogleWebTranslator(BaseTranslator):
             async with session.get(self.URL, params=params) as resp:
                 if resp.status == 429:
                     self._cooldown_until = time.monotonic() + self.COOLDOWN_SEC
-                    print("[警告] Google 翻译接口被限流（429），"
-                          "暂停请求 {} 秒后自动恢复".format(self.COOLDOWN_SEC))
+                    self._note_http_error(429)
+                    print("[警告] Google 翻译接口返回 HTTP 429，"
+                          "暂停请求 {} 秒后自动重试".format(self.COOLDOWN_SEC))
                     return None
                 if resp.status != 200:
+                    self._note_http_error(resp.status)
                     return None
+                self._note_ok()
                 data = await resp.json(content_type=None)
             if not data or not data[0]:
                 return None
@@ -406,11 +479,12 @@ class DeepLTranslator(BaseTranslator):
             status, data = await self._api("POST", "/v2/translate", body=body)
             if status in (429, 456):
                 self._cooldown_until = time.monotonic() + 120
+                self._note_http_error(status)
                 if status == 456:
                     self.quota_exhausted = True
-                print("[警告] DeepL {}（{}），暂停 120 秒".format(
+                print("[警告] DeepL 返回 HTTP {}（{}），暂停 120 秒".format(
                     status,
-                    "本月额度已用尽" if status == 456 else "被限流"))
+                    "本月额度已用尽" if status == 456 else "请求过多"))
                 return None
             if status == 400 and gid:
                 # 表可能被人在 DeepL 后台删了。丢掉缓存、这次先不带表翻，
@@ -419,8 +493,18 @@ class DeepLTranslator(BaseTranslator):
                                         self._GLOSSARY_TARGET.get(target)), None)
                 retry = {k: v for k, v in body.items() if k != "glossary_id"}
                 status, data = await self._api("POST", "/v2/translate", body=retry)
-            if status != 200:
+            if status in self.REJECT_STATUSES:
+                # 密钥被拒 / 地址不对：和 429 一样暂停。界面上重填密钥会建一个新的
+                # 引擎对象，这个冷却随旧对象一起作废，不会拖住修好的密钥
+                self._cooldown_until = time.monotonic() + self.REJECT_COOLDOWN_SEC
+                self._note_http_error(status)
+                print("[警告] DeepL 返回 HTTP {}，暂停请求 {} 秒".format(
+                    status, self.REJECT_COOLDOWN_SEC))
                 return None
+            if status != 200:
+                self._note_http_error(status)
+                return None
+            self._note_ok()
             items = data.get("translations") or []
             return (items[0].get("text") or "").strip() or None if items else None
         except Exception:
@@ -440,7 +524,25 @@ class ClaudeTranslator(BaseTranslator):
         if not self.api_key:
             raise RuntimeError("还没有填 Claude 密钥——在页面上的「翻译引擎」里填一次即可")
 
+    # 自检探针查的是这个模型本身：模型下线时回 404，而不只是验密钥
+    PROBE_CHECKS_MODEL = True
+
+    async def probe_key(self):
+        """不花 token 的探针：GET /v1/models/{模型}，返回 HTTP 状态码。
+        连不上时抛异常，由调用方处理（自检那边限时 5 秒）。"""
+        from urllib.parse import quote
+
+        headers = {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"}
+        url = self.URL.rsplit("/", 1)[0] + "/models/" + quote(self.MODEL, safe="")
+        session = await self.session()
+        async with session.get(url, headers=headers) as resp:
+            return resp.status
+
     async def translate(self, text, target, source="auto", glossary=None):
+        import time
+
+        if time.monotonic() < self._cooldown_until:
+            return None             # 密钥或模型刚被拒过：冷却期内不再发
         lang = LANG_NAMES.get(target, target)
         body = {
             "model": self.MODEL,
@@ -459,7 +561,12 @@ class ClaudeTranslator(BaseTranslator):
             session = await self.session()
             async with session.post(self.URL, data=json.dumps(body), headers=headers) as resp:
                 if resp.status != 200:
+                    # 只记状态码：远程接口的错误说明里可能带着打码后的密钥片段
+                    self._note_http_error(resp.status)
+                    if resp.status in self.REJECT_STATUSES:
+                        self._cooldown_until = time.monotonic() + self.REJECT_COOLDOWN_SEC
                     return None
+                self._note_ok()
                 data = await resp.json()
             return (data.get("content") or [{}])[0].get("text", "").strip() or None
         except Exception:
@@ -477,10 +584,25 @@ class OpenAITranslator(BaseTranslator):
         if not self.api_key:
             raise RuntimeError("还没有填 OpenAI 密钥——在页面上的「翻译引擎」里填一次即可")
         base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        self.base = base
         self.url = base + "/chat/completions"
         self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
+    # OpenAI 兼容接口（OPENAI_BASE_URL）未必提供按模型查询，探针只列模型、只验密钥
+    PROBE_CHECKS_MODEL = False
+
+    async def probe_key(self):
+        """不花 token 的探针：GET {base}/models，返回 HTTP 状态码；连不上抛异常。"""
+        headers = {"Authorization": "Bearer " + self.api_key}
+        session = await self.session()
+        async with session.get(self.base + "/models", headers=headers) as resp:
+            return resp.status
+
     async def translate(self, text, target, source="auto", glossary=None):
+        import time
+
+        if time.monotonic() < self._cooldown_until:
+            return None             # 密钥或模型刚被拒过：冷却期内不再发
         lang = LANG_NAMES.get(target, target)
         body = {
             "model": self.model,
@@ -498,7 +620,12 @@ class OpenAITranslator(BaseTranslator):
             session = await self.session()
             async with session.post(self.url, data=json.dumps(body), headers=headers) as resp:
                 if resp.status != 200:
+                    # 只记状态码：OpenAI 的 401 说明里带着打码后的密钥片段
+                    self._note_http_error(resp.status)
+                    if resp.status in self.REJECT_STATUSES:
+                        self._cooldown_until = time.monotonic() + self.REJECT_COOLDOWN_SEC
                     return None
+                self._note_ok()
                 data = await resp.json()
             return data["choices"][0]["message"]["content"].strip() or None
         except Exception:
@@ -507,6 +634,22 @@ class OpenAITranslator(BaseTranslator):
 
 # TranslateGemma 用的语言代码与我们 UI 代码的差异映射
 _GEMMA_CODES = {"zh-CN": "zh-Hans", "zh-TW": "zh-Hant"}
+
+
+async def _ollama_error_text(resp):
+    """Ollama 非 200 回应里它自己的说明（回应体是 {"error": "..."}）；读不到返回 None。
+    原样转述给中控和审计，不替它猜原因。"""
+    try:
+        raw = await resp.text()
+    except Exception:
+        return None
+    try:
+        said = json.loads(raw).get("error")
+        if said:
+            return str(said)
+    except Exception:
+        pass
+    return raw or None
 
 
 class OllamaGemmaTranslator(BaseTranslator):
@@ -574,7 +717,9 @@ class OllamaGemmaTranslator(BaseTranslator):
             session = await self.session()
             async with session.post(self.url, data=json.dumps(body)) as resp:
                 if resp.status != 200:
+                    self._note_http_error(resp.status, await _ollama_error_text(resp))
                     return None
+                self._note_ok()
                 data = await resp.json()
             return (data.get("response") or "").strip() or None
         except Exception:
@@ -706,7 +851,11 @@ class OllamaHyMT2Translator(BaseTranslator):
             session = await self.session()
             async with session.post(self.url, data=json.dumps(body)) as resp:
                 if resp.status != 200:
+                    # 404 = 这台 Ollama 里没有这个模型，500 = 载入失败……原话留着，
+                    # 管线连续几次后把它原样告诉中控并记审计
+                    self._note_http_error(resp.status, await _ollama_error_text(resp))
                     return None
+                self._note_ok()
                 data = await resp.json()
             if data.get("done_reason") == "length":
                 # 撞到长度上限。实测 70 句真实翻译无一撞到，所以撞了就说明
@@ -835,8 +984,9 @@ def _as_pairs(glossary):
     return list(glossary)
 
 
-def _ollama_models():
-    """启动时的一次性同步探测：Ollama 在跑的话，返回已拉取的模型名列表。"""
+def _ollama_models_or_none():
+    """同步探测 /api/tags：Ollama 在跑就返回已拉取的模型名列表，连不上返回 None。
+    「没在跑」和「在跑但没有这个模型」必须分得开——前者该启动它，后者该下载模型。"""
     import urllib.request
 
     base = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -845,7 +995,24 @@ def _ollama_models():
             data = json.load(resp)
         return [m.get("name", "") for m in data.get("models", [])]
     except Exception:
-        return []
+        return None
+
+
+def _ollama_models():
+    """启动时的一次性同步探测：Ollama 在跑的话，返回已拉取的模型名列表。"""
+    return _ollama_models_or_none() or []
+
+
+def model_listed(model, names):
+    """names（/api/tags 的模型名）里有没有 model 这一个。按 Ollama 的规矩比：不分
+    大小写、没写标签等于 :latest。和 _ollama_has 的子串判断不同，这里认的是生成时
+    真找得到的那个名字——量化后缀不一样，/api/generate 照样回 404。"""
+    def norm(name):
+        name = str(name or "").strip().lower()
+        return name if ":" in name.rsplit("/", 1)[-1] else name + ":latest"
+
+    want = norm(model)
+    return any(norm(n) == want for n in (names or ()))
 
 
 def _ollama_has(marker):

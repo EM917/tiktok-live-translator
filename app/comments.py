@@ -26,6 +26,21 @@ _CJK_RE = re.compile(r"[㐀-鿿]")
 # 我们喂进去的编号原样保留甚至换个符号，统一在这里剥掉。
 _LEADING_NUM_RE = re.compile(r"^\s*\d+\s*[.。、)）:：]\s*")
 
+# 弹幕只用常驻的本地快速模型翻：hymt2（1.8B）和 gemma。
+#   * hymt2-7b 不算——弹幕绝不用 7B（见模块开头的铁律）；
+#   * 远程引擎也不算。弹幕约 0.3 秒一批，比字幕（约 9 秒一条）密得多：打在 Google
+#     免费接口上会让它回 429，整个引擎实例暂停 120 秒，字幕和（没有本地强模型时的）
+#     报警上下文跟着一起没有译文；打在 DeepL 上是在花按字符计费的额度。
+# 其它引擎下弹幕只显示原文，每场提示一次。
+COMMENT_ENGINES = ("hymt2", "gemma")
+REMOTE_ENGINE_HINT = "当前翻译引擎不是本地模型，弹幕只显示原文"
+_NOT_YET = object()
+
+
+def engine_allows_comments(translator):
+    """这个引擎能不能拿来翻弹幕（见 COMMENT_ENGINES）。"""
+    return translator is not None and getattr(translator, "name", None) in COMMENT_ENGINES
+
 
 def needs_translation(text, target):
     """这段弹幕值不值得（也翻不翻得出）过一次翻译引擎。
@@ -89,12 +104,16 @@ class CommentTranslator:
     DEDUPE_ID_HISTORY = 500
     DEDUPE_CONTENT_SEC = 60.0
 
-    def __init__(self, broadcast, translator, target, glossary=None, busy=None):
+    def __init__(self, broadcast, translator, target, glossary=None, busy=None,
+                 session=None):
         """broadcast: async fn(msg)。translator/target/glossary：零参可调用
         （getter）——引擎能在界面里热切换、目标语言能改，弹幕翻译不能拿着
         构造时刻的快照用一整场。busy：零参可调用 -> bool，字幕翻译排队/在途
-        时返回 True，弹幕翻译据此让路。
+        时返回 True，弹幕翻译据此让路。session：零参可调用，返回「这一场」的
+        标识（管线传审计对象），「弹幕只显示原文」的提示每场只发一次。
         """
+        self._session = session if session is not None else (lambda: None)
+        self._hinted_session = _NOT_YET
         self._broadcast = broadcast
         self._translator = translator
         self._target = target
@@ -169,15 +188,21 @@ class CommentTranslator:
     async def _enqueue(self, cid, user, text, ts):
         translator = self._translator()
         target = self._target()
+        hint = False
         if translator is None:
             state = "skipped"          # engine=none：只显示原文
         elif not needs_translation(text, target):
             state = "same"             # 已是目标语言，或没有可译内容
+        elif not engine_allows_comments(translator):
+            state = "skipped"          # 不是常驻本地模型：只显示原文（见 COMMENT_ENGINES）
+            hint = True
         else:
             state = "pending"
         await self._broadcast({"type": "comment", "id": cid, "user": user,
                                "text": text, "ts": ts, "translated": None,
                                "state": state})
+        if hint:
+            await self._hint_original_only()
         if state != "pending":
             return
         queue = self._q()
@@ -191,6 +216,14 @@ class CommentTranslator:
                                        "translated": None, "state": "dropped"})
         await queue.put({"id": cid, "user": user, "text": text, "ts": ts})
         self._ensure_worker()
+
+    async def _hint_original_only(self):
+        """「弹幕只显示原文」每场说一次：每条弹幕都说一遍会把提示区刷爆。"""
+        session = self._session()
+        if self._hinted_session is session:
+            return
+        self._hinted_session = session
+        await self._safe_broadcast({"type": "notice", "text": REMOTE_ENGINE_HINT})
 
     def _ensure_worker(self):
         if self._worker_task is None or self._worker_task.done():
@@ -242,10 +275,12 @@ class CommentTranslator:
         # 每批开头抓一次快照：引擎可能在这批翻译进行中被界面上的操作换掉，
         # 但这一批必须自始至终用同一个对象，行为才可预期。
         translator = self._translator()
-        if translator is None:
+        if not engine_allows_comments(translator):
+            # 入队之后引擎被关掉，或被换成了非本地模型：这批不送出去，原样显示原文
+            state = "failed" if translator is None else "skipped"
             for item in batch:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
-                                            "translated": None, "state": "failed"})
+                                            "translated": None, "state": state})
             return
         target = self._target()
         glossary = self._glossary()
