@@ -717,6 +717,10 @@
   var alertSession = null;   // 当前场次 { session, streamer, total }，服务端在 config 里给
   var sessionTotal = 0;      // 本场报警总数（面板只留最近 50 条）
   var attention = { unseen: 0, restoreTo: null };   // 窗口在后台时标题上的提醒
+  // 桌面窗口（pywebview）的原生标题不跟 document.title：条数经 JS 桥另外告诉窗口
+  // （app/window_attention.py）。浏览器里没有 window.pywebview，这几行什么都不做
+  var windowBridge = { sent: 0, seq: 0 };
+  var windowPage = Math.random().toString(36).slice(2);
 
   function renderAlert(msg) {
     alertPanel.classList.remove("hidden");
@@ -762,6 +766,7 @@
     // 回放的报警不改标题（noteAlert 里挡掉）：那是补发的历史，不是新情况
     attention = noteAlert(attention, msg, pageActive(), document.title);
     if (attention.title) document.title = attention.title;
+    syncWindowAttention(false);
   }
 
   function markAlertItem(item) {
@@ -810,6 +815,19 @@
     if (!attention.unseen || !pageActive()) return;
     attention = noteActive(attention, document.title);
     if (attention.title) document.title = attention.title;
+    syncWindowAttention(false);
+  }
+
+  function syncWindowAttention(force) {
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.set_attention !== "function") return;
+    var next = windowAttentionUpdate(windowBridge, attention.unseen, force);
+    windowBridge = { sent: next.sent, seq: next.seq };
+    if (next.send === null) return;
+    try {
+      var pending = api.set_attention(next.send, windowPage, next.seq);
+      if (pending && typeof pending.catch === "function") pending.catch(function () {});
+    } catch (e) { /* 桥出错不影响报警面板本身 */ }
   }
 
   document.addEventListener("visibilitychange", clearAttention);
@@ -818,6 +836,9 @@
   document.addEventListener("keydown", clearAttention);
   // 兜底：窗口本来就在前台、没有再触发 focus 时，也要把标题换回来
   setInterval(clearAttention, 2000);
+  // 页面刚加载（含刷新）时照发一次：上一个页面留在窗口标题上的提醒要清掉
+  window.addEventListener("pywebviewready", function () { syncWindowAttention(true); });
+  if (window.pywebview && window.pywebview.api) syncWindowAttention(true);
 
   function updateAlert(msg) {
     var item = alertList.querySelector('[data-alert-id="' + msg.alert_id + '"]');

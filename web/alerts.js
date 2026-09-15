@@ -37,6 +37,17 @@ function noteActive(state, currentTitle) {
   return { unseen: 0, restoreTo: null, title: title };
 }
 
+/* 桌面窗口的原生标题要单独同步：pywebview 不跟 document.title（见 app/window_attention.py）。
+   bridge = { sent, seq }，返回新的 bridge，另带 send：要告诉窗口的条数，null 表示不用发。
+   条数变了才发；force（页面刚加载、JS 桥刚就绪）时照发一次，把上一个页面留在窗口标题上的
+   提醒清掉。seq 每发一次加一：Python 那边每次 JS 调用各开一个线程，靠它丢掉晚到的旧调用。 */
+function windowAttentionUpdate(bridge, unseen, force) {
+  var b = bridge || { sent: 0, seq: 0 };
+  var n = unseen || 0;
+  if (!force && n === b.sent) return { sent: b.sent, seq: b.seq, send: null };
+  return { sent: n, seq: b.seq + 1, send: n };
+}
+
 /* 这条报警是不是别的场次的（换过主播，或上一场留下的）。没有场次标记的报警不判。 */
 function isOtherSession(msg, currentSession) {
   return !!(msg && msg.session && currentSession && msg.session !== currentSession);
@@ -51,5 +62,5 @@ function sessionNote(total, shown) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { alertTitle, isAlertTitle, noteAlert, noteActive, isOtherSession,
-                     sessionNote, ALERT_PANEL_CAP };
+                     sessionNote, windowAttentionUpdate, ALERT_PANEL_CAP };
 }

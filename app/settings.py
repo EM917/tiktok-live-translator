@@ -16,7 +16,7 @@ _corrupt = {"backup": None, "announced": False}
 def load_settings():
     """读出全部设置。文件缺失、读不了、或是合法 JSON 但不是对象时返回空 dict。
 
-    解析不了（不是合法 JSON、不是 UTF-8、0 字节）时，先把文件改名备份成
+    解析不了（不是合法 JSON、编码认不出、0 字节）时，先把文件改名备份成
     settings.json.corrupt-<时间>，再返回空 dict。以前直接返回 {}：启动几秒内
     必然有一次 save_setting（更新器记时间戳、开播记房间）在这个 {} 上合并写回，
     DeepL 等密钥、引擎选择、最近直播间被静默抹掉，连原文件都不剩。
@@ -26,7 +26,11 @@ def load_settings():
     except OSError:
         return {}
     try:
-        data = json.loads(raw.decode("utf-8"))
+        # 整段字节交给 json，由它认编码：带 BOM 的 UTF-8（PowerShell 5.1 的
+        # Set-Content -Encoding UTF8、老版记事本）和 UTF-16（PowerShell 5.1 的 > 或
+        # Out-File、记事本存成「Unicode」）都读得出来。手改粘密钥正是这样存出来的，
+        # 合法的文件不能被当成损坏挪走
+        data = json.loads(raw)
     except Exception:            # JSONDecodeError、UnicodeDecodeError……
         _backup_corrupt(raw)
         return {}

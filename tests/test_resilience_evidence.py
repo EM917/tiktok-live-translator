@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import alert_notify, selfcheck, settings, window_close
+from app import alert_notify, selfcheck, settings, window_attention, window_close
 from app import audit as audit_mod
 from app import pipeline as pipeline_mod
 from app.audit import AuditLog, clean_error
@@ -256,7 +256,19 @@ def test_real_socket_that_never_reads_is_aborted_and_the_healthy_page_keeps_rece
                 worst = max(worst, time.monotonic() - t0)
             assert dropped in (["send_timeout"], ["buffer_full"])
             assert worst < 2.5
-            assert len(s.clients) == 1
+            assert len(s.clients) == 1 and len(s._transports) == 1
+            # 被断开的连接必须真的断掉（abort）：只是不再给它发的话，页面解冻后守着一条
+            # 静默的连接，既收不到新报警，也不会重连去补回。实测断开后约 10 毫秒读到 EOF
+            raw.setblocking(False)
+            closed, deadline = False, time.monotonic() + 2.0
+            while not closed and time.monotonic() < deadline:
+                try:
+                    closed = raw.recv(65536) == b""
+                except BlockingIOError:
+                    await asyncio.sleep(0.01)
+                except ConnectionError:           # RST 也是断开
+                    closed = True
+            assert closed
             for _ in range(300):
                 if len(ids) >= n:
                     break
@@ -437,6 +449,7 @@ def test_a_write_failure_on_another_thread_raises_one_banner_and_recovery_replac
     async def go():
         p.audit = AuditLog(room_url="https://www.tiktok.com/@bella/live", log_dir=tmp_path)
         await p._watch_audit("bella")
+        hooked = p.audit.on_write_error is not None
         flaky = FlakyFile(p.audit._fh)
         p.audit._fh = flaky
         flaky.full = True
@@ -448,6 +461,8 @@ def test_a_write_failure_on_another_thread_raises_one_banner_and_recovery_replac
             if p.server.incidents("session:audit-write"):
                 break
             await asyncio.sleep(0.01)
+        # 横幅要来自写失败回调（切回事件循环），不是等 _stats_loop 10 秒一次的轮询
+        immediate = list(p.server.incidents("session:audit-write"))
         await p._check_audit_health()               # 仍在失败：不重复提示
         await p._check_audit_health()
         failing = p.server.incidents("session:audit-write")
@@ -455,9 +470,11 @@ def test_a_write_failure_on_another_thread_raises_one_banner_and_recovery_replac
         p.audit.segment(21, res("ya"), 1.0, 1.0, [])
         await p._check_audit_health()
         await p._check_audit_health()
-        return failing
+        return hooked, immediate, failing
 
-    failing = run(go())
+    hooked, immediate, failing = run(go())
+    assert hooked
+    assert len(immediate) == 1 and immediate[0]["level"] == "error"
     assert len(failing) == 1 and failing[0]["level"] == "error"
     assert "审计日志写不进去" in failing[0]["text"] and "No space" in failing[0]["text"]
     assert_plain(failing[0]["text"])
@@ -629,6 +646,54 @@ def test_alerts_carry_streamer_session_page_count_and_session_total(monkeypatch,
     assert p._alert_notifier.alerts == 2
 
 
+class FakeTitleWindow:
+    """pywebview Window 的样子：expose 按 __name__ 挂函数，set_title 改原生标题。"""
+
+    def __init__(self, fail=False):
+        self.titles = []
+        self.exposed = {}
+        self.fail = fail
+
+    def expose(self, *fns):
+        for fn in fns:
+            self.exposed[fn.__name__] = fn
+
+    def set_title(self, title):
+        if self.fail:
+            raise RuntimeError("窗口已经关了")
+        self.titles.append(title)
+
+
+def test_the_desktop_window_title_follows_unseen_alerts():
+    window = FakeTitleWindow()
+    assert window_attention.expose_attention(window) is not None
+    call = window.exposed["set_attention"]                 # 页面里是 pywebview.api.set_attention
+    assert call(2, "page-a", 1) is True
+    assert window.titles == ["(2) 疑似违禁词 · TikTok 直播同传"]   # 与 web/alerts.js 的 alertTitle 一致
+    assert call(2, "page-a", 2) is False                  # 条数没变：不重设
+    assert call(0, "page-a", 3) is True                   # 中控回到窗口
+    assert window.titles[-1] == "TikTok 直播同传"
+    assert call(3, "page-a", 3) is False                  # JS 桥里晚到的旧调用：丢掉
+    assert call(3, "page-a", 2) is False
+    assert window.titles[-1] == "TikTok 直播同传"
+    assert call(1, "page-b", 1) is True                   # 刷新后的页面从头数 seq，照认
+    assert window.titles[-1].startswith("(1) ")
+    assert len(window.titles) == 3
+
+
+def test_the_window_title_bridge_never_raises_and_retries_after_a_failure():
+    window = FakeTitleWindow(fail=True)
+    assert window_attention.expose_attention(window) is not None
+    call = window.exposed["set_attention"]
+    assert call(3, "p", 1) is False and window.titles == []
+    window.fail = False
+    assert call(3, "p", 2) is True                        # 上次没设上：这次照设
+    for bad in ("x", None, float("inf")):
+        assert call(bad, "p", 9) is False
+    assert call(10 ** 9, "p", 10) is True and window.titles[-1].startswith("(999) ")
+    assert window_attention.expose_attention(SimpleNamespace()) is None   # 老 pywebview 没有 expose
+
+
 def test_os_notification_is_sent_off_the_loop_only_when_a_burst_starts():
     class Notifier:
         def __init__(self):
@@ -738,6 +803,19 @@ def test_unparsable_settings_are_backed_up(settings_file, tmp_path, content):
     settings_file.write_bytes(content)
     assert settings.load_settings() == {}
     assert len(list(tmp_path.glob("settings.json.corrupt-*"))) == 1
+
+
+@pytest.mark.parametrize("content", [
+    b'\xef\xbb\xbf{"k": 1}',          # 带 BOM 的 UTF-8：PowerShell 5.1 Set-Content -Encoding UTF8
+    '{"k": 1}'.encode("utf-16"),     # 带 BOM 的 UTF-16：PowerShell 5.1 的 >、记事本「Unicode」
+])
+def test_hand_edited_settings_with_a_bom_are_read_not_backed_up(settings_file, tmp_path,
+                                                                 content):
+    settings_file.write_bytes(content)
+    assert settings.load_settings() == {"k": 1}
+    assert settings_file.exists()
+    assert not list(tmp_path.glob("settings.json.corrupt-*"))
+    assert settings.corrupt_backup_name() is None
 
 
 def test_missing_or_non_object_settings_are_not_backed_up(settings_file, tmp_path):

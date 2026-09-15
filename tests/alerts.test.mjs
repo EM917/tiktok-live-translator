@@ -69,3 +69,16 @@ test("本场总数多于面板上的条数时说出来", () => {
   assert.equal(A.sessionNote(12, 0), "显示最近 0 条，本场共 12 条");
   assert.equal(A.ALERT_PANEL_CAP, 50);
 });
+
+test("桌面窗口标题：条数变了才告诉窗口，页面刚加载时照发一次清掉旧提醒", () => {
+  let r = A.windowAttentionUpdate({ sent: 0, seq: 0 }, 0, false);
+  assert.equal(r.send, null);
+  r = A.windowAttentionUpdate({ sent: 0, seq: 0 }, 0, true);
+  assert.deepEqual(r, { sent: 0, seq: 1, send: 0 });
+  r = A.windowAttentionUpdate({ sent: r.sent, seq: r.seq }, 2, false);
+  assert.deepEqual(r, { sent: 2, seq: 2, send: 2 });
+  const same = A.windowAttentionUpdate({ sent: 2, seq: 2 }, 2, false);
+  assert.deepEqual(same, { sent: 2, seq: 2, send: null });
+  const back = A.windowAttentionUpdate({ sent: 2, seq: 2 }, 0, false);
+  assert.deepEqual(back, { sent: 0, seq: 3, send: 0 });
+});

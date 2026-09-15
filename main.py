@@ -541,9 +541,11 @@ def run_with_window(args):
             _info_dialog("程序已经在运行，这次给的直播间地址没有自动开始。\n"
                          "请在已打开的窗口里粘贴地址后点「开始翻译」。")
         from app.macbrand import brand_mac_app
+        from app.window_attention import expose_attention
         brand_mac_app(ROOT)
-        webview.create_window("TikTok 直播同传", existing,
-                              width=1000, height=760, min_size=(420, 480))
+        window = webview.create_window("TikTok 直播同传", existing,
+                                       width=1000, height=760, min_size=(420, 480))
+        expose_attention(window)
         webview.start()
         return
 
@@ -577,6 +579,7 @@ def run_with_window(args):
 
     url = "http://127.0.0.1:{}".format(state["ready_port"])
     from app.macbrand import brand_mac_app
+    from app.window_attention import expose_attention
     from app.window_close import guard_close, localization_kwargs, stop_after_close
     brand_mac_app(ROOT)
     try:
@@ -585,6 +588,8 @@ def run_with_window(args):
         window = webview.create_window("TikTok 直播同传", url,
                                        width=1000, height=760, min_size=(420, 480), **loc)
         guard_close(window, state.get("pipeline"))
+        # 窗口被盖住时新报警改原生标题：pywebview 的标题不跟页面的 document.title
+        expose_attention(window)
         webview.start(**({} if loc else localization_kwargs(webview.start)))
     except Exception as exc:
         # 本机没有可用的 webview 后端（如部分 Linux 桌面）——退回浏览器
