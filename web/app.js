@@ -62,6 +62,7 @@
   var commentById = Object.create(null);
   var statsEl = document.getElementById("stats-line");
   var healthBar = document.getElementById("health-bar");
+  var incidentBar = document.getElementById("incident-bar");
   var watchState = document.getElementById("watch-state");
   var watchDesc = document.getElementById("watch-desc");
   var fixCmd = document.getElementById("fix-command");
@@ -396,6 +397,14 @@
           if (msg.config.recent_rooms) renderRecentRooms(msg.config.recent_rooms);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
+          // 持续提示以服务端为准：重连时整份重放，先清掉本地的
+          incidents = Object.create(null);
+          if (msg.config.incidents) {
+            Object.keys(msg.config.incidents).forEach(function (k) {
+              renderIncident(msg.config.incidents[k]);
+            });
+          }
+          drawIncidents();
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
           if (msg.config.source_lang && !sourceTouched) sourceSel.value = msg.config.source_lang;
@@ -473,6 +482,9 @@
         break;
       case "stats":
         renderStats(msg);
+        break;
+      case "incident":
+        renderIncident(msg);
         break;
       case "health":
         renderHealth(msg);
@@ -974,6 +986,38 @@
   }
 
   // 识别落后时必须让中控看见——假装一切正常比晚几秒报警危险得多
+  // 持续提示（电脑休眠过、审计日志写不进去、识别改用 CPU……）：按 id 覆盖，level=clear 去掉。
+  // 和 health（识别积压，会被「已追上」覆盖）、notice（几秒后消失）不同：这类状况中控必须
+  // 看到，刷新页面也还在（服务端放在 hello 的 config.incidents 里）。
+  var incidents = Object.create(null);
+
+  function renderIncident(msg) {
+    if (!msg || !msg.id) return;
+    if (msg.level === "clear") {
+      delete incidents[msg.id];
+    } else {
+      incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "",
+                            since: msg.since || msg.ts || 0 };
+    }
+    drawIncidents();
+  }
+
+  function drawIncidents() {
+    if (!incidentBar) return;
+    incidentBar.innerHTML = "";
+    var keys = Object.keys(incidents).sort(function (a, b) {
+      return (incidents[a].since || 0) - (incidents[b].since || 0);
+    });
+    keys.forEach(function (k) {
+      var row = document.createElement("div");
+      var level = incidents[k].level;
+      row.className = "incident " + (level === "error" ? "error" : (level === "info" ? "info" : "warn"));
+      row.textContent = incidents[k].text;      // 当数据，不当 HTML
+      incidentBar.appendChild(row);
+    });
+    incidentBar.classList.toggle("hidden", keys.length === 0);
+  }
+
   function renderHealth(msg) {
     if (msg.level === "ok") {
       healthBar.classList.add("hidden");

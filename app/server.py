@@ -173,6 +173,23 @@ class CaptionServer:
                     c["translated"] = msg.get("translated")
                     c["state"] = msg.get("state")
                     break
+        elif msg.get("type") == "incident":
+            # 持续提示：按 id 覆盖，level=clear 去掉；落进 config，刷新或重连的页面照样看得到。
+            # 最多留 20 条，超出时丢最久没更新的那条
+            key = str(msg.get("id") or "")
+            if key:
+                incidents = self.config.setdefault("incidents", {})
+                if msg.get("level") == "clear":
+                    incidents.pop(key, None)
+                else:
+                    now = msg.get("ts") if msg.get("ts") is not None else time.time()
+                    prev = incidents.get(key)
+                    incidents[key] = {"id": key, "level": msg.get("level") or "warn",
+                                      "text": msg.get("text") or "",
+                                      "since": prev["since"] if prev else now, "ts": now}
+                    while len(incidents) > 20:
+                        oldest = min(incidents.values(), key=lambda x: x["ts"])
+                        incidents.pop(oldest["id"], None)
         elif msg.get("type") == "status":
             # command 必须一起留存：它常常是用户当下唯一的出路，
             # 刷新一下页面就没了的话，等于没给。

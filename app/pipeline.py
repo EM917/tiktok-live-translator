@@ -424,6 +424,25 @@ class Pipeline:
             return "lagging"
         return "ok"
 
+    async def _incident(self, key, level, text=""):
+        """在界面顶部持续显示、直到明确清除的提示（电脑休眠过、审计日志写不进去、
+        识别改用 CPU、网络断了……）。key 相同的覆盖同一条，level="clear" 去掉。
+
+        和 health（识别积压，会被「已追上」覆盖）、notice（几秒后消失）不同：这类状况
+        中控必须看到，刷新页面也还在。key 以 "session:" 开头的只属于这一场，下一场
+        开始时自动清掉；其余的一直留到发出 clear。文字只写观察到的事实和能做的事。"""
+        if level == "clear":
+            print("[提示] {} 已清除".format(key))
+        else:
+            print("[提示] {}".format(text))
+        await self.server.broadcast({"type": "incident", "id": key, "level": level,
+                                     "text": text, "ts": time.time()})
+
+    async def _clear_session_incidents(self):
+        incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
+        for key in [k for k in list(incidents) if str(k).startswith("session:")]:
+            await self._incident(key, "clear")
+
     async def _announce_health(self, level, backlog_sec):
         if level == "degraded":
             text = ("🔴 检测已降级：识别落后 {:.0f} 秒，仍在继续处理（不会漏掉这段音频）"
@@ -438,6 +457,7 @@ class Pipeline:
                                      "text": text})
 
     async def _run_stream_inner(self, url):
+        await self._clear_session_incidents()     # 上一场的持续提示不属于这一场
         await self._begin_session(url)
         # 记住**本会话自己的** audit：旧流任务可能取消不掉（识别一段要几十秒
         # 时，3 秒宽限必然超时、_stop_locked 放手让它自行收尾），等它终于走到
