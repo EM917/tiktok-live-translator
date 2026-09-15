@@ -166,9 +166,10 @@ def test_unreachable_index_is_a_failed_check_not_no_update(monkeypatch, capsys):
     还进了六小时冷却。现在先问索引，连不上就是检查失败。"""
     up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1",), index=(False, None))
     result = run(up.freshen_tiktoklive("comment-rejected"))
-    assert result["outcome"] == "pip-failed" and result["code"] == "index-unreachable"
+    assert result["outcome"] == "pip-failed" and result["code"] == "index-query-failed"
     assert pip_calls == [] and "tiktoklive_freshen_at" not in store
-    assert "包索引连不上" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "pip index" in out and "连不上" not in out      # 只记看到的，不下结论
     assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "recently-failed"
 
 
@@ -188,12 +189,65 @@ def test_index_versions_parsing(monkeypatch):
     monkeypatch.setattr(up, "_pip_capture", fake_capture)
     replies["r"] = (0, "TikTokLive (8.0.0)\nAvailable versions: 8.0.0, 7.1.0b1, 7.0.2, 7.0.1, 7.0.0\n", "")
     assert run(up._tiktoklive_index_versions()) == (True, "7.0.2")
-    replies["r"] = (1, "", "ERROR: Could not fetch URL https://pypi.org/simple/tiktoklive/")
+    replies["r"] = (0, "TikTokLive (7.0.1.post1)\nAvailable versions: 7.0.1.post1, 7.0.1, 7.0.0\n", "")
+    assert run(up._tiktoklive_index_versions()) == (True, "7.0.1.post1")
+    replies["r"] = (0, "TikTokLive (8.0.0)\nAvailable versions: 8.0.0\n", "")
+    assert run(up._tiktoklive_index_versions()) == (True, None)
+    replies["r"] = (1, "", "WARNING: Retrying...\nERROR: No matching distribution found for TikTokLive")
     assert run(up._tiktoklive_index_versions()) == (False, None)
+    assert up._index_query_detail == "pip index 返回 1：ERROR: No matching distribution found for TikTokLive"
     replies["r"] = (1, "", "ERROR: unknown command \"index\"")
     assert run(up._tiktoklive_index_versions()) == (None, None)
     replies["r"] = (None, "", "timeout")
     assert run(up._tiktoklive_index_versions()) == (False, None)
+    assert "没有返回" in up._index_query_detail
+
+
+def test_newer_post_release_is_installed_not_skipped(monkeypatch):
+    """第三轮核对确认：7(.N){1,2} 的正则会跳过 7.0.1.post1 这种补丁后续版。"""
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1.post1"),
+                                    index=(True, "7.0.1.post1"))
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "upgraded"
+    assert len(pip_calls) == 1
+
+
+def test_pip_capture_kills_the_child_on_timeout_and_on_cancel(monkeypatch):
+    """第三轮核对确认：以前只在超时时收掉子进程，被取消时 pip index 会留着没人等。"""
+    killed, waited = [], []
+
+    class Proc:
+        returncode = None
+
+        async def communicate(self):
+            await asyncio.sleep(3600)
+
+        def kill(self):
+            killed.append(1)
+
+        async def wait(self):
+            waited.append(1)
+            return -9
+
+    async def fake_exec(*args, **kwargs):
+        return Proc()
+
+    monkeypatch.setattr(updater_mod.asyncio, "create_subprocess_exec", fake_exec)
+    up = updater_mod.Updater(server=None)
+    assert run(up._pip_capture(["index"], timeout=0.2)) == (None, "", "timeout")
+    assert killed == [1] and waited == [1]
+
+    async def scenario():
+        task = asyncio.ensure_future(up._pip_capture(["index"], timeout=60))
+        await asyncio.sleep(0.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return True
+        return False
+
+    assert run(scenario()) is True
+    assert killed == [1, 1] and waited == [1, 1]
 
 
 def test_failed_check_is_logged_and_does_not_start_the_six_hour_cooldown(monkeypatch, capsys):
@@ -272,6 +326,26 @@ def test_joiner_is_announced_when_it_joins_a_running_check(monkeypatch):
         return seen_before_release
 
     assert run(scenario()) == ["A", "B"]
+
+
+def test_joiner_queued_before_the_check_starts_is_announced_once(monkeypatch):
+    """第三轮核对确认：旧测试中间 sleep 了，走的是「马上通知」那条路，排队这条没被测到。
+    两个调用在同一轮事件循环里发起，第二个必然赶在检查开始之前。"""
+    announced = []
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1",), index=(True, "7.0.1"))
+
+    def announcer(tag):
+        async def announce():
+            announced.append(tag)
+        return announce
+
+    async def scenario():
+        first = asyncio.ensure_future(up.freshen_tiktoklive("a", announce=announcer("A")))
+        second = asyncio.ensure_future(up.freshen_tiktoklive("b", announce=announcer("B")))
+        return await first, await second
+
+    a, b = run(scenario())
+    assert announced == ["A", "B"] and a == b
 
 
 def test_joiner_before_the_check_starts_is_announced_with_the_first(monkeypatch):
@@ -444,6 +518,42 @@ def test_handshake_msg_is_read_from_the_headers(monkeypatch):
     assert comment_worker._handshake_fields(RuntimeError("x")) == {}
     assert comment_worker._handshake_fields(exc) == {"http_status": 400,
                                                      "handshake_msg": "invalid route params"}
+
+
+def test_worker_run_reports_the_handshake_msg_when_rejected(monkeypatch, capsys):
+    """第三轮核对确认：_run 里把 handshake_msg 带出来的那一行没有测试。"""
+    _fake_errors(monkeypatch)
+    from app import comment_worker
+
+    class Client:
+        def __init__(self, unique_id):
+            self.room_id = None
+
+        def on(self, _event):
+            return lambda fn: fn
+
+        async def is_live(self):
+            raise InvalidStatusCode(400, "invalid route params")
+
+        async def disconnect(self):
+            return None
+
+    events = ModuleType("TikTokLive.events")
+    for name in ("CommentEvent", "ConnectEvent", "DisconnectEvent"):
+        setattr(events, name, type(name, (), {}))
+    sys.modules["TikTokLive"].TikTokLiveClient = Client
+    monkeypatch.setitem(sys.modules, "TikTokLive.events", events)
+
+    async def no_watch(*a, **k):
+        return None
+
+    monkeypatch.setattr(comment_worker, "_watch_parent", no_watch)
+    code = run(comment_worker._run(SimpleNamespace(unique_id="bella", session_id=None,
+                                                   tt_target_idc=None)))
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    rejected = [x for x in lines if x.get("state") == "rejected"]
+    assert code == 8 and rejected
+    assert rejected[0]["http_status"] == 400 and rejected[0]["handshake_msg"] == "invalid route params"
 
 
 def test_tiktoklive_700_handshake_400_is_rejected(monkeypatch):
@@ -914,6 +1024,46 @@ def test_selfcheck_not_installed_row_states_the_real_rule(monkeypatch):
     c = run(selfcheck.check_comments(_args()))
     assert "自动安装" not in c["detail"] + c["fix"]
     assert "一小时内只试一次" in c["fix"] and updater_mod.TIKTOKLIVE_SPEC in c["fix"]
+
+
+def test_run_selfcheck_records_the_component_version(monkeypatch):
+    """第三轮核对确认：记版本那一行删掉测试照样全过（旧测试手动设了这个值）。"""
+    p = Pipeline.__new__(Pipeline)
+    p.server = StubServer()
+    p.args = SimpleNamespace()
+    p.detector = p.glossary = p.translator = None
+    monkeypatch.setattr(pipeline_mod, "_tiktoklive_version", lambda: "7.0.1")
+
+    async def fake_run_all(*a, **k):
+        return []
+
+    monkeypatch.setattr(selfcheck, "run_all", fake_run_all)
+    run(p.run_selfcheck())
+    assert p._selfcheck_tiktoklive == "7.0.1"
+
+
+def test_selfcheck_row_refreshes_on_any_state_not_only_connected(monkeypatch):
+    """第三轮核对确认：装上了但主播没开播、升级后仍被拒，状态不会到「已连接」。"""
+    p = Pipeline.__new__(Pipeline)
+    p.server = StubServer()
+    p.audit = None
+    p._bg_tasks = set()
+    runs = []
+
+    async def run_selfcheck():
+        runs.append(1)
+
+    p.run_selfcheck = run_selfcheck
+    p._selfcheck_tiktoklive = None
+    monkeypatch.setattr(pipeline_mod, "_tiktoklive_version", lambda: "7.0.1")
+
+    async def scenario():
+        await p._publish_comment_source("offline", "主播未开播")
+        await p._publish_comment_source("offline", "主播未开播")
+        await asyncio.sleep(0.01)
+
+    run(scenario())
+    assert runs == [1] and p._selfcheck_tiktoklive == "7.0.1"
 
 
 def test_selfcheck_is_rerun_when_the_component_changed_since_the_last_check(monkeypatch):
