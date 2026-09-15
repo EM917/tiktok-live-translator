@@ -86,39 +86,6 @@ async def check_denoise(args):
                   "删除 models/bd.rnnn 后重新开始，程序会重新下载")
 
 
-# main.py 在 mlx-whisper 自动安装失败时留下的记号。内容有两种写法：早期是一行纯文字，
-# 之后是 JSON {"at": ISO 日期, "pip_exit": 退出码或 null, "note": ...}，两种都要认。
-MLX_GIVEUP_MARKER = ROOT / ".venv" / ".mlx-unavailable"
-
-
-def _mlx_giveup_note(path=None):
-    """读那个记号：不存在返回 None；否则返回 {at: 日期, pip_exit, note}。
-    旧的纯文字记号里没有日期，用文件的修改日期。"""
-    import json
-    from datetime import datetime
-
-    marker = Path(path) if path else MLX_GIVEUP_MARKER
-    try:
-        raw = marker.read_text(encoding="utf-8", errors="replace")
-        mtime = marker.stat().st_mtime
-    except OSError:
-        return None
-    info = {"at": None, "pip_exit": None, "note": raw.strip()[:200]}
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        data = None
-    if isinstance(data, dict):
-        info["at"] = str(data.get("at") or "")[:10] or None
-        code = data.get("pip_exit")
-        if isinstance(code, int) and not isinstance(code, bool):
-            info["pip_exit"] = code
-        info["note"] = str(data.get("note") or "")[:200]
-    if not info["at"]:
-        info["at"] = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
-    return info
-
-
 async def check_asr(args, state=None):
     """state 是管线实际加载的结果（Pipeline._asr_check_state）：加载失败、出错后改用了
     CPU——这些比按配置推一遍更可信，所以先看它。"""
@@ -170,24 +137,17 @@ async def check_asr(args, state=None):
     except Exception:
         info = {}
     if info.get("apple_silicon") and rec["backend"] != "mlx":
-        giveup = _mlx_giveup_note()
-        if giveup is not None:
-            # 记号在的时候程序启动不会再去装 GPU 组件，「重开会自动补装」是假的。
-            # 只写看到的事实（哪天、pip 退出码）和真能做的事
-            return _check("语音识别", WARN,
-                          "这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）——慢一倍以上，"
-                          "长时间监听容易积压。{} 自动安装 GPU 加速组件没有成功{}".format(
-                              detail, giveup["at"],
-                              "（pip 退出码 {}）".format(giveup["pip_exit"])
-                              if giveup["pip_exit"] is not None else ""),
-                          "关闭程序后" + _pip_command("mlx-whisper", upgrade=False)
-                          + "，装好后重新打开程序；或删除 {} 后重新打开程序，启动时会再尝试"
-                            "安装一次".format(MLX_GIVEUP_MARKER))
+        # 首次安装没装上 mlx-whisper 时留了放弃记号，重开程序不会补装——那时不能再说
+        # 「重新打开会自动补装」，要说哪天没装上、程序接下来会做什么、中控能做什么
+        from .bootstrap import mlx_giveup_note
+        note = mlx_giveup_note(ROOT)
+        fix = ("关闭程序后重新打开，会自动补装 GPU 加速组件；若反复出现请把这句话反馈给开发者"
+               if note is None else
+               note + "。也可以停播后" + _pip_command("mlx-whisper", upgrade=False)
+               + "，装好后重开程序")
         return _check("语音识别", WARN,
                       "这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）"
-                      "——慢一倍以上，长时间监听容易积压".format(detail),
-                      "关闭程序后重新打开，会自动补装 GPU 加速组件；"
-                      "若反复出现请把这句话反馈给开发者")
+                      "——慢一倍以上，长时间监听容易积压".format(detail), fix)
     return _check("语音识别", OK if cached else WARN, detail)
 
 

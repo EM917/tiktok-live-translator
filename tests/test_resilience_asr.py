@@ -996,7 +996,11 @@ def test_cpu_row_reads_the_mlx_giveup_marker_in_both_forms(monkeypatch, tmp_path
         "note": ""})
     monkeypatch.setattr(selfcheck, "_model_cached", lambda m, b: True)
     monkeypatch.setattr(selfcheck, "_importable", lambda name: True)
-    marker = tmp_path / ".mlx-unavailable"
+    from app import bootstrap
+
+    # 记号由 bootstrap 写、也由它读（合并时两组各写了一个读取函数，留了 bootstrap 那份）
+    marker = tmp_path / ".venv" / bootstrap.MLX_GIVEUP
+    marker.parent.mkdir()
     if form == "json":
         marker.write_text(json.dumps({"at": "2026-09-10T08:30:00", "pip_exit": 1,
                                       "note": "pip failed"}), encoding="utf-8")
@@ -1006,14 +1010,14 @@ def test_cpu_row_reads_the_mlx_giveup_marker_in_both_forms(monkeypatch, tmp_path
         stamp = time.mktime((2026, 9, 3, 12, 0, 0, 0, 0, -1))
         os.utime(str(marker), (stamp, stamp))
         day = "2026-09-03"
-    monkeypatch.setattr(selfcheck, "MLX_GIVEUP_MARKER", marker)
+    monkeypatch.setattr(selfcheck, "ROOT", tmp_path)
 
     row = run(selfcheck.check_asr(SimpleNamespace(backend="auto", model=None, device="auto")))
 
-    assert row["level"] == "warn" and day in row["detail"]
-    assert ("退出码 1" in row["detail"]) == (form == "json")
-    assert "自动补装" not in row["fix"]
-    assert "mlx-whisper" in row["fix"] and str(marker) in row["fix"]
+    assert row["level"] == "warn" and day in row["fix"]
+    assert ("pip 返回 1" in row["fix"]) == (form == "json")
+    assert "自动补装" not in row["fix"] and "每天在后台重试" in row["fix"]
+    assert "mlx-whisper" in row["fix"]
 
 
 # ---- 违禁词表体检：只报告，不改匹配 ------------------------------------------------

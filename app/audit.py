@@ -594,6 +594,29 @@ class AuditLog:
             "traceback": strip_query(tb)[-2000:],
         })
 
+    def update_stop(self, from_version, to_version):
+        """一键更新暂停了这场监听。session_end 说「为什么停」，这条说「从哪个版本更到
+        哪个版本」；下一场 session_start 的 resumed_after 说「什么时候接上的」。以前
+        审计里只剩一条光秃秃的 session_end，事后分不清是中控点了停止还是更新停的。"""
+        self._write({
+            "type": "update_stop",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "from_version": from_version,
+            "to_version": to_version,
+        })
+
+    def component_updated(self, name, from_version, to_version, reason):
+        """会话进行中后台升级了解析组件（yt-dlp / curl_cffi）。解析行为变了的时候，
+        事后要答得出「升没升、升之前之后各是哪个版本」。"""
+        self._write({
+            "type": "component_updated",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "name": name,
+            "from": from_version,
+            "to": to_version,
+            "reason": reason,
+        })
+
     def alert(self, hit):
         self._write({"type": "alert",
                      "at": datetime.now().isoformat(timespec="milliseconds"),

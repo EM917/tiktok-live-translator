@@ -26,7 +26,7 @@ def make(git_results):
     u.latest = {"can_auto": True, "url": ""}
     calls = []
 
-    async def fake_git(*args):
+    async def fake_git(*args, **kw):
         calls.append(args)
         return git_results.get(args[0], (0, "", ""))
 
@@ -41,7 +41,7 @@ def run(coro):
 
 def test_status_check_excludes_untracked_files():
     """必须带上 --untracked-files=no，否则一个日志文件就能挡死更新。"""
-    u = make({"status": (0, "", ""), "pull": (1, "", "stop here")})
+    u = make({"status": (0, "", ""), "fetch": (1, "", "stop here")})
     run(u._apply_inner())
     status_call = next(c for c in u._calls if c[0] == "status")
     assert "--untracked-files=no" in status_call
@@ -59,10 +59,12 @@ def test_tracked_modifications_still_block_and_name_the_files():
     assert command and command.startswith('cd "') and "git pull" in command
 
 
-def test_clean_tree_proceeds_to_pull():
-    u = make({"status": (0, "", ""), "pull": (1, "", "boom")})
+def test_clean_tree_proceeds_to_fetch():
+    # 一键更新先 fetch（只动网络，监听照常），能快进了才停监听、装依赖、合并——
+    # 不再直接 pull（见 tests/test_resilience_update.py）
+    u = make({"status": (0, "", ""), "fetch": (1, "", "boom")})
     run(u._apply_inner())
-    assert any(c[0] == "pull" for c in u._calls)
+    assert any(c[0] == "fetch" for c in u._calls)
 
 
 def test_every_failure_hands_the_user_a_runnable_command():
@@ -76,7 +78,7 @@ def test_every_failure_hands_the_user_a_runnable_command():
     scenarios = {
         "git 不可用": {"status": (127, "", "not found")},
         "有本地修改": {"status": (0, " M app/pipeline.py\n", "")},
-        "pull 失败": {"status": (0, "", ""), "pull": (1, "", "diverged")},
+        "fetch 失败": {"status": (0, "", ""), "fetch": (1, "", "diverged")},
     }
     for label, results in scenarios.items():
         u = make(results)
@@ -94,7 +96,7 @@ def test_discard_variant_only_appears_for_local_modifications():
     run(u._apply_inner())
     assert "git checkout -- ." in u.server.statuses[-1][2]
 
-    u2 = make({"status": (0, "", ""), "pull": (1, "", "diverged")})
+    u2 = make({"status": (0, "", ""), "fetch": (1, "", "diverged")})
     run(u2._apply_inner())
     assert "git checkout" not in u2.server.statuses[-1][2]
 

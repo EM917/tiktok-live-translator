@@ -22,8 +22,9 @@ if sys.version_info < (3, 9):
 
 _CORE_DEPS = ["aiohttp>=3.9", "numpy>=1.24", "faster-whisper>=1.0",
               "yt-dlp", "imageio-ffmpeg>=0.5"]
-# mlx-whisper 装不上时留个记号，免得每次启动都重试一遍（老系统上它确实可能
-# 没有轮子）。删掉这个文件就会再试一次。
+# mlx-whisper 装不上时留个记号（JSON：at / pip_exit / note，见 app/bootstrap.py），
+# 免得每次启动都重试一遍、把启动挡上几分钟（老系统上它确实可能没有轮子）。
+# 程序空闲时每天在后台重试一次（Updater.retry_mlx_install）；删掉这个文件也会再试。
 _MLX_GIVEUP = ROOT / ".venv" / ".mlx-unavailable"
 
 
@@ -72,26 +73,29 @@ def _deps_ok():
     # ffmpeg 也是硬依赖：不查它的话，安装中途断掉会让「重开自动补装」的承诺落空
     try:
         import imageio_ffmpeg  # noqa: F401
-        return True
     except ImportError:
         import shutil
-        return shutil.which("ffmpeg") is not None
+        if shutil.which("ffmpeg") is None:
+            return False
+    return _requirements_current()
+
+
+def _requirements_current():
+    """requirements.txt 和上次在本项目 .venv 里装成功的那份一致吗（app/bootstrap.py）。
+
+    以前这里只查固定的几个模块：一键更新或 git pull 带来新依赖、而 pip 没装上时，
+    重开程序既不补装、也说「会自动继续安装」，于是每次启动都卡在同一个 ImportError。
+    用户自己装齐依赖的 Python 不归这里管；判断本身出错不挡启动。"""
+    try:
+        from app import bootstrap
+        return bootstrap.requirements_current(ROOT)
+    except Exception:
+        return True
 
 
 def _venv_python():
     sub = "Scripts/python.exe" if os.name == "nt" else "bin/python"
     return ROOT / ".venv" / sub
-
-
-def _venv_usable(vpy):
-    """光看路径存在不够——上次安装被中断会留下残缺的 venv，必须实际跑一下确认。"""
-    if not vpy.exists():
-        return False
-    try:
-        return subprocess.run([str(vpy), "-c", "import sys"],
-                              capture_output=True, timeout=30).returncode == 0
-    except Exception:
-        return False
 
 
 def _has_console():
@@ -111,6 +115,7 @@ def _esc_osa(text):
 
 
 _INFO_DIALOG = None
+_FIRST_RUN_SHOWN = False
 
 
 def _info_dialog(message):
@@ -171,20 +176,24 @@ def _acquire_bootstrap_lock():
     return acquire(ROOT / ".venv.lock", _deps_ok)
 
 
-def _first_run_dialog():
-    """「首次运行：正在安装…」只在真要创建环境/装依赖时弹。以前放在 ensure_env
+def _first_run_dialog(text=None):
+    """「正在安装…」只在真要创建环境/装依赖时弹。以前放在 ensure_env
     开头：.app 里的 python 没装齐 sys.path 时 _deps_ok() 为假，于是**每次**
-    双击都闪一下这个对话框，两三秒后才发现什么都不用装——用户以为又在重装。"""
+    双击都闪一下这个对话框，两三秒后才发现什么都不用装——用户以为又在重装。
+    text 由 app/bootstrap.install_dialog_text 按实际情况给（首次运行、Python 版本
+    变了、组件清单变了……）。"""
     global _FIRST_RUN_SHOWN
     if _FIRST_RUN_SHOWN:
         return
     _FIRST_RUN_SHOWN = True
-    _info_dialog("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n"
-                 "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。")
+    _info_dialog(text or ("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n"
+                          "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。"))
 
 
 def ensure_env():
-    """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。"""
+    """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。
+
+    判断、文案和安装步骤在 app/bootstrap.py——这里没法测试（import main 就会跑到这儿）。"""
     if _deps_ok():
         return
     vpy = _venv_python()
@@ -196,57 +205,59 @@ def ensure_env():
             _fail_alert("另一个实例仍在安装组件（已等待 15 分钟）。请等它装完后再打开本程序，"
                         "避免两边同时安装把环境写坏。")
             return
+    log_path = None
+    target_version = None
     try:
+        from app import bootstrap
+
         if _deps_ok():        # 等锁期间别的实例已经装好了
             return
-        if not in_project_venv and not _venv_usable(vpy):
-            _first_run_dialog()
-            print("[初始化] 首次运行：正在创建虚拟环境（仅需一次，可能几分钟）…")
-            import venv
+        here = "{}.{}".format(*sys.version_info[:2])
+        recorded = bootstrap.pyvenv_version(ROOT / ".venv")    # 建环境时的 Python 版本
+        if in_project_venv:
+            target_version = here
+        else:
+            # 光看路径存在不够：上次安装被中断会留下残缺的 venv，链到的 Python 被卸掉
+            # 也一样——必须实际跑一下确认，顺便拿到它现在的版本
+            usable, target_version = (bootstrap.interpreter_version(vpy)
+                                      if vpy.exists() else (False, None))
+            if not usable:
+                _first_run_dialog(bootstrap.install_dialog_text(
+                    recorded, here, venv_existed=recorded is not None))
+                print("[初始化] 正在创建虚拟环境（仅需一次，可能几分钟）…")
+                import venv
 
-            venv.create(ROOT / ".venv", with_pip=True, clear=True)
+                venv.create(ROOT / ".venv", with_pip=True, clear=True)
+                target_version = here
         pip_python = sys.executable if in_project_venv else str(vpy)
         check = subprocess.run(
             [pip_python, "-c",
              _ready_import()],
             capture_output=True,
         )
-        if check.returncode != 0:
-            _first_run_dialog()
-            print("[初始化] 正在安装依赖（含内置 ffmpeg，需要几分钟，仅首次）…")
-            full = subprocess.run(
-                [pip_python, "-m", "pip", "install", "--disable-pip-version-check",
-                 "-r", str(ROOT / "requirements.txt")],
-            )
-            if full.returncode != 0:
-                # 整份 requirements 装不上时，先保证核心依赖，再**逐个**试可选包。
-                #
-                # 以前这里是「失败就只装核心依赖」，于是一个包装不上会连累其余
-                # 全部落空。真实后果：一台 M4 Mac 因为某个可选包编译失败，
-                # mlx-whisper 跟着没装上，整机掉到 faster-whisper CPU 路径跑
-                # large-v3-turbo——按 hwdetect 的实测那是 RTF 0.99，勉强跟得上，
-                # 跑久了必然积压。而屏幕上什么也没说。
-                print("[初始化] 完整安装失败，改为逐个安装…")
-                subprocess.run(
-                    [pip_python, "-m", "pip", "install", "--disable-pip-version-check",
-                     *_CORE_DEPS],
-                    check=True,
-                )
-                for optional in _optional_deps():
-                    r = subprocess.run(
-                        [pip_python, "-m", "pip", "install",
-                         "--disable-pip-version-check", optional])
-                    if r.returncode != 0:
-                        print("[初始化] 可选组件 {} 没装上，其余功能不受影响"
-                              .format(optional))
-                        if optional == "mlx-whisper":
-                            # 记下来别每次启动都重试；删掉这个文件会再试一次
-                            try:
-                                _MLX_GIVEUP.parent.mkdir(parents=True, exist_ok=True)
-                                _MLX_GIVEUP.write_text("装不上，改用 CPU 后端\n",
-                                                       encoding="utf-8")
-                            except OSError:
-                                pass
+        # 核心模块都在、只是 requirements.txt 和上次装成功的那份不一样（更新带来了
+        # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
+        # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
+        plan = bootstrap.plan_install(check.returncode == 0, ROOT, recorded, target_version)
+        if plan is not None:
+            timer = None
+            if plan["delay"] > 0:
+                import threading
+                timer = threading.Timer(plan["delay"], _first_run_dialog, args=(plan["text"],))
+                timer.daemon = True
+                timer.start()
+            else:
+                _first_run_dialog(plan["text"])
+            print("[初始化] 正在安装依赖（含内置 ffmpeg，可能需要几分钟）…")
+            # pip 的输出同时进终端和 logs/bootstrap-*.log：双击 .app 时 stdout 是
+            # /dev/null，以前装失败了什么都不留
+            log_path = bootstrap.new_log_path(ROOT, "bootstrap")
+            try:
+                bootstrap.install_requirements(pip_python, ROOT, _CORE_DEPS, _optional_deps(),
+                                               log_path=log_path)
+            finally:
+                if timer is not None:
+                    timer.cancel()
         if not in_project_venv:
             if lock is not None:      # execv 不会执行 finally，先手动释放锁
                 try:
@@ -258,10 +269,18 @@ def ensure_env():
             from app.relaunch import exec_args
             os.execv(str(vpy), exec_args([str(vpy), str(ROOT / "main.py")] + sys.argv[1:]))
     except Exception as exc:
-        _fail_alert("自动安装未完成（{}）。\n"
-                    "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
-                    "（进阶：也可手动运行 setup.sh / setup.ps1，"
-                    "或 pip install -r requirements.txt）".format(exc))
+        # 按 pip 输出里真实出现的字样说明（磁盘满 / 连不上软件包服务器 / 没有适用于
+        # 这个 Python 的安装包），附日志位置——不再把 CalledProcessError 原文给中控
+        try:
+            from app import bootstrap
+            message = bootstrap.failure_text(exc, log_path, python_version=target_version,
+                                             root=ROOT)
+        except Exception:
+            message = ("自动安装未完成（{}）。\n"
+                       "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
+                       "（进阶：也可手动运行 setup.sh / setup.ps1，"
+                       "或 pip install -r requirements.txt）".format(exc))
+        _fail_alert(message)
     finally:
         if lock is not None:
             try:
@@ -273,9 +292,19 @@ def ensure_env():
 if "--doctor" not in sys.argv:
     ensure_env()
 
+def _forget_install_failure():
+    """程序因为缺模块起不来：让下次启动立刻重试安装（见 bootstrap.forget_requirements_failure）。"""
+    try:
+        from app.bootstrap import forget_requirements_failure
+        forget_requirements_failure(ROOT)
+    except Exception:
+        pass
+
+
 try:
     from app.translator import TRANSLATOR_CHOICES, restore_engine  # noqa: E402
 except ImportError as exc:
+    _forget_install_failure()
     _fail_alert("组件尚未安装完成，程序暂时无法启动（{}）。\n"
                 "请检查网络后重新打开本程序，会自动继续安装。".format(exc))
     sys.exit(1)
@@ -409,6 +438,8 @@ async def main_async(args, state=None):
         sys.exit(1)
     updater = Updater(server)
     pipeline.updater = updater
+    # 后台装组件要知道此刻有没有在监听；组件升级要写进当前这场的审计
+    updater.attach_pipeline(pipeline)
     server.on_control = pipeline.handle_control
     server.on_client_dropped = pipeline.on_ui_client_dropped
     if state is not None:
@@ -442,6 +473,9 @@ async def main_async(args, state=None):
         await pipeline.start_demo()
     elif args.url:
         await pipeline.start_stream(args.url)
+    elif await pipeline.resume_after_update():
+        # 一键更新前正在监听、几分钟内重启回来了：接着听那个房间（记号读到即删）
+        print("[信息] 一键更新前正在监听，已自动恢复")
     else:
         await server.status("idle", "在页面里输入直播间地址开始翻译")
         print("未指定直播间地址——在打开的网页里输入地址点「开始翻译」即可。")
@@ -558,6 +592,8 @@ def run_with_window(args):
             print(str(exc))
             os._exit(1)
         except Exception as exc:
+            if isinstance(exc, ImportError):
+                _forget_install_failure()      # 缺模块：下次启动立刻重试安装
             _fail_alert("后台服务异常退出：{}".format(exc))
             os._exit(1)
 
