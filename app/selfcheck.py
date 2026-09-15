@@ -86,7 +86,57 @@ async def check_denoise(args):
                   "删除 models/bd.rnnn 后重新开始，程序会重新下载")
 
 
-async def check_asr(args):
+# main.py 在 mlx-whisper 自动安装失败时留下的记号。内容有两种写法：早期是一行纯文字，
+# 之后是 JSON {"at": ISO 日期, "pip_exit": 退出码或 null, "note": ...}，两种都要认。
+MLX_GIVEUP_MARKER = ROOT / ".venv" / ".mlx-unavailable"
+
+
+def _mlx_giveup_note(path=None):
+    """读那个记号：不存在返回 None；否则返回 {at: 日期, pip_exit, note}。
+    旧的纯文字记号里没有日期，用文件的修改日期。"""
+    import json
+    from datetime import datetime
+
+    marker = Path(path) if path else MLX_GIVEUP_MARKER
+    try:
+        raw = marker.read_text(encoding="utf-8", errors="replace")
+        mtime = marker.stat().st_mtime
+    except OSError:
+        return None
+    info = {"at": None, "pip_exit": None, "note": raw.strip()[:200]}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        info["at"] = str(data.get("at") or "")[:10] or None
+        code = data.get("pip_exit")
+        if isinstance(code, int) and not isinstance(code, bool):
+            info["pip_exit"] = code
+        info["note"] = str(data.get("note") or "")[:200]
+    if not info["at"]:
+        info["at"] = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+    return info
+
+
+async def check_asr(args, state=None):
+    """state 是管线实际加载的结果（Pipeline._asr_check_state）：加载失败、出错后改用了
+    CPU——这些比按配置推一遍更可信，所以先看它。"""
+    state = state or {}
+    fallback = state.get("fallback")
+    if fallback:
+        return _check("语音识别", WARN,
+                      "{} 识别出错，已改用 {}——较慢，长时间监听容易积压（{}）".format(
+                          fallback.get("from"), fallback.get("to"),
+                          fallback.get("error") or "无错误详情"),
+                      "关闭程序重新打开会重新尝试原来的识别配置；若反复出现请反馈给开发者")
+    load_error = state.get("load_error")
+    if load_error:
+        return _check("语音识别", FAIL,
+                      "识别模型（{}/{}）没能加载，本场不会识别：{}".format(
+                          load_error.get("backend"), load_error.get("model"),
+                          load_error.get("error") or "无错误详情"),
+                      "确认网络和磁盘空间后点「开始翻译」重试；若反复出现，关闭程序重新打开")
     backend = getattr(args, "backend", "auto")
     try:
         from .hwdetect import recommend
@@ -120,6 +170,19 @@ async def check_asr(args):
     except Exception:
         info = {}
     if info.get("apple_silicon") and rec["backend"] != "mlx":
+        giveup = _mlx_giveup_note()
+        if giveup is not None:
+            # 记号在的时候程序启动不会再去装 GPU 组件，「重开会自动补装」是假的。
+            # 只写看到的事实（哪天、pip 退出码）和真能做的事
+            return _check("语音识别", WARN,
+                          "这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）——慢一倍以上，"
+                          "长时间监听容易积压。{} 自动安装 GPU 加速组件没有成功{}".format(
+                              detail, giveup["at"],
+                              "（pip 退出码 {}）".format(giveup["pip_exit"])
+                              if giveup["pip_exit"] is not None else ""),
+                          "关闭程序后" + _pip_command("mlx-whisper", upgrade=False)
+                          + "，装好后重新打开程序；或删除 {} 后重新打开程序，启动时会再尝试"
+                            "安装一次".format(MLX_GIVEUP_MARKER))
         return _check("语音识别", WARN,
                       "这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）"
                       "——慢一倍以上，长时间监听容易积压".format(detail),
@@ -303,12 +366,43 @@ def _ollama_reachable():
 
 
 async def check_watchlist(detector):
-    """违禁词表为空 = 这个工具的核心功能没有生效。"""
+    """违禁词表为空 = 这个工具的核心功能没有生效。
+
+    「N 条已生效」只数真能匹配上的：行尾带注释、正则里写了重音或标点的条目能加载，
+    却永远匹配不上（检测跑在去掉重音和标点的文本上）——以前它们照样算进「已生效」。"""
+    name = "违禁词表"
+    fname = Path(getattr(detector, "source_path", None) or "banned_terms.txt").name
+    read_error = getattr(detector, "read_error", None)
     if detector is None or not detector.enabled:
-        return _check("违禁词表", FAIL,
+        if read_error:
+            return _check(name, FAIL,
+                          "{} 读不出来（{}）——本工具不会发出任何违禁词报警".format(fname, read_error),
+                          "检查这个文件能否打开后点「停止」再「开始翻译」")
+        return _check(name, FAIL,
                       "词表为空——本工具不会发出任何违禁词报警",
                       "编辑 banned_terms.txt 后重新「开始翻译」")
-    return _check("违禁词表", OK, "{} 条已生效".format(detector.count))
+    warnings = list(getattr(detector, "load_warnings", None) or [])
+    effective = getattr(detector, "effective_count", detector.count)
+    notes = []
+    if getattr(detector, "decode_error", None):
+        skipped = list(getattr(detector, "skipped_lines", None) or [])
+        notes.append("{} 不是 UTF-8 编码，{}，其余 {} 条照常生效——请用 UTF-8 另存".format(
+            fname,
+            "第 {} 行读不出已跳过".format("、".join(str(n) for n in skipped[:10])
+                                         + ("等 {} 行".format(len(skipped))
+                                            if len(skipped) > 10 else ""))
+            if skipped else "读不出的只有注释行", effective))
+    notes += [w["text"] for w in warnings[:5]]
+    if len(warnings) > 5:
+        notes.append("另有 {} 条同类问题".format(len(warnings) - 5))
+    fix = "按提示改好 {} 后点「停止」再「开始翻译」".format(fname)
+    if effective <= 0:
+        return _check(name, FAIL,
+                      "词表里的条目都匹配不上——本工具不会发出任何违禁词报警。" + "；".join(notes),
+                      fix)
+    if notes:
+        return _check(name, WARN, "{} 条已生效；".format(effective) + "；".join(notes), fix)
+    return _check(name, OK, "{} 条已生效".format(detector.count))
 
 
 async def check_glossary(glossary):
@@ -416,7 +510,7 @@ async def check_disk():
     return _check("磁盘空间", OK, "剩余 {:.0f} GB".format(free))
 
 
-async def run_all(args, detector=None, glossary=None, translator=None):
+async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None):
     """跑完所有自检。任一项抛异常都不影响其余项——自检自己绝不能拖垮启动。
 
     探测崩了算 **FAIL，不是 WARN**：崩了意味着这项能力压根没被验证过，和
@@ -426,7 +520,7 @@ async def run_all(args, detector=None, glossary=None, translator=None):
     probes = [
         ("音频组件 ffmpeg", check_ffmpeg()),
         ("人声降噪", check_denoise(args)),
-        ("语音识别", check_asr(args)),
+        ("语音识别", check_asr(args, asr_state)),
         ("翻译引擎", check_translator(args, translator)),
         ("违禁词表", check_watchlist(detector)),
         ("领域词表", check_glossary(glossary)),

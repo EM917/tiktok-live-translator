@@ -15,7 +15,7 @@ from pathlib import Path
 from .asr import DEFAULT_TEMPERATURE
 from .comment_source import CommentSource
 from .comments import CommentTranslator
-from .detector import BannedTermDetector, load_fuzzy_policy, load_terms
+from .detector import BannedTermDetector, TermsFile, load_fuzzy_policy, read_terms
 from .glossary import load as load_glossary
 from .nethttp import read_all
 from .settings import (load_settings, push_recent_room, recent_rooms,
@@ -33,18 +33,51 @@ FUZZY_POLICY_FILE = ROOT / "banned_fuzzy_policy.txt"
 
 def load_detector(path=None):
     """读取违禁词表。首次运行时从模板复制一份用户可编辑的副本——
-    模板入库、副本不入库，用户编辑不会挡住一键更新。"""
+    模板入库、副本不入库，用户编辑不会挡住一键更新。
+
+    **从不抛异常。** 以前非 UTF-8 的词表（Windows 上 ANSI/GBK 编辑器另存）让它抛
+    UnicodeDecodeError：启动时整个程序起不来，开播时会话在建审计文件之前就停了，
+    界面上只有一句英文。读的过程中发现的问题记在检测器上，由自检那一行和
+    session_start 报出来。"""
     target = Path(path) if path else TERMS_FILE
-    if not target.exists() and target == TERMS_FILE and TERMS_EXAMPLE.exists():
+    try:
+        if not target.exists() and target == TERMS_FILE and TERMS_EXAMPLE.exists():
+            try:
+                target.write_text(TERMS_EXAMPLE.read_text(encoding="utf-8"),
+                                  encoding="utf-8")
+                print("[信息] 已生成违禁词表 {}（当前为空，按文件里的说明填写即可）"
+                      .format(target.name))
+            except (OSError, ValueError):
+                pass
+        info = read_terms(target)
         try:
-            target.write_text(TERMS_EXAMPLE.read_text(encoding="utf-8"),
-                              encoding="utf-8")
-            print("[信息] 已生成违禁词表 {}（当前为空，按文件里的说明填写即可）"
-                  .format(target.name))
-        except OSError:
-            pass
-    return BannedTermDetector(load_terms(target),
-                              fuzzy_policy=load_fuzzy_policy(FUZZY_POLICY_FILE))
+            policy = load_fuzzy_policy(FUZZY_POLICY_FILE)
+        except (OSError, ValueError) as exc:
+            # policy 只会收紧模糊匹配：读不出来就按默认预算，多报不漏报
+            print("[警告] 读不出 {}，本场模糊匹配按默认预算：{}".format(
+                FUZZY_POLICY_FILE.name, exc))
+            policy = {}
+        detector = BannedTermDetector([line for _, line in info.entries],
+                                      fuzzy_policy=policy,
+                                      line_numbers=[n for n, _ in info.entries])
+    except Exception as exc:
+        print("[错误] 违禁词表没能加载：{}".format(exc))
+        info = TermsFile()
+        info.read_error = str(exc)[:200]
+        detector = BannedTermDetector([])
+    detector.source_path = str(target)
+    detector.source_hash = info.hash
+    detector.source_mtime = info.mtime
+    detector.decode_error = info.decode_error
+    detector.skipped_lines = list(info.skipped_lines)
+    detector.read_error = info.read_error
+    if info.decode_error:
+        print("[警告] {} 不是 UTF-8 编码，读不出的 {} 行已跳过".format(
+            target.name, len(info.skipped_lines)))
+    for warning in detector.load_warnings:
+        if warning["reason"] != "invalid_regex":      # 这一种构造时已经打印过
+            print("[警告] 违禁词表：" + warning["text"])
+    return detector
 
 # whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
 MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
@@ -75,6 +108,28 @@ def _media_label(url):
         return (parts.netloc + parts.path) or str(url)[:80]
     except Exception:
         return "?"
+
+
+def _describe_asr(cfg):
+    """给人看的识别配置：「ct2/large-v3-turbo/cpu/int8」（auto 的部分省略）。"""
+    parts = [cfg.get("backend"), cfg.get("model"), cfg.get("device"), cfg.get("compute_type")]
+    return "/".join(str(v) for v in parts if v and v != "auto")
+
+
+class _ASRSlot:
+    """一场会话正在用的识别器，外加「连续出错后换一个」需要的上下文。
+
+    asr_worker 换模型时改的是这里：_run_session 的重连循环每轮把同一个 slot 交给
+    _stream_session，只改局部变量的话，重连后的下一轮又会用回那个坏掉的模型。
+    reloaded 保证一场会话最多换一次，不在两个模型之间来回加载。"""
+
+    def __init__(self, transcriber, config=None, key=None, audit=None):
+        self.transcriber = transcriber
+        self.config = dict(config or {})
+        self.key = key
+        self.audit = audit
+        self.reloaded = False
+        self.gave_up = False
 
 
 def _arnndn_probe(model_path):
@@ -155,6 +210,9 @@ class Pipeline:
         self._transcriber_key = None     # 已就绪模型对应的配置 key
         self._loading_key = None         # 在途加载对应的配置 key（可能被取消）
         self._transcriber_future = None  # 正在加载中的模型，避免重复加载
+        self._asr_load_error = None      # 最近一次识别模型没能加载的详情，按配置加载成功后清掉
+        self._asr_fallback = None        # 出错后改用的识别配置 {from,to,error}；None = 原配置
+        self._asr_inflight = None        # 正在识别的那一段的开始时刻 [monotonic]，卡住检测用
         self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
         self._bg_tasks = set()           # fire-and-forget 任务的引用，见 _spawn
         self.telemetry = Telemetry()
@@ -411,6 +469,7 @@ class Pipeline:
                 if level != last_level:
                     await self._announce_health(level, snap["audio_backlog_sec"])
                     last_level = level
+                await self._watch_detection(snap)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -443,18 +502,123 @@ class Pipeline:
         for key in [k for k in list(incidents) if str(k).startswith("session:")]:
             await self._incident(key, "clear")
 
-    async def _announce_health(self, level, backlog_sec):
-        if level == "degraded":
-            text = ("🔴 检测已降级：识别落后 {:.0f} 秒，仍在继续处理（不会漏掉这段音频）"
-                    .format(backlog_sec))
-        elif level == "lagging":
-            text = "⚠️ 识别开始落后（积压 {:.0f} 秒），报警会相应延迟".format(backlog_sec)
-        else:
-            text = "✅ 识别已追上，检测恢复正常"
+    async def _announce_health(self, level, backlog_sec, text=None, reason="backlog"):
+        """推一条检测健康状态。text 不给时按积压等级生成。
+
+        同一句话已经在界面上时不重发（统计循环和识别卡住检查可能在同一轮说同一件事）；
+        等级或原因变了才写进审计——审计要的是转折点，不是每轮刷新。"""
+        dropped = getattr(getattr(self, "telemetry", None), "audio_segments_dropped", 0) or 0
+        if text is None:
+            if level == "degraded":
+                # 以前这里一直写「仍在继续处理（不会漏掉这段音频）」，而积压过 60 秒 _put
+                # 已经在丢段、统计条上同时显示「丢音频 N」——界面自相矛盾，正是 08-31 那类事故
+                if dropped:
+                    text = ("🔴 检测已降级：识别落后 {:.0f} 秒；积压超过 {:.0f} 秒的旧音频"
+                            "已丢弃 {} 段，这些音频没有做违禁词检测"
+                            .format(backlog_sec, AUDIO_BACKLOG_HARD_SEC, dropped))
+                else:
+                    text = ("🔴 检测已降级：识别落后 {:.0f} 秒，仍在继续处理；积压超过 {:.0f} 秒"
+                            "会开始丢弃最旧的音频".format(backlog_sec, AUDIO_BACKLOG_HARD_SEC))
+            elif level == "lagging":
+                text = "⚠️ 识别开始落后（积压 {:.0f} 秒），报警会相应延迟".format(backlog_sec)
+            else:
+                text = "✅ 识别已追上，检测恢复正常"
+        audit = getattr(self, "audit", None)
+        if getattr(self, "_health_shown", None) == (audit, level, text):
+            return
+        self._health_shown = (audit, level, text)
         print("[健康] " + text)
         await self.server.broadcast({"type": "health", "level": level,
                                      "backlog_sec": round(backlog_sec, 1),
                                      "text": text})
+        if audit is not None and getattr(self, "_health_audited", None) != (audit, level, reason):
+            self._health_audited = (audit, level, reason)
+            audit.health(level, backlog_sec, reason=reason, text=text, dropped=dropped)
+
+    ASR_STALL_SEC = 60.0
+
+    async def _watch_detection(self, snap, now=None):
+        """_stats_loop 每轮调一次的检测侧检查：识别调用卡住、直播中违禁词表被改。
+        任何一项出错都只打一行日志——_stats_loop 遇到异常会整个退出，统计条就停了。"""
+        try:
+            await self._check_asr_stall(snap, now=now)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 识别卡住检查出错：{}".format(exc))
+        try:
+            await self._check_terms_changed()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 违禁词表变更检查出错：{}".format(exc))
+
+    async def _check_asr_stall(self, snap, now=None):
+        """一段音频的识别调用 ASR_STALL_SEC 秒还没返回：写一条 asr_stalled，在界面上说清。
+
+        **不自动重载模型。** 线程池里的调用取消不掉，它会一直抓着自己那份模型；这时再
+        加载一份等于两个大模型同时驻留——正是 2026-08-31 丢 16 段音频的事故形态。
+        卡住期间丢段数一变就更新那句话；卡住结束时按积压重报一次；其余时候不重复发。"""
+        audit = getattr(self, "audit", None)
+        state = getattr(self, "_asr_watch", None)
+        if state is None or state["audit"] is not audit:
+            state = self._asr_watch = {"audit": audit, "stalled": False, "dropped": 0}
+        dropped = int(snap.get("audio_segments_dropped") or 0)
+        backlog = float(snap.get("audio_backlog_sec") or 0.0)
+        grew = dropped > state["dropped"]
+        state["dropped"] = dropped
+        mark = getattr(self, "_asr_inflight", None)
+        now = time.monotonic() if now is None else now
+        inflight = now - mark[0] if mark else 0.0
+        if inflight >= self.ASR_STALL_SEC:
+            first = not state["stalled"]
+            state["stalled"] = True
+            if first and audit is not None:
+                audit.asr_stalled(inflight_sec=inflight, backlog_sec=backlog, dropped=dropped)
+            if first or grew:
+                await self._announce_health(
+                    "degraded", backlog, reason="asr_stalled",
+                    text="🔴 一段音频识别已 {:.0f} 秒没有返回；积压超过 {:.0f} 秒的旧音频会被丢弃"
+                         "（可能漏报），本场已丢弃 {} 段。若持续几分钟，请关闭程序重新打开——"
+                         "「停止/开始」不会重新加载识别模型".format(
+                             inflight, AUDIO_BACKLOG_HARD_SEC, dropped))
+            return
+        if state["stalled"] or grew:
+            state["stalled"] = False
+            await self._announce_health(self._health_level(backlog), backlog)
+
+    async def _check_terms_changed(self):
+        """直播中 banned_terms.txt 被改了：新内容要「停止→开始」后才生效，说一次。
+        每次内容变化只提示一次；改回本场加载的那份不提示。"""
+        detector = getattr(self, "detector", None)
+        path = getattr(detector, "source_path", None)
+        if not path:
+            return
+        audit = getattr(self, "audit", None)
+        state = getattr(self, "_terms_watch", None)
+        if state is None or state["audit"] is not audit or state["path"] != path:
+            state = self._terms_watch = {"audit": audit, "path": path,
+                                         "mtime": detector.source_mtime,
+                                         "hash": detector.source_hash}
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            mtime = None
+        if mtime == state["mtime"]:
+            return
+        state["mtime"] = mtime
+        from .provenance import file_hash
+        digest = file_hash(path)
+        if digest == state["hash"]:
+            return
+        state["hash"] = digest
+        if digest == detector.source_hash:
+            return
+        if audit is not None:
+            audit.terms_changed(digest)
+        text = "违禁词表已修改，点「停止」再「开始翻译」后生效"
+        print("[提示] " + text)
+        await self.server.broadcast({"type": "notice", "text": text})
 
     async def _run_stream_inner(self, url):
         await self._clear_session_incidents()     # 上一场的持续提示不属于这一场
@@ -537,6 +701,7 @@ class Pipeline:
             "profile": streamer if prof else None,
             "profile_hash": file_hash(prof) if prof else None,
             "merged_glossary_hash": fingerprint(self.glossary.entries),
+            **self._banned_terms_provenance(),
         })
         if misplaced:
             owner, variant, zh = misplaced[0]
@@ -590,6 +755,35 @@ class Pipeline:
             comment_source = getattr(self, "comment_source", None)
             if comment_source is not None:
                 comment_source.start(streamer)
+
+    def _banned_terms_provenance(self):
+        """违禁词表的来源信息，并进 session_start。
+
+        banned_terms.txt 不入库，code_commit 钉不住它；只存指纹又没人留历史版本——
+        「那场直播时词表里有没有 X」这种合规复查最常问的问题就答不出来。所以把本场
+        实际加载的条目原文整份记下（一百来条，几 KB），不做任何归一化。"""
+        from .provenance import file_hash
+        info = {"fuzzy_policy_hash": file_hash(FUZZY_POLICY_FILE)}
+        detector = getattr(self, "detector", None)
+        if detector is None:
+            return dict(info, detector_enabled=False)
+        decode_error = getattr(detector, "decode_error", None)
+        info.update({
+            "detector_enabled": bool(detector.enabled),
+            "banned_terms_hash": getattr(detector, "source_hash", "?"),
+            "banned_terms_count": detector.count,
+            "banned_terms": list(getattr(detector, "loaded", None) or []),
+            "banned_terms_warnings": [
+                {"line": w.get("line"), "entry": w.get("entry"), "reason": w.get("reason")}
+                for w in getattr(detector, "load_warnings", None) or []],
+            "banned_terms_decode_error": (
+                {"error": decode_error,
+                 "skipped_lines": list(getattr(detector, "skipped_lines", None) or [])}
+                if decode_error else None),
+        })
+        if getattr(detector, "read_error", None):
+            info["banned_terms_read_error"] = detector.read_error
+        return info
 
     async def _provision_then_check(self):
         await self.ensure_local_translator()
@@ -752,23 +946,67 @@ class Pipeline:
 
         这个方法存在的原因是降噪那次事故——功能静默降级成关闭，只在一行
         没人看的日志里说了一句。自检把这类问题变成界面上的红条。"""
-        from .selfcheck import run_all, summarize
+        from .selfcheck import run_all
         # 记下这次自检看到的弹幕组件版本：之后组件被自动升级（被拒时找到了补丁），
         # 评论流重新连上时对得上号就知道要不要重查，免得「观众弹幕」一行停在旧版本
         self._selfcheck_tiktoklive = _tiktoklive_version()
         try:
             checks = await run_all(self.args, self.detector, self.glossary,
-                                   self.translator)
+                                   self.translator, asr_state=self._asr_check_state())
         except Exception as exc:
             print("[警告] 自检执行失败: {}".format(exc))
             return
-        summary = summarize(checks)
         for c in checks:
             icon = {"ok": "✅", "warn": "⚠️ ", "fail": "❌"}[c["level"]]
             print("[自检] {} {}：{}".format(icon, c["name"], c["detail"]))
+        await self._publish_selfcheck(checks)
+
+    def _asr_check_state(self):
+        """交给自检「语音识别」那一行的实际加载结果（加载失败、出错后改用了 CPU）。"""
+        return {"load_error": getattr(self, "_asr_load_error", None),
+                "fallback": getattr(self, "_asr_fallback", None)}
+
+    async def _publish_selfcheck(self, checks):
+        from .selfcheck import summarize
+        summary = summarize(checks)
         self.server.config["selfcheck"] = {"checks": checks, "summary": summary}
         await self.server.broadcast({"type": "selfcheck", "checks": checks,
                                      "summary": summary})
+        self._audit_selfcheck(checks, summary)
+
+    def _audit_selfcheck(self, checks, summary):
+        """自检结论写进本场审计：第一次整份写，之后只在某一行等级变了时写变了的那几行。
+        打包运行时 stdout 指向 /dev/null，以前复盘「这场为什么漏报」时说不出当时哪项能力
+        是坏的。键里带 audit 对象，换场后第一次照样整份写（与 _publish_comment_source 同法）。"""
+        audit = getattr(self, "audit", None)
+        if audit is None:
+            return
+        levels = {c.get("name"): c.get("level") for c in checks}
+        last = getattr(self, "_selfcheck_audited", None)
+        if last is None or last[0] is not audit:
+            audit.selfcheck(checks, summary, full=True)
+        else:
+            changed = [c for c in checks if last[1].get(c.get("name")) != c.get("level")]
+            if not changed:
+                return
+            audit.selfcheck(changed, summary, full=False)
+        self._selfcheck_audited = (audit, levels)
+
+    async def _refresh_asr_check(self):
+        """只重查「语音识别」一行。加载失败、改用 CPU、恢复都发生在开播时那轮自检之后，
+        不刷新的话那一行会一直停在旧颜色；整轮自检会去 ping Ollama、建 DeepL 术语表，
+        不为这一行重跑。还没跑过自检就不管——之后那一轮会带上最新状态。"""
+        from .selfcheck import check_asr
+        current = (getattr(self.server, "config", None) or {}).get("selfcheck") or {}
+        if not current.get("checks"):
+            return
+        try:
+            row = await check_asr(self.args, self._asr_check_state())
+        except Exception as exc:
+            print("[警告] 语音识别自检刷新失败：{}".format(exc))
+            return
+        checks = [row if c.get("name") == row["name"] else c for c in current["checks"]]
+        await self._publish_selfcheck(checks)
 
     async def _clear_recent_rooms(self):
         """清空「最近直播间」——中控点了首页那个「清空」。"""
@@ -1016,6 +1254,7 @@ class Pipeline:
         from .asr import create_transcriber
         from .resolver import ResolveError, is_direct_url
 
+        my_audit = getattr(self, "audit", None)     # 本场自己的审计，见 _run_stream_inner
         await self.server.status("connecting", "正在解析直播流地址…")
         try:
             media = await self._resolve_media(url)
@@ -1045,7 +1284,14 @@ class Pipeline:
         key = (backend, model, device, compute, self.args.source,
                self.args.beam, self.args.context, temperature,
                self.glossary.asr_prompt())
+        config = {"backend": backend, "model": model, "device": device,
+                  "compute_type": compute, "language": self.args.source,
+                  "beam_size": self.args.beam, "use_context": self.args.context,
+                  "temperature": temperature, "hotwords": self.glossary.asr_prompt(),
+                  "note": rec["note"]}
         if self._transcriber is None or self._transcriber_key != key:
+            # 正在用的是出错后改用的 CPU 模型：先放掉再加载新配置，两个模型不同时驻留
+            dropped_fallback = await self._drop_fallback_transcriber()
             size_mb = MODEL_SIZES_MB.get(model)
             if size_mb and size_mb >= 1000:
                 size_note = "约 {:.1f} GB".format(size_mb / 1000)
@@ -1085,6 +1331,7 @@ class Pipeline:
                     ),
                 )
             watcher = asyncio.ensure_future(self._model_download_progress(model))
+            as_configured = True
             try:
                 # shield：本任务被取消时不要连带取消底层加载，
                 # 下一次启动可以直接复用同一个在途结果
@@ -1095,17 +1342,21 @@ class Pipeline:
                 self._transcriber_future = None
                 self._loading_key = None
                 watcher.cancel()   # 先停进度播报，别让它把下面的 error 状态盖回去
-                await self.server.status(
-                    "error", "下载/加载识别模型失败——请检查网络后点「开始翻译」重试。\n"
-                             "技术细节：{}".format(str(exc)[:200]))
-                print("[错误] 加载模型失败: {}".format(exc))
-                return
+                transcriber = await self._on_model_load_failed(exc, config, loop)
+                if transcriber is None:
+                    return
+                as_configured = False
             finally:
                 watcher.cancel()
             # 模型和它的 key 一起提交：中途取消时两者都不动，下次重来还会重新加载
             self._transcriber = transcriber
             self._transcriber_key = key
+            if as_configured:
+                await self._asr_loaded_ok(refresh=dropped_fallback)
         transcriber = self._transcriber
+        if my_audit is not None:
+            my_audit.asr_config(self._asr_config_record(config, transcriber))
+        slot = _ASRSlot(transcriber, config=config, key=key, audit=my_audit)
 
         denoise = await self._ensure_denoise_model()
         live_note = ("已连接直播间，开始实时识别"
@@ -1124,7 +1375,7 @@ class Pipeline:
         while True:
             await self.server.status("connecting", "正在连接直播音频流…")
             got_audio, audio_secs = await self._stream_session(
-                media, transcriber, denoise, live_note, loop)
+                media, slot, denoise, live_note, loop)
             if audio_secs >= 30:
                 if direct:
                     await self.server.status(
@@ -1174,8 +1425,13 @@ class Pipeline:
         30 秒只吐 2 秒音频，用墙钟会把这种「假连接」当成播得好好的，
         重连预算被错误重置后放弃分支永远走不到。"""
         from .audio import FRAME_SEC, SAMPLE_RATE, FFmpegAudioSource
+        from .audit import strip_url_queries
         from .segmenter import SilenceSegmenter
 
+        # transcriber 可以是 _ASRSlot（_run_session 传的，出错换模型后重连也用新的），
+        # 也可以是裸识别器（这时没有换模型需要的配置，出错只报告不换）
+        slot = transcriber if isinstance(transcriber, _ASRSlot) else _ASRSlot(
+            transcriber, audit=getattr(self, "audit", None))
         got_audio = False
         audio_secs = 0.0
         # 音频缓冲按**秒数**预算，不按段数——段数上限在 9 秒片段下是 27 秒缓冲、
@@ -1271,6 +1527,8 @@ class Pipeline:
 
         async def asr_worker():
             asr_failures = 0
+            streak_handled = False   # 这一串连续出错已经处理过（换过模型或说过恢复不了）
+            banner_up = False        # 出错提示在界面上：下一段识别成功时撤掉
             while True:
                 item = await queue.get()
                 if item is None:
@@ -1279,30 +1537,43 @@ class Pipeline:
                 backlog["sec"] = max(0.0, backlog["sec"] - len(segment) / 2.0 / SAMPLE_RATE)
                 self.telemetry.set_backlog(backlog["sec"])
                 t0 = time.monotonic()
+                # 在途标记：一段识别迟迟不返回时，统计循环据此报「卡住」（_check_asr_stall）
+                inflight = [t0]
+                self._asr_inflight = inflight
+                failure = None
                 try:
                     result = await loop.run_in_executor(
-                        asr_pool, transcriber.transcribe, segment
+                        asr_pool, slot.transcriber.transcribe, segment
                     )
                 except Exception as exc:
+                    failure = exc
+                finally:
+                    if getattr(self, "_asr_inflight", None) is inflight:
+                        self._asr_inflight = None
+                if failure is not None:
                     # 这段音频没进检测器也没进审计——漏报的第五种成因，而且以前
                     # 只有一行 print（打包运行时 stdout 指向 /dev/null，等于没有）。
-                    # 计数、写审计、连续失败就告诉界面，别让识别已死的会话继续
-                    # 显示「直播中」。
+                    # 计数、写审计、连续失败就告诉界面并设法恢复，别让识别已死的会话
+                    # 继续显示「直播中」。
                     asr_failures += 1
                     self.telemetry.drop_audio()
                     if self.audit is not None:
                         self.audit.asr_failed(
                             segment_ms=len(segment) / 2.0 / SAMPLE_RATE * 1000.0,
-                            error=str(exc)[:200], queue_depth=queue.qsize())
-                    print("[警告] 识别一段音频失败: {}".format(exc))
-                    if asr_failures == 3:
-                        await self.server.broadcast({
-                            "type": "health", "level": "degraded",
-                            "backlog_sec": round(backlog["sec"], 1),
-                            "text": "🔴 识别连续失败 3 次，这期间的音频没有检测——"
-                                    "请点「停止」再「开始翻译」"})
+                            error=strip_url_queries(failure, 200), queue_depth=queue.qsize())
+                    print("[警告] 识别一段音频失败: {}".format(failure))
+                    if asr_failures >= self.ASR_FAILURES_BEFORE_RECOVERY and not streak_handled:
+                        streak_handled = banner_up = True
+                        if await self._on_asr_failures(slot, strip_url_queries(failure, 200),
+                                                       asr_failures, backlog["sec"],
+                                                       asr_pool, loop):
+                            # 换了模型：重新计数，新模型再连续出错才轮到「恢复不了」
+                            asr_failures, streak_handled = 0, False
                     continue
-                asr_failures = 0
+                asr_failures, streak_handled = 0, False
+                if banner_up:
+                    banner_up = False
+                    await self._asr_calls_recovered(slot, backlog["sec"])
                 asr_ms = (time.monotonic() - t0) * 1000.0
                 segment_ms = len(segment) / 2.0 / SAMPLE_RATE * 1000.0
                 if asr_ms > segment_ms:
@@ -1370,6 +1641,211 @@ class Pipeline:
         if tail:
             print("[信息] ffmpeg 输出: {}".format(tail))   # 英文技术输出只进终端，不上 UI
         return got_audio, audio_secs
+
+    # ---- 识别出错：记录、说清、在安全的前提下换一个识别配置 ----
+    ASR_FAILURES_BEFORE_RECOVERY = 3
+
+    @staticmethod
+    def _asr_active(transcriber, config):
+        """识别器实际生效的配置：CUDA 构造时退回了 CPU、出错后改用了 CPU，都以对象上记的为准。"""
+        return {"backend": getattr(transcriber, "backend", None) or config.get("backend"),
+                "model": getattr(transcriber, "model_size", None) or config.get("model"),
+                "device": getattr(transcriber, "device", None) or config.get("device"),
+                "compute_type": (getattr(transcriber, "compute_type", None)
+                                 or config.get("compute_type"))}
+
+    def _asr_config_record(self, config, transcriber):
+        """asr_config 审计记录：实际在听的配置；和请求的不一样、或出错后改用过时带上来龙去脉。"""
+        active = self._asr_active(transcriber, config)
+        record = dict(active, note=config.get("note"))
+        if (active["backend"] != config.get("backend") or active["model"] != config.get("model")
+                or (config.get("device") not in (None, "auto")
+                    and active["device"] != config.get("device"))):
+            record["requested"] = {k: config.get(k)
+                                   for k in ("backend", "model", "device", "compute_type")}
+        if getattr(self, "_asr_fallback", None):
+            record["fallback"] = dict(self._asr_fallback)
+        return record
+
+    @staticmethod
+    def _transcriber_kwargs(cfg):
+        return {"backend": cfg["backend"], "model_size": cfg["model"],
+                "device": cfg["device"], "compute_type": cfg["compute_type"],
+                "language": cfg.get("language"), "beam_size": cfg.get("beam_size", 5),
+                "use_context": cfg.get("use_context", False),
+                "temperature": cfg.get("temperature", DEFAULT_TEMPERATURE),
+                "hotwords": cfg.get("hotwords")}
+
+    def _asr_fallback_plan(self, config, active=None):
+        """识别出错后可以改用的配置；没有安全的选择就返回 None。
+
+        * CUDA 出错：同一个模型改在 CPU 上跑（int8，与 asr.Transcriber 构造失败时的退路一致）；
+        * 苹果 GPU（mlx）出错：CPU 上跑 large-v3-turbo（hwdetect.CPU_FALLBACK）；
+        * 只用已经**完整下载**的模型——直播中途开始下载 1.6 GB，检测只会停得更久。"""
+        from .hwdetect import CPU_FALLBACK
+        from .selfcheck import _model_cached
+        current = dict(config, **{k: v for k, v in (active or {}).items() if v})
+        if current.get("backend") == "ct2" and current.get("device") == "cuda":
+            plan = dict(current, device="cpu", compute_type="int8")
+        elif current.get("backend") == "mlx":
+            plan = dict(current, **CPU_FALLBACK)
+        else:
+            return None
+        try:
+            cached = _model_cached(plan["model"], "ct2")
+        except Exception:
+            cached = False
+        return plan if cached else None
+
+    async def _drop_fallback_transcriber(self):
+        """要加载新配置之前，放掉出错后改用的那个 CPU 模型。返回是否真的放掉了。"""
+        if getattr(self, "_asr_fallback", None) is None:
+            return False
+        from .asr import release_transcriber
+        old, self._transcriber, self._transcriber_key = self._transcriber, None, None
+        if old is not None:
+            release_transcriber(old)
+        self._asr_fallback = None
+        await self._incident("asr-fallback", "clear")
+        return True
+
+    async def _asr_loaded_ok(self, refresh=False):
+        """按配置加载成功：之前记下的加载失败作废，自检「语音识别」那一行刷回来。"""
+        if getattr(self, "_asr_load_error", None) is not None:
+            self._asr_load_error = None
+            refresh = True
+        if refresh:
+            await self._refresh_asr_check()
+
+    async def _on_model_load_failed(self, exc, config, loop):
+        """识别模型没能加载。写审计；界面上只说观察到的事和能做的事——网络、磁盘、Metal
+        初始化都出现过，程序分不清，就不猜。苹果 GPU 后端失败、而 CPU turbo 已经完整下载时
+        改用它。返回能用的识别器；没有就返回 None（这一场随即结束）。"""
+        from .asr import create_transcriber, release_mlx_model
+        from .audit import strip_url_queries
+        error = strip_url_queries(exc, 200)
+        backend, model, device = config.get("backend"), config.get("model"), config.get("device")
+        print("[错误] 加载模型失败: {}".format(exc))
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.asr_load_failed(backend, model, device, error)
+        self._asr_load_error = {"backend": backend, "model": model, "device": device,
+                                "error": error}
+        plan = self._asr_fallback_plan(config) if backend == "mlx" else None
+        if plan is not None:
+            source, target = _describe_asr(config), _describe_asr(plan)
+            await self.server.status(
+                "connecting", "识别模型（{}/{}）没能加载，正在改用 CPU 识别（{}）…".format(
+                    backend, model, target))
+            release_mlx_model()     # 预热失败时模型可能已经进了 mlx 的类级缓存
+            try:
+                fallback = await loop.run_in_executor(
+                    None, lambda: create_transcriber(**self._transcriber_kwargs(plan)))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc2:
+                print("[错误] 改用 CPU 识别也没能加载: {}".format(exc2))
+                if audit is not None:
+                    audit.asr_backend_fallback(source, None, error, tried=target,
+                                               fallback_error=str(exc2))
+            else:
+                if audit is not None:
+                    audit.asr_backend_fallback(source, target, error)
+                self._asr_fallback = {"from": source, "to": target, "error": error}
+                await self._incident(
+                    "asr-fallback", "warn",
+                    "识别模型（{}/{}）没能加载，已改用 CPU 识别（{}），较慢，可能积压。"
+                    "关闭程序重新打开会重新尝试原来的识别模型".format(backend, model, target))
+                await self._refresh_asr_check()
+                return fallback
+        await self.server.status(
+            "error", "识别模型（{}/{}）没能加载。可以：确认网络和磁盘空间后点「开始翻译」重试；"
+                     "若反复出现，关闭程序重新打开。\n技术细节：{}".format(backend, model, error))
+        await self._refresh_asr_check()
+        return None
+
+    async def _on_asr_failures(self, slot, error, failures, backlog_sec, pool, loop):
+        """识别连续出错 ASR_FAILURES_BEFORE_RECOVERY 次。返回是否换上了新的识别器。
+
+        以前这里只发一次「请点停止再开始翻译」——可停止/开始复用的是同一个坏模型（key
+        没变），mlx 的类级缓存也还在，照做什么都不会变。现在：
+          * 一场最多换一次：先放掉坏模型，再加载一个**已完整下载**的 CPU 配置；
+          * 没有可换的就说实话：程序自己恢复不了，请关闭程序重新打开。
+        在 asr_worker 协程里做：调用都返回了，识别线程是空的，换的时候没有调用在跑。"""
+        from .asr import create_transcriber, release_transcriber
+        failing = "识别连续 {} 次出错，这期间的音频没有做违禁词检测".format(failures)
+        old = slot.transcriber
+        active = self._asr_active(old, slot.config) if slot.config else {}
+        source = _describe_asr(active) if active else "?"
+        plan = None
+        if slot.config and not slot.reloaded:
+            plan = self._asr_fallback_plan(slot.config, active)
+        if plan is None:
+            if not slot.gave_up and slot.audit is not None:
+                slot.audit.asr_backend_fallback(
+                    source, None, error,
+                    reason="already_switched" if slot.reloaded else "no_cached_fallback")
+            slot.gave_up = True
+            if slot.audit is getattr(self, "audit", None):
+                await self._asr_unrecoverable(failing, backlog_sec)
+            return False
+        slot.reloaded = True
+        target = _describe_asr(plan)
+        if slot.audit is getattr(self, "audit", None):
+            await self._incident("session:asr-failing", "error",
+                                 "{}，正在改用 CPU 识别（{}）…".format(failing, target))
+            await self._announce_health("degraded", backlog_sec, reason="asr_failing",
+                                        text="🔴 {}，正在改用 CPU 识别…".format(failing))
+        # 先放掉坏模型再加载：两个模型同时驻留正是规则三那类事故
+        release_transcriber(old)
+        if slot.key is not None and self._transcriber is old:
+            self._transcriber, self._transcriber_key = None, None
+        try:
+            new = await loop.run_in_executor(
+                pool, lambda: create_transcriber(**self._transcriber_kwargs(plan)))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[错误] 改用 CPU 识别没能加载: {}".format(exc))
+            if slot.audit is not None:
+                slot.audit.asr_backend_fallback(source, None, error, tried=target,
+                                                fallback_error=str(exc))
+            slot.gave_up = True
+            if slot.audit is getattr(self, "audit", None):
+                await self._asr_unrecoverable(failing, backlog_sec)
+            return False
+        if slot.audit is not getattr(self, "audit", None):
+            release_transcriber(new)      # 这一场已经结束：没人会用它，别留在内存里
+            return False
+        slot.transcriber = new
+        if slot.key is not None:
+            self._transcriber, self._transcriber_key = new, slot.key
+            self._asr_fallback = {"from": source, "to": target, "error": error}
+        if slot.audit is not None:
+            slot.audit.asr_backend_fallback(source, target, error)
+        print("[警告] 识别连续出错，已从 {} 改用 {}".format(source, target))
+        await self._incident("session:asr-failing", "clear")
+        await self._incident(
+            "asr-fallback", "warn",
+            "GPU 识别连续出错，已改用 CPU 识别（{}），较慢，可能积压。"
+            "关闭程序重新打开会重新尝试 GPU 识别".format(target))
+        await self._announce_health("lagging", backlog_sec, reason="asr_fallback",
+                                    text="⚠️ GPU 识别连续出错，已改用 CPU 识别（较慢，可能积压）")
+        await self._refresh_asr_check()
+        return True
+
+    async def _asr_unrecoverable(self, failing, backlog_sec):
+        text = "{}。程序自动恢复不了——请关闭程序重新打开；若仍出错请反馈".format(failing)
+        await self._incident("session:asr-failing", "error", text)
+        await self._announce_health("degraded", backlog_sec, reason="asr_failing",
+                                    text="🔴 " + text)
+
+    async def _asr_calls_recovered(self, slot, backlog_sec):
+        """出错提示发出后又识别成功了一段：撤掉提示，健康条回到按积压算的状态。"""
+        if slot.audit is not getattr(self, "audit", None):
+            return
+        await self._incident("session:asr-failing", "clear")
+        await self._announce_health(self._health_level(backlog_sec), backlog_sec)
 
     def _note_resolve_failure(self, exc):
         """连续两次「不是主播下播」的解析失败，多半是 yt-dlp 的 TikTok 提取器

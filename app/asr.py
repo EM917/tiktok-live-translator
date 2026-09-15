@@ -15,6 +15,7 @@
     误识别）的段直接丢弃，宁缺毋滥。
 """
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass, field
 from typing import List
@@ -134,6 +135,38 @@ _MLX_REPOS = {
 }
 
 
+def release_mlx_model():
+    """放掉 mlx-whisper 缓存在类属性里的模型（ModelHolder 是类级缓存，新建一个
+    MLXTranscriber 也还是同一份模型）。只看已经 import 过的模块：没加载过就没有
+    可放的，不为此去 import mlx。返回是否真的找到了缓存。"""
+    holder = getattr(sys.modules.get("mlx_whisper.transcribe"), "ModelHolder", None)
+    if holder is None:
+        return False
+    holder.model = None
+    holder.model_path = None
+    core = sys.modules.get("mlx.core")
+    for clear in (getattr(core, "clear_cache", None),
+                  getattr(getattr(core, "metal", None), "clear_cache", None)):
+        if callable(clear):
+            try:
+                clear()
+                break
+            except Exception:
+                pass
+    return True
+
+
+def release_transcriber(transcriber):
+    """放掉一个识别器占着的模型。换模型之前必须先调它：两个大模型同时驻留
+    正是 2026-08-31 识别从 1.1 秒掉到 38-55 秒/段、丢 16 段音频的那类事故。"""
+    release = getattr(transcriber, "release", None)
+    if callable(release):
+        try:
+            release()
+        except Exception:
+            pass
+
+
 def create_transcriber(backend, model_size, device="auto", compute_type="auto",
                        language=None, beam_size=5, use_context=False,
                        temperature=DEFAULT_TEMPERATURE, hotwords=None):
@@ -218,6 +251,11 @@ class Transcriber(_FilterMixin):
         # 不会把上一段的幻觉传染给下一段
         self.hotwords = hotwords
         self._context = ""
+        # 实际生效的配置（CUDA 退回 CPU 后与请求的不同），审计记的是这一份
+        self.backend = "ct2"
+        self.model_size = model_size
+        self.device = device
+        self.compute_type = compute_type
         try:
             self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
         except Exception as exc:
@@ -228,9 +266,16 @@ class Transcriber(_FilterMixin):
             print("[警告] CUDA 加载识别模型失败（{}），改用 CPU int8"
                   .format(str(exc)[:120]))
             self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            self.device, self.compute_type = "cpu", "int8"
+
+    def release(self):
+        """放掉模型。之后再调 transcribe 会明确报错，而不是悄悄换一个模型。"""
+        self.model = None
 
     def transcribe(self, pcm):
         """输入 16 kHz mono s16le PCM，返回 (文本, 识别到的语言代码)。"""
+        if self.model is None:
+            raise RuntimeError("识别模型已释放")
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         kwargs = {}
         if self.hotwords:
@@ -268,9 +313,16 @@ class MLXTranscriber(_FilterMixin):
         # 不会把上一段的幻觉传染给下一段
         self.hotwords = hotwords
         self._context = ""
+        self.backend = "mlx"
+        self.model_size = model_size
+        self.device = "gpu"
+        self.compute_type = "float16"
         # 预热一次：触发模型下载/编译，让第一段真实音频不用等
         self._mlx.transcribe(np.zeros(16000, dtype=np.float32),
                              path_or_hf_repo=self.repo, language=language, fp16=True)
+
+    def release(self):
+        release_mlx_model()
 
     def transcribe(self, pcm):
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
