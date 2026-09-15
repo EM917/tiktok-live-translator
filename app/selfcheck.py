@@ -86,7 +86,24 @@ async def check_denoise(args):
                   "删除 models/bd.rnnn 后重新开始，程序会重新下载")
 
 
-async def check_asr(args):
+async def check_asr(args, state=None):
+    """state 是管线实际加载的结果（Pipeline._asr_check_state）：加载失败、出错后改用了
+    CPU——这些比按配置推一遍更可信，所以先看它。"""
+    state = state or {}
+    fallback = state.get("fallback")
+    if fallback:
+        return _check("语音识别", WARN,
+                      "{} 识别出错，已改用 {}——较慢，长时间监听容易积压（{}）".format(
+                          fallback.get("from"), fallback.get("to"),
+                          fallback.get("error") or "无错误详情"),
+                      "关闭程序重新打开会重新尝试原来的识别配置；若反复出现请反馈给开发者")
+    load_error = state.get("load_error")
+    if load_error:
+        return _check("语音识别", FAIL,
+                      "识别模型（{}/{}）没能加载，本场不会识别：{}".format(
+                          load_error.get("backend"), load_error.get("model"),
+                          load_error.get("error") or "无错误详情"),
+                      "确认网络和磁盘空间后点「开始翻译」重试；若反复出现，关闭程序重新打开")
     backend = getattr(args, "backend", "auto")
     try:
         from .hwdetect import recommend
@@ -120,11 +137,17 @@ async def check_asr(args):
     except Exception:
         info = {}
     if info.get("apple_silicon") and rec["backend"] != "mlx":
+        # 首次安装没装上 mlx-whisper 时留了放弃记号，重开程序不会补装——那时不能再说
+        # 「重新打开会自动补装」，要说哪天没装上、程序接下来会做什么、中控能做什么
+        from .bootstrap import mlx_giveup_note
+        note = mlx_giveup_note(ROOT)
+        fix = ("关闭程序后重新打开，会自动补装 GPU 加速组件；若反复出现请把这句话反馈给开发者"
+               if note is None else
+               note + "。也可以停播后" + _pip_command("mlx-whisper", upgrade=False)
+               + "，装好后重开程序")
         return _check("语音识别", WARN,
                       "这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）"
-                      "——慢一倍以上，长时间监听容易积压".format(detail),
-                      "关闭程序后重新打开，会自动补装 GPU 加速组件；"
-                      "若反复出现请把这句话反馈给开发者")
+                      "——慢一倍以上，长时间监听容易积压".format(detail), fix)
     return _check("语音识别", OK if cached else WARN, detail)
 
 
@@ -213,22 +236,32 @@ async def check_translator(args, translator=None):
         return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
 
     if translator is not None:
+        from .translator import model_listed
+
         engine = getattr(translator, "name", "?")
         model = getattr(getattr(translator, "inner", translator), "model", "")
         if engine in ("hymt2", "hymt2-7b"):
             tier = "7B" if "7B" in model else "1.8B"
-            if not await _to_thread(_ollama_reachable):
+            names = await _to_thread(_ollama_tags)
+            if names is None:
                 return _check("翻译引擎", FAIL,
                               "配置的是本地 Hy-MT2 {}，但 Ollama 没在运行".format(tier),
                               await _ollama_down_hint())
+            # Ollama 在跑不等于能翻：模型不在，每句 /api/generate 都回 404。以前这里
+            # 只 ping /api/tags，切到本机没有的 7B 之后这一行照样是绿的
+            if model and not model_listed(model, names):
+                return _model_missing("本地 Hy-MT2 {}".format(tier), model)
             note = "、术语最准，但更吃内存" if tier == "7B" else ""
             return _check("翻译引擎", OK,
                           "本地 Hy-MT2 {}（离线、无限流{}）".format(tier, note))
         if engine == "gemma":
-            if not await _to_thread(_ollama_reachable):
+            names = await _to_thread(_ollama_tags)
+            if names is None:
                 return _check("翻译引擎", FAIL,
                               "配置的是本地 TranslateGemma，但 Ollama 没在运行",
                               await _ollama_down_hint())
+            if model and not model_listed(model, names):
+                return _model_missing("本地 TranslateGemma", model)
             return _check("翻译引擎", OK, "本地 TranslateGemma（离线、无限流）")
         if engine == "google":
             from . import localmodel
@@ -241,10 +274,8 @@ async def check_translator(args, translator=None):
         if engine == "deepl":
             return await _check_deepl(args, translator)
         key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(engine)
-        if key and not os.environ.get(key):
-            return _check("翻译引擎", FAIL,
-                          "{} 需要先设置环境变量 {}".format(engine, key),
-                          "没有这个密钥的话，把翻译引擎留在默认的「自动」即可")
+        if key:
+            return await _check_paid_api(engine, key, translator)
         return _check("翻译引擎", OK, "{}（付费 API）".format(engine))
 
     # 没有引擎对象（还没建，或翻译被关掉）——只能就配置说话，不假装知道更多
@@ -252,6 +283,54 @@ async def check_translator(args, translator=None):
         return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
     return _check("翻译引擎", WARN, "翻译引擎尚未初始化",
                   "点一次「开始翻译」后本项会重新检查")
+
+
+def _model_missing(label, model):
+    return _check("翻译引擎", FAIL,
+                  "配置的是{}，Ollama 在运行，但里面没有模型 {}——字幕会只显示原文"
+                  "（违禁词报警不受影响）".format(label, model),
+                  "不在直播时程序会自动下载它（进度显示在首页），直播中会等停止后再下载；"
+                  "也可以在「翻译引擎」里换一个引擎")
+
+
+async def _check_paid_api(engine, key, translator):
+    """Claude / OpenAI。
+
+    密钥可以来自环境变量，也可以是界面里填的（settings.json）。以前这里只看环境
+    变量：界面填了密钥、翻译明明在工作，这一行却一直红着「需要先设置环境变量」，
+    教会中控无视红条。
+
+    有密钥时再真问一次接口（列模型，不花 token，最多等 5 秒）：密钥被拒、模型下线，
+    这一行要在开播前变红，而不是等整场字幕都翻不出来。"""
+    from .translator import api_key
+
+    label = {"claude": "Claude", "openai": "OpenAI"}.get(engine, engine)
+    if not api_key(key):
+        return _check("翻译引擎", FAIL, "{} 还没有密钥".format(label),
+                      "在「翻译引擎」里填写密钥；没有密钥的话，把引擎留在默认的「自动」即可")
+    inner = getattr(translator, "inner", translator)
+    probe = getattr(inner, "probe_key", None)
+    if probe is None:
+        return _check("翻译引擎", OK, "{}（付费 API）".format(label))
+    try:
+        status = await asyncio.wait_for(probe(), timeout=5)
+    except Exception as exc:
+        return _check("翻译引擎", WARN,
+                      "{}（付费 API）：这次没连上接口（{}）".format(label, type(exc).__name__),
+                      "检查网络；翻译不出来时字幕先显示原文，违禁词报警不受影响")
+    if status in (401, 403):
+        return _check("翻译引擎", FAIL,
+                      "{} 拒绝了当前密钥（HTTP {}）".format(label, status),
+                      "在「翻译引擎」里重新填写密钥")
+    if status == 404 and getattr(inner, "PROBE_CHECKS_MODEL", False):
+        model = getattr(inner, "model", None) or getattr(inner, "MODEL", "?")
+        return _check("翻译引擎", FAIL,
+                      "{} 接口里找不到模型 {}（HTTP 404）".format(label, model),
+                      "在「翻译引擎」里换一个引擎")
+    if status != 200:
+        return _check("翻译引擎", WARN,
+                      "{}（付费 API）：验证密钥时接口返回 HTTP {}".format(label, status))
+    return _check("翻译引擎", OK, "{}（付费 API，密钥已验证）".format(label))
 
 
 async def _check_deepl(args, translator):
@@ -272,6 +351,16 @@ async def _check_deepl(args, translator):
     source = (getattr(args, "source", None) or "es").lower()
     if not hasattr(inner, "_ensure_glossary"):
         return _check("翻译引擎", OK, "DeepL（付费 API）")
+    # 先问一次用量：DeepL 最轻的鉴权请求。密钥被拒（401/403）时下面建术语表同样
+    # 失败，而那条路只会报「术语表没建起来」——等于把一把被拒的密钥说成「已就绪」
+    try:
+        status, _usage = await inner._api("GET", "/v2/usage")
+    except Exception:
+        status = None          # 连不上或回应读不懂：交给下面建术语表那一步去报
+    if status in (401, 403):
+        return _check("翻译引擎", FAIL,
+                      "DeepL 拒绝了当前密钥（HTTP {}）".format(status),
+                      "在「翻译引擎」里重新填写密钥")
     if target not in inner._GLOSSARY_TARGET:
         return _check("翻译引擎", WARN,
                       "DeepL 已就绪，但 {} 不挂原生术语表（DeepL 的术语表只有"
@@ -285,30 +374,61 @@ async def _check_deepl(args, translator):
         return _check("翻译引擎", WARN,
                       "DeepL 已就绪，但原生术语表没建起来——商品名会被直译"
                       "（实测词表遵从率会从 91.8% 掉到 26.5%）",
-                      "多半是额度或权限问题；本地 Hy-MT2 不受影响")
+                      "建术语表的请求没有成功，程序 120 秒后会自动重试；本地 Hy-MT2 不受影响")
     n = len(inner.glossary_tsv(load_glossary().entries).splitlines())
     return _check("翻译引擎", OK,
                   "DeepL + 原生术语表（{} 条，{}→{}）".format(n, source, target))
 
 
-def _ollama_reachable():
-    import urllib.request
+def _ollama_tags():
+    """Ollama /api/tags 里的模型名列表；连不上返回 None。同步 urllib，放线程池里调。"""
+    from .translator import _ollama_models_or_none
 
-    base = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-    try:
-        urllib.request.urlopen(base + "/api/tags", timeout=2).read()
-        return True
-    except Exception:
-        return False
+    return _ollama_models_or_none()
+
+
+def _ollama_reachable():
+    return _ollama_tags() is not None
 
 
 async def check_watchlist(detector):
-    """违禁词表为空 = 这个工具的核心功能没有生效。"""
+    """违禁词表为空 = 这个工具的核心功能没有生效。
+
+    「N 条已生效」只数真能匹配上的：行尾带注释、正则里写了重音或标点的条目能加载，
+    却永远匹配不上（检测跑在去掉重音和标点的文本上）——以前它们照样算进「已生效」。"""
+    name = "违禁词表"
+    fname = Path(getattr(detector, "source_path", None) or "banned_terms.txt").name
+    read_error = getattr(detector, "read_error", None)
     if detector is None or not detector.enabled:
-        return _check("违禁词表", FAIL,
+        if read_error:
+            return _check(name, FAIL,
+                          "{} 读不出来（{}）——本工具不会发出任何违禁词报警".format(fname, read_error),
+                          "检查这个文件能否打开后点「停止」再「开始翻译」")
+        return _check(name, FAIL,
                       "词表为空——本工具不会发出任何违禁词报警",
                       "编辑 banned_terms.txt 后重新「开始翻译」")
-    return _check("违禁词表", OK, "{} 条已生效".format(detector.count))
+    warnings = list(getattr(detector, "load_warnings", None) or [])
+    effective = getattr(detector, "effective_count", detector.count)
+    notes = []
+    if getattr(detector, "decode_error", None):
+        skipped = list(getattr(detector, "skipped_lines", None) or [])
+        notes.append("{} 不是 UTF-8 编码，{}，其余 {} 条照常生效——请用 UTF-8 另存".format(
+            fname,
+            "第 {} 行读不出已跳过".format("、".join(str(n) for n in skipped[:10])
+                                         + ("等 {} 行".format(len(skipped))
+                                            if len(skipped) > 10 else ""))
+            if skipped else "读不出的只有注释行", effective))
+    notes += [w["text"] for w in warnings[:5]]
+    if len(warnings) > 5:
+        notes.append("另有 {} 条同类问题".format(len(warnings) - 5))
+    fix = "按提示改好 {} 后点「停止」再「开始翻译」".format(fname)
+    if effective <= 0:
+        return _check(name, FAIL,
+                      "词表里的条目都匹配不上——本工具不会发出任何违禁词报警。" + "；".join(notes),
+                      fix)
+    if notes:
+        return _check(name, WARN, "{} 条已生效；".format(effective) + "；".join(notes), fix)
+    return _check(name, OK, "{} 条已生效".format(detector.count))
 
 
 async def check_glossary(glossary):
@@ -327,8 +447,23 @@ async def check_audit():
         probe.unlink()
         return _check("审计日志", OK, "可写入 logs/")
     except OSError as exc:
-        return _check("审计日志", WARN,
-                      "logs/ 不可写（{}）——漏报将无法事后追溯".format(exc))
+        # FAIL 而不是 WARN：写不进去就是整场没有证据——报警照常上屏，审计里一条没有。
+        # WARN 时界面只显示「⚠️ 自检通过，1 项提醒」且不自动展开，等于没说
+        return _check("审计日志", FAIL,
+                      "logs/ 不可写（{}）——漏报将无法事后追溯".format(exc),
+                      _audit_fix(os.name == "nt"))
+
+
+def _audit_fix(windows):
+    """logs/ 写不进去时能照做的一步。目录归属不对（比如用 sudo 跑过安装或程序）时
+    chown 能修；logs/ 还没建出来时要改的是它的上一级。"""
+    if windows:
+        return "把程序文件夹移出「文档/桌面」，或在「受控文件夹访问」里允许 python"
+    import shlex
+
+    from .audit import LOG_DIR
+    target = LOG_DIR if LOG_DIR.exists() else LOG_DIR.parent
+    return 'sudo chown -R "$(whoami)" {}'.format(shlex.quote(str(target)))
 
 
 async def check_resolver():
@@ -416,7 +551,7 @@ async def check_disk():
     return _check("磁盘空间", OK, "剩余 {:.0f} GB".format(free))
 
 
-async def run_all(args, detector=None, glossary=None, translator=None):
+async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None):
     """跑完所有自检。任一项抛异常都不影响其余项——自检自己绝不能拖垮启动。
 
     探测崩了算 **FAIL，不是 WARN**：崩了意味着这项能力压根没被验证过，和
@@ -426,7 +561,7 @@ async def run_all(args, detector=None, glossary=None, translator=None):
     probes = [
         ("音频组件 ffmpeg", check_ffmpeg()),
         ("人声降噪", check_denoise(args)),
-        ("语音识别", check_asr(args)),
+        ("语音识别", check_asr(args, asr_state)),
         ("翻译引擎", check_translator(args, translator)),
         ("违禁词表", check_watchlist(detector)),
         ("领域词表", check_glossary(glossary)),

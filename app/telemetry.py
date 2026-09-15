@@ -35,6 +35,9 @@ class Telemetry:
         self.detect_ms = deque(maxlen=window)
         self.audio_segments_total = 0
         self.audio_segments_dropped = 0
+        # 其中因为识别调用出错而没检测的段（其余是积压超过上限被挤掉的）。健康条说「积压
+        # 丢弃了 N 段」时不能把识别出错的也算进去，两种状况的提示和处理都不一样
+        self.audio_segments_asr_failed = 0
         self.translation_jobs_dropped = 0
         # 识别耗时超过片段时长的调用：Whisper 在音乐/噪声段上会复读跑飞，
         # 实测能让 4.5 秒的片段解码 39 秒——那正是队列溢出丢音频的前兆
@@ -57,6 +60,7 @@ class Telemetry:
         self.detect_ms.clear()
         self.audio_segments_total = 0
         self.audio_segments_dropped = 0
+        self.audio_segments_asr_failed = 0
         self.translation_jobs_dropped = 0
         self.asr_overruns = 0
         self.asr_queue_depth = 0
@@ -83,8 +87,10 @@ class Telemetry:
     def note_overrun(self):
         self.asr_overruns += 1
 
-    def drop_audio(self):
+    def drop_audio(self, asr_failed=False):
         self.audio_segments_dropped += 1
+        if asr_failed:
+            self.audio_segments_asr_failed += 1
 
     def drop_translation(self):
         self.translation_jobs_dropped += 1
@@ -103,6 +109,7 @@ class Telemetry:
             "detect_worst": stats(self.detect_ms),
             "audio_segments_total": self.audio_segments_total,
             "audio_segments_dropped": self.audio_segments_dropped,
+            "audio_segments_asr_failed": self.audio_segments_asr_failed,
             "translation_jobs_dropped": self.translation_jobs_dropped,
             "asr_overruns": self.asr_overruns,
             "audio_backlog_sec": round(self.audio_backlog_sec, 1),

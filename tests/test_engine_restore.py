@@ -93,6 +93,8 @@ def test_note_cleared_after_user_picks_an_engine(monkeypatch, tmp_path):
     p = _pipeline(monkeypatch, tmp_path, note="旧提示")
     monkeypatch.setattr("app.pipeline.create_translator",
                         lambda name: type("X", (), {"name": name})())
+    # set_engine 选本地引擎前会问 Ollama 有没有这个模型；这里当它连不上，别碰本机
+    monkeypatch.setattr("app.translator._ollama_models_or_none", lambda: None)
     _run(p.set_engine("hymt2"))
     assert p.args.translator_note is None
     assert p.server.sent[-1].get("note") is None

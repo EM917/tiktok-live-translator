@@ -62,6 +62,7 @@
   var commentById = Object.create(null);
   var statsEl = document.getElementById("stats-line");
   var healthBar = document.getElementById("health-bar");
+  var incidentBar = document.getElementById("incident-bar");
   var watchState = document.getElementById("watch-state");
   var watchDesc = document.getElementById("watch-desc");
   var fixCmd = document.getElementById("fix-command");
@@ -94,6 +95,8 @@
   var startWatchdog = null;
   var pendingStart = null;   // 已发出但服务器还没回执的「开始」指令（重连后补发）
   var versionNoticeTimer = null;
+  var updateCheckNote = "";  // 很久没连上更新服务器时版本号后面那句话（文字由服务端给）
+  var updateConfirmTimer = null;
   var liveBarId = null;      // 底部大字幕当前显示的是哪一条（译文回来要就地替换）
   // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
   var cardsById = {};
@@ -215,7 +218,27 @@
     send({ type: "stop" });
   });
 
+  function resetUpdateBtn() {
+    if (updateConfirmTimer) clearTimeout(updateConfirmTimer);
+    updateConfirmTimer = null;
+    delete updateBtn.dataset.confirm;
+    updateBtn.disabled = false;
+    updateBtn.textContent = "一键更新";
+  }
+
   updateBtn.addEventListener("click", function () {
+    // 监听中点的要再点一次确认：更新会暂停监听，而这个按钮直播中一直摆在中控眼前。
+    // 不用 window.confirm——应用窗口（pywebview）里它可能根本弹不出来
+    if (streamActive && updateBtn.dataset.confirm !== "1") {
+      updateBtn.dataset.confirm = "1";
+      // 暂停多久要看这次要不要装新组件，页面不知道：不许诺时长，服务端的状态行会说
+      updateBtn.textContent = "再点一次确认更新：更新期间监听暂停，更新完自动恢复";
+      updateConfirmTimer = setTimeout(resetUpdateBtn, 6000);
+      return;
+    }
+    if (updateConfirmTimer) clearTimeout(updateConfirmTimer);
+    updateConfirmTimer = null;
+    delete updateBtn.dataset.confirm;
     updateBtn.disabled = true;
     updateBtn.textContent = "更新中…";
     send({ type: "apply_update" });
@@ -314,7 +337,15 @@
   function restoreVersion() {
     if (versionNoticeTimer) clearTimeout(versionNoticeTimer);
     versionNoticeTimer = null;
-    if (currentVersion) versionEl.textContent = " · v" + currentVersion;
+    if (currentVersion) {
+      versionEl.textContent = " · v" + currentVersion + (updateCheckNote ? " · " + updateCheckNote : "");
+    }
+  }
+
+  // 连续很多天没连上更新服务器：只在页脚版本号旁边安静地提一句，不进自检、不进横幅
+  function renderUpdateCheck(info) {
+    updateCheckNote = info && info.note ? String(info.note) : "";
+    if (!versionNoticeTimer) restoreVersion();   // 正在显示的一次性提示到点后会带上它
   }
 
   function applyFont(size) {
@@ -378,6 +409,8 @@
         alertList.innerHTML = "";
         alertCount.textContent = "0";
         alertPanel.classList.add("hidden");
+        // 当前场次先于回放的报警到：回放进来的每一条都要据此判断是不是上一场的
+        setAlertSession(msg.config && msg.config.alerts_session);
         // 弹幕同理：服务器会重放最近的评论，先清掉本地已有的
         commentList.innerHTML = "";
         commentById = Object.create(null);
@@ -396,6 +429,14 @@
           if (msg.config.recent_rooms) renderRecentRooms(msg.config.recent_rooms);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
+          // 持续提示以服务端为准：重连时整份重放，先清掉本地的
+          incidents = Object.create(null);
+          if (msg.config.incidents) {
+            Object.keys(msg.config.incidents).forEach(function (k) {
+              renderIncident(msg.config.incidents[k]);
+            });
+          }
+          drawIncidents();
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
           if (msg.config.source_lang && !sourceTouched) sourceSel.value = msg.config.source_lang;
@@ -404,16 +445,17 @@
                               count: msg.config.glossary_migration.count });
           }
           if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
+          updateCheckNote = msg.config.update_check && msg.config.update_check.note
+            ? String(msg.config.update_check.note) : "";
           if (msg.config.version) {
             currentVersion = msg.config.version;
-            versionEl.textContent = " · v" + msg.config.version;
+            restoreVersion();
           }
           // 重连/刷新时回放的提示从来不是「新」提示：不许再改标题打扰直播中的中控
           if (msg.config.update) showUpdate(Object.assign({}, msg.config.update, { quiet: true }));
           else {
             updateBar.classList.add("hidden");
-            updateBtn.disabled = false;
-            updateBtn.textContent = "一键更新";
+            resetUpdateBtn();
           }
         }
         break;
@@ -423,6 +465,10 @@
       case "updating":
         updateBtn.disabled = true;
         updateBtn.textContent = "更新中…";
+        break;
+      // 这次没更新成（原因另有提示/状态说明）：按钮恢复，可以再试
+      case "update_aborted":
+        resetUpdateBtn();
         break;
       case "status":
         // connecting/live/error 任一状态到达即视为服务器已接管「开始」指令
@@ -442,6 +488,8 @@
         if (msg.target_lang) targetSel.value = msg.target_lang;
         if (msg.source_lang && !sourceTouched) sourceSel.value = msg.source_lang;
         if (msg.room_url) fillRoomInput(msg.room_url);
+        if (msg.alerts_session) setAlertSession(msg.alerts_session);
+        if ("update_check" in msg) renderUpdateCheck(msg.update_check);
         break;
       case "glossary_migration":
         handleMigration(msg);
@@ -474,6 +522,9 @@
       case "stats":
         renderStats(msg);
         break;
+      case "incident":
+        renderIncident(msg);
+        break;
       case "health":
         renderHealth(msg);
         break;
@@ -502,10 +553,7 @@
     statusText.textContent = STATUS_TEXT[state] || state;
 
     // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
-    if (state === "error" || state === "idle") {
-      updateBtn.disabled = false;
-      updateBtn.textContent = "一键更新";
-    }
+    if (state === "error" || state === "idle") resetUpdateBtn();
 
     var active = state === "live" || state === "connecting";
     startPanel.classList.toggle("hidden", active);
@@ -698,6 +746,14 @@
   // ---- 违禁词警报 ----
   // 警报是这个工具的核心产出，绝不自动消失：中控没看到就等于漏报。
   var TIER_LABEL = { exact: "🔴 命中", variant: "🟠 变体", fuzzy: "🟡 疑似" };
+  var alertNote = document.getElementById("alert-note");
+  var alertSession = null;   // 当前场次 { session, streamer, total }，服务端在 config 里给
+  var sessionTotal = 0;      // 本场报警总数（面板只留最近 50 条）
+  var attention = { unseen: 0, restoreTo: null };   // 窗口在后台时标题上的提醒
+  // 桌面窗口（pywebview）的原生标题不跟 document.title：条数经 JS 桥另外告诉窗口
+  // （app/window_attention.py）。浏览器里没有 window.pywebview，这几行什么都不做
+  var windowBridge = { sent: 0, seq: 0 };
+  var windowPage = Math.random().toString(36).slice(2);
 
   function renderAlert(msg) {
     alertPanel.classList.remove("hidden");
@@ -707,9 +763,14 @@
     var head = document.createElement("div");
     head.className = "alert-head";
     var ts = new Date((msg.ts || Date.now() / 1000) * 1000);
-    head.textContent = (TIER_LABEL[msg.tier] || "命中") + "「" + msg.term + "」 " +
-      pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds());
+    // 带上主播：换过房间后，面板上的旧报警不能被当成眼前这个主播说的
+    head.appendChild(document.createTextNode(
+      (TIER_LABEL[msg.tier] || "命中") + "「" + msg.term + "」 " +
+      pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds()) +
+      (msg.streamer ? " @" + msg.streamer : "")));
     item.appendChild(head);
+    item.dataset.session = msg.session || "";
+    markAlertItem(item);
 
     var ctx = document.createElement("div");
     ctx.className = "alert-ctx";
@@ -726,11 +787,91 @@
     if (msg.alert_id) item.dataset.alertId = msg.alert_id;
 
     alertList.insertBefore(item, alertList.firstChild);
-    while (alertList.children.length > 50) {
+    while (alertList.children.length > ALERT_PANEL_CAP) {
       alertList.removeChild(alertList.lastChild);
     }
     alertCount.textContent = alertList.children.length;
+    if (!msg.replay && alertSession && msg.session === alertSession.session) {
+      sessionTotal = Math.max(sessionTotal, msg.session_total || 0);
+    }
+    drawAlertNote();
+    // 窗口被别的软件盖住时，标题是任务栏/Dock/标签页上唯一看得到的地方。
+    // 回放的报警不改标题（noteAlert 里挡掉）：那是补发的历史，不是新情况
+    attention = noteAlert(attention, msg, pageActive(), document.title);
+    if (attention.title) document.title = attention.title;
+    syncWindowAttention(false);
   }
+
+  function markAlertItem(item) {
+    var other = isOtherSession({ session: item.dataset.session },
+                               alertSession && alertSession.session);
+    item.classList.toggle("prev-session", other);
+    var head = item.querySelector(".alert-head");
+    var tag = item.querySelector(".alert-prev");
+    if (other && !tag && head) {
+      tag = document.createElement("span");
+      tag.className = "alert-prev";
+      tag.textContent = "上一场";
+      head.insertBefore(tag, head.firstChild);
+    } else if (!other && tag) {
+      tag.parentNode.removeChild(tag);
+    }
+  }
+
+  // 换场（或重连拿到当前场次）：旧报警标成「上一场」，不删——上一场可能是断线结束的，
+  // 那几条报警中控可能还没处理
+  function setAlertSession(info) {
+    alertSession = info || null;
+    sessionTotal = alertSession ? (alertSession.total || 0) : 0;
+    for (var i = 0; i < alertList.children.length; i++) markAlertItem(alertList.children[i]);
+    drawAlertNote();
+  }
+
+  function drawAlertNote() {
+    if (!alertNote) return;
+    var current = alertSession && alertSession.session;
+    var shown = 0;
+    for (var i = 0; i < alertList.children.length; i++) {
+      var s = alertList.children[i].dataset.session;
+      if (!current || !s || s === current) shown++;
+    }
+    var text = sessionNote(sessionTotal, shown);
+    alertNote.textContent = text;
+    alertNote.classList.toggle("hidden", !text);
+  }
+
+  function pageActive() {
+    return !document.hidden && (typeof document.hasFocus !== "function" || document.hasFocus());
+  }
+
+  function clearAttention() {
+    if (!attention.unseen || !pageActive()) return;
+    attention = noteActive(attention, document.title);
+    if (attention.title) document.title = attention.title;
+    syncWindowAttention(false);
+  }
+
+  function syncWindowAttention(force) {
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.set_attention !== "function") return;
+    var next = windowAttentionUpdate(windowBridge, attention.unseen, force);
+    windowBridge = { sent: next.sent, seq: next.seq };
+    if (next.send === null) return;
+    try {
+      var pending = api.set_attention(next.send, windowPage, next.seq);
+      if (pending && typeof pending.catch === "function") pending.catch(function () {});
+    } catch (e) { /* 桥出错不影响报警面板本身 */ }
+  }
+
+  document.addEventListener("visibilitychange", clearAttention);
+  window.addEventListener("focus", clearAttention);
+  document.addEventListener("pointerdown", clearAttention);
+  document.addEventListener("keydown", clearAttention);
+  // 兜底：窗口本来就在前台、没有再触发 focus 时，也要把标题换回来
+  setInterval(clearAttention, 2000);
+  // 页面刚加载（含刷新）时照发一次：上一个页面留在窗口标题上的提醒要清掉
+  window.addEventListener("pywebviewready", function () { syncWindowAttention(true); });
+  if (window.pywebview && window.pywebview.api) syncWindowAttention(true);
 
   function updateAlert(msg) {
     var item = alertList.querySelector('[data-alert-id="' + msg.alert_id + '"]');
@@ -753,6 +894,7 @@
     alertList.innerHTML = "";
     alertCount.textContent = "0";
     alertPanel.classList.add("hidden");
+    drawAlertNote();
   });
 
   // ---- 观众弹幕 ----
@@ -974,6 +1116,38 @@
   }
 
   // 识别落后时必须让中控看见——假装一切正常比晚几秒报警危险得多
+  // 持续提示（电脑休眠过、审计日志写不进去、识别改用 CPU……）：按 id 覆盖，level=clear 去掉。
+  // 和 health（识别积压，会被「已追上」覆盖）、notice（几秒后消失）不同：这类状况中控必须
+  // 看到，刷新页面也还在（服务端放在 hello 的 config.incidents 里）。
+  var incidents = Object.create(null);
+
+  function renderIncident(msg) {
+    if (!msg || !msg.id) return;
+    if (msg.level === "clear") {
+      delete incidents[msg.id];
+    } else {
+      incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "",
+                            since: msg.since || msg.ts || 0 };
+    }
+    drawIncidents();
+  }
+
+  function drawIncidents() {
+    if (!incidentBar) return;
+    incidentBar.innerHTML = "";
+    var keys = Object.keys(incidents).sort(function (a, b) {
+      return (incidents[a].since || 0) - (incidents[b].since || 0);
+    });
+    keys.forEach(function (k) {
+      var row = document.createElement("div");
+      var level = incidents[k].level;
+      row.className = "incident " + (level === "error" ? "error" : (level === "info" ? "info" : "warn"));
+      row.textContent = incidents[k].text;      // 当数据，不当 HTML
+      incidentBar.appendChild(row);
+    });
+    incidentBar.classList.toggle("hidden", keys.length === 0);
+  }
+
   function renderHealth(msg) {
     if (msg.level === "ok") {
       healthBar.classList.add("hidden");

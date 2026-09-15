@@ -337,7 +337,11 @@ def test_a_load_that_finished_after_cancel_is_reused(monkeypatch, tmp_path):
     async def fake_session(media, *a, **k):
         return True, 60.0
 
+    async def dead(url, timeout=8):          # 直连地址播完后的探活：地址已失效
+        return False
+
     monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
+    monkeypatch.setattr(app.resolver, "_media_url_works", dead)
     monkeypatch.setattr(p, "_stream_session", fake_session)
 
     async def scenario():
@@ -386,7 +390,11 @@ def test_recent_captions_do_not_survive_a_room_switch(monkeypatch, tmp_path):
     async def fake_session(media, *a, **k):
         return True, 60.0
 
+    async def dead(url, timeout=8):          # 直连地址播完后的探活：地址已失效
+        return False
+
     monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
+    monkeypatch.setattr(app.resolver, "_media_url_works", dead)
     monkeypatch.setattr(p, "_stream_session", fake_session)
     p._recent[1] = {"id": 1, "text": "vieja"}
     p._strong_missing = True
@@ -584,6 +592,8 @@ def test_bootstrap_lock_held_by_a_live_process_is_respected(tmp_path):
 # ---- #33 更新预检没过就不停直播 ----------------------------------------------------------------
 
 def test_update_precheck_failure_leaves_the_stream_running(monkeypatch, tmp_path):
+    """管线自己不先停直播：停不停由更新器决定——预检、fetch 都过了、确认能快进之后才调
+    pause（完整流程见 tests/test_resilience_update.py）。没走到那一步，监听不能白停。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     stops, applied = [], []
 
@@ -591,19 +601,19 @@ def test_update_precheck_failure_leaves_the_stream_running(monkeypatch, tmp_path
         def __init__(self, ok):
             self.ok = ok
 
-        async def precheck(self):
-            return self.ok
-
-        async def apply(self):
+        async def apply(self, live=None, pause=None, resume=None, before_restart=None):
             applied.append(1)
+            if self.ok:
+                await pause("1.0.0", "1.0.1")
 
     async def stop_stream(quiet=False):
         stops.append(1)
 
     monkeypatch.setattr(p, "stop_stream", stop_stream)
+    monkeypatch.setattr(p, "_stream_active", lambda: True)
     p.updater = FakeUpdater(False)
     run(p._apply_update())
-    assert stops == [] and applied == []
+    assert stops == [] and applied == [1]
     p.updater = FakeUpdater(True)
     run(p._apply_update())
-    assert stops == [1] and applied == [1]
+    assert stops == [1] and applied == [1, 1]

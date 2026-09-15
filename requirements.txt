@@ -1,7 +1,10 @@
 aiohttp>=3.9
 numpy>=1.24
 faster-whisper>=1.0
-yt-dlp
+# 带上 curl-cffi 扩展：pip 按 yt-dlp 自己声明的 curl_cffi 版本范围装配这一对。
+# yt-dlp 只加载特定区间的 curl_cffi（yt_dlp/networking/_curlcffi.py 的版本检查），
+# 区间外它就没有可用的 TikTok 伪装。
+yt-dlp[curl-cffi]
 # yt-dlp 抓 TikTok 直播需要它做 TLS 指纹伪装。不装的话 yt-dlp 会打印
 # "attempting impersonation, but no impersonate target is available"，
 # 拉房间元数据时被 TikTok 挡成 HTTP 400，最后错报成「主播未开播」。

@@ -77,26 +77,41 @@ def find_binary():
     return None
 
 
+# Spotlight 找到过一次就记住。mdfind 平时不到 0.1 秒，但在重建索引时（比如系统
+# 更新后）最坏要等满 8 秒；而装好的 Ollama 不会在程序运行中自己消失——真被卸载了，
+# start() 起不来会照常返回失败。
+_SPOTLIGHT_FOUND = False
+
+
 def _mac_app_exists():
     """LaunchServices 认不认识 Ollama——它在哪个目录都算。
 
     比自己猜路径可靠：用户把 app 放在哪儿都行，只要 macOS 索引过它。
+    会跑 Spotlight 查询（最坏 8 秒），**只能在线程池里调**。
     """
+    global _SPOTLIGHT_FOUND
     if sys.platform != "darwin":
         return False
     if find_binary():
+        return True
+    if _SPOTLIGHT_FOUND:
         return True
     try:
         import subprocess
         r = subprocess.run(["mdfind", "kMDItemCFBundleIdentifier == 'com.electron.ollama'"
                             " || kMDItemFSName == 'Ollama.app'"],
                            capture_output=True, timeout=8)
-        return bool(r.stdout.strip())
+        found = bool(r.stdout.strip())
     except Exception:
         return False
+    if found:
+        _SPOTLIGHT_FOUND = True
+    return found
 
 
 def is_installed():
+    """会查文件系统、可能跑 Spotlight（最坏 8 秒）：在事件循环里调用时必须
+    run_in_executor——直播中卡 8 秒就是音频读取和报警广播一起停 8 秒。"""
     return find_binary() is not None or _mac_app_exists()
 
 
@@ -104,8 +119,10 @@ async def start(timeout=25):
     """启动已安装但没在跑的 Ollama，等到接口真的能通为止。"""
     if await is_running():
         return True
-    exe = find_binary()
-    if exe is None and not _mac_app_exists():
+    # 找安装位置要查文件系统、可能还要跑 Spotlight：放线程池，别冻住事件循环
+    loop = asyncio.get_running_loop()
+    exe = await loop.run_in_executor(None, find_binary)
+    if exe is None and not await loop.run_in_executor(None, _mac_app_exists):
         return False
     try:
         launched = False
@@ -137,13 +154,33 @@ async def start(timeout=25):
     return False
 
 
+async def _http_error_text(resp):
+    """非 200 回应的说明：「HTTP 状态码：Ollama 的原话」，没有原话就只有状态码。"""
+    said = ""
+    try:
+        raw = await resp.text()
+        said = raw
+        said = json.loads(raw).get("error") or raw
+    except Exception:
+        pass
+    said = " ".join(str(said or "").split())
+    status = getattr(resp, "status", "?")
+    return "HTTP {}：{}".format(status, said) if said else "HTTP {}".format(status)
+
+
 async def pull(model, on_progress=None):
     """通过 HTTP 接口拉模型。on_progress(百分比, 已下载MB, 总MB) 用于界面进度。
 
     走接口而不是 `ollama pull` 命令：用户不必开终端，我们也能把进度显示在
     页面上——这和 Whisper 模型的下载进度是同一种体验。
+
+    返回 (是否成功, 失败说明)。说明是 Ollama 自己的原话；没有原话时是 HTTP 状态码
+    或异常类型。以前失败只回 False、原话当场丢掉，界面停在最后一个百分比上，
+    每场都失败、每场都没有一个字说明。
     """
     import aiohttp
+
+    from .translator import clean_error_text
 
     body = json.dumps({"model": model, "stream": True})
     try:
@@ -151,7 +188,7 @@ async def pull(model, on_progress=None):
                 timeout=aiohttp.ClientTimeout(total=None, sock_read=120)) as s:
             async with s.post(base_url() + "/api/pull", data=body) as r:
                 if r.status != 200:
-                    return False
+                    return False, clean_error_text(await _http_error_text(r), 300)
                 async for raw in r.content:
                     if not raw.strip():
                         continue
@@ -160,16 +197,20 @@ async def pull(model, on_progress=None):
                     except ValueError:
                         continue
                     if msg.get("error"):
-                        return False
+                        return False, clean_error_text(msg.get("error"), 300)
                     total, done = msg.get("total"), msg.get("completed")
                     if on_progress and total:
                         on_progress(100.0 * (done or 0) / total,
                                     (done or 0) / 1e6, total / 1e6)
                     if msg.get("status") == "success":
-                        return True
-        return await is_running()
-    except Exception:
-        return False
+                        return True, None
+        if await is_running():
+            return True, None
+        return False, "下载没有收到完成信号，Ollama 已经连不上"
+    except Exception as exc:
+        said = str(exc)
+        return False, clean_error_text(
+            type(exc).__name__ + ("：" + said if said else ""), 300)
 
 
 def install_hint():

@@ -59,6 +59,8 @@ def run(coro):
 class FastTranslator:
     """逐条按序返回 "[zh] " + text，用于验证顺序与对应关系。"""
 
+    name = "hymt2"      # 弹幕只用常驻本地模型翻（app/comments.py COMMENT_ENGINES）
+
     def __init__(self):
         self.calls = []
 
@@ -69,6 +71,8 @@ class FastTranslator:
 
 class OneLineTranslator:
     """故意无视多行输入，永远只回一行——逼 worker 走逐条重译的兜底路径。"""
+
+    name = "hymt2"
 
     def __init__(self):
         self.calls = []
@@ -82,6 +86,8 @@ class OneLineTranslator:
 
 class BlockingTranslator:
     """永久不返回，用来测队列溢出与「等字幕翻译让路」。"""
+
+    name = "hymt2"
 
     def __init__(self):
         self.calls = 0

@@ -15,9 +15,10 @@ from pathlib import Path
 from .asr import DEFAULT_TEMPERATURE
 from .comment_source import CommentSource
 from .comments import CommentTranslator
-from .detector import BannedTermDetector, load_fuzzy_policy, load_terms
+from .detector import BannedTermDetector, TermsFile, load_fuzzy_policy, read_terms
 from .glossary import load as load_glossary
 from .nethttp import read_all
+from .redact import strip_query
 from .settings import (load_settings, push_recent_room, recent_rooms,
                        save_setting)
 from .telemetry import Telemetry
@@ -33,18 +34,51 @@ FUZZY_POLICY_FILE = ROOT / "banned_fuzzy_policy.txt"
 
 def load_detector(path=None):
     """读取违禁词表。首次运行时从模板复制一份用户可编辑的副本——
-    模板入库、副本不入库，用户编辑不会挡住一键更新。"""
+    模板入库、副本不入库，用户编辑不会挡住一键更新。
+
+    **从不抛异常。** 以前非 UTF-8 的词表（Windows 上 ANSI/GBK 编辑器另存）让它抛
+    UnicodeDecodeError：启动时整个程序起不来，开播时会话在建审计文件之前就停了，
+    界面上只有一句英文。读的过程中发现的问题记在检测器上，由自检那一行和
+    session_start 报出来。"""
     target = Path(path) if path else TERMS_FILE
-    if not target.exists() and target == TERMS_FILE and TERMS_EXAMPLE.exists():
+    try:
+        if not target.exists() and target == TERMS_FILE and TERMS_EXAMPLE.exists():
+            try:
+                target.write_text(TERMS_EXAMPLE.read_text(encoding="utf-8"),
+                                  encoding="utf-8")
+                print("[信息] 已生成违禁词表 {}（当前为空，按文件里的说明填写即可）"
+                      .format(target.name))
+            except (OSError, ValueError):
+                pass
+        info = read_terms(target)
         try:
-            target.write_text(TERMS_EXAMPLE.read_text(encoding="utf-8"),
-                              encoding="utf-8")
-            print("[信息] 已生成违禁词表 {}（当前为空，按文件里的说明填写即可）"
-                  .format(target.name))
-        except OSError:
-            pass
-    return BannedTermDetector(load_terms(target),
-                              fuzzy_policy=load_fuzzy_policy(FUZZY_POLICY_FILE))
+            policy = load_fuzzy_policy(FUZZY_POLICY_FILE)
+        except (OSError, ValueError) as exc:
+            # policy 只会收紧模糊匹配：读不出来就按默认预算，多报不漏报
+            print("[警告] 读不出 {}，本场模糊匹配按默认预算：{}".format(
+                FUZZY_POLICY_FILE.name, exc))
+            policy = {}
+        detector = BannedTermDetector([line for _, line in info.entries],
+                                      fuzzy_policy=policy,
+                                      line_numbers=[n for n, _ in info.entries])
+    except Exception as exc:
+        print("[错误] 违禁词表没能加载：{}".format(exc))
+        info = TermsFile()
+        info.read_error = str(exc)[:200]
+        detector = BannedTermDetector([])
+    detector.source_path = str(target)
+    detector.source_hash = info.hash
+    detector.source_mtime = info.mtime
+    detector.decode_error = info.decode_error
+    detector.skipped_lines = list(info.skipped_lines)
+    detector.read_error = info.read_error
+    if info.decode_error:
+        print("[警告] {} 不是 UTF-8 编码，读不出的 {} 行已跳过".format(
+            target.name, len(info.skipped_lines)))
+    for warning in detector.load_warnings:
+        if warning["reason"] != "invalid_regex":      # 这一种构造时已经打印过
+            print("[警告] 违禁词表：" + warning["text"])
+    return detector
 
 # whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
 MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
@@ -75,6 +109,28 @@ def _media_label(url):
         return (parts.netloc + parts.path) or str(url)[:80]
     except Exception:
         return "?"
+
+
+def _describe_asr(cfg):
+    """给人看的识别配置：「ct2/large-v3-turbo/cpu/int8」（auto 的部分省略）。"""
+    parts = [cfg.get("backend"), cfg.get("model"), cfg.get("device"), cfg.get("compute_type")]
+    return "/".join(str(v) for v in parts if v and v != "auto")
+
+
+class _ASRSlot:
+    """一场会话正在用的识别器，外加「连续出错后换一个」需要的上下文。
+
+    asr_worker 换模型时改的是这里：_run_session 的重连循环每轮把同一个 slot 交给
+    _stream_session，只改局部变量的话，重连后的下一轮又会用回那个坏掉的模型。
+    reloaded 保证一场会话最多换一次，不在两个模型之间来回加载。"""
+
+    def __init__(self, transcriber, config=None, key=None, audit=None):
+        self.transcriber = transcriber
+        self.config = dict(config or {})
+        self.key = key
+        self.audit = audit
+        self.reloaded = False
+        self.gave_up = False
 
 
 def _arnndn_probe(model_path):
@@ -155,6 +211,11 @@ class Pipeline:
         self._transcriber_key = None     # 已就绪模型对应的配置 key
         self._loading_key = None         # 在途加载对应的配置 key（可能被取消）
         self._transcriber_future = None  # 正在加载中的模型，避免重复加载
+        self._asr_load_error = None      # 最近一次识别模型没能加载的详情，按配置加载成功后清掉
+        self._asr_fallback = None        # 出错后改用的识别配置 {from,to,error}；None = 原配置
+        self._asr_inflight = None        # 正在识别的那一段的开始时刻 [monotonic]，卡住检测用
+        self._asr_failing = None         # 识别连续出错、提示还挂着的那一场的 audit
+        self._fallback_load = None       # 在途的「改用 CPU」加载：被停止打断时下一场接着用
         self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
         self._bg_tasks = set()           # fire-and-forget 任务的引用，见 _spawn
         self.telemetry = Telemetry()
@@ -187,7 +248,8 @@ class Pipeline:
         self.comments = CommentTranslator(
             broadcast=self.server.broadcast,
             translator=lambda: self.translator, target=lambda: self.target,
-            glossary=lambda: self.glossary, busy=self._subtitle_translation_busy)
+            glossary=lambda: self.glossary, busy=self._subtitle_translation_busy,
+            session=lambda: self.audit)     # 「弹幕只显示原文」的提示每场说一次
         # 弹幕抓取（TikTokLive，见 app/comment_source.py）：与上面的
         # CommentTranslator 是两回事——这里只负责把观众评论从 TikTok 的
         # WebSocket 弄到本地，弄到后喂给 self.comments.accept()。
@@ -238,11 +300,14 @@ class Pipeline:
                     self._save_setting("source_lang", source[:12])
                     self.server.config["source_lang"] = source[:12]
                     self.args.source_requested = source[:12]
+                self._note_operator_stream_action()
                 return self._start_with_ack(url, media=media)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
                 "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
         elif mtype == "stop":
+            self._note_operator_stream_action()
+            self._stop_reason = "user_stop"
             return self.stop_stream()
         elif mtype == "clear_recent_rooms":
             return self._clear_recent_rooms()
@@ -259,18 +324,157 @@ class Pipeline:
             return self._migrate_glossary(bool(msg.get("confirm")))
         elif mtype == "apply_update":
             if getattr(self, "updater", None) is not None:
-                return self._apply_update()
+                # 放后台跑，不在这个页面的消息循环里等：fetch、pip 要好几分钟，等着的话
+                # 这期间点的「停止」要排到更新做完才处理——而更新成功就直接重启了
+                self._spawn(self._apply_update())
+                return None
         elif mtype == "check_update":
             if getattr(self, "updater", None) is not None:
                 return self.updater.check_and_notify(delay=0, manual=True)
         return None
 
+    # 一键更新暂停监听后，新进程要在这么久之内起来，才自动接着监听（记号读到即删）
+    RESUME_AFTER_UPDATE_MAX_SEC = 300
+
     async def _apply_update(self):
-        # 先预检（git 在不在、工作区干不干净），过了才停直播：被拒时监听不能白停
-        if not await self.updater.precheck():
-            return
+        """一键更新（步骤见 Updater._apply_inner）。以前是预检一过就停直播、再无时限地
+        git pull：网络卡住时监听已经停了，界面还显示「直播中」；重启后回到待机，审计里
+        只剩一条 session_end。现在：新版本取下来、确认能快进了才暂停监听；装依赖或合并
+        失败就在当前版本上恢复；成功就留记号，重启后自动接着听。"""
+        if getattr(self.updater, "_applying", False):
+            return          # 已经有一次在跑：别动它正在用的暂停记录和横幅
+        incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
+        if "update" in incidents:
+            await self._incident("update", "clear")    # 上次没更新成的说明，重试时收起
+        self._update_pause = None
+        try:
+            await self.updater.apply(live=self._stream_active, pause=self._pause_for_update,
+                                     resume=self._resume_after_update_failure,
+                                     before_restart=self._save_update_resume)
+        except Exception as exc:
+            # 更新器里没料到的异常：暂停了的监听不能就这么一直停着
+            print("[警告] 一键更新出错：{!r}".format(exc))
+            pause = getattr(self, "_update_pause", None)
+            if pause is not None:
+                await self._resume_after_update_failure(
+                    pause, "更新过程中程序出错（{}）".format(type(exc).__name__))
+        finally:
+            self._update_pause = None
+            # 更新期间推迟的模型下载：走到这里说明没有重启（没更新成、或中控自己停了监听）
+            if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks") \
+                    and not self._stream_active():
+                self._spawn(self._pull_after_session(None))
+
+    def _note_operator_stream_action(self):
+        """中控在一键更新暂停监听期间自己点了开始或停止（handle_control 调用）。更新收尾时
+        照中控最后的操作来：失败了不替他恢复监听，成功了也不留「重启后接着监听」的记号。"""
+        pause = getattr(self, "_update_pause", None)
+        if pause is not None:
+            pause["operator_acted"] = True
+
+    async def _pause_for_update(self, from_version, to_version, pip_minutes=None):
+        """新版本已经取下来、确认能更新之后才调用：记审计、停监听、告诉中控在更新。
+        pip_minutes 是要先装组件时 pip 的最长时限（分钟），不用装是 None。
+        返回恢复监听要用的 {url, media}；没在监听（或演示模式）返回 None。"""
+        if not self._stream_active() or getattr(self.args, "demo", False):
+            return None
+        token = {"url": (self.server.config or {}).get("room_url"),
+                 "media": getattr(self, "_media_override", None)}
+        self._update_pause = token
+        if self.audit is not None:
+            self.audit.update_stop(from_version, to_version)
+        self._stop_reason = "update"
         await self.stop_stream(quiet=True)
-        await self.updater.apply()
+        if pip_minutes:
+            text = ("正在更新，监听已暂停：先安装新版本需要的组件（最长约 {} 分钟），"
+                    "装好后自动重启并恢复监听".format(pip_minutes))
+        else:
+            text = "正在更新，监听已暂停（约 1 分钟后自动恢复）"
+        await self.server.status("connecting", text)
+        return token
+
+    async def _resume_after_update_failure(self, token, text):
+        """停了监听之后更新没成：工作区还是旧代码，在当前版本上把监听恢复起来，并用持续
+        提示说清楚（状态行马上会被「连接中/直播中」盖掉，一次性提示几秒就没了）。
+
+        更新期间中控自己点过开始/停止，或者此刻已经在监听：照中控的意思，不再替他开始。"""
+        if load_settings().get("resume_after_update") is not None:
+            save_setting("resume_after_update", None)   # 这个进程接着听，不再靠重启后恢复
+        self._update_pause = None
+        token = token or {}
+        url = token.get("url")
+        if token.get("operator_acted") or self._stream_active():
+            await self._incident("update", "warn", "一键更新没完成：{}".format(text))
+            return
+        if not url:
+            await self.server.status("idle", text)
+            return
+        await self._incident("update", "warn",
+                             "一键更新没完成：{}。已在当前版本上自动恢复监听".format(text))
+        self._resume_reason = "update_failed"
+        await self.start_stream(url, media=token.get("media"))
+
+    def _save_update_resume(self, token, to_version):
+        """execv 之前留记号：新进程启动时据此接着监听（见 resume_after_update）。
+        返回是否留了记号。更新期间中控点过开始/停止的不留：重启后照他最后的操作来。"""
+        if not token or not token.get("url"):
+            return False
+        if token.get("operator_acted"):
+            print("[信息] 更新期间中控点过开始/停止，重启后不自动接着监听")
+            return False
+        save_setting("resume_after_update", {"url": token["url"], "media": token.get("media"),
+                                             "at": time.time(), "to_version": to_version})
+        return True
+
+    async def resume_after_update(self, now=None):
+        """启动时调用（main.py，命令行没给直播间地址时）：上一个进程是一键更新暂停的监听，
+        而且在 RESUME_AFTER_UPDATE_MAX_SEC 之内重启回来了，就接着监听那个房间。
+
+        记号读到就删、过期不用：绝不能留着让以后哪次启动莫名其妙开始监听。返回是否已恢复。"""
+        marker = load_settings().get("resume_after_update")
+        if marker is None:
+            return False
+        save_setting("resume_after_update", None)
+        if not isinstance(marker, dict):
+            return False
+        url = str(marker.get("url") or "")
+        try:
+            at = float(marker.get("at"))
+        except (TypeError, ValueError):
+            at = None
+        now = time.time() if now is None else now
+        if not url.startswith(("http://", "https://")) or at is None \
+                or not (-60 <= now - at <= self.RESUME_AFTER_UPDATE_MAX_SEC):
+            print("[信息] 一键更新留下的「重启后接着监听」记号已超过 {} 分钟或内容不对，没有自动开始"
+                  .format(self.RESUME_AFTER_UPDATE_MAX_SEC // 60))
+            return False
+        from .provenance import app_version, streamer_of
+        media = marker.get("media")
+        streamer = streamer_of(url)
+        self._resume_reason = "update"
+        await self.server.status("connecting", "已更新到 v{}，正在自动恢复监听{}…".format(
+            app_version(), " @" + streamer if streamer else ""))
+        await self.start_stream(url, media=media if isinstance(media, str) and media else None)
+        return True
+
+    def note_component_updated(self, name, before, after, reason):
+        """后台升级了解析组件（Updater.freshen_ytdlp）：有正在进行的会话就记进它的审计。"""
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.component_updated(name, before, after, reason)
+
+    def _update_session_extras(self):
+        """session_start 里与组件和更新有关的几项。resumed_after 只用一次：update 表示
+        一键更新重启后自动接上的这一场，update_failed 表示更新没成、在旧版本上恢复的。"""
+        from .updater import component_version, update_check_ok_iso
+        reason = getattr(self, "_resume_reason", None)
+        self._resume_reason = None
+        return {
+            "ytdlp_version": component_version("yt-dlp"),
+            "curl_cffi_version": component_version("curl_cffi"),
+            "update_check_ok_at": update_check_ok_iso(),
+            "resumed_after": reason,
+        }
 
     async def _start_with_ack(self, url, media=None):
         """UI 点「开始」后立刻回执——停掉旧管线可能要好几秒（等 ffmpeg 退出），
@@ -315,6 +519,8 @@ class Pipeline:
 
     async def start_stream(self, url, media=None):
         async with self._lock():
+            if not getattr(self, "_stop_reason", None):
+                self._stop_reason = "new_session"    # 正在跑的那一场（如果有）因为开了新的一场而结束
             await self._stop_locked(quiet=True)
             # 本场的音频源直连地址（可选）。设在 _stop_locked 之后：停旧场会把它
             # 清掉，免得上一场的地址泄漏到这一场。
@@ -329,6 +535,8 @@ class Pipeline:
             # Ollama 没跑就趁解析地址/加载模型这几秒把它拉起来，别等第一句翻译失败
             self._spawn(self._heal_local_engine())
             self._stream_task = asyncio.create_task(self._run_stream(url))
+            # 任务第一步还没跑：_begin_session 能把拿到了哪些防睡眠手段记进 session_start
+            self._hold_sleep_guard(self._stream_task)
 
     async def stop_stream(self, quiet=False):
         async with self._lock():
@@ -338,7 +546,13 @@ class Pipeline:
     STOP_GRACE_SEC = 3.0
 
     async def _stop_locked(self, quiet=False):
-        """调用方必须已持有 _stream_lock。"""
+        """调用方必须已持有 _stream_lock。
+
+        停止原因（写进 session_end 的 reason）由发起停止的一方在调用前放进
+        self._stop_reason（user_stop / window_closed / update / new_session）；没放就按
+        quiet 记成 stopped 或 user_stop。被取消的任务收尾时读它，这里用完清掉。"""
+        if not getattr(self, "_stop_reason", None):
+            self._stop_reason = "stopped" if quiet else "user_stop"
         task = self._stream_task
         self._stream_task = None
         if task is not None and not task.done():
@@ -368,9 +582,17 @@ class Pipeline:
         comment_source = getattr(self, "comment_source", None)
         if comment_source is not None:
             await comment_source.stop()
-        if self.audit is not None:
-            self.audit.close()
+        closed = self.audit
+        if closed is not None:
+            self._close_audit(closed, self._stop_reason)
             self.audit = None
+        self._stop_reason = None
+        self._release_sleep_guard()
+        if closed is not None:
+            await self._settle_audit_incident(closed)
+        # 旧任务可能超时没走到 _end_session（识别线程停不下来），这里也撤一次
+        await self._clear_ongoing_incidents()
+        await self._settle_engine_incident()
         self._media_override = None
         pool, self._asr_pool = self._asr_pool, None
         if pool is not None:
@@ -404,6 +626,7 @@ class Pipeline:
         try:
             while True:
                 await asyncio.sleep(interval)
+                await self._check_clock_gap(interval)
                 snap = self.telemetry.snapshot()
                 level = self._health_level(snap["audio_backlog_sec"])
                 snap["health"] = level
@@ -411,6 +634,8 @@ class Pipeline:
                 if level != last_level:
                     await self._announce_health(level, snap["audio_backlog_sec"])
                     last_level = level
+                await self._watch_detection(snap)
+                await self._check_audit_health()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -424,33 +649,197 @@ class Pipeline:
             return "lagging"
         return "ok"
 
-    async def _announce_health(self, level, backlog_sec):
-        if level == "degraded":
-            text = ("🔴 检测已降级：识别落后 {:.0f} 秒，仍在继续处理（不会漏掉这段音频）"
-                    .format(backlog_sec))
-        elif level == "lagging":
-            text = "⚠️ 识别开始落后（积压 {:.0f} 秒），报警会相应延迟".format(backlog_sec)
+    async def _incident(self, key, level, text=""):
+        """在界面顶部持续显示、直到明确清除的提示（电脑休眠过、审计日志写不进去、
+        识别改用 CPU、网络断了……）。key 相同的覆盖同一条，level="clear" 去掉。
+
+        和 health（识别积压，会被「已追上」覆盖）、notice（几秒后消失）不同：这类状况
+        中控必须看到，刷新页面也还在。key 以 "session:" 开头的只属于这一场，下一场
+        开始时自动清掉；其余的一直留到发出 clear。文字只写观察到的事实和能做的事。"""
+        if level == "clear":
+            print("[提示] {} 已清除".format(key))
         else:
-            text = "✅ 识别已追上，检测恢复正常"
+            print("[提示] {}".format(text))
+        await self.server.broadcast({"type": "incident", "id": key, "level": level,
+                                     "text": text, "ts": time.time()})
+
+    async def _clear_session_incidents(self):
+        incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
+        for key in [k for k in list(incidents) if str(k).startswith("session:")]:
+            await self._incident(key, "clear")
+
+    async def _announce_health(self, level, backlog_sec, text=None, reason="backlog"):
+        """推一条检测健康状态。text 不给时按积压等级生成。
+
+        同一句话已经在界面上时不重发（统计循环和识别卡住检查可能在同一轮说同一件事）；
+        等级或原因变了才写进审计——审计要的是转折点，不是每轮刷新。
+
+        识别连续出错的提示挂着时，按积压算的状态不覆盖它：出错的调用返回得快、积压归零，
+        不拦的话统计循环会在检测停摆时报「已追上」，审计里也记一条 ok。"""
+        audit = getattr(self, "audit", None)
+        if (reason == "backlog" and audit is not None
+                and getattr(self, "_asr_failing", None) is audit):
+            return
+        telemetry = getattr(self, "telemetry", None)
+        # 只数积压挤掉的段：识别出错没检测的段不是「积压超过 60 秒的旧音频」，另有出错提示
+        asr_failed = getattr(telemetry, "audio_segments_asr_failed", 0) or 0
+        dropped = max(0, (getattr(telemetry, "audio_segments_dropped", 0) or 0) - asr_failed)
+        if text is None:
+            if level == "degraded":
+                # 以前这里一直写「仍在继续处理（不会漏掉这段音频）」，而积压过 60 秒 _put
+                # 已经在丢段、统计条上同时显示「丢音频 N」——界面自相矛盾，正是 08-31 那类事故
+                if dropped:
+                    text = ("🔴 检测已降级：识别落后 {:.0f} 秒；积压超过 {:.0f} 秒的旧音频"
+                            "已丢弃 {} 段，这些音频没有做违禁词检测"
+                            .format(backlog_sec, AUDIO_BACKLOG_HARD_SEC, dropped))
+                else:
+                    text = ("🔴 检测已降级：识别落后 {:.0f} 秒，仍在继续处理；积压超过 {:.0f} 秒"
+                            "会开始丢弃最旧的音频".format(backlog_sec, AUDIO_BACKLOG_HARD_SEC))
+            elif level == "lagging":
+                text = "⚠️ 识别开始落后（积压 {:.0f} 秒），报警会相应延迟".format(backlog_sec)
+            else:
+                text = "✅ 识别已追上，检测恢复正常"
+        if getattr(self, "_health_shown", None) == (audit, level, text):
+            return
+        self._health_shown = (audit, level, text)
         print("[健康] " + text)
         await self.server.broadcast({"type": "health", "level": level,
                                      "backlog_sec": round(backlog_sec, 1),
                                      "text": text})
+        if audit is not None and getattr(self, "_health_audited", None) != (audit, level, reason):
+            self._health_audited = (audit, level, reason)
+            audit.health(level, backlog_sec, reason=reason, text=text, dropped=dropped,
+                         asr_failed=asr_failed)
+
+    ASR_STALL_SEC = 60.0
+
+    async def _watch_detection(self, snap, now=None):
+        """_stats_loop 每轮调一次的检测侧检查：识别调用卡住、直播中违禁词表被改。
+        任何一项出错都只打一行日志——_stats_loop 遇到异常会整个退出，统计条就停了。"""
+        try:
+            await self._check_asr_stall(snap, now=now)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 识别卡住检查出错：{}".format(exc))
+        try:
+            await self._check_terms_changed()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 违禁词表变更检查出错：{}".format(exc))
+
+    async def _check_asr_stall(self, snap, now=None):
+        """一段音频的识别调用 ASR_STALL_SEC 秒还没返回：写一条 asr_stalled，在界面上说清。
+
+        **不自动重载模型。** 线程池里的调用取消不掉，它会一直抓着自己那份模型；这时再
+        加载一份等于两个大模型同时驻留——正是 2026-08-31 丢 16 段音频的事故形态。
+        卡住期间丢段数一变就更新那句话；卡住结束时按积压重报一次；其余时候不重复发。"""
+        audit = getattr(self, "audit", None)
+        state = getattr(self, "_asr_watch", None)
+        if state is None or state["audit"] is not audit:
+            state = self._asr_watch = {"audit": audit, "stalled": False, "dropped": 0}
+        # 只数积压挤掉的段。识别出错没检测的段也记在 audio_segments_dropped 里，算进来的话
+        # 每次出错都触发下面的「按积压重报」，把红色的出错提示刷成「已追上」
+        dropped = max(0, int(snap.get("audio_segments_dropped") or 0)
+                      - int(snap.get("audio_segments_asr_failed") or 0))
+        backlog = float(snap.get("audio_backlog_sec") or 0.0)
+        grew = dropped > state["dropped"]
+        state["dropped"] = dropped
+        mark = getattr(self, "_asr_inflight", None)
+        now = time.monotonic() if now is None else now
+        inflight = now - mark[0] if mark else 0.0
+        if inflight >= self.ASR_STALL_SEC:
+            first = not state["stalled"]
+            state["stalled"] = True
+            if first and audit is not None:
+                audit.asr_stalled(inflight_sec=inflight, backlog_sec=backlog, dropped=dropped)
+            if first or grew:
+                await self._announce_health(
+                    "degraded", backlog, reason="asr_stalled",
+                    text="🔴 一段音频识别已 {:.0f} 秒没有返回；积压超过 {:.0f} 秒的旧音频会被丢弃"
+                         "（可能漏报），本场已丢弃 {} 段。若持续几分钟，请关闭程序重新打开——"
+                         "「停止/开始」不会重新加载识别模型".format(
+                             inflight, AUDIO_BACKLOG_HARD_SEC, dropped))
+            return
+        if state["stalled"] or grew:
+            state["stalled"] = False
+            await self._announce_health(self._health_level(backlog), backlog)
+
+    async def _check_terms_changed(self):
+        """直播中 banned_terms.txt 被改了：新内容要「停止→开始」后才生效，说一次。
+        每次内容变化只提示一次；改回本场加载的那份不提示。"""
+        detector = getattr(self, "detector", None)
+        path = getattr(detector, "source_path", None)
+        if not path:
+            return
+        audit = getattr(self, "audit", None)
+        state = getattr(self, "_terms_watch", None)
+        if state is None or state["audit"] is not audit or state["path"] != path:
+            state = self._terms_watch = {"audit": audit, "path": path,
+                                         "mtime": detector.source_mtime,
+                                         "hash": detector.source_hash}
+        try:
+            mtime = os.stat(path).st_mtime_ns
+        except OSError:
+            mtime = None
+        if mtime == state["mtime"]:
+            return
+        state["mtime"] = mtime
+        from .provenance import file_hash
+        digest = file_hash(path)
+        if digest == state["hash"]:
+            return
+        state["hash"] = digest
+        if digest == detector.source_hash:
+            return
+        if audit is not None:
+            audit.terms_changed(digest)
+        text = "违禁词表已修改，点「停止」再「开始翻译」后生效"
+        print("[提示] " + text)
+        await self.server.broadcast({"type": "notice", "text": text})
 
     async def _run_stream_inner(self, url):
-        await self._begin_session(url)
+        before = self.audit
+        try:
+            await self._clear_session_incidents()     # 上一场的持续提示不属于这一场
+            await self._begin_session(url)
+        except Exception as exc:
+            # 开场这一步出错（词表读不了、推给界面失败……）时下面的 try 还没进：防睡眠断言
+            # 在 start_stream 里已经拿了，审计也可能已经建好。不在这里收尾，caffeinate 会
+            # 一直挂着、审计文件只剩一个头。只认这一步自己新建的那份审计（my_audit 的道理）
+            mine = self.audit if self.audit is not before else None
+            if mine is not None:
+                self._record_internal_error(mine, exc)
+                await self._end_session(mine, reason="internal_error")
+            else:
+                self._release_sleep_guard(owner=asyncio.current_task())
+            raise
         # 记住**本会话自己的** audit：旧流任务可能取消不掉（识别一段要几十秒
         # 时，3 秒宽限必然超时、_stop_locked 放手让它自行收尾），等它终于走到
         # finally 时，self.audit 已经是**下一场**的了——关掉它等于让新会话的
         # 合规证据从头到尾静默丢失（实录：2026-08-31 一场 102 条字幕的直播，
         # audit 文件只有 544 字节的头）。收尾只许碰自己那一份。
         my_audit = self.audit
+        # 这一场自己的观察状态（断流时刻、时钟跳变、结束原因……），同样只属于这一场
+        sess = self._session_state = self._new_session_state(my_audit)
+        end = {}
         try:
             await self._run_session(url)
+            end = sess.get("end") or {}
+        except asyncio.CancelledError:
+            end = {"reason": getattr(self, "_stop_reason", None) or "cancelled"}
+            raise
+        except Exception as exc:
+            # 打包运行时 stdout 指向 /dev/null，外层 _run_stream 打的堆栈没人看得到；
+            # 等它接住异常时，下面的 finally 早把审计关了——所以在这里先写进本场审计
+            end = {"reason": "internal_error"}
+            self._record_internal_error(my_audit, exc)
+            raise
         finally:
             # 无论怎么结束（下播、预算耗尽、解析失败、模型加载失败、被取消），
             # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字
-            await self._end_session(my_audit)
+            await self._end_session(my_audit, **end)
 
     async def _begin_session(self, url):
         from .audit import AuditLog
@@ -490,6 +879,7 @@ class Pipeline:
         if recent is not None:
             recent.clear()
         self._strong_missing = False     # 用户可能在两场之间拉好了模型
+        self._drop_strong()              # 也可能删掉了：上一场的强模型对象不能接着用
         self.telemetry.reset()          # 统计按场计，不跨房间累计
         if self.audit is not None:
             self.audit.close()
@@ -517,7 +907,13 @@ class Pipeline:
             "profile": streamer if prof else None,
             "profile_hash": file_hash(prof) if prof else None,
             "merged_glossary_hash": fingerprint(self.glossary.entries),
+            **self._sleep_guard_extra(),
+            **self._banned_terms_provenance(),
+            **self._evidence_session_extras(),
+            # 解析组件版本、上次连上更新服务器的时间、这一场是不是更新后自动接上的
+            **self._update_session_extras(),
         })
+        await self._watch_audit(streamer)
         if misplaced:
             owner, variant, zh = misplaced[0]
             text = ("glossary.txt 里有 {} 条「{}」的专属词条（如 {} => {}），"
@@ -571,6 +967,35 @@ class Pipeline:
             if comment_source is not None:
                 comment_source.start(streamer)
 
+    def _banned_terms_provenance(self):
+        """违禁词表的来源信息，并进 session_start。
+
+        banned_terms.txt 不入库，code_commit 钉不住它；只存指纹又没人留历史版本——
+        「那场直播时词表里有没有 X」这种合规复查最常问的问题就答不出来。所以把本场
+        实际加载的条目原文整份记下（一百来条，几 KB），不做任何归一化。"""
+        from .provenance import file_hash
+        info = {"fuzzy_policy_hash": file_hash(FUZZY_POLICY_FILE)}
+        detector = getattr(self, "detector", None)
+        if detector is None:
+            return dict(info, detector_enabled=False)
+        decode_error = getattr(detector, "decode_error", None)
+        info.update({
+            "detector_enabled": bool(detector.enabled),
+            "banned_terms_hash": getattr(detector, "source_hash", "?"),
+            "banned_terms_count": detector.count,
+            "banned_terms": list(getattr(detector, "loaded", None) or []),
+            "banned_terms_warnings": [
+                {"line": w.get("line"), "entry": w.get("entry"), "reason": w.get("reason")}
+                for w in getattr(detector, "load_warnings", None) or []],
+            "banned_terms_decode_error": (
+                {"error": decode_error,
+                 "skipped_lines": list(getattr(detector, "skipped_lines", None) or [])}
+                if decode_error else None),
+        })
+        if getattr(detector, "read_error", None):
+            info["banned_terms_read_error"] = detector.read_error
+        return info
+
     async def _provision_then_check(self):
         await self.ensure_local_translator()
         await self.run_selfcheck()
@@ -616,7 +1041,12 @@ class Pipeline:
         if task is not None and not task.done():
             return
         self._heal_at = now
-        if await localmodel.is_running() or not localmodel.is_installed():
+        if await localmodel.is_running():
+            return
+        # is_installed 可能跑 Spotlight 查询（最坏 8 秒）：直播中在事件循环上跑，
+        # 音频读取和报警广播会一起停住
+        loop = asyncio.get_running_loop()
+        if not await loop.run_in_executor(None, localmodel.is_installed):
             return
         await self.server.broadcast({
             "type": "notice", "text": "翻译引擎用的 Ollama 没在运行，正在自动启动…"})
@@ -640,18 +1070,23 @@ class Pipeline:
         「用户指定了引擎就不自作主张」直接返回，于是选了本地 Hy-MT2 的机器
         Ollama 永远不会被启动，自检一直红着「Ollama 没在运行」、每句翻译
         0.8 毫秒失败——用户明明就是要这个引擎，把它跑起来才是不自作主张。
+
+        **直播中不下载。** 下载和拉流抢同一条网络（7B 有 4.6 GB），而会话日志里以前
+        不留下载的痕迹，事后一段音频中断对不上号。直播中发现缺模型只记下来、说一句，
+        停止后由 _end_session 再来一遍；已经在跑的下载（比如启动时起的那个）不去动它。
         """
         from . import localmodel
-        from .translator import (HYMT2_LARGE, HYMT2_SMALL, _ollama_has_gemma,
-                                 _ollama_has_hymt2)
+        from . import translator as T
 
         engine = getattr(self.args, "translator", "auto")
         if engine not in self.LOCAL_ENGINES:
             return                      # deepl/google/claude/openai/none：不碰 Ollama
+        loop = asyncio.get_running_loop()
         started = False
         if await localmodel.is_running():
             pass
-        elif localmodel.is_installed():
+        # is_installed 可能跑 Spotlight 查询（最坏 8 秒）：放线程池
+        elif await loop.run_in_executor(None, localmodel.is_installed):
             print("[信息] Ollama 已安装但没在运行，正在启动…")
             if not await localmodel.start():
                 print("[警告] Ollama 没能启动，本地翻译暂不可用")
@@ -661,45 +1096,42 @@ class Pipeline:
             return                      # 没装：交给自检那一行去引导
 
         # 探测是同步 urllib，放线程池（直播中也可能走到这里）
-        loop = asyncio.get_running_loop()
-        wanted = {"hymt2": (HYMT2_SMALL, _ollama_has_hymt2),
-                  "hymt2-7b": (HYMT2_LARGE, lambda: _ollama_has_hymt2(large=True)),
-                  "gemma": ("translategemma:4b", _ollama_has_gemma)}
         if engine == "auto":
-            have = await loop.run_in_executor(
-                None, lambda: _ollama_has_hymt2() or _ollama_has_hymt2(large=True)
-                or _ollama_has_gemma())
-            need = None if have else HYMT2_SMALL
+            active = getattr(self.translator, "name", None)
+            if active in ("hymt2", "gemma"):
+                # 正在用的那个本地模型本身得在。以前只要本机还有随便哪个本地模型就算
+                # 「有」：1.8B 被 ollama rm 掉而 7B 还在时，既不重新下载也不重建引擎，
+                # 每句 404 到本场结束
+                has = self._local_wanted(active)[1]
+            else:
+                def has():
+                    # 和 _local_wanted 同一个判据：按生成时真正用的名字精确比
+                    return T._ollama_has_model(*(T.local_engine_model(e)
+                                                 for e in ("hymt2", "hymt2-7b", "gemma")))
+            need = None if await loop.run_in_executor(None, has) \
+                else T.local_engine_model("hymt2")
         else:
-            model, has = wanted[engine]
+            model, has = self._local_wanted(engine)
             need = None if await loop.run_in_executor(None, has) else model
 
         pulled = False
         if need is not None:
-            size = "约 1.1 GB，" if need == HYMT2_SMALL else "首次需要下载，"
-            await self._provision_note(
-                "正在准备本地翻译模型（{}只需这一次）…".format(size))
-            last = [-10.0]
-
-            def progress(pct, done_mb, total_mb):
-                if pct - last[0] < 5:       # 别把界面刷爆
-                    return
-                last[0] = pct
-                self._spawn(self._provision_note(
-                    "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
-                    "只需这一次）…".format(pct, done_mb, total_mb)))
-
-            pulled = await localmodel.pull(need, on_progress=progress)
-            if pulled:
-                print("[信息] 本地翻译模型已就绪")
+            if need in self._pulls_running():
+                # 已经有一个下载在跑（比如启动时起的那个）：不再起第二个，也不推迟它；
+                # 只在本场日志里留个记号，事后能把这段时间的网络占用对上号
+                self._audit_pull("in_progress", need)
+            elif self._stream_active() or self._update_in_progress():
+                await self._defer_pull(need)
             else:
-                print("[警告] 本地翻译模型下载失败，本次继续用当前引擎")
+                pulled = await self._pull_model(need)
 
         if engine == "auto" and (started or pulled):
             # 启动时 Ollama 还没起来，auto 已经落到了 Google；现在本地模型能用了
             self.translator = await loop.run_in_executor(
                 None, create_translator, "auto")
             await self._publish_engine()
+        elif pulled and getattr(self, "_engine_pending", None) == engine:
+            await self._apply_pending_engine(engine)
         if pulled:
             await self._provision_note("本地翻译已就绪，可以开始了。")
         if started or need is not None:
@@ -714,15 +1146,155 @@ class Pipeline:
                     pass
             await self.run_selfcheck()
 
+    _NOT_NOTED = object()
+
+    @staticmethod
+    def _local_wanted(engine):
+        """本地引擎 → (它生成时真正调用的模型, 本机有没有**这一个**模型的同步探测)。
+
+        和自检（selfcheck.check_translator）同一个判据：按名字精确比（model_listed），
+        环境变量改过的模型名也照认。以前这里按子串认——Ollama 里只有 translategemma:12b、
+        或 1.8B 只有别的量化档时，自检红着说「会自动下载」，这里却当作有、一个字节都不下，
+        set_engine 也照换不误，每句 404。探测在调用时才去 translator 模块里取，测试替换
+        得到。不是本地引擎时模型是 None。"""
+        from . import translator as T
+
+        model = T.local_engine_model(engine)
+        if model is None:
+            return None, lambda: True
+        return model, lambda: T._ollama_has_model(model)
+
+    def _pulls_running(self):
+        """正在下载的模型名（进程级集合：一次下载可能跨场次）。"""
+        running = getattr(self, "_pulling", None)
+        if running is None:
+            running = self._pulling = set()
+        return running
+
+    def _audit_pull(self, state, model, error=None):
+        """下载本身跨场次，记进事件发生这一刻正开着的那场审计；没有开着的就不记。"""
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.model_pull(state, model, error)
+
+    async def _defer_pull(self, need):
+        """直播中（或一键更新进行中）缺模型：不下载，记下来之后再下；同一场只说一次。"""
+        from .translator import model_label
+
+        audit = getattr(self, "audit", None)
+        if getattr(self, "_pull_deferred", None) == need \
+                and getattr(self, "_pull_deferred_session", self._NOT_NOTED) is audit:
+            return
+        self._pull_deferred = need
+        self._pull_deferred_session = audit
+        self._audit_pull("deferred", need)
+        when = "更新结束后" if self._update_in_progress() else "停止后"
+        text = "本地翻译模型 {} 还没下载，{}自动下载".format(model_label(need), when)
+        print("[信息] " + text)
+        await self._provision_note(text)
+
+    async def _pull_model(self, need):
+        """真的去下载（调用方已确认不在直播）。进度和结果都告诉界面；失败时带上
+        Ollama 的原话，替换掉停在半截的百分比。返回是否成功。"""
+        from . import localmodel
+        from .translator import HYMT2_SMALL, engine_label
+
+        size = "约 1.1 GB，" if need == HYMT2_SMALL else "首次需要下载，"
+        await self._provision_note(
+            "正在准备本地翻译模型（{}只需这一次）…".format(size))
+        last = [-10.0]
+        finished = [False]
+
+        async def note(text):
+            if not finished[0]:         # 下载结束后才轮到的进度，别盖掉结果
+                await self._provision_note(text)
+
+        def progress(pct, done_mb, total_mb):
+            if pct - last[0] < 5:       # 别把界面刷爆
+                return
+            last[0] = pct
+            self._spawn(note(
+                "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
+                "只需这一次）…".format(pct, done_mb, total_mb)))
+
+        running = self._pulls_running()
+        running.add(need)
+        self._pull_deferred = None      # 推迟的那一次就是这一次
+        self._audit_pull("start", need)
+        try:
+            result = await localmodel.pull(need, on_progress=progress)
+        finally:
+            finished[0] = True
+            running.discard(need)
+        ok, error = result if isinstance(result, tuple) else (bool(result), None)
+        if ok:
+            print("[信息] 本地翻译模型已就绪")
+            self._audit_pull("done", need)
+            return True
+        error = error or "Ollama 没有给出说明"
+        print("[警告] 本地翻译模型下载失败：{}".format(error))
+        self._audit_pull("failed", need, error)
+        current = getattr(self.translator, "name", None)
+        keep = "继续用" + engine_label(current) if current else "继续不翻译"
+        await self._provision_note(
+            "本地翻译模型下载失败：{}；{}，下一场停止后会自动再试".format(error[:120], keep))
+        return False
+
+    async def _apply_pending_engine(self, engine):
+        """界面上选了一个当时本机还没有模型的本地引擎：模型下好之后才换上它。"""
+        loop = asyncio.get_running_loop()
+        try:
+            new = await loop.run_in_executor(None, create_translator, engine)
+        except Exception as exc:
+            print("[警告] 换用 {} 失败: {}".format(engine, exc))
+            return
+        if getattr(self.args, "translator", None) != engine \
+                or getattr(self, "_engine_pending", None) != engine:
+            try:                        # 下载期间用户又换了别的引擎：以后来的选择为准
+                await new.close()
+            except Exception:
+                pass
+            return
+        old, self.translator = self.translator, new
+        self._engine_pending = None
+        self.args.translator_note = None
+        if old is not None and old is not new:
+            try:
+                await old.close()
+            except Exception:
+                pass
+        await self._publish_engine()
+
+    async def _pull_after_session(self, session_task):
+        """补上直播中推迟的模型下载。_end_session 跑在直播任务自己里面，那一刻
+        _stream_active() 还是真：等这个任务真正结束再动手。这期间又开了新的一场，
+        ensure_local_translator 会自己再推迟一次。"""
+        try:
+            if session_task is not None and session_task is not asyncio.current_task():
+                await asyncio.wait({session_task})
+            if self._update_in_progress():
+                return          # 一键更新停掉的这一场：更新收尾时再补（见 _apply_update）
+            if getattr(self, "_pull_deferred", None) and not self._stream_active():
+                await self.ensure_local_translator()
+        except Exception as exc:
+            print("[警告] 停止后补下载本地翻译模型失败: {}".format(exc))
+
     def _stream_active(self):
         task = getattr(self, "_stream_task", None)
         return task is not None and not task.done()
+
+    def _update_in_progress(self):
+        """一键更新正在进行：取新版本、装依赖、合并，或为此暂停了监听。"""
+        updater = getattr(self, "updater", None)
+        return bool(getattr(updater, "_applying", False)) \
+            or getattr(self, "_update_pause", None) is not None
 
     async def _provision_note(self, text):
         """后台备模型的进度：待机时走 status（首页大字），直播中只发 notice。
         这个下载要几分钟，而用户完全可以在它跑着的时候点开始——那时再广播
         status=idle 会把界面从「直播中」拽回待机、停止按钮消失，每 5% 刷一次。"""
-        if self._stream_active():
+        if self._stream_active() or self._update_in_progress():
+            # 更新期间状态行是「正在更新，监听已暂停」那句，也不能被下载进度盖掉
             await self.server.broadcast({"type": "notice", "text": text})
         else:
             await self.server.status("idle", text)
@@ -732,23 +1304,98 @@ class Pipeline:
 
         这个方法存在的原因是降噪那次事故——功能静默降级成关闭，只在一行
         没人看的日志里说了一句。自检把这类问题变成界面上的红条。"""
-        from .selfcheck import run_all, summarize
+        from .selfcheck import run_all
         # 记下这次自检看到的弹幕组件版本：之后组件被自动升级（被拒时找到了补丁），
         # 评论流重新连上时对得上号就知道要不要重查，免得「观众弹幕」一行停在旧版本
         self._selfcheck_tiktoklive = _tiktoklive_version()
+        asr_state = self._asr_check_state()
         try:
             checks = await run_all(self.args, self.detector, self.glossary,
-                                   self.translator)
+                                   self.translator, asr_state=asr_state)
         except Exception as exc:
             print("[警告] 自检执行失败: {}".format(exc))
             return
-        summary = summarize(checks)
+        # 整轮自检要等 Ollama、解析器、磁盘这些慢探测，开播时和模型加载并行跑：这期间加载
+        # 失败了（_refresh_asr_check 已经把那一行刷红），不能再用开跑时的旧状态盖回绿色
+        checks = await self._with_live_asr_row(checks, asr_state)
         for c in checks:
             icon = {"ok": "✅", "warn": "⚠️ ", "fail": "❌"}[c["level"]]
             print("[自检] {} {}：{}".format(icon, c["name"], c["detail"]))
+        await self._publish_selfcheck(checks)
+
+    def _asr_check_state(self):
+        """交给自检「语音识别」那一行的实际加载结果（加载失败、出错后改用了 CPU）。"""
+        return {"load_error": getattr(self, "_asr_load_error", None),
+                "fallback": getattr(self, "_asr_fallback", None)}
+
+    async def _publish_selfcheck(self, checks):
+        from .selfcheck import summarize
+        summary = summarize(checks)
         self.server.config["selfcheck"] = {"checks": checks, "summary": summary}
         await self.server.broadcast({"type": "selfcheck", "checks": checks,
                                      "summary": summary})
+        self._audit_selfcheck(checks, summary)
+
+    def _audit_selfcheck(self, checks, summary):
+        """自检结论写进本场审计：第一次整份写，之后只在某一行等级变了时写变了的那几行。
+        打包运行时 stdout 指向 /dev/null，以前复盘「这场为什么漏报」时说不出当时哪项能力
+        是坏的。键里带 audit 对象，换场后第一次照样整份写（与 _publish_comment_source 同法）。"""
+        audit = getattr(self, "audit", None)
+        if audit is None:
+            return
+        levels = {c.get("name"): c.get("level") for c in checks}
+        last = getattr(self, "_selfcheck_audited", None)
+        if last is None or last[0] is not audit:
+            audit.selfcheck(checks, summary, full=True)
+        else:
+            changed = [c for c in checks if last[1].get(c.get("name")) != c.get("level")]
+            if not changed:
+                return
+            audit.selfcheck(changed, summary, full=False)
+        self._selfcheck_audited = (audit, levels)
+
+    async def _refresh_asr_check(self):
+        """只重查「语音识别」一行。加载失败、改用 CPU、恢复都发生在开播时那轮自检之后，
+        不刷新的话那一行会一直停在旧颜色；整轮自检会去 ping Ollama、建 DeepL 术语表，
+        不为这一行重跑。还没跑过自检就不管——之后那一轮会带上最新状态。"""
+        if not self._published_checks():
+            return
+        row = await self._live_asr_row()
+        # check_asr 会进线程：这期间整轮自检可能刚发布过，按发布那一刻的结果替换这一行
+        current = self._published_checks()
+        if row is None or not current:
+            return
+        await self._publish_selfcheck(
+            [row if c.get("name") == row["name"] else c for c in current])
+
+    def _published_checks(self):
+        return ((getattr(self.server, "config", None) or {}).get("selfcheck") or {}).get("checks")
+
+    async def _live_asr_row(self, state=None, row=None):
+        """按管线此刻的识别加载状态算「语音识别」一行（row 是按 state 算好的现成结果）。
+        check_asr 会进线程探测 import，算的这一会儿加载结果又变了就重算，最多三次。"""
+        from .selfcheck import check_asr
+        for _ in range(3):
+            live = self._asr_check_state()
+            if row is not None and live == state:
+                return row
+            state = live
+            try:
+                row = await check_asr(self.args, state)
+            except Exception as exc:
+                print("[警告] 语音识别自检刷新失败：{}".format(exc))
+                return None
+        return row
+
+    async def _with_live_asr_row(self, checks, state):
+        """整轮自检的结果里，「语音识别」一行换成按此刻加载状态算的（没变就原样返回）。"""
+        current = next((c for c in checks if c.get("name") == "语音识别"), None)
+        if current is None:
+            return checks
+        row = await self._live_asr_row(state, current)
+        if row is None or row is current:
+            return checks
+        return [row if c.get("name") == row["name"] else c for c in checks]
 
     async def _clear_recent_rooms(self):
         """清空「最近直播间」——中控点了首页那个「清空」。"""
@@ -879,11 +1526,17 @@ class Pipeline:
         await self.server.broadcast({
             "type": "comment_source", "backend": state, "detail": detail})
 
-    async def _end_session(self, my_audit=None):
+    async def _end_session(self, my_audit=None, reason=None, **fields):
         """收尾。my_audit 是调用方会话自己的 audit——凭它判断「我还是不是
         当前会话」：晚到的旧任务只许关自己的 audit，不许碰 stats 循环等
-        共享状态（那些已经属于下一场了）。"""
+        共享状态（那些已经属于下一场了）。
+
+        reason/fields 写进 session_end（这一场为什么结束）。防睡眠断言只在「我还是
+        当前会话、而且断言是我这个任务开的」时释放。"""
         still_current = my_audit is None or self.audit is my_audit
+        if still_current:
+            self._release_sleep_guard(owner=asyncio.current_task())
+            await self._clear_ongoing_incidents()
         if still_current:
             # 弹幕后端抓取是这一场自己起的子进程，晚到的旧任务不该碰
             # 已经属于下一场的连接——只有「我还是当前会话」才停它。
@@ -902,9 +1555,14 @@ class Pipeline:
             self._stats_task = None
         target = my_audit if my_audit is not None else self.audit
         if target is not None:
-            target.close()
+            self._close_audit(target, reason, **fields)
             if self.audit is target:
                 self.audit = None
+            await self._settle_audit_incident(target)
+        if still_current:
+            await self._settle_engine_incident()
+        if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks"):
+            self._spawn(self._pull_after_session(asyncio.current_task()))  # 直播中推迟的模型下载
 
     # TikTok 不给流地址（接口回 4003110、后面各层也没拿到）时的自动重试。
     # 曾以为是同一 IP 短时间内请求过多被限流——2026-09-05 实测推翻：同一分钟
@@ -913,11 +1571,21 @@ class Pipeline:
     TRANSLATION_DRAIN_SEC = 5.0       # 流结束后最多等在途翻译这么久
     BROWSER_ONLY_RETRIES = 3
     BROWSER_ONLY_RETRY_SEC = 20.0
+    # ---- 断流之后：时钟对账、网络探测、等房间恢复在播（见 _run_session 的重连循环）----
+    CLOCK_GAP_SEC = 15.0          # 一跳统计比预期晚这么多秒（墙钟），记一条 clock_gap
+    OFFLINE_RECHECK_SEC = 30.0    # 时钟跳变之后的「已结束」判定：醒着再等这么久复查一次
+    DIRECT_RECHECK_DELAYS = (2.0, 4.0, 8.0, 16.0)   # 时钟跳变之后直连地址拉不到数据：共 30 秒里再试
+    STATS_TICK_SEC = 10.0         # _stats_loop 默认每跳间隔；统计循环还没跳过时补对时钟用它
+    HOST_WAIT_POLL_SEC = 60.0     # 房间状态既不是在播也不是已结束：隔这么久问一次房间接口
+    HOST_WAIT_MAX_SEC = 600.0     # 一次中断里最多这样等这么久
+    NETWORK_RETRY_SEC = 20.0      # 本机连不上 TikTok 时隔这么久再探一次
+    NETWORK_GIVE_UP_SEC = 1800.0  # 连不上超过这么久才放弃
 
-    async def _resolve_media(self, url):
+    async def _resolve_media(self, url, reconnect=None):
         """解析直播流地址。TikTok 明确「不给程序」（kind=browser_only）时不立刻放弃：
         隔 BROWSER_ONLY_RETRY_SEC 秒再试，最多 BROWSER_ONLY_RETRIES 次，界面上说清
         在等什么；其它失败（下播、找不到、网络……）原样抛出。
+        reconnect：会话中途第几次重连（首次开播为 None），原样记进审计。
         曾经试过在这一步借用户的 Chrome + 插件拿地址，用户嫌麻烦，撤掉了：
         程序只靠自己，拿不到就明白说「稍后再试」。"""
         from .resolver import (ResolveError, _check_media_url, _media_url_works,
@@ -933,10 +1601,10 @@ class Pipeline:
             if await _media_url_works(checked):
                 print("[信息] 使用用户指定的音频源")
                 self._log_resolve(0, True, t0, [{"layer": "用户直连", "outcome": "url"}],
-                                  media=checked)
+                                  media=checked, reconnect=reconnect)
                 return checked
             self._log_resolve(0, False, t0, [{"layer": "用户直连", "outcome": "dead_url"}],
-                              kind="dead_override")
+                              kind="dead_override", reconnect=reconnect)
             self._media_override = None      # 失效就别再用，回到正常解析
             await self.server.status(
                 "connecting", "你给的流地址拉不动（可能已过期），改用自动解析…")
@@ -950,12 +1618,14 @@ class Pipeline:
                     cookies_browser=getattr(self.args, "cookies_browser", "auto"),
                     trace=layers)
             except ResolveError as exc:
-                self._log_resolve(attempt, False, t0, layers, kind=exc.kind)
+                self._log_resolve(attempt, False, t0, layers, kind=exc.kind,
+                                  reconnect=reconnect, message=str(exc))
                 if exc.kind != "browser_only":
                     raise
                 last = exc
             else:
-                self._log_resolve(attempt, True, t0, layers, media=media)
+                self._log_resolve(attempt, True, t0, layers, media=media,
+                                  reconnect=reconnect)
                 return media
             if attempt < self.BROWSER_ONLY_RETRIES:
                 await self.server.status(
@@ -972,8 +1642,12 @@ class Pipeline:
             "（中间空格隔开），一次约两周有效。".format(self.BROWSER_ONLY_RETRIES),
             kind="browser_only") from last
 
-    def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None):
+    def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None,
+                     reconnect=None, message=None):
         """一次解析尝试：审计文件里一行（type=resolve）+ 终端一行。
+
+        reconnect 是会话中途第几次重连（首次开播不带这一栏，和重连区分得开）；
+        失败时 message 记错误原文前 200 字（URL 去掉 query）。
 
         attempt=0 表示用户自带的直连地址；1..N 是自动解析的第几次。media 只记
         主机和路径——签名地址的 query 里带 sign/expire，两周内拿着就能拉流，
@@ -986,6 +1660,10 @@ class Pipeline:
             rec["kind"] = kind
         if media:
             rec["media"] = _media_label(media)
+        if reconnect is not None:
+            rec["reconnect"] = reconnect
+        if message and not ok:
+            rec["message"] = strip_query(message, 200)
         audit = getattr(self, "audit", None)
         if audit is not None:
             audit.resolve(rec)
@@ -996,10 +1674,473 @@ class Pipeline:
             label, "成功" if ok else "失败", ms / 1000,
             " kind=" + kind if kind else "", walked).rstrip())
 
+    # ---- 一场直播自己的观察状态、防睡眠断言、断流/休眠/断网/等房间恢复 ----
+
+    def _new_session_state(self, audit):
+        """一场直播的观察状态。重连循环、拉流 reader 和统计循环共用这一份；晚到的旧任务
+        手里拿的是自己那一份，写不进下一场（同 my_audit 的道理）。"""
+        return {
+            "audit": audit,
+            "clock": (time.time(), time.monotonic()),   # _check_clock_gap 上一次的读数
+            "gap": None,              # 最近一次时钟跳变；之后收到音频就清掉
+            "gap_count": 0,
+            "gap_stop": False,        # 这一轮是时钟对账之后主动断开的
+            "source": None,           # 当前这一轮的音频源
+            "last_frame_wall": None,  # 最近一帧音频到达的墙钟时间
+            "deaf_since": None,       # 上一轮收到最后一帧的时间；这一轮收到首帧时清掉
+            "reconnect_no": 0,        # 本场第几次重连
+            "meter": None,            # AudioFlowMeter，第一轮拉流时建
+            "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
+        }
+
+    def _hold_sleep_guard(self, task):
+        """开播时阻止空闲睡眠（见 app/power.py，合盖休眠阻止不了），记下是哪个任务开的。"""
+        from . import power
+
+        self._release_sleep_guard()
+        try:
+            guard = power.hold("直播合规监听中")
+        except Exception as exc:
+            print("[警告] 没能阻止系统空闲睡眠: {}".format(exc))
+            return
+        guard.owner = task
+        self._sleep_guard = guard
+        if guard.held:
+            print("[信息] 监听期间阻止空闲睡眠：{}（合盖休眠阻止不了）".format(
+                "、".join(guard.held)))
+
+    def _release_sleep_guard(self, owner=None):
+        """owner 给定时只释放这个任务开的那一份——晚到的旧任务碰不到新一场的断言。"""
+        guard = getattr(self, "_sleep_guard", None)
+        if guard is None or (owner is not None and guard.owner is not owner):
+            return
+        self._sleep_guard = None
+        guard.release()
+
+    def _sleep_guard_extra(self):
+        """session_start 里记下这一场拿到了哪些防睡眠手段（空列表 = 没拿到或本平台没有）。"""
+        guard = getattr(self, "_sleep_guard", None)
+        return {"sleep_guard": list(guard.held) if guard is not None else []}
+
+    @staticmethod
+    def _record_internal_error(audit, exc):
+        """把没预料到的异常写进这一场自己的审计。必须在 except 块里调（要取当前堆栈）。"""
+        if audit is None:
+            return
+        try:
+            audit.internal_error(exc, traceback.format_exc())
+        except Exception:
+            pass
+
+    # 停止或一场结束时，各条 session: 提示怎么收（下一场开始时 _clear_session_incidents 全部撤掉）：
+    #   撤掉：描述「正在进行」、监听停了就不成立的——「网络恢复后自动重连」、音频到达率、
+    #         「程序继续监听」的安静提示（ONGOING_INCIDENTS）
+    #   改写：承诺「会继续重试」的——审计写不进去（_settle_audit_incident）、远程引擎被拒
+    #         （_settle_engine_incident）。停了就不再重试，改成已经发生的事和下一步
+    #   留着：已经发生的事，或停了也成立的话——时钟跳变、识别连续出错（CPU 模型照样在后台
+    #         加载，或请重开程序）、本地引擎连续出错、审计没能创建、审计文件被移走、磁盘快满
+    ONGOING_INCIDENTS = ("session:network", "session:audio_rate", "session:quiet_audio")
+
+    async def _clear_ongoing_incidents(self):
+        config = getattr(getattr(self, "server", None), "config", None) or {}
+        incidents = config.get("incidents") or {}
+        for key in self.ONGOING_INCIDENTS:
+            if key in incidents:
+                try:
+                    await self._incident(key, "clear")
+                except Exception:
+                    pass
+
+    async def _settle_audit_incident(self, audit):
+        """审计关掉之后收尾「写不进去」的提示。「程序会继续重试、能写入后补写」到这里就不
+        成立了：文件关了，留在内存里等补写的记录跟着丢。改成已经发生的事留给中控看；关的
+        那一刻恰好又写进去了，就换成「已恢复」那句。只认本场自己的 audit（规则七）。"""
+        watch = getattr(self, "_audit_watch", None) or {}
+        if audit is None or watch.get("audit") is not audit:
+            return
+        unwritten = audit.unwritten() if hasattr(audit, "unwritten") else None
+        if not watch.get("failing") and unwritten is None:
+            return
+        watch["failing"] = False
+        pending = watch.get("task")
+        if pending is not None and not pending.done():
+            try:            # 写失败回调发出的那条还在路上：等它先到，别让它盖掉收尾这句
+                await pending
+            except Exception:
+                pass
+        try:
+            if unwritten is not None:
+                await self._incident("session:audit-write", "error",
+                                     self._audit_unwritten_text(unwritten))
+            else:
+                await self._incident("session:audit-write", "warn",
+                                     self._audit_recovered_text(audit))
+        except Exception:
+            pass
+
+    async def _settle_engine_incident(self):
+        """远程引擎被拒那句里的「程序每 N 秒再试一次」只在监听时成立：停了改成已经发生的
+        事和下一步。本地引擎连续出错那句本来就只是记录和建议，不动。"""
+        info = getattr(self, "_engine_rejection", None)
+        if not info or not getattr(self, "_engine_incident_up", False):
+            return
+        self._engine_rejection = None
+        try:
+            await self._incident(
+                self.ENGINE_INCIDENT, "error",
+                "{}，之后的字幕只显示了原文（违禁词报警不受影响）。下一场开始后会再试；"
+                "可以在「翻译引擎」里{}".format(
+                    info["what"], "换一个引擎" if info["status"] == 404
+                    else "重新填写密钥，或换一个引擎"))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _close_audit(audit, reason=None, **fields):
+        """关审计，结束原因写进 session_end。没有原因时照老样子 close()。"""
+        if reason:
+            audit.close(reason=reason, **fields)
+        else:
+            audit.close()
+
+    @staticmethod
+    def _duration_text(sec):
+        sec = max(0, int(round(sec)))
+        if sec < 90:
+            return "{} 秒".format(sec)
+        minutes = int(round(sec / 60.0))
+        if minutes < 90:
+            return "{} 分钟".format(minutes)
+        return "{} 小时 {} 分钟".format(minutes // 60, minutes % 60)
+
+    async def _check_clock_gap(self, interval, now=None):
+        """_stats_loop 每一跳调一次：对一次墙钟和单调时钟。now=(墙钟, 单调时钟) 只给测试用。
+
+        统计循环每 interval 秒醒一次；墙钟比预期多走了 CLOCK_GAP_SEC 以上，就是这段时间
+        程序没有运行。两种看法：
+          - 墙钟走了、单调时钟没走（macOS/Linux 的单调时钟在系统休眠时停住）：这是电脑
+            休眠或挂起的直接观察；
+          - 两个钟一起走多了（Windows 的单调时钟休眠时照走，或者事件循环被卡住）：只说
+            程序没有运行。
+        记一条 clock_gap，挂一条持续提示（重连的状态文字盖不掉它），并告诉重连循环之后的
+        「已结束」判定要复查。时钟被往前拨也会触发，所以记录只叫 clock_gap，文字不说合盖。
+        任何异常都不能带崩统计循环。"""
+        try:
+            sess = getattr(self, "_session_state", None)
+            audit = self.audit
+            if sess is None or audit is None or sess.get("audit") is not audit:
+                return
+            wall, mono = now if now is not None else (time.time(), time.monotonic())
+            sess["tick_sec"] = float(interval)
+            prev_wall, prev_mono = sess["clock"]
+            sess["clock"] = (wall, mono)
+            wall_sec, mono_sec = wall - prev_wall, mono - prev_mono
+            gap = wall_sec - float(interval)
+            if gap < self.CLOCK_GAP_SEC:
+                return
+            diverged = wall_sec - mono_sec >= self.CLOCK_GAP_SEC
+            sess["gap"] = {"from": prev_wall, "to": wall, "sec": gap, "diverged": diverged}
+            sess["gap_count"] = sess.get("gap_count", 0) + 1
+            audit.clock_gap(prev_wall, wall, gap_sec=gap, wall_sec=wall_sec,
+                            mono_sec=mono_sec, clocks_diverged=diverged)
+            span = "{}–{}".format(time.strftime("%H:%M", time.localtime(prev_wall)),
+                                  time.strftime("%H:%M", time.localtime(wall)))
+            if diverged:
+                text = ("{} 电脑休眠或挂起了约 {}，程序没有运行，这段时间的直播没有监听。"
+                        "直播期间请接电源、不要合盖").format(span, self._duration_text(gap))
+            else:
+                text = ("{} 程序约 {}没有运行，这段时间的直播没有监听。"
+                        "直播期间请接电源、不要让电脑休眠").format(span, self._duration_text(gap))
+            if sess["gap_count"] > 1:
+                text = "本场第 {} 次：{}".format(sess["gap_count"], text)
+            print("[时钟] 墙钟走了 {:.0f} 秒、单调时钟走了 {:.0f} 秒".format(wall_sec, mono_sec))
+            await self._incident("session:clock_gap", "warn", text)
+            # 睡着之前的连接多半已经失效：醒来 5 秒内没有新音频就直接断开这一轮、马上重连，
+            # 不再干等 20 秒看门狗。只在两个钟对不上时这么做——事件循环卡住时数据还在管道里
+            # 排着，断开反而丢
+            source = sess.get("source")
+            last = sess.get("last_frame_wall")
+            if diverged and source is not None and (last is None or wall - last > 5.0):
+                sess["gap_stop"] = True
+                self._spawn(source.stop())
+        except Exception as exc:
+            print("[警告] 时钟对账出错: {}".format(exc))
+
+    async def _recheck_clock(self, sess):
+        """重连循环要下「结束」结论之前，补对一次时钟。
+
+        统计循环醒着每 10 秒才对一次。睡着时它和重连退避、解析的计时器一起停住，醒来后谁
+        剩的时间少谁先跑：解析先回来「已结束」时，统计循环还没发现刚才睡过，复查就被跳过，
+        连 clock_gap 都来不及记（结束时统计循环被取消）。离上一次读数正常不超过一跳，
+        补对不会误报；统计循环没在跑时读数是旧的，不对。"""
+        stats = getattr(self, "_stats_task", None)
+        if stats is None or stats.done() or getattr(self, "_session_state", None) is not sess:
+            return
+        await self._check_clock_gap(sess.get("tick_sec") or self.STATS_TICK_SEC)
+
+    def _gap_lead(self, gap):
+        """时钟跳变之后状态文字的开头。两个钟对不上才说休眠或挂起，否则只说程序没有运行。"""
+        if gap.get("diverged"):
+            return "电脑刚从休眠或挂起中恢复"
+        return "程序刚才约 {}没有运行".format(self._duration_text(gap.get("sec") or 0))
+
+    def _note_stream_resumed(self, sess, now):
+        """这一轮收到第一帧：上一轮最后一帧之后多久没有音频，记一条 stream_resumed。"""
+        sess["gap"] = None
+        deaf_since = sess.get("deaf_since")
+        if deaf_since is None:
+            return
+        sess["deaf_since"] = None
+        audit = sess.get("audit")
+        if audit is not None:
+            audit.stream_resumed(deaf_sec=now - deaf_since,
+                                 reconnect_no=sess.get("reconnect_no"))
+
+    async def _on_audio_events(self, sess, events):
+        """AudioFlowMeter 的事件：写审计、挂或撤持续提示。观察不能拖垮拉流，异常一律吞掉。"""
+        audit = sess.get("audit")
+        try:
+            for kind, data in events:
+                if kind == "heartbeat":
+                    if audit is not None:
+                        audit.audio_heartbeat(**data)
+                elif kind == "summary":
+                    if audit is not None:
+                        audit.stream_audio(**data)
+                elif kind == "low":
+                    per_min = data["audio_sec"] * 60.0 / max(data["wall_sec"], 1.0)
+                    await self._incident(
+                        "session:audio_rate", "warn",
+                        "过去 1 分钟只收到 {:.0f} 秒直播音频，缺的部分没有经过检测"
+                        .format(per_min))
+                elif kind == "recovered":
+                    await self._incident("session:audio_rate", "clear")
+                elif kind == "quiet":
+                    await self._incident(
+                        "session:quiet_audio", "warn",
+                        "已收到 {:.0f} 秒直播音频，但音量一直低于识别门限，没有送去识别；"
+                        "程序继续监听".format(data["audio_sec"]))
+                elif kind == "speech":
+                    await self._incident("session:quiet_audio", "clear")
+        except Exception as exc:
+            print("[警告] 音频计数事件处理出错: {}".format(exc))
+
+    def _record_stream_break(self, sess, source, reason, error, got_audio, audio_secs,
+                             meter):
+        """一轮拉流结束时写 stream_audio + stream_break，写进 sess 里本场自己的审计。"""
+        try:
+            if reason == "eof" and getattr(source, "stalled", False):
+                reason = "stall"
+            if sess.get("gap_stop"):
+                sess["gap_stop"] = False
+                if reason in ("eof", "stall"):
+                    reason = "clock_gap"
+            if got_audio:
+                sess["deaf_since"] = sess.get("last_frame_wall") or time.time()
+            sess["source"] = None
+            if meter is not None and meter.low:
+                self._spawn(self._incident("session:audio_rate", "clear"))
+            audit = sess.get("audit")
+            if audit is None:
+                return
+            try:
+                tail = source.stderr_tail()
+            except Exception:
+                tail = ""
+            if meter is not None:
+                audit.stream_audio(final=True, **meter.summary())
+            audit.stream_break(
+                reason, returncode=getattr(getattr(source, "proc", None), "returncode", None),
+                audio_sec=audio_secs, got_audio=got_audio,
+                reconnect_no=sess.get("reconnect_no", 0), stderr_tail=tail,
+                error=str(error) if error is not None else None)
+        except Exception as exc:
+            print("[警告] 记录断流出错: {}".format(exc))
+
+    async def _wait_for_network(self, sess):
+        """重连解析之前先确认本机连得上 www.tiktok.com（DNS + TCP 443，3 秒，不发 HTTP 请求）。
+
+        以前断网时解析照跑（每次走完五层、近一分钟），失败还算进重连预算，大约 7 分钟后
+        监听就永久放弃，网络恢复了也不会自己回来。现在连不上就不解析、不计预算，每
+        NETWORK_RETRY_SEC 秒再探一次；连上返回 True，超过 NETWORK_GIVE_UP_SEC 返回 False。
+        探测通过而解析失败（比如要网页登录的公共 Wi-Fi）时，行为和以前一样。"""
+        from .resolver import tiktok_reachable
+
+        ok, why = await tiktok_reachable()
+        if ok:
+            return True
+        audit = sess.get("audit")
+        since = time.time()
+        if audit is not None:
+            audit.network_down(since, why=why)
+        print("[网络] 本机连不上 www.tiktok.com（{}），暂停解析".format(why))
+        tries = 0
+        while tries * self.NETWORK_RETRY_SEC < self.NETWORK_GIVE_UP_SEC:
+            deaf = time.time() - (sess.get("deaf_since") or since)
+            text = "本机连不上 www.tiktok.com，已 {}没有监听，网络恢复后自动重连".format(
+                self._duration_text(deaf))
+            await self._incident("session:network", "error", text)
+            await self.server.status("connecting", text)
+            await asyncio.sleep(self.NETWORK_RETRY_SEC)
+            tries += 1
+            ok, why = await tiktok_reachable()
+            if ok:
+                if audit is not None:
+                    audit.network_up(time.time() - since)
+                await self._incident("session:network", "clear")
+                print("[网络] 已恢复，继续重连")
+                return True
+        await self._incident("session:network", "clear")
+        return False
+
+    @staticmethod
+    def _room_status_text(status):
+        """只说接口返回了什么（CLAUDE.md 第八条）。2 本不该出现在「不在播」判定里，
+        出现了也照实写出数字，按未知状态去等（等待有上限）。"""
+        if status is None:
+            return "TikTok 接口这次没有给出房间状态"
+        if status == 2:
+            return "TikTok 接口返回房间状态 2"
+        return "TikTok 接口返回房间状态 {}（{}）".format(
+            status, "已结束" if status == 4 else "不是在播状态")
+
+    async def _probe_room_status(self, url):
+        from .resolver import probe_room_status
+
+        status, why = await probe_room_status(url)
+        print("[解析] 房间状态复查：{}{}".format(status, "（{}）".format(why) if why else ""))
+        return status, why
+
+    async def _confirm_offline(self, url, exc, sess, waited):
+        """重连时解析说「没在播」。返回 (verdict, waited)：verdict 为 live 时回去重新解析；
+        其余情况这里已经写好界面文字和 sess["end"]。
+
+        - 只有状态 4（已结束）才收手。以前任何非 2 都当结束，而 TikTok 的状态不止这两个
+          （TikTokLive 也只把 4 当下播），断一下就永久停止监听。
+        - 刚发现时钟跳变（电脑休眠或挂起过）时，4 也先不信：2026-09-14 那次「已结束」就是
+          在合盖休眠的短暂维护唤醒里判的。醒着再等 OFFLINE_RECHECK_SEC 秒问一次房间接口。
+        - 其它状态（含拿不到状态）：每 HOST_WAIT_POLL_SEC 秒问一次房间接口，一次中断里
+          最多等 HOST_WAIT_MAX_SEC。
+        文字只写接口返回了什么、程序在做什么，不猜主播为什么（CLAUDE.md 第八条）。"""
+        from .resolver import ENDED_STATUS, LIVE_STATUS
+
+        status = getattr(exc, "status", None)
+        if status == ENDED_STATUS:
+            status, waited, _why = await self._recheck_ended_after_gap(url, status, sess, waited)
+            if status == LIVE_STATUS:
+                return "live", waited
+        if status == ENDED_STATUS:
+            await self.server.status(
+                "ended", "直播已结束。可以继续翻看上面的字幕，"
+                         "或输入新的直播间地址。")
+            print("[信息] 直播已结束。可在网页里输入新地址继续。")
+            sess["end"] = {"reason": "offline", "status": status}
+            return "ended", waited
+        return await self._host_wait(url, status, sess, waited)
+
+    async def _recheck_ended_after_gap(self, url, status, sess, waited, why=None):
+        """状态 4，而且这次中断里发现过时钟跳变：先不信，醒着再等 OFFLINE_RECHECK_SEC 秒问一次
+        房间接口。返回 (状态, waited, why)；没有跳变时原样返回，不多发请求。"""
+        from .resolver import ENDED_STATUS, LIVE_STATUS
+
+        if status != ENDED_STATUS:
+            return status, waited, why
+        await self._recheck_clock(sess)
+        gap = sess.get("gap")
+        if gap is None:
+            return status, waited, why
+        sess["gap"] = None
+        await self.server.status(
+            "connecting",
+            "{}，{}；{:.0f} 秒后再查一次再下结论…".format(
+                self._gap_lead(gap), self._room_status_text(status), self.OFFLINE_RECHECK_SEC))
+        await asyncio.sleep(self.OFFLINE_RECHECK_SEC)
+        waited += self.OFFLINE_RECHECK_SEC
+        status, why = await self._probe_room_status(url)
+        audit = sess.get("audit")
+        if audit is not None:
+            audit.host_wait(status, self.OFFLINE_RECHECK_SEC,
+                            {LIVE_STATUS: "live", ENDED_STATUS: "ended"}.get(status, "waiting"),
+                            trigger="clock_gap", why=why)
+        return status, waited, why
+
+    async def _direct_media_works(self, media, sess):
+        """直连地址问 CDN 还出不出数据（只拉 2KB，不碰房间接口）。返回 (是否出数据, 探了几次)。
+
+        这次中断里发现过时钟跳变时，一次失败不算数：醒来那一刻网络常常还没连上，而时钟对账
+        可能已经提前断开了这一轮。按 DIRECT_RECHECK_DELAYS 再试，仍拉不到才下结论。"""
+        from .resolver import _media_url_works
+
+        await self._recheck_clock(sess)
+        probes = 1
+        if await _media_url_works(media):
+            return True, probes
+        gap = sess.get("gap")
+        if gap is None:
+            return False, probes
+        sess["gap"] = None
+        total = len(self.DIRECT_RECHECK_DELAYS)
+        for i, delay in enumerate(self.DIRECT_RECHECK_DELAYS, 1):
+            await self.server.status(
+                "connecting", "{}，这个直连地址暂时拉不到数据；{:.0f} 秒后再试（第 {}/{} 次）…".format(
+                    self._gap_lead(gap), delay, i, total))
+            await asyncio.sleep(delay)
+            probes += 1
+            if await _media_url_works(media):
+                return True, probes
+        return False, probes
+
+    async def _host_wait(self, url, status, sess, waited):
+        from .resolver import ENDED_STATUS, LIVE_STATUS
+
+        audit = sess.get("audit")
+        why = None
+        if audit is not None:
+            audit.host_wait(status, waited, "started")
+        while waited < self.HOST_WAIT_MAX_SEC:
+            await self.server.status(
+                "connecting",
+                "{}，每 {:.0f} 秒复查一次，最多 {:.0f} 分钟（已等 {:.0f} 分钟）…".format(
+                    self._room_status_text(status), self.HOST_WAIT_POLL_SEC,
+                    self.HOST_WAIT_MAX_SEC / 60, waited / 60))
+            await asyncio.sleep(self.HOST_WAIT_POLL_SEC)
+            waited += self.HOST_WAIT_POLL_SEC
+            status, why = await self._probe_room_status(url)
+            if status == ENDED_STATUS:      # 等的这一分钟里睡过的话，4 也先复查
+                status, waited, why = await self._recheck_ended_after_gap(
+                    url, status, sess, waited, why)
+            if status in (LIVE_STATUS, ENDED_STATUS):
+                break
+        outcome = {LIVE_STATUS: "live", ENDED_STATUS: "ended"}.get(status, "timeout")
+        if audit is not None:
+            audit.host_wait(status, waited, outcome, why=why)
+        if outcome == "live":
+            print("[信息] 房间接口回到在播状态，重新解析")
+            return "live", waited
+        if outcome == "ended":
+            await self.server.status(
+                "ended", "直播已结束。可以继续翻看上面的字幕，"
+                         "或输入新的直播间地址。")
+            sess["end"] = {"reason": "offline", "status": status,
+                           "waited_sec": int(round(waited))}
+        else:
+            await self.server.status(
+                "ended", "{:.0f} 分钟内 TikTok 接口一直没有返回在播状态（最后一次：{}），"
+                         "监听已停止。可以点「开始翻译」重新开始。".format(
+                             waited / 60, self._room_status_text(status)))
+            sess["end"] = {"reason": "host_wait_timeout", "status": status,
+                           "waited_sec": int(round(waited))}
+        print("[信息] 等房间恢复在播：{}".format(outcome))
+        return outcome, waited
+
     async def _run_session(self, url):
-        from .asr import create_transcriber
+        from .asr import create_transcriber, forget_exception_locals
         from .resolver import ResolveError, is_direct_url
 
+        sess = getattr(self, "_session_state", None)
+        if sess is None or sess.get("audit") is not self.audit:
+            sess = self._session_state = self._new_session_state(self.audit)
+        my_audit = sess["audit"]     # 本场自己的审计，见 _run_stream_inner 与 _new_session_state
         await self.server.status("connecting", "正在解析直播流地址…")
         try:
             media = await self._resolve_media(url)
@@ -1008,8 +2149,11 @@ class Pipeline:
             self._note_resolve_failure(exc)
             await self.server.status("error", str(exc))
             print("[错误] {}".format(exc))
+            sess["end"] = {"reason": "resolve_error", "kind": exc.kind}
             return
 
+        # 从这里到识别模型就绪，中途 return 只可能是「加载模型失败」
+        sess["end"] = {"reason": "model_load_failed"}
         loop = asyncio.get_running_loop()
         # 未显式指定的参数用硬件推荐补齐。注意：backend/model/device/compute 是联动
         # 整体，用户锁定 backend/device 时其余字段围绕它重新推导（见 hwdetect.py）
@@ -1029,7 +2173,16 @@ class Pipeline:
         key = (backend, model, device, compute, self.args.source,
                self.args.beam, self.args.context, temperature,
                self.glossary.asr_prompt())
+        config = {"backend": backend, "model": model, "device": device,
+                  "compute_type": compute, "language": self.args.source,
+                  "beam_size": self.args.beam, "use_context": self.args.context,
+                  "temperature": temperature, "hotwords": self.glossary.asr_prompt(),
+                  "note": rec["note"]}
+        # 上一场「改用 CPU」的加载被停止打断、还在线程里跑：先等它，别和下面的加载同时驻留两份
+        await self._settle_fallback_load(key)
         if self._transcriber is None or self._transcriber_key != key:
+            # 正在用的是出错后改用的 CPU 模型：先放掉再加载新配置，两个模型不同时驻留
+            dropped_fallback = await self._drop_fallback_transcriber()
             size_mb = MODEL_SIZES_MB.get(model)
             if size_mb and size_mb >= 1000:
                 size_note = "约 {:.1f} GB".format(size_mb / 1000)
@@ -1069,6 +2222,7 @@ class Pipeline:
                     ),
                 )
             watcher = asyncio.ensure_future(self._model_download_progress(model))
+            as_configured = True
             try:
                 # shield：本任务被取消时不要连带取消底层加载，
                 # 下一次启动可以直接复用同一个在途结果
@@ -1076,20 +2230,28 @@ class Pipeline:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                # 回溯里的帧还连着加载了一半的模型（mlx 预热失败时 model 是局部变量）：
+                # 不清掉，下面改用 CPU 时两个模型同时驻留
+                forget_exception_locals(exc)
                 self._transcriber_future = None
                 self._loading_key = None
                 watcher.cancel()   # 先停进度播报，别让它把下面的 error 状态盖回去
-                await self.server.status(
-                    "error", "下载/加载识别模型失败——请检查网络后点「开始翻译」重试。\n"
-                             "技术细节：{}".format(str(exc)[:200]))
-                print("[错误] 加载模型失败: {}".format(exc))
-                return
+                transcriber = await self._on_model_load_failed(exc, config, loop, key=key)
+                if transcriber is None:
+                    return
+                as_configured = False
             finally:
                 watcher.cancel()
             # 模型和它的 key 一起提交：中途取消时两者都不动，下次重来还会重新加载
             self._transcriber = transcriber
             self._transcriber_key = key
+            if as_configured:
+                await self._asr_loaded_ok(refresh=dropped_fallback)
         transcriber = self._transcriber
+        sess["end"] = None
+        if my_audit is not None:
+            my_audit.asr_config(self._asr_config_record(config, transcriber))
+        slot = _ASRSlot(transcriber, config=config, key=key, audit=my_audit)
 
         denoise = await self._ensure_denoise_model()
         live_note = ("已连接直播间，开始实时识别"
@@ -1105,17 +2267,26 @@ class Pipeline:
         budget = 1 if direct else 5
         reconnects = 0        # 连续重连次数：决定退避间隔（2、4、…、30 秒）
         silent = 0            # 连续「一帧音频都没有」的轮次：决定何时放弃
+        host_waited = 0.0     # 这次中断里等房间恢复在播已经等了多久；收到音频才清零
         while True:
             await self.server.status("connecting", "正在连接直播音频流…")
             got_audio, audio_secs = await self._stream_session(
-                media, transcriber, denoise, live_note, loop)
+                media, slot, denoise, live_note, loop, sess=sess)
+            if got_audio:
+                host_waited = 0.0
             if audio_secs >= 30:
                 if direct:
-                    await self.server.status(
-                        "ended", "直播流已结束。可以继续翻看上面的字幕，"
-                                 "或输入新的地址。")
-                    print("[信息] 直播流已结束。")
-                    return
+                    # 直连地址问不出「主播还在不在播」，但问得出「这个地址还出不出数据」。
+                    # 以前播过 30 秒就一律按「直播流已结束」收尾：Wi-Fi 抖一下、半开连接被
+                    # 看门狗掐断，剩下的直播就没人听了。只向 CDN 拉 2KB，不碰房间接口
+                    works, probes = await self._direct_media_works(media, sess)
+                    if not works:
+                        await self.server.status(
+                            "ended", "这个直连地址已经拉不到数据，监听已停止。"
+                                     "可以输入直播间地址或新的流地址继续。")
+                        print("[信息] 直连地址已拉不到数据，监听停止。")
+                        sess["end"] = {"reason": "stream_ended", "probes": probes}
+                        return
                 reconnects = 0        # 刚才播得好好的：重置重连预算
             # 拿到过音频的轮次不算失败：网络劣化时每轮只播二十几秒就断，
             # 五轮之后主播还在播，监听却宣布「重连失败」放弃了。只有连续几轮
@@ -1130,6 +2301,8 @@ class Pipeline:
                         "error", "直播流多次中断且自动重连失败——可能直播已结束，"
                                  "或网络不稳。请稍后点「开始翻译」重试。")
                     print("[信息] 自动重连预算用尽，放弃。")
+                    sess["end"] = {"reason": "reconnect_exhausted",
+                                   "silent": silent, "budget": budget}
                     return
                 delay = min(30, 2 ** reconnects)
                 await self.server.status(
@@ -1137,29 +2310,54 @@ class Pipeline:
                     "直播流中断，{} 秒后自动重连（第 {}/{} 次）…".format(
                         delay, reconnects, budget))
                 await asyncio.sleep(delay)
+                # 本机连不上 TikTok 时不去解析，也不算进重连预算（直连地址不走这一步）
+                if not direct and not await self._wait_for_network(sess):
+                    await self.server.status(
+                        "error", "本机连不上 www.tiktok.com 已超过 {:.0f} 分钟，监听已停止。"
+                                 "网络恢复后点「开始翻译」重新开始。".format(
+                                     self.NETWORK_GIVE_UP_SEC / 60))
+                    print("[信息] 网络长时间不通，放弃重连。")
+                    sess["end"] = {"reason": "network_down",
+                                   "down_sec": int(self.NETWORK_GIVE_UP_SEC)}
+                    return
+                sess["reconnect_no"] += 1
                 try:
-                    media = await self._resolve_media(url)
+                    media = await self._resolve_media(url, reconnect=sess["reconnect_no"])
                     self._resolve_fail_streak = 0
                 except ResolveError as exc:
                     if exc.kind == "offline":
-                        await self.server.status(
-                            "ended", "直播已结束。可以继续翻看上面的字幕，"
-                                     "或输入新的直播间地址。")
-                        print("[信息] 直播已结束。可在网页里输入新地址继续。")
-                        return
+                        verdict, host_waited = await self._confirm_offline(
+                            url, exc, sess, host_waited)
+                        if verdict != "live":
+                            return        # 界面文字和结束原因 _confirm_offline 已经写好
+                        reconnects = 0    # 房间回到在播：马上重新解析，不再长退避
+                        continue
                     self._note_resolve_failure(exc)
                     silent += 1       # 解析不出地址也是一轮没有音频
                     print("[错误] 重连解析失败: {}".format(exc))
 
-    async def _stream_session(self, media, transcriber, denoise, live_note, loop):
+    async def _stream_session(self, media, transcriber, denoise, live_note, loop, sess=None):
         """跑一轮拉流→识别→翻译，直到流断开。返回 (是否收到过音频, 音频时长秒)。
+
+        sess 是这一场的观察状态（见 _new_session_state）：这一轮怎么断的、断之前收到多少
+        音频、下一轮隔了多久才又有声音，都写进 sess 里那一份审计，不读 self.audit——
+        晚到的旧任务写不进下一场的文件。
 
         音频时长按真实收到的帧数累计，不用墙钟——网络劣化时 ffmpeg 可能连着
         30 秒只吐 2 秒音频，用墙钟会把这种「假连接」当成播得好好的，
         重连预算被错误重置后放弃分支永远走不到。"""
-        from .audio import FRAME_SEC, SAMPLE_RATE, FFmpegAudioSource
+        from .asr import forget_exception_locals
+        from .audio import FRAME_SEC, SAMPLE_RATE, AudioFlowMeter, FFmpegAudioSource
+        from .audit import strip_url_queries
         from .segmenter import SilenceSegmenter
 
+        if sess is None:
+            sess = self._new_session_state(self.audit)
+
+        # transcriber 可以是 _ASRSlot（_run_session 传的，出错换模型后重连也用新的），
+        # 也可以是裸识别器（这时没有换模型需要的配置，出错只报告不换）
+        slot = transcriber if isinstance(transcriber, _ASRSlot) else _ASRSlot(
+            transcriber, audit=sess["audit"])
         got_audio = False
         audio_secs = 0.0
         # 音频缓冲按**秒数**预算，不按段数——段数上限在 9 秒片段下是 27 秒缓冲、
@@ -1175,6 +2373,12 @@ class Pipeline:
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
         segmenter = SilenceSegmenter()
+        sess["source"] = source
+        meter = sess.get("meter")
+        if meter is None:
+            meter = sess["meter"] = AudioFlowMeter(
+                speech_rms=getattr(segmenter, "silence_rms", 300.0))
+        meter.start_round()
 
         def _put(segment):
             if segment is None:
@@ -1190,8 +2394,8 @@ class Pipeline:
                     break
                 backlog["sec"] -= len(stale) / 2.0 / SAMPLE_RATE
                 self.telemetry.drop_audio()
-                if self.audit is not None:
-                    self.audit.dropped_audio(queue_depth=queue.qsize())
+                if sess["audit"] is not None:
+                    sess["audit"].dropped_audio(queue_depth=queue.qsize())
                 print("[严重] 积压超过 {} 秒，被迫丢弃最旧的一段音频——这段可能漏词"
                       .format(AUDIO_BACKLOG_HARD_SEC))
             queue.put_nowait(segment)
@@ -1242,19 +2446,33 @@ class Pipeline:
             nonlocal got_audio, audio_secs
             try:
                 async for frame in source.frames():
+                    now = time.time()
                     if not got_audio:
                         got_audio = True
+                        self._note_stream_resumed(sess, now)
                         await self.server.status("live", live_note)
                     audio_secs += FRAME_SEC
-                    for segment in segmenter.feed(frame):
+                    sess["last_frame_wall"] = now
+                    segments = segmenter.feed(frame)
+                    for segment in segments:
                         _put((segment, time.time()))
-                for segment in segmenter.flush():   # 别丢掉最后一段话
+                    # 实际收到多少音频、有没有切出语音段：每帧只计数，有事件才 await
+                    events = meter.feed(frame, segments=len(segments))
+                    if events:
+                        await self._on_audio_events(sess, events)
+                rest = segmenter.flush()
+                for segment in rest:   # 别丢掉最后一段话
                     _put((segment, time.time()))
+                events = meter.cut(len(rest))
+                if events:
+                    await self._on_audio_events(sess, events)
             finally:
                 _put(None)
 
         async def asr_worker():
             asr_failures = 0
+            streak_handled = False   # 这一串连续出错已经处理过（换过模型或说过恢复不了）
+            banner_up = False        # 出错提示在界面上：下一段识别成功时撤掉
             while True:
                 item = await queue.get()
                 if item is None:
@@ -1263,30 +2481,47 @@ class Pipeline:
                 backlog["sec"] = max(0.0, backlog["sec"] - len(segment) / 2.0 / SAMPLE_RATE)
                 self.telemetry.set_backlog(backlog["sec"])
                 t0 = time.monotonic()
+                # 在途标记：一段识别迟迟不返回时，统计循环据此报「卡住」（_check_asr_stall）
+                inflight = [t0]
+                self._asr_inflight = inflight
+                failure = None
                 try:
                     result = await loop.run_in_executor(
-                        asr_pool, transcriber.transcribe, segment
+                        asr_pool, slot.transcriber.transcribe, segment
                     )
                 except Exception as exc:
+                    failure = exc
+                    # 回溯里的帧连着模型（mlx_whisper.transcribe 的局部变量 model、faster-whisper
+                    # 帧里的 self）：failure 还活着，放掉 ModelHolder 也放不掉模型，下面换 CPU
+                    # 时就是两个模型同时驻留
+                    forget_exception_locals(exc)
+                finally:
+                    if getattr(self, "_asr_inflight", None) is inflight:
+                        self._asr_inflight = None
+                if failure is not None:
                     # 这段音频没进检测器也没进审计——漏报的第五种成因，而且以前
                     # 只有一行 print（打包运行时 stdout 指向 /dev/null，等于没有）。
-                    # 计数、写审计、连续失败就告诉界面，别让识别已死的会话继续
-                    # 显示「直播中」。
+                    # 计数、写审计、连续失败就告诉界面并设法恢复，别让识别已死的会话
+                    # 继续显示「直播中」。
                     asr_failures += 1
-                    self.telemetry.drop_audio()
-                    if self.audit is not None:
-                        self.audit.asr_failed(
+                    self.telemetry.drop_audio(asr_failed=True)
+                    if sess["audit"] is not None:
+                        sess["audit"].asr_failed(
                             segment_ms=len(segment) / 2.0 / SAMPLE_RATE * 1000.0,
-                            error=str(exc)[:200], queue_depth=queue.qsize())
-                    print("[警告] 识别一段音频失败: {}".format(exc))
-                    if asr_failures == 3:
-                        await self.server.broadcast({
-                            "type": "health", "level": "degraded",
-                            "backlog_sec": round(backlog["sec"], 1),
-                            "text": "🔴 识别连续失败 3 次，这期间的音频没有检测——"
-                                    "请点「停止」再「开始翻译」"})
+                            error=strip_url_queries(failure, 200), queue_depth=queue.qsize())
+                    print("[警告] 识别一段音频失败: {}".format(failure))
+                    if asr_failures >= self.ASR_FAILURES_BEFORE_RECOVERY and not streak_handled:
+                        streak_handled = banner_up = True
+                        if await self._on_asr_failures(slot, strip_url_queries(failure, 200),
+                                                       asr_failures, backlog["sec"],
+                                                       asr_pool, loop):
+                            # 换了模型：重新计数，新模型再连续出错才轮到「恢复不了」
+                            asr_failures, streak_handled = 0, False
                     continue
-                asr_failures = 0
+                asr_failures, streak_handled = 0, False
+                if banner_up:
+                    banner_up = False
+                    await self._asr_calls_recovered(slot, backlog["sec"])
                 asr_ms = (time.monotonic() - t0) * 1000.0
                 segment_ms = len(segment) / 2.0 / SAMPLE_RATE * 1000.0
                 if asr_ms > segment_ms:
@@ -1294,8 +2529,8 @@ class Pipeline:
                     self.telemetry.note_overrun()
                     print("[警告] 识别耗时 {:.1f}s 超过片段时长 {:.1f}s（疑似复读跑飞）"
                           .format(asr_ms / 1000, segment_ms / 1000))
-                    if self.audit is not None:
-                        self.audit.asr_overrun(asr_ms=asr_ms, segment_ms=segment_ms)
+                    if sess["audit"] is not None:
+                        sess["audit"].asr_overrun(asr_ms=asr_ms, segment_ms=segment_ms)
                 self.telemetry.asr_queue_depth = queue.qsize()
                 self.telemetry.translation_queue_depth = trans_queue.qsize()
                 job = await self._emit_original(result, audio_end_ts, asr_ms,
@@ -1344,16 +2579,306 @@ class Pipeline:
                     if pending is not None:
                         _drop_job(pending)
 
+        reason, error = "eof", None
         try:
             await run_workers()
+        except asyncio.CancelledError:
+            reason = "cancelled"
+            raise
+        except Exception as exc:
+            reason, error = "error", exc
+            raise
         finally:
             # 先切 ffmpeg 再收尾，任何退出路径（含异常）都不留子进程
-            await source.stop()
-            asr_pool.shutdown(wait=False)
+            try:
+                await source.stop()
+            finally:
+                asr_pool.shutdown(wait=False)
+                # 这一轮怎么断的写进本场审计：打包运行时终端输出没人看得到
+                self._record_stream_break(sess, source, reason, error, got_audio,
+                                          audio_secs, meter)
         tail = source.stderr_tail()
         if tail:
             print("[信息] ffmpeg 输出: {}".format(tail))   # 英文技术输出只进终端，不上 UI
         return got_audio, audio_secs
+
+    # ---- 识别出错：记录、说清、在安全的前提下换一个识别配置 ----
+    ASR_FAILURES_BEFORE_RECOVERY = 3
+
+    @staticmethod
+    def _asr_active(transcriber, config):
+        """识别器实际生效的配置：CUDA 构造时退回了 CPU、出错后改用了 CPU，都以对象上记的为准。"""
+        return {"backend": getattr(transcriber, "backend", None) or config.get("backend"),
+                "model": getattr(transcriber, "model_size", None) or config.get("model"),
+                "device": getattr(transcriber, "device", None) or config.get("device"),
+                "compute_type": (getattr(transcriber, "compute_type", None)
+                                 or config.get("compute_type"))}
+
+    def _asr_config_record(self, config, transcriber):
+        """asr_config 审计记录：实际在听的配置；和请求的不一样、或出错后改用过时带上来龙去脉。"""
+        active = self._asr_active(transcriber, config)
+        record = dict(active, note=config.get("note"))
+        if (active["backend"] != config.get("backend") or active["model"] != config.get("model")
+                or (config.get("device") not in (None, "auto")
+                    and active["device"] != config.get("device"))):
+            record["requested"] = {k: config.get(k)
+                                   for k in ("backend", "model", "device", "compute_type")}
+        if getattr(self, "_asr_fallback", None):
+            record["fallback"] = dict(self._asr_fallback)
+        return record
+
+    @staticmethod
+    def _transcriber_kwargs(cfg):
+        return {"backend": cfg["backend"], "model_size": cfg["model"],
+                "device": cfg["device"], "compute_type": cfg["compute_type"],
+                "language": cfg.get("language"), "beam_size": cfg.get("beam_size", 5),
+                "use_context": cfg.get("use_context", False),
+                "temperature": cfg.get("temperature", DEFAULT_TEMPERATURE),
+                "hotwords": cfg.get("hotwords")}
+
+    def _asr_fallback_plan(self, config, active=None):
+        """识别出错后可以改用的配置：返回 (配置, None)；没有安全的选择时返回 (None, 原因)。
+
+        * CUDA 出错：同一个模型改在 CPU 上跑（int8，与 asr.Transcriber 构造失败时的退路一致）；
+        * 苹果 GPU（mlx）出错：CPU 上跑 large-v3-turbo（hwdetect.CPU_FALLBACK）；
+        * 其余配置（本来就在 CPU 上）没有更稳的退路：no_fallback_for_config；
+        * 只用已经**完整下载**的模型，没下全是 fallback_not_cached——直播中途开始下载 1.6 GB，
+          检测只会停得更久。两个原因分开记：复查的人看到「没下载」会去查下载，那未必是问题。"""
+        from .hwdetect import CPU_FALLBACK
+        from .selfcheck import _model_cached
+        current = dict(config, **{k: v for k, v in (active or {}).items() if v})
+        if current.get("backend") == "ct2" and current.get("device") == "cuda":
+            plan = dict(current, device="cpu", compute_type="int8")
+        elif current.get("backend") == "mlx":
+            plan = dict(current, **CPU_FALLBACK)
+        else:
+            return None, "no_fallback_for_config"
+        try:
+            cached = _model_cached(plan["model"], "ct2")
+        except Exception:
+            cached = False
+        return (plan, None) if cached else (None, "fallback_not_cached")
+
+    async def _drop_fallback_transcriber(self):
+        """要加载新配置之前，放掉出错后改用的那个 CPU 模型。返回是否真的放掉了。"""
+        if getattr(self, "_asr_fallback", None) is None:
+            return False
+        from .asr import release_transcriber
+        old, self._transcriber, self._transcriber_key = self._transcriber, None, None
+        if old is not None:
+            release_transcriber(old)
+            self._forget_transcriber(old)
+        self._asr_fallback = None
+        await self._incident("asr-fallback", "clear")
+        return True
+
+    def _forget_transcriber(self, transcriber):
+        """放掉了的识别器不能再被下一场拿回来用。上次按配置加载的结果除了 _transcriber，
+        还留在 _transcriber_future 里（加载中被停止时靠它复用）——只清前者的话，下一场
+        「开始」会直接拿回这个已释放的识别器，每段都报「识别模型已释放」。"""
+        if getattr(self, "_transcriber", None) is transcriber:
+            self._transcriber, self._transcriber_key = None, None
+        fut = getattr(self, "_transcriber_future", None)
+        if (fut is not None and fut.done() and not fut.cancelled()
+                and fut.exception() is None and fut.result() is transcriber):
+            self._transcriber_future, self._loading_key = None, None
+
+    def _track_fallback_load(self, future, key, info, incident):
+        """记下在途的「改用 CPU」加载。线程里的加载取消不掉：中控这时点了停止，下一场开始时
+        由 _settle_fallback_load 等它结束接着用，而不是再起一份。"""
+        self._fallback_load = {"future": future, "key": key, "info": info,
+                               "incident": incident}
+        return self._fallback_load
+
+    def _end_fallback_load(self, pending):
+        if getattr(self, "_fallback_load", None) is pending:
+            self._fallback_load = None
+
+    async def _settle_fallback_load(self, key):
+        """上一场「改用 CPU」的加载被停止打断了，还在线程里跑。开始这一场之前先等它结束：
+        配置没变就接着用它——和没被打断时一样，不再去加载那个出过错的原配置；配置变了就
+        放掉。两种情况都不会和下面按配置的加载同时驻留两份模型。"""
+        from .asr import release_transcriber
+        pending = getattr(self, "_fallback_load", None)
+        if pending is None:
+            return
+        if not pending["future"].done():
+            await self.server.status(
+                "connecting", "上一场开始改用的 CPU 识别模型（{}）还在加载，等它加载完…"
+                .format(pending["info"]["to"]))
+        try:
+            new = await asyncio.shield(pending["future"])
+        except asyncio.CancelledError:
+            raise                          # 又点了停止：留给下一场接着等
+        except Exception as exc:
+            self._end_fallback_load(pending)
+            print("[错误] 改用 CPU 识别没能加载: {}".format(exc))
+            return                         # 什么也没驻留：下面按配置加载
+        if getattr(self, "_fallback_load", None) is not pending:
+            return                         # 发起加载的那一场自己收了尾（用上或放掉了）
+        self._fallback_load = None
+        if pending["key"] is None or pending["key"] != key or self._transcriber is not None:
+            release_transcriber(new)
+            return
+        self._transcriber, self._transcriber_key = new, key
+        self._asr_fallback = dict(pending["info"])
+        print("[警告] 接着使用上一场改用的 CPU 识别：{}".format(pending["info"]["to"]))
+        await self._incident("asr-fallback", "warn", pending["incident"])
+        await self._refresh_asr_check()
+
+    async def _asr_loaded_ok(self, refresh=False):
+        """按配置加载成功：之前记下的加载失败作废，自检「语音识别」那一行刷回来。"""
+        if getattr(self, "_asr_load_error", None) is not None:
+            self._asr_load_error = None
+            refresh = True
+        if refresh:
+            await self._refresh_asr_check()
+
+    async def _on_model_load_failed(self, exc, config, loop, key=None):
+        """识别模型没能加载。写审计；界面上只说观察到的事和能做的事——网络、磁盘、Metal
+        初始化都出现过，程序分不清，就不猜。苹果 GPU 后端失败、而 CPU turbo 已经完整下载时
+        改用它。返回能用的识别器；没有就返回 None（这一场随即结束）。
+        key 是这套配置的 key：改用 CPU 的加载被停止打断时，下一场按它接着用。"""
+        from .asr import create_transcriber, release_mlx_model
+        from .audit import strip_url_queries
+        error = strip_url_queries(exc, 200)
+        backend, model, device = config.get("backend"), config.get("model"), config.get("device")
+        print("[错误] 加载模型失败: {}".format(exc))
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.asr_load_failed(backend, model, device, error)
+        self._asr_load_error = {"backend": backend, "model": model, "device": device,
+                                "error": error}
+        plan = self._asr_fallback_plan(config)[0] if backend == "mlx" else None
+        if plan is not None:
+            source, target = _describe_asr(config), _describe_asr(plan)
+            await self.server.status(
+                "connecting", "识别模型（{}/{}）没能加载，正在改用 CPU 识别（{}）…".format(
+                    backend, model, target))
+            release_mlx_model()     # 预热失败时模型可能已经进了 mlx 的类级缓存
+            pending = self._track_fallback_load(
+                loop.run_in_executor(
+                    None, lambda: create_transcriber(**self._transcriber_kwargs(plan))),
+                key, {"from": source, "to": target, "error": error},
+                "识别模型（{}/{}）没能加载，已改用 CPU 识别（{}），较慢，可能积压。"
+                "关闭程序重新打开会重新尝试原来的识别模型".format(backend, model, target))
+            try:
+                # shield：这时点了停止，线程里的加载照样跑完，下一场接着用（不另载一份）
+                fallback = await asyncio.shield(pending["future"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc2:
+                self._end_fallback_load(pending)
+                print("[错误] 改用 CPU 识别也没能加载: {}".format(exc2))
+                if audit is not None:
+                    audit.asr_backend_fallback(source, None, error, tried=target,
+                                               fallback_error=str(exc2))
+            else:
+                self._end_fallback_load(pending)
+                if audit is not None:
+                    audit.asr_backend_fallback(source, target, error)
+                self._asr_fallback = dict(pending["info"])
+                await self._incident("asr-fallback", "warn", pending["incident"])
+                await self._refresh_asr_check()
+                return fallback
+        await self.server.status(
+            "error", "识别模型（{}/{}）没能加载。可以：确认网络和磁盘空间后点「开始翻译」重试；"
+                     "若反复出现，关闭程序重新打开。\n技术细节：{}".format(backend, model, error))
+        await self._refresh_asr_check()
+        return None
+
+    async def _on_asr_failures(self, slot, error, failures, backlog_sec, pool, loop):
+        """识别连续出错 ASR_FAILURES_BEFORE_RECOVERY 次。返回是否换上了新的识别器。
+
+        以前这里只发一次「请点停止再开始翻译」——可停止/开始复用的是同一个坏模型（key
+        没变），mlx 的类级缓存也还在，照做什么都不会变。现在：
+          * 一场最多换一次：先放掉坏模型，再加载一个**已完整下载**的 CPU 配置；
+          * 没有可换的就说实话：程序自己恢复不了，请关闭程序重新打开。
+        在 asr_worker 协程里做：调用都返回了，识别线程是空的，换的时候没有调用在跑。"""
+        from .asr import create_transcriber, release_transcriber
+        failing = "识别连续 {} 次出错，这期间的音频没有做违禁词检测".format(failures)
+        old = slot.transcriber
+        active = self._asr_active(old, slot.config) if slot.config else {}
+        source = _describe_asr(active) if active else "?"
+        plan, reason = None, "already_switched" if slot.reloaded else "no_fallback_for_config"
+        if slot.config and not slot.reloaded:
+            plan, reason = self._asr_fallback_plan(slot.config, active)
+        if plan is None:
+            if not slot.gave_up and slot.audit is not None:
+                slot.audit.asr_backend_fallback(source, None, error, reason=reason)
+            slot.gave_up = True
+            if slot.audit is getattr(self, "audit", None):
+                await self._asr_unrecoverable(failing, backlog_sec)
+            return False
+        slot.reloaded = True
+        target = _describe_asr(plan)
+        if slot.audit is getattr(self, "audit", None):
+            self._asr_failing = slot.audit
+            await self._incident("session:asr-failing", "error",
+                                 "{}，正在改用 CPU 识别（{}）…".format(failing, target))
+            await self._announce_health("degraded", backlog_sec, reason="asr_failing",
+                                        text="🔴 {}，正在改用 CPU 识别…".format(failing))
+        # 先放掉坏模型再加载：两个模型同时驻留正是规则三那类事故
+        release_transcriber(old)
+        self._forget_transcriber(old)
+        pending = self._track_fallback_load(
+            loop.run_in_executor(
+                pool, lambda: create_transcriber(**self._transcriber_kwargs(plan))),
+            slot.key, {"from": source, "to": target, "error": error},
+            "GPU 识别连续出错，已改用 CPU 识别（{}），较慢，可能积压。"
+            "关闭程序重新打开会重新尝试 GPU 识别".format(target))
+        try:
+            # shield：这时点了停止，线程里的加载照样跑完，下一场接着用（不另载一份）
+            new = await asyncio.shield(pending["future"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if getattr(self, "_fallback_load", None) is not pending:
+                return False              # 下一场已经接手了这次加载
+            self._end_fallback_load(pending)
+            print("[错误] 改用 CPU 识别没能加载: {}".format(exc))
+            if slot.audit is not None:
+                slot.audit.asr_backend_fallback(source, None, error, tried=target,
+                                                fallback_error=str(exc))
+            slot.gave_up = True
+            if slot.audit is getattr(self, "audit", None):
+                await self._asr_unrecoverable(failing, backlog_sec)
+            return False
+        if getattr(self, "_fallback_load", None) is not pending:
+            return False                  # 下一场已经接手了这次加载（_settle_fallback_load）
+        self._end_fallback_load(pending)
+        if slot.audit is not getattr(self, "audit", None):
+            release_transcriber(new)      # 这一场已经结束：没人会用它，别留在内存里
+            return False
+        slot.transcriber = new
+        if slot.key is not None:
+            self._transcriber, self._transcriber_key = new, slot.key
+            self._asr_fallback = dict(pending["info"])
+        if slot.audit is not None:
+            slot.audit.asr_backend_fallback(source, target, error)
+        print("[警告] 识别连续出错，已从 {} 改用 {}".format(source, target))
+        self._asr_failing = None
+        await self._incident("session:asr-failing", "clear")
+        await self._incident("asr-fallback", "warn", pending["incident"])
+        await self._announce_health("lagging", backlog_sec, reason="asr_fallback",
+                                    text="⚠️ GPU 识别连续出错，已改用 CPU 识别（较慢，可能积压）")
+        await self._refresh_asr_check()
+        return True
+
+    async def _asr_unrecoverable(self, failing, backlog_sec):
+        text = "{}。程序自动恢复不了——请关闭程序重新打开；若仍出错请反馈".format(failing)
+        self._asr_failing = getattr(self, "audit", None)    # 按积压算的「已追上」别盖掉它
+        await self._incident("session:asr-failing", "error", text)
+        await self._announce_health("degraded", backlog_sec, reason="asr_failing",
+                                    text="🔴 " + text)
+
+    async def _asr_calls_recovered(self, slot, backlog_sec):
+        """出错提示发出后又识别成功了一段：撤掉提示，健康条回到按积压算的状态。"""
+        if slot.audit is not getattr(self, "audit", None):
+            return
+        self._asr_failing = None
+        await self._incident("session:asr-failing", "clear")
+        await self._announce_health(self._health_level(backlog_sec), backlog_sec)
 
     def _note_resolve_failure(self, exc):
         """连续两次「不是主播下播」的解析失败，多半是 yt-dlp 的 TikTok 提取器
@@ -1476,6 +3001,9 @@ class Pipeline:
 
         alert_ids = []
         for hit in hits:
+            # 主播、场次、此刻连着几个界面：换过房间后认得出哪条是上一场的；事后答得出
+            # 「这条报警响的时候有没有页面开着」。audit.alert 原样带上这几列
+            hit.update(self._alert_stamp())
             if self.audit is not None:
                 self.audit.alert(hit)
             print("[警报] 疑似违禁词「{}」（{}）：{}".format(
@@ -1483,7 +3011,9 @@ class Pipeline:
             self._alert_seq += 1
             hit["alert_id"] = self._alert_seq
             alert_ids.append(self._alert_seq)
-            await self.server.broadcast({"type": "alert", **hit})
+            await self.server.broadcast({"type": "alert", **hit, **self._count_alert()})
+        if alert_ids:
+            self._notify_alert_burst()
 
         # 报警的上下文是西语原话。中控读不了西语就无从判断该不该处理，
         # 而报警恰恰是最需要人工复核的地方——所以补一份中文，用最强模型：
@@ -1542,6 +3072,203 @@ class Pipeline:
 
         return job
 
+    # ---- 合规证据：审计写入健康、报警的场次戳、界面断开留痕 ----
+    DISK_LOW_BYTES = 1024 ** 3                 # 剩这么多就提醒：满了审计就写不进去
+    DISK_LOW_CLEAR_BYTES = 1536 * 1024 ** 2    # 回到这以上才撤提醒，免得在门槛上反复闪
+
+    def _evidence_session_extras(self):
+        """session_start 的额外列。本次运行 settings.json 损坏被备份过就记下备份名：
+        事后看到 translator_requested=auto 时答得出「设置文件坏过」，而不是去猜。"""
+        from .settings import corrupt_backup_name
+        return {"settings_backup": corrupt_backup_name()}
+
+    async def _watch_audit(self, streamer):
+        """紧跟在 AuditLog 构造之后：记下本场报警的主播和场次戳，挂上审计写失败的回调；
+        审计文件根本没建起来就挂一条持续提示——整场都不会有证据。"""
+        audit = self.audit
+        path = getattr(audit, "path", None)
+        self._session_serial = getattr(self, "_session_serial", 0) + 1
+        stamp = (Path(str(path)).stem if path is not None else "nolog-{}-{}".format(
+            time.strftime("%Y%m%d-%H%M%S"), self._session_serial))
+        self._alert_scope = {"session": stamp, "streamer": streamer or "", "total": 0}
+        self.server.config["alerts_session"] = dict(self._alert_scope)
+        await self.server.broadcast({"type": "config",
+                                     "alerts_session": dict(self._alert_scope)})
+        self._audit_watch = {"audit": audit, "failing": False, "detached": False,
+                             "disk_low": False, "errored": False}
+        if audit is None:
+            return
+        if path is None:
+            await self._incident(
+                "session:audit-open", "error",
+                "本场审计日志没能创建（{}）——报警会显示，但不会留下任何证据（见自检「审计日志」）"
+                .format(getattr(audit, "open_error", None) or "没有拿到错误信息"))
+            return
+        loop = asyncio.get_running_loop()
+
+        def on_write_error(_info, _audit=audit):
+            # 可能在别的线程里被调：只切回事件循环，别的什么都不做
+            try:
+                loop.call_soon_threadsafe(self._audit_write_failed, _audit)
+            except RuntimeError:
+                pass                     # 事件循环已经关了（程序退出途中）
+
+        audit.on_write_error = on_write_error
+        if getattr(audit, "failing", False):   # 会话头就没写进去：发生在回调挂上之前
+            self._audit_write_failed(audit)
+
+    def _audit_write_failed(self, audit):
+        """审计开始写不进去（AuditLog 的回调，已切回事件循环）。只认本场自己的 audit：
+        晚到的旧会话回调不许动这一场的提示。一次中断只提示一次。"""
+        watch = getattr(self, "_audit_watch", None) or {}
+        if (audit is not getattr(self, "audit", None) or watch.get("audit") is not audit
+                or watch.get("failing")):
+            return
+        watch["failing"] = True
+        watch["task"] = asyncio.ensure_future(self._incident(
+            "session:audit-write", "error", self._audit_failing_text(audit)))
+
+    @staticmethod
+    def _audit_failing_text(audit):
+        return ("审计日志写不进去（{}）——报警照常显示，但这段时间没有留下证据。"
+                "程序会继续重试，报警记录先留在内存里，能写入后补写"
+                .format(getattr(audit, "last_error", "") or "没有拿到错误信息"))
+
+    @staticmethod
+    def _audit_recovered_text(audit):
+        gap = getattr(audit, "last_gap", None) or {}
+        return ("审计日志在 {} 到 {} 之间写不进去：{} 条记录没有留下，{} 条（会话头/报警）"
+                "已补写。现在已恢复写入，日志里的 audit_gap 记录标出了这一段".format(
+                    str(gap.get("from") or "")[11:19] or "?",
+                    str(gap.get("to") or "")[11:19] or "?",
+                    gap.get("lost_records", "?"), gap.get("retained_records", "?")))
+
+    @staticmethod
+    def _audit_unwritten_text(info):
+        return ("审计日志从 {} 起写不进去，到这场监听结束也没有恢复（{}）：{} 条记录没有留下，"
+                "{} 条会话头/报警/会话尾没能补写。这段时间的报警只显示在了界面上".format(
+                    str(info.get("since") or "")[11:19] or "?",
+                    info.get("error") or "没有拿到错误信息",
+                    info.get("lost", "?"), info.get("retained", "?")))
+
+    async def _check_audit_health(self):
+        """_stats_loop 每 10 秒调一次：审计写入失败与恢复、审计文件被移走、磁盘快满。
+        只在状态变化时提示。自己出错不能拖垮统计循环。"""
+        watch = getattr(self, "_audit_watch", None)
+        try:
+            audit = getattr(self, "audit", None)
+            if (audit is None or not watch or watch.get("audit") is not audit
+                    or getattr(audit, "path", None) is None):
+                return
+            failing = bool(getattr(audit, "failing", False))
+            if failing and not watch["failing"]:
+                watch["failing"] = True
+                await self._incident("session:audit-write", "error",
+                                     self._audit_failing_text(audit))
+            elif not failing and watch["failing"]:
+                watch["failing"] = False
+                await self._incident("session:audit-write", "warn",
+                                     self._audit_recovered_text(audit))
+            detached = bool(audit.detached()) if hasattr(audit, "detached") else False
+            if detached != watch["detached"]:
+                watch["detached"] = detached
+                if detached:
+                    await self._incident(
+                        "session:audit-moved", "error",
+                        "本场审计文件已不在原来的位置（{}）——之后的记录写进的是被移走的那个"
+                        "文件，它若已被删除，这些记录会丢失。点「停止」再「开始翻译」会新建"
+                        "审计文件".format(audit.path))
+                else:
+                    await self._incident("session:audit-moved", "clear")
+            free = self._log_free_bytes(audit)
+            if free is not None:
+                if not watch["disk_low"] and free < self.DISK_LOW_BYTES:
+                    watch["disk_low"] = True
+                    await self._incident(
+                        "session:disk-low", "warn",
+                        "磁盘剩余 {:.1f} GB，满了以后审计日志会写不进去——请腾出磁盘空间"
+                        .format(free / 1024 ** 3))
+                elif watch["disk_low"] and free > self.DISK_LOW_CLEAR_BYTES:
+                    watch["disk_low"] = False
+                    await self._incident("session:disk-low", "clear")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if watch is not None and not watch.get("errored"):
+                watch["errored"] = True
+                print("[警告] 审计健康检查出错: {}".format(exc))
+
+    @staticmethod
+    def _log_free_bytes(audit):
+        import shutil
+        try:
+            return shutil.disk_usage(str(Path(str(audit.path)).parent)).free
+        except (OSError, ValueError):
+            return None
+
+    def on_ui_client_dropped(self, reason, buffered_bytes=None):
+        """服务端断开了一个收不下消息的页面（CaptionServer.on_client_dropped）：打一行、
+        记审计。页面会自己重连并补回报警。"""
+        clients = getattr(self.server, "clients", None)
+        left = len(clients) if clients is not None else None
+        if reason == "buffer_full":
+            what = "积压了 {} KB 消息没读".format(int((buffered_bytes or 0) / 1024))
+        else:
+            what = "{:.0f} 秒内没收下消息".format(
+                getattr(self.server, "SEND_TIMEOUT_SEC", 2.0))
+        print("[警告] 一个界面页面{}，已断开它（页面会自动重连并补回报警），还连着 {} 个页面"
+              .format(what, "?" if left is None else left))
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.ui_client_dropped(reason, buffered_bytes, clients_left=left)
+
+    def _alert_stamp(self):
+        scope = getattr(self, "_alert_scope", None) or {}
+        clients = getattr(getattr(self, "server", None), "clients", None)
+        return {"streamer": scope.get("streamer") or "",
+                "session": scope.get("session") or "",
+                "ui_clients": len(clients) if clients is not None else 0}
+
+    def _count_alert(self):
+        """本场报警计数：面板只留最近 50 条，页面要说得出「本场共 N 条」。
+        只进广播（和 hello 的 config），不进审计——审计里本来就是全量。"""
+        scope = getattr(self, "_alert_scope", None)
+        if scope is None:
+            return {}
+        scope["total"] += 1
+        current = self.server.config.get("alerts_session")
+        if isinstance(current, dict) and current.get("session") == scope["session"]:
+            current["total"] = scope["total"]
+        return {"session_total": scope["total"]}
+
+    def _notify_alert_burst(self):
+        """系统通知（默认关，见 app/alert_notify.py）：一阵报警只发一条，不带词条和声音。
+        读设置、跑命令都放线程池，不占识别循环。"""
+        notifier = getattr(self, "_alert_notifier", None)
+        if notifier is None:
+            from .alert_notify import AlertNotifier
+            notifier = self._alert_notifier = AlertNotifier()
+        if notifier.note_alert():
+            try:
+                asyncio.get_running_loop().run_in_executor(None, notifier.send)
+            except RuntimeError:
+                pass
+
+    async def _announce_settings_backup(self):
+        """settings.json 损坏被备份过（见 settings.load_settings）：挂一条持续提示，
+        本次运行只挂一次；用户在页面上重新选过引擎（设置里又有了 translator）就撤下。"""
+        from .settings import load_settings, take_corrupt_notice
+        name = take_corrupt_notice()
+        if name:
+            self._settings_notice_shown = True
+            await self._incident("settings-corrupt", "warn",
+                                 "设置文件损坏，已备份为 {}；翻译引擎和密钥需要重新填写"
+                                 .format(name))
+        elif getattr(self, "_settings_notice_shown", False) \
+                and "translator" in load_settings():
+            self._settings_notice_shown = False
+            await self._incident("settings-corrupt", "clear")
+
     # 定义在 translator.py（启动恢复引擎时也要用），这里保留同名类属性
     ENGINE_KEY_ENV = ENGINE_KEY_ENV
 
@@ -1551,6 +3278,11 @@ class Pipeline:
         密钥存进 settings.json（已在 .gitignore 里），**从不回传页面**——
         回传的只有打码后的尾四位，够用户确认「我填的是哪一个」，
         又不至于让密钥出现在任何一条 WebSocket 消息里。
+
+        选的是本地引擎、而本机 Ollama（在跑）里没有它的模型时**先不换**：直播中本场
+        继续用原来的引擎、停止后自动下载；不在直播就马上开始下载，下好再换上。以前
+        这里直接建引擎（顺手把正在用的 1.8B 从显存卸掉），于是整场每句 404，自检
+        还是绿的。
         """
         from .settings import save_setting
         from .translator import TRANSLATOR_CHOICES, saved_keys
@@ -1563,6 +3295,10 @@ class Pipeline:
                 keys = saved_keys()
                 keys[env] = key.strip()
                 save_setting("api_keys", keys)
+        missing = await self._local_model_missing(engine)
+        if missing is not None:
+            await self._keep_engine_until_model(engine, missing)
+            return
         # create_translator 会同步探测 Ollama（urllib，最坏 ~10 秒）：直播中在事件
         # 循环上跑会冻住音频读取、识别调度和报警广播，与 _quota_fallback 同款进线程池
         loop = asyncio.get_running_loop()
@@ -1580,15 +3316,74 @@ class Pipeline:
         self.args.translator = engine
         # 用户刚亲手选完引擎，启动时「引擎被回退」的提示不再适用
         self.args.translator_note = None
+        self._engine_pending = None
+        self._pull_deferred = None       # 之前为别的引擎推迟的下载不再需要；下一场开始时会重新判断
         save_setting("translator", engine)
+        # 换了引擎（重填密钥也是新建一个对象）：旧引擎的报错横幅和冷却提示不再适用
+        await self._clear_engine_marks()
         await self._publish_engine()
         await self.run_selfcheck()
+
+    async def _local_model_missing(self, engine):
+        """engine 是本地引擎、Ollama 在跑、但里面没有它要的模型时，返回那个模型名；
+        否则 None（不是本地引擎；或 Ollama 连不上——那交给自检和自动启动）。
+        探测是同步 urllib，放线程池。"""
+        from . import translator as T
+
+        model = T.local_engine_model(engine)
+        if model is None:
+            return None
+
+        def probe():
+            names = T._ollama_models_or_none()
+            if names is None:
+                return None
+            return None if T.model_listed(model, names) else model    # 同 _local_wanted
+
+        try:
+            return await asyncio.get_running_loop().run_in_executor(None, probe)
+        except Exception:
+            return None
+
+    async def _keep_engine_until_model(self, engine, model):
+        """记下用户的选择，但先不换引擎：模型还没有（见 set_engine）。"""
+        from .settings import save_setting
+        from .translator import engine_label, model_label
+
+        self.args.translator = engine
+        self.args.translator_note = None
+        self._engine_pending = engine
+        save_setting("translator", engine)
+        if self._stream_active():
+            current = getattr(self.translator, "name", None)
+            text = "本机 Ollama 里还没有 {}，本场{}；停止后自动下载".format(
+                model_label(model), "继续用" + engine_label(current) if current else "继续不翻译")
+            print("[信息] " + text)
+            self.args.translator_note = text     # 引擎面板上一直看得到，直到下次选引擎
+            self._pull_deferred = model
+            self._pull_deferred_session = getattr(self, "audit", None)
+            self._audit_pull("deferred", model)
+            await self.server.broadcast({"type": "notice", "text": text})
+        elif hasattr(self, "_bg_tasks"):
+            self._spawn(self.ensure_local_translator())    # 马上下载，下好换上
+        await self._publish_engine()
+        await self.run_selfcheck()
+
+    async def _clear_engine_marks(self):
+        """忘掉已经报过的引擎问题；横幅挂着的话撤掉。"""
+        self._cooldown_mark = None
+        self._engine_error_mark = None
+        if getattr(self, "_engine_incident_up", False):
+            self._engine_incident_up = False
+            self._engine_rejection = None
+            await self._incident(self.ENGINE_INCIDENT, "clear")
 
     async def _publish_engine(self):
         """把当前引擎和各密钥的填写状态告诉页面（密钥只给尾四位）。"""
         from .settings import load_settings
         from .translator import mask_key
 
+        await self._announce_settings_backup()
         stored = load_settings().get("api_keys", {})
         # DeepL 的月度用量：中控要能看着额度用（实测约 3.5 万字符/小时，
         # Developer 档一次性 100 万字符 ≈ 29 小时）。拿不到就不显示，最多等 3 秒
@@ -1615,11 +3410,20 @@ class Pipeline:
 
         `lang` 是识别出的源语言。别图省事传 "auto"——DeepL 的原生术语表
         必须带明确的 source_lang 才生效，而报警恰恰是最不能把商品名翻错的
-        地方（实测不挂术语表词表遵从率只有 26.5%）。"""
+        地方（实测不挂术语表词表遵从率只有 26.5%）。
+
+        强模型没译出来（返回空或出错）时用常驻引擎再译一次，并清掉 self._strong，
+        下一条报警重新探测——7B 可能在两场之间被磁盘面板删了，以前每条报警都去叫
+        一个不存在的模型，直到重启程序。识别正在积压、或另一条报警正占着强模型时，
+        一开始就用常驻引擎：违禁词报警延迟排在译文质量前面（CLAUDE.md §6），7B 和
+        Whisper 抢内存会把识别拖得更慢。每一次都记一条 alert_translation。"""
         from .translator import looks_fabricated
 
         if not context.strip():
             return
+        # 本场自己的审计：这个任务可能换场之后才回来，不能写进下一场的文件
+        audit = getattr(self, "audit", None)
+        t0 = time.monotonic()
 
         async def tell(zh=None, why=""):
             """**每一条路径都要走到这里。** 报警框先画的是「翻译中…」，
@@ -1633,27 +3437,152 @@ class Pipeline:
                                              "failed": not zh,
                                              "why": why})
 
-        tr = await self._strong_translator() or self.translator
-        if tr is None:
-            await tell(why="没有可用的翻译引擎")
-            return
+        fast = self.translator
+        backlog = getattr(getattr(self, "telemetry", None), "audio_backlog_sec", 0.0) or 0.0
+        for_backlog = backlog >= AUDIO_BACKLOG_WARN_SEC
+        for_busy = not for_backlog and getattr(self, "_alert_strong_busy", False)
+        # 占住强模型要在探测之前：探测会让出事件循环，同时到的另一条报警得看得见
+        claimed = not (for_backlog or for_busy)
+        if claimed:
+            self._alert_strong_busy = True
+        strong = used = out = error = None
+        fallback = hard_fail = held = False
         try:
+            if claimed:
+                strong = await self._strong_translator()
+                strong_model = self._model_of(strong) if strong is not None else None
+                if strong_model and fast is not None and strong_model == self._model_of(fast):
+                    # 本机最强的就是常驻的那个：直接用常驻实例。按需实例 keep_alive=0，
+                    # 用它会在每条报警之后把常驻模型从显存里卸掉
+                    strong = None
+                if strong is None:
+                    self._alert_strong_busy = claimed = False
+                else:
+                    self._hold_strong(strong)
+                    held = True
+            used = first = strong or fast
+            if first is None:
+                if for_backlog:
+                    why = "识别正在积压，这条报警先不翻译"
+                elif for_busy:
+                    why = "另一条报警正在用强模型翻译，这条先不翻译"
+                else:
+                    why = "没有可用的翻译引擎"
+                await tell(why=why)
+                self._record_alert_translation(audit, alert_ids, None, None, t0, False, why,
+                                               for_backlog, for_busy, None)
+                return
             text, hint = self._for_translation(context)
-            out = await tr.translate(text, self.target, source=lang or "auto",
-                                     glossary=hint)
-            if out and looks_fabricated(context, out):
-                print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
-                      "改用常规引擎")
-                out = await self.translator.translate(
-                    context, self.target,
-                    source=lang or "auto") if self.translator else None
-            elif out and self.glossary:
-                out = self.glossary.apply(text, out)
-        except Exception as exc:
-            print("[警告] 报警上下文翻译失败: {}".format(exc))
-            await tell(why="翻译超时或出错")
+            try:
+                out = await first.translate(text, self.target, source=lang or "auto",
+                                            glossary=hint)
+                if out and looks_fabricated(context, out):
+                    print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
+                          "改用常规引擎")
+                    fallback, used = True, fast
+                    out = await fast.translate(
+                        context, self.target,
+                        source=lang or "auto") if fast else None
+                elif out and self.glossary:
+                    out = self.glossary.apply(text, out)
+            except Exception as exc:
+                print("[警告] 报警上下文翻译失败: {}".format(exc))
+                out, hard_fail = None, True
+            if claimed:
+                self._alert_strong_busy = claimed = False
+            if not out and first is strong and strong is not None and not fallback:
+                err = getattr(strong, "last_error", None)
+                if err and err[0] is not None:
+                    error = "HTTP {}{}".format(err[0], "：" + err[1] if err[1] else "")
+                if getattr(self, "_strong", None) is strong:
+                    self._drop_strong()       # 下一条报警重新探测（探测在线程池里）
+                if fast is not None and fast is not strong:
+                    print("[警告] 强模型没有给出报警上下文译文，改用常驻引擎再译一次")
+                    fallback, used, hard_fail = True, fast, False
+                    try:
+                        out = await fast.translate(text, self.target,
+                                                   source=lang or "auto", glossary=hint)
+                        if out and self.glossary:
+                            out = self.glossary.apply(text, out)
+                    except Exception as exc:
+                        print("[警告] 常驻引擎翻译报警上下文也失败: {}".format(exc))
+                        out, hard_fail = None, True
+        finally:
+            if claimed:
+                self._alert_strong_busy = False
+            if held:
+                self._release_strong(strong)
+        why = "" if out else ("翻译超时或出错" if hard_fail else "模型没有返回译文")
+        await tell(out, why=why)
+        self._record_alert_translation(audit, alert_ids, used, out, t0, fallback, why,
+                                       for_backlog, for_busy, error)
+
+    @staticmethod
+    def _model_of(engine):
+        """引擎实际用的模型名：本地引擎和 OpenAI 在实例的 model 上，Claude 在类的
+        MODEL 上；都没有（DeepL、Google）就用引擎名。"""
+        inner = getattr(engine, "inner", engine)
+        return (getattr(inner, "model", None) or getattr(inner, "MODEL", None)
+                or getattr(engine, "name", None))
+
+    def _record_alert_translation(self, audit, alert_ids, used, out, t0, fallback, why,
+                                  for_backlog, for_busy, error):
+        if audit is None:
             return
-        await tell(out, why="" if out else "模型没有返回译文")
+        audit.alert_translation(
+            alert_ids, self._model_of(used) if used is not None else None, bool(out),
+            (time.monotonic() - t0) * 1000.0, fallback, why,
+            downgraded_for_backlog=for_backlog, downgraded_for_busy=for_busy, error=error)
+
+    def _strong_users(self):
+        """正在用的强模型实例：id → [实例, 用的人数]。清掉 self._strong 时靠它判断能不能
+        马上关掉旧实例的 HTTP 连接——关早了会掐断别人半路的请求，还会被当成「强模型
+        失败」记进审计。"""
+        users = getattr(self, "_strong_in_use", None)
+        if users is None:
+            users = self._strong_in_use = {}
+        return users
+
+    def _hold_strong(self, strong):
+        self._strong_users().setdefault(id(strong), [strong, 0])[1] += 1
+
+    def _release_strong(self, strong):
+        users = self._strong_users()
+        entry = users.get(id(strong))
+        if entry is None:
+            return
+        entry[1] -= 1
+        if entry[1] > 0:
+            return
+        del users[id(strong)]
+        if strong is not getattr(self, "_strong", None):
+            self._close_later(strong)    # 已经换下的实例：最后一个用的人用完就关
+
+    def _drop_strong(self):
+        """忘掉缓存的强模型实例，下次用时重新探测；没人在用就马上关掉它的连接，有人在用
+        就等最后一个人用完（_release_strong）。以前只是置 None：每场开始、每次强模型
+        失败都丢下一个没关的 aiohttp 会话。"""
+        old, self._strong = getattr(self, "_strong", None), None
+        if old is not None and id(old) not in self._strong_users():
+            self._close_later(old)
+
+    def _close_later(self, engine):
+        """不等结果地关掉一个换下来的引擎实例的连接。这一步跑在报警翻译的 finally 里：
+        清理出了任何错都只能放弃，不能让报警框等不到回话（半成品实例没有 _bg_tasks 也一样）。"""
+        if getattr(engine, "close", None) is None:
+            return
+        coro = self._close_engine(engine)
+        try:
+            self._spawn(coro)
+        except Exception:
+            coro.close()
+
+    @staticmethod
+    async def _close_engine(engine):
+        try:
+            await engine.close()
+        except Exception:
+            pass
 
     async def _migrate_glossary(self, confirm):
         """「迁移旧词表」：扫描 → 展示 → 用户确认 → 备份 → 迁移。
@@ -1742,6 +3671,135 @@ class Pipeline:
         await self._publish_engine()
         return new
 
+    ENGINE_INCIDENT = "session:translation-engine"
+    # 本地 Ollama 连续几次非 200 才说：单独一次 500 可能只是一时载入失败
+    ENGINE_ERROR_STREAK = 3
+
+    async def _note_engine_failure(self, tr):
+        """一条字幕没译出来：看引擎自己记下的 HTTP 回应，说得清的告诉中控、记进审计。
+
+        三种情况，都只在状态变化时说一次——同一个引擎在同一场里说过就不再说，直到它
+        中间真的成功过一次（缓存命中不算，见 _note_engine_ok）：
+          * 回 429 且引擎正在暂停请求：一条提示 + translation_cooldown；
+          * 远程引擎回 401/403/404：translation_engine_error；本机有本地模型就本场改用
+            它，没有就挂一条横幅、留在原引擎按冷却重试——**绝不**自动改发 Google；
+          * 本地 Ollama 连续 ENGINE_ERROR_STREAK 次非 200：translation_engine_error +
+            引用 Ollama 原话的横幅，并重跑备模型（模型不在了会安排停止后重新下载）。
+        返回本场改用的本地引擎，没有就是 None。文字只写回应本身和能做的事，不猜原因。"""
+        from .translator import BaseTranslator, engine_label
+
+        if tr is not self.translator:
+            return None                 # 这条翻译期间引擎已经换了：旧引擎的事不再报
+        err = getattr(tr, "last_error", None)
+        if not err or err[0] is None:
+            return None
+        status, said = err[0], err[1]
+        name = getattr(tr, "name", None)
+        label = engine_label(name)
+        audit = getattr(self, "audit", None)
+        mark = (tr, audit)
+        remaining = getattr(tr, "cooldown_until", 0.0) - time.monotonic()
+        if status == 429 and remaining > 0:
+            if getattr(self, "_cooldown_mark", None) == mark:
+                return None
+            self._cooldown_mark = mark
+            seconds = int(round(remaining))
+            text = ("{} 返回 HTTP 429，程序暂停请求 {} 秒后自动重试；这期间字幕先显示原文，"
+                    "违禁词报警不受影响").format(label, seconds)
+            print("[警告] " + text)
+            if audit is not None:
+                audit.translation_cooldown(name, 429, seconds)
+            await self.server.broadcast({"type": "notice", "text": text})
+            return None
+        if getattr(self, "_engine_error_mark", None) == mark:
+            return None
+        model = self._model_of(tr)
+        if name in ("deepl", "claude", "openai") and status in BaseTranslator.REJECT_STATUSES:
+            self._engine_error_mark = mark
+            if audit is not None:
+                audit.translation_engine_error(
+                    name, status, model=None if name == "deepl" else model)
+            what = "{} 返回 HTTP {}".format(label, status)
+            if status == 404 and name != "deepl":
+                what += "（模型 {}）".format(model)
+            print("[警告] " + what)
+            fallback = await self._rejection_fallback(tr, what, status)
+            if fallback is None:
+                self._engine_incident_up = True
+                self._engine_rejection = {"what": what, "status": status}   # 停止时改写用
+                await self._incident(
+                    self.ENGINE_INCIDENT, "error",
+                    "{}，字幕先显示原文（违禁词报警不受影响），程序每 {} 秒再试一次；"
+                    "可以在「翻译引擎」里{}".format(
+                        what, BaseTranslator.REJECT_COOLDOWN_SEC,
+                        "换一个引擎" if status == 404 else "重新填写密钥，或换一个引擎"))
+            return fallback
+        if name in ("hymt2", "hymt2-7b", "gemma") \
+                and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
+            self._engine_error_mark = mark
+            if audit is not None:
+                audit.translation_engine_error(name, status, error=said, model=model)
+            text = ("{} 连续 {} 次没有译文，Ollama 返回 HTTP {}{}。字幕先显示原文"
+                    "（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎").format(
+                        label, getattr(tr, "fail_streak", 0), status,
+                        "：" + said if said else "")
+            self._engine_incident_up = True
+            self._engine_rejection = None
+            await self._incident(self.ENGINE_INCIDENT, "warn", text)
+            # 模型不在了的话 ensure_local_translator 会发现，安排停止后重新下载；
+            # 自检那一行也会跟着变红（Ollama 在跑但没有这个模型）
+            task = getattr(self, "_provision_task", None)
+            if hasattr(self, "_bg_tasks") and (task is None or task.done()):
+                self._provision_task = self._spawn(self._provision_then_check())
+        return None
+
+    async def _note_engine_ok(self, tr):
+        """一条译文成功回来：之前报过的引擎问题解除（横幅撤掉），再出问题会重新说。
+        缓存命中不算——引擎自己最近一次 HTTP 回应仍是失败（fail_streak>0）时不解除。"""
+        if getattr(tr, "fail_streak", 0):
+            return
+        self._cooldown_mark = None
+        self._engine_error_mark = None
+        if getattr(self, "_engine_incident_up", False):
+            self._engine_incident_up = False
+            self._engine_rejection = None
+            await self._incident(self.ENGINE_INCIDENT, "clear")
+
+    async def _rejection_fallback(self, old, what, status):
+        """远程引擎拒绝了密钥或模型：本机有本地模型就本场改用它，下拉框里的选择不动
+        （和 _quota_fallback 同一个做法）。没有本地模型时返回 None，留在原引擎按冷却
+        重试。**绝不**自动改发 Google：那等于不打招呼换了字幕的去处。"""
+        from .translator import engine_label
+
+        loop = asyncio.get_running_loop()
+        try:
+            new = await loop.run_in_executor(None, create_translator, "auto")
+        except Exception as exc:
+            print("[警告] 没有可换用的本地引擎: {}".format(exc))
+            return None
+        if new is None:
+            return None
+        if getattr(new, "name", None) not in ("hymt2", "gemma") or self.translator is not old:
+            try:
+                await new.close()
+            except Exception:
+                pass
+            return None
+        self.translator = new
+        try:
+            await old.close()
+        except Exception:
+            pass
+        back = ("在「翻译引擎」里换好模型后重选 {} 即可回来。" if status == 404
+                else "在「翻译引擎」里重新填写密钥后重选 {} 即可回来。").format(
+                    engine_label(getattr(old, "name", None)))
+        note = "{}，本场已改用{}继续翻译。{}".format(what, engine_label(new.name), back)
+        print("[警告] " + note)
+        self.args.translator_note = note
+        await self.server.broadcast({"type": "notice", "text": note})
+        await self._publish_engine()
+        return new
+
     async def _publish_translation(self, seq, translated, ok, ms, level,
                                    target, extra=None):
         """发布译文，并保证低等级不覆盖已生效的高等级结果。
@@ -1780,7 +3838,9 @@ class Pipeline:
         job = self._recent.get(seq)
         if job is None:
             return
-        if await self._strong_translator() is None:
+        # 拿本地引用：报警翻译失败时会把 self._strong 清掉，而这边可能还在等译文
+        strong = await self._strong_translator()
+        if strong is None:
             await self.server.broadcast({
                 "type": "notice",
                 "text": "没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）"})
@@ -1797,13 +3857,15 @@ class Pipeline:
         # 而那条本来好好的快译已经被擦掉了。
         # 「一次失败不得擦掉已在屏幕上的译文」这条规则，必须同时管住中间态。
         self._strong_inflight.add(seq)
+        self._hold_strong(strong)        # 报警翻译清掉 self._strong 时，别关掉这边还在用的连接
+        audit = self.audit               # 本场自己的审计：等译文期间可能已经换场
         had = self._quality.get(seq, 0) > 0
         await self.server.broadcast({"type": "caption_update", "id": seq,
                                      "strong_state": "pending"})
         t0 = time.monotonic()
         text, hint = self._for_translation(job["text"])
         try:
-            out = await self._strong.translate(
+            out = await strong.translate(
                 text, job["target"], source=job["lang"] or "auto",
                 glossary=hint)
             if out and looks_fabricated(job["text"], out):
@@ -1818,9 +3880,10 @@ class Pipeline:
             out = None
         ms = (time.monotonic() - t0) * 1000.0
         self._strong_inflight.discard(seq)
-        if self.audit is not None:
-            self.audit.translation_strong(seq, out, ms, bool(out),
-                                          self._strong.model, trigger)
+        self._release_strong(strong)
+        if audit is not None:
+            audit.translation_strong(seq, out, ms, bool(out),
+                                     getattr(strong, "model", None), trigger)
         if out:
             await self._publish_translation(seq, out, True, ms, QUALITY_STRONG,
                                             job["target"],
@@ -1890,24 +3953,31 @@ class Pipeline:
         # DeepL 月额度用尽（456）不是这一条的问题，是这个月的问题：不切换的话
         # 后面每条字幕都会「翻译失败」直到月底。切到本地引擎，并用新引擎把
         # 当前这条立刻补上——它不该成为切换的牺牲品。
+        fallback = None
         if translated is None and getattr(tr, "quota_exhausted", False):
             fallback = await self._quota_fallback(tr)
-            if fallback is not None:
-                tr = fallback
-                # translate_ms 只记翻译本身：引擎切换的开销不该算进这一条的
-                # 翻译耗时去污染延迟统计（e2e_translated_ms 仍如实含全部等待）
-                t0 = time.monotonic()
-                try:
-                    translated = await tr.translate(
-                        text, job["target"], source=job["lang"] or "auto",
-                        glossary=hint)
-                    if self.glossary:
-                        translated = self.glossary.apply(text, translated)
-                except Exception as exc:
-                    print("[警告] 降级引擎翻译失败: {}".format(exc))
-                    translated = None
+        elif translated is None:
+            # 说得清的失败（429 暂停、密钥被拒、Ollama 连续报错）告诉中控并记审计；
+            # 远程引擎拒绝密钥、本机又有本地模型时，本场改用本地模型
+            fallback = await self._note_engine_failure(tr)
+        if fallback is not None:
+            tr = fallback
+            # translate_ms 只记翻译本身：引擎切换的开销不该算进这一条的
+            # 翻译耗时去污染延迟统计（e2e_translated_ms 仍如实含全部等待）
+            t0 = time.monotonic()
+            try:
+                translated = await tr.translate(
+                    text, job["target"], source=job["lang"] or "auto",
+                    glossary=hint)
+                if self.glossary:
+                    translated = self.glossary.apply(text, translated)
+            except Exception as exc:
+                print("[警告] 降级引擎翻译失败: {}".format(exc))
+                translated = None
         if translated is None and hasattr(self, "_bg_tasks"):
             self._spawn(self._heal_local_engine())   # Ollama 掉了就拉起来（节流）
+        elif translated is not None:
+            await self._note_engine_ok(tr)        # 之前报过的引擎问题就此解除
         translate_ms = (time.monotonic() - t0) * 1000.0
         self.telemetry.record_translation(translate_ms)
         if self.audit is not None:
