@@ -337,7 +337,11 @@ def test_a_load_that_finished_after_cancel_is_reused(monkeypatch, tmp_path):
     async def fake_session(media, *a, **k):
         return True, 60.0
 
+    async def dead(url, timeout=8):          # 直连地址播完后的探活：地址已失效
+        return False
+
     monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
+    monkeypatch.setattr(app.resolver, "_media_url_works", dead)
     monkeypatch.setattr(p, "_stream_session", fake_session)
 
     async def scenario():
@@ -386,7 +390,11 @@ def test_recent_captions_do_not_survive_a_room_switch(monkeypatch, tmp_path):
     async def fake_session(media, *a, **k):
         return True, 60.0
 
+    async def dead(url, timeout=8):          # 直连地址播完后的探活：地址已失效
+        return False
+
     monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
+    monkeypatch.setattr(app.resolver, "_media_url_works", dead)
     monkeypatch.setattr(p, "_stream_session", fake_session)
     p._recent[1] = {"id": 1, "text": "vieja"}
     p._strong_missing = True

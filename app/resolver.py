@@ -1,5 +1,6 @@
 """把 TikTok 直播间页面地址解析成可供 ffmpeg 拉流的媒体地址（FLV/HLS）。"""
 import asyncio
+import contextvars
 import os
 import json
 import re
@@ -9,6 +10,7 @@ import traceback
 from pathlib import Path
 
 from .nethttp import read_all
+from .redact import strip_query
 
 
 class ResolveError(RuntimeError):
@@ -21,11 +23,15 @@ class ResolveError(RuntimeError):
       internal  —— 本工具自身的问题（组件缺失等）
       browser_only —— 程序拿不到、需借用户浏览器
       unknown   —— 其余
+
+    status：kind=offline 时房间接口/页面原样给出的房间状态值（4=已结束，其它值含义
+    TikTok 没说明）。重连循环只在 4 时收手，其余值先等一等（见 pipeline._confirm_offline）。
     """
 
-    def __init__(self, message, kind="unknown"):
+    def __init__(self, message, kind="unknown", status=None):
         super().__init__(message)
         self.kind = kind
+        self.status = status
 
 
 _DIRECT_RE = re.compile(r"\.(flv|m3u8)(\?|$)", re.IGNORECASE)
@@ -153,6 +159,7 @@ async def _resolve_from_page(url, browser=None):
     if browser:
         cookie = await _cookie_header_with_budget(browser)
         if not cookie:
+            _note("{}: no_cookie".format(browser))
             return None, False
         headers["Cookie"] = cookie
     try:
@@ -160,15 +167,19 @@ async def _resolve_from_page(url, browser=None):
             timeout=aiohttp.ClientTimeout(total=15)
         ) as session:
             async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    _note("http={}".format(resp.status))
                 # 必须读到 EOF。这里曾经写成单次 read(8MB)，实测 213KB 的直播页
                 # 只拿到 85KB——流地址在被截掉的那 60% 里，于是每个直播间都
                 # 「解析失败」，而日志上看不出任何异常。
                 raw = await read_all(resp, 8 * 1024 * 1024)
                 charset = resp.charset
         if raw is None:
+            _note("empty_body")
             return None, False
         html = raw.decode(charset or "utf-8", errors="replace")
-    except Exception:
+    except Exception as exc:
+        _note(type(exc).__name__)
         return None, False
     return _parse_live_page(html)
 
@@ -191,6 +202,7 @@ def _parse_live_page(html):
                     or {}).get("liveRoom") or {}
             status = room.get("status")
             if status is not None and status != LIVE_STATUS:
+                _note(status=status, field="liveRoom.status")
                 return None, True                     # 页面明确说已结束
             picked = _pick_stream({"stream_url": _sigi_stream_url(room)})
             if picked:
@@ -239,6 +251,7 @@ _SIGI_RE = re.compile(r'id="SIGI_STATE"[^>]*>(.*?)</script>', re.S)
 # TikTok 的房间状态：2=在播，4=已结束。只有拿到明确的非 2 才敢说「主播没在播」，
 # 拿不到就只能说「没解析出来」——两者对重连策略的含义完全不同。
 LIVE_STATUS = 2
+ENDED_STATUS = 4
 # webcast 房间接口拒绝给出流地址时的**通用**代码：status_code 4003110，data 里
 # 只剩一个空的 prompts 字段。TikTok 不说原因，返回体里也没有任何可读的原因。
 #
@@ -257,15 +270,19 @@ def _username(url):
 
 
 async def _get_json(session, url, limit=4 * 1024 * 1024, headers=None):
+    """拿不到返回 None；为什么拿不到（HTTP 状态码 / 异常类名 / 空响应）记进当前层的观察。"""
     try:
         async with session.get(url, headers=headers or _BROWSER_HEADERS) as resp:
             if resp.status != 200:
+                _note("http={}".format(resp.status))
                 return None
             raw = await read_all(resp, limit)
         if not raw:
+            _note("empty_body")
             return None
         return json.loads(raw.decode("utf-8", errors="replace"))
-    except Exception:
+    except Exception as exc:
+        _note(type(exc).__name__)
         return None
 
 
@@ -273,10 +290,16 @@ async def _room_status(session, user):
     """用户名 → (room_id, status)。拿不到返回 (None, None)。"""
     j = await _get_json(session, _ROOM_API.format(user=user), limit=1024 * 1024)
     if not isinstance(j, dict) or j.get("statusCode") not in (0, None):
+        if isinstance(j, dict):
+            _note("statusCode={}".format(j.get("statusCode")))
         return None, None
     u = ((j.get("data") or {}).get("user") or {})
     room = u.get("roomId")
     status = u.get("status")
+    if not room:
+        _note("no_roomId")
+    if status is not None:
+        _note(status=status, field="user.status")
     return (str(room) if room else None), status
 
 
@@ -352,6 +375,7 @@ async def _run_webkit_fetch(url, timeout):
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        _note("timeout")
         proc.kill()
         try:
             await proc.wait()
@@ -369,6 +393,7 @@ async def _run_webkit_fetch(url, timeout):
             except ValueError:
                 continue
             return obj if isinstance(obj, dict) else None
+    _note("no_output")
     return None
 
 
@@ -386,7 +411,10 @@ async def _resolve_via_webkit(url, timeout=WEBKIT_TIMEOUT_SEC):
     if result.get("url"):
         return str(result["url"]), False
     if result.get("offline"):
+        _note(status=result.get("status"), field="liveRoom.status")
         return None, True
+    if result.get("error"):
+        _note(strip_query(result["error"], 120))
     return None, False
 
 
@@ -406,6 +434,7 @@ async def _resolve_via_api(url, cookies_browser="auto"):
 
     user = _username(url)
     if not user:
+        _note("no_username")
         return None, False
     try:
         async with aiohttp.ClientSession(
@@ -439,9 +468,14 @@ async def _resolve_via_api(url, cookies_browser="auto"):
             else:
                 data = (info or {}).get("data") or {}
                 if data.get("status") is not None and data["status"] != LIVE_STATUS:
+                    _note(status=data["status"], field="data.status")
                     return None, True
-                return _pick_stream(data), False
-    except Exception:
+                picked = _pick_stream(data)
+                if not picked:
+                    _note("no_stream_url")
+                return picked, False
+    except Exception as exc:
+        _note(type(exc).__name__)
         return None, False
     # 只有一种情况会走到这里：接口一直不肯给流地址（4003110），登录态也没帮上忙。
     # 只报观察，不编原因——交给上层隔一会儿自动重试（见 pipeline._resolve_media）。
@@ -465,12 +499,72 @@ async def _media_url_works(url, timeout=8):
                 timeout=aiohttp.ClientTimeout(total=timeout)) as session:
             async with session.get(url, headers=_BROWSER_HEADERS) as resp:
                 if resp.status != 200:
+                    _note("probe http={}".format(resp.status))
                     return False
                 # 只取一小口：能出数据就说明流是活的
                 chunk = await resp.content.read(2048)
+                if not chunk:
+                    _note("probe empty")
                 return bool(chunk)
-    except Exception:
+    except Exception as exc:
+        _note("probe " + type(exc).__name__)
         return False
+
+
+# ---- 重连循环用的两个小探测（都不走五层解析）----
+PROBE_HOST = "www.tiktok.com"
+
+
+async def tiktok_reachable(host=PROBE_HOST, port=443, timeout=3.0):
+    """本机连不连得上 TikTok：DNS 解析 + TCP 建连，**不发任何 HTTP 请求**，不碰房间。
+
+    返回 (ok, why)，why 只写观察到的异常类名或 timeout。连得上不代表解析一定成功
+    （比如要网页登录的公共 Wi-Fi），那种情况照旧走解析。测试里（pytest）不真的连，
+    直接当连得上——要测探测本身就调 _tcp_probe。"""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True, "not_probed_in_tests"
+    return await _tcp_probe(host, port, timeout)
+
+
+async def _tcp_probe(host, port, timeout):
+    try:
+        _reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port),
+                                                 timeout=timeout)
+    except asyncio.TimeoutError:
+        return False, "timeout"
+    except Exception as exc:
+        return False, type(exc).__name__
+    writer.close()
+    try:
+        await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
+    except Exception:
+        pass
+    return True, ""
+
+
+async def probe_room_status(url):
+    """只问一次房间接口（一个请求），返回 (房间状态值或 None, why)。
+
+    重连时接口说「不在播」但不是「已结束」，程序隔一会儿用它复查，不再走五层解析。
+    测试里（pytest）不发请求，返回 (None, "not_probed_in_tests")。"""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None, "not_probed_in_tests"
+    import aiohttp
+
+    user = _username(url)
+    if not user:
+        return None, "no_username"
+    note = {}
+    token = _LAYER_NOTE.set(note)
+    try:
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15)) as session:
+            _room, status = await _room_status(session, user)
+    except Exception as exc:
+        return None, type(exc).__name__
+    finally:
+        _LAYER_NOTE.reset(token)
+    return status, _layer_note(note).get("why", "")
 
 
 def _classify_ytdlp_error(err_text):
@@ -599,6 +693,49 @@ def _first_url(stdout):
     return lines[0] if lines else None
 
 
+# 每一层解析的原始观察：HTTP 状态码、接口 statusCode、异常类名、房间状态值。以前每层
+# 失败都只记一个 outcome=none，官方接口 23 毫秒就失败的那几次，分不清是 DNS 不通、
+# HTTP 4xx 还是返回结构变了。用 ContextVar 收集，各层函数的签名和返回值都不用变。
+_LAYER_NOTE = contextvars.ContextVar("tlt_resolver_layer_note", default=None)
+
+
+def _note(why=None, **fields):
+    """给当前正在跑的那一层记一笔观察。只记代码、状态值和异常类名，不写原因推测
+    （CLAUDE.md 第八条）；没有层在记时（单独调用内部函数）什么也不做。"""
+    note = _LAYER_NOTE.get()
+    if note is None:
+        return
+    if why:
+        whys = note.setdefault("why", [])
+        if str(why) not in whys:
+            whys.append(str(why))
+    note.update(fields)
+
+
+def _fresh_note():
+    note = {}
+    _LAYER_NOTE.set(note)
+    return note
+
+
+def _layer_note(note):
+    """一层的观察摊成 _mark 的额外字段：why（≤120 字符，URL 去掉 query）、status、field。"""
+    out = {}
+    if note.get("why"):
+        out["why"] = strip_query("; ".join(note["why"]), 120)
+    if note.get("status") is not None:
+        out["status"] = note["status"]
+        if note.get("field"):
+            out["field"] = note["field"]
+    return out
+
+
+def _stderr_why(text):
+    """yt-dlp 失败时 stderr 的最后一行（URL 去掉 query，120 字符），摊成 _mark 的额外字段。"""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return {"why": strip_query(lines[-1], 120)} if lines else {}
+
+
 def _mark(trace, layer, outcome, t0, **extra):
     """解析日志的一条：哪一层、什么结果、花了多久。trace 为 None 时什么也不做。
 
@@ -606,7 +743,9 @@ def _mark(trace, layer, outcome, t0, **extra):
     下播）/ browser_only（4003110）/ none（这层没拿到）/ skipped（这层在本机
     不可用）/ crash（层内部异常，已跳过）/ 或 ResolveError 的 kind。
     2026-09-06 一场直播前两次解析失败、第三次才成，事后只能靠「只有一个
-    会话文件」+「秒数对得上」倒推——因为解析过程一个字都没记。"""
+    会话文件」+「秒数对得上」倒推——因为解析过程一个字都没记。
+
+    extra 里常见的 why / status / field 是这一层的原始观察（见 _note）。"""
     if trace is None:
         return
     rec = {"layer": layer, "outcome": outcome,
@@ -635,6 +774,19 @@ def _note_layer_crash(crashed, layer_name, exc):
 
 
 async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=None):
+    """返回直播流媒体地址，详见 _resolve_stream_url。
+
+    这一层包装只负责各层观察（_note）的上下文：返回或抛出之前把它复位，上一次解析的
+    笔记不会漏到同一个任务里后面的调用上。"""
+    token = _LAYER_NOTE.set(None)
+    try:
+        return await _resolve_stream_url(url, cookies=cookies,
+                                         cookies_browser=cookies_browser, trace=trace)
+    finally:
+        _LAYER_NOTE.reset(token)
+
+
+async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=None):
     """返回直播流媒体地址。已经是 .flv/.m3u8 的直接放行，否则用 yt-dlp 解析。
 
     trace：传一个 list 进来，每走过一层就追加一条 {layer, outcome, ms}
@@ -663,11 +815,12 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
     api_url, known_offline = None, False
     browser_only = None      # 接口说「这房间的流地址不给程序」——先记着，后面的层可能拿得到
     t0, api_outcome = time.monotonic(), "none"
+    api_note = _fresh_note()
     try:
         api_url, known_offline = await _resolve_via_api(url, cookies_browser=cookies_browser)
     except ResolveError as exc:
         if exc.kind != "browser_only":
-            _mark(trace, "官方接口", exc.kind, t0)
+            _mark(trace, "官方接口", exc.kind, t0, **_layer_note(api_note))
             raise
         browser_only = exc
         api_outcome = "browser_only"
@@ -675,6 +828,7 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
         raise
     except Exception as exc:
         _note_layer_crash(crashed, "官方接口", exc)
+        _note(type(exc).__name__)
         api_outcome = "crash"
     if api_url:
         checked = await _vet(api_url, "官方接口", rejected)
@@ -682,22 +836,23 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
             api_outcome = "rejected"
         elif await _media_url_works(checked):
             print("[信息] 已通过 TikTok 直播接口取到纯音频流")
-            _mark(trace, "官方接口", "url", t0)
+            _mark(trace, "官方接口", "url", t0, **_layer_note(api_note))
             return checked
         else:
             print("[信息] 直播接口给的地址拉不动，继续试其它方式")
             api_outcome = "dead_url"
     if known_offline:
-        # 接口明确说房间已结束——这是唯一敢下这个断言的地方
-        _mark(trace, "官方接口", "offline", t0)
+        # 接口明确说房间不在播。状态值原样带上去：重连时只有 4（已结束）才收手
+        _mark(trace, "官方接口", "offline", t0, **_layer_note(api_note))
         raise ResolveError("主播当前没有在直播（TikTok 接口确认直播已结束）",
-                           kind="offline")
-    _mark(trace, "官方接口", api_outcome, t0)
+                           kind="offline", status=api_note.get("status"))
+    _mark(trace, "官方接口", api_outcome, t0, **_layer_note(api_note))
 
     # 第 2 层：系统 WebKit 引擎加载直播页。TikTok 只把某些房间的流地址交给真正的
     # 浏览器（接口回 4003110），而 mac 的 WebKit 不登录就放行，实测 2 秒拿到。
     t0 = time.monotonic()
     wk_outcome = "none" if _webkit_available() else "skipped"
+    wk_note = _fresh_note()
     try:
         wk_url, wk_offline = await _resolve_via_webkit(url)
         if wk_url:
@@ -706,21 +861,22 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
                 wk_outcome = "rejected"
             elif await _media_url_works(checked):
                 print("[信息] 已通过系统 WebKit 引擎从直播页取到流地址")
-                _mark(trace, "WebKit", "url", t0)
+                _mark(trace, "WebKit", "url", t0, **_layer_note(wk_note))
                 return checked
             else:
                 print("[信息] WebKit 拿到的地址拉不动，继续试其它方式")
                 wk_outcome = "dead_url"
         elif wk_offline:
-            _mark(trace, "WebKit", "offline", t0)
+            _mark(trace, "WebKit", "offline", t0, **_layer_note(wk_note))
             raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
-                               kind="offline")
+                               kind="offline", status=wk_note.get("status"))
     except (ResolveError, asyncio.CancelledError):
         raise
     except Exception as exc:
         _note_layer_crash(crashed, "WebKit", exc)
+        _note(type(exc).__name__)
         wk_outcome = "crash"
-    _mark(trace, "WebKit", wk_outcome, t0)
+    _mark(trace, "WebKit", wk_outcome, t0, **_layer_note(wk_note))
 
     try:
         import yt_dlp  # noqa: F401
@@ -741,10 +897,11 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
         raise
     except Exception as exc:
         _note_layer_crash(crashed, "yt-dlp匿名", exc)
-        _mark(trace, "yt-dlp匿名", "crash", t0)
+        _mark(trace, "yt-dlp匿名", "crash", t0, why=type(exc).__name__)
     else:
-        _mark(trace, "yt-dlp匿名", "url" if code == 0 and _first_url(out) else "none",
-              t0, code=code)
+        got = code == 0 and _first_url(out)
+        _mark(trace, "yt-dlp匿名", "url" if got else "none",
+              t0, code=code, **({} if got else _stderr_why(err)))
         if code == 0 and not _first_url(out):
             # 退出码 0 却没有地址：不能据此断言下播（只有接口确认才敢说），
             # 当失败处理，让后面借 cookie / 直播页兜底的层继续
@@ -754,6 +911,7 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
     # 记住成功的那个，下次直接用，不再逐个试。
     if code != 0 and not cookies and cookies_browser != "none":
         t0, used_browser, cookie_outcome = time.monotonic(), None, "none"
+        last_err = ""
         try:
             for browser in _browser_order(cookies_browser):
                 try:
@@ -762,7 +920,9 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
                     b_code, b_out, b_err = await _run_ytdlp(
                         url, browser=browser, timeout=BROWSER_ATTEMPT_TIMEOUT)
                 except ResolveError:
+                    last_err = "{}: timeout".format(browser)
                     continue          # 这个浏览器超时了：换下一个，别中断整个兜底
+                last_err = b_err
                 if b_code == 0 and _first_url(b_out):
                     _remember_browser(browser)
                     print("[信息] 匿名解析失败，已借用 {} 的 TikTok 登录状态".format(browser))
@@ -773,21 +933,24 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
             raise
         except Exception as exc:
             _note_layer_crash(crashed, "yt-dlp借cookie", exc)
-            cookie_outcome = "crash"
-        _mark(trace, "yt-dlp借cookie", cookie_outcome, t0, browser=used_browser)
+            cookie_outcome, last_err = "crash", type(exc).__name__
+        _mark(trace, "yt-dlp借cookie", cookie_outcome, t0, browser=used_browser,
+              **({} if cookie_outcome == "url" else _stderr_why(last_err)))
     if code != 0:
         # 第 4 层：yt-dlp 的 TikTok 提取器时不时失灵（接口说没播但页面在播）——
         # 先试页面兜底。匿名抓不到时再借用浏览器登录态抓一次：有些房间的页面
         # 对未登录访问就是不带流地址。
         t0, page_outcome = time.monotonic(), "none"
+        page_note = _fresh_note()
         try:
             for browser in (None,) + tuple(_browser_order(cookies_browser)
                                            if cookies_browser != "none" else ()):
                 fallback, page_offline = await _resolve_from_page(url, browser=browser)
                 if page_offline:
-                    _mark(trace, "直播页兜底", "offline", t0, browser=browser)
+                    _mark(trace, "直播页兜底", "offline", t0, browser=browser,
+                          **_layer_note(page_note))
                     raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
-                                       kind="offline")
+                                       kind="offline", status=page_note.get("status"))
                 if not fallback:
                     continue
                 checked = await _vet(fallback, "直播页兜底", rejected)
@@ -799,14 +962,16 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
                     continue
                 print("[信息] yt-dlp 解析失败，已从直播页面直接找到流地址{}".format(
                     "（借用 {} 的登录状态）".format(browser) if browser else ""))
-                _mark(trace, "直播页兜底", "url", t0, browser=browser)
+                _mark(trace, "直播页兜底", "url", t0, browser=browser,
+                      **_layer_note(page_note))
                 return checked
         except (ResolveError, asyncio.CancelledError):
             raise
         except Exception as exc:
             _note_layer_crash(crashed, "直播页兜底", exc)
+            _note(type(exc).__name__)
             page_outcome = "crash"
-        _mark(trace, "直播页兜底", page_outcome, t0)
+        _mark(trace, "直播页兜底", page_outcome, t0, **_layer_note(page_note))
         err_text = err
         tail = err_text.strip().splitlines()[-3:] if err_text.strip() else []
         if tail:
