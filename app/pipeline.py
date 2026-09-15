@@ -360,6 +360,10 @@ class Pipeline:
                     pause, "更新过程中程序出错（{}）".format(type(exc).__name__))
         finally:
             self._update_pause = None
+            # 更新期间推迟的模型下载：走到这里说明没有重启（没更新成、或中控自己停了监听）
+            if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks") \
+                    and not self._stream_active():
+                self._spawn(self._pull_after_session(None))
 
     def _note_operator_stream_action(self):
         """中控在一键更新暂停监听期间自己点了开始或停止（handle_control 调用）。更新收尾时
@@ -578,13 +582,17 @@ class Pipeline:
         comment_source = getattr(self, "comment_source", None)
         if comment_source is not None:
             await comment_source.stop()
-        if self.audit is not None:
-            self._close_audit(self.audit, self._stop_reason)
+        closed = self.audit
+        if closed is not None:
+            self._close_audit(closed, self._stop_reason)
             self.audit = None
         self._stop_reason = None
         self._release_sleep_guard()
+        if closed is not None:
+            await self._settle_audit_incident(closed)
         # 旧任务可能超时没走到 _end_session（识别线程停不下来），这里也撤一次
         await self._clear_ongoing_incidents()
+        await self._settle_engine_incident()
         self._media_override = None
         pool, self._asr_pool = self._asr_pool, None
         if pool is not None:
@@ -1112,7 +1120,7 @@ class Pipeline:
                 # 已经有一个下载在跑（比如启动时起的那个）：不再起第二个，也不推迟它；
                 # 只在本场日志里留个记号，事后能把这段时间的网络占用对上号
                 self._audit_pull("in_progress", need)
-            elif self._stream_active():
+            elif self._stream_active() or self._update_in_progress():
                 await self._defer_pull(need)
             else:
                 pulled = await self._pull_model(need)
@@ -1170,7 +1178,7 @@ class Pipeline:
             audit.model_pull(state, model, error)
 
     async def _defer_pull(self, need):
-        """直播中缺模型：不下载，记下来停止后再下；同一场只说一次。"""
+        """直播中（或一键更新进行中）缺模型：不下载，记下来之后再下；同一场只说一次。"""
         from .translator import model_label
 
         audit = getattr(self, "audit", None)
@@ -1180,7 +1188,8 @@ class Pipeline:
         self._pull_deferred = need
         self._pull_deferred_session = audit
         self._audit_pull("deferred", need)
-        text = "本地翻译模型 {} 还没下载，停止后自动下载".format(model_label(need))
+        when = "更新结束后" if self._update_in_progress() else "停止后"
+        text = "本地翻译模型 {} 还没下载，{}自动下载".format(model_label(need), when)
         print("[信息] " + text)
         await self._provision_note(text)
 
@@ -1263,6 +1272,8 @@ class Pipeline:
         try:
             if session_task is not None and session_task is not asyncio.current_task():
                 await asyncio.wait({session_task})
+            if self._update_in_progress():
+                return          # 一键更新停掉的这一场：更新收尾时再补（见 _apply_update）
             if getattr(self, "_pull_deferred", None) and not self._stream_active():
                 await self.ensure_local_translator()
         except Exception as exc:
@@ -1272,11 +1283,18 @@ class Pipeline:
         task = getattr(self, "_stream_task", None)
         return task is not None and not task.done()
 
+    def _update_in_progress(self):
+        """一键更新正在进行：取新版本、装依赖、合并，或为此暂停了监听。"""
+        updater = getattr(self, "updater", None)
+        return bool(getattr(updater, "_applying", False)) \
+            or getattr(self, "_update_pause", None) is not None
+
     async def _provision_note(self, text):
         """后台备模型的进度：待机时走 status（首页大字），直播中只发 notice。
         这个下载要几分钟，而用户完全可以在它跑着的时候点开始——那时再广播
         status=idle 会把界面从「直播中」拽回待机、停止按钮消失，每 5% 刷一次。"""
-        if self._stream_active():
+        if self._stream_active() or self._update_in_progress():
+            # 更新期间状态行是「正在更新，监听已暂停」那句，也不能被下载进度盖掉
             await self.server.broadcast({"type": "notice", "text": text})
         else:
             await self.server.status("idle", text)
@@ -1540,6 +1558,9 @@ class Pipeline:
             self._close_audit(target, reason, **fields)
             if self.audit is target:
                 self.audit = None
+            await self._settle_audit_incident(target)
+        if still_current:
+            await self._settle_engine_incident()
         if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks"):
             self._spawn(self._pull_after_session(asyncio.current_task()))  # 直播中推迟的模型下载
 
@@ -1711,8 +1732,13 @@ class Pipeline:
         except Exception:
             pass
 
-    # 描述「正在进行」的持续提示：监听停了它们就不再成立（「网络恢复后自动重连」「程序继续
-    # 监听」），停止或一场结束时撤掉。session:clock_gap 是已经发生过的事，留给中控看
+    # 停止或一场结束时，各条 session: 提示怎么收（下一场开始时 _clear_session_incidents 全部撤掉）：
+    #   撤掉：描述「正在进行」、监听停了就不成立的——「网络恢复后自动重连」、音频到达率、
+    #         「程序继续监听」的安静提示（ONGOING_INCIDENTS）
+    #   改写：承诺「会继续重试」的——审计写不进去（_settle_audit_incident）、远程引擎被拒
+    #         （_settle_engine_incident）。停了就不再重试，改成已经发生的事和下一步
+    #   留着：已经发生的事，或停了也成立的话——时钟跳变、识别连续出错（CPU 模型照样在后台
+    #         加载，或请重开程序）、本地引擎连续出错、审计没能创建、审计文件被移走、磁盘快满
     ONGOING_INCIDENTS = ("session:network", "session:audio_rate", "session:quiet_audio")
 
     async def _clear_ongoing_incidents(self):
@@ -1724,6 +1750,50 @@ class Pipeline:
                     await self._incident(key, "clear")
                 except Exception:
                     pass
+
+    async def _settle_audit_incident(self, audit):
+        """审计关掉之后收尾「写不进去」的提示。「程序会继续重试、能写入后补写」到这里就不
+        成立了：文件关了，留在内存里等补写的记录跟着丢。改成已经发生的事留给中控看；关的
+        那一刻恰好又写进去了，就换成「已恢复」那句。只认本场自己的 audit（规则七）。"""
+        watch = getattr(self, "_audit_watch", None) or {}
+        if audit is None or watch.get("audit") is not audit:
+            return
+        unwritten = audit.unwritten() if hasattr(audit, "unwritten") else None
+        if not watch.get("failing") and unwritten is None:
+            return
+        watch["failing"] = False
+        pending = watch.get("task")
+        if pending is not None and not pending.done():
+            try:            # 写失败回调发出的那条还在路上：等它先到，别让它盖掉收尾这句
+                await pending
+            except Exception:
+                pass
+        try:
+            if unwritten is not None:
+                await self._incident("session:audit-write", "error",
+                                     self._audit_unwritten_text(unwritten))
+            else:
+                await self._incident("session:audit-write", "warn",
+                                     self._audit_recovered_text(audit))
+        except Exception:
+            pass
+
+    async def _settle_engine_incident(self):
+        """远程引擎被拒那句里的「程序每 N 秒再试一次」只在监听时成立：停了改成已经发生的
+        事和下一步。本地引擎连续出错那句本来就只是记录和建议，不动。"""
+        info = getattr(self, "_engine_rejection", None)
+        if not info or not getattr(self, "_engine_incident_up", False):
+            return
+        self._engine_rejection = None
+        try:
+            await self._incident(
+                self.ENGINE_INCIDENT, "error",
+                "{}，之后的字幕只显示了原文（违禁词报警不受影响）。下一场开始后会再试；"
+                "可以在「翻译引擎」里{}".format(
+                    info["what"], "换一个引擎" if info["status"] == 404
+                    else "重新填写密钥，或换一个引擎"))
+        except Exception:
+            pass
 
     @staticmethod
     def _close_audit(audit, reason=None, **fields):
@@ -3064,6 +3134,23 @@ class Pipeline:
                 "程序会继续重试，报警记录先留在内存里，能写入后补写"
                 .format(getattr(audit, "last_error", "") or "没有拿到错误信息"))
 
+    @staticmethod
+    def _audit_recovered_text(audit):
+        gap = getattr(audit, "last_gap", None) or {}
+        return ("审计日志在 {} 到 {} 之间写不进去：{} 条记录没有留下，{} 条（会话头/报警）"
+                "已补写。现在已恢复写入，日志里的 audit_gap 记录标出了这一段".format(
+                    str(gap.get("from") or "")[11:19] or "?",
+                    str(gap.get("to") or "")[11:19] or "?",
+                    gap.get("lost_records", "?"), gap.get("retained_records", "?")))
+
+    @staticmethod
+    def _audit_unwritten_text(info):
+        return ("审计日志从 {} 起写不进去，到这场监听结束也没有恢复（{}）：{} 条记录没有留下，"
+                "{} 条会话头/报警/会话尾没能补写。这段时间的报警只显示在了界面上".format(
+                    str(info.get("since") or "")[11:19] or "?",
+                    info.get("error") or "没有拿到错误信息",
+                    info.get("lost", "?"), info.get("retained", "?")))
+
     async def _check_audit_health(self):
         """_stats_loop 每 10 秒调一次：审计写入失败与恢复、审计文件被移走、磁盘快满。
         只在状态变化时提示。自己出错不能拖垮统计循环。"""
@@ -3080,14 +3167,8 @@ class Pipeline:
                                      self._audit_failing_text(audit))
             elif not failing and watch["failing"]:
                 watch["failing"] = False
-                gap = getattr(audit, "last_gap", None) or {}
-                await self._incident(
-                    "session:audit-write", "warn",
-                    "审计日志在 {} 到 {} 之间写不进去：{} 条记录没有留下，{} 条（会话头/报警）"
-                    "已补写。现在已恢复写入，日志里的 audit_gap 记录标出了这一段".format(
-                        str(gap.get("from") or "")[11:19] or "?",
-                        str(gap.get("to") or "")[11:19] or "?",
-                        gap.get("lost_records", "?"), gap.get("retained_records", "?")))
+                await self._incident("session:audit-write", "warn",
+                                     self._audit_recovered_text(audit))
             detached = bool(audit.detached()) if hasattr(audit, "detached") else False
             if detached != watch["detached"]:
                 watch["detached"] = detached
@@ -3294,6 +3375,7 @@ class Pipeline:
         self._engine_error_mark = None
         if getattr(self, "_engine_incident_up", False):
             self._engine_incident_up = False
+            self._engine_rejection = None
             await self._incident(self.ENGINE_INCIDENT, "clear")
 
     async def _publish_engine(self):
@@ -3644,6 +3726,7 @@ class Pipeline:
             fallback = await self._rejection_fallback(tr, what, status)
             if fallback is None:
                 self._engine_incident_up = True
+                self._engine_rejection = {"what": what, "status": status}   # 停止时改写用
                 await self._incident(
                     self.ENGINE_INCIDENT, "error",
                     "{}，字幕先显示原文（违禁词报警不受影响），程序每 {} 秒再试一次；"
@@ -3661,6 +3744,7 @@ class Pipeline:
                         label, getattr(tr, "fail_streak", 0), status,
                         "：" + said if said else "")
             self._engine_incident_up = True
+            self._engine_rejection = None
             await self._incident(self.ENGINE_INCIDENT, "warn", text)
             # 模型不在了的话 ensure_local_translator 会发现，安排停止后重新下载；
             # 自检那一行也会跟着变红（Ollama 在跑但没有这个模型）
@@ -3678,6 +3762,7 @@ class Pipeline:
         self._engine_error_mark = None
         if getattr(self, "_engine_incident_up", False):
             self._engine_incident_up = False
+            self._engine_rejection = None
             await self._incident(self.ENGINE_INCIDENT, "clear")
 
     async def _rejection_fallback(self, old, what, status):

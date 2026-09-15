@@ -6,6 +6,7 @@ import ast
 import asyncio
 import inspect
 import json
+import re
 import textwrap
 from types import SimpleNamespace
 
@@ -199,3 +200,141 @@ def test_an_update_pause_is_the_recorded_end_reason(monkeypatch, tmp_path):
     assert "update_stop" in kinds and kinds.index("update_stop") < kinds.index("session_end")
     assert [r["reason"] for r in of_type(rows, "session_end")] == ["update"]
     assert p._stop_reason is None and not p._stream_active()
+
+
+# ---- 停止之后，承诺「会继续重试」的提示改成已经发生的事 ----------------------------------
+# stream 组在停止或收尾时只撤自己的三条「正在进行」提示；evidence 组那条「审计写不进去，程序
+# 会继续重试、能写入后补写」原样留着——可文件一关，留在内存里等补写的记录就跟着丢了。
+
+class FullDisk:
+    """审计文件句柄的替身：full 为真时每次写都报磁盘满，其余操作交给真的句柄。"""
+
+    def __init__(self, fh):
+        self._fh = fh
+        self.full = True
+
+    def write(self, data):
+        if self.full:
+            raise OSError(28, "No space left on device")
+        return self._fh.write(data)
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+
+def incidents_of(server, key):
+    return [m for m in server.messages if m.get("type") == "incident" and m.get("id") == key]
+
+
+async def start_endless(p, monkeypatch):
+    """真的 start_stream，拉流那一轮换成永远不结束的桩。Event 在事件循环里建（3.9 要求）。"""
+    from app import resolver
+    entered = asyncio.Event()
+
+    async def endless_round(media, *a, **k):
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def fake_resolve(url, cookies=None, cookies_browser="auto", trace=None):
+        return "http://cdn/a.flv"
+
+    monkeypatch.setattr(resolver, "resolve_stream_url", fake_resolve)
+    monkeypatch.setattr(p, "_stream_session", endless_round)
+    await p.start_stream(ROOM)
+    await asyncio.wait_for(entered.wait(), 10)
+
+
+async def break_the_audit(p, server):
+    audit = p.audit
+    audit._fh = FullDisk(audit._fh)
+    audit.dropped_audio(queue_depth=3)                               # 普通记录：确定丢了
+    audit.alert({"term": "x", "tier": "exact", "context": "x"})      # 报警：留在内存里等补写
+    for _ in range(200):
+        await asyncio.sleep(0)
+        if incidents_of(server, "session:audit-write"):
+            break
+    return audit
+
+
+def test_an_audit_still_failing_at_stop_leaves_a_record_instead_of_a_promise(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start_endless(p, monkeypatch)
+        await break_the_audit(p, server)
+        await p.handle_control({"type": "stop"})
+
+    run(scenario())
+    banners = incidents_of(server, "session:audit-write")
+    assert banners and "程序会继续重试" in banners[0]["text"]
+    last = banners[-1]
+    assert last["level"] == "error" and "继续重试" not in last["text"]
+    assert "到这场监听结束也没有恢复" in last["text"]
+    assert re.search(r"\d+ 条记录没有留下，\d+ 条会话头/报警/会话尾没能补写", last["text"])
+    assert server.config["incidents"]["session:audit-write"]["text"] == last["text"]
+
+
+def test_an_audit_that_recovered_before_stop_ends_on_the_recovered_note(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start_endless(p, monkeypatch)
+        audit = await break_the_audit(p, server)
+        audit._fh.full = False
+        await p.handle_control({"type": "stop"})
+
+    run(scenario())
+    last = incidents_of(server, "session:audit-write")[-1]
+    assert last["level"] == "warn" and "现在已恢复写入" in last["text"]
+
+
+# ---- 一键更新进行中不下载模型 --------------------------------------------------------------
+# translation 组在一场结束时补上直播中推迟的模型下载；update 组暂停监听去更新时，正好触发
+# 这场收尾。下载会和取新版本、pip 抢网络，进度提示还会盖掉「正在更新，监听已暂停」那句。
+
+def test_a_deferred_model_download_waits_out_a_one_click_update(monkeypatch, tmp_path):
+    from app import localmodel
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    del p.ensure_local_translator            # make_pipeline 把它换成了空操作；这里要真的那个
+    p.args.translator = "hymt2"
+    pulls, seen = [], []
+
+    async def running():
+        return True
+
+    async def fake_pull(need):
+        pulls.append(need)
+        return True
+
+    monkeypatch.setattr(localmodel, "is_running", running)
+    monkeypatch.setattr(p, "_local_wanted", lambda engine: ("hy-model", lambda: False))
+    monkeypatch.setattr(p, "_pull_model", fake_pull)
+
+    class FakeUpdater:
+        _applying = False
+
+        async def apply(self, live, pause, resume, before_restart):
+            self._applying = True
+            try:
+                await p._pull_after_session(None)     # 上一场收尾时推迟的那次
+                await p.ensure_local_translator()     # 更新期间中控换了本地引擎
+                seen.append(list(pulls))
+            finally:
+                self._applying = False                # 没走到重启：比如新版本的依赖没装上
+
+    p.updater = FakeUpdater()
+
+    async def scenario():
+        p._pull_deferred = "hy-model"
+        await p._apply_update()
+        pending = [t for t in list(p._bg_tasks) if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=5)
+
+    run(scenario())
+    assert seen == [[]]
+    assert pulls == ["hy-model"]
+    assert not any("自动下载" in (m.get("detail") or "")
+                   for m in server.messages if m.get("type") == "status")
+    assert any("更新结束后自动下载" in m.get("text", "")
+               for m in server.messages if m.get("type") == "notice")

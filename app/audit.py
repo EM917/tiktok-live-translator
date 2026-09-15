@@ -204,6 +204,15 @@ class AuditLog:
             return {"since": self.failing_since, "error": self.last_error}
         return None
 
+    def unwritten(self):
+        """此刻写不进去的这一段：从什么时候起、最近的错误、确定丢了几条、还有几条留在内存里
+        等补写。没在失败时返回 None。文件关掉之后留在内存里的也就丢了——停止时的提示按这个说。"""
+        with self._lock:
+            if not self.failing:
+                return None
+            return {"since": self.failing_since, "error": self.last_error,
+                    "lost": self._lost_in_outage, "retained": len(self._retained)}
+
     def detached(self):
         """审计文件还在不在它的路径上。logs/ 在访达里被移走或删掉时写入并不报错，
         进的是路径上已经没有的那个文件——删掉的话关闭时就全没了。

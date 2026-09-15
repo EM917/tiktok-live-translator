@@ -1022,6 +1022,30 @@ def test_a_rejected_key_is_reported_once_and_never_falls_back_to_google(
     assert p.args.translator_note is None
 
 
+def test_the_rejected_key_banner_stops_promising_retries_once_the_session_ends(
+        monkeypatch, tmp_path, settings_file):
+    """合并时发现的接缝：「程序每 N 秒再试一次」只在监听时成立。stream 组的收尾只撤它自己
+    那几条提示，这一条原样留在停下来的界面上。收尾时改成已经发生的事和下一步。"""
+    engine = ScriptedEngine("deepl", script=[("http", 403, None, 120)])
+    monkeypatch.setattr("app.pipeline.create_translator", lambda name: Fast("google"))
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, engine, engine="deepl")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1))
+        await p._end_session(p.audit, "user_stop")
+        return p
+
+    p = run(scenario())
+    banners = [m for m in p.server.of("incident") if m["id"] == Pipeline.ENGINE_INCIDENT]
+    assert "秒再试一次" in banners[0]["text"]
+    last = banners[-1]
+    assert last["level"] == "error" and "再试一次" not in last["text"]
+    assert "下一场开始后会再试" in last["text"]
+    assert "HTTP 403" in plain(last["text"]) and "重新填写密钥" in last["text"]
+    assert p._engine_rejection is None
+
+
 def test_a_rejected_key_switches_to_a_local_model_when_there_is_one(
         monkeypatch, tmp_path, settings_file):
     engine = ScriptedEngine("claude", model="claude-haiku-4-5-20251001",
