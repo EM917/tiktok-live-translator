@@ -248,7 +248,8 @@ class Pipeline:
         self.comments = CommentTranslator(
             broadcast=self.server.broadcast,
             translator=lambda: self.translator, target=lambda: self.target,
-            glossary=lambda: self.glossary, busy=self._subtitle_translation_busy)
+            glossary=lambda: self.glossary, busy=self._subtitle_translation_busy,
+            session=lambda: self.audit)     # 「弹幕只显示原文」的提示每场说一次
         # 弹幕抓取（TikTokLive，见 app/comment_source.py）：与上面的
         # CommentTranslator 是两回事——这里只负责把观众评论从 TikTok 的
         # WebSocket 弄到本地，弄到后喂给 self.comments.accept()。
@@ -732,6 +733,7 @@ class Pipeline:
         if recent is not None:
             recent.clear()
         self._strong_missing = False     # 用户可能在两场之间拉好了模型
+        self._drop_strong()              # 也可能删掉了：上一场的强模型对象不能接着用
         self.telemetry.reset()          # 统计按场计，不跨房间累计
         if self.audit is not None:
             self.audit.close()
@@ -889,7 +891,12 @@ class Pipeline:
         if task is not None and not task.done():
             return
         self._heal_at = now
-        if await localmodel.is_running() or not localmodel.is_installed():
+        if await localmodel.is_running():
+            return
+        # is_installed 可能跑 Spotlight 查询（最坏 8 秒）：直播中在事件循环上跑，
+        # 音频读取和报警广播会一起停住
+        loop = asyncio.get_running_loop()
+        if not await loop.run_in_executor(None, localmodel.is_installed):
             return
         await self.server.broadcast({
             "type": "notice", "text": "翻译引擎用的 Ollama 没在运行，正在自动启动…"})
@@ -913,18 +920,23 @@ class Pipeline:
         「用户指定了引擎就不自作主张」直接返回，于是选了本地 Hy-MT2 的机器
         Ollama 永远不会被启动，自检一直红着「Ollama 没在运行」、每句翻译
         0.8 毫秒失败——用户明明就是要这个引擎，把它跑起来才是不自作主张。
+
+        **直播中不下载。** 下载和拉流抢同一条网络（7B 有 4.6 GB），而会话日志里以前
+        不留下载的痕迹，事后一段音频中断对不上号。直播中发现缺模型只记下来、说一句，
+        停止后由 _end_session 再来一遍；已经在跑的下载（比如启动时起的那个）不去动它。
         """
         from . import localmodel
-        from .translator import (HYMT2_LARGE, HYMT2_SMALL, _ollama_has_gemma,
-                                 _ollama_has_hymt2)
+        from . import translator as T
 
         engine = getattr(self.args, "translator", "auto")
         if engine not in self.LOCAL_ENGINES:
             return                      # deepl/google/claude/openai/none：不碰 Ollama
+        loop = asyncio.get_running_loop()
         started = False
         if await localmodel.is_running():
             pass
-        elif localmodel.is_installed():
+        # is_installed 可能跑 Spotlight 查询（最坏 8 秒）：放线程池
+        elif await loop.run_in_executor(None, localmodel.is_installed):
             print("[信息] Ollama 已安装但没在运行，正在启动…")
             if not await localmodel.start():
                 print("[警告] Ollama 没能启动，本地翻译暂不可用")
@@ -934,45 +946,42 @@ class Pipeline:
             return                      # 没装：交给自检那一行去引导
 
         # 探测是同步 urllib，放线程池（直播中也可能走到这里）
-        loop = asyncio.get_running_loop()
-        wanted = {"hymt2": (HYMT2_SMALL, _ollama_has_hymt2),
-                  "hymt2-7b": (HYMT2_LARGE, lambda: _ollama_has_hymt2(large=True)),
-                  "gemma": ("translategemma:4b", _ollama_has_gemma)}
         if engine == "auto":
-            have = await loop.run_in_executor(
-                None, lambda: _ollama_has_hymt2() or _ollama_has_hymt2(large=True)
-                or _ollama_has_gemma())
-            need = None if have else HYMT2_SMALL
+            active = getattr(self.translator, "name", None)
+            if active in ("hymt2", "gemma"):
+                # 正在用的那个本地模型本身得在。以前只要本机还有随便哪个本地模型就算
+                # 「有」：1.8B 被 ollama rm 掉而 7B 还在时，既不重新下载也不重建引擎，
+                # 每句 404 到本场结束
+                has = self._local_wanted(active)[1]
+            else:
+                def has():
+                    # 和 _local_wanted 同一个判据：按生成时真正用的名字精确比
+                    return T._ollama_has_model(*(T.local_engine_model(e)
+                                                 for e in ("hymt2", "hymt2-7b", "gemma")))
+            need = None if await loop.run_in_executor(None, has) \
+                else T.local_engine_model("hymt2")
         else:
-            model, has = wanted[engine]
+            model, has = self._local_wanted(engine)
             need = None if await loop.run_in_executor(None, has) else model
 
         pulled = False
         if need is not None:
-            size = "约 1.1 GB，" if need == HYMT2_SMALL else "首次需要下载，"
-            await self._provision_note(
-                "正在准备本地翻译模型（{}只需这一次）…".format(size))
-            last = [-10.0]
-
-            def progress(pct, done_mb, total_mb):
-                if pct - last[0] < 5:       # 别把界面刷爆
-                    return
-                last[0] = pct
-                self._spawn(self._provision_note(
-                    "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
-                    "只需这一次）…".format(pct, done_mb, total_mb)))
-
-            pulled = await localmodel.pull(need, on_progress=progress)
-            if pulled:
-                print("[信息] 本地翻译模型已就绪")
+            if need in self._pulls_running():
+                # 已经有一个下载在跑（比如启动时起的那个）：不再起第二个，也不推迟它；
+                # 只在本场日志里留个记号，事后能把这段时间的网络占用对上号
+                self._audit_pull("in_progress", need)
+            elif self._stream_active():
+                await self._defer_pull(need)
             else:
-                print("[警告] 本地翻译模型下载失败，本次继续用当前引擎")
+                pulled = await self._pull_model(need)
 
         if engine == "auto" and (started or pulled):
             # 启动时 Ollama 还没起来，auto 已经落到了 Google；现在本地模型能用了
             self.translator = await loop.run_in_executor(
                 None, create_translator, "auto")
             await self._publish_engine()
+        elif pulled and getattr(self, "_engine_pending", None) == engine:
+            await self._apply_pending_engine(engine)
         if pulled:
             await self._provision_note("本地翻译已就绪，可以开始了。")
         if started or need is not None:
@@ -986,6 +995,136 @@ class Pipeline:
                 except Exception:
                     pass
             await self.run_selfcheck()
+
+    _NOT_NOTED = object()
+
+    @staticmethod
+    def _local_wanted(engine):
+        """本地引擎 → (它生成时真正调用的模型, 本机有没有**这一个**模型的同步探测)。
+
+        和自检（selfcheck.check_translator）同一个判据：按名字精确比（model_listed），
+        环境变量改过的模型名也照认。以前这里按子串认——Ollama 里只有 translategemma:12b、
+        或 1.8B 只有别的量化档时，自检红着说「会自动下载」，这里却当作有、一个字节都不下，
+        set_engine 也照换不误，每句 404。探测在调用时才去 translator 模块里取，测试替换
+        得到。不是本地引擎时模型是 None。"""
+        from . import translator as T
+
+        model = T.local_engine_model(engine)
+        if model is None:
+            return None, lambda: True
+        return model, lambda: T._ollama_has_model(model)
+
+    def _pulls_running(self):
+        """正在下载的模型名（进程级集合：一次下载可能跨场次）。"""
+        running = getattr(self, "_pulling", None)
+        if running is None:
+            running = self._pulling = set()
+        return running
+
+    def _audit_pull(self, state, model, error=None):
+        """下载本身跨场次，记进事件发生这一刻正开着的那场审计；没有开着的就不记。"""
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.model_pull(state, model, error)
+
+    async def _defer_pull(self, need):
+        """直播中缺模型：不下载，记下来停止后再下；同一场只说一次。"""
+        from .translator import model_label
+
+        audit = getattr(self, "audit", None)
+        if getattr(self, "_pull_deferred", None) == need \
+                and getattr(self, "_pull_deferred_session", self._NOT_NOTED) is audit:
+            return
+        self._pull_deferred = need
+        self._pull_deferred_session = audit
+        self._audit_pull("deferred", need)
+        text = "本地翻译模型 {} 还没下载，停止后自动下载".format(model_label(need))
+        print("[信息] " + text)
+        await self._provision_note(text)
+
+    async def _pull_model(self, need):
+        """真的去下载（调用方已确认不在直播）。进度和结果都告诉界面；失败时带上
+        Ollama 的原话，替换掉停在半截的百分比。返回是否成功。"""
+        from . import localmodel
+        from .translator import HYMT2_SMALL, engine_label
+
+        size = "约 1.1 GB，" if need == HYMT2_SMALL else "首次需要下载，"
+        await self._provision_note(
+            "正在准备本地翻译模型（{}只需这一次）…".format(size))
+        last = [-10.0]
+        finished = [False]
+
+        async def note(text):
+            if not finished[0]:         # 下载结束后才轮到的进度，别盖掉结果
+                await self._provision_note(text)
+
+        def progress(pct, done_mb, total_mb):
+            if pct - last[0] < 5:       # 别把界面刷爆
+                return
+            last[0] = pct
+            self._spawn(note(
+                "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
+                "只需这一次）…".format(pct, done_mb, total_mb)))
+
+        running = self._pulls_running()
+        running.add(need)
+        self._pull_deferred = None      # 推迟的那一次就是这一次
+        self._audit_pull("start", need)
+        try:
+            result = await localmodel.pull(need, on_progress=progress)
+        finally:
+            finished[0] = True
+            running.discard(need)
+        ok, error = result if isinstance(result, tuple) else (bool(result), None)
+        if ok:
+            print("[信息] 本地翻译模型已就绪")
+            self._audit_pull("done", need)
+            return True
+        error = error or "Ollama 没有给出说明"
+        print("[警告] 本地翻译模型下载失败：{}".format(error))
+        self._audit_pull("failed", need, error)
+        current = getattr(self.translator, "name", None)
+        keep = "继续用" + engine_label(current) if current else "继续不翻译"
+        await self._provision_note(
+            "本地翻译模型下载失败：{}；{}，下一场停止后会自动再试".format(error[:120], keep))
+        return False
+
+    async def _apply_pending_engine(self, engine):
+        """界面上选了一个当时本机还没有模型的本地引擎：模型下好之后才换上它。"""
+        loop = asyncio.get_running_loop()
+        try:
+            new = await loop.run_in_executor(None, create_translator, engine)
+        except Exception as exc:
+            print("[警告] 换用 {} 失败: {}".format(engine, exc))
+            return
+        if getattr(self.args, "translator", None) != engine \
+                or getattr(self, "_engine_pending", None) != engine:
+            try:                        # 下载期间用户又换了别的引擎：以后来的选择为准
+                await new.close()
+            except Exception:
+                pass
+            return
+        old, self.translator = self.translator, new
+        self._engine_pending = None
+        self.args.translator_note = None
+        if old is not None and old is not new:
+            try:
+                await old.close()
+            except Exception:
+                pass
+        await self._publish_engine()
+
+    async def _pull_after_session(self, session_task):
+        """补上直播中推迟的模型下载。_end_session 跑在直播任务自己里面，那一刻
+        _stream_active() 还是真：等这个任务真正结束再动手。这期间又开了新的一场，
+        ensure_local_translator 会自己再推迟一次。"""
+        try:
+            if session_task is not None and session_task is not asyncio.current_task():
+                await asyncio.wait({session_task})
+            if getattr(self, "_pull_deferred", None) and not self._stream_active():
+                await self.ensure_local_translator()
+        except Exception as exc:
+            print("[警告] 停止后补下载本地翻译模型失败: {}".format(exc))
 
     def _stream_active(self):
         task = getattr(self, "_stream_task", None)
@@ -1259,6 +1398,8 @@ class Pipeline:
             self._close_audit(target, reason, **fields)
             if self.audit is target:
                 self.audit = None
+        if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks"):
+            self._spawn(self._pull_after_session(asyncio.current_task()))  # 直播中推迟的模型下载
 
     # TikTok 不给流地址（接口回 4003110、后面各层也没拿到）时的自动重试。
     # 曾以为是同一 IP 短时间内请求过多被限流——2026-09-05 实测推翻：同一分钟
@@ -2723,6 +2864,11 @@ class Pipeline:
         密钥存进 settings.json（已在 .gitignore 里），**从不回传页面**——
         回传的只有打码后的尾四位，够用户确认「我填的是哪一个」，
         又不至于让密钥出现在任何一条 WebSocket 消息里。
+
+        选的是本地引擎、而本机 Ollama（在跑）里没有它的模型时**先不换**：直播中本场
+        继续用原来的引擎、停止后自动下载；不在直播就马上开始下载，下好再换上。以前
+        这里直接建引擎（顺手把正在用的 1.8B 从显存卸掉），于是整场每句 404，自检
+        还是绿的。
         """
         from .settings import save_setting
         from .translator import TRANSLATOR_CHOICES, saved_keys
@@ -2735,6 +2881,10 @@ class Pipeline:
                 keys = saved_keys()
                 keys[env] = key.strip()
                 save_setting("api_keys", keys)
+        missing = await self._local_model_missing(engine)
+        if missing is not None:
+            await self._keep_engine_until_model(engine, missing)
+            return
         # create_translator 会同步探测 Ollama（urllib，最坏 ~10 秒）：直播中在事件
         # 循环上跑会冻住音频读取、识别调度和报警广播，与 _quota_fallback 同款进线程池
         loop = asyncio.get_running_loop()
@@ -2752,9 +2902,66 @@ class Pipeline:
         self.args.translator = engine
         # 用户刚亲手选完引擎，启动时「引擎被回退」的提示不再适用
         self.args.translator_note = None
+        self._engine_pending = None
+        self._pull_deferred = None       # 之前为别的引擎推迟的下载不再需要；下一场开始时会重新判断
         save_setting("translator", engine)
+        # 换了引擎（重填密钥也是新建一个对象）：旧引擎的报错横幅和冷却提示不再适用
+        await self._clear_engine_marks()
         await self._publish_engine()
         await self.run_selfcheck()
+
+    async def _local_model_missing(self, engine):
+        """engine 是本地引擎、Ollama 在跑、但里面没有它要的模型时，返回那个模型名；
+        否则 None（不是本地引擎；或 Ollama 连不上——那交给自检和自动启动）。
+        探测是同步 urllib，放线程池。"""
+        from . import translator as T
+
+        model = T.local_engine_model(engine)
+        if model is None:
+            return None
+
+        def probe():
+            names = T._ollama_models_or_none()
+            if names is None:
+                return None
+            return None if T.model_listed(model, names) else model    # 同 _local_wanted
+
+        try:
+            return await asyncio.get_running_loop().run_in_executor(None, probe)
+        except Exception:
+            return None
+
+    async def _keep_engine_until_model(self, engine, model):
+        """记下用户的选择，但先不换引擎：模型还没有（见 set_engine）。"""
+        from .settings import save_setting
+        from .translator import engine_label, model_label
+
+        self.args.translator = engine
+        self.args.translator_note = None
+        self._engine_pending = engine
+        save_setting("translator", engine)
+        if self._stream_active():
+            current = getattr(self.translator, "name", None)
+            text = "本机 Ollama 里还没有 {}，本场{}；停止后自动下载".format(
+                model_label(model), "继续用" + engine_label(current) if current else "继续不翻译")
+            print("[信息] " + text)
+            self.args.translator_note = text     # 引擎面板上一直看得到，直到下次选引擎
+            self._pull_deferred = model
+            self._pull_deferred_session = getattr(self, "audit", None)
+            self._audit_pull("deferred", model)
+            await self.server.broadcast({"type": "notice", "text": text})
+        elif hasattr(self, "_bg_tasks"):
+            self._spawn(self.ensure_local_translator())    # 马上下载，下好换上
+        await self._publish_engine()
+        await self.run_selfcheck()
+
+    async def _clear_engine_marks(self):
+        """忘掉已经报过的引擎问题；横幅挂着的话撤掉。"""
+        self._cooldown_mark = None
+        self._engine_error_mark = None
+        if getattr(self, "_engine_incident_up", False):
+            self._engine_incident_up = False
+            await self._incident(self.ENGINE_INCIDENT, "clear")
 
     async def _publish_engine(self):
         """把当前引擎和各密钥的填写状态告诉页面（密钥只给尾四位）。"""
@@ -2787,11 +2994,20 @@ class Pipeline:
 
         `lang` 是识别出的源语言。别图省事传 "auto"——DeepL 的原生术语表
         必须带明确的 source_lang 才生效，而报警恰恰是最不能把商品名翻错的
-        地方（实测不挂术语表词表遵从率只有 26.5%）。"""
+        地方（实测不挂术语表词表遵从率只有 26.5%）。
+
+        强模型没译出来（返回空或出错）时用常驻引擎再译一次，并清掉 self._strong，
+        下一条报警重新探测——7B 可能在两场之间被磁盘面板删了，以前每条报警都去叫
+        一个不存在的模型，直到重启程序。识别正在积压、或另一条报警正占着强模型时，
+        一开始就用常驻引擎：违禁词报警延迟排在译文质量前面（CLAUDE.md §6），7B 和
+        Whisper 抢内存会把识别拖得更慢。每一次都记一条 alert_translation。"""
         from .translator import looks_fabricated
 
         if not context.strip():
             return
+        # 本场自己的审计：这个任务可能换场之后才回来，不能写进下一场的文件
+        audit = getattr(self, "audit", None)
+        t0 = time.monotonic()
 
         async def tell(zh=None, why=""):
             """**每一条路径都要走到这里。** 报警框先画的是「翻译中…」，
@@ -2805,27 +3021,152 @@ class Pipeline:
                                              "failed": not zh,
                                              "why": why})
 
-        tr = await self._strong_translator() or self.translator
-        if tr is None:
-            await tell(why="没有可用的翻译引擎")
-            return
+        fast = self.translator
+        backlog = getattr(getattr(self, "telemetry", None), "audio_backlog_sec", 0.0) or 0.0
+        for_backlog = backlog >= AUDIO_BACKLOG_WARN_SEC
+        for_busy = not for_backlog and getattr(self, "_alert_strong_busy", False)
+        # 占住强模型要在探测之前：探测会让出事件循环，同时到的另一条报警得看得见
+        claimed = not (for_backlog or for_busy)
+        if claimed:
+            self._alert_strong_busy = True
+        strong = used = out = error = None
+        fallback = hard_fail = held = False
         try:
+            if claimed:
+                strong = await self._strong_translator()
+                strong_model = self._model_of(strong) if strong is not None else None
+                if strong_model and fast is not None and strong_model == self._model_of(fast):
+                    # 本机最强的就是常驻的那个：直接用常驻实例。按需实例 keep_alive=0，
+                    # 用它会在每条报警之后把常驻模型从显存里卸掉
+                    strong = None
+                if strong is None:
+                    self._alert_strong_busy = claimed = False
+                else:
+                    self._hold_strong(strong)
+                    held = True
+            used = first = strong or fast
+            if first is None:
+                if for_backlog:
+                    why = "识别正在积压，这条报警先不翻译"
+                elif for_busy:
+                    why = "另一条报警正在用强模型翻译，这条先不翻译"
+                else:
+                    why = "没有可用的翻译引擎"
+                await tell(why=why)
+                self._record_alert_translation(audit, alert_ids, None, None, t0, False, why,
+                                               for_backlog, for_busy, None)
+                return
             text, hint = self._for_translation(context)
-            out = await tr.translate(text, self.target, source=lang or "auto",
-                                     glossary=hint)
-            if out and looks_fabricated(context, out):
-                print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
-                      "改用常规引擎")
-                out = await self.translator.translate(
-                    context, self.target,
-                    source=lang or "auto") if self.translator else None
-            elif out and self.glossary:
-                out = self.glossary.apply(text, out)
-        except Exception as exc:
-            print("[警告] 报警上下文翻译失败: {}".format(exc))
-            await tell(why="翻译超时或出错")
+            try:
+                out = await first.translate(text, self.target, source=lang or "auto",
+                                            glossary=hint)
+                if out and looks_fabricated(context, out):
+                    print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
+                          "改用常规引擎")
+                    fallback, used = True, fast
+                    out = await fast.translate(
+                        context, self.target,
+                        source=lang or "auto") if fast else None
+                elif out and self.glossary:
+                    out = self.glossary.apply(text, out)
+            except Exception as exc:
+                print("[警告] 报警上下文翻译失败: {}".format(exc))
+                out, hard_fail = None, True
+            if claimed:
+                self._alert_strong_busy = claimed = False
+            if not out and first is strong and strong is not None and not fallback:
+                err = getattr(strong, "last_error", None)
+                if err and err[0] is not None:
+                    error = "HTTP {}{}".format(err[0], "：" + err[1] if err[1] else "")
+                if getattr(self, "_strong", None) is strong:
+                    self._drop_strong()       # 下一条报警重新探测（探测在线程池里）
+                if fast is not None and fast is not strong:
+                    print("[警告] 强模型没有给出报警上下文译文，改用常驻引擎再译一次")
+                    fallback, used, hard_fail = True, fast, False
+                    try:
+                        out = await fast.translate(text, self.target,
+                                                   source=lang or "auto", glossary=hint)
+                        if out and self.glossary:
+                            out = self.glossary.apply(text, out)
+                    except Exception as exc:
+                        print("[警告] 常驻引擎翻译报警上下文也失败: {}".format(exc))
+                        out, hard_fail = None, True
+        finally:
+            if claimed:
+                self._alert_strong_busy = False
+            if held:
+                self._release_strong(strong)
+        why = "" if out else ("翻译超时或出错" if hard_fail else "模型没有返回译文")
+        await tell(out, why=why)
+        self._record_alert_translation(audit, alert_ids, used, out, t0, fallback, why,
+                                       for_backlog, for_busy, error)
+
+    @staticmethod
+    def _model_of(engine):
+        """引擎实际用的模型名：本地引擎和 OpenAI 在实例的 model 上，Claude 在类的
+        MODEL 上；都没有（DeepL、Google）就用引擎名。"""
+        inner = getattr(engine, "inner", engine)
+        return (getattr(inner, "model", None) or getattr(inner, "MODEL", None)
+                or getattr(engine, "name", None))
+
+    def _record_alert_translation(self, audit, alert_ids, used, out, t0, fallback, why,
+                                  for_backlog, for_busy, error):
+        if audit is None:
             return
-        await tell(out, why="" if out else "模型没有返回译文")
+        audit.alert_translation(
+            alert_ids, self._model_of(used) if used is not None else None, bool(out),
+            (time.monotonic() - t0) * 1000.0, fallback, why,
+            downgraded_for_backlog=for_backlog, downgraded_for_busy=for_busy, error=error)
+
+    def _strong_users(self):
+        """正在用的强模型实例：id → [实例, 用的人数]。清掉 self._strong 时靠它判断能不能
+        马上关掉旧实例的 HTTP 连接——关早了会掐断别人半路的请求，还会被当成「强模型
+        失败」记进审计。"""
+        users = getattr(self, "_strong_in_use", None)
+        if users is None:
+            users = self._strong_in_use = {}
+        return users
+
+    def _hold_strong(self, strong):
+        self._strong_users().setdefault(id(strong), [strong, 0])[1] += 1
+
+    def _release_strong(self, strong):
+        users = self._strong_users()
+        entry = users.get(id(strong))
+        if entry is None:
+            return
+        entry[1] -= 1
+        if entry[1] > 0:
+            return
+        del users[id(strong)]
+        if strong is not getattr(self, "_strong", None):
+            self._close_later(strong)    # 已经换下的实例：最后一个用的人用完就关
+
+    def _drop_strong(self):
+        """忘掉缓存的强模型实例，下次用时重新探测；没人在用就马上关掉它的连接，有人在用
+        就等最后一个人用完（_release_strong）。以前只是置 None：每场开始、每次强模型
+        失败都丢下一个没关的 aiohttp 会话。"""
+        old, self._strong = getattr(self, "_strong", None), None
+        if old is not None and id(old) not in self._strong_users():
+            self._close_later(old)
+
+    def _close_later(self, engine):
+        """不等结果地关掉一个换下来的引擎实例的连接。这一步跑在报警翻译的 finally 里：
+        清理出了任何错都只能放弃，不能让报警框等不到回话（半成品实例没有 _bg_tasks 也一样）。"""
+        if getattr(engine, "close", None) is None:
+            return
+        coro = self._close_engine(engine)
+        try:
+            self._spawn(coro)
+        except Exception:
+            coro.close()
+
+    @staticmethod
+    async def _close_engine(engine):
+        try:
+            await engine.close()
+        except Exception:
+            pass
 
     async def _migrate_glossary(self, confirm):
         """「迁移旧词表」：扫描 → 展示 → 用户确认 → 备份 → 迁移。
@@ -2914,6 +3255,132 @@ class Pipeline:
         await self._publish_engine()
         return new
 
+    ENGINE_INCIDENT = "session:translation-engine"
+    # 本地 Ollama 连续几次非 200 才说：单独一次 500 可能只是一时载入失败
+    ENGINE_ERROR_STREAK = 3
+
+    async def _note_engine_failure(self, tr):
+        """一条字幕没译出来：看引擎自己记下的 HTTP 回应，说得清的告诉中控、记进审计。
+
+        三种情况，都只在状态变化时说一次——同一个引擎在同一场里说过就不再说，直到它
+        中间真的成功过一次（缓存命中不算，见 _note_engine_ok）：
+          * 回 429 且引擎正在暂停请求：一条提示 + translation_cooldown；
+          * 远程引擎回 401/403/404：translation_engine_error；本机有本地模型就本场改用
+            它，没有就挂一条横幅、留在原引擎按冷却重试——**绝不**自动改发 Google；
+          * 本地 Ollama 连续 ENGINE_ERROR_STREAK 次非 200：translation_engine_error +
+            引用 Ollama 原话的横幅，并重跑备模型（模型不在了会安排停止后重新下载）。
+        返回本场改用的本地引擎，没有就是 None。文字只写回应本身和能做的事，不猜原因。"""
+        from .translator import BaseTranslator, engine_label
+
+        if tr is not self.translator:
+            return None                 # 这条翻译期间引擎已经换了：旧引擎的事不再报
+        err = getattr(tr, "last_error", None)
+        if not err or err[0] is None:
+            return None
+        status, said = err[0], err[1]
+        name = getattr(tr, "name", None)
+        label = engine_label(name)
+        audit = getattr(self, "audit", None)
+        mark = (tr, audit)
+        remaining = getattr(tr, "cooldown_until", 0.0) - time.monotonic()
+        if status == 429 and remaining > 0:
+            if getattr(self, "_cooldown_mark", None) == mark:
+                return None
+            self._cooldown_mark = mark
+            seconds = int(round(remaining))
+            text = ("{} 返回 HTTP 429，程序暂停请求 {} 秒后自动重试；这期间字幕先显示原文，"
+                    "违禁词报警不受影响").format(label, seconds)
+            print("[警告] " + text)
+            if audit is not None:
+                audit.translation_cooldown(name, 429, seconds)
+            await self.server.broadcast({"type": "notice", "text": text})
+            return None
+        if getattr(self, "_engine_error_mark", None) == mark:
+            return None
+        model = self._model_of(tr)
+        if name in ("deepl", "claude", "openai") and status in BaseTranslator.REJECT_STATUSES:
+            self._engine_error_mark = mark
+            if audit is not None:
+                audit.translation_engine_error(
+                    name, status, model=None if name == "deepl" else model)
+            what = "{} 返回 HTTP {}".format(label, status)
+            if status == 404 and name != "deepl":
+                what += "（模型 {}）".format(model)
+            print("[警告] " + what)
+            fallback = await self._rejection_fallback(tr, what, status)
+            if fallback is None:
+                self._engine_incident_up = True
+                await self._incident(
+                    self.ENGINE_INCIDENT, "error",
+                    "{}，字幕先显示原文（违禁词报警不受影响），程序每 {} 秒再试一次；"
+                    "可以在「翻译引擎」里{}".format(
+                        what, BaseTranslator.REJECT_COOLDOWN_SEC,
+                        "换一个引擎" if status == 404 else "重新填写密钥，或换一个引擎"))
+            return fallback
+        if name in ("hymt2", "hymt2-7b", "gemma") \
+                and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
+            self._engine_error_mark = mark
+            if audit is not None:
+                audit.translation_engine_error(name, status, error=said, model=model)
+            text = ("{} 连续 {} 次没有译文，Ollama 返回 HTTP {}{}。字幕先显示原文"
+                    "（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎").format(
+                        label, getattr(tr, "fail_streak", 0), status,
+                        "：" + said if said else "")
+            self._engine_incident_up = True
+            await self._incident(self.ENGINE_INCIDENT, "warn", text)
+            # 模型不在了的话 ensure_local_translator 会发现，安排停止后重新下载；
+            # 自检那一行也会跟着变红（Ollama 在跑但没有这个模型）
+            task = getattr(self, "_provision_task", None)
+            if hasattr(self, "_bg_tasks") and (task is None or task.done()):
+                self._provision_task = self._spawn(self._provision_then_check())
+        return None
+
+    async def _note_engine_ok(self, tr):
+        """一条译文成功回来：之前报过的引擎问题解除（横幅撤掉），再出问题会重新说。
+        缓存命中不算——引擎自己最近一次 HTTP 回应仍是失败（fail_streak>0）时不解除。"""
+        if getattr(tr, "fail_streak", 0):
+            return
+        self._cooldown_mark = None
+        self._engine_error_mark = None
+        if getattr(self, "_engine_incident_up", False):
+            self._engine_incident_up = False
+            await self._incident(self.ENGINE_INCIDENT, "clear")
+
+    async def _rejection_fallback(self, old, what, status):
+        """远程引擎拒绝了密钥或模型：本机有本地模型就本场改用它，下拉框里的选择不动
+        （和 _quota_fallback 同一个做法）。没有本地模型时返回 None，留在原引擎按冷却
+        重试。**绝不**自动改发 Google：那等于不打招呼换了字幕的去处。"""
+        from .translator import engine_label
+
+        loop = asyncio.get_running_loop()
+        try:
+            new = await loop.run_in_executor(None, create_translator, "auto")
+        except Exception as exc:
+            print("[警告] 没有可换用的本地引擎: {}".format(exc))
+            return None
+        if new is None:
+            return None
+        if getattr(new, "name", None) not in ("hymt2", "gemma") or self.translator is not old:
+            try:
+                await new.close()
+            except Exception:
+                pass
+            return None
+        self.translator = new
+        try:
+            await old.close()
+        except Exception:
+            pass
+        back = ("在「翻译引擎」里换好模型后重选 {} 即可回来。" if status == 404
+                else "在「翻译引擎」里重新填写密钥后重选 {} 即可回来。").format(
+                    engine_label(getattr(old, "name", None)))
+        note = "{}，本场已改用{}继续翻译。{}".format(what, engine_label(new.name), back)
+        print("[警告] " + note)
+        self.args.translator_note = note
+        await self.server.broadcast({"type": "notice", "text": note})
+        await self._publish_engine()
+        return new
+
     async def _publish_translation(self, seq, translated, ok, ms, level,
                                    target, extra=None):
         """发布译文，并保证低等级不覆盖已生效的高等级结果。
@@ -2952,7 +3419,9 @@ class Pipeline:
         job = self._recent.get(seq)
         if job is None:
             return
-        if await self._strong_translator() is None:
+        # 拿本地引用：报警翻译失败时会把 self._strong 清掉，而这边可能还在等译文
+        strong = await self._strong_translator()
+        if strong is None:
             await self.server.broadcast({
                 "type": "notice",
                 "text": "没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）"})
@@ -2969,13 +3438,15 @@ class Pipeline:
         # 而那条本来好好的快译已经被擦掉了。
         # 「一次失败不得擦掉已在屏幕上的译文」这条规则，必须同时管住中间态。
         self._strong_inflight.add(seq)
+        self._hold_strong(strong)        # 报警翻译清掉 self._strong 时，别关掉这边还在用的连接
+        audit = self.audit               # 本场自己的审计：等译文期间可能已经换场
         had = self._quality.get(seq, 0) > 0
         await self.server.broadcast({"type": "caption_update", "id": seq,
                                      "strong_state": "pending"})
         t0 = time.monotonic()
         text, hint = self._for_translation(job["text"])
         try:
-            out = await self._strong.translate(
+            out = await strong.translate(
                 text, job["target"], source=job["lang"] or "auto",
                 glossary=hint)
             if out and looks_fabricated(job["text"], out):
@@ -2990,9 +3461,10 @@ class Pipeline:
             out = None
         ms = (time.monotonic() - t0) * 1000.0
         self._strong_inflight.discard(seq)
-        if self.audit is not None:
-            self.audit.translation_strong(seq, out, ms, bool(out),
-                                          self._strong.model, trigger)
+        self._release_strong(strong)
+        if audit is not None:
+            audit.translation_strong(seq, out, ms, bool(out),
+                                     getattr(strong, "model", None), trigger)
         if out:
             await self._publish_translation(seq, out, True, ms, QUALITY_STRONG,
                                             job["target"],
@@ -3062,24 +3534,31 @@ class Pipeline:
         # DeepL 月额度用尽（456）不是这一条的问题，是这个月的问题：不切换的话
         # 后面每条字幕都会「翻译失败」直到月底。切到本地引擎，并用新引擎把
         # 当前这条立刻补上——它不该成为切换的牺牲品。
+        fallback = None
         if translated is None and getattr(tr, "quota_exhausted", False):
             fallback = await self._quota_fallback(tr)
-            if fallback is not None:
-                tr = fallback
-                # translate_ms 只记翻译本身：引擎切换的开销不该算进这一条的
-                # 翻译耗时去污染延迟统计（e2e_translated_ms 仍如实含全部等待）
-                t0 = time.monotonic()
-                try:
-                    translated = await tr.translate(
-                        text, job["target"], source=job["lang"] or "auto",
-                        glossary=hint)
-                    if self.glossary:
-                        translated = self.glossary.apply(text, translated)
-                except Exception as exc:
-                    print("[警告] 降级引擎翻译失败: {}".format(exc))
-                    translated = None
+        elif translated is None:
+            # 说得清的失败（429 暂停、密钥被拒、Ollama 连续报错）告诉中控并记审计；
+            # 远程引擎拒绝密钥、本机又有本地模型时，本场改用本地模型
+            fallback = await self._note_engine_failure(tr)
+        if fallback is not None:
+            tr = fallback
+            # translate_ms 只记翻译本身：引擎切换的开销不该算进这一条的
+            # 翻译耗时去污染延迟统计（e2e_translated_ms 仍如实含全部等待）
+            t0 = time.monotonic()
+            try:
+                translated = await tr.translate(
+                    text, job["target"], source=job["lang"] or "auto",
+                    glossary=hint)
+                if self.glossary:
+                    translated = self.glossary.apply(text, translated)
+            except Exception as exc:
+                print("[警告] 降级引擎翻译失败: {}".format(exc))
+                translated = None
         if translated is None and hasattr(self, "_bg_tasks"):
             self._spawn(self._heal_local_engine())   # Ollama 掉了就拉起来（节流）
+        elif translated is not None:
+            await self._note_engine_ok(tr)        # 之前报过的引擎问题就此解除
         translate_ms = (time.monotonic() - t0) * 1000.0
         self.telemetry.record_translation(translate_ms)
         if self.audit is not None:

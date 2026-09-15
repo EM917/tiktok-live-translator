@@ -27,7 +27,9 @@ class FakeTranslator:
 
 def check(engine_name, model="", configured="auto", reachable=True, monkeypatch=None):
     if monkeypatch is not None:
-        monkeypatch.setattr(selfcheck, "_ollama_reachable", lambda: reachable)
+        # 自检现在一次问 /api/tags 拿模型列表：连不上是 None，连上了要列出在用的模型
+        monkeypatch.setattr(selfcheck, "_ollama_tags",
+                            lambda: [model] if reachable else None)
     return run(selfcheck.check_translator(
         SimpleNamespace(translator=configured),
         FakeTranslator(engine_name, model)))

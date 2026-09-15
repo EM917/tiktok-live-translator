@@ -142,6 +142,73 @@ class AuditLog:
             "trigger": trigger,
         })
 
+    def translation_engine_error(self, engine, status, error=None, model=None):
+        """翻译引擎的 HTTP 回应说明它这会儿用不了：本地 Ollama 连续几次非 200（没有
+        这个模型、载入失败……），或远程引擎拒绝了密钥/模型（401/403/404）。translation
+        记录里只有 ok=false，没有这一条就答不出「这一场的译文为什么整段是空的」。
+
+        error 是 Ollama 的原话；远程引擎不记原话（它们的错误说明里可能带打码后的
+        密钥片段）。同一个引擎在同一场里只记一次，中间成功过才会再记。"""
+        self._write({
+            "type": "translation_engine_error",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "engine": engine,
+            "model": model,
+            "status": status,
+            "error": (error or "")[:200] or None,
+        })
+
+    def translation_cooldown(self, engine, status, seconds):
+        """翻译接口回了 429、程序暂停请求的那一刻。暂停期间每条字幕都是 ok=false，
+        有这一条才分得清「接口让等一会儿」和「引擎坏了」。中间成功过才会再记。"""
+        self._write({
+            "type": "translation_cooldown",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "engine": engine,
+            "status": status,
+            "seconds": seconds,
+        })
+
+    def alert_translation(self, alert_ids, model, ok, ms, fallback, why,
+                          downgraded_for_backlog=False, downgraded_for_busy=False,
+                          error=None):
+        """报警上下文的中文翻译，一次扫描记一条。
+
+        **不复用 translation_strong**：离线重译工具（tools/retranslate_audit.py）见到
+        某个 seq 有 ok 的 translation_strong 就跳过这段，而报警编号和字幕 seq 是两套
+        号——混用的话，第 N 条报警会挡住第 N 段字幕的重译。
+
+        model 是最后给出（或没给出）译文的那个模型；fallback=真表示强模型没译出来或
+        译文不像译文，改用了常驻引擎；downgraded_for_backlog / downgraded_for_busy
+        表示一开始就没用强模型（识别正在积压 / 另一条报警正占着强模型）。error 是
+        强模型那次失败时 Ollama 的回应（状态码和原话），没有就是 None。"""
+        self._write({
+            "type": "alert_translation",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "alert_ids": list(alert_ids),
+            "model": model,
+            "ok": bool(ok),
+            "ms": round(ms, 1),
+            "fallback": bool(fallback),
+            "why": why or "",
+            "downgraded_for_backlog": bool(downgraded_for_backlog),
+            "downgraded_for_busy": bool(downgraded_for_busy),
+            "error": (error or "")[:200] or None,
+        })
+
+    def model_pull(self, state, model, error=None):
+        """本地翻译模型的下载。state：start / done / failed，以及 deferred（直播中不
+        下载，停止后再下）和 in_progress（这一场开始时已有下载在跑）。下载和拉流抢
+        同一条网络，事后要能把一段音频中断和它对上号——以前会话日志里没有下载的
+        任何痕迹。下载本身跨场次，这条记在事件发生时正开着的那场里。"""
+        self._write({
+            "type": "model_pull",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "state": state,
+            "model": model,
+            "error": (error or "")[:300] or None,
+        })
+
     def resolve(self, record):
         """流地址解析的一次尝试：第几次、成没成、走了哪几层、各层结果与耗时。
 

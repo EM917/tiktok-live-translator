@@ -276,22 +276,32 @@ async def check_translator(args, translator=None):
         return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
 
     if translator is not None:
+        from .translator import model_listed
+
         engine = getattr(translator, "name", "?")
         model = getattr(getattr(translator, "inner", translator), "model", "")
         if engine in ("hymt2", "hymt2-7b"):
             tier = "7B" if "7B" in model else "1.8B"
-            if not await _to_thread(_ollama_reachable):
+            names = await _to_thread(_ollama_tags)
+            if names is None:
                 return _check("翻译引擎", FAIL,
                               "配置的是本地 Hy-MT2 {}，但 Ollama 没在运行".format(tier),
                               await _ollama_down_hint())
+            # Ollama 在跑不等于能翻：模型不在，每句 /api/generate 都回 404。以前这里
+            # 只 ping /api/tags，切到本机没有的 7B 之后这一行照样是绿的
+            if model and not model_listed(model, names):
+                return _model_missing("本地 Hy-MT2 {}".format(tier), model)
             note = "、术语最准，但更吃内存" if tier == "7B" else ""
             return _check("翻译引擎", OK,
                           "本地 Hy-MT2 {}（离线、无限流{}）".format(tier, note))
         if engine == "gemma":
-            if not await _to_thread(_ollama_reachable):
+            names = await _to_thread(_ollama_tags)
+            if names is None:
                 return _check("翻译引擎", FAIL,
                               "配置的是本地 TranslateGemma，但 Ollama 没在运行",
                               await _ollama_down_hint())
+            if model and not model_listed(model, names):
+                return _model_missing("本地 TranslateGemma", model)
             return _check("翻译引擎", OK, "本地 TranslateGemma（离线、无限流）")
         if engine == "google":
             from . import localmodel
@@ -304,10 +314,8 @@ async def check_translator(args, translator=None):
         if engine == "deepl":
             return await _check_deepl(args, translator)
         key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(engine)
-        if key and not os.environ.get(key):
-            return _check("翻译引擎", FAIL,
-                          "{} 需要先设置环境变量 {}".format(engine, key),
-                          "没有这个密钥的话，把翻译引擎留在默认的「自动」即可")
+        if key:
+            return await _check_paid_api(engine, key, translator)
         return _check("翻译引擎", OK, "{}（付费 API）".format(engine))
 
     # 没有引擎对象（还没建，或翻译被关掉）——只能就配置说话，不假装知道更多
@@ -315,6 +323,54 @@ async def check_translator(args, translator=None):
         return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
     return _check("翻译引擎", WARN, "翻译引擎尚未初始化",
                   "点一次「开始翻译」后本项会重新检查")
+
+
+def _model_missing(label, model):
+    return _check("翻译引擎", FAIL,
+                  "配置的是{}，Ollama 在运行，但里面没有模型 {}——字幕会只显示原文"
+                  "（违禁词报警不受影响）".format(label, model),
+                  "不在直播时程序会自动下载它（进度显示在首页），直播中会等停止后再下载；"
+                  "也可以在「翻译引擎」里换一个引擎")
+
+
+async def _check_paid_api(engine, key, translator):
+    """Claude / OpenAI。
+
+    密钥可以来自环境变量，也可以是界面里填的（settings.json）。以前这里只看环境
+    变量：界面填了密钥、翻译明明在工作，这一行却一直红着「需要先设置环境变量」，
+    教会中控无视红条。
+
+    有密钥时再真问一次接口（列模型，不花 token，最多等 5 秒）：密钥被拒、模型下线，
+    这一行要在开播前变红，而不是等整场字幕都翻不出来。"""
+    from .translator import api_key
+
+    label = {"claude": "Claude", "openai": "OpenAI"}.get(engine, engine)
+    if not api_key(key):
+        return _check("翻译引擎", FAIL, "{} 还没有密钥".format(label),
+                      "在「翻译引擎」里填写密钥；没有密钥的话，把引擎留在默认的「自动」即可")
+    inner = getattr(translator, "inner", translator)
+    probe = getattr(inner, "probe_key", None)
+    if probe is None:
+        return _check("翻译引擎", OK, "{}（付费 API）".format(label))
+    try:
+        status = await asyncio.wait_for(probe(), timeout=5)
+    except Exception as exc:
+        return _check("翻译引擎", WARN,
+                      "{}（付费 API）：这次没连上接口（{}）".format(label, type(exc).__name__),
+                      "检查网络；翻译不出来时字幕先显示原文，违禁词报警不受影响")
+    if status in (401, 403):
+        return _check("翻译引擎", FAIL,
+                      "{} 拒绝了当前密钥（HTTP {}）".format(label, status),
+                      "在「翻译引擎」里重新填写密钥")
+    if status == 404 and getattr(inner, "PROBE_CHECKS_MODEL", False):
+        model = getattr(inner, "model", None) or getattr(inner, "MODEL", "?")
+        return _check("翻译引擎", FAIL,
+                      "{} 接口里找不到模型 {}（HTTP 404）".format(label, model),
+                      "在「翻译引擎」里换一个引擎")
+    if status != 200:
+        return _check("翻译引擎", WARN,
+                      "{}（付费 API）：验证密钥时接口返回 HTTP {}".format(label, status))
+    return _check("翻译引擎", OK, "{}（付费 API，密钥已验证）".format(label))
 
 
 async def _check_deepl(args, translator):
@@ -335,6 +391,16 @@ async def _check_deepl(args, translator):
     source = (getattr(args, "source", None) or "es").lower()
     if not hasattr(inner, "_ensure_glossary"):
         return _check("翻译引擎", OK, "DeepL（付费 API）")
+    # 先问一次用量：DeepL 最轻的鉴权请求。密钥被拒（401/403）时下面建术语表同样
+    # 失败，而那条路只会报「术语表没建起来」——等于把一把被拒的密钥说成「已就绪」
+    try:
+        status, _usage = await inner._api("GET", "/v2/usage")
+    except Exception:
+        status = None          # 连不上或回应读不懂：交给下面建术语表那一步去报
+    if status in (401, 403):
+        return _check("翻译引擎", FAIL,
+                      "DeepL 拒绝了当前密钥（HTTP {}）".format(status),
+                      "在「翻译引擎」里重新填写密钥")
     if target not in inner._GLOSSARY_TARGET:
         return _check("翻译引擎", WARN,
                       "DeepL 已就绪，但 {} 不挂原生术语表（DeepL 的术语表只有"
@@ -348,21 +414,21 @@ async def _check_deepl(args, translator):
         return _check("翻译引擎", WARN,
                       "DeepL 已就绪，但原生术语表没建起来——商品名会被直译"
                       "（实测词表遵从率会从 91.8% 掉到 26.5%）",
-                      "多半是额度或权限问题；本地 Hy-MT2 不受影响")
+                      "建术语表的请求没有成功，程序 120 秒后会自动重试；本地 Hy-MT2 不受影响")
     n = len(inner.glossary_tsv(load_glossary().entries).splitlines())
     return _check("翻译引擎", OK,
                   "DeepL + 原生术语表（{} 条，{}→{}）".format(n, source, target))
 
 
-def _ollama_reachable():
-    import urllib.request
+def _ollama_tags():
+    """Ollama /api/tags 里的模型名列表；连不上返回 None。同步 urllib，放线程池里调。"""
+    from .translator import _ollama_models_or_none
 
-    base = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-    try:
-        urllib.request.urlopen(base + "/api/tags", timeout=2).read()
-        return True
-    except Exception:
-        return False
+    return _ollama_models_or_none()
+
+
+def _ollama_reachable():
+    return _ollama_tags() is not None
 
 
 async def check_watchlist(detector):
