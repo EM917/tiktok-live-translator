@@ -327,8 +327,23 @@ async def check_audit():
         probe.unlink()
         return _check("审计日志", OK, "可写入 logs/")
     except OSError as exc:
-        return _check("审计日志", WARN,
-                      "logs/ 不可写（{}）——漏报将无法事后追溯".format(exc))
+        # FAIL 而不是 WARN：写不进去就是整场没有证据——报警照常上屏，审计里一条没有。
+        # WARN 时界面只显示「⚠️ 自检通过，1 项提醒」且不自动展开，等于没说
+        return _check("审计日志", FAIL,
+                      "logs/ 不可写（{}）——漏报将无法事后追溯".format(exc),
+                      _audit_fix(os.name == "nt"))
+
+
+def _audit_fix(windows):
+    """logs/ 写不进去时能照做的一步。目录归属不对（比如用 sudo 跑过安装或程序）时
+    chown 能修；logs/ 还没建出来时要改的是它的上一级。"""
+    if windows:
+        return "把程序文件夹移出「文档/桌面」，或在「受控文件夹访问」里允许 python"
+    import shlex
+
+    from .audit import LOG_DIR
+    target = LOG_DIR if LOG_DIR.exists() else LOG_DIR.parent
+    return 'sudo chown -R "$(whoami)" {}'.format(shlex.quote(str(target)))
 
 
 async def check_resolver():

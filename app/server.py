@@ -30,10 +30,28 @@ def replay_payloads(history):
     return payloads
 
 
+def _write_buffer_size(transport):
+    if transport is None:
+        return None
+    try:
+        return transport.get_write_buffer_size()
+    except Exception:
+        return None
+
+
 class CaptionServer:
+    # 一个页面收不下消息时的两道闸（见 broadcast）。都放得很宽：只该拦住真的卡死的
+    # 页面，不该拦住跑了个长 JS 任务的慢页面——被断开的页面会重连，而每次 hello
+    # 都会清空面板重放。
+    SEND_TIMEOUT_SEC = 2.0
+    MAX_CLIENT_BUFFER = 2 * 1024 * 1024
+    # 由 Pipeline 注入：(reason, buffered_bytes) -> None，写审计、打一行日志
+    on_client_dropped = None
+
     def __init__(self, port=8765):
         self.port = port
         self.clients = set()
+        self._transports = {}    # ws -> 这个连接的 transport（断开卡死的页面要 abort 它）
         self.history = deque(maxlen=100)
         # 违禁词警报必须跨刷新/重连留存：中控没看到就等于漏报，
         # 不能因为页面重载而消失
@@ -113,6 +131,7 @@ class CaptionServer:
             # 观众弹幕历史同样要回放，且同样带 replay 标记
             for c in list(self.comments):
                 await ws.send_json(dict(c, replay=True))
+            self._transports[ws] = request.transport
             self.clients.add(ws)
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -133,6 +152,7 @@ class CaptionServer:
                         print("[警告] 处理控制消息失败: {}".format(exc))
         finally:
             self.clients.discard(ws)
+            self._transports.pop(ws, None)
         return ws
 
     async def broadcast(self, msg):
@@ -198,14 +218,50 @@ class CaptionServer:
                                      "command": msg.get("command")}
         elif msg.get("type") == "config":
             self.config.update({k: v for k, v in msg.items() if k != "type"})
+        # 逐个页面发，每个都有上限。以前是不限时的 await：一个不读消息的页面（浏览器
+        # 冻结的后台标签、DevTools 断点、弹着 confirm 的 WebView2）把发送缓冲塞满后，
+        # send_json 永远不返回——识别循环在等报警广播，于是识别整个停下、音频积压
+        # 到上限被丢，而正常的窗口一直显示「直播中」。心跳救不了：它的关闭是优雅
+        # 关闭，也在等那个永远发不完的缓冲区。
+        transports = getattr(self, "_transports", None) or {}
         dead = []
         for ws in list(self.clients):
+            transport = transports.get(ws)
+            buffered = _write_buffer_size(transport)
+            if buffered is not None and buffered > self.MAX_CLIENT_BUFFER:
+                self._drop_client(ws, transport, "buffer_full", buffered)
+                continue
             try:
-                await ws.send_json(msg)
+                await asyncio.wait_for(ws.send_json(msg), self.SEND_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                self._drop_client(ws, transport, "send_timeout",
+                                  _write_buffer_size(transport))
             except Exception:
                 dead.append(ws)
         for ws in dead:
             self.clients.discard(ws)
+            transports.pop(ws, None)
+
+    def _drop_client(self, ws, transport, reason, buffered):
+        """断开一个收不下消息的页面。用 abort 不用 close：close 要等缓冲区发完，
+        对一个不读的页面永远等不完。页面会自己重连，hello 之后补回报警。"""
+        registered = ws in self.clients
+        self.clients.discard(ws)
+        transports = getattr(self, "_transports", None)
+        if transports is not None:
+            transports.pop(ws, None)
+        if transport is not None:
+            try:
+                transport.abort()
+            except Exception:
+                pass
+        # 两条并发的广播可能同时卡在同一个页面上：只报一次
+        hook = self.on_client_dropped
+        if registered and hook is not None:
+            try:
+                hook(reason, buffered)
+            except Exception as exc:
+                print("[警告] 记录界面断开失败: {}".format(exc))
 
     async def status(self, state, detail="", command=None):
         """command：给用户一条可以原样照做的命令（界面会渲染成可复制的一行）。

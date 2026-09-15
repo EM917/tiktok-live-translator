@@ -5,34 +5,73 @@
   A. Whisper 根本没听出来       —— raw 里也没有
   B. 听出来了但被质量过滤丢掉   —— rejected 里有，附原因
   C. ASR 正确但检测器没匹配上   —— text 里有、hits 为空
-写入失败一律静默忽略：日志不能拖累实时链路。
+写入失败不抛给实时链路（日志不能拖累报警），但也不再静默：见 AuditLog._write。
 """
 import json
+import os
+import re
 import threading
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
+# 写不进去时先留在内存里、能写了再补写的记录类型：会话头、报警、会话尾。
+# 逐段字幕和译文只计数不留——几个小时的磁盘满不能把内存吃光。
+RETAIN_TYPES = ("session_start", "alert", "session_end")
+RETAIN_MAX = 500
+
 
 def _open_new(directory, stamp):
     """独占创建审计文件。同一秒起两场（双击「开始」、一秒内换主播）会得到同一个
     stamp：以前用追加模式，第二场写进第一场的文件，provenance 把两场混成一场归到
-    第一个主播名下，按会话切语料的工具全部错归属。冲突就加 -2/-3 后缀。"""
+    第一个主播名下，按会话切语料的工具全部错归属。冲突就加 -2/-3 后缀。
+
+    无缓冲的二进制句柄：每条记录要么整行落盘、要么一个字节都不留（见
+    AuditLog._append_locked）。文本句柄在磁盘满时会把一部分记录留在 Python 的
+    缓冲区里、丢掉另一部分，事后既数不清丢了几条，补写报警时还可能写出重复的。"""
     for n in range(1, 100):
         name = "session-{}{}.jsonl".format(stamp, "" if n == 1 else "-{}".format(n))
         path = directory / name
         try:
-            return path, path.open("x", encoding="utf-8")
+            return path, path.open("xb", buffering=0)
         except FileExistsError:
             continue
     raise OSError("同一秒内已有 99 个审计文件")
+
+
+def clean_error(exc, limit=200):
+    """错误文字写进审计或界面之前去掉 URL 的查询串（签名地址、token 常在里面）。"""
+    text = exc if isinstance(exc, str) else str(exc)
+    text = re.sub(r"(\w+://[^\s?#'\"]*)[?#][^\s'\"]*", r"\1", text)
+    return text[:limit]
+
+
+def _now_ms():
+    return datetime.now().isoformat(timespec="milliseconds")
 
 
 class AuditLog:
     def __init__(self, room_url="", log_dir=None, extra=None):
         self._lock = threading.Lock()
         self._fh = None
+        self._pos = 0                    # 已整行落盘的字节数（写到一半失败时截回这里）
+        self._torn = False               # 截回失败、文件里留着半行
+        # 写入失败的状态。以前 _write 把 OSError 吞掉就完了：磁盘满的那段时间报警
+        # 照常上屏，审计里一条没有，界面和自检都不知道。
+        self.open_error = None           # 文件根本没建起来的原因（此时 path 为 None）
+        self.failing = False             # 此刻是否写不进去
+        self.failing_since = None
+        self.last_error = ""
+        self.write_failures = 0          # 本场累计写失败的记录条数
+        self.lost_records = 0            # 其中没留在内存里、确定丢了的条数
+        self.last_gap = None             # 最近一次恢复时写下的 audit_gap
+        self._lost_in_outage = 0
+        self._retained = deque()         # 等补写的会话头/报警/会话尾（编码好的整行）
+        # 每次「开始写不进去」调一次，不是每条都调。可能在事件循环之外的线程里被调用，
+        # 调用方自己切回循环（call_soon_threadsafe）
+        self.on_write_error = None
         directory = Path(log_dir) if log_dir else LOG_DIR
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -53,18 +92,124 @@ class AuditLog:
                                 "code_commit": code_commit(),
                                 "glossary_hash": file_hash(root / "glossary.txt"),
                                 "vocative_hash": file_hash(root / "app" / "vocative.py")}))
-        except OSError:
-            self.path = None
+        except OSError as exc:
+            if self._fh is None:
+                self.path = None
+                self.open_error = clean_error(exc)
 
     def _write(self, record):
+        """写一条。失败不抛给调用方（实时链路不能被日志拖住），但要记下来：
+          - failing / failing_since / last_error / write_failures 供管线每 10 秒查看；
+          - 开始写不进去的那一刻调一次 on_write_error；
+          - 会话头、报警、会话尾留在内存里（最多 RETAIN_MAX 条），其余只计数；
+          - 之后第一次能写时先补一条 audit_gap（起止时间、丢了几条），再按原顺序补写
+            留下的记录，最后才是这一条。
+        每条都是整行直接落盘（无缓冲），崩溃也不丢最后几条。"""
         if self._fh is None:
             return
         try:
-            with self._lock:
-                self._fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-                self._fh.flush()      # 崩溃也不能丢最后几条
+            data = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+        except ValueError:
+            return
+        started = None
+        with self._lock:
+            if self._fh is None:
+                return
+            try:
+                if self.failing or self._retained:
+                    self._drain_locked()
+                self._append_locked(data)
+            except (OSError, ValueError) as exc:
+                started = self._note_failure_locked(record, data, exc)
+        callback = self.on_write_error
+        if started is not None and callback is not None:
+            try:
+                callback(started)
+            except Exception:
+                pass
+
+    def _append_locked(self, data):
+        """整行写进去，或者一个字节都不留。写到一半失败（磁盘只剩几个字节）就把文件
+        截回这一行之前：半行 JSON 会让逐行读日志的工具在这里断掉。"""
+        fh = self._fh
+        if self._torn:
+            data = b"\n" + data          # 上次没截回去的半行，先把它隔成单独一行
+        view = memoryview(data)
+        done = 0
+        try:
+            while done < len(data):
+                n = fh.write(view[done:])
+                if not n:
+                    raise OSError("审计文件写入返回 0 字节")
+                done += n
         except (OSError, ValueError):
-            pass
+            if done:
+                try:
+                    fh.truncate(self._pos)
+                    fh.seek(self._pos)
+                except (OSError, ValueError):
+                    self._torn = True
+                    try:
+                        self._pos = fh.tell()
+                    except (OSError, ValueError):
+                        pass
+            raise
+        self._pos += done
+        self._torn = False
+
+    def _drain_locked(self):
+        """写不进去之后第一次能写：先记 audit_gap，再补写留在内存里的记录。
+        任何一步写不进去就抛出，留到下一条再试。"""
+        if self.failing:
+            now = _now_ms()
+            gap = {"type": "audit_gap", "at": now, "from": self.failing_since, "to": now,
+                   "lost_records": self._lost_in_outage,
+                   "retained_records": len(self._retained),
+                   "error": self.last_error}
+            self._append_locked((json.dumps(gap, ensure_ascii=False) + "\n").encode("utf-8"))
+            self.failing = False
+            self.failing_since = None
+            self._lost_in_outage = 0
+            self.last_gap = gap
+        while self._retained:
+            self._append_locked(self._retained[0])
+            self._retained.popleft()
+
+    def _note_failure_locked(self, record, data, exc):
+        """记一次写失败。只在「这一刻开始写不进去」时返回信息（给回调），否则 None。"""
+        self.write_failures += 1
+        self.last_error = clean_error(exc)
+        started = not self.failing
+        if started:
+            self.failing = True
+            self.failing_since = _now_ms()
+        if record.get("type") in RETAIN_TYPES and len(self._retained) < RETAIN_MAX:
+            self._retained.append(data)
+        else:
+            self._lost_in_outage += 1
+            self.lost_records += 1
+        if started:
+            return {"since": self.failing_since, "error": self.last_error}
+        return None
+
+    def detached(self):
+        """审计文件还在不在它的路径上。logs/ 在访达里被移走或删掉时写入并不报错，
+        进的是路径上已经没有的那个文件——删掉的话关闭时就全没了。
+        Windows 上打开着的文件删不掉也改不了名，只看路径在不在。"""
+        fh, path = self._fh, getattr(self, "path", None)
+        if fh is None or path is None:
+            return False
+        try:
+            if os.name == "nt":
+                return not os.path.exists(str(path))
+            opened = os.fstat(fh.fileno())
+            try:
+                current = os.stat(str(path))
+            except FileNotFoundError:
+                return True
+            return (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        except (OSError, ValueError):
+            return False
 
     def segment(self, seq, result, audio_end_ts, asr_ms, hits):
         """一段音频的完整记录：接受的文本、被丢弃的候选及原因、命中的违禁词。"""
@@ -180,6 +325,17 @@ class AuditLog:
         self._write({"type": "alert",
                      "at": datetime.now().isoformat(timespec="milliseconds"),
                      **hit})
+
+    def ui_client_dropped(self, reason, buffered_bytes=None, clients_left=None):
+        """一个界面页面收不下消息，被服务端断开（页面会自己重连并补回报警）。
+        留痕是为了事后答得出「那段时间屏幕上的报警为什么晚到」。"""
+        self._write({"type": "ui_client_dropped", "at": _now_ms(), "reason": reason,
+                     "buffered_bytes": buffered_bytes, "clients_left": clients_left})
+
+    def window_closed(self):
+        """中控关掉了程序窗口（正在监听时要先确认），监听随之停止。先于停止流程写下：
+        收尾要等识别线程和弹幕子进程，进程可能等不到 session_end 就退出。"""
+        self._write({"type": "window_closed", "at": _now_ms()})
 
     def close(self):
         if self._fh is not None:

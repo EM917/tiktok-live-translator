@@ -4,18 +4,68 @@
 """
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
 
+# 本次运行里发现 settings.json 内容损坏时备份成的文件名，以及界面提示是否已发过
+_corrupt = {"backup": None, "announced": False}
+
 
 def load_settings():
-    """读出全部设置。文件缺失/损坏/不是对象都静默返回空 dict。"""
+    """读出全部设置。文件缺失、读不了、或是合法 JSON 但不是对象时返回空 dict。
+
+    解析不了（不是合法 JSON、不是 UTF-8、0 字节）时，先把文件改名备份成
+    settings.json.corrupt-<时间>，再返回空 dict。以前直接返回 {}：启动几秒内
+    必然有一次 save_setting（更新器记时间戳、开播记房间）在这个 {} 上合并写回，
+    DeepL 等密钥、引擎选择、最近直播间被静默抹掉，连原文件都不剩。
+    改名而不是复制：之后的读取看到的是「没有文件」，不会每读一次备份一份。"""
     try:
-        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
+        raw = SETTINGS_FILE.read_bytes()
+    except OSError:
         return {}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:            # JSONDecodeError、UnicodeDecodeError……
+        _backup_corrupt(raw)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _backup_corrupt(raw):
+    try:
+        if SETTINGS_FILE.read_bytes() != raw:
+            return               # 读完之后文件已被别处改写或备份过：别把新文件当坏的挪走
+    except OSError:
+        return
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    for n in range(1, 100):
+        backup = SETTINGS_FILE.with_name("{}.corrupt-{}{}".format(
+            SETTINGS_FILE.name, stamp, "" if n == 1 else "-{}".format(n)))
+        if backup.exists():
+            continue
+        try:
+            os.replace(str(SETTINGS_FILE), str(backup))
+        except OSError:          # 含 FileNotFoundError：并发的另一次读取刚改过名
+            return
+        if _corrupt["backup"] is None:
+            _corrupt["backup"] = backup.name
+        print("[警告] settings.json 内容损坏，已备份为 {}".format(backup.name))
+        return
+
+
+def corrupt_backup_name():
+    """本次运行里 settings.json 被判定损坏后备份成的文件名；没发生过是 None。"""
+    return _corrupt["backup"]
+
+
+def take_corrupt_notice():
+    """同上，但每次运行只交出一次：界面提示发一遍，不是每读一次设置发一遍。"""
+    if _corrupt["backup"] is None or _corrupt["announced"]:
+        return None
+    _corrupt["announced"] = True
+    return _corrupt["backup"]
 
 
 DEFAULT_SOURCE_LANG = "es"
@@ -87,8 +137,11 @@ def save_setting(key, value):
     data[key] = value
     try:
         tmp = SETTINGS_FILE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                       encoding="utf-8")
+        with open(str(tmp), "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False, indent=2))
+            f.flush()
+            # 先落盘再替换：写完就断电时，不至于换上一个 0 字节的 settings.json
+            os.fsync(f.fileno())
         os.replace(tmp, SETTINGS_FILE)
     except OSError:
         pass
