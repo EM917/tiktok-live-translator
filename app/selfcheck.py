@@ -348,6 +348,16 @@ async def check_resolver():
                   "在 Chrome/Safari 里登录一次 TikTok")
 
 
+def _pip_command(spec, upgrade=True):
+    """给中控复制的手动安装命令。Windows 默认终端是 PowerShell：以带引号的路径开头的一行
+    会被当成表达式报错，前面必须加 &。"""
+    import sys
+    flag = " -U" if upgrade else ""
+    if os.name == "nt":
+        return "在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"".format(sys.executable, flag, spec)
+    return "在终端里执行：\"{}\" -m pip install{} \"{}\"".format(sys.executable, flag, spec)
+
+
 async def check_comments(args):
     """观众弹幕组件 TikTokLive：装没装、版本够不够。只读包元数据，不连 TikTok。
 
@@ -365,18 +375,20 @@ async def check_comments(args):
                       "弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用"
                       .format(sys.version_info[0], sys.version_info[1]),
                       "字幕和违禁词报警不受影响")
+    from .updater import TIKTOKLIVE_SPEC
     version = await _to_thread(tiktoklive_version)
     if version is None:
-        return _check(name, WARN, "弹幕组件 TikTokLive 还没装，程序会在后台自动安装",
-                      "字幕和违禁词报警不受影响")
+        # 只写事实和真实的规则：安装有一小时冷却，这一行不知道此刻有没有在装
+        return _check(name, WARN, "弹幕组件 TikTokLive 还没装（字幕和违禁词报警不受影响）",
+                      "程序每次启动和开播时会尝试安装，一小时内只试一次；也可以关掉程序后"
+                      + _pip_command(TIKTOKLIVE_SPEC, upgrade=False))
     if tiktoklive_outdated(version):
-        from .updater import TIKTOKLIVE_SPEC
         need = ".".join(str(x) for x in TIKTOKLIVE_MIN)
         # 只写观察到的事实和能做的事：升级此刻是否在跑、下次何时试，这一行都不知道，别说
         return _check(name, WARN,
                       "弹幕组件 TikTokLive {} 低于 {}，评论服务走备用线路时连不上".format(version, need),
-                      "程序每次启动会自动尝试升级，一小时内只试一次；也可以关掉程序后在终端执行："
-                      "\"{}\" -m pip install -U \"{}\"".format(sys.executable, TIKTOKLIVE_SPEC))
+                      "程序每次启动会自动尝试升级，一小时内只试一次；也可以关掉程序后"
+                      + _pip_command(TIKTOKLIVE_SPEC, upgrade=True))
     return _check(name, OK, "弹幕组件 TikTokLive {}".format(version))
 
 

@@ -733,6 +733,9 @@ class Pipeline:
         这个方法存在的原因是降噪那次事故——功能静默降级成关闭，只在一行
         没人看的日志里说了一句。自检把这类问题变成界面上的红条。"""
         from .selfcheck import run_all, summarize
+        # 记下这次自检看到的弹幕组件版本：之后组件被自动升级（被拒时找到了补丁），
+        # 评论流重新连上时对得上号就知道要不要重查，免得「观众弹幕」一行停在旧版本
+        self._selfcheck_tiktoklive = _tiktoklive_version()
         try:
             checks = await run_all(self.args, self.detector, self.glossary,
                                    self.translator)
@@ -857,6 +860,10 @@ class Pipeline:
         每次变化也写进本场审计。2026-09-14 弹幕连接每次被拒时，日志里一条弹幕状态
         都没有，查不出是哪一刻坏的、之前几场好不好。连续相同的状态只记一条；
         键里带上 audit 对象，换场后第一条状态照记。"""
+        if state == "connected" and hasattr(self, "_selfcheck_tiktoklive") \
+                and hasattr(self, "_bg_tasks") \
+                and _tiktoklive_version() != self._selfcheck_tiktoklive:
+            self._spawn(self.run_selfcheck())   # 组件版本在上次自检之后变了：刷新那一行
         audit = getattr(self, "audit", None)
         key = (audit, state, detail, raw)
         if audit is not None and getattr(self, "_last_comment_state", None) != key:

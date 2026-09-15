@@ -71,7 +71,7 @@ def test_requirements_pin_matches_the_minimum():
 
 
 def _updater(monkeypatch, settings=None, versions=("7.0.0",), pip_code=0, installed=True,
-             pip_gate=None):
+             pip_gate=None, index=(True, None), index_gate=None):
     """造一个 Updater：设置存内存、版本号按序列返回、pip 只记参数（可选地等一个闸门）。"""
     store = dict(settings or {})
     seq = list(versions)
@@ -95,6 +95,13 @@ def _updater(monkeypatch, settings=None, versions=("7.0.0",), pip_code=0, instal
         return pip_code
 
     monkeypatch.setattr(up, "_pip_install", fake_pip)
+
+    async def fake_index():
+        if index_gate is not None:
+            await index_gate()
+        return index
+
+    monkeypatch.setattr(up, "_tiktoklive_index_versions", fake_index)
     return up, store, pip_calls
 
 
@@ -148,6 +155,47 @@ def test_freshen_without_a_newer_release_says_no_update(monkeypatch):
     assert len(pip_calls) == 1 and "tiktoklive_freshen_at" in store
 
 
+def test_index_says_installed_is_latest_so_pip_install_is_skipped(monkeypatch):
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1",), index=(True, "7.0.1"))
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "no-update"
+    assert pip_calls == [] and "tiktoklive_freshen_at" in store
+
+
+def test_unreachable_index_is_a_failed_check_not_no_update(monkeypatch, capsys):
+    """复查确认：索引连不上时 pip install -U 退回已装版本并返回 0，以前被记成「已是最新」、
+    还进了六小时冷却。现在先问索引，连不上就是检查失败。"""
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1",), index=(False, None))
+    result = run(up.freshen_tiktoklive("comment-rejected"))
+    assert result["outcome"] == "pip-failed" and result["code"] == "index-unreachable"
+    assert pip_calls == [] and "tiktoklive_freshen_at" not in store
+    assert "包索引连不上" in capsys.readouterr().out
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "recently-failed"
+
+
+def test_pip_without_index_command_falls_back_to_install(monkeypatch):
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"), index=(None, None))
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "upgraded"
+    assert len(pip_calls) == 1
+
+
+def test_index_versions_parsing(monkeypatch):
+    up = updater_mod.Updater(server=None)
+    replies = {}
+
+    async def fake_capture(args, timeout=120):
+        return replies["r"]
+
+    monkeypatch.setattr(up, "_pip_capture", fake_capture)
+    replies["r"] = (0, "TikTokLive (8.0.0)\nAvailable versions: 8.0.0, 7.1.0b1, 7.0.2, 7.0.1, 7.0.0\n", "")
+    assert run(up._tiktoklive_index_versions()) == (True, "7.0.2")
+    replies["r"] = (1, "", "ERROR: Could not fetch URL https://pypi.org/simple/tiktoklive/")
+    assert run(up._tiktoklive_index_versions()) == (False, None)
+    replies["r"] = (1, "", "ERROR: unknown command \"index\"")
+    assert run(up._tiktoklive_index_versions()) == (None, None)
+    replies["r"] = (None, "", "timeout")
+    assert run(up._tiktoklive_index_versions()) == (False, None)
+
+
 def test_failed_check_is_logged_and_does_not_start_the_six_hour_cooldown(monkeypatch, capsys):
     """审查确认：以前 pip 失败也先记了六小时冷却，还一句不说——网络一分钟后恢复，
     修复版本也要再等六小时。现在失败只进十分钟的内存重试间隔。"""
@@ -178,7 +226,7 @@ def test_freshen_does_nothing_when_not_installed(monkeypatch):
     assert pip_calls == []
 
 
-def test_announce_runs_right_before_pip(monkeypatch):
+def test_announce_runs_before_the_check(monkeypatch):
     order = []
 
     async def announce():
@@ -194,6 +242,64 @@ def test_announce_runs_right_before_pip(monkeypatch):
     monkeypatch.setattr(up, "_pip_install", pip_after_announce)
     run(up.freshen_tiktoklive("comment-rejected", announce=announce))
     assert order == ["announce", "pip"]
+
+
+def test_joiner_is_announced_when_it_joins_a_running_check(monkeypatch):
+    """复查确认：第二场被拒时跟着等第一场的检查，以前它的面板一直停在「连接中」。"""
+    gate = {}
+    announced = []
+
+    async def pip_gate():
+        await gate["event"].wait()
+
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"), pip_gate=pip_gate)
+
+    def announcer(tag):
+        async def announce():
+            announced.append(tag)
+        return announce
+
+    async def scenario():
+        gate["event"] = asyncio.Event()
+        first = asyncio.ensure_future(up.freshen_tiktoklive("a", announce=announcer("A")))
+        await wait_until(lambda: pip_calls, limit=100)
+        second = asyncio.ensure_future(up.freshen_tiktoklive("b", announce=announcer("B")))
+        await wait_until(lambda: "B" in announced, limit=100)
+        seen_before_release = list(announced)
+        gate["event"].set()
+        await first
+        await second
+        return seen_before_release
+
+    assert run(scenario()) == ["A", "B"]
+
+
+def test_joiner_before_the_check_starts_is_announced_with_the_first(monkeypatch):
+    gate = {}
+    announced = []
+
+    async def index_gate():
+        await gate["event"].wait()
+
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1",), index=(True, "7.0.1"),
+                                    index_gate=index_gate)
+
+    def announcer(tag):
+        async def announce():
+            announced.append(tag)
+        return announce
+
+    async def scenario():
+        gate["event"] = asyncio.Event()
+        first = asyncio.ensure_future(up.freshen_tiktoklive("a", announce=announcer("A")))
+        await asyncio.sleep(0.05)
+        second = asyncio.ensure_future(up.freshen_tiktoklive("b", announce=announcer("B")))
+        await asyncio.sleep(0.05)
+        gate["event"].set()
+        return await first, await second
+
+    a, b = run(scenario())
+    assert sorted(announced) == ["A", "B"] and a == b
 
 
 def test_concurrent_freshen_calls_share_one_check(monkeypatch):
@@ -310,15 +416,34 @@ def _fake_errors(monkeypatch):
 
 
 class InvalidStatusCode(Exception):          # websockets.legacy 的同名异常（类名是识别依据）
-    def __init__(self, status_code):
+    def __init__(self, status_code, msg=None):
         super().__init__("server rejected WebSocket connection: HTTP {}".format(status_code))
         self.status_code = status_code
+        self.headers = {"Handshake-Msg": msg} if msg else {}
 
 
 class InvalidStatus(Exception):              # 新版 websockets：状态码在 response 上
     def __init__(self, status_code):
         super().__init__("server rejected WebSocket connection: HTTP {}".format(status_code))
         self.response = SimpleNamespace(status_code=status_code)
+
+
+def test_handshake_msg_is_read_from_the_headers(monkeypatch):
+    """复查确认：7.0.0 的报错文本不带服务端的 Handshake-Msg，只有头里有。"""
+    errors = _fake_errors(monkeypatch)
+    from app import comment_worker
+    exc = InvalidStatusCode(400, "invalid route params")
+    assert comment_worker._handshake_info(exc) == (400, "invalid route params")
+    try:
+        try:
+            raise InvalidStatus(403)
+        except InvalidStatus as inner:
+            raise errors.WebcastBlockedError("403") from inner
+    except errors.WebcastBlockedError as wrapped:
+        assert comment_worker._handshake_info(wrapped) == (403, None)
+    assert comment_worker._handshake_fields(RuntimeError("x")) == {}
+    assert comment_worker._handshake_fields(exc) == {"http_status": 400,
+                                                     "handshake_msg": "invalid route params"}
 
 
 def test_tiktoklive_700_handshake_400_is_rejected(monkeypatch):
@@ -370,11 +495,11 @@ def test_plain_errors_and_cyclic_chains_are_safe(monkeypatch):
 
 def test_worker_status_line_carries_the_http_status(capsys):
     from app import comment_worker
-    comment_worker._status("rejected", "x", http_status=400)
+    comment_worker._status("rejected", "x", http_status=400, handshake_msg="bad params")
     comment_worker._status("connecting")
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert lines[0]["http_status"] == 400
-    assert "http_status" not in lines[1]
+    assert lines[0]["http_status"] == 400 and lines[0]["handshake_msg"] == "bad params"
+    assert "http_status" not in lines[1] and "handshake_msg" not in lines[1]
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +541,7 @@ def jline(d):
 
 REJECTED_400 = jline({"event": "status", "state": "rejected",
                       "detail": "InvalidStatusCode: server rejected WebSocket connection: HTTP 400",
-                      "http_status": 400})
+                      "http_status": 400, "handshake_msg": "invalid route params"})
 BLOCKED_200 = jline({"event": "status", "state": "blocked",
                      "detail": 'WebcastBlockedError: rejected due to "illegal secret key"',
                      "http_status": 200})
@@ -505,7 +630,8 @@ def test_rejected_then_upgraded_reconnects_immediately(monkeypatch):
     assert any("正在检查" in d for d in details)
     assert any("7.0.0" in d and "7.0.1" in d for d in details)
     assert not any("InvalidStatusCode" in d for d in details)     # 原始英文报错没上面板
-    assert any("InvalidStatusCode" in raw and "http_status=400" in raw for _, _, raw in raw_log)
+    assert any("InvalidStatusCode" in raw and "http_status=400" in raw
+               and "handshake_msg=invalid route params" in raw for _, _, raw in raw_log)
     _no_banned_labels(state_log)
 
 
@@ -518,6 +644,7 @@ def test_rejected_without_update_waits_and_says_what_happened(monkeypatch):
     assert len(calls) == 1                                           # 仍在长等窗口内
     final = [d for _, d in state_log if "分钟后自动重试" in d][-1]
     assert "HTTP 400" in final and "已是可用的最新版本" in final
+    assert any("分钟后自动重试" in d and "http_status=400" in raw for _, d, raw in raw_log)
     _no_banned_labels(state_log)
 
 
@@ -529,6 +656,14 @@ def test_rejected_during_cooldown_does_not_claim_a_check(monkeypatch):
     assert _run_until(cs, lambda: any("分钟后自动重试" in d for _, d in state_log)) is True
     assert not any("正在检查" in d for _, d in state_log)
     assert any("近几个小时已检查过" in d for _, d in state_log)
+    assert any("近几个小时已检查过" in d and "InvalidStatusCode" in raw for _, d, raw in raw_log)
+
+
+def test_rejection_without_an_updater_still_records_the_raw_reason(monkeypatch):
+    cs, state_log, raw_log, calls = make_source(
+        monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=None)
+    assert _run_until(cs, lambda: any("分钟后自动重试" in d for _, d in state_log)) is True
+    assert any("分钟后自动重试" in d and "http_status=400" in raw for _, d, raw in raw_log)
 
 
 def test_failed_update_check_is_reported_on_the_panel(monkeypatch):
@@ -761,6 +896,52 @@ def test_selfcheck_comments_row(monkeypatch, version, level, needle):
     assert c["name"] == "观众弹幕" and c["level"] == level and needle in c["detail"]
     for word in BANNED_LABELS:
         assert word not in c["detail"] + c["fix"]
+
+
+def test_selfcheck_pip_command_is_valid_for_each_shell(monkeypatch):
+    """复查确认：Windows 默认终端是 PowerShell，带引号路径开头的一行会报语法错误，必须加 &。"""
+    monkeypatch.setattr(selfcheck.os, "name", "nt")
+    win = selfcheck._pip_command("TikTokLive>=7.0.1,<8")
+    assert "PowerShell" in win and "& \"" in win and "pip install -U" in win
+    monkeypatch.setattr(selfcheck.os, "name", "posix")
+    posix = selfcheck._pip_command("TikTokLive>=7.0.1,<8", upgrade=False)
+    assert "& " not in posix and "pip install \"TikTokLive" in posix
+
+
+def test_selfcheck_not_installed_row_states_the_real_rule(monkeypatch):
+    monkeypatch.setattr(sys, "version_info", (3, 13, 0))
+    monkeypatch.setattr(updater_mod, "tiktoklive_version", lambda: None)
+    c = run(selfcheck.check_comments(_args()))
+    assert "自动安装" not in c["detail"] + c["fix"]
+    assert "一小时内只试一次" in c["fix"] and updater_mod.TIKTOKLIVE_SPEC in c["fix"]
+
+
+def test_selfcheck_is_rerun_when_the_component_changed_since_the_last_check(monkeypatch):
+    """复查确认：被拒时升级了组件，自检那一行一直停在旧版本。"""
+    p = Pipeline.__new__(Pipeline)
+    p.server = StubServer()
+    p.audit = None
+    p._bg_tasks = set()
+    runs = []
+
+    async def run_selfcheck():
+        runs.append(1)
+
+    p.run_selfcheck = run_selfcheck
+    p._selfcheck_tiktoklive = "7.0.0"
+    monkeypatch.setattr(pipeline_mod, "_tiktoklive_version", lambda: "7.0.1")
+
+    async def scenario():
+        await p._publish_comment_source("connecting", "")
+        await p._publish_comment_source("connected", "")
+        await asyncio.sleep(0.01)
+
+    run(scenario())
+    assert runs == [1]
+    p._selfcheck_tiktoklive = "7.0.1"
+    runs.clear()
+    run(scenario())
+    assert runs == []
 
 
 def test_selfcheck_outdated_row_states_facts_not_an_upgrade_in_progress(monkeypatch):

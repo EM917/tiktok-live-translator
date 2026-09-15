@@ -198,6 +198,7 @@ class CommentSource:
         self._last_state = None         # 子进程最后一条 status 的 state，退出码不可信时的依据
         self._last_detail = ""          # 同一条 status 的 detail（原始报错），换成中文说明时用
         self._last_http = None          # 同一条 status 带的握手 HTTP 状态码（被拒时才有）
+        self._last_handshake = None     # 同一条 status 带的服务端 Handshake-Msg 原话
         self._connect_times = []        # 最近一小时内的连接尝试时间戳，额度限流用
         # start()/stop() 每次调用都自增的世代号：_restart() 里 await self.stop()
         # 会让出事件循环，这段时间内如果有另一次 start()/stop() 插进来，_restart()
@@ -277,6 +278,7 @@ class CommentSource:
             self._last_state = None
             self._last_detail = ""
             self._last_http = None
+            self._last_handshake = None
             # 记下这次子进程用的组件版本：被拒时若已经换了新版本（启动时的升级刚落地、
             # 上一次被取消的 pip 刚跑完），立刻重连，不去白查一次、更不白等几分钟
             spawned_version = _installed_tiktoklive()
@@ -320,7 +322,9 @@ class CommentSource:
                     prefix = "TikTok 暂时拒绝了评论连接"
                     wait = self.BLOCKED_WAIT_SEC
                 # 服务端给的原始原因只进审计，不上面板
-                raw = "{} http_status={}".format(self._last_detail, self._last_http)
+                raw = "{} http_status={}{}".format(
+                    self._last_detail, self._last_http,
+                    " handshake_msg={}".format(self._last_handshake) if self._last_handshake else "")
                 now_version = _installed_tiktoklive()
                 if now_version and spawned_version and now_version != spawned_version:
                     await self._set_state(
@@ -459,6 +463,7 @@ class CommentSource:
                     self._last_state = state
                     self._last_detail = obj.get("detail") or ""
                     self._last_http = obj.get("http_status")
+                    self._last_handshake = obj.get("handshake_msg")
                     if state == "connected":
                         connected_at = self._clock()
                     if state in ("rejected", "blocked"):
