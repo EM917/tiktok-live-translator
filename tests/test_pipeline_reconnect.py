@@ -69,7 +69,7 @@ def test_offline_resolve_ends_stream(monkeypatch, tmp_path):
         resolves.append(url)
         if len(resolves) == 1:
             return "http://cdn/stream.flv"
-        raise ResolveError("主播现在没有开播。", kind="offline")
+        raise ResolveError("主播现在没有开播。", kind="offline", status=4)
 
     import app.resolver
     monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
@@ -97,7 +97,7 @@ def test_reconnect_resumes_with_fresh_url(monkeypatch, tmp_path):
         try:
             return next(urls)
         except StopIteration:
-            raise ResolveError("没开播", kind="offline") from None
+            raise ResolveError("没开播", kind="offline", status=4) from None
 
     import app.resolver
     monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
@@ -142,7 +142,7 @@ def test_good_run_resets_budget(monkeypatch, tmp_path):
 
     async def fake_resolve(url, cookies=None, cookies_browser="auto", trace=None):
         if len(sessions) >= len(outcomes):     # 剧本演完 → 主播下播收尾
-            raise ResolveError("没开播", kind="offline")
+            raise ResolveError("没开播", kind="offline", status=4)
         return "http://cdn/s.flv"
 
     import app.resolver
@@ -196,10 +196,19 @@ def test_stream_session_accounts_real_audio_duration(monkeypatch, tmp_path):
 
 
 def test_direct_url_ends_cleanly_after_good_run(monkeypatch, tmp_path):
-    """直连 .flv 地址播过一阵后断流 → 直接按「已结束」收尾，不做徒劳重连
-    （直连地址重新解析不出「主播是否还在播」）。"""
+    """直连 .flv 地址播过一阵后断流、而且这个地址已经拉不到数据 → 按「已结束」收尾，
+    不做徒劳重连（直连地址重新解析不出「主播是否还在播」）。地址还出数据的情况见
+    tests/test_resilience_stream.py：那时要重连。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     sessions = []
+    probes = []
+
+    async def dead(url, timeout=8):
+        probes.append(url)
+        return False
+
+    import app.resolver
+    monkeypatch.setattr(app.resolver, "_media_url_works", dead)
 
     async def fake_session(media, *a, **k):
         sessions.append(media)
@@ -214,7 +223,9 @@ def test_direct_url_ends_cleanly_after_good_run(monkeypatch, tmp_path):
 
     run(p._run_stream_inner("https://cdn.example.com/room/stream.flv"))
     assert len(sessions) == 1                    # 播完即收，零重连
+    assert probes == ["https://cdn.example.com/room/stream.flv"]
     assert server.statuses[-1][0] == "ended"
+    assert "拉不到数据" in server.statuses[-1][1]
 
 
 def test_direct_url_dead_stream_gets_one_retry(monkeypatch, tmp_path):

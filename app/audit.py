@@ -12,6 +12,8 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from .redact import strip_query
+
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 
@@ -27,6 +29,13 @@ def _open_new(directory, stamp):
         except FileExistsError:
             continue
     raise OSError("同一秒内已有 99 个审计文件")
+
+
+def _iso_from_epoch(ts):
+    try:
+        return datetime.fromtimestamp(float(ts)).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 class AuditLog:
@@ -176,16 +185,141 @@ class AuditLog:
             "raw": (raw or "")[:300],
         })
 
+    # ---- 拉流这一侧的观察：断在哪、断了多久、程序有没有在跑、为什么结束 ----
+    # 以前这些只打在终端上，而打包运行时 stdout 指向 /dev/null：事后对着一段没有字幕的
+    # 时间，分不清是主播没说话、流断了、网断了，还是电脑睡着了。所有错误文本里的 URL
+    # 先去掉 query（签名地址两周内拿着就能拉流）。
+
+    def stream_break(self, reason, returncode=None, audio_sec=0.0, got_audio=False,
+                     reconnect_no=0, stderr_tail="", error=None):
+        """一轮拉流结束。reason：eof（读到流尾）/ stall（20 秒没有任何字节，看门狗断开）/
+        clock_gap（时钟对账发现电脑休眠过，程序主动断开重连）/ cancelled（停止或换场）/
+        error（这一轮内部出错）。returncode 是 ffmpeg 收尾后的退出码，原样记。"""
+        rec = {
+            "type": "stream_break",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "reason": reason,
+            "returncode": returncode,
+            "audio_sec": round(float(audio_sec or 0.0), 1),
+            "got_audio": bool(got_audio),
+            "reconnect_no": reconnect_no,
+            "stderr_tail": strip_query(stderr_tail)[-300:],
+        }
+        if error:
+            rec["error"] = strip_query(error, 200)
+        self._write(rec)
+
+    def stream_resumed(self, deaf_sec, reconnect_no=None):
+        """断流之后重新收到第一帧音频：中间有多少秒什么都没听到。"""
+        self._write({
+            "type": "stream_resumed",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "deaf_sec": round(max(0.0, float(deaf_sec)), 1),
+            "reconnect_no": reconnect_no,
+        })
+
+    def audio_heartbeat(self, audio_sec, wall_sec, speech_frames, segments):
+        """每 60 秒一条：这段时间实际收到多少秒音频（wall_sec 是这个窗口经过的秒数，
+        按单调时钟算，电脑睡着的时间不计）、多少帧超过识别门限、切出几段。
+        用来分开「主播没说话」「音频没到」「程序没在跑」三种空白。"""
+        self._write({
+            "type": "audio_heartbeat",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "audio_sec": round(float(audio_sec), 1),
+            "wall_sec": round(float(wall_sec), 1),
+            "speech_frames": int(speech_frames),
+            "segments": int(segments),
+        })
+
+    def stream_audio(self, audio_sec, segments_cut, peak_rms, final=False):
+        """一轮拉流的累计：收到的音频秒数、切出送去识别的段数、帧 RMS 峰值。
+        每 5 分钟一条、每轮结束一条（final=True）。"""
+        self._write({
+            "type": "stream_audio",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "audio_sec": round(float(audio_sec), 1),
+            "segments_cut": int(segments_cut),
+            "peak_rms": round(float(peak_rms), 1),
+            "final": bool(final),
+        })
+
+    def clock_gap(self, from_ts, to_ts, gap_sec, wall_sec, mono_sec, clocks_diverged):
+        """统计循环发现墙钟比预期多走了一大截：这段时间程序没有运行。
+        clocks_diverged=True 表示墙钟走了、单调时钟没走（macOS/Linux 上电脑休眠或挂起时
+        就是这样）；False 表示两个钟一起走多了（Windows 休眠、或事件循环被卡住）。
+        时钟被往前拨也会触发，所以只叫 clock_gap，不叫「休眠」。"""
+        self._write({
+            "type": "clock_gap",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "from": _iso_from_epoch(from_ts),
+            "to": _iso_from_epoch(to_ts),
+            "gap_sec": round(float(gap_sec), 1),
+            "wall_sec": round(float(wall_sec), 1),
+            "mono_sec": round(float(mono_sec), 1),
+            "clocks_diverged": bool(clocks_diverged),
+        })
+
+    def network_down(self, since_ts, why=""):
+        """重连前的连通性探测（DNS + TCP 到 www.tiktok.com:443）失败。why 只有异常类名。"""
+        self._write({
+            "type": "network_down",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "since": _iso_from_epoch(since_ts),
+            "why": strip_query(why, 120),
+        })
+
+    def network_up(self, down_sec):
+        self._write({
+            "type": "network_up",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "down_sec": round(float(down_sec), 1),
+        })
+
+    def host_wait(self, status, waited_sec, outcome, trigger="status", why=None):
+        """重连时接口说房间不在播，但不是「已结束」（状态 4）：程序在等、每分钟问一次。
+        outcome：started / live / ended / timeout；trigger=clock_gap 是电脑休眠过之后
+        对「已结束」判定做的那次复查。status 是房间接口原样返回的值。"""
+        rec = {
+            "type": "host_wait",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "status": status,
+            "waited_sec": int(round(float(waited_sec))),
+            "outcome": outcome,
+            "trigger": trigger,
+        }
+        if why:
+            rec["why"] = strip_query(why, 120)
+        self._write(rec)
+
+    def internal_error(self, exc, tb=""):
+        """直播任务里没预料到的异常。以前只有终端里的堆栈（打包运行时没人看得到），
+        界面上那句「内部错误，已停止」刷新就没了。堆栈只留最后 2000 个字符。"""
+        self._write({
+            "type": "internal_error",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "exc_type": type(exc).__name__,
+            "message": strip_query(str(exc), 300),
+            "traceback": strip_query(tb)[-2000:],
+        })
+
     def alert(self, hit):
         self._write({"type": "alert",
                      "at": datetime.now().isoformat(timespec="milliseconds"),
                      **hit})
 
-    def close(self):
+    def close(self, reason=None, **fields):
+        """写 session_end 并关文件。reason：这一场为什么结束（offline / reconnect_exhausted /
+        user_stop / internal_error …），fields 是这个原因附带的观察（如 silent、budget）。
+        骨架字段优先：fields 里撞名的键盖不掉 type/ended_at/reason。"""
         if self._fh is not None:
             try:
-                self._write({"type": "session_end",
-                             "ended_at": datetime.now().isoformat(timespec="seconds")})
+                rec = {"type": "session_end",
+                       "ended_at": datetime.now().isoformat(timespec="seconds")}
+                if reason:
+                    rec["reason"] = reason
+                    for key, value in fields.items():
+                        rec.setdefault(key, value)
+                self._write(rec)
                 self._fh.close()
             except (OSError, ValueError):
                 pass

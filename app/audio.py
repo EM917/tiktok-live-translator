@@ -1,6 +1,9 @@
 """用 ffmpeg 从直播流中抽取音频，输出 16 kHz 单声道 16-bit PCM 帧。"""
 import asyncio
+import time
 from collections import deque
+
+import numpy as np
 
 from .ffmpeg_bin import filter_path, find_ffmpeg
 
@@ -93,3 +96,123 @@ class FFmpegAudioSource:
                 await asyncio.wait_for(self._stderr_task, timeout=2)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 self._stderr_task.cancel()
+
+
+def frame_rms(frame):
+    """一帧 s16le PCM 的 RMS，和 SilenceSegmenter 的识别门限同一个量纲。"""
+    usable = len(frame) // 2 * 2
+    if not usable:
+        return 0.0
+    arr = np.frombuffer(frame[:usable], dtype=np.int16).astype(np.float32)
+    return float(np.sqrt(np.mean(arr * arr)))
+
+
+class AudioFlowMeter:
+    """「这场直播实际收到了多少音频」的计数器：一场一个，每轮拉流开头调 start_round()。
+
+    stall 看门狗只管「20 秒一个字节都没有」。网络劣化时 ffmpeg 可能 30 秒只吐 2 秒音频，
+    静音或音量太低的流也一直有字节——这些时候界面照样显示「直播中」，却没有几段话
+    进了检测。这里只计数、不做决定，feed() 返回的事件由调用方写审计或上界面：
+
+      heartbeat      每 WINDOW_SEC（单调时钟）一个窗口：收到的音频秒数、经过秒数、超过
+                     识别门限的帧数、切出的段数。每轮开头 WARMUP_SEC 不计——CDN 开播先
+                     灌一段缓存，比例会虚高。单调时钟在电脑休眠时不走，睡着的时间不会被
+                     算成「没收到音频」（那由 pipeline 的 clock_gap 负责）。
+      low            连续 LOW_WINDOWS 个窗口收到的不到 LOW_RATIO；处于 low 期间每个窗口
+                     再报一次（数字跟着更新）。
+      recovered      某个窗口回到 RECOVER_RATIO 以上（和 LOW_RATIO 之间留回差，免得来回闪）。
+      summary        每 SUMMARY_SEC 一次本轮累计，崩溃了也留得下记录。
+      quiet / speech 累计收到 QUIET_AUDIO_SEC 秒音频却一段都没切出来（音量一直低于门限）
+                     时报 quiet；之后切出第一段时报 speech。这个计数跨轮累计。
+    """
+    WARMUP_SEC = 15.0
+    WINDOW_SEC = 60.0
+    LOW_RATIO = 0.7
+    RECOVER_RATIO = 0.8
+    LOW_WINDOWS = 2
+    SUMMARY_SEC = 300.0
+    QUIET_AUDIO_SEC = 120.0
+
+    def __init__(self, speech_rms=300.0, clock=time.monotonic):
+        self.speech_rms = speech_rms
+        self._clock = clock
+        self.low = False
+        self.quiet = False
+        self.since_cut = 0.0
+        self.start_round()
+
+    def start_round(self):
+        self.audio_sec = 0.0
+        self.segments = 0
+        self.speech_frames = 0
+        self.peak_rms = 0.0
+        self.low = False
+        self._t0 = None
+        self._summary_at = None
+        self._win = None                  # [开始时刻, 音频秒, 门限以上帧, 段数]；热身期为 None
+        self._low_windows = 0
+
+    def summary(self):
+        return {"audio_sec": round(self.audio_sec, 1), "segments_cut": self.segments,
+                "peak_rms": round(self.peak_rms, 1)}
+
+    def cut(self, segments):
+        """记下新切出的语音段。feed() 已经包含这一步；流结束时 flush 出来的段走这里。"""
+        if segments <= 0:
+            return []
+        self.segments += segments
+        self.since_cut = 0.0
+        if self.quiet:
+            self.quiet = False
+            return [("speech", {})]
+        return []
+
+    def feed(self, frame, segments=0):
+        """记一帧（以及这一帧让切段器切出的段数），返回事件列表，通常为空。"""
+        now = self._clock()
+        rms = frame_rms(frame)
+        sec = len(frame) / 2.0 / SAMPLE_RATE
+        speech = rms >= self.speech_rms
+        self.audio_sec += sec
+        if speech:
+            self.speech_frames += 1
+        if rms > self.peak_rms:
+            self.peak_rms = rms
+        events = self.cut(segments)
+        if not segments:
+            self.since_cut += sec
+            if not self.quiet and self.since_cut >= self.QUIET_AUDIO_SEC:
+                self.quiet = True
+                events.append(("quiet", {"audio_sec": round(self.since_cut, 1)}))
+        if self._t0 is None:
+            self._t0 = self._summary_at = now
+        if now - self._summary_at >= self.SUMMARY_SEC:
+            self._summary_at = now
+            events.append(("summary", self.summary()))
+        if self._win is None:
+            if now - self._t0 >= self.WARMUP_SEC:
+                self._win = [now, 0.0, 0, 0]
+            return events
+        win = self._win
+        win[1] += sec
+        win[2] += 1 if speech else 0
+        win[3] += segments
+        if now - win[0] >= self.WINDOW_SEC:
+            events.extend(self._close_window(now))
+        return events
+
+    def _close_window(self, now):
+        start, audio, speech, segments = self._win
+        self._win = [now, 0.0, 0, 0]
+        elapsed = now - start
+        info = {"audio_sec": round(audio, 1), "wall_sec": round(elapsed, 1)}
+        events = [("heartbeat", dict(info, speech_frames=speech, segments=segments))]
+        ratio = audio / elapsed if elapsed > 0 else 1.0
+        self._low_windows = self._low_windows + 1 if ratio < self.LOW_RATIO else 0
+        if self._low_windows >= self.LOW_WINDOWS:
+            self.low = True
+            events.append(("low", info))
+        elif self.low and ratio >= self.RECOVER_RATIO:
+            self.low = False
+            events.append(("recovered", info))
+        return events

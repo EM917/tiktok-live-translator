@@ -18,6 +18,7 @@ from .comments import CommentTranslator
 from .detector import BannedTermDetector, load_fuzzy_policy, load_terms
 from .glossary import load as load_glossary
 from .nethttp import read_all
+from .redact import strip_query
 from .settings import (load_settings, push_recent_room, recent_rooms,
                        save_setting)
 from .telemetry import Telemetry
@@ -243,6 +244,7 @@ class Pipeline:
             return self.server.status(
                 "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
         elif mtype == "stop":
+            self._stop_reason = "user_stop"
             return self.stop_stream()
         elif mtype == "clear_recent_rooms":
             return self._clear_recent_rooms()
@@ -315,6 +317,8 @@ class Pipeline:
 
     async def start_stream(self, url, media=None):
         async with self._lock():
+            if not getattr(self, "_stop_reason", None):
+                self._stop_reason = "new_session"    # 正在跑的那一场（如果有）因为开了新的一场而结束
             await self._stop_locked(quiet=True)
             # 本场的音频源直连地址（可选）。设在 _stop_locked 之后：停旧场会把它
             # 清掉，免得上一场的地址泄漏到这一场。
@@ -329,6 +333,8 @@ class Pipeline:
             # Ollama 没跑就趁解析地址/加载模型这几秒把它拉起来，别等第一句翻译失败
             self._spawn(self._heal_local_engine())
             self._stream_task = asyncio.create_task(self._run_stream(url))
+            # 任务第一步还没跑：_begin_session 能把拿到了哪些防睡眠手段记进 session_start
+            self._hold_sleep_guard(self._stream_task)
 
     async def stop_stream(self, quiet=False):
         async with self._lock():
@@ -338,7 +344,13 @@ class Pipeline:
     STOP_GRACE_SEC = 3.0
 
     async def _stop_locked(self, quiet=False):
-        """调用方必须已持有 _stream_lock。"""
+        """调用方必须已持有 _stream_lock。
+
+        停止原因（写进 session_end 的 reason）由发起停止的一方在调用前放进
+        self._stop_reason（user_stop / window_closed / update / new_session）；没放就按
+        quiet 记成 stopped 或 user_stop。被取消的任务收尾时读它，这里用完清掉。"""
+        if not getattr(self, "_stop_reason", None):
+            self._stop_reason = "stopped" if quiet else "user_stop"
         task = self._stream_task
         self._stream_task = None
         if task is not None and not task.done():
@@ -369,8 +381,10 @@ class Pipeline:
         if comment_source is not None:
             await comment_source.stop()
         if self.audit is not None:
-            self.audit.close()
+            self._close_audit(self.audit, self._stop_reason)
             self.audit = None
+        self._stop_reason = None
+        self._release_sleep_guard()
         self._media_override = None
         pool, self._asr_pool = self._asr_pool, None
         if pool is not None:
@@ -404,6 +418,7 @@ class Pipeline:
         try:
             while True:
                 await asyncio.sleep(interval)
+                await self._check_clock_gap(interval)
                 snap = self.telemetry.snapshot()
                 level = self._health_level(snap["audio_backlog_sec"])
                 snap["health"] = level
@@ -465,12 +480,29 @@ class Pipeline:
         # 合规证据从头到尾静默丢失（实录：2026-08-31 一场 102 条字幕的直播，
         # audit 文件只有 544 字节的头）。收尾只许碰自己那一份。
         my_audit = self.audit
+        # 这一场自己的观察状态（断流时刻、时钟跳变、结束原因……），同样只属于这一场
+        sess = self._session_state = self._new_session_state(my_audit)
+        end = {}
         try:
             await self._run_session(url)
+            end = sess.get("end") or {}
+        except asyncio.CancelledError:
+            end = {"reason": getattr(self, "_stop_reason", None) or "cancelled"}
+            raise
+        except Exception as exc:
+            # 打包运行时 stdout 指向 /dev/null，外层 _run_stream 打的堆栈没人看得到；
+            # 等它接住异常时，下面的 finally 早把审计关了——所以在这里先写进本场审计
+            end = {"reason": "internal_error"}
+            if my_audit is not None:
+                try:
+                    my_audit.internal_error(exc, traceback.format_exc())
+                except Exception:
+                    pass
+            raise
         finally:
             # 无论怎么结束（下播、预算耗尽、解析失败、模型加载失败、被取消），
             # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字
-            await self._end_session(my_audit)
+            await self._end_session(my_audit, **end)
 
     async def _begin_session(self, url):
         from .audit import AuditLog
@@ -537,6 +569,7 @@ class Pipeline:
             "profile": streamer if prof else None,
             "profile_hash": file_hash(prof) if prof else None,
             "merged_glossary_hash": fingerprint(self.glossary.entries),
+            **self._sleep_guard_extra(),
         })
         if misplaced:
             owner, variant, zh = misplaced[0]
@@ -895,11 +928,16 @@ class Pipeline:
         await self.server.broadcast({
             "type": "comment_source", "backend": state, "detail": detail})
 
-    async def _end_session(self, my_audit=None):
+    async def _end_session(self, my_audit=None, reason=None, **fields):
         """收尾。my_audit 是调用方会话自己的 audit——凭它判断「我还是不是
         当前会话」：晚到的旧任务只许关自己的 audit，不许碰 stats 循环等
-        共享状态（那些已经属于下一场了）。"""
+        共享状态（那些已经属于下一场了）。
+
+        reason/fields 写进 session_end（这一场为什么结束）。防睡眠断言只在「我还是
+        当前会话、而且断言是我这个任务开的」时释放。"""
         still_current = my_audit is None or self.audit is my_audit
+        if still_current:
+            self._release_sleep_guard(owner=asyncio.current_task())
         if still_current:
             # 弹幕后端抓取是这一场自己起的子进程，晚到的旧任务不该碰
             # 已经属于下一场的连接——只有「我还是当前会话」才停它。
@@ -918,7 +956,7 @@ class Pipeline:
             self._stats_task = None
         target = my_audit if my_audit is not None else self.audit
         if target is not None:
-            target.close()
+            self._close_audit(target, reason, **fields)
             if self.audit is target:
                 self.audit = None
 
@@ -929,11 +967,19 @@ class Pipeline:
     TRANSLATION_DRAIN_SEC = 5.0       # 流结束后最多等在途翻译这么久
     BROWSER_ONLY_RETRIES = 3
     BROWSER_ONLY_RETRY_SEC = 20.0
+    # ---- 断流之后：时钟对账、网络探测、等房间恢复在播（见 _run_session 的重连循环）----
+    CLOCK_GAP_SEC = 15.0          # 一跳统计比预期晚这么多秒（墙钟），记一条 clock_gap
+    OFFLINE_RECHECK_SEC = 30.0    # 时钟跳变之后的「已结束」判定：醒着再等这么久复查一次
+    HOST_WAIT_POLL_SEC = 60.0     # 房间状态既不是在播也不是已结束：隔这么久问一次房间接口
+    HOST_WAIT_MAX_SEC = 600.0     # 一次中断里最多这样等这么久
+    NETWORK_RETRY_SEC = 20.0      # 本机连不上 TikTok 时隔这么久再探一次
+    NETWORK_GIVE_UP_SEC = 1800.0  # 连不上超过这么久才放弃
 
-    async def _resolve_media(self, url):
+    async def _resolve_media(self, url, reconnect=None):
         """解析直播流地址。TikTok 明确「不给程序」（kind=browser_only）时不立刻放弃：
         隔 BROWSER_ONLY_RETRY_SEC 秒再试，最多 BROWSER_ONLY_RETRIES 次，界面上说清
         在等什么；其它失败（下播、找不到、网络……）原样抛出。
+        reconnect：会话中途第几次重连（首次开播为 None），原样记进审计。
         曾经试过在这一步借用户的 Chrome + 插件拿地址，用户嫌麻烦，撤掉了：
         程序只靠自己，拿不到就明白说「稍后再试」。"""
         from .resolver import (ResolveError, _check_media_url, _media_url_works,
@@ -949,10 +995,10 @@ class Pipeline:
             if await _media_url_works(checked):
                 print("[信息] 使用用户指定的音频源")
                 self._log_resolve(0, True, t0, [{"layer": "用户直连", "outcome": "url"}],
-                                  media=checked)
+                                  media=checked, reconnect=reconnect)
                 return checked
             self._log_resolve(0, False, t0, [{"layer": "用户直连", "outcome": "dead_url"}],
-                              kind="dead_override")
+                              kind="dead_override", reconnect=reconnect)
             self._media_override = None      # 失效就别再用，回到正常解析
             await self.server.status(
                 "connecting", "你给的流地址拉不动（可能已过期），改用自动解析…")
@@ -966,12 +1012,14 @@ class Pipeline:
                     cookies_browser=getattr(self.args, "cookies_browser", "auto"),
                     trace=layers)
             except ResolveError as exc:
-                self._log_resolve(attempt, False, t0, layers, kind=exc.kind)
+                self._log_resolve(attempt, False, t0, layers, kind=exc.kind,
+                                  reconnect=reconnect, message=str(exc))
                 if exc.kind != "browser_only":
                     raise
                 last = exc
             else:
-                self._log_resolve(attempt, True, t0, layers, media=media)
+                self._log_resolve(attempt, True, t0, layers, media=media,
+                                  reconnect=reconnect)
                 return media
             if attempt < self.BROWSER_ONLY_RETRIES:
                 await self.server.status(
@@ -988,8 +1036,12 @@ class Pipeline:
             "（中间空格隔开），一次约两周有效。".format(self.BROWSER_ONLY_RETRIES),
             kind="browser_only") from last
 
-    def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None):
+    def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None,
+                     reconnect=None, message=None):
         """一次解析尝试：审计文件里一行（type=resolve）+ 终端一行。
+
+        reconnect 是会话中途第几次重连（首次开播不带这一栏，和重连区分得开）；
+        失败时 message 记错误原文前 200 字（URL 去掉 query）。
 
         attempt=0 表示用户自带的直连地址；1..N 是自动解析的第几次。media 只记
         主机和路径——签名地址的 query 里带 sign/expire，两周内拿着就能拉流，
@@ -1002,6 +1054,10 @@ class Pipeline:
             rec["kind"] = kind
         if media:
             rec["media"] = _media_label(media)
+        if reconnect is not None:
+            rec["reconnect"] = reconnect
+        if message and not ok:
+            rec["message"] = strip_query(message, 200)
         audit = getattr(self, "audit", None)
         if audit is not None:
             audit.resolve(rec)
@@ -1012,10 +1068,337 @@ class Pipeline:
             label, "成功" if ok else "失败", ms / 1000,
             " kind=" + kind if kind else "", walked).rstrip())
 
+    # ---- 一场直播自己的观察状态、防睡眠断言、断流/休眠/断网/等房间恢复 ----
+
+    def _new_session_state(self, audit):
+        """一场直播的观察状态。重连循环、拉流 reader 和统计循环共用这一份；晚到的旧任务
+        手里拿的是自己那一份，写不进下一场（同 my_audit 的道理）。"""
+        return {
+            "audit": audit,
+            "clock": (time.time(), time.monotonic()),   # _check_clock_gap 上一次的读数
+            "gap": None,              # 最近一次时钟跳变；之后收到音频就清掉
+            "gap_count": 0,
+            "gap_stop": False,        # 这一轮是时钟对账之后主动断开的
+            "source": None,           # 当前这一轮的音频源
+            "last_frame_wall": None,  # 最近一帧音频到达的墙钟时间
+            "deaf_since": None,       # 上一轮收到最后一帧的时间；这一轮收到首帧时清掉
+            "reconnect_no": 0,        # 本场第几次重连
+            "meter": None,            # AudioFlowMeter，第一轮拉流时建
+            "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
+        }
+
+    def _hold_sleep_guard(self, task):
+        """开播时阻止空闲睡眠（见 app/power.py，合盖休眠阻止不了），记下是哪个任务开的。"""
+        from . import power
+
+        self._release_sleep_guard()
+        try:
+            guard = power.hold("直播合规监听中")
+        except Exception as exc:
+            print("[警告] 没能阻止系统空闲睡眠: {}".format(exc))
+            return
+        guard.owner = task
+        self._sleep_guard = guard
+        if guard.held:
+            print("[信息] 监听期间阻止空闲睡眠：{}（合盖休眠阻止不了）".format(
+                "、".join(guard.held)))
+
+    def _release_sleep_guard(self, owner=None):
+        """owner 给定时只释放这个任务开的那一份——晚到的旧任务碰不到新一场的断言。"""
+        guard = getattr(self, "_sleep_guard", None)
+        if guard is None or (owner is not None and guard.owner is not owner):
+            return
+        self._sleep_guard = None
+        guard.release()
+
+    def _sleep_guard_extra(self):
+        """session_start 里记下这一场拿到了哪些防睡眠手段（空列表 = 没拿到或本平台没有）。"""
+        guard = getattr(self, "_sleep_guard", None)
+        return {"sleep_guard": list(guard.held) if guard is not None else []}
+
+    @staticmethod
+    def _close_audit(audit, reason=None, **fields):
+        """关审计，结束原因写进 session_end。没有原因时照老样子 close()。"""
+        if reason:
+            audit.close(reason=reason, **fields)
+        else:
+            audit.close()
+
+    @staticmethod
+    def _duration_text(sec):
+        sec = max(0, int(round(sec)))
+        if sec < 90:
+            return "{} 秒".format(sec)
+        minutes = int(round(sec / 60.0))
+        if minutes < 90:
+            return "{} 分钟".format(minutes)
+        return "{} 小时 {} 分钟".format(minutes // 60, minutes % 60)
+
+    async def _check_clock_gap(self, interval, now=None):
+        """_stats_loop 每一跳调一次：对一次墙钟和单调时钟。now=(墙钟, 单调时钟) 只给测试用。
+
+        统计循环每 interval 秒醒一次；墙钟比预期多走了 CLOCK_GAP_SEC 以上，就是这段时间
+        程序没有运行。两种看法：
+          - 墙钟走了、单调时钟没走（macOS/Linux 的单调时钟在系统休眠时停住）：这是电脑
+            休眠或挂起的直接观察；
+          - 两个钟一起走多了（Windows 的单调时钟休眠时照走，或者事件循环被卡住）：只说
+            程序没有运行。
+        记一条 clock_gap，挂一条持续提示（重连的状态文字盖不掉它），并告诉重连循环之后的
+        「已结束」判定要复查。时钟被往前拨也会触发，所以记录只叫 clock_gap，文字不说合盖。
+        任何异常都不能带崩统计循环。"""
+        try:
+            sess = getattr(self, "_session_state", None)
+            audit = self.audit
+            if sess is None or audit is None or sess.get("audit") is not audit:
+                return
+            wall, mono = now if now is not None else (time.time(), time.monotonic())
+            prev_wall, prev_mono = sess["clock"]
+            sess["clock"] = (wall, mono)
+            wall_sec, mono_sec = wall - prev_wall, mono - prev_mono
+            gap = wall_sec - float(interval)
+            if gap < self.CLOCK_GAP_SEC:
+                return
+            diverged = wall_sec - mono_sec >= self.CLOCK_GAP_SEC
+            sess["gap"] = {"from": prev_wall, "to": wall, "sec": gap}
+            sess["gap_count"] = sess.get("gap_count", 0) + 1
+            audit.clock_gap(prev_wall, wall, gap_sec=gap, wall_sec=wall_sec,
+                            mono_sec=mono_sec, clocks_diverged=diverged)
+            span = "{}–{}".format(time.strftime("%H:%M", time.localtime(prev_wall)),
+                                  time.strftime("%H:%M", time.localtime(wall)))
+            if diverged:
+                text = ("{} 电脑休眠或挂起了约 {}，程序没有运行，这段时间的直播没有监听。"
+                        "直播期间请接电源、不要合盖").format(span, self._duration_text(gap))
+            else:
+                text = ("{} 程序约 {}没有运行，这段时间的直播没有监听。"
+                        "直播期间请接电源、不要让电脑休眠").format(span, self._duration_text(gap))
+            if sess["gap_count"] > 1:
+                text = "本场第 {} 次：{}".format(sess["gap_count"], text)
+            print("[时钟] 墙钟走了 {:.0f} 秒、单调时钟走了 {:.0f} 秒".format(wall_sec, mono_sec))
+            await self._incident("session:clock_gap", "warn", text)
+            # 睡着之前的连接多半已经失效：醒来 5 秒内没有新音频就直接断开这一轮、马上重连，
+            # 不再干等 20 秒看门狗。只在两个钟对不上时这么做——事件循环卡住时数据还在管道里
+            # 排着，断开反而丢
+            source = sess.get("source")
+            last = sess.get("last_frame_wall")
+            if diverged and source is not None and (last is None or wall - last > 5.0):
+                sess["gap_stop"] = True
+                self._spawn(source.stop())
+        except Exception as exc:
+            print("[警告] 时钟对账出错: {}".format(exc))
+
+    def _note_stream_resumed(self, sess, now):
+        """这一轮收到第一帧：上一轮最后一帧之后多久没有音频，记一条 stream_resumed。"""
+        sess["gap"] = None
+        deaf_since = sess.get("deaf_since")
+        if deaf_since is None:
+            return
+        sess["deaf_since"] = None
+        audit = sess.get("audit")
+        if audit is not None:
+            audit.stream_resumed(deaf_sec=now - deaf_since,
+                                 reconnect_no=sess.get("reconnect_no"))
+
+    async def _on_audio_events(self, sess, events):
+        """AudioFlowMeter 的事件：写审计、挂或撤持续提示。观察不能拖垮拉流，异常一律吞掉。"""
+        audit = sess.get("audit")
+        try:
+            for kind, data in events:
+                if kind == "heartbeat":
+                    if audit is not None:
+                        audit.audio_heartbeat(**data)
+                elif kind == "summary":
+                    if audit is not None:
+                        audit.stream_audio(**data)
+                elif kind == "low":
+                    per_min = data["audio_sec"] * 60.0 / max(data["wall_sec"], 1.0)
+                    await self._incident(
+                        "session:audio_rate", "warn",
+                        "过去 1 分钟只收到 {:.0f} 秒直播音频，缺的部分没有经过检测"
+                        .format(per_min))
+                elif kind == "recovered":
+                    await self._incident("session:audio_rate", "clear")
+                elif kind == "quiet":
+                    await self._incident(
+                        "session:quiet_audio", "warn",
+                        "已收到 {:.0f} 秒直播音频，但音量一直低于识别门限，没有送去识别；"
+                        "程序继续监听".format(data["audio_sec"]))
+                elif kind == "speech":
+                    await self._incident("session:quiet_audio", "clear")
+        except Exception as exc:
+            print("[警告] 音频计数事件处理出错: {}".format(exc))
+
+    def _record_stream_break(self, sess, source, reason, error, got_audio, audio_secs,
+                             meter):
+        """一轮拉流结束时写 stream_audio + stream_break，写进 sess 里本场自己的审计。"""
+        try:
+            if reason == "eof" and getattr(source, "stalled", False):
+                reason = "stall"
+            if sess.get("gap_stop"):
+                sess["gap_stop"] = False
+                if reason in ("eof", "stall"):
+                    reason = "clock_gap"
+            if got_audio:
+                sess["deaf_since"] = sess.get("last_frame_wall") or time.time()
+            sess["source"] = None
+            if meter is not None and meter.low:
+                self._spawn(self._incident("session:audio_rate", "clear"))
+            audit = sess.get("audit")
+            if audit is None:
+                return
+            try:
+                tail = source.stderr_tail()
+            except Exception:
+                tail = ""
+            if meter is not None:
+                audit.stream_audio(final=True, **meter.summary())
+            audit.stream_break(
+                reason, returncode=getattr(getattr(source, "proc", None), "returncode", None),
+                audio_sec=audio_secs, got_audio=got_audio,
+                reconnect_no=sess.get("reconnect_no", 0), stderr_tail=tail,
+                error=str(error) if error is not None else None)
+        except Exception as exc:
+            print("[警告] 记录断流出错: {}".format(exc))
+
+    async def _wait_for_network(self, sess):
+        """重连解析之前先确认本机连得上 www.tiktok.com（DNS + TCP 443，3 秒，不发 HTTP 请求）。
+
+        以前断网时解析照跑（每次走完五层、近一分钟），失败还算进重连预算，大约 7 分钟后
+        监听就永久放弃，网络恢复了也不会自己回来。现在连不上就不解析、不计预算，每
+        NETWORK_RETRY_SEC 秒再探一次；连上返回 True，超过 NETWORK_GIVE_UP_SEC 返回 False。
+        探测通过而解析失败（比如要网页登录的公共 Wi-Fi）时，行为和以前一样。"""
+        from .resolver import tiktok_reachable
+
+        ok, why = await tiktok_reachable()
+        if ok:
+            return True
+        audit = sess.get("audit")
+        since = time.time()
+        if audit is not None:
+            audit.network_down(since, why=why)
+        print("[网络] 本机连不上 www.tiktok.com（{}），暂停解析".format(why))
+        tries = 0
+        while tries * self.NETWORK_RETRY_SEC < self.NETWORK_GIVE_UP_SEC:
+            deaf = time.time() - (sess.get("deaf_since") or since)
+            text = "本机连不上 www.tiktok.com，已 {}没有监听，网络恢复后自动重连".format(
+                self._duration_text(deaf))
+            await self._incident("session:network", "error", text)
+            await self.server.status("connecting", text)
+            await asyncio.sleep(self.NETWORK_RETRY_SEC)
+            tries += 1
+            ok, why = await tiktok_reachable()
+            if ok:
+                if audit is not None:
+                    audit.network_up(time.time() - since)
+                await self._incident("session:network", "clear")
+                print("[网络] 已恢复，继续重连")
+                return True
+        await self._incident("session:network", "clear")
+        return False
+
+    @staticmethod
+    def _room_status_text(status):
+        """只说接口返回了什么（CLAUDE.md 第八条）。2 本不该出现在「不在播」判定里，
+        出现了也照实写出数字，按未知状态去等（等待有上限）。"""
+        if status is None:
+            return "TikTok 接口这次没有给出房间状态"
+        if status == 2:
+            return "TikTok 接口返回房间状态 2"
+        return "TikTok 接口返回房间状态 {}（{}）".format(
+            status, "已结束" if status == 4 else "不是在播状态")
+
+    async def _probe_room_status(self, url):
+        from .resolver import probe_room_status
+
+        status, why = await probe_room_status(url)
+        print("[解析] 房间状态复查：{}{}".format(status, "（{}）".format(why) if why else ""))
+        return status, why
+
+    async def _confirm_offline(self, url, exc, sess, waited):
+        """重连时解析说「没在播」。返回 (verdict, waited)：verdict 为 live 时回去重新解析；
+        其余情况这里已经写好界面文字和 sess["end"]。
+
+        - 只有状态 4（已结束）才收手。以前任何非 2 都当结束，而 TikTok 的状态不止这两个
+          （TikTokLive 也只把 4 当下播），断一下就永久停止监听。
+        - 刚发现时钟跳变（电脑休眠或挂起过）时，4 也先不信：2026-09-14 那次「已结束」就是
+          在合盖休眠的短暂维护唤醒里判的。醒着再等 OFFLINE_RECHECK_SEC 秒问一次房间接口。
+        - 其它状态（含拿不到状态）：每 HOST_WAIT_POLL_SEC 秒问一次房间接口，一次中断里
+          最多等 HOST_WAIT_MAX_SEC。
+        文字只写接口返回了什么、程序在做什么，不猜主播为什么（CLAUDE.md 第八条）。"""
+        from .resolver import ENDED_STATUS, LIVE_STATUS
+
+        status = getattr(exc, "status", None)
+        audit = sess.get("audit")
+        if status == ENDED_STATUS and sess.get("gap") is not None:
+            sess["gap"] = None
+            await self.server.status(
+                "connecting",
+                "电脑刚从休眠或挂起中恢复，{}；{:.0f} 秒后再查一次再下结论…".format(
+                    self._room_status_text(status), self.OFFLINE_RECHECK_SEC))
+            await asyncio.sleep(self.OFFLINE_RECHECK_SEC)
+            waited += self.OFFLINE_RECHECK_SEC
+            status, why = await self._probe_room_status(url)
+            if audit is not None:
+                audit.host_wait(status, self.OFFLINE_RECHECK_SEC,
+                                {LIVE_STATUS: "live", ENDED_STATUS: "ended"}.get(status, "waiting"),
+                                trigger="clock_gap", why=why)
+            if status == LIVE_STATUS:
+                return "live", waited
+        if status == ENDED_STATUS:
+            await self.server.status(
+                "ended", "直播已结束。可以继续翻看上面的字幕，"
+                         "或输入新的直播间地址。")
+            print("[信息] 直播已结束。可在网页里输入新地址继续。")
+            sess["end"] = {"reason": "offline", "status": status}
+            return "ended", waited
+        return await self._host_wait(url, status, sess, waited)
+
+    async def _host_wait(self, url, status, sess, waited):
+        from .resolver import ENDED_STATUS, LIVE_STATUS
+
+        audit = sess.get("audit")
+        why = None
+        if audit is not None:
+            audit.host_wait(status, waited, "started")
+        while waited < self.HOST_WAIT_MAX_SEC:
+            await self.server.status(
+                "connecting",
+                "{}，每 {:.0f} 秒复查一次，最多 {:.0f} 分钟（已等 {:.0f} 分钟）…".format(
+                    self._room_status_text(status), self.HOST_WAIT_POLL_SEC,
+                    self.HOST_WAIT_MAX_SEC / 60, waited / 60))
+            await asyncio.sleep(self.HOST_WAIT_POLL_SEC)
+            waited += self.HOST_WAIT_POLL_SEC
+            status, why = await self._probe_room_status(url)
+            if status in (LIVE_STATUS, ENDED_STATUS):
+                break
+        outcome = {LIVE_STATUS: "live", ENDED_STATUS: "ended"}.get(status, "timeout")
+        if audit is not None:
+            audit.host_wait(status, waited, outcome, why=why)
+        if outcome == "live":
+            print("[信息] 房间接口回到在播状态，重新解析")
+            return "live", waited
+        if outcome == "ended":
+            await self.server.status(
+                "ended", "直播已结束。可以继续翻看上面的字幕，"
+                         "或输入新的直播间地址。")
+            sess["end"] = {"reason": "offline", "status": status,
+                           "waited_sec": int(round(waited))}
+        else:
+            await self.server.status(
+                "ended", "{:.0f} 分钟内 TikTok 接口一直没有返回在播状态（最后一次：{}），"
+                         "监听已停止。可以点「开始翻译」重新开始。".format(
+                             waited / 60, self._room_status_text(status)))
+            sess["end"] = {"reason": "host_wait_timeout", "status": status,
+                           "waited_sec": int(round(waited))}
+        print("[信息] 等房间恢复在播：{}".format(outcome))
+        return outcome, waited
+
     async def _run_session(self, url):
         from .asr import create_transcriber
         from .resolver import ResolveError, is_direct_url
 
+        sess = getattr(self, "_session_state", None)
+        if sess is None or sess.get("audit") is not self.audit:
+            sess = self._session_state = self._new_session_state(self.audit)
         await self.server.status("connecting", "正在解析直播流地址…")
         try:
             media = await self._resolve_media(url)
@@ -1024,8 +1407,11 @@ class Pipeline:
             self._note_resolve_failure(exc)
             await self.server.status("error", str(exc))
             print("[错误] {}".format(exc))
+            sess["end"] = {"reason": "resolve_error", "kind": exc.kind}
             return
 
+        # 从这里到识别模型就绪，中途 return 只可能是「加载模型失败」
+        sess["end"] = {"reason": "model_load_failed"}
         loop = asyncio.get_running_loop()
         # 未显式指定的参数用硬件推荐补齐。注意：backend/model/device/compute 是联动
         # 整体，用户锁定 backend/device 时其余字段围绕它重新推导（见 hwdetect.py）
@@ -1106,6 +1492,7 @@ class Pipeline:
             self._transcriber = transcriber
             self._transcriber_key = key
         transcriber = self._transcriber
+        sess["end"] = None
 
         denoise = await self._ensure_denoise_model()
         live_note = ("已连接直播间，开始实时识别"
@@ -1121,17 +1508,26 @@ class Pipeline:
         budget = 1 if direct else 5
         reconnects = 0        # 连续重连次数：决定退避间隔（2、4、…、30 秒）
         silent = 0            # 连续「一帧音频都没有」的轮次：决定何时放弃
+        host_waited = 0.0     # 这次中断里等房间恢复在播已经等了多久；收到音频才清零
         while True:
             await self.server.status("connecting", "正在连接直播音频流…")
             got_audio, audio_secs = await self._stream_session(
-                media, transcriber, denoise, live_note, loop)
+                media, transcriber, denoise, live_note, loop, sess=sess)
+            if got_audio:
+                host_waited = 0.0
             if audio_secs >= 30:
                 if direct:
-                    await self.server.status(
-                        "ended", "直播流已结束。可以继续翻看上面的字幕，"
-                                 "或输入新的地址。")
-                    print("[信息] 直播流已结束。")
-                    return
+                    # 直连地址问不出「主播还在不在播」，但问得出「这个地址还出不出数据」。
+                    # 以前播过 30 秒就一律按「直播流已结束」收尾：Wi-Fi 抖一下、半开连接被
+                    # 看门狗掐断，剩下的直播就没人听了。只向 CDN 拉 2KB，不碰房间接口
+                    from .resolver import _media_url_works
+                    if not await _media_url_works(media):
+                        await self.server.status(
+                            "ended", "这个直连地址已经拉不到数据，监听已停止。"
+                                     "可以输入直播间地址或新的流地址继续。")
+                        print("[信息] 直连地址已拉不到数据，监听停止。")
+                        sess["end"] = {"reason": "stream_ended"}
+                        return
                 reconnects = 0        # 刚才播得好好的：重置重连预算
             # 拿到过音频的轮次不算失败：网络劣化时每轮只播二十几秒就断，
             # 五轮之后主播还在播，监听却宣布「重连失败」放弃了。只有连续几轮
@@ -1146,6 +1542,8 @@ class Pipeline:
                         "error", "直播流多次中断且自动重连失败——可能直播已结束，"
                                  "或网络不稳。请稍后点「开始翻译」重试。")
                     print("[信息] 自动重连预算用尽，放弃。")
+                    sess["end"] = {"reason": "reconnect_exhausted",
+                                   "silent": silent, "budget": budget}
                     return
                 delay = min(30, 2 ** reconnects)
                 await self.server.status(
@@ -1153,29 +1551,47 @@ class Pipeline:
                     "直播流中断，{} 秒后自动重连（第 {}/{} 次）…".format(
                         delay, reconnects, budget))
                 await asyncio.sleep(delay)
+                # 本机连不上 TikTok 时不去解析，也不算进重连预算（直连地址不走这一步）
+                if not direct and not await self._wait_for_network(sess):
+                    await self.server.status(
+                        "error", "本机连不上 www.tiktok.com 已超过 {:.0f} 分钟，监听已停止。"
+                                 "网络恢复后点「开始翻译」重新开始。".format(
+                                     self.NETWORK_GIVE_UP_SEC / 60))
+                    print("[信息] 网络长时间不通，放弃重连。")
+                    sess["end"] = {"reason": "network_down",
+                                   "down_sec": int(self.NETWORK_GIVE_UP_SEC)}
+                    return
+                sess["reconnect_no"] += 1
                 try:
-                    media = await self._resolve_media(url)
+                    media = await self._resolve_media(url, reconnect=sess["reconnect_no"])
                     self._resolve_fail_streak = 0
                 except ResolveError as exc:
                     if exc.kind == "offline":
-                        await self.server.status(
-                            "ended", "直播已结束。可以继续翻看上面的字幕，"
-                                     "或输入新的直播间地址。")
-                        print("[信息] 直播已结束。可在网页里输入新地址继续。")
-                        return
+                        verdict, host_waited = await self._confirm_offline(
+                            url, exc, sess, host_waited)
+                        if verdict != "live":
+                            return        # 界面文字和结束原因 _confirm_offline 已经写好
+                        reconnects = 0    # 房间回到在播：马上重新解析，不再长退避
+                        continue
                     self._note_resolve_failure(exc)
                     silent += 1       # 解析不出地址也是一轮没有音频
                     print("[错误] 重连解析失败: {}".format(exc))
 
-    async def _stream_session(self, media, transcriber, denoise, live_note, loop):
+    async def _stream_session(self, media, transcriber, denoise, live_note, loop, sess=None):
         """跑一轮拉流→识别→翻译，直到流断开。返回 (是否收到过音频, 音频时长秒)。
+
+        sess 是这一场的观察状态（见 _new_session_state）：这一轮怎么断的、断之前收到多少
+        音频、下一轮隔了多久才又有声音，都写进 sess 里那一份审计，不读 self.audit——
+        晚到的旧任务写不进下一场的文件。
 
         音频时长按真实收到的帧数累计，不用墙钟——网络劣化时 ffmpeg 可能连着
         30 秒只吐 2 秒音频，用墙钟会把这种「假连接」当成播得好好的，
         重连预算被错误重置后放弃分支永远走不到。"""
-        from .audio import FRAME_SEC, SAMPLE_RATE, FFmpegAudioSource
+        from .audio import FRAME_SEC, SAMPLE_RATE, AudioFlowMeter, FFmpegAudioSource
         from .segmenter import SilenceSegmenter
 
+        if sess is None:
+            sess = self._new_session_state(self.audit)
         got_audio = False
         audio_secs = 0.0
         # 音频缓冲按**秒数**预算，不按段数——段数上限在 9 秒片段下是 27 秒缓冲、
@@ -1191,6 +1607,12 @@ class Pipeline:
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
         segmenter = SilenceSegmenter()
+        sess["source"] = source
+        meter = sess.get("meter")
+        if meter is None:
+            meter = sess["meter"] = AudioFlowMeter(
+                speech_rms=getattr(segmenter, "silence_rms", 300.0))
+        meter.start_round()
 
         def _put(segment):
             if segment is None:
@@ -1258,14 +1680,26 @@ class Pipeline:
             nonlocal got_audio, audio_secs
             try:
                 async for frame in source.frames():
+                    now = time.time()
                     if not got_audio:
                         got_audio = True
+                        self._note_stream_resumed(sess, now)
                         await self.server.status("live", live_note)
                     audio_secs += FRAME_SEC
-                    for segment in segmenter.feed(frame):
+                    sess["last_frame_wall"] = now
+                    segments = segmenter.feed(frame)
+                    for segment in segments:
                         _put((segment, time.time()))
-                for segment in segmenter.flush():   # 别丢掉最后一段话
+                    # 实际收到多少音频、有没有切出语音段：每帧只计数，有事件才 await
+                    events = meter.feed(frame, segments=len(segments))
+                    if events:
+                        await self._on_audio_events(sess, events)
+                rest = segmenter.flush()
+                for segment in rest:   # 别丢掉最后一段话
                     _put((segment, time.time()))
+                events = meter.cut(len(rest))
+                if events:
+                    await self._on_audio_events(sess, events)
             finally:
                 _put(None)
 
@@ -1360,12 +1794,24 @@ class Pipeline:
                     if pending is not None:
                         _drop_job(pending)
 
+        reason, error = "eof", None
         try:
             await run_workers()
+        except asyncio.CancelledError:
+            reason = "cancelled"
+            raise
+        except Exception as exc:
+            reason, error = "error", exc
+            raise
         finally:
             # 先切 ffmpeg 再收尾，任何退出路径（含异常）都不留子进程
-            await source.stop()
-            asr_pool.shutdown(wait=False)
+            try:
+                await source.stop()
+            finally:
+                asr_pool.shutdown(wait=False)
+                # 这一轮怎么断的写进本场审计：打包运行时终端输出没人看得到
+                self._record_stream_break(sess, source, reason, error, got_audio,
+                                          audio_secs, meter)
         tail = source.stderr_tail()
         if tail:
             print("[信息] ffmpeg 输出: {}".format(tail))   # 英文技术输出只进终端，不上 UI
