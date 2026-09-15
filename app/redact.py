@@ -7,7 +7,9 @@ traceback 都先过这里：URL 只留「协议://主机/路径」，query 和 f
 import re
 
 # 从协议头一直到空白或引号为止算一个地址；query/fragment 从第一个 ? 或 # 开始丢
-_URL_RE = re.compile(r"(?i)\b((?:https?|rtmps?|wss?)://[^\s?#\"'<>|]*)(?:[?#][^\s\"'<>|]*)?")
+# 协议名不限（rtmp、wss、s3 签名地址……）：asr 与 evidence 两组原先在 audit.py 各写了一份
+# 规则略有出入，合并时统一到这里，只留这一处
+_URL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s?#\"'<>|]*)(?:[?#][^\s\"'<>|]*)?")
 
 
 def strip_query(text, limit=None):

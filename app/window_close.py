@@ -74,7 +74,7 @@ async def close_session(pipeline, audit_budget=AUDIT_BUDGET_SEC, total=STOP_TIME
         # session_end 落盘。close 可重入，停止流程稍后再关是空操作
         audit = getattr(pipeline, "audit", None)
         if audit is not None:
-            audit.close()
+            audit.close(reason="window_closed")
         rest = total - audit_budget - 0.2
         if rest > 0:
             done, _ = await asyncio.wait({stop}, timeout=rest)

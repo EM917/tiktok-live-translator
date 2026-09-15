@@ -964,6 +964,8 @@ def test_a_slow_stop_still_gets_session_end_on_disk_in_time(tmp_path):
     assert elapsed < 2.0                                   # 远早于停止流程自己结束（3 秒）
     types = [r["type"] for r in records(audit.path)]
     assert types == ["session_start", "window_closed", "session_end"]
+    # 慢路径抢先写的 session_end 也要带原因：之后停止流程再关是空操作，补不上
+    assert records(audit.path)[-1].get("reason") == "window_closed"
 
 
 def test_stop_after_close_from_the_window_thread(tmp_path):

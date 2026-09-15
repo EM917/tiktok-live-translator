@@ -9,7 +9,6 @@
 """
 import json
 import os
-import re
 import threading
 from collections import deque
 from datetime import datetime
@@ -50,20 +49,15 @@ def _iso_from_epoch(ts):
         return None
 
 
-_URL_QUERY_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^\s?#'\"<>]*)[?#][^\s'\"<>]*")
-
-
 def strip_url_queries(text, limit=300):
     """写进审计的错误文本：去掉网址里的 query。签名流地址的 sign/expire、HF 的
-    token 都在 query 里——审计文件不能变成两周有效的拉流凭证。"""
-    return _URL_QUERY_RE.sub(r"\1", str(text or ""))[:limit]
+    token 都在 query 里——审计文件不能变成两周有效的拉流凭证。规则在 redact.strip_query。"""
+    return strip_query(text, limit)
 
 
 def clean_error(exc, limit=200):
     """错误文字写进审计或界面之前去掉 URL 的查询串（签名地址、token 常在里面）。"""
-    text = exc if isinstance(exc, str) else str(exc)
-    text = re.sub(r"(\w+://[^\s?#'\"]*)[?#][^\s'\"]*", r"\1", text)
-    return text[:limit]
+    return strip_query(exc, limit)
 
 
 def _now_ms():

@@ -2324,8 +2324,8 @@ class Pipeline:
                     break
                 backlog["sec"] -= len(stale) / 2.0 / SAMPLE_RATE
                 self.telemetry.drop_audio()
-                if self.audit is not None:
-                    self.audit.dropped_audio(queue_depth=queue.qsize())
+                if sess["audit"] is not None:
+                    sess["audit"].dropped_audio(queue_depth=queue.qsize())
                 print("[严重] 积压超过 {} 秒，被迫丢弃最旧的一段音频——这段可能漏词"
                       .format(AUDIO_BACKLOG_HARD_SEC))
             queue.put_nowait(segment)
@@ -2435,8 +2435,8 @@ class Pipeline:
                     # 继续显示「直播中」。
                     asr_failures += 1
                     self.telemetry.drop_audio(asr_failed=True)
-                    if self.audit is not None:
-                        self.audit.asr_failed(
+                    if sess["audit"] is not None:
+                        sess["audit"].asr_failed(
                             segment_ms=len(segment) / 2.0 / SAMPLE_RATE * 1000.0,
                             error=strip_url_queries(failure, 200), queue_depth=queue.qsize())
                     print("[警告] 识别一段音频失败: {}".format(failure))
@@ -2459,8 +2459,8 @@ class Pipeline:
                     self.telemetry.note_overrun()
                     print("[警告] 识别耗时 {:.1f}s 超过片段时长 {:.1f}s（疑似复读跑飞）"
                           .format(asr_ms / 1000, segment_ms / 1000))
-                    if self.audit is not None:
-                        self.audit.asr_overrun(asr_ms=asr_ms, segment_ms=segment_ms)
+                    if sess["audit"] is not None:
+                        sess["audit"].asr_overrun(asr_ms=asr_ms, segment_ms=segment_ms)
                 self.telemetry.asr_queue_depth = queue.qsize()
                 self.telemetry.translation_queue_depth = trans_queue.qsize()
                 job = await self._emit_original(result, audio_end_ts, asr_ms,
