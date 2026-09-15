@@ -382,6 +382,7 @@
         commentList.innerHTML = "";
         commentById = Object.create(null);
         commentCount.textContent = "0";
+        commentFollowing = true;   // 回放重建整个列表：从最新处开始看
         commentPanel.classList.add("hidden");
         // 失败连击也归零——回放的陈旧字幕不该累积成新警告
         failStreak = 0;
@@ -837,15 +838,34 @@
     if (msg.state === "same" || msg.state === "skipped") orig.classList.add("hidden");
     item.appendChild(orig);
 
-    commentList.insertBefore(item, commentList.firstChild);
+    // 正序：新的追加在底部，和字幕列表同一个方向，从上往下读就是时间顺序
+    commentList.appendChild(item);
     commentById[msg.id] = item;
+    // 满 100 条从顶部删最旧的。用户正往上翻着看时，眼前那条不能跟着跑：
+    // 删之前记下第一条可见弹幕的位置，删完量它实际移动了多少再补回来。
+    // 不按「删掉多高」去减——Chromium 自带滚动锚定会先补一次，再减就补过头
+    // （实测每删一条视野往上窜一条）；WebKit 不一定锚定。量实际位移两边都对。
+    var anchor = null, anchorTop = 0;
+    var excess = commentList.children.length - 100;
+    if (excess > 0 && !commentFollowing && isMeasurable(commentList)) {
+      var listTop = commentList.getBoundingClientRect().top;
+      for (var i = excess; i < commentList.children.length; i++) {
+        var rect = commentList.children[i].getBoundingClientRect();
+        if (rect.bottom > listTop) { anchor = commentList.children[i]; anchorTop = rect.top; break; }
+      }
+    }
     while (commentList.children.length > 100) {
-      var last = commentList.lastChild;
-      delete commentById[last.dataset.cmtId];
-      commentList.removeChild(last);
+      var oldest = commentList.firstChild;
+      delete commentById[oldest.dataset.cmtId];
+      commentList.removeChild(oldest);
+    }
+    if (anchor) {
+      var drift = anchor.getBoundingClientRect().top - anchorTop;
+      if (Math.abs(drift) >= 1) commentList.scrollTop += drift;
     }
     commentCount.textContent = commentList.children.length;
     refreshCommentPanel();
+    if (commentFollowing) commentsToBottomNow();
   }
 
   function updateComment(msg) {
@@ -867,6 +887,37 @@
     if (orig) orig.classList.add("hidden");
   }
 
+  // ---- 弹幕跟随 ----
+  // 和字幕同一套规则（见 follow.js）：停在底部就跟着最新走；用户自己往上翻
+  // 就不打扰，翻回底部再恢复跟随。面板收起或页面不可见时几何量全是 0，
+  // 这时沿用原来的意图，等重新可见再补滚。
+  var commentFollowing = true;
+  var lastCommentInput = 0;
+  ["wheel", "touchstart", "touchmove", "keydown", "mousedown"].forEach(
+    function (name) {
+      commentList.addEventListener(name, function () {
+        lastCommentInput = Date.now();
+      }, { passive: true });
+    });
+
+  commentList.addEventListener("scroll", function () {
+    commentFollowing = nextFollowing(commentList, commentFollowing,
+                                     Date.now() - lastCommentInput < 700);
+  }, { passive: true });
+
+  // 瞬时滚到底：理由同字幕的 scrollToBottomNow（平滑动画追不上连续追加）
+  function commentsToBottomNow() {
+    var prev = commentList.style.scrollBehavior;
+    commentList.style.scrollBehavior = "auto";
+    commentList.scrollTop = commentList.scrollHeight;
+    commentList.style.scrollBehavior = prev;
+  }
+
+  function resyncComments() {
+    if (document.hidden || !commentFollowing) return;
+    requestAnimationFrame(commentsToBottomNow);
+  }
+
   toggleCommentsBtn.addEventListener("click", function () {
     commentPanel.classList.add("collapsed");
     lsSet("commentPanelCollapsed", "1");
@@ -877,6 +928,7 @@
     commentPanel.classList.remove("collapsed");
     lsSet("commentPanelCollapsed", "0");
     refreshCommentPanel();
+    resyncComments();         // 收起期间来的弹幕没法滚动，展开时补到最新
   });
 
   window.addEventListener("resize", refreshCommentPanel);
@@ -885,6 +937,7 @@
     commentList.innerHTML = "";
     commentById = Object.create(null);
     commentCount.textContent = "0";
+    commentFollowing = true;
     refreshCommentPanel();    // 直播中清空后面板留着，只是回到空态
   });
 
@@ -1241,11 +1294,15 @@
   document.addEventListener("visibilitychange", resync);
   window.addEventListener("focus", resync);
   window.addEventListener("resize", resync);
+  document.addEventListener("visibilitychange", resyncComments);
+  window.addEventListener("focus", resyncComments);
+  window.addEventListener("resize", resyncComments);
   // 兜底：桌面窗口被遮挡时 visibilitychange 未必触发。跟随状态下若发现
   // 不在底部就补上，代价是每 2 秒读一次几何量。
   setInterval(function () {
     if (document.hidden) return;
     if (needsResync(historyEl, following)) scrollToBottomNow();
+    if (needsResync(commentList, commentFollowing)) commentsToBottomNow();
     updateJumpButton();
   }, 2000);
 
