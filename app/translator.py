@@ -662,7 +662,7 @@ class OllamaGemmaTranslator(BaseTranslator):
         super().__init__()
         base = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
         self.url = base + "/api/generate"
-        self.model = os.environ.get("OLLAMA_TRANSLATE_MODEL", "translategemma:4b")
+        self.model = local_engine_model("gemma")
 
     def _prompt(self, text, target, source, glossary=None):
         """短指令。实测（M 系列 + translategemma:4b，6 句带货话术中位数）：
@@ -787,8 +787,7 @@ class OllamaHyMT2Translator(BaseTranslator):
         super().__init__()
         base = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
         self.url = base + "/api/generate"
-        self.model = os.environ.get(
-            "OLLAMA_HYMT2_MODEL", "hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M")
+        self.model = local_engine_model("hymt2")
 
     async def _needs_raw(self):
         """这个模型的自带模板能不能用。问一次就记住。
@@ -1029,6 +1028,28 @@ HYMT2_LARGE = "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M"
 
 def _ollama_has_hymt2(large=False):
     return _ollama_has("hy-mt2-7b" if large else "hy-mt2-1.8b")
+
+
+def local_engine_model(engine):
+    """本地引擎生成时真正调用的模型名，和 create_translator 建出来的实例一致（环境变量
+    OLLAMA_HYMT2_MODEL / OLLAMA_TRANSLATE_MODEL 改过的也算）；不是本地引擎返回 None。"""
+    if engine == "hymt2":
+        return os.environ.get("OLLAMA_HYMT2_MODEL", HYMT2_SMALL)
+    if engine == "hymt2-7b":
+        return HYMT2_LARGE
+    if engine == "gemma":
+        return os.environ.get("OLLAMA_TRANSLATE_MODEL", "translategemma:4b")
+    return None
+
+
+def _ollama_has_model(*models):
+    """本机 Ollama 里有没有 models 中的某一个：按名字精确比（model_listed），不是子串。
+
+    判断「要不要下载」「能不能换上」都用这个，和自检同一个判据。_ollama_has_hymt2 这类
+    子串判断只够 auto 挑引擎用——标签对不上，/api/generate 照样 404。连不上算没有；
+    一次 /api/tags，同步 urllib，放线程池里调。"""
+    names = _ollama_models()
+    return any(model_listed(m, names) for m in models)
 
 
 def _unload_siblings(keep_model):

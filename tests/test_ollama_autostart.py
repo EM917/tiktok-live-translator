@@ -65,9 +65,11 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(localmodel, "is_installed", lambda: state["installed"])
     monkeypatch.setattr(localmodel, "start", start)
     monkeypatch.setattr(localmodel, "pull", pull)
-    monkeypatch.setattr(translator, "_ollama_has_hymt2",
-                        lambda large=False: state["has_large"] if large else state["has_small"])
-    monkeypatch.setattr(translator, "_ollama_has_gemma", lambda: state["has_gemma"])
+    # /api/tags 按生成时真正用的名字列出已有模型：要不要下载按名字精确判断
+    monkeypatch.setattr(translator, "_ollama_models_or_none", lambda: [
+        m for m, key in ((translator.HYMT2_SMALL, "has_small"),
+                         (translator.HYMT2_LARGE, "has_large"),
+                         ("translategemma:4b", "has_gemma")) if state[key]])
     monkeypatch.setattr(pipeline_mod, "create_translator",
                         lambda name: calls["create"].append(name) or object())
     monkeypatch.setattr(p, "run_selfcheck", run_selfcheck)

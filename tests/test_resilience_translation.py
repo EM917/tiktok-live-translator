@@ -127,12 +127,16 @@ class Strong:
         self.name = "strong"
         self.last_error = None
         self.calls = 0
+        self.closed = False
 
     async def translate(self, text, target, source="auto", glossary=None):
         self.calls += 1
         if self.raises:
             raise RuntimeError("超时")
         return self.result
+
+    async def close(self):
+        self.closed = True
 
 
 class ScriptedEngine:
@@ -301,6 +305,63 @@ def test_selfcheck_fails_when_ollama_runs_without_the_configured_model(monkeypat
                                           gemma))["level"] == "ok"
 
 
+@pytest.mark.parametrize("engine,env,listed,wanted", [
+    ("gemma", None, ["translategemma:12b"], "translategemma:4b"),
+    ("gemma", "translategemma:12b", ["translategemma:4b"], "translategemma:12b"),
+    ("hymt2", None, ["hf.co/tencent/Hy-MT2-1.8B-GGUF:Q8_0"], HYMT2_SMALL),
+    ("hymt2-7b", None, [HYMT2_SMALL, "hf.co/tencent/Hy-MT2-7B-GGUF:Q8_0"], HYMT2_LARGE),
+])
+def test_another_tag_of_the_model_does_not_count_as_the_model(
+        monkeypatch, tmp_path, settings_file, engine, env, listed, wanted):
+    """自检、备模型、换引擎对「本机有没有这个模型」必须给同一个答案：生成时用的那个名字。
+    以前后两处按子串认：自检红着说会自动下载，实际一个字节都不下，换引擎也照换。"""
+    monkeypatch.delenv("OLLAMA_HYMT2_MODEL", raising=False)
+    monkeypatch.delenv("OLLAMA_TRANSLATE_MODEL", raising=False)
+    if env:
+        monkeypatch.setenv("OLLAMA_TRANSLATE_MODEL", env)
+    monkeypatch.setattr(translator, "_ollama_models_or_none", lambda: list(listed))
+    pulls, built = [], []
+
+    async def running(timeout=2):
+        return True
+
+    async def pull(model, on_progress=None):
+        pulls.append(model)
+        return True, None
+
+    monkeypatch.setattr(localmodel, "is_running", running)
+    monkeypatch.setattr(localmodel, "pull", pull)
+    monkeypatch.setattr("app.pipeline.create_translator", lambda name: built.append(name))
+
+    inner = OllamaGemmaTranslator() if engine == "gemma" else OllamaHyMT2Translator()
+    if engine == "hymt2-7b":
+        inner.model, inner.name = HYMT2_LARGE, "hymt2-7b"
+    assert inner.model == wanted
+    engine_obj = CachedTranslator(inner)
+    check = run(selfcheck.check_translator(SimpleNamespace(translator=engine), engine_obj))
+    assert check["level"] == "fail" and wanted in check["detail"]
+
+    async def idle():
+        p = bare_pipeline(tmp_path, engine_obj, engine=engine, audit=False)
+        await p.ensure_local_translator()
+
+    run(idle())
+    assert pulls == [wanted]                           # 自检说会下载的，这里真的下载
+
+    current = Fast("google")
+
+    async def live():
+        p = bare_pipeline(tmp_path, current, engine="google", audit=False)
+        p._stream_task = asyncio.get_running_loop().create_future()      # 直播中
+        await p.set_engine(engine)
+        p._stream_task.cancel()
+        return p
+
+    p = run(live())
+    assert p.translator is current and built == []   # 模型不在：本场不换
+    assert p._engine_pending == engine and p._pull_deferred == wanted
+
+
 def test_picking_a_missing_local_model_mid_live_keeps_the_current_engine(
         monkeypatch, tmp_path, settings_file):
     from app.settings import load_settings
@@ -309,7 +370,6 @@ def test_picking_a_missing_local_model_mid_live_keeps_the_current_engine(
     built = []
     monkeypatch.setattr("app.pipeline.create_translator", lambda name: built.append(name))
     monkeypatch.setattr(translator, "_ollama_models_or_none", lambda: [HYMT2_SMALL])
-    monkeypatch.setattr(translator, "_ollama_has_hymt2", lambda large=False: not large)
 
     async def scenario():
         p = bare_pipeline(tmp_path, current, engine="hymt2")
@@ -333,9 +393,8 @@ def test_picking_a_missing_local_model_mid_live_keeps_the_current_engine(
 def test_picking_a_missing_local_model_while_idle_downloads_then_switches(
         monkeypatch, tmp_path, settings_file):
     state = {"large": False, "pulls": []}
-    monkeypatch.setattr(translator, "_ollama_models_or_none", lambda: [HYMT2_SMALL])
-    monkeypatch.setattr(translator, "_ollama_has_hymt2",
-                        lambda large=False: state["large"] if large else True)
+    monkeypatch.setattr(translator, "_ollama_models_or_none",
+                        lambda: [HYMT2_SMALL] + ([HYMT2_LARGE] if state["large"] else []))
 
     async def running(timeout=2):
         return True
@@ -413,6 +472,7 @@ def test_alert_translation_falls_back_to_the_resident_engine(tmp_path, raises):
         p = bare_pipeline(tmp_path, fast)
         p._strong = strong
         await p._translate_alert([5, 6], "esto cura el cancer", "es")
+        await drain(p)
         return p
 
     p = run(scenario())
@@ -421,6 +481,7 @@ def test_alert_translation_falls_back_to_the_resident_engine(tmp_path, raises):
     assert all(u["context_zh"] == "这句话宣称能治癌症" and not u["failed"] for u in updates)
     assert strong.calls == 1 and fast.calls == 1
     assert p._strong is None                           # 下一条报警重新探测
+    assert strong.closed is True                       # 丢下的实例没人在用：关掉连接
     (record,) = rows(p.audit, "alert_translation")
     assert record["alert_ids"] == [5, 6] and record["ok"] is True
     assert record["fallback"] is True and record["model"] == HYMT2_SMALL
@@ -453,14 +514,65 @@ def test_after_a_strong_failure_the_next_alert_probes_again_off_the_loop(
 def test_each_session_starts_without_the_previous_strong_model(monkeypatch, tmp_path):
     p = full_pipeline(monkeypatch, tmp_path)
     p._provision_then_check = noop
-    p._strong = Strong(result="上一场的")
+    old = p._strong = Strong(result="上一场的")
 
     async def scenario():
         await p._begin_session("https://www.tiktok.com/@x/live")
         assert p._strong is None and p._strong_missing is False
+        assert await wait_for(lambda: old.closed)     # 没人在用：旧实例的连接关掉
         await p._end_session()
 
     run(scenario())
+
+
+def test_a_dropped_strong_model_stays_open_until_its_last_user_is_done(tmp_path):
+    """报警翻译失败清掉 self._strong 时，重译可能正拿着同一个实例等译文：马上关会把它
+    半路掐断，还会记成一次「强模型失败」；等它用完再关。"""
+    async def scenario():
+        gate = asyncio.Event()
+
+        class SharedStrong(Strong):
+            async def translate(self, text, target, source="auto", glossary=None):
+                self.calls += 1
+                if self.calls == 1:                    # 重译：等在半路
+                    await gate.wait()
+                    return "强译"
+                return None                            # 报警：强模型没给出译文
+
+        strong = SharedStrong()
+        p = bare_pipeline(tmp_path, Fast("hymt2", model=HYMT2_SMALL, out="快译"))
+        p._strong = strong
+        p._recent = {7: job(7)}
+        p._strong_inflight = set()
+        p._publish_translation = noop
+        redo = asyncio.ensure_future(p.retranslate(7))
+        assert await wait_for(lambda: strong.calls == 1)
+        await p._translate_alert([1], "esto cura el cancer", "es")
+        await drain(p)
+        assert p._strong is None and strong.closed is False
+        gate.set()
+        await redo
+        await drain(p)
+        return p, strong
+
+    p, strong = run(scenario())
+    assert strong.closed is True
+    assert [r["ok"] for r in rows(p.audit, "translation_strong")] == [True]
+
+
+def test_closing_a_dropped_strong_model_never_costs_the_alert_its_reply():
+    """关连接是顺手的清理，跑在报警翻译的 finally 里：它出了错（这里是半成品实例没有
+    _bg_tasks），报警框也必须收到回话，否则永远停在「翻译中…」。"""
+    p = Pipeline.__new__(Pipeline)
+    p.server = Server()
+    p.glossary = None
+    p.target = "zh-CN"
+    p.translator = None
+    p._strong = Strong(result=None)
+    run(p._translate_alert([7], "esto cura el cancer", "es"))
+    (update,) = p.server.of("alert_update")
+    assert update["failed"] is True and update["why"] == "模型没有返回译文"
+    assert p._strong is None
 
 
 def test_alert_translation_that_fails_everywhere_still_answers_the_page(tmp_path):
@@ -518,7 +630,14 @@ def test_comments_are_never_sent_to_a_non_resident_engine(name):
     assert {m["id"]: m["state"] for m in sent if m["type"] == "comment"} == {
         "a": "skipped", "b": "skipped", "c": "skipped"}
     hints = [m["text"] for m in sent if m["type"] == "notice"]
-    assert hints == [comments_mod.REMOTE_ENGINE_HINT] * 2    # 每场一次
+    expected = comments_mod.original_only_hint(engine)
+    assert hints == [expected] * 2                           # 每场一次
+    if name == "hymt2-7b":                                   # 7B 是本地模型，不能说成不是
+        assert expected == comments_mod.LARGE_MODEL_HINT
+        assert "不是本地模型" not in expected and "7B" in expected
+    else:
+        assert expected == comments_mod.REMOTE_ENGINE_HINT
+    plain(expected)
 
 
 @pytest.mark.parametrize("name", ["hymt2", "gemma"])
@@ -551,6 +670,22 @@ def test_a_batch_queued_before_a_switch_to_a_remote_engine_is_not_sent():
     run(scenario())
     assert local.calls == 0 and remote.calls == 0
     assert [m["state"] for m in sent if m["type"] == "comment_update"] == ["skipped"]
+
+
+def test_the_comment_hint_is_repeated_in_a_session_only_when_its_wording_changes():
+    holder = {"tr": None}
+    ct, sent = make_comments(holder, session=lambda: "同一场")
+
+    async def scenario():
+        for cid, name in (("a", "google"), ("b", "deepl"), ("c", "hymt2-7b"),
+                          ("d", "hymt2-7b")):
+            holder["tr"] = Fast(name)
+            await ct.accept({"items": [{"id": cid, "user": "u",
+                                        "text": "hola amigos " + cid}]})
+
+    run(scenario())
+    assert [m["text"] for m in sent if m["type"] == "notice"] == [
+        comments_mod.REMOTE_ENGINE_HINT, comments_mod.LARGE_MODEL_HINT]
 
 
 def test_the_pipeline_scopes_the_comment_hint_to_the_session(monkeypatch, tmp_path):
@@ -658,9 +793,11 @@ def ollama(monkeypatch):
     monkeypatch.setattr(localmodel, "is_installed", lambda: state["installed"])
     monkeypatch.setattr(localmodel, "start", start)
     monkeypatch.setattr(localmodel, "pull", pull)
-    monkeypatch.setattr(translator, "_ollama_has_hymt2",
-                        lambda large=False: state["large"] if large else state["small"])
-    monkeypatch.setattr(translator, "_ollama_has_gemma", lambda: state["gemma"])
+    def listed():                       # /api/tags：按生成时真正用的名字列出已有模型
+        return [m for m, key in ((HYMT2_SMALL, "small"), (HYMT2_LARGE, "large"),
+                                 ("translategemma:4b", "gemma")) if state[key]]
+
+    monkeypatch.setattr(translator, "_ollama_models_or_none", listed)
     return state
 
 
@@ -763,6 +900,42 @@ def test_a_second_alert_does_not_queue_behind_a_running_strong_call(tmp_path):
         return p
 
     p = run(scenario())
+    assert {u["alert_id"]: u["context_zh"] for u in p.server.of("alert_update")} == {
+        1: "强译", 2: "快译"}
+    records = {r["alert_ids"][0]: r for r in rows(p.audit, "alert_translation")}
+    assert records[2]["downgraded_for_busy"] is True and records[2]["model"] == HYMT2_SMALL
+    assert records[1]["downgraded_for_busy"] is False and records[1]["model"] == HYMT2_LARGE
+
+
+def test_an_alert_that_arrives_while_the_strong_model_is_probed_uses_the_resident_one(
+        monkeypatch, tmp_path):
+    """每场第一条报警时 self._strong 是空的，得先去线程池里探测：这期间到的第二条报警也要
+    看得见「强模型已被占住」，否则两条都去叫 7B。"""
+    entered, release = threading.Event(), threading.Event()
+    made = []
+
+    def create_strong():
+        made.append(1)
+        entered.set()
+        release.wait(2)                 # 探测要一会儿；上限 2 秒，出错时测试不至于卡死
+        return Strong(result="强译")
+
+    monkeypatch.setattr(translator, "create_strong_translator", create_strong)
+    fast = Fast("hymt2", model=HYMT2_SMALL, out="快译")
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, fast)
+        first = asyncio.ensure_future(p._translate_alert([1], "esto cura el cancer", "es"))
+        try:
+            assert await wait_for(entered.is_set)
+            await p._translate_alert([2], "adelgaza sin dieta", "es")
+        finally:
+            release.set()
+        await first
+        return p
+
+    p = run(scenario())
+    assert made == [1] and fast.calls == 1
     assert {u["alert_id"]: u["context_zh"] for u in p.server.of("alert_update")} == {
         1: "强译", 2: "快译"}
     records = {r["alert_ids"][0]: r for r in rows(p.audit, "alert_translation")}
@@ -1082,6 +1255,26 @@ def test_a_failed_download_replaces_the_progress_with_ollamas_words(ollama, tmp_
     assert [(r["state"], r["error"]) for r in rows(p.audit, "model_pull")] == [
         ("start", None), ("failed", "pull model manifest: file does not exist")]
     assert p.translator.name == "google"               # 失败不换引擎
+
+
+def test_a_progress_note_scheduled_just_before_a_failure_does_not_cover_it(
+        ollama, tmp_path, monkeypatch):
+    """进度回调刚排上提示、下载就失败了（中间没让出事件循环）：迟到的百分比不能盖掉失败原因。"""
+    async def pull(model, on_progress=None):
+        on_progress(63.0, 700.0, 1100.0)
+        return False, "pull model manifest: file does not exist"
+
+    monkeypatch.setattr(localmodel, "pull", pull)
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, Fast("google"), engine="auto", audit=False)
+        await p.ensure_local_translator()
+        await drain(p)
+        return p
+
+    details = [m["detail"] for m in run(scenario()).server.of("status")]
+    assert "下载失败" in details[-1] and "file does not exist" in details[-1]
+    assert not [d for d in details if "%" in d]
 
 
 def test_auto_mode_downloads_again_when_the_model_in_use_was_removed(ollama, tmp_path):

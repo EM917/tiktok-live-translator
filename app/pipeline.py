@@ -511,7 +511,7 @@ class Pipeline:
         if recent is not None:
             recent.clear()
         self._strong_missing = False     # 用户可能在两场之间拉好了模型
-        self._strong = None              # 也可能删掉了：上一场的强模型对象不能接着用
+        self._drop_strong()              # 也可能删掉了：上一场的强模型对象不能接着用
         self.telemetry.reset()          # 统计按场计，不跨房间累计
         if self.audit is not None:
             self.audit.close()
@@ -702,9 +702,11 @@ class Pipeline:
                 has = self._local_wanted(active)[1]
             else:
                 def has():
-                    return (T._ollama_has_hymt2() or T._ollama_has_hymt2(large=True)
-                            or T._ollama_has_gemma())
-            need = None if await loop.run_in_executor(None, has) else T.HYMT2_SMALL
+                    # 和 _local_wanted 同一个判据：按生成时真正用的名字精确比
+                    return T._ollama_has_model(*(T.local_engine_model(e)
+                                                 for e in ("hymt2", "hymt2-7b", "gemma")))
+            need = None if await loop.run_in_executor(None, has) \
+                else T.local_engine_model("hymt2")
         else:
             model, has = self._local_wanted(engine)
             need = None if await loop.run_in_executor(None, has) else model
@@ -712,7 +714,7 @@ class Pipeline:
         pulled = False
         if need is not None:
             if need in self._pulls_running():
-                # 已经有一个下载在跑（多半是启动时起的）：不再起第二个，也不推迟它；
+                # 已经有一个下载在跑（比如启动时起的那个）：不再起第二个，也不推迟它；
                 # 只在本场日志里留个记号，事后能把这段时间的网络占用对上号
                 self._audit_pull("in_progress", need)
             elif self._stream_active():
@@ -745,14 +747,19 @@ class Pipeline:
 
     @staticmethod
     def _local_wanted(engine):
-        """本地引擎 → (它要的模型, 本机有没有这个模型的同步探测)。探测在调用时才去
-        translator 模块里取，测试替换得到。不是本地引擎时模型是 None。"""
+        """本地引擎 → (它生成时真正调用的模型, 本机有没有**这一个**模型的同步探测)。
+
+        和自检（selfcheck.check_translator）同一个判据：按名字精确比（model_listed），
+        环境变量改过的模型名也照认。以前这里按子串认——Ollama 里只有 translategemma:12b、
+        或 1.8B 只有别的量化档时，自检红着说「会自动下载」，这里却当作有、一个字节都不下，
+        set_engine 也照换不误，每句 404。探测在调用时才去 translator 模块里取，测试替换
+        得到。不是本地引擎时模型是 None。"""
         from . import translator as T
 
-        return {"hymt2": (T.HYMT2_SMALL, lambda: T._ollama_has_hymt2()),
-                "hymt2-7b": (T.HYMT2_LARGE, lambda: T._ollama_has_hymt2(large=True)),
-                "gemma": ("translategemma:4b", lambda: T._ollama_has_gemma())}.get(
-                    engine, (None, lambda: True))
+        model = T.local_engine_model(engine)
+        if model is None:
+            return None, lambda: True
+        return model, lambda: T._ollama_has_model(model)
 
     def _pulls_running(self):
         """正在下载的模型名（进程级集合：一次下载可能跨场次）。"""
@@ -1753,14 +1760,15 @@ class Pipeline:
         探测是同步 urllib，放线程池。"""
         from . import translator as T
 
-        model, has = self._local_wanted(engine)
+        model = T.local_engine_model(engine)
         if model is None:
             return None
 
         def probe():
-            if T._ollama_models_or_none() is None:
+            names = T._ollama_models_or_none()
+            if names is None:
                 return None
-            return None if has() else model
+            return None if T.model_listed(model, names) else model    # 同 _local_wanted
 
         try:
             return await asyncio.get_running_loop().run_in_executor(None, probe)
@@ -1866,7 +1874,7 @@ class Pipeline:
         if claimed:
             self._alert_strong_busy = True
         strong = used = out = error = None
-        fallback = hard_fail = False
+        fallback = hard_fail = held = False
         try:
             if claimed:
                 strong = await self._strong_translator()
@@ -1877,6 +1885,9 @@ class Pipeline:
                     strong = None
                 if strong is None:
                     self._alert_strong_busy = claimed = False
+                else:
+                    self._hold_strong(strong)
+                    held = True
             used = first = strong or fast
             if first is None:
                 if for_backlog:
@@ -1912,7 +1923,7 @@ class Pipeline:
                 if err and err[0] is not None:
                     error = "HTTP {}{}".format(err[0], "：" + err[1] if err[1] else "")
                 if getattr(self, "_strong", None) is strong:
-                    self._strong = None       # 下一条报警重新探测（探测在线程池里）
+                    self._drop_strong()       # 下一条报警重新探测（探测在线程池里）
                 if fast is not None and fast is not strong:
                     print("[警告] 强模型没有给出报警上下文译文，改用常驻引擎再译一次")
                     fallback, used, hard_fail = True, fast, False
@@ -1927,6 +1938,8 @@ class Pipeline:
         finally:
             if claimed:
                 self._alert_strong_busy = False
+            if held:
+                self._release_strong(strong)
         why = "" if out else ("翻译超时或出错" if hard_fail else "模型没有返回译文")
         await tell(out, why=why)
         self._record_alert_translation(audit, alert_ids, used, out, t0, fallback, why,
@@ -1948,6 +1961,56 @@ class Pipeline:
             alert_ids, self._model_of(used) if used is not None else None, bool(out),
             (time.monotonic() - t0) * 1000.0, fallback, why,
             downgraded_for_backlog=for_backlog, downgraded_for_busy=for_busy, error=error)
+
+    def _strong_users(self):
+        """正在用的强模型实例：id → [实例, 用的人数]。清掉 self._strong 时靠它判断能不能
+        马上关掉旧实例的 HTTP 连接——关早了会掐断别人半路的请求，还会被当成「强模型
+        失败」记进审计。"""
+        users = getattr(self, "_strong_in_use", None)
+        if users is None:
+            users = self._strong_in_use = {}
+        return users
+
+    def _hold_strong(self, strong):
+        self._strong_users().setdefault(id(strong), [strong, 0])[1] += 1
+
+    def _release_strong(self, strong):
+        users = self._strong_users()
+        entry = users.get(id(strong))
+        if entry is None:
+            return
+        entry[1] -= 1
+        if entry[1] > 0:
+            return
+        del users[id(strong)]
+        if strong is not getattr(self, "_strong", None):
+            self._close_later(strong)    # 已经换下的实例：最后一个用的人用完就关
+
+    def _drop_strong(self):
+        """忘掉缓存的强模型实例，下次用时重新探测；没人在用就马上关掉它的连接，有人在用
+        就等最后一个人用完（_release_strong）。以前只是置 None：每场开始、每次强模型
+        失败都丢下一个没关的 aiohttp 会话。"""
+        old, self._strong = getattr(self, "_strong", None), None
+        if old is not None and id(old) not in self._strong_users():
+            self._close_later(old)
+
+    def _close_later(self, engine):
+        """不等结果地关掉一个换下来的引擎实例的连接。这一步跑在报警翻译的 finally 里：
+        清理出了任何错都只能放弃，不能让报警框等不到回话（半成品实例没有 _bg_tasks 也一样）。"""
+        if getattr(engine, "close", None) is None:
+            return
+        coro = self._close_engine(engine)
+        try:
+            self._spawn(coro)
+        except Exception:
+            coro.close()
+
+    @staticmethod
+    async def _close_engine(engine):
+        try:
+            await engine.close()
+        except Exception:
+            pass
 
     async def _migrate_glossary(self, confirm):
         """「迁移旧词表」：扫描 → 展示 → 用户确认 → 备份 → 迁移。
@@ -2219,6 +2282,7 @@ class Pipeline:
         # 而那条本来好好的快译已经被擦掉了。
         # 「一次失败不得擦掉已在屏幕上的译文」这条规则，必须同时管住中间态。
         self._strong_inflight.add(seq)
+        self._hold_strong(strong)        # 报警翻译清掉 self._strong 时，别关掉这边还在用的连接
         audit = self.audit               # 本场自己的审计：等译文期间可能已经换场
         had = self._quality.get(seq, 0) > 0
         await self.server.broadcast({"type": "caption_update", "id": seq,
@@ -2241,6 +2305,7 @@ class Pipeline:
             out = None
         ms = (time.monotonic() - t0) * 1000.0
         self._strong_inflight.discard(seq)
+        self._release_strong(strong)
         if audit is not None:
             audit.translation_strong(seq, out, ms, bool(out),
                                      getattr(strong, "model", None), trigger)
