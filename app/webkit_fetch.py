@@ -24,6 +24,8 @@ import json
 import sys
 import time
 
+from .stdio import utf8_stdio
+
 # 页面里读 SIGI_STATE 的脚本：返回 JSON 字符串，永不抛异常（抛了就是空对象）。
 # 与 resolver._pick_stream 同一套挑法：纯音频档（ao）优先，其次任意档的 flv，
 # 再退到 flv_pull_url / hls。
@@ -111,6 +113,11 @@ def _poll(window, timeout, result):
 
 
 def main(argv=None):
+    # 父进程按 UTF-8 读这一行 JSON（resolver 里 out.decode("utf-8")），所以这里和
+    # app/comment_worker.py 一样固定 UTF-8，而不是 main.py 的「保留代码页」护栏。
+    # 今天只在 macOS 上会被调起（resolver._webkit_available），但错误文本里可能有
+    # 页面片段、主播昵称：哪天放开这个门，编码不该是新的失败点。
+    utf8_stdio()
     p = argparse.ArgumentParser(prog="python -m app.webkit_fetch")
     p.add_argument("url")
     p.add_argument("--timeout", type=float, default=25.0)

@@ -667,8 +667,12 @@ async def _run_ytdlp(url, cookies=None, browser=None, timeout=45):
     elif browser:
         cmd += ["--cookies-from-browser", browser]
     cmd += ["--", url]      # `--` 之后一律当作地址，防止 "-xxx" 形式的地址被当成选项
+    # PYTHONIOENCODING=utf-8：我们按 UTF-8 解这两个管道（下面的 decode），而 Windows 上
+    # 子进程默认按 ANSI 代码页输出——报错里的主播昵称、路径会解成一串 U+FFFD，
+    # 而 U+FFFD 本身又是 GBK 编不出来的字符，等于把 yt-dlp 的原话变成第二个编码坑。
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env=dict(os.environ, PYTHONIOENCODING="utf-8"),
     )
     try:
         # 限时 + 取消时务必杀掉子进程：否则用户点「停止」或换房间后，

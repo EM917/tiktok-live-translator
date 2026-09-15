@@ -14,6 +14,15 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from app.stdio import harden_stdio
+
+# 必须是 import 之后的第一句可执行语句：下面的版本检查、ensure_env() 的安装提示、--doctor 的
+# 体检报告都会写标准流，而 Windows 上重定向/管道的 stdout 默认是 ANSI 代码页 +
+# errors='strict'——一个 ✅ 或一个西语 ñ 就让进程带着 UnicodeEncodeError 退出
+# （2026-09-15 中文 Windows 11 实测，见 app/stdio.py）。首次安装后 execv 进 .venv、
+# 一键更新后重启，都会重新从这里跑一遍；窗口模式的后台线程与本进程共用这两个流。
+harden_stdio()
+
 ROOT = Path(__file__).resolve().parent
 
 if sys.version_info < (3, 9):
