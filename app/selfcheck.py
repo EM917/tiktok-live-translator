@@ -370,11 +370,13 @@ async def check_comments(args):
         return _check(name, WARN, "弹幕组件 TikTokLive 还没装，程序会在后台自动安装",
                       "字幕和违禁词报警不受影响")
     if tiktoklive_outdated(version):
+        from .updater import TIKTOKLIVE_SPEC
         need = ".".join(str(x) for x in TIKTOKLIVE_MIN)
+        # 只写观察到的事实和能做的事：升级此刻是否在跑、下次何时试，这一行都不知道，别说
         return _check(name, WARN,
-                      "弹幕组件 TikTokLive {} 低于 {}，评论服务走备用线路时连不上；"
-                      "程序正在后台自动升级".format(version, need),
-                      "一直这样的话，重开本程序会再试一次升级")
+                      "弹幕组件 TikTokLive {} 低于 {}，评论服务走备用线路时连不上".format(version, need),
+                      "程序每次启动会自动尝试升级，一小时内只试一次；也可以关掉程序后在终端执行："
+                      "\"{}\" -m pip install -U \"{}\"".format(sys.executable, TIKTOKLIVE_SPEC))
     return _check(name, OK, "弹幕组件 TikTokLive {}".format(version))
 
 

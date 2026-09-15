@@ -1,4 +1,4 @@
-"""弹幕连接的保险（2026-09-14 事故之后加的四层）。
+"""弹幕连接的保险（2026-09-14 事故之后加的四层，外加合并前审查确认的修正）。
 
 那次：Euler 签名服务把连接派到备用推流线路，TikTokLive 7.0.0 拼错握手地址，
 每次 HTTP 400；修好它的 7.0.1 四天前就发布了，而程序只在「没装」时才安装、从不升级。
@@ -6,12 +6,16 @@
 
 这里钉住：
   1. 版本兜底：低于 7.0.1 就升，失败也不把弹幕判成不可用；
-  2. 被拒时找更新：握手被拒（沿异常链认状态码）单独归类，先找补丁版本，
-     升级了立刻重连，没有就长等；
-  3. 中文说明：原始英文报错不直接上面板，文案不带规则八禁用的原因标签；
-  4. 留证据：弹幕状态变化与组件版本写进会话日志，自检多一行「观众弹幕」。
+  2. 被拒时找更新：握手被拒（沿异常链认状态码）单独归类，先找补丁版本，升级了或
+     子进程启动后版本已经变了就立刻重连，否则长等；检查失败不进六小时冷却；并发的
+     检查合成一次；调用方被取消时 pip 锁不提前释放；
+  3. 中文说明：原始英文报错不上面板，面板说的「正在检查」必须真的在检查，事后写明
+     结果；文案不带规则八禁用的原因标签；
+  4. 留证据：弹幕状态变化、服务端给的原始原因（只进审计）与组件版本写进会话日志，
+     自检多一行「观众弹幕」且只写事实。
 
 不 import 其它测试文件；不 import TikTokLive（CI 没装），异常类用同构的假模块。
+等待时间都留足余量：Windows 跑器的计时粒度约 15.6 毫秒。
 """
 import asyncio
 import json
@@ -47,7 +51,7 @@ async def wait_until(cond, limit=300):
 
 
 # ---------------------------------------------------------------------------
-# 1. 版本兜底（updater）
+# 1. 版本兜底与更新检查（updater）
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("version,outdated", [
@@ -66,8 +70,9 @@ def test_requirements_pin_matches_the_minimum():
     assert updater_mod.TIKTOKLIVE_MIN == (7, 0, 1)
 
 
-def _updater(monkeypatch, settings=None, versions=("7.0.0",), pip_code=0, installed=True):
-    """造一个 Updater：设置存内存、版本号按序列返回、pip 只记参数。"""
+def _updater(monkeypatch, settings=None, versions=("7.0.0",), pip_code=0, installed=True,
+             pip_gate=None):
+    """造一个 Updater：设置存内存、版本号按序列返回、pip 只记参数（可选地等一个闸门）。"""
     store = dict(settings or {})
     seq = list(versions)
     pip_calls = []
@@ -85,6 +90,8 @@ def _updater(monkeypatch, settings=None, versions=("7.0.0",), pip_code=0, instal
 
     async def fake_pip(args, label, timeout=600):
         pip_calls.append(list(args))
+        if pip_gate is not None:
+            await pip_gate()
         return pip_code
 
     monkeypatch.setattr(up, "_pip_install", fake_pip)
@@ -112,12 +119,13 @@ def test_failed_upgrade_still_reports_available(monkeypatch):
     assert len(pip_calls) == 1
 
 
-def test_outdated_upgrade_respects_its_cooldown(monkeypatch):
+def test_outdated_upgrade_respects_its_cooldown_and_says_so(monkeypatch, capsys):
     up, store, pip_calls = _updater(
         monkeypatch, settings={"tiktoklive_upgrade_attempted_at": time.time()},
         versions=("7.0.0",))
     assert run(up.ensure_tiktoklive("comments")) is True
     assert pip_calls == []
+    assert "一小时内已试过升级" in capsys.readouterr().out
 
 
 def test_fresh_install_uses_the_pinned_spec(monkeypatch):
@@ -126,32 +134,131 @@ def test_fresh_install_uses_the_pinned_spec(monkeypatch):
     assert pip_calls == [[updater_mod.TIKTOKLIVE_SPEC]]
 
 
-def test_freshen_returns_the_version_change(monkeypatch):
+def test_freshen_upgrade_returns_the_change_and_starts_the_cooldown(monkeypatch):
     up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"))
-    assert run(up.freshen_tiktoklive("comment-rejected")) == ("7.0.1", "7.0.2")
+    result = run(up.freshen_tiktoklive("comment-rejected"))
+    assert result == {"outcome": "upgraded", "before": "7.0.1", "after": "7.0.2"}
     assert pip_calls and "-U" in pip_calls[0] and updater_mod.TIKTOKLIVE_SPEC in pip_calls[0]
     assert "tiktoklive_freshen_at" in store
 
 
-def test_freshen_without_a_newer_release_returns_none(monkeypatch):
+def test_freshen_without_a_newer_release_says_no_update(monkeypatch):
     up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"))
-    assert run(up.freshen_tiktoklive("comment-rejected")) is None
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "no-update"
+    assert len(pip_calls) == 1 and "tiktoklive_freshen_at" in store
+
+
+def test_failed_check_is_logged_and_does_not_start_the_six_hour_cooldown(monkeypatch, capsys):
+    """审查确认：以前 pip 失败也先记了六小时冷却，还一句不说——网络一分钟后恢复，
+    修复版本也要再等六小时。现在失败只进十分钟的内存重试间隔。"""
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"), pip_code=1)
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "pip-failed"
+    assert "tiktoklive_freshen_at" not in store
+    assert "没成功" in capsys.readouterr().out
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "recently-failed"
     assert len(pip_calls) == 1
 
 
-def test_freshen_respects_the_cooldown(monkeypatch):
-    """拒绝往往连着来：冷却期内不再拉 pip。"""
+def test_freshen_respects_the_cooldown_without_announcing(monkeypatch):
+    announced = []
+
+    async def announce():
+        announced.append(1)
+
     up, store, pip_calls = _updater(
         monkeypatch, settings={"tiktoklive_freshen_at": time.time() - 60},
         versions=("7.0.1", "7.0.2"))
-    assert run(up.freshen_tiktoklive("comment-rejected")) is None
-    assert pip_calls == []
+    assert run(up.freshen_tiktoklive("comment-rejected", announce=announce))["outcome"] == "cooldown"
+    assert pip_calls == [] and announced == []
 
 
 def test_freshen_does_nothing_when_not_installed(monkeypatch):
     up, store, pip_calls = _updater(monkeypatch, versions=(None,), installed=False)
-    assert run(up.freshen_tiktoklive("comment-rejected")) is None
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "not-installed"
     assert pip_calls == []
+
+
+def test_announce_runs_right_before_pip(monkeypatch):
+    order = []
+
+    async def announce():
+        order.append("announce")
+
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"))
+    real_pip = up._pip_install
+
+    async def pip_after_announce(args, label, timeout=600):
+        order.append("pip")
+        return await real_pip(args, label, timeout)
+
+    monkeypatch.setattr(up, "_pip_install", pip_after_announce)
+    run(up.freshen_tiktoklive("comment-rejected", announce=announce))
+    assert order == ["announce", "pip"]
+
+
+def test_concurrent_freshen_calls_share_one_check(monkeypatch):
+    """审查确认：第二次被拒时第一次检查还没完，以前直接判「没有更新」再白等几分钟。"""
+    gate = {}
+
+    async def pip_gate():
+        await gate["event"].wait()
+
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"), pip_gate=pip_gate)
+
+    async def scenario():
+        gate["event"] = asyncio.Event()
+        first = asyncio.ensure_future(up.freshen_tiktoklive("a"))
+        await asyncio.sleep(0.05)
+        second = asyncio.ensure_future(up.freshen_tiktoklive("b"))
+        await asyncio.sleep(0.05)
+        gate["event"].set()
+        return await first, await second
+
+    a, b = run(scenario())
+    assert a == b == {"outcome": "upgraded", "before": "7.0.1", "after": "7.0.2"}
+    assert len(pip_calls) == 1
+
+
+def test_cancelled_caller_does_not_release_the_pip_lock_before_pip_exits(monkeypatch):
+    """审查确认：中控点停止会取消等待中的调用方，以前锁随之释放、pip 却还在写环境，
+    一键更新的 pip 紧接着拿到锁并发写同一个 venv。"""
+    spawned = []
+    gate = {}
+
+    class Proc:
+        returncode = 0
+
+        async def wait(self):
+            await gate["event"].wait()
+            return 0
+
+        def kill(self):
+            pass
+
+    async def fake_exec(*args, **kwargs):
+        spawned.append(args)
+        return Proc()
+
+    monkeypatch.setattr(updater_mod.asyncio, "create_subprocess_exec", fake_exec)
+    up = updater_mod.Updater(server=None)
+
+    async def scenario():
+        gate["event"] = asyncio.Event()
+        caller = asyncio.ensure_future(up._pip_install(["TikTokLive"], "测试"))
+        await wait_until(lambda: spawned, limit=100)
+        caller.cancel()
+        try:
+            await caller
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0.05)
+        held_while_pip_runs = up._get_pip_lock().locked()
+        gate["event"].set()
+        await wait_until(lambda: not up._get_pip_lock().locked(), limit=100)
+        return held_while_pip_runs, up._get_pip_lock().locked()
+
+    held, after = run(scenario())
+    assert held is True and after is False and len(spawned) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +378,7 @@ def test_worker_status_line_carries_the_http_status(capsys):
 
 
 # ---------------------------------------------------------------------------
-# 3. 监督循环：被拒先找更新，升级了立刻重连，没有就长等
+# 3. 监督循环：被拒先找更新，升级了立刻重连，没有就长等并说清结果
 # ---------------------------------------------------------------------------
 
 class FakeStream:
@@ -310,26 +417,40 @@ def jline(d):
 REJECTED_400 = jline({"event": "status", "state": "rejected",
                       "detail": "InvalidStatusCode: server rejected WebSocket connection: HTTP 400",
                       "http_status": 400})
+BLOCKED_200 = jline({"event": "status", "state": "blocked",
+                     "detail": 'WebcastBlockedError: rejected due to "illegal secret key"',
+                     "http_status": 200})
+LONG_WAIT = 5.0     # 「长等」设得远大于立刻重连所需的时间，Windows 计时粒度下也不会误判
 
 
-def make_source(monkeypatch, procs, on_stale=None):
+def make_source(monkeypatch, procs, on_stale=None, versions=("7.0.1",), two_arg_state=False):
     state_log = []
+    raw_log = []
 
     async def on_items(items):
         pass
 
-    async def on_state(state, detail=""):
-        state_log.append((state, detail))
+    if two_arg_state:
+        async def on_state(state, detail=""):
+            state_log.append((state, detail))
+    else:
+        async def on_state(state, detail="", raw=""):
+            state_log.append((state, detail))
+            if raw:
+                raw_log.append((state, detail, raw))
 
     cs = CommentSource(on_items=on_items, on_state=on_state, cookies_browser="none")
     for name, value in (("BACKOFF_MIN_SEC", 0.01), ("BACKOFF_MAX_SEC", 0.05),
                         ("HEALTHY_SEC", 0.02), ("OFFLINE_RETRY_SEC", 0.02),
-                        ("SIGN_ERROR_WAIT_SEC", 0.3), ("BLOCKED_WAIT_SEC", 0.3),
-                        ("REJECTED_WAIT_SEC", 0.3), ("MAX_CONNECTS_PER_HOUR", 30),
-                        ("STOP_GRACE_SEC", 0.05), ("HOUR_WINDOW_SEC", 5.0),
+                        ("SIGN_ERROR_WAIT_SEC", LONG_WAIT), ("BLOCKED_WAIT_SEC", LONG_WAIT),
+                        ("REJECTED_WAIT_SEC", LONG_WAIT), ("MAX_CONNECTS_PER_HOUR", 30),
+                        ("STOP_GRACE_SEC", 0.05), ("HOUR_WINDOW_SEC", 60.0),
                         ("PROVISION_POLL_SEC", 0.02)):
         monkeypatch.setattr(CommentSource, name, value)
     monkeypatch.setattr(cs_mod, "worker_available", lambda: True)
+    seq = list(versions)
+    monkeypatch.setattr(cs_mod, "_installed_tiktoklive",
+                        lambda: seq.pop(0) if len(seq) > 1 else (seq[0] if seq else None))
     queue = list(procs)
     calls = []
 
@@ -339,7 +460,22 @@ def make_source(monkeypatch, procs, on_stale=None):
 
     monkeypatch.setattr(CommentSource, "_spawn", fake_spawn)
     cs.on_stale = on_stale
-    return cs, state_log, calls
+    return cs, state_log, raw_log, calls
+
+
+def make_stale(outcome, announce_first=True, before="7.0.0", after="7.0.1"):
+    asked = []
+
+    async def stale(reason, announce=None):
+        asked.append(reason)
+        if announce_first and announce is not None:
+            await announce()
+        result = {"outcome": outcome, "before": before}
+        if outcome in ("upgraded", "no-update", "pip-failed"):
+            result["after"] = after if outcome == "upgraded" else before
+        return result
+
+    return stale, asked
 
 
 def _no_banned_labels(state_log):
@@ -348,133 +484,132 @@ def _no_banned_labels(state_log):
             assert word not in detail, (word, detail)
 
 
-def test_rejected_then_upgraded_reconnects_immediately(monkeypatch):
-    asked = []
-
-    async def stale(reason):
-        asked.append(reason)
-        return ("7.0.0", "7.0.1")
-
-    cs, state_log, calls = make_source(
-        monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=stale)
-
+def _run_until(cs, cond, limit=300, settle=0.0):
     async def scenario():
         cs.start("bella")
-        ok = await wait_until(lambda: len(calls) >= 2, limit=15)   # 远小于 REJECTED_WAIT_SEC
+        ok = await wait_until(cond, limit=limit)
+        if settle:
+            await asyncio.sleep(settle)
         await cs.stop()
         return ok
+    return run(scenario())
 
-    assert run(scenario()) is True
+
+def test_rejected_then_upgraded_reconnects_immediately(monkeypatch):
+    stale, asked = make_stale("upgraded")
+    cs, state_log, raw_log, calls = make_source(
+        monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=stale)
+    assert _run_until(cs, lambda: len(calls) >= 2, limit=100) is True
     assert asked == ["comment-rejected"]
     details = [d for _, d in state_log]
+    assert any("正在检查" in d for d in details)
     assert any("7.0.0" in d and "7.0.1" in d for d in details)
-    assert not any("InvalidStatusCode" in d for d in details)    # 原始英文报错没上面板
+    assert not any("InvalidStatusCode" in d for d in details)     # 原始英文报错没上面板
+    assert any("InvalidStatusCode" in raw and "http_status=400" in raw for _, _, raw in raw_log)
     _no_banned_labels(state_log)
 
 
-def test_rejected_without_update_waits_and_says_so(monkeypatch):
-    async def stale(reason):
-        return None
-
-    cs, state_log, calls = make_source(
+def test_rejected_without_update_waits_and_says_what_happened(monkeypatch):
+    stale, asked = make_stale("no-update")
+    cs, state_log, raw_log, calls = make_source(
         monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=stale)
-
-    async def scenario():
-        cs.start("bella")
-        await wait_until(lambda: any("分钟后自动重试" in d for _, d in state_log))
-        await asyncio.sleep(0.1)                  # 仍在 REJECTED_WAIT_SEC 窗口内
-        early = len(calls)
-        await cs.stop()
-        return early
-
-    assert run(scenario()) == 1
-    assert any("HTTP 400" in d and "分钟后自动重试" in d for _, d in state_log)
+    assert _run_until(cs, lambda: any("分钟后自动重试" in d for _, d in state_log),
+                      settle=0.2) is True
+    assert len(calls) == 1                                           # 仍在长等窗口内
+    final = [d for _, d in state_log if "分钟后自动重试" in d][-1]
+    assert "HTTP 400" in final and "已是可用的最新版本" in final
     _no_banned_labels(state_log)
+
+
+def test_rejected_during_cooldown_does_not_claim_a_check(monkeypatch):
+    """审查确认：以前每次被拒都先写「正在检查」，冷却期内其实什么都没查，日志会误导人。"""
+    stale, asked = make_stale("cooldown", announce_first=False)
+    cs, state_log, raw_log, calls = make_source(
+        monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=stale)
+    assert _run_until(cs, lambda: any("分钟后自动重试" in d for _, d in state_log)) is True
+    assert not any("正在检查" in d for _, d in state_log)
+    assert any("近几个小时已检查过" in d for _, d in state_log)
+
+
+def test_failed_update_check_is_reported_on_the_panel(monkeypatch):
+    stale, asked = make_stale("pip-failed")
+    cs, state_log, raw_log, calls = make_source(
+        monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=stale)
+    assert _run_until(cs, lambda: any("更新检查没成功" in d for _, d in state_log)) is True
+
+
+def test_version_changed_since_spawn_reconnects_without_a_check(monkeypatch):
+    """审查确认：启动时的升级在子进程已经起来之后才落地，被拒时版本其实已经是新的。"""
+    stale, asked = make_stale("no-update")
+    cs, state_log, raw_log, calls = make_source(
+        monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=stale,
+        versions=("7.0.0", "7.0.1"))
+    assert _run_until(cs, lambda: len(calls) >= 2, limit=100) is True
+    assert asked == []
+    assert any("已更新到 7.0.1" in d for _, d in state_log)
 
 
 def test_rejected_status_with_unexpected_exit_code_maps_to_eight(monkeypatch):
-    """子进程被信号打死（退出码不在表里）：以最后一条 status 为准。"""
-    asked = []
-
-    async def stale(reason):
-        asked.append(reason)
-        return None
-
-    cs, state_log, calls = make_source(
+    stale, asked = make_stale("no-update")
+    cs, state_log, raw_log, calls = make_source(
         monkeypatch, [FakeProc([REJECTED_400], returncode=-9)], on_stale=stale)
-
-    async def scenario():
-        cs.start("bella")
-        await wait_until(lambda: asked)
-        await cs.stop()
-
-    run(scenario())
-    assert asked == ["comment-rejected"]
+    assert _run_until(cs, lambda: asked) is True
 
 
 def test_freshen_callback_that_raises_is_treated_as_no_update(monkeypatch):
-    async def stale(reason):
+    async def stale(reason, announce=None):
         raise RuntimeError("pip exploded")
 
-    cs, state_log, calls = make_source(
+    cs, state_log, raw_log, calls = make_source(
         monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=stale)
-
-    async def scenario():
-        cs.start("bella")
-        ok = await wait_until(lambda: any("分钟后自动重试" in d for _, d in state_log))
-        await cs.stop()
-        return ok
-
-    assert run(scenario()) is True
+    assert _run_until(cs, lambda: any("分钟后自动重试" in d for _, d in state_log)) is True
 
 
 def test_blocked_also_asks_for_an_update(monkeypatch):
-    asked = []
-
-    async def stale(reason):
-        asked.append(reason)
-        return ("7.0.1", "7.0.2")
-
-    blocked = jline({"event": "status", "state": "blocked",
-                     "detail": "WebcastBlockedError: rejected", "http_status": 200})
-    cs, state_log, calls = make_source(
-        monkeypatch, [FakeProc([blocked], returncode=7)], on_stale=stale)
-
-    async def scenario():
-        cs.start("bella")
-        ok = await wait_until(lambda: len(calls) >= 2, limit=15)
-        await cs.stop()
-        return ok
-
-    assert run(scenario()) is True
+    stale, asked = make_stale("upgraded", before="7.0.1", after="7.0.2")
+    cs, state_log, raw_log, calls = make_source(
+        monkeypatch, [FakeProc([BLOCKED_200], returncode=7)], on_stale=stale)
+    assert _run_until(cs, lambda: len(calls) >= 2, limit=100) is True
     assert asked == ["comment-rejected"]
     assert not any("WebcastBlockedError" in d for _, d in state_log)
+    assert any("illegal secret key" in raw for _, _, raw in raw_log)
 
 
 def test_generic_error_gets_a_chinese_lead(monkeypatch):
     err = jline({"event": "status", "state": "error", "detail": "RuntimeError: boom"})
-    cs, state_log, calls = make_source(monkeypatch, [FakeProc([err], returncode=1)])
-
-    async def scenario():
-        cs.start("bella")
-        ok = await wait_until(lambda: any(d.startswith("评论连接出错") for _, d in state_log))
-        await cs.stop()
-        return ok
-
-    assert run(scenario()) is True
+    cs, state_log, raw_log, calls = make_source(monkeypatch, [FakeProc([err], returncode=1)])
+    assert _run_until(cs, lambda: any(d.startswith("评论连接出错") for _, d in state_log)) is True
     assert any("RuntimeError: boom" in d for _, d in state_log if d.startswith("评论连接出错"))
 
 
+def test_two_argument_state_callbacks_still_work(monkeypatch):
+    stale, asked = make_stale("no-update")
+    cs, state_log, raw_log, calls = make_source(
+        monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=stale, two_arg_state=True)
+    assert _run_until(cs, lambda: any("分钟后自动重试" in d for _, d in state_log)) is True
+
+
+def test_accepts_raw_detection():
+    p = Pipeline.__new__(Pipeline)
+    assert cs_mod._accepts_raw(p._publish_comment_source) is True
+    assert cs_mod._accepts_raw(lambda state, detail="": None) is False
+
+    def varargs(*a):
+        return None
+
+    assert cs_mod._accepts_raw(varargs) is True
+
+
 # ---------------------------------------------------------------------------
-# 4. 留证据：会话日志、开场版本、自检
+# 4. 留证据：会话日志、开场版本、接线、自检
 # ---------------------------------------------------------------------------
 
 class FakeAudit:
     def __init__(self):
         self.records = []
 
-    def comment_source(self, state, detail=""):
-        self.records.append((state, detail))
+    def comment_source(self, state, detail="", raw=""):
+        self.records.append((state, detail, raw))
 
 
 class StubServer:
@@ -492,43 +627,49 @@ class StubServer:
 def test_comment_states_are_written_to_the_session_audit_once_per_change():
     p = Pipeline.__new__(Pipeline)
     p.server = StubServer()
-    p.audit = FakeAudit()
+    first = FakeAudit()
+    second = FakeAudit()
+    p.audit = first
 
     async def scenario():
         await p._publish_comment_source("connecting", "")
         await p._publish_comment_source("connecting", "")          # 重复：只记一条
-        await p._publish_comment_source("error", "评论服务拒绝了连接（HTTP 400）")
+        await p._publish_comment_source("error", "评论服务拒绝了连接（HTTP 400）", "raw reason http_status=400")
         await p._publish_comment_source("connected", "")
-        first = p.audit
-        p.audit = FakeAudit()                                      # 换场
+        p.audit = second                                           # 换场
         await p._publish_comment_source("connected", "")          # 新一场照记
         p.audit = None
         await p._publish_comment_source("idle", "")               # 没有审计也不崩
-        return first
 
-    first = run(scenario())
-    assert first.records == [("connecting", ""), ("error", "评论服务拒绝了连接（HTTP 400）"),
-                             ("connected", "")]
-    assert len([m for m in p.server.messages if m["type"] == "comment_source"]) == 6
+    run(scenario())
+    assert first.records == [("connecting", "", ""),
+                             ("error", "评论服务拒绝了连接（HTTP 400）", "raw reason http_status=400"),
+                             ("connected", "", "")]
+    assert second.records == [("connected", "", "")]
+    broadcasts = [m for m in p.server.messages if m["type"] == "comment_source"]
+    assert len(broadcasts) == 6
+    assert all("raw" not in m and "raw reason" not in m["detail"] for m in broadcasts)
 
 
 def test_audit_log_writes_comment_source_records(tmp_path):
     log = audit_mod.AuditLog(room_url="https://www.tiktok.com/@x/live", log_dir=tmp_path)
-    log.comment_source("error", "x" * 500)
+    log.comment_source("error", "x" * 500, raw="y" * 500)
+    log.comment_source("connected")
     log.close()
     rows = [json.loads(line) for line in Path(log.path).read_text(encoding="utf-8").splitlines()]
-    rec = [r for r in rows if r["type"] == "comment_source"][0]
-    assert rec["state"] == "error" and len(rec["detail"]) == 300 and rec["at"]
+    recs = [r for r in rows if r["type"] == "comment_source"]
+    assert recs[0]["state"] == "error" and len(recs[0]["detail"]) == 300 and len(recs[0]["raw"]) == 300
+    assert recs[1]["raw"] == "" and recs[1]["at"]
 
 
-def test_session_start_records_the_tiktoklive_version(monkeypatch, tmp_path):
+def _real_pipeline(monkeypatch, tmp_path, version="7.0.1"):
     from app import settings
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     terms = tmp_path / "banned_terms.txt"
     terms.write_text("", encoding="utf-8")
     monkeypatch.setattr(pipeline_mod, "TERMS_FILE", terms)
     monkeypatch.setattr(audit_mod, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(pipeline_mod, "_tiktoklive_version", lambda: "7.0.1")
+    monkeypatch.setattr(pipeline_mod, "_tiktoklive_version", lambda: version)
     monkeypatch.setattr(CommentSource, "start", lambda self, unique_id: None)
 
     async def fake_stop(self, _external=True):
@@ -539,7 +680,11 @@ def test_session_start_records_the_tiktoklive_version(monkeypatch, tmp_path):
                            beam=5, context=False, asr_temperature=None, glossary=None,
                            backend="auto", model=None, device="auto", compute_type="auto",
                            denoise="off", banned_terms=None, comments=True)
-    p = Pipeline(args, StubServer())
+    return Pipeline(args, StubServer())
+
+
+def test_session_start_records_the_tiktoklive_version(monkeypatch, tmp_path):
+    p = _real_pipeline(monkeypatch, tmp_path)
 
     async def scenario():
         await p._begin_session("https://www.tiktok.com/@abc/live")
@@ -552,24 +697,26 @@ def test_session_start_records_the_tiktoklive_version(monkeypatch, tmp_path):
     assert start["type"] == "session_start" and start["tiktoklive_version"] == "7.0.1"
 
 
-def test_pipeline_wires_the_freshen_callback():
-    p = Pipeline.__new__(Pipeline)
-    p.comment_source = CommentSource(on_items=lambda i: None, on_state=lambda s, d="": None)
+def test_real_pipeline_wires_freshen_and_raw_evidence(monkeypatch, tmp_path):
+    """审查确认：旧测试给自己写的 lambda 断言，真正的 __init__ 接线写错了也照样绿。"""
+    p = _real_pipeline(monkeypatch, tmp_path)
+    assert p.comment_source.on_stale("comment-rejected", None) is None     # updater 还没注入
     asked = []
 
     class FakeUpdater:
-        async def freshen_tiktoklive(self, reason):
-            asked.append(reason)
-            return ("7.0.0", "7.0.1")
+        async def freshen_tiktoklive(self, reason, announce=None):
+            asked.append((reason, announce))
+            return {"outcome": "upgraded", "before": "7.0.0", "after": "7.0.1"}
 
-    # 与 __init__ 里同一个写法：惰性读 self.updater
-    p.comment_source.on_stale = lambda reason: (
-        p.updater.freshen_tiktoklive(reason) if getattr(p, "updater", None) is not None else None)
-    assert p.comment_source.on_stale("x") is None                  # updater 还没注入
     p.updater = FakeUpdater()
-    assert run(p.comment_source.on_stale("comment-rejected")) == ("7.0.0", "7.0.1")
-    src = (ROOT / "app" / "pipeline.py").read_text(encoding="utf-8")
-    assert "self.comment_source.on_stale = lambda reason:" in src
+
+    async def announce():
+        pass
+
+    result = run(p.comment_source.on_stale("comment-rejected", announce))
+    assert result == {"outcome": "upgraded", "before": "7.0.0", "after": "7.0.1"}
+    assert asked == [("comment-rejected", announce)]
+    assert p.comment_source._on_state_takes_raw is True
 
 
 def test_startup_provisioning_reruns_selfcheck_only_when_the_version_changed(monkeypatch):
@@ -614,6 +761,16 @@ def test_selfcheck_comments_row(monkeypatch, version, level, needle):
     assert c["name"] == "观众弹幕" and c["level"] == level and needle in c["detail"]
     for word in BANNED_LABELS:
         assert word not in c["detail"] + c["fix"]
+
+
+def test_selfcheck_outdated_row_states_facts_not_an_upgrade_in_progress(monkeypatch):
+    """审查确认：以前写「程序正在后台自动升级」，升级失败或在冷却期时这句话是假的。"""
+    monkeypatch.setattr(sys, "version_info", (3, 13, 0))
+    monkeypatch.setattr(updater_mod, "tiktoklive_version", lambda: "7.0.0")
+    c = run(selfcheck.check_comments(_args()))
+    assert "正在" not in c["detail"]
+    assert "一小时内只试一次" in c["fix"] and "pip install -U" in c["fix"]
+    assert updater_mod.TIKTOKLIVE_SPEC in c["fix"]
 
 
 def test_selfcheck_comments_on_python_39_says_unavailable(monkeypatch):

@@ -204,8 +204,8 @@ class Pipeline:
             self.updater.ensure_tiktoklive("comments")
             if getattr(self, "updater", None) is not None else None)
         # 评论连接被服务端拒绝时找组件的补丁版本（和解析失败时升 yt-dlp 同一个思路）
-        self.comment_source.on_stale = lambda reason: (
-            self.updater.freshen_tiktoklive(reason)
+        self.comment_source.on_stale = lambda reason, announce=None: (
+            self.updater.freshen_tiktoklive(reason, announce=announce)
             if getattr(self, "updater", None) is not None else None)
 
     def _subtitle_translation_busy(self):
@@ -850,7 +850,7 @@ class Pipeline:
         self.server.config["watchlist"] = info
         await self.server.broadcast(dict(info, type="watchlist"))
 
-    async def _publish_comment_source(self, state, detail=""):
+    async def _publish_comment_source(self, state, detail="", raw=""):
         """广播弹幕抓取（TikTokLive）的状态：connecting/connected/
         disconnected/error/unavailable/idle 之一。
 
@@ -858,10 +858,13 @@ class Pipeline:
         都没有，查不出是哪一刻坏的、之前几场好不好。连续相同的状态只记一条；
         键里带上 audit 对象，换场后第一条状态照记。"""
         audit = getattr(self, "audit", None)
-        key = (audit, state, detail)
+        key = (audit, state, detail, raw)
         if audit is not None and getattr(self, "_last_comment_state", None) != key:
             self._last_comment_state = key
-            audit.comment_source(state, detail)
+            if raw:       # raw 只进审计，下面的广播里没有它
+                audit.comment_source(state, detail, raw)
+            else:
+                audit.comment_source(state, detail)
         await self.server.broadcast({
             "type": "comment_source", "backend": state, "detail": detail})
 

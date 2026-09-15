@@ -25,6 +25,9 @@ TIKTOKLIVE_MIN = (7, 0, 1)
 TIKTOKLIVE_SPEC = "TikTokLive>=7.0.1,<8"
 # 评论连接被拒时找补丁版本的冷却：pip 要去问 PyPI，拒绝又往往连着来
 TIKTOKLIVE_FRESHEN_COOLDOWN_SEC = 6 * 3600
+# 更新检查失败（断网、PyPI 不通、pip 出错）后多久可以再试：失败不进六小时冷却，
+# 否则网络一分钟后就恢复了，修复版本却要再等六小时才拿得到
+TIKTOKLIVE_FRESHEN_RETRY_SEC = 600
 
 
 def tiktoklive_version():
@@ -83,7 +86,9 @@ class Updater:
         self._applying = False
         self._freshening = False
         self._freshen_attempted_at = 0.0     # 失败也要冷却，别反复拉起注定失败的 pip
-        self._tiktoklive_freshening = False
+        self._tiktoklive_freshen_task = None     # 在途的更新检查：并发的调用方跟着等同一次结果
+        self._tiktoklive_freshen_failed_at = 0.0
+        self._pip_tasks = set()                  # 在跑的 pip 任务，保引用防 GC
         # freshen 与一键更新共用：pip 不能并发写环境。惰性初始化——
         # 3.9 的 asyncio.Lock() 构造时就要绑事件循环
         self._pip_lock = None
@@ -170,9 +175,18 @@ class Updater:
     async def _pip_install(self, args, label, timeout=600):
         """跑一次 `pip install <args>`，返回退出码；超时或异常返回 None。
 
-        与 freshen_ytdlp、一键更新共用 pip 锁（pip 不能并发写环境）。超时 kill
-        之后必须再 wait 一次去 reap，否则残留僵尸进程——弹幕来源的回调可能
-        在同一场直播里反复走到这里。"""
+        pip 跑在独立任务里，从拿锁到 pip 退出都持有 pip 锁；调用方被取消（中控点停止、
+        换房间、一键更新会先停直播）只结束「等」，不结束 pip，也不放锁。以前锁随调用方
+        的取消一起释放，pip 却还在写环境：一键更新的 pip 紧接着拿到锁并发写同一个 venv，
+        随后 execv 重启（2026-09-15 审查实测复现）。"""
+        task = asyncio.ensure_future(self._pip_install_locked(args, label, timeout))
+        self._pip_tasks.add(task)
+        task.add_done_callback(self._pip_tasks.discard)
+        return await asyncio.shield(task)
+
+    async def _pip_install_locked(self, args, label, timeout):
+        """与 freshen_ytdlp、一键更新共用 pip 锁（pip 不能并发写环境）。超时 kill 之后
+        必须再 wait 一次去 reap，否则残留僵尸进程。"""
         async with self._get_pip_lock():
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -239,6 +253,8 @@ class Updater:
         """把低于最低版本的 TikTokLive 升上去。一小时冷却持久化，理由同安装。"""
         now = time.time()
         if now - _setting_float("tiktoklive_upgrade_attempted_at") < 3600:
+            print("[信息] 弹幕组件 TikTokLive {} 低于最低版本；一小时内已试过升级，这次跳过（{}）"
+                  .format(current, reason))
             return False
         save_setting("tiktoklive_upgrade_attempted_at", now)
         need = ".".join(str(x) for x in TIKTOKLIVE_MIN)
@@ -253,38 +269,58 @@ class Updater:
               .format(code, after))
         return False
 
-    async def freshen_tiktoklive(self, reason="comment-rejected"):
+    async def freshen_tiktoklive(self, reason="comment-rejected", announce=None):
         """评论连接被服务端拒绝时，看 TikTokLive 有没有补丁版本，有就升。
 
         和「解析连续失败就升 yt-dlp」是同一个思路：对接的接口一变，修复通常先出现
         在上游的补丁版本里（2026-09-10 的 7.0.1 就是），而老安装从来不会自己去拿。
-        只在 7.x 之内升（TIKTOKLIVE_SPEC 限定 <8），依赖只在必要时才动。冷却持久化
-        进 settings.json，重启也不会连着拉 pip。
+        只在 7.x 之内升（TIKTOKLIVE_SPEC 限定 <8），依赖只在必要时才动。
 
-        调用方（comment_source）只在弹幕子进程已经退出后调用，升级碰不到正在
-        运行的连接。返回 (旧版本, 新版本)；没有升级（冷却中、没装、上游没有新版、
-        pip 失败）返回 None。"""
-        if sys.version_info < (3, 10) or self._tiktoklive_freshening:
-            return None
+        并发的调用方跟着等同一次检查（不重复拉 pip，也不会在检查还没完时误判
+        「没有更新」）。announce 是可选的协程函数：只有真的要跑 pip 时才调用，
+        让界面说「正在检查」这句话时确实在检查。
+
+        返回 {"outcome": ..., "before": ..., "after": ...}，outcome 取值：
+          upgraded / no-update / pip-failed / cooldown / recently-failed /
+          not-installed / unsupported。"""
+        task = self._tiktoklive_freshen_task
+        if task is None or task.done():
+            task = asyncio.ensure_future(self._freshen_tiktoklive(reason, announce))
+            self._tiktoklive_freshen_task = task
+        return await asyncio.shield(task)
+
+    async def _freshen_tiktoklive(self, reason, announce):
+        if sys.version_info < (3, 10):
+            return {"outcome": "unsupported"}
         before = tiktoklive_version()
         if before is None:
-            return None
+            return {"outcome": "not-installed"}
         now = time.time()
+        # 冷却只记「检查成功完成」的那一次；失败走下面的短重试间隔
         if now - _setting_float("tiktoklive_freshen_at") < TIKTOKLIVE_FRESHEN_COOLDOWN_SEC:
-            return None
-        save_setting("tiktoklive_freshen_at", now)
-        self._tiktoklive_freshening = True
-        try:
-            code = await self._pip_install(
-                ["-U", "--upgrade-strategy", "only-if-needed", TIKTOKLIVE_SPEC],
-                "弹幕组件 TikTokLive 更新检查（{}）".format(reason))
-        finally:
-            self._tiktoklive_freshening = False
+            return {"outcome": "cooldown", "before": before}
+        if now - self._tiktoklive_freshen_failed_at < TIKTOKLIVE_FRESHEN_RETRY_SEC:
+            return {"outcome": "recently-failed", "before": before}
+        if announce is not None:
+            try:
+                await announce()
+            except Exception:
+                pass
+        code = await self._pip_install(
+            ["-U", "--upgrade-strategy", "only-if-needed", TIKTOKLIVE_SPEC],
+            "弹幕组件 TikTokLive 更新检查（{}）".format(reason))
         after = tiktoklive_version()
-        if code == 0 and after and after != before:
+        if code != 0:
+            self._tiktoklive_freshen_failed_at = time.time()
+            print("[警告] 弹幕组件 TikTokLive 更新检查没成功（pip 返回 {}，当前 {}），{} 分钟后可再试（{}）"
+                  .format(code, after, TIKTOKLIVE_FRESHEN_RETRY_SEC // 60, reason))
+            return {"outcome": "pip-failed", "before": before, "after": after, "code": code}
+        save_setting("tiktoklive_freshen_at", time.time())
+        if after and after != before:
             print("[信息] 已自动更新弹幕组件 TikTokLive：{} 更新到 {}（{}）".format(before, after, reason))
-            return (before, after)
-        return None
+            return {"outcome": "upgraded", "before": before, "after": after}
+        print("[信息] 弹幕组件 TikTokLive {} 已是可用的最新版本（{}）".format(after, reason))
+        return {"outcome": "no-update", "before": before, "after": after}
 
     async def check_and_notify(self, delay=2.0, manual=False):
         """检查一次最新版本；网络失败/限流一律无声跳过（手动检查时会回报结果）。"""

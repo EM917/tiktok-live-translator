@@ -162,7 +162,7 @@ class AuditLog:
             "segment_ms": round(segment_ms, 1),
         })
 
-    def comment_source(self, state, detail=""):
+    def comment_source(self, state, detail="", raw=""):
         """弹幕连接状态的变化（连上、断开、被拒、组件更新）。弹幕不在报警链路上，
         记下来是为了事后答得出「弹幕是哪一刻坏的、之前几场好不好」——2026-09-14
         弹幕连接每次 HTTP 400 时，会话日志里一条弹幕状态都没有，这两个问题都答不上来。"""
@@ -171,6 +171,9 @@ class AuditLog:
             "at": datetime.now().isoformat(timespec="milliseconds"),
             "state": state,
             "detail": (detail or "")[:300],
+            # 服务端给的原始原因（握手被拒时的 Handshake-Msg、状态码）。面板上只有
+            # 中文说明，事后要分清「这次 400」和「另一种 400」只能靠这一栏
+            "raw": (raw or "")[:300],
         })
 
     def alert(self, hit):
