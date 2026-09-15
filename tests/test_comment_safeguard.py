@@ -607,11 +607,20 @@ def _args(**kw):
     ("7.0.1", "ok", "7.0.1"),
 ])
 def test_selfcheck_comments_row(monkeypatch, version, level, needle):
+    # 固定 Python 版本：CI 有一台 3.9 跑器，那里这一行先报「需要 3.10」，走不到版本判断
+    monkeypatch.setattr(sys, "version_info", (3, 13, 0))
     monkeypatch.setattr(updater_mod, "tiktoklive_version", lambda: version)
     c = run(selfcheck.check_comments(_args()))
     assert c["name"] == "观众弹幕" and c["level"] == level and needle in c["detail"]
     for word in BANNED_LABELS:
         assert word not in c["detail"] + c["fix"]
+
+
+def test_selfcheck_comments_on_python_39_says_unavailable(monkeypatch):
+    monkeypatch.setattr(sys, "version_info", (3, 9, 18))
+    monkeypatch.setattr(updater_mod, "tiktoklive_version", lambda: "7.0.1")
+    c = run(selfcheck.check_comments(_args()))
+    assert c["level"] == "warn" and "Python 3.10" in c["detail"]
 
 
 def test_selfcheck_comments_off_by_choice_is_ok():
@@ -620,6 +629,7 @@ def test_selfcheck_comments_off_by_choice_is_ok():
 
 
 def test_selfcheck_lists_the_comments_row(monkeypatch):
+    monkeypatch.setattr(sys, "version_info", (3, 13, 0))
     monkeypatch.setattr(updater_mod, "tiktoklive_version", lambda: "7.0.1")
     for name in ("check_ffmpeg", "check_denoise", "check_asr", "check_translator",
                  "check_watchlist", "check_glossary", "check_audit", "check_resolver",
