@@ -208,14 +208,17 @@ class AuditLog:
             "dropped": dropped,
         })
 
-    def health(self, level, backlog_sec, reason="backlog", text="", dropped=None):
-        """检测健康状态的变化（积压、识别出错、识别卡住、改用 CPU）。只在变化时写。"""
+    def health(self, level, backlog_sec, reason="backlog", text="", dropped=None,
+               asr_failed=None):
+        """检测健康状态的变化（积压、识别出错、识别卡住、改用 CPU）。只在变化时写。
+        dropped 是积压挤掉的段数，asr_failed 是识别出错没检测的段数，两者分开记。"""
         self._write({
             "type": "health",
             "at": datetime.now().isoformat(timespec="milliseconds"),
             "level": level, "reason": reason,
             "backlog_sec": round(backlog_sec or 0.0, 1),
             "dropped": dropped,
+            "asr_failed": asr_failed,
             "text": (text or "")[:300],
         })
 

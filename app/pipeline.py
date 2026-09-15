@@ -213,6 +213,8 @@ class Pipeline:
         self._asr_load_error = None      # 最近一次识别模型没能加载的详情，按配置加载成功后清掉
         self._asr_fallback = None        # 出错后改用的识别配置 {from,to,error}；None = 原配置
         self._asr_inflight = None        # 正在识别的那一段的开始时刻 [monotonic]，卡住检测用
+        self._asr_failing = None         # 识别连续出错、提示还挂着的那一场的 audit
+        self._fallback_load = None       # 在途的「改用 CPU」加载：被停止打断时下一场接着用
         self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
         self._bg_tasks = set()           # fire-and-forget 任务的引用，见 _spawn
         self.telemetry = Telemetry()
@@ -506,8 +508,18 @@ class Pipeline:
         """推一条检测健康状态。text 不给时按积压等级生成。
 
         同一句话已经在界面上时不重发（统计循环和识别卡住检查可能在同一轮说同一件事）；
-        等级或原因变了才写进审计——审计要的是转折点，不是每轮刷新。"""
-        dropped = getattr(getattr(self, "telemetry", None), "audio_segments_dropped", 0) or 0
+        等级或原因变了才写进审计——审计要的是转折点，不是每轮刷新。
+
+        识别连续出错的提示挂着时，按积压算的状态不覆盖它：出错的调用返回得快、积压归零，
+        不拦的话统计循环会在检测停摆时报「已追上」，审计里也记一条 ok。"""
+        audit = getattr(self, "audit", None)
+        if (reason == "backlog" and audit is not None
+                and getattr(self, "_asr_failing", None) is audit):
+            return
+        telemetry = getattr(self, "telemetry", None)
+        # 只数积压挤掉的段：识别出错没检测的段不是「积压超过 60 秒的旧音频」，另有出错提示
+        asr_failed = getattr(telemetry, "audio_segments_asr_failed", 0) or 0
+        dropped = max(0, (getattr(telemetry, "audio_segments_dropped", 0) or 0) - asr_failed)
         if text is None:
             if level == "degraded":
                 # 以前这里一直写「仍在继续处理（不会漏掉这段音频）」，而积压过 60 秒 _put
@@ -523,7 +535,6 @@ class Pipeline:
                 text = "⚠️ 识别开始落后（积压 {:.0f} 秒），报警会相应延迟".format(backlog_sec)
             else:
                 text = "✅ 识别已追上，检测恢复正常"
-        audit = getattr(self, "audit", None)
         if getattr(self, "_health_shown", None) == (audit, level, text):
             return
         self._health_shown = (audit, level, text)
@@ -533,7 +544,8 @@ class Pipeline:
                                      "text": text})
         if audit is not None and getattr(self, "_health_audited", None) != (audit, level, reason):
             self._health_audited = (audit, level, reason)
-            audit.health(level, backlog_sec, reason=reason, text=text, dropped=dropped)
+            audit.health(level, backlog_sec, reason=reason, text=text, dropped=dropped,
+                         asr_failed=asr_failed)
 
     ASR_STALL_SEC = 60.0
 
@@ -563,7 +575,10 @@ class Pipeline:
         state = getattr(self, "_asr_watch", None)
         if state is None or state["audit"] is not audit:
             state = self._asr_watch = {"audit": audit, "stalled": False, "dropped": 0}
-        dropped = int(snap.get("audio_segments_dropped") or 0)
+        # 只数积压挤掉的段。识别出错没检测的段也记在 audio_segments_dropped 里，算进来的话
+        # 每次出错都触发下面的「按积压重报」，把红色的出错提示刷成「已追上」
+        dropped = max(0, int(snap.get("audio_segments_dropped") or 0)
+                      - int(snap.get("audio_segments_asr_failed") or 0))
         backlog = float(snap.get("audio_backlog_sec") or 0.0)
         grew = dropped > state["dropped"]
         state["dropped"] = dropped
@@ -950,12 +965,16 @@ class Pipeline:
         # 记下这次自检看到的弹幕组件版本：之后组件被自动升级（被拒时找到了补丁），
         # 评论流重新连上时对得上号就知道要不要重查，免得「观众弹幕」一行停在旧版本
         self._selfcheck_tiktoklive = _tiktoklive_version()
+        asr_state = self._asr_check_state()
         try:
             checks = await run_all(self.args, self.detector, self.glossary,
-                                   self.translator, asr_state=self._asr_check_state())
+                                   self.translator, asr_state=asr_state)
         except Exception as exc:
             print("[警告] 自检执行失败: {}".format(exc))
             return
+        # 整轮自检要等 Ollama、解析器、磁盘这些慢探测，开播时和模型加载并行跑：这期间加载
+        # 失败了（_refresh_asr_check 已经把那一行刷红），不能再用开跑时的旧状态盖回绿色
+        checks = await self._with_live_asr_row(checks, asr_state)
         for c in checks:
             icon = {"ok": "✅", "warn": "⚠️ ", "fail": "❌"}[c["level"]]
             print("[自检] {} {}：{}".format(icon, c["name"], c["detail"]))
@@ -996,17 +1015,44 @@ class Pipeline:
         """只重查「语音识别」一行。加载失败、改用 CPU、恢复都发生在开播时那轮自检之后，
         不刷新的话那一行会一直停在旧颜色；整轮自检会去 ping Ollama、建 DeepL 术语表，
         不为这一行重跑。还没跑过自检就不管——之后那一轮会带上最新状态。"""
+        if not self._published_checks():
+            return
+        row = await self._live_asr_row()
+        # check_asr 会进线程：这期间整轮自检可能刚发布过，按发布那一刻的结果替换这一行
+        current = self._published_checks()
+        if row is None or not current:
+            return
+        await self._publish_selfcheck(
+            [row if c.get("name") == row["name"] else c for c in current])
+
+    def _published_checks(self):
+        return ((getattr(self.server, "config", None) or {}).get("selfcheck") or {}).get("checks")
+
+    async def _live_asr_row(self, state=None, row=None):
+        """按管线此刻的识别加载状态算「语音识别」一行（row 是按 state 算好的现成结果）。
+        check_asr 会进线程探测 import，算的这一会儿加载结果又变了就重算，最多三次。"""
         from .selfcheck import check_asr
-        current = (getattr(self.server, "config", None) or {}).get("selfcheck") or {}
-        if not current.get("checks"):
-            return
-        try:
-            row = await check_asr(self.args, self._asr_check_state())
-        except Exception as exc:
-            print("[警告] 语音识别自检刷新失败：{}".format(exc))
-            return
-        checks = [row if c.get("name") == row["name"] else c for c in current["checks"]]
-        await self._publish_selfcheck(checks)
+        for _ in range(3):
+            live = self._asr_check_state()
+            if row is not None and live == state:
+                return row
+            state = live
+            try:
+                row = await check_asr(self.args, state)
+            except Exception as exc:
+                print("[警告] 语音识别自检刷新失败：{}".format(exc))
+                return None
+        return row
+
+    async def _with_live_asr_row(self, checks, state):
+        """整轮自检的结果里，「语音识别」一行换成按此刻加载状态算的（没变就原样返回）。"""
+        current = next((c for c in checks if c.get("name") == "语音识别"), None)
+        if current is None:
+            return checks
+        row = await self._live_asr_row(state, current)
+        if row is None or row is current:
+            return checks
+        return [row if c.get("name") == row["name"] else c for c in checks]
 
     async def _clear_recent_rooms(self):
         """清空「最近直播间」——中控点了首页那个「清空」。"""
@@ -1251,7 +1297,7 @@ class Pipeline:
             " kind=" + kind if kind else "", walked).rstrip())
 
     async def _run_session(self, url):
-        from .asr import create_transcriber
+        from .asr import create_transcriber, forget_exception_locals
         from .resolver import ResolveError, is_direct_url
 
         my_audit = getattr(self, "audit", None)     # 本场自己的审计，见 _run_stream_inner
@@ -1289,6 +1335,8 @@ class Pipeline:
                   "beam_size": self.args.beam, "use_context": self.args.context,
                   "temperature": temperature, "hotwords": self.glossary.asr_prompt(),
                   "note": rec["note"]}
+        # 上一场「改用 CPU」的加载被停止打断、还在线程里跑：先等它，别和下面的加载同时驻留两份
+        await self._settle_fallback_load(key)
         if self._transcriber is None or self._transcriber_key != key:
             # 正在用的是出错后改用的 CPU 模型：先放掉再加载新配置，两个模型不同时驻留
             dropped_fallback = await self._drop_fallback_transcriber()
@@ -1339,10 +1387,13 @@ class Pipeline:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                # 回溯里的帧还连着加载了一半的模型（mlx 预热失败时 model 是局部变量）：
+                # 不清掉，下面改用 CPU 时两个模型同时驻留
+                forget_exception_locals(exc)
                 self._transcriber_future = None
                 self._loading_key = None
                 watcher.cancel()   # 先停进度播报，别让它把下面的 error 状态盖回去
-                transcriber = await self._on_model_load_failed(exc, config, loop)
+                transcriber = await self._on_model_load_failed(exc, config, loop, key=key)
                 if transcriber is None:
                     return
                 as_configured = False
@@ -1424,6 +1475,7 @@ class Pipeline:
         音频时长按真实收到的帧数累计，不用墙钟——网络劣化时 ffmpeg 可能连着
         30 秒只吐 2 秒音频，用墙钟会把这种「假连接」当成播得好好的，
         重连预算被错误重置后放弃分支永远走不到。"""
+        from .asr import forget_exception_locals
         from .audio import FRAME_SEC, SAMPLE_RATE, FFmpegAudioSource
         from .audit import strip_url_queries
         from .segmenter import SilenceSegmenter
@@ -1547,6 +1599,10 @@ class Pipeline:
                     )
                 except Exception as exc:
                     failure = exc
+                    # 回溯里的帧连着模型（mlx_whisper.transcribe 的局部变量 model、faster-whisper
+                    # 帧里的 self）：failure 还活着，放掉 ModelHolder 也放不掉模型，下面换 CPU
+                    # 时就是两个模型同时驻留
+                    forget_exception_locals(exc)
                 finally:
                     if getattr(self, "_asr_inflight", None) is inflight:
                         self._asr_inflight = None
@@ -1556,7 +1612,7 @@ class Pipeline:
                     # 计数、写审计、连续失败就告诉界面并设法恢复，别让识别已死的会话
                     # 继续显示「直播中」。
                     asr_failures += 1
-                    self.telemetry.drop_audio()
+                    self.telemetry.drop_audio(asr_failed=True)
                     if self.audit is not None:
                         self.audit.asr_failed(
                             segment_ms=len(segment) / 2.0 / SAMPLE_RATE * 1000.0,
@@ -1677,11 +1733,13 @@ class Pipeline:
                 "hotwords": cfg.get("hotwords")}
 
     def _asr_fallback_plan(self, config, active=None):
-        """识别出错后可以改用的配置；没有安全的选择就返回 None。
+        """识别出错后可以改用的配置：返回 (配置, None)；没有安全的选择时返回 (None, 原因)。
 
         * CUDA 出错：同一个模型改在 CPU 上跑（int8，与 asr.Transcriber 构造失败时的退路一致）；
         * 苹果 GPU（mlx）出错：CPU 上跑 large-v3-turbo（hwdetect.CPU_FALLBACK）；
-        * 只用已经**完整下载**的模型——直播中途开始下载 1.6 GB，检测只会停得更久。"""
+        * 其余配置（本来就在 CPU 上）没有更稳的退路：no_fallback_for_config；
+        * 只用已经**完整下载**的模型，没下全是 fallback_not_cached——直播中途开始下载 1.6 GB，
+          检测只会停得更久。两个原因分开记：复查的人看到「没下载」会去查下载，那未必是问题。"""
         from .hwdetect import CPU_FALLBACK
         from .selfcheck import _model_cached
         current = dict(config, **{k: v for k, v in (active or {}).items() if v})
@@ -1690,12 +1748,12 @@ class Pipeline:
         elif current.get("backend") == "mlx":
             plan = dict(current, **CPU_FALLBACK)
         else:
-            return None
+            return None, "no_fallback_for_config"
         try:
             cached = _model_cached(plan["model"], "ct2")
         except Exception:
             cached = False
-        return plan if cached else None
+        return (plan, None) if cached else (None, "fallback_not_cached")
 
     async def _drop_fallback_transcriber(self):
         """要加载新配置之前，放掉出错后改用的那个 CPU 模型。返回是否真的放掉了。"""
@@ -1705,9 +1763,64 @@ class Pipeline:
         old, self._transcriber, self._transcriber_key = self._transcriber, None, None
         if old is not None:
             release_transcriber(old)
+            self._forget_transcriber(old)
         self._asr_fallback = None
         await self._incident("asr-fallback", "clear")
         return True
+
+    def _forget_transcriber(self, transcriber):
+        """放掉了的识别器不能再被下一场拿回来用。上次按配置加载的结果除了 _transcriber，
+        还留在 _transcriber_future 里（加载中被停止时靠它复用）——只清前者的话，下一场
+        「开始」会直接拿回这个已释放的识别器，每段都报「识别模型已释放」。"""
+        if getattr(self, "_transcriber", None) is transcriber:
+            self._transcriber, self._transcriber_key = None, None
+        fut = getattr(self, "_transcriber_future", None)
+        if (fut is not None and fut.done() and not fut.cancelled()
+                and fut.exception() is None and fut.result() is transcriber):
+            self._transcriber_future, self._loading_key = None, None
+
+    def _track_fallback_load(self, future, key, info, incident):
+        """记下在途的「改用 CPU」加载。线程里的加载取消不掉：中控这时点了停止，下一场开始时
+        由 _settle_fallback_load 等它结束接着用，而不是再起一份。"""
+        self._fallback_load = {"future": future, "key": key, "info": info,
+                               "incident": incident}
+        return self._fallback_load
+
+    def _end_fallback_load(self, pending):
+        if getattr(self, "_fallback_load", None) is pending:
+            self._fallback_load = None
+
+    async def _settle_fallback_load(self, key):
+        """上一场「改用 CPU」的加载被停止打断了，还在线程里跑。开始这一场之前先等它结束：
+        配置没变就接着用它——和没被打断时一样，不再去加载那个出过错的原配置；配置变了就
+        放掉。两种情况都不会和下面按配置的加载同时驻留两份模型。"""
+        from .asr import release_transcriber
+        pending = getattr(self, "_fallback_load", None)
+        if pending is None:
+            return
+        if not pending["future"].done():
+            await self.server.status(
+                "connecting", "上一场开始改用的 CPU 识别模型（{}）还在加载，等它加载完…"
+                .format(pending["info"]["to"]))
+        try:
+            new = await asyncio.shield(pending["future"])
+        except asyncio.CancelledError:
+            raise                          # 又点了停止：留给下一场接着等
+        except Exception as exc:
+            self._end_fallback_load(pending)
+            print("[错误] 改用 CPU 识别没能加载: {}".format(exc))
+            return                         # 什么也没驻留：下面按配置加载
+        if getattr(self, "_fallback_load", None) is not pending:
+            return                         # 发起加载的那一场自己收了尾（用上或放掉了）
+        self._fallback_load = None
+        if pending["key"] is None or pending["key"] != key or self._transcriber is not None:
+            release_transcriber(new)
+            return
+        self._transcriber, self._transcriber_key = new, key
+        self._asr_fallback = dict(pending["info"])
+        print("[警告] 接着使用上一场改用的 CPU 识别：{}".format(pending["info"]["to"]))
+        await self._incident("asr-fallback", "warn", pending["incident"])
+        await self._refresh_asr_check()
 
     async def _asr_loaded_ok(self, refresh=False):
         """按配置加载成功：之前记下的加载失败作废，自检「语音识别」那一行刷回来。"""
@@ -1717,10 +1830,11 @@ class Pipeline:
         if refresh:
             await self._refresh_asr_check()
 
-    async def _on_model_load_failed(self, exc, config, loop):
+    async def _on_model_load_failed(self, exc, config, loop, key=None):
         """识别模型没能加载。写审计；界面上只说观察到的事和能做的事——网络、磁盘、Metal
         初始化都出现过，程序分不清，就不猜。苹果 GPU 后端失败、而 CPU turbo 已经完整下载时
-        改用它。返回能用的识别器；没有就返回 None（这一场随即结束）。"""
+        改用它。返回能用的识别器；没有就返回 None（这一场随即结束）。
+        key 是这套配置的 key：改用 CPU 的加载被停止打断时，下一场按它接着用。"""
         from .asr import create_transcriber, release_mlx_model
         from .audit import strip_url_queries
         error = strip_url_queries(exc, 200)
@@ -1731,31 +1845,36 @@ class Pipeline:
             audit.asr_load_failed(backend, model, device, error)
         self._asr_load_error = {"backend": backend, "model": model, "device": device,
                                 "error": error}
-        plan = self._asr_fallback_plan(config) if backend == "mlx" else None
+        plan = self._asr_fallback_plan(config)[0] if backend == "mlx" else None
         if plan is not None:
             source, target = _describe_asr(config), _describe_asr(plan)
             await self.server.status(
                 "connecting", "识别模型（{}/{}）没能加载，正在改用 CPU 识别（{}）…".format(
                     backend, model, target))
             release_mlx_model()     # 预热失败时模型可能已经进了 mlx 的类级缓存
+            pending = self._track_fallback_load(
+                loop.run_in_executor(
+                    None, lambda: create_transcriber(**self._transcriber_kwargs(plan))),
+                key, {"from": source, "to": target, "error": error},
+                "识别模型（{}/{}）没能加载，已改用 CPU 识别（{}），较慢，可能积压。"
+                "关闭程序重新打开会重新尝试原来的识别模型".format(backend, model, target))
             try:
-                fallback = await loop.run_in_executor(
-                    None, lambda: create_transcriber(**self._transcriber_kwargs(plan)))
+                # shield：这时点了停止，线程里的加载照样跑完，下一场接着用（不另载一份）
+                fallback = await asyncio.shield(pending["future"])
             except asyncio.CancelledError:
                 raise
             except Exception as exc2:
+                self._end_fallback_load(pending)
                 print("[错误] 改用 CPU 识别也没能加载: {}".format(exc2))
                 if audit is not None:
                     audit.asr_backend_fallback(source, None, error, tried=target,
                                                fallback_error=str(exc2))
             else:
+                self._end_fallback_load(pending)
                 if audit is not None:
                     audit.asr_backend_fallback(source, target, error)
-                self._asr_fallback = {"from": source, "to": target, "error": error}
-                await self._incident(
-                    "asr-fallback", "warn",
-                    "识别模型（{}/{}）没能加载，已改用 CPU 识别（{}），较慢，可能积压。"
-                    "关闭程序重新打开会重新尝试原来的识别模型".format(backend, model, target))
+                self._asr_fallback = dict(pending["info"])
+                await self._incident("asr-fallback", "warn", pending["incident"])
                 await self._refresh_asr_check()
                 return fallback
         await self.server.status(
@@ -1777,14 +1896,12 @@ class Pipeline:
         old = slot.transcriber
         active = self._asr_active(old, slot.config) if slot.config else {}
         source = _describe_asr(active) if active else "?"
-        plan = None
+        plan, reason = None, "already_switched" if slot.reloaded else "no_fallback_for_config"
         if slot.config and not slot.reloaded:
-            plan = self._asr_fallback_plan(slot.config, active)
+            plan, reason = self._asr_fallback_plan(slot.config, active)
         if plan is None:
             if not slot.gave_up and slot.audit is not None:
-                slot.audit.asr_backend_fallback(
-                    source, None, error,
-                    reason="already_switched" if slot.reloaded else "no_cached_fallback")
+                slot.audit.asr_backend_fallback(source, None, error, reason=reason)
             slot.gave_up = True
             if slot.audit is getattr(self, "audit", None):
                 await self._asr_unrecoverable(failing, backlog_sec)
@@ -1792,20 +1909,29 @@ class Pipeline:
         slot.reloaded = True
         target = _describe_asr(plan)
         if slot.audit is getattr(self, "audit", None):
+            self._asr_failing = slot.audit
             await self._incident("session:asr-failing", "error",
                                  "{}，正在改用 CPU 识别（{}）…".format(failing, target))
             await self._announce_health("degraded", backlog_sec, reason="asr_failing",
                                         text="🔴 {}，正在改用 CPU 识别…".format(failing))
         # 先放掉坏模型再加载：两个模型同时驻留正是规则三那类事故
         release_transcriber(old)
-        if slot.key is not None and self._transcriber is old:
-            self._transcriber, self._transcriber_key = None, None
+        self._forget_transcriber(old)
+        pending = self._track_fallback_load(
+            loop.run_in_executor(
+                pool, lambda: create_transcriber(**self._transcriber_kwargs(plan))),
+            slot.key, {"from": source, "to": target, "error": error},
+            "GPU 识别连续出错，已改用 CPU 识别（{}），较慢，可能积压。"
+            "关闭程序重新打开会重新尝试 GPU 识别".format(target))
         try:
-            new = await loop.run_in_executor(
-                pool, lambda: create_transcriber(**self._transcriber_kwargs(plan)))
+            # shield：这时点了停止，线程里的加载照样跑完，下一场接着用（不另载一份）
+            new = await asyncio.shield(pending["future"])
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if getattr(self, "_fallback_load", None) is not pending:
+                return False              # 下一场已经接手了这次加载
+            self._end_fallback_load(pending)
             print("[错误] 改用 CPU 识别没能加载: {}".format(exc))
             if slot.audit is not None:
                 slot.audit.asr_backend_fallback(source, None, error, tried=target,
@@ -1814,21 +1940,22 @@ class Pipeline:
             if slot.audit is getattr(self, "audit", None):
                 await self._asr_unrecoverable(failing, backlog_sec)
             return False
+        if getattr(self, "_fallback_load", None) is not pending:
+            return False                  # 下一场已经接手了这次加载（_settle_fallback_load）
+        self._end_fallback_load(pending)
         if slot.audit is not getattr(self, "audit", None):
             release_transcriber(new)      # 这一场已经结束：没人会用它，别留在内存里
             return False
         slot.transcriber = new
         if slot.key is not None:
             self._transcriber, self._transcriber_key = new, slot.key
-            self._asr_fallback = {"from": source, "to": target, "error": error}
+            self._asr_fallback = dict(pending["info"])
         if slot.audit is not None:
             slot.audit.asr_backend_fallback(source, target, error)
         print("[警告] 识别连续出错，已从 {} 改用 {}".format(source, target))
+        self._asr_failing = None
         await self._incident("session:asr-failing", "clear")
-        await self._incident(
-            "asr-fallback", "warn",
-            "GPU 识别连续出错，已改用 CPU 识别（{}），较慢，可能积压。"
-            "关闭程序重新打开会重新尝试 GPU 识别".format(target))
+        await self._incident("asr-fallback", "warn", pending["incident"])
         await self._announce_health("lagging", backlog_sec, reason="asr_fallback",
                                     text="⚠️ GPU 识别连续出错，已改用 CPU 识别（较慢，可能积压）")
         await self._refresh_asr_check()
@@ -1836,6 +1963,7 @@ class Pipeline:
 
     async def _asr_unrecoverable(self, failing, backlog_sec):
         text = "{}。程序自动恢复不了——请关闭程序重新打开；若仍出错请反馈".format(failing)
+        self._asr_failing = getattr(self, "audit", None)    # 按积压算的「已追上」别盖掉它
         await self._incident("session:asr-failing", "error", text)
         await self._announce_health("degraded", backlog_sec, reason="asr_failing",
                                     text="🔴 " + text)
@@ -1844,6 +1972,7 @@ class Pipeline:
         """出错提示发出后又识别成功了一段：撤掉提示，健康条回到按积压算的状态。"""
         if slot.audit is not getattr(self, "audit", None):
             return
+        self._asr_failing = None
         await self._incident("session:asr-failing", "clear")
         await self._announce_health(self._health_level(backlog_sec), backlog_sec)
 

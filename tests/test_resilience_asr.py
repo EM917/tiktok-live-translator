@@ -7,10 +7,13 @@
   * 审计：本场实际加载的词表、识别配置、自检结论都要落盘。
 """
 import asyncio
+import gc
 import json
 import os
 import sys
+import threading
 import time
+import weakref
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -258,7 +261,7 @@ def test_failures_without_a_cached_fallback_do_not_reload_and_say_so(monkeypatch
     assert incident["level"] == "error" and "关闭程序重新打开" in incident["text"]
     fallback = rows(p.audit.path, "asr_backend_fallback")
     assert len(fallback) == 1 and fallback[0]["to"] is None
-    assert fallback[0]["reason"] == "no_cached_fallback"
+    assert fallback[0]["reason"] == "fallback_not_cached"
 
 
 def test_cuda_failures_recreate_the_same_model_on_cpu(monkeypatch, tmp_path):
@@ -379,6 +382,254 @@ def test_release_helpers_free_the_model(monkeypatch):
         t.transcribe(b"\x00\x00")
 
 
+class _Model:
+    """代替一个大模型：能挂弱引用，看它是不是真的从内存里没了。"""
+
+
+def test_the_failing_model_is_gone_before_the_cpu_model_loads(monkeypatch, tmp_path):
+    """mlx_whisper/transcribe.py 里模型是局部变量（model = ModelHolder.get_model(...)），异常回溯
+    的帧连着它。以前清了 ModelHolder，模型还被留着的异常拽在内存里，CPU 模型照样开始加载。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.audit = AuditLog(room_url=LIVE_URL, log_dir=tmp_path / "logs")
+    holder = fake_mlx_cache(monkeypatch)
+    holder.model = _Model()
+    model_ref = weakref.ref(holder.model)
+    seen = []
+
+    class MlxLike:
+        backend, model_size, device, compute_type = "mlx", "large-v3", "gpu", "float16"
+
+        def transcribe(self, pcm):
+            model = holder.model          # 同 mlx_whisper：模型在出错那一帧的局部变量里
+            raise RuntimeError("[METAL] Command buffer execution failed ({})".format(
+                type(model).__name__))
+
+        def release(self):
+            asr.release_mlx_model()
+
+    def create(**kw):
+        gc.collect()                      # 引用环都回收之后还活着，就是被实打实地引用着
+        seen.append((holder.model is None, model_ref() is None))
+        return Working(**kw)
+
+    monkeypatch.setattr(asr, "create_transcriber", create)
+    monkeypatch.setattr(selfcheck, "_model_cached", lambda model, backend: True)
+    broken = MlxLike()
+    p._transcriber, p._transcriber_key = broken, ("key",)
+    slot = _ASRSlot(broken, config=mlx_config(), key=("key",), audit=p.audit)
+    fake_audio(monkeypatch, frames=5)
+
+    stream_once(p, slot)
+
+    assert seen == [(True, True)]          # 加载 CPU 模型那一刻，出错的模型已经不在了
+    assert len(server.of("caption")) == 2
+
+
+def test_a_model_that_failed_to_load_is_gone_before_the_cpu_model_loads(monkeypatch, tmp_path):
+    """mlx 预热失败时模型已经进了 ModelHolder，也在异常回溯的帧里。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    holder = fake_mlx_cache(monkeypatch)
+    holder.model = None
+    refs, seen = [], []
+
+    def create(**kw):
+        if kw["backend"] == "mlx":
+            model = _Model()              # 预热把模型装进了类级缓存，随后出错
+            holder.model = model
+            refs.append(weakref.ref(model))
+            raise RuntimeError("[METAL] failed during warm-up")
+        gc.collect()
+        seen.append((holder.model is None, refs[0]() is None))
+        return Working(**kw)
+
+    _load_world(monkeypatch, p, {"backend": "mlx", "model": "large-v3", "device": "auto",
+                                 "compute_type": "auto", "note": ""}, create)
+    monkeypatch.setattr(selfcheck, "_model_cached",
+                        lambda model, backend: (model, backend) == ("large-v3-turbo", "ct2"))
+
+    run(p._run_stream_inner(DIRECT_URL))
+
+    assert seen == [(True, True)]
+
+
+def test_releasing_the_mlx_model_collects_it_before_clearing_the_cache(monkeypatch):
+    """模型对象内部有引用环时，只置 None 放不掉；不先回收，mx.clear_cache 什么也清不出来。"""
+    holder = fake_mlx_cache(monkeypatch)
+    holder.model = _Model()
+    holder.model.cycle = holder.model
+    model_ref = weakref.ref(holder.model)
+    seen = []
+    core = ModuleType("mlx.core")
+    core.clear_cache = lambda: seen.append(model_ref() is None)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    enabled = gc.isenabled()
+    gc.disable()                          # 只让显式的回收起作用，结果不看自动 GC 的时机
+    try:
+        assert asr.release_mlx_model() is True
+    finally:
+        if enabled:
+            gc.enable()
+    assert seen == [True]
+
+
+class _CudaModel:
+    """CUDA 上能加载、第一次识别才报错的识别器（Windows 缺 cuBLAS 那种）。"""
+
+    def __init__(self, events=None, **kw):
+        self.events = events if events is not None else []
+        self.backend, self.model_size = "ct2", kw["model_size"]
+        self.device, self.compute_type = kw["device"], kw["compute_type"]
+        self.model = object()
+
+    def release(self):
+        self.events.append("release-cuda")
+        self.model = None
+
+    def transcribe(self, pcm):
+        if self.model is None:
+            raise RuntimeError("识别模型已释放")
+        raise RuntimeError("Library cublas64_12.dll is not found")
+
+
+def _cuda_world(monkeypatch, create):
+    """配置是 CUDA large-v3；真的 _stream_session（假音频），每轮按「直连地址播完了」收尾。"""
+    import app.hwdetect
+    import app.resolver
+    monkeypatch.setattr(app.hwdetect, "recommend", lambda backend=None, device=None: {
+        "backend": "ct2", "model": "large-v3", "device": "cuda", "compute_type": "float16",
+        "note": ""})
+    monkeypatch.setattr(asr, "create_transcriber", create)
+    monkeypatch.setattr(selfcheck, "_model_cached", lambda model, backend: True)
+
+    async def resolve(url, cookies=None, cookies_browser="auto", trace=None):
+        return url
+
+    monkeypatch.setattr(app.resolver, "resolve_stream_url", resolve)
+    real = Pipeline._stream_session
+    slots = []
+
+    async def once(self_, media, slot, denoise, live_note, loop):
+        slots.append(slot)
+        await real(self_, media, slot, denoise, live_note, loop)
+        return True, 60.0
+
+    monkeypatch.setattr(Pipeline, "_stream_session", once)
+    return slots
+
+
+async def _until(cond, spins=2000):
+    """让出事件循环直到 cond() 成立；要等线程的步骤再用 10 ms 小睡兜底（最多约 10 秒）。
+    只用来等状态出现，不做任何计时断言。"""
+    for i in range(spins + 1000):
+        if cond():
+            return True
+        await asyncio.sleep(0 if i < spins else 0.01)
+    return cond()
+
+
+def test_start_after_a_failed_cpu_switch_loads_the_configured_model_again(monkeypatch, tmp_path):
+    """以前换 CPU 没载成功，下一场「开始」会从上次的加载结果里拿回已释放的识别器：
+    每段都报「识别模型已释放」，配置的模型根本没再跑，还要再丢 3 段才轮到换模型。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    created = []
+
+    def create(**kw):
+        created.append(kw["device"])
+        if kw["device"] == "cpu":
+            raise OSError("model.bin truncated")
+        return _CudaModel(**kw)
+
+    _cuda_world(monkeypatch, create)
+    fake_audio(monkeypatch, frames=4)
+
+    run(p._run_stream_inner(DIRECT_URL))
+    run(p._run_stream_inner(DIRECT_URL))           # 中控再点「开始翻译」，配置没变
+
+    assert created == ["cuda", "cpu", "cuda", "cpu"]
+    logs = list((tmp_path / "logs").glob("session-*.jsonl"))
+    assert len(logs) == 2
+    for log in logs:                                # 两场都真的在跑配置的 CUDA 模型
+        assert [r["error"] for r in rows(log, "asr_failed")][:3] == [
+            "Library cublas64_12.dll is not found"] * 3
+
+
+@pytest.mark.parametrize("same_config", [True, False])
+def test_stop_during_the_cpu_switch_never_loads_a_model_next_to_it(monkeypatch, tmp_path,
+                                                                   same_config):
+    """「正在改用 CPU 识别…」时点了停止：线程里的加载取消不掉，会继续跑完。以前下一场「开始」
+    拿回已释放的 GPU 识别器，或在它没载完时另载一份。现在先等它载完：配置没变就接着用，
+    变了就先放掉再按新配置加载。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    events = []
+    started, gate = threading.Event(), threading.Event()
+
+    class CpuModel(Working):
+        def release(self):
+            events.append("release-cpu")
+
+    def create(**kw):
+        events.append("create-" + kw["device"])
+        if kw["device"] == "cpu":
+            started.set()
+            gate.wait(10)
+            return CpuModel(**kw)
+        return _CudaModel(events, **kw)
+
+    slots = _cuda_world(monkeypatch, create)
+    fake_audio(monkeypatch, frames=4)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        first = asyncio.ensure_future(p._run_stream_inner(DIRECT_URL))
+        assert await loop.run_in_executor(None, started.wait, 10)
+        assert await _until(lambda: p._fallback_load is not None)
+        first.cancel()                                   # 中控点了停止
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        if not same_config:
+            p.args.beam = 3                              # 改了识别参数：配置 key 变了
+        second = asyncio.ensure_future(p._run_stream_inner(DIRECT_URL))
+        waited = await _until(lambda: any("还在加载" in d for _, d in server.statuses))
+        gate.set()
+        await second
+        return waited
+
+    try:
+        assert run(scenario())
+    finally:
+        gate.set()
+    assert p._fallback_load is None
+    if same_config:
+        assert events == ["create-cuda", "release-cuda", "create-cpu"]   # 没有再载任何模型
+        assert isinstance(slots[-1].transcriber, CpuModel)
+        assert p._transcriber is slots[-1].transcriber
+        assert p._asr_fallback["to"] == "ct2/large-v3/cpu/int8"
+        assert "asr-fallback" in server.config["incidents"]
+        record = rows(_latest_log(tmp_path), "asr_config")[0]
+        assert record["device"] == "cpu" and record["fallback"]["from"] == "ct2/large-v3/cuda/float16"
+    else:
+        assert events[:5] == ["create-cuda", "release-cuda", "create-cpu", "release-cpu",
+                              "create-cuda"]                 # 先放掉那份 CPU 模型，再加载
+
+
+def test_a_config_with_no_fallback_is_not_recorded_as_a_missing_download(monkeypatch, tmp_path):
+    """本来就在 CPU 上的配置没有更稳的退路。以前也记成 no_cached_fallback，复查的人会去查下载。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.audit = AuditLog(room_url=LIVE_URL, log_dir=tmp_path / "logs")
+    asked = []
+    monkeypatch.setattr(selfcheck, "_model_cached",
+                        lambda model, backend: asked.append(model) or True)
+    cfg = mlx_config(backend="ct2", model="large-v3-turbo", device="cpu", compute_type="int8")
+    broken = Broken([], backend="ct2", model="large-v3-turbo", device="cpu", compute_type="int8")
+    fake_audio(monkeypatch, frames=4)
+
+    stream_once(p, _ASRSlot(broken, config=cfg, key=("key",), audit=p.audit))
+
+    assert asked == []
+    assert [r["reason"] for r in rows(p.audit.path, "asr_backend_fallback")] == [
+        "no_fallback_for_config"]
+
+
 # ---- 识别调用卡住：记审计、说清会丢段、不自动重载 ------------------------------------
 
 def _half_pipeline(tmp_path=None):
@@ -463,6 +714,63 @@ def test_the_stats_loop_runs_the_detection_watch_every_tick():
 
     run(scenario())
     assert len(calls) == 2 and "audio_segments_dropped" in calls[0]
+
+
+def test_health_stays_red_while_every_asr_call_fails(monkeypatch, tmp_path):
+    """出错的调用返回得快、积压归零，丢段数却在涨。以前下一轮统计就把「程序自动恢复不了」
+    刷成「✅ 识别已追上」，审计里还记一条 ok——检测停摆时报恢复。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.audit = AuditLog(room_url=LIVE_URL, log_dir=tmp_path / "logs")
+    monkeypatch.setattr(selfcheck, "_model_cached", lambda model, backend: False)
+    slot = _ASRSlot(Broken([]), config=mlx_config(), key=("key",), audit=p.audit)
+    fake_audio(monkeypatch, frames=5)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        await p._check_asr_stall(p.telemetry.snapshot(), now=0.0)
+        await p._stream_session("http://cdn/s.flv", slot, None, "note", loop)
+        snap = p.telemetry.snapshot()
+        await p._check_asr_stall(snap, now=10.0)              # 下一轮统计：丢段数涨了
+        await p._announce_health(p._health_level(0.0), 0.0)   # 统计循环：积压回到 0
+        return snap
+
+    snap = run(scenario())
+
+    assert snap["audio_segments_dropped"] == 5 and snap["audio_segments_asr_failed"] == 5
+    health = server.of("health")
+    assert [m["level"] for m in health] == ["degraded"]
+    assert "程序自动恢复不了" in health[0]["text"]
+    assert [(r["level"], r["reason"]) for r in rows(p.audit.path, "health")] == [
+        ("degraded", "asr_failing")]
+    assert "session:asr-failing" in server.config["incidents"]
+
+
+def test_the_degraded_text_counts_only_audio_the_backlog_pushed_out():
+    """「积压超过 60 秒的旧音频已丢弃 N 段」不能把识别出错没检测的段也算进去。"""
+    p = _half_pipeline()
+    p.telemetry.drop_audio(asr_failed=True)
+    p.telemetry.drop_audio(asr_failed=True)
+    run(p._announce_health("degraded", 45.0))
+    assert "已丢弃" not in p.server.of("health")[-1]["text"]
+    p.telemetry.drop_audio()                            # 这一段才是积压挤掉的
+    run(p._announce_health("degraded", 59.0))
+    assert "已丢弃 1 段" in p.server.of("health")[-1]["text"]
+
+
+def test_the_stall_check_counts_only_audio_the_backlog_pushed_out(tmp_path):
+    """识别出错也记进丢段数。以前卡住检查把它当成「积压丢了段」：每次出错都按积压重报一次，
+    卡住时的那句「本场已丢弃 N 段」和 asr_stalled 审计也把出错的段算了进去。"""
+    p = _half_pipeline(tmp_path)
+    run(p._announce_health("lagging", 25.0))
+    run(p._check_asr_stall({"audio_segments_dropped": 0, "audio_backlog_sec": 25.0}, now=0.0))
+    failed = {"audio_segments_dropped": 2, "audio_segments_asr_failed": 2,
+              "audio_backlog_sec": 31.0}
+    run(p._check_asr_stall(failed, now=10.0))           # 两段识别出错（还没到换模型的次数）
+    assert len(p.server.of("health")) == 1
+    p._asr_inflight = [0.0]
+    run(p._check_asr_stall(failed, now=70.0))           # 接着一段卡住了
+    assert "本场已丢弃 0 段" in p.server.of("health")[-1]["text"]
+    assert rows(p.audit.path, "asr_stalled")[0]["dropped"] == 0
 
 
 # ---- 模型加载失败：记审计、不猜原因、自检变红、安全时改用 CPU ------------------------
@@ -595,6 +903,87 @@ def test_check_asr_trusts_the_pipelines_load_result():
     assert warn["level"] == "warn" and "ct2/large-v3-turbo" in warn["detail"]
 
 
+def _asr_check_world(monkeypatch):
+    """check_asr 按配置那条路要用的探测，全换成确定的结果（不碰真硬件、不 import 大库）。"""
+    from app import hwdetect
+    monkeypatch.setattr(hwdetect, "detect", lambda: {
+        "apple_silicon": False, "has_mlx": False, "has_cuda": False, "cores": 10, "ram_gb": 16})
+    monkeypatch.setattr(selfcheck, "_model_cached", lambda m, b: True)
+    monkeypatch.setattr(selfcheck, "_importable", lambda name: True)
+
+
+def _asr_row(server):
+    return [c["level"] for c in server.config["selfcheck"]["checks"] if c["name"] == "语音识别"]
+
+
+def test_a_session_selfcheck_does_not_paint_over_a_newer_load_failure(monkeypatch, tmp_path):
+    """整轮自检和开播时的模型加载并行跑。以前自检开跑时记下的旧状态，会在它跑完时把
+    「没能加载」那一行刷回绿色。"""
+    from app import hwdetect
+    p = _half_pipeline(tmp_path)
+    p.args = SimpleNamespace(backend="auto", model=None, device="auto", comments=False)
+    p.detector = p.glossary = p.translator = None
+    p._asr_load_error = p._asr_fallback = None
+    monkeypatch.setattr(pipeline_mod, "_tiktoklive_version", lambda: None)
+    _asr_check_world(monkeypatch)
+    monkeypatch.setattr(hwdetect, "recommend", lambda backend="auto", device="auto": {
+        "backend": "ct2", "model": "small", "device": "cpu", "compute_type": "int8", "note": ""})
+
+    async def quick(*a, **k):
+        return selfcheck._check("x", "ok", "fine")
+
+    for name in ("check_ffmpeg", "check_denoise", "check_translator", "check_watchlist",
+                 "check_glossary", "check_audit", "check_resolver", "check_comments"):
+        monkeypatch.setattr(selfcheck, name, quick)
+    p.server.config["selfcheck"] = {"checks": [selfcheck._check("语音识别", "ok", "startup")],
+                                    "summary": {}}
+
+    async def scenario():
+        disk_done = asyncio.Event()
+
+        async def slow_disk():
+            await disk_done.wait()
+            return selfcheck._check("磁盘空间", "ok", "fine")
+
+        monkeypatch.setattr(selfcheck, "check_disk", slow_disk)
+        task = asyncio.ensure_future(p.run_selfcheck())     # 这一场的自检开跑
+        assert await _until(lambda: hasattr(p, "_selfcheck_tiktoklive"))
+        p._asr_load_error = {"backend": "ct2", "model": "small", "device": "cpu",
+                             "error": "boom"}               # 同时模型加载失败了
+        await p._refresh_asr_check()
+        mid = _asr_row(p.server)
+        disk_done.set()
+        await task                                          # 自检这时才跑完
+        return mid, _asr_row(p.server)
+
+    mid, end = run(scenario())
+    assert mid == ["fail"] and end == ["fail"]
+
+
+def test_the_published_asr_row_follows_load_failures_and_recoveries(monkeypatch, tmp_path):
+    """开播那轮自检早就发布了：加载失败、之后又加载成功，界面上那一行都要跟着变。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    _asr_check_world(monkeypatch)
+
+    def boom(**kw):
+        raise RuntimeError("Unable to open file 'model.bin'")
+
+    _load_world(monkeypatch, p, {"backend": "ct2", "model": "small", "device": "cpu",
+                                 "compute_type": "int8", "note": ""}, boom)
+    server.config["selfcheck"] = {"checks": [selfcheck._check("语音识别", "ok", "startup"),
+                                             selfcheck._check("磁盘空间", "ok", "fine")],
+                                  "summary": {}}
+
+    run(p._run_stream_inner(DIRECT_URL))
+    assert _asr_row(server) == ["fail"]
+    assert server.of("selfcheck")[-1]["summary"]["fail"] == 1
+
+    monkeypatch.setattr(asr, "create_transcriber", lambda **kw: Working(**kw))
+    run(p._run_stream_inner(DIRECT_URL))
+    assert _asr_row(server) == ["ok"]
+    assert [c["name"] for c in server.config["selfcheck"]["checks"]] == ["语音识别", "磁盘空间"]
+
+
 @pytest.mark.parametrize("form", ["json", "plain"])
 def test_cpu_row_reads_the_mlx_giveup_marker_in_both_forms(monkeypatch, tmp_path, form):
     """记号在时启动不会再装 GPU 组件：「重开会自动补装」是假的，要给日期和真能做的事。"""
@@ -683,6 +1072,22 @@ def test_a_bom_no_longer_kills_a_first_line_regex(tmp_path):
     det = load_detector(f)
     assert [x["raw"] for x in det.patterns] == ["re:pas[eé]\\s*de\\s*\\d+\\s*a\\s*\\d+"]
     assert det.scan("pasé de 97 a 82", ts=1000.0)
+
+
+def test_a_regex_with_a_trailing_comment_is_told_to_move_the_comment(tmp_path):
+    """以前报「删掉 #」——照做之后「 说明」几个字还是必须出现，条目照样是死的。"""
+    f = tmp_path / "terms.txt"
+    f.write_text("re:perd[ií]\\s*\\d+\\s*kilos  # 说明\n"      # 1 # 之前那段能用
+                 "re:perdí \\d+ kilos  # 说明\n"               # 2 # 之前那段自己也是死的
+                 "re:precio[ #]\\d+ kilos  # nota\n",          # 3 第一个「 #」在字符类里
+                 encoding="utf-8")
+    det = load_detector(f)
+    found = {w["line"]: (w["reason"], w["text"]) for w in det.load_warnings}
+    assert found[1][0] == "trailing_comment" and "单独写一行" in found[1][1]
+    assert "删掉这个符号" not in found[1][1]
+    assert found[2][0] == "accent" and "[ií]" in found[2][1] and "单独一行" in found[2][1]
+    assert found[3][0] == "trailing_comment"
+    assert len(det.patterns) == 3                     # 照样加载：体检不改匹配
 
 
 # ---- 非 UTF-8 词表：不再让程序起不来，读不出的行点名 ------------------------------

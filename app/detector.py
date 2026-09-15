@@ -78,6 +78,7 @@ def _stem_tokens(tokens):
 # 跟着变，那是业务决定（CLAUDE.md 第五条），不是加载器能替人做的。
 
 _TRAILING_COMMENT_RE = re.compile(r"\s#")
+_COMMENT_ADVICE = "行尾的 # 说明不算注释，连同词条一起去匹配——注释要单独写一行"
 
 
 def _char_survives(ch):
@@ -158,6 +159,27 @@ def _regex_dead_reason(expr):
                            "或在它后面加 ? 让它可有可无".format(ch))
 
 
+def _regex_comment_reason(expr, dead):
+    """正则条目行尾写了「  # 说明」时该给的建议。
+
+    体检只看得出「# 不会出现」，照「删掉 #」去改，「 说明」几个字还是必须出现，条目照样
+    是死的。所以先看 # 之前那段：它本身能用，就说把注释挪走；它本身也是死的，就报它自己
+    的原因，再提一句注释。切在字符类或分组中间（编译不过）就换下一个 # 再试。"""
+    for match in _TRAILING_COMMENT_RE.finditer(expr):
+        head = expr[:match.start()].rstrip()
+        if not head:
+            continue
+        try:
+            re.compile(head, re.I)
+        except re.error:
+            continue
+        head_dead = _regex_dead_reason(head)
+        if head_dead is None:
+            return ("trailing_comment", _COMMENT_ADVICE)
+        return (head_dead[0], "{}；行尾的 # 说明也要挪到单独一行".format(head_dead[1]))
+    return dead
+
+
 class BannedTermDetector:
     """扫描识别文本里的违禁词。线程/协程内直接调用即可，无 IO。"""
 
@@ -205,6 +227,7 @@ class BannedTermDetector:
                 self.loaded.append(raw)
                 dead = _regex_dead_reason(expr)
                 if dead:
+                    dead = _regex_comment_reason(expr, dead)
                     self._warn(line, raw, dead[0], dead[1], loaded=True)
                 continue
             norm = normalize(raw)
@@ -220,9 +243,7 @@ class BannedTermDetector:
             })
             self.loaded.append(raw)
             if _TRAILING_COMMENT_RE.search(raw):
-                self._warn(line, raw, "trailing_comment",
-                           "行尾的 # 说明不算注释，连同词条一起去匹配——注释要单独写一行",
-                           loaded=True)
+                self._warn(line, raw, "trailing_comment", _COMMENT_ADVICE, loaded=True)
         self._window = deque()      # [(ts, normalized_text)]
         self._last_hit = {}         # term.raw -> ts，命中冷却，避免刷屏
 
