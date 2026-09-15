@@ -11,6 +11,13 @@ import platform
 import shutil
 import sys
 
+# 识别出错时唯一允许改用的 CPU 配置（见 pipeline 的识别出错处理）：上面实测锚点里
+# Apple Silicon CPU 能勉强跟上直播的就是 turbo（RTF 0.99），int8 与 CUDA 失败时
+# asr.Transcriber 的退路一致。改用前必须确认这个模型已经完整下载——直播中途开始
+# 下载 1.6 GB 只会让检测更久地停着。
+CPU_FALLBACK = {"backend": "ct2", "model": "large-v3-turbo", "device": "cpu",
+                "compute_type": "int8"}
+
 
 def _ram_gb():
     try:

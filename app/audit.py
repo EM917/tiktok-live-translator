@@ -8,6 +8,7 @@
 写入失败一律静默忽略：日志不能拖累实时链路。
 """
 import json
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,15 @@ def _iso_from_epoch(ts):
         return datetime.fromtimestamp(float(ts)).isoformat(timespec="seconds")
     except (TypeError, ValueError, OverflowError, OSError):
         return None
+
+
+_URL_QUERY_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^\s?#'\"<>]*)[?#][^\s'\"<>]*")
+
+
+def strip_url_queries(text, limit=300):
+    """写进审计的错误文本：去掉网址里的 query。签名流地址的 sign/expire、HF 的
+    token 都在 query 里——审计文件不能变成两周有效的拉流凭证。"""
+    return _URL_QUERY_RE.sub(r"\1", str(text or ""))[:limit]
 
 
 class AuditLog:
@@ -169,6 +179,77 @@ class AuditLog:
             "at": datetime.now().isoformat(timespec="milliseconds"),
             "asr_ms": round(asr_ms, 1),
             "segment_ms": round(segment_ms, 1),
+        })
+
+    def asr_config(self, config):
+        """这一场实际在听的识别配置（backend/model/device/compute_type/note，改用过
+        CPU 时带上来龙去脉）。以前只 print 一行，打包运行时 stdout 指向 /dev/null，
+        复盘「这场为什么漏报」时答不出当时是 GPU large-v3 还是 CPU turbo 在听。"""
+        self._write(dict(config, type="asr_config",
+                         at=datetime.now().isoformat(timespec="milliseconds")))
+
+    def asr_load_failed(self, backend, model, device, error):
+        """识别模型没能加载：这一场一段都不会识别。以前只有界面上一句话。"""
+        self._write({
+            "type": "asr_load_failed",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "backend": backend, "model": model, "device": device,
+            "error": strip_url_queries(error),
+        })
+
+    def asr_backend_fallback(self, from_, to, error, **extra):
+        """识别出错后改用了另一套配置（to=None 表示没有可以安全改用的，没换）。"""
+        self._write(dict(
+            {k: (strip_url_queries(v) if k.endswith("error") else v)
+             for k, v in extra.items()},
+            type="asr_backend_fallback",
+            at=datetime.now().isoformat(timespec="milliseconds"),
+            **{"from": from_, "to": to, "error": strip_url_queries(error)}))
+
+    def asr_stalled(self, inflight_sec, backlog_sec, dropped):
+        """一段音频识别了很久还没返回。asr_overrun 要等调用返回才写、asr_failed 只在
+        抛异常时写——调用一直不返回时，会话日志里只剩一条条 audio_dropped。"""
+        self._write({
+            "type": "asr_stalled",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "inflight_sec": round(inflight_sec, 1),
+            "backlog_sec": round(backlog_sec, 1),
+            "dropped": dropped,
+        })
+
+    def health(self, level, backlog_sec, reason="backlog", text="", dropped=None,
+               asr_failed=None):
+        """检测健康状态的变化（积压、识别出错、识别卡住、改用 CPU）。只在变化时写。
+        dropped 是积压挤掉的段数，asr_failed 是识别出错没检测的段数，两者分开记。"""
+        self._write({
+            "type": "health",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "level": level, "reason": reason,
+            "backlog_sec": round(backlog_sec or 0.0, 1),
+            "dropped": dropped,
+            "asr_failed": asr_failed,
+            "text": (text or "")[:300],
+        })
+
+    def selfcheck(self, checks, summary, full=True):
+        """自检结论。full=False 表示只记了等级有变化的那几行。自检本来就是为了抓静默
+        降级，结论却只上界面、只 print——事后说不出这场跑的时候哪项能力是坏的。"""
+        self._write({
+            "type": "selfcheck",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "full": bool(full),
+            "summary": summary,
+            "checks": [{"name": c.get("name"), "level": c.get("level"),
+                        "detail": strip_url_queries(c.get("detail"), 500)}
+                       for c in checks],
+        })
+
+    def terms_changed(self, digest):
+        """直播中违禁词表文件被改了（新内容要「停止→开始」后才生效）。"""
+        self._write({
+            "type": "terms_changed",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "hash": digest,
         })
 
     def comment_source(self, state, detail="", raw=""):
