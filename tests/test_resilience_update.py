@@ -930,9 +930,11 @@ def test_footer_note_counts_only_the_observed_failure_streak(isolated):
 
     server = RecordingServer()
     u = Updater(server)
+    # 时钟只读一次：分两次读时第二次总晚几微秒（Linux 上必然），差值不到整 20 天，
+    # 按天向下取整成 19
+    t = time.time()
     settings_mod.save_setting("update_check_error",
-                              {"at": time.time(), "since": time.time() - 20 * day,
-                               "status_or_exc": "HTTP 403"})
+                              {"at": t, "since": t - 20 * day, "status_or_exc": "HTTP 403"})
     run(u._publish_check_health())
     run(u._publish_check_health())                  # 没变化不重复广播
     configs = server.of_type("config")
