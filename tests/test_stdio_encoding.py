@@ -34,9 +34,16 @@ ROOT = Path(__file__).resolve().parent.parent
 LINE = "✅ ñ 中文"
 
 
+def _gbk(errors="strict"):
+    """复现 Windows 上重定向后的 sys.stdout：代码页编码 + 不容错的 errors。
+
+    真机上量到的是 surrogateescape（2026-09-15 中文 Windows 11），strict 是显式设
+    PYTHONIOENCODING=gbk:strict 时的样子。两档都编不了 ✅ 和 ñ。"""
+    return io.TextIOWrapper(io.BytesIO(), encoding="gbk", errors=errors, newline="")
+
+
 def _gbk_strict():
-    """复现 Windows 上重定向后的 sys.stdout：代码页编码 + errors='strict'。"""
-    return io.TextIOWrapper(io.BytesIO(), encoding="gbk", errors="strict", newline="")
+    return _gbk("strict")
 
 
 def _written(stream):
@@ -46,12 +53,14 @@ def _written(stream):
 
 # ---- 1. 护栏本身 ----------------------------------------------------------------------
 
-def test_a_gbk_strict_stream_raises_before_the_guard_and_not_after():
-    before = _gbk_strict()
+@pytest.mark.parametrize("errors", ["strict", "surrogateescape"])
+def test_a_gbk_stream_raises_before_the_guard_and_not_after(errors):
+    """两档都要覆盖：strict 是显式设出来的，surrogateescape 是 Windows 的默认值。"""
+    before = _gbk(errors)
     with pytest.raises(UnicodeEncodeError):
         print(LINE, file=before)
 
-    after = _gbk_strict()
+    after = _gbk(errors)
     assert harden_stdio([after]) == [after]
     print(LINE, file=after)                      # 不抛就是修好了
     raw = _written(after)
@@ -86,6 +95,10 @@ def test_the_guard_skips_streams_it_must_not_touch():
     chosen = io.TextIOWrapper(io.BytesIO(), encoding="gbk", errors="backslashreplace")
     assert harden_stdio([chosen]) == []                  # 操作员/别的护栏定过：不覆盖
     assert chosen.errors == "backslashreplace"
+
+    lenient = _gbk("surrogateescape")                    # 名字像容错，其实照抛：要换掉
+    assert harden_stdio([lenient]) == [lenient]
+    assert lenient.errors == "replace"
 
     class Cranky:
         errors = "strict"
@@ -139,10 +152,13 @@ def test_doctor_survives_a_gbk_strict_stdout(monkeypatch):
     assert "推荐配置".encode("gbk") in raw       # 崩点之后的内容也写全了
 
 
-def test_doctor_in_a_real_gbk_strict_pipe_exits_zero_with_the_guard():
-    """VM 上实测的那条命令（PYTHONIOENCODING=gbk:strict + 管道），逐字复现。"""
+@pytest.mark.parametrize("handler", ["strict", "surrogateescape"])
+def test_doctor_in_a_real_gbk_pipe_exits_zero_with_the_guard(handler):
+    """VM 上实测的那条命令（管道 + 代码页），两档错误处理策略各跑一遍。
+
+    surrogateescape 是虚拟机里量到的真实默认值；第一版护栏就是在这一档上整个跳过的。"""
     body = "import sys; sys.path.insert(0, {!r}); ".format(str(ROOT))
-    env = dict(os.environ, PYTHONIOENCODING="gbk:strict", PYTHONUTF8="0")
+    env = dict(os.environ, PYTHONIOENCODING="gbk:" + handler, PYTHONUTF8="0")
 
     crash = subprocess.run([sys.executable, "-c", body + "from app import hwdetect; hwdetect.doctor()"],
                            capture_output=True, env=env, timeout=120)

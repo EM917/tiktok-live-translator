@@ -14,6 +14,16 @@
 Python 就按 ANSI 代码页编码、并且 errors='strict'——一个 emoji 就是异常。交互
 控制台下 Python 走 UTF-16 控制台 API，永远不会触发，所以开发机、mac 上看不到。
 
+2026-09-15 在虚拟机里量到的实际档位是 `gbk` + **`surrogateescape`**，不是 `strict`：
+
+    before gbk surrogateescape False      # 重定向后的 sys.stdout
+    after  gbk surrogateescape changed 0  # 第一版护栏只认 strict，整个跳过
+    emoji-raised UnicodeEncodeError
+
+surrogateescape 只负责把落单的代理字符还原成原始字节，正常的 `✅`、`ñ` 照样抛。
+所以这里判断的是「策略能不能容错」，不是「策略是不是 strict」。第一版的复现命令用了
+`PYTHONIOENCODING=gbk:strict`，正好把真机的默认值绕过去了，三方验证都没看出来。
+
 为什么这值得一个模块，而不是在崩的那一行删掉 emoji：**print 出现在关键路径上**。
 `⚠️`/`✅` 只是最先撞上的字符，真正会反复出现的是运行时文本——西语识别文本里的
 `ñ ¿ ¡`（GBK 编不了）、子进程输出按 `errors="replace"` 解码出来的 U+FFFD（GBK
@@ -39,9 +49,9 @@ import sys
 
 
 def harden_stdio(streams=None):
-    """把 errors='strict' 的标准流改成 'replace'，编码不动。返回真正改过的流。
+    """把不能容错的标准流改成 errors='replace'，编码不动。返回真正改过的流。
 
-    幂等：改过一次之后 errors 已经不是 'strict'，再调用什么都不做。
+    幂等：改过一次之后 errors 已经是 'replace'，再调用什么都不做。
     """
     changed = []
     for stream in (_default_streams() if streams is None else streams):
@@ -69,11 +79,16 @@ def _default_streams():
     return (sys.stdout, sys.stderr)
 
 
+# 遇到编不了的字符不会抛的策略。surrogateescape 不在其中：它只把落单的代理字符还原成
+# 原始字节，正常字符照抛——而 Windows 上重定向的 stdout 默认就是它
+_TOLERANT = ("replace", "backslashreplace", "xmlcharrefreplace", "ignore", "namereplace")
+
+
 def _soften(stream):
     reconfigure = getattr(stream, "reconfigure", None)
     if reconfigure is None:            # None（pythonw）、pytest 捕获对象、自定义流
         return False
-    if (getattr(stream, "errors", None) or "strict") != "strict":
+    if (getattr(stream, "errors", None) or "strict").lower() in _TOLERANT:
         return False                   # 操作员或别的护栏已经指定过：不覆盖
     try:
         # 只传 errors：encoding/newline/行缓冲都保持原样（TextIOWrapper.reconfigure，3.7+）
