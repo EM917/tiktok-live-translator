@@ -381,6 +381,9 @@ class Updater:
                     sys.executable, "-m", "pip", "install", "-U",
                     "--disable-pip-version-check", YTDLP_SPEC,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    # 我们按 UTF-8 解它的输出，就得让它按 UTF-8 写（与 bootstrap.run_logged
+                    # 一致）：Windows 默认 ANSI 代码页，非 ASCII 路径会解成 U+FFFD
+                    env=dict(os.environ, PYTHONIOENCODING="utf-8"),
                 )
                 try:
                     out, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
@@ -562,7 +565,9 @@ class Updater:
         try:
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "pip", *args,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                # 同上：stderr 的最后一行会被原话打印出来，别让它先烂成 U+FFFD
+                env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         except Exception as exc:
             return None, "", str(exc)
         try:

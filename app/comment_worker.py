@@ -26,6 +26,8 @@ import signal
 import sys
 import threading
 
+from .stdio import utf8_stdio
+
 _PENDING = set()     # 信号处理里起的 disconnect 任务，保引用
 
 
@@ -291,12 +293,12 @@ def _utf8_stdio():
     """父进程按 UTF-8 解析每一行。Windows 上管道的默认编码是 ANSI 代码页
     （cp936/cp1252）：带 emoji 的昵称直接 UnicodeEncodeError 丢掉这条，
     "niño" 编成 \xf1 让父进程 json.loads 失败——西语弹幕几乎条条带重音，
-    等于弹幕面板在 Windows 上只剩纯 ASCII 的少数评论。"""
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+    等于弹幕面板在 Windows 上只剩纯 ASCII 的少数评论。
+
+    注意这里和 main.py 的 harden_stdio() 是两种不同的处理，不能互换：主进程的输出
+    是给人看的终端日志，要保留平台代码页；这里的 stdout 是给父进程 json.loads 的
+    字节流，必须 UTF-8（见 app/stdio.py）。"""
+    utf8_stdio()
 
 
 def main(argv=None):

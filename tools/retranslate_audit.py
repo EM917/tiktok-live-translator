@@ -34,6 +34,12 @@ from datetime import datetime
 
 sys.path.insert(0, ".")
 
+from app.stdio import harden_stdio                     # noqa: E402
+
+# 重定向到文件时（Windows 上 `python3 tools/x.py > out.txt` 的默认编码是 ANSI
+# 代码页 + strict），中文文案和 ✅/⚠️ 不该让工具中途崩掉：见 app/stdio.py。
+harden_stdio()
+
 from app.glossary import load as load_glossary          # noqa: E402
 from app.translator import create_strong_translator     # noqa: E402
 
