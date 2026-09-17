@@ -114,7 +114,9 @@ def test_offline_message_does_not_claim_streamer_is_offline():
 # ---- 借用浏览器登录态：TikTok 对未登录请求把在播房间报成「未开播」 ----
 
 def test_browser_order_prefers_remembered(monkeypatch, tmp_path):
+    import sys as _sys
     from app import resolver, settings
+    monkeypatch.setattr(_sys, "platform", "linux")       # macOS 的顺序见下一条
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(resolver, "_installed_browsers",
                         lambda: ("chrome", "safari", "firefox"))
@@ -125,21 +127,35 @@ def test_browser_order_prefers_remembered(monkeypatch, tmp_path):
     assert set(order) == {"chrome", "safari", "firefox"}
 
 
+def test_safari_stays_ahead_of_the_remembered_browser_on_macos(monkeypatch, tmp_path):
+    """macOS 上读 Safari 不花时间，读到登录就不再读别的：记住的浏览器排在它后面。"""
+    import sys as _sys
+    from app import resolver, settings
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(resolver, "_installed_browsers",
+                        lambda: ("safari", "chrome", "firefox"))
+    settings.save_setting("cookies_browser", "firefox")
+    assert resolver._browser_order("auto") == ("safari", "firefox", "chrome")
+
+
 def test_explicit_browser_preference_wins(monkeypatch, tmp_path):
     from app import resolver, settings
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     assert resolver._browser_order("safari") == ("safari",)
 
 
-def test_safari_tried_last_on_macos():
-    """Safari 的 cookie 需要完全磁盘访问权限，未授权时会卡住——必须排最后。"""
+def test_safari_tried_first_on_macos(monkeypatch):
+    """2026-09-17 起 Safari 排最前：实测读它 0.0 秒、不碰钥匙串，没授权时立刻
+    PermissionError（不会卡住）；读 Chrome 约 5 秒还要向钥匙串要密钥。"""
     import sys as _sys
+    from pathlib import Path
     from app import resolver
-    if _sys.platform != "darwin":
-        return
-    order = resolver._installed_browsers()
-    if "safari" in order and len(order) > 1:
-        assert order[-1] == "safari"
+    with monkeypatch.context() as m:       # 只在这一次调用期间改，别碰到 pytest 自己的收尾
+        m.setattr(_sys, "platform", "darwin")
+        m.setattr(Path, "exists", lambda self: True)           # 假装六个浏览器都装了
+        order = resolver._installed_browsers()
+    assert order[0] == "safari" and set(order) == set(resolver.BROWSER_CANDIDATES)
 
 
 def test_browser_attempt_timeout_is_short():

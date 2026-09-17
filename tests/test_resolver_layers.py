@@ -423,7 +423,10 @@ def test_trace_stops_at_the_layer_that_won(monkeypatch):
     monkeypatch.setattr(resolver, "_check_media_url", ok)
     monkeypatch.setattr(resolver, "_media_url_works", works)
     trace = []
-    got = run(resolver.resolve_stream_url("https://www.tiktok.com/@x/live", trace=trace))
+    # cookies_browser="none"：这里钉的是「哪一层拿到就停在哪一层」；macOS 上默认还会先有
+    # 一条「登录直播页」的记录（见 tests/test_login_first.py）
+    got = run(resolver.resolve_stream_url("https://www.tiktok.com/@x/live",
+                                          cookies_browser="none", trace=trace))
     assert got.endswith("a.flv")
     assert [(r["layer"], r["outcome"]) for r in trace] == [("官方接口", "url")]
 

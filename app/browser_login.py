@@ -444,6 +444,29 @@ def steps_text(login):
     return "".join(steps)
 
 
+SAFARI_LOGIN_STEPS = "请在 Safari 里登录 TikTok。"
+SELFCHECK_POINTER = "（这些步骤在自检「浏览器登录态」一行里也有。）"
+
+
+def no_login_notice(login):
+    """一个可用的 TikTok 登录都没读到时，挂在界面顶部的那条持续提示（不挡开播，读到登录
+    就撤）。写三件事：看到了什么、这意味着哪类直播间拿不到、能照做的步骤。
+
+    2026-09-17 实测：有的直播间，TikTok 给未登录访问的直播页里没有流地址，带登录去抓才有。
+    macOS 上程序先读 Safari（见 resolver._installed_browsers），所以步骤说的是 Safari。"""
+    login = {b: c for b, c in (login or {}).items() if c != NOT_READ}
+    codes = set(login.values())
+    steps = [SAFARI_LOGIN_STEPS]
+    if BLOCKED in codes:
+        steps.append(FDA_OBSERVED + FDA_STEPS + SELFCHECK_POINTER)
+    if KEYCHAIN_WAIT in codes:
+        steps.append(KEYCHAIN_STEPS)
+    return ("程序没有读到浏览器里的 TikTok 登录——{}。有的直播间 TikTok 只把流地址给已登录的"
+            "观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会"
+            "因此停下。{}读到登录后这条提示自动消失。".format(
+                observed_text(login) or "没有找到可读取的浏览器", "".join(steps)))
+
+
 def browser_only_advice(login):
     """解析以 kind=browser_only 收场时，附在固定话术后面的那一段：两个借登录的层
     看到了什么、对应能做什么。没有观察（没试浏览器）返回空串。"""

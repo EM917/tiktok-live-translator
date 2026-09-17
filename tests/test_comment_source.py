@@ -241,6 +241,60 @@ def test_supervise_forwards_status_and_comments_in_order(monkeypatch):
     assert calls == [["abc"]]
 
 
+def _anon_notes(monkeypatch):
+    """记下 CommentSource 向 resolver 报了几次「刚发过匿名请求」。"""
+    from app import resolver
+    notes = []
+    monkeypatch.setattr(resolver, "note_anonymous_request", lambda: notes.append(True))
+    return notes
+
+
+def test_worker_without_session_id_is_noted_as_anonymous_requests(monkeypatch):
+    """不带 sessionid 的子进程一启动就匿名抓 https://www.tiktok.com/@主播/live（TikTokLive 的
+    fetch_room_id_from_html），连上评论 WebSocket 之后才不再发请求。resolver 的间隔规则
+    （带登录抓直播页之前和上一次匿名请求隔开 8 秒）要看得见它：启动时记一次，连上时记一次。"""
+    notes = _anon_notes(monkeypatch)
+    proc = FakeProc(stdout_lines=[
+        jline({"event": "status", "state": "connecting"}),
+        jline({"event": "status", "state": "connected", "room_id": 1}),
+    ], returncode=0)
+    cs, _items, _states, _calls = make_source(monkeypatch, [proc])
+    assert run(cs._run_once("abc", []))[0] == 0
+    assert len(notes) == 2             # 连上之后才退出：退出那一刻没有新的匿名请求，不再记
+
+
+def test_worker_that_exits_before_connecting_is_noted_at_exit(monkeypatch):
+    notes = _anon_notes(monkeypatch)
+    proc = FakeProc(stdout_lines=[
+        jline({"event": "status", "state": "connecting"}),
+        jline({"event": "status", "state": "offline"}),
+    ], returncode=3)
+    cs, _items, _states, _calls = make_source(monkeypatch, [proc])
+    assert run(cs._run_once("abc", []))[0] == 3
+    assert len(notes) == 2             # 启动 + 退出：它的匿名请求最晚发到退出那一刻
+
+
+def test_worker_with_session_id_is_not_noted_as_anonymous(monkeypatch):
+    notes = _anon_notes(monkeypatch)
+    proc = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
+                    returncode=0)
+    cs, _items, _states, calls = make_source(monkeypatch, [proc])
+    run(cs._run_once("abc", ["--session-id", "sid-value"]))
+    assert calls == [["abc", "--session-id", "sid-value"]] and notes == []
+
+
+def test_anonymous_worker_start_moves_the_resolver_stamp(monkeypatch):
+    """不经假的记录器：真的 resolver.note_anonymous_request，假的时钟。"""
+    from app import resolver
+    monkeypatch.setattr(resolver, "_monotonic", lambda: 4242.0)
+    assert resolver._ANON["last"] is None
+    proc = FakeProc(stdout_lines=[jline({"event": "status", "state": "offline"})],
+                    returncode=3)
+    cs, _items, _states, _calls = make_source(monkeypatch, [proc])
+    run(cs._run_once("abc", []))
+    assert resolver._ANON["last"] == 4242.0
+
+
 def test_supervise_respawns_after_clean_exit(monkeypatch):
     proc1 = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
                       returncode=0)
@@ -540,6 +594,10 @@ def make_pipeline(monkeypatch, tmp_path, comments=True):
 
 
 def test_begin_session_starts_comment_source_by_streamer(monkeypatch, tmp_path):
+    # macOS 上弹幕等第一次流地址解析返回才起（tests/test_login_first.py 里验证）；
+    # 这里验证的是其它平台一直以来的接线：开场即起、收尾即停
+    from app import resolver
+    monkeypatch.setattr(resolver, "_login_first_enabled", lambda: False)
     started = []
     stopped = []
 

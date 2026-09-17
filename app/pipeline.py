@@ -898,6 +898,7 @@ class Pipeline:
         self._strong_missing = False     # 用户可能在两场之间拉好了模型
         self._drop_strong()              # 也可能删掉了：上一场的强模型对象不能接着用
         self.telemetry.reset()          # 统计按场计，不跨房间累计
+        login_source = await self._login_source()
         if self.audit is not None:
             self.audit.close()
         # requested 是用户的选择，active 是实际生效的对象——这两列并排记，
@@ -924,6 +925,9 @@ class Pipeline:
             "profile": streamer if prof else None,
             "profile_hash": file_hash(prof) if prof else None,
             "merged_glossary_hash": fingerprint(self.glossary.entries),
+            # 这一场解析流地址时先借哪个浏览器的 TikTok 登录（浏览器名，没有是 null）。
+            # 关于账号只记这一个名字：不记用户名、不记 cookie 的名字和值
+            "login_source": login_source,
             **self._sleep_guard_extra(),
             **self._banned_terms_provenance(),
             **self._evidence_session_extras(),
@@ -971,6 +975,7 @@ class Pipeline:
             })
         # 弹幕后端抓取：只有 @主播名 / 直播间链接能反查出 unique_id，直接流
         # 地址（.m3u8/.flv 之类）没有主播身份，没法连 TikTok 的评论 WebSocket。
+        self._comments_pending = None
         if not getattr(self.args, "comments", True):
             await self._publish_comment_source("unavailable", "已用 --no-comments 关闭")
         elif not streamer:
@@ -981,8 +986,40 @@ class Pipeline:
             # 实例，没有 comment_source 属性——这条锦上添花的功能缺了就悄悄
             # 跳过，不该拖累那些测试本来要验证的东西
             comment_source = getattr(self, "comment_source", None)
-            if comment_source is not None:
+            if comment_source is None:
+                pass
+            elif self._comments_wait_for_resolve(url):
+                # 登录优先（macOS）：弹幕子进程一启动就**匿名**抓同一个直播页（TikTokLive 的
+                # fetch_room_id_from_html）。它要是先起，这一场第一个带登录的请求就落在一次匿名
+                # 请求之后一两秒——2026-09-17 实测那样 3 次里 3 次拿不到地址。所以等第一次
+                # 解析返回再起（_start_pending_comments）；解析失败这一场就此结束，弹幕不起。
+                # 弹幕不进报警链路，晚几秒没有代价。记着是哪一场要起的：晚到的旧任务不能替
+                # 新的一场起。
+                self._comments_pending = (self.audit, streamer)
+                await self._publish_comment_source("connecting", "流地址解析完成后连接评论…")
+            else:
                 comment_source.start(streamer)
+
+    def _comments_wait_for_resolve(self, url):
+        """这一场的弹幕要不要等第一次流地址解析返回之后再起：解析会走登录优先那一步
+        （resolver.login_first_applies）的时候。用户自带流地址时也等——那个地址拉不动的话
+        _resolve_media 会回到自动解析，照样有带登录的请求。其它平台照旧立刻起。"""
+        from .resolver import login_first_applies
+
+        try:
+            return login_first_applies(url, getattr(self.args, "cookies_browser", "auto"))
+        except Exception:
+            return False
+
+    async def _start_pending_comments(self, my_audit):
+        """第一次解析返回之后起弹幕（见 _begin_session 里的说明）。只认这一场自己挂的那一笔。"""
+        pending = getattr(self, "_comments_pending", None)
+        if not pending or pending[0] is not my_audit or self.audit is not my_audit:
+            return
+        self._comments_pending = None
+        comment_source = getattr(self, "comment_source", None)
+        if comment_source is not None:
+            comment_source.start(pending[1])
 
     def _banned_terms_provenance(self):
         """违禁词表的来源信息，并进 session_start。
@@ -1559,6 +1596,7 @@ class Pipeline:
             # 已经属于下一场的连接——只有「我还是当前会话」才停它。
             # getattr 兜底：个别测试用 Pipeline.__new__ 绕过 __init__ 造
             # 半成品实例，没有 comment_source 属性
+            self._comments_pending = None
             comment_source = getattr(self, "comment_source", None)
             if comment_source is not None:
                 await comment_source.stop()
@@ -1638,12 +1676,14 @@ class Pipeline:
                 self._log_resolve(attempt, False, t0, layers, kind=exc.kind,
                                   reconnect=reconnect, message=str(exc),
                                   login=getattr(exc, "login", None))
+                await self._sync_login_incident(layers)
                 if exc.kind != "browser_only":
                     raise
                 last = exc
             else:
                 self._log_resolve(attempt, True, t0, layers, media=media,
                                   reconnect=reconnect)
+                await self._sync_login_incident(layers)
                 return media
             if attempt < self.BROWSER_ONLY_RETRIES:
                 await self.server.status(
@@ -1656,6 +1696,53 @@ class Pipeline:
                                                 getattr(last, "login", None)),
                            kind="browser_only",
                            login=getattr(last, "login", None)) from last
+
+    LOGIN_SOURCE_BUDGET_SEC = 2.0     # 只读几个本地文件；到点没返回就记 null，不挡开播
+    LOGIN_INCIDENT = "login-unreadable"   # 不带 "session:"：跨场保留，读到登录才撤
+
+    async def _login_source(self):
+        """session_start 的 login_source。只看登录 cookie 的名字（resolver.login_source），
+        不解密、不弹钥匙串；出任何问题都记 null——这一栏不能挡住开播。"""
+        from .resolver import login_source_with_budget
+
+        try:
+            return await login_source_with_budget(
+                getattr(self.args, "cookies_browser", "auto"), self.LOGIN_SOURCE_BUDGET_SEC)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+
+    async def _sync_login_incident(self, layers):
+        """按这次解析里「登录直播页」那一层的记录，挂上或撤掉「没有读到 TikTok 登录」的提示。
+
+        读到了可用的登录（那一层记着浏览器名）就撤；一个都没读到就挂，文字写各浏览器的
+        观察和能照做的步骤。监听照常开始、照常匿名解析——这条提示不挡任何事。没有那一层
+        的记录（其它平台、--cookies-browser none、用户自带流地址）或什么都没去读（测试环境）
+        时不动它。提示跨场保留，直到读到登录。"""
+        from .browser_login import NOT_READ, no_login_notice
+        from .resolver import LOGIN_LAYER
+
+        rec = next((r for r in layers or () if r.get("layer") == LOGIN_LAYER), None)
+        if rec is None:
+            return
+        try:
+            incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
+            if rec.get("browser"):
+                if self.LOGIN_INCIDENT in incidents:
+                    await self._incident(self.LOGIN_INCIDENT, "clear")
+                return
+            observed = {b: c for b, c in (rec.get("login") or {}).items() if c != NOT_READ}
+            if not observed:
+                return
+            text = no_login_notice(observed)
+            if (incidents.get(self.LOGIN_INCIDENT) or {}).get("text") != text:
+                await self._incident(self.LOGIN_INCIDENT, "warn", text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 这一步跟在解析结果后面：提示推不出去不能把解析的结果（或它的错误）盖掉
+            print("[警告] 「没有读到 TikTok 登录」的提示没能更新: {}".format(type(exc).__name__))
 
     def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None,
                      reconnect=None, message=None, login=None):
@@ -2169,6 +2256,7 @@ class Pipeline:
             print("[错误] {}".format(exc))
             sess["end"] = {"reason": "resolve_error", "kind": exc.kind}
             return
+        await self._start_pending_comments(my_audit)    # macOS：弹幕等第一次解析返回才起
 
         # 从这里到识别模型就绪，中途 return 只可能是「加载模型失败」
         sess["end"] = {"reason": "model_load_failed"}
