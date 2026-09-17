@@ -653,10 +653,54 @@ class Pipeline:
                     last_level = level
                 await self._watch_detection(snap)
                 await self._check_audit_health()
+                self._asr_memory_tick()
         except asyncio.CancelledError:
             raise
         except Exception:
             pass
+
+    ASR_MEMORY_EVERY_SEC = 300.0
+
+    def _asr_memory_tick(self, now=None):
+        """_stats_loop 每一跳调一次；到 5 分钟才真的写。只认当前这一场自己的观察状态
+        （同 _check_clock_gap）。now 是单调时钟读数，只给测试用。不抛异常。"""
+        try:
+            sess = getattr(self, "_session_state", None)
+            audit = getattr(self, "audit", None)
+            if sess is None or audit is None or sess.get("audit") is not audit:
+                return False
+            return self._record_asr_memory(sess, getattr(self, "_transcriber", None),
+                                           now=now, periodic=True)
+        except Exception as exc:
+            print("[警告] 记录 MLX 内存读数出错：{}".format(exc))
+            return False
+
+    def _record_asr_memory(self, sess, transcriber, now=None, periodic=False):
+        """往**这一场自己的**审计（sess["audit"]，不读 self.audit）写一条 asr_memory。
+
+        只有 mlx 后端写；读数来自 transcriber.memory_stats()（只读计数器）。在事件循环里
+        调，不进识别线程：识别那条路上不多一步。periodic=True 是统计循环的调用：模型就绪
+        那一条写过之后，每 ASR_MEMORY_EVERY_SEC 秒一条。读数出错也算写过这一轮，
+        不每 10 秒重试一遍。任何异常都不抛——统计循环遇到异常会整个退出。"""
+        try:
+            audit = sess.get("audit") if sess else None
+            if audit is None or getattr(transcriber, "backend", None) != "mlx":
+                return False
+            read = getattr(transcriber, "memory_stats", None)
+            if not callable(read):
+                return False
+            now = time.monotonic() if now is None else now
+            last = sess.get("asr_memory_at")
+            if periodic and (last is None or now - last < self.ASR_MEMORY_EVERY_SEC):
+                return False
+            sess["asr_memory_at"] = now
+            stats = read() or {}
+            audit.asr_memory(stats.get("active_mb"), stats.get("cache_mb"),
+                             stats.get("peak_mb"))
+            return True
+        except Exception as exc:
+            print("[警告] 记录 MLX 内存读数出错：{}".format(exc))
+            return False
 
     @staticmethod
     def _health_level(backlog_sec):
@@ -2357,6 +2401,7 @@ class Pipeline:
         sess["end"] = None
         if my_audit is not None:
             my_audit.asr_config(self._asr_config_record(config, transcriber))
+        self._record_asr_memory(sess, transcriber)     # 模型就绪时一条，之后统计循环每 5 分钟一条
         slot = _ASRSlot(transcriber, config=config, key=key, audit=my_audit)
 
         denoise = await self._ensure_denoise_model()
@@ -2724,6 +2769,8 @@ class Pipeline:
         """asr_config 审计记录：实际在听的配置；和请求的不一样、或出错后改用过时带上来龙去脉。"""
         active = self._asr_active(transcriber, config)
         record = dict(active, note=config.get("note"))
+        # 实际设上的 MLX 缓冲缓存上限（MB）；没配置、没设上、不是 mlx 后端都是 null
+        record["mlx_cache_limit_mb"] = getattr(transcriber, "mlx_cache_limit_mb", None)
         if (active["backend"] != config.get("backend") or active["model"] != config.get("model")
                 or (config.get("device") not in (None, "auto")
                     and active["device"] != config.get("device"))):
