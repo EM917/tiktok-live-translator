@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -43,10 +44,27 @@ TIKTOKLIVE_FRESHEN_COOLDOWN_SEC = 6 * 3600
 TIKTOKLIVE_FRESHEN_RETRY_SEC = 600
 
 
+_import_cache_lock = threading.Lock()
+
+
+def _refresh_import_caches():
+    """pip 刚改完环境时，让包元数据的查找重新扫目录。尽力而为，出什么事都不抛。
+
+    标准库的这个刷新函数会遍历并删改全局的 sys.path_importer_cache；两个线程同时调用时，后到的
+    那个去删一条已经被删掉的相对路径条目，抛 KeyError。2026-09-17 Windows CI 实测到的就是
+    KeyError: '.'，调用栈在 _begin_session → tiktoklive_version()——放在真实程序里，等于这一场
+    开播以「内部错误」失败。锁管住我们自己的并发调用，try 管住别人的。"""
+    with _import_cache_lock:
+        try:
+            importlib.invalidate_caches()
+        except Exception:
+            pass
+
+
 def tiktoklive_version():
     """已安装的 TikTokLive 版本号；没装返回 None。只读包元数据、不 import 这个库
     （它要求 Python 3.10+，主进程不碰它，见 comment_source.py 模块说明）。"""
-    importlib.invalidate_caches()        # pip 刚装完/升完，元数据查找的路径缓存可能是旧的
+    _refresh_import_caches()        # pip 刚装完/升完，元数据查找的路径缓存可能是旧的
     try:
         return importlib.metadata.version("TikTokLive")
     except Exception:
@@ -183,7 +201,7 @@ MLX_READY_TEXT = ("GPU 加速组件已装好，停播后重开程序生效（这
 def _mlx_on_disk():
     """mlx_whisper 在不在环境里：按 sys.path 找，不看 sys.modules（下面钉的那个 None），
     也不 import。"""
-    importlib.invalidate_caches()
+    _refresh_import_caches()
     try:
         return importlib.machinery.PathFinder.find_spec("mlx_whisper") is not None
     except (ImportError, ValueError):
@@ -210,7 +228,7 @@ UPDATE_CHECK_STALE_DAYS = 14
 
 def component_version(dist):
     """已安装组件的版本号（只读包元数据，不 import）；没装返回 None。"""
-    importlib.invalidate_caches()
+    _refresh_import_caches()
     for name in dict.fromkeys((dist, dist.replace("-", "_"), dist.replace("_", "-"))):
         try:
             return importlib.metadata.version(name)
@@ -462,7 +480,7 @@ class Updater:
                 return None
             finally:
                 _close_pip_log(log, outcome)
-        importlib.invalidate_caches()   # pip 刚改完环境，find_spec/元数据的路径缓存可能是旧的
+        _refresh_import_caches()   # pip 刚改完环境，find_spec/元数据的路径缓存可能是旧的
         return proc.returncode
 
     @staticmethod
