@@ -732,7 +732,7 @@ def test_no_readable_login_raises_a_persistent_incident_and_monitoring_still_sta
     assert "Safari：系统拒绝读取" in text
     assert "Chrome" not in text and world.reads() == ["safari"]     # 这一步只读 Safari
     assert "只把流地址给已登录的观众" in text and "其余直播间照常监听" in text
-    assert bl.SAFARI_LOGIN_STEPS in text and bl.FDA_STEPS in text
+    assert bl.SAFARI_LOGIN_STEPS in text and bl.fda_steps() in text
     assert "自检「浏览器登录态」" in text
     assert not any(word in text for word in GUESSED_LABELS)
     assert not INCIDENT.startswith("session:")
@@ -751,7 +751,7 @@ def test_no_readable_login_raises_a_persistent_incident_and_monitoring_still_sta
 
 
 @pytest.mark.parametrize("observed,must_have,must_not_have", [
-    ({"safari": "blocked_by_system"}, [bl.SAFARI_LOGIN_STEPS, bl.FDA_STEPS], [bl.KEYCHAIN_STEPS]),
+    ({"safari": "blocked_by_system"}, [bl.SAFARI_LOGIN_STEPS, bl.fda_steps()], [bl.KEYCHAIN_STEPS]),
     ({"safari": "not_logged_in"}, [bl.SAFARI_LOGIN_STEPS], ["完全磁盘访问权限"]),
     ({"safari": "no_browser_data", "chrome": "keychain_wait"},
      [bl.SAFARI_LOGIN_STEPS, bl.KEYCHAIN_STEPS], ["完全磁盘访问权限"]),

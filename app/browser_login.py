@@ -458,7 +458,7 @@ def no_login_notice(login):
     codes = set(login.values())
     steps = [SAFARI_LOGIN_STEPS]
     if BLOCKED in codes:
-        steps.append(FDA_OBSERVED + FDA_STEPS + SELFCHECK_POINTER)
+        steps.append(FDA_OBSERVED + fda_steps() + SELFCHECK_POINTER)
     if KEYCHAIN_WAIT in codes:
         steps.append(KEYCHAIN_STEPS)
     return ("程序没有读到浏览器里的 TikTok 登录——{}。有的直播间 TikTok 只把流地址给已登录的"

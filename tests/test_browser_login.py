@@ -740,7 +740,10 @@ def test_ytdlp_subprocess_layer_is_given_the_same_profile(monkeypatch, tmp_path)
 
     monkeypatch.setattr(resolver, "_run_ytdlp", ytdlp)
     _resolve_and_fail([])
-    assert ("chrome", str(profile_dir)) in seen and ("safari", None) in seen
+    assert ("chrome", str(profile_dir)) in seen
+    # 与 login-first 合并之后：某个浏览器读到了登录，后面的层就只借它，不再去读别的浏览器。
+    # 这里 Safari 被系统拒绝、Chrome 有登录，所以 yt-dlp 不再带着 Safari 多跑一次
+    assert ("safari", None) not in seen
 
 
 def test_ytdlp_command_line_carries_the_profile(monkeypatch):
