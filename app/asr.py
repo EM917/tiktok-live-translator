@@ -166,9 +166,21 @@ def release_mlx_model():
 # 2026-09-17 实测（18 GB M3 Pro，mlx 0.32.1，large-v3 fp16，进程运行 28 分钟）：
 # `footprint` 里监听进程 7.5 GB，其中 6948 MB 是 "IOAccelerator (graphics)"（Metal 缓冲），
 # 其余不到 0.5 GB；权重约 3.1 GB。这些缓冲是 wired 统一内存，不能压缩也不能换出。
-# 上限默认**不设**：设了之后识别延迟怎么变还没测过，而识别延迟在关键路径上。
+#
+# 默认上限 256 MB，同一天停播后实测定的（tools/bench_mlx_cache.py：一个进程一个配置，同一段
+# 130 秒西语话术逐段配对，识别耗时相对「不设上限」的变化与 95% 置信区间）：
+#   等长段 23 段：256 MB −0.7% [−1.7, +0.2]；1024 MB +3.6% [+0.4, +5.2]；0 +5.7% [+4.2, +7.1]；
+#                 再跑一次不设上限作对照 +0.6% [−0.9, +2.1]
+#   变长段 2.5–9 秒 46 段：256 MB −0.5% [−2.2, +1.0]；512 MB +1.3% [−0.6, +5.5]；对照 −1.4% [−2.7, +0.4]
+#   显卡缓冲：不设 4095–4305 MB，256 MB 时 3220 MB，0 时 2998 MB；模型常驻 2945 MB、峰值约 3760 MB 与上限无关。
+# 不设上限时缓存随「段长种类」增长（等长 1142 MB，16 种长度 1353 MB）；真实直播段长连续变化，
+# 线上 28 分钟攒到约 4 GB。256 MB 的差异落在对照组自身的波动里；完全不留缓存确实慢约 6%，所以不取 0。
+# 局限：合成语音、单机、单次。上线后看审计里的 asr_memory 和各段 asr_ms 复核。
 MLX_CACHE_ENV = "TLT_MLX_CACHE_MB"
 MLX_CACHE_SETTING = "mlx_cache_limit_mb"
+DEFAULT_MLX_CACHE_MB = 256
+_NO_LIMIT_WORDS = ("off", "none", "unlimited")     # 明确写这几个词之一 = 不设上限（以前的行为）
+_UNLIMITED = object()
 _MB = 1024 * 1024
 _mlx_said = set()         # 已经打过的提示：同一句话一个进程只说一次
 
@@ -180,33 +192,39 @@ def _say_once(text):
 
 
 def _parse_cache_mb(raw, source):
-    """非负整数（0 = 不留缓存）。没给返回 None；给了但不是非负整数：提示一次，当作没给。"""
+    """非负整数（0 = 不留缓存），或 off / none / unlimited（不设上限，返回 _UNLIMITED）。
+    没给返回 None；给了但两者都不是：提示一次，当作没给。"""
     if raw is None:
         return None
     if isinstance(raw, str):
         text = raw.strip()
         if not text:
             return None
+        if text.lower() in _NO_LIMIT_WORDS:
+            return _UNLIMITED
         if text.isascii() and text.isdigit():
             return int(text)
     elif isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
         return raw
-    _say_once("[警告] {} 的值 {!r} 不是非负整数，已忽略".format(source, raw))
+    _say_once("[警告] {} 的值 {!r} 不是非负整数，也不是 off，已忽略".format(source, raw))
     return None
 
 
 def mlx_cache_limit_mb():
-    """配置的 MLX 缓冲缓存上限（MB）：环境变量 TLT_MLX_CACHE_MB，其次 settings.json 的
-    mlx_cache_limit_mb，都没有就是 None（不设，和以前一样）。不抛异常。"""
+    """要用的 MLX 缓冲缓存上限（MB）：环境变量 TLT_MLX_CACHE_MB，其次 settings.json 的
+    mlx_cache_limit_mb，都没有就用 DEFAULT_MLX_CACHE_MB。写 off 的返回 None（不设上限）。不抛异常。"""
+    value = None
     try:
         value = _parse_cache_mb(os.environ.get(MLX_CACHE_ENV), "环境变量 " + MLX_CACHE_ENV)
-        if value is not None:
-            return value
-        from .settings import load_settings
-        return _parse_cache_mb(load_settings().get(MLX_CACHE_SETTING),
-                               "settings.json 的 " + MLX_CACHE_SETTING)
+        if value is None:
+            from .settings import load_settings
+            value = _parse_cache_mb(load_settings().get(MLX_CACHE_SETTING),
+                                    "settings.json 的 " + MLX_CACHE_SETTING)
     except Exception:
+        value = None
+    if value is _UNLIMITED:
         return None
+    return DEFAULT_MLX_CACHE_MB if value is None else value
 
 
 def _mlx_api(name):

@@ -150,29 +150,55 @@ def test_zero_means_keep_no_cache_and_is_not_the_same_as_unset(monkeypatch, even
     assert core.calls == [("set_cache_limit", 0)] and t.mlx_cache_limit_mb == 0
 
 
-def test_nothing_in_mlx_is_touched_when_no_limit_is_configured(monkeypatch, events, capsys):
+DEFAULT = asr.DEFAULT_MLX_CACHE_MB
+
+
+def test_the_default_is_256_mb_when_nothing_is_configured(monkeypatch, events, capsys):
+    """2026-09-17 实测定的默认值（见 app/asr.py 的注释和 tools/bench_mlx_cache.py）。"""
+    assert DEFAULT == 256
     core = core_with_limit(monkeypatch)
+    t = asr.MLXTranscriber("large-v3")
+    assert core.calls == [("set_cache_limit", 256 * MB)] and t.mlx_cache_limit_mb == 256
+    assert "[警告]" not in capsys.readouterr().out
+    # 空的环境变量、settings 里的 null 也是「没配置」：用默认值，不提示
+    monkeypatch.setenv(asr.MLX_CACHE_ENV, "  ")
+    save_settings(None)
+    assert asr.MLXTranscriber("large-v3").mlx_cache_limit_mb == 256
+    assert "[警告]" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("word", ["off", "OFF", " none ", "unlimited"])
+@pytest.mark.parametrize("where", ["env", "settings"])
+def test_off_means_no_limit_and_nothing_in_mlx_is_touched(monkeypatch, events, capsys, word, where):
+    """明确写 off：回到以前的行为——mlx 的任何属性都不碰，识别时也一样。"""
+    core = core_with_limit(monkeypatch)
+    if where == "env":
+        monkeypatch.setenv(asr.MLX_CACHE_ENV, word)
+    else:
+        save_settings(word)
     t = asr.MLXTranscriber("large-v3")
     t.transcribe(b"\x00\x00" * 1600)
     assert core.touched == [] and core.calls == []
     assert t.mlx_cache_limit_mb is None
     assert "MLX" not in capsys.readouterr().out
-    # 空的环境变量、settings 里的 null 也是「没配置」：不提示
-    monkeypatch.setenv(asr.MLX_CACHE_ENV, "  ")
-    save_settings(None)
-    assert asr.MLXTranscriber("large-v3").mlx_cache_limit_mb is None
-    assert core.touched == [] and capsys.readouterr().out == ""
+
+
+def test_off_in_the_environment_beats_a_number_in_settings(monkeypatch, events):
+    core = core_with_limit(monkeypatch)
+    monkeypatch.setenv(asr.MLX_CACHE_ENV, "off")
+    save_settings(1024)
+    assert asr.MLXTranscriber("large-v3").mlx_cache_limit_mb is None and core.calls == []
 
 
 @pytest.mark.parametrize("junk", ["lots", "-1", "1.5", "1e3", "1024MB", "١٢٣"])
 def test_a_junk_environment_value_is_ignored_with_one_warning(monkeypatch, events, capsys, junk):
     core = core_with_limit(monkeypatch)
     monkeypatch.setenv(asr.MLX_CACHE_ENV, junk)
-    for _ in range(3):
-        assert asr.MLXTranscriber("large-v3").mlx_cache_limit_mb is None
+    for _ in range(3):                         # 写错了的值当作没给：用默认值
+        assert asr.MLXTranscriber("large-v3").mlx_cache_limit_mb == DEFAULT
     out = capsys.readouterr().out
     assert out.count("[警告]") == 1 and asr.MLX_CACHE_ENV in out and "已忽略" in out
-    assert core.calls == []
+    assert core.calls == [("set_cache_limit", DEFAULT * MB)] * 3
 
 
 @pytest.mark.parametrize("junk", [True, -5, 12.5, "big", [1024], {"mb": 1}])
@@ -180,10 +206,10 @@ def test_a_junk_settings_value_is_ignored_with_one_warning(monkeypatch, events, 
     core = core_with_limit(monkeypatch)
     save_settings(junk)
     for _ in range(2):
-        assert asr.MLXTranscriber("large-v3").mlx_cache_limit_mb is None
+        assert asr.MLXTranscriber("large-v3").mlx_cache_limit_mb == DEFAULT
     out = capsys.readouterr().out
     assert out.count("[警告]") == 1 and asr.MLX_CACHE_SETTING in out
-    assert core.calls == []
+    assert core.calls == [("set_cache_limit", DEFAULT * MB)] * 2
 
 
 def test_a_junk_environment_value_falls_through_to_settings(monkeypatch, events, capsys):
@@ -202,8 +228,8 @@ def test_an_unreadable_settings_file_never_raises(monkeypatch, events):
         raise RuntimeError("disk on fire")
 
     monkeypatch.setattr(settings, "load_settings", boom)
-    assert asr.mlx_cache_limit_mb() is None
-    assert asr.MLXTranscriber("large-v3").mlx_cache_limit_mb is None
+    assert asr.mlx_cache_limit_mb() == DEFAULT          # 读不了设置：用默认值，不抛
+    assert asr.MLXTranscriber("large-v3").mlx_cache_limit_mb == DEFAULT
 
 
 def test_older_mlx_keeps_the_call_under_mx_metal(monkeypatch, events):
@@ -422,8 +448,9 @@ def test_asr_config_carries_the_limit_that_was_applied(monkeypatch, tmp_path, ev
     assert core.calls == [("set_cache_limit", 1024 * MB)] and events == ["load"]
 
 
-def test_asr_config_says_null_when_no_limit_is_configured(monkeypatch, tmp_path, events):
+def test_asr_config_says_null_when_the_limit_is_switched_off(monkeypatch, tmp_path, events):
     core = core_with_limit(monkeypatch)
+    monkeypatch.setenv(asr.MLX_CACHE_ENV, "off")
     real_create = asr.create_transcriber
     p, _ = make_pipeline(monkeypatch, tmp_path)
     load_world(monkeypatch, p, "mlx", lambda **kw: real_create(**kw))

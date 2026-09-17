@@ -555,13 +555,17 @@ process up 28 minutes): `footprint` reported the monitor at 7.5 GB, of which
 else was under 0.5 GB; the model weights are about 3.1 GB. These buffers are
 wired unified memory and can be neither compressed nor swapped. The machine was
 10 GB into swap at the time, which coincided with the on-demand 7B translation
-model taking 42–60 s to load. MLX keeps freed buffers in a cache for reuse, and
-by default the application sets no limit on that cache. A limit
-can be set with the environment variable `TLT_MLX_CACHE_MB`, or with
-`"mlx_cache_limit_mb"` in `settings.json` (the environment variable takes
-precedence); the value is a non-negative integer in MB, and `0` keeps no cache.
-The default is unchanged because the effect of a limit on recognition latency
-has not been measured yet, and recognition latency is on the alert path. The
+model taking 42–60 s to load. MLX keeps freed buffers in a cache for reuse, and without a limit that cache
+grows with the number of distinct segment lengths. The application sets the
+limit to 256 MB by default. The value comes from a measurement made the same
+day with monitoring stopped (`tools/bench_mlx_cache.py`, the same audio paired
+segment by segment): against no limit, recognition time changed by −0.5% with
+a 95% confidence interval of −2.2% to +1.0%, the same size as the difference
+between two no-limit runs, while graphics memory fell from 4305 MB to 3220 MB.
+Keeping no cache at all made recognition about 6% slower. Change it with the
+environment variable `TLT_MLX_CACHE_MB`, or with `"mlx_cache_limit_mb"` in
+`settings.json` (the environment variable takes precedence); the value is a
+non-negative integer in MB, `0` keeps no cache, and `off` sets no limit. The
 setting applies to the `mlx` backend only and is read when the recognition
 model loads, so restart the application after changing it. The value in effect
 is written to the session log's `asr_config` record, and `asr_memory` records
