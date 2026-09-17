@@ -15,6 +15,7 @@
     误识别）的段直接丢弃，宁缺毋滥。
 """
 import gc
+import os
 import re
 import sys
 import traceback
@@ -159,6 +160,98 @@ def release_mlx_model():
             except Exception:
                 pass
     return True
+
+
+# ---- MLX 缓冲缓存：可选上限 + 读数 ----
+# 2026-09-17 实测（18 GB M3 Pro，mlx 0.32.1，large-v3 fp16，进程运行 28 分钟）：
+# `footprint` 里监听进程 7.5 GB，其中 6948 MB 是 "IOAccelerator (graphics)"（Metal 缓冲），
+# 其余不到 0.5 GB；权重约 3.1 GB。这些缓冲是 wired 统一内存，不能压缩也不能换出。
+# 上限默认**不设**：设了之后识别延迟怎么变还没测过，而识别延迟在关键路径上。
+MLX_CACHE_ENV = "TLT_MLX_CACHE_MB"
+MLX_CACHE_SETTING = "mlx_cache_limit_mb"
+_MB = 1024 * 1024
+_mlx_said = set()         # 已经打过的提示：同一句话一个进程只说一次
+
+
+def _say_once(text):
+    if text not in _mlx_said:
+        _mlx_said.add(text)
+        print(text)
+
+
+def _parse_cache_mb(raw, source):
+    """非负整数（0 = 不留缓存）。没给返回 None；给了但不是非负整数：提示一次，当作没给。"""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        if text.isascii() and text.isdigit():
+            return int(text)
+    elif isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    _say_once("[警告] {} 的值 {!r} 不是非负整数，已忽略".format(source, raw))
+    return None
+
+
+def mlx_cache_limit_mb():
+    """配置的 MLX 缓冲缓存上限（MB）：环境变量 TLT_MLX_CACHE_MB，其次 settings.json 的
+    mlx_cache_limit_mb，都没有就是 None（不设，和以前一样）。不抛异常。"""
+    try:
+        value = _parse_cache_mb(os.environ.get(MLX_CACHE_ENV), "环境变量 " + MLX_CACHE_ENV)
+        if value is not None:
+            return value
+        from .settings import load_settings
+        return _parse_cache_mb(load_settings().get(MLX_CACHE_SETTING),
+                               "settings.json 的 " + MLX_CACHE_SETTING)
+    except Exception:
+        return None
+
+
+def _mlx_api(name):
+    """mx.<name>，没有就找 mx.metal.<name>（旧版 mlx 放在那里）。只看已经 import 过的
+    mlx.core，不为此去 import mlx。"""
+    core = sys.modules.get("mlx.core")
+    for owner in (core, getattr(core, "metal", None)):
+        fn = getattr(owner, name, None)
+        if callable(fn):
+            return fn
+    return None
+
+
+def apply_mlx_cache_limit():
+    """MLX 模型加载之后调：配置了上限就设上。返回实际设上的 MB 数，没设是 None。
+    没配置时不碰 mlx 的任何接口。任何一步出错都只打一行，不影响识别。"""
+    limit_mb = mlx_cache_limit_mb()
+    if limit_mb is None:
+        return None
+    try:
+        set_limit = _mlx_api("set_cache_limit")
+        if set_limit is None:
+            _say_once("[警告] 这个版本的 mlx 没有 set_cache_limit，MLX 缓冲缓存上限没有设")
+            return None
+        set_limit(limit_mb * _MB)
+    except Exception as exc:
+        _say_once("[警告] 设 MLX 缓冲缓存上限出错（{}），没有设".format(str(exc)[:120]))
+        return None
+    print("[信息] MLX 缓冲缓存上限：{} MB".format(limit_mb))
+    return limit_mb
+
+
+def mlx_memory_stats():
+    """MLX 分配器的三个读数（MB）：在用、缓存、峰值。读的是计数器，不加锁、不触发计算。
+    读不到的那一项是 None，不抛异常。"""
+    out = {}
+    for key, name in (("active_mb", "get_active_memory"),
+                      ("cache_mb", "get_cache_memory"),
+                      ("peak_mb", "get_peak_memory")):
+        try:
+            read = _mlx_api(name)
+            out[key] = round(read() / float(_MB), 1) if read is not None else None
+        except Exception:
+            out[key] = None
+    return out
 
 
 def release_transcriber(transcriber):
@@ -343,9 +436,17 @@ class MLXTranscriber(_FilterMixin):
         # 预热一次：触发模型下载/编译，让第一段真实音频不用等
         self._mlx.transcribe(np.zeros(16000, dtype=np.float32),
                              path_or_hf_repo=self.repo, language=language, fp16=True)
+        # 模型在上面那一步加载。每个新的 MLX 模型都从这里过（按配置加载、换模型后重载），
+        # 所以上限设在这里；实际设上的值记在对象上，asr_config 审计记的是这一份
+        self.mlx_cache_limit_mb = apply_mlx_cache_limit()
 
     def release(self):
         release_mlx_model()
+
+    def memory_stats(self):
+        """{"active_mb", "cache_mb", "peak_mb"}，读不到的是 None。只读计数器，可以在识别
+        线程之外随时调。"""
+        return mlx_memory_stats()
 
     def transcribe(self, pcm):
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0

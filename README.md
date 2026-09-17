@@ -548,6 +548,26 @@ approximately real time and accumulates backlog.
 `large-v3` (~3 GB). Where memory is constrained, use `--model large-v3-turbo`
 or `--model small`.
 
+**Limiting the memory MLX keeps for buffer reuse (Apple Silicon).** Measured on
+2026-09-17 on an 18 GB M3 Pro (macOS 27, mlx 0.32.1, Whisper large-v3, fp16,
+process up 28 minutes): `footprint` reported the monitor at 7.5 GB, of which
+6948 MB was "IOAccelerator (graphics)", that is, Metal buffers, and everything
+else was under 0.5 GB; the model weights are about 3.1 GB. These buffers are
+wired unified memory and can be neither compressed nor swapped. The machine was
+10 GB into swap at the time, which coincided with the on-demand 7B translation
+model taking 42–60 s to load. MLX keeps freed buffers in a cache for reuse, and
+by default the application sets no limit on that cache. A limit
+can be set with the environment variable `TLT_MLX_CACHE_MB`, or with
+`"mlx_cache_limit_mb"` in `settings.json` (the environment variable takes
+precedence); the value is a non-negative integer in MB, and `0` keeps no cache.
+The default is unchanged because the effect of a limit on recognition latency
+has not been measured yet, and recognition latency is on the alert path. The
+setting applies to the `mlx` backend only and is read when the recognition
+model loads, so restart the application after changing it. The value in effect
+is written to the session log's `asr_config` record, and `asr_memory` records
+(one when the model is ready, then one every 5 minutes) carry MLX's active,
+cache and peak memory figures.
+
 **Sung vocals in background music are transcribed as speech.** RNNoise
 suppresses instrumental music effectively but can only partially suppress sung
 vocals. Confidence filtering removes most such segments; occasional

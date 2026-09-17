@@ -402,6 +402,16 @@ class AuditLog:
         self._write(dict(config, type="asr_config",
                          at=datetime.now().isoformat(timespec="milliseconds")))
 
+    def asr_memory(self, active_mb, cache_mb, peak_mb):
+        """MLX 分配器的读数（MB）：在用、缓冲缓存、峰值；读不到的是 null。模型就绪时一条，
+        之后每 5 分钟一条。2026-09-17 监听进程 7.5 GB 里有 6948 MB 是 Metal 缓冲，当时只能
+        靠 `footprint` 从外面看；有了这条，缓存随时间怎么涨在会话日志里就能看到。"""
+        self._write({
+            "type": "asr_memory",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "active_mb": active_mb, "cache_mb": cache_mb, "peak_mb": peak_mb,
+        })
+
     def asr_load_failed(self, backend, model, device, error):
         """识别模型没能加载：这一场一段都不会识别。以前只有界面上一句话。"""
         self._write({
