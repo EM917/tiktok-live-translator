@@ -36,3 +36,27 @@ def _reset_active_glossary(monkeypatch):
     from app import glossary
 
     monkeypatch.setattr(glossary, "_ACTIVE", None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_resolver_process_state(monkeypatch):
+    """resolver 里有两样进程级的状态，不能在测试之间泄漏：
+
+    * 上一次匿名请求的时刻（_ANON）——借登录抓直播页之前要和它隔开 8 秒。前一个用例留下的
+      时刻会让后一个用例**真的**去等；这里清掉，并把那段等待换成立刻返回（要验证等了多久的
+      用例自己再换成记录用的假 sleep）。等完之后 resolver 会再看一眼时刻（等的时候别的任务
+      可能又发过匿名请求），所以这个假 sleep 要让「时间过去了」：把记下的时刻往回拨同样多。
+    * 在途的浏览器登录读取（_LOGIN_READS）——生产里同一个浏览器同一时刻只读一次，后来的
+      调用接在在途的那一次上；测试里前一个用例故意读得很慢的假读取，不能被后一个用例接上。
+    """
+    from app import resolver
+
+    async def no_wait(seconds):
+        if resolver._ANON["last"] is not None:
+            resolver._ANON["last"] -= seconds
+
+    monkeypatch.setitem(resolver._ANON, "last", None)
+    monkeypatch.setattr(resolver, "_gap_sleep", no_wait)
+    resolver._LOGIN_READS.clear()
+    yield
+    resolver._LOGIN_READS.clear()

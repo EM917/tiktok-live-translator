@@ -37,7 +37,7 @@ It also works as a plain live-subtitle translator: leave `banned_terms.txt` empt
 - 📺 **Local web interface** — scrolling bilingual history with a large current caption, in the app window or any browser on the machine
 - 📊 **Observable latency** — a live readout of time-to-first-caption (P50/P95) broken down into segmentation, recognition and translation, alongside an audit log recording each segment: accepted text, candidates rejected by the quality filter, banned-term matches, and the translation that followed
 - ✅ **Startup self-check** — each capability is executed rather than inspected: denoising processes a sample through RNNoise, translation queries the engine, the audit log performs a write. Results appear on the home screen with a remediation step for anything failing
-- 🔄 **Fault tolerance** — five independent stream-resolution paths (TikTok's live API → the system WebKit engine loading the live page in the background (macOS; the way in when TikTok only hands a room's stream URL to a real browser, measured at 2 s) → yt-dlp → yt-dlp with browser login → live page parsing), since a blocked yt-dlp extractor reports failures as "not currently live". Each resolved URL is verified before the session starts. Dropped streams reconnect with a freshly resolved URL, distinguishing a network interruption from the broadcast ending; segments are dropped automatically when recognition falls behind; yt-dlp is kept current in the background. When TikTok withholds a room's stream URL from the app, it retries a few times 20 s apart and then says so plainly; for such rooms you can paste **the live-room link and a .flv address from your browser together** (separated by a space) — the link drives comments and the glossary, the address is the audio source. Measured: these signed addresses stay valid for about two weeks, so one capture covers a whole broadcast. While monitoring, the machine is kept from going to sleep on its own, and a gap where the program did not run at all is recorded and shown on screen. On reconnect the network is probed first, so an outage does not spend the reconnect budget, and a room that is not reported as ended is waited on for up to 10 minutes
+- 🔄 **Fault tolerance** — five independent stream-resolution paths (TikTok's live API → the system WebKit engine loading the live page in the background (macOS; the way in when TikTok only hands a room's stream URL to a real browser, measured at 2 s) → yt-dlp → yt-dlp with browser login → live page parsing), since a blocked yt-dlp extractor reports failures as "not currently live". On macOS, when a TikTok login can be read from the browser, the first request sent is the live page carrying that login, and the five paths run only if it yields no address (measured: some rooms serve their stream URL only to logged-in viewers, and a logged-in request made within 3 s of an anonymous one came back without it, so the app leaves 8 s between them); unless a browser is named (`--cookies-browser` or `cookies_browser_only`), this first step reads Safari only — other browsers are read only by the later login-borrowing paths, after the anonymous ones have failed — and once Safari shows a login no other browser's data is read. An `http://` TikTok link is resolved as `https://`, so the login is never sent in clear text. The comment connection starts after the first resolution returns, because it opens with an anonymous request for the same page. Reading Safari's cookies requires Full Disk Access for the app (see the "浏览器登录态" self-check row); without a readable login monitoring still starts, resolution stays anonymous, and a persistent notice states what to do. Each resolved URL is verified before the session starts. Dropped streams reconnect with a freshly resolved URL, distinguishing a network interruption from the broadcast ending; segments are dropped automatically when recognition falls behind; yt-dlp is kept current in the background. When TikTok withholds a room's stream URL from the app, it retries a few times 20 s apart and then says so plainly; for such rooms you can paste **the live-room link and a .flv address from your browser together** (separated by a space) — the link drives comments and the glossary, the address is the audio source. Measured: these signed addresses stay valid for about two weeks, so one capture covers a whole broadcast. While monitoring, the machine is kept from going to sleep on its own, and a gap where the program did not run at all is recorded and shown on screen. On reconnect the network is probed first, so an outage does not spend the reconnect budget, and a room that is not reported as ended is waited on for up to 10 minutes
 - 💬 **Viewer comment translation** — the app fetches comments itself via TikTokLive from the live room's comment stream (WebSocket signing goes through the third-party Euler Stream service, the only step in this project that doesn't run locally; needs Python 3.10+, and the component installs itself automatically on first stream start; usually works logged out, and retries once using the browser's TikTok login when TikTok requires one). Translations appear in the web UI's comment panel — translation and display only, never part of the alert pipeline. Comments are translated only while the active engine is a local model (Hy-MT2 1.8B or TranslateGemma); with a remote engine or the 7B model the panel shows the original text. Disable with `--no-comments`
 
 ## Disk Space
@@ -474,6 +474,32 @@ required, and no file needs exporting; cookies remain between your machine and
 TikTok. The application no longer reports the streamer as offline unless TikTok
 explicitly states the room has ended. A browser can be pinned with
 `--cookies-browser safari`, or credentials supplied via `--cookies cookies.txt`.
+To restrict the app to one browser persistently, set
+`"cookies_browser_only": "safari"` in `settings.json`; an explicit
+`--cookies-browser` takes precedence over it.
+
+**The "浏览器登录态" self-check row says the system refused the read.** macOS does
+not let other apps read a browser's data directory unless the reading app has
+Full Disk Access. The entry to add is **not** this .app: the app is a launcher
+script that hands over to a Python interpreter, and macOS records the permission
+against the interpreter file's path (measured 2026-09-17 on macOS 27: the TCC
+log shows `identifier_type=Path` with a `python3.x` path and never mentions the
+bundle). The self-check row and the error message print the exact path(s) for
+your machine. Open System Settings → Privacy & Security → Full Disk Access,
+press "+", press ⌘⇧G in the file picker, paste the path, press Return, click
+Open, and switch the new entry on; repeat for each path shown. The list shows
+the entry as `python3.x`, not under the app's name. Add Terminal too if you
+launch with Start.command. Then quit the app completely and reopen it. The path
+changes when Python is upgraded or the environment is rebuilt; the row then
+shows the new one. This only matters for rooms whose stream address TikTok
+serves to signed-in viewers. The self-check looks only at whether the cookie
+store can be read and at login cookie names, across every browser profile; it
+never decrypts and never raises a Keychain prompt. Failed resolutions record one
+of these codes in the audit log: `blocked_by_system`, `no_browser_data`,
+`no_tiktok_cookie`, `not_logged_in`, `cannot_decrypt`, `keychain_wait`.
+`cannot_decrypt` means the store holds TikTok cookie names but their values did
+not come out of decryption; start again and, if a Keychain dialog asks for
+"Chrome Safe Storage", enter the Mac login password and choose Always Allow.
 
 **"TikTok did not hand this room's stream address to the app (code 4003110)".**
 That code is TikTok's generic refusal; the response carries no reason, and the

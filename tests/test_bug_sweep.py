@@ -185,11 +185,13 @@ def test_cookie_read_has_a_budget(monkeypatch):
     """yt-dlp 读 Chrome cookie 会弹钥匙串对话框，线程可能永远不返回——协程不能陪它等。"""
     monkeypatch.setattr(resolver, "BROWSER_ATTEMPT_TIMEOUT", 0.05)
 
+    from app.browser_login import LoginRead
+
     def slow(browser):
         time.sleep(0.5)
-        return "sessionid=x"
+        return LoginRead("sessionid=x", "ok")
 
-    monkeypatch.setattr(resolver, "_cookie_header", slow)
+    monkeypatch.setattr(resolver, "_read_login", slow)
 
     async def go():
         # 计时放在协程里：asyncio.run 收尾时会等那个还在睡的线程池线程，

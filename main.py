@@ -14,6 +14,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from app.macbundle import remember_launch_python
 from app.stdio import harden_stdio
 
 # 必须是 import 之后的第一句可执行语句：下面的版本检查、ensure_env() 的安装提示、--doctor 的
@@ -22,6 +23,10 @@ from app.stdio import harden_stdio
 # （2026-09-15 中文 Windows 11 实测，见 app/stdio.py）。首次安装后 execv 进 .venv、
 # 一键更新后重启，都会重新从这里跑一遍；窗口模式的后台线程与本进程共用这两个流。
 harden_stdio()
+
+# 启动用的解释器路径：要在任何 exec（ensure_env 进 .venv、main() 进 .app）之前记下，
+# 「完全磁盘访问权限」的步骤里要把它原样告诉中控（见 app/macbundle.py、browser_login.fda_targets）
+remember_launch_python()
 
 ROOT = Path(__file__).resolve().parent
 
@@ -363,9 +368,11 @@ def parse_args():
     p.add_argument("--denoise", choices=["auto", "on", "off"], default="auto",
                    help="RNNoise 人声降噪，抑制背景音乐/噪声（auto=模型文件存在即开启，默认）")
     p.add_argument("--cookies-browser", default="auto", dest="cookies_browser",
-                   help="匿名解析失败时借用哪个浏览器的 TikTok 登录状态："
-                        "auto（默认，依次尝试并记住有效的那个）/ chrome / safari / "
-                        "firefox / edge / none（完全不读浏览器 cookie）")
+                   help="解析直播流时借用哪个浏览器的 TikTok 登录状态："
+                        "auto（默认；macOS 上解析的第一步只读 Safari，读到登录就不读别的浏览器，"
+                        "其它浏览器只在匿名方式都没拿到地址之后才读）/ "
+                        "chrome / safari / firefox / edge / none（完全不读浏览器 cookie）。"
+                        "显式指定时优先于 settings.json 里的 cookies_browser_only")
     p.add_argument("--cookies", default=None,
                    help="可选：传给 yt-dlp 的 cookies.txt 路径（地区受限的直播间可能需要）")
     p.add_argument("--glossary", default=None,

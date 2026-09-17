@@ -40,6 +40,15 @@ def _installed_tiktoklive():
     return tiktoklive_version()
 
 
+def _note_anonymous_request():
+    """告诉 resolver「本进程刚向 TikTok 发过匿名请求」。弹幕这条链路不能因为它出任何问题。"""
+    try:
+        from .resolver import note_anonymous_request
+        note_anonymous_request()
+    except Exception:
+        pass
+
+
 def _accepts_raw(fn):
     """on_state 回调收不收第三个参数 raw（只进审计的原始报错）。老的两参回调照常能用。"""
     try:
@@ -449,6 +458,13 @@ class CommentSource:
         self._proc = proc
         stderr_task = asyncio.ensure_future(self._drain_stderr(proc))
         connected_at = None
+        # 不带 sessionid 的子进程一启动就匿名请求 TikTok（TikTokLive 先抓
+        # https://www.tiktok.com/@主播/live，再问是否在播），连上评论 WebSocket 之后才不再发。
+        # 解析流地址那边「带登录抓直播页之前和上一次匿名请求隔开 8 秒」的规则要看得见这些
+        # 请求（resolver.note_anonymous_request）：启动时记一次，连上或没连上就退出时再记一次。
+        anonymous = "--session-id" not in extra_args
+        if anonymous:
+            _note_anonymous_request()
         try:
             while True:
                 line = await proc.stdout.readline()
@@ -465,6 +481,8 @@ class CommentSource:
                     self._last_http = obj.get("http_status")
                     self._last_handshake = obj.get("handshake_msg")
                     if state == "connected":
+                        if anonymous and connected_at is None:
+                            _note_anonymous_request()
                         connected_at = self._clock()
                     if state in ("rejected", "blocked"):
                         # 原始英文报错不直接上面板：子进程退出后 _supervise 换成
@@ -488,6 +506,8 @@ class CommentSource:
             await self._terminate(proc)
             return (-1, False)
         finally:
+            if anonymous and connected_at is None:
+                _note_anonymous_request()       # 没连上就结束了：它的匿名请求最晚发到这一刻
             stderr_task.cancel()
             try:
                 await stderr_task

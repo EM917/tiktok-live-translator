@@ -24,8 +24,25 @@ from pathlib import Path
 
 APP_DIR_NAME = "TikTok Live Translator.app"
 ENV_GUARD = "TLT_IN_BUNDLE"
+# 最先跑起来的那个解释器的真实路径。系统的隐私权限（完全磁盘访问权限）登记的是解释器文件
+# 的路径，不是这个 .app（2026-09-17 TCC 日志，见 browser_login.fda_targets）；而进程一路
+# execv 进 .venv、execve 进 bundle，到要告诉中控「该加哪个文件」的时候，sys.executable
+# 早已不是启动用的那个了。环境变量跟着 exec 走，所以在第一次进 main.py 时记下。
+LAUNCH_PYTHON_ENV = "TLT_LAUNCH_PYTHON"
 # 这些参数下不开应用窗口，进不进 bundle 没有区别，别多一次 exec
 NO_WINDOW_FLAGS = ("--browser", "--no-open", "--doctor", "-h", "--help")
+
+
+def remember_launch_python(environ=None, executable=None):
+    """记下启动用的解释器（只记第一次：exec 之后 main.py 会从头再跑）。返回记下的路径。
+    只用标准库、绝不抛异常——这一句跑在 ensure_env() 之前，依赖还没装。"""
+    env = os.environ if environ is None else environ
+    if not env.get(LAUNCH_PYTHON_ENV):
+        try:
+            env[LAUNCH_PYTHON_ENV] = os.path.realpath(executable or sys.executable)
+        except Exception:
+            return None
+    return env.get(LAUNCH_PYTHON_ENV)
 
 
 def bundle_python(root):
