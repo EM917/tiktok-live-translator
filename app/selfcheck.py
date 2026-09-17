@@ -475,7 +475,7 @@ async def check_resolver():
     browsers = await _to_thread(_installed_browsers)
     if browsers:
         return _check("直播流解析", OK,
-                      "yt-dlp 可用；匿名失败时会借用 {} 的登录状态"
+                      "yt-dlp 可用；解析时按这个顺序借用浏览器的登录状态：{}"
                       .format(" / ".join(browsers)))
     return _check("直播流解析", WARN,
                   "yt-dlp 可用，但找不到可借用登录状态的浏览器——"

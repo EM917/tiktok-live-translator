@@ -363,9 +363,10 @@ def parse_args():
     p.add_argument("--denoise", choices=["auto", "on", "off"], default="auto",
                    help="RNNoise 人声降噪，抑制背景音乐/噪声（auto=模型文件存在即开启，默认）")
     p.add_argument("--cookies-browser", default="auto", dest="cookies_browser",
-                   help="匿名解析失败时借用哪个浏览器的 TikTok 登录状态："
-                        "auto（默认，依次尝试并记住有效的那个）/ chrome / safari / "
-                        "firefox / edge / none（完全不读浏览器 cookie）")
+                   help="解析直播流时借用哪个浏览器的 TikTok 登录状态："
+                        "auto（默认；macOS 上先读 Safari，读到登录就不读别的浏览器）/ "
+                        "chrome / safari / firefox / edge / none（完全不读浏览器 cookie）。"
+                        "显式指定时优先于 settings.json 里的 cookies_browser_only")
     p.add_argument("--cookies", default=None,
                    help="可选：传给 yt-dlp 的 cookies.txt 路径（地区受限的直播间可能需要）")
     p.add_argument("--glossary", default=None,

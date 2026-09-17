@@ -898,6 +898,7 @@ class Pipeline:
         self._strong_missing = False     # 用户可能在两场之间拉好了模型
         self._drop_strong()              # 也可能删掉了：上一场的强模型对象不能接着用
         self.telemetry.reset()          # 统计按场计，不跨房间累计
+        login_source = await self._login_source()
         if self.audit is not None:
             self.audit.close()
         # requested 是用户的选择，active 是实际生效的对象——这两列并排记，
@@ -924,6 +925,9 @@ class Pipeline:
             "profile": streamer if prof else None,
             "profile_hash": file_hash(prof) if prof else None,
             "merged_glossary_hash": fingerprint(self.glossary.entries),
+            # 这一场解析流地址时先借哪个浏览器的 TikTok 登录（浏览器名，没有是 null）。
+            # 关于账号只记这一个名字：不记用户名、不记 cookie 的名字和值
+            "login_source": login_source,
             **self._sleep_guard_extra(),
             **self._banned_terms_provenance(),
             **self._evidence_session_extras(),
@@ -1638,12 +1642,14 @@ class Pipeline:
                 self._log_resolve(attempt, False, t0, layers, kind=exc.kind,
                                   reconnect=reconnect, message=str(exc),
                                   login=getattr(exc, "login", None))
+                await self._sync_login_incident(layers)
                 if exc.kind != "browser_only":
                     raise
                 last = exc
             else:
                 self._log_resolve(attempt, True, t0, layers, media=media,
                                   reconnect=reconnect)
+                await self._sync_login_incident(layers)
                 return media
             if attempt < self.BROWSER_ONLY_RETRIES:
                 await self.server.status(
@@ -1656,6 +1662,53 @@ class Pipeline:
                                                 getattr(last, "login", None)),
                            kind="browser_only",
                            login=getattr(last, "login", None)) from last
+
+    LOGIN_SOURCE_BUDGET_SEC = 2.0     # 只读几个本地文件；到点没返回就记 null，不挡开播
+    LOGIN_INCIDENT = "login-unreadable"   # 不带 "session:"：跨场保留，读到登录才撤
+
+    async def _login_source(self):
+        """session_start 的 login_source。只看登录 cookie 的名字（resolver.login_source），
+        不解密、不弹钥匙串；出任何问题都记 null——这一栏不能挡住开播。"""
+        from .resolver import login_source_with_budget
+
+        try:
+            return await login_source_with_budget(
+                getattr(self.args, "cookies_browser", "auto"), self.LOGIN_SOURCE_BUDGET_SEC)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+
+    async def _sync_login_incident(self, layers):
+        """按这次解析里「登录直播页」那一层的记录，挂上或撤掉「没有读到 TikTok 登录」的提示。
+
+        读到了可用的登录（那一层记着浏览器名）就撤；一个都没读到就挂，文字写各浏览器的
+        观察和能照做的步骤。监听照常开始、照常匿名解析——这条提示不挡任何事。没有那一层
+        的记录（其它平台、--cookies-browser none、用户自带流地址）或什么都没去读（测试环境）
+        时不动它。提示跨场保留，直到读到登录。"""
+        from .browser_login import NOT_READ, no_login_notice
+        from .resolver import LOGIN_LAYER
+
+        rec = next((r for r in layers or () if r.get("layer") == LOGIN_LAYER), None)
+        if rec is None:
+            return
+        try:
+            incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
+            if rec.get("browser"):
+                if self.LOGIN_INCIDENT in incidents:
+                    await self._incident(self.LOGIN_INCIDENT, "clear")
+                return
+            observed = {b: c for b, c in (rec.get("login") or {}).items() if c != NOT_READ}
+            if not observed:
+                return
+            text = no_login_notice(observed)
+            if (incidents.get(self.LOGIN_INCIDENT) or {}).get("text") != text:
+                await self._incident(self.LOGIN_INCIDENT, "warn", text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 这一步跟在解析结果后面：提示推不出去不能把解析的结果（或它的错误）盖掉
+            print("[警告] 「没有读到 TikTok 登录」的提示没能更新: {}".format(type(exc).__name__))
 
     def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None,
                      reconnect=None, message=None, login=None):

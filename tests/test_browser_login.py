@@ -225,7 +225,7 @@ def _wire_resolver(monkeypatch, ytdlp_stderr):
         async def __aexit__(self, *exc):
             return False
 
-        def get(self, url, headers=None):
+        def get(self, url, headers=None, **kwargs):
             sent.append((headers or {}).get("Cookie"))
             return _FakeResponse()
 
