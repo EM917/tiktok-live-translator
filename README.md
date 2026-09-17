@@ -477,14 +477,26 @@ explicitly states the room has ended. A browser can be pinned with
 
 **The "浏览器登录态" self-check row says the system refused the read.** macOS does
 not let other apps read a browser's data directory unless the reading app has
-Full Disk Access. Open System Settings → Privacy & Security → Full Disk Access,
-press "+", add "TikTok Live Translator" and switch it on (add Terminal too if
-you launch with Start.command), then quit the app completely and reopen it. This
-only matters for rooms whose stream address TikTok serves to signed-in viewers.
-The self-check looks only at whether the cookie store can be read and at login
-cookie names; it never decrypts and never raises a Keychain prompt. Failed
-resolutions record one of these codes in the audit log: `blocked_by_system`,
-`no_browser_data`, `no_tiktok_cookie`, `not_logged_in`, `keychain_wait`.
+Full Disk Access. The entry to add is **not** this .app: the app is a launcher
+script that hands over to a Python interpreter, and macOS records the permission
+against the interpreter file's path (measured 2026-09-17 on macOS 27: the TCC
+log shows `identifier_type=Path` with a `python3.x` path and never mentions the
+bundle). The self-check row and the error message print the exact path(s) for
+your machine. Open System Settings → Privacy & Security → Full Disk Access,
+press "+", press ⌘⇧G in the file picker, paste the path, press Return, click
+Open, and switch the new entry on; repeat for each path shown. The list shows
+the entry as `python3.x`, not under the app's name. Add Terminal too if you
+launch with Start.command. Then quit the app completely and reopen it. The path
+changes when Python is upgraded or the environment is rebuilt; the row then
+shows the new one. This only matters for rooms whose stream address TikTok
+serves to signed-in viewers. The self-check looks only at whether the cookie
+store can be read and at login cookie names, across every browser profile; it
+never decrypts and never raises a Keychain prompt. Failed resolutions record one
+of these codes in the audit log: `blocked_by_system`, `no_browser_data`,
+`no_tiktok_cookie`, `not_logged_in`, `cannot_decrypt`, `keychain_wait`.
+`cannot_decrypt` means the store holds TikTok cookie names but their values did
+not come out of decryption; start again and, if a Keychain dialog asks for
+"Chrome Safe Storage", enter the Mac login password and choose Always Allow.
 
 **"TikTok did not hand this room's stream address to the app (code 4003110)".**
 That code is TikTok's generic refusal; the response carries no reason, and the

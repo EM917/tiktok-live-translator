@@ -421,12 +421,20 @@ large-v3 叠加后足以耗尽 16–18 GB 机器的内存并引发换页，表�
 或通过 `--cookies cookies.txt` 提供凭据。
 
 **自检「浏览器登录态」显示「系统拒绝读取」。** macOS 不允许其它程序读取浏览器的
-数据目录，除非该程序有「完全磁盘访问权限」。到「系统设置」→「隐私与安全性」→
-「完全磁盘访问权限」，点「+」加入「TikTok Live Translator」并打开开关（用
-Start.command 启动的话把「终端」也加进去），然后完全退出程序再打开。这一项只影响
-TikTok 要求登录才给流地址的直播间；自检只看 cookie 库能否读取和登录 cookie 的名字，
-不解密、不弹钥匙串对话框。解析失败时审计里记的是代码：`blocked_by_system`、
-`no_browser_data`、`no_tiktok_cookie`、`not_logged_in`、`keychain_wait`。
+数据目录，除非该程序有「完全磁盘访问权限」。要加进去的**不是这个 .app**：.app 只是一段
+启动脚本，随后交给 Python 解释器运行，系统把权限登记在解释器文件的路径上（2026-09-17
+在 macOS 27 上实测：TCC 日志里是 `identifier_type=Path` 加一个 `python3.x` 的路径，
+从未出现过本程序的 bundle）。自检这一行和报错信息里会给出本机要加的路径。到「系统设置」→
+「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 ⌘⇧G，粘贴路径后回车、
+点「打开」，再把它的开关打开；给出几个路径就各做一遍。列表里显示的名字是 `python3.x`，
+不是本程序的名字。用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。
+升级 Python 或重建运行环境后路径会变，届时这一行会给出新的路径。这一项只影响 TikTok
+要求登录才给流地址的直播间；自检只看 cookie 库能否读取和登录 cookie 的名字（每个浏览器
+个人资料都看），不解密、不弹钥匙串对话框。解析失败时审计里记的是代码：`blocked_by_system`、
+`no_browser_data`、`no_tiktok_cookie`、`not_logged_in`、`cannot_decrypt`、`keychain_wait`。
+`cannot_decrypt` 指库里有 TikTok 的 cookie 名字、解密后却没有对应的值：再点一次「开始翻译」，
+屏幕上如果出现「钥匙串」对话框（要访问「Chrome Safe Storage」），输入这台电脑的登录密码后点
+「始终允许」。
 
 **首次启动长时间停留在下载识别模型。** 模型正从 Hugging Face 下载
 （large-v3 约 3 GB），进度显示在页面上，仅首次需要。

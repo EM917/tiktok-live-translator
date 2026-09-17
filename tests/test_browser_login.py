@@ -15,6 +15,7 @@ import struct
 import sys
 import time
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -62,12 +63,21 @@ def _refuse_listing(monkeypatch, refused):
     monkeypatch.setattr(os, "listdir", listdir)
 
 
+class _Calls(list):
+    """假读取函数被叫到的浏览器，按顺序；profiles 是每次收到的 profile= 参数。"""
+
+    def __init__(self):
+        super().__init__()
+        self.profiles = []
+
+
 def _extractor(monkeypatch, behaviour):
     """behaviour：{浏览器: 异常实例 或 cookie 列表}。"""
-    calls = []
+    calls = _Calls()
 
-    def extract(browser):
+    def extract(browser, profile=None):
         calls.append(browser)
+        calls.profiles.append(profile)
         got = behaviour[browser]
         if isinstance(got, BaseException):
             raise got
@@ -334,14 +344,14 @@ def _advice(message):
 
 @pytest.mark.parametrize("login,must_have,must_not_have", [
     ({"chrome": "blocked_by_system", "safari": "blocked_by_system"},
-     ["Chrome：系统拒绝读取；Safari：系统拒绝读取", bl.FDA_OBSERVED + bl.FDA_STEPS],
+     ["Chrome：系统拒绝读取；Safari：系统拒绝读取", bl.FDA_OBSERVED + bl.fda_steps()],
      [bl.LOGIN_STEPS]),
     ({"chrome": "not_logged_in"}, ["Chrome：能读取，没有 TikTok 登录 cookie", bl.LOGIN_STEPS],
      ["完全磁盘访问权限"]),
     ({"chrome": "no_tiktok_cookie"}, ["里面没有 tiktok.com 的 cookie", bl.LOGIN_STEPS],
      ["完全磁盘访问权限"]),
     ({"chrome": "blocked_by_system", "safari": "not_logged_in"},
-     [bl.FDA_STEPS, bl.LOGIN_STEPS], []),
+     [bl.fda_steps(), bl.LOGIN_STEPS], []),
     ({"chrome": "ok", "safari": "blocked_by_system"},
      ["已借用 Chrome 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。"],
      ["完全磁盘访问权限", bl.LOGIN_STEPS]),
@@ -406,7 +416,7 @@ def test_pipeline_passes_the_observation_through_not_the_text(monkeypatch, tmp_p
     with pytest.raises(resolver.ResolveError) as exc:
         asyncio.run(p._resolve_media("https://www.tiktok.com/@x/live"))
     assert exc.value.kind == "browser_only" and exc.value.login == login
-    assert bl.FDA_STEPS in str(exc.value) and _PASTE in str(exc.value)
+    assert bl.fda_steps() in str(exc.value) and _PASTE in str(exc.value)
     assert bl.LOGIN_STEPS not in str(exc.value)
     assert [r.get("login") for r in p.audit.records] == [login] * 3
 
@@ -489,13 +499,17 @@ def test_selfcheck_row_when_the_system_refuses(monkeypatch, tmp_path):
         return real_open(path, *a, **k)
 
     monkeypatch.setattr(bl, "open", guarded_open, raising=False)
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: [
+        "/opt/homebrew/Cellar/python@3.14/3.14.7/bin/python3.14", "/opt/anaconda3/bin/python3.13"])
     row = run(selfcheck.check_browser_login())
     assert row["level"] == "warn"
     assert "Chrome：系统拒绝读取；Safari：系统拒绝读取" in row["detail"]
     assert row["fix"] == (
         "系统不允许本程序读取浏览器数据。到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，"
-        "点「+」加入「TikTok Live Translator」并打开开关（用 Start.command 启动的话把「终端」"
-        "也加进去），然后完全退出程序再打开。")
+        "点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开"
+        "（每个路径各做一遍）：「/opt/homebrew/Cellar/python@3.14/3.14.7/bin/python3.14」、"
+        "「/opt/anaconda3/bin/python3.13」。列表里显示的名字是 python3.14、python3.13，"
+        "不是本程序的名字。用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。")
     _assert_plain(row, calls)
 
 
@@ -566,3 +580,291 @@ def test_run_all_lists_the_row_and_reads_nothing_under_pytest(monkeypatch):
                            device="auto", comments=False)
     rows = [c for c in run(selfcheck.run_all(args, None, None)) if c["name"] == "浏览器登录态"]
     assert len(rows) == 1 and rows[0]["level"] == "ok"
+
+
+# ---- 钥匙串没给密钥：名字在、值没出来，不能说成「没有 cookie」 -------------------
+#
+# yt-dlp 拿不到「Chrome Safe Storage」的密钥时（中控在钥匙串对话框上点了「拒绝」、钥匙串
+# 锁着、security 命令退出码非 0），解不开的 v10 cookie 被它一条条丢掉，交回来的是一个
+# 没有 tiktok.com 条目的 jar。以前这里于是说「能读取，里面没有 tiktok.com 的 cookie，去登录」
+# ——同一个库里明明有 sessionid，自检那一行也写着「读到了 TikTok 登录」。
+
+def test_names_in_the_store_but_nothing_decrypted_is_cannot_decrypt(monkeypatch, tmp_path):
+    home = _mac_home(monkeypatch, tmp_path)
+    _chrome_db(home, [(".tiktok.com", "sessionid"), (".tiktok.com", "sid_tt"),
+                      (".tiktok.com", "ttwid")])
+    _extractor(monkeypatch, {"chrome": [FakeCookie(".example.com", "plain", "p")]})
+    assert bl.read_login("chrome") == bl.LoginRead(None, "cannot_decrypt")
+    assert bl.probe("chrome") == "ok"          # 只看名字的自检和它不再互相矛盾
+
+    message = browser_only_message(3, {"chrome": "cannot_decrypt"})
+    assert "Chrome：能读取，cookie 的值没能解开" in message
+    assert "「Chrome Safe Storage」" in message and "始终允许" in message
+    assert "没有 tiktok.com 的 cookie" not in message
+    assert bl.LOGIN_STEPS not in message and "完全磁盘访问权限" not in message
+    assert not any(word in _advice(message) for word in GUESSED_LABELS)
+
+
+def test_login_name_in_the_store_missing_from_the_jar_is_cannot_decrypt(monkeypatch, tmp_path):
+    """解出来一部分（没加密的那几条）：照旧带给 TikTok，但代码不能说成「没登录」。"""
+    home = _mac_home(monkeypatch, tmp_path)
+    _chrome_db(home, [(".tiktok.com", "sessionid"), (".tiktok.com", "ttwid")])
+    _extractor(monkeypatch, {"chrome": [FakeCookie(".tiktok.com", "ttwid", "w")]})
+    assert bl.read_login("chrome") == bl.LoginRead("ttwid=w", "cannot_decrypt")
+
+
+def test_tiktok_names_without_login_and_an_empty_jar_is_cannot_decrypt(monkeypatch, tmp_path):
+    home = _mac_home(monkeypatch, tmp_path)
+    _chrome_db(home, [(".tiktok.com", "ttwid"), (".tiktok.com", "msToken")])
+    _extractor(monkeypatch, {"chrome": []})
+    assert bl.read_login("chrome") == bl.LoginRead(None, "cannot_decrypt")
+
+
+def test_cannot_decrypt_needs_the_names_to_be_there(monkeypatch, tmp_path):
+    """库里确实没有 tiktok.com 的名字、或者确实只有没登录的那几条：原来的代码不变。"""
+    home = _mac_home(monkeypatch, tmp_path)
+    _chrome_db(home, [(".example.com", "sessionid")])
+    _extractor(monkeypatch, {"chrome": []})
+    assert bl.read_login("chrome") == bl.LoginRead(None, "no_tiktok_cookie")
+    _chrome_db(home, [(".tiktok.com", "ttwid")], profile="Profile 1")
+    _extractor(monkeypatch, {"chrome": [FakeCookie(".tiktok.com", "ttwid", "w")]})
+    assert bl.read_login("chrome") == bl.LoginRead("ttwid=w", "not_logged_in")
+
+
+def test_cannot_decrypt_is_only_said_about_chromium_family(monkeypatch, tmp_path):
+    """Safari 的 cookie 值不加密：名字在、jar 里没有，不是「没能解开」，不换说法。"""
+    home = _mac_home(monkeypatch, tmp_path)
+    _safari_file(home, [(".tiktok.com", "sessionid")])
+    _extractor(monkeypatch, {"safari": []})
+    assert bl.read_login("safari") == bl.LoginRead(None, "no_tiktok_cookie")
+
+
+def test_cannot_decrypt_names_each_browsers_own_keychain_item():
+    text = bl.steps_text({"chrome": "cannot_decrypt", "brave": "cannot_decrypt"})
+    assert "「Chrome Safe Storage」" in text and "「Brave Safe Storage」" in text
+
+
+def test_cannot_decrypt_reaches_the_trace_and_the_resolve_error(monkeypatch, tmp_path):
+    home = _mac_home(monkeypatch, tmp_path)
+    _chrome_db(home, [(".tiktok.com", "sessionid")])
+    _extractor(monkeypatch, {"chrome": [], "safari": _safari_denied()})
+    _wire_resolver(monkeypatch, {})
+    trace = []
+    err = _resolve_and_fail(trace)
+    assert err.login == {"chrome": "cannot_decrypt", "safari": "blocked_by_system"}
+    assert "chrome: cannot_decrypt" in [r for r in trace if r["layer"] == "直播页兜底"][0]["why"]
+    assert SENTINEL not in json.dumps(trace, ensure_ascii=False) + str(err)
+
+
+# ---- 好几个 Chrome 个人资料：登录不一定在最近写过的那个里 ------------------------
+#
+# yt-dlp 不给 profile 时只看 Chrome 目录下最新的那个 Cookies 文件，自检以前也一样。
+# 中控在「Profile 1」里登录了 TikTok、而「Default」最后落了盘，结论就是「没有 cookie、去登录」；
+# 两个文件的 mtime 一换，结论又变回「读到了登录」。
+
+def _two_profiles(home, newest):
+    """Default 里没有 TikTok，Profile 1 里有登录；newest 指定哪个库的 mtime 更新。"""
+    plain = _chrome_db(home, [(".example.com", "sessionid")], profile="Default")
+    login = _chrome_db(home, [(".tiktok.com", "sessionid"), (".tiktok.com", "ttwid")],
+                       profile="Profile 1")
+    now = time.time()
+    for path in (plain, login):
+        stamp = now if path.parent.parent.name == newest else now - 3600
+        os.utime(str(path), (stamp, stamp))
+    return login.parent.parent
+
+
+@pytest.mark.parametrize("newest", ["Default", "Profile 1"])
+def test_probe_finds_the_login_in_any_profile(monkeypatch, tmp_path, newest):
+    home, calls = _selfcheck_env(monkeypatch, tmp_path, browsers=("chrome",))
+    _two_profiles(home, newest)
+    assert bl.probe("chrome") == "ok"
+    row = run(selfcheck.check_browser_login())
+    assert row["level"] == "ok" and row["detail"] == "Chrome：读到了 TikTok 登录"
+    _assert_plain(row, calls)
+
+
+@pytest.mark.parametrize("newest", ["Default", "Profile 1"])
+def test_read_login_reads_the_profile_that_holds_the_login(monkeypatch, tmp_path, newest):
+    home = _mac_home(monkeypatch, tmp_path)
+    profile_dir = _two_profiles(home, newest)
+    calls = _extractor(monkeypatch, {"chrome": [FakeCookie(".tiktok.com", "sessionid", "v")]})
+    assert bl.read_login("chrome") == bl.LoginRead("sessionid=v", "ok")
+    assert calls == ["chrome"] and calls.profiles == [str(profile_dir)]
+
+
+def test_read_login_leaves_the_profile_to_ytdlp_when_no_profile_shows_tiktok(monkeypatch,
+                                                                            tmp_path):
+    home = _mac_home(monkeypatch, tmp_path)
+    _chrome_db(home, [(".example.com", "a")], profile="Default")
+    calls = _extractor(monkeypatch, {"chrome": []})
+    assert bl.read_login("chrome").code == "no_tiktok_cookie"
+    assert calls.profiles == [None]
+
+
+def test_among_profiles_with_a_login_the_most_recently_written_wins(monkeypatch, tmp_path):
+    home = _mac_home(monkeypatch, tmp_path)
+    old = _chrome_db(home, [(".tiktok.com", "sessionid")], profile="Default")
+    new = _chrome_db(home, [(".tiktok.com", "sid_tt")], profile="Profile 2")
+    now = time.time()
+    os.utime(str(old), (now - 3600, now - 3600))
+    os.utime(str(new), (now, now))
+    assert bl.login_profile("chrome") == str(new.parent.parent)
+
+
+def test_one_unreadable_profile_does_not_hide_the_login_in_another(monkeypatch, tmp_path):
+    home, calls = _selfcheck_env(monkeypatch, tmp_path, browsers=("chrome",))
+    broken = _chrome_db(home, [(".tiktok.com", "ttwid")], profile="Default")
+    broken.write_bytes(b"this is not a sqlite file " + SENTINEL.encode())
+    _chrome_db(home, [(".tiktok.com", "sessionid")], profile="Profile 1")
+    assert bl.probe("chrome") == "ok"
+    broken_only = tmp_path / "second"
+    broken_only.mkdir()
+    monkeypatch.setattr(bl, "_home", lambda: str(broken_only))
+    lone = _chrome_db(broken_only, [(".tiktok.com", "sessionid")])
+    lone.write_bytes(b"this is not a sqlite file")
+    assert bl.probe("chrome") == "error:DatabaseError"
+
+
+def test_ytdlp_subprocess_layer_is_given_the_same_profile(monkeypatch, tmp_path):
+    home = _mac_home(monkeypatch, tmp_path)
+    profile_dir = _two_profiles(home, "Default")
+    _extractor(monkeypatch, {"chrome": [FakeCookie(".tiktok.com", "sessionid")],
+                             "safari": _safari_denied()})
+    _wire_resolver(monkeypatch, {})
+    seen = []
+
+    async def ytdlp(_url, cookies=None, browser=None, timeout=None, profile=None):
+        seen.append((browser, profile))
+        return 1, "", "ERROR: The channel is not currently live"
+
+    monkeypatch.setattr(resolver, "_run_ytdlp", ytdlp)
+    _resolve_and_fail([])
+    assert ("chrome", str(profile_dir)) in seen and ("safari", None) in seen
+
+
+def test_ytdlp_command_line_carries_the_profile(monkeypatch):
+    captured = {}
+
+    class Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"https://pull.example/stream.flv\n", b""
+
+    async def create(*cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    run(resolver._run_ytdlp("https://www.tiktok.com/@x/live", browser="chrome",
+                            profile="/Users/x/Library/Application Support/Google/Chrome/Profile 1"))
+    at = captured["cmd"].index("--cookies-from-browser")
+    assert captured["cmd"][at + 1] == (
+        "chrome:/Users/x/Library/Application Support/Google/Chrome/Profile 1")
+    run(resolver._run_ytdlp("https://www.tiktok.com/@x/live", browser="safari"))
+    at = captured["cmd"].index("--cookies-from-browser")
+    assert captured["cmd"][at + 1] == "safari"
+
+
+# ---- 「完全磁盘访问权限」要加的是哪一项 ----------------------------------------
+#
+# 2026-09-17 本机 TCC 日志：.app 的 CFBundleExecutable 是 bash 脚本，exec 进 python、main.py
+# 再 exec 进 .venv 的 python，系统从头到尾没见过这个 bundle——登记的是解释器文件的**路径**
+# （identifier_type=Path，subject=/opt/homebrew/…/python3.14）。照着「加入 TikTok Live
+# Translator」去做，加进去的是一条对不上的 bundle 记录，自检那一行不会变。
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def test_fda_targets_are_the_interpreter_files_the_system_sees(tmp_path):
+    real_launch = tmp_path / "Cellar" / "python3.14"
+    real_venv = tmp_path / "anaconda" / "python3.13"
+    for f in (real_launch, real_venv):
+        f.parent.mkdir(parents=True)
+        f.write_text("", encoding="utf-8")
+    bundle_python = tmp_path / "TikTok Live Translator.app" / "Contents" / "MacOS" / "python"
+    bundle_python.parent.mkdir(parents=True)
+    os.symlink(str(real_venv), str(bundle_python))
+    got = bl.fda_targets(environ={"TLT_LAUNCH_PYTHON": str(real_launch)},
+                         executable=str(bundle_python))
+    assert got == [os.path.realpath(str(real_launch)), os.path.realpath(str(real_venv))]
+    # 启动用的和现在跑的是同一个文件：只列一次；没记下启动用的：只列现在跑的
+    assert bl.fda_targets(environ={"TLT_LAUNCH_PYTHON": str(real_venv)},
+                          executable=str(bundle_python)) == [os.path.realpath(str(real_venv))]
+    assert bl.fda_targets(environ={}, executable=str(bundle_python)) == [
+        os.path.realpath(str(real_venv))]
+
+
+def test_fda_steps_name_the_interpreter_paths_not_the_bundle():
+    paths = ["/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/"
+             "Versions/3.14/bin/python3.14", "/opt/anaconda3/bin/python3.13"]
+    text = bl.fda_steps(paths)
+    for path in paths:
+        assert "「{}」".format(path) in text
+    assert "python3.14、python3.13" in text and "⌘⇧G" in text
+    assert "完全磁盘访问权限" in text and "「终端」" in text and "完全退出程序再打开" in text
+    assert "TikTok Live Translator" not in text and "TikTok 直播同传" not in text
+    assert not any(word in text for word in GUESSED_LABELS)
+
+
+def test_blocked_message_and_selfcheck_row_use_the_runtime_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: ["/opt/x/bin/python3.12"])
+    message = browser_only_message(3, {"chrome": "blocked_by_system"})
+    assert "「/opt/x/bin/python3.12」" in message and "TikTok Live Translator" not in message
+    row = selfcheck._browser_login_row({"chrome": "blocked_by_system"})
+    assert "「/opt/x/bin/python3.12」" in row["fix"] and "TikTok Live Translator" not in row["fix"]
+
+
+def test_launch_python_is_remembered_once_and_survives_the_execs():
+    from app import macbundle
+
+    env = {}
+    assert macbundle.remember_launch_python(env, "/opt/homebrew/bin/python3") == env[
+        "TLT_LAUNCH_PYTHON"]
+    first = env["TLT_LAUNCH_PYTHON"]
+    assert first == os.path.realpath("/opt/homebrew/bin/python3")
+    # execv 进 .venv、再 execve 进 .app 之后 main.py 从头再跑：不许被后来的解释器盖掉
+    macbundle.remember_launch_python(env, "/somewhere/.venv/bin/python")
+    assert env["TLT_LAUNCH_PYTHON"] == first
+
+
+def test_main_remembers_the_launch_python_before_anything_execs():
+    """main.py 测不了（import 就 execv）：读语法树，确认这一句在模块级、排在 ensure_env() 之前。"""
+    import ast
+
+    tree = ast.parse((REPO / "main.py").read_text(encoding="utf-8"))
+
+    def first_top_level_call(name):
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            for sub in ast.walk(node):
+                if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                        and sub.func.id == name):
+                    return node.lineno
+        return None
+
+    remember = first_top_level_call("remember_launch_python")
+    ensure = first_top_level_call("ensure_env")
+    assert remember is not None and ensure is not None and remember < ensure
+
+
+def test_bundle_relaunch_passes_the_launch_python_along(tmp_path, monkeypatch):
+    from app import macbundle
+
+    monkeypatch.setenv("TLT_LAUNCH_PYTHON", "/opt/homebrew/bin/python3.14")
+    monkeypatch.setattr(macbundle, "should_relaunch", lambda root, argv: True)
+    monkeypatch.setattr(macbundle, "ensure_bundle_shell", lambda root: tmp_path / "python")
+    seen = {}
+    macbundle.relaunch_inside_bundle(tmp_path, argv=["main.py"],
+                                     execve=lambda path, argv, env: seen.update(env))
+    assert seen["TLT_LAUNCH_PYTHON"] == "/opt/homebrew/bin/python3.14"
+
+
+@pytest.mark.parametrize("readme", ["README.md", "README.zh-CN.md"])
+def test_readme_does_not_tell_the_operator_to_add_the_bundle(readme):
+    text = (REPO / readme).read_text(encoding="utf-8")
+    assert 'add "TikTok Live Translator"' not in text
+    assert "加入「TikTok Live Translator」" not in text
+    assert "cannot_decrypt" in text and "⌘⇧G" in text

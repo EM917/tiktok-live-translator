@@ -675,14 +675,20 @@ def _remember_browser(browser):
         save_setting("cookies_browser", browser)
 
 
-async def _run_ytdlp(url, cookies=None, browser=None, timeout=45):
-    """跑一次 yt-dlp 取流地址，返回 (returncode, stdout, stderr)。"""
+async def _run_ytdlp(url, cookies=None, browser=None, timeout=45, profile=None):
+    """跑一次 yt-dlp 取流地址，返回 (returncode, stdout, stderr)。
+
+    profile：浏览器个人资料目录的完整路径（browser_login.login_profile）。不给的话 yt-dlp
+    只读最近写过的那个个人资料——TikTok 登录在另一个里时，它读到的是一份没有登录的 cookie。"""
     fmt = "flv-ao/bestaudio/flv-hd/flv-hd1/best"
     cmd = [sys.executable, "-m", "yt_dlp", "-g", "-f", fmt, "--no-warnings"]
     if cookies:
         cmd += ["--cookies", cookies]
     elif browser:
-        cmd += ["--cookies-from-browser", browser]
+        # BROWSER[:PROFILE]，PROFILE 带路径分隔符时 yt-dlp 当路径用。整段是一个 argv，空格无妨
+        cmd += ["--cookies-from-browser",
+                "{}:{}".format(browser, profile) if profile and "::" not in profile
+                else browser]        # 「::」在 yt-dlp 的写法里是容器分隔符，路径里有就不传
     cmd += ["--", url]      # `--` 之后一律当作地址，防止 "-xxx" 形式的地址被当成选项
     # PYTHONIOENCODING=utf-8：我们按 UTF-8 解这两个管道（下面的 decode），而 Windows 上
     # 子进程默认按 ANSI 代码页输出——报错里的主播昵称、路径会解成一串 U+FFFD，
@@ -940,7 +946,7 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     # 第 3 层：匿名失败且用户没自带 cookies.txt——依次试各浏览器的现成登录态。
     # 记住成功的那个，下次直接用，不再逐个试。
     if code != 0 and not cookies and cookies_browser != "none":
-        from .browser_login import classify_stderr
+        from .browser_login import classify_stderr, login_profile
 
         t0, used_browser, cookie_outcome = time.monotonic(), None, "none"
         last_err = ""
@@ -948,10 +954,15 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         try:
             for browser in _browser_order(cookies_browser):
                 try:
+                    # 和借登录的另外两层读同一个个人资料（只看 cookie 名字挑出来的，不解密）；
+                    # 没挑出来就不传这个参数，yt-dlp 照旧自己取最新的
+                    profile = await asyncio.get_running_loop().run_in_executor(
+                        None, login_profile, browser)
                     # 单个浏览器给较短预算：读不到 cookie（未授权/未安装/被占用）
                     # 应当快速失败换下一个，而不是把整体解析拖垮
                     b_code, b_out, b_err = await _run_ytdlp(
-                        url, browser=browser, timeout=BROWSER_ATTEMPT_TIMEOUT)
+                        url, browser=browser, timeout=BROWSER_ATTEMPT_TIMEOUT,
+                        **({"profile": profile} if profile else {}))
                 except ResolveError:
                     last_err = "{}: timeout".format(browser)
                     continue          # 这个浏览器超时了：换下一个，别中断整个兜底
