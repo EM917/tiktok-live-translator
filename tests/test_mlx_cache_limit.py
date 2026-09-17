@@ -473,13 +473,15 @@ def test_asr_memory_is_written_when_the_model_is_ready_then_every_five_minutes(
 
     def during_session(sess):
         start = sess["asr_memory_at"]                   # 模型就绪那一条的时刻（单调时钟）
-        for offset in (10.0, 290.0, 299.9, 300.0, 310.0, 599.9, 600.0, 905.0):
+        # 不踩精确的 300.0：start 是真实的单调时钟读数，(start + 300.0) - start 在浮点下可能是
+        # 299.99999999999994。刚开机的 Linux CI 机器上 start 只有三百多，正好落进这个误差
+        for offset in (10.0, 290.0, 299.0, 301.0, 310.0, 600.0, 602.0, 905.0):
             ticks.append((offset, p._asr_memory_tick(now=start + offset)))
 
     load_world(monkeypatch, p, "mlx", create, during_session)
     run(p._run_stream_inner(DIRECT_URL))
 
-    assert [offset for offset, wrote in ticks if wrote] == [300.0, 600.0, 905.0]
+    assert [offset for offset, wrote in ticks if wrote] == [301.0, 602.0, 905.0]
     log = rows(session_logs(tmp_path)[0])
     memory = [r for r in log if r["type"] == "asr_memory"]
     assert len(memory) == 4
