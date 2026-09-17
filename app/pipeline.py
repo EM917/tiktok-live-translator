@@ -975,6 +975,7 @@ class Pipeline:
             })
         # 弹幕后端抓取：只有 @主播名 / 直播间链接能反查出 unique_id，直接流
         # 地址（.m3u8/.flv 之类）没有主播身份，没法连 TikTok 的评论 WebSocket。
+        self._comments_pending = None
         if not getattr(self.args, "comments", True):
             await self._publish_comment_source("unavailable", "已用 --no-comments 关闭")
         elif not streamer:
@@ -985,8 +986,40 @@ class Pipeline:
             # 实例，没有 comment_source 属性——这条锦上添花的功能缺了就悄悄
             # 跳过，不该拖累那些测试本来要验证的东西
             comment_source = getattr(self, "comment_source", None)
-            if comment_source is not None:
+            if comment_source is None:
+                pass
+            elif self._comments_wait_for_resolve(url):
+                # 登录优先（macOS）：弹幕子进程一启动就**匿名**抓同一个直播页（TikTokLive 的
+                # fetch_room_id_from_html）。它要是先起，这一场第一个带登录的请求就落在一次匿名
+                # 请求之后一两秒——2026-09-17 实测那样 3 次里 3 次拿不到地址。所以等第一次
+                # 解析返回再起（_start_pending_comments）；解析失败这一场就此结束，弹幕不起。
+                # 弹幕不进报警链路，晚几秒没有代价。记着是哪一场要起的：晚到的旧任务不能替
+                # 新的一场起。
+                self._comments_pending = (self.audit, streamer)
+                await self._publish_comment_source("connecting", "流地址解析完成后连接评论…")
+            else:
                 comment_source.start(streamer)
+
+    def _comments_wait_for_resolve(self, url):
+        """这一场的弹幕要不要等第一次流地址解析返回之后再起：解析会走登录优先那一步
+        （resolver.login_first_applies）的时候。用户自带流地址时也等——那个地址拉不动的话
+        _resolve_media 会回到自动解析，照样有带登录的请求。其它平台照旧立刻起。"""
+        from .resolver import login_first_applies
+
+        try:
+            return login_first_applies(url, getattr(self.args, "cookies_browser", "auto"))
+        except Exception:
+            return False
+
+    async def _start_pending_comments(self, my_audit):
+        """第一次解析返回之后起弹幕（见 _begin_session 里的说明）。只认这一场自己挂的那一笔。"""
+        pending = getattr(self, "_comments_pending", None)
+        if not pending or pending[0] is not my_audit or self.audit is not my_audit:
+            return
+        self._comments_pending = None
+        comment_source = getattr(self, "comment_source", None)
+        if comment_source is not None:
+            comment_source.start(pending[1])
 
     def _banned_terms_provenance(self):
         """违禁词表的来源信息，并进 session_start。
@@ -1563,6 +1596,7 @@ class Pipeline:
             # 已经属于下一场的连接——只有「我还是当前会话」才停它。
             # getattr 兜底：个别测试用 Pipeline.__new__ 绕过 __init__ 造
             # 半成品实例，没有 comment_source 属性
+            self._comments_pending = None
             comment_source = getattr(self, "comment_source", None)
             if comment_source is not None:
                 await comment_source.stop()
@@ -2222,6 +2256,7 @@ class Pipeline:
             print("[错误] {}".format(exc))
             sess["end"] = {"reason": "resolve_error", "kind": exc.kind}
             return
+        await self._start_pending_comments(my_audit)    # macOS：弹幕等第一次解析返回才起
 
         # 从这里到识别模型就绪，中途 return 只可能是「加载模型失败」
         sess["end"] = {"reason": "model_load_failed"}

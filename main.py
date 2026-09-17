@@ -364,7 +364,8 @@ def parse_args():
                    help="RNNoise 人声降噪，抑制背景音乐/噪声（auto=模型文件存在即开启，默认）")
     p.add_argument("--cookies-browser", default="auto", dest="cookies_browser",
                    help="解析直播流时借用哪个浏览器的 TikTok 登录状态："
-                        "auto（默认；macOS 上先读 Safari，读到登录就不读别的浏览器）/ "
+                        "auto（默认；macOS 上解析的第一步只读 Safari，读到登录就不读别的浏览器，"
+                        "其它浏览器只在匿名方式都没拿到地址之后才读）/ "
                         "chrome / safari / firefox / edge / none（完全不读浏览器 cookie）。"
                         "显式指定时优先于 settings.json 里的 cookies_browser_only")
     p.add_argument("--cookies", default=None,

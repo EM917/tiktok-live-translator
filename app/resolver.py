@@ -194,8 +194,9 @@ def _read_login(browser):
 
 
 def _read_login_prechecked(browser):
-    """登录优先那一步用的读取。Safari 直接读（明文文件，实测 0.0 秒）。其它浏览器先用不解密的
-    probe 看一眼：系统拒绝读取、没有数据、没有 tiktok.com 的 cookie、没有登录 cookie 的名字
+    """登录优先那一步用的读取。Safari 直接读（明文文件，实测 0.0 秒）。其它浏览器——只有中控
+    点了名才会在这一步被读到（见 _login_first_browsers）——先用不解密的 probe 看一眼：
+    系统拒绝读取、没有数据、没有 tiktok.com 的 cookie、没有登录 cookie 的名字
     ——这四种就不做会解密的读取了（Chrome 上那一次约 5 秒，还要向钥匙串要密钥），直接给出
     probe 的代码。这一步每次解析、每次断流重连都会走，没有登录可借时不该为它多等 5 秒。
     probe 看不到还没落进主库的 cookie（见 browser_login._sqlite_names）：刚在 Chrome 里登录的
@@ -256,6 +257,9 @@ LOGIN_AFTER_ANON_GAP_SEC = 8.0
 # 或抓页太慢就放弃这一步往下走：不登录也能解析的直播间最多被它拖慢这么久。刻意等的间隔
 # （waited_ms）和拿到地址之后的拉流探活不算在里面——探活和其它层一样，拿到地址才会发生。
 LOGIN_STEP_BUDGET_SEC = 8.0
+# 等间隔最多等这么久（三个间隔）。同一个进程里弹幕子进程的重连也会发匿名请求
+# （见 note_anonymous_request），等的时候时刻可能被刷新；不设上限就可能一直等下去。
+LOGIN_GAP_MAX_WAIT_SEC = 3 * LOGIN_AFTER_ANON_GAP_SEC
 
 # 进程级：本进程上一次向 TikTok 发**匿名**解析请求的 monotonic 时刻。
 _ANON = {"last": None}
@@ -267,12 +271,25 @@ def _login_first_enabled():
     return sys.platform == "darwin"
 
 
+def login_first_applies(url, cookies_browser="auto"):
+    """这个链接的解析会不会走登录优先那一步。只看平台、--cookies-browser 和链接本身，
+    不读浏览器。pipeline 用它决定弹幕子进程要不要等第一次解析完再起（子进程一启动就匿名
+    抓同一个直播页）。"""
+    return (_login_first_enabled() and cookies_browser != "none"
+            and _is_tiktok_host(_upgrade_tiktok_scheme(url)))
+
+
 def _monotonic():
     return time.monotonic()
 
 
 async def _gap_sleep(seconds):
     await asyncio.sleep(seconds)
+
+
+def _tiktok_hostname(host):
+    host = (host or "").lower()
+    return host == "tiktok.com" or host.endswith(".tiktok.com")
 
 
 def _is_tiktok_host(url):
@@ -282,10 +299,43 @@ def _is_tiktok_host(url):
 
     try:
         parsed = urlparse(url or "")
-        host = (parsed.hostname or "").lower()
+        host = parsed.hostname
     except ValueError:
         return False
-    return parsed.scheme == "https" and (host == "tiktok.com" or host.endswith(".tiktok.com"))
+    return parsed.scheme == "https" and _tiktok_hostname(host)
+
+
+def _upgrade_tiktok_scheme(url):
+    """http:// 开头的 TikTok 直播间链接改成 https://，别的地址原样返回。
+
+    界面接受 http:// 开头的链接（pipeline 的输入校验）。借来的 cookie 不走明文 http，这一条
+    不变；但只因为链接少了一个 s 就整场不用登录，只对已登录观众给流地址的直播间就解析不出来，
+    界面上也没有一句话说明。所以换协议，不丢登录。只换主机确实是 tiktok.com（或子域）、
+    没有用户名密码、端口是默认的那种；其余一概不动（照旧拿不到 cookie）。"""
+    from urllib.parse import urlparse, urlunparse
+
+    try:
+        parsed = urlparse(url or "")
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        return url
+    if (parsed.scheme != "http" or not _tiktok_hostname(host)
+            or parsed.username is not None or parsed.password is not None
+            or port not in (None, 80)):
+        return url
+    return urlunparse(parsed._replace(scheme="https", netloc=host.lower()))
+
+
+def _cookie_refusal(url):
+    """_is_tiktok_host 说不行时，trace 里记哪一种：主机是 tiktok.com 但不是 https（not_https），
+    还是主机根本不是 tiktok.com（not_tiktok_host）。"""
+    from urllib.parse import urlparse
+
+    try:
+        host = urlparse(url or "").hostname
+    except ValueError:
+        host = None
+    return "not_https" if _tiktok_hostname(host) else "not_tiktok_host"
 
 
 def _carries_login(cookie):
@@ -303,23 +353,41 @@ def _stamp_anon():
     _ANON["last"] = _monotonic()
 
 
+def note_anonymous_request():
+    """给 resolver 之外、同一个进程里也会向 TikTok 发匿名请求的代码用：弹幕子进程
+    （TikTokLive）不带 sessionid 启动时，第一件事就是匿名抓 https://www.tiktok.com/@主播/live
+    ——正是实测里排在登录请求前面的那种请求。它不记进来，间隔规则就看不见它。"""
+    _stamp_anon()
+
+
 async def _wait_out_anon_gap():
     """借登录抓直播页之前调用：离上一次匿名请求不足 LOGIN_AFTER_ANON_GAP_SEC 就把差额等完。
     返回等了多少秒（没等是 0.0），并记进当前层的 waited_ms。这段等待是刻意的，
-    不算进任何一层的预算。"""
+    不算进任何一层的预算。
+
+    等完要再看一眼：等的这几秒里，别的任务（弹幕子进程重连、房间状态复查）可能又发了一次
+    匿名请求。总共最多等 LOGIN_GAP_MAX_WAIT_SEC，到点仍没等到空档就照常去抓、在 why 里记
+    gap_not_clear——晚一点监听可以，永远不去抓不行。"""
     if not _login_first_enabled():
         return 0.0
-    last = _ANON["last"]
-    if last is None:
-        return 0.0
-    remain = LOGIN_AFTER_ANON_GAP_SEC - (_monotonic() - last)
-    if remain <= 0:
-        return 0.0
-    note = _LAYER_NOTE.get()
-    if note is not None:
-        note["waited_ms"] = note.get("waited_ms", 0) + int(round(remain * 1000))
-    await _gap_sleep(remain)
-    return remain
+    waited = 0.0
+    while True:
+        last = _ANON["last"]
+        if last is None:
+            break
+        remain = LOGIN_AFTER_ANON_GAP_SEC - (_monotonic() - last)
+        if remain <= 0:
+            break
+        if waited >= LOGIN_GAP_MAX_WAIT_SEC:
+            _note("gap_not_clear")
+            break
+        remain = min(remain, LOGIN_GAP_MAX_WAIT_SEC - waited)
+        note = _LAYER_NOTE.get()
+        if note is not None:
+            note["waited_ms"] = note.get("waited_ms", 0) + int(round(remain * 1000))
+        await _gap_sleep(remain)
+        waited += remain
+    return waited
 
 
 async def _resolve_from_page(url, browser=None):
@@ -352,7 +420,7 @@ async def _fetch_live_page(url, cookie=None):
 
     headers = dict(_BROWSER_HEADERS)
     if cookie and not _is_tiktok_host(url):
-        _note("cookie_not_sent: not_tiktok_host")     # 借来的 cookie 只发给 tiktok.com
+        _note("cookie_not_sent: " + _cookie_refusal(url))   # 借来的 cookie 只发给 https 的 tiktok.com
         cookie = None
     if cookie:
         headers["Cookie"] = cookie
@@ -487,12 +555,23 @@ def _username(url):
 
 async def _get_json(session, url, limit=4 * 1024 * 1024, headers=None):
     """拿不到返回 None；为什么拿不到（HTTP 状态码 / 异常类名 / 空响应）记进当前层的观察。
-    不带登录 cookie 的请求记进匿名时刻（见 _stamp_anon）。"""
-    anonymous = not _carries_login((headers or {}).get("Cookie"))
+    不带登录 cookie 的请求记进匿名时刻（见 _stamp_anon）。
+
+    请求头里带着 Cookie 时（4003110 之后借浏览器登录重问的那一次）：只发给 https 的
+    tiktok.com，而且**不跟重定向**——aiohttp 自动跟的话，显式写的 Cookie 头会原样带到
+    重定向指向的任何主机上（3.11 实测跨域也带）。这两个接口平时不重定向；真回了 3xx
+    就和别的非 200 一样当这次没拿到，记 http=3xx。"""
+    sent_cookie = (headers or {}).get("Cookie")
+    if sent_cookie and not _is_tiktok_host(url):
+        _note("cookie_not_sent: " + _cookie_refusal(url))
+        headers = {k: v for k, v in headers.items() if k != "Cookie"}
+        sent_cookie = None
+    anonymous = not _carries_login(sent_cookie)
     if anonymous:
         _stamp_anon()
+    extra = {"allow_redirects": False} if sent_cookie else {}
     try:
-        async with session.get(url, headers=headers or _BROWSER_HEADERS) as resp:
+        async with session.get(url, headers=headers or _BROWSER_HEADERS, **extra) as resp:
             if resp.status != 200:
                 _note("http={}".format(resp.status))
                 return None
@@ -866,6 +945,18 @@ def _installed_browsers():
                  if shutil.which(b) or shutil.which(b + "-browser"))
 
 
+def _named_browser(preference):
+    """中控**点名**的那一个浏览器：命令行的 --cookies-browser，其次设置里的
+    cookies_browser_only；都没有（auto / none）返回 None。"""
+    if preference and preference not in ("auto", "none"):
+        return preference
+    from .settings import load_settings
+    only = load_settings().get("cookies_browser_only")
+    if isinstance(only, str) and only.strip().lower() in BROWSER_CANDIDATES:
+        return only.strip().lower()
+    return None
+
+
 def _browser_order(preference):
     """要试的浏览器顺序。
 
@@ -873,14 +964,11 @@ def _browser_order(preference):
     浏览器，比如 "safari"：别的浏览器的数据一概不碰）> 自动。自动时上次成功的排前面——
     避免每次都从头逐个试；macOS 上 Safari 永远在它前面（读它不花时间，读到登录就不再
     读别的，见 _installed_browsers）。"""
-    if preference and preference not in ("auto", "none"):
-        return (preference,)
+    named = _named_browser(preference)
+    if named:
+        return (named,)
     from .settings import load_settings
-    settings = load_settings()
-    only = settings.get("cookies_browser_only")
-    if isinstance(only, str) and only.strip().lower() in BROWSER_CANDIDATES:
-        return (only.strip().lower(),)
-    remembered = settings.get("cookies_browser")
+    remembered = load_settings().get("cookies_browser")
     installed = _installed_browsers() or BROWSER_CANDIDATES
     if remembered in installed:
         order = (remembered,) + tuple(b for b in installed if b != remembered)
@@ -904,8 +992,28 @@ def _iter_borrow(cookies_browser):
         yield browser
 
 
+def _login_first_browsers(cookies_browser):
+    """登录优先那一步读哪些浏览器：中控点名了就读点名的那一个，没点名就**只读 Safari**。
+
+    这一步每次解析、每次断流重连都走，而且排在匿名的官方接口前面——不登录也能解析的
+    直播间，那一层约 1 秒就拿到地址。实测读 Safari 的 cookie 0.0 秒；读 Chrome 的约 5 秒，
+    还要向钥匙串要密钥（对话框点的是「允许」而不是「始终允许」的话，每次重连都会再弹）。
+    把 Chrome 放进这一步，等于让每次重连的监听空档多出 5–8 秒——只有 Chrome 里读得到登录
+    的机器（没给「完全磁盘访问权限」的现有安装都是）以前解析这类直播间从不碰 Chrome。
+    产品负责人定的也是「不动 Chrome，直接用 Safari」。Chrome 仍然留给后面原有的几层
+    （接口被拒后的重问、yt-dlp 借 cookie、直播页兜底）：它们只在匿名各层都没拿到时才走，
+    和以前一样。"""
+    if cookies_browser == "none":
+        return ()
+    named = _named_browser(cookies_browser)
+    if named:
+        return (named,)
+    return tuple(b for b in _browser_order(cookies_browser) if b == "safari")
+
+
 def login_source(cookies_browser="auto"):
-    """这一场会先借哪个浏览器的 TikTok 登录：浏览器名，没有就 None。给 session_start 用。
+    """这一场登录优先那一步会借哪个浏览器的 TikTok 登录：浏览器名，没有就 None。给
+    session_start 用。看的浏览器和那一步读的一样（_login_first_browsers）：没点名时只看 Safari。
 
     只看 cookie 库读不读得到、里面有没有登录 cookie 的**名字**（browser_login.probe）：
     不解密、不碰钥匙串，也不读任何 cookie 的值。"""
@@ -913,7 +1021,7 @@ def login_source(cookies_browser="auto"):
         return None
     from .browser_login import OK, probe
 
-    for browser in _browser_order(cookies_browser):
+    for browser in _login_first_browsers(cookies_browser):
         if probe(browser) == OK:
             return browser
     return None
@@ -1120,7 +1228,7 @@ async def _login_page_step(url, cookies_browser):
     began = time.monotonic()
     try:
         browser, header = await asyncio.wait_for(
-            _find_login(tuple(_iter_borrow(cookies_browser)), codes),
+            _find_login(_login_first_browsers(cookies_browser), codes),
             timeout=LOGIN_STEP_BUDGET_SEC)
     except asyncio.TimeoutError:
         for name, code in codes.items():
@@ -1169,7 +1277,8 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     trace：传一个 list 进来，每走过一层就追加一条 {layer, outcome, ms}
     （见 _mark）。调用方拿它写审计日志；不传就不记。
 
-    解析顺序：（macOS 上读得到浏览器里的 TikTok 登录时）带登录抓直播页 → 官方接口 →
+    解析顺序：（macOS 上读得到浏览器里的 TikTok 登录时；没点名浏览器就只读 Safari，见
+    _login_first_browsers）带登录抓直播页 → 官方接口 →
     系统 WebKit 引擎加载直播页（macOS）→ yt-dlp 匿名 →（失败时）yt-dlp 借用浏览器
     登录态 → 直播页兜底（有登录时先带登录抓、匿名的那一次放最后）。断流重连走的是同一个
     函数，顺序一样。cookies 只在本机与 TikTok 之间使用，不写入日志、不发往任何
@@ -1185,6 +1294,10 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         _mark(trace, "直连地址", "url", time.monotonic())
         return await _check_media_url(url, trusted=True)
 
+    # http:// 开头的 TikTok 链接：换成 https 再解析（见 _upgrade_tiktok_scheme）。下面每一层
+    # 用的都是换过的地址；审计里的 room_url 仍是中控输入的原文。
+    url = _upgrade_tiktok_scheme(url)
+
     crashed = []
     rejected = []      # (层, ResolveError)：派生地址没过安全校验，不算这层拿到
 
@@ -1193,7 +1306,7 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     # 链接不是 https 的 tiktok.com 就没有这一步：借来的 cookie 不发给别的主机。
     # 拿到地址、过了校验、拉得动就直接返回，后面的匿名各层一概不走；页面明确说本场已结束
     # 就照旧报下播；其余情况（没读到登录、页面里没有地址、预算到点）往下走原来的链路。
-    if _login_first_enabled() and cookies_browser != "none" and _is_tiktok_host(url):
+    if login_first_applies(url, cookies_browser):
         t0, login_outcome = time.monotonic(), "none"
         login_note = _fresh_note()
         info = {"browser": None, "login": {}}

@@ -27,6 +27,7 @@ from app import resolver, settings
 from app.pipeline import Pipeline
 from app.server import CaptionServer
 
+REAL_GET_JSON = resolver._get_json          # wire() 会把它换成假的；测它本身的用例用这个
 SENTINEL = "S3NTINEL-login-first-VALUE-71c4"
 GUESSED_LABELS = ("年龄", "限流", "封禁", "多半")
 ROOM = "https://www.tiktok.com/@x/live"
@@ -247,30 +248,75 @@ def test_failure_falls_through_and_the_last_layer_goes_login_then_anonymous(monk
     assert set(world.reads()) == {"safari"} and probed == []
 
 
-def test_chrome_is_read_only_when_safari_has_no_usable_login(monkeypatch, tmp_path):
+def test_login_step_reads_only_safari_when_no_browser_is_named(monkeypatch, tmp_path):
+    """Safari 读不到、Chrome 里有登录、不登录也能解析的直播间——没给「完全磁盘访问权限」的现有
+    安装都是这样。登录优先那一步每次解析、每次重连都走，排在约 1 秒就能拿到地址的匿名接口
+    前面：它只读 Safari。Chrome 的会解密读取（实测约 5 秒、要向钥匙串要密钥）和不解密的
+    探测都不发生——以前这类直播间的解析从不碰 Chrome，现在也不碰。"""
+    world = wire(monkeypatch, tmp_path, World())
+    world.jars["safari"] = PermissionError(1, "Operation not permitted")
+    world.jars["chrome"] = logged_in_jar()
+    world.api = "url"
+    probed = []
+    monkeypatch.setattr(bl, "probe", lambda b: probed.append(b) or bl.OK)
+    settings.save_setting("cookies_browser", "chrome")             # 上次成功的是 Chrome 也一样
+    for _ in range(3):                                             # 首次 + 两次重连
+        trace = []
+        assert resolve(trace) == API_FLV
+        assert layers(trace) == [("登录直播页", "no_login"), ("官方接口", "url")]
+        assert trace[0]["login"] == {"safari": "blocked_by_system"}
+    assert world.reads() == ["safari"] * 3 and probed == []
+
+
+def test_chrome_stays_available_to_the_later_layers(monkeypatch, tmp_path):
+    """Safari 里没有登录、Chrome 里有：登录优先那一步不碰 Chrome；匿名各层都没拿到之后，
+    原有的几层照旧借 Chrome 的登录（直播页兜底现在先登录后匿名）。"""
     world = wire(monkeypatch, tmp_path, World())
     world.jars["safari"] = [FakeCookie(".tiktok.com", "ttwid")]       # 没有登录 cookie
     world.jars["chrome"] = logged_in_jar()
     trace = []
     assert resolve(trace) == FLV
-    assert world.reads() == ["safari", "chrome"]
-    assert trace[0]["browser"] == "chrome"
-    assert trace[0]["login"] == {"safari": "not_logged_in", "chrome": "ok"}
-    # Safari 那份没有登录的 cookie 没有被拿去发请求：第一个请求仍然是带登录的那一个
-    assert world.requests() == [("page", HEADER)]
+    assert layers(trace)[0] == ("登录直播页", "no_login")
+    assert trace[0]["browser"] is None and trace[0]["login"] == {"safari": "not_logged_in"}
+    # 第一次读 Chrome 发生在匿名接口之后（接口回 4003110、借登录重问的那一次）
+    first_chrome = world.events.index(("read", "chrome"))
+    assert ("api", None) in world.events[:first_chrome]
+    assert world.events[:first_chrome].count(("read", "safari")) == 2   # 登录那一步 + 接口重问
+    last = trace[-1]
+    assert (last["layer"], last["outcome"], last["browser"]) == ("直播页兜底", "url", "chrome")
+    # 读到 Chrome 的登录之后，后面的层只借它：yt-dlp 没有再去试 Safari
+    assert ("ytdlp", "chrome") in world.events and ("ytdlp", "safari") not in world.events
 
 
-def test_chrome_without_a_login_is_not_decrypted_in_the_login_step(monkeypatch, tmp_path):
-    """登录优先每次解析、每次重连都走：不解密的探测说 Chrome 里没有登录，就不花那 5 秒。"""
+@pytest.mark.parametrize("how", ["flag", "setting"])
+def test_a_named_browser_is_the_one_the_login_step_reads(monkeypatch, tmp_path, how):
     world = wire(monkeypatch, tmp_path, World())
-    world.jars["safari"] = PermissionError(1, "Operation not permitted")
+    world.jars["safari"] = logged_in_jar()
+    world.jars["chrome"] = logged_in_jar()
+    monkeypatch.setattr(bl, "probe", lambda b: bl.OK)
+    kwargs = {}
+    if how == "flag":
+        kwargs["cookies_browser"] = "chrome"
+    else:
+        settings.save_setting("cookies_browser_only", "chrome")
+    trace = []
+    assert resolve(trace, **kwargs) == FLV
+    assert world.reads() == ["chrome"] and world.requests() == [("page", HEADER)]
+    assert trace[0]["browser"] == "chrome" and trace[0]["login"] == {"chrome": "ok"}
+
+
+def test_a_named_chrome_without_a_login_is_not_decrypted_in_the_login_step(monkeypatch,
+                                                                            tmp_path):
+    """中控点名了 Chrome：登录优先每次解析、每次重连都走，不解密的探测说 Chrome 里没有登录，
+    就不花那 5 秒。"""
+    world = wire(monkeypatch, tmp_path, World())
     world.jars["chrome"] = logged_in_jar()
     world.api = "url"
     monkeypatch.setattr(bl, "probe", lambda b: bl.NOT_LOGGED_IN)
     trace = []
-    assert resolve(trace) == API_FLV
-    assert world.reads() == ["safari"]
-    assert trace[0]["login"] == {"safari": "blocked_by_system", "chrome": "not_logged_in"}
+    assert resolve(trace, cookies_browser="chrome") == API_FLV
+    assert world.reads() == []
+    assert trace[0]["login"] == {"chrome": "not_logged_in"}
     assert layers(trace) == [("登录直播页", "no_login"), ("官方接口", "url")]
 
 
@@ -355,6 +401,49 @@ def test_last_layer_waits_out_the_gap_after_the_anonymous_layers(monkeypatch, tm
                     ("page", HEADER), ("page", None)]
     page_layer = [r for r in trace if r["layer"] == "直播页兜底"][0]
     assert page_layer["waited_ms"] == 6000
+
+
+def test_the_gap_is_checked_again_after_waiting(monkeypatch, tmp_path):
+    """等间隔的那几秒里，同一个进程里别的任务（弹幕子进程重连）又发了一次匿名请求：
+    等完再看一眼，把新的差额也等完，两段都记进 waited_ms。"""
+    world = wire(monkeypatch, tmp_path, World())
+    world.jars["safari"] = logged_in_jar()
+    clock = fake_clock(monkeypatch, world)
+    plain_sleep = clock.sleep
+
+    async def sleep(seconds):
+        await plain_sleep(seconds)
+        if len(clock.slept) == 1:
+            resolver._ANON["last"] = clock.now - 2.0      # 醒来前 2 秒有过一次匿名请求
+
+    monkeypatch.setattr(resolver, "_gap_sleep", sleep)
+    resolver._stamp_anon()
+    clock.now += 0.5
+    trace = []
+    assert resolve(trace) == FLV
+    assert clock.slept == [pytest.approx(7.5), pytest.approx(6.0)]
+    assert trace[0]["waited_ms"] == 13500 and "gap_not_clear" not in trace[0].get("why", "")
+    assert world.requests()[-1] == ("page", HEADER)
+
+
+def test_the_gap_wait_is_capped(monkeypatch, tmp_path):
+    """匿名请求一直有：最多等三个间隔，然后照常去抓，trace 里记 gap_not_clear。"""
+    world = wire(monkeypatch, tmp_path, World())
+    world.jars["safari"] = logged_in_jar()
+    clock = fake_clock(monkeypatch, world)
+    plain_sleep = clock.sleep
+
+    async def sleep(seconds):
+        await plain_sleep(seconds)
+        resolver._ANON["last"] = clock.now                # 每次醒来都刚好又有一次
+
+    monkeypatch.setattr(resolver, "_gap_sleep", sleep)
+    assert resolver.LOGIN_GAP_MAX_WAIT_SEC == 3 * resolver.LOGIN_AFTER_ANON_GAP_SEC
+    resolver._stamp_anon()
+    trace = []
+    assert resolve(trace) == FLV                           # 没有一直等下去
+    assert sum(clock.slept) == pytest.approx(24.0)
+    assert trace[0]["waited_ms"] == 24000 and "gap_not_clear" in trace[0]["why"]
 
 
 def test_anonymous_requests_are_stamped_and_logged_in_ones_are_not(monkeypatch):
@@ -641,7 +730,7 @@ def test_no_readable_login_raises_a_persistent_incident_and_monitoring_still_sta
     assert banner["level"] == "warn"
     text = banner["text"]
     assert "Safari：系统拒绝读取" in text
-    assert "Chrome：能读取，没有 TikTok 登录 cookie" in text
+    assert "Chrome" not in text and world.reads() == ["safari"]     # 这一步只读 Safari
     assert "只把流地址给已登录的观众" in text and "其余直播间照常监听" in text
     assert bl.SAFARI_LOGIN_STEPS in text and bl.FDA_STEPS in text
     assert "自检「浏览器登录态」" in text
@@ -715,6 +804,22 @@ def test_session_start_records_the_login_source_by_name_only(monkeypatch, tmp_pa
     assert account_keys == ["login_source"]
 
 
+def test_login_source_looks_only_at_safari_when_no_browser_is_named(monkeypatch, tmp_path):
+    wire(monkeypatch, tmp_path, World())
+    probed = []
+
+    def probe(browser):
+        probed.append(browser)
+        return bl.OK if browser == "chrome" else bl.BLOCKED
+
+    monkeypatch.setattr(bl, "probe", probe)
+    assert resolver.login_source("auto") is None and probed == ["safari"]
+    assert resolver.login_source("chrome") == "chrome"              # 点了名就看点名的那个
+    settings.save_setting("cookies_browser_only", "chrome")
+    assert resolver.login_source("auto") == "chrome"
+    assert resolver._login_first_browsers("none") == ()
+
+
 @pytest.mark.parametrize("platform,probe_code,flag,expected", [
     ("darwin", bl.BLOCKED, "auto", None),
     ("darwin", bl.OK, "none", None),
@@ -769,14 +874,115 @@ def test_cookie_values_go_to_tiktok_and_nowhere_else(monkeypatch, tmp_path, caps
     assert "sessionid" not in json.dumps(audit.records)              # 审计里连 cookie 的名字都没有
 
 
+# ---- 弹幕子进程：它一启动就匿名抓同一个直播页 --------------------------------
+
+class _StopHere(Exception):
+    pass
+
+
+def _pipeline_with_comments(monkeypatch, tmp_path, world):
+    from app import hwdetect
+    from app.comment_source import CommentSource
+
+    p, _server, _ = make_pipeline(monkeypatch, tmp_path, stub_audit=False)
+    p.args.comments = True
+
+    async def stop(self, _external=True):
+        world.events.append(("comments_stop",))
+
+    def stop_here(**_kwargs):
+        raise _StopHere()                      # 解析之后就是加载识别模型：测试到此为止
+
+    monkeypatch.setattr(CommentSource, "start",
+                        lambda self, unique_id: world.events.append(("comments", unique_id)))
+    monkeypatch.setattr(CommentSource, "stop", stop)
+    monkeypatch.setattr(hwdetect, "recommend", stop_here)
+    return p
+
+
+def test_comment_worker_starts_only_after_the_first_resolve_on_macos(monkeypatch, tmp_path):
+    """TikTokLive 不带 sessionid 启动时先匿名抓 https://www.tiktok.com/@主播/live。弹幕在
+    _begin_session 里就起的话，这一场第一个带登录的请求就排在它后面一两秒。"""
+    world = wire(monkeypatch, tmp_path, World())
+    world.jars["safari"] = logged_in_jar()
+    p = _pipeline_with_comments(monkeypatch, tmp_path, world)
+
+    async def go():
+        await p._begin_session(ROOM)
+        begun = list(world.events)
+        with pytest.raises(_StopHere):
+            await p._run_session(ROOM)
+        await p._end_session()
+        return begun
+
+    begun = run(go())
+    assert not [e for e in begun if e[0] == "comments"]      # 开场时还没起
+    order = [e for e in world.events if e[0] in ("page", "comments")]
+    assert order == [("page", HEADER), ("comments", "x")]    # 带登录的请求在前，弹幕在后
+    assert p._comments_pending is None
+
+
+def test_comment_worker_is_not_started_when_the_first_resolve_fails(monkeypatch, tmp_path):
+    world = wire(monkeypatch, tmp_path, World())
+    world.jars["safari"] = logged_in_jar()
+    world.page_with_login = GATE_PAGE
+    p = _pipeline_with_comments(monkeypatch, tmp_path, world)
+
+    async def go():
+        await p._begin_session(ROOM)
+        await p._run_session(ROOM)               # 解析失败：这一场到此结束
+        await p._end_session()
+        await p._start_pending_comments(None)    # 收尾之后没有留下待起的那一笔
+
+    run(go())
+    assert not [e for e in world.events if e[0] == "comments"]
+    assert p._comments_pending is None
+
+
+def test_a_late_old_task_cannot_start_comments_for_the_next_session(monkeypatch, tmp_path):
+    world = wire(monkeypatch, tmp_path, World())
+    p = _pipeline_with_comments(monkeypatch, tmp_path, world)
+
+    async def go():
+        await p._begin_session(ROOM)
+        old_audit = p.audit
+        await p._begin_session("https://www.tiktok.com/@y/live")
+        await p._start_pending_comments(old_audit)           # 上一场晚到的任务
+        late = [e for e in world.events if e[0] == "comments"]
+        await p._start_pending_comments(p.audit)             # 这一场自己的
+        await p._end_session()
+        return late
+
+    assert run(go()) == []
+    assert [e for e in world.events if e[0] == "comments"] == [("comments", "y")]
+
+
+@pytest.mark.parametrize("platform,flag", [("linux", "auto"), ("win32", "auto"),
+                                           ("darwin", "none")])
+def test_comment_worker_starts_at_once_where_no_login_step_runs(monkeypatch, tmp_path,
+                                                                 platform, flag):
+    world = wire(monkeypatch, tmp_path, World(), platform=platform)
+    p = _pipeline_with_comments(monkeypatch, tmp_path, world)
+    p.args.cookies_browser = flag
+
+    async def go():
+        await p._begin_session(ROOM)
+        begun = list(world.events)
+        await p._end_session()
+        return begun
+
+    assert ("comments", "x") in run(go())
+
+
 # ---- cookie 只发给 https 的 tiktok.com（含重定向的每一跳）---------------------
 
 @pytest.mark.parametrize("room", [
     "https://www.tiktok.com.evil.example/@x/live",
     "https://evil.example/www.tiktok.com/@x/live",
-    "http://www.tiktok.com/@x/live",
+    "http://www.tiktok.com.evil.example/@x/live",
+    "http://www.tiktok.com@evil.example/@x/live",
 ])
-def test_a_link_that_is_not_https_tiktok_never_gets_the_cookie(monkeypatch, tmp_path, room):
+def test_a_link_that_is_not_tiktok_never_gets_the_cookie(monkeypatch, tmp_path, room):
     world = wire(monkeypatch, tmp_path, World())
     world.jars["safari"] = logged_in_jar()
     seen = []
@@ -806,15 +1012,70 @@ def test_a_link_that_is_not_https_tiktok_never_gets_the_cookie(monkeypatch, tmp_
     assert "cookie_not_sent: not_tiktok_host" in page["why"]
 
 
-def _redirecting_session(monkeypatch, hops, seen):
-    """hops：{地址: 重定向到哪}；不在里面的地址回 200 + 带流地址的页面。"""
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_an_http_tiktok_link_is_upgraded_to_https_and_keeps_the_login(monkeypatch, tmp_path,
+                                                                     platform):
+    """界面接受 http:// 开头的链接。cookie 不走明文 http——换成 https 再解析，而不是整场不用
+    登录：只对已登录观众给地址的直播间，以前（66f054e）粘 http 链接是解析得出来的。"""
+    world = wire(monkeypatch, tmp_path, World(), platform=platform)
+    world.jars["safari"] = logged_in_jar()
+    world.jars["chrome"] = logged_in_jar()
+    seen = []
+    _redirecting_session(monkeypatch, {}, seen, anonymous_page=GATE_PAGE)
+    trace = []
+    got = run(resolver.resolve_stream_url("http://www.tiktok.com/@x/live", trace=trace))
+    assert got == FLV
+    assert seen and all(url == ROOM for url, _cookie, _redirects in seen)   # 没有一个明文请求
+    assert (ROOM, HEADER, False) in seen                     # 登录带上了
+    assert "cookie_not_sent" not in json.dumps(trace, ensure_ascii=False)
+    if platform == "darwin":
+        assert seen == [(ROOM, HEADER, False)]               # 第一个请求就是带登录的 https 直播页
+        assert layers(trace) == [("登录直播页", "url")]
+    else:
+        assert layers(trace)[-1] == ("直播页兜底", "url")    # 其它平台：链路不变，登录照旧用得上
+
+
+def test_upgrade_touches_only_plain_http_tiktok_links():
+    up = resolver._upgrade_tiktok_scheme
+    assert up("http://www.tiktok.com/@x/live?lang=en") == "https://www.tiktok.com/@x/live?lang=en"
+    assert up("http://TikTok.com:80/@x/live") == "https://tiktok.com/@x/live"
+    assert up("http://m.tiktok.com/@x/live") == "https://m.tiktok.com/@x/live"
+    for untouched in (ROOM, "http://www.tiktok.com:8080/@x/live",
+                      "http://user:pw@www.tiktok.com/@x/live",
+                      "http://www.tiktok.com.evil.example/@x/live",
+                      "http://www.tiktok.com@evil.example/@x/live",
+                      "http://nottiktok.com/@x/live", "ftp://www.tiktok.com/@x/live",
+                      "http://[::1", "", None):
+        assert up(untouched) == untouched
+
+
+def test_a_plain_http_fetch_never_carries_the_cookie(monkeypatch, tmp_path):
+    """_fetch_live_page 自己仍然不把 cookie 发到明文 http 上，trace 里说的是 not_https。"""
+    wire(monkeypatch, tmp_path, World())
+    seen = []
+    _redirecting_session(monkeypatch, {}, seen)
+
+    async def go():
+        note = resolver._fresh_note()
+        got = await resolver._fetch_live_page("http://www.tiktok.com/@x/live", cookie=HEADER)
+        return got, note
+
+    got, note = run(go())
+    assert got == (FLV, False)
+    assert seen == [("http://www.tiktok.com/@x/live", None, None)]
+    assert note["why"] == ["cookie_not_sent: not_https"]
+
+
+def _redirecting_session(monkeypatch, hops, seen, anonymous_page=LIVE_PAGE):
+    """hops：{地址: 重定向到哪}；不在里面的地址回 200 + 带流地址的页面（不带 cookie 的请求
+    回 anonymous_page）。"""
     class Resp:
         charset = "utf-8"
 
-        def __init__(self, url):
+        def __init__(self, url, cookie=None):
             self.status = 302 if url in hops else 200
             self.headers = {"Location": hops[url]} if url in hops else {}
-            self.body = LIVE_PAGE
+            self.body = LIVE_PAGE if cookie else anonymous_page
 
         async def __aenter__(self):
             return self
@@ -833,8 +1094,9 @@ def _redirecting_session(monkeypatch, hops, seen):
             return False
 
         def get(self, url, headers=None, **kwargs):
-            seen.append((url, (headers or {}).get("Cookie"), kwargs.get("allow_redirects")))
-            return Resp(url)
+            cookie = (headers or {}).get("Cookie")
+            seen.append((url, cookie, kwargs.get("allow_redirects")))
+            return Resp(url, cookie)
 
     import aiohttp
     monkeypatch.setattr(aiohttp, "ClientSession", Session)
@@ -861,6 +1123,91 @@ def test_logged_in_fetch_does_not_follow_a_redirect_off_tiktok(monkeypatch, tmp_
     assert seen == [(ROOM, HEADER, False)]                  # 没有跟出去，cookie 没到别的主机
     assert layers(trace)[0] == ("登录直播页", "none")
     assert "redirect_off_tiktok" in trace[0]["why"]
+
+
+def _api_session(monkeypatch, redirect_to, seen):
+    """房间接口的假会话：匿名请求回 4003110；带 Cookie 的请求回 302 → redirect_to。
+    和 aiohttp 一样：没传 allow_redirects=False 就自己跟过去，请求头（含 Cookie）原样带上。"""
+    class Resp:
+        charset = "utf-8"
+
+        def __init__(self, status, body=b"", location=None):
+            self.status, self.body = status, body
+            self.headers = {"Location": location} if location else {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def get(self, url, headers=None, **kwargs):
+            cookie = (headers or {}).get("Cookie")
+            seen.append((url, cookie))
+            if not cookie:
+                return Resp(200, json.dumps(_GATED).encode("utf-8"))
+            if kwargs.get("allow_redirects", True):
+                seen.append((redirect_to, cookie))            # aiohttp 会这样跟过去
+                return Resp(200, b'{"data": {}}')
+            return Resp(302, location=redirect_to)
+
+    async def read_all(resp, _limit):
+        return resp.body
+
+    import aiohttp
+    monkeypatch.setattr(aiohttp, "ClientSession", Session)
+    monkeypatch.setattr(resolver, "read_all", read_all)
+
+
+def test_logged_in_api_retry_does_not_follow_a_redirect_off_tiktok(monkeypatch, tmp_path):
+    """4003110 之后借登录重问房间接口的那一次，用真的 _get_json。接口回 30x 指到别的主机时，
+    cookie 不跟过去——和直播页那一条一样。"""
+    world = wire(monkeypatch, tmp_path, World())
+    world.jars["safari"] = logged_in_jar()
+    monkeypatch.setattr(resolver, "_get_json", REAL_GET_JSON)      # wire() 换掉的那个换回来
+    seen = []
+    _api_session(monkeypatch, "https://evil.example/collect", seen)
+
+    async def go():
+        note = resolver._fresh_note()
+        with pytest.raises(resolver.ResolveError) as exc:
+            await resolver._resolve_via_api(ROOM)
+        return exc.value, note
+
+    err, note = run(go())
+    assert err.kind == "browser_only"
+    webcast = resolver._WEBCAST_API.format(room="123")
+    assert seen == [(webcast, None), (webcast, HEADER)]      # 带 cookie 的请求只到过 TikTok
+    assert "http=302" in note["why"]
+    assert SENTINEL not in json.dumps(note, ensure_ascii=False) and SENTINEL not in str(err)
+
+
+def test_get_json_never_sends_a_cookie_to_another_host(monkeypatch):
+    seen = []
+    _api_session(monkeypatch, "https://evil.example/collect", seen)
+    import aiohttp
+
+    async def go():
+        note = resolver._fresh_note()
+        async with aiohttp.ClientSession() as session:
+            got = await REAL_GET_JSON(session, "https://evil.example/webcast/room/info/",
+                                      headers={"User-Agent": "x", "Cookie": HEADER})
+        return got, note
+
+    got, note = run(go())
+    assert got == _GATED                                      # 照常请求，只是不带 cookie
+    assert seen == [("https://evil.example/webcast/room/info/", None)]
+    assert note["why"] == ["cookie_not_sent: not_tiktok_host"]
 
 
 # ---- 12：其它平台保持原样 ----------------------------------------------------
