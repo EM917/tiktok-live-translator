@@ -483,6 +483,45 @@ async def check_resolver():
                   "在 Chrome/Safari 里登录一次 TikTok")
 
 
+async def check_browser_login():
+    """有的直播间 TikTok 只把流地址给登录了的观众，那时程序要借浏览器里的 TikTok 登录。
+    这一行只看两件事：各浏览器的 cookie 库**读不读得到**、里面有没有登录 cookie 的**名字**。
+
+    绝不解密、绝不调 yt-dlp 的读取函数：解密 Chrome 的 cookie 值要向钥匙串要密钥，
+    启动自检会因此弹对话框。2026-09-17 实测 macOS 27 上两个浏览器都是系统拒绝读取，
+    而当时界面上没有任何一行说这件事。"""
+    import sys
+
+    from . import browser_login as bl
+
+    name = "浏览器登录态"
+    if sys.platform != "darwin":
+        return _check(name, OK, "这一项只检查 macOS 上的浏览器数据读取权限，本机不适用")
+    from .resolver import _installed_browsers
+    browsers = await _to_thread(_installed_browsers)
+    observed = {}
+    for browser in browsers:
+        observed[browser] = await _to_thread(bl.probe, browser)
+    return _browser_login_row(observed)
+
+
+def _browser_login_row(observed):
+    """{浏览器: 代码} → 自检的一行。大多数直播间不登录也能解析，所以借不到只是 WARN。"""
+    from . import browser_login as bl
+
+    name = "浏览器登录态"
+    scope = "（只有 TikTok 要求登录才给流地址的直播间用得到，其余直播间不受影响）"
+    if not observed:
+        return _check(name, WARN, "没有找到 Chrome、Safari 等可借用登录的浏览器" + scope,
+                      bl.LOGIN_STEPS)
+    if all(code == bl.NOT_READ for code in observed.values()):
+        return _check(name, OK, "这次运行没有读取浏览器数据（测试环境或 TLT_NO_BROWSER）")
+    detail = bl.observed_text(observed)
+    if any(code == bl.OK for code in observed.values()):
+        return _check(name, OK, detail)
+    return _check(name, WARN, detail + scope, bl.steps_text(observed))
+
+
 def _pip_command(spec, upgrade=True):
     """给中控复制的手动安装命令。Windows 默认终端是 PowerShell：以带引号的路径开头的一行
     会被当成表达式报错，前面必须加 &。"""
@@ -567,6 +606,7 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
         ("领域词表", check_glossary(glossary)),
         ("审计日志", check_audit()),
         ("直播流解析", check_resolver()),
+        ("浏览器登录态", check_browser_login()),
         ("观众弹幕", check_comments(args)),
         ("磁盘空间", check_disk()),
     ]

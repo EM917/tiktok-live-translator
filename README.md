@@ -475,6 +475,17 @@ TikTok. The application no longer reports the streamer as offline unless TikTok
 explicitly states the room has ended. A browser can be pinned with
 `--cookies-browser safari`, or credentials supplied via `--cookies cookies.txt`.
 
+**The "浏览器登录态" self-check row says the system refused the read.** macOS does
+not let other apps read a browser's data directory unless the reading app has
+Full Disk Access. Open System Settings → Privacy & Security → Full Disk Access,
+press "+", add "TikTok Live Translator" and switch it on (add Terminal too if
+you launch with Start.command), then quit the app completely and reopen it. This
+only matters for rooms whose stream address TikTok serves to signed-in viewers.
+The self-check looks only at whether the cookie store can be read and at login
+cookie names; it never decrypts and never raises a Keychain prompt. Failed
+resolutions record one of these codes in the audit log: `blocked_by_system`,
+`no_browser_data`, `no_tiktok_cookie`, `not_logged_in`, `keychain_wait`.
+
 **"TikTok did not hand this room's stream address to the app (code 4003110)".**
 That code is TikTok's generic refusal; the response carries no reason, and the
 app does not invent one. Before concluding anything, run the built-in check:

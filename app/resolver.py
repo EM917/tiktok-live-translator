@@ -26,12 +26,17 @@ class ResolveError(RuntimeError):
 
     status：kind=offline 时房间接口/页面原样给出的房间状态值（4=已结束，其它值含义
     TikTok 没说明）。重连循环只在 4 时收手，其余值先等一等（见 pipeline._confirm_offline）。
+
+    login：这次解析里借各浏览器 TikTok 登录时看到的结果，{浏览器: 代码}（代码见
+    app/browser_login.py）。上层拿它给中控写「能照做的一步」，不用去解析错误文本。
+    只有代码，没有 cookie 的值。
     """
 
-    def __init__(self, message, kind="unknown", status=None):
+    def __init__(self, message, kind="unknown", status=None, login=None):
         super().__init__(message)
         self.kind = kind
         self.status = status
+        self.login = dict(login or {})
 
 
 _DIRECT_RE = re.compile(r"\.(flv|m3u8)(\?|$)", re.IGNORECASE)
@@ -112,35 +117,48 @@ async def _cookie_header_with_budget(browser):
     """在线程池里读浏览器 cookie，并给它一个预算。yt-dlp 解密 Chrome cookie 要跑
     macOS 的 security 命令，会弹钥匙串授权对话框——用户没看到就一直阻塞，
     整条解析停在「正在解析直播流地址…」，点停止也取消不掉线程。超时按
-    「读不到」处理；线程本身收不回来，但协程不再陪它等。"""
+    「读不到」处理；线程本身收不回来，但协程不再陪它等。
+
+    返回 Cookie 头或 None。读到了什么（见 browser_login 的代码）记进当前这一层的
+    why 和这次解析的登录观察里——只记代码，cookie 的值不出这个函数的返回值。"""
+    from .browser_login import KEYCHAIN_WAIT, LoginRead
+
     loop = asyncio.get_running_loop()
     try:
-        return await asyncio.wait_for(loop.run_in_executor(None, _cookie_header, browser),
-                                      timeout=BROWSER_ATTEMPT_TIMEOUT)
+        got = await asyncio.wait_for(loop.run_in_executor(None, _read_login, browser),
+                                     timeout=BROWSER_ATTEMPT_TIMEOUT)
     except asyncio.TimeoutError:
-        print("[信息] 读取 {} 的 TikTok 登录状态 {} 秒没有返回（macOS 可能在等你"
-              "点钥匙串对话框），先按未登录继续".format(browser, BROWSER_ATTEMPT_TIMEOUT))
-        return None
+        print("[信息] 读取 {} 的 TikTok 登录状态 {} 秒没有返回，先按未登录继续；屏幕上"
+              "如果有「钥匙串」对话框，点「始终允许」".format(browser, BROWSER_ATTEMPT_TIMEOUT))
+        got = LoginRead(None, KEYCHAIN_WAIT)
+    _observe_login(browser, got.code)
+    return got.header
 
 
-def _cookie_header(browser):
-    """借用浏览器里现成的 TikTok cookie，拼成一个 Cookie 头。
+def _read_login(browser):
+    """借用浏览器里现成的 TikTok cookie：返回 LoginRead(Cookie 头或 None, 代码)。
 
     cookies 只在本机与 TikTok 之间使用：不写日志、不落盘、不发往任何第三方。
-    读不到就返回 None，调用方按匿名处理。"""
-    try:
-        from yt_dlp.cookies import extract_cookies_from_browser
-    except Exception:
-        return None
-    try:
-        jar = extract_cookies_from_browser(browser)
-    except Exception:
-        return None
-    pairs = []
-    for c in jar:
-        if c.domain and "tiktok.com" in c.domain:
-            pairs.append("{}={}".format(c.name, c.value))
-    return "; ".join(pairs) if pairs else None
+    读不到时 header 为 None，调用方按匿名处理；为什么读不到看 code。
+
+    以前这里叫 _cookie_header，任何异常都吞成 None，调用方一律记「no_cookie」——
+    2026-09-17 实测 macOS 27 上两个浏览器都是系统拒绝读取，日志却说「没有 cookie」。"""
+    from .browser_login import read_login
+    return read_login(browser)
+
+
+# 一次解析里借各浏览器登录的观察 {浏览器: 代码}，最后挂在 ResolveError.login 上。
+_LOGIN_OBS = contextvars.ContextVar("tlt_resolver_login_obs", default=None)
+
+
+def _observe_login(browser, code):
+    """记一笔「借这个浏览器的登录时看到了什么」：进当前层的 why，也进这次解析的汇总。
+    同一个浏览器一次解析里会被读好几回（接口层、直播页层）；读到过登录（ok）就不再被
+    后面的结果盖掉——「借到了登录、TikTok 仍然不给」是要原样告诉中控的事实。"""
+    _note("{}: {}".format(browser, code))
+    seen = _LOGIN_OBS.get()
+    if seen is not None and seen.get(browser) != "ok":
+        seen[browser] = code
 
 
 async def _resolve_from_page(url, browser=None):
@@ -157,9 +175,8 @@ async def _resolve_from_page(url, browser=None):
 
     headers = dict(_BROWSER_HEADERS)
     if browser:
-        cookie = await _cookie_header_with_budget(browser)
+        cookie = await _cookie_header_with_budget(browser)   # 读不到的原因它已经记下
         if not cookie:
-            _note("{}: no_cookie".format(browser))
             return None, False
         headers["Cookie"] = cookie
     try:
@@ -740,6 +757,13 @@ def _stderr_why(text):
     return {"why": strip_query(lines[-1], 120)} if lines else {}
 
 
+def _borrow_why(note, stderr_text):
+    """yt-dlp借cookie 这一层的 why：各浏览器的登录代码在前，yt-dlp stderr 的最后一行在后。"""
+    parts = list(note.get("why") or [])
+    parts += [v for v in _stderr_why(stderr_text).values() if v not in parts]
+    return {"why": strip_query("; ".join(parts), 120)} if parts else {}
+
+
 def _mark(trace, layer, outcome, t0, **extra):
     """解析日志的一条：哪一层、什么结果、花了多久。trace 为 None 时什么也不做。
 
@@ -783,10 +807,12 @@ async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=No
     这一层包装只负责各层观察（_note）的上下文：返回或抛出之前把它复位，上一次解析的
     笔记不会漏到同一个任务里后面的调用上。"""
     token = _LAYER_NOTE.set(None)
+    login_token = _LOGIN_OBS.set({})
     try:
         return await _resolve_stream_url(url, cookies=cookies,
                                          cookies_browser=cookies_browser, trace=trace)
     finally:
+        _LOGIN_OBS.reset(login_token)
         _LAYER_NOTE.reset(token)
 
 
@@ -914,8 +940,11 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     # 第 3 层：匿名失败且用户没自带 cookies.txt——依次试各浏览器的现成登录态。
     # 记住成功的那个，下次直接用，不再逐个试。
     if code != 0 and not cookies and cookies_browser != "none":
+        from .browser_login import classify_stderr
+
         t0, used_browser, cookie_outcome = time.monotonic(), None, "none"
         last_err = ""
+        borrow_note = _fresh_note()
         try:
             for browser in _browser_order(cookies_browser):
                 try:
@@ -927,6 +956,11 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
                     last_err = "{}: timeout".format(browser)
                     continue          # 这个浏览器超时了：换下一个，别中断整个兜底
                 last_err = b_err
+                # 子进程读 cookie 读不到时，stderr 里是系统或 yt-dlp 的原话：归成代码记下。
+                # stderr 说的是别的事（比如提取器报未开播）就不记——这一层不知道登录状态
+                login_code = classify_stderr(browser, b_err) if b_code != 0 else None
+                if login_code:
+                    _observe_login(browser, login_code)
                 if b_code == 0 and _first_url(b_out):
                     _remember_browser(browser)
                     print("[信息] 匿名解析失败，已借用 {} 的 TikTok 登录状态".format(browser))
@@ -939,7 +973,7 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
             _note_layer_crash(crashed, "yt-dlp借cookie", exc)
             cookie_outcome, last_err = "crash", type(exc).__name__
         _mark(trace, "yt-dlp借cookie", cookie_outcome, t0, browser=used_browser,
-              **({} if cookie_outcome == "url" else _stderr_why(last_err)))
+              **_borrow_why(borrow_note, "" if cookie_outcome == "url" else last_err))
     if code != 0:
         # 第 4 层：yt-dlp 的 TikTok 提取器时不时失灵（接口说没播但页面在播）——
         # 先试页面兜底。匿名抓不到时再借用浏览器登录态抓一次：有些房间的页面
@@ -1002,7 +1036,7 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         if crashed:
             message += "（另有解析路径内部出错已跳过：{}，详见终端）".format(
                 "、".join(crashed))
-        raise ResolveError(message, kind=kind)
+        raise ResolveError(message, kind=kind, login=_LOGIN_OBS.get())
     lines = [line.strip() for line in out.splitlines() if line.strip()]
     if not lines:
         # 退出码 0 但没有任何输出：我们不知道发生了什么，不能替它说「下播了」

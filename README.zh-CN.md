@@ -420,6 +420,14 @@ large-v3 叠加后足以耗尽 16–18 GB 机器的内存并引发换页，表�
 明确说明房间已结束时判定主播下播。可用 `--cookies-browser safari` 指定浏览器，
 或通过 `--cookies cookies.txt` 提供凭据。
 
+**自检「浏览器登录态」显示「系统拒绝读取」。** macOS 不允许其它程序读取浏览器的
+数据目录，除非该程序有「完全磁盘访问权限」。到「系统设置」→「隐私与安全性」→
+「完全磁盘访问权限」，点「+」加入「TikTok Live Translator」并打开开关（用
+Start.command 启动的话把「终端」也加进去），然后完全退出程序再打开。这一项只影响
+TikTok 要求登录才给流地址的直播间；自检只看 cookie 库能否读取和登录 cookie 的名字，
+不解密、不弹钥匙串对话框。解析失败时审计里记的是代码：`blocked_by_system`、
+`no_browser_data`、`no_tiktok_cookie`、`not_logged_in`、`keychain_wait`。
+
 **首次启动长时间停留在下载识别模型。** 模型正从 Hugging Face 下载
 （large-v3 约 3 GB），进度显示在页面上，仅首次需要。
 

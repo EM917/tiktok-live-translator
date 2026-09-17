@@ -138,7 +138,10 @@ def test_page_fallback_always_returns_a_pair_without_cookies(monkeypatch):
 
     from app import resolver
 
-    monkeypatch.setattr(resolver, "_cookie_header", lambda browser: None)
+    from app.browser_login import LoginRead
+
+    monkeypatch.setattr(resolver, "_read_login",
+                        lambda browser: LoginRead(None, "no_tiktok_cookie"))
     result = asyncio.run(resolver._resolve_from_page(
         "https://www.tiktok.com/@someone/live", browser="chrome"))
     assert result == (None, False)
@@ -170,7 +173,10 @@ def _age_gate_setup(monkeypatch, cookie, gated_even_with_cookie=False):
     monkeypatch.setattr(resolver, "_room_status", fake_status)
     monkeypatch.setattr(resolver, "_get_json", fake_json)
     monkeypatch.setattr(resolver, "_browser_order", lambda pref: ("chrome",))
-    monkeypatch.setattr(resolver, "_cookie_header", lambda browser: cookie)
+    from app.browser_login import LoginRead
+
+    monkeypatch.setattr(resolver, "_read_login", lambda browser: LoginRead(
+        cookie, "ok" if cookie else "no_tiktok_cookie"))
     monkeypatch.setattr(resolver, "_remember_browser", lambda browser: None)
 
 

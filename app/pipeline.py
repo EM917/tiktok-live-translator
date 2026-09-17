@@ -111,6 +111,23 @@ def _media_label(url):
         return "?"
 
 
+def browser_only_message(retries, login=None):
+    """解析以 kind=browser_only 收场时给中控的话。
+
+    前半句是一直以来的事实（TikTok 不给、原因它不说明）；中间按这次借浏览器登录时的
+    观察（ResolveError.login，{浏览器: 代码}）接上对应的一步——系统拒绝读取就给
+    「完全磁盘访问权限」的步骤，没登录就说去登录，借到了登录仍然不给就照实说；
+    最后是粘 .flv 地址的办法。只写观察和能照做的事。"""
+    from .browser_login import browser_only_advice
+
+    return ("TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 {} 次。"
+            "不是网络或限流问题——同一时刻其它直播间正常，原因 TikTok 不说明；"
+            "有时过一会儿再点「开始翻译」就好，有时整场都不给。".format(retries)
+            + browser_only_advice(login)
+            + "想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
+              "（中间空格隔开），一次约两周有效。")
+
+
 def _describe_asr(cfg):
     """给人看的识别配置：「ct2/large-v3-turbo/cpu/int8」（auto 的部分省略）。"""
     parts = [cfg.get("backend"), cfg.get("model"), cfg.get("device"), cfg.get("compute_type")]
@@ -1619,7 +1636,8 @@ class Pipeline:
                     trace=layers)
             except ResolveError as exc:
                 self._log_resolve(attempt, False, t0, layers, kind=exc.kind,
-                                  reconnect=reconnect, message=str(exc))
+                                  reconnect=reconnect, message=str(exc),
+                                  login=getattr(exc, "login", None))
                 if exc.kind != "browser_only":
                     raise
                 last = exc
@@ -1634,20 +1652,18 @@ class Pipeline:
                     "（第 {}/{} 次）…".format(self.BROWSER_ONLY_RETRY_SEC, attempt + 1,
                                             self.BROWSER_ONLY_RETRIES))
                 await asyncio.sleep(self.BROWSER_ONLY_RETRY_SEC)
-        raise ResolveError(
-            "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 {} 次。"
-            "不是网络或限流问题——同一时刻其它直播间正常，原因 TikTok 不说明；"
-            "有时过一会儿再点「开始翻译」就好，有时整场都不给。"
-            "想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
-            "（中间空格隔开），一次约两周有效。".format(self.BROWSER_ONLY_RETRIES),
-            kind="browser_only") from last
+        raise ResolveError(browser_only_message(self.BROWSER_ONLY_RETRIES,
+                                                getattr(last, "login", None)),
+                           kind="browser_only",
+                           login=getattr(last, "login", None)) from last
 
     def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None,
-                     reconnect=None, message=None):
+                     reconnect=None, message=None, login=None):
         """一次解析尝试：审计文件里一行（type=resolve）+ 终端一行。
 
         reconnect 是会话中途第几次重连（首次开播不带这一栏，和重连区分得开）；
-        失败时 message 记错误原文前 200 字（URL 去掉 query）。
+        失败时 message 记错误原文前 200 字（URL 去掉 query）；login 是借各浏览器
+        TikTok 登录时看到的代码 {浏览器: 代码}（见 app/browser_login.py），没有 cookie 的值。
 
         attempt=0 表示用户自带的直连地址；1..N 是自动解析的第几次。media 只记
         主机和路径——签名地址的 query 里带 sign/expire，两周内拿着就能拉流，
@@ -1664,6 +1680,8 @@ class Pipeline:
             rec["reconnect"] = reconnect
         if message and not ok:
             rec["message"] = strip_query(message, 200)
+        if login and not ok:
+            rec["login"] = dict(login)
         audit = getattr(self, "audit", None)
         if audit is not None:
             audit.resolve(rec)
