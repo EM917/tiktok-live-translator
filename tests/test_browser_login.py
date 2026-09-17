@@ -46,6 +46,23 @@ def _mac_home(monkeypatch, tmp_path):
     return home
 
 
+def test_store_paths_use_the_native_separator(monkeypatch, tmp_path):
+    """常量里的相对路径用 / 写，拼出来必须全是本机分隔符：Windows 上混用分隔符的路径
+    和 pathlib 的规范路径做字符串比较对不上，模拟「拒绝列目录」的用例会整片失效。"""
+    home = _mac_home(monkeypatch, tmp_path)
+    expected = {
+        "chrome": [home / "Library" / "Application Support" / "Google" / "Chrome"],
+        "brave": [home / "Library" / "Application Support" / "BraveSoftware" / "Brave-Browser"],
+        "firefox": [home / "Library" / "Application Support" / "Firefox" / "Profiles"],
+        "safari": [home / "Library" / "Cookies",
+                   home / "Library" / "Containers" / "com.apple.Safari" / "Data" / "Library" / "Cookies"],
+    }
+    for browser, dirs in expected.items():
+        assert list(bl.store_dirs(browser)) == [str(d) for d in dirs]
+    assert bl._under("C:\\home" if os.sep == "\\" else "/home", "a/b c/d") == os.path.join(
+        "C:\\home" if os.sep == "\\" else "/home", "a", "b c", "d")
+
+
 def _chrome_dir(home):
     d = home / "Library" / "Application Support" / "Google" / "Chrome"
     d.mkdir(parents=True, exist_ok=True)

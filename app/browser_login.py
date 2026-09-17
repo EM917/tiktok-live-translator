@@ -82,6 +82,13 @@ def error_code(exc):
 
 # ---- 数据目录 ----------------------------------------------------------
 
+def _under(home, relative):
+    """home 下的相对路径，按本机的分隔符拼。常量里的相对路径用 / 写；直接整串交给
+    os.path.join 在 Windows 上会拼出正反斜杠混用的路径，和 pathlib 给的规范路径做字符串
+    比较就对不上（2026-09-17 Windows CI：9 个用例因此失败）。"""
+    return os.path.join(home, *relative.split("/"))
+
+
 def store_dirs(browser):
     """这个浏览器放 cookie 的目录（macOS）。其它平台返回空：「目录在却不让列」是
     macOS 隐私保护的表现，别的平台没有这一类。"""
@@ -89,11 +96,11 @@ def store_dirs(browser):
     if home is None or sys.platform != "darwin":
         return ()
     if browser == "safari":
-        return tuple(os.path.dirname(os.path.join(home, f)) for f in _SAFARI_FILES)
+        return tuple(os.path.dirname(_under(home, f)) for f in _SAFARI_FILES)
     if browser == "firefox":
-        return (os.path.join(home, "Library/Application Support/Firefox/Profiles"),)
+        return (_under(home, "Library/Application Support/Firefox/Profiles"),)
     sub = _CHROMIUM_DIRS.get(browser)
-    return (os.path.join(home, "Library/Application Support", sub),) if sub else ()
+    return (_under(home, "Library/Application Support/" + sub),) if sub else ()
 
 
 def _listing_refused(path):
@@ -319,7 +326,7 @@ def _safari_names(data):
 
 
 def _probe_safari(home):
-    files = [os.path.join(home, f) for f in _SAFARI_FILES]
+    files = [_under(home, f) for f in _SAFARI_FILES]
     present = [f for f in files if os.path.isfile(f)]
     if not present:
         return _missing_store_code("safari")
