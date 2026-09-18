@@ -222,6 +222,12 @@ class Pipeline:
         saved_source = load_settings().get("source_lang")
         if saved_source:
             self.server.config["source_lang"] = str(saved_source)[:12]
+        # 违禁词警示模式：每场在界面上选一次，默认关闭（产品负责人明确要求
+        # 「不要默认开」）。记住上次选择的道理和手机同看一样——opt-in 功能
+        # 默认关，settings 里存过才在下次启动时回填。关闭不代表不扫：命中
+        # 仍写审计（见 _emit_original），只是不广播报警、不占强模型
+        self.alerts_enabled = bool(load_settings().get("alerts_enabled", False))
+        self.server.config["alerts_enabled"] = self.alerts_enabled
         # 「最近直播间」：启动就摆在首页，中控不必每次重新粘地址。只存主播名
         # 和地址，界面上只显示主播名（见 web/app.js renderRecentRooms）
         self.server.config["recent_rooms"] = recent_rooms()
@@ -341,6 +347,12 @@ class Pipeline:
                     self._save_setting("source_lang", source[:12])
                     self.server.config["source_lang"] = source[:12]
                     self.args.source_requested = source[:12]
+                # 违禁词警示：界面每次点「开始」都显式带这一项，默认关闭——
+                # 没带这个字段（老页面缓存、异常消息）一律按关处理，不擅自当成开
+                alerts_enabled = bool(msg.get("alerts", False))
+                self.alerts_enabled = alerts_enabled
+                self._save_setting("alerts_enabled", alerts_enabled)
+                self.server.config["alerts_enabled"] = alerts_enabled
                 self._note_operator_stream_action()
                 return self._start_with_ack(url, media=media)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
@@ -975,6 +987,9 @@ class Pipeline:
         self._drop_strong()              # 也可能删掉了：上一场的强模型对象不能接着用
         self.telemetry.reset()          # 统计按场计，不跨房间累计
         login_source = await self._login_source()
+        # getattr 兜底：个别测试用 Pipeline.__new__ 造半成品实例，没走过 __init__
+        # 或 handle_control 的 start 分支——按全局默认（关）处理，不当成开
+        alerts_enabled = getattr(self, "alerts_enabled", False)
         if self.audit is not None:
             self.audit.close()
         # requested 是用户的选择，active 是实际生效的对象——这两列并排记，
@@ -1004,12 +1019,24 @@ class Pipeline:
             # 这一场解析流地址时先借哪个浏览器的 TikTok 登录（浏览器名，没有是 null）。
             # 关于账号只记这一个名字：不记用户名、不记 cookie 的名字和值
             "login_source": login_source,
+            # 本场违禁词警示是开是关（见 handle_control 的 start 分支）：状态
+            # 必须落审计，否则事后没法回答「那场命中为什么没报警」
+            "alerts_enabled": alerts_enabled,
             **self._sleep_guard_extra(),
             **self._banned_terms_provenance(),
             **self._evidence_session_extras(),
             # 解析组件版本、上次连上更新服务器的时间、这一场是不是更新后自动接上的
             **self._update_session_extras(),
         })
+        # 这一场就按上面算出来的值走到底（即便 self.alerts_enabled 在别处被改，
+        # 也不会跟审计头和这条广播错位）
+        self.alerts_enabled = alerts_enabled
+        # 状态要看得见，不能只写进审计：config 里带上（hello 会捎给新连进来的
+        # 页面/手机），并广播一次给已经连着的页面——中控不该靠猜知道这场报不报警
+        self.server.config["alerts_enabled"] = alerts_enabled
+        await self.server.broadcast({"type": "alert_mode", "on": alerts_enabled})
+        if not alerts_enabled:
+            print("[提示] 本场违禁词警示关闭：命中只记入审计，不报警")
         # 空闲期（还没开播）攒下的手机同看事件在这里补写：session_start 已经落盘，
         # 顺序保持原样。晚了这一步，「开播前就打开了同看」这件事在证据里会不见
         self._flush_viewer_audit()
@@ -3491,6 +3518,13 @@ class Pipeline:
             # 主播、场次、此刻连着几个界面：换过房间后认得出哪条是上一场的；事后答得出
             # 「这条报警响的时候有没有页面开着」。audit.alert 原样带上这几列
             hit.update(self._alert_stamp())
+            if not getattr(self, "alerts_enabled", False):
+                # 警示关闭：证据不能因此丢——命中照样进审计，只是多打一个
+                # suppressed 标记；不广播、不计数、不占强模型、不进系统通知
+                hit["suppressed"] = "alerts_off"
+                if self.audit is not None:
+                    self.audit.alert(hit)
+                continue
             if self.audit is not None:
                 self.audit.alert(hit)
             print("[警报] 疑似违禁词「{}」（{}）：{}".format(

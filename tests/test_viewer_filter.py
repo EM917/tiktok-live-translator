@@ -218,6 +218,19 @@ def test_strong_flag_is_a_plain_bool_cast():
         assert out["strong"] is want, value
 
 
+def test_alert_mode_keeps_only_on():
+    """手机只需要知道命中会不会有人看到，不需要原因（CLAUDE.md 八）。"""
+    out = viewer.filter_payload({"type": "alert_mode", "on": True,
+                                 "reason": "operator", "term": "x"})
+    assert out == {"type": "alert_mode", "on": True}
+
+
+def test_alert_mode_on_is_a_plain_bool_cast():
+    for value, want in ((1, True), (0, False), ("x", True), ("", False), (None, False)):
+        out = viewer.filter_payload({"type": "alert_mode", "on": value})
+        assert out["on"] is want, value
+
+
 def test_scrub_text_truncates_and_leaves_plain_chinese_alone():
     assert len(viewer.scrub_text("啊" * 500)) == viewer.SCRUB_LIMIT
     assert len(viewer.scrub_text("啊" * 500, limit=20)) == 20

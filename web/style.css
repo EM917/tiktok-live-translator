@@ -57,6 +57,13 @@ body {
 
 .status-text { font-size: 13px; color: var(--text-dim); }
 
+/* 违禁词警示开关的状态标签：只在连接中/直播中露出（app.js 控制 hidden） */
+.alert-mode-tag {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+}
+.alert-mode-tag.off { color: var(--text-dim); background: color-mix(in srgb, var(--text) 8%, var(--bg)); }
+.alert-mode-tag.on { color: #1db954; background: color-mix(in srgb, #1db954 15%, var(--bg)); }
+
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
 .dot.live { background: #1db954; }
 .dot.connecting { background: #e8a013; }
@@ -344,6 +351,11 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 .watch-state { font-size: 12px; font-weight: 600; }
 .watch-state.on { color: #1db954; }
 .watch-state.off { color: var(--fail); }
+.watch-toggle-row {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--text); margin-top: 8px; cursor: pointer;
+}
+.watch-toggle-row input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 .watch-desc { font-size: 12px; color: var(--text-dim); margin-top: 6px; line-height: 1.6; }
 .watch-how { font-size: 11px; color: var(--text-faint); margin-top: 6px; line-height: 1.6; }
 .watch-how code {

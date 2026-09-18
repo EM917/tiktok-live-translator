@@ -250,6 +250,26 @@ def test_replay_snapshot_stays_under_the_queue_limit():
     assert viewer_mod.REPLAY_MAX < viewer_mod.QUEUE_MAX
 
 
+def test_replay_snapshot_carries_the_alert_mode_when_config_has_it():
+    """晚进来的手机要在下一次事件之前就知道这场报不报警，不能靠猜。"""
+    server = StubServer(alerts_enabled=True)
+    snapshot = viewer_mod.replay_snapshot(server)
+    modes = [m for m in snapshot if m["type"] == "alert_mode"]
+    assert modes == [{"type": "alert_mode", "on": True}]
+
+    server = StubServer(alerts_enabled=False)
+    snapshot = viewer_mod.replay_snapshot(server)
+    modes = [m for m in snapshot if m["type"] == "alert_mode"]
+    assert modes == [{"type": "alert_mode", "on": False}]
+
+
+def test_replay_snapshot_omits_the_alert_mode_when_config_lacks_the_key():
+    """没有这一键的都是老会话——按「未知」处理，不当「关闭」擅自下结论。"""
+    server = StubServer()
+    snapshot = viewer_mod.replay_snapshot(server)
+    assert not any(m["type"] == "alert_mode" for m in snapshot)
+
+
 # ---- 握手 ----
 def run_handshake(hub, ws, ip="192.168.1.99"):
     request = SimpleNamespace(transport=FakeTransport(), match_info={},

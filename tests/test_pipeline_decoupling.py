@@ -43,6 +43,9 @@ def make_pipeline(monkeypatch, tmp_path, translator=None, terms=()):
     server = StubServer()
     p = Pipeline(args, server)
     p.translator = translator
+    # 这个文件测的是检测/审计本身，不是新开关（见 tests/test_alert_mode.py）：
+    # 开着才是这些用例一直假定的行为
+    p.alerts_enabled = True
     return p, server
 
 

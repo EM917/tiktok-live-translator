@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=28">
+  <link rel="stylesheet" href="/static/style.css?v=29">
 </head>
 <body>
   <header class="topbar">
@@ -13,6 +13,8 @@
       <span id="status-dot" class="dot idle"></span>
       <h1>TikTok 直播同传</h1>
       <span id="status-text" class="status-text">等待连接…</span>
+      <!-- 违禁词警示开关的状态：只在连接中/直播中露出，待机时没有场次可言 -->
+      <span id="alert-mode-tag" class="alert-mode-tag hidden"></span>
     </div>
     <div class="controls">
       <label class="ctl">
@@ -217,6 +219,12 @@
           <span class="watch-title">🚨 违禁词实时报警</span>
           <span id="watch-state" class="watch-state">检查中…</span>
         </div>
+        <!-- 违禁词警示模式：默认关闭。关闭时命中仍会记入审计（不会漏），
+             只是不弹窗、不通知——开不开只影响「要不要报警」，不影响「要不要记」 -->
+        <label class="watch-toggle-row">
+          <input type="checkbox" id="alerts-toggle">
+          开启违禁词警示
+        </label>
         <p id="watch-desc" class="watch-desc"></p>
         <p class="watch-how">
           编辑项目文件夹里的 <code>banned_terms.txt</code>，一行一个词或短语，
@@ -297,6 +305,6 @@
   <script src="/static/follow.js?v=1"></script>
   <script src="/static/alerts.js?v=2"></script>
   <script src="/static/qrcanvas.js?v=1"></script>
-  <script src="/static/app.js?v=47"></script>
+  <script src="/static/app.js?v=48"></script>
 </body>
 </html>

@@ -104,6 +104,9 @@ ALLOW = {
     "status": ("state", "ts"),
     # backlog_sec / reason / text / dropped 都不给：手机只需要知道有没有在积压
     "health": ("level",),
+    # 中控这一场有没有开违禁词警示。只给这一个布尔——手机不需要知道原因，
+    # 只需要知道「命中了会不会有人看到」（CLAUDE.md 八：只报观察）
+    "alert_mode": ("on",),
 }
 
 # 显式拒绝。viewer 必须单独钉死：它的载荷里带着含 token 的 URL，
@@ -199,7 +202,7 @@ def filter_payload(msg):
             # why 是自由文本。今天的取值都是固定的中文短句，但它长在会变的代码
             # 路径上——顺手过一遍清洗，将来谁把异常文本塞进来也带不出路径
             value = scrub_text(value, 160)
-        elif key in ("replay", "restore", "failed", "strong"):
+        elif key in ("replay", "restore", "failed", "strong", "on"):
             value = bool(value)
         elif key == "strong_state":
             # 只认这三档；来路不明的值归一成 None 而不是丢掉整个键——手机端按
@@ -496,6 +499,13 @@ def replay_snapshot(server, viewers=0, share_since=None):
     backend = config.get("comment_backend")
     if backend:
         payload = filter_payload({"type": "comment_source", "backend": backend})
+        if payload is not None:
+            out.append(payload)
+    # alerts_enabled 不在 config 里是老审计/老会话（键从没写过），这时不发——
+    # 手机端把「没收到过 alert_mode」当「未知」，不当「关闭」
+    if "alerts_enabled" in config:
+        payload = filter_payload({"type": "alert_mode",
+                                  "on": bool(config.get("alerts_enabled"))})
         if payload is not None:
             out.append(payload)
     incidents = config.get("incidents")

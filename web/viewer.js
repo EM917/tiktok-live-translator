@@ -57,6 +57,13 @@ function backoffDelay(n, rand) {
   return Math.max(BACKOFF_MIN, Math.min(BACKOFF_MAX, v));
 }
 
+// 违禁词警示模式的手机端提示文案：中控这场没打开警示时，命中仍会记进审计，
+// 但手机上也看不到报警——不能让手机这边毫无提示，否则同看的人会误以为
+// 「这场很干净」。关闭时给一行常驻灰字；打开时不显示（返回空串，调用方据此隐藏）。
+function alertModeText(on) {
+  return on ? "" : "违禁词警示已关闭（中控开播时未开启）";
+}
+
 // 让「回放的 alert」与「随后实时同 id 的 alert」只渲染一份：只按 alert_id 取键，
 // 不掺 replay 标记——回放先到、实时后到，同一个 key 命中同一张卡片，后到的
 // 走 alert_update 的更新路径，不会重复插入。
@@ -193,6 +200,7 @@ if (typeof document !== "undefined") {
     var demoBanner = document.getElementById("demo-banner");
     var incidentList = document.getElementById("incident-list");
     var healthLine = document.getElementById("health-line");
+    var alertModeLine = document.getElementById("alert-mode-line");
     var alertSection = document.getElementById("alert-section");
     var alertList = document.getElementById("alert-list");
     var captionList = document.getElementById("caption-list");
@@ -447,6 +455,9 @@ if (typeof document !== "undefined") {
       if (commentCountEl) commentCountEl.textContent = "0";
       demoMode = false;
       updateDemoBanner();
+      // 新场次先隐藏，等 replay_snapshot 里的 alert_mode（跟 status 一样紧跟
+      // viewer_hello 补发）把真实值刷回来——不沿用上一场的开关状态
+      if (alertModeLine) alertModeLine.classList.add("hidden");
     }
 
     function updateDemoBanner() {
@@ -472,6 +483,9 @@ if (typeof document !== "undefined") {
             demoMode = false;
             updateDemoBanner();
           }
+          break;
+        case "alert_mode":
+          renderAlertMode(msg);
           break;
         case "incident":
           renderIncident(msg);
@@ -502,6 +516,19 @@ if (typeof document !== "undefined") {
           break;
         default:
           break;   // 白名单以外的类型服务端本就不会发；未知类型安静忽略
+      }
+    }
+
+    // ---- 违禁词警示开关：中控这场没打开时，常驻一行灰字提醒——命中仍记入
+    //      审计，只是这台手机（和中控屏幕）都看不到报警 ----
+    function renderAlertMode(msg) {
+      if (!alertModeLine) return;
+      var text = alertModeText(!!(msg && msg.on));
+      if (text) {
+        alertModeLine.textContent = text;
+        alertModeLine.classList.remove("hidden");
+      } else {
+        alertModeLine.classList.add("hidden");
       }
     }
 
@@ -783,6 +810,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     statusText: statusText,
     streamText: streamText,
+    alertModeText: alertModeText,
     backoffDelay: backoffDelay,
     alertKey: alertKey,
     applyUpdate: applyUpdate,

@@ -37,6 +37,12 @@ test("streamText 未知值有兜底文案", () => {
   assert.equal(V.streamText(null), "状态未知");
 });
 
+// ---- alertModeText ----
+test("alertModeText: 关闭时给出常驻提示文案，打开时空串（调用方据此隐藏）", () => {
+  assert.equal(V.alertModeText(false), "违禁词警示已关闭（中控开播时未开启）");
+  assert.equal(V.alertModeText(true), "");
+});
+
 // ---- backoffDelay ----
 test("backoffDelay(n) n=0..10 单调不减、界内、抖动在注入的固定值附近", () => {
   const fixedRand = () => 0.5;   // (0.5*2-1)*0.2 = 0，无抖动，纯测单调性与边界
@@ -410,6 +416,7 @@ function baseElements() {
   return {
     "conn-dot": makeFakeNode(), "conn-text": makeFakeNode(), "stream-text": makeFakeNode(),
     "alert-badge": makeFakeNode(), "alert-count": makeFakeNode(), "stale-line": makeFakeNode(),
+    "alert-mode-line": makeFakeNode(),
     "demo-banner": makeFakeNode(), "incident-list": makeFakeNode(), "health-line": makeFakeNode(),
     "alert-section": makeFakeNode(), "alert-list": makeFakeNode(), "alert-clear-seen": makeFakeNode(),
     "caption-list": makeFakeNode(), "jump-latest": makeFakeNode(),
@@ -540,5 +547,27 @@ test("手机端「取消警报」：✕ 只在本机隐藏、回放不复活；�
     const stored = JSON.parse(store.get("viewerDismissedAlerts"));
     assert.ok(["a1", "a2", "a3"].every((id) => stored.includes(id)));
     assert.ok(!stored.includes("a4"));
+  });
+});
+
+// ---- DOM 回归：违禁词警示开关的常驻提示行 ----
+test("alert_mode 广播：关闭时常驻灰字，打开时隐藏；新场次先隐藏，等 replay 刷回真实值", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const line = elements["alert-mode-line"];
+    assert.equal(line.classList.contains("hidden"), true, "viewer_hello 之后、alert_mode 到达之前先保持隐藏");
+
+    ws.onmessage({ data: JSON.stringify({ type: "alert_mode", on: false }) });
+    assert.equal(line.classList.contains("hidden"), false, "关闭时应该显示常驻提示");
+    assert.equal(line.textContent, "违禁词警示已关闭（中控开播时未开启）");
+
+    ws.onmessage({ data: JSON.stringify({ type: "alert_mode", on: true }) });
+    assert.equal(line.classList.contains("hidden"), true, "打开时应该隐藏这一行");
+
+    // 断线重连：新场次的 viewer_hello 先把提示行盖回隐藏，不沿用上一场「关闭」的状态，
+    // 直到回放的 alert_mode 把真实值刷回来
+    ws.onmessage({ data: JSON.stringify({ type: "alert_mode", on: false }) });
+    assert.equal(line.classList.contains("hidden"), false);
+    ws.onmessage({ data: JSON.stringify({ type: "viewer_hello", ok: true, ts: Date.now() / 1000, share_since: 0, viewers: 1, max_viewers: 12, read_only: true }) });
+    assert.equal(line.classList.contains("hidden"), true, "新场次的 viewer_hello 应该先隐藏，不沿用上一场");
   });
 });

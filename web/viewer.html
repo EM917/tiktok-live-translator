@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>手机同看 · TikTok 直播同传</title>
 <link rel="icon" type="image/png" href="/v/icon.png">
-<link rel="stylesheet" href="/v/viewer.css?v=1">
+<link rel="stylesheet" href="/v/viewer.css?v=2">
 </head>
 <body>
   <!-- 顶栏：连接点 + 直播状态 + 报警计数，sticky 在最上面 -->
@@ -16,6 +16,8 @@
     <span id="stream-text" class="stream-text">状态未知</span>
     <span id="alert-badge" class="alert-badge hidden">🚨 <span id="alert-count">0</span></span>
   </header>
+  <!-- 违禁词警示关闭时的常驻提示：命中仍记入审计，只是这台手机看不到报警 -->
+  <div id="alert-mode-line" class="alert-mode-line hidden"></div>
   <div id="stale-line" class="stale-line hidden"></div>
 
   <!-- 演示数据提示：见过带 demo 的字幕就常驻，直到状态变回直播中/连接中，或重连后
@@ -60,6 +62,6 @@
   </footer>
   <p class="ring-note">页面切到后台或锁屏后，手机可能停掉提示音。</p>
 
-  <script src="/v/viewer.js?v=1"></script>
+  <script src="/v/viewer.js?v=2"></script>
 </body>
 </html>
