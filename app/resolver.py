@@ -261,6 +261,28 @@ LOGIN_STEP_BUDGET_SEC = 8.0
 # （见 note_anonymous_request），等的时候时刻可能被刷新；不设上限就可能一直等下去。
 LOGIN_GAP_MAX_WAIT_SEC = 3 * LOGIN_AFTER_ANON_GAP_SEC
 
+# ---- 登录直播页重试（2026-09-17 加的）------------------------------------------
+# 一次 @daisycabral_ 的重连实录（logs/session-20260917-185551.jsonl；同一房间当天更早的
+# 每一次解析都是第一层 0.6–1.4 秒就拿到地址）：
+#   层1 登录直播页     none          533 毫秒  browser=safari login={'safari': 'ok'}
+#                                             （带 Safari 的登录抓到了页面，页面里没有流地址）
+#   层2 官方接口       browser_only 1376 毫秒  status=2
+#   层3 WebKit 隐藏页  none        25530 毫秒  超时 25 秒
+#   层4 yt-dlp 匿名    none          986 毫秒  报未开播
+#   层5 yt-dlp 借cookie none       1972 毫秒  同上
+#   层6 直播页兜底     url          7244 毫秒  browser=safari waited_ms=6026
+#                                             ——和层 1 同一种抓法（带 Safari 的登录抓直播页），
+#                                             等过间隔之后拿到了
+#   整场 37641 毫秒。
+# 第一次抓到的页面里为什么没有流地址，我们不知道，这里只记这个观察；已知的是同一种抓法在
+# 约 31 秒后拿到了，而中间那三层（WebKit 隐藏页 25 秒 + 两次匿名 yt-dlp）一个也没拿到。
+# 所以把这一次重抓提到它们前面。
+LOGIN_RETRY_LAYER = "登录直播页重试"
+# 重抓之前固定等这么久（中间没发过匿名请求时）。中间发过匿名请求就按实测的
+# LOGIN_AFTER_ANON_GAP_SEC 等（见 _login_retry_wait）——链路里排在前面的官方接口
+# 是匿名的，生产上等的通常是那个间隔的差额。
+LOGIN_RETRY_GAP_SEC = 3.0
+
 # 进程级：本进程上一次向 TikTok 发**匿名**解析请求的 monotonic 时刻。
 _ANON = {"last": None}
 
@@ -388,6 +410,21 @@ async def _wait_out_anon_gap():
         await _gap_sleep(remain)
         waited += remain
     return waited
+
+
+async def _login_retry_wait():
+    """LOGIN_RETRY_LAYER 重抓之前等的那一段。中间发过匿名请求（链路里排在前面的官方接口
+    就是匿名的）就按间隔规则把差额等完——那一条是实测量出来的，重抓不能绕过它；一次都没发过
+    就固定等 LOGIN_RETRY_GAP_SEC。返回等了多少秒，并记进当前层的 waited_ms（同
+    _wait_out_anon_gap：刻意等的时间不算进任何一层的预算）。"""
+    waited = await _wait_out_anon_gap()
+    if waited:
+        return waited
+    note = _LAYER_NOTE.get()
+    if note is not None:
+        note["waited_ms"] = note.get("waited_ms", 0) + int(round(LOGIN_RETRY_GAP_SEC * 1000))
+    await _gap_sleep(LOGIN_RETRY_GAP_SEC)
+    return LOGIN_RETRY_GAP_SEC
 
 
 async def _resolve_from_page(url, browser=None):
@@ -1260,6 +1297,72 @@ async def _login_page_step(url, cookies_browser):
     return page_url, offline, info
 
 
+async def _login_page_layer(url, cookies_browser, layer, trace, rejected, crashed,
+                            wait=None):
+    """带登录抓直播页的一层：第一次（LOGIN_LAYER）和重抓那一次（LOGIN_RETRY_LAYER）走的是
+    同一段代码、同一个预算（LOGIN_STEP_BUDGET_SEC）。wait 非空时先等它（重抓之前的间隔，
+    见 _login_retry_wait），等的时间记 waited_ms，不算进预算。
+
+    返回 (能用的地址或 None, outcome, info)：拿到、过了安全校验、拉得动才给地址；页面明确说
+    本场已结束照旧抛 offline；其余情况只记一条 trace（outcome / ms / browser / login /
+    waited_ms，和其它层一样），让调用方接着往下走。"""
+    t0, outcome = time.monotonic(), "none"
+    note = _fresh_note()
+    info = {"browser": None, "login": {}}
+    try:
+        if wait is not None:
+            await wait()
+        page_url, offline, info = await _login_page_step(url, cookies_browser)
+        if info["budget"]:
+            outcome = "budget"
+        elif info["browser"] is None:
+            outcome = "no_login"
+        if offline:
+            _mark(trace, layer, "offline", t0, browser=info["browser"],
+                  login=dict(info["login"]), **_layer_note(note))
+            raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
+                               kind="offline", status=note.get("status"))
+        if page_url:
+            checked = await _vet(page_url, layer, rejected)
+            if checked is None:
+                outcome = "rejected"
+            elif await _media_url_works(checked):
+                _remember_browser(info["browser"])
+                print("[信息] 已借用 {} 的 TikTok 登录从直播页取到流地址".format(
+                    info["browser"]))
+                _mark(trace, layer, "url", t0, browser=info["browser"],
+                      login=dict(info["login"]), **_layer_note(note))
+                return checked, "url", info
+            else:
+                print("[信息] 带登录从直播页拿到的地址拉不动，继续试其它方式")
+                outcome = "dead_url"
+    except (ResolveError, asyncio.CancelledError):
+        raise
+    except Exception as exc:
+        _note_layer_crash(crashed, layer, exc)
+        _note(type(exc).__name__)
+        outcome = "crash"
+    _mark(trace, layer, outcome, t0, browser=info["browser"],
+          login=dict(info["login"]), **_layer_note(note))
+    return None, outcome, info
+
+
+def _login_retry_applies(outcome, info):
+    """第一次带登录抓直播页之后，要不要重抓一次（LOGIN_RETRY_LAYER）。
+
+    两个条件：读到的登录确实可用（那一层记下的浏览器回 ok——没读到登录、或读到的不可用时，
+    重抓和第一次一样是匿名的，没有意义），并且那一次**没拿到地址**（outcome=none：这一步走完了，
+    页面里没有流地址，就是上面实录里的那一次）。拿到了地址但没过安全校验 / 拉不动
+    （rejected / dead_url）不重抓——地址是有的，问题不在这一层；预算到点、层内部出错
+    （budget / crash）也不重抓——这一步没走完，再走一次就是再花一个同样的预算，而这两种情况
+    下重抓有没有用我们没有量过。"""
+    from .browser_login import OK
+
+    browser = info.get("browser")
+    return (outcome == "none" and browser is not None
+            and (info.get("login") or {}).get(browser) == OK)
+
+
 async def resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=None):
     """返回直播流媒体地址，详见 _resolve_stream_url。
 
@@ -1284,7 +1387,8 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     （见 _mark）。调用方拿它写审计日志；不传就不记。
 
     解析顺序：（macOS 上读得到浏览器里的 TikTok 登录时；没点名浏览器就只读 Safari，见
-    _login_first_browsers）带登录抓直播页 → 官方接口 →
+    _login_first_browsers）带登录抓直播页 → 官方接口 →（第一次带登录抓页读到了可用登录却
+    没拿到地址、而官方接口也没确认下播时）隔一小段再带登录抓一次直播页 →
     系统 WebKit 引擎加载直播页（macOS）→ yt-dlp 匿名 →（失败时）yt-dlp 借用浏览器
     登录态 → 直播页兜底（有登录时先带登录抓、匿名的那一次放最后）。断流重连走的是同一个
     函数，顺序一样。cookies 只在本机与 TikTok 之间使用，不写入日志、不发往任何
@@ -1311,44 +1415,15 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     # 这次解析向 TikTok 发的**第一个**请求就是带登录的直播页——它前面不能有任何匿名请求。
     # 链接不是 https 的 tiktok.com 就没有这一步：借来的 cookie 不发给别的主机。
     # 拿到地址、过了校验、拉得动就直接返回，后面的匿名各层一概不走；页面明确说本场已结束
-    # 就照旧报下播；其余情况（没读到登录、页面里没有地址、预算到点）往下走原来的链路。
+    # 就照旧报下播；其余情况（没读到登录、页面里没有地址、预算到点）往下走原来的链路——
+    # 其中「读到了可用登录、页面里却没有地址」这一种，官方接口之后会再抓一次（第 1.5 层）。
+    login_can_retry = False
     if login_first_applies(url, cookies_browser):
-        t0, login_outcome = time.monotonic(), "none"
-        login_note = _fresh_note()
-        info = {"browser": None, "login": {}}
-        try:
-            login_url, login_offline, info = await _login_page_step(url, cookies_browser)
-            if info["budget"]:
-                login_outcome = "budget"
-            elif info["browser"] is None:
-                login_outcome = "no_login"
-            if login_offline:
-                _mark(trace, LOGIN_LAYER, "offline", t0, browser=info["browser"],
-                      login=dict(info["login"]), **_layer_note(login_note))
-                raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
-                                   kind="offline", status=login_note.get("status"))
-            if login_url:
-                checked = await _vet(login_url, LOGIN_LAYER, rejected)
-                if checked is None:
-                    login_outcome = "rejected"
-                elif await _media_url_works(checked):
-                    _remember_browser(info["browser"])
-                    print("[信息] 已借用 {} 的 TikTok 登录从直播页取到流地址".format(
-                        info["browser"]))
-                    _mark(trace, LOGIN_LAYER, "url", t0, browser=info["browser"],
-                          login=dict(info["login"]), **_layer_note(login_note))
-                    return checked
-                else:
-                    print("[信息] 带登录从直播页拿到的地址拉不动，继续试其它方式")
-                    login_outcome = "dead_url"
-        except (ResolveError, asyncio.CancelledError):
-            raise
-        except Exception as exc:
-            _note_layer_crash(crashed, LOGIN_LAYER, exc)
-            _note(type(exc).__name__)
-            login_outcome = "crash"
-        _mark(trace, LOGIN_LAYER, login_outcome, t0, browser=info["browser"],
-              login=dict(info["login"]), **_layer_note(login_note))
+        checked, login_outcome, login_info = await _login_page_layer(
+            url, cookies_browser, LOGIN_LAYER, trace, rejected, crashed)
+        if checked is not None:
+            return checked
+        login_can_retry = _login_retry_applies(login_outcome, login_info)
 
     # 第 1 层：TikTok 官方接口。放在最前有两个理由——它给的是**纯音频档**
     # （only_audio=1，省掉整条视频码流），而且它独立于 yt-dlp 的提取器：
@@ -1388,6 +1463,18 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         raise ResolveError("主播当前没有在直播（TikTok 接口确认直播已结束）",
                            kind="offline", status=api_note.get("status"))
     _mark(trace, "官方接口", api_outcome, t0, **_layer_note(api_note))
+
+    # 第 1.5 层：登录直播页重试（见 LOGIN_RETRY_LAYER 上面那次 37.6 秒的实录）。只有第一次
+    # 带登录抓页读到了可用登录、却没拿到地址时才走（_login_retry_applies）；接口确认下播在
+    # 上面就抛了，所以走到这里的接口结果一定不是「确认下播」。一次解析最多重抓一次。
+    # 排在 WebKit 隐藏页（那一次实测超时 25 秒）和两次匿名 yt-dlp 前面：只把流地址给登录
+    # 观众的房间，那三层实录里一个也没拿到，而同一种带登录抓页的方式过一会儿就拿到了。
+    if login_can_retry:
+        checked, _retry_outcome, _retry_info = await _login_page_layer(
+            url, cookies_browser, LOGIN_RETRY_LAYER, trace, rejected, crashed,
+            wait=_login_retry_wait)
+        if checked is not None:
+            return checked
 
     # 第 2 层：系统 WebKit 引擎加载直播页。TikTok 只把某些房间的流地址交给真正的
     # 浏览器（接口回 4003110），而 mac 的 WebKit 不登录就放行，实测 2 秒拿到。
