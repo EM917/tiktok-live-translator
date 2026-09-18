@@ -1,0 +1,138 @@
+/* 手机同看：单列、移动优先，跟随系统明暗（v1 不做手动切换，见 spec §16 第 12 条）。
+   变量命名与桌面端 style.css 保持一致，两个文件各自独立、互不引用。 */
+:root {
+  --bg: #ffffff;
+  --text: #111111;
+  --text-dim: #888888;
+  --text-faint: #b0b0b0;
+  --border: #e5e5e5;
+  --accent: #0a7cff;
+  --fail: #d0342c;
+  --warn-bg: #fff6e0;
+  --warn-fg: #7a5200;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161616;
+    --text: #eaeaea;
+    --text-dim: #9a9a9a;
+    --text-faint: #666666;
+    --border: #2c2c2c;
+    --accent: #4a9eff;
+    --fail: #ff6b61;
+    --warn-bg: #3a2f14;
+    --warn-fg: #f0c674;
+  }
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-x: hidden;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+.hidden { display: none !important; }
+
+/* ---------- 顶栏 ---------- */
+.top-bar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 8px;
+  padding: calc(env(safe-area-inset-top) + 10px) 14px 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.dot.connected { background: #1db954; }
+.dot.connecting, .dot.reconnecting { background: var(--warn-fg); }
+.dot.denied, .dot.off, .dot.full { background: var(--fail); }
+.conn-text { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.sep { color: var(--text-faint); }
+.stream-text { font-size: 13px; color: var(--text-dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.stream-text.stale { color: var(--text-faint); }
+.alert-badge { font-size: 13px; font-weight: 700; color: var(--fail); flex: none; }
+.stale-line { padding: 4px 14px; font-size: 11px; color: var(--text-faint); }
+
+/* ---------- 演示数据 / 持续提示 / 健康度 ---------- */
+.demo-banner {
+  padding: 6px 14px; font-size: 12px; text-align: center;
+  color: var(--warn-fg); background: var(--warn-bg);
+}
+.incident-list .incident, .health-line {
+  padding: 7px 14px; font-size: 12px; line-height: 1.6;
+}
+.incident.warn, .health-line.lagging { color: var(--warn-fg); background: var(--warn-bg); }
+.incident.error, .health-line.degraded { color: #fff; background: var(--fail); }
+.incident.info { color: #1f3b63; background: #e3edfb; }
+
+/* ---------- 违禁词报警 ---------- */
+.alert-section { padding: 10px 14px 4px; }
+.section-title { font-size: 13px; font-weight: 700; color: var(--fail); margin-bottom: 6px; }
+.alert-item {
+  border-radius: 10px; padding: 9px 12px; margin-bottom: 8px;
+  background: color-mix(in srgb, var(--fail) 10%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--fail) 35%, var(--border));
+}
+.alert-head { font-size: 12px; font-weight: 700; color: var(--fail); }
+.alert-ctx { font-size: 13px; margin-top: 4px; word-break: break-word; }
+.alert-zh { font-size: 13px; margin-top: 3px; color: var(--text-dim); word-break: break-word; }
+.alert-zh.pending { font-style: italic; color: var(--text-faint); }
+.alert-zh.failed { color: var(--text-dim); }
+
+/* ---------- 字幕 ---------- */
+.caption-section { flex: 1; overflow-y: auto; padding: 10px 14px 6px; -webkit-overflow-scrolling: touch; }
+.cap-item { margin-bottom: 12px; }
+.cap-meta { font-size: 11px; color: var(--text-faint); }
+.cap-orig { font-size: 15px; margin-top: 2px; word-break: break-word; }
+.cap-trans { font-size: 15px; margin-top: 2px; color: var(--accent); word-break: break-word; min-height: 1.5em; }
+.cap-trans.pending { color: var(--text-faint); font-style: italic; }
+.cap-trans.failed { color: var(--text-dim); font-style: normal; }
+
+.jump-latest {
+  position: fixed; right: 16px; bottom: 76px; z-index: 6;
+  padding: 7px 14px; font-size: 13px; font-family: inherit;
+  color: #fff; background: var(--accent);
+  border: none; border-radius: 999px; cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .3);
+}
+
+/* ---------- 弹幕 ---------- */
+.comment-section { border-top: 1px solid var(--border); }
+.comment-toggle {
+  width: 100%; display: flex; align-items: baseline; gap: 8px;
+  text-align: left; padding: 9px 14px; font-size: 13px;
+  background: none; border: none; color: var(--text); font-family: inherit; cursor: pointer;
+}
+.cmt-source-label { font-size: 11px; color: var(--text-faint); }
+.comment-list { max-height: 34vh; overflow-y: auto; padding: 0 14px 8px; -webkit-overflow-scrolling: touch; }
+.cmt-item { padding: 5px 0; border-top: 1px solid var(--border); }
+.cmt-item:first-child { border-top: none; }
+.cmt-head { font-size: 11px; color: var(--text-dim); }
+.cmt-zh { font-size: 13px; word-break: break-word; }
+.cmt-zh.pending { color: var(--text-faint); font-style: italic; }
+.cmt-orig { font-size: 12px; color: var(--text-faint); word-break: break-word; }
+
+/* ---------- 底栏 ---------- */
+.bottom-bar {
+  position: sticky; bottom: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 14px calc(env(safe-area-inset-bottom) + 9px);
+  background: var(--bg); border-top: 1px solid var(--border);
+}
+.ro-note { font-size: 12px; color: var(--text-faint); }
+.ring-toggle {
+  padding: 5px 12px; font-size: 12px; font-family: inherit; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text);
+}
+.ring-toggle.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+.ring-note { font-size: 11px; color: var(--text-faint); text-align: center; padding: 4px 14px 8px; }

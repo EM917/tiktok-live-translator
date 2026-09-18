@@ -39,6 +39,7 @@ It also works as a plain live-subtitle translator: leave `banned_terms.txt` empt
 - ✅ **Startup self-check** — each capability is executed rather than inspected: denoising processes a sample through RNNoise, translation queries the engine, the audit log performs a write. Results appear on the home screen with a remediation step for anything failing
 - 🔄 **Fault tolerance** — five independent stream-resolution paths (TikTok's live API → the system WebKit engine loading the live page in the background (macOS; the way in when TikTok only hands a room's stream URL to a real browser, measured at 2 s) → yt-dlp → yt-dlp with browser login → live page parsing), since a blocked yt-dlp extractor reports failures as "not currently live". On macOS, when a TikTok login can be read from the browser, the first request sent is the live page carrying that login, and the five paths run only if it yields no address (measured: some rooms serve their stream URL only to logged-in viewers, and a logged-in request made within 3 s of an anonymous one came back without it, so the app leaves 8 s between them); unless a browser is named (`--cookies-browser` or `cookies_browser_only`), this first step reads Safari only — other browsers are read only by the later login-borrowing paths, after the anonymous ones have failed — and once Safari shows a login no other browser's data is read. An `http://` TikTok link is resolved as `https://`, so the login is never sent in clear text. The comment connection starts after the first resolution returns, because it opens with an anonymous request for the same page. Reading Safari's cookies requires Full Disk Access for the app (see the "浏览器登录态" self-check row); without a readable login monitoring still starts, resolution stays anonymous, and a persistent notice states what to do. Each resolved URL is verified before the session starts. Dropped streams reconnect with a freshly resolved URL, distinguishing a network interruption from the broadcast ending; segments are dropped automatically when recognition falls behind; yt-dlp is kept current in the background. When TikTok withholds a room's stream URL from the app, it retries a few times 20 s apart and then says so plainly; for such rooms you can paste **the live-room link and a .flv address from your browser together** (separated by a space) — the link drives comments and the glossary, the address is the audio source. Measured: these signed addresses stay valid for about two weeks, so one capture covers a whole broadcast. While monitoring, the machine is kept from going to sleep on its own, and a gap where the program did not run at all is recorded and shown on screen. On reconnect the network is probed first, so an outage does not spend the reconnect budget, and a room that is not reported as ended is waited on for up to 10 minutes
 - 💬 **Viewer comment translation** — the app fetches comments itself via TikTokLive from the live room's comment stream (WebSocket signing goes through the third-party Euler Stream service, the only step in this project that doesn't run locally; needs Python 3.10+, and the component installs itself automatically on first stream start; usually works logged out, and retries once using the browser's TikTok login when TikTok requires one). Translations appear in the web UI's comment panel — translation and display only, never part of the alert pipeline. Comments are translated only while the active engine is a local model (Hy-MT2 1.8B or TranslateGemma); with a remote engine or the 7B model the panel shows the original text. Disable with `--no-comments`
+- 📱 **Phone viewer** — scan a QR code on the local network and a colleague's phone can watch captions and alerts; view-only, no control; off by default
 
 ## Disk Space
 
@@ -578,7 +579,26 @@ vocals. Confidence filtering removes most such segments; occasional
 false positives are expected.
 
 **The interface is not on port 8765.** If 8765 is occupied, the application
-moves to the next free port in 8766–8774 and says so in the terminal.
+moves to the next free port in 8766–8774 and says so in the terminal. That's
+the control page only; the phone viewer uses a separate port that never
+drifts — see the next entry.
+
+**Can colleagues watch from their phones?** Yes. Click "Open" on the phone
+viewer card on the home page; a phone on the same Wi-Fi as this computer can
+scan the QR code or type in the address shown on the card, and can only view
+captions and alerts — it cannot control the app in any way (no start/stop,
+engine switch, or settings changes). Up to 12 phones can watch at once. The
+link carries a key and should be treated like a password: whoever has it can
+see captions and alerts; clicking "Get a new link" disconnects every phone
+currently watching, and they need to rescan. When a phone can't connect, the
+only thing the app knows is that no connection came in; try, in order:
+confirming the phone is on the same Wi-Fi; typing in another address from the
+card's list; opening the same link in a browser on this computer to confirm
+the service itself is running. The address is plain `http://` on the LAN, not
+a secure context, so there are no system notifications and no screen
+wake-lock, and the alert sound may stop once the page is backgrounded or the
+phone is locked. v1 only works within the same local network — not across
+networks.
 
 **Exporting captions.** There is no export function; select and copy the text
 from the page. The page retains the most recent 300 lines, and the server
@@ -598,6 +618,7 @@ frequently block these.
 
 - Recognition always runs locally. Translation is fully offline when using `gemma`/`none`; with `google`/`claude`/`openai`, subtitle text is sent to the corresponding provider.
 - This tool is for personal learning and language-assistance use only. Please comply with TikTok's Terms of Service and local laws — don't use it to rebroadcast or redistribute recordings of other people's content.
+- The phone viewer binds `0.0.0.0` only while it's turned on, and stops as soon as it's turned off; the control page always stays on `127.0.0.1` only. What a phone receives is filtered through an allowlist — it never sees settings, file paths, cookies, or the stream address. The share link's key lives in the local `settings.json` (already gitignored); no data leaves the local network.
 
 ## Acknowledgments
 

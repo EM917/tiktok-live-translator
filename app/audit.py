@@ -641,6 +641,36 @@ class AuditLog:
         self._write({"type": "ui_client_dropped", "at": _now_ms(), "reason": reason,
                      "buffered_bytes": buffered_bytes, "clients_left": clients_left})
 
+    def viewer_share(self, state, port=None, viewers=None, reason=None):
+        """手机同看被打开/关闭/换了链接。state: "on"|"off"|"rotate"；
+        reason: "operator"|"boot_restore"|"port_busy"|"shutdown"。
+
+        为什么要留痕：打开同看意味着这台机器在局域网上多了一个监听面，事后要答得出
+        「那段时间字幕和报警都被哪些人看得到」。**token 绝不进审计**——审计文件是
+        给人看的证据，不是发链接的地方。"""
+        self._write({"type": "viewer_share", "at": _now_ms(), "state": state,
+                     "port": port, "viewers": viewers, "reason": reason})
+
+    def viewer_connected(self, ip, count):
+        """一台手机接进来了。只记 IP 与人数：不知道也不记录「谁在看」。"""
+        self._write({"type": "viewer_connected", "at": _now_ms(), "ip": ip,
+                     "count": count})
+
+    def viewer_disconnected(self, ip, count, reason):
+        """reason: closed|queue_full|send_timeout|inbound_flood|kicked|cap。
+        前几种是服务端主动断的——被断的手机会重连并拿到完整回放，所以这不是丢数据，
+        但要能查出「那台手机当时为什么在重连」。"""
+        self._write({"type": "viewer_disconnected", "at": _now_ms(), "ip": ip,
+                     "count": count, "reason": reason})
+
+    def viewer_auth_failed(self, ip, why, suppressed=0):
+        """鉴权失败。why 只取 missing|bad_type|bad_token|not_json|timeout——
+        记的是「第一条消息哪里不对」，不是对 token 的任何回显。
+        限流在 ViewerHub 里做（同一 IP 每 10 秒最多一条），suppressed 是这条之前
+        被压掉的次数：没有它，一次扫端口就能把审计文件刷成几千行同样的记录。"""
+        self._write({"type": "viewer_auth_failed", "at": _now_ms(), "ip": ip,
+                     "why": why, "suppressed": suppressed})
+
     def window_closed(self):
         """中控关掉了程序窗口（正在监听时要先确认），监听随之停止。先于停止流程写下：
         收尾要等识别线程和弹幕子进程，进程可能等不到 session_end 就退出。"""

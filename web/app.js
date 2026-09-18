@@ -79,6 +79,22 @@
   var diskList = document.getElementById("disk-list");
   var diskDelete = document.getElementById("disk-delete");
 
+  // 手机同看卡片（#share-card）：只在打开期间监听 0.0.0.0，控制面本身始终只在
+  // 127.0.0.1；这张卡片只发/收 viewer_share / viewer_rotate，看不到任何观众数据
+  var shareToggle = document.getElementById("share-toggle");
+  var shareState = document.getElementById("share-state");
+  var shareDesc = document.getElementById("share-desc");
+  var shareBody = document.getElementById("share-body");
+  var shareQr = document.getElementById("share-qr");
+  var shareUrl = document.getElementById("share-url");
+  var shareCopy = document.getElementById("share-copy");
+  var shareRotate = document.getElementById("share-rotate");
+  var shareClose = document.getElementById("share-close");
+  var shareCount = document.getElementById("share-count");
+  var shareAddrChanged = document.getElementById("share-addr-changed");
+  var shareNote = document.getElementById("share-note");
+  var shareIpList = document.getElementById("share-ip-list");
+
   var STATUS_TEXT = {
     idle: "待机",
     connecting: "连接中…",
@@ -429,6 +445,7 @@
           if (msg.config.recent_rooms) renderRecentRooms(msg.config.recent_rooms);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
+          if (msg.config.viewer) renderShare(msg.config.viewer);
           // 持续提示以服务端为准：重连时整份重放，先清掉本地的
           incidents = Object.create(null);
           if (msg.config.incidents) {
@@ -542,6 +559,9 @@
         break;
       case "selfcheck":
         renderSelfcheck(msg);
+        break;
+      case "viewer":
+        renderShare(msg);
         break;
     }
   }
@@ -1283,6 +1303,174 @@
       diskDelete.disabled = true;
       diskDelete.textContent = "删除中…";
       send({ type: "disk_delete", ids: ids });
+    });
+  }
+
+  // ---- 手机同看卡片（#share-card）----
+  // 状态 1/2/3/6/7 的文案是这里用结构化字段（url/viewers/ips/ambiguous）拼出来的；
+  // 状态 4/5/8（没读到局域网地址 / 端口被占用，带原始报错 / 二维码生成失败）用的是
+  // server.viewer.note——那几句话依赖后端才知道的事实（真实的 OSError 文本、qr.encode
+  // 是否抛了异常），前端原样显示，不二次改写、不重新猜一遍原因（规则八）。
+  var shareOn = false;        // 上一次渲染出来的开关状态，用来判定「刚打开」（A8 一次性提示）
+  var shareLastIp = null;     // 上一次渲染用的局域网地址，用来判定「地址变了」（A9）
+  var shareLastUrl = null;    // url 变了（如换了链接）就重置用户手选的候选地址
+  var shareSelectedIp = null; // 多地址时（A10）用户点选的那个，默认跟 state.ip 一致
+  var lastShareState = null;
+
+  // 把 state.url 里的 host 换成另一个候选地址，端口和 #k=token 原样保留——
+  // 手机同看不下发裸 token，只下发拼好的完整 URL，多地址靠字符串替换而不是重新拼接
+  function buildViewerUrl(url, ip) {
+    if (!url || !ip) return url || "";
+    return url.replace(/^(https?:\/\/)[^/:#?]+(:\d+)?/, function (m, proto, port) {
+      return proto + ip + (port || "");
+    });
+  }
+
+  function fallbackCopyText(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) { /* 复制失败不影响同看本身 */ }
+    document.body.removeChild(ta);
+  }
+  function copyShareUrl(text) {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function () { fallbackCopyText(text); });
+    } else {
+      fallbackCopyText(text);
+    }
+  }
+
+  // 本机有多个网络地址（A10）：列出全部候选，点了就用那个地址重画二维码/URL
+  function drawShareIpList(ips, activeIp) {
+    if (!shareIpList) return;
+    shareIpList.innerHTML = "";
+    ips.forEach(function (ip) {
+      var li = document.createElement("li");
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "share-ip-btn" + (ip === activeIp ? " active" : "");
+      btn.textContent = ip;            // 地址当数据，不当 HTML
+      btn.addEventListener("click", function () {
+        shareSelectedIp = ip;
+        if (lastShareState) renderShare(lastShareState);   // 先改文字，给个即时反馈
+        // 二维码是服务端按 ip 生成的矩阵，光改前端的 URL 文本对不上——真正把
+        // 二维码换成这个地址的，要让后端用它重新 qr.encode 一遍（app/pipeline.py
+        // 的 _pick_viewer_ip），下一条 viewer 广播回来才是文字与二维码一致的那份
+        send({ type: "viewer_pick_ip", ip: ip });
+      });
+      li.appendChild(btn);
+      shareIpList.appendChild(li);
+    });
+  }
+
+  function renderShare(state) {
+    if (!shareToggle || !state) return;
+    lastShareState = state;
+    var on = !!state.on;
+    var justOpened = on && !shareOn;
+
+    shareState.textContent = on ? "打开" : "关闭";
+    shareState.className = "share-state " + (on ? "on" : "off");
+    shareToggle.classList.toggle("hidden", on);   // 打开后靠卡片里的「关闭」按钮，不重复放一个
+
+    if (state.url !== shareLastUrl) {
+      shareSelectedIp = null;   // 链接变了（换了链接/重新打开）：候选地址的手选状态失效
+      shareLastUrl = state.url;
+    }
+
+    if (!on) {
+      shareBody.classList.add("hidden");
+      // note 有内容时是刚失败的一次尝试（状态 5：端口被占，带真实报错）；否则是普通关闭说明
+      shareDesc.textContent = state.note ||
+        "关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。";
+      shareLastIp = null;
+      shareOn = false;
+      return;
+    }
+
+    shareBody.classList.remove("hidden");
+
+    if (!state.ip) {
+      // 状态 4：没读到局域网地址，没有二维码
+      shareDesc.textContent = state.note || "已打开，但没读到本机的局域网地址。";
+      shareUrl.textContent = "";
+      shareQr.classList.add("hidden");
+      shareIpList.classList.add("hidden");
+      shareCount.textContent = "";
+      shareNote.classList.add("hidden");
+    } else {
+      var activeIp = shareSelectedIp || state.ip;
+      var url = buildViewerUrl(state.url, activeIp) || state.url || "";
+      var n = state.viewers || 0;
+      var max = state.max_viewers || 12;
+      shareDesc.textContent = "已打开。手机连同一个 Wi-Fi，扫下面的二维码，或直接打开：" + url;
+      shareUrl.textContent = url;      // 大号可选中：用户可以直接长按复制，不必点按钮
+      shareUrl.title = "这个链接里带着一把钥匙，当密码看待；发给谁，谁就能看到字幕和报警。";
+      shareCount.textContent = "当前 " + n + " 人在看，最多 " + max + " 人。";
+
+      var ok = (typeof renderQR === "function") && renderQR(shareQr, state.qr_rows, 220);
+      shareQr.classList.toggle("hidden", !ok);
+      if (!ok) {
+        // 状态 8：二维码没能生成——note 是后端已经拼好的那句话
+        shareNote.textContent = state.note || "二维码没能生成，请让手机手工输入上面的地址。";
+        shareNote.classList.remove("hidden");
+      } else {
+        shareNote.classList.add("hidden");
+      }
+
+      if (state.ambiguous && Array.isArray(state.ips) && state.ips.length > 1) {
+        shareIpList.classList.remove("hidden");
+        drawShareIpList(state.ips, activeIp);
+      } else {
+        shareIpList.classList.add("hidden");
+      }
+    }
+
+    // A9：地址变了。只在「已经打开着」的连续期间比较，刚打开的这一次不算「变了」
+    if (shareLastIp && state.ip && state.ip !== shareLastIp) {
+      shareAddrChanged.textContent = "本机地址已从 " + shareLastIp + " 变为 " + state.ip +
+        "，之前发出去的链接需要重新扫码";
+      shareAddrChanged.classList.remove("hidden");
+    } else {
+      shareAddrChanged.classList.add("hidden");
+    }
+    if (state.ip) shareLastIp = state.ip;
+
+    // A8：从关到开的这一刻，一次性提示系统可能弹出的网络权限确认框；
+    // 覆盖掉上面刚设的正常描述，下一次真实状态广播到达（如 A9 的地址重发）会把它换回来
+    if (justOpened) {
+      shareDesc.textContent = "第一次打开时，系统可能弹出是否允许接受网络连接的确认框（macOS）" +
+        "或防火墙提示（Windows），请选允许。";
+    }
+    shareOn = on;
+  }
+
+  if (shareToggle) {
+    shareToggle.addEventListener("click", function () {
+      send({ type: "viewer_share", on: true });
+    });
+  }
+  if (shareClose) {
+    shareClose.addEventListener("click", function () {
+      send({ type: "viewer_share", on: false });
+    });
+  }
+  if (shareCopy) {
+    shareCopy.addEventListener("click", function () {
+      copyShareUrl(shareUrl.textContent);
+    });
+  }
+  if (shareRotate) {
+    shareRotate.addEventListener("click", function () {
+      var n = (lastShareState && lastShareState.viewers) || 0;
+      // 状态 6：换链接确认——发出去的旧链接立刻失效，在看的手机全部断开重扫
+      if (!window.confirm("换链接之后，现在在看的 " + n + " 台手机会断开，要重新扫码。继续？")) return;
+      send({ type: "viewer_rotate" });
     });
   }
 

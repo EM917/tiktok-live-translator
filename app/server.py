@@ -66,6 +66,9 @@ class CaptionServer:
         self.config["comment_backend"] = "idle"
         self.config["comment_detail"] = ""
         self._runner = None
+        # 手机同看的观众面（app/viewer.ViewerHub），中控打开时由 Pipeline 挂上来。
+        # 默认 None：这个功能默认关闭，也就默认不存在第二个监听面
+        self.viewer = None
 
     async def start(self):
         @web.middleware
@@ -218,6 +221,18 @@ class CaptionServer:
                                      "command": msg.get("command")}
         elif msg.get("type") == "config":
             self.config.update({k: v for k, v in msg.items() if k != "type"})
+        # 手机同看：同步交棒，绝不 await。fanout 只做「白名单过滤 + put_nowait」，
+        # 没有 I/O，耗时与观众数成正比且有上界。识别循环 await 的正是报警广播，
+        # 任何观众侧的等待都会变成识别延迟，所以这里一个 await 都不能有；观众
+        # 收不下就丢它自己（它会重连并拿到完整回放）。
+        # 放在下面逐个控制页面的循环**之前**是刻意的：本机页面每个最多拖 2 秒，
+        # 放在后面的话，一个卡死的本机页面会把手机端也一起拖慢。
+        hub = getattr(self, "viewer", None)
+        if hub is not None:
+            try:
+                hub.fanout(msg)
+            except Exception as exc:      # 观众侧任何问题都不许影响本机界面
+                print("[警告] 手机同看分发失败: {}".format(exc))
         # 逐个页面发，每个都有上限。以前是不限时的 await：一个不读消息的页面（浏览器
         # 冻结的后台标签、DevTools 断点、弹着 confirm 的 WebView2）把发送缓冲塞满后，
         # send_json 永远不返回——识别循环在等报警广播，于是识别整个停下、音频积压

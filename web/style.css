@@ -348,6 +348,56 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
   font-size: 11px;
 }
 
+/* ---------- 手机同看 ---------- */
+.share-card {
+  max-width: 560px;
+  margin: 14px auto 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: left;
+  background: var(--bg);
+}
+.share-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.share-title { font-size: 13px; font-weight: 600; }
+.share-state { font-size: 12px; font-weight: 600; }
+.share-state.on { color: #1db954; }
+.share-state.off { color: var(--text-dim); }
+.share-desc { font-size: 12px; color: var(--text-dim); margin-top: 6px; line-height: 1.6; word-break: break-word; }
+.share-card .btn.small { margin-top: 8px; }
+
+.share-body { margin-top: 10px; }
+.share-main { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.share-qr {
+  flex: none; border: 1px solid var(--border); border-radius: 6px;
+  background: #fff;   /* 二维码背板固定白底：暗色模式下也要保证扫描对比度 */
+}
+.share-right { flex: 1; min-width: 180px; }
+.share-url {
+  font-size: 12px; line-height: 1.6; word-break: break-all; user-select: all;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: color-mix(in srgb, var(--text) 4%, var(--bg));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.share-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.share-count { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+.share-addr-changed {
+  font-size: 12px; color: var(--warn-fg); background: var(--warn-bg);
+  padding: 6px 8px; border-radius: 6px; margin-top: 8px; line-height: 1.6;
+}
+.share-note { font-size: 12px; color: var(--text-dim); margin-top: 8px; line-height: 1.6; }
+.share-ip-list {
+  list-style: none; display: flex; gap: 6px; flex-wrap: wrap;
+  margin-top: 8px; padding: 0;
+}
+.share-ip-btn {
+  padding: 3px 9px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text);
+  cursor: pointer;
+}
+.share-ip-btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+.share-help { font-size: 11px; color: var(--text-faint); margin-top: 6px; line-height: 1.6; }
+
 /* ---------- 启动自检 ---------- */
 .selfcheck {
   max-width: 560px; margin: 18px auto 0;
