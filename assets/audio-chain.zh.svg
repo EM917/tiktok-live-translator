@@ -340,15 +340,15 @@ rect.c-bg-rect { fill: var(--bg); }
         <text x="125" y="106" class="t-muted" font-size="9" text-anchor="middle">webcast 接口 · 直播页</text>
         </g>
 
-        <g id="node-resolver" data-node-id="resolver" data-node-label="流地址解析" tabindex="0" role="button" aria-label="聚焦流地址解析，4 条兜底路径, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="4 条兜底路径" data-node-context="架构组件">
-          <title>流地址解析 · 4 条兜底路径 · 架构组件</title>
+        <g id="node-resolver" data-node-id="resolver" data-node-label="流地址解析" tabindex="0" role="button" aria-label="聚焦流地址解析，最多 7 层兜底, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="最多 7 层兜底" data-node-context="架构组件">
+          <title>流地址解析 · 最多 7 层兜底 · 架构组件</title>
           <rect x="330" y="60" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="330" y="60" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(336 66) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" x="415" y="90" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">流地址解析</text>
-        <text x="415" y="106" class="t-muted" font-size="9" text-anchor="middle">4 条兜底路径</text>
+        <text x="415" y="106" class="t-muted" font-size="9" text-anchor="middle">最多 7 层兜底</text>
         </g>
 
         <g id="node-ffmpeg" data-node-id="ffmpeg" data-node-label="ffmpeg 抽音降噪" tabindex="0" role="button" aria-label="聚焦ffmpeg 抽音降噪，16 kHz 单声道 PCM, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="16 kHz 单声道 PCM" data-node-tag="RNNoise" data-node-context="架构组件">
@@ -412,8 +412,8 @@ rect.c-bg-rect { fill: var(--bg); }
         <text x="415" y="286" class="t-muted" font-size="9" text-anchor="middle">按秒计 · 硬顶 60 s</text>
         </g>
 
-        <g id="node-ui" data-node-id="ui" data-node-label="字幕界面" tabindex="0" role="button" aria-label="聚焦字幕界面，本地网页 · Chrome 扩展, 架构组件" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="本地网页 · Chrome 扩展" data-node-context="架构组件">
-          <title>字幕界面 · 本地网页 · Chrome 扩展 · 架构组件</title>
+        <g id="node-ui" data-node-id="ui" data-node-label="字幕界面" tabindex="0" role="button" aria-label="聚焦字幕界面，本地网页 · 手机同看, 架构组件" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="本地网页 · 手机同看" data-node-context="架构组件">
+          <title>字幕界面 · 本地网页 · 手机同看 · 架构组件</title>
           <rect x="40" y="600" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="40" y="600" width="170" height="64" rx="6" class="c-frontend" data-animate="node" style="--step:12" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(46 606) scale(0.6875)">
@@ -423,7 +423,7 @@ rect.c-bg-rect { fill: var(--bg); }
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
           <text data-node-label="" x="125" y="630" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">字幕界面</text>
-        <text x="125" y="646" class="t-muted" font-size="9" text-anchor="middle">本地网页 · Chrome 扩展</text>
+        <text x="125" y="646" class="t-muted" font-size="9" text-anchor="middle">本地网页 · 手机同看</text>
         </g>
 
         <g id="node-server" data-node-id="server" data-node-label="CaptionServer" tabindex="0" role="button" aria-label="聚焦CaptionServer，aiohttp :8765, 架构组件" aria-pressed="false" data-node-kind="backend" data-node-sublabel="aiohttp :8765" data-node-context="架构组件">

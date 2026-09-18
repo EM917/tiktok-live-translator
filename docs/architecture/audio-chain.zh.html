@@ -5060,15 +5060,15 @@
         <text data-detail="context" x="155" y="116" class="t-muted" font-size="9" text-anchor="middle">webcast 接口 · 直播页</text>
         </g>
 
-        <g id="node-resolver" data-node-id="resolver" data-node-label="流地址解析" tabindex="0" role="button" aria-label="聚焦流地址解析，4 条兜底路径, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="4 条兜底路径" data-node-context="本机 Python 进程 · 全程离线，无 API key">
-          <title>流地址解析 · 4 条兜底路径 · 本机 Python 进程 · 全程离线，无 API key</title>
+        <g id="node-resolver" data-node-id="resolver" data-node-label="流地址解析" tabindex="0" role="button" aria-label="聚焦流地址解析，最多 7 层兜底, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="最多 7 层兜底" data-node-context="本机 Python 进程 · 全程离线，无 API key">
+          <title>流地址解析 · 最多 7 层兜底 · 本机 Python 进程 · 全程离线，无 API key</title>
           <rect x="370" y="70" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="370" y="70" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(376 76) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="455" y="100" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">流地址解析</text>
-        <text data-detail="context" x="455" y="116" class="t-muted" font-size="9" text-anchor="middle">4 条兜底路径</text>
+        <text data-detail="context" x="455" y="116" class="t-muted" font-size="9" text-anchor="middle">最多 7 层兜底</text>
         </g>
 
         <g id="node-ffmpeg" data-node-id="ffmpeg" data-node-label="ffmpeg 抽音降噪" tabindex="0" role="button" aria-label="聚焦ffmpeg 抽音降噪，16 kHz 单声道 PCM, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="16 kHz 单声道 PCM" data-node-tag="RNNoise" data-node-context="本机 Python 进程 · 全程离线，无 API key">
@@ -5132,8 +5132,8 @@
         <text data-detail="context" x="1055" y="306" class="t-muted" font-size="9" text-anchor="middle">按秒计 · 硬顶 60 s</text>
         </g>
 
-        <g id="node-ui" data-node-id="ui" data-node-label="字幕界面" tabindex="0" role="button" aria-label="聚焦字幕界面，本地网页 · Chrome 扩展, 架构组件" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="本地网页 · Chrome 扩展" data-node-context="架构组件">
-          <title>字幕界面 · 本地网页 · Chrome 扩展 · 架构组件</title>
+        <g id="node-ui" data-node-id="ui" data-node-label="字幕界面" tabindex="0" role="button" aria-label="聚焦字幕界面，本地网页 · 手机同看, 架构组件" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="本地网页 · 手机同看" data-node-context="架构组件">
+          <title>字幕界面 · 本地网页 · 手机同看 · 架构组件</title>
           <rect x="70" y="450" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="70" y="450" width="170" height="64" rx="6" class="c-frontend" data-animate="node" style="--step:12" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(76 456) scale(0.6875)">
@@ -5143,7 +5143,7 @@
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="155" y="480" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">字幕界面</text>
-        <text data-detail="context" x="155" y="496" class="t-muted" font-size="9" text-anchor="middle">本地网页 · Chrome 扩展</text>
+        <text data-detail="context" x="155" y="496" class="t-muted" font-size="9" text-anchor="middle">本地网页 · 手机同看</text>
         </g>
 
         <g id="node-server" data-node-id="server" data-node-label="CaptionServer" tabindex="0" role="button" aria-label="聚焦CaptionServer，aiohttp :8765, 本机 Python 进程 · 全程离线，无 API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="aiohttp :8765" data-node-context="本机 Python 进程 · 全程离线，无 API key">
@@ -5458,7 +5458,7 @@
           <h3>采集与切段</h3>
         </div>
         <ul>
-          <li>&bull; 解析依次走 TikTok webcast 接口 → yt-dlp → 借浏览器登录态 → 直播页兜底</li>
+          <li>&bull; 解析最多依次试 7 层：登录直播页（macOS）→ 官方接口 → 登录直播页重试 → WebKit 隐藏页（macOS）→ yt-dlp 匿名 → yt-dlp 借 cookie → 直播页兜底</li>
           <li>&bull; webcast 接口给的是 only_audio 纯音频档，省掉整条视频码流</li>
           <li>&bull; ffmpeg 先 highpass=70 再 arnndn 神经降噪，专门压直播的背景音乐</li>
         </ul>

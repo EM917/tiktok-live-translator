@@ -5060,15 +5060,15 @@
         <text data-detail="context" x="155" y="116" class="t-muted" font-size="9" text-anchor="middle">webcast API · live page</text>
         </g>
 
-        <g id="node-resolver" data-node-id="resolver" data-node-label="Stream resolver" tabindex="0" role="button" aria-label="Focus Stream resolver, 4 fallback paths, Local Python process · fully offline, no API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="4 fallback paths" data-node-context="Local Python process · fully offline, no API key">
-          <title>Stream resolver · 4 fallback paths · Local Python process · fully offline, no API key</title>
+        <g id="node-resolver" data-node-id="resolver" data-node-label="Stream resolver" tabindex="0" role="button" aria-label="Focus Stream resolver, up to 7 fallback layers, Local Python process · fully offline, no API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="up to 7 fallback layers" data-node-context="Local Python process · fully offline, no API key">
+          <title>Stream resolver · up to 7 fallback layers · Local Python process · fully offline, no API key</title>
           <rect x="370" y="70" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="370" y="70" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(376 76) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="455" y="100" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Stream resolver</text>
-        <text data-detail="context" x="455" y="116" class="t-muted" font-size="9" text-anchor="middle">4 fallback paths</text>
+        <text data-detail="context" x="455" y="116" class="t-muted" font-size="9" text-anchor="middle">up to 7 fallback layers</text>
         </g>
 
         <g id="node-ffmpeg" data-node-id="ffmpeg" data-node-label="ffmpeg denoise" tabindex="0" role="button" aria-label="Focus ffmpeg denoise, 16 kHz mono PCM, Local Python process · fully offline, no API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="16 kHz mono PCM" data-node-tag="RNNoise" data-node-context="Local Python process · fully offline, no API key">
@@ -5132,8 +5132,8 @@
         <text data-detail="context" x="1055" y="306" class="t-muted" font-size="9" text-anchor="middle">by seconds · 60 s cap</text>
         </g>
 
-        <g id="node-ui" data-node-id="ui" data-node-label="Caption surface" tabindex="0" role="button" aria-label="Focus Caption surface, local web · Chrome ext, Architecture component" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="local web · Chrome ext" data-node-context="Architecture component">
-          <title>Caption surface · local web · Chrome ext · Architecture component</title>
+        <g id="node-ui" data-node-id="ui" data-node-label="Caption surface" tabindex="0" role="button" aria-label="Focus Caption surface, local web · phone viewer, Architecture component" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="local web · phone viewer" data-node-context="Architecture component">
+          <title>Caption surface · local web · phone viewer · Architecture component</title>
           <rect x="70" y="450" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="70" y="450" width="170" height="64" rx="6" class="c-frontend" data-animate="node" style="--step:12" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(76 456) scale(0.6875)">
@@ -5143,7 +5143,7 @@
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="155" y="480" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Caption surface</text>
-        <text data-detail="context" x="155" y="496" class="t-muted" font-size="9" text-anchor="middle">local web · Chrome ext</text>
+        <text data-detail="context" x="155" y="496" class="t-muted" font-size="9" text-anchor="middle">local web · phone viewer</text>
         </g>
 
         <g id="node-server" data-node-id="server" data-node-label="CaptionServer" tabindex="0" role="button" aria-label="Focus CaptionServer, aiohttp :8765, Local Python process · fully offline, no API key" aria-pressed="false" data-node-kind="backend" data-node-sublabel="aiohttp :8765" data-node-context="Local Python process · fully offline, no API key">
@@ -5458,7 +5458,7 @@
           <h3>Capture &amp; segment</h3>
         </div>
         <ul>
-          <li>&bull; Resolves via webcast API → yt-dlp → browser login → live-page fallback</li>
+          <li>&bull; Resolves via up to 7 layers: login-first page (macOS) → live API → login retry → WebKit (macOS) → yt-dlp → yt-dlp+login → page fallback</li>
           <li>&bull; The webcast API returns an only_audio rendition, skipping the video bitstream</li>
           <li>&bull; highpass=70 then arnndn, tuned for streams with constant background music</li>
         </ul>

@@ -68,7 +68,7 @@
       "id": "resolver",
       "type": "backend",
       "label": "流地址解析",
-      "sublabel": "4 条兜底路径",
+      "sublabel": "最多 7 层兜底",
       "pos": [
         330,
         60
@@ -201,7 +201,7 @@
       "id": "ui",
       "type": "frontend",
       "label": "字幕界面",
-      "sublabel": "本地网页 · Chrome 扩展",
+      "sublabel": "本地网页 · 手机同看",
       "pos": [
         40,
         600
@@ -396,7 +396,7 @@
       "dot": "cyan",
       "title": "采集与切段",
       "items": [
-        "解析依次走 TikTok webcast 接口 → yt-dlp → 借浏览器登录态 → 直播页兜底",
+        "解析最多依次试 7 层：登录直播页（macOS）→ 官方接口 → 登录直播页重试 → WebKit 隐藏页（macOS）→ yt-dlp 匿名 → yt-dlp 借 cookie → 直播页兜底",
         "webcast 接口给的是 only_audio 纯音频档，省掉整条视频码流",
         "ffmpeg 先 highpass=70 再 arnndn 神经降噪，专门压直播的背景音乐"
       ]

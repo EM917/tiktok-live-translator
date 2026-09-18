@@ -68,7 +68,7 @@
       "id": "resolver",
       "type": "backend",
       "label": "Stream resolver",
-      "sublabel": "4 fallback paths",
+      "sublabel": "up to 7 fallback layers",
       "pos": [
         370,
         70
@@ -201,7 +201,7 @@
       "id": "ui",
       "type": "frontend",
       "label": "Caption surface",
-      "sublabel": "local web · Chrome ext",
+      "sublabel": "local web · phone viewer",
       "pos": [
         70,
         450
@@ -400,7 +400,7 @@
       "dot": "cyan",
       "title": "Capture & segment",
       "items": [
-        "Resolves via webcast API → yt-dlp → browser login → live-page fallback",
+        "Resolves via up to 7 layers: login-first page (macOS) → live API → login retry → WebKit (macOS) → yt-dlp → yt-dlp+login → page fallback",
         "The webcast API returns an only_audio rendition, skipping the video bitstream",
         "highpass=70 then arnndn, tuned for streams with constant background music"
       ]
