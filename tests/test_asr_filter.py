@@ -121,3 +121,59 @@ def test_decimal_numbers_are_not_split_into_hallucination_parts():
     """摘掉词内的点不能误伤：价格是合规要看的内容，整句必须保留。"""
     (out, _), _ = fold([(0.1, 1.2, -0.9, "Cuesta 3.5 dólares, chicas.")])
     assert "3.5" in out
+
+
+# ---- 网址署名 / 文字系统离群（2026-09-17 一天里上屏的 45 条幻觉）----
+
+def test_url_credit_line_dropped_even_with_high_confidence():
+    """「Más información www.cdc.gov.ar」一天里 5 条上屏：带网址的短句是训练集署名。"""
+    for text in ("Más información www.cdc.gov.ar",
+                 "Más información www.albertosanagustin.com", "www.example.com"):
+        (out, _), _ = fold([(0.1, 1.2, -0.1, text)])
+        assert out == "", text
+
+
+def test_long_sentence_with_a_url_is_kept():
+    """长句里夹一个网址可能是主播真在念，不动。"""
+    (out, _), _ = fold([(0.1, 1.2, -0.3,
+                         "Chicas entren a la página oficial www.tienda.com para ver todos los precios de hoy")])
+    assert "www.tienda.com" in out
+
+
+def test_foreign_script_outlier_dropped_after_latin_history():
+    """西语直播里突然一段韩文/阿拉伯文：最近接受的字幕里没这种文字，扣下。"""
+    f = Filter()
+    for i in range(6):
+        fold([(0.1, 1.2, -0.3, "Hola chicas, bienvenidas número {}".format(i))], f=f)
+    for text in ("안녕하세요 여러분.", "المترجمات لكثير من الاشتراك في القناة",
+                 "И вот она, новая маска."):
+        res = f._fold(iter([(0.1, 1.2, -0.1, text)]), "es")
+        assert res.text == "", text
+        assert text in res.raw_text        # 违禁词检测的输入一个字都不少
+        assert res.rejected[-1]["reason"] == "script_outlier"
+
+
+def test_a_real_language_switch_costs_only_the_first_segment():
+    """同一种文字连着来两段就当真换了语言：第二段起放行，之后进入历史。"""
+    f = Filter()
+    for i in range(6):
+        fold([(0.1, 1.2, -0.3, "Hola chicas {}".format(i))], f=f)
+    (a, _), _ = fold([(0.1, 1.2, -0.2, "안녕하세요 여러분")], f=f)
+    (b, _), _ = fold([(0.1, 1.2, -0.2, "오늘은 립스틱을 소개합니다")], f=f)
+    (c, _), _ = fold([(0.1, 1.2, -0.2, "이 제품은 정말 좋아요")], f=f)
+    assert a == "" and b != "" and c != ""
+
+
+def test_no_script_rule_without_history():
+    """开播头几段没有参照，不按文字系统判。"""
+    (out, _), _ = fold([(0.1, 1.2, -0.2, "안녕하세요 여러분")])
+    assert out != ""
+
+
+def test_mixed_spanish_english_stream_is_never_an_outlier():
+    """西语和英语同是拉丁字母：主播中英西夹杂不受影响。"""
+    f = Filter()
+    for i in range(8):
+        fold([(0.1, 1.2, -0.3, "Hola chicas {}".format(i))], f=f)
+    (out, _), _ = fold([(0.1, 1.2, -0.2, "Oh my god it's so good, twenty dollars")], f=f)
+    assert "twenty" in out

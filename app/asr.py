@@ -50,6 +50,51 @@ def _is_subtitle_credit(normalized):
     return "amaraorg" in normalized
 
 
+# 2026-09-17 一天的会话里，显示出来的字幕有 40 条不是拉丁字母：韩文「감사합니다」14 条、
+# 阿拉伯文「المترجمات لكثير من الاشتراك في القناة」14 条、俄文 5 条、日文 3 条……直播间只说
+# 西语和英语。这些都是 Whisper 在无人声段吐出的训练集套话，靠一句句往表里加永远加不完，
+# 所以按**文字系统**判：一段的文字系统在最近接受的字幕里一次都没出现过，就先扣下；
+# 同一种文字连着来两段才放行——真换了语言的直播只损失第一段的显示，违禁词检测用的
+# raw_text 不受影响。
+_SCRIPT_NAMES = (("ARABIC", "arabic"), ("CYRILLIC", "cyrillic"), ("HANGUL", "hangul"),
+                 ("HIRAGANA", "kana"), ("KATAKANA", "kana"), ("CJK", "cjk"),
+                 ("THAI", "thai"), ("HEBREW", "hebrew"), ("LATIN", "latin"))
+SCRIPT_HISTORY = 12      # 只看最近这么多条接受的字幕
+SCRIPT_MIN_HISTORY = 6   # 历史不足这么多条时不判（开播头几段没有参照）
+
+
+def _script_of(text):
+    """一段文字的主要文字系统；没有字母就是 None。数字与标点不算。"""
+    counts = {}
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        name = unicodedata.name(ch, "")
+        for key, label in _SCRIPT_NAMES:
+            if key in name:
+                counts[label] = counts.get(label, 0) + 1
+                break
+        else:
+            counts["other"] = counts.get("other", 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=counts.get)
+
+
+_URL_RE = re.compile(r"(https?://|www\.|\b[\w-]+\.(com|net|org|es|mx|co|ar|gov|edu|info|tv)\b)",
+                     re.IGNORECASE)
+CREDIT_MAX_WORDS = 8
+
+
+def _is_url_credit(text):
+    """「Más información www.cdc.gov.ar」「www.albertosanagustin.com」这类带网址的短句：
+    Whisper 训练集里的片尾署名，2026-09-17 一天里 5 条上了屏。带货主播念网址会说
+    「punto com」，识别出来不会是一个带点的域名；长句里夹一个网址不算（可能真在念）。"""
+    if not _URL_RE.search(text):
+        return False
+    return len(text.split()) <= CREDIT_MAX_WORDS
+
+
 # 字母或数字（任意文字系统都算）。整段一个都没有——多为 Whisper 在音乐/
 # 噪声段吐出的裸感叹号——就不是话：实测一场里 13 段 "!" 被当成字幕原样
 # 翻译上屏，观感全是「翻错了」。数字要保留：价格和数量是合规要看的内容。
@@ -142,9 +187,15 @@ _HALLUCINATIONS = {
     "hasta la proxima", "nos vemos", "gracias por su atencion",
     "subtitulos realizados por la comunidad de amara.org",
     "mas videos", "dale like y suscribete",
+    "aplausos", "musica", "risas", "mas informacion", "obrigado", "obrigada",
     # 中文
     "字幕由amara.org社区提供", "请不吝点赞订阅转发打赏支持明镜与点点栏目",
     "谢谢观看", "请订阅",
+    # 其它语言的同类套话（文字系统规则通常先扣下它们；这里是第二道）
+    "감사합니다", "구독과 좋아요 부탁드립니다", "다음 영상에서 만나요",
+    "المترجمات لكثير من الاشتراك في القناة", "اشتركوا في القناة",
+    "субтитры сделал dimatorzok", "субтитры создавал dimatorzok", "продолжение следует",
+    "ご視聴ありがとうございました", "チャンネル登録お願いします", "תודה רבה",
 }
 
 
@@ -342,6 +393,34 @@ def create_transcriber(backend, model_size, device="auto", compute_type="auto",
 class _FilterMixin:
     """两个后端共用的质量过滤 + 滚动上下文。"""
 
+    def _script_outlier(self, text):
+        """这段的文字系统在最近接受的字幕里一次都没出现过，且不是连着第二段同种文字。"""
+        script = _script_of(text)
+        if script is None:
+            return False
+        history = getattr(self, "_script_history", None)
+        if history is None:
+            history = self._script_history = []
+        if len(history) < SCRIPT_MIN_HISTORY or script in history:
+            self._script_pending = None
+            return False
+        if getattr(self, "_script_pending", None) == script:
+            # 同一种文字连着第二段：当真换了语言，放行（并从此进入历史）
+            self._script_pending = None
+            return False
+        self._script_pending = script
+        return True
+
+    def _remember_script(self, text):
+        script = _script_of(text)
+        if script is None:
+            return
+        history = getattr(self, "_script_history", None)
+        if history is None:
+            history = self._script_history = []
+        history.append(script)
+        del history[:-SCRIPT_HISTORY]
+
     def _fold(self, seg_iter, detected_lang):
         parts = []
         logprobs = []
@@ -358,12 +437,17 @@ class _FilterMixin:
                 reason = "repetition"
             elif avg_lp is not None and avg_lp < -1.6:          # 置信度过低（背景音乐）
                 reason = "low_confidence"
+            elif text and _is_url_credit(text):                 # 带网址的片尾署名
+                reason = "credit"
+            elif text and self._script_outlier(text):           # 文字系统离群（见 _script_of）
+                reason = "script_outlier"
             if reason:
                 if text:
                     rejected.append({"text": text, "reason": reason})
                 continue
             if text:
                 parts.append(text)
+                self._remember_script(text)
                 if avg_lp is not None:
                     logprobs.append(avg_lp)
         text = " ".join(parts).strip()
