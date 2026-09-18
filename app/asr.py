@@ -30,9 +30,24 @@ def _norm_for_hallucination(text):
     """比对幻觉短语用的归一化：去重音、去标点、压空白、转小写。"""
     text = unicodedata.normalize("NFD", text.lower())
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    # 词内的点（amara.org、3.5）不是句号，先摘掉，免得拆句时把一句拆成两句：
+    # 表里三条 amara.org 条目就因此从未命中过——2026-09-17 线上一条英文的
+    # 「Subtitles by the Amara.org community」原样上了屏
+    text = re.sub(r"(?<=\w)\.(?=\w)", "", text)
     # 保留句末标点（拆句要用），只去掉其它标点与首尾空白
     text = re.sub(r"[^\w\s.!?！？。]", " ", text)
     return " ".join(text.split()).strip()
+
+
+def _hallucination_key(text):
+    """逐句比对用的键：去空白与句末标点。表和识别文本两边都走同一条路，
+    表里带 "!" 或 "." 的条目才不会成为永远比不中的死条目。"""
+    return re.sub(r"[\s.!?！？。]", "", text)
+
+
+def _is_subtitle_credit(normalized):
+    """字幕组署名（amara.org 一族）：没有任何主播会亲口说这句，不看置信度直接丢。"""
+    return "amaraorg" in normalized
 
 
 # 字母或数字（任意文字系统都算）。整段一个都没有——多为 Whisper 在音乐/
@@ -53,13 +68,14 @@ def _is_all_hallucination(normalized):
     """
     global _HALLUCINATION_KEYS
     if _HALLUCINATION_KEYS is None:
-        _HALLUCINATION_KEYS = {h.replace(" ", "") for h in _HALLUCINATIONS}
+        _HALLUCINATION_KEYS = {_hallucination_key(_norm_for_hallucination(h))
+                               for h in _HALLUCINATIONS}
     if not normalized:
         return False
     parts = [p for p in re.split(r"[.!?！？。]+", normalized) if p.strip()]
     if not parts:
         return False
-    return all(p.replace(" ", "") in _HALLUCINATION_KEYS for p in parts)
+    return all(_hallucination_key(p) in _HALLUCINATION_KEYS for p in parts)
 
 
 @dataclass
@@ -113,6 +129,11 @@ _HALLUCINATIONS = {
     "thank you", "thanks for watching", "thank you for watching", "you",
     "please subscribe", "subscribe", "bye", "so",
     "thanks for watching!", "see you next time",
+    "subtitles by the amara.org community", "subtitles by amara.org",
+    "subtitled by the amara.org community",
+    # 葡语 / 法语：同一个训练集署名，Whisper 在西语直播里也会吐
+    "legendas pela comunidade amara.org",
+    "sous-titres realises par la communaute d'amara.org",
     # 西语（带货直播的主力语种，之前完全没覆盖）
     "gracias por ver", "gracias por ver el video",
     "gracias por ver este video", "gracias por vernos",
@@ -357,7 +378,7 @@ class _FilterMixin:
         normalized = _norm_for_hallucination(text)
         if _is_all_hallucination(normalized):
             mean_logprob = sum(logprobs) / len(logprobs) if logprobs else -10.0
-            if mean_logprob < -0.6:
+            if mean_logprob < -0.6 or _is_subtitle_credit(normalized):
                 if text:
                     rejected.append({"text": text, "reason": "hallucination"})
                 return ASRResult(text="", language=detected_lang,
