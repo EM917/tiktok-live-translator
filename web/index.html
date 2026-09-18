@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=27">
+  <link rel="stylesheet" href="/static/style.css?v=28">
 </head>
 <body>
   <header class="topbar">
@@ -38,6 +38,10 @@
         <input type="range" id="font-size" min="20" max="60" step="2">
       </label>
       <button id="clear-btn" class="btn" title="清空历史字幕">清空</button>
+      <!-- 手机同看的入口常驻顶栏：这张卡片曾经放在 #start-panel 里，直播开始后
+           整块面板被隐藏，中控恰好在这时候想扫码给同事看，却找不到入口。
+           按钮本身在待机/直播两种状态下都不隐藏，只负责开关下面的 #share-panel。 -->
+      <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板">📱 手机同看</button>
       <button id="stop-btn" class="btn hidden" title="停止当前直播间">停止</button>
     </div>
   </header>
@@ -72,6 +76,55 @@
     </div>
     <div id="alert-list" class="alert-list"></div>
   </section>
+
+  <!-- 手机同看：局域网内扫码只读观看，只在打开期间监听 0.0.0.0，关闭即停。
+       文案表见 spec §11——状态 1/2/3/6/7 由这里的结构化字段拼出来，
+       状态 4/5/8（没读到地址 / 端口被占 / 二维码生成失败）是后端已经拼好
+       的整段话（server.viewer.note），前端原样显示，不再二次改写。
+
+       这块面板以前放在 #start-panel 里：直播一开始整块面板就被隐藏，
+       中控恰恰是在直播中才想扫码给同事看，结果找不到入口。现在挪到顶栏
+       按钮下面、字幕历史上面，跟警报条一个层级，待机和直播中都能打开。 -->
+  <div id="share-panel" class="share-panel hidden">
+    <div id="share-card" class="share-card">
+      <div class="share-head">
+        <span class="share-title">📱 手机同看</span>
+        <span id="share-state" class="share-state off">关闭</span>
+      </div>
+      <p id="share-desc" class="share-desc">
+        关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。
+      </p>
+      <button id="share-toggle" class="btn small" type="button">打开</button>
+
+      <div id="share-body" class="share-body hidden">
+        <div class="share-main">
+          <canvas id="share-qr" class="share-qr" width="0" height="0"></canvas>
+          <div class="share-right">
+            <div id="share-url" class="share-url" tabindex="0"></div>
+            <div class="share-actions">
+              <button id="share-copy" class="btn small" type="button">复制链接</button>
+              <button id="share-rotate" class="btn small" type="button">换一个链接</button>
+              <button id="share-close" class="btn small" type="button">关闭</button>
+            </div>
+            <div id="share-count" class="share-count"></div>
+          </div>
+        </div>
+        <p id="share-addr-changed" class="share-addr-changed hidden"></p>
+        <p id="share-note" class="share-note hidden"></p>
+        <ul id="share-ip-list" class="share-ip-list hidden"></ul>
+        <p class="share-help">
+          手机要和这台电脑连同一个 Wi-Fi。连不上时，可以问网络管理员这个 Wi-Fi 是否允许设备互相访问。
+        </p>
+        <p class="share-help">
+          在微信里打开卡住或提示风险时，点右上角用浏览器打开，或改用手机相机扫码。
+        </p>
+        <p class="share-help">
+          手机打不开时，程序这边只知道没有连接进来。可以依次试：确认手机连的是同一个 Wi-Fi；
+          用列表里另一个地址手工输入；在本机浏览器打开同一个链接，确认服务本身在跑。
+        </p>
+      </div>
+    </div>
+  </div>
 
   <!-- 字幕历史与观众弹幕并排：弹幕放右侧一列，不挤占主播字幕的阅读区
        （放顶部时中控反映挡住了看主播翻译）。收起后整列让出去，右上角留一个
@@ -171,49 +224,6 @@
         </p>
       </div>
 
-      <!-- 手机同看：局域网内扫码只读观看，只在打开期间监听 0.0.0.0，关闭即停。
-           文案表见 spec §11——状态 1/2/3/6/7 由这里的结构化字段拼出来，
-           状态 4/5/8（没读到地址 / 端口被占 / 二维码生成失败）是后端已经拼好
-           的整段话（server.viewer.note），前端原样显示，不再二次改写。 -->
-      <div id="share-card" class="share-card">
-        <div class="share-head">
-          <span class="share-title">📱 手机同看</span>
-          <span id="share-state" class="share-state off">关闭</span>
-        </div>
-        <p id="share-desc" class="share-desc">
-          关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。
-        </p>
-        <button id="share-toggle" class="btn small" type="button">打开</button>
-
-        <div id="share-body" class="share-body hidden">
-          <div class="share-main">
-            <canvas id="share-qr" class="share-qr" width="0" height="0"></canvas>
-            <div class="share-right">
-              <div id="share-url" class="share-url" tabindex="0"></div>
-              <div class="share-actions">
-                <button id="share-copy" class="btn small" type="button">复制链接</button>
-                <button id="share-rotate" class="btn small" type="button">换一个链接</button>
-                <button id="share-close" class="btn small" type="button">关闭</button>
-              </div>
-              <div id="share-count" class="share-count"></div>
-            </div>
-          </div>
-          <p id="share-addr-changed" class="share-addr-changed hidden"></p>
-          <p id="share-note" class="share-note hidden"></p>
-          <ul id="share-ip-list" class="share-ip-list hidden"></ul>
-          <p class="share-help">
-            手机要和这台电脑连同一个 Wi-Fi。连不上时，可以问网络管理员这个 Wi-Fi 是否允许设备互相访问。
-          </p>
-          <p class="share-help">
-            在微信里打开卡住或提示风险时，点右上角用浏览器打开，或改用手机相机扫码。
-          </p>
-          <p class="share-help">
-            手机打不开时，程序这边只知道没有连接进来。可以依次试：确认手机连的是同一个 Wi-Fi；
-            用列表里另一个地址手工输入；在本机浏览器打开同一个链接，确认服务本身在跑。
-          </p>
-        </div>
-      </div>
-
       <!-- 磁盘空间：程序往硬盘放的模型和日志散在三处，用户看不到也没地方删。
            实测一台用了三周的机器缓存里躺着 50 多 GB，一半是本程序不用的模型。 -->
       <div id="disk-card" class="disk-card">
@@ -287,6 +297,6 @@
   <script src="/static/follow.js?v=1"></script>
   <script src="/static/alerts.js?v=2"></script>
   <script src="/static/qrcanvas.js?v=1"></script>
-  <script src="/static/app.js?v=46"></script>
+  <script src="/static/app.js?v=47"></script>
 </body>
 </html>
