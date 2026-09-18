@@ -387,10 +387,6 @@ def _ollama_tags():
     return _ollama_models_or_none()
 
 
-def _ollama_reachable():
-    return _ollama_tags() is not None
-
-
 async def check_watchlist(detector):
     """违禁词表为空 = 这个工具的核心功能没有生效。
 

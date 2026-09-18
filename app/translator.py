@@ -632,10 +632,6 @@ class OpenAITranslator(BaseTranslator):
             return None
 
 
-# TranslateGemma 用的语言代码与我们 UI 代码的差异映射
-_GEMMA_CODES = {"zh-CN": "zh-Hans", "zh-TW": "zh-Hant"}
-
-
 async def _ollama_error_text(resp):
     """Ollama 非 200 回应里它自己的说明（回应体是 {"error": "..."}）；读不到返回 None。
     原样转述给中控和审计，不替它猜原因。"""

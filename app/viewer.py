@@ -126,11 +126,6 @@ _BACKEND_MAP = {
 }
 
 
-def allowed_fields(mtype):
-    """某个 type 的保留字段集合；不在白名单里返回空集。"""
-    return frozenset(ALLOW.get(mtype) or ())
-
-
 def _norm_backend(value):
     return _BACKEND_MAP.get(str(value or "").strip().lower(), "unavailable")
 
