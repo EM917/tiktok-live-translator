@@ -237,11 +237,13 @@ def test_failure_falls_through_and_the_last_layer_goes_login_then_anonymous(monk
     assert exc.value.kind == "browser_only"
     assert exc.value.login == {"safari": "ok"}
     assert layers(trace) == [
-        ("登录直播页", "none"), ("官方接口", "browser_only"), ("WebKit", "none"),
+        ("登录直播页", "none"), ("官方接口", "browser_only"), ("登录直播页重试", "none"),
+        ("WebKit", "none"),
         ("yt-dlp匿名", "none"), ("yt-dlp借cookie", "none"), ("直播页兜底", "none")]
     assert world.requests() == [
         ("page", HEADER),                          # 登录优先
         ("api", None), ("api", HEADER),            # 官方接口：匿名，被拒后带登录再问一次
+        ("page", HEADER),                          # 登录直播页重试：慢的那几层之前再抓一次
         ("webkit",), ("ytdlp", None), ("ytdlp", "safari"),
         ("page", HEADER), ("page", None)]          # 直播页兜底：先登录，匿名的放最后
     # Safari 里有登录：Chrome 的数据一次都没读（会解密的读取和不解密的探测都没有）
@@ -395,7 +397,8 @@ def test_last_layer_waits_out_the_gap_after_the_anonymous_layers(monkeypatch, tm
     trace = []
     with pytest.raises(resolver.ResolveError):
         resolve(trace)
-    assert clock.slept == [pytest.approx(6.0)]
+    # 3.0 是登录直播页重试那一层的固定间隔（假的官方接口不记匿名时刻）；6.0 是这里要验的
+    assert clock.slept == [pytest.approx(3.0), pytest.approx(6.0)]
     tail = world.requests()[-4:]
     assert tail == [("ytdlp", "safari"), ("sleep", pytest.approx(6.0)),
                     ("page", HEADER), ("page", None)]
@@ -1208,6 +1211,179 @@ def test_get_json_never_sends_a_cookie_to_another_host(monkeypatch):
     assert got == _GATED                                      # 照常请求，只是不带 cookie
     assert seen == [("https://evil.example/webcast/room/info/", None)]
     assert note["why"] == ["cookie_not_sent: not_tiktok_host"]
+
+
+# ---- 登录直播页重试：慢的那几层之前再抓一次 ----------------------------------
+# 2026-09-17 一次 @daisycabral_ 的重连实录（logs/session-20260917-185551.jsonl，同一房间当天
+# 更早的每一次解析都是第一层 0.6–1.4 秒就拿到地址）：
+#   层1 登录直播页 none 533ms（browser=safari login={'safari': 'ok'}：带登录抓到了页面，
+#   页面里没有流地址）→ 层2 官方接口 browser_only 1376ms → 层3 WebKit 隐藏页 none 25530ms
+#   （超时 25 秒）→ 层4 yt-dlp 匿名 none 986ms → 层5 yt-dlp 借 cookie none 1972ms →
+#   层6 直播页兜底 url 7244ms（browser=safari waited_ms=6026，和层 1 同一种抓法）。整场 37.6 秒。
+# 为什么第一次抓到的页面里没有地址，不知道；已知同一种抓法约 31 秒后拿到了。所以把这一次
+# 重抓提到层 3–5 前面。
+
+
+class RetryWorld(World):
+    """带登录抓直播页：头 gated 次页面里没有流地址，之后有——上面实录的形状。"""
+
+    def __init__(self, gated=1):
+        self._gated = gated
+        super().__init__()
+
+    @property
+    def page_with_login(self):
+        if self._gated > 0:
+            self._gated -= 1
+            return GATE_PAGE
+        return self._served
+
+    @page_with_login.setter
+    def page_with_login(self, value):
+        self._served = value
+
+
+def test_the_retry_gets_the_address_before_the_slow_layers(monkeypatch, tmp_path):
+    """实录那一场：第一次带登录抓页没有地址、接口回 4003110，重抓拿到——WebKit 隐藏页
+    （实录里超时 25 秒）和两次 yt-dlp 一个都没走。"""
+    world = wire(monkeypatch, tmp_path, RetryWorld())
+    world.jars["safari"] = logged_in_jar()
+    clock = fake_clock(monkeypatch, world)
+    trace = []
+    assert resolve(trace) == FLV
+    assert layers(trace) == [("登录直播页", "none"), ("官方接口", "browser_only"),
+                             ("登录直播页重试", "url")]
+    assert world.requests() == [
+        ("page", HEADER),                        # 层1：带登录抓页，页面里没有地址
+        ("api", None), ("api", HEADER),          # 层2：匿名，被拒后带登录再问一次
+        ("sleep", pytest.approx(3.0)), ("page", HEADER)]     # 等一小段，同一种抓法再来一次
+    assert ("webkit",) not in world.events
+    assert [e for e in world.events if e[0] == "ytdlp"] == []
+    retry = trace[-1]
+    assert retry["browser"] == "safari" and retry["login"] == {"safari": "ok"}
+    assert retry["waited_ms"] == 3000 and isinstance(retry["ms"], int)
+    assert clock.slept == [pytest.approx(3.0)]
+    assert world.remembered == ["safari"]
+    assert SENTINEL not in json.dumps(trace, ensure_ascii=False)
+
+
+def test_the_retry_layer_shows_up_in_the_audit_record_on_reconnect(monkeypatch, tmp_path):
+    """断流重连走的是同一个函数：审计的 resolve 记录里看得到这一层（tools/diagnose_room.py
+    按 layer→outcome 逐层打印，不用改）。"""
+    world = wire(monkeypatch, tmp_path, RetryWorld())
+    world.jars["safari"] = logged_in_jar()
+    fake_clock(monkeypatch, world)
+    p, _server, audit = make_pipeline(monkeypatch, tmp_path)
+    assert run(p._resolve_media(ROOM, reconnect=1)) == FLV
+    (rec,) = audit.records
+    assert [x["layer"] for x in rec["layers"]] == ["登录直播页", "官方接口", "登录直播页重试"]
+    assert rec["layers"][-1]["outcome"] == "url" and rec["layers"][-1]["browser"] == "safari"
+
+
+def test_a_failed_retry_hands_over_to_the_rest_of_the_chain(monkeypatch, tmp_path):
+    """重抓也没拿到：后面的链路一层不少、顺序不变。"""
+    world = wire(monkeypatch, tmp_path, World())
+    world.jars["safari"] = logged_in_jar()
+    world.page_with_login = GATE_PAGE            # 每一次带登录抓页都没有地址
+    trace = []
+    with pytest.raises(resolver.ResolveError) as exc:
+        resolve(trace)
+    assert exc.value.kind == "browser_only"
+    assert layers(trace) == [
+        ("登录直播页", "none"), ("官方接口", "browser_only"), ("登录直播页重试", "none"),
+        ("WebKit", "none"), ("yt-dlp匿名", "none"), ("yt-dlp借cookie", "none"),
+        ("直播页兜底", "none")]
+    assert world.requests()[3:] == [
+        ("page", HEADER),                        # 重抓
+        ("webkit",), ("ytdlp", None), ("ytdlp", "safari"),
+        ("page", HEADER), ("page", None)]        # 直播页兜底照旧：先登录，匿名的放最后
+
+
+def test_no_retry_when_the_api_says_the_room_ended(monkeypatch, tmp_path):
+    """接口确认下播就到此为止：不重抓（照旧抛 offline）。"""
+    world = wire(monkeypatch, tmp_path, RetryWorld())
+    world.jars["safari"] = logged_in_jar()
+
+    async def room_status(_session, _user):
+        return "123", 4                          # 接口明确说没在播
+
+    monkeypatch.setattr(resolver, "_room_status", room_status)
+    trace = []
+    with pytest.raises(resolver.ResolveError) as exc:
+        resolve(trace)
+    assert exc.value.kind == "offline"
+    assert layers(trace) == [("登录直播页", "none"), ("官方接口", "offline")]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_no_retry_without_a_usable_login(monkeypatch, tmp_path, platform):
+    """Safari 里只有 ttwid（不算登录）：重抓和第一次一样是匿名的，不重抓。其它平台连
+    登录优先那一步都没有，也就没有重抓。"""
+    world = wire(monkeypatch, tmp_path, World(), platform=platform, installed=("safari",))
+    world.jars["safari"] = [FakeCookie(".tiktok.com", "ttwid")]
+    trace = []
+    with pytest.raises(resolver.ResolveError):
+        resolve(trace)
+    assert "登录直播页重试" not in [r["layer"] for r in trace]
+    assert not [e for e in world.events if "sessionid=" in str(e)]   # 整场没有一次带登录的请求
+
+
+def test_an_anonymous_request_in_between_keeps_the_measured_gap(monkeypatch, tmp_path):
+    """真的官方接口那一层是匿名的（_get_json 记匿名时刻）：重抓等的是实测的 8 秒间隔的差额，
+    不是 3 秒的固定间隔——重抓不许绕过那一条。"""
+    world = wire(monkeypatch, tmp_path, RetryWorld())
+    world.jars["safari"] = logged_in_jar()
+    clock = fake_clock(monkeypatch, world)
+    fake_api = resolver._get_json
+
+    async def get_json(session, url, limit=None, headers=None):
+        got = await fake_api(session, url, limit=limit, headers=headers)
+        if not (headers or {}).get("Cookie"):
+            resolver._stamp_anon()               # 真的 _get_json 在这里记匿名时刻
+            clock.now += 1.4                     # 实录里官方接口那一层 1376 毫秒
+        return got
+
+    monkeypatch.setattr(resolver, "_get_json", get_json)
+    trace = []
+    assert resolve(trace) == FLV
+    assert layers(trace) == [("登录直播页", "none"), ("官方接口", "browser_only"),
+                             ("登录直播页重试", "url")]
+    assert clock.slept == [pytest.approx(resolver.LOGIN_AFTER_ANON_GAP_SEC - 1.4)]
+    assert trace[-1]["waited_ms"] == 6600
+    assert world.requests()[-2:] == [("sleep", pytest.approx(6.6)), ("page", HEADER)]
+
+
+def test_the_retry_happens_at_most_once_per_resolve(monkeypatch, tmp_path):
+    """一次解析最多重抓一次；下一次解析（重连）自己再算一次。"""
+    world = wire(monkeypatch, tmp_path, World())
+    world.jars["safari"] = logged_in_jar()
+    world.page_with_login = GATE_PAGE
+    for _ in range(2):
+        trace, world.events[:] = [], []
+        with pytest.raises(resolver.ResolveError):
+            resolve(trace)
+        assert [r["layer"] for r in trace].count("登录直播页重试") == 1
+        # 整条链路里带登录抓页只有三次：层1、重抓、直播页兜底那一次——没有第二次重抓
+        assert world.requests().count(("page", HEADER)) == 3
+
+
+def test_the_retry_gap_constant_is_a_few_seconds():
+    assert 1 <= resolver.LOGIN_RETRY_GAP_SEC <= resolver.LOGIN_AFTER_ANON_GAP_SEC
+    assert resolver.LOGIN_RETRY_LAYER == "登录直播页重试"
+
+
+def test_the_retry_layer_states_observations_only():
+    """CLAUDE.md 第八条：这一层的名字、常量说明和代码注释里只写观察，不许出现猜的原因。"""
+    import inspect
+
+    text = inspect.getsource(resolver)
+    blocks = [text[text.index("# ---- 登录直播页重试"):text.index("_ANON = {")],
+              inspect.getsource(resolver._login_retry_wait),
+              inspect.getsource(resolver._login_retry_applies),
+              resolver.LOGIN_RETRY_LAYER]
+    for word in GUESSED_LABELS:
+        for block in blocks:
+            assert word not in block
 
 
 # ---- 12：其它平台保持原样 ----------------------------------------------------
