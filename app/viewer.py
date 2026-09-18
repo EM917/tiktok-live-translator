@@ -525,7 +525,9 @@ def replay_snapshot(server, viewers=0, share_since=None):
             payload = filter_payload(dict(comment, replay=True))
             if payload is not None:
                 out.append(payload)
-    return out
+    # 按当前各集合的上限，回放序列本就不会超过 REPLAY_MAX；这里切一刀是保险，
+    # 不是当前会触发的路径——某个集合的上限以后涨了，也不该让回放悄悄超过 QUEUE_MAX。
+    return out[:REPLAY_MAX]
 
 
 def _coerce_action_id(value):
@@ -924,7 +926,11 @@ class ViewerHub:
                 "qr_rows": qr_rows,
                 "note": share_note(on, port=port, url=url, ip=ip, ips=ips,
                                    viewers=self.count, qr_ok=qr_rows is not None,
-                                   ip_changed=ip_changed, ports=self._candidates)}
+                                   ip_changed=ip_changed, ports=self._candidates),
+                # 换链接确认框的文案：连着 {n} 占位符原样下发，前端点按钮那一刻
+                # 才知道当下人数，由它自己替换——不在这里 .format()，也不在
+                # web/app.js 里另存一份，唯一出处就是 NOTE_ROTATE_CONFIRM。
+                "rotate_confirm": NOTE_ROTATE_CONFIRM}
 
     # ---- 路由 ----
     async def page(self, request):

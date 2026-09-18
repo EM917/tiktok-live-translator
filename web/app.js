@@ -1523,8 +1523,12 @@
   if (shareRotate) {
     shareRotate.addEventListener("click", function () {
       var n = (lastShareState && lastShareState.viewers) || 0;
-      // 状态 6：换链接确认——发出去的旧链接立刻失效，在看的手机全部断开重扫
-      if (!window.confirm("换链接之后，现在在看的 " + n + " 台手机会断开，要重新扫码。继续？")) return;
+      // 状态 6：换链接确认——发出去的旧链接立刻失效，在看的手机全部断开重扫。
+      // 文案来自服务端 viewer 载荷的 rotate_confirm（唯一出处是 app/viewer.py
+      // 的 NOTE_ROTATE_CONFIRM），这里只补上当下人数，不再自己存一份重复文案。
+      var tmpl = (lastShareState && lastShareState.rotate_confirm) ||
+        "换链接之后，现在在看的 {n} 台手机会断开，要重新扫码。继续？";
+      if (!window.confirm(tmpl.replace("{n}", String(n)))) return;
       send({ type: "viewer_rotate" });
     });
   }
