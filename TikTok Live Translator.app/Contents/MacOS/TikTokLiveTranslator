@@ -14,37 +14,12 @@ if [ ! -f "$DIR/main.py" ]; then
 fi
 cd "$DIR"
 
-# 与 Start.command 相同的探测逻辑：真实安装优先，/usr/bin/python3 垫片必须
-# 确认装过 Xcode 命令行工具才能执行（否则会弹「安装开发者工具」对话框）。
-find_python() {
-  local candidates=() p v devdir
-  # python.org 官方框架：全部版本按新到旧依次候选（老版本过不了 ≥3.9 检查时
-  # 还能落到下一个，不能只挑一个）
-  for v in $(ls /Library/Frameworks/Python.framework/Versions 2>/dev/null \
-             | grep -E '^3\.[0-9]+$' | sort -t. -k2,2nr); do
-    candidates+=("/Library/Frameworks/Python.framework/Versions/$v/bin/python3")
-  done
-  candidates+=(/opt/homebrew/bin/python3 /usr/local/bin/python3)
-  # /usr/bin/python3 垫片：必须确认它真正派发到的文件存在才能执行——
-  # xcode-select -p 只回显配置路径、不校验目录还在不在
-  devdir="$(xcode-select -p 2>/dev/null)"
-  if [ -n "$devdir" ] && [ -x "$devdir/usr/bin/python3" ]; then
-    candidates+=(/usr/bin/python3)
-  fi
-  for p in "${candidates[@]}"; do
-    if [ -x "$p" ] && "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
-      echo "$p"
-      return 0
-    fi
-  done
-  p="$(command -v python3 2>/dev/null)"
-  if [ -n "$p" ] && [ "$p" != "/usr/bin/python3" ] && \
-     "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
-    echo "$p"
-    return 0
-  fi
-  return 1
-}
+# find_python() 和 Start.command 共用一份，见 tools/find_python.sh。
+if [ ! -f "$DIR/tools/find_python.sh" ]; then
+  dialog "缺少程序文件 tools/find_python.sh，项目文件不完整，无法探测 Python。\n\n请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击，或重新下载完整项目。" caution
+  exit 1
+fi
+. "$DIR/tools/find_python.sh"
 
 PY="$(find_python)" || {
   open "https://www.python.org/downloads/"

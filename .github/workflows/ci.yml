@@ -60,6 +60,7 @@ jobs:
           bash -n Start.command
           bash -n setup.sh
           bash -n "TikTok Live Translator.app/Contents/MacOS/TikTokLiveTranslator"
+          bash -n tools/find_python.sh
       - name: PowerShell setup script parses
         shell: pwsh
         run: |
