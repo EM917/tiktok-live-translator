@@ -1,5 +1,10 @@
 """手机同看（局域网观众面）：从 app/pipeline.py 纯搬移出来，方法名/签名/方法体
 逐字未改动。Pipeline 通过 ViewerShareMixin 继承这些方法，self.* 语义不变。
+
+搬出来的原因：那个文件搬移前已经 4550 行，而这一块有 8 个 self.* 字段
+（见 _init_viewer_share）从头到尾只在这 21 个方法里用到，和 Pipeline 其余部分
+只通过 self.server / self._save_setting / self._spawn / self.retranslate /
+self.audit / self._recent 六个稳定通道打交道——边界很干净，天然可以整块搬走。
 """
 import asyncio
 from collections import deque
@@ -18,6 +23,26 @@ VIEWER_RETRANSLATE_QUEUE_MAX = 4
 
 
 class ViewerShareMixin:
+    def _init_viewer_share(self):
+        """Pipeline.__init__ 在同一个位置调用：8 个只在本模块内使用的字段，
+        原样从 __init__ 搬出来，初始化顺序不变。"""
+        # 手机同看（app/viewer.py）。默认关闭，settings 里存过才在启动时恢复。
+        # 这把锁是专用的，不复用开播那把：开/关同看不该和 start/stop 互相等
+        self._viewer_lock_obj = None
+        self._viewer_want = False        # 中控最后一条指令想要的终态（锁外记、锁内复核）
+        self._viewer_ip = None           # 已发布的那个局域网地址，地址变了要重出二维码
+        self._viewer_pinned_ip = None    # 中控在多地址里手工点过的那一个
+        self._viewer_ip_task = None
+        # 手机发起的「重译」：一次只跑一条，锁惰性建（同 _viewer_lock_obj，
+        # 3.9 的 asyncio.Semaphore 构造时会去绑当前事件循环）
+        self._viewer_action_sem_obj = None
+        self._viewer_action_pending = 0  # 已接受、还没跑完的个数，见 VIEWER_RETRANSLATE_QUEUE_MAX
+        # 空闲期（还没开播、没有 audit）的同看事件先攒着，_begin_session 之后补写：
+        # 合规证据不能因为「当时没在监听」就没了
+        # maxlen 与 viewer.VIEWER_AUDIT_PENDING_MAX 同步（这里不 import viewer：
+        # 它拉进 aiohttp，而 pipeline 的模块级导入刻意保持轻量）
+        self._viewer_audit_pending = deque(maxlen=VIEWER_AUDIT_PENDING_MAX)
+
     # ---- 手机同看（见 app/viewer.py）----
     # 这一整块的三条不变式：
     #   1. 开/关/换链接全部在专用锁内串行，任何 await 之后都重新核对想要的终态

@@ -8,7 +8,7 @@ import os
 import subprocess
 import time
 import traceback
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -198,13 +198,13 @@ def _tiktoklive_version():
 # 手机同看（21 个方法）与磁盘空间盘点/删除（5 个方法）已经纯搬移到各自的模块——
 # 本文件搬移前有 4550 行，这两块各自有一组本文件其余部分完全不碰的专属状态/
 # 工具方法，是天然的切分边界。放在这里（不是文件顶部）是因为 DiskSpaceMixin
-# 要读上面刚定义的 TERMS_FILE；下面几个常量的重新导出，是因为本文件自己的
-# __init__（VIEWER_AUDIT_PENDING_MAX）和测试（pipeline_mod.VIEWER_*）还按老路子
-# 从 app.pipeline 读它们。
+# 要读上面刚定义的 TERMS_FILE；下面几个常量都只在 viewer_share.py 内部使用，
+# 重新导出纯粹是为了兼容 `from app.pipeline import VIEWER_XXX` 和
+# `pipeline_mod.VIEWER_XXX`（测试和外部代码还按老路子从这里读）。
 from .viewer_share import (  # noqa: E402
     ViewerShareMixin,
-    VIEWER_AUDIT_PENDING_MAX,
-    VIEWER_IP_TIMEOUT_SEC,          # noqa: F401  （外部/测试从 app.pipeline 读）
+    VIEWER_AUDIT_PENDING_MAX,       # noqa: F401
+    VIEWER_IP_TIMEOUT_SEC,          # noqa: F401
     VIEWER_STOP_TIMEOUT_SEC,        # noqa: F401
     VIEWER_RETRANSLATE_QUEUE_MAX,   # noqa: F401
 )
@@ -275,22 +275,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin):
         self._strong_inflight = set()    # 正在跑强模型的 seq，防同一条重复触发
         self._alert_seq = 0              # 报警编号，供译文回来后对上号
         self._alert_tasks = []
-        # 手机同看（app/viewer.py）。默认关闭，settings 里存过才在启动时恢复。
-        # 这把锁是专用的，不复用开播那把：开/关同看不该和 start/stop 互相等
-        self._viewer_lock_obj = None
-        self._viewer_want = False        # 中控最后一条指令想要的终态（锁外记、锁内复核）
-        self._viewer_ip = None           # 已发布的那个局域网地址，地址变了要重出二维码
-        self._viewer_pinned_ip = None    # 中控在多地址里手工点过的那一个
-        self._viewer_ip_task = None
-        # 手机发起的「重译」：一次只跑一条，锁惰性建（同 _viewer_lock_obj，
-        # 3.9 的 asyncio.Semaphore 构造时会去绑当前事件循环）
-        self._viewer_action_sem_obj = None
-        self._viewer_action_pending = 0  # 已接受、还没跑完的个数，见 VIEWER_RETRANSLATE_QUEUE_MAX
-        # 空闲期（还没开播、没有 audit）的同看事件先攒着，_begin_session 之后补写：
-        # 合规证据不能因为「当时没在监听」就没了
-        # maxlen 与 viewer.VIEWER_AUDIT_PENDING_MAX 同步（这里不 import viewer：
-        # 它拉进 aiohttp，而 pipeline 的模块级导入刻意保持轻量）
-        self._viewer_audit_pending = deque(maxlen=VIEWER_AUDIT_PENDING_MAX)
+        self._init_viewer_share()        # 手机同看的 8 个专属字段，见 app/viewer_share.py
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:

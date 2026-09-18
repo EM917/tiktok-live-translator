@@ -83,12 +83,13 @@ def test_the_viewer_module_texts_are_clean():
 
 
 def test_the_new_pipeline_block_is_clean():
-    text = (ROOT / "app" / "pipeline.py").read_text(encoding="utf-8")
-    block = section(text, "# ---- 手机同看（见 app/viewer.py）----",
-                    "# ---- 磁盘空间：盘点与可选删除")
-    assert "手机同看" in block
-    # 段落单独 parse 不了（缩进在类里），补一层壳
-    assert_source_clean("class _Scan:\n" + block, "app/pipeline.py 的手机同看段")
+    """手机同看那一块已经从 app/pipeline.py 纯搬移到 app/viewer_share.py
+    （ViewerShareMixin，方法体逐字未改动）——扫这个新文件，不是靠旧的注释
+    标记在 pipeline.py 里挖一段：那两行标记搬走后就不在那儿了，继续按老办法
+    找只会读到不相关的文本，或者干脆读不到（ValueError），从而假装通过。"""
+    text = (ROOT / "app" / "viewer_share.py").read_text(encoding="utf-8")
+    assert "手机同看" in text
+    assert_source_clean(text, "app/viewer_share.py")
 
 
 def test_the_new_audit_methods_are_clean():
