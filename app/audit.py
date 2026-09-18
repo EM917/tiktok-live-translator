@@ -234,7 +234,7 @@ class AuditLog:
 
     def segment(self, seq, result, audio_end_ts, asr_ms, hits):
         """一段音频的完整记录：接受的文本、被丢弃的候选及原因、命中的违禁词。"""
-        self._write({
+        record = {
             "type": "segment",
             "seq": seq,
             "at": datetime.now().isoformat(timespec="milliseconds"),
@@ -245,7 +245,13 @@ class AuditLog:
             "raw_text": result.raw_text,
             "rejected": result.rejected,
             "hits": hits,
-        })
+        }
+        # 只在真的发生过「检测语言不在允许列表里、强制重转」时才带这一列——
+        # 平时不带 null，省得每条 segment 都多一个恒为空的字段
+        relabeled_from = getattr(result, "relabeled_from", None)
+        if relabeled_from:
+            record["relabeled_from"] = relabeled_from
+        self._write(record)
 
     def translation(self, seq, translated, translate_ms, ok, engine=None):
         """译文是后到的，单独记一条，按 seq 与上面的 segment 对应。

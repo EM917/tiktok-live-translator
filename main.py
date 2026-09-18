@@ -341,8 +341,10 @@ def parse_args():
     p.add_argument("--target", default=None,
                    help="目标语言代码，默认 zh-CN（简体中文）；界面里改过的话记住上次的选择")
     p.add_argument("--source", default=None,
-                   help="主播语言代码，例如 es/en/ja；默认记住界面里上次的选择，"
-                        "从未选过则按西语（想逐段自动检测请传 auto 或在界面里选）")
+                   help="主播语言代码，例如 es/en/ja；也可以是逗号分隔的列表如 es,en"
+                        "（自动检测但只在列表里选，最多 4 个，第一个是主语言，"
+                        "检测到列表外的语言会强制重转一遍）。默认记住界面里上次的选择，"
+                        "从未选过则是 es,en（想不限制地逐段自动检测请传 auto 或在界面里选）")
     p.add_argument("--model", default=None,
                    help="whisper 模型：tiny/base/small/medium/large-v3/large-v3-turbo。"
                         "默认：mlx 后端用 large-v3（GPU 跑得动最准的），ct2 后端用 large-v3-turbo")

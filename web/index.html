@@ -152,10 +152,12 @@
       </div>
       <div class="start-row secondary">
         <label>主播语言
-          <!-- 西语是默认：这个产品面向西语带货直播，逐段自动检测实测会让
-               两成以上的段语言标签乱跳（服务端 resolve_source 同一默认） -->
+          <!-- 西语+英语是默认：这个产品面向西语带货直播，主播常夹英语，不限制的
+               逐段自动检测实测会让两成以上的段语言标签乱跳（服务端 resolve_source
+               同一默认）。列表形式＝自动检测但只在列表里的语言中选 -->
           <select id="source-lang">
-            <option value="es">西班牙语（默认）</option>
+            <option value="es,en">西班牙语 + 英语（默认）</option>
+            <option value="es">西班牙语（只有西语）</option>
             <option value="auto">自动检测</option>
             <option value="en">英语</option>
             <option value="ja">日语</option>
@@ -305,6 +307,6 @@
   <script src="/static/follow.js?v=1"></script>
   <script src="/static/alerts.js?v=2"></script>
   <script src="/static/qrcanvas.js?v=1"></script>
-  <script src="/static/app.js?v=48"></script>
+  <script src="/static/app.js?v=49"></script>
 </body>
 </html>

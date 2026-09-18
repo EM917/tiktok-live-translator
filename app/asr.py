@@ -131,13 +131,17 @@ class ASRResult:
     raw_text —— 含被过滤掉的部分，**违禁词检测用这个**：漏报的代价远高于误报，
                 宁可扫到一句置信度低的疑似违禁词，也不要因为过滤而漏掉；
     rejected —— 被丢弃的候选及原因，用于审计（事后能区分「没听出来」和
-                「听出来了但被过滤」——这是两个完全不同的问题）。
+                「听出来了但被过滤」——这是两个完全不同的问题）；
+    relabeled_from —— 主播语言设了允许列表（如 "es,en"）时，检测到的语言不在
+                列表里、整段用主语言重转过：这里留一笔被推翻的检测语言（如
+                "ko"），供审计追溯；没发生过重转时是空字符串。
     """
 
     text: str = ""
     language: str = ""
     raw_text: str = ""
     rejected: List[dict] = field(default_factory=list)
+    relabeled_from: str = ""
 
     def __iter__(self):
         """兼容旧的 `text, lang = transcribe(...)` 解包写法。"""
@@ -372,10 +376,53 @@ def forget_exception_locals(exc):
         stack.extend((current.__cause__, current.__context__))
 
 
+# 主播语言可以是一个 Whisper 语言码列表（逗号分隔，如 "es,en"）：意思不是强制
+# 单一语种，而是「自动检测，但只在这些语言里选」——带货主播西语夹英语是常态，
+# 不限制的逐段自动检测实测会把两成以上的段贴上无关语言标签（见 settings.py 的
+# resolve_source 说明）。允许的语言码与界面下拉框一致（web/index.html #source-lang）。
+SOURCE_LANG_CODES = {"es", "en", "ja", "ko", "pt", "fr", "de", "ru",
+                     "ar", "th", "vi", "id", "zh"}
+MAX_SOURCE_LANGS = 4     # 再多没有实际意义，还要控制「检测语言不对就整段重转一遍」的开销
+
+
+def _parse_language_spec(language):
+    """把 create_transcriber 收到的 language 拆成识别器要用的三样：
+
+      forced  —— 直接传给 Whisper 的 language 参数；单一语种 / None / "auto" 时
+                 原样返回，行为和改动前完全一致；
+      allowed —— 允许的语言码（元组，保序）；不是逗号列表时是 None（不限制）；
+      primary —— allowed 的第一个语言码：检测到的语言不在 allowed 里时，
+                 重转这一段时强制用这个语言（见 Transcriber/MLXTranscriber.transcribe）。
+
+    逗号列表的校验规则（没有一条会让识别报错——识别器不能因为一个写错的语言码
+    就整个起不来）：
+      * 只认 SOURCE_LANG_CODES 里的码，表外的码直接丢弃；
+      * 去重，保留第一次出现的顺序；
+      * 最多 MAX_SOURCE_LANGS 个，多出的从尾部截掉——首位是主语言，永远保留；
+      * 校验完少于 2 个码：退化成「表里已经有的行为」而不是不限制列表——
+        剩 1 个就当成单一语种（强制这个语言），一个都不剩就当成不限制的自动检测。
+    """
+    if not language or "," not in str(language):
+        return language, None, None
+    codes, seen = [], set()
+    for raw in str(language).split(","):
+        code = raw.strip().lower()
+        if code and code in SOURCE_LANG_CODES and code not in seen:
+            seen.add(code)
+            codes.append(code)
+    codes = codes[:MAX_SOURCE_LANGS]
+    if len(codes) < 2:
+        return (codes[0] if codes else None), None, None
+    return None, tuple(codes), codes[0]
+
+
 def create_transcriber(backend, model_size, device="auto", compute_type="auto",
                        language=None, beam_size=5, use_context=False,
                        temperature=DEFAULT_TEMPERATURE, hotwords=None):
-    """backend: ct2（faster-whisper，CPU/CUDA）或 mlx（Apple GPU）。auto 优先 mlx。"""
+    """backend: ct2（faster-whisper，CPU/CUDA）或 mlx（Apple GPU）。auto 优先 mlx。
+
+    language 支持逗号列表形式（如 "es,en"，见 _parse_language_spec）；单一语种码
+    和 "auto"/None 的行为不变。"""
     if backend == "auto":
         try:
             import mlx_whisper  # noqa: F401
@@ -481,7 +528,7 @@ class Transcriber(_FilterMixin):
                  temperature=DEFAULT_TEMPERATURE, hotwords=None):
         from faster_whisper import WhisperModel
 
-        self.language = language
+        self.language, self.allowed_langs, self.primary_lang = _parse_language_spec(language)
         self.beam_size = beam_size
         self.use_context = use_context
         self.temperature = temperature
@@ -530,10 +577,32 @@ class Transcriber(_FilterMixin):
             condition_on_previous_text=False,
             **kwargs
         )
-        return self._fold(
+        segments = list(segments)
+        detected_lang, relabeled_from = info.language, None
+        # 主播语言设了允许列表（如 "es,en"）时：检测到的语言不在列表里，整段
+        # 用主语言强制重转一遍——比如把误判成韩语的一段纠正回西语。这一步很少
+        # 触发（只在检测跑偏时才会走到），比放一段错误语言标签的字幕流入
+        # 后面的展示/翻译/脚本离群判定划算。
+        if self.allowed_langs and detected_lang not in self.allowed_langs:
+            relabeled_from = detected_lang
+            segments, info = self.model.transcribe(
+                audio,
+                language=self.primary_lang,
+                vad_filter=True,
+                beam_size=self.beam_size,
+                temperature=self.temperature,
+                condition_on_previous_text=False,
+                **kwargs
+            )
+            segments = list(segments)
+            detected_lang = info.language
+        result = self._fold(
             ((s.no_speech_prob, s.compression_ratio, s.avg_logprob, s.text) for s in segments),
-            info.language,
+            detected_lang,
         )
+        if relabeled_from:
+            result.relabeled_from = relabeled_from
+        return result
 
 
 class MLXTranscriber(_FilterMixin):
@@ -545,7 +614,7 @@ class MLXTranscriber(_FilterMixin):
 
         self._mlx = mlx_whisper
         self.repo = _MLX_REPOS.get(model_size, model_size)  # 允许直接给 HF 仓库名
-        self.language = language
+        self.language, self.allowed_langs, self.primary_lang = _parse_language_spec(language)
         self.use_context = use_context
         self.temperature = temperature
         # 静态热词（商品名等）。与滚动上下文不同：它不随时间漂移，
@@ -556,9 +625,11 @@ class MLXTranscriber(_FilterMixin):
         self.model_size = model_size
         self.device = "gpu"
         self.compute_type = "float16"
-        # 预热一次：触发模型下载/编译，让第一段真实音频不用等
+        # 预热一次：触发模型下载/编译，让第一段真实音频不用等。传解析后的
+        # self.language（列表形式已拆成 None + allowed_langs），不能传原始
+        # language——mlx-whisper 的 language 参数不认 "es,en" 这种逗号列表
         self._mlx.transcribe(np.zeros(16000, dtype=np.float32),
-                             path_or_hf_repo=self.repo, language=language, fp16=True)
+                             path_or_hf_repo=self.repo, language=self.language, fp16=True)
         # 模型在上面那一步加载。每个新的 MLX 模型都从这里过（按配置加载、换模型后重载），
         # 所以上限设在这里；实际设上的值记在对象上，asr_config 审计记的是这一份
         self.mlx_cache_limit_mb = apply_mlx_cache_limit()
@@ -587,8 +658,26 @@ class MLXTranscriber(_FilterMixin):
             fp16=True,
             **kwargs
         )
-        return self._fold(
+        detected_lang, relabeled_from = out.get("language"), None
+        # 见 Transcriber.transcribe 里的同一段说明：允许列表框住了主播语言、
+        # 检测结果又不在列表里时，整段用主语言强制重转一遍再用
+        if self.allowed_langs and detected_lang not in self.allowed_langs:
+            relabeled_from = detected_lang
+            out = self._mlx.transcribe(
+                audio,
+                path_or_hf_repo=self.repo,
+                language=self.primary_lang,
+                temperature=self.temperature,
+                condition_on_previous_text=False,
+                fp16=True,
+                **kwargs
+            )
+            detected_lang = out.get("language")
+        result = self._fold(
             ((s.get("no_speech_prob"), s.get("compression_ratio"),
               s.get("avg_logprob"), s.get("text", "")) for s in out.get("segments", [])),
-            out.get("language"),
+            detected_lang,
         )
+        if relabeled_from:
+            result.relabeled_from = relabeled_from
+        return result
