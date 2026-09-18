@@ -27,14 +27,11 @@ from app import asr, settings
 from app import pipeline as pipeline_mod
 from app.audit import AuditLog
 from app.pipeline import Pipeline
+from tests.helpers import run
 
 LIVE_URL = "https://www.tiktok.com/@bellaallnatural/live"
 DIRECT_URL = "https://cdn.example.com/s.flv"
 MB = 1024 * 1024
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def rows(path, kind=None):

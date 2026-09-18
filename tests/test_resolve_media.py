@@ -1,6 +1,5 @@
 """流地址解析在 Pipeline 层的重试策略：TikTok 明确「不给程序」（browser_only）时
 隔一会儿自动重试几次，其它失败原样抛出、不重试。"""
-import asyncio
 import json
 from types import SimpleNamespace
 
@@ -9,6 +8,7 @@ import pytest
 from app import pipeline as pipeline_mod
 from app.pipeline import Pipeline
 from app.resolver import ResolveError
+from tests.helpers import run
 
 
 class StubServer:
@@ -38,10 +38,6 @@ def make_pipeline(monkeypatch, tmp_path):
     p = Pipeline(args, server)
     p.BROWSER_ONLY_RETRY_SEC = 0.01
     return p, server
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def test_browser_only_is_retried_then_succeeds(monkeypatch, tmp_path):

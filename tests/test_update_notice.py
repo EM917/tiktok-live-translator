@@ -7,10 +7,10 @@
 规则：短时间内已经提示过，就只静默刷新版本信息——按钮保持可用，但不再抢注意力。
 手动点「检查更新」永远给回应，那是用户主动问的。
 """
-import asyncio
 import time
 
 from app import updater as U
+from tests.helpers import run
 
 
 class FakeServer:
@@ -23,10 +23,6 @@ class FakeServer:
 
     async def status(self, *a, **k):
         pass
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
 
 
 def make(monkeypatch, last_notice=None, tag="v9.9.9"):

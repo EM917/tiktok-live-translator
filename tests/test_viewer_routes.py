@@ -7,7 +7,6 @@
 这里全部直接调 handler 和中间件，一个端口都不绑；唯一一条真 socket 在
 tests/test_viewer_e2e.py。
 """
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +14,7 @@ from aiohttp import web
 
 from app import viewer as viewer_mod
 from app.viewer import ViewerHub
+from tests.helpers import run
 
 TOKEN = "t" * viewer_mod.TOKEN_LEN
 
@@ -38,10 +38,6 @@ def hub(web_dir):
 def request_for(name=None):
     return SimpleNamespace(match_info=({} if name is None else {"name": name}),
                            headers={}, transport=None)
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def test_the_route_table_is_exactly_three_entries(hub):

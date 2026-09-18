@@ -4,16 +4,12 @@
 （HTTP 400）后，会把任何失败都翻译成 "The channel is not currently live"——
 那句话是错的，而我们照抄给了用户。
 """
-import asyncio
 
 import pytest
 import json
 
 from app import resolver
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+from tests.helpers import run
 
 
 # ---- 从官方接口的返回里挑地址 ----

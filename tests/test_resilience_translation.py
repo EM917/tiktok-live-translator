@@ -21,12 +21,9 @@ from app.telemetry import Telemetry
 from app.translator import (HYMT2_LARGE, HYMT2_SMALL, CachedTranslator,
                             ClaudeTranslator, DeepLTranslator, GoogleWebTranslator,
                             OllamaGemmaTranslator, OllamaHyMT2Translator, OpenAITranslator)
+from tests.helpers import run
 
 GUESSED_CAUSES = ("年龄", "限流", "封禁", "多半")
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def plain(text):

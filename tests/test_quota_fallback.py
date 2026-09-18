@@ -4,7 +4,6 @@
 前提就是这个洞必须补上。降级是一次性的、当条重试、界面有常驻提示，且用户
 在下拉框里的选择不动：下月额度恢复后自动回到 DeepL。
 """
-import asyncio
 import json
 import time
 from types import SimpleNamespace
@@ -14,14 +13,7 @@ import pytest
 from app.audit import AuditLog
 from app.telemetry import Telemetry
 from app.translator import CachedTranslator, DeepLTranslator
-
-
-def run(coro):
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+from tests.helpers import run
 
 
 @pytest.fixture

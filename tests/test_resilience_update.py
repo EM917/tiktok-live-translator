@@ -31,20 +31,13 @@ from app.audit import AuditLog
 from app.pipeline import Pipeline
 from app.server import CaptionServer
 from app.updater import Updater
+from tests.helpers import run
 
 REPO = Path(__file__).resolve().parent.parent
 URL = "https://www.tiktok.com/@someone/live"
 MEDIA = "https://pull.example.com/stage/stream.flv?expire=1&sign=secret-token"
 TARGET = "a" * 40
 REQS = "aiohttp>=3.9\nyt-dlp[curl-cffi]\nbrand-new-dep>=1\n"
-
-
-def run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
 
 
 class RecordingServer(CaptionServer):

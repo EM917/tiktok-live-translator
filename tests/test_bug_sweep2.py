@@ -16,13 +16,10 @@ from app.ffmpeg_bin import filter_path, find_ffmpeg
 from app.pipeline import Pipeline
 from app.relaunch import exec_args
 from app.server import CaptionServer
+from tests.helpers import run
 
 ROOT = Path(__file__).resolve().parent.parent
 _REAL_SLEEP = asyncio.sleep       # make_pipeline 会把 asyncio.sleep 全局换成 0 秒
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class StubServer:

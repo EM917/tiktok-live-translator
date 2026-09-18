@@ -15,6 +15,7 @@ from aiohttp import WSMsgType
 from app import viewer as viewer_mod
 from app.server import CaptionServer
 from app.viewer import ViewerHub
+from tests.helpers import run
 
 TIMEOUT = 10.0
 
@@ -24,10 +25,6 @@ def web_dir(tmp_path):
     for name in viewer_mod.VIEWER_FILES:
         (tmp_path / name).write_text("stand-in " + name, encoding="utf-8")
     return tmp_path
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 async def recv(ws):

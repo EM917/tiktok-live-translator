@@ -8,7 +8,6 @@
 
 默认关闭是产品负责人明确要求的（"不要默认开 默认是关闭的"），不是本改动自选。
 """
-import asyncio
 import json
 from types import SimpleNamespace
 
@@ -16,10 +15,7 @@ from app import pipeline as pipeline_mod
 from app import settings
 from app.pipeline import Pipeline
 from app.server import CaptionServer
-
-
-def run(coro):
-    return asyncio.run(coro)
+from tests.helpers import run
 
 
 def res(text):

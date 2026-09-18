@@ -4,14 +4,10 @@
 经常整段翻译失败），而原来的提示是让用户自己去装 Ollama、再敲一行 ollama pull。
 对连终端是什么都不知道的人来说，那条本地翻译的路是永远走不通的。
 """
-import asyncio
 import sys
 
 from app import localmodel
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+from tests.helpers import run
 
 
 def test_install_hint_is_honest_per_platform(monkeypatch):

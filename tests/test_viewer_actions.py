@@ -17,6 +17,7 @@ import pytest
 from app import pipeline as pipeline_mod
 from app import settings as settings_mod
 from app.pipeline import Pipeline
+from tests.helpers import run
 
 
 class StubServer:
@@ -57,10 +58,6 @@ def pl(monkeypatch, tmp_path):
         model=None, device="auto", compute_type="auto", denoise="off",
         banned_terms=None)
     return Pipeline(args, StubServer())
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 # ---- 校验：合法 id 才往下传，且 trigger 恰好是 "viewer" ----

@@ -7,15 +7,11 @@
 这一层容易写反的地方全在这里守着：免费版只有一个术语表槽位（先删后建）、
 只能删自己建的表、繁体不挂表、源语言认第一个。
 """
-import asyncio
 
 import pytest
 
 from app.translator import DeepLTranslator
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+from tests.helpers import run
 
 
 @pytest.fixture

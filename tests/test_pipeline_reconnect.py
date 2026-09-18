@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from app import pipeline as pipeline_mod
 from app.pipeline import Pipeline
 from app.resolver import ResolveError
+from tests.helpers import run
 
 
 class StubServer:
@@ -49,10 +50,6 @@ def make_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline_mod.asyncio, "sleep",
                         lambda *_a, **_k: real_sleep(0))
     return p, server
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def test_offline_resolve_ends_stream(monkeypatch, tmp_path):

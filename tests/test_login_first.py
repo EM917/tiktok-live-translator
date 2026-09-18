@@ -26,6 +26,7 @@ from app import pipeline as pipeline_mod
 from app import resolver, settings
 from app.pipeline import Pipeline
 from app.server import CaptionServer
+from tests.helpers import run
 
 REAL_GET_JSON = resolver._get_json          # wire() 会把它换成假的；测它本身的用例用这个
 SENTINEL = "S3NTINEL-login-first-VALUE-71c4"
@@ -38,10 +39,6 @@ GATE_PAGE = "<html>a login gate; no stream address in this page</html>"
 ENDED_PAGE = ('<html><script id="SIGI_STATE" type="application/json">'
               '{"LiveRoom":{"liveRoomUserInfo":{"liveRoom":{"status":4}}}}</script></html>')
 _GATED = {"status_code": 4003110, "data": {"prompts": ""}}
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class FakeCookie:

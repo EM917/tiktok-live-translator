@@ -10,10 +10,7 @@ import pytest
 
 from app import localmodel, pipeline as pipeline_mod, translator
 from app.pipeline import Pipeline
-
-
-def run(coro):
-    return asyncio.run(coro)
+from tests.helpers import run
 
 
 class StubServer:

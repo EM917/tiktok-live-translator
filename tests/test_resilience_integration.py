@@ -22,13 +22,10 @@ from app.audit import AuditLog
 from app.pipeline import Pipeline
 from app.redact import strip_query
 from app.server import CaptionServer
+from tests.helpers import run
 
 ROOM = "https://www.tiktok.com/@example/live"
 SECRET = "SECRETSIGN"
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class RecordingServer(CaptionServer):

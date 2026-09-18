@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from app import pipeline as pipeline_mod
 from app.asr import ASRResult
 from app.pipeline import Pipeline
+from tests.helpers import run
 
 
 class StubServer:
@@ -47,10 +48,6 @@ def make_pipeline(monkeypatch, tmp_path, translator=None, terms=()):
     # 开着才是这些用例一直假定的行为
     p.alerts_enabled = True
     return p, server
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class SlowTranslator:

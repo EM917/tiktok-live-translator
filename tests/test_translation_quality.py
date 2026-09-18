@@ -10,6 +10,7 @@ import asyncio
 import pytest
 
 from app.pipeline import QUALITY_FAST, QUALITY_STRONG, Pipeline
+from tests.helpers import run
 
 
 class FakeServer:
@@ -28,10 +29,6 @@ def make():
     p.server = FakeServer()
     p._quality = {}
     return p
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
 
 
 def publish(p, level, ok=True, text="译文"):

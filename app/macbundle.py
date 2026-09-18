@@ -45,10 +45,6 @@ def remember_launch_python(environ=None, executable=None):
     return env.get(LAUNCH_PYTHON_ENV)
 
 
-def bundle_python(root):
-    return Path(root) / APP_DIR_NAME / "Contents" / "MacOS" / "python"
-
-
 def ensure_bundle_shell(root):
     """把三样壳文件放好；成功返回 bundle 里的 python 路径，否则 None。
 
