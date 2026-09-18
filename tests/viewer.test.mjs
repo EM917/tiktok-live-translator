@@ -406,9 +406,13 @@ function makeFakeNode(tag) {
   return node;
 }
 function makeFakeDocument(elements) {
+  const listeners = {};
   return {
+    hidden: false,
     getElementById: (id) => elements[id] || null,
     createElement: (tag) => makeFakeNode(tag),
+    addEventListener(type, cb) { (listeners[type] = listeners[type] || []).push(cb); },
+    dispatch(type) { (listeners[type] || []).slice().forEach((cb) => cb()); },
   };
 }
 // viewer.js 在浏览器分支里 getElementById 的全部 id——两个新测试都要建全，
@@ -588,8 +592,10 @@ test("新字幕到达时滚动的是 #caption-section；用户上翻后不抢滚
     assert.equal(section.scrollTop, 3000, "跟随中：新字幕到达应把容器滚到底");
     assert.equal(list.scrollTop, 0, "内层列表不该被当成滚动容器");
 
-    // 用户往上翻（离底部远于 FOLLOW_SLACK）：停止跟随，显示「最新」按钮
+    // 用户往上翻（离底部远于 FOLLOW_SLACK）：停止跟随，显示「最新」按钮。
+    // 先有一次真实的触摸输入，随后的 scroll 才算用户自己滚的
     section.scrollTop = 1000;
+    section.dispatch("touchstart");
     section.dispatch("scroll");
     section.scrollHeight = 3400;
     ws.onmessage({ data: JSON.stringify({ type: "caption", id: 2, ts: 2, original: "adios", translated: "再见" }) });
@@ -608,5 +614,51 @@ test("新字幕到达时滚动的是 #caption-section；用户上翻后不抢滚
     section.scrollHeight = 3500;
     ws.onmessage({ data: JSON.stringify({ type: "caption_update", id: 2, translated: "再见了，朋友" }) });
     assert.equal(section.scrollTop, 3500, "跟随中译文补进来应再贴底");
+  });
+});
+
+// ---- DOM 回归：切到别的 App / 标签页再回来，仍然跟随 ----
+// 第二版每个 scroll 事件都现算「在不在底部」：页面在后台时浏览器重置 scrollTop 并抛
+// scroll 事件，跟随就被关掉，回来后不再自动滚动（用户报的）。
+test("页面在后台期间的 scroll 事件不关闭跟随；回到前台补滚一次", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const section = elements["caption-section"];
+    const jump = elements["jump-latest"];
+    section.clientHeight = 600;
+    section.scrollHeight = 3000;
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 1, ts: 1, original: "hola", translated: "你好" }) });
+    assert.equal(section.scrollTop, 3000);
+
+    // 切到后台：浏览器把 scrollTop 重置并抛 scroll（没有任何用户输入）
+    global.document.hidden = true;
+    section.scrollTop = 0;
+    section.dispatch("scroll");
+    // 后台期间来了新字幕：内容变高，但滚动请求可能落空——模拟成落空
+    section.scrollHeight = 3600;
+
+    // 回到前台：补滚到底，且「最新」按钮不出现
+    global.document.hidden = false;
+    global.document.dispatch("visibilitychange");
+    assert.equal(section.scrollTop, 3600, "回到前台应补滚到最新");
+    assert.equal(jump.classList.contains("hidden"), true);
+
+    // 之后的新字幕继续跟随
+    section.scrollHeight = 3900;
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 2, ts: 2, original: "adios", translated: "再见" }) });
+    assert.equal(section.scrollTop, 3900, "回来之后仍在跟随");
+  });
+});
+
+test("不可测量（尺寸读成 0）时的 scroll 事件沿用原意图", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const section = elements["caption-section"];
+    section.clientHeight = 0;          // 页面不可渲染时浏览器给的就是 0
+    section.scrollHeight = 0;
+    section.dispatch("touchstart");
+    section.dispatch("scroll");        // 即便有过触摸，也不能据 0 判断「用户翻上去了」
+    section.clientHeight = 600;
+    section.scrollHeight = 2000;
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 1, ts: 1, original: "hola", translated: "你好" }) });
+    assert.equal(section.scrollTop, 2000, "恢复可测量后仍在跟随");
   });
 });

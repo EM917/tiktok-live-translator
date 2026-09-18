@@ -265,40 +265,78 @@ if (typeof document !== "undefined") {
       });
     }
 
-    // ---- 字幕区贴底跟随：follow.js 的 12 行重写版（故意不复用，见 spec §12） ----
+    // ---- 字幕区贴底跟随：和桌面页同一套规则（说明见 web/follow.js） ----
     // 真正滚动的是外层 #caption-section（viewer.css 里 flex:1 + overflow-y:auto），
     // 不是 #caption-list：列表本身不溢出，给它设 scrollTop 什么都不会发生，它的
     // scroll 事件也永远不触发。第一版就是滚错了元素，上线当天用户报「手机端不会
     // 自动滚动」。这里认容器，列表只作兜底。
+    //
+    // 「跟随最新」是**用户意图**，不是每次从几何量现算的结论。第二版在每个 scroll
+    // 事件里现算 atBottom()：手机切到别的 App、别的标签页期间，浏览器会重置
+    // scrollTop 并抛 scroll 事件，尺寸还可能读成 0——跟随就此被关掉，回来之后再也
+    // 不自动滚（上线第二天用户报的）。现在只有用户自己往上翻才停止跟随；重新可见、
+    // 重新获得焦点、窗口变化时补滚一次，另有 2 秒一次的兜底。
     var FOLLOW_SLACK = 120;
+    var USER_INPUT_WINDOW_MS = 700;
     var following = true;
+    var lastUserInput = 0;
     var scroller = document.getElementById("caption-section") || captionList;
+    function measurable() { return !!(scroller && scroller.clientHeight); }
     function atBottom() {
       return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < FOLLOW_SLACK;
     }
+    function updateJump() {
+      // 只在量得出来、且确实有内容在下面时才显示：量不出来时摆个按钮只会添乱
+      if (jumpBtn) jumpBtn.classList.toggle("hidden", !(measurable() && !atBottom()));
+    }
+    function stickNow() {
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    }
     if (scroller) {
-      scroller.addEventListener("scroll", function () {
-        if (!scroller.clientHeight) return;   // 不可测量时沿用原意图，不猜
-        following = atBottom();
-        if (jumpBtn) jumpBtn.classList.toggle("hidden", following);
+      ["wheel", "touchstart", "touchmove", "keydown", "mousedown"].forEach(function (name) {
+        scroller.addEventListener(name, function () { lastUserInput = Date.now(); }, { passive: true });
       });
+      scroller.addEventListener("scroll", function () {
+        // 不可测量：沿用原意图，不猜。到了底部：一律恢复跟随。没在底部：只有用户
+        // 自己滚上去才停止跟随——页面从后台回来时那次 scrollTop 重置不算数
+        if (measurable()) {
+          if (atBottom()) following = true;
+          else if (Date.now() - lastUserInput < USER_INPUT_WINDOW_MS) following = false;
+        }
+        updateJump();
+      }, { passive: true });
     }
     function stickCaptions() {
       if (!scroller) return;
-      if (following) scroller.scrollTop = scroller.scrollHeight;
-      else if (jumpBtn) jumpBtn.classList.remove("hidden");
+      if (following) stickNow();
+      updateJump();
     }
-    // 切回前台时再贴一次：后台期间到的字幕不会触发布局滚动，回来会停在半截
+    // 重新可见 / 获得焦点 / 窗口变化时补一次：后台期间的滚动请求全部落空了。
+    // 等一帧再滚——刚显示出来时尺寸还没算完
+    function resyncCaptions() {
+      if (document.hidden || !following) return;
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(function () { stickNow(); updateJump(); });
+      else { stickNow(); updateJump(); }
+    }
     if (typeof document.addEventListener === "function") {
-      document.addEventListener("visibilitychange", function () {
-        if (!document.hidden) stickCaptions();
+      document.addEventListener("visibilitychange", resyncCaptions);
+    }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      ["focus", "pageshow", "resize", "orientationchange"].forEach(function (name) {
+        window.addEventListener(name, resyncCaptions);
       });
     }
+    // 兜底：有的手机浏览器切回来时上面几个事件一个都不发。跟随着却不在底部就补上
+    setInterval(function () {
+      if (document.hidden || !following || !measurable()) return;
+      if (!atBottom()) stickNow();
+      updateJump();
+    }, 2000);
     if (jumpBtn) {
       jumpBtn.addEventListener("click", function () {
-        following = true;
-        jumpBtn.classList.add("hidden");
-        stickCaptions();
+        following = true;                 // 点了就是要看最新，恢复跟随
+        stickNow();
+        updateJump();
       });
     }
 
@@ -454,6 +492,7 @@ if (typeof document !== "undefined") {
     var lastRetranslateTapAt = Object.create(null);   // 每条字幕自己的本地节流时间戳
 
     function resetForNewSession() {
+      following = true;   // 回放会重建整个列表：从最新处开始看
       alertsById = Object.create(null);
       captionsById = Object.create(null);
       commentsById = Object.create(null);
