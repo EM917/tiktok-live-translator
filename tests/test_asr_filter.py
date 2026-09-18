@@ -95,3 +95,29 @@ def test_real_speech_containing_gracias_survives():
     assert "Gracias" in out
     (out2, _), _ = fold([(0.1, 1.2, -0.9, "Gracias por ver. Ahora vamos con la moringa.")])
     assert "moringa" in out2       # 一半是真话，整段不能丢
+
+
+# ---- 字幕组署名：表里带 "." 的条目曾经永远比不中 ----
+
+def test_amara_credit_dropped_in_every_language_even_with_high_confidence():
+    """「Subtitles by the Amara.org community」2026-09-17 线上原样上屏：
+    归一化保留句号做拆句，amara.org 里的点把一句拆成两半，表里三条 amara
+    条目从未命中过。署名不是任何主播会说的话，置信度再高也丢。"""
+    for text in ("Subtitles by the Amara.org community",
+                 "Subtítulos realizados por la comunidad de Amara.org",
+                 "字幕由Amara.org社区提供",
+                 "Legendas pela comunidade Amara.org"):
+        (out, _), _ = fold([(0.1, 1.2, -0.1, text)])
+        assert out == "", text
+
+
+def test_table_entries_with_punctuation_are_live():
+    """表里写着 "thanks for watching!"（带叹号）这类条目也要能比中。"""
+    (out, _), _ = fold([(0.1, 1.2, -0.9, "Thanks for watching!")])
+    assert out == ""
+
+
+def test_decimal_numbers_are_not_split_into_hallucination_parts():
+    """摘掉词内的点不能误伤：价格是合规要看的内容，整句必须保留。"""
+    (out, _), _ = fold([(0.1, 1.2, -0.9, "Cuesta 3.5 dólares, chicas.")])
+    assert "3.5" in out
