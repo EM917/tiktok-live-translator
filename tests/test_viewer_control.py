@@ -15,6 +15,7 @@ import pytest
 from app import pipeline as pipeline_mod
 from app import settings as settings_mod
 from app import viewer as viewer_mod
+from app import viewer_share as viewer_share_mod
 from app.pipeline import Pipeline
 
 try:                      # app/qr.py 是另一份改动提供的；缺了也不该让这个文件整体报错
@@ -376,7 +377,10 @@ def test_restore_never_raises(setup, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("settings 读坏了")
 
-    monkeypatch.setattr(pipeline_mod, "load_settings", boom)
+    # restore_viewer_share 现在实现在 app/viewer_share.py（ViewerShareMixin），
+    # 它自己的 load_settings 绑定在那个模块的命名空间里，补丁要打在那儿——
+    # 打 pipeline_mod.load_settings 不会影响已经搬走的这份绑定
+    monkeypatch.setattr(viewer_share_mod, "load_settings", boom)
     asyncio.run(setup.pipeline.restore_viewer_share())
     assert setup.server.viewer is None
 
@@ -399,7 +403,9 @@ def test_shutdown_never_raises_even_when_stopping_hangs(setup, monkeypatch):
         await asyncio.sleep(30)
 
     hub.stop = never
-    monkeypatch.setattr(pipeline_mod, "VIEWER_STOP_TIMEOUT_SEC", 0.05)
+    # 同上：stop_viewer_share 也搬进了 app/viewer_share.py，这个常量要在那个
+    # 模块里打补丁才会被它读到（pipeline_mod 上的只是重新导出的一份副本）
+    monkeypatch.setattr(viewer_share_mod, "VIEWER_STOP_TIMEOUT_SEC", 0.05)
     asyncio.run(setup.pipeline.stop_viewer_share("shutdown"))
 
 
