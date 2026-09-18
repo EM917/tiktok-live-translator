@@ -81,6 +81,12 @@
 
   // 手机同看卡片（#share-card）：只在打开期间监听 0.0.0.0，控制面本身始终只在
   // 127.0.0.1；这张卡片只发/收 viewer_share / viewer_rotate，看不到任何观众数据
+  //
+  // 卡片以前挂在 #start-panel 下面，直播开始后整块面板被隐藏，中控恰恰是在
+  // 直播中才想扫码给同事看，却找不到入口。现在卡片单独放进 #share-panel，
+  // 由顶栏的 #share-btn 开关，跟直播状态无关，待机/直播都能点开。
+  var shareBtn = document.getElementById("share-btn");
+  var sharePanel = document.getElementById("share-panel");
   var shareToggle = document.getElementById("share-toggle");
   var shareState = document.getElementById("share-state");
   var shareDesc = document.getElementById("share-desc");
@@ -1368,11 +1374,20 @@
     });
   }
 
+  // 顶栏按钮只反映「同看是否打开」这一件事，跟面板本身是否展开无关——
+  // 中控可能收起面板但没关同看，这时按钮要接着显示「已打开」
+  function updateShareBtn(on) {
+    if (!shareBtn) return;
+    shareBtn.textContent = on ? "📱 手机同看 · 已打开" : "📱 手机同看";
+    shareBtn.classList.toggle("on", on);
+  }
+
   function renderShare(state) {
     if (!shareToggle || !state) return;
     lastShareState = state;
     var on = !!state.on;
     var justOpened = on && !shareOn;
+    updateShareBtn(on);
 
     shareState.textContent = on ? "打开" : "关闭";
     shareState.className = "share-state " + (on ? "on" : "off");
@@ -1450,6 +1465,13 @@
     shareOn = on;
   }
 
+  // 顶栏按钮只管面板的展开/收起，不碰同看开关本身——同看是否广播局域网端口
+  // 完全由卡片里的「打开/关闭」决定，两件事故意分开，收起面板不应该顺手断掉正在看的手机
+  if (shareBtn && sharePanel) {
+    shareBtn.addEventListener("click", function () {
+      sharePanel.classList.toggle("hidden");
+    });
+  }
   if (shareToggle) {
     shareToggle.addEventListener("click", function () {
       send({ type: "viewer_share", on: true });
@@ -1458,6 +1480,8 @@
   if (shareClose) {
     shareClose.addEventListener("click", function () {
       send({ type: "viewer_share", on: false });
+      // 面板本身也一起收起：点「关闭」的人是要结束同看，没必要还占着字幕历史上方的位置
+      if (sharePanel) sharePanel.classList.add("hidden");
     });
   }
   if (shareCopy) {
