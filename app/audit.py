@@ -671,6 +671,13 @@ class AuditLog:
         self._write({"type": "viewer_auth_failed", "at": _now_ms(), "ip": ip,
                      "why": why, "suppressed": suppressed})
 
+    def viewer_action(self, action, seq, ip):
+        """手机端发起的动作（目前只有 retranslate）。translation_strong 的
+        trigger="viewer" 说得出「是手机按的」，答不出「是哪一台」；这一条单独
+        记 ip，事后要能答「那次重译是谁点的」。"""
+        self._write({"type": "viewer_action", "at": _now_ms(), "action": action,
+                     "id": seq, "ip": ip})
+
     def window_closed(self):
         """中控关掉了程序窗口（正在监听时要先确认），监听随之停止。先于停止流程写下：
         收尾要等识别线程和弹幕子进程，进程可能等不到 session_end 就退出。"""

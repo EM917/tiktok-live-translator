@@ -77,26 +77,44 @@ body {
 
 /* ---------- 违禁词报警 ---------- */
 .alert-section { padding: 10px 14px 4px; }
+.alert-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .section-title { font-size: 13px; font-weight: 700; color: var(--fail); margin-bottom: 6px; }
+.alert-clear-seen {
+  flex: none; font-size: 11px; padding: 3px 9px; font-family: inherit; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text-dim);
+}
+.alert-local-note { font-size: 11px; color: var(--text-faint); margin: -2px 0 6px; }
 .alert-item {
   border-radius: 10px; padding: 9px 12px; margin-bottom: 8px;
   background: color-mix(in srgb, var(--fail) 10%, var(--bg));
   border: 1px solid color-mix(in srgb, var(--fail) 35%, var(--border));
 }
-.alert-head { font-size: 12px; font-weight: 700; color: var(--fail); }
+.alert-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.alert-head-label { font-size: 12px; font-weight: 700; color: var(--fail); }
+.alert-dismiss {
+  flex: none; font-size: 12px; line-height: 1; padding: 2px 7px; font-family: inherit; cursor: pointer;
+  border: none; border-radius: 999px; background: transparent; color: var(--text-faint);
+}
+.alert-dismiss:active { background: color-mix(in srgb, var(--fail) 15%, transparent); }
 .alert-ctx { font-size: 13px; margin-top: 4px; word-break: break-word; }
 .alert-zh { font-size: 13px; margin-top: 3px; color: var(--text-dim); word-break: break-word; }
 .alert-zh.pending { font-style: italic; color: var(--text-faint); }
 .alert-zh.failed { color: var(--text-dim); }
 
 /* ---------- 字幕 ---------- */
-.caption-section { flex: 1; overflow-y: auto; padding: 10px 14px 6px; -webkit-overflow-scrolling: touch; }
+.retranslate-hint { font-size: 11px; color: var(--text-faint); padding: 6px 14px 0; }
+.caption-section { flex: 1; overflow-y: auto; padding: 6px 14px 6px; -webkit-overflow-scrolling: touch; }
 .cap-item { margin-bottom: 12px; }
 .cap-meta { font-size: 11px; color: var(--text-faint); }
 .cap-orig { font-size: 15px; margin-top: 2px; word-break: break-word; }
 .cap-trans { font-size: 15px; margin-top: 2px; color: var(--accent); word-break: break-word; min-height: 1.5em; }
 .cap-trans.pending { color: var(--text-faint); font-style: italic; }
 .cap-trans.failed { color: var(--text-dim); font-style: normal; }
+.cap-retranslate {
+  margin-top: 4px; font-size: 12px; padding: 3px 10px; font-family: inherit; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--accent);
+}
+.cap-retranslate:disabled { color: var(--text-faint); cursor: default; }
 
 .jump-latest {
   position: fixed; right: 16px; bottom: 76px; z-index: 6;

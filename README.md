@@ -598,7 +598,14 @@ the service itself is running. The address is plain `http://` on the LAN, not
 a secure context, so there are no system notifications and no screen
 wake-lock, and the alert sound may stop once the page is backgrounded or the
 phone is locked. v1 only works within the same local network — not across
-networks.
+networks. Each caption also has a "重译" (retranslate) button that asks the
+control computer's strongest local model to redo that one line; it's
+rate-limited per phone (a few seconds between taps, a handful per minute) so
+one phone tapping repeatedly can't queue up work or slow down the control
+computer. Each alert has a ✕ to hide it, plus a "清除已看过的报警" button to
+hide everything currently shown — both act only on that one phone: the control
+computer's alert panel and the audit log are unaffected, and nothing is sent
+to the server.
 
 **Exporting captions.** There is no export function; select and copy the text
 from the page. The page retains the most recent 300 lines, and the server
