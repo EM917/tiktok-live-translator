@@ -55,6 +55,10 @@
   var backendState = "idle";   // 后端 TikTokLive 抓取协程的状态：idle/connecting/connected/disconnected/error/unavailable
   var backendDetail = "";      // backendState 为 error/unavailable 时的说明文字
   var streamActive = false;    // 直播中/连接中：这时面板即使空着也要显示
+  // 违禁词警示：默认关闭（负责人明确要求，见 CLAUDE.md），实际值以后端 hello/
+  // alert_mode 广播为准；本地只在用户没点过开关、也还没收到后端值之前用这个默认。
+  var alertsEnabled = false;
+  var watchlistConfigured = false;   // 词表非空：来自最近一次 renderWatchlist，决定 watch-desc 是否显示模式文案
   // Object.create(null)：commentById 的键直接取自服务端转发的弹幕 id（最终来自
   // TikTok 页面上任意脚本可控的 viewer_comments.items[].id），普通字面量 {} 遇到
   // "__proto__" 这个键时会触发 Object.prototype 的存取器而不是新增普通键，
@@ -65,6 +69,8 @@
   var incidentBar = document.getElementById("incident-bar");
   var watchState = document.getElementById("watch-state");
   var watchDesc = document.getElementById("watch-desc");
+  var alertsToggle = document.getElementById("alerts-toggle");
+  var alertModeTag = document.getElementById("alert-mode-tag");
   var fixCmd = document.getElementById("fix-command");
   var fixCmdText = document.getElementById("fix-command-text");
   var fixCmdCopy = document.getElementById("fix-command-copy");
@@ -207,7 +213,8 @@
     // 服务器收到 start 后会立刻回执 connecting 状态；在那之前指令算「在途」，
     // 重连后的 hello 里补发一次，超时仍无回执才提示用户手点。
     pendingStart = { payload: { type: "start", url: url, source: sourceSel.value,
-                                media: media || undefined },
+                                media: media || undefined,
+                                alerts: !!(alertsToggle && alertsToggle.checked) },
                      retried: false };
     send(pendingStart.payload);
     armStartWatchdog();
@@ -234,6 +241,12 @@
   roomInput.addEventListener("keydown", function (e) {
     if (e.key === "Enter") startStream();
   });
+  // 用户手动扳这个开关：立刻更新描述文案和顶栏标签的预览，不用等下一次开播
+  if (alertsToggle) {
+    alertsToggle.addEventListener("change", function () {
+      setAlertsEnabled(alertsToggle.checked);
+    });
+  }
   stopBtn.addEventListener("click", function () {
     pendingStart = null;                             // 在途的「开始」随之作废
     if (startWatchdog) clearTimeout(startWatchdog);
@@ -447,6 +460,8 @@
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
           if (msg.config.comment_detail != null) backendDetail = msg.config.comment_detail;
           if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
+          // 违禁词警示开关：hello 每次都带真实值（默认关闭），不猜测、不沿用上一场
+          setAlertsEnabled(!!msg.config.alerts_enabled);
           if (msg.config.disk) renderDisk(msg.config.disk);
           if (msg.config.recent_rooms) renderRecentRooms(msg.config.recent_rooms);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
@@ -554,6 +569,10 @@
       case "watchlist":
         renderWatchlist(msg);
         break;
+      // 违禁词警示开关的状态广播：会话开始时发一次，中途改变时再发一次
+      case "alert_mode":
+        setAlertsEnabled(!!msg.on);
+        break;
       case "recent_rooms":
         renderRecentRooms(msg.entries);
         break;
@@ -586,6 +605,7 @@
     stopBtn.classList.toggle("hidden", !active);
     startBtn.disabled = state === "connecting";
     streamActive = active;
+    updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
     refreshCommentPanel();
 
     // 附带的命令：程序自己已经帮不上忙时，至少让用户有一条能照做的路
@@ -1498,13 +1518,43 @@
     });
   }
 
+  // 违禁词警示开关：本地状态 + 顶栏标签 + 首页描述文案，三处一起同步。
+  // 来源可能是用户手动扳开关、也可能是后端 hello/alert_mode 广播——不区分来源，
+  // 一律走这一个函数，保证三处永远一致。
+  function setAlertsEnabled(on) {
+    alertsEnabled = !!on;
+    if (alertsToggle) alertsToggle.checked = alertsEnabled;
+    updateWatchDesc();
+    updateAlertModeTag();
+  }
+
+  // 顶栏标签：只在连接中/直播中露出（跟其它「直播中才有意义」的 UI 一个逻辑），
+  // 待机/已结束/出错/离线时没有场次可言，不该挂着一个「警示关/开」误导人。
+  function updateAlertModeTag() {
+    if (!alertModeTag) return;
+    alertModeTag.classList.toggle("hidden", !streamActive);
+    alertModeTag.textContent = alertsEnabled ? "警示开" : "警示关";
+    alertModeTag.classList.toggle("on", alertsEnabled);
+    alertModeTag.classList.toggle("off", !alertsEnabled);
+  }
+
+  // 词表为空时的「未配置」文案原样保留（renderWatchlist 里直接写），跟开关状态
+  // 无关——没有词就永远不会命中，这句话本身已经说清楚了。只有词表非空时，
+  // watch-desc 才需要按开关状态二选一。
+  function updateWatchDesc() {
+    if (!watchDesc || !watchlistConfigured) return;
+    watchDesc.textContent = alertsEnabled
+      ? "开播后会实时监听主播原话，命中立即报警（不依赖翻译，翻译再慢也不影响报警）。"
+      : "开播后不报警；命中只记入审计。要报警请先打开此开关。";
+  }
+
   function renderWatchlist(msg) {
     if (!watchState) return;
+    watchlistConfigured = msg.count > 0;
     if (msg.count > 0) {
       watchState.textContent = "已启用 · " + msg.count + " 条";
       watchState.className = "watch-state on";
-      watchDesc.textContent = "开播后会实时监听主播原话，命中立即报警（不依赖翻译，"
-        + "翻译再慢也不影响报警）。";
+      updateWatchDesc();
     } else {
       watchState.textContent = "未配置";
       watchState.className = "watch-state off";

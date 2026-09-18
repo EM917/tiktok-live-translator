@@ -123,6 +123,9 @@ def make_pipeline(monkeypatch, tmp_path, terms=("cura el cancer",), server=None)
     p = Pipeline(args, server)
     p.translator = None
     p._alert_notifier = QuietNotifier()
+    # 这个文件测的是报警的证据链本身，不是新开关（见 tests/test_alert_mode.py）：
+    # 开着才是这些用例一直假定的行为
+    p.alerts_enabled = True
 
     async def nothing(*a, **k):
         return None

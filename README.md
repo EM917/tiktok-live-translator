@@ -452,6 +452,14 @@ directly beneath it. The most frequent causes are an empty `banned_terms.txt`
 on every start, so a resolved issue clears on the next run. A passing row
 indicates the capability was executed, not merely configured.
 
+**Banned-term alerting is off by default.** The start panel has an "Enable
+banned-term alerts" switch you tick before starting, unchecked by default.
+With it off, detection still runs and every hit is still written to the audit
+(tagged `suppressed: "alerts_off"`) — it just does not pop an alert, fire a
+system notification, or spend a strong-model re-translation. Turning hits into
+visible alerts requires explicitly checking this switch; your last choice is
+remembered and reused on the next start.
+
 **The update button reports that something is blocking it.** The message names
 the affected files and provides a complete command with your project path and a
 Copy button. On builds older than v0.10.4 the machine cannot repair itself, as

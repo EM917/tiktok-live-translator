@@ -63,6 +63,12 @@ body {
 .alert-badge { font-size: 13px; font-weight: 700; color: var(--fail); flex: none; }
 .stale-line { padding: 4px 14px; font-size: 11px; color: var(--text-faint); }
 
+/* 违禁词警示关闭时的常驻提示：灰底灰字，不抢红色报警的注意力，但也不会被忽略 */
+.alert-mode-line {
+  padding: 6px 14px; font-size: 12px; text-align: center; line-height: 1.5;
+  color: var(--text-dim); background: color-mix(in srgb, var(--text) 6%, var(--bg));
+}
+
 /* ---------- 演示数据 / 持续提示 / 健康度 ---------- */
 .demo-banner {
   padding: 6px 14px; font-size: 12px; text-align: center;
