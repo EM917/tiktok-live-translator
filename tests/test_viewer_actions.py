@@ -150,7 +150,9 @@ def test_the_operator_button_does_not_go_through_the_viewer_semaphore(pl):
 def test_pending_count_caps_further_viewer_actions(pl):
     for i in range(pipeline_mod.VIEWER_RETRANSLATE_QUEUE_MAX + 1):
         pl._recent[i] = {"text": "x"}
-    gate = asyncio.Event()
+    # Event 要在协程里建：Python 3.9 的 asyncio.Event() 构造时会去拿当前事件循环，
+    # 前一个 asyncio.run 结束后主线程没有循环，直接 RuntimeError（3.10 起才不绑循环）
+    gate = None
 
     async def fake_retranslate(seq, trigger="manual"):
         await gate.wait()
@@ -158,6 +160,8 @@ def test_pending_count_caps_further_viewer_actions(pl):
     pl.retranslate = fake_retranslate
 
     async def scenario():
+        nonlocal gate
+        gate = asyncio.Event()
         started = [pl._on_viewer_action("retranslate", {"id": i}, "1.2.3.4")
                    for i in range(pipeline_mod.VIEWER_RETRANSLATE_QUEUE_MAX)]
         assert all(c is not None for c in started)
