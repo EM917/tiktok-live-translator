@@ -266,22 +266,33 @@ if (typeof document !== "undefined") {
     }
 
     // ---- 字幕区贴底跟随：follow.js 的 12 行重写版（故意不复用，见 spec §12） ----
+    // 真正滚动的是外层 #caption-section（viewer.css 里 flex:1 + overflow-y:auto），
+    // 不是 #caption-list：列表本身不溢出，给它设 scrollTop 什么都不会发生，它的
+    // scroll 事件也永远不触发。第一版就是滚错了元素，上线当天用户报「手机端不会
+    // 自动滚动」。这里认容器，列表只作兜底。
     var FOLLOW_SLACK = 120;
     var following = true;
+    var scroller = document.getElementById("caption-section") || captionList;
     function atBottom() {
-      return captionList.scrollHeight - captionList.scrollTop - captionList.clientHeight < FOLLOW_SLACK;
+      return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < FOLLOW_SLACK;
     }
-    if (captionList) {
-      captionList.addEventListener("scroll", function () {
-        if (!captionList.clientHeight) return;   // 不可测量时沿用原意图，不猜
+    if (scroller) {
+      scroller.addEventListener("scroll", function () {
+        if (!scroller.clientHeight) return;   // 不可测量时沿用原意图，不猜
         following = atBottom();
         if (jumpBtn) jumpBtn.classList.toggle("hidden", following);
       });
     }
     function stickCaptions() {
-      if (!captionList) return;
-      if (following) captionList.scrollTop = captionList.scrollHeight;
+      if (!scroller) return;
+      if (following) scroller.scrollTop = scroller.scrollHeight;
       else if (jumpBtn) jumpBtn.classList.remove("hidden");
+    }
+    // 切回前台时再贴一次：后台期间到的字幕不会触发布局滚动，回来会停在半截
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) stickCaptions();
+      });
     }
     if (jumpBtn) {
       jumpBtn.addEventListener("click", function () {
@@ -734,6 +745,8 @@ if (typeof document !== "undefined") {
       entry.msg = applyUpdate(entry.msg, msg);
       applyCaptionState(entry.msg, entry.transEl);
       applyRetranslateButton(msg.id);
+      // 译文是后补的，卡片会长高：正在贴底看的人得跟着再贴一次
+      stickCaptions();
     }
 
     // ---- 弹幕：默认折叠，只留最近 30 条 ----
