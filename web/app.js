@@ -141,11 +141,22 @@
     if (cssSize) fontSlider.value = cssSize;
   }
 
+  // 主播语言的 <select> 只认表里已有的 value（单个语言码，或默认那一种列表组合
+  // "es,en"）：回填的值缺失、或是表里没有的旧值/脏数据，都退回默认组合，不能让
+  // select 卡在没有任何选项被选中的空白态
+  function selectSourceLang(value) {
+    var v = value ? String(value) : "";
+    for (var i = 0; i < sourceSel.options.length; i++) {
+      if (sourceSel.options[i].value === v) { sourceSel.value = v; return; }
+    }
+    sourceSel.value = "es,en";
+  }
+
   // localStorage 里的 "auto" 不回填：老版本默认就是 auto，它大概率是历史
-  // 默认值而非用户的选择——现在默认是西语。真选过自动检测的用户，其选择
+  // 默认值而非用户的选择——现在默认是西语+英语。真选过自动检测的用户，其选择
   // 存在服务端（settings.json），随 config 消息回填，不经这里
   var savedSource = lsGet("sourceLang");
-  if (savedSource && savedSource !== "auto") sourceSel.value = savedSource;
+  if (savedSource && savedSource !== "auto") selectSourceLang(savedSource);
   var savedRoom = lsGet("roomUrl");
   if (savedRoom) roomInput.value = savedRoom;
   // 服务端记住的主播语言随 config 到达后回填（localStorage 按端口隔离，
@@ -477,7 +488,7 @@
           drawIncidents();
           if (msg.config.status) setStatus(msg.config.status);
           if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
-          if (msg.config.source_lang && !sourceTouched) sourceSel.value = msg.config.source_lang;
+          if (msg.config.source_lang && !sourceTouched) selectSourceLang(msg.config.source_lang);
           if (msg.config.glossary_migration) {
             handleMigration({ stage: "available",
                               count: msg.config.glossary_migration.count });
@@ -524,7 +535,7 @@
         break;
       case "config":
         if (msg.target_lang) targetSel.value = msg.target_lang;
-        if (msg.source_lang && !sourceTouched) sourceSel.value = msg.source_lang;
+        if (msg.source_lang && !sourceTouched) selectSourceLang(msg.source_lang);
         if (msg.room_url) fillRoomInput(msg.room_url);
         if (msg.alerts_session) setAlertSession(msg.alerts_session);
         if ("update_check" in msg) renderUpdateCheck(msg.update_check);

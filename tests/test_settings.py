@@ -58,12 +58,20 @@ def test_no_stray_tmp_file_left(monkeypatch, tmp_path):
     assert leftovers == ["settings.json"]      # 临时文件已原子替换掉
 
 
-# ---- resolve_source：CLI > 界面上次选择 > 西语（产品默认，不是 auto）----
+# ---- resolve_source：CLI > 界面上次选择 > 西语+英语（产品默认，不是 auto）----
 
-def test_source_first_run_defaults_to_spanish():
-    """首次使用不逐段猜语言：实测 auto 档一场里 22.7% 的段语言标签乱跳。"""
-    assert settings.resolve_source(None, None) == "es"
-    assert settings.resolve_source(None, "") == "es"
+def test_source_first_run_defaults_to_spanish_and_english():
+    """首次使用不逐段猜语言：实测 auto 档一场里 22.7% 的段语言标签乱跳。
+    默认是列表形式 "es,en" 而不是单纯 "es"——带货主播西语夹英语是常态，
+    列表形式仍然只在这两种语言里自动检测，不会被贴上无关语言标签。"""
+    assert settings.resolve_source(None, None) == "es,en"
+    assert settings.resolve_source(None, "") == "es,en"
+
+
+def test_source_list_value_round_trips():
+    """列表形式原样传下去，不在这一层校验/拆解（见 app.asr._parse_language_spec）。"""
+    assert settings.resolve_source(None, "es,en") == "es,en"
+    assert settings.resolve_source("ja,ko,ru,ar", "es") == "ja,ko,ru,ar"
 
 
 def test_source_saved_choice_wins_over_default():

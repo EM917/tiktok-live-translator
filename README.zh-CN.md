@@ -142,7 +142,7 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 | 参数 | 说明 | 默认 |
 |------|------|------|
 | `--target` | 目标语言（`zh-CN`/`en`/`ja`/`ko`/…，UI 里也能随时切换） | `zh-CN` |
-| `--source` | 主播语言，不填自动检测（确定时指定更准，如 `es`/`en`/`ja`） | 自动 |
+| `--source` | 主播语言：单个语言码（如 `es`/`en`/`ja`），或逗号列表只在这些语言里自动检测（如 `es,en`，最多 4 个，第一个是主语言；检测到列表外的语言会强制重转一遍） | `es,en` |
 | `--backend` | 识别后端：`mlx`（Apple GPU）/`ct2`（faster-whisper）/`auto` | `auto` |
 | `--model` | whisper 模型：`tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` | 按硬件自动 |
 | `--device` | `auto`/`cpu`/`cuda` | 按硬件自动 |
