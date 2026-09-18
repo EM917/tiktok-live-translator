@@ -340,15 +340,15 @@ rect.c-bg-rect { fill: var(--bg); }
         <text x="125" y="106" class="t-muted" font-size="9" text-anchor="middle">webcast API · live page</text>
         </g>
 
-        <g id="node-resolver" data-node-id="resolver" data-node-label="Stream resolver" tabindex="0" role="button" aria-label="Focus Stream resolver, 4 fallback paths, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="4 fallback paths" data-node-context="Architecture component">
-          <title>Stream resolver · 4 fallback paths · Architecture component</title>
+        <g id="node-resolver" data-node-id="resolver" data-node-label="Stream resolver" tabindex="0" role="button" aria-label="Focus Stream resolver, up to 7 fallback layers, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="up to 7 fallback layers" data-node-context="Architecture component">
+          <title>Stream resolver · up to 7 fallback layers · Architecture component</title>
           <rect x="330" y="60" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="330" y="60" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(336 66) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" x="415" y="90" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Stream resolver</text>
-        <text x="415" y="106" class="t-muted" font-size="9" text-anchor="middle">4 fallback paths</text>
+        <text x="415" y="106" class="t-muted" font-size="9" text-anchor="middle">up to 7 fallback layers</text>
         </g>
 
         <g id="node-ffmpeg" data-node-id="ffmpeg" data-node-label="ffmpeg denoise" tabindex="0" role="button" aria-label="Focus ffmpeg denoise, 16 kHz mono PCM, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="16 kHz mono PCM" data-node-tag="RNNoise" data-node-context="Architecture component">
@@ -412,8 +412,8 @@ rect.c-bg-rect { fill: var(--bg); }
         <text x="415" y="286" class="t-muted" font-size="9" text-anchor="middle">by seconds · 60 s cap</text>
         </g>
 
-        <g id="node-ui" data-node-id="ui" data-node-label="Caption surface" tabindex="0" role="button" aria-label="Focus Caption surface, local web · Chrome ext, Architecture component" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="local web · Chrome ext" data-node-context="Architecture component">
-          <title>Caption surface · local web · Chrome ext · Architecture component</title>
+        <g id="node-ui" data-node-id="ui" data-node-label="Caption surface" tabindex="0" role="button" aria-label="Focus Caption surface, local web · phone viewer, Architecture component" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="local web · phone viewer" data-node-context="Architecture component">
+          <title>Caption surface · local web · phone viewer · Architecture component</title>
           <rect x="40" y="600" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="40" y="600" width="170" height="64" rx="6" class="c-frontend" data-animate="node" style="--step:12" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(46 606) scale(0.6875)">
@@ -423,7 +423,7 @@ rect.c-bg-rect { fill: var(--bg); }
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
           <text data-node-label="" x="125" y="630" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Caption surface</text>
-        <text x="125" y="646" class="t-muted" font-size="9" text-anchor="middle">local web · Chrome ext</text>
+        <text x="125" y="646" class="t-muted" font-size="9" text-anchor="middle">local web · phone viewer</text>
         </g>
 
         <g id="node-server" data-node-id="server" data-node-label="CaptionServer" tabindex="0" role="button" aria-label="Focus CaptionServer, aiohttp :8765, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="aiohttp :8765" data-node-context="Architecture component">
