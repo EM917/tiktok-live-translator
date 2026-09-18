@@ -399,6 +399,7 @@ function makeFakeNode(tag) {
     },
     addEventListener(type, cb) { (listeners[type] = listeners[type] || []).push(cb); },
     click() { (listeners.click || []).slice().forEach((cb) => cb()); },
+    dispatch(type) { (listeners[type] || []).slice().forEach((cb) => cb()); },
     setAttribute() {},
     querySelector() { return null; },
   };
@@ -419,7 +420,7 @@ function baseElements() {
     "alert-mode-line": makeFakeNode(),
     "demo-banner": makeFakeNode(), "incident-list": makeFakeNode(), "health-line": makeFakeNode(),
     "alert-section": makeFakeNode(), "alert-list": makeFakeNode(), "alert-clear-seen": makeFakeNode(),
-    "caption-list": makeFakeNode(), "jump-latest": makeFakeNode(),
+    "caption-section": makeFakeNode(), "caption-list": makeFakeNode(), "jump-latest": makeFakeNode(),
     "comment-toggle": makeFakeNode(), "comment-count": makeFakeNode(), "comment-list": makeFakeNode(),
     "ring-toggle": makeFakeNode(),
   };
@@ -569,5 +570,43 @@ test("alert_mode 广播：关闭时常驻灰字，打开时隐藏；新场次先
     assert.equal(line.classList.contains("hidden"), false);
     ws.onmessage({ data: JSON.stringify({ type: "viewer_hello", ok: true, ts: Date.now() / 1000, share_since: 0, viewers: 1, max_viewers: 12, read_only: true }) });
     assert.equal(line.classList.contains("hidden"), true, "新场次的 viewer_hello 应该先隐藏，不沿用上一场");
+  });
+});
+
+// ---- DOM 回归：自动滚动认的是外层容器 #caption-section ----
+// 第一版滚的是 #caption-list（不溢出，设 scrollTop 无效），手机上不会自动滚动。
+test("新字幕到达时滚动的是 #caption-section；用户上翻后不抢滚动，点「最新」再贴底", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const section = elements["caption-section"];
+    const list = elements["caption-list"];
+    const jump = elements["jump-latest"];
+    section.clientHeight = 600;
+    section.scrollHeight = 3000;
+    list.scrollHeight = 3000;   // 列表和容器一样高：只有容器该被滚
+
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 1, ts: 1, original: "hola", translated: "你好" }) });
+    assert.equal(section.scrollTop, 3000, "跟随中：新字幕到达应把容器滚到底");
+    assert.equal(list.scrollTop, 0, "内层列表不该被当成滚动容器");
+
+    // 用户往上翻（离底部远于 FOLLOW_SLACK）：停止跟随，显示「最新」按钮
+    section.scrollTop = 1000;
+    section.dispatch("scroll");
+    section.scrollHeight = 3400;
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 2, ts: 2, original: "adios", translated: "再见" }) });
+    assert.equal(section.scrollTop, 1000, "上翻后新字幕不该抢滚动");
+    assert.equal(jump.classList.contains("hidden"), false, "上翻后应显示「最新」按钮");
+
+    // 译文后补也不抢
+    ws.onmessage({ data: JSON.stringify({ type: "caption_update", id: 2, translated: "再见了" }) });
+    assert.equal(section.scrollTop, 1000, "译文后补时上翻状态也不该抢滚动");
+
+    jump.click();
+    assert.equal(section.scrollTop, 3400, "点「最新」应贴底");
+    assert.equal(jump.classList.contains("hidden"), true, "贴底后按钮隐藏");
+
+    // 跟随中译文后补（卡片长高）也要再贴一次
+    section.scrollHeight = 3500;
+    ws.onmessage({ data: JSON.stringify({ type: "caption_update", id: 2, translated: "再见了，朋友" }) });
+    assert.equal(section.scrollTop, 3500, "跟随中译文补进来应再贴底");
   });
 });
