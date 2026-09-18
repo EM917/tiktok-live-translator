@@ -24,13 +24,10 @@ from app import browser_login as bl
 from app import pipeline as pipeline_mod
 from app import resolver, selfcheck
 from app.pipeline import Pipeline, browser_only_message
+from tests.helpers import run
 
 SENTINEL = "S3NTINEL-c00kie-VALUE-9f2e"
 GUESSED_LABELS = ("年龄", "限流", "封禁", "多半")
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
 
 
 class FakeCookie:

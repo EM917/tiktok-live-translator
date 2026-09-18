@@ -4,14 +4,10 @@
 里自己复制的那份 auto 选择逻辑没跟上。结果程序实际跑着 1.8B，面板却写「本地
 Hy-MT2 7B」。自检报错东西比不自检更糟——它会让人相信一个错误的事实。
 """
-import asyncio
 from types import SimpleNamespace
 
 from app import selfcheck
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+from tests.helpers import run
 
 
 class FakeInner:

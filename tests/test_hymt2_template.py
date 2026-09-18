@@ -8,15 +8,11 @@
 对 7B 来说我们拼的标记只是普通文本，用户轮次从来没有被闭合，于是它一直
 以为在聊天。
 """
-import asyncio
 
 import pytest
 
 from app.translator import OllamaHyMT2Translator, _strip_special
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+from tests.helpers import run
 
 
 class FakeResp:

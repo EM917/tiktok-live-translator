@@ -6,10 +6,10 @@
 安全上的硬要求：密钥存在本机的 settings.json（已在 .gitignore 里），
 **从不出现在任何一条发给页面的消息里**，回传的只有打码后的尾四位。
 """
-import asyncio
 
 from app import translator as T
 from app.pipeline import Pipeline
+from tests.helpers import run
 
 KEY = "0123456789abcdef:fx"
 
@@ -24,14 +24,6 @@ class FakeServer:
 
     async def status(self, *a, **k):
         pass
-
-
-def run(coro):
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()          # 不关的话 GC 时会往 stderr 吐 fd 报错噪音
 
 
 def make(monkeypatch, tmp_path):

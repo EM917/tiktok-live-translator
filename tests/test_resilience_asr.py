@@ -25,14 +25,11 @@ from app import selfcheck
 from app.audit import AuditLog
 from app.pipeline import Pipeline, _ASRSlot, load_detector
 from app.telemetry import Telemetry
+from tests.helpers import run
 
 ROOT = Path(__file__).resolve().parent.parent
 LIVE_URL = "https://www.tiktok.com/@bellaallnatural/live"
 DIRECT_URL = "https://cdn.example.com/s.flv"
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def rows(path, kind=None):

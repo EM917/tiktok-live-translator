@@ -2,14 +2,10 @@
 
 钉住：按 id 覆盖且保留最初出现的时间；level=clear 去掉；落进 config 让重连的页面
 照样看得到；最多 20 条；"session:" 开头的在下一场开始时清掉，其余的保留。"""
-import asyncio
 
 from app.pipeline import Pipeline
 from app.server import CaptionServer
-
-
-def run(coro):
-    return asyncio.run(coro)
+from tests.helpers import run
 
 
 def test_incidents_are_kept_in_config_updated_by_id_and_cleared():

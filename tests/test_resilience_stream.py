@@ -21,6 +21,7 @@ from app.pipeline import Pipeline
 from app.redact import strip_query
 from app.resolver import ResolveError
 from app.server import CaptionServer
+from tests.helpers import run
 
 ROOM = "https://www.tiktok.com/@bellaallnatural/live"
 ROOM2 = "https://www.tiktok.com/@elisa/live"
@@ -29,10 +30,6 @@ SIGNED = DIRECT + "?expire=1790000000&sign=SECRETSIGN"
 SILENT = b"\x00" * FRAME_BYTES
 # CLAUDE.md 第八条：界面文字、日志只写观察和能做的事，不贴原因标签
 CAUSE_LABELS = ("年龄", "限流", "封禁", "多半", "暂停", "断线", "被挡")
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 class RecordingServer(CaptionServer):

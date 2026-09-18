@@ -4,16 +4,12 @@
 都静默退回「不降噪」，只在一行日志里说了句话，几周没人发现。所以这里的
 测试重点全在「坏掉时会不会变红」，而不是「好的时候是不是绿的」。
 """
-import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from app import pipeline, selfcheck
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+from tests.helpers import run
 
 
 def test_denoise_reports_fail_when_model_is_corrupt(tmp_path, monkeypatch):

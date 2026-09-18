@@ -28,13 +28,10 @@ from app import pipeline as pipeline_mod
 from app.audit import AuditLog, clean_error
 from app.pipeline import Pipeline
 from app.server import CaptionServer
+from tests.helpers import run
 
 # 界面文案只写观察和能做的事，不贴原因标签（CLAUDE.md 第八条）
 CAUSE_LABELS = ("年龄", "限流", "封禁", "多半")
-
-
-def run(coro):
-    return asyncio.run(coro)
 
 
 def records(path):

@@ -4,9 +4,9 @@
 不同（一个是「降噪永远关着」，一个是「每个直播间都解析失败」），根因都是
 `content.read(n)` 只返回缓冲区里现有的字节，不保证读满 n。
 """
-import asyncio
 
 from app.nethttp import read_all
+from tests.helpers import run
 
 
 class FakeContent:
@@ -22,10 +22,6 @@ class FakeContent:
 class FakeResp:
     def __init__(self, chunks):
         self.content = FakeContent(chunks)
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
 
 
 def test_reads_past_the_first_chunk():

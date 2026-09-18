@@ -4,9 +4,9 @@
 自动更新就此彻底罢工，提示是「请自行处理后 git pull」——对一个不会用终端的
 人来说，这是个没有出口的死胡同。而 git pull 本来就不会动未跟踪文件。
 """
-import asyncio
 
 from app.updater import Updater
+from tests.helpers import run
 
 
 class FakeServer:
@@ -33,10 +33,6 @@ def make(git_results):
     u._git = fake_git
     u._calls = calls
     return u
-
-
-def run(coro):
-    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
 
 
 def test_status_check_excludes_untracked_files():
