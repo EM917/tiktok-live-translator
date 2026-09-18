@@ -458,6 +458,10 @@ async def main_async(args, state=None):
     updater.attach_pipeline(pipeline)
     server.on_control = pipeline.handle_control
     server.on_client_dropped = pipeline.on_ui_client_dropped
+    # 手机同看：上次中控开着就接着开（默认关闭）。放在这里而不是更后面，是因为
+    # 它要在界面第一次拿 hello 之前把 config["viewer"] 填好——否则卡片会先闪一下
+    # 「关闭」再跳成「已打开」。restore 自己吞掉所有异常，不会挡住启动
+    await pipeline.restore_viewer_share()
     if state is not None:
         state["loop"] = asyncio.get_running_loop()
         state["pipeline"] = pipeline
@@ -497,7 +501,16 @@ async def main_async(args, state=None):
         print("未指定直播间地址——在打开的网页里输入地址点「开始翻译」即可。")
 
     # 直播结束后保留 UI（可以继续翻看历史字幕 / 换房间），Ctrl-C 退出
-    await asyncio.Event().wait()
+    try:
+        await asyncio.Event().wait()
+    finally:
+        # 退出时把手机同看的监听面收掉：0.0.0.0 上的端口不该比进程活得久。
+        # 窗口模式走 app/window_close.close_session，这里管 CLI / --browser。
+        # 尽力而为——任何失败都不许拖住退出
+        try:
+            await pipeline.stop_viewer_share("shutdown")
+        except Exception as exc:
+            print("[警告] 收尾时关闭手机同看出错: {}".format(exc))
 
 
 def main():

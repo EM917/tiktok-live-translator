@@ -67,6 +67,15 @@ async def close_session(pipeline, audit_budget=AUDIT_BUDGET_SEC, total=STOP_TIME
     if audit is not None and stream_active(pipeline):
         audit.window_closed()
     pipeline._stop_reason = "window_closed"
+    # 手机同看的监听面要随窗口一起关掉：0.0.0.0 上的端口不该比进程活得久。
+    # 和停止流程并行起，最后只等一小会儿——它自己带 2 秒预算，且收尾不能为它让路
+    share = None
+    stopper = getattr(pipeline, "stop_viewer_share", None)
+    if callable(stopper):
+        try:
+            share = asyncio.ensure_future(stopper("shutdown"))
+        except Exception:
+            share = None
     stop = asyncio.ensure_future(pipeline.stop_stream(quiet=True))
     done, _ = await asyncio.wait({stop}, timeout=audit_budget)
     if stop not in done:
@@ -80,6 +89,10 @@ async def close_session(pipeline, audit_budget=AUDIT_BUDGET_SEC, total=STOP_TIME
             done, _ = await asyncio.wait({stop}, timeout=rest)
     if stop in done and not stop.cancelled():
         stop.exception()             # 取走异常，别在退出时刷一屏「never retrieved」
+    if share is not None:
+        done2, _ = await asyncio.wait({share}, timeout=0.5)
+        if share in done2 and not share.cancelled():
+            share.exception()        # 同上；没走完也不再等，进程马上就退出了
     return stop in done
 
 

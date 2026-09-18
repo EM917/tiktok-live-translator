@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>手机同看 · TikTok 直播同传</title>
+<link rel="icon" type="image/png" href="/v/icon.png">
+<link rel="stylesheet" href="/v/viewer.css?v=1">
+</head>
+<body>
+  <!-- 顶栏：连接点 + 直播状态 + 报警计数，sticky 在最上面 -->
+  <header id="top-bar" class="top-bar">
+    <span id="conn-dot" class="dot connecting"></span>
+    <span id="conn-text" class="conn-text">连接中…</span>
+    <span class="sep">·</span>
+    <span id="stream-text" class="stream-text">状态未知</span>
+    <span id="alert-badge" class="alert-badge hidden">🚨 <span id="alert-count">0</span></span>
+  </header>
+  <div id="stale-line" class="stale-line hidden"></div>
+
+  <!-- 演示数据提示：见过带 demo 的字幕就常驻，直到状态变回直播中/连接中，或重连后
+       回放里不再带 demo（amendments.md A4） -->
+  <div id="demo-banner" class="demo-banner hidden">演示数据，不是真实直播</div>
+
+  <!-- 持续提示（磁盘空间不足之类）：可折叠按 level 着色，无则不占位 -->
+  <div id="incident-list" class="incident-list"></div>
+  <div id="health-line" class="health-line hidden"></div>
+
+  <!-- 违禁词报警：最显眼，红底卡片，新的在上，最多 50 条 -->
+  <section id="alert-section" class="alert-section hidden">
+    <div class="section-title">🚨 疑似违禁词</div>
+    <div id="alert-list" class="alert-list"></div>
+  </section>
+
+  <!-- 字幕：西语原文 + 中文译文，时间顺序，自动跟到底 -->
+  <section id="caption-section" class="caption-section">
+    <div id="caption-list" class="caption-list"></div>
+  </section>
+  <button id="jump-latest" class="jump-latest hidden" type="button">↓ 最新</button>
+
+  <!-- 观众弹幕：默认折叠，只看最近 30 条；只读，不进报警链路 -->
+  <section id="comment-section" class="comment-section">
+    <button id="comment-toggle" class="comment-toggle" type="button">
+      💬 弹幕 <span id="comment-count">0</span>
+      <span class="cmt-source-label"></span>
+    </button>
+    <div id="comment-list" class="comment-list hidden"></div>
+  </section>
+
+  <!-- 底栏：只看模式提示 + 提示音开关 -->
+  <footer id="bottom-bar" class="bottom-bar">
+    <span class="ro-note">只看模式 · 不能操作</span>
+    <button id="ring-toggle" class="ring-toggle" type="button" aria-pressed="false">🔔 提示音</button>
+  </footer>
+  <p class="ring-note">页面切到后台或锁屏后，手机可能停掉提示音。</p>
+
+  <script src="/v/viewer.js?v=1"></script>
+</body>
+</html>
