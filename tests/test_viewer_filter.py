@@ -185,6 +185,39 @@ def test_scrub_text_removes_addresses_and_paths(raw, gone):
     assert "…" in out
 
 
+def test_strong_and_strong_state_are_kept_on_caption_and_its_update():
+    """手机端要能显示「重译中…/已重译/重译失败」。strong 是普通布尔，
+    strong_state 只认三档，两个字段在 caption 和 caption_update 上都要在。"""
+    out = viewer.filter_payload({
+        "type": "caption", "id": 1, "strong": True, "strong_state": "pending"})
+    assert out["strong"] is True
+    assert out["strong_state"] == "pending"
+
+    out = viewer.filter_payload({
+        "type": "caption_update", "id": 1, "strong_state": "ok"})
+    assert out["strong_state"] == "ok"
+
+    for state in ("pending", "ok", "failed"):
+        out = viewer.filter_payload({"type": "caption_update", "id": 1,
+                                     "strong_state": state})
+        assert out["strong_state"] == state
+
+
+def test_strong_state_normalizes_unknown_values_instead_of_dropping_the_key():
+    """来路不明的值归一成 None，但键本身要留着——不然 caption_update 就不再是
+    caption 的子集，*_update 的键集合不变式会被这一个字段悄悄破坏。"""
+    out = viewer.filter_payload({"type": "caption", "id": 1,
+                                 "strong_state": "bogus"})
+    assert "strong_state" in out
+    assert out["strong_state"] is None
+
+
+def test_strong_flag_is_a_plain_bool_cast():
+    for value, want in ((1, True), (0, False), ("x", True), ("", False), (None, False)):
+        out = viewer.filter_payload({"type": "caption", "id": 1, "strong": value})
+        assert out["strong"] is want, value
+
+
 def test_scrub_text_truncates_and_leaves_plain_chinese_alone():
     assert len(viewer.scrub_text("啊" * 500)) == viewer.SCRUB_LIMIT
     assert len(viewer.scrub_text("啊" * 500, limit=20)) == 20

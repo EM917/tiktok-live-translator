@@ -34,6 +34,10 @@ FUZZY_POLICY_FILE = ROOT / "banned_fuzzy_policy.txt"
 VIEWER_AUDIT_PENDING_MAX = 100
 VIEWER_IP_TIMEOUT_SEC = 3.0      # 取本机地址放执行器里跑，最多等这么久
 VIEWER_STOP_TIMEOUT_SEC = 2.0    # 退出收尾时关同看的预算：不得拖住退出
+# 手机点「重译」：一次只跑一条（见 _viewer_action_semaphore），排在后面的
+# 用这个数上限，多出来的安静丢掉——不然一台手机连点十几下能把请求堆成一长队，
+# 而这条队伍会一直占着强模型，跟违禁词报警抢显存
+VIEWER_RETRANSLATE_QUEUE_MAX = 4
 
 
 def load_detector(path=None):
@@ -264,6 +268,10 @@ class Pipeline:
         self._viewer_ip = None           # 已发布的那个局域网地址，地址变了要重出二维码
         self._viewer_pinned_ip = None    # 中控在多地址里手工点过的那一个
         self._viewer_ip_task = None
+        # 手机发起的「重译」：一次只跑一条，锁惰性建（同 _viewer_lock_obj，
+        # 3.9 的 asyncio.Semaphore 构造时会去绑当前事件循环）
+        self._viewer_action_sem_obj = None
+        self._viewer_action_pending = 0  # 已接受、还没跑完的个数，见 VIEWER_RETRANSLATE_QUEUE_MAX
         # 空闲期（还没开播、没有 audit）的同看事件先攒着，_begin_session 之后补写：
         # 合规证据不能因为「当时没在监听」就没了
         # maxlen 与 viewer.VIEWER_AUDIT_PENDING_MAX 同步（这里不 import viewer：
@@ -1592,7 +1600,39 @@ class Pipeline:
         from .viewer import ViewerHub
 
         return ViewerHub(self.server, ports=ports, token=token,
-                         audit_hook=self._viewer_audit)
+                         audit_hook=self._viewer_audit,
+                         on_action=self._on_viewer_action)
+
+    def _viewer_action_semaphore(self):
+        """手机发起的重译一次只跑一条。中控桌面那颗「重译」按钮不受影响——
+        它走 self.retranslate() 本身，不经过这把锁。"""
+        if getattr(self, "_viewer_action_sem_obj", None) is None:
+            self._viewer_action_sem_obj = asyncio.Semaphore(1)
+        return self._viewer_action_sem_obj
+
+    def _on_viewer_action(self, action, payload, ip):
+        """ViewerHub 的 on_action 回调：同步，不 await。校验和排队计数都在这儿
+        做完；真正等强模型的部分是返回的协程，由 hub 用 ensure_future 调度，
+        绝不堵住它读 socket 的循环。"""
+        if action != "retranslate" or not isinstance(payload, dict):
+            return None
+        seq = payload.get("id")
+        if isinstance(seq, bool) or not isinstance(seq, int):
+            return None
+        if seq not in self._recent:
+            return None           # 程序自己都不认得这条字幕，不必往下传
+        if self._viewer_action_pending >= VIEWER_RETRANSLATE_QUEUE_MAX:
+            return None           # 排队已经够多了，安静丢掉这次点击
+        self._viewer_action_pending += 1
+        return self._run_viewer_action(seq, ip)
+
+    async def _run_viewer_action(self, seq, ip):
+        try:
+            self._viewer_audit("viewer_action", action="retranslate", seq=seq, ip=ip)
+            async with self._viewer_action_semaphore():
+                await self.retranslate(seq, trigger="viewer")
+        finally:
+            self._viewer_action_pending -= 1
 
     async def _viewer_ip_info(self):
         """取本机局域网地址。getaddrinfo 会阻塞（DNS 配错时能卡上几秒），放执行器里

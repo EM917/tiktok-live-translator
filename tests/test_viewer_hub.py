@@ -346,12 +346,140 @@ def test_inbound_messages_never_reach_on_control():
 
 
 def test_inbound_flood_gets_the_viewer_aborted():
+    """滑动窗口而不是绝对上限：窗口内一次性发太多帧（不管是不是能解析）
+    照样断——junk 帧也计数，坏页面换个 id 绕不过这道闸。"""
     hub = make_hub()
     flood = [text({"type": "noise", "n": i})
-             for i in range(viewer_mod.MAX_INBOUND_MESSAGES + 1)]
+             for i in range(viewer_mod.INBOUND_BURST + 1)]
     ws = FakeWS(first=auth(), incoming=flood)
     run_handshake(hub, ws)
     assert "inbound_flood" in reasons(hub)
+
+
+def test_a_lone_retranslate_frame_does_not_trip_the_flood_cap():
+    calls = []
+    hub = make_hub(on_action=lambda a, p, ip: calls.append((a, p, ip)))
+    ws = FakeWS(first=auth(), incoming=[text({"type": "retranslate", "id": 7})])
+    run_handshake(hub, ws)
+    assert calls == [("retranslate", {"id": 7}, "192.168.1.99")]
+    assert "inbound_flood" not in reasons(hub)
+
+
+@pytest.mark.parametrize("bad", [
+    {"type": "retranslate"},                       # 缺 id
+    {"type": "retranslate", "id": "abc"},           # id 不是数字
+    {"type": "retranslate", "id": "1.5"},           # 不是纯数字字符串
+    {"type": "retranslate", "id": True},            # bool 是 int 的子类，要挡掉
+    {"type": "retranslate", "id": -1},              # 负数：字幕序号不该是负的
+    {"type": "retranslate", "id": 1, "extra": 2},   # 多一个键就不是「恰好」了
+    {"type": "start", "url": "http://tiktok.com"},  # 完全不相关的类型
+    {"type": "retranslate", "id": None},
+    "not a dict at all",
+])
+def test_malformed_or_irrelevant_inbound_is_silently_ignored(bad):
+    """既不解析出动作，也不回消息、不断连接——坏页面和探测本就不该有回音。"""
+    calls = []
+    hub = make_hub(on_action=lambda *a: calls.append(a))
+    ws = FakeWS(first=auth(), incoming=[text(bad)])
+    run_handshake(hub, ws)
+    assert calls == []
+    assert reasons(hub) == ["closed"]
+
+
+def test_a_non_text_frame_is_ignored_too():
+    calls = []
+    hub = make_hub(on_action=lambda *a: calls.append(a))
+    ws = FakeWS(first=auth(), incoming=[
+        SimpleNamespace(type=WSMsgType.BINARY, data=b"\x00"),
+        SimpleNamespace(type=WSMsgType.TEXT, data="{not json"),
+    ])
+    run_handshake(hub, ws)
+    assert calls == []
+    assert reasons(hub) == ["closed"]
+
+
+def test_a_numeric_string_id_is_accepted_like_an_int():
+    calls = []
+    hub = make_hub(on_action=lambda a, p, ip: calls.append(p["id"]))
+    ws = FakeWS(first=auth(), incoming=[text({"type": "retranslate", "id": "42"})])
+    run_handshake(hub, ws)
+    assert calls == [42]
+
+
+def test_a_second_rapid_click_is_swallowed_by_the_per_viewer_gap():
+    """ACTION_GAP_SEC 之内的第二次点击：静默吞掉，不发送任何东西，不断开。"""
+    calls = []
+    hub = make_hub(on_action=lambda a, p, ip: calls.append(p["id"]))
+    ws = FakeWS(first=auth(), incoming=[
+        text({"type": "retranslate", "id": 1}),
+        text({"type": "retranslate", "id": 2}),
+    ])
+    run_handshake(hub, ws)
+    assert calls == [1]
+    assert reasons(hub) == ["closed"]      # 没有因为超限而被断开
+
+
+def test_the_per_minute_cap_ignores_further_actions_once_hit():
+    """每次都满足单独的冷却间隔，只测每分钟的总量上限。"""
+    clock = {"t": 0.0}
+    calls = []
+
+    def on_action(action, payload, ip):
+        calls.append(payload["id"])
+        clock["t"] += viewer_mod.ACTION_GAP_SEC
+
+    hub = make_hub(now=lambda: clock["t"], on_action=on_action)
+    messages = [text({"type": "retranslate", "id": i})
+                for i in range(viewer_mod.ACTIONS_PER_MINUTE + 1)]
+    ws = FakeWS(first=auth(), incoming=messages)
+    run_handshake(hub, ws)
+    assert calls == list(range(viewer_mod.ACTIONS_PER_MINUTE))
+
+
+def test_on_action_raising_does_not_break_the_read_loop():
+    """同步回调抛异常：吞掉、记日志，绝不炸掉正在读 socket 的循环，也不断连接。"""
+    seen = []
+
+    def broken(action, payload, ip):
+        seen.append(payload["id"])
+        raise RuntimeError("boom")
+
+    hub = make_hub(on_action=broken)
+    ws = FakeWS(first=auth(), incoming=[
+        text({"type": "retranslate", "id": 1}),
+        text({"type": "retranslate", "id": 2}),
+    ])
+    run_handshake(hub, ws)
+    assert seen == [1]                     # 第二条在冷却内本来就会被吞掉
+    assert reasons(hub) == ["closed"]       # 正常收尾，不是被断开的
+    assert "inbound_flood" not in reasons(hub)
+
+
+def test_a_coroutine_returned_by_on_action_is_scheduled_not_awaited_inline():
+    """回调可能返回协程（真正等强模型的部分）：hub 用 ensure_future 调度它，
+    绝不在读循环里 await——那样一台手机的点击就会拖慢识别循环。"""
+    ran = []
+
+    async def slow_work():
+        await asyncio.sleep(0.01)
+        ran.append("done")
+
+    def on_action(action, payload, ip):
+        return slow_work()
+
+    async def scenario():
+        hub = make_hub(on_action=on_action)
+        ws = FakeWS(first=auth(), incoming=[text({"type": "retranslate", "id": 5})])
+        request = SimpleNamespace(transport=FakeTransport(), match_info={},
+                                  headers={})
+        hub._make_ws = lambda: ws
+        await hub.vws(request)
+        assert hub._action_tasks        # 调度进去了，不是被丢在原地当协程对象
+        await asyncio.sleep(0.05)
+        return ran
+
+    result = asyncio.run(scenario())
+    assert result == ["done"]
 
 
 def test_pending_connections_are_capped_before_the_upgrade():

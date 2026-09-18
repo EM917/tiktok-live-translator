@@ -93,6 +93,87 @@ function tokenFromHash(hash) {
   return m ? m[1] : null;
 }
 
+// 重译按钮文案。state 是这条字幕当前的 strong_state（服务端 caption/caption_update
+// 带来的；从没发起过重译是 null/undefined），strong 是这条字幕是否已经是大模型译文。
+// 规则：从没发起过重译、且已经是大模型译文（比如桌面端按过，或回放带来的）——
+// 按钮没意义，隐藏；只要发起过一次（pending/ok/failed 任一），就一直给反馈，
+// 哪怕之后 strong 变成 true 也要先亮一下「已重译」，不能让人以为白点了。
+function retranslateLabel(state, strong) {
+  if (state == null) {
+    return strong
+      ? { hidden: true, text: "已重译", disabled: true }
+      : { hidden: false, text: "重译", disabled: false };
+  }
+  if (state === "pending") return { hidden: false, text: "重译中…", disabled: true };
+  if (state === "ok") return { hidden: false, text: "已重译", disabled: true };
+  if (state === "failed") return { hidden: false, text: "重译失败，可再试", disabled: false };
+  return { hidden: false, text: "重译", disabled: !!strong };   // 未知取值，兜底成可点
+}
+
+// 重译点击的本地节流：3 秒内只认第一次点击，断线时一律不让点。这只是本地体验
+// （服务端 ACTION_GAP_SEC 才是真正的闸，值保持一致纯是为了不让人白点白等）。
+var RETRANSLATE_COOLDOWN_MS = 3000;
+function canRetranslate(lastTapTs, now, connected) {
+  if (!connected) return false;
+  if (lastTapTs == null) return true;
+  return (now - lastTapTs) >= RETRANSLATE_COOLDOWN_MS;
+}
+
+// ---- 取消警报（本地隐藏，只在这台手机上生效）----
+// 不发服务端：桌面报警面板和审计日志都不受影响。storage 可注入（真 localStorage
+// 或测试里的假存储）；取不到/抛错都不影响功能，只是刷新后记不住已取消的报警——
+// 这本身就是「本地、best-effort」的设计，不是缺陷。
+var DISMISSED_ALERTS_KEY = "viewerDismissedAlerts";
+var DISMISSED_ALERTS_MAX = 500;
+
+function loadDismissedAlerts(storage) {
+  try {
+    var raw = storage && storage.getItem(DISMISSED_ALERTS_KEY);
+    if (!raw) return [];
+    var arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.map(String) : [];
+  } catch (e) { return []; }
+}
+
+function saveDismissedAlerts(storage, ids, max) {
+  try {
+    if (!storage) return;
+    var cap = max > 0 ? max : DISMISSED_ALERTS_MAX;
+    var capped = ids.length > cap ? ids.slice(ids.length - cap) : ids;
+    storage.setItem(DISMISSED_ALERTS_KEY, JSON.stringify(capped));
+  } catch (e) { /* 没有存储也要能正常用，只是刷新后记不住 */ }
+}
+
+// 工厂：内存态 + best-effort 持久化，浏览器分支和测试共用同一套 has/add/addMany。
+// 只留最新 max 个（默认 500，超过就挤掉最老的）——最近取消的更值得记住。
+function createDismissedStore(storage, max) {
+  var cap = max > 0 ? max : DISMISSED_ALERTS_MAX;
+  var ids = loadDismissedAlerts(storage);
+  var set = Object.create(null);
+  ids.forEach(function (id) { set[id] = true; });
+
+  function addOne(id) {
+    var key = String(id);
+    if (set[key]) return false;
+    set[key] = true;
+    ids.push(key);
+    while (ids.length > cap) delete set[ids.shift()];
+    return true;
+  }
+
+  return {
+    has: function (id) { return !!set[String(id)]; },
+    add: function (id) {
+      if (addOne(id)) saveDismissedAlerts(storage, ids, cap);
+    },
+    addMany: function (list) {
+      var changed = false;
+      (list || []).forEach(function (id) { if (addOne(id)) changed = true; });
+      if (changed) saveDismissedAlerts(storage, ids, cap);
+    },
+  };
+}
+
 // ============ 二、浏览器专用：DOM + WebSocket ============
 // Node 环境没有 document，整段跳过；node:test 只用得到上面的纯函数。
 if (typeof document !== "undefined") {
@@ -120,9 +201,14 @@ if (typeof document !== "undefined") {
     var commentCountEl = document.getElementById("comment-count");
     var commentList = document.getElementById("comment-list");
     var ringToggle = document.getElementById("ring-toggle");
+    var alertClearSeenBtn = document.getElementById("alert-clear-seen");
 
     function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
     function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 忽略 */ } }
+
+    // 取消警报：本地 best-effort 存储，注入的读写就是上面两个已经带 try/catch 的
+    // 小函数——没有 localStorage 也不影响这场的取消，只是刷新后记不住。
+    var dismissedAlerts = createDismissedStore({ getItem: lsGet, setItem: lsSet });
 
     function pad(n) { return n < 10 ? "0" + n : String(n); }
     function hhmmss(ts) {
@@ -267,6 +353,7 @@ if (typeof document !== "undefined") {
       connState = state;
       renderConnBar();
       renderStreamStale();
+      refreshAllRetranslateButtons();   // 断线/重连都要跟着刷「重译」按钮的可点状态
     }
 
     // 断线（reconnecting/denied/full/off）时不能让 stream-text 停在最后一次
@@ -345,11 +432,13 @@ if (typeof document !== "undefined") {
     var captionsById = Object.create(null);
     var commentsById = Object.create(null);
     var demoMode = false;
+    var lastRetranslateTapAt = Object.create(null);   // 每条字幕自己的本地节流时间戳
 
     function resetForNewSession() {
       alertsById = Object.create(null);
       captionsById = Object.create(null);
       commentsById = Object.create(null);
+      lastRetranslateTapAt = Object.create(null);   // 新的一场：seq 从头计，旧的冷却时间戳不该跟过来
       if (alertList) alertList.innerHTML = "";
       if (captionList) captionList.innerHTML = "";
       if (commentList) commentList.innerHTML = "";
@@ -454,6 +543,9 @@ if (typeof document !== "undefined") {
     var TIER_LABEL = { exact: "🔴 精确", variant: "🟠 变体", fuzzy: "🟡 疑似" };
     function renderAlert(msg) {
       if (!alertSection || !alertList) return;
+      // 之前在本机取消过：回放（重连/刷新补发的历史）也不复活。不是「自动取消」，
+      // 是记住了「取消过」——真正的新报警（新 alert_id）永远照常显示。
+      if (dismissedAlerts.has(msg.alert_id)) return;
       if (msg.demo) { demoMode = true; updateDemoBanner(); }
       alertSection.classList.remove("hidden");
       var item = document.createElement("div");
@@ -462,7 +554,17 @@ if (typeof document !== "undefined") {
 
       var head = document.createElement("div");
       head.className = "alert-head";
-      head.textContent = (TIER_LABEL[msg.tier] || "命中") + " 「" + (msg.term || "") + "」 " + hhmmss(msg.ts);
+      var headLabel = document.createElement("span");
+      headLabel.className = "alert-head-label";
+      headLabel.textContent = (TIER_LABEL[msg.tier] || "命中") + " 「" + (msg.term || "") + "」 " + hhmmss(msg.ts);
+      head.appendChild(headLabel);
+      var dismissBtn = document.createElement("button");
+      dismissBtn.type = "button";
+      dismissBtn.className = "alert-dismiss";
+      dismissBtn.setAttribute("aria-label", "取消这条报警（只在本机隐藏）");
+      dismissBtn.textContent = "✕";
+      dismissBtn.addEventListener("click", function () { dismissAlert(msg.alert_id); });
+      head.appendChild(dismissBtn);
       item.appendChild(head);
 
       var ctx = document.createElement("div");
@@ -500,6 +602,51 @@ if (typeof document !== "undefined") {
         entry.zhEl.classList.add("failed");
       }
     }
+    // 摘掉一张已经在列表里的报警卡片：本地取消（✕）和「清除已看过」共用。
+    // 只改 DOM 和这台手机自己的 alertsById，不发服务端、不碰审计。
+    function removeAlertCard(key) {
+      var entry = alertsById[key];
+      if (!entry) return;
+      delete alertsById[key];
+      if (entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
+      if (alertCountEl) alertCountEl.textContent = String(alertList.children.length);
+      if (alertBadge && !alertList.children.length) alertBadge.classList.add("hidden");
+    }
+    // ✕：取消单条。只在这台手机上隐藏，桌面报警面板和审计日志都不受影响。
+    function dismissAlert(alertId) {
+      dismissedAlerts.add(alertId);
+      removeAlertCard(alertKey({ alert_id: alertId }));
+    }
+    // 「清除已看过的报警」：把这台手机眼下还显示着的报警一次性全部取消。
+    function clearSeenAlerts() {
+      var ids = Object.keys(alertsById).map(function (key) { return alertsById[key].msg.alert_id; });
+      dismissedAlerts.addMany(ids);
+      ids.forEach(function (id) { removeAlertCard(alertKey({ alert_id: id })); });
+    }
+    if (alertClearSeenBtn) alertClearSeenBtn.addEventListener("click", clearSeenAlerts);
+
+    // ---- 重译：状态完全由服务端 caption/caption_update 的 strong/strong_state 驱动，
+    //      本地只管节流和发送，不本地伪造「重译中」——避免服务端真实状态和手机
+    //      显示的不一致 ----
+    function applyRetranslateButton(id) {
+      var entry = captionsById[id];
+      if (!entry || !entry.btnEl) return;
+      var label = retranslateLabel(entry.msg.strong_state, entry.msg.strong);
+      entry.btnEl.classList.toggle("hidden", label.hidden);
+      entry.btnEl.textContent = label.text;
+      entry.btnEl.disabled = label.disabled || connState !== "connected";
+    }
+    function refreshAllRetranslateButtons() {
+      Object.keys(captionsById).forEach(applyRetranslateButton);
+    }
+    function onRetranslateTap(id) {
+      var connected = connState === "connected";
+      if (!canRetranslate(lastRetranslateTapAt[id], Date.now(), connected)) return;
+      if (!ws) return;
+      lastRetranslateTapAt[id] = Date.now();
+      try { ws.send(JSON.stringify({ type: "retranslate", id: id })); }
+      catch (e) { /* 发不出去就算了，冷却过了能再点 */ }
+    }
 
     // ---- 字幕：时间顺序，自动跟到底 ----
     function renderCaption(msg) {
@@ -523,14 +670,21 @@ if (typeof document !== "undefined") {
       trans.className = "cap-trans";
       card.appendChild(trans);
 
+      var retranslateBtn = document.createElement("button");
+      retranslateBtn.type = "button";
+      retranslateBtn.className = "cap-retranslate";
+      retranslateBtn.addEventListener("click", function () { onRetranslateTap(msg.id); });
+      card.appendChild(retranslateBtn);
+
       captionList.appendChild(card);
-      captionsById[msg.id] = { msg: msg, el: card, transEl: trans };
+      captionsById[msg.id] = { msg: msg, el: card, transEl: trans, btnEl: retranslateBtn };
       while (captionList.children.length > MAX_CAPTIONS) {
         var oldest = captionList.firstChild;
         delete captionsById[oldest.dataset.id];
         captionList.removeChild(oldest);
       }
       applyCaptionState(msg, trans);
+      applyRetranslateButton(msg.id);
       stickCaptions();
     }
     function applyCaptionState(msg, transEl) {
@@ -552,6 +706,7 @@ if (typeof document !== "undefined") {
       if (!entry) return;
       entry.msg = applyUpdate(entry.msg, msg);
       applyCaptionState(entry.msg, entry.transEl);
+      applyRetranslateButton(msg.id);
     }
 
     // ---- 弹幕：默认折叠，只留最近 30 条 ----
@@ -633,5 +788,10 @@ if (typeof module !== "undefined" && module.exports) {
     applyUpdate: applyUpdate,
     shouldRing: shouldRing,
     tokenFromHash: tokenFromHash,
+    retranslateLabel: retranslateLabel,
+    canRetranslate: canRetranslate,
+    loadDismissedAlerts: loadDismissedAlerts,
+    saveDismissedAlerts: saveDismissedAlerts,
+    createDismissedStore: createDismissedStore,
   };
 }

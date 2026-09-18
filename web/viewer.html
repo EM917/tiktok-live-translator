@@ -26,13 +26,19 @@
   <div id="incident-list" class="incident-list"></div>
   <div id="health-line" class="health-line hidden"></div>
 
-  <!-- 违禁词报警：最显眼，红底卡片，新的在上，最多 50 条 -->
+  <!-- 违禁词报警：最显眼，红底卡片，新的在上，最多 50 条。每条带 ✕，只在这台
+       手机上隐藏；「清除已看过的报警」一次性隐藏当前全部——都不影响中控和记录 -->
   <section id="alert-section" class="alert-section hidden">
-    <div class="section-title">🚨 疑似违禁词</div>
+    <div class="alert-section-head">
+      <div class="section-title">🚨 疑似违禁词</div>
+      <button id="alert-clear-seen" class="alert-clear-seen" type="button">清除已看过的报警</button>
+    </div>
+    <div class="alert-local-note">只在这台手机上隐藏，中控电脑和记录不受影响</div>
     <div id="alert-list" class="alert-list"></div>
   </section>
 
-  <!-- 字幕：西语原文 + 中文译文，时间顺序，自动跟到底 -->
+  <!-- 字幕：西语原文 + 中文译文，时间顺序，自动跟到底。每条带「重译」按钮 -->
+  <div class="retranslate-hint">重译会用中控电脑上的大模型，稍等几秒</div>
   <section id="caption-section" class="caption-section">
     <div id="caption-list" class="caption-list"></div>
   </section>

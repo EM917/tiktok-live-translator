@@ -17,6 +17,7 @@ import json
 import re
 import secrets
 import time
+from collections import deque
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
@@ -35,7 +36,12 @@ SEND_TIMEOUT_SEC = 5.0        # 写任务里单条发送的上限（不在关键
 AUTH_TIMEOUT_SEC = 5.0        # 握手后等第一条 auth 的上限
 MAX_VIEWERS = 12              # 中控团队规模，也是 fanout 每条消息的成本上界
 MAX_PENDING = 32              # 在途连接（含未鉴权）总数上限，独立于且大于 MAX_VIEWERS
-MAX_INBOUND_MESSAGES = 50     # 手机端一条都不该发；超过就断（坏页面或探测）
+# 入站帧：手机现在能发「重译」，但仍然不该发很多。滑动窗口而不是绝对上限——
+# 允许零星的合法点击，持续的洪泛（坏页面/探测）依然会被断开。junk 帧也计数。
+INBOUND_BURST = 30
+INBOUND_BURST_WINDOW_SEC = 10.0
+ACTION_GAP_SEC = 3.0          # 同一观众两次「重译」之间的最短间隔
+ACTIONS_PER_MINUTE = 10       # 同一观众每分钟最多几次动作；超了静默忽略，不断开
 MAX_MSG_SIZE = 4096           # 入站帧上限，超过由 aiohttp 自己断开
 WS_HEARTBEAT = 30             # 与控制面一致
 AUTH_FAIL_AUDIT_WINDOW_SEC = 10.0   # 同一 IP 的鉴权失败最多每 10 秒记一条
@@ -78,8 +84,12 @@ ALLOW = {
                 "src_lang", "target_lang", "failed", "why", "replay", "restore",
                 # demo 只认 True：手机上要能看出「这是演示数据，不是真实直播」，
                 # 否则演示时空着的报警面板会被当成「这场很干净」
-                "demo"),
-    "caption_update": ("id", "translated", "translate_state", "failed", "why"),
+                "demo",
+                # strong/strong_state 供手机端显示「重译中…/已重译/重译失败」，
+                # 也用来隐藏已经是强模型译文那条的「重译」按钮
+                "strong", "strong_state"),
+    "caption_update": ("id", "translated", "translate_state", "failed", "why",
+                       "strong", "strong_state"),
     # streamer / session / ui_clients 是 _alert_stamp() 塞进来的内部归属信息，不给手机
     "alert": ("alert_id", "term", "tier", "ts", "matched", "context", "context_zh",
               "failed", "why", "session_total", "replay"),
@@ -189,8 +199,12 @@ def filter_payload(msg):
             # why 是自由文本。今天的取值都是固定的中文短句，但它长在会变的代码
             # 路径上——顺手过一遍清洗，将来谁把异常文本塞进来也带不出路径
             value = scrub_text(value, 160)
-        elif key in ("replay", "restore", "failed"):
+        elif key in ("replay", "restore", "failed", "strong"):
             value = bool(value)
+        elif key == "strong_state":
+            # 只认这三档；来路不明的值归一成 None 而不是丢掉整个键——手机端按
+            # 缺失/None 一视同仁地不显示状态，但 *_update 仍是 caption 的子集
+            value = value if value in ("pending", "ok", "failed") else None
         out[key] = value
     if mtype == "comment_source" and "backend" not in out:
         out["backend"] = _norm_backend(None)
@@ -509,6 +523,22 @@ def replay_snapshot(server, viewers=0, share_since=None):
     return out
 
 
+def _coerce_action_id(value):
+    """手机发上来的 id：只接受 int，或者恰好是一串数字的字符串（JS 那边有的
+    路径会把数字序列化成字符串）。bool 是 int 的子类，要挡掉；负数、小数、
+    带空白或其它字符的字符串一律拒绝——这是字幕的序号，不该是别的东西。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str) and value.isdigit():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
 # ---- 连接 ----
 class _Close:
     """写队列里的哨兵：让写任务发一个关闭帧再退出。踢人要带上关闭码，
@@ -522,7 +552,8 @@ class _Close:
 
 
 class _Viewer:
-    __slots__ = ("ws", "transport", "ip", "queue", "writer", "inbound", "registered")
+    __slots__ = ("ws", "transport", "ip", "queue", "writer", "registered",
+                 "inbound_times", "last_action", "action_times")
 
     def __init__(self, ws, transport=None, ip=""):
         self.ws = ws
@@ -530,8 +561,10 @@ class _Viewer:
         self.ip = ip or ""
         self.queue = asyncio.Queue(QUEUE_MAX)
         self.writer = None
-        self.inbound = 0
         self.registered = False
+        self.inbound_times = deque()     # 入站帧时间戳，供滑动窗口洪泛检测
+        self.last_action = None          # 上一次被接受的动作时间（ACTION_GAP_SEC）
+        self.action_times = deque()      # 最近 60 秒内被接受的动作时间（ACTIONS_PER_MINUTE）
 
 
 def _peer_ip(request):
@@ -558,8 +591,8 @@ async def _deny(ws, reason, code):
 
 class ViewerHub:
     def __init__(self, server, ports=None, token=None, bind_host="0.0.0.0",
-                 audit_hook=None, log=print, web_dir=None, share_since=None,
-                 auth_timeout=AUTH_TIMEOUT_SEC, now=None):
+                 audit_hook=None, on_action=None, log=print, web_dir=None,
+                 share_since=None, auth_timeout=AUTH_TIMEOUT_SEC, now=None):
         self._server = server
         if ports is None:
             ports = []
@@ -569,6 +602,9 @@ class ViewerHub:
         self._token = token
         self._bind_host = bind_host
         self._audit_hook = audit_hook
+        # 手机发起的动作（目前只有「重译」）交给 Pipeline 注入的回调；hub 自己
+        # 从不 import pipeline，也从不直接碰 Pipeline 的状态（同 audit_hook）
+        self._on_action = on_action
         self._log = log or (lambda *a, **k: None)
         self._web_dir = Path(web_dir) if web_dir is not None else WEB_DIR
         self.share_since = time.time() if share_since is None else share_since
@@ -584,6 +620,8 @@ class ViewerHub:
         # 踢人之后的兜底 abort 任务。保住引用：事件循环只弱引用任务，
         # 不保引用的会在半路被 GC 收走（同 Pipeline._spawn 那条教训）
         self._guards = set()
+        # on_action 返回的协程（真正等强模型的部分）以同样的理由保住引用
+        self._action_tasks = set()
 
     # ---- 只读属性 ----
     @property
@@ -937,13 +975,14 @@ class ViewerHub:
             viewer = _Viewer(ws, request.transport, ip)
             self.register(viewer)          # 同步块：鉴权通过到入册之间没有 await
             viewer.writer = asyncio.ensure_future(self._writer(viewer))
-            async for _msg in ws:
-                # 鉴权之后的入站消息只计数然后丢弃：绝不解析、绝不转交 on_control。
-                # 变量名故意没用上——这道闸是给坏页面和探测的，不是功能
-                viewer.inbound += 1
-                if viewer.inbound > MAX_INBOUND_MESSAGES:
+            async for msg in ws:
+                # 鉴权之后的入站消息：只认恰好 {"type":"retranslate","id":…}，
+                # 其它一律不解析、绝不转交 on_control——这道闸首先是给坏页面和
+                # 探测的，「重译」只是从「丢弃一切」里单独开的一个小口子
+                if self._flooding(viewer):
                     self._drop(viewer, "inbound_flood")
                     break
+                self._handle_inbound(viewer, msg)
         finally:
             self._pending -= 1
             if viewer is not None:
@@ -967,6 +1006,82 @@ class ViewerHub:
         if not token_ok(data.get("k"), self._token):
             return "bad_token"
         return None
+
+    # ---- 入站：手机发起的动作 ----
+    def _flooding(self, viewer):
+        """滑动窗口洪泛检测：INBOUND_BURST_WINDOW_SEC 秒内超过 INBOUND_BURST 帧
+        （不论是不是能解析、是不是「重译」）就该断。junk 帧一样计数——不然
+        坏页面只要把 id 换成乱七八糟的东西就绕过了这道闸。"""
+        now = self._now()
+        times = viewer.inbound_times
+        times.append(now)
+        while times and now - times[0] > INBOUND_BURST_WINDOW_SEC:
+            times.popleft()
+        return len(times) > INBOUND_BURST
+
+    def _handle_inbound(self, viewer, msg):
+        """只认恰好 {"type":"retranslate","id":<int 或数字字符串>}。别的一切
+        （多一个键、类型不对、不是 JSON、不是文本帧）一律安静地什么都不做——
+        既不回消息也不断开，坏页面和探测本就不该有回音。"""
+        if msg.type != WSMsgType.TEXT:
+            return
+        try:
+            data = json.loads(msg.data)
+        except (ValueError, TypeError):
+            return
+        if not isinstance(data, dict) or set(data) != {"type", "id"}:
+            return
+        if data.get("type") != "retranslate":
+            return
+        seq = _coerce_action_id(data.get("id"))
+        if seq is None:
+            return
+        if not self._allow_action(viewer):
+            return          # 超过频率上限：静默忽略，不发送任何东西，不断开
+        self._dispatch_action("retranslate", {"id": seq}, viewer.ip)
+
+    def _allow_action(self, viewer):
+        """每个观众自己的节流：两次动作之间至少 ACTION_GAP_SEC，每分钟至多
+        ACTIONS_PER_MINUTE 次。超限不算错误、不记审计、不断连接——只是这次
+        点击什么都不发生，手机端按钮上的本地冷却会先一步挡住大多数这种情况。"""
+        now = self._now()
+        if viewer.last_action is not None and (now - viewer.last_action) < ACTION_GAP_SEC:
+            return False
+        window = viewer.action_times
+        while window and now - window[0] > 60.0:
+            window.popleft()
+        if len(window) >= ACTIONS_PER_MINUTE:
+            return False
+        viewer.last_action = now
+        window.append(now)
+        return True
+
+    def _dispatch_action(self, action, payload, ip):
+        """调用 Pipeline 注入的回调。同步部分的异常在这里就地吞掉——一个动作
+        处理坏了不该断连接，也不该炸掉正在读 socket 的循环。回调可能返回一个
+        协程（真正等强模型的部分），那部分交给 _schedule_action 用 ensure_future
+        调度，绝不在这儿 await：await 就是让一台手机的点击拖慢识别循环。"""
+        callback = self._on_action
+        if callback is None:
+            return
+        try:
+            result = callback(action, payload, ip)
+        except Exception as exc:
+            self._log("[警告] 处理手机端动作出错: {}".format(exc))
+            return
+        if asyncio.iscoroutine(result):
+            self._schedule_action(result)
+
+    def _schedule_action(self, coro):
+        async def runner():
+            try:
+                await coro
+            except Exception as exc:
+                self._log("[警告] 处理手机端动作出错: {}".format(exc))
+
+        task = asyncio.ensure_future(runner())
+        self._action_tasks.add(task)
+        task.add_done_callback(self._action_tasks.discard)
 
     async def _writer(self, viewer):
         """每条连接一个写任务，只认这条连接自己的队列。识别循环从不 await 这里。"""
