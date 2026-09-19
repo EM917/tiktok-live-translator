@@ -264,7 +264,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         self.audit = None                # 每条直播一个审计日志文件
         self._stats_task = None
         self._selfcheck_task = None      # 持有引用，否则任务可能被 GC 掉
-        self._provision_task = None
+        self._init_engine_provision()    # 本地引擎备货的专属字段，见 app/pipeline_engine.py
         self._comments_provision_task = None   # 弹幕组件（TikTokLive）后台安装任务，main.py 注入
         # 最近若干条字幕的原文，供「重译」按 id 取回。只留少量：这个功能是
         # 给中控看到可疑一句时临时用的，不是历史检索。

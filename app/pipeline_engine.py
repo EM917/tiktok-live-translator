@@ -16,12 +16,34 @@ self._update_in_progress、self.run_selfcheck、self._selfcheck_task），继承
 _keep_engine_until_model / _quota_fallback / _rejection_fallback 等），和这
 里同属「本地引擎」这个大概念、但离得很远、还跟每段强模型重译的方法交叉夹在
 一起，不能整块搬——那是另一步要做的事，这次不碰。
+
+create_translator 是 app/pipeline.py 模块级导入的名字（`from .translator import
+create_translator`），除了本文件的 ensure_local_translator/_apply_pending_engine
+两处，set_engine/_quota_fallback/_rejection_fallback（仍留在 pipeline.py）也
+在用同一个名字，而且好几个测试用 monkeypatch.setattr("app.pipeline.
+create_translator", ...) / monkeypatch.setattr(pipeline_mod, "create_translator",
+...) 打这个桩，指望所有调用点（不管搬没搬）都认。如果这里在文件顶部
+`from .translator import create_translator` 一次性导入，会绑定一份独立的
+引用，测试打桩 app.pipeline.create_translator 就再也影响不到这两个方法——
+两个测试会以 NameError 之外的方式悄悄读到真引擎而不是桩（tests/test_ollama_
+autostart.py::test_auto_engine_switches_off_google_once_ollama_is_up、
+tests/test_resilience_translation.py::test_picking_a_missing_local_model_
+while_idle_downloads_then_switches）。所以这两个方法改成运行时从 app.pipeline
+现取（惰性 import），跟 pipeline.py 自己那三处调用共用同一个可打桩的名字。
 """
 import asyncio
 import time
 
 
 class EngineProvisionMixin:
+    def _init_engine_provision(self):
+        """Pipeline.__init__ 在同一个位置调用：唯一一个有专属 __init__ 赋值的
+        字段，原样从 __init__ 搬出来，初始化顺序不变。其余 5 个字段
+        （_engine_pending/_pull_deferred/_pull_deferred_session/_pulling/
+        _heal_at）本来就没有 __init__ 赋值——按 getattr(self, name, 默认值)
+        惰性创建，搬移前后都一样，不需要在这里补。"""
+        self._provision_task = None
+
     OLLAMA_HEAL_COOLDOWN_SEC = 60.0
 
     async def _heal_local_engine(self):
@@ -128,6 +150,10 @@ class EngineProvisionMixin:
                 pulled = await self._pull_model(need)
 
         if engine == "auto" and (started or pulled):
+            # 惰性 import：读 app.pipeline 当前那份绑定（可能已被测试打桩），
+            # 不要在本文件顶部一次性 import——理由见模块开头的说明
+            from .pipeline import create_translator
+
             # 启动时 Ollama 还没起来，auto 已经落到了 Google；现在本地模型能用了
             self.translator = await loop.run_in_executor(
                 None, create_translator, "auto")
@@ -244,6 +270,8 @@ class EngineProvisionMixin:
 
     async def _apply_pending_engine(self, engine):
         """界面上选了一个当时本机还没有模型的本地引擎：模型下好之后才换上它。"""
+        from .pipeline import create_translator  # 惰性 import，理由见模块开头
+
         loop = asyncio.get_running_loop()
         try:
             new = await loop.run_in_executor(None, create_translator, engine)
