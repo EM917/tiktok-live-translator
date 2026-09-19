@@ -95,6 +95,24 @@ def module_level_assignments(source):
     return out
 
 
+def class_body_assignments(source):
+    """Return {"ClassName.NAME": node} for simple `NAME = ...` assignments
+    directly in the body of a top-level class (e.g. Pipeline.LOCAL_ENGINES) —
+    the class-level-constant analogue of module_level_assignments. Keyed by
+    "ClassName.NAME" so it can be merged into the same dict as module-level
+    constants without name collisions; the byte-identical text search below
+    doesn't care which class (if any) holds the matching text in a dest file."""
+    tree = ast.parse(source)
+    out = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            for sub in node.body:
+                if isinstance(sub, ast.Assign) and len(sub.targets) == 1 \
+                        and isinstance(sub.targets[0], ast.Name):
+                    out["{}.{}".format(node.name, sub.targets[0].id)] = sub
+    return out
+
+
 def node_span(node):
     """1-indexed inclusive (start, end) line span, including leading
     decorators/comments are NOT included (ast doesn't track leading comments;
@@ -118,6 +136,12 @@ def check(base_ref, source_path, dest_paths):
 
     old_consts = module_level_assignments(old_text)
     new_consts = module_level_assignments(new_text)
+    # Merge in class-body constants (e.g. a class-level `FOO = 60.0` that
+    # moved along with its methods into a mixin) — same removed/kept check,
+    # just scoped one level into a top-level class instead of module scope.
+    # Keys are "ClassName.NAME" so they can't collide with module-level names.
+    old_consts.update(class_body_assignments(old_text))
+    new_consts.update(class_body_assignments(new_text))
     removed_const_names = set(old_consts) - set(new_consts)
 
     print("== removed functions/methods: {} ==".format(len(removed_func_names)))
