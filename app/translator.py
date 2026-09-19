@@ -829,7 +829,26 @@ class OllamaHyMT2Translator(BaseTranslator):
     keep_alive = None
 
     async def translate(self, text, target, source="auto", glossary=None):
+        """译一句。译文里混进了原文没有、目标语言也不该有的文字（见
+        foreign_script_runs）时，换一组采样参数重译一次；重译仍然带着就把那几个
+        字符去掉——一条读得通的译文比一条夹着韩文的译文有用。"""
+        out = await self._translate_once(text, target, source, glossary)
+        if not out or not foreign_script_runs(text, out, target):
+            return out
+        print("[警告] 译文里混进了别的文字（{}），重译一次".format(
+            "".join(foreign_script_runs(text, out, target))[:12]))
+        retry = await self._translate_once(text, target, source, glossary,
+                                           temperature=RETRY_TEMPERATURE)
+        if retry and not foreign_script_runs(text, retry, target):
+            return retry
+        return strip_foreign_script(text, out, target) or None
+
+    async def _translate_once(self, text, target, source="auto", glossary=None,
+                              temperature=None):
         opts = dict(self._OPTIONS, num_predict=predict_cap(text))
+        if temperature is not None:
+            # 默认 temperature=0 是确定性的，原样重发只会得到同一句；换采样才有意义
+            opts.update(temperature=temperature, seed=RETRY_SEED)
         prompt = self._prompt(text, target, source, glossary)
         raw = await self._needs_raw()
         body = {
@@ -887,6 +906,71 @@ def _strip_special(text):
     out = _SPECIAL_RE.sub("", text)
     out = _TOKEN_RE.sub("", out)
     return _KANA_RE.sub("", _BAR_RE.sub("", out)).strip()
+
+
+# ---- 译文串台：夹进了别的文字 ------------------------------------------------
+# 2026-09-19 上屏的一条：「好的，在32号에도你有测试项。」——原文是西语，目标是中文，
+# 译文中间夹了两个韩文字。回看 9 月 15–19 日的 7212 条译文，这样的有 5 条
+# （韩文 2、日文 1、泰文 2），全部出自本地 1.8B：模型偶尔把一个词写成了别的语言。
+# 判据只看**文字系统**：译文里出现的文字，既不是目标语言该有的，原文里也没有，
+# 就算串台。拉丁字母一律放行（品牌名、型号、单位都保留拉丁写法）。
+RETRY_TEMPERATURE = 0.4
+RETRY_SEED = 7
+_SCRIPT_RANGES = (
+    ("hangul", ((0xAC00, 0xD7AF), (0x1100, 0x11FF), (0x3130, 0x318F))),
+    ("kana", ((0x3040, 0x30FF), (0xFF66, 0xFF9F))),
+    ("cjk", ((0x4E00, 0x9FFF), (0x3400, 0x4DBF))),
+    ("cyrillic", ((0x0400, 0x04FF),)),
+    ("arabic", ((0x0600, 0x06FF),)),
+    ("thai", ((0x0E00, 0x0E7F),)),
+    ("hebrew", ((0x0590, 0x05FF),)),
+)
+# 目标语言自己的文字；拉丁字母另行放行
+_TARGET_SCRIPTS = {"zh": {"cjk"}, "ja": {"cjk", "kana"}, "ko": {"hangul", "cjk"},
+                   "ru": {"cyrillic"}, "uk": {"cyrillic"}, "ar": {"arabic"},
+                   "th": {"thai"}, "he": {"hebrew"}}
+
+
+def _script_of_char(ch):
+    code = ord(ch)
+    for name, ranges in _SCRIPT_RANGES:
+        for lo, hi in ranges:
+            if lo <= code <= hi:
+                return name
+    return None        # 拉丁字母、数字、标点、表情：不参与判断
+
+
+def _allowed_scripts(source, target):
+    allowed = set(_TARGET_SCRIPTS.get((target or "").split("-")[0].lower(), ()))
+    for ch in source or "":
+        name = _script_of_char(ch)
+        if name:
+            allowed.add(name)       # 原文里就有的文字（主播念了个日文品牌名）不算串台
+    return allowed
+
+
+def foreign_script_runs(source, translated, target):
+    """译文里不该出现的文字，按连续的一段一段给出；没有就是空列表。"""
+    allowed = _allowed_scripts(source, target)
+    runs, current = [], ""
+    for ch in translated or "":
+        name = _script_of_char(ch)
+        if name and name not in allowed:
+            current += ch
+        elif current:
+            runs.append(current)
+            current = ""
+    if current:
+        runs.append(current)
+    return runs
+
+
+def strip_foreign_script(source, translated, target):
+    """去掉串台的那几个字符，收拾多出来的空格。"""
+    allowed = _allowed_scripts(source, target)
+    kept = "".join(ch for ch in translated or ""
+                   if not (_script_of_char(ch) and _script_of_char(ch) not in allowed))
+    return re.sub(r"[ \t]{2,}", " ", kept).strip()
 
 
 _DIGITS_RE = re.compile(r"\d+")
