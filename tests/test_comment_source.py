@@ -2,16 +2,19 @@
 TikTokLive——唯一 import 它的地方是子进程入口 app/comment_worker.py，这里
 只用假事件/假子进程（鸭子类型）去驱动。
 
-覆盖四件事：
+覆盖六件事：
   1. event_to_item / worker_available 两个纯函数；
   2. CommentSource 的监督协程：顺序转发、按退出码退避/重试/放弃、
      登录态重试、签名限流等待、stop() 收尾、每小时连接上限；
   3. Pipeline 与 CommentSource 的接线（开播即起、下播即停、直接流地址/
-     --no-comments 时不起）；
+     --no-comments 时不起、session_end 里的 comments_received）；
   4. server.py 对 comment_source 广播的处理（config 落盘）；
   5. comment_worker._classify_exc 的异常分类——用一份和真库同构的假异常
      模块跑，不依赖真的 TikTokLive（测试环境承诺 Python 3.9+，那里装不了
-     TikTokLive 7.x）。
+     TikTokLive 7.x）；
+  6. 弹幕静默看门狗（connected 却哑了 SILENCE_RESTART_SEC 才优雅重连、
+     同一窗口最多一次）：编排完整子进程的用假时钟推进 _clock()，窗口
+     守卫本身直接摆状态调 _silence_watchdog，不绕整条监督协程。
 
 不 import 其它测试文件，避免耦合到别处 fixture 的变化；所有等待用有限
 轮询（wait_until），绝不无限等；CommentSource 的秒级常量全部调到
@@ -126,28 +129,43 @@ def test_worker_available_true_when_lib_present(monkeypatch):
 class FakeStream:
     """模拟 asyncio 子进程的 stdout/stderr：readline() 是协程，逐行吐给定内容，
     吃完之后要么立刻回 b""（管道关闭/进程退出），要么挂起等外部 cancel
-    （模拟仍在运行、暂时没有新内容）。"""
+    （模拟仍在运行、暂时没有新内容）。
+
+    hang 时不是一次性 sleep(3600)，而是轮询检查 `terminated`：真实子进程
+    收到 SIGTERM 会自己退出、stdout 随之关闭，FakeProc.terminate() 就置这个
+    标记来模拟同样的效果（看门狗测试要看到 terminate() 之后主循环真的能
+    读到 EOF，不是只记了一个「叫过 terminate」的布尔值）。也支持 push()
+    在挂起期间追加新行，模拟「还连着、又来了新弹幕」。轮询用短 sleep，不用
+    asyncio.Event/Future——这两者在协程外构造在 Python 3.9 下不安全，
+    而这里的 FakeProc/FakeStream 都是在测试函数体（非协程）里构造的。"""
 
     def __init__(self, lines=(), hang_after=False):
         self._lines = list(lines)
         self._hang_after = hang_after
+        self.terminated = False
+
+    def push(self, line):
+        self._lines.append(line)
 
     async def readline(self):
-        if self._lines:
-            item = self._lines.pop(0)
-            if isinstance(item, BaseException):
-                # 模拟一行超长弹幕撑爆 StreamReader 行缓冲上限时
-                # readline() 真实会抛出的那类异常（ValueError 等）。
-                raise item
-            return item
-        if self._hang_after:
-            await asyncio.sleep(3600)
-        return b""
+        while True:
+            if self._lines:
+                item = self._lines.pop(0)
+                if isinstance(item, BaseException):
+                    # 模拟一行超长弹幕撑爆 StreamReader 行缓冲上限时
+                    # readline() 真实会抛出的那类异常（ValueError 等）。
+                    raise item
+                return item
+            if not self._hang_after or self.terminated:
+                return b""
+            await asyncio.sleep(0.005)
 
 
 class FakeProc:
     """process-like 假对象：stdout/stderr 异步流，wait() 是协程，
-    terminate()/kill() 只记录调用，不做真的事。"""
+    terminate()/kill() 记录调用，并让 stdout 的 hang 循环看到「已经被终止」
+    （见 FakeStream），这样看门狗真的 terminate() 之后主循环能读到 EOF、
+    走完 _run_once 的正常收尾，不是永远卡在 readline() 上。"""
 
     def __init__(self, stdout_lines=(), stderr_lines=(), returncode=0, hang_after=False):
         self.stdout = FakeStream(stdout_lines, hang_after=hang_after)
@@ -161,9 +179,11 @@ class FakeProc:
 
     def terminate(self):
         self.terminate_called = True
+        self.stdout.terminated = True
 
     def kill(self):
         self.kill_called = True
+        self.stdout.terminated = True
 
 
 def jline(d):
@@ -555,6 +575,196 @@ def test_hourly_cap_releases_once_the_window_has_passed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 3b. 弹幕静默看门狗：connected 却哑了太久，优雅重连
+# ---------------------------------------------------------------------------
+
+def test_silence_watchdog_no_restart_while_comments_keep_arriving(monkeypatch):
+    """连着且弹幕没断流：看门狗查很多轮也不该重连——用假时钟推进很久的模拟
+    时间，配合持续补充的弹幕，证明触发条件是「没弹幕」，不是「查了很多次」。"""
+    proc = FakeProc(stdout_lines=[
+        jline({"event": "status", "state": "connected"}),
+        jline({"event": "comments", "items": [{"id": "0", "user": "a", "text": "hola"}]}),
+    ], hang_after=True)
+    cs, items_log, state_log, calls = make_source(monkeypatch, [proc])
+    monkeypatch.setattr(CommentSource, "SILENCE_RESTART_SEC", 5.0)
+    monkeypatch.setattr(CommentSource, "SILENCE_CHECK_SEC", 0.02)
+    clock = {"t": 1_000_000.0}
+    cs._clock = lambda: clock["t"]
+
+    async def scenario():
+        cs.start("abc")
+        assert await wait_until(lambda: len(items_log) >= 1)
+        for i in range(4):
+            clock["t"] += 3.0            # 每次都小于阈值 5 秒——弹幕一直在续命
+            proc.stdout.push(jline({"event": "comments",
+                             "items": [{"id": str(i + 1), "user": "a", "text": "hola"}]}))
+            await asyncio.sleep(0.05)    # 给看门狗几轮真实时间的检查机会
+        before_stop = proc.terminate_called   # cs.stop() 自己也会 terminate，别跟看门狗的混了
+        await cs.stop()
+        return before_stop
+
+    before_stop = run(scenario())
+    assert before_stop is False
+    assert all(s != "silent_restart" for s, _ in state_log)
+    assert calls == [["abc"]]
+
+
+def test_silence_watchdog_restarts_after_threshold_and_reconnects_at_backoff_min(monkeypatch):
+    """connected 满 15 分钟没有任何弹幕（这里用假时钟等价模拟）：优雅重连、
+    audit 路径（on_state）收到 silent_restart 及分钟数，且下一次连接立刻按
+    BACKOFF_MIN_SEC 重试，不是指数退避，也不算一次拒绝/出错。"""
+    proc1 = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
+                     hang_after=True, returncode=0)
+    proc2 = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
+                     hang_after=True)
+    cs, items_log, state_log, calls = make_source(monkeypatch, [proc1, proc2])
+    monkeypatch.setattr(CommentSource, "SILENCE_RESTART_SEC", 5.0)
+    monkeypatch.setattr(CommentSource, "SILENCE_CHECK_SEC", 0.02)
+    monkeypatch.setattr(CommentSource, "BACKOFF_MIN_SEC", 0.03)
+    monkeypatch.setattr(CommentSource, "BACKOFF_MAX_SEC", 5.0)
+    clock = {"t": 2_000_000.0}
+    cs._clock = lambda: clock["t"]
+
+    async def scenario():
+        cs.start("abc")
+        assert await wait_until(lambda: cs.state == "connected")
+        clock["t"] += 900.0     # 模拟连着的这段时间里过了 15 分钟，一条弹幕都没有
+        assert await wait_until(lambda: proc1.terminate_called)
+        assert await wait_until(lambda: any(s == "silent_restart" for s, _ in state_log))
+        assert await wait_until(lambda: len(calls) >= 2)
+        assert await wait_until(lambda: cs.state == "connected" and len(calls) == 2)
+        await cs.stop()
+
+    run(scenario())
+    detail = next(d for s, d in state_log if s == "silent_restart")
+    assert "15" in detail and "分钟" in detail and "已重连评论流" in detail
+    assert calls == [["abc"], ["abc"]]
+    # returncode 是 0（子进程自己 disconnect 退出），不是被判定成拒绝/出错的
+    # 任何分支——没有走 REJECTED_WAIT_SEC/BLOCKED_WAIT_SEC 那些长等待就是证据：
+    # 上面 wait_until(len(calls)>=2) 早就在几十毫秒内通过了。
+    assert not any(s == "error" for s, _ in state_log)
+
+
+def test_silence_watchdog_ignores_silence_while_not_connected(monkeypatch):
+    """还在 connecting（或 offline 等其它非 connected 状态）时，不管模拟时间
+    推了多久都不该触发——看门狗只看「connected 却哑了」，不是「哑了」。"""
+    proc = FakeProc(stdout_lines=[jline({"event": "status", "state": "connecting"})],
+                    hang_after=True)
+    cs, items_log, state_log, calls = make_source(monkeypatch, [proc])
+    monkeypatch.setattr(CommentSource, "SILENCE_RESTART_SEC", 1.0)
+    monkeypatch.setattr(CommentSource, "SILENCE_CHECK_SEC", 0.02)
+    clock = {"t": 5_000_000.0}
+    cs._clock = lambda: clock["t"]
+
+    async def scenario():
+        cs.start("abc")
+        assert await wait_until(lambda: any(s == "connecting" for s, _ in state_log))
+        clock["t"] += 10_000.0        # 远超阈值的模拟时间
+        await asyncio.sleep(0.1)      # 给看门狗几轮真实时间的检查机会
+        before_stop = proc.terminate_called
+        await cs.stop()
+        return before_stop
+
+    before_stop = run(scenario())
+    assert before_stop is False
+    assert all(s != "silent_restart" for s, _ in state_log)
+
+
+def test_silence_watchdog_task_is_cancelled_when_worker_exits_on_its_own(monkeypatch):
+    """子进程自己退出（不是被看门狗打断）时，这次 _run_once 起的看门狗任务
+    要跟着收尾，不能泄漏成一个还在查一个已经死掉的子进程的孤儿任务。
+
+    模拟「自己退出」：不调用 terminate()，直接让 proc1 的 stdout 关掉——
+    这样能确认收尾是 _run_once 的 finally 做的，不是看门狗自己触发的
+    （下面反证 proc1.terminate_called 为假）。等了一小段真实时间才让它退出，
+    是为了让看门狗任务真的先跑起来、查过至少一轮：如果子进程在看门狗第一次
+    被调度之前就已经退出（零个事件循环轮次），看门狗任务会在从没执行过一行
+    代码的情况下被取消，测不出「取消」这回事——只是测出「没机会开始」。"""
+    proc1 = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
+                     returncode=0, hang_after=True)
+    proc2 = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
+                     hang_after=True)
+    cs, items_log, state_log, calls = make_source(monkeypatch, [proc1, proc2])
+    monkeypatch.setattr(CommentSource, "SILENCE_RESTART_SEC", 5.0)
+    monkeypatch.setattr(CommentSource, "SILENCE_CHECK_SEC", 0.02)
+
+    watchdog_tasks = []
+    orig = CommentSource._silence_watchdog
+
+    async def spy(self, proc_arg):
+        watchdog_tasks.append(asyncio.current_task())
+        await orig(self, proc_arg)
+
+    monkeypatch.setattr(CommentSource, "_silence_watchdog", spy)
+
+    async def scenario():
+        cs.start("abc")
+        assert await wait_until(lambda: cs.state == "connected")
+        await asyncio.sleep(0.05)          # 让第一个看门狗真的跑起来、查过至少一轮
+        proc1.stdout.terminated = True     # 子进程自己退出：stdout 关掉，不经我们的 terminate()
+        assert await wait_until(lambda: len(calls) >= 2)   # proc1 走完，重连出 proc2
+        await asyncio.sleep(0.05)
+        await cs.stop()
+
+    run(scenario())
+    assert not proc1.terminate_called        # 证明是「自己退出」，不是被看门狗 terminate 的
+    assert len(watchdog_tasks) >= 2          # 每次 _run_once 都起了自己的看门狗
+    assert watchdog_tasks[0].done()          # proc1 那次的看门狗没有跟着泄漏
+
+
+def test_silence_watchdog_restarts_at_most_once_per_window(monkeypatch):
+    """看门狗内部「同一 SILENCE_RESTART_SEC 窗口最多重连一次」的判断：直接
+    摆时钟/状态调 _silence_watchdog，不经完整的子进程编排（那条路径已经在
+    上面几个用例里测过）——重连要烧一次匿名请求加一次签名握手，看门狗自己
+    不能在窗口内心跳式地反复触发。"""
+    cs, items_log, state_log, calls = make_source(monkeypatch, [])
+    monkeypatch.setattr(CommentSource, "SILENCE_RESTART_SEC", 10.0)
+    monkeypatch.setattr(CommentSource, "SILENCE_CHECK_SEC", 0.02)
+    clock = {"t": 100.0}
+    cs._clock = lambda: clock["t"]
+    cs.state = "connected"
+    cs._connected_at = 0.0      # 已经「连了」100 秒，早就过了阈值
+    cs._last_item_at = None
+
+    class DummyProc:
+        def __init__(self):
+            self.terminate_called = False
+
+        def terminate(self):
+            self.terminate_called = True
+
+        async def wait(self):
+            return 0
+
+    async def scenario():
+        # 阶段一：5 秒前刚重连过，还没满 10 秒窗口——不该再重连
+        cs._last_silent_restart_at = 95.0
+        dummy1 = DummyProc()
+        task1 = asyncio.ensure_future(cs._silence_watchdog(dummy1))
+        await asyncio.sleep(0.1)
+        task1.cancel()
+        try:
+            await task1
+        except asyncio.CancelledError:
+            pass
+
+        # 阶段二：上一次重连是 50 秒前——窗口已经过了，这回该重连
+        cs.state = "connected"
+        cs._last_silent_restart_at = 50.0
+        dummy2 = DummyProc()
+        task2 = asyncio.ensure_future(cs._silence_watchdog(dummy2))
+        ok = await wait_until(lambda: dummy2.terminate_called)
+        assert ok
+        await wait_until(lambda: task2.done())
+        return dummy1.terminate_called
+
+    dummy1_terminated = run(scenario())
+    assert dummy1_terminated is False
+    assert cs.state == "silent_restart"
+    assert cs._last_silent_restart_at == 100.0
+
+
+# ---------------------------------------------------------------------------
 # 4. Pipeline 接线：开播起、下播停、直接流地址/--no-comments 不起
 # ---------------------------------------------------------------------------
 
@@ -647,6 +857,43 @@ def test_begin_session_no_comments_flag_skips_comment_source(monkeypatch, tmp_pa
     sources = server.of_type("comment_source")
     assert sources and sources[-1]["backend"] == "unavailable"
     assert "--no-comments" in sources[-1]["detail"]
+
+
+def test_end_session_records_comments_received_in_session_end(monkeypatch, tmp_path):
+    """收到过几条弹幕要跟着 session_end 一起落盘——哪怕弹幕连接全程显示
+    「已连接」，这一列也能让事后一眼看出它是不是哑了一整场（配合看门狗，
+    见 CommentSource.comments_received）。"""
+    from app import resolver
+    monkeypatch.setattr(resolver, "_login_first_enabled", lambda: False)
+
+    class FakeCommentSource:
+        def __init__(self):
+            self.comments_received = 42
+            self.stopped = False
+
+        def start(self, unique_id):
+            pass
+
+        async def stop(self):
+            self.stopped = True
+
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    fake_cs = FakeCommentSource()
+    p.comment_source = fake_cs
+
+    async def scenario():
+        await p._begin_session("https://www.tiktok.com/@abc/live")
+        audit = p.audit
+        await p._end_session(audit, reason="offline")
+        return audit
+
+    audit = run(scenario())
+    assert fake_cs.stopped is True
+    records = [json.loads(line) for line in audit.path.read_text(encoding="utf-8").splitlines()
+               if line.strip()]
+    end_rec = next(r for r in records if r["type"] == "session_end")
+    assert end_rec["comments_received"] == 42
+    assert end_rec["reason"] == "offline"
 
 
 # ---------------------------------------------------------------------------

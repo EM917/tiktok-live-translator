@@ -179,6 +179,14 @@ class CommentSource:
     HOUR_WINDOW_SEC = 3600.0
     # 缺库/Python 版本不够时，多久重查一次 worker_available()
     PROVISION_POLL_SEC = 30.0
+    # 评论 WebSocket 能「半开」：还在 connected、没有 DisconnectEvent、也没有任何
+    # 弹幕事件——2026-09-21 实录：一场直播报了 connected 之后哑了 4 小时零弹幕，
+    # HEALTHY_SEC 只在退避判定里用一次就完了，从没人再检查「连上之后有没有事」。
+    # 看门狗每 SILENCE_CHECK_SEC 秒查一次，超过 SILENCE_RESTART_SEC 没收到任何
+    # 弹幕就优雅重连。阈值定这么长：每次重连都要烧一次匿名请求 + 一次经 Euler
+    # Stream 签名的握手（免费额度按天算），15 分钟是能接受的下限，不是随手挑的。
+    SILENCE_RESTART_SEC = 15 * 60
+    SILENCE_CHECK_SEC = 30
     # 时钟做成可替换的：每小时连接上限、健康判定都按它算。测试注入一个手动
     # 拨动的假时钟，窗口逻辑就不再依赖真实时间——2026-09-07 Windows CI 上
     # test_hourly_connect_cap 反复偶发失败，那台跑器的 time.time() 精度是
@@ -214,6 +222,11 @@ class CommentSource:
         # 结尾那次 self._launch() 就不该再执行——否则会为一个已经不该活着的
         # 会话起一个没人跟踪的子进程（见 stop() 期间的竞态记录）。
         self._epoch = 0
+        self._connected_at = None       # 看门狗读的：这次连接建立的 _clock() 时间
+        self._last_item_at = None       # 看门狗读的：最近一次收到弹幕批次的 _clock() 时间
+        self._silent_restart = False    # 上一次子进程退出是不是看门狗触发的优雅重连
+        self._last_silent_restart_at = None  # 上次静默重连的 _clock() 时间，同一窗口最多一次
+        self.comments_received = 0      # 本场（start()~stop()）收到的弹幕条数，写进 session_end
 
     # ---- 对外接口 ----
     def start(self, unique_id):
@@ -241,6 +254,7 @@ class CommentSource:
 
     def _launch(self, unique_id):
         self._unique_id = unique_id
+        self.comments_received = 0      # 新的一场，从零重新数（跨这一场内的重连都累加）
         self._task = asyncio.ensure_future(self._supervise(unique_id))
 
     async def stop(self, _external=True):
@@ -457,7 +471,10 @@ class CommentSource:
             return (-1, False)
         self._proc = proc
         stderr_task = asyncio.ensure_future(self._drain_stderr(proc))
+        watchdog_task = asyncio.ensure_future(self._silence_watchdog(proc))
         connected_at = None
+        self._connected_at = None
+        self._last_item_at = None
         # 不带 sessionid 的子进程一启动就匿名请求 TikTok（TikTokLive 先抓
         # https://www.tiktok.com/@主播/live，再问是否在播），连上评论 WebSocket 之后才不再发。
         # 解析流地址那边「带登录抓直播页之前和上一次匿名请求隔开 8 秒」的规则要看得见这些
@@ -484,6 +501,7 @@ class CommentSource:
                         if anonymous and connected_at is None:
                             _note_anonymous_request()
                         connected_at = self._clock()
+                        self._connected_at = connected_at
                     if state in ("rejected", "blocked"):
                         # 原始英文报错不直接上面板：子进程退出后 _supervise 换成
                         # 中文说明，并先去找组件更新
@@ -492,6 +510,8 @@ class CommentSource:
                 elif kind == "comments":
                     items = obj.get("items")
                     if isinstance(items, list):
+                        self._last_item_at = self._clock()
+                        self.comments_received += len(items)
                         await self._safe_on_items(items)
             returncode = await proc.wait()
         except asyncio.CancelledError:
@@ -509,15 +529,64 @@ class CommentSource:
             if anonymous and connected_at is None:
                 _note_anonymous_request()       # 没连上就结束了：它的匿名请求最晚发到这一刻
             stderr_task.cancel()
+            watchdog_task.cancel()
             try:
                 await stderr_task
             except asyncio.CancelledError:
                 pass
             except Exception:
                 pass
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
             self._proc = None
         healthy = connected_at is not None and (self._clock() - connected_at) >= self.HEALTHY_SEC
+        if self._silent_restart:
+            # 看门狗刚优雅重连过这一次退出：无论连了多久，都当健康退出——
+            # 立刻按 BACKOFF_MIN_SEC 重连，不进指数退避，也不算一次拒绝/出错
+            # （returncode 本就是 0，这里只是不依赖 HEALTHY_SEC 的偶然满足）。
+            healthy = True
+            self._silent_restart = False
         return returncode, healthy
+
+    async def _silence_watchdog(self, proc):
+        """连着但哑了太久就优雅重连。评论 WebSocket 会「半开」：状态一直是
+        connected，没有 DisconnectEvent，也没有任何弹幕事件，什么都不会主动
+        告诉我们它已经死了（2026-09-21 实录：报了 connected 之后哑了 4 小时
+        零弹幕，直到手动 SIGTERM 才在 30 秒内重连、第一秒就来了三条）。
+
+        每 SILENCE_CHECK_SEC 秒查一次；只在当前状态是 connected 时才可能触发，
+        且同一个 SILENCE_RESTART_SEC 窗口最多重连一次——重连要烧一次匿名请求
+        加一次经 Euler Stream 签名的握手，免费额度按天算，看门狗自己不能把它
+        烧光。异常只记日志，绝不冒泡到 _run_once（弹幕这条锦上添花的链路不能
+        因为看门狗自己的 bug 被带死）。"""
+        try:
+            while True:
+                await asyncio.sleep(self.SILENCE_CHECK_SEC)
+                if self.state != "connected" or self._connected_at is None:
+                    continue
+                now = self._clock()
+                silent_since = max(self._connected_at, self._last_item_at or 0)
+                if now - silent_since < self.SILENCE_RESTART_SEC:
+                    continue
+                if self._last_silent_restart_at is not None and \
+                        now - self._last_silent_restart_at < self.SILENCE_RESTART_SEC:
+                    continue
+                self._last_silent_restart_at = now
+                self._silent_restart = True
+                minutes = max(1, int(round((now - silent_since) / 60)))
+                await self._set_state(
+                    "silent_restart",
+                    "连接着但 {} 分钟没有收到弹幕，已重连评论流".format(minutes))
+                await self._terminate(proc)
+                return   # 这次子进程的看门狗任务到此为止，_run_once 的 finally 会把它收掉
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 弹幕静默看门狗异常: {}".format(exc))
 
     async def _spawn(self, args):
         """单独成方法，方便测试 monkeypatch 掉、返回一个假子进程。"""

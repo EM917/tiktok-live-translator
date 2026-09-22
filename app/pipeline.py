@@ -1362,6 +1362,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             self._comments_pending = None
             comment_source = getattr(self, "comment_source", None)
             if comment_source is not None:
+                # 这一场收到过多少条弹幕一起写进 session_end——弹幕连接哪怕全程
+                # "connected"，事后也要能看出它是不是哑了一整场（见看门狗）。
+                fields.setdefault("comments_received", comment_source.comments_received)
                 await comment_source.stop()
         if still_current and self._stats_task is not None \
                 and not self._stats_task.done():
