@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { isMeasurable, nextFollowing, needsResync } =
+const { isMeasurable, nextFollowing, needsResync, viewTransition } =
   require("../web/follow.js");
 
 // 不可渲染的元素：浏览器一律返回 0
@@ -62,4 +62,56 @@ test("用户主动滚上去看历史时不打扰他", () => {
 
 test("不可见时不尝试补滚——那时的滚动同样是空操作", () => {
   assert.equal(needsResync(hidden, true), false);
+});
+
+// 「停止」之后页面留残留：大字幕、统计行、弹幕面板各自用不同条件判断要不要
+// 隐藏，改一个漏一个。viewTransition 把「状态变了该做什么」收成一个纯函数，
+// 这样每种迁移组合都能在这里钉住，不用靠真开页面去点「停止」核对。
+test("直播中→待机/结束/出错：进入首页", () => {
+  assert.deepEqual(viewTransition(true, "idle"),
+    { active: false, enterHome: true, exitHome: false });
+  assert.deepEqual(viewTransition(true, "ended"),
+    { active: false, enterHome: true, exitHome: false });
+  assert.deepEqual(viewTransition(true, "error"),
+    { active: false, enterHome: true, exitHome: false });
+});
+
+test("待机→连接中：离开首页", () => {
+  assert.deepEqual(viewTransition(false, "connecting"),
+    { active: true, enterHome: false, exitHome: true });
+});
+
+test("直播中→断线重连→恢复直播：布局全程不动", () => {
+  var afterOffline = viewTransition(true, "offline");
+  assert.deepEqual(afterOffline, { active: true, enterHome: false, exitHome: false });
+  // 重连后 hello 带回真实状态仍是 live：不能因为「断线那一刻」已经算过
+  // active=true 就重复触发离开首页的动作
+  assert.deepEqual(viewTransition(afterOffline.active, "live"),
+    { active: true, enterHome: false, exitHome: false });
+});
+
+test("待机中断线：布局同样不动（不会被误判成进首页）", () => {
+  assert.deepEqual(viewTransition(false, "offline"),
+    { active: false, enterHome: false, exitHome: false });
+});
+
+test("初始加载即待机：prevActive 传 null，仍要进首页", () => {
+  // null 表示「还没收到过任何状态」，跟「已经在待机」（false）是两回事——
+  // 不分开的话页面刚加载时会被判成「没有变化」，首页该做的动作就漏了
+  assert.deepEqual(viewTransition(null, "idle"),
+    { active: false, enterHome: true, exitHome: false });
+});
+
+test("出错→待机：都是非活跃，不重复触发进首页", () => {
+  var afterError = viewTransition(true, "error");   // 先从直播中出错，触发一次
+  assert.equal(afterError.enterHome, true);
+  var afterIdle = viewTransition(afterError.active, "idle");
+  assert.deepEqual(afterIdle, { active: false, enterHome: false, exitHome: false });
+});
+
+test("连接中→直播中：都是活跃，不重复触发离开首页", () => {
+  var afterConnecting = viewTransition(false, "connecting");
+  assert.equal(afterConnecting.exitHome, true);
+  var afterLive = viewTransition(afterConnecting.active, "live");
+  assert.deepEqual(afterLive, { active: true, enterHome: false, exitHome: false });
 });

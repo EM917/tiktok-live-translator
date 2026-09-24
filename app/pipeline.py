@@ -2000,8 +2000,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 return "live", waited
         if status == ENDED_STATUS:
             await self.server.status(
-                "ended", "直播已结束。可以继续翻看上面的字幕，"
-                         "或输入新的直播间地址。")
+                "ended", "直播已结束。可以往下翻看这一场的字幕，"
+                         "或在上方输入新的直播间地址。")
             print("[信息] 直播已结束。可在网页里输入新地址继续。")
             sess["end"] = {"reason": "offline", "status": status}
             return "ended", waited
@@ -2088,8 +2088,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             return "live", waited
         if outcome == "ended":
             await self.server.status(
-                "ended", "直播已结束。可以继续翻看上面的字幕，"
-                         "或输入新的直播间地址。")
+                "ended", "直播已结束。可以往下翻看这一场的字幕，"
+                         "或在上方输入新的直播间地址。")
             sess["end"] = {"reason": "offline", "status": status,
                            "waited_sec": int(round(waited))}
         else:

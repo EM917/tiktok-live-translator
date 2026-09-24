@@ -44,7 +44,42 @@ function needsResync(box, following) {
   return box.scrollHeight - box.scrollTop - box.clientHeight >= FOLLOW_SLACK_PX;
 }
 
+/* 「状态迁移 → 布局动作」的判定。直播状态从 hello/status 消息到达，
+   但「停止后页面该长什么样」是一个独立于具体消息形状的问题，抽成纯函数
+   才能不靠真开页面去验证每一种迁移组合（同一批事故：大字幕、统计行、
+   弹幕面板、回到最新按钮，停止后各自用不同的隐藏条件，改一个漏一个）。
+
+   prevActive：上一次算出的 active（true/false），页面刚加载、还没收到任何
+   状态时传 null——这不是「已经在待机」，而是「压根不知道」，两者要分开：
+   否则首次到达就是 idle 时会被误判成「没有变化」而跳过进首页的动作。
+
+   state：这一条 status 消息的 state 字段（idle/connecting/live/ended/error/offline）。
+
+   返回 { active, enterHome, exitHome }：
+     - active：这条消息之后，「直播中」这件事本身该算 true 还是 false。
+     - enterHome：这一步要不要执行「进入首页」的动作（隐藏大字幕/统计行/
+       弹幕面板、字幕区回到顶部）。只在从活跃变为非活跃的**那一刻**触发一次，
+       同为非活跃的后续状态（如 error → idle）不重复触发。
+     - exitHome：这一步要不要执行「离开首页」的动作（字幕跟随恢复到底部）。
+       同理只在从非活跃变为活跃的那一刻触发一次。
+
+   offline 是本地 WebSocket 断线重连中的状态，不代表直播本身发生了任何变化——
+   断线前是直播中就还是直播中，断线前是待机就还是待机，布局原样不动，
+   只有状态点和状态文字该刷新（那部分不归这个函数管）。重连成功后 hello
+   里的真实状态会再算一次，到时候该做的动作照样会做，不会因为这次跳过而漏掉。 */
+function viewTransition(prevActive, state) {
+  if (state === "offline") {
+    return { active: prevActive, enterHome: false, exitHome: false };
+  }
+  var active = state === "live" || state === "connecting";
+  return {
+    active: active,
+    enterHome: !active && prevActive !== false,
+    exitHome: active && prevActive !== true,
+  };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { isMeasurable, atBottom, nextFollowing, needsResync,
-                     FOLLOW_SLACK_PX };
+                     viewTransition, FOLLOW_SLACK_PX };
 }

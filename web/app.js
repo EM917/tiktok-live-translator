@@ -131,6 +131,10 @@
   var liveBarId = null;      // 底部大字幕当前显示的是哪一条（译文回来要就地替换）
   // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
   var cardsById = {};
+  // 布局意义上的「直播中」，供 viewTransition 判断迁移方向；null＝页面刚加载，
+  // 还没收到过任何状态——不能当成「已经在待机」，否则首次到达就是 idle 时会被
+  // 误判成「没有变化」，进首页该做的动作（大字幕/统计行/弹幕面板归位）就漏了
+  var homeActive = null;
 
   // ---- 设置 ----
   // 只有用户显式调过字号才覆盖 CSS 默认值（否则会压掉移动端媒体查询的 26px）
@@ -691,13 +695,24 @@
     // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
     if (state === "error" || state === "idle") resetUpdateBtn();
 
-    var active = state === "live" || state === "connecting";
+    // offline（本地连接断线重连中）不代表直播本身发生了变化：布局（开始面板/
+    // 停止按钮/弹幕面板/大字幕的显示状态）原样不动，viewTransition 对这个状态
+    // 直接把 active 原样传回来，下面几行也就什么都不会改——只有状态点和状态
+    // 文字（上面已经写完）该刷新。重连后 hello 带回真实状态会再算一次。
+    var transition = viewTransition(homeActive, state);
+    homeActive = transition.active;
+    var active = transition.active;
     startPanel.classList.toggle("hidden", active);
     stopBtn.classList.toggle("hidden", !active);
     startBtn.disabled = state === "connecting";
     streamActive = active;
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
     refreshCommentPanel();
+    // 「停止」之后桌面页面留残留（大字幕压住开始面板、回到最新按钮悬空、
+    // 上一场弹幕还挂着）：这两步把「直播中才有意义」的 UI 收掉/摆好，
+    // 只在活跃↔非活跃真正切换的那一刻各触发一次
+    if (transition.enterHome) enterHomeLayout();
+    if (transition.exitHome) exitHomeLayout();
 
     // 附带的命令：程序自己已经帮不上忙时，至少让用户有一条能照做的路
     if (fixCmd) {
@@ -802,11 +817,18 @@
     }
 
     applyTranslation(card, msg);
-    stickToBottom(msg.replay);
+    // force 只在「重连时回放、且当前确实处于直播中」才为 true：那是唯一
+    // 该无视用户滚动状态、强制跳到最新的场景。待机时收到的回放（刚停止/刚
+    // 打开就是上一场留下的历史）不该跟着强制滚到底——否则 enterHomeLayout
+    // 刚把 #history 归位到顶部，这里又把它拽回底部，开始面板重新被盖住
+    // （这正是「长场次停止后看不到输入框」那个既有问题的成因）。
+    stickToBottom(msg.replay && streamActive);
 
-    // 底部大字幕：回放历史时不逐条更新（避免闪一串旧字幕），
-    // 但最后一条带 restore 标记，用它把大字幕恢复成断线前的样子
-    if (!msg.replay || msg.restore) {
+    // 底部大字幕：回放历史时不逐条更新（避免闪一串旧字幕），最后一条带
+    // restore 标记，用它把大字幕恢复成断线前的样子——但只在当前确实处于
+    // 直播中才恢复；待机时回放只用来恢复上面的历史卡片，大字幕留隐藏，
+    // 不然停止后大字幕会跟着回放重新冒出来，压住开始面板下半部
+    if ((!msg.replay || msg.restore) && streamActive) {
       liveBar.classList.remove("hidden");
       liveTranslated.textContent = msg.translated || msg.original || "";
       liveOriginal.textContent = msg.translated ? (msg.original || "") : "";
@@ -1042,9 +1064,12 @@
 
   // 面板什么时候露面、空着的时候说什么。直播中面板必须在——否则中控分不清
   // 「今天没人发弹幕」和「评论流压根没连上」，而后者是要去处理的。
+  // show 只看 streamActive，不再是「有内容也算」：待机页面（含刚停止那一刻）
+  // 不该显示上一场的弹幕面板/小入口，但列表内容本身不清空，下一场开始时
+  // streamActive 一变回 true，原样恢复显示。
   function refreshCommentPanel() {
     var has = commentList.children.length > 0;
-    var show = has || streamActive;
+    var show = streamActive;
     var collapsed = commentPanel.classList.contains("collapsed");
     commentPanel.classList.toggle("hidden", !show);
     commentEmpty.classList.toggle("hidden", has);
@@ -1749,7 +1774,10 @@
   // `scrollTop = scrollHeight` 变成给 0 赋 0（空操作），而 0-0-0 < 120 又让
   // 判定看起来是「在底部」。于是离开页面期间到达的每一条字幕都没能滚动，
   // 回来时停在旧位置，必须手动往下拖。
-  var following = true;
+  // 初始值 false：页面刚加载默认是首页状态（见 viewTransition），要等真正
+  // 进入直播中（exitHomeLayout）才恢复跟随；这之前不该有任何东西把 #history
+  // 拽向底部。
+  var following = false;
 
   // 记下最近一次真实的用户输入。浏览器在元素重新可渲染时会把 scrollTop
   // 重置为 0 并抛出 scroll 事件，不区分来源的话那次重置会被当成
@@ -1785,17 +1813,50 @@
     historyEl.style.scrollBehavior = prev;
   }
 
+  // 同上，瞬时滚到顶：#start-panel 是 #history 的第一个子元素，进首页状态时
+  // 要让它回到视口里。理由同 scrollToBottomNow——.history 的 scroll-behavior:
+  // smooth 会让赋值变成一次追不上后续变化的动画，干脆临时关掉。
+  function scrollToTopNow() {
+    var prev = historyEl.style.scrollBehavior;
+    historyEl.style.scrollBehavior = "auto";
+    historyEl.scrollTop = 0;
+    historyEl.style.scrollBehavior = prev;
+  }
+
   function stickToBottom(force) {
     if (force) following = true;
     if (following) scrollToBottomNow();
     updateJumpButton();
   }
 
+  // 进入首页状态（viewTransition 的 enterHome）：直播状态从活跃变为非活跃，
+  // 或页面刚加载就是非活跃。把上一场直播留下的视觉残留收掉——大字幕、统计行、
+  // 弹幕面板都是「直播中才有意义」的 UI，赖在待机页面上会压住开始面板、或
+  // 让人以为还在直播（2026-09-24 用户报告的残留）。弹幕面板本身的隐藏交给
+  // refreshCommentPanel（已在调用处按 streamActive 处理），这里不重复。
+  function enterHomeLayout() {
+    liveBar.classList.add("hidden");
+    liveBarId = null;
+    following = false;
+    scrollToTopNow();
+    updateJumpButton();
+    statsEl.classList.add("hidden");
+  }
+
+  // 离开首页状态（viewTransition 的 exitHome）：直播状态从非活跃变为活跃
+  // （点了「开始翻译」、后端确认 connecting/live）。大字幕和统计行不在这里
+  // 主动显示——它们等第一条真正的字幕/统计数据到达时由 renderCaption /
+  // renderStats 自己揭开；这里只需要让接下来到达的新字幕照常跟到底部。
+  function exitHomeLayout() {
+    following = true;
+  }
+
   // 按钮只在「确实有内容在下面」时出现。不可测量时不显示——那时什么都判断不了，
-  // 摆一个按不动的按钮只会添乱。
+  // 摆一个按不动的按钮只会添乱。非活跃状态（待机/已结束/出错）下不显示：
+  // 那时 #history 顶部是开始面板，「回到最新」没有意义。
   function updateJumpButton() {
     if (!jumpBtn) return;
-    var show = isMeasurable(historyEl) && !atBottom(historyEl);
+    var show = streamActive && isMeasurable(historyEl) && !atBottom(historyEl);
     if (show) {
       // 底部大字幕是 fixed 且高度随字号变化，按钮得让开它。
       // 上限夹在视口 40% 处：布局异常时测出的 barTop 可能贴近顶部，
