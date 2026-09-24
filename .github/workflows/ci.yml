@@ -72,5 +72,9 @@ jobs:
           node --check web/app.js
           node --check web/normalize.js
           node --check web/brand.js
+          node --check web/switch.js
+          node --check web/session-divider.js
+          node --check web/follow.js
+          node --check web/alerts.js
           node --check web/viewer.js
           node --check web/qrcanvas.js
