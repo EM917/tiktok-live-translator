@@ -71,5 +71,6 @@ jobs:
         run: |
           node --check web/app.js
           node --check web/normalize.js
+          node --check web/brand.js
           node --check web/viewer.js
           node --check web/qrcanvas.js

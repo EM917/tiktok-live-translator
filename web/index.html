@@ -173,6 +173,20 @@
             <option value="zh">中文</option>
           </select>
         </label>
+        <label>本场只卖
+          <!-- 品牌词表：整场只卖这一个牌子时加载对应的商品词表（识别热词/
+               翻译提示/译文兜底三处生效，见 app/glossary.py）；混卖别家货时
+               选「不限」，行为与不选这个下拉时完全一样。按主播记住上次的
+               选择，见 web/brand.js。选项由 brands/ 文件夹里的文件动态生成
+               （见 config.brand_options），这里只保留固定的「不限」一项；
+               下拉获得焦点时会发 refresh_brands 重新扫一遍，不用重启程序 -->
+          <select id="brand-select" title="整场只卖这个牌子时选它：加载该品牌的商品词表。混卖别家货时选「不限」。">
+            <option value="">不限（默认）</option>
+          </select>
+        </label>
+        <button id="brands-dir-btn" class="btn small" type="button"
+                title="打开 brands 文件夹，把品牌词表文件放进去">打开词表文件夹</button>
+        <span id="brand-empty-hint" class="brand-hint hidden">把品牌词表放进 brands 文件夹后，这里可以选择</span>
       </div>
       <p class="hint">也可以只输入主播用户名（如 @somebody），或直接粘贴 .flv / .m3u8 流地址 · 首次识别需下载模型，进度会显示在页面上</p>
       <p class="hint">个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源</p>
@@ -304,9 +318,10 @@
     }
   </script>
   <script src="/static/normalize.js?v=1"></script>
+  <script src="/static/brand.js?v=2"></script>
   <script src="/static/follow.js?v=1"></script>
   <script src="/static/alerts.js?v=2"></script>
   <script src="/static/qrcanvas.js?v=1"></script>
-  <script src="/static/app.js?v=49"></script>
+  <script src="/static/app.js?v=51"></script>
 </body>
 </html>

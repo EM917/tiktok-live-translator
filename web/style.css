@@ -172,6 +172,8 @@ input[type="range"] { accent-color: var(--accent); width: 110px; }
 }
 .start-row.secondary { font-size: 13px; color: var(--text-dim); }
 .start-row.secondary label { display: flex; align-items: center; gap: 6px; }
+/* 品牌下拉旁边的空态小字：brands 文件夹里一个词表都没有时提示去哪加 */
+.brand-hint { font-size: 12px; color: var(--text-faint); }
 
 #room-input {
   flex: 1;
