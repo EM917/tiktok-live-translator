@@ -26,11 +26,20 @@ GLOSSARY_EXAMPLE = ROOT / "glossary.example.txt"
 # 硬塞进结果。只放最容易听错的专有名词，且宁短勿长。
 MAX_ASR_TERMS = 18
 
+# 品牌词表能贡献给识别热词的条目数上限。品牌表通常比主播 profile 长得多
+# （给多个没有自己 profile 的主播共用），整表塞进热词只会重演上面 99 词
+# 那次教训；只放最容易听错的前几条，其余条目仍正常参与翻译提示与译文兜底。
+BRAND_ASR_TERMS = 3
+
 
 class Glossary:
-    def __init__(self, entries):
+    def __init__(self, entries, asr_entries=None):
         # entries: [(西语变体列表, 中文译法)]，保持文件顺序（前面的优先级高）
         self.entries = entries
+        # 识别热词单独一份列表，默认就是 entries（没有品牌词表时的老行为）。
+        # 品牌词表生效时二者会不同：见 load() 里的构造逻辑——热词表只取品牌表
+        # 前 BRAND_ASR_TERMS 条，matching()/apply() 用的 entries 不受影响。
+        self.asr_entries = entries if asr_entries is None else asr_entries
 
     @property
     def enabled(self):
@@ -40,7 +49,7 @@ class Glossary:
         """给 Whisper 的热词提示。写成自然的西语句子而不是逗号词表——
         Whisper 的 prompt 是当作「上文」续写的，自然句式的引导效果更好。"""
         names = []
-        for variants, _zh in self.entries[:limit]:
+        for variants, _zh in self.asr_entries[:limit]:
             if variants:
                 names.append(variants[0])
         if not names:
@@ -152,6 +161,26 @@ def parse(text):
 
 
 PROFILE_DIR = ROOT / "profiles"
+BRAND_DIR = ROOT / "brands"
+
+
+def _copy_template_once(directory, safe_name):
+    """`directory/safe_name.txt` 的路径；不存在但有同名 `.example.txt` 模板时，
+    首次使用先复制一份用户可编辑的副本（模板入库、副本不入库，编辑不会被
+    一键更新挡住）；两者都没有就返回 None。profile_path 与 brand_path 共用
+    这段「名字已经清洗过之后」的逻辑，各自只管自己的清洗/校验规则。"""
+    target = directory / (safe_name + ".txt")
+    if not target.exists():
+        example = directory / (safe_name + ".example.txt")
+        if not example.exists():
+            return None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            target.write_text(example.read_text(encoding="utf-8-sig"),
+                              encoding="utf-8")
+        except _READ_ERRORS:
+            return None
+    return target
 
 
 def profile_path(streamer):
@@ -160,18 +189,91 @@ def profile_path(streamer):
     safe = re.sub(r"[^\w.\-]", "", str(streamer or ""))
     if not safe:
         return None
-    target = PROFILE_DIR / (safe + ".txt")
-    if not target.exists():
-        example = PROFILE_DIR / (safe + ".example.txt")
-        if not example.exists():
-            return None
+    return _copy_template_once(PROFILE_DIR, safe)
+
+
+# 品牌 id 来自 brands/<id>.txt 的文件名（用户自己起的），不像主播名那样
+# 直接照抄直播间 URL——所以敢按小写字母数字加单个连字符分隔严格校验，而不是
+# 像 profile_path 那样只挖掉危险字符。校验不过一律返回 None 且不建任何文件：
+# 不能因为一个拼错的 id 就在 brands/ 下凭空建出一个空文件。
+_BRAND_ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+BRAND_ID_MAX_LEN = 40
+
+
+def brand_path(brand_id):
+    """品牌词表（brands/<id>.txt）的路径；id 不合法或长度超限返回 None。
+    首次使用时从同名 .example 生成可编辑副本，逻辑与 profile_path 共享。"""
+    bid = str(brand_id or "")
+    if not bid or len(bid) > BRAND_ID_MAX_LEN or not _BRAND_ID_RE.match(bid):
+        return None
+    return _copy_template_once(BRAND_DIR, bid)
+
+
+def _valid_brand_id(bid):
+    return bool(bid) and len(bid) <= BRAND_ID_MAX_LEN and bool(_BRAND_ID_RE.match(bid))
+
+
+_NAME_LINE_RE = re.compile(r"^name\s*:\s*(.+)$", re.I)
+
+
+def _brand_display_name(text):
+    """从已经读出来的文件内容里找 `name: 显示名` 那一行；parse() 认不出它
+    （没有 `=>`），天然互不干扰，和 profile 的开关行是同一个道理。没写就
+    返回 None，调用方退回用 id 当显示名。"""
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or "=>" in line:
+            continue
+        m = _NAME_LINE_RE.match(line)
+        if m:
+            name = m.group(1).strip()
+            if name:
+                return name
+    return None
+
+
+def brand_options():
+    """扫描 brands/ 目录，返回可选品牌列表：[{"id", "name"}, ...]，按显示名排序。
+
+    用户文件 `<id>.txt` 和模板 `<id>.example.txt` 都算一个选项；同一个 id 两者
+    都有时以用户文件为准（用户可能自己改过显示名）。id 要通过 brand_path 同样
+    的合法性校验，不合法的文件名、以及 README.md 这类其它文件一律忽略——
+    不能因为文件夹里有说明文档就在下拉框里多出一条乱码选项。
+
+    单个文件读取失败（权限、非 UTF-8）只打印一行警告并跳过那一份，不能挡住
+    整个下拉框，更不能挡住启动——和 load() 里品牌词表读取失败时同一个
+    「翻译辅助文件绝不能拖累主流程」的原则。
+    """
+    try:
+        paths = sorted(BRAND_DIR.iterdir())
+    except OSError:
+        return []
+    user_files, example_files = {}, {}
+    for path in paths:
+        if not path.is_file():
+            continue
+        name = path.name
+        if name.endswith(".example.txt"):
+            bid, bucket = name[:-len(".example.txt")], example_files
+        elif name.endswith(".txt"):
+            bid, bucket = name[:-len(".txt")], user_files
+        else:
+            continue        # README.md 等其它文件：不是词表，忽略
+        if _valid_brand_id(bid):
+            bucket[bid] = path
+
+    options = []
+    for bid in sorted(set(user_files) | set(example_files)):
+        path = user_files.get(bid) or example_files[bid]
         try:
-            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-            target.write_text(example.read_text(encoding="utf-8-sig"),
-                              encoding="utf-8")
+            text = path.read_text(encoding="utf-8-sig")
         except _READ_ERRORS:
-            return None
-    return target
+            print("[警告] 品牌词表 {} 读取失败，已跳过——下拉框里不会出现这一项"
+                  .format(path))
+            continue
+        options.append({"id": bid, "name": _brand_display_name(text) or bid})
+    options.sort(key=lambda o: o["name"])
+    return options
 
 
 def _merge(profile_entries, global_entries):
@@ -188,13 +290,19 @@ def _merge(profile_entries, global_entries):
     return merged
 
 
-def load(path=None, streamer=None):
+def load(path=None, streamer=None, brand=None):
     """读取词表；首次运行从模板生成一份用户可编辑的副本（模板入库、副本不入库，
     这样用户编辑不会挡住一键更新）。
 
     传入 streamer（主播用户名）时，会把 profiles/<主播>.txt 合并进来且优先。
     商品知识是逐主播的：把 Bella 的品名装进全局表，Elisa 的直播里就会凭空
     冒出别家商品（实测发生过——「凭空多出 D3 K2」在盲评里被判成捏造）。
+
+    传入 brand（品牌 id）时，会把 brands/<品牌>.txt 也合并进来，优先级在全局表
+    之上、主播 profile 之下——「这一场只卖这个牌子」是给没有自己 profile 的
+    主播用的，主播自己校正过的写法不能被品牌表抢回去。brand 为 None/空
+    时这一段整个不会执行，条目、fingerprint、asr_prompt 与不带 brand 参数时
+    逐字相同。
     """
     target = Path(path) if path else GLOSSARY_FILE
     if not target.exists() and target == GLOSSARY_FILE and GLOSSARY_EXAMPLE.exists():
@@ -211,16 +319,51 @@ def load(path=None, streamer=None):
         entries = []
     except OSError:
         entries = []
+    global_entries = entries    # 未合并的全局条目，识别热词的「全局」那一截要用
+
+    brand_entries = []
+    if brand:
+        bpath = brand_path(brand)
+        if bpath is not None:
+            try:
+                brand_entries = parse(bpath.read_text(encoding="utf-8-sig"))
+            except UnicodeDecodeError:
+                print("[警告] 品牌词表 {} 不是 UTF-8 编码，已忽略——请用 UTF-8 重新保存"
+                      .format(bpath))
+            except OSError:
+                pass
+        if brand_entries:
+            entries = _merge(brand_entries, entries)
+
     prof = profile_path(streamer)
+    profile_entries = []
     if prof is not None:
         try:
-            entries = _merge(parse(prof.read_text(encoding="utf-8-sig")), entries)
+            profile_entries = parse(prof.read_text(encoding="utf-8-sig"))
         except UnicodeDecodeError:
             print("[警告] 主播 profile {} 不是 UTF-8 编码，已忽略——请用 UTF-8 重新保存"
                   .format(prof))
         except OSError:
             pass
-    return Glossary(entries)
+        if profile_entries:
+            entries = _merge(profile_entries, entries)
+
+    asr_entries = None
+    if brand_entries:
+        # 识别热词单独排一份：品牌表只贡献前 BRAND_ASR_TERMS 条（越长的提示词
+        # 越容易被 Whisper 当成上文续写进结果，见文件头注释），且要避开 profile
+        # 已经收过的变体——同一个词两份提示打架。顺序是 profile 条目 → 品牌表
+        # 前 BRAND_ASR_TERMS 条 → 全局条目；matching()/翻译走的 entries 不受影响，
+        # 那边全部品牌条目照常生效，不受这里「只取前几条」的限制。
+        claimed = {v.lower() for variants, _zh in profile_entries for v in variants}
+        hot_brand = []
+        for variants, zh in brand_entries[:BRAND_ASR_TERMS]:
+            rest = [v for v in variants if v.lower() not in claimed]
+            if rest:
+                hot_brand.append((rest, zh))
+        asr_entries = profile_entries + hot_brand + global_entries
+
+    return Glossary(entries, asr_entries=asr_entries)
 
 
 # profile 文件里的开关行：`选项名: on/off`。parse() 认不出它（没有 =>），

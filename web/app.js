@@ -11,6 +11,9 @@
   var startPanel = document.getElementById("start-panel");
   var roomInput = document.getElementById("room-input");
   var sourceSel = document.getElementById("source-lang");
+  var brandSel = document.getElementById("brand-select");
+  var brandsDirBtn = document.getElementById("brands-dir-btn");
+  var brandEmptyHint = document.getElementById("brand-empty-hint");
   var startBtn = document.getElementById("start-btn");
   var recentRooms = document.getElementById("recent-rooms");
   var recentList = document.getElementById("recent-list");
@@ -164,6 +167,68 @@
   var sourceTouched = false;
   sourceSel.addEventListener("change", function () { sourceTouched = true; });
 
+  // 品牌词表下拉：只认表里已有的 value，回填的值缺失/脏数据退回「不限」——
+  // 道理同 selectSourceLang，不能让 select 卡在空白态
+  function selectBrand(value) {
+    if (!brandSel) return;
+    var v = value ? String(value) : "";
+    for (var i = 0; i < brandSel.options.length; i++) {
+      if (brandSel.options[i].value === v) { brandSel.value = v; return; }
+    }
+    brandSel.value = "";
+  }
+
+  // 下拉框的选项由 config.brand_options 动态生成（brands/ 文件夹里的文件
+  // 决定有哪些可选），不写死在页面里；选项列表本身、以及重建后该保留哪个
+  // 选中值，是 web/brand.js 里的纯函数（buildBrandOptionList /
+  // resolveSelectedBrand），这里只管 DOM——textContent 赋值，不拼 HTML，
+  // 显示名是用户自己写的文件内容，不能当成 HTML 解析
+  function renderBrandOptions(brandOptions) {
+    if (!brandSel) return;
+    var opts = buildBrandOptionList(brandOptions);
+    var kept = resolveSelectedBrand(brandSel.value, opts);
+    while (brandSel.firstChild) brandSel.removeChild(brandSel.firstChild);
+    for (var i = 0; i < opts.length; i++) {
+      var opt = document.createElement("option");
+      opt.value = opts[i].value;
+      opt.textContent = opts[i].label;
+      brandSel.appendChild(opt);
+    }
+    brandSel.value = kept;
+    // opts 里固定带着「不限」一项：长度 1 就是除它之外一个可选品牌都没有
+    if (brandEmptyHint) brandEmptyHint.classList.toggle("hidden", opts.length > 1);
+  }
+
+  // 按主播记住的品牌映射（hello/config 里的 config.brands），及「换到这个主播
+  // 之后用户有没有手动改过下拉」——规则见 web/brand.js：换了主播（输入框或
+  // 最近直播间 chip）时，没手动改过就按记住的值刷新；改过之后，只要主播没换就
+  // 不再替用户做主（同一个主播的地址改写不算换，见 brandStateAfterRoomInput）
+  var brandsMap = {};
+  var brandState = { streamer: "", touched: false };
+  function applyDefaultBrand() {
+    if (!brandSel || brandState.touched) return;
+    selectBrand(defaultBrandFor(streamerFromInput(roomInput.value), brandsMap));
+  }
+  function onRoomInputChanged() {
+    brandState = brandStateAfterRoomInput(brandState, streamerFromInput(roomInput.value));
+    applyDefaultBrand();
+  }
+  if (brandSel) {
+    brandSel.addEventListener("change", function () { brandState.touched = true; });
+    // 获得焦点/按下鼠标时先让后端重新扫一遍 brands 文件夹：用户刚放进去的
+    // 词表不用重启程序就能在下拉里出现。两个事件都挂是为了尽量在选项真正
+    // 展开之前把新列表发过来，键盘/触屏只触发 focus，鼠标点击两个都会触发
+    var requestBrandRefresh = function () { send({ type: "refresh_brands" }); };
+    brandSel.addEventListener("focus", requestBrandRefresh);
+    brandSel.addEventListener("mousedown", requestBrandRefresh);
+  }
+  if (brandsDirBtn) {
+    brandsDirBtn.addEventListener("click", function () {
+      send({ type: "open_brands_dir" });
+    });
+  }
+  roomInput.addEventListener("input", onRoomInputChanged);
+
   fontSlider.addEventListener("input", function () {
     var size = parseInt(fontSlider.value, 10);
     applyFont(size);
@@ -225,7 +290,8 @@
     // 重连后的 hello 里补发一次，超时仍无回执才提示用户手点。
     pendingStart = { payload: { type: "start", url: url, source: sourceSel.value,
                                 media: media || undefined,
-                                alerts: !!(alertsToggle && alertsToggle.checked) },
+                                alerts: !!(alertsToggle && alertsToggle.checked),
+                                brand: brandSel ? brandSel.value : "" },
                      retried: false };
     send(pendingStart.payload);
     armStartWatchdog();
@@ -475,6 +541,14 @@
           setAlertsEnabled(!!msg.config.alerts_enabled);
           if (msg.config.disk) renderDisk(msg.config.disk);
           if (msg.config.recent_rooms) renderRecentRooms(msg.config.recent_rooms);
+          // room_url 必须先回填，applyDefaultBrand() 才能读到这一场真正的主播名——
+          // 顺序反了的话，私密窗口/换设备等 roomInput 本来是空的场景会先按空
+          // 主播算出「不限」，room_url 填进来后却没有再刷新一遍（踩过的坑）
+          if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
+          // brand_options 要先于 brands 处理：下拉框的选项得先建好，
+          // applyDefaultBrand() 才有值可选
+          if (msg.config.brand_options) renderBrandOptions(msg.config.brand_options);
+          if (msg.config.brands) { brandsMap = msg.config.brands; applyDefaultBrand(); }
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
           if (msg.config.viewer) renderShare(msg.config.viewer);
@@ -493,7 +567,6 @@
             handleMigration({ stage: "available",
                               count: msg.config.glossary_migration.count });
           }
-          if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
           updateCheckNote = msg.config.update_check && msg.config.update_check.note
             ? String(msg.config.update_check.note) : "";
           if (msg.config.version) {
@@ -536,7 +609,14 @@
       case "config":
         if (msg.target_lang) targetSel.value = msg.target_lang;
         if (msg.source_lang && !sourceTouched) selectSourceLang(msg.source_lang);
+        // 同一条 config 广播里 room_url 和 brands 一起到达时，room_url 要先填
+        // 进输入框——换了主播的第二个页面靠它才能刷新出正确的默认品牌，
+        // 顺序反了就会用上一个主播的房间算出错的默认值（踩过的坑，同 hello 分支）。
+        // brand_options 同理要先于 brands：refresh_brands 的回执也走这条分支，
+        // 选项要先建好，applyDefaultBrand() 才有值可选
         if (msg.room_url) fillRoomInput(msg.room_url);
+        if (msg.brand_options) renderBrandOptions(msg.brand_options);
+        if (msg.brands) { brandsMap = msg.brands; applyDefaultBrand(); }
         if (msg.alerts_session) setAlertSession(msg.alerts_session);
         if ("update_check" in msg) renderUpdateCheck(msg.update_check);
         break;
@@ -1235,6 +1315,7 @@
       chip.title = "点击开始翻译 @" + e.streamer;
       chip.addEventListener("click", function () {
         roomInput.value = e.url;                // 地址在背后填好，界面上只见主播名
+        onRoomInputChanged();                   // 换了主播才按记住的品牌刷新
         startStream();
       });
       recentList.appendChild(chip);

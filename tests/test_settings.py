@@ -145,3 +145,52 @@ def test_recent_rooms_skips_corrupt_entries(monkeypatch, tmp_path):
 def test_recent_rooms_empty_when_missing(monkeypatch, tmp_path):
     _use_tmp(monkeypatch, tmp_path)
     assert settings.recent_rooms() == []
+
+
+# ---- 按主播记住的品牌词表：空串="不限"（删键）、类型防御 --------------------
+
+def test_save_streamer_brand_roundtrips_and_lowercases_the_key(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    settings.save_streamer_brand("DaisyCabral_", "acme")
+    assert settings.streamer_brands() == {"daisycabral_": "acme"}
+
+
+def test_save_streamer_brand_with_empty_string_deletes_the_key(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    settings.save_streamer_brand("bella", "acme")
+    settings.save_streamer_brand("itzesantana11", "acme")
+    settings.save_streamer_brand("bella", "")       # 改选「不限」
+    got = settings.streamer_brands()
+    assert "bella" not in got                       # 不留一条「不限」的记录
+    assert got == {"itzesantana11": "acme"}
+
+
+def test_save_streamer_brand_preserves_other_settings_keys(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    settings.save_setting("target_lang", "ja")
+    settings.save_streamer_brand("bella", "acme")
+    assert settings.load_settings()["target_lang"] == "ja"
+
+
+def test_save_streamer_brand_without_a_streamer_is_a_noop(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    settings.save_streamer_brand("", "acme")
+    assert settings.streamer_brands() == {}
+
+
+def test_streamer_brands_defends_against_bad_shapes(monkeypatch, tmp_path):
+    """settings.json 可能被手改过：整个值不是 dict，或某个键/值类型不对，
+    都要被静默滤掉而不是让读取本身炸掉。"""
+    path = _use_tmp(monkeypatch, tmp_path)
+    path.write_text(json.dumps({"brands": "not a dict"}), encoding="utf-8")
+    assert settings.streamer_brands() == {}
+
+    # JSON 对象的键解析出来总是字符串，值的类型才可能跑偏（如手改成了数字）
+    path.write_text(json.dumps({"brands": {"bella": "acme",
+                                           "elisa": 7}}), encoding="utf-8")
+    assert settings.streamer_brands() == {"bella": "acme"}
+
+
+def test_streamer_brands_empty_when_missing(monkeypatch, tmp_path):
+    _use_tmp(monkeypatch, tmp_path)
+    assert settings.streamer_brands() == {}

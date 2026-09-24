@@ -209,6 +209,16 @@ from `glossary.txt` on first use. The glossary name carries a fingerprint of the
 file contents, so editing the glossary rebuilds it on the next launch with no
 manual step.
 
+Product knowledge stacks on top of the global list in two more specific layers:
+`profiles/<streamer-username>.txt` holds one streamer's own wording and
+translations, loaded automatically from the room URL; `brands/<brand-id>.txt` is a
+brand-specific list loaded only when the home screen's "Brand this session" picker
+selects it — for streamers who sell one brand exclusively but have no profile of
+their own. Both are generated as an editable copy from a matching
+`*.example.txt` template on first use, and take effect after Stop → Start. Where
+the same wording appears in more than one layer, the streamer's profile wins over
+the brand list, which wins over the global list.
+
 Measured on the same 60 lines of real subtitles:
 
 | | Glossary compliance | Median latency |

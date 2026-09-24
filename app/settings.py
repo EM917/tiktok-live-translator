@@ -140,6 +140,39 @@ def recent_rooms(limit=RECENT_ROOMS_MAX):
     return clean[:max(1, int(limit))]
 
 
+# 按主播记住「本场品牌」选的品牌词表。键是主播用户名（小写），值是品牌 id；
+# 空串表示「不限」，写空串时直接删掉这个键（不留一条「不限」的记录，
+# 没记过和记了「不限」在读取时是同一件事）。读/改/写模式与「最近直播间」
+# 那组函数一致：先读全部设置，取出这一项的映射，改动单个主播的那一条，
+# 再整体写回——不能直接 save_setting("brands.bella", ...)，settings.json
+# 里没有嵌套路径这种写法。
+def save_streamer_brand(streamer, brand):
+    """记住（或清除）某个主播这场选的品牌词表，返回更新后的完整映射。"""
+    streamer = str(streamer or "").strip().lower()
+    if not streamer:
+        return streamer_brands()
+    data = load_settings()
+    raw = data.get("brands")
+    brands = ({k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+              if isinstance(raw, dict) else {})
+    brand = str(brand or "").strip()
+    if brand:
+        brands[streamer] = brand
+    else:
+        brands.pop(streamer, None)     # 「不限」：不留占位记录
+    save_setting("brands", brands)
+    return brands
+
+
+def streamer_brands():
+    """读「按主播记住的品牌词表」映射，过滤掉结构不对的条目（不是 dict 就当
+    空，键或值不是字符串就整条丢弃——设置文件可能被手改过）。"""
+    raw = load_settings().get("brands")
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+
+
 def save_setting(key, value):
     """写入单个设置项（读-合并-原子替换）。写失败静默忽略——
     持久化是锦上添花，不能因为磁盘/权限问题影响主流程。"""

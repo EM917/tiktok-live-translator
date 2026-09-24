@@ -14,6 +14,9 @@ glossary.txt
 # 用户自己的主播专属词表（模板见 profiles/*.example.txt）
 profiles/*.txt
 !profiles/*.example.txt
+# 用户自己的品牌词表副本（模板见 brands/*.example.txt），机制同上
+brands/*.txt
+!brands/*.example.txt
 # 审计日志
 logs/
 # 用户/程序在目录里留下的杂物——它们不入库，也绝不该挡住一键更新

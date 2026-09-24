@@ -19,6 +19,7 @@ from app.translator import CachedTranslator, DeepLTranslator
 
 BELLA = "https://www.tiktok.com/@bellaallnatural/live"
 ELISA = "https://www.tiktok.com/@elisa._martinez/live"
+DAISY = "https://www.tiktok.com/@daisycabral_/live"
 
 
 class FakeServer:
@@ -64,11 +65,17 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(G, "GLOSSARY_FILE", tmp_path / "glossary.txt")
     monkeypatch.setattr(G, "GLOSSARY_EXAMPLE", tmp_path / "no.example.txt")
     monkeypatch.setattr(G, "PROFILE_DIR", tmp_path / "profiles")
+    monkeypatch.setattr(G, "BRAND_DIR", tmp_path / "brands")
     (tmp_path / "glossary.txt").write_text("el carrito => 小黄车\n",
                                            encoding="utf-8")
     (tmp_path / "profiles").mkdir()
     (tmp_path / "profiles" / "bellaallnatural.example.txt").write_text(
         "la limpieza => 排毒粉\nD3 K2 => D3 K2 维生素滴剂\n", encoding="utf-8")
+    (tmp_path / "brands").mkdir()
+    # 虚构品牌：这份词表只给 test_daisy_with_brand_then_without 用，内容和 id
+    # 都不对应任何真实品牌——个人使用的品牌词表不进仓库，见 brands/README.md
+    (tmp_path / "brands" / "acme.example.txt").write_text(
+        "la crema acme => ACME 面霜\nsuero acme => ACME 精华液\n", encoding="utf-8")
     terms = tmp_path / "terms.txt"
     terms.write_text("", encoding="utf-8")
 
@@ -148,6 +155,45 @@ def test_bella_elisa_bella_round_trip(world):
         assert gid_back != gid_elisa                  # 但表是新建的（单槽位）
         assert h3["merged_glossary_hash"] == h1["merged_glossary_hash"]
         assert h3["profile"] == "bellaallnatural"
+    finally:
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.close()
+
+
+def test_daisy_with_brand_then_without(world):
+    """daisycabral_ 没有自己的 profile，是品牌词表要覆盖的那类主播：带 brand
+    时品牌条目生效、profile 仍是 None、brand/brand_hash 落审计；下一场不带
+    brand，品牌条目静默消失（回到只有全局表）。"""
+    p, deepl, api = world
+    loop = asyncio.new_event_loop()
+
+    def begin(url, brand=None):
+        p.brand = brand
+        loop.run_until_complete(p._begin_session(url))
+        loop.run_until_complete(asyncio.sleep(0))
+        rows = [json.loads(line) for line in
+                Path(p.audit.path).read_text(encoding="utf-8").splitlines()]
+        return [r for r in rows if r["type"] == "session_start"][-1]
+
+    try:
+        # ---- 带品牌 ----
+        h1 = begin(DAISY, brand="acme")
+        assert p.glossary.matching("la crema acme")[0][1] == "ACME 面霜"
+        assert p.glossary.matching("suero acme")[0][1] == "ACME 精华液"
+        assert p.glossary.matching("todo en el carrito")[0][1] == "小黄车"   # 全局表仍在
+        assert h1["streamer"] == "daisycabral_"
+        assert h1["profile"] is None and h1["profile_hash"] is None
+        assert h1["brand"] == "acme"
+        assert h1["brand_hash"] and h1["brand_hash"] != "?"
+
+        # ---- 不带品牌：条目消失，回到只有全局表 ----
+        h2 = begin(DAISY)
+        assert p.glossary.matching("la crema acme") == []
+        assert p.glossary.matching("suero acme") == []
+        assert p.glossary.matching("todo en el carrito")[0][1] == "小黄车"
+        assert h2["brand"] is None and h2["brand_hash"] is None
     finally:
         for task in asyncio.all_tasks(loop):
             task.cancel()

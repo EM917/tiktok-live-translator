@@ -160,6 +160,47 @@ def test_no_plan_touches_nothing(monkeypatch, tmp_path):
     assert not list(root.glob("glossary.txt.bak-*"))
 
 
+def test_migration_hot_reload_keeps_the_brand_layer(monkeypatch, tmp_path):
+    """本场选了品牌词表时，「迁移旧词表」触发的热重载不能把品牌层弄丢——
+    self.brand 重载前后都是选中的品牌 id，重载后的 self.glossary 必须还命中
+    品牌专属条目，否则界面和审计都看不出词表已经静默退化成只有两层。"""
+    from app.pipeline import Pipeline
+
+    root = _files(monkeypatch, tmp_path,
+                  TEMPLATE_LINE + "\nel carrito => 小黄车\n")
+    monkeypatch.setattr(G, "BRAND_DIR", root / "brands")
+    (root / "brands").mkdir()
+    (root / "brands" / "acme.txt").write_text("cosa marca => 品牌条目\n",
+                                              encoding="utf-8")
+
+    class FakeServer:
+        def __init__(self):
+            self.sent = []
+            self.config = {"room_url": "https://www.tiktok.com/@bella/live"}
+
+        async def broadcast(self, msg):
+            self.sent.append(msg)
+
+    p = Pipeline.__new__(Pipeline)
+    p.server = FakeServer()
+    p.args = SimpleNamespace(glossary=None)
+    p.brand = "acme"
+    p.glossary = G.load(streamer="bella", brand="acme")
+    p.detector = None
+    assert p.glossary.matching("cosa marca")          # 迁移前：品牌条目命中
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(p._migrate_glossary(True))
+        done = [m for m in p.server.sent if m.get("stage") == "done"][0]
+        assert done["result"]["total"] == 1            # 迁移本身如常执行
+        assert p.brand == "acme"                        # 选中的品牌没变
+        # 品牌条目热重载后仍然命中——这是这次修复要守住的底线
+        assert p.glossary.matching("cosa marca")[0][1] == "品牌条目"
+    finally:
+        loop.close()
+
+
 def test_pipeline_flow_previews_then_migrates_on_confirm(monkeypatch, tmp_path):
     from app.pipeline import Pipeline
 
