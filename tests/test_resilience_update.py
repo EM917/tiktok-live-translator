@@ -117,12 +117,13 @@ def make_updater(monkeypatch, server, events, git_overrides=None, pip_code=0):
     return u, pip_calls, execs
 
 
-def make_live_pipeline(server, events, tmp_path, active=True):
+def make_live_pipeline(server, events, tmp_path, active=True, brand=None):
     p = Pipeline.__new__(Pipeline)
     p.server = server
     p.args = SimpleNamespace()
     p.audit = AuditLog(room_url=URL, log_dir=tmp_path / "logs")
     p._media_override = MEDIA
+    p.brand = brand
     p._bg_tasks = set()
     server.config["room_url"] = URL
     state = {"active": active, "stops": [], "starts": []}
@@ -259,10 +260,41 @@ def test_live_update_fetches_first_then_pauses_installs_merges_and_leaves_a_resu
     assert bootstrap.requirements_pending(isolated) is False
 
 
+def test_live_update_resume_marker_carries_the_effective_brand(monkeypatch, isolated):
+    """本场选过的品牌词表要跟着「暂停 → 装组件 → 重启」这条路径走，否则更新
+    重启后这一场会静默丢掉品牌词表（回到全局表，商品条目凭空消失）。"""
+    (isolated / ".venv").mkdir()
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events)
+    monkeypatch.setattr(updater_mod, "managed_env", lambda root: True)
+    p, state = make_live_pipeline(server, events, isolated, brand="acme")
+    p.updater = u
+
+    run(p._apply_update())
+
+    assert execs
+    marker = settings_mod.load_settings()["resume_after_update"]
+    assert marker["url"] == URL and marker["brand"] == "acme"
+
+
+def test_live_update_resume_marker_has_no_brand_when_unrestricted(monkeypatch, isolated):
+    (isolated / ".venv").mkdir()
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events)
+    monkeypatch.setattr(updater_mod, "managed_env", lambda root: True)
+    p, state = make_live_pipeline(server, events, isolated)      # brand=None（默认）
+    p.updater = u
+
+    run(p._apply_update())
+
+    assert execs
+    assert settings_mod.load_settings()["resume_after_update"]["brand"] is None
+
+
 def test_live_update_pip_failure_restores_monitoring_on_the_current_version(monkeypatch, isolated):
     server, events = RecordingServer(), []
     u, pip_calls, execs = make_updater(monkeypatch, server, events, pip_code=1)
-    p, state = make_live_pipeline(server, events, isolated)
+    p, state = make_live_pipeline(server, events, isolated, brand="acme")
     p.updater = u
 
     run(p._apply_update())
@@ -276,6 +308,54 @@ def test_live_update_pip_failure_restores_monitoring_on_the_current_version(monk
     assert settings_mod.load_settings().get("resume_after_update") is None
     assert server.of_type("update_aborted")
     assert pip_calls[0]["log_path"] is not None
+    # pip 失败没成功更新：在当前版本上恢复监听时，本场的品牌词表也要跟着恢复
+    assert p.brand == "acme"
+
+
+def test_resume_after_update_failure_restores_the_tokens_brand(isolated):
+    """token 里的 brand 是暂停那一刻的事实；self.brand 在暂停之后、恢复之前
+    发生了漂移（不该发生，但代码要以 token 为准，不能沿用漂移后的值）。"""
+    server = RecordingServer()
+    p = Pipeline.__new__(Pipeline)
+    p.server = server
+    p.brand = "drifted-value"
+    p._stream_active = lambda: False
+    starts = []
+
+    async def start_stream(url, media=None):
+        starts.append((url, media))
+
+    async def incident(*a, **k):
+        pass
+
+    p.start_stream = start_stream
+    p._incident = incident
+
+    run(p._resume_after_update_failure(
+        {"url": URL, "media": MEDIA, "brand": "acme"}, "pip 返回 1"))
+    assert p.brand == "acme"
+    assert starts == [(URL, MEDIA)]
+
+
+def test_resume_after_update_failure_with_no_brand_in_the_token_means_unrestricted(isolated):
+    server = RecordingServer()
+    p = Pipeline.__new__(Pipeline)
+    p.server = server
+    p.brand = "leftover"
+    p._stream_active = lambda: False
+    starts = []
+
+    async def start_stream(url, media=None):
+        starts.append((url, media))
+
+    async def incident(*a, **k):
+        pass
+
+    p.start_stream = start_stream
+    p._incident = incident
+
+    run(p._resume_after_update_failure({"url": URL, "media": MEDIA}, "pip 返回 1"))
+    assert p.brand is None
 
 
 def test_live_update_merge_failure_restores_monitoring_too(monkeypatch, isolated):
@@ -387,6 +467,45 @@ def test_resume_marker_is_used_once_and_only_when_fresh(isolated):
         assert run(p.resume_after_update(now=now)) is False
         assert settings_mod.load_settings().get("resume_after_update") is None
     assert len(starts) == 1
+
+
+def test_resume_after_update_restores_the_markers_brand(isolated):
+    server = RecordingServer()
+    p = Pipeline.__new__(Pipeline)
+    p.server = server
+    starts = []
+
+    async def start_stream(url, media=None):
+        starts.append((url, media))
+
+    p.start_stream = start_stream
+    now = 1_800_000_000.0
+    settings_mod.save_setting("resume_after_update",
+                              {"url": URL, "media": MEDIA, "brand": "acme",
+                               "at": now - 30, "to_version": "9.9.9"})
+    assert run(p.resume_after_update(now=now)) is True
+    assert p.brand == "acme"
+    assert starts == [(URL, MEDIA)]
+
+
+def test_resume_after_update_with_an_old_marker_lacking_brand_means_unrestricted(isolated):
+    """升级前留下的记号没有 brand 字段（这次改动之前的版本写的）：按不限处理，
+    不能让一个不存在的字段被解读成某个具体品牌，也不能沿用上一场留下的脏状态。"""
+    server = RecordingServer()
+    p = Pipeline.__new__(Pipeline)
+    p.server = server
+    p.brand = "leftover-from-before"
+    starts = []
+
+    async def start_stream(url, media=None):
+        starts.append((url, media))
+
+    p.start_stream = start_stream
+    now = 1_800_000_000.0
+    settings_mod.save_setting("resume_after_update",
+                              {"url": URL, "media": MEDIA, "at": now - 30, "to_version": "9.9.9"})
+    assert run(p.resume_after_update(now=now)) is True
+    assert p.brand is None
 
 
 def test_session_start_records_versions_update_check_and_why_it_started(monkeypatch, isolated):

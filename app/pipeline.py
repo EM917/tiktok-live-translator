@@ -6,6 +6,7 @@
 import asyncio
 import os
 import subprocess
+import sys
 import time
 import traceback
 from collections import OrderedDict
@@ -16,11 +17,11 @@ from .asr import DEFAULT_TEMPERATURE
 from .comment_source import CommentSource
 from .comments import CommentTranslator
 from .detector import BannedTermDetector, TermsFile, load_fuzzy_policy, read_terms
-from .glossary import load as load_glossary
+from .glossary import brand_options, brand_path, load as load_glossary
 from .nethttp import read_all
 from .redact import strip_query
 from .settings import (load_settings, push_recent_room, recent_rooms,
-                       save_setting)
+                       save_setting, save_streamer_brand, streamer_brands)
 from .telemetry import Telemetry
 from .translator import ENGINE_KEY_ENV, create_translator
 
@@ -79,6 +80,19 @@ def load_detector(path=None):
         if warning["reason"] != "invalid_regex":      # 这一种构造时已经打印过
             print("[警告] 违禁词表：" + warning["text"])
     return detector
+
+
+def _open_directory_default(path):
+    """「打开词表文件夹」的默认实现：按平台用系统自带的方式打开一个文件夹。
+    Popen/startfile 都是发起即返回，不等子进程退出——不会挡住事件循环。
+    Pipeline 把这个函数存成实例属性（self._brand_dir_opener）而不是直接调用，
+    测试替换成假的，不真的弹出访达/资源管理器。"""
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    elif sys.platform == "win32":
+        os.startfile(str(path))          # 只有 Windows 才有这个属性
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
 
 # whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
 MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
@@ -240,6 +254,17 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # 「最近直播间」：启动就摆在首页，中控不必每次重新粘地址。只存主播名
         # 和地址，界面上只显示主播名（见 web/app.js renderRecentRooms）
         self.server.config["recent_rooms"] = recent_rooms()
+        # 按主播记住的「本场只卖」品牌词表：只回显映射本身，供前端给下拉框
+        # 挑默认值（见 web/brand.js）。不在这里给 self.brand 设默认——它只在
+        # handle_control 的 start 分支里显式设置，缺省就是「不限」（None）
+        self.server.config["brands"] = streamer_brands()
+        # 下拉框里有哪些品牌可选：扫 brands/ 目录算出来，不写死在前端页面里。
+        # 用户往文件夹里新放/删掉文件后，靠前端发 refresh_brands 重新扫一遍
+        # （见 handle_control），不用重启程序
+        self.server.config["brand_options"] = brand_options()
+        # 「打开词表文件夹」按钮背后的实现，可注入：测试换成假的，不真的
+        # 弹出访达/资源管理器（见 _open_directory_default）
+        self._brand_dir_opener = _open_directory_default
         self._counter = 0
         self._asr_pool = None            # 每条直播一个独立线程池，停止时整个丢弃
         self._stream_task = None
@@ -347,6 +372,22 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self.alerts_enabled = alerts_enabled
                 self._save_setting("alerts_enabled", alerts_enabled)
                 self.server.config["alerts_enabled"] = alerts_enabled
+                # 「本场只卖」的品牌词表：字段缺失（老页面缓存）、id 不合法、
+                # 或没有对应模板，一律按「不限」处理——和上面 alerts 字段同一个
+                # 宽容原则，不能因为一个解析不出来的字段就让开播失败。后一种
+                # 情况也可能是「选过之后文件被删了」（用户清理 brands/ 目录、
+                # 或换了一批词表）：不报错，只在控制台留一行，下一场照常按
+                # 不限开播
+                brand = str(msg.get("brand", "") or "").strip()[:40]
+                if brand and brand_path(brand) is None:
+                    print("[信息] 品牌词表 {} 未找到（可能已被删除或改名），"
+                          "本场按不限处理".format(brand))
+                    brand = ""
+                self.brand = brand or None
+                from .provenance import streamer_of
+                streamer = streamer_of(url)
+                if streamer:
+                    self.server.config["brands"] = save_streamer_brand(streamer, brand)
                 self._note_operator_stream_action()
                 return self._start_with_ack(url, media=media)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
@@ -386,6 +427,36 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             # 本机有多个网络地址时中控点了另一个：用它重画二维码。
             # 程序这边分不出哪个地址手机能到——让人试，比让程序猜靠谱
             return self._pick_viewer_ip(msg.get("ip"))
+        elif mtype == "refresh_brands":
+            # 品牌下拉框获得焦点时前端会发这个：重新扫一遍 brands/ 目录，
+            # 用户刚放进去的词表不用重启程序就能出现在选项里
+            self.server.config["brand_options"] = brand_options()
+            return self.server.broadcast(
+                {"type": "config",
+                 "brand_options": self.server.config["brand_options"],
+                 "brands": self.server.config.get("brands", {})})
+        elif mtype == "open_brands_dir":
+            return self._open_brands_dir()
+        return None
+
+    def _open_brands_dir(self):
+        """「打开词表文件夹」：确保 brands/ 存在，再用系统方式把它打开，方便
+        用户把自己的品牌词表文件拖进去。这条只在本机控制面可用——手机同看
+        的入站白名单只认 retranslate，见 app/viewer.py _handle_inbound。
+
+        打不开（无图形界面的服务器、没装 xdg-open 等）不算错误：这不在两个
+        KPI 的关键路径上，只打一行警告、给界面提一次性提示，不影响直播。"""
+        # 函数内 import：BRAND_DIR 要在调用这一刻从 glossary 模块重新取一遍
+        # （测试会 monkeypatch app.glossary.BRAND_DIR 指到 tmp_path），模块级
+        # import 拿到的是构造时那一份快照，测试换目录换不动它
+        from .glossary import BRAND_DIR
+        try:
+            BRAND_DIR.mkdir(parents=True, exist_ok=True)
+            self._brand_dir_opener(BRAND_DIR)
+        except OSError as exc:
+            print("[警告] 打开品牌词表文件夹失败：{}".format(exc))
+            return self.server.broadcast(
+                {"type": "notice", "text": "无法打开文件夹：{}".format(BRAND_DIR)})
         return None
 
     # 一键更新暂停监听后，新进程要在这么久之内起来，才自动接着监听（记号读到即删）
@@ -434,7 +505,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if not self._stream_active() or getattr(self.args, "demo", False):
             return None
         token = {"url": (self.server.config or {}).get("room_url"),
-                 "media": getattr(self, "_media_override", None)}
+                 "media": getattr(self, "_media_override", None),
+                 # 本场生效的品牌词表要跟着走，否则更新重启后这一场会静默
+                 # 丢掉品牌词表（getattr 兜底：老记号/半成品实例可能没有这个属性）
+                 "brand": getattr(self, "brand", None)}
         self._update_pause = token
         if self.audit is not None:
             self.audit.update_stop(from_version, to_version)
@@ -467,6 +541,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         await self._incident("update", "warn",
                              "一键更新没完成：{}。已在当前版本上自动恢复监听".format(text))
         self._resume_reason = "update_failed"
+        # 品牌词表跟着这次恢复走：token 里没有这个键（老流程/测试构造的半成品
+        # token）按不限处理，和「缺字段按不限」的宽容原则一致
+        self.brand = token.get("brand")
         await self.start_stream(url, media=token.get("media"))
 
     def _save_update_resume(self, token, to_version):
@@ -478,6 +555,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             print("[信息] 更新期间中控点过开始/停止，重启后不自动接着监听")
             return False
         save_setting("resume_after_update", {"url": token["url"], "media": token.get("media"),
+                                             "brand": token.get("brand"),
                                              "at": time.time(), "to_version": to_version})
         return True
 
@@ -507,6 +585,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         media = marker.get("media")
         streamer = streamer_of(url)
         self._resume_reason = "update"
+        # 品牌词表跟着记号恢复；老记号没有这个字段（升级前留下的）按不限处理，
+        # 和缺 media/其它字段的宽容原则一致——brand_path 会在 _begin_session
+        # 里重新校验一遍，这里不必重复校验
+        brand = marker.get("brand")
+        self.brand = brand if isinstance(brand, str) and brand else None
         await self.server.status("connecting", "已更新到 v{}，正在自动恢复监听{}…".format(
             app_version(), " @" + streamer if streamer else ""))
         await self.start_stream(url, media=media if isinstance(media, str) and media else None)
@@ -583,10 +666,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             self.server.config["room_url"] = url
             self._save_setting("room_url", url)
             # source_lang 捎在同一条 config 里：开着的第二个页面也要跟上，
-            # 不能等它重连才看到第一个页面刚选的语言
+            # 不能等它重连才看到第一个页面刚选的语言。brands 同理捎带一份
+            # （handle_control 的 start 分支已经把最新映射写进了
+            # server.config["brands"]），换了主播的第二个页面也要跟着刷新默认值
             await self.server.broadcast({"type": "config", "room_url": url,
                                          "source_lang": getattr(self.args, "source",
-                                                                None) or "auto"})
+                                                                None) or "auto",
+                                         "brands": self.server.config.get("brands", {})})
             # Ollama 没跑就趁解析地址/加载模型这几秒把它拉起来，别等第一句翻译失败
             self._spawn(self._heal_local_engine())
             self._stream_task = asyncio.create_task(self._run_stream(url))
@@ -942,20 +1028,24 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
 
     async def _begin_session(self, url):
         from .audit import AuditLog
-        from .glossary import (fingerprint, misplaced_entries, profile_options,
-                               profile_path, set_active)
+        from .glossary import (brand_path, fingerprint, load as load_global_glossary,
+                               misplaced_entries, profile_options, profile_path,
+                               set_active)
         from .provenance import app_version, file_hash, streamer_of
 
         # 词表每场重新读：模板生成出来是空的，用户按提示填好后点「停止→开始」
         # 必须真的生效，否则头号卖点就是 100% 静默漏报
         self.detector = load_detector(getattr(self.args, "banned_terms", None))
         self.detector.reset_state()
-        # 词表按主播加载：全局表 + profiles/<主播>.txt（后者优先）。商品知识
-        # 是逐主播的——Bella 的品名进了全局表，Elisa 的直播里就会凭空冒出
-        # 别家商品。set_active 让 DeepL 的原生术语表也拿到同一份合并结果。
+        # 词表按主播加载：全局表 + profiles/<主播>.txt（后者优先）+ 可选的
+        # brands/<品牌>.txt（本场「只卖这个牌子」时才加载，见 handle_control 的
+        # start 分支）。商品知识是逐主播/逐品牌的——Bella 的品名进了全局表，
+        # Elisa 的直播里就会凭空冒出别家商品。set_active 让 DeepL 的原生术语表
+        # 也拿到同一份合并结果。
         streamer = streamer_of(url)
+        brand = getattr(self, "brand", None)
         self.glossary = load_glossary(getattr(self.args, "glossary", None),
-                                      streamer=streamer)
+                                      streamer=streamer, brand=brand)
         set_active(self.glossary)
         # 记进「最近直播间」。放在这里而不是解析成功之后：用户「加入过」这个
         # 房间就该出现在列表里，哪怕这次没拿到流地址——下次点一下就能再试。
@@ -963,7 +1053,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if streamer:
             await self._publish_recent_rooms(streamer, url)
         prof = profile_path(streamer)
-        misplaced = misplaced_entries(self.glossary.entries)
+        bpath = brand_path(brand) if brand else None
+        # 「全局表里误放了主播条目」只扫全局层：单独 load 一份不带 streamer/brand
+        # 的词表。扫合并后的 self.glossary.entries 的话，品牌表的正常条目会被
+        # 误判成「某个主播的专属条目跑错了地方」
+        global_only = load_global_glossary(getattr(self.args, "glossary", None))
+        misplaced = misplaced_entries(global_only.entries)
         misplaced = [(o, v, zh) for o, v, zh in misplaced if o != streamer]
         # 称呼摘除是按主播验证的行为（触发率跨主播差 60 倍），profile 里写了
         # vocative_strip: on 才开。没验证过的新主播默认关——「规则不泛化，
@@ -1004,11 +1099,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             # 两种写法之间做字符串匹配
             "translator_active": (self.translator.name
                                   if self.translator is not None else "none"),
-            # 词表归属四件套：加载了谁的 profile、它的指纹、全局表指纹
-            # （AuditLog 里的 glossary_hash）、合并后实际生效那份的指纹。
-            # 引擎归属吃过「只能靠反推」的亏，词表归属不能再走一遍
+            # 词表归属：加载了谁的 profile、它的指纹、这一场生效的品牌（没选
+            # 就是 null）、品牌层的指纹、全局表指纹（AuditLog 里的
+            # glossary_hash）、合并后实际生效那份的指纹。引擎归属吃过
+            # 「只能靠反推」的亏，词表归属不能再走一遍
             "profile": streamer if prof else None,
             "profile_hash": file_hash(prof) if prof else None,
+            "brand": brand if bpath else None,
+            "brand_hash": file_hash(bpath) if bpath else None,
             "merged_glossary_hash": fingerprint(self.glossary.entries),
             # 这一场解析流地址时先借哪个浏览器的 TikTok 登录（浏览器名，没有是 null）。
             # 关于账号只记这一个名字：不记用户名、不记 cookie 的名字和值
@@ -3488,7 +3586,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             # 热重载：正在直播也立刻用干净的词表（audit 的 merged_glossary_hash
             # 在下一场才会体现，本场以界面提示为准）
             streamer = streamer_of(self.server.config.get("room_url", ""))
-            self.glossary = load_glossary(gpath, streamer=streamer or None)
+            # 品牌层不能漏：本场如果选了「只卖这个牌子」，热重载也要保住
+            # 品牌词表，否则 self.brand 还显示选中但商品条目已从识别/翻译/
+            # matching() 里静默消失，界面和审计都看不出来（回归见
+            # tests/test_brand_pipeline.py 的迁移热重载用例）
+            self.glossary = load_glossary(gpath, streamer=streamer or None,
+                                          brand=getattr(self, "brand", None))
             set_active(self.glossary)
             await self._publish_watchlist()
         if not migration_plan(gpath):      # 没有剩余可迁条目才撤掉入口

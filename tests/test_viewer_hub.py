@@ -351,7 +351,13 @@ def test_the_thirteenth_viewer_is_told_the_room_is_full():
 
 
 def test_inbound_messages_never_reach_on_control():
-    """手机端一条都不该发。就算发了，也只计数然后丢弃——绝不解析、绝不转交。"""
+    """手机端一条都不该发。就算发了，也只计数然后丢弃——绝不解析、绝不转交。
+
+    包含品牌词表这两条本机专属的控制消息：refresh_brands（重新扫描 brands/
+    目录）、open_brands_dir（打开词表文件夹）都只该在本机控制面可用，手机
+    同看没有理由触发它们——道理和 start/stop/set_engine 完全一样，不需要
+    在 ALLOW/DENY 表之外再加一条专门的黑名单，_handle_inbound 本就只认
+    「恰好 {type: retranslate, id: …}」这一种形状。"""
     server = StubServer()
     calls = []
     server.on_control = lambda msg: calls.append(msg)
@@ -360,6 +366,8 @@ def test_inbound_messages_never_reach_on_control():
         text({"type": "start", "url": "http://tiktok.com/@a/live"}),
         text({"type": "stop"}),
         text({"type": "set_engine", "engine": "deepl", "api_key": "k"}),
+        text({"type": "refresh_brands"}),
+        text({"type": "open_brands_dir"}),
     ])
     run_handshake(hub, ws)
     assert calls == []
@@ -395,6 +403,8 @@ def test_a_lone_retranslate_frame_does_not_trip_the_flood_cap():
     {"type": "start", "url": "http://tiktok.com"},  # 完全不相关的类型
     {"type": "retranslate", "id": None},
     "not a dict at all",
+    {"type": "refresh_brands"},                     # 本机控制面专属：手机不该碰
+    {"type": "open_brands_dir"},                    # 同上
 ])
 def test_malformed_or_irrelevant_inbound_is_silently_ignored(bad):
     """既不解析出动作，也不回消息、不断连接——坏页面和探测本就不该有回音。"""
