@@ -423,6 +423,72 @@ def test_stop_terminates_process_and_sets_idle(monkeypatch):
     assert len(calls) == 1   # stop 之后不该有额外 spawn
 
 
+class NeverExitingProc:
+    """process-like 假对象：wait() 永远不返回，模拟 SIGKILL 之后内核也没能
+    及时回收子进程（僵尸表满/内核卡顿之类极端情况）。用普通 asyncio.sleep
+    实现——可取消，这样 asyncio.wait_for 的超时能正常通过取消它来放手，
+    不会连测试本身也一起卡住。"""
+
+    def __init__(self):
+        self.terminate_called = False
+        self.kill_called = False
+
+    def terminate(self):
+        self.terminate_called = True
+
+    def kill(self):
+        self.kill_called = True
+
+    async def wait(self):
+        await asyncio.sleep(3600)
+
+
+def test_terminate_gives_up_when_kill_still_does_not_reap(monkeypatch):
+    """SIGTERM 超时之后 _terminate 会 SIGKILL，但 wait() 就算杀了也可能不返回；
+    这一步也必须有上限，超时打警告、正常返回，不能拖住调用它的 stop()。"""
+    monkeypatch.setattr(CommentSource, "STOP_GRACE_SEC", 0.02)
+    monkeypatch.setattr(CommentSource, "KILL_WAIT_SEC", 0.02)
+    cs, _items, _states, _calls = make_source(monkeypatch, [])
+    proc = NeverExitingProc()
+
+    async def scenario():
+        await asyncio.wait_for(cs._terminate(proc), timeout=1)
+
+    run(scenario())     # 不超时、不抛异常就是通过
+    assert proc.terminate_called
+    assert proc.kill_called
+
+
+def test_stop_gives_up_on_a_supervise_task_that_ignores_cancellation(monkeypatch):
+    """监督任务如果卡在一次取消不掉的调用里（比如 _terminate 也撞上了上面
+    那种极端情况），stop() 不能陪着一直等——必须在有限时间内放手回到 idle，
+    否则下一场的 start() 会一直卡在还没释放的资源上。放手的任务还要留一份
+    引用防止被 GC，不能真的把它弄丢（子进程/管道会变成没人清理的孤儿）。"""
+    monkeypatch.setattr(CommentSource, "STOP_GRACE_SEC", 0.01)
+    monkeypatch.setattr(CommentSource, "STOP_TASK_EXTRA_SEC", 0.02)
+    cs, _items, state_log, _calls = make_source(monkeypatch, [])
+
+    async def stubborn():
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            # 卡在一次取消不掉的阻塞调用里，比 stop() 的等待窗口（0.01*2+0.02=0.04s）长
+            await asyncio.sleep(0.15)
+
+    async def scenario():
+        task = asyncio.ensure_future(stubborn())
+        await asyncio.sleep(0)      # 让它先跑到 sleep(30) 再被取消
+        cs._task = task
+        cs._unique_id = "abc"
+        await asyncio.wait_for(cs.stop(), timeout=1)
+        assert task in cs._lingering_tasks
+        # 清理：等它真的跑完，别让 asyncio.run() 收尾时卡在一个还没完成的任务上
+        await asyncio.wait_for(task, timeout=1)
+
+    run(scenario())
+    assert state_log[-1][0] == "idle"
+
+
 def test_supervise_recovers_from_stdout_read_exception(monkeypatch):
     """一行超长弹幕（或库本身吐出的畸形输出）能让 readline() 抛异常——
     这必须只终止当前这次子进程、退避重试，而不是把整条监督协程带死

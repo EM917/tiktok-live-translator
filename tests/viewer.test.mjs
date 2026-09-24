@@ -157,6 +157,17 @@ test("canRetranslate 3 秒冷却：差一点不到不能点，刚好到点能点
   assert.equal(V.canRetranslate(1000, 4000, true), true);
 });
 
+// ---- shouldRenderSessionDivider / sessionDividerText ----
+test("shouldRenderSessionDivider：首场（还没有字幕卡片）不画线，其余画", () => {
+  assert.equal(V.shouldRenderSessionDivider(0), false);
+  assert.equal(V.shouldRenderSessionDivider(undefined), false);
+  assert.equal(V.shouldRenderSessionDivider(1), true);
+});
+test("sessionDividerText：固定文案，不带时间、不带主播名（哪怕传了 streamer）", () => {
+  assert.equal(V.sessionDividerText(), "── 新的一场 ──");
+  assert.equal(V.sessionDividerText({ ts: 123, streamer: "bella" }), "── 新的一场 ──");
+});
+
 // ---- 取消警报本地存储：loadDismissedAlerts / saveDismissedAlerts / createDismissedStore ----
 function fakeStorage(initial) {
   const data = new Map(initial ? Object.entries(initial) : []);
@@ -402,6 +413,23 @@ function makeFakeNode(tag) {
     dispatch(type) { (listeners[type] || []).slice().forEach((cb) => cb()); },
     setAttribute() {},
     querySelector() { return null; },
+    // 只支持 renderSessionBreak 用到的这种单类名选择器（".cap-item"），
+    // 匹配 className 字符串（renderCaption 用 card.className = "cap-item"
+    // 这种写法）和 classList（其余状态位用 classList.add 这种写法），
+    // 递归子树——真实 DOM 的 querySelectorAll 也是找整棵子树
+    querySelectorAll(sel) {
+      var cls = String(sel || "").replace(/^\./, "");
+      var out = [];
+      (function walk(n) {
+        n.children.forEach(function (c) {
+          var hit = (c.className || "").split(/\s+/).indexOf(cls) !== -1
+                    || c.classList.contains(cls);
+          if (hit) out.push(c);
+          walk(c);
+        });
+      })(node);
+      return out;
+    },
   };
   return node;
 }
@@ -660,5 +688,48 @@ test("不可测量（尺寸读成 0）时的 scroll 事件沿用原意图", () =
     section.scrollHeight = 2000;
     ws.onmessage({ data: JSON.stringify({ type: "caption", id: 1, ts: 1, original: "hola", translated: "你好" }) });
     assert.equal(section.scrollTop, 2000, "恢复可测量后仍在跟随");
+  });
+});
+
+// ---- DOM 回归：session_break 场次分隔（renderSessionBreak）----
+// 上面 shouldRenderSessionDivider/sessionDividerText 只测了纯逻辑；这里用
+// withFakeViewerPage 把 renderSessionBreak 真正建出来的 DOM 节点找到，
+// 验证首场不画线、真实换场时 class 和分隔文案都对、主播名不泄露到手机端。
+test("session_break：程序启动后的第一场（还没有任何字幕卡片）不画分隔线", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const captionList = elements["caption-list"];
+    ws.onmessage({ data: JSON.stringify({ type: "session_break", ts: 1000 }) });
+    assert.equal(captionList.children.length, 0);
+  });
+});
+
+test("session_break：真实换场时，旧卡片打上 prev-session，插入一条分隔线", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const captionList = elements["caption-list"];
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 1, ts: 1, original: "hola" }) });
+    assert.equal(captionList.children.length, 1);
+    const oldCard = captionList.children[0];
+    assert.equal(oldCard.classList.contains("prev-session"), false);
+
+    ws.onmessage({ data: JSON.stringify({ type: "session_break", ts: 1000 }) });
+
+    assert.equal(captionList.children.length, 2, "旧卡片 + 一条分隔线");
+    assert.equal(oldCard.classList.contains("prev-session"), true);
+    const sep = captionList.children[1];
+    assert.equal(sep.className, "session-sep");
+    assert.equal(sep.textContent, "── 新的一场 ──");
+  });
+});
+
+test("session_break：即便消息里带了 streamer，手机端分隔文案也绝不带主播名", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 1, ts: 1, original: "hola" }) });
+    // 正常情况下服务端的 ALLOW 白名单已经把 streamer 过滤掉（见
+    // app/viewer.py），这里故意在消息里塞一个，确认前端自己也不会拿来拼文案——
+    // 双重保险，任何一层疏漏都不至于把主播身份漏给手机端
+    ws.onmessage({ data: JSON.stringify({ type: "session_break", ts: 1000, streamer: "leakedname" }) });
+    const sep = elements["caption-list"].children[1];
+    assert.equal(sep.textContent.indexOf("leakedname"), -1);
+    assert.equal(sep.textContent, "── 新的一场 ──");
   });
 });

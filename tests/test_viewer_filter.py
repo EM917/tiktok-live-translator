@@ -16,11 +16,13 @@ KNOWN_TYPES = (
     "config", "glossary_migration", "caption", "caption_update", "alert_update",
     "alert", "comment", "comment_update", "comment_source", "stats", "incident",
     "health", "watchlist", "recent_rooms", "disk", "engine", "selfcheck", "viewer",
+    "session_break",
 )
 
 ALLOWED_TYPES = frozenset({
     "caption", "caption_update", "alert", "alert_update", "comment",
     "comment_update", "comment_source", "incident", "status", "health",
+    "session_break",
 })
 
 
@@ -229,6 +231,14 @@ def test_alert_mode_on_is_a_plain_bool_cast():
     for value, want in ((1, True), (0, False), ("x", True), ("", False), (None, False)):
         out = viewer.filter_payload({"type": "alert_mode", "on": value})
         assert out["on"] is want, value
+
+
+def test_session_break_drops_streamer_keeps_ts():
+    """主播名是内部归属信息，不给手机——既有取舍，同 alert 里丢掉的
+    streamer/session/ui_clients（CLAUDE.md 六）。"""
+    out = viewer.filter_payload({"type": "session_break", "ts": 5.0,
+                                 "streamer": "bellaallnatural"})
+    assert out == {"type": "session_break", "ts": 5.0}
 
 
 def test_scrub_text_truncates_and_leaves_plain_chinese_alone():

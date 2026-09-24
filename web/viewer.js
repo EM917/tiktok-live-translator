@@ -181,6 +181,24 @@ function createDismissedStore(storage, max) {
   };
 }
 
+// 场次分隔线：要不要画、画什么字，从下面浏览器专用段落的 renderSessionBreak
+// 里抽出来单独测（与桌面页 web/session-divider.js 的做法一样，但不共用那份
+// 文件——本文件顶部docstring 说明只认 VIEWER_FILES 这四个文件，不引用
+// app.js/session-divider.js，贴底跟随那段纯函数也是同样理由各写一份）。
+
+// 只在同看页已经有字幕卡片时才画分隔线：程序启动后的第一场前面没有任何
+// 卡片，不该凭空多出一条线。
+function shouldRenderSessionDivider(hasExistingItems) {
+  return !!hasExistingItems;
+}
+
+// 手机端文案固定「── 新的一场 ──」，不带主播名、不带时间：主播名是内部归属
+// 信息，viewer.py 的 ALLOW 白名单本就不下发（见 session_break 只放行 ts），
+// 这里即使收到带 streamer 的 msg 也不采用，双重保险。
+function sessionDividerText() {
+  return "── 新的一场 ──";
+}
+
 // ============ 二、浏览器专用：DOM + WebSocket ============
 // Node 环境没有 document，整段跳过；node:test 只用得到上面的纯函数。
 if (typeof document !== "undefined") {
@@ -555,6 +573,9 @@ if (typeof document !== "undefined") {
         case "caption_update":
           updateCaption(msg);
           break;
+        case "session_break":
+          renderSessionBreak(msg);
+          break;
         case "comment":
           renderComment(msg);
           break;
@@ -788,6 +809,29 @@ if (typeof document !== "undefined") {
       stickCaptions();
     }
 
+    // 换主播（或程序重启后的每一场）广播的场次分隔：白名单只给这条消息放行
+    // ts（见 app/viewer.py 的 ALLOW），主播名不下发手机（内部归属信息），
+    // 分隔条文案固定写「新的一场」，不像桌面页那样带 @主播名。
+    //
+    // 已有字幕才画：页面刚连上、这是第一场（程序启动后的第一场）时字幕区还
+    // 空着，不画多余的分隔线。.prev-session 只加 class，不直接摸按钮的
+    // disabled/hidden——真正的「不能再点」交给 CSS（.cap-item.prev-session
+    // .cap-retranslate { display:none }），这样哪怕这张卡片之后还收到迟到的
+    // caption_update（旧场次的译文晚到，仍要能就地更新，按钮状态也会被
+    // applyRetranslateButton 照常重算一遍），按钮也不会被重新翻出来。
+    function renderSessionBreak(msg) {
+      if (!captionList) return;
+      var items = captionList.querySelectorAll(".cap-item");
+      // 要不要画、画什么字是纯逻辑，抽到上面「一、纯函数」段落里单独测
+      if (!shouldRenderSessionDivider(items.length)) return;
+      for (var i = 0; i < items.length; i++) items[i].classList.add("prev-session");
+      var sep = document.createElement("div");
+      sep.className = "session-sep";
+      sep.textContent = sessionDividerText(msg);
+      captionList.appendChild(sep);
+      stickCaptions();
+    }
+
     // ---- 弹幕：默认折叠，只留最近 30 条 ----
     function renderComment(msg) {
       if (!commentList) return;
@@ -873,5 +917,7 @@ if (typeof module !== "undefined" && module.exports) {
     loadDismissedAlerts: loadDismissedAlerts,
     saveDismissedAlerts: saveDismissedAlerts,
     createDismissedStore: createDismissedStore,
+    shouldRenderSessionDivider: shouldRenderSessionDivider,
+    sessionDividerText: sessionDividerText,
   };
 }

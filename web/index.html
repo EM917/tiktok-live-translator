@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=29">
+  <link rel="stylesheet" href="/static/style.css?v=30">
 </head>
 <body>
   <header class="topbar">
@@ -44,6 +44,10 @@
            整块面板被隐藏，中控恰好在这时候想扫码给同事看，却找不到入口。
            按钮本身在待机/直播两种状态下都不隐藏，只负责开关下面的 #share-panel。 -->
       <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板">📱 手机同看</button>
+      <!-- 换主播：只在直播中/连接中露出，和停止按钮同一处切换（见 app.js setStatus）。
+           跟停止之间留出明显间距（.switch-btn 的 margin-right），防止手滑点错——
+           点错「换主播」是可挽回的（面板里还要再确认一次），点错「停止」是直接断流。 -->
+      <button id="switch-btn" class="btn switch-btn hidden" type="button" title="不停止监听，直接换成另一个主播">换主播</button>
       <button id="stop-btn" class="btn hidden" title="停止当前直播间">停止</button>
     </div>
   </header>
@@ -125,6 +129,42 @@
           用列表里另一个地址手工输入；在本机浏览器打开同一个链接，确认服务本身在跑。
         </p>
       </div>
+    </div>
+  </div>
+
+  <!-- 换主播：直播中不停止监听、直接改听另一个主播。照 #share-panel 的位置与
+       收放方式放在 #start-panel/#history 之外——直播中 #start-panel 整块隐藏，
+       这个面板不能跟着一起被藏起来。两段式确认的状态机在 web/switch.js（可测），
+       这里只是纯 DOM 结构；点「换主播」打开，× 或 Esc 关闭（app.js）。 -->
+  <div id="switch-panel" class="switch-panel hidden">
+    <div class="switch-card">
+      <div class="switch-head">
+        <span class="switch-title">换主播</span>
+        <button id="switch-close" class="switch-close" type="button" title="关闭" aria-label="关闭">×</button>
+      </div>
+      <p id="switch-sub" class="switch-sub"></p>
+      <div class="switch-row">
+        <input id="switch-input" type="text" spellcheck="false"
+               placeholder="新主播的直播间地址或 @用户名">
+      </div>
+      <!-- 最近直播间：同开始面板的数据，但这里点了只填入并武装，绝不直接开始——
+           直播中误触一下 chip 不该立刻断流（见 app.js 的两段式确认）。
+           当前正在监听的那个主播标「监听中」且不可点。 -->
+      <div id="switch-recent" class="recent-rooms hidden">
+        <div class="recent-head"><span class="recent-label">最近的直播间</span></div>
+        <div id="switch-recent-list" class="recent-list"></div>
+      </div>
+      <div class="switch-row secondary">
+        <label>本场品牌
+          <select id="switch-brand-select" title="整场只卖这个牌子时选它：加载该品牌的商品词表。混卖别家货时选「不限」。">
+            <option value="">不限（默认）</option>
+          </select>
+        </label>
+      </div>
+      <p class="switch-carry">沿用：主播语言 <span id="switch-source-echo"></span></p>
+      <p id="switch-error" class="switch-error hidden"></p>
+      <button id="switch-confirm" class="btn primary" type="button" disabled>确认换主播</button>
+      <p id="switch-hint" class="switch-hint">切换期间两个主播都没有字幕，直到新主播出现第一句。</p>
     </div>
   </div>
 
@@ -322,6 +362,8 @@
   <script src="/static/follow.js?v=2"></script>
   <script src="/static/alerts.js?v=2"></script>
   <script src="/static/qrcanvas.js?v=1"></script>
-  <script src="/static/app.js?v=52"></script>
+  <script src="/static/switch.js?v=2"></script>
+  <script src="/static/session-divider.js?v=1"></script>
+  <script src="/static/app.js?v=55"></script>
 </body>
 </html>

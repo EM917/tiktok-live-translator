@@ -47,6 +47,43 @@ def test_alerts_survive_reconnect():
     assert server.alerts[0]["term"] == "cura el cancer"
 
 
+def test_session_break_never_marked_restore_even_when_last():
+    """session_break 是场次分隔标记，不是字幕：就算它是 history 里最后一条，
+    也不该背 restore——网页端会拿一条没有大字幕字段的消息去恢复底部大字幕。"""
+    history = [{"type": "caption", "id": 1, "original": "hola"},
+               {"type": "session_break", "ts": 5.0, "streamer": "bella"}]
+    out = replay_payloads(history)
+    assert out[0]["restore"] is True
+    assert "restore" not in out[1]
+
+
+def test_restore_falls_on_last_caption_not_last_item():
+    history = [{"type": "caption", "id": 1}, {"type": "session_break", "ts": 1.0},
+               {"type": "caption", "id": 2}, {"type": "session_break", "ts": 2.0}]
+    out = replay_payloads(history)
+    restored = [i for i, p in enumerate(out) if p.get("restore")]
+    assert restored == [2]
+
+
+def test_replay_with_no_caption_never_sets_restore():
+    out = replay_payloads([{"type": "session_break", "ts": 1.0}])
+    assert "restore" not in out[0]
+
+
+def test_session_break_stored_in_history_and_replayed():
+    """存进 server.history，和 caption 一样参与重连回放，保证刷新/重连后
+    分隔线还在。"""
+    import asyncio
+    from app.server import CaptionServer
+
+    server = CaptionServer(port=8765)
+    asyncio.run(server.broadcast({"type": "session_break", "ts": 100.0,
+                                  "streamer": "bellaallnatural"}))
+    assert len(server.history) == 1
+    stored = list(server.history)[0]
+    assert stored["type"] == "session_break" and stored["streamer"] == "bellaallnatural"
+
+
 def test_caption_update_patches_history():
     """译文是后补的：历史里那条也要补上，否则重连回放只剩原文。"""
     import asyncio

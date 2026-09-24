@@ -122,6 +122,19 @@ body {
 }
 .cap-retranslate:disabled { color: var(--text-faint); cursor: default; }
 
+/* 换主播：上一场的字幕变淡，重译按钮彻底不可交互。display:none（而不是只在
+   换场那一刻切一次 disabled）是因为这张卡片的译文可能晚到，viewer.js 的
+   updateCaption/applyRetranslateButton 到时候还会照常重算一遍按钮状态——
+   只有靠 CSS 钉死才能保证换场之后这颗按钮不会被重新翻出来 */
+.cap-item.prev-session { opacity: 0.5; }
+.cap-item.prev-session .cap-retranslate { display: none !important; }
+
+/* 场次分隔条：手机端不带主播名（白名单只放行 ts），固定文案 */
+.session-sep {
+  margin: 10px 0; padding: 4px 0;
+  text-align: center; font-size: 11px; color: var(--text-faint);
+}
+
 .jump-latest {
   position: fixed; right: 16px; bottom: 76px; z-index: 6;
   padding: 7px 14px; font-size: 13px; font-family: inherit;

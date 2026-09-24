@@ -110,6 +110,22 @@
   var shareNote = document.getElementById("share-note");
   var shareIpList = document.getElementById("share-ip-list");
 
+  // 换主播：直播中不停止监听、直接改听另一个主播。面板照 #share-panel 挂在
+  // #start-panel/#history 之外，跟直播状态无关地独立开关——但按钮本身（顶栏
+  // #switch-btn）只在直播中/连接中才露出，和 #stop-btn 同一处切换（见 setStatus）。
+  var switchBtn = document.getElementById("switch-btn");
+  var switchPanel = document.getElementById("switch-panel");
+  var switchClose = document.getElementById("switch-close");
+  var switchSub = document.getElementById("switch-sub");
+  var switchInput = document.getElementById("switch-input");
+  var switchRecent = document.getElementById("switch-recent");
+  var switchRecentList = document.getElementById("switch-recent-list");
+  var switchBrandSel = document.getElementById("switch-brand-select");
+  var switchSourceEcho = document.getElementById("switch-source-echo");
+  var switchError = document.getElementById("switch-error");
+  var switchConfirmBtn = document.getElementById("switch-confirm");
+  var switchHint = document.getElementById("switch-hint");
+
   var STATUS_TEXT = {
     idle: "待机",
     connecting: "连接中…",
@@ -172,33 +188,45 @@
   sourceSel.addEventListener("change", function () { sourceTouched = true; });
 
   // 品牌词表下拉：只认表里已有的 value，回填的值缺失/脏数据退回「不限」——
-  // 道理同 selectSourceLang，不能让 select 卡在空白态
-  function selectBrand(value) {
-    if (!brandSel) return;
+  // 不能让 select 卡在空白态。selectEl 是形参而不是硬编码 brandSel，是因为
+  // 换主播面板（#switch-brand-select）要用同一套回填规则，不能只有开始面板那份
+  function selectBrand(selectEl, value) {
+    if (!selectEl) return;
     var v = value ? String(value) : "";
-    for (var i = 0; i < brandSel.options.length; i++) {
-      if (brandSel.options[i].value === v) { brandSel.value = v; return; }
+    for (var i = 0; i < selectEl.options.length; i++) {
+      if (selectEl.options[i].value === v) { selectEl.value = v; return; }
     }
-    brandSel.value = "";
+    selectEl.value = "";
   }
 
   // 下拉框的选项由 config.brand_options 动态生成（brands/ 文件夹里的文件
   // 决定有哪些可选），不写死在页面里；选项列表本身、以及重建后该保留哪个
   // 选中值，是 web/brand.js 里的纯函数（buildBrandOptionList /
   // resolveSelectedBrand），这里只管 DOM——textContent 赋值，不拼 HTML，
-  // 显示名是用户自己写的文件内容，不能当成 HTML 解析
-  function renderBrandOptions(brandOptions) {
-    if (!brandSel) return;
+  // 显示名是用户自己写的文件内容，不能当成 HTML 解析。返回 opts 供调用方
+  // （目前只有开始面板要用它判断「有没有可选品牌」）做进一步判断
+  function renderBrandOptionsInto(selectEl, brandOptions) {
+    if (!selectEl) return null;
     var opts = buildBrandOptionList(brandOptions);
-    var kept = resolveSelectedBrand(brandSel.value, opts);
-    while (brandSel.firstChild) brandSel.removeChild(brandSel.firstChild);
+    var kept = resolveSelectedBrand(selectEl.value, opts);
+    while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
     for (var i = 0; i < opts.length; i++) {
       var opt = document.createElement("option");
       opt.value = opts[i].value;
       opt.textContent = opts[i].label;
-      brandSel.appendChild(opt);
+      selectEl.appendChild(opt);
     }
-    brandSel.value = kept;
+    selectEl.value = kept;
+    return opts;
+  }
+
+  // 开始面板和换主播面板的品牌下拉是同一份数据（config.brand_options），
+  // 两个 <select> 一起重建，保持永远同步——不然换主播面板打开时可能还是
+  // 上一次没刷新过的旧选项列表
+  function renderBrandOptions(brandOptions) {
+    var opts = renderBrandOptionsInto(brandSel, brandOptions);
+    renderBrandOptionsInto(switchBrandSel, brandOptions);
+    if (!opts) return;
     // opts 里固定带着「不限」一项：长度 1 就是除它之外一个可选品牌都没有
     if (brandEmptyHint) brandEmptyHint.classList.toggle("hidden", opts.length > 1);
   }
@@ -211,20 +239,35 @@
   var brandState = { streamer: "", touched: false };
   function applyDefaultBrand() {
     if (!brandSel || brandState.touched) return;
-    selectBrand(defaultBrandFor(streamerFromInput(roomInput.value), brandsMap));
+    selectBrand(brandSel, defaultBrandFor(streamerFromInput(roomInput.value), brandsMap));
   }
   function onRoomInputChanged() {
     brandState = brandStateAfterRoomInput(brandState, streamerFromInput(roomInput.value));
     applyDefaultBrand();
   }
+  // 获得焦点/按下鼠标时先让后端重新扫一遍 brands 文件夹：用户刚放进去的
+  // 词表不用重启程序就能在下拉里出现。两个事件都挂是为了尽量在选项真正
+  // 展开之前把新列表发过来，键盘/触屏只触发 focus，鼠标点击两个都会触发。
+  // 开始面板和换主播面板的品牌下拉共用同一个刷新请求
+  var requestBrandRefresh = function () { send({ type: "refresh_brands" }); };
   if (brandSel) {
     brandSel.addEventListener("change", function () { brandState.touched = true; });
-    // 获得焦点/按下鼠标时先让后端重新扫一遍 brands 文件夹：用户刚放进去的
-    // 词表不用重启程序就能在下拉里出现。两个事件都挂是为了尽量在选项真正
-    // 展开之前把新列表发过来，键盘/触屏只触发 focus，鼠标点击两个都会触发
-    var requestBrandRefresh = function () { send({ type: "refresh_brands" }); };
     brandSel.addEventListener("focus", requestBrandRefresh);
     brandSel.addEventListener("mousedown", requestBrandRefresh);
+  }
+
+  // 换主播面板自己的一份「按主播记住的品牌」跟踪状态，规则和开始面板的
+  // brandState 完全一样（见 web/brand.js），只是主播名来自 #switch-input
+  // 而不是 #room-input——两个面板认的是两个不同的主播（@A 正在听的，@B 要换成的）
+  var switchBrandState = { streamer: "", touched: false };
+  function applySwitchDefaultBrand() {
+    if (!switchBrandSel || switchBrandState.touched) return;
+    selectBrand(switchBrandSel, defaultBrandFor(switchBrandState.streamer, brandsMap));
+  }
+  if (switchBrandSel) {
+    switchBrandSel.addEventListener("change", function () { switchBrandState.touched = true; });
+    switchBrandSel.addEventListener("focus", requestBrandRefresh);
+    switchBrandSel.addEventListener("mousedown", requestBrandRefresh);
   }
   if (brandsDirBtn) {
     brandsDirBtn.addEventListener("click", function () {
@@ -245,7 +288,11 @@
   });
 
   clearBtn.addEventListener("click", function () {
-    var caps = historyEl.querySelectorAll(".cap");
+    // 分隔条（.session-sep，换主播时插的「── HH:MM:SS 以下为 @B ──」）跟着
+    // 字幕一起清掉，不然重连回放前调这个函数清场时，旧分隔条会越攒越多——
+    // 这个函数也被 hello 处理里的 clearBtn.click() 当内部重置用，不只是
+    // 用户手点「清空」那一条路径
+    var caps = historyEl.querySelectorAll(".cap, .session-sep");
     for (var i = 0; i < caps.length; i++) caps[i].remove();
     cardsById = {};              // 卡片没了，id 映射也要清，否则一直涨
     liveBarId = null;
@@ -264,13 +311,13 @@
     roomInput.value = m ? roomUrl + " " + m[0] : roomUrl;
   }
 
-  function startStream() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      setStatus({ state: "offline", detail: "与本地服务断开，正在重连——稍候再点「开始翻译」" });
-      return;
-    }
-    var raw = roomInput.value.trim();
-    if (!raw) { roomInput.focus(); return; }
+  // 从原始输入解析房间地址（+ 可选的直连媒体地址）。开始面板和换主播面板要
+  // 各自校验一遍同样格式的输入，抽出来是不想让同一套 MEDIA_RE/normalizeRoomInput
+  // 拼接逻辑在两处各写一份、改一个漏一个。error 只有两种："empty"（原始输入是
+  // 空串，调用方通常直接聚焦输入框，不算错误）和 "unrecognized"（认不出，要提示）
+  function parseRoomInput(raw) {
+    raw = (raw || "").trim();
+    if (!raw) return { error: "empty" };
     // 允许一次粘两个地址：直播间链接 + 浏览器里拿到的 .flv/.m3u8 直连地址。
     // 房间链接决定弹幕、词表和审计归属，直连地址只作音频源——只贴直连地址
     // 也能用，但那样没有主播身份，弹幕就出不来。
@@ -279,26 +326,49 @@
     var roomPart = media ? raw.replace(media, " ").trim() : raw;
     var url = normalizeRoomInput(roomPart || raw);
     if (media && !url) { url = media; media = null; }   // 只给了直连地址
-    if (!url) {
-      setStatus({ state: "error",
-                  detail: "认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名" +
-                          "（到主播主页复制 @ 后面的部分，中文昵称不行）。" });
-      return;
-    }
-    roomInput.value = media ? url + " " + media : url;
-    lsSet("roomUrl", url);
-    lsSet("sourceLang", sourceSel.value);
+    if (!url) return { error: "unrecognized" };
+    return { url: url, media: media };
+  }
+
+  var UNRECOGNIZED_INPUT_MSG = "认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名" +
+                               "（到主播主页复制 @ 后面的部分，中文昵称不行）。";
+
+  // 组装一条「开始」指令的 payload。开始面板和换主播面板字段完全一致，
+  // 只是 source/alerts 恒取开始面板当前的值、brand 各取各自下拉的值（见调用处）
+  function buildStartPayload(url, media, source, alerts, brand) {
+    return { type: "start", url: url, source: source, media: media || undefined,
+             alerts: !!alerts, brand: brand || "" };
+  }
+
+  // 发送「开始」指令并接管 pendingStart/看门狗——开始面板和换主播面板共用，
+  // 抽出来是不想让「指令必须确认送达」这条规则（见 armStartWatchdog 的注释）
+  // 在两处各实现一遍
+  function sendStartCommand(payload) {
     // 「开始」指令必须确认送达：半死连接上 send 会无声进黑洞（readyState 还是
     // OPEN），随后自动重连成功、页面若无其事地回到待机——用户点了却毫无反应。
     // 服务器收到 start 后会立刻回执 connecting 状态；在那之前指令算「在途」，
     // 重连后的 hello 里补发一次，超时仍无回执才提示用户手点。
-    pendingStart = { payload: { type: "start", url: url, source: sourceSel.value,
-                                media: media || undefined,
-                                alerts: !!(alertsToggle && alertsToggle.checked),
-                                brand: brandSel ? brandSel.value : "" },
-                     retried: false };
+    pendingStart = { payload: payload, retried: false };
     send(pendingStart.payload);
     armStartWatchdog();
+  }
+
+  function startStream() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setStatus({ state: "offline", detail: "与本地服务断开，正在重连——稍候再点「开始翻译」" });
+      return;
+    }
+    var parsed = parseRoomInput(roomInput.value);
+    if (parsed.error === "empty") { roomInput.focus(); return; }
+    if (parsed.error) {
+      setStatus({ state: "error", detail: UNRECOGNIZED_INPUT_MSG });
+      return;
+    }
+    roomInput.value = parsed.media ? parsed.url + " " + parsed.media : parsed.url;
+    lsSet("roomUrl", parsed.url);
+    lsSet("sourceLang", sourceSel.value);
+    sendStartCommand(buildStartPayload(parsed.url, parsed.media, sourceSel.value,
+      alertsToggle && alertsToggle.checked, brandSel ? brandSel.value : ""));
   }
 
   function armStartWatchdog() {
@@ -633,6 +703,9 @@
       case "caption_update":
         updateCaption(msg);
         break;
+      case "session_break":
+        renderSessionBreak(msg);
+        break;
       case "alert_update":
         updateAlert(msg);
         break;
@@ -690,7 +763,15 @@
   function setStatus(msg) {
     var state = msg.state || "idle";
     statusDot.className = "dot " + state;
-    statusText.textContent = STATUS_TEXT[state] || state;
+    // 直播中额外带上正在听谁：「直播中 · @A」。主播名和顶栏「换主播」面板
+    // 认的是同一个来源（config.room_url，经 streamerFromInput 提取），
+    // 取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就不带这半句
+    var label = STATUS_TEXT[state] || state;
+    if (state === "live") {
+      var liveStreamer = streamerFromInput(roomInput.value);
+      if (liveStreamer) label += " · @" + liveStreamer;
+    }
+    statusText.textContent = label;
 
     // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
     if (state === "error" || state === "idle") resetUpdateBtn();
@@ -704,6 +785,9 @@
     var active = transition.active;
     startPanel.classList.toggle("hidden", active);
     stopBtn.classList.toggle("hidden", !active);
+    // 换主播按钮和停止按钮同一处切换：只在直播中/连接中有意义，待机/已结束/
+    // 出错/离线时没有「正在监听的主播」可换
+    if (switchBtn) switchBtn.classList.toggle("hidden", !active);
     startBtn.disabled = state === "connecting";
     streamActive = active;
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
@@ -850,6 +934,35 @@
       liveTranslated.textContent = msg.translated;
     }
     trackTranslateHealth(msg);
+  }
+
+  // 换主播（或程序重启后的每一场）广播的场次分隔：约定见前后端约定文档——
+  // 每场都发，前端只在页面里已经有字幕卡片时才画分隔线，所以程序启动后的
+  // 第一场不会多出一条线（那时 #history 里还没有任何 .cap）。回放（重连）时
+  // 同样调用这个函数，走的是和实时一样的路径，不需要额外的「回放」分支：
+  // hello 处理会先用 clearBtn.click() 清场，之后回放按原始顺序重新触发
+  // caption/session_break，历史上的场次边界就这样被原样重建一遍。
+  function renderSessionBreak(msg) {
+    var caps = historyEl.querySelectorAll(".cap");
+    // 要不要画、画什么字是纯逻辑，抽到 web/session-divider.js 里单独测
+    // （见该文件顶部注释）：app.js 这个大 IIFE 顶层就摸 DOM，整份没法被
+    // node:test require
+    if (!shouldRenderSessionDivider(caps.length)) return;
+    for (var i = 0; i < caps.length; i++) caps[i].classList.add("prev-session");
+    insertSessionDivider(historyEl, msg);
+    // 底部大字幕清空，等新一场第一条字幕自己把它揭开（同 enterHomeLayout
+    // 的道理：不主动显示，交给下一条真实字幕）
+    liveBar.classList.add("hidden");
+    liveBarId = null;
+    insertSessionDivider(commentList, msg);
+    stickToBottom(false);
+  }
+
+  function insertSessionDivider(container, msg) {
+    var sep = document.createElement("div");
+    sep.className = "session-sep";
+    sep.textContent = sessionDividerText(msg);
+    container.appendChild(sep);
   }
 
   function applyTranslation(card, msg) {
@@ -1075,7 +1188,7 @@
     commentEmpty.classList.toggle("hidden", has);
     // 收起时整列不显示，只在字幕区右上角留一个带条数的入口
     commentFab.classList.toggle("hidden", !(show && collapsed));
-    commentFabCount.textContent = commentList.children.length;
+    commentFabCount.textContent = commentItemCount();
     // 「回到最新」是 fixed 定位在右下角的，弹幕列展开时把它往左挪，别盖在弹幕上
     var panelOpen = show && !collapsed;
     jumpBtn.style.right = (panelOpen ? commentPanel.offsetWidth + 20 : 20) + "px";
@@ -1169,9 +1282,15 @@
       var drift = anchor.getBoundingClientRect().top - anchorTop;
       if (Math.abs(drift) >= 1) commentList.scrollTop += drift;
     }
-    commentCount.textContent = commentList.children.length;
+    commentCount.textContent = commentItemCount();
     refreshCommentPanel();
     if (commentFollowing) commentsToBottomNow();
+  }
+
+  // 弹幕条数：只数 .cmt-item，不数换主播时插进同一个列表里的 .session-sep
+  // 分隔条——否则条数徽标会把分隔线也算进去，显得比实际弹幕数多
+  function commentItemCount() {
+    return commentList.querySelectorAll(".cmt-item").length;
   }
 
   function updateComment(msg) {
@@ -1323,29 +1442,35 @@
   // 首页的违禁词监控状态。词表默认为空，用户不看到这个就不知道要去配
   // 「最近直播间」：按用户要求只显示主播名字，不铺一长串地址。点一下就把
   // 地址填进输入框并开始——中控启动后不必每次重新粘。空列表整块隐藏。
+  // 存一份供换主播面板的最近直播间列表复用（renderSwitchRecentList）——
+  // 两个面板显示同一份数据，但点击行为完全不同（这里直接开始，那边只武装）
+  var recentRoomsEntries = [];
+
   function renderRecentRooms(entries) {
-    if (!recentRooms || !recentList) return;
-    entries = Array.isArray(entries) ? entries : [];
-    recentList.innerHTML = "";
-    if (!entries.length) {
-      recentRooms.classList.add("hidden");
-      return;
+    recentRoomsEntries = Array.isArray(entries) ? entries : [];
+    if (recentRooms && recentList) {
+      recentList.innerHTML = "";
+      if (!recentRoomsEntries.length) {
+        recentRooms.classList.add("hidden");
+      } else {
+        recentRoomsEntries.forEach(function (e) {
+          if (!e || !e.streamer || !e.url) return;
+          var chip = document.createElement("button");
+          chip.className = "recent-chip";
+          chip.type = "button";
+          chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
+          chip.title = "点击开始翻译 @" + e.streamer;
+          chip.addEventListener("click", function () {
+            roomInput.value = e.url;                // 地址在背后填好，界面上只见主播名
+            onRoomInputChanged();                   // 换了主播才按记住的品牌刷新
+            startStream();
+          });
+          recentList.appendChild(chip);
+        });
+        recentRooms.classList.remove("hidden");
+      }
     }
-    entries.forEach(function (e) {
-      if (!e || !e.streamer || !e.url) return;
-      var chip = document.createElement("button");
-      chip.className = "recent-chip";
-      chip.type = "button";
-      chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
-      chip.title = "点击开始翻译 @" + e.streamer;
-      chip.addEventListener("click", function () {
-        roomInput.value = e.url;                // 地址在背后填好，界面上只见主播名
-        onRoomInputChanged();                   // 换了主播才按记住的品牌刷新
-        startStream();
-      });
-      recentList.appendChild(chip);
-    });
-    recentRooms.classList.remove("hidden");
+    renderSwitchRecentList();
   }
 
   if (recentClear) {
@@ -1639,6 +1764,191 @@
     });
   }
 
+  // ---- 换主播 ----
+  // 直播中不停止监听、直接改听另一个主播。两段式确认的状态机在 web/switch.js
+  // （可测，tests/switch.test.mjs 钉住规则），这里只管 DOM：面板开合、最近
+  // 直播间 chip、品牌/主播语言的回显、拼包发送。
+  var switchArmState = initialSwitchState();
+  var switchResetTimer = null;
+
+  // 当前正在监听的主播名，和顶栏「直播中 · @A」取的是同一个来源
+  // （config.room_url，经 streamerFromInput 提取）
+  function currentStreamerName() {
+    return streamerFromInput(roomInput.value);
+  }
+
+  function clearSwitchResetTimer() {
+    if (switchResetTimer) clearTimeout(switchResetTimer);
+    switchResetTimer = null;
+  }
+
+  function showSwitchError(text) {
+    if (!switchError) return;
+    switchError.textContent = text;
+    switchError.classList.remove("hidden");
+  }
+  function clearSwitchError() {
+    if (!switchError) return;
+    switchError.textContent = "";
+    switchError.classList.add("hidden");
+  }
+
+  function renderSwitchButton() {
+    if (!switchConfirmBtn) return;
+    var label = switchButtonLabel(switchArmState, currentStreamerName());
+    switchConfirmBtn.textContent = label.text;
+    // 发出去的「开始」还没等到服务器接管（pendingStart 非空）时也保持禁用：
+    // 换主播面板只在直播中/连接中才能打开，这时唯一可能在途的 pendingStart
+    // 只会是换主播自己刚发的那条（开始面板此刻已经隐藏，发不出新的）
+    switchConfirmBtn.disabled = label.disabled || !!pendingStart;
+    if (switchHint) {
+      switchHint.textContent = switchArmState.target
+        ? "切换期间两个主播都没有字幕，直到 @" + switchArmState.target + " 出现第一句。"
+        : "切换期间两个主播都没有字幕，直到新主播出现第一句。";
+    }
+  }
+
+  // 输入框变化、或点了最近直播间 chip：只「武装」第一步，绝不直接发送
+  // （见 web/switch.js）。品牌默认值的刷新规则和开始面板一致
+  // （brandStateAfterRoomInput），只是认的是换主播面板自己这份 state 和输入框——
+  // 这里换的是「要听谁」（@B），不是「正在听谁」（@A），两份状态不能混
+  function armSwitchFromInput() {
+    var streamer = streamerFromInput(switchInput.value);
+    switchArmState = armSwitch(streamer, currentStreamerName(), Date.now());
+    switchBrandState = brandStateAfterRoomInput(switchBrandState, streamer);
+    applySwitchDefaultBrand();
+    clearSwitchError();
+    renderSwitchButton();
+    startSwitchResetTimer();
+  }
+
+  // 6 秒未确认自动复位：不能只靠 shouldConfirmSwitch 兜底判断——不然过期后
+  // 按钮文案会一直停在「再点一次…」，看着像还能点，实际点了也没反应。
+  // 复位只解除武装、保留目标（expireSwitchState），按钮回到可点的「换到 @B」
+  function startSwitchResetTimer() {
+    clearSwitchResetTimer();
+    if (!switchArmState.armed) return;
+    switchResetTimer = setTimeout(function () {
+      switchArmState = expireSwitchState(switchArmState, Date.now() + SWITCH_ARM_MS);
+      renderSwitchButton();
+    }, SWITCH_ARM_MS);
+  }
+
+  // 最近直播间 chip：数据同开始面板（renderRecentRooms 存的 recentRoomsEntries），
+  // 但点击行为不同——这里只填入并武装，绝不直接开始，直播中误触一下不该立刻断流。
+  // 当前正在监听的那个主播标「监听中」且不可点。
+  function renderSwitchRecentList() {
+    if (!switchRecent || !switchRecentList) return;
+    switchRecentList.innerHTML = "";
+    if (!recentRoomsEntries.length) { switchRecent.classList.add("hidden"); return; }
+    var cur = currentStreamerName();
+    recentRoomsEntries.forEach(function (e) {
+      if (!e || !e.streamer || !e.url) return;
+      var chip = document.createElement("button");
+      chip.className = "recent-chip";
+      chip.type = "button";
+      var isCurrent = !!cur && e.streamer.toLowerCase() === cur.toLowerCase();
+      if (isCurrent) {
+        chip.disabled = true;
+        chip.textContent = "@" + e.streamer + "（监听中）";
+      } else {
+        chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
+        chip.title = "填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）";
+        chip.addEventListener("click", function () {
+          switchInput.value = e.url;
+          armSwitchFromInput();
+          switchInput.focus();
+        });
+      }
+      switchRecentList.appendChild(chip);
+    });
+    switchRecent.classList.remove("hidden");
+  }
+
+  function openSwitchPanel() {
+    if (!switchPanel) return;
+    switchInput.value = "";
+    switchArmState = initialSwitchState();
+    switchBrandState = { streamer: "", touched: false };
+    clearSwitchResetTimer();
+    clearSwitchError();
+    if (switchBrandSel) switchBrandSel.value = "";
+    var cur = currentStreamerName();
+    if (switchSub) {
+      switchSub.textContent = cur
+        ? "当前监听 @" + cur + "，确认前不会中断"
+        : "确认前不会中断当前监听";
+    }
+    if (switchSourceEcho) {
+      var opt = sourceSel.options[sourceSel.selectedIndex];
+      switchSourceEcho.textContent = opt ? opt.textContent : sourceSel.value;
+    }
+    renderSwitchRecentList();
+    renderSwitchButton();
+    switchPanel.classList.remove("hidden");
+    switchInput.focus();
+  }
+
+  function closeSwitchPanel() {
+    if (!switchPanel) return;
+    switchPanel.classList.add("hidden");
+    clearSwitchResetTimer();
+  }
+
+  // 确认按钮点击、或输入框按 Enter：只有 shouldConfirmSwitch 判定「这一下算数」
+  // 才真的往下走。本地校验失败（认不出输入、连接断开）的报错显示在面板里，
+  // 绝不调用 setStatus——那会把直播中的界面切成非直播状态（既有教训，
+  // 见 startStream 对同一类错误的处理方式，这里不能共用因为不能动 setStatus）
+  function attemptSwitchConfirm() {
+    var now = Date.now();
+    var cur = currentStreamerName();
+    var action = switchClickAction(switchArmState, now, cur);
+    if (action === "arm") {
+      // 超时复位过（或已过期）：这一下只重新武装，下一下才发送
+      switchArmState = armSwitch(switchArmState.target, cur, now);
+      renderSwitchButton();
+      startSwitchResetTimer();
+      return;
+    }
+    if (action !== "confirm") return;
+    var parsed = parseRoomInput(switchInput.value);
+    if (parsed.error) {
+      showSwitchError(UNRECOGNIZED_INPUT_MSG);
+      return;
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showSwitchError("与本地服务断开，正在重连——稍候再试。");
+      return;
+    }
+    clearSwitchResetTimer();
+    // 换主播成功后 localStorage 也要跟着换，否则刷新页面时页面加载那段
+    // 「savedRoom 非空就回填 roomInput.value」会用旧主播的地址把输入框填上，
+    // hello 处理里 `!roomInput.value` 那个兜底判断见它非空就不再信服务器的
+    // config.room_url——界面就会显示回换之前的主播（同 startStream 里
+    // lsSet("roomUrl", ...) 的道理，这里之前漏了）
+    lsSet("roomUrl", parsed.url);
+    sendStartCommand(buildStartPayload(parsed.url, parsed.media, sourceSel.value,
+      alertsToggle && alertsToggle.checked, switchBrandSel ? switchBrandSel.value : ""));
+    switchArmState = initialSwitchState();
+    closeSwitchPanel();
+  }
+
+  if (switchBtn) switchBtn.addEventListener("click", openSwitchPanel);
+  if (switchClose) switchClose.addEventListener("click", closeSwitchPanel);
+  if (switchInput) {
+    switchInput.addEventListener("input", armSwitchFromInput);
+    switchInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") attemptSwitchConfirm();
+    });
+  }
+  if (switchConfirmBtn) switchConfirmBtn.addEventListener("click", attemptSwitchConfirm);
+  // Esc 关闭：只在面板确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && switchPanel && !switchPanel.classList.contains("hidden")) {
+      closeSwitchPanel();
+    }
+  });
+
   // 违禁词警示开关：本地状态 + 顶栏标签 + 首页描述文案，三处一起同步。
   // 来源可能是用户手动扳开关、也可能是后端 hello/alert_mode 广播——不区分来源，
   // 一律走这一个函数，保证三处永远一致。
@@ -1841,6 +2151,9 @@
     scrollToTopNow();
     updateJumpButton();
     statsEl.classList.add("hidden");
+    // 换主播面板只在直播中有意义（按钮本身这时也被隐藏了）：停止之后若还开着，
+    // 关掉它，不然会变成一块摆在待机页面上的残留浮层
+    closeSwitchPanel();
   }
 
   // 离开首页状态（viewTransition 的 exitHome）：直播状态从非活跃变为活跃
