@@ -254,7 +254,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # 「最近直播间」：启动就摆在首页，中控不必每次重新粘地址。只存主播名
         # 和地址，界面上只显示主播名（见 web/app.js renderRecentRooms）
         self.server.config["recent_rooms"] = recent_rooms()
-        # 按主播记住的「本场只卖」品牌词表：只回显映射本身，供前端给下拉框
+        # 按主播记住的「本场品牌」品牌词表：只回显映射本身，供前端给下拉框
         # 挑默认值（见 web/brand.js）。不在这里给 self.brand 设默认——它只在
         # handle_control 的 start 分支里显式设置，缺省就是「不限」（None）
         self.server.config["brands"] = streamer_brands()
@@ -372,7 +372,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self.alerts_enabled = alerts_enabled
                 self._save_setting("alerts_enabled", alerts_enabled)
                 self.server.config["alerts_enabled"] = alerts_enabled
-                # 「本场只卖」的品牌词表：字段缺失（老页面缓存）、id 不合法、
+                # 「本场品牌」的品牌词表：字段缺失（老页面缓存）、id 不合法、
                 # 或没有对应模板，一律按「不限」处理——和上面 alerts 字段同一个
                 # 宽容原则，不能因为一个解析不出来的字段就让开播失败。后一种
                 # 情况也可能是「选过之后文件被删了」（用户清理 brands/ 目录、
