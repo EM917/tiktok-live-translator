@@ -11,20 +11,28 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 
 def replay_payloads(history):
-    """把历史字幕转成回放消息。
+    """把历史字幕（以及场次分隔标记）转成回放消息。
 
     每一条都带 replay=True——只显示实时字幕的客户端据此整段跳过（这条约定起于
     当年的 Chrome 插件，插件已撤、语义保留）。以前为了让网页端恢复底部大字幕，
     最后一条刻意不加标记，结果插件把它当成新
     字幕：翻译过一场直播后再打开任意直播页，画面上就会浮出上一场的最后一句。
     改由单独的 restore 标记承担「恢复大字幕」这件事，两个用途各归各的字段。
+
+    history 现在还混着 session_break（分隔线用，不是字幕）：restore 只该打在
+    「最后一条 caption」上，不能落到它后面可能跟着的 session_break 头上，
+    否则网页端会拿一条没有大字幕字段的消息去恢复底部大字幕。
     """
     items = list(history)
+    last_caption = None
+    for i, item in enumerate(items):
+        if item.get("type") == "caption":
+            last_caption = i
     payloads = []
     for i, item in enumerate(items):
         payload = dict(item)
         payload["replay"] = True
-        if i == len(items) - 1:
+        if item.get("type") == "caption" and i == last_caption:
             payload["restore"] = True
         payloads.append(payload)
     return payloads
@@ -160,6 +168,10 @@ class CaptionServer:
 
     async def broadcast(self, msg):
         if msg.get("type") == "caption" and not msg.get("replay"):
+            self.history.append(msg)
+        elif msg.get("type") == "session_break" and not msg.get("replay"):
+            # 和 caption 混进同一个 deque：顺序就是发生顺序，回放时分隔线
+            # 落在它该在的两条字幕之间，不用另开一路时间线去对齐
             self.history.append(msg)
         elif msg.get("type") == "caption_update":
             # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文

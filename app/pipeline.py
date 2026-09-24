@@ -7,6 +7,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from collections import OrderedDict
@@ -100,6 +101,22 @@ MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
 
 DENOISE_MODEL = Path(__file__).resolve().parent.parent / "models" / "bd.rnnn"
 DENOISE_MIN_BYTES = 100_000   # 完整模型约 300 KB；明显小于此值 = 下载被截断
+
+# 进程级：同一时刻只许一个识别调用在跑。_stop_locked 的 STOP_GRACE_SEC 超时
+# 之后会放手不等——旧场那个 run_in_executor 调用可能还在线程池里跑，而新场
+# 几乎立刻复用同一个识别器对象（Pipeline.self._transcriber，或者 MLX 那份
+# 类级权重缓存）：两条线程同时闯进同一份模型状态，不是各转各的两次调用能比的。
+# 用一把全局锁而不是挂在某个 transcriber 实例上：新场很可能换了一个新的
+# transcriber 对象，但只要底层模型缓存是类级/进程级共享的，锁也必须是同一级别。
+_TRANSCRIBE_LOCK = threading.Lock()
+
+
+def _locked_transcribe(transcriber, segment):
+    """run_in_executor 的目标函数：在线程池线程里跑，锁也在这个线程里拿——
+    绝不能把加锁挪到事件循环所在线程，那会在等锁的这段时间里让整个程序（界面、
+    弹幕、状态广播……）全部卡住。"""
+    with _TRANSCRIBE_LOCK:
+        return transcriber.transcribe(segment)
 
 # 音频积压预算（秒）。软阈值只是告警，硬上限才丢——丢一段就等于可能漏词，
 # 所以硬上限给得很宽：60 秒 PCM 不到 2 MB，内存从来不是限制因素。
@@ -616,8 +633,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
 
     async def _start_with_ack(self, url, media=None):
         """UI 点「开始」后立刻回执——停掉旧管线可能要好几秒（等 ffmpeg 退出），
-        期间不给任何反馈的话，用户会以为点了没反应而反复点。"""
-        await self.server.status("connecting", "已收到指令，正在连接…")
+        期间不给任何反馈的话，用户会以为点了没反应而反复点。
+
+        换主播时文案额外说明「正在切换」：不然中控会以为点了没反应，
+        其实是在等上一个主播的监听先停下来。"""
+        from .provenance import streamer_of
+
+        text = "已收到指令，正在连接…"
+        task = getattr(self, "_stream_task", None)
+        if task is not None and not task.done():
+            current = streamer_of(self.server.config.get("room_url") or "")
+            new = streamer_of(url)
+            if current and new and current != new:
+                text = "正在切换到 @{}：先停止 @{} 的监听，再连接新的直播间…".format(
+                    new, current)
+        await self.server.status("connecting", text)
         await self.start_stream(url, media=media)
 
     async def _strong_translator(self):
@@ -685,6 +715,27 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
 
     # 等旧管线收尾的上限。超过就不等了——见 _stop_locked 里的说明。
     STOP_GRACE_SEC = 3.0
+    # comment_source.stop() 自己已经有上限（CommentSource.STOP_GRACE_SEC*2+2，
+    # 默认 8 秒）；这里再包一层兜底——它自己的上限万一失效（比如被改坏），
+    # 不能连累这把锁一直不放、界面永远停在「正在停止…」。
+    COMMENT_STOP_TIMEOUT_SEC = 10.0
+
+    async def _stop_comment_source(self):
+        """停弹幕来源，带外层兜底超时。_stop_locked 与 _end_session 共用：
+        两处都必须保证「停」这件事有限时间内做完，不能因为弹幕这条锦上
+        添花的链路卡住而拖住主链路的锁和界面状态。
+
+        shield：超时只撒手不再等，不倒过来把 comment_source.stop() 也拽进
+        取消——它会在后台按自己的节奏收尾（CommentSource.stop() 内部已经
+        做了保留引用防 GC 的处理）。"""
+        comment_source = getattr(self, "comment_source", None)
+        if comment_source is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(comment_source.stop()),
+                                   self.COMMENT_STOP_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            print("[警告] 弹幕来源停止超时，已放手（可能残留子进程）")
 
     async def _stop_locked(self, quiet=False):
         """调用方必须已持有 _stream_lock。
@@ -720,9 +771,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # 上面的等待会超时撒手，这里随即把 audit 置空，等旧任务终于走到
         # _end_session 时它已经「不是当前会话」了，于是弹幕子进程和它的
         # WebSocket 一直挂到下一场——界面早就显示已停止。stop() 可重入。
-        comment_source = getattr(self, "comment_source", None)
-        if comment_source is not None:
-            await comment_source.stop()
+        await self._stop_comment_source()
         closed = self.audit
         if closed is not None:
             self._close_audit(closed, self._stop_reason)
@@ -1043,6 +1092,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # Elisa 的直播里就会凭空冒出别家商品。set_active 让 DeepL 的原生术语表
         # 也拿到同一份合并结果。
         streamer = streamer_of(url)
+        # 前端用它在字幕流里画一条分隔线：每场都发（含程序启动后的第一场），
+        # 发生在这场第一条字幕广播之前，前端只在已经有字幕卡片时才画线，
+        # 所以第一场不会凭空多出一条。主播名取不到就是空串，不猜不补。
+        await self.server.broadcast({"type": "session_break", "ts": time.time(),
+                                     "streamer": streamer})
         brand = getattr(self, "brand", None)
         self.glossary = load_glossary(getattr(self.args, "glossary", None),
                                       streamer=streamer, brand=brand)
@@ -1463,7 +1517,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 # 这一场收到过多少条弹幕一起写进 session_end——弹幕连接哪怕全程
                 # "connected"，事后也要能看出它是不是哑了一整场（见看门狗）。
                 fields.setdefault("comments_received", comment_source.comments_received)
-                await comment_source.stop()
+            await self._stop_comment_source()
         if still_current and self._stats_task is not None \
                 and not self._stats_task.done():
             try:      # 收尾前推一次终值，别让界面停在半截数据上
@@ -2458,7 +2512,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 failure = None
                 try:
                     result = await loop.run_in_executor(
-                        asr_pool, slot.transcriber.transcribe, segment
+                        asr_pool, _locked_transcribe, slot.transcriber, segment
                     )
                 except Exception as exc:
                     failure = exc

@@ -233,6 +233,35 @@ def test_detector_state_reset_between_rooms(monkeypatch, tmp_path):
     assert len(server.of_type("alert")) == 2           # 两场各报一次
 
 
+def test_session_break_broadcast_on_switch(monkeypatch, tmp_path):
+    """前后端约定（见 _begin_session 里的注释）：每场开始都要广播 session_break，
+    含程序启动后的第一场；它要排在这场自己第一条字幕之前，前端才能先画分隔线
+    再收字幕。换主播是旧场先、新场后，不多发也不少发——这是整个前后端分隔线
+    契约唯一的落地机制，此前没有 Pipeline 级测试盯着它（见 review）。"""
+    p, server = make_pipeline(monkeypatch, tmp_path, translator=None)
+
+    async def scenario():
+        await p._begin_session("https://www.tiktok.com/@a/live")     # 程序启动后的第一场
+        await p._emit_original(result("hola"), audio_end_ts=100.0, asr_ms=100)
+        await p._end_session()
+        await p._begin_session("https://www.tiktok.com/@b/live")     # 真实换主播
+        await p._emit_original(result("hola de nuevo"), audio_end_ts=200.0, asr_ms=100)
+        await p._end_session()
+
+    run(scenario())
+    breaks = server.of_type("session_break")
+    assert len(breaks) == 2                                   # 每场各一条，不多不少，
+                                                                # 第一场也不例外
+    assert [b["streamer"] for b in breaks] == ["a", "b"]       # 旧场先、新场后，主播不串场
+    break_at = [server.messages.index(b) for b in breaks]
+    caption_at = [i for i, m in enumerate(server.messages) if m["type"] == "caption"]
+    assert len(caption_at) == 2
+    # 每一场自己的分隔线都要排在这场字幕之前：break[0] < caption[0]（第一场）、
+    # break[1] < caption[1]（第二场），而且 break[1] 排在 caption[0] 之后——
+    # 不是旧场任务在新场开始后又晚发了一条
+    assert break_at[0] < caption_at[0] < break_at[1] < caption_at[1]
+
+
 def test_telemetry_reset_between_sessions(monkeypatch, tmp_path):
     """统计按场计：上一场的「丢音频 7」不能挂在这一场的面板上。"""
     p, server = make_pipeline(monkeypatch, tmp_path, translator=None)

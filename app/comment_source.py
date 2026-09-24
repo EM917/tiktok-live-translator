@@ -174,6 +174,16 @@ class CommentSource:
     REJECTED_WAIT_SEC = 180.0
     MAX_CONNECTS_PER_HOUR = 30
     STOP_GRACE_SEC = 3.0
+    # SIGKILL 之后再等子进程被系统回收的上限。理论上 kill -9 之后进程必死，
+    # 但 wait() 等的是内核真正回收（僵尸态清理），僵尸表满/内核卡顿这类极端
+    # 情况下这一步也可能不返回——不能让 stop() 因为等一个已经杀死的进程而
+    # 挂住下一场的「停旧起新」。
+    KILL_WAIT_SEC = 2.0
+    # stop() 等被取消的监督任务收尾的上限是 STOP_GRACE_SEC 的两倍（等 _terminate
+    # 先 SIGTERM 再 SIGKILL 各一轮）再加这份余量。单独成常量而不是写成字面量
+    # "+2"：测试把 STOP_GRACE_SEC 调到几十毫秒时，这份余量也要能跟着调小，
+    # 否则那条测试就要真的等两秒。
+    STOP_TASK_EXTRA_SEC = 2.0
     # 「一小时」本身也做成常量：额度限流测试要能把这个窗口也调短，
     # 否则触发限流后要真的等接近一小时才能看到窗口滑出、恢复连接。
     HOUR_WINDOW_SEC = 3600.0
@@ -227,6 +237,10 @@ class CommentSource:
         self._silent_restart = False    # 上一次子进程退出是不是看门狗触发的优雅重连
         self._last_silent_restart_at = None  # 上次静默重连的 _clock() 时间，同一窗口最多一次
         self.comments_received = 0      # 本场（start()~stop()）收到的弹幕条数，写进 session_end
+        # stop() 等监督任务超时放手时，仍要保住它的引用——事件循环只弱引用
+        # 任务，不保引用的话任务可能在收尾的路上被 GC 收走，子进程/管道就
+        # 成了没人清理的孤儿（同 Pipeline._spawn 的理由）
+        self._lingering_tasks = set()
 
     # ---- 对外接口 ----
     def start(self, unique_id):
@@ -270,8 +284,17 @@ class CommentSource:
         self._unique_id = None
         if task is not None and not task.done():
             task.cancel()
+            # 上限：_run_once 取消时要先 _terminate() 子进程（现在本身也有上限），
+            # 但极端情况下（僵尸表满、事件循环被别的同步调用占住）这条路径仍可能
+            # 不返回。shield 避免等它——超时只撒手，不反过来把 task 也拖入取消，
+            # 它会在后台按自己的节奏收尾；保留引用防止半路被 GC。
             try:
-                await task
+                await asyncio.wait_for(
+                    asyncio.shield(task), self.STOP_GRACE_SEC * 2 + self.STOP_TASK_EXTRA_SEC)
+            except asyncio.TimeoutError:
+                print("[警告] 弹幕监督任务停不下来，已放手（可能残留子进程）")
+                self._lingering_tasks.add(task)
+                task.add_done_callback(self._lingering_tasks.discard)
             except asyncio.CancelledError:
                 pass
             except Exception as exc:
@@ -602,7 +625,12 @@ class CommentSource:
         )
 
     async def _terminate(self, proc):
-        """stop() 取消监督协程时用：尽力优雅退出，超时就强杀，绝不残留子进程。"""
+        """stop() 取消监督协程时用：尽力优雅退出，超时就强杀，绝不残留子进程。
+
+        SIGKILL 之后的 wait() 同样要有上限——它等的是内核真正回收，正常情况下
+        毫秒级返回，但没有上限的话，一旦不返回，_run_once 的取消分支
+        （`except CancelledError: await self._terminate(proc); raise`）就会
+        卡住不再向外传播取消，stop() 等它的那一层也跟着卡住。"""
         try:
             proc.terminate()
         except Exception:
@@ -615,7 +643,9 @@ class CommentSource:
             except Exception:
                 pass
             try:
-                await proc.wait()
+                await asyncio.wait_for(proc.wait(), timeout=self.KILL_WAIT_SEC)
+            except asyncio.TimeoutError:
+                print("[警告] 弹幕子进程 SIGKILL 后仍未回收，已放手")
             except Exception:
                 pass
         except Exception:

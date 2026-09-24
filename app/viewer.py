@@ -107,6 +107,9 @@ ALLOW = {
     # 中控这一场有没有开违禁词警示。只给这一个布尔——手机不需要知道原因，
     # 只需要知道「命中了会不会有人看到」（CLAUDE.md 八：只报观察）
     "alert_mode": ("on",),
+    # 场次分隔线：手机端用 ts 画一条分隔线。streamer 不给——主播名是内部
+    # 归属信息，同一份考量见上面 alert 里丢掉的 streamer/session/ui_clients
+    "session_break": ("ts",),
 }
 
 # 显式拒绝。viewer 必须单独钉死：它的载荷里带着含 token 的 URL，
