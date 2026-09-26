@@ -671,7 +671,10 @@ if (typeof document !== "undefined") {
       var headLabel = document.createElement("span");
       headLabel.className = "alert-head-label";
       var tierIcon = document.createElement("span");
-      tierIcon.className = "alert-tier-icon";
+      // 借 .icon 定尺寸（跟 renderHealth 的图标同一套用法）：只有 .alert-tier-icon
+      // 不给宽高，SVG 自己也没有 width/height，会撑成浏览器默认的 300x150、
+      // 在卡片里等于看不见。
+      tierIcon.className = "alert-tier-icon icon";
       tierIcon.setAttribute("aria-hidden", "true");
       tierIcon.innerHTML = ICON_ALERT_TRIANGLE;
       headLabel.appendChild(tierIcon);
