@@ -74,6 +74,7 @@
   var watchDesc = document.getElementById("watch-desc");
   var alertsToggle = document.getElementById("alerts-toggle");
   var alertModeTag = document.getElementById("alert-mode-tag");
+  var activeBrandTag = document.getElementById("active-brand-tag");
   var fixCmd = document.getElementById("fix-command");
   var fixCmdText = document.getElementById("fix-command-text");
   var fixCmdCopy = document.getElementById("fix-command-copy");
@@ -668,6 +669,9 @@
           // applyDefaultBrand() 才有值可选
           if (msg.config.brand_options) renderBrandOptions(msg.config.brand_options);
           if (msg.config.brands) { brandsMap = msg.config.brands; applyDefaultBrand(); }
+          // 本场品牌标签：hello 每次都带真实值（默认没有），同 alerts_enabled，
+          // 不沿用上一次连接看到的值
+          setActiveBrand(msg.config.active_brand || null);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
           if (msg.config.viewer) renderShare(msg.config.viewer);
@@ -736,6 +740,10 @@
         if (msg.room_url) fillRoomInput(msg.room_url);
         if (msg.brand_options) renderBrandOptions(msg.brand_options);
         if (msg.brands) { brandsMap = msg.brands; applyDefaultBrand(); }
+        // start_stream 开播时、真正停止后都会广播这个字段（后者是显式 null）；
+        // 用 "in" 而不是真值判断，是因为 set_target 等别的 config 广播不带这个
+        // 键，不该被当成「清空品牌」处理
+        if ("active_brand" in msg) setActiveBrand(msg.active_brand);
         if (msg.alerts_session) setAlertSession(msg.alerts_session);
         if ("update_check" in msg) renderUpdateCheck(msg.update_check);
         break;
@@ -838,6 +846,7 @@
     startBtn.disabled = state === "connecting";
     streamActive = active;
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
+    updateActiveBrandTag(); // 本场品牌标签同一个显示条件，见该函数注释
     refreshCommentPanel();
     // 「停止」之后桌面页面留残留（大字幕压住开始面板、回到最新按钮悬空、
     // 上一场弹幕还挂着）：这两步把「直播中才有意义」的 UI 收掉/摆好，
@@ -2048,6 +2057,30 @@
     alertModeTag.textContent = alertsEnabled ? "警示开" : "警示关";
     alertModeTag.classList.toggle("on", alertsEnabled);
     alertModeTag.classList.toggle("off", !alertsEnabled);
+  }
+
+  // 本场品牌标签：config.active_brand（{id, name} 或 null）来自 hello/config
+  // 广播，见 app/pipeline.py _active_brand_info。只存显示名——标签只负责
+  // 显示，id 用不上。hello 每次都带真实值（同 alerts_enabled），不猜测、
+  // 不沿用上一次连接看到的值，重连/换设备也不会显示错主播的品牌
+  var activeBrandName = "";
+  function setActiveBrand(info) {
+    activeBrandName = info && typeof info === "object" && typeof info.name === "string"
+      ? info.name : "";
+    updateActiveBrandTag();
+  }
+
+  // 只在连接中/直播中且这一场选了品牌时露出（跟 updateAlertModeTag 同一个
+  // 逻辑），过长的名字交给 CSS text-overflow 省略号，这里把完整名字放进
+  // title 供悬停查看
+  function updateActiveBrandTag() {
+    if (!activeBrandTag) return;
+    var show = streamActive && !!activeBrandName;
+    activeBrandTag.classList.toggle("hidden", !show);
+    if (show) {
+      activeBrandTag.textContent = "品牌 · " + activeBrandName;
+      activeBrandTag.title = activeBrandName;
+    }
   }
 
   // 词表为空时的「未配置」文案原样保留（renderWatchlist 里直接写），跟开关状态

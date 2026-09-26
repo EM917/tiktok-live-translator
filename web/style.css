@@ -155,6 +155,18 @@ body.home { --page-bg: var(--grouped-bg); }
 .alert-mode-tag.off { color: var(--label-2); background: var(--fill); }
 .alert-mode-tag.on { color: var(--green-ink); background: color-mix(in srgb, var(--green) 16%, transparent); }
 
+/* 本场品牌标签：同样只在连接中/直播中露出（app.js 控制 hidden），但纯粹是
+   说明性质（「正在按哪份词表监听」），不是开关，配色固定用中性灰，不跟着
+   开/关变色。名字可能很长（用户自己起的），超宽度截断加省略号，完整名字
+   放 title 里 */
+.active-brand-tag {
+  display: inline-flex; align-items: center;
+  height: 22px; padding: 0 8px; border-radius: 11px;
+  font-size: var(--fs-footnote); font-weight: 500;
+  color: var(--label-2); background: var(--fill);
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gray); flex: none; }
 .dot.live { background: var(--green); }
 .dot.connecting { background: var(--orange); }

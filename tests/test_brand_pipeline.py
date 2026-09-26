@@ -226,3 +226,43 @@ def test_open_brands_dir_reports_failure_through_a_notice_without_raising(
     run(p.handle_control({"type": "open_brands_dir"}))   # 不抛异常
     notices = [m for m in sent if m.get("type") == "notice"]
     assert notices and "无法打开文件夹" in notices[-1]["text"]
+
+
+# ---------------------------------------------------------------------------
+# 顶栏「本场品牌」标签：server.config["active_brand"]，随 start_stream 的
+# config 广播下发、hello 时也在（见 web/app.js updateActiveBrandTag）
+# ---------------------------------------------------------------------------
+
+def test_starting_with_a_brand_sets_active_brand_with_its_display_name(monkeypatch, tmp_path):
+    """name 要查 brand_options()——和下拉框选项同一份数据源，不是直接拿 id
+    当名字：这里特意给 acme 起一个不同于 id 的显示名，确保测的是真的在查，
+    不是巧合地 id == name。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    (tmp_path / "brands" / "acme.example.txt").write_text(
+        "name: ACME 严选\nalgo => 什么\n", encoding="utf-8")
+    run(p.handle_control({"type": "start",
+                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "brand": "acme"}))
+    assert server.config["active_brand"] == {"id": "acme", "name": "ACME 严选"}
+
+
+def test_starting_without_a_brand_leaves_active_brand_cleared(monkeypatch, tmp_path):
+    """没选品牌（不限）：顶栏不该挂任何标签，active_brand 是 None，不是
+    缺字段——前端靠它和「还没连上」区分，见 web/app.js setActiveBrand。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    run(p.handle_control({"type": "start",
+                          "url": "https://www.tiktok.com/@daisycabral_/live"}))
+    assert server.config["active_brand"] is None
+
+
+def test_stopping_clears_the_active_brand_tag(monkeypatch, tmp_path):
+    """停止之后顶栏不该还挂着上一场的品牌——不清的话，刷新页面或第二个
+    页面重连会看到一个其实已经不生效的品牌（见 Pipeline._stop_locked
+    quiet=False 分支）。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    run(p.handle_control({"type": "start",
+                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "brand": "acme"}))
+    assert server.config["active_brand"] == {"id": "acme", "name": "acme"}
+    run(p.handle_control({"type": "stop"}))
+    assert server.config["active_brand"] is None
