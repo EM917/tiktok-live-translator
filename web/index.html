@@ -418,6 +418,11 @@
         </div>
       </section>
     </div>
+    <!-- 停止后如果历史里还留着上一场的字幕，加一个和分组标题同款的小标题，
+         跟设置面板一样宽（body.home 下 .cap 收到 600px，见 style.css），页面上
+         不再出现「面板 600 / 字幕 760」两条左边线（designer.md #6）。
+         显隐由 app.js syncCaptionDependentUi 按「是否在首页 + 是否还有字幕」决定 -->
+    <h3 id="prev-caps-title" class="group-title prev-caps-title hidden">上一场字幕</h3>
   </main>
 
   <!-- 观众弹幕：程序自己通过 TikTokLive 抓取评论流；只翻译、只显示，不进报警链路 -->

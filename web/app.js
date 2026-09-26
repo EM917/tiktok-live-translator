@@ -1581,6 +1581,7 @@
     diskItems.forEach(function (it) { total += it.size || 0; });
     diskSummary.textContent = (info.free != null ? "剩余 " + humanSize(info.free) + " · " : "")
       + "本机模型与日志 " + humanSize(total);
+    diskSummary.title = diskSummary.textContent;   // 摘要被截断时补全文，见 designer.md #6
     diskList.innerHTML = "";
     if (!diskItems.length) {
       diskList.textContent = "没有找到可管理的模型或日志。";

@@ -418,10 +418,12 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .sp-help p + p { margin-top: 6px; }
 .sp-help b { color: var(--label); font-weight: 600; }
 
-/* 常用选项：紧贴输入框下方一行，文字标签 + 白色弹出按钮 */
+/* 常用选项：紧贴输入框下方一行，文字标签 + 白色弹出按钮。
+   去掉左右 4px 内边距——那 4px 既不贴容器边，也没对齐输入框里的文字，
+   是首页几条不同左边线里的一条（designer.md #6） */
 .sp-options {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px;
-  margin-top: 12px; padding: 0 4px;
+  margin-top: 12px;
   font-size: var(--fs-callout); color: var(--label-2);
 }
 .sp-opt { display: inline-flex; align-items: center; gap: 8px; }
@@ -432,23 +434,29 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
    用 --label-2（跟 .disk-hint/.watch-desc/.sp-sub 同一档），--label-3 太浅快读不出来 */
 .brand-hint { font-size: var(--fs-footnote); color: var(--label-2); }
 
-/* 图标按钮（打开词表文件夹）：无底色，常态中性灰，只在悬停/聚焦时变蓝，
-   蓝色只留给「开始翻译」和真正的交互反馈 */
+/* 图标按钮（打开词表文件夹）：以前常态透明、只有悬停才看得出是个按钮，
+   不知道它存在的人根本不会去悬停，等于找不到。改成常态就跟旁边的白色
+   下拉框同款（卡片底 + 描边），一眼就能看出这是可以点的（designer.md #7） */
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: var(--h-control); height: var(--h-control); flex: none;
   border: none; border-radius: var(--r-control);
-  background: transparent; color: var(--label-2); cursor: pointer;
+  background: var(--card); box-shadow: var(--ring); color: var(--label-2); cursor: pointer;
 }
 .icon-btn svg { width: 17px; height: 17px; }
-.icon-btn:hover { background: var(--fill); color: var(--blue); }
-.icon-btn:focus-visible { outline: none; box-shadow: var(--focus); color: var(--blue); }
+.icon-btn:hover { background: var(--card); filter: brightness(0.98); color: var(--blue); }
+.icon-btn:focus-visible { outline: 2px solid transparent; box-shadow: var(--ring), var(--focus); color: var(--blue); }
 
 /* ---------- 底部大字幕 ---------- */
+/* 堵缝：.stats-line 在第一批延迟数据到达前是隐藏的（bottom:22px），这里以前
+   是 bottom:42px，中间空出 20px，右下角会露出弹幕列的背景色（designer.md #5）。
+   把 bottom 改到跟 .stats-line 一致，用 padding-bottom 把露出来的这一截吃掉——
+   大字幕条顶边的位置不变（padding-top 仍是 14px），.stats-line 在 DOM 里更靠后，
+   真出现时照样叠在这层上面 */
 .live-bar {
   position: fixed;
-  left: 0; right: 0; bottom: 42px;   /* 让出底部统计条的位置 */
-  padding: 14px 24px 16px;
+  left: 0; right: 0; bottom: 22px;
+  padding: 14px 24px 36px;
   text-align: center;
   background: var(--bg);
   border-top: 1px solid var(--border);
@@ -782,7 +790,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   cursor: pointer;
 }
 .share-ip-btn.active { color: #fff; background: var(--blue); }
-.share-help { font-size: var(--fs-caption); color: var(--label-2); margin-top: 6px; line-height: 16px; }
+.share-help { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 6px; line-height: 18px; }
 
 /* ---------- 换主播 ----------
    照 .share-panel 的位置与收放方式：跟直播状态无关地独立挂在顶栏下面、
@@ -1043,7 +1051,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .start-panel .recent-rooms { margin-top: 32px; }
 .recent-head {
   display: flex; align-items: baseline; justify-content: space-between;
-  padding: 0 4px; margin-bottom: 8px;
+  margin-bottom: 8px;
 }
 .recent-label { font-size: var(--fs-footnote); color: var(--label-2); }
 .recent-clear {
