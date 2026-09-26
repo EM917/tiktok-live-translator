@@ -31,6 +31,9 @@
   --gray: #8e8e93;
   --warn-bg: #fff6e0;
   --warn-fg: #7a5200;
+  --info-bg: #e3edfb;
+  --info-fg: #1f3b63;                   /* GPU 加速组件装好的提示（app/updater.py 的
+                                            mlx-ready），9.5:1，见 .incident.info */
   /* 违禁词报警的分级色（tier-variant=变体命中，tier-fuzzy=模糊命中） */
   --tier-variant: #e8a013;
   --tier-fuzzy: #c9a227;
@@ -64,6 +67,8 @@
     --gray: #8e8e93;
     --warn-bg: #3a2f14;
     --warn-fg: #f0c674;
+    --info-bg: #16283f;
+    --info-fg: #9dc4f2;                 /* 8.2:1 */
     --tier-variant: #f0b429;
     --tier-fuzzy: #d9bb4a;
   }
@@ -141,7 +146,7 @@ body {
 }
 .incident.warn, .health-line.lagging { color: var(--warn-fg); background: var(--warn-bg); }
 .incident.error, .health-line.degraded { color: #fff; background: var(--fail); }
-.incident.info { color: #1f3b63; background: #e3edfb; }
+.incident.info { color: var(--info-fg); background: var(--info-bg); }
 
 /* ---------- 违禁词报警 ---------- */
 .alert-section { padding: 10px 14px 4px; }
