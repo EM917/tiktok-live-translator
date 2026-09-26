@@ -557,14 +557,17 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .cap .trans.pending { color: var(--text-faint); font-style: italic; font-size: 14px; }
 
 /* ---------- 识别落后 / 降级 ---------- */
+/* 以前写死浅黄 #ffeaa7：深色模式下这条会变成一整条刺眼的亮黄带，跟 #1c1c1e
+   背景对比高达 14:1，偏偏出现在「识别落后」这种需要冷静判断的时刻——改用
+   --warn-bg/--warn-fg，深浅色各有自己的低饱和度版本（designer.md #8） */
 .health-bar {
   padding: 7px 20px;
   font-size: 13px;
   font-weight: 600;
   text-align: center;
-  color: #7a5200;
-  background: #ffeaa7;
-  border-bottom: 1px solid #e6c200;
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border-bottom: 0.5px solid color-mix(in srgb, var(--orange) 40%, transparent);
 }
 .health-bar.degraded { color: #fff; background: var(--fail); border-bottom-color: var(--fail); }
 
@@ -575,20 +578,29 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-size: 13px;
   font-weight: 600;
   text-align: center;
-  color: #7a5200;
-  background: #ffeaa7;
-  border-bottom: 1px solid #e6c200;
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  border-bottom: 0.5px solid color-mix(in srgb, var(--orange) 40%, transparent);
 }
 .incident.error { color: #fff; background: var(--fail); border-bottom-color: var(--fail); }
-.incident.info { color: #1f3b63; background: #e3edfb; border-bottom-color: #bcd0ee; }
+.incident.info {
+  color: var(--label);
+  background: color-mix(in srgb, var(--blue) 10%, var(--bg));
+  border-bottom-color: color-mix(in srgb, var(--blue) 30%, transparent);
+}
 
 /* ---------- 设置分组列表（inset grouped list） ---------- */
 .settings { margin-top: 32px; }
 .group-title {
-  padding: 0 4px; margin-bottom: 8px;
+  margin-bottom: 8px;
   font-size: var(--fs-footnote); font-weight: 400; color: var(--label-2);
 }
-.group { background: var(--card); border-radius: var(--r-group); overflow: hidden; }
+/* 停止后留在 #history 里的上一场字幕：跟 .start-panel 同宽、同一条左边线
+   （见 body.home .cap 的 600px 覆写），不用 .group-title 默认的 0 4px 内边距——
+   那 4px 本来就是本次一起去掉的对不齐来源之一（designer.md #6） */
+.prev-caps-title { max-width: 600px; margin: 0 auto 8px; padding: 0; }
+/* 描边跟输入框/下拉统一，理由同上面的 .recent-chip（designer.md #12） */
+.group { background: var(--card); border-radius: var(--r-group); overflow: hidden; box-shadow: var(--ring); }
 .set-item { position: relative; }
 /* 行间发丝线从名称处开始（左缩进 52 = 16 边距 + 26 图标 + 10 间距），苹果列表的样子 */
 .set-item + .set-item::before {
@@ -920,9 +932,10 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   color: var(--text);
 }
 
-/* 报警译文失败。不能只是留白——中控会以为还在等，而其实永远等不到。 */
+/* 报警译文失败。不能只是留白——中控会以为还在等，而其实永远等不到。
+   写死的 #b45309 换成 --warn-fg，深色模式下才跟着变（designer.md #8） */
 .alert-zh.failed {
-  color: #b45309;
+  color: var(--warn-fg);
   font-style: normal;
   opacity: 1;
 }
