@@ -23,7 +23,10 @@ def test_saved_engine_without_key_falls_back_with_warning():
     而重新填密钥恰恰得先把界面打开。"""
     engine, warn = restore_engine(None, "deepl", key_lookup=_key(None))
     assert engine == "auto"
-    assert warn and "deepl" in warn
+    # 说人话的引擎名（engine_label），不露内部代号——同一条规矩见 CLAUDE.md
+    # 「拿不到流地址：只报观察，不猜原因」一节禁止的那类内部术语
+    assert warn and "DeepL" in warn and "自动" in warn
+    assert "deepl" not in warn and "auto" not in warn
 
 
 def test_keyless_engine_needs_no_lookup():

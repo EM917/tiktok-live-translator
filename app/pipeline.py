@@ -3450,7 +3450,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
     async def _publish_engine(self):
         """把当前引擎和各密钥的填写状态告诉页面（密钥只给尾四位）。"""
         from .settings import load_settings
-        from .translator import mask_key
+        from .translator import engine_label, mask_key
 
         await self._announce_settings_backup()
         stored = load_settings().get("api_keys", {})
@@ -3463,10 +3463,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 usage = await asyncio.wait_for(inner.usage(), timeout=3)
             except Exception:
                 usage = None
+        active_name = getattr(self.translator, "name", None)
         info = {"engine": getattr(self.args, "translator", "auto"),
                 "usage": usage,
-                "active": getattr(self.translator, "name", None),
-                # 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」）。
+                "active": active_name,
+                # 说人话的引擎名，页面据此显示摘要，不用自己再维护一份对照表——
+                # 以前 web/app.js 有一份重复的 ENGINE_LABEL，跟这里的 engine_label
+                # 已经不一致（同一个 openai 一边叫「OpenAI 兼容接口」一边叫
+                # 「OpenAI」），单一数据源改到这里
+                "active_label": engine_label(active_name),
+                # 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用自动」）。
                 # 终端里 print 过一遍，但窗口应用的用户看不到终端
                 "note": getattr(self.args, "translator_note", None),
                 "keys": {env: mask_key(os.environ.get(env) or stored.get(env, ""))

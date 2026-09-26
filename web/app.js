@@ -171,6 +171,7 @@
   var versionNoticeTimer = null;
   var updateCheckNote = "";  // 很久没连上更新服务器时版本号后面那句话（文字由服务端给）
   var updateConfirmTimer = null;
+  var recentClearConfirmTimer = null;
   var liveBarId = null;      // 底部大字幕当前显示的是哪一条（译文回来要就地替换）
   // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
   var cardsById = {};
@@ -298,11 +299,12 @@
     switchBrandSel.addEventListener("focus", requestBrandRefresh);
     switchBrandSel.addEventListener("mousedown", requestBrandRefresh);
   }
-  if (brandsDirBtn) {
-    brandsDirBtn.addEventListener("click", function () {
-      send({ type: "open_brands_dir" });
-    });
-  }
+  function openBrandsDir() { send({ type: "open_brands_dir" }); }
+  if (brandsDirBtn) brandsDirBtn.addEventListener("click", openBrandsDir);
+  // 空态里那句话末尾的「打开 brands 文件夹」文字按钮：同一个消息，跟旁边的
+  // 文件夹图标按钮是两个入口、一个动作（pm.md #6）
+  var brandHintOpenBtn = document.getElementById("brand-hint-open");
+  if (brandHintOpenBtn) brandHintOpenBtn.addEventListener("click", openBrandsDir);
   // savedRoom 的回填放在这里（brandState 已声明）：同步记一下主播名，
   // 不清 touched（此刻必然是 false，页面刚加载还没人碰过下拉，写这行只是
   // 让「回填不清 touched」这条规则从一开始就一致，不是这里真的需要保留什么）
@@ -829,11 +831,13 @@
   function setStatus(msg) {
     var state = msg.state || "idle";
     statusDot.className = "dot " + state;
-    // 直播中额外带上正在听谁：「直播中 · @A」。主播名和顶栏「换主播」面板
-    // 认的是同一个来源（config.room_url，经 streamerFromInput 提取），
-    // 取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就不带这半句
+    // 连接中/直播中额外带上正在听谁：「连接中… · @A」「直播中 · @A」。主播名和
+    // 顶栏「换主播」面板认的是同一个来源（config.room_url，经 streamerFromInput
+    // 提取），取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就
+    // 不带这半句。连接中也要带：点错了要等连上才看得出来，而失败的连接中位
+    // 要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）
     var label = STATUS_TEXT[state] || state;
-    if (state === "live") {
+    if (state === "live" || state === "connecting") {
       var liveStreamer = streamerFromInput(roomInput.value);
       if (liveStreamer) label += " · @" + liveStreamer;
     }
@@ -1556,8 +1560,27 @@
     renderSwitchRecentList();
   }
 
+  // 两段式确认，做法同顶栏「一键更新」（resetUpdateBtn/updateBtn 那一对）：
+  // 第一次点只改文案、6 秒后自动复位，第二次点在窗口内才真的发送。这份列表
+  // 是「一键开始」的唯一数据来源，误触清空的代价不小，原来一点就清、连按钮
+  // 本身还是最显眼的系统蓝，是最容易被误触的地方之一（pm.md #5）
+  function resetRecentClear() {
+    if (recentClearConfirmTimer) clearTimeout(recentClearConfirmTimer);
+    recentClearConfirmTimer = null;
+    if (recentClear) {
+      delete recentClear.dataset.confirm;
+      recentClear.textContent = "清除记录";
+    }
+  }
   if (recentClear) {
     recentClear.addEventListener("click", function () {
+      if (recentClear.dataset.confirm !== "1") {
+        recentClear.dataset.confirm = "1";
+        recentClear.textContent = "再点一次清除";
+        recentClearConfirmTimer = setTimeout(resetRecentClear, 6000);
+        return;
+      }
+      resetRecentClear();
       send({ type: "clear_recent_rooms" });     // 服务端清空并广播空列表回来
     });
   }
@@ -1938,7 +1961,7 @@
 
   // 最近直播间 chip：数据同开始面板（renderRecentRooms 存的 recentRoomsEntries），
   // 但点击行为不同——这里只填入并武装，绝不直接开始，直播中误触一下不该立刻断流。
-  // 当前正在监听的那个主播标「监听中」且不可点。
+  // 当前正在监听的那个主播标「当前」且不可点。
   function renderSwitchRecentList() {
     if (!switchRecent || !switchRecentList) return;
     switchRecentList.innerHTML = "";
@@ -1952,7 +1975,7 @@
       var isCurrent = !!cur && e.streamer.toLowerCase() === cur.toLowerCase();
       if (isCurrent) {
         chip.disabled = true;
-        chip.textContent = "@" + e.streamer + "（监听中）";
+        chip.textContent = "@" + e.streamer + "（当前）";
       } else {
         chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
         chip.title = "填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）";
@@ -1977,8 +2000,11 @@
     if (switchBrandSel) switchBrandSel.value = "";
     var cur = currentStreamerName();
     if (switchSub) {
+      // 「当前 @A」跟最近直播间 chip 的「（当前）」用同一个词，不再说「监听中」——
+      // 顶栏是「直播中 · @A」，这里以前的「当前监听」/chip 的「监听中」是第三种
+      // 说法，混用容易让人以为指的不是同一件事（pm.md #7）
       switchSub.textContent = cur
-        ? "当前监听 @" + cur + "，确认前不会中断"
+        ? "当前 @" + cur + "，确认前不会中断"
         : "确认前不会中断当前监听";
     }
     if (switchSourceEcho) {
@@ -2060,7 +2086,9 @@
   function setAlertsEnabled(on) {
     alertsEnabled = !!on;
     if (alertsToggle) alertsToggle.checked = alertsEnabled;
-    if (watchMode) watchMode.textContent = alertsEnabled ? "警示开" : "警示关";
+    // 统一叫「报警」：这一行摘要「开启/关闭 · 词表 N 条」，跟设置行名称
+    // 「违禁词报警」、顶栏标签「报警开」用同一个词，不再是「警示」（pm.md #7）
+    if (watchMode) watchMode.textContent = alertsEnabled ? "开启" : "关闭";
     updateWatchDesc();
     updateAlertModeTag();
   }
@@ -2113,13 +2141,14 @@
   function renderWatchlist(msg) {
     if (!watchState) return;
     watchlistConfigured = msg.count > 0;
+    // 不再切 .watch-state.on/.off——旧版靠这两个类换色，这次改版的 style.css
+    // 里 .watch-state 从未定义任何样式（词表状态只用文字说明，见 pm.md #7 附带
+    // 发现），继续写这两个类只是死代码（engineer.md #7）
     if (msg.count > 0) {
       watchState.textContent = "词表 " + msg.count + " 条";
-      watchState.className = "watch-state on";
       updateWatchDesc();
     } else {
       watchState.textContent = "词表为空";
-      watchState.className = "watch-state off";
       watchDesc.textContent = "当前词表为空，本工具不会发出任何违禁词报警。";
     }
   }
@@ -2397,10 +2426,6 @@
     none: "只显示识别原文，不翻译。"
   };
   var engineKeys = {};
-  // 设置行右侧的摘要：说人话的引擎名，不露内部代号（hymt2）
-  var ENGINE_LABEL = { hymt2: "本地 Hy-MT2 1.8B", "hymt2-7b": "本地 Hy-MT2 7B",
-                       gemma: "本地 TranslateGemma", deepl: "DeepL", claude: "Claude",
-                       openai: "OpenAI 兼容接口", google: "Google 免费接口" };
   var engineNoteSig = null;   // 上一次的回退提示；变了才自动展开，重连回放不反复弹开
 
   // 引擎被回退时摘要前面加的小三角（跟 .sc-icon 同一套线性画法，颜色固定橙——
@@ -2416,8 +2441,10 @@
     if (!engineSelect) return;
     engineKeys = info.keys || {};
     engineSelect.value = info.engine || "auto";
-    var active = info.active ? (ENGINE_LABEL[info.active] || info.active)
-                             : (info.engine === "none" ? "不翻译" : "");
+    // 说人话的引擎名由服务端给（app/translator.py engine_label），页面不再自己
+    // 维护一份对照表——以前这里的 ENGINE_LABEL 和服务端那份已经不一致（同一个
+    // openai 一边叫「OpenAI 兼容接口」一边叫「OpenAI」，见 pm.md #7）
+    var active = info.active_label || (info.engine === "none" ? "不翻译" : "");
     if (info.usage && info.usage.limit) {
       var pct = Math.round(info.usage.used * 100 / info.usage.limit);
       // 35k 字符/小时是实测均值（2026-08-26 场），只做量级提示

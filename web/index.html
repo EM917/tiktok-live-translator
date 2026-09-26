@@ -167,7 +167,7 @@
       </div>
       <!-- 最近直播间：同开始面板的数据，但这里点了只填入并武装，绝不直接开始——
            直播中误触一下 chip 不该立刻断流（见 app.js 的两段式确认）。
-           当前正在监听的那个主播标「监听中」且不可点。 -->
+           当前正在监听的那个主播标「当前」且不可点。 -->
       <div id="switch-recent" class="recent-rooms hidden">
         <div class="recent-head"><span class="recent-label">最近的直播间</span></div>
         <div id="switch-recent-list" class="recent-list"></div>
@@ -209,7 +209,7 @@
         <p class="sp-sub">
           粘贴直播间链接，或只输入主播用户名（如 @somebody）
           <button id="input-help-btn" class="help-btn" type="button" aria-expanded="false"
-                  aria-controls="input-help" title="其他输入方式">
+                  aria-controls="input-help" title="输入说明">
             <!-- SF Symbols「info.circle」，跟设置行图标同一套画法（描边、currentColor） -->
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="8" cy="8" r="6.3"/>
@@ -276,7 +276,14 @@
             </svg>
           </button>
         </span>
-        <span id="brand-empty-hint" class="brand-hint hidden">把品牌词表放进 brands 文件夹后可选</span>
+        <!-- 空态：说清楚这个下拉是干什么的（以前只写在下拉的悬停提示里，没做过的人
+             看不到），并直接给一个可点的入口，不用先找到旁边那个图标按钮
+             （pm.md #6）。文字按钮复用 #brands-dir-btn 同一个 open_brands_dir 消息 -->
+        <span id="brand-empty-hint" class="brand-hint hidden">
+          整场只卖一个牌子时，放入它的商品词表可提高商品名翻译准确率。
+          <button id="brand-hint-open" class="brand-hint-link" type="button">打开 brands 文件夹</button>
+          · 放好后点一下下拉即可，无需重启
+        </span>
       </div>
 
       <!-- 最近直播间：只显示主播名，点一下就直接开始（用上面这一行的主播语言/品牌）。
@@ -284,7 +291,7 @@
       <div id="recent-rooms" class="recent-rooms hidden">
         <div class="recent-head">
           <span class="recent-label">最近的直播间</span>
-          <button id="recent-clear" class="recent-clear" title="清空最近记录">清空</button>
+          <button id="recent-clear" class="recent-clear" title="清除最近直播间记录" type="button">清除记录</button>
         </div>
         <div id="recent-list" class="recent-list"></div>
       </div>
@@ -370,14 +377,14 @@
                 </svg>
               </span>
               <span class="set-name">违禁词报警</span>
-              <span class="set-value"><span id="watch-mode">警示关</span> · <span id="watch-state" class="watch-state">检查中…</span></span>
+              <span class="set-value"><span id="watch-mode">关闭</span> · <span id="watch-state" class="watch-state">检查中…</span></span>
               <span class="set-chevron" aria-hidden="true"></span>
             </button>
             <div id="watch-body" class="set-body hidden">
               <!-- 违禁词警示模式：默认关闭。关闭时命中仍会记入审计（不会漏），
                    只是不弹窗、不通知——开不开只影响「要不要报警」，不影响「要不要记」 -->
               <label class="watch-toggle-row">
-                <span>开启违禁词警示</span>
+                <span>命中时弹出报警</span>
                 <!-- 真复选框留着（id 与 change 事件不变），视觉上藏起来，由后面的 .switch 画成开关 -->
                 <input type="checkbox" id="alerts-toggle" class="toggle-input">
                 <span class="switch" aria-hidden="true"></span>
@@ -432,7 +439,7 @@
         <span id="comment-source" class="cmt-source">未连接</span></span>
       <span class="comment-actions">
         <button id="toggle-comments" class="btn small" title="收起弹幕列，字幕独占整行">收起</button>
-        <button id="clear-comments" class="btn small">清空</button>
+        <button id="clear-comments" class="btn small">清空弹幕</button>
       </span>
     </div>
     <!-- 空态要说清楚是「没人发」还是「评论流没连上」，两者对中控意义完全不同 -->
