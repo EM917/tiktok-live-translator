@@ -140,28 +140,37 @@ body.home { --page-bg: var(--grouped-bg); }
 
 .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
-.brand h1 { font-size: var(--fs-body); font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
-
-/* 状态胶囊：点 + 文字。直播中/出错时整颗胶囊染色（:has 不支持时退回灰色胶囊，不影响信息） */
+/* 状态胶囊：点 + 文字。中性状态（待机/已结束）不再有灰底——之前跟按钮用
+   同一种灰色填充，看着像个禁用的按钮（designer.md #9）。只有直播中/连接中/
+   出错这几个真正有状态含义的时候才上色、恢复胶囊的内边距
+   （:has 不支持时退回无底色的纯文字，不影响信息） */
 .status-pill {
   display: inline-flex; align-items: center; gap: 6px;
-  height: 22px; padding: 0 10px 0 8px; border-radius: 11px;
-  background: var(--fill); color: var(--label-2);
+  height: 22px; padding: 0; border-radius: 11px;
+  background: transparent; color: var(--label-2);
   font-size: var(--fs-footnote); white-space: nowrap;
+}
+.status-pill:has(.dot.live),
+.status-pill:has(.dot.connecting),
+.status-pill:has(.dot.error) {
+  padding: 0 10px 0 8px;
 }
 .status-pill:has(.dot.live) { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green-ink); }
 .status-pill:has(.dot.connecting) { background: color-mix(in srgb, var(--orange) 16%, transparent); color: var(--orange-ink); }
-.status-pill:has(.dot.error) { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--fail); }
-.status-text { font-size: var(--fs-footnote); color: inherit; }
+.status-pill:has(.dot.error) { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red-ink); }
+/* 主播名可能很长：顶栏放不下时省略号截断，不挤爆后面的控件（见 designer.md #3） */
+.status-text { font-size: var(--fs-footnote); color: inherit; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
-/* 违禁词警示开关的状态标签：只在连接中/直播中露出（app.js 控制 hidden） */
+/* 违禁词警示开关的状态标签：只在「连接中/直播中且报警开着」时露出（app.js
+   updateAlertModeTag），关闭是默认值，常驻显示一个「警示关」不但占顶栏空间，
+   对新人也是看不懂的术语——关闭就直接不显示这个标签（pm.md #4）。
+   因此这里只需要「开」一种视觉，不再需要 .off 的样式 */
 .alert-mode-tag {
   display: inline-flex; align-items: center;
   height: 22px; padding: 0 8px; border-radius: 11px;
   font-size: var(--fs-footnote); font-weight: 500;
+  color: var(--green-ink); background: color-mix(in srgb, var(--green) 16%, transparent);
 }
-.alert-mode-tag.off { color: var(--label-2); background: var(--fill); }
-.alert-mode-tag.on { color: var(--green-ink); background: color-mix(in srgb, var(--green) 16%, transparent); }
 
 /* 本场品牌标签：同样只在连接中/直播中露出（app.js 控制 hidden），但纯粹是
    说明性质（「正在按哪份词表监听」），不是开关，配色固定用中性灰，不跟着
@@ -181,11 +190,15 @@ body.home { --page-bg: var(--grouped-bg); }
 .dot.error { background: var(--red); }
 .dot.ended { background: var(--gray); }
 
-.controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* margin-left:auto 是折行前的最后一道兜底：真折成两行时至少让控件贴右边，
+   跟左边的品牌区拉开，不会看着像纯粹堆在一起（见 designer.md #3） */
+.controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 
 .ctl { display: flex; align-items: center; gap: 6px; font-size: var(--fs-callout); color: var(--label-2); }
-/* 字号：小 A — 滑块 — 大 A */
+/* 字号：小 A — 滑块 — 大 A。只影响直播时底部的大字幕，待机首页拖动看不到
+   任何效果，索性首页不显示（pm.md #8） */
 .ctl-font { margin: 0 8px; gap: 8px; }
+body.home .ctl-font { display: none; }
 .ctl-font .a-small { font-size: 11px; font-weight: 500; }
 .ctl-font .a-large { font-size: 16px; font-weight: 500; }
 
@@ -268,6 +281,14 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
 /* 窄窗口：顶栏先省掉「目标语言」四个字（下拉本身有 title），再让控件整行换到第二行 */
 @media (max-width: 1080px) {
   .ctl-text { display: none; }
+}
+
+/* 更窄的窗口（默认 1000×760 属于这一档）：「手机同看」只留图标，省掉约 114px。
+   font-size:0 只是让文字在视觉上不占地方，文字本身还在 DOM 里，用 textContent
+   写入、不受影响，读屏一样能读到「手机同看」/「手机同看 · 已打开」（designer.md #3）。
+   图标本身用固定 px 宽高的 mask 画（见下面 #share-btn::before），不随字号缩放 */
+@media (max-width: 1100px) {
+  #share-btn { font-size: 0; width: 28px; padding: 0; gap: 0; }
 }
 
 /* ---------- 更新横幅 ---------- */

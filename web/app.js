@@ -34,6 +34,7 @@
   var targetSel = document.getElementById("target-lang");
   var fontSlider = document.getElementById("font-size");
   var clearBtn = document.getElementById("clear-btn");
+  var prevCapsTitle = document.getElementById("prev-caps-title");
   var migrateBar = document.getElementById("migrate-bar");
   var migrateText = document.getElementById("migrate-text");
   var migrateBtn = document.getElementById("migrate-btn");
@@ -321,6 +322,16 @@
     send({ type: "set_target", value: targetSel.value });
   });
 
+  // 「清空字幕」按钮本身，以及停止后停留在待机首页的「上一场字幕」小标题，
+  // 都只在 #history 里确实还有 .cap 时才该出现（pm.md #8、designer.md #6）。
+  // 两处判断条件不同（前者不看是不是首页，后者只在首页才显示），抽成一个
+  // 函数只是不想让「有没有字幕」这个判断在多处各写一份、改一个漏一个
+  function syncCaptionDependentUi() {
+    var hasCaps = !!historyEl.querySelector(".cap");
+    if (clearBtn) clearBtn.classList.toggle("hidden", !hasCaps);
+    if (prevCapsTitle) prevCapsTitle.classList.toggle("hidden", streamActive || !hasCaps);
+  }
+
   clearBtn.addEventListener("click", function () {
     // 分隔条（.session-sep，换主播时插的「── HH:MM:SS 以下为 @B ──」）跟着
     // 字幕一起清掉，不然重连回放前调这个函数清场时，旧分隔条会越攒越多——
@@ -331,6 +342,7 @@
     cardsById = {};              // 卡片没了，id 映射也要清，否则一直涨
     liveBarId = null;
     liveBar.classList.add("hidden");
+    syncCaptionDependentUi();
   });
 
   // 地址输入归一化在 normalize.js（独立成文件以便单元测试），
@@ -847,6 +859,7 @@
     streamActive = active;
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
     updateActiveBrandTag(); // 本场品牌标签同一个显示条件，见该函数注释
+    syncCaptionDependentUi(); // 「上一场字幕」标题只在首页才显示，随 streamActive 变化
     refreshCommentPanel();
     // 「停止」之后桌面页面留残留（大字幕压住开始面板、回到最新按钮悬空、
     // 上一场弹幕还挂着）：这两步把「直播中才有意义」的 UI 收掉/摆好，
@@ -948,6 +961,7 @@
 
     historyEl.appendChild(card);
     cardsById[msg.id] = card;
+    syncCaptionDependentUi();
 
     var caps = historyEl.querySelectorAll(".cap");
     while (caps.length > maxHistory) {
@@ -2049,14 +2063,15 @@
     updateAlertModeTag();
   }
 
-  // 顶栏标签：只在连接中/直播中露出（跟其它「直播中才有意义」的 UI 一个逻辑），
-  // 待机/已结束/出错/离线时没有场次可言，不该挂着一个「警示关/开」误导人。
+  // 顶栏标签：只在「连接中/直播中且报警开着」才露出。关闭是默认值，常驻显示
+  // 一个「警示关」既占顶栏空间（默认窗口下顶栏本就放不下一行，见 designer.md #3），
+  // 对新人也是看不懂的术语；不像开关本身，这里没有「什么都不显示」会被误解的
+  // 风险——顶栏别的地方也不会暗示这个功能存在（pm.md #4）
   function updateAlertModeTag() {
     if (!alertModeTag) return;
-    alertModeTag.classList.toggle("hidden", !streamActive);
-    alertModeTag.textContent = alertsEnabled ? "警示开" : "警示关";
-    alertModeTag.classList.toggle("on", alertsEnabled);
-    alertModeTag.classList.toggle("off", !alertsEnabled);
+    var show = streamActive && alertsEnabled;
+    alertModeTag.classList.toggle("hidden", !show);
+    if (show) alertModeTag.textContent = "报警开";
   }
 
   // 本场品牌标签：config.active_brand（{id, name} 或 null）来自 hello/config
