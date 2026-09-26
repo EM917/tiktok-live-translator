@@ -75,12 +75,26 @@ def test_incident_is_withdrawn_once_every_failure_clears():
 
 
 def test_incident_does_not_repeat_when_the_same_failure_is_republished():
-    """同样的失败重新发布（比如直播中语音识别每轮都刷新一次）不该重复起一条新提示。"""
+    """同样的失败重新发布（比如直播中语音识别每轮都刷新一次）不该重复起一条新提示。
+
+    不能靠 since 没变来判断：CaptionServer 收到 incident 广播时本来就把 since
+    焐住不动（"since": prev["since"] if prev else now，见 app/server.py），不管
+    _sync_selfcheck_incident 是真的跳过了重发、还是内容不变也照样广播了一遍，
+    since 这个字段都不会变——拿它当断言测不出去重 guard 有没有被删掉。改成直接
+    数 _incident 被调用几次，才是钉住「内容没变就不重发」这件事本身。"""
     p = _bare_pipeline()
+    calls = []
+    original_incident = p._incident
+
+    async def spy(key, level, text=""):
+        if key == p.SELFCHECK_INCIDENT:
+            calls.append((level, text))
+        await original_incident(key, level, text)
+
+    p._incident = spy
     run(p._publish_selfcheck(_checks(("fail", "人声降噪", "修法"))))
-    since = p.server.config["incidents"][p.SELFCHECK_INCIDENT]["since"]
     run(p._publish_selfcheck(_checks(("fail", "人声降噪", "修法"))))
-    assert p.server.config["incidents"][p.SELFCHECK_INCIDENT]["since"] == since
+    assert len(calls) == 1
 
 
 def test_incident_key_is_not_session_scoped_so_it_survives_a_new_session():
