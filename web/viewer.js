@@ -209,6 +209,12 @@ if (typeof document !== "undefined") {
     var STALE_MS = 45000;     // 已连接但 45 秒没有新消息：叠加显示，不改变连接状态本身
     var STALE_RECONNECT_SEC = 60;   // A9：重连超过这么久，文案升级为找中控确认
 
+    // 图标：描边 1.5、currentColor，跟桌面端设置行同一套画法（见 web/index.html）。
+    // 只放这两个——其余（提示音、弹幕、回到最新、报警角标）是静态文案，直接写在
+    // viewer.html 里；这两个是 JS 拼接出来的卡片内容，只能在这里内联。
+    var ICON_ALERT_TRIANGLE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.3 14.3 13.3H1.7Z"/><path d="M8 6.6v3"/><circle cx="8" cy="11.4" r="0.6" fill="currentColor" stroke="none"/></svg>';
+    var ICON_XMARK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg>';
+
     var connDot = document.getElementById("conn-dot");
     var connText = document.getElementById("conn-text");
     var streamTextEl = document.getElementById("stream-text");
@@ -625,20 +631,30 @@ if (typeof document !== "undefined") {
 
     // ---- 识别健康度：白名单只留 level，文案按 level 查表自己生成 ----
     var HEALTH_TEXT = {
-      lagging: "⚠️ 识别开始落后，报警会有延迟",
-      degraded: "🔴 检测已降级，识别明显落后",
+      lagging: "识别开始落后，报警会有延迟",
+      degraded: "检测已降级，识别明显落后",
     };
     function renderHealth(msg) {
       if (!healthLine) return;
       var text = msg && HEALTH_TEXT[msg.level];
       if (!text) { healthLine.classList.add("hidden"); return; }
-      healthLine.textContent = text;
+      healthLine.innerHTML = "";
+      var icon = document.createElement("span");
+      icon.className = "icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.innerHTML = ICON_ALERT_TRIANGLE;
+      healthLine.appendChild(icon);
+      var label = document.createElement("span");
+      label.textContent = text;
+      healthLine.appendChild(label);
       healthLine.className = "health-line " + msg.level;
       healthLine.classList.remove("hidden");
     }
 
     // ---- 违禁词报警：最显眼的红卡片，新的插最前，最多 50 条 ----
-    var TIER_LABEL = { exact: "🔴 精确", variant: "🟠 变体", fuzzy: "🟡 疑似" };
+    // 精确/变体/疑似三档不再靠 emoji 颜色区分，改成卡片左侧的分级色竖线
+    // （跟桌面端 .alert-item.tier-variant/.tier-fuzzy 同一套逻辑，见 viewer.css）。
+    var TIER_LABEL = { exact: "精确", variant: "变体", fuzzy: "疑似" };
     function renderAlert(msg) {
       if (!alertSection || !alertList) return;
       // 之前在本机取消过：回放（重连/刷新补发的历史）也不复活。不是「自动取消」，
@@ -647,20 +663,27 @@ if (typeof document !== "undefined") {
       if (msg.demo) { demoMode = true; updateDemoBanner(); }
       alertSection.classList.remove("hidden");
       var item = document.createElement("div");
-      item.className = "alert-item";
+      item.className = "alert-item tier-" + (msg.tier || "exact");
       item.dataset.key = alertKey(msg);
 
       var head = document.createElement("div");
       head.className = "alert-head";
       var headLabel = document.createElement("span");
       headLabel.className = "alert-head-label";
-      headLabel.textContent = (TIER_LABEL[msg.tier] || "命中") + " 「" + (msg.term || "") + "」 " + hhmmss(msg.ts);
+      var tierIcon = document.createElement("span");
+      tierIcon.className = "alert-tier-icon";
+      tierIcon.setAttribute("aria-hidden", "true");
+      tierIcon.innerHTML = ICON_ALERT_TRIANGLE;
+      headLabel.appendChild(tierIcon);
+      var labelText = document.createElement("span");
+      labelText.textContent = (TIER_LABEL[msg.tier] || "命中") + " 「" + (msg.term || "") + "」 " + hhmmss(msg.ts);
+      headLabel.appendChild(labelText);
       head.appendChild(headLabel);
       var dismissBtn = document.createElement("button");
       dismissBtn.type = "button";
       dismissBtn.className = "alert-dismiss";
       dismissBtn.setAttribute("aria-label", "取消这条报警（只在本机隐藏）");
-      dismissBtn.textContent = "✕";
+      dismissBtn.innerHTML = ICON_XMARK;
       dismissBtn.addEventListener("click", function () { dismissAlert(msg.alert_id); });
       head.appendChild(dismissBtn);
       item.appendChild(head);
@@ -700,7 +723,7 @@ if (typeof document !== "undefined") {
         entry.zhEl.classList.add("failed");
       }
     }
-    // 摘掉一张已经在列表里的报警卡片：本地取消（✕）和「清除已看过」共用。
+    // 摘掉一张已经在列表里的报警卡片：本地取消（取消按钮）和「清除已看过」共用。
     // 只改 DOM 和这台手机自己的 alertsById，不发服务端、不碰审计。
     function removeAlertCard(key) {
       var entry = alertsById[key];
@@ -710,7 +733,7 @@ if (typeof document !== "undefined") {
       if (alertCountEl) alertCountEl.textContent = String(alertList.children.length);
       if (alertBadge && !alertList.children.length) alertBadge.classList.add("hidden");
     }
-    // ✕：取消单条。只在这台手机上隐藏，桌面报警面板和审计日志都不受影响。
+    // 取消按钮：只取消这一条。只在这台手机上隐藏，桌面报警面板和审计日志都不受影响。
     function dismissAlert(alertId) {
       dismissedAlerts.add(alertId);
       removeAlertCard(alertKey({ alert_id: alertId }));
