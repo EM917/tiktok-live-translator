@@ -204,8 +204,10 @@
   // 存在服务端（settings.json），随 config 消息回填，不经这里
   var savedSource = lsGet("sourceLang");
   if (savedSource && savedSource !== "auto") selectSourceLang(savedSource);
+  // savedRoom 先读出来，回填挪到下面（brandState 声明之后）——回填要顺带
+  // 同步 brandState.streamer（brandStateSyncStreamer，只记主播不清 touched），
+  // 这是页面加载不是中控操作，不能套用 brandStateAfterRoomInput 那条规则
   var savedRoom = lsGet("roomUrl");
-  if (savedRoom) roomInput.value = savedRoom;
   // 服务端记住的主播语言随 config 到达后回填（localStorage 按端口隔离，
   // 端口漂移就丢了）；但本页里用户已亲手改过的选择不能被盖掉
   var sourceTouched = false;
@@ -298,6 +300,13 @@
       send({ type: "open_brands_dir" });
     });
   }
+  // savedRoom 的回填放在这里（brandState 已声明）：同步记一下主播名，
+  // 不清 touched（此刻必然是 false，页面刚加载还没人碰过下拉，写这行只是
+  // 让「回填不清 touched」这条规则从一开始就一致，不是这里真的需要保留什么）
+  if (savedRoom) {
+    roomInput.value = savedRoom;
+    brandState = brandStateSyncStreamer(brandState, streamerFromInput(savedRoom));
+  }
   roomInput.addEventListener("input", onRoomInputChanged);
 
   fontSlider.addEventListener("input", function () {
@@ -333,6 +342,10 @@
   function fillRoomInput(roomUrl) {
     var m = roomInput.value.match(MEDIA_RE);
     roomInput.value = m ? roomUrl + " " + m[0] : roomUrl;
+    // 服务端广播的回填（如换主播成功后台推来的新 room_url），不是中控在敲
+    // 键盘——只记主播名，不清 touched（brandStateSyncStreamer，同页面加载/
+    // hello 那两处，见 web/brand.js）
+    brandState = brandStateSyncStreamer(brandState, streamerFromInput(roomInput.value));
   }
 
   // 从原始输入解析房间地址（+ 可选的直连媒体地址）。开始面板和换主播面板要
@@ -393,6 +406,10 @@
     lsSet("sourceLang", sourceSel.value);
     sendStartCommand(buildStartPayload(parsed.url, parsed.media, sourceSel.value,
       alertsToggle && alertsToggle.checked, brandSel ? brandSel.value : ""));
+    // 发出 start 之后清掉 touched：三个入口（开始按钮、回车、chip）都走这个
+    // 函数，一处清零就够了。下一次不管是刷新默认值还是点 chip，都要重新按
+    // 「有没有改过」判断（brandStateAfterStart，见 web/brand.js）
+    brandState = brandStateAfterStart(brandState);
   }
 
   function armStartWatchdog() {
@@ -642,7 +659,11 @@
           // room_url 必须先回填，applyDefaultBrand() 才能读到这一场真正的主播名——
           // 顺序反了的话，私密窗口/换设备等 roomInput 本来是空的场景会先按空
           // 主播算出「不限」，room_url 填进来后却没有再刷新一遍（踩过的坑）
-          if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
+          if (msg.config.room_url && !roomInput.value) {
+            roomInput.value = msg.config.room_url;
+            // 同 fillRoomInput：程序自己回填的，不清 touched，只记主播名
+            brandState = brandStateSyncStreamer(brandState, streamerFromInput(msg.config.room_url));
+          }
           // brand_options 要先于 brands 处理：下拉框的选项得先建好，
           // applyDefaultBrand() 才有值可选
           if (msg.config.brand_options) renderBrandOptions(msg.config.brand_options);
@@ -1488,7 +1509,19 @@
           chip.title = "点击开始翻译 @" + e.streamer;
           chip.addEventListener("click", function () {
             roomInput.value = e.url;                // 地址在背后填好，界面上只见主播名
-            onRoomInputChanged();                   // 换了主播才按记住的品牌刷新
+            // 「下拉显示什么就发什么」：本页手动改过品牌下拉就沿用当前值，
+            // 不管点的是哪个主播的 chip；没改过才按这个主播记住的品牌刷新
+            // （brandForChipClick，见 web/brand.js）。这里不再走
+            // onRoomInputChanged/brandStateAfterRoomInput——那条规则是给
+            // 「敲键盘改地址」用的，chip 点击是另一套规则。主播名过
+            // streamerFromInput 而不是直接用 e.streamer：后者是 URL 里的原始
+            // 大小写（provenance.streamer_of 不转小写），brandState.streamer
+            // 要和「手打输入」那条路径存的值大小写一致，否则点完 chip 再手打
+            // 同一个主播会被误判成「换了主播」
+            var decision = brandForChipClick(brandState, streamerFromInput(e.url),
+              brandSel ? brandSel.value : "", brandsMap);
+            brandState = decision.state;
+            if (brandSel) selectBrand(brandSel, decision.brand);
             startStream();
           });
           recentList.appendChild(chip);
@@ -1834,15 +1867,33 @@
     }
   }
 
-  // 输入框变化、或点了最近直播间 chip：只「武装」第一步，绝不直接发送
-  // （见 web/switch.js）。品牌默认值的刷新规则和开始面板一致
+  // 输入框变化：只「武装」第一步，绝不直接发送（见 web/switch.js）。品牌
+  // 默认值的刷新规则和开始面板「敲键盘改地址」那一路一致
   // （brandStateAfterRoomInput），只是认的是换主播面板自己这份 state 和输入框——
-  // 这里换的是「要听谁」（@B），不是「正在听谁」（@A），两份状态不能混
+  // 这里换的是「要听谁」（@B），不是「正在听谁」（@A），两份状态不能混。
+  // chip 点击走 armSwitchFromChip，规则不同（见其注释）
   function armSwitchFromInput() {
     var streamer = streamerFromInput(switchInput.value);
     switchArmState = armSwitch(streamer, currentStreamerName(), Date.now());
     switchBrandState = brandStateAfterRoomInput(switchBrandState, streamer);
     applySwitchDefaultBrand();
+    clearSwitchError();
+    renderSwitchButton();
+    startSwitchResetTimer();
+  }
+
+  // 最近直播间 chip：同样只「武装」，不直接发送，但品牌那部分不能复用
+  // brandStateAfterRoomInput——那条规则一遇到「主播变了」就清 touched，点
+  // chip 换主播必然「变了」，手动选的品牌会被立刻冲掉。这里和开始面板的
+  // chip 一样走「下拉显示什么就发什么」（brandForChipClick，见
+  // web/brand.js）：本页手动改过换主播面板的下拉就沿用当前值，没改过才按
+  // 这个 chip 对应主播记住的品牌刷新
+  function armSwitchFromChip(streamer) {
+    switchArmState = armSwitch(streamer, currentStreamerName(), Date.now());
+    var decision = brandForChipClick(switchBrandState, streamer,
+      switchBrandSel ? switchBrandSel.value : "", brandsMap);
+    switchBrandState = decision.state;
+    if (switchBrandSel) selectBrand(switchBrandSel, decision.brand);
     clearSwitchError();
     renderSwitchButton();
     startSwitchResetTimer();
@@ -1882,7 +1933,7 @@
         chip.title = "填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）";
         chip.addEventListener("click", function () {
           switchInput.value = e.url;
-          armSwitchFromInput();
+          armSwitchFromChip(streamerFromInput(e.url));   // 大小写规则同开始面板的 chip
           switchInput.focus();
         });
       }
@@ -1955,6 +2006,9 @@
     lsSet("roomUrl", parsed.url);
     sendStartCommand(buildStartPayload(parsed.url, parsed.media, sourceSel.value,
       alertsToggle && alertsToggle.checked, switchBrandSel ? switchBrandSel.value : ""));
+    // 同开始面板的 startStream：发出 start 之后清掉 touched（面板下次打开
+    // 会整个重置，这里做只是让规则在两个面板上一致，不依赖「反正会重置」）
+    switchBrandState = brandStateAfterStart(switchBrandState);
     switchArmState = initialSwitchState();
     closeSwitchPanel();
   }

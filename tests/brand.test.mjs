@@ -6,7 +6,9 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { streamerFromInput, defaultBrandFor,
-       buildBrandOptionList, resolveSelectedBrand } = require("../web/brand.js");
+       buildBrandOptionList, resolveSelectedBrand,
+       brandStateSyncStreamer, brandStateAfterStart,
+       brandForChipClick } = require("../web/brand.js");
 
 // ---- streamerFromInput：与 normalizeRoomInput 认的输入一致 ----
 
@@ -131,4 +133,79 @@ test("初始/脏 state 按「没改过」处理，不改入参", () => {
   const prev = { streamer: "abc", touched: true };
   brandStateAfterRoomInput(prev, "xyz");
   assert.deepEqual(prev, { streamer: "abc", touched: true });
+});
+
+// ---- brandStateSyncStreamer：页面加载/hello/config 回填输入框——只记主播，
+// 不清 touched（和上面 brandStateAfterRoomInput 的唯一区别） ----
+
+test("回填换了主播也不清 touched（不是中控操作，不能套用换主播清空那条规则）", () => {
+  const touched = { streamer: "daisycabral_", touched: true };
+  assert.deepEqual(brandStateSyncStreamer(touched, "jessyjewelry1"),
+                   { streamer: "jessyjewelry1", touched: true });
+});
+
+test("回填时本来没改过下拉：touched 保持 false", () => {
+  assert.deepEqual(brandStateSyncStreamer({ streamer: "", touched: false }, "bella"),
+                   { streamer: "bella", touched: false });
+});
+
+test("初始/脏 state 按「没改过」处理，不改入参", () => {
+  assert.deepEqual(brandStateSyncStreamer(undefined, "abc"), { streamer: "abc", touched: false });
+  assert.deepEqual(brandStateSyncStreamer(null, ""), { streamer: "", touched: false });
+  const prev = { streamer: "abc", touched: true };
+  brandStateSyncStreamer(prev, "xyz");
+  assert.deepEqual(prev, { streamer: "abc", touched: true });
+});
+
+// ---- brandStateAfterStart：发出 start 之后清掉 touched，主播名原样保留 ----
+
+test("发出 start 后 touched 清零，主播名保留", () => {
+  assert.deepEqual(brandStateAfterStart({ streamer: "bella", touched: true }),
+                   { streamer: "bella", touched: false });
+});
+
+test("本来就没改过：保持不变", () => {
+  assert.deepEqual(brandStateAfterStart({ streamer: "bella", touched: false }),
+                   { streamer: "bella", touched: false });
+});
+
+test("脏 state 按空主播处理，不改入参", () => {
+  assert.deepEqual(brandStateAfterStart(undefined), { streamer: "", touched: false });
+  const prev = { streamer: "abc", touched: true };
+  brandStateAfterStart(prev);
+  assert.deepEqual(prev, { streamer: "abc", touched: true });
+});
+
+// ---- brandForChipClick：新规则「下拉显示什么就发什么」----
+// 品牌 id 同样用虚构的 "acme"/"zeta"：这里钉的是通用规则，不是某个真实品牌。
+
+test("加载后先改下拉，再点同一个主播的 chip：发手选值", () => {
+  const loaded = brandStateSyncStreamer({ streamer: "", touched: false }, "bella");
+  const edited = { streamer: loaded.streamer, touched: true };   // 中控手动改了下拉
+  const result = brandForChipClick(edited, "bella", "acme", { bella: "zeta" });
+  assert.deepEqual(result, { brand: "acme", state: { streamer: "bella", touched: true } });
+});
+
+test("改下拉后点另一个主播的 chip：仍发手选值，不按新主播刷新", () => {
+  const edited = { streamer: "bella", touched: true };
+  const result = brandForChipClick(edited, "daisycabral_", "acme", { daisycabral_: "zeta" });
+  assert.deepEqual(result, { brand: "acme", state: { streamer: "daisycabral_", touched: true } });
+});
+
+test("没改过下拉点 chip：发这个主播记住的品牌", () => {
+  const untouched = { streamer: "", touched: false };
+  const result = brandForChipClick(untouched, "daisycabral_", "无关紧要的当前值",
+    { daisycabral_: "zeta" });
+  assert.deepEqual(result, { brand: "zeta", state: { streamer: "daisycabral_", touched: false } });
+});
+
+test("没改过下拉、这个主播没记住品牌：发不限", () => {
+  const untouched = { streamer: "", touched: false };
+  const result = brandForChipClick(untouched, "nadie", "acme", {});
+  assert.deepEqual(result, { brand: "", state: { streamer: "nadie", touched: false } });
+});
+
+test("初始/脏 state 按「没改过」处理", () => {
+  const result = brandForChipClick(undefined, "bella", "acme", { bella: "zeta" });
+  assert.deepEqual(result, { brand: "zeta", state: { streamer: "bella", touched: false } });
 });
