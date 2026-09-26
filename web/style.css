@@ -610,7 +610,9 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .set-icon.green { background: var(--green); }
 .set-icon.blue { background: var(--blue); }
 .set-icon.orange { background: var(--orange); }
+.set-icon.red { background: var(--red); }
 .set-icon.gray { background: var(--gray); }
+.set-icon.indigo { background: var(--indigo); }
 .set-name { flex: none; }
 .set-value {
   flex: 1; min-width: 0; text-align: right;
@@ -627,12 +629,28 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .set-row[aria-expanded="true"] .set-chevron { transform: rotate(90deg); }
 /* 展开内容与名称左对齐 */
 .set-body { padding: 0 16px 16px 52px; }
+/* 展开动画：箭头本来就有 0.2s 旋转，内容却是瞬间出现，两者不搭
+   （designer.md #12）。:not(.hidden) 在 .hidden 被摘掉、元素从 display:none
+   变回可渲染的那一刻重新匹配上，浏览器会把它当成新出现的内容，从头播一遍
+   这段 @keyframes——不需要额外的 JS 去重新触发 */
+@keyframes set-body-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.set-body:not(.hidden) { animation: set-body-in .18s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .set-body:not(.hidden) { animation: none; }
+}
 
-/* 自检有失败/提醒、引擎被回退：摘要变色，失败时整行淡红底 + 图标变红 */
+/* 自检失败：整行淡红底 + 摘要文字标红。#sc-icon 本身的颜色/图形由 app.js
+   setSelfcheckIcon 按状态直接设置（checking/pass/warn/fail 四态），不依赖
+   这里的 has-fail 派生。
+   提醒状态不再有单独的摘要染色——之前用 --orange-ink，跟失败色 --fail
+   亮度只差 1.02:1，色弱基本分不清；「提醒」已经由 #sc-icon 的图形表达，
+   摘要文字维持普通的 --label-2 即可（designer.md #1） */
 .set-row.has-fail { background: color-mix(in srgb, var(--red) 8%, transparent); }
-.set-row.has-fail .set-value { color: var(--fail); font-weight: 500; }
+.set-row.has-fail .set-value { color: var(--red-ink); font-weight: 500; }
 .set-row.has-fail .set-icon { background: var(--red); }
-.set-row.has-warn .set-value { color: var(--orange-ink); }
 
 /* ---------- 设置行：违禁词报警 ---------- */
 .watch-toggle-row {
@@ -780,22 +798,32 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-size: var(--fs-footnote); color: var(--fail); margin-top: 8px; line-height: 18px;
 }
 #switch-confirm { width: 100%; height: var(--h-large); margin-top: 12px; border-radius: var(--r-field); font-size: var(--fs-body); }
-.switch-hint { font-size: var(--fs-caption); color: var(--label-2); margin-top: 8px; line-height: 16px; }
+.switch-hint { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 8px; line-height: 18px; }
 
 /* ---------- 设置行：启动自检 ---------- */
 .sc-list { list-style: none; margin: 0; }
 .sc-item { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: var(--fs-footnote); line-height: 18px; }
-/* 状态用小圆点代替 ✅⚠️❌ 表情 */
+/* 状态用小圆点代替 ✅⚠️❌ 表情。通过＝实心圆点，提醒＝空心圆环——形状本身
+   就能分辨，不是只靠 warn 的橙色和 fail 的红色（两者亮度接近，色弱基本
+   分不清，见 engineer.md #3）。失败沿用实心圆点（红），detail 那一列
+   本来就已经加粗变红，颜色以外的区分已经够了 */
 .sc-item::before {
   content: ""; flex: none; width: 6px; height: 6px; margin-top: 6px;
   border-radius: 50%; background: var(--green);
 }
-.sc-item.warn::before { background: var(--orange); }
+.sc-item.warn::before { background: transparent; border: 1.5px solid var(--orange); }
 .sc-item.fail::before { background: var(--red); }
 .sc-item .sc-name { flex: none; min-width: 96px; color: var(--label-2); }
 .sc-item .sc-detail { flex: 1; color: var(--label); }
-.sc-item .sc-fix { display: block; color: var(--blue); margin-top: 2px; }
+.sc-item .sc-fix { display: block; color: var(--label); margin-top: 2px; }
 .sc-item.fail .sc-detail { color: var(--fail); font-weight: 600; }
+
+/* 视觉隐藏但读屏可读：自检提醒/失败项在文字里补一句级别说明（app.js
+   renderSelfcheck），色弱/读屏用户不用只靠圆点颜色猜级别 */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; white-space: nowrap; border: 0; clip: rect(0, 0, 0, 0);
+}
 
 /* ---------- 走投无路时的可复制命令 ---------- */
 .fix-command {
@@ -894,6 +922,13 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   margin-top: 8px; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2);
 }
 .engine-note.warn { color: var(--warn-fg); }
+
+/* 引擎被回退：摘要（#engine-active）前面加一个小三角，跟文字「已回退 · …」
+   一起说明状态，不是只靠摘要行标橙（designer.md #1，见 app.js renderEngine） */
+.set-fallback-icon {
+  display: inline-block; width: 12px; height: 12px; margin: 0 3px -1px 0;
+  color: var(--orange); flex: none;
+}
 
 /* ---------- 观众弹幕 ---------- */
 /* 弹幕面板：视觉上跟违禁词警报区分开（那里用 --fail 红，这里用 --accent 蓝），

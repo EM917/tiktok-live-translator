@@ -81,6 +81,7 @@
   var fixCmdCopy = document.getElementById("fix-command-copy");
   var scBox = document.getElementById("selfcheck");
   var scHead = document.getElementById("sc-head");
+  var scIcon = document.getElementById("sc-icon");
   var scSummary = document.getElementById("sc-summary");
   var scList = document.getElementById("sc-list");
   var diskHead = document.getElementById("disk-head");
@@ -2122,9 +2123,34 @@
     }
   }
 
+  // 自检总览图标：颜色和图形一起变，不是只换背景色——「自检中…」还没出结果时
+  // 就已经显示绿底对勾，是这次要修的自相矛盾（designer.md #1）。四态都画在
+  // 同一个盾牌轮廓上，内部的勾/叹号/叉用状态自己的颜色（跟 .set-icon.<level>
+  // 的背景色一致），在纯白盾牌上「抠」出一个同色标记，效果上等价于 SF Symbols
+  // 的 xxx.shield.fill 二色画法，不需要真的做镂空
+  var SC_SHIELD_D = "M8 1.8 13 3.6v4c0 3.2-2.1 5.6-5 6.6-2.9-1-5-3.4-5-6.6v-4Z";
+  var SC_ICON_SVG = {
+    checking: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + SC_SHIELD_D + '" fill="currentColor"/></svg>',
+    pass: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + SC_SHIELD_D + '" fill="currentColor"/>' +
+      '<path d="M5.8 8 7.4 9.6 10.3 6.5" fill="none" stroke="var(--green)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    warn: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + SC_SHIELD_D + '" fill="currentColor"/>' +
+      '<path d="M8 5.2v3.4" stroke="var(--orange)" stroke-width="1.6" stroke-linecap="round"/>' +
+      '<circle cx="8" cy="10.6" r=".65" fill="var(--orange)"/></svg>',
+    fail: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + SC_SHIELD_D + '" fill="currentColor"/>' +
+      '<path d="M6.1 6.1 9.9 9.9M9.9 6.1 6.1 9.9" stroke="var(--red)" stroke-width="1.6" stroke-linecap="round"/></svg>'
+  };
+  // level 是背景色（.set-icon.<level>），跟上面 SVG 用哪一种内部标记一一对应
+  var SC_ICON_LEVEL = { checking: "gray", pass: "green", warn: "orange", fail: "red" };
+  function setSelfcheckIcon(state) {
+    if (!scIcon) return;
+    scIcon.className = "set-icon " + (SC_ICON_LEVEL[state] || "gray");
+    scIcon.innerHTML = SC_ICON_SVG[state] || SC_ICON_SVG.checking;
+  }
+
   // 自检结果。有失败项时默认展开——「功能悄悄坏了」必须让人一眼看到，
   // 全绿时收起来不打扰
   var scLastSig = null;   // 结论没变就别动展开状态
+  var SC_LEVEL_SR_TEXT = { warn: "（提醒）", fail: "（未通过）" };
 
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
@@ -2134,25 +2160,38 @@
     scHead.classList.toggle("has-warn", !sum.fail && sum.warn > 0);
     if (sum.fail) {
       scSummary.textContent = sum.fail + " 项功能未生效";
+      setSelfcheckIcon("fail");
     } else if (sum.warn) {
       scSummary.textContent = "通过 · " + sum.warn + " 项提醒";
+      setSelfcheckIcon("warn");
     } else {
       scSummary.textContent = "全部通过 · " + sum.total + " 项";
+      setSelfcheckIcon("pass");
     }
+    scSummary.title = scSummary.textContent;
     scList.innerHTML = "";
     msg.checks.forEach(function (c) {
       var li = document.createElement("li");
       li.className = "sc-item " + c.level;
       var name = document.createElement("span");
       name.className = "sc-name";
-      name.textContent = c.name;          // 状态由 .sc-item.<level>::before 的圆点表示
+      name.textContent = c.name;          // 状态由 .sc-item.<level>::before 的圆点/圆环表示
       var detail = document.createElement("span");
       detail.className = "sc-detail";
       detail.textContent = c.detail;
+      // 提醒/失败：圆点的形状已经跟通过项不一样（实心 vs 空心），但色弱看不出
+      // 颜色差异时还是分不清「提醒」和「失败」——补一句读屏可读、视觉隐藏的
+      // 级别说明，不额外占版面（engineer.md #3）
+      if (SC_LEVEL_SR_TEXT[c.level]) {
+        var srLevel = document.createElement("span");
+        srLevel.className = "sr-only";
+        srLevel.textContent = SC_LEVEL_SR_TEXT[c.level];
+        name.appendChild(srLevel);
+      }
       if (c.fix) {
         var fix = document.createElement("span");
         fix.className = "sc-fix";
-        fix.textContent = "→ " + c.fix;
+        fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
         detail.appendChild(fix);
       }
       li.appendChild(name);
@@ -2363,6 +2402,15 @@
                        openai: "OpenAI 兼容接口", google: "Google 免费接口" };
   var engineNoteSig = null;   // 上一次的回退提示；变了才自动展开，重连回放不反复弹开
 
+  // 引擎被回退时摘要前面加的小三角（跟 .sc-icon 同一套线性画法，颜色固定橙——
+  // 这是「提醒」级别，不是失败），配合摘要文字改写成「已回退 · …」一起说明，
+  // 不再只靠摘要标橙一种视觉（designer.md #1）
+  var ENGINE_FALLBACK_ICON =
+    '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round">' +
+    '<path d="M8 2.3 14.2 13.2H1.8Z"/><path d="M8 6.6v3"/>' +
+    '<circle cx="8" cy="11.1" r=".55" fill="currentColor" stroke="none"/></svg>';
+
   function renderEngine(info) {
     if (!engineSelect) return;
     engineKeys = info.keys || {};
@@ -2375,7 +2423,18 @@
       var hours = Math.max(0, Math.floor((info.usage.limit - info.usage.used) / 35000));
       active += " · 免费额度已用 " + pct + "%（按近期速度约剩 " + hours + " 小时）";
     }
-    engineActive.textContent = active;
+    if (info.note) {
+      active = "已回退 · " + active;
+      engineActive.innerHTML = "";
+      var triangle = document.createElement("span");
+      triangle.className = "set-fallback-icon";
+      triangle.setAttribute("aria-hidden", "true");
+      triangle.innerHTML = ENGINE_FALLBACK_ICON;
+      engineActive.appendChild(triangle);
+      engineActive.appendChild(document.createTextNode(active));
+    } else {
+      engineActive.textContent = active;
+    }
     engineActive.title = active;
     syncEngineRow();
     // 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」），
