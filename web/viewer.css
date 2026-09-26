@@ -1,7 +1,10 @@
 /* 手机同看：单列、移动优先，跟随系统明暗（v1 不做手动切换，见 spec §16 第 12 条）。
-   变量命名与桌面端 style.css 保持一致（label/label-2/label-3、系统色、分隔线、
-   圆角、字体栈），数值按对比度评审（designer.md #2）取修正后的版本；两个文件
-   仍然各自独立、互不引用——只共享这一套令牌名字和取值。 */
+   令牌命名照抄桌面端 style.css 那一套（label/label-2/label-3、系统色、分隔线、
+   圆角、字体栈），数值取 designer.md #2 的修正版本——这套修正写这份文件时还
+   没进 origin/main，是先在这边落地；claude/apple-style-home 分支后来也采纳
+   了同一版本（321d877），但 --fail-ink 这个名字两边没对上（桌面端叫
+   --red-ink，同一个值 #c8000f），等两支分支都合到 main 再统一。两个文件
+   仍然各自独立、互不引用。 */
 :root {
   color-scheme: light dark;             /* 原生滚动条、复选框跟着深浅色走 */
 
