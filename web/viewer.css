@@ -1,28 +1,68 @@
 /* 手机同看：单列、移动优先，跟随系统明暗（v1 不做手动切换，见 spec §16 第 12 条）。
-   变量命名与桌面端 style.css 保持一致，两个文件各自独立、互不引用。 */
+   变量命名与桌面端 style.css 保持一致（label/label-2/label-3、系统色、分隔线、
+   圆角、字体栈），数值按对比度评审（designer.md #2）取修正后的版本；两个文件
+   仍然各自独立、互不引用——只共享这一套令牌名字和取值。 */
 :root {
+  color-scheme: light dark;             /* 原生滚动条、复选框跟着深浅色走 */
+
+  /* 文字 */
+  --label: #1d1d1f;
+  --label-2: rgba(60, 60, 67, 0.75);    /* secondaryLabel：苹果系统值是 .60，
+                                            白底/灰胶囊上量出来不到 4:1，取 .75（白底 5.2:1） */
+  --label-3: rgba(60, 60, 67, 0.36);    /* 只给占位符/装饰用，不承载中文正文 */
+
+  /* 背景 */
   --bg: #ffffff;
-  --text: #111111;
-  --text-dim: #888888;
-  --text-faint: #b0b0b0;
-  --border: #e5e5e5;
-  --accent: #0a7cff;
-  --fail: #d0342c;
+  --bar-bg: #ffffff;
+
+  /* 填充与分隔 */
+  --fill: rgba(120, 120, 128, 0.16);
+  --separator: rgba(60, 60, 67, 0.29);  /* 只配 0.5px 发丝线 */
+
+  /* 系统色：-ink 是叠在同色调底色上的高对比版本 */
+  --blue: #007aff;
+  --blue-fill: #0071e3;                 /* 主色按钮：白字对比 4.7:1（designer.md #2） */
+  --green: #34c759;   --green-ink: #1e7b34;   /* 绿底上的文字用 -ink，4.7:1 */
+  --orange: #ff9500;  --orange-ink: #c93400;
+  --red: #ff3b30;     --fail: #d70015;  --fail-ink: #c8000f;   /* 红底上的文字用 -ink，5.0:1 */
+  --gray: #8e8e93;
   --warn-bg: #fff6e0;
   --warn-fg: #7a5200;
+  /* 违禁词报警的分级色（tier-variant=变体命中，tier-fuzzy=模糊命中） */
+  --tier-variant: #e8a013;
+  --tier-fuzzy: #c9a227;
+
+  /* 字号：中文正文不小于 12px（--fs-caption），11px 只留给纯拉丁字母/数字 */
+  --fs-body: 15px;
+  --fs-callout: 13px;
+  --fs-footnote: 12px;
+  --fs-caption: 12px;
+
+  --r-pill: 999px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #161616;
-    --text: #eaeaea;
-    --text-dim: #9a9a9a;
-    --text-faint: #666666;
-    --border: #2c2c2c;
-    --accent: #4a9eff;
-    --fail: #ff6b61;
+    --label: #f5f5f7;
+    --label-2: rgba(235, 235, 245, 0.64);   /* 深色下系统值已达标（6.6:1），不用再加深 */
+    --label-3: rgba(235, 235, 245, 0.36);
+
+    --bg: #1c1c1e;
+    --bar-bg: #2c2c2e;
+
+    --fill: rgba(120, 120, 128, 0.32);
+    --separator: rgba(84, 84, 88, 0.65);
+
+    --blue: #0a84ff;
+    --blue-fill: #0a84ff;
+    --green: #30d158;   --green-ink: #30d158;
+    --orange: #ff9f0a;  --orange-ink: #ff9f0a;
+    --red: #ff453a;     --fail: #ff6961;  --fail-ink: #ff6961;
+    --gray: #8e8e93;
     --warn-bg: #3a2f14;
     --warn-fg: #f0c674;
+    --tier-variant: #f0b429;
+    --tier-fuzzy: #d9bb4a;
   }
 }
 
@@ -33,9 +73,11 @@ body {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-size: 15px;
+  color: var(--label);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+               "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  font-size: var(--fs-body);
+  -webkit-font-smoothing: antialiased;
   line-height: 1.5;
   overflow-x: hidden;
   padding-left: env(safe-area-inset-left);
@@ -43,39 +85,56 @@ body {
 }
 
 .hidden { display: none !important; }
+.icon { width: 16px; height: 16px; flex: none; }   /* 内联 SVG 图标统一尺寸，颜色跟 currentColor */
 
 /* ---------- 顶栏 ---------- */
 .top-bar {
   position: sticky; top: 0; z-index: 5;
   display: flex; align-items: center; gap: 8px;
   padding: calc(env(safe-area-inset-top) + 10px) 14px 10px;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  background: var(--bar-bg);
+  border-bottom: 0.5px solid var(--separator);
 }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-faint); flex: none; }
-.dot.connected { background: #1db954; }
-.dot.connecting, .dot.reconnecting { background: var(--warn-fg); }
-.dot.denied, .dot.off, .dot.full { background: var(--fail); }
-.conn-text { font-size: 13px; font-weight: 600; white-space: nowrap; }
-.sep { color: var(--text-faint); }
-.stream-text { font-size: 13px; color: var(--text-dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.stream-text.stale { color: var(--text-faint); }
-.alert-badge { font-size: 13px; font-weight: 700; color: var(--fail); flex: none; }
-.stale-line { padding: 4px 14px; font-size: 11px; color: var(--text-faint); }
+
+/* 状态胶囊：连接点 + 文案。中性态（连接中之外没有专门状态时）不上色，
+   免得像个按钮；已连接/重连/失败时整颗染色。:has 不支持时退回透明胶囊，
+   圆点依旧按状态着色，信息不丢（Safari 15.4 以下的已知降级，与桌面端一致） */
+.status-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 22px; padding: 0 2px; border-radius: 11px;
+  color: var(--label-2);
+}
+.status-pill:has(.dot.connected) { padding: 0 10px 0 8px; background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green-ink); }
+.status-pill:has(.dot.connecting), .status-pill:has(.dot.reconnecting) { padding: 0 10px 0 8px; background: color-mix(in srgb, var(--orange) 16%, transparent); color: var(--orange-ink); }
+.status-pill:has(.dot.denied), .status-pill:has(.dot.off), .status-pill:has(.dot.full) { padding: 0 10px 0 8px; background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--fail-ink); }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gray); flex: none; }
+.dot.connected { background: var(--green); }
+.dot.connecting, .dot.reconnecting { background: var(--orange); }
+.dot.denied, .dot.off, .dot.full { background: var(--red); }
+
+.conn-text { font-size: var(--fs-footnote); font-weight: 600; white-space: nowrap; color: inherit; }
+.sep { color: var(--label-3); }
+.stream-text { font-size: var(--fs-footnote); color: var(--label-2); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stream-text.stale { color: var(--label-3); }   /* 断线提示：绝不能停在最后一次「直播中」不动，见 viewer.js renderStreamStale */
+
+.alert-badge { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-footnote); font-weight: 700; color: var(--fail); flex: none; }
+.stale-line { padding: 4px 14px; font-size: var(--fs-caption); color: var(--label-2); }
 
 /* 违禁词警示关闭时的常驻提示：灰底灰字，不抢红色报警的注意力，但也不会被忽略 */
 .alert-mode-line {
-  padding: 6px 14px; font-size: 12px; text-align: center; line-height: 1.5;
-  color: var(--text-dim); background: color-mix(in srgb, var(--text) 6%, var(--bg));
+  padding: 6px 14px; font-size: var(--fs-footnote); text-align: center; line-height: 1.5;
+  color: var(--label-2); background: var(--fill);
 }
 
 /* ---------- 演示数据 / 持续提示 / 健康度 ---------- */
 .demo-banner {
-  padding: 6px 14px; font-size: 12px; text-align: center;
+  padding: 6px 14px; font-size: var(--fs-footnote); text-align: center;
   color: var(--warn-fg); background: var(--warn-bg);
 }
 .incident-list .incident, .health-line {
-  padding: 7px 14px; font-size: 12px; line-height: 1.6;
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 14px; font-size: var(--fs-footnote); line-height: 1.6;
 }
 .incident.warn, .health-line.lagging { color: var(--warn-fg); background: var(--warn-bg); }
 .incident.error, .health-line.degraded { color: #fff; background: var(--fail); }
@@ -84,43 +143,57 @@ body {
 /* ---------- 违禁词报警 ---------- */
 .alert-section { padding: 10px 14px 4px; }
 .alert-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.section-title { font-size: 13px; font-weight: 700; color: var(--fail); margin-bottom: 6px; }
+.section-title { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-footnote); font-weight: 700; color: var(--fail); margin-bottom: 6px; }
 .alert-clear-seen {
-  flex: none; font-size: 11px; padding: 3px 9px; font-family: inherit; cursor: pointer;
-  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text-dim);
+  flex: none; min-height: 44px; font-size: var(--fs-caption); padding: 0 12px; font-family: inherit; cursor: pointer;
+  border: none; border-radius: var(--r-pill); background: var(--fill); color: var(--label-2);
 }
-.alert-local-note { font-size: 11px; color: var(--text-faint); margin: -2px 0 6px; }
+.alert-local-note { font-size: var(--fs-caption); color: var(--label-3); margin: -2px 0 6px; }
 .alert-item {
+  position: relative;
   border-radius: 10px; padding: 9px 12px; margin-bottom: 8px;
-  background: color-mix(in srgb, var(--fail) 10%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--fail) 35%, var(--border));
+  background: color-mix(in srgb, var(--fail) 8%, var(--bg));
+  border-left: 3px solid var(--fail);
 }
+/* 分级色：精确命中沿用 --fail，变体/模糊改用不那么刺眼的分级色，跟桌面端
+   .alert-item.tier-variant/.tier-fuzzy 同一套逻辑 */
+.alert-item.tier-variant { border-left-color: var(--tier-variant); }
+.alert-item.tier-fuzzy { border-left-color: var(--tier-fuzzy); }
 .alert-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.alert-head-label { font-size: 12px; font-weight: 700; color: var(--fail); }
+.alert-head-label { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-caption); font-weight: 700; color: var(--fail-ink); }
+.alert-tier-icon { display: inline-flex; color: inherit; }
 .alert-dismiss {
-  flex: none; font-size: 12px; line-height: 1; padding: 2px 7px; font-family: inherit; cursor: pointer;
-  border: none; border-radius: 999px; background: transparent; color: var(--text-faint);
+  position: relative; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; font-family: inherit; cursor: pointer;
+  border: none; border-radius: 999px; background: transparent; color: var(--label-3);
 }
+/* 可点区域撑到 44px，但不放大视觉尺寸（22 + 11*2 = 44） */
+.alert-dismiss::before { content: ""; position: absolute; inset: -11px; }
 .alert-dismiss:active { background: color-mix(in srgb, var(--fail) 15%, transparent); }
-.alert-ctx { font-size: 13px; margin-top: 4px; word-break: break-word; }
-.alert-zh { font-size: 13px; margin-top: 3px; color: var(--text-dim); word-break: break-word; }
-.alert-zh.pending { font-style: italic; color: var(--text-faint); }
-.alert-zh.failed { color: var(--text-dim); }
+.alert-ctx { font-size: var(--fs-callout); margin-top: 4px; word-break: break-word; }
+.alert-zh { font-size: var(--fs-callout); margin-top: 3px; color: var(--label-2); word-break: break-word; }
+.alert-zh.pending { font-style: italic; color: var(--label-3); }
+.alert-zh.failed { color: var(--warn-fg); font-style: normal; }   /* 不能只是留白，中控会以为还在等 */
 
 /* ---------- 字幕 ---------- */
-.retranslate-hint { font-size: 11px; color: var(--text-faint); padding: 6px 14px 0; }
-.caption-section { flex: 1; overflow-y: auto; padding: 6px 14px 6px; -webkit-overflow-scrolling: touch; }
-.cap-item { margin-bottom: 12px; }
-.cap-meta { font-size: 11px; color: var(--text-faint); }
-.cap-orig { font-size: 15px; margin-top: 2px; word-break: break-word; }
-.cap-trans { font-size: 15px; margin-top: 2px; color: var(--accent); word-break: break-word; min-height: 1.5em; }
-.cap-trans.pending { color: var(--text-faint); font-style: italic; }
-.cap-trans.failed { color: var(--text-dim); font-style: normal; }
+.retranslate-hint { font-size: var(--fs-caption); color: var(--label-2); padding: 6px 14px 0; }
+.caption-section { flex: 1; overflow-y: auto; padding: 6px 14px 6px; -webkit-overflow-scrolling: touch; background: var(--bg); }
+.cap-item { margin-bottom: 14px; }
+.cap-meta { font-size: 11px; color: var(--label-3); }   /* 纯拉丁字母/数字（时间+语言码），11px 不受中文下限约束 */
+.cap-orig { font-size: var(--fs-body); margin-top: 2px; color: var(--label-2); word-break: break-word; }
+.cap-trans { font-size: var(--fs-body); margin-top: 2px; color: var(--blue); word-break: break-word; min-height: 1.5em; }
+.cap-trans.pending { color: var(--label-3); font-style: italic; }
+.cap-trans.failed { color: var(--warn-fg); font-style: normal; }
 .cap-retranslate {
-  margin-top: 4px; font-size: 12px; padding: 3px 10px; font-family: inherit; cursor: pointer;
-  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--accent);
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-top: 6px; padding: 5px 14px; font-size: var(--fs-callout); font-family: inherit; cursor: pointer;
+  border: none; border-radius: var(--r-pill); background: var(--fill); color: var(--blue);
 }
-.cap-retranslate:disabled { color: var(--text-faint); cursor: default; }
+/* 同 .alert-dismiss：可点区域不小于 44px，视觉上仍是一颗小胶囊 */
+.cap-retranslate::before { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: 44px; transform: translate(-50%, -50%); }
+.cap-retranslate:disabled { color: var(--label-3); background: var(--fill); cursor: default; }
 
 /* 换主播：上一场的字幕变淡，重译按钮彻底不可交互。display:none（而不是只在
    换场那一刻切一次 disabled）是因为这张卡片的译文可能晚到，viewer.js 的
@@ -131,45 +204,47 @@ body {
 
 /* 场次分隔条：手机端不带主播名（白名单只放行 ts），固定文案 */
 .session-sep {
-  margin: 10px 0; padding: 4px 0;
-  text-align: center; font-size: 11px; color: var(--text-faint);
+  margin: 12px 0; padding: 4px 0;
+  text-align: center; font-size: var(--fs-caption); color: var(--label-2);
 }
 
 .jump-latest {
   position: fixed; right: 16px; bottom: 76px; z-index: 6;
-  padding: 7px 14px; font-size: 13px; font-family: inherit;
-  color: #fff; background: var(--accent);
-  border: none; border-radius: 999px; cursor: pointer;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, .3);
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 44px; padding: 0 16px; font-size: var(--fs-callout); font-family: inherit; font-weight: 600;
+  color: #fff; background: var(--blue-fill);
+  border: none; border-radius: var(--r-pill); cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .25);
 }
 
 /* ---------- 弹幕 ---------- */
-.comment-section { border-top: 1px solid var(--border); }
+.comment-section { border-top: 0.5px solid var(--separator); }
 .comment-toggle {
-  width: 100%; display: flex; align-items: baseline; gap: 8px;
-  text-align: left; padding: 9px 14px; font-size: 13px;
-  background: none; border: none; color: var(--text); font-family: inherit; cursor: pointer;
+  width: 100%; min-height: 44px; display: flex; align-items: center; gap: 8px;
+  text-align: left; padding: 0 14px; font-size: var(--fs-callout);
+  background: none; border: none; color: var(--label); font-family: inherit; cursor: pointer;
 }
-.cmt-source-label { font-size: 11px; color: var(--text-faint); }
+.cmt-source-label { font-size: var(--fs-caption); color: var(--label-2); }
 .comment-list { max-height: 34vh; overflow-y: auto; padding: 0 14px 8px; -webkit-overflow-scrolling: touch; }
-.cmt-item { padding: 5px 0; border-top: 1px solid var(--border); }
+.cmt-item { padding: 6px 0; border-top: 0.5px solid var(--separator); }
 .cmt-item:first-child { border-top: none; }
-.cmt-head { font-size: 11px; color: var(--text-dim); }
-.cmt-zh { font-size: 13px; word-break: break-word; }
-.cmt-zh.pending { color: var(--text-faint); font-style: italic; }
-.cmt-orig { font-size: 12px; color: var(--text-faint); word-break: break-word; }
+.cmt-head { font-size: var(--fs-caption); color: var(--label-2); }
+.cmt-zh { font-size: var(--fs-callout); color: var(--label); word-break: break-word; }
+.cmt-zh.pending { color: var(--label-3); font-style: italic; }
+.cmt-orig { font-size: var(--fs-caption); color: var(--label-3); word-break: break-word; }
 
 /* ---------- 底栏 ---------- */
 .bottom-bar {
   position: sticky; bottom: 0; z-index: 5;
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 9px 14px calc(env(safe-area-inset-bottom) + 9px);
-  background: var(--bg); border-top: 1px solid var(--border);
+  background: var(--bar-bg); border-top: 0.5px solid var(--separator);
 }
-.ro-note { font-size: 12px; color: var(--text-faint); }
+.ro-note { font-size: var(--fs-caption); color: var(--label-3); }
 .ring-toggle {
-  padding: 5px 12px; font-size: 12px; font-family: inherit; cursor: pointer;
-  border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text);
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 44px; padding: 0 14px; font-size: var(--fs-callout); font-family: inherit; cursor: pointer;
+  border: none; border-radius: var(--r-pill); background: var(--fill); color: var(--label);
 }
-.ring-toggle.on { color: #fff; background: var(--accent); border-color: var(--accent); }
-.ring-note { font-size: 11px; color: var(--text-faint); text-align: center; padding: 4px 14px 8px; }
+.ring-toggle.on { color: #fff; background: var(--blue-fill); }
+.ring-note { font-size: var(--fs-caption); color: var(--label-3); text-align: center; padding: 4px 14px 8px; }
