@@ -176,19 +176,12 @@
     <div id="start-panel" class="start-panel">
       <div class="empty-icon">🎙️</div>
       <h2>输入 TikTok 直播间地址</h2>
+      <p class="hint">也可以只输入主播用户名（如 @somebody），或直接粘贴 .flv / .m3u8 流地址 · 首次识别需下载模型，进度会显示在页面上</p>
+      <p class="hint">个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源</p>
       <div class="start-row">
         <input id="room-input" type="text" spellcheck="false"
                placeholder="https://www.tiktok.com/@主播用户名/live">
         <button id="start-btn" class="btn primary">开始翻译</button>
-      </div>
-      <!-- 最近直播间：只显示主播名，点一下就直接开始。空的时候整块隐藏，
-           不在首页留一块空白。 -->
-      <div id="recent-rooms" class="recent-rooms hidden">
-        <div class="recent-head">
-          <span class="recent-label">最近的直播间</span>
-          <button id="recent-clear" class="recent-clear" title="清空最近记录">清空</button>
-        </div>
-        <div id="recent-list" class="recent-list"></div>
       </div>
       <div class="start-row secondary">
         <label>主播语言
@@ -228,8 +221,15 @@
                 title="打开 brands 文件夹，把品牌词表文件放进去">打开词表文件夹</button>
         <span id="brand-empty-hint" class="brand-hint hidden">把品牌词表放进 brands 文件夹后，这里可以选择</span>
       </div>
-      <p class="hint">也可以只输入主播用户名（如 @somebody），或直接粘贴 .flv / .m3u8 流地址 · 首次识别需下载模型，进度会显示在页面上</p>
-      <p class="hint">个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源</p>
+      <!-- 最近直播间：只显示主播名，点一下就直接开始。空的时候整块隐藏，
+           不在首页留一块空白。 -->
+      <div id="recent-rooms" class="recent-rooms hidden">
+        <div class="recent-head">
+          <span class="recent-label">最近的直播间</span>
+          <button id="recent-clear" class="recent-clear" title="清空最近记录">清空</button>
+        </div>
+        <div id="recent-list" class="recent-list"></div>
+      </div>
 
       <!-- 违禁词监控：这是本工具的核心功能，必须在首页可见，
            否则用户根本不知道有这回事（词表默认是空的） -->
