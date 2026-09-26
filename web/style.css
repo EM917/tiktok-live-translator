@@ -9,8 +9,10 @@
 
   /* 文字 */
   --label: #1d1d1f;                     /* label：比纯黑柔和，3–6 小时盯屏不刺眼 */
-  --label-2: rgba(60, 60, 67, 0.64);    /* secondaryLabel（系统值 0.60，12px 字上略浅，取 0.64） */
-  --label-3: rgba(60, 60, 67, 0.36);    /* tertiaryLabel：占位符、箭头、版权行 */
+  --label-2: rgba(60, 60, 67, 0.75);    /* secondaryLabel（系统值 0.60/0.64 在白底/灰底分别只有
+                                            3.8:1/3.6:1，不达 WCAG AA 的 4.5:1；实测 0.75 才够，
+                                            见 scratchpad/reviews/designer.md #2） */
+  --label-3: rgba(60, 60, 67, 0.36);    /* tertiaryLabel：占位符、箭头、版权行——不用于正文文字 */
 
   /* 背景 */
   --bg: #ffffff;                        /* systemBackground：直播中的字幕区 */
@@ -26,14 +28,17 @@
   --separator: rgba(60, 60, 67, 0.29);  /* separator：只配 0.5px 发丝线用 */
   --border: #e5e5ea;                    /* 需要 1px 实线的旧组件（字幕卡分隔、同看二维码框） */
   --ring: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.05);  /* 灰底上白色控件的轮廓 */
-  --focus: 0 0 0 3px rgba(0, 122, 255, 0.35);                               /* 键盘焦点环 */
+  --focus-color: rgba(0, 122, 255, 0.55);   /* 焦点环颜色单独存一份：.set-row 的内描边要复用它 */
+  --focus: 0 0 0 3px var(--focus-color);                                  /* 键盘焦点环 */
 
   /* 系统色：-ink 是小字号用的高对比版本（Increase Contrast 取值） */
-  --blue: #007aff;
-  --green: #34c759;   --green-ink: #248a3d;
+  --blue: #007aff;                    /* 链接、焦点环——「开始翻译」等主按钮改用 --blue-fill */
+  --blue-fill: #0071e3;               /* 主按钮实色：白字对比 4.7:1，#007aff 白字只有 4.0:1 不达标 */
+  --green: #34c759;   --green-ink: #1e7b34;   /* -ink 在 16% 绿底上 4.7:1（原 #248a3d 只有 3.9:1） */
   --orange: #ff9500;  --orange-ink: #c93400;
-  --red: #ff3b30;     --fail: #d70015;
+  --red: #ff3b30;     --fail: #d70015; --red-ink: #c8000f;  /* -ink：14% 红底上 5.0:1（--fail 本身只 4.46:1，临界） */
   --gray: #8e8e93;
+  --indigo: #5856d6;  /* 违禁词报警行图标：不借用 orange，免得和「提醒」状态色撞在一起 */
   --warn-bg: #fff6e0;
   --warn-fg: #7a5200;
   /* 违禁词报警条目的分级色（tier-variant=变体命中，tier-fuzzy=模糊命中），
@@ -69,7 +74,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --label: #f5f5f7;
-    --label-2: rgba(235, 235, 245, 0.64);
+    --label-2: rgba(235, 235, 245, 0.75);
     --label-3: rgba(235, 235, 245, 0.36);
 
     --bg: #1c1c1e;
@@ -83,13 +88,16 @@
     --separator: rgba(84, 84, 88, 0.65);
     --border: #38383a;
     --ring: 0 0 0 0.5px rgba(255, 255, 255, 0.10);
-    --focus: 0 0 0 3px rgba(10, 132, 255, 0.5);
+    --focus-color: rgba(10, 132, 255, 0.6);
+    --focus: 0 0 0 3px var(--focus-color);
 
     --blue: #0a84ff;
+    --blue-fill: #0071e3;   /* 按钮自身背景色，跟页面深浅色无关，白字对比不随主题变 */
     --green: #30d158;   --green-ink: #30d158;
     --orange: #ff9f0a;  --orange-ink: #ff9f0a;
-    --red: #ff453a;     --fail: #ff6961;
+    --red: #ff453a;     --fail: #ff6961; --red-ink: #ff6961;
     --gray: #8e8e93;
+    --indigo: #5e5ce6;
     --warn-bg: #3a2f14;
     --warn-fg: #f0c674;
     --tier-variant: #f0b429;
@@ -212,24 +220,30 @@ select {
 }
 select:hover, .btn:hover { background-color: var(--fill-hover); }
 .btn:active { background-color: var(--fill-press); }
-select:focus-visible, .btn:focus-visible { outline: none; box-shadow: var(--focus); }
+select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
 .btn:disabled { opacity: 0.4; cursor: default; background-color: var(--fill); }
 
 .btn.small { height: var(--h-small); padding: 0 10px; font-size: var(--fs-footnote); border-radius: 6px; flex: none; }
 .btn.large { height: var(--h-large); padding: 0 20px; font-size: var(--fs-body); border-radius: var(--r-field); }
 
-.btn.primary { background-color: var(--blue); color: #ffffff; font-weight: 600; }
-.btn.primary:hover { background-color: var(--blue); filter: brightness(1.08); }
+.btn.primary { background-color: var(--blue-fill); color: #ffffff; font-weight: 600; }
+.btn.primary:hover { background-color: var(--blue-fill); filter: brightness(1.08); }
 .btn.primary:active { filter: brightness(0.92); }
-.btn.primary:disabled { background-color: var(--blue); filter: none; }
+/* 禁用主按钮：灰底 + 三级文字，不是半透明的蓝——40% 透明蓝看着像还在加载
+   （designer.md #10）。这条要写在通用 .btn:disabled 之后才能盖过它 */
+.btn.primary:disabled { background-color: var(--fill); color: var(--label-3); opacity: 1; filter: none; }
 
 /* 破坏性操作（停止、删除所选）：红字 + 淡红底，苹果 destructive 按钮的样子 */
 .btn.destructive, .btn.danger {
   background-color: color-mix(in srgb, var(--red) 12%, transparent);
-  color: var(--fail);
+  color: var(--red-ink);
 }
 .btn.destructive { font-weight: 600; }
 .btn.destructive:hover, .btn.danger:hover { background-color: color-mix(in srgb, var(--red) 20%, transparent); }
+/* 按下态：以前没有独立的 :active，通用 .btn:active 又被这里的
+   .btn.destructive/.btn.danger 覆盖掉，按下和悬停其实是同一个颜色
+   （designer.md #10） */
+.btn.destructive:active, .btn.danger:active { background-color: color-mix(in srgb, var(--red) 28%, transparent); }
 .btn.danger:disabled { background-color: color-mix(in srgb, var(--red) 12%, transparent); }
 
 /* 手机同看：图标用 mask 画（颜色跟文字走），文字仍由 app.js 整段写入。
@@ -306,10 +320,16 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
 }
+/* 待机首页（停止后留着上一场字幕）跟 .start-panel 同宽，不再出现「面板 600 /
+   字幕 760」两条左边线（designer.md #6）；直播中维持原来的 760，读起来更宽松 */
+body.home .cap, body.home .session-sep { max-width: 600px; }
 
 .cap .meta {
+  /* 时间戳/语言码本身是纯数字或拉丁字母，但 state-chip 里可能出现中文
+     （「翻译失败」「翻译已跳过（积压）」，见 app.js applyTranslation），
+     11px + --label-3 两条都不满足，整行按中文的下限走 */
   display: flex; gap: 10px; align-items: center;
-  font-size: 11px; color: var(--text-faint); margin-bottom: 3px;
+  font-size: var(--fs-footnote); color: var(--text-dim); margin-bottom: 3px;
 }
 
 .cap .lang-chip { text-transform: uppercase; letter-spacing: 0.5px; }
@@ -461,7 +481,7 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   gap: 12px;
   padding: 8px 20px;
 }
-.alert-title { font-size: 14px; font-weight: 700; color: var(--fail); }
+.alert-title { font-size: 14px; font-weight: 700; color: var(--red-ink); }
 #alert-count {
   display: inline-block;
   min-width: 20px;
@@ -491,7 +511,7 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   padding: 0 5px;
   border: 1px solid var(--text-faint);
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--fs-footnote);
   font-weight: 400;
   color: var(--text-dim);
 }
@@ -501,8 +521,9 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   position: fixed;
   left: 0; right: 0; bottom: 22px;
   padding: 3px 20px;
-  font-size: 11px;
-  color: var(--text-faint);
+  font-size: var(--fs-footnote);
+  font-variant-numeric: tabular-nums;
+  color: var(--label-2);
   text-align: center;
   background: var(--bg);
   pointer-events: none;
@@ -784,8 +805,8 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
 .cap { position: relative; }
 .redo {
   position: absolute; top: 10px; right: 0;
-  padding: 2px 9px; font-size: 11px; font-family: inherit; line-height: 1.6;
-  color: var(--text-faint); background: transparent;
+  padding: 2px 9px; font-size: var(--fs-footnote); font-family: inherit; line-height: 1.6;
+  color: var(--text-dim); background: transparent;
   border: 1px solid var(--border); border-radius: 5px;
   cursor: pointer; opacity: 0;
   transition: opacity .12s;
@@ -814,7 +835,7 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
 /* 字幕列表 / 观众弹幕列表里的场次分隔条，两处共用同一个类名 */
 .session-sep {
   max-width: 760px; margin: 10px auto; padding: 4px 0;
-  text-align: center; font-size: 12px; color: var(--text-faint);
+  text-align: center; font-size: var(--fs-footnote); color: var(--text-dim);
 }
 
 /* 报警里的中文：比西语原话更醒目，中控主要读这一行 */
@@ -902,7 +923,7 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
 .cmt-zh.failed { color: var(--text-dim); }
 .cmt-orig { font-size: 12px; color: var(--text-dim); }
 .cmt-empty { padding: 8px 14px 10px; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
-.cmt-source { font-size: 11px; font-weight: 400; color: var(--text-faint); }
+.cmt-source { font-size: var(--fs-footnote); font-weight: 400; color: var(--text-dim); }
 .cmt-source.on { color: var(--green-ink); }
 .cmt-source.warn { color: var(--warn-fg); }
 /* 收起：整列让出去（字幕独占整行），弹幕继续在后台收；展开时全在 */
@@ -960,13 +981,15 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
 .disk-item:last-child { border-bottom: none; }
 .disk-item input[type="checkbox"] { accent-color: var(--blue); }
 .disk-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 「正在用」「本程序」「非本程序」是中文，11px（--fs-caption）不够，跟 .disk-note/
+   .disk-hint 一起改用 --fs-footnote（12px），见 designer.md #2 */
 .disk-role {
-  display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 9px;
-  font-size: var(--fs-caption); background: var(--fill); color: var(--label-2);
+  display: inline-flex; align-items: center; height: 19px; padding: 0 7px; border-radius: 9px;
+  font-size: var(--fs-footnote); background: var(--fill); color: var(--label-2);
 }
 .disk-item.role-in_use .disk-role { color: var(--green-ink); background: color-mix(in srgb, var(--green) 16%, transparent); }
 .disk-item.role-other .disk-role { color: var(--orange-ink); background: color-mix(in srgb, var(--orange) 16%, transparent); }
 .disk-size { font-variant-numeric: tabular-nums; color: var(--label-2); }
-.disk-note { grid-column: 2 / span 3; font-size: var(--fs-caption); color: var(--label-2); }
+.disk-note { grid-column: 2 / span 3; font-size: var(--fs-footnote); color: var(--label-2); }
 .disk-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; }
-.disk-hint { font-size: var(--fs-caption); line-height: 16px; color: var(--label-2); }
+.disk-hint { font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
