@@ -80,13 +80,37 @@
   var scBox = document.getElementById("selfcheck");
   var scHead = document.getElementById("sc-head");
   var scSummary = document.getElementById("sc-summary");
-  var scToggle = document.getElementById("sc-toggle");
   var scList = document.getElementById("sc-list");
   var diskHead = document.getElementById("disk-head");
   var diskSummary = document.getElementById("disk-summary");
   var diskBody = document.getElementById("disk-body");
   var diskList = document.getElementById("disk-list");
   var diskDelete = document.getElementById("disk-delete");
+  // 设置分组里新增的可展开行（自检、磁盘沿用原来的 #sc-head / #disk-head）
+  var engineHead = document.getElementById("engine-head");
+  var engineBody = document.getElementById("engine-body");
+  var watchHead = document.getElementById("watch-head");
+  var watchBody = document.getElementById("watch-body");
+  var watchMode = document.getElementById("watch-mode");
+  var inputHelpBtn = document.getElementById("input-help-btn");
+  var inputHelp = document.getElementById("input-help");
+
+  // 设置分组的行：展开状态记在行的 aria-expanded 上（CSS 据此转箭头），内容区
+  // 照旧靠 .hidden 收放。自检、磁盘、引擎、报警、输入说明的「?」共用这一对函数
+  function setRowOpen(row, body, open) {
+    if (!row || !body) return;
+    body.classList.toggle("hidden", !open);
+    row.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  function bindRow(row, body) {
+    if (!row || !body) return;
+    row.addEventListener("click", function () {
+      setRowOpen(row, body, body.classList.contains("hidden"));
+    });
+  }
+  bindRow(engineHead, engineBody);
+  bindRow(watchHead, watchBody);
+  bindRow(inputHelpBtn, inputHelp);
 
   // 手机同看卡片（#share-card）：只在打开期间监听 0.0.0.0，控制面本身始终只在
   // 127.0.0.1；这张卡片只发/收 viewer_share / viewer_rotate，看不到任何观众数据
@@ -784,6 +808,8 @@
     homeActive = transition.active;
     var active = transition.active;
     startPanel.classList.toggle("hidden", active);
+    // 首页（开始面板可见）用分组灰底，直播中回到白底读字幕（style.css body.home）
+    document.body.classList.toggle("home", !active);
     stopBtn.classList.toggle("hidden", !active);
     // 换主播按钮和停止按钮同一处切换：只在直播中/连接中有意义，待机/已结束/
     // 出错/离线时没有「正在监听的主播」可换
@@ -1554,7 +1580,7 @@
     diskHead.addEventListener("click", function () {
       var open = diskBody.classList.contains("hidden");
       diskBody.classList.toggle("hidden", !open);
-      document.getElementById("disk-toggle").textContent = open ? "收起" : "管理";
+      diskHead.setAttribute("aria-expanded", open ? "true" : "false");
       if (open) {
         diskList.textContent = "正在统计…";
         send({ type: "disk_inventory" });
@@ -1640,7 +1666,7 @@
   // 中控可能收起面板但没关同看，这时按钮要接着显示「已打开」
   function updateShareBtn(on) {
     if (!shareBtn) return;
-    shareBtn.textContent = on ? "📱 手机同看 · 已打开" : "📱 手机同看";
+    shareBtn.textContent = on ? "手机同看 · 已打开" : "手机同看";
     shareBtn.classList.toggle("on", on);
   }
 
@@ -1955,6 +1981,7 @@
   function setAlertsEnabled(on) {
     alertsEnabled = !!on;
     if (alertsToggle) alertsToggle.checked = alertsEnabled;
+    if (watchMode) watchMode.textContent = alertsEnabled ? "警示开" : "警示关";
     updateWatchDesc();
     updateAlertModeTag();
   }
@@ -1983,11 +2010,11 @@
     if (!watchState) return;
     watchlistConfigured = msg.count > 0;
     if (msg.count > 0) {
-      watchState.textContent = "已启用 · " + msg.count + " 条";
+      watchState.textContent = "词表 " + msg.count + " 条";
       watchState.className = "watch-state on";
       updateWatchDesc();
     } else {
-      watchState.textContent = "未配置";
+      watchState.textContent = "词表为空";
       watchState.className = "watch-state off";
       watchDesc.textContent = "当前词表为空，本工具不会发出任何违禁词报警。";
     }
@@ -1995,7 +2022,6 @@
 
   // 自检结果。有失败项时默认展开——「功能悄悄坏了」必须让人一眼看到，
   // 全绿时收起来不打扰
-  var ICONS = { ok: "✅", warn: "⚠️", fail: "❌" };
   var scLastSig = null;   // 结论没变就别动展开状态
 
   function renderSelfcheck(msg) {
@@ -2005,11 +2031,11 @@
     scHead.classList.toggle("has-fail", sum.fail > 0);
     scHead.classList.toggle("has-warn", !sum.fail && sum.warn > 0);
     if (sum.fail) {
-      scSummary.textContent = "❌ 自检发现 " + sum.fail + " 项功能未生效";
+      scSummary.textContent = sum.fail + " 项功能未生效";
     } else if (sum.warn) {
-      scSummary.textContent = "⚠️ 自检通过，" + sum.warn + " 项提醒";
+      scSummary.textContent = "通过 · " + sum.warn + " 项提醒";
     } else {
-      scSummary.textContent = "✅ 自检全部通过（" + sum.total + " 项）";
+      scSummary.textContent = "全部通过 · " + sum.total + " 项";
     }
     scList.innerHTML = "";
     msg.checks.forEach(function (c) {
@@ -2017,7 +2043,7 @@
       li.className = "sc-item " + c.level;
       var name = document.createElement("span");
       name.className = "sc-name";
-      name.textContent = (ICONS[c.level] || "") + " " + c.name;
+      name.textContent = c.name;          // 状态由 .sc-item.<level>::before 的圆点表示
       var detail = document.createElement("span");
       detail.className = "sc-detail";
       detail.textContent = c.detail;
@@ -2041,8 +2067,7 @@
   }
 
   function setSelfcheckOpen(open) {
-    scList.classList.toggle("hidden", !open);
-    scToggle.textContent = open ? "收起" : "展开";
+    setRowOpen(scHead, scList, open);
   }
 
   if (scHead) {
@@ -2230,12 +2255,18 @@
     none: "只显示识别原文，不翻译。"
   };
   var engineKeys = {};
+  // 设置行右侧的摘要：说人话的引擎名，不露内部代号（hymt2）
+  var ENGINE_LABEL = { hymt2: "本地 Hy-MT2 1.8B", "hymt2-7b": "本地 Hy-MT2 7B",
+                       gemma: "本地 TranslateGemma", deepl: "DeepL", claude: "Claude",
+                       openai: "OpenAI 兼容接口", google: "Google 免费接口" };
+  var engineNoteSig = null;   // 上一次的回退提示；变了才自动展开，重连回放不反复弹开
 
   function renderEngine(info) {
     if (!engineSelect) return;
     engineKeys = info.keys || {};
     engineSelect.value = info.engine || "auto";
-    var active = info.active ? "当前：" + info.active : "";
+    var active = info.active ? (ENGINE_LABEL[info.active] || info.active)
+                             : (info.engine === "none" ? "不翻译" : "");
     if (info.usage && info.usage.limit) {
       var pct = Math.round(info.usage.used * 100 / info.usage.limit);
       // 35k 字符/小时是实测均值（2026-08-26 场），只做量级提示
@@ -2243,12 +2274,21 @@
       active += " · 免费额度已用 " + pct + "%（按近期速度约剩 " + hours + " 小时）";
     }
     engineActive.textContent = active;
+    engineActive.title = active;
     syncEngineRow();
     // 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」），
     // 压过常规注记——用户上次的选择被改掉了，必须看得见
     if (info.note) {
       engineNote.textContent = info.note;
       engineNote.classList.add("warn");
+    }
+    // 卡片收进设置列表后，「上次的选择被改掉了」不能藏在折叠里：
+    // 摘要标橙，提示内容变了就自动展开这一行
+    if (engineHead) engineHead.classList.toggle("has-warn", !!info.note);
+    var noteSig = info.note ? String(info.note) : "";
+    if (noteSig !== engineNoteSig) {
+      engineNoteSig = noteSig;
+      if (noteSig) setRowOpen(engineHead, engineBody, true);
     }
   }
 

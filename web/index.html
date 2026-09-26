@@ -5,21 +5,27 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=30">
+  <link rel="stylesheet" href="/static/style.css?v=31">
 </head>
-<body>
+<body class="home">
   <header class="topbar">
     <div class="brand">
-      <span id="status-dot" class="dot idle"></span>
       <h1>TikTok 直播同传</h1>
-      <span id="status-text" class="status-text">等待连接…</span>
+      <!-- 状态胶囊：点 + 文字包在一起。#status-dot 的 className 与 #status-text 的
+           文字仍由 app.js setStatus 写，这层 span 只负责外观（直播中变绿靠 :has） -->
+      <span class="status-pill">
+        <span id="status-dot" class="dot idle"></span>
+        <span id="status-text" class="status-text">等待连接…</span>
+      </span>
       <!-- 违禁词警示开关的状态：只在连接中/直播中露出，待机时没有场次可言 -->
       <span id="alert-mode-tag" class="alert-mode-tag hidden"></span>
     </div>
     <div class="controls">
-      <label class="ctl">
-        目标语言
-        <select id="target-lang">
+      <label class="ctl" title="目标语言">
+        <span class="ctl-text">目标语言</span>
+        <!-- 固定 aria-label：.ctl-text 在窄宽度（≤1080px）会被隐藏，不依赖它做可访问名称
+             （和同一行 #font-size 的 aria-label="字幕字号" 保持同一种更稳的写法） -->
+        <select id="target-lang" aria-label="目标语言">
           <option value="zh-CN">中文（简体）</option>
           <option value="zh-TW">中文（繁體）</option>
           <option value="en">English</option>
@@ -35,20 +41,23 @@
           <option value="id">Bahasa Indonesia</option>
         </select>
       </label>
-      <label class="ctl">
-        字号
-        <input type="range" id="font-size" min="20" max="60" step="2">
+      <!-- 字号：小 A —— 滑块 —— 大 A（苹果「图书」的做法），省掉「字号」两个字 -->
+      <label class="ctl ctl-font" title="字幕字号">
+        <span class="a-small" aria-hidden="true">A</span>
+        <input type="range" id="font-size" min="20" max="60" step="2" aria-label="字幕字号">
+        <span class="a-large" aria-hidden="true">A</span>
       </label>
-      <button id="clear-btn" class="btn" title="清空历史字幕">清空</button>
+      <button id="clear-btn" class="btn" title="清空历史字幕">清空字幕</button>
       <!-- 手机同看的入口常驻顶栏：这张卡片曾经放在 #start-panel 里，直播开始后
            整块面板被隐藏，中控恰好在这时候想扫码给同事看，却找不到入口。
-           按钮本身在待机/直播两种状态下都不隐藏，只负责开关下面的 #share-panel。 -->
-      <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板">📱 手机同看</button>
+           按钮本身在待机/直播两种状态下都不隐藏，只负责开关下面的 #share-panel。
+           图标由 CSS ::before 画（mask），文字仍由 app.js updateShareBtn 整段写入 -->
+      <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板">手机同看</button>
       <!-- 换主播：只在直播中/连接中露出，和停止按钮同一处切换（见 app.js setStatus）。
            跟停止之间留出明显间距（.switch-btn 的 margin-right），防止手滑点错——
            点错「换主播」是可挽回的（面板里还要再确认一次），点错「停止」是直接断流。 -->
       <button id="switch-btn" class="btn switch-btn hidden" type="button" title="不停止监听，直接换成另一个主播">换主播</button>
-      <button id="stop-btn" class="btn hidden" title="停止当前直播间">停止</button>
+      <button id="stop-btn" class="btn destructive hidden" title="停止当前直播间">停止</button>
     </div>
   </header>
 
@@ -174,17 +183,49 @@
   <div id="workspace" class="workspace">
   <main id="history" class="history">
     <div id="start-panel" class="start-panel">
-      <div class="empty-icon">🎙️</div>
-      <h2>输入 TikTok 直播间地址</h2>
-      <p class="hint">也可以只输入主播用户名（如 @somebody），或直接粘贴 .flv / .m3u8 流地址 · 首次识别需下载模型，进度会显示在页面上</p>
-      <p class="hint">个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源</p>
-      <div class="start-row">
+      <!-- 首屏只突出一件事：输入/点最近直播间 → 开始。其余按使用频率往下排：
+           常用选项（主播语言、本场品牌）紧跟输入框；低频的自检/引擎/报警/磁盘
+           收进最下面的「设置」分组列表，点行才展开。 -->
+      <div class="sp-hero">
+        <!-- SF Symbols「dot.radiowaves.left.and.right」风格的线性图标，颜色跟随 currentColor -->
+        <svg class="sp-glyph" viewBox="0 0 28 28" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+          <circle cx="14" cy="14" r="2.1" fill="currentColor" stroke="none"/>
+          <path d="M9.5 9.5A6.36 6.36 0 0 0 9.5 18.5"/>
+          <path d="M18.5 9.5A6.36 6.36 0 0 1 18.5 18.5"/>
+          <path d="M6 6A11.31 11.31 0 0 0 6 22"/>
+          <path d="M22 6A11.31 11.31 0 0 1 22 22"/>
+        </svg>
+        <h2>输入 TikTok 直播间地址</h2>
+        <p class="sp-sub">
+          粘贴直播间链接，或只输入主播用户名（如 @somebody）
+          <button id="input-help-btn" class="help-btn" type="button" aria-expanded="false"
+                  aria-controls="input-help" title="其他输入方式">
+            <!-- SF Symbols「info.circle」，跟设置行图标同一套画法（描边、currentColor） -->
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.3"/>
+              <path d="M8 7.4v3.6" stroke-width="1.5"/>
+              <circle cx="8" cy="5.15" r="0.6" fill="currentColor" stroke="none"/>
+            </svg>
+          </button>
+        </p>
+      </div>
+
+      <div class="sp-input-row">
         <input id="room-input" type="text" spellcheck="false"
                placeholder="https://www.tiktok.com/@主播用户名/live">
-        <button id="start-btn" class="btn primary">开始翻译</button>
+        <button id="start-btn" class="btn primary large">开始翻译</button>
       </div>
-      <div class="start-row secondary">
-        <label>主播语言
+
+      <!-- 原来的两段灰字，收进「?」：只有少数场景用得上，不该常驻首屏 -->
+      <div id="input-help" class="sp-help hidden">
+        <p>也可以直接粘贴 .flv / .m3u8 流地址。</p>
+        <p>个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源。</p>
+        <p>首次识别需下载模型，进度会显示在页面上。</p>
+      </div>
+
+      <div class="sp-options">
+        <label class="sp-opt">主播语言
           <!-- 西语+英语是默认：这个产品面向西语带货直播，主播常夹英语，不限制的
                逐段自动检测实测会让两成以上的段语言标签乱跳（服务端 resolve_source
                同一默认）。列表形式＝自动检测但只在列表里的语言中选 -->
@@ -206,7 +247,8 @@
             <option value="zh">中文</option>
           </select>
         </label>
-        <label>本场品牌
+        <span class="sp-opt">
+          <label for="brand-select">本场品牌</label>
           <!-- 品牌词表：整场只卖这一个牌子时加载对应的商品词表（识别热词/
                翻译提示/译文兜底三处生效，见 app/glossary.py）；混卖别家货时
                选「不限」，行为与不选这个下拉时完全一样。按主播记住上次的
@@ -216,13 +258,20 @@
           <select id="brand-select" title="整场只卖这个牌子时选它：加载该品牌的商品词表。混卖别家货时选「不限」。">
             <option value="">不限（默认）</option>
           </select>
-        </label>
-        <button id="brands-dir-btn" class="btn small" type="button"
-                title="打开 brands 文件夹，把品牌词表文件放进去">打开词表文件夹</button>
-        <span id="brand-empty-hint" class="brand-hint hidden">把品牌词表放进 brands 文件夹后，这里可以选择</span>
+          <!-- 打开词表文件夹：从大按钮降为下拉旁的图标按钮（访达文件夹图标） -->
+          <button id="brands-dir-btn" class="icon-btn" type="button"
+                  title="打开 brands 文件夹，把品牌词表文件放进去" aria-label="打开词表文件夹">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"
+                 stroke-linejoin="round" aria-hidden="true">
+              <path d="M2 4.6A1.6 1.6 0 0 1 3.6 3h2.6l1.5 1.6h4.7A1.6 1.6 0 0 1 14 6.2v5.2a1.6 1.6 0 0 1-1.6 1.6H3.6A1.6 1.6 0 0 1 2 11.4Z"/>
+            </svg>
+          </button>
+        </span>
+        <span id="brand-empty-hint" class="brand-hint hidden">把品牌词表放进 brands 文件夹后可选</span>
       </div>
-      <!-- 最近直播间：只显示主播名，点一下就直接开始。空的时候整块隐藏，
-           不在首页留一块空白。 -->
+
+      <!-- 最近直播间：只显示主播名，点一下就直接开始（用上面这一行的主播语言/品牌）。
+           空的时候整块隐藏，不在首页留一块空白。 -->
       <div id="recent-rooms" class="recent-rooms hidden">
         <div class="recent-head">
           <span class="recent-label">最近的直播间</span>
@@ -231,79 +280,127 @@
         <div id="recent-list" class="recent-list"></div>
       </div>
 
-      <!-- 违禁词监控：这是本工具的核心功能，必须在首页可见，
-           否则用户根本不知道有这回事（词表默认是空的） -->
-      <!-- 启动自检：把「功能悄悄坏了」变成看得见的红条。
-           降噪曾经整整没跑起来，只在一行日志里说了句话，没人发现。 -->
-      <div id="selfcheck" class="selfcheck">
-        <div class="sc-head" id="sc-head">
-          <span id="sc-summary">自检中…</span>
-          <span class="sc-toggle" id="sc-toggle">展开</span>
-        </div>
-        <ul id="sc-list" class="sc-list hidden"></ul>
-      </div>
+      <!-- 设置：macOS 系统设置 / iOS 设置式的 inset grouped list。每行左图标、
+           中名称、右一句状态摘要 + 箭头；点行展开原有内容。行本身是 <button>，
+           键盘 Tab/空格/回车天然可用；aria-expanded 驱动箭头旋转。 -->
+      <section class="settings" aria-label="设置">
+        <h3 class="group-title">设置</h3>
+        <div class="group">
 
-      <!-- 翻译引擎。密钥填在这里而不是环境变量——这个工具的用户里
-           有连终端是什么都不知道的人，「设个环境变量」对他们等于功能不存在。 -->
-      <div id="engine-card" class="engine-card">
-        <div class="engine-head">
-          <span class="engine-title">🌐 翻译引擎</span>
-          <span id="engine-active" class="engine-active"></span>
-        </div>
-        <div class="engine-row">
-          <select id="engine-select">
-            <option value="auto">自动（优先本地，离线免费）</option>
-            <option value="hymt2">本地 Hy-MT2 1.8B</option>
-            <option value="hymt2-7b">本地 Hy-MT2 7B（更准，更吃内存）</option>
-            <option value="deepl">DeepL API</option>
-            <option value="claude">Claude API</option>
-            <option value="openai">OpenAI 兼容 API</option>
-            <option value="google">Google 免费接口</option>
-            <option value="none">不翻译，只显示原文</option>
-          </select>
-          <input id="engine-key" type="password" class="hidden"
-                 spellcheck="false" autocomplete="off" placeholder="粘贴 API 密钥">
-          <button id="engine-save" class="btn small">保存</button>
-        </div>
-        <div id="engine-note" class="engine-note">
-          默认用本地模型：完全离线、不限量、字幕不出本机。
-        </div>
-      </div>
-
-      <div id="watch-card" class="watch-card">
-        <div class="watch-head">
-          <span class="watch-title">🚨 违禁词实时报警</span>
-          <span id="watch-state" class="watch-state">检查中…</span>
-        </div>
-        <!-- 违禁词警示模式：默认关闭。关闭时命中仍会记入审计（不会漏），
-             只是不弹窗、不通知——开不开只影响「要不要报警」，不影响「要不要记」 -->
-        <label class="watch-toggle-row">
-          <input type="checkbox" id="alerts-toggle">
-          开启违禁词警示
-        </label>
-        <p id="watch-desc" class="watch-desc"></p>
-        <p class="watch-how">
-          编辑项目文件夹里的 <code>banned_terms.txt</code>，一行一个词或短语，
-          保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色警报并写入审计日志。
-        </p>
-      </div>
-
-      <!-- 磁盘空间：程序往硬盘放的模型和日志散在三处，用户看不到也没地方删。
-           实测一台用了三周的机器缓存里躺着 50 多 GB，一半是本程序不用的模型。 -->
-      <div id="disk-card" class="disk-card">
-        <div class="disk-head" id="disk-head">
-          <span class="disk-title">💽 磁盘空间</span>
-          <span id="disk-summary" class="disk-summary"></span>
-          <span class="disk-toggle" id="disk-toggle">管理</span>
-        </div>
-        <div id="disk-body" class="disk-body hidden">
-          <div id="disk-list" class="disk-list"></div>
-          <div class="disk-foot">
-            <span id="disk-hint" class="disk-hint">标「正在用」的删不掉；标「本程序」的删了会在下次需要时自动重下；标「非本程序」的可能是别的工具在用，删前自己确认。</span>
-            <button id="disk-delete" class="btn small danger" disabled>删除所选</button>
+          <!-- 启动自检：把「功能悄悄坏了」变成看得见的红条。
+               降噪曾经整整没跑起来，只在一行日志里说了句话，没人发现。
+               有失败项时 app.js 自动展开并把摘要标红（has-fail），全绿时收起。 -->
+          <div id="selfcheck" class="set-item">
+            <button id="sc-head" class="set-row" type="button" aria-expanded="false" aria-controls="sc-list">
+              <span class="set-icon green" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M8 1.8 13 3.6v4c0 3.2-2.1 5.6-5 6.6-2.9-1-5-3.4-5-6.6v-4Z"/>
+                  <path d="m5.8 8 1.6 1.6 2.9-3.1"/>
+                </svg>
+              </span>
+              <span class="set-name">启动自检</span>
+              <span id="sc-summary" class="set-value">自检中…</span>
+              <span id="sc-toggle" class="set-chevron" aria-hidden="true"></span>
+            </button>
+            <ul id="sc-list" class="sc-list set-body hidden"></ul>
           </div>
+
+          <!-- 翻译引擎。密钥填在这里而不是环境变量——这个工具的用户里
+               有连终端是什么都不知道的人，「设个环境变量」对他们等于功能不存在。
+               启动时引擎被回退（info.note）会自动展开这一行，见 app.js renderEngine -->
+          <div id="engine-card" class="set-item">
+            <button id="engine-head" class="set-row" type="button" aria-expanded="false" aria-controls="engine-body">
+              <span class="set-icon blue" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">
+                  <circle cx="8" cy="8" r="6"/>
+                  <ellipse cx="8" cy="8" rx="2.6" ry="6"/>
+                  <path d="M2 8h12"/>
+                </svg>
+              </span>
+              <span class="set-name">翻译引擎</span>
+              <span id="engine-active" class="set-value"></span>
+              <span class="set-chevron" aria-hidden="true"></span>
+            </button>
+            <div id="engine-body" class="set-body hidden">
+              <div class="engine-row">
+                <select id="engine-select">
+                  <option value="auto">自动（优先本地，离线免费）</option>
+                  <option value="hymt2">本地 Hy-MT2 1.8B</option>
+                  <option value="hymt2-7b">本地 Hy-MT2 7B（更准，更吃内存）</option>
+                  <option value="deepl">DeepL API</option>
+                  <option value="claude">Claude API</option>
+                  <option value="openai">OpenAI 兼容 API</option>
+                  <option value="google">Google 免费接口</option>
+                  <option value="none">不翻译，只显示原文</option>
+                </select>
+                <input id="engine-key" type="password" class="hidden"
+                       spellcheck="false" autocomplete="off" placeholder="粘贴 API 密钥">
+                <button id="engine-save" class="btn">保存</button>
+              </div>
+              <div id="engine-note" class="engine-note">
+                默认用本地模型：完全离线、不限量、字幕不出本机。
+              </div>
+            </div>
+          </div>
+
+          <!-- 违禁词实时报警：功能保留但已搁置，降为设置里的一行，不抢首屏。
+               摘要＝警示开关（#watch-mode）+ 词表条数（#watch-state）。 -->
+          <div id="watch-card" class="set-item">
+            <button id="watch-head" class="set-row" type="button" aria-expanded="false" aria-controls="watch-body">
+              <span class="set-icon orange" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 11V7.4a4 4 0 0 1 8 0V11l1.2 1.3H2.8Z"/>
+                  <path d="M6.6 14h2.8"/>
+                </svg>
+              </span>
+              <span class="set-name">违禁词报警</span>
+              <span class="set-value"><span id="watch-mode">警示关</span> · <span id="watch-state" class="watch-state">检查中…</span></span>
+              <span class="set-chevron" aria-hidden="true"></span>
+            </button>
+            <div id="watch-body" class="set-body hidden">
+              <!-- 违禁词警示模式：默认关闭。关闭时命中仍会记入审计（不会漏），
+                   只是不弹窗、不通知——开不开只影响「要不要报警」，不影响「要不要记」 -->
+              <label class="watch-toggle-row">
+                <span>开启违禁词警示</span>
+                <!-- 真复选框留着（id 与 change 事件不变），视觉上藏起来，由后面的 .switch 画成开关 -->
+                <input type="checkbox" id="alerts-toggle" class="toggle-input">
+                <span class="switch" aria-hidden="true"></span>
+              </label>
+              <p id="watch-desc" class="watch-desc"></p>
+              <p class="watch-how">
+                编辑项目文件夹里的 <code>banned_terms.txt</code>，一行一个词或短语，
+                保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色警报并写入审计日志。
+              </p>
+            </div>
+          </div>
+
+          <!-- 磁盘空间：程序往硬盘放的模型和日志散在三处，用户看不到也没地方删。
+               实测一台用了三周的机器缓存里躺着 50 多 GB，一半是本程序不用的模型。
+               展开时才向服务端要盘点（见 app.js diskHead 的点击处理） -->
+          <div id="disk-card" class="set-item">
+            <button id="disk-head" class="set-row" type="button" aria-expanded="false" aria-controls="disk-body">
+              <span class="set-icon gray" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">
+                  <rect x="2" y="4" width="12" height="8" rx="1.8"/>
+                  <path d="M2.4 9.2h11.2"/>
+                  <circle cx="11.4" cy="10.6" r=".5" fill="currentColor"/>
+                </svg>
+              </span>
+              <span class="set-name">磁盘空间</span>
+              <span id="disk-summary" class="set-value"></span>
+              <span id="disk-toggle" class="set-chevron" aria-hidden="true"></span>
+            </button>
+            <div id="disk-body" class="disk-body set-body hidden">
+              <div id="disk-list" class="disk-list"></div>
+              <div class="disk-foot">
+                <span id="disk-hint" class="disk-hint">标「正在用」的删不掉；标「本程序」的删了会在下次需要时自动重下；标「非本程序」的可能是别的工具在用，删前自己确认。</span>
+                <button id="disk-delete" class="btn small danger" disabled>删除所选</button>
+              </div>
+            </div>
+          </div>
+
         </div>
-      </div>
+      </section>
     </div>
   </main>
 
@@ -364,6 +461,6 @@
   <script src="/static/qrcanvas.js?v=1"></script>
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
-  <script src="/static/app.js?v=55"></script>
+  <script src="/static/app.js?v=56"></script>
 </body>
 </html>
