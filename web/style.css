@@ -376,18 +376,21 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .sp-sub { margin-top: 6px; font-size: var(--fs-callout); line-height: 18px; color: var(--label-2); }
 
 /* 展开原来那两段灰字（#input-help）；图标用 SF Symbols「info.circle」而不是
-   圆圈问号——后者更像第三方网页产品的帮助气泡，不是苹果系统的「更多信息」惯用语 */
+   圆圈问号——后者更像第三方网页产品的帮助气泡，不是苹果系统的「更多信息」惯用语。
+   可点区域从 18px 提到 24px（HIG 建议的可点区域最小约 20pt），上下各 -3px
+   负外边距抵消多出来的 6px，不撑高这一行文字；展开态只把图标变蓝，不再铺一整块
+   蓝底——那样比「只是多了行字」更像点了个开关（designer.md #7） */
 .help-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; margin-left: 4px; vertical-align: -3px;
+  width: 24px; height: 24px; margin: -3px 0 -3px 2px; vertical-align: -3px;
   border: none; border-radius: 50%;
-  background: var(--fill); color: var(--label-2);
+  background: transparent; color: var(--label-2);
   cursor: pointer;
 }
-.help-btn svg { width: 13px; height: 13px; }
-.help-btn:hover { background: var(--fill-hover); color: var(--label); }
-.help-btn[aria-expanded="true"] { background: var(--blue); color: #ffffff; }
-.help-btn:focus-visible { outline: none; box-shadow: var(--focus); }
+.help-btn svg { width: 16px; height: 16px; }
+.help-btn:hover { background: var(--fill); color: var(--label); }
+.help-btn[aria-expanded="true"] { background: transparent; color: var(--blue); }
+.help-btn:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
 
 .sp-input-row { display: flex; gap: 8px; }
 #room-input {
@@ -402,7 +405,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   border: none;
   border-radius: var(--r-field);
   box-shadow: var(--ring);
-  outline: none;
+  outline: 2px solid transparent;
 }
 #room-input::placeholder { color: var(--label-3); }
 #room-input:focus { box-shadow: var(--ring), var(--focus); }
@@ -601,7 +604,14 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 }
 .set-row:hover { background: color-mix(in srgb, var(--label) 4%, transparent); }
 .set-row:active { background: var(--fill); }
-.set-row:focus-visible { outline: none; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--blue) 60%, transparent); }
+/* 内描边 + 圆角：以前是直角 2px 内描边，第一行/最后一行的角会被分组卡片
+   12px 的圆角裁掉一块；焦点色也跟其余控件统一用加深过的 --focus-color
+   （designer.md #10） */
+.set-row:focus-visible {
+  outline: 2px solid transparent;
+  box-shadow: inset 0 0 0 3px var(--focus-color);
+  border-radius: 12px;
+}
 .set-icon {
   flex: none; width: 26px; height: 26px; border-radius: 6px;
   display: flex; align-items: center; justify-content: center; color: #ffffff;
@@ -668,7 +678,10 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .switch {
   position: relative; flex: none;
   width: 38px; height: 22px; border-radius: 11px;
-  background: var(--fill-hover);
+  /* 关闭态：--fill-hover 在白底上只有 1.3:1，轨道边界几乎看不出来；
+     换成更深的固定值 + 一圈极细的内描边（designer.md #12） */
+  background: rgba(120, 120, 128, .32);
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, .06);
   transition: background-color .2s ease;
 }
 .switch::before {
@@ -680,6 +693,19 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .toggle-input:checked + .switch { background: var(--green); }
 .toggle-input:checked + .switch::before { transform: translateX(16px); }
 .toggle-input:focus-visible + .switch { box-shadow: var(--focus); }
+
+/* Windows 高对比度模式：开关的轨道/圆钮全靠 background/box-shadow，
+   forced-colors 会把这些都清成系统底色，开关状态整个看不见；焦点也是同理，
+   全站统一把 outline:none 换成 outline:2px solid transparent（上面已改）
+   本身只解决了「不再显式清掉系统的强制轮廓」，这里再补一条明确的
+   Highlight 轮廓，两条一起才保证键盘焦点在强制配色下确实看得见
+   （engineer.md #3，designer.md #10） */
+@media (forced-colors: active) {
+  .switch { forced-color-adjust: none; border: 1px solid CanvasText; background: Canvas; }
+  .toggle-input:checked + .switch { background: Highlight; }
+  .switch::before { forced-color-adjust: none; border: 1px solid CanvasText; background: Canvas; }
+  :focus-visible { outline: 2px solid Highlight; }
+}
 .watch-desc { font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); margin-top: 8px; }
 .watch-how { font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); margin-top: 4px; }
 .watch-how code {
@@ -782,7 +808,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   background: var(--fill);
   border: none;
   border-radius: var(--r-field);
-  outline: none;
+  outline: 2px solid transparent;
 }
 .switch-row #switch-input::placeholder { color: var(--label-3); }
 .switch-row #switch-input:focus { box-shadow: var(--focus); }
@@ -914,7 +940,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-size: var(--fs-footnote);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--label); background: var(--fill);
-  border: none; border-radius: var(--r-control); outline: none;
+  border: none; border-radius: var(--r-control); outline: 2px solid transparent;
 }
 .engine-row input::placeholder { color: var(--label-3); }
 .engine-row input:focus { box-shadow: var(--focus); }
@@ -1022,10 +1048,13 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: background-color .12s, color .12s;
 }
-.start-panel .recent-chip { background: var(--card); }
+/* 灰底（首页）上的白色 chip：常态就带描边，不用等悬停才看得出边界——
+   白色和 #f2f2f7 只有 1.12:1，在素质一般的显示器上容易糊成一片
+   （designer.md #12，跟下面 .group 是同一个问题） */
+.start-panel .recent-chip { background: var(--card); box-shadow: var(--ring); }
 .recent-chip:hover { color: var(--blue); background: var(--fill-hover); }
 .start-panel .recent-chip:hover { background: var(--card); box-shadow: var(--ring); }
-.recent-chip:focus-visible { outline: none; box-shadow: var(--focus); }
+.recent-chip:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
 
 /* ---------- 设置行：磁盘空间 ---------- */
 .disk-list { font-size: var(--fs-footnote); }
