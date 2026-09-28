@@ -90,6 +90,7 @@
   --h-control: 28px;
   --h-large: 36px;
   --h-row: 44px;          /* 设置行 */
+  --set-indent: 52px;     /* 设置行内容缩进 = 16 边距 + 26 图标 + 10 间距，见下面两处用法 */
 
   /* 旧名别名 */
   --text: var(--label);
@@ -208,8 +209,9 @@ body.home { --page-bg: var(--grouped-bg); }
 .status-pill[data-state="live"] { background: var(--a-green-16); color: var(--green-ink); }
 .status-pill[data-state="connecting"] { background: var(--a-orange-16); color: var(--orange-ink); }
 .status-pill[data-state="error"] { background: var(--a-red-14); color: var(--red-ink); }
-/* 主播名可能很长：顶栏放不下时省略号截断，不挤爆后面的控件（见 designer.md #3） */
-.status-text { font-size: var(--fs-footnote); color: inherit; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+/* 主播名可能很长：顶栏放不下时省略号截断，不挤爆后面的控件（见 designer.md #3）。
+   inline-block：纯 inline 元素不接受 max-width/overflow，省略号不会生效 */
+.status-text { display: inline-block; vertical-align: bottom; font-size: var(--fs-footnote); color: inherit; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 违禁词警示开关的状态标签：只在「连接中/直播中且报警开着」时露出（app.js
    updateAlertModeTag），关闭是默认值，常驻显示一个「警示关」不但占顶栏空间，
@@ -328,7 +330,10 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
 
 input[type="range"] { accent-color: var(--blue); width: 96px; }
 
-/* 窄窗口：顶栏先省掉「目标语言」四个字（下拉本身有 title），再让控件整行换到第二行 */
+/* 窄窗口：顶栏先省掉「目标语言」四个字（下拉本身有 title），再让控件整行换到第二行。
+   1080 这个阈值的依据：直播中顶栏满编（品牌区 + 状态胶囊 + 报警标签 + 控件簇）
+   实测约需 1030–1060px（da4d4dc 提交说明，designer.md #3、pm.md #4 的像素量法），
+   留出一点余量，在真正挤到下一行之前先把这四个字省掉（engineer.md #8） */
 @media (max-width: 1080px) {
   .ctl-text { display: none; }
 }
@@ -346,14 +351,25 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  /* 窄窗口下换行，而不是让内容在水平方向被裁掉——见下面 .update-bar .btn.primary
+     的注释（engineer.md #9） */
+  flex-wrap: wrap;
+  gap: 8px 12px;
   padding: 8px 20px;
   font-size: var(--fs-callout);
   border-bottom: 0.5px solid var(--separator);
   background: var(--tint-accent-8);
 }
 .update-bar a { color: var(--accent); font-size: var(--fs-footnote); }
-.update-bar .btn.primary { height: var(--h-small); padding: 0 10px; font-size: var(--fs-footnote); }
+/* 直播中点「一键更新」的确认文案能长到约 320px（「再点一次确认更新：更新期间
+   监听暂停，更新完自动恢复」），而 .btn 全站默认 white-space:nowrap + 固定
+   高度——窗口窄于约 560px（最小可缩到 420px）时这句话会被裁掉而不是折行，
+   偏偏它在说「监听会暂停」，被裁掉不是小事。只放开这一个按钮的折行，
+   高度改 min-height 让两行文字撑得开（engineer.md #9） */
+.update-bar .btn.primary {
+  height: auto; min-height: var(--h-small); padding: 4px 10px;
+  font-size: var(--fs-footnote); white-space: normal; text-align: center; line-height: 1.4;
+}
 /* ZIP 安装时「前往下载新版本」链接升级为主按钮 */
 .update-bar a.btn.primary { color: #ffffff; text-decoration: none; }
 
@@ -480,9 +496,18 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .sp-options select { background-color: var(--card); box-shadow: var(--ring); max-width: 220px; }
 .sp-options select:hover { background-color: var(--card); filter: brightness(0.98); }
 .sp-options select:focus-visible { box-shadow: var(--ring), var(--focus); }
-/* 品牌下拉旁边的空态小字：brands 文件夹里一个词表都没有时提示去哪加。
-   用 --label-2（跟 .disk-hint/.watch-desc/.sp-sub 同一档），--label-3 太浅快读不出来 */
-.brand-hint { font-size: var(--fs-footnote); color: var(--label-2); }
+/* 品牌下拉旁边的空态提示：brands 文件夹里一个词表都没有时说明这个功能是
+   干什么的、该去哪加（pm.md #6）。用 --label-2（跟 .disk-hint/.watch-desc/
+   .sp-sub 同一档），--label-3 太浅快读不出来 */
+.brand-hint { display: block; margin-top: 6px; max-width: 600px; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
+/* 句子里那个可点的「打开 brands 文件夹」：跟 .update-bar a 同一种「文字链接」
+   处理，不单独起一块按钮底色——这句话本身就是一句提示，链接只是其中一段 */
+.brand-hint-link {
+  font: inherit; color: var(--blue); background: none; border: none; padding: 0;
+  cursor: pointer; text-decoration: none;
+}
+.brand-hint-link:hover { text-decoration: underline; }
+.brand-hint-link:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); border-radius: 2px; }
 
 /* 图标按钮（打开词表文件夹）：以前常态透明、只有悬停才看得出是个按钮，
    不知道它存在的人根本不会去悬停，等于找不到。改成常态就跟旁边的白色
@@ -660,9 +685,10 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 /* 描边跟输入框/下拉统一，理由同上面的 .recent-chip（designer.md #12） */
 .group { background: var(--card); border-radius: var(--r-group); overflow: hidden; box-shadow: var(--ring); }
 .set-item { position: relative; }
-/* 行间发丝线从名称处开始（左缩进 52 = 16 边距 + 26 图标 + 10 间距），苹果列表的样子 */
+/* 行间发丝线从名称处开始（左缩进 = 16 边距 + 26 图标 + 10 间距，见 --set-indent），
+   苹果列表的样子 */
 .set-item + .set-item::before {
-  content: ""; position: absolute; top: 0; left: 52px; right: 0;
+  content: ""; position: absolute; top: 0; left: var(--set-indent); right: 0;
   border-top: 0.5px solid var(--separator);
 }
 .set-row {
@@ -708,7 +734,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 }
 .set-row[aria-expanded="true"] .set-chevron { transform: rotate(90deg); }
 /* 展开内容与名称左对齐 */
-.set-body { padding: 0 16px 16px 52px; }
+.set-body { padding: 0 16px 16px var(--set-indent); }
 /* 展开动画：箭头本来就有 0.2s 旋转，内容却是瞬间出现，两者不搭
    （designer.md #12）。:not(.hidden) 在 .hidden 被摘掉、元素从 display:none
    变回可渲染的那一刻重新匹配上，浏览器会把它当成新出现的内容，从头播一遍
@@ -1104,11 +1130,15 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   margin-bottom: 8px;
 }
 .recent-label { font-size: var(--fs-footnote); color: var(--label-2); }
+/* 次级灰字，不用系统蓝——这份列表是一键开始的唯一数据来源，蓝色曾经让它变成
+   这一块最显眼的可点元素，一点就清（没有确认），最容易被误触（pm.md #5）。
+   两段式确认见 web/app.js 的 recentClear 点击处理 */
 .recent-clear {
-  font-family: inherit; font-size: var(--fs-footnote); color: var(--blue);
+  font-family: inherit; font-size: var(--fs-footnote); color: var(--label-2);
   background: none; border: none; cursor: pointer; padding: 0;
 }
-.recent-clear:hover { opacity: 0.7; }
+.recent-clear:hover { color: var(--label); }
+.recent-clear:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); border-radius: 2px; }
 .recent-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .recent-chip {
   display: inline-flex; align-items: center;

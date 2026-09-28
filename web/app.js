@@ -102,7 +102,10 @@
   var inputHelp = document.getElementById("input-help");
 
   // 设置分组的行：展开状态记在行的 aria-expanded 上（CSS 据此转箭头），内容区
-  // 照旧靠 .hidden 收放。自检、磁盘、引擎、报警、输入说明的「?」共用这一对函数
+  // 照旧靠 .hidden 收放。引擎、报警、输入说明这三行没有额外的开合时机，直接
+  // bindRow 挂点击；自检、磁盘各自在展开时还要多做一件事（自检失败自动展开、
+  // 磁盘展开时才向服务端要盘点），改成自己接管点击、调用 setRowOpen——收放
+  // 本身仍是同一个函数，只是不是每一行都经过 bindRow（engineer.md #8）
   function setRowOpen(row, body, open) {
     if (!row || !body) return;
     body.classList.toggle("hidden", !open);
@@ -1664,8 +1667,7 @@
   if (diskHead) {
     diskHead.addEventListener("click", function () {
       var open = diskBody.classList.contains("hidden");
-      diskBody.classList.toggle("hidden", !open);
-      diskHead.setAttribute("aria-expanded", open ? "true" : "false");
+      setRowOpen(diskHead, diskBody, open);
       if (open) {
         diskList.textContent = "正在统计…";
         send({ type: "disk_inventory" });
@@ -2447,8 +2449,11 @@
     engineSelect.value = info.engine || "auto";
     // 说人话的引擎名由服务端给（app/translator.py engine_label），页面不再自己
     // 维护一份对照表——以前这里的 ENGINE_LABEL 和服务端那份已经不一致（同一个
-    // openai 一边叫「OpenAI 兼容接口」一边叫「OpenAI」，见 pm.md #7）
-    var active = info.active_label || (info.engine === "none" ? "不翻译" : "");
+    // openai 一边叫「OpenAI 兼容接口」一边叫「OpenAI」，见 pm.md #7）。
+    // info.active 兜底：老版本/回放数据没带 active_label 时，露内部代号也比
+    // 摘要整行空着强
+    var active = info.active_label || info.active
+                 || (info.engine === "none" ? "不翻译" : "");
     if (info.usage && info.usage.limit) {
       var pct = Math.round(info.usage.used * 100 / info.usage.limit);
       // 35k 字符/小时是实测均值（2026-08-26 场），只做量级提示
@@ -2469,8 +2474,9 @@
     }
     engineActive.title = active;
     syncEngineRow();
-    // 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」），
-    // 压过常规注记——用户上次的选择被改掉了，必须看得见
+    // 启动时引擎被回退的提示（如「上次选的翻译引擎 DeepL 还没有密钥，本次先用
+    // 自动」，来自 app/translator.py restore_engine），压过常规注记——
+    // 用户上次的选择被改掉了，必须看得见
     if (info.note) {
       engineNote.textContent = info.note;
       engineNote.classList.add("warn");
