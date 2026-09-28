@@ -5,16 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>手机同看 · TikTok 直播同传</title>
 <link rel="icon" type="image/png" href="/v/icon.png">
-<link rel="stylesheet" href="/v/viewer.css?v=3">
+<link rel="stylesheet" href="/v/viewer.css?v=5">
 </head>
 <body>
   <!-- 顶栏：连接点 + 直播状态 + 报警计数，sticky 在最上面 -->
   <header id="top-bar" class="top-bar">
-    <span id="conn-dot" class="dot connecting"></span>
-    <span id="conn-text" class="conn-text">连接中…</span>
+    <span class="status-pill">
+      <span id="conn-dot" class="dot connecting"></span>
+      <span id="conn-text" class="conn-text">连接中…</span>
+    </span>
     <span class="sep">·</span>
     <span id="stream-text" class="stream-text">状态未知</span>
-    <span id="alert-badge" class="alert-badge hidden">🚨 <span id="alert-count">0</span></span>
+    <span id="alert-badge" class="alert-badge hidden">
+      <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M8 2.3 14.3 13.3H1.7Z"/>
+        <path d="M8 6.6v3"/>
+        <circle cx="8" cy="11.4" r="0.6" fill="currentColor" stroke="none"/>
+      </svg>
+      <span id="alert-count">0</span>
+    </span>
   </header>
   <!-- 违禁词警示关闭时的常驻提示：命中仍记入审计，只是这台手机看不到报警 -->
   <div id="alert-mode-line" class="alert-mode-line hidden"></div>
@@ -28,11 +38,19 @@
   <div id="incident-list" class="incident-list"></div>
   <div id="health-line" class="health-line hidden"></div>
 
-  <!-- 违禁词报警：最显眼，红底卡片，新的在上，最多 50 条。每条带 ✕，只在这台
+  <!-- 违禁词报警：最显眼，红底卡片，新的在上，最多 50 条。每条带取消按钮，只在这台
        手机上隐藏；「清除已看过的报警」一次性隐藏当前全部——都不影响中控和记录 -->
   <section id="alert-section" class="alert-section hidden">
     <div class="alert-section-head">
-      <div class="section-title">🚨 疑似违禁词</div>
+      <div class="section-title">
+        <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 2.3 14.3 13.3H1.7Z"/>
+          <path d="M8 6.6v3"/>
+          <circle cx="8" cy="11.4" r="0.6" fill="currentColor" stroke="none"/>
+        </svg>
+        <span>疑似违禁词</span>
+      </div>
       <button id="alert-clear-seen" class="alert-clear-seen" type="button">清除已看过的报警</button>
     </div>
     <div class="alert-local-note">只在这台手机上隐藏，中控电脑和记录不受影响</div>
@@ -44,12 +62,24 @@
   <section id="caption-section" class="caption-section">
     <div id="caption-list" class="caption-list"></div>
   </section>
-  <button id="jump-latest" class="jump-latest hidden" type="button">↓ 最新</button>
+  <button id="jump-latest" class="jump-latest hidden" type="button">
+    <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M8 2.6v8.6"/>
+      <path d="M4.4 8 8 11.6 11.6 8"/>
+    </svg>
+    <span>最新</span>
+  </button>
 
   <!-- 观众弹幕：默认折叠，只看最近 30 条；只读，不进报警链路 -->
   <section id="comment-section" class="comment-section">
     <button id="comment-toggle" class="comment-toggle" type="button">
-      💬 弹幕 <span id="comment-count">0</span>
+      <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M2.6 4.6A1.6 1.6 0 0 1 4.2 3h7.6A1.6 1.6 0 0 1 13.4 4.6v4.6a1.6 1.6 0 0 1-1.6 1.6H6.6L4 13.2v-2.4h-.2a1.6 1.6 0 0 1-1.6-1.6Z"/>
+      </svg>
+      <span>弹幕</span>
+      <span id="comment-count">0</span>
       <span class="cmt-source-label"></span>
     </button>
     <div id="comment-list" class="comment-list hidden"></div>
@@ -58,10 +88,17 @@
   <!-- 底栏：只看模式提示 + 提示音开关 -->
   <footer id="bottom-bar" class="bottom-bar">
     <span class="ro-note">只看模式 · 不能操作</span>
-    <button id="ring-toggle" class="ring-toggle" type="button" aria-pressed="false">🔔 提示音</button>
+    <button id="ring-toggle" class="ring-toggle" type="button" aria-pressed="false">
+      <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 11V7.4a4 4 0 0 1 8 0V11l1.2 1.3H2.8Z"/>
+        <path d="M6.6 14h2.8"/>
+      </svg>
+      <span>提示音</span>
+    </button>
   </footer>
   <p class="ring-note">页面切到后台或锁屏后，手机可能停掉提示音。</p>
 
-  <script src="/v/viewer.js?v=5"></script>
+  <script src="/v/viewer.js?v=6"></script>
 </body>
 </html>
