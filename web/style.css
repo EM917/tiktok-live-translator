@@ -329,10 +329,14 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
 .btn.destructive:active, .btn.danger:active { background-color: var(--a-red-28); }
 .btn.danger:disabled { background-color: var(--a-red-12); }
 
-/* 手机同看：图标是内联 SVG（#i-iphone），文字仍由 app.js 整段写入。
+/* 手机同看：图标是内联 SVG（#i-iphone），文字由 app.js 写进 #share-btn-text。
    同看打开时按钮变绿，跟其余「on」状态同一个颜色，中控一眼就能看出当前
    是不是正对外广播着地址 */
+#share-btn { gap: 4px; padding: 0 10px 0 7px; }
 #share-btn.on { color: var(--green-ink); background-color: var(--a-green-16); }
+/* 人数徽标只给窄窗口（按钮只剩图标）用；宽窗口人数已经写在文字里 */
+.btn-count { font-size: var(--fs-footnote); font-weight: 600; font-variant-numeric: tabular-nums; }
+@media (min-width: 1101px) { #share-btn .btn-count { display: none; } }
 
 /* 换主播：和停止按钮之间留出明显间距，防止手滑点错——点错「换主播」还能
    在面板里反悔，点错「停止」是直接断流，两个按钮不能挨得太近。间距要加在
@@ -886,11 +890,16 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .share-head, .switch-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .share-head-right { display: flex; align-items: center; gap: 10px; }
 .share-title, .switch-title { display: flex; align-items: center; gap: 6px; font-size: var(--fs-body); font-weight: 600; }
-.share-state { font-size: var(--fs-footnote); font-weight: 600; }
+.share-title > .i { color: var(--label-2); }
+.share-title .help-btn { margin: -4px 0 -4px -2px; }
+/* 状态字前加一个点：开＝绿色实心，关＝灰色——颜色之外位置和字也能认 */
+.share-state { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-footnote); font-weight: 500; }
+.share-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--gray); }
 .share-state.on { color: var(--green-ink); }
+.share-state.on::before { background: var(--green); }
 .share-state.off { color: var(--label-2); }
 .share-desc { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 6px; line-height: 18px; word-break: break-word; }
-.share-card .btn.small { margin-top: 8px; }
+#share-toggle { margin-top: 12px; }
 
 .share-body { margin-top: 12px; }
 .share-main { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
@@ -922,7 +931,13 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   cursor: pointer;
 }
 .share-ip-btn.active { color: #fff; background: var(--blue); }
-.share-help { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 6px; line-height: 18px; }
+/* ⓘ 展开的排查说明：白卡片里用分组灰底衬一块，跟首页 .sp-help 同一个角色 */
+.share-help-box {
+  margin-top: 12px; padding: 10px 12px;
+  border-radius: var(--r-control); background: var(--grouped-bg);
+}
+.share-help { font-size: var(--fs-footnote); color: var(--label-2); line-height: 18px; }
+.share-help + .share-help { margin-top: 6px; }
 
 /* ---------- 换主播 ---------- */
 .switch-sub { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 4px; line-height: 18px; }

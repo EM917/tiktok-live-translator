@@ -77,10 +77,13 @@
       <!-- 手机同看的入口常驻顶栏：这张卡片曾经放在 #start-panel 里，直播开始后
            整块面板被隐藏，中控恰好在这时候想扫码给同事看，却找不到入口。
            按钮本身在待机/直播两种状态下都不隐藏，只负责开关下面的 #share-panel。
-           图标是内联 SVG（#i-iphone），文字仍由 app.js updateShareBtn 整段写入 -->
+           图标是内联 SVG（#i-iphone），文字由 app.js updateShareBtn 写进 #share-btn-text；
+           #share-btn-count 只在窄窗口（只剩图标）且有人在看时露出人数 -->
       <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板"
               aria-expanded="false" aria-controls="share-panel">
-        <svg class="i" aria-hidden="true"><use href="#i-iphone"/></svg>手机同看
+        <svg class="i" aria-hidden="true"><use href="#i-iphone"/></svg>
+        <span id="share-btn-text" class="btn-label">手机同看</span>
+        <span id="share-btn-count" class="btn-count hidden"></span>
       </button>
       <!-- 手机同看：局域网内扫码只读观看，只在打开期间监听 0.0.0.0，关闭即停。
            文案表见 spec §11——状态 1/2/3/6/7 由这里的结构化字段拼出来，
@@ -93,7 +96,14 @@
       <div id="share-panel" class="share-panel popover hidden" role="dialog" aria-label="手机同看">
         <div id="share-card" class="share-card">
           <div class="share-head">
-            <span class="share-title">手机同看</span>
+            <span class="share-title">
+              <svg class="i" aria-hidden="true"><use href="#i-iphone"/></svg>手机同看
+              <!-- 三段连不上时的排查说明收进 ⓘ，跟首页输入框旁那颗同一种交互（designer.md #11） -->
+              <button id="share-help-btn" class="help-btn" type="button" aria-expanded="false"
+                      aria-controls="share-help" title="手机连不上时">
+                <svg class="i" aria-hidden="true"><use href="#i-info"/></svg>
+              </button>
+            </span>
             <div class="share-head-right">
               <span id="share-state" class="share-state off">未打开</span>
               <!-- 只收起面板，不碰同看开关——跟下面「停止同看」（真的断开在看的手机）
@@ -104,9 +114,9 @@
             </div>
           </div>
           <p id="share-desc" class="share-desc">
-            关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。
+            打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。
           </p>
-          <button id="share-toggle" class="btn small" type="button">打开</button>
+          <button id="share-toggle" class="btn primary" type="button">开始同看</button>
 
           <div id="share-body" class="share-body hidden">
             <div class="share-main">
@@ -126,6 +136,8 @@
             <p id="share-addr-changed" class="share-addr-changed hidden"></p>
             <p id="share-note" class="share-note hidden"></p>
             <ul id="share-ip-list" class="share-ip-list hidden"></ul>
+          </div>
+          <div id="share-help" class="share-help-box hidden">
             <p class="share-help">
               手机要和这台电脑连同一个 Wi-Fi。连不上时，可以问网络管理员这个 Wi-Fi 是否允许设备互相访问。
             </p>

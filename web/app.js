@@ -151,7 +151,11 @@
   // 直播中才想扫码给同事看，却找不到入口。现在卡片单独放进 #share-panel，
   // 由顶栏的 #share-btn 开关，跟直播状态无关，待机/直播都能点开。
   var shareBtn = document.getElementById("share-btn");
+  var shareBtnText = document.getElementById("share-btn-text");
+  var shareBtnCount = document.getElementById("share-btn-count");
   var sharePanel = document.getElementById("share-panel");
+  var shareHelpBtn = document.getElementById("share-help-btn");
+  var shareHelp = document.getElementById("share-help");
   var shareToggle = document.getElementById("share-toggle");
   var shareState = document.getElementById("share-state");
   var shareDesc = document.getElementById("share-desc");
@@ -166,6 +170,8 @@
   var shareAddrChanged = document.getElementById("share-addr-changed");
   var shareNote = document.getElementById("share-note");
   var shareIpList = document.getElementById("share-ip-list");
+  // 浮层标题旁的 ⓘ：三段「手机连不上时」的排查说明，跟首页输入框旁那颗同一种收放
+  bindRow(shareHelpBtn, shareHelp);
 
   // 换主播：直播中不停止监听、直接改听另一个主播。面板照 #share-panel 挂在
   // #start-panel/#history 之外，跟直播状态无关地独立开关——但按钮本身（顶栏
@@ -1780,9 +1786,16 @@
 
   // 顶栏按钮只反映「同看是否打开」这一件事，跟面板本身是否展开无关——
   // 中控可能收起面板但没关同看，这时按钮要接着显示「已打开」
-  function updateShareBtn(on) {
+  // 有人在看时写人数（shareButtonText，web/live-ui.js）；文字写进 #share-btn-text，
+  // 不再整段覆盖按钮（按钮里还有图标和窄窗口用的人数）
+  function updateShareBtn(on, viewers) {
     if (!shareBtn) return;
-    shareBtn.textContent = on ? "手机同看 · 已打开" : "手机同看";
+    var label = shareButtonText(on, viewers);
+    if (shareBtnText) shareBtnText.textContent = label.text;
+    if (shareBtnCount) {
+      shareBtnCount.textContent = label.count;
+      shareBtnCount.classList.toggle("hidden", !label.count);
+    }
     shareBtn.classList.toggle("on", on);
   }
 
@@ -1791,7 +1804,7 @@
     lastShareState = state;
     var on = !!state.on;
     var justOpened = on && !shareOn;
-    updateShareBtn(on);
+    updateShareBtn(on, state.viewers);
 
     // 顶栏按钮同一个状态写的是「已打开」（updateShareBtn），这里跟着改成
     // 「已打开/未打开」，别再各写各的（pm.md #3）
@@ -1807,8 +1820,9 @@
     if (!on) {
       shareBody.classList.add("hidden");
       // note 有内容时是刚失败的一次尝试（状态 5：端口被占，带真实报错）；否则是普通关闭说明
+      // 状态字已经写着「未打开」，这句不再以「关闭。」开头
       shareDesc.textContent = state.note ||
-        "关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。";
+        "打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。";
       shareLastIp = null;
       shareOn = false;
       return;
