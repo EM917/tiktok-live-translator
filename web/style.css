@@ -192,7 +192,13 @@ body {
 body.home { --page-bg: var(--grouped-bg); }
 
 /* ---------- 顶栏 ---------- */
+/* 顶栏固定一行：浮层（.popover）挂在这里面，top:100% 就是顶栏底边；顶栏自己
+   z-index 20 是为了让浮层盖住后面 fixed 的大字幕/统计行/回到最新（都 ≤5）。
+   放不下时左边的状态区先省略号截断（.brand 可以缩到 0），控件区不缩；
+   再窄就按 media query 一档档收起次要控件，最后 600px 以下才允许折行 */
 .topbar {
+  position: relative;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -201,10 +207,10 @@ body.home { --page-bg: var(--grouped-bg); }
   padding: 8px 16px;
   border-bottom: 0.5px solid var(--separator);
   background: var(--bar-bg);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
-.brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 0 1 auto; }
 
 /* 状态胶囊：点 + 文字。中性状态（待机/已结束）不再有灰底——之前跟按钮用
    同一种灰色填充，看着像个禁用的按钮（designer.md #9）。只有直播中/连接中/
@@ -214,7 +220,7 @@ body.home { --page-bg: var(--grouped-bg); }
    直接把状态写进 .status-pill 自己的 data-state，CSS 只用普通的属性选择器，
    兼容性只取决于属性选择器本身（所有現代浏览器都支持） */
 .status-pill {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
   height: 22px; padding: 0; border-radius: 11px;
   background: transparent; color: var(--label-2);
   font-size: var(--fs-footnote); white-space: nowrap;
@@ -236,7 +242,7 @@ body.home { --page-bg: var(--grouped-bg); }
    对新人也是看不懂的术语——关闭就直接不显示这个标签（pm.md #4）。
    因此这里只需要「开」一种视觉，不再需要 .off 的样式 */
 .alert-mode-tag {
-  display: inline-flex; align-items: center;
+  display: inline-flex; align-items: center; flex: none;
   height: 22px; padding: 0 8px; border-radius: 11px;
   font-size: var(--fs-footnote); font-weight: 500;
   color: var(--green-ink); background: var(--a-green-16);
@@ -247,11 +253,12 @@ body.home { --page-bg: var(--grouped-bg); }
    开/关变色。名字可能很长（用户自己起的），超宽度截断加省略号，完整名字
    放 title 里 */
 .active-brand-tag {
-  display: inline-flex; align-items: center;
+  display: inline-block; line-height: 22px;   /* 不能是 inline-flex：flex 容器上 text-overflow 不生效，省略号出不来 */
   height: 22px; padding: 0 8px; border-radius: 11px;
   font-size: var(--fs-footnote); font-weight: 500;
   color: var(--label-2); background: var(--fill);
-  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 160px; min-width: 48px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 0 2 auto;   /* 挤的时候品牌标签比主播名先缩 */
 }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gray); flex: none; }
@@ -262,7 +269,7 @@ body.home { --page-bg: var(--grouped-bg); }
 
 /* margin-left:auto 是折行前的最后一道兜底：真折成两行时至少让控件贴右边，
    跟左边的品牌区拉开，不会看着像纯粹堆在一起（见 designer.md #3） */
-.controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.controls { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: nowrap; margin-left: auto; }
 
 .ctl { display: flex; align-items: center; gap: 6px; font-size: var(--fs-callout); color: var(--label-2); }
 /* 字号：小 A — 滑块 — 大 A。只影响直播时底部的大字幕，待机首页拖动看不到
@@ -355,11 +362,31 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
 }
 
 /* 更窄的窗口（默认 1000×760 属于这一档）：「手机同看」只留图标，省掉约 114px。
-   font-size:0 只是让文字在视觉上不占地方，文字本身还在 DOM 里，用 textContent
-   写入、不受影响，读屏一样能读到「手机同看」/「手机同看 · 已打开」（designer.md #3）。
-   图标本身固定 16px 宽高，不随字号缩放 */
+   视觉隐藏而不是 display:none（同 .sr-only 的写法）：读屏照样能念到
+   「手机同看」/「手机同看 · 2 人」，文字本身还在 DOM 里，由 app.js
+   updateShareBtn 写进 #share-btn-text（designer.md #3）。有人在看时露出
+   #share-btn-count 数字，图标本身固定 16px 宽高，不随字号缩放 */
 @media (max-width: 1100px) {
-  #share-btn { font-size: 0; width: 28px; padding: 0; gap: 0; }
+  #share-btn { padding: 0 6px; min-width: 28px; }
+  #share-btn .btn-label {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; white-space: nowrap; border: 0; clip: rect(0, 0, 0, 0);
+  }
+}
+/* 再窄：字号滑块只剩滑条（省掉两个 A），然后整个收起——字号只是偏好，
+   随时可以把窗口拉宽再调；顶栏折成两行会让浮层、按钮位置全跟着跳 */
+@media (max-width: 860px) {
+  .ctl-font .a-small, .ctl-font .a-large { display: none; }
+  .ctl-font { margin: 0; }
+}
+@media (max-width: 720px) {
+  .ctl-font { display: none; }
+}
+/* 最后一档（窗口最小 420 宽）：实在放不下才允许折行。浮层 top 取的是顶栏
+   底边（100%），折行后照样贴着顶栏下沿，不需要跟着改 */
+@media (max-width: 600px) {
+  .topbar { flex-wrap: wrap; }
+  .controls { flex-wrap: wrap; }
 }
 
 /* ---------- 更新横幅 ---------- */
