@@ -81,10 +81,100 @@
       <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板">
         <svg class="i" aria-hidden="true"><use href="#i-iphone"/></svg>手机同看
       </button>
+      <!-- 手机同看：局域网内扫码只读观看，只在打开期间监听 0.0.0.0，关闭即停。
+           文案表见 spec §11——状态 1/2/3/6/7 由这里的结构化字段拼出来，
+           状态 4/5/8（没读到地址 / 端口被占 / 二维码生成失败）是后端已经拼好
+           的整段话（server.viewer.note），前端原样显示，不再二次改写。
+
+           这块面板以前放在 #start-panel 里：直播一开始整块面板就被隐藏，
+           中控恰恰是在直播中才想扫码给同事看，结果找不到入口。现在挪到顶栏
+           按钮下面、字幕历史上面，跟警报条一个层级，待机和直播中都能打开。 -->
+      <div id="share-panel" class="share-panel hidden">
+        <div id="share-card" class="share-card">
+          <div class="share-head">
+            <span class="share-title">手机同看</span>
+            <div class="share-head-right">
+              <span id="share-state" class="share-state off">未打开</span>
+              <!-- 只收起面板，不碰同看开关——跟下面「停止同看」（真的断开在看的手机）
+                   是两件事，照换主播面板 #switch-close 的外观和语义（app.js） -->
+              <button id="share-collapse" class="share-collapse" type="button" title="收起面板" aria-label="收起面板">×</button>
+            </div>
+          </div>
+          <p id="share-desc" class="share-desc">
+            关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。
+          </p>
+          <button id="share-toggle" class="btn small" type="button">打开</button>
+
+          <div id="share-body" class="share-body hidden">
+            <div class="share-main">
+              <canvas id="share-qr" class="share-qr" width="0" height="0"></canvas>
+              <div class="share-right">
+                <div id="share-url" class="share-url" tabindex="0"></div>
+                <div class="share-actions">
+                  <button id="share-copy" class="btn small" type="button">复制链接</button>
+                  <button id="share-rotate" class="btn small" type="button">换一个链接</button>
+                  <!-- 断开全部在看的手机，跟上面只收起面板的 × 不是同一件事，
+                       红字标出来避免和「关闭=收起」混淆（pm.md #3） -->
+                  <button id="share-close" class="btn small danger" type="button">停止同看</button>
+                </div>
+                <div id="share-count" class="share-count"></div>
+              </div>
+            </div>
+            <p id="share-addr-changed" class="share-addr-changed hidden"></p>
+            <p id="share-note" class="share-note hidden"></p>
+            <ul id="share-ip-list" class="share-ip-list hidden"></ul>
+            <p class="share-help">
+              手机要和这台电脑连同一个 Wi-Fi。连不上时，可以问网络管理员这个 Wi-Fi 是否允许设备互相访问。
+            </p>
+            <p class="share-help">
+              在微信里打开卡住或提示风险时，点右上角用浏览器打开，或改用手机相机扫码。
+            </p>
+            <p class="share-help">
+              手机打不开时，程序这边只知道没有连接进来。可以依次试：确认手机连的是同一个 Wi-Fi；
+              用列表里另一个地址手工输入；在本机浏览器打开同一个链接，确认服务本身在跑。
+            </p>
+          </div>
+        </div>
+      </div>
       <!-- 换主播：只在直播中/连接中露出，和停止按钮同一处切换（见 app.js setStatus）。
            跟停止之间留出明显间距（.switch-btn 的 margin-right），防止手滑点错——
            点错「换主播」是可挽回的（面板里还要再确认一次），点错「停止」是直接断流。 -->
       <button id="switch-btn" class="btn switch-btn hidden" type="button" title="不停止监听，直接换成另一个主播">换主播</button>
+      <!-- 换主播：直播中不停止监听、直接改听另一个主播。照 #share-panel 的位置与
+           收放方式放在 #start-panel/#history 之外——直播中 #start-panel 整块隐藏，
+           这个面板不能跟着一起被藏起来。两段式确认的状态机在 web/switch.js（可测），
+           这里只是纯 DOM 结构；点「换主播」打开，× 或 Esc 关闭（app.js）。 -->
+      <div id="switch-panel" class="switch-panel hidden">
+        <div class="switch-card">
+          <div class="switch-head">
+            <span class="switch-title">换主播</span>
+            <button id="switch-close" class="switch-close" type="button" title="关闭" aria-label="关闭">×</button>
+          </div>
+          <p id="switch-sub" class="switch-sub"></p>
+          <div class="switch-row">
+            <input id="switch-input" type="text" spellcheck="false"
+                   placeholder="新主播的直播间地址或 @用户名">
+          </div>
+          <!-- 最近直播间：同开始面板的数据，但这里点了只填入并武装，绝不直接开始——
+               直播中误触一下 chip 不该立刻断流（见 app.js 的两段式确认）。
+               当前正在监听的那个主播标「当前」且不可点。 -->
+          <div id="switch-recent" class="recent-rooms hidden">
+            <div class="recent-head"><span class="recent-label">最近的直播间</span></div>
+            <div id="switch-recent-list" class="recent-list"></div>
+          </div>
+          <div class="switch-row secondary">
+            <label>本场品牌
+              <select id="switch-brand-select" title="整场只卖这个牌子时选它：加载该品牌的商品词表。混卖别家货时选「不限」。">
+                <option value="">不限（默认）</option>
+              </select>
+            </label>
+          </div>
+          <p class="switch-carry">沿用：主播语言 <span id="switch-source-echo"></span></p>
+          <p id="switch-error" class="switch-error hidden"></p>
+          <button id="switch-confirm" class="btn primary" type="button" disabled>确认换主播</button>
+          <p id="switch-hint" class="switch-hint">切换期间两个主播都没有字幕，直到新主播出现第一句。</p>
+        </div>
+      </div>
       <button id="stop-btn" class="btn destructive hidden" title="停止当前直播间">停止</button>
     </div>
   </header>
@@ -120,98 +210,6 @@
     </div>
     <div id="alert-list" class="alert-list"></div>
   </section>
-
-  <!-- 手机同看：局域网内扫码只读观看，只在打开期间监听 0.0.0.0，关闭即停。
-       文案表见 spec §11——状态 1/2/3/6/7 由这里的结构化字段拼出来，
-       状态 4/5/8（没读到地址 / 端口被占 / 二维码生成失败）是后端已经拼好
-       的整段话（server.viewer.note），前端原样显示，不再二次改写。
-
-       这块面板以前放在 #start-panel 里：直播一开始整块面板就被隐藏，
-       中控恰恰是在直播中才想扫码给同事看，结果找不到入口。现在挪到顶栏
-       按钮下面、字幕历史上面，跟警报条一个层级，待机和直播中都能打开。 -->
-  <div id="share-panel" class="share-panel hidden">
-    <div id="share-card" class="share-card">
-      <div class="share-head">
-        <span class="share-title">手机同看</span>
-        <div class="share-head-right">
-          <span id="share-state" class="share-state off">未打开</span>
-          <!-- 只收起面板，不碰同看开关——跟下面「停止同看」（真的断开在看的手机）
-               是两件事，照换主播面板 #switch-close 的外观和语义（app.js） -->
-          <button id="share-collapse" class="share-collapse" type="button" title="收起面板" aria-label="收起面板">×</button>
-        </div>
-      </div>
-      <p id="share-desc" class="share-desc">
-        关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。
-      </p>
-      <button id="share-toggle" class="btn small" type="button">打开</button>
-
-      <div id="share-body" class="share-body hidden">
-        <div class="share-main">
-          <canvas id="share-qr" class="share-qr" width="0" height="0"></canvas>
-          <div class="share-right">
-            <div id="share-url" class="share-url" tabindex="0"></div>
-            <div class="share-actions">
-              <button id="share-copy" class="btn small" type="button">复制链接</button>
-              <button id="share-rotate" class="btn small" type="button">换一个链接</button>
-              <!-- 断开全部在看的手机，跟上面只收起面板的 × 不是同一件事，
-                   红字标出来避免和「关闭=收起」混淆（pm.md #3） -->
-              <button id="share-close" class="btn small danger" type="button">停止同看</button>
-            </div>
-            <div id="share-count" class="share-count"></div>
-          </div>
-        </div>
-        <p id="share-addr-changed" class="share-addr-changed hidden"></p>
-        <p id="share-note" class="share-note hidden"></p>
-        <ul id="share-ip-list" class="share-ip-list hidden"></ul>
-        <p class="share-help">
-          手机要和这台电脑连同一个 Wi-Fi。连不上时，可以问网络管理员这个 Wi-Fi 是否允许设备互相访问。
-        </p>
-        <p class="share-help">
-          在微信里打开卡住或提示风险时，点右上角用浏览器打开，或改用手机相机扫码。
-        </p>
-        <p class="share-help">
-          手机打不开时，程序这边只知道没有连接进来。可以依次试：确认手机连的是同一个 Wi-Fi；
-          用列表里另一个地址手工输入；在本机浏览器打开同一个链接，确认服务本身在跑。
-        </p>
-      </div>
-    </div>
-  </div>
-
-  <!-- 换主播：直播中不停止监听、直接改听另一个主播。照 #share-panel 的位置与
-       收放方式放在 #start-panel/#history 之外——直播中 #start-panel 整块隐藏，
-       这个面板不能跟着一起被藏起来。两段式确认的状态机在 web/switch.js（可测），
-       这里只是纯 DOM 结构；点「换主播」打开，× 或 Esc 关闭（app.js）。 -->
-  <div id="switch-panel" class="switch-panel hidden">
-    <div class="switch-card">
-      <div class="switch-head">
-        <span class="switch-title">换主播</span>
-        <button id="switch-close" class="switch-close" type="button" title="关闭" aria-label="关闭">×</button>
-      </div>
-      <p id="switch-sub" class="switch-sub"></p>
-      <div class="switch-row">
-        <input id="switch-input" type="text" spellcheck="false"
-               placeholder="新主播的直播间地址或 @用户名">
-      </div>
-      <!-- 最近直播间：同开始面板的数据，但这里点了只填入并武装，绝不直接开始——
-           直播中误触一下 chip 不该立刻断流（见 app.js 的两段式确认）。
-           当前正在监听的那个主播标「当前」且不可点。 -->
-      <div id="switch-recent" class="recent-rooms hidden">
-        <div class="recent-head"><span class="recent-label">最近的直播间</span></div>
-        <div id="switch-recent-list" class="recent-list"></div>
-      </div>
-      <div class="switch-row secondary">
-        <label>本场品牌
-          <select id="switch-brand-select" title="整场只卖这个牌子时选它：加载该品牌的商品词表。混卖别家货时选「不限」。">
-            <option value="">不限（默认）</option>
-          </select>
-        </label>
-      </div>
-      <p class="switch-carry">沿用：主播语言 <span id="switch-source-echo"></span></p>
-      <p id="switch-error" class="switch-error hidden"></p>
-      <button id="switch-confirm" class="btn primary" type="button" disabled>确认换主播</button>
-      <p id="switch-hint" class="switch-hint">切换期间两个主播都没有字幕，直到新主播出现第一句。</p>
-    </div>
-  </div>
 
   <!-- 字幕历史与观众弹幕并排：弹幕放右侧一列，不挤占主播字幕的阅读区
        （放顶部时中控反映挡住了看主播翻译）。收起后整列让出去，右上角留一个
