@@ -5,9 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=32">
+  <link rel="stylesheet" href="/static/style.css?v=33">
 </head>
 <body class="home">
+  <!-- 直播界面的线性图标：跟设置行、ⓘ 同一套画法（SF Symbols 风格，16×16、描边 1.5、
+       圆角端点、颜色跟 currentColor）。集中成一份 <symbol>，静态 DOM 和 app.js 动态
+       生成的（报警分级、提示条）都用 <use href="#i-…"> 引用，同一个图形不在 HTML 和
+       JS 里各抄一份路径。描边宽度/端点写在 style.css 的 .i 上（会继承进 <use> 的影子树），
+       个别位置要加粗只改 CSS。以前这些位置是 emoji 和 × ↓ 这类文字符号：emoji 在
+       Windows 上换成 Segoe 那套画风，同一屏还会出现两种手机图案（designer.md #4） -->
+  <svg class="icon-sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-bubble" viewBox="0 0 16 16"><path d="M8 2.75c3.45 0 6.25 2.2 6.25 4.9S11.45 12.55 8 12.55c-.68 0-1.33-.08-1.94-.24L3 13.75l.62-2.55C2.4 10.3 1.75 9.03 1.75 7.65 1.75 4.95 4.55 2.75 8 2.75Z"/></symbol>
+    <symbol id="i-iphone" viewBox="0 0 16 16"><rect x="4.25" y="1.5" width="7.5" height="13" rx="1.75"/><path d="M7.1 12.1h1.8"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 16 16"><path d="M8 2.5v11M3.5 9 8 13.5 12.5 9"/></symbol>
+    <symbol id="i-xmark" viewBox="0 0 16 16"><path d="M4.25 4.25l7.5 7.5M11.75 4.25l-7.5 7.5"/></symbol>
+    <symbol id="i-arrow-clockwise" viewBox="0 0 16 16"><path d="M13.1 9.8a5.4 5.4 0 1 1-1.28-5.62L14.6 6.8M14.6 3.2v3.6H11"/></symbol>
+    <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 7.25V11"/><circle cx="8" cy="5" r=".8" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 16 16"><path d="M7.13 2.5a1 1 0 0 1 1.74 0l5.58 9.75a1 1 0 0 1-.87 1.5H2.42a1 1 0 0 1-.87-1.5Z"/><path d="M8 6.25V9.5"/><circle cx="8" cy="11.4" r=".8" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-octagon" viewBox="0 0 16 16"><path d="M5.5 1.75h5l3.75 3.75v5l-3.75 3.75h-5L1.75 10.5v-5Z"/><path d="M8 5v3.75"/><circle cx="8" cy="11" r=".8" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-alert-fill" viewBox="0 0 16 16"><path fill="currentColor" stroke="none" fill-rule="evenodd" d="M7.13 2.5a1 1 0 0 1 1.74 0l5.58 9.75a1 1 0 0 1-.87 1.5H2.42a1 1 0 0 1-.87-1.5ZM8 5.6a.8.8 0 0 0-.8.8v3.1a.8.8 0 0 0 1.6 0V6.4a.8.8 0 0 0-.8-.8Zm0 5.05a.9.9 0 1 0 0 1.8.9.9 0 0 0 0-1.8Z"/></symbol>
+  </svg>
   <header class="topbar">
     <div class="brand">
       <!-- 原来这里有个 <h1>TikTok 直播同传</h1>：pywebview 的原生窗口标题栏已经显示
@@ -60,8 +77,10 @@
       <!-- 手机同看的入口常驻顶栏：这张卡片曾经放在 #start-panel 里，直播开始后
            整块面板被隐藏，中控恰好在这时候想扫码给同事看，却找不到入口。
            按钮本身在待机/直播两种状态下都不隐藏，只负责开关下面的 #share-panel。
-           图标由 CSS ::before 画（mask），文字仍由 app.js updateShareBtn 整段写入 -->
-      <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板">手机同看</button>
+           图标是内联 SVG（#i-iphone），文字仍由 app.js updateShareBtn 整段写入 -->
+      <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板">
+        <svg class="i" aria-hidden="true"><use href="#i-iphone"/></svg>手机同看
+      </button>
       <!-- 换主播：只在直播中/连接中露出，和停止按钮同一处切换（见 app.js setStatus）。
            跟停止之间留出明显间距（.switch-btn 的 margin-right），防止手滑点错——
            点错「换主播」是可挽回的（面板里还要再确认一次），点错「停止」是直接断流。 -->
@@ -95,8 +114,9 @@
   <!-- 违禁词警报：本工具的核心产出，不自动消失，只能手动清空 -->
   <section id="alert-panel" class="alert-panel hidden">
     <div class="alert-bar">
-      <span class="alert-title">🚨 疑似违禁词 <span id="alert-count">0</span><span id="alert-note" class="alert-note hidden"></span></span>
-      <button id="clear-alerts" class="btn">清空警报</button>
+      <span class="alert-title"><svg class="i" aria-hidden="true"><use href="#i-alert-fill"/></svg>疑似违禁词
+        <span id="alert-count">0</span><span id="alert-note" class="alert-note hidden"></span></span>
+      <button id="clear-alerts" class="btn small">清空警报</button>
     </div>
     <div id="alert-list" class="alert-list"></div>
   </section>
@@ -442,7 +462,7 @@
   <!-- 观众弹幕：程序自己通过 TikTokLive 抓取评论流；只翻译、只显示，不进报警链路 -->
   <aside id="comment-panel" class="comment-panel hidden">
     <div class="comment-bar">
-      <span class="comment-title">💬 观众弹幕 <span id="comment-count">0</span>
+      <span class="comment-title"><svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>观众弹幕 <span id="comment-count">0</span>
         <span id="comment-source" class="cmt-source">未连接</span></span>
       <span class="comment-actions">
         <button id="toggle-comments" class="btn small" title="收起弹幕列，字幕独占整行">收起</button>
@@ -455,13 +475,15 @@
   </aside>
   <!-- 弹幕列收起后的入口：带条数，新弹幕来了也能看出来 -->
   <button id="comment-fab" class="comment-fab hidden" type="button" title="展开观众弹幕">
-    💬 弹幕 <span id="comment-fab-count">0</span>
+    <svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>弹幕 <span id="comment-fab-count">0</span>
   </button>
   </div>
 
   <!-- 回到最新。自动跟随依赖几何量判断，而页面不可渲染时那些值不可信；
        这个按钮是用户随时可用的直接出口，不依赖任何启发式判断。 -->
-  <button id="jump-latest" class="jump-latest hidden" type="button">↓ 回到最新</button>
+  <button id="jump-latest" class="jump-latest hidden" type="button">
+    <svg class="i" aria-hidden="true"><use href="#i-arrow-down"/></svg>回到最新
+  </button>
 
   <footer id="live-bar" class="live-bar hidden">
     <div id="live-translated" class="live-translated"></div>
@@ -482,8 +504,7 @@
         "font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;" +
         "font-size:15px;line-height:1.9;color:#333;border:1px solid #ddd;" +
         "border-radius:12px;text-align:center;background:#fff;";
-      __note.innerHTML = "<div style='font-size:34px'>🚪</div>" +
-        "<b>请不要直接打开这个文件</b><br>" +
+      __note.innerHTML = "<b>请不要直接打开这个文件</b><br>" +
         "回到解压出来的文件夹，双击 <b>TikTok Live Translator.app</b>（Mac）" +
         "或 <b>Start.bat</b>（Windows）启动程序，字幕界面会自动打开。";
       document.body.appendChild(__note);
@@ -497,6 +518,7 @@
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=1"></script>
-  <script src="/static/app.js?v=58"></script>
+  <script src="/static/live-ui.js?v=1"></script>
+  <script src="/static/app.js?v=59"></script>
 </body>
 </html>

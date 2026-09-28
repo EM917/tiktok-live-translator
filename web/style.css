@@ -41,10 +41,9 @@
   --indigo: #5856d6;  /* 违禁词报警行图标：不借用 orange，免得和「提醒」状态色撞在一起 */
   --warn-bg: #fff6e0;
   --warn-fg: #7a5200;
-  /* 违禁词报警条目的分级色（tier-variant=变体命中，tier-fuzzy=模糊命中），
-     原来是硬编码 hex，深色模式不会跟着变调；纳入令牌体系 */
-  --tier-variant: #e8a013;
-  --tier-fuzzy: #c9a227;
+  /* 红色计数徽标的底：深色模式下 --fail #ff6961 配白字只有 2.8:1，
+     #d70015 配白字 5.4:1，深浅色共用同一个实色 */
+  --red-fill: #d70015;
 
   /* 半透明色阶：以前直接写 color-mix(in srgb, var(--x) N%, transparent)，
      Safari 15.4–16.1（Intel Mac 走 CPU 路径、没升级系统的机器仍在支持范围内）
@@ -72,7 +71,6 @@
   --tint-accent-8: #ebf4ff;
   --tint-accent-12: #e0efff;
   --tint-blue-10: #e6f2ff;
-  --tint-fail-10: #fbe6e8;
   --tint-label-4: #f6f6f6;
 
   /* 字号层级（macOS 尺度，中文正文取 14 保证可读） */
@@ -130,8 +128,7 @@
     --indigo: #5e5ce6;
     --warn-bg: #3a2f14;
     --warn-fg: #f0c674;
-    --tier-variant: #f0b429;
-    --tier-fuzzy: #d9bb4a;
+    --red-fill: #d70015;
 
     /* 同上，换成深色模式下 --green/--orange/--red/--label/--blue/--bg 各自的值 */
     --a-green-16: rgba(48, 209, 88, 0.16);
@@ -148,12 +145,22 @@
     --tint-accent-8: #1b2430;
     --tint-accent-12: #1a2839;
     --tint-blue-10: #1a2634;
-    --tint-fail-10: #332425;
     --tint-label-4: #252527;
   }
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* 图标：index.html 顶部 .icon-sprite 里的 <symbol>，用 <svg class="i"><use href="#i-…">
+   引用。描边属性写在这里而不是 <symbol> 里：fill/stroke 是继承属性，会传进 <use>
+   的影子树，个别位置要加粗（如浮层关闭按钮）只改 CSS。实心的小圆点在 symbol 里
+   自带 fill/stroke 属性，不受这里影响 */
+.icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.i {
+  flex: none; width: 16px; height: 16px;
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 
 html, body { height: 100%; }
 
@@ -311,15 +318,9 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
 .btn.destructive:active, .btn.danger:active { background-color: var(--a-red-28); }
 .btn.danger:disabled { background-color: var(--a-red-12); }
 
-/* 手机同看：图标用 mask 画（颜色跟文字走），文字仍由 app.js 整段写入。
+/* 手机同看：图标是内联 SVG（#i-iphone），文字仍由 app.js 整段写入。
    同看打开时按钮变绿，跟其余「on」状态同一个颜色，中控一眼就能看出当前
    是不是正对外广播着地址 */
-#share-btn::before {
-  content: ""; width: 10px; height: 15px; flex: none;
-  background-color: currentColor;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 15'%3E%3Crect x='.75' y='.75' width='8.5' height='13.5' rx='2' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M3.8 11.6h2.4' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
-          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 15'%3E%3Crect x='.75' y='.75' width='8.5' height='13.5' rx='2' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M3.8 11.6h2.4' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
-}
 #share-btn.on { color: var(--green-ink); background-color: var(--a-green-16); }
 
 /* 换主播：和停止按钮之间留出明显间距，防止手滑点错——点错「换主播」还能
@@ -341,7 +342,7 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
 /* 更窄的窗口（默认 1000×760 属于这一档）：「手机同看」只留图标，省掉约 114px。
    font-size:0 只是让文字在视觉上不占地方，文字本身还在 DOM 里，用 textContent
    写入、不受影响，读屏一样能读到「手机同看」/「手机同看 · 已打开」（designer.md #3）。
-   图标本身用固定 px 宽高的 mask 画（见下面 #share-btn::before），不随字号缩放 */
+   图标本身固定 16px 宽高，不随字号缩放 */
 @media (max-width: 1100px) {
   #share-btn { font-size: 0; width: 28px; padding: 0; gap: 0; }
 }
@@ -574,9 +575,12 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 }
 
 /* ---------- 违禁词警报 ---------- */
+/* 报警功能已搁置但保留：配色换成新令牌（半透明红底 + 发丝线），不再是写死的
+   粉底 + 2px 红粗线；分级从每条左侧的彩色竖条改成条目开头的文字胶囊
+   （命中/变体/疑似），颜色之外还有字可认 */
 .alert-panel {
-  border-bottom: 2px solid var(--fail);
-  background: var(--tint-fail-10);
+  border-bottom: 0.5px solid var(--a-red-28);
+  background: var(--a-red-8);
   max-height: 30vh;
   display: flex;
   flex-direction: column;
@@ -588,39 +592,37 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   gap: 12px;
   padding: 8px 20px;
 }
-.alert-title { font-size: 14px; font-weight: 700; color: var(--red-ink); }
+.alert-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--fs-callout); font-weight: 600; color: var(--red-ink);
+}
+.alert-title .i { color: var(--red); }
 #alert-count {
-  display: inline-block;
-  min-width: 20px;
-  padding: 0 6px;
-  border-radius: 10px;
-  background: var(--fail);
-  color: #fff;
-  text-align: center;
-  font-size: 12px;
+  display: inline-block; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 9px;
+  background: var(--red-fill); color: #fff; text-align: center;
+  font-size: 11px; line-height: 18px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
-.alert-list { overflow-y: auto; padding: 0 20px 10px; }
-.alert-item {
-  padding: 6px 0 6px 10px;
-  border-left: 3px solid var(--fail);
-  margin-bottom: 6px;
+.alert-list { overflow-y: auto; padding: 0 20px 4px; }
+.alert-item { padding: 8px 0; border-top: 0.5px solid var(--a-red-20); }
+.alert-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--fs-callout); font-weight: 600; }
+/* 分级胶囊：app.js renderAlert 按 alertTierText() 写字，颜色跟 .alert-item.tier-* 走 */
+.alert-tier {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px;
+  font-size: var(--fs-footnote); font-weight: 600;
+  color: var(--red-ink); background: var(--a-red-14);
 }
-.alert-item.tier-variant { border-left-color: var(--tier-variant); }
-.alert-item.tier-fuzzy { border-left-color: var(--tier-fuzzy); }
-.alert-head { font-size: 13px; font-weight: 600; }
-.alert-ctx { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
-.alert-note { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--text-dim); }
+.alert-item.tier-variant .alert-tier { color: var(--warn-fg); background: var(--a-orange-16); }
+/* 最低一档用描边胶囊：实心/空心本身就是一层区分，不只靠颜色；灰底上 --label-2
+   只有 4.37:1，去掉底色后 4.86:1 */
+.alert-item.tier-fuzzy .alert-tier { color: var(--label-2); background: transparent; box-shadow: inset 0 0 0 0.5px var(--separator); }
+.alert-ctx { font-size: var(--fs-footnote); color: var(--label-2); line-height: 1.5; margin-top: 2px; }
+.alert-note { margin-left: 2px; font-size: var(--fs-footnote); font-weight: 400; color: var(--label-2); }
 /* 上一场（换过主播/断线结束）的报警：留着但压暗，不能被当成眼前这个主播说的 */
 .alert-item.prev-session { opacity: 0.55; }
 .alert-prev {
-  display: inline-block;
-  margin-right: 6px;
-  padding: 0 5px;
-  border: 1px solid var(--text-faint);
-  border-radius: 4px;
-  font-size: var(--fs-footnote);
-  font-weight: 400;
-  color: var(--text-dim);
+  display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px;
+  font-size: var(--fs-footnote); font-weight: 500;
+  color: var(--label-2); background: var(--fill);
 }
 
 /* ---------- 延迟统计 ---------- */
@@ -643,6 +645,11 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 /* 以前写死浅黄 #ffeaa7：深色模式下这条会变成一整条刺眼的亮黄带，跟 #1c1c1e
    背景对比高达 14:1，偏偏出现在「识别落后」这种需要冷静判断的时刻——改用
    --warn-bg/--warn-fg，深浅色各有自己的低饱和度版本（designer.md #8） */
+/* 图标（按级别换形状：提醒=三角、降级/出错=八角、说明=ⓘ）+ 文字，见 app.js
+   setIconText；后端文字开头自带的 🔴⚠️ 由 stripStatusEmoji 去掉 */
+.health-bar, .incident {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+}
 .health-bar {
   padding: 7px 20px;
   font-size: 13px;

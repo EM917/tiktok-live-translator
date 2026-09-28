@@ -7,6 +7,29 @@
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 忽略 */ } }
   "use strict";
 
+  // index.html 顶部 .icon-sprite 里的 <symbol>：动态生成的图标也走 <use href>，
+  // 路径只在 HTML 里存一份。createElementNS：普通 createElement 造出来的 <svg>
+  // 不在 SVG 命名空间里，浏览器不会画
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  function iconEl(name) {
+    var svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "i");
+    svg.setAttribute("aria-hidden", "true");
+    var use = document.createElementNS(SVG_NS, "use");
+    use.setAttribute("href", "#i-" + name);
+    svg.appendChild(use);
+    return svg;
+  }
+  // 图标 + 一段文字：文字仍按数据写（textContent），不拼 HTML
+  function setIconText(el, name, text) {
+    if (!el) return;
+    el.textContent = "";
+    el.appendChild(iconEl(name));
+    var span = document.createElement("span");
+    span.textContent = text;
+    el.appendChild(span);
+  }
+
   var historyEl = document.getElementById("history");
   var startPanel = document.getElementById("start-panel");
   var roomInput = document.getElementById("room-input");
@@ -496,7 +519,7 @@
 
   function showUpdate(info) {
     if (!info || !info.version) return;
-    updateText.textContent = "🔄 发现新版本 " + info.version;
+    setIconText(updateText, "arrow-clockwise", "发现新版本 " + info.version);
     if (info.can_auto) {
       updateBtn.classList.remove("hidden");
       updateLink.textContent = "更新说明";
@@ -912,8 +935,8 @@
       // 只要翻译还在持续失败，警告就要顶回来
       if (failStreak >= 4) {
         transBannerOn = true;
-        statusBanner.textContent =
-          "⚠️ 连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。";
+        setIconText(statusBanner, "warn",
+          "连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。");
         statusBanner.classList.remove("hidden");
         statusBanner.classList.remove("info");
       }
@@ -1100,7 +1123,6 @@
 
   // ---- 违禁词警报 ----
   // 警报是这个工具的核心产出，绝不自动消失：中控没看到就等于漏报。
-  var TIER_LABEL = { exact: "🔴 命中", variant: "🟠 变体", fuzzy: "🟡 疑似" };
   var alertNote = document.getElementById("alert-note");
   var alertSession = null;   // 当前场次 { session, streamer, total }，服务端在 config 里给
   var sessionTotal = 0;      // 本场报警总数（面板只留最近 50 条）
@@ -1119,8 +1141,13 @@
     head.className = "alert-head";
     var ts = new Date((msg.ts || Date.now() / 1000) * 1000);
     // 带上主播：换过房间后，面板上的旧报警不能被当成眼前这个主播说的
+    // 分级：文字胶囊（颜色由 CSS 按 .alert-item.tier-* 给），不再是 🔴🟠🟡 前缀
+    var tierTag = document.createElement("span");
+    tierTag.className = "alert-tier";
+    tierTag.textContent = alertTierText(msg.tier);
+    head.appendChild(tierTag);
     head.appendChild(document.createTextNode(
-      (TIER_LABEL[msg.tier] || "命中") + "「" + msg.term + "」 " +
+      "「" + msg.term + "」 " +
       pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds()) +
       (msg.streamer ? " @" + msg.streamer : "")));
     item.appendChild(head);
@@ -1506,7 +1533,8 @@
       var row = document.createElement("div");
       var level = incidents[k].level;
       row.className = "incident " + (level === "error" ? "error" : (level === "info" ? "info" : "warn"));
-      row.textContent = incidents[k].text;      // 当数据，不当 HTML
+      // 当数据，不当 HTML；开头自带的 🔴⚠️ 换成按级别画的图标
+      setIconText(row, barIconFor(level), stripStatusEmoji(incidents[k].text));
       incidentBar.appendChild(row);
     });
     incidentBar.classList.toggle("hidden", keys.length === 0);
@@ -1517,7 +1545,7 @@
       healthBar.classList.add("hidden");
       return;
     }
-    healthBar.textContent = msg.text || "";
+    setIconText(healthBar, barIconFor(msg.level), stripStatusEmoji(msg.text || ""));
     healthBar.classList.remove("hidden");
     healthBar.classList.toggle("degraded", msg.level === "degraded");
   }
@@ -2425,10 +2453,10 @@
     auto: "默认用本地模型：完全离线、不限量、字幕不出本机。",
     hymt2: "本地模型，离线免费。多数机器用这一档就够。",
     "hymt2-7b": "本地模型，术语更准，但会和语音识别抢内存，可能拖慢报警。",
-    deepl: "⚠️ 字幕文本会发送给 DeepL。免费额度以此处显示的用量为准；额度周期与续用方式取决于你的 DeepL 账户方案。",
-    claude: "⚠️ 字幕文本会发送给 Anthropic，按用量计费。",
-    openai: "⚠️ 字幕文本会发送给该接口的提供方，按用量计费。",
-    google: "⚠️ 字幕文本会发送给 Google，且会按 IP 限流。",
+    deepl: "字幕文本会发送给 DeepL。免费额度以此处显示的用量为准；额度周期与续用方式取决于你的 DeepL 账户方案。",
+    claude: "字幕文本会发送给 Anthropic，按用量计费。",
+    openai: "字幕文本会发送给该接口的提供方，按用量计费。",
+    google: "字幕文本会发送给 Google，且会按 IP 限流。",
     none: "只显示识别原文，不翻译。"
   };
   var engineKeys = {};
@@ -2469,7 +2497,7 @@
     // 自动」，来自 app/translator.py restore_engine），压过常规注记——
     // 用户上次的选择被改掉了，必须看得见
     if (engSum.hasNote) {
-      engineNote.textContent = info.note;
+      setIconText(engineNote, "warn", info.note);
       engineNote.classList.add("warn");
     }
     // 卡片收进设置列表后，「上次的选择被改掉了」不能藏在折叠里：
@@ -2492,9 +2520,11 @@
       engineKey.placeholder = have ? "已填 " + have + "（留空则沿用）"
                                    : "粘贴 API 密钥";
     }
-    engineNote.textContent = NOTES[engineSelect.value] || "";
-    engineNote.classList.toggle("warn", engineSelect.value in KEY_ENV
-                                        || engineSelect.value === "google");
+    // 字幕会发到外部服务的几档：前面加三角图标（以前是 ⚠️ 前缀），颜色仍由 .warn 给
+    var sendsOut = engineSelect.value in KEY_ENV || engineSelect.value === "google";
+    if (sendsOut) setIconText(engineNote, "warn", NOTES[engineSelect.value] || "");
+    else engineNote.textContent = NOTES[engineSelect.value] || "";
+    engineNote.classList.toggle("warn", sendsOut);
   }
 
   if (engineSelect) {
