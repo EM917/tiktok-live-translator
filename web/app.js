@@ -1871,11 +1871,54 @@
     shareOn = on;
   }
 
+  // ---- 顶栏浮层（手机同看 / 换主播）的共用开合 ----
+  // 两个浮层互斥；位置按触发按钮右边缘算（popoverRight）；aria-expanded 跟着走。
+  // 关闭的途径：按钮再点一次、×、Esc、点浮层外。不在窗口失焦（blur/focusout）时
+  // 关——中控要切到浏览器复制新主播的地址再回来粘，浮层得还在
+  function isPopoverOpen(panel) { return !!panel && !panel.classList.contains("hidden"); }
+  function placePopover(panel, trigger) {
+    if (!isPopoverOpen(panel) || !trigger) return;
+    var r = trigger.getBoundingClientRect();
+    panel.style.right = popoverRight(r.right, window.innerWidth, panel.offsetWidth, 12) + "px";
+  }
+  function showPopover(panel, trigger) {
+    if (panel === switchPanel) closeSharePanel(); else closeSwitchPanel();
+    panel.classList.remove("hidden");
+    if (trigger) trigger.setAttribute("aria-expanded", "true");
+    placePopover(panel, trigger);
+  }
+  function hidePopover(panel, trigger) {
+    if (!panel) return;
+    panel.classList.add("hidden");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+  }
+  window.addEventListener("resize", function () {
+    placePopover(sharePanel, shareBtn);
+    placePopover(switchPanel, switchBtn);
+  });
+  // 捕获阶段：浮层里的按钮自己的 click 照常触发；点在触发按钮上不算「外面」，
+  // 交给按钮自己的切换（否则这里先关、按钮的 click 又打开）
+  document.addEventListener("pointerdown", function (e) {
+    var t = e.target;
+    if (isPopoverOpen(switchPanel) && !switchPanel.contains(t) && !(switchBtn && switchBtn.contains(t))) {
+      closeSwitchPanel();
+    }
+    if (isPopoverOpen(sharePanel) && !sharePanel.contains(t) && !(shareBtn && shareBtn.contains(t))) {
+      closeSharePanel();
+    }
+  }, true);
+
+  // 不主动挪焦点：浮层在 DOM 里紧跟着 #share-btn，键盘用户按 Tab 就进去了；
+  // 鼠标用户点开后焦点跳到某个按钮上反而会亮出一圈焦点环
+  function openSharePanel() {
+    if (!sharePanel) return;
+    showPopover(sharePanel, shareBtn);
+  }
   // 顶栏按钮只管面板的展开/收起，不碰同看开关本身——同看是否广播局域网端口
   // 完全由卡片里的「打开/关闭」决定，两件事故意分开，收起面板不应该顺手断掉正在看的手机
   if (shareBtn && sharePanel) {
     shareBtn.addEventListener("click", function () {
-      sharePanel.classList.toggle("hidden");
+      if (isPopoverOpen(sharePanel)) closeSharePanel(); else openSharePanel();
     });
   }
   if (shareToggle) {
@@ -1886,14 +1929,14 @@
   if (shareClose) {
     shareClose.addEventListener("click", function () {
       send({ type: "viewer_share", on: false });
-      // 面板本身也一起收起：点「停止同看」的人是要结束同看，没必要还占着字幕历史上方的位置
-      if (sharePanel) sharePanel.classList.add("hidden");
+      // 浮层也一起收起：点「停止同看」的人是要结束同看
+      closeSharePanel();
     });
   }
   // 卡片右上角的 ×：只收起面板，不发 viewer_share——跟上面「停止同看」故意
   // 是两个控件，别把两件事并回一个按钮（pm.md #3；closeSharePanel 给 Esc 复用）
   function closeSharePanel() {
-    if (sharePanel) sharePanel.classList.add("hidden");
+    hidePopover(sharePanel, shareBtn);
   }
   if (shareCollapse) {
     shareCollapse.addEventListener("click", closeSharePanel);
@@ -2058,13 +2101,15 @@
     }
     renderSwitchRecentList();
     renderSwitchButton();
-    switchPanel.classList.remove("hidden");
+    showPopover(switchPanel, switchBtn);
     switchInput.focus();
   }
 
+  // 关闭＝作废这一轮：定时器清掉，下次打开 openSwitchPanel 从头重置输入与武装状态，
+  // 点浮层外关掉也不会留下一个「再点一次就换」的半截状态
   function closeSwitchPanel() {
     if (!switchPanel) return;
-    switchPanel.classList.add("hidden");
+    hidePopover(switchPanel, switchBtn);
     clearSwitchResetTimer();
   }
 
@@ -2109,7 +2154,11 @@
     closeSwitchPanel();
   }
 
-  if (switchBtn) switchBtn.addEventListener("click", openSwitchPanel);
+  if (switchBtn) {
+    switchBtn.addEventListener("click", function () {
+      if (isPopoverOpen(switchPanel)) closeSwitchPanel(); else openSwitchPanel();
+    });
+  }
   if (switchClose) switchClose.addEventListener("click", closeSwitchPanel);
   if (switchInput) {
     switchInput.addEventListener("input", armSwitchFromInput);
@@ -2120,12 +2169,15 @@
   if (switchConfirmBtn) switchConfirmBtn.addEventListener("click", attemptSwitchConfirm);
   // Esc 关闭：只在面板确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
   // 同看面板走 closeSharePanel——只收起，不碰同看开关，跟卡片里的 × 同一个函数（pm.md #3）
+  // 关掉后焦点回到触发按钮，键盘用户不会掉到页面开头
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    if (switchPanel && !switchPanel.classList.contains("hidden")) {
+    if (isPopoverOpen(switchPanel)) {
       closeSwitchPanel();
-    } else if (sharePanel && !sharePanel.classList.contains("hidden")) {
+      if (switchBtn) switchBtn.focus();
+    } else if (isPopoverOpen(sharePanel)) {
       closeSharePanel();
+      if (shareBtn) shareBtn.focus();
     }
   });
 

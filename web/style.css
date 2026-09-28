@@ -50,6 +50,10 @@
   /* 弹幕入口、回到最新这类悬浮小按钮的投影：贴在字幕上方，要一眼看出
      「浮在上面、不占位置」 */
   --float-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.10);
+  /* 顶栏浮层（换主播 / 手机同看）的投影：浮层压在字幕上，要一眼看出「浮在
+     上面、不占位置」；深色模式同样的阴影几乎看不见，靠提高不透明度 + 一圈
+     亮色发丝线勾边 */
+  --popover-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 0 0 0.5px rgba(0, 0, 0, 0.10);
 
   /* 半透明色阶：以前直接写 color-mix(in srgb, var(--x) N%, transparent)，
      Safari 15.4–16.1（Intel Mac 走 CPU 路径、没升级系统的机器仍在支持范围内）
@@ -136,6 +140,7 @@
     --red-fill: #d70015;
     --sidebar-bg: #232325;
     --float-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 2px 8px rgba(0, 0, 0, 0.45);
+    --popover-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 0 0 0.5px rgba(255, 255, 255, 0.12);
 
     /* 同上，换成深色模式下 --green/--orange/--red/--label/--blue/--bg 各自的值 */
     --a-green-16: rgba(48, 209, 88, 0.16);
@@ -466,8 +471,10 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .help-btn:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
 
 .sp-input-row { display: flex; gap: 8px; }
-#room-input {
-  flex: 1;
+/* 文字输入框：首页 #room-input 与换主播浮层 #switch-input 同一个样子（白底 + 发丝
+   描边 + 焦点环）。以前浮层里是灰色填充，同一种控件两种样子（designer.md #11） */
+.field {
+  width: 100%;
   min-width: 0;
   height: var(--h-large);
   padding: 0 12px;
@@ -480,8 +487,9 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   box-shadow: var(--ring);
   outline: 2px solid transparent;
 }
-#room-input::placeholder { color: var(--label-3); }
-#room-input:focus { box-shadow: var(--ring), var(--focus); }
+.field::placeholder { color: var(--label-3); }
+.field:focus { box-shadow: var(--ring), var(--focus); }
+#room-input { flex: 1; }
 
 .sp-help {
   margin-top: 12px; padding: 12px 16px;
@@ -500,9 +508,9 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-size: var(--fs-callout); color: var(--label-2);
 }
 .sp-opt { display: inline-flex; align-items: center; gap: 8px; }
-.sp-options select { background-color: var(--card); box-shadow: var(--ring); max-width: 220px; }
-.sp-options select:hover { background-color: var(--card); filter: brightness(0.98); }
-.sp-options select:focus-visible { box-shadow: var(--ring), var(--focus); }
+.sp-options select, .popover select { background-color: var(--card); box-shadow: var(--ring); max-width: 220px; }
+.sp-options select:hover, .popover select:hover { background-color: var(--card); filter: brightness(0.98); }
+.sp-options select:focus-visible, .popover select:focus-visible { box-shadow: var(--ring), var(--focus); }
 /* 品牌下拉旁边的空态提示：brands 文件夹里一个词表都没有时说明这个功能是
    干什么的、该去哪加（pm.md #6）。用 --label-2（跟 .disk-hint/.watch-desc/
    .sp-sub 同一档），--label-3 太浅快读不出来 */
@@ -822,36 +830,62 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
 }
 
-/* ---------- 手机同看 ----------
-   这块面板以前嵌在 #start-panel 里，直播开始后随整块面板一起被隐藏，
-   中控恰恰是在直播中才想扫码给同事看，却找不到入口。现在跟警报条
-   （.alert-panel）一个层级，直接挂在顶栏下面、字幕历史上面，靠顶栏的
-   #share-btn 开关，跟直播状态无关，不会被 #start-panel 的隐藏逻辑带走。
-   外观跟首页设置列表一致：分组灰底上一张白卡片，无描边。 */
-.share-panel {
-  background: var(--grouped-bg);
-  border-bottom: 0.5px solid var(--separator);
-  padding: 0 16px;
-}
-.share-card {
-  max-width: 560px;
-  margin: 16px auto;
+/* ---------- 顶栏浮层：换主播 / 手机同看 ----------
+   以前是把字幕区整体往下推 340–430px 的横带（designer.md #11），直播中布局会跳。
+   现在挂在各自按钮正下方、浮在字幕上面：position:absolute 相对 .topbar，
+   top:100% 就是顶栏底边（顶栏万一折行也照样贴着）；right 由 app.js
+   placePopover 按按钮右边缘算（popoverRight，web/live-ui.js），夹在窗口内。
+   开合：按钮再点一次 / × / Esc / 点浮层外。不因窗口失焦关闭——中控要切到浏览器
+   复制新主播地址再回来粘贴 */
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 16px;
+  z-index: 30;
+  width: min(420px, calc(100vw - 24px));
+  max-height: calc(100vh - 96px);   /* 顶栏 52 + 间距 6 + 底部版权行 22 + 余量 */
+  overflow-y: auto;
   padding: 16px;
   border-radius: var(--r-group);
-  text-align: left;
   background: var(--card);
+  box-shadow: var(--popover-shadow);
+  text-align: left;
+  font-size: var(--fs-body);
+  color: var(--label);
 }
-.share-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+/* 二维码实际 232（qrCanvasPlan 按整数模块像素向上取整，29 模块 × 8）+ 间距 16
+   + 右列 200 + 内边距 32 = 480；420 放不下会把二维码挤到链接上面一行 */
+.share-panel.popover { width: min(480px, calc(100vw - 24px)); }
+@keyframes popover-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.popover:not(.hidden) { animation: popover-in .16s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .popover:not(.hidden) { animation: none; }
+}
+/* 浮层右上角的关闭（×）：两个浮层共用。只关浮层，不碰里面的开关（pm.md #3） */
+.popover-close {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 22px; height: 22px; padding: 0;
+  border: none; border-radius: 50%; cursor: pointer;
+  background: var(--fill); color: var(--label-2);
+}
+.popover-close .i { width: 12px; height: 12px; stroke-width: 2; }   /* 12px 下 2 → 实际 1.5px */
+.popover-close:hover { color: var(--label); background: var(--fill-hover); }
+.popover-close:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
+/* 浮层里的 chip 跟首页同款白底描边；「当前」那颗不可点，只留一圈发丝线 */
+.popover .recent-chip { background: var(--card); box-shadow: var(--ring); }
+.popover .recent-chip:hover { background: var(--card); }
+.popover .recent-chip:disabled {
+  cursor: default; color: var(--label-2); background: transparent;
+  box-shadow: inset 0 0 0 0.5px var(--separator);
+}
+
+/* ---------- 手机同看 ---------- */
+.share-head, .switch-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .share-head-right { display: flex; align-items: center; gap: 10px; }
-/* 标题前的图标改用跟顶栏 #share-btn 同一个 mask（颜色跟文字走），不再是手机 emoji：
-   顶栏那颗已经是线性图标，emoji 版本会在同一屏里出现两种手机图案（designer.md #4） */
-.share-title { font-size: var(--fs-body); font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.share-title::before {
-  content: ""; width: 10px; height: 15px; flex: none;
-  background-color: currentColor;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 15'%3E%3Crect x='.75' y='.75' width='8.5' height='13.5' rx='2' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M3.8 11.6h2.4' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
-          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 15'%3E%3Crect x='.75' y='.75' width='8.5' height='13.5' rx='2' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M3.8 11.6h2.4' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
-}
+.share-title, .switch-title { display: flex; align-items: center; gap: 6px; font-size: var(--fs-body); font-weight: 600; }
 .share-state { font-size: var(--fs-footnote); font-weight: 600; }
 .share-state.on { color: var(--green-ink); }
 .share-state.off { color: var(--label-2); }
@@ -861,7 +895,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .share-body { margin-top: 12px; }
 .share-main { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
 .share-qr {
-  flex: none; border: 1px solid var(--border); border-radius: 8px;
+  flex: none; border-radius: 8px; box-shadow: var(--ring);
   background: #fff;   /* 二维码背板固定白底：暗色模式下也要保证扫描对比度 */
 }
 .share-right { flex: 1; min-width: 180px; }
@@ -890,55 +924,12 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .share-ip-btn.active { color: #fff; background: var(--blue); }
 .share-help { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 6px; line-height: 18px; }
 
-/* ---------- 换主播 ----------
-   照 .share-panel 的位置与收放方式：跟直播状态无关地独立挂在顶栏下面、
-   字幕历史上面，靠顶栏的 #switch-btn 打开，面板自己的 × / Esc 关闭。 */
-.switch-panel {
-  background: var(--grouped-bg);
-  border-bottom: 0.5px solid var(--separator);
-  padding: 0 16px;
-}
-.switch-card {
-  max-width: 480px;
-  margin: 16px auto;
-  padding: 16px;
-  border-radius: var(--r-group);
-  text-align: left;
-  background: var(--card);
-}
-.switch-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.switch-title { font-size: var(--fs-body); font-weight: 600; }
-/* 同看面板的收起按钮（#share-collapse）外观照搬这一份：两个面板是一对，
-   都是「× 只收起、不影响面板里的开关状态」（pm.md #3） */
-.switch-close, .share-collapse {
-  width: 22px; height: 22px; border: none; border-radius: 50%; cursor: pointer;
-  background: var(--fill); color: var(--label-2);
-  font-size: 15px; line-height: 1; padding: 0;
-}
-.switch-close:hover, .share-collapse:hover { color: var(--label); background: var(--fill-hover); }
+/* ---------- 换主播 ---------- */
 .switch-sub { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 4px; line-height: 18px; }
 .switch-row { margin-top: 12px; }
-.switch-row #switch-input {
-  width: 100%;
-  height: var(--h-large);
-  padding: 0 12px;
-  font-family: inherit;
-  font-size: var(--fs-body);
-  color: var(--label);
-  background: var(--fill);
-  border: none;
-  border-radius: var(--r-field);
-  outline: 2px solid transparent;
-}
-.switch-row #switch-input::placeholder { color: var(--label-3); }
-.switch-row #switch-input:focus { box-shadow: var(--focus); }
 .switch-row.secondary { font-size: var(--fs-callout); color: var(--label-2); }
 .switch-row.secondary label { display: flex; align-items: center; gap: 8px; }
 #switch-recent { margin: 12px 0 0; }
-#switch-recent .recent-chip:disabled {
-  cursor: default; opacity: .7; background: transparent;
-  border-style: dashed; border-color: var(--border);
-}
 .switch-carry { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 12px; }
 .switch-error {
   font-size: var(--fs-footnote); color: var(--fail); margin-top: 8px; line-height: 18px;

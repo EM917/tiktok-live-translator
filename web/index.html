@@ -78,7 +78,8 @@
            整块面板被隐藏，中控恰好在这时候想扫码给同事看，却找不到入口。
            按钮本身在待机/直播两种状态下都不隐藏，只负责开关下面的 #share-panel。
            图标是内联 SVG（#i-iphone），文字仍由 app.js updateShareBtn 整段写入 -->
-      <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板">
+      <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板"
+              aria-expanded="false" aria-controls="share-panel">
         <svg class="i" aria-hidden="true"><use href="#i-iphone"/></svg>手机同看
       </button>
       <!-- 手机同看：局域网内扫码只读观看，只在打开期间监听 0.0.0.0，关闭即停。
@@ -89,7 +90,7 @@
            这块面板以前放在 #start-panel 里：直播一开始整块面板就被隐藏，
            中控恰恰是在直播中才想扫码给同事看，结果找不到入口。现在挪到顶栏
            按钮下面、字幕历史上面，跟警报条一个层级，待机和直播中都能打开。 -->
-      <div id="share-panel" class="share-panel hidden">
+      <div id="share-panel" class="share-panel popover hidden" role="dialog" aria-label="手机同看">
         <div id="share-card" class="share-card">
           <div class="share-head">
             <span class="share-title">手机同看</span>
@@ -97,7 +98,9 @@
               <span id="share-state" class="share-state off">未打开</span>
               <!-- 只收起面板，不碰同看开关——跟下面「停止同看」（真的断开在看的手机）
                    是两件事，照换主播面板 #switch-close 的外观和语义（app.js） -->
-              <button id="share-collapse" class="share-collapse" type="button" title="收起面板" aria-label="收起面板">×</button>
+              <button id="share-collapse" class="popover-close" type="button" title="收起面板" aria-label="收起面板">
+                <svg class="i" aria-hidden="true"><use href="#i-xmark"/></svg>
+              </button>
             </div>
           </div>
           <p id="share-desc" class="share-desc">
@@ -139,20 +142,23 @@
       <!-- 换主播：只在直播中/连接中露出，和停止按钮同一处切换（见 app.js setStatus）。
            跟停止之间留出明显间距（.switch-btn 的 margin-right），防止手滑点错——
            点错「换主播」是可挽回的（面板里还要再确认一次），点错「停止」是直接断流。 -->
-      <button id="switch-btn" class="btn switch-btn hidden" type="button" title="不停止监听，直接换成另一个主播">换主播</button>
+      <button id="switch-btn" class="btn switch-btn hidden" type="button" title="不停止监听，直接换成另一个主播"
+              aria-expanded="false" aria-controls="switch-panel">换主播</button>
       <!-- 换主播：直播中不停止监听、直接改听另一个主播。照 #share-panel 的位置与
            收放方式放在 #start-panel/#history 之外——直播中 #start-panel 整块隐藏，
            这个面板不能跟着一起被藏起来。两段式确认的状态机在 web/switch.js（可测），
            这里只是纯 DOM 结构；点「换主播」打开，× 或 Esc 关闭（app.js）。 -->
-      <div id="switch-panel" class="switch-panel hidden">
+      <div id="switch-panel" class="switch-panel popover hidden" role="dialog" aria-label="换主播">
         <div class="switch-card">
           <div class="switch-head">
             <span class="switch-title">换主播</span>
-            <button id="switch-close" class="switch-close" type="button" title="关闭" aria-label="关闭">×</button>
+            <button id="switch-close" class="popover-close" type="button" title="关闭" aria-label="关闭">
+              <svg class="i" aria-hidden="true"><use href="#i-xmark"/></svg>
+            </button>
           </div>
           <p id="switch-sub" class="switch-sub"></p>
           <div class="switch-row">
-            <input id="switch-input" type="text" spellcheck="false"
+            <input id="switch-input" class="field" type="text" spellcheck="false"
                    placeholder="新主播的直播间地址或 @用户名">
           </div>
           <!-- 最近直播间：同开始面板的数据，但这里点了只填入并武装，绝不直接开始——
@@ -246,7 +252,7 @@
       </div>
 
       <div class="sp-input-row">
-        <input id="room-input" type="text" spellcheck="false"
+        <input id="room-input" class="field" type="text" spellcheck="false"
                placeholder="https://www.tiktok.com/@主播用户名/live">
         <button id="start-btn" class="btn primary large">开始翻译</button>
       </div>
