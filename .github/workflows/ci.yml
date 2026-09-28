@@ -79,3 +79,4 @@ jobs:
           node --check web/alerts.js
           node --check web/viewer.js
           node --check web/qrcanvas.js
+          node --check web/live-ui.js

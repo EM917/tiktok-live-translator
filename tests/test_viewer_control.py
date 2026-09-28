@@ -371,6 +371,73 @@ def test_an_audit_that_refuses_to_write_does_not_break_the_share(setup):
     setup.pipeline._viewer_audit("viewer_connected", ip="10.0.0.9", count=1)
 
 
+# ---- 手机连上/断开时刷新桌面卡片上的人数 ----
+# 以前只在开/关/换链接时才收到 viewer 消息：手机连上或断开只写审计，桌面
+# 「当前 N 人在看」会停在旧数字，直到中控自己做了下一个动作才碰巧更新。
+def test_a_connect_while_sharing_updates_the_viewer_count(setup):
+    async def scenario():
+        await setup.pipeline._set_viewer_share(True)
+        setup.pipeline._viewer_audit("viewer_connected", ip="192.168.1.50", count=2)
+        await asyncio.sleep(0)   # 让 _spawn 起的广播任务有机会跑完
+
+    asyncio.run(scenario())
+    state = last_viewer(setup)
+    assert state["on"] is True
+    assert state["viewers"] == 2
+    assert setup.server.config["viewer"]["viewers"] == 2
+
+
+def test_a_disconnect_while_sharing_updates_the_viewer_count(setup):
+    async def scenario():
+        await setup.pipeline._set_viewer_share(True)
+        setup.pipeline._viewer_audit("viewer_connected", ip="192.168.1.50", count=1)
+        await asyncio.sleep(0)
+        setup.pipeline._viewer_audit("viewer_disconnected", ip="192.168.1.50",
+                                     count=0, reason="closed")
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    state = last_viewer(setup)
+    assert state["on"] is True
+    assert state["viewers"] == 0
+    assert setup.server.config["viewer"]["viewers"] == 0
+
+
+def test_no_broadcast_when_sharing_is_off(setup):
+    async def scenario():
+        setup.pipeline._viewer_audit("viewer_connected", ip="192.168.1.50", count=3)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    # 同看从没开过：没有 config["viewer"]，也没有任何 viewer 类型的广播
+    assert "viewer" not in setup.server.config
+    assert setup.server.of_type("viewer") == []
+
+
+def test_calling_the_hook_outside_an_event_loop_does_not_raise(setup):
+    """现有测试（如 test_events_from_the_idle_period_are_written_when_a_session_starts）
+    就是在同步测试函数体里直接调 _viewer_audit，事件循环外一样不能抛异常。"""
+    asyncio.run(setup.pipeline._set_viewer_share(True))   # 开着，但 asyncio.run 已经把循环关了
+    setup.pipeline._viewer_audit("viewer_connected", ip="192.168.1.50", count=1)
+    # 没有运行中的循环可以 _spawn，人数仍然原地更新（只是没能广播出去）
+    assert setup.server.config["viewer"]["viewers"] == 1
+
+
+def test_stopping_after_a_count_event_ends_with_off(setup):
+    """带着人数事件去停止同看：断开事件排队的广播不能盖掉随后那条「已关闭」——
+    _broadcast_viewer_count 在真正发送那一刻重新读 config，届时已经关了就不发。"""
+    async def scenario():
+        await setup.pipeline._set_viewer_share(True)
+        setup.pipeline._viewer_audit("viewer_disconnected", ip="192.168.1.50",
+                                     count=0, reason="closed")
+        await setup.pipeline._set_viewer_share(False)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    state = last_viewer(setup)
+    assert state["on"] is False
+
+
 # ---- 启动与退出 ----
 def test_restore_never_raises(setup, monkeypatch):
     """启动路径不能被同看带崩。"""

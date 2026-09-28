@@ -7,6 +7,29 @@
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 忽略 */ } }
   "use strict";
 
+  // index.html 顶部 .icon-sprite 里的 <symbol>：动态生成的图标也走 <use href>，
+  // 路径只在 HTML 里存一份。createElementNS：普通 createElement 造出来的 <svg>
+  // 不在 SVG 命名空间里，浏览器不会画
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  function iconEl(name) {
+    var svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "i");
+    svg.setAttribute("aria-hidden", "true");
+    var use = document.createElementNS(SVG_NS, "use");
+    use.setAttribute("href", "#i-" + name);
+    svg.appendChild(use);
+    return svg;
+  }
+  // 图标 + 一段文字：文字仍按数据写（textContent），不拼 HTML
+  function setIconText(el, name, text) {
+    if (!el) return;
+    el.textContent = "";
+    el.appendChild(iconEl(name));
+    var span = document.createElement("span");
+    span.textContent = text;
+    el.appendChild(span);
+  }
+
   var historyEl = document.getElementById("history");
   var startPanel = document.getElementById("start-panel");
   var roomInput = document.getElementById("room-input");
@@ -34,6 +57,8 @@
   var engineNote = document.getElementById("engine-note");
   var liveTranslated = document.getElementById("live-translated");
   var liveOriginal = document.getElementById("live-original");
+  var connectHintEl = document.getElementById("connect-hint");
+  var connectHintText = document.getElementById("connect-hint-text");
   var targetSel = document.getElementById("target-lang");
   var fontSlider = document.getElementById("font-size");
   var clearBtn = document.getElementById("clear-btn");
@@ -128,7 +153,11 @@
   // 直播中才想扫码给同事看，却找不到入口。现在卡片单独放进 #share-panel，
   // 由顶栏的 #share-btn 开关，跟直播状态无关，待机/直播都能点开。
   var shareBtn = document.getElementById("share-btn");
+  var shareBtnText = document.getElementById("share-btn-text");
+  var shareBtnCount = document.getElementById("share-btn-count");
   var sharePanel = document.getElementById("share-panel");
+  var shareHelpBtn = document.getElementById("share-help-btn");
+  var shareHelp = document.getElementById("share-help");
   var shareToggle = document.getElementById("share-toggle");
   var shareState = document.getElementById("share-state");
   var shareDesc = document.getElementById("share-desc");
@@ -143,6 +172,8 @@
   var shareAddrChanged = document.getElementById("share-addr-changed");
   var shareNote = document.getElementById("share-note");
   var shareIpList = document.getElementById("share-ip-list");
+  // 浮层标题旁的 ⓘ：三段「手机连不上时」的排查说明，跟首页输入框旁那颗同一种收放
+  bindRow(shareHelpBtn, shareHelp);
 
   // 换主播：直播中不停止监听、直接改听另一个主播。面板照 #share-panel 挂在
   // #start-panel/#history 之外，跟直播状态无关地独立开关——但按钮本身（顶栏
@@ -496,7 +527,7 @@
 
   function showUpdate(info) {
     if (!info || !info.version) return;
-    updateText.textContent = "🔄 发现新版本 " + info.version;
+    setIconText(updateText, "arrow-clockwise", "发现新版本 " + info.version);
     if (info.can_auto) {
       updateBtn.classList.remove("hidden");
       updateLink.textContent = "更新说明";
@@ -873,6 +904,7 @@
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
     updateActiveBrandTag(); // 本场品牌标签同一个显示条件，见该函数注释
     syncCaptionDependentUi(); // 「上一场字幕」标题只在首页才显示，随 streamActive 变化
+    syncConnectHint(state);
     refreshCommentPanel();
     // 「停止」之后桌面页面留残留（大字幕压住开始面板、回到最新按钮悬空、
     // 上一场弹幕还挂着）：这两步把「直播中才有意义」的 UI 收掉/摆好，
@@ -900,6 +932,22 @@
     }
   }
 
+  // 连接中：字幕区中央的转圈 + 「正在连接 @xxx…」（显示规则见 web/live-ui.js
+  // connectHint）。已有字幕时挪到 #history 末尾当一行，并跟到底部——停止后再开、
+  // 换主播时历史还在，中央那一版会盖在旧字幕上
+  function syncConnectHint(state) {
+    if (!connectHintEl) return;
+    var hint = connectHint(state, streamerFromInput(roomInput.value),
+                           !!historyEl.querySelector(".cap"));
+    if (!hint) return;
+    connectHintEl.classList.toggle("hidden", !hint.show);
+    connectHintEl.classList.toggle("inline", hint.inline);
+    if (!hint.show) return;
+    connectHintText.textContent = hint.text;
+    if (connectHintEl !== historyEl.lastElementChild) historyEl.appendChild(connectHintEl);
+    if (hint.inline) stickToBottom(false);
+  }
+
   // 翻译连续失败时给一条全局解释——每条字幕角落的小标签太容易被忽略，
   // 用户面对满屏外文会以为整个程序坏了
   var failStreak = 0;
@@ -912,8 +960,8 @@
       // 只要翻译还在持续失败，警告就要顶回来
       if (failStreak >= 4) {
         transBannerOn = true;
-        statusBanner.textContent =
-          "⚠️ 连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。";
+        setIconText(statusBanner, "warn",
+          "连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。");
         statusBanner.classList.remove("hidden");
         statusBanner.classList.remove("info");
       }
@@ -1038,6 +1086,7 @@
     liveBar.classList.add("hidden");
     liveBarId = null;
     insertSessionDivider(commentList, msg);
+    syncConnectHint(statusPill ? statusPill.dataset.state : "");
     stickToBottom(false);
   }
 
@@ -1100,7 +1149,6 @@
 
   // ---- 违禁词警报 ----
   // 警报是这个工具的核心产出，绝不自动消失：中控没看到就等于漏报。
-  var TIER_LABEL = { exact: "🔴 命中", variant: "🟠 变体", fuzzy: "🟡 疑似" };
   var alertNote = document.getElementById("alert-note");
   var alertSession = null;   // 当前场次 { session, streamer, total }，服务端在 config 里给
   var sessionTotal = 0;      // 本场报警总数（面板只留最近 50 条）
@@ -1119,8 +1167,13 @@
     head.className = "alert-head";
     var ts = new Date((msg.ts || Date.now() / 1000) * 1000);
     // 带上主播：换过房间后，面板上的旧报警不能被当成眼前这个主播说的
+    // 分级：文字胶囊（颜色由 CSS 按 .alert-item.tier-* 给），不再是 🔴🟠🟡 前缀
+    var tierTag = document.createElement("span");
+    tierTag.className = "alert-tier";
+    tierTag.textContent = alertTierText(msg.tier);
+    head.appendChild(tierTag);
     head.appendChild(document.createTextNode(
-      (TIER_LABEL[msg.tier] || "命中") + "「" + msg.term + "」 " +
+      "「" + msg.term + "」 " +
       pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds()) +
       (msg.streamer ? " @" + msg.streamer : "")));
     item.appendChild(head);
@@ -1506,7 +1559,8 @@
       var row = document.createElement("div");
       var level = incidents[k].level;
       row.className = "incident " + (level === "error" ? "error" : (level === "info" ? "info" : "warn"));
-      row.textContent = incidents[k].text;      // 当数据，不当 HTML
+      // 当数据，不当 HTML；开头自带的 🔴⚠️ 换成按级别画的图标
+      setIconText(row, barIconFor(level), stripStatusEmoji(incidents[k].text));
       incidentBar.appendChild(row);
     });
     incidentBar.classList.toggle("hidden", keys.length === 0);
@@ -1517,7 +1571,7 @@
       healthBar.classList.add("hidden");
       return;
     }
-    healthBar.textContent = msg.text || "";
+    setIconText(healthBar, barIconFor(msg.level), stripStatusEmoji(msg.text || ""));
     healthBar.classList.remove("hidden");
     healthBar.classList.toggle("degraded", msg.level === "degraded");
   }
@@ -1752,9 +1806,16 @@
 
   // 顶栏按钮只反映「同看是否打开」这一件事，跟面板本身是否展开无关——
   // 中控可能收起面板但没关同看，这时按钮要接着显示「已打开」
-  function updateShareBtn(on) {
+  // 有人在看时写人数（shareButtonText，web/live-ui.js）；文字写进 #share-btn-text，
+  // 不再整段覆盖按钮（按钮里还有图标和窄窗口用的人数）
+  function updateShareBtn(on, viewers) {
     if (!shareBtn) return;
-    shareBtn.textContent = on ? "手机同看 · 已打开" : "手机同看";
+    var label = shareButtonText(on, viewers);
+    if (shareBtnText) shareBtnText.textContent = label.text;
+    if (shareBtnCount) {
+      shareBtnCount.textContent = label.count;
+      shareBtnCount.classList.toggle("hidden", !label.count);
+    }
     shareBtn.classList.toggle("on", on);
   }
 
@@ -1763,7 +1824,7 @@
     lastShareState = state;
     var on = !!state.on;
     var justOpened = on && !shareOn;
-    updateShareBtn(on);
+    updateShareBtn(on, state.viewers);
 
     // 顶栏按钮同一个状态写的是「已打开」（updateShareBtn），这里跟着改成
     // 「已打开/未打开」，别再各写各的（pm.md #3）
@@ -1779,8 +1840,9 @@
     if (!on) {
       shareBody.classList.add("hidden");
       // note 有内容时是刚失败的一次尝试（状态 5：端口被占，带真实报错）；否则是普通关闭说明
+      // 状态字已经写着「未打开」，这句不再以「关闭。」开头
       shareDesc.textContent = state.note ||
-        "关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。";
+        "打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。";
       shareLastIp = null;
       shareOn = false;
       return;
@@ -1843,11 +1905,54 @@
     shareOn = on;
   }
 
+  // ---- 顶栏浮层（手机同看 / 换主播）的共用开合 ----
+  // 两个浮层互斥；位置按触发按钮右边缘算（popoverRight）；aria-expanded 跟着走。
+  // 关闭的途径：按钮再点一次、×、Esc、点浮层外。不在窗口失焦（blur/focusout）时
+  // 关——中控要切到浏览器复制新主播的地址再回来粘，浮层得还在
+  function isPopoverOpen(panel) { return !!panel && !panel.classList.contains("hidden"); }
+  function placePopover(panel, trigger) {
+    if (!isPopoverOpen(panel) || !trigger) return;
+    var r = trigger.getBoundingClientRect();
+    panel.style.right = popoverRight(r.right, window.innerWidth, panel.offsetWidth, 12) + "px";
+  }
+  function showPopover(panel, trigger) {
+    if (panel === switchPanel) closeSharePanel(); else closeSwitchPanel();
+    panel.classList.remove("hidden");
+    if (trigger) trigger.setAttribute("aria-expanded", "true");
+    placePopover(panel, trigger);
+  }
+  function hidePopover(panel, trigger) {
+    if (!panel) return;
+    panel.classList.add("hidden");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+  }
+  window.addEventListener("resize", function () {
+    placePopover(sharePanel, shareBtn);
+    placePopover(switchPanel, switchBtn);
+  });
+  // 捕获阶段：浮层里的按钮自己的 click 照常触发；点在触发按钮上不算「外面」，
+  // 交给按钮自己的切换（否则这里先关、按钮的 click 又打开）
+  document.addEventListener("pointerdown", function (e) {
+    var t = e.target;
+    if (isPopoverOpen(switchPanel) && !switchPanel.contains(t) && !(switchBtn && switchBtn.contains(t))) {
+      closeSwitchPanel();
+    }
+    if (isPopoverOpen(sharePanel) && !sharePanel.contains(t) && !(shareBtn && shareBtn.contains(t))) {
+      closeSharePanel();
+    }
+  }, true);
+
+  // 不主动挪焦点：浮层在 DOM 里紧跟着 #share-btn，键盘用户按 Tab 就进去了；
+  // 鼠标用户点开后焦点跳到某个按钮上反而会亮出一圈焦点环
+  function openSharePanel() {
+    if (!sharePanel) return;
+    showPopover(sharePanel, shareBtn);
+  }
   // 顶栏按钮只管面板的展开/收起，不碰同看开关本身——同看是否广播局域网端口
   // 完全由卡片里的「打开/关闭」决定，两件事故意分开，收起面板不应该顺手断掉正在看的手机
   if (shareBtn && sharePanel) {
     shareBtn.addEventListener("click", function () {
-      sharePanel.classList.toggle("hidden");
+      if (isPopoverOpen(sharePanel)) closeSharePanel(); else openSharePanel();
     });
   }
   if (shareToggle) {
@@ -1858,14 +1963,14 @@
   if (shareClose) {
     shareClose.addEventListener("click", function () {
       send({ type: "viewer_share", on: false });
-      // 面板本身也一起收起：点「停止同看」的人是要结束同看，没必要还占着字幕历史上方的位置
-      if (sharePanel) sharePanel.classList.add("hidden");
+      // 浮层也一起收起：点「停止同看」的人是要结束同看
+      closeSharePanel();
     });
   }
   // 卡片右上角的 ×：只收起面板，不发 viewer_share——跟上面「停止同看」故意
   // 是两个控件，别把两件事并回一个按钮（pm.md #3；closeSharePanel 给 Esc 复用）
   function closeSharePanel() {
-    if (sharePanel) sharePanel.classList.add("hidden");
+    hidePopover(sharePanel, shareBtn);
   }
   if (shareCollapse) {
     shareCollapse.addEventListener("click", closeSharePanel);
@@ -2030,13 +2135,15 @@
     }
     renderSwitchRecentList();
     renderSwitchButton();
-    switchPanel.classList.remove("hidden");
+    showPopover(switchPanel, switchBtn);
     switchInput.focus();
   }
 
+  // 关闭＝作废这一轮：定时器清掉，下次打开 openSwitchPanel 从头重置输入与武装状态，
+  // 点浮层外关掉也不会留下一个「再点一次就换」的半截状态
   function closeSwitchPanel() {
     if (!switchPanel) return;
-    switchPanel.classList.add("hidden");
+    hidePopover(switchPanel, switchBtn);
     clearSwitchResetTimer();
   }
 
@@ -2081,7 +2188,11 @@
     closeSwitchPanel();
   }
 
-  if (switchBtn) switchBtn.addEventListener("click", openSwitchPanel);
+  if (switchBtn) {
+    switchBtn.addEventListener("click", function () {
+      if (isPopoverOpen(switchPanel)) closeSwitchPanel(); else openSwitchPanel();
+    });
+  }
   if (switchClose) switchClose.addEventListener("click", closeSwitchPanel);
   if (switchInput) {
     switchInput.addEventListener("input", armSwitchFromInput);
@@ -2092,12 +2203,15 @@
   if (switchConfirmBtn) switchConfirmBtn.addEventListener("click", attemptSwitchConfirm);
   // Esc 关闭：只在面板确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
   // 同看面板走 closeSharePanel——只收起，不碰同看开关，跟卡片里的 × 同一个函数（pm.md #3）
+  // 关掉后焦点回到触发按钮，键盘用户不会掉到页面开头
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    if (switchPanel && !switchPanel.classList.contains("hidden")) {
+    if (isPopoverOpen(switchPanel)) {
       closeSwitchPanel();
-    } else if (sharePanel && !sharePanel.classList.contains("hidden")) {
+      if (switchBtn) switchBtn.focus();
+    } else if (isPopoverOpen(sharePanel)) {
       closeSharePanel();
+      if (shareBtn) shareBtn.focus();
     }
   });
 
@@ -2425,10 +2539,10 @@
     auto: "默认用本地模型：完全离线、不限量、字幕不出本机。",
     hymt2: "本地模型，离线免费。多数机器用这一档就够。",
     "hymt2-7b": "本地模型，术语更准，但会和语音识别抢内存，可能拖慢报警。",
-    deepl: "⚠️ 字幕文本会发送给 DeepL。免费额度以此处显示的用量为准；额度周期与续用方式取决于你的 DeepL 账户方案。",
-    claude: "⚠️ 字幕文本会发送给 Anthropic，按用量计费。",
-    openai: "⚠️ 字幕文本会发送给该接口的提供方，按用量计费。",
-    google: "⚠️ 字幕文本会发送给 Google，且会按 IP 限流。",
+    deepl: "字幕文本会发送给 DeepL。免费额度以此处显示的用量为准；额度周期与续用方式取决于你的 DeepL 账户方案。",
+    claude: "字幕文本会发送给 Anthropic，按用量计费。",
+    openai: "字幕文本会发送给该接口的提供方，按用量计费。",
+    google: "字幕文本会发送给 Google，且会按 IP 限流。",
     none: "只显示识别原文，不翻译。"
   };
   var engineKeys = {};
@@ -2469,7 +2583,7 @@
     // 自动」，来自 app/translator.py restore_engine），压过常规注记——
     // 用户上次的选择被改掉了，必须看得见
     if (engSum.hasNote) {
-      engineNote.textContent = info.note;
+      setIconText(engineNote, "warn", info.note);
       engineNote.classList.add("warn");
     }
     // 卡片收进设置列表后，「上次的选择被改掉了」不能藏在折叠里：
@@ -2492,9 +2606,11 @@
       engineKey.placeholder = have ? "已填 " + have + "（留空则沿用）"
                                    : "粘贴 API 密钥";
     }
-    engineNote.textContent = NOTES[engineSelect.value] || "";
-    engineNote.classList.toggle("warn", engineSelect.value in KEY_ENV
-                                        || engineSelect.value === "google");
+    // 字幕会发到外部服务的几档：前面加三角图标（以前是 ⚠️ 前缀），颜色仍由 .warn 给
+    var sendsOut = engineSelect.value in KEY_ENV || engineSelect.value === "google";
+    if (sendsOut) setIconText(engineNote, "warn", NOTES[engineSelect.value] || "");
+    else engineNote.textContent = NOTES[engineSelect.value] || "";
+    engineNote.classList.toggle("warn", sendsOut);
   }
 
   if (engineSelect) {

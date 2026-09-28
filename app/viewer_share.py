@@ -59,7 +59,13 @@ class ViewerShareMixin:
     def _viewer_audit(self, event, **fields):
         """一条同看审计事件。没有 audit（还没开播）就先攒着，开播后由
         _flush_viewer_audit 按原顺序补写。无论有没有 audit 都打一行——
-        沿用 on_ui_client_dropped 的做法，终端里也要看得见。"""
+        沿用 on_ui_client_dropped 的做法，终端里也要看得见。
+
+        手机连上/断开在这里顺带把桌面卡片上的人数刷新一遍：以前只在开/关/
+        换链接时才收到 viewer 消息，手机连上或断开不推送，桌面「当前 N 人
+        在看」会停在旧数字，直到中控自己做了下一个动作才碰巧更新。"""
+        if event in ("viewer_connected", "viewer_disconnected") and fields.get("count") is not None:
+            self._update_viewer_count(fields["count"])
         shown = " ".join("{}={}".format(k, fields[k]) for k in sorted(fields)
                          if fields[k] is not None)
         print("[同看] {} {}".format(event, shown).rstrip())
@@ -72,6 +78,35 @@ class ViewerShareMixin:
             pending.append((event, dict(fields)))
             return
         self._write_viewer_audit(audit, event, fields)
+
+    def _update_viewer_count(self, count):
+        """刷新 server.config["viewer"] 里的人数并广播，不重新生成二维码/地址。
+        只有同看还开着时才做——已经关了的话 config 应该停在「已关闭」，不能被
+        随后到达的断开事件的人数盖回「开着」。
+
+        同步方法自己不 await：_on_viewer_action 之类的调用点、以及这里被
+        ViewerHub 的 _event 同步调过来的路径，都可能在事件循环外（现有测试
+        就是在测试函数体里直接同步调 _viewer_audit）。真正的广播交给 _spawn
+        起的后台任务，取不到运行中的事件循环就跳过——下一条真实状态广播
+        （开/关/换链接）会把人数带上，不会一直显示旧数字。"""
+        state = self.server.config.get("viewer")
+        if not isinstance(state, dict) or not state.get("on"):
+            return
+        self.server.config["viewer"] = dict(state, viewers=count)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._spawn(self._broadcast_viewer_count())
+
+    async def _broadcast_viewer_count(self):
+        """真正发送那一刻重新读一遍 config：如果这期间同看已经被关闭（对应的
+        「已关闭」状态已经广播过），这条排队较晚发出的人数更新就不再发——
+        不然停止同看时，断开事件的这条广播可能盖掉随后那条「已关闭」。"""
+        state = self.server.config.get("viewer")
+        if not isinstance(state, dict) or not state.get("on"):
+            return
+        await self.server.broadcast(dict(state, type="viewer"))
 
     @staticmethod
     def _write_viewer_audit(audit, event, fields):
