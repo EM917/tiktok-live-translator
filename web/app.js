@@ -138,6 +138,7 @@
   var shareCopy = document.getElementById("share-copy");
   var shareRotate = document.getElementById("share-rotate");
   var shareClose = document.getElementById("share-close");
+  var shareCollapse = document.getElementById("share-collapse");
   var shareCount = document.getElementById("share-count");
   var shareAddrChanged = document.getElementById("share-addr-changed");
   var shareNote = document.getElementById("share-note");
@@ -1764,7 +1765,9 @@
     var justOpened = on && !shareOn;
     updateShareBtn(on);
 
-    shareState.textContent = on ? "打开" : "关闭";
+    // 顶栏按钮同一个状态写的是「已打开」（updateShareBtn），这里跟着改成
+    // 「已打开/未打开」，别再各写各的（pm.md #3）
+    shareState.textContent = on ? "已打开" : "未打开";
     shareState.className = "share-state " + (on ? "on" : "off");
     shareToggle.classList.toggle("hidden", on);   // 打开后靠卡片里的「关闭」按钮，不重复放一个
 
@@ -1855,9 +1858,17 @@
   if (shareClose) {
     shareClose.addEventListener("click", function () {
       send({ type: "viewer_share", on: false });
-      // 面板本身也一起收起：点「关闭」的人是要结束同看，没必要还占着字幕历史上方的位置
+      // 面板本身也一起收起：点「停止同看」的人是要结束同看，没必要还占着字幕历史上方的位置
       if (sharePanel) sharePanel.classList.add("hidden");
     });
+  }
+  // 卡片右上角的 ×：只收起面板，不发 viewer_share——跟上面「停止同看」故意
+  // 是两个控件，别把两件事并回一个按钮（pm.md #3；closeSharePanel 给 Esc 复用）
+  function closeSharePanel() {
+    if (sharePanel) sharePanel.classList.add("hidden");
+  }
+  if (shareCollapse) {
+    shareCollapse.addEventListener("click", closeSharePanel);
   }
   if (shareCopy) {
     shareCopy.addEventListener("click", function () {
@@ -2079,10 +2090,14 @@
     });
   }
   if (switchConfirmBtn) switchConfirmBtn.addEventListener("click", attemptSwitchConfirm);
-  // Esc 关闭：只在面板确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）
+  // Esc 关闭：只在面板确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
+  // 同看面板走 closeSharePanel——只收起，不碰同看开关，跟卡片里的 × 同一个函数（pm.md #3）
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && switchPanel && !switchPanel.classList.contains("hidden")) {
+    if (e.key !== "Escape") return;
+    if (switchPanel && !switchPanel.classList.contains("hidden")) {
       closeSwitchPanel();
+    } else if (sharePanel && !sharePanel.classList.contains("hidden")) {
+      closeSharePanel();
     }
   });
 

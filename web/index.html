@@ -112,8 +112,13 @@
   <div id="share-panel" class="share-panel hidden">
     <div id="share-card" class="share-card">
       <div class="share-head">
-        <span class="share-title">📱 手机同看</span>
-        <span id="share-state" class="share-state off">关闭</span>
+        <span class="share-title">手机同看</span>
+        <div class="share-head-right">
+          <span id="share-state" class="share-state off">未打开</span>
+          <!-- 只收起面板，不碰同看开关——跟下面「停止同看」（真的断开在看的手机）
+               是两件事，照换主播面板 #switch-close 的外观和语义（app.js） -->
+          <button id="share-collapse" class="share-collapse" type="button" title="收起面板" aria-label="收起面板">×</button>
+        </div>
       </div>
       <p id="share-desc" class="share-desc">
         关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。
@@ -128,7 +133,9 @@
             <div class="share-actions">
               <button id="share-copy" class="btn small" type="button">复制链接</button>
               <button id="share-rotate" class="btn small" type="button">换一个链接</button>
-              <button id="share-close" class="btn small" type="button">关闭</button>
+              <!-- 断开全部在看的手机，跟上面只收起面板的 × 不是同一件事，
+                   红字标出来避免和「关闭=收起」混淆（pm.md #3） -->
+              <button id="share-close" class="btn small danger" type="button">停止同看</button>
             </div>
             <div id="share-count" class="share-count"></div>
           </div>

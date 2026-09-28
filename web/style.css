@@ -829,7 +829,16 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   background: var(--card);
 }
 .share-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.share-title { font-size: var(--fs-body); font-weight: 600; }
+.share-head-right { display: flex; align-items: center; gap: 10px; }
+/* 标题前的图标改用跟顶栏 #share-btn 同一个 mask（颜色跟文字走），不再是手机 emoji：
+   顶栏那颗已经是线性图标，emoji 版本会在同一屏里出现两种手机图案（designer.md #4） */
+.share-title { font-size: var(--fs-body); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.share-title::before {
+  content: ""; width: 10px; height: 15px; flex: none;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 15'%3E%3Crect x='.75' y='.75' width='8.5' height='13.5' rx='2' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M3.8 11.6h2.4' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 15'%3E%3Crect x='.75' y='.75' width='8.5' height='13.5' rx='2' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M3.8 11.6h2.4' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
 .share-state { font-size: var(--fs-footnote); font-weight: 600; }
 .share-state.on { color: var(--green-ink); }
 .share-state.off { color: var(--label-2); }
@@ -886,12 +895,14 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 }
 .switch-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .switch-title { font-size: var(--fs-body); font-weight: 600; }
-.switch-close {
+/* 同看面板的收起按钮（#share-collapse）外观照搬这一份：两个面板是一对，
+   都是「× 只收起、不影响面板里的开关状态」（pm.md #3） */
+.switch-close, .share-collapse {
   width: 22px; height: 22px; border: none; border-radius: 50%; cursor: pointer;
   background: var(--fill); color: var(--label-2);
   font-size: 15px; line-height: 1; padding: 0;
 }
-.switch-close:hover { color: var(--label); background: var(--fill-hover); }
+.switch-close:hover, .share-collapse:hover { color: var(--label); background: var(--fill-hover); }
 .switch-sub { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 4px; line-height: 18px; }
 .switch-row { margin-top: 12px; }
 .switch-row #switch-input {
