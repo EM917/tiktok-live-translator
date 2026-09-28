@@ -1419,25 +1419,43 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         self._audit_selfcheck(checks, summary)
         await self._sync_selfcheck_incident(checks)
 
-    SELFCHECK_INCIDENT = "session:selfcheck"
+    SELFCHECK_INCIDENT = "selfcheck"   # 不带 "session:"：自检反映的是环境和依赖的状态，
+                                        # 跟哪一场直播无关，待机时也要看见，不随开场清掉
 
     async def _sync_selfcheck_incident(self, checks):
-        """自检失败项以前只有首页那一行看得到，而 #start-panel 直播中整块隐藏
-        （setStatus 里 active 时 toggle hidden）——降噪这类「字幕还在、只是变差」
-        的问题会跟着隐身 3-6 小时，直到中控自己停下来看。跟引擎回退、ASR 连续
-        出错用同一条常驻提示条，失败项清零后自动撤掉；首页那一行原样保留，
-        提示条只负责「看得到」，明细仍旧去首页看（pm.md #2）。"""
-        fails = [c for c in checks if c.get("level") == "fail"]
+        """自检出现 fail 项时同步成顶部持续提示。设置面板里那份红字（#start-panel）只有
+        待机时看得到，直播开始后整块被隐藏，中控这时反而最需要知道识别、降噪这类核心
+        能力是不是真的在工作——道理和「识别落后必须让中控看见」（_announce_health）一样。
+
+        只认 fail，warn 不发：warn 是「能用但有取舍」（翻译退化成限流的免费接口、领域
+        词表没配……），本来就不影响违禁词报警，天天顶在最上面只会盖掉真正要立刻处理的
+        情况，等于教会中控无视顶栏。这里跟着 checks 走，run_selfcheck（整轮）和
+        _refresh_asr_check（直播中只重查语音识别一行）都经过 _publish_selfcheck，
+        不用另外订阅刷新。"""
+        from .selfcheck import FAIL
+
+        fails = [c for c in checks if c.get("level") == FAIL]
+        incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
         if not fails:
-            await self._incident(self.SELFCHECK_INCIDENT, "clear")
+            if self.SELFCHECK_INCIDENT in incidents:
+                await self._incident(self.SELFCHECK_INCIDENT, "clear")
             return
+        text = self._selfcheck_incident_text(fails)
+        # 内容没变就别重发：直播中语音识别那一行按 ASR_STALL_SEC 等周期反复刷新，
+        # 状态没变也会重新过一遍这里
+        if (incidents.get(self.SELFCHECK_INCIDENT) or {}).get("text") != text:
+            await self._incident(self.SELFCHECK_INCIDENT, "error", text)
+
+    @staticmethod
+    def _selfcheck_incident_text(fails):
+        """只写观察到的事实（哪项没生效）和能做的事（fix），不猜原因（规则八同样的道理）。
+        单项时把 fix 带上——顶栏这时候就是最直接的求助入口；多项时只报数量和名字，
+        堆上每一项的 fix 会超出一条提示能读完的长度，细节留给设置面板里的自检明细。"""
         if len(fails) == 1:
-            reason = fails[0].get("fix") or fails[0].get("detail") or ""
-            text = "自检：{} 未通过——{}".format(fails[0]["name"], reason)
-        else:
-            text = "自检：{} 未通过——详情见首页「设置」".format(
-                "、".join(c["name"] for c in fails))
-        await self._incident(self.SELFCHECK_INCIDENT, "warn", text)
+            c = fails[0]
+            return "自检：{} 未生效——{}".format(c.get("name"), c.get("fix") or c.get("detail"))
+        names = "、".join(c.get("name") for c in fails)
+        return "自检：{} 项未生效（{}）".format(len(fails), names)
 
     def _audit_selfcheck(self, checks, summary):
         """自检结论写进本场审计：第一次整份写，之后只在某一行等级变了时写变了的那几行。
