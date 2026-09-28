@@ -44,6 +44,12 @@
   /* 红色计数徽标的底：深色模式下 --fail #ff6961 配白字只有 2.8:1，
      #d70015 配白字 5.4:1，深浅色共用同一个实色 */
   --red-fill: #d70015;
+  /* 直播中右侧弹幕列：中性侧栏（macOS 侧栏的浅灰），不再是 8% 蓝底——蓝色只留给
+     主要动作，视野边缘一整列饱和色最容易累眼（designer.md #4） */
+  --sidebar-bg: #f5f5f7;
+  /* 弹幕入口、回到最新这类悬浮小按钮的投影：贴在字幕上方，要一眼看出
+     「浮在上面、不占位置」 */
+  --float-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.10);
 
   /* 半透明色阶：以前直接写 color-mix(in srgb, var(--x) N%, transparent)，
      Safari 15.4–16.1（Intel Mac 走 CPU 路径、没升级系统的机器仍在支持范围内）
@@ -69,7 +75,6 @@
      fix-command 是 4% --label + 96% 背景，comment-fab 是 12% 强调色 +
      88% 背景，用同一个换算脚本（scratchpad）算出 sRGB 线性混合再取整 */
   --tint-accent-8: #ebf4ff;
-  --tint-accent-12: #e0efff;
   --tint-blue-10: #e6f2ff;
   --tint-label-4: #f6f6f6;
 
@@ -129,6 +134,8 @@
     --warn-bg: #3a2f14;
     --warn-fg: #f0c674;
     --red-fill: #d70015;
+    --sidebar-bg: #232325;
+    --float-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 2px 8px rgba(0, 0, 0, 0.45);
 
     /* 同上，换成深色模式下 --green/--orange/--red/--label/--blue/--bg 各自的值 */
     --a-green-16: rgba(48, 209, 88, 0.16);
@@ -143,7 +150,6 @@
     --a-label-4: rgba(245, 245, 247, 0.04);
 
     --tint-accent-8: #1b2430;
-    --tint-accent-12: #1a2839;
     --tint-blue-10: #1a2634;
     --tint-label-4: #252527;
   }
@@ -406,7 +412,7 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   max-width: 760px;
   margin: 0 auto;
   padding: 12px 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 0.5px solid var(--separator);
 }
 /* 待机首页（停止后留着上一场字幕）跟 .start-panel 同宽，不再出现「面板 600 /
    字幕 760」两条左边线（designer.md #6）；直播中维持原来的 760，读起来更宽松 */
@@ -535,7 +541,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   padding: 14px 24px 36px;
   text-align: center;
   background: var(--bg);
-  border-top: 1px solid var(--border);
+  border-top: 0.5px solid var(--separator);
 }
 
 /* ---------- 底部署名 ---------- */
@@ -980,28 +986,32 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 
 /* ---------- 回到最新 ---------- */
 /* bottom 由脚本按底部大字幕的实际高度算出——字号可调，写死会被盖住 */
+/* 中性悬浮胶囊（白底 + 投影），跟弹幕入口同款：蓝色实心只留给主要动作 */
 .jump-latest {
   position: fixed; right: 20px; z-index: 5;
-  padding: 7px 15px; font-size: 13px; font-family: inherit; line-height: 1.4;
-  color: #fff; background: var(--accent);
-  border: none; border-radius: 999px; cursor: pointer;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, .3);
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 14px 0 11px;
+  font-size: var(--fs-callout); font-weight: 500; font-family: inherit;
+  color: var(--label); background: var(--card);
+  border: none; border-radius: 16px; cursor: pointer;
+  box-shadow: var(--float-shadow);
 }
-.jump-latest:hover { filter: brightness(1.08); }
+.jump-latest:hover { color: var(--blue); }
 .jump-latest:active { transform: translateY(1px); }
+.jump-latest:focus-visible { outline: 2px solid transparent; box-shadow: var(--float-shadow), var(--focus); }
 
 /* ---------- 单条重译 ---------- */
 .cap { position: relative; }
 .redo {
   position: absolute; top: 10px; right: 0;
-  padding: 2px 9px; font-size: var(--fs-footnote); font-family: inherit; line-height: 1.6;
-  color: var(--text-dim); background: transparent;
-  border: 1px solid var(--border); border-radius: 5px;
+  height: 22px; padding: 0 8px; font-size: var(--fs-footnote); font-family: inherit;
+  color: var(--label-2); background: var(--fill);
+  border: none; border-radius: 6px;
   cursor: pointer; opacity: 0;
   transition: opacity .12s;
 }
 .cap:hover .redo, .redo:focus-visible { opacity: 1; }
-.redo:hover { color: var(--accent); border-color: var(--accent); }
+.redo:hover { color: var(--label); background: var(--fill-hover); }
 
 /* 强模型重译过的条目：左侧一道细标，可分辨看的是哪一版 */
 .cap.strong { border-left: 2px solid var(--accent); padding-left: 10px; }
@@ -1009,7 +1019,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 
 /* 重译进行中：按钮常驻可见，让人知道自己点的那一下生效了；
    译文原样留在屏幕上，不被替换成占位文字 */
-.cap.redoing .redo { opacity: 1; color: var(--accent); border-color: var(--accent); }
+.cap.redoing .redo { opacity: 1; color: var(--label); }
 .redo:disabled { cursor: default; }
 
 /* ---------- 换主播：场次分隔 ---------- */
@@ -1072,15 +1082,16 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 }
 
 /* ---------- 观众弹幕 ---------- */
-/* 弹幕面板：视觉上跟违禁词警报区分开（那里用 --fail 红，这里用 --accent 蓝），
-   免得中控把「观众在聊什么」误当成报警看 */
+/* 中性侧栏：浅灰底 + 左侧发丝线，标题/计数/条目都用中性色（designer.md #4）。
+   以前靠 8% 蓝底把它跟红色报警区分开——两者位置本来就分得开（顶部红条 vs
+   右侧一列），不需要再用颜色 */
 .comment-panel {
   flex: none;
   width: 340px;
   max-width: 42vw;
   min-height: 0;
-  border-left: 1px solid var(--border);
-  background: var(--tint-accent-8);
+  border-left: 0.5px solid var(--separator);
+  background: var(--sidebar-bg);
   display: flex;
   flex-direction: column;
 }
@@ -1089,54 +1100,58 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
+  padding: 10px 12px 8px 16px;
+  border-bottom: 0.5px solid var(--separator);
 }
 .comment-title {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;
-  font-size: 14px; font-weight: 700; color: var(--accent);
+  min-height: var(--h-small);
+  font-size: var(--fs-callout); font-weight: 600; color: var(--label);
 }
-.comment-actions { display: flex; gap: 6px; }
-#comment-count {
-  display: inline-block;
-  min-width: 20px;
-  padding: 0 6px;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #fff;
-  text-align: center;
-  font-size: 12px;
+.comment-title > .i { color: var(--label-2); }
+.comment-actions { display: flex; gap: 6px; flex: none; }
+#comment-count, #comment-fab-count {
+  display: inline-block; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 9px;
+  background: var(--fill); color: var(--label); text-align: center;
+  font-size: 11px; line-height: 18px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
 /* 底部留白与 .history 一致：底部通栏大字幕是 fixed 的，不留就会盖住最后几条 */
-.comment-list { flex: 1; overflow-y: auto; padding: 6px 14px 180px; }
-.cmt-item {
-  padding: 4px 0 4px 10px;
-  border-left: 3px solid var(--accent);
-  margin-bottom: 4px;
+.comment-list { flex: 1; overflow-y: auto; padding: 0 16px 180px; }
+.cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
+.cmt-item:last-child { border-bottom: 0; }
+.cmt-head { font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
+.cmt-zh { font-size: 15px; line-height: 1.5; margin-top: 1px; }
+.cmt-zh.pending { color: var(--label-3); font-style: italic; font-size: var(--fs-callout); }
+.cmt-zh.failed { color: var(--label-2); }
+.cmt-orig { font-size: var(--fs-footnote); color: var(--label-2); }
+.cmt-empty { padding: 12px 16px; font-size: var(--fs-footnote); color: var(--label-2); line-height: 1.5; }
+/* 评论流状态：前面一个小圆点表达状态（连上＝绿色实心、有问题＝橙色空心环、
+   其余＝灰），文字本身不上色——跟自检列表同一种画法（designer.md #1） */
+.cmt-source {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--fs-footnote); font-weight: 400; color: var(--label-2);
 }
-.cmt-head { font-size: 12px; color: var(--text-dim); }
-.cmt-zh { font-size: 15px; line-height: 1.5; }
-.cmt-zh.pending { color: var(--text-faint); font-style: italic; font-size: 13px; }
-.cmt-zh.failed { color: var(--text-dim); }
-.cmt-orig { font-size: 12px; color: var(--text-dim); }
-.cmt-empty { padding: 8px 14px 10px; font-size: 12px; color: var(--text-dim); line-height: 1.5; }
-.cmt-source { font-size: var(--fs-footnote); font-weight: 400; color: var(--text-dim); }
-.cmt-source.on { color: var(--green-ink); }
-.cmt-source.warn { color: var(--warn-fg); }
+.cmt-source::before {
+  content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--gray);
+}
+.cmt-source.on::before { background: var(--green); }
+.cmt-source.warn::before { background: transparent; border: 1.5px solid var(--orange); width: 7px; height: 7px; }
 /* 收起：整列让出去（字幕独占整行），弹幕继续在后台收；展开时全在 */
 .comment-panel.collapsed { display: none; }
-/* 收起后的入口按钮：挂在字幕区右上角，带条数 */
+/* 收起后的入口：字幕区右上角一颗白色悬浮胶囊，带条数（同「回到最新」） */
 .comment-fab {
   position: absolute; top: 10px; right: 16px; z-index: 4;
-  padding: 5px 12px; font-size: 13px; font-family: inherit; line-height: 1.5;
-  color: var(--accent); background: var(--tint-accent-12);
-  border: 1px solid var(--accent); border-radius: 999px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 8px 0 10px;
+  font-size: var(--fs-callout); font-weight: 500; font-family: inherit;
+  color: var(--label); background: var(--card);
+  border: none; border-radius: 14px; cursor: pointer;
+  box-shadow: var(--float-shadow);
 }
-.comment-fab:hover { filter: brightness(1.08); }
-#comment-fab-count {
-  display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px;
-  background: var(--accent); color: #fff; text-align: center; font-size: 11px;
-}
+.comment-fab > .i { color: var(--label-2); }
+.comment-fab:hover { color: var(--blue); }
+.comment-fab:focus-visible { outline: 2px solid transparent; box-shadow: var(--float-shadow), var(--focus); }
 
 /* ---------- 最近直播间 ----------
    开始面板与换主播面板共用这组类。chip 是无描边的胶囊：首页灰底上用白色，
