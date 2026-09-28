@@ -1417,6 +1417,27 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         await self.server.broadcast({"type": "selfcheck", "checks": checks,
                                      "summary": summary})
         self._audit_selfcheck(checks, summary)
+        await self._sync_selfcheck_incident(checks)
+
+    SELFCHECK_INCIDENT = "session:selfcheck"
+
+    async def _sync_selfcheck_incident(self, checks):
+        """自检失败项以前只有首页那一行看得到，而 #start-panel 直播中整块隐藏
+        （setStatus 里 active 时 toggle hidden）——降噪这类「字幕还在、只是变差」
+        的问题会跟着隐身 3-6 小时，直到中控自己停下来看。跟引擎回退、ASR 连续
+        出错用同一条常驻提示条，失败项清零后自动撤掉；首页那一行原样保留，
+        提示条只负责「看得到」，明细仍旧去首页看（pm.md #2）。"""
+        fails = [c for c in checks if c.get("level") == "fail"]
+        if not fails:
+            await self._incident(self.SELFCHECK_INCIDENT, "clear")
+            return
+        if len(fails) == 1:
+            reason = fails[0].get("fix") or fails[0].get("detail") or ""
+            text = "自检：{} 未通过——{}".format(fails[0]["name"], reason)
+        else:
+            text = "自检：{} 未通过——详情见首页「设置」".format(
+                "、".join(c["name"] for c in fails))
+        await self._incident(self.SELFCHECK_INCIDENT, "warn", text)
 
     def _audit_selfcheck(self, checks, summary):
         """自检结论写进本场审计：第一次整份写，之后只在某一行等级变了时写变了的那几行。
