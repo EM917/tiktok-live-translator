@@ -1245,3 +1245,28 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .disk-note { grid-column: 2 / span 3; font-size: var(--fs-footnote); color: var(--label-2); }
 .disk-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; }
 .disk-hint { font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
+
+/* ---------- 连接中 ----------
+   字幕区中央：macOS 活动指示器（8 根辐条按 8 步旋转）+ 「正在连接 @xxx…」。
+   已有字幕时（.inline）改成字幕末尾一行、跟 .cap 同宽左对齐，不遮旧字幕 */
+.connect-hint {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  max-width: 480px; margin: clamp(96px, 26vh, 220px) auto 0;
+  font-size: var(--fs-body); color: var(--label-2); text-align: center;
+  overflow-wrap: anywhere;
+}
+.connect-hint.inline {
+  flex-direction: row; justify-content: flex-start; gap: 8px;
+  max-width: 760px; margin: 16px auto 0; font-size: var(--fs-callout);
+}
+.spinner { width: 20px; height: 20px; flex: none; color: var(--label-2); animation: spinner-turn .8s steps(8) infinite; }
+.connect-hint.inline .spinner { width: 16px; height: 16px; }
+@keyframes spinner-turn { to { transform: rotate(360deg); } }
+/* 减少动态效果：辐条停住不转，「正在连接…」这行字本身已经说明状态 */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+}
+
+/* 状态横幅、更新横幅、引擎说明里 JS 写进去的图标（setIconText） */
+.status-banner .i, .engine-note .i { vertical-align: -3px; margin-right: 4px; }
+#update-text { display: inline-flex; align-items: center; gap: 6px; }

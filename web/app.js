@@ -57,6 +57,8 @@
   var engineNote = document.getElementById("engine-note");
   var liveTranslated = document.getElementById("live-translated");
   var liveOriginal = document.getElementById("live-original");
+  var connectHintEl = document.getElementById("connect-hint");
+  var connectHintText = document.getElementById("connect-hint-text");
   var targetSel = document.getElementById("target-lang");
   var fontSlider = document.getElementById("font-size");
   var clearBtn = document.getElementById("clear-btn");
@@ -902,6 +904,7 @@
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
     updateActiveBrandTag(); // 本场品牌标签同一个显示条件，见该函数注释
     syncCaptionDependentUi(); // 「上一场字幕」标题只在首页才显示，随 streamActive 变化
+    syncConnectHint(state);
     refreshCommentPanel();
     // 「停止」之后桌面页面留残留（大字幕压住开始面板、回到最新按钮悬空、
     // 上一场弹幕还挂着）：这两步把「直播中才有意义」的 UI 收掉/摆好，
@@ -927,6 +930,22 @@
     } else {
       statusBanner.classList.add("hidden");
     }
+  }
+
+  // 连接中：字幕区中央的转圈 + 「正在连接 @xxx…」（显示规则见 web/live-ui.js
+  // connectHint）。已有字幕时挪到 #history 末尾当一行，并跟到底部——停止后再开、
+  // 换主播时历史还在，中央那一版会盖在旧字幕上
+  function syncConnectHint(state) {
+    if (!connectHintEl) return;
+    var hint = connectHint(state, streamerFromInput(roomInput.value),
+                           !!historyEl.querySelector(".cap"));
+    if (!hint) return;
+    connectHintEl.classList.toggle("hidden", !hint.show);
+    connectHintEl.classList.toggle("inline", hint.inline);
+    if (!hint.show) return;
+    connectHintText.textContent = hint.text;
+    if (connectHintEl !== historyEl.lastElementChild) historyEl.appendChild(connectHintEl);
+    if (hint.inline) stickToBottom(false);
   }
 
   // 翻译连续失败时给一条全局解释——每条字幕角落的小标签太容易被忽略，
@@ -1067,6 +1086,7 @@
     liveBar.classList.add("hidden");
     liveBarId = null;
     insertSessionDivider(commentList, msg);
+    syncConnectHint(statusPill ? statusPill.dataset.state : "");
     stickToBottom(false);
   }
 

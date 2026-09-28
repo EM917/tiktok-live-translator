@@ -468,6 +468,26 @@
         </div>
       </section>
     </div>
+    <!-- 连接中：字幕区中央一个转圈 + 「正在连接 @xxx…」（designer.md #12）。以前整片
+         空白，只有顶栏一行小字，点错主播要等连上才看得出来（pm.md #5）。已经有字幕
+         （换主播、停止后再开）时改成字幕末尾的一行（.inline），不遮旧字幕。
+         显隐由 app.js syncConnectHint 按 connectHint()（web/live-ui.js）决定 -->
+    <div id="connect-hint" class="connect-hint hidden" role="status">
+      <!-- macOS 活动指示器画法：8 根辐条透明度递减，整体按 8 步旋转 -->
+      <svg class="spinner" viewBox="0 0 20 20" aria-hidden="true">
+        <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M10 2v3.2"/>
+          <path d="M15.66 4.34l-2.27 2.27" opacity=".2"/>
+          <path d="M18 10h-3.2" opacity=".28"/>
+          <path d="M15.66 15.66l-2.27-2.27" opacity=".36"/>
+          <path d="M10 18v-3.2" opacity=".45"/>
+          <path d="M4.34 15.66l2.27-2.27" opacity=".55"/>
+          <path d="M2 10h3.2" opacity=".7"/>
+          <path d="M4.34 4.34l2.27 2.27" opacity=".85"/>
+        </g>
+      </svg>
+      <span id="connect-hint-text">正在连接…</span>
+    </div>
     <!-- 停止后如果历史里还留着上一场的字幕，加一个和分组标题同款的小标题，
          跟设置面板一样宽（body.home 下 .cap 收到 600px，见 style.css），页面上
          不再出现「面板 600 / 字幕 760」两条左边线（designer.md #6）。
