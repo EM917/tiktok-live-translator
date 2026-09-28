@@ -279,6 +279,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # 用户往文件夹里新放/删掉文件后，靠前端发 refresh_brands 重新扫一遍
         # （见 handle_control），不用重启程序
         self.server.config["brand_options"] = brand_options()
+        # 本场生效的品牌，供顶栏标签显示（见 web/app.js updateActiveBrandTag）：
+        # 程序刚启动、还没点过「开始」，就是「没有本场」，None
+        self.server.config["active_brand"] = None
         # 「打开词表文件夹」按钮背后的实现，可注入：测试换成假的，不真的
         # 弹出访达/资源管理器（见 _open_directory_default）
         self._brand_dir_opener = _open_directory_default
@@ -357,6 +360,25 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         """字幕翻译是否正忙（在途或排队）——弹幕翻译据此让路，最多等 3 秒。"""
         return self._subtitle_busy > 0 or self.telemetry.translation_queue_depth > 0
 
+    def _active_brand_info(self):
+        """把 self.brand（只是个 id）转成顶栏标签要显示的 {id, name}，供
+        server.config["active_brand"] 用（随 start_stream 的 config 广播下发，
+        hello 时也在，见 web/app.js updateActiveBrandTag）。没选品牌返回 None。
+        显示名查 brand_options()——和下拉框选项同一份数据源（web/brand.js
+        buildBrandOptionList），保证顶栏标签和下拉框显示名永远一致；查不到
+        （文件被删/改名，多半是极短的过渡状态）就退回用 id 本身当显示名，
+        不能因为查不到显示名就让标签整个消失，那样反而让中控误以为品牌
+        没生效。"""
+        brand = getattr(self, "brand", None)
+        if not brand:
+            return None
+        name = brand
+        for opt in brand_options():
+            if opt.get("id") == brand:
+                name = opt.get("name") or brand
+                break
+        return {"id": brand, "name": name}
+
     # ---- 来自 UI 的控制消息 ----
     def handle_control(self, msg):
         mtype = msg.get("type")
@@ -401,6 +423,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                           "本场按不限处理".format(brand))
                     brand = ""
                 self.brand = brand or None
+                self.server.config["active_brand"] = self._active_brand_info()
                 from .provenance import streamer_of
                 streamer = streamer_of(url)
                 if streamer:
@@ -561,6 +584,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # 品牌词表跟着这次恢复走：token 里没有这个键（老流程/测试构造的半成品
         # token）按不限处理，和「缺字段按不限」的宽容原则一致
         self.brand = token.get("brand")
+        self.server.config["active_brand"] = self._active_brand_info()
         await self.start_stream(url, media=token.get("media"))
 
     def _save_update_resume(self, token, to_version):
@@ -607,6 +631,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # 里重新校验一遍，这里不必重复校验
         brand = marker.get("brand")
         self.brand = brand if isinstance(brand, str) and brand else None
+        self.server.config["active_brand"] = self._active_brand_info()
         await self.server.status("connecting", "已更新到 v{}，正在自动恢复监听{}…".format(
             app_version(), " @" + streamer if streamer else ""))
         await self.start_stream(url, media=media if isinstance(media, str) and media else None)
@@ -698,11 +723,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             # source_lang 捎在同一条 config 里：开着的第二个页面也要跟上，
             # 不能等它重连才看到第一个页面刚选的语言。brands 同理捎带一份
             # （handle_control 的 start 分支已经把最新映射写进了
-            # server.config["brands"]），换了主播的第二个页面也要跟着刷新默认值
+            # server.config["brands"]），换了主播的第二个页面也要跟着刷新默认值。
+            # active_brand 同理：本场生效的品牌显示名，供顶栏标签用——
+            # handle_control/两条恢复路径已经在调用这个方法之前把它算好放进
+            # server.config，这里只是原样带上（上面 quiet=True 的 _stop_locked
+            # 不会把它清掉，只有真正的用户停止才清，见 _stop_locked）
             await self.server.broadcast({"type": "config", "room_url": url,
                                          "source_lang": getattr(self.args, "source",
                                                                 None) or "auto",
-                                         "brands": self.server.config.get("brands", {})})
+                                         "brands": self.server.config.get("brands", {}),
+                                         "active_brand": self.server.config.get("active_brand")})
             # Ollama 没跑就趁解析地址/加载模型这几秒把它拉起来，别等第一句翻译失败
             self._spawn(self._heal_local_engine())
             self._stream_task = asyncio.create_task(self._run_stream(url))
@@ -790,6 +820,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             # 但它跑在旧线程池上，不会占住下一条直播的识别线程
             pool.shutdown(wait=False, cancel_futures=True)
         if not quiet:
+            # 真正停止（不是换主播/更新暂停那种「马上又要开始」的内部调用，
+            # 那两种 quiet=True，不走这里）：顶栏的本场品牌标签也要跟着清掉，
+            # 否则刷新页面或第二个页面重连会看到一个其实已经不生效的品牌
+            self.server.config["active_brand"] = None
+            await self.server.broadcast({"type": "config", "active_brand": None})
             await self.server.status("idle", "已停止。输入直播间地址可重新开始。")
 
     # ---- 实际的直播管线 ----
@@ -3454,7 +3489,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
     async def _publish_engine(self):
         """把当前引擎和各密钥的填写状态告诉页面（密钥只给尾四位）。"""
         from .settings import load_settings
-        from .translator import mask_key
+        from .translator import engine_label, mask_key
 
         await self._announce_settings_backup()
         stored = load_settings().get("api_keys", {})
@@ -3467,10 +3502,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 usage = await asyncio.wait_for(inner.usage(), timeout=3)
             except Exception:
                 usage = None
+        active_name = getattr(self.translator, "name", None)
         info = {"engine": getattr(self.args, "translator", "auto"),
                 "usage": usage,
-                "active": getattr(self.translator, "name", None),
-                # 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」）。
+                "active": active_name,
+                # 说人话的引擎名，页面据此显示摘要，不用自己再维护一份对照表——
+                # 以前 web/app.js 有一份重复的 ENGINE_LABEL，跟这里的 engine_label
+                # 已经不一致（同一个 openai 一边叫「OpenAI 兼容接口」一边叫
+                # 「OpenAI」），单一数据源改到这里
+                "active_label": engine_label(active_name),
+                # 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用自动」）。
                 # 终端里 print 过一遍，但窗口应用的用户看不到终端
                 "note": getattr(self.args, "translator_note", None),
                 "keys": {env: mask_key(os.environ.get(env) or stored.get(env, ""))

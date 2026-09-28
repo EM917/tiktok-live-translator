@@ -44,8 +44,11 @@ TRANSLATOR_CHOICES = ["auto", "hymt2", "hymt2-7b", "gemma",
 ENGINE_KEY_ENV = {"deepl": "DEEPL_API_KEY", "claude": "ANTHROPIC_API_KEY",
                   "openai": "OPENAI_API_KEY"}
 
-# 提示文字里称呼引擎用的名字（与页面「翻译引擎」下拉框一致）
-ENGINE_LABELS = {"hymt2": "本地 Hy-MT2 1.8B", "hymt2-7b": "本地 Hy-MT2 7B",
+# 提示文字里称呼引擎用的名字（与页面「翻译引擎」下拉框一致）。"auto" 也收进来——
+# 界面上不出现内部代号，回退提示（restore_engine）说「本次先用自动」而不是
+# 「本次先用 auto」，跟违禁词/直播排障那条「不猜原因」的规矩是同一类要求：
+# 面向用户的文字里不能有代号
+ENGINE_LABELS = {"auto": "自动", "hymt2": "本地 Hy-MT2 1.8B", "hymt2-7b": "本地 Hy-MT2 7B",
                  "gemma": "本地 TranslateGemma", "deepl": "DeepL",
                  "google": "Google 免费接口", "claude": "Claude", "openai": "OpenAI"}
 
@@ -97,8 +100,11 @@ def restore_engine(cli_value, saved, key_lookup=None):
         return "auto", None          # 没存过，或 settings.json 被改坏
     env = ENGINE_KEY_ENV.get(name)
     if env and not (key_lookup or api_key)(env):
-        return "auto", ("上次选的翻译引擎 {} 还没有密钥，本次先用 auto——"
-                        "在页面的「翻译引擎」里重新填一次即可".format(name))
+        # 说人话的引擎名，不露内部代号（deepl/auto）——跟「不猜原因」是同一条规矩：
+        # 面向用户的文字里不能有代号，只能有引擎选择菜单里那种名字（engine_label）
+        return "auto", ("上次选的翻译引擎 {} 还没有密钥，本次先用{}——"
+                        "在页面的「翻译引擎」里重新填一次即可"
+                        .format(engine_label(name), engine_label("auto")))
     return name, None
 
 LANG_NAMES = {

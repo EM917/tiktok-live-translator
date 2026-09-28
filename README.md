@@ -87,6 +87,19 @@ once a session has been reviewed.
    - **macOS**: double-click **`TikTok Live Translator.app`** in the folder. If the first launch is blocked ("cannot be opened"): on older systems right-click → Open; on **macOS 15 and later** go to **System Settings → Privacy & Security**, scroll to the bottom and click **"Open Anyway"** (one time only). Feel free to drag it to the Dock — but **don't move it out of this folder**.
    - **Windows**: double-click **`Start.bat`**. If a "publisher unknown" security warning pops up, click "Run" (this tool is fully open source — the code is right there in the folder). A black text window stays open while running — **that's the translation engine, keep it open**; subtitles appear in the separate app window.
 
+The interface window itself is rendered by the system's built-in browser engine
+(WKWebView on macOS, WebView2 on Windows), not a bundled one. On macOS the
+highest-requirement CSS feature currently used is `:focus-visible`, which needs
+**Safari 15.4 / macOS 12.3 (Monterey) or later**, based on reading the CSS this
+project ships rather than testing on that exact OS build — Apple has
+historically also shipped point releases of Safari to the two prior major
+macOS versions, so some older systems may already have it too. Below that, the
+app still runs and shows captions; only the keyboard-focus outline on a few
+controls falls back to the system default. WebView2 on Windows auto-updates independently of Windows
+itself, so there is no practical minimum version there — see the "publisher
+unknown" note above if Windows Defender SmartScreen has not seen WebView2 on
+this machine before.
+
 The first launch installs everything automatically (a few minutes, with on-screen progress; the first recognition also downloads the speech model, with progress shown on the page). Every launch after that is instant. Once the window opens: **paste the live-room URL (or just the streamer's username) → pick the streamer's language → hit Start**. Stop or switch rooms anytime.
 
 ### Command line
@@ -462,13 +475,15 @@ directly beneath it. The most frequent causes are an empty `banned_terms.txt`
 on every start, so a resolved issue clears on the next run. A passing row
 indicates the capability was executed, not merely configured.
 
-**Banned-term alerting is off by default.** The start panel has an "Enable
-banned-term alerts" switch you tick before starting, unchecked by default.
-With it off, detection still runs and every hit is still written to the audit
-(tagged `suppressed: "alerts_off"`) — it just does not pop an alert, fire a
-system notification, or spend a strong-model re-translation. Turning hits into
-visible alerts requires explicitly checking this switch; your last choice is
-remembered and reused on the next start.
+**Banned-term alerting is off by default.** The switch lives under
+**Settings → Banned-term alerts**, a collapsible row on the home screen (not
+the start panel — the feature is kept but no longer prominent; see
+[`CLAUDE.md`](CLAUDE.md)). Inside that row, an "Alert on hit" toggle is
+unchecked by default. With it off, detection still runs and every hit is still
+written to the audit (tagged `suppressed: "alerts_off"`) — it just does not pop
+an alert, fire a system notification, or spend a strong-model re-translation.
+Turning hits into visible alerts requires explicitly enabling this toggle;
+your last choice is remembered and reused on the next start.
 
 **The update button reports that something is blocking it.** The message names
 the affected files and provides a complete command with your project path and a
@@ -601,9 +616,10 @@ moves to the next free port in 8766–8774 and says so in the terminal. That's
 the control page only; the phone viewer uses a separate port that never
 drifts — see the next entry.
 
-**Can colleagues watch from their phones?** Yes. Click "Open" on the phone
-viewer card on the home page; a phone on the same Wi-Fi as this computer can
-scan the QR code or type in the address shown on the card, and can only view
+**Can colleagues watch from their phones?** Yes. Click "手机同看" (Phone
+viewer) in the top bar — present whether idle or live — and click "打开"
+(Open) in the panel that opens; a phone on the same Wi-Fi as this computer can
+scan the QR code or type in the address shown in the panel, and can only view
 captions and alerts — it cannot control the app in any way (no start/stop,
 engine switch, or settings changes). Up to 12 phones can watch at once. The
 link carries a key and should be treated like a password: whoever has it can
@@ -611,7 +627,7 @@ see captions and alerts; clicking "Get a new link" disconnects every phone
 currently watching, and they need to rescan. When a phone can't connect, the
 only thing the app knows is that no connection came in; try, in order:
 confirming the phone is on the same Wi-Fi; typing in another address from the
-card's list; opening the same link in a browser on this computer to confirm
+panel's list; opening the same link in a browser on this computer to confirm
 the service itself is running. The address is plain `http://` on the LAN, not
 a secure context, so there are no system notifications and no screen
 wake-lock, and the alert sound may stop once the page is backgrounded or the

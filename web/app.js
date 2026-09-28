@@ -21,6 +21,9 @@
   var stopBtn = document.getElementById("stop-btn");
   var statusDot = document.getElementById("status-dot");
   var statusText = document.getElementById("status-text");
+  // 状态胶囊本体：setStatus 把状态写进它的 data-state，CSS 用属性选择器
+  // 派生底色/文字色，不依赖 :has()（Safari 15.4 以下不支持，见 style.css）
+  var statusPill = document.querySelector(".status-pill");
   var statusBanner = document.getElementById("status-banner");
   var liveBar = document.getElementById("live-bar");
   var jumpBtn = document.getElementById("jump-latest");
@@ -34,6 +37,7 @@
   var targetSel = document.getElementById("target-lang");
   var fontSlider = document.getElementById("font-size");
   var clearBtn = document.getElementById("clear-btn");
+  var prevCapsTitle = document.getElementById("prev-caps-title");
   var migrateBar = document.getElementById("migrate-bar");
   var migrateText = document.getElementById("migrate-text");
   var migrateBtn = document.getElementById("migrate-btn");
@@ -61,7 +65,7 @@
   // 违禁词警示：默认关闭（负责人明确要求，见 CLAUDE.md），实际值以后端 hello/
   // alert_mode 广播为准；本地只在用户没点过开关、也还没收到后端值之前用这个默认。
   var alertsEnabled = false;
-  var watchlistConfigured = false;   // 词表非空：来自最近一次 renderWatchlist，决定 watch-desc 是否显示模式文案
+  var watchlistCount = 0;   // 最近一次 renderWatchlist 报的词表条数，watchSummary（settings-rows.js）据此算 desc
   // Object.create(null)：commentById 的键直接取自服务端转发的弹幕 id（最终来自
   // TikTok 页面上任意脚本可控的 viewer_comments.items[].id），普通字面量 {} 遇到
   // "__proto__" 这个键时会触发 Object.prototype 的存取器而不是新增普通键，
@@ -74,19 +78,48 @@
   var watchDesc = document.getElementById("watch-desc");
   var alertsToggle = document.getElementById("alerts-toggle");
   var alertModeTag = document.getElementById("alert-mode-tag");
+  var activeBrandTag = document.getElementById("active-brand-tag");
   var fixCmd = document.getElementById("fix-command");
   var fixCmdText = document.getElementById("fix-command-text");
   var fixCmdCopy = document.getElementById("fix-command-copy");
   var scBox = document.getElementById("selfcheck");
   var scHead = document.getElementById("sc-head");
+  var scIcon = document.getElementById("sc-icon");
   var scSummary = document.getElementById("sc-summary");
-  var scToggle = document.getElementById("sc-toggle");
   var scList = document.getElementById("sc-list");
   var diskHead = document.getElementById("disk-head");
   var diskSummary = document.getElementById("disk-summary");
   var diskBody = document.getElementById("disk-body");
   var diskList = document.getElementById("disk-list");
   var diskDelete = document.getElementById("disk-delete");
+  // 设置分组里新增的可展开行（自检、磁盘沿用原来的 #sc-head / #disk-head）
+  var engineHead = document.getElementById("engine-head");
+  var engineBody = document.getElementById("engine-body");
+  var watchHead = document.getElementById("watch-head");
+  var watchBody = document.getElementById("watch-body");
+  var watchMode = document.getElementById("watch-mode");
+  var inputHelpBtn = document.getElementById("input-help-btn");
+  var inputHelp = document.getElementById("input-help");
+
+  // 设置分组的行：展开状态记在行的 aria-expanded 上（CSS 据此转箭头），内容区
+  // 照旧靠 .hidden 收放。引擎、报警、输入说明这三行没有额外的开合时机，直接
+  // bindRow 挂点击；自检、磁盘各自在展开时还要多做一件事（自检失败自动展开、
+  // 磁盘展开时才向服务端要盘点），改成自己接管点击、调用 setRowOpen——收放
+  // 本身仍是同一个函数，只是不是每一行都经过 bindRow（engineer.md #8）
+  function setRowOpen(row, body, open) {
+    if (!row || !body) return;
+    body.classList.toggle("hidden", !open);
+    row.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  function bindRow(row, body) {
+    if (!row || !body) return;
+    row.addEventListener("click", function () {
+      setRowOpen(row, body, body.classList.contains("hidden"));
+    });
+  }
+  bindRow(engineHead, engineBody);
+  bindRow(watchHead, watchBody);
+  bindRow(inputHelpBtn, inputHelp);
 
   // 手机同看卡片（#share-card）：只在打开期间监听 0.0.0.0，控制面本身始终只在
   // 127.0.0.1；这张卡片只发/收 viewer_share / viewer_rotate，看不到任何观众数据
@@ -105,6 +138,7 @@
   var shareCopy = document.getElementById("share-copy");
   var shareRotate = document.getElementById("share-rotate");
   var shareClose = document.getElementById("share-close");
+  var shareCollapse = document.getElementById("share-collapse");
   var shareCount = document.getElementById("share-count");
   var shareAddrChanged = document.getElementById("share-addr-changed");
   var shareNote = document.getElementById("share-note");
@@ -144,6 +178,7 @@
   var versionNoticeTimer = null;
   var updateCheckNote = "";  // 很久没连上更新服务器时版本号后面那句话（文字由服务端给）
   var updateConfirmTimer = null;
+  var recentClearConfirmTimer = null;
   var liveBarId = null;      // 底部大字幕当前显示的是哪一条（译文回来要就地替换）
   // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
   var cardsById = {};
@@ -180,8 +215,10 @@
   // 存在服务端（settings.json），随 config 消息回填，不经这里
   var savedSource = lsGet("sourceLang");
   if (savedSource && savedSource !== "auto") selectSourceLang(savedSource);
+  // savedRoom 先读出来，回填挪到下面（brandState 声明之后）——回填要顺带
+  // 同步 brandState.streamer（brandStateSyncStreamer，只记主播不清 touched），
+  // 这是页面加载不是中控操作，不能套用 brandStateAfterRoomInput 那条规则
   var savedRoom = lsGet("roomUrl");
-  if (savedRoom) roomInput.value = savedRoom;
   // 服务端记住的主播语言随 config 到达后回填（localStorage 按端口隔离，
   // 端口漂移就丢了）；但本页里用户已亲手改过的选择不能被盖掉
   var sourceTouched = false;
@@ -269,10 +306,18 @@
     switchBrandSel.addEventListener("focus", requestBrandRefresh);
     switchBrandSel.addEventListener("mousedown", requestBrandRefresh);
   }
-  if (brandsDirBtn) {
-    brandsDirBtn.addEventListener("click", function () {
-      send({ type: "open_brands_dir" });
-    });
+  function openBrandsDir() { send({ type: "open_brands_dir" }); }
+  if (brandsDirBtn) brandsDirBtn.addEventListener("click", openBrandsDir);
+  // 空态里那句话末尾的「打开 brands 文件夹」文字按钮：同一个消息，跟旁边的
+  // 文件夹图标按钮是两个入口、一个动作（pm.md #6）
+  var brandHintOpenBtn = document.getElementById("brand-hint-open");
+  if (brandHintOpenBtn) brandHintOpenBtn.addEventListener("click", openBrandsDir);
+  // savedRoom 的回填放在这里（brandState 已声明）：同步记一下主播名，
+  // 不清 touched（此刻必然是 false，页面刚加载还没人碰过下拉，写这行只是
+  // 让「回填不清 touched」这条规则从一开始就一致，不是这里真的需要保留什么）
+  if (savedRoom) {
+    roomInput.value = savedRoom;
+    brandState = brandStateSyncStreamer(brandState, streamerFromInput(savedRoom));
   }
   roomInput.addEventListener("input", onRoomInputChanged);
 
@@ -287,6 +332,16 @@
     send({ type: "set_target", value: targetSel.value });
   });
 
+  // 「清空字幕」按钮本身，以及停止后停留在待机首页的「上一场字幕」小标题，
+  // 都只在 #history 里确实还有 .cap 时才该出现（pm.md #8、designer.md #6）。
+  // 两处判断条件不同（前者不看是不是首页，后者只在首页才显示），抽成一个
+  // 函数只是不想让「有没有字幕」这个判断在多处各写一份、改一个漏一个
+  function syncCaptionDependentUi() {
+    var hasCaps = !!historyEl.querySelector(".cap");
+    if (clearBtn) clearBtn.classList.toggle("hidden", !hasCaps);
+    if (prevCapsTitle) prevCapsTitle.classList.toggle("hidden", streamActive || !hasCaps);
+  }
+
   clearBtn.addEventListener("click", function () {
     // 分隔条（.session-sep，换主播时插的「── HH:MM:SS 以下为 @B ──」）跟着
     // 字幕一起清掉，不然重连回放前调这个函数清场时，旧分隔条会越攒越多——
@@ -297,6 +352,7 @@
     cardsById = {};              // 卡片没了，id 映射也要清，否则一直涨
     liveBarId = null;
     liveBar.classList.add("hidden");
+    syncCaptionDependentUi();
   });
 
   // 地址输入归一化在 normalize.js（独立成文件以便单元测试），
@@ -309,6 +365,10 @@
   function fillRoomInput(roomUrl) {
     var m = roomInput.value.match(MEDIA_RE);
     roomInput.value = m ? roomUrl + " " + m[0] : roomUrl;
+    // 服务端广播的回填（如换主播成功后台推来的新 room_url），不是中控在敲
+    // 键盘——只记主播名，不清 touched（brandStateSyncStreamer，同页面加载/
+    // hello 那两处，见 web/brand.js）
+    brandState = brandStateSyncStreamer(brandState, streamerFromInput(roomInput.value));
   }
 
   // 从原始输入解析房间地址（+ 可选的直连媒体地址）。开始面板和换主播面板要
@@ -369,6 +429,10 @@
     lsSet("sourceLang", sourceSel.value);
     sendStartCommand(buildStartPayload(parsed.url, parsed.media, sourceSel.value,
       alertsToggle && alertsToggle.checked, brandSel ? brandSel.value : ""));
+    // 发出 start 之后清掉 touched：三个入口（开始按钮、回车、chip）都走这个
+    // 函数，一处清零就够了。下一次不管是刷新默认值还是点 chip，都要重新按
+    // 「有没有改过」判断（brandStateAfterStart，见 web/brand.js）
+    brandState = brandStateAfterStart(brandState);
   }
 
   function armStartWatchdog() {
@@ -618,11 +682,18 @@
           // room_url 必须先回填，applyDefaultBrand() 才能读到这一场真正的主播名——
           // 顺序反了的话，私密窗口/换设备等 roomInput 本来是空的场景会先按空
           // 主播算出「不限」，room_url 填进来后却没有再刷新一遍（踩过的坑）
-          if (msg.config.room_url && !roomInput.value) roomInput.value = msg.config.room_url;
+          if (msg.config.room_url && !roomInput.value) {
+            roomInput.value = msg.config.room_url;
+            // 同 fillRoomInput：程序自己回填的，不清 touched，只记主播名
+            brandState = brandStateSyncStreamer(brandState, streamerFromInput(msg.config.room_url));
+          }
           // brand_options 要先于 brands 处理：下拉框的选项得先建好，
           // applyDefaultBrand() 才有值可选
           if (msg.config.brand_options) renderBrandOptions(msg.config.brand_options);
           if (msg.config.brands) { brandsMap = msg.config.brands; applyDefaultBrand(); }
+          // 本场品牌标签：hello 每次都带真实值（默认没有），同 alerts_enabled，
+          // 不沿用上一次连接看到的值
+          setActiveBrand(msg.config.active_brand || null);
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
           if (msg.config.viewer) renderShare(msg.config.viewer);
@@ -691,6 +762,10 @@
         if (msg.room_url) fillRoomInput(msg.room_url);
         if (msg.brand_options) renderBrandOptions(msg.brand_options);
         if (msg.brands) { brandsMap = msg.brands; applyDefaultBrand(); }
+        // start_stream 开播时、真正停止后都会广播这个字段（后者是显式 null）；
+        // 用 "in" 而不是真值判断，是因为 set_target 等别的 config 广播不带这个
+        // 键，不该被当成「清空品牌」处理
+        if ("active_brand" in msg) setActiveBrand(msg.active_brand);
         if (msg.alerts_session) setAlertSession(msg.alerts_session);
         if ("update_check" in msg) renderUpdateCheck(msg.update_check);
         break;
@@ -763,11 +838,14 @@
   function setStatus(msg) {
     var state = msg.state || "idle";
     statusDot.className = "dot " + state;
-    // 直播中额外带上正在听谁：「直播中 · @A」。主播名和顶栏「换主播」面板
-    // 认的是同一个来源（config.room_url，经 streamerFromInput 提取），
-    // 取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就不带这半句
+    if (statusPill) statusPill.dataset.state = state;
+    // 连接中/直播中额外带上正在听谁：「连接中… · @A」「直播中 · @A」。主播名和
+    // 顶栏「换主播」面板认的是同一个来源（config.room_url，经 streamerFromInput
+    // 提取），取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就
+    // 不带这半句。连接中也要带：点错了要等连上才看得出来，而失败的连接中位
+    // 要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）
     var label = STATUS_TEXT[state] || state;
-    if (state === "live") {
+    if (state === "live" || state === "connecting") {
       var liveStreamer = streamerFromInput(roomInput.value);
       if (liveStreamer) label += " · @" + liveStreamer;
     }
@@ -784,6 +862,8 @@
     homeActive = transition.active;
     var active = transition.active;
     startPanel.classList.toggle("hidden", active);
+    // 首页（开始面板可见）用分组灰底，直播中回到白底读字幕（style.css body.home）
+    document.body.classList.toggle("home", !active);
     stopBtn.classList.toggle("hidden", !active);
     // 换主播按钮和停止按钮同一处切换：只在直播中/连接中有意义，待机/已结束/
     // 出错/离线时没有「正在监听的主播」可换
@@ -791,6 +871,8 @@
     startBtn.disabled = state === "connecting";
     streamActive = active;
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
+    updateActiveBrandTag(); // 本场品牌标签同一个显示条件，见该函数注释
+    syncCaptionDependentUi(); // 「上一场字幕」标题只在首页才显示，随 streamActive 变化
     refreshCommentPanel();
     // 「停止」之后桌面页面留残留（大字幕压住开始面板、回到最新按钮悬空、
     // 上一场弹幕还挂着）：这两步把「直播中才有意义」的 UI 收掉/摆好，
@@ -892,6 +974,7 @@
 
     historyEl.appendChild(card);
     cardsById[msg.id] = card;
+    syncCaptionDependentUi();
 
     var caps = historyEl.querySelectorAll(".cap");
     while (caps.length > maxHistory) {
@@ -1462,7 +1545,19 @@
           chip.title = "点击开始翻译 @" + e.streamer;
           chip.addEventListener("click", function () {
             roomInput.value = e.url;                // 地址在背后填好，界面上只见主播名
-            onRoomInputChanged();                   // 换了主播才按记住的品牌刷新
+            // 「下拉显示什么就发什么」：本页手动改过品牌下拉就沿用当前值，
+            // 不管点的是哪个主播的 chip；没改过才按这个主播记住的品牌刷新
+            // （brandForChipClick，见 web/brand.js）。这里不再走
+            // onRoomInputChanged/brandStateAfterRoomInput——那条规则是给
+            // 「敲键盘改地址」用的，chip 点击是另一套规则。主播名过
+            // streamerFromInput 而不是直接用 e.streamer：后者是 URL 里的原始
+            // 大小写（provenance.streamer_of 不转小写），brandState.streamer
+            // 要和「手打输入」那条路径存的值大小写一致，否则点完 chip 再手打
+            // 同一个主播会被误判成「换了主播」
+            var decision = brandForChipClick(brandState, streamerFromInput(e.url),
+              brandSel ? brandSel.value : "", brandsMap);
+            brandState = decision.state;
+            if (brandSel) selectBrand(brandSel, decision.brand);
             startStream();
           });
           recentList.appendChild(chip);
@@ -1473,8 +1568,27 @@
     renderSwitchRecentList();
   }
 
+  // 两段式确认，做法同顶栏「一键更新」（resetUpdateBtn/updateBtn 那一对）：
+  // 第一次点只改文案、6 秒后自动复位，第二次点在窗口内才真的发送。这份列表
+  // 是「一键开始」的唯一数据来源，误触清空的代价不小，原来一点就清、连按钮
+  // 本身还是最显眼的系统蓝，是最容易被误触的地方之一（pm.md #5）
+  function resetRecentClear() {
+    if (recentClearConfirmTimer) clearTimeout(recentClearConfirmTimer);
+    recentClearConfirmTimer = null;
+    if (recentClear) {
+      delete recentClear.dataset.confirm;
+      recentClear.textContent = "清除记录";
+    }
+  }
   if (recentClear) {
     recentClear.addEventListener("click", function () {
+      if (recentClear.dataset.confirm !== "1") {
+        recentClear.dataset.confirm = "1";
+        recentClear.textContent = "再点一次清除";
+        recentClearConfirmTimer = setTimeout(resetRecentClear, 6000);
+        return;
+      }
+      resetRecentClear();
       send({ type: "clear_recent_rooms" });     // 服务端清空并广播空列表回来
     });
   }
@@ -1498,6 +1612,7 @@
     diskItems.forEach(function (it) { total += it.size || 0; });
     diskSummary.textContent = (info.free != null ? "剩余 " + humanSize(info.free) + " · " : "")
       + "本机模型与日志 " + humanSize(total);
+    diskSummary.title = diskSummary.textContent;   // 摘要被截断时补全文，见 designer.md #6
     diskList.innerHTML = "";
     if (!diskItems.length) {
       diskList.textContent = "没有找到可管理的模型或日志。";
@@ -1553,8 +1668,7 @@
   if (diskHead) {
     diskHead.addEventListener("click", function () {
       var open = diskBody.classList.contains("hidden");
-      diskBody.classList.toggle("hidden", !open);
-      document.getElementById("disk-toggle").textContent = open ? "收起" : "管理";
+      setRowOpen(diskHead, diskBody, open);
       if (open) {
         diskList.textContent = "正在统计…";
         send({ type: "disk_inventory" });
@@ -1640,7 +1754,7 @@
   // 中控可能收起面板但没关同看，这时按钮要接着显示「已打开」
   function updateShareBtn(on) {
     if (!shareBtn) return;
-    shareBtn.textContent = on ? "📱 手机同看 · 已打开" : "📱 手机同看";
+    shareBtn.textContent = on ? "手机同看 · 已打开" : "手机同看";
     shareBtn.classList.toggle("on", on);
   }
 
@@ -1651,7 +1765,9 @@
     var justOpened = on && !shareOn;
     updateShareBtn(on);
 
-    shareState.textContent = on ? "打开" : "关闭";
+    // 顶栏按钮同一个状态写的是「已打开」（updateShareBtn），这里跟着改成
+    // 「已打开/未打开」，别再各写各的（pm.md #3）
+    shareState.textContent = on ? "已打开" : "未打开";
     shareState.className = "share-state " + (on ? "on" : "off");
     shareToggle.classList.toggle("hidden", on);   // 打开后靠卡片里的「关闭」按钮，不重复放一个
 
@@ -1742,9 +1858,17 @@
   if (shareClose) {
     shareClose.addEventListener("click", function () {
       send({ type: "viewer_share", on: false });
-      // 面板本身也一起收起：点「关闭」的人是要结束同看，没必要还占着字幕历史上方的位置
+      // 面板本身也一起收起：点「停止同看」的人是要结束同看，没必要还占着字幕历史上方的位置
       if (sharePanel) sharePanel.classList.add("hidden");
     });
+  }
+  // 卡片右上角的 ×：只收起面板，不发 viewer_share——跟上面「停止同看」故意
+  // 是两个控件，别把两件事并回一个按钮（pm.md #3；closeSharePanel 给 Esc 复用）
+  function closeSharePanel() {
+    if (sharePanel) sharePanel.classList.add("hidden");
+  }
+  if (shareCollapse) {
+    shareCollapse.addEventListener("click", closeSharePanel);
   }
   if (shareCopy) {
     shareCopy.addEventListener("click", function () {
@@ -1808,15 +1932,33 @@
     }
   }
 
-  // 输入框变化、或点了最近直播间 chip：只「武装」第一步，绝不直接发送
-  // （见 web/switch.js）。品牌默认值的刷新规则和开始面板一致
+  // 输入框变化：只「武装」第一步，绝不直接发送（见 web/switch.js）。品牌
+  // 默认值的刷新规则和开始面板「敲键盘改地址」那一路一致
   // （brandStateAfterRoomInput），只是认的是换主播面板自己这份 state 和输入框——
-  // 这里换的是「要听谁」（@B），不是「正在听谁」（@A），两份状态不能混
+  // 这里换的是「要听谁」（@B），不是「正在听谁」（@A），两份状态不能混。
+  // chip 点击走 armSwitchFromChip，规则不同（见其注释）
   function armSwitchFromInput() {
     var streamer = streamerFromInput(switchInput.value);
     switchArmState = armSwitch(streamer, currentStreamerName(), Date.now());
     switchBrandState = brandStateAfterRoomInput(switchBrandState, streamer);
     applySwitchDefaultBrand();
+    clearSwitchError();
+    renderSwitchButton();
+    startSwitchResetTimer();
+  }
+
+  // 最近直播间 chip：同样只「武装」，不直接发送，但品牌那部分不能复用
+  // brandStateAfterRoomInput——那条规则一遇到「主播变了」就清 touched，点
+  // chip 换主播必然「变了」，手动选的品牌会被立刻冲掉。这里和开始面板的
+  // chip 一样走「下拉显示什么就发什么」（brandForChipClick，见
+  // web/brand.js）：本页手动改过换主播面板的下拉就沿用当前值，没改过才按
+  // 这个 chip 对应主播记住的品牌刷新
+  function armSwitchFromChip(streamer) {
+    switchArmState = armSwitch(streamer, currentStreamerName(), Date.now());
+    var decision = brandForChipClick(switchBrandState, streamer,
+      switchBrandSel ? switchBrandSel.value : "", brandsMap);
+    switchBrandState = decision.state;
+    if (switchBrandSel) selectBrand(switchBrandSel, decision.brand);
     clearSwitchError();
     renderSwitchButton();
     startSwitchResetTimer();
@@ -1836,7 +1978,7 @@
 
   // 最近直播间 chip：数据同开始面板（renderRecentRooms 存的 recentRoomsEntries），
   // 但点击行为不同——这里只填入并武装，绝不直接开始，直播中误触一下不该立刻断流。
-  // 当前正在监听的那个主播标「监听中」且不可点。
+  // 当前正在监听的那个主播标「当前」且不可点。
   function renderSwitchRecentList() {
     if (!switchRecent || !switchRecentList) return;
     switchRecentList.innerHTML = "";
@@ -1850,13 +1992,13 @@
       var isCurrent = !!cur && e.streamer.toLowerCase() === cur.toLowerCase();
       if (isCurrent) {
         chip.disabled = true;
-        chip.textContent = "@" + e.streamer + "（监听中）";
+        chip.textContent = "@" + e.streamer + "（当前）";
       } else {
         chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
         chip.title = "填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）";
         chip.addEventListener("click", function () {
           switchInput.value = e.url;
-          armSwitchFromInput();
+          armSwitchFromChip(streamerFromInput(e.url));   // 大小写规则同开始面板的 chip
           switchInput.focus();
         });
       }
@@ -1875,8 +2017,11 @@
     if (switchBrandSel) switchBrandSel.value = "";
     var cur = currentStreamerName();
     if (switchSub) {
+      // 「当前 @A」跟最近直播间 chip 的「（当前）」用同一个词，不再说「监听中」——
+      // 顶栏是「直播中 · @A」，这里以前的「当前监听」/chip 的「监听中」是第三种
+      // 说法，混用容易让人以为指的不是同一件事（pm.md #7）
       switchSub.textContent = cur
-        ? "当前监听 @" + cur + "，确认前不会中断"
+        ? "当前 @" + cur + "，确认前不会中断"
         : "确认前不会中断当前监听";
     }
     if (switchSourceEcho) {
@@ -1929,6 +2074,9 @@
     lsSet("roomUrl", parsed.url);
     sendStartCommand(buildStartPayload(parsed.url, parsed.media, sourceSel.value,
       alertsToggle && alertsToggle.checked, switchBrandSel ? switchBrandSel.value : ""));
+    // 同开始面板的 startStream：发出 start 之后清掉 touched（面板下次打开
+    // 会整个重置，这里做只是让规则在两个面板上一致，不依赖「反正会重置」）
+    switchBrandState = brandStateAfterStart(switchBrandState);
     switchArmState = initialSwitchState();
     closeSwitchPanel();
   }
@@ -1942,10 +2090,14 @@
     });
   }
   if (switchConfirmBtn) switchConfirmBtn.addEventListener("click", attemptSwitchConfirm);
-  // Esc 关闭：只在面板确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）
+  // Esc 关闭：只在面板确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
+  // 同看面板走 closeSharePanel——只收起，不碰同看开关，跟卡片里的 × 同一个函数（pm.md #3）
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && switchPanel && !switchPanel.classList.contains("hidden")) {
+    if (e.key !== "Escape") return;
+    if (switchPanel && !switchPanel.classList.contains("hidden")) {
       closeSwitchPanel();
+    } else if (sharePanel && !sharePanel.classList.contains("hidden")) {
+      closeSharePanel();
     }
   });
 
@@ -1955,48 +2107,91 @@
   function setAlertsEnabled(on) {
     alertsEnabled = !!on;
     if (alertsToggle) alertsToggle.checked = alertsEnabled;
-    updateWatchDesc();
+    // 统一叫「报警」：这一行摘要「开启/关闭 · 词表 N 条」，跟设置行名称
+    // 「违禁词报警」、顶栏标签「报警开」用同一个词，不再是「警示」（pm.md #7）
+    var sum = watchSummary(alertsEnabled, watchlistCount);
+    if (watchMode) watchMode.textContent = sum.mode;
+    if (watchDesc) watchDesc.textContent = sum.desc;
     updateAlertModeTag();
   }
 
-  // 顶栏标签：只在连接中/直播中露出（跟其它「直播中才有意义」的 UI 一个逻辑），
-  // 待机/已结束/出错/离线时没有场次可言，不该挂着一个「警示关/开」误导人。
+  // 顶栏标签：只在「连接中/直播中且报警开着」才露出。关闭是默认值，常驻显示
+  // 一个「警示关」既占顶栏空间（默认窗口下顶栏本就放不下一行，见 designer.md #3），
+  // 对新人也是看不懂的术语；不像开关本身，这里没有「什么都不显示」会被误解的
+  // 风险——顶栏别的地方也不会暗示这个功能存在（pm.md #4）
   function updateAlertModeTag() {
     if (!alertModeTag) return;
-    alertModeTag.classList.toggle("hidden", !streamActive);
-    alertModeTag.textContent = alertsEnabled ? "警示开" : "警示关";
-    alertModeTag.classList.toggle("on", alertsEnabled);
-    alertModeTag.classList.toggle("off", !alertsEnabled);
+    var show = streamActive && alertsEnabled;
+    alertModeTag.classList.toggle("hidden", !show);
+    if (show) alertModeTag.textContent = "报警开";
   }
 
-  // 词表为空时的「未配置」文案原样保留（renderWatchlist 里直接写），跟开关状态
-  // 无关——没有词就永远不会命中，这句话本身已经说清楚了。只有词表非空时，
-  // watch-desc 才需要按开关状态二选一。
-  function updateWatchDesc() {
-    if (!watchDesc || !watchlistConfigured) return;
-    watchDesc.textContent = alertsEnabled
-      ? "开播后会实时监听主播原话，命中立即报警（不依赖翻译，翻译再慢也不影响报警）。"
-      : "开播后不报警；命中只记入审计。要报警请先打开此开关。";
+  // 本场品牌标签：config.active_brand（{id, name} 或 null）来自 hello/config
+  // 广播，见 app/pipeline.py _active_brand_info。只存显示名——标签只负责
+  // 显示，id 用不上。hello 每次都带真实值（同 alerts_enabled），不猜测、
+  // 不沿用上一次连接看到的值，重连/换设备也不会显示错主播的品牌
+  var activeBrandName = "";
+  function setActiveBrand(info) {
+    activeBrandName = info && typeof info === "object" && typeof info.name === "string"
+      ? info.name : "";
+    updateActiveBrandTag();
   }
 
+  // 只在连接中/直播中且这一场选了品牌时露出（跟 updateAlertModeTag 同一个
+  // 逻辑），过长的名字交给 CSS text-overflow 省略号，这里把完整名字放进
+  // title 供悬停查看
+  function updateActiveBrandTag() {
+    if (!activeBrandTag) return;
+    var show = streamActive && !!activeBrandName;
+    activeBrandTag.classList.toggle("hidden", !show);
+    if (show) {
+      activeBrandTag.textContent = "品牌 · " + activeBrandName;
+      activeBrandTag.title = activeBrandName;
+    }
+  }
+
+  // 词表状态、开关状态搭配出来的说明句由 watchSummary（settings-rows.js）统一算，
+  // count<=0 时的「未配置」文案跟开关状态无关——没有词就永远不会命中，这句话
+  // 本身已经说清楚了，watchSummary 内部已经处理了这条分支，这里不用再分两路写。
   function renderWatchlist(msg) {
     if (!watchState) return;
-    watchlistConfigured = msg.count > 0;
-    if (msg.count > 0) {
-      watchState.textContent = "已启用 · " + msg.count + " 条";
-      watchState.className = "watch-state on";
-      updateWatchDesc();
-    } else {
-      watchState.textContent = "未配置";
-      watchState.className = "watch-state off";
-      watchDesc.textContent = "当前词表为空，本工具不会发出任何违禁词报警。";
-    }
+    watchlistCount = msg.count || 0;
+    // 不再切 .watch-state.on/.off——旧版靠这两个类换色，这次改版的 style.css
+    // 里 .watch-state 从未定义任何样式（词表状态只用文字说明，见 pm.md #7 附带
+    // 发现），继续写这两个类只是死代码（engineer.md #7）
+    var sum = watchSummary(alertsEnabled, watchlistCount);
+    watchState.textContent = sum.state;
+    if (watchDesc) watchDesc.textContent = sum.desc;
+  }
+
+  // 自检总览图标：颜色和图形一起变，不是只换背景色——「自检中…」还没出结果时
+  // 就已经显示绿底对勾，是这次要修的自相矛盾（designer.md #1）。四态都画在
+  // 同一个盾牌轮廓上，内部的勾/叹号/叉用状态自己的颜色（跟 .set-icon.<level>
+  // 的背景色一致），在纯白盾牌上「抠」出一个同色标记，效果上等价于 SF Symbols
+  // 的 xxx.shield.fill 二色画法，不需要真的做镂空
+  var SC_SHIELD_D = "M8 1.8 13 3.6v4c0 3.2-2.1 5.6-5 6.6-2.9-1-5-3.4-5-6.6v-4Z";
+  var SC_ICON_SVG = {
+    checking: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + SC_SHIELD_D + '" fill="currentColor"/></svg>',
+    pass: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + SC_SHIELD_D + '" fill="currentColor"/>' +
+      '<path d="M5.8 8 7.4 9.6 10.3 6.5" fill="none" stroke="var(--green)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    warn: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + SC_SHIELD_D + '" fill="currentColor"/>' +
+      '<path d="M8 5.2v3.4" stroke="var(--orange)" stroke-width="1.6" stroke-linecap="round"/>' +
+      '<circle cx="8" cy="10.6" r=".65" fill="var(--orange)"/></svg>',
+    fail: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + SC_SHIELD_D + '" fill="currentColor"/>' +
+      '<path d="M6.1 6.1 9.9 9.9M9.9 6.1 6.1 9.9" stroke="var(--red)" stroke-width="1.6" stroke-linecap="round"/></svg>'
+  };
+  // level 是背景色（.set-icon.<level>），跟上面 SVG 用哪一种内部标记一一对应
+  var SC_ICON_LEVEL = { checking: "gray", pass: "green", warn: "orange", fail: "red" };
+  function setSelfcheckIcon(state) {
+    if (!scIcon) return;
+    scIcon.className = "set-icon " + (SC_ICON_LEVEL[state] || "gray");
+    scIcon.innerHTML = SC_ICON_SVG[state] || SC_ICON_SVG.checking;
   }
 
   // 自检结果。有失败项时默认展开——「功能悄悄坏了」必须让人一眼看到，
   // 全绿时收起来不打扰
-  var ICONS = { ok: "✅", warn: "⚠️", fail: "❌" };
   var scLastSig = null;   // 结论没变就别动展开状态
+  var SC_LEVEL_SR_TEXT = { warn: "（提醒）", fail: "（未通过）" };
 
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
@@ -2004,27 +2199,35 @@
     scBox.classList.remove("hidden");
     scHead.classList.toggle("has-fail", sum.fail > 0);
     scHead.classList.toggle("has-warn", !sum.fail && sum.warn > 0);
-    if (sum.fail) {
-      scSummary.textContent = "❌ 自检发现 " + sum.fail + " 项功能未生效";
-    } else if (sum.warn) {
-      scSummary.textContent = "⚠️ 自检通过，" + sum.warn + " 项提醒";
-    } else {
-      scSummary.textContent = "✅ 自检全部通过（" + sum.total + " 项）";
-    }
+    // 摘要文案 + 图标状态由 selfcheckSummary（settings-rows.js）统一算，
+    // 折叠行要不要跟着自动展开见下面的 nextAutoOpen
+    var scSum = selfcheckSummary(sum);
+    scSummary.textContent = scSum.text;
+    setSelfcheckIcon(scSum.icon);
+    scSummary.title = scSummary.textContent;
     scList.innerHTML = "";
     msg.checks.forEach(function (c) {
       var li = document.createElement("li");
       li.className = "sc-item " + c.level;
       var name = document.createElement("span");
       name.className = "sc-name";
-      name.textContent = (ICONS[c.level] || "") + " " + c.name;
+      name.textContent = c.name;          // 状态由 .sc-item.<level>::before 的圆点/圆环表示
       var detail = document.createElement("span");
       detail.className = "sc-detail";
       detail.textContent = c.detail;
+      // 提醒/失败：圆点的形状已经跟通过项不一样（实心 vs 空心），但色弱看不出
+      // 颜色差异时还是分不清「提醒」和「失败」——补一句读屏可读、视觉隐藏的
+      // 级别说明，不额外占版面（engineer.md #3）
+      if (SC_LEVEL_SR_TEXT[c.level]) {
+        var srLevel = document.createElement("span");
+        srLevel.className = "sr-only";
+        srLevel.textContent = SC_LEVEL_SR_TEXT[c.level];
+        name.appendChild(srLevel);
+      }
       if (c.fix) {
         var fix = document.createElement("span");
         fix.className = "sc-fix";
-        fix.textContent = "→ " + c.fix;
+        fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
         detail.appendChild(fix);
       }
       li.appendChild(name);
@@ -2032,17 +2235,16 @@
       scList.appendChild(li);
     });
     // 只有结论真的变了才自动展开/收起。重连会重放一次 hello，
-    // 那时若无条件重置，正在看明细的人会被收起来
-    var sig = sum.fail + "/" + sum.warn + "/" + sum.total;
-    if (sig !== scLastSig) {
-      scLastSig = sig;
-      setSelfcheckOpen(sum.fail > 0);
-    }
+    // 那时若无条件重置，正在看明细的人会被收起来。自检这一行的规则是「签名
+    // 一变就无条件同步」——从「有失败」变回「全绿」也要跟着收起，所以直接用
+    // r.open，不像引擎回退提示那样还要额外判断（见 nextAutoOpen 的注释）
+    var r = nextAutoOpen(scLastSig, scSum.sig, sum.fail > 0);
+    scLastSig = r.sig;
+    if (r.changed) setSelfcheckOpen(r.open);
   }
 
   function setSelfcheckOpen(open) {
-    scList.classList.toggle("hidden", !open);
-    scToggle.textContent = open ? "收起" : "展开";
+    setRowOpen(scHead, scList, open);
   }
 
   if (scHead) {
@@ -2230,26 +2432,55 @@
     none: "只显示识别原文，不翻译。"
   };
   var engineKeys = {};
+  var engineNoteSig = null;   // 上一次的回退提示；变了才自动展开，重连回放不反复弹开
+
+  // 引擎被回退时摘要前面加的小三角（跟 .sc-icon 同一套线性画法，颜色固定橙——
+  // 这是「提醒」级别，不是失败），配合摘要文字改写成「已回退 · …」一起说明，
+  // 不再只靠摘要标橙一种视觉（designer.md #1）
+  var ENGINE_FALLBACK_ICON =
+    '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round">' +
+    '<path d="M8 2.3 14.2 13.2H1.8Z"/><path d="M8 6.6v3"/>' +
+    '<circle cx="8" cy="11.1" r=".55" fill="currentColor" stroke="none"/></svg>';
 
   function renderEngine(info) {
     if (!engineSelect) return;
     engineKeys = info.keys || {};
     engineSelect.value = info.engine || "auto";
-    var active = info.active ? "当前：" + info.active : "";
-    if (info.usage && info.usage.limit) {
-      var pct = Math.round(info.usage.used * 100 / info.usage.limit);
-      // 35k 字符/小时是实测均值（2026-08-26 场），只做量级提示
-      var hours = Math.max(0, Math.floor((info.usage.limit - info.usage.used) / 35000));
-      active += " · 免费额度已用 " + pct + "%（按近期速度约剩 " + hours + " 小时）";
+    // 说人话的引擎名由服务端给（app/translator.py engine_label），页面不再自己
+    // 维护一份对照表——以前这里的 ENGINE_LABEL 和服务端那份已经不一致（同一个
+    // openai 一边叫「OpenAI 兼容接口」一边叫「OpenAI」，见 pm.md #7）。摘要文案
+    // 本身由 engineSummary（settings-rows.js）算，这里只管把它塞进 DOM
+    var engSum = engineSummary(info);
+    if (engSum.hasNote) {
+      engineActive.innerHTML = "";
+      var triangle = document.createElement("span");
+      triangle.className = "set-fallback-icon";
+      triangle.setAttribute("aria-hidden", "true");
+      triangle.innerHTML = ENGINE_FALLBACK_ICON;
+      engineActive.appendChild(triangle);
+      engineActive.appendChild(document.createTextNode(engSum.text));
+    } else {
+      engineActive.textContent = engSum.text;
     }
-    engineActive.textContent = active;
+    engineActive.title = engSum.text;
     syncEngineRow();
-    // 启动时引擎被回退的提示（如「deepl 缺密钥，本次先用 auto」），
-    // 压过常规注记——用户上次的选择被改掉了，必须看得见
-    if (info.note) {
+    // 启动时引擎被回退的提示（如「上次选的翻译引擎 DeepL 还没有密钥，本次先用
+    // 自动」，来自 app/translator.py restore_engine），压过常规注记——
+    // 用户上次的选择被改掉了，必须看得见
+    if (engSum.hasNote) {
       engineNote.textContent = info.note;
       engineNote.classList.add("warn");
     }
+    // 卡片收进设置列表后，「上次的选择被改掉了」不能藏在折叠里：
+    // 摘要标橙，提示内容变了就自动展开这一行
+    if (engineHead) engineHead.classList.toggle("has-warn", engSum.hasNote);
+    // 同一条提示重放（sig 没变）不重开；换了新提示才展开；提示被清除时签名
+    // 也会变，但只有 engSum.hasNote 为真才应用 open——不能把用户正开着看的行
+    // 强制收起（nextAutoOpen 的注释里解释了这一步为什么不能合并进纯函数）
+    var r = nextAutoOpen(engineNoteSig, engSum.sig, true);
+    engineNoteSig = r.sig;
+    if (r.changed && engSum.hasNote) setRowOpen(engineHead, engineBody, true);
   }
 
   function syncEngineRow() {
