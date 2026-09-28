@@ -65,7 +65,7 @@
   // 违禁词警示：默认关闭（负责人明确要求，见 CLAUDE.md），实际值以后端 hello/
   // alert_mode 广播为准；本地只在用户没点过开关、也还没收到后端值之前用这个默认。
   var alertsEnabled = false;
-  var watchlistConfigured = false;   // 词表非空：来自最近一次 renderWatchlist，决定 watch-desc 是否显示模式文案
+  var watchlistCount = 0;   // 最近一次 renderWatchlist 报的词表条数，watchSummary（settings-rows.js）据此算 desc
   // Object.create(null)：commentById 的键直接取自服务端转发的弹幕 id（最终来自
   // TikTok 页面上任意脚本可控的 viewer_comments.items[].id），普通字面量 {} 遇到
   // "__proto__" 这个键时会触发 Object.prototype 的存取器而不是新增普通键，
@@ -2094,8 +2094,9 @@
     if (alertsToggle) alertsToggle.checked = alertsEnabled;
     // 统一叫「报警」：这一行摘要「开启/关闭 · 词表 N 条」，跟设置行名称
     // 「违禁词报警」、顶栏标签「报警开」用同一个词，不再是「警示」（pm.md #7）
-    if (watchMode) watchMode.textContent = alertsEnabled ? "开启" : "关闭";
-    updateWatchDesc();
+    var sum = watchSummary(alertsEnabled, watchlistCount);
+    if (watchMode) watchMode.textContent = sum.mode;
+    if (watchDesc) watchDesc.textContent = sum.desc;
     updateAlertModeTag();
   }
 
@@ -2134,29 +2135,18 @@
     }
   }
 
-  // 词表为空时的「未配置」文案原样保留（renderWatchlist 里直接写），跟开关状态
-  // 无关——没有词就永远不会命中，这句话本身已经说清楚了。只有词表非空时，
-  // watch-desc 才需要按开关状态二选一。
-  function updateWatchDesc() {
-    if (!watchDesc || !watchlistConfigured) return;
-    watchDesc.textContent = alertsEnabled
-      ? "开播后会实时监听主播原话，命中立即报警（不依赖翻译，翻译再慢也不影响报警）。"
-      : "开播后不报警；命中只记入审计。要报警请先打开此开关。";
-  }
-
+  // 词表状态、开关状态搭配出来的说明句由 watchSummary（settings-rows.js）统一算，
+  // count<=0 时的「未配置」文案跟开关状态无关——没有词就永远不会命中，这句话
+  // 本身已经说清楚了，watchSummary 内部已经处理了这条分支，这里不用再分两路写。
   function renderWatchlist(msg) {
     if (!watchState) return;
-    watchlistConfigured = msg.count > 0;
+    watchlistCount = msg.count || 0;
     // 不再切 .watch-state.on/.off——旧版靠这两个类换色，这次改版的 style.css
     // 里 .watch-state 从未定义任何样式（词表状态只用文字说明，见 pm.md #7 附带
     // 发现），继续写这两个类只是死代码（engineer.md #7）
-    if (msg.count > 0) {
-      watchState.textContent = "词表 " + msg.count + " 条";
-      updateWatchDesc();
-    } else {
-      watchState.textContent = "词表为空";
-      watchDesc.textContent = "当前词表为空，本工具不会发出任何违禁词报警。";
-    }
+    var sum = watchSummary(alertsEnabled, watchlistCount);
+    watchState.textContent = sum.state;
+    if (watchDesc) watchDesc.textContent = sum.desc;
   }
 
   // 自检总览图标：颜色和图形一起变，不是只换背景色——「自检中…」还没出结果时
@@ -2194,16 +2184,11 @@
     scBox.classList.remove("hidden");
     scHead.classList.toggle("has-fail", sum.fail > 0);
     scHead.classList.toggle("has-warn", !sum.fail && sum.warn > 0);
-    if (sum.fail) {
-      scSummary.textContent = sum.fail + " 项功能未生效";
-      setSelfcheckIcon("fail");
-    } else if (sum.warn) {
-      scSummary.textContent = "通过 · " + sum.warn + " 项提醒";
-      setSelfcheckIcon("warn");
-    } else {
-      scSummary.textContent = "全部通过 · " + sum.total + " 项";
-      setSelfcheckIcon("pass");
-    }
+    // 摘要文案 + 图标状态由 selfcheckSummary（settings-rows.js）统一算，
+    // 折叠行要不要跟着自动展开见下面的 nextAutoOpen
+    var scSum = selfcheckSummary(sum);
+    scSummary.textContent = scSum.text;
+    setSelfcheckIcon(scSum.icon);
     scSummary.title = scSummary.textContent;
     scList.innerHTML = "";
     msg.checks.forEach(function (c) {
@@ -2235,12 +2220,12 @@
       scList.appendChild(li);
     });
     // 只有结论真的变了才自动展开/收起。重连会重放一次 hello，
-    // 那时若无条件重置，正在看明细的人会被收起来
-    var sig = sum.fail + "/" + sum.warn + "/" + sum.total;
-    if (sig !== scLastSig) {
-      scLastSig = sig;
-      setSelfcheckOpen(sum.fail > 0);
-    }
+    // 那时若无条件重置，正在看明细的人会被收起来。自检这一行的规则是「签名
+    // 一变就无条件同步」——从「有失败」变回「全绿」也要跟着收起，所以直接用
+    // r.open，不像引擎回退提示那样还要额外判断（见 nextAutoOpen 的注释）
+    var r = nextAutoOpen(scLastSig, scSum.sig, sum.fail > 0);
+    scLastSig = r.sig;
+    if (r.changed) setSelfcheckOpen(r.open);
   }
 
   function setSelfcheckOpen(open) {
@@ -2449,46 +2434,38 @@
     engineSelect.value = info.engine || "auto";
     // 说人话的引擎名由服务端给（app/translator.py engine_label），页面不再自己
     // 维护一份对照表——以前这里的 ENGINE_LABEL 和服务端那份已经不一致（同一个
-    // openai 一边叫「OpenAI 兼容接口」一边叫「OpenAI」，见 pm.md #7）。
-    // info.active 兜底：老版本/回放数据没带 active_label 时，露内部代号也比
-    // 摘要整行空着强
-    var active = info.active_label || info.active
-                 || (info.engine === "none" ? "不翻译" : "");
-    if (info.usage && info.usage.limit) {
-      var pct = Math.round(info.usage.used * 100 / info.usage.limit);
-      // 35k 字符/小时是实测均值（2026-08-26 场），只做量级提示
-      var hours = Math.max(0, Math.floor((info.usage.limit - info.usage.used) / 35000));
-      active += " · 免费额度已用 " + pct + "%（按近期速度约剩 " + hours + " 小时）";
-    }
-    if (info.note) {
-      active = "已回退 · " + active;
+    // openai 一边叫「OpenAI 兼容接口」一边叫「OpenAI」，见 pm.md #7）。摘要文案
+    // 本身由 engineSummary（settings-rows.js）算，这里只管把它塞进 DOM
+    var engSum = engineSummary(info);
+    if (engSum.hasNote) {
       engineActive.innerHTML = "";
       var triangle = document.createElement("span");
       triangle.className = "set-fallback-icon";
       triangle.setAttribute("aria-hidden", "true");
       triangle.innerHTML = ENGINE_FALLBACK_ICON;
       engineActive.appendChild(triangle);
-      engineActive.appendChild(document.createTextNode(active));
+      engineActive.appendChild(document.createTextNode(engSum.text));
     } else {
-      engineActive.textContent = active;
+      engineActive.textContent = engSum.text;
     }
-    engineActive.title = active;
+    engineActive.title = engSum.text;
     syncEngineRow();
     // 启动时引擎被回退的提示（如「上次选的翻译引擎 DeepL 还没有密钥，本次先用
     // 自动」，来自 app/translator.py restore_engine），压过常规注记——
     // 用户上次的选择被改掉了，必须看得见
-    if (info.note) {
+    if (engSum.hasNote) {
       engineNote.textContent = info.note;
       engineNote.classList.add("warn");
     }
     // 卡片收进设置列表后，「上次的选择被改掉了」不能藏在折叠里：
     // 摘要标橙，提示内容变了就自动展开这一行
-    if (engineHead) engineHead.classList.toggle("has-warn", !!info.note);
-    var noteSig = info.note ? String(info.note) : "";
-    if (noteSig !== engineNoteSig) {
-      engineNoteSig = noteSig;
-      if (noteSig) setRowOpen(engineHead, engineBody, true);
-    }
+    if (engineHead) engineHead.classList.toggle("has-warn", engSum.hasNote);
+    // 同一条提示重放（sig 没变）不重开；换了新提示才展开；提示被清除时签名
+    // 也会变，但只有 engSum.hasNote 为真才应用 open——不能把用户正开着看的行
+    // 强制收起（nextAutoOpen 的注释里解释了这一步为什么不能合并进纯函数）
+    var r = nextAutoOpen(engineNoteSig, engSum.sig, true);
+    engineNoteSig = r.sig;
+    if (r.changed && engSum.hasNote) setRowOpen(engineHead, engineBody, true);
   }
 
   function syncEngineRow() {
