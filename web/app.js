@@ -21,6 +21,9 @@
   var stopBtn = document.getElementById("stop-btn");
   var statusDot = document.getElementById("status-dot");
   var statusText = document.getElementById("status-text");
+  // 状态胶囊本体：setStatus 把状态写进它的 data-state，CSS 用属性选择器
+  // 派生底色/文字色，不依赖 :has()（Safari 15.4 以下不支持，见 style.css）
+  var statusPill = document.querySelector(".status-pill");
   var statusBanner = document.getElementById("status-banner");
   var liveBar = document.getElementById("live-bar");
   var jumpBtn = document.getElementById("jump-latest");
@@ -831,6 +834,7 @@
   function setStatus(msg) {
     var state = msg.state || "idle";
     statusDot.className = "dot " + state;
+    if (statusPill) statusPill.dataset.state = state;
     // 连接中/直播中额外带上正在听谁：「连接中… · @A」「直播中 · @A」。主播名和
     // 顶栏「换主播」面板认的是同一个来源（config.room_url，经 streamerFromInput
     // 提取），取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就

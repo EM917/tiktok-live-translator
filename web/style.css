@@ -46,6 +46,35 @@
   --tier-variant: #e8a013;
   --tier-fuzzy: #c9a227;
 
+  /* 半透明色阶：以前直接写 color-mix(in srgb, var(--x) N%, transparent)，
+     Safari 15.4–16.1（Intel Mac 走 CPU 路径、没升级系统的机器仍在支持范围内）
+     遇到 color-mix() 计算期整条声明失效——带 var() 的 color-mix 不回退到
+     前一条规则，直接吃初始值（背景变 transparent、box-shadow 变 none），
+     engineer.md #2。跟 transparent 混合数学上就是 rgba(色, N%)，这里按用到
+     的颜色/百分比各存一份，深浅色分别取各自主题下的 rgba，不再依赖
+     color-mix() 本身 */
+  --a-green-16: rgba(52, 199, 89, 0.16);
+  --a-orange-16: rgba(255, 149, 0, 0.16);
+  --a-orange-40: rgba(255, 149, 0, 0.40);
+  --a-red-8: rgba(255, 59, 48, 0.08);
+  --a-red-12: rgba(255, 59, 48, 0.12);
+  --a-red-14: rgba(255, 59, 48, 0.14);
+  --a-red-20: rgba(255, 59, 48, 0.20);
+  --a-red-28: rgba(255, 59, 48, 0.28);
+  --a-blue-30: rgba(0, 122, 255, 0.30);
+  --a-label-4: rgba(29, 29, 31, 0.04);
+
+  /* 不透明的两色混合（旧代码里跟 var(--bg) 而不是 transparent 混，数学上不是
+     简单的 rgba，需要按主题各自预先算出混合结果）：update-bar/comment-panel
+     是 8% 强调色 + 92% 背景，alert-panel 是 10% --fail + 90% 背景，
+     fix-command 是 4% --label + 96% 背景，comment-fab 是 12% 强调色 +
+     88% 背景，用同一个换算脚本（scratchpad）算出 sRGB 线性混合再取整 */
+  --tint-accent-8: #ebf4ff;
+  --tint-accent-12: #e0efff;
+  --tint-blue-10: #e6f2ff;
+  --tint-fail-10: #fbe6e8;
+  --tint-label-4: #f6f6f6;
+
   /* 字号层级（macOS 尺度，中文正文取 14 保证可读） */
   --fs-title: 22px;       /* 大标题 */
   --fs-body: 14px;        /* 正文：输入框、设置行名称 */
@@ -102,6 +131,24 @@
     --warn-fg: #f0c674;
     --tier-variant: #f0b429;
     --tier-fuzzy: #d9bb4a;
+
+    /* 同上，换成深色模式下 --green/--orange/--red/--label/--blue/--bg 各自的值 */
+    --a-green-16: rgba(48, 209, 88, 0.16);
+    --a-orange-16: rgba(255, 159, 10, 0.16);
+    --a-orange-40: rgba(255, 159, 10, 0.40);
+    --a-red-8: rgba(255, 69, 58, 0.08);
+    --a-red-12: rgba(255, 69, 58, 0.12);
+    --a-red-14: rgba(255, 69, 58, 0.14);
+    --a-red-20: rgba(255, 69, 58, 0.20);
+    --a-red-28: rgba(255, 69, 58, 0.28);
+    --a-blue-30: rgba(10, 132, 255, 0.30);
+    --a-label-4: rgba(245, 245, 247, 0.04);
+
+    --tint-accent-8: #1b2430;
+    --tint-accent-12: #1a2839;
+    --tint-blue-10: #1a2634;
+    --tint-fail-10: #332425;
+    --tint-label-4: #252527;
   }
 }
 
@@ -142,22 +189,25 @@ body.home { --page-bg: var(--grouped-bg); }
 
 /* 状态胶囊：点 + 文字。中性状态（待机/已结束）不再有灰底——之前跟按钮用
    同一种灰色填充，看着像个禁用的按钮（designer.md #9）。只有直播中/连接中/
-   出错这几个真正有状态含义的时候才上色、恢复胶囊的内边距
-   （:has 不支持时退回无底色的纯文字，不影响信息） */
+   出错这几个真正有状态含义的时候才上色、恢复胶囊的内边距。
+   状态判断不用 :has(.dot.live) 这类选择器——Safari 15.4 以下不支持
+   :has()，一旦不支持就整条规则被丢弃（engineer.md #2）。改由 setStatus
+   直接把状态写进 .status-pill 自己的 data-state，CSS 只用普通的属性选择器，
+   兼容性只取决于属性选择器本身（所有現代浏览器都支持） */
 .status-pill {
   display: inline-flex; align-items: center; gap: 6px;
   height: 22px; padding: 0; border-radius: 11px;
   background: transparent; color: var(--label-2);
   font-size: var(--fs-footnote); white-space: nowrap;
 }
-.status-pill:has(.dot.live),
-.status-pill:has(.dot.connecting),
-.status-pill:has(.dot.error) {
+.status-pill[data-state="live"],
+.status-pill[data-state="connecting"],
+.status-pill[data-state="error"] {
   padding: 0 10px 0 8px;
 }
-.status-pill:has(.dot.live) { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green-ink); }
-.status-pill:has(.dot.connecting) { background: color-mix(in srgb, var(--orange) 16%, transparent); color: var(--orange-ink); }
-.status-pill:has(.dot.error) { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red-ink); }
+.status-pill[data-state="live"] { background: var(--a-green-16); color: var(--green-ink); }
+.status-pill[data-state="connecting"] { background: var(--a-orange-16); color: var(--orange-ink); }
+.status-pill[data-state="error"] { background: var(--a-red-14); color: var(--red-ink); }
 /* 主播名可能很长：顶栏放不下时省略号截断，不挤爆后面的控件（见 designer.md #3） */
 .status-text { font-size: var(--fs-footnote); color: inherit; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
@@ -169,7 +219,7 @@ body.home { --page-bg: var(--grouped-bg); }
   display: inline-flex; align-items: center;
   height: 22px; padding: 0 8px; border-radius: 11px;
   font-size: var(--fs-footnote); font-weight: 500;
-  color: var(--green-ink); background: color-mix(in srgb, var(--green) 16%, transparent);
+  color: var(--green-ink); background: var(--a-green-16);
 }
 
 /* 本场品牌标签：同样只在连接中/直播中露出（app.js 控制 hidden），但纯粹是
@@ -248,16 +298,16 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
 
 /* 破坏性操作（停止、删除所选）：红字 + 淡红底，苹果 destructive 按钮的样子 */
 .btn.destructive, .btn.danger {
-  background-color: color-mix(in srgb, var(--red) 12%, transparent);
+  background-color: var(--a-red-12);
   color: var(--red-ink);
 }
 .btn.destructive { font-weight: 600; }
-.btn.destructive:hover, .btn.danger:hover { background-color: color-mix(in srgb, var(--red) 20%, transparent); }
+.btn.destructive:hover, .btn.danger:hover { background-color: var(--a-red-20); }
 /* 按下态：以前没有独立的 :active，通用 .btn:active 又被这里的
    .btn.destructive/.btn.danger 覆盖掉，按下和悬停其实是同一个颜色
    （designer.md #10） */
-.btn.destructive:active, .btn.danger:active { background-color: color-mix(in srgb, var(--red) 28%, transparent); }
-.btn.danger:disabled { background-color: color-mix(in srgb, var(--red) 12%, transparent); }
+.btn.destructive:active, .btn.danger:active { background-color: var(--a-red-28); }
+.btn.danger:disabled { background-color: var(--a-red-12); }
 
 /* 手机同看：图标用 mask 画（颜色跟文字走），文字仍由 app.js 整段写入。
    同看打开时按钮变绿，跟其余「on」状态同一个颜色，中控一眼就能看出当前
@@ -268,7 +318,7 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 15'%3E%3Crect x='.75' y='.75' width='8.5' height='13.5' rx='2' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M3.8 11.6h2.4' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
           mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 15'%3E%3Crect x='.75' y='.75' width='8.5' height='13.5' rx='2' fill='none' stroke='black' stroke-width='1.5'/%3E%3Cpath d='M3.8 11.6h2.4' stroke='black' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
-#share-btn.on { color: var(--green-ink); background-color: color-mix(in srgb, var(--green) 16%, transparent); }
+#share-btn.on { color: var(--green-ink); background-color: var(--a-green-16); }
 
 /* 换主播：和停止按钮之间留出明显间距，防止手滑点错——点错「换主播」还能
    在面板里反悔，点错「停止」是直接断流，两个按钮不能挨得太近。间距要加在
@@ -300,7 +350,7 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   padding: 8px 20px;
   font-size: var(--fs-callout);
   border-bottom: 0.5px solid var(--separator);
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  background: var(--tint-accent-8);
 }
 .update-bar a { color: var(--accent); font-size: var(--fs-footnote); }
 .update-bar .btn.primary { height: var(--h-small); padding: 0 10px; font-size: var(--fs-footnote); }
@@ -501,7 +551,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 /* ---------- 违禁词警报 ---------- */
 .alert-panel {
   border-bottom: 2px solid var(--fail);
-  background: color-mix(in srgb, var(--fail) 10%, var(--bg));
+  background: var(--tint-fail-10);
   max-height: 30vh;
   display: flex;
   flex-direction: column;
@@ -575,7 +625,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   text-align: center;
   color: var(--warn-fg);
   background: var(--warn-bg);
-  border-bottom: 0.5px solid color-mix(in srgb, var(--orange) 40%, transparent);
+  border-bottom: 0.5px solid var(--a-orange-40);
 }
 .health-bar.degraded { color: #fff; background: var(--fail); border-bottom-color: var(--fail); }
 
@@ -588,13 +638,13 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   text-align: center;
   color: var(--warn-fg);
   background: var(--warn-bg);
-  border-bottom: 0.5px solid color-mix(in srgb, var(--orange) 40%, transparent);
+  border-bottom: 0.5px solid var(--a-orange-40);
 }
 .incident.error { color: #fff; background: var(--fail); border-bottom-color: var(--fail); }
 .incident.info {
   color: var(--label);
-  background: color-mix(in srgb, var(--blue) 10%, var(--bg));
-  border-bottom-color: color-mix(in srgb, var(--blue) 30%, transparent);
+  background: var(--tint-blue-10);
+  border-bottom-color: var(--a-blue-30);
 }
 
 /* ---------- 设置分组列表（inset grouped list） ---------- */
@@ -622,7 +672,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-family: inherit; font-size: var(--fs-body); text-align: left;
   cursor: pointer;
 }
-.set-row:hover { background: color-mix(in srgb, var(--label) 4%, transparent); }
+.set-row:hover { background: var(--a-label-4); }
 .set-row:active { background: var(--fill); }
 /* 内描边 + 圆角：以前是直角 2px 内描边，第一行/最后一行的角会被分组卡片
    12px 的圆角裁掉一块；焦点色也跟其余控件统一用加深过的 --focus-color
@@ -678,7 +728,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
    提醒状态不再有单独的摘要染色——之前用 --orange-ink，跟失败色 --fail
    亮度只差 1.02:1，色弱基本分不清；「提醒」已经由 #sc-icon 的图形表达，
    摘要文字维持普通的 --label-2 即可（designer.md #1） */
-.set-row.has-fail { background: color-mix(in srgb, var(--red) 8%, transparent); }
+.set-row.has-fail { background: var(--a-red-8); }
 .set-row.has-fail .set-value { color: var(--red-ink); font-weight: 500; }
 .set-row.has-fail .set-icon { background: var(--red); }
 
@@ -876,7 +926,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   display: flex; align-items: center; gap: 10px;
   max-width: 760px; margin: 8px auto 0; padding: 9px 12px;
   border: 1px solid var(--border); border-radius: 8px;
-  background: color-mix(in srgb, var(--text) 4%, var(--bg));
+  background: var(--tint-label-4);
 }
 .fix-command code {
   flex: 1; font-size: 12px; line-height: 1.5;
@@ -986,7 +1036,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   max-width: 42vw;
   min-height: 0;
   border-left: 1px solid var(--border);
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  background: var(--tint-accent-8);
   display: flex;
   flex-direction: column;
 }
@@ -1035,7 +1085,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .comment-fab {
   position: absolute; top: 10px; right: 16px; z-index: 4;
   padding: 5px 12px; font-size: 13px; font-family: inherit; line-height: 1.5;
-  color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  color: var(--accent); background: var(--tint-accent-12);
   border: 1px solid var(--accent); border-radius: 999px; cursor: pointer;
 }
 .comment-fab:hover { filter: brightness(1.08); }
@@ -1093,8 +1143,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   display: inline-flex; align-items: center; height: 19px; padding: 0 7px; border-radius: 9px;
   font-size: var(--fs-footnote); background: var(--fill); color: var(--label-2);
 }
-.disk-item.role-in_use .disk-role { color: var(--green-ink); background: color-mix(in srgb, var(--green) 16%, transparent); }
-.disk-item.role-other .disk-role { color: var(--orange-ink); background: color-mix(in srgb, var(--orange) 16%, transparent); }
+.disk-item.role-in_use .disk-role { color: var(--green-ink); background: var(--a-green-16); }
+.disk-item.role-other .disk-role { color: var(--orange-ink); background: var(--a-orange-16); }
 .disk-size { font-variant-numeric: tabular-nums; color: var(--label-2); }
 .disk-note { grid-column: 2 / span 3; font-size: var(--fs-footnote); color: var(--label-2); }
 .disk-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; }
