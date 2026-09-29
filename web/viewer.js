@@ -844,9 +844,11 @@ if (typeof document !== "undefined") {
         entry.zhEl.classList.remove("pending", "failed");
       } else if (entry.msg.failed) {
         markBody(entry.zhEl, false);
+        // 与桌面 app.js 同一写法：英文没有原因时整句不带括号
         entry.zhEl.textContent = L("中文译不出来（" + (pick(entry.msg, "why") || "未知原因") + "）——请看上面的原话",
-                                   "Couldn’t translate (" + (pick(entry.msg, "why") || "unknown reason")
-                                   + "). See the original above.");
+                                   pick(entry.msg, "why")
+                                     ? "Couldn’t translate (" + pick(entry.msg, "why") + "). See the original above."
+                                     : "Couldn’t translate. See the original above.");
         entry.zhEl.classList.remove("pending");
         entry.zhEl.classList.add("failed");
       }
@@ -944,8 +946,9 @@ if (typeof document !== "undefined") {
         transEl.textContent = msg.translated;
       } else if (msg.failed) {
         transEl.textContent = L("译文失败（" + (pick(msg, "why") || "未知原因") + "）——请看上面的原话",
-                                "Couldn’t translate (" + (pick(msg, "why") || "unknown reason")
-                                + "). See the original above.");
+                                pick(msg, "why")
+                                  ? "Couldn’t translate (" + pick(msg, "why") + "). See the original above."
+                                  : "Couldn’t translate. See the original above.");
         transEl.classList.add("failed");
       } else if (msg.translate_state === "pending") {
         transEl.textContent = L("翻译中…", "Translating…");

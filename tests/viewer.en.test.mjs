@@ -236,12 +236,12 @@ test("一整场：健康提示、报警四档（含认不出的分级）、译�
   const ctxZh = (card) => card.children[2].textContent;
   assert.equal(ctxZh(cards[0]), "Translating…", "报警译文还没到");
   assert.equal(ctxZh(cards[2]), "Couldn’t translate (timed out). See the original above.");
-  assert.equal(ctxZh(cards[1]), "Couldn’t translate (unknown reason). See the original above.",
-    "没有原因时的兜底也要英文");
+  assert.equal(ctxZh(cards[1]), "Couldn’t translate. See the original above.",
+    "没有原因时的兜底也要英文，且与桌面 app.js 一样整句不带括号");
 
   const caps = els["caption-list"].children;
   assert.equal(caps[0].children[2].textContent, "Couldn’t translate (timed out). See the original above.");
-  assert.equal(caps[1].children[2].textContent, "Couldn’t translate (unknown reason). See the original above.");
+  assert.equal(caps[1].children[2].textContent, "Couldn’t translate. See the original above.");
   assert.equal(caps[2].children[2].textContent, "Translating…");
   assert.equal(caps[0].children[3].textContent, "Retranslate");
   assert.equal(caps[3].children[3].textContent, "Couldn’t Retranslate · Try Again");
