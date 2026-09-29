@@ -652,6 +652,7 @@ def test_waiting_for_the_room_is_bounded_and_the_timeout_is_the_recorded_reason(
     assert end["reason"] == "host_wait_timeout" and end["status"] == 3 and end["waited_sec"] == 600
 
 
+@pytest.mark.i18n_fixture
 def test_first_start_on_a_room_that_is_not_live_still_fails_fast(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
 
@@ -886,6 +887,7 @@ def test_a_network_that_never_returns_gives_up_at_the_ceiling(monkeypatch, tmp_p
 ONGOING = ("session:network", "session:audio_rate", "session:quiet_audio")
 
 
+@pytest.mark.i18n_fixture
 def test_stopping_during_an_outage_takes_down_the_banners_that_promise_more_listening(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     calls = []
@@ -942,6 +944,7 @@ def test_a_session_that_ends_by_itself_takes_down_the_ongoing_banners(monkeypatc
     assert not set(ONGOING) & set(server.config.get("incidents") or {})
 
 
+@pytest.mark.i18n_fixture
 def test_stop_takes_the_ongoing_banners_down_even_when_the_old_task_is_slow_to_finish(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     p.STOP_GRACE_SEC = 0.2

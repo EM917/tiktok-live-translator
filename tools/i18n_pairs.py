@@ -5,6 +5,8 @@
   按钮名引用（R6）、产品名映射、禁用词两级（CLAUDE.md 第八条；第八条家族的中文臂也查）。
 - G3 同中文→同英文：同一句中文在全仓只许有一种英文。
 - G4 覆盖：带 `i18n: done` 标记的文件里，界面中文必须都成对；Python 另查 R11 的四种会丢英文的写法。
+  全量（Z0 起）：tests/i18n_rules.py 的 UI_FILES 与标了 done 的文件一一对应，清单外的文件不许有
+  没登记（NON_UI_CHINESE）的中文字面量。
 - G5 静态页模拟：按 web/i18n.js 的 applyStatic 规则把 data-en* 代进去，看还剩不剩中文。
 
 三种源：Python 走 AST；JS 走下面这个小词法器（认得正则字面量、模板串）；HTML 走 html.parser。
@@ -46,10 +48,13 @@ _NOTE = re.compile(r"i18n:\s*([\w=]+)")
 
 
 class Violation(tuple):
-    """(path, line, rule, message)。按这个顺序排序、打印。"""
+    """(path, line, rule, message)。按这个顺序排序、打印。G4 的违例另在 .text 上带着那个中文字面量
+    的全文（message 里只有前 40 个字）：清单外文件的登记（rules.NON_UI_CHINESE）按全文对。"""
 
-    def __new__(cls, path, line, rule, message):
-        return tuple.__new__(cls, (path, line, rule, message))
+    def __new__(cls, path, line, rule, message, text=None):
+        obj = tuple.__new__(cls, (path, line, rule, message))
+        obj.text = text
+        return obj
 
     def __str__(self):
         return "{}:{}  [{}] {}".format(*self)
@@ -782,15 +787,37 @@ def _is_slice(node):
     return isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice)
 
 
+def _parents(tree):
+    return {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+
+def _qualname(node, parents):
+    """node 所在的函数（带外层类名，如 BannedTermDetector.scan）；模块级为空串。"""
+    names, up = [], parents.get(id(node))
+    while up is not None:
+        if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(up.name)
+        up = parents.get(id(up))
+    return ".".join(reversed(names))
+
+
+def literal_joins(src):
+    """文件里每个 "<字面量>".join(...) 的 (所在函数的限定名, 分隔符)。rules.R11_JOIN_EXEMPT
+    的登记拿它核对：登记的那处 join 没了，登记就过期了。"""
+    tree = ast.parse(src)
+    parents = _parents(tree)
+    return {(_qualname(n, parents), n.func.value.value) for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "join" and isinstance(n.func.value, ast.Constant)
+            and isinstance(n.func.value.value, str)}
+
+
 def check_python_coverage(path, src):
     lines, whole = py_notes(src)
     if rules.FILE_TAG in whole:
         return []
     tree = ast.parse(src)
-    parents = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parents[id(child)] = node
+    parents = _parents(tree)
 
     def annotated(node):
         """这个节点所在的（最内层简单）语句任何一行写了 R8 注记。"""
@@ -821,9 +848,10 @@ def check_python_coverage(path, src):
                 r11_exempt |= _descendants(node.args + [k.value for k in node.keywords])
 
     out = []
+    join_exempt = rules.R11_JOIN_EXEMPT.get(path, {})
 
-    def bad(node, rule, msg):
-        out.append(Violation(path, node.lineno, rule, msg))
+    def bad(node, rule, msg, text=None):
+        out.append(Violation(path, node.lineno, rule, msg, text))
 
     reported = set()                  # 已经按 R11 报过的字面量（f-string 片段、join 的分隔符），不再按 G4 报一遍
     for node in ast.walk(tree):         # 广度优先：父节点先于子节点
@@ -839,13 +867,15 @@ def check_python_coverage(path, src):
                     or node.value.lstrip().startswith(rules.TERMINAL_PREFIXES) or annotated(node)):
                 continue
             bad(node, "G4", "界面中文要写成 L(\"中文\", \"English\")，不上界面的在行尾写 "
-                            "# i18n: terminal|audit|data|os：{!r}".format(node.value[:40]))
+                            "# i18n: terminal|audit|data|os：{!r}".format(node.value[:40]),
+                node.value)
         elif isinstance(node, ast.Call) and id(node) not in r11_exempt and not annotated(node):
             f = node.func
             if (isinstance(f, ast.Attribute) and f.attr == "join" and isinstance(f.value, ast.Constant)
                     and isinstance(f.value.value, str)):
-                bad(node, "R11", "{!r}.join(...) 会丢英文，改成 L(sep, sep_en).join(...)".format(
-                    f.value.value))
+                if (_qualname(node, parents), f.value.value) not in join_exempt:
+                    bad(node, "R11", "{!r}.join(...) 会丢英文，改成 L(sep, sep_en).join(...)".format(
+                        f.value.value))
                 reported.add(id(f.value))
             name = _call_name(node)
             if name and (name in rules.SLICE_SINKS or name.startswith(rules.SLICE_SINK_PREFIXES)):
@@ -890,7 +920,8 @@ def check_js_coverage(path, src):
         if lines.get(t.line, set()) & set(rules.NOTE_TAGS):
             continue
         out.append(Violation(path, t.line, "G4", "界面中文要写成 L(\"中文\", \"English\")，不上界面的在行尾写 "
-                                                 "// i18n: data 一类注记：{}".format(t.value[:40])))
+                                                 "// i18n: data 一类注记：{}".format(t.value[:40]),
+                             js_text(t)))
     return out
 
 
@@ -910,7 +941,7 @@ def check_html_coverage(path, src):
             if (value and CJK.search(value) and not in_data and not en_html
                     and not el.has("data-en-" + attr)):
                 out.append(Violation(path, el.line, "G4", "<{}> 的 {} 是中文，要配 data-en-{}：{!r}".format(
-                    el.tag, attr, attr, value[:40])))
+                    el.tag, attr, attr, value[:40]), value))
         child_data = in_data or is_data_region(el)
         child_eh = en_html or el.has("data-en-html")
         first = own_text(el)
@@ -920,7 +951,8 @@ def check_html_coverage(path, src):
             elif (type(child) is Text and CJK.search(child.data) and not child_data and not child_eh
                   and el.tag not in RAW_TAGS and not (child is first and el.has("data-en"))):
                 out.append(Violation(path, child.line, "G4", "<{}> 里的中文要配 data-en（或 data-en-html）："
-                                                             "{!r}".format(el.tag, collapse(child.data)[:40])))
+                                                             "{!r}".format(el.tag, collapse(child.data)[:40]),
+                                     collapse(child.data)))
 
     root = parse_html(src)
     for child in root.children:
@@ -937,6 +969,48 @@ def check_coverage(path, src):
     if path.endswith(".html"):
         return check_html_coverage(path, src)
     return []
+
+
+def check_unlisted(path, src):
+    """G4 全量（Z0）里 UI_FILES 以外的一个文件：照 G4 的规则扫中文字面量（R11 不查——这些文件里
+    没有 L() 的结果流过，"".join 之类拼的是数据），扫出来的每一处都得在 rules.NON_UI_CHINESE
+    里按全文登记了理由。返回 (没登记的违例, 登记了却已经不在文件里的字面量)。"""
+    listed = {t for texts in rules.NON_UI_CHINESE.get(path, {}).values() for t in texts}
+    found = [v for v in check_coverage(path, src) if v[2] == "G4"]
+    fresh = [Violation(path, v[1], "G4", "不在 UI_FILES 里的文件出现了中文：{!r}。上界面的话把文件加进 "
+                                         "tests/i18n_rules.py 的 UI_FILES、写 i18n: done 并写成 L()；"
+                                         "不上界面的在 NON_UI_CHINESE 里登记理由".format(v.text[:40]),
+                       v.text)
+             for v in found if v.text not in listed]
+    return fresh, sorted(listed - {v.text for v in found})
+
+
+def check_full_coverage(files):
+    """G4 全量（spec §12.1 G4，Z0 起）。files 是抽对范围里全部文件的 {路径: 源码}。
+    - rules.UI_FILES 与写了 `i18n: done` 的文件一一对应：清单里的都在、都标了，标了的都在清单里；
+    - 清单外的文件按 check_unlisted 查；rules.NON_UI_CHINESE 里过期的登记也算违例。"""
+    out = []
+    listed = set(rules.UI_FILES)
+    for path in sorted(listed - set(files)):
+        out.append(Violation(path, 0, "G4", "UI_FILES 里的文件不在抽对范围里（改名或删掉了？"
+                                            "同步改 tests/i18n_rules.py）"))
+    for path in sorted(set(rules.NON_UI_CHINESE) - (set(files) - listed)):
+        out.append(Violation(path, 0, "G4", "NON_UI_CHINESE 登记的文件不在抽对范围里、或已在 UI_FILES 里"))
+    for path, src in sorted(files.items()):
+        marked = is_marked(path, src)
+        if path in listed:
+            if not marked:
+                out.append(Violation(path, 1, "G4", "在 UI_FILES 里，但没写 i18n: done"))
+            continue
+        if marked:
+            out.append(Violation(path, 1, "G4", "写了 i18n: done，但不在 tests/i18n_rules.py 的 "
+                                                "UI_FILES 里"))
+            continue
+        fresh, stale = check_unlisted(path, src)
+        out.extend(fresh)
+        out.extend(Violation(path, 0, "G4", "NON_UI_CHINESE 登记的字面量已经不在文件里（或已写成 "
+                                            "L()、加了注记）：{!r}".format(t[:40])) for t in stale)
+    return out
 
 
 # =========================================================================================
@@ -1022,17 +1096,21 @@ def changed_files(repo, base, patterns=rules.PAIR_SOURCES):
 # =========================================================================================
 
 def scan(root=REPO_ROOT, paths=None):
-    """全仓（或指定文件）抽对并跑 G2/G3/G4。返回 (pairs, violations, 已标记的文件)。"""
+    """全仓（或指定文件）抽对并跑 G2/G3/G4。返回 (pairs, violations, 已标记的文件)。
+    不指定文件时另跑 G4 全量（check_full_coverage）：只看几个文件时判断不了清单全不全。"""
+    full = not paths
     paths = paths or source_files(root)
-    pairs, violations, marked = [], [], []
+    pairs, violations, marked, files = [], [], [], {}
     for path in paths:
-        src = read(path, root)
+        src = files[path] = read(path, root)
         pairs.extend(pairs_of(path, src))
         if is_marked(path, src):
             marked.append(path)
             violations.extend(check_coverage(path, src))
     violations.extend(check_pairs(pairs))
     violations.extend(check_consistency(pairs))
+    if full:
+        violations.extend(check_full_coverage(files))
     return pairs, sorted(set(violations)), marked
 
 
@@ -1042,7 +1120,7 @@ def main(argv=None):
     ap.add_argument("--list", action="store_true", help="逐条列出所有对（TSV）")
     args = ap.parse_args(argv)
     paths = args.paths or source_files()
-    pairs, violations, marked = scan(REPO_ROOT, paths)
+    pairs, violations, marked = scan(REPO_ROOT, args.paths or None)
     if args.list:
         for p in pairs:
             print("\t".join([p.path, str(p.line), p.kind, p.zh, " | ".join(p.ens), p.problem or ""]))

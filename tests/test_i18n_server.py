@@ -381,3 +381,77 @@ def test_english_desktop_messages_have_no_chinese_on_registered_fields():
     for msg in client.got:
         for path, value in i18n.ui_values(msg):
             assert not (isinstance(value, str) and CJK.search(value)), (msg["type"], path, value)
+
+
+# ---- G9 strict：按用例判（tests/conftest.py 的 pytest_runtest_call） ----------------------------
+
+def _conftest():
+    """pytest 已经载入的那个 tests/conftest.py（同一个 _I18N_FIXTURE_TESTS），不另 import 一份。"""
+    import sys
+    from pathlib import Path
+
+    here = (Path(__file__).resolve().parent / "conftest.py")
+    return next(m for m in list(sys.modules.values())
+                if getattr(m, "__file__", None) and Path(m.__file__).resolve() == here)
+
+
+class _Item:
+    def __init__(self, nodeid):
+        self.nodeid = nodeid
+
+
+def _after_call(item, error=None):
+    """把 conftest 的 hook wrapper 当生成器推一遍：error 为 None 时模拟用例本身通过，否则模拟
+    用例本身抛了 error。交回 wrapper 最后给出的结果。"""
+    gen = _conftest().pytest_runtest_call(item)
+    next(gen)
+    try:
+        if error is None:
+            gen.send("passed")
+        else:
+            gen.throw(error)
+    except StopIteration as stop:
+        return stop.value
+    raise AssertionError("wrapper 没有在 yield 之后结束")
+
+
+NODE = "tests/test_x.py::test_y[a]"
+PLAIN = ("plain", "status", "detail", "正在停止…", NODE + " (call)")
+
+
+@pytest.fixture
+def strict(monkeypatch):
+    hits = []
+    monkeypatch.setattr(i18n, "NET_HITS", hits)
+    monkeypatch.setattr(i18n, "NET", "strict")
+    return hits
+
+
+def test_strict_fails_the_test_that_sent_plain_chinese(strict):
+    strict.append(PLAIN)
+    strict.append(("unregistered", "brand_new_thing", "", "", NODE + " (setup)"))
+    with pytest.raises(pytest.fail.Exception) as caught:
+        _after_call(_Item(NODE))
+    message = str(caught.value)
+    assert "status.detail  「正在停止…」" in message and "没登记的消息类型 brand_new_thing" in message
+    assert "i18n_fixture" in message                      # 告诉人另一条出路
+
+
+def test_strict_leaves_other_tests_and_marked_tests_alone(strict, monkeypatch):
+    strict.append(PLAIN)
+    assert _after_call(_Item("tests/test_x.py::test_other")) == "passed"
+    monkeypatch.setattr(_conftest(), "_I18N_FIXTURE_TESTS", {NODE})
+    assert _after_call(_Item(NODE)) == "passed"
+
+
+def test_strict_does_not_judge_a_test_that_switched_the_net_itself(strict, monkeypatch):
+    """tests/test_i18n_server.py 的 net 夹具把 NET 换成 report、故意造违例：不按 strict 判。"""
+    strict.append(PLAIN)
+    monkeypatch.setattr(i18n, "NET", "report")
+    assert _after_call(_Item(NODE)) == "passed"
+
+
+def test_a_test_that_failed_on_its_own_keeps_its_own_error(strict):
+    strict.append(PLAIN)
+    with pytest.raises(KeyError):
+        _after_call(_Item(NODE), KeyError("boom"))

@@ -16,12 +16,14 @@ viewer.js 的前后（`?v=` 查询串与 /static/、/v/ 路径照原样）。场
 TLT_DOM_SHOTS=<目录> 时同一批场景各出一张 PNG，英文 README 截图从这里来：桌面另用 --screenshot
 再开一次，手机在同一次页面上经 DevTools 截（2 倍像素）。
 
-文件末尾几条用例不开 Chrome，平时照常跑：场景组得起来、插入点还在、默认确实跳过。页面结构
-或场景一变普通 CI 就会红，不用等 dom-scan job（它里面「英文页没有中文」「顶栏放得下」两组在 Z0 之前只报告）。
+文件末尾几条用例不开 Chrome，平时照常跑：场景组得起来、插入点还在、默认确实跳过、到点没结果时
+重试一次。页面结构或场景一变普通 CI 就会红，不用等 dom-scan job。收紧闸（Z0）起 dom-scan 整组
+严格跑：英文页上剩下中文、顶栏放不下，PR 都是红的。
 """
 import asyncio
 import base64
 import contextlib
+import itertools
 import json
 import os
 import re
@@ -31,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -48,6 +51,15 @@ FIXTURES = ("fake_ws.js", "scan.js", "probe.js")
 CHROME_NAMES = ("google-chrome", "chromium", "chromium-browser",
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 CHROME_TIMEOUT_SEC = 60
+# 一次 Chrome 到点（CHROME_TIMEOUT_SEC）还没给出结果时，换一个新的配置目录再起一次，最多这么多次。
+# 只对「到点没结果」重试（ChromeNoResult）：Chrome 自己退出了没给结果、页面上的任何断言都不重试。
+# 依据：PR #68 的 CI（macOS 跑器）里 live-full@1100 的 --dump-dom 起来之后 60 秒一个字节都没往
+# stdout 写，stderr 只有每次启动都有的那几行，被杀掉判红；那一轮其余三十多次启动都正常出了结果，
+# 同一场景、同一宽度在 PR #69 的 CI 里也正常出了结果（只是版面断言没过，L1 修的就是它）——是偶发，
+# 与 1100 这个宽度无关。
+# Z0 起整个 dom-scan 严格跑，偶发一次就会让 PR 红；真的每次都卡住的话两次都到点，照样红。
+# 重试过的在 pytest 的 warnings 摘要里留一条，连同当时已经端出去的资源，下回好对照。
+CHROME_RETRIES = 1
 TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".png": "image/png", ".json": "application/json"}
 EN_SCENARIOS = S.DESKTOP_EN + S.PHONE_EN
@@ -253,6 +265,10 @@ def _tail(err):
     return bytes(err).decode("utf-8", "replace")[-800:]
 
 
+class ChromeNoResult(AssertionError):
+    """Chrome 到点（CHROME_TIMEOUT_SEC）还没给出结果，已经杀掉整个进程组。_Runner 只对它重试。"""
+
+
 def run_chrome(chrome, url, size, lang, profile, extra, finished):
     """起一个无头 Chrome，等到 finished(stdout, stderr) 成立（结果齐了）或它自己退出，然后收掉
     整个进程组。不能用 subprocess.run 等它自己退：2026-09-29 本机实测 macOS 上的 Chrome 154
@@ -268,9 +284,11 @@ def run_chrome(chrome, url, size, lang, profile, extra, finished):
                 break
             time.sleep(0.1)
     if not finished(bytes(out), bytes(err)):
-        why = ("{} 秒没有给出结果，已杀掉整个进程组".format(CHROME_TIMEOUT_SEC) if timed_out
-               else "没给出结果就退出了（退出码 {}）".format(proc.returncode))
-        raise AssertionError("Chrome {}：{}\n{}".format(why, url, _tail(err)))
+        if timed_out:
+            raise ChromeNoResult("Chrome {} 秒没有给出结果，已杀掉整个进程组：{}\n{}".format(
+                CHROME_TIMEOUT_SEC, url, _tail(err)))
+        raise AssertionError("Chrome 没给出结果就退出了（退出码 {}）：{}\n{}".format(
+            proc.returncode, url, _tail(err)))
     return bytes(out).decode("utf-8", "replace")
 
 
@@ -354,7 +372,7 @@ async def cdp_scan(ws_url, url, size, deadline, shot=False):
                 if dom:
                     break
                 if time.monotonic() > deadline:
-                    raise AssertionError("{} 秒内没等到 #i18n-scan：{}".format(CHROME_TIMEOUT_SEC, url))
+                    raise ChromeNoResult("{} 秒内没等到 #i18n-scan：{}".format(CHROME_TIMEOUT_SEC, url))
                 await asyncio.sleep(0.1)
             png = None
             if shot:
@@ -374,9 +392,12 @@ def run_chrome_cdp(chrome, url, size, lang, profile, shot=None):
     with _chrome(argv) as (proc, out, err):
         ws_url = devtools_url(err, profile)
         while ws_url is None:
-            if proc.poll() is not None or time.monotonic() > deadline:
-                raise AssertionError("Chrome 没报出 DevTools 地址（退出码 {}）：{}\n{}".format(
+            if proc.poll() is not None:
+                raise AssertionError("Chrome 没报出 DevTools 地址就退出了（退出码 {}）：{}\n{}".format(
                     proc.poll(), url, _tail(err)))
+            if time.monotonic() > deadline:
+                raise ChromeNoResult("Chrome {} 秒没报出 DevTools 地址，已杀掉整个进程组：{}\n{}".format(
+                    CHROME_TIMEOUT_SEC, url, _tail(err)))
             time.sleep(0.1)
             ws_url = devtools_url(err, profile)
         try:
@@ -384,7 +405,7 @@ def run_chrome_cdp(chrome, url, size, lang, profile, shot=None):
                 cdp_scan(ws_url, url, size, deadline, shot is not None),
                 timeout=max(1.0, deadline - time.monotonic())))
         except asyncio.TimeoutError:
-            raise AssertionError("Chrome {} 秒没有给出结果，已杀掉整个进程组：{}\n{}".format(
+            raise ChromeNoResult("Chrome {} 秒没有给出结果，已杀掉整个进程组：{}\n{}".format(
                 CHROME_TIMEOUT_SEC, url, _tail(err))) from None
     if shot is not None:
         Path(shot).write_bytes(png)
@@ -392,12 +413,28 @@ def run_chrome_cdp(chrome, url, size, lang, profile, shot=None):
 
 
 class _Runner:
-    """每个场景只开一次 Chrome，结果缓存给同一模块里的各条断言。"""
+    """每个场景只开一次 Chrome（到点没结果时重试一次，见 CHROME_RETRIES），结果缓存给同一模块里的
+    各条断言。"""
 
     def __init__(self, site, chrome, scenarios, tmp, shots=None):
         self.site, self.chrome, self.scenarios, self.tmp = site, chrome, scenarios, tmp
         self.shots = Path(shots) if shots else None
         self._done = {}
+        self._dirs = itertools.count()          # 每次起 Chrome 都用一个新的配置目录
+
+    def _launch(self, name, start):
+        """start(配置目录) 起一次 Chrome。到点没给出结果（ChromeNoResult）时换一个新配置目录再起，
+        最多 CHROME_RETRIES 次（理由见 CHROME_RETRIES）；别的失败原样抛。"""
+        for attempt in range(CHROME_RETRIES + 1):
+            self.site.served.clear()
+            try:
+                return start(self.tmp / "profile-{}".format(next(self._dirs)))
+            except ChromeNoResult as exc:
+                if attempt == CHROME_RETRIES:
+                    raise
+                served = sorted(path for path, status in self.site.served if status == 200)
+                warnings.warn("G10 {}：{}。当时已端出去 {} 个资源：{}。换一个配置目录重试".format(
+                    name, str(exc).split("\n", 1)[0], len(served), served), stacklevel=2)
 
     def _url(self, scenario):
         url = "http://127.0.0.1:{}/".format(self.site.server_address[1])
@@ -412,14 +449,13 @@ class _Runner:
     def scan(self, name):
         if name not in self._done:
             sc = self.site.scenario = self.scenarios[name]
-            profile = self.tmp / "profile-{}".format(len(self._done))
             url, shot = self._url(sc), self._shot(name)
-            self.site.served.clear()
             if sc["page"] == "phone":
-                dom = run_chrome_cdp(self.chrome, url, sc["size"], sc["lang"], profile, shot)
+                dom = self._launch(name, lambda profile: run_chrome_cdp(
+                    self.chrome, url, sc["size"], sc["lang"], profile, shot))
             else:
-                dom = run_chrome(self.chrome, url, sc["size"], sc["lang"], profile,
-                                 ["--dump-dom"], dumped)
+                dom = self._launch(name, lambda profile: run_chrome(
+                    self.chrome, url, sc["size"], sc["lang"], profile, ["--dump-dom"], dumped))
             ok = {path for path, status in self.site.served if status == 200}
             missing = sorted(self.site.assets(page_html(sc, self.site.web_dir)) - ok)
             if missing:           # 装置自己的问题，不是界面的：页面缺了脚本，结果不可信
@@ -431,9 +467,9 @@ class _Runner:
             result["probe"] = dump_json(dom, "i18n-probe")
             result["dom"] = dom
             if shot is not None and sc["page"] == "desktop":
-                run_chrome(self.chrome, url, sc["size"], sc["lang"],
-                           self.tmp / "shot-{}".format(len(self._done)),
-                           ["--hide-scrollbars", "--screenshot={}".format(shot)], shot_written)
+                self._launch(name, lambda profile: run_chrome(
+                    self.chrome, url, sc["size"], sc["lang"], profile,
+                    ["--hide-scrollbars", "--screenshot={}".format(shot)], shot_written))
             self._done[name] = result
         return self._done[name]
 
@@ -710,6 +746,58 @@ def test_site_serves_fixtures_the_scenario_and_web_files_only(tmp_path):
         for bad in ("/v/../secret.txt", "/v/sub/x.js", "/v/.hidden", "/v/", "/elsewhere",
                     "/v/missing.js"):
             assert site.resolve(bad) is None, bad
+    finally:
+        site.server_close()
+
+
+SCAN_DOM = '<html><body><script type="application/json" id="i18n-scan">{"cjk": []}</script></body></html>'
+
+
+def _runner_with(monkeypatch, tmp_path, outcomes):
+    """_Runner 接一个不开 Chrome 的 run_chrome：按 outcomes 依次抛出或交回 DOM（交回前把页面引用的
+    资源都记成端出去过）。交回 (runner, 每次拿到的配置目录, site)。"""
+    site = _Site(WEB_DIR)
+    sc = {"page": "desktop", "page_lang": "en", "lang": "en", "size": [1000, 760]}
+    profiles, script = [], iter(outcomes)
+
+    def fake_run(chrome, url, size, lang, profile, extra, finished):
+        profiles.append(profile)
+        site.served.append(("/static/app.js", 200))
+        outcome = next(script)
+        if isinstance(outcome, Exception):
+            raise outcome
+        site.served.extend((path, 200) for path in site.assets(page_html(sc)))
+        return outcome
+
+    monkeypatch.setattr(sys.modules[__name__], "run_chrome", fake_run)
+    return _Runner(site, "chrome", {"x": sc}, tmp_path), profiles, site
+
+
+def test_a_chrome_that_gives_no_result_in_time_is_retried_once(tmp_path, monkeypatch):
+    """PR #68 那种偶发：第一次到点没结果，换一个新配置目录再起一次就好了。重试留一条 warning，
+    带着当时已经端出去的资源。"""
+    runner, profiles, site = _runner_with(monkeypatch, tmp_path, [
+        ChromeNoResult("Chrome 60 秒没有给出结果，已杀掉整个进程组：http://x/\nstderr"), SCAN_DOM])
+    try:
+        with pytest.warns(UserWarning, match=r"G10 x：Chrome 60 秒没有给出结果.*1 个资源.*重试"):
+            assert runner.scan("x")["cjk"] == []
+        assert len(profiles) == 2 and profiles[0] != profiles[1]
+    finally:
+        site.server_close()
+
+
+@pytest.mark.parametrize("outcomes,raised", [
+    ([ChromeNoResult("到点 1"), ChromeNoResult("到点 2")], ChromeNoResult),   # 每次都卡：照样红
+    ([AssertionError("Chrome 没给出结果就退出了（退出码 1）")], AssertionError),  # 自己退出：不重试
+])
+def test_only_one_retry_and_only_for_no_result_in_time(tmp_path, monkeypatch, outcomes, raised):
+    runner, profiles, site = _runner_with(monkeypatch, tmp_path, outcomes)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(raised) as caught:
+                runner.scan("x")
+        assert type(caught.value) is raised and len(profiles) == len(outcomes)
     finally:
         site.server_close()
 

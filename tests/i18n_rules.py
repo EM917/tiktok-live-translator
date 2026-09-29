@@ -23,6 +23,71 @@ FILE_TAG = "file=terminal"
 # R9 迁移完成的标记；G4/G5 只对带它的文件生效
 DONE_TAG = "done"
 
+# ---- G4 全量（spec §12.1 G4，Z0 起） -------------------------------------------------------
+# 抽对范围（PAIR_SOURCES）里的文件分两类，tests/test_i18n_coverage.py 与 tools/i18n_pairs.py
+# 的 check_full_coverage 钉着：
+# - UI_FILES：会产出界面（含系统对话框、通知、窗口标题）文字的文件，以及迁移时逐句核对过、只剩
+#   R8 注记的文件（hwdetect、power）。必须写 `i18n: done`，写了 done 的也必须在这里——两边一一对应；
+# - 其余文件不产出界面文字。G4 照样按同一套规则扫它们的中文字面量，扫出来的每一处都得在
+#   NON_UI_CHINESE 里按全文登记理由，否则失败。新的界面中文写进了清单外的文件，这里就红。
+# 新加一个界面文件：写好 L()、标 done、加进这里。
+UI_FILES = (
+    "main.py",
+    "app/alert_notify.py", "app/audio.py", "app/audit.py", "app/bootstrap.py",
+    "app/browser_login.py", "app/comment_source.py", "app/comments.py", "app/detector.py",
+    "app/diskspace.py", "app/ffmpeg_bin.py", "app/hwdetect.py", "app/localmodel.py",
+    "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
+    "app/pipeline_engine.py", "app/power.py", "app/resolver.py", "app/selfcheck.py",
+    "app/translator.py", "app/updater.py", "app/viewer.py", "app/viewer_share.py",
+    "app/window_attention.py", "app/window_close.py", "app/window_lang.py",
+    "web/alerts.js", "web/app.js", "web/brand.js", "web/i18n.js", "web/live-ui.js",
+    "web/session-divider.js", "web/settings-rows.js", "web/switch.js", "web/viewer.js",
+    "web/index.html", "web/viewer.html",
+)
+
+# UI_FILES 以外的文件里确实有、又不上界面的中文字面量：路径 → {理由: (字面量全文, …)}。
+# 按全文登记，不按行号（行号会漂）；登记了的字面量从文件里没了也算失败（清单不许过期）。
+# 这几处不在行尾写 `# i18n: data` 一类注记，是因为 spec §0.3 不变量 3「识别、BannedTermDetector
+# .scan、词表、幻听黑名单一行不动」——注记也是改那一行；其余几个文件为了一致也登记在这里。
+NON_UI_CHINESE = {
+    "app/asr.py": {
+        "幻听黑名单：Whisper 在没人说话时常编出来的片尾套话，按原文比对后丢弃，是数据": (
+            "字幕由amara.org社区提供", "请不吝点赞订阅转发打赏支持明镜与点点栏目", "谢谢观看", "请订阅",
+            "ご視聴ありがとうございました", "チャンネル登録お願いします"),
+        "正则里的全角标点：给识别结果切句、比对前去标点，是数据": (
+            "[^\\w\\s.!?！？。]", "[\\s.!?！？。]", "[.!?！？。]+"),
+        "_parse_cache_mb 的来源名，只拼进以 [警告] 开头的终端行": ("环境变量 ", "settings.json 的 "),
+        "transcribe 在模型放掉之后又被调用时抛的错。异常原文进终端和审计 asr_failed；连续出错改用 "
+        "CPU 后，自检「语音识别」行把它原样放在 Details: 后面，和别的识别库抛的英文异常原文一样"
+        "当数据显示。它在识别路径上（不变量 3），不改成 L()": ("识别模型已释放",),
+    },
+    "app/glossary.py": {
+        "把全局 glossary.txt 里的主播词条迁进 profiles/ 下该主播的词表时，写进那个文件的注释行："
+        "文件内容，界面不显示": (
+            "\n# 从 glossary.txt 迁移（{}）\n",),
+    },
+    "app/i18n.py": {
+        "CJK 字符范围的正则本身（界面语言的判定工具，数据）": (
+            "[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]",),
+    },
+    "app/provenance.py": {
+        "训练侧工具（tools/ 下的 mine、annotate、bench_live 等）读冻结评测清单失败时的说明："
+        "strict 时 SystemExit 打到终端，否则拼进以 [警告] 开头的终端行": (
+            "eval_holdout.json {}——训练侧管线拒绝在没有冻结清单的情况下运行", "读取失败（{}）",
+            "schema 不合法（缺 dev_eval / sealed_test 两层）", "schema 不合法（{}.{} 必须是对象）"),
+    },
+    "app/qr.py": {
+        "二维码编码器的参数校验与 `python -m app.qr` 的命令行帮助：app/viewer_share.py 生成二维码时"
+        "整段接住异常，只往终端打一行 [警告]，界面上只是不显示二维码": (
+            "这个实现只支持纠错等级 L", "data 必须是 bytes（字节模式的输入约束）",
+            "版本范围必须落在 2-6 之内，且 min_version<=max_version", "--scale 必须是正整数",
+            "生成一个二维码矩阵，可选写出 PBM 图片供人工核对", "要编码的文本，按 UTF-8 转成字节",
+            "把结果写成一张 PBM(P1) 图片", "每个模块放大到多少像素（默认 8）",
+            "数据长度 {} 字节超过版本 {}-{} 等级 L 的容量上限 {} 字节", "数据超过版本 {} 等级 L 的容量",
+            "数据放置与容量不匹配（放入 {}，应为 {}）——这是编码器内部错误，不是输入问题"),
+    },
+}
+
 # ---- R7：数据区 ----------------------------------------------------------------------------
 # 页面上的数据有两种标法（用户决定 6，2026-09-29，改了 spec §6）。G4/G5 和 G10 的 scan.js
 # 对两种都豁免子树里的文字与子孙的属性，元素自己的 title/aria-label/placeholder/alt 照查：
@@ -197,3 +262,14 @@ SLICE_DICT_SINKS = ("status", "broadcast")
 # R11 的四种写法出现在这些调用的实参里不算违例（终端与审计本来就是中文）
 R11_EXEMPT_CALLS = ("print",)
 R11_EXEMPT_RECEIVERS = ("audit",)
+# R11 ① 的逐处豁免：路径 → {(所在函数的限定名, 分隔符): 理由}。只给不能写行尾注记的地方用——
+# spec §0.3 不变量 3：识别、BannedTermDetector.scan、词表一行不动，行尾注记也是改这一行。
+# 登记的那处 join 从文件里没了也算失败（tests/test_i18n_coverage.py）。
+R11_JOIN_EXEMPT = {
+    "app/detector.py": {
+        ("normalize", ""): "拼回去掉组合附加符之后的 ASR 原文字符（归一化），结果只拿去匹配违禁词，"
+                           "不上界面，也不会是 L() 的结果。normalize 在冻结的检测路径上",
+        ("BannedTermDetector.scan", " "): "把时间窗里归一化过的几段 ASR 原文接成一段再匹配，结果"
+                                          "不上界面。scan 在冻结的检测路径上",
+    },
+}

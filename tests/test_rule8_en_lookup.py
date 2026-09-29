@@ -15,8 +15,8 @@ restrict……）、EN_CAUSAL 猜原因的句式（because、probably、likely�
   各个状态，在英文下渲染，看交到界面上的是不是干净的英文。
 - 审计：同一条弹幕状态分别在中文、英文界面下发出，审计记录逐字节相同（终端、审计永远是中文）。
 
-pipeline.browser_only_message 的固定话术由 M5a 管，它和这里 advice 的组合在
-tests/test_browser_login.py（_FIXED_FACTS_EN）。
+pipeline.browser_only_message 的固定话术在 tests/test_rule8_en.py；它接上这里 advice 的每一个分支
+之后的整句，在那个文件的最后一节（跨模块组合）和 tests/test_browser_login.py（_FIXED_FACTS_EN）。
 """
 import ast
 import asyncio
