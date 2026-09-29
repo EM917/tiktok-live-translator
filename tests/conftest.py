@@ -64,8 +64,12 @@ def _reset_resolver_process_state(monkeypatch):
 
 # ---- 英文界面（app/i18n.py） -------------------------------------------------------------
 
-# G9 运行时网的模式（spec §12.1）。迁移期是 report：违例只汇总进测试结束时的报告，就是剩余
-# 工作量清单；收紧闸（Z0）时改成 strict，未标记用例里的违例直接失败。
+# G9 运行时网的模式（spec §12.1）。迁移期是 report：违例只汇总进测试结束时的报告；收紧闸（Z0）
+# 时改成 strict，未标记用例里的违例直接失败。
+# 这张网只罩住经过真 CaptionServer.broadcast / ViewerHub.fanout 的消息。很多用例用自己的替身
+# server（如 tests/test_resilience_asr.py 的 StubServer），生产函数发出的消息根本到不了
+# check_outbound——比如 pipeline._announce_health 的三档提示。所以报告是抽样，不是剩余工作量的
+# 完整清单；完整的以 G4 的逐文件 `i18n: done` 标记与 tools/i18n_pairs.py 为准。
 I18N_NET_MODE = "report"
 # 带 @pytest.mark.i18n_fixture 的用例：它把中文夹具交给生产函数、再由生产函数广播出去
 # （比如 _check("语音识别", …) 造的自检行经 _publish_selfcheck 发出），运行时网不算它的违例
@@ -107,7 +111,8 @@ def _net_test_id(current):
 
 
 def pytest_terminal_summary(terminalreporter):
-    """G9 report：把运行时网记下的违例汇总成一份清单（spec §12.1）。-v 时逐句列出用例名。"""
+    """G9 report：把运行时网记下的违例汇总成一份清单（spec §12.1）。-v 时逐句列出用例名。
+    只是抽样：替身 server 发的消息不经过这张网（见 I18N_NET_MODE 上面的注释）。"""
     from collections import Counter, defaultdict
 
     from app import i18n
@@ -119,6 +124,8 @@ def pytest_terminal_summary(terminalreporter):
         return
     tr = terminalreporter
     tr.write_sep("-", "i18n 运行时网（G9，{} 模式）".format(I18N_NET_MODE))
+    tr.write_line("只含经过真 CaptionServer / ViewerHub 的消息；用替身 server 的用例不在内。"
+                  "这是抽样，完整清单以 G4 标记与 tools/i18n_pairs.py 为准")
     plain = [h for h in counted if h[0] == "plain"]
     unregistered = [h for h in counted if h[0] == "unregistered"]
     sentences = {(h[1], h[2], h[3]) for h in plain}
