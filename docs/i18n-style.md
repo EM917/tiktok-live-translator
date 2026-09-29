@@ -1,12 +1,25 @@
 # TikTok Live Translator：英文界面文案规范
 
-依据：分支 `claude/apple-style-live` 的 `web/index.html`、`web/*.js`、`web/style.css`，
-R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 `README.md` 里已经在用的英文术语。
+英文界面（中/英双语）的术语、大小写、标点和定稿文案，以这份文件为准。改词先改 §1 的术语表，再改代码。
+
+- 写法机制：Python 写 `L("中文", "English")`、复数写 `LN(n, …)`（`app/i18n.py`）；HTML 写 `data-en*` 属性。
+  中文原文一字不动，英文写在它旁边。
+- 机械检查：`tests/test_i18n_pairs.py`（G2 成对、G3 同中文→同英文）、`tests/test_i18n_coverage.py`（G4 覆盖）、
+  `tests/test_i18n_static_html.py`（G5 静态页）。按钮名、禁用词、例外清单这些规则表在 `tests/i18n_rules.py`，
+  改表要写理由。本地看全仓的对：`python3 tools/i18n_pairs.py --list`。
+- 无损证明：`tools/i18n_strip_check.py`（只加英文的提交）、`tools/i18n_const_check.py`（只收常量的提交）。
+
+来源：2026-09-28 按 `web/index.html`、`web/*.js`、`web/style.css`、四份界面文字清单、9 张中文界面截图，
+以及 `README.md` 里已经在用的英文术语整理。文中的 `文件:行号` 指那一天的代码（584e1ea），之后会漂移，以文字内容为准。
 
 宽度数字的来源：用本机 SF Pro（`/System/Library/Fonts/SFNS.ttf`，按 CSS 实际字号和字重，
 带 Apple 小字号 tracking）和 PingFang 量字形宽度，再拿截图校准过（字幕原文一行：截图 275px，
 估算 275px；状态胶囊：截图 167，估算 170；品牌标签：截图 142，估算 143）。误差约 ±5px。
-估算脚本在 `i18n/style-work/`，只读，不碰仓库。
+估算脚本和截图没有进仓库。
+
+相对最初的文案稿，这一版按实现规格覆盖了八处：§1.5 不用的词、§2.3 换链接确认、§2.6 BLOCKED 的写法与禁用词两级、
+§2.8 设置行、§3 #8 的 file:// 提示、§3 #107–#109 保留 emoji、§4.3 R17 关窗框。另外 §3 #2 与 §4.3 R14 的
+`isAlertTitle` 跟着实现改成了与语言无关的写法。
 
 ---
 
@@ -60,20 +73,20 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 
 | 中文 | English | 不用 | 理由 |
 |---|---|---|---|
-| 手机同看 | **Phone Viewing** | Phone Viewer, Mirror to Phone, Screen Share | README 写的是 “Phone viewer”，但界面里 viewer(s) 还要用来指人；用作功能名会和人数打架。Viewing 跟 Screen Mirroring 的构词一样。建议 README 顺手改成 “Phone viewing” |
+| 手机同看 | **Phone Viewing** | Phone Viewer, Phone view, Mirror to Phone, Screen Share | README 写的是 “Phone viewer”，但界面里 viewer(s) 还要用来指人；用作功能名会和人数打架。Viewing 跟 Screen Mirroring 的构词一样。建议 README 顺手改成 “Phone viewing” |
 | 开始同看 / 停止同看 | **Start Sharing / Stop Sharing** | Turn On / Turn Off | 动词加对象，两个按钮成对 |
 | 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Bella All Natural” 和中文差不多宽 |
 | 不限（默认） | **Any (default)** | None, All brands | None 会被读成「没有品牌」，实际意思是「不限定某一个品牌」 |
 | 品牌词表 | **brand glossary** | brand list | |
 | 词表 / 领域词表（glossary.txt） | **glossary** | dictionary, term list | 帮助翻译用的 |
 | 违禁词表（banned_terms.txt） | **banned-term list** | blacklist, banned glossary | 必须和 glossary 分开：list 决定报不报警，glossary 决定怎么翻译 |
-| 违禁词 | **banned term** | prohibited word, forbidden word, blacklisted word | README 已经在用。term 也覆盖短语 |
+| 违禁词 | **banned term** | prohibited word, prohibited term, forbidden word, blacklisted word | README 已经在用。term 也覆盖短语 |
 | 违禁词报警 | **Banned-Term Alerts**（设置行名），正文写 **banned-term alerts** | Compliance Alerts, Warnings | |
 | 疑似违禁词 | **possible banned term(s)**；面板标题写 **Possible Banned Terms** | suspected violation | 「疑似」是还没人工确认；violation 是法律判断，不该由程序下 |
 | 报警 | **alert** | alarm, warning | warning 留给自检的「提醒」这一级 |
 | 命中 | **match** | hit, trigger | |
 | 分级：命中 / 变体 / 疑似（手机上叫：精确 / 变体 / 疑似） | **Exact / Variant / Similar** | Fuzzy, Possible | fuzzy 是算法术语；Possible 会跟面板标题撞。手机和桌面统一成同一套 |
-| 自检 / 启动自检 | **Startup Check** | Self-Test, Diagnostics, Health Check | health 已经被「识别落后」那条 health 提示占了。README 写的是 “Startup self-check”，界面用更短的写法 |
+| 自检 / 启动自检 | **Startup Check** | Self-Test, Self-check, Diagnostics, Health Check | health 已经被「识别落后」那条 health 提示占了。README 写的是 “Startup self-check”，界面用更短的写法 |
 | 自检项 | **check** | test, item | |
 | 通过 / 提醒 / 未生效 | **passed / warning / isn’t working** | failed（只在读屏的级别说明里用） | 「未生效」强调的是功能没起作用，不是测试没过。isn’t working 是苹果的常用说法 |
 | 翻译引擎 | **Translation Engine**；短写 **engine** | translator, provider | |
@@ -86,7 +99,7 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 | 清空字幕 | **Clear**（顶栏按钮），tooltip 写 **Clear caption history** | Clear Captions（放不下，见 §4） | |
 | 重译 | **Retranslate** | Redo, Translate Again | |
 | 弹幕 / 观众弹幕 / 评论流 | **comments / Comments**；实在需要时才说 **comment stream** | danmaku, bullet comments, chat | TikTok 英文界面就叫 comments。「弹幕」是中文平台的概念 |
-| 开始翻译 | **Start** | Start Translating, Go | 和 Stop 成对。十几条后端提示要引用这个按钮，“click Start” 最短（38px，中文是 56px；“Start Translating” 要 123px） |
+| 开始翻译 | **Start** | Start Translating, Start translating, Go | 和 Stop 成对。十几条后端提示要引用这个按钮，“click Start” 最短（38px，中文是 56px；“Start Translating” 要 123px） |
 | 停止 | **Stop** | End, Disconnect | |
 | 语音识别 / 识别 | **speech recognition / recognition** | ASR, transcription | 只有延迟统计行这种技术读数可以写 ASR |
 | 识别落后 / 积压 | **falling behind / backlog** | lagging, queue | |
@@ -119,6 +132,12 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 `ffmpeg`、`yt-dlp`、`TikTokLive 7.0.2`、`Safari`、`banned_terms.txt`、`glossary.txt`、
 `profiles/`、`brands/`、`logs/`、`.flv`、`.m3u8`、`HTTP 429`、`code 4003110`、
 目标语言下拉的 13 个选项、违禁词和词表内容、报警里的 `msg.term`。
+
+### 1.5 设计过程中出现过、现在不用的词
+
+三份实现方案里与本表冲突的写法一律不用：**prohibited term**（用 banned term）、**Phone view**（用 Phone Viewing）、
+**Self-check**（用 Startup Check）、分级里的 **Possible**（用 Exact / Variant / Similar；Possible 只出现在
+“Possible Banned Terms” 这个面板标题里）、**Start translating**（按钮就叫 Start）。
 
 ---
 
@@ -196,7 +215,7 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 | pipeline.py:1458 自检提示条 | Startup Check: 1 item isn’t working ({names}) | Startup Check: {n} items aren’t working ({names}) |
 | app.js:1719 删除所选 | Delete 1 Item ({size}) | Delete {n} Items ({size}) |
 | pipeline_disk.py:90 已删除 | Deleted 1 item and freed {size}. | Deleted {n} items and freed {size}. |
-| app.js:1990 / viewer.py:429 换链接确认 | The phone watching now will disconnect and needs to scan again. Continue? | The {n} phones watching now will disconnect and need to scan again. Continue? |
+| app.js:1990 / viewer.py:429 换链接确认 | Changing the link disconnects the phones watching now ({n}). They’ll need to scan the new QR code. Continue? | 同左（不变形：`{n}` 由前端在点击时才填，后端选不了单复数） |
 | alerts.js:60 报警条数说明 | Showing the latest {n} of {m} alerts this session | （{m} 至少是 2，只需要这一种） |
 | app.js:564/589/597 词表迁移 | 1 entry | {n} entries |
 | pipeline.py:961 丢段 | 1 audio segment | {n} audio segments |
@@ -244,16 +263,31 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 - 中文原文有一句「不是网络或限流问题」。英文版**整句删掉**，换成正面的观察：
   **Other live streams worked at the same time, and TikTok doesn’t say why.**
   否定句里出现 rate limit 也不行。这是英文版有意和中文不一样的地方。
-- `browser_login` 的 BLOCKED 状态（macOS 没给完全磁盘访问权限）写成
-  **macOS didn’t allow the app to read Safari’s data**。不写 blocked。
+- `browser_login` 的 BLOCKED 状态（macOS 没给完全磁盘访问权限）**不点名浏览器**。`observed_text` 是按浏览器
+  逐条拼的（「Chrome：系统拒绝读取；Safari：系统拒绝读取」），写死 Safari 会让 Chrome 那一条说错：
+  - `_OBSERVED[BLOCKED]` 写 **macOS didn’t allow access**，拼出来是 `Chrome: macOS didn’t allow access`；
+  - `FDA_OBSERVED` 写 **macOS didn’t allow the app to read browser data.**
+  - 不写 blocked。
 
-以后给英文版加钉子测试（照 `tests/test_diagnose_room.py` 和 `tests/test_selfcheck_incident.py` 的先例），
-建议用下面这条正则。注意它要放过产品术语 “banned term”，不然自检提示条里的
-“Banned-Term List” 会误报：
+禁用词分两级，G2 对每一句英文都查，正则在 `tests/i18n_rules.py`：
 
-```
-(?i)\b(age|aged|age[- ]restrict\w*|adult|mature|rate[- ]?limit\w*|throttl\w*|block(ed|ing|s)?|ban(s|ned)?\b(?![- ]terms?)|suspend\w*|restrict\w*|probably|likely|because|due to|caused by|the reason)\b
-```
+- **标签词**（`EN_LABELS`）：全仓所有英文都查。它放过产品术语 banned term / Banned-Term List，
+  不然自检提示条里的 “Banned-Term List” 会误报：
+
+  ```
+  (?i)\b(age|aged|age[- ]restrict\w*|rate[- ]?limit\w*|throttl\w*|ban(s|ned)?\b(?![- ]terms?)|block(ed|ing|s)?|restrict\w*)\b
+  ```
+
+- **因果词**（`EN_CAUSAL`）：只查第八条家族，也就是 `resolver.py`、`browser_login.py`、`comment_source.py`、
+  `viewer.py`、`viewer_share.py`、`viewer.js`、`viewer.html`、`index.html` 的 `#input-help`，以及 `pipeline.py` 的
+  `browser_only_message`、`_resolve_media`、`_confirm_offline`、`_host_wait`、`_selfcheck_incident_text`：
+
+  ```
+  (?i)\b(because|due to|caused by|the reason|probably|likely|must be|seems to)\b
+  ```
+
+- 电脑休眠写 suspended 不在任何一级里，照常用。真有一句必须用到这些词，登记进 `EN_WORD_EXCEPTIONS`，
+  写明「中文臂 → 理由」。
 
 同一族以外，还有两处也顺手避开这些词：
 
@@ -270,13 +304,15 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 
 | 位置 | 中文界面 | 英文界面 |
 |---|---|---|
-| 设置行名 | 界面语言 | App Language |
+| 设置行名 | 界面语言 · Language（带上英文，困在中文界面里的英文用户也找得到） | App Language |
 | 行右侧摘要 | 跟随系统 · 中文 / 中文 / English | System · English / 中文 / English |
 | 选项 1 | 跟随系统（中文） | System (English) |
 | 选项 2 / 3 | 中文 / English | 中文 / English |
-| 行下方的说明（可选） | 关闭窗口时的确认框在重新打开程序后才会换语言。 | The close confirmation switches language after you reopen the app. |
+| 行下方的说明 | 切换后窗口会刷新一次。手机同看页按各自手机的语言显示。 | The window reloads once after you switch. Phone Viewing pages follow each phone’s language. |
 
 语言名永远用该语言自己的写法（中文 / English）。这样用户就算落进一个看不懂的界面，也能认出自己的语言，切回去。
+
+不写「关窗确认框重启后才换语言」：切换后页面经 JS 桥通知窗口，确认框当场就换（见 §4.3 R17）。
 
 ---
 
@@ -289,13 +325,13 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
 | 1 | index.html:6、alerts.js:6、main.py:611/655、window_attention.py:14、alert_notify.py:17、macbrand.py:35 | TikTok 直播同传 | TikTok Live Translator | 这 6 处要一起改，最好提成一个常量 |
-| 2 | alerts.js:9、window_attention.py:20 | ({n}) 疑似违禁词 · TikTok 直播同传 | ({n}) Possible Banned Terms · TikTok Live Translator | 标签式写法，不做单复数。`isAlertTitle` 的正则要同时认两种语言 |
+| 2 | alerts.js:9、window_attention.py:20 | ({n}) 疑似违禁词 · TikTok 直播同传 | ({n}) Possible Banned Terms · TikTok Live Translator | 标签式写法，不做单复数。`isAlertTitle` 改成与语言无关：取出开头的 `(n) `，再与当前语言的 `alertTitle(n)` 比较 |
 | 3 | app.js:545 | 有新版本 · TikTok 直播同传 | Update Available · TikTok Live Translator | |
 | 4 | alert_notify.py:18 | 有新的疑似违禁词报警，请查看窗口 | New banned-term alert. Open the window to review it. | 系统通知的正文 |
 | 5 | window_close.py:10 | 正在监听直播，关闭窗口会停止违禁词监听。确定关闭？ | Close the window? This stops monitoring the live stream, including banned-term detection. | pywebview 的退出确认框 |
 | 6 | window_close.py:11/12 | 关闭 / 取消 | Close / Cancel | |
 | 7 | main.py:146/174 | 知道了 / 好 | OK | 原生对话框的按钮 |
-| 8 | index.html:543 | 请不要直接打开这个文件 / 回到解压出来的文件夹，双击…启动程序，字幕界面会自动打开。 | Don’t open this file directly. / Go back to the unzipped folder and double-click TikTok Live Translator.app (Mac) or Start.bat (Windows). The caption window opens automatically. | 这段内联脚本跑得最早，要自己读 `navigator.language` 判断语言 |
+| 8 | index.html:543 | 请不要直接打开这个文件 / 回到解压出来的文件夹，双击…启动程序，字幕界面会自动打开。 | Don’t open this file directly. / Go back to the unzipped folder and double-click TikTok Live Translator.app (Mac) or Start.bat (Windows). The caption window opens automatically. | 这段内联脚本跑得最早，什么都还没加载：中英两段并列，不读 `navigator.language` |
 | 9 | viewer.html:6 | 手机同看 · TikTok 直播同传 | Phone Viewing · TikTok Live Translator | |
 | 10 | pipeline.py:1799 | 直播合规监听中 | Monitoring a live stream | macOS 电源断言的原因文字，只在 `pmset` 里看得到 |
 
@@ -429,9 +465,9 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 | # | 位置 | 中文 | English |
 |---|---|---|---|
 | 106 | pipeline.py:1456 | 自检：{name} 未生效——{fix} | Startup Check: {name} isn’t working. {fix} ——截图 8：“Startup Check: Noise Reduction isn’t working. Restart the app and try again.”（13px/600 下约 450px，1000 宽的窗口里一行放得下） |
-| 107 | pipeline.py:968 | ⚠️ 识别开始落后（积压 {n} 秒），报警会相应延迟 | Speech recognition is falling behind ({n} sec backlog). Alerts will be delayed. |
-| 108 | pipeline.py:961/965 | 🔴 检测已降级：识别落后 {n} 秒；… | Detection degraded: recognition is {n} sec behind. {k} audio segments older than {m} sec were dropped and weren’t checked for banned terms. |
-| 109 | pipeline.py:970 | ✅ 识别已追上，检测恢复正常 | Speech recognition caught up. Detection is back to normal. |
+| 107 | pipeline.py:968 | ⚠️ 识别开始落后（积压 {n} 秒），报警会相应延迟 | ⚠️ Speech recognition is falling behind ({n} sec backlog). Alerts will be delayed. |
+| 108 | pipeline.py:961/965 | 🔴 检测已降级：识别落后 {n} 秒；… | 🔴 Detection degraded: recognition is {n} sec behind. {k} audio segments older than {m} sec were dropped and weren’t checked for banned terms. |
+| 109 | pipeline.py:970 | ✅ 识别已追上，检测恢复正常 | ✅ Speech recognition caught up. Detection is back to normal. |
 | 110 | pipeline.py:667/673/784/828 | 已收到指令，正在连接… / 正在切换到 @B：先停止 @A 的监听… / 正在停止… / 已停止。输入直播间地址可重新开始。 | Connecting… / Switching to @B: stopping @A, then connecting… / Stopping… / Stopped. Enter a live link to start again. |
 | 111 | pipeline.py:2241/2356/2357 | 正在解析直播流地址… / 已连接直播间，开始实时识别（人声降噪已开启） | Getting the stream URL… / Connected. Transcribing live (noise reduction on). |
 | 112 | pipeline.py:2131/2219 | 直播已结束。可以往下翻看这一场的字幕，或在上方输入新的直播间地址。 | The stream has ended. Scroll down to review this session’s captions, or enter a new live link above. |
@@ -444,6 +480,9 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 | 119 | pipeline.py:1946 | {t} 电脑休眠或挂起了约 {d}… | {t} This computer was asleep for about {d}. The app wasn’t running, so that part of the stream wasn’t monitored. During streams, keep the computer plugged in with the lid open. |
 | 120 | app.js:530–538、516/524 | 发现新版本 / 一键更新 / 更新说明 / 前往下载新版本 / 再点一次确认更新：更新期间监听暂停，更新完自动恢复 / 更新中… | A new version is available / Update Now / Release Notes / Download New Version / Click Again to Update. Monitoring pauses and resumes afterward. / Updating… |
 | 121 | app.js:1517–1529 延迟统计行 | 违禁词最迟 {a} / P95 {b} 内报警 · 其中 切段 {c} + 识别 {d} · 译文再等 {e} · 积压 … | Alerts ≤{a} (P95 {b}) · Segment {c} + ASR {d} · Translation +{e} · Backlog {n}s · Dropped {n} · ASR timeouts {n} · Skipped {n} · Queue {x}/{y} |
+
+#107–#109 的英文保留与中文相同的行首 emoji（⚠️ 🔴 ✅）：桌面提示条由 `live-ui.js` 的 `stripStatusEmoji`
+统一去掉，两臂保持一样，G2 按 emoji 的多重集比。
 
 ### I. 手机同看页（viewer.html / viewer.js）
 
@@ -572,14 +611,16 @@ R1–R4 四份 inventory，`deliver-0928/` 里 9 张中文界面截图，以及 
 
 - **R13 `lang` 属性写死了。** `<html lang="zh-CN">` 在 index.html:2 和 viewer.html:2 都是写死的，要随界面语言改。
   它影响读屏的发音，也影响浏览器按什么语言挑字形和标点。
-- **R14 窗口标题的正则。** `isAlertTitle` 的正则只认中文标题。标题改成英文后要同时认两种，否则后台报警后标题恢复不了（见 #2）。
-- **R15 file:// 提示。** index.html:537 的内联脚本在 i18n 机制加载之前就执行了，要自己读 `navigator.language` 决定用哪种语言（见 #8）。
+- **R14 窗口标题的正则。** `isAlertTitle` 的正则只认中文标题。标题改成英文后就认不出来，后台报警后标题恢复不了（见 #2）。
+  改成与语言无关：取出开头的 `(n) `，再与当前语言的 `alertTitle(n)` 比较；一次页面生命周期里语言不变。
+- **R15 file:// 提示。** index.html:537 的内联脚本在 i18n 机制加载之前就执行了，中英两段并列显示，不做语言判断（见 #8）。
 - **R16 系统层的名字。** Dock、菜单栏里的程序名来自 Info.plist 的 `CFBundleName`，现在写死的是中文。
   - 建议加 `en.lproj/InfoPlist.strings` 和 `zh-Hans.lproj/InfoPlist.strings`，这样系统会按系统语言显示。
   - 苹果建议 `CFBundleName` 不超过 15 个字符。“TikTok Live Translator” 有 22 个字符。
     菜单栏名可以用 “Live Translator”（刚好 15 个），`CFBundleDisplayName` 保留全名。
-- **R17 退出确认框的语言。** pywebview 的 localization 只在创建窗口时传一次，程序运行中切换界面语言，这个框不会跟着变。
-  可以在「App Language」行下面写一句说明（§2.8），或者接受「重启后生效」。
+- **R17 退出确认框的语言。**（最初的结论作废）pywebview ≥6 的 `window.localization` 是窗口自己的一份字典，
+  关窗那一刻才读。切换语言后页面经 JS 桥通知窗口，原地更新这份字典，确认框当场就换。
+  只有 pywebview 5 没有这份字典，才要重启后生效。设置行下面不用写说明。
 - **R18 所有「HTML 初始值 = JS 兜底值」的成对字符串（† 标记的那些），两边要一起改。**
   比如 #25、#44、#59、#78、#83、#85、#94。
   漏改一边的话，页面刚加载、JS 还没接管的那一瞬间会露出另一种语言，README 截图正好可能截到这一刻。
