@@ -351,7 +351,7 @@
 | 12 | app.js:195 idle | 待机 | Ready | 24 → 38 |
 | 13 | app.js:195 connecting | 连接中… | Connecting… | |
 | 14 | app.js:195 live | 直播中 | Live | |
-| 15 | app.js:195 ended | 直播已结束 | Stream ended | 60 → 85 |
+| 15 | app.js:195 ended、viewer.js STREAM_TEXT.ended | 直播已结束 | Stream ended | 60 → 85 |
 | 16 | app.js:195 error | 出错了 | Error | |
 | 17 | app.js:195 offline | 与本地服务断开，重连中… | Reconnecting… | 141 → 91。完整说明放在横幅里（见 #75） |
 | 18 | app.js:878 | 直播中 · @x / 连接中… · @x | Live · @x / Connecting… · @x | 胶囊整体 170 → 159 / 179 → 211 |
@@ -466,7 +466,7 @@
 | 102 | app.js:1138/1146 | 翻译中… / 翻译失败 / 翻译已跳过（积压） | Translating… / Translation failed / Skipped (backlog) | |
 | 103 | session-divider.js:27 | ── 14:01:29 以下为 @x ── / 以下为新的一场 | ── 14:01:29 Now monitoring @x ── / New session | |
 | 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空警报 / 上一场 / 命中·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | |
-| 105 | app.js:1297、viewer.js:724/819 | 译文失败（{why}）——请看上面的原话 | Couldn’t translate ({why}). See the original above. | 「中文正在补…」统一写 Translating…，不提具体语言 |
+| 105 | app.js:1297、viewer.js:724/819 | 译文失败（{why}）——请看上面的原话 | Couldn’t translate ({why}). See the original above. | 报警译到本场的目标语言，不一定是中文，中文也只说「译文」。手机报警的「译文正在补…」写 Translating…，不提具体语言 |
 
 ### H. 常见的提示条和横幅
 

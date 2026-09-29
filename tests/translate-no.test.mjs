@@ -385,12 +385,12 @@ test("手机：报警头只把词条标成名字，拼起来与原来相同；�
   assert.equal(kind(byClass(first, "alert-ctx")), "body");
 
   const zh = byClass(first, "alert-zh");
-  assert.deepEqual([zh.textContent, kind(zh)], ["中文正在补…", null]);
+  assert.deepEqual([zh.textContent, kind(zh)], ["译文正在补…", null]);
   page.push({ type: "alert_update", alert_id: "a1", context_zh: "这是奇迹" });
   assert.deepEqual([zh.textContent, kind(zh)], ["这是奇迹", "body"]);
   page.push({ type: "alert_update", alert_id: "a2", failed: true, why: "超时" });
   const failed = byClass(second, "alert-zh");
-  assert.deepEqual([failed.textContent, kind(failed)], ["中文译不出来（超时）——请看上面的原话", null]);
+  assert.deepEqual([failed.textContent, kind(failed)], ["译文失败（超时）——请看上面的原话", null]);
 });
 
 test("手机：弹幕的观众名是名字；原文、译文是正文；「翻译中…」是界面提示", () => {
@@ -493,7 +493,7 @@ test("G10 scan.js 扫手机：名字和正文都豁免，界面提示照查", ()
   assertScan(runScan(phoneFull()),
     ["李四", "王五", "治愈", "大家好", "你们好", "这能治愈", "多少钱", "好看"],
     [["翻译中…", /div\.cap-trans$/], ["译文失败（超时）——请看上面的原话", /div\.cap-trans$/],
-     ["中文正在补…", /div\.alert-zh$/], ["中文译不出来（超时）——请看上面的原话", /div\.alert-zh$/],
+     ["译文正在补…", /div\.alert-zh$/], ["译文失败（超时）——请看上面的原话", /div\.alert-zh$/],
      ["翻译中…", /div\.cmt-zh$/],
      ["精确 「", /span\.alert-head-label > span > span$/],
      ["取消这条报警（只在本机隐藏）", /button\.alert-dismiss @aria-label$/], ["重译", /button\.cap-retranslate$/]]);

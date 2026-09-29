@@ -43,6 +43,7 @@ test("直播状态：与桌面同一套词，认不出的写 Status unknown", ()
   assert.equal(V.streamText("idle"), "Not started");
   assert.equal(V.streamText("connecting"), "Connecting");
   assert.equal(V.streamText("live"), "Live");
+  assert.equal(V.streamText("ended"), "Stream ended");
   assert.equal(V.streamText("error"), "Stopped");
   assert.equal(V.streamText(undefined), "Status unknown");
 });

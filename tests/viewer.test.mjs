@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { readFileSync, readdirSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
 const V = require("../web/viewer.js");
@@ -30,11 +31,30 @@ test("streamText 覆盖 status.state 全集", () => {
   assert.equal(V.streamText("idle"), "未开始");
   assert.equal(V.streamText("connecting"), "连接中");
   assert.equal(V.streamText("live"), "直播中");
+  assert.equal(V.streamText("ended"), "直播已结束", "与桌面 app.js 的 ended 同一句");
   assert.equal(V.streamText("error"), "已停止");
 });
 test("streamText 未知值有兜底文案", () => {
-  assert.equal(V.streamText("ended"), "状态未知");
+  assert.equal(V.streamText("weird-state"), "状态未知");
   assert.equal(V.streamText(null), "状态未知");
+});
+// 以前 STREAM_TEXT 只核对了 pipeline 的四种，漏了 ended：主播下播时手机只显示「状态未知」。
+// 这里直接读后端源码，把 server.status("…") 发出的 state 全抽出来逐个核对，后端加了新状态会红
+test("后端 server.status() 发出的每一种 state，手机都有自己的字", () => {
+  const root = new URL("../", import.meta.url);
+  const files = [new URL("main.py", root)].concat(
+    readdirSync(new URL("app/", root)).filter((f) => f.endsWith(".py")).map((f) => new URL("app/" + f, root)));
+  const states = new Set();
+  let calls = 0;
+  let literal = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    calls += (src.match(/server\.status\(/g) || []).length;
+    for (const m of src.matchAll(/server\.status\(\s*"([a-z_]+)"/g)) { literal += 1; states.add(m[1]); }
+  }
+  assert.ok(calls > 0 && states.has("live"), "没抽到 server.status()：源码位置变了，这条测试要跟着改");
+  assert.equal(literal, calls, "有一处 server.status() 的 state 不是字面量，这里认不出它能发哪些值");
+  for (const s of states) assert.notEqual(V.streamText(s), "状态未知", "手机不认识后端的 state：" + s);
 });
 
 // ---- alertModeText ----

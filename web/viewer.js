@@ -85,13 +85,17 @@ function statusText(state, n) {
   return t.replace("{n}", String(n == null ? 0 : n));
 }
 
-// 直播状态文案：与 app/pipeline.py 里 server.status() 实际用到的取值一致
-// （idle/connecting/live/error，见 spec §12「实现者请核对」一条，已用
-// `grep -n 'server.status(' app/pipeline.py` 核对，只有这四种）。
+// 直播状态文案：与 main.py、app/*.py 里 server.status() 实际用到的取值一致，
+// 一共五种：idle/connecting/live/ended/error。以前漏了 ended，主播下播时手机只显示
+// 「状态未知」。tests/viewer.test.mjs 会把后端发出的 state 全抽出来逐个核对，
+// 后端加了新状态这里没跟上，测试会红。
+// ended 与桌面 app.js 同一句「直播已结束」：同一句中文只许有一种英文（G3），
+// 光写「已结束」会和 pipeline 里房间状态 4 的 L("已结束", "ended") 撞车。
 var STREAM_TEXT = {
   idle: L("未开始", "Not started"),
   connecting: L("连接中", "Connecting"),
   live: L("直播中", "Live"),
+  ended: L("直播已结束", "Stream ended"),
   error: L("已停止", "Stopped"),
 };
 
@@ -819,7 +823,9 @@ if (typeof document !== "undefined") {
       var zh = document.createElement("div");
       zh.className = "alert-zh" + (msg.context_zh ? "" : " pending");
       markBody(zh, !!msg.context_zh);
-      zh.textContent = msg.context_zh || L("中文正在补…", "Translating…");
+      // 报警原话译到的是本场的目标语言（pipeline 里 self.target），不一定是中文，
+      // 所以只说「译文」。class 名 alert-zh、字段名 context_zh 是历史叫法，不是界面文字
+      zh.textContent = msg.context_zh || L("译文正在补…", "Translating…");
       item.appendChild(zh);
 
       alertsById[item.dataset.key] = { msg: msg, el: item, zhEl: zh };
@@ -844,8 +850,9 @@ if (typeof document !== "undefined") {
         entry.zhEl.classList.remove("pending", "failed");
       } else if (entry.msg.failed) {
         markBody(entry.zhEl, false);
-        // 与桌面 app.js 同一写法：英文没有原因时整句不带括号
-        entry.zhEl.textContent = L("中文译不出来（" + (pick(entry.msg, "why") || "未知原因") + "）——请看上面的原话",
+        // 与桌面 app.js 报警、本页字幕失败同一句：目标语言不一定是中文，只说「译文」。
+        // 英文没有原因时整句不带括号
+        entry.zhEl.textContent = L("译文失败（" + (pick(entry.msg, "why") || "未知原因") + "）——请看上面的原话",
                                    pick(entry.msg, "why")
                                      ? "Couldn’t translate (" + pick(entry.msg, "why") + "). See the original above."
                                      : "Couldn’t translate. See the original above.");
