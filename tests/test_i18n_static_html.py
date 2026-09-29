@@ -1,7 +1,9 @@
 """G5 静态页英文渲染模拟（spec §12.1）。
 
 按 web/i18n.js 的 applyStatic 同一套规则，在 Python 里把 index.html / viewer.html 的 data-en*
-代进去，跳过 translate="no" 子树的文字、<script>、<style>、注释，看整页还剩不剩中文。
+代进去，跳过数据区子树的文字、<script>、<style>、注释，看整页还剩不剩中文。数据区两种标法
+（用户决定 6）：名字标 translate="no"；字幕、弹幕、报警原话这类正文留给浏览器翻译，只带
+class i18n-data（tests/i18n_rules.py 的 DATA_TEXT_CLASS）。
 只对写了 <!-- i18n: done --> 的页面生效；没标记的页面整条跳过。
 
 另有一条无条件的：inject_lang 靠 `<html lang="zh-CN">` 这个字面量换语言，两个页面里它都必须
@@ -11,6 +13,7 @@ import textwrap
 import pytest
 
 from app import i18n
+from tests import i18n_rules as rules
 from tools import i18n_pairs as P
 
 PAGES = ("web/index.html", "web/viewer.html")
@@ -83,6 +86,33 @@ def test_translate_no_skips_text_but_not_its_own_attributes():
         </body></html>
     '''
     assert [(line, where) for line, where, _ in _left(src)] == [(3, "<select aria-label>")]
+
+
+def test_the_body_text_class_skips_text_like_translate_no():
+    """正文不标 translate="no"（要留给浏览器翻译），只带 class i18n-data：子树文字照样豁免，
+    自己的属性照查；class 要整词匹配。"""
+    src = '''
+        <html lang="zh-CN"><body>
+        <div class="live-translated i18n-data"><span title="译文">这款面霜</span></div>
+        <div class="i18n-data" title="大字幕">这款面霜</div>
+        <div class="i18n-database">这款面霜</div>
+        </body></html>
+    '''
+    assert [(line, where) for line, where, _ in _left(src)] == [(4, "<div title>"), (5, "<div>")]
+
+
+def test_the_body_text_class_is_one_name_everywhere():
+    """正文的豁免 class 写在五处：规则表（G4/G5）、scan.js（G10）、app.js 与 viewer.js 的 markBody、
+    index.html 的底部大字幕。改名漏掉一处，要么页面上的正文被当成漏翻，要么豁免悄悄失效。
+    底部大字幕只放译文和原文，所以它们不标 translate="no"，带这个 class。"""
+    cls = rules.DATA_TEXT_CLASS
+    assert 'var DATA_CLASS = "{}";'.format(cls) in P.read("tests/i18n_dom/scan.js")
+    for path in ("web/app.js", "web/viewer.js"):
+        assert 'el.classList.toggle("{}", isData);'.format(cls) in P.read(path), path
+    root = P.parse_html(P.read("web/index.html"))
+    marked = [el for el in P.iter_elements(root) if cls in (el.get("class") or "").split()]
+    assert [el.get("id") for el in marked] == ["live-translated", "live-original"]
+    assert [el.get("translate") for el in marked] == [None, None]
 
 
 def test_scripts_styles_and_comments_are_not_page_text():

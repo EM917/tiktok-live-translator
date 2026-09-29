@@ -339,8 +339,9 @@ def test_english_page_never_paints_a_chinese_first_frame(dom, name):
 
 @needs_chrome
 def test_the_scan_is_not_blind(dom):
-    """防空转：同一个 live-full 用中文跑一遍，必须扫得出中文。数据区（translate="no"）里的中文——
-    中文译文、中文品牌名、报警上下文的中文译文——确实画到了页面上，但中英两种页面都不许计入。
+    """防空转：同一个 live-full 用中文跑一遍，必须扫得出中文。数据区里的中文——中文品牌名
+    （名字，translate="no"）、中文译文和报警上下文的中文译文（正文，class i18n-data，不标
+    translate="no"，用户决定 6）——确实画到了页面上，但中英两种页面都不许计入。
     手机不收品牌名，只查另外两样。"""
     zh = dom.scan(S.CONTROL_ZH)
     assert zh["cjk"], "中文页上一处中文都没扫到：扫描本身失灵了"
@@ -350,8 +351,29 @@ def test_the_scan_is_not_blind(dom):
         missing = [d for d in wanted if d not in result["dom"]]
         assert not missing, "{}：场景里的中文数据没画到页面上 {}".format(name, missing)
         counted = [x for x in result["cjk"] if any(d in x["text"] for d in S.DATA_ZH)]
-        assert not counted, "{}：translate=\"no\" 里的数据被计入了：\n{}".format(
+        assert not counted, "{}：数据区里的中文被计入了：\n{}".format(
             name, _listing(counted))
+        # 豁免得对还不够，还要豁免在对的标法上：品牌名是名字，浏览器不许翻；两条译文是正文，
+        # 要留给浏览器「翻译此页」，不许标 translate="no"
+        for text in wanted:
+            holders = _holders(result["dom"], text)
+            assert holders, "{}：找不到直接装着「{}」的元素".format(name, text)
+            for tag in holders:
+                named = 'translate="no"' in tag
+                body = "i18n-data" in _classes(tag)
+                ok = named and not body if text == S.BRAND_ZH else body and not named
+                assert ok, "{}：「{}」的标法不对：{}".format(name, text, tag)
+
+
+def _holders(html, text):
+    """--dump-dom 里直接、只装着这段文字的元素的开标签。"""
+    return [m.group(0)[:m.group(0).index(">") + 1] for m in re.finditer(
+        r"<([a-z]+)\b[^>]*>{}</\1>".format(re.escape(text)), html)]
+
+
+def _classes(tag):
+    m = re.search(r'\bclass="([^"]*)"', tag)
+    return m.group(1).split() if m else []
 
 
 def _expanded(html, element_id):

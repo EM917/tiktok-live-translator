@@ -2,14 +2,21 @@
 (function () {
   var CJK = /[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯]/;
   var ATTRS = ["title", "aria-label", "placeholder", "alt"];
-  function skipText(node) {                       // 文字：祖先里有 translate=no / script / style 就豁免
+  // 数据区两种标法（用户决定 6）：名字（主播名、观众名、品牌名、词条、模型名、链接）标 translate=no；
+  // 正文（字幕、弹幕、报警原话及其译文）要留给浏览器「翻译此页」，不标 translate，只带 class
+  // i18n-data。两种都豁免；「翻译中…」这类界面提示两样都不带，照查
+  var DATA_CLASS = "i18n-data";
+  function isData(el) {
+    return el.getAttribute("translate") === "no" || el.classList.contains(DATA_CLASS);
+  }
+  function skipText(node) {                       // 文字：祖先是数据区，或是 script / style，就豁免
     for (var el = node.parentElement; el; el = el.parentElement) {
-      if (el.getAttribute("translate") === "no" || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)) return true;
+      if (isData(el) || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)) return true;
     }
     return false;
   }
-  function skipAttrs(el) {                        // 属性：只有**祖先**标了 translate=no 才豁免，元素自己标的不算
-    for (var p = el.parentElement; p; p = p.parentElement) if (p.getAttribute("translate") === "no") return true;
+  function skipAttrs(el) {                        // 属性：只有**祖先**是数据区才豁免，元素自己标的不算
+    for (var p = el.parentElement; p; p = p.parentElement) if (isData(p)) return true;
     return false;
   }
   function mirrorsData(el, v) {                   // 属性只是把自己里面 translate=no 那段数据原样再写一遍（#active-brand-tag 的 title 就是品牌名）

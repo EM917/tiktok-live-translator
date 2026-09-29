@@ -880,23 +880,30 @@ def check_js_coverage(path, src):
     return out
 
 
+def is_data_region(el):
+    """R7 数据区：子树里的文字、子孙的属性都不算界面文字（元素自己的属性不在内）。两种标法：
+    名字标 translate="no"；字幕、弹幕、报警原话这类正文要留给浏览器翻译，只带
+    class rules.DATA_TEXT_CLASS（用户决定 6）。与 tests/i18n_dom/scan.js 的 isData 同一条规则。"""
+    return el.get("translate") == "no" or rules.DATA_TEXT_CLASS in (el.get("class") or "").split()
+
+
 def check_html_coverage(path, src):
     out = []
 
-    def walk(el, translate_no, en_html):
+    def walk(el, in_data, en_html):
         for attr in I18N_ATTRS:
             value = el.get(attr)
-            if (value and CJK.search(value) and not translate_no and not en_html
+            if (value and CJK.search(value) and not in_data and not en_html
                     and not el.has("data-en-" + attr)):
                 out.append(Violation(path, el.line, "G4", "<{}> 的 {} 是中文，要配 data-en-{}：{!r}".format(
                     el.tag, attr, attr, value[:40])))
-        child_tn = translate_no or el.get("translate") == "no"
+        child_data = in_data or is_data_region(el)
         child_eh = en_html or el.has("data-en-html")
         first = own_text(el)
         for child in el.children:
             if isinstance(child, Node):
-                walk(child, child_tn, child_eh)
-            elif (type(child) is Text and CJK.search(child.data) and not child_tn and not child_eh
+                walk(child, child_data, child_eh)
+            elif (type(child) is Text and CJK.search(child.data) and not child_data and not child_eh
                   and el.tag not in RAW_TAGS and not (child is first and el.has("data-en"))):
                 out.append(Violation(path, child.line, "G4", "<{}> 里的中文要配 data-en（或 data-en-html）："
                                                              "{!r}".format(el.tag, collapse(child.data)[:40])))
@@ -925,8 +932,9 @@ def check_coverage(path, src):
 def render_static_en(src):
     """模拟 web/i18n.js 的 applyStatic（英文），返回还剩中文的地方 [(行号, 位置, 文字)]。
 
-    跳过 <script>、<style>、注释，以及 translate="no" 子树里的文字；
-    translate="no" 元素自己的 title/aria-label/placeholder/alt 照查（只有子孙的属性豁免）。"""
+    跳过 <script>、<style>、注释，以及数据区（translate="no" 或 class 带 rules.DATA_TEXT_CLASS，
+    见 is_data_region）子树里的文字；数据区元素自己的 title/aria-label/placeholder/alt 照查
+    （只有子孙的属性豁免）。"""
     root = parse_html(src)
     for el in list(iter_elements(root)):                 # 与 querySelectorAll 一样：先取全，再逐个换
         if el.has("data-en-html"):
@@ -947,12 +955,12 @@ def render_static_en(src):
                 el.set(attr, el.get("data-en-" + attr))
     left = []
 
-    def walk(el, translate_no):
+    def walk(el, in_data):
         for attr in I18N_ATTRS:
             value = el.get(attr)
-            if value and not translate_no and CJK.search(value):
+            if value and not in_data and CJK.search(value):
                 left.append((el.line, "<{} {}>".format(el.tag, attr), value))
-        inner = translate_no or el.get("translate") == "no"
+        inner = in_data or is_data_region(el)
         for child in el.children:
             if isinstance(child, Node):
                 walk(child, inner)

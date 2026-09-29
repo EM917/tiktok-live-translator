@@ -212,6 +212,18 @@ def test_translate_no_exempts_the_subtree_but_not_its_own_attributes():
     assert _html(src) == [(2, "G4")]
 
 
+def test_the_body_text_class_exempts_like_translate_no():
+    """R7 的另一种标法（用户决定 6）：字幕、弹幕、报警原话这类正文不标 translate="no"，留给浏览器
+    翻译，只带 class i18n-data。豁免范围与 translate="no" 相同：子树的文字和子孙的属性豁免，
+    自己的属性照查。class 要整词匹配，只是包含这几个字母的 class 不算。"""
+    src = '''
+        <div id="live-translated" class="live-translated i18n-data">这款面霜<b title="译文">很好</b></div>
+        <div class="i18n-data" title="大字幕">这款面霜</div>
+        <div class="i18n-database">这款面霜</div>
+    '''
+    assert _html(src) == [(3, "G4"), (4, "G4")]
+
+
 def test_data_en_covers_only_the_first_text_node():
     src = '''
         <p data-en="Stop">停止<b>x</b>然后开始</p>

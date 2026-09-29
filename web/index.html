@@ -550,10 +550,11 @@
     <svg class="i" aria-hidden="true"><use href="#i-arrow-down"/></svg>回到最新
   </button>
 
-  <!-- 底部大字幕只放译文和原文，都是数据：translate="no" -->
+  <!-- 底部大字幕只放译文和原文，都是正文：不标 translate="no"，留给浏览器「翻译此页」；
+       class i18n-data 让英文界面的检查把它们当数据豁免（用户决定 6，同 app.js 的 markBody） -->
   <footer id="live-bar" class="live-bar hidden">
-    <div id="live-translated" class="live-translated" translate="no"></div>
-    <div id="live-original" class="live-original" translate="no"></div>
+    <div id="live-translated" class="live-translated i18n-data"></div>
+    <div id="live-original" class="live-original i18n-data"></div>
   </footer>
 
   <div id="stats-line" class="stats-line hidden"></div>
@@ -586,6 +587,6 @@
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=2"></script>
   <script src="/static/live-ui.js?v=1"></script>
-  <script src="/static/app.js?v=61"></script>
+  <script src="/static/app.js?v=62"></script>
 </body>
 </html>

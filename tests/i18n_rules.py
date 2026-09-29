@@ -23,6 +23,16 @@ FILE_TAG = "file=terminal"
 # R9 迁移完成的标记；G4/G5 只对带它的文件生效
 DONE_TAG = "done"
 
+# ---- R7：数据区 ----------------------------------------------------------------------------
+# 页面上的数据有两种标法（用户决定 6，2026-09-29，改了 spec §6）。G4/G5 和 G10 的 scan.js
+# 对两种都豁免子树里的文字与子孙的属性，元素自己的 title/aria-label/placeholder/alt 照查：
+# - 名字（主播名、观众名、品牌名、违禁词条、模型名、链接和地址）标 translate="no"，浏览器的
+#   「翻译此页」也不去改它们；
+# - 正文（字幕、弹幕、报警原话及其译文）要留给浏览器翻译，不标 translate，只带这个 class。
+# 改名要连 web/app.js、web/viewer.js、web/index.html、tests/i18n_dom/scan.js 一起改，
+# tests/test_i18n_static_html.py 钉着它们一致。
+DATA_TEXT_CLASS = "i18n-data"
+
 # ---- R6：句子里引用的按钮与界面元素名 ----------------------------------------------------
 # 中文臂里写了「X」、X 在表里，英文臂就必须以整词出现 UI_NAMES[X]（英文里不加引号）。
 # 只收英文名已经在 docs/i18n-style.md 里定死的；有歧义的（「关闭」：Off / Close）不收。

@@ -30,17 +30,23 @@
     el.appendChild(span);
   }
 
-  // 承载数据的节点（字幕原文和译文、弹幕、报警的词条和原话、主播名、品牌名、模型名）标
-  // translate="no"（spec §4.1 R7）：英文界面的检查豁免这些文字，浏览器自带的网页翻译也
-  // 不会去改用户名和译文。同一个节点有时放数据、有时放「翻译中…」这类界面提示的，按当下的
-  // 内容来回切：写 "yes" 而不是删掉属性，跟 viewer.js 同一种写法
-  function markData(el, isData) {
-    el.setAttribute("translate", isData ? "no" : "yes");
+  // 数据不进 L()（spec §4.1 R7），承载数据的节点分两类标（用户决定 6，改了 spec §6）：
+  // - 名字：主播名、观众名、品牌名、违禁词条、模型名，标 translate="no"。浏览器自带的「翻译此页」
+  //   不去改名字，英文界面的检查（G5/G10）也跳过它们。
+  // - 正文：字幕原文和译文、弹幕正文和译文、报警原话和译文，不标 translate——用浏览器翻译看页面的
+  //   人读的就是这些，不能把这条退路堵上。只加 class "i18n-data"，英文界面的检查按它豁免，不算漏翻。
+  //   同一个节点有时放正文、有时放「翻译中…」这类界面提示的，class 跟着当下的内容加上或去掉，
+  //   界面提示照样要查（写法同 viewer.js）
+  function markName(el) {
+    el.setAttribute("translate", "no");
   }
-  // 一段数据文字：句子里夹着主播名、词条时，把数据那一截单独包起来
-  function dataSpan(text) {
+  function markBody(el, isData) {
+    el.classList.toggle("i18n-data", isData);
+  }
+  // 一段名字：句子里夹着主播名、词条时，把名字那一截单独包起来
+  function nameSpan(text) {
     var span = document.createElement("span");
-    markData(span, true);
+    markName(span);
     span.textContent = text;
     return span;
   }
@@ -306,7 +312,7 @@
       var opt = document.createElement("option");
       opt.value = opts[i].value;
       opt.textContent = opts[i].label;
-      if (opts[i].value) markData(opt, true);   // 品牌名是数据；value 为空的「不限」是界面文字
+      if (opts[i].value) markName(opt);   // 品牌名是名字；value 为空的「不限」是界面文字
       selectEl.appendChild(opt);
     }
     selectEl.value = kept;
@@ -913,7 +919,7 @@
     var liveStreamer = (state === "live" || state === "connecting")
       ? streamerFromInput(roomInput.value) : "";
     statusText.textContent = liveStreamer ? label + " · " : label;
-    if (liveStreamer) statusText.appendChild(dataSpan("@" + liveStreamer));   // 主播名是数据
+    if (liveStreamer) statusText.appendChild(nameSpan("@" + liveStreamer));   // 主播名
 
     // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
     if (state === "error" || state === "idle") resetUpdateBtn();
@@ -1034,7 +1040,7 @@
     // 原文永远先显示（不等翻译）；译文回来前译文行留空
     var orig = document.createElement("div");
     orig.className = "orig";
-    markData(orig, true);
+    markBody(orig, true);
     orig.textContent = msg.original || "";
     card.appendChild(orig);
 
@@ -1165,7 +1171,7 @@
     var trans = card.querySelector(".trans");
     var stateChip = card.querySelector(".state-chip");
     var state = msg.translate_state;
-    markData(trans, !!msg.translated);   // 译文是数据；「翻译中…」是界面提示
+    markBody(trans, !!msg.translated);   // 译文是正文；「翻译中…」是界面提示
     if (msg.translated) {
       trans.textContent = msg.translated;
       trans.classList.remove("pending");
@@ -1207,16 +1213,16 @@
     tierTag.className = "alert-tier";
     tierTag.textContent = alertTierText(msg.tier);
     head.appendChild(tierTag);
-    // 词条和主播名是数据，各包一层 translate="no"。外面再套一个 span：.alert-head 是 flex，
+    // 词条和主播名是名字，各包一层 translate="no"。外面再套一个 span：.alert-head 是 flex，
     // 原来这一整段文字是一个匿名 flex 项，拆成几个直接子节点会多出几道 gap
     var headText = document.createElement("span");
     headText.appendChild(document.createTextNode("「"));
-    headText.appendChild(dataSpan(String(msg.term)));   // 与原来的字符串拼接逐字相同
+    headText.appendChild(nameSpan(String(msg.term)));   // 与原来的字符串拼接逐字相同
     headText.appendChild(document.createTextNode("」 " +
       pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds())));
     if (msg.streamer) {
       headText.appendChild(document.createTextNode(" "));
-      headText.appendChild(dataSpan("@" + msg.streamer));
+      headText.appendChild(nameSpan("@" + msg.streamer));
     }
     head.appendChild(headText);
     item.appendChild(head);
@@ -1225,7 +1231,7 @@
 
     var ctx = document.createElement("div");
     ctx.className = "alert-ctx";
-    markData(ctx, true);
+    markBody(ctx, true);
     ctx.textContent = msg.context || "";
     item.appendChild(ctx);
 
@@ -1233,7 +1239,7 @@
     // 译文是后到的（要跑一次强模型），先占位，回来再填。
     var zh = document.createElement("div");
     zh.className = "alert-zh";
-    markData(zh, !!msg.context_zh);
+    markBody(zh, !!msg.context_zh);
     zh.textContent = msg.context_zh || "翻译中…";
     if (!msg.context_zh) zh.classList.add("pending");
     item.appendChild(zh);
@@ -1345,7 +1351,7 @@
     var zh = item.querySelector(".alert-zh");
     if (!zh) return;
     zh.classList.remove("pending");
-    markData(zh, !!msg.context_zh);
+    markBody(zh, !!msg.context_zh);
     if (msg.context_zh) {
       zh.textContent = msg.context_zh;
       zh.classList.remove("failed");
@@ -1430,7 +1436,7 @@
     var head = document.createElement("div");
     head.className = "cmt-head";
     var ts = new Date((msg.ts || Date.now() / 1000) * 1000);
-    head.appendChild(dataSpan(msg.user || ""));   // 观众名是数据
+    head.appendChild(nameSpan(msg.user || ""));   // 观众名
     head.appendChild(document.createTextNode(" " +
       pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds())));
     item.appendChild(head);
@@ -1438,7 +1444,7 @@
     // 译文行：pending 时占位提示，same/skipped 时直接就是原文本身（不会再更新）
     var zh = document.createElement("div");
     zh.className = "cmt-zh";
-    markData(zh, msg.state !== "pending");
+    markBody(zh, msg.state !== "pending");
     if (msg.state === "pending") {
       zh.textContent = "翻译中…";
       zh.classList.add("pending");
@@ -1450,7 +1456,7 @@
     // 原文行：跟译文重复时（same/skipped）没必要再显示一遍
     var orig = document.createElement("div");
     orig.className = "cmt-orig";
-    markData(orig, true);
+    markBody(orig, true);
     orig.textContent = msg.text || "";
     if (msg.state === "same" || msg.state === "skipped") orig.classList.add("hidden");
     item.appendChild(orig);
@@ -1498,7 +1504,7 @@
     var orig = item.querySelector(".cmt-orig");
     if (!zh) return;
     zh.classList.remove("pending");
-    markData(zh, true);   // 下面两路放的都是数据：译文，或者原文本身
+    markBody(zh, true);   // 下面两路放的都是正文：译文，或者原文本身
     if (msg.state === "ok") {
       zh.textContent = msg.translated || "";
       zh.classList.remove("failed");
@@ -1664,7 +1670,7 @@
           var chip = document.createElement("button");
           chip.className = "recent-chip";
           chip.type = "button";
-          markData(chip, true);                     // 整个 chip 只有主播名；title 仍要双语（R7：自己的属性不豁免）
+          markName(chip);                           // 整个 chip 只有主播名；title 仍要双语（R7：自己的属性不豁免）
           chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
           chip.title = "点击开始翻译 @" + e.streamer;
           chip.addEventListener("click", function () {
@@ -1754,9 +1760,9 @@
       box.addEventListener("change", syncDiskButton);
       var name = document.createElement("span");
       name.className = "disk-name";
-      // 模型（hf/ollama）的标签是模型名，数据；日志两项（kind=logs）的标签是后端写的界面
+      // 模型（hf/ollama）的标签是模型名，按名字标；日志两项（kind=logs）的标签是后端写的界面
       // 句子，要能换成英文——按 kind 分，不加新字段（spec §6、§17 第 6 条）
-      if (it.kind !== "logs") markData(name, true);
+      if (it.kind !== "logs") markName(name);
       name.textContent = it.label;                 // textContent：模型名当数据，不当 HTML
       var tag = document.createElement("span");
       tag.className = "disk-role";
@@ -2170,14 +2176,14 @@
       var isCurrent = !!cur && e.streamer.toLowerCase() === cur.toLowerCase();
       if (isCurrent) {
         chip.disabled = true;
-        // 主播名是数据，「（当前）」是界面文字：只包前一截。外面再套一个 span，理由同报警头——
+        // 主播名是名字，「（当前）」是界面文字：只包前一截。外面再套一个 span，理由同报警头——
         // .recent-chip 是 inline-flex，原来整段文字是一个匿名 flex 项
         var curText = document.createElement("span");
-        curText.appendChild(dataSpan("@" + e.streamer));
+        curText.appendChild(nameSpan("@" + e.streamer));
         curText.appendChild(document.createTextNode("（当前）"));
         chip.appendChild(curText);
       } else {
-        markData(chip, true);
+        markName(chip);
         chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
         chip.title = "填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）";
         chip.addEventListener("click", function () {
@@ -2339,7 +2345,7 @@
     activeBrandTag.classList.toggle("hidden", !show);
     if (show) {
       activeBrandTag.textContent = "品牌 · ";
-      activeBrandTag.appendChild(dataSpan(activeBrandName));   // 品牌名是数据（标签是 inline-block，省略号照样生效）
+      activeBrandTag.appendChild(nameSpan(activeBrandName));   // 品牌名（标签是 inline-block，省略号照样生效）
       activeBrandTag.title = activeBrandName;
     }
   }
