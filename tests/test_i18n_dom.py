@@ -14,7 +14,7 @@ viewer.js 的前后（`?v=` 查询串与 /static/、/v/ 路径照原样）。场
 TLT_DOM_SHOTS=<目录> 时同一批场景另用 --screenshot 各出一张 PNG，英文 README 截图从这里来。
 
 文件末尾几条用例不开 Chrome，平时照常跑：场景组得起来、插入点还在、默认确实跳过。页面结构
-或场景一变普通 CI 就会红，不用等 dom-scan 这个（Z0 之前）continue-on-error 的 job。
+或场景一变普通 CI 就会红，不用等 dom-scan job（它里面「英文页没有中文」「顶栏放得下」两组在 Z0 之前只报告）。
 """
 import json
 import os

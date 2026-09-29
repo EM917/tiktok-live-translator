@@ -49,7 +49,10 @@ jobs:
   dom-scan:
     timeout-minutes: 15
     runs-on: macos-latest
-    continue-on-error: true      # Z0 删掉这一行
+    env:
+      TLT_DOM_SCAN: "1"
+      TLT_DOM_SHOTS: dom-shots
+      TLT_CHROME: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,8 +60,16 @@ jobs:
           python-version: "3.13"
       - name: Install test deps   # 场景要 import app.pipeline，app/asr.py:26、app/audio.py:6 在模块级 import numpy
         run: pip install pytest numpy aiohttp
-      - name: English DOM scan
-        run: TLT_DOM_SCAN=1 TLT_DOM_SHOTS=dom-shots TLT_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" pytest tests/test_i18n_dom.py -q
+      # 装置本身（扫描不瞎、场景点击生效、首帧、窗口语言、手机状态胶囊）现在就必须过
+      - name: English DOM scan (harness)
+        run: pytest tests/test_i18n_dom.py -q -k "not english_page_has_no_chinese_left and not live_top_bar_fits"
+      # 「英文页没有中文」要等各区域补完英文（M 系列），「顶栏放得下」要等 L1 版面调整。
+      # 在那之前只报告：步骤级 continue-on-error 让这一步失败时整个 job 仍然算通过，
+      # 不会给每个 PR 挂红叉（job 级的 continue-on-error 做不到，检查照样显示失败）。
+      # Z0 删掉这一步的 continue-on-error，并去掉上一步的 -k 排除，合成一步严格跑。
+      - name: English DOM scan (report only until Z0)
+        continue-on-error: true
+        run: pytest tests/test_i18n_dom.py -q -k "english_page_has_no_chinese_left or live_top_bar_fits"
       # 同一批场景的截图：英文 README 截图可以直接从这里取（spec §12.3 第 9 条）
       - name: Upload screenshots
         if: always()
