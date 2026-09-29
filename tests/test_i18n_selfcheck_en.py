@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import i18n, selfcheck
-from app.i18n import CJK
+from app.i18n import CJK, L
 from tests.helpers import run
 from tests.test_i18n_backend_en import assert_language_independent, run_in_both_languages
 
@@ -416,7 +416,7 @@ def test_comments_install_and_update_commands(monkeypatch, tmp_path):
     assert ("The app tries to update it at each launch, at most once an hour. You can also quit "
             "the app and " + i18n.text(_pip(monkeypatch, TIKTOKLIVE_SPEC, upgrade=True), i18n.EN)
             ) in fixes
-    assert "The comments component needs Python 3.10 or later (this is 3.9). Comments aren’t " \
+    assert "The comments component needs Python 3.10 or later (current: 3.9). Comments aren’t " \
            "available." in [i18n.text(r["detail"], i18n.EN) for r in rows]
     outdated = next(r for r in rows if "7.0.0" in r["detail"])
     assert i18n.text(outdated["detail"], i18n.EN) == (
@@ -482,6 +482,23 @@ def test_browser_login_scope_reads_after_any_observation(monkeypatch, tmp_path):
             "use" + scope) in details
     # 「登录」这个动作全仓只用 sign in / sign-in（docs/i18n-style.md §1.3）
     assert not [d for d in details if "log in" in d.lower() or "login" in d.lower()], details
+
+
+def test_an_unfinished_check_says_so_and_keeps_the_error_english(monkeypatch, tmp_path):
+    rows = _rows("crashed", monkeypatch, tmp_path)
+    assert {i18n.text(r["detail"], i18n.EN) for r in rows} == {
+        "This check didn’t finish (probe exploded), so the app can’t tell whether this part works."}
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError(L("探测炸了", "The probe crashed"))
+
+    monkeypatch.setattr(selfcheck, "check_disk", boom)
+    rows = run(selfcheck.run_all(SimpleNamespace()))
+    disk = next(r for r in rows if r["name"] == selfcheck.NAMES["disk"])
+    assert str(disk["detail"]) == "这一项没能检查完（探测炸了）——它是好是坏都不知道"
+    assert i18n.text(disk["detail"], i18n.EN) == (
+        "This check didn’t finish (The probe crashed), so the app can’t tell whether this part "
+        "works.")
 
 
 MODEL_LOAD_FIX_EN = ("Check your network connection and available storage, then click Start to "

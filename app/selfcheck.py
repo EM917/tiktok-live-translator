@@ -700,7 +700,7 @@ async def check_comments(args):
     if sys.version_info < (3, 10):
         return _check(name, WARN,
                       L("弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用",
-                        "The comments component needs Python 3.10 or later (this is {}.{}). "
+                        "The comments component needs Python 3.10 or later (current: {}.{}). "
                         "Comments aren’t available.")
                       .format(sys.version_info[0], sys.version_info[1]),
                       L("字幕和违禁词报警不受影响",
@@ -792,8 +792,8 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
         if isinstance(r, BaseException):
             checks.append(_check(name, FAIL,
                                  L("这一项没能检查完（{}）——它是好是坏都不知道",
-                                   "This check didn’t finish ({}). It’s unknown whether this "
-                                   "part works.").format(of(r)),
+                                   "This check didn’t finish ({}), so the app can’t tell "
+                                   "whether this part works.").format(of(r)),
                                  L("把这条信息反馈给开发者；这不影响其它功能",
                                    "Send this message to the developer. Other features aren’t "
                                    "affected.")))
