@@ -335,9 +335,10 @@ def test_banned_list_warnings_read_in_english():
     assert all(no_cjk(v) for v in got.values()), got
     assert got["re:perdí \\d+ kilos"] == (
         "“re:perdí \\d+ kilos” (line 1) never matches: Accents are removed before matching, so "
-        "“í” in the pattern never appears. Write it as [ií] instead")
-    assert got["re:\\d+% natural"].startswith(
-        "“re:\\d+% natural” (line 2) never matches: Punctuation is removed before matching")
+        "“í” in the pattern can never match. Write it as [ií] instead")
+    assert got["re:\\d+% natural"] == (
+        "“re:\\d+% natural” (line 2) never matches: Punctuation is removed before matching, so "
+        "“%” in the pattern can never match. Delete it, or add ? after it to make it optional")
     assert got["re:("].startswith("“re:(” (line 3) isn’t active: The pattern has an error (")
     assert got["¡¿!"] == "“¡¿!” (line 4) isn’t active: Nothing is left once punctuation is removed"
     assert got["hola # saludo"] == (

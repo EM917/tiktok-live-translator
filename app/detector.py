@@ -161,13 +161,13 @@ def _regex_dead_reason(expr):
     if normalize(ch.lower()):
         return ("accent", L("检测时文本已去掉重音，正则里的「{}」不会出现——请改写成 [{}{}] "
                             "这种形式",
-                            "Accents are removed before matching, so “{}” in the pattern never "
-                            "appears. Write it as [{}{}] instead")
+                            "Accents are removed before matching, so “{}” in the pattern can "
+                            "never match. Write it as [{}{}] instead")
                 .format(ch, normalize(ch.lower()), ch.lower()))
     return ("punctuation", L("检测时文本已去掉标点，正则里的「{}」不会出现——删掉这个符号，"
                              "或在它后面加 ? 让它可有可无",
                              "Punctuation is removed before matching, so “{}” in the pattern "
-                             "never appears. Delete it, or add ? after it to make it optional")
+                             "can never match. Delete it, or add ? after it to make it optional")
             .format(ch))
 
 
