@@ -19,16 +19,23 @@ import os
 import shutil
 from pathlib import Path
 
+from .i18n import L, LN
+
 ROOT = Path(__file__).resolve().parent.parent
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 
 # 每一行自检的名字，按稳定 id 查：界面、审计、终端用的都是这里的值。直播中只重查识别
-# 那一行时，pipeline 也按 NAMES["asr"] 在整轮结果里认出它
-NAMES = {"ffmpeg": "音频组件 ffmpeg", "denoise": "人声降噪", "asr": "语音识别",
-         "translator": "翻译引擎", "watchlist": "违禁词表", "glossary": "领域词表",
-         "audit": "审计日志", "resolver": "直播流解析", "browser_login": "浏览器登录态",
-         "comments": "观众弹幕", "disk": "磁盘空间"}
+# 那一行时，pipeline 也按 NAMES["asr"] 在整轮结果里认出它（L() 的结果按中文比较相等，
+# 测试里 _check("语音识别", …) 造的行照样认得出）。
+# 自检的 name / detail / fix 都写成 L()：终端和审计拿中文，界面在发出去的那一刻换英文
+NAMES = {"ffmpeg": L("音频组件 ffmpeg", "Audio (ffmpeg)"), "denoise": L("人声降噪", "Noise Reduction"),
+         "asr": L("语音识别", "Speech Recognition"),
+         "translator": L("翻译引擎", "Translation Engine"),
+         "watchlist": L("违禁词表", "Banned-Term List"), "glossary": L("领域词表", "Glossary"),
+         "audit": L("审计日志", "Audit Log"), "resolver": L("直播流解析", "Stream Lookup"),
+         "browser_login": L("浏览器登录态", "Browser Login"),
+         "comments": L("观众弹幕", "Comments"), "disk": L("磁盘空间", "Storage")}
 
 
 def _check(name, level, detail, fix=""):
@@ -68,29 +75,41 @@ async def check_ffmpeg():
     from .ffmpeg_bin import ffmpeg_source, find_ffmpeg
     exe = find_ffmpeg()
     if exe is None:
-        return _check(NAMES["ffmpeg"], FAIL, "找不到 ffmpeg，无法拉取直播音频",
-                      "关闭程序后重新打开，会自动补装")
+        return _check(NAMES["ffmpeg"], FAIL,
+                      L("找不到 ffmpeg，无法拉取直播音频",
+                        "Couldn’t find ffmpeg, so the app can’t get the stream’s audio."),
+                      L("关闭程序后重新打开，会自动补装",
+                        "Quit and reopen the app to install it automatically."))
     if not await _to_thread(_ffmpeg_runs, exe):
         return _check(NAMES["ffmpeg"], FAIL,
-                      "找到了 ffmpeg 但跑不起来——直播音频拉不下来",
-                      "macOS 若提示「无法验证开发者」，在系统设置→隐私与安全性里放行；"
-                      "或用 brew install ffmpeg 装一个系统版")
-    return _check(NAMES["ffmpeg"], OK, "实测可用（{}）".format(ffmpeg_source()))
+                      L("找到了 ffmpeg 但跑不起来——直播音频拉不下来",
+                        "Found ffmpeg, but it won’t run, so the app can’t get the stream’s audio."),
+                      L("macOS 若提示「无法验证开发者」，在系统设置→隐私与安全性里放行；"
+                        "或用 brew install ffmpeg 装一个系统版",
+                        "If macOS says the developer can’t be verified, allow it in System Settings > "
+                        "Privacy & Security. Or install a system copy with brew install ffmpeg."))
+    return _check(NAMES["ffmpeg"], OK, L("实测可用（{}）", "Working ({})").format(ffmpeg_source()))
 
 
 async def check_denoise(args):
     """降噪是对抗背景音乐的第一道防线，必须实测能初始化。"""
     from .pipeline import DENOISE_MODEL, _arnndn_probe
     if getattr(args, "denoise", "auto") == "off":
-        return _check(NAMES["denoise"], OK, "已按 --denoise off 主动关闭")
+        return _check(NAMES["denoise"], OK,
+                      L("已按 --denoise off 主动关闭", "Turned off with --denoise off"))
     if not DENOISE_MODEL.exists():
-        return _check(NAMES["denoise"], WARN, "降噪模型尚未下载（首次开播时自动下载）")
+        return _check(NAMES["denoise"], WARN,
+                      L("降噪模型尚未下载（首次开播时自动下载）",
+                        "Model not downloaded yet (it downloads when you first click Start)"))
     if await _to_thread(_arnndn_probe, str(DENOISE_MODEL)):
         size = DENOISE_MODEL.stat().st_size // 1024
-        return _check(NAMES["denoise"], OK, "实测可用（模型 {} KB）".format(size))
+        return _check(NAMES["denoise"], OK,
+                      L("实测可用（模型 {} KB）", "Working (model {} KB)").format(size))
     return _check(NAMES["denoise"], FAIL,
-                  "模型存在，但实测跑不起来——背景音乐不会被抑制",
-                  "删除 models/bd.rnnn 后重新开始，程序会重新下载")
+                  L("模型存在，但实测跑不起来——背景音乐不会被抑制",
+                    "The model file is there, but it won’t run. Background music won’t be reduced."),
+                  L("删除 models/bd.rnnn 后重新开始，程序会重新下载",
+                    "Delete models/bd.rnnn, then click Start. The app downloads it again."))
 
 
 async def check_asr(args, state=None):
@@ -100,17 +119,25 @@ async def check_asr(args, state=None):
     fallback = state.get("fallback")
     if fallback:
         return _check(NAMES["asr"], WARN,
-                      "{} 识别出错，已改用 {}——较慢，长时间监听容易积压（{}）".format(
+                      L("{} 识别出错，已改用 {}——较慢，长时间监听容易积压（{}）",
+                        "Recognition on {} ran into an error, so the app switched to {}. It’s "
+                        "slower, and long sessions tend to build a backlog. Details: {}").format(
                           fallback.get("from"), fallback.get("to"),
-                          fallback.get("error") or "无错误详情"),
-                      "关闭程序重新打开会重新尝试原来的识别配置；若反复出现请反馈给开发者")
+                          fallback.get("error") or L("无错误详情", "not available")),
+                      L("关闭程序重新打开会重新尝试原来的识别配置；若反复出现请反馈给开发者",
+                        "Quit and reopen the app to try the original recognition setup again. "
+                        "If this keeps happening, report it to the developer."))
     load_error = state.get("load_error")
     if load_error:
         return _check(NAMES["asr"], FAIL,
-                      "识别模型（{}/{}）没能加载，本场不会识别：{}".format(
+                      L("识别模型（{}/{}）没能加载，本场不会识别：{}",
+                        "The recognition model ({}/{}) didn’t load. Speech won’t be recognized in "
+                        "this session. Details: {}").format(
                           load_error.get("backend"), load_error.get("model"),
-                          load_error.get("error") or "无错误详情"),
-                      "确认网络和磁盘空间后点「开始翻译」重试；若反复出现，关闭程序重新打开")
+                          load_error.get("error") or L("无错误详情", "not available")),
+                      L("确认网络和磁盘空间后点「开始翻译」重试；若反复出现，关闭程序重新打开",
+                        "Check your network and free disk space, then click Start to try again. "
+                        "If this keeps happening, quit and reopen the app."))
     backend = getattr(args, "backend", "auto")
     try:
         from .hwdetect import recommend
@@ -119,20 +146,28 @@ async def check_asr(args, state=None):
         # 那套配置——报「ct2 + large-v3」而管线加载的是别的，等于白检。
         rec = recommend(backend=backend, device=getattr(args, "device", "auto"))
     except Exception as exc:
-        return _check(NAMES["asr"], FAIL, "硬件探测失败：{}".format(exc))
+        return _check(NAMES["asr"], FAIL,
+                      L("硬件探测失败：{}", "Couldn’t detect the hardware: {}").format(exc))
     model = getattr(args, "model", None) or rec["model"]
     # 这几个库第一次 import 要几百毫秒到一秒，放线程里做——run_selfcheck 特意
     # 挂在后台就是为了不挡住界面，在协程里同步 import 等于白挂
     if rec["backend"] == "mlx":
         if not await _to_thread(_importable, "mlx_whisper"):
-            return _check(NAMES["asr"], FAIL, "苹果芯片加速组件未装上",
-                          "关闭程序后重新打开，会自动补装；若反复出现请反馈给开发者")
+            return _check(NAMES["asr"], FAIL,
+                          L("苹果芯片加速组件未装上", "Apple silicon acceleration isn’t installed."),
+                          L("关闭程序后重新打开，会自动补装；若反复出现请反馈给开发者",
+                            "Quit and reopen the app to install it automatically. If this keeps "
+                            "happening, report it to the developer."))
     elif not await _to_thread(_importable, "faster_whisper"):
-        return _check(NAMES["asr"], FAIL, "faster-whisper 不可用",
-                      "关闭程序后重新打开，会自动补装")
+        return _check(NAMES["asr"], FAIL,
+                      L("faster-whisper 不可用", "faster-whisper isn’t available."),
+                      L("关闭程序后重新打开，会自动补装",
+                        "Quit and reopen the app to install it automatically."))
     cached = _model_cached(model, rec["backend"])
-    detail = "{} + {}（{}）".format(rec["backend"], model,
-                                   "模型已下载" if cached else "首次开播需先下载模型")
+    detail = L("{} + {}（{}）", "{} + {} ({})").format(
+        rec["backend"], model,
+        L("模型已下载", "model downloaded") if cached
+        else L("首次开播需先下载模型", "model downloads when you first click Start"))
 
     # Apple Silicon 却在用 CPU 后端 = 这台机器的能力只发挥了一小部分。
     # 实测（hwdetect）CPU 跑 turbo 的 RTF 是 0.99——勉强跟得上，跑久了必然积压，
@@ -148,13 +183,20 @@ async def check_asr(args, state=None):
         # 「重新打开会自动补装」，要说哪天没装上、程序接下来会做什么、中控能做什么
         from .bootstrap import mlx_giveup_note
         note = mlx_giveup_note(ROOT)
-        fix = ("关闭程序后重新打开，会自动补装 GPU 加速组件；若反复出现请把这句话反馈给开发者"
+        # 英文接在 note 后面：note 的英文不带句末句号，这里用 ". " 接上下一句
+        fix = (L("关闭程序后重新打开，会自动补装 GPU 加速组件；若反复出现请把这句话反馈给开发者",
+                 "Quit and reopen the app to install GPU acceleration automatically. If this "
+                 "keeps happening, send this message to the developer.")
                if note is None else
-               note + "。也可以停播后" + _pip_command("mlx-whisper", upgrade=False)
-               + "，装好后重开程序")
+               note + L("。也可以停播后", ". When you’re not monitoring, you can also ")
+               + _pip_command("mlx-whisper", upgrade=False)
+               + L("，装好后重开程序", ". Then reopen the app."))
         return _check(NAMES["asr"], WARN,
-                      "这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）"
-                      "——慢一倍以上，长时间监听容易积压".format(detail), fix)
+                      L("这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）"
+                        "——慢一倍以上，长时间监听容易积压",
+                        "This Mac supports GPU acceleration, but recognition is running on the "
+                        "CPU: {}. That’s more than twice as slow, and long sessions tend to build "
+                        "a backlog.").format(detail), fix)
     return _check(NAMES["asr"], OK if cached else WARN, detail)
 
 
@@ -224,8 +266,10 @@ async def _ollama_down_hint():
     可以「打开」的东西。"""
     from . import localmodel
     if await _to_thread(localmodel.is_installed):
-        return ("程序会自动把它启动起来，这一行随后会刷新；一直这样的话，"
-                "请手动启动 Ollama，再在「翻译引擎」面板点一次「保存」")
+        return L("程序会自动把它启动起来，这一行随后会刷新；一直这样的话，"
+                 "请手动启动 Ollama，再在「翻译引擎」面板点一次「保存」",
+                 "The app starts it automatically, and this row updates shortly. If it stays "
+                 "like this, open Ollama yourself, then click Save in Settings > Translation Engine.")
     hint, _url = localmodel.install_hint()
     return hint
 
@@ -240,7 +284,8 @@ async def check_translator(args, translator=None):
     """
     name = getattr(args, "translator", "auto")
     if name == "none" or (translator is None and name == "none"):
-        return _check(NAMES["translator"], OK, "已按 --translator none 主动关闭")
+        return _check(NAMES["translator"], OK,
+                      L("已按 --translator none 主动关闭", "Turned off with --translator none"))
 
     if translator is not None:
         from .translator import model_listed
@@ -252,52 +297,74 @@ async def check_translator(args, translator=None):
             names = await _to_thread(_ollama_tags)
             if names is None:
                 return _check(NAMES["translator"], FAIL,
-                              "配置的是本地 Hy-MT2 {}，但 Ollama 没在运行".format(tier),
+                              L("配置的是本地 Hy-MT2 {}，但 Ollama 没在运行",
+                                "The engine is set to Local Hy-MT2 {}, but Ollama isn’t "
+                                "running.").format(tier),
                               await _ollama_down_hint())
             # Ollama 在跑不等于能翻：模型不在，每句 /api/generate 都回 404。以前这里
             # 只 ping /api/tags，切到本机没有的 7B 之后这一行照样是绿的
             if model and not model_listed(model, names):
-                return _model_missing("本地 Hy-MT2 {}".format(tier), model)
-            note = "、术语最准，但更吃内存" if tier == "7B" else ""
+                return _model_missing(L("本地 Hy-MT2 {}", "Local Hy-MT2 {}").format(tier), model)
+            note = (L("、术语最准，但更吃内存", ", most accurate on terms, uses more memory")
+                    if tier == "7B" else "")
             return _check(NAMES["translator"], OK,
-                          "本地 Hy-MT2 {}（离线、无限流{}）".format(tier, note))
+                          L("本地 Hy-MT2 {}（离线、无限流{}）",
+                            "Local Hy-MT2 {} (offline, unlimited{})").format(tier, note))
         if engine == "gemma":
             names = await _to_thread(_ollama_tags)
             if names is None:
                 return _check(NAMES["translator"], FAIL,
-                              "配置的是本地 TranslateGemma，但 Ollama 没在运行",
+                              L("配置的是本地 TranslateGemma，但 Ollama 没在运行",
+                                "The engine is set to Local TranslateGemma, but Ollama isn’t "
+                                "running."),
                               await _ollama_down_hint())
             if model and not model_listed(model, names):
-                return _model_missing("本地 TranslateGemma", model)
-            return _check(NAMES["translator"], OK, "本地 TranslateGemma（离线、无限流）")
+                return _model_missing(L("本地 TranslateGemma", "Local TranslateGemma"), model)
+            return _check(NAMES["translator"], OK,
+                          L("本地 TranslateGemma（离线、无限流）",
+                            "Local TranslateGemma (offline, unlimited)"))
         if engine == "google":
             from . import localmodel
             # 装好 Ollama 之后模型是程序自己拉的，不用再让用户敲 ollama pull
             hint, _url = localmodel.install_hint()
             return _check(NAMES["translator"], WARN,
-                          "正在用 Google 免费接口：会按 IP 限流，长时间监听容易"
-                          "整段翻译失败（违禁词报警不受影响，它不依赖翻译）",
-                          "想换成完全本地、不限流的翻译：" + hint)
+                          L("正在用 Google 免费接口：会按 IP 限流，长时间监听容易"
+                            "整段翻译失败（违禁词报警不受影响，它不依赖翻译）",
+                            "Using Google’s free service. Google caps how many requests one IP "
+                            "address can make, so in long sessions whole stretches may go "
+                            "untranslated. Banned-term alerts don’t use translation and aren’t "
+                            "affected."),
+                          L("想换成完全本地、不限流的翻译：",
+                            "For fully local translation with no request caps: ") + hint)
         if engine == "deepl":
             return await _check_deepl(args, translator)
         key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(engine)
         if key:
             return await _check_paid_api(engine, key, translator)
-        return _check(NAMES["translator"], OK, "{}（付费 API）".format(engine))
+        return _check(NAMES["translator"], OK, L("{}（付费 API）", "{} (paid API)").format(engine))
 
     # 没有引擎对象（还没建，或翻译被关掉）——只能就配置说话，不假装知道更多
     if name == "none":
-        return _check(NAMES["translator"], OK, "已按 --translator none 主动关闭")
-    return _check(NAMES["translator"], WARN, "翻译引擎尚未初始化",
-                  "点一次「开始翻译」后本项会重新检查")
+        return _check(NAMES["translator"], OK,
+                      L("已按 --translator none 主动关闭", "Turned off with --translator none"))
+    return _check(NAMES["translator"], WARN,
+                  L("翻译引擎尚未初始化", "The translation engine hasn’t started yet."),
+                  L("点一次「开始翻译」后本项会重新检查",
+                    "This row is checked again after you click Start."))
 
 
 def _model_missing(label, model):
     return _check(NAMES["translator"], FAIL,
-                  "配置的是{}，Ollama 在运行，但里面没有模型 {}——字幕会只显示原文"
-                  "（违禁词报警不受影响）".format(label, model),
-                  "不在直播时程序会自动下载它（进度显示在首页），直播中会等停止后再下载；"
-                  "也可以在「翻译引擎」里换一个引擎")
+                  L("配置的是{}，Ollama 在运行，但里面没有模型 {}——字幕会只显示原文"
+                    "（违禁词报警不受影响）",
+                    "The engine is set to {} and Ollama is running, but it doesn’t have the "
+                    "model {}. Captions will show only the original text. Banned-term alerts "
+                    "aren’t affected.").format(label, model),
+                  L("不在直播时程序会自动下载它（进度显示在首页），直播中会等停止后再下载；"
+                    "也可以在「翻译引擎」里换一个引擎",
+                    "When you’re not monitoring, the app downloads it automatically (progress "
+                    "appears on the home screen). During a session, it waits until you click "
+                    "Stop. You can also choose another engine in Settings > Translation Engine."))
 
 
 async def _check_paid_api(engine, key, translator):
@@ -313,31 +380,45 @@ async def _check_paid_api(engine, key, translator):
 
     label = {"claude": "Claude", "openai": "OpenAI"}.get(engine, engine)
     if not api_key(key):
-        return _check(NAMES["translator"], FAIL, "{} 还没有密钥".format(label),
-                      "在「翻译引擎」里填写密钥；没有密钥的话，把引擎留在默认的「自动」即可")
+        return _check(NAMES["translator"], FAIL,
+                      L("{} 还没有密钥", "No API key for {} yet.").format(label),
+                      L("在「翻译引擎」里填写密钥；没有密钥的话，把引擎留在默认的「自动」即可",
+                        "Enter a key in Settings > Translation Engine. If you don’t have one, "
+                        "leave the engine on the default, Automatic."))
     inner = getattr(translator, "inner", translator)
     probe = getattr(inner, "probe_key", None)
     if probe is None:
-        return _check(NAMES["translator"], OK, "{}（付费 API）".format(label))
+        return _check(NAMES["translator"], OK, L("{}（付费 API）", "{} (paid API)").format(label))
     try:
         status = await asyncio.wait_for(probe(), timeout=5)
     except Exception as exc:
         return _check(NAMES["translator"], WARN,
-                      "{}（付费 API）：这次没连上接口（{}）".format(label, type(exc).__name__),
-                      "检查网络；翻译不出来时字幕先显示原文，违禁词报警不受影响")
+                      L("{}（付费 API）：这次没连上接口（{}）",
+                        "{} (paid API): couldn’t reach the API this time ({})").format(
+                          label, type(exc).__name__),
+                      L("检查网络；翻译不出来时字幕先显示原文，违禁词报警不受影响",
+                        "Check your network. Until translation works, captions show the original "
+                        "text. Banned-term alerts aren’t affected."))
     if status in (401, 403):
         return _check(NAMES["translator"], FAIL,
-                      "{} 拒绝了当前密钥（HTTP {}）".format(label, status),
-                      "在「翻译引擎」里重新填写密钥")
+                      L("{} 拒绝了当前密钥（HTTP {}）",
+                        "{} rejected the current API key (HTTP {}).").format(label, status),
+                      L("在「翻译引擎」里重新填写密钥",
+                        "Enter the key again in Settings > Translation Engine."))
     if status == 404 and getattr(inner, "PROBE_CHECKS_MODEL", False):
         model = getattr(inner, "model", None) or getattr(inner, "MODEL", "?")
         return _check(NAMES["translator"], FAIL,
-                      "{} 接口里找不到模型 {}（HTTP 404）".format(label, model),
-                      "在「翻译引擎」里换一个引擎")
+                      L("{} 接口里找不到模型 {}（HTTP 404）",
+                        "The {} API doesn’t have the model {} (HTTP 404).").format(label, model),
+                      L("在「翻译引擎」里换一个引擎",
+                        "Choose another engine in Settings > Translation Engine."))
     if status != 200:
         return _check(NAMES["translator"], WARN,
-                      "{}（付费 API）：验证密钥时接口返回 HTTP {}".format(label, status))
-    return _check(NAMES["translator"], OK, "{}（付费 API，密钥已验证）".format(label))
+                      L("{}（付费 API）：验证密钥时接口返回 HTTP {}",
+                        "{} (paid API): the API returned HTTP {} when checking the key").format(
+                          label, status))
+    return _check(NAMES["translator"], OK,
+                  L("{}（付费 API，密钥已验证）", "{} (paid API, key verified)").format(label))
 
 
 async def _check_deepl(args, translator):
@@ -357,7 +438,7 @@ async def _check_deepl(args, translator):
     target = getattr(args, "target", "zh-CN")
     source = (getattr(args, "source", None) or "es").lower()
     if not hasattr(inner, "_ensure_glossary"):
-        return _check(NAMES["translator"], OK, "DeepL（付费 API）")
+        return _check(NAMES["translator"], OK, L("DeepL（付费 API）", "DeepL (paid API)"))
     # 先问一次用量：DeepL 最轻的鉴权请求。密钥被拒（401/403）时下面建术语表同样
     # 失败，而那条路只会报「术语表没建起来」——等于把一把被拒的密钥说成「已就绪」
     try:
@@ -366,25 +447,41 @@ async def _check_deepl(args, translator):
         status = None          # 连不上或回应读不懂：交给下面建术语表那一步去报
     if status in (401, 403):
         return _check(NAMES["translator"], FAIL,
-                      "DeepL 拒绝了当前密钥（HTTP {}）".format(status),
-                      "在「翻译引擎」里重新填写密钥")
+                      L("DeepL 拒绝了当前密钥（HTTP {}）",
+                        "DeepL rejected the current API key (HTTP {}).").format(status),
+                      L("在「翻译引擎」里重新填写密钥",
+                        "Enter the key again in Settings > Translation Engine."))
     if target not in inner._GLOSSARY_TARGET:
         return _check(NAMES["translator"], WARN,
-                      "DeepL 已就绪，但 {} 不挂原生术语表（DeepL 的术语表只有"
-                      "简体一档），商品名只能靠译后替换兜底".format(target))
+                      L("DeepL 已就绪，但 {} 不挂原生术语表（DeepL 的术语表只有"
+                        "简体一档），商品名只能靠译后替换兜底",
+                        "DeepL is ready, but there’s no native glossary for {} (DeepL glossaries "
+                        "are used only for Simplified Chinese). Product names fall back to "
+                        "replacement after translation.").format(target))
     try:
         gid = await inner._ensure_glossary(source, target)
     except Exception as exc:
-        return _check(NAMES["translator"], FAIL, "DeepL 连不上：{}".format(exc),
-                      "检查密钥和网络；或把引擎换成本地 Hy-MT2")
+        return _check(NAMES["translator"], FAIL,
+                      L("DeepL 连不上：{}", "Couldn’t connect to DeepL: {}").format(exc),
+                      L("检查密钥和网络；或把引擎换成本地 Hy-MT2",
+                        "Check the API key and your network, or switch the engine to Local "
+                        "Hy-MT2."))
     if not gid:
         return _check(NAMES["translator"], WARN,
-                      "DeepL 已就绪，但原生术语表没建起来——商品名会被直译"
-                      "（实测词表遵从率会从 91.8% 掉到 26.5%）",
-                      "建术语表的请求没有成功，程序 120 秒后会自动重试；本地 Hy-MT2 不受影响")
+                      L("DeepL 已就绪，但原生术语表没建起来——商品名会被直译"
+                        "（实测词表遵从率会从 91.8% 掉到 26.5%）",
+                        "DeepL is ready, but the native glossary wasn’t created. Product names "
+                        "will be translated literally (in testing, glossary adherence drops from "
+                        "91.8% to 26.5%)."),
+                      L("建术语表的请求没有成功，程序 120 秒后会自动重试；本地 Hy-MT2 不受影响",
+                        "The request to create the glossary didn’t go through. The app retries "
+                        "automatically in 120 sec. Local Hy-MT2 isn’t affected."))
     n = len(inner.glossary_tsv(load_glossary().entries).splitlines())
+    # 英文单数那一臂不带条数，所以用显式下标取后两个参数
     return _check(NAMES["translator"], OK,
-                  "DeepL + 原生术语表（{} 条，{}→{}）".format(n, source, target))
+                  LN(n, "DeepL + 原生术语表（{} 条，{}→{}）",
+                     "DeepL + native glossary (1 entry, {1}→{2})",
+                     "DeepL + native glossary ({} entries, {}→{})").format(n, source, target))
 
 
 def _ollama_tags():
@@ -530,9 +627,14 @@ def _pip_command(spec, upgrade=True):
     会被当成表达式报错，前面必须加 &。"""
     import sys
     flag = " -U" if upgrade else ""
+    # 这句只接在「也可以……后」的后面（英文是 "…, you can also " / "…quit the app and "），
+    # 所以英文小写开头
     if os.name == "nt":
-        return "在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"".format(sys.executable, flag, spec)
-    return "在终端里执行：\"{}\" -m pip install{} \"{}\"".format(sys.executable, flag, spec)
+        return L("在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"",
+                 "run this in PowerShell: & \"{}\" -m pip install{} \"{}\"").format(
+                     sys.executable, flag, spec)
+    return L("在终端里执行：\"{}\" -m pip install{} \"{}\"",
+             "run this in Terminal: \"{}\" -m pip install{} \"{}\"").format(sys.executable, flag, spec)
 
 
 async def check_comments(args):
