@@ -48,8 +48,10 @@
       <label class="ctl" title="目标语言">
         <span class="ctl-text">目标语言</span>
         <!-- 固定 aria-label：.ctl-text 在窄宽度（≤1080px）会被隐藏，不依赖它做可访问名称
-             （和同一行 #font-size 的 aria-label="字幕字号" 保持同一种更稳的写法） -->
-        <select id="target-lang" aria-label="目标语言">
+             （和同一行 #font-size 的 aria-label="字幕字号" 保持同一种更稳的写法）。
+             translate="no"：选项是各语言的自称，属于数据，哪种界面语言都不翻；只豁免选项文字，
+             select 自己的 aria-label 照常要英文（spec §4.1 R7） -->
+        <select id="target-lang" aria-label="目标语言" translate="no">
           <option value="zh-CN">中文（简体）</option>
           <option value="zh-TW">中文（繁體）</option>
           <option value="en">English</option>
@@ -123,7 +125,7 @@
             <div class="share-main">
               <canvas id="share-qr" class="share-qr" width="0" height="0"></canvas>
               <div class="share-right">
-                <div id="share-url" class="share-url" tabindex="0"></div>
+                <div id="share-url" class="share-url" tabindex="0" translate="no"></div>
                 <div class="share-actions">
                   <button id="share-copy" class="btn small" type="button">复制链接</button>
                   <button id="share-rotate" class="btn small" type="button">换一个链接</button>
@@ -136,7 +138,7 @@
             </div>
             <p id="share-addr-changed" class="share-addr-changed hidden"></p>
             <p id="share-note" class="share-note hidden"></p>
-            <ul id="share-ip-list" class="share-ip-list hidden"></ul>
+            <ul id="share-ip-list" class="share-ip-list hidden" translate="no"></ul>
           </div>
           <div id="share-help" class="share-help-box hidden">
             <p class="share-help">
@@ -212,7 +214,7 @@
     <!-- 走投无路时的出口：一条带真实路径、可一键复制的命令。
          更新器曾经把自己锁死过——修好它的代码只能靠更新送达。 -->
     <div id="fix-command" class="fix-command hidden">
-      <code id="fix-command-text"></code>
+      <code id="fix-command-text" translate="no"></code>
       <button id="fix-command-copy" class="btn small">复制</button>
     </div>
 
@@ -548,9 +550,10 @@
     <svg class="i" aria-hidden="true"><use href="#i-arrow-down"/></svg>回到最新
   </button>
 
+  <!-- 底部大字幕只放译文和原文，都是数据：translate="no" -->
   <footer id="live-bar" class="live-bar hidden">
-    <div id="live-translated" class="live-translated"></div>
-    <div id="live-original" class="live-original"></div>
+    <div id="live-translated" class="live-translated" translate="no"></div>
+    <div id="live-original" class="live-original" translate="no"></div>
   </footer>
 
   <div id="stats-line" class="stats-line hidden"></div>
@@ -583,6 +586,6 @@
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=2"></script>
   <script src="/static/live-ui.js?v=1"></script>
-  <script src="/static/app.js?v=60"></script>
+  <script src="/static/app.js?v=61"></script>
 </body>
 </html>

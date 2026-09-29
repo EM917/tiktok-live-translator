@@ -282,6 +282,21 @@ if (typeof document !== "undefined") {
     var ICON_ALERT_TRIANGLE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.3 14.3 13.3H1.7Z"/><path d="M8 6.6v3"/><circle cx="8" cy="11.4" r="0.6" fill="currentColor" stroke="none"/></svg>';
     var ICON_XMARK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg>';
 
+    // 承载数据的节点（字幕原文和译文、弹幕、报警的词条和原话、观众名）标 translate="no"
+    // （spec §4.1 R7），写法同桌面 app.js：英文界面的检查豁免这些文字，浏览器自带的网页翻译
+    // 也不去改。同一个节点有时放数据、有时放「翻译中…」这类界面提示的，按当下的内容来回切
+    function markData(el, isData) {
+      el.setAttribute("translate", isData ? "no" : "yes");
+    }
+    // 一整串文字里夹着数据时拆成几个 span，拼起来与原来的整串逐字相同。只用 createElement：
+    // tests/viewer.test.mjs 的假 document 没有 createTextNode
+    function textSpan(text, isData) {
+      var span = document.createElement("span");
+      if (isData) markData(span, true);
+      span.textContent = text;
+      return span;
+    }
+
     var connDot = document.getElementById("conn-dot");
     var connText = document.getElementById("conn-text");
     var streamTextEl = document.getElementById("stream-text");
@@ -764,7 +779,10 @@ if (typeof document !== "undefined") {
       tierIcon.innerHTML = ICON_ALERT_TRIANGLE;
       headLabel.appendChild(tierIcon);
       var labelText = document.createElement("span");
-      labelText.textContent = (TIER_LABEL[msg.tier] || "命中") + " 「" + (msg.term || "") + "」 " + hhmmss(msg.ts);
+      // 词条是数据，单独一截；三截都在 labelText 里，.alert-head-label 的 flex 子项不变
+      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || "命中") + " 「"));
+      labelText.appendChild(textSpan(msg.term || "", true));
+      labelText.appendChild(textSpan("」 " + hhmmss(msg.ts)));
       headLabel.appendChild(labelText);
       head.appendChild(headLabel);
       var dismissBtn = document.createElement("button");
@@ -778,11 +796,13 @@ if (typeof document !== "undefined") {
 
       var ctx = document.createElement("div");
       ctx.className = "alert-ctx";
+      markData(ctx, true);
       ctx.textContent = msg.context || "";
       item.appendChild(ctx);
 
       var zh = document.createElement("div");
       zh.className = "alert-zh" + (msg.context_zh ? "" : " pending");
+      markData(zh, !!msg.context_zh);
       zh.textContent = msg.context_zh || "中文正在补…";
       item.appendChild(zh);
 
@@ -803,9 +823,11 @@ if (typeof document !== "undefined") {
       if (!entry) return;
       entry.msg = applyUpdate(entry.msg, msg);
       if (entry.msg.context_zh) {
+        markData(entry.zhEl, true);
         entry.zhEl.textContent = entry.msg.context_zh;
         entry.zhEl.classList.remove("pending", "failed");
       } else if (entry.msg.failed) {
+        markData(entry.zhEl, false);
         entry.zhEl.textContent = "中文译不出来（" + (pick(entry.msg, "why") || "未知原因") + "）——请看上面的原话";
         entry.zhEl.classList.remove("pending");
         entry.zhEl.classList.add("failed");
@@ -872,6 +894,7 @@ if (typeof document !== "undefined") {
 
       var orig = document.createElement("div");
       orig.className = "cap-orig";
+      markData(orig, true);
       orig.textContent = msg.original || "";
       card.appendChild(orig);
 
@@ -898,6 +921,7 @@ if (typeof document !== "undefined") {
     }
     function applyCaptionState(msg, transEl) {
       transEl.classList.remove("pending", "failed");
+      markData(transEl, !!msg.translated);   // 译文是数据；失败说明、「翻译中…」是界面提示
       if (msg.translated) {
         transEl.textContent = msg.translated;
       } else if (msg.failed) {
@@ -952,11 +976,13 @@ if (typeof document !== "undefined") {
 
       var head = document.createElement("div");
       head.className = "cmt-head";
-      head.textContent = (msg.user || "") + " " + hhmmss(msg.ts);
+      head.appendChild(textSpan(msg.user || "", true));   // 观众名是数据
+      head.appendChild(textSpan(" " + hhmmss(msg.ts)));
       item.appendChild(head);
 
       var zh = document.createElement("div");
       zh.className = "cmt-zh";
+      markData(zh, msg.state !== "pending");
       if (msg.state === "pending") {
         zh.textContent = "翻译中…";
         zh.classList.add("pending");
@@ -967,6 +993,7 @@ if (typeof document !== "undefined") {
 
       var orig = document.createElement("div");
       orig.className = "cmt-orig";
+      markData(orig, true);
       orig.textContent = msg.text || "";
       if (msg.state === "same" || msg.state === "skipped") orig.classList.add("hidden");
       item.appendChild(orig);
@@ -984,6 +1011,7 @@ if (typeof document !== "undefined") {
       var entry = commentsById[msg.id];
       if (!entry) return;
       entry.msg = applyUpdate(entry.msg, msg);
+      markData(entry.zhEl, entry.msg.state !== "pending");
       if (entry.msg.state === "pending") {
         entry.zhEl.textContent = "翻译中…";
         entry.zhEl.classList.add("pending");
