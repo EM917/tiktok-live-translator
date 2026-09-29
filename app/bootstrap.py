@@ -390,7 +390,7 @@ _NO_DIST_MARKS = ("no matching distribution found", "could not find a version th
 _PY_MARK = "a different python"
 _ADVANCED = L("（进阶：也可手动运行 setup.sh / setup.ps1，或 pip install -r requirements.txt）",
               "(Advanced: you can also run setup.sh / setup.ps1, or pip install -r "
-              "requirements.txt.)")
+              "requirements.txt)")
 
 
 def _free_gb(root):

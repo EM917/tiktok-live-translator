@@ -62,6 +62,28 @@ def test_english_pointers_to_a_settings_row_start_from_settings():
     assert not _BARE_SETTINGS_POINTER.search("See the Audit Log row in Settings > Startup Check.")
 
 
+# 括号里以命令或文件名收尾时右括号前不加句号（docs/i18n-style.md §2.2）：照着复制会把
+# “requirements.txt.” 带进 pip
+_COMMAND_THEN_PERIOD = re.compile(
+    r"(?:requirements\.txt|setup\.sh|setup\.ps1|Start\.command|Start\.bat|\.app)\.\)")
+
+
+def test_a_command_in_parentheses_has_no_full_stop_after_it():
+    bad = [(p.path, p.line, en) for p in _all_pairs() for en in p.ens
+           if _COMMAND_THEN_PERIOD.search(en)]
+    assert not bad, bad
+    assert _COMMAND_THEN_PERIOD.search("(Advanced: pip install -r requirements.txt.)")
+
+
+def test_the_reinstall_hint_reads_the_same_everywhere():
+    """「关闭程序（后）重新打开，会自动补装」只有一种英文说法。"""
+    got = [(p.path, p.line, en) for p in _all_pairs() for en in p.ens
+           if re.search("关闭程序后?重新打开，会自动补装", p.zh)]
+    assert len(got) >= 5, got
+    assert not [g for g in got if not re.search(r"Quit and reopen the app to install \w+( \w+)? "
+                                                r"automatically\.", g[2])], got
+
+
 def test_the_scan_covers_the_ui_sources_and_nothing_else():
     """范围读错了（比如 glob 写坏）时上面那条会假装通过：这里钉住它真的在看界面源文件。"""
     files = P.source_files()

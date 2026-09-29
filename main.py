@@ -308,7 +308,7 @@ def ensure_env():
                          "Check your network connection, then open the app again. Installation "
                          "picks up where it left off.\n"
                          "(Advanced: you can also run setup.sh / setup.ps1, or pip install -r "
-                         "requirements.txt.)").format(of(exc)))
+                         "requirements.txt)").format(of(exc)))
         _fail_alert(message)
     finally:
         if lock is not None:
@@ -585,7 +585,7 @@ def main():
             missing.append(L("组件 ffmpeg 缺失：请关闭程序后重新打开，会自动补装。"
                              "（进阶：pip install -r requirements.txt）",
                              "Audio (ffmpeg) is missing. Quit and reopen the app to install it "
-                             "automatically. (Advanced: pip install -r requirements.txt.)"))
+                             "automatically. (Advanced: pip install -r requirements.txt)"))
         try:
             import faster_whisper  # noqa: F401
         except ImportError:

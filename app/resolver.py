@@ -1570,9 +1570,8 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     except ImportError:
         raise ResolveError(L("组件 yt-dlp 缺失：请关闭程序后重新打开，会自动补装。"
                              "（进阶：pip install -r requirements.txt）",
-                             "The yt-dlp component is missing. Quit the app and open it again "
-                             "to reinstall it automatically. (Advanced: pip install -r "
-                             "requirements.txt)"),
+                             "yt-dlp is missing. Quit and reopen the app to install it "
+                             "automatically. (Advanced: pip install -r requirements.txt)"),
                            kind="internal") from None
 
     # 第 2 层：yt-dlp 匿名解析。

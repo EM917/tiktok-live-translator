@@ -271,7 +271,7 @@ def test_pip_failure_texts_are_unchanged_in_chinese_and_read_in_english(monkeypa
         english = _english(text)
         assert english.startswith(en_head), english
         assert english.endswith("\nLog file: {}\n(Advanced: you can also run setup.sh / "
-                                "setup.ps1, or pip install -r requirements.txt.)".format(log))
+                                "setup.ps1, or pip install -r requirements.txt)".format(log))
     no_disk_number = bootstrap.pip_failure_text("No space left on device", 1, None, "3.13", None)
     assert "约 4 GB。\n腾出空间" in no_disk_number and "继续安装。\n（进阶" in no_disk_number
     assert "translation models.\nFree up space" in _english(no_disk_number)
@@ -285,7 +285,7 @@ def test_other_install_failures_read_in_both_languages(tmp_path):
     assert _english(unlogged) == (
         "Installation didn’t finish.\nCheck your network connection, then open the app again. "
         "Installation picks up where it left off.\n(boom)\n(Advanced: you can also run "
-        "setup.sh / setup.ps1, or pip install -r requirements.txt.)")
+        "setup.sh / setup.ps1, or pip install -r requirements.txt)")
     logged = bootstrap.failure_text(RuntimeError("boom"), root=tmp_path)
     assert logged.startswith("自动安装未完成。\n" + RETRY_ZH + "\n详细记录：")
     assert "\nLog file: " in _english(logged)
