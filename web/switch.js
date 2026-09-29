@@ -1,3 +1,4 @@
+// i18n: done
 /* 「换主播」两段式确认的纯函数（web/switch.js）。
  * 直播中换主播是不可逆的破坏性操作（会立刻停听 @A），照开始面板那种「输入完
  * 直接开始」不安全——误触输入框、点错最近直播间 chip 都会中断正在进行的监听。
@@ -8,6 +9,9 @@
  * 留给 app.js，这里只管状态该是什么样。 */
 
 "use strict";
+
+// 浏览器里 L/LN 是 i18n.js 定义的全局函数（这里的 var 不会清掉它）；node 测试里从 i18n.js 取
+if (typeof L === "undefined") { var I18N_ = require("./i18n.js"); var L = I18N_.L, LN = I18N_.LN, APP_NAME = I18N_.APP_NAME; }
 
 // 武装后多久算过期（6 秒，见换主播面板说明文案）；武装后多久内的点击/回车
 // 算「双击误触」，不当成第二次确认（400ms）。两个数字导出给 app.js 的
@@ -91,16 +95,19 @@ function switchButtonLabel(state, currentStreamer) {
   var cur = currentStreamer ? String(currentStreamer) : "";
   var target = state && state.target ? state.target : "";
   if (target && cur && target.toLowerCase() === cur.toLowerCase()) {
-    return { text: "正在监听的就是 @" + cur, disabled: true };
+    return { text: L("正在监听的就是 @" + cur, "Already Monitoring @" + cur), disabled: true };
   }
   if (state && state.armed && target) {
+    // 英文也把 @A 写上（会停掉谁、改听谁）：两臂引用的变量要一致（tools/i18n_pairs.py 的 R2）。
+    // 名字长时要靠 #switch-confirm 能折行（spec §11 第 3 条，中文武装态今天就放不下）
     var text = cur
-      ? "再点一次：改听 @" + target + "（停止监听 @" + cur + "）"
-      : "再点一次：改听 @" + target;
+      ? L("再点一次：改听 @" + target + "（停止监听 @" + cur + "）",
+          "Click Again to Switch from @" + cur + " to @" + target)
+      : L("再点一次：改听 @" + target, "Click Again to Switch to @" + target);
     return { text: text, disabled: false };
   }
-  if (target) return { text: "换到 @" + target, disabled: false };
-  return { text: "确认换主播", disabled: true };
+  if (target) return { text: L("换到 @" + target, "Switch to @" + target), disabled: false };
+  return { text: L("确认换主播", "Switch Streamer"), disabled: true };
 }
 
 /* Node 测试环境导出；浏览器里作为全局函数被 app.js 使用 */

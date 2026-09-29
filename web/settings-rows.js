@@ -1,3 +1,4 @@
+// i18n: done
 /* 设置分组（自检 / 引擎 / 报警 / 界面语言）几行的纯逻辑：摘要文案该写什么、折叠行该不该
  * 自动展开。这些判断本身不碰 DOM，但曾经全部埋在 app.js 的立即执行函数里，
  * 149 个 node 测试没有一个覆盖到（engineer.md #4）：改摘要文案的措辞、或者
@@ -17,9 +18,12 @@ function selfcheckSummary(summary) {
   "use strict";
   var sum = summary || {};
   var sig = sum.fail + "/" + sum.warn + "/" + sum.total;
-  if (sum.fail) return { text: sum.fail + " 项功能未生效", icon: "fail", sig: sig };
-  if (sum.warn) return { text: "通过 · " + sum.warn + " 项提醒", icon: "warn", sig: sig };
-  return { text: "全部通过 · " + sum.total + " 项", icon: "pass", sig: sig };
+  if (sum.fail) return { text: LN(sum.fail, sum.fail + " 项功能未生效", "1 feature isn’t working",
+                                  sum.fail + " features aren’t working"), icon: "fail", sig: sig };
+  if (sum.warn) return { text: LN(sum.warn, "通过 · " + sum.warn + " 项提醒", "Passed · 1 warning",
+                                  "Passed · " + sum.warn + " warnings"), icon: "warn", sig: sig };
+  return { text: LN(sum.total, "全部通过 · " + sum.total + " 项", "1 check passed",
+                    "All " + sum.total + " checks passed"), icon: "pass", sig: sig };
 }
 
 /* 引擎摘要：人话名 + 回退前缀 + 免费额度提示，全部拼进一行 active 文案。
@@ -30,14 +34,16 @@ function engineSummary(info) {
   "use strict";
   var data = info || {};
   var active = data.active_label || data.active
-               || (data.engine === "none" ? "不翻译" : "");
+               || (data.engine === "none" ? L("不翻译", "No translation") : "");
   if (data.usage && data.usage.limit) {
     var pct = Math.round(data.usage.used * 100 / data.usage.limit);
     var hours = Math.max(0, Math.floor((data.usage.limit - data.usage.used) / 35000));
-    active += " · 免费额度已用 " + pct + "%（按近期速度约剩 " + hours + " 小时）";
+    // 英文用紧凑写法（docs/i18n-style.md §3 #62、§4.3 R11）：长写法会把摘要挤出这一行
+    active += L(" · 免费额度已用 " + pct + "%（按近期速度约剩 " + hours + " 小时）",
+                " · " + pct + "% of free quota used (~" + hours + " hr left)");
   }
   var hasNote = !!data.note;
-  if (hasNote) active = "已回退 · " + active;
+  if (hasNote) active = L("已回退 · " + active, "Fallback · " + active);
   return { text: active, hasNote: hasNote, sig: hasNote ? String(data.note) : "" };
 }
 
@@ -48,13 +54,17 @@ function watchSummary(alertsEnabled, count) {
   "use strict";
   var configured = count > 0;
   return {
-    mode: alertsEnabled ? "开启" : "关闭",
-    state: configured ? "词表 " + count + " 条" : "词表为空",
+    mode: alertsEnabled ? L("开启", "On") : L("关闭", "Off"),
+    state: configured ? LN(count, "词表 " + count + " 条", "1 term", count + " terms") : L("词表为空", "List empty"),
     desc: configured
       ? (alertsEnabled
-          ? "开播后会实时监听主播原话，命中立即报警（不依赖翻译，翻译再慢也不影响报警）。"
-          : "开播后不报警；命中只记入审计。要报警请先打开此开关。")
-      : "当前词表为空，本工具不会发出任何违禁词报警。",
+          ? L("开播后会实时监听主播原话，命中立即报警（不依赖翻译，翻译再慢也不影响报警）。",
+              "Listens to what the streamer says and alerts on a match right away. "
+              + "Translation speed doesn’t affect alerts.")
+          : L("开播后不报警；命中只记入审计。要报警请先打开此开关。",
+              "No alerts during the stream. Matches are still written to the audit log. Turn this on to get alerts."))
+      : L("当前词表为空，本工具不会发出任何违禁词报警。",
+          "The banned-term list is empty, so no alerts will be raised."),
     configured: configured
   };
 }
