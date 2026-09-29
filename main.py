@@ -394,7 +394,7 @@ def parse_args():
                         "chrome / safari / firefox / edge / none（完全不读浏览器 cookie）。"
                         "显式指定时优先于 settings.json 里的 cookies_browser_only")
     p.add_argument("--cookies", default=None,  # i18n: terminal
-                   help="可选：传给 yt-dlp 的 cookies.txt 路径（地区受限的直播间可能需要）")
+                   help="可选：传给 yt-dlp 的 cookies.txt 路径（yt-dlp 报告直播间要登录才能看时用）")
     p.add_argument("--glossary", default=None,  # i18n: terminal
                    help="领域词表路径，默认项目目录下的 glossary.txt"
                         "（首次运行会从 glossary.example.txt 生成）")

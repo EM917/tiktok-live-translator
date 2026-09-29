@@ -98,6 +98,14 @@ EN_LABELS = re.compile(
 EN_CAUSAL = re.compile(
     r"(?i)\b(because|due to|caused by|the reason|probably|likely|must be|seems to)\b")
 
+# 第八条家族的中文臂也查这两级（只查家族：家族以外「Google 会按 IP 限流」是对方写明的规则，照常用）。
+# 光「可能」二字不查：说将来可能发生的事（「系统可能弹出确认框」「读到登录之前可能解析不出」）照常用，
+# 和英文 may 同一个规矩；查的是把猜测当原因的几种说法，包括「可能 A，或 B」这种列候选原因的句式。
+# 「限制」二字也不单查：「（安全限制）」说的是程序自己拒绝了本机地址，是观察。
+ZH_LABELS = re.compile(r"年龄|限流|封禁|封号|私密|观看限制|地区|风控|被挡|被墙|拦截|繁忙")
+ZH_CAUSAL = re.compile(r"可能是|也可能|可能已|可能[^。；]*，或|多半|八成|应该是|大概是|估计是"
+                       r"|似乎|好像|看起来是|因为|由于|导致|原因是")
+
 # 第八条家族：值为 "*" 表示整个文件；元组里是函数名（Python）或 "#元素 id"（HTML，含子孙）
 RULE8_FAMILY = {
     "app/resolver.py": "*",
@@ -109,7 +117,7 @@ RULE8_FAMILY = {
     "web/viewer.html": "*",
     "web/index.html": ("#input-help",),
     "app/pipeline.py": ("browser_only_message", "_resolve_media", "_confirm_offline",
-                        "_host_wait", "_selfcheck_incident_text"),
+                        "_host_wait", "_run_session", "_selfcheck_incident_text"),
 }
 
 # 禁用词例外：中文臂 → 理由。命中这里的对不查两级禁用词。

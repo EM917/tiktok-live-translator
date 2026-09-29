@@ -351,8 +351,8 @@ class CommentSource:
             elif returncode == 3:                       # UserOfflineError
                 await self._set_state("offline", L("主播未开播", "The streamer isn’t live"))
                 await asyncio.sleep(self.OFFLINE_RETRY_SEC)
-            elif returncode == 4:                        # 签名服务限流/报错
-                await self._set_state("error", L("评论签名服务繁忙，稍后重试",
+            elif returncode == 4:                        # SignatureRateLimitError / SignAPIError
+                await self._set_state("error", L("评论签名服务返回了错误，稍后重试",
                                                  "The comment signing service returned an error. Retrying later."))
                 await asyncio.sleep(self.SIGN_ERROR_WAIT_SEC)
             elif returncode == 5:                        # 需要登录态

@@ -55,7 +55,7 @@ def capture(url, seconds, out_path):
          "flv-ao/bestaudio/flv-hd/best", "--no-warnings", "--", url],
         capture_output=True, text=True, timeout=90).stdout.strip().splitlines()
     if not media:
-        raise SystemExit("解析直播流失败——主播可能没在播")
+        raise SystemExit("解析直播流失败：yt-dlp 没有返回流地址。先确认主播在播，再重试")
     ffmpeg = find_ffmpeg()
     subprocess.run(
         [ffmpeg, "-nostdin", "-loglevel", "error", "-reconnect", "1",

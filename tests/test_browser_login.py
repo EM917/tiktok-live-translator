@@ -351,7 +351,7 @@ def test_page_layer_note_carries_the_code(monkeypatch, tmp_path):
 
 # ---- 以 browser_only 收场时给中控的话 -------------------------------------
 
-_FIXED_FACTS = ("代码 4003110", "已自动重试 3 次", "不是网络或限流", "原因 TikTok 不说明")
+_FIXED_FACTS = ("代码 4003110", "已自动重试 3 次", "同一时刻其它直播间正常", "原因 TikTok 不说明")
 _PASTE = "把直播间链接和浏览器里的 .flv 地址一起粘进来"
 
 
@@ -395,8 +395,8 @@ def test_browser_only_message_without_observations_is_the_old_text():
 # ---- 同一段话的英文（spec §12.1 G11）：一样只写观察和能照做的事 --------------------
 
 # 固定话术里的三件事实。那几句写在 pipeline.browser_only_message 里（M5a 给它写英文），
-# 中间接上的 advice 是 browser_login 的（本文件管）。英文版不译「不是网络或限流问题」这半句：
-# 否定句里也不许出现 rate limit（CLAUDE.md 第八条，docs/i18n-style.md §2.6）
+# 中间接上的 advice 是 browser_login 的（本文件管）。中英文都只写正面的观察（同一时刻其它直播间
+# 正常），不写「不是 X 问题」：否定句里也不许出现原因标签（CLAUDE.md 第八条，docs/i18n-style.md §2.6）
 _FIXED_FACTS_EN = ("code 4003110", "Retried 3 times", "TikTok doesn’t say why")
 _FDA_PATHS = ["/opt/homebrew/bin/python3.14", "/opt/anaconda3/bin/python3.13"]
 # 句号（或右括号）后面紧跟着下一句的大写字母 = 两句英文粘在了一起（中文句子不用空格，

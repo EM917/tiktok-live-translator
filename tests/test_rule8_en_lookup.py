@@ -1,8 +1,9 @@
 """CLAUDE.md 第八条的英文闸：拿不到流地址、借浏览器登录、弹幕连接这几路（spec §12.1 G11）。
 
-这几路的失败对程序来说是不透明的：接口不给、握手被拒、读不到登录，原因对方都不说。中文按
-第八条只写观察和能做的事，英文同样如此，而且更严：中文里残留的「可能是私密或有观看限制」
-「主播可能没在播，也可能是网络问题」这类猜测，英文版改写成要核对的几件事，不跟着猜。
+这几路的失败对程序来说是不透明的：接口不给、握手被拒、读不到登录，原因对方都不说。中英文都按
+第八条只写观察和能做的事：以前中文里残留过「可能是 A，也可能是 B」这类猜测，英文从一开始就写成
+要核对的几件事，中文后来也照样改了（第八条家族的中文臂由 G2 的 ZH_LABELS / ZH_CAUSAL 查，
+见最后一节）。
 
 禁用词两级（tests/i18n_rules.py）：EN_LABELS 贴标签的词（age、rate limit、ban、block、
 restrict……）、EN_CAUSAL 猜原因的句式（because、probably、likely……）。
@@ -34,7 +35,7 @@ from app.i18n import CJK, L, Bi
 from app.pipeline import Pipeline
 from app.server import CaptionServer
 from tests.helpers import run
-from tests.i18n_rules import EN_CAUSAL, EN_LABELS
+from tests.i18n_rules import EN_CAUSAL, EN_LABELS, RULE8_FAMILY, ZH_CAUSAL, ZH_LABELS
 from tests.test_comment_safeguard import (BLOCKED_200, REJECTED_400, FakeProc, _run_until,
                                           jline, make_source, make_stale)
 from tools import i18n_pairs as P
@@ -119,9 +120,10 @@ def test_ytdlp_errors_are_explained_in_english_without_guessing(stderr, kind):
 
 
 def test_unknown_ytdlp_error_turns_the_guess_into_checks():
-    """中文说「主播可能没在播，也可能是网络问题或地址有误」；英文只列要核对的三件事。"""
+    """不猜是「主播没在播」还是「网络问题」：中英文都只列要核对的三件事。"""
     _, message = resolver._classify_ytdlp_error("ERROR: ???")
-    assert "可能" in message
+    assert "请检查主播是否在播、网络是否正常、地址是否正确" in message
+    assert "可能" not in message
     text = en(message)
     assert "Check that the streamer is live, your network is working, and the link is correct" in text
     assert "may" not in text.split("\n")[0]
@@ -385,3 +387,20 @@ def test_comment_hints_about_the_engine_in_english():
     for hint in (comments_mod.REMOTE_ENGINE_HINT, comments_mod.LARGE_MODEL_HINT):
         assert_clean_english(en(hint), str(hint))
         assert "original text" in en(hint)
+
+
+# ---- 第八条家族的中文 ------------------------------------------------------------------------
+
+def test_the_chinese_of_the_whole_rule8_family_names_no_cause():
+    """这一族的中文跟英文一样只写观察和能做的事：不出现年龄、限流、封禁、私密、观看限制、地区这类
+    标签，也不出现「可能是 A，也可能是 B」「多半」这类猜原因的说法（ZH_LABELS / ZH_CAUSAL；
+    G2 的全仓检查查的是同一条，这里按家族逐个文件列出来，红了一眼看得出是哪一句）。"""
+    seen = 0
+    for path in RULE8_FAMILY:
+        for pair in P.pairs_of(path, P.read(path)):
+            if not P.in_rule8_family(path, pair.scope):
+                continue
+            seen += 1
+            hit = ZH_LABELS.search(pair.zh) or ZH_CAUSAL.search(pair.zh)
+            assert hit is None, (path, pair.line, hit.group(), pair.zh)
+    assert seen >= 150                  # 家族认人的规则坏了（一句都没扫到）也要红

@@ -63,11 +63,13 @@ def test_the_retry_count_reads_right_in_english(retries, said):
     assert_rule8_clean(text)
 
 
-def test_the_english_drops_the_negated_rate_limit_clause_instead_of_translating_it():
-    """中文「不是网络或限流问题」是否定句，英文照译也会出现 rate limit：整句不译，换成正面的观察。
-    中文一侧一个字不动（test_browser_login.py 的 _FIXED_FACTS 钉着）。"""
+def test_both_languages_state_the_positive_observation_instead_of_a_negated_label():
+    """以前中文有一句「不是 X 问题」的否定句，里面点了原因标签的名；英文从一开始就没照译，
+    换成正面的观察。现在中文也一样（CLAUDE.md 第八条：否定句里也不许出现），
+    中文的固定事实由 test_browser_login.py 的 _FIXED_FACTS 钉着。"""
     message = browser_only_message(3, None)
-    assert "不是网络或限流问题" in message
+    assert "同一时刻其它直播间正常" in message
+    assert not rules.ZH_LABELS.search(message) and not rules.ZH_CAUSAL.search(message), message
     text = i18n.render(message, EN).lower()
     assert "limit" not in text and "network" not in text
 
@@ -103,7 +105,7 @@ def test_retry_banners_and_the_final_error_are_english_and_only_say_what_was_obs
     for text in banners:
         assert_rule8_clean(text)
     assert i18n.render(i18n.of(caught.value), EN) == BROWSER_ONLY_3_EN
-    assert "不是网络或限流" in str(caught.value)           # 审计与终端拿到的仍是中文
+    assert "同一时刻其它直播间正常" in str(caught.value)      # 审计与终端拿到的仍是中文
 
 
 def test_a_dead_pasted_stream_url_says_so_in_english(monkeypatch, tmp_path):

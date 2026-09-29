@@ -2,7 +2,7 @@
 """抽出全仓的中英对，并跑英文界面的几道静态闸（docs/i18n-style.md；规则表在 tests/i18n_rules.py）。
 
 - G2 成对检查：两臂非空、占位符一致（R2）、英文臂无 CJK 且 emoji 与中文相同（R3）、
-  按钮名引用（R6）、产品名映射、禁用词两级（CLAUDE.md 第八条）。
+  按钮名引用（R6）、产品名映射、禁用词两级（CLAUDE.md 第八条；第八条家族的中文臂也查）。
 - G3 同中文→同英文：同一句中文在全仓只许有一种英文。
 - G4 覆盖：带 `i18n: done` 标记的文件里，界面中文必须都成对；Python 另查 R11 的四种会丢英文的写法。
 - G5 静态页模拟：按 web/i18n.js 的 applyStatic 规则把 data-en* 代进去，看还剩不剩中文。
@@ -663,6 +663,10 @@ def check_pair(p):
             if not (_sub_multiset(one, zh_f) if isinstance(one, Counter) else one <= zh_f):
                 bad("R2", "LN 的 one 臂只能用中文里有的占位符 {}".format(_fmt(one)))
     zh_emoji = Counter(EMOJI.findall(p.zh))
+    if in_rule8_family(p.path, p.scope):
+        m = rules.ZH_LABELS.search(p.zh) or rules.ZH_CAUSAL.search(p.zh)
+        if m:
+            bad("第八条", "第八条家族的中文里出现了贴标签或猜原因的词 {!r}".format(m.group()))
     for en in p.ens:
         cjk = CJK.findall(en)
         if cjk:

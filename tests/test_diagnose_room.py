@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.i18n_rules import ZH_CAUSAL, ZH_LABELS
+
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("diagnose_room", ROOT / "tools" / "diagnose_room.py")
 dr = importlib.util.module_from_spec(spec)
@@ -84,10 +86,13 @@ def test_classify_observations():
     (("withheld", "x"), None),
 ])
 def test_verdict_never_names_a_cause(target, control):
-    """结论只能描述观察和可做的事。这些词每一个都曾被当成原因写进过代码或对话。"""
+    """结论只能描述观察和可做的事。这些词每一个都曾被当成原因写进过代码或对话；
+    提醒「别贴标签」的否定句里也不点它们的名（CLAUDE.md 第八条），所以不再有豁免。"""
     v = dr.verdict(target, control)
-    for banned in ("年龄限制", "被限流", "IP 限流", "封禁", "打坏", "多半"):
-        assert banned not in v.replace("不要贴年龄/限流/封禁之类的标签", ""), (banned, v)
+    for banned in ("年龄", "限流", "封禁", "被挡", "打坏", "多半", "接口变更"):
+        assert banned not in v, (banned, v)
+    hit = ZH_LABELS.search(v) or ZH_CAUSAL.search(v)
+    assert hit is None, (hit and hit.group(), v)
 
 
 def test_verdict_rules():

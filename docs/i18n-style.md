@@ -250,6 +250,7 @@
 - 不把猜测当原因。中文原文里带「可能是 A，或 B」的，英文改写成**让用户去核对的动作**。例如：
   - 原文：「直播流多次中断且自动重连失败——可能直播已结束，或网络不稳。请稍后点「开始翻译」重试。」
   - 译文：**The stream was interrupted several times and couldn’t reconnect. Check that the stream is still live and your network is working, then click Start.**
+  - 这一句（和第八条家族里其它几句带猜测的中文）后来中文也照这个改了：「直播流多次中断且自动重连失败。请确认直播还在进行、网络正常，然后点「开始翻译」重试。」
 - may 只能用来说「将来可能发生」的事（*Alerts may be delayed*），不能用来解释原因。
 
 ### 2.6 第八条（4003110）和「不猜原因」的英文禁用词
@@ -263,7 +264,8 @@
 - 固定说法：**TikTok didn’t provide a stream URL for this live stream (code 4003110).**
 - 中文原文有一句「不是网络或限流问题」。英文版**整句删掉**，换成正面的观察：
   **Other live streams worked at the same time, and TikTok doesn’t say why.**
-  否定句里出现 rate limit 也不行。这是英文版有意和中文不一样的地方。
+  否定句里出现 rate limit 也不行。中文后来也照这样改了（「同一时刻其它直播间正常，原因 TikTok 不说明」），
+  两边现在说的是同一件事。
 - `browser_login` 的 BLOCKED 状态（macOS 没给完全磁盘访问权限）**不点名浏览器**。`observed_text` 是按浏览器
   逐条拼的（「Chrome：系统拒绝读取；Safari：系统拒绝读取」），写死 Safari 会让 Chrome 那一条说错：
   - `_OBSERVED[BLOCKED]` 写 **macOS didn’t allow access**，拼出来是 `Chrome: macOS didn’t allow access`；
@@ -281,7 +283,8 @@
 
 - **因果词**（`EN_CAUSAL`）：只查第八条家族，也就是 `resolver.py`、`browser_login.py`、`comment_source.py`、
   `viewer.py`、`viewer_share.py`、`viewer.js`、`viewer.html`、`index.html` 的 `#input-help`，以及 `pipeline.py` 的
-  `browser_only_message`、`_resolve_media`、`_confirm_offline`、`_host_wait`、`_selfcheck_incident_text`：
+  `browser_only_message`、`_resolve_media`、`_confirm_offline`、`_host_wait`、`_run_session`、
+  `_selfcheck_incident_text`：
 
   ```
   (?i)\b(because|due to|caused by|the reason|probably|likely|must be|seems to)\b
@@ -289,6 +292,10 @@
 
 - 电脑休眠写 suspended 不在任何一级里，照常用。真有一句必须用到这些词，登记进 `EN_WORD_EXCEPTIONS`，
   写明「中文臂 → 理由」。
+- **中文臂**（`ZH_LABELS`、`ZH_CAUSAL`）：同一个第八条家族里，G2 也查中文。标签词是年龄、限流、封禁、私密、
+  观看限制、地区、风控、被挡、繁忙这一类；因果词是「可能是」「也可能」「可能 A，或 B」「多半」「因为」「导致」
+  这一类。光「可能」二字不查，说将来可能发生的事（「系统可能弹出确认框」）照常用，跟英文 may 同一个规矩。
+  家族以外不查中文：Google 引擎说明里的「会按 IP 限流」是对方写明的规则，不是猜的。
 
 同一族以外，还有两处也顺手避开这些词：
 

@@ -69,8 +69,9 @@ def test_browser_only_gives_up_with_a_plain_message(monkeypatch, tmp_path):
     with pytest.raises(ResolveError) as exc:
         run(p._resolve_media("https://www.tiktok.com/@x/live"))
     assert exc.value.kind == "browser_only"
-    # 文案必须说清两件事：这不是限流（曾经的误诊），以及现在就能用的办法
-    assert "不是网络或限流" in str(exc.value)
+    # 文案只写观察和现在就能用的办法，不给拒绝安原因——否定句也不写（CLAUDE.md 第八条）
+    assert "同一时刻其它直播间正常，原因 TikTok 不说明" in str(exc.value)
+    assert "限流" not in str(exc.value) and "年龄" not in str(exc.value)
     assert ".flv" in str(exc.value)
 
 
@@ -143,7 +144,9 @@ def test_expired_media_override_falls_back_to_normal_resolution(monkeypatch, tmp
     got = run(p._resolve_media("https://www.tiktok.com/@bella2/live"))
     assert got == "https://pull-flv-x.tiktokcdn-us.com/new.flv"
     assert p._media_override is None          # 失效的地址不再留着拖累重连
-    assert any("过期" in (m.get("detail") or "") for m in server.messages)
+    details = [m.get("detail") or "" for m in server.messages]
+    assert any("你给的流地址拉不动，改用自动解析" in d for d in details)
+    assert not any("过期" in d for d in details)   # 程序只看到拉不动，看不到为什么（CLAUDE.md 第八条）
 
 
 def test_start_control_message_passes_media_through(monkeypatch, tmp_path):
