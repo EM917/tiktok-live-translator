@@ -1529,7 +1529,11 @@
       parts.push("积压 " + msg.asr_queue_depth + "/" + msg.translation_queue_depth);
     }
     statsEl.textContent = parts.join(" · ");
-    statsEl.classList.remove("hidden");
+    // 只在直播中/连接中揭开。后端每场收尾会补推一次终值（pipeline 的 _end_session），
+    // 出错那条路上它晚于 status=error 到达——这时页面已经回到首页、enterHomeLayout
+    // 已经把统计行收掉了，无条件揭开会让一行全是「—」的统计压在设置列表上
+    // （2026-09-28 用户截图）。文字照常更新，下一场开播时的第一条统计再揭开。
+    if (streamActive) statsEl.classList.remove("hidden");
   }
 
   // 识别落后时必须让中控看见——假装一切正常比晚几秒报警危险得多
