@@ -1,3 +1,4 @@
+# i18n: done
 """审计日志：每一段音频的识别结果逐条落盘（JSONL）。
 
 合规监听场景里，事后要能回答「昨天主播明明说了某个违禁词，为什么没报警」。
@@ -14,6 +15,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+from .i18n import L, bimap, of
 from .redact import strip_query
 
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -39,7 +41,7 @@ def _open_new(directory, stamp):
             return path, path.open("xb", buffering=0)
         except FileExistsError:
             continue
-    raise OSError("同一秒内已有 99 个审计文件")
+    raise OSError(L("同一秒内已有 99 个审计文件", "99 audit files already exist for this second"))
 
 
 def _iso_from_epoch(ts):
@@ -57,7 +59,10 @@ def strip_url_queries(text, limit=300):
 
 def clean_error(exc, limit=200):
     """错误文字写进审计或界面之前去掉 URL 的查询串（签名地址、token 常在里面）。"""
-    return strip_query(exc, limit)
+    # 我们自己抛的 OSError(L(...)) 带着英文：中英两句各清洗一次，界面按语言取，审计仍是中文。
+    # 别的异常 of(exc) 就是 str(exc)，而 strip_query 本来也是先 str() 再清洗：中文结果与改造前
+    # 的 strip_query(exc, limit) 逐字节相同（tests/test_i18n_backend_modules_en.py 钉着）
+    return bimap(lambda s: strip_query(s, limit), of(exc))
 
 
 def _now_ms():
@@ -152,7 +157,8 @@ class AuditLog:
             while done < len(data):
                 n = fh.write(view[done:])
                 if not n:
-                    raise OSError("审计文件写入返回 0 字节")
+                    raise OSError(L("审计文件写入返回 0 字节",
+                                    "Writing to the audit file returned 0 bytes"))
                 done += n
         except (OSError, ValueError):
             if done:

@@ -1,3 +1,4 @@
+# i18n: done
 """ffmpeg 二进制定位：优先系统安装的，其次 pip 包 imageio-ffmpeg 自带的静态版。
 
 这样用户不需要手动装 ffmpeg——`pip install -r requirements.txt` 就把一切备齐；
@@ -5,6 +6,8 @@
 """
 import re
 import shutil
+
+from .i18n import L
 
 _cached = None
 _resolved = False
@@ -30,10 +33,13 @@ def find_ffmpeg():
 
 def ffmpeg_source():
     """描述当前 ffmpeg 来源，用于 doctor 展示。"""
+    # doctor 打在终端上（中文）；自检「音频组件 ffmpeg」那一行的「实测可用（…）」上界面，
+    # 英文是 Working (…)
     exe = find_ffmpeg()
     if exe is None:
         return None
-    return "系统" if shutil.which("ffmpeg") else "内置（imageio-ffmpeg）"
+    return (L("系统", "system ffmpeg") if shutil.which("ffmpeg")
+            else L("内置（imageio-ffmpeg）", "built-in imageio-ffmpeg"))
 
 
 # ffmpeg 滤镜串解析分两级：先按 `[ ] , ;` 拆滤镜图，再按 `:` 拆每个滤镜的

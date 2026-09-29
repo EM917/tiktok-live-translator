@@ -1,3 +1,4 @@
+# i18n: done
 """硬件检测与自动配置：根据这台电脑的芯片/GPU/核数/内存，推荐能实时跑的最优配置。
 
 设计原则：宁可保守也不能丢字幕——推荐的模型必须让识别速度稳定快于直播（RTF < 1）。
@@ -103,7 +104,7 @@ def recommend(info=None, backend=None, device=None):
     if backend == "mlx":
         return {"backend": "mlx", "model": "large-v3", "device": "auto",
                 "compute_type": "auto",
-                "note": "Apple Silicon GPU（MLX）：直接跑最准的 large-v3"}
+                "note": "Apple Silicon GPU（MLX）：直接跑最准的 large-v3"}  # i18n: audit
 
     # ---- ct2（faster-whisper）----
     if device in (None, "auto"):
@@ -111,10 +112,10 @@ def recommend(info=None, backend=None, device=None):
     if device == "cuda":
         return {"backend": "ct2", "model": "large-v3", "device": "cuda",
                 "compute_type": "float16",
-                "note": "NVIDIA GPU：CUDA 跑 large-v3"}
+                "note": "NVIDIA GPU：CUDA 跑 large-v3"}  # i18n: audit
     # CPU 路径
     if info["apple_silicon"]:
-        note = ("Apple Silicon CPU：turbo 临界实时" +
+        note = ("Apple Silicon CPU：turbo 临界实时" +  # i18n: audit
                 ("" if info["has_mlx"] else
                  "——装 mlx-whisper 可改用 GPU 跑 large-v3"))
         return {"backend": "ct2", "model": "large-v3-turbo", "device": "cpu",
@@ -123,11 +124,11 @@ def recommend(info=None, backend=None, device=None):
     if cores >= 8 and ram >= 8:
         return {"backend": "ct2", "model": "small", "device": "cpu",
                 "compute_type": "int8",
-                "note": "普通 CPU（{}核/{:.0f}GB）：small+int8 保实时；"
+                "note": "普通 CPU（{}核/{:.0f}GB）：small+int8 保实时；"  # i18n: audit
                         "识别不够准可手动试 --model medium".format(cores, ram)}
     return {"backend": "ct2", "model": "base", "device": "cpu",
             "compute_type": "int8",
-            "note": "低配 CPU（{}核/{:.0f}GB）：base+int8，优先保证字幕不掉队".format(cores, ram)}
+            "note": "低配 CPU（{}核/{:.0f}GB）：base+int8，优先保证字幕不掉队".format(cores, ram)}  # i18n: audit
 
 
 def doctor():

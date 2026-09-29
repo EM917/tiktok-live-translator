@@ -28,6 +28,8 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+from .i18n import L
+
 APP_DIR_NAME = "TikTok Live Translator.app"      # 与 app/macbundle.py 一致
 
 REQ_STAMP = ".requirements.sha256"               # 放在 .venv 里：环境重建，指纹跟着没
@@ -577,10 +579,17 @@ def mlx_giveup_note(root):
     info = read_mlx_giveup(Path(root) / ".venv" / MLX_GIVEUP)
     if info is None:
         return None
+    # 英文把日期和 pip 的返回码收进同一对括号：(attempted 2026-09-20, pip returned 1)。
+    # 句末不加句号：自检那一行（selfcheck.check_asr）还要在后面接一句
     try:
-        day = datetime.fromtimestamp(info["ts"]).strftime("%Y-%m-%d") if info["ts"] else "之前"
+        day = (datetime.fromtimestamp(info["ts"]).strftime("%Y-%m-%d") if info["ts"]
+               else L("之前", "earlier"))
     except (OverflowError, OSError, ValueError):
-        day = "之前"
-    code = "（pip 返回 {}）".format(info["pip_exit"]) if info["pip_exit"] is not None else ""
-    return ("{} 安装 GPU 加速组件没成功{}，程序启动时不会再自动重试；没在监听时每天在后台"
-            "重试一次，装好后会提示".format(day, code))
+        day = L("之前", "earlier")
+    code = (L("（pip 返回 {}）", ", pip returned {}").format(info["pip_exit"])
+            if info["pip_exit"] is not None else "")
+    return (L("{} 安装 GPU 加速组件没成功{}，程序启动时不会再自动重试；没在监听时每天在后台"
+              "重试一次，装好后会提示",
+              "GPU acceleration couldn’t be installed (attempted {}{}). The app won’t retry "
+              "when it starts. While it isn’t monitoring, it retries once a day in the "
+              "background and lets you know once it’s installed").format(day, code))
