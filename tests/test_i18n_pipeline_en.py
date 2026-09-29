@@ -1,11 +1,15 @@
-"""pipeline.py 的英文场景（spec §12.1 G7 / G8）：会话生命周期、健康提示、持续提示、审计类提示。
+"""pipeline.py、pipeline_engine.py、pipeline_disk.py 的英文场景（spec §12.1 G7 / G8）。
+
+前半是会话生命周期、健康提示、持续提示、审计类提示（提交 M5a）；后半是翻译引擎的回退与报错、
+额度、HTTP 429、报警译文的 why、一键更新暂停、演示模式、本地模型下载、磁盘删除（提交 M5b）。
 
 G7：真的 Pipeline 加记录用的 CaptionServer（tests/test_resilience_stream.py 的 make_pipeline），在
-i18n.use("en") 下跑完一段真实流程，本提交拥有的消息类型（status / notice / incident / health /
-comment_source）里，界面文字渲染成英文后没有中文。输入挑得不经过别的模块的文字：自检项的名字
-用成对的替身，拿不到流地址时没有浏览器观察（advice 为空），解析失败用 ASCII 的 ResolveError。
-别的模块（selfcheck、resolver、browser_login、translator……）的句子由各自的迁移提交补，
-跨模块组合留给收紧闸的提交。
+i18n.use("en") 下跑完一段真实流程，这两个提交拥有的消息类型（status / notice / incident /
+health / comment_source / alert_update）里，界面文字渲染成英文后没有中文。输入挑得不经过别的
+模块的文字：自检项的名字用成对的替身，拿不到流地址时没有浏览器观察（advice 为空），解析失败用
+ASCII 的 ResolveError，引擎名换成 ASCII 的替身（translator.engine_label 由它自己的迁移提交写英文）。
+别的模块（selfcheck、resolver、browser_login、translator、updater、diskspace……）的句子由各自的
+迁移提交补，跨模块组合留给收紧闸的提交。
 
 G8：同一段流程在中文、英文下各跑一次，审计 JSONL 与终端输出逐字节相同（不变量 2），
 借用 tests/test_i18n_backend_en.py 的骨架。
@@ -13,15 +17,18 @@ G8：同一段流程在中文、英文下各跑一次，审计 JSONL 与终端�
 模板写坏时这里直接抛（NET="strict"），不像生产里那样退回中文、只打一行警告。
 """
 import asyncio
+import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
 import app.asr
 from app import i18n
+from app import pipeline as pipeline_mod
 from app import resolver as resolver_mod
 from app import settings as settings_mod
-from app.i18n import CJK
+from app.i18n import CJK, L
 from app.pipeline import LIVE_ENDED_NOTE, Pipeline, _ASRSlot
 from app.resolver import ResolveError
 from tests.helpers import run
@@ -30,7 +37,7 @@ from tests.test_resilience_stream import (DIRECT, ROOM, T0, audit_rows, make_pip
                                           scripted_resolve)
 
 EN = i18n.EN
-OWNED = ("status", "notice", "incident", "health", "comment_source")
+OWNED = ("status", "notice", "incident", "health", "comment_source", "alert_update")
 
 
 @pytest.fixture(autouse=True)
@@ -423,3 +430,373 @@ def test_audit_and_terminal_of_these_messages_do_not_depend_on_the_ui_language(t
     texts = [value for msg in en_got for _, value in i18n.ui_values(msg)]
     assert texts and not [t for t in texts if CJK.search(t)]
     assert zh_got[0]["text"] != en_got[0]["text"]
+
+
+# =========================================================================================
+# 提交 M5b：翻译引擎、额度、429、报警译文的 why、一键更新暂停、演示、本地模型下载、磁盘删除
+# =========================================================================================
+
+LABELS = {"deepl": "DeepL", "claude": "Claude", "openai": "OpenAI", "google": "Google",
+          "hymt2": "Local Hy-MT2 1.8B"}
+
+
+@pytest.fixture
+def ascii_engine_labels(monkeypatch):
+    """引擎的显示名由 translator.py 自己的迁移提交写英文；这里换成 ASCII，只看本提交的句子。"""
+    from app import translator
+    monkeypatch.setattr(translator, "engine_label", lambda name: LABELS.get(name, str(name)))
+
+
+class FakeEngine:
+    def __init__(self, name, status=None, said="", cooldown=0.0, streak=0, model=None,
+                 raises=False):
+        self.name, self.model = name, model
+        self.last_error = (status, said) if status else None
+        self.cooldown_until = time.monotonic() + cooldown if cooldown else 0.0
+        self.fail_streak = streak
+        self.raises = raises
+        self.closed = False
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        if self.raises:
+            raise RuntimeError("timeout")
+        return None
+
+    async def close(self):
+        self.closed = True
+
+
+def notices_en(server):
+    return [i18n.render(m["text"], EN) for m in server.messages if m.get("type") == "notice"]
+
+
+def test_engine_trouble_is_explained_in_english(monkeypatch, tmp_path, ascii_engine_labels):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline_mod, "create_translator", lambda name: None)
+
+    async def scenario():
+        p.translator = FakeEngine("deepl", status=429, cooldown=30.0)
+        await p._note_engine_failure(p.translator)
+        p.translator = FakeEngine("claude", status=401)
+        await p._note_engine_failure(p.translator)
+        await p._settle_engine_incident()
+        p.translator = FakeEngine("openai", status=404, model="gpt-x")
+        await p._note_engine_failure(p.translator)
+        p.translator = FakeEngine("hymt2", status=500, said="model not found", streak=3)
+        await p._note_engine_failure(p.translator)
+
+    with i18n.use(EN):
+        run(scenario())
+    assert_no_chinese(english_ui(server.messages))
+    assert notices_en(server) == [
+        "DeepL returned HTTP 429. Requests are paused for 30 sec, then retried automatically. "
+        "Meanwhile, captions show the original text. Banned-term alerts aren’t affected."]
+    assert incidents_en(server, Pipeline.ENGINE_INCIDENT) == [
+        "Claude returned HTTP 401. Captions show the original text (banned-term alerts aren’t "
+        "affected). The app tries again every 120 sec. In Translation Engine, you can re-enter "
+        "the API key or choose another engine.",
+        "Claude returned HTTP 401. Captions after that showed only the original text "
+        "(banned-term alerts weren’t affected). The app tries again when the next session "
+        "starts. In Translation Engine, you can re-enter the API key or choose another engine.",
+        "OpenAI returned HTTP 404 (model gpt-x). Captions show the original text (banned-term "
+        "alerts aren’t affected). The app tries again every 120 sec. In Translation Engine, you "
+        "can choose another engine.",
+        "Local Hy-MT2 1.8B returned no translation 3 times in a row. Ollama returned HTTP 500: "
+        "model not found. Captions show the original text (banned-term alerts aren’t "
+        "affected). You can choose another engine in Translation Engine."]
+
+
+def test_engine_fallbacks_are_explained_in_english(monkeypatch, tmp_path, ascii_engine_labels):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    made = []
+
+    def fake_create(name):
+        made.append(name)
+        return FakeEngine(["hymt2", "google", "hymt2"][len(made) - 1])
+
+    monkeypatch.setattr(pipeline_mod, "create_translator", fake_create)
+
+    async def scenario():
+        p.translator = FakeEngine("claude", status=403)
+        await p._note_engine_failure(p.translator)          # 本机有本地模型：本场改用它
+        p.translator = old = FakeEngine("deepl")
+        await p._quota_fallback(old)                        # 额度用完，只有 Google
+        p.translator = old = FakeEngine("deepl")
+        await p._quota_fallback(old)                        # 额度用完，改用本地引擎
+
+    with i18n.use(EN):
+        run(scenario())
+    assert_no_chinese(english_ui(server.messages))
+    assert notices_en(server) == [
+        "Claude returned HTTP 403. This session switched to Local Hy-MT2 1.8B to keep "
+        "translating. To switch back, re-enter the API key in Translation Engine, then choose "
+        "Claude again.",
+        "The DeepL free quota is used up, and no local model is available on this computer, so "
+        "the app switched to Google (free) to keep translating. Captions are now sent to "
+        "Google. After you upgrade or renew DeepL, choose DeepL again to switch back.",
+        "The DeepL free quota is used up, so this session switched to a local engine (hymt2) to "
+        "keep translating. After you upgrade or renew DeepL, choose DeepL again to switch back."]
+    assert i18n.render(p.args.translator_note, EN) == notices_en(server)[-1]
+
+
+def test_choosing_an_engine_that_is_not_ready_is_english(monkeypatch, tmp_path,
+                                                         ascii_engine_labels):
+    from app.translator import HYMT2_LARGE
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(Pipeline, "_stream_active", lambda self: True)
+
+    def refuse(name):
+        raise RuntimeError(L("缺少密钥", "The API key is missing."))
+
+    monkeypatch.setattr(pipeline_mod, "create_translator", refuse)
+
+    async def scenario():
+        p.translator = FakeEngine("deepl")
+        await p._keep_engine_until_model("hymt2-7b", HYMT2_LARGE)
+        p.translator = None
+        await p._keep_engine_until_model("hymt2-7b", HYMT2_LARGE)
+        await p.set_engine("deepl")                         # 建引擎抛出的界面文字原样带英文
+
+    with i18n.use(EN):
+        run(scenario())
+    assert_no_chinese(english_ui(server.messages))
+    assert notices_en(server) == [
+        "Ollama on this computer doesn’t have Hy-MT2 7B yet. This session keeps using DeepL. It "
+        "downloads automatically after monitoring stops.",
+        "Ollama on this computer doesn’t have Hy-MT2 7B yet. This session continues without "
+        "translation. It downloads automatically after monitoring stops.",
+        "The API key is missing."]
+
+
+def test_alert_translation_reasons_are_short_english_fragments(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def no_strong():
+        return None
+
+    monkeypatch.setattr(p, "_strong_translator", no_strong)
+
+    async def scenario():
+        p.translator = None
+        await p._translate_alert([1], "hola amigos", "es")          # 没有引擎
+        p.telemetry.set_backlog(20.0)
+        await p._translate_alert([2], "hola amigos", "es")          # 识别在积压
+        p.telemetry.set_backlog(0.0)
+        p.translator = FakeEngine("hymt2", raises=True)
+        await p._translate_alert([3], "hola amigos", "es")          # 译的时候出错
+
+    with i18n.use(EN):
+        run(scenario())
+    assert_no_chinese(english_ui(server.messages))
+    whys = [i18n.render(m["why"], EN) for m in server.messages if m["type"] == "alert_update"]
+    assert whys == ["no translation engine is available",
+                    "skipped while speech recognition is behind",
+                    "translation timed out or failed"]
+
+
+def test_update_pause_and_resume_are_english(monkeypatch, tmp_path):
+    from app.provenance import app_version
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(Pipeline, "_stream_active", lambda self: True)
+    started = []
+
+    async def fake_start(url, media=None):
+        started.append(url)
+
+    p.start_stream = fake_start
+    server.config["room_url"] = ROOM
+
+    class Updater:
+        _applying = False
+
+        async def apply(self, live, pause, resume, before_restart):
+            await pause("1.0.0", "1.1.0", pip_minutes=10)
+            raise RuntimeError("boom")
+
+    p.updater = Updater()
+
+    async def scenario():
+        await p._apply_update()
+        await p._pause_for_update("1.0.0", "1.1.0")
+        settings_mod.save_setting("resume_after_update", {"url": ROOM, "at": time.time()})
+        await p.resume_after_update()
+
+    with i18n.use(EN):
+        run(scenario())
+    assert_no_chinese(english_ui(server.messages))
+    texts = statuses_en(server)
+    assert texts[0] == ("Updating. Monitoring is paused while the new version’s components "
+                        "install (up to about 10 min). Then the app restarts and resumes "
+                        "monitoring.")
+    assert "Updating. Monitoring is paused and resumes in about 1 minute." in texts
+    assert texts[-1] == "Updated to v{}. Resuming monitoring @bellaallnatural…".format(
+        app_version())
+    assert incidents_en(server, "update") == [
+        "The update didn’t finish: The app hit an error during the update (RuntimeError)."]
+    assert started == [ROOM]
+
+
+def test_demo_terms_brands_and_retranslate_notes_are_english(monkeypatch, tmp_path):
+    from app import glossary
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    terms = tmp_path / "terms.txt"
+    terms.write_text("uno\n", encoding="utf-8")
+    p.detector = SimpleNamespace(source_path=str(terms), source_mtime=0, source_hash="old")
+    monkeypatch.setattr(glossary, "BRAND_DIR", tmp_path / "brands")
+
+    def cannot_open(path):
+        raise OSError("no opener")
+
+    p._brand_dir_opener = cannot_open
+
+    async def no_strong():
+        return None
+
+    monkeypatch.setattr(p, "_strong_translator", no_strong)
+    p._recent[7] = {"id": 7, "text": "hola", "lang": "es", "target": "zh-CN"}
+
+    async def scenario():
+        demo = asyncio.ensure_future(p.run_demo())
+        for _ in range(3):
+            await asyncio.sleep(0)
+        demo.cancel()
+        try:
+            await demo
+        except asyncio.CancelledError:
+            pass
+        await p._check_terms_changed()
+        await p._open_brands_dir()
+        await p.retranslate(7)
+
+    with i18n.use(EN):
+        run(scenario())
+    assert_no_chinese(english_ui(server.messages))
+    assert statuses_en(server)[:2] == [
+        "Starting demo mode…",
+        "Demo mode: built-in sample lines simulate live captions (not connected to a real "
+        "stream)"]
+    assert notices_en(server) == [
+        "The banned-term list changed. Click Stop, then Start, to apply it.",
+        "Couldn’t open the folder: {}".format(tmp_path / "brands"),
+        "No local model is available, so this can’t be retranslated. See Translation Engine in "
+        "Startup Check on the home screen."]
+
+
+def test_local_model_download_notes_are_english(monkeypatch, tmp_path):
+    from app import localmodel
+    from app.translator import HYMT2_LARGE, HYMT2_SMALL
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.translator = None
+    p.args.translator = "hymt2"
+
+    async def failing_pull(model, on_progress=None):
+        on_progress(50.0, 550.0, 1100.0)
+        for _ in range(3):
+            await asyncio.sleep(0)                  # 让进度那一条先发出去
+        return False, None
+
+    async def not_running(timeout=2):
+        return False
+
+    async def nothing():
+        return None
+
+    monkeypatch.setattr(localmodel, "pull", failing_pull)
+    monkeypatch.setattr(localmodel, "is_running", not_running)
+    monkeypatch.setattr(localmodel, "is_installed", lambda: True)
+    monkeypatch.setattr(p, "_provision_then_check", nothing)
+
+    async def scenario():
+        await p._defer_pull(HYMT2_LARGE)
+        assert await p._pull_model(HYMT2_SMALL) is False
+        p.translator = FakeEngine("hymt2")
+        await p._heal_local_engine()
+
+    with i18n.use(EN):
+        run(scenario())
+    assert_no_chinese(english_ui(server.messages))
+    assert statuses_en(server) == [
+        "The local translation model Hy-MT2 7B isn’t downloaded yet. It downloads "
+        "automatically after monitoring stops.",
+        "Preparing the local translation model (about 1.1 GB, only needed once)…",
+        "Downloading the local translation model… 50% (550 of 1100 MB, only needed once)",
+        "Couldn’t download the local translation model: Ollama gave no details. The app "
+        "continues without translation, and tries again after the next session stops."]
+    assert notices_en(server) == [
+        "Ollama, which the translation engine uses, isn’t running. Starting it…"]
+
+
+def test_disk_delete_notes_are_english(monkeypatch, tmp_path):
+    from app import diskspace
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    results = iter([(1_200_000, ["a"], ["b: skipped", "c: skipped"]),
+                    (2_400_000, ["a", "b"], [])])
+
+    async def fake_delete(ids, **kw):
+        return next(results)
+
+    async def no_models():
+        return []
+
+    async def nothing():
+        return None
+
+    monkeypatch.setattr(diskspace, "delete", fake_delete)
+    monkeypatch.setattr(p, "_ollama_models", no_models)
+    monkeypatch.setattr(p, "_publish_disk", nothing)
+
+    async def scenario():
+        server.config["status"] = {"state": "live"}
+        await p._disk_delete(["a"])
+        server.config["status"] = {"state": "idle"}
+        await p._disk_delete(["a"])
+        await p._disk_delete(["a", "b"])
+
+    with i18n.use(EN):
+        run(scenario())
+    assert_no_chinese(english_ui(server.messages))
+    assert notices_en(server) == [
+        "Files can’t be deleted during a stream. Click Stop first.",
+        "Deleted 1 item and freed {}. Not deleted: b: skipped; c: skipped".format(
+            diskspace.human(1_200_000)),
+        "Deleted 2 items and freed {}.".format(diskspace.human(2_400_000))]
+
+
+# ---- G8（M5b）：引擎出错与回退写进审计和终端的，与界面语言无关 --------------------------------
+
+def _engine_trouble_in(lang, monkeypatch, tmp_path, capsys):
+    from app.audit import AuditLog
+    (tmp_path / lang).mkdir()
+    p, server = make_pipeline(monkeypatch, tmp_path / lang)
+    p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path / lang / "logs")
+    monkeypatch.setattr(pipeline_mod, "create_translator", lambda name: None)
+
+    async def scenario():
+        p.translator = FakeEngine("deepl", status=429, cooldown=30.0)
+        await p._note_engine_failure(p.translator)
+        p.translator = FakeEngine("claude", status=401)
+        await p._note_engine_failure(p.translator)
+        await p._settle_engine_incident()
+
+    i18n._bad_once.clear()
+    capsys.readouterr()
+    with i18n.use(lang):
+        run(scenario())
+    p.audit.close(reason="user_stop")
+    rows = [json.dumps({k: v for k, v in json.loads(line).items()
+                        if k not in ("at", "ts", "started_at", "ended_at")}, ensure_ascii=False)
+            for line in p.audit.path.read_text(encoding="utf-8").splitlines()]
+    return rows, capsys.readouterr().out, server
+
+
+def test_engine_audit_and_terminal_do_not_depend_on_the_ui_language(
+        monkeypatch, tmp_path, capsys, ascii_engine_labels):
+    zh_rows, zh_out, _ = _engine_trouble_in(i18n.ZH, monkeypatch, tmp_path, capsys)
+    en_rows, en_out, en_server = _engine_trouble_in(i18n.EN, monkeypatch, tmp_path, capsys)
+    assert en_rows == zh_rows and en_out == zh_out
+    assert "[警告] DeepL 返回 HTTP 429，程序暂停请求 30 秒后自动重试" in zh_out
+    kinds = [json.loads(r)["type"] for r in zh_rows]
+    assert "translation_cooldown" in kinds and "translation_engine_error" in kinds
+    assert "returned HTTP" not in zh_out and "returned HTTP" not in "\n".join(zh_rows)
+    assert incidents_en(en_server, Pipeline.ENGINE_INCIDENT)[0].startswith(
+        "Claude returned HTTP 401.")

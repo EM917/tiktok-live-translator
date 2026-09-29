@@ -1,3 +1,4 @@
+# i18n: done
 """管线编排：拉流 → (降噪) → 切段 → 语音识别 → 翻译 → 广播给 UI。
 
 支持两种启动方式：命令行传直播间地址，或在网页 UI 里输入地址点「开始」。
@@ -68,7 +69,7 @@ def load_detector(path=None):
     except Exception as exc:
         print("[错误] 违禁词表没能加载：{}".format(exc))
         info = TermsFile()
-        info.read_error = str(exc)[:200]
+        info.read_error = str(exc)[:200]  # i18n: data
         detector = BannedTermDetector([])
     detector.source_path = str(target)
     detector.source_hash = info.hash
@@ -228,8 +229,9 @@ def _arnndn_probe(model_path):
 RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/"
                "beguiling-drafter-2018-08-30/bd.rnnn")
 
-# 演示模式的内置台词（英文原文 + 中文译文），用于在没有直播时验证 UI
-DEMO_SCRIPT = [
+# 演示模式的内置台词（英文原文 + 中文译文），用于在没有直播时验证 UI。
+# 台词是字幕数据，不随界面语言变（spec §1：DEMO_SCRIPT 不在英文化范围内）
+DEMO_SCRIPT = [  # i18n: data
     ("Hey everyone, welcome back to my live stream!", "嘿大家好，欢迎回到我的直播间！"),
     ("If you're new here, don't forget to tap the follow button.", "如果你是新来的，别忘了点一下关注按钮。"),
     ("Today I'm going to show you guys something really special.", "今天我要给大家展示一个特别的东西。"),
@@ -538,7 +540,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         except OSError as exc:
             print("[警告] 打开品牌词表文件夹失败：{}".format(exc))
             return self.server.broadcast(
-                {"type": "notice", "text": "无法打开文件夹：{}".format(BRAND_DIR)})
+                {"type": "notice", "text": L("无法打开文件夹：{}",
+                                             "Couldn’t open the folder: {}").format(BRAND_DIR)})
         return None
 
     # 一键更新暂停监听后，新进程要在这么久之内起来，才自动接着监听（记号读到即删）
@@ -565,7 +568,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             pause = getattr(self, "_update_pause", None)
             if pause is not None:
                 await self._resume_after_update_failure(
-                    pause, "更新过程中程序出错（{}）".format(type(exc).__name__))
+                    pause, L("更新过程中程序出错（{}）",
+                             "The app hit an error during the update ({})").format(
+                        type(exc).__name__))
         finally:
             self._update_pause = None
             # 更新期间推迟的模型下载：走到这里说明没有重启（没更新成、或中控自己停了监听）
@@ -597,10 +602,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         self._stop_reason = "update"
         await self.stop_stream(quiet=True)
         if pip_minutes:
-            text = ("正在更新，监听已暂停：先安装新版本需要的组件（最长约 {} 分钟），"
-                    "装好后自动重启并恢复监听".format(pip_minutes))
+            text = L("正在更新，监听已暂停：先安装新版本需要的组件（最长约 {} 分钟），"
+                     "装好后自动重启并恢复监听",
+                     "Updating. Monitoring is paused while the new version’s components "
+                     "install (up to about {} min). Then the app restarts and resumes "
+                     "monitoring.").format(pip_minutes)
         else:
-            text = "正在更新，监听已暂停（约 1 分钟后自动恢复）"
+            text = L("正在更新，监听已暂停（约 1 分钟后自动恢复）",
+                     "Updating. Monitoring is paused and resumes in about 1 minute.")
         await self.server.status("connecting", text)
         return token
 
@@ -615,13 +624,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         token = token or {}
         url = token.get("url")
         if token.get("operator_acted") or self._stream_active():
-            await self._incident("update", "warn", "一键更新没完成：{}".format(text))
+            await self._incident("update", "warn",
+                                 L("一键更新没完成：{}", "The update didn’t finish: {}.").format(text))
             return
         if not url:
             await self.server.status("idle", text)
             return
         await self._incident("update", "warn",
-                             "一键更新没完成：{}。已在当前版本上自动恢复监听".format(text))
+                             L("一键更新没完成：{}。已在当前版本上自动恢复监听",
+                               "The update didn’t finish: {}. Monitoring resumed on the "
+                               "current version.").format(text))
         self._resume_reason = "update_failed"
         # 品牌词表跟着这次恢复走：token 里没有这个键（老流程/测试构造的半成品
         # token）按不限处理，和「缺字段按不限」的宽容原则一致
@@ -674,7 +686,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         brand = marker.get("brand")
         self.brand = brand if isinstance(brand, str) and brand else None
         self.server.config["active_brand"] = self._active_brand_info()
-        await self.server.status("connecting", "已更新到 v{}，正在自动恢复监听{}…".format(
+        await self.server.status("connecting", L("已更新到 v{}，正在自动恢复监听{}…",
+                                                 "Updated to v{}. Resuming monitoring{}…").format(
             app_version(), " @" + streamer if streamer else ""))
         await self.start_stream(url, media=media if isinstance(media, str) and media else None)
         return True
@@ -1129,7 +1142,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             return
         if audit is not None:
             audit.terms_changed(digest)
-        text = "违禁词表已修改，点「停止」再「开始翻译」后生效"
+        text = L("违禁词表已修改，点「停止」再「开始翻译」后生效",
+                 "The banned-term list changed. Click Stop, then Start, to apply it.")
         print("[提示] " + text)
         await self.server.broadcast({"type": "notice", "text": text})
 
@@ -1972,10 +1986,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         try:
             await self._incident(
                 self.ENGINE_INCIDENT, "error",
-                "{}，之后的字幕只显示了原文（违禁词报警不受影响）。下一场开始后会再试；"
-                "可以在「翻译引擎」里{}".format(
-                    info["what"], "换一个引擎" if info["status"] == 404
-                    else "重新填写密钥，或换一个引擎"))
+                L("{}，之后的字幕只显示了原文（违禁词报警不受影响）。下一场开始后会再试；"
+                  "可以在「翻译引擎」里{}",
+                  "{}. Captions after that showed only the original text (banned-term alerts "
+                  "weren’t affected). The app tries again when the next session starts. In "
+                  "Translation Engine, you can {}.").format(
+                    info["what"], L("换一个引擎", "choose another engine") if info["status"] == 404
+                    else L("重新填写密钥，或换一个引擎",
+                           "re-enter the API key or choose another engine")))
         except Exception:
             pass
 
@@ -3589,7 +3607,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         try:
             new = await loop.run_in_executor(None, create_translator, engine)
         except RuntimeError as exc:
-            await self.server.broadcast({"type": "notice", "text": str(exc)})
+            await self.server.broadcast({"type": "notice", "text": of(exc)})
             return
         old, self.translator = self.translator, new
         if old is not None and old is not new:
@@ -3640,8 +3658,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         save_setting("translator", engine)
         if self._stream_active():
             current = getattr(self.translator, "name", None)
-            text = "本机 Ollama 里还没有 {}，本场{}；停止后自动下载".format(
-                model_label(model), "继续用" + engine_label(current) if current else "继续不翻译")
+            text = L("本机 Ollama 里还没有 {}，本场{}；停止后自动下载",
+                     "Ollama on this computer doesn’t have {} yet. This session {}. It "
+                     "downloads automatically after monitoring stops.").format(
+                model_label(model),
+                L("继续用", "keeps using ") + engine_label(current) if current
+                else L("继续不翻译", "continues without translation"))
             print("[信息] " + text)
             self.args.translator_note = text     # 引擎面板上一直看得到，直到下次选引擎
             self._pull_deferred = model
@@ -3752,12 +3774,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                     held = True
             used = first = strong or fast
             if first is None:
+                # why 会拼进「译文失败（{why}）」一类的句子：英文写成小写开头、不带句号的片段
                 if for_backlog:
-                    why = "识别正在积压，这条报警先不翻译"
+                    why = L("识别正在积压，这条报警先不翻译",
+                            "skipped while speech recognition is behind")
                 elif for_busy:
-                    why = "另一条报警正在用强模型翻译，这条先不翻译"
+                    why = L("另一条报警正在用强模型翻译，这条先不翻译",
+                            "skipped while another alert uses the stronger model")
                 else:
-                    why = "没有可用的翻译引擎"
+                    why = L("没有可用的翻译引擎", "no translation engine is available")
                 await tell(why=why)
                 self._record_alert_translation(audit, alert_ids, None, None, t0, False, why,
                                                for_backlog, for_busy, None)
@@ -3783,7 +3808,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             if not out and first is strong and strong is not None and not fallback:
                 err = getattr(strong, "last_error", None)
                 if err and err[0] is not None:
-                    error = "HTTP {}{}".format(err[0], "：" + err[1] if err[1] else "")
+                    error = "HTTP {}{}".format(err[0], "：" + err[1] if err[1] else "")  # i18n: audit
                 if getattr(self, "_strong", None) is strong:
                     self._drop_strong()       # 下一条报警重新探测（探测在线程池里）
                 if fast is not None and fast is not strong:
@@ -3802,7 +3827,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self._alert_strong_busy = False
             if held:
                 self._release_strong(strong)
-        why = "" if out else ("翻译超时或出错" if hard_fail else "模型没有返回译文")
+        why = "" if out else (L("翻译超时或出错", "translation timed out or failed") if hard_fail
+                              else L("模型没有返回译文", "the model returned no translation"))
         await tell(out, why=why)
         self._record_alert_translation(audit, alert_ids, used, out, t0, fallback, why,
                                        for_backlog, for_busy, error)
@@ -3953,13 +3979,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if name == "google":
             # 不是本地引擎，字幕会发给 Google——合规工具的提示绝不能在
             # 「数据去哪了」这件事上含糊
-            note = ("DeepL 免费额度已用完，且本机没有可用的本地模型，"
-                    "已自动改用 Google 免费接口继续翻译——注意：字幕文本会"
-                    "发送给 Google。在 DeepL 升级/续费后重选 DeepL 即可回来。")
+            note = L("DeepL 免费额度已用完，且本机没有可用的本地模型，"
+                     "已自动改用 Google 免费接口继续翻译——注意：字幕文本会"
+                     "发送给 Google。在 DeepL 升级/续费后重选 DeepL 即可回来。",
+                     "The DeepL free quota is used up, and no local model is available on this "
+                     "computer, so the app switched to Google (free) to keep translating. "
+                     "Captions are now sent to Google. After you upgrade or renew DeepL, "
+                     "choose DeepL again to switch back.")
         else:
-            note = ("DeepL 免费额度已用完，本场已自动改用本地引擎（{}）继续"
-                    "翻译。在 DeepL 升级/续费后重选 DeepL 即可回来。"
-                    ).format(name)
+            note = L("DeepL 免费额度已用完，本场已自动改用本地引擎（{}）继续"
+                     "翻译。在 DeepL 升级/续费后重选 DeepL 即可回来。",
+                     "The DeepL free quota is used up, so this session switched to a local "
+                     "engine ({}) to keep translating. After you upgrade or renew DeepL, "
+                     "choose DeepL again to switch back."
+                     ).format(name)
         print("[警告] " + note)
         self.args.translator_note = note
         await self.server.broadcast({"type": "notice", "text": note})
@@ -3999,8 +4032,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 return None
             self._cooldown_mark = mark
             seconds = int(round(remaining))
-            text = ("{} 返回 HTTP 429，程序暂停请求 {} 秒后自动重试；这期间字幕先显示原文，"
-                    "违禁词报警不受影响").format(label, seconds)
+            text = L("{} 返回 HTTP 429，程序暂停请求 {} 秒后自动重试；这期间字幕先显示原文，"
+                     "违禁词报警不受影响",
+                     "{} returned HTTP 429. Requests are paused for {} sec, then retried "
+                     "automatically. Meanwhile, captions show the original text. Banned-term "
+                     "alerts aren’t affected.").format(label, seconds)
             print("[警告] " + text)
             if audit is not None:
                 audit.translation_cooldown(name, 429, seconds)
@@ -4014,9 +4050,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             if audit is not None:
                 audit.translation_engine_error(
                     name, status, model=None if name == "deepl" else model)
-            what = "{} 返回 HTTP {}".format(label, status)
+            what = L("{} 返回 HTTP {}", "{} returned HTTP {}").format(label, status)
             if status == 404 and name != "deepl":
-                what += "（模型 {}）".format(model)
+                what += L("（模型 {}）", " (model {})").format(model)
             print("[警告] " + what)
             fallback = await self._rejection_fallback(tr, what, status)
             if fallback is None:
@@ -4024,20 +4060,28 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self._engine_rejection = {"what": what, "status": status}   # 停止时改写用
                 await self._incident(
                     self.ENGINE_INCIDENT, "error",
-                    "{}，字幕先显示原文（违禁词报警不受影响），程序每 {} 秒再试一次；"
-                    "可以在「翻译引擎」里{}".format(
+                    L("{}，字幕先显示原文（违禁词报警不受影响），程序每 {} 秒再试一次；"
+                      "可以在「翻译引擎」里{}",
+                      "{}. Captions show the original text (banned-term alerts aren’t "
+                      "affected). The app tries again every {} sec. In Translation Engine, you "
+                      "can {}.").format(
                         what, BaseTranslator.REJECT_COOLDOWN_SEC,
-                        "换一个引擎" if status == 404 else "重新填写密钥，或换一个引擎"))
+                        L("换一个引擎", "choose another engine") if status == 404
+                        else L("重新填写密钥，或换一个引擎",
+                               "re-enter the API key or choose another engine")))
             return fallback
         if name in ("hymt2", "hymt2-7b", "gemma") \
                 and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
             self._engine_error_mark = mark
             if audit is not None:
                 audit.translation_engine_error(name, status, error=said, model=model)
-            text = ("{} 连续 {} 次没有译文，Ollama 返回 HTTP {}{}。字幕先显示原文"
-                    "（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎").format(
+            text = L("{} 连续 {} 次没有译文，Ollama 返回 HTTP {}{}。字幕先显示原文"
+                     "（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎",
+                     "{} returned no translation {} times in a row. Ollama returned HTTP {}{}. "
+                     "Captions show the original text (banned-term alerts aren’t affected). "
+                     "You can choose another engine in Translation Engine.").format(
                         label, getattr(tr, "fail_streak", 0), status,
-                        "：" + said if said else "")
+                        L("：", ": ") + said if said else "")
             self._engine_incident_up = True
             self._engine_rejection = None
             await self._incident(self.ENGINE_INCIDENT, "warn", text)
@@ -4085,10 +4129,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             await old.close()
         except Exception:
             pass
-        back = ("在「翻译引擎」里换好模型后重选 {} 即可回来。" if status == 404
-                else "在「翻译引擎」里重新填写密钥后重选 {} 即可回来。").format(
+        back = (L("在「翻译引擎」里换好模型后重选 {} 即可回来。",
+                  "To switch back, change the model in Translation Engine, then choose {} "
+                  "again.") if status == 404
+                else L("在「翻译引擎」里重新填写密钥后重选 {} 即可回来。",
+                       "To switch back, re-enter the API key in Translation Engine, then "
+                       "choose {} again.")).format(
                     engine_label(getattr(old, "name", None)))
-        note = "{}，本场已改用{}继续翻译。{}".format(what, engine_label(new.name), back)
+        note = L("{}，本场已改用{}继续翻译。{}",
+                 "{}. This session switched to {} to keep translating. {}").format(
+            what, engine_label(new.name), back)
         print("[警告] " + note)
         self.args.translator_note = note
         await self.server.broadcast({"type": "notice", "text": note})
@@ -4138,7 +4188,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if strong is None:
             await self.server.broadcast({
                 "type": "notice",
-                "text": "没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）"})
+                "text": L("没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）",
+                          "No local model is available, so this can’t be retranslated. See "
+                          "Translation Engine in Startup Check on the home screen.")})
             return
         if self._quality.get(seq, 0) >= QUALITY_STRONG:
             return                        # 这一条已经是强模型译的，不重复
@@ -4293,9 +4345,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             self._stream_task = asyncio.create_task(self.run_demo())
 
     async def run_demo(self):
-        await self.server.status("connecting", "演示模式启动中…")
+        await self.server.status("connecting", L("演示模式启动中…", "Starting demo mode…"))
         await asyncio.sleep(1.0)
-        await self.server.status("live", "演示模式：内置台词模拟直播字幕（未连接真实直播）")
+        await self.server.status("live", L("演示模式：内置台词模拟直播字幕（未连接真实直播）",
+                                           "Demo mode: built-in sample lines simulate live "
+                                           "captions (not connected to a real stream)"))
         while True:
             for original, translated in DEMO_SCRIPT:
                 self._counter += 1
