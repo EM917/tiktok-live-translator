@@ -609,14 +609,15 @@ async def check_resolver():
     if browsers:
         return _check(NAMES["resolver"], OK,
                       L("yt-dlp 可用；解析时按这个顺序借用浏览器的登录状态：{}",
-                        "yt-dlp works. Stream lookup uses browser logins in this order: {}")
+                        "yt-dlp works. Stream lookup uses the TikTok sign-in from these browsers, in "
+                        "this order: {}")
                       .format(L(" / ", " / ").join(browsers)))
     return _check(NAMES["resolver"], WARN,
                   L("yt-dlp 可用，但找不到可借用登录状态的浏览器——"
                     "TikTok 常把在播房间报成「未开播」",
-                    "yt-dlp works, but no browser with a login the app can use was found. For "
-                    "signed-out requests, TikTok often reports live streams as not live."),
-                  L("在 Chrome/Safari 里登录一次 TikTok", "Log in to TikTok once in Chrome or Safari."))
+                    "yt-dlp works, but the app didn’t find a browser with a TikTok sign-in it can "
+                    "use. For signed-out requests, TikTok often reports live streams as not live."),
+                  L("在 Chrome/Safari 里登录一次 TikTok", "Sign in to TikTok once in Chrome or Safari."))
 
 
 async def check_browser_login():
@@ -649,15 +650,15 @@ def _browser_login_row(observed):
     from . import browser_login as bl
 
     name = NAMES["browser_login"]
-    # 英文写成括号里的完整句子：前面接的 observed_text 英文带不带句号都读得通
+    # 英文以句号开头、另起两句：前面接的 observed_text 和「Didn’t find…」英文都不带句末句号
     scope = L("（只有 TikTok 要求登录才给流地址的直播间用得到，其余直播间不受影响）",
-              " (Only live streams where TikTok requires a login to provide the stream URL need "
-              "this. Other live streams aren’t affected.)")
+              ". Only live streams where TikTok provides the stream URL only to signed-in viewers "
+              "need this. Other live streams aren’t affected.")
     if not observed:
         return _check(name, WARN,
                       L("没有找到 Chrome、Safari 等可借用登录的浏览器",
-                        "Didn’t find Chrome, Safari, or another browser with a login the app can "
-                        "use") + scope,
+                        "Didn’t find Chrome, Safari, or another browser with a TikTok sign-in the "
+                        "app can use") + scope,
                       bl.LOGIN_STEPS)
     if all(code == bl.NOT_READ for code in observed.values()):
         return _check(name, OK,

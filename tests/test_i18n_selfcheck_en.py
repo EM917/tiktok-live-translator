@@ -29,7 +29,7 @@ PY = "/opt/py/bin/python3"
 NOTE = "GPU acceleration didn't install on 2026-09-01"            # bootstrap.mlx_giveup_note
 HINT = "Install Ollama from ollama.com, then reopen the app."      # localmodel.install_hint
 WARNING = "Line 7 'foo # x' can't match: put the comment on its own line"   # detector.load_warnings
-OBSERVED = "Chrome: no TikTok login"                               # browser_login.observed_text
+OBSERVED = "Chrome: no TikTok sign-in"                               # browser_login.observed_text
 
 ENGLISH_NAMES = {"Audio (ffmpeg)", "Noise Reduction", "Speech Recognition", "Translation Engine",
                  "Banned-Term List", "Glossary", "Audit Log", "Stream Lookup", "Browser Login",
@@ -256,9 +256,9 @@ def _resolver(mp, tmp_path):
 
 def _browser_login(mp, tmp_path):
     from app import browser_login as bl
-    mp.setattr(bl, "LOGIN_STEPS", "Log in to TikTok in Chrome, then try again.")
+    mp.setattr(bl, "LOGIN_STEPS", "Sign in to TikTok in Chrome, then try again.")
     mp.setattr(bl, "observed_text", lambda observed: OBSERVED)
-    mp.setattr(bl, "steps_text", lambda observed: "Log in to TikTok in Chrome.")
+    mp.setattr(bl, "steps_text", lambda observed: "Sign in to TikTok in Chrome.")
     rows = [selfcheck._browser_login_row({}),
             selfcheck._browser_login_row({"Chrome": bl.NOT_READ}),
             selfcheck._browser_login_row({"Chrome": bl.OK, "Safari": bl.BLOCKED}),
@@ -474,12 +474,23 @@ def test_deepl_glossary_size_uses_english_plurals(tsv, expected, monkeypatch):
 
 def test_browser_login_scope_reads_after_any_observation(monkeypatch, tmp_path):
     rows = _rows("browser_login", monkeypatch, tmp_path)
-    scope = (" (Only live streams where TikTok requires a login to provide the stream URL need "
-             "this. Other live streams aren’t affected.)")
+    scope = (". Only live streams where TikTok provides the stream URL only to signed-in viewers "
+             "need this. Other live streams aren’t affected.")
     details = [i18n.text(r["detail"], i18n.EN) for r in rows]
     assert OBSERVED + scope in details
-    assert ("Didn’t find Chrome, Safari, or another browser with a login the app can use"
-            + scope) in details
+    assert ("Didn’t find Chrome, Safari, or another browser with a TikTok sign-in the app can "
+            "use" + scope) in details
+    # 「登录」这个动作全仓只用 sign in / sign-in（docs/i18n-style.md §1.3）
+    assert not [d for d in details if "log in" in d.lower() or "login" in d.lower()], details
+
+
+def test_stream_lookup_rows_say_sign_in(monkeypatch, tmp_path):
+    rows = _rows("resolver", monkeypatch, tmp_path)
+    texts = [i18n.text(r[k], i18n.EN) for r in rows for k in ("detail", "fix") if r.get(k)]
+    assert ("yt-dlp works. Stream lookup uses the TikTok sign-in from these browsers, in this "
+            "order: Chrome / Safari") in texts
+    assert "Sign in to TikTok once in Chrome or Safari." in texts
+    assert not [t for t in texts if "log in" in t.lower() or "login" in t.lower()], texts
 
 
 # ---- G8：审计和终端与界面语言无关 ---------------------------------------------------------------

@@ -121,6 +121,7 @@
 | 提示音 | **Sound** | Ringtone, Beep | |
 | 演示模式 | **Demo mode** | Test mode | |
 | 浏览器登录态 | **Browser Login** | Cookies, Session | |
+| 登录（动作）/ 登录（名词）/ 已登录、未登录 | **sign in** / **sign-in** / **signed in、signed-out** | log in, login, logged in | 苹果的说法；browser_login、comment_source、resolver、selfcheck 统一这么写。设置行名 Browser Login 照上一行保留；钥匙串对话框里的 login password 是 macOS 自己的叫法，照抄 |
 | 完全磁盘访问权限 | **Full Disk Access** | | 照抄 macOS 里的原名 |
 | 直播流解析 | **Stream Lookup** | Stream Resolution | 「解析」对用户来说就是去找流地址。Resolution 容易被当成分辨率 |
 | 音频组件 ffmpeg | **Audio (ffmpeg)** | Audio Component | ffmpeg 全小写，是它的品牌写法 |
