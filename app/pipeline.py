@@ -161,8 +161,9 @@ def browser_only_message(retries, login=None):
     from .browser_login import browser_only_advice
 
     # 英文（docs/i18n-style.md §2.6）：中文里「不是网络或限流问题」那半句英文整句不译，换成
-    # 正面的观察——否定句里也不许出现 rate limit（CLAUDE.md 第八条）。第一段英文以空格收尾，
-    # 中间 advice 的英文也要以句号加空格收尾，拼出来句与句之间正好一个空格。
+    # 正面的观察——否定句里也不许出现 rate limit（CLAUDE.md 第八条）。句与句之间的空格由后一段
+    # 带在英文开头：第一段英文以句号收尾、不带空格，advice（browser_login）和最后一段的英文
+    # 都以一个空格开头，advice 为空时拼出来也正好一个空格。
     return (LN(retries,
                "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 {} 次。"
                "不是网络或限流问题——同一时刻其它直播间正常，原因 TikTok 不说明；"
@@ -170,15 +171,15 @@ def browser_only_message(retries, login=None):
                "TikTok didn’t provide a stream URL for this live stream (code 4003110). "
                "Retried once. Other live streams worked at the same time, and TikTok doesn’t "
                "say why. Sometimes it works if you click Start again a little later. Sometimes "
-               "it doesn’t work for the whole stream. ",
+               "it doesn’t work for the whole stream.",
                "TikTok didn’t provide a stream URL for this live stream (code 4003110). "
                "Retried {} times. Other live streams worked at the same time, and TikTok "
                "doesn’t say why. Sometimes it works if you click Start again a little later. "
-               "Sometimes it doesn’t work for the whole stream. ").format(retries)
+               "Sometimes it doesn’t work for the whole stream.").format(retries)
             + browser_only_advice(login)
             + L("想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
                 "（中间空格隔开），一次约两周有效。",
-                "To watch now, paste the live link and the .flv URL from your browser "
+                " To watch now, paste the live link and the .flv URL from your browser "
                 "together, separated by a space. A .flv URL usually works for about two "
                 "weeks."))
 
