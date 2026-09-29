@@ -30,6 +30,27 @@
     el.appendChild(span);
   }
 
+  // 数据不进 L()（spec §4.1 R7），承载数据的节点分两类标（用户决定 6，改了 spec §6）：
+  // - 名字：主播名、观众名、品牌名、违禁词条、模型名，标 translate="no"。浏览器自带的「翻译此页」
+  //   不去改名字，英文界面的检查（G5/G10）也跳过它们。
+  // - 正文：字幕原文和译文、弹幕正文和译文、报警原话和译文，不标 translate——用浏览器翻译看页面的
+  //   人读的就是这些，不能把这条退路堵上。只加 class "i18n-data"，英文界面的检查按它豁免，不算漏翻。
+  //   同一个节点有时放正文、有时放「翻译中…」这类界面提示的，class 跟着当下的内容加上或去掉，
+  //   界面提示照样要查（写法同 viewer.js）
+  function markName(el) {
+    el.setAttribute("translate", "no");
+  }
+  function markBody(el, isData) {
+    el.classList.toggle("i18n-data", isData);
+  }
+  // 一段名字：句子里夹着主播名、词条时，把名字那一截单独包起来
+  function nameSpan(text) {
+    var span = document.createElement("span");
+    markName(span);
+    span.textContent = text;
+    return span;
+  }
+
   var historyEl = document.getElementById("history");
   var startPanel = document.getElementById("start-panel");
   var roomInput = document.getElementById("room-input");
@@ -125,6 +146,14 @@
   var watchMode = document.getElementById("watch-mode");
   var inputHelpBtn = document.getElementById("input-help-btn");
   var inputHelp = document.getElementById("input-help");
+  // 界面语言行（spec §3.4）：config 里没有 ui_lang_available（发布闸关着、又没有
+  // --ui-lang 一次性覆盖）时整行一直隐藏，这几个元素什么都不改
+  var langCard = document.getElementById("lang-card");
+  var langHead = document.getElementById("lang-head");
+  var langBody = document.getElementById("lang-body");
+  var langSummaryEl = document.getElementById("lang-summary");
+  var uiLangSelect = document.getElementById("ui-lang-select");
+  var uiLangSystemOpt = document.getElementById("ui-lang-system");
 
   // 设置分组的行：展开状态记在行的 aria-expanded 上（CSS 据此转箭头），内容区
   // 照旧靠 .hidden 收放。引擎、报警、输入说明这三行没有额外的开合时机，直接
@@ -145,6 +174,7 @@
   bindRow(engineHead, engineBody);
   bindRow(watchHead, watchBody);
   bindRow(inputHelpBtn, inputHelp);
+  bindRow(langHead, langBody);
 
   // 手机同看卡片（#share-card）：只在打开期间监听 0.0.0.0，控制面本身始终只在
   // 127.0.0.1；这张卡片只发/收 viewer_share / viewer_rotate，看不到任何观众数据
@@ -282,6 +312,7 @@
       var opt = document.createElement("option");
       opt.value = opts[i].value;
       opt.textContent = opts[i].label;
+      if (opts[i].value) markName(opt);   // 品牌名是名字；value 为空的「不限」是界面文字
       selectEl.appendChild(opt);
     }
     selectEl.value = kept;
@@ -755,6 +786,9 @@
             updateBar.classList.add("hidden");
             resetUpdateBtn();
           }
+          // 界面语言：闸关着时 config 里没有这几个键，行保持隐藏、不比对、不重载
+          renderLang(msg.config);
+          reloadForLang(msg.config);
         }
         break;
       case "update_available":
@@ -799,6 +833,12 @@
         if ("active_brand" in msg) setActiveBrand(msg.active_brand);
         if (msg.alerts_session) setAlertSession(msg.alerts_session);
         if ("update_check" in msg) renderUpdateCheck(msg.update_check);
+        // 设置里换了界面语言（app/pipeline.py _set_ui_lang 广播语言那几个键）：刷新这一行，
+        // 本页语言和新的不一样就重载。别的 config 广播（set_target 等）不带这些键，不动这一行
+        if ("ui_lang_available" in msg) {
+          renderLang(msg);
+          reloadForLang(msg);
+        }
         break;
       case "glossary_migration":
         handleMigration(msg);
@@ -876,11 +916,10 @@
     // 不带这半句。连接中也要带：点错了要等连上才看得出来，而失败的连接中位
     // 要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）
     var label = STATUS_TEXT[state] || state;
-    if (state === "live" || state === "connecting") {
-      var liveStreamer = streamerFromInput(roomInput.value);
-      if (liveStreamer) label += " · @" + liveStreamer;
-    }
-    statusText.textContent = label;
+    var liveStreamer = (state === "live" || state === "connecting")
+      ? streamerFromInput(roomInput.value) : "";
+    statusText.textContent = liveStreamer ? label + " · " : label;
+    if (liveStreamer) statusText.appendChild(nameSpan("@" + liveStreamer));   // 主播名
 
     // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
     if (state === "error" || state === "idle") resetUpdateBtn();
@@ -1001,6 +1040,7 @@
     // 原文永远先显示（不等翻译）；译文回来前译文行留空
     var orig = document.createElement("div");
     orig.className = "orig";
+    markBody(orig, true);
     orig.textContent = msg.original || "";
     card.appendChild(orig);
 
@@ -1131,6 +1171,7 @@
     var trans = card.querySelector(".trans");
     var stateChip = card.querySelector(".state-chip");
     var state = msg.translate_state;
+    markBody(trans, !!msg.translated);   // 译文是正文；「翻译中…」是界面提示
     if (msg.translated) {
       trans.textContent = msg.translated;
       trans.classList.remove("pending");
@@ -1172,16 +1213,25 @@
     tierTag.className = "alert-tier";
     tierTag.textContent = alertTierText(msg.tier);
     head.appendChild(tierTag);
-    head.appendChild(document.createTextNode(
-      "「" + msg.term + "」 " +
-      pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds()) +
-      (msg.streamer ? " @" + msg.streamer : "")));
+    // 词条和主播名是名字，各包一层 translate="no"。外面再套一个 span：.alert-head 是 flex，
+    // 原来这一整段文字是一个匿名 flex 项，拆成几个直接子节点会多出几道 gap
+    var headText = document.createElement("span");
+    headText.appendChild(document.createTextNode("「"));
+    headText.appendChild(nameSpan(String(msg.term)));   // 与原来的字符串拼接逐字相同
+    headText.appendChild(document.createTextNode("」 " +
+      pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds())));
+    if (msg.streamer) {
+      headText.appendChild(document.createTextNode(" "));
+      headText.appendChild(nameSpan("@" + msg.streamer));
+    }
+    head.appendChild(headText);
     item.appendChild(head);
     item.dataset.session = msg.session || "";
     markAlertItem(item);
 
     var ctx = document.createElement("div");
     ctx.className = "alert-ctx";
+    markBody(ctx, true);
     ctx.textContent = msg.context || "";
     item.appendChild(ctx);
 
@@ -1189,6 +1239,7 @@
     // 译文是后到的（要跑一次强模型），先占位，回来再填。
     var zh = document.createElement("div");
     zh.className = "alert-zh";
+    markBody(zh, !!msg.context_zh);
     zh.textContent = msg.context_zh || "翻译中…";
     if (!msg.context_zh) zh.classList.add("pending");
     item.appendChild(zh);
@@ -1277,9 +1328,22 @@
   document.addEventListener("keydown", clearAttention);
   // 兜底：窗口本来就在前台、没有再触发 focus 时，也要把标题换回来
   setInterval(clearAttention, 2000);
-  // 页面刚加载（含刷新）时照发一次：上一个页面留在窗口标题上的提醒要清掉
-  window.addEventListener("pywebviewready", function () { syncWindowAttention(true); });
-  if (window.pywebview && window.pywebview.api) syncWindowAttention(true);
+  // 页面告诉窗口自己是什么语言（app/window_lang.py，spec §8.1）：原生标题、后台报警时的
+  // 标题、关窗确认框跟着换。双击第二次时窗口开在另一个进程里，收不到语言切换，只有页面
+  // 知道自己此刻是什么语言。闸关着时这里总是 "zh"，窗口那边什么都不动
+  function syncWindowLang() {
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.set_window_lang !== "function") return;
+    try {
+      var pending = api.set_window_lang(UI_LANG);
+      if (pending && typeof pending.catch === "function") pending.catch(function () {});
+    } catch (e) { /* 桥出错不影响页面本身 */ }
+  }
+
+  // 页面刚加载（含刷新）时照发一次：上一个页面留在窗口标题上的提醒要清掉。
+  // 先告诉语言再同步条数：标题按新语言的基底加上条数
+  window.addEventListener("pywebviewready", function () { syncWindowLang(); syncWindowAttention(true); });
+  if (window.pywebview && window.pywebview.api) { syncWindowLang(); syncWindowAttention(true); }
 
   function updateAlert(msg) {
     var item = alertList.querySelector('[data-alert-id="' + msg.alert_id + '"]');
@@ -1287,6 +1351,7 @@
     var zh = item.querySelector(".alert-zh");
     if (!zh) return;
     zh.classList.remove("pending");
+    markBody(zh, !!msg.context_zh);
     if (msg.context_zh) {
       zh.textContent = msg.context_zh;
       zh.classList.remove("failed");
@@ -1371,13 +1436,15 @@
     var head = document.createElement("div");
     head.className = "cmt-head";
     var ts = new Date((msg.ts || Date.now() / 1000) * 1000);
-    head.textContent = (msg.user || "") + " " +
-      pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds());
+    head.appendChild(nameSpan(msg.user || ""));   // 观众名
+    head.appendChild(document.createTextNode(" " +
+      pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds())));
     item.appendChild(head);
 
     // 译文行：pending 时占位提示，same/skipped 时直接就是原文本身（不会再更新）
     var zh = document.createElement("div");
     zh.className = "cmt-zh";
+    markBody(zh, msg.state !== "pending");
     if (msg.state === "pending") {
       zh.textContent = "翻译中…";
       zh.classList.add("pending");
@@ -1389,6 +1456,7 @@
     // 原文行：跟译文重复时（same/skipped）没必要再显示一遍
     var orig = document.createElement("div");
     orig.className = "cmt-orig";
+    markBody(orig, true);
     orig.textContent = msg.text || "";
     if (msg.state === "same" || msg.state === "skipped") orig.classList.add("hidden");
     item.appendChild(orig);
@@ -1436,6 +1504,7 @@
     var orig = item.querySelector(".cmt-orig");
     if (!zh) return;
     zh.classList.remove("pending");
+    markBody(zh, true);   // 下面两路放的都是正文：译文，或者原文本身
     if (msg.state === "ok") {
       zh.textContent = msg.translated || "";
       zh.classList.remove("failed");
@@ -1601,6 +1670,7 @@
           var chip = document.createElement("button");
           chip.className = "recent-chip";
           chip.type = "button";
+          markName(chip);                           // 整个 chip 只有主播名；title 仍要双语（R7：自己的属性不豁免）
           chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
           chip.title = "点击开始翻译 @" + e.streamer;
           chip.addEventListener("click", function () {
@@ -1690,6 +1760,9 @@
       box.addEventListener("change", syncDiskButton);
       var name = document.createElement("span");
       name.className = "disk-name";
+      // 模型（hf/ollama）的标签是模型名，按名字标；日志两项（kind=logs）的标签是后端写的界面
+      // 句子，要能换成英文——按 kind 分，不加新字段（spec §6、§17 第 6 条）
+      if (it.kind !== "logs") markName(name);
       name.textContent = it.label;                 // textContent：模型名当数据，不当 HTML
       var tag = document.createElement("span");
       tag.className = "disk-role";
@@ -2103,8 +2176,14 @@
       var isCurrent = !!cur && e.streamer.toLowerCase() === cur.toLowerCase();
       if (isCurrent) {
         chip.disabled = true;
-        chip.textContent = "@" + e.streamer + "（当前）";
+        // 主播名是名字，「（当前）」是界面文字：只包前一截。外面再套一个 span，理由同报警头——
+        // .recent-chip 是 inline-flex，原来整段文字是一个匿名 flex 项
+        var curText = document.createElement("span");
+        curText.appendChild(nameSpan("@" + e.streamer));
+        curText.appendChild(document.createTextNode("（当前）"));
+        chip.appendChild(curText);
       } else {
+        markName(chip);
         chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
         chip.title = "填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）";
         chip.addEventListener("click", function () {
@@ -2265,7 +2344,8 @@
     var show = streamActive && !!activeBrandName;
     activeBrandTag.classList.toggle("hidden", !show);
     if (show) {
-      activeBrandTag.textContent = "品牌 · " + activeBrandName;
+      activeBrandTag.textContent = "品牌 · ";
+      activeBrandTag.appendChild(nameSpan(activeBrandName));   // 品牌名（标签是 inline-block，省略号照样生效）
       activeBrandTag.title = activeBrandName;
     }
   }
@@ -2634,6 +2714,55 @@
         engineSave.disabled = false;
         engineSave.textContent = "保存";
       }, 2500);
+    });
+  }
+
+  // ---- 界面语言（spec §3.4、§3.5） ----
+  // 语言名、摘要、要不要重载都由 settings-rows.js 的纯函数算，这里只管 DOM 和存储
+  var LANG_RELOAD_KEY = "tlt.langReload";
+  var langSetting = null;   // 服务端此刻存的选择（system / zh / en）：发送失败时下拉退回它
+
+  function renderLang(cfg) {
+    if (!langCard || !cfg) return;
+    var available = cfg.ui_lang_available === true;
+    langCard.classList.toggle("hidden", !available);
+    if (!available) return;
+    langSetting = cfg.ui_lang_setting;
+    if (uiLangSystemOpt) uiLangSystemOpt.textContent = langSystemLabel(cfg.ui_lang_system);
+    if (uiLangSelect) {
+      if (langSetting === "system" || langSetting === "zh" || langSetting === "en") {
+        uiLangSelect.value = langSetting;
+      }
+      // 带了 --ui-lang 一次性覆盖：这次启动的语言由启动参数定，改设置也不会生效
+      var locked = cfg.ui_lang_locked === true;
+      uiLangSelect.disabled = locked;
+      if (locked) uiLangSelect.title = L("由启动参数固定", "Set by a launch option");
+      else uiLangSelect.removeAttribute("title");
+    }
+    if (langSummaryEl) langSummaryEl.textContent = langSummary(langSetting, cfg.ui_lang, cfg.ui_lang_system);
+  }
+
+  // 服务端的界面语言和本页不同（刚在设置里换过，或重连到一个换过语言的程序）：整页重载一次。
+  // 重载后服务端按新语言注入 <html lang>，hello 回放也按新语言渲染，页面上没有残留。
+  // sessionStorage 记不下就不重载：宁可停在原来的语言，也不能在对不上时无限刷新
+  function reloadForLang(cfg) {
+    if (!cfg || typeof cfg.ui_lang !== "string") return false;
+    var stored = null;
+    try { stored = sessionStorage.getItem(LANG_RELOAD_KEY); } catch (e) { stored = null; }
+    var decision = langReload(cfg.ui_lang, UI_LANG, stored, Date.now());
+    if (!decision.reload) return false;
+    try { sessionStorage.setItem(LANG_RELOAD_KEY, decision.mark); } catch (e) { return false; }
+    location.reload();
+    return true;
+  }
+
+  if (uiLangSelect) {
+    uiLangSelect.addEventListener("change", function () {
+      if (send({ type: "set_ui_lang", value: uiLangSelect.value })) return;
+      if (langSetting) uiLangSelect.value = langSetting;
+      setStatus({ state: "offline",
+                  detail: L("与本地服务断开，正在重连——稍候再试。",
+                            "Lost connection to the local service. Reconnecting… Try again in a moment.") });
     });
   }
 

@@ -14,6 +14,8 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from app import i18n, native_dialog
+from app.i18n import APP_NAME
 from app.macbundle import remember_launch_python
 from app.stdio import harden_stdio
 
@@ -29,6 +31,11 @@ harden_stdio()
 remember_launch_python()
 
 ROOT = Path(__file__).resolve().parent
+
+# 界面语言（app/i18n.py）：每个进程都跑一次，只读——记下装机状态与系统语言（经环境变量带过
+# 下面的 execv / execve），给自举期的对话框定语言。settings.json 在这里只看不改：损坏的文件
+# 要留给最终进程去备份（main() 里的 settle），否则备份提示会随 exec 丢掉
+i18n.boot(ROOT)
 
 if sys.version_info < (3, 9):
     sys.exit("需要 Python 3.9 或更高版本（当前 {}.{}）".format(*sys.version_info[:2]))
@@ -124,10 +131,6 @@ def _has_console():
     return False
 
 
-def _esc_osa(text):
-    return text.replace("\\", "\\\\").replace('"', '\\"')
-
-
 _INFO_DIALOG = None
 _FIRST_RUN_SHOWN = False
 
@@ -142,9 +145,8 @@ def _info_dialog(message):
         return   # Windows 走 Start.bat，有黑窗口能看到 print
     try:
         _INFO_DIALOG = subprocess.Popen(
-            ["osascript", "-e",
-             'display dialog "{}" with title "TikTok 直播同传" buttons {{"知道了"}} '
-             'default button 1 with icon note giving up after 600'.format(_esc_osa(message))],
+            native_dialog.osascript_argv(message, button=native_dialog.INFO_BUTTON,
+                                         icon="note", giving_up=600),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         _INFO_DIALOG = None
@@ -170,13 +172,13 @@ def _fail_alert(message):
         if sys.platform == "darwin":
             _close_info_dialog()
             subprocess.run(
-                ["osascript", "-e",
-                 'display dialog "{}" with title "TikTok 直播同传" buttons {{"好"}} '
-                 'default button 1 with icon caution'.format(_esc_osa(message))],
+                native_dialog.osascript_argv(message, button=native_dialog.FAIL_BUTTON,
+                                             icon="caution"),
                 capture_output=True, timeout=60)
         elif os.name == "nt":
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, message, "TikTok 直播同传", 0x30)
+            text, title = native_dialog.messagebox_args(message)
+            ctypes.windll.user32.MessageBoxW(None, text, title, 0x30)
     except Exception:
         pass
 
@@ -392,6 +394,9 @@ def parse_args():
     p.add_argument("--browser", action="store_true",
                    help="在浏览器里打开界面（默认在独立应用窗口中打开）")
     p.add_argument("--no-open", action="store_true", help="启动后不要自动打开浏览器/窗口")
+    # boot() 已经直接从 sys.argv 读过它（要赶在这里和自举对话框之前）；这里登记只为不报「未知参数」
+    p.add_argument("--ui-lang", dest="ui_lang", choices=("zh", "en"), default=None,
+                   help="一次性指定界面语言，不改设置")
     return p.parse_args()
 
 
@@ -400,9 +405,11 @@ def _existing_instance_url(base_port):
     用于双击两次的场景：复用已有实例，而不是再起一个后端。
     必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
     base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
-    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹，扫描耗时可忽略。"""
+    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
     import socket
     import urllib.request
+
+    from app.instance import PROBE_BYTES, looks_like_us
     for port in range(base_port, base_port + 10):
         with socket.socket() as probe:
             probe.settimeout(0.3)
@@ -411,7 +418,7 @@ def _existing_instance_url(base_port):
         url = "http://127.0.0.1:{}".format(port)
         try:
             with urllib.request.urlopen(url, timeout=1.5) as resp:
-                if "直播同传" in resp.read(4096).decode(errors="replace"):
+                if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
                     return url
         except Exception:
             pass
@@ -447,6 +454,10 @@ async def main_async(args, state=None):
                         args.port, args.port + 9, last_exc))
         sys.exit(1)
     server.config["version"] = local_version()
+    # 界面语言的几个字段（设置行、页面重载用）。闸关着、没有一次性覆盖时一个键都不加：
+    # hello 里的 config 与改造前逐字节相同
+    if i18n.enabled():
+        server.config.update(i18n.config_info())
     try:
         pipeline = Pipeline(args, server)
     except RuntimeError as exc:   # 例如缺少翻译引擎的 API Key
@@ -521,6 +532,9 @@ def main():
     if sys.platform == "darwin":
         from app.macbundle import relaunch_inside_bundle
         relaunch_inside_bundle(ROOT)
+    # 到这里一定是最终进程了：本进程第一次读设置（损坏就在这里备份，界面提示和审计都拿得到），
+    # 闸开着、设置里还没有 ui_lang 时迁移写一次，然后定下界面语言
+    i18n.settle(ROOT)
     args = parse_args()
     if args.target is None:   # 未显式传参：用界面里上次选的语言，都没有则简体中文
         saved = _load_settings().get("target_lang")
@@ -607,10 +621,18 @@ def run_with_window(args):
                          "请在已打开的窗口里粘贴地址后点「开始翻译」。")
         from app.macbrand import brand_mac_app
         from app.window_attention import expose_attention
+        from app.window_close import confirm_localization_kwargs
+        from app.window_lang import expose_window_lang
         brand_mac_app(ROOT)
-        window = webview.create_window("TikTok 直播同传", existing,
-                                       width=1000, height=760, min_size=(420, 480))
-        expose_attention(window)
+        lang = i18n.current()
+        # 这个窗口不 guard_close（后端在另一个进程里），localization 只给页面里 JS confirm()
+        # 的按钮用。今天没传、用 pywebview 自带的文字；关窗表里有了 global.ok（M11）才传，与闸无关
+        loc = confirm_localization_kwargs(webview.create_window, lang)
+        window = webview.create_window(i18n.text(APP_NAME, lang), existing,
+                                       width=1000, height=760, min_size=(420, 480), **loc)
+        # 语言切换发生在另一个进程里，这个进程收不到：页面重载后经 JS 桥告诉窗口。
+        # 建窗时没传 localization 的，切换时也不往里写（app/window_lang.py）
+        expose_window_lang(window, expose_attention(window), localized=bool(loc))
         webview.start()
         return
 
@@ -648,16 +670,20 @@ def run_with_window(args):
     from app.macbrand import brand_mac_app
     from app.window_attention import expose_attention
     from app.window_close import guard_close, localization_kwargs, stop_after_close
+    from app.window_lang import expose_window_lang
     brand_mac_app(ROOT)
     try:
+        # 标题和关窗确认框先用启动时的界面语言；页面加载好后经 JS 桥告诉窗口它的语言（运行中
+        # 在设置里换了语言，页面会重载），标题与确认框再跟着换（app/window_lang.py）
+        lang = i18n.current()
         # 正在监听时关窗口先确认；待机时直接关（判断和文案见 app/window_close.py）
-        loc = localization_kwargs(webview.create_window)
-        window = webview.create_window("TikTok 直播同传", url,
+        loc = localization_kwargs(webview.create_window, lang)
+        window = webview.create_window(i18n.text(APP_NAME, lang), url,
                                        width=1000, height=760, min_size=(420, 480), **loc)
         guard_close(window, state.get("pipeline"))
         # 窗口被盖住时新报警改原生标题：pywebview 的标题不跟页面的 document.title
-        expose_attention(window)
-        webview.start(**({} if loc else localization_kwargs(webview.start)))
+        expose_window_lang(window, expose_attention(window))
+        webview.start(**({} if loc else localization_kwargs(webview.start, lang)))
     except Exception as exc:
         # 本机没有可用的 webview 后端（如部分 Linux 桌面）——退回浏览器
         print("[信息] 无法创建应用窗口（{}），改在浏览器中打开".format(exc))

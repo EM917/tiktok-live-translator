@@ -5,6 +5,8 @@
   - 不带词条原文：通知横幅会被 OBS 的屏幕采集拍进直播画面；
   - 不带声音：中控通常就坐在直播麦克风旁边；
   - 一阵报警只发一条：模糊档可能连着响，卖货时不能刷屏。
+
+文字在发送那一刻按界面语言渲染成普通 str，再按各平台的规矩转义（spec §8.4）。
 """
 import base64
 import os
@@ -13,8 +15,12 @@ import subprocess
 import sys
 import time
 
+from . import i18n
+from .i18n import APP_NAME
+from .native_dialog import esc_osa
+
 SETTING_KEY = "alert_os_notify"
-TITLE = "TikTok 直播同传"
+TITLE = APP_NAME
 TEXT = "有新的疑似违禁词报警，请查看窗口"
 BURST_GAP_SEC = 60.0      # 距上一条报警超过这么久，才算新的一阵
 REMIND_SEC = 600.0        # 一阵报警持续很久时，最多每 10 分钟再提醒一次
@@ -40,21 +46,37 @@ def enabled():
     return load_settings().get(SETTING_KEY) is True
 
 
-def command(platform=None, which=shutil.which):
-    """发一条通知的命令行（不经 shell）。本机没有可用的通知手段时返回 None。"""
+# PowerShell 把这几个弯引号也当单引号：文案里的撇号（英文的 ’）会提前结束 LoadXml('…')
+_PS_QUOTES = ("'", "\u2018", "\u2019", "\u201a", "\u201b")
+
+
+def _toast_text(text):
+    """放进 toast XML、再放进 PowerShell 单引号字符串的文字：先做 XML 转义，
+    再把每一种单引号写两遍（单引号字符串里的转义办法）。"""
+    text = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+    for quote in _PS_QUOTES:
+        text = text.replace(quote, quote * 2)
+    return text
+
+
+def command(platform=None, which=shutil.which, lang=None):
+    """发一条通知的命令行（不经 shell）。本机没有可用的通知手段时返回 None。
+    lang 缺省是当前界面语言；标题和正文交给系统前都是普通 str。"""
     platform = platform or sys.platform
+    title, text = i18n.text(TITLE, lang), i18n.text(TEXT, lang)
     if platform == "darwin":
         # 不写 sound name 就是静音
         return ["osascript", "-e",
-                'display notification "{}" with title "{}"'.format(TEXT, TITLE)]
+                'display notification "{}" with title "{}"'.format(esc_osa(text), esc_osa(title))]
     if platform.startswith("win"):
-        script = (_WIN_TOAST.replace("@TITLE@", TITLE).replace("@TEXT@", TEXT)
-                  .replace("@APP@", _WIN_APP_ID))
+        script = (_WIN_TOAST.replace("@TITLE@", _toast_text(title))
+                  .replace("@TEXT@", _toast_text(text)).replace("@APP@", _WIN_APP_ID))
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         return ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
                 "-EncodedCommand", encoded]
     exe = which("notify-send")
-    return [exe, TITLE, TEXT] if exe else None
+    return [exe, title, text] if exe else None      # 不经 shell，不用转义
 
 
 class AlertNotifier:

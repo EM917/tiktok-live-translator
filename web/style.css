@@ -191,6 +191,12 @@ body {
    HTML 初始就带着（页面刚加载就是首页） */
 body.home { --page-bg: var(--grouped-bg); }
 
+/* 英文页防闪（spec §2.3）：服务端给了 <html lang="en"> 时，在 i18n.js 把静态文案换成英文
+   （给 <html> 加 i18n-done）之前先不显示，免得首帧闪一下中文。i18n.js 万一没加载，
+   1.5 秒后照样显示。中文页选择器不命中，零变化 */
+html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-reveal 0s 1.5s forwards; }
+@keyframes i18n-reveal { to { visibility: visible; } }
+
 /* ---------- 顶栏 ---------- */
 /* 顶栏固定一行：浮层（.popover）挂在这里面，top:100% 就是顶栏底边；顶栏自己
    z-index 20 是为了让浮层盖住后面 fixed 的大字幕/统计行/回到最新（都 ≤5）。
@@ -1245,6 +1251,13 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .disk-note { grid-column: 2 / span 3; font-size: var(--fs-footnote); color: var(--label-2); }
 .disk-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; }
 .disk-hint { font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
+
+/* ---------- 设置行：界面语言 ----------
+   整行在 config.ui_lang_available 不为 true 时隐藏（app.js renderLang）；
+   有一次性覆盖（--ui-lang）时下拉置灰，悬停说明由启动参数固定 */
+#ui-lang-select { width: 100%; }
+#ui-lang-select:disabled { opacity: .5; cursor: default; background-color: var(--fill); }
+.set-note { margin-top: 8px; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
 
 /* ---------- 连接中 ----------
    字幕区中央：macOS 活动指示器（8 根辐条按 8 步旋转）+ 「正在连接 @xxx…」。

@@ -50,6 +50,15 @@ test("期间别的提示改过标题（有新版本）就留着它", () => {
   assert.equal(A.noteActive(s, s.title).title, "有新版本 · TikTok 直播同传");
 });
 
+test("只认 alertTitle 自己设的标题，不按标题里的中文认", () => {
+  for (const n of [1, 2, 12]) assert.equal(A.isAlertTitle(A.alertTitle(n)), true);
+  assert.equal(A.isAlertTitle(BASE), false);
+  assert.equal(A.isAlertTitle("有新版本 · TikTok 直播同传"), false);
+  assert.equal(A.isAlertTitle("(2) 有新版本 · TikTok 直播同传"), false);   // 开头像条数也不算
+  assert.equal(A.isAlertTitle(""), false);
+  assert.equal(A.isAlertTitle(null), false);
+});
+
 test("标题里不出现词条原文", () => {
   const s = A.noteAlert(fresh(), { type: "alert", term: "cura el cancer" }, false, BASE);
   assert.ok(!s.title.includes("cura"));

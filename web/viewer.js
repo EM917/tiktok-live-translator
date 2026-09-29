@@ -1,11 +1,67 @@
 /* 手机同看页面逻辑。只读：不引用 app.js/alerts.js/follow.js（VIEWER_FILES 只有
    四个文件是安全性质，见 spec §12），贴底跟随那 12 行在下面故意重写了一份。
 
-   本文件分两段：
+   本文件分三段：
+     0. 界面语言——加载时读一次 <html>（假 document 没有它就当中文），其余都是纯函数。
      1. 纯函数——不摸 document/window，node:test 直接 require 这份文件测。
      2. 浏览器专用——真机上才跑，用 `typeof document` 挡住，Node 环境下整段跳过，
         这样纯函数照样能被测，不会因为 document 不存在而在 require 时就报错。 */
 "use strict";
+
+// ============ 〇、界面语言（spec §7.1）============
+// 语言要在任何文案表之前定下来：下面的 CONN_TEXT / STREAM_TEXT… 都是加载时求值的。
+//
+// 闸由服务端写进页面：只有 <html data-i18n="on">（app/viewer.py page，发布闸开着或带了
+// 一次性覆盖）时才读这台手机上手动选过的语言、才显示切换按钮。没有这个标记就恒为中文，
+// localStorage 碰都不碰——手机拿不到 config，自己判断不了闸。
+// 不引用桌面的 i18n.js（手机面只端 VIEWER_FILES 四个文件），这里自带一份同样写法的。
+var VIEWER_LANG_KEY = "tlt.viewer.lang";
+var I18N_ON = (function () {
+  var d = typeof document !== "undefined" && document.documentElement;                        // 假 document 没有它
+  return !!(d && typeof d.getAttribute === "function" && d.getAttribute("data-i18n") === "on");
+})();
+var UI_LANG = (function () {
+  if (typeof globalThis !== "undefined" && globalThis.UI_LANG) return globalThis.UI_LANG;      // node 测试
+  if (!I18N_ON) return "zh";                                                                  // 闸关着：恒为中文
+  var d = document.documentElement;
+  try {
+    var saved = localStorage.getItem(VIEWER_LANG_KEY);                                       // 本机手动选过的优先
+    if (saved === "zh" || saved === "en") return saved;
+  } catch (e) { /* 隐私模式等：当没选过 */ }
+  return /^en/i.test(d.lang || d.getAttribute("lang") || "") ? "en" : "zh";
+})();
+function L(zh, en) { return UI_LANG === "en" && en != null ? en : zh; }
+function LN(n, zh, one, many) { return UI_LANG === "en" ? (Number(n) === 1 ? one : many) : zh; }
+
+// 后端的英文由服务端派生成 *_en 字段（app/viewer.py DERIVED_EN：incident 的 text_en，
+// 字幕和报警的 why_en），所有手机共享同一份，各按自己的语言挑。英文页有就用它；
+// 没有或是空串就退回中文——漏翻只露中文，不会空白。中文页取值和原来完全一样
+function pick(msg, field) {
+  if (!msg) return undefined;
+  var en = msg[field + "_en"];
+  return UI_LANG === "en" && typeof en === "string" && en ? en : msg[field];
+}
+
+var I18N_ATTRS = ["title", "aria-label", "placeholder", "alt"];
+function setOwnText(el, text) {            // 只换自己的第一段非空文字节点，旁边的 <svg> 不动
+  for (var n = el.firstChild; n; n = n.nextSibling) {
+    if (n.nodeType === 3 && n.nodeValue.trim()) { n.nodeValue = text; return; }
+  }
+  el.appendChild(document.createTextNode(text));
+}
+function applyStatic(root) {
+  if (UI_LANG !== "en" || !root || typeof root.querySelectorAll !== "function") return;   // 中文：不碰 DOM
+  var els = root.querySelectorAll("[data-en],[data-en-html],[data-en-title],[data-en-aria-label],[data-en-placeholder],[data-en-alt]");
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    if (el.hasAttribute("data-en-html")) el.innerHTML = el.getAttribute("data-en-html");  // 只来自我们自己的 HTML
+    else if (el.hasAttribute("data-en")) setOwnText(el, el.getAttribute("data-en"));
+    for (var j = 0; j < I18N_ATTRS.length; j++) {
+      var v = el.getAttribute("data-en-" + I18N_ATTRS[j]);
+      if (v != null) el.setAttribute(I18N_ATTRS[j], v);
+    }
+  }
+}
 
 // ============ 一、纯函数 ============
 
@@ -203,6 +259,17 @@ function sessionDividerText() {
 // Node 环境没有 document，整段跳过；node:test 只用得到上面的纯函数。
 if (typeof document !== "undefined") {
   (function () {
+    // 界面语言：静态文案先换好、<html lang> 定下来，再缓存下面的元素引用——data-en-html
+    // 换掉的节点不会被当成旧引用留住。服务端给的是中文页、本机选了英文时要改 lang；
+    // i18n-done 撤掉 viewer.css 里的防闪。闸关着时（没有 data-i18n）这里什么都不改
+    applyStatic(document);
+    var htmlEl = document.documentElement;
+    if (I18N_ON && htmlEl) {
+      var pageLang = UI_LANG === "en" ? "en" : "zh-CN";
+      if (htmlEl.getAttribute("lang") !== pageLang) htmlEl.setAttribute("lang", pageLang);
+      if (htmlEl.classList) htmlEl.classList.add("i18n-done");
+    }
+
     var MAX_ALERTS = 50;      // 与回放上限一致（spec §5）
     var MAX_COMMENTS = 30;    // 手机端默认折叠，只留最近这么多条（负责人定稿：三个待定问题）
     var MAX_CAPTIONS = 200;   // 回放上限 100 条 + 直播中持续追加，留够余量不无限长
@@ -214,6 +281,28 @@ if (typeof document !== "undefined") {
     // viewer.html 里；这两个是 JS 拼接出来的卡片内容，只能在这里内联。
     var ICON_ALERT_TRIANGLE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.3 14.3 13.3H1.7Z"/><path d="M8 6.6v3"/><circle cx="8" cy="11.4" r="0.6" fill="currentColor" stroke="none"/></svg>';
     var ICON_XMARK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg>';
+
+    // 数据不进 L()（spec §4.1 R7），承载数据的节点分两类标，写法同桌面 app.js（用户决定 6，
+    // 改了 spec §6）：
+    // - 名字：观众名、违禁词条，标 translate="no"。浏览器自带的「翻译此页」不去改名字，
+    //   英文界面的检查（G10）也跳过它们。
+    // - 正文：字幕原文和译文、弹幕正文和译文、报警原话和译文，不标 translate——用浏览器翻译看
+    //   这一页的人读的就是这些。只加 class "i18n-data"，英文界面的检查按它豁免，不算漏翻。同一个
+    //   节点有时放正文、有时放「翻译中…」这类界面提示的，class 跟着当下的内容加上或去掉
+    function markName(el) {
+      el.setAttribute("translate", "no");
+    }
+    function markBody(el, isData) {
+      el.classList.toggle("i18n-data", isData);
+    }
+    // 一整串文字里夹着名字时拆成几个 span，拼起来与原来的整串逐字相同。只用 createElement：
+    // tests/viewer.test.mjs 的假 document 没有 createTextNode
+    function textSpan(text, isName) {
+      var span = document.createElement("span");
+      if (isName) markName(span);
+      span.textContent = text;
+      return span;
+    }
 
     var connDot = document.getElementById("conn-dot");
     var connText = document.getElementById("conn-text");
@@ -286,6 +375,24 @@ if (typeof document !== "undefined") {
         ensureAudio();
         lsSet("viewerRingEnabled", ringEnabled ? "1" : "0");
         syncRingBtn();
+      });
+    }
+
+    // ---- 界面语言切换：只在闸开着（data-i18n="on"）时出现。按钮上写另一种语言的
+    //      自称（语言名永不翻译），点一下记在这台手机上再重载——重连后拿到完整回放，
+    //      走的是已有的路。记不下（隐私模式等）就不重载：重载了也还是原来的语言 ----
+    var langToggle = document.getElementById("lang-toggle");
+    var langToggleText = document.getElementById("lang-toggle-text");
+    if (langToggle && I18N_ON) {
+      var otherLang = UI_LANG === "en" ? "zh" : "en";
+      if (langToggleText) {
+        langToggleText.textContent = otherLang === "en" ? "EN" : "中文";   // i18n: data（语言自称）
+        langToggleText.setAttribute("lang", otherLang === "en" ? "en" : "zh-CN");
+      }
+      langToggle.classList.remove("hidden");
+      langToggle.addEventListener("click", function () {
+        try { localStorage.setItem(VIEWER_LANG_KEY, otherLang); } catch (e) { return; }
+        location.reload();
       });
     }
 
@@ -614,7 +721,7 @@ if (typeof document !== "undefined") {
     function renderIncident(msg) {
       if (!msg || !msg.id) return;
       if (msg.level === "clear") delete incidents[msg.id];
-      else incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "" };
+      else incidents[msg.id] = { level: msg.level || "warn", text: pick(msg, "text") || "" };
       drawIncidents();
     }
     function drawIncidents() {
@@ -679,7 +786,10 @@ if (typeof document !== "undefined") {
       tierIcon.innerHTML = ICON_ALERT_TRIANGLE;
       headLabel.appendChild(tierIcon);
       var labelText = document.createElement("span");
-      labelText.textContent = (TIER_LABEL[msg.tier] || "命中") + " 「" + (msg.term || "") + "」 " + hhmmss(msg.ts);
+      // 词条是名字，单独一截；三截都在 labelText 里，.alert-head-label 的 flex 子项不变
+      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || "命中") + " 「"));
+      labelText.appendChild(textSpan(msg.term || "", true));
+      labelText.appendChild(textSpan("」 " + hhmmss(msg.ts)));
       headLabel.appendChild(labelText);
       head.appendChild(headLabel);
       var dismissBtn = document.createElement("button");
@@ -693,11 +803,13 @@ if (typeof document !== "undefined") {
 
       var ctx = document.createElement("div");
       ctx.className = "alert-ctx";
+      markBody(ctx, true);
       ctx.textContent = msg.context || "";
       item.appendChild(ctx);
 
       var zh = document.createElement("div");
       zh.className = "alert-zh" + (msg.context_zh ? "" : " pending");
+      markBody(zh, !!msg.context_zh);
       zh.textContent = msg.context_zh || "中文正在补…";
       item.appendChild(zh);
 
@@ -718,10 +830,12 @@ if (typeof document !== "undefined") {
       if (!entry) return;
       entry.msg = applyUpdate(entry.msg, msg);
       if (entry.msg.context_zh) {
+        markBody(entry.zhEl, true);
         entry.zhEl.textContent = entry.msg.context_zh;
         entry.zhEl.classList.remove("pending", "failed");
       } else if (entry.msg.failed) {
-        entry.zhEl.textContent = "中文译不出来（" + (entry.msg.why || "未知原因") + "）——请看上面的原话";
+        markBody(entry.zhEl, false);
+        entry.zhEl.textContent = "中文译不出来（" + (pick(entry.msg, "why") || "未知原因") + "）——请看上面的原话";
         entry.zhEl.classList.remove("pending");
         entry.zhEl.classList.add("failed");
       }
@@ -787,6 +901,7 @@ if (typeof document !== "undefined") {
 
       var orig = document.createElement("div");
       orig.className = "cap-orig";
+      markBody(orig, true);
       orig.textContent = msg.original || "";
       card.appendChild(orig);
 
@@ -813,10 +928,11 @@ if (typeof document !== "undefined") {
     }
     function applyCaptionState(msg, transEl) {
       transEl.classList.remove("pending", "failed");
+      markBody(transEl, !!msg.translated);   // 译文是正文；失败说明、「翻译中…」是界面提示
       if (msg.translated) {
         transEl.textContent = msg.translated;
       } else if (msg.failed) {
-        transEl.textContent = "译文失败（" + (msg.why || "未知原因") + "）——请看上面的原话";
+        transEl.textContent = "译文失败（" + (pick(msg, "why") || "未知原因") + "）——请看上面的原话";
         transEl.classList.add("failed");
       } else if (msg.translate_state === "pending") {
         transEl.textContent = "翻译中…";
@@ -867,11 +983,13 @@ if (typeof document !== "undefined") {
 
       var head = document.createElement("div");
       head.className = "cmt-head";
-      head.textContent = (msg.user || "") + " " + hhmmss(msg.ts);
+      head.appendChild(textSpan(msg.user || "", true));   // 观众名
+      head.appendChild(textSpan(" " + hhmmss(msg.ts)));
       item.appendChild(head);
 
       var zh = document.createElement("div");
       zh.className = "cmt-zh";
+      markBody(zh, msg.state !== "pending");
       if (msg.state === "pending") {
         zh.textContent = "翻译中…";
         zh.classList.add("pending");
@@ -882,6 +1000,7 @@ if (typeof document !== "undefined") {
 
       var orig = document.createElement("div");
       orig.className = "cmt-orig";
+      markBody(orig, true);
       orig.textContent = msg.text || "";
       if (msg.state === "same" || msg.state === "skipped") orig.classList.add("hidden");
       item.appendChild(orig);
@@ -899,6 +1018,7 @@ if (typeof document !== "undefined") {
       var entry = commentsById[msg.id];
       if (!entry) return;
       entry.msg = applyUpdate(entry.msg, msg);
+      markBody(entry.zhEl, entry.msg.state !== "pending");
       if (entry.msg.state === "pending") {
         entry.zhEl.textContent = "翻译中…";
         entry.zhEl.classList.add("pending");
@@ -945,5 +1065,11 @@ if (typeof module !== "undefined" && module.exports) {
     createDismissedStore: createDismissedStore,
     shouldRenderSessionDivider: shouldRenderSessionDivider,
     sessionDividerText: sessionDividerText,
+    UI_LANG: UI_LANG,
+    I18N_ON: I18N_ON,
+    L: L,
+    LN: LN,
+    pick: pick,
+    applyStatic: applyStatic,
   };
 }

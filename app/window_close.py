@@ -6,6 +6,8 @@ main.py 的 run_with_window 只负责把这里的几个函数接到 pywebview �
 import asyncio
 import inspect
 
+from . import i18n
+
 CLOSE_LOCALIZATION = {
     "global.quitConfirmation": "正在监听直播，关闭窗口会停止违禁词监听。确定关闭？",
     "global.quit": "关闭",
@@ -15,7 +17,14 @@ STOP_TIMEOUT_SEC = 5.0     # 窗口关了之后最多等停止流程这么久，
 AUDIT_BUDGET_SEC = 3.5     # 停止流程到这时还没走完，先把审计收尾：session_end 不能等
 
 
-def localization_kwargs(fn):
+def close_localization(lang=None):
+    """关窗确认框（和 cocoa 下 JS confirm() 的按钮）用的文字，按 lang 渲染（缺省是当前界面
+    语言）。交给 pywebview 的一律是普通 str：PyObjC / pythonnet 收到 str 子类的行为没验证过。
+    运行中换语言由 app/window_lang.py 拿它原地更新 window.localization（spec §8.2）。"""
+    return {key: i18n.text(value, lang) for key, value in CLOSE_LOCALIZATION.items()}
+
+
+def localization_kwargs(fn, lang=None):
     """fn（create_window 或 start）认 localization 参数才传。requirements 只要求
     pywebview>=5：多传一个老版本不认的参数会抛 TypeError，窗口就退回浏览器了。"""
     try:
@@ -24,7 +33,20 @@ def localization_kwargs(fn):
         return {}
     if "localization" not in params:
         return {}
-    return {"localization": dict(CLOSE_LOCALIZATION)}
+    return {"localization": close_localization(lang)}
+
+
+def confirm_localization_kwargs(fn, lang=None):
+    """第二个实例的窗口用（双击第二次时开的那个）：它不 guard_close，localization 只给页面里
+    JS confirm() 的两个按钮——cocoa 取 global.ok / global.cancel。今天这个窗口没传，按钮是
+    pywebview 自带的「OK / Cancel」。
+
+    表里有了 global.ok 才传（M11 补上它，spec §8.2 标明的中文可见修正），两个按钮一起换成
+    「好 / 取消」。在那之前传，只会换掉 Cancel，变成「OK / 取消」混排；而且要是拿闸来开关，
+    这处中文可见的变化就落在开闸（Z1）上了。与闸无关：英文界面上 pywebview 自带的就是英文。"""
+    if "global.ok" not in CLOSE_LOCALIZATION:
+        return {}
+    return localization_kwargs(fn, lang)
 
 
 def stream_active(pipeline):

@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 
+from .i18n import APP_NAME
+
 _KEEP = []   # 图像与通知观察者的引用：回调在启动完成后才触发，之前不能被回收
 
 
@@ -32,8 +34,8 @@ def brand_mac_app(root):
         pass
     try:
         info = NSBundle.mainBundle().infoDictionary()
-        info["CFBundleName"] = "TikTok 直播同传"
-        info["CFBundleDisplayName"] = "TikTok 直播同传"
+        info["CFBundleName"] = APP_NAME
+        info["CFBundleDisplayName"] = APP_NAME
     except Exception:
         pass
     image = None

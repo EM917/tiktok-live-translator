@@ -5,9 +5,12 @@
 viewer、selfcheck、disk）带着设置、路径、含 token 的链接。写成黑名单的话，
 以后谁加一种新消息，默认就是发给手机。
 """
+from contextlib import nullcontext
+
 import pytest
 
-from app import viewer
+from app import i18n, viewer
+from app.i18n import L
 
 # web/app.js 的 switch 是权威列表：这里逐个钉住「进白名单」还是「不发」。
 # 新增一种消息类型时这个列表要同步——漏了会被 test_every_known_type_is_decided 抓到。
@@ -37,17 +40,64 @@ def test_every_known_type_is_decided():
             assert viewer.filter_payload({"type": mtype, "x": 1}) is None, mtype
 
 
+@pytest.mark.parametrize("lang", [None, "en"])
 @pytest.mark.parametrize("mtype", sorted(ALLOWED_TYPES))
-def test_allowed_types_keep_exactly_the_listed_fields(mtype):
-    """给一条塞满了字段的消息，过滤后剩下的键恰好是白名单 + type。"""
+def test_allowed_types_keep_exactly_the_listed_fields(mtype, lang):
+    """给一条塞满了字段的消息，过滤后剩下的键恰好是白名单 + type，再加上双语机制生效时
+    从基础字段派生的英文字段（viewer.DERIVED_EN）。写成与闸无关：开闸那一刻这条不用再改。
+    lang=None 是闸关着时生产里的样子；"en" 是一次性覆盖（i18n.enabled() 为真）。"""
     fields = dict.fromkeys(viewer.ALLOW[mtype], 1)
     if "demo" in fields:
         fields["demo"] = True          # demo 只认字面的 True，见下面单独那条
     noise = {"detail": "x", "command": "y", "streamer": "z", "session": "s",
-             "ui_clients": 3, "asr_ms": 12, "backlog_sec": 4.0, "secret": "k"}
-    out = viewer.filter_payload(dict(fields, type=mtype, **noise))
+             "ui_clients": 3, "asr_ms": 12, "backlog_sec": 4.0, "secret": "k",
+             "text_en": "injected", "why_en": "injected"}
+    msg = dict(fields, type=mtype, **noise)
+    with i18n.use(lang) if lang else nullcontext():
+        out = viewer.filter_payload(msg)
+        expected = set(viewer.ALLOW[mtype]) | {"type"}
+        derived = viewer.DERIVED_EN.get(mtype)
+        if i18n.enabled() and derived and derived[0] in msg:
+            expected.add(derived[1])
     assert out is not None
-    assert set(out) == set(viewer.ALLOW[mtype]) | {"type"}
+    assert set(out) == expected
+
+
+def test_derived_english_fields_only_come_from_the_base_field():
+    """消息自带的 text_en / why_en 根本不会被读：派生值只可能来自基础字段，注入在结构上不存在。
+    基础字段是普通 str（还没迁移的路径）时也派生，值就是它本身；why="" 派生出 ""——
+    update 按键合并到手机那一条上，旧的英文原因不会残留（spec §7.2）。"""
+    bi = L("电脑休眠过", "The computer was asleep")
+    with i18n.use("en"):
+        out = viewer.filter_payload({"type": "incident", "id": "sleep", "level": "warn",
+                                     "text": bi, "text_en": "INJECTED"})
+        assert out["text"] == "电脑休眠过" and out["text_en"] == "The computer was asleep"
+        assert type(out["text"]) is str and type(out["text_en"]) is str
+        plain = viewer.filter_payload({"type": "alert_update", "alert_id": 1, "why": "超时",
+                                       "why_en": "INJECTED"})
+        assert plain["why_en"] == "超时"
+        empty = viewer.filter_payload({"type": "caption_update", "id": 1, "why": ""})
+        assert empty["why"] == "" and empty["why_en"] == ""
+        # 基础字段没过白名单（容器）就不派生
+        nested = viewer.filter_payload({"type": "caption", "id": 1, "why": ["a"]})
+        assert "why" not in nested and "why_en" not in nested
+    # 闸关着、没有一次性覆盖：一个字段都不多派生，手机消息与改造前逐字节相同
+    closed = viewer.filter_payload({"type": "incident", "id": "sleep", "text": bi})
+    assert set(closed) == {"type", "id", "text"}
+
+
+def test_derived_english_fields_are_scrubbed_and_capped_too():
+    """派生值同样过 scrub_text：英文里的绝对路径也换成「…」。上限另算（英文长 2–3 倍）。"""
+    text = L("审计日志写不进去：/Users/elonmei/logs/session-1.jsonl",
+             "Can’t write the audit log: /Users/elonmei/logs/session-1.jsonl " + "x" * 500)
+    why = L("超时", "Timed out at https://api.example.com/v2?key=1 " + "y" * 500)
+    with i18n.use("en"):
+        inc = viewer.filter_payload({"type": "incident", "id": "audit", "text": text})
+        alert = viewer.filter_payload({"type": "alert", "alert_id": 1, "why": why})
+    assert "/Users" not in inc["text_en"] and "…" in inc["text_en"]
+    assert len(inc["text_en"]) == viewer.SCRUB_LIMIT_EN
+    assert "https://" not in alert["why_en"] and "…" in alert["why_en"]
+    assert len(alert["why_en"]) == viewer.WHY_LIMIT_EN
 
 
 def test_unknown_and_malformed_messages_are_dropped():

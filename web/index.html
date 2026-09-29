@@ -2,10 +2,11 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
+  <meta name="tlt-app" content="tiktok-live-translator">  <!-- 实例指纹，与界面语言无关：双击第二次时 main.py 靠它认出自己（app/instance.py），要留在文件前 4096 字节里 -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=33">
+  <link rel="stylesheet" href="/static/style.css?v=34">
 </head>
 <body class="home">
   <!-- 直播界面的线性图标：跟设置行、ⓘ 同一套画法（SF Symbols 风格，16×16、描边 1.5、
@@ -47,8 +48,10 @@
       <label class="ctl" title="目标语言">
         <span class="ctl-text">目标语言</span>
         <!-- 固定 aria-label：.ctl-text 在窄宽度（≤1080px）会被隐藏，不依赖它做可访问名称
-             （和同一行 #font-size 的 aria-label="字幕字号" 保持同一种更稳的写法） -->
-        <select id="target-lang" aria-label="目标语言">
+             （和同一行 #font-size 的 aria-label="字幕字号" 保持同一种更稳的写法）。
+             translate="no"：选项是各语言的自称，属于数据，哪种界面语言都不翻；只豁免选项文字，
+             select 自己的 aria-label 照常要英文（spec §4.1 R7） -->
+        <select id="target-lang" aria-label="目标语言" translate="no">
           <option value="zh-CN">中文（简体）</option>
           <option value="zh-TW">中文（繁體）</option>
           <option value="en">English</option>
@@ -122,7 +125,7 @@
             <div class="share-main">
               <canvas id="share-qr" class="share-qr" width="0" height="0"></canvas>
               <div class="share-right">
-                <div id="share-url" class="share-url" tabindex="0"></div>
+                <div id="share-url" class="share-url" tabindex="0" translate="no"></div>
                 <div class="share-actions">
                   <button id="share-copy" class="btn small" type="button">复制链接</button>
                   <button id="share-rotate" class="btn small" type="button">换一个链接</button>
@@ -135,7 +138,7 @@
             </div>
             <p id="share-addr-changed" class="share-addr-changed hidden"></p>
             <p id="share-note" class="share-note hidden"></p>
-            <ul id="share-ip-list" class="share-ip-list hidden"></ul>
+            <ul id="share-ip-list" class="share-ip-list hidden" translate="no"></ul>
           </div>
           <div id="share-help" class="share-help-box hidden">
             <p class="share-help">
@@ -211,7 +214,7 @@
     <!-- 走投无路时的出口：一条带真实路径、可一键复制的命令。
          更新器曾经把自己锁死过——修好它的代码只能靠更新送达。 -->
     <div id="fix-command" class="fix-command hidden">
-      <code id="fix-command-text"></code>
+      <code id="fix-command-text" translate="no"></code>
       <button id="fix-command-copy" class="btn small">复制</button>
     </div>
 
@@ -465,6 +468,32 @@
             </div>
           </div>
 
+          <!-- 界面语言：跟随系统 / 中文 / English。config.ui_lang_available 不为 true 时整行隐藏
+               （发布闸关着、又没有 --ui-lang 一次性覆盖时，config 里根本没有这个键），见 app.js
+               renderLang。设置分组只在待机时可见，所以切换后页面重载不会打断监听 -->
+          <div id="lang-card" class="set-item hidden">
+            <button id="lang-head" class="set-row" type="button" aria-expanded="false" aria-controls="lang-body">
+              <span class="set-icon indigo" aria-hidden="true">
+                <!-- 实心白色图形，跟其余设置行一样写内联 SVG（sprite 里的 .i 是描边图标，不用在这里）。
+                     左上一个挖出字形的方块、右下一个 A，表示「文字/语言」；不用地球，翻译引擎那一行已经用了 -->
+                <svg viewBox="0 0 16 16" fill="currentColor" fill-rule="evenodd" aria-hidden="true">
+                  <path d="M2.6 1h4.8A1.6 1.6 0 0 1 9 2.6v4.8A1.6 1.6 0 0 1 7.4 9H2.6A1.6 1.6 0 0 1 1 7.4V2.6A1.6 1.6 0 0 1 2.6 1ZM4.5 2.2v.9h1v-.9ZM2.5 3.6v.95h5V3.6ZM5 5 2.4 7.9h1.3L5 6.45 6.3 7.9h1.3ZM11.1 6.5h1.8l2.6 8.5h-1.8l-.6-1.9h-2.2l-.6 1.9H8.5ZM12 9.3l-.65 2.2h1.3Z"/>
+                </svg>
+              </span>
+              <span class="set-name" data-en="App Language">界面语言 · Language</span>
+              <span id="lang-summary" class="set-value"></span>
+              <span class="set-chevron" aria-hidden="true"></span>
+            </button>
+            <div id="lang-body" class="set-body hidden">
+              <select id="ui-lang-select" aria-labelledby="lang-head">
+                <option value="system" id="ui-lang-system"></option>  <!-- app.js 填：跟随系统（中文）/ System (English) -->
+                <option value="zh" lang="zh-CN" translate="no">中文</option>
+                <option value="en" lang="en" translate="no">English</option>
+              </select>
+              <p class="set-note" data-en="The window reloads once after you switch. Phone Viewing pages follow each phone’s language.">切换后窗口会刷新一次。手机同看页按各自手机的语言显示。</p>
+            </div>
+          </div>
+
         </div>
       </section>
     </div>
@@ -521,9 +550,11 @@
     <svg class="i" aria-hidden="true"><use href="#i-arrow-down"/></svg>回到最新
   </button>
 
+  <!-- 底部大字幕只放译文和原文，都是正文：不标 translate="no"，留给浏览器「翻译此页」；
+       class i18n-data 让英文界面的检查把它们当数据豁免（用户决定 6，同 app.js 的 markBody） -->
   <footer id="live-bar" class="live-bar hidden">
-    <div id="live-translated" class="live-translated"></div>
-    <div id="live-original" class="live-original"></div>
+    <div id="live-translated" class="live-translated i18n-data"></div>
+    <div id="live-original" class="live-original i18n-data"></div>
   </footer>
 
   <div id="stats-line" class="stats-line hidden"></div>
@@ -546,6 +577,7 @@
       document.body.appendChild(__note);
     }
   </script>
+  <script src="/static/i18n.js?v=1"></script>
   <script src="/static/normalize.js?v=1"></script>
   <script src="/static/brand.js?v=3"></script>
   <script src="/static/follow.js?v=2"></script>
@@ -553,8 +585,8 @@
   <script src="/static/qrcanvas.js?v=1"></script>
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
-  <script src="/static/settings-rows.js?v=1"></script>
+  <script src="/static/settings-rows.js?v=2"></script>
   <script src="/static/live-ui.js?v=1"></script>
-  <script src="/static/app.js?v=59"></script>
+  <script src="/static/app.js?v=62"></script>
 </body>
 </html>

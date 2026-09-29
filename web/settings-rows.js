@@ -1,10 +1,13 @@
-/* 设置分组（自检 / 引擎 / 报警）几行的纯逻辑：摘要文案该写什么、折叠行该不该
+/* 设置分组（自检 / 引擎 / 报警 / 界面语言）几行的纯逻辑：摘要文案该写什么、折叠行该不该
  * 自动展开。这些判断本身不碰 DOM，但曾经全部埋在 app.js 的立即执行函数里，
  * 149 个 node 测试没有一个覆盖到（engineer.md #4）：改摘要文案的措辞、或者
  * 改自动展开的判定条件，都不会有任何测试变红。
  *
  * 单独成文件、走 module.exports 供 node 测试直接 require，写法和加载方式照
  * web/follow.js、web/brand.js：浏览器里作为全局函数被 app.js 调用。 */
+
+// 浏览器里 L/LN 是 i18n.js 定义的全局函数（这里的 var 不会清掉它）；node 测试里从 i18n.js 取
+if (typeof L === "undefined") { var I18N_ = require("./i18n.js"); var L = I18N_.L, LN = I18N_.LN, APP_NAME = I18N_.APP_NAME; }
 
 /* 自检摘要：三种结论只看 fail/warn/total 这几个数，不看具体是哪一项检查。
  * 同时返回 sig——「结论」的签名，给 nextAutoOpen 判断这一条自检广播是不是
@@ -77,6 +80,48 @@ function nextAutoOpen(prevSig, sig, openWhenChanged) {
   return { sig: s, changed: s !== p, open: !!openWhenChanged };
 }
 
+/* 界面语言行（index.html #lang-card，spec §3.4）。语言名永远用该语言自己的写法，
+ * 不翻译：用户就算落进一个看不懂的界面，也能认出自己的语言、切回去。 */
+function langName(code) {
+  "use strict";
+  return code === "en" ? "English" : "中文";   // i18n: data（语言自称，永不翻译）
+}
+
+/* 行右侧的摘要。setting 是设置里存的选择（system / zh / en，config.ui_lang_setting），
+ * lang 是此刻生效的界面语言（config.ui_lang），system 是「跟随系统」解析出的语言
+ * （config.ui_lang_system；检测失败时服务端已经按中文给）。跟随系统时写出它此刻
+ * 解析成了什么；认不出的 setting（老数据）就写生效的语言，不留空。 */
+function langSummary(setting, lang, system) {
+  "use strict";
+  if (setting === "zh" || setting === "en") return langName(setting);
+  if (setting === "system") return L("跟随系统 · {name}", "System · {name}").replace("{name}", langName(system));
+  return langName(lang);
+}
+
+/* 下拉里「跟随系统」那一项：括号里写它此刻会解析成的语言。 */
+function langSystemLabel(system) {
+  "use strict";
+  return L("跟随系统（{name}）", "System ({name})").replace("{name}", langName(system));
+}
+
+/* 服务端的界面语言（config.ui_lang）和本页不同时要不要整页重载一次（spec §3.5）。
+ * uiLang 是本页加载时的语言（i18n.js 的 UI_LANG），stored 是 sessionStorage 里
+ * 上一次重载留下的「目标语言@毫秒时间」。10 秒内已经为同一个目标重载过就不再重载：
+ * 服务端和页面万一一直对不上，宁可停在原来的语言，也不能无限刷新。
+ * 返回 { reload, mark }：mark 是这次重载前要记下的值。 */
+var LANG_RELOAD_WINDOW_MS = 10000;
+function langReload(target, uiLang, stored, now) {
+  "use strict";
+  var keep = { reload: false, mark: null };
+  if (target !== "zh" && target !== "en") return keep;      // 没带 ui_lang（闸关着）：不比对
+  if (target === (uiLang === "en" ? "en" : "zh")) return keep;
+  var m = /^(zh|en)@(\d+)$/.exec(stored == null ? "" : String(stored));
+  var age = m ? now - Number(m[2]) : -1;
+  if (m && m[1] === target && age >= 0 && age < LANG_RELOAD_WINDOW_MS) return keep;
+  return { reload: true, mark: target + "@" + now };
+}
+
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { selfcheckSummary, engineSummary, watchSummary, nextAutoOpen };
+  module.exports = { selfcheckSummary, engineSummary, watchSummary, nextAutoOpen,
+                     langName, langSummary, langSystemLabel, langReload, LANG_RELOAD_WINDOW_MS };
 }

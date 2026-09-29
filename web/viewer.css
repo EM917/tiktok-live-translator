@@ -98,6 +98,12 @@ body {
 .hidden { display: none !important; }
 .icon { width: 16px; height: 16px; flex: none; }   /* 内联 SVG 图标统一尺寸，颜色跟 currentColor */
 
+/* 界面语言防闪（spec §7.1）：服务端写了 <html data-i18n="on">（发布闸开着）时，在 viewer.js
+   定好语言、换好静态文案（给 <html> 加 i18n-done）之前先不显示，免得首帧闪一下中文。
+   viewer.js 万一没跑起来，1.5 秒后照样显示。闸关着时没有 data-i18n，选择器不命中 */
+html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-reveal 0s 1.5s forwards; }
+@keyframes i18n-reveal { to { visibility: visible; } }
+
 /* ---------- 顶栏 ---------- */
 .top-bar {
   position: sticky; top: 0; z-index: 5;
@@ -258,4 +264,6 @@ body {
   border: none; border-radius: var(--r-pill); background: var(--fill); color: var(--label);
 }
 .ring-toggle.on { color: #fff; background: var(--blue-fill); }
+/* 语言切换和提示音一起靠右，只看模式提示留在左边 */
+#lang-toggle { margin-left: auto; }
 .ring-note { font-size: var(--fs-caption); color: var(--label-3); text-align: center; padding: 4px 14px 8px; }
