@@ -498,14 +498,14 @@ def read_terms(path):
     except FileNotFoundError:
         return info
     except OSError as exc:
-        info.read_error = str(exc)[:200]
+        info.read_error = str(exc)[:200]          # i18n: data（系统给的错误原文）
         return info
     info.mtime = mtime
     info.hash = hashlib.sha256(data).hexdigest()[:12]
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        info.decode_error = str(exc)[:200]
+        info.decode_error = str(exc)[:200]        # i18n: data（解码器给的错误原文）
         text = data.decode("utf-8", errors="replace")
         if text.startswith("\ufeff"):
             text = text[1:]
