@@ -621,17 +621,18 @@ def run_with_window(args):
                          "请在已打开的窗口里粘贴地址后点「开始翻译」。")
         from app.macbrand import brand_mac_app
         from app.window_attention import expose_attention
-        from app.window_close import localization_kwargs
+        from app.window_close import confirm_localization_kwargs
         from app.window_lang import expose_window_lang
         brand_mac_app(ROOT)
         lang = i18n.current()
         # 这个窗口不 guard_close（后端在另一个进程里），localization 只给页面里 JS confirm()
-        # 的按钮用。闸关着、没有一次性覆盖时照旧不传：今天这个窗口用的是 pywebview 自带的文字
-        loc = localization_kwargs(webview.create_window, lang) if i18n.enabled() else {}
+        # 的按钮用。今天没传、用 pywebview 自带的文字；关窗表里有了 global.ok（M11）才传，与闸无关
+        loc = confirm_localization_kwargs(webview.create_window, lang)
         window = webview.create_window(i18n.text(APP_NAME, lang), existing,
                                        width=1000, height=760, min_size=(420, 480), **loc)
-        # 语言切换发生在另一个进程里，这个进程收不到：页面重载后经 JS 桥告诉窗口
-        expose_window_lang(window, expose_attention(window))
+        # 语言切换发生在另一个进程里，这个进程收不到：页面重载后经 JS 桥告诉窗口。
+        # 建窗时没传 localization 的，切换时也不往里写（app/window_lang.py）
+        expose_window_lang(window, expose_attention(window), localized=bool(loc))
         webview.start()
         return
 

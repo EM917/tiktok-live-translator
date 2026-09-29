@@ -36,6 +36,19 @@ def localization_kwargs(fn, lang=None):
     return {"localization": close_localization(lang)}
 
 
+def confirm_localization_kwargs(fn, lang=None):
+    """第二个实例的窗口用（双击第二次时开的那个）：它不 guard_close，localization 只给页面里
+    JS confirm() 的两个按钮——cocoa 取 global.ok / global.cancel。今天这个窗口没传，按钮是
+    pywebview 自带的「OK / Cancel」。
+
+    表里有了 global.ok 才传（M11 补上它，spec §8.2 标明的中文可见修正），两个按钮一起换成
+    「好 / 取消」。在那之前传，只会换掉 Cancel，变成「OK / 取消」混排；而且要是拿闸来开关，
+    这处中文可见的变化就落在开闸（Z1）上了。与闸无关：英文界面上 pywebview 自带的就是英文。"""
+    if "global.ok" not in CLOSE_LOCALIZATION:
+        return {}
+    return localization_kwargs(fn, lang)
+
+
 def stream_active(pipeline):
     fn = getattr(pipeline, "_stream_active", None)
     try:

@@ -64,6 +64,41 @@ def test_localization_kwargs_pass_the_rendered_table(monkeypatch):
         assert window_close.localization_kwargs(create_window) == {"localization": got}
 
 
+# pywebview 6.2.1 的 webview/localization.py 默认表里与关窗、JS confirm() 有关的四个键
+# （建窗口时整张表复制成 window.localization）
+PYWEBVIEW_DEFAULT = {"global.quitConfirmation": "Do you really want to quit?",
+                     "global.ok": "OK", "global.quit": "Quit", "global.cancel": "Cancel"}
+
+
+def _create_window(title, url, localization=None):
+    pass
+
+
+@pytest.mark.parametrize("lang", ["zh", "en", None])
+@pytest.mark.parametrize("gate", ["closed", "zh", "en"])
+def test_the_second_window_keeps_pywebview_buttons_until_the_table_has_ok(gate, lang):
+    """复审（spec-invariants）：第二个实例的窗口今天没有 localization，JS confirm() 的按钮是
+    pywebview 自带的「OK / Cancel」。关窗表里还没有 global.ok 时，开闸（Z1）也不许传——
+    否则老装机上 Cancel 变「取消」，这处中文可见的变化就落在了只改一行的 Z1 上。"""
+    assert "global.ok" not in window_close.CLOSE_LOCALIZATION
+    if gate == "closed":
+        assert window_close.confirm_localization_kwargs(_create_window, lang) == {}
+    else:
+        with i18n.use(gate):                 # 闸开着（一次性覆盖同样让 enabled() 为真）
+            assert window_close.confirm_localization_kwargs(_create_window, lang) == {}
+
+
+def test_the_second_window_gets_both_buttons_once_the_table_has_ok(monkeypatch):
+    """M11 补上 global.ok 之后，两个按钮一起换（spec §8.2 标明的中文可见修正），与闸无关。"""
+    monkeypatch.setattr(window_close, "CLOSE_LOCALIZATION",
+                        dict(BILINGUAL_CLOSE, **{"global.ok": L("好", "OK")}))
+    zh = window_close.confirm_localization_kwargs(_create_window, "zh")["localization"]
+    assert zh["global.ok"] == "好" and zh["global.cancel"] == "取消" and _plain(zh.values())
+    en = window_close.confirm_localization_kwargs(_create_window, "en")["localization"]
+    assert en["global.ok"] == "OK" and en["global.cancel"] == "Cancel"
+    assert window_close.confirm_localization_kwargs(lambda title, url: None, "zh") == {}
+
+
 # ---- 窗口标题 -----------------------------------------------------------------------------
 
 class FakeWindow:
@@ -145,6 +180,23 @@ def test_with_the_gate_closed_a_chinese_page_changes_nothing(monkeypatch):
     for lang in ("zh", None, "fr", 3):
         assert call(lang) is False
     assert window.localization == {"global.cancel": "Cancel"} and window.titles == []
+
+
+def test_a_window_built_without_our_localization_keeps_pywebview_buttons(bilingual_titles,
+                                                                         monkeypatch):
+    """第二个实例的窗口建窗时没传 localization（localized=False）：闸开着时换语言，标题照换，
+    pywebview 自带的 localization 一个键都不动——pywebview 6 的实例 dict 总在，往里写就会把
+    JS confirm() 的 Cancel 改成「取消」，而且是在开闸（Z1）时。"""
+    monkeypatch.setattr(window_close, "CLOSE_LOCALIZATION", BILINGUAL_CLOSE)
+    window = FakeWindow(localization=dict(PYWEBVIEW_DEFAULT))
+    attention = window_attention.expose_attention(window, base=APP)
+    call = window_lang.expose_window_lang(window, attention, localized=False)
+    with i18n.use("zh"):                          # 闸开着
+        assert call("en") is True
+        assert call("zh") is True
+        assert call("zh") is False
+    assert window.localization == PYWEBVIEW_DEFAULT
+    assert window.titles == ["TikTok Live Translator", "TikTok 直播同传"]
 
 
 def test_windows_without_an_instance_localization_are_skipped_silently():
@@ -354,10 +406,20 @@ def test_both_windows_render_the_title_and_expose_the_language_bridge():
         assert _call_name(call.args[1]) == "expose_attention"
 
 
-def test_the_second_window_only_gets_a_localization_when_enabled():
-    """第二个实例的窗口今天没有 localization（JS confirm 用 pywebview 自带的文字）：
-    闸关着时不能变。"""
+def test_the_second_window_ties_its_localization_to_the_table_not_the_gate():
+    """第二个实例的窗口今天没有 localization（JS confirm 用 pywebview 自带的文字）。传不传由
+    confirm_localization_kwargs 按关窗表里有没有 global.ok 决定（M11），不看闸：否则开闸（Z1）
+    会顺带改出中文可见的按钮文字。建窗时传没传，也要告诉 JS 桥（localized=bool(loc)）。"""
     func = _function(_main(), "run_with_window")
-    gated = [n for n in ast.walk(func) if isinstance(n, ast.IfExp)
-             and _call_name(n.body) == "localization_kwargs"]
-    assert len(gated) == 1 and _call_name(gated[0].test) == "i18n.enabled"
+    branch = next(n for n in func.body if isinstance(n, ast.If)
+                  and _calls(n, "webview.create_window"))
+    (create,) = _calls(branch, "webview.create_window")
+    assert [kw.value.id for kw in create.keywords if kw.arg is None] == ["loc"]
+    assigns = [n for n in ast.walk(branch) if isinstance(n, ast.Assign)
+               and [getattr(t, "id", None) for t in n.targets] == ["loc"]]
+    assert len(assigns) == 1
+    assert _call_name(assigns[0].value) == "confirm_localization_kwargs"
+    assert not _calls(branch, "i18n.enabled") and not _calls(branch, "localization_kwargs")
+    (bridge,) = _calls(branch, "expose_window_lang")
+    (localized,) = [kw.value for kw in bridge.keywords if kw.arg == "localized"]
+    assert _call_name(localized) == "bool" and localized.args[0].id == "loc"
