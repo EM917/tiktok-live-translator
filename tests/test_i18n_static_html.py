@@ -8,6 +8,7 @@ class i18n-data（tests/i18n_rules.py 的 DATA_TEXT_CLASS）。
 
 另有一条无条件的：inject_lang 靠 `<html lang="zh-CN">` 这个字面量换语言，两个页面里它都必须
 恰好出现一次——改成别的写法，英文界面会静默失效（页面照样是中文，不报错）。"""
+import re
 import textwrap
 
 import pytest
@@ -167,3 +168,31 @@ def test_scripts_styles_and_comments_are_not_page_text():
         </body></html>
     '''
     assert _left(src) == []
+
+
+# ---- file:// 指引（docs/i18n-style.md #8、§4.3 R15；spec §6、§9 R1-11） ---------------------
+
+def _file_url_script():
+    scripts = re.findall(r"<script>([\s\S]*?)</script>", P.read("web/index.html"))
+    found = [s for s in scripts if 'location.protocol === "file:"' in s]
+    assert len(found) == 1, "index.html 里应当恰好有一段 file:// 的内联指引"
+    return found[0]
+
+
+def test_the_file_url_note_is_still_there():
+    """G4/G5/G10 都跳过 <script>：这段指引丢了或改了，别的检查都不会红。"""
+    script = _file_url_script()
+    assert "请不要直接打开这个文件" in script
+    assert "TikTok Live Translator.app" in script and "Start.bat" in script
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "开闸（Z1）之后才加英文：闸关着时中文用户直接双击 index.html 看到的这段指引要逐字节不变。"
+    "file:// 下 i18n.js 加载不出来，只能中英并列，<title> 也要在这段脚本里一并给英文。"
+    "改完这条会 XPASS 而失败，届时删掉 xfail 标记"))
+def test_the_file_url_note_carries_both_languages():
+    script = _file_url_script()
+    assert "请不要直接打开这个文件" in script
+    assert "Don’t open this file directly" in script
+    assert "The caption window opens automatically" in script
+    assert re.search(r'document\.title\s*=\s*"[^"]*TikTok Live Translator', script)
