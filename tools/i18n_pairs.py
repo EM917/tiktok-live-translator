@@ -851,11 +851,20 @@ def check_python_coverage(path, src):
                     bad(node, "R11", "切片直接交给 {}() 会丢英文，改成 bimap(lambda s: s[:n], x)".format(name))
         elif isinstance(node, ast.ExceptHandler) and node.name:
             for sub in ast.walk(ast.Module(body=node.body, type_ignores=[])):
-                if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                if not isinstance(sub, ast.Call) or id(sub) in r11_exempt or annotated(sub):
+                    continue
+                if (isinstance(sub.func, ast.Name)
                         and sub.func.id == "str" and len(sub.args) == 1
-                        and isinstance(sub.args[0], ast.Name) and sub.args[0].id == node.name
-                        and id(sub) not in r11_exempt and not annotated(sub)):
+                        and isinstance(sub.args[0], ast.Name) and sub.args[0].id == node.name):
                     bad(sub, "R11", "str({}) 会丢英文，改成 of({})".format(node.name, node.name))
+                # L(...).format(exc)：Bi.format 把异常对象当普通值填进两臂，format(exc) 就是
+                # str(exc)——raise X(L(...)) 带着的英文在这里丢掉，英文界面露中文
+                elif (isinstance(sub.func, ast.Attribute) and sub.func.attr == "format"
+                      and isinstance(sub.func.value, ast.Call) and py_call_kind(sub.func.value)
+                      and any(isinstance(a, ast.Name) and a.id == node.name
+                              for a in sub.args + [k.value for k in sub.keywords])):
+                    bad(sub, "R11", "L(...).format({0}) 会丢异常里的英文，改成 .format(of({0}))".format(
+                        node.name))
     return out
 
 

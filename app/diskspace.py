@@ -18,7 +18,7 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .i18n import L, LN
+from .i18n import L, LN, of
 
 ROOT = Path(__file__).resolve().parent.parent
 LOGS_OLD_DAYS = 30
@@ -219,7 +219,7 @@ async def delete(item_ids, hf_dir=None, log_dir=None, current_log=None,
             freed += it["size"]
             done.append(it["id"])
         except OSError as exc:
-            failed.append(L("{}：{}", "{}: {}").format(it["label"], exc))
+            failed.append(L("{}：{}", "{}: {}").format(it["label"], of(exc)))
     return freed, done, failed
 
 

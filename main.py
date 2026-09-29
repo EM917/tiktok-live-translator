@@ -308,7 +308,7 @@ def ensure_env():
                          "Check your network connection, then open the app again. Installation "
                          "picks up where it left off.\n"
                          "(Advanced: you can also run setup.sh / setup.ps1, or pip install -r "
-                         "requirements.txt.)").format(exc))
+                         "requirements.txt.)").format(of(exc)))
         _fail_alert(message)
     finally:
         if lock is not None:
@@ -338,7 +338,7 @@ except ImportError as exc:
                   "请检查网络后重新打开本程序，会自动继续安装。",
                   "The app’s components aren’t fully installed yet, so it can’t start ({}).\n"
                   "Check your network, then open the app again. Installation continues "
-                  "automatically.").format(exc))
+                  "automatically.").format(of(exc)))
     sys.exit(1)
 
 
@@ -673,7 +673,7 @@ def run_with_window(args):
             if isinstance(exc, ImportError):
                 _forget_install_failure()      # 缺模块：下次启动立刻重试安装
             _fail_alert(L("后台服务异常退出：{}", "The background service quit unexpectedly: {}")
-                        .format(exc))
+                        .format(of(exc)))
             os._exit(1)
 
     thread = threading.Thread(target=backend, daemon=True)

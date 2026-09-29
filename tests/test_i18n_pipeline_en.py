@@ -371,6 +371,31 @@ def test_a_failed_model_load_ends_the_session_with_an_english_status(monkeypatch
     assert of_type(audit_rows(tmp_path), "session_end")[0]["reason"] == "model_load_failed"
 
 
+def test_the_catch_all_keeps_the_english_an_exception_carries(monkeypatch, tmp_path):
+    """_run_stream 的兜底用 of(exc)：raise X(L(...)) 带来的英文不能在 .format 里丢掉。
+    缺 ffmpeg 时 audio.py 抛的就是这样一个 RuntimeError，这里是它到界面的唯一出口
+    （双击启动不带地址时，main.py 只在终端提醒缺组件，窗口照常打开）。"""
+    from app import audio
+
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(audio, "find_ffmpeg", lambda: None)
+
+    async def inner(url):
+        async for _ in audio.FFmpegAudioSource("http://cdn/a.flv").frames():
+            pass
+
+    p._run_stream_inner = inner
+    with i18n.use(EN):
+        run(p._run_stream(ROOM))
+    state, detail = server.statuses[-1]
+    assert state == "error"
+    assert str(detail) == "内部错误，已停止：缺少音频组件 ffmpeg——请关闭程序后重新打开，会自动补装"
+    assert i18n.render(detail, EN) == (
+        "An internal error stopped monitoring. Details: Audio (ffmpeg) is missing. Quit and "
+        "reopen the app to install it automatically.")
+    assert_no_chinese(english_ui(server.messages))
+
+
 # ---- 开始、换主播、停止、地址不对 --------------------------------------------------------------
 
 def test_start_switch_and_stop_acks_are_english(monkeypatch, tmp_path):

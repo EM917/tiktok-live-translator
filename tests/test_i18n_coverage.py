@@ -136,6 +136,22 @@ def test_r11_str_of_a_caught_exception():
     assert _py(src) == [(5, "R11")]
 
 
+def test_r11_a_caught_exception_formatted_into_a_pair():
+    """raise X(L(...)) 带着英文；L(...).format(exc) 把它当普通值 str() 进两臂，英文就丢了。"""
+    src = '''
+        try:
+            go()
+        except RuntimeError as exc:
+            status("error", L("内部错误：{}", "Internal error: {}").format(exc))
+            status("error", L("{a}：{b}", "{a}: {b}").format(a=name, b=exc))
+            status("error", L("内部错误：{}", "Internal error: {}").format(of(exc)))
+            status("error", NOTE.format(exc))
+            print("[错误] {}".format(exc))
+            audit.error(L("出错：{}", "Error: {}").format(exc))
+    '''
+    assert _py(src) == [(5, "R11"), (6, "R11")]
+
+
 def test_r11_chinese_f_string():
     src = '''
         a = f"积压 {n} 秒"

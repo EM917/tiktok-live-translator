@@ -17,7 +17,7 @@ import unicodedata
 from collections import deque
 from pathlib import Path
 
-from .i18n import L
+from .i18n import L, of
 
 # 三级命中，按可信度从高到低
 TIER_EXACT = "exact"        # 🔴 原样命中
@@ -236,7 +236,7 @@ class BannedTermDetector:
                     print("[警告] 违禁词表里的正则无效，已跳过：{}（{}）".format(raw, exc))
                     self._warn(line, raw, "invalid_regex",
                                L("正则写法有错，没有生效（{}）", "The pattern has an error ({})")
-                               .format(exc), loaded=False)
+                               .format(of(exc)), loaded=False)
                     continue
                 self.patterns.append({"raw": raw, "re": compiled})
                 self.loaded.append(raw)

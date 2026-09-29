@@ -898,7 +898,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             try:
                 await self.server.status("error", L(
                     "内部错误，已停止：{}",
-                    "An internal error stopped monitoring. Details: {}").format(exc))
+                    "An internal error stopped monitoring. Details: {}").format(of(exc)))
             except Exception:
                 pass
 

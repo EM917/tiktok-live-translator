@@ -20,7 +20,7 @@ import os
 import shutil
 from pathlib import Path
 
-from .i18n import L, LN
+from .i18n import L, LN, of
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -148,7 +148,7 @@ async def check_asr(args, state=None):
         rec = recommend(backend=backend, device=getattr(args, "device", "auto"))
     except Exception as exc:
         return _check(NAMES["asr"], FAIL,
-                      L("硬件探测失败：{}", "Couldn’t detect the hardware: {}").format(exc))
+                      L("硬件探测失败：{}", "Couldn’t detect the hardware: {}").format(of(exc)))
     model = getattr(args, "model", None) or rec["model"]
     # 这几个库第一次 import 要几百毫秒到一秒，放线程里做——run_selfcheck 特意
     # 挂在后台就是为了不挡住界面，在协程里同步 import 等于白挂
@@ -463,7 +463,7 @@ async def _check_deepl(args, translator):
         gid = await inner._ensure_glossary(source, target)
     except Exception as exc:
         return _check(NAMES["translator"], FAIL,
-                      L("DeepL 连不上：{}", "Couldn’t connect to DeepL: {}").format(exc),
+                      L("DeepL 连不上：{}", "Couldn’t connect to DeepL: {}").format(of(exc)),
                       L("检查密钥和网络；或把引擎换成本地 Hy-MT2",
                         "Check the API key and your network, or switch the engine to Local "
                         "Hy-MT2."))
@@ -580,7 +580,7 @@ async def check_audit():
         return _check(NAMES["audit"], FAIL,
                       L("logs/ 不可写（{}）——漏报将无法事后追溯",
                         "Can’t write to logs/ ({}). Missed alerts can’t be traced "
-                        "afterward.").format(exc),
+                        "afterward.").format(of(exc)),
                       _audit_fix(os.name == "nt"))
 
 
@@ -792,7 +792,7 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
             checks.append(_check(name, FAIL,
                                  L("这一项没能检查完（{}）——它是好是坏都不知道",
                                    "This check didn’t finish ({}). It’s unknown whether this "
-                                   "part works.").format(r),
+                                   "part works.").format(of(r)),
                                  L("把这条信息反馈给开发者；这不影响其它功能",
                                    "Send this message to the developer. Other features aren’t "
                                    "affected.")))

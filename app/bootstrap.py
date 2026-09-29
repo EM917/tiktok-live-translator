@@ -29,7 +29,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from .i18n import L
+from .i18n import L, of
 
 APP_DIR_NAME = "TikTok Live Translator.app"      # 与 app/macbundle.py 一致
 
@@ -477,7 +477,7 @@ def failure_text(exc, log_path=None, python_version=None, root=None):
         except OSError:
             written = False
     detail = (L("详细记录：{}\n", "Log file: {}\n").format(log_path) if written
-              else L("（{}）\n", "({})\n").format(exc))
+              else L("（{}）\n", "({})\n").format(of(exc)))
     return (L("自动安装未完成。\n请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n",
               "Installation didn’t finish.\nCheck your network connection, then open the app "
               "again. Installation picks up where it left off.\n")
