@@ -6,11 +6,13 @@
 
 另一半是语言初始化：boot 只读、settle 才写。损坏的 settings.json 要留到最终进程里才备份，
 否则「设置文件损坏，已备份为…」的提示和审计里的备份名会随 exec 静默消失（spec §3.3）。"""
+import ast
 import copy
 import json
 import pickle
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -496,6 +498,107 @@ def test_settle_keeps_an_existing_choice_and_the_boot_override(tmp_path, setting
     _boot(tmp_path, env, ("--ui-lang", "zh"))
     assert i18n.settle(tmp_path, environ=env) == ZH
     assert i18n.config_info()["ui_lang_locked"] is True
+
+
+# ---- 提交 T：新装、界面是英文时，翻译目标语言默认 English（用户 09-28 决定 3） ---------------
+
+FRESH_EN = {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "en"}
+
+
+@pytest.mark.parametrize("gate, env, saved, want", [
+    (True, FRESH_EN, None, EN),                                          # 新装第一次启动
+    (True, FRESH_EN, {"ui_lang": "system"}, EN),
+    (True, FRESH_EN, {"ui_lang": "en"}, EN),
+    (True, FRESH_EN, {"ui_lang": "zh"}, None),                           # 界面是中文
+    (True, {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "zh"}, None, None),
+    (True, {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "none"}, None, None),   # 检测失败按中文
+    (True, {i18n.ENV_INSTALL: "existing", i18n.ENV_SYSTEM: "en"}, {"ui_lang": "en"}, None),  # 老用户不动
+    (True, {i18n.ENV_INSTALL: "existing", i18n.ENV_SYSTEM: "en"}, None, None),
+    (True, {i18n.ENV_SYSTEM: "en"}, {"ui_lang": "en"}, None),            # 没经过 boot：按老装机
+    (False, FRESH_EN, None, None),                                       # 闸关着
+    (False, FRESH_EN, {"ui_lang": "en"}, None),
+])
+def test_settle_defaults_captions_to_english_only_for_fresh_english_installs(
+        tmp_path, settings_file, monkeypatch, gate, env, saved, want):
+    monkeypatch.setattr(i18n, "I18N_ENABLED", gate)
+    if saved is not None:
+        settings_file.write_text(json.dumps(saved), encoding="utf-8")
+    i18n.settle(tmp_path, environ=dict(env))
+    assert settings.load_settings().get("target_lang") == want
+
+
+@pytest.mark.parametrize("target", ["zh-CN", "ja", "", None])
+def test_settle_never_replaces_a_target_lang_that_is_already_there(tmp_path, settings_file,
+                                                                   monkeypatch, target):
+    """设置里有过 target_lang（哪怕是空值）就是选过了：一个字节都不写。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    settings_file.write_text(json.dumps({"ui_lang": "system", "target_lang": target}),
+                             encoding="utf-8")
+    before = _snapshot(tmp_path)
+    assert i18n.settle(tmp_path, environ=dict(FRESH_EN)) == EN
+    assert _snapshot(tmp_path) == before
+
+
+def test_english_caption_default_is_written_on_the_first_launch_only(tmp_path, settings_file,
+                                                                     monkeypatch):
+    """真实顺序：第一个进程 boot 判出 fresh，ensure_env 建 .venv 再 execv，最终进程 settle 写。
+    下一次启动 settings.json 已在，判成老装机，不再写。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    monkeypatch.setattr(i18n, "system_lang", lambda: EN)
+    env = {}
+    _boot(tmp_path, env)
+    (tmp_path / ".venv").mkdir()
+    _boot(tmp_path, env)
+    assert i18n.settle(tmp_path, environ=env) == EN
+    assert settings.load_settings() == {"ui_lang": "system", "target_lang": "en"}
+    before = _snapshot(tmp_path)
+    env = {}
+    _boot(tmp_path, env)
+    assert env[i18n.ENV_INSTALL] == "existing"
+    assert i18n.settle(tmp_path, environ=env) == EN
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("gate, system, argv, want_lang, want_target", [
+    (True, "zh", ("--ui-lang", "en"), EN, None),     # 这次靠覆盖看英文，设置解析出的仍是中文：不写
+    (True, "en", ("--ui-lang", "zh"), ZH, EN),       # 这次靠覆盖看中文，下次正常启动是英文：照写
+    (False, "en", ("--ui-lang", "en"), EN, None),    # 闸关着用覆盖预览英文：不写
+])
+def test_english_caption_default_ignores_the_one_off_override(tmp_path, settings_file, monkeypatch,
+                                                              gate, system, argv, want_lang,
+                                                              want_target):
+    """覆盖不落盘（§3.1），不能拿它去定一个会落盘的默认值。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", gate)
+    env = {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: system}
+    _boot(tmp_path, env, argv)
+    assert i18n.settle(tmp_path, environ=env) == want_lang
+    assert settings.load_settings().get("target_lang") == want_target
+
+
+def test_a_failed_caption_default_write_leaves_the_ui_language_resolved(tmp_path, settings_file,
+                                                                        monkeypatch):
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    real_save = settings.save_setting
+
+    def save(key, value):
+        if key == "target_lang":
+            raise RuntimeError("disk gone")
+        real_save(key, value)
+
+    monkeypatch.setattr(settings, "save_setting", save)
+    assert i18n.settle(tmp_path, environ=dict(FRESH_EN)) == EN
+    assert i18n.current() == EN
+    assert settings.load_settings() == {"ui_lang": "system"}
+
+
+def test_main_settles_before_it_reads_target_lang():
+    """T 的默认值要赶上第一次启动：main() 里 settle 必须早于读 target_lang（静态读，不 import main）。"""
+    src = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
+    fn = next(node for node in ast.walk(ast.parse(src))
+              if isinstance(node, ast.FunctionDef) and node.name == "main")
+    body = ast.get_source_segment(src, fn)
+    assert body.count("i18n.settle(ROOT)") == 1
+    assert body.index("i18n.settle(ROOT)") < body.index('.get("target_lang")')
 
 
 def test_settle_never_raises(tmp_path, monkeypatch):
