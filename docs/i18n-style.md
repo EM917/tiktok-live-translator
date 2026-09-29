@@ -494,7 +494,7 @@
 | 124 | 同看人数已满（12 人），稍后再试 | Full (12 max) · Try again later | |
 | 125 | 中控已关闭手机同看 / {n} 秒没有新消息 / 状态未知 | Operator stopped sharing / No updates for {n} sec / Status unknown | |
 | 126 | 未开始 / 连接中 / 直播中 / 已停止 | Not started / Connecting / Live / Stopped | |
-| 127 | 已经 {n} 秒没连上。请找中控确认同看是否还开着，或重新扫码 | Can’t connect for {n} sec. Ask the operator whether sharing is still on, or scan the QR code again. | |
+| 127 | 已经 {n} 秒没连上。请找中控确认同看是否还开着，或重新扫码 | Not connected for {n} sec. Ask the operator whether sharing is still on, or scan the QR code again. | can’t 不跟一段时长连用 |
 | 128 | 疑似违禁词 / 清除已看过的报警 / 只在这台手机上隐藏，中控电脑和记录不受影响 | Possible Banned Terms / Clear Seen / Hides alerts on this phone only. The operator’s computer and records aren’t affected. | |
 | 129 | 重译会用中控电脑上的大模型，稍等几秒 | Retranslation uses the larger model on the operator’s computer and takes a few seconds. | |
 | 130 | 最新 / 弹幕 / 只看模式 · 不能操作 / 提示音 | Latest / Comments / View only / Sound | |

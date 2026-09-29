@@ -258,6 +258,19 @@ def test_bad_js_pairs_are_caught(call, rule):
     assert rule in _rules(_js("var x = " + call + ";"))
 
 
+def test_a_registered_js_pair_may_leave_out_a_variable(monkeypatch):
+    """R2_EN_OMITS：登记了的对，英文可以少引用中文里的变量；多引用、换变量照样报，
+    没登记的照样报。"""
+    omit = 'L("再点一次：改听 @" + target + "（停止监听 @" + cur + "）", "Click Again to Switch to @" + target)'
+    assert "再点一次：改听 @（停止监听 @）" in rules.R2_EN_OMITS
+    assert _rules(_js("var x = " + omit + ";")) == []
+    monkeypatch.setattr(rules, "R2_EN_OMITS", {})
+    assert _rules(_js("var x = " + omit + ";")) == ["R2"]
+    monkeypatch.setattr(rules, "R2_EN_OMITS", {"再点一次：改听 @（停止监听 @）": "测试"})
+    extra = omit.replace('"Click Again to Switch to @" + target', '"Switch to @" + other')
+    assert _rules(_js("var x = " + extra + ";")) == ["R2"]
+
+
 def test_html_pairs_come_from_every_data_en_attribute():
     src = ('<html lang="zh-CN"><body>\n'
            '<span id="s" data-en="Ready">待机</span>\n'

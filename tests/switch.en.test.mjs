@@ -32,10 +32,10 @@ test("目标就是当前主播：禁用，说清已经在听这个人（大小�
     { text: "Already Monitoring @BellaAllNatural", disabled: true });
 });
 
-test("武装：有当前主播时两个名字都写上（会停掉谁、改听谁），没有时只写目标", () => {
+test("武装：英文只写改听谁（@A 已在副标题里，docs/i18n-style.md #75），有没有当前主播都一样", () => {
   const armed = S.armSwitch("lamejorcrema", "bellaallnatural", 1000);
   assert.deepEqual(S.switchButtonLabel(armed, "bellaallnatural"),
-    { text: "Click Again to Switch from @bellaallnatural to @lamejorcrema", disabled: false });
+    { text: "Click Again to Switch to @lamejorcrema", disabled: false });
   assert.deepEqual(S.switchButtonLabel(armed, ""),
     { text: "Click Again to Switch to @lamejorcrema", disabled: false });
 });

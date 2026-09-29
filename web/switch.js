@@ -98,11 +98,12 @@ function switchButtonLabel(state, currentStreamer) {
     return { text: L("正在监听的就是 @" + cur, "Already Monitoring @" + cur), disabled: true };
   }
   if (state && state.armed && target) {
-    // 英文也把 @A 写上（会停掉谁、改听谁）：两臂引用的变量要一致（tools/i18n_pairs.py 的 R2）。
-    // 名字长时要靠 #switch-confirm 能折行（spec §11 第 3 条，中文武装态今天就放不下）
+    // 英文不写括号那半句：@A 已经在上面的副标题里（docs/i18n-style.md #75），按钮才放得下。
+    // 两臂引用的变量因此不同，登记在 tests/i18n_rules.py 的 R2_EN_OMITS。
+    // 中文武装态今天就放不下，要靠 #switch-confirm 能折行（spec §11 第 3 条，L1）
     var text = cur
       ? L("再点一次：改听 @" + target + "（停止监听 @" + cur + "）",
-          "Click Again to Switch from @" + cur + " to @" + target)
+          "Click Again to Switch to @" + target)
       : L("再点一次：改听 @" + target, "Click Again to Switch to @" + target);
     return { text: text, disabled: false };
   }

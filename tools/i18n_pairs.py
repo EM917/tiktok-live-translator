@@ -653,7 +653,8 @@ def check_pair(p):
         if p.lang == "py" and (zh_f is None or any(f is None for f in en_fs)):
             if not (zh_f is None and all(f is None for f in en_fs)):
                 bad("R2", "占位符写法不合法（单个花括号，或 {} 与 {0} 混用）")
-        elif p.kind == "L" and zh_f != en_fs[0]:
+        elif p.kind == "L" and zh_f != en_fs[0] and not (
+                p.lang == "js" and p.zh in rules.R2_EN_OMITS and en_fs[0] <= zh_f):
             bad("R2", "两臂的占位符不一致 {} ≠ {}".format(_fmt(zh_f), _fmt(en_fs[0])))
         elif p.kind == "LN":
             one, many = en_fs
