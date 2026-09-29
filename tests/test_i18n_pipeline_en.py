@@ -245,8 +245,8 @@ def test_clock_gaps_and_audio_events_are_english(monkeypatch, tmp_path):
         "Only 20 sec of stream audio arrived in the last minute. The missing audio wasn’t "
         "checked."]
     assert incidents_en(server, "session:quiet_audio") == [
-        "45 sec of stream audio arrived, but it stayed below the speech recognition threshold, "
-        "so none of it was transcribed. Monitoring continues."]
+        "45 sec of stream audio arrived, but its volume stayed below the speech recognition "
+        "threshold, so none of it was transcribed. Monitoring continues."]
     p.audit.close()
 
 

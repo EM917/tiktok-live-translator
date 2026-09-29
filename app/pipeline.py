@@ -2136,9 +2136,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                         "session:quiet_audio", "warn",
                         L("已收到 {:.0f} 秒直播音频，但音量一直低于识别门限，没有送去识别；"
                           "程序继续监听",
-                          "{:.0f} sec of stream audio arrived, but it stayed below the speech "
-                          "recognition threshold, so none of it was transcribed. Monitoring "
-                          "continues.").format(data["audio_sec"]))
+                          "{:.0f} sec of stream audio arrived, but its volume stayed below the "
+                          "speech recognition threshold, so none of it was transcribed. "
+                          "Monitoring continues.").format(data["audio_sec"]))
                 elif kind == "speech":
                     await self._incident("session:quiet_audio", "clear")
         except Exception as exc:
