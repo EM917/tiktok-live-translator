@@ -14,7 +14,8 @@
 //      提示两样都不带；拆开的句子拼回来与原来逐字相同（闸关着，中文界面）；
 //   3. 手机 viewer.js 同上；
 //   4. 真的 G10 扫描脚本（tests/i18n_dom/scan.js）扫这两页渲染出来的 DOM：名字和正文里的中文
-//      一条都不计入，界面提示照样计入——豁免靠的是 class，不是 translate="no"。
+//      一条都不计入，界面提示照样计入——豁免靠的是 class，不是 translate="no"；
+//   5. 两种标记只落在叶子上：扫描豁免的是整棵子树，标记挪到外层会连带豁免同一层的界面文字。
 // 假 DOM 只实现这几条路径用得到的接口；不认识的选择器直接抛错，免得静默走偏。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -211,8 +212,9 @@ function kind(el) {
   assert.ok(!(translate === "no" && body), "名字和正文两种标法叠在了一个节点上");
   return translate === "no" ? "name" : body ? "body" : null;
 }
-// 子树里标成名字的节点的文字，按文档顺序
-const nameTexts = (el) => el.descendants().filter((n) => kind(n) === "name").map((n) => n.textContent);
+// 子树里标成名字的节点的文字，按文档顺序。子树含根：整个报警头、弹幕头被标成名字时，
+// 第一项就是整段文字，断言当场变红
+const nameTexts = (el) => [el, ...el.descendants()].filter((n) => kind(n) === "name").map((n) => n.textContent);
 const byClass = (root, cls) => root.querySelector("." + cls);
 
 // ---- 2. 桌面 app.js ---------------------------------------------------------------------------
@@ -245,6 +247,10 @@ function desktopLive() {
   page.push({ type: "comment", id: "c2", ts: T + 4, user: "Ana", text: "que bonito", state: "pending" });
   return page;
 }
+// 重连或程序重启后的回放：CaptionServer 已把 alert_update 并进留存的那条报警（app/server.py），
+// 译文随报警一起到，走 renderAlert 而不是 updateAlert
+const REPLAYED_ALERT = { type: "alert", alert_id: "a4", ts: T + 8, term: "gratis", tier: "variant", session: "s1",
+                         context: "todo gratis", context_zh: "全部免费", replay: true };
 
 test("桌面：状态胶囊、本场品牌、品牌下拉——只把名字那一截标 translate=\"no\"，拼起来与原来相同", () => {
   const page = desktopLive();
@@ -295,6 +301,10 @@ test("桌面：报警的词条、主播名是名字；原话、译文是正文�
   page.push({ type: "alert_update", alert_id: "a2", why: "超时" });
   const failed = byClass(second, "alert-zh");
   assert.deepEqual([failed.textContent, kind(failed)], ["译文失败（超时）——请看上面的原话", null]);
+
+  page.push(REPLAYED_ALERT);
+  const replayed = byClass(page.el("alert-list").querySelector('[data-alert-id="a4"]'), "alert-zh");
+  assert.deepEqual([replayed.textContent, kind(replayed)], ["全部免费", "body"], "回放时译文随报警一起到，仍是正文");
 });
 
 test("桌面：弹幕的观众名是名字；原文、译文是正文；「翻译中…」是界面提示", () => {
@@ -430,27 +440,25 @@ function assertScan(found, data, ui) {
   }
 }
 
-test("G10 scan.js 扫桌面：名字（translate=\"no\"）和正文（class）都豁免，界面提示照查", () => {
+// 各种状态都推齐的两页：译文已回的、停在「翻译中…」的、翻译失败的、回放时译文随报警一起到的。
+// 扫描和第 5 节的叶子检查看的是同一页
+function desktopFull() {
   const page = desktopLive();
   page.push({ type: "caption_update", id: 1, translated: "大家好", translate_state: "ok" });
   page.push({ type: "caption", id: 2, ts: T + 5, original: "你们好", translate_state: "pending" });   // 中文原文，停在「翻译中…」
+  page.push({ type: "caption", id: 3, ts: T + 5, original: "no se oye", translate_state: "pending" });
+  page.push({ type: "caption_update", id: 3, translate_state: "failed" });                         // 状态胶囊「翻译失败」
   page.push({ type: "alert_update", alert_id: "a1", context_zh: "这是奇迹" });
   page.push({ type: "alert_update", alert_id: "a2", why: "超时" });
   page.push({ type: "alert", alert_id: "a3", ts: T + 6, term: "治愈", tier: "exact", streamer: "maria.ventas",
               session: "s1", context: "这能治愈" });                                                // 停在「翻译中…」
+  page.push(REPLAYED_ALERT);
   page.push({ type: "comment_update", id: "c1", state: "ok", translated: "多少钱" });
   page.push({ type: "comment", id: "c3", ts: T + 7, user: "王五", text: "好看", state: "same" });
   page.el("switch-btn").click();
-  assertScan(runScan(page),
-    ["中文品牌", "李四", "王五", "治愈", "大家好", "你们好", "这是奇迹", "这能治愈", "多少钱", "好看"],
-    [["翻译中…", /div\.trans$/], ["翻译中…", /div\.alert-zh$/], ["翻译中…", /div\.cmt-zh$/],
-     ["译文失败（超时）——请看上面的原话", /div\.alert-zh$/],
-     ["直播中 ·", /span#status-text/], ["品牌 ·", /#active-brand-tag/], ["不限（默认）", /option$/],
-     ["（当前）", /button\.recent-chip > span$/], ["早于 30 天的会话审计日志（3 个文件）", /span\.disk-name$/],
-     ["点击开始翻译 @maria.ventas", /button\.recent-chip @title$/]]);
-});
-
-test("G10 scan.js 扫手机：名字和正文都豁免，界面提示照查", () => {
+  return page;
+}
+function phoneFull() {
   const page = phoneLive();
   page.push({ type: "caption_update", id: 1, translated: "大家好" });
   page.push({ type: "caption", id: 3, ts: T + 5, original: "你们好", translate_state: "pending" });
@@ -459,9 +467,65 @@ test("G10 scan.js 扫手机：名字和正文都豁免，界面提示照查", ()
               context_zh: "这能治愈吗" });
   page.push({ type: "comment_update", id: "c1", state: "ok", translated: "多少钱" });
   page.push({ type: "comment", id: "c2", ts: T + 7, user: "王五", text: "好看", state: "pending" });
-  assertScan(runScan(page),
+  return page;
+}
+
+// 界面提示里也列上和名字、正文同在一张卡片里的那些：分级、「」和时间、状态胶囊、重译按钮、取消按钮的
+// aria-label。标记从叶子挪到 .meta、.alert-head 这些外层时，它们会跟着被豁免，这里就扫不到了
+test("G10 scan.js 扫桌面：名字（translate=\"no\"）和正文（class）都豁免，界面提示照查", () => {
+  assertScan(runScan(desktopFull()),
+    ["中文品牌", "李四", "王五", "治愈", "大家好", "你们好", "这是奇迹", "这能治愈", "全部免费", "多少钱", "好看"],
+    [["翻译中…", /div\.trans$/], ["翻译中…", /div\.alert-zh$/], ["翻译中…", /div\.cmt-zh$/],
+     ["译文失败（超时）——请看上面的原话", /div\.alert-zh$/],
+     ["直播中 ·", /span#status-text/], ["品牌 ·", /#active-brand-tag/], ["不限（默认）", /option$/],
+     ["（当前）", /button\.recent-chip > span$/], ["早于 30 天的会话审计日志（3 个文件）", /span\.disk-name$/],
+     ["点击开始翻译 @maria.ventas", /button\.recent-chip @title$/],
+     ["疑似", /span\.alert-tier$/], ["」 " + hhmmss(T + 2), /div\.alert-head > span$/],
+     ["重译", /button\.redo$/], ["翻译失败", /div\.meta > span\.lang-chip$/]]);
+});
+
+test("G10 scan.js 扫手机：名字和正文都豁免，界面提示照查", () => {
+  assertScan(runScan(phoneFull()),
     ["李四", "王五", "治愈", "大家好", "你们好", "这能治愈", "多少钱", "好看"],
     [["翻译中…", /div\.cap-trans$/], ["译文失败（超时）——请看上面的原话", /div\.cap-trans$/],
      ["中文正在补…", /div\.alert-zh$/], ["中文译不出来（超时）——请看上面的原话", /div\.alert-zh$/],
-     ["翻译中…", /div\.cmt-zh$/]]);
+     ["翻译中…", /div\.cmt-zh$/],
+     ["精确 「", /span\.alert-head-label > span > span$/],
+     ["取消这条报警（只在本机隐藏）", /button\.alert-dismiss @aria-label$/], ["重译", /button\.cap-retranslate$/]]);
+});
+
+// ---- 5. 两种标记只落在叶子上 -------------------------------------------------------------------
+// scan.js 豁免的是标记节点的整棵子树。class 或 translate="no" 一旦从叶子挪到外层（.meta、.alert-head、
+// .cmt-head、.cap-meta、整张卡片），同层的界面文字跟着被豁免，所有检查照样绿：上面的 kind() 只看叶子，
+// 中文界面提示在第 4 节列了，时间这类纯 ASCII 的邻居扫描根本看不见。所以把形状钉死：
+//   - 带正文 class 的只有这几种正文叶子，而且没有子元素；
+//   - translate="no" 的元素没有子元素。静态的 select#target-lang、ul#share-ip-list 除外：里面只有语言名
+//     和地址按钮（第 1 节钉着这两处是静态标的）。
+// 新增一种正文节点时，在下面的清单里加上它，是有意为之的一步
+const NAME_CONTAINERS = ["target-lang", "share-ip-list"];
+function marksOnLeaves(page) {
+  const els = [...new Set(page.all().flatMap((el) => [el, ...el.descendants()]))];
+  const label = (el) => el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + el.cls.map((c) => "." + c).join("");
+  const bodies = els.filter((el) => el.cls.includes(BODY_CLASS));
+  const names = els.filter((el) => el.getAttribute("translate") === "no");
+  const notLeaf = [...bodies, ...names.filter((el) => !NAME_CONTAINERS.includes(el.id))]
+    .filter((el) => el.children.length)
+    .map((el) => label(el) + " 有 " + el.children.length + " 个子元素");
+  const bodyKinds = [...new Set(bodies.map((el) => (el.id ? "#" + el.id : "." + el.cls[0])))].sort();
+  return { notLeaf, bodyKinds, names: names.length };
+}
+
+test("桌面：正文 class 只在正文叶子上，translate=\"no\" 只在没有子元素的名字上", () => {
+  const { notLeaf, bodyKinds, names } = marksOnLeaves(desktopFull());
+  assert.deepEqual(notLeaf, []);
+  assert.deepEqual(bodyKinds, ["#live-original", "#live-translated", ".alert-ctx", ".alert-zh",
+                               ".cmt-orig", ".cmt-zh", ".orig", ".trans"]);
+  assert.ok(names >= 10, "这一页上标成名字的节点太少（" + names + "），fixture 没画出来");
+});
+
+test("手机：正文 class 只在正文叶子上，translate=\"no\" 只在没有子元素的名字上", () => {
+  const { notLeaf, bodyKinds, names } = marksOnLeaves(phoneFull());
+  assert.deepEqual(notLeaf, []);
+  assert.deepEqual(bodyKinds, [".alert-ctx", ".alert-zh", ".cap-orig", ".cap-trans", ".cmt-orig", ".cmt-zh"]);
+  assert.ok(names >= 5, "这一页上标成名字的节点太少（" + names + "），fixture 没画出来");
 });
