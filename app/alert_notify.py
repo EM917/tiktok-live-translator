@@ -13,8 +13,10 @@ import subprocess
 import sys
 import time
 
+from .i18n import APP_NAME
+
 SETTING_KEY = "alert_os_notify"
-TITLE = "TikTok 直播同传"
+TITLE = APP_NAME
 TEXT = "有新的疑似违禁词报警，请查看窗口"
 BURST_GAP_SEC = 60.0      # 距上一条报警超过这么久，才算新的一阵
 REMIND_SEC = 600.0        # 一阵报警持续很久时，最多每 10 分钟再提醒一次

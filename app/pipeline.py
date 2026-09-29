@@ -131,6 +131,10 @@ AUDIO_BACKLOG_WARN_SEC = 10.0
 AUDIO_BACKLOG_DEGRADED_SEC = 30.0
 AUDIO_BACKLOG_HARD_SEC = 60.0
 
+# 房间接口说直播已结束时状态栏的话（_confirm_offline 与 _host_wait 两处，必须一字不差）
+LIVE_ENDED_NOTE = ("直播已结束。可以往下翻看这一场的字幕，"
+                   "或在上方输入新的直播间地址。")
+
 
 def _media_label(url):
     """流地址只留主机+路径进日志：query 里的 sign/expire 就是能拉流的凭证。"""
@@ -1510,7 +1514,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
 
     async def _with_live_asr_row(self, checks, state):
         """整轮自检的结果里，「语音识别」一行换成按此刻加载状态算的（没变就原样返回）。"""
-        current = next((c for c in checks if c.get("name") == "语音识别"), None)
+        from .selfcheck import NAMES
+        current = next((c for c in checks if c.get("name") == NAMES["asr"]), None)
         if current is None:
             return checks
         row = await self._live_asr_row(state, current)
@@ -2127,9 +2132,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             if status == LIVE_STATUS:
                 return "live", waited
         if status == ENDED_STATUS:
-            await self.server.status(
-                "ended", "直播已结束。可以往下翻看这一场的字幕，"
-                         "或在上方输入新的直播间地址。")
+            await self.server.status("ended", LIVE_ENDED_NOTE)
             print("[信息] 直播已结束。可在网页里输入新地址继续。")
             sess["end"] = {"reason": "offline", "status": status}
             return "ended", waited
@@ -2215,9 +2218,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             print("[信息] 房间接口回到在播状态，重新解析")
             return "live", waited
         if outcome == "ended":
-            await self.server.status(
-                "ended", "直播已结束。可以往下翻看这一场的字幕，"
-                         "或在上方输入新的直播间地址。")
+            await self.server.status("ended", LIVE_ENDED_NOTE)
             sess["end"] = {"reason": "offline", "status": status,
                            "waited_sec": int(round(waited))}
         else:

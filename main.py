@@ -14,6 +14,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from app.i18n import APP_NAME
 from app.macbundle import remember_launch_python
 from app.stdio import harden_stdio
 
@@ -176,7 +177,7 @@ def _fail_alert(message):
                 capture_output=True, timeout=60)
         elif os.name == "nt":
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, message, "TikTok 直播同传", 0x30)
+            ctypes.windll.user32.MessageBoxW(None, message, APP_NAME, 0x30)
     except Exception:
         pass
 
@@ -608,7 +609,7 @@ def run_with_window(args):
         from app.macbrand import brand_mac_app
         from app.window_attention import expose_attention
         brand_mac_app(ROOT)
-        window = webview.create_window("TikTok 直播同传", existing,
+        window = webview.create_window(APP_NAME, existing,
                                        width=1000, height=760, min_size=(420, 480))
         expose_attention(window)
         webview.start()
@@ -652,7 +653,7 @@ def run_with_window(args):
     try:
         # 正在监听时关窗口先确认；待机时直接关（判断和文案见 app/window_close.py）
         loc = localization_kwargs(webview.create_window)
-        window = webview.create_window("TikTok 直播同传", url,
+        window = webview.create_window(APP_NAME, url,
                                        width=1000, height=760, min_size=(420, 480), **loc)
         guard_close(window, state.get("pipeline"))
         # 窗口被盖住时新报警改原生标题：pywebview 的标题不跟页面的 document.title

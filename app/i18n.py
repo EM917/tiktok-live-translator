@@ -96,6 +96,11 @@ def LN(n, zh, en_one, en_many):
     return Bi(zh, en_one if n == 1 else en_many)
 
 
+# 程序名，窗口标题、系统通知、菜单栏兜底等处共用这一个。
+# 现在是普通 str；M11 改成 L("TikTok 直播同传", "TikTok Live Translator")
+APP_NAME = "TikTok 直播同传"
+
+
 def of(exc):
     """异常里的界面文字：raise X(L(...)) 抛出来的保留英文；其余照旧 str(exc)。"""
     args = getattr(exc, "args", ())

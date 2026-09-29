@@ -11,7 +11,9 @@ main.py 的 run_with_window 只负责调 expose_attention。
 """
 import threading
 
-DEFAULT_TITLE = "TikTok 直播同传"
+from .i18n import APP_NAME
+
+DEFAULT_TITLE = APP_NAME
 MAX_COUNT = 999
 
 

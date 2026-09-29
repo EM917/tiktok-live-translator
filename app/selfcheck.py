@@ -23,6 +23,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 
+# 每一行自检的名字，按稳定 id 查：界面、审计、终端用的都是这里的值。直播中只重查识别
+# 那一行时，pipeline 也按 NAMES["asr"] 在整轮结果里认出它
+NAMES = {"ffmpeg": "音频组件 ffmpeg", "denoise": "人声降噪", "asr": "语音识别",
+         "translator": "翻译引擎", "watchlist": "违禁词表", "glossary": "领域词表",
+         "audit": "审计日志", "resolver": "直播流解析", "browser_login": "浏览器登录态",
+         "comments": "观众弹幕", "disk": "磁盘空间"}
+
 
 def _check(name, level, detail, fix=""):
     return {"name": name, "level": level, "detail": detail, "fix": fix}
@@ -61,27 +68,27 @@ async def check_ffmpeg():
     from .ffmpeg_bin import ffmpeg_source, find_ffmpeg
     exe = find_ffmpeg()
     if exe is None:
-        return _check("音频组件 ffmpeg", FAIL, "找不到 ffmpeg，无法拉取直播音频",
+        return _check(NAMES["ffmpeg"], FAIL, "找不到 ffmpeg，无法拉取直播音频",
                       "关闭程序后重新打开，会自动补装")
     if not await _to_thread(_ffmpeg_runs, exe):
-        return _check("音频组件 ffmpeg", FAIL,
+        return _check(NAMES["ffmpeg"], FAIL,
                       "找到了 ffmpeg 但跑不起来——直播音频拉不下来",
                       "macOS 若提示「无法验证开发者」，在系统设置→隐私与安全性里放行；"
                       "或用 brew install ffmpeg 装一个系统版")
-    return _check("音频组件 ffmpeg", OK, "实测可用（{}）".format(ffmpeg_source()))
+    return _check(NAMES["ffmpeg"], OK, "实测可用（{}）".format(ffmpeg_source()))
 
 
 async def check_denoise(args):
     """降噪是对抗背景音乐的第一道防线，必须实测能初始化。"""
     from .pipeline import DENOISE_MODEL, _arnndn_probe
     if getattr(args, "denoise", "auto") == "off":
-        return _check("人声降噪", OK, "已按 --denoise off 主动关闭")
+        return _check(NAMES["denoise"], OK, "已按 --denoise off 主动关闭")
     if not DENOISE_MODEL.exists():
-        return _check("人声降噪", WARN, "降噪模型尚未下载（首次开播时自动下载）")
+        return _check(NAMES["denoise"], WARN, "降噪模型尚未下载（首次开播时自动下载）")
     if await _to_thread(_arnndn_probe, str(DENOISE_MODEL)):
         size = DENOISE_MODEL.stat().st_size // 1024
-        return _check("人声降噪", OK, "实测可用（模型 {} KB）".format(size))
-    return _check("人声降噪", FAIL,
+        return _check(NAMES["denoise"], OK, "实测可用（模型 {} KB）".format(size))
+    return _check(NAMES["denoise"], FAIL,
                   "模型存在，但实测跑不起来——背景音乐不会被抑制",
                   "删除 models/bd.rnnn 后重新开始，程序会重新下载")
 
@@ -92,14 +99,14 @@ async def check_asr(args, state=None):
     state = state or {}
     fallback = state.get("fallback")
     if fallback:
-        return _check("语音识别", WARN,
+        return _check(NAMES["asr"], WARN,
                       "{} 识别出错，已改用 {}——较慢，长时间监听容易积压（{}）".format(
                           fallback.get("from"), fallback.get("to"),
                           fallback.get("error") or "无错误详情"),
                       "关闭程序重新打开会重新尝试原来的识别配置；若反复出现请反馈给开发者")
     load_error = state.get("load_error")
     if load_error:
-        return _check("语音识别", FAIL,
+        return _check(NAMES["asr"], FAIL,
                       "识别模型（{}/{}）没能加载，本场不会识别：{}".format(
                           load_error.get("backend"), load_error.get("model"),
                           load_error.get("error") or "无错误详情"),
@@ -112,16 +119,16 @@ async def check_asr(args, state=None):
         # 那套配置——报「ct2 + large-v3」而管线加载的是别的，等于白检。
         rec = recommend(backend=backend, device=getattr(args, "device", "auto"))
     except Exception as exc:
-        return _check("语音识别", FAIL, "硬件探测失败：{}".format(exc))
+        return _check(NAMES["asr"], FAIL, "硬件探测失败：{}".format(exc))
     model = getattr(args, "model", None) or rec["model"]
     # 这几个库第一次 import 要几百毫秒到一秒，放线程里做——run_selfcheck 特意
     # 挂在后台就是为了不挡住界面，在协程里同步 import 等于白挂
     if rec["backend"] == "mlx":
         if not await _to_thread(_importable, "mlx_whisper"):
-            return _check("语音识别", FAIL, "苹果芯片加速组件未装上",
+            return _check(NAMES["asr"], FAIL, "苹果芯片加速组件未装上",
                           "关闭程序后重新打开，会自动补装；若反复出现请反馈给开发者")
     elif not await _to_thread(_importable, "faster_whisper"):
-        return _check("语音识别", FAIL, "faster-whisper 不可用",
+        return _check(NAMES["asr"], FAIL, "faster-whisper 不可用",
                       "关闭程序后重新打开，会自动补装")
     cached = _model_cached(model, rec["backend"])
     detail = "{} + {}（{}）".format(rec["backend"], model,
@@ -145,10 +152,10 @@ async def check_asr(args, state=None):
                if note is None else
                note + "。也可以停播后" + _pip_command("mlx-whisper", upgrade=False)
                + "，装好后重开程序")
-        return _check("语音识别", WARN,
+        return _check(NAMES["asr"], WARN,
                       "这台 Mac 有 GPU 加速能力，但正在用 CPU 识别（{}）"
                       "——慢一倍以上，长时间监听容易积压".format(detail), fix)
-    return _check("语音识别", OK if cached else WARN, detail)
+    return _check(NAMES["asr"], OK if cached else WARN, detail)
 
 
 def _hub_dirs():
@@ -233,7 +240,7 @@ async def check_translator(args, translator=None):
     """
     name = getattr(args, "translator", "auto")
     if name == "none" or (translator is None and name == "none"):
-        return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
+        return _check(NAMES["translator"], OK, "已按 --translator none 主动关闭")
 
     if translator is not None:
         from .translator import model_listed
@@ -244,7 +251,7 @@ async def check_translator(args, translator=None):
             tier = "7B" if "7B" in model else "1.8B"
             names = await _to_thread(_ollama_tags)
             if names is None:
-                return _check("翻译引擎", FAIL,
+                return _check(NAMES["translator"], FAIL,
                               "配置的是本地 Hy-MT2 {}，但 Ollama 没在运行".format(tier),
                               await _ollama_down_hint())
             # Ollama 在跑不等于能翻：模型不在，每句 /api/generate 都回 404。以前这里
@@ -252,22 +259,22 @@ async def check_translator(args, translator=None):
             if model and not model_listed(model, names):
                 return _model_missing("本地 Hy-MT2 {}".format(tier), model)
             note = "、术语最准，但更吃内存" if tier == "7B" else ""
-            return _check("翻译引擎", OK,
+            return _check(NAMES["translator"], OK,
                           "本地 Hy-MT2 {}（离线、无限流{}）".format(tier, note))
         if engine == "gemma":
             names = await _to_thread(_ollama_tags)
             if names is None:
-                return _check("翻译引擎", FAIL,
+                return _check(NAMES["translator"], FAIL,
                               "配置的是本地 TranslateGemma，但 Ollama 没在运行",
                               await _ollama_down_hint())
             if model and not model_listed(model, names):
                 return _model_missing("本地 TranslateGemma", model)
-            return _check("翻译引擎", OK, "本地 TranslateGemma（离线、无限流）")
+            return _check(NAMES["translator"], OK, "本地 TranslateGemma（离线、无限流）")
         if engine == "google":
             from . import localmodel
             # 装好 Ollama 之后模型是程序自己拉的，不用再让用户敲 ollama pull
             hint, _url = localmodel.install_hint()
-            return _check("翻译引擎", WARN,
+            return _check(NAMES["translator"], WARN,
                           "正在用 Google 免费接口：会按 IP 限流，长时间监听容易"
                           "整段翻译失败（违禁词报警不受影响，它不依赖翻译）",
                           "想换成完全本地、不限流的翻译：" + hint)
@@ -276,17 +283,17 @@ async def check_translator(args, translator=None):
         key = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}.get(engine)
         if key:
             return await _check_paid_api(engine, key, translator)
-        return _check("翻译引擎", OK, "{}（付费 API）".format(engine))
+        return _check(NAMES["translator"], OK, "{}（付费 API）".format(engine))
 
     # 没有引擎对象（还没建，或翻译被关掉）——只能就配置说话，不假装知道更多
     if name == "none":
-        return _check("翻译引擎", OK, "已按 --translator none 主动关闭")
-    return _check("翻译引擎", WARN, "翻译引擎尚未初始化",
+        return _check(NAMES["translator"], OK, "已按 --translator none 主动关闭")
+    return _check(NAMES["translator"], WARN, "翻译引擎尚未初始化",
                   "点一次「开始翻译」后本项会重新检查")
 
 
 def _model_missing(label, model):
-    return _check("翻译引擎", FAIL,
+    return _check(NAMES["translator"], FAIL,
                   "配置的是{}，Ollama 在运行，但里面没有模型 {}——字幕会只显示原文"
                   "（违禁词报警不受影响）".format(label, model),
                   "不在直播时程序会自动下载它（进度显示在首页），直播中会等停止后再下载；"
@@ -306,31 +313,31 @@ async def _check_paid_api(engine, key, translator):
 
     label = {"claude": "Claude", "openai": "OpenAI"}.get(engine, engine)
     if not api_key(key):
-        return _check("翻译引擎", FAIL, "{} 还没有密钥".format(label),
+        return _check(NAMES["translator"], FAIL, "{} 还没有密钥".format(label),
                       "在「翻译引擎」里填写密钥；没有密钥的话，把引擎留在默认的「自动」即可")
     inner = getattr(translator, "inner", translator)
     probe = getattr(inner, "probe_key", None)
     if probe is None:
-        return _check("翻译引擎", OK, "{}（付费 API）".format(label))
+        return _check(NAMES["translator"], OK, "{}（付费 API）".format(label))
     try:
         status = await asyncio.wait_for(probe(), timeout=5)
     except Exception as exc:
-        return _check("翻译引擎", WARN,
+        return _check(NAMES["translator"], WARN,
                       "{}（付费 API）：这次没连上接口（{}）".format(label, type(exc).__name__),
                       "检查网络；翻译不出来时字幕先显示原文，违禁词报警不受影响")
     if status in (401, 403):
-        return _check("翻译引擎", FAIL,
+        return _check(NAMES["translator"], FAIL,
                       "{} 拒绝了当前密钥（HTTP {}）".format(label, status),
                       "在「翻译引擎」里重新填写密钥")
     if status == 404 and getattr(inner, "PROBE_CHECKS_MODEL", False):
         model = getattr(inner, "model", None) or getattr(inner, "MODEL", "?")
-        return _check("翻译引擎", FAIL,
+        return _check(NAMES["translator"], FAIL,
                       "{} 接口里找不到模型 {}（HTTP 404）".format(label, model),
                       "在「翻译引擎」里换一个引擎")
     if status != 200:
-        return _check("翻译引擎", WARN,
+        return _check(NAMES["translator"], WARN,
                       "{}（付费 API）：验证密钥时接口返回 HTTP {}".format(label, status))
-    return _check("翻译引擎", OK, "{}（付费 API，密钥已验证）".format(label))
+    return _check(NAMES["translator"], OK, "{}（付费 API，密钥已验证）".format(label))
 
 
 async def _check_deepl(args, translator):
@@ -350,7 +357,7 @@ async def _check_deepl(args, translator):
     target = getattr(args, "target", "zh-CN")
     source = (getattr(args, "source", None) or "es").lower()
     if not hasattr(inner, "_ensure_glossary"):
-        return _check("翻译引擎", OK, "DeepL（付费 API）")
+        return _check(NAMES["translator"], OK, "DeepL（付费 API）")
     # 先问一次用量：DeepL 最轻的鉴权请求。密钥被拒（401/403）时下面建术语表同样
     # 失败，而那条路只会报「术语表没建起来」——等于把一把被拒的密钥说成「已就绪」
     try:
@@ -358,25 +365,25 @@ async def _check_deepl(args, translator):
     except Exception:
         status = None          # 连不上或回应读不懂：交给下面建术语表那一步去报
     if status in (401, 403):
-        return _check("翻译引擎", FAIL,
+        return _check(NAMES["translator"], FAIL,
                       "DeepL 拒绝了当前密钥（HTTP {}）".format(status),
                       "在「翻译引擎」里重新填写密钥")
     if target not in inner._GLOSSARY_TARGET:
-        return _check("翻译引擎", WARN,
+        return _check(NAMES["translator"], WARN,
                       "DeepL 已就绪，但 {} 不挂原生术语表（DeepL 的术语表只有"
                       "简体一档），商品名只能靠译后替换兜底".format(target))
     try:
         gid = await inner._ensure_glossary(source, target)
     except Exception as exc:
-        return _check("翻译引擎", FAIL, "DeepL 连不上：{}".format(exc),
+        return _check(NAMES["translator"], FAIL, "DeepL 连不上：{}".format(exc),
                       "检查密钥和网络；或把引擎换成本地 Hy-MT2")
     if not gid:
-        return _check("翻译引擎", WARN,
+        return _check(NAMES["translator"], WARN,
                       "DeepL 已就绪，但原生术语表没建起来——商品名会被直译"
                       "（实测词表遵从率会从 91.8% 掉到 26.5%）",
                       "建术语表的请求没有成功，程序 120 秒后会自动重试；本地 Hy-MT2 不受影响")
     n = len(inner.glossary_tsv(load_glossary().entries).splitlines())
-    return _check("翻译引擎", OK,
+    return _check(NAMES["translator"], OK,
                   "DeepL + 原生术语表（{} 条，{}→{}）".format(n, source, target))
 
 
@@ -392,7 +399,7 @@ async def check_watchlist(detector):
 
     「N 条已生效」只数真能匹配上的：行尾带注释、正则里写了重音或标点的条目能加载，
     却永远匹配不上（检测跑在去掉重音和标点的文本上）——以前它们照样算进「已生效」。"""
-    name = "违禁词表"
+    name = NAMES["watchlist"]
     fname = Path(getattr(detector, "source_path", None) or "banned_terms.txt").name
     read_error = getattr(detector, "read_error", None)
     if detector is None or not detector.enabled:
@@ -429,9 +436,9 @@ async def check_watchlist(detector):
 
 async def check_glossary(glossary):
     if glossary is None or not glossary.enabled:
-        return _check("领域词表", WARN, "未配置——商品名/行话可能被译错",
+        return _check(NAMES["glossary"], WARN, "未配置——商品名/行话可能被译错",
                       "编辑 glossary.txt（可选，但能明显改善译文）")
-    return _check("领域词表", OK, "{} 条已生效".format(len(glossary.entries)))
+    return _check(NAMES["glossary"], OK, "{} 条已生效".format(len(glossary.entries)))
 
 
 async def check_audit():
@@ -441,11 +448,11 @@ async def check_audit():
         probe = LOG_DIR / ".write_probe"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-        return _check("审计日志", OK, "可写入 logs/")
+        return _check(NAMES["audit"], OK, "可写入 logs/")
     except OSError as exc:
         # FAIL 而不是 WARN：写不进去就是整场没有证据——报警照常上屏，审计里一条没有。
         # WARN 时界面只显示「⚠️ 自检通过，1 项提醒」且不自动展开，等于没说
-        return _check("审计日志", FAIL,
+        return _check(NAMES["audit"], FAIL,
                       "logs/ 不可写（{}）——漏报将无法事后追溯".format(exc),
                       _audit_fix(os.name == "nt"))
 
@@ -465,15 +472,15 @@ def _audit_fix(windows):
 async def check_resolver():
     """能不能拿到直播流地址。TikTok 对未登录请求会把在播房间报成未开播。"""
     if not await _to_thread(_importable, "yt_dlp"):     # yt-dlp 导入很重
-        return _check("直播流解析", FAIL, "缺少 yt-dlp",
+        return _check(NAMES["resolver"], FAIL, "缺少 yt-dlp",
                       "关闭程序后重新打开，会自动补装")
     from .resolver import _installed_browsers
     browsers = await _to_thread(_installed_browsers)
     if browsers:
-        return _check("直播流解析", OK,
+        return _check(NAMES["resolver"], OK,
                       "yt-dlp 可用；解析时按这个顺序借用浏览器的登录状态：{}"
                       .format(" / ".join(browsers)))
-    return _check("直播流解析", WARN,
+    return _check(NAMES["resolver"], WARN,
                   "yt-dlp 可用，但找不到可借用登录状态的浏览器——"
                   "TikTok 常把在播房间报成「未开播」",
                   "在 Chrome/Safari 里登录一次 TikTok")
@@ -490,7 +497,7 @@ async def check_browser_login():
 
     from . import browser_login as bl
 
-    name = "浏览器登录态"
+    name = NAMES["browser_login"]
     if sys.platform != "darwin":
         return _check(name, OK, "这一项只检查 macOS 上的浏览器数据读取权限，本机不适用")
     from .resolver import _installed_browsers
@@ -505,7 +512,7 @@ def _browser_login_row(observed):
     """{浏览器: 代码} → 自检的一行。大多数直播间不登录也能解析，所以借不到只是 WARN。"""
     from . import browser_login as bl
 
-    name = "浏览器登录态"
+    name = NAMES["browser_login"]
     scope = "（只有 TikTok 要求登录才给流地址的直播间用得到，其余直播间不受影响）"
     if not observed:
         return _check(name, WARN, "没有找到 Chrome、Safari 等可借用登录的浏览器" + scope,
@@ -537,7 +544,7 @@ async def check_comments(args):
 
     from .updater import TIKTOKLIVE_MIN, tiktoklive_outdated, tiktoklive_version
 
-    name = "观众弹幕"
+    name = NAMES["comments"]
     if getattr(args, "comments", True) is False:
         return _check(name, OK, "已按 --no-comments 关闭")
     if sys.version_info < (3, 10):
@@ -572,18 +579,18 @@ async def check_disk():
     try:
         free = shutil.disk_usage(ROOT).free / 1024 ** 3
     except OSError:
-        return _check("磁盘空间", WARN, "无法读取磁盘剩余空间")
+        return _check(NAMES["disk"], WARN, "无法读取磁盘剩余空间")
     if free < 3:
-        return _check("磁盘空间", FAIL,
+        return _check(NAMES["disk"], FAIL,
                       "仅剩 {:.1f} GB——完整安装需要约 {} GB（运行环境 1.4 + "
                       "语音模型 2.9 + 翻译模型 1.1）".format(free, INSTALL_NEED_GB),
                       "腾出空间后重开程序；各部分体积见 README「磁盘空间」")
     if free < INSTALL_NEED_GB:
-        return _check("磁盘空间", WARN,
+        return _check(NAMES["disk"], WARN,
                       "剩余 {:.1f} GB，完整安装约需 {} GB——模型可能下不全"
                       .format(free, INSTALL_NEED_GB),
                       "腾出空间，或用 --model large-v3-turbo（省约 1.4 GB）")
-    return _check("磁盘空间", OK, "剩余 {:.0f} GB".format(free))
+    return _check(NAMES["disk"], OK, "剩余 {:.0f} GB".format(free))
 
 
 async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None):
@@ -594,17 +601,17 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
     通过，1 项提醒」而那一项其实是没检成——这正是本模块要消灭的那种「看起来
     没事」。名字也必须带上，否则只剩一个「自检项」，用户不知道是哪块没验。"""
     probes = [
-        ("音频组件 ffmpeg", check_ffmpeg()),
-        ("人声降噪", check_denoise(args)),
-        ("语音识别", check_asr(args, asr_state)),
-        ("翻译引擎", check_translator(args, translator)),
-        ("违禁词表", check_watchlist(detector)),
-        ("领域词表", check_glossary(glossary)),
-        ("审计日志", check_audit()),
-        ("直播流解析", check_resolver()),
-        ("浏览器登录态", check_browser_login()),
-        ("观众弹幕", check_comments(args)),
-        ("磁盘空间", check_disk()),
+        (NAMES["ffmpeg"], check_ffmpeg()),
+        (NAMES["denoise"], check_denoise(args)),
+        (NAMES["asr"], check_asr(args, asr_state)),
+        (NAMES["translator"], check_translator(args, translator)),
+        (NAMES["watchlist"], check_watchlist(detector)),
+        (NAMES["glossary"], check_glossary(glossary)),
+        (NAMES["audit"], check_audit()),
+        (NAMES["resolver"], check_resolver()),
+        (NAMES["browser_login"], check_browser_login()),
+        (NAMES["comments"], check_comments(args)),
+        (NAMES["disk"], check_disk()),
     ]
     results = await asyncio.gather(*(c for _, c in probes), return_exceptions=True)
     checks = []
