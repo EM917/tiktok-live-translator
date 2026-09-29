@@ -1437,6 +1437,8 @@
 
     // 标题旁的小字状态 + 空态文案：中控要能一眼分清「没人发弹幕」和
     // 「抓取本身出了问题」，两者处理方式完全不同（前者等，后者去修）。
+    // 后端说明原样写进去，太长由 CSS 截成最多 6 行（style.css .cmt-source）：以前在这里按
+    // 80 个字符截，英文只截得出半句话（spec §11 第 6 条）
     var title, cls = "cmt-source", emptyText;
     // 小字状态就放在 Comments 标题旁边，英文不再重复「评论流」这个主语
     if (backendState === "connected") {
@@ -1446,7 +1448,7 @@
     } else if (backendState === "connecting") {
       // 带说明的连接中（读浏览器登录态、组件刚更新完正在重连）要让中控看得见
       var cdetail = backendDetail || L("正在连接评论流…", "Connecting…");
-      title = cdetail.length > 80 ? cdetail.slice(0, 80) + "…" : cdetail;
+      title = cdetail;
       emptyText = cdetail;
     } else if (backendState === "disconnected") {
       title = L("评论流断开，重连中…", "Disconnected. Reconnecting…");
@@ -1457,7 +1459,7 @@
       // 状态：没有专门分支的一律把 detail 原样给中控看，别显示成「未连接」
       // 让人以为弹幕功能没启动
       var detail = backendDetail || "";
-      title = detail.length > 80 ? detail.slice(0, 80) + "…" : detail;
+      title = detail;
       cls += " warn";
       emptyText = detail;
     } else {

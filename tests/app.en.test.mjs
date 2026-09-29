@@ -361,6 +361,27 @@ test("英文页：弹幕面板的状态与空态、统计行", () => {
   assert.deepEqual(leftoverChinese(page), []);
 });
 
+test("弹幕状态的后端说明整句写进去，截断交给 CSS（spec §11 第 6 条）", () => {
+  // 以前 app.js 按 80 个字符截再补「…」：英文只截得出半句话。现在原样写进 #comment-source，
+  // 由 style.css 的 .cmt-source 截成最多 6 行
+  const page = runDesktop();
+  hello(page);
+  const refused = "The comment service refused the connection (HTTP 400). " +
+                  "Couldn’t check for a comments component update. Retrying in 2 min.";
+  const updated = "Comments component updated from 7.0.0 to 7.0.2. Reconnecting… " +
+                  "(the operator should see this whole line)";
+  assert.ok(refused.length > 80 && updated.length > 80);
+  page.push({ type: "comment_source", backend: "error", detail: refused });
+  assert.equal(page.el("comment-source").textContent, refused);
+  assert.equal(page.el("comment-empty").textContent, refused);
+  page.push({ type: "comment_source", backend: "connecting", detail: updated });
+  assert.equal(page.el("comment-source").textContent, updated);
+  const rule = web("style.css").match(/\n\.cmt-source \{([^}]*)\}/);
+  assert.ok(rule, "style.css 里找不到 .cmt-source 规则");
+  assert.match(rule[1], /-webkit-line-clamp: 6;/);
+  assert.match(rule[1], /overflow: hidden;/);
+});
+
 test("英文页：磁盘列表、删除按钮的单复数、删除确认框", () => {
   const page = runDesktop();
   hello(page);

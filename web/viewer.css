@@ -94,6 +94,13 @@ body {
   padding-left: env(safe-area-inset-left);
   padding-right: env(safe-area-inset-right);
 }
+/* 英文页的字体栈（同桌面 style.css，spec §11 第 7 条）：打开同看页的也可能是 Windows 笔记本或
+   安卓手机，上面那一串在那里会先落到雅黑 / 思源黑体，英文用中文字体自带的拉丁字形。英文页把
+   Segoe UI、Roboto 提到中文字体前面；苹果设备上打头的 -apple-system 不变 */
+html[lang="en"] body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "PingFang SC",
+               "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+}
 
 .hidden { display: none !important; }
 .icon { width: 16px; height: 16px; flex: none; }   /* 内联 SVG 图标统一尺寸，颜色跟 currentColor */
@@ -115,9 +122,11 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 
 /* 状态胶囊：连接点 + 文案。中性态（连接中之外没有专门状态时）不上色，
    免得像个按钮；已连接/重连/失败时整颗染色。:has 不支持时退回透明胶囊，
-   圆点依旧按状态着色，信息不丢（Safari 15.4 以下的已知降级，与桌面端一致） */
+   圆点依旧按状态着色，信息不丢（Safari 15.4 以下的已知降级，与桌面端一致）。
+   min-width:0 加上 .conn-text 的省略号：放不下时胶囊跟着缩，不把顶栏撑出屏幕（spec §11 第 5 条）。
+   现有文案在 320px 宽的手机上两种语言都放得下，这一条防的是以后更长的文案 */
 .status-pill {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
   height: 22px; padding: 0 2px; border-radius: 11px;
   color: var(--label-2);
 }
@@ -130,7 +139,7 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 .dot.connecting, .dot.reconnecting { background: var(--orange); }
 .dot.denied, .dot.off, .dot.full { background: var(--red); }
 
-.conn-text { font-size: var(--fs-footnote); font-weight: 600; white-space: nowrap; color: inherit; }
+.conn-text { font-size: var(--fs-footnote); font-weight: 600; white-space: nowrap; color: inherit; overflow: hidden; text-overflow: ellipsis; }
 .sep { color: var(--label-3); }
 .stream-text { font-size: var(--fs-footnote); color: var(--label-2); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stream-text.stale { color: var(--label-3); }   /* 断线提示：绝不能停在最后一次「直播中」不动，见 viewer.js renderStreamStale */
