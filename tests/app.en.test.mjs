@@ -106,7 +106,9 @@ function matches(el, sel) {
   });
 }
 
-const START_TAG = /<([a-z]+)\b((?:[^>"]|"[^"]*")*)>/g;
+const START_TAG = /<([a-z]+)\b((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
+// 属性：值可能用单引号（#brand-empty-hint 的 data-en-html 里面就有带双引号的 <button id="…">）
+const ATTR = /([\w-]+)=(?:"([^"]*)"|'([^']*)')/g;
 
 // 按 index.html 的顺序在一个新的 vm 上下文里跑桌面页的脚本。带 id 的元素照页面源码建好
 // （标签名和属性与真页面一致；静态属性不算脚本写的），不建树：脚本只经 getElementById 拿它们
@@ -119,12 +121,15 @@ function runDesktop() {
   for (const m of html.replace(/<!--[\s\S]*?-->/g, "").matchAll(START_TAG)) {
     if (!/\sid="/.test(m[2])) continue;
     const el = new FakeEl(m[1]);
-    for (const a of m[2].matchAll(/([\w-]+)="([^"]*)"/g)) {
-      if (a[1] === "class") el.className = a[2]; else el.setAttribute(a[1], a[2]);
+    for (const a of m[2].matchAll(ATTR)) {
+      const value = a[2] !== undefined ? a[2] : a[3];
+      if (a[1] === "class") el.className = value; else el.setAttribute(a[1], value);
     }
     el.written.clear();
     byId.set(el.id, el);
   }
+  // 绊线：单引号属性值里带着 <button id="…"> 的那个 span 以前会被里面的 id 顶掉
+  assert.ok(byId.has("brand-empty-hint"), "假 DOM 漏建了 #brand-empty-hint");
   const root = new FakeEl("html");
   root.setAttribute("lang", "en");
   root.lang = "en";                                  // i18n.js 读的是 documentElement.lang
