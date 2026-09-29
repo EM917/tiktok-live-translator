@@ -25,7 +25,9 @@ PY="$(find_python)" || {
   echo "  2. 下载 macOS 安装包并完成安装"
   echo "  3. 装好后重新双击本文件即可"
   open "https://www.python.org/downloads/"
-  osascript -e 'display dialog "需要先安装 Python 才能运行本工具（免费，约 2 分钟）。\n\n已为你打开下载页面 python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。" with title "TikTok 直播同传" buttons {"好"} default button 1 with icon note' >/dev/null 2>&1
+  # 上面的终端说明保持中文；这个对话框在 Python 之前弹出、读不到界面语言设置，
+  # 所以中文一段、英文一段并列（用户 09-28 决定 4；与 .app 启动器的同一句一致）
+  osascript -e 'display dialog "需要先安装 Python 才能运行本工具（免费，约 2 分钟）。\n\n已为你打开下载页面 python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。\n\nPython is needed to run this app (free, about 2 minutes).\n\nThe python.org/downloads page is now open. Download and install the macOS installer, then double-click the app again." with title "TikTok 直播同传 · TikTok Live Translator" buttons {"OK"} default button 1 with icon note' >/dev/null 2>&1
   exit 1
 }
 

@@ -186,13 +186,12 @@ def test_the_file_url_note_is_still_there():
     assert "TikTok Live Translator.app" in script and "Start.bat" in script
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "开闸（Z1）之后才加英文：闸关着时中文用户直接双击 index.html 看到的这段指引要逐字节不变。"
-    "file:// 下 i18n.js 加载不出来，只能中英并列，<title> 也要在这段脚本里一并给英文。"
-    "改完这条会 XPASS 而失败，届时删掉 xfail 标记"))
 def test_the_file_url_note_carries_both_languages():
+    """file:// 下 i18n.js 加载不出来、读不到界面语言：指引中英并列，<title> 也在这段脚本里
+    一并给两种语言。开闸（Z1）之后的 N1 才加的英文，闸关着那几周中文用户看到的指引逐字节不变。"""
     script = _file_url_script()
     assert "请不要直接打开这个文件" in script
     assert "Don’t open this file directly" in script
     assert "The caption window opens automatically" in script
-    assert re.search(r'document\.title\s*=\s*"[^"]*TikTok Live Translator', script)
+    assert script.index("请不要直接打开这个文件") < script.index("Don’t open this file directly")  # 先中文
+    assert re.search(r'document\.title\s*=\s*"TikTok 直播同传 · TikTok Live Translator"', script)

@@ -1,0 +1,3 @@
+/* 简体中文系统上 Dock、菜单栏、⌘Tab 里的程序名。见 Info.plist 里的注释 */
+"CFBundleName" = "TikTok 直播同传";
+"CFBundleDisplayName" = "TikTok 直播同传";

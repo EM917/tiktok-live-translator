@@ -622,10 +622,12 @@
 - **R14 窗口标题的正则。** `isAlertTitle` 的正则只认中文标题。标题改成英文后就认不出来，后台报警后标题恢复不了（见 #2）。
   改成与语言无关：取出开头的 `(n) `，再与当前语言的 `alertTitle(n)` 比较；一次页面生命周期里语言不变。
 - **R15 file:// 提示。** index.html:537 的内联脚本在 i18n 机制加载之前就执行了，中英两段并列显示，不做语言判断（见 #8）。
-- **R16 系统层的名字。** Dock、菜单栏里的程序名来自 Info.plist 的 `CFBundleName`，现在写死的是中文。
-  - 建议加 `en.lproj/InfoPlist.strings` 和 `zh-Hans.lproj/InfoPlist.strings`，这样系统会按系统语言显示。
+- **R16 系统层的名字。** Dock、菜单栏里的程序名来自 Info.plist 的 `CFBundleName`，原来写死的是中文。
+  - 已按 spec §8.6 落地（提交 N1）：加了 `en.lproj/InfoPlist.strings` 和 `zh-Hans.lproj/InfoPlist.strings`，
+    系统按系统语言显示；访达照旧显示文件名（不设 `LSHasLocalizedDisplayName`）。
   - 苹果建议 `CFBundleName` 不超过 15 个字符。“TikTok Live Translator” 有 22 个字符。
-    菜单栏名可以用 “Live Translator”（刚好 15 个），`CFBundleDisplayName` 保留全名。
+    最初的建议是菜单栏名用 “Live Translator”（刚好 15 个）、`CFBundleDisplayName` 保留全名；
+    N1 按 spec §8.6 两个键都用全名，与窗口标题、通知里的程序名一致。菜单栏里放不放得下要真机看。
 - **R17 退出确认框的语言。**（最初的结论作废）pywebview ≥6 的 `window.localization` 是窗口自己的一份字典，
   关窗那一刻才读。切换语言后页面经 JS 桥通知窗口，原地更新这份字典，确认框当场就换。
   只有 pywebview 5 没有这份字典，才要重启后生效。设置行下面不用写说明。

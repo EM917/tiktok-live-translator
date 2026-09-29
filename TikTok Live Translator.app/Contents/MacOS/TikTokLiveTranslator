@@ -4,26 +4,32 @@
 # 逐个探测，出问题时用系统对话框说话（print 没人看得见）。
 DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 
-dialog() {  # $1=文本 $2=图标（note/caution，默认 note）
-  osascript -e "display dialog \"$1\" with title \"TikTok 直播同传\" buttons {\"好\"} default button 1 with icon ${2:-note}" >/dev/null 2>&1
+# 这里还没有 Python，读不到界面语言设置，老装机、新装机都可能走到：每个对话框都是
+# 中文一段、空一行、英文一段，不按系统语言挑（spec §8.5，用户 09-28 决定 4）。
+# 文字里不能有 ASCII 双引号和反斜杠（\n 除外），它们会原样拼进 AppleScript。
+dialog() {  # $1=中文 $2=English $3=图标（note/caution，默认 note）
+  osascript -e "display dialog \"$1\n\n$2\" with title \"TikTok 直播同传 · TikTok Live Translator\" buttons {\"OK\"} default button 1 with icon ${3:-note}" >/dev/null 2>&1
 }
 
 if [ ! -f "$DIR/main.py" ]; then
-  dialog "找不到程序文件。\n\n请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击。想常驻可以把它拖到 Dock——但不要把它拖出文件夹。" caution
+  dialog "找不到程序文件。\n\n请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击。想常驻可以把它拖到 Dock——但不要把它拖出文件夹。" \
+         "Couldn’t find the app’s files.\n\nPut “TikTok Live Translator” back in the tiktok-live-translator folder, then double-click it again. You can drag it to the Dock, but don’t move it out of the folder." caution
   exit 1
 fi
 cd "$DIR"
 
 # find_python() 和 Start.command 共用一份，见 tools/find_python.sh。
 if [ ! -f "$DIR/tools/find_python.sh" ]; then
-  dialog "缺少程序文件 tools/find_python.sh，项目文件不完整，无法探测 Python。\n\n请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击，或重新下载完整项目。" caution
+  dialog "缺少程序文件 tools/find_python.sh，项目文件不完整，无法探测 Python。\n\n请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击，或重新下载完整项目。" \
+         "The file tools/find_python.sh is missing. The project folder is incomplete, so the app can’t check for Python.\n\nPut “TikTok Live Translator” back in the tiktok-live-translator folder and double-click it again, or download a fresh copy of the complete project." caution
   exit 1
 fi
 . "$DIR/tools/find_python.sh"
 
 PY="$(find_python)" || {
   open "https://www.python.org/downloads/"
-  dialog "需要先安装 Python 才能运行本工具（免费，约 2 分钟）。\n\n已为你打开下载页面 python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。"
+  dialog "需要先安装 Python 才能运行本工具（免费，约 2 分钟）。\n\n已为你打开下载页面 python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。" \
+         "Python is needed to run this app (free, about 2 minutes).\n\nThe python.org/downloads page is now open. Download and install the macOS installer, then double-click the app again."
   exit 1
 }
 
