@@ -132,6 +132,7 @@ ZH_IDENTITY_CALLS = {
     "render": "app.i18n:render",
     "i18n.render": "app.i18n:render",
     "i18n.text": "app.i18n:text",
+    "_ui_layer": "app.resolver:_ui_layer",
 }
 
 # ---- R11 ④：切片直接当这些调用的实参（或 status/broadcast 的字典值）会丢英文 ----------------

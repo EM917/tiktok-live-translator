@@ -1,3 +1,4 @@
+# i18n: done
 """借用浏览器里现成的 TikTok 登录：读得到就拼 Cookie 头，读不到就说清楚是哪一种读不到。
 
 2026-09-17 实测（macOS 27，房间 @daisycabral_ 在播）：五层解析全部没拿到地址，
@@ -26,6 +27,8 @@ import struct
 import sys
 from collections import namedtuple
 from pathlib import Path
+
+from .i18n import L
 
 # TikTok 登录后才有的 cookie 名字
 LOGIN_COOKIE_NAMES = ("sessionid", "sessionid_ss", "sid_tt", "sid_guard")
@@ -180,7 +183,7 @@ def read_login(browser):
                 names.add(c.name)
     except Exception as exc:
         return LoginRead(None, classify_exception(browser, exc))
-    header = "; ".join(pairs) or None
+    header = "; ".join(pairs) or None            # i18n: data（Cookie 头，只发给 TikTok）
     if any(n in names for n in LOGIN_COOKIE_NAMES):
         return LoginRead(header, OK)
     # Chromium 系的 cookie 值是加密的，密钥在钥匙串里；拿不到密钥时 yt-dlp 不报错，只是把
@@ -352,7 +355,8 @@ def probe(browser):
 
 # ---- 给中控看的话：只写观察和能照做的一步 ----------------------------------
 
-FDA_OBSERVED = "系统不允许本程序读取浏览器数据。"
+FDA_OBSERVED = L("系统不允许本程序读取浏览器数据。",
+                 "macOS didn’t allow the app to read browser data. ")   # 英文尾部留空格：后面紧接着拼 fda_steps()
 
 
 def fda_targets(environ=None, executable=None):
@@ -384,36 +388,49 @@ def fda_targets(environ=None, executable=None):
 def fda_steps(targets=None):
     """系统拒绝读取时能照做的一步。路径用「」括起来，方便中控整段选中复制。"""
     targets = fda_targets() if targets is None else list(targets)
-    return ("到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 "
-            "⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开{}：{}。"
-            "列表里显示的名字是 {}，不是本程序的名字。用 Start.command 启动的话把「终端」"
-            "也加进去。然后完全退出程序再打开。".format(
-                "（每个路径各做一遍）" if len(targets) > 1 else "",
-                "、".join("「{}」".format(t) for t in targets),
-                "、".join(os.path.basename(t) for t in targets)))
+    return L("到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 "
+             "⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开{}：{}。"
+             "列表里显示的名字是 {}，不是本程序的名字。用 Start.command 启动的话把「终端」"
+             "也加进去。然后完全退出程序再打开。",
+             "Go to System Settings > Privacy & Security > Full Disk Access and click +. In the "
+             "file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on "
+             "its switch{}: {}. The list shows {}, not the app’s name. If you start the app with "
+             "Start.command, add Terminal too. Then quit the app completely and open it again.").format(
+                L("（每个路径各做一遍）", " (do this for each path)") if len(targets) > 1 else "",
+                L("、", ", ").join(L("「{}」", "“{}”").format(t) for t in targets),
+                L("、", ", ").join(os.path.basename(t) for t in targets))
 
 
 def decrypt_steps(browsers):
     """cookie 的值没能解开时能照做的一步：钥匙串里那一项的名字按浏览器给。"""
-    items = "、".join("「{}」".format(_KEYCHAIN_ITEMS[b]) for b in browsers
-                      if b in _KEYCHAIN_ITEMS)
-    return ("再点一次「开始翻译」；屏幕上如果出现「钥匙串」对话框（要访问{}），"
-            "输入这台电脑的登录密码后点「始终允许」。".format(items or "浏览器的 Safe Storage"))
+    items = L("、", ", ").join(L("「{}」", "“{}”").format(_KEYCHAIN_ITEMS[b]) for b in browsers
+                              if b in _KEYCHAIN_ITEMS)
+    return L("再点一次「开始翻译」；屏幕上如果出现「钥匙串」对话框（要访问{}），"
+             "输入这台电脑的登录密码后点「始终允许」。",
+             "Click Start again. If a keychain dialog asks for access to {}, enter this "
+             "computer’s login password and click Always Allow.").format(
+                 items or L("浏览器的 Safe Storage", "the browser’s Safe Storage"))
 
 
-LOGIN_STEPS = "在 Chrome（或 Safari）里登录 TikTok 后再试。"
-KEYCHAIN_STEPS = "屏幕上如果有「钥匙串」对话框，点「始终允许」后再试。"
+LOGIN_STEPS = L("在 Chrome（或 Safari）里登录 TikTok 后再试。",
+                "Sign in to TikTok in Chrome (or Safari), then try again.")
+KEYCHAIN_STEPS = L("屏幕上如果有「钥匙串」对话框，点「始终允许」后再试。",
+                   "If a keychain dialog is on screen, click Always Allow, then try again.")
 
+# 每条拼在「Chrome：」后面，英文小写开头（冒号后接的不是完整句子）。
+# BLOCKED 不点名谁拒绝了谁：observed_text 按浏览器逐条拼，写死浏览器名会让另一条说错
 _OBSERVED = {
-    OK: "读到了 TikTok 登录",
-    BLOCKED: "系统拒绝读取",
-    NO_DATA: "没有找到它的 cookie 数据",
-    NO_TIKTOK: "能读取，里面没有 tiktok.com 的 cookie",
-    NOT_LOGGED_IN: "能读取，没有 TikTok 登录 cookie（sessionid 等）",
-    CANNOT_DECRYPT: "能读取，cookie 的值没能解开",
-    KEYCHAIN_WAIT: "读取在限时内没有返回",
-    READABLE: "能读取，没能看出有没有登录 TikTok",
-    NOT_READ: "未读取",
+    OK: L("读到了 TikTok 登录", "found a TikTok sign-in"),
+    BLOCKED: L("系统拒绝读取", "macOS didn’t allow access"),
+    NO_DATA: L("没有找到它的 cookie 数据", "no cookie data found"),
+    NO_TIKTOK: L("能读取，里面没有 tiktok.com 的 cookie", "readable, but no tiktok.com cookies"),
+    NOT_LOGGED_IN: L("能读取，没有 TikTok 登录 cookie（sessionid 等）",
+                     "readable, but no TikTok sign-in cookie (sessionid or similar)"),
+    CANNOT_DECRYPT: L("能读取，cookie 的值没能解开", "readable, but the cookie values couldn’t be decrypted"),
+    KEYCHAIN_WAIT: L("读取在限时内没有返回", "reading didn’t finish in time"),
+    READABLE: L("能读取，没能看出有没有登录 TikTok",
+                "readable, but couldn’t tell whether you’re signed in to TikTok"),
+    NOT_READ: L("未读取", "not read"),
 }
 
 
@@ -424,13 +441,14 @@ def label(browser):
 def describe(code):
     code = str(code)
     if code.startswith("error:"):
-        return "读取出错（{}）".format(code[len("error:"):])
-    return _OBSERVED.get(code, "读取结果 {}".format(code))
+        return L("读取出错（{}）", "error while reading ({})").format(code[len("error:"):])
+    return _OBSERVED.get(code, L("读取结果 {}", "read result {}").format(code))
 
 
 def observed_text(login):
     """{浏览器: 代码} → 「Chrome：系统拒绝读取；Safari：系统拒绝读取」。"""
-    return "；".join("{}：{}".format(label(b), describe(c)) for b, c in (login or {}).items())
+    return L("；", "; ").join(L("{}：{}", "{}: {}").format(label(b), describe(c))
+                             for b, c in (login or {}).items())
 
 
 def steps_text(login):
@@ -447,12 +465,14 @@ def steps_text(login):
     if KEYCHAIN_WAIT in codes:
         steps.append(KEYCHAIN_STEPS)
     if not steps and any(str(c).startswith("error:") for c in codes):
-        steps.append("可以把这条信息反馈给开发者。")
-    return "".join(steps)
+        steps.append(L("可以把这条信息反馈给开发者。", "You can report this message to the developer."))
+    return L("", " ").join(steps)            # 中文句子直接相连，英文句子之间要空格
 
 
-SAFARI_LOGIN_STEPS = "请在 Safari 里登录 TikTok。"
-SELFCHECK_POINTER = "（这些步骤在自检「浏览器登录态」一行里也有。）"
+SAFARI_LOGIN_STEPS = L("请在 Safari 里登录 TikTok。", "Sign in to TikTok in Safari.")
+# 英文开头留空格：它直接拼在上一句（fda_steps() 的句号）后面
+SELFCHECK_POINTER = L("（这些步骤在自检「浏览器登录态」一行里也有。）",
+                      " (These steps are also in the Browser Login row of Startup Check.)")
 
 
 def no_login_notice(login):
@@ -468,10 +488,15 @@ def no_login_notice(login):
         steps.append(FDA_OBSERVED + fda_steps() + SELFCHECK_POINTER)
     if KEYCHAIN_WAIT in codes:
         steps.append(KEYCHAIN_STEPS)
-    return ("程序没有读到浏览器里的 TikTok 登录——{}。有的直播间 TikTok 只把流地址给已登录的"
-            "观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会"
-            "因此停下。{}读到登录后这条提示自动消失。".format(
-                observed_text(login) or "没有找到可读取的浏览器", "".join(steps)))
+    return L("程序没有读到浏览器里的 TikTok 登录——{}。有的直播间 TikTok 只把流地址给已登录的"
+             "观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会"
+             "因此停下。{}读到登录后这条提示自动消失。",
+             "The app didn’t find a TikTok sign-in in your browsers. {}. For some live streams, "
+             "TikTok provides the stream URL only to signed-in viewers, so those live streams "
+             "may not get a stream URL until a sign-in is found. Other live streams are "
+             "monitored as usual. {} This notice disappears once a sign-in is found.").format(
+                observed_text(login) or L("没有找到可读取的浏览器", "No readable browser found"),
+                L("", " ").join(steps))
 
 
 def browser_only_advice(login):
@@ -481,8 +506,11 @@ def browser_only_advice(login):
     if not login:
         return ""
     borrowed = [b for b, c in login.items() if c == OK]
+    # 英文开头留空格：这一段夹在 pipeline.browser_only_message 的两句之间，前一句以句号结尾
     if borrowed:
-        return "已借用 {} 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。".format(
-            "、".join(label(b) for b in borrowed))
-    return "借用浏览器里的 TikTok 登录时观察到——{}。{}".format(
+        return L("已借用 {} 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。",
+                 " Tried again with the TikTok sign-in from {}. TikTok still didn’t provide a "
+                 "stream URL.").format(L("、", ", ").join(label(b) for b in borrowed))
+    return L("借用浏览器里的 TikTok 登录时观察到——{}。{}",
+             " Tried the TikTok sign-in from your browsers. {}. {}").format(
         observed_text(login), steps_text(login))
