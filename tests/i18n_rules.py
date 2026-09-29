@@ -134,6 +134,7 @@ ZH_IDENTITY_CALLS = {
     "i18n.render": "app.i18n:render",
     "i18n.text": "app.i18n:text",
     "_ui_layer": "app.resolver:_ui_layer",
+    "_ui_reason": "app.resolver:_ui_reason",
     "_ui_check_error": "app.updater:_ui_check_error",
     "_space_before": "app.browser_login:_space_before",
 }

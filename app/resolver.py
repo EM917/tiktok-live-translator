@@ -10,7 +10,7 @@ import time
 import traceback
 from pathlib import Path
 
-from .i18n import L, of
+from .i18n import Bi, L, of
 from .nethttp import read_all
 from .redact import strip_query
 
@@ -1268,6 +1268,13 @@ def _ui_layer(layer):
     return LAYER_LABEL.get(layer, layer)
 
 
+def _ui_reason(exc):
+    """拼进「层名：原因」清单的原因。中文就是 str(exc)；英文去掉句末句号——原因是完整句子，
+    清单项之间还要接「; 」，不去掉就是「.;」。登记在 tests/i18n_rules.py 的 ZH_IDENTITY_CALLS。"""
+    text = of(exc)
+    return Bi(str(text), text.en.rstrip(".")) if isinstance(text, Bi) else text
+
+
 def _page_attempts(cookies_browser):
     """直播页兜底层依次怎么抓：浏览器名 = 借它的登录，None = 匿名。惰性地给——借登录的
     浏览器要看这次解析里已经读到了谁的登录（_iter_borrow）。"""
@@ -1697,7 +1704,7 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         if rejected:
             message += L("（另有拿到的地址没过安全校验：{}）",
                          " (Other stream URLs were found but failed the safety check: {})").format(
-                L("；", "; ").join(L("{}：{}", "{}: {}").format(layer, of(exc))
+                L("；", "; ").join(L("{}：{}", "{}: {}").format(layer, _ui_reason(exc))
                                   for layer, exc in rejected))
             if kind == "unknown" and any(exc.kind == "network" for _, exc in rejected):
                 kind = "network"          # DNS 解析失败：可重试，别当成谜之失败

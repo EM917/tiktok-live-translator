@@ -178,9 +178,30 @@ def test_the_end_of_the_lookup_chain_names_the_layers_in_english(monkeypatch):
     assert_clean_english(text, "chain end")
     assert text.startswith("The app tried every method but couldn’t get the audio stream")
     assert ("(Other stream URLs were found but failed the safety check: live page fallback: "
-            "Refused a stream URL on this computer or the local network (safety check).)") in text
+            "Refused a stream URL on this computer or the local network (safety check))") in text
     assert ("(Some lookup methods hit an internal error and were skipped: official API. "
             "See the terminal for details.)") in text
+
+
+def test_rejected_layer_reasons_drop_their_full_stop_in_the_list():
+    """「层名：原因」清单里的原因是完整句子：英文去掉句末句号，免得和「; 」、右括号叠在一起。
+    中文就是原来的 str(exc)。"""
+    dns = resolver.ResolveError(L("流媒体域名解析失败：{}（检查网络 / DNS）",
+                                  "Couldn’t resolve the stream host {}. Check your network and "
+                                  "DNS.").format("cdn.example"), kind="network")
+    local = resolver.ResolveError(L("拒绝访问内网/本机地址的流媒体地址（安全限制）",
+                                    "Refused a stream URL on this computer or the local network "
+                                    "(safety check)."))
+    for exc in (dns, local, RuntimeError("plain text.")):
+        assert str(resolver._ui_reason(exc)) == str(exc)
+    listed = L("；", "; ").join(L("{}：{}", "{}: {}").format(resolver._ui_layer(layer),
+                                                          resolver._ui_reason(exc))
+                               for layer, exc in (("官方接口", local), ("直播页兜底", dns)))
+    assert str(listed) == ("官方接口：拒绝访问内网/本机地址的流媒体地址（安全限制）；"
+                           "直播页兜底：流媒体域名解析失败：cdn.example（检查网络 / DNS）")
+    assert en(listed) == ("official API: Refused a stream URL on this computer or the local "
+                          "network (safety check); live page fallback: Couldn’t resolve the "
+                          "stream host cdn.example. Check your network and DNS")
 
 
 def test_the_api_refusal_says_the_code_in_english(monkeypatch):
