@@ -518,17 +518,18 @@ def test_engine_trouble_is_explained_in_english(monkeypatch, tmp_path, ascii_eng
         "Meanwhile, captions show the original text. Banned-term alerts aren’t affected."]
     assert incidents_en(server, Pipeline.ENGINE_INCIDENT) == [
         "Claude returned HTTP 401. Captions show the original text (banned-term alerts aren’t "
-        "affected). The app tries again every 120 sec. In Translation Engine, you can re-enter "
-        "the API key or choose another engine.",
+        "affected). The app tries again every 120 sec. In Settings > Translation Engine, you "
+        "can re-enter the API key or choose another engine.",
         "Claude returned HTTP 401. Captions after that showed only the original text "
         "(banned-term alerts weren’t affected). The app tries again when the next session "
-        "starts. In Translation Engine, you can re-enter the API key or choose another engine.",
+        "starts. In Settings > Translation Engine, you can re-enter the API key or choose "
+        "another engine.",
         "OpenAI returned HTTP 404 (model gpt-x). Captions show the original text (banned-term "
-        "alerts aren’t affected). The app tries again every 120 sec. In Translation Engine, you "
-        "can choose another engine.",
+        "alerts aren’t affected). The app tries again every 120 sec. In Settings > Translation "
+        "Engine, you can choose another engine.",
         "Local Hy-MT2 1.8B returned no translation 3 times in a row. Ollama returned HTTP 500: "
         "model not found. Captions show the original text (banned-term alerts aren’t "
-        "affected). You can choose another engine in Translation Engine."]
+        "affected). You can choose another engine in Settings > Translation Engine."]
 
 
 def test_engine_fallbacks_are_explained_in_english(monkeypatch, tmp_path, ascii_engine_labels):
@@ -554,8 +555,8 @@ def test_engine_fallbacks_are_explained_in_english(monkeypatch, tmp_path, ascii_
     assert_no_chinese(english_ui(server.messages))
     assert notices_en(server) == [
         "Claude returned HTTP 403. This session switched to Local Hy-MT2 1.8B to keep "
-        "translating. To switch back, re-enter the API key in Translation Engine, then choose "
-        "Claude again.",
+        "translating. To switch back, re-enter the API key in Settings > Translation Engine, "
+        "then choose Claude again.",
         "The DeepL free quota is used up, and no local model is available on this computer, so "
         "the app switched to Google (free) to keep translating. Captions are now sent to "
         "Google. After you upgrade or renew DeepL, choose DeepL again to switch back.",
@@ -703,8 +704,8 @@ def test_demo_terms_brands_and_retranslate_notes_are_english(monkeypatch, tmp_pa
     assert notices_en(server) == [
         "The banned-term list changed. Click Stop, then Start, to apply it.",
         "Couldn’t open the folder: {}".format(tmp_path / "brands"),
-        "No local model is available, so this can’t be retranslated. See Translation Engine in "
-        "Startup Check on the home screen."]
+        "No local model is available, so this can’t be retranslated. See the Translation Engine "
+        "row in Settings > Startup Check."]
 
 
 def test_local_model_download_notes_are_english(monkeypatch, tmp_path):

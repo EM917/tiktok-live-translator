@@ -478,7 +478,8 @@ def _space_before(text):
 SAFARI_LOGIN_STEPS = L("请在 Safari 里登录 TikTok。", "Sign in to TikTok in Safari.")
 # 英文开头留空格：它直接拼在上一句（fda_steps() 的句号）后面
 SELFCHECK_POINTER = L("（这些步骤在自检「浏览器登录态」一行里也有。）",
-                      " (These steps are also in the Browser Login row of Startup Check.)")
+                      " (These steps are also in the Browser Login row of Settings > Startup "
+                      "Check.)")
 
 
 def no_login_notice(login):

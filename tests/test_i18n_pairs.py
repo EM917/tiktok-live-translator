@@ -46,6 +46,22 @@ def test_every_pair_in_the_repo_passes_g2_and_g3():
     assert not violations, "\n".join(map(str, violations))
 
 
+# 句子里指路到设置分组里的某一行：一律从 Settings 走起（docs/i18n-style.md §2.1），
+# 光写 “in Translation Engine” 读着像个地名，用户不知道去哪找
+_BARE_SETTINGS_POINTER = re.compile(
+    r"\b(?:in|of|See) (?:the )?(?:Translation Engine|Startup Check|Storage|Banned-Term Alerts)\b"
+    r"(?! row)")
+
+
+def test_english_pointers_to_a_settings_row_start_from_settings():
+    bad = [(p.path, p.line, en) for p in _all_pairs() for en in p.ens
+           if _BARE_SETTINGS_POINTER.search(en)]
+    assert not bad, bad
+    assert _BARE_SETTINGS_POINTER.search("You can choose another engine in Translation Engine.")
+    assert not _BARE_SETTINGS_POINTER.search("Choose another engine in Settings > Translation Engine.")
+    assert not _BARE_SETTINGS_POINTER.search("See the Audit Log row in Settings > Startup Check.")
+
+
 def test_the_scan_covers_the_ui_sources_and_nothing_else():
     """范围读错了（比如 glob 写坏）时上面那条会假装通过：这里钉住它真的在看界面源文件。"""
     files = P.source_files()

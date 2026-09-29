@@ -254,7 +254,7 @@ def test_steps_and_the_no_login_notice_in_english(monkeypatch, login):
     assert notice.startswith("The app didn’t find a TikTok sign-in in your browsers. ")
     assert notice.endswith(" This notice disappears once a sign-in is found.")
     if bl.BLOCKED in login.values():
-        assert "(These steps are also in the Browser Login row of Startup Check.)" in notice
+        assert "(These steps are also in the Browser Login row of Settings > Startup Check.)" in notice
 
 
 # ---- comment_source：面板上每一种状态说明 ---------------------------------------------------

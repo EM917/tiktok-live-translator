@@ -1991,7 +1991,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                   "可以在「翻译引擎」里{}",
                   "{}. Captions after that showed only the original text (banned-term alerts "
                   "weren’t affected). The app tries again when the next session starts. In "
-                  "Translation Engine, you can {}.").format(
+                  "Settings > Translation Engine, you can {}.").format(
                     info["what"], L("换一个引擎", "choose another engine") if info["status"] == 404
                     else L("重新填写密钥，或换一个引擎",
                            "re-enter the API key or choose another engine")))
@@ -3383,7 +3383,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 "session:audit-open", "error",
                 L("本场审计日志没能创建（{}）——报警会显示，但不会留下任何证据（见自检「审计日志」）",
                   "The audit log for this session couldn’t be created ({}). Alerts still "
-                  "show, but no record of them will be kept. See Audit Log in Startup Check.")
+                  "show, but no record of them will be kept. See the Audit Log row in "
+                  "Settings > Startup Check.")
                 .format(getattr(audit, "open_error", None)
                         or L("没有拿到错误信息", "no error details")))
             return
@@ -4064,8 +4065,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                     L("{}，字幕先显示原文（违禁词报警不受影响），程序每 {} 秒再试一次；"
                       "可以在「翻译引擎」里{}",
                       "{}. Captions show the original text (banned-term alerts aren’t "
-                      "affected). The app tries again every {} sec. In Translation Engine, you "
-                      "can {}.").format(
+                      "affected). The app tries again every {} sec. In Settings > Translation "
+                      "Engine, you can {}.").format(
                         what, BaseTranslator.REJECT_COOLDOWN_SEC,
                         L("换一个引擎", "choose another engine") if status == 404
                         else L("重新填写密钥，或换一个引擎",
@@ -4080,7 +4081,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                      "（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎",
                      "{} returned no translation {} times in a row. Ollama returned HTTP {}{}. "
                      "Captions show the original text (banned-term alerts aren’t affected). "
-                     "You can choose another engine in Translation Engine.").format(
+                     "You can choose another engine in Settings > Translation Engine.").format(
                         label, getattr(tr, "fail_streak", 0), status,
                         L("：", ": ") + said if said else "")
             self._engine_incident_up = True
@@ -4131,11 +4132,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         except Exception:
             pass
         back = (L("在「翻译引擎」里换好模型后重选 {} 即可回来。",
-                  "To switch back, change the model in Translation Engine, then choose {} "
-                  "again.") if status == 404
+                  "To switch back, change the model in Settings > Translation Engine, then "
+                  "choose {} again.") if status == 404
                 else L("在「翻译引擎」里重新填写密钥后重选 {} 即可回来。",
-                       "To switch back, re-enter the API key in Translation Engine, then "
-                       "choose {} again.")).format(
+                       "To switch back, re-enter the API key in Settings > Translation Engine, "
+                       "then choose {} again.")).format(
                     engine_label(getattr(old, "name", None)))
         note = L("{}，本场已改用{}继续翻译。{}",
                  "{}. This session switched to {} to keep translating. {}").format(
@@ -4190,8 +4191,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             await self.server.broadcast({
                 "type": "notice",
                 "text": L("没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）",
-                          "No local model is available, so this can’t be retranslated. See "
-                          "Translation Engine in Startup Check on the home screen.")})
+                          "No local model is available, so this can’t be retranslated. See the "
+                          "Translation Engine row in Settings > Startup Check.")})
             return
         if self._quality.get(seq, 0) >= QUALITY_STRONG:
             return                        # 这一条已经是强模型译的，不重复
