@@ -423,12 +423,24 @@ def test_the_scan_is_opt_in():
     assert skip_reason({"TLT_DOM_SCAN": "0"}) is not None
 
 
-def test_find_chrome_prefers_tlt_chrome(tmp_path):
-    fake = tmp_path / "fake-chrome.exe"
-    fake.write_text("", encoding="utf-8")
-    fake.chmod(0o755)
+def _fake_exe(path):
+    path.write_text("", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_find_chrome_prefers_tlt_chrome(tmp_path, monkeypatch):
+    fake = _fake_exe(tmp_path / "fake-chrome.exe")
+    fallback = _fake_exe(tmp_path / "fake-fallback.exe")
+    # 候选名单换成 tmp 里的一个真文件：结果与跑测试那台机器装没装 Chrome 无关
+    monkeypatch.setattr(sys.modules[__name__], "CHROME_NAMES", (str(fallback),))
     assert Path(find_chrome({"TLT_CHROME": str(fake)})) == fake
-    assert find_chrome({"TLT_CHROME": str(tmp_path / "missing")}) != str(tmp_path / "missing")
+    # TLT_CHROME 指向不存在的文件：跳过它，接着找名单里的下一个
+    assert Path(find_chrome({"TLT_CHROME": str(tmp_path / "missing")})) == fallback
+    assert Path(find_chrome({})) == fallback
+    monkeypatch.setattr(sys.modules[__name__], "CHROME_NAMES", ())
+    assert find_chrome({"TLT_CHROME": str(tmp_path / "missing")}) is None
+    assert find_chrome({}) is None
 
 
 def test_scenarios_carry_real_backend_text_and_the_chinese_data(tmp_path):
