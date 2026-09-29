@@ -69,6 +69,7 @@ jobs:
           if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
       - name: JS syntax
         run: |
+          node --check web/i18n.js
           node --check web/app.js
           node --check web/normalize.js
           node --check web/brand.js

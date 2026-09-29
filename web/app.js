@@ -125,6 +125,14 @@
   var watchMode = document.getElementById("watch-mode");
   var inputHelpBtn = document.getElementById("input-help-btn");
   var inputHelp = document.getElementById("input-help");
+  // 界面语言行（spec §3.4）：config 里没有 ui_lang_available（发布闸关着、又没有
+  // --ui-lang 一次性覆盖）时整行一直隐藏，这几个元素什么都不改
+  var langCard = document.getElementById("lang-card");
+  var langHead = document.getElementById("lang-head");
+  var langBody = document.getElementById("lang-body");
+  var langSummaryEl = document.getElementById("lang-summary");
+  var uiLangSelect = document.getElementById("ui-lang-select");
+  var uiLangSystemOpt = document.getElementById("ui-lang-system");
 
   // 设置分组的行：展开状态记在行的 aria-expanded 上（CSS 据此转箭头），内容区
   // 照旧靠 .hidden 收放。引擎、报警、输入说明这三行没有额外的开合时机，直接
@@ -145,6 +153,7 @@
   bindRow(engineHead, engineBody);
   bindRow(watchHead, watchBody);
   bindRow(inputHelpBtn, inputHelp);
+  bindRow(langHead, langBody);
 
   // 手机同看卡片（#share-card）：只在打开期间监听 0.0.0.0，控制面本身始终只在
   // 127.0.0.1；这张卡片只发/收 viewer_share / viewer_rotate，看不到任何观众数据
@@ -755,6 +764,9 @@
             updateBar.classList.add("hidden");
             resetUpdateBtn();
           }
+          // 界面语言：闸关着时 config 里没有这几个键，行保持隐藏、不比对、不重载
+          renderLang(msg.config);
+          reloadForLang(msg.config);
         }
         break;
       case "update_available":
@@ -799,6 +811,12 @@
         if ("active_brand" in msg) setActiveBrand(msg.active_brand);
         if (msg.alerts_session) setAlertSession(msg.alerts_session);
         if ("update_check" in msg) renderUpdateCheck(msg.update_check);
+        // 设置里换了界面语言（app/pipeline.py _set_ui_lang 广播语言那几个键）：刷新这一行，
+        // 本页语言和新的不一样就重载。别的 config 广播（set_target 等）不带这些键，不动这一行
+        if ("ui_lang_available" in msg) {
+          renderLang(msg);
+          reloadForLang(msg);
+        }
         break;
       case "glossary_migration":
         handleMigration(msg);
@@ -1277,9 +1295,22 @@
   document.addEventListener("keydown", clearAttention);
   // 兜底：窗口本来就在前台、没有再触发 focus 时，也要把标题换回来
   setInterval(clearAttention, 2000);
-  // 页面刚加载（含刷新）时照发一次：上一个页面留在窗口标题上的提醒要清掉
-  window.addEventListener("pywebviewready", function () { syncWindowAttention(true); });
-  if (window.pywebview && window.pywebview.api) syncWindowAttention(true);
+  // 页面告诉窗口自己是什么语言（app/window_lang.py，spec §8.1）：原生标题、后台报警时的
+  // 标题、关窗确认框跟着换。双击第二次时窗口开在另一个进程里，收不到语言切换，只有页面
+  // 知道自己此刻是什么语言。闸关着时这里总是 "zh"，窗口那边什么都不动
+  function syncWindowLang() {
+    var api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.set_window_lang !== "function") return;
+    try {
+      var pending = api.set_window_lang(UI_LANG);
+      if (pending && typeof pending.catch === "function") pending.catch(function () {});
+    } catch (e) { /* 桥出错不影响页面本身 */ }
+  }
+
+  // 页面刚加载（含刷新）时照发一次：上一个页面留在窗口标题上的提醒要清掉。
+  // 先告诉语言再同步条数：标题按新语言的基底加上条数
+  window.addEventListener("pywebviewready", function () { syncWindowLang(); syncWindowAttention(true); });
+  if (window.pywebview && window.pywebview.api) { syncWindowLang(); syncWindowAttention(true); }
 
   function updateAlert(msg) {
     var item = alertList.querySelector('[data-alert-id="' + msg.alert_id + '"]');
@@ -2625,6 +2656,55 @@
         engineSave.disabled = false;
         engineSave.textContent = "保存";
       }, 2500);
+    });
+  }
+
+  // ---- 界面语言（spec §3.4、§3.5） ----
+  // 语言名、摘要、要不要重载都由 settings-rows.js 的纯函数算，这里只管 DOM 和存储
+  var LANG_RELOAD_KEY = "tlt.langReload";
+  var langSetting = null;   // 服务端此刻存的选择（system / zh / en）：发送失败时下拉退回它
+
+  function renderLang(cfg) {
+    if (!langCard || !cfg) return;
+    var available = cfg.ui_lang_available === true;
+    langCard.classList.toggle("hidden", !available);
+    if (!available) return;
+    langSetting = cfg.ui_lang_setting;
+    if (uiLangSystemOpt) uiLangSystemOpt.textContent = langSystemLabel(cfg.ui_lang_system);
+    if (uiLangSelect) {
+      if (langSetting === "system" || langSetting === "zh" || langSetting === "en") {
+        uiLangSelect.value = langSetting;
+      }
+      // 带了 --ui-lang 一次性覆盖：这次启动的语言由启动参数定，改设置也不会生效
+      var locked = cfg.ui_lang_locked === true;
+      uiLangSelect.disabled = locked;
+      if (locked) uiLangSelect.title = L("由启动参数固定", "Set by a launch option");
+      else uiLangSelect.removeAttribute("title");
+    }
+    if (langSummaryEl) langSummaryEl.textContent = langSummary(langSetting, cfg.ui_lang, cfg.ui_lang_system);
+  }
+
+  // 服务端的界面语言和本页不同（刚在设置里换过，或重连到一个换过语言的程序）：整页重载一次。
+  // 重载后服务端按新语言注入 <html lang>，hello 回放也按新语言渲染，页面上没有残留。
+  // sessionStorage 记不下就不重载：宁可停在原来的语言，也不能在对不上时无限刷新
+  function reloadForLang(cfg) {
+    if (!cfg || typeof cfg.ui_lang !== "string") return false;
+    var stored = null;
+    try { stored = sessionStorage.getItem(LANG_RELOAD_KEY); } catch (e) { stored = null; }
+    var decision = langReload(cfg.ui_lang, UI_LANG, stored, Date.now());
+    if (!decision.reload) return false;
+    try { sessionStorage.setItem(LANG_RELOAD_KEY, decision.mark); } catch (e) { return false; }
+    location.reload();
+    return true;
+  }
+
+  if (uiLangSelect) {
+    uiLangSelect.addEventListener("change", function () {
+      if (send({ type: "set_ui_lang", value: uiLangSelect.value })) return;
+      if (langSetting) uiLangSelect.value = langSetting;
+      setStatus({ state: "offline",
+                  detail: L("与本地服务断开，正在重连——稍候再试。",
+                            "Lost connection to the local service. Reconnecting… Try again in a moment.") });
     });
   }
 
