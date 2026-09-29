@@ -1529,7 +1529,11 @@
       parts.push("积压 " + msg.asr_queue_depth + "/" + msg.translation_queue_depth);
     }
     statsEl.textContent = parts.join(" · ");
-    statsEl.classList.remove("hidden");
+    // 只在直播中/连接中揭开。后端每场收尾会补推一次终值（pipeline 的 _end_session），
+    // 出错那条路上它晚于 status=error 到达——这时页面已经回到首页、enterHomeLayout
+    // 已经把统计行收掉了，无条件揭开会让一行全是「—」的统计压在设置列表上
+    // （2026-09-28 用户截图）。文字照常更新，下一场开播时的第一条统计再揭开。
+    if (streamActive) statsEl.classList.remove("hidden");
   }
 
   // 识别落后时必须让中控看见——假装一切正常比晚几秒报警危险得多
@@ -1567,7 +1571,9 @@
   }
 
   function renderHealth(msg) {
-    if (msg.level === "ok") {
+    // 「识别落后/已降级」只对正在进行的这一场成立；停止或出错回到首页后，
+    // 晚到的一条不该再把它揭开（同 renderStats 的道理）
+    if (msg.level === "ok" || !streamActive) {
       healthBar.classList.add("hidden");
       return;
     }
@@ -2467,6 +2473,9 @@
     scrollToTopNow();
     updateJumpButton();
     statsEl.classList.add("hidden");
+    // 识别落后提示只描述正在进行的那一场：后端停止时不会补发 level=ok，
+    // 一场在落后状态下结束，这条会一直留在首页上
+    healthBar.classList.add("hidden");
     // 换主播面板只在直播中有意义（按钮本身这时也被隐藏了）：停止之后若还开着，
     // 关掉它，不然会变成一块摆在待机页面上的残留浮层
     closeSwitchPanel();
