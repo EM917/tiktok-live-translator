@@ -9,8 +9,12 @@ function alertTitle(n) {
   return "(" + n + ") 疑似违禁词 · " + DEFAULT_TITLE;
 }
 
+/* 标题是不是 alertTitle 自己设的提醒。不按标题里的中文认：拿开头的条数重新生成一遍，
+   逐字相同才算，这样标题换成哪种语言都认得出。页面生命周期里语言不变（切换语言会重载页面，
+   标题回到 <title>），所以此刻的 alertTitle 就是设标题时的那个。 */
 function isAlertTitle(title) {
-  return /^\(\d+\) 疑似违禁词 · /.test(String(title || ""));
+  var m = /^\((\d+)\) /.exec(String(title || ""));
+  return !!m && String(title) === alertTitle(Number(m[1]));
 }
 
 /* 一条报警到达后标题该怎么变。state = { unseen, restoreTo }，返回新的 state，

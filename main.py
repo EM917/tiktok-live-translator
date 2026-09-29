@@ -14,6 +14,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from app import native_dialog
 from app.i18n import APP_NAME
 from app.macbundle import remember_launch_python
 from app.stdio import harden_stdio
@@ -125,10 +126,6 @@ def _has_console():
     return False
 
 
-def _esc_osa(text):
-    return text.replace("\\", "\\\\").replace('"', '\\"')
-
-
 _INFO_DIALOG = None
 _FIRST_RUN_SHOWN = False
 
@@ -143,9 +140,8 @@ def _info_dialog(message):
         return   # Windows 走 Start.bat，有黑窗口能看到 print
     try:
         _INFO_DIALOG = subprocess.Popen(
-            ["osascript", "-e",
-             'display dialog "{}" with title "TikTok 直播同传" buttons {{"知道了"}} '
-             'default button 1 with icon note giving up after 600'.format(_esc_osa(message))],
+            native_dialog.osascript_argv(message, button=native_dialog.INFO_BUTTON,
+                                         icon="note", giving_up=600),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         _INFO_DIALOG = None
@@ -171,13 +167,13 @@ def _fail_alert(message):
         if sys.platform == "darwin":
             _close_info_dialog()
             subprocess.run(
-                ["osascript", "-e",
-                 'display dialog "{}" with title "TikTok 直播同传" buttons {{"好"}} '
-                 'default button 1 with icon caution'.format(_esc_osa(message))],
+                native_dialog.osascript_argv(message, button=native_dialog.FAIL_BUTTON,
+                                             icon="caution"),
                 capture_output=True, timeout=60)
         elif os.name == "nt":
             import ctypes
-            ctypes.windll.user32.MessageBoxW(None, message, APP_NAME, 0x30)
+            text, title = native_dialog.messagebox_args(message)
+            ctypes.windll.user32.MessageBoxW(None, text, title, 0x30)
     except Exception:
         pass
 
@@ -401,9 +397,11 @@ def _existing_instance_url(base_port):
     用于双击两次的场景：复用已有实例，而不是再起一个后端。
     必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
     base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
-    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹，扫描耗时可忽略。"""
+    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
     import socket
     import urllib.request
+
+    from app.instance import PROBE_BYTES, looks_like_us
     for port in range(base_port, base_port + 10):
         with socket.socket() as probe:
             probe.settimeout(0.3)
@@ -412,7 +410,7 @@ def _existing_instance_url(base_port):
         url = "http://127.0.0.1:{}".format(port)
         try:
             with urllib.request.urlopen(url, timeout=1.5) as resp:
-                if "直播同传" in resp.read(4096).decode(errors="replace"):
+                if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
                     return url
         except Exception:
             pass
