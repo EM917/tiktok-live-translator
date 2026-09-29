@@ -28,7 +28,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-I18N_ENABLED = False          # 发布闸：Z1 提交改成 True。关着时（且没有一次性覆盖）界面恒为中文
+I18N_ENABLED = True           # 发布闸，Z1 打开。改回 False 就回到纯中文：关着时（且没有一次性覆盖）界面恒为中文
 ZH, EN = "zh", "en"
 CHOICES = ("system", ZH, EN)
 BUNDLE_ID = "io.github.em917.tiktok-live-translator"
