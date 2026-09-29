@@ -452,11 +452,9 @@ def test_browser_only_advice_in_english(monkeypatch, login, must_have):
 
 
 def test_browser_only_message_in_english_keeps_the_fixed_facts(monkeypatch):
-    """整句（pipeline 的固定话术 + 这里的 advice）在英文里同样带着三件事实。固定话术的英文由
-    M5a 写；它还没合进来时这条跳过，advice 那一半上面的用例已经钉住。"""
+    """整句（pipeline 的固定话术 + 这里的 advice）在英文里同样带着三件事实，没有中文、没有
+    贴标签和猜原因的词、句子之间恰好一个空格。"""
     monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_FDA_PATHS))
-    if CJK.search(i18n.render(browser_only_message(3, None), "en")):
-        pytest.skip("pipeline.browser_only_message 的固定话术还没有英文（M5a）")
     for login in (None, {"chrome": "blocked_by_system", "safari": "blocked_by_system"},
                   {"chrome": "ok"}, {"safari": "not_logged_in"}, {"chrome": "readable"},
                   {"chrome": "readable", "safari": "readable"}):
