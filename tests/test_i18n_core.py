@@ -507,8 +507,10 @@ FRESH_EN = {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "en"}
 
 @pytest.mark.parametrize("gate, env, saved, want", [
     (True, FRESH_EN, None, EN),                                          # 新装第一次启动
-    (True, FRESH_EN, {"ui_lang": "system"}, EN),
-    (True, FRESH_EN, {"ui_lang": "en"}, EN),
+    (True, FRESH_EN, {}, EN),
+    # 已有 ui_lang：不是迁移的那一次 settle，哪怕环境变量还是 fresh（复审：一键更新 execv 继承）
+    (True, FRESH_EN, {"ui_lang": "system"}, None),
+    (True, FRESH_EN, {"ui_lang": "en"}, None),
     (True, FRESH_EN, {"ui_lang": "zh"}, None),                           # 界面是中文
     (True, {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "zh"}, None, None),
     (True, {i18n.ENV_INSTALL: "fresh", i18n.ENV_SYSTEM: "none"}, None, None),   # 检测失败按中文
@@ -557,6 +559,61 @@ def test_english_caption_default_is_written_on_the_first_launch_only(tmp_path, s
     assert env[i18n.ENV_INSTALL] == "existing"
     assert i18n.settle(tmp_path, environ=env) == EN
     assert _snapshot(tmp_path) == before
+
+
+def test_an_update_restart_does_not_default_captions_to_english(tmp_path, settings_file,
+                                                                monkeypatch):
+    """复审（live-path-safety，提交 T）：一键更新用 os.execv 重启（updater.py），环境变量整条继承。
+    新装第一次启动时界面解析成中文，之后用户在设置里把界面改成英文、没动过目标语言：更新重启
+    （同一个 env 再 boot + settle）不能静默改成英文字幕。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    monkeypatch.setattr(i18n, "system_lang", lambda: ZH)
+    env = {}
+    _boot(tmp_path, env)
+    assert env[i18n.ENV_INSTALL] == "fresh"
+    assert i18n.settle(tmp_path, environ=env) == ZH
+    assert settings.load_settings() == {"ui_lang": "system"}
+    assert env[i18n.ENV_INSTALL] == "existing"          # 这之后 exec 出来的进程不再算新装
+    settings.save_setting("ui_lang", EN)                  # 设置里的「界面语言」行
+    i18n.set_choice(EN)
+    _boot(tmp_path, env)                                  # 一键更新：execv，同一个 env
+    assert i18n.settle(tmp_path, environ=env) == EN
+    assert settings.load_settings() == {"ui_lang": "en"}
+
+
+@pytest.mark.parametrize("gate", [False, True])
+def test_settle_marks_the_install_as_existing_for_later_execs(tmp_path, settings_file,
+                                                              monkeypatch, gate):
+    """settle 不论闸开关、成败，结束时都把装机状态记成 existing。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", gate)
+    env = dict(FRESH_EN)
+    i18n.settle(tmp_path, environ=env)
+    assert env[i18n.ENV_INSTALL] == "existing"
+
+    def boom():
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(settings, "load_settings", boom)
+    env = dict(FRESH_EN)
+    assert i18n.settle(tmp_path, environ=env) == i18n.current()
+    assert env[i18n.ENV_INSTALL] == "existing"
+
+
+def test_an_install_from_the_closed_gate_weeks_stays_chinese_after_updating_across_it(
+        tmp_path, settings_file, monkeypatch):
+    """闸关着时装上、一直没退出，一键更新到开闸的版本：execv 继承环境变量。第一个版本的 settle
+    已经把它记成老装机，开闸后的 settle 按老装机迁移成 zh（用户决定 1），不跟随系统变英文，
+    也不写英文字幕。"""
+    monkeypatch.setattr(i18n, "system_lang", lambda: EN)
+    env = {}
+    _boot(tmp_path, env)
+    assert env[i18n.ENV_INSTALL] == "fresh"
+    assert i18n.settle(tmp_path, environ=env) == ZH        # 闸关着：一个字节都不写
+    assert not settings_file.exists()
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)        # 更新到开闸的版本，execv
+    _boot(tmp_path, env)
+    assert i18n.settle(tmp_path, environ=env) == ZH
+    assert settings.load_settings() == {"ui_lang": "zh"}
 
 
 @pytest.mark.parametrize("gate, system, argv, want_lang, want_target", [

@@ -16,7 +16,8 @@ f-string、普通模板 "…{}".format(bi)、切片、.strip()、re.sub、str(ex
   自己读 settings.json 的字节，不调 load_settings、不改名、不写回——损坏的设置文件要留给
   最终进程去备份，否则「设置文件损坏，已备份为…」的提示和审计里的备份名会随 exec 丢掉。
 - settle(ROOT)：只在最终进程里跑一次。这里才第一次 load_settings，闸开着时才迁移写 ui_lang；
-  新装且界面是英文时，顺带把没设置过的翻译目标语言默认成 English（提交 T）。
+  新装且界面是英文时，顺带把没设置过的翻译目标语言默认成 English（提交 T）。结束时把装机状态
+  记成 existing：之后 exec 出来的进程（一键更新重启）不再算新装。
 """
 import json
 import os
@@ -36,7 +37,8 @@ BUNDLE_ID = "io.github.em917.tiktok-live-translator"
 CJK = re.compile("[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯]")
 ENV_OVERRIDE = "TLT_UI_LANG"         # 一次性覆盖（开发、截图）；命令行 --ui-lang 同义
 ENV_SYSTEM = "TLT_SYSTEM_LANG"       # system_lang() 的结果跨 exec 缓存：zh / en / none
-ENV_INSTALL = "TLT_INSTALL_STATE"    # 第一个进程看到的装机状态：fresh / existing（只记第一次）
+ENV_INSTALL = "TLT_INSTALL_STATE"    # 第一个进程看到的装机状态：fresh / existing（只记第一次）；
+                                    # settle 之后改成 existing
 NET = None                    # 测试运行时网："report" / "strict"；生产为 None，零开销
 _state = {"choice": "system", "lang": ZH, "system": None, "override": None}
 _bad_once = set()
@@ -197,15 +199,20 @@ def _migrated_choice(env):
     return "system" if env.get(ENV_INSTALL) == "fresh" else ZH
 
 
-def _defaults_to_english_captions(data, env):
+def _defaults_to_english_captions(loaded, env):
     """提交 T（用户 09-28 决定 3）：闸开着、新装、界面解析为英文、设置里从没有过 target_lang，
-    翻译目标语言默认写 English。老装机和已经选过目标语言的一律不动。
+    翻译目标语言默认写 English。老装机和已经选过目标语言的一律不动。loaded 是 settle 读到的、
+    迁移之前的设置。
 
-    fresh 只在第一次启动时成立（之后 settings.json 已存在），所以这件事每个装机最多发生一次。
+    只在第一次启动那一次 settle 里成立，两道条件各管一半：
+    - loaded 里还没有 ui_lang：T 与 ui_lang 迁移发生在同一次 settle 里，之后设置里总有 ui_lang；
+    - boot 判的是 fresh：settle 结束时把环境变量改成 existing。一键更新用 os.execv 重启
+      （updater.py），环境整条继承，不改的话重启后的进程还算新装——用户第一次启动后在设置里把
+      界面改成英文、没动过目标语言，更新重启就会被静默写成英文字幕。
     看的是设置解析出的语言、不看一次性覆盖：覆盖不落盘（--ui-lang 用于截图、开发），
     不能拿它去定一个会落盘的默认值。"""
-    return (I18N_ENABLED and env.get(ENV_INSTALL) == "fresh"
-            and "target_lang" not in data and _saved_lang() == EN)
+    return (I18N_ENABLED and env.get(ENV_INSTALL) == "fresh" and "ui_lang" not in loaded
+            and "target_lang" not in loaded and _saved_lang() == EN)
 
 
 def _choice_from(data, env):
@@ -288,19 +295,26 @@ def settle(root, environ=None):
     否则闸关着那几周的新装机会被写成 system，闸一开就突然变英文。
     同样只在闸开着时：新装、界面解析为英文、没设置过 target_lang，再写 target_lang="en"。
     这发生在 main.py 读 target_lang 之前，所以第一次启动就是英文字幕。返回生效语言。
+    结束时（不论成败）把装机状态记成 existing：这之后 exec 出来的进程（一键更新重启）不再算
+    新装。否则闸关着时装上、用了几周的机器，一键更新到开闸的版本时会按新装迁移成跟随系统，
+    界面突然变英文（用户决定 1）；T 也会在更新重启时再判一次。
     root 与 boot 对称，由调用方传 ROOT；设置文件以 app.settings.SETTINGS_FILE 为准（就是 ROOT 下那个）。"""
     env = os.environ if environ is None else environ
     try:
         from . import settings as _settings
-        data = _settings.load_settings()
+        loaded = data = _settings.load_settings()
         if I18N_ENABLED and "ui_lang" not in data:
             value = _migrated_choice(env)
             _settings.save_setting("ui_lang", value)
             data = dict(data, ui_lang=value)
         _state.update(system=_system_from(env), choice=_choice_from(data, env))
         _state["lang"] = _resolve()
-        if _defaults_to_english_captions(data, env):     # 放在语言定下之后：写失败也不影响界面语言
+        if _defaults_to_english_captions(loaded, env):   # 放在语言定下之后：写失败也不影响界面语言
             _settings.save_setting("target_lang", EN)
+    except Exception:
+        pass
+    try:
+        env[ENV_INSTALL] = "existing"
     except Exception:
         pass
     return _state["lang"]
