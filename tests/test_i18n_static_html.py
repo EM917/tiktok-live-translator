@@ -43,6 +43,50 @@ def test_the_pages_parse_into_a_real_tree(path):
     assert tags[0] == "html" and "title" in tags and "body" in tags and len(tags) > 50
 
 
+def _spacing_problems(src):
+    """data-en 丢了中文文字节点贴着相邻元素的那一边空白：[(行号, 标签, 哪一边)]。
+
+    applyStatic 的 setOwnText 把整段文字节点换成 data-en，节点两头的空白也一起换掉。中文
+    「沿用：主播语言 <span>」「…（如 @somebody）<button ⓘ>」靠这个空白和后面的元素隔开；英文不带
+    就粘成 "Keeps spoken language:Spanish"。G5 按折叠后的文字比，看不出这个，所以单独查：中文在哪
+    一边挨着元素留了空白，data-en 同一边也要留（挨着的是注释、或是开头结尾，就不要求）。"""
+    out = []
+    for el in P.iter_elements(P.parse_html(src)):
+        if not el.has("data-en") or el.has("data-en-html"):
+            continue
+        own = P.own_text(el)
+        if own is None:
+            continue
+        i = el.children.index(own)
+        en = el.get("data-en") or ""
+        before = el.children[i - 1] if i else None
+        after = el.children[i + 1] if i + 1 < len(el.children) else None
+        if type(after) is P.Node and own.data != own.data.rstrip() and en == en.rstrip():
+            out.append((el.line, el.tag, "end"))
+        if type(before) is P.Node and own.data != own.data.lstrip() and en == en.lstrip():
+            out.append((el.line, el.tag, "start"))
+    return out
+
+
+@pytest.mark.parametrize("path", PAGES)
+def test_the_english_keeps_the_space_next_to_an_inline_neighbour(path):
+    assert _spacing_problems(P.read(path)) == []
+
+
+def test_the_spacing_check_sees_a_glued_neighbour():
+    """上面那条的检查器自己要能抓到问题，不然它会假装通过。"""
+    src = textwrap.dedent('''
+        <p data-en="Keeps spoken language:">沿用：主播语言 <span id="echo"></span></p>
+        <p data-en="Keeps spoken language: ">沿用：主播语言 <span id="echo"></span></p>
+        <span data-en="Comments"><svg></svg> 弹幕</span>
+        <span data-en="Brand">本场品牌
+          <!-- 注释后面的空白是另一个文字节点，换不掉 -->
+          <select></select></span>
+        <b data-en="Stop">停止 </b>
+    ''')
+    assert _spacing_problems(src) == [(2, "p", "end"), (4, "span", "start")]
+
+
 def _left(src):
     return [(line, where, text) for line, where, text in P.render_static_en(textwrap.dedent(src))]
 

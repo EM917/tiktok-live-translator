@@ -4,9 +4,10 @@
   <meta charset="UTF-8">
   <meta name="tlt-app" content="tiktok-live-translator">  <!-- 实例指纹，与界面语言无关：双击第二次时 main.py 靠它认出自己（app/instance.py），要留在文件前 4096 字节里 -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TikTok 直播同传</title>
+  <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
   <link rel="stylesheet" href="/static/style.css?v=34">
+  <!-- i18n: done -->
 </head>
 <body class="home">
   <!-- 直播界面的线性图标：跟设置行、ⓘ 同一套画法（SF Symbols 风格，16×16、描边 1.5、
@@ -36,7 +37,7 @@
            文字仍由 app.js setStatus 写，这层 span 只负责外观（直播中变绿靠 :has） -->
       <span class="status-pill">
         <span id="status-dot" class="dot idle"></span>
-        <span id="status-text" class="status-text">等待连接…</span>
+        <span id="status-text" class="status-text" data-en="Starting…">等待连接…</span>
       </span>
       <!-- 违禁词警示开关的状态：只在连接中/直播中露出，待机时没有场次可言 -->
       <span id="alert-mode-tag" class="alert-mode-tag hidden"></span>
@@ -45,13 +46,13 @@
       <span id="active-brand-tag" class="active-brand-tag hidden"></span>
     </div>
     <div class="controls">
-      <label class="ctl" title="目标语言">
-        <span class="ctl-text">目标语言</span>
+      <label class="ctl" title="目标语言" data-en-title="Translate to">
+        <span class="ctl-text" data-en="Translate to">目标语言</span>
         <!-- 固定 aria-label：.ctl-text 在窄宽度（≤1080px）会被隐藏，不依赖它做可访问名称
              （和同一行 #font-size 的 aria-label="字幕字号" 保持同一种更稳的写法）。
              translate="no"：选项是各语言的自称，属于数据，哪种界面语言都不翻；只豁免选项文字，
              select 自己的 aria-label 照常要英文（spec §4.1 R7） -->
-        <select id="target-lang" aria-label="目标语言" translate="no">
+        <select id="target-lang" aria-label="目标语言" data-en-aria-label="Translate to" translate="no">
           <option value="zh-CN">中文（简体）</option>
           <option value="zh-TW">中文（繁體）</option>
           <option value="en">English</option>
@@ -68,24 +69,25 @@
         </select>
       </label>
       <!-- 字号：小 A —— 滑块 —— 大 A（苹果「图书」的做法），省掉「字号」两个字 -->
-      <label class="ctl ctl-font" title="字幕字号">
+      <label class="ctl ctl-font" title="字幕字号" data-en-title="Caption size">
         <span class="a-small" aria-hidden="true">A</span>
-        <input type="range" id="font-size" min="20" max="60" step="2" aria-label="字幕字号">
+        <input type="range" id="font-size" min="20" max="60" step="2" aria-label="字幕字号" data-en-aria-label="Caption size">
         <span class="a-large" aria-hidden="true">A</span>
       </label>
       <!-- 没有字幕（含上一场留下的历史）时按钮没有意义，一直亮着占地方，见
            pm.md #8；显示由 app.js syncCaptionDependentUi 按 #history 里有没有
            .cap 决定，不跟直播/待机状态本身绑定——停止后只要历史还在就仍可点 -->
-      <button id="clear-btn" class="btn hidden" title="清空历史字幕">清空字幕</button>
+      <button id="clear-btn" class="btn hidden" title="清空历史字幕" data-en-title="Clear caption history" data-en="Clear">清空字幕</button>
       <!-- 手机同看的入口常驻顶栏：这张卡片曾经放在 #start-panel 里，直播开始后
            整块面板被隐藏，中控恰好在这时候想扫码给同事看，却找不到入口。
            按钮本身在待机/直播两种状态下都不隐藏，只负责开关下面的 #share-panel。
            图标是内联 SVG（#i-iphone），文字由 app.js updateShareBtn 写进 #share-btn-text；
            #share-btn-count 只在窄窗口（只剩图标）且有人在看时露出人数 -->
       <button id="share-btn" class="btn" type="button" title="打开/收起手机同看面板"
+              data-en-title="Show or hide Phone Viewing"
               aria-expanded="false" aria-controls="share-panel">
         <svg class="i" aria-hidden="true"><use href="#i-iphone"/></svg>
-        <span id="share-btn-text" class="btn-label">手机同看</span>
+        <span id="share-btn-text" class="btn-label" data-en="Phone Viewing">手机同看</span>
         <span id="share-btn-count" class="btn-count hidden"></span>
       </button>
       <!-- 手机同看：局域网内扫码只读观看，只在打开期间监听 0.0.0.0，关闭即停。
@@ -96,30 +98,32 @@
            这块面板以前放在 #start-panel 里：直播一开始整块面板就被隐藏，
            中控恰恰是在直播中才想扫码给同事看，结果找不到入口。现在挪到顶栏
            按钮下面、字幕历史上面，跟警报条一个层级，待机和直播中都能打开。 -->
-      <div id="share-panel" class="share-panel popover hidden" role="dialog" aria-label="手机同看">
+      <div id="share-panel" class="share-panel popover hidden" role="dialog" aria-label="手机同看" data-en-aria-label="Phone Viewing">
         <div id="share-card" class="share-card">
           <div class="share-head">
-            <span class="share-title">
+            <span class="share-title" data-en="Phone Viewing">
               <svg class="i" aria-hidden="true"><use href="#i-iphone"/></svg>手机同看
               <!-- 三段连不上时的排查说明收进 ⓘ，跟首页输入框旁那颗同一种交互（designer.md #11） -->
               <button id="share-help-btn" class="help-btn" type="button" aria-expanded="false"
-                      aria-controls="share-help" title="手机连不上时">
+                      aria-controls="share-help" title="手机连不上时" data-en-title="If a phone can’t connect">
                 <svg class="i" aria-hidden="true"><use href="#i-info"/></svg>
               </button>
             </span>
             <div class="share-head-right">
-              <span id="share-state" class="share-state off">未打开</span>
+              <span id="share-state" class="share-state off" data-en="Off">未打开</span>
               <!-- 只收起面板，不碰同看开关——跟下面「停止同看」（真的断开在看的手机）
                    是两件事，照换主播面板 #switch-close 的外观和语义（app.js） -->
-              <button id="share-collapse" class="popover-close" type="button" title="收起面板" aria-label="收起面板">
+              <button id="share-collapse" class="popover-close" type="button" title="收起面板" aria-label="收起面板"
+                      data-en-title="Close panel" data-en-aria-label="Close panel">
                 <svg class="i" aria-hidden="true"><use href="#i-xmark"/></svg>
               </button>
             </div>
           </div>
-          <p id="share-desc" class="share-desc">
+          <p id="share-desc" class="share-desc"
+             data-en="When this is on, phones on the same Wi-Fi can scan to view captions and alerts. They can only view, not control the app.">
             打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。
           </p>
-          <button id="share-toggle" class="btn primary" type="button">开始同看</button>
+          <button id="share-toggle" class="btn primary" type="button" data-en="Start Sharing">开始同看</button>
 
           <div id="share-body" class="share-body hidden">
             <div class="share-main">
@@ -127,11 +131,11 @@
               <div class="share-right">
                 <div id="share-url" class="share-url" tabindex="0" translate="no"></div>
                 <div class="share-actions">
-                  <button id="share-copy" class="btn small" type="button">复制链接</button>
-                  <button id="share-rotate" class="btn small" type="button">换一个链接</button>
+                  <button id="share-copy" class="btn small" type="button" data-en="Copy Link">复制链接</button>
+                  <button id="share-rotate" class="btn small" type="button" data-en="New Link">换一个链接</button>
                   <!-- 断开全部在看的手机，跟上面只收起面板的 × 不是同一件事，
                        红字标出来避免和「关闭=收起」混淆（pm.md #3） -->
-                  <button id="share-close" class="btn small danger" type="button">停止同看</button>
+                  <button id="share-close" class="btn small danger" type="button" data-en="Stop Sharing">停止同看</button>
                 </div>
                 <div id="share-count" class="share-count"></div>
               </div>
@@ -141,13 +145,16 @@
             <ul id="share-ip-list" class="share-ip-list hidden" translate="no"></ul>
           </div>
           <div id="share-help" class="share-help-box hidden">
-            <p class="share-help">
+            <p class="share-help"
+               data-en="The phone needs to be on the same Wi-Fi as this computer. If it can’t connect, ask the network administrator whether this Wi-Fi allows devices to connect to each other.">
               手机要和这台电脑连同一个 Wi-Fi。连不上时，可以问网络管理员这个 Wi-Fi 是否允许设备互相访问。
             </p>
-            <p class="share-help">
+            <p class="share-help"
+               data-en="If the link gets stuck or shows a warning in WeChat, tap the menu in the top-right corner to open it in a browser, or scan with the phone’s camera instead.">
               在微信里打开卡住或提示风险时，点右上角用浏览器打开，或改用手机相机扫码。
             </p>
-            <p class="share-help">
+            <p class="share-help"
+               data-en="If the page won’t open on the phone, all the app can tell is that no connection came in. Try these in order: make sure the phone is on the same Wi-Fi, type in another address from the list, then open the same link in a browser on this computer to check that the service is running.">
               手机打不开时，程序这边只知道没有连接进来。可以依次试：确认手机连的是同一个 Wi-Fi；
               用列表里另一个地址手工输入；在本机浏览器打开同一个链接，确认服务本身在跑。
             </p>
@@ -158,56 +165,61 @@
            跟停止之间留出明显间距（.switch-btn 的 margin-right），防止手滑点错——
            点错「换主播」是可挽回的（面板里还要再确认一次），点错「停止」是直接断流。 -->
       <button id="switch-btn" class="btn switch-btn hidden" type="button" title="不停止监听，直接换成另一个主播"
-              aria-expanded="false" aria-controls="switch-panel">换主播</button>
+              data-en-title="Switch to another streamer without stopping"
+              aria-expanded="false" aria-controls="switch-panel" data-en="Switch Streamer">换主播</button>
       <!-- 换主播：直播中不停止监听、直接改听另一个主播。照 #share-panel 的位置与
            收放方式放在 #start-panel/#history 之外——直播中 #start-panel 整块隐藏，
            这个面板不能跟着一起被藏起来。两段式确认的状态机在 web/switch.js（可测），
            这里只是纯 DOM 结构；点「换主播」打开，× 或 Esc 关闭（app.js）。 -->
-      <div id="switch-panel" class="switch-panel popover hidden" role="dialog" aria-label="换主播">
+      <div id="switch-panel" class="switch-panel popover hidden" role="dialog" aria-label="换主播" data-en-aria-label="Switch Streamer">
         <div class="switch-card">
           <div class="switch-head">
-            <span class="switch-title">换主播</span>
-            <button id="switch-close" class="popover-close" type="button" title="关闭" aria-label="关闭">
+            <span class="switch-title" data-en="Switch Streamer">换主播</span>
+            <button id="switch-close" class="popover-close" type="button" title="关闭" aria-label="关闭"
+                    data-en-title="Close" data-en-aria-label="Close">
               <svg class="i" aria-hidden="true"><use href="#i-xmark"/></svg>
             </button>
           </div>
           <p id="switch-sub" class="switch-sub"></p>
           <div class="switch-row">
             <input id="switch-input" class="field" type="text" spellcheck="false"
-                   placeholder="新主播的直播间地址或 @用户名">
+                   placeholder="新主播的直播间地址或 @用户名"
+                   data-en-placeholder="New streamer’s live link or @username">
           </div>
           <!-- 最近直播间：同开始面板的数据，但这里点了只填入并武装，绝不直接开始——
                直播中误触一下 chip 不该立刻断流（见 app.js 的两段式确认）。
                当前正在监听的那个主播标「当前」且不可点。 -->
           <div id="switch-recent" class="recent-rooms hidden">
-            <div class="recent-head"><span class="recent-label">最近的直播间</span></div>
+            <div class="recent-head"><span class="recent-label" data-en="Recent Streams">最近的直播间</span></div>
             <div id="switch-recent-list" class="recent-list"></div>
           </div>
           <div class="switch-row secondary">
-            <label>本场品牌
-              <select id="switch-brand-select" title="整场只卖这个牌子时选它：加载该品牌的商品词表。混卖别家货时选「不限」。">
-                <option value="">不限（默认）</option>
+            <label data-en="Brand ">本场品牌
+              <select id="switch-brand-select" title="整场只卖这个牌子时选它：加载该品牌的商品词表。混卖别家货时选「不限」。"
+                      data-en-title="If this stream sells only one brand, choose it to load that brand’s product glossary. For mixed brands, choose Any.">
+                <option value="" data-en="Any (default)">不限（默认）</option>
               </select>
             </label>
           </div>
-          <p class="switch-carry">沿用：主播语言 <span id="switch-source-echo"></span></p>
+          <p class="switch-carry" data-en="Keeps spoken language: ">沿用：主播语言 <span id="switch-source-echo"></span></p>
           <p id="switch-error" class="switch-error hidden"></p>
-          <button id="switch-confirm" class="btn primary" type="button" disabled>确认换主播</button>
-          <p id="switch-hint" class="switch-hint">切换期间两个主播都没有字幕，直到新主播出现第一句。</p>
+          <button id="switch-confirm" class="btn primary" type="button" disabled data-en="Switch Streamer">确认换主播</button>
+          <p id="switch-hint" class="switch-hint"
+             data-en="No captions from either streamer until the new streamer starts speaking.">切换期间两个主播都没有字幕，直到新主播出现第一句。</p>
         </div>
       </div>
-      <button id="stop-btn" class="btn destructive hidden" title="停止当前直播间">停止</button>
+      <button id="stop-btn" class="btn destructive hidden" title="停止当前直播间" data-en-title="Stop monitoring this stream" data-en="Stop">停止</button>
     </div>
   </header>
 
   <div id="migrate-bar" class="update-bar hidden">
-    <span id="migrate-text">词表里有旧模板遗留的主播专属条目</span>
-    <button id="migrate-btn" class="btn primary">迁移旧词表</button>
+    <span id="migrate-text" data-en="The glossary has streamer-specific entries left over from an old template.">词表里有旧模板遗留的主播专属条目</span>
+    <button id="migrate-btn" class="btn primary" data-en="Migrate Old Entries">迁移旧词表</button>
   </div>
   <div id="update-bar" class="update-bar hidden">
-    <span id="update-text">发现新版本</span>
-    <button id="update-btn" class="btn primary">一键更新</button>
-    <a id="update-link" href="#" target="_blank" rel="noopener">更新说明</a>
+    <span id="update-text" data-en="A new version is available">发现新版本</span>
+    <button id="update-btn" class="btn primary" data-en="Update Now">一键更新</button>
+    <a id="update-link" href="#" target="_blank" rel="noopener" data-en="Release Notes">更新说明</a>
   </div>
 
   <div id="status-banner" class="status-banner hidden"></div>
@@ -215,7 +227,7 @@
          更新器曾经把自己锁死过——修好它的代码只能靠更新送达。 -->
     <div id="fix-command" class="fix-command hidden">
       <code id="fix-command-text" translate="no"></code>
-      <button id="fix-command-copy" class="btn small">复制</button>
+      <button id="fix-command-copy" class="btn small" data-en="Copy">复制</button>
     </div>
 
   <!-- 识别落后/降级：中控必须看得见「检测正在落后多少秒」 -->
@@ -225,9 +237,9 @@
   <!-- 违禁词警报：本工具的核心产出，不自动消失，只能手动清空 -->
   <section id="alert-panel" class="alert-panel hidden">
     <div class="alert-bar">
-      <span class="alert-title"><svg class="i" aria-hidden="true"><use href="#i-alert-fill"/></svg>疑似违禁词
+      <span class="alert-title" data-en="Possible Banned Terms "><svg class="i" aria-hidden="true"><use href="#i-alert-fill"/></svg>疑似违禁词
         <span id="alert-count">0</span><span id="alert-note" class="alert-note hidden"></span></span>
-      <button id="clear-alerts" class="btn small">清空警报</button>
+      <button id="clear-alerts" class="btn small" data-en="Clear Alerts">清空警报</button>
     </div>
     <div id="alert-list" class="alert-list"></div>
   </section>
@@ -251,11 +263,11 @@
           <path d="M6 6A11.31 11.31 0 0 0 6 22"/>
           <path d="M22 6A11.31 11.31 0 0 1 22 22"/>
         </svg>
-        <h2>输入 TikTok 直播间地址</h2>
-        <p class="sp-sub">
+        <h2 data-en="Enter a TikTok Live Link">输入 TikTok 直播间地址</h2>
+        <p class="sp-sub" data-en="Paste a live link, or just the streamer’s username (such as @somebody) ">
           粘贴直播间链接，或只输入主播用户名（如 @somebody）
           <button id="input-help-btn" class="help-btn" type="button" aria-expanded="false"
-                  aria-controls="input-help" title="输入说明">
+                  aria-controls="input-help" title="输入说明" data-en-title="About links">
             <!-- SF Symbols「info.circle」，跟设置行图标同一套画法（描边、currentColor） -->
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="8" cy="8" r="6.3"/>
@@ -268,54 +280,57 @@
 
       <div class="sp-input-row">
         <input id="room-input" class="field" type="text" spellcheck="false"
-               placeholder="https://www.tiktok.com/@主播用户名/live">
-        <button id="start-btn" class="btn primary large">开始翻译</button>
+               placeholder="https://www.tiktok.com/@主播用户名/live"
+               data-en-placeholder="https://www.tiktok.com/@username/live">
+        <button id="start-btn" class="btn primary large" data-en="Start">开始翻译</button>
       </div>
 
       <!-- 原来的两段灰字，收进「?」：只有少数场景用得上，不该常驻首屏 -->
       <div id="input-help" class="sp-help hidden">
-        <p>也可以直接粘贴 .flv / .m3u8 流地址。</p>
-        <p>个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源。</p>
-        <p>首次识别需下载模型，进度会显示在页面上。</p>
+        <p data-en="You can also paste a .flv or .m3u8 stream URL.">也可以直接粘贴 .flv / .m3u8 流地址。</p>
+        <p data-en-html="For some live streams, TikTok doesn’t provide a stream URL to the app. In that case, <b>paste the live link and the .flv URL from your browser together</b>, separated by a space. The link is used for comments and glossaries, and the .flv URL for audio.">个别直播间 TikTok 不把流地址给程序。这时把<b>直播间链接和浏览器里的 .flv 地址一起粘进来</b>（中间空格隔开）：前者管弹幕和词表，后者作音频源。</p>
+        <p data-en="The speech model downloads the first time you start. Progress appears here.">首次识别需下载模型，进度会显示在页面上。</p>
       </div>
 
       <div class="sp-options">
-        <label class="sp-opt">主播语言
+        <label class="sp-opt" data-en="Spoken language">主播语言
           <!-- 西语+英语是默认：这个产品面向西语带货直播，主播常夹英语，不限制的
                逐段自动检测实测会让两成以上的段语言标签乱跳（服务端 resolve_source
                同一默认）。列表形式＝自动检测但只在列表里的语言中选 -->
           <select id="source-lang">
-            <option value="es,en">西班牙语 + 英语（默认）</option>
-            <option value="es">西班牙语（只有西语）</option>
-            <option value="auto">自动检测</option>
-            <option value="en">英语</option>
-            <option value="ja">日语</option>
-            <option value="ko">韩语</option>
-            <option value="pt">葡萄牙语</option>
-            <option value="fr">法语</option>
-            <option value="de">德语</option>
-            <option value="ru">俄语</option>
-            <option value="ar">阿拉伯语</option>
-            <option value="th">泰语</option>
-            <option value="vi">越南语</option>
-            <option value="id">印尼语</option>
-            <option value="zh">中文</option>
+            <option value="es,en" data-en="Spanish + English (default)">西班牙语 + 英语（默认）</option>
+            <option value="es" data-en="Spanish Only">西班牙语（只有西语）</option>
+            <option value="auto" data-en="Detect Automatically">自动检测</option>
+            <option value="en" data-en="English">英语</option>
+            <option value="ja" data-en="Japanese">日语</option>
+            <option value="ko" data-en="Korean">韩语</option>
+            <option value="pt" data-en="Portuguese">葡萄牙语</option>
+            <option value="fr" data-en="French">法语</option>
+            <option value="de" data-en="German">德语</option>
+            <option value="ru" data-en="Russian">俄语</option>
+            <option value="ar" data-en="Arabic">阿拉伯语</option>
+            <option value="th" data-en="Thai">泰语</option>
+            <option value="vi" data-en="Vietnamese">越南语</option>
+            <option value="id" data-en="Indonesian">印尼语</option>
+            <option value="zh" data-en="Chinese">中文</option>
           </select>
         </label>
         <span class="sp-opt">
-          <label for="brand-select">本场品牌</label>
+          <label for="brand-select" data-en="Brand">本场品牌</label>
           <!-- 品牌词表：整场只卖这一个牌子时加载对应的商品词表（识别热词/
                翻译提示/译文兜底三处生效，见 app/glossary.py）；混卖别家货时
                选「不限」，行为与不选这个下拉时完全一样。按主播记住上次的
                选择，见 web/brand.js。选项由 brands/ 文件夹里的文件动态生成
                （见 config.brand_options），这里只保留固定的「不限」一项；
                下拉获得焦点时会发 refresh_brands 重新扫一遍，不用重启程序 -->
-          <select id="brand-select" title="整场只卖这个牌子时选它：加载该品牌的商品词表。混卖别家货时选「不限」。">
-            <option value="">不限（默认）</option>
+          <select id="brand-select" title="整场只卖这个牌子时选它：加载该品牌的商品词表。混卖别家货时选「不限」。"
+                  data-en-title="If this stream sells only one brand, choose it to load that brand’s product glossary. For mixed brands, choose Any.">
+            <option value="" data-en="Any (default)">不限（默认）</option>
           </select>
           <!-- 打开词表文件夹：从大按钮降为下拉旁的图标按钮（访达文件夹图标） -->
           <button id="brands-dir-btn" class="icon-btn" type="button"
-                  title="打开 brands 文件夹，把品牌词表文件放进去" aria-label="打开词表文件夹">
+                  title="打开 brands 文件夹，把品牌词表文件放进去" aria-label="打开词表文件夹"
+                  data-en-title="Open the brands folder to add brand glossary files" data-en-aria-label="Open Brands Folder">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"
                  stroke-linejoin="round" aria-hidden="true">
               <path d="M2 4.6A1.6 1.6 0 0 1 3.6 3h2.6l1.5 1.6h4.7A1.6 1.6 0 0 1 14 6.2v5.2a1.6 1.6 0 0 1-1.6 1.6H3.6A1.6 1.6 0 0 1 2 11.4Z"/>
@@ -325,7 +340,8 @@
         <!-- 空态：说清楚这个下拉是干什么的（以前只写在下拉的悬停提示里，没做过的人
              看不到），并直接给一个可点的入口，不用先找到旁边那个图标按钮
              （pm.md #6）。文字按钮复用 #brands-dir-btn 同一个 open_brands_dir 消息 -->
-        <span id="brand-empty-hint" class="brand-hint hidden">
+        <span id="brand-empty-hint" class="brand-hint hidden"
+              data-en-html='If a stream sells only one brand, add that brand’s product glossary to translate product names more accurately. <button id="brand-hint-open" class="brand-hint-link" type="button">Open Brands Folder</button> · Then click the menu. No restart needed.'>
           整场只卖一个牌子时，放入它的商品词表可提高商品名翻译准确率。
           <button id="brand-hint-open" class="brand-hint-link" type="button">打开 brands 文件夹</button>
           · 放好后点一下下拉即可，无需重启
@@ -336,8 +352,9 @@
            空的时候整块隐藏，不在首页留一块空白。 -->
       <div id="recent-rooms" class="recent-rooms hidden">
         <div class="recent-head">
-          <span class="recent-label">最近的直播间</span>
-          <button id="recent-clear" class="recent-clear" title="清除最近直播间记录" type="button">清除记录</button>
+          <span class="recent-label" data-en="Recent Streams">最近的直播间</span>
+          <button id="recent-clear" class="recent-clear" title="清除最近直播间记录" type="button"
+                  data-en-title="Clear recent streams" data-en="Clear History">清除记录</button>
         </div>
         <div id="recent-list" class="recent-list"></div>
       </div>
@@ -345,8 +362,8 @@
       <!-- 设置：macOS 系统设置 / iOS 设置式的 inset grouped list。每行左图标、
            中名称、右一句状态摘要 + 箭头；点行展开原有内容。行本身是 <button>，
            键盘 Tab/空格/回车天然可用；aria-expanded 驱动箭头旋转。 -->
-      <section class="settings" aria-label="设置">
-        <h3 class="group-title">设置</h3>
+      <section class="settings" aria-label="设置" data-en-aria-label="Settings">
+        <h3 class="group-title" data-en="Settings">设置</h3>
         <div class="group">
 
           <!-- 启动自检：把「功能悄悄坏了」变成看得见的红条。
@@ -363,8 +380,8 @@
                   <path d="M8 1.8 13 3.6v4c0 3.2-2.1 5.6-5 6.6-2.9-1-5-3.4-5-6.6v-4Z" fill="currentColor"/>
                 </svg>
               </span>
-              <span class="set-name">启动自检</span>
-              <span id="sc-summary" class="set-value">自检中…</span>
+              <span class="set-name" data-en="Startup Check">启动自检</span>
+              <span id="sc-summary" class="set-value" data-en="Checking…">自检中…</span>
               <span id="sc-toggle" class="set-chevron" aria-hidden="true"></span>
             </button>
             <ul id="sc-list" class="sc-list set-body hidden"></ul>
@@ -384,27 +401,28 @@
                   <path d="M2 8h12"/>
                 </svg>
               </span>
-              <span class="set-name">翻译引擎</span>
+              <span class="set-name" data-en="Translation Engine">翻译引擎</span>
               <span id="engine-active" class="set-value"></span>
               <span class="set-chevron" aria-hidden="true"></span>
             </button>
             <div id="engine-body" class="set-body hidden">
               <div class="engine-row">
                 <select id="engine-select">
-                  <option value="auto">自动（优先本地，离线免费）</option>
-                  <option value="hymt2">本地 Hy-MT2 1.8B</option>
-                  <option value="hymt2-7b">本地 Hy-MT2 7B（更准，更吃内存）</option>
+                  <option value="auto" data-en="Automatic (local first, free and offline)">自动（优先本地，离线免费）</option>
+                  <option value="hymt2" data-en="Local Hy-MT2 1.8B">本地 Hy-MT2 1.8B</option>
+                  <option value="hymt2-7b" data-en="Local Hy-MT2 7B (more accurate, uses more memory)">本地 Hy-MT2 7B（更准，更吃内存）</option>
                   <option value="deepl">DeepL API</option>
                   <option value="claude">Claude API</option>
-                  <option value="openai">OpenAI 兼容 API</option>
-                  <option value="google">Google 免费接口</option>
-                  <option value="none">不翻译，只显示原文</option>
+                  <option value="openai" data-en="OpenAI-Compatible API">OpenAI 兼容 API</option>
+                  <option value="google" data-en="Google (free)">Google 免费接口</option>
+                  <option value="none" data-en="Don’t Translate (show original)">不翻译，只显示原文</option>
                 </select>
                 <input id="engine-key" type="password" class="hidden"
-                       spellcheck="false" autocomplete="off" placeholder="粘贴 API 密钥">
-                <button id="engine-save" class="btn">保存</button>
+                       spellcheck="false" autocomplete="off" placeholder="粘贴 API 密钥" data-en-placeholder="Paste API key">
+                <button id="engine-save" class="btn" data-en="Save">保存</button>
               </div>
-              <div id="engine-note" class="engine-note">
+              <div id="engine-note" class="engine-note"
+                   data-en="Uses a local model: fully offline, unlimited, and captions never leave this computer.">
                 默认用本地模型：完全离线、不限量、字幕不出本机。
               </div>
             </div>
@@ -422,21 +440,22 @@
                   <path d="M8 14.4c.83 0 1.5-.67 1.5-1.5h-3c0 .83.67 1.5 1.5 1.5Zm5-3.9V7.8c0-2.4-1.28-4.4-3.5-4.94V2.3a1.5 1.5 0 0 0-3 0v.56C4.28 3.4 3 5.4 3 7.8v2.7l-1.3 1.6a.6.6 0 0 0 .43 1h11.74a.6.6 0 0 0 .43-1L13 10.5Z"/>
                 </svg>
               </span>
-              <span class="set-name">违禁词报警</span>
-              <span class="set-value"><span id="watch-mode">关闭</span> · <span id="watch-state" class="watch-state">检查中…</span></span>
+              <span class="set-name" data-en="Banned-Term Alerts">违禁词报警</span>
+              <span class="set-value"><span id="watch-mode" data-en="Off">关闭</span> · <span id="watch-state" class="watch-state" data-en="Checking…">检查中…</span></span>
               <span class="set-chevron" aria-hidden="true"></span>
             </button>
             <div id="watch-body" class="set-body hidden">
               <!-- 违禁词警示模式：默认关闭。关闭时命中仍会记入审计（不会漏），
                    只是不弹窗、不通知——开不开只影响「要不要报警」，不影响「要不要记」 -->
               <label class="watch-toggle-row">
-                <span>命中时弹出报警</span>
+                <span data-en="Show alert on match">命中时弹出报警</span>
                 <!-- 真复选框留着（id 与 change 事件不变），视觉上藏起来，由后面的 .switch 画成开关 -->
                 <input type="checkbox" id="alerts-toggle" class="toggle-input">
                 <span class="switch" aria-hidden="true"></span>
               </label>
               <p id="watch-desc" class="watch-desc"></p>
-              <p class="watch-how">
+              <p class="watch-how"
+                 data-en-html="Edit <code>banned_terms.txt</code> in the app folder, one word or phrase per line. Save, then click Stop and Start to apply. Matches show a red alert at the top of the window and are written to the audit log.">
                 编辑项目文件夹里的 <code>banned_terms.txt</code>，一行一个词或短语，
                 保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色警报并写入审计日志。
               </p>
@@ -455,15 +474,16 @@
                   <path d="M2 4.6A1.6 1.6 0 0 1 3.6 3h8.8A1.6 1.6 0 0 1 14 4.6v6.8a1.6 1.6 0 0 1-1.6 1.6H3.6A1.6 1.6 0 0 1 2 11.4Zm2 5.4a.9.9 0 1 0 0 1.8.9.9 0 0 0 0-1.8Z"/>
                 </svg>
               </span>
-              <span class="set-name">磁盘空间</span>
+              <span class="set-name" data-en="Storage">磁盘空间</span>
               <span id="disk-summary" class="set-value"></span>
               <span id="disk-toggle" class="set-chevron" aria-hidden="true"></span>
             </button>
             <div id="disk-body" class="disk-body set-body hidden">
               <div id="disk-list" class="disk-list"></div>
               <div class="disk-foot">
-                <span id="disk-hint" class="disk-hint">标「正在用」的删不掉；标「本程序」的删了会在下次需要时自动重下；标「非本程序」的可能是别的工具在用，删前自己确认。</span>
-                <button id="disk-delete" class="btn small danger" disabled>删除所选</button>
+                <span id="disk-hint" class="disk-hint"
+                      data-en="Items marked In use can’t be deleted. Items marked This app download again when needed. Items marked Not this app may be used by other tools, so check before deleting.">标「正在用」的删不掉；标「本程序」的删了会在下次需要时自动重下；标「非本程序」的可能是别的工具在用，删前自己确认。</span>
+                <button id="disk-delete" class="btn small danger" disabled data-en="Delete Selected">删除所选</button>
               </div>
             </div>
           </div>
@@ -515,23 +535,24 @@
           <path d="M4.34 4.34l2.27 2.27" opacity=".85"/>
         </g>
       </svg>
-      <span id="connect-hint-text">正在连接…</span>
+      <span id="connect-hint-text" data-en="Connecting…">正在连接…</span>
     </div>
     <!-- 停止后如果历史里还留着上一场的字幕，加一个和分组标题同款的小标题，
          跟设置面板一样宽（body.home 下 .cap 收到 600px，见 style.css），页面上
          不再出现「面板 600 / 字幕 760」两条左边线（designer.md #6）。
          显隐由 app.js syncCaptionDependentUi 按「是否在首页 + 是否还有字幕」决定 -->
-    <h3 id="prev-caps-title" class="group-title prev-caps-title hidden">上一场字幕</h3>
+    <h3 id="prev-caps-title" class="group-title prev-caps-title hidden" data-en="Previous Session">上一场字幕</h3>
   </main>
 
   <!-- 观众弹幕：程序自己通过 TikTokLive 抓取评论流；只翻译、只显示，不进报警链路 -->
   <aside id="comment-panel" class="comment-panel hidden">
     <div class="comment-bar">
-      <span class="comment-title"><svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>观众弹幕 <span id="comment-count">0</span>
-        <span id="comment-source" class="cmt-source">未连接</span></span>
+      <span class="comment-title" data-en="Comments "><svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>观众弹幕 <span id="comment-count">0</span>
+        <span id="comment-source" class="cmt-source" data-en="Not connected">未连接</span></span>
       <span class="comment-actions">
-        <button id="toggle-comments" class="btn small" title="收起弹幕列，字幕独占整行">收起</button>
-        <button id="clear-comments" class="btn small">清空弹幕</button>
+        <button id="toggle-comments" class="btn small" title="收起弹幕列，字幕独占整行"
+                data-en-title="Hide comments to widen captions" data-en="Hide">收起</button>
+        <button id="clear-comments" class="btn small" data-en="Clear">清空弹幕</button>
       </span>
     </div>
     <!-- 空态要说清楚是「没人发」还是「评论流没连上」，两者对中控意义完全不同 -->
@@ -539,14 +560,15 @@
     <div id="comment-list" class="comment-list"></div>
   </aside>
   <!-- 弹幕列收起后的入口：带条数，新弹幕来了也能看出来 -->
-  <button id="comment-fab" class="comment-fab hidden" type="button" title="展开观众弹幕">
+  <button id="comment-fab" class="comment-fab hidden" type="button" title="展开观众弹幕"
+          data-en-title="Show comments" data-en="Comments ">
     <svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>弹幕 <span id="comment-fab-count">0</span>
   </button>
   </div>
 
   <!-- 回到最新。自动跟随依赖几何量判断，而页面不可渲染时那些值不可信；
        这个按钮是用户随时可用的直接出口，不依赖任何启发式判断。 -->
-  <button id="jump-latest" class="jump-latest hidden" type="button">
+  <button id="jump-latest" class="jump-latest hidden" type="button" data-en="Jump to Latest">
     <svg class="i" aria-hidden="true"><use href="#i-arrow-down"/></svg>回到最新
   </button>
 
@@ -559,7 +581,7 @@
 
   <div id="stats-line" class="stats-line hidden"></div>
 
-  <div class="copyright">Copyright &copy; 2026 Elon Mei (EM917). All rights reserved. &middot; <a href="https://github.com/EM917/tiktok-live-translator" target="_blank" rel="noopener">MIT License</a><span id="app-version" title="点击检查更新"></span></div>
+  <div class="copyright">Copyright &copy; 2026 Elon Mei (EM917). All rights reserved. &middot; <a href="https://github.com/EM917/tiktok-live-translator" target="_blank" rel="noopener">MIT License</a><span id="app-version" title="点击检查更新" data-en-title="Click to check for updates"></span></div>
 
   <script>
     // 有人会解压后直接双击本文件——file:// 下 /static/ 绝对路径全部失效

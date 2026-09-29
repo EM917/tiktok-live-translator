@@ -3,19 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>手机同看 · TikTok 直播同传</title>
+<title data-en="Phone Viewing · TikTok Live Translator">手机同看 · TikTok 直播同传</title>
 <link rel="icon" type="image/png" href="/v/icon.png">
 <link rel="stylesheet" href="/v/viewer.css?v=6">
+<!-- i18n: done -->
 </head>
 <body>
   <!-- 顶栏：连接点 + 直播状态 + 报警计数，sticky 在最上面 -->
   <header id="top-bar" class="top-bar">
     <span class="status-pill">
       <span id="conn-dot" class="dot connecting"></span>
-      <span id="conn-text" class="conn-text">连接中…</span>
+      <span id="conn-text" class="conn-text" data-en="Connecting…">连接中…</span>
     </span>
     <span class="sep">·</span>
-    <span id="stream-text" class="stream-text">状态未知</span>
+    <span id="stream-text" class="stream-text" data-en="Status unknown">状态未知</span>
     <span id="alert-badge" class="alert-badge hidden">
       <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -32,7 +33,7 @@
 
   <!-- 演示数据提示：见过带 demo 的字幕就常驻，直到状态变回直播中/连接中，或重连后
        回放里不再带 demo（amendments.md A4） -->
-  <div id="demo-banner" class="demo-banner hidden">演示数据，不是真实直播</div>
+  <div id="demo-banner" class="demo-banner hidden" data-en="Demo data, not a real stream">演示数据，不是真实直播</div>
 
   <!-- 持续提示（磁盘空间不足之类）：可折叠按 level 着色，无则不占位 -->
   <div id="incident-list" class="incident-list"></div>
@@ -49,16 +50,18 @@
           <path d="M8 6.6v3"/>
           <circle cx="8" cy="11.4" r="0.6" fill="currentColor" stroke="none"/>
         </svg>
-        <span>疑似违禁词</span>
+        <span data-en="Possible Banned Terms">疑似违禁词</span>
       </div>
-      <button id="alert-clear-seen" class="alert-clear-seen" type="button">清除已看过的报警</button>
+      <button id="alert-clear-seen" class="alert-clear-seen" type="button" data-en="Clear Seen">清除已看过的报警</button>
     </div>
-    <div class="alert-local-note">只在这台手机上隐藏，中控电脑和记录不受影响</div>
+    <div class="alert-local-note"
+         data-en="Hides alerts on this phone only. The operator’s computer and records aren’t affected.">只在这台手机上隐藏，中控电脑和记录不受影响</div>
     <div id="alert-list" class="alert-list"></div>
   </section>
 
   <!-- 字幕：西语原文 + 中文译文，时间顺序，自动跟到底。每条带「重译」按钮 -->
-  <div class="retranslate-hint">重译会用中控电脑上的大模型，稍等几秒</div>
+  <div class="retranslate-hint"
+       data-en="Retranslation uses the larger model on the operator’s computer and takes a few seconds.">重译会用中控电脑上的大模型，稍等几秒</div>
   <section id="caption-section" class="caption-section">
     <div id="caption-list" class="caption-list"></div>
   </section>
@@ -68,7 +71,7 @@
       <path d="M8 2.6v8.6"/>
       <path d="M4.4 8 8 11.6 11.6 8"/>
     </svg>
-    <span>最新</span>
+    <span data-en="Latest">最新</span>
   </button>
 
   <!-- 观众弹幕：默认折叠，只看最近 30 条；只读，不进报警链路 -->
@@ -78,7 +81,7 @@
            stroke-linejoin="round" aria-hidden="true">
         <path d="M2.6 4.6A1.6 1.6 0 0 1 4.2 3h7.6A1.6 1.6 0 0 1 13.4 4.6v4.6a1.6 1.6 0 0 1-1.6 1.6H6.6L4 13.2v-2.4h-.2a1.6 1.6 0 0 1-1.6-1.6Z"/>
       </svg>
-      <span>弹幕</span>
+      <span data-en="Comments">弹幕</span>
       <span id="comment-count">0</span>
       <span class="cmt-source-label"></span>
     </button>
@@ -87,7 +90,7 @@
 
   <!-- 底栏：只看模式提示 + 界面语言切换 + 提示音开关 -->
   <footer id="bottom-bar" class="bottom-bar">
-    <span class="ro-note">只看模式 · 不能操作</span>
+    <span class="ro-note" data-en="View only">只看模式 · 不能操作</span>
     <!-- 界面语言切换：只有服务端写了 data-i18n="on"（发布闸开着）时 viewer.js 才去掉 hidden。
          按钮上写另一种语言的自称，由 viewer.js 填；语言名永不翻译 -->
     <button id="lang-toggle" class="ring-toggle hidden" type="button"
@@ -100,10 +103,11 @@
         <path d="M4 11V7.4a4 4 0 0 1 8 0V11l1.2 1.3H2.8Z"/>
         <path d="M6.6 14h2.8"/>
       </svg>
-      <span>提示音</span>
+      <span data-en="Sound">提示音</span>
     </button>
   </footer>
-  <p class="ring-note">页面切到后台或锁屏后，手机可能停掉提示音。</p>
+  <p class="ring-note"
+     data-en="Sounds may stop when this page is in the background or the phone is locked.">页面切到后台或锁屏后，手机可能停掉提示音。</p>
 
   <script src="/v/viewer.js?v=9"></script>
 </body>
