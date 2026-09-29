@@ -4,8 +4,9 @@
 原生层（PyObjC / pythonnet / ctypes / osascript / PowerShell）收到 str 子类的行为没验证过，所以
 这里每一处都断言交给系统的是普通 str（`type(x) is str`）。中文模式下与改造前逐字节相同。
 
-这批提交里生产文字还是普通中文 str（M11 才把窗口标题、关窗框、通知写成 L()），英文用例里的
-双语对由测试临时换进去，验证的是渲染与转义这套机制本身。
+机制部分的用例把双语对临时换进去（替身表、带引号和撇号的刁钻英文），验证的是渲染与转义
+本身；M11 之后生产里的程序名、窗口标题、关窗框、通知都已是 L()，另有用例直接钉生产文字
+（中文与改造前逐字节相同，英文照 docs/i18n-style.md 与 tests/i18n_golden.json）。
 """
 import ast
 import base64
@@ -74,18 +75,42 @@ def _create_window(title, url, localization=None):
     pass
 
 
-@pytest.mark.parametrize("lang", ["zh", "en", None])
 @pytest.mark.parametrize("gate", ["closed", "zh", "en"])
-def test_the_second_window_keeps_pywebview_buttons_until_the_table_has_ok(gate, lang):
-    """复审（spec-invariants）：第二个实例的窗口今天没有 localization，JS confirm() 的按钮是
-    pywebview 自带的「OK / Cancel」。关窗表里还没有 global.ok 时，开闸（Z1）也不许传——
-    否则老装机上 Cancel 变「取消」，这处中文可见的变化就落在了只改一行的 Z1 上。"""
-    assert "global.ok" not in window_close.CLOSE_LOCALIZATION
+def test_the_second_window_gets_both_chinese_buttons_whatever_the_gate(gate):
+    """M11 给关窗表补上了 global.ok（spec §8.2 标明的中文可见修正）：第二个实例的窗口从此传
+    localization，JS confirm() 的两个按钮从 pywebview 自带的「OK / Cancel」一起换成
+    「好 / 取消」。这处变化落在 M11，与闸无关——开闸（Z1）时中文界面上什么都不再变。
+    （M11 之前的样子，即表里没有 global.ok 时一个键都不传，由下一个用例用替身表钉着。）"""
+    assert window_close.CLOSE_LOCALIZATION["global.ok"] == "好"
     if gate == "closed":
-        assert window_close.confirm_localization_kwargs(_create_window, lang) == {}
+        loc = window_close.confirm_localization_kwargs(_create_window, "zh")["localization"]
     else:
         with i18n.use(gate):                 # 闸开着（一次性覆盖同样让 enabled() 为真）
-            assert window_close.confirm_localization_kwargs(_create_window, lang) == {}
+            loc = window_close.confirm_localization_kwargs(_create_window, "zh")["localization"]
+    assert (loc["global.ok"], loc["global.cancel"]) == ("好", "取消") and _plain(loc.values())
+    en = window_close.confirm_localization_kwargs(_create_window, "en")["localization"]
+    assert (en["global.ok"], en["global.cancel"]) == ("OK", "Cancel") and _plain(en.values())
+
+
+@pytest.mark.parametrize("lang", ["zh", "en", None])
+def test_without_ok_in_the_table_the_second_window_keeps_pywebview_buttons(monkeypatch, lang):
+    """表里没有 global.ok 时一个键都不传：只换掉 Cancel 会变成「OK / 取消」混排。"""
+    table = {k: v for k, v in window_close.CLOSE_LOCALIZATION.items() if k != "global.ok"}
+    monkeypatch.setattr(window_close, "CLOSE_LOCALIZATION", table)
+    assert window_close.confirm_localization_kwargs(_create_window, lang) == {}
+    with i18n.use("zh"):
+        assert window_close.confirm_localization_kwargs(_create_window, lang) == {}
+
+
+def test_the_real_close_dialog_reads_in_both_languages():
+    """M11：生产里的关窗表就是双语对（上面几个用例的替身表与它的英文一致）。"""
+    zh = window_close.close_localization("zh")
+    assert zh == {"global.quitConfirmation": "正在监听直播，关闭窗口会停止违禁词监听。确定关闭？",
+                  "global.quit": "关闭", "global.cancel": "取消", "global.ok": "好"}
+    en = window_close.close_localization("en")
+    assert en == dict({k: v.en for k, v in BILINGUAL_CLOSE.items()}, **{"global.ok": "OK"})
+    assert _plain(zh.values()) and _plain(en.values())
+    assert not [v for v in en.values() if CJK.search(v)]
 
 
 def test_the_second_window_gets_both_buttons_once_the_table_has_ok(monkeypatch):
@@ -137,6 +162,36 @@ def test_the_title_follows_the_page_language_and_keeps_the_unseen_count(bilingua
     assert window.titles[-1] == "TikTok Live Translator"
     assert attention.set_lang("zh") is True and window.titles[-1] == "TikTok 直播同传"
     assert attention.set_lang("fr") is False            # 只认 en，其余一律中文
+    assert _plain(window.titles)
+
+
+def _golden():
+    import json
+    return json.loads((REPO / "tests" / "i18n_golden.json").read_text(encoding="utf-8"))
+
+
+def test_the_real_app_name_and_window_title_match_the_golden_sentences():
+    """spec §8.1：Python 的模板与 web/alerts.js 的拼接中文键不同、G3 聚合不到，改由同一份金句
+    两边各钉一次（node 那边是 tests/alerts.en.test.mjs）。"""
+    golden = _golden()
+    assert i18n.APP_NAME == "TikTok 直播同传"
+    assert i18n.text(i18n.APP_NAME, "en") == golden["app_name_en"]
+    title = window_attention.attention_title(2)
+    assert i18n.text(title, "zh") == "(2) 疑似违禁词 · TikTok 直播同传"
+    assert i18n.text(title, "en") == golden["window_title_2_en"]
+    assert window_attention.attention_title(0) is i18n.APP_NAME
+    assert window_attention.DEFAULT_TITLE is i18n.APP_NAME
+
+
+def test_the_real_title_follows_the_page_language():
+    window = FakeWindow()
+    attention = window_attention.WindowAttention(window)
+    assert attention.set_attention(3, "p", 1) is True
+    assert attention.set_lang("en") is True
+    assert attention.set_attention(0, "p", 2) is True
+    assert window.titles == ["(3) 疑似违禁词 · TikTok 直播同传",
+                             "(3) Possible Banned Terms · TikTok Live Translator",
+                             "TikTok Live Translator"]
     assert _plain(window.titles)
 
 
@@ -309,6 +364,60 @@ def test_windows_toasts_escape_xml_and_double_every_single_quote(bilingual_notic
     assert "<text>TikTok Live Translator</text>" in xml
     for quote in ("'", "\u2018", "\u2019", "\u201a", "\u201b"):
         assert TRICKY.en.count(quote) and script.count(quote * 2) >= TRICKY.en.count(quote)
+
+
+def test_the_real_notification_reads_in_both_languages():
+    assert alert_notify.command("darwin", lang="en") == [
+        "osascript", "-e", 'display notification "New banned-term alert. Open the window to '
+                           'review it." with title "TikTok Live Translator"']
+    assert alert_notify.command("linux", which=_which, lang="en") == [
+        "/usr/bin/notify-send", "TikTok Live Translator",
+        "New banned-term alert. Open the window to review it."]
+    script = base64.b64decode(alert_notify.command("win32", lang="en")[-1]).decode("utf-16-le")
+    assert ("<text>TikTok Live Translator</text><text>New banned-term alert. Open the window to "
+            "review it.</text>") in script
+    assert not CJK.search(script)
+    # 中文：与改造前逐字节相同（上面 test_chinese_notifications_are_byte_identical_to_before）
+    assert alert_notify.command("linux", which=_which) == [
+        "/usr/bin/notify-send", "TikTok 直播同传", "有新的疑似违禁词报警，请查看窗口"]
+
+
+def test_the_menu_bar_fallback_name_is_rendered_as_plain_str(monkeypatch, tmp_path):
+    """没进 .app 的兜底（app/macbrand.py）：CFBundleName 交给 PyObjC 的是普通 str，按启动时的语言。"""
+    import sys
+    import types
+
+    from app import macbrand
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    info = {}
+
+    class FakeBundle:
+        @staticmethod
+        def mainBundle():
+            return FakeBundle()
+
+        def bundlePath(self):
+            return "/usr/local/bin"
+
+        def infoDictionary(self):
+            return info
+
+    appkit = types.ModuleType("AppKit")
+    appkit.NSApplication = object
+    appkit.NSImage = object
+    foundation = types.ModuleType("Foundation")
+    foundation.NSBundle = FakeBundle
+    monkeypatch.setitem(sys.modules, "AppKit", appkit)
+    monkeypatch.setitem(sys.modules, "Foundation", foundation)
+    names = {}
+    for lang in ("zh", "en"):
+        with i18n.use(lang):
+            macbrand.brand_mac_app(tmp_path)            # 没有图标文件：设完名字就返回
+        names[lang] = (info["CFBundleName"], info["CFBundleDisplayName"])
+    assert names == {"zh": ("TikTok 直播同传", "TikTok 直播同传"),
+                     "en": ("TikTok Live Translator", "TikTok Live Translator")}
+    assert _plain(names["zh"] + names["en"])
 
 
 def test_linux_notifications_pass_the_text_unescaped(bilingual_notice):

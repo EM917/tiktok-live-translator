@@ -1,3 +1,4 @@
+# i18n: done
 """macOS 上给应用窗口一个 Dock 图标和菜单栏名字。
 
 只依赖标准库和随 pywebview 一起安装的 PyObjC；main.py 在起窗口前调用。
@@ -5,6 +6,7 @@
 import sys
 from pathlib import Path
 
+from . import i18n
 from .i18n import APP_NAME
 
 _KEEP = []   # 图像与通知观察者的引用：回调在启动完成后才触发，之前不能被回收
@@ -33,9 +35,10 @@ def brand_mac_app(root):
     except Exception:
         pass
     try:
+        # 按启动时的界面语言；交给 PyObjC 的是普通 str（它收到 str 子类的行为没验证过）
         info = NSBundle.mainBundle().infoDictionary()
-        info["CFBundleName"] = APP_NAME
-        info["CFBundleDisplayName"] = APP_NAME
+        info["CFBundleName"] = i18n.text(APP_NAME)
+        info["CFBundleDisplayName"] = i18n.text(APP_NAME)
     except Exception:
         pass
     image = None

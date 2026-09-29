@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# i18n: done
 """TikTok 直播同传 —— 本地实时字幕翻译工具入口。
 
 用法示例：
@@ -15,7 +16,7 @@ import webbrowser
 from pathlib import Path
 
 from app import i18n, native_dialog
-from app.i18n import APP_NAME
+from app.i18n import APP_NAME, L, of
 from app.macbundle import remember_launch_python
 from app.stdio import harden_stdio
 
@@ -38,7 +39,7 @@ ROOT = Path(__file__).resolve().parent
 i18n.boot(ROOT)
 
 if sys.version_info < (3, 9):
-    sys.exit("需要 Python 3.9 或更高版本（当前 {}.{}）".format(*sys.version_info[:2]))
+    sys.exit("需要 Python 3.9 或更高版本（当前 {}.{}）".format(*sys.version_info[:2]))  # i18n: terminal
 
 
 _CORE_DEPS = ["aiohttp>=3.9", "numpy>=1.24", "faster-whisper>=1.0",
@@ -202,8 +203,12 @@ def _first_run_dialog(text=None):
     if _FIRST_RUN_SHOWN:
         return
     _FIRST_RUN_SHOWN = True
-    _info_dialog(text or ("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n"
-                          "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。"))
+    _info_dialog(text or L("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n"
+                           "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。",
+                           "First launch: installing the app’s components (about 2–5 minutes, "
+                           "depending on your connection).\nThe caption window opens "
+                           "automatically when it’s done. Don’t open the app again in the "
+                           "meantime."))
 
 
 def ensure_env():
@@ -218,8 +223,11 @@ def ensure_env():
     if not in_project_venv:
         state, lock = _acquire_bootstrap_lock()
         if state == "busy":
-            _fail_alert("另一个实例仍在安装组件（已等待 15 分钟）。请等它装完后再打开本程序，"
-                        "避免两边同时安装把环境写坏。")
+            _fail_alert(L("另一个实例仍在安装组件（已等待 15 分钟）。请等它装完后再打开本程序，"
+                          "避免两边同时安装把环境写坏。",
+                          "Another copy of the app is still installing components (waited 15 "
+                          "minutes). Wait for it to finish, then open the app again, so the two "
+                          "don’t install at the same time and damage the setup."))
             return
     log_path = None
     target_version = None
@@ -292,10 +300,15 @@ def ensure_env():
             message = bootstrap.failure_text(exc, log_path, python_version=target_version,
                                              root=ROOT)
         except Exception:
-            message = ("自动安装未完成（{}）。\n"
-                       "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
-                       "（进阶：也可手动运行 setup.sh / setup.ps1，"
-                       "或 pip install -r requirements.txt）".format(exc))
+            message = (L("自动安装未完成（{}）。\n"
+                         "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
+                         "（进阶：也可手动运行 setup.sh / setup.ps1，"
+                         "或 pip install -r requirements.txt）",
+                         "Installation didn’t finish ({}).\n"
+                         "Check your network connection, then open the app again. Installation "
+                         "picks up where it left off.\n"
+                         "(Advanced: you can also run setup.sh / setup.ps1, or pip install -r "
+                         "requirements.txt.)").format(exc))
         _fail_alert(message)
     finally:
         if lock is not None:
@@ -321,8 +334,11 @@ try:
     from app.translator import TRANSLATOR_CHOICES, restore_engine  # noqa: E402
 except ImportError as exc:
     _forget_install_failure()
-    _fail_alert("组件尚未安装完成，程序暂时无法启动（{}）。\n"
-                "请检查网络后重新打开本程序，会自动继续安装。".format(exc))
+    _fail_alert(L("组件尚未安装完成，程序暂时无法启动（{}）。\n"
+                  "请检查网络后重新打开本程序，会自动继续安装。",
+                  "The app’s components aren’t fully installed yet, so it can’t start ({}).\n"
+                  "Check your network, then open the app again. Installation continues "
+                  "automatically.").format(exc))
     sys.exit(1)
 
 
@@ -333,69 +349,69 @@ def _load_settings():
 
 
 def parse_args():
-    p = argparse.ArgumentParser(
+    p = argparse.ArgumentParser(  # i18n: terminal
         prog="tiktok-live-translator",
         description="监听 TikTok 直播间，把主播的语音实时转写并翻译成字幕（全部本地运行，浏览器 UI 展示）。",
     )
-    p.add_argument("url", nargs="?", default=None,
+    p.add_argument("url", nargs="?", default=None,  # i18n: terminal
                    help="直播间地址（可选——不填则启动后在网页里输入），"
                         "例如 https://www.tiktok.com/@user/live；也可以直接给 .flv/.m3u8 流地址")
-    p.add_argument("--target", default=None,
+    p.add_argument("--target", default=None,  # i18n: terminal
                    help="目标语言代码，默认 zh-CN（简体中文）；界面里改过的话记住上次的选择")
-    p.add_argument("--source", default=None,
+    p.add_argument("--source", default=None,  # i18n: terminal
                    help="主播语言代码，例如 es/en/ja；也可以是逗号分隔的列表如 es,en"
                         "（自动检测但只在列表里选，最多 4 个，第一个是主语言，"
                         "检测到列表外的语言会强制重转一遍）。默认记住界面里上次的选择，"
                         "从未选过则是 es,en（想不限制地逐段自动检测请传 auto 或在界面里选）")
-    p.add_argument("--model", default=None,
+    p.add_argument("--model", default=None,  # i18n: terminal
                    help="whisper 模型：tiny/base/small/medium/large-v3/large-v3-turbo。"
                         "默认：mlx 后端用 large-v3（GPU 跑得动最准的），ct2 后端用 large-v3-turbo")
-    p.add_argument("--backend", default="auto", choices=["auto", "mlx", "ct2"],
+    p.add_argument("--backend", default="auto", choices=["auto", "mlx", "ct2"],  # i18n: terminal
                    help="识别后端：mlx（Apple GPU，Mac 推荐）/ ct2（faster-whisper，CPU/CUDA）。"
                         "auto=装了 mlx-whisper 就用 mlx")
-    p.add_argument("--beam", type=int, default=5,
+    p.add_argument("--beam", type=int, default=5,  # i18n: terminal
                    help="beam search 宽度，越大越准越慢，默认 5（设 1 即贪心解码）")
-    p.add_argument("--asr-temperature", type=float, default=None, dest="asr_temperature",
+    p.add_argument("--asr-temperature", type=float, default=None, dest="asr_temperature",  # i18n: terminal
                    help="识别解码温度，默认 0（只解码一次）。Whisper 默认会在质量不达标时"
                         "用更高温度重解码最多 6 次，音乐段上实测能让单次识别涨到 25 秒")
-    p.add_argument("--context", action="store_true",
+    p.add_argument("--context", action="store_true",  # i18n: terminal
                    help="开启滚动上下文（把上一段识别结果喂给下一段）。默认关闭："
                         "实测它会诱发复读死循环，反而大幅拉低召回率")
-    p.add_argument("--device", default="auto", help="识别设备，默认 auto（Mac 上即 CPU）")
-    p.add_argument("--compute-type", default="auto", dest="compute_type",
+    p.add_argument("--device", default="auto", help="识别设备，默认 auto（Mac 上即 CPU）")  # i18n: terminal
+    p.add_argument("--compute-type", default="auto", dest="compute_type",  # i18n: terminal
                    help="faster-whisper compute_type，默认 auto；CPU 上想更快可用 int8")
-    p.add_argument("--translator", default=None, choices=TRANSLATOR_CHOICES,
+    p.add_argument("--translator", default=None, choices=TRANSLATOR_CHOICES,  # i18n: terminal
                    help="翻译引擎：auto / hymt2 / hymt2-7b / gemma / deepl / google / "
                         "claude / openai / none。默认记住界面里上次的选择，"
                         "没有选过则 auto（本地有模型用本地，否则 google）")
-    p.add_argument("--port", type=int, default=8765, help="本地 UI 端口，默认 8765")
-    p.add_argument("--denoise", choices=["auto", "on", "off"], default="auto",
+    p.add_argument("--port", type=int, default=8765, help="本地 UI 端口，默认 8765")  # i18n: terminal
+    p.add_argument("--denoise", choices=["auto", "on", "off"], default="auto",  # i18n: terminal
                    help="RNNoise 人声降噪，抑制背景音乐/噪声（auto=模型文件存在即开启，默认）")
-    p.add_argument("--cookies-browser", default="auto", dest="cookies_browser",
+    p.add_argument("--cookies-browser", default="auto", dest="cookies_browser",  # i18n: terminal
                    help="解析直播流时借用哪个浏览器的 TikTok 登录状态："
                         "auto（默认；macOS 上解析的第一步只读 Safari，读到登录就不读别的浏览器，"
                         "其它浏览器只在匿名方式都没拿到地址之后才读）/ "
                         "chrome / safari / firefox / edge / none（完全不读浏览器 cookie）。"
                         "显式指定时优先于 settings.json 里的 cookies_browser_only")
-    p.add_argument("--cookies", default=None,
+    p.add_argument("--cookies", default=None,  # i18n: terminal
                    help="可选：传给 yt-dlp 的 cookies.txt 路径（地区受限的直播间可能需要）")
-    p.add_argument("--glossary", default=None,
+    p.add_argument("--glossary", default=None,  # i18n: terminal
                    help="领域词表路径，默认项目目录下的 glossary.txt"
                         "（首次运行会从 glossary.example.txt 生成）")
-    p.add_argument("--banned-terms", default=None, dest="banned_terms",
+    p.add_argument("--banned-terms", default=None, dest="banned_terms",  # i18n: terminal
                    help="违禁词表路径，默认项目目录下的 banned_terms.txt"
                         "（首次运行会从 banned_terms.example.txt 生成）")
-    p.add_argument("--no-comments", action="store_false", dest="comments",
+    p.add_argument("--no-comments", action="store_false", dest="comments",  # i18n: terminal
                    help="不抓取观众评论（默认抓取）")
-    p.add_argument("--demo", action="store_true",
+    p.add_argument("--demo", action="store_true",  # i18n: terminal
                    help="演示模式：不连直播，用内置台词驱动 UI（用来验证界面）")
-    p.add_argument("--doctor", action="store_true",
+    p.add_argument("--doctor", action="store_true",  # i18n: terminal
                    help="环境体检：检测本机硬件并打印推荐配置，不启动服务")
-    p.add_argument("--browser", action="store_true",
+    p.add_argument("--browser", action="store_true",  # i18n: terminal
                    help="在浏览器里打开界面（默认在独立应用窗口中打开）")
-    p.add_argument("--no-open", action="store_true", help="启动后不要自动打开浏览器/窗口")
+    p.add_argument("--no-open", action="store_true", help="启动后不要自动打开浏览器/窗口")  # i18n: terminal
     # boot() 已经直接从 sys.argv 读过它（要赶在这里和自举对话框之前）；这里登记只为不报「未知参数」
-    p.add_argument("--ui-lang", dest="ui_lang", choices=("zh", "en"), default=None,
+    p.add_argument("--ui-lang", dest="ui_lang", choices=("zh", "en"), default=None,  # i18n: terminal
                    help="一次性指定界面语言，不改设置")
     return p.parse_args()
 
@@ -449,8 +465,10 @@ async def main_async(args, state=None):
     if server is None:
         if state is not None:
             state["failed"] = True   # 告诉窗口线程别开窗口了
-        _fail_alert("无法启动本地服务：端口 {}–{} 全部被占用（{}）。\n"
-                    "请关闭占用这些端口的程序后重新打开。".format(
+        _fail_alert(L("无法启动本地服务：端口 {}–{} 全部被占用（{}）。\n"
+                      "请关闭占用这些端口的程序后重新打开。",
+                      "Couldn’t start the local service: ports {}–{} are all in use ({}).\n"
+                      "Quit the apps using these ports, then open the app again.").format(
                         args.port, args.port + 9, last_exc))
         sys.exit(1)
     server.config["version"] = local_version()
@@ -463,7 +481,7 @@ async def main_async(args, state=None):
     except RuntimeError as exc:   # 例如缺少翻译引擎的 API Key
         if state is not None:
             state["failed"] = True
-        _fail_alert(str(exc))
+        _fail_alert(of(exc))
         sys.exit(1)
     updater = Updater(server)
     pipeline.updater = updater
@@ -510,7 +528,7 @@ async def main_async(args, state=None):
         # 一键更新前正在监听、几分钟内重启回来了：接着听那个房间（记号读到即删）
         print("[信息] 一键更新前正在监听，已自动恢复")
     else:
-        await server.status("idle", "在页面里输入直播间地址开始翻译")
+        await server.status("idle", L("在页面里输入直播间地址开始翻译", "Enter a live link to start."))
         print("未指定直播间地址——在打开的网页里输入地址点「开始翻译」即可。")
 
     # 直播结束后保留 UI（可以继续翻看历史字幕 / 换房间），Ctrl-C 退出
@@ -564,16 +582,21 @@ def main():
         missing = []
         from app.ffmpeg_bin import find_ffmpeg
         if find_ffmpeg() is None:
-            missing.append("组件 ffmpeg 缺失：请关闭程序后重新打开，会自动补装。"
-                           "（进阶：pip install -r requirements.txt）")
+            missing.append(L("组件 ffmpeg 缺失：请关闭程序后重新打开，会自动补装。"
+                             "（进阶：pip install -r requirements.txt）",
+                             "Audio (ffmpeg) is missing. Quit and reopen the app to install it "
+                             "automatically. (Advanced: pip install -r requirements.txt.)"))
         try:
             import faster_whisper  # noqa: F401
         except ImportError:
-            missing.append("组件 faster-whisper 缺失：请关闭程序后重新打开，会自动补装。"
-                           "（进阶：pip install -r requirements.txt 或运行 setup 脚本）")
+            missing.append(L("组件 faster-whisper 缺失：请关闭程序后重新打开，会自动补装。"
+                             "（进阶：pip install -r requirements.txt 或运行 setup 脚本）",
+                             "faster-whisper is missing. Quit and reopen the app to install it "
+                             "automatically. (Advanced: pip install -r requirements.txt, or run "
+                             "the setup script.)"))
         if missing:
             if args.url:
-                _fail_alert("\n".join(missing))
+                _fail_alert(L("\n", "\n").join(missing))
                 sys.exit(1)
             for m in missing:
                 print("⚠️ " + m)
@@ -617,8 +640,10 @@ def run_with_window(args):
         print("[信息] 检测到程序已在运行，打开已有实例的窗口")
         if args.url:
             # 地址没有送进那个实例：明说，别让用户以为已经在监听
-            _info_dialog("程序已经在运行，这次给的直播间地址没有自动开始。\n"
-                         "请在已打开的窗口里粘贴地址后点「开始翻译」。")
+            _info_dialog(L("程序已经在运行，这次给的直播间地址没有自动开始。\n"
+                           "请在已打开的窗口里粘贴地址后点「开始翻译」。",
+                           "The app is already running, so this live link didn’t start "
+                           "automatically.\nPaste the link in the open window, then click Start."))
         from app.macbrand import brand_mac_app
         from app.window_attention import expose_attention
         from app.window_close import confirm_localization_kwargs
@@ -647,7 +672,8 @@ def run_with_window(args):
         except Exception as exc:
             if isinstance(exc, ImportError):
                 _forget_install_failure()      # 缺模块：下次启动立刻重试安装
-            _fail_alert("后台服务异常退出：{}".format(exc))
+            _fail_alert(L("后台服务异常退出：{}", "The background service quit unexpectedly: {}")
+                        .format(exc))
             os._exit(1)
 
     thread = threading.Thread(target=backend, daemon=True)

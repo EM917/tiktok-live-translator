@@ -1,3 +1,4 @@
+# i18n: done
 """窗口被别的软件盖住时，新报警要在桌面窗口的标题上看得见。
 
 页面在后台时会把 document.title 改成「(N) 疑似违禁词」（web/alerts.js），浏览器标签页
@@ -15,7 +16,7 @@ main.py 的 run_with_window 只负责调 expose_attention。
 import threading
 
 from . import i18n
-from .i18n import APP_NAME
+from .i18n import APP_NAME, L
 
 DEFAULT_TITLE = APP_NAME      # 旧名字，保留为 APP_NAME 的别名
 MAX_COUNT = 999
@@ -23,7 +24,9 @@ MAX_COUNT = 999
 
 def attention_title(count, base=APP_NAME):
     """与 web/alerts.js 的 alertTitle 同一个样子；0 条就是原标题。"""
-    return "({}) 疑似违禁词 · {}".format(count, base) if count > 0 else base
+    # 标签式写法，英文不分单复数；与 alertTitle 的英文由 tests/i18n_golden.json 两边各钉一次
+    return (L("({}) 疑似违禁词 · {}", "({}) Possible Banned Terms · {}").format(count, base)
+            if count > 0 else base)
 
 
 class WindowAttention:

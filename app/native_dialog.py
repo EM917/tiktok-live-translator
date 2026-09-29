@@ -1,3 +1,4 @@
+# i18n: done
 """启动期的系统对话框（安装提示、缺组件、致命错误）：只负责组装交给系统的参数。
 
 main.py 的 _info_dialog / _fail_alert 是「同一句话既 print 又弹框」。弹框的命令原来就拼在
@@ -9,10 +10,10 @@ main.py 里，而测试不能 import main.py（模块级跑 ensure_env()，会�
 （tests/test_native_dialog.py）。
 """
 from . import i18n
-from .i18n import APP_NAME
+from .i18n import APP_NAME, L
 
-INFO_BUTTON = "知道了"      # 安装提示、「已经在运行」这类说明；M11 改成 L("知道了", "OK")
-FAIL_BUTTON = "好"          # 致命错误；M11 改成 L("好", "OK")
+INFO_BUTTON = L("知道了", "OK")      # 安装提示、「已经在运行」这类说明
+FAIL_BUTTON = L("好", "OK")          # 致命错误
 
 
 def esc_osa(text):
