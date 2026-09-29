@@ -413,7 +413,8 @@ def _assert_plain_english(text, where):
 
 @pytest.mark.parametrize("login,must_have", [
     ({"chrome": "blocked_by_system", "safari": "blocked_by_system"},
-     ["Chrome: macOS didn’t allow access; Safari: macOS didn’t allow access",
+     ["Looked for a TikTok sign-in in your browsers. Chrome: macOS didn’t allow access; "
+      "Safari: macOS didn’t allow access",
       "macOS didn’t allow the app to read browser data. Go to System Settings > "
       "Privacy & Security > Full Disk Access",
       "(do this for each path): “/opt/homebrew/bin/python3.14”, “/opt/anaconda3/bin/python3.13”"]),
@@ -430,6 +431,12 @@ def _assert_plain_english(text, where):
      ["access to “Chrome Safe Storage”, “Microsoft Edge Safe Storage”"]),
     ({"chrome": "error:RuntimeError"},
      ["Chrome: error while reading (RuntimeError)", "You can report this message to the developer."]),
+    # 能读、看不出登没登录：没有对应的步骤，英文收在句号上，不留尾部空格
+    ({"chrome": "readable"},
+     ["Looked for a TikTok sign-in in your browsers. Chrome: readable, but couldn’t tell whether "
+      "you’re signed in to TikTok."]),
+    ({"chrome": "readable", "safari": "readable"},
+     ["Chrome: readable, but couldn’t tell whether you’re signed in to TikTok; Safari: readable"]),
 ])
 def test_browser_only_advice_in_english(monkeypatch, login, must_have):
     """browser_login 这一段自己的英文：没有中文、没有贴标签和猜原因的词、句子之间有空格。
@@ -437,6 +444,7 @@ def test_browser_only_advice_in_english(monkeypatch, login, must_have):
     monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_FDA_PATHS))
     advice = i18n.render(bl.browser_only_advice(login), "en")
     assert advice.startswith(" ") and not advice.startswith("  "), advice
+    assert advice.endswith(".") and not advice.endswith(" "), advice
     _assert_plain_english(advice.strip(), login)
     for text in must_have:
         assert text in advice, (text, advice)
@@ -450,7 +458,8 @@ def test_browser_only_message_in_english_keeps_the_fixed_facts(monkeypatch):
     if CJK.search(i18n.render(browser_only_message(3, None), "en")):
         pytest.skip("pipeline.browser_only_message 的固定话术还没有英文（M5a）")
     for login in (None, {"chrome": "blocked_by_system", "safari": "blocked_by_system"},
-                  {"chrome": "ok"}, {"safari": "not_logged_in"}):
+                  {"chrome": "ok"}, {"safari": "not_logged_in"}, {"chrome": "readable"},
+                  {"chrome": "readable", "safari": "readable"}):
         message = i18n.render(browser_only_message(3, login), "en")
         for fact in _FIXED_FACTS_EN:
             assert fact in message, (fact, message)

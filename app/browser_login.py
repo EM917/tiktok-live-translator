@@ -469,6 +469,12 @@ def steps_text(login):
     return L("", " ").join(steps)            # 中文句子直接相连，英文句子之间要空格
 
 
+def _space_before(text):
+    """英文非空时在前面加一个空格（英文句子之间要空格），中文原样（中文句子直接相连）。
+    登记在 tests/i18n_rules.py 的 ZH_IDENTITY_CALLS：中文模式下 str(_space_before(x)) == x。"""
+    return L("", " ") + text if text else text
+
+
 SAFARI_LOGIN_STEPS = L("请在 Safari 里登录 TikTok。", "Sign in to TikTok in Safari.")
 # 英文开头留空格：它直接拼在上一句（fda_steps() 的句号）后面
 SELFCHECK_POINTER = L("（这些步骤在自检「浏览器登录态」一行里也有。）",
@@ -511,6 +517,7 @@ def browser_only_advice(login):
         return L("已借用 {} 里的 TikTok 登录再试，TikTok 仍然没有给出流地址。",
                  " Tried again with the TikTok sign-in from {}. TikTok still didn’t provide a "
                  "stream URL.").format(L("、", ", ").join(label(b) for b in borrowed))
+    # 英文只说「找过」：观察里可能一个登录都没读到。步骤为空（比如只有 READABLE）时英文不留尾部空格
     return L("借用浏览器里的 TikTok 登录时观察到——{}。{}",
-             " Tried the TikTok sign-in from your browsers. {}. {}").format(
-        observed_text(login), steps_text(login))
+             " Looked for a TikTok sign-in in your browsers. {}.{}").format(
+        observed_text(login), _space_before(steps_text(login)))
