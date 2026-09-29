@@ -1,3 +1,4 @@
+# i18n: done
 """启动自检：确认每项能力**真的在工作**，而不是「配置看起来对」。
 
 这个模块的存在理由是一次真实事故：RNNoise 降噪从来没跑起来过。模型文件
@@ -502,40 +503,67 @@ async def check_watchlist(detector):
     if detector is None or not detector.enabled:
         if read_error:
             return _check(name, FAIL,
-                          "{} 读不出来（{}）——本工具不会发出任何违禁词报警".format(fname, read_error),
-                          "检查这个文件能否打开后点「停止」再「开始翻译」")
+                          L("{} 读不出来（{}）——本工具不会发出任何违禁词报警",
+                            "Couldn’t read {} ({}). The app won’t raise any banned-term "
+                            "alerts.").format(fname, read_error),
+                          L("检查这个文件能否打开后点「停止」再「开始翻译」",
+                            "Check that the file opens, then click Stop and Start."))
         return _check(name, FAIL,
-                      "词表为空——本工具不会发出任何违禁词报警",
-                      "编辑 banned_terms.txt 后重新「开始翻译」")
+                      L("词表为空——本工具不会发出任何违禁词报警",
+                        "The list is empty. The app won’t raise any banned-term alerts."),
+                      L("编辑 banned_terms.txt 后重新「开始翻译」",
+                        "Edit banned_terms.txt, then click Start again."))
     warnings = list(getattr(detector, "load_warnings", None) or [])
     effective = getattr(detector, "effective_count", detector.count)
+    # 每条 note 的英文都不带句末句号（与中文一样），由下面的 L("；", ". ").join 接成几句
     notes = []
     if getattr(detector, "decode_error", None):
         skipped = list(getattr(detector, "skipped_lines", None) or [])
-        notes.append("{} 不是 UTF-8 编码，{}，其余 {} 条照常生效——请用 UTF-8 另存".format(
+        # 英文单数那一臂不说条数（「其余 1 条」写成 The other entry），所以用显式下标
+        notes.append(LN(effective, "{} 不是 UTF-8 编码，{}，其余 {} 条照常生效——请用 UTF-8 另存",
+                        "{0} isn’t UTF-8 encoded. {1}. The other entry is active. Save it as UTF-8",
+                        "{} isn’t UTF-8 encoded. {}. The other {} entries are active. Save it as "
+                        "UTF-8").format(
             fname,
-            "第 {} 行读不出已跳过".format("、".join(str(n) for n in skipped[:10])
-                                         + ("等 {} 行".format(len(skipped))
-                                            if len(skipped) > 10 else ""))
-            if skipped else "读不出的只有注释行", effective))
+            LN(len(skipped), "第 {} 行读不出已跳过", "Line {} couldn’t be read and was skipped",
+               "Lines {} couldn’t be read and were skipped").format(
+                L("、", ", ").join(str(n) for n in skipped[:10])
+                + (L("等 {} 行", " and more ({} lines in all)").format(len(skipped))
+                   if len(skipped) > 10 else ""))
+            if skipped else L("读不出的只有注释行", "Only comment lines couldn’t be read"),
+            effective))
     notes += [w["text"] for w in warnings[:5]]
     if len(warnings) > 5:
-        notes.append("另有 {} 条同类问题".format(len(warnings) - 5))
-    fix = "按提示改好 {} 后点「停止」再「开始翻译」".format(fname)
+        notes.append(LN(len(warnings) - 5, "另有 {} 条同类问题", "1 more similar issue",
+                        "{} more similar issues").format(len(warnings) - 5))
+    fix = L("按提示改好 {} 后点「停止」再「开始翻译」",
+            "Fix {} as described above, then click Stop and Start.").format(fname)
     if effective <= 0:
         return _check(name, FAIL,
-                      "词表里的条目都匹配不上——本工具不会发出任何违禁词报警。" + "；".join(notes),
+                      L("词表里的条目都匹配不上——本工具不会发出任何违禁词报警。",
+                        "None of the entries in the list can match. The app won’t raise any "
+                        "banned-term alerts. ") + L("；", ". ").join(notes),
                       fix)
     if notes:
-        return _check(name, WARN, "{} 条已生效；".format(effective) + "；".join(notes), fix)
-    return _check(name, OK, "{} 条已生效".format(detector.count))
+        return _check(name, WARN,
+                      LN(effective, "{} 条已生效；", "1 entry active. ",
+                         "{} entries active. ").format(effective) + L("；", ". ").join(notes),
+                      fix)
+    return _check(name, OK,
+                  LN(detector.count, "{} 条已生效", "1 entry active",
+                     "{} entries active").format(detector.count))
 
 
 async def check_glossary(glossary):
     if glossary is None or not glossary.enabled:
-        return _check(NAMES["glossary"], WARN, "未配置——商品名/行话可能被译错",
-                      "编辑 glossary.txt（可选，但能明显改善译文）")
-    return _check(NAMES["glossary"], OK, "{} 条已生效".format(len(glossary.entries)))
+        return _check(NAMES["glossary"], WARN,
+                      L("未配置——商品名/行话可能被译错",
+                        "Not set up. Product names and slang may be mistranslated."),
+                      L("编辑 glossary.txt（可选，但能明显改善译文）",
+                        "Edit glossary.txt (optional, but it noticeably improves translations)."))
+    return _check(NAMES["glossary"], OK,
+                  LN(len(glossary.entries), "{} 条已生效", "1 entry active",
+                     "{} entries active").format(len(glossary.entries)))
 
 
 async def check_audit():
@@ -545,12 +573,14 @@ async def check_audit():
         probe = LOG_DIR / ".write_probe"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-        return _check(NAMES["audit"], OK, "可写入 logs/")
+        return _check(NAMES["audit"], OK, L("可写入 logs/", "Can write to logs/"))
     except OSError as exc:
         # FAIL 而不是 WARN：写不进去就是整场没有证据——报警照常上屏，审计里一条没有。
         # WARN 时界面只显示「⚠️ 自检通过，1 项提醒」且不自动展开，等于没说
         return _check(NAMES["audit"], FAIL,
-                      "logs/ 不可写（{}）——漏报将无法事后追溯".format(exc),
+                      L("logs/ 不可写（{}）——漏报将无法事后追溯",
+                        "Can’t write to logs/ ({}). Missed alerts can’t be traced "
+                        "afterward.").format(exc),
                       _audit_fix(os.name == "nt"))
 
 
@@ -558,7 +588,9 @@ def _audit_fix(windows):
     """logs/ 写不进去时能照做的一步。目录归属不对（比如用 sudo 跑过安装或程序）时
     chown 能修；logs/ 还没建出来时要改的是它的上一级。"""
     if windows:
-        return "把程序文件夹移出「文档/桌面」，或在「受控文件夹访问」里允许 python"
+        return L("把程序文件夹移出「文档/桌面」，或在「受控文件夹访问」里允许 python",
+                 "Move the app folder out of Documents or Desktop, or allow python in "
+                 "Controlled folder access.")
     import shlex
 
     from .audit import LOG_DIR
@@ -569,18 +601,22 @@ def _audit_fix(windows):
 async def check_resolver():
     """能不能拿到直播流地址。TikTok 对未登录请求会把在播房间报成未开播。"""
     if not await _to_thread(_importable, "yt_dlp"):     # yt-dlp 导入很重
-        return _check(NAMES["resolver"], FAIL, "缺少 yt-dlp",
-                      "关闭程序后重新打开，会自动补装")
+        return _check(NAMES["resolver"], FAIL, L("缺少 yt-dlp", "yt-dlp is missing."),
+                      L("关闭程序后重新打开，会自动补装",
+                        "Quit and reopen the app to install it automatically."))
     from .resolver import _installed_browsers
     browsers = await _to_thread(_installed_browsers)
     if browsers:
         return _check(NAMES["resolver"], OK,
-                      "yt-dlp 可用；解析时按这个顺序借用浏览器的登录状态：{}"
-                      .format(" / ".join(browsers)))
+                      L("yt-dlp 可用；解析时按这个顺序借用浏览器的登录状态：{}",
+                        "yt-dlp works. Stream lookup uses browser logins in this order: {}")
+                      .format(L(" / ", " / ").join(browsers)))
     return _check(NAMES["resolver"], WARN,
-                  "yt-dlp 可用，但找不到可借用登录状态的浏览器——"
-                  "TikTok 常把在播房间报成「未开播」",
-                  "在 Chrome/Safari 里登录一次 TikTok")
+                  L("yt-dlp 可用，但找不到可借用登录状态的浏览器——"
+                    "TikTok 常把在播房间报成「未开播」",
+                    "yt-dlp works, but no browser with a login the app can use was found. For "
+                    "signed-out requests, TikTok often reports live streams as not live."),
+                  L("在 Chrome/Safari 里登录一次 TikTok", "Log in to TikTok once in Chrome or Safari."))
 
 
 async def check_browser_login():
@@ -596,7 +632,10 @@ async def check_browser_login():
 
     name = NAMES["browser_login"]
     if sys.platform != "darwin":
-        return _check(name, OK, "这一项只检查 macOS 上的浏览器数据读取权限，本机不适用")
+        return _check(name, OK,
+                      L("这一项只检查 macOS 上的浏览器数据读取权限，本机不适用",
+                        "This check only covers reading browser data on macOS. It doesn’t apply "
+                        "to this computer."))
     from .resolver import _installed_browsers
     browsers = await _to_thread(_installed_browsers)
     observed = {}
@@ -610,12 +649,20 @@ def _browser_login_row(observed):
     from . import browser_login as bl
 
     name = NAMES["browser_login"]
-    scope = "（只有 TikTok 要求登录才给流地址的直播间用得到，其余直播间不受影响）"
+    # 英文写成括号里的完整句子：前面接的 observed_text 英文带不带句号都读得通
+    scope = L("（只有 TikTok 要求登录才给流地址的直播间用得到，其余直播间不受影响）",
+              " (Only live streams where TikTok requires a login to provide the stream URL need "
+              "this. Other live streams aren’t affected.)")
     if not observed:
-        return _check(name, WARN, "没有找到 Chrome、Safari 等可借用登录的浏览器" + scope,
+        return _check(name, WARN,
+                      L("没有找到 Chrome、Safari 等可借用登录的浏览器",
+                        "Didn’t find Chrome, Safari, or another browser with a login the app can "
+                        "use") + scope,
                       bl.LOGIN_STEPS)
     if all(code == bl.NOT_READ for code in observed.values()):
-        return _check(name, OK, "这次运行没有读取浏览器数据（测试环境或 TLT_NO_BROWSER）")
+        return _check(name, OK,
+                      L("这次运行没有读取浏览器数据（测试环境或 TLT_NO_BROWSER）",
+                        "Browser data wasn’t read this run (test environment or TLT_NO_BROWSER)"))
     detail = bl.observed_text(observed)
     if any(code == bl.OK for code in observed.values()):
         return _check(name, OK, detail)
@@ -648,27 +695,40 @@ async def check_comments(args):
 
     name = NAMES["comments"]
     if getattr(args, "comments", True) is False:
-        return _check(name, OK, "已按 --no-comments 关闭")
+        return _check(name, OK, L("已按 --no-comments 关闭", "Turned off with --no-comments"))
     if sys.version_info < (3, 10):
         return _check(name, WARN,
-                      "弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用"
+                      L("弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用",
+                        "The comments component needs Python 3.10 or later (this is {}.{}). "
+                        "Comments aren’t available.")
                       .format(sys.version_info[0], sys.version_info[1]),
-                      "字幕和违禁词报警不受影响")
+                      L("字幕和违禁词报警不受影响",
+                        "Captions and banned-term alerts aren’t affected."))
     from .updater import TIKTOKLIVE_SPEC
     version = await _to_thread(tiktoklive_version)
     if version is None:
         # 只写事实和真实的规则：安装有一小时冷却，这一行不知道此刻有没有在装
-        return _check(name, WARN, "弹幕组件 TikTokLive 还没装（字幕和违禁词报警不受影响）",
-                      "程序每次启动和开播时会尝试安装，一小时内只试一次；也可以关掉程序后"
+        return _check(name, WARN,
+                      L("弹幕组件 TikTokLive 还没装（字幕和违禁词报警不受影响）",
+                        "The comments component, TikTokLive, isn’t installed yet. Captions and "
+                        "banned-term alerts aren’t affected."),
+                      L("程序每次启动和开播时会尝试安装，一小时内只试一次；也可以关掉程序后",
+                        "The app tries to install it at launch and when you click Start, at most "
+                        "once an hour. You can also quit the app and ")
                       + _pip_command(TIKTOKLIVE_SPEC, upgrade=False))
     if tiktoklive_outdated(version):
-        need = ".".join(str(x) for x in TIKTOKLIVE_MIN)
+        need = ".".join(str(x) for x in TIKTOKLIVE_MIN)  # i18n: data（版本号）
         # 只写观察到的事实和能做的事：升级此刻是否在跑、下次何时试，这一行都不知道，别说
         return _check(name, WARN,
-                      "弹幕组件 TikTokLive {} 低于 {}，评论服务走备用线路时连不上".format(version, need),
-                      "程序每次启动会自动尝试升级，一小时内只试一次；也可以关掉程序后"
+                      L("弹幕组件 TikTokLive {} 低于 {}，评论服务走备用线路时连不上",
+                        "The comments component, TikTokLive {}, is older than {}. It can’t "
+                        "connect when the comment service uses its backup route.").format(
+                          version, need),
+                      L("程序每次启动会自动尝试升级，一小时内只试一次；也可以关掉程序后",
+                        "The app tries to update it at each launch, at most once an hour. You "
+                        "can also quit the app and ")
                       + _pip_command(TIKTOKLIVE_SPEC, upgrade=True))
-    return _check(name, OK, "弹幕组件 TikTokLive {}".format(version))
+    return _check(name, OK, L("弹幕组件 TikTokLive {}", "TikTokLive {}").format(version))
 
 
 # 一次完整安装的实测占用（见 README「磁盘空间」）：
@@ -681,18 +741,28 @@ async def check_disk():
     try:
         free = shutil.disk_usage(ROOT).free / 1024 ** 3
     except OSError:
-        return _check(NAMES["disk"], WARN, "无法读取磁盘剩余空间")
+        return _check(NAMES["disk"], WARN,
+                      L("无法读取磁盘剩余空间", "Couldn’t check free disk space."))
     if free < 3:
         return _check(NAMES["disk"], FAIL,
-                      "仅剩 {:.1f} GB——完整安装需要约 {} GB（运行环境 1.4 + "
-                      "语音模型 2.9 + 翻译模型 1.1）".format(free, INSTALL_NEED_GB),
-                      "腾出空间后重开程序；各部分体积见 README「磁盘空间」")
+                      L("仅剩 {:.1f} GB——完整安装需要约 {} GB（运行环境 1.4 + "
+                        "语音模型 2.9 + 翻译模型 1.1）",
+                        "Only {:.1f} GB available. A full install needs about {} GB (runtime "
+                        "1.4 GB + speech model 2.9 GB + translation model 1.1 GB).").format(
+                          free, INSTALL_NEED_GB),
+                      # 英文 README 那一节叫 Disk Space；「磁盘空间」在界面上是 Storage 那一行
+                      L("腾出空间后重开程序；各部分体积见 README「磁盘空间」",
+                        "Free up space, then reopen the app. Disk Space in the README lists each "
+                        "part’s size, and Settings > Storage shows what the app is using."))
     if free < INSTALL_NEED_GB:
         return _check(NAMES["disk"], WARN,
-                      "剩余 {:.1f} GB，完整安装约需 {} GB——模型可能下不全"
+                      L("剩余 {:.1f} GB，完整安装约需 {} GB——模型可能下不全",
+                        "{:.1f} GB available. A full install needs about {} GB, so models may "
+                        "not finish downloading.")
                       .format(free, INSTALL_NEED_GB),
-                      "腾出空间，或用 --model large-v3-turbo（省约 1.4 GB）")
-    return _check(NAMES["disk"], OK, "剩余 {:.0f} GB".format(free))
+                      L("腾出空间，或用 --model large-v3-turbo（省约 1.4 GB）",
+                        "Free up space, or use --model large-v3-turbo (saves about 1.4 GB)."))
+    return _check(NAMES["disk"], OK, L("剩余 {:.0f} GB", "{:.0f} GB available").format(free))
 
 
 async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None):
@@ -720,8 +790,12 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
     for (name, _), r in zip(probes, results):
         if isinstance(r, BaseException):
             checks.append(_check(name, FAIL,
-                                 "这一项没能检查完（{}）——它是好是坏都不知道".format(r),
-                                 "把这条信息反馈给开发者；这不影响其它功能"))
+                                 L("这一项没能检查完（{}）——它是好是坏都不知道",
+                                   "This check didn’t finish ({}). It’s unknown whether this "
+                                   "part works.").format(r),
+                                 L("把这条信息反馈给开发者；这不影响其它功能",
+                                   "Send this message to the developer. Other features aren’t "
+                                   "affected.")))
         else:
             checks.append(r)
     return checks
