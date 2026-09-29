@@ -167,8 +167,9 @@ def test_the_share_note_english_wording():
                         "The QR code uses 192.168.1.23. If a phone can’t open it, type another "
                         "address from the list.")
     busy = i18n.render(viewer_mod.share_note(**_SHARE_CASES["port busy"]), "en")
-    assert busy == ("Couldn’t listen on ports 8766–8770. Details: [Errno 48] Address already in "
-                    "use. Phone Viewing is still off. Quit apps using these ports, then try again.")
+    assert busy == ("Couldn’t open a port for Phone Viewing (tried 8766–8770). Details: [Errno 48] "
+                    "Address already in use. Phone Viewing is still off. Quit apps that use those "
+                    "ports, then try again.")
     # 换链接确认框：{n} 原样下发，前端点按钮时才填
     assert "{n}" in viewer_mod.NOTE_ROTATE_CONFIRM.en
 
@@ -186,9 +187,9 @@ def test_no_free_viewer_port_is_an_oserror_that_keeps_its_english():
     note = viewer_mod.share_note(False, port=8766, ports=[8766], error=err)
     assert str(note) == ("端口 8766 都没能打开监听，系统返回：没有可用的观众端口。已保持关闭。"
                          "可以关掉占用这些端口的程序后再打开一次。")
-    assert i18n.render(note, "en") == ("Couldn’t listen on ports 8766. Details: No viewer port is "
-                                       "available. Phone Viewing is still off. Quit apps using "
-                                       "these ports, then try again.")
+    assert i18n.render(note, "en") == ("Couldn’t open a port for Phone Viewing (tried 8766). "
+                                       "Details: No viewer port is available. Phone Viewing is "
+                                       "still off. Quit apps that use those ports, then try again.")
 
 
 def test_a_busy_port_reaches_the_desktop_in_english(monkeypatch, tmp_path):

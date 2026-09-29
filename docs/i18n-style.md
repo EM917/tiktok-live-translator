@@ -442,7 +442,7 @@
 | 90 | app.js:1868、viewer.py:410 | 这个链接里带着一把钥匙，当密码看待；发给谁，谁就能看到字幕和报警。 | This link contains an access key. Treat it like a password. Anyone who has it can see captions and alerts. | |
 | 91 | app.js:1902、viewer.py:421 | 第一次打开时，系统可能弹出…请选允许。 | The first time you turn this on, macOS may ask to allow incoming network connections, or Windows Firewall may ask for access. Choose Allow. | |
 | 92 | app.js:1891、viewer.py:420 | 本机地址已从 {old} 变为 {new}，之前发出去的链接需要重新扫码 | This computer’s address changed from {old} to {new}. Phones need to scan the new QR code. | |
-| 93 | viewer.py:417 | 端口 {ports} 都没能打开监听，系统返回：{err}。已保持关闭。可以关掉占用这些端口的程序后再打开一次。 | Couldn’t listen on ports {ports}. Details: {err}. Phone Viewing is still off. Quit apps using these ports, then try again. | `{err}` 可能是系统给的任意语言，放在 Details 后面 |
+| 93 | viewer.py:417 | 端口 {ports} 都没能打开监听，系统返回：{err}。已保持关闭。可以关掉占用这些端口的程序后再打开一次。 | Couldn’t open a port for Phone Viewing (tried {ports}). Details: {err}. Phone Viewing is still off. Quit apps that use those ports, then try again. | `{err}` 可能是系统给的任意语言，放在 Details 后面。`{ports}` 可能只有一个（8766）也可能是一段（8766–8770），所以写成 tried {ports}，不写 ports {ports} |
 
 ### G. 直播中的字幕区和弹幕列
 

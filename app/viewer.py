@@ -458,8 +458,8 @@ NOTE_NO_IP = L("已打开，但没读到本机的局域网地址（只读到回�
 # {err} 是系统给的原话（数据，可能是任何语言），放在 Details 后面
 NOTE_PORT_BUSY = L("端口 {ports} 都没能打开监听，系统返回：{err}。已保持关闭。"
                    "可以关掉占用这些端口的程序后再打开一次。",
-                   "Couldn’t listen on ports {ports}. Details: {err}. Phone Viewing is still off. "
-                   "Quit apps using these ports, then try again.")
+                   "Couldn’t open a port for Phone Viewing (tried {ports}). Details: {err}. "
+                   "Phone Viewing is still off. Quit apps that use those ports, then try again.")
 NOTE_QR_FAILED = L("二维码没能生成，请让手机手工输入上面的地址。",
                    "Couldn’t create the QR code. Type the address above on the phone.")
 NOTE_IP_CHANGED = L("本机地址已从 {old} 变为 {new}，之前发出去的链接需要重新扫码。",
