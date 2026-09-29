@@ -66,14 +66,15 @@ def _accepts_raw(fn):
 
 
 # 更新检查的结果 -> 面板上说的话。只写发生了什么，不猜原因。
-# 这几句都跟在「；」后面拼进被拒的那句话里，英文小写开头
+# 这几句都跟在「；」后面拼进被拒的那句话里。英文拆成新的一句（docs/i18n-style.md §2.2 不用分号），
+# 所以大写开头、不带句末句号（后面还接「. Retrying in N min.」）
 _FRESHEN_NOTES = {
-    "no-update": L("弹幕组件已是可用的最新版本", "the comments component is already the latest version"),
-    "pip-failed": L("弹幕组件更新检查没成功", "couldn’t check for a comments component update"),
+    "no-update": L("弹幕组件已是可用的最新版本", "The comments component is already the latest version"),
+    "pip-failed": L("弹幕组件更新检查没成功", "Couldn’t check for a comments component update"),
     "cooldown": L("近几个小时已检查过弹幕组件更新",
-                  "already checked for a comments component update in the last few hours"),
+                  "Already checked for a comments component update in the last few hours"),
     "recently-failed": L("弹幕组件更新检查刚失败过",
-                         "a comments component update check failed a moment ago"),
+                         "A comments component update check failed recently"),
 }
 
 
@@ -398,7 +399,7 @@ class CommentSource:
                 note = _FRESHEN_NOTES.get(outcome)
                 await self._set_state(
                     "error", L("{}{}，{} 分钟后自动重试", "{}{}. Retrying in {} min.").format(
-                        prefix, L("；", "; ") + note if note else "", max(1, int(round(wait / 60)))),
+                        prefix, L("；", ". ") + note if note else "", max(1, int(round(wait / 60)))),
                     raw=raw)
                 await asyncio.sleep(wait)
             else:

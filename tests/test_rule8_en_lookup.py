@@ -272,14 +272,14 @@ def _assert_details_clean(state_log):
 
 
 @pytest.mark.parametrize("outcome,expect", [
-    ("no-update", "The comment service refused the connection (HTTP 400); the comments "
+    ("no-update", "The comment service refused the connection (HTTP 400). The comments "
                   "component is already the latest version. Retrying in 1 min."),
-    ("pip-failed", "The comment service refused the connection (HTTP 400); couldn’t check for "
+    ("pip-failed", "The comment service refused the connection (HTTP 400). Couldn’t check for "
                    "a comments component update. Retrying in 1 min."),
-    ("cooldown", "The comment service refused the connection (HTTP 400); already checked for a "
+    ("cooldown", "The comment service refused the connection (HTTP 400). Already checked for a "
                  "comments component update in the last few hours. Retrying in 1 min."),
-    ("recently-failed", "The comment service refused the connection (HTTP 400); a comments "
-                        "component update check failed a moment ago. Retrying in 1 min."),
+    ("recently-failed", "The comment service refused the connection (HTTP 400). A comments "
+                        "component update check failed recently. Retrying in 1 min."),
 ])
 def test_a_refused_comments_connection_in_english(monkeypatch, outcome, expect):
     stale, _asked = make_stale(outcome, announce_first=outcome != "cooldown")
@@ -324,7 +324,7 @@ def test_a_comment_state_reaches_the_page_in_english_and_the_audit_in_chinese(tm
     detail = L("{}{}，{} 分钟后自动重试", "{}{}. Retrying in {} min.").format(
         L("评论服务拒绝了连接{}", "The comment service refused the connection{}").format(
             cs_mod._http_note(400)),
-        L("；", "; ") + cs_mod._FRESHEN_NOTES["no-update"], 5)
+        L("；", ". ") + cs_mod._FRESHEN_NOTES["no-update"], 5)
 
     class FakeClient:
         def __init__(self):
@@ -353,7 +353,7 @@ def test_a_comment_state_reaches_the_page_in_english_and_the_audit_in_chinese(tm
     assert audits[i18n.ZH][0]["detail"] == ("评论服务拒绝了连接（HTTP 400）；弹幕组件已是可用的"
                                             "最新版本，5 分钟后自动重试")
     assert pages[i18n.ZH] == [audits[i18n.ZH][0]["detail"]]
-    assert pages[i18n.EN] == ["The comment service refused the connection (HTTP 400); the "
+    assert pages[i18n.EN] == ["The comment service refused the connection (HTTP 400). The "
                               "comments component is already the latest version. Retrying in "
                               "5 min."]
 
