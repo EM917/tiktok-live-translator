@@ -132,13 +132,13 @@ async def check_asr(args, state=None):
     if load_error:
         return _check(NAMES["asr"], FAIL,
                       L("识别模型（{}/{}）没能加载，本场不会识别：{}",
-                        "The recognition model ({}/{}) didn’t load. Speech won’t be recognized in "
-                        "this session. Details: {}").format(
+                        "The speech model ({}/{}) didn’t load. Speech won’t be recognized in this "
+                        "session. Details: {}").format(
                           load_error.get("backend"), load_error.get("model"),
                           load_error.get("error") or L("无错误详情", "not available")),
                       L("确认网络和磁盘空间后点「开始翻译」重试；若反复出现，关闭程序重新打开",
-                        "Check your network and free disk space, then click Start to try again. "
-                        "If this keeps happening, quit and reopen the app."))
+                        "Check your network connection and available storage, then click Start "
+                        "to try again. If this keeps happening, quit and reopen the app."))
     backend = getattr(args, "backend", "auto")
     try:
         from .hwdetect import recommend
@@ -743,7 +743,7 @@ async def check_disk():
         free = shutil.disk_usage(ROOT).free / 1024 ** 3
     except OSError:
         return _check(NAMES["disk"], WARN,
-                      L("无法读取磁盘剩余空间", "Couldn’t check free disk space."))
+                      L("无法读取磁盘剩余空间", "Couldn’t check available storage."))
     if free < 3:
         return _check(NAMES["disk"], FAIL,
                       L("仅剩 {:.1f} GB——完整安装需要约 {} GB（运行环境 1.4 + "

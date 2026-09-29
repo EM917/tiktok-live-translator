@@ -344,7 +344,7 @@ def test_speech_model_failures_are_english(monkeypatch, tmp_path):
         assert run(scenario()) == (None, False)
     assert_no_chinese(english_ui(server.messages))
     assert statuses_en(server)[-1] == (
-        "The speech model (ct2/small) didn’t load. Check your network connection and free "
+        "The speech model (ct2/small) didn’t load. Check your network connection and available "
         "storage, then click Start to try again. If this keeps happening, quit and reopen the "
         "app.\nDetails: cache unreadable")
     failing = ("Speech recognition failed 3 times in a row, and audio from that time wasn’t "
@@ -368,6 +368,9 @@ def test_a_failed_model_load_ends_the_session_with_an_english_status(monkeypatch
     assert_no_chinese(english_ui(server.messages))
     assert server.statuses[-1][0] == "error"
     assert statuses_en(server)[-1].startswith("The speech model (")
+    # 与自检那一行的修复说法逐字相同（tests/test_i18n_selfcheck_en.py 的 MODEL_LOAD_FIX_EN）
+    assert ("Check your network connection and available storage, then click Start to try "
+            "again. If this keeps happening, quit and reopen the app.") in statuses_en(server)[-1]
     assert of_type(audit_rows(tmp_path), "session_end")[0]["reason"] == "model_load_failed"
 
 

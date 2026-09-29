@@ -3034,7 +3034,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             "error", L("识别模型（{}/{}）没能加载。可以：确认网络和磁盘空间后点「开始翻译」重试；"
                        "若反复出现，关闭程序重新打开。\n技术细节：{}",
                        "The speech model ({}/{}) didn’t load. Check your network connection "
-                       "and free storage, then click Start to try again. If this keeps "
+                       "and available storage, then click Start to try again. If this keeps "
                        "happening, quit and reopen the app.\nDetails: {}").format(
                 backend, model, error))
         await self._refresh_asr_check()

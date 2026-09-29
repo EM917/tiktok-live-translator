@@ -484,6 +484,21 @@ def test_browser_login_scope_reads_after_any_observation(monkeypatch, tmp_path):
     assert not [d for d in details if "log in" in d.lower() or "login" in d.lower()], details
 
 
+MODEL_LOAD_FIX_EN = ("Check your network connection and available storage, then click Start to "
+                     "try again. If this keeps happening, quit and reopen the app.")
+
+
+def test_a_failed_model_load_reads_like_the_banner(monkeypatch, tmp_path):
+    """同一次加载失败，横幅（pipeline）和自检「Speech Recognition」一行同时出现：说法要一样。"""
+    rows = _rows("asr", monkeypatch, tmp_path)
+    failed = [r for r in rows if str(r["detail"]).startswith("识别模型（mlx/large-v3-turbo）没能加载")]
+    assert failed
+    for row in failed:
+        assert i18n.text(row["detail"], i18n.EN).startswith(
+            "The speech model (mlx/large-v3-turbo) didn’t load. Speech won’t be recognized")
+        assert i18n.text(row["fix"], i18n.EN) == MODEL_LOAD_FIX_EN
+
+
 def test_stream_lookup_rows_say_sign_in(monkeypatch, tmp_path):
     rows = _rows("resolver", monkeypatch, tmp_path)
     texts = [i18n.text(r[k], i18n.EN) for r in rows for k in ("detail", "fix") if r.get(k)]
