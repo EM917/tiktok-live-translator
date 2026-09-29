@@ -1,3 +1,4 @@
+# i18n: done
 """手机同看：局域网里的第二个监听面，只读，只发白名单里的字段。
 
 为什么另起一套 aiohttp app，而不是给 CaptionServer 加一条路由：控制面绑在
@@ -23,6 +24,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 from . import i18n
+from .i18n import L
 from .server import replay_payloads
 
 # ---- 常量（全部模块级：测试直接引用，不要散在函数里）----
@@ -418,7 +420,7 @@ def lan_ipv4(probe=None, hostname_addrs=None):
 def viewer_url(ip, port, token):
     """token 只能进片段：URL 片段不会进服务端，也不会进 Referer。"""
     if not ip:
-        raise ViewerError("没读到本机的局域网地址")
+        raise ViewerError("没读到本机的局域网地址")   # i18n: terminal（只在 url() 里被吞掉，不上界面）
     return "http://{}:{}/#k={}".format(ip, int(port), token)
 
 
@@ -426,30 +428,66 @@ def viewer_url(ip, port, token):
 # 只写观察到的事实和能做的事。不许出现「年龄」「限流」「封禁」这类给不透明失败
 # 贴的原因标签，也不许有「多半是」「应该是」这类因果断言句式。
 # 系统会弹什么框、Wi-Fi 要连哪一个——这些是可观察事实 + 可做的事，要写。
-NOTE_OFF = ("关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，"
-            "只能看，不能操作本程序。")
-NOTE_OPEN = "已打开。手机连同一个 Wi-Fi，扫下面的二维码，或直接打开：{url}"
-NOTE_COUNT = "当前 {n} 人在看，最多 {max} 人。"
-NOTE_KEY = "这个链接里带着一把钥匙，当密码看待；发给谁，谁就能看到字幕和报警。"
-NOTE_MULTI_IP = ("本机有多个网络地址：{ips}。二维码用的是 {ip}；"
-                 "手机扫了打不开，就换列表里另一个地址手工输入。")
-NOTE_NO_IP = ("已打开，但没读到本机的局域网地址（只读到回环地址），所以没出二维码。"
-              "手机上手工输入 http://<本机地址>:{port}/#k=<没显示的钥匙> —— "
-              "本机地址可以在系统的网络设置里看到；也可以先在本机浏览器打开 "
-              "http://127.0.0.1:{port}/ 确认服务本身在跑。")
-NOTE_PORT_BUSY = ("端口 {ports} 都没能打开监听，系统返回：{err}。已保持关闭。"
-                  "可以关掉占用这些端口的程序后再打开一次。")
-NOTE_QR_FAILED = "二维码没能生成，请让手机手工输入上面的地址。"
-NOTE_IP_CHANGED = "本机地址已从 {old} 变为 {new}，之前发出去的链接需要重新扫码。"
-NOTE_FIRST_OPEN = ("第一次打开时，系统可能弹出是否允许接受网络连接的确认框（macOS）"
-                   "或防火墙提示（Windows），请选允许。")
-NOTE_WIFI = ("手机要和这台电脑连同一个 Wi-Fi。连不上时，"
-             "可以问网络管理员这个 Wi-Fi 是否允许设备互相访问。")
-NOTE_WECHAT = "在微信里打开卡住或提示风险时，点右上角用浏览器打开，或改用手机相机扫码。"
-NOTE_TROUBLE = ("手机打不开时，程序这边只知道没有连接进来。可以依次试："
-                "确认手机连的是同一个 Wi-Fi；用列表里另一个地址手工输入；"
-                "在本机浏览器打开同一个链接，确认服务本身在跑。")
-NOTE_ROTATE_CONFIRM = "换链接之后，现在在看的 {n} 台手机会断开，要重新扫码。继续？"
+# 英文同样只写观察和能做的事（docs/i18n-style.md §2.6、§3 F）。web/app.js、web/index.html
+# 里有同一句中文的，英文逐字相同（tests/test_i18n_pairs.py 的 G3 钉住）。
+NOTE_OFF = L("关闭。打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，"
+             "只能看，不能操作本程序。",
+             "Off. When this is on, phones on the same Wi-Fi can scan to view captions and "
+             "alerts. They can only view, not control the app.")
+NOTE_OPEN = L("已打开。手机连同一个 Wi-Fi，扫下面的二维码，或直接打开：{url}",
+              "On. On a phone connected to the same Wi-Fi, scan the QR code or open: {url}")
+# 人数不变形（「N watching」单复数同形），不用 LN
+NOTE_COUNT = L("当前 {n} 人在看，最多 {max} 人。", "{n} watching (limit {max})")
+NOTE_KEY = L("这个链接里带着一把钥匙，当密码看待；发给谁，谁就能看到字幕和报警。",
+             "This link contains an access key. Treat it like a password. Anyone who has it can "
+             "see captions and alerts.")
+NOTE_MULTI_IP = L("本机有多个网络地址：{ips}。二维码用的是 {ip}；"
+                  "手机扫了打不开，就换列表里另一个地址手工输入。",
+                  "This computer has several network addresses: {ips}. The QR code uses {ip}. If "
+                  "a phone can’t open it, type another address from the list.")
+NOTE_NO_IP = L("已打开，但没读到本机的局域网地址（只读到回环地址），所以没出二维码。"
+               "手机上手工输入 http://<本机地址>:{port}/#k=<没显示的钥匙> —— "
+               "本机地址可以在系统的网络设置里看到；也可以先在本机浏览器打开 "
+               "http://127.0.0.1:{port}/ 确认服务本身在跑。",
+               "On, but the app couldn’t find this computer’s local network address (only the "
+               "loopback address), so there’s no QR code. On the phone, type "
+               "http://<this computer’s address>:{port}/#k=<the key not shown here>. This "
+               "computer’s address is in the system’s network settings. You can also open "
+               "http://127.0.0.1:{port}/ in a browser on this computer to check that the "
+               "service is running.")
+# {err} 是系统给的原话（数据，可能是任何语言），放在 Details 后面
+NOTE_PORT_BUSY = L("端口 {ports} 都没能打开监听，系统返回：{err}。已保持关闭。"
+                   "可以关掉占用这些端口的程序后再打开一次。",
+                   "Couldn’t listen on ports {ports}. Details: {err}. Phone Viewing is still off. "
+                   "Quit apps using these ports, then try again.")
+NOTE_QR_FAILED = L("二维码没能生成，请让手机手工输入上面的地址。",
+                   "Couldn’t create the QR code. Type the address above on the phone.")
+NOTE_IP_CHANGED = L("本机地址已从 {old} 变为 {new}，之前发出去的链接需要重新扫码。",
+                    "This computer’s address changed from {old} to {new}. Phones need to scan "
+                    "the new QR code.")
+NOTE_FIRST_OPEN = L("第一次打开时，系统可能弹出是否允许接受网络连接的确认框（macOS）"
+                    "或防火墙提示（Windows），请选允许。",
+                    "The first time you turn this on, macOS may ask to allow incoming network "
+                    "connections, or Windows Firewall may ask for access. Choose Allow.")
+NOTE_WIFI = L("手机要和这台电脑连同一个 Wi-Fi。连不上时，"
+              "可以问网络管理员这个 Wi-Fi 是否允许设备互相访问。",
+              "The phone needs to be on the same Wi-Fi as this computer. If it can’t connect, "
+              "ask the network administrator whether this Wi-Fi allows devices to connect to each "
+              "other.")
+NOTE_WECHAT = L("在微信里打开卡住或提示风险时，点右上角用浏览器打开，或改用手机相机扫码。",
+                "If the link gets stuck or shows a warning in WeChat, tap the menu in the "
+                "top-right corner to open it in a browser, or scan with the phone’s camera instead.")
+NOTE_TROUBLE = L("手机打不开时，程序这边只知道没有连接进来。可以依次试："
+                 "确认手机连的是同一个 Wi-Fi；用列表里另一个地址手工输入；"
+                 "在本机浏览器打开同一个链接，确认服务本身在跑。",
+                 "If the page won’t open on the phone, all the app can tell is that no connection "
+                 "came in. Try these in order: make sure the phone is on the same Wi-Fi, type in "
+                 "another address from the list, then open the same link in a browser on this "
+                 "computer to check that the service is running.")
+# {n} 由前端在点按钮那一刻才填，后端选不了单复数：英文用不变形的句式（spec §9 R1-3）
+NOTE_ROTATE_CONFIRM = L("换链接之后，现在在看的 {n} 台手机会断开，要重新扫码。继续？",
+                        "Changing the link disconnects the phones watching now ({n}). They’ll "
+                        "need to scan the new QR code. Continue?")
 
 
 def _ports_phrase(ports, port):
@@ -480,7 +518,7 @@ def share_note(on, port=None, url=None, ip=None, ips=(), viewers=0,
     lines.append(NOTE_COUNT.format(n=viewers, max=MAX_VIEWERS))
     lines.append(NOTE_KEY)
     if url and len(ips) > 1:
-        lines.append(NOTE_MULTI_IP.format(ips="、".join(ips), ip=ip))
+        lines.append(NOTE_MULTI_IP.format(ips=L("、", ", ").join(ips), ip=ip))
     if url and not qr_ok:
         lines.append(NOTE_QR_FAILED)
     if ip_changed:
@@ -489,7 +527,7 @@ def share_note(on, port=None, url=None, ip=None, ips=(), viewers=0,
     lines.append(NOTE_WIFI)
     lines.append(NOTE_WECHAT)
     lines.append(NOTE_TROUBLE)
-    return "\n".join(lines)
+    return L("\n", "\n").join(lines)
 
 
 def off_state(port=None, error=None, ports=()):
@@ -733,7 +771,9 @@ class ViewerHub:
             self._running = True
             return
         if last is None:
-            last = OSError("没有可用的观众端口")
+            # 保持 OSError：换成 ViewerError（RuntimeError）会逃出 viewer_share 的 except OSError，
+            # 同看开关收不到回执、界面卡住
+            last = OSError(L("没有可用的观众端口", "No viewer port is available"))
         raise last
 
     def _make_runner(self):
