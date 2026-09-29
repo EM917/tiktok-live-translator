@@ -29,7 +29,9 @@ const web = (name) => read("web/" + name);
 const BODY_CLASS = "i18n-data";   // 与 tests/i18n_rules.py 的 DATA_TEXT_CLASS 相同（那边另有一条钉五处一致）
 
 // 开始标签：属性值里可能有 < >（data-en-html），引号里的整段跳过
-const START_TAG = /<([a-z]+)\b((?:[^>"]|"[^"]*")*)>/g;
+const START_TAG = /<([a-z]+)\b((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
+// 属性：值可能用单引号（#brand-empty-hint 的 data-en-html 里面就有带双引号的 <button id="…">）
+const ATTR = /([\w-]+)=(?:"([^"]*)"|'([^']*)')/g;
 
 // ---- 1. 静态标记 ----------------------------------------------------------------------------
 function staticTags(html, keep) {
@@ -155,11 +157,14 @@ function runPage(page, scripts) {
   for (const m of bare.matchAll(START_TAG)) {
     if (!/\sid="/.test(m[2])) continue;
     const el = new FakeEl(m[1]);
-    for (const a of m[2].matchAll(/([\w-]+)="([^"]*)"/g)) {
-      if (a[1] === "class") el.className = a[2]; else el.setAttribute(a[1], a[2]);
+    for (const a of m[2].matchAll(ATTR)) {
+      const value = a[2] !== undefined ? a[2] : a[3];
+      if (a[1] === "class") el.className = value; else el.setAttribute(a[1], value);
     }
     byId.set(el.id, el);
   }
+  // 绊线：单引号属性值里带着 <button id="…"> 的那个 span 以前会被里面的 id 顶掉
+  if (page === "index.html") assert.ok(byId.has("brand-empty-hint"), "假 DOM 漏建了 #brand-empty-hint");
   const html = new FakeEl("html");
   html.setAttribute("lang", "zh-CN");
   const document = {

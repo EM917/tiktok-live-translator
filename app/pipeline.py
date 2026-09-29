@@ -1,3 +1,4 @@
+# i18n: done
 """管线编排：拉流 → (降噪) → 切段 → 语音识别 → 翻译 → 广播给 UI。
 
 支持两种启动方式：命令行传直播间地址，或在网页 UI 里输入地址点「开始」。
@@ -16,6 +17,7 @@ from pathlib import Path
 
 from . import i18n
 from .asr import DEFAULT_TEMPERATURE
+from .i18n import LN, L, of
 from .comment_source import CommentSource
 from .comments import CommentTranslator
 from .detector import BannedTermDetector, TermsFile, load_fuzzy_policy, read_terms
@@ -67,7 +69,7 @@ def load_detector(path=None):
     except Exception as exc:
         print("[错误] 违禁词表没能加载：{}".format(exc))
         info = TermsFile()
-        info.read_error = str(exc)[:200]
+        info.read_error = str(exc)[:200]  # i18n: data
         detector = BannedTermDetector([])
     detector.source_path = str(target)
     detector.source_hash = info.hash
@@ -133,8 +135,10 @@ AUDIO_BACKLOG_DEGRADED_SEC = 30.0
 AUDIO_BACKLOG_HARD_SEC = 60.0
 
 # 房间接口说直播已结束时状态栏的话（_confirm_offline 与 _host_wait 两处，必须一字不差）
-LIVE_ENDED_NOTE = ("直播已结束。可以往下翻看这一场的字幕，"
-                   "或在上方输入新的直播间地址。")
+LIVE_ENDED_NOTE = L("直播已结束。可以往下翻看这一场的字幕，"
+                    "或在上方输入新的直播间地址。",
+                    "The stream has ended. Scroll down to review this session’s captions, "
+                    "or enter a new live link above.")
 
 
 def _media_label(url):
@@ -156,18 +160,34 @@ def browser_only_message(retries, login=None):
     最后是粘 .flv 地址的办法。只写观察和能照做的事。"""
     from .browser_login import browser_only_advice
 
-    return ("TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 {} 次。"
-            "不是网络或限流问题——同一时刻其它直播间正常，原因 TikTok 不说明；"
-            "有时过一会儿再点「开始翻译」就好，有时整场都不给。".format(retries)
+    # 英文（docs/i18n-style.md §2.6）：中文里「不是网络或限流问题」那半句英文整句不译，换成
+    # 正面的观察——否定句里也不许出现 rate limit（CLAUDE.md 第八条）。句与句之间的空格由后一段
+    # 带在英文开头：第一段英文以句号收尾、不带空格，advice（browser_login）和最后一段的英文
+    # 都以一个空格开头，advice 为空时拼出来也正好一个空格。
+    return (LN(retries,
+               "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 {} 次。"
+               "不是网络或限流问题——同一时刻其它直播间正常，原因 TikTok 不说明；"
+               "有时过一会儿再点「开始翻译」就好，有时整场都不给。",
+               "TikTok didn’t provide a stream URL for this live stream (code 4003110). "
+               "Retried once. Other live streams worked at the same time, and TikTok doesn’t "
+               "say why. Sometimes it works if you click Start again a little later. Sometimes "
+               "it doesn’t work for the whole stream.",
+               "TikTok didn’t provide a stream URL for this live stream (code 4003110). "
+               "Retried {} times. Other live streams worked at the same time, and TikTok "
+               "doesn’t say why. Sometimes it works if you click Start again a little later. "
+               "Sometimes it doesn’t work for the whole stream.").format(retries)
             + browser_only_advice(login)
-            + "想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
-              "（中间空格隔开），一次约两周有效。")
+            + L("想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
+                "（中间空格隔开），一次约两周有效。",
+                " To watch now, paste the live link and the .flv URL from your browser "
+                "together, separated by a space. A .flv URL usually works for about two "
+                "weeks."))
 
 
 def _describe_asr(cfg):
     """给人看的识别配置：「ct2/large-v3-turbo/cpu/int8」（auto 的部分省略）。"""
     parts = [cfg.get("backend"), cfg.get("model"), cfg.get("device"), cfg.get("compute_type")]
-    return "/".join(str(v) for v in parts if v and v != "auto")
+    return "/".join(str(v) for v in parts if v and v != "auto")  # i18n: data
 
 
 class _ASRSlot:
@@ -210,8 +230,9 @@ def _arnndn_probe(model_path):
 RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/"
                "beguiling-drafter-2018-08-30/bd.rnnn")
 
-# 演示模式的内置台词（英文原文 + 中文译文），用于在没有直播时验证 UI
-DEMO_SCRIPT = [
+# 演示模式的内置台词（英文原文 + 中文译文），用于在没有直播时验证 UI。
+# 台词是字幕数据，不随界面语言变（spec §1：DEMO_SCRIPT 不在英文化范围内）
+DEMO_SCRIPT = [  # i18n: data
     ("Hey everyone, welcome back to my live stream!", "嘿大家好，欢迎回到我的直播间！"),
     ("If you're new here, don't forget to tap the follow button.", "如果你是新来的，别忘了点一下关注按钮。"),
     ("Today I'm going to show you guys something really special.", "今天我要给大家展示一个特别的东西。"),
@@ -439,7 +460,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 return self._start_with_ack(url, media=media)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
-                "error", "地址无效：请填写 http:// 或 https:// 开头的直播间地址")
+                "error", L("地址无效：请填写 http:// 或 https:// 开头的直播间地址",
+                           "This address isn’t valid. Enter a live link that starts with "
+                           "http:// or https://."))
         elif mtype == "stop":
             self._note_operator_stream_action()
             self._stop_reason = "user_stop"
@@ -518,7 +541,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         except OSError as exc:
             print("[警告] 打开品牌词表文件夹失败：{}".format(exc))
             return self.server.broadcast(
-                {"type": "notice", "text": "无法打开文件夹：{}".format(BRAND_DIR)})
+                {"type": "notice", "text": L("无法打开文件夹：{}",
+                                             "Couldn’t open the folder: {}").format(BRAND_DIR)})
         return None
 
     # 一键更新暂停监听后，新进程要在这么久之内起来，才自动接着监听（记号读到即删）
@@ -545,7 +569,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             pause = getattr(self, "_update_pause", None)
             if pause is not None:
                 await self._resume_after_update_failure(
-                    pause, "更新过程中程序出错（{}）".format(type(exc).__name__))
+                    pause, L("更新过程中程序出错（{}）",
+                             "The app hit an error during the update ({})").format(
+                        type(exc).__name__))
         finally:
             self._update_pause = None
             # 更新期间推迟的模型下载：走到这里说明没有重启（没更新成、或中控自己停了监听）
@@ -577,10 +603,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         self._stop_reason = "update"
         await self.stop_stream(quiet=True)
         if pip_minutes:
-            text = ("正在更新，监听已暂停：先安装新版本需要的组件（最长约 {} 分钟），"
-                    "装好后自动重启并恢复监听".format(pip_minutes))
+            text = L("正在更新，监听已暂停：先安装新版本需要的组件（最长约 {} 分钟），"
+                     "装好后自动重启并恢复监听",
+                     "Updating. Monitoring is paused while the new version’s components "
+                     "install (up to about {} min). Then the app restarts and resumes "
+                     "monitoring.").format(pip_minutes)
         else:
-            text = "正在更新，监听已暂停（约 1 分钟后自动恢复）"
+            text = L("正在更新，监听已暂停（约 1 分钟后自动恢复）",
+                     "Updating. Monitoring is paused and resumes in about 1 minute.")
         await self.server.status("connecting", text)
         return token
 
@@ -595,13 +625,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         token = token or {}
         url = token.get("url")
         if token.get("operator_acted") or self._stream_active():
-            await self._incident("update", "warn", "一键更新没完成：{}".format(text))
+            await self._incident("update", "warn",
+                                 L("一键更新没完成：{}", "The update didn’t finish: {}.").format(text))
             return
         if not url:
             await self.server.status("idle", text)
             return
         await self._incident("update", "warn",
-                             "一键更新没完成：{}。已在当前版本上自动恢复监听".format(text))
+                             L("一键更新没完成：{}。已在当前版本上自动恢复监听",
+                               "The update didn’t finish: {}. Monitoring resumed on the "
+                               "current version.").format(text))
         self._resume_reason = "update_failed"
         # 品牌词表跟着这次恢复走：token 里没有这个键（老流程/测试构造的半成品
         # token）按不限处理，和「缺字段按不限」的宽容原则一致
@@ -654,7 +687,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         brand = marker.get("brand")
         self.brand = brand if isinstance(brand, str) and brand else None
         self.server.config["active_brand"] = self._active_brand_info()
-        await self.server.status("connecting", "已更新到 v{}，正在自动恢复监听{}…".format(
+        await self.server.status("connecting", L("已更新到 v{}，正在自动恢复监听{}…",
+                                                 "Updated to v{}. Resuming monitoring{}…").format(
             app_version(), " @" + streamer if streamer else ""))
         await self.start_stream(url, media=media if isinstance(media, str) and media else None)
         return True
@@ -686,13 +720,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         其实是在等上一个主播的监听先停下来。"""
         from .provenance import streamer_of
 
-        text = "已收到指令，正在连接…"
+        text = L("已收到指令，正在连接…", "Connecting…")
         task = getattr(self, "_stream_task", None)
         if task is not None and not task.done():
             current = streamer_of(self.server.config.get("room_url") or "")
             new = streamer_of(url)
             if current and new and current != new:
-                text = "正在切换到 @{}：先停止 @{} 的监听，再连接新的直播间…".format(
+                text = L("正在切换到 @{}：先停止 @{} 的监听，再连接新的直播间…",
+                         "Switching to @{}: stopping @{}, then connecting…").format(
                     new, current)
         await self.server.status("connecting", text)
         await self.start_stream(url, media=media)
@@ -803,7 +838,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             # 先让界面立刻回到待机。停止是用户的明确指令，界面不该在这儿干等：
             # 点了没反应，人只会以为程序死了，然后反复点。
             if not quiet:
-                await self.server.status("idle", "正在停止…")
+                await self.server.status("idle", L("正在停止…", "Stopping…"))
             task.cancel()
             # 等待要有上限。`run_in_executor` 里的识别调用**取消不掉**——线程一旦
             # 开跑就只能等它自己结束，实测遇到复读跑飞时单次要十几秒。
@@ -847,7 +882,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             # 否则刷新页面或第二个页面重连会看到一个其实已经不生效的品牌
             self.server.config["active_brand"] = None
             await self.server.broadcast({"type": "config", "active_brand": None})
-            await self.server.status("idle", "已停止。输入直播间地址可重新开始。")
+            await self.server.status("idle", L("已停止。输入直播间地址可重新开始。",
+                                               "Stopped. Enter a live link to start again."))
 
     # ---- 实际的直播管线 ----
     async def _run_stream(self, url):
@@ -860,7 +896,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             print("[错误] 直播管线异常: {}".format(exc))
             traceback.print_exc()      # 终端要能看到堆栈——这次就是没堆栈才查了半天
             try:
-                await self.server.status("error", "内部错误，已停止：{}".format(exc))
+                await self.server.status("error", L(
+                    "内部错误，已停止：{}",
+                    "An internal error stopped monitoring. Details: {}").format(of(exc)))
             except Exception:
                 pass
 
@@ -980,16 +1018,30 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 # 以前这里一直写「仍在继续处理（不会漏掉这段音频）」，而积压过 60 秒 _put
                 # 已经在丢段、统计条上同时显示「丢音频 N」——界面自相矛盾，正是 08-31 那类事故
                 if dropped:
-                    text = ("🔴 检测已降级：识别落后 {:.0f} 秒；积压超过 {:.0f} 秒的旧音频"
-                            "已丢弃 {} 段，这些音频没有做违禁词检测"
+                    text = (LN(dropped,
+                               "🔴 检测已降级：识别落后 {:.0f} 秒；积压超过 {:.0f} 秒的旧音频"
+                               "已丢弃 {} 段，这些音频没有做违禁词检测",
+                               "🔴 Detection degraded: recognition is {0:.0f} sec behind. "
+                               "1 audio segment older than {1:.0f} sec was dropped and wasn’t "
+                               "checked for banned terms.",
+                               "🔴 Detection degraded: recognition is {0:.0f} sec behind. "
+                               "{2} audio segments older than {1:.0f} sec were dropped and "
+                               "weren’t checked for banned terms.")
                             .format(backlog_sec, AUDIO_BACKLOG_HARD_SEC, dropped))
                 else:
-                    text = ("🔴 检测已降级：识别落后 {:.0f} 秒，仍在继续处理；积压超过 {:.0f} 秒"
-                            "会开始丢弃最旧的音频".format(backlog_sec, AUDIO_BACKLOG_HARD_SEC))
+                    text = (L("🔴 检测已降级：识别落后 {:.0f} 秒，仍在继续处理；积压超过 {:.0f} 秒"
+                              "会开始丢弃最旧的音频",
+                              "🔴 Detection degraded: recognition is {:.0f} sec behind and "
+                              "still processing. Once the backlog passes {:.0f} sec, the "
+                              "oldest audio starts being dropped.")
+                            .format(backlog_sec, AUDIO_BACKLOG_HARD_SEC))
             elif level == "lagging":
-                text = "⚠️ 识别开始落后（积压 {:.0f} 秒），报警会相应延迟".format(backlog_sec)
+                text = L("⚠️ 识别开始落后（积压 {:.0f} 秒），报警会相应延迟",
+                         "⚠️ Speech recognition is falling behind ({:.0f} sec backlog). "
+                         "Alerts will be delayed.").format(backlog_sec)
             else:
-                text = "✅ 识别已追上，检测恢复正常"
+                text = L("✅ 识别已追上，检测恢复正常",
+                         "✅ Speech recognition caught up. Detection is back to normal.")
         if getattr(self, "_health_shown", None) == (audit, level, text):
             return
         self._health_shown = (audit, level, text)
@@ -1048,9 +1100,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             if first or grew:
                 await self._announce_health(
                     "degraded", backlog, reason="asr_stalled",
-                    text="🔴 一段音频识别已 {:.0f} 秒没有返回；积压超过 {:.0f} 秒的旧音频会被丢弃"
-                         "（可能漏报），本场已丢弃 {} 段。若持续几分钟，请关闭程序重新打开——"
-                         "「停止/开始」不会重新加载识别模型".format(
+                    text=L("🔴 一段音频识别已 {:.0f} 秒没有返回；积压超过 {:.0f} 秒的旧音频会被丢弃"
+                           "（可能漏报），本场已丢弃 {} 段。若持续几分钟，请关闭程序重新打开——"
+                           "「停止/开始」不会重新加载识别模型",
+                           "🔴 One audio segment has been in speech recognition for {:.0f} sec "
+                           "without a result. Audio older than {:.0f} sec will be dropped, so "
+                           "banned terms in it may be missed. Segments dropped this session: {}. "
+                           "If this lasts several minutes, quit and reopen the app. Stop and "
+                           "Start don’t reload the speech model.").format(
                              inflight, AUDIO_BACKLOG_HARD_SEC, dropped))
             return
         if state["stalled"] or grew:
@@ -1086,7 +1143,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             return
         if audit is not None:
             audit.terms_changed(digest)
-        text = "违禁词表已修改，点「停止」再「开始翻译」后生效"
+        text = L("违禁词表已修改，点「停止」再「开始翻译」后生效",
+                 "The banned-term list changed. Click Stop, then Start, to apply it.")
         print("[提示] " + text)
         await self.server.broadcast({"type": "notice", "text": text})
 
@@ -1246,10 +1304,17 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         await self._watch_audit(streamer)
         if misplaced:
             owner, variant, zh = misplaced[0]
-            text = ("glossary.txt 里有 {} 条「{}」的专属词条（如 {} => {}），"
-                    "在其他主播的直播里会凭空冒出别家商品——建议把它们移到 "
-                    "profiles/{}.txt").format(len(misplaced), owner, variant,
-                                              zh, owner)
+            text = LN(len(misplaced),
+                      "glossary.txt 里有 {} 条「{}」的专属词条（如 {} => {}），"
+                      "在其他主播的直播里会凭空冒出别家商品——建议把它们移到 "
+                      "profiles/{}.txt",
+                      "glossary.txt has 1 entry just for {1} ({2} => {3}). In other "
+                      "streamers’ streams, it can put product names that don’t belong into "
+                      "captions. Move it to profiles/{4}.txt.",
+                      "glossary.txt has {0} entries just for {1} (such as {2} => {3}). In other "
+                      "streamers’ streams, they can put product names that don’t belong into "
+                      "captions. Move them to profiles/{4}.txt.").format(len(misplaced), owner,
+                                                                        variant, zh, owner)
             print("[警告] " + text)
             await self.server.broadcast({"type": "notice", "text": text})
             # 界面上给一个「迁移旧词表」入口。能一键迁移的只是整条与旧官方
@@ -1280,16 +1345,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             print("[警告] 违禁词表为空，本场不会有任何报警")
             await self.server.broadcast({
                 "type": "notice",
-                "text": "违禁词表为空，本场不会报警——编辑 banned_terms.txt 后重新开始",
+                "text": L("违禁词表为空，本场不会报警——编辑 banned_terms.txt 后重新开始",
+                          "The banned-term list is empty, so no alerts will be raised this "
+                          "session. Edit banned_terms.txt, then start again."),
             })
         # 弹幕后端抓取：只有 @主播名 / 直播间链接能反查出 unique_id，直接流
         # 地址（.m3u8/.flv 之类）没有主播身份，没法连 TikTok 的评论 WebSocket。
         self._comments_pending = None
         if not getattr(self.args, "comments", True):
-            await self._publish_comment_source("unavailable", "已用 --no-comments 关闭")
+            await self._publish_comment_source(
+                "unavailable", L("已用 --no-comments 关闭", "Turned off with --no-comments"))
         elif not streamer:
             await self._publish_comment_source(
-                "unavailable", "直接流地址无法获取评论，请用 @主播名 或直播间链接")
+                "unavailable", L("直接流地址无法获取评论，请用 @主播名 或直播间链接",
+                                 "Comments aren’t available from a stream URL. Use the "
+                                 "@username or the live link."))
         else:
             # getattr 兜底：个别测试用 Pipeline.__new__ 绕过 __init__ 造半成品
             # 实例，没有 comment_source 属性——这条锦上添花的功能缺了就悄悄
@@ -1305,7 +1375,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 # 弹幕不进报警链路，晚几秒没有代价。记着是哪一场要起的：晚到的旧任务不能替
                 # 新的一场起。
                 self._comments_pending = (self.audit, streamer)
-                await self._publish_comment_source("connecting", "流地址解析完成后连接评论…")
+                await self._publish_comment_source(
+                    "connecting", L("流地址解析完成后连接评论…",
+                                    "Comments connect after the stream URL is found…"))
             else:
                 comment_source.start(streamer)
 
@@ -1475,9 +1547,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         堆上每一项的 fix 会超出一条提示能读完的长度，细节留给设置面板里的自检明细。"""
         if len(fails) == 1:
             c = fails[0]
-            return "自检：{} 未生效——{}".format(c.get("name"), c.get("fix") or c.get("detail"))
-        names = "、".join(c.get("name") for c in fails)
-        return "自检：{} 项未生效（{}）".format(len(fails), names)
+            return L("自检：{} 未生效——{}", "Startup Check: {} isn’t working. {}").format(
+                c.get("name"), c.get("fix") or c.get("detail"))
+        names = L("、", ", ").join(c.get("name") for c in fails)
+        return L("自检：{} 项未生效（{}）",
+                 "Startup Check: {} items aren’t working ({})").format(len(fails), names)
 
     def _audit_selfcheck(self, checks, summary):
         """自检结论写进本场审计：第一次整份写，之后只在某一行等级变了时写变了的那几行。
@@ -1670,14 +1744,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             checked = await _check_media_url(override, trusted=True)
             if await _media_url_works(checked):
                 print("[信息] 使用用户指定的音频源")
-                self._log_resolve(0, True, t0, [{"layer": "用户直连", "outcome": "url"}],
+                self._log_resolve(0, True, t0, [{"layer": "用户直连", "outcome": "url"}],  # i18n: audit
                                   media=checked, reconnect=reconnect)
                 return checked
-            self._log_resolve(0, False, t0, [{"layer": "用户直连", "outcome": "dead_url"}],
+            self._log_resolve(0, False, t0, [{"layer": "用户直连", "outcome": "dead_url"}],  # i18n: audit
                               kind="dead_override", reconnect=reconnect)
             self._media_override = None      # 失效就别再用，回到正常解析
             await self.server.status(
-                "connecting", "你给的流地址拉不动（可能已过期），改用自动解析…")
+                "connecting", L("你给的流地址拉不动（可能已过期），改用自动解析…",
+                                "The stream URL you pasted isn’t returning data. Looking up "
+                                "the stream URL automatically…"))
 
         last = None
         for attempt in range(1, self.BROWSER_ONLY_RETRIES + 1):
@@ -1689,7 +1765,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                     trace=layers)
             except ResolveError as exc:
                 self._log_resolve(attempt, False, t0, layers, kind=exc.kind,
-                                  reconnect=reconnect, message=str(exc),
+                                  reconnect=reconnect, message=str(exc),  # i18n: audit
                                   login=getattr(exc, "login", None))
                 await self._sync_login_incident(layers)
                 if exc.kind != "browser_only":
@@ -1703,9 +1779,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             if attempt < self.BROWSER_ONLY_RETRIES:
                 await self.server.status(
                     "connecting",
-                    "TikTok 暂时没有把这个直播间的流地址给程序，{:.0f} 秒后自动重试"
-                    "（第 {}/{} 次）…".format(self.BROWSER_ONLY_RETRY_SEC, attempt + 1,
-                                            self.BROWSER_ONLY_RETRIES))
+                    L("TikTok 暂时没有把这个直播间的流地址给程序，{:.0f} 秒后自动重试"
+                      "（第 {}/{} 次）…",
+                      "TikTok didn’t provide a stream URL for this live stream. Retrying in "
+                      "{:.0f} sec (attempt {} of {})…").format(self.BROWSER_ONLY_RETRY_SEC,
+                                                              attempt + 1,
+                                                              self.BROWSER_ONLY_RETRIES))
                 await asyncio.sleep(self.BROWSER_ONLY_RETRY_SEC)
         raise ResolveError(browser_only_message(self.BROWSER_ONLY_RETRIES,
                                                 getattr(last, "login", None)),
@@ -1787,9 +1866,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         audit = getattr(self, "audit", None)
         if audit is not None:
             audit.resolve(rec)
-        label = "用户直连" if attempt == 0 else "第 {}/{} 次".format(
+        label = "用户直连" if attempt == 0 else "第 {}/{} 次".format(  # i18n: terminal
             attempt, self.BROWSER_ONLY_RETRIES)
-        walked = " ".join("{}→{}".format(r.get("layer"), r.get("outcome")) for r in layers)
+        walked = " ".join("{}→{}".format(r.get("layer"), r.get("outcome")) for r in layers)  # i18n: terminal
         print("[解析] {} {} {:.1f}s{} {}".format(
             label, "成功" if ok else "失败", ms / 1000,
             " kind=" + kind if kind else "", walked).rstrip())
@@ -1819,7 +1898,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
 
         self._release_sleep_guard()
         try:
-            guard = power.hold("直播合规监听中")
+            guard = power.hold("直播合规监听中")  # i18n: os
         except Exception as exc:
             print("[警告] 没能阻止系统空闲睡眠: {}".format(exc))
             return
@@ -1908,10 +1987,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         try:
             await self._incident(
                 self.ENGINE_INCIDENT, "error",
-                "{}，之后的字幕只显示了原文（违禁词报警不受影响）。下一场开始后会再试；"
-                "可以在「翻译引擎」里{}".format(
-                    info["what"], "换一个引擎" if info["status"] == 404
-                    else "重新填写密钥，或换一个引擎"))
+                L("{}，之后的字幕只显示了原文（违禁词报警不受影响）。下一场开始后会再试；"
+                  "可以在「翻译引擎」里{}",
+                  "{}. Captions after that showed only the original text (banned-term alerts "
+                  "weren’t affected). The app tries again when the next session starts. In "
+                  "Settings > Translation Engine, you can {}.").format(
+                    info["what"], L("换一个引擎", "choose another engine") if info["status"] == 404
+                    else L("重新填写密钥，或换一个引擎",
+                           "re-enter the API key or choose another engine")))
         except Exception:
             pass
 
@@ -1927,11 +2010,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
     def _duration_text(sec):
         sec = max(0, int(round(sec)))
         if sec < 90:
-            return "{} 秒".format(sec)
+            return L("{} 秒", "{} sec").format(sec)
         minutes = int(round(sec / 60.0))
         if minutes < 90:
-            return "{} 分钟".format(minutes)
-        return "{} 小时 {} 分钟".format(minutes // 60, minutes % 60)
+            return L("{} 分钟", "{} min").format(minutes)
+        return L("{} 小时 {} 分钟", "{} hr {} min").format(minutes // 60, minutes % 60)
 
     async def _check_clock_gap(self, interval, now=None):
         """_stats_loop 每一跳调一次：对一次墙钟和单调时钟。now=(墙钟, 单调时钟) 只给测试用。
@@ -1966,13 +2049,22 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             span = "{}–{}".format(time.strftime("%H:%M", time.localtime(prev_wall)),
                                   time.strftime("%H:%M", time.localtime(wall)))
             if diverged:
-                text = ("{} 电脑休眠或挂起了约 {}，程序没有运行，这段时间的直播没有监听。"
-                        "直播期间请接电源、不要合盖").format(span, self._duration_text(gap))
+                text = L("{} 电脑休眠或挂起了约 {}，程序没有运行，这段时间的直播没有监听。"
+                         "直播期间请接电源、不要合盖",
+                         "{} This computer was asleep or suspended for about {}. The app "
+                         "wasn’t running, so that part of the stream wasn’t monitored. During "
+                         "streams, keep the computer plugged in with the lid open."
+                         ).format(span, self._duration_text(gap))
             else:
-                text = ("{} 程序约 {}没有运行，这段时间的直播没有监听。"
-                        "直播期间请接电源、不要让电脑休眠").format(span, self._duration_text(gap))
+                text = L("{} 程序约 {}没有运行，这段时间的直播没有监听。"
+                         "直播期间请接电源、不要让电脑休眠",
+                         "{} The app wasn’t running for about {}, so that part of the stream "
+                         "wasn’t monitored. During streams, keep the computer plugged in and "
+                         "don’t let it sleep.").format(span, self._duration_text(gap))
             if sess["gap_count"] > 1:
-                text = "本场第 {} 次：{}".format(sess["gap_count"], text)
+                text = L("本场第 {} 次：{}",
+                         "{1} This has happened {0} times this session.").format(
+                    sess["gap_count"], text)
             print("[时钟] 墙钟走了 {:.0f} 秒、单调时钟走了 {:.0f} 秒".format(wall_sec, mono_sec))
             await self._incident("session:clock_gap", "warn", text)
             # 睡着之前的连接多半已经失效：醒来 5 秒内没有新音频就直接断开这一轮、马上重连，
@@ -2001,8 +2093,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
     def _gap_lead(self, gap):
         """时钟跳变之后状态文字的开头。两个钟对不上才说休眠或挂起，否则只说程序没有运行。"""
         if gap.get("diverged"):
-            return "电脑刚从休眠或挂起中恢复"
-        return "程序刚才约 {}没有运行".format(self._duration_text(gap.get("sec") or 0))
+            return L("电脑刚从休眠或挂起中恢复",
+                     "This computer just resumed after sleep or suspension")
+        return L("程序刚才约 {}没有运行", "The app wasn’t running for about {}").format(
+            self._duration_text(gap.get("sec") or 0))
 
     def _note_stream_resumed(self, sess, now):
         """这一轮收到第一帧：上一轮最后一帧之后多久没有音频，记一条 stream_resumed。"""
@@ -2031,15 +2125,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                     per_min = data["audio_sec"] * 60.0 / max(data["wall_sec"], 1.0)
                     await self._incident(
                         "session:audio_rate", "warn",
-                        "过去 1 分钟只收到 {:.0f} 秒直播音频，缺的部分没有经过检测"
+                        L("过去 1 分钟只收到 {:.0f} 秒直播音频，缺的部分没有经过检测",
+                          "Only {:.0f} sec of stream audio arrived in the last minute. The "
+                          "missing audio wasn’t checked.")
                         .format(per_min))
                 elif kind == "recovered":
                     await self._incident("session:audio_rate", "clear")
                 elif kind == "quiet":
                     await self._incident(
                         "session:quiet_audio", "warn",
-                        "已收到 {:.0f} 秒直播音频，但音量一直低于识别门限，没有送去识别；"
-                        "程序继续监听".format(data["audio_sec"]))
+                        L("已收到 {:.0f} 秒直播音频，但音量一直低于识别门限，没有送去识别；"
+                          "程序继续监听",
+                          "{:.0f} sec of stream audio arrived, but its volume stayed below the "
+                          "speech recognition threshold, so none of it was transcribed. "
+                          "Monitoring continues.").format(data["audio_sec"]))
                 elif kind == "speech":
                     await self._incident("session:quiet_audio", "clear")
         except Exception as exc:
@@ -2097,7 +2196,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         tries = 0
         while tries * self.NETWORK_RETRY_SEC < self.NETWORK_GIVE_UP_SEC:
             deaf = time.time() - (sess.get("deaf_since") or since)
-            text = "本机连不上 www.tiktok.com，已 {}没有监听，网络恢复后自动重连".format(
+            text = L("本机连不上 www.tiktok.com，已 {}没有监听，网络恢复后自动重连",
+                     "This computer can’t reach www.tiktok.com. Nothing has been monitored "
+                     "for {}. The app reconnects when the network is back.").format(
                 self._duration_text(deaf))
             await self._incident("session:network", "error", text)
             await self.server.status("connecting", text)
@@ -2118,11 +2219,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         """只说接口返回了什么（CLAUDE.md 第八条）。2 本不该出现在「不在播」判定里，
         出现了也照实写出数字，按未知状态去等（等待有上限）。"""
         if status is None:
-            return "TikTok 接口这次没有给出房间状态"
+            return L("TikTok 接口这次没有给出房间状态",
+                     "TikTok’s API didn’t return a stream status this time")
         if status == 2:
-            return "TikTok 接口返回房间状态 2"
-        return "TikTok 接口返回房间状态 {}（{}）".format(
-            status, "已结束" if status == 4 else "不是在播状态")
+            return L("TikTok 接口返回房间状态 2", "TikTok’s API returned stream status 2")
+        return L("TikTok 接口返回房间状态 {}（{}）", "TikTok’s API returned stream status {} ({})").format(
+            status, L("已结束", "ended") if status == 4 else L("不是在播状态", "not live"))
 
     async def _probe_room_status(self, url):
         from .resolver import probe_room_status
@@ -2170,7 +2272,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         sess["gap"] = None
         await self.server.status(
             "connecting",
-            "{}，{}；{:.0f} 秒后再查一次再下结论…".format(
+            L("{}，{}；{:.0f} 秒后再查一次再下结论…",
+              "{}. {}. Checking again in {:.0f} sec before deciding…").format(
                 self._gap_lead(gap), self._room_status_text(status), self.OFFLINE_RECHECK_SEC))
         await asyncio.sleep(self.OFFLINE_RECHECK_SEC)
         waited += self.OFFLINE_RECHECK_SEC
@@ -2200,7 +2303,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         total = len(self.DIRECT_RECHECK_DELAYS)
         for i, delay in enumerate(self.DIRECT_RECHECK_DELAYS, 1):
             await self.server.status(
-                "connecting", "{}，这个直连地址暂时拉不到数据；{:.0f} 秒后再试（第 {}/{} 次）…".format(
+                "connecting", L("{}，这个直连地址暂时拉不到数据；{:.0f} 秒后再试（第 {}/{} 次）…",
+                                "{}. This stream URL isn’t returning data right now. Trying "
+                                "again in {:.0f} sec (attempt {} of {})…").format(
                     self._gap_lead(gap), delay, i, total))
             await asyncio.sleep(delay)
             probes += 1
@@ -2218,7 +2323,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         while waited < self.HOST_WAIT_MAX_SEC:
             await self.server.status(
                 "connecting",
-                "{}，每 {:.0f} 秒复查一次，最多 {:.0f} 分钟（已等 {:.0f} 分钟）…".format(
+                L("{}，每 {:.0f} 秒复查一次，最多 {:.0f} 分钟（已等 {:.0f} 分钟）…",
+                  "{}. Checking every {:.0f} sec for up to {:.0f} min ({:.0f} min so far)…"
+                  ).format(
                     self._room_status_text(status), self.HOST_WAIT_POLL_SEC,
                     self.HOST_WAIT_MAX_SEC / 60, waited / 60))
             await asyncio.sleep(self.HOST_WAIT_POLL_SEC)
@@ -2241,9 +2348,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                            "waited_sec": int(round(waited))}
         else:
             await self.server.status(
-                "ended", "{:.0f} 分钟内 TikTok 接口一直没有返回在播状态（最后一次：{}），"
-                         "监听已停止。可以点「开始翻译」重新开始。".format(
-                             waited / 60, self._room_status_text(status)))
+                "ended", L("{:.0f} 分钟内 TikTok 接口一直没有返回在播状态（最后一次：{}），"
+                           "监听已停止。可以点「开始翻译」重新开始。",
+                           "TikTok’s API didn’t report the stream as live for {0:.0f} min. "
+                           "Last check: {1}. Monitoring stopped. Click Start to start again."
+                           ).format(waited / 60, self._room_status_text(status)))
             sess["end"] = {"reason": "host_wait_timeout", "status": status,
                            "waited_sec": int(round(waited))}
         print("[信息] 等房间恢复在播：{}".format(outcome))
@@ -2257,13 +2366,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if sess is None or sess.get("audit") is not self.audit:
             sess = self._session_state = self._new_session_state(self.audit)
         my_audit = sess["audit"]     # 本场自己的审计，见 _run_stream_inner 与 _new_session_state
-        await self.server.status("connecting", "正在解析直播流地址…")
+        await self.server.status("connecting", L("正在解析直播流地址…", "Getting the stream URL…"))
         try:
             media = await self._resolve_media(url)
             self._resolve_fail_streak = 0
         except ResolveError as exc:
             self._note_resolve_failure(exc)
-            await self.server.status("error", str(exc))
+            await self.server.status("error", of(exc))
             print("[错误] {}".format(exc))
             sess["end"] = {"reason": "resolve_error", "kind": exc.kind}
             return
@@ -2302,14 +2411,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             dropped_fallback = await self._drop_fallback_transcriber()
             size_mb = MODEL_SIZES_MB.get(model)
             if size_mb and size_mb >= 1000:
-                size_note = "约 {:.1f} GB".format(size_mb / 1000)
+                size_note = L("约 {:.1f} GB", "about {:.1f} GB").format(size_mb / 1000)
             elif size_mb:
-                size_note = "约 {} MB".format(size_mb)
+                size_note = L("约 {} MB", "about {} MB").format(size_mb)
             else:
-                size_note = "可能较大"
+                size_note = L("可能较大", "may be large")
             await self.server.status(
                 "connecting",
-                "正在加载语音识别模型 {}（仅首次使用需下载，{}，进度会显示在这里）…"
+                L("正在加载语音识别模型 {}（仅首次使用需下载，{}，进度会显示在这里）…",
+                  "Loading speech model {}… It downloads the first time only ({}). "
+                  "Progress appears here.")
                 .format(model, size_note))
             # 关键：把「正在加载」这件事本身记下来。模型要几分钟，用户等不及
             # 点停止再开始时，取消只会解绑协程、线程仍在后台加载；若不认这个
@@ -2372,8 +2483,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         slot = _ASRSlot(transcriber, config=config, key=key, audit=my_audit)
 
         denoise = await self._ensure_denoise_model()
-        live_note = ("已连接直播间，开始实时识别"
-                     + ("（人声降噪已开启）" if denoise else ""))
+        live_note = (L("已连接直播间，开始实时识别", "Connected. Transcribing live")
+                     + (L("（人声降噪已开启）", " (noise reduction on)") if denoise else ""))
 
         # ---- 断流自动重连 ----
         # TikTok 的流地址会过期、网络会抖动，ffmpeg 一断不等于主播下播了。
@@ -2387,7 +2498,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         silent = 0            # 连续「一帧音频都没有」的轮次：决定何时放弃
         host_waited = 0.0     # 这次中断里等房间恢复在播已经等了多久；收到音频才清零
         while True:
-            await self.server.status("connecting", "正在连接直播音频流…")
+            await self.server.status("connecting", L("正在连接直播音频流…",
+                                                     "Connecting to the stream audio…"))
             got_audio, audio_secs = await self._stream_session(
                 media, slot, denoise, live_note, loop, sess=sess)
             if got_audio:
@@ -2400,8 +2512,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                     works, probes = await self._direct_media_works(media, sess)
                     if not works:
                         await self.server.status(
-                            "ended", "这个直连地址已经拉不到数据，监听已停止。"
-                                     "可以输入直播间地址或新的流地址继续。")
+                            "ended", L("这个直连地址已经拉不到数据，监听已停止。"
+                                       "可以输入直播间地址或新的流地址继续。",
+                                       "This stream URL isn’t returning data anymore. "
+                                       "Monitoring stopped. Enter a live link or a new "
+                                       "stream URL to continue."))
                         print("[信息] 直连地址已拉不到数据，监听停止。")
                         sess["end"] = {"reason": "stream_ended", "probes": probes}
                         return
@@ -2416,8 +2531,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 reconnects += 1
                 if silent > budget:
                     await self.server.status(
-                        "error", "直播流多次中断且自动重连失败——可能直播已结束，"
-                                 "或网络不稳。请稍后点「开始翻译」重试。")
+                        "error", L("直播流多次中断且自动重连失败——可能直播已结束，"
+                                   "或网络不稳。请稍后点「开始翻译」重试。",
+                                   "The stream was interrupted several times and couldn’t "
+                                   "reconnect. Check that the stream is still live and your "
+                                   "network is working, then click Start."))
                     print("[信息] 自动重连预算用尽，放弃。")
                     sess["end"] = {"reason": "reconnect_exhausted",
                                    "silent": silent, "budget": budget}
@@ -2425,14 +2543,18 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 delay = min(30, 2 ** reconnects)
                 await self.server.status(
                     "connecting",
-                    "直播流中断，{} 秒后自动重连（第 {}/{} 次）…".format(
-                        delay, reconnects, budget))
+                    L("直播流中断，{} 秒后自动重连（第 {}/{} 次）…",
+                      "The stream was interrupted. Reconnecting in {} sec (attempt {} of {})…"
+                      ).format(delay, reconnects, budget))
                 await asyncio.sleep(delay)
                 # 本机连不上 TikTok 时不去解析，也不算进重连预算（直连地址不走这一步）
                 if not direct and not await self._wait_for_network(sess):
                     await self.server.status(
-                        "error", "本机连不上 www.tiktok.com 已超过 {:.0f} 分钟，监听已停止。"
-                                 "网络恢复后点「开始翻译」重新开始。".format(
+                        "error", L("本机连不上 www.tiktok.com 已超过 {:.0f} 分钟，监听已停止。"
+                                   "网络恢复后点「开始翻译」重新开始。",
+                                   "This computer couldn’t reach www.tiktok.com for over "
+                                   "{:.0f} min. Monitoring stopped. When the network is back, "
+                                   "click Start to start again.").format(
                                      self.NETWORK_GIVE_UP_SEC / 60))
                     print("[信息] 网络长时间不通，放弃重连。")
                     sess["end"] = {"reason": "network_down",
@@ -2824,7 +2946,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             return
         if not pending["future"].done():
             await self.server.status(
-                "connecting", "上一场开始改用的 CPU 识别模型（{}）还在加载，等它加载完…"
+                "connecting", L("上一场开始改用的 CPU 识别模型（{}）还在加载，等它加载完…",
+                                "The CPU speech model from the previous session ({}) is still "
+                                "loading. Waiting for it to finish…")
                 .format(pending["info"]["to"]))
         try:
             new = await asyncio.shield(pending["future"])
@@ -2873,15 +2997,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if plan is not None:
             source, target = _describe_asr(config), _describe_asr(plan)
             await self.server.status(
-                "connecting", "识别模型（{}/{}）没能加载，正在改用 CPU 识别（{}）…".format(
+                "connecting", L("识别模型（{}/{}）没能加载，正在改用 CPU 识别（{}）…",
+                                "The speech model ({}/{}) didn’t load. Switching to CPU "
+                                "recognition ({})…").format(
                     backend, model, target))
             release_mlx_model()     # 预热失败时模型可能已经进了 mlx 的类级缓存
             pending = self._track_fallback_load(
                 loop.run_in_executor(
                     None, lambda: create_transcriber(**self._transcriber_kwargs(plan))),
                 key, {"from": source, "to": target, "error": error},
-                "识别模型（{}/{}）没能加载，已改用 CPU 识别（{}），较慢，可能积压。"
-                "关闭程序重新打开会重新尝试原来的识别模型".format(backend, model, target))
+                L("识别模型（{}/{}）没能加载，已改用 CPU 识别（{}），较慢，可能积压。"
+                  "关闭程序重新打开会重新尝试原来的识别模型",
+                  "The speech model ({}/{}) didn’t load, so the app switched to CPU "
+                  "recognition ({}). It’s slower and may fall behind. Quit and reopen the app "
+                  "to try the original model again.").format(backend, model, target))
             try:
                 # shield：这时点了停止，线程里的加载照样跑完，下一场接着用（不另载一份）
                 fallback = await asyncio.shield(pending["future"])
@@ -2902,8 +3031,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 await self._refresh_asr_check()
                 return fallback
         await self.server.status(
-            "error", "识别模型（{}/{}）没能加载。可以：确认网络和磁盘空间后点「开始翻译」重试；"
-                     "若反复出现，关闭程序重新打开。\n技术细节：{}".format(backend, model, error))
+            "error", L("识别模型（{}/{}）没能加载。可以：确认网络和磁盘空间后点「开始翻译」重试；"
+                       "若反复出现，关闭程序重新打开。\n技术细节：{}",
+                       "The speech model ({}/{}) didn’t load. Check your network connection "
+                       "and available storage, then click Start to try again. If this keeps "
+                       "happening, quit and reopen the app.\nDetails: {}").format(
+                backend, model, error))
         await self._refresh_asr_check()
         return None
 
@@ -2916,7 +3049,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
           * 没有可换的就说实话：程序自己恢复不了，请关闭程序重新打开。
         在 asr_worker 协程里做：调用都返回了，识别线程是空的，换的时候没有调用在跑。"""
         from .asr import create_transcriber, release_transcriber
-        failing = "识别连续 {} 次出错，这期间的音频没有做违禁词检测".format(failures)
+        failing = LN(failures, "识别连续 {} 次出错，这期间的音频没有做违禁词检测",
+                     "Speech recognition failed, and that audio wasn’t checked for banned "
+                     "terms",
+                     "Speech recognition failed {} times in a row, and audio from that time "
+                     "wasn’t checked for banned terms").format(failures)
         old = slot.transcriber
         active = self._asr_active(old, slot.config) if slot.config else {}
         source = _describe_asr(active) if active else "?"
@@ -2935,9 +3072,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if slot.audit is getattr(self, "audit", None):
             self._asr_failing = slot.audit
             await self._incident("session:asr-failing", "error",
-                                 "{}，正在改用 CPU 识别（{}）…".format(failing, target))
+                                 L("{}，正在改用 CPU 识别（{}）…",
+                                   "{}. Switching to CPU recognition ({})…").format(
+                                     failing, target))
             await self._announce_health("degraded", backlog_sec, reason="asr_failing",
-                                        text="🔴 {}，正在改用 CPU 识别…".format(failing))
+                                        text=L("🔴 {}，正在改用 CPU 识别…",
+                                               "🔴 {}. Switching to CPU recognition…").format(
+                                            failing))
         # 先放掉坏模型再加载：两个模型同时驻留正是规则三那类事故
         release_transcriber(old)
         self._forget_transcriber(old)
@@ -2945,8 +3086,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             loop.run_in_executor(
                 pool, lambda: create_transcriber(**self._transcriber_kwargs(plan))),
             slot.key, {"from": source, "to": target, "error": error},
-            "GPU 识别连续出错，已改用 CPU 识别（{}），较慢，可能积压。"
-            "关闭程序重新打开会重新尝试 GPU 识别".format(target))
+            L("GPU 识别连续出错，已改用 CPU 识别（{}），较慢，可能积压。"
+              "关闭程序重新打开会重新尝试 GPU 识别",
+              "GPU speech recognition kept failing, so the app switched to CPU recognition "
+              "({}). It’s slower and may fall behind. Quit and reopen the app to try GPU "
+              "recognition again.").format(target))
         try:
             # shield：这时点了停止，线程里的加载照样跑完，下一场接着用（不另载一份）
             new = await asyncio.shield(pending["future"])
@@ -2959,7 +3103,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             print("[错误] 改用 CPU 识别没能加载: {}".format(exc))
             if slot.audit is not None:
                 slot.audit.asr_backend_fallback(source, None, error, tried=target,
-                                                fallback_error=str(exc))
+                                                fallback_error=str(exc))  # i18n: audit
             slot.gave_up = True
             if slot.audit is getattr(self, "audit", None):
                 await self._asr_unrecoverable(failing, backlog_sec)
@@ -2981,12 +3125,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         await self._incident("session:asr-failing", "clear")
         await self._incident("asr-fallback", "warn", pending["incident"])
         await self._announce_health("lagging", backlog_sec, reason="asr_fallback",
-                                    text="⚠️ GPU 识别连续出错，已改用 CPU 识别（较慢，可能积压）")
+                                    text=L("⚠️ GPU 识别连续出错，已改用 CPU 识别（较慢，可能积压）",
+                                           "⚠️ GPU speech recognition kept failing. Switched to "
+                                           "CPU recognition (slower, may fall behind)."))
         await self._refresh_asr_check()
         return True
 
     async def _asr_unrecoverable(self, failing, backlog_sec):
-        text = "{}。程序自动恢复不了——请关闭程序重新打开；若仍出错请反馈".format(failing)
+        text = L("{}。程序自动恢复不了——请关闭程序重新打开；若仍出错请反馈",
+                 "{}. The app can’t recover on its own. Quit and reopen the app. If it still "
+                 "fails, report the problem.").format(failing)
         self._asr_failing = getattr(self, "audit", None)    # 按积压算的「已追上」别盖掉它
         await self._incident("session:asr-failing", "error", text)
         await self._announce_health("degraded", backlog_sec, reason="asr_failing",
@@ -3044,11 +3192,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 if expected:
                     done_mb = min(done_mb, expected)   # Windows 无软链权限时是真副本，仍可能翻倍
                     pct = min(99, int(done_mb * 100 / expected))
-                    text = ("正在下载识别模型 {}：{}%（{:.0f} / {} MB，仅首次需要，"
-                            "请保持窗口打开）…".format(model, pct, done_mb, expected))
+                    text = (L("正在下载识别模型 {}：{}%（{:.0f} / {} MB，仅首次需要，"
+                              "请保持窗口打开）…",
+                              "Downloading speech model {}… {}% ({:.0f} of {} MB, first time "
+                              "only). Keep this window open.").format(model, pct, done_mb,
+                                                                     expected))
                 else:
-                    text = ("正在下载识别模型 {}：已下载 {:.0f} MB（仅首次需要，"
-                            "请保持窗口打开）…".format(model, done_mb))
+                    text = (L("正在下载识别模型 {}：已下载 {:.0f} MB（仅首次需要，"
+                              "请保持窗口打开）…",
+                              "Downloading speech model {}… {:.0f} MB so far (first time "
+                              "only). Keep this window open.").format(model, done_mb))
                 await self.server.status("connecting", text)
         except asyncio.CancelledError:
             raise
@@ -3228,8 +3381,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if path is None:
             await self._incident(
                 "session:audit-open", "error",
-                "本场审计日志没能创建（{}）——报警会显示，但不会留下任何证据（见自检「审计日志」）"
-                .format(getattr(audit, "open_error", None) or "没有拿到错误信息"))
+                L("本场审计日志没能创建（{}）——报警会显示，但不会留下任何证据（见自检「审计日志」）",
+                  "The audit log for this session couldn’t be created ({}). Alerts still "
+                  "show, but no record of them will be kept. See the Audit Log row in "
+                  "Settings > Startup Check.")
+                .format(getattr(audit, "open_error", None)
+                        or L("没有拿到错误信息", "no error details")))
             return
         loop = asyncio.get_running_loop()
 
@@ -3257,25 +3414,36 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
 
     @staticmethod
     def _audit_failing_text(audit):
-        return ("审计日志写不进去（{}）——报警照常显示，但这段时间没有留下证据。"
-                "程序会继续重试，报警记录先留在内存里，能写入后补写"
-                .format(getattr(audit, "last_error", "") or "没有拿到错误信息"))
+        return (L("审计日志写不进去（{}）——报警照常显示，但这段时间没有留下证据。"
+                  "程序会继续重试，报警记录先留在内存里，能写入后补写",
+                  "Can’t write to the audit log ({}). Alerts still show, but nothing is being "
+                  "recorded right now. The app keeps retrying and holds alert records in "
+                  "memory until it can write them.")
+                .format(getattr(audit, "last_error", "")
+                        or L("没有拿到错误信息", "no error details")))
 
     @staticmethod
     def _audit_recovered_text(audit):
         gap = getattr(audit, "last_gap", None) or {}
-        return ("审计日志在 {} 到 {} 之间写不进去：{} 条记录没有留下，{} 条（会话头/报警）"
-                "已补写。现在已恢复写入，日志里的 audit_gap 记录标出了这一段".format(
+        return (L("审计日志在 {} 到 {} 之间写不进去：{} 条记录没有留下，{} 条（会话头/报警）"
+                  "已补写。现在已恢复写入，日志里的 audit_gap 记录标出了这一段",
+                  "The audit log couldn’t be written from {} to {}. Records lost: {}. "
+                  "Records written afterward (session header and alerts): {}. Writing has "
+                  "resumed, and an audit_gap record in the log marks this period.").format(
                     str(gap.get("from") or "")[11:19] or "?",
                     str(gap.get("to") or "")[11:19] or "?",
                     gap.get("lost_records", "?"), gap.get("retained_records", "?")))
 
     @staticmethod
     def _audit_unwritten_text(info):
-        return ("审计日志从 {} 起写不进去，到这场监听结束也没有恢复（{}）：{} 条记录没有留下，"
-                "{} 条会话头/报警/会话尾没能补写。这段时间的报警只显示在了界面上".format(
+        return (L("审计日志从 {} 起写不进去，到这场监听结束也没有恢复（{}）：{} 条记录没有留下，"
+                  "{} 条会话头/报警/会话尾没能补写。这段时间的报警只显示在了界面上",
+                  "The audit log couldn’t be written from {} until this session ended ({}). "
+                  "Records lost: {}. Session header, alert and session end records that "
+                  "couldn’t be written afterward: {}. Alerts from this period were only shown "
+                  "on screen.").format(
                     str(info.get("since") or "")[11:19] or "?",
-                    info.get("error") or "没有拿到错误信息",
+                    info.get("error") or L("没有拿到错误信息", "no error details"),
                     info.get("lost", "?"), info.get("retained", "?")))
 
     async def _check_audit_health(self):
@@ -3302,9 +3470,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 if detached:
                     await self._incident(
                         "session:audit-moved", "error",
-                        "本场审计文件已不在原来的位置（{}）——之后的记录写进的是被移走的那个"
-                        "文件，它若已被删除，这些记录会丢失。点「停止」再「开始翻译」会新建"
-                        "审计文件".format(audit.path))
+                        L("本场审计文件已不在原来的位置（{}）——之后的记录写进的是被移走的那个"
+                          "文件，它若已被删除，这些记录会丢失。点「停止」再「开始翻译」会新建"
+                          "审计文件",
+                          "This session’s audit file is no longer where it was ({}). New "
+                          "records go to the moved file, and if that file was deleted, they’re "
+                          "lost. Click Stop, then Start, to create a new audit file."
+                          ).format(audit.path))
                 else:
                     await self._incident("session:audit-moved", "clear")
             free = self._log_free_bytes(audit)
@@ -3313,7 +3485,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                     watch["disk_low"] = True
                     await self._incident(
                         "session:disk-low", "warn",
-                        "磁盘剩余 {:.1f} GB，满了以后审计日志会写不进去——请腾出磁盘空间"
+                        L("磁盘剩余 {:.1f} GB，满了以后审计日志会写不进去——请腾出磁盘空间",
+                          "Only {:.1f} GB of storage is available. When the disk is full, the "
+                          "audit log can’t be written. Free up some storage.")
                         .format(free / 1024 ** 3))
                 elif watch["disk_low"] and free > self.DISK_LOW_CLEAR_BYTES:
                     watch["disk_low"] = False
@@ -3339,9 +3513,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         clients = getattr(self.server, "clients", None)
         left = len(clients) if clients is not None else None
         if reason == "buffer_full":
-            what = "积压了 {} KB 消息没读".format(int((buffered_bytes or 0) / 1024))
+            what = "积压了 {} KB 消息没读".format(int((buffered_bytes or 0) / 1024))  # i18n: terminal
         else:
-            what = "{:.0f} 秒内没收下消息".format(
+            what = "{:.0f} 秒内没收下消息".format(  # i18n: terminal
                 getattr(self.server, "SEND_TIMEOUT_SEC", 2.0))
         print("[警告] 一个界面页面{}，已断开它（页面会自动重连并补回报警），还连着 {} 个页面"
               .format(what, "?" if left is None else left))
@@ -3389,7 +3563,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if name:
             self._settings_notice_shown = True
             await self._incident("settings-corrupt", "warn",
-                                 "设置文件损坏，已备份为 {}；翻译引擎和密钥需要重新填写"
+                                 L("设置文件损坏，已备份为 {}；翻译引擎和密钥需要重新填写",
+                                   "The settings file was damaged and was backed up as {}. "
+                                   "Choose the translation engine and enter the API key "
+                                   "again.")
                                  .format(name))
         elif getattr(self, "_settings_notice_shown", False) \
                 and "translator" in load_settings():
@@ -3432,7 +3609,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         try:
             new = await loop.run_in_executor(None, create_translator, engine)
         except RuntimeError as exc:
-            await self.server.broadcast({"type": "notice", "text": str(exc)})
+            await self.server.broadcast({"type": "notice", "text": of(exc)})
             return
         old, self.translator = self.translator, new
         if old is not None and old is not new:
@@ -3483,8 +3660,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         save_setting("translator", engine)
         if self._stream_active():
             current = getattr(self.translator, "name", None)
-            text = "本机 Ollama 里还没有 {}，本场{}；停止后自动下载".format(
-                model_label(model), "继续用" + engine_label(current) if current else "继续不翻译")
+            text = L("本机 Ollama 里还没有 {}，本场{}；停止后自动下载",
+                     "Ollama on this computer doesn’t have {} yet. This session {}. It "
+                     "downloads automatically after monitoring stops.").format(
+                model_label(model),
+                L("继续用", "keeps using ") + engine_label(current) if current
+                else L("继续不翻译", "continues without translation"))
             print("[信息] " + text)
             self.args.translator_note = text     # 引擎面板上一直看得到，直到下次选引擎
             self._pull_deferred = model
@@ -3595,12 +3776,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                     held = True
             used = first = strong or fast
             if first is None:
+                # why 会拼进「译文失败（{why}）」一类的句子：英文写成小写开头、不带句号的片段
                 if for_backlog:
-                    why = "识别正在积压，这条报警先不翻译"
+                    why = L("识别正在积压，这条报警先不翻译",
+                            "skipped while speech recognition is behind")
                 elif for_busy:
-                    why = "另一条报警正在用强模型翻译，这条先不翻译"
+                    why = L("另一条报警正在用强模型翻译，这条先不翻译",
+                            "skipped while another alert uses the stronger model")
                 else:
-                    why = "没有可用的翻译引擎"
+                    why = L("没有可用的翻译引擎", "no translation engine is available")
                 await tell(why=why)
                 self._record_alert_translation(audit, alert_ids, None, None, t0, False, why,
                                                for_backlog, for_busy, None)
@@ -3626,7 +3810,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             if not out and first is strong and strong is not None and not fallback:
                 err = getattr(strong, "last_error", None)
                 if err and err[0] is not None:
-                    error = "HTTP {}{}".format(err[0], "：" + err[1] if err[1] else "")
+                    error = "HTTP {}{}".format(err[0], "：" + err[1] if err[1] else "")  # i18n: audit
                 if getattr(self, "_strong", None) is strong:
                     self._drop_strong()       # 下一条报警重新探测（探测在线程池里）
                 if fast is not None and fast is not strong:
@@ -3645,7 +3829,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self._alert_strong_busy = False
             if held:
                 self._release_strong(strong)
-        why = "" if out else ("翻译超时或出错" if hard_fail else "模型没有返回译文")
+        why = "" if out else (L("翻译超时或出错", "translation timed out or failed") if hard_fail
+                              else L("模型没有返回译文", "the model returned no translation"))
         await tell(out, why=why)
         self._record_alert_translation(audit, alert_ids, used, out, t0, fallback, why,
                                        for_backlog, for_busy, error)
@@ -3796,13 +3981,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if name == "google":
             # 不是本地引擎，字幕会发给 Google——合规工具的提示绝不能在
             # 「数据去哪了」这件事上含糊
-            note = ("DeepL 免费额度已用完，且本机没有可用的本地模型，"
-                    "已自动改用 Google 免费接口继续翻译——注意：字幕文本会"
-                    "发送给 Google。在 DeepL 升级/续费后重选 DeepL 即可回来。")
+            note = L("DeepL 免费额度已用完，且本机没有可用的本地模型，"
+                     "已自动改用 Google 免费接口继续翻译——注意：字幕文本会"
+                     "发送给 Google。在 DeepL 升级/续费后重选 DeepL 即可回来。",
+                     "The DeepL free quota is used up, and no local model is available on this "
+                     "computer, so the app switched to Google (free) to keep translating. "
+                     "Captions are now sent to Google. After you upgrade or renew DeepL, "
+                     "choose DeepL again to switch back.")
         else:
-            note = ("DeepL 免费额度已用完，本场已自动改用本地引擎（{}）继续"
-                    "翻译。在 DeepL 升级/续费后重选 DeepL 即可回来。"
-                    ).format(name)
+            note = L("DeepL 免费额度已用完，本场已自动改用本地引擎（{}）继续"
+                     "翻译。在 DeepL 升级/续费后重选 DeepL 即可回来。",
+                     "The DeepL free quota is used up, so this session switched to a local "
+                     "engine ({}) to keep translating. After you upgrade or renew DeepL, "
+                     "choose DeepL again to switch back."
+                     ).format(name)
         print("[警告] " + note)
         self.args.translator_note = note
         await self.server.broadcast({"type": "notice", "text": note})
@@ -3842,8 +4034,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 return None
             self._cooldown_mark = mark
             seconds = int(round(remaining))
-            text = ("{} 返回 HTTP 429，程序暂停请求 {} 秒后自动重试；这期间字幕先显示原文，"
-                    "违禁词报警不受影响").format(label, seconds)
+            text = L("{} 返回 HTTP 429，程序暂停请求 {} 秒后自动重试；这期间字幕先显示原文，"
+                     "违禁词报警不受影响",
+                     "{} returned HTTP 429. Requests are paused for {} sec, then retried "
+                     "automatically. Meanwhile, captions show the original text. Banned-term "
+                     "alerts aren’t affected.").format(label, seconds)
             print("[警告] " + text)
             if audit is not None:
                 audit.translation_cooldown(name, 429, seconds)
@@ -3857,9 +4052,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             if audit is not None:
                 audit.translation_engine_error(
                     name, status, model=None if name == "deepl" else model)
-            what = "{} 返回 HTTP {}".format(label, status)
+            what = L("{} 返回 HTTP {}", "{} returned HTTP {}").format(label, status)
             if status == 404 and name != "deepl":
-                what += "（模型 {}）".format(model)
+                what += L("（模型 {}）", " (model {})").format(model)
             print("[警告] " + what)
             fallback = await self._rejection_fallback(tr, what, status)
             if fallback is None:
@@ -3867,20 +4062,28 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self._engine_rejection = {"what": what, "status": status}   # 停止时改写用
                 await self._incident(
                     self.ENGINE_INCIDENT, "error",
-                    "{}，字幕先显示原文（违禁词报警不受影响），程序每 {} 秒再试一次；"
-                    "可以在「翻译引擎」里{}".format(
+                    L("{}，字幕先显示原文（违禁词报警不受影响），程序每 {} 秒再试一次；"
+                      "可以在「翻译引擎」里{}",
+                      "{}. Captions show the original text (banned-term alerts aren’t "
+                      "affected). The app tries again every {} sec. In Settings > Translation "
+                      "Engine, you can {}.").format(
                         what, BaseTranslator.REJECT_COOLDOWN_SEC,
-                        "换一个引擎" if status == 404 else "重新填写密钥，或换一个引擎"))
+                        L("换一个引擎", "choose another engine") if status == 404
+                        else L("重新填写密钥，或换一个引擎",
+                               "re-enter the API key or choose another engine")))
             return fallback
         if name in ("hymt2", "hymt2-7b", "gemma") \
                 and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
             self._engine_error_mark = mark
             if audit is not None:
                 audit.translation_engine_error(name, status, error=said, model=model)
-            text = ("{} 连续 {} 次没有译文，Ollama 返回 HTTP {}{}。字幕先显示原文"
-                    "（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎").format(
+            text = L("{} 连续 {} 次没有译文，Ollama 返回 HTTP {}{}。字幕先显示原文"
+                     "（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎",
+                     "{} returned no translation {} times in a row. Ollama returned HTTP {}{}. "
+                     "Captions show the original text (banned-term alerts aren’t affected). "
+                     "You can choose another engine in Settings > Translation Engine.").format(
                         label, getattr(tr, "fail_streak", 0), status,
-                        "：" + said if said else "")
+                        L("：", ": ") + said if said else "")
             self._engine_incident_up = True
             self._engine_rejection = None
             await self._incident(self.ENGINE_INCIDENT, "warn", text)
@@ -3928,10 +4131,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             await old.close()
         except Exception:
             pass
-        back = ("在「翻译引擎」里换好模型后重选 {} 即可回来。" if status == 404
-                else "在「翻译引擎」里重新填写密钥后重选 {} 即可回来。").format(
+        back = (L("在「翻译引擎」里换好模型后重选 {} 即可回来。",
+                  "To switch back, change the model in Settings > Translation Engine, then "
+                  "choose {} again.") if status == 404
+                else L("在「翻译引擎」里重新填写密钥后重选 {} 即可回来。",
+                       "To switch back, re-enter the API key in Settings > Translation Engine, "
+                       "then choose {} again.")).format(
                     engine_label(getattr(old, "name", None)))
-        note = "{}，本场已改用{}继续翻译。{}".format(what, engine_label(new.name), back)
+        note = L("{}，本场已改用{}继续翻译。{}",
+                 "{}. This session switched to {} to keep translating. {}").format(
+            what, engine_label(new.name), back)
         print("[警告] " + note)
         self.args.translator_note = note
         await self.server.broadcast({"type": "notice", "text": note})
@@ -3981,7 +4190,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         if strong is None:
             await self.server.broadcast({
                 "type": "notice",
-                "text": "没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）"})
+                "text": L("没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）",
+                          "No local model is available, so this can’t be retranslated. See the "
+                          "Translation Engine row in Settings > Startup Check.")})
             return
         if self._quality.get(seq, 0) >= QUALITY_STRONG:
             return                        # 这一条已经是强模型译的，不重复
@@ -4136,9 +4347,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             self._stream_task = asyncio.create_task(self.run_demo())
 
     async def run_demo(self):
-        await self.server.status("connecting", "演示模式启动中…")
+        await self.server.status("connecting", L("演示模式启动中…", "Starting demo mode…"))
         await asyncio.sleep(1.0)
-        await self.server.status("live", "演示模式：内置台词模拟直播字幕（未连接真实直播）")
+        await self.server.status("live", L("演示模式：内置台词模拟直播字幕（未连接真实直播）",
+                                           "Demo mode: built-in sample lines simulate live "
+                                           "captions (not connected to a real stream)"))
         while True:
             for original, translated in DEMO_SCRIPT:
                 self._counter += 1

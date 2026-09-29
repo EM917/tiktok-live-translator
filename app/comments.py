@@ -1,3 +1,4 @@
+# i18n: done
 """观众弹幕（评论区）翻译 —— 只翻译、只显示，不进检测/审计链路。
 
 弹幕由程序自己经 TikTokLive 从直播间的评论 WebSocket 抓取（见
@@ -17,14 +18,16 @@ import re
 import time
 from collections import OrderedDict
 
+from .i18n import L
+
 # 「有没有可译内容」的粗判：至少要有 2 个字母（含各语言字母，排除数字和下划线）。
 # 纯 emoji / 数字 / 标点的弹幕（"😂😂😂"、"1111"）翻不出东西，白白占用引擎。
 _ALPHA_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 # CJK 统一表意文字（含扩展 A）：目标语言是中文、原文已经是中文时不用再翻一遍。
-_CJK_RE = re.compile(r"[㐀-鿿]")
+_CJK_RE = re.compile(r"[㐀-鿿]")                        # i18n: data
 # 批量翻译回来的行首编号，如 "1. "、"2、"、"3)"、"4：" —— 翻译引擎经常会把
 # 我们喂进去的编号原样保留甚至换个符号，统一在这里剥掉。
-_LEADING_NUM_RE = re.compile(r"^\s*\d+\s*[.。、)）:：]\s*")
+_LEADING_NUM_RE = re.compile(r"^\s*\d+\s*[.。、)）:：]\s*")   # i18n: data
 
 # 弹幕只用常驻的本地快速模型翻：hymt2（1.8B）和 gemma。
 #   * hymt2-7b 不算——弹幕绝不用 7B（见模块开头的铁律）；
@@ -33,8 +36,11 @@ _LEADING_NUM_RE = re.compile(r"^\s*\d+\s*[.。、)）:：]\s*")
 #     报警上下文跟着一起没有译文；打在 DeepL 上是在花按字符计费的额度。
 # 其它引擎下弹幕只显示原文，每场提示一次。
 COMMENT_ENGINES = ("hymt2", "gemma")
-REMOTE_ENGINE_HINT = "当前翻译引擎不是本地模型，弹幕只显示原文"
-LARGE_MODEL_HINT = "弹幕不用本地 Hy-MT2 7B 翻译，只显示原文"
+REMOTE_ENGINE_HINT = L("当前翻译引擎不是本地模型，弹幕只显示原文",
+                       "The current translation engine isn’t a local model, so comments show "
+                       "the original text.")
+LARGE_MODEL_HINT = L("弹幕不用本地 Hy-MT2 7B 翻译，只显示原文",
+                     "Comments aren’t translated with local Hy-MT2 7B. They show the original text.")
 _NOT_YET = object()
 
 
@@ -68,7 +74,7 @@ def needs_translation(text, target):
 
 def build_batch(texts):
     """把多条弹幕拼成带编号的一段文本，一次 translate() 调用搞定一批。"""
-    return "\n".join("{}. {}".format(i + 1, t) for i, t in enumerate(texts))
+    return "\n".join("{}. {}".format(i + 1, t) for i, t in enumerate(texts))   # i18n: data
 
 
 def parse_batch(output, n):
@@ -309,7 +315,7 @@ class CommentTranslator:
                                             "translated": None, "state": "failed"})
 
     async def _translate_many(self, translator, texts, target, glossary):
-        joined = "\n".join(texts)
+        joined = "\n".join(texts)                   # i18n: data（弹幕原文，喂给翻译引擎）
         hint = tuple(glossary.translation_pairs(joined)) if glossary else None
         raw = await translator.translate(build_batch(texts), target, source="auto",
                                           glossary=hint)

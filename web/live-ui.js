@@ -1,3 +1,4 @@
+// i18n: done
 /* 直播中界面几处「显示什么」的纯逻辑（web/live-ui.js）：顶栏手机同看按钮的文案、
  * 连接中提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签。
  * 这些判断本身不碰 DOM，放进 app.js 的立即执行函数就没法被 node 测试 require
@@ -6,14 +7,17 @@
 
 "use strict";
 
+// 浏览器里 L/LN 是 i18n.js 定义的全局函数（这里的 var 不会清掉它）；node 测试里从 i18n.js 取
+if (typeof L === "undefined") { var I18N_ = require("./i18n.js"); var L = I18N_.L, LN = I18N_.LN, APP_NAME = I18N_.APP_NAME; }
+
 /* 顶栏「手机同看」按钮：关着只写功能名；开着没人看写「已打开」；有人在看直接写
  * 人数，比「已打开」信息多、字还短（pm.md #3）。count 只给窄窗口用——那时按钮
  * 只剩图标，文字视觉隐藏，人数作为图标旁的数字露出来；没人看时为空串 */
 function shareButtonText(on, viewers) {
-  if (!on) return { text: "手机同看", count: "" };
+  if (!on) return { text: L("手机同看", "Phone Viewing"), count: "" };
   var n = Math.floor(Number(viewers));
-  if (!(n > 0)) return { text: "手机同看 · 已打开", count: "" };
-  return { text: "手机同看 · " + n + " 人", count: String(n) };
+  if (!(n > 0)) return { text: L("手机同看 · 已打开", "Phone Viewing · On"), count: "" };
+  return { text: L("手机同看 · " + n + " 人", "Phone Viewing · " + n), count: String(n) };
 }
 
 /* 连接中提示：只在 connecting 时显示。有主播名就带上——点错了要等连上才看得出来，
@@ -27,7 +31,8 @@ function connectHint(state, streamer, hasCaptions) {
   return {
     show: true,
     inline: !!hasCaptions,
-    text: streamer ? "正在连接 @" + streamer + "…" : "正在连接…",
+    text: streamer ? L("正在连接 @" + streamer + "…", "Connecting to @" + streamer + "…")
+                   : L("正在连接…", "Connecting…"),
   };
 }
 
@@ -59,9 +64,9 @@ function popoverRight(anchorRight, viewportWidth, panelWidth, margin) {
 
 /* 报警分级胶囊上的字。以前是「🔴 命中」这类 emoji 前缀，颜色现在交给 CSS
  * （.alert-item.tier-*），这里只给字；认不出的分级按「命中」处理（同旧逻辑） */
-var ALERT_TIER_TEXT = { exact: "命中", variant: "变体", fuzzy: "疑似" };
+var ALERT_TIER_TEXT = { exact: L("命中", "Exact"), variant: L("变体", "Variant"), fuzzy: L("疑似", "Similar") };
 function alertTierText(tier) {
-  return Object.prototype.hasOwnProperty.call(ALERT_TIER_TEXT, tier) ? ALERT_TIER_TEXT[tier] : "命中";
+  return Object.prototype.hasOwnProperty.call(ALERT_TIER_TEXT, tier) ? ALERT_TIER_TEXT[tier] : L("命中", "Exact");
 }
 
 /* Node 测试环境导出；浏览器里作为全局函数被 app.js 使用 */

@@ -1,3 +1,4 @@
+// i18n: done
 /* 品牌词表（「本场品牌」下拉）的纯函数：一组猜默认值（从房间输入框的文本或
  * 「最近直播间」chip 猜出主播名，再查服务端广播的 config.brands 取记住的
  * 品牌），一组管选项列表本身（用 config.brand_options 生成选项、决定重建
@@ -8,6 +9,9 @@
  * 独立成文件以便单元测试：tests/brand.test.mjs 用 node:test 钉住这些规则。
  * 写法和加载方式照 web/normalize.js、web/follow.js：浏览器里是全局函数，
  * Node 测试环境走 module.exports。 */
+
+// 浏览器里 L/LN 是 i18n.js 定义的全局函数（这里的 var 不会清掉它）；node 测试里从 i18n.js 取
+if (typeof L === "undefined") { var I18N_ = require("./i18n.js"); var L = I18N_.L, LN = I18N_.LN, APP_NAME = I18N_.APP_NAME; }
 
 /* 从房间输入框的文本里挖出主播用户名——与 normalizeRoomInput 认的输入一致：
  * 完整链接 .../@name/live、裸 @name、裸用户名。挖不出就返回空串（视为
@@ -95,7 +99,7 @@ function brandForChipClick(state, streamer, currentValue, brands) {
  * 「不限」一项。 */
 function buildBrandOptionList(brandOptions) {
   "use strict";
-  var opts = [{ value: "", label: "不限（默认）" }];
+  var opts = [{ value: "", label: L("不限（默认）", "Any (default)") }];
   if (Array.isArray(brandOptions)) {
     for (var i = 0; i < brandOptions.length; i++) {
       var o = brandOptions[i];

@@ -1,3 +1,4 @@
+# i18n: done
 """弹幕后端抓取——父进程侧（不 import TikTokLive，见 app/comment_worker.py）。
 
 这一条链路彻底独立于字幕/检测/审计：子进程连不上、断线、被限流，全部
@@ -19,6 +20,8 @@ import sys
 import time
 from pathlib import Path
 
+from .i18n import L
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # event_to_item 在拿不到 msg_id 时用它编号——模块级、跨调用递增，
@@ -28,8 +31,9 @@ _t_counter = 0
 
 def _http_note(http_status):
     """「（HTTP 400）」这样的状态码说明；没有状态码返回空串。"""
+    # 英文开头带空格：直接拼在上一句后面
     try:
-        return "（HTTP {}）".format(int(http_status)) if http_status else ""
+        return L("（HTTP {}）", " (HTTP {})").format(int(http_status)) if http_status else ""
     except (TypeError, ValueError):
         return ""
 
@@ -61,12 +65,16 @@ def _accepts_raw(fn):
     return len(positional) >= 3 or any(p.name == "raw" for p in params)
 
 
-# 更新检查的结果 -> 面板上说的话。只写发生了什么，不猜原因
+# 更新检查的结果 -> 面板上说的话。只写发生了什么，不猜原因。
+# 这几句都跟在「；」后面拼进被拒的那句话里。英文拆成新的一句（docs/i18n-style.md §2.2 不用分号），
+# 所以大写开头、不带句末句号（后面还接「. Retrying in N min.」）
 _FRESHEN_NOTES = {
-    "no-update": "弹幕组件已是可用的最新版本",
-    "pip-failed": "弹幕组件更新检查没成功",
-    "cooldown": "近几个小时已检查过弹幕组件更新",
-    "recently-failed": "弹幕组件更新检查刚失败过",
+    "no-update": L("弹幕组件已是可用的最新版本", "The comments component is already the latest version"),
+    "pip-failed": L("弹幕组件更新检查没成功", "Couldn’t check for a comments component update"),
+    "cooldown": L("近几个小时已检查过弹幕组件更新",
+                  "Already checked for a comments component update in the last few hours"),
+    "recently-failed": L("弹幕组件更新检查刚失败过",
+                         "A comments component update check failed recently"),
 }
 
 
@@ -341,10 +349,11 @@ class CommentSource:
                     else min(backoff * 2, self.BACKOFF_MAX_SEC)
                 await asyncio.sleep(backoff)
             elif returncode == 3:                       # UserOfflineError
-                await self._set_state("offline", "主播未开播")
+                await self._set_state("offline", L("主播未开播", "The streamer isn’t live"))
                 await asyncio.sleep(self.OFFLINE_RETRY_SEC)
             elif returncode == 4:                        # 签名服务限流/报错
-                await self._set_state("error", "评论签名服务繁忙，稍后重试")
+                await self._set_state("error", L("评论签名服务繁忙，稍后重试",
+                                                 "The comment signing service returned an error. Retrying later."))
                 await asyncio.sleep(self.SIGN_ERROR_WAIT_SEC)
             elif returncode == 5:                        # 需要登录态
                 if not tried_login:
@@ -355,17 +364,21 @@ class CommentSource:
                         continue                          # 立即带登录态重起，不退避
                 await self._set_state(
                     "unavailable",
-                    "TikTok 要求登录才能读取评论，浏览器里登录 TikTok 后重新开始")
+                    L("TikTok 要求登录才能读取评论，浏览器里登录 TikTok 后重新开始",
+                      "TikTok asked for a sign-in to read comments. Sign in to TikTok in your "
+                      "browser, then start again."))
                 return
             elif returncode == 6:                         # UserNotFoundError
-                await self._set_state("unavailable", "找不到该主播")
+                await self._set_state("unavailable", L("找不到该主播", "Couldn’t find this streamer"))
                 return
             elif returncode in (7, 8):                    # 握手被拒（8：HTTP 400 等；7：回 200 不升级）
                 if returncode == 8:
-                    prefix = "评论服务拒绝了连接{}".format(_http_note(self._last_http))
+                    prefix = L("评论服务拒绝了连接{}",
+                               "The comment service refused the connection{}").format(
+                        _http_note(self._last_http))
                     wait = self.REJECTED_WAIT_SEC
                 else:
-                    prefix = "TikTok 暂时拒绝了评论连接"
+                    prefix = L("TikTok 暂时拒绝了评论连接", "TikTok didn’t accept the comments connection")
                     wait = self.BLOCKED_WAIT_SEC
                 # 服务端给的原始原因只进审计，不上面板
                 raw = "{} http_status={}{}".format(
@@ -374,7 +387,9 @@ class CommentSource:
                 now_version = _installed_tiktoklive()
                 if now_version and spawned_version and now_version != spawned_version:
                     await self._set_state(
-                        "connecting", "弹幕组件已更新到 {}，正在重新连接…".format(now_version), raw=raw)
+                        "connecting", L("弹幕组件已更新到 {}，正在重新连接…",
+                                        "Comments component updated to {}. Reconnecting…")
+                        .format(now_version), raw=raw)
                     backoff = self.BACKOFF_MIN_SEC
                     continue
                 outcome = await self._try_freshen(prefix, raw)
@@ -383,8 +398,8 @@ class CommentSource:
                     continue
                 note = _FRESHEN_NOTES.get(outcome)
                 await self._set_state(
-                    "error", "{}{}，{} 分钟后自动重试".format(
-                        prefix, "；" + note if note else "", max(1, int(round(wait / 60)))),
+                    "error", L("{}{}，{} 分钟后自动重试", "{}{}. Retrying in {} min.").format(
+                        prefix, L("；", ". ") + note if note else "", max(1, int(round(wait / 60)))),
                     raw=raw)
                 await asyncio.sleep(wait)
             else:
@@ -392,7 +407,9 @@ class CommentSource:
                 if self._last_state == "error" and self._last_detail:
                     # 原始报错是英文异常，中控看不懂；先说程序在做什么，原文留在括号里备查
                     await self._set_state(
-                        "error", "评论连接出错，稍后自动重试（{}）".format(self._last_detail[:120]))
+                        "error", L("评论连接出错，稍后自动重试（{}）",
+                                   "Comments connection error ({}). Retrying shortly.")
+                        .format(self._last_detail[:120]))
                 await asyncio.sleep(backoff)
 
     async def _try_freshen(self, prefix, raw=""):
@@ -404,7 +421,9 @@ class CommentSource:
 
         async def announce():
             # 只有真的要跑 pip 时 updater 才会调这个：面板说「正在检查」时确实在检查
-            await self._set_state("error", "{}，正在检查弹幕组件有没有更新…".format(prefix), raw=raw)
+            await self._set_state("error", L("{}，正在检查弹幕组件有没有更新…",
+                                             "{}. Checking for a comments component update…")
+                                  .format(prefix), raw=raw)
 
         try:
             result = stale("comment-rejected", announce)
@@ -418,7 +437,8 @@ class CommentSource:
         outcome = result.get("outcome") or "unavailable"
         if outcome == "upgraded":
             await self._set_state(
-                "connecting", "弹幕组件已从 {} 更新到 {}，正在重新连接…".format(
+                "connecting", L("弹幕组件已从 {} 更新到 {}，正在重新连接…",
+                                "Comments component updated from {} to {}. Reconnecting…").format(
                     result.get("before"), result.get("after")), raw=raw)
         return outcome
 
@@ -427,11 +447,13 @@ class CommentSource:
         每 PROVISION_POLL_SEC 秒重查一次，装好/满足条件了才回到调用方继续。
         """
         if sys.version_info < (3, 10):
-            detail = "弹幕需要 Python 3.10+（当前 {}.{}）".format(
+            detail = L("弹幕需要 Python 3.10+（当前 {}.{}）",
+                       "Comments need Python 3.10 or later (current: {}.{})").format(
                 sys.version_info[0], sys.version_info[1])
             await self._set_state("unavailable", detail)
         else:
-            await self._set_state("unavailable", "正在安装弹幕组件 TikTokLive…")
+            await self._set_state("unavailable", L("正在安装弹幕组件 TikTokLive…",
+                                                   "Installing the comments component (TikTokLive)…"))
             provision = getattr(self, "on_provision", None)
             if provision is not None:
                 try:
@@ -445,8 +467,10 @@ class CommentSource:
                 # 已试过）就别让界面一直停在「正在安装」——那是在撒谎
                 await self._set_state(
                     "unavailable",
-                    "弹幕组件 TikTokLive 未装上，稍后自动重试；"
-                    "也可手动执行 pip install TikTokLive 后重新开始")
+                    L("弹幕组件 TikTokLive 未装上，稍后自动重试；"
+                      "也可手动执行 pip install TikTokLive 后重新开始",
+                      "The comments component (TikTokLive) isn’t installed. The app will try "
+                      "again later. You can also run pip install TikTokLive, then start again."))
         while not worker_available():
             await asyncio.sleep(self.PROVISION_POLL_SEC)
 
@@ -458,7 +482,8 @@ class CommentSource:
                                if now - t < self.HOUR_WINDOW_SEC]
         if len(self._connect_times) < self.MAX_CONNECTS_PER_HOUR:
             return
-        await self._set_state("error", "连接尝试过多，暂停到下一小时")
+        await self._set_state("error", L("连接尝试过多，暂停到下一小时",
+                                         "Too many connection attempts. Paused until the next hour."))
         wait = max(0.0, self.HOUR_WINDOW_SEC - (now - min(self._connect_times)))
         await asyncio.sleep(wait)
         now = self._clock()
@@ -472,7 +497,7 @@ class CommentSource:
         授权对话框弹在别处没人点，线程会一直等下去，监督协程跟着卡死在这里、
         面板永远「未连接」。超时按「没拿到」处理，走需要登录的提示。"""
         loop = asyncio.get_running_loop()
-        await self._set_state("connecting", "正在读取浏览器登录态…")
+        await self._set_state("connecting", L("正在读取浏览器登录态…", "Reading the browser sign-in…"))
         try:
             return await asyncio.wait_for(
                 loop.run_in_executor(None, session_cookies, self._cookies_browser),
@@ -603,7 +628,9 @@ class CommentSource:
                 minutes = max(1, int(round((now - silent_since) / 60)))
                 await self._set_state(
                     "silent_restart",
-                    "连接着但 {} 分钟没有收到弹幕，已重连评论流".format(minutes))
+                    L("连接着但 {} 分钟没有收到弹幕，已重连评论流",
+                      "No comments for {} min while connected. Reconnected the comments stream.")
+                    .format(minutes))
                 await self._terminate(proc)
                 return   # 这次子进程的看门狗任务到此为止，_run_once 的 finally 会把它收掉
         except asyncio.CancelledError:

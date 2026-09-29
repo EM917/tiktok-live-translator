@@ -1,3 +1,4 @@
+# i18n: done
 """启动自举（main.py 的 ensure_env）里能单独测试的判断、文案和安装步骤。
 
 main.py 在模块级就跑 ensure_env()，测试一 import 它就会被 execv 成 .venv 里的程序
@@ -28,6 +29,8 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+from .i18n import L, of
+
 APP_DIR_NAME = "TikTok Live Translator.app"      # 与 app/macbundle.py 一致
 
 REQ_STAMP = ".requirements.sha256"               # 放在 .venv 里：环境重建，指纹跟着没
@@ -39,7 +42,10 @@ MLX_RETRY_SEC = 24 * 3600
 KEEP_LOGS = 10
 TAIL_LINES = 40
 
-_WAIT = "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。"
+# 下面这些句子由 main.py 的 _info_dialog / _fail_alert 弹成系统对话框（同时 print 到终端，终端是中文）
+_WAIT = L("完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。",
+          "The caption window opens automatically when it’s done. Don’t open the app again "
+          "in the meantime.")
 
 
 def is_apple_silicon():
@@ -131,7 +137,7 @@ def filter_requirements(content, drop):
     """去掉 drop 里这些包的行，其余原样保留（注释、pip 选项、环境标记都不动）。"""
     drop = {_dist_key(d) for d in drop}
     kept = [ln for ln in str(content).splitlines() if requirement_name(ln) not in drop]
-    return "\n".join(kept) + "\n"
+    return "\n".join(kept) + "\n"  # i18n: data
 
 
 def skipped_for_this_machine(root):
@@ -271,13 +277,22 @@ def install_dialog_text(recorded=None, actual=None, venv_existed=False,
     """安装开始时给中控看的那句话。只说观察到的事：清单变了、Python 版本变了、
     环境里缺组件、还是第一次装。"""
     if requirements_only:
-        return "组件清单和上次安装时不一样了，正在补装运行组件（一般不到一分钟）。\n" + _WAIT
+        return L("组件清单和上次安装时不一样了，正在补装运行组件（一般不到一分钟）。\n",
+                 "The list of components changed since the last install. Installing what’s "
+                 "missing (usually under a minute).\n") + _WAIT
     if recorded and actual and recorded != actual:
-        return ("Python 版本从 {} 变成了 {}，需要重新安装运行组件（约需 2–5 分钟，"
-                "取决于网速）。\n".format(recorded, actual) + _WAIT)
+        return (L("Python 版本从 {} 变成了 {}，需要重新安装运行组件（约需 2–5 分钟，"
+                  "取决于网速）。\n",
+                  "Python changed from {} to {}, so the app’s components need to be reinstalled "
+                  "(about 2–5 minutes, depending on your connection).\n")
+                .format(recorded, actual) + _WAIT)
     if venv_existed:
-        return "运行组件不完整，正在自动补装（约需 2–5 分钟，取决于网速）。\n" + _WAIT
-    return "首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n" + _WAIT
+        return L("运行组件不完整，正在自动补装（约需 2–5 分钟，取决于网速）。\n",
+                 "Some of the app’s components are missing. Installing them now (about "
+                 "2–5 minutes, depending on your connection).\n") + _WAIT
+    return L("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n",
+             "First launch: installing the app’s components (about 2–5 minutes, depending on "
+             "your connection).\n") + _WAIT
 
 
 # ---- pip 输出落盘与失败说明 -----------------------------------------------------------------
@@ -309,7 +324,7 @@ def run_logged(cmd, log_path=None, echo=True, popen=subprocess.Popen):
     if log_path is not None:
         try:
             fh = open(str(log_path), "ab")
-            fh.write("$ {}\n".format(" ".join(str(c) for c in cmd)).encode("utf-8"))
+            fh.write("$ {}\n".format(" ".join(str(c) for c in cmd)).encode("utf-8"))  # i18n: data
             fh.flush()
         except OSError:
             fh = None
@@ -333,18 +348,18 @@ def run_logged(cmd, log_path=None, echo=True, popen=subprocess.Popen):
                     pass
         proc.stdout.close()
         code = proc.wait()
-        return code, "\n".join(tail)
+        return code, "\n".join(tail)  # i18n: data
     except Exception as exc:
         if fh is not None:
             try:
-                fh.write("启动失败：{!r}\n".format(exc).encode("utf-8"))
+                fh.write("启动失败：{!r}\n".format(exc).encode("utf-8"))  # i18n: terminal
             except OSError:
                 pass
         raise
     finally:
         if fh is not None:
             try:
-                fh.write("[退出码 {}]\n".format(code).encode("utf-8"))
+                fh.write("[退出码 {}]\n".format(code).encode("utf-8"))  # i18n: terminal
                 fh.close()
             except OSError:
                 pass
@@ -354,7 +369,7 @@ class PipFailed(Exception):
     """核心依赖都没装上。带着退出码、输出末尾和日志位置，供 failure_text 分类。"""
 
     def __init__(self, exit_code, tail="", log_path=None):
-        super().__init__("pip 返回 {}".format(exit_code))
+        super().__init__(L("pip 返回 {}", "pip returned {}").format(exit_code))
         self.exit_code = exit_code
         self.tail = tail or ""
         self.log_path = log_path
@@ -373,7 +388,9 @@ _NO_DIST_MARKS = ("no matching distribution found", "could not find a version th
 # pip 的两种说法：「Package 'x' requires a different Python」和
 # 「Ignored the following versions that require a different python version」
 _PY_MARK = "a different python"
-_ADVANCED = "（进阶：也可手动运行 setup.sh / setup.ps1，或 pip install -r requirements.txt）"
+_ADVANCED = L("（进阶：也可手动运行 setup.sh / setup.ps1，或 pip install -r requirements.txt）",
+              "(Advanced: you can also run setup.sh / setup.ps1, or pip install -r "
+              "requirements.txt)")
 
 
 def _free_gb(root):
@@ -399,27 +416,47 @@ def pip_failure_text(tail, exit_code, log_path=None, python_version=None, root=N
     no_dist = _PY_MARK in low or any(m in low for m in _NO_DIST_MARKS)
     if any(m in low for m in _DISK_MARKS):
         free = _free_gb(root) if root is not None else None
-        head = ("安装运行组件时磁盘空间不够（pip 报告写不进去）。运行环境约需 1.4 GB，"
-                "语音和翻译模型另需约 4 GB{}。\n腾出空间后重新打开本程序，会自动继续安装。"
-                .format("，现在剩余 {:.1f} GB".format(free) if free is not None else ""))
+        head = (L("安装运行组件时磁盘空间不够（pip 报告写不进去）。运行环境约需 1.4 GB，"
+                  "语音和翻译模型另需约 4 GB{}。\n腾出空间后重新打开本程序，会自动继续安装。",
+                  "There wasn’t enough disk space to install the app’s components (pip reported "
+                  "it couldn’t write). The app needs about 1.4 GB, plus about 4 GB for the "
+                  "speech and translation models{}.\nFree up space, then open the app again. "
+                  "Installation continues automatically.")
+                .format(L("，现在剩余 {:.1f} GB", " ({:.1f} GB available now)").format(free)
+                        if free is not None else ""))
     elif (no_dist and (_PY_MARK in low or not network) and python_version
           and python_version not in SUPPORTED_PYTHONS):
-        head = ("pip 找不到适用于当前 Python {} 的安装包。\n"
-                "本程序在 Python {} 上测试过：装好其中一个后，删掉程序目录里的 .venv 文件夹，"
-                "再用那个 Python 运行一次 main.py（例如 python3.13 main.py），会用它重新安装"
-                "运行组件。".format(python_version, "、".join(SUPPORTED_PYTHONS)))
+        head = (L("pip 找不到适用于当前 Python {} 的安装包。\n"
+                  "本程序在 Python {} 上测试过：装好其中一个后，删掉程序目录里的 .venv 文件夹，"
+                  "再用那个 Python 运行一次 main.py（例如 python3.13 main.py），会用它重新安装"
+                  "运行组件。",
+                  "pip couldn’t find packages for Python {}.\n"
+                  "The app is tested with these Python versions: {}. Install one of them, delete "
+                  "the .venv folder in the app folder, then run main.py once with that Python "
+                  "(for example, python3.13 main.py). It reinstalls the app’s components with "
+                  "that Python.")
+                .format(python_version, L("、", ", ").join(SUPPORTED_PYTHONS)))
     elif network:
-        head = ("自动安装未完成：pip 连不上软件包服务器。\n"
-                "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。")
+        head = L("自动安装未完成：pip 连不上软件包服务器。\n"
+                 "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。",
+                 "Installation didn’t finish: pip couldn’t reach the package server.\n"
+                 "Check your network connection, then open the app again. Installation picks "
+                 "up where it left off.")
     elif no_dist:
-        head = ("自动安装未完成：pip 没找到所需组件的安装包（pip 返回 {}）。\n"
-                "重新打开本程序会再试一次；一直这样的话，请把下面的记录发给开发者。"
+        head = (L("自动安装未完成：pip 没找到所需组件的安装包（pip 返回 {}）。\n"
+                  "重新打开本程序会再试一次；一直这样的话，请把下面的记录发给开发者。",
+                  "Installation didn’t finish: pip couldn’t find packages for the required "
+                  "components (pip returned {}).\nOpen the app again to retry. If this keeps "
+                  "happening, send the log below to the developer.")
                 .format(exit_code))
     else:
-        head = ("自动安装未完成（pip 返回 {}）。\n"
-                "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。"
+        head = (L("自动安装未完成（pip 返回 {}）。\n"
+                  "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。",
+                  "Installation didn’t finish (pip returned {}).\n"
+                  "Check your network connection, then open the app again. Installation picks "
+                  "up where it left off.")
                 .format(exit_code))
-    where = "详细记录：{}\n".format(log_path) if log_path else ""
+    where = L("详细记录：{}\n", "Log file: {}\n").format(log_path) if log_path else ""
     return head + "\n" + where + _ADVANCED
 
 
@@ -435,12 +472,15 @@ def failure_text(exc, log_path=None, python_version=None, root=None):
     if log_path is not None:
         try:
             with open(str(log_path), "a", encoding="utf-8") as fh:
-                fh.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+                fh.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))  # i18n: data
             written = True
         except OSError:
             written = False
-    detail = "详细记录：{}\n".format(log_path) if written else "（{}）\n".format(exc)
-    return ("自动安装未完成。\n请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
+    detail = (L("详细记录：{}\n", "Log file: {}\n").format(log_path) if written
+              else L("（{}）\n", "({})\n").format(of(exc)))
+    return (L("自动安装未完成。\n请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n",
+              "Installation didn’t finish.\nCheck your network connection, then open the app "
+              "again. Installation picks up where it left off.\n")
             + detail + _ADVANCED)
 
 
@@ -496,7 +536,7 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
             failed.append(optional)
             if optional == "mlx-whisper":
                 write_mlx_giveup(root / ".venv" / MLX_GIVEUP, c,
-                                 "首次安装时单独安装 mlx-whisper 没成功", now=now)
+                                 "首次安装时单独安装 mlx-whisper 没成功", now=now)  # i18n: data
     return {"full_ok": False, "failed_optional": failed}
 
 
@@ -577,10 +617,17 @@ def mlx_giveup_note(root):
     info = read_mlx_giveup(Path(root) / ".venv" / MLX_GIVEUP)
     if info is None:
         return None
+    # 英文把日期和 pip 的返回码收进同一对括号：(attempted 2026-09-20, pip returned 1)。
+    # 句末不加句号：自检那一行（selfcheck.check_asr）还要在后面接一句
     try:
-        day = datetime.fromtimestamp(info["ts"]).strftime("%Y-%m-%d") if info["ts"] else "之前"
+        day = (datetime.fromtimestamp(info["ts"]).strftime("%Y-%m-%d") if info["ts"]
+               else L("之前", "earlier"))
     except (OverflowError, OSError, ValueError):
-        day = "之前"
-    code = "（pip 返回 {}）".format(info["pip_exit"]) if info["pip_exit"] is not None else ""
-    return ("{} 安装 GPU 加速组件没成功{}，程序启动时不会再自动重试；没在监听时每天在后台"
-            "重试一次，装好后会提示".format(day, code))
+        day = L("之前", "earlier")
+    code = (L("（pip 返回 {}）", ", pip returned {}").format(info["pip_exit"])
+            if info["pip_exit"] is not None else "")
+    return (L("{} 安装 GPU 加速组件没成功{}，程序启动时不会再自动重试；没在监听时每天在后台"
+              "重试一次，装好后会提示",
+              "GPU acceleration couldn’t be installed (attempted {}{}). The app won’t retry "
+              "when it starts. While it isn’t monitoring, it retries once a day in the "
+              "background and lets you know once it’s installed").format(day, code))

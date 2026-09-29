@@ -46,6 +46,44 @@ def test_every_pair_in_the_repo_passes_g2_and_g3():
     assert not violations, "\n".join(map(str, violations))
 
 
+# 句子里指路到设置分组里的某一行：一律从 Settings 走起（docs/i18n-style.md §2.1），
+# 光写 “in Translation Engine” 读着像个地名，用户不知道去哪找
+_BARE_SETTINGS_POINTER = re.compile(
+    r"\b(?:in|of|See) (?:the )?(?:Translation Engine|Startup Check|Storage|Banned-Term Alerts)\b"
+    r"(?! row)")
+
+
+def test_english_pointers_to_a_settings_row_start_from_settings():
+    bad = [(p.path, p.line, en) for p in _all_pairs() for en in p.ens
+           if _BARE_SETTINGS_POINTER.search(en)]
+    assert not bad, bad
+    assert _BARE_SETTINGS_POINTER.search("You can choose another engine in Translation Engine.")
+    assert not _BARE_SETTINGS_POINTER.search("Choose another engine in Settings > Translation Engine.")
+    assert not _BARE_SETTINGS_POINTER.search("See the Audit Log row in Settings > Startup Check.")
+
+
+# 括号里以命令或文件名收尾时右括号前不加句号（docs/i18n-style.md §2.2）：照着复制会把
+# “requirements.txt.” 带进 pip
+_COMMAND_THEN_PERIOD = re.compile(
+    r"(?:requirements\.txt|setup\.sh|setup\.ps1|Start\.command|Start\.bat|\.app)\.\)")
+
+
+def test_a_command_in_parentheses_has_no_full_stop_after_it():
+    bad = [(p.path, p.line, en) for p in _all_pairs() for en in p.ens
+           if _COMMAND_THEN_PERIOD.search(en)]
+    assert not bad, bad
+    assert _COMMAND_THEN_PERIOD.search("(Advanced: pip install -r requirements.txt.)")
+
+
+def test_the_reinstall_hint_reads_the_same_everywhere():
+    """「关闭程序（后）重新打开，会自动补装」只有一种英文说法。"""
+    got = [(p.path, p.line, en) for p in _all_pairs() for en in p.ens
+           if re.search("关闭程序后?重新打开，会自动补装", p.zh)]
+    assert len(got) >= 5, got
+    assert not [g for g in got if not re.search(r"Quit and reopen the app to install \w+( \w+)? "
+                                                r"automatically\.", g[2])], got
+
+
 def test_the_scan_covers_the_ui_sources_and_nothing_else():
     """范围读错了（比如 glob 写坏）时上面那条会假装通过：这里钉住它真的在看界面源文件。"""
     files = P.source_files()
@@ -218,6 +256,19 @@ def test_good_js_pairs_pass(call):
 ])
 def test_bad_js_pairs_are_caught(call, rule):
     assert rule in _rules(_js("var x = " + call + ";"))
+
+
+def test_a_registered_js_pair_may_leave_out_a_variable(monkeypatch):
+    """R2_EN_OMITS：登记了的对，英文可以少引用中文里的变量；多引用、换变量照样报，
+    没登记的照样报。"""
+    omit = 'L("再点一次：改听 @" + target + "（停止监听 @" + cur + "）", "Click Again to Switch to @" + target)'
+    assert "再点一次：改听 @（停止监听 @）" in rules.R2_EN_OMITS
+    assert _rules(_js("var x = " + omit + ";")) == []
+    monkeypatch.setattr(rules, "R2_EN_OMITS", {})
+    assert _rules(_js("var x = " + omit + ";")) == ["R2"]
+    monkeypatch.setattr(rules, "R2_EN_OMITS", {"再点一次：改听 @（停止监听 @）": "测试"})
+    extra = omit.replace('"Click Again to Switch to @" + target', '"Switch to @" + other')
+    assert _rules(_js("var x = " + extra + ";")) == ["R2"]
 
 
 def test_html_pairs_come_from_every_data_en_attribute():

@@ -121,6 +121,7 @@
 | 提示音 | **Sound** | Ringtone, Beep | |
 | 演示模式 | **Demo mode** | Test mode | |
 | 浏览器登录态 | **Browser Login** | Cookies, Session | |
+| 登录（动作）/ 登录（名词）/ 已登录、未登录 | **sign in** / **sign-in** / **signed in、signed-out** | log in, login, logged in | 苹果的说法；browser_login、comment_source、resolver、selfcheck 统一这么写。设置行名 Browser Login 照上一行保留；钥匙串对话框里的 login password 是 macOS 自己的叫法，照抄 |
 | 完全磁盘访问权限 | **Full Disk Access** | | 照抄 macOS 里的原名 |
 | 直播流解析 | **Stream Lookup** | Stream Resolution | 「解析」对用户来说就是去找流地址。Resolution 容易被当成分辨率 |
 | 音频组件 ffmpeg | **Audio (ffmpeg)** | Audio Component | ffmpeg 全小写，是它的品牌写法 |
@@ -177,10 +178,10 @@
 | 顶栏按钮不加省略号 | 顶栏相当于 toolbar，苹果的 toolbar 项不带省略号。所以写 **Switch Streamer**，不写 “Switch Streamer…”（省 11px，§4 用得上） |
 | 对话框里的推按钮，点了还要再填东西的，加省略号 | 这个程序目前没有这种按钮；以后加了照这条做 |
 | 截断统一交给 CSS（`text-overflow: ellipsis`） | 不要在 JS 里按字符数截断再补 “…”（见 §4 R10） |
-| 句号 | 完整句子加；按钮、标题、标签、胶囊、占位文字不加 |
+| 句号 | 完整句子加；按钮、标题、标签、胶囊、占位文字不加。括号里以命令、路径或文件名收尾时，右括号前不加句号：`(Advanced: pip install -r requirements.txt)`，照着复制时句号不会带进命令 |
 | 分隔符 ` · `（U+00B7，两边各一个空格） | 沿用中文界面：Live · @bella、Brand · Bella、Off · 53 terms |
 | 破折号 | 中文的「——」优先拆成两句。实在要保留，用不带空格的 em dash `—`，一句最多一个 |
-| 分号 | 不用，拆成两句 |
+| 分号 | 不用，拆成两句。唯一例外：冒号后面逐条列 `name: reason` 时，条目之间用 `; ` 分隔（`Chrome: …; Safari: …`） |
 | 冒号 | 标签后接值：`Startup Check: Noise Reduction isn’t working.` 冒号后面除非是专有名词或完整句子，否则小写 |
 | 引号 | 引用用户内容（比如报警里的违禁词）用弯双引号 “term”。撇号用弯的 `’`（U+2019），代码和文件名里除外 |
 | 括号 | ASCII 括号，前面加空格：`Spanish + English (default)` |
@@ -441,7 +442,7 @@
 | 90 | app.js:1868、viewer.py:410 | 这个链接里带着一把钥匙，当密码看待；发给谁，谁就能看到字幕和报警。 | This link contains an access key. Treat it like a password. Anyone who has it can see captions and alerts. | |
 | 91 | app.js:1902、viewer.py:421 | 第一次打开时，系统可能弹出…请选允许。 | The first time you turn this on, macOS may ask to allow incoming network connections, or Windows Firewall may ask for access. Choose Allow. | |
 | 92 | app.js:1891、viewer.py:420 | 本机地址已从 {old} 变为 {new}，之前发出去的链接需要重新扫码 | This computer’s address changed from {old} to {new}. Phones need to scan the new QR code. | |
-| 93 | viewer.py:417 | 端口 {ports} 都没能打开监听，系统返回：{err}。已保持关闭。可以关掉占用这些端口的程序后再打开一次。 | Couldn’t listen on ports {ports}. Details: {err}. Phone Viewing is still off. Quit apps using these ports, then try again. | `{err}` 可能是系统给的任意语言，放在 Details 后面 |
+| 93 | viewer.py:417 | 端口 {ports} 都没能打开监听，系统返回：{err}。已保持关闭。可以关掉占用这些端口的程序后再打开一次。 | Couldn’t open a port for Phone Viewing (tried {ports}). Details: {err}. Phone Viewing is still off. Quit apps that use those ports, then try again. | `{err}` 可能是系统给的任意语言，放在 Details 后面。`{ports}` 可能只有一个（8766）也可能是一段（8766–8770），所以写成 tried {ports}，不写 ports {ports} |
 
 ### G. 直播中的字幕区和弹幕列
 
@@ -493,7 +494,7 @@
 | 124 | 同看人数已满（12 人），稍后再试 | Full (12 max) · Try again later | |
 | 125 | 中控已关闭手机同看 / {n} 秒没有新消息 / 状态未知 | Operator stopped sharing / No updates for {n} sec / Status unknown | |
 | 126 | 未开始 / 连接中 / 直播中 / 已停止 | Not started / Connecting / Live / Stopped | |
-| 127 | 已经 {n} 秒没连上。请找中控确认同看是否还开着，或重新扫码 | Can’t connect for {n} sec. Ask the operator whether sharing is still on, or scan the QR code again. | |
+| 127 | 已经 {n} 秒没连上。请找中控确认同看是否还开着，或重新扫码 | Not connected for {n} sec. Ask the operator whether sharing is still on, or scan the QR code again. | can’t 不跟一段时长连用 |
 | 128 | 疑似违禁词 / 清除已看过的报警 / 只在这台手机上隐藏，中控电脑和记录不受影响 | Possible Banned Terms / Clear Seen / Hides alerts on this phone only. The operator’s computer and records aren’t affected. | |
 | 129 | 重译会用中控电脑上的大模型，稍等几秒 | Retranslation uses the larger model on the operator’s computer and takes a few seconds. | |
 | 130 | 最新 / 弹幕 / 只看模式 · 不能操作 / 提示音 | Latest / Comments / View only / Sound | |

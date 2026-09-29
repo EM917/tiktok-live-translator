@@ -8,6 +8,7 @@ class i18n-data（tests/i18n_rules.py 的 DATA_TEXT_CLASS）。
 
 另有一条无条件的：inject_lang 靠 `<html lang="zh-CN">` 这个字面量换语言，两个页面里它都必须
 恰好出现一次——改成别的写法，英文界面会静默失效（页面照样是中文，不报错）。"""
+import re
 import textwrap
 
 import pytest
@@ -41,6 +42,50 @@ def test_the_pages_parse_into_a_real_tree(path):
     root = P.parse_html(P.read(path))
     tags = [el.tag for el in P.iter_elements(root)]
     assert tags[0] == "html" and "title" in tags and "body" in tags and len(tags) > 50
+
+
+def _spacing_problems(src):
+    """data-en 丢了中文文字节点贴着相邻元素的那一边空白：[(行号, 标签, 哪一边)]。
+
+    applyStatic 的 setOwnText 把整段文字节点换成 data-en，节点两头的空白也一起换掉。中文
+    「沿用：主播语言 <span>」「…（如 @somebody）<button ⓘ>」靠这个空白和后面的元素隔开；英文不带
+    就粘成 "Keeps spoken language:Spanish"。G5 按折叠后的文字比，看不出这个，所以单独查：中文在哪
+    一边挨着元素留了空白，data-en 同一边也要留（挨着的是注释、或是开头结尾，就不要求）。"""
+    out = []
+    for el in P.iter_elements(P.parse_html(src)):
+        if not el.has("data-en") or el.has("data-en-html"):
+            continue
+        own = P.own_text(el)
+        if own is None:
+            continue
+        i = el.children.index(own)
+        en = el.get("data-en") or ""
+        before = el.children[i - 1] if i else None
+        after = el.children[i + 1] if i + 1 < len(el.children) else None
+        if type(after) is P.Node and own.data != own.data.rstrip() and en == en.rstrip():
+            out.append((el.line, el.tag, "end"))
+        if type(before) is P.Node and own.data != own.data.lstrip() and en == en.lstrip():
+            out.append((el.line, el.tag, "start"))
+    return out
+
+
+@pytest.mark.parametrize("path", PAGES)
+def test_the_english_keeps_the_space_next_to_an_inline_neighbour(path):
+    assert _spacing_problems(P.read(path)) == []
+
+
+def test_the_spacing_check_sees_a_glued_neighbour():
+    """上面那条的检查器自己要能抓到问题，不然它会假装通过。"""
+    src = textwrap.dedent('''
+        <p data-en="Keeps spoken language:">沿用：主播语言 <span id="echo"></span></p>
+        <p data-en="Keeps spoken language: ">沿用：主播语言 <span id="echo"></span></p>
+        <span data-en="Comments"><svg></svg> 弹幕</span>
+        <span data-en="Brand">本场品牌
+          <!-- 注释后面的空白是另一个文字节点，换不掉 -->
+          <select></select></span>
+        <b data-en="Stop">停止 </b>
+    ''')
+    assert _spacing_problems(src) == [(2, "p", "end"), (4, "span", "start")]
 
 
 def _left(src):
@@ -123,3 +168,31 @@ def test_scripts_styles_and_comments_are_not_page_text():
         </body></html>
     '''
     assert _left(src) == []
+
+
+# ---- file:// 指引（docs/i18n-style.md #8、§4.3 R15；spec §6、§9 R1-11） ---------------------
+
+def _file_url_script():
+    scripts = re.findall(r"<script>([\s\S]*?)</script>", P.read("web/index.html"))
+    found = [s for s in scripts if 'location.protocol === "file:"' in s]
+    assert len(found) == 1, "index.html 里应当恰好有一段 file:// 的内联指引"
+    return found[0]
+
+
+def test_the_file_url_note_is_still_there():
+    """G4/G5/G10 都跳过 <script>：这段指引丢了或改了，别的检查都不会红。"""
+    script = _file_url_script()
+    assert "请不要直接打开这个文件" in script
+    assert "TikTok Live Translator.app" in script and "Start.bat" in script
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "开闸（Z1）之后才加英文：闸关着时中文用户直接双击 index.html 看到的这段指引要逐字节不变。"
+    "file:// 下 i18n.js 加载不出来，只能中英并列，<title> 也要在这段脚本里一并给英文。"
+    "改完这条会 XPASS 而失败，届时删掉 xfail 标记"))
+def test_the_file_url_note_carries_both_languages():
+    script = _file_url_script()
+    assert "请不要直接打开这个文件" in script
+    assert "Don’t open this file directly" in script
+    assert "The caption window opens automatically" in script
+    assert re.search(r'document\.title\s*=\s*"[^"]*TikTok Live Translator', script)

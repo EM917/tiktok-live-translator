@@ -10,6 +10,7 @@ SENTINEL 是假 cookie 的值：它只许出现在发给 TikTok 的 Cookie 头�
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import struct
 import sys
@@ -21,10 +22,13 @@ from types import SimpleNamespace
 import pytest
 
 from app import browser_login as bl
+from app import i18n
 from app import pipeline as pipeline_mod
 from app import resolver, selfcheck
+from app.i18n import CJK
 from app.pipeline import Pipeline, browser_only_message
 from tests.helpers import run
+from tests.i18n_rules import EN_CAUSAL, EN_LABELS
 
 SENTINEL = "S3NTINEL-c00kie-VALUE-9f2e"
 GUESSED_LABELS = ("年龄", "限流", "封禁", "多半")
@@ -386,6 +390,79 @@ def test_browser_only_message_matches_what_was_observed(login, must_have, must_n
 def test_browser_only_message_without_observations_is_the_old_text():
     assert _advice(browser_only_message(3, None)) == ""
     assert _advice(browser_only_message(3, {"chrome": "not_read"})) == ""
+
+
+# ---- 同一段话的英文（spec §12.1 G11）：一样只写观察和能照做的事 --------------------
+
+# 固定话术里的三件事实。那几句写在 pipeline.browser_only_message 里（M5a 给它写英文），
+# 中间接上的 advice 是 browser_login 的（本文件管）。英文版不译「不是网络或限流问题」这半句：
+# 否定句里也不许出现 rate limit（CLAUDE.md 第八条，docs/i18n-style.md §2.6）
+_FIXED_FACTS_EN = ("code 4003110", "Retried 3 times", "TikTok doesn’t say why")
+_FDA_PATHS = ["/opt/homebrew/bin/python3.14", "/opt/anaconda3/bin/python3.13"]
+# 句号（或右括号）后面紧跟着下一句的大写字母 = 两句英文粘在了一起（中文句子不用空格，
+# 英文要）。macOS 开头的那句是小写开头，单独列出来
+_GLUED = re.compile(r"\.(?=[A-Z]|macOS\b)|\)(?=[A-Za-z])")
+
+
+def _assert_plain_english(text, where):
+    assert not CJK.search(text), (where, text)
+    assert not EN_LABELS.search(text), (where, EN_LABELS.search(text).group(), text)
+    assert not EN_CAUSAL.search(text), (where, EN_CAUSAL.search(text).group(), text)
+    assert "  " not in text and not _GLUED.search(text), (where, text)
+
+
+@pytest.mark.parametrize("login,must_have", [
+    ({"chrome": "blocked_by_system", "safari": "blocked_by_system"},
+     ["Looked for a TikTok sign-in in your browsers. Chrome: macOS didn’t allow access; "
+      "Safari: macOS didn’t allow access",
+      "macOS didn’t allow the app to read browser data. Go to System Settings > "
+      "Privacy & Security > Full Disk Access",
+      "(do this for each path): “/opt/homebrew/bin/python3.14”, “/opt/anaconda3/bin/python3.13”"]),
+    ({"chrome": "not_logged_in"},
+     ["Chrome: readable, but no TikTok sign-in cookie", "Sign in to TikTok in Chrome (or Safari)"]),
+    ({"chrome": "no_tiktok_cookie"}, ["Chrome: readable, but no tiktok.com cookies"]),
+    ({"chrome": "blocked_by_system", "safari": "not_logged_in"},
+     ["Full Disk Access", "open it again. Sign in to TikTok in Chrome (or Safari)"]),
+    ({"chrome": "ok", "safari": "blocked_by_system"},
+     ["Tried again with the TikTok sign-in from Chrome. TikTok still didn’t provide a stream URL."]),
+    ({"chrome": "keychain_wait"},
+     ["Chrome: reading didn’t finish in time", "If a keychain dialog is on screen, click Always Allow"]),
+    ({"chrome": "cannot_decrypt", "edge": "cannot_decrypt"},
+     ["access to “Chrome Safe Storage”, “Microsoft Edge Safe Storage”"]),
+    ({"chrome": "error:RuntimeError"},
+     ["Chrome: error while reading (RuntimeError)", "You can report this message to the developer."]),
+    # 能读、看不出登没登录：没有对应的步骤，英文收在句号上，不留尾部空格
+    ({"chrome": "readable"},
+     ["Looked for a TikTok sign-in in your browsers. Chrome: readable, but couldn’t tell whether "
+      "you’re signed in to TikTok."]),
+    ({"chrome": "readable", "safari": "readable"},
+     ["Chrome: readable, but couldn’t tell whether you’re signed in to TikTok; Safari: readable"]),
+])
+def test_browser_only_advice_in_english(monkeypatch, login, must_have):
+    """browser_login 这一段自己的英文：没有中文、没有贴标签和猜原因的词、句子之间有空格。
+    开头带一个空格：它接在 browser_only_message 前一句的句号后面。"""
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_FDA_PATHS))
+    advice = i18n.render(bl.browser_only_advice(login), "en")
+    assert advice.startswith(" ") and not advice.startswith("  "), advice
+    assert advice.endswith(".") and not advice.endswith(" "), advice
+    _assert_plain_english(advice.strip(), login)
+    for text in must_have:
+        assert text in advice, (text, advice)
+    assert str(bl.browser_only_advice(login)) == _advice(browser_only_message(3, login))
+
+
+def test_browser_only_message_in_english_keeps_the_fixed_facts(monkeypatch):
+    """整句（pipeline 的固定话术 + 这里的 advice）在英文里同样带着三件事实，没有中文、没有
+    贴标签和猜原因的词、句子之间恰好一个空格。"""
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_FDA_PATHS))
+    for login in (None, {"chrome": "blocked_by_system", "safari": "blocked_by_system"},
+                  {"chrome": "ok"}, {"safari": "not_logged_in"}, {"chrome": "readable"},
+                  {"chrome": "readable", "safari": "readable"}):
+        message = i18n.render(browser_only_message(3, login), "en")
+        for fact in _FIXED_FACTS_EN:
+            assert fact in message, (fact, message)
+        assert "rate limit" not in message.lower()
+        _assert_plain_english(message, login)
 
 
 class _StubServer:

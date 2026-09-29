@@ -1,3 +1,4 @@
+# i18n: done
 """把 TikTok 直播间页面地址解析成可供 ffmpeg 拉流的媒体地址（FLV/HLS）。"""
 import asyncio
 import contextvars
@@ -9,6 +10,7 @@ import time
 import traceback
 from pathlib import Path
 
+from .i18n import Bi, L, of
 from .nethttp import read_all
 from .redact import strip_query
 
@@ -78,8 +80,9 @@ async def _host_is_private(host):
         # 「解析不了」和「命中内网」是两回事：以前一律 return True，CDN 域名在
         # 用户网络下解析失败时中控看到的是「安全限制」，而且整条解析链在第一层
         # 就被终止、审计里 layers=[]。如实说是 DNS 问题，kind=network 可重试。
-        raise ResolveError("流媒体域名解析失败：{}（检查网络 / DNS）".format(host),
-                           kind="network") from exc
+        raise ResolveError(L("流媒体域名解析失败：{}（检查网络 / DNS）",
+                             "Couldn’t resolve the stream host {}. Check your network and DNS.")
+                           .format(host), kind="network") from exc
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
@@ -106,10 +109,13 @@ async def _check_media_url(url, trusted=False):
     parsed = urlparse(url)
     allowed = ("http", "https", "file") if trusted else ("http", "https")
     if parsed.scheme not in allowed:
-        raise ResolveError("不支持的地址协议：{}（只接受 http/https 直播流）"
-                           .format(parsed.scheme or "(空)"))
+        raise ResolveError(L("不支持的地址协议：{}（只接受 http/https 直播流）",
+                             "Unsupported URL scheme: {}. Only http and https streams are accepted.")
+                           .format(parsed.scheme or L("(空)", "(empty)")))
     if not trusted and await _host_is_private(parsed.hostname):
-        raise ResolveError("拒绝访问内网/本机地址的流媒体地址（安全限制）")
+        raise ResolveError(L("拒绝访问内网/本机地址的流媒体地址（安全限制）",
+                             "Refused a stream URL on this computer or the local network "
+                             "(safety check)."))
     return url
 
 
@@ -248,7 +254,7 @@ def _observe_login(browser, code):
 #     5 秒，还要向钥匙串要密钥。
 # 产品负责人的决定（已被告知代价：此后每次解析都带着中控的 TikTok 身份）：只要读得到登录，
 # 就一律先用登录；不动 Chrome，直接用 Safari。
-LOGIN_LAYER = "登录直播页"
+LOGIN_LAYER = "登录直播页"                # i18n: audit（审计里的层名；界面句子里经 _ui_layer 换标签）
 # 借登录抓直播页之前，离本进程上一次**匿名**请求至少隔这么久。取 8 秒：上面实测 0.5 秒和
 # 3 秒都拿不到，8 秒和 20 秒都拿到，8 是量到过的最小可行间隔。
 LOGIN_AFTER_ANON_GAP_SEC = 8.0
@@ -277,7 +283,7 @@ LOGIN_GAP_MAX_WAIT_SEC = 3 * LOGIN_AFTER_ANON_GAP_SEC
 # 第一次抓到的页面里为什么没有流地址，我们不知道，这里只记这个观察；已知的是同一种抓法在
 # 约 31 秒后拿到了，而中间那三层（WebKit 隐藏页 25 秒 + 两次匿名 yt-dlp）一个也没拿到。
 # 所以把这一次重抓提到它们前面。
-LOGIN_RETRY_LAYER = "登录直播页重试"
+LOGIN_RETRY_LAYER = "登录直播页重试"      # i18n: audit
 # 重抓之前固定等这么久（中间没发过匿名请求时）。中间发过匿名请求就按实测的
 # LOGIN_AFTER_ANON_GAP_SEC 等（见 _login_retry_wait）——链路里排在前面的官方接口
 # 是匿名的，生产上等的通常是那个间隔的差额。
@@ -821,7 +827,8 @@ async def _resolve_via_api(url, cookies_browser="auto"):
     # 只有一种情况会走到这里：接口一直不肯给流地址（4003110），登录态也没帮上忙。
     # 只报观察，不编原因——交给上层隔一会儿自动重试（见 pipeline._resolve_media）。
     raise ResolveError(
-        "TikTok 没有把这个直播间的流地址给程序（代码 4003110）",
+        L("TikTok 没有把这个直播间的流地址给程序（代码 4003110）",
+          "TikTok didn’t provide a stream URL for this live stream (code 4003110)."),
         kind="browser_only")
 
 
@@ -912,40 +919,57 @@ def _classify_ytdlp_error(err_text):
     """把 yt-dlp 的英文报错归类成 (kind, 用户能行动的中文话术)；技术细节只留最后一行。"""
     lowered = err_text.lower()
     lines = [ln.strip() for ln in err_text.strip().splitlines() if ln.strip()]
-    detail = "\n技术细节：{}".format(lines[-1][:200]) if lines else ""
+    detail = L("\n技术细节：{}", "\nDetails: {}").format(lines[-1][:200]) if lines else ""
     if "not currently live" in lowered or "room is offline" in lowered:
         # 注意：TikTok 对**未登录**的请求也经常返回「not currently live」——
         # 浏览器里明明在播、这里却说没开播，多半是这个原因。实测同一时刻
         # 6 个在播房间里 5 个被判为未开播，只有 1 个能匿名解析。
         # 所以不能把这条当成板上钉钉的「主播下播了」。
         return ("offline",
-                "没能获取到这个直播间的音频流。\n"
-                "· 如果主播确实没在播：等开播后再试即可；\n"
-                "· 如果你在浏览器里看得到这个直播：TikTok 对未登录访问经常"
-                "返回「未开播」，需要导出登录 cookies 后用 --cookies 指定"
-                "（见 README 常见问题）。")
+                L("没能获取到这个直播间的音频流。\n"
+                  "· 如果主播确实没在播：等开播后再试即可；\n"
+                  "· 如果你在浏览器里看得到这个直播：TikTok 对未登录访问经常"
+                  "返回「未开播」，需要导出登录 cookies 后用 --cookies 指定"
+                  "（见 README 常见问题）。",
+                  "Couldn’t get the audio stream for this live stream.\n"
+                  "· If the streamer isn’t live: try again after the stream starts.\n"
+                  "· If you can see this live stream in your browser: TikTok often answers "
+                  "“not live” to visitors who aren’t signed in. Export your sign-in cookies and "
+                  "pass them with --cookies (see the README FAQ)."))
     if ("unable to find room" in lowered or "http error 404" in lowered
             or "unsupported url" in lowered or "does not exist" in lowered):
         return ("not_found",
-                "没有找到这个直播间——请确认地址形如 "
-                "https://www.tiktok.com/@用户名/live，"
-                "或在直播间里点「分享 → 复制链接」粘贴过来。")
+                L("没有找到这个直播间——请确认地址形如 "
+                  "https://www.tiktok.com/@用户名/live，"
+                  "或在直播间里点「分享 → 复制链接」粘贴过来。",
+                  "Couldn’t find this live stream. Check that the link looks like "
+                  "https://www.tiktok.com/@username/live, or in the live stream, click "
+                  "Share > Copy link and paste it here."))
     if ("log in" in lowered or "login" in lowered or "cookies" in lowered
             or "authentication" in lowered or "private" in lowered):
+        # 英文只写 yt-dlp 报出来的事（要登录），不跟中文去猜「私密或有观看限制」（CLAUDE.md 第八条）
         return ("login",
-                "这个直播间需要登录后才能观看（可能是私密或有观看限制），"
-                "换一个直播间试试吧。（进阶：若你在浏览器里能看这个直播，"
-                "可用 --cookies 导入登录信息，见 README 常见问题）" + detail)
+                L("这个直播间需要登录后才能观看（可能是私密或有观看限制），"
+                  "换一个直播间试试吧。（进阶：若你在浏览器里能看这个直播，"
+                  "可用 --cookies 导入登录信息，见 README 常见问题）",
+                  "yt-dlp reported that this live stream needs a sign-in to watch. Try another "
+                  "live stream. (Advanced: if you can watch it in your browser, import your "
+                  "sign-in with --cookies. See the README FAQ.)") + detail)
     if ("timed out" in lowered or "connection" in lowered
             or "network" in lowered or "temporary failure" in lowered
             or "getaddrinfo" in lowered or "nodename" in lowered
             or "name resolution" in lowered or "unreachable" in lowered
             or "reset by peer" in lowered or "urlopen error" in lowered):
         return ("network",
-                "网络连接不畅，暂时访问不到 TikTok——请检查网络后重试。" + detail)
+                L("网络连接不畅，暂时访问不到 TikTok——请检查网络后重试。",
+                  "Couldn’t reach TikTok. Check your network connection and try again.")
+                + detail)
+    # 英文把中文里的「可能是 A，也可能是 B」改写成要核对的几件事（docs/i18n-style.md §2.5）
     return ("unknown",
-            "无法连接这个直播间：主播可能没在播，也可能是网络问题或地址有误。"
-            "请检查后重试。" + detail)
+            L("无法连接这个直播间：主播可能没在播，也可能是网络问题或地址有误。"
+              "请检查后重试。",
+              "Couldn’t connect to this live stream. Check that the streamer is live, your "
+              "network is working, and the link is correct, then try again.") + detail)
 
 
 # 从浏览器直接借用登录态的候选顺序。TikTok 现在对**未登录**请求把大多数
@@ -1119,7 +1143,9 @@ async def _run_ytdlp(url, cookies=None, browser=None, timeout=45, profile=None):
             except Exception:
                 pass
         if isinstance(exc, asyncio.TimeoutError):
-            raise ResolveError("解析直播流超时（网络不通或该地区无法访问 TikTok）",
+            raise ResolveError(L("解析直播流超时（网络不通或该地区无法访问 TikTok）",
+                                 "Stream lookup timed out. Check that this computer can open "
+                                 "tiktok.com, then try again."),
                                kind="network") from None
         raise
     if anonymous:
@@ -1162,7 +1188,7 @@ def _layer_note(note):
     waited_ms。"""
     out = {}
     if note.get("why"):
-        out["why"] = strip_query("; ".join(note["why"]), 120)
+        out["why"] = strip_query("; ".join(note["why"]), 120)       # i18n: audit
     if note.get("status") is not None:
         out["status"] = note["status"]
         if note.get("field"):
@@ -1182,7 +1208,7 @@ def _borrow_why(note, stderr_text):
     """yt-dlp借cookie 这一层的 why：各浏览器的登录代码在前，yt-dlp stderr 的最后一行在后。"""
     parts = list(note.get("why") or [])
     parts += [v for v in _stderr_why(stderr_text).values() if v not in parts]
-    return {"why": strip_query("; ".join(parts), 120)} if parts else {}
+    return {"why": strip_query("; ".join(parts), 120)} if parts else {}   # i18n: audit
 
 
 def _mark(trace, layer, outcome, t0, **extra):
@@ -1209,7 +1235,7 @@ async def _vet(url, layer, rejected):
     try:
         return await _check_media_url(url)
     except ResolveError as exc:
-        rejected.append((layer, exc))
+        rejected.append((_ui_layer(layer), exc))     # 只拼进界面句子，不进审计
         return None
 
 
@@ -1219,7 +1245,34 @@ def _note_layer_crash(crashed, layer_name, exc):
     crashed 列表后放过——绝不能让一层的 bug 把后面几层一起带崩。"""
     traceback.print_exc()
     print("[警告] 解析路径 {} 内部出错，已跳过: {}".format(layer_name, exc))
-    crashed.append(layer_name)
+    crashed.append(_ui_layer(layer_name))           # 只拼进界面句子，不进审计
+
+
+# 解析层名 → 界面标签。审计 trace 里的 layer（_mark 的第二个参数）是左边的中文原值，那是审计
+# 证据的格式，一个字都不改。rejected / crashed 两张表只拿来拼给中控看的 ResolveError 句子，
+# 记进去的时候（_vet、_note_layer_crash）就经 _ui_layer 换成双语标签。WebKit 本来就是 ASCII，
+# 不在表里。
+LAYER_LABEL = {   # i18n: audit（键是审计值）
+    "直连地址": L("直连地址", "direct URL"),
+    LOGIN_LAYER: L("登录直播页", "live page (signed in)"),
+    LOGIN_RETRY_LAYER: L("登录直播页重试", "live page retry (signed in)"),
+    "官方接口": L("官方接口", "official API"),
+    "yt-dlp匿名": L("yt-dlp匿名", "yt-dlp (signed out)"),
+    "yt-dlp借cookie": L("yt-dlp借cookie", "yt-dlp (browser cookies)"),
+    "直播页兜底": L("直播页兜底", "live page fallback"),
+}
+
+
+def _ui_layer(layer):
+    """拼进界面句子的层名：中文与审计值逐字相同（Bi 按中文比较），英文换成标签。"""
+    return LAYER_LABEL.get(layer, layer)
+
+
+def _ui_reason(exc):
+    """拼进「层名：原因」清单的原因。中文就是 str(exc)；英文去掉句末句号——原因是完整句子，
+    清单项之间还要接「; 」，不去掉就是「.;」。登记在 tests/i18n_rules.py 的 ZH_IDENTITY_CALLS。"""
+    text = of(exc)
+    return Bi(str(text), text.en.rstrip(".")) if isinstance(text, Bi) else text
 
 
 def _page_attempts(cookies_browser):
@@ -1320,7 +1373,9 @@ async def _login_page_layer(url, cookies_browser, layer, trace, rejected, crashe
         if offline:
             _mark(trace, layer, "offline", t0, browser=info["browser"],
                   login=dict(info["login"]), **_layer_note(note))
-            raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
+            raise ResolveError(L("主播当前没有在直播（直播页确认本场已结束）",
+                                 "The streamer isn’t live right now. The live page confirms "
+                                 "the stream has ended."),
                                kind="offline", status=note.get("status"))
         if page_url:
             checked = await _vet(page_url, layer, rejected)
@@ -1401,7 +1456,7 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     再把哪几层内部出过错附在错误消息里，方便定位（详细堆栈在终端）。"""
     if _DIRECT_RE.search(url):
         # 用户直接给的流地址：按可信处理（详见 _check_media_url 的说明）
-        _mark(trace, "直连地址", "url", time.monotonic())
+        _mark(trace, "直连地址", "url", time.monotonic())   # i18n: audit
         return await _check_media_url(url, trusted=True)
 
     # http:// 开头的 TikTok 链接：换成 https 再解析（见 _upgrade_tiktok_scheme）。下面每一层
@@ -1436,33 +1491,35 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         api_url, known_offline = await _resolve_via_api(url, cookies_browser=cookies_browser)
     except ResolveError as exc:
         if exc.kind != "browser_only":
-            _mark(trace, "官方接口", exc.kind, t0, **_layer_note(api_note))
+            _mark(trace, "官方接口", exc.kind, t0, **_layer_note(api_note))   # i18n: audit
             raise
         browser_only = exc
         api_outcome = "browser_only"
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        _note_layer_crash(crashed, "官方接口", exc)
+        _note_layer_crash(crashed, "官方接口", exc)   # i18n: audit
         _note(type(exc).__name__)
         api_outcome = "crash"
     if api_url:
-        checked = await _vet(api_url, "官方接口", rejected)
+        checked = await _vet(api_url, "官方接口", rejected)   # i18n: audit
         if checked is None:
             api_outcome = "rejected"
         elif await _media_url_works(checked):
             print("[信息] 已通过 TikTok 直播接口取到纯音频流")
-            _mark(trace, "官方接口", "url", t0, **_layer_note(api_note))
+            _mark(trace, "官方接口", "url", t0, **_layer_note(api_note))   # i18n: audit
             return checked
         else:
             print("[信息] 直播接口给的地址拉不动，继续试其它方式")
             api_outcome = "dead_url"
     if known_offline:
         # 接口明确说房间不在播。状态值原样带上去：重连时只有 4（已结束）才收手
-        _mark(trace, "官方接口", "offline", t0, **_layer_note(api_note))
-        raise ResolveError("主播当前没有在直播（TikTok 接口确认直播已结束）",
+        _mark(trace, "官方接口", "offline", t0, **_layer_note(api_note))   # i18n: audit
+        raise ResolveError(L("主播当前没有在直播（TikTok 接口确认直播已结束）",
+                             "The streamer isn’t live right now. TikTok’s API confirms the "
+                             "stream has ended."),
                            kind="offline", status=api_note.get("status"))
-    _mark(trace, "官方接口", api_outcome, t0, **_layer_note(api_note))
+    _mark(trace, "官方接口", api_outcome, t0, **_layer_note(api_note))   # i18n: audit
 
     # 第 1.5 层：登录直播页重试（见 LOGIN_RETRY_LAYER 上面那次 37.6 秒的实录）。只有第一次
     # 带登录抓页读到了可用登录、却没拿到地址时才走（_login_retry_applies）；接口确认下播在
@@ -1496,7 +1553,9 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
                 wk_outcome = "dead_url"
         elif wk_offline:
             _mark(trace, "WebKit", "offline", t0, **_layer_note(wk_note))
-            raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
+            raise ResolveError(L("主播当前没有在直播（直播页确认本场已结束）",
+                                 "The streamer isn’t live right now. The live page confirms "
+                                 "the stream has ended."),
                                kind="offline", status=wk_note.get("status"))
     except (ResolveError, asyncio.CancelledError):
         raise
@@ -1509,8 +1568,10 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     try:
         import yt_dlp  # noqa: F401
     except ImportError:
-        raise ResolveError("组件 yt-dlp 缺失：请关闭程序后重新打开，会自动补装。"
-                           "（进阶：pip install -r requirements.txt）",
+        raise ResolveError(L("组件 yt-dlp 缺失：请关闭程序后重新打开，会自动补装。"
+                             "（进阶：pip install -r requirements.txt）",
+                             "yt-dlp is missing. Quit and reopen the app to install it "
+                             "automatically. (Advanced: pip install -r requirements.txt)"),
                            kind="internal") from None
 
     # 第 2 层：yt-dlp 匿名解析。
@@ -1519,16 +1580,16 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
     try:
         code, out, err = await _run_ytdlp(url, cookies=cookies)
     except ResolveError as exc:
-        _mark(trace, "yt-dlp匿名", exc.kind, t0)
+        _mark(trace, "yt-dlp匿名", exc.kind, t0)   # i18n: audit
         raise
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        _note_layer_crash(crashed, "yt-dlp匿名", exc)
-        _mark(trace, "yt-dlp匿名", "crash", t0, why=type(exc).__name__)
+        _note_layer_crash(crashed, "yt-dlp匿名", exc)   # i18n: audit
+        _mark(trace, "yt-dlp匿名", "crash", t0, why=type(exc).__name__)   # i18n: audit
     else:
         got = code == 0 and _first_url(out)
-        _mark(trace, "yt-dlp匿名", "url" if got else "none",
+        _mark(trace, "yt-dlp匿名", "url" if got else "none",   # i18n: audit
               t0, code=code, **({} if got else _stderr_why(err)))
         if code == 0 and not _first_url(out):
             # 退出码 0 却没有地址：不能据此断言下播（只有接口确认才敢说），
@@ -1573,9 +1634,9 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            _note_layer_crash(crashed, "yt-dlp借cookie", exc)
+            _note_layer_crash(crashed, "yt-dlp借cookie", exc)   # i18n: audit
             cookie_outcome, last_err = "crash", type(exc).__name__
-        _mark(trace, "yt-dlp借cookie", cookie_outcome, t0, browser=used_browser,
+        _mark(trace, "yt-dlp借cookie", cookie_outcome, t0, browser=used_browser,   # i18n: audit
               **_borrow_why(borrow_note, "" if cookie_outcome == "url" else last_err))
     if code != 0:
         # 第 4 层：yt-dlp 的 TikTok 提取器时不时失灵（接口说没播但页面在播）——
@@ -1589,13 +1650,15 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
             for browser in _page_attempts(cookies_browser):
                 fallback, page_offline = await _resolve_from_page(url, browser=browser)
                 if page_offline:
-                    _mark(trace, "直播页兜底", "offline", t0, browser=browser,
+                    _mark(trace, "直播页兜底", "offline", t0, browser=browser,   # i18n: audit
                           **_layer_note(page_note))
-                    raise ResolveError("主播当前没有在直播（直播页确认本场已结束）",
+                    raise ResolveError(L("主播当前没有在直播（直播页确认本场已结束）",
+                                         "The streamer isn’t live right now. The live page "
+                                         "confirms the stream has ended."),
                                        kind="offline", status=page_note.get("status"))
                 if not fallback:
                     continue
-                checked = await _vet(fallback, "直播页兜底", rejected)
+                checked = await _vet(fallback, "直播页兜底", rejected)   # i18n: audit
                 if checked is None:
                     page_outcome = "rejected"
                     continue
@@ -1604,16 +1667,16 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
                     continue
                 print("[信息] yt-dlp 解析失败，已从直播页面直接找到流地址{}".format(
                     "（借用 {} 的登录状态）".format(browser) if browser else ""))
-                _mark(trace, "直播页兜底", "url", t0, browser=browser,
+                _mark(trace, "直播页兜底", "url", t0, browser=browser,   # i18n: audit
                       **_layer_note(page_note))
                 return checked
         except (ResolveError, asyncio.CancelledError):
             raise
         except Exception as exc:
-            _note_layer_crash(crashed, "直播页兜底", exc)
+            _note_layer_crash(crashed, "直播页兜底", exc)   # i18n: audit
             _note(type(exc).__name__)
             page_outcome = "crash"
-        _mark(trace, "直播页兜底", page_outcome, t0, **_layer_note(page_note))
+        _mark(trace, "直播页兜底", page_outcome, t0, **_layer_note(page_note))   # i18n: audit
         err_text = err
         tail = err_text.strip().splitlines()[-3:] if err_text.strip() else []
         if tail:
@@ -1623,30 +1686,41 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         # 而没有任何一条**确认**过房间结束，所以不能替它下这个断言。
         if kind == "offline":
             # 只说做了什么、看到什么、能做什么。不说「多半是被挡了」——我们不知道。
-            kind, message = "unknown", (
+            kind, message = "unknown", L(
                 "试过全部方式都没能拿到这个直播间的音频流，也没有任何一种"
                 "确认直播已结束。可以过一会儿再点「开始翻译」；如果你在浏览器里"
                 "看得到这个直播，也可以把直播间链接和浏览器里的 .flv 地址一起"
-                "粘进来（中间空格隔开）。")
+                "粘进来（中间空格隔开）。",
+                "The app tried every method but couldn’t get the audio stream for this live "
+                "stream, and none of them confirmed that the stream ended. Click Start again in "
+                "a little while. If you can see this live stream in your browser, you can also "
+                "paste the live link and the .flv URL from your browser together, separated by "
+                "a space.")
         if browser_only is not None:
             # 接口早就说了「不给程序」，后面各层也都没拿到：把这个明确的原因
             # 传上去，上层据此隔一会儿自动重试，而不是当成普通失败
-            kind, message = "browser_only", str(browser_only)
+            kind, message = "browser_only", of(browser_only)
         if rejected:
-            message += "（另有拿到的地址没过安全校验：{}）".format(
-                "；".join("{}：{}".format(layer, exc) for layer, exc in rejected))
+            message += L("（另有拿到的地址没过安全校验：{}）",
+                         " (Other stream URLs were found but failed the safety check: {})").format(
+                L("；", "; ").join(L("{}：{}", "{}: {}").format(layer, _ui_reason(exc))
+                                  for layer, exc in rejected))
             if kind == "unknown" and any(exc.kind == "network" for _, exc in rejected):
                 kind = "network"          # DNS 解析失败：可重试，别当成谜之失败
         if crashed:
-            message += "（另有解析路径内部出错已跳过：{}，详见终端）".format(
-                "、".join(crashed))
+            message += L("（另有解析路径内部出错已跳过：{}，详见终端）",
+                         " (Some lookup methods hit an internal error and were skipped: {}. "
+                         "See the terminal for details.)").format(
+                L("、", ", ").join(crashed))
         raise ResolveError(message, kind=kind, login=_LOGIN_OBS.get())
     lines = [line.strip() for line in out.splitlines() if line.strip()]
     if not lines:
         # 退出码 0 但没有任何输出：我们不知道发生了什么，不能替它说「下播了」
-        message = "yt-dlp 没有返回流地址"
+        message = L("yt-dlp 没有返回流地址", "yt-dlp didn’t return a stream URL.")
         if crashed:
-            message += "（另有解析路径内部出错已跳过：{}，详见终端）".format(
-                "、".join(crashed))
+            message += L("（另有解析路径内部出错已跳过：{}，详见终端）",
+                         " (Some lookup methods hit an internal error and were skipped: {}. "
+                         "See the terminal for details.)").format(
+                L("、", ", ").join(crashed))
         raise ResolveError(message, kind="unknown")
     return await _check_media_url(lines[0])

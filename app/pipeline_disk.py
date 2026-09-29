@@ -1,3 +1,4 @@
+# i18n: done
 """磁盘空间盘点/删除的 Pipeline 侧胶水：从 app/pipeline.py 纯搬移出来，方法名/
 签名/方法体逐字未改动。真正的盘点与删除逻辑在 app/diskspace.py；这里只是把
 Pipeline 手头的状态（当前 ASR/引擎、审计文件、直播中标志）转成那边要的参数。
@@ -11,6 +12,7 @@ _publish_disk 用到的 TERMS_FILE 常量定义在 app/pipeline.py（跟违禁�
 """
 import asyncio
 
+from .i18n import LN, L, bimap
 from .pipeline import TERMS_FILE
 
 
@@ -79,7 +81,9 @@ class DiskSpaceMixin:
         if state in ("connecting", "live") or (
                 self._stream_task is not None and not self._stream_task.done()):
             await self.server.broadcast({"type": "notice",
-                                         "text": "直播进行中不删除文件，先点「停止」"})
+                                         "text": L("直播进行中不删除文件，先点「停止」",
+                                                   "Files can’t be deleted during a stream. "
+                                                   "Click Stop first.")})
             return
         asr, ollama = self._disk_active()
         models = await self._ollama_models()
@@ -87,9 +91,12 @@ class DiskSpaceMixin:
         freed, done, failed = await diskspace.delete(
             ids, ollama_models=models, ollama_delete=self._ollama_delete,
             current_log=current_log, active_asr=asr, active_ollama=ollama)
-        text = "已删除 {} 项，释放 {}".format(len(done), diskspace.human(freed))
+        text = LN(len(done), "已删除 {} 项，释放 {}", "Deleted 1 item and freed {1}.",
+                  "Deleted {0} items and freed {1}.").format(len(done), diskspace.human(freed))
         if failed:
-            text += "；未删除：" + "；".join(failed)[:300]
+            # 未删除的说明由 diskspace.delete 给出；连起来之后整体截断，中英两句各截各的
+            text += L("；未删除：", " Not deleted: ") + bimap(lambda s: s[:300],
+                                                         L("；", "; ").join(failed))
         print("[磁盘] " + text)
         await self.server.broadcast({"type": "notice", "text": text})
         await self._publish_disk()

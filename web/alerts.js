@@ -1,12 +1,19 @@
+// i18n: done
 /* 报警面板的纯逻辑：窗口在后台时的标题提醒、「上一场」标记、「本场共 N 条」。
 
    单独成文件是为了可测（tests/alerts.test.mjs）；app.js 只负责把结果写进 DOM。 */
 
-var ALERT_PANEL_CAP = 50;      // 面板只留最近这么多条（与 app.js / server.alerts 一致）
-var DEFAULT_TITLE = "TikTok 直播同传";
+// 浏览器里 L/LN 是 i18n.js 定义的全局函数（这里的 var 不会清掉它）；node 测试里从 i18n.js 取
+if (typeof L === "undefined") { var I18N_ = require("./i18n.js"); var L = I18N_.L, LN = I18N_.LN, APP_NAME = I18N_.APP_NAME; }
 
+var ALERT_PANEL_CAP = 50;      // 面板只留最近这么多条（与 app.js / server.alerts 一致）
+var DEFAULT_TITLE = L("TikTok 直播同传", "TikTok Live Translator");
+
+/* 英文是标签式写法，不分单复数；和 app/window_attention.py 的 attention_title 必须逐字相同，
+   两边的中文写法不同（这里拼接、那边模板），同中文→同英文的检查聚合不到一起，
+   改由 tests/i18n_golden.json 的 window_title_2_en 在 node 和 Python 两边各钉一次 */
 function alertTitle(n) {
-  return "(" + n + ") 疑似违禁词 · " + DEFAULT_TITLE;
+  return L("(" + n + ") 疑似违禁词 · " + DEFAULT_TITLE, "(" + n + ") Possible Banned Terms · " + DEFAULT_TITLE);
 }
 
 /* 标题是不是 alertTitle 自己设的提醒。不按标题里的中文认：拿开头的条数重新生成一遍，
@@ -61,7 +68,10 @@ function isOtherSession(msg, currentSession) {
    要说出来，不然「50」看起来像是全部。shown 是面板上属于本场的条数。 */
 function sessionNote(total, shown) {
   var n = shown || 0;
-  return total > n ? "显示最近 " + n + " 条，本场共 " + total + " 条" : "";
+  // 手动清过面板时 n 可以是 0，本场只有 1 条也会走到这里：英文按 total 分单复数
+  return total > n ? LN(total, "显示最近 " + n + " 条，本场共 " + total + " 条",
+                        "Showing the latest " + n + " of 1 alert this session",
+                        "Showing the latest " + n + " of " + total + " alerts this session") : "";
 }
 
 if (typeof module !== "undefined" && module.exports) {

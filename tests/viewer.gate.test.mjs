@@ -286,9 +286,10 @@ test("pick 调用点：持续提示和译文失败的原因，英文页用 *_en�
     { type: "incident", id: "disk", level: "warn", text: "磁盘快满了", text_en: "Disk almost full" },
     { type: "caption", id: 7, ts: 1, original: "hola", failed: true, why: "超时", why_en: "timed out" },
   ];
+  // 原因嵌在各自语言的句子里：中文全角括号，英文半角括号（web/viewer.js 的译文失败说明）
   for (const [html, text, why] of [
-    [makeHtml({ lang: "zh-CN" }), "磁盘快满了", "超时"],
-    [makeHtml({ lang: "en", "data-i18n": "on" }), "Disk almost full", "timed out"],
+    [makeHtml({ lang: "zh-CN" }), "磁盘快满了", "（超时）"],
+    [makeHtml({ lang: "en", "data-i18n": "on" }), "Disk almost full", "(timed out)"],
   ]) {
     const page = loadViewer({ html }, (p) => {
       const ws = p.sockets[0];
@@ -299,6 +300,6 @@ test("pick 调用点：持续提示和译文失败的原因，英文页用 *_en�
     const card = page.elements["caption-list"].children[0];
     const trans = card.children[2];
     assert.equal(trans.className, "cap-trans");
-    assert.ok(trans.textContent.includes("（" + why + "）"), trans.textContent);
+    assert.ok(trans.textContent.includes(why), trans.textContent);
   }
 });

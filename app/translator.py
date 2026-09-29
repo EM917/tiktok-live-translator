@@ -1,3 +1,4 @@
+# i18n: done
 """翻译引擎。auto：本地 Ollama 里有 TranslateGemma 就用它（完全本地），否则退回
 Google 网页免费接口；也可显式指定 gemma / google / claude / openai / none。"""
 import asyncio
@@ -6,6 +7,8 @@ import json
 import os
 import re
 from collections import OrderedDict
+
+from .i18n import L
 
 def api_key(name):
     """取密钥：环境变量优先，其次界面里填的（存在 settings.json）。
@@ -48,13 +51,14 @@ ENGINE_KEY_ENV = {"deepl": "DEEPL_API_KEY", "claude": "ANTHROPIC_API_KEY",
 # 界面上不出现内部代号，回退提示（restore_engine）说「本次先用自动」而不是
 # 「本次先用 auto」，跟违禁词/直播排障那条「不猜原因」的规矩是同一类要求：
 # 面向用户的文字里不能有代号
-ENGINE_LABELS = {"auto": "自动", "hymt2": "本地 Hy-MT2 1.8B", "hymt2-7b": "本地 Hy-MT2 7B",
-                 "gemma": "本地 TranslateGemma", "deepl": "DeepL",
-                 "google": "Google 免费接口", "claude": "Claude", "openai": "OpenAI"}
+ENGINE_LABELS = {"auto": L("自动", "Automatic"), "hymt2": L("本地 Hy-MT2 1.8B", "Local Hy-MT2 1.8B"),
+                 "hymt2-7b": L("本地 Hy-MT2 7B", "Local Hy-MT2 7B"),
+                 "gemma": L("本地 TranslateGemma", "Local TranslateGemma"), "deepl": "DeepL",
+                 "google": L("Google 免费接口", "Google (free)"), "claude": "Claude", "openai": "OpenAI"}
 
 
 def engine_label(name):
-    return ENGINE_LABELS.get(name, str(name)) if name else "不翻译"
+    return ENGINE_LABELS.get(name, str(name)) if name else L("不翻译", "No translation")
 
 
 def model_label(model):
@@ -77,7 +81,7 @@ def clean_error_text(text, limit=200):
     query（签名下载地址的 query 本身就是凭证），压成一行，截断。"""
     if text is None:
         return None
-    out = " ".join(_URL_QUERY_RE.sub(r"\1", str(text)).split())
+    out = " ".join(_URL_QUERY_RE.sub(r"\1", str(text)).split())  # i18n: data
     return out[:limit] or None
 
 
@@ -102,8 +106,10 @@ def restore_engine(cli_value, saved, key_lookup=None):
     if env and not (key_lookup or api_key)(env):
         # 说人话的引擎名，不露内部代号（deepl/auto）——跟「不猜原因」是同一条规矩：
         # 面向用户的文字里不能有代号，只能有引擎选择菜单里那种名字（engine_label）
-        return "auto", ("上次选的翻译引擎 {} 还没有密钥，本次先用{}——"
-                        "在页面的「翻译引擎」里重新填一次即可"
+        return "auto", (L("上次选的翻译引擎 {} 还没有密钥，本次先用{}——"
+                          "在页面的「翻译引擎」里重新填一次即可",
+                          "The last engine you chose, {}, doesn’t have an API key yet, so {} "
+                          "is used for now. Enter the key again in Settings > Translation Engine.")
                         .format(engine_label(name), engine_label("auto")))
     return name, None
 
@@ -260,7 +266,7 @@ class GoogleWebTranslator(BaseTranslator):
                 data = await resp.json(content_type=None)
             if not data or not data[0]:
                 return None
-            return "".join(seg[0] for seg in data[0] if seg and seg[0]).strip() or None
+            return "".join(seg[0] for seg in data[0] if seg and seg[0]).strip() or None  # i18n: data
         except Exception:
             return None
 
@@ -299,7 +305,8 @@ class DeepLTranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("DEEPL_API_KEY")
         if not self.api_key:
-            raise RuntimeError("还没有填 DeepL 密钥——在页面上的「翻译引擎」里填一次即可")
+            raise RuntimeError(L("还没有填 DeepL 密钥——在页面上的「翻译引擎」里填一次即可",
+                                 "No DeepL API key yet. Enter it once in Settings > Translation Engine."))
         self.host = ("https://api-free.deepl.com" if self.api_key.strip().endswith(":fx")
                      else "https://api.deepl.com")
         self.host = os.environ.get("DEEPL_URL", self.host).rstrip("/")
@@ -340,7 +347,7 @@ class DeepLTranslator(BaseTranslator):
                     continue
                 seen.add(v.lower())
                 rows.append(v + "\t" + zh)
-        return "\n".join(rows)
+        return "\n".join(rows)  # i18n: data
 
     def glossary_name(self, source, target, tsv):
         """表名里带词表内容的指纹——改了 glossary.txt 就是另一个名字，
@@ -528,7 +535,8 @@ class ClaudeTranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise RuntimeError("还没有填 Claude 密钥——在页面上的「翻译引擎」里填一次即可")
+            raise RuntimeError(L("还没有填 Claude 密钥——在页面上的「翻译引擎」里填一次即可",
+                                 "No Claude API key yet. Enter it once in Settings > Translation Engine."))
 
     # 自检探针查的是这个模型本身：模型下线时回 404，而不只是验密钥
     PROBE_CHECKS_MODEL = True
@@ -588,7 +596,8 @@ class OpenAITranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("OPENAI_API_KEY")
         if not self.api_key:
-            raise RuntimeError("还没有填 OpenAI 密钥——在页面上的「翻译引擎」里填一次即可")
+            raise RuntimeError(L("还没有填 OpenAI 密钥——在页面上的「翻译引擎」里填一次即可",
+                                 "No OpenAI API key yet. Enter it once in Settings > Translation Engine."))
         base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.base = base
         self.url = base + "/chat/completions"
@@ -697,7 +706,7 @@ class OllamaGemmaTranslator(BaseTranslator):
         pairs = _as_pairs(glossary)
         if pairs:
             head += (" Keep these terms exactly as given: "
-                     + "; ".join("{} = {}".format(es, zh) for es, zh in pairs) + ".")
+                     + "; ".join("{} = {}".format(es, zh) for es, zh in pairs) + ".")  # i18n: data
         return head + "\n\n" + text
 
     # temperature 必须逐次一致：Ollama 一旦发现 options 变了就会重新加载模型，
@@ -772,13 +781,13 @@ class OllamaHyMT2Translator(BaseTranslator):
     # 客服口吻。换回它自己的模板后这四类样例全部译对。
     # 所以 raw 模式是**按模型判定**的，判据就是问 Ollama 要模板看看坏没坏——
     # 哪天官方把 1.8B 的模板修好了，这里会自动跟着改用模板路径。
-    _BOS = "<｜hy_begin▁of▁sentence｜>"
-    _USER = "<｜hy_User｜>"
-    _ASSISTANT = "<｜hy_Assistant｜>"
+    _BOS = "<｜hy_begin▁of▁sentence｜>"  # i18n: data
+    _USER = "<｜hy_User｜>"  # i18n: data
+    _ASSISTANT = "<｜hy_Assistant｜>"  # i18n: data
     # 两种全角竖线都要列进去：实测模型有时吐的是 ｠（U+FF60）而不是 ｜（U+FF5C），
     # 只挡一种的话另一种会原样漏进字幕（真的在直播里出现过：
     # 「索菲亚！<｠hy_end▁of▁sentence｠>」）。
-    _STOP = ["<｜hy_end▁of▁sentence｜>", "<｜hy_place▁holder▁no▁2｜>",
+    _STOP = ["<｜hy_end▁of▁sentence｜>", "<｜hy_place▁holder▁no▁2｜>",  # i18n: data
              "<｠hy_end▁of▁sentence｠>", "<｠hy_place▁holder▁no▁2｠>",
              # 7B 走错模板时吐的是这个，名字是 message 不是 sentence——
              # 只列 sentence 的话它会原样漏进字幕（实测：「价格应该是57.20
@@ -822,7 +831,7 @@ class OllamaHyMT2Translator(BaseTranslator):
         lang = LANG_NAMES.get(target, target)
         head = ""
         if glossary:
-            lines = "\n".join("{} translates to {}".format(es, zh)
+            lines = "\n".join("{} translates to {}".format(es, zh)  # i18n: data
                                for es, zh in _as_pairs(glossary))
             if lines:
                 head = "Reference the following translations:\n" + lines + "\n\n"
@@ -896,16 +905,16 @@ class OllamaHyMT2Translator(BaseTranslator):
 # 正常字幕里不会出现 hy_xxx / hy-xxx。
 # hy 前面不能是字母：Healthy-Life、Shy_Girl 这类保留成 Latin 写法的品牌名
 # 里也有 hy-/hy_，没有左边界会把「Healthy-Life 排毒粉」截成「Healt排毒粉」
-_SPECIAL_RE = re.compile(r"[<｜｠]*\s*(?<![A-Za-z])hy[-_][A-Za-z0-9▁_-]+\s*[｜｠>]*")
+_SPECIAL_RE = re.compile(r"[<｜｠]*\s*(?<![A-Za-z])hy[-_][A-Za-z0-9▁_-]+\s*[｜｠>]*")  # i18n: data
 # 全角竖线是这个模型词表里的分隔符，正常字幕里不会出现。实测残留过 `ａ｜>`
 # 这种只剩半截的写法——它不含 hy_ 前缀，上面那条正则拦不住。
-_BAR_RE = re.compile(r"[｜｠]+>?")
+_BAR_RE = re.compile(r"[｜｠]+>?")  # i18n: data
 # 3. 还有不带 hy 前缀的：`<｠end▁of▁message`。这一类的形状是「▁ 连接的
 #    token 名」，正常中文字幕里不会出现 ▁（U+2581）。
-_TOKEN_RE = re.compile(r"[<｜｠]*\s*[A-Za-z]+(?:▁[A-Za-z]+)+\s*[｜｠>]*")
+_TOKEN_RE = re.compile(r"[<｜｠]*\s*[A-Za-z]+(?:▁[A-Za-z]+)+\s*[｜｠>]*")  # i18n: data
 # 半角片假名连成一串也是词表残留（实测出现过 `<ｯｯｯｯ｝`）。
 # 中文字幕里不会出现这种东西；要求连续三个以上，避免误伤偶发的单字符。
-_KANA_RE = re.compile(r"[<>{}｛｝]?[ｦ-ﾟ]{3,}[<>{}｛｝]?")
+_KANA_RE = re.compile(r"[<>{}｛｝]?[ｦ-ﾟ]{3,}[<>{}｛｝]?")  # i18n: data
 
 
 def _strip_special(text):
@@ -974,13 +983,13 @@ def foreign_script_runs(source, translated, target):
 def strip_foreign_script(source, translated, target):
     """去掉串台的那几个字符，收拾多出来的空格。"""
     allowed = _allowed_scripts(source, target)
-    kept = "".join(ch for ch in translated or ""
+    kept = "".join(ch for ch in translated or ""  # i18n: data
                    if not (_script_of_char(ch) and _script_of_char(ch) not in allowed))
     return re.sub(r"[ \t]{2,}", " ", kept).strip()
 
 
 _DIGITS_RE = re.compile(r"\d+")
-_CN_NUM_RE = re.compile(r"[一二三四五六七八九十百千万两半]")
+_CN_NUM_RE = re.compile(r"[一二三四五六七八九十百千万两半]")  # i18n: data
 
 
 # 中文译文正常只有西语原文的三到六成长。实测 1959 对真实译文：
@@ -1037,8 +1046,8 @@ def looks_fabricated(source, translated):
     # 问句：只在源文**以疑问为主**时才管（两个以上问号）。源文里只有一个问句、
     # 其余是陈述时，译文合并掉问号是正常的中文表达——实测按一个问号判会把
     # 大量正常译文误判成捏造。
-    if source.count("?") + source.count("？") >= 2:
-        if "?" not in translated and "？" not in translated:
+    if source.count("?") + source.count("？") >= 2:  # i18n: data
+        if "?" not in translated and "？" not in translated:  # i18n: data
             return True
     # 数字：只在译文里**一个数字符号都没有**时才算丢。中文会把数字换个写法
     # （pacto 3 → 第三个约定、20 millones → 2000万），逐个比对数值会把
@@ -1249,5 +1258,5 @@ def create_translator(name):
     elif name == "openai":
         inner = OpenAITranslator()
     else:
-        raise ValueError("未知的翻译引擎: " + str(name))
+        raise ValueError("未知的翻译引擎: " + str(name))  # i18n: terminal
     return CachedTranslator(inner)

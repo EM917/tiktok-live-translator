@@ -1,3 +1,4 @@
+# i18n: done
 """自动更新：启动时检查 GitHub 最新 release，UI 一键更新（git 安装）并自动重启。
 
 安全边界：只做 fast-forward，且要求工作区干净——绝不覆盖用户的本地改动；
@@ -26,6 +27,7 @@ from .bootstrap import (MLX_GIVEUP, OPTIONAL_DISTS, clear_mlx_giveup, filter_req
                         read_mlx_giveup, record_requirements_failure,
                         recorded_requirements_digest, requirements_digest,
                         skipped_for_this_machine, write_mlx_giveup, write_requirements_stamp)
+from .i18n import L
 from .settings import load_settings, save_setting
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -149,7 +151,7 @@ def _open_pip_log(log_path, args):
     try:
         fh = open(str(log_path), "ab")
         fh.write("$ pip install {}  ({})\n".format(
-            " ".join(str(a) for a in args),
+            " ".join(str(a) for a in args),               # i18n: terminal（pip 日志文件）
             datetime.now().isoformat(timespec="seconds")).encode("utf-8"))
         fh.flush()        # 子进程接着往同一个文件追加，先把这行落下去
         return fh
@@ -161,7 +163,7 @@ def _close_pip_log(fh, outcome):
     if fh is None:
         return
     try:
-        fh.write("[pip 结束：{}]\n".format(outcome).encode("utf-8"))
+        fh.write("[pip 结束：{}]\n".format(outcome).encode("utf-8"))   # i18n: terminal（pip 日志文件）
         fh.close()
     except (OSError, ValueError):
         pass
@@ -194,8 +196,12 @@ PIP_ABORTED = "aborted"
 # 点「一键更新」时 pip 锁被占着，先等这么久：后台的 mlx-whisper 安装每 PIP_ABORT_POLL_SEC
 # 秒看一次有没有在更新，看到就自己撤。等不到的（yt-dlp 保鲜这类不会撤的）这次就不更新
 UPDATE_LOCK_WAIT_SEC = 2 * PIP_ABORT_POLL_SEC + 1
-MLX_READY_TEXT = ("GPU 加速组件已装好，停播后重开程序生效（这次运行不会切换识别方式；"
-                  "还没下载过 GPU 识别模型的话，重开后第一次开始监听要先下载约 3 GB）")
+MLX_READY_TEXT = L("GPU 加速组件已装好，停播后重开程序生效（这次运行不会切换识别方式；"
+                   "还没下载过 GPU 识别模型的话，重开后第一次开始监听要先下载约 3 GB）",
+                   "The GPU acceleration component is installed. It takes effect when you reopen "
+                   "the app after the stream. This run keeps its current speech recognition. If "
+                   "the GPU speech model hasn’t been downloaded yet, the first session after you "
+                   "reopen the app downloads about 3 GB first.")
 
 
 def _mlx_on_disk():
@@ -273,13 +279,24 @@ def update_check_note(settings=None):
     days = int((at - since) // 86400)
     if days < UPDATE_CHECK_STALE_DAYS:
         return None
-    return "已连续 {} 天没能连上更新服务器（最近一次：{}）".format(
-        days, err.get("status_or_exc") or "未知")
+    return L("已连续 {} 天没能连上更新服务器（最近一次：{}）",
+             "Couldn’t reach the update server for {} days in a row (last result: {})").format(
+        days, _ui_check_error(err.get("status_or_exc")) or L("未知", "unknown"))
+
+
+# 检查更新失败时记进 settings 的原因：HTTP 状态码、异常类名（数据，原样上界面），或者程序自己
+# 写的「超时」。settings 里存的一个字不改；页脚那句话拼它的时候，中文照旧，英文换成下面的说法
+_CHECK_ERROR_LABEL = {"超时": L("超时", "timed out")}   # i18n: data（键是 settings 里存的值）
+
+
+def _ui_check_error(value):
+    """settings 里的检查失败原因 → 界面上的说法。中文与存的值逐字相同，英文换出来。"""
+    return _CHECK_ERROR_LABEL.get(value, value) if isinstance(value, str) else value
 
 
 def _git_tail(err):
     lines = [ln.strip() for ln in (err or "").strip().splitlines() if ln.strip()]
-    return " / ".join(lines[-2:])
+    return " / ".join(lines[-2:])                         # i18n: data（git 的原话）
 
 
 def _log_label(path):
@@ -308,7 +325,7 @@ def _parse(version):
     version = version.strip().lstrip("vV")
     parts = []
     for piece in version.split(".")[:3]:
-        digits = "".join(ch for ch in piece if ch.isdigit())
+        digits = "".join(ch for ch in piece if ch.isdigit())   # i18n: data
         parts.append(int(digits) if digits else 0)
     while len(parts) < 3:
         parts.append(0)
@@ -424,8 +441,10 @@ class Updater:
                 current = (self.server.config.get("status") or {}).get("state")
                 if reason == "resolve-failures" and current in (None, "idle", "error"):
                     await self.server.status(
-                        "idle", "已自动更新直播解析组件（yt-dlp {}）——"
-                                "请重新点「开始翻译」试试。".format(m.group(1)))
+                        "idle", L("已自动更新直播解析组件（yt-dlp {}）——"
+                                  "请重新点「开始翻译」试试。",
+                                  "Updated the stream lookup component (yt-dlp {}). Click Start "
+                                  "to try again.").format(m.group(1)))
         except Exception as exc:
             print("[警告] yt-dlp 自动更新异常: {}".format(exc))
         finally:
@@ -453,7 +472,7 @@ class Updater:
             if abort_if is not None and abort_if():
                 return PIP_ABORTED       # 等锁的这段时间里情况变了：不开始
             log = _open_pip_log(log_path, args)
-            outcome = "异常"
+            outcome = "异常"                        # i18n: terminal（写进 pip 日志文件）
             try:
                 proc = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "pip", "install",
@@ -466,15 +485,15 @@ class Updater:
                     if abort_if is None:
                         await asyncio.wait_for(proc.wait(), timeout=timeout)
                     elif await self._wait_or_abort(proc, timeout, abort_if):
-                        outcome = "被叫停"
+                        outcome = "被叫停"          # i18n: terminal
                         print("[信息] {}：已停下".format(label))
                         return PIP_ABORTED
                 except asyncio.TimeoutError:
                     await _reap(proc)
-                    outcome = "超时"
+                    outcome = "超时"                # i18n: terminal
                     print("[警告] {}超时，已放弃本次尝试".format(label))
                     return None
-                outcome = "返回 {}".format(proc.returncode)
+                outcome = "返回 {}".format(proc.returncode)   # i18n: terminal
             except Exception as exc:
                 print("[警告] {}异常: {}".format(label, exc))
                 return None
@@ -562,7 +581,7 @@ class Updater:
         if numpy_version:
             args.append("numpy=={}".format(numpy_version))
         code = await self._pip_install(
-            args, "GPU 加速组件 mlx-whisper 后台安装", timeout=MLX_RETRY_TIMEOUT_SEC,
+            args, "GPU 加速组件 mlx-whisper 后台安装", timeout=MLX_RETRY_TIMEOUT_SEC,   # i18n: terminal
             log_path=new_log_path(ROOT, "mlx-retry"), abort_if=self._busy_for_background_pip)
         if code == PIP_ABORTED:
             print("[信息] 开始监听或更新了，GPU 加速组件的后台安装已停下，下次空闲时再试")
@@ -571,7 +590,7 @@ class Updater:
             clear_mlx_giveup(marker)
             await self._persistent_note("mlx-ready", "info", MLX_READY_TEXT)
             return "installed"
-        write_mlx_giveup(marker, code if isinstance(code, int) else None,
+        write_mlx_giveup(marker, code if isinstance(code, int) else None,   # i18n: data（只写不读）
                          "后台安装没成功" + ("（超时）" if code is None else ""))
         print("[警告] GPU 加速组件 mlx-whisper 后台安装没成功（pip 返回 {}），"
               "24 小时后空闲时再试".format(code))
@@ -587,7 +606,7 @@ class Updater:
                 # 同上：stderr 的最后一行会被原话打印出来，别让它先烂成 U+FFFD
                 env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         except Exception as exc:
-            return None, "", str(exc)
+            return None, "", str(exc)                    # i18n: data（系统报错原话）
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except BaseException as exc:
@@ -618,10 +637,10 @@ class Updater:
             ["index", "versions", "TikTokLive", "--disable-pip-version-check"])
         lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
         if code is None:
-            self._index_query_detail = "pip index 没有返回（{}）".format((err or "")[:80])
+            self._index_query_detail = "pip index 没有返回（{}）".format((err or "")[:80])   # i18n: terminal
             return False, None
         if code != 0:
-            self._index_query_detail = "pip index 返回 {}：{}".format(
+            self._index_query_detail = "pip index 返回 {}：{}".format(   # i18n: terminal
                 code, (lines[-1] if lines else "")[:160])
             low = (err or "").lower()
             if "unknown command" in low or "no such command" in low:
@@ -662,7 +681,7 @@ class Updater:
             return False
         save_setting("tiktoklive_install_attempted_at", now)
         code = await self._pip_install(
-            [TIKTOKLIVE_SPEC], "弹幕组件 TikTokLive 安装（{}）".format(reason))
+            [TIKTOKLIVE_SPEC], "弹幕组件 TikTokLive 安装（{}）".format(reason))   # i18n: terminal
         if code is None:
             return False
         if code == 0 and importlib.util.find_spec("TikTokLive") is not None:
@@ -679,10 +698,10 @@ class Updater:
                   .format(current, reason))
             return False
         save_setting("tiktoklive_upgrade_attempted_at", now)
-        need = ".".join(str(x) for x in TIKTOKLIVE_MIN)
+        need = ".".join(str(x) for x in TIKTOKLIVE_MIN)   # i18n: data
         print("[信息] 弹幕组件 TikTokLive {} 低于 {}，后台升级中（{}）".format(current, need, reason))
         code = await self._pip_install(
-            [TIKTOKLIVE_SPEC], "弹幕组件 TikTokLive 升级（{}）".format(reason))
+            [TIKTOKLIVE_SPEC], "弹幕组件 TikTokLive 升级（{}）".format(reason))   # i18n: terminal
         after = tiktoklive_version()
         if code == 0 and after and not tiktoklive_outdated(after):
             print("[信息] 弹幕组件 TikTokLive 已从 {} 升级到 {}".format(current, after))
@@ -752,7 +771,7 @@ class Updater:
                 return {"outcome": "no-update", "before": before, "after": before}
             code = await self._pip_install(
                 ["-U", "--upgrade-strategy", "only-if-needed", TIKTOKLIVE_SPEC],
-                "弹幕组件 TikTokLive 更新检查（{}）".format(reason))
+                "弹幕组件 TikTokLive 更新检查（{}）".format(reason))   # i18n: terminal
             after = tiktoklive_version()
             if code != 0:
                 self._tiktoklive_freshen_failed_at = time.time()
@@ -785,20 +804,24 @@ class Updater:
                         await self._record_check("HTTP {}".format(resp.status))
                         if manual:
                             await self._notice(
-                                "检查更新失败（GitHub 返回 {}）".format(resp.status))
+                                L("检查更新失败（GitHub 返回 {}）",
+                                  "Couldn’t check for updates (GitHub returned HTTP {}).")
+                                .format(resp.status))
                         return
                     data = await resp.json()
         except Exception as exc:
-            await self._record_check(
+            await self._record_check(   # i18n: data（记进 settings；页脚上经 _ui_check_error 换说法）
                 "超时" if isinstance(exc, asyncio.TimeoutError) else type(exc).__name__)
             if manual:
-                await self._notice("检查更新失败（网络不可达）")
+                await self._notice(L("检查更新失败（网络不可达）",
+                                     "Couldn’t check for updates (couldn’t reach GitHub)."))
             return
         await self._record_check(None)
         tag = str(data.get("tag_name") or "")
         if not tag or _parse(tag) <= _parse(local_version()):
             if manual:
-                await self._notice("已是最新版本 v{}".format(local_version()))
+                await self._notice(L("已是最新版本 v{}", "v{} is the latest version.")
+                                   .format(local_version()))
             return
         self.latest = {
             "version": tag,
@@ -876,7 +899,7 @@ class Updater:
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
         except Exception as exc:
-            return None, "", str(exc)
+            return None, "", str(exc)                    # i18n: data（系统报错原话）
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -927,9 +950,12 @@ class Updater:
             return False
         if not self.latest.get("can_auto"):
             await self._refuse(
-                "当前是 ZIP 安装，无法自动更新——请到 GitHub 下载新版本：{}".format(
+                L("当前是 ZIP 安装，无法自动更新——请到 GitHub 下载新版本：{}",
+                  "This copy was installed from a ZIP file and can’t update itself. Download "
+                  "the new version from GitHub: {}").format(
                     self.latest["url"]),
-                None, live, "当前是 ZIP 安装，程序没法自己更新")
+                None, live, L("当前是 ZIP 安装，程序没法自己更新",
+                              "This copy was installed from a ZIP file and can’t update itself"))
             return False
         # --untracked-files=no 是关键：未跟踪的文件 git pull 根本不会动它，
         # 拿它们挡住更新纯属误伤。真实案例：用户目录里多了一个 .run.log 和两个
@@ -940,22 +966,30 @@ class Updater:
         code, out, _ = await self._git("status", "--porcelain", "--untracked-files=no")
         if code != 0:
             await self._refuse(
-                "这台电脑上找不到 git，程序没法自己更新。"
-                "可以到 GitHub 下载新版压缩包，或者装好 git 后执行：",
-                self._manual_command(), live, "这台电脑上找不到 git，程序没法自己更新")
+                L("这台电脑上找不到 git，程序没法自己更新。"
+                  "可以到 GitHub 下载新版压缩包，或者装好 git 后执行：",
+                  "git isn’t available on this computer, so the app can’t update itself. "
+                  "Download the new version’s ZIP file from GitHub, or install git and run:"),
+                self._manual_command(), live,
+                L("这台电脑上找不到 git，程序没法自己更新",
+                  "git isn’t available on this computer, so the app can’t update itself"))
             return False
         if out.strip():
             # porcelain 是「两位状态 + 空格 + 文件名」，而未暂存修改的第一位
             # 就是空格——所以只能逐行去尾部空白，绝不能对整段 strip()，
             # 否则第一行会被削掉行首空格，文件名跟着少一个字母（app/ → pp/）。
             files = [ln[3:].rstrip() for ln in out.splitlines()[:4] if len(ln) > 3]
-            names = "、".join(files) or "（若干文件）"
+            names = L("、", ", ").join(files) or L("（若干文件）", "(several files)")
             await self._refuse(
-                "本次没有自动更新：这几个程序文件被改过，直接更新会覆盖掉它们——{}。"
-                "如果不是你有意改的，复制下面这行到「终端」里执行，"
-                "就能放弃这些改动并完成更新：".format(names),
+                L("本次没有自动更新：这几个程序文件被改过，直接更新会覆盖掉它们——{}。"
+                  "如果不是你有意改的，复制下面这行到「终端」里执行，"
+                  "就能放弃这些改动并完成更新：",
+                  "The update didn’t start. These app files were changed, and updating would "
+                  "overwrite them: {}. If you didn’t change them on purpose, run the line below "
+                  "in Terminal to discard the changes and finish the update:").format(names),
                 self._manual_command(discard=True), live,
-                "本次没有自动更新：这几个程序文件被改过——{}".format(names))
+                L("本次没有自动更新：这几个程序文件被改过——{}",
+                  "The update didn’t start. These app files were changed: {}").format(names))
             return False
         return True
 
@@ -967,7 +1001,9 @@ class Updater:
             return
         print("[警告] 一键更新没有开始：{}".format(live_text))
         await self.server.broadcast({"type": "update_aborted"})
-        await self._notice("{}。监听没有中断；停播后再点「一键更新」会给出处理办法".format(live_text))
+        await self._notice(L("{}。监听没有中断；停播后再点「一键更新」会给出处理办法",
+                             "{}. Monitoring continues. After the stream, click Update Now "
+                             "again to see what to do.").format(live_text))
 
     async def _not_updated(self, text, live, command=True):
         """还没停监听时的失败出口。直播中只发一次性提示——监听照常，不能把界面状态打回
@@ -976,15 +1012,21 @@ class Updater:
         print("[警告] 一键更新没完成：{}（手动更新：{}）".format(text, self._manual_command()))
         await self.server.broadcast({"type": "update_aborted"})
         if live:
-            await self._notice("更新没完成：{}。监听没有中断{}".format(
-                text, "，停播后可以再点「一键更新」" if command else ""))
+            await self._notice(L("更新没完成：{}。监听没有中断{}",
+                                 "The update didn’t finish: {}. Monitoring continues.{}").format(
+                text, L("，停播后可以再点「一键更新」",
+                        " After the stream, you can click Update Now again.") if command else ""))
             return
         if not command:
-            await self.server.status("idle", "本次没有更新（{}）。新版本可以到 GitHub 下载：{}".format(
+            await self.server.status("idle", L("本次没有更新（{}）。新版本可以到 GitHub 下载：{}",
+                                               "The app wasn’t updated ({}). You can download "
+                                               "the new version from GitHub: {}").format(
                 text, (self.latest or {}).get("url") or RELEASES_URL))
             return
         await self.server.status(
-            "idle", "更新没能完成（{}）。复制下面这行到「终端」里执行通常就能解决：".format(text),
+            "idle", L("更新没能完成（{}）。复制下面这行到「终端」里执行通常就能解决：",
+                      "The update didn’t finish ({}). Running the line below in Terminal "
+                      "usually fixes this:").format(text),
             command=self._manual_command())
 
     async def _update_failed(self, text, token, resume, command, live=False):
@@ -997,10 +1039,12 @@ class Updater:
             await resume(token, text)
             return
         if live:
-            await self._notice(text + "。监听没有中断")
+            await self._notice(text + L("。监听没有中断", ". Monitoring continues."))
             return
         await self.server.status(
-            "idle", text + "。复制下面这行到「终端」里执行可以手动更新：", command=command)
+            "idle", text + L("。复制下面这行到「终端」里执行可以手动更新：",
+                             ". To update manually, run the line below in Terminal:"),
+            command=command)
 
     def _requirements_to_install(self, requirements):
         """一键更新要不要按新版本的清单跑 pip：要的话返回交给 pip -r 的清单内容，不用返回 None。
@@ -1040,7 +1084,7 @@ class Updater:
         白暂停一场监听、最后还不更新（2026-09-15 审查）。两次共用 UPDATE_PIP_TIMEOUT_SEC。"""
         deadline = time.monotonic() + UPDATE_PIP_TIMEOUT_SEC
         code = await self._pip_requirements(wanted, log_path, UPDATE_PIP_TIMEOUT_SEC,
-                                            "新版本依赖安装")
+                                            "新版本依赖安装")          # i18n: terminal
         if code in (0, None):
             return code, None
         core = filter_requirements(wanted, OPTIONAL_DISTS)
@@ -1050,7 +1094,7 @@ class Updater:
         if remaining <= 0:
             return None, code
         print("[信息] 新版本的完整组件清单没装上（pip 返回 {}），改为只装必需的组件…".format(code))
-        core_code = await self._pip_requirements(core, log_path, remaining, "新版本必需组件安装")
+        core_code = await self._pip_requirements(core, log_path, remaining, "新版本必需组件安装")   # i18n: terminal
         return core_code, code
 
     @staticmethod
@@ -1095,49 +1139,63 @@ class Updater:
         # 1. 取新版本：只动网络和 .git，工作区不变，监听照常
         code, _, err = await self._git("fetch", timeout=FETCH_TIMEOUT_SEC)
         if code != 0:
-            why = ("{} 秒内没下载完".format(FETCH_TIMEOUT_SEC) if err == "timeout"
-                   else _git_tail(err) or "git 返回 {}".format(code))
-            await self._not_updated("没能从 GitHub 取到新版本（{}）".format(why), is_live())
+            why = (L("{} 秒内没下载完", "didn’t finish downloading in {} sec").format(FETCH_TIMEOUT_SEC)
+                   if err == "timeout" else _git_tail(err) or L("git 返回 {}", "git returned {}").format(code))
+            await self._not_updated(L("没能从 GitHub 取到新版本（{}）",
+                                      "couldn’t get the new version from GitHub ({})").format(why),
+                                    is_live())
             return
         # 与 `git pull` 同一个目标：当前分支跟踪的远端分支。解析成提交号，后面几步都认
         # 这一个提交（本地实测：分离 HEAD 时 FETCH_HEAD 全是 not-for-merge，靠不住）
         code, target, err = await self._git("rev-parse", "--verify", "@{u}")
         target = target.strip()
         if code != 0 or not target:
-            await self._not_updated("找不到这份安装跟踪的远端分支（{}）".format(
-                _git_tail(err) or "git 返回 {}".format(code)), is_live())
+            await self._not_updated(L("找不到这份安装跟踪的远端分支（{}）",
+                                      "couldn’t find the remote branch this copy tracks ({})").format(
+                _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)), is_live())
             return
         # 跟踪的分支上没有新东西（发版标签不在这个分支上、跟踪着一个旧分支）：合并什么也不会
         # 变，不能为此暂停监听、重启一遍——重启后检查更新又会提示同一个版本
         code, head, _ = await self._git("rev-parse", "HEAD")
         if code == 0 and head.strip() == target:
-            await self._not_updated("这份安装跟踪的远端分支上没有比当前更新的提交",
+            await self._not_updated(L("这份安装跟踪的远端分支上没有比当前更新的提交",
+                                      "the remote branch this copy tracks has nothing newer"),
                                     is_live(), command=False)
             return
         code, version_text, err = await self._git("show", "{}:VERSION".format(target))
         to_version = version_text.strip()
         if code != 0 or not to_version:
-            await self._not_updated("读不到远端分支上的版本号（{}）".format(
-                _git_tail(err) or "git 返回 {}".format(code)), is_live())
+            await self._not_updated(L("读不到远端分支上的版本号（{}）",
+                                      "couldn’t read the version number on the remote branch ({})")
+                                    .format(_git_tail(err) or L("git 返回 {}", "git returned {}").format(code)),
+                                    is_live())
             return
         if _parse(to_version) <= _parse(from_version):
             await self._not_updated(
-                "这份安装跟踪的远端分支上是 v{}，不比当前的 v{} 新".format(
+                L("这份安装跟踪的远端分支上是 v{}，不比当前的 v{} 新",
+                  "the remote branch this copy tracks has v{}, which isn’t newer than the current "
+                  "v{}").format(
                     to_version.lstrip("vV"), from_version), is_live(), command=False)
             return
         code, requirements, err = await self._git("show", "{}:requirements.txt".format(target))
         if code != 0:
-            await self._not_updated("读不到新版本的组件清单（{}）".format(
-                _git_tail(err) or "git 返回 {}".format(code)), is_live())
+            await self._not_updated(L("读不到新版本的组件清单（{}）",
+                                      "couldn’t read the new version’s component list ({})").format(
+                _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)), is_live())
             return
         code, _, err = await self._git("merge-base", "--is-ancestor", "HEAD", target)
         if code != 0:
-            await self._not_updated("本地代码没法直接快进到新版本（{}）".format(
-                _git_tail(err) or "git 返回 {}".format(code)), is_live())
+            await self._not_updated(L("本地代码没法直接快进到新版本（{}）",
+                                      "the local code can’t fast-forward to the new version ({})")
+                                    .format(_git_tail(err) or L("git 返回 {}", "git returned {}").format(code)),
+                                    is_live())
             return
         if not await self._wait_for_pip_lock():
-            await self._not_updated("后台正在安装别的组件，等了 {} 秒还没装完；等它装完再点"
-                                    "「一键更新」".format(int(UPDATE_LOCK_WAIT_SEC)), is_live())
+            await self._not_updated(L("后台正在安装别的组件，等了 {} 秒还没装完；等它装完再点"
+                                      "「一键更新」",
+                                      "another component was still installing in the background "
+                                      "after {} sec. Click Update Now after it finishes")
+                                    .format(int(UPDATE_LOCK_WAIT_SEC)), is_live())
             return
 
         # 2. 确认能更新了，才停监听。要不要先装组件现在就定下来：暂停时告诉中控要等多久
@@ -1145,7 +1203,8 @@ class Updater:
         pip_minutes = int(math.ceil(UPDATE_PIP_TIMEOUT_SEC / 60.0)) if wanted is not None else None
         token = await pause(from_version, to_version, pip_minutes) if pause is not None else None
         if token is None and wanted is not None and not is_live():
-            await self.server.status("connecting", "正在安装新版本的依赖…")
+            await self.server.status("connecting", L("正在安装新版本的依赖…",
+                                                     "Installing components for the new version…"))
 
         # 3. 先按新版本的清单装依赖，装好了才合并：新代码绝不在缺依赖的环境里落地。
         # 以前是先 pull 再装、不看 pip 的退出码，装失败也照样重启进新代码
@@ -1154,16 +1213,21 @@ class Updater:
             log_path = new_log_path(ROOT, "update")
             code, full_code = await self._install_new_requirements(wanted, log_path)
             if code != 0:
-                text = "新版本需要的组件没装上（pip 返回 {}{}），继续使用当前版本 v{}".format(
-                    "超时" if code is None else code,
-                    "，详情见 " + _log_label(log_path) if log_path else "", from_version)
+                text = L("新版本需要的组件没装上（pip 返回 {}{}），继续使用当前版本 v{}",
+                         "Couldn’t install the components the new version needs (pip result: {}{}). "
+                         "Keeping the current version, v{}").format(
+                    L("超时", "timed out") if code is None else code,
+                    L("，详情见 ", ", details in ") + _log_label(log_path) if log_path else "",
+                    from_version)
                 await self._update_failed(text, token, resume, self._manual_command(pip=True),
                                           is_live())
                 return
         # 装组件那几分钟里中控又开始了监听：不能在他正听着的时候合并、重启
         if is_live():
             await self._update_failed(
-                "更新期间又开始了监听，这次没有合并新版本 v{}；停播后可以再点「一键更新」".format(
+                L("更新期间又开始了监听，这次没有合并新版本 v{}；停播后可以再点「一键更新」",
+                  "Monitoring started again during the update, so v{} wasn’t merged. After the "
+                  "stream, you can click Update Now again").format(
                     to_version.lstrip("vV")), token, resume, self._manual_command(), True)
             return
 
@@ -1177,7 +1241,9 @@ class Updater:
                                 and before_restart(token, to_version))
                 await self.server.status(
                     "connecting" if resuming else "idle",
-                    "更新完成，正在自动重启…" + ("重启后自动恢复监听" if resuming else ""))
+                    L("更新完成，正在自动重启…", "Update complete. Restarting…")
+                    + (L("重启后自动恢复监听", " Monitoring resumes after the restart.")
+                       if resuming else ""))
                 print("[信息] 已更新到最新版本，重启进程…")
                 await asyncio.sleep(0.6)
                 try:
@@ -1187,14 +1253,18 @@ class Updater:
                 except Exception as exc:
                     exec_error = exc
         if code != 0:
-            text = "新版本的代码没能合并（{}），继续使用当前版本 v{}".format(
-                _git_tail(err) or "git 返回 {}".format(code), from_version)
+            text = L("新版本的代码没能合并（{}），继续使用当前版本 v{}",
+                     "Couldn’t merge the new version’s code ({}). Keeping the current version, "
+                     "v{}").format(
+                _git_tail(err) or L("git 返回 {}", "git returned {}").format(code), from_version)
             await self._update_failed(text, token, resume, self._manual_command(), is_live())
             return
         if exec_error is None:
             return          # 真的 execv 不会回到这里
         # execv 失败（极少见）：代码已经是新的，这个进程还是旧的——不能让用户以为更新丢了
-        text = "更新已下载完成，但自动重启失败（{}）——请手动关掉再重新打开程序".format(exec_error)
+        text = L("更新已下载完成，但自动重启失败（{}）——请手动关掉再重新打开程序",
+                 "The update was downloaded, but the app couldn’t restart itself ({}). Quit the "
+                 "app and open it again").format(exec_error)   # 英文同中文，句末不加句号：调用方还会往后拼
         print("[警告] " + text)
         await self.server.broadcast({"type": "update_aborted"})
         if token is not None and resume is not None:

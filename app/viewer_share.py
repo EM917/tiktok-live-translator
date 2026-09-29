@@ -1,3 +1,4 @@
+# i18n: done
 """手机同看（局域网观众面）：从 app/pipeline.py 纯搬移出来，方法名/签名/方法体
 逐字未改动。Pipeline 通过 ViewerShareMixin 继承这些方法，self.* 语义不变。
 
@@ -9,6 +10,7 @@ self.audit / self._recent 六个稳定通道打交道——边界很干净，天
 import asyncio
 from collections import deque
 
+from .i18n import bimap, of
 from .redact import strip_query
 from .settings import load_settings
 
@@ -66,7 +68,7 @@ class ViewerShareMixin:
         在看」会停在旧数字，直到中控自己做了下一个动作才碰巧更新。"""
         if event in ("viewer_connected", "viewer_disconnected") and fields.get("count") is not None:
             self._update_viewer_count(fields["count"])
-        shown = " ".join("{}={}".format(k, fields[k]) for k in sorted(fields)
+        shown = " ".join("{}={}".format(k, fields[k]) for k in sorted(fields)   # i18n: terminal
                          if fields[k] is not None)
         print("[同看] {} {}".format(event, shown).rstrip())
         audit = getattr(self, "audit", None)
@@ -261,7 +263,8 @@ class ViewerShareMixin:
             self._viewer_audit("viewer_share", state="off",
                                port=ports[0] if ports else None, viewers=0,
                                reason="port_busy")
-            await self._publish_viewer(error=strip_query(str(exc), 200), ports=ports)
+            await self._publish_viewer(error=bimap(lambda s: strip_query(s, 200), of(exc)),
+                                       ports=ports)
             return
         self.server.viewer = hub
         self._viewer_pinned_ip = None

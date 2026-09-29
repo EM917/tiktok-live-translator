@@ -1,3 +1,4 @@
+# i18n: done
 """关窗口 = 停止违禁词监听。正在监听时关窗口要先问一句，关了要留下原因。
 
 放在 app/ 里是为了能测：main.py 导入时会 execv 进虚拟环境，测试不能 import 它。
@@ -7,11 +8,19 @@ import asyncio
 import inspect
 
 from . import i18n
+from .i18n import L
 
 CLOSE_LOCALIZATION = {
-    "global.quitConfirmation": "正在监听直播，关闭窗口会停止违禁词监听。确定关闭？",
-    "global.quit": "关闭",
-    "global.cancel": "取消",
+    "global.quitConfirmation": L("正在监听直播，关闭窗口会停止违禁词监听。确定关闭？",
+                                 "Close the window? This stops monitoring the live stream, "
+                                 "including banned-term detection."),
+    "global.quit": L("关闭", "Close"),
+    "global.cancel": L("取消", "Cancel"),
+    # 页面里 JS confirm() 的确认键：cocoa 取 global.ok / global.cancel。以前表里没有这一项，
+    # 按钮是 pywebview 自带的「OK」配我们的「取消」，中文界面上混排；补上之后两个按钮都是
+    # 中文（spec §8.2 标明的中文可见修正）。第二个实例的窗口也因此开始传 localization
+    # （confirm_localization_kwargs），它的两个按钮从「OK / Cancel」变成「好 / 取消」
+    "global.ok": L("好", "OK"),
 }
 STOP_TIMEOUT_SEC = 5.0     # 窗口关了之后最多等停止流程这么久，然后进程退出
 AUDIT_BUDGET_SEC = 3.5     # 停止流程到这时还没走完，先把审计收尾：session_end 不能等

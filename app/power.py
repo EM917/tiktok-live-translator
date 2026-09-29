@@ -1,3 +1,4 @@
+# i18n: done
 """直播监听期间阻止系统「空闲睡眠」，并让 macOS 不对本程序做 App Nap。
 
 **只管空闲睡眠。** 合上笔记本盖子、手动点「睡眠」、电量耗尽时系统照样会睡——
@@ -43,7 +44,7 @@ def _kernel32():
 
 
 class SleepGuard:
-    def __init__(self, reason="直播合规监听中"):
+    def __init__(self, reason="直播合规监听中"):  # i18n: os
         self.reason = reason
         self.held = []           # 实际拿到的机制，写进 session_start 当证据
         self.owner = None        # 开这一场的那个任务
@@ -115,7 +116,7 @@ class SleepGuard:
             self._k32 = None
 
 
-def hold(reason="直播合规监听中"):
+def hold(reason="直播合规监听中"):  # i18n: os
     """开一场直播时调用，返回已经尽力拿好的 SleepGuard。
 
     测试里（pytest）不起 caffeinate、不改线程执行状态；TLT_NO_SLEEP_GUARD=1 同样关掉。"""

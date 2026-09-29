@@ -1,4 +1,6 @@
-/* TikTok 直播同传 —— 前端逻辑：WebSocket 收字幕、渲染历史 + 底部大字幕、启动/停止直播间 */
+// i18n: done
+/* TikTok 直播同传 —— 前端逻辑：WebSocket 收字幕、渲染历史 + 底部大字幕、启动/停止直播间。
+   界面文字写成 L("中文", "English") / LN(n, …)（web/i18n.js，docs/i18n-style.md）；数据不进 L */
 (function () {
   // 浏览器把 127.0.0.1 的站点数据整个禁掉（隐私开关/企业策略）时，localStorage
   // 一碰就抛 SecurityError——不兜住的话整个初始化脚本在第一行就断掉，页面停在
@@ -221,13 +223,14 @@
   var switchConfirmBtn = document.getElementById("switch-confirm");
   var switchHint = document.getElementById("switch-hint");
 
+  // 页面生命周期里语言不变（换语言整页重载），加载时求值一次就够
   var STATUS_TEXT = {
-    idle: "待机",
-    connecting: "连接中…",
-    live: "直播中",
-    ended: "直播已结束",
-    error: "出错了",
-    offline: "与本地服务断开，重连中…",
+    idle: L("待机", "Ready"),
+    connecting: L("连接中…", "Connecting…"),
+    live: L("直播中", "Live"),
+    ended: L("直播已结束", "Stream ended"),
+    error: L("出错了", "Error"),
+    offline: L("与本地服务断开，重连中…", "Reconnecting…"),   // 完整说明在横幅里
   };
 
   var ws = null;
@@ -452,8 +455,11 @@
     return { url: url, media: media };
   }
 
-  var UNRECOGNIZED_INPUT_MSG = "认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名" +
-                               "（到主播主页复制 @ 后面的部分，中文昵称不行）。";
+  var UNRECOGNIZED_INPUT_MSG = L("认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名" +
+                                 "（到主播主页复制 @ 后面的部分，中文昵称不行）。",
+                                 "This isn’t a live link or username. Paste the live link, or enter " +
+                                 "the streamer’s username, which is the part after @ on their profile. " +
+                                 "Display names won’t work.");
 
   // 组装一条「开始」指令的 payload。开始面板和换主播面板字段完全一致，
   // 只是 source/alerts 恒取开始面板当前的值、brand 各取各自下拉的值（见调用处）
@@ -477,7 +483,8 @@
 
   function startStream() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      setStatus({ state: "offline", detail: "与本地服务断开，正在重连——稍候再点「开始翻译」" });
+      setStatus({ state: "offline", detail: L("与本地服务断开，正在重连——稍候再点「开始翻译」",
+        "Lost connection to the local service. Reconnecting… Click Start again in a moment.") });
       return;
     }
     var parsed = parseRoomInput(roomInput.value);
@@ -509,7 +516,8 @@
       }
       pendingStart = null;
       try { ws.close(); } catch (e) { /* noop */ }   // 强制换一条新连接
-      stickyOfflineDetail = "指令未送达（连接中断），已自动重连——请再点一次「开始翻译」。";
+      stickyOfflineDetail = L("指令未送达（连接中断），已自动重连——请再点一次「开始翻译」。",
+        "The command didn’t go through (connection interrupted). The page reconnected. Click Start again.");
       setStatus({ state: "offline", detail: stickyOfflineDetail });
     }, 8000);
   }
@@ -535,7 +543,7 @@
     updateConfirmTimer = null;
     delete updateBtn.dataset.confirm;
     updateBtn.disabled = false;
-    updateBtn.textContent = "一键更新";
+    updateBtn.textContent = L("一键更新", "Update Now");
   }
 
   updateBtn.addEventListener("click", function () {
@@ -544,7 +552,8 @@
     if (streamActive && updateBtn.dataset.confirm !== "1") {
       updateBtn.dataset.confirm = "1";
       // 暂停多久要看这次要不要装新组件，页面不知道：不许诺时长，服务端的状态行会说
-      updateBtn.textContent = "再点一次确认更新：更新期间监听暂停，更新完自动恢复";
+      updateBtn.textContent = L("再点一次确认更新：更新期间监听暂停，更新完自动恢复",
+                                "Click Again to Update. Monitoring pauses and resumes afterward.");
       updateConfirmTimer = setTimeout(resetUpdateBtn, 6000);
       return;
     }
@@ -552,62 +561,74 @@
     updateConfirmTimer = null;
     delete updateBtn.dataset.confirm;
     updateBtn.disabled = true;
-    updateBtn.textContent = "更新中…";
+    updateBtn.textContent = L("更新中…", "Updating…");
     send({ type: "apply_update" });
   });
 
   function showUpdate(info) {
     if (!info || !info.version) return;
-    setIconText(updateText, "arrow-clockwise", "发现新版本 " + info.version);
+    setIconText(updateText, "arrow-clockwise", L("发现新版本 " + info.version,
+                                                 "Version " + info.version + " is available"));
     if (info.can_auto) {
       updateBtn.classList.remove("hidden");
-      updateLink.textContent = "更新说明";
+      updateLink.textContent = L("更新说明", "Release Notes");
       updateLink.className = "";
     } else {
       // ZIP 安装无法自动更新——别摆一个点了必失败的按钮，直接给下载入口
       updateBtn.classList.add("hidden");
-      updateLink.textContent = "前往下载新版本";
+      updateLink.textContent = L("前往下载新版本", "Download New Version");
       updateLink.className = "btn primary";
     }
     updateLink.href = info.url || "#";
     updateBar.classList.remove("hidden");
     // 静默模式：短时间内已经提示过了。按钮照常可用，但不再改标题——
     // 标题会闪在任务栏/标签页上，连续几个 patch 的日子那是纯粹的骚扰。
-    if (!info.quiet) document.title = "有新版本 · TikTok 直播同传";
+    if (!info.quiet) document.title = L("有新版本 · TikTok 直播同传", "Update Available · TikTok Live Translator");
     updateBar.classList.toggle("quiet", !!info.quiet);
   }
 
   // 点底部版本号即可手动检查更新
   versionEl.addEventListener("click", function () {
     if (!send({ type: "check_update" })) {
-      showVersionNote("未连接到本地服务", 3000);
+      showVersionNote(L("未连接到本地服务", "Not connected to the local service"), 3000);
       return;
     }
     // 「检查中…」的恢复定时器要能被随后到达的结果提示接管，
     // 否则结果刚显示就被这个定时器抹回版本号
-    showVersionNote("检查更新中…", 8000);
+    showVersionNote(L("检查更新中…", "Checking for updates…"), 8000);
   });
 
   // 「迁移旧词表」：扫描 → 展示 → 用户确认 → 服务端备份并迁移。
   // 只迁移整条与旧官方模板一致的行，用户自己写的内容绝不动。
   function handleMigration(msg) {
     if (msg.stage === "available") {
-      migrateText.textContent = "glossary.txt 里有 " + msg.count +
-        " 条旧模板遗留的主播专属词条，会污染其他主播的直播";
+      migrateText.textContent = LN(msg.count, "glossary.txt 里有 " + msg.count +
+        " 条旧模板遗留的主播专属词条，会污染其他主播的直播",
+        "glossary.txt has 1 streamer-specific entry left over from the old template. " +
+        "It also affects other streamers’ translations.",
+        "glossary.txt has " + msg.count + " streamer-specific entries left over from the old template. " +
+        "They also affect other streamers’ translations.");
       migrateBar.classList.remove("hidden");
     } else if (msg.stage === "plan") {
       if (!msg.entries || !msg.entries.length) {
-        showVersionNote("没有可以安全自动迁移的条目（改动过的条目需手动移到 profiles/）", 8000);
+        showVersionNote(L("没有可以安全自动迁移的条目（改动过的条目需手动移到 profiles/）",
+                          "Nothing can be moved automatically. Move edited entries to profiles/ by hand."), 8000);
         migrateBtn.disabled = false;
         return;
       }
       var lines = msg.entries.map(function (e) {
         return e.display + "  → profiles/" + e.streamer + ".txt";
       });
-      var ok = window.confirm(
+      var ok = window.confirm(LN(lines.length,
         "将迁移以下 " + lines.length + " 条（先备份 glossary.txt）：\n\n" +
         lines.join("\n") + "\n\n只迁移与旧官方模板完全一致的条目，" +
-        "你自己添加或改过的内容不会被改动。继续？");
+        "你自己添加或改过的内容不会被改动。继续？",
+        "This entry will be moved (glossary.txt is backed up first):\n\n" +
+        lines.join("\n") + "\n\nOnly entries that exactly match the old official template are moved. " +
+        "Anything you added or edited stays as it is. Continue?",
+        "These " + lines.length + " entries will be moved (glossary.txt is backed up first):\n\n" +
+        lines.join("\n") + "\n\nOnly entries that exactly match the old official template are moved. " +
+        "Anything you added or edited stays as it is. Continue?"));
       if (ok) {
         send({ type: "migrate_glossary", confirm: true });
       } else {
@@ -617,18 +638,29 @@
       migrateBtn.disabled = false;
       if (msg.result && msg.result.total) {
         migrateBar.classList.add("hidden");
-        var note = "已迁移 " + msg.result.total + " 条（备份：" +
-                   msg.result.backup + "）";
+        var note = LN(msg.result.total, "已迁移 " + msg.result.total + " 条（备份：" +
+                   msg.result.backup + "）",
+                   "Moved 1 entry (backup: " + msg.result.backup + ")",
+                   "Moved " + msg.result.total + " entries (backup: " + msg.result.backup + ")");
         if (msg.result.failed) {
-          note += "；另有 " + msg.result.failed +
-                  " 条因 profile 写入失败未迁移，仍保留在原词表里";
+          // 接在上一句后面：英文另起一句
+          note += LN(msg.result.failed, "；另有 " + msg.result.failed +
+                  " 条因 profile 写入失败未迁移，仍保留在原词表里",
+                  ". 1 entry wasn’t moved because its profile couldn’t be written. It’s still in glossary.txt.",
+                  ". " + msg.result.failed + " entries weren’t moved because their profiles couldn’t be " +
+                  "written. They’re still in glossary.txt.");
         }
         showVersionNote(note, 10000);
       } else if (msg.result && msg.result.failed) {
-        showVersionNote("迁移失败：profiles/ 目录写不进去，" + msg.result.failed +
-                        " 条全部保留在原词表（已留备份 " + msg.result.backup + "）", 10000);
+        showVersionNote(LN(msg.result.failed, "迁移失败：profiles/ 目录写不进去，" + msg.result.failed +
+                        " 条全部保留在原词表（已留备份 " + msg.result.backup + "）",
+                        "Couldn’t write to the profiles/ folder, so the entry wasn’t moved. " +
+                        "It’s still in glossary.txt (backup: " + msg.result.backup + ").",
+                        "Couldn’t write to the profiles/ folder, so no entries were moved. All " +
+                        msg.result.failed + " are still in glossary.txt (backup: " + msg.result.backup + ")."),
+                        10000);
       } else {
-        showVersionNote("没有需要迁移的条目", 6000);
+        showVersionNote(L("没有需要迁移的条目", "Nothing to move"), 6000);
       }
     }
   }
@@ -681,7 +713,9 @@
       setStatus({
         state: "offline",
         detail: gone
-          ? "本地程序似乎已经关闭——请重新双击打开：macOS 双击「TikTok Live Translator.app」，Windows 双击「Start.bat」。"
+          ? L("本地程序似乎已经关闭——请重新双击打开：macOS 双击「TikTok Live Translator.app」，Windows 双击「Start.bat」。",
+              "No connection to the app’s local service for over 20 seconds. If the app has quit, reopen it. " +
+              "On Mac, double-click TikTok Live Translator.app. On Windows, double-click Start.bat.")
           : stickyOfflineDetail,
       });
       var delay = Math.min(5000, 700 * Math.pow(2, retries++));
@@ -796,7 +830,7 @@
         break;
       case "updating":
         updateBtn.disabled = true;
-        updateBtn.textContent = "更新中…";
+        updateBtn.textContent = L("更新中…", "Updating…");
         break;
       // 这次没更新成（原因另有提示/状态说明）：按钮恢复，可以再试
       case "update_aborted":
@@ -1000,7 +1034,10 @@
       if (failStreak >= 4) {
         transBannerOn = true;
         setIconText(statusBanner, "warn",
-          "连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。");
+          L("连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。",
+            "The last several captions couldn’t be translated, so captions show the original text. " +
+            "Speech recognition isn’t affected. If this continues, choose another engine in " +
+            "Settings > Translation Engine."));
         statusBanner.classList.remove("hidden");
         statusBanner.classList.remove("info");
       }
@@ -1053,8 +1090,8 @@
     var redo = document.createElement("button");
     redo.className = "redo";
     redo.type = "button";
-    redo.title = "用最强模型重新翻译这一条";
-    redo.textContent = "重译";
+    redo.title = L("用最强模型重新翻译这一条", "Retranslate with the most accurate model");
+    redo.textContent = L("重译", "Retranslate");
     redo.addEventListener("click", function () {
       send({ type: "retranslate", id: msg.id });
     });
@@ -1146,10 +1183,10 @@
       card.classList.toggle("redoing", msg.strong_state === "pending");
       if (redoBtn) {
         redoBtn.disabled = msg.strong_state === "pending";
-        redoBtn.textContent = msg.strong_state === "pending" ? "重译中…"
-          : (msg.strong_state === "failed" ? "重译失败" : "重译");
+        redoBtn.textContent = msg.strong_state === "pending" ? L("重译中…", "Retranslating…")
+          : (msg.strong_state === "failed" ? L("重译失败", "Couldn’t retranslate") : L("重译", "Retranslate"));
         if (msg.strong_state === "failed") {
-          setTimeout(function () { redoBtn.textContent = "重译"; }, 4000);
+          setTimeout(function () { redoBtn.textContent = L("重译", "Retranslate"); }, 4000);
         }
       }
       // 只带状态位、没有译文和等级的消息到此为止，不动屏幕上的内容
@@ -1176,7 +1213,7 @@
       trans.textContent = msg.translated;
       trans.classList.remove("pending");
     } else if (state === "pending") {
-      trans.textContent = "翻译中…";
+      trans.textContent = L("翻译中…", "Translating…");
       trans.classList.add("pending");
     } else {
       trans.textContent = "";
@@ -1184,8 +1221,8 @@
     }
     if (!stateChip) return;
     stateChip.classList.toggle("fail-chip", state === "failed");
-    stateChip.textContent = state === "failed" ? "翻译失败"
-      : (state === "dropped" ? "翻译已跳过（积压）" : "");
+    stateChip.textContent = state === "failed" ? L("翻译失败", "Translation failed")
+      : (state === "dropped" ? L("翻译已跳过（积压）", "Skipped (backlog)") : "");
   }
 
   // ---- 违禁词警报 ----
@@ -1216,9 +1253,10 @@
     // 词条和主播名是名字，各包一层 translate="no"。外面再套一个 span：.alert-head 是 flex，
     // 原来这一整段文字是一个匿名 flex 项，拆成几个直接子节点会多出几道 gap
     var headText = document.createElement("span");
-    headText.appendChild(document.createTextNode("「"));
+    // 英文引用用户内容用弯双引号（docs/i18n-style.md §2.2）
+    headText.appendChild(document.createTextNode(L("「", "“")));
     headText.appendChild(nameSpan(String(msg.term)));   // 与原来的字符串拼接逐字相同
-    headText.appendChild(document.createTextNode("」 " +
+    headText.appendChild(document.createTextNode(L("」 ", "” ") +
       pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds())));
     if (msg.streamer) {
       headText.appendChild(document.createTextNode(" "));
@@ -1240,7 +1278,7 @@
     var zh = document.createElement("div");
     zh.className = "alert-zh";
     markBody(zh, !!msg.context_zh);
-    zh.textContent = msg.context_zh || "翻译中…";
+    zh.textContent = msg.context_zh || L("翻译中…", "Translating…");
     if (!msg.context_zh) zh.classList.add("pending");
     item.appendChild(zh);
     if (msg.alert_id) item.dataset.alertId = msg.alert_id;
@@ -1270,7 +1308,7 @@
     if (other && !tag && head) {
       tag = document.createElement("span");
       tag.className = "alert-prev";
-      tag.textContent = "上一场";
+      tag.textContent = L("上一场", "Previous");
       head.insertBefore(tag, head.firstChild);
     } else if (!other && tag) {
       tag.parentNode.removeChild(tag);
@@ -1359,7 +1397,10 @@
     }
     // 译不出来要说出来。以前这里把整行清空，中控看到一片空白，比停在
     // 「翻译中…」还糟——上面那行西语原话才是他真正要看的东西。
-    zh.textContent = "译文失败（" + (msg.why || "未知原因") + "）——请看上面的原话";
+    // why 是服务端渲染好的界面文字；英文没有原因时整句不带括号
+    zh.textContent = L("译文失败（" + (msg.why || "未知原因") + "）——请看上面的原话",
+                       msg.why ? "Couldn’t translate (" + msg.why + "). See the original above."
+                               : "Couldn’t translate. See the original above.");
     zh.classList.add("failed");
   }
 
@@ -1397,17 +1438,18 @@
     // 标题旁的小字状态 + 空态文案：中控要能一眼分清「没人发弹幕」和
     // 「抓取本身出了问题」，两者处理方式完全不同（前者等，后者去修）。
     var title, cls = "cmt-source", emptyText;
+    // 小字状态就放在 Comments 标题旁边，英文不再重复「评论流」这个主语
     if (backendState === "connected") {
-      title = "评论流已连接";
+      title = L("评论流已连接", "Connected");
       cls += " on";
-      emptyText = "已连接，等待观众发评论…";
+      emptyText = L("已连接，等待观众发评论…", "Connected. Waiting for comments…");
     } else if (backendState === "connecting") {
       // 带说明的连接中（读浏览器登录态、组件刚更新完正在重连）要让中控看得见
-      var cdetail = backendDetail || "正在连接评论流…";
+      var cdetail = backendDetail || L("正在连接评论流…", "Connecting…");
       title = cdetail.length > 80 ? cdetail.slice(0, 80) + "…" : cdetail;
       emptyText = cdetail;
     } else if (backendState === "disconnected") {
-      title = "评论流断开，重连中…";
+      title = L("评论流断开，重连中…", "Disconnected. Reconnecting…");
       emptyText = title;
     } else if (backendState === "error" || backendState === "unavailable"
                || (backendState && backendState !== "idle" && backendDetail)) {
@@ -1419,8 +1461,8 @@
       cls += " warn";
       emptyText = detail;
     } else {
-      title = "未连接";
-      emptyText = "开播后自动连接评论流";
+      title = L("未连接", "Not connected");
+      emptyText = L("开播后自动连接评论流", "Comments connect when the stream starts.");
     }
 
     commentSource.textContent = title;
@@ -1446,7 +1488,7 @@
     zh.className = "cmt-zh";
     markBody(zh, msg.state !== "pending");
     if (msg.state === "pending") {
-      zh.textContent = "翻译中…";
+      zh.textContent = L("翻译中…", "Translating…");
       zh.classList.add("pending");
     } else {
       zh.textContent = msg.translated || msg.text || "";
@@ -1582,20 +1624,27 @@
     var det = msg.detect_worst || {};
     // 第一指标是检测延迟（最坏情况）：违禁词说出口到报警最久要多少秒。
     // 字幕延迟只是副产品，合规上该被考核的是这个数。
+    // 英文用紧凑写法（docs/i18n-style.md §3 #121）：所有计数都出现时逐字翻译会超过一行
     var parts = [
-      "违禁词最迟 " + fmtMs(det.p50) + " / P95 " + fmtMs(det.p95) + " 内报警",
-      "其中 切段 " + fmtMs(seg.p50) + " + 识别 " + fmtMs(asr.p50),
-      "译文再等 " + fmtMs(tr.p50),
+      L("违禁词最迟 " + fmtMs(det.p50) + " / P95 " + fmtMs(det.p95) + " 内报警",
+        "Alerts ≤" + fmtMs(det.p50) + " (P95 " + fmtMs(det.p95) + ")"),
+      L("其中 切段 " + fmtMs(seg.p50) + " + 识别 " + fmtMs(asr.p50),
+        "Segment " + fmtMs(seg.p50) + " + ASR " + fmtMs(asr.p50)),
+      L("译文再等 " + fmtMs(tr.p50), "Translation +" + fmtMs(tr.p50)),
     ];
     if (msg.audio_backlog_sec >= 3) {
-      parts.push("积压 " + msg.audio_backlog_sec.toFixed(0) + "s");
+      parts.push(L("积压 " + msg.audio_backlog_sec.toFixed(0) + "s",
+                   "Backlog " + msg.audio_backlog_sec.toFixed(0) + "s"));
     }
-    if (msg.audio_segments_dropped) parts.push("丢音频 " + msg.audio_segments_dropped);
+    if (msg.audio_segments_dropped) parts.push(L("丢音频 " + msg.audio_segments_dropped,
+                                                 "Dropped " + msg.audio_segments_dropped));
     // 识别跑飞是丢音频的前兆，出现就该看见
-    if (msg.asr_overruns) parts.push("识别超时 " + msg.asr_overruns);
-    if (msg.translation_jobs_dropped) parts.push("跳过翻译 " + msg.translation_jobs_dropped);
+    if (msg.asr_overruns) parts.push(L("识别超时 " + msg.asr_overruns, "ASR timeouts " + msg.asr_overruns));
+    if (msg.translation_jobs_dropped) parts.push(L("跳过翻译 " + msg.translation_jobs_dropped,
+                                                   "Skipped " + msg.translation_jobs_dropped));
     if (msg.asr_queue_depth || msg.translation_queue_depth) {
-      parts.push("积压 " + msg.asr_queue_depth + "/" + msg.translation_queue_depth);
+      parts.push(L("积压 " + msg.asr_queue_depth + "/" + msg.translation_queue_depth,
+                   "Queue " + msg.asr_queue_depth + "/" + msg.translation_queue_depth));
     }
     statsEl.textContent = parts.join(" · ");
     // 只在直播中/连接中揭开。后端每场收尾会补推一次终值（pipeline 的 _end_session），
@@ -1672,7 +1721,7 @@
           chip.type = "button";
           markName(chip);                           // 整个 chip 只有主播名；title 仍要双语（R7：自己的属性不豁免）
           chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
-          chip.title = "点击开始翻译 @" + e.streamer;
+          chip.title = L("点击开始翻译 @" + e.streamer, "Start with @" + e.streamer);
           chip.addEventListener("click", function () {
             roomInput.value = e.url;                // 地址在背后填好，界面上只见主播名
             // 「下拉显示什么就发什么」：本页手动改过品牌下拉就沿用当前值，
@@ -1707,14 +1756,14 @@
     recentClearConfirmTimer = null;
     if (recentClear) {
       delete recentClear.dataset.confirm;
-      recentClear.textContent = "清除记录";
+      recentClear.textContent = L("清除记录", "Clear History");
     }
   }
   if (recentClear) {
     recentClear.addEventListener("click", function () {
       if (recentClear.dataset.confirm !== "1") {
         recentClear.dataset.confirm = "1";
-        recentClear.textContent = "再点一次清除";
+        recentClear.textContent = L("再点一次清除", "Click Again to Clear");
         recentClearConfirmTimer = setTimeout(resetRecentClear, 6000);
         return;
       }
@@ -1740,16 +1789,18 @@
     diskItems = Array.isArray(info.items) ? info.items : [];
     var total = 0;
     diskItems.forEach(function (it) { total += it.size || 0; });
-    diskSummary.textContent = (info.free != null ? "剩余 " + humanSize(info.free) + " · " : "")
-      + "本机模型与日志 " + humanSize(total);
+    diskSummary.textContent = (info.free != null ? L("剩余 " + humanSize(info.free) + " · ",
+                                                     humanSize(info.free) + " available · ") : "")
+      + L("本机模型与日志 " + humanSize(total), "Models and logs " + humanSize(total));
     diskSummary.title = diskSummary.textContent;   // 摘要被截断时补全文，见 designer.md #6
     diskList.innerHTML = "";
     if (!diskItems.length) {
-      diskList.textContent = "没有找到可管理的模型或日志。";
+      diskList.textContent = L("没有找到可管理的模型或日志。", "No models or logs to manage.");
       syncDiskButton();
       return;
     }
-    var ROLE = { in_use: "正在用", app: "本程序", other: "非本程序" };
+    // 三个词与 index.html #disk-hint 那行说明用词逐字一致
+    var ROLE = { in_use: L("正在用", "In use"), app: L("本程序", "This app"), other: L("非本程序", "Not this app") };
     diskItems.forEach(function (it) {
       var row = document.createElement("label");
       row.className = "disk-item role-" + it.role;
@@ -1795,7 +1846,9 @@
     diskItems.forEach(function (it) { if (ids.indexOf(it.id) !== -1) bytes += it.size || 0; });
     diskDelete.disabled = ids.length === 0;
     diskDelete.textContent = ids.length
-      ? "删除所选（" + ids.length + " 项，" + humanSize(bytes) + "）" : "删除所选";
+      ? LN(ids.length, "删除所选（" + ids.length + " 项，" + humanSize(bytes) + "）",
+           "Delete 1 Item (" + humanSize(bytes) + ")",
+           "Delete " + ids.length + " Items (" + humanSize(bytes) + ")") : L("删除所选", "Delete Selected");
   }
 
   if (diskHead) {
@@ -1803,7 +1856,7 @@
       var open = diskBody.classList.contains("hidden");
       setRowOpen(diskHead, diskBody, open);
       if (open) {
-        diskList.textContent = "正在统计…";
+        diskList.textContent = L("正在统计…", "Calculating…");
         send({ type: "disk_inventory" });
       }
     });
@@ -1813,10 +1866,13 @@
       var ids = diskSelected();
       if (!ids.length) return;
       var lines = diskItems.filter(function (it) { return ids.indexOf(it.id) !== -1; })
-        .map(function (it) { return "· " + it.label + "（" + humanSize(it.size) + "）"; });
-      if (!window.confirm("确定删除以下内容？删了就没有了。\n\n" + lines.join("\n"))) return;
+        .map(function (it) {
+          return L("· " + it.label + "（" + humanSize(it.size) + "）", "· " + it.label + " (" + humanSize(it.size) + ")");
+        });
+      if (!window.confirm(L("确定删除以下内容？删了就没有了。\n\n", "Delete these items? This can’t be undone.\n\n") +
+                          lines.join("\n"))) return;
       diskDelete.disabled = true;
-      diskDelete.textContent = "删除中…";
+      diskDelete.textContent = L("删除中…", "Deleting…");
       send({ type: "disk_delete", ids: ids });
     });
   }
@@ -1907,7 +1963,7 @@
 
     // 顶栏按钮同一个状态写的是「已打开」（updateShareBtn），这里跟着改成
     // 「已打开/未打开」，别再各写各的（pm.md #3）
-    shareState.textContent = on ? "已打开" : "未打开";
+    shareState.textContent = on ? L("已打开", "On") : L("未打开", "Off");
     shareState.className = "share-state " + (on ? "on" : "off");
     shareToggle.classList.toggle("hidden", on);   // 打开后靠卡片里的「关闭」按钮，不重复放一个
 
@@ -1921,7 +1977,9 @@
       // note 有内容时是刚失败的一次尝试（状态 5：端口被占，带真实报错）；否则是普通关闭说明
       // 状态字已经写着「未打开」，这句不再以「关闭。」开头
       shareDesc.textContent = state.note ||
-        "打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。";
+        L("打开后，连着同一个 Wi-Fi 的手机可以扫码看字幕和报警，只能看，不能操作本程序。",
+          "When this is on, phones on the same Wi-Fi can scan to view captions and alerts. " +
+          "They can only view, not control the app.");
       shareLastIp = null;
       shareOn = false;
       return;
@@ -1931,7 +1989,8 @@
 
     if (!state.ip) {
       // 状态 4：没读到局域网地址，没有二维码
-      shareDesc.textContent = state.note || "已打开，但没读到本机的局域网地址。";
+      shareDesc.textContent = state.note ||
+        L("已打开，但没读到本机的局域网地址。", "On, but the app couldn’t find this computer’s local network address.");
       shareUrl.textContent = "";
       shareQr.classList.add("hidden");
       shareIpList.classList.add("hidden");
@@ -1942,16 +2001,20 @@
       var url = buildViewerUrl(state.url, activeIp) || state.url || "";
       var n = state.viewers || 0;
       var max = state.max_viewers || 12;
-      shareDesc.textContent = "已打开。手机连同一个 Wi-Fi，扫下面的二维码，或直接打开：" + url;
+      shareDesc.textContent = L("已打开。手机连同一个 Wi-Fi，扫下面的二维码，或直接打开：" + url,
+        "On. On a phone connected to the same Wi-Fi, scan the QR code or open: " + url);
       shareUrl.textContent = url;      // 大号可选中：用户可以直接长按复制，不必点按钮
-      shareUrl.title = "这个链接里带着一把钥匙，当密码看待；发给谁，谁就能看到字幕和报警。";
-      shareCount.textContent = "当前 " + n + " 人在看，最多 " + max + " 人。";
+      shareUrl.title = L("这个链接里带着一把钥匙，当密码看待；发给谁，谁就能看到字幕和报警。",
+        "This link contains an access key. Treat it like a password. Anyone who has it can see captions and alerts.");
+      // 英文 “N watching” 单复数同形（docs/i18n-style.md §2.3），不用 LN
+      shareCount.textContent = L("当前 " + n + " 人在看，最多 " + max + " 人。", n + " watching (limit " + max + ")");
 
       var ok = (typeof renderQR === "function") && renderQR(shareQr, state.qr_rows, 220);
       shareQr.classList.toggle("hidden", !ok);
       if (!ok) {
         // 状态 8：二维码没能生成——note 是后端已经拼好的那句话
-        shareNote.textContent = state.note || "二维码没能生成，请让手机手工输入上面的地址。";
+        shareNote.textContent = state.note ||
+          L("二维码没能生成，请让手机手工输入上面的地址。", "Couldn’t create the QR code. Type the address above on the phone.");
         shareNote.classList.remove("hidden");
       } else {
         shareNote.classList.add("hidden");
@@ -1967,8 +2030,10 @@
 
     // A9：地址变了。只在「已经打开着」的连续期间比较，刚打开的这一次不算「变了」
     if (shareLastIp && state.ip && state.ip !== shareLastIp) {
-      shareAddrChanged.textContent = "本机地址已从 " + shareLastIp + " 变为 " + state.ip +
-        "，之前发出去的链接需要重新扫码";
+      shareAddrChanged.textContent = L("本机地址已从 " + shareLastIp + " 变为 " + state.ip +
+        "，之前发出去的链接需要重新扫码",
+        "This computer’s address changed from " + shareLastIp + " to " + state.ip +
+        ". Phones need to scan the new QR code.");
       shareAddrChanged.classList.remove("hidden");
     } else {
       shareAddrChanged.classList.add("hidden");
@@ -1978,8 +2043,10 @@
     // A8：从关到开的这一刻，一次性提示系统可能弹出的网络权限确认框；
     // 覆盖掉上面刚设的正常描述，下一次真实状态广播到达（如 A9 的地址重发）会把它换回来
     if (justOpened) {
-      shareDesc.textContent = "第一次打开时，系统可能弹出是否允许接受网络连接的确认框（macOS）" +
-        "或防火墙提示（Windows），请选允许。";
+      shareDesc.textContent = L("第一次打开时，系统可能弹出是否允许接受网络连接的确认框（macOS）" +
+        "或防火墙提示（Windows），请选允许。",
+        "The first time you turn this on, macOS may ask to allow incoming network connections, " +
+        "or Windows Firewall may ask for access. Choose Allow.");
     }
     shareOn = on;
   }
@@ -2065,8 +2132,10 @@
       // 状态 6：换链接确认——发出去的旧链接立刻失效，在看的手机全部断开重扫。
       // 文案来自服务端 viewer 载荷的 rotate_confirm（唯一出处是 app/viewer.py
       // 的 NOTE_ROTATE_CONFIRM），这里只补上当下人数，不再自己存一份重复文案。
+      // 兜底与后端 NOTE_ROTATE_CONFIRM 同一句；英文用不变形的句式：{n} 到这里才填，后端选不了单复数
       var tmpl = (lastShareState && lastShareState.rotate_confirm) ||
-        "换链接之后，现在在看的 {n} 台手机会断开，要重新扫码。继续？";
+        L("换链接之后，现在在看的 {n} 台手机会断开，要重新扫码。继续？",
+          "Changing the link disconnects the phones watching now ({n}). They’ll need to scan the new QR code. Continue?");
       if (!window.confirm(tmpl.replace("{n}", String(n)))) return;
       send({ type: "viewer_rotate" });
     });
@@ -2111,8 +2180,10 @@
     switchConfirmBtn.disabled = label.disabled || !!pendingStart;
     if (switchHint) {
       switchHint.textContent = switchArmState.target
-        ? "切换期间两个主播都没有字幕，直到 @" + switchArmState.target + " 出现第一句。"
-        : "切换期间两个主播都没有字幕，直到新主播出现第一句。";
+        ? L("切换期间两个主播都没有字幕，直到 @" + switchArmState.target + " 出现第一句。",
+            "No captions from either streamer until @" + switchArmState.target + " starts speaking.")
+        : L("切换期间两个主播都没有字幕，直到新主播出现第一句。",
+            "No captions from either streamer until the new streamer starts speaking.");
     }
   }
 
@@ -2180,12 +2251,13 @@
         // .recent-chip 是 inline-flex，原来整段文字是一个匿名 flex 项
         var curText = document.createElement("span");
         curText.appendChild(nameSpan("@" + e.streamer));
-        curText.appendChild(document.createTextNode("（当前）"));
+        curText.appendChild(document.createTextNode(L("（当前）", " (current)")));
         chip.appendChild(curText);
       } else {
         markName(chip);
         chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
-        chip.title = "填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）";
+        chip.title = L("填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）",
+                       "Select @" + e.streamer + ". You’ll still need to confirm.");
         chip.addEventListener("click", function () {
           switchInput.value = e.url;
           armSwitchFromChip(streamerFromInput(e.url));   // 大小写规则同开始面板的 chip
@@ -2211,8 +2283,8 @@
       // 顶栏是「直播中 · @A」，这里以前的「当前监听」/chip 的「监听中」是第三种
       // 说法，混用容易让人以为指的不是同一件事（pm.md #7）
       switchSub.textContent = cur
-        ? "当前 @" + cur + "，确认前不会中断"
-        : "确认前不会中断当前监听";
+        ? L("当前 @" + cur + "，确认前不会中断", "Now monitoring @" + cur + ". Nothing changes until you confirm.")
+        : L("确认前不会中断当前监听", "Monitoring continues until you confirm.");
     }
     if (switchSourceEcho) {
       var opt = sourceSel.options[sourceSel.selectedIndex];
@@ -2254,7 +2326,8 @@
       return;
     }
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      showSwitchError("与本地服务断开，正在重连——稍候再试。");
+      showSwitchError(L("与本地服务断开，正在重连——稍候再试。",
+                        "Lost connection to the local service. Reconnecting… Try again in a moment."));
       return;
     }
     clearSwitchResetTimer();
@@ -2322,7 +2395,7 @@
     if (!alertModeTag) return;
     var show = streamActive && alertsEnabled;
     alertModeTag.classList.toggle("hidden", !show);
-    if (show) alertModeTag.textContent = "报警开";
+    if (show) alertModeTag.textContent = L("报警开", "Alerts on");
   }
 
   // 本场品牌标签：config.active_brand（{id, name} 或 null）来自 hello/config
@@ -2344,7 +2417,7 @@
     var show = streamActive && !!activeBrandName;
     activeBrandTag.classList.toggle("hidden", !show);
     if (show) {
-      activeBrandTag.textContent = "品牌 · ";
+      activeBrandTag.textContent = L("品牌 · ", "Brand · ");
       activeBrandTag.appendChild(nameSpan(activeBrandName));   // 品牌名（标签是 inline-block，省略号照样生效）
       activeBrandTag.title = activeBrandName;
     }
@@ -2391,7 +2464,7 @@
   // 自检结果。有失败项时默认展开——「功能悄悄坏了」必须让人一眼看到，
   // 全绿时收起来不打扰
   var scLastSig = null;   // 结论没变就别动展开状态
-  var SC_LEVEL_SR_TEXT = { warn: "（提醒）", fail: "（未通过）" };
+  var SC_LEVEL_SR_TEXT = { warn: L("（提醒）", " (warning)"), fail: L("（未通过）", " (failed)") };
 
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
@@ -2457,8 +2530,8 @@
     fixCmdCopy.addEventListener("click", function () {
       var text = fixCmdText.textContent;
       var done = function () {
-        fixCmdCopy.textContent = "已复制";
-        setTimeout(function () { fixCmdCopy.textContent = "复制"; }, 2000);
+        fixCmdCopy.textContent = L("已复制", "Copied");
+        setTimeout(function () { fixCmdCopy.textContent = L("复制", "Copy"); }, 2000);
       };
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(done, function () {
@@ -2476,8 +2549,8 @@
     var sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    fixCmdCopy.textContent = "已选中，按 ⌘C";
-    setTimeout(function () { fixCmdCopy.textContent = "复制"; }, 3000);
+    fixCmdCopy.textContent = L("已选中，按 ⌘C", "Selected. Press ⌘C");
+    setTimeout(function () { fixCmdCopy.textContent = L("复制", "Copy"); }, 3000);
   }
 
   // ---- 字幕跟随 ----
@@ -2624,15 +2697,25 @@
   // 用户不重填就沿用旧的（页面永远拿不到完整密钥）。
   var KEY_ENV = { deepl: "DEEPL_API_KEY", claude: "ANTHROPIC_API_KEY",
                   openai: "OPENAI_API_KEY" };
+  // auto 那一句与 index.html #engine-note 的初值是同一句（首帧不闪另一种语言）
   var NOTES = {
-    auto: "默认用本地模型：完全离线、不限量、字幕不出本机。",
-    hymt2: "本地模型，离线免费。多数机器用这一档就够。",
-    "hymt2-7b": "本地模型，术语更准，但会和语音识别抢内存，可能拖慢报警。",
-    deepl: "字幕文本会发送给 DeepL。免费额度以此处显示的用量为准；额度周期与续用方式取决于你的 DeepL 账户方案。",
-    claude: "字幕文本会发送给 Anthropic，按用量计费。",
-    openai: "字幕文本会发送给该接口的提供方，按用量计费。",
-    google: "字幕文本会发送给 Google，且会按 IP 限流。",
-    none: "只显示识别原文，不翻译。"
+    auto: L("默认用本地模型：完全离线、不限量、字幕不出本机。",
+            "Uses a local model: fully offline, unlimited, and captions never leave this computer."),
+    hymt2: L("本地模型，离线免费。多数机器用这一档就够。",
+             "Local model, offline and free. Good enough for most computers."),
+    "hymt2-7b": L("本地模型，术语更准，但会和语音识别抢内存，可能拖慢报警。",
+                  "Local model with more accurate terms. It shares memory with speech recognition " +
+                  "and can slow alerts."),
+    deepl: L("字幕文本会发送给 DeepL。免费额度以此处显示的用量为准；额度周期与续用方式取决于你的 DeepL 账户方案。",
+             "Captions are sent to DeepL. Free quota usage is shown here. Your DeepL plan sets the quota " +
+             "period and renewal."),
+    claude: L("字幕文本会发送给 Anthropic，按用量计费。", "Captions are sent to Anthropic and billed by usage."),
+    openai: L("字幕文本会发送给该接口的提供方，按用量计费。",
+              "Captions are sent to this API’s provider and billed by usage."),
+    // 不写 rate limit 一类的词（CLAUDE.md 第八条的禁用词对全仓英文都查）
+    google: L("字幕文本会发送给 Google，且会按 IP 限流。",
+              "Captions are sent to Google. Google caps how many requests one IP address can make."),
+    none: L("只显示识别原文，不翻译。", "Shows the original text without translating.")
   };
   var engineKeys = {};
   var engineNoteSig = null;   // 上一次的回退提示；变了才自动展开，重连回放不反复弹开
@@ -2692,8 +2775,9 @@
     if (env) {
       var have = engineKeys[env];
       engineKey.value = "";
-      engineKey.placeholder = have ? "已填 " + have + "（留空则沿用）"
-                                   : "粘贴 API 密钥";
+      // have 是打过码的尾四位（app/translator.py mask_key：「…abcd」）
+      engineKey.placeholder = have ? L("已填 " + have + "（留空则沿用）", "Saved key " + have + " (leave blank to keep)")
+                                   : L("粘贴 API 密钥", "Paste API key");
     }
     // 字幕会发到外部服务的几档：前面加三角图标（以前是 ⚠️ 前缀），颜色仍由 .warn 给
     var sendsOut = engineSelect.value in KEY_ENV || engineSelect.value === "google";
@@ -2706,13 +2790,13 @@
     engineSelect.addEventListener("change", syncEngineRow);
     engineSave.addEventListener("click", function () {
       engineSave.disabled = true;
-      engineSave.textContent = "切换中…";
+      engineSave.textContent = L("切换中…", "Switching…");
       send({ type: "set_engine", engine: engineSelect.value,
              api_key: engineKey.value || null });
       engineKey.value = "";
       setTimeout(function () {
         engineSave.disabled = false;
-        engineSave.textContent = "保存";
+        engineSave.textContent = L("保存", "Save");
       }, 2500);
     });
   }

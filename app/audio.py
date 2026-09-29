@@ -1,3 +1,4 @@
+# i18n: done
 """用 ffmpeg 从直播流中抽取音频，输出 16 kHz 单声道 16-bit PCM 帧。"""
 import asyncio
 import time
@@ -6,6 +7,7 @@ from collections import deque
 import numpy as np
 
 from .ffmpeg_bin import filter_path, find_ffmpeg
+from .i18n import L
 
 SAMPLE_RATE = 16000
 FRAME_SEC = 0.1
@@ -33,7 +35,9 @@ class FFmpegAudioSource:
         """异步生成固定长度（0.1 秒）的 PCM 帧，流结束后返回。"""
         ffmpeg = find_ffmpeg()
         if ffmpeg is None:
-            raise RuntimeError("缺少音频组件 ffmpeg——请关闭程序后重新打开，会自动补装")
+            raise RuntimeError(L("缺少音频组件 ffmpeg——请关闭程序后重新打开，会自动补装",
+                                 "Audio (ffmpeg) is missing. Quit and reopen the app to "
+                                 "install it automatically."))
         cmd = [ffmpeg, "-nostdin", "-loglevel", "error"]
         if self.media_url.startswith("http"):
             cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
@@ -81,7 +85,7 @@ class FFmpegAudioSource:
             pass
 
     def stderr_tail(self):
-        return " | ".join(self._stderr_tail)
+        return " | ".join(self._stderr_tail)  # i18n: data
 
     async def stop(self):
         if self.proc is not None and self.proc.returncode is None:

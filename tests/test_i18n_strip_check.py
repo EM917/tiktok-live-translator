@@ -136,6 +136,107 @@ def test_registered_identity_calls_really_are_identity_in_chinese(monkeypatch):
         assert fn("正在停止…") == "正在停止…", name
 
 
+# ---- strip-check：剥完之后认的等价写法（tests/i18n_rules.py 登记） ----------------------------
+
+def test_format_of_str_x_is_format_of_x_only_for_plain_fields():
+    """L(…).format(of(exc)) 剥出来是 "…".format(str(exc))，与基点的 "…".format(exc) 同字节：
+    占位符不带格式规格和 !转换 时，str.format 调的就是 format(exc, "") == str(exc)。"""
+    base = 'try:\n    go()\nexcept Exception as exc:\n    status("内部错误，已停止：{}".format(exc))\n'
+    new = base.replace('"内部错误，已停止：{}".format(exc)',
+                       'L("内部错误，已停止：{}", "An internal error stopped monitoring. Details: {}")'
+                       '.format(of(exc))')
+    ok, counts, why = S.compare_python(base, new)
+    assert ok, why
+    assert counts['"…".format(str(x))'] == 1 and counts["of"] == 1
+    kw = S.compare_python('x = "{a}：{b}".format(a=1, b=exc)\n',
+                          'x = L("{a}：{b}", "{a}: {b}").format(a=1, b=of(exc))\n')
+    assert kw[0], kw[2]
+    for field in ("{!r}", "{:>20}", "{0.args}", "{:{}}"):
+        template = "出错：" + field
+        ok, _, _ = S.compare_python('x = "{}".format(exc, 5)\n'.format(template),
+                                    'x = L("{0}", "Error: {0}").format(of(exc), 5)\n'.format(template))
+        assert not ok, field
+    # 不是 .format 的实参就不认：str(exc) 与 exc 本来就不是一回事
+    assert not S.compare_python("x = exc\n", "x = of(exc)\n")[0]
+
+
+def test_str_first_calls_only_cover_the_registered_functions():
+    base = "def clean_error(exc, limit=200):\n    return strip_query(exc, limit)\n"
+    new = ("def clean_error(exc, limit=200):\n"
+           "    return bimap(lambda s: strip_query(s, limit), of(exc))\n")
+    ok, counts, why = S.compare_python(base, new)
+    assert ok, why
+    assert counts["strip_query(str(x))"] == 1
+    assert "strip_query" in rules.STR_FIRST_CALLS
+    ok, _, _ = S.compare_python(base.replace("strip_query", "shorten"),
+                                new.replace("strip_query", "shorten"))
+    assert not ok
+
+
+_RESOLVER_BASE = '''
+    def lookup(layer, exc):
+        return "{}：{}".format(layer, exc)
+'''
+_RESOLVER_NEW = '''
+    from .i18n import L, of
+
+    LAYER_LABEL = {"官方接口": L("官方接口", "official API")}  # i18n: audit
+
+
+    def _ui_layer(layer):
+        return LAYER_LABEL.get(layer, layer)
+
+
+    def lookup(layer, exc):
+        return L("{}：{}", "{}: {}").format(_ui_layer(layer), of(exc))
+'''
+
+
+def test_identity_helpers_and_their_own_constants_are_dropped_in_their_module():
+    ok, counts, why = S.compare_python(_d(_RESOLVER_BASE), _d(_RESOLVER_NEW), "app/resolver.py")
+    assert ok, why
+    assert counts["删定义 _ui_layer"] == 1 and counts["删定义 LAYER_LABEL"] == 1
+    # 别的模块里同名的函数不是登记过的那一个
+    assert not S.compare_python(_d(_RESOLVER_BASE), _d(_RESOLVER_NEW), "app/pipeline.py")[0]
+    # 常量别处也在读：它不只为恒等函数存在，不能去掉
+    also_read = _d(_RESOLVER_NEW) + "\n\ndef names():\n    return list(LAYER_LABEL)\n"
+    assert not S.compare_python(_d(_RESOLVER_BASE) + "\n\ndef names():\n    return []\n",
+                                also_read, "app/resolver.py")[0]
+    # 基点已经有这个函数：照常逐节点比，里面的改动拦得住
+    base_has = _d(_RESOLVER_NEW)
+    changed = base_has.replace("LAYER_LABEL.get(layer, layer)", "LAYER_LABEL.get(layer, '?')")
+    assert S.compare_python(base_has, base_has, "app/resolver.py")[0]
+    assert not S.compare_python(base_has, changed, "app/resolver.py")[0]
+
+
+def test_the_node_guard_line_is_dropped_only_when_it_is_new_and_exact():
+    base = 'function f() { return "待机"; }\n'
+    new = rules.JS_NODE_GUARD + '\nfunction f() { return L("待机", "Ready"); }\n'
+    ok, counts, why = S.compare_js(base, new)
+    assert ok, why
+    assert counts == {"L": 1, "§2.3 守卫行": 1}
+    assert S.compare_js(rules.JS_NODE_GUARD + "\n" + base, new)[0]          # 基点已有：照常比
+    assert not S.compare_js(base, new.replace("APP_NAME = I18N_.APP_NAME", "X = 1"))[0]
+    assert not S.compare_js(base, rules.JS_NODE_GUARD + "\n" + new)[0]      # 多出两行
+
+
+def test_known_chinese_visible_additions_are_listed_and_nothing_else():
+    base = 'CLOSE_LOCALIZATION = {"global.quit": "关闭", "global.cancel": "取消"}\n'
+    new = ('CLOSE_LOCALIZATION = {"global.quit": L("关闭", "Close"), "global.cancel": '
+           'L("取消", "Cancel"), "global.ok": L("好", "OK")}\n')
+    path = "app/window_close.py"
+    assert "global.ok" in rules.STRIP_KNOWN_ADDITIONS[path]["CLOSE_LOCALIZATION"]
+    ok, counts, why = S.compare_python(base, new, path)
+    assert ok, why
+    assert counts["已登记改动 CLOSE_LOCALIZATION['global.ok']"] == 1
+    assert not S.compare_python(base, new, "app/other.py")[0]                     # 只认登记的文件
+    assert not S.compare_python(base, new.replace("global.ok", "global.yes"), path)[0]
+    # 基点已经有这个键：它的中文再改就是普通的不一致
+    with_ok = base.replace("}", ', "global.ok": "好"}')
+    assert S.compare_python(with_ok, new, path)[0]
+    assert not S.compare_python(with_ok, new.replace('L("好", "OK")', 'L("确定", "OK")'), path)[0]
+
+
 # ---- strip-check：JS 与 HTML ---------------------------------------------------------------
 
 def test_js_pairs_strip_back_to_the_base_tokens():

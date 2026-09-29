@@ -1,3 +1,4 @@
+# i18n: done
 """报警的系统通知。默认关闭，只有 settings.json 里 "alert_os_notify": true 才发。
 
 中控常把 TikTok LIVE Studio 全屏盖在本程序窗口上：新报警只是被盖住的窗口里多一行，
@@ -16,12 +17,12 @@ import sys
 import time
 
 from . import i18n
-from .i18n import APP_NAME
+from .i18n import APP_NAME, L
 from .native_dialog import esc_osa
 
 SETTING_KEY = "alert_os_notify"
 TITLE = APP_NAME
-TEXT = "有新的疑似违禁词报警，请查看窗口"
+TEXT = L("有新的疑似违禁词报警，请查看窗口", "New banned-term alert. Open the window to review it.")
 BURST_GAP_SEC = 60.0      # 距上一条报警超过这么久，才算新的一阵
 REMIND_SEC = 600.0        # 一阵报警持续很久时，最多每 10 分钟再提醒一次
 

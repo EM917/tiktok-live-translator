@@ -1,3 +1,4 @@
+# i18n: done
 """本地翻译引擎的启动/备货（healing + pull）：从 app/pipeline.py 纯搬移出来，
 方法名/签名/方法体逐字未改动。Pipeline 通过 EngineProvisionMixin 继承这些方法，
 self.* 语义不变。
@@ -33,6 +34,8 @@ while_idle_downloads_then_switches）。所以这两个方法改成运行时从 
 """
 import asyncio
 import time
+
+from .i18n import L, bimap
 
 
 class EngineProvisionMixin:
@@ -73,7 +76,9 @@ class EngineProvisionMixin:
         if not await loop.run_in_executor(None, localmodel.is_installed):
             return
         await self.server.broadcast({
-            "type": "notice", "text": "翻译引擎用的 Ollama 没在运行，正在自动启动…"})
+            "type": "notice", "text": L("翻译引擎用的 Ollama 没在运行，正在自动启动…",
+                                        "Ollama, which the translation engine uses, isn’t "
+                                        "running. Starting it…")})
         self._provision_task = asyncio.ensure_future(self._provision_then_check())
 
     # 需要 Ollama 的引擎 → 它要的模型、以及「本机有没有这个模型」的探测
@@ -161,7 +166,8 @@ class EngineProvisionMixin:
         elif pulled and getattr(self, "_engine_pending", None) == engine:
             await self._apply_pending_engine(engine)
         if pulled:
-            await self._provision_note("本地翻译已就绪，可以开始了。")
+            await self._provision_note(L("本地翻译已就绪，可以开始了。",
+                                         "Local translation is ready. You can start now."))
         if started or need is not None:
             # 启动时的自检和这里是并行跑的，那一行多半是在 Ollama 起来之前
             # 查的：等它跑完再查一遍，把红条刷掉
@@ -216,8 +222,11 @@ class EngineProvisionMixin:
         self._pull_deferred = need
         self._pull_deferred_session = audit
         self._audit_pull("deferred", need)
-        when = "更新结束后" if self._update_in_progress() else "停止后"
-        text = "本地翻译模型 {} 还没下载，{}自动下载".format(model_label(need), when)
+        when = (L("更新结束后", "after the update finishes") if self._update_in_progress()
+                else L("停止后", "after monitoring stops"))
+        text = L("本地翻译模型 {} 还没下载，{}自动下载",
+                 "The local translation model {} isn’t downloaded yet. It downloads "
+                 "automatically {}.").format(model_label(need), when)
         print("[信息] " + text)
         await self._provision_note(text)
 
@@ -227,9 +236,11 @@ class EngineProvisionMixin:
         from . import localmodel
         from .translator import HYMT2_SMALL, engine_label
 
-        size = "约 1.1 GB，" if need == HYMT2_SMALL else "首次需要下载，"
+        size = (L("约 1.1 GB，", "about 1.1 GB, ") if need == HYMT2_SMALL
+                else L("首次需要下载，", "first-time download, "))
         await self._provision_note(
-            "正在准备本地翻译模型（{}只需这一次）…".format(size))
+            L("正在准备本地翻译模型（{}只需这一次）…",
+              "Preparing the local translation model ({}only needed once)…").format(size))
         last = [-10.0]
         finished = [False]
 
@@ -242,8 +253,10 @@ class EngineProvisionMixin:
                 return
             last[0] = pct
             self._spawn(note(
-                "正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
-                "只需这一次）…".format(pct, done_mb, total_mb)))
+                L("正在下载本地翻译模型：{:.0f}%（{:.0f} / {:.0f} MB，"
+                  "只需这一次）…",
+                  "Downloading the local translation model… {:.0f}% ({:.0f} of {:.0f} MB, "
+                  "only needed once)").format(pct, done_mb, total_mb)))
 
         running = self._pulls_running()
         running.add(need)
@@ -259,13 +272,17 @@ class EngineProvisionMixin:
             print("[信息] 本地翻译模型已就绪")
             self._audit_pull("done", need)
             return True
-        error = error or "Ollama 没有给出说明"
+        error = error or L("Ollama 没有给出说明", "Ollama gave no details")
         print("[警告] 本地翻译模型下载失败：{}".format(error))
         self._audit_pull("failed", need, error)
         current = getattr(self.translator, "name", None)
-        keep = "继续用" + engine_label(current) if current else "继续不翻译"
+        keep = (L("继续用", "keeps using ") + engine_label(current) if current
+                else L("继续不翻译", "continues without translation"))
         await self._provision_note(
-            "本地翻译模型下载失败：{}；{}，下一场停止后会自动再试".format(error[:120], keep))
+            L("本地翻译模型下载失败：{}；{}，下一场停止后会自动再试",
+              "Couldn’t download the local translation model: {}. The app {}, and tries "
+              "again after the next session stops.").format(
+                bimap(lambda s: s[:120], error), keep))
         return False
 
     async def _apply_pending_engine(self, engine):

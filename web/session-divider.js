@@ -1,3 +1,4 @@
+// i18n: done
 /* 桌面页字幕流里「场次分隔线」的纯文案与判断逻辑：要不要画、画什么字。
  * DOM 部分（找 .cap 节点、插入 div、隐藏大字幕）留在 web/app.js 的
  * renderSessionBreak/insertSessionDivider 里，这里只管分隔线本身该长什么样。
@@ -7,6 +8,9 @@
  * 环境走 module.exports。 */
 
 "use strict";
+
+// 浏览器里 L/LN 是 i18n.js 定义的全局函数（这里的 var 不会清掉它）；node 测试里从 i18n.js 取
+if (typeof L === "undefined") { var I18N_ = require("./i18n.js"); var L = I18N_.L, LN = I18N_.LN, APP_NAME = I18N_.APP_NAME; }
 
 /* 只有页面里已经有字幕卡片时才画分隔线：程序启动后的第一场前面没有任何
  * 卡片，不该凭空多出一条线。session_break 每场都广播（含第一场，见
@@ -24,7 +28,8 @@ function pad2(n) { return (n < 10 ? "0" : "") + n; }
 function sessionDividerText(msg) {
   var d = new Date(((msg && msg.ts) || Date.now() / 1000) * 1000);
   var time = pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
-  var who = (msg && msg.streamer) ? ("以下为 @" + msg.streamer) : "以下为新的一场";
+  var who = (msg && msg.streamer) ? (L("以下为 @" + msg.streamer, "Now monitoring @" + msg.streamer))
+                                  : L("以下为新的一场", "New session");
   return "── " + time + " " + who + " ──";
 }
 

@@ -1,3 +1,4 @@
+# i18n: done
 """本地翻译模型的自动就绪：不让用户为了「离线翻译」去开终端。
 
 背景：没装 Ollama 的机器会退回 Google 免费接口——它按 IP 限流，长时间监听
@@ -17,6 +18,8 @@ import os
 import shutil
 import sys
 from pathlib import Path
+
+from .i18n import L, bimap
 
 OLLAMA_DOWNLOAD = {
     "darwin": "https://ollama.com/download/Ollama-darwin.zip",
@@ -163,9 +166,9 @@ async def _http_error_text(resp):
         said = json.loads(raw).get("error") or raw
     except Exception:
         pass
-    said = " ".join(str(said or "").split())
+    said = " ".join(str(said or "").split())  # i18n: data
     status = getattr(resp, "status", "?")
-    return "HTTP {}：{}".format(status, said) if said else "HTTP {}".format(status)
+    return L("HTTP {}：{}", "HTTP {}: {}").format(status, said) if said else "HTTP {}".format(status)
 
 
 async def pull(model, on_progress=None):
@@ -188,7 +191,8 @@ async def pull(model, on_progress=None):
                 timeout=aiohttp.ClientTimeout(total=None, sock_read=120)) as s:
             async with s.post(base_url() + "/api/pull", data=body) as r:
                 if r.status != 200:
-                    return False, clean_error_text(await _http_error_text(r), 300)
+                    return False, bimap(lambda s: clean_error_text(s, 300),
+                                        await _http_error_text(r))
                 async for raw in r.content:
                     if not raw.strip():
                         continue
@@ -206,21 +210,32 @@ async def pull(model, on_progress=None):
                         return True, None
         if await is_running():
             return True, None
-        return False, "下载没有收到完成信号，Ollama 已经连不上"
+        # 句末不加句号：pipeline_engine 把它拼进「本地翻译模型下载失败：…；…」
+        return False, L("下载没有收到完成信号，Ollama 已经连不上",
+                        "The download ended without a completion signal, and Ollama is no "
+                        "longer reachable")
     except Exception as exc:
-        said = str(exc)
-        return False, clean_error_text(
-            type(exc).__name__ + ("：" + said if said else ""), 300)
+        said = str(exc)  # i18n: data
+        return False, bimap(lambda s: clean_error_text(s, 300),
+                            type(exc).__name__ + (L("：", ": ") + said if said else ""))
 
 
 def install_hint():
     """没装 Ollama 时给用户的话。分平台说实话，别承诺做不到的事。"""
     url = OLLAMA_DOWNLOAD.get(sys.platform)
     if sys.platform == "darwin":
-        return ("到 ollama.com 下载 Ollama（约 179 MB），拖进「应用程序」打开一次，"
-                "然后重开本程序——翻译模型会自动下载，不用敲任何命令。", url)
+        return (L("到 ollama.com 下载 Ollama（约 179 MB），拖进「应用程序」打开一次，"
+                  "然后重开本程序——翻译模型会自动下载，不用敲任何命令。",
+                  "Download Ollama from ollama.com (about 179 MB), drag it to Applications, "
+                  "and open it once. Then reopen the app. The translation model downloads "
+                  "automatically, with no commands to type."), url)
     if sys.platform == "win32":
-        return ("到 ollama.com 下载并安装 Ollama（安装器约 1.5 GB，需要管理员权限，"
-                "所以本程序无法代劳），装完重开本程序——翻译模型会自动下载。", url)
-    return ("按 ollama.com 上的说明装好 Ollama 后重开本程序，翻译模型会自动下载。",
+        return (L("到 ollama.com 下载并安装 Ollama（安装器约 1.5 GB，需要管理员权限，"
+                  "所以本程序无法代劳），装完重开本程序——翻译模型会自动下载。",
+                  "Download and install Ollama from ollama.com. The installer is about 1.5 GB "
+                  "and needs administrator rights, so the app can’t install it for you. Then "
+                  "reopen the app. The translation model downloads automatically."), url)
+    return (L("按 ollama.com 上的说明装好 Ollama 后重开本程序，翻译模型会自动下载。",
+              "Install Ollama by following the instructions on ollama.com, then reopen the "
+              "app. The translation model downloads automatically."),
             "https://ollama.com/download")

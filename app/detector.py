@@ -17,6 +17,8 @@ import unicodedata
 from collections import deque
 from pathlib import Path
 
+from .i18n import L, of
+
 # 三级命中，按可信度从高到低
 TIER_EXACT = "exact"        # 🔴 原样命中
 TIER_VARIANT = "variant"    # 🟠 形态变化（单复数、阴阳性、动词变位）
@@ -78,7 +80,11 @@ def _stem_tokens(tokens):
 # 跟着变，那是业务决定（CLAUDE.md 第五条），不是加载器能替人做的。
 
 _TRAILING_COMMENT_RE = re.compile(r"\s#")
-_COMMENT_ADVICE = "行尾的 # 说明不算注释，连同词条一起去匹配——注释要单独写一行"
+# 词表体检的说明经自检「违禁词表」那一行上界面（load_warnings[].text）。英文句末不加句号，
+# 与中文一样：自检把几条说明接在一起时自己加分隔
+_COMMENT_ADVICE = L("行尾的 # 说明不算注释，连同词条一起去匹配——注释要单独写一行",
+                    "A # note at the end of a line isn’t a comment. It’s matched as part of "
+                    "the entry. Put comments on their own line")
 
 
 def _char_survives(ch):
@@ -153,10 +159,16 @@ def _regex_dead_reason(expr):
     if not ch:
         return None
     if normalize(ch.lower()):
-        return ("accent", "检测时文本已去掉重音，正则里的「{}」不会出现——请改写成 [{}{}] "
-                          "这种形式".format(ch, normalize(ch.lower()), ch.lower()))
-    return ("punctuation", "检测时文本已去掉标点，正则里的「{}」不会出现——删掉这个符号，"
-                           "或在它后面加 ? 让它可有可无".format(ch))
+        return ("accent", L("检测时文本已去掉重音，正则里的「{}」不会出现——请改写成 [{}{}] "
+                            "这种形式",
+                            "Accents are removed before matching, so “{}” in the pattern can "
+                            "never match. Write it as [{}{}] instead")
+                .format(ch, normalize(ch.lower()), ch.lower()))
+    return ("punctuation", L("检测时文本已去掉标点，正则里的「{}」不会出现——删掉这个符号，"
+                             "或在它后面加 ? 让它可有可无",
+                             "Punctuation is removed before matching, so “{}” in the pattern "
+                             "can never match. Delete it, or add ? after it to make it optional")
+            .format(ch))
 
 
 def _regex_comment_reason(expr, dead):
@@ -176,7 +188,9 @@ def _regex_comment_reason(expr, dead):
         head_dead = _regex_dead_reason(head)
         if head_dead is None:
             return ("trailing_comment", _COMMENT_ADVICE)
-        return (head_dead[0], "{}；行尾的 # 说明也要挪到单独一行".format(head_dead[1]))
+        return (head_dead[0], L("{}；行尾的 # 说明也要挪到单独一行",
+                                "{}. Also move the # note at the end of the line to its own "
+                                "line").format(head_dead[1]))
     return dead
 
 
@@ -221,7 +235,8 @@ class BannedTermDetector:
                 except re.error as exc:
                     print("[警告] 违禁词表里的正则无效，已跳过：{}（{}）".format(raw, exc))
                     self._warn(line, raw, "invalid_regex",
-                               "正则写法有错，没有生效（{}）".format(exc), loaded=False)
+                               L("正则写法有错，没有生效（{}）", "The pattern has an error ({})")
+                               .format(of(exc)), loaded=False)
                     continue
                 self.patterns.append({"raw": raw, "re": compiled})
                 self.loaded.append(raw)
@@ -232,7 +247,9 @@ class BannedTermDetector:
                 continue
             norm = normalize(raw)
             if not norm:
-                self._warn(line, raw, "empty", "去掉标点后什么都不剩，没有生效", loaded=False)
+                self._warn(line, raw, "empty", L("去掉标点后什么都不剩，没有生效",
+                                                 "Nothing is left once punctuation is removed"),
+                           loaded=False)
                 continue
             tokens = norm.split()
             self.terms.append({
@@ -257,11 +274,13 @@ class BannedTermDetector:
         self._last_hit.clear()
 
     def _warn(self, line, raw, reason, text, loaded):
-        where = "第 {} 行".format(line) if line else ""
+        # 英文把行号挪到词条后面：“re:é” (line 3) never matches: …；没有行号时就是 “re:é” never …
+        where = L("第 {} 行", " (line {})").format(line) if line else ""
         self.load_warnings.append({
             "line": line, "entry": raw, "reason": reason, "loaded": loaded,
-            "text": "{}「{}」{}：{}".format(
-                where, raw, "匹配不上" if loaded else "没有生效", text)})
+            "text": L("{}「{}」{}：{}", "“{1}”{0} {2}: {3}").format(
+                where, raw, L("匹配不上", "never matches") if loaded else L("没有生效", "isn’t active"),
+                text)})
 
     @property
     def enabled(self):
@@ -479,14 +498,14 @@ def read_terms(path):
     except FileNotFoundError:
         return info
     except OSError as exc:
-        info.read_error = str(exc)[:200]
+        info.read_error = str(exc)[:200]          # i18n: data（系统给的错误原文）
         return info
     info.mtime = mtime
     info.hash = hashlib.sha256(data).hexdigest()[:12]
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        info.decode_error = str(exc)[:200]
+        info.decode_error = str(exc)[:200]        # i18n: data（解码器给的错误原文）
         text = data.decode("utf-8", errors="replace")
         if text.startswith("\ufeff"):
             text = text[1:]

@@ -120,6 +120,20 @@ EN_WORD_EXCEPTIONS = {}
 # 中文臂 → 理由。同一句中文在不同位置确实该译成不同英文时才登记。
 SAME_ZH_DIFFERENT_EN = {
     "关闭": "状态读作 Off（设置行摘要、同看开关），窗口按钮读作 Close（关窗确认框）",
+    "；": "把几条完整的句子连起来时读作 '. '（自检行的 notes、弹幕被拒后的更新检查结果），"
+          "照 docs/i18n-style.md §2.2 拆句；只有在冒号或括号后面逐条列「名字：原因」时读作 '; '"
+          "（磁盘「未删除」清单、浏览器登录的观察、没过安全校验的解析层），"
+          "改成句号会让后面几条脱离冒号，读不出还是同一张清单",
+}
+
+# ---- R2：英文可以少引用中文里的变量（只限 JS，逐条登记） ------------------------------------
+# JS 的对按两臂引用的变量比（tools/i18n_pairs.py 的 R2）。英文有意省掉中文里的某个变量时登记在这里：
+# 中文臂的字面文字（变量处为空，即 Pair.zh）→ 理由。登记了的对，英文臂的变量只要是中文臂的子集就算过；
+# 英文多出中文里没有的变量照样报。
+R2_EN_OMITS = {
+    "再点一次：改听 @（停止监听 @）": "换主播的武装态：@A 已经写在上面的副标题里（Now monitoring @A. "
+                                  "Nothing changes until you confirm.），英文只说改听谁，按钮才放得下"
+                                  "（docs/i18n-style.md #75、§4.3 R3）",
 }
 
 # ---- R12：中文恒等函数 ------------------------------------------------------------------
@@ -129,6 +143,41 @@ ZH_IDENTITY_CALLS = {
     "render": "app.i18n:render",
     "i18n.render": "app.i18n:render",
     "i18n.text": "app.i18n:text",
+    "_ui_layer": "app.resolver:_ui_layer",
+    "_ui_reason": "app.resolver:_ui_reason",
+    "_ui_check_error": "app.updater:_ui_check_error",
+    "_space_before": "app.browser_login:_space_before",
+}
+
+# ---- strip-check 认的几种等价写法（tools/i18n_strip_check.py） ----------------------------
+# 剥回中文之后仍有差别时才用；用到哪条，结果表的「剥掉」一列就列出哪条，证明里看得见。
+#
+# 1. 新版在它自己的模块里定义了 ZH_IDENTITY_CALLS 登记的函数（如 resolver._ui_layer）：
+#    调用处已经剥成 x，所以定义本身、以及只有这些函数读的模块级常量（如 resolver.LAYER_LABEL），
+#    在基点里没有时从新版里去掉再比。基点里已经有了就照常比，改动照样拦得住。
+# 2. "…".format(…, str(x), …) 当作 "…".format(…, x, …)：对应的占位符没有格式规格、没有
+#    !r/!s/!a 时，str.format 调的是 format(x, "")，对异常和内置类型就是 str(x)。
+#    of(exc) 剥出来正是 str(exc)，所以 L(…).format(of(exc)) 能与基点的 "…".format(exc) 对上。
+# 3. 这些函数第一步就是 str() 它们的第一个参数：f(str(x), …) 当作 f(x, …)。
+#    函数名 → 理由。x 为 None 时两者不同，理由里要写清用处为什么不会是 None。
+STR_FIRST_CALLS = {
+    "strip_query": "app/redact.py 的 strip_query 先 str(text) 再清洗；只有 text 为 None 时不同"
+                   "（返回空串，而 str(None) 是 \"None\"）。用处 audit.clean_error 的 exc 是"
+                   " except 子句里接到的异常，不会是 None",
+}
+# 4. spec §2.3 的 node 守卫：web/*.js 顶上这一行只给 node 测试取 L/LN，浏览器里 L 早已定义，
+#    整行不执行。新版恰好多出一行、与这里逐字节相同，而基点没有时，从新版里去掉再比。
+JS_NODE_GUARD = ('if (typeof L === "undefined") { var I18N_ = require("./i18n.js"); '
+                 'var L = I18N_.L, LN = I18N_.LN, APP_NAME = I18N_.APP_NAME; }')
+# 5. 已登记的中文可见修正（spec §0.3：只有 §13 标成「中文可见修正」的提交可以改中文）。
+#    路径 → {模块级字典常量: {新增的键: 理由}}。只在基点的这个字典里还没有这个键时，
+#    从新版里去掉再比；基点已经有了就照常比。
+STRIP_KNOWN_ADDITIONS = {
+    "app/window_close.py": {"CLOSE_LOCALIZATION": {
+        "global.ok": "M11（spec §8.2）：cocoa 下 JS confirm() 的确认键取 global.ok，以前缺这一项，"
+                     "中文界面上是 pywebview 自带的「OK」配我们的「取消」；补上「好」是 §13 登记的"
+                     "中文可见修正",
+    }},
 }
 
 # ---- R11 ④：切片直接当这些调用的实参（或 status/broadcast 的字典值）会丢英文 ----------------
