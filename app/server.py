@@ -7,6 +7,8 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
+from . import i18n
+
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 
@@ -96,7 +98,13 @@ class CaptionServer:
         await site.start()
 
     async def _index(self, request):
-        return web.FileResponse(WEB_DIR / "index.html")
+        """桌面页。中文时照旧端文件本身，字节与改造前相同；英文时只把 <html lang> 换成 en，
+        页面里的 web/i18n.js 按它换文字（spec §2.2）。桌面页不加 data-i18n：那是手机页的闸标记。"""
+        path = WEB_DIR / "index.html"
+        if i18n.current() == i18n.ZH:
+            return web.FileResponse(path)
+        html = i18n.inject_lang(path.read_text(encoding="utf-8"), i18n.EN)
+        return web.Response(text=html, content_type="text/html", charset="utf-8")
 
     def _classify_origin(self, request):
         """WS 来源判定。浏览器里任意网页都能发起 ws://127.0.0.1 连接（不受同源
@@ -132,16 +140,18 @@ class CaptionServer:
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         try:
-            await ws.send_json({"type": "hello", "config": self.config})
+            # 缓存里存的是原消息（界面文字是 Bi），这里按「此刻」的界面语言现渲染：
+            # 切换语言后重连的页面拿到的是新语言，不会残留旧的。中文时 render 原样返回
+            await ws.send_json({"type": "hello", "config": i18n.render(self.config)})
             # 先补发历史警报（刷新页面不能丢报警），再回放字幕
             for alert in list(self.alerts):
-                await ws.send_json(dict(alert, replay=True))
+                await ws.send_json(i18n.render(dict(alert, replay=True)))
             # 回放完成后才加入广播集合，避免新字幕插进回放序列中间
             for payload in replay_payloads(self.history):
-                await ws.send_json(payload)
+                await ws.send_json(i18n.render(payload))
             # 观众弹幕历史同样要回放，且同样带 replay 标记
             for c in list(self.comments):
-                await ws.send_json(dict(c, replay=True))
+                await ws.send_json(i18n.render(dict(c, replay=True)))
             self._transports[ws] = request.transport
             self.clients.add(ws)
             async for msg in ws:
@@ -245,6 +255,11 @@ class CaptionServer:
                 hub.fanout(msg)
             except Exception as exc:      # 观众侧任何问题都不许影响本机界面
                 print("[警告] 手机同看分发失败: {}".format(exc))
+        # 发往本机页面之前的最后一步：界面文字按当前语言渲染（spec §2.2）。上面的缓存和手机
+        # 拿的都是原消息（带 Bi）；中文时 out 就是 msg 本身，字节不变。同步、没有 await。
+        # check_outbound 是测试里的运行时网，生产里第一行就返回
+        i18n.check_outbound(msg)
+        out = i18n.render(msg)
         # 逐个页面发，每个都有上限。以前是不限时的 await：一个不读消息的页面（浏览器
         # 冻结的后台标签、DevTools 断点、弹着 confirm 的 WebView2）把发送缓冲塞满后，
         # send_json 永远不返回——识别循环在等报警广播，于是识别整个停下、音频积压
@@ -259,7 +274,7 @@ class CaptionServer:
                 self._drop_client(ws, transport, "buffer_full", buffered)
                 continue
             try:
-                await asyncio.wait_for(ws.send_json(msg), self.SEND_TIMEOUT_SEC)
+                await asyncio.wait_for(ws.send_json(out), self.SEND_TIMEOUT_SEC)
             except asyncio.TimeoutError:
                 self._drop_client(ws, transport, "send_timeout",
                                   _write_buffer_size(transport))

@@ -386,3 +386,133 @@ def accept_lang(header):
     except Exception:
         return ZH
     return ZH if best is None else _lang_of_tag(best)
+
+
+# ---- G9 运行时网（spec §12.1；只在测试里开，生产 NET 为 None） ---------------------------
+
+# 每种发往桌面界面的消息里，哪些字段是界面散文（会原样显示给中控的句子）。
+# 路径写法："a.b" 进字典，"a[]" 逐个列表元素，"*" 字典里的每个值。
+# 新加一种消息类型要登记在这里或 DATA_ONLY：没登记的类型，运行时网记一条违例。
+_CHECKS = ("checks[].name", "checks[].detail", "checks[].fix")
+_ENGINE = ("active_label", "note")
+_DISK = ("items[].label", "items[].note")        # hf / ollama 的 label 是模型名：ASCII，不会误报
+_VIEWER = ("note", "rotate_confirm", "error")
+UI_FIELDS = {
+    "status": ("detail",),
+    "notice": ("text",),
+    "incident": ("text",),
+    "health": ("text",),
+    "caption": ("why",),
+    "caption_update": ("why",),
+    "alert": ("why",),
+    "alert_update": ("why",),
+    "comment_source": ("detail",),
+    "selfcheck": _CHECKS,
+    "engine": _ENGINE,
+    "disk": _DISK,
+    "viewer": _VIEWER,
+    # config 的各个键并进 server.config，hello 时整份重放
+    "config": (("status.detail", "incidents.*.text", "comment_detail", "update_check.note")
+               + tuple("selfcheck." + p for p in _CHECKS)
+               + tuple("engine." + p for p in _ENGINE)
+               + tuple("disk." + p for p in _DISK)
+               + tuple("viewer." + p for p in _VIEWER)),
+}
+# 只带数字、开关或数据（主播名、词条、字幕和弹幕的原文译文、GitHub 上的版本说明）的消息类型
+DATA_ONLY = frozenset({
+    "update_available", "updating", "update_aborted", "glossary_migration", "comment",
+    "comment_update", "stats", "watchlist", "alert_mode", "recent_rooms", "session_break",
+})
+# check_outbound 记下的违例：(kind, type, path, text, test)。kind 是 "unregistered"（没登记的
+# 消息类型）或 "plain"（界面字段上的普通中文 str，即漏写了 L()）。tests/conftest.py 汇总。
+NET_HITS = []
+_NET_PIPES = ("server.py", "i18n.py", "viewer.py")   # 广播本身的管道：往上找真正的发出者
+_NET_WRAPPERS = ("broadcast", "status", "fanout")    # 测试里 RecordingServer 一类的包装同理
+_net_paths = {}
+
+
+def ui_values(msg):
+    """msg 里登记为界面文字的字段，逐个交出 (路径, 值)。认不出的类型什么都不交。"""
+    if not isinstance(msg, dict):
+        return
+    for path in UI_FIELDS.get(msg.get("type"), ()):
+        for value in _walk(msg, path.split(".")):
+            yield path, value
+
+
+def _walk(node, parts):
+    if not parts:
+        yield node
+        return
+    head, rest = parts[0], parts[1:]
+    if head == "*":
+        if isinstance(node, dict):
+            for value in node.values():
+                yield from _walk(value, rest)
+        return
+    many = head.endswith("[]")
+    key = head[:-2] if many else head
+    if not isinstance(node, dict) or key not in node:
+        return
+    child = node[key]
+    if not many:
+        yield from _walk(child, rest)
+    elif isinstance(child, (list, tuple)):
+        for value in child:
+            yield from _walk(value, rest)
+
+
+def _net_frame(frame):
+    """(这一帧是否在 tests/ 下, 是否属于广播管道)，按代码对象缓存。"""
+    code = frame.f_code
+    hit = _net_paths.get(code)
+    if hit is None:
+        import asyncio
+        here = os.path.dirname(os.path.abspath(__file__))
+        tests = os.path.normcase(os.path.join(os.path.dirname(here), "tests")) + os.sep
+        name = os.path.normcase(os.path.abspath(code.co_filename))
+        pipes = {os.path.normcase(os.path.join(here, n)) for n in _NET_PIPES}
+        loop = os.path.normcase(os.path.dirname(os.path.abspath(asyncio.__file__))) + os.sep
+        piped = (name in pipes or name.startswith(loop)
+                 or (code.co_name in _NET_WRAPPERS and "self" in code.co_varnames[:1]))
+        hit = _net_paths[code] = (name.startswith(tests), piped)
+    return hit
+
+
+def _fed_by_test(frame):
+    """这条消息是不是测试直接喂给 broadcast / fanout 的夹具（如「电脑休眠过」这类中文 text）。
+
+    从调用者往上走：跳过广播管道本身（server.py、i18n.py、viewer.py）、asyncio 的事件循环
+    以及测试里对 broadcast / status 的包装，第一个剩下的帧在 tests/ 下就是夹具，跳过不查。
+    谁 await 这条广播就算谁的：生产函数交回协程、由测试 await 的（handle_control 的几支），
+    也算测试喂的——这是漏网而不是误报，G7 / G10 另外兜着。"""
+    while frame is not None:
+        in_tests, piped = _net_frame(frame)
+        if not piped:
+            return in_tests
+        frame = frame.f_back
+    return False
+
+
+def check_outbound(msg):
+    """G9 运行时网：生产代码发往界面的消息里，界面文字字段上出现普通中文 str（不是 Bi）
+    就是漏写了 L()，记一条违例；没登记的消息类型也记。只查中文臂，不查 Bi 英文里的
+    CJK（那可能是数据，归 G7）。
+
+    生产里 NET 为 None，第一行就返回。只记不抛：违例是否让用例失败由 tests/conftest.py 定，
+    绝不能因为这张网让一条广播在半路抛异常。"""
+    if NET is None:
+        return
+    try:
+        if not isinstance(msg, dict) or _fed_by_test(sys._getframe(1)):
+            return
+        mtype = msg.get("type")
+        test = os.environ.get("PYTEST_CURRENT_TEST", "")
+        if mtype not in UI_FIELDS and mtype not in DATA_ONLY:
+            NET_HITS.append(("unregistered", str(mtype), "", "", test))
+            return
+        for path, value in ui_values(msg):
+            if isinstance(value, str) and not isinstance(value, Bi) and CJK.search(value):
+                NET_HITS.append(("plain", mtype, path, value[:40], test))
+    except Exception:
+        pass

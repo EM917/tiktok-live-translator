@@ -22,6 +22,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
+from . import i18n
 from .server import replay_payloads
 
 # ---- 常量（全部模块级：测试直接引用，不要散在函数里）----
@@ -55,6 +56,9 @@ SHUTDOWN_TIMEOUT_SEC = 2.0    # 传给 AppRunner：handler 收尾的上限
 VIEWER_AUDIT_PENDING_MAX = 100     # 空闲期攒下的审计事件上限
 ALERT_CONTEXT_LIMIT = 200
 SCRUB_LIMIT = 120
+# 英文比同样意思的中文长 2–3 倍，派生的英文字段另有上限；安全边界靠 _SCRUB_PATTERNS，不靠长度
+SCRUB_LIMIT_EN = 300
+WHY_LIMIT, WHY_LIMIT_EN = 160, 400
 REPLAY_MAX = 273              # 1+1+1+20+50+100+100，见 replay_snapshot
 
 VIEWER_FILES = ("viewer.html", "viewer.js", "viewer.css", "icon.png")
@@ -110,6 +114,18 @@ ALLOW = {
     # 场次分隔线：手机端用 ts 画一条分隔线。streamer 不给——主播名是内部
     # 归属信息，同一份考量见上面 alert 里丢掉的 streamer/session/ui_clients
     "session_break": ("ts",),
+}
+
+# 派生的英文字段（spec §7.2）：基础字段过了白名单，就从它身上派生出英文那一份，手机按自己的
+# 语言挑。ALLOW 一个键都不加——消息自带的 text_en / why_en 根本不会被读，派生值只可能来自
+# 基础字段，注入在结构上不存在。只在 i18n.enabled() 时派生：闸关着手机消息一个字段都不多。
+# 值是 (基础字段, 派生字段, 长度上限)
+DERIVED_EN = {
+    "incident": ("text", "text_en", SCRUB_LIMIT_EN),
+    "caption": ("why", "why_en", WHY_LIMIT_EN),
+    "caption_update": ("why", "why_en", WHY_LIMIT_EN),
+    "alert": ("why", "why_en", WHY_LIMIT_EN),
+    "alert_update": ("why", "why_en", WHY_LIMIT_EN),
 }
 
 # 显式拒绝。viewer 必须单独钉死：它的载荷里带着含 token 的 URL，
@@ -199,7 +215,7 @@ def filter_payload(msg):
         elif key == "why":
             # why 是自由文本。今天的取值都是固定的中文短句，但它长在会变的代码
             # 路径上——顺手过一遍清洗，将来谁把异常文本塞进来也带不出路径
-            value = scrub_text(value, 160)
+            value = scrub_text(value, WHY_LIMIT)
         elif key in ("replay", "restore", "failed", "strong", "on"):
             value = bool(value)
         elif key == "strong_state":
@@ -209,6 +225,13 @@ def filter_payload(msg):
         out[key] = value
     if mtype == "comment_source" and "backend" not in out:
         out["backend"] = _norm_backend(None)
+    if mtype in DERIVED_EN and i18n.enabled():
+        base, key, limit = DERIVED_EN[mtype]
+        if base in out:
+            # 基础字段在，派生字段就一定在：普通 str（还没迁移的路径、why=""）就用它本身。
+            # update 按键合并到手机那一条上，这样旧的英文原因不会残留
+            raw = msg[base]
+            out[key] = scrub_text(getattr(raw, "en", raw), limit)
     return out
 
 
@@ -805,6 +828,7 @@ class ViewerHub:
 
     # ---- 分发（同步，绝不 await）----
     def fanout(self, msg):
+        i18n.check_outbound(msg)          # 测试里的运行时网；生产里第一行就返回
         if not self._viewers:
             return
         payload = filter_payload(msg)
@@ -937,10 +961,18 @@ class ViewerHub:
 
     # ---- 路由 ----
     async def page(self, request):
+        """手机页。闸关着（且没有一次性覆盖）时照旧端文件本身，与改造前逐字节相同。
+        开着时按手机的 Accept-Language 定 <html lang>，并写上 data-i18n="on"：config / hello
+        不发给手机（DENY），手机只能从这个标记知道闸开着，viewer.js 见到它才读本机选择、
+        才显示语言切换（spec §7.1）。CSP 不变，也不加内联脚本。"""
         path = self._web_dir / "viewer.html"
         if not path.is_file():
             raise web.HTTPNotFound()
-        return web.FileResponse(path)
+        if not i18n.enabled():
+            return web.FileResponse(path)
+        lang = i18n.accept_lang(request.headers.get("Accept-Language", ""))
+        html = i18n.inject_lang(path.read_text(encoding="utf-8"), lang, marker=True)
+        return web.Response(text=html, content_type="text/html", charset="utf-8")
 
     async def asset(self, request):
         name = request.match_info.get("name") or ""

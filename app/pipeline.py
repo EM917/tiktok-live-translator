@@ -14,6 +14,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from . import i18n
 from .asr import DEFAULT_TEMPERATURE
 from .comment_source import CommentSource
 from .comments import CommentTranslator
@@ -392,6 +393,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self.target = value
                 self._save_setting("target_lang", value)
                 return self.server.broadcast({"type": "config", "target_lang": value})
+        elif mtype == "set_ui_lang":
+            return self._set_ui_lang(msg.get("value"))
         elif mtype == "start":
             url = str(msg.get("url", "")).strip()
             source = str(msg.get("source", "") or "").strip()
@@ -482,6 +485,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         elif mtype == "open_brands_dir":
             return self._open_brands_dir()
         return None
+
+    def _set_ui_lang(self, value):
+        """设置里换了界面语言（spec §3.5）：存设置、更新全局语言、把新的语言字段广播出去，
+        所有桌面页面见到 config.ui_lang 和自己的不一样就重载一次。
+
+        闸关着（I18N_ENABLED 为假）一律忽略：那时界面恒为中文，设置行也是隐藏的。
+        设置分组在直播中、连接中整块隐藏，所以只可能在待机时切换，重载不会打断监听。
+        不写审计：审计记录的类型和字段一个都不加。"""
+        if value not in i18n.CHOICES or not i18n.I18N_ENABLED:
+            return None
+        self._save_setting("ui_lang", value)
+        lang = i18n.set_choice(value)
+        info = i18n.config_info()
+        print("[信息] 界面语言：{} → {}".format(value, lang))
+        return self.server.broadcast(dict(info, type="config"))
 
     def _open_brands_dir(self):
         """「打开词表文件夹」：确保 brands/ 存在，再用系统方式把它打开，方便
