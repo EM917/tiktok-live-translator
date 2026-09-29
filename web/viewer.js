@@ -1,3 +1,4 @@
+// i18n: done
 /* 手机同看页面逻辑。只读：不引用 app.js/alerts.js/follow.js（VIEWER_FILES 只有
    四个文件是安全性质，见 spec §12），贴底跟随那 12 行在下面故意重写了一份。
 
@@ -66,19 +67,21 @@ function applyStatic(root) {
 // ============ 一、纯函数 ============
 
 // 连接状态文案。n 用于 reconnecting 的倒计时秒数 / stale 的静默秒数。
+// 英文放在窄屏的状态胶囊里，用短写法（docs/i18n-style.md §3 #122–#125、§4.3 R4）；
+// 「12」照写：被拒的手机收不到 max_viewers（spec §7.2）
 var CONN_TEXT = {
-  connecting: "连接中…",
-  connected: "已连接",
-  reconnecting: "已断开，{n} 秒后重连…",
-  denied: "链接已失效，请向中控要新的二维码",
-  full: "同看人数已满（12 人），稍后再试",
-  off: "中控已关闭手机同看",
-  stale: "{n} 秒没有新消息",
+  connecting: L("连接中…", "Connecting…"),
+  connected: L("已连接", "Connected"),
+  reconnecting: L("已断开，{n} 秒后重连…", "Reconnecting in {n} sec…"),
+  denied: L("链接已失效，请向中控要新的二维码", "Link expired · Ask for a new QR code"),
+  full: L("同看人数已满（12 人），稍后再试", "Full (12 max) · Try again later"),
+  off: L("中控已关闭手机同看", "Operator stopped sharing"),
+  stale: L("{n} 秒没有新消息", "No updates for {n} sec"),
 };
 
 function statusText(state, n) {
   var t = CONN_TEXT[state];
-  if (!t) return "状态未知";
+  if (!t) return L("状态未知", "Status unknown");
   return t.replace("{n}", String(n == null ? 0 : n));
 }
 
@@ -86,14 +89,14 @@ function statusText(state, n) {
 // （idle/connecting/live/error，见 spec §12「实现者请核对」一条，已用
 // `grep -n 'server.status(' app/pipeline.py` 核对，只有这四种）。
 var STREAM_TEXT = {
-  idle: "未开始",
-  connecting: "连接中",
-  live: "直播中",
-  error: "已停止",
+  idle: L("未开始", "Not started"),
+  connecting: L("连接中", "Connecting"),
+  live: L("直播中", "Live"),
+  error: L("已停止", "Stopped"),
 };
 
 function streamText(state) {
-  return STREAM_TEXT[state] || "状态未知";
+  return STREAM_TEXT[state] || L("状态未知", "Status unknown");
 }
 
 // 重连退避：0.5/1/2/4/8/15 秒封顶，±20% 抖动。抖动之后再夹到 [400, 15000]——
@@ -117,7 +120,7 @@ function backoffDelay(n, rand) {
 // 但手机上也看不到报警——不能让手机这边毫无提示，否则同看的人会误以为
 // 「这场很干净」。关闭时给一行常驻灰字；打开时不显示（返回空串，调用方据此隐藏）。
 function alertModeText(on) {
-  return on ? "" : "违禁词警示已关闭（中控开播时未开启）";
+  return on ? "" : L("违禁词警示已关闭（中控开播时未开启）", "Banned-term alerts are off for this session.");
 }
 
 // 让「回放的 alert」与「随后实时同 id 的 alert」只渲染一份：只按 alert_id 取键，
@@ -164,13 +167,14 @@ function tokenFromHash(hash) {
 function retranslateLabel(state, strong) {
   if (state == null) {
     return strong
-      ? { hidden: true, text: "已重译", disabled: true }
-      : { hidden: false, text: "重译", disabled: false };
+      ? { hidden: true, text: L("已重译", "Retranslated"), disabled: true }
+      : { hidden: false, text: L("重译", "Retranslate"), disabled: false };
   }
-  if (state === "pending") return { hidden: false, text: "重译中…", disabled: true };
-  if (state === "ok") return { hidden: false, text: "已重译", disabled: true };
-  if (state === "failed") return { hidden: false, text: "重译失败，可再试", disabled: false };
-  return { hidden: false, text: "重译", disabled: !!strong };   // 未知取值，兜底成可点
+  if (state === "pending") return { hidden: false, text: L("重译中…", "Retranslating…"), disabled: true };
+  if (state === "ok") return { hidden: false, text: L("已重译", "Retranslated"), disabled: true };
+  if (state === "failed") return { hidden: false, text: L("重译失败，可再试", "Couldn’t Retranslate · Try Again"),
+                                   disabled: false };
+  return { hidden: false, text: L("重译", "Retranslate"), disabled: !!strong };   // 未知取值，兜底成可点
 }
 
 // 重译点击的本地节流：3 秒内只认第一次点击，断线时一律不让点。这只是本地体验
@@ -252,7 +256,7 @@ function shouldRenderSessionDivider(hasExistingItems) {
 // 信息，viewer.py 的 ALLOW 白名单本就不下发（见 session_break 只放行 ts），
 // 这里即使收到带 streamer 的 msg 也不采用，双重保险。
 function sessionDividerText() {
-  return "── 新的一场 ──";
+  return L("── 新的一场 ──", "── New session ──");
 }
 
 // ============ 二、浏览器专用：DOM + WebSocket ============
@@ -504,7 +508,9 @@ if (typeof document !== "undefined") {
         var elapsedSec = Math.round((Date.now() - lastConnectedAt) / 1000);
         if (elapsedSec > STALE_RECONNECT_SEC) {
           // A9：重连拖得够久，普通的「N 秒后重连」已经不够用——告诉人可以做什么
-          text = "已经 " + elapsedSec + " 秒没连上。请找中控确认同看是否还开着，或重新扫码";
+          text = L("已经 " + elapsedSec + " 秒没连上。请找中控确认同看是否还开着，或重新扫码",
+                   "Not connected for " + elapsedSec + " sec. "
+                   + "Ask the operator whether sharing is still on, or scan the QR code again.");
           staleReconnectShown = elapsedSec;
         } else {
           text = statusText(connState, pendingRetrySec);
@@ -556,7 +562,7 @@ if (typeof document !== "undefined") {
       if (connState === "connected") {
         streamTextEl.classList.remove("stale");
       } else {
-        streamTextEl.textContent = "状态未知";
+        streamTextEl.textContent = L("状态未知", "Status unknown");
         streamTextEl.classList.add("stale");
       }
     }
@@ -738,8 +744,8 @@ if (typeof document !== "undefined") {
 
     // ---- 识别健康度：白名单只留 level，文案按 level 查表自己生成 ----
     var HEALTH_TEXT = {
-      lagging: "识别开始落后，报警会有延迟",
-      degraded: "检测已降级，识别明显落后",
+      lagging: L("识别开始落后，报警会有延迟", "Recognition is falling behind. Alerts will be delayed."),
+      degraded: L("检测已降级，识别明显落后", "Detection degraded: recognition is far behind."),
     };
     function renderHealth(msg) {
       if (!healthLine) return;
@@ -761,7 +767,9 @@ if (typeof document !== "undefined") {
     // ---- 违禁词报警：最显眼的红卡片，新的插最前，最多 50 条 ----
     // 精确/变体/疑似三档不再靠 emoji 颜色区分，改成卡片左侧的分级色竖线
     // （跟桌面端 .alert-item.tier-variant/.tier-fuzzy 同一套逻辑，见 viewer.css）。
-    var TIER_LABEL = { exact: "精确", variant: "变体", fuzzy: "疑似" };
+    // 英文与桌面（web/live-ui.js）统一成 Exact / Variant / Similar；认不出的分级兜底写的「命中」
+    // 在桌面就是 exact 那一档的字，英文同样写 Exact（同一句中文只许有一种英文）
+    var TIER_LABEL = { exact: L("精确", "Exact"), variant: L("变体", "Variant"), fuzzy: L("疑似", "Similar") };
     function renderAlert(msg) {
       if (!alertSection || !alertList) return;
       // 之前在本机取消过：回放（重连/刷新补发的历史）也不复活。不是「自动取消」，
@@ -787,15 +795,16 @@ if (typeof document !== "undefined") {
       headLabel.appendChild(tierIcon);
       var labelText = document.createElement("span");
       // 词条是名字，单独一截；三截都在 labelText 里，.alert-head-label 的 flex 子项不变
-      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || "命中") + " 「"));
+      // 引号跟着语言换：中文「」，英文弯双引号 “”（docs/i18n-style.md §2.2）
+      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || L("命中", "Exact")) + L(" 「", " “")));
       labelText.appendChild(textSpan(msg.term || "", true));
-      labelText.appendChild(textSpan("」 " + hhmmss(msg.ts)));
+      labelText.appendChild(textSpan(L("」 ", "” ") + hhmmss(msg.ts)));
       headLabel.appendChild(labelText);
       head.appendChild(headLabel);
       var dismissBtn = document.createElement("button");
       dismissBtn.type = "button";
       dismissBtn.className = "alert-dismiss";
-      dismissBtn.setAttribute("aria-label", "取消这条报警（只在本机隐藏）");
+      dismissBtn.setAttribute("aria-label", L("取消这条报警（只在本机隐藏）", "Dismiss this alert (this phone only)"));
       dismissBtn.innerHTML = ICON_XMARK;
       dismissBtn.addEventListener("click", function () { dismissAlert(msg.alert_id); });
       head.appendChild(dismissBtn);
@@ -810,7 +819,7 @@ if (typeof document !== "undefined") {
       var zh = document.createElement("div");
       zh.className = "alert-zh" + (msg.context_zh ? "" : " pending");
       markBody(zh, !!msg.context_zh);
-      zh.textContent = msg.context_zh || "中文正在补…";
+      zh.textContent = msg.context_zh || L("中文正在补…", "Translating…");
       item.appendChild(zh);
 
       alertsById[item.dataset.key] = { msg: msg, el: item, zhEl: zh };
@@ -835,7 +844,9 @@ if (typeof document !== "undefined") {
         entry.zhEl.classList.remove("pending", "failed");
       } else if (entry.msg.failed) {
         markBody(entry.zhEl, false);
-        entry.zhEl.textContent = "中文译不出来（" + (pick(entry.msg, "why") || "未知原因") + "）——请看上面的原话";
+        entry.zhEl.textContent = L("中文译不出来（" + (pick(entry.msg, "why") || "未知原因") + "）——请看上面的原话",
+                                   "Couldn’t translate (" + (pick(entry.msg, "why") || "unknown reason")
+                                   + "). See the original above.");
         entry.zhEl.classList.remove("pending");
         entry.zhEl.classList.add("failed");
       }
@@ -932,10 +943,12 @@ if (typeof document !== "undefined") {
       if (msg.translated) {
         transEl.textContent = msg.translated;
       } else if (msg.failed) {
-        transEl.textContent = "译文失败（" + (pick(msg, "why") || "未知原因") + "）——请看上面的原话";
+        transEl.textContent = L("译文失败（" + (pick(msg, "why") || "未知原因") + "）——请看上面的原话",
+                                "Couldn’t translate (" + (pick(msg, "why") || "unknown reason")
+                                + "). See the original above.");
         transEl.classList.add("failed");
       } else if (msg.translate_state === "pending") {
-        transEl.textContent = "翻译中…";
+        transEl.textContent = L("翻译中…", "Translating…");
         transEl.classList.add("pending");
       } else {
         transEl.textContent = "";
@@ -991,7 +1004,7 @@ if (typeof document !== "undefined") {
       zh.className = "cmt-zh";
       markBody(zh, msg.state !== "pending");
       if (msg.state === "pending") {
-        zh.textContent = "翻译中…";
+        zh.textContent = L("翻译中…", "Translating…");
         zh.classList.add("pending");
       } else {
         zh.textContent = msg.translated || msg.text || "";
@@ -1020,7 +1033,7 @@ if (typeof document !== "undefined") {
       entry.msg = applyUpdate(entry.msg, msg);
       markBody(entry.zhEl, entry.msg.state !== "pending");
       if (entry.msg.state === "pending") {
-        entry.zhEl.textContent = "翻译中…";
+        entry.zhEl.textContent = L("翻译中…", "Translating…");
         entry.zhEl.classList.add("pending");
       } else {
         entry.zhEl.textContent = entry.msg.translated || entry.msg.text || "";
@@ -1028,11 +1041,12 @@ if (typeof document !== "undefined") {
       }
     }
 
+    // 这行小字紧挨着「弹幕 / Comments」标题：英文不再重复 Comments（同桌面，docs/i18n-style.md §3 #96）
     var COMMENT_SOURCE_TEXT = {
-      idle: "弹幕未连接",
-      connecting: "弹幕连接中…",
-      live: "弹幕已连接",
-      unavailable: "弹幕暂时不可用",
+      idle: L("弹幕未连接", "Not connected"),
+      connecting: L("弹幕连接中…", "Connecting…"),
+      live: L("弹幕已连接", "Connected"),
+      unavailable: L("弹幕暂时不可用", "Temporarily unavailable"),
     };
     function renderCommentSource(msg) {
       if (!commentToggle) return;
