@@ -93,7 +93,9 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse=True)
 def _chinese_ui_on_any_machine(monkeypatch):
-    """每个用例都从「闸关着时生产里的样子」开始：界面语言中文、没有一次性覆盖。
+    """每个用例都从中文界面开始：生效语言中文、没有一次性覆盖。发布闸 I18N_ENABLED 不在这里
+    定，用生产里的值：守闸关着或开着某一边语义的用例自己 monkeypatch，这样开闸和把闸改回
+    False 回退时，测试都不用跟着改。
 
     与跑测试的那台机器无关（spec §3.2）：系统语言检测换成「检测不了」，三个 TLT_* 环境变量
     删掉——CI 的 Windows / macOS 跑器、开发机的系统语言都不该让结果不同。模块级状态

@@ -10,6 +10,7 @@
 这里的中文夹具都写成 L()：这批提交里生产代码还没有迁移，句子由测试造；数据全用 ASCII。
 """
 import asyncio
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -65,8 +66,11 @@ async def _broadcast_samples(server):
 
 # ---- 桌面广播 ---------------------------------------------------------------------------
 
-def test_in_chinese_the_desktop_gets_the_very_same_message_object():
-    """中文时 render 原样返回：发给页面的就是原消息本身，没有复制、没有改写。"""
+@pytest.mark.parametrize("gate", [False, True])
+def test_in_chinese_the_desktop_gets_the_very_same_message_object(gate, monkeypatch):
+    """中文时 render 原样返回：发给页面的就是原消息本身，没有复制、没有改写。闸开着也一样
+    （开闸后老装机固定中文，spec §0.3 不变量 1）。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", gate)
     server, client = make_server()
     msg = {"type": "incident", "id": "session:sleep", "level": "warn", "text": SLEPT, "ts": 1.0}
     run(server.broadcast(msg))
@@ -140,7 +144,9 @@ def test_hello_and_every_replay_follow_the_language_at_connect_time():
 
 # ---- 桌面首页 ---------------------------------------------------------------------------
 
-def test_the_desktop_page_is_the_file_itself_in_chinese():
+@pytest.mark.parametrize("gate", [False, True])
+def test_the_desktop_page_is_the_file_itself_in_chinese(gate, monkeypatch):
+    monkeypatch.setattr(i18n, "I18N_ENABLED", gate)
     resp = run(CaptionServer(port=0)._index(None))
     assert isinstance(resp, web.FileResponse)
     assert resp._path == WEB_DIR / "index.html"
@@ -171,24 +177,29 @@ def _page(hub, accept=None):
     return run(hub.page(SimpleNamespace(match_info={}, headers=headers, transport=None)))
 
 
-def test_with_the_gate_closed_the_phone_page_is_the_file_itself():
+def test_with_the_gate_closed_the_phone_page_is_the_file_itself(monkeypatch):
     """闸关着：不看 Accept-Language，手机页与改造前逐字节相同，也没有 data-i18n 标记——
     viewer.js 见不到标记就不读本机的语言选择、不显示切换（spec §7.1）。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", False)
     assert not i18n.enabled()
     for accept in (None, "en-US,en;q=0.9", "zh-CN"):
         resp = _page(_phone_hub(), accept)
         assert isinstance(resp, web.FileResponse)
 
 
+@pytest.mark.parametrize("how", ["gate", "override"])
 @pytest.mark.parametrize("accept,tag", [
     ("en-US,en;q=0.9", '<html lang="en" data-i18n="on">'),
     ("zh-CN,zh;q=0.9,en;q=0.8", '<html lang="zh-CN" data-i18n="on">'),
     ("fr;q=0.4,zh-TW;q=0.9", '<html lang="zh-CN" data-i18n="on">'),
     (None, '<html lang="zh-CN" data-i18n="on">'),
 ])
-def test_when_enabled_the_phone_page_follows_the_phones_language(accept, tag):
-    """双语机制生效时（闸开着或一次性覆盖）按手机自己的语言定，与桌面用的语言无关。"""
-    with i18n.use("zh"):                          # 桌面是中文，手机照样按自己的语言
+def test_when_enabled_the_phone_page_follows_the_phones_language(accept, tag, how, monkeypatch):
+    """双语机制生效时（闸开着，或闸关着但带了一次性覆盖）按手机自己的语言定，与桌面用的语言
+    无关。how="gate" 是开闸后老装机的样子：桌面固定中文、没有一次性覆盖。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", how == "gate")
+    with i18n.use("zh") if how == "override" else nullcontext():
+        assert i18n.enabled() and i18n.current() == i18n.ZH     # 桌面是中文，手机照样按自己的语言
         resp = _page(_phone_hub(), accept)
     assert resp.content_type == "text/html" and resp.charset == "utf-8"
     original = (WEB_DIR / "viewer.html").read_text(encoding="utf-8")
@@ -207,13 +218,14 @@ def test_the_phone_page_keeps_its_security_headers_when_rendered():
 
 # ---- 手机消息 ---------------------------------------------------------------------------
 
-def test_the_phone_replay_carries_both_languages_only_when_enabled():
+def test_the_phone_replay_carries_both_languages_only_when_enabled(monkeypatch):
     server = CaptionServer(port=0)
     run(_broadcast_samples(server))
 
     def by_type(items):
         return {m["type"]: m for m in items}
 
+    monkeypatch.setattr(i18n, "I18N_ENABLED", False)
     closed = by_type(replay_snapshot(server))
     assert "text_en" not in closed["incident"] and "why_en" not in closed["alert"]
     assert closed["incident"]["text"] == "电脑休眠过 30 秒"
@@ -224,6 +236,14 @@ def test_the_phone_replay_carries_both_languages_only_when_enabled():
     assert opened["alert"]["why_en"] == "Timed out"
     assert opened["caption"]["why_en"] == "Timed out"
     assert "detail" not in opened["status"]           # status 的文字本来就不给手机
+    # 闸开着、桌面是中文（开闸后的老装机）：手机照样拿到两种语言，由手机自己挑
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    assert i18n.current() == i18n.ZH
+
+    def without_hello(items):                          # viewer_hello 带的是此刻的时间戳
+        return {k: v for k, v in items.items() if k != "viewer_hello"}
+
+    assert without_hello(by_type(replay_snapshot(server))) == without_hello(opened)
 
 
 def test_live_fanout_shares_one_payload_with_both_languages():
@@ -268,6 +288,7 @@ def _pipeline(monkeypatch):
 
 
 def test_switching_the_ui_language_is_ignored_while_the_gate_is_closed(monkeypatch, capsys):
+    monkeypatch.setattr(i18n, "I18N_ENABLED", False)
     p, saved = _pipeline(monkeypatch)
     assert p.handle_control({"type": "set_ui_lang", "value": "en"}) is None
     assert saved == {} and p.server.sent == [] and i18n.current() == i18n.ZH

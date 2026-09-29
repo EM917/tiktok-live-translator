@@ -53,7 +53,7 @@ MESSAGES = [
 
 @pytest.fixture(autouse=True)
 def _chinese(monkeypatch):
-    """闸关着时生产里的样子：界面语言是中文，没有一次性覆盖。"""
+    """中文界面、没有一次性覆盖：闸关着时、以及开闸后老装机在生产里的样子。"""
     monkeypatch.setitem(i18n._state, "lang", i18n.ZH)
     monkeypatch.setitem(i18n._state, "override", None)
 
