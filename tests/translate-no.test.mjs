@@ -13,7 +13,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-const web = (name) => readFileSync(new URL("../web/" + name, import.meta.url), "utf8");
+// Windows 的 Git 默认 core.autocrlf=true，检出的是 CRLF：统一成 \n，下面的正则只写 \n
+const web = (name) =>
+  readFileSync(new URL("../web/" + name, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 // 开始标签：属性值里可能有 < >（data-en-html），引号里的整段跳过
 const START_TAG = /<([a-z]+)\b((?:[^>"]|"[^"]*")*)>/g;

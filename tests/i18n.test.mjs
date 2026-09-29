@@ -12,7 +12,9 @@ import { readFileSync } from "node:fs";
 const require = createRequire(import.meta.url);
 const I18N = require.resolve("../web/i18n.js");
 const ROWS = require.resolve("../web/settings-rows.js");
-const web = (name) => readFileSync(new URL("../web/" + name, import.meta.url), "utf8");
+// Windows 的 Git 默认 core.autocrlf=true，检出的是 CRLF：统一成 \n，下面的正则只写 \n
+const web = (name) =>
+  readFileSync(new URL("../web/" + name, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 // 在给定的 globalThis.UI_LANG / document 下重新求值 i18n.js（和依赖它的 settings-rows.js）
 function load({ lang, document } = {}) {

@@ -5,6 +5,7 @@
 旧字样也照认——升级时可能还有旧版本的实例在跑，它的页面上没有这个 meta。
 """
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,9 @@ def test_other_pages_are_not_us(page):
 
 def test_index_html_carries_the_meta_right_after_charset():
     head = _index_head()
-    assert '<meta charset="UTF-8">\n  ' + instance.META in head
+    # 换行不限 LF：Windows 的 Git 默认 core.autocrlf=true，检出的是 CRLF。PROBE_BYTES 仍按原始
+    # 字节截：CRLF 下 meta 也得落在 main.py 读的那一段里
+    assert re.search(r'<meta charset="UTF-8">\r?\n  ' + re.escape(instance.META), head)
     assert looks_like_us(head)
 
 
