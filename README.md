@@ -612,27 +612,34 @@ and a list padded with false positives buries the operator in noise.
 ## Architecture
 
 <p align="center">
-  <img src="assets/audio-chain.en.svg" width="1000" alt="Audio pipeline: TikTok live room to stream resolver to ffmpeg denoise to energy VAD to audio queue to Whisper ASR, which branches into a banned-term scan and a translation queue, both converging on CaptionServer and the caption surface">
+  <img src="assets/audio-chain.en.svg" width="1000" alt="Audio pipeline: TikTok live room → stream resolver → ffmpeg denoise → energy VAD → audio queue → Whisper ASR (the glossary supplies hotwords), branching into a translation queue → translation engine (the same glossary supplies term hints and fix-ups) and a banned-term scan, both converging on CaptionServer and the caption surface">
 </p>
 
 **[Open the explorable version ↗](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.en.html)** — search nodes, focus a component to see its authored upstream and downstream, trace a directed route, play the guided chapters.
 
-Read from the source at [`c409181`](https://github.com/EM917/tiktok-live-translator/tree/c409181f6fd0f92f4f1a0558eb2889fc1cb820b4). The typed source and regeneration steps are in [`docs/architecture/`](docs/architecture/).
+Drawn from the source at [`430fe06`](https://github.com/EM917/tiktok-live-translator/tree/430fe06c139bb3cadc423221b6f4091702a4d51b), with every component checked against where it lives in the code. The typed source and regeneration steps are in [`docs/architecture/`](docs/architecture/).
 
 <details>
 <summary>The same topology as Mermaid — editable without any tooling</summary>
 
 ```mermaid
 flowchart TD
-    URL["TikTok live-room URL"] --> RESOLVE["stream resolver<br/>login-first (macOS) → live API → retry → WebKit (macOS) → yt-dlp → +login → page<br/>(audio-only preferred; see Fault tolerance)"]
-    RESOLVE -->|"media URL"| FF["ffmpeg → RNNoise denoise → 16 kHz PCM"]
+    URL["TikTok live link"] --> RESOLVE["stream resolver<br/>signed-in page (macOS) → live API → retry → WebKit (macOS) → yt-dlp → +sign-in → page<br/>(audio-only preferred; see Fault tolerance)"]
+    RESOLVE -->|"checked media URL"| FF["ffmpeg → RNNoise noise reduction → 16 kHz PCM"]
     FF --> VAD["energy-VAD segmenter (2.5–9 s)"]
-    VAD --> ASR["Whisper ASR<br/>MLX GPU / faster-whisper<br/>confidence + hallucination filter"]
-    ASR --> TR["translation<br/>Hy-MT2 7B / 1.8B (local) / TranslateGemma / Google / Claude / OpenAI / off"]
-    TR --> WS(("WebSocket"))
-    WS --> UI["browser subtitle UI"]
-    FF -.->|"stream drops: auto re-resolve + reconnect"| RESOLVE
-    VAD -.->|"ASR falls behind: drop a segment, stay real-time"| ASR
+    VAD --> AQ["audio queue<br/>60 s cap"]
+    AQ --> ASR["Whisper ASR<br/>MLX GPU / faster-whisper<br/>confidence + hallucination filter"]
+    GL["glossary<br/>global · brand · streamer"] -.->|"hotwords"| ASR
+    ASR -->|"source caption, no wait"| SRV["CaptionServer"]
+    ASR --> TQ["translation queue<br/>4 lines, drop oldest"]
+    TQ --> TR["translation engine<br/>Hy-MT2 1.8B / 7B (local) / TranslateGemma / DeepL / Google / Claude / OpenAI / off"]
+    GL -.->|"term hints · fix-ups"| TR
+    TR -->|"translation filled in"| SRV
+    ASR -->|"raw_text"| DET["banned-term scan<br/>exact · variant · similar"]
+    DET -->|"alert (when on)"| SRV
+    SRV --> WS(("WebSocket"))
+    WS --> UI["caption surface<br/>app window · Phone Viewing"]
+    FF -.->|"stream drops: re-resolve + reconnect"| RESOLVE
 ```
 
 </details>
@@ -641,19 +648,21 @@ flowchart TD
 
 On every launch the app silently checks GitHub for the latest release (network failures are silently ignored). When a new version exists, a banner appears at the top of the page:
 
-- **git install** (cloned via `git clone`) → click "Update" to run `git pull --ff-only` and restart automatically. If you have uncommitted local changes, the update is refused to avoid overwriting them;
+- **git install** (cloned via `git clone`) → click **Update Now** to run `git pull --ff-only` and restart automatically. If you have uncommitted local changes, the update is refused to avoid overwriting them;
 - **ZIP install** → the banner links to the download page instead.
 
 The current version is shown in the page footer.
 
 ## FAQ
 
-**The self-check shows a failing row.** Each row carries its remediation step
-directly beneath it. The most frequent causes are an empty `banned_terms.txt`
-(no alerts will be raised at all) and an incompletely downloaded denoise model
-(delete `models/bd.rnnn` and start again; it re-downloads). The panel re-checks
-on every start, so a resolved issue clears on the next run. A passing row
-indicates the capability was executed, not merely configured.
+**A Startup Check row is failing.** Each row carries its remediation step
+directly beneath it, and a failing check also stays in a banner at the top of
+the window, idle or live, until a later check passes. The most frequent causes
+are an empty `banned_terms.txt` (no alerts can be raised at all) and an
+incompletely downloaded noise-reduction model (delete `models/bd.rnnn` and
+start again; it re-downloads). The checks run again on every start, so a
+resolved issue clears on the next run. A passing row indicates the capability
+was executed, not merely configured.
 
 **The update button reports that something is blocking it.** The message names
 the affected files and provides a complete command with your project path and a
@@ -668,26 +677,24 @@ large-v3 this can exhaust a 16–18 GB machine and cause paging, presenting as
 slower recognition and a growing backlog. Unused tiers are now unloaded at
 startup. On older builds, `ollama stop <model>` releases it immediately.
 
-**The stream cannot be resolved although the room plays in a browser.** A
-blocked yt-dlp extractor reports failures as "the channel is not currently
-live", which is incorrect — see [Fault tolerance](#fault-tolerance) above for
-the full chain of layers the app tries instead, in order, with their measured
-timings. Being signed in to TikTok in Chrome or Safari helps but is usually not
-required, and no file needs exporting; cookies remain between your machine and
-TikTok. The application no longer reports the streamer as offline unless TikTok
-explicitly states the room has ended. A browser can be pinned with
-`--cookies-browser safari`, or credentials supplied via `--cookies cookies.txt`.
-To restrict the app to one browser persistently, set
+**The stream URL isn't found, although the stream plays in a browser.** yt-dlp
+can answer "not currently live" for such a stream, so the app does not stop
+there: it tries the layers listed under [Fault tolerance](#fault-tolerance), in
+order, and reports a stream as ended only when TikTok says so. Being signed in
+to TikTok in Safari or Chrome helps for some rooms but is usually not required,
+and no file needs exporting; cookies stay between your computer and TikTok. A
+browser can be pinned with `--cookies-browser safari`, or cookies supplied via
+`--cookies cookies.txt`. To have the app read only one browser from now on, set
 `"cookies_browser_only": "safari"` in `settings.json`; an explicit
 `--cookies-browser` takes precedence over it.
 
-<a id="browser-login"></a>**The "浏览器登录态" self-check row says the system refused the read.** macOS does
+<a id="browser-login"></a>**The Browser Login row of the Startup Check says macOS didn't allow access.** macOS does
 not let other apps read a browser's data directory unless the reading app has
 Full Disk Access. The entry to add is **not** this .app: the app is a launcher
 script that hands over to a Python interpreter, and macOS records the permission
 against the interpreter file's path (measured 2026-09-17 on macOS 27: the TCC
 log shows `identifier_type=Path` with a `python3.x` path and never mentions the
-bundle). The self-check row and the error message print the exact path(s) for
+bundle). The Browser Login row and the error message print the exact path(s) for
 your machine. Open System Settings → Privacy & Security → Full Disk Access,
 press "+", press ⌘⇧G in the file picker, paste the path, press Return, click
 Open, and switch the new entry on; repeat for each path shown. The list shows
@@ -695,7 +702,7 @@ the entry as `python3.x`, not under the app's name. Add Terminal too if you
 launch with Start.command. Then quit the app completely and reopen it. The path
 changes when Python is upgraded or the environment is rebuilt; the row then
 shows the new one. This only matters for rooms whose stream address TikTok
-serves to signed-in viewers. The self-check looks only at whether the cookie
+serves to signed-in viewers. The check looks only at whether the cookie
 store can be read and at login cookie names, across every browser profile; it
 never decrypts and never raises a Keychain prompt. Failed resolutions record one
 of these codes in the audit log: `blocked_by_system`, `no_browser_data`,
@@ -704,12 +711,13 @@ of these codes in the audit log: `blocked_by_system`, `no_browser_data`,
 not come out of decryption; start again and, if a Keychain dialog asks for
 "Chrome Safe Storage", enter the Mac login password and choose Always Allow.
 
-<a id="code-4003110"></a>**"TikTok did not hand this room's stream address to the app (code 4003110)".**
+<a id="code-4003110"></a>**"TikTok didn't provide a stream URL for this live stream (code 4003110)."**
 That code is TikTok's generic refusal; the response carries no reason, and the
 app does not invent one. Before concluding anything, run the built-in check:
 
 ```bash
-python3 tools/diagnose_room.py @streamer
+python3 tools/diagnose_room.py @streamer --history-only   # your own logs only, no requests
+python3 tools/diagnose_room.py @streamer                  # then the same-minute paired check
 ```
 
 It first aggregates your own `logs/session-*.jsonl` by streamer with zero
@@ -726,25 +734,41 @@ two weeks.
 is being retrieved from Hugging Face (large-v3 is approximately 3 GB). Progress
 is displayed on the page and this occurs only once.
 
-**All translations fail and captions show only the source language.** The
-default Google endpoint rate-limits per IP and returns 429 under sustained use.
-The application pauses requests for two minutes and recovers automatically, with
-a banner on the page. Speech recognition is unaffected. For extended sessions,
-use a local Hy-MT2 model or an API key via `--translator claude` / `openai`. No
-network connection, or a stopped Ollama, produces the same symptom.
+**All translations fail and captions show only the source language.** Google's
+free endpoint, which `auto` uses when no local model is installed,
+rate-limits per IP and returns 429 under sustained use. The application pauses
+requests for two minutes and recovers automatically, with a banner on the page.
+Speech recognition is unaffected. For extended sessions, install a local Hy-MT2
+model or choose another engine in Settings → Translation Engine. No network
+connection, or a stopped Ollama, produces the same symptom.
 
-**Status reads "live" but no captions appear for some time.** This is normally
+**The status reads Live but no captions appear for some time.** This is normally
 expected: while the streamer plays music or is not speaking, silent and
 low-confidence segments are discarded deliberately. If the streamer is clearly
 speaking and nothing appears, try `--denoise off` or a different model size.
 
 **Captions stop after closing the laptop lid or switching networks.** When the
-stream drops, the URL is re-resolved and the connection re-established
-automatically, up to 5 attempts with increasing backoff. If the interface
-reports repeated interruptions and failed reconnection, press Start again.
+stream drops, the app re-resolves the stream URL and reconnects by itself,
+waiting longer between attempts each time (2 s, then 4, 8, 16 and at most
+30 s). While the computer cannot reach TikTok it waits without spending
+attempts, for up to 30 minutes. It gives up only after 5 reconnects in a row
+bring no audio at all (1 for a pasted stream URL); a round that played any
+audio resets that count, so a patchy connection keeps reconnecting. If the
+window says the stream was interrupted several times and couldn't reconnect,
+click Start again. Details: [Keeping the stream](#keeping-the-stream).
+
+**Switching to another streamer during a session.** Click **Switch Streamer**
+in the top bar, paste the new live link or @username, or pick one from Recent
+Streams (the current streamer is marked and can't be picked), and choose the
+brand. The button then reads **Click Again to Switch to @name**; click it
+within 6 seconds to confirm. The current session stops and a new one starts
+with the same spoken language, re-reading the glossaries and the banned-term
+list. Neither streamer has captions until the new one starts speaking, and a
+divider in the caption history marks the change. **Stop**, by contrast, ends
+monitoring and returns to the start page.
 
 **Recognition cannot keep pace with the stream.** Use a smaller model
-(`--model small`) or `--beam 1`. On Apple Silicon, confirm the self-check
+(`--model small`) or `--beam 1`. On Apple Silicon, confirm the Startup Check
 reports the `mlx` backend rather than `ct2` — the CPU path runs at
 approximately real time and accumulates backlog.
 
@@ -783,17 +807,21 @@ false positives are expected.
 
 **The interface is not on port 8765.** If 8765 is occupied, the application
 moves to the next free port in 8766–8774 and says so in the terminal. That's
-the control page only; the phone viewer uses a separate port that never
-drifts — see the next entry.
+the control page only; Phone Viewing uses a port of its own and reuses the
+same one across restarts when it is free, so a printed QR code keeps working —
+see the next entry.
 
-<a id="phone-viewing"></a>**Can colleagues watch from their phones?** Yes. Click "手机同看" (Phone
-viewer) in the top bar — present whether idle or live — and click "打开"
-(Open) in the panel that opens; a phone on the same Wi-Fi as this computer can
+<a id="phone-viewing"></a>**Can colleagues watch from their phones?** Yes. Click **Phone Viewing** in
+the top bar (just a phone icon when the window is narrow; there whether idle or
+live) and click **Start Sharing** in the panel that opens. The first time,
+macOS may ask to allow incoming network connections, or Windows Firewall may
+ask for access; choose Allow. A phone on the same Wi-Fi as this computer can
 scan the QR code or type in the address shown in the panel, and can only view
 captions and alerts — it cannot control the app in any way (no start/stop,
-engine switch, or settings changes). Up to 12 phones can watch at once. The
+engine switch, or settings changes). Each phone page is in that phone's own
+language, with a toggle at the bottom. Up to 12 phones can watch at once. The
 link carries a key and should be treated like a password: whoever has it can
-see captions and alerts; clicking "Get a new link" disconnects every phone
+see captions and alerts; clicking **New Link** disconnects every phone
 currently watching, and they need to rescan. When a phone can't connect, the
 only thing the app knows is that no connection came in; try, in order:
 confirming the phone is on the same Wi-Fi; typing in another address from the
@@ -802,14 +830,14 @@ the service itself is running. The address is plain `http://` on the LAN, not
 a secure context, so there are no system notifications and no screen
 wake-lock, and the alert sound may stop once the page is backgrounded or the
 phone is locked. v1 only works within the same local network — not across
-networks. Each caption also has a "重译" (retranslate) button that asks the
-control computer's strongest local model to redo that one line; it's
-rate-limited per phone (a few seconds between taps, a handful per minute) so
-one phone tapping repeatedly can't queue up work or slow down the control
-computer. Each alert has a ✕ to hide it, plus a "清除已看过的报警" button to
-hide everything currently shown — both act only on that one phone: the control
-computer's alert panel and the audit log are unaffected, and nothing is sent
-to the server.
+networks. Each caption also has a **Retranslate** button that asks the
+operator's computer's strongest local model to redo that one line; it's
+rate-limited per phone (at least 3 seconds between taps, at most 10 a minute)
+so one phone tapping repeatedly can't queue up work or slow down the
+operator's computer. Each alert has a ✕ to hide it, plus a **Clear Seen**
+button to hide everything currently shown — both act only on that one phone:
+the operator's alert panel and the audit log are unaffected, and nothing is
+sent to the server.
 
 **Exporting captions.** There is no export function; select and copy the text
 from the page. The page retains the most recent 300 lines, and the server
@@ -817,8 +845,8 @@ replays the last 100 after a reload or reconnection.
 
 **Closing the console window.** On Windows that console window is the
 translation engine, so closing it exits the application. On macOS, closing the
-application window exits it; if launched via `Start.command`, close the Terminal
-window or press Ctrl-C.
+application window exits it (during a session it asks first); if launched via
+`Start.command`, close the Terminal window or press Ctrl-C.
 
 **Installation fails on a managed computer, or space is insufficient.** The
 initial installation requires about 6 GB and access to PyPI, Hugging Face and
@@ -827,9 +855,9 @@ frequently block these.
 
 ## Privacy and Usage Boundaries
 
-- Recognition always runs locally. Translation is fully offline when using `gemma`/`none`; with `google`/`claude`/`openai`, subtitle text is sent to the corresponding provider.
+- Recognition always runs locally. Translation stays on your computer with `hymt2`, `hymt2-7b`, `gemma` or `none`; with `deepl`, `google`, `claude` or `openai`, caption text is sent to that provider (for `openai`, unless `OPENAI_BASE_URL` points at a local server such as LM Studio). Viewer comments come from TikTok through TikTokLive, whose connection signing goes through the third-party Euler Stream service.
 - This tool is for personal learning and language-assistance use only. Please comply with TikTok's Terms of Service and local laws — don't use it to rebroadcast or redistribute recordings of other people's content.
-- The phone viewer binds `0.0.0.0` only while it's turned on, and stops as soon as it's turned off; the control page always stays on `127.0.0.1` only. What a phone receives is filtered through an allowlist — it never sees settings, file paths, cookies, or the stream address. The share link's key lives in the local `settings.json` (already gitignored); no data leaves the local network.
+- Phone Viewing binds `0.0.0.0` only while it's turned on, and stops as soon as it's turned off; the control page always stays on `127.0.0.1` only. What a phone receives is filtered through an allowlist — it never sees settings, file paths, cookies, or the stream address. The share link's key lives in the local `settings.json` (already gitignored); no data leaves the local network.
 
 ## Acknowledgments
 
