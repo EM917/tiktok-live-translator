@@ -159,17 +159,24 @@ PRODUCT_NAME = ("TikTok 直播同传", "TikTok Live Translator")
 EN_LABELS = re.compile(
     r"(?i)\b(age|aged|age[- ]restrict\w*|rate[- ]?limit\w*|throttl\w*"
     r"|ban(s|ned)?\b(?![- ]terms?)|block(ed|ing|s)?|restrict\w*)\b")
-# 第二级「因果词」：只查第八条家族（拿不到流地址、登录、弹幕、手机同看这几路的文案）
+# 第二级「因果词」：只查第八条家族（拿不到流地址、登录、弹幕、手机同看这几路的文案）。
+# 后两行是 09-29 复审补的：private / region 与中文 ZH_LABELS 的「私密」「地区」对应（只在家族里查，
+# 家族以外 private network 一类照常用）；maybe / perhaps 与「也许」「或许」对应；
+# 「not a network problem」「isn’t a … issue」是排除原因的否定句，否定句里也不许点原因的名
 EN_CAUSAL = re.compile(
-    r"(?i)\b(because|due to|caused by|the reason|probably|likely|must be|seems to)\b")
+    r"(?i)\b(because|due to|caused by|the reason|probably|likely|must be|seems to"
+    r"|private|regions?|regional|maybe|perhaps"
+    r"|(?:not|isn[’']t) an? [\w -]*(?:problem|issue))\b")
 
 # 第八条家族的中文臂也查这两级（只查家族：家族以外「Google 会按 IP 限流」是对方写明的规则，照常用）。
 # 光「可能」二字不查：说将来可能发生的事（「系统可能弹出确认框」「读到登录之前可能解析不出」）照常用，
 # 和英文 may 同一个规矩；查的是把猜测当原因的几种说法，包括「可能 A，或 B」这种列候选原因的句式。
 # 「限制」二字也不单查：「（安全限制）」说的是程序自己拒绝了本机地址，是观察。
 ZH_LABELS = re.compile(r"年龄|限流|封禁|封号|私密|观看限制|地区|风控|被挡|被墙|拦截|繁忙")
+# 「不是……问题」是排除原因的否定句（W2 删掉的「不是网络或限流问题」就是这种），和英文一样拦
 ZH_CAUSAL = re.compile(r"可能是|也可能|可能已|可能[^。；]*，或|多半|八成|应该是|大概是|估计是"
-                       r"|似乎|好像|看起来是|因为|由于|导致|原因是")
+                       r"|似乎|好像|看起来是|因为|由于|导致|原因是"
+                       r"|也许|或许|恐怕|不是[^。；]*问题")
 
 # 第八条家族：值为 "*" 表示整个文件；元组里是函数名（Python）或 "#元素 id"（HTML，含子孙）
 RULE8_FAMILY = {

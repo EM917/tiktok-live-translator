@@ -289,14 +289,20 @@
   `_selfcheck_incident_text`：
 
   ```
-  (?i)\b(because|due to|caused by|the reason|probably|likely|must be|seems to)\b
+  (?i)\b(because|due to|caused by|the reason|probably|likely|must be|seems to
+  |private|regions?|regional|maybe|perhaps|(?:not|isn[’']t) an? [\w -]*(?:problem|issue))\b
   ```
+
+  第二行是 09-29 复审补的：private / region 对应中文标签词里的「私密」「地区」（只在家族里查，家族以外
+  private network 一类照常用）；maybe / perhaps 对应「也许」「或许」；`not a network problem`、
+  `isn’t a sign-in issue` 是排除原因的否定句。yt-dlp 自己的原话（放在 Details: 后面的数据，比如
+  “This live is private”）不在查的范围里。
 
 - 电脑休眠写 suspended 不在任何一级里，照常用。真有一句必须用到这些词，登记进 `EN_WORD_EXCEPTIONS`，
   写明「中文臂 → 理由」。
 - **中文臂**（`ZH_LABELS`、`ZH_CAUSAL`）：同一个第八条家族里，G2 也查中文。标签词是年龄、限流、封禁、私密、
   观看限制、地区、风控、被挡、繁忙这一类；因果词是「可能是」「也可能」「可能 A，或 B」「多半」「因为」「导致」
-  这一类。光「可能」二字不查，说将来可能发生的事（「系统可能弹出确认框」）照常用，跟英文 may 同一个规矩。
+  「也许」「或许」「恐怕」这一类，还有「不是……问题」这种排除原因的否定句。光「可能」二字不查，说将来可能发生的事（「系统可能弹出确认框」）照常用，跟英文 may 同一个规矩。
   家族以外不查中文：Google 引擎说明里的「会按 IP 限流」是对方写明的规则，不是猜的。
 
 同一族以外，还有两处也顺手避开这些词：

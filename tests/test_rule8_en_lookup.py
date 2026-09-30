@@ -113,7 +113,9 @@ def test_ytdlp_errors_are_explained_in_english_without_guessing(stderr, kind):
     got_kind, message = resolver._classify_ytdlp_error(stderr)
     assert got_kind == kind
     text = en(message)
-    assert_clean_english(text, kind)
+    # Details: 后面是 yt-dlp 的原话（数据，比如 "This live is private"），不按我们的措辞查禁用词
+    assert_clean_english(text.split("\nDetails: ", 1)[0], kind)
+    assert not CJK.search(text), text
     if kind in ("login", "network", "unknown"):                # 这三种把 yt-dlp 的原话放在最后
         assert text.endswith("\nDetails: " + stderr), text
     assert str(message) == resolver._classify_ytdlp_error(stderr)[1]

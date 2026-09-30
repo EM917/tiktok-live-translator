@@ -215,6 +215,35 @@ def test_causal_words_are_only_checked_in_the_rule8_family():
     assert _rules(_py(method, "app/pipeline.py")) == ["第八条"]
 
 
+# 09-29 复审：这几种英文以前都能过 G2。前两个是中文 ZH_LABELS「私密」「地区」对应的标签，
+# 然后是排除原因的否定句，最后是 maybe / perhaps 式的猜测
+@pytest.mark.parametrize("en", [
+    "This live stream is private.",
+    "This live stream isn’t available in your region.",
+    "It’s not available in some regions.",
+    "Regional settings can hide it.",
+    "It’s not a network problem. TikTok doesn’t say why.",
+    "This isn’t a sign-in issue.",
+    "This isn't an account problem.",
+    "Maybe the streamer isn’t live.",
+    "Perhaps the link is wrong.",
+])
+def test_family_labels_negations_and_guesses_are_caught_in_english(en):
+    call = 'x = L("TikTok 不给流地址", "{}")'.format(en)
+    assert _rules(_py(call, "app/resolver.py")) == ["第八条"]
+    assert _rules(_py(call, "app/translator.py")) == []      # 家族以外不查（private network 一类照常用）
+
+
+@pytest.mark.parametrize("en", [
+    "This isn’t a live link or username.",                  # 否定句本身没问题，拦的是「不是某某问题」
+    "The streamer may not be live yet.",                     # may 说将来可能发生的事，照常用
+    "Couldn’t reach TikTok. Check your network connection and try again.",
+    "If this keeps happening, report the problem to the developer.",
+])
+def test_plain_statements_still_pass_in_the_english_family(en):
+    assert _rules(_py('x = L("TikTok 不给流地址", "{}")'.format(en), "app/resolver.py")) == []
+
+
 def test_unlikely_is_not_a_causal_word():
     assert _rules(_py('x = L("没收到", "Nothing arrived, which is unlikely to last.")',
                       "app/resolver.py")) == []
@@ -239,6 +268,12 @@ def test_word_exceptions_need_the_exact_chinese_arm(monkeypatch):
     "这个直播间有年龄限制",
     "多半是没登录",
     "因为没登录，所以拿不到",
+    # 09-29 复审补的：排除原因的否定句、也许 / 或许 / 恐怕式的猜测
+    "不是网络问题，TikTok 不说明原因",
+    "这不是登录的问题",
+    "主播也许没在播",
+    "或许要登录才能看",
+    "恐怕要等主播重新开播",
 ])
 def test_chinese_labels_and_guesses_are_caught_in_the_rule8_family(zh):
     call = 'x = L("{}", "TikTok didn’t provide a stream URL.")'.format(zh)

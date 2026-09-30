@@ -134,8 +134,8 @@ python3 tools/replay_alerts.py
   exec 丢掉。回退就是把闸改回 `False`。测闸某一边的语义要显式 `monkeypatch` 它：
   开闸那天有 5 条测试是靠「闸默认关着」才绿的
 - **第八条的英文同样适用**：英文也不贴原因标签、不猜原因，否定句里也不行。两级
-  禁用词在 `tests/i18n_rules.py`（`EN_LABELS`、`EN_CAUSAL`），例外逐条写理由，
-  不许为了变绿放宽正则
+  禁用词在 `tests/i18n_rules.py`（`EN_LABELS`、`EN_CAUSAL`；中文臂同样查，`ZH_LABELS`、
+  `ZH_CAUSAL`），例外逐条写理由，不许为了变绿放宽正则
 - **怎么验**：`python3 tools/i18n_pairs.py` 一条命令跑 G2（成对）、G3（同一句中文
   只有一种英文）、G4（覆盖），看退出码；其余的闸在普通 pytest 和 `node --test` 里。
   新的界面文件要在文件头标 `i18n: done`、加进 `tests/i18n_rules.py` 的 `UI_FILES`，
