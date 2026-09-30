@@ -44,6 +44,13 @@ def test_every_scene_builds_in_both_languages(built):
 
 def test_readme_data_is_fictional_and_the_english_set_has_no_chinese(built):
     real = {S.STREAMER, *S.RECENT, S.BRAND_ZH}              # G10 场景里借用的名字，README 不用
+    # 观众名和主播名一样一看就是示例：像真账号的名字配上编的评论，等于替真人说话
+    names = [row[0] for row in R.COMMENTS + R.DEMO_COMMENTS] + list(R.RECENT)
+    assert all(n.endswith(".demo") for n in names), names
+    for lang in R.LANGS:
+        for name, sc in built[lang].items():
+            users = {m["user"] for m in sc["messages"] if m["type"] == "comment"}
+            assert all(u.endswith(".demo") for u in users), (lang, name, users)
     for lang in R.LANGS:
         for name, sc in built[lang].items():
             text = json.dumps(sc, ensure_ascii=False)
@@ -75,6 +82,15 @@ def test_scenes_are_the_clean_state(built):
         # 手机页：报警开着、没有命中，顶上不会常驻「违禁词警示已关闭」
         assert {"type": "alert_mode", "on": True} in phone
         assert phone[-1]["type"] != "status" or phone[-1]["state"] == "live"
+
+
+def test_popover_scenes_leave_out_the_rows_under_the_popover_edge(built):
+    for lang in R.LANGS:
+        for name in ("switch-streamer", "share-panel"):
+            msgs = built[lang][name]["messages"]
+            caps = [m for m in msgs if m["type"] == "caption"]
+            assert len(caps) == R.SCENE_CAPTIONS.get(name, len(R.CAPTIONS)), (lang, name)
+            assert len([m for m in msgs if m["type"] == "comment"]) == len(R.POPOVER_COMMENTS)
 
 
 def test_live_scenes_fit_one_screen(built):
@@ -165,6 +181,8 @@ def test_the_pre_shot_check_catches_what_the_readme_must_not_show():
     assert R.problems("live", "en", _facts(bars=["health-bar"]))
     assert R.problems("live", "en", _facts(cut=["span#status-text：Live · @luna.de…"]))
     assert R.problems("live", "en", _facts(clipped=["19:57:30 ES Hoy les…"]))
+    assert R.problems("share-panel", "en", _facts(                          # 浮层下沿切过一行字
+        sharePanel=True, qr=580, straddle=["share-panel：Today we have free shipping"]))
     assert R.problems("live", "en", _facts(viewport={"width": 1280, "height": 760}))
     leak = [{"at": "span.set-name", "text": "违禁词报警", "data": False}]
     assert R.problems("live", "en", _facts(visible=leak))                    # 英文图里有汉字

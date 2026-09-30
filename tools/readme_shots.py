@@ -25,9 +25,10 @@ PATH 上有 pngquant 时 PNG 交给它压）。项目的 .venv 里没装 Pillow�
 事件的间隔，所以动图的节奏与截图快慢无关。
 
 每张图出图前都核对一遍：视口对、数据真的到了（状态不是「等待连接…」、字幕条数对）、没有
-提示条、没有被省略号截断的文字、没有被滚动切掉一截的字幕卡片、英文图里没有一个汉字（切换
-语言按钮上的「中文」这个语言自称除外）。对不上就报错退出，不写这张图。同一台机器、同一版
-Chrome 重跑，出来的文件逐字节相同（2026-09-29 实测），所以图的 diff 就是界面的变化。
+提示条、没有被省略号截断的文字、没有被滚动切掉一截的字幕卡片、没有被浮层下沿切成两半的
+文字行、英文图里没有一个汉字（切换语言按钮上的「中文」这个语言自称除外）。对不上就报错退出，
+不写这张图。同一台机器、同一版 Chrome 重跑，出来的文件逐字节相同（2026-09-29 实测），
+所以图的 diff 就是界面的变化。
 
 直播转写进行中拒绝运行（CLAUDE.md 第三条）：无头 Chrome 是一整个浏览器进程。
 """
@@ -119,18 +120,24 @@ DEMO_CAPTIONS = (
      "I'll leave the link down here in the orange cart",
      "链接放在下面的橙色购物车里了"),
 )
-# (观众名, 西语原文, 英文译文, 中文译文)
+# (观众名, 西语原文, 英文译文, 中文译文)。观众名和主播名一样一看就是示例（.demo 结尾）：
+# 像真账号的名字配上编的评论（「已经买了，超喜欢」），等于替真人说了没说过的话
 COMMENTS = (
-    ("sofi.glow", "¿Sirve para piel grasa?", "Does it work for oily skin?", "油皮能用吗？"),
-    ("carla_mx", "Ya lo compré, me encantó", "I already bought it, I loved it", "我已经买了，超喜欢"),
-    ("dany.beauty", "¿Hacen envíos a Colombia?", "Do you ship to Colombia?", "能寄到哥伦比亚吗？"),
-    ("lu_martinez", "¿Cuánto cuesta el set completo?", "How much is the full set?", "全套多少钱？"),
-    ("marisol22", "Saludos desde Guadalajara", "Greetings from Guadalajara", "来自瓜达拉哈拉的问候"),
+    ("sofi.demo", "¿Sirve para piel grasa?", "Does it work for oily skin?", "油皮能用吗？"),
+    ("carla.demo", "Ya lo compré, me encantó", "I already bought it, I loved it", "我已经买了，超喜欢"),
+    ("dany.demo", "¿Hacen envíos a Colombia?", "Do you ship to Colombia?", "能寄到哥伦比亚吗？"),
+    ("lucia.demo", "¿Cuánto cuesta el set completo?", "How much is the full set?", "全套多少钱？"),
+    ("marisol.demo", "Saludos desde Guadalajara", "Greetings from Guadalajara", "来自瓜达拉哈拉的问候"),
 )
 DEMO_COMMENTS = (
-    ("vale.rios", "¿Se puede usar con retinol?", "Can you use it with retinol?", "能和A醇一起用吗？"),
-    ("anita_cdmx", "Necesito dos, ya lo agregué", "I need two, I already added them", "我要两瓶，已经加购了"),
+    ("vale.demo", "¿Se puede usar con retinol?", "Can you use it with retinol?", "能和A醇一起用吗？"),
+    ("anita.demo", "Necesito dos, ya lo agregué", "I need two, I already added them", "我要两瓶，已经加购了"),
 )
+# 打开浮层（换主播、手机同看）的那两张：浮层下沿不能把一行字切成两半，上半截盖在浮层底下、
+# 下半截露在外面（出图前的核对会拦）。1000×760 里手机同看面板的下沿正好压在第 4 张字幕卡片的
+# 译文行上（英文），两个浮层的下沿都压在第 5 条弹幕上（英文同看、中文换主播），所以这两张少放几条
+POPOVER_COMMENTS = COMMENTS[:4]
+SHARE_CAPTIONS = CAPTIONS[:3]
 # 动图时间轴（秒）：("cap", DEMO_CAPTIONS 下标) 在 t 秒出原文、t + TRANSLATE_SEC 秒补译文；
 # ("cmt", DEMO_COMMENTS 下标) 在 t 秒出原文、t + COMMENT_TRANSLATE_SEC 秒补译文
 TRANSLATE_SEC = 0.9            # 本地 Hy-MT2 1.8B 一句的量级（Telemetry 里的 translate p50）
@@ -278,15 +285,17 @@ def live(lang, tmp):
 def switch_streamer(lang, tmp):
     """直播中点「换主播」，再点一个最近直播间：已武装，确认按钮可点。"""
     with i18n.use(lang):
-        return _desktop("switch-streamer", lang, _live_server(lang, tmp), live=[_stats()],
+        server = _live_server(lang, tmp, comments=POPOVER_COMMENTS)
+        return _desktop("switch-streamer", lang, server, live=[_stats()],
                         clicks=["#switch-btn", "#switch-recent-list .recent-chip:not([disabled])"])
 
 
 def share_panel(lang, tmp):
     """直播中打开顶栏「手机同看」面板：二维码、链接、在看人数。"""
     with i18n.use(lang):
-        return _desktop("share-panel", lang, _live_server(lang, tmp, viewers=1), live=[_stats()],
-                        clicks=["#share-btn"])
+        server = _live_server(lang, tmp, captions=SHARE_CAPTIONS, comments=POPOVER_COMMENTS,
+                              viewers=1)
+        return _desktop("share-panel", lang, server, live=[_stats()], clicks=["#share-btn"])
 
 
 def phone(lang, tmp):
@@ -333,6 +342,8 @@ def timeline(lang):
 SCENES = {"home": home, "settings-language": settings_language, "live": live,
           "switch-streamer": switch_streamer, "share-panel": share_panel, "phone": phone}
 GIF = "demo"
+# 直播中的场景里该有几条字幕（没列出的是 CAPTIONS 全部）
+SCENE_CAPTIONS = {"share-panel": len(SHARE_CAPTIONS)}
 
 
 def build(lang, tmp, names=None):
@@ -428,6 +439,30 @@ FACTS_JS = r"""
     var r = el.getBoundingClientRect();
     if (shown(el) && r.top < top - 0.5 && r.bottom > top) clipped.push(el.textContent.trim().slice(0, 40));
   });
+  // 被打开的浮层（换主播、手机同看）下沿切成两半的文字行：上半截盖在浮层底下、下半截露在
+  // 外面，截图里看着像渲染坏了。浮层自己的文字不算
+  var straddle = [];
+  ["switch-panel", "share-panel"].forEach(function (id) {
+    var pop = byId(id);
+    if (!pop || !shown(pop)) return;
+    var p = pop.getBoundingClientRect();
+    var tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (var n = tw.nextNode(); n; n = tw.nextNode()) {
+      var el = n.parentElement;
+      if (!n.nodeValue.trim() || !el || pop.contains(el) || !shown(el)) continue;
+      var rg = document.createRange();
+      rg.selectNodeContents(n);
+      var lines = rg.getClientRects();
+      for (var i = 0; i < lines.length; i++) {
+        var r = lines[i];
+        if (r.width > 0 && r.top < p.bottom - 0.5 && r.bottom > p.bottom + 0.5
+            && r.right > p.left && r.left < p.right) {
+          straddle.push(id + "：" + n.nodeValue.trim().slice(0, 40));
+          break;
+        }
+      }
+    }
+  });
   var qr = byId("share-qr");
   var confirm = byId("switch-confirm");
   return {
@@ -445,6 +480,7 @@ FACTS_JS = r"""
     langBody: !!(byId("lang-body") && shown(byId("lang-body"))),
     brandTag: !!(byId("active-brand-tag") && shown(byId("active-brand-tag"))),
     bars: bars, expanded: expanded, visible: visible, cut: cut, clipped: clipped,
+    straddle: straddle,
     viewport: { width: innerWidth, height: innerHeight }
   };
 })()
@@ -472,6 +508,7 @@ def problems(name, lang, facts, expect_caps=None):
     need(not facts["bars"], "露着提示条：{}".format(facts["bars"]))
     need(not facts["cut"], "文字被截断：\n  " + "\n  ".join(facts["cut"]))
     need(not facts["clipped"], "字幕卡片顶上被切掉一截：{}".format(facts["clipped"]))
+    need(not facts.get("straddle"), "文字行被浮层下沿切成两半：{}".format(facts.get("straddle")))
     if lang == "en":
         leaks = ["{}「{}」".format(v["at"], v["text"]) for v in facts["visible"]
                  if CJK.search(v["text"]) and not (v["data"] and v["text"] in AUTONYMS)]
@@ -744,7 +781,7 @@ async def _shoot(page, name, lang, out):
     if name == "settings-language":
         clip = await page.eval(SETTINGS_CLIP_JS)
         await asyncio.sleep(SETTLE_SEC)
-    await _check(page, name, lang)
+    await _check(page, name, lang, expect_caps=SCENE_CAPTIONS.get(name))
     path = shot_path(out, lang, name)
     size = save_png(await page.screenshot(clip), path)
     print("  {}  {:.0f} KB".format(path.relative_to(out), size / 1024))
