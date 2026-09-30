@@ -7,39 +7,60 @@
   <a href="https://github.com/EM917/tiktok-live-translator/actions/workflows/ci.yml"><img src="https://github.com/EM917/tiktok-live-translator/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="python 3.9+">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="platform">
-  <img src="https://img.shields.io/badge/privacy-100%25_local,_no_API_key-success" alt="100% local">
+  <img src="https://img.shields.io/badge/privacy-local--first,_no_API_key_needed-success" alt="local-first, no API key needed">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/EM917/tiktok-live-translator" alt="license"></a>
 </p>
 
-<p align="center"><img src="assets/demo.gif" width="720" alt="Live demo: real-time bilingual subtitles"></p>
+<p align="center"><img src="assets/demo.zh.gif" width="760" alt="演示：每句西语原文先上屏，中文译文稍后在下方补上；右侧弹幕面板同时翻译观众评论"></p>
 
 **Language / 语言：[English](README.md) | 中文**
 
 ---
 
-# TikTok 直播同传
+TikTok 直播的实时双语字幕工具，为西语带货直播而做。粘贴直播间地址，程序就把主播说的话
+实时转写：每句识别出来立刻上屏，译文稍后在它下方补上。观众弹幕同时翻译，同事还能用
+手机跟着看。
 
+字幕从不等译文：原文先上屏。识别跟不上时音频在队列里排着，窗口上会说明。语音识别
+永远在本机完成，用本地模型时翻译也在本机——不需要 API Key，没有使用费用。
 
-TikTok 直播的实时双语字幕工具，为**西语带货直播的合规监听**而做。它把**主播说的话**实时转写，一旦说出违禁表述立刻报警，并在旁边给出译文，让中控读懂上下文再决定要不要处理。
-
-整套设计是围绕报警链路做的：违禁词匹配跑在**识别出的原文**上，不经过译文，所以报警不会被翻译引擎拖慢；音频宁可缓冲也不丢弃，因为晚报警好过漏报警。判断它好不好用只有两个指标——**召回率**（漏一条的代价远高于误报一条）与**从说出到报警的时间**。
-
-也可以当成纯粹的直播字幕翻译工具用：把 `banned_terms.txt` 留空，报警层就不会出现。
-
-**全程本地运行**：拉流、语音识别与翻译均在本机完成，无需 API Key，无使用费用。
+界面有中文和英文两种。新装的程序跟随系统语言，「设置 → 界面语言 · Language」可以切换，
+见[界面语言](#界面语言)。
 
 ## 特性
 
-- 🚨 **违禁词实时报警** —— 在**识别原文**上做三级匹配（精确 / 形态变体 / 模糊），不依赖翻译，短语跨字幕边界同样可命中。词表见 `banned_terms.txt`
-- 🎙️ **实时语音识别** —— OpenAI Whisper 双后端（faster-whisper / MLX），自动检测主播语言，支持 90+ 语言
-- 🌐 **本地优先的翻译** —— Hy-MT2（Apache 2.0，离线免费）两档可选，另有 TranslateGemma 4B、Google 免费接口、Claude·OpenAI 作为兜底。按已安装的档位自动选择
+- 🎙️ **实时字幕，原文先出** —— OpenAI Whisper 双后端（faster-whisper / MLX），支持 90+ 语言，默认只在西语和英语之间识别。每句识别出来立刻上屏，译文随后补在它下方；最新一句还会以大字显示在窗口底部
+- 🌐 **本地优先的翻译** —— Hy-MT2（Apache 2.0，离线免费）经 Ollama 提供两档，另可选 TranslateGemma、DeepL（带原生术语表）、Google 免费接口和 Claude · OpenAI 兼容接口。默认用本机装着的最好的本地模型。见[翻译引擎](#翻译引擎)
+- 🏷️ **按品牌、按主播的词表** —— 全局词表、主播词表、品牌词表（在「本场品牌」下拉里按场选择）共同决定商品名怎么识别、怎么翻译，对所有引擎都生效。见[词表](#词表)
+- 💬 **观众弹幕翻译** —— 评论由程序自己通过 TikTokLive 从直播间评论流获取（WebSocket 签名经第三方 Euler Stream 服务，不在本机完成；需要 Python 3.10+，首次开播自动安装组件；一般免登录，TikTok 要求登录时会借用浏览器里的 TikTok 登录态重试一次）。译文显示在「观众弹幕」面板里，只翻译、只显示，不进报警链路。弹幕只在当前翻译引擎是本地模型（Hy-MT2 1.8B 或 TranslateGemma）时翻译，用远程引擎或 7B 时面板只显示原文。评论 WebSocket 可能「半开」——面板上仍显示已连接，却不再有任何弹幕：连接着满 15 分钟一条弹幕都没收到就会自动重连，并记进本场审计。可用 `--no-comments` 关闭
+- 🔁 **直播中换主播** —— 点顶栏「换主播」，不用先点「停止」就能改听另一个主播：从「最近的直播间」里选或粘贴直播间地址，选好本场品牌，再点一次确认。主播语言沿用当前设置，字幕历史里会插一条分隔线标出新主播从哪里开始
+- 📱 **手机同看** —— 同一 Wi-Fi 下的同事扫二维码，就能在手机上看字幕和报警，页面按各自手机的语言显示；只看，不能操作；默认关闭。见[常见问题](#phone-viewing)
+- 🌍 **中英文界面** —— 新装跟随系统语言，也可以在「设置」里切换。见[界面语言](#界面语言)
+- ✅ **启动自检** —— 每项能力实际执行而非检查配置：降噪实跑 RNNoise，翻译实际请求引擎，审计日志实际写入。有项目未生效时，首页上那一行自动展开并附处理步骤，页面顶部还会出现一条提示，待机和直播中都在，直到之后的自检通过
+- 🔄 **抗故障** —— 最多七种办法找流地址；重连时分得清断网和下播；识别跟不上时音频排队而不是丢掉。见[抗故障](#fault-tolerance)
 - 🎵 **人声降噪** —— RNNoise 抑制背景音乐，针对持续 BGM 的直播间调校
 - ⚡ **硬件自动配置** —— 检测可用加速器（Apple Silicon GPU / NVIDIA CUDA / CPU），选择仍能实时运行的最大模型
-- 📺 **本地网页界面** —— 双语历史字幕 + 底部当前字幕大字，在应用窗口或本机任意浏览器里打开
-- 📊 **延迟可观测** —— 实时显示首字等待（P50/P95）及其构成（切段、识别、翻译），并配套审计日志逐段记录：采纳的文本、被质量过滤丢弃的候选、命中的违禁词，以及随后到达的译文
-- ✅ **启动自检** —— 每项能力实际执行而非检查配置：降噪实跑 RNNoise，翻译实际请求引擎，审计日志实际写入。结果显示在首页，异常项附带处理步骤
-- 💬 **观众弹幕翻译** —— 评论由程序自己通过 TikTokLive 从直播间评论流获取（WebSocket 签名经第三方 Euler Stream 服务，这是本项目唯一不在本机完成的环节；需要 Python 3.10+，首次开播自动安装组件；一般免登录，TikTok 要求登录时会借用浏览器里的 TikTok 登录态重试一次）。译文显示在本地界面的弹幕面板里，只翻译、只显示，不进报警链路。弹幕只在当前翻译引擎是本地模型（Hy-MT2 1.8B 或 TranslateGemma）时翻译，用远程引擎或 7B 时面板只显示原文。评论 WebSocket 可能「半开」——界面上仍显示已连接，却不再有任何弹幕：连接着满 15 分钟一条弹幕都没收到就会自动重连，并记进本场审计。可用 `--no-comments` 关闭
-- 📱 **手机同看** —— 局域网内扫码，同事的手机就能看字幕和报警；只看，不能操作；默认关闭
+- 📊 **延迟可观测** —— 窗口底部实时显示：一个词说出口后最多要等多久才被识别并检查完（中位数与 P95），拆成切段与识别两部分，另加译文再等多久。审计日志逐段记录：采纳的文本、被质量过滤丢弃的候选、命中的违禁词，以及随后到达的译文
+- 🚨 **违禁词报警（默认关闭）** —— 用于带货直播的合规监听：在识别出的原文上做三级匹配（精确 / 变体 / 疑似），不依赖翻译，短语跨字幕边界同样可命中。开关在「设置 → 违禁词报警」。见[违禁词报警](#违禁词报警)
+
+## 界面截图
+
+<table>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/zh/home.png" width="100%" alt="首页：直播间地址与「开始翻译」、主播语言与本场品牌下拉、最近的直播间，以及含启动自检、翻译引擎、违禁词报警、磁盘空间、界面语言的「设置」分组"><br><sub>首页：粘贴直播间地址，点「开始翻译」。「设置」收在下方。</sub></td>
+    <td width="50%"><img src="assets/screenshots/zh/live.png" width="100%" alt="直播中：每句西语原文下面是中文译文，右侧是翻译后的观众弹幕，底部大字显示最新一句，下方是延迟统计"><br><sub>直播中：原文先出，译文在下，弹幕在旁。</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/zh/switch-streamer.png" width="100%" alt="直播中的「换主播」面板：新主播地址、标出当前主播的最近直播间、本场品牌下拉、沿用的主播语言，以及要求再点一次才切换的按钮"><br><sub>换主播：选好下一个主播，再点一次确认。</sub></td>
+    <td width="50%"><img src="assets/screenshots/zh/share-panel.png" width="100%" alt="「手机同看」面板：二维码、局域网链接、复制链接、换一个链接、停止同看，以及 1 人在看（上限 12）"><br><sub>手机同看：给同一 Wi-Fi 下的手机的二维码和链接。</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="assets/screenshots/zh/phone.png" width="240" alt="手机页：已连接、直播中，每句西语原文带中文译文和「重译」按钮，观众弹幕栏，只看模式提示，语言切换与提示音按钮"><br><sub>手机同看的手机页：只看，按手机自己的语言显示。</sub></td>
+    <td width="50%"><img src="assets/screenshots/zh/settings-language.png" width="100%" alt="「设置」分组里展开的「界面语言 · Language」一行，选的是跟随系统（中文），并说明手机同看页按各自手机的语言显示"><br><sub>设置 → 界面语言 · Language：跟随系统、中文或 English。</sub></td>
+  </tr>
+</table>
+
+<sub>上面的截图和演示动图都是虚构的直播，由 <code>tools/readme_shots.py</code> 生成。</sub>
 
 ## 磁盘空间
 

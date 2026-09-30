@@ -7,38 +7,65 @@
   <a href="https://github.com/EM917/tiktok-live-translator/actions/workflows/ci.yml"><img src="https://github.com/EM917/tiktok-live-translator/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="python 3.9+">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="platform">
-  <img src="https://img.shields.io/badge/privacy-100%25_local,_no_API_key-success" alt="100% local">
+  <img src="https://img.shields.io/badge/privacy-local--first,_no_API_key_needed-success" alt="local-first, no API key needed">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/EM917/tiktok-live-translator" alt="license"></a>
 </p>
 
-<p align="center"><img src="assets/demo.gif" width="720" alt="Live demo: real-time bilingual subtitles"></p>
+<p align="center"><img src="assets/demo.en.gif" width="760" alt="Demo: each Spanish caption appears first and its English translation fills in a moment later, while viewer comments are translated in the panel on the right"></p>
 
 **Language / 语言：English | [中文](README.zh-CN.md)**
 
 ---
 
-# TikTok Live Translator
+Real-time bilingual captions for TikTok live streams, built for Spanish-language
+live selling. Paste a live link and the app transcribes what the streamer says,
+shows each line as soon as it is recognised, and fills in the translation
+beneath it a moment later. Viewer comments are translated alongside, and
+colleagues can follow on their phones.
 
-Real-time bilingual subtitles for TikTok livestreams, built for **compliance monitoring of Spanish-language live commerce**. It transcribes what the **streamer says**, raises an alert the moment a prohibited claim is spoken, and shows the translation alongside so an operator can read the context and decide whether to act.
+A caption never waits for its translation: the original goes on screen first.
+When recognition falls behind, audio waits in a queue and the window says so.
+Speech recognition always runs on your computer, and with a local model so does
+translation — no API key and no fees.
 
-The alert path is what the design optimises for. Banned-term matching runs on the **recognised source text**, never on the translation, so an alert is never delayed by a translation engine; audio is buffered rather than discarded, because a late alert beats a missed one. Two numbers decide whether it is working: **recall** — a missed violation costs far more than a false alarm — and **time from utterance to alert**.
-
-It also works as a plain live-subtitle translator: leave `banned_terms.txt` empty and the alert layer stays out of the way.
-
-**Runs entirely locally**: stream capture, speech recognition, and (optionally) translation all happen on your own machine — no API key needed, zero cost.
+The interface is in English or Chinese. A new install follows the system
+language, and Settings → App Language switches it; see
+[Interface Language](#interface-language).
 
 ## Features
 
-- 🚨 **Real-time banned-term alerts** — three-tier matching (exact / morphological variant / fuzzy) against the **recognised source text**, independent of translation, including phrases split across caption boundaries. Configured in `banned_terms.txt`
-- 🎙️ **Real-time speech recognition** — OpenAI Whisper with a dual backend (faster-whisper / MLX), automatic language detection, 90+ languages
-- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two tiers, with TranslateGemma 4B, Google's free API and Claude · OpenAI available as fallbacks. Whichever tier is installed is selected automatically
-- 🎵 **Voice-focused denoising** — RNNoise suppresses background music, tuned for streams with continuous BGM
+- 🎙️ **Live captions, original first** — OpenAI Whisper with two backends (faster-whisper / MLX), 90+ languages, limited to Spanish + English by default. Each line appears as soon as it is recognised and its translation fills in beneath it; the latest line is also shown large at the bottom of the window
+- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two sizes through Ollama, with TranslateGemma, DeepL (with a native glossary), Google's free endpoint and Claude · OpenAI-compatible APIs as alternatives. By default the best installed local model is used. See [Translation Engines](#translation-engines)
+- 🏷️ **Glossaries per brand and streamer** — a global glossary, one per streamer and one per brand (picked in the Brand menu for the session) steer how product names are recognised and translated, with every engine. See [Glossaries](#glossaries)
+- 💬 **Viewer comment translation** — the app fetches comments itself via TikTokLive from the live stream's comment feed (WebSocket signing goes through the third-party Euler Stream service rather than your computer; needs Python 3.10+, and the component installs itself on the first start; usually works signed out, and retries once with the browser's TikTok sign-in when TikTok asks for one). Translations appear in the Comments panel — translation and display only, never part of the alert path. Comments are translated only while the active engine is a local model (Hy-MT2 1.8B or TranslateGemma); with a remote engine or the 7B model the panel shows the original text. The comment WebSocket can go half-open — the panel still shows Connected but no comments ever arrive — so the app reconnects automatically after 15 minutes of silence while connected, and records it in the session audit. Disable with `--no-comments`
+- 🔁 **Switch Streamer during a session** — Switch Streamer in the top bar moves to another streamer without clicking Stop first: pick from Recent Streams or paste a live link, choose the brand, then click again to confirm. The spoken language carries over, and a divider in the caption history marks where the new streamer begins
+- 📱 **Phone Viewing** — colleagues on the same Wi-Fi scan a QR code and follow captions and alerts on their phones, each page in its phone's own language; view only, no control; off by default. See [the FAQ](#phone-viewing)
+- 🌍 **English and Chinese interface** — follows the system language on a new install, switchable in Settings. See [Interface Language](#interface-language)
+- ✅ **Startup Check** — each capability is executed rather than inspected: noise reduction processes a sample through RNNoise, translation queries the engine, the audit log performs a write. A failing check opens its row on the home page with a remediation step, and stays in a banner at the top of the window, idle or live, until a later check passes
+- 🔄 **Fault tolerance** — up to seven ways to find the stream URL, reconnects that tell a network drop from the end of the stream, and audio queued rather than lost when recognition falls behind. See [Fault tolerance](#fault-tolerance)
+- 🎵 **Voice-focused noise reduction** — RNNoise suppresses background music, tuned for streams with continuous BGM
 - ⚡ **Automatic hardware configuration** — detects the available accelerator (Apple Silicon GPU / NVIDIA CUDA / CPU) and selects the largest model that still runs in real time
-- 📺 **Local web interface** — scrolling bilingual history with a large current caption, in the app window or any browser on the machine
-- 📊 **Observable latency** — a live readout of time-to-first-caption (P50/P95) broken down into segmentation, recognition and translation, alongside an audit log recording each segment: accepted text, candidates rejected by the quality filter, banned-term matches, and the translation that followed
-- ✅ **Startup self-check** — each capability is executed rather than inspected: denoising processes a sample through RNNoise, translation queries the engine, the audit log performs a write. Results appear on the home screen with a remediation step for anything failing
-- 💬 **Viewer comment translation** — the app fetches comments itself via TikTokLive from the live room's comment stream (WebSocket signing goes through the third-party Euler Stream service, the only step in this project that doesn't run locally; needs Python 3.10+, and the component installs itself automatically on first stream start; usually works logged out, and retries once using the browser's TikTok login when TikTok requires one). Translations appear in the web UI's comment panel — translation and display only, never part of the alert pipeline. Comments are translated only while the active engine is a local model (Hy-MT2 1.8B or TranslateGemma); with a remote engine or the 7B model the panel shows the original text. The comment WebSocket can go half-open — the panel still shows "connected" but no comments ever arrive — so the app reconnects automatically after 15 minutes of silence while connected, and records it in the session audit. Disable with `--no-comments`
-- 📱 **Phone viewer** — scan a QR code on the local network and a colleague's phone can watch captions and alerts; view-only, no control; off by default
+- 📊 **Observable latency** — a live readout at the bottom of the window: the longest a spoken word waits before it is recognised and checked (median and P95), split into segmentation and recognition, plus the time the translation adds. An audit log records each segment: accepted text, candidates rejected by the quality filter, banned-term matches, and the translation that followed
+- 🚨 **Banned-term alerts, off by default** — for compliance monitoring of live selling: three-tier matching (exact / variant / similar) against the recognised source text, independent of translation and across caption boundaries. The switch is in Settings → Banned-Term Alerts. See [Banned-Term Alerts](#banned-term-alerts)
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/en/home.png" width="100%" alt="Home page: live link and Start, the Spoken language and Brand menus, Recent Streams, and the Settings group with Startup Check, Translation Engine, Banned-Term Alerts, Storage and App Language"><br><sub>Home: paste a live link and click Start. Settings stays below, collapsed.</sub></td>
+    <td width="50%"><img src="assets/screenshots/en/live.png" width="100%" alt="During a session: each Spanish line above its English translation, translated comments on the right, the latest line in large type at the bottom, and the latency readout under it"><br><sub>Live: the original first, the translation beneath it, comments alongside.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/en/switch-streamer.png" width="100%" alt="The Switch Streamer panel during a session: a new live link, Recent Streams with the current streamer marked, a Brand menu, the carried-over spoken language, and the button asking for a second click to switch"><br><sub>Switch Streamer: pick the next streamer, then click again to confirm.</sub></td>
+    <td width="50%"><img src="assets/screenshots/en/share-panel.png" width="100%" alt="The Phone Viewing panel: a QR code, the local network link, Copy Link, New Link and Stop Sharing, and 1 watching (limit 12)"><br><sub>Phone Viewing: a QR code and link for phones on the same Wi-Fi.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="assets/screenshots/en/phone.png" width="240" alt="The phone page: Connected and Live, Spanish lines with English translations and a Retranslate button on each, the Comments bar, View only, a language toggle and the Sound button"><br><sub>A phone on Phone Viewing: view only, in the phone's own language.</sub></td>
+    <td width="50%"><img src="assets/screenshots/en/settings-language.png" width="100%" alt="The Settings group with the App Language row open, set to System (English), and the note that Phone Viewing pages follow each phone's language"><br><sub>Settings → App Language: System, 中文 or English.</sub></td>
+  </tr>
+</table>
+
+<sub>The screenshots and the demo above show made-up streams and are generated by <code>tools/readme_shots.py</code>.</sub>
 
 ## Disk Space
 
