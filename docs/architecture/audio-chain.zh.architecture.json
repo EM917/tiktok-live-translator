@@ -7,11 +7,11 @@
     "quality_profile": "showcase",
     "viewBox": [
       830,
-      720
+      810
     ],
     "repository": {
       "url": "https://github.com/EM917/tiktok-live-translator",
-      "revision": "c409181f6fd0f92f4f1a0558eb2889fc1cb820b4"
+      "revision": "430fe06c139bb3cadc423221b6f4091702a4d51b"
     },
     "views": [
       {
@@ -23,17 +23,20 @@
           "ffmpeg",
           "segmenter"
         ],
-        "note": "从直播间到语音段：解析纯音频地址、神经降噪、能量 VAD 切段。"
+        "note": "从直播间到语音段：解析媒体地址（优先纯音频）、神经降噪、能量 VAD 切段。"
       },
       {
-        "id": "alert",
-        "label": "报警不等翻译",
+        "id": "captions",
+        "label": "字幕先出，译文后补",
         "focus": [
           "asr",
-          "detector",
-          "server"
+          "glossary",
+          "transq",
+          "translator",
+          "server",
+          "ui"
         ],
-        "note": "识别一出结果就扫违禁词并推原文，两条都不等译文。"
+        "note": "识别一出结果就推原文字幕；词表同时喂给识别和翻译，译文回来再按 id 原地补上。"
       },
       {
         "id": "backpressure",
@@ -45,6 +48,16 @@
           "translator"
         ],
         "note": "音频队列留到硬顶才丢；翻译队列满了立刻丢，绝不反压识别。"
+      },
+      {
+        "id": "alert",
+        "label": "报警不等翻译",
+        "focus": [
+          "asr",
+          "detector",
+          "server"
+        ],
+        "note": "识别一出结果就扫违禁词，不等译文；报警开关关着时照样扫，命中只进审计。"
       }
     ],
     "animation": "trace"
@@ -57,7 +70,7 @@
       "sublabel": "webcast 接口 · 直播页",
       "pos": [
         40,
-        60
+        50
       ],
       "size": [
         170,
@@ -71,7 +84,7 @@
       "sublabel": "最多 7 层兜底",
       "pos": [
         330,
-        60
+        50
       ],
       "size": [
         170,
@@ -80,7 +93,7 @@
       "sources": [
         {
           "path": "app/resolver.py",
-          "line": 454,
+          "line": 1422,
           "label": "resolve_stream_url"
         }
       ]
@@ -93,7 +106,7 @@
       "tag": "RNNoise",
       "pos": [
         620,
-        60
+        50
       ],
       "size": [
         170,
@@ -102,7 +115,7 @@
       "sources": [
         {
           "path": "app/audio.py",
-          "line": 20,
+          "line": 34,
           "label": "FFmpegAudioSource.frames"
         }
       ]
@@ -114,7 +127,7 @@
       "sublabel": "2.5–9 s · 尾静音 0.7 s",
       "pos": [
         620,
-        240
+        210
       ],
       "size": [
         170,
@@ -129,13 +142,13 @@
       ]
     },
     {
-      "id": "detector",
-      "type": "security",
-      "label": "违禁词检测",
-      "sublabel": "exact · variant · fuzzy",
+      "id": "audioq",
+      "type": "messagebus",
+      "label": "音频队列",
+      "sublabel": "按秒计 · 硬顶 60 s",
       "pos": [
-        330,
-        420
+        620,
+        370
       ],
       "size": [
         170,
@@ -143,9 +156,9 @@
       ],
       "sources": [
         {
-          "path": "app/detector.py",
-          "line": 128,
-          "label": "BannedTermDetector.scan"
+          "path": "app/pipeline.py",
+          "line": 2608,
+          "label": "queue = asyncio.Queue()"
         }
       ]
     },
@@ -156,8 +169,8 @@
       "sublabel": "faster-whisper / MLX",
       "tag": "单线程池",
       "pos": [
-        40,
-        240
+        330,
+        370
       ],
       "size": [
         170,
@@ -166,24 +179,29 @@
       "sources": [
         {
           "path": "app/asr.py",
-          "line": 223,
+          "line": 561,
           "label": "Transcriber.transcribe"
         },
         {
+          "path": "app/asr.py",
+          "line": 645,
+          "label": "MLXTranscriber.transcribe"
+        },
+        {
           "path": "app/pipeline.py",
-          "line": 776,
+          "line": 2713,
           "label": "asr_worker"
         }
       ]
     },
     {
-      "id": "audioq",
-      "type": "messagebus",
-      "label": "音频队列",
-      "sublabel": "按秒计 · 硬顶 60 s",
+      "id": "glossary",
+      "type": "database",
+      "label": "领域词表",
+      "sublabel": "全局 · 本场品牌 · 主播",
       "pos": [
         330,
-        240
+        210
       ],
       "size": [
         170,
@@ -191,65 +209,19 @@
       ],
       "sources": [
         {
-          "path": "app/pipeline.py",
-          "line": 704,
-          "label": "queue = asyncio.Queue()"
-        }
-      ]
-    },
-    {
-      "id": "ui",
-      "type": "frontend",
-      "label": "字幕界面",
-      "sublabel": "本地网页 · 手机同看",
-      "pos": [
-        40,
-        600
-      ],
-      "size": [
-        170,
-        64
-      ]
-    },
-    {
-      "id": "server",
-      "type": "backend",
-      "label": "CaptionServer",
-      "sublabel": "aiohttp :8765",
-      "pos": [
-        40,
-        420
-      ],
-      "size": [
-        170,
-        64
-      ],
-      "sources": [
+          "path": "app/glossary.py",
+          "line": 293,
+          "label": "load (global → brand → profile)"
+        },
         {
-          "path": "app/server.py",
-          "line": 92,
-          "label": "CaptionServer._ws"
-        }
-      ]
-    },
-    {
-      "id": "translator",
-      "type": "backend",
-      "label": "翻译引擎",
-      "sublabel": "Hy-MT2 / Gemma / 云端",
-      "pos": [
-        330,
-        600
-      ],
-      "size": [
-        170,
-        64
-      ],
-      "sources": [
+          "path": "app/glossary.py",
+          "line": 48,
+          "label": "Glossary.asr_prompt"
+        },
         {
-          "path": "app/translator.py",
-          "line": 574,
-          "label": "OllamaHyMT2Translator"
+          "path": "app/glossary.py",
+          "line": 106,
+          "label": "Glossary.apply"
         }
       ]
     },
@@ -259,8 +231,8 @@
       "label": "翻译队列",
       "sublabel": "maxsize=4 · 满则丢最旧",
       "pos": [
-        620,
-        420
+        40,
+        370
       ],
       "size": [
         170,
@@ -269,9 +241,96 @@
       "sources": [
         {
           "path": "app/pipeline.py",
-          "line": 708,
+          "line": 2612,
           "label": "trans_queue maxsize=4"
         }
+      ]
+    },
+    {
+      "id": "translator",
+      "type": "backend",
+      "label": "翻译引擎",
+      "sublabel": "Hy-MT2 / Gemma / 云端",
+      "pos": [
+        40,
+        530
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/translator.py",
+          "line": 1207,
+          "label": "create_translator"
+        },
+        {
+          "path": "app/pipeline.py",
+          "line": 4284,
+          "label": "_translate_and_update_inner"
+        }
+      ]
+    },
+    {
+      "id": "detector",
+      "type": "security",
+      "label": "违禁词检测",
+      "sublabel": "exact · variant · fuzzy",
+      "pos": [
+        620,
+        530
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/detector.py",
+          "line": 299,
+          "label": "BannedTermDetector.scan"
+        }
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "CaptionServer",
+      "sublabel": "aiohttp :8765",
+      "pos": [
+        330,
+        530
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/server.py",
+          "line": 136,
+          "label": "CaptionServer._ws"
+        },
+        {
+          "path": "app/server.py",
+          "line": 179,
+          "label": "CaptionServer.broadcast"
+        }
+      ]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "字幕界面",
+      "sublabel": "本地网页 · 手机同看",
+      "pos": [
+        330,
+        690
+      ],
+      "size": [
+        170,
+        64
       ]
     }
   ],
@@ -287,7 +346,7 @@
       "id": "resolver-to-ffmpeg",
       "from": "resolver",
       "to": "ffmpeg",
-      "label": "校验后的纯音频地址"
+      "label": "校验后的媒体地址"
     },
     {
       "id": "reconnect",
@@ -295,18 +354,8 @@
       "to": "resolver",
       "label": "断流后重连",
       "variant": "dashed",
-      "fromSide": "bottom",
-      "toSide": "bottom",
-      "via": [
-        [
-          705,
-          180
-        ],
-        [
-          415,
-          180
-        ]
-      ]
+      "fromSide": "top",
+      "toSide": "top"
     },
     {
       "id": "ffmpeg-to-segmenter",
@@ -314,13 +363,14 @@
       "to": "segmenter",
       "label": "0.1 s PCM 帧",
       "variant": "emphasis",
-      "labelDy": 100
+      "labelDy": 61
     },
     {
       "id": "segmenter-to-queue",
       "from": "segmenter",
       "to": "audioq",
-      "label": "语音段"
+      "label": "语音段",
+      "labelDy": 61
     },
     {
       "id": "queue-to-asr",
@@ -329,11 +379,30 @@
       "label": "顺序解码"
     },
     {
-      "id": "asr-to-detector",
-      "from": "asr",
-      "to": "detector",
-      "label": "raw_text（含被过滤）",
-      "variant": "security"
+      "id": "glossary-to-asr",
+      "from": "glossary",
+      "to": "asr",
+      "label": "识别热词",
+      "labelDy": 61
+    },
+    {
+      "id": "glossary-to-translator",
+      "from": "glossary",
+      "to": "translator",
+      "label": "术语提示 · 译文兜底",
+      "fromSide": "left",
+      "toSide": "left",
+      "via": [
+        [
+          20,
+          242
+        ],
+        [
+          20,
+          562
+        ]
+      ],
+      "labelSegment": 0
     },
     {
       "id": "asr-to-server",
@@ -341,32 +410,21 @@
       "to": "server",
       "label": "原文字幕，不等翻译",
       "variant": "emphasis",
-      "labelDy": 110
+      "labelDy": 84
     },
     {
       "id": "asr-to-transq",
       "from": "asr",
       "to": "transq",
-      "label": "待译任务",
-      "fromSide": "bottom",
-      "toSide": "top",
-      "via": [
-        [
-          125,
-          365
-        ],
-        [
-          705,
-          365
-        ]
-      ]
+      "label": "待译任务"
     },
     {
       "id": "transq-to-translator",
       "from": "transq",
       "to": "translator",
       "label": "满 4 条丢最旧",
-      "variant": "dashed"
+      "variant": "dashed",
+      "labelDy": 61
     },
     {
       "id": "translator-to-server",
@@ -375,20 +433,27 @@
       "label": "译文回填"
     },
     {
+      "id": "asr-to-detector",
+      "from": "asr",
+      "to": "detector",
+      "label": "raw_text（含被过滤）",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
       "id": "detector-to-server",
       "from": "detector",
       "to": "server",
-      "label": "违禁词报警",
-      "variant": "security",
-      "labelDy": 41,
-      "labelDx": 60
+      "label": "报警（开关打开时）",
+      "variant": "security"
     },
     {
       "id": "server-to-ui",
       "from": "server",
       "to": "ui",
       "label": "WebSocket /ws",
-      "labelDy": 78
+      "labelDy": 61
     }
   ],
   "cards": [
@@ -397,26 +462,26 @@
       "title": "采集与切段",
       "items": [
         "解析最多依次试 7 层：登录直播页（macOS）→ 官方接口 → 登录直播页重试 → WebKit 隐藏页（macOS）→ yt-dlp 匿名 → yt-dlp 借 cookie → 直播页兜底",
-        "webcast 接口给的是 only_audio 纯音频档，省掉整条视频码流",
-        "ffmpeg 先 highpass=70 再 arnndn 神经降噪，专门压直播的背景音乐"
+        "各层都优先取 only_audio 纯音频档；ffmpeg 先 highpass=70 再 arnndn 降噪，专压背景音乐",
+        "开始与直播中换主播同一条路：停掉上一场，重读违禁词表与词表、另开审计，再从解析重来"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "字幕先出，译文后补",
+      "items": [
+        "识别一出结果就推原文字幕，译文回来再按 id 原地补上",
+        "领域词表按「全局 → 本场品牌 → 主播」逐层合并，同一份喂给识别热词、翻译提示和译文兜底",
+        "界面文字在出口（桌面广播、手机同看）才换成中文或英文；终端、日志、审计永远是中文"
       ]
     },
     {
       "dot": "amber",
-      "title": "两级背压，方向相反",
+      "title": "两级背压与报警",
       "items": [
-        "音频队列按秒计，到 60 s 硬顶才丢最旧一段——识别慢只推迟报警，不该漏词",
-        "翻译队列 maxsize=4，满了立刻丢最旧任务，绝不反压回识别链路",
-        "被丢的音频段与翻译任务都进审计日志，事后能区分漏听和漏译"
-      ]
-    },
-    {
-      "dot": "rose",
-      "title": "报警链路不依赖翻译",
-      "items": [
-        "违禁词扫的是 raw_text，含被质量过滤丢掉的部分——宁可多报，不能漏报",
-        "三级匹配：原样命中、形态变化、ASR 听错一两个字母的模糊层",
-        "识别一出结果就推原文并扫词，译文后到再回填字幕"
+        "音频队列按秒计，到 60 s 硬顶才丢最旧一段；翻译队列满 4 条立刻丢最旧，绝不反压识别",
+        "违禁词扫 raw_text（含被过滤的部分），不等译文；报警开关默认关，关着照样扫、命中只进审计",
+        "启动自检实测每一环，有一项失败就挂在顶部提示条上，直播中也看得见"
       ]
     }
   ]

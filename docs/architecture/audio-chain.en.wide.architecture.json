@@ -7,11 +7,11 @@
     "quality_profile": "showcase",
     "viewBox": [
       1240,
-      600
+      580
     ],
     "repository": {
       "url": "https://github.com/EM917/tiktok-live-translator",
-      "revision": "c409181f6fd0f92f4f1a0558eb2889fc1cb820b4"
+      "revision": "430fe06c139bb3cadc423221b6f4091702a4d51b"
     },
     "views": [
       {
@@ -23,17 +23,20 @@
           "ffmpeg",
           "segmenter"
         ],
-        "note": "From live room to speech segments: resolve an audio-only URL, denoise, energy VAD."
+        "note": "From live room to speech segments: resolve a media URL (audio-only preferred), denoise, energy VAD."
       },
       {
-        "id": "alert",
-        "label": "Alerts skip translation",
+        "id": "captions",
+        "label": "Captions first",
         "focus": [
           "asr",
-          "detector",
-          "server"
+          "glossary",
+          "transq",
+          "translator",
+          "server",
+          "ui"
         ],
-        "note": "The moment ASR returns, banned terms are scanned and the source caption ships."
+        "note": "The source caption ships as soon as ASR returns; the glossary feeds ASR and translation; the translation fills the line in later."
       },
       {
         "id": "backpressure",
@@ -45,6 +48,16 @@
           "translator"
         ],
         "note": "Audio is held to a hard cap; translation jobs are dropped the moment the queue fills."
+      },
+      {
+        "id": "alert",
+        "label": "Alerts skip translation",
+        "focus": [
+          "asr",
+          "detector",
+          "server"
+        ],
+        "note": "Banned terms are scanned as soon as ASR returns. With alerts off, the scan still runs and hits go to the audit only."
       }
     ],
     "animation": "trace"
@@ -56,12 +69,12 @@
       "label": "TikTok Live Room",
       "sublabel": "webcast API · live page",
       "pos": [
-        70,
-        70
+        40,
+        56
       ],
       "size": [
-        170,
-        64
+        180,
+        56
       ]
     },
     {
@@ -70,17 +83,17 @@
       "label": "Stream resolver",
       "sublabel": "up to 7 fallback layers",
       "pos": [
-        370,
-        70
+        620,
+        56
       ],
       "size": [
-        170,
-        64
+        180,
+        56
       ],
       "sources": [
         {
           "path": "app/resolver.py",
-          "line": 454,
+          "line": 1422,
           "label": "resolve_stream_url"
         }
       ]
@@ -92,17 +105,17 @@
       "sublabel": "16 kHz mono PCM",
       "tag": "RNNoise",
       "pos": [
-        670,
-        70
+        930,
+        56
       ],
       "size": [
-        170,
-        64
+        180,
+        56
       ],
       "sources": [
         {
           "path": "app/audio.py",
-          "line": 20,
+          "line": 34,
           "label": "FFmpegAudioSource.frames"
         }
       ]
@@ -113,12 +126,12 @@
       "label": "Energy VAD",
       "sublabel": "2.5–9 s · 0.7 s trailing",
       "pos": [
-        970,
-        70
+        930,
+        158
       ],
       "size": [
-        170,
-        64
+        180,
+        56
       ],
       "sources": [
         {
@@ -129,23 +142,23 @@
       ]
     },
     {
-      "id": "detector",
-      "type": "security",
-      "label": "Banned-term scan",
-      "sublabel": "exact · variant · fuzzy",
+      "id": "audioq",
+      "type": "messagebus",
+      "label": "Audio queue",
+      "sublabel": "by seconds · 60 s cap",
       "pos": [
-        370,
+        930,
         260
       ],
       "size": [
-        170,
-        64
+        180,
+        56
       ],
       "sources": [
         {
-          "path": "app/detector.py",
-          "line": 128,
-          "label": "BannedTermDetector.scan"
+          "path": "app/pipeline.py",
+          "line": 2608,
+          "label": "queue = asyncio.Queue()"
         }
       ]
     },
@@ -156,100 +169,59 @@
       "sublabel": "faster-whisper / MLX",
       "tag": "1 thread",
       "pos": [
-        670,
+        620,
         260
       ],
       "size": [
-        170,
-        64
+        180,
+        56
       ],
       "sources": [
         {
           "path": "app/asr.py",
-          "line": 223,
+          "line": 561,
           "label": "Transcriber.transcribe"
         },
         {
+          "path": "app/asr.py",
+          "line": 645,
+          "label": "MLXTranscriber.transcribe"
+        },
+        {
           "path": "app/pipeline.py",
-          "line": 776,
+          "line": 2713,
           "label": "asr_worker"
         }
       ]
     },
     {
-      "id": "audioq",
-      "type": "messagebus",
-      "label": "Audio queue",
-      "sublabel": "by seconds · 60 s cap",
+      "id": "glossary",
+      "type": "database",
+      "label": "Glossary",
+      "sublabel": "global · brand · streamer",
       "pos": [
-        970,
-        260
+        620,
+        158
       ],
       "size": [
-        170,
-        64
+        180,
+        56
       ],
       "sources": [
         {
-          "path": "app/pipeline.py",
-          "line": 704,
-          "label": "queue = asyncio.Queue()"
-        }
-      ]
-    },
-    {
-      "id": "ui",
-      "type": "frontend",
-      "label": "Caption surface",
-      "sublabel": "local web · phone viewer",
-      "pos": [
-        70,
-        450
-      ],
-      "size": [
-        170,
-        64
-      ]
-    },
-    {
-      "id": "server",
-      "type": "backend",
-      "label": "CaptionServer",
-      "sublabel": "aiohttp :8765",
-      "pos": [
-        370,
-        450
-      ],
-      "size": [
-        170,
-        64
-      ],
-      "sources": [
+          "path": "app/glossary.py",
+          "line": 293,
+          "label": "load (global → brand → profile)"
+        },
         {
-          "path": "app/server.py",
-          "line": 92,
-          "label": "CaptionServer._ws"
-        }
-      ]
-    },
-    {
-      "id": "translator",
-      "type": "backend",
-      "label": "Translation engine",
-      "sublabel": "Hy-MT2 / Gemma / cloud",
-      "pos": [
-        670,
-        450
-      ],
-      "size": [
-        170,
-        64
-      ],
-      "sources": [
+          "path": "app/glossary.py",
+          "line": 48,
+          "label": "Glossary.asr_prompt"
+        },
         {
-          "path": "app/translator.py",
-          "line": 574,
-          "label": "OllamaHyMT2Translator"
+          "path": "app/glossary.py",
+          "line": 106,
+          "label": "Glossary.apply"
         }
       ]
     },
@@ -259,37 +231,126 @@
       "label": "Translation queue",
       "sublabel": "maxsize=4 · drop oldest",
       "pos": [
-        970,
-        450
+        310,
+        260
       ],
       "size": [
-        170,
-        64
+        180,
+        56
       ],
       "sources": [
         {
           "path": "app/pipeline.py",
-          "line": 708,
+          "line": 2612,
           "label": "trans_queue maxsize=4"
         }
+      ]
+    },
+    {
+      "id": "translator",
+      "type": "backend",
+      "label": "Translation engine",
+      "sublabel": "Hy-MT2 / Gemma / cloud",
+      "pos": [
+        310,
+        362
+      ],
+      "size": [
+        180,
+        56
+      ],
+      "sources": [
+        {
+          "path": "app/translator.py",
+          "line": 1207,
+          "label": "create_translator"
+        },
+        {
+          "path": "app/pipeline.py",
+          "line": 4284,
+          "label": "_translate_and_update_inner"
+        }
+      ]
+    },
+    {
+      "id": "detector",
+      "type": "security",
+      "label": "Banned-term scan",
+      "sublabel": "exact · variant · fuzzy",
+      "pos": [
+        930,
+        362
+      ],
+      "size": [
+        180,
+        56
+      ],
+      "sources": [
+        {
+          "path": "app/detector.py",
+          "line": 299,
+          "label": "BannedTermDetector.scan"
+        }
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "CaptionServer",
+      "sublabel": "aiohttp :8765",
+      "pos": [
+        620,
+        362
+      ],
+      "size": [
+        180,
+        56
+      ],
+      "sources": [
+        {
+          "path": "app/server.py",
+          "line": 136,
+          "label": "CaptionServer._ws"
+        },
+        {
+          "path": "app/server.py",
+          "line": 179,
+          "label": "CaptionServer.broadcast"
+        }
+      ]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "Caption surface",
+      "sublabel": "local web · Phone Viewing",
+      "pos": [
+        620,
+        474
+      ],
+      "size": [
+        180,
+        56
       ]
     }
   ],
   "boundaries": [
     {
       "kind": "region",
-      "label": "Local Python process · fully offline, no API key",
+      "label": "Local process · ASR and banned-term scan run on this machine",
       "wraps": [
         "resolver",
         "ffmpeg",
         "segmenter",
-        "detector",
-        "asr",
         "audioq",
-        "server",
+        "asr",
+        "glossary",
+        "transq",
         "translator",
-        "transq"
-      ]
+        "detector",
+        "server"
+      ],
+      "pad": 30
     }
   ],
   "connections": [
@@ -304,7 +365,7 @@
       "id": "resolver-to-ffmpeg",
       "from": "resolver",
       "to": "ffmpeg",
-      "label": "checked audio-only URL"
+      "label": "checked media URL"
     },
     {
       "id": "reconnect",
@@ -312,32 +373,23 @@
       "to": "resolver",
       "label": "reconnect on drop",
       "variant": "dashed",
-      "fromSide": "bottom",
-      "toSide": "bottom",
-      "via": [
-        [
-          755,
-          200
-        ],
-        [
-          455,
-          200
-        ]
-      ]
+      "fromSide": "top",
+      "toSide": "top"
     },
     {
       "id": "ffmpeg-to-segmenter",
       "from": "ffmpeg",
       "to": "segmenter",
       "label": "0.1 s PCM frames",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "labelDy": 36
     },
     {
       "id": "segmenter-to-queue",
       "from": "segmenter",
       "to": "audioq",
       "label": "speech segment",
-      "labelDy": 100
+      "labelDy": 36
     },
     {
       "id": "queue-to-asr",
@@ -346,18 +398,39 @@
       "label": "sequential decode"
     },
     {
-      "id": "asr-to-detector",
-      "from": "asr",
-      "to": "detector",
-      "label": "raw_text (incl. filtered)",
-      "variant": "security"
+      "id": "glossary-to-asr",
+      "from": "glossary",
+      "to": "asr",
+      "label": "hotword prompt",
+      "labelDy": 36
+    },
+    {
+      "id": "glossary-to-translator",
+      "from": "glossary",
+      "to": "translator",
+      "label": "term hints · fix-ups",
+      "fromSide": "left",
+      "toSide": "left",
+      "via": [
+        [
+          295,
+          186
+        ],
+        [
+          295,
+          390
+        ]
+      ],
+      "labelSegment": 0
     },
     {
       "id": "asr-to-server",
       "from": "asr",
       "to": "server",
       "label": "source caption, no wait",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "labelDy": 36,
+      "labelDx": -58
     },
     {
       "id": "asr-to-transq",
@@ -371,28 +444,36 @@
       "to": "translator",
       "label": "drop oldest at 4",
       "variant": "dashed",
-      "labelDy": 30
+      "labelDy": 36
     },
     {
       "id": "translator-to-server",
       "from": "translator",
       "to": "server",
-      "label": "translation filled in",
-      "labelDy": 30
+      "label": "translation filled in"
+    },
+    {
+      "id": "asr-to-detector",
+      "from": "asr",
+      "to": "detector",
+      "label": "raw_text (incl. filtered)",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
     },
     {
       "id": "detector-to-server",
       "from": "detector",
       "to": "server",
-      "label": "banned-term alert",
-      "variant": "security",
-      "labelDy": 100
+      "label": "alert (when on)",
+      "variant": "security"
     },
     {
       "id": "server-to-ui",
       "from": "server",
       "to": "ui",
-      "label": "WebSocket /ws"
+      "label": "WebSocket /ws",
+      "labelDy": 41.0
     }
   ],
   "cards": [
@@ -401,26 +482,26 @@
       "title": "Capture & segment",
       "items": [
         "Resolves via up to 7 layers: login-first page (macOS) → live API → login retry → WebKit (macOS) → yt-dlp → yt-dlp+login → page fallback",
-        "The webcast API returns an only_audio rendition, skipping the video bitstream",
-        "highpass=70 then arnndn, tuned for streams with constant background music"
+        "Every layer prefers the only_audio rendition; ffmpeg runs highpass=70 then arnndn against background music",
+        "Start and Switch Streamer share one path: stop the last session, re-read the term lists, open a new audit, resolve again"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Captions first",
+      "items": [
+        "The source caption ships as soon as ASR returns; the translation fills the same line in by id",
+        "The glossary merges global → brand → streamer and feeds ASR hotwords, translation hints and fix-ups",
+        "Interface text turns Chinese or English only at the edge; terminal, logs and audit stay Chinese"
       ]
     },
     {
       "dot": "amber",
-      "title": "Backpressure, two directions",
+      "title": "Backpressure & alerts",
       "items": [
-        "Audio is budgeted in seconds; only a 60 s hard cap drops the oldest segment",
-        "Translation queue is maxsize=4 and drops the oldest job rather than stalling ASR",
-        "Both kinds of drop reach the audit log: missed audio vs missed translation"
-      ]
-    },
-    {
-      "dot": "rose",
-      "title": "Alerts never wait on translation",
-      "items": [
-        "Scans raw_text, including quality-filtered text: over-report beats under-report",
-        "Three tiers: literal, morphological variant, and fuzzy for ASR mishearing",
-        "Caption and alert ship as soon as ASR returns; translation is filled in later"
+        "Audio is budgeted in seconds and dropped only at a 60 s cap; the translation queue drops its oldest job at 4 rather than stall ASR",
+        "The scan reads raw_text (incl. filtered text) and never waits on translation; with alerts off (the default) hits go to the audit only",
+        "Startup Check exercises each link; a failure stays in the top banner while live"
       ]
     }
   ]
