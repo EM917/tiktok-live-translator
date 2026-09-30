@@ -35,7 +35,7 @@ language, and Settings → App Language switches it; see
 ## Features
 
 - 🎙️ **Live captions, original first** — OpenAI Whisper with two backends (faster-whisper / MLX), 90+ languages, limited to Spanish + English by default. Each line appears as soon as it is recognised and its translation fills in beneath it; the latest line is also shown large at the bottom of the window
-- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two sizes through Ollama, with TranslateGemma, DeepL (with a native glossary), Google's free endpoint and Claude · OpenAI-compatible APIs as alternatives. By default the best installed local model is used, or Google's free endpoint when none is installed. See [Translation Engines](#translation-engines)
+- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two sizes through Ollama, with TranslateGemma, DeepL (with a native glossary), Google's free endpoint and Claude · OpenAI-compatible APIs as alternatives. By default Hy-MT2 1.8B is used, then TranslateGemma, and Google's free endpoint when neither is installed; 7B is never picked automatically. See [Translation Engines](#translation-engines)
 - 🏷️ **Glossaries per brand and streamer** — a global glossary, one per streamer and one per brand (picked in the Brand menu for the session) steer how product names are recognised and translated, with every engine. See [Glossaries](#glossaries)
 - 💬 **Viewer comment translation** — the app fetches comments itself via TikTokLive from the live stream's comment feed (WebSocket signing goes through the third-party Euler Stream service rather than your computer; needs Python 3.10+, and the component installs itself on the first start; usually works signed out, and retries once with the browser's TikTok sign-in when TikTok asks for one). Translations appear in the Comments panel — translation and display only, never part of the alert path. Comments are translated only while the active engine is a local model (Hy-MT2 1.8B or TranslateGemma); with a remote engine or the 7B model the panel shows the original text. The comment WebSocket can go half-open — the panel still shows Connected but no comments ever arrive — so the app reconnects automatically after 15 minutes of silence while connected, and records it in the session audit. Disable with `--no-comments`
 - 🔁 **Switch Streamer during a session** — Switch Streamer in the top bar moves to another streamer without clicking Stop first: pick from Recent Streams or paste a live link, choose the brand, then click again to confirm. The spoken language carries over, and a divider in the caption history marks where the new streamer begins
@@ -182,9 +182,12 @@ page — is in English or Chinese.
 - The app name in the Dock, the menu bar and ⌘Tab follows the macOS system
   language (TikTok 直播同传 on a Chinese system). The file is always
   `TikTok Live Translator.app`.
-- Terminal output, logs and the audit log are always in Chinese, as are the
-  messages from `Start.command` and `Start.bat`. Streamer names, glossaries,
-  captions and comments are data; the interface language never changes them.
+- Terminal output, logs and the audit log are always in Chinese, as is the
+  text `Start.command` and `Start.bat` print in their terminal window. The
+  launchers' error dialogs, which appear before the app can read the
+  language setting, show Chinese and English together. Streamer names,
+  glossaries, captions and comments are data; the interface language never
+  changes them.
 
 Notes for maintainers: [docs/i18n.md](docs/i18n.md) (in Chinese).
 
@@ -301,12 +304,13 @@ The measurements, tables and caveats are in
 ### Glossaries
 
 Product names are where a general-purpose model goes wrong most often, and a
-short list of them fixes that for every engine. The glossary is one set of
-entries used in three places: the first entries are given to speech
-recognition as a hint, entries that occur in a line are passed to the
-translation model with that line (DeepL uses a native glossary instead; see
-below), and a rule-based pass replaces whatever the model still rendered
-differently.
+short list of them is the most direct fix. The glossary is one set of entries
+used in three places: the first entries are given to speech recognition as a
+hint; entries that occur in a line are passed with that line to a local
+translation model (DeepL uses a native glossary instead, see below, while
+Google's free endpoint, Claude and OpenAI-compatible APIs take no hints, so
+only the fix-up applies to them); and a rule-based fix-up replaces any
+glossary entry the translation left untranslated.
 
 It is merged from three files, most specific first:
 
@@ -364,16 +368,10 @@ The following constraints are measured, not assumed:
 Quota is billed on source length, and the burn rate depends heavily on how
 densely the streamer talks — two measured sessions differ by 2.3×:
 
-| Usage | Burn rate | 1,000,000 characters covers |
+| Session, every caption through DeepL | Burn rate | 1,000,000 characters covers |
 |---|---|---|
-| Every subtitle — dense session (38.4 min, 567 lines) | 95,824 chars/hour | ~10 hours |
-| Every subtitle — sparser session (4.4 h, 2,041 lines) | 41,363 chars/hour | ~24 hours |
-| Alert context only | 546 chars/hour | ~1,800 hours |
-
-Alert context is sparse — two passages totalling 349 characters in the first
-session — and it is the text that must not be mistranslated, since the operator
-reads it to decide whether to act. Routing only that through DeepL is the
-difference between hours and months of coverage.
+| Dense (38.4 min, 567 lines) | 95,824 chars/hour | ~10 hours |
+| Sparser (4.4 h, 2,041 lines) | 41,363 chars/hour | ~24 hours |
 
 Read your own remaining budget in Settings → Translation Engine, which shows how
 much of the free quota your key has used (from the `used / limit` DeepL returns),
@@ -409,9 +407,9 @@ Three ways to invoke it:
   any existing line, and prints the segments whose translation changed rather
   than replacing anything silently
 
-Measured on the same 259 captions, the re-translation reads more easily — that
-difference survived the correction — but it was not shown to be more correct.
-Details are in
+Measured on the same 259 captions, re-translation with 7B reads more easily
+than 1.8B — that difference survived the correction — but it was not shown to
+be more correct. Details are in
 [docs/engine-benchmarks.md](docs/engine-benchmarks.md#re-translating-with-the-strongest-model).
 
 ### Finding translation errors without reading everything
@@ -446,11 +444,11 @@ handled explicitly.
 
 Up to seven layers are tried in order, each isolated so a bug in one cannot
 take down the rest. Resolution stops at the first layer that returns an
-address, and each address is checked before the session starts.
+address, and each address is checked before the session starts. Every layer
+prefers TikTok's audio-only track when one is offered.
 
 1. **Signed-in live page** (macOS) — uses a TikTok sign-in already in the browser
-2. **Official live API** — independent of yt-dlp, and the only layer that
-   returns an audio-only track
+2. **Official live API** — independent of yt-dlp
 3. **Signed-in retry** — only when the first signed-in fetch read a usable
    sign-in but the page carried no address, and the live API did not report
    the stream as ended
@@ -489,9 +487,11 @@ How the sign-in is used:
   still starts, resolution stays anonymous, and a persistent notice says what
   to do.
 
-When no layer returns an address, the app tries three times, 20 s apart, and
-then says so on screen. For such streams you can paste **the live link and a
-.flv address from your browser together**, separated by a space: the link
+When TikTok's live API withholds the stream URL (code 4003110) and no later
+layer finds one, the app tries three times, 20 s apart, and then says so on
+screen; other failures are reported right away. When the stream plays in your
+browser but the app cannot find its address, you can paste **the live link and
+a .flv address from your browser together**, separated by a space: the link
 drives comments and the glossary, and the .flv address is used as given for
 the audio, skipping every layer above. Measured: these signed addresses stay
 valid for about two weeks, so one capture covers a whole stream. See also
@@ -505,9 +505,10 @@ valid for about two weeks, so one capture covers a whole stream. See also
   reconnect attempts, for up to 30 minutes.
 - A stream that TikTok does not report as ended is waited on for up to 10
   minutes.
-- The app gives up only after several reconnects in a row bring no audio at
-  all (5 for a live link, 1 for a pasted stream URL). A round that played any
-  audio resets the count.
+- The app gives up once six connection attempts in a row bring no audio at
+  all (two for a pasted stream URL); an attempt that played any audio resets
+  the count. A pasted stream URL that stops serving data after playing for
+  30 s or more ends the session instead of reconnecting.
 - yt-dlp is kept current in the background.
 - While monitoring, the computer is kept from going to sleep on its own, and a
   gap where the app did not run at all is recorded and shown on screen.
@@ -567,8 +568,10 @@ failure of the list, not of the matcher.
 The shipped list is a starting point derived from one company's category guide
 for supplement and weight-management streams. It misses when a streamer
 phrases a claim differently from the list: `eliminar grasa` is listed, but
-"eliminando el exceso **de** grasa" inserts words between the anchors and
-misses.
+"eliminar **toda la** grasa" puts words between the two anchors and does not
+match. The same gap let "eliminando el exceso de grasa" through in the case
+below, which is why `exceso de grasa` has been an entry of its own since
+2026-09-02.
 
 Replay a recorded session against your list before trusting it:
 
@@ -751,9 +754,9 @@ speaking and nothing appears, try `--denoise off` or a different model size.
 stream drops, the app re-resolves the stream URL and reconnects by itself,
 waiting longer between attempts each time (2 s, then 4, 8, 16 and at most
 30 s). While the computer cannot reach TikTok it waits without spending
-attempts, for up to 30 minutes. It gives up only after 5 reconnects in a row
-bring no audio at all (1 for a pasted stream URL); a round that played any
-audio resets that count, so a patchy connection keeps reconnecting. If the
+attempts, for up to 30 minutes. It gives up only after six reconnects in a row
+bring no audio at all (two for a pasted stream URL); a reconnect that played
+any audio resets that count, so a patchy connection keeps reconnecting. If the
 window says the stream was interrupted several times and couldn't reconnect,
 click Start again. Details: [Keeping the stream](#keeping-the-stream).
 
@@ -811,11 +814,11 @@ the control page only; Phone Viewing uses a port of its own and reuses the
 same one across restarts when it is free, so a printed QR code keeps working —
 see the next entry.
 
-<a id="phone-viewing"></a>**Can colleagues watch from their phones?** Yes. Click **Phone Viewing** in
-the top bar (just a phone icon when the window is narrow; there whether idle or
-live) and click **Start Sharing** in the panel that opens. The first time,
-macOS may ask to allow incoming network connections, or Windows Firewall may
-ask for access; choose Allow. A phone on the same Wi-Fi as this computer can
+<a id="phone-viewing"></a>**Can colleagues watch from their phones?** Yes. Click the phone icon in
+the top bar (labelled **Phone Viewing** once the window is at least 1,200 px
+wide; there whether idle or live) and click **Start Sharing** in the panel that
+opens. The first time, macOS may ask to allow incoming network connections, or
+Windows Firewall may ask for access; choose Allow. A phone on the same Wi-Fi as this computer can
 scan the QR code or type in the address shown in the panel, and can only view
 captions and alerts — it cannot control the app in any way (no start/stop,
 engine switch, or settings changes). Each phone page is in that phone's own
