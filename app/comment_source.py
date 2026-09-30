@@ -378,7 +378,8 @@ class CommentSource:
                         _http_note(self._last_http))
                     wait = self.REJECTED_WAIT_SEC
                 else:
-                    prefix = L("TikTok 暂时拒绝了评论连接", "TikTok didn’t accept the comments connection")
+                    # 不写「暂时」：看不出会拒多久，后面的「N 分钟后自动重试」已经说了会再试
+                    prefix = L("TikTok 没有接受评论连接", "TikTok didn’t accept the comments connection")
                     wait = self.BLOCKED_WAIT_SEC
                 # 服务端给的原始原因只进审计，不上面板
                 raw = "{} http_status={}{}".format(

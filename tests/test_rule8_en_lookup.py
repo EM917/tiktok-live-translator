@@ -321,6 +321,8 @@ def test_an_upgrade_after_a_blocked_connection_in_english(monkeypatch):
     texts = _assert_details_clean(state_log)
     assert "TikTok didn’t accept the comments connection. Checking for a comments component " \
            "update…" in texts
+    # 中文和英文说同一件事：不写「暂时」，看不出会拒多久（复审 rule8-and-copy）
+    assert "TikTok 没有接受评论连接，正在检查弹幕组件有没有更新…" in [d for _, d in state_log]
     assert "Comments component updated from 7.0.1 to 7.0.2. Reconnecting…" in texts
 
 

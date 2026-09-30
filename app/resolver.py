@@ -960,8 +960,10 @@ def _classify_ytdlp_error(err_text):
             or "getaddrinfo" in lowered or "nodename" in lowered
             or "name resolution" in lowered or "unreachable" in lowered
             or "reset by peer" in lowered or "urlopen error" in lowered):
+        # 中英文都只说连不上：yt-dlp 报错里带 connection / timed out 也可能是对端关了连接，
+        # 不一定是本机网络差，也看不出是不是暂时的（CLAUDE.md 第八条）
         return ("network",
-                L("网络连接不畅，暂时访问不到 TikTok——请检查网络后重试。",
+                L("连不上 TikTok——请检查网络后重试。",
                   "Couldn’t reach TikTok. Check your network connection and try again.")
                 + detail)
     # 不写「可能是 A，也可能是 B」，中英文都写成要核对的几件事（docs/i18n-style.md §2.5）

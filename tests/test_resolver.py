@@ -3,6 +3,7 @@ import asyncio
 
 import pytest
 
+from app import i18n
 from app.resolver import (
     ResolveError,
     _check_media_url,
@@ -23,17 +24,29 @@ from app.resolver import (
     ("ERROR: Unsupported URL: https://x", "not_found", "没有找到这个直播间"),
     ("ERROR: This video is private. Log in to access", "login", "需要登录"),
     ("ERROR: Use --cookies to provide authentication", "login", "需要登录"),
-    ("urlopen error timed out", "network", "网络连接不畅"),
+    ("urlopen error timed out", "network", "连不上 TikTok"),
     ("[Errno 8] nodename nor servname provided, or not known",
-     "network", "网络连接不畅"),
-    ("getaddrinfo failed", "network", "网络连接不畅"),
-    ("Temporary failure in name resolution", "network", "网络连接不畅"),
+     "network", "连不上 TikTok"),
+    ("getaddrinfo failed", "network", "连不上 TikTok"),
+    ("Temporary failure in name resolution", "network", "连不上 TikTok"),
     ("something totally unexpected", "unknown", "无法连接这个直播间"),
 ])
 def test_classify_ytdlp_error(err, kind, expect):
     got_kind, message = _classify_ytdlp_error(err)
     assert got_kind == kind
     assert expect in message
+
+
+def test_the_network_message_says_only_that_tiktok_was_unreachable():
+    """复审（rule8-and-copy）：这一支只要报错里带 connection / timed out 就触发，对端关了连接也算，
+    看不出是不是本机网络差、是不是暂时的。中文以前比英文多说了「网络连接不畅，暂时……」，
+    现在和英文说同一件事（CLAUDE.md 第八条）。"""
+    kind, message = _classify_ytdlp_error("ERROR: Remote end closed connection without response")
+    assert kind == "network"
+    assert message.startswith("连不上 TikTok——请检查网络后重试。")
+    assert "不畅" not in message and "暂时" not in message
+    assert i18n.text(message, i18n.EN).startswith(
+        "Couldn’t reach TikTok. Check your network connection and try again.")
 
 
 def test_classify_keeps_technical_detail_for_ambiguous_kinds():
