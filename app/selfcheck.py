@@ -113,6 +113,19 @@ async def check_denoise(args):
                     "Delete models/bd.rnnn, then click Start. The app downloads it again."))
 
 
+# app/asr.py 的 Transcriber 在模型放掉之后又被调 transcribe 时抛的 RuntimeError 原文。那一行在
+# 识别路径上（spec §0.3 不变量 3），不改成 L()；连续出错改用 CPU 后，它经 pipeline 的
+# fallback["error"] 进到「语音识别」行的 Details: 后面，在这里换成双语，英文界面才不露中文。
+# tests/test_i18n_selfcheck_en.py 钉着 asr.py 抛的正是这句
+_ASR_RELEASED = L("识别模型已释放", "The speech model had already been unloaded")
+
+
+def _asr_error(error):
+    """识别出错的原文，放在 Details: 后面。别的识别库抛的英文原文照样当数据显示；只有 asr.py
+    自己那句中文换成双语（L() 按中文比较相等，所以和普通 str 比得上）。"""
+    return _ASR_RELEASED if error == _ASR_RELEASED else error
+
+
 async def check_asr(args, state=None):
     """state 是管线实际加载的结果（Pipeline._asr_check_state）：加载失败、出错后改用了
     CPU——这些比按配置推一遍更可信，所以先看它。"""
@@ -124,7 +137,7 @@ async def check_asr(args, state=None):
                         "Recognition on {} ran into an error, so the app switched to {}. It’s "
                         "slower, and long sessions tend to build a backlog. Details: {}").format(
                           fallback.get("from"), fallback.get("to"),
-                          fallback.get("error") or L("无错误详情", "not available")),
+                          _asr_error(fallback.get("error")) or L("无错误详情", "not available")),
                       L("关闭程序重新打开会重新尝试原来的识别配置；若反复出现请反馈给开发者",
                         "Quit and reopen the app to try the original recognition setup again. "
                         "If this keeps happening, report it to the developer."))
@@ -135,7 +148,7 @@ async def check_asr(args, state=None):
                         "The speech model ({}/{}) didn’t load. Speech won’t be recognized in this "
                         "session. Details: {}").format(
                           load_error.get("backend"), load_error.get("model"),
-                          load_error.get("error") or L("无错误详情", "not available")),
+                          _asr_error(load_error.get("error")) or L("无错误详情", "not available")),
                       L("确认网络和磁盘空间后点「开始翻译」重试；若反复出现，关闭程序重新打开",
                         "Check your network connection and available storage, then click Start "
                         "to try again. If this keeps happening, quit and reopen the app."))

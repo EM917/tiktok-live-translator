@@ -113,7 +113,8 @@ def _asr(mp, tmp_path):
     from app import bootstrap, hwdetect
     args = SimpleNamespace(backend="auto", model=None, device="auto")
     rows = []
-    for error in ("RuntimeError: boom", None):
+    # 最后一个是 app/asr.py 自己抛的中文（识别路径上，不改成 L()），由 selfcheck 换成双语
+    for error in ("RuntimeError: boom", None, "识别模型已释放"):
         rows.append(run(selfcheck.check_asr(args, {"fallback": {
             "from": "mlx", "to": "ct2 (cpu)", "error": error}})))
         rows.append(run(selfcheck.check_asr(args, {"load_error": {
@@ -422,6 +423,33 @@ def test_comments_install_and_update_commands(monkeypatch, tmp_path):
     assert i18n.text(outdated["detail"], i18n.EN) == (
         "The comments component, TikTokLive 7.0.0, is older than 7.0.1. It can’t connect when "
         "the comment service uses its backup route.")
+
+
+def test_the_released_model_error_from_asr_reads_as_english():
+    """复审（english-e2e）：Transcriber 在模型放掉之后又被调 transcribe 时抛
+    RuntimeError("识别模型已释放")。那一行在识别路径上（spec §0.3 不变量 3）不改；连续出错改用
+    CPU 后它经 fallback["error"] 进到「语音识别」行的 Details:，英文界面上以前就露这句中文。
+    中文照旧：终端、审计拿到的还是原来那句。"""
+    from app import asr
+    released = object.__new__(asr.Transcriber)          # 不加载模型：只要 release() 之后的状态
+    released.model = None
+    with pytest.raises(RuntimeError) as caught:
+        released.transcribe(b"")
+    error = str(caught.value)                              # pipeline 记进 fallback 的就是这个原文
+    assert error == selfcheck._ASR_RELEASED
+
+    args = SimpleNamespace(backend="auto", model=None, device="auto")
+    row = run(selfcheck.check_asr(args, {"fallback": {"from": "mlx", "to": "ct2 (cpu)",
+                                                       "error": error}}))
+    assert row["detail"] == "mlx 识别出错，已改用 ct2 (cpu)——较慢，长时间监听容易积压（识别模型已释放）"
+    assert i18n.text(row["detail"], i18n.EN) == (
+        "Recognition on mlx ran into an error, so the app switched to ct2 (cpu). It’s slower, and "
+        "long sessions tend to build a backlog. Details: The speech model had already been "
+        "unloaded")
+    row = run(selfcheck.check_asr(args, {"load_error": {"backend": "mlx", "model": "turbo",
+                                                         "error": error}}))
+    assert not CJK.search(i18n.text(row["detail"], i18n.EN))
+    assert row["detail"].endswith("本场不会识别：识别模型已释放")
 
 
 def test_banned_term_notes_join_into_sentences(monkeypatch):
