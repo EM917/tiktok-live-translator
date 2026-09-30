@@ -126,7 +126,7 @@ itself, so there is no practical minimum version there — see the "publisher
 unknown" note above if Windows Defender SmartScreen has not seen WebView2 on
 this machine before.
 
-The first launch installs everything automatically (a few minutes, with on-screen progress; the first recognition also downloads the speech model, with progress shown on the page). Every launch after that is instant. Once the window opens: **paste the live-room URL (or just the streamer's username) → pick the streamer's language → hit Start**. Stop or switch rooms anytime.
+The first launch installs everything automatically (a few minutes, with on-screen progress; the first recognition also downloads the speech model, with progress shown on the page). Every launch after that is instant. Once the window opens: **paste the live link (or just the streamer's username) → check Spoken language (Spanish + English by default) and, in the top bar, the language to translate into → click Start**. During a session, **Switch Streamer** moves to another streamer, and **Stop** takes the window back to the start page, with that session's captions kept below under Previous Session.
 
 ### Command line
 
@@ -143,6 +143,7 @@ cd tiktok-live-translator && python3 main.py
 python3 main.py "https://www.tiktok.com/@streamer_username/live" --source es
 python3 main.py --demo      # preview the UI without connecting to a stream
 python3 main.py --doctor    # print the hardware check and recommended config
+python3 main.py --ui-lang en   # English interface for this launch only
 ```
 
 > Prefer to control the install yourself? `bash setup.sh` (macOS/Linux) or `powershell -ExecutionPolicy Bypass -File setup.ps1` (Windows) does the same steps explicitly.
@@ -155,7 +156,37 @@ python3 main.py --doctor    # print the hardware check and recommended config
 - **Windows**: double-click **`Start.bat`**;
 - CLI: `cd ~/tiktok-live-translator && python3 main.py`.
 
-The UI opens in its **own app window** (no browser tab), remembering the room URL and target language from last time — just hit Start. Rooms you opened recently are listed under the input box by streamer name; one click starts them. Closing the window quits the app. Pass `--browser` if you prefer the browser UI.
+The UI opens in its **own app window** (no browser tab), remembering the last live link, spoken language and target language — just click Start. **Recent Streams** under the input box lists the streamers you opened recently; one click starts one. Closing the window quits the app, and asks first during a session. Pass `--browser` if you prefer the browser UI.
+
+## Interface Language
+
+The interface — the app window, its dialogs and notifications, and the phone
+page — is in English or Chinese.
+
+- A new install follows the system language: on macOS, the language set for
+  this app in System Settings, otherwise the preferred language; on Windows,
+  the display language. A Chinese system language (Simplified or Traditional)
+  gives the Chinese interface, anything else English, and Chinese if it
+  cannot be detected.
+- An install that was already in use before the English interface existed
+  stays in Chinese after updating.
+- To switch, open **Settings → App Language** on the home page and choose
+  System, 中文 or English. The window reloads once. Settings is hidden during
+  a session, so switch between sessions.
+- `python3 main.py --ui-lang en` (or `zh`) sets the language for one launch
+  and saves nothing.
+- On a new install with an English interface, captions are translated into
+  English until you choose another language in the top bar.
+- Phone Viewing pages follow each phone's own language, with a toggle at the
+  bottom of the page.
+- The app name in the Dock, the menu bar and ⌘Tab follows the macOS system
+  language (TikTok 直播同传 on a Chinese system). The file is always
+  `TikTok Live Translator.app`.
+- Terminal output, logs and the audit log are always in Chinese, as are the
+  messages from `Start.command` and `Start.bat`. Streamer names, glossaries,
+  captions and comments are data; the interface language never changes them.
+
+Notes for maintainers: [docs/i18n.md](docs/i18n.md) (in Chinese).
 
 ## Automatic Hardware Configuration
 
@@ -182,8 +213,8 @@ Every selected value can be overridden with a command-line flag.
 
 | Flag | Description | Default |
 |------|------|------|
-| `--target` | Target language (`zh-CN`/`en`/`ja`/`ko`/…; can also be switched anytime in the UI) | `zh-CN` |
-| `--source` | Streamer's language(s): a single code (`es`/`en`/`ja`/…), or a comma list to auto-detect within just those (e.g. `es,en`, max 4, first = primary; a detected language outside the list triggers one forced re-run) | `es,en` |
+| `--target` | Target language (`zh-CN`/`en`/`ja`/`ko`/…; can also be switched anytime in the top bar) | last choice in the UI; otherwise `zh-CN` (`en` on a new install with an English interface) |
+| `--source` | Streamer's language(s): a single code (`es`/`en`/`ja`/…), or a comma list to auto-detect within just those (e.g. `es,en`, max 4, first = primary; a detected language outside the list triggers one forced re-run) | last choice in the UI; otherwise `es,en` |
 | `--backend` | Recognition backend: `mlx` (Apple GPU) / `ct2` (faster-whisper) / `auto` | `auto` |
 | `--model` | Whisper model: `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` | auto by hardware |
 | `--device` | `auto`/`cpu`/`cuda` | auto by hardware |
@@ -191,13 +222,16 @@ Every selected value can be overridden with a command-line flag.
 | `--beam` | Beam search width (larger = more accurate but slower; `1` = greedy; ct2 backend only) | `5` |
 | `--context` | Enable rolling context. **Off by default**: measured to trigger repetition loops that badly hurt recall | off |
 | `--asr-temperature` | Decoding temperature. **Defaults to 0 (single pass)**: Whisper otherwise re-decodes a segment at up to six temperatures when quality checks fail, which measured 25s on music-heavy audio | `0` |
-| `--translator` | Translation engine: `auto`/`hymt2-7b`/`hymt2`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
+| `--translator` | Translation engine: `auto`/`hymt2`/`hymt2-7b`/`gemma`/`deepl`/`google`/`claude`/`openai`/`none`; see [Translation Engines](#translation-engines) | last choice in the UI; otherwise `auto` |
 | `--denoise` | RNNoise voice denoising: `auto`/`on`/`off` | `auto` (on) |
 | `--port` | Local UI port | `8765` |
 | `--cookies` | Path to a yt-dlp cookies.txt file (use it when yt-dlp reports that the stream needs a login) | none |
+| `--glossary` | Glossary file; see [Glossaries](#glossaries) | `glossary.txt` in the project folder, created from `glossary.example.txt` on first run |
+| `--banned-terms` | Banned-term list; see [Banned-Term Alerts](#banned-term-alerts) | `banned_terms.txt` in the project folder, created from `banned_terms.example.txt` on first run |
 | `--demo` | Demo mode — drives only the UI | off |
 | `--doctor` | Print the hardware check and recommended config, then exit | off |
-| `--no-open` | Don't auto-open the browser on startup | off |
+| `--no-open` | Don't open the app window or browser on startup | off |
+| `--ui-lang` | Interface language for this launch only: `zh`/`en`. Not saved; see [Interface Language](#interface-language) | the App Language setting |
 
 ## Translation Engines
 
