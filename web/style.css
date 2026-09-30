@@ -282,6 +282,13 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
    报警标签（"Alerts on"）照旧不缩：它是开关状态，截成 "Aler…" 就没意义了（R6 的铃铛胶囊
    按 spec §11 第 9 条不做）。中文页不受影响 */
 html[lang="en"] .active-brand-tag { flex-shrink: 1000; }
+/* 但只要主播名还参与收缩，哪怕只分到 0.05px，text-overflow 也会把最后几个字母换成「…」
+   （PR #70 实测：1000px 下 "@bellaallnatural" 显示成 "@bellaallnatu…"，品牌标签还剩 125px）。
+   默认窗口 1000px 及以上，状态胶囊干脆不缩，缺的全部由品牌标签让出；更窄时仍允许缩，
+   否则品牌标签到底以后顶栏会挤爆 */
+@media (min-width: 1000px) {
+  html[lang="en"] .status-pill { flex-shrink: 0; }
+}
 
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gray); flex: none; }
 .dot.live { background: var(--green); }

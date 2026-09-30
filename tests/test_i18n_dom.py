@@ -603,6 +603,12 @@ def test_live_top_bar_fits(dom, width):
         status, confirm = got[".status-text"], got["#switch-confirm"]
         need(status and status["scrollWidth"] <= status["clientWidth"] + 1,
              ".status-text 被截 {}".format(status))
+        # 整数宽度看不出零点几个像素的截断，省略号却已经换掉了最后几个字母（scan.js 的注释）。
+        # Chrome 只要文字比盒子宽一点点就出省略号：PR #70 在 1000px 实测文字 123.0625、盒子
+        # 123.015625，只差 3/64 像素，"@bellaallnatural" 就显示成 "@bellaallnatu…"。
+        # 排版单位是 1/64 像素，容差取 0.01 只挡浮点噪声
+        need(status and status["textWidth"] <= status["innerWidth"] + 0.01,
+             ".status-text 文字比盒子宽（省略号已出现） {}".format(status))
         need(confirm and confirm["width"] > 0, "换主播面板没打开，#switch-confirm 量不到 {}".format(confirm))
         need(confirm and confirm["scrollWidth"] <= confirm["clientWidth"] + 1,
              "#switch-confirm 被截 {}".format(confirm))
