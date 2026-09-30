@@ -168,7 +168,7 @@ Every selected value can be overridden with a command-line flag.
 | `--translator` | Translation engine: `auto`/`hymt2-7b`/`hymt2`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
 | `--denoise` | RNNoise voice denoising: `auto`/`on`/`off` | `auto` (on) |
 | `--port` | Local UI port | `8765` |
-| `--cookies` | Path to a yt-dlp cookies.txt file (may be needed for region-restricted streams) | none |
+| `--cookies` | Path to a yt-dlp cookies.txt file (use it when yt-dlp reports that the stream needs a login) | none |
 | `--demo` | Demo mode — drives only the UI | off |
 | `--doctor` | Print the hardware check and recommended config, then exit | off |
 | `--no-open` | Don't auto-open the browser on startup | off |

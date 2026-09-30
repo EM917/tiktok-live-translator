@@ -162,7 +162,7 @@ python3 main.py --doctor    # 看看硬件体检和推荐配置
 | `--translator` | 翻译引擎：`auto`/`hymt2-7b`/`hymt2`/`gemma`/`google`/`claude`/`openai`/`none` | `auto` |
 | `--denoise` | RNNoise 人声降噪：`auto`/`on`/`off` | `auto`（开） |
 | `--port` | 本地 UI 端口 | `8765` |
-| `--cookies` | yt-dlp cookies.txt 路径（地区受限的直播间可能需要） | 无 |
+| `--cookies` | yt-dlp cookies.txt 路径（yt-dlp 报告直播间要登录才能看时用） | 无 |
 | `--demo` | 演示模式，仅驱动 UI | 关 |
 | `--doctor` | 打印硬件体检和推荐配置后退出 | 关 |
 | `--no-open` | 启动后不自动打开浏览器 | 关 |
