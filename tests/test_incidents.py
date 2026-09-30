@@ -3,6 +3,8 @@
 钉住：按 id 覆盖且保留最初出现的时间；level=clear 去掉；落进 config 让重连的页面
 照样看得到；最多 20 条；"session:" 开头的在下一场开始时清掉，其余的保留。"""
 
+import pytest
+
 from app.pipeline import Pipeline
 from app.server import CaptionServer
 from tests.helpers import run
@@ -45,6 +47,7 @@ def test_incident_without_id_is_ignored():
     assert not s.config.get("incidents")
 
 
+@pytest.mark.i18n_fixture
 def test_pipeline_incident_helper_and_session_scoped_clearing():
     p = Pipeline.__new__(Pipeline)
     p.server = CaptionServer(port=8765)

@@ -250,6 +250,7 @@
 - 不把猜测当原因。中文原文里带「可能是 A，或 B」的，英文改写成**让用户去核对的动作**。例如：
   - 原文：「直播流多次中断且自动重连失败——可能直播已结束，或网络不稳。请稍后点「开始翻译」重试。」
   - 译文：**The stream was interrupted several times and couldn’t reconnect. Check that the stream is still live and your network is working, then click Start.**
+  - 这一句（和第八条家族里其它几句带猜测的中文）后来中文也照这个改了：「直播流多次中断且自动重连失败。请确认直播还在进行、网络正常，然后点「开始翻译」重试。」
 - may 只能用来说「将来可能发生」的事（*Alerts may be delayed*），不能用来解释原因。
 
 ### 2.6 第八条（4003110）和「不猜原因」的英文禁用词
@@ -261,9 +262,12 @@
 这些文案里只写两件事：「接口没给流地址」，以及用户能做什么。
 
 - 固定说法：**TikTok didn’t provide a stream URL for this live stream (code 4003110).**
-- 中文原文有一句「不是网络或限流问题」。英文版**整句删掉**，换成正面的观察：
-  **Other live streams worked at the same time, and TikTok doesn’t say why.**
-  否定句里出现 rate limit 也不行。这是英文版有意和中文不一样的地方。
+- 中文原文有一句「不是网络或限流问题」。英文版**整句删掉**，否定句里出现 rate limit 也不行。
+  删掉之后只剩 **Retried {n} times. TikTok doesn’t say why.**，中文是「已自动重试 {} 次，原因 TikTok 不说明」。
+- **不写程序没观察到的事。** 这里曾经写过「同一时刻其它直播间正常」/ *Other live streams worked at the
+  same time*。那是 2026-09-05 一次人工同分钟配对的结果，程序运行时并不去解析对照房间：本机这边出了
+  问题、所有房间都拿不到流地址时，它照样会这么说，把中控引向「只是这个房间的问题」。09-29 复审后
+  中英文都删了。要让用户自己做对照，就写成动作（「换一个正在直播的直播间试试」），不写成已经看到的结果。
 - `browser_login` 的 BLOCKED 状态（macOS 没给完全磁盘访问权限）**不点名浏览器**。`observed_text` 是按浏览器
   逐条拼的（「Chrome：系统拒绝读取；Safari：系统拒绝读取」），写死 Safari 会让 Chrome 那一条说错：
   - `_OBSERVED[BLOCKED]` 写 **macOS didn’t allow access**，拼出来是 `Chrome: macOS didn’t allow access`；
@@ -281,14 +285,25 @@
 
 - **因果词**（`EN_CAUSAL`）：只查第八条家族，也就是 `resolver.py`、`browser_login.py`、`comment_source.py`、
   `viewer.py`、`viewer_share.py`、`viewer.js`、`viewer.html`、`index.html` 的 `#input-help`，以及 `pipeline.py` 的
-  `browser_only_message`、`_resolve_media`、`_confirm_offline`、`_host_wait`、`_selfcheck_incident_text`：
+  `browser_only_message`、`_resolve_media`、`_confirm_offline`、`_host_wait`、`_run_session`、
+  `_selfcheck_incident_text`：
 
   ```
-  (?i)\b(because|due to|caused by|the reason|probably|likely|must be|seems to)\b
+  (?i)\b(because|due to|caused by|the reason|probably|likely|must be|seems to
+  |private|regions?|regional|maybe|perhaps|(?:not|isn[’']t) an? [\w -]*(?:problem|issue))\b
   ```
+
+  第二行是 09-29 复审补的：private / region 对应中文标签词里的「私密」「地区」（只在家族里查，家族以外
+  private network 一类照常用）；maybe / perhaps 对应「也许」「或许」；`not a network problem`、
+  `isn’t a sign-in issue` 是排除原因的否定句。yt-dlp 自己的原话（放在 Details: 后面的数据，比如
+  “This live is private”）不在查的范围里。
 
 - 电脑休眠写 suspended 不在任何一级里，照常用。真有一句必须用到这些词，登记进 `EN_WORD_EXCEPTIONS`，
   写明「中文臂 → 理由」。
+- **中文臂**（`ZH_LABELS`、`ZH_CAUSAL`）：同一个第八条家族里，G2 也查中文。标签词是年龄、限流、封禁、私密、
+  观看限制、地区、风控、被挡、繁忙这一类；因果词是「可能是」「也可能」「可能 A，或 B」「多半」「因为」「导致」
+  「也许」「或许」「恐怕」这一类，还有「不是……问题」这种排除原因的否定句。光「可能」二字不查，说将来可能发生的事（「系统可能弹出确认框」）照常用，跟英文 may 同一个规矩。
+  家族以外不查中文：Google 引擎说明里的「会按 IP 限流」是对方写明的规则，不是猜的。
 
 同一族以外，还有两处也顺手避开这些词：
 
@@ -344,7 +359,7 @@
 | 12 | app.js:195 idle | 待机 | Ready | 24 → 38 |
 | 13 | app.js:195 connecting | 连接中… | Connecting… | |
 | 14 | app.js:195 live | 直播中 | Live | |
-| 15 | app.js:195 ended | 直播已结束 | Stream ended | 60 → 85 |
+| 15 | app.js:195 ended、viewer.js STREAM_TEXT.ended | 直播已结束 | Stream ended | 60 → 85 |
 | 16 | app.js:195 error | 出错了 | Error | |
 | 17 | app.js:195 offline | 与本地服务断开，重连中… | Reconnecting… | 141 → 91。完整说明放在横幅里（见 #75） |
 | 18 | app.js:878 | 直播中 · @x / 连接中… · @x | Live · @x / Connecting… · @x | 胶囊整体 170 → 159 / 179 → 211 |
@@ -459,7 +474,7 @@
 | 102 | app.js:1138/1146 | 翻译中… / 翻译失败 / 翻译已跳过（积压） | Translating… / Translation failed / Skipped (backlog) | |
 | 103 | session-divider.js:27 | ── 14:01:29 以下为 @x ── / 以下为新的一场 | ── 14:01:29 Now monitoring @x ── / New session | |
 | 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空警报 / 上一场 / 命中·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | |
-| 105 | app.js:1297、viewer.js:724/819 | 译文失败（{why}）——请看上面的原话 | Couldn’t translate ({why}). See the original above. | 「中文正在补…」统一写 Translating…，不提具体语言 |
+| 105 | app.js:1297、viewer.js:724/819 | 译文失败（{why}）——请看上面的原话 | Couldn’t translate ({why}). See the original above. | 报警译到本场的目标语言，不一定是中文，中文也只说「译文」。手机报警的「译文正在补…」写 Translating…，不提具体语言 |
 
 ### H. 常见的提示条和横幅
 
@@ -472,7 +487,7 @@
 | 110 | pipeline.py:667/673/784/828 | 已收到指令，正在连接… / 正在切换到 @B：先停止 @A 的监听… / 正在停止… / 已停止。输入直播间地址可重新开始。 | Connecting… / Switching to @B: stopping @A, then connecting… / Stopping… / Stopped. Enter a live link to start again. |
 | 111 | pipeline.py:2241/2356/2357 | 正在解析直播流地址… / 已连接直播间，开始实时识别（人声降噪已开启） | Getting the stream URL… / Connected. Transcribing live (noise reduction on). |
 | 112 | pipeline.py:2131/2219 | 直播已结束。可以往下翻看这一场的字幕，或在上方输入新的直播间地址。 | The stream has ended. Scroll down to review this session’s captions, or enter a new live link above. |
-| 113 | pipeline.py:154–158 | 4003110 整段 | TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried {n} times. Other live streams worked at the same time, and TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream. {browser advice} To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks. |
+| 113 | pipeline.py:154–158 | 4003110 整段 | TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried {n} times. TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream. {browser advice} To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks. |
 | 114 | pipeline.py:1683 | TikTok 暂时没有把这个直播间的流地址给程序，{s} 秒后自动重试（第 {i}/{n} 次）… | TikTok didn’t provide a stream URL for this live stream. Retrying in {s} sec (attempt {i} of {n})… |
 | 115 | pipeline.py:2400 | 直播流多次中断且自动重连失败——可能直播已结束，或网络不稳。… | The stream was interrupted several times and couldn’t reconnect. Check that the stream is still live and your network is working, then click Start. |
 | 116 | app.js:449/653 | 与本地服务断开，正在重连——稍候再点「开始翻译」 / 本地程序似乎已经关闭——请重新双击打开… | Lost connection to the local service. Reconnecting… Click Start again in a moment. / No connection to the app’s local service for over 20 seconds. If the app has quit, reopen it: on Mac, double-click TikTok Live Translator.app; on Windows, double-click Start.bat. |
@@ -615,10 +630,14 @@
 - **R14 窗口标题的正则。** `isAlertTitle` 的正则只认中文标题。标题改成英文后就认不出来，后台报警后标题恢复不了（见 #2）。
   改成与语言无关：取出开头的 `(n) `，再与当前语言的 `alertTitle(n)` 比较；一次页面生命周期里语言不变。
 - **R15 file:// 提示。** index.html:537 的内联脚本在 i18n 机制加载之前就执行了，中英两段并列显示，不做语言判断（见 #8）。
-- **R16 系统层的名字。** Dock、菜单栏里的程序名来自 Info.plist 的 `CFBundleName`，现在写死的是中文。
-  - 建议加 `en.lproj/InfoPlist.strings` 和 `zh-Hans.lproj/InfoPlist.strings`，这样系统会按系统语言显示。
+- **R16 系统层的名字。** Dock、菜单栏里的程序名来自 Info.plist 的 `CFBundleName`，原来写死的是中文。
+  - 已按 spec §8.6 落地（提交 N1）：加了 `en.lproj/InfoPlist.strings` 和 `zh-Hans.lproj/InfoPlist.strings`，
+    系统按系统语言显示；访达照旧显示文件名（不设 `LSHasLocalizedDisplayName`）。
+  - 09-29 复审补了 `zh-Hant.lproj`（内容同样是简体的「TikTok 直播同传」）：只有两份时，繁体中文系统
+    （zh-Hant、zh-TW、zh-HK）上 macOS 挑 en，Dock 显示英文名，界面却是中文。
   - 苹果建议 `CFBundleName` 不超过 15 个字符。“TikTok Live Translator” 有 22 个字符。
-    菜单栏名可以用 “Live Translator”（刚好 15 个），`CFBundleDisplayName` 保留全名。
+    最初的建议是菜单栏名用 “Live Translator”（刚好 15 个）、`CFBundleDisplayName` 保留全名；
+    N1 按 spec §8.6 两个键都用全名，与窗口标题、通知里的程序名一致。菜单栏里放不放得下要真机看。
 - **R17 退出确认框的语言。**（最初的结论作废）pywebview ≥6 的 `window.localization` 是窗口自己的一份字典，
   关窗那一刻才读。切换语言后页面经 JS 桥通知窗口，原地更新这份字典，确认框当场就换。
   只有 pywebview 5 没有这份字典，才要重启后生效。设置行下面不用写说明。
@@ -631,3 +650,31 @@
   Comments 标题栏里，状态会折到第二行，截图 4 的中文版就是这样；
   磁盘删除按钮英文 159px、中文 163px，一样宽；
   悬浮的 “Jump to Latest” 和 “Comments 4” 也没问题。
+
+### 4.4 落地与实测（提交 L1，2026-09-29）
+
+上面 §4.1 的估算按「报警关」算。G10 的 `live-full` 场景是满编（主播 + 报警开 + 品牌 + 2 人在看），
+PR #69 的 CI dom-scan（macOS 跑器）截图逐项量出来：状态胶囊 154px（其中 “Live · @bellaallnatural” 123）、
+“Alerts on” 68、品牌标签上限 160；1101px 时控件区 808（“Phone Viewing · 2” 147，两个 A 连间距 34）。
+按比例分摊负空间，五档宽度下主播名都被截（只剩 72–103px），1101px 时品牌标签只剩 58px。
+
+L1 的做法（`style.css`、`viewer.css`，英文专属的一律挂在 `html[lang="en"]` 下，`tests/test_i18n_layout_css.py` 静态钉住）：
+
+| 规则 | 作用范围 | 效果 |
+|---|---|---|
+| 品牌标签 `flex-shrink: 1000` | 英文 | 品牌标签缩到 48px 之前，主播名不让。报警标签照旧不缩（R6 不做） |
+| 收起两个 A：**≤1199px**（R1 原写 ≤1100） | 英文 | 只到 1100 的话，1101px 时品牌标签只分到约 114px |
+| 「手机同看」只留图标：1101–1199px（R2） | 英文 | 中文仍在 1100/1101 |
+| `#switch-confirm` 可以折行（R3） | 两种语言 | 中文武装态不再溢出；单行时样子不变 |
+| `.sc-name` 最小 128px（R5） | 英文 | |
+| 字体栈把 Segoe UI 提前（R12）；同看页另加 Roboto | 英文 | macOS 上不变 |
+| 同看页胶囊 `min-width:0`、`.conn-text` 省略号（R4） | 两种语言 | 防以后的长文案 |
+| 弹幕状态交给 CSS 截断，**最多 6 行**（R10） | 两种语言 | 状态行只有约 175–190px 宽：两行只放得下约 28 个汉字、60 个英文字符，比原来的 80 个字符还少；6 行约等于原来的 80 个汉字，英文约 180 个字符 |
+
+按上面的量法算，英文满编时品牌标签宽度：1000px 约 125、1100/1101px 约 148、1199px 160、1200px 约 106（此时两条英文断点都不生效），
+主播名在这五档都完整。860/720px 两档品牌标签缩到 48px 后主播名才开始截，顶栏不溢出。
+
+G10 的手机场景改经 DevTools 协议定视口（`Emulation.setDeviceMetricsOverride`）：macOS 的新无头模式里
+`--window-size` 窄不过约 500px，页面按 500 排版、截图只截左边 390px。PR #69 的 `phone-*.png` 右边被裁就是这样来的
+（截图底部居中的那行说明左边从 34px 起、右边伸出截图外，按 390 排版的话应当左右对称；底栏右对齐的提示音按钮整颗不见）。
+改完以后 `test_phone_status_pill_stays_on_screen` 先核对视口真是 390 宽，再量胶囊。

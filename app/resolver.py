@@ -20,7 +20,7 @@ class ResolveError(RuntimeError):
 
       offline   —— 主播没在播 / 直播已结束（重连应就此收手）
       not_found —— 直播间不存在 / 地址错误
-      login     —— 需要登录 / 私密限制
+      login     —— yt-dlp 报告要登录才能看
       network   —— 网络不通 / DNS 失败 / 超时
       internal  —— 本工具自身的问题（组件缺失等）
       browser_only —— 程序拿不到、需借用户浏览器
@@ -835,8 +835,8 @@ async def _resolve_via_api(url, cookies_browser="auto"):
 async def _media_url_works(url, timeout=8):
     """真的去拉几个字节，确认这个地址能用。
 
-    签名地址解析得出来不等于拉得动：签名过期、地区限制、CDN 节点故障都会让
-    ffmpeg 在开播那一刻才失败——那时用户已经以为连上了。宁可在这里多花一秒。
+    签名地址解析得出来不等于拉得动：拉不动的地址会让 ffmpeg 在开播那一刻才失败——
+    那时用户已经以为连上了。宁可在这里多花一秒。
     """
     if not url:
         return False
@@ -921,10 +921,9 @@ def _classify_ytdlp_error(err_text):
     lines = [ln.strip() for ln in err_text.strip().splitlines() if ln.strip()]
     detail = L("\n技术细节：{}", "\nDetails: {}").format(lines[-1][:200]) if lines else ""
     if "not currently live" in lowered or "room is offline" in lowered:
-        # 注意：TikTok 对**未登录**的请求也经常返回「not currently live」——
-        # 浏览器里明明在播、这里却说没开播，多半是这个原因。实测同一时刻
-        # 6 个在播房间里 5 个被判为未开播，只有 1 个能匿名解析。
-        # 所以不能把这条当成板上钉钉的「主播下播了」。
+        # 注意：TikTok 对**未登录**的请求也经常返回「not currently live」——浏览器里在播、
+        # 这里却报未开播的情况实测很常见：同一时刻 6 个在播房间里 5 个被判为未开播，
+        # 只有 1 个能匿名解析。所以不能把这条当成板上钉钉的「主播下播了」。
         return ("offline",
                 L("没能获取到这个直播间的音频流。\n"
                   "· 如果主播确实没在播：等开播后再试即可；\n"
@@ -947,9 +946,9 @@ def _classify_ytdlp_error(err_text):
                   "Share > Copy link and paste it here."))
     if ("log in" in lowered or "login" in lowered or "cookies" in lowered
             or "authentication" in lowered or "private" in lowered):
-        # 英文只写 yt-dlp 报出来的事（要登录），不跟中文去猜「私密或有观看限制」（CLAUDE.md 第八条）
+        # 中英文都只写 yt-dlp 报出来的事（要登录），不猜它为什么要登录（CLAUDE.md 第八条）
         return ("login",
-                L("这个直播间需要登录后才能观看（可能是私密或有观看限制），"
+                L("yt-dlp 报告这个直播间需要登录后才能观看，"
                   "换一个直播间试试吧。（进阶：若你在浏览器里能看这个直播，"
                   "可用 --cookies 导入登录信息，见 README 常见问题）",
                   "yt-dlp reported that this live stream needs a sign-in to watch. Try another "
@@ -960,14 +959,16 @@ def _classify_ytdlp_error(err_text):
             or "getaddrinfo" in lowered or "nodename" in lowered
             or "name resolution" in lowered or "unreachable" in lowered
             or "reset by peer" in lowered or "urlopen error" in lowered):
+        # 中英文都只说连不上：yt-dlp 报错里带 connection / timed out 也可能是对端关了连接，
+        # 不一定是本机网络差，也看不出是不是暂时的（CLAUDE.md 第八条）
         return ("network",
-                L("网络连接不畅，暂时访问不到 TikTok——请检查网络后重试。",
+                L("连不上 TikTok——请检查网络后重试。",
                   "Couldn’t reach TikTok. Check your network connection and try again.")
                 + detail)
-    # 英文把中文里的「可能是 A，也可能是 B」改写成要核对的几件事（docs/i18n-style.md §2.5）
+    # 不写「可能是 A，也可能是 B」，中英文都写成要核对的几件事（docs/i18n-style.md §2.5）
     return ("unknown",
-            L("无法连接这个直播间：主播可能没在播，也可能是网络问题或地址有误。"
-              "请检查后重试。",
+            L("无法连接这个直播间。请检查主播是否在播、网络是否正常、地址是否正确，"
+              "然后重试。",
               "Couldn’t connect to this live stream. Check that the streamer is live, your "
               "network is working, and the link is correct, then try again.") + detail)
 
@@ -1143,7 +1144,7 @@ async def _run_ytdlp(url, cookies=None, browser=None, timeout=45, profile=None):
             except Exception:
                 pass
         if isinstance(exc, asyncio.TimeoutError):
-            raise ResolveError(L("解析直播流超时（网络不通或该地区无法访问 TikTok）",
+            raise ResolveError(L("解析直播流超时（请确认这台电脑能打开 tiktok.com，然后重试）",
                                  "Stream lookup timed out. Check that this computer can open "
                                  "tiktok.com, then try again."),
                                kind="network") from None

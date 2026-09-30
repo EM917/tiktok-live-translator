@@ -186,6 +186,14 @@ body {
   flex-direction: column;
   overflow: hidden;
 }
+/* 英文页的字体栈（spec §11 第 7 条，i18n-style §4.3 R12）：Windows 上排在前面的苹果字体都不存在，
+   上面那一串会先落到微软雅黑，英文就用雅黑自带的拉丁字形——更宽，也不像 Windows 的界面字。
+   英文页把 "Segoe UI" 提到中文字体前面；中文字体仍排在 system-ui 前，英文界面里的中文字幕
+   不会落到日文字形。macOS 上打头的 -apple-system 不变，版面与中文页用的是同一套字体 */
+html[lang="en"] body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+}
 /* 待机首页（开始面板可见）用分组灰底，白色控件和设置列表浮在上面；
    直播中回到白底读字幕。class 由 app.js setStatus 与开始面板同一处切换，
    HTML 初始就带着（页面刚加载就是首页） */
@@ -265,6 +273,21 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
   color: var(--label-2); background: var(--fill);
   max-width: 160px; min-width: 48px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   flex: 0 2 auto;   /* 挤的时候品牌标签比主播名先缩 */
+}
+/* 英文页：品牌标签缩到底（48px）之前，主播名一个像素都不让（spec §11，L1）。上面的 2 只是
+   「比主播名缩得快一点」：负空间按 缩放系数 × 自身宽度 分摊，主播名照样要分走三成左右。
+   CI dom-scan（PR #69）实测：直播满编时英文状态字 "Live · @bellaallnatural" 要 123px，按比例
+   分摊下来五档窗口宽度都只剩 72–103px，主播名被截掉一截，品牌标签反倒还有余。给 1000 之后，
+   同一段负空间里品牌标签分走 99.9% 以上；缩到 48px 冻住以后，剩下的才轮到主播名。
+   报警标签（"Alerts on"）照旧不缩：它是开关状态，截成 "Aler…" 就没意义了（R6 的铃铛胶囊
+   按 spec §11 第 9 条不做）。中文页不受影响 */
+html[lang="en"] .active-brand-tag { flex-shrink: 1000; }
+/* 但只要主播名还参与收缩，哪怕只分到 0.05px，text-overflow 也会把最后几个字母换成「…」
+   （PR #70 实测：1000px 下 "@bellaallnatural" 显示成 "@bellaallnatu…"，品牌标签还剩 125px）。
+   默认窗口 1000px 及以上，状态胶囊干脆不缩，缺的全部由品牌标签让出；更窄时仍允许缩，
+   否则品牌标签到底以后顶栏会挤爆 */
+@media (min-width: 1000px) {
+  html[lang="en"] .status-pill { flex-shrink: 0; }
 }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--gray); flex: none; }
@@ -378,6 +401,28 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
     position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
     overflow: hidden; white-space: nowrap; border: 0; clip: rect(0, 0, 0, 0);
   }
+}
+/* 英文页的两条断点（spec §11 第 1、2 条，L1），都只挂在 html[lang="en"] 下：中文的 1100/1101
+   与 860 断点一条不动，中文页在 1101–1199px 照旧显示「手机同看 · 2 人」和两个 A。
+   量法：PR #69 的 CI dom-scan 截图逐项量出的宽度——状态胶囊 154、报警标签 68、品牌标签上限 160，
+   1101px 时控件区 808（其中「Phone Viewing · 2」147、两个 A 连间距 34）。
+   ① ≤1199px 收起字号控件的两个 A（纯装饰，aria-hidden；滑块有 aria-label，外层有 title）。
+      spec 原写 ≤1100；只到 1100 的话，1101px 时品牌标签只分到约 114px，低于 G10 的 120px 下限，
+      所以跟 ② 同一档收起。1000px 时（主播名完整的前提下）品牌标签也由约 91px 放宽到约 125px
+   ② 1101–1199px「手机同看」只留图标加人数（中文到 1100 为止）。1101px 时控件区 808 → 667，
+      主播名完整，品牌标签约 148px。1200px 起两条都不生效：控件区 808，品牌标签约 106px */
+@media (max-width: 1199px) {
+  html[lang="en"] .ctl-font .a-small,
+  html[lang="en"] .ctl-font .a-large { display: none; }
+}
+@media (min-width: 1101px) and (max-width: 1199px) {
+  html[lang="en"] #share-btn { padding: 0 6px; min-width: 28px; }
+  html[lang="en"] #share-btn .btn-label {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; white-space: nowrap; border: 0; clip: rect(0, 0, 0, 0);
+  }
+  /* 盖过上面 ≥1101px 藏徽标那条；没人在看时 .hidden（!important）照样藏着 */
+  html[lang="en"] #share-btn .btn-count { display: inline; }
 }
 /* 再窄：字号滑块只剩滑条（省掉两个 A），然后整个收起——字号只是偏好，
    随时可以把窗口拉宽再调；顶栏折成两行会让浮层、按钮位置全跟着跳 */
@@ -982,7 +1027,14 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .switch-error {
   font-size: var(--fs-footnote); color: var(--fail); margin-top: 8px; line-height: 18px;
 }
-#switch-confirm { width: 100%; height: var(--h-large); margin-top: 12px; border-radius: var(--r-field); font-size: var(--fs-body); }
+/* 确认按钮放不下一行时折行，两种语言都要（spec §11 第 3 条，中文可见修正）：浮层内宽只有
+   388px，中文武装态「再点一次：改听 @B（停止监听 @A）」两个用户名一长就要 400 多 px，
+   .btn 的 nowrap 让它从按钮右边溢出去。单行时照旧 36px 高、文字居中，看不出变化 */
+#switch-confirm {
+  width: 100%; height: auto; min-height: var(--h-large); margin-top: 12px; padding: 8px 12px;
+  border-radius: var(--r-field); font-size: var(--fs-body);
+  line-height: 1.35; white-space: normal; text-align: center; overflow-wrap: anywhere;
+}
 .switch-hint { font-size: var(--fs-footnote); color: var(--label-2); margin-top: 8px; line-height: 18px; }
 
 /* ---------- 设置行：启动自检 ---------- */
@@ -999,6 +1051,9 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .sc-item.warn::before { background: transparent; border: 1.5px solid var(--orange); }
 .sc-item.fail::before { background: var(--red); }
 .sc-item .sc-name { flex: none; min-width: 96px; color: var(--label-2); }
+/* 英文名更长（Speech Recognition 约 120px、Translation Engine 约 110px）：名字列放宽，
+   右边的说明才对得齐（spec §11 第 4 条） */
+html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .sc-item .sc-detail { flex: 1; color: var(--label); }
 .sc-item .sc-fix { display: block; color: var(--label); margin-top: 2px; }
 .sc-item.fail .sc-detail { color: var(--fail); font-weight: 600; }
@@ -1165,17 +1220,25 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .cmt-orig { font-size: var(--fs-footnote); color: var(--label-2); }
 .cmt-empty { padding: 12px 16px; font-size: var(--fs-footnote); color: var(--label-2); line-height: 1.5; }
 /* 评论流状态：前面一个小圆点表达状态（连上＝绿色实心、有问题＝橙色空心环、
-   其余＝灰），文字本身不上色——跟自检列表同一种画法（designer.md #1） */
+   其余＝灰），文字本身不上色——跟自检列表同一种画法（designer.md #1）。
+   后端给的说明可能很长：截断交给 CSS，最多 6 行，多出来的补省略号（spec §11 第 6 条；以前是
+   app.js 按 80 个字符截）。状态行只有约 175–190px 宽（弹幕列 340px，右边还有两颗按钮），
+   一行约 14 个汉字、30 个英文字符：6 行约等于原来的 80 个汉字，英文则从 80 个字符放宽到约 180 个
+   （spec 写的是两行；两行在这个宽度下只放得下约 28 个汉字、60 个英文字符，比原来还少）。
+   圆点绝对定位在第一行中间，折行的文字对齐在圆点右边，跟以前 inline-flex 的样子一样 */
 .cmt-source {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: var(--fs-footnote); font-weight: 400; color: var(--label-2);
+  position: relative;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden;
+  padding-left: 11px;
+  font-size: var(--fs-footnote); font-weight: 400; line-height: 16px; color: var(--label-2);
+  overflow-wrap: anywhere;
 }
 .cmt-source::before {
-  content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%;
+  content: ""; position: absolute; left: 0; top: 5px; width: 6px; height: 6px; border-radius: 50%;
   background: var(--gray);
 }
 .cmt-source.on::before { background: var(--green); }
-.cmt-source.warn::before { background: transparent; border: 1.5px solid var(--orange); width: 7px; height: 7px; }
+.cmt-source.warn::before { background: transparent; border: 1.5px solid var(--orange); width: 7px; height: 7px; top: 4.5px; }
 /* 收起：整列让出去（字幕独占整行），弹幕继续在后台收；展开时全在 */
 .comment-panel.collapsed { display: none; }
 /* 收起后的入口：字幕区右上角一颗白色悬浮胶囊，带条数（同「回到最新」） */

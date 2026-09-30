@@ -111,3 +111,34 @@ python3 tools/replay_alerts.py
   `tests/test_diagnose_room.py` 钉着这条
 - 弹幕通 ≠ 流地址能拿：两条路不重叠（评论 WebSocket 不经过 `room/info`）
 - 对同一房间的请求要省，绝不开浏览器。改口时要说清楚哪句错了、为什么
+
+## 九、界面文字成对写：中文一字不动，英文写在旁边
+
+2026-09-28 用户决定做英文界面，2026-09-29 开闸（Z1）。界面上每一句中文都挂着它的
+英文；漏写一处，英文界面上就露一句中文——程序不报错，只有下面几道闸会拦。
+语言怎么定、老装机为什么是中文、怎么回退，见 `docs/i18n.md`。
+
+- **新增任何界面文字都写成对**：Python `L("中文", "English")`，随数量变的写
+  `LN(n, "中文", "one", "many")`（`app/i18n.py`）；JS 用同名的 `L()`/`LN()`
+  （`web/i18n.js`，手机页用 `web/viewer.js` 自带的那份）；HTML 的文字写 `data-en`，
+  属性写 `data-en-title`、`data-en-aria-label`、`data-en-placeholder`。术语和标点照
+  `docs/i18n-style.md`，改词先改它的术语表。f-string、切片、`str(exc)`、
+  `"、".join(...)` 会把英文丢掉，换成什么写法见 `app/i18n.py` 文件头
+- **终端、日志、审计 JSONL 永远是中文**：`print`、`audit.*` 照旧写中文，G8 钉着
+  中英两种界面下审计和终端逐字节相同。主播名、词条、字幕和弹幕内容是数据，不翻
+- **闸与迁移**：`I18N_ENABLED` 是发布闸。开闸后第一次启动往 `settings.json` 写一次
+  `ui_lang`：已有 `settings.json`、或 `.venv` 装成功过（有 `.requirements.sha256`）的老装机
+  写 `zh`，只有新装写 `system`（跟系统语言）——用户定的，老用户升级后界面不许突然变英文。
+  光有 `.venv` 不算：`setup.sh` 和装到一半中断的第一次启动都会先留下它。`boot()` 只读，
+  `settle()` 在 exec 之后的最终进程里才写：提前碰设置文件，损坏备份的提示会随
+  exec 丢掉。回退就是把闸改回 `False`。测闸某一边的语义要显式 `monkeypatch` 它：
+  开闸那天有 5 条测试是靠「闸默认关着」才绿的
+- **第八条的英文同样适用**：英文也不贴原因标签、不猜原因，否定句里也不行。两级
+  禁用词在 `tests/i18n_rules.py`（`EN_LABELS`、`EN_CAUSAL`；中文臂同样查，`ZH_LABELS`、
+  `ZH_CAUSAL`），例外逐条写理由，不许为了变绿放宽正则
+- **怎么验**：`python3 tools/i18n_pairs.py` 一条命令跑 G2（成对）、G3（同一句中文
+  只有一种英文）、G4（覆盖），看退出码；其余的闸在普通 pytest 和 `node --test` 里。
+  新的界面文件要在文件头标 `i18n: done`、加进 `tests/i18n_rules.py` 的 `UI_FILES`，
+  两边对不上 G4 就红。G10（英文页扫 DOM、量顶栏宽度）要开无头 Chrome：
+  `TLT_DOM_SCAN=1 pytest tests/test_i18n_dom.py -q`。先 `pgrep -f tiktokcdn`，
+  **直播转写进行中不开**，交给 PR 的 CI dom-scan（macOS 跑器）

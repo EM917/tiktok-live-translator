@@ -348,25 +348,81 @@ def _boot(root, env, argv=()):
     return i18n.boot(root, argv=list(argv), environ=env)
 
 
+def _finish_install(root):
+    """ensure_env 装完的样子：建出 .venv，pip 返回 0 之后 bootstrap 写下清单指纹。"""
+    (root / ".venv").mkdir(exist_ok=True)
+    (root / ".venv" / i18n.INSTALL_STAMP).write_text("abc\n", encoding="utf-8")
+
+
+def test_the_install_stamp_is_the_one_bootstrap_writes():
+    """i18n 只依赖标准库，不能 import bootstrap，文件名是抄过来的：两边改名不同步，老装机
+    就全被判成新装（界面跟系统语言、字幕改成英文），所以钉住。"""
+    from app import bootstrap
+    assert i18n.INSTALL_STAMP == bootstrap.REQ_STAMP
+
+
 def test_boot_records_install_state_only_once(tmp_path):
     env = {}
     _boot(tmp_path, env)
     assert env[i18n.ENV_INSTALL] == "fresh"
-    (tmp_path / ".venv").mkdir()                      # ensure_env 建出 .venv 再 execv
+    _finish_install(tmp_path)                         # ensure_env 建 .venv、装完写记号，再 execv
     _boot(tmp_path, env)
     assert env[i18n.ENV_INSTALL] == "fresh"           # exec 之后的进程不重判
 
 
 @pytest.mark.parametrize("make", [
-    lambda root: (root / ".venv").mkdir(),
+    _finish_install,
     lambda root: (root / "settings.json").write_text("{}", encoding="utf-8"),
     lambda root: (root / "settings.json").write_bytes(b"{ broken"),     # 内容好坏不论
 ])
-def test_boot_treats_settings_or_venv_as_an_existing_install(tmp_path, make):
+def test_boot_treats_settings_or_a_finished_install_as_existing(tmp_path, make):
     make(tmp_path)
     env = {}
     _boot(tmp_path, env)
     assert env[i18n.ENV_INSTALL] == "existing"
+
+
+def _setup_script_venv(root):
+    """setup.sh / setup.ps1 第 3 步：`python -m venv .venv` 再 pip install -r，不写记号。"""
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / ".venv" / "pyvenv.cfg").write_text("version = 3.13.5\n", encoding="utf-8")
+
+
+def _interrupted_first_launch(root):
+    """第一次启动 venv.create 之后 pip 失败（断网）或中途退出：.venv 在，记号没写，
+    record_requirements_failure 可能留下一份失败记录。"""
+    _setup_script_venv(root)
+    (root / ".venv" / ".requirements-attempt.json").write_text("{}", encoding="utf-8")
+
+
+@pytest.mark.parametrize("make", [
+    lambda root: (root / ".venv").mkdir(),
+    _setup_script_venv,
+    _interrupted_first_launch,
+])
+def test_boot_treats_a_venv_that_never_finished_installing_as_fresh(tmp_path, make):
+    """复审（english-e2e、live-path-audit）：光有 .venv 不算老装机。setup.sh 先建 .venv 再用它
+    跑 main.py --doctor，那一次就是第一次迁移；第一次启动装到一半失败，重开时 .venv 也在。
+    按老装机判，英文系统上的新用户会被永远固定成中文界面、中文字幕。"""
+    make(tmp_path)
+    env = {}
+    _boot(tmp_path, env)
+    assert env[i18n.ENV_INSTALL] == "fresh"
+
+
+def test_the_setup_script_doctor_run_migrates_like_a_fresh_install(tmp_path, settings_file,
+                                                                   monkeypatch):
+    """setup.sh 的 `.venv/bin/python main.py --doctor`：boot 在 ensure_env 之前（记号那时还没写），
+    settle 在同一个进程里。英文系统上写出跟随系统 + 英文字幕，和双击 .app 的新装一样。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    monkeypatch.setattr(i18n, "system_lang", lambda: EN)
+    _setup_script_venv(tmp_path)
+    env = {}
+    _boot(tmp_path, env, ("--doctor",))
+    assert env[i18n.ENV_INSTALL] == "fresh"
+    _finish_install(tmp_path)                         # ensure_env 发现没有指纹，补跑 pip 后写下
+    assert i18n.settle(tmp_path, environ=env) == EN
+    assert settings.load_settings() == {"ui_lang": "system", "target_lang": "en"}
 
 
 def test_boot_detects_system_language_once_per_launch(tmp_path, monkeypatch):
@@ -543,13 +599,13 @@ def test_settle_never_replaces_a_target_lang_that_is_already_there(tmp_path, set
 
 def test_english_caption_default_is_written_on_the_first_launch_only(tmp_path, settings_file,
                                                                      monkeypatch):
-    """真实顺序：第一个进程 boot 判出 fresh，ensure_env 建 .venv 再 execv，最终进程 settle 写。
-    下一次启动 settings.json 已在，判成老装机，不再写。"""
+    """真实顺序：第一个进程 boot 判出 fresh，ensure_env 建 .venv、装完写记号再 execv，
+    最终进程 settle 写。下一次启动 settings.json 已在，判成老装机，不再写。"""
     monkeypatch.setattr(i18n, "I18N_ENABLED", True)
     monkeypatch.setattr(i18n, "system_lang", lambda: EN)
     env = {}
     _boot(tmp_path, env)
-    (tmp_path / ".venv").mkdir()
+    _finish_install(tmp_path)
     _boot(tmp_path, env)
     assert i18n.settle(tmp_path, environ=env) == EN
     assert settings.load_settings() == {"ui_lang": "system", "target_lang": "en"}

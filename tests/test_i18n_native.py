@@ -228,7 +228,9 @@ def test_the_page_updates_the_title_and_the_close_dialog_in_place(bilingual_titl
 
 def test_with_the_gate_closed_a_chinese_page_changes_nothing(monkeypatch):
     """闸关着、没有一次性覆盖：界面恒为中文，窗口保持建窗时的样子。第二个实例的窗口
-    今天没有传 localization，不能被这里改出新的按钮文字来。"""
+    今天没有传 localization，不能被这里改出新的按钮文字来。闸显式关上：这条守的是回退
+    （把 I18N_ENABLED 改回 False）之后的样子，不随生产里的闸值变。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", False)
     window = FakeWindow(localization={"global.cancel": "Cancel"})
     attention = window_attention.expose_attention(window)
     call = window_lang.expose_window_lang(window, attention)

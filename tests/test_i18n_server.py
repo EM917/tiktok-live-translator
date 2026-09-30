@@ -10,6 +10,7 @@
 这里的中文夹具都写成 L()：这批提交里生产代码还没有迁移，句子由测试造；数据全用 ASCII。
 """
 import asyncio
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -65,8 +66,11 @@ async def _broadcast_samples(server):
 
 # ---- 桌面广播 ---------------------------------------------------------------------------
 
-def test_in_chinese_the_desktop_gets_the_very_same_message_object():
-    """中文时 render 原样返回：发给页面的就是原消息本身，没有复制、没有改写。"""
+@pytest.mark.parametrize("gate", [False, True])
+def test_in_chinese_the_desktop_gets_the_very_same_message_object(gate, monkeypatch):
+    """中文时 render 原样返回：发给页面的就是原消息本身，没有复制、没有改写。闸开着也一样
+    （开闸后老装机固定中文，spec §0.3 不变量 1）。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", gate)
     server, client = make_server()
     msg = {"type": "incident", "id": "session:sleep", "level": "warn", "text": SLEPT, "ts": 1.0}
     run(server.broadcast(msg))
@@ -140,7 +144,9 @@ def test_hello_and_every_replay_follow_the_language_at_connect_time():
 
 # ---- 桌面首页 ---------------------------------------------------------------------------
 
-def test_the_desktop_page_is_the_file_itself_in_chinese():
+@pytest.mark.parametrize("gate", [False, True])
+def test_the_desktop_page_is_the_file_itself_in_chinese(gate, monkeypatch):
+    monkeypatch.setattr(i18n, "I18N_ENABLED", gate)
     resp = run(CaptionServer(port=0)._index(None))
     assert isinstance(resp, web.FileResponse)
     assert resp._path == WEB_DIR / "index.html"
@@ -171,24 +177,29 @@ def _page(hub, accept=None):
     return run(hub.page(SimpleNamespace(match_info={}, headers=headers, transport=None)))
 
 
-def test_with_the_gate_closed_the_phone_page_is_the_file_itself():
+def test_with_the_gate_closed_the_phone_page_is_the_file_itself(monkeypatch):
     """闸关着：不看 Accept-Language，手机页与改造前逐字节相同，也没有 data-i18n 标记——
     viewer.js 见不到标记就不读本机的语言选择、不显示切换（spec §7.1）。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", False)
     assert not i18n.enabled()
     for accept in (None, "en-US,en;q=0.9", "zh-CN"):
         resp = _page(_phone_hub(), accept)
         assert isinstance(resp, web.FileResponse)
 
 
+@pytest.mark.parametrize("how", ["gate", "override"])
 @pytest.mark.parametrize("accept,tag", [
     ("en-US,en;q=0.9", '<html lang="en" data-i18n="on">'),
     ("zh-CN,zh;q=0.9,en;q=0.8", '<html lang="zh-CN" data-i18n="on">'),
     ("fr;q=0.4,zh-TW;q=0.9", '<html lang="zh-CN" data-i18n="on">'),
     (None, '<html lang="zh-CN" data-i18n="on">'),
 ])
-def test_when_enabled_the_phone_page_follows_the_phones_language(accept, tag):
-    """双语机制生效时（闸开着或一次性覆盖）按手机自己的语言定，与桌面用的语言无关。"""
-    with i18n.use("zh"):                          # 桌面是中文，手机照样按自己的语言
+def test_when_enabled_the_phone_page_follows_the_phones_language(accept, tag, how, monkeypatch):
+    """双语机制生效时（闸开着，或闸关着但带了一次性覆盖）按手机自己的语言定，与桌面用的语言
+    无关。how="gate" 是开闸后老装机的样子：桌面固定中文、没有一次性覆盖。"""
+    monkeypatch.setattr(i18n, "I18N_ENABLED", how == "gate")
+    with i18n.use("zh") if how == "override" else nullcontext():
+        assert i18n.enabled() and i18n.current() == i18n.ZH     # 桌面是中文，手机照样按自己的语言
         resp = _page(_phone_hub(), accept)
     assert resp.content_type == "text/html" and resp.charset == "utf-8"
     original = (WEB_DIR / "viewer.html").read_text(encoding="utf-8")
@@ -207,13 +218,14 @@ def test_the_phone_page_keeps_its_security_headers_when_rendered():
 
 # ---- 手机消息 ---------------------------------------------------------------------------
 
-def test_the_phone_replay_carries_both_languages_only_when_enabled():
+def test_the_phone_replay_carries_both_languages_only_when_enabled(monkeypatch):
     server = CaptionServer(port=0)
     run(_broadcast_samples(server))
 
     def by_type(items):
         return {m["type"]: m for m in items}
 
+    monkeypatch.setattr(i18n, "I18N_ENABLED", False)
     closed = by_type(replay_snapshot(server))
     assert "text_en" not in closed["incident"] and "why_en" not in closed["alert"]
     assert closed["incident"]["text"] == "电脑休眠过 30 秒"
@@ -224,6 +236,14 @@ def test_the_phone_replay_carries_both_languages_only_when_enabled():
     assert opened["alert"]["why_en"] == "Timed out"
     assert opened["caption"]["why_en"] == "Timed out"
     assert "detail" not in opened["status"]           # status 的文字本来就不给手机
+    # 闸开着、桌面是中文（开闸后的老装机）：手机照样拿到两种语言，由手机自己挑
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    assert i18n.current() == i18n.ZH
+
+    def without_hello(items):                          # viewer_hello 带的是此刻的时间戳
+        return {k: v for k, v in items.items() if k != "viewer_hello"}
+
+    assert without_hello(by_type(replay_snapshot(server))) == without_hello(opened)
 
 
 def test_live_fanout_shares_one_payload_with_both_languages():
@@ -268,6 +288,7 @@ def _pipeline(monkeypatch):
 
 
 def test_switching_the_ui_language_is_ignored_while_the_gate_is_closed(monkeypatch, capsys):
+    monkeypatch.setattr(i18n, "I18N_ENABLED", False)
     p, saved = _pipeline(monkeypatch)
     assert p.handle_control({"type": "set_ui_lang", "value": "en"}) is None
     assert saved == {} and p.server.sent == [] and i18n.current() == i18n.ZH
@@ -381,3 +402,77 @@ def test_english_desktop_messages_have_no_chinese_on_registered_fields():
     for msg in client.got:
         for path, value in i18n.ui_values(msg):
             assert not (isinstance(value, str) and CJK.search(value)), (msg["type"], path, value)
+
+
+# ---- G9 strict：按用例判（tests/conftest.py 的 pytest_runtest_call） ----------------------------
+
+def _conftest():
+    """pytest 已经载入的那个 tests/conftest.py（同一个 _I18N_FIXTURE_TESTS），不另 import 一份。"""
+    import sys
+    from pathlib import Path
+
+    here = (Path(__file__).resolve().parent / "conftest.py")
+    return next(m for m in list(sys.modules.values())
+                if getattr(m, "__file__", None) and Path(m.__file__).resolve() == here)
+
+
+class _Item:
+    def __init__(self, nodeid):
+        self.nodeid = nodeid
+
+
+def _after_call(item, error=None):
+    """把 conftest 的 hook wrapper 当生成器推一遍：error 为 None 时模拟用例本身通过，否则模拟
+    用例本身抛了 error。交回 wrapper 最后给出的结果。"""
+    gen = _conftest().pytest_runtest_call(item)
+    next(gen)
+    try:
+        if error is None:
+            gen.send("passed")
+        else:
+            gen.throw(error)
+    except StopIteration as stop:
+        return stop.value
+    raise AssertionError("wrapper 没有在 yield 之后结束")
+
+
+NODE = "tests/test_x.py::test_y[a]"
+PLAIN = ("plain", "status", "detail", "正在停止…", NODE + " (call)")
+
+
+@pytest.fixture
+def strict(monkeypatch):
+    hits = []
+    monkeypatch.setattr(i18n, "NET_HITS", hits)
+    monkeypatch.setattr(i18n, "NET", "strict")
+    return hits
+
+
+def test_strict_fails_the_test_that_sent_plain_chinese(strict):
+    strict.append(PLAIN)
+    strict.append(("unregistered", "brand_new_thing", "", "", NODE + " (setup)"))
+    with pytest.raises(pytest.fail.Exception) as caught:
+        _after_call(_Item(NODE))
+    message = str(caught.value)
+    assert "status.detail  「正在停止…」" in message and "没登记的消息类型 brand_new_thing" in message
+    assert "i18n_fixture" in message                      # 告诉人另一条出路
+
+
+def test_strict_leaves_other_tests_and_marked_tests_alone(strict, monkeypatch):
+    strict.append(PLAIN)
+    assert _after_call(_Item("tests/test_x.py::test_other")) == "passed"
+    monkeypatch.setattr(_conftest(), "_I18N_FIXTURE_TESTS", {NODE})
+    assert _after_call(_Item(NODE)) == "passed"
+
+
+def test_strict_does_not_judge_a_test_that_switched_the_net_itself(strict, monkeypatch):
+    """tests/test_i18n_server.py 的 net 夹具把 NET 换成 report、故意造违例：不按 strict 判。"""
+    strict.append(PLAIN)
+    monkeypatch.setattr(i18n, "NET", "report")
+    assert _after_call(_Item(NODE)) == "passed"
+
+
+def test_a_test_that_failed_on_its_own_keeps_its_own_error(strict):
+    strict.append(PLAIN)
+    with pytest.raises(KeyError):
+        _after_call(_Item(NODE), KeyError("boom"))

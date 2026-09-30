@@ -64,15 +64,19 @@ def _reset_resolver_process_state(monkeypatch):
 
 # ---- 英文界面（app/i18n.py） -------------------------------------------------------------
 
-# G9 运行时网的模式（spec §12.1）。迁移期是 report：违例只汇总进测试结束时的报告；收紧闸（Z0）
-# 时改成 strict，未标记用例里的违例直接失败。
+# G9 运行时网的模式（spec §12.1）。迁移期是 report（违例只汇总进测试结束时的报告）；收紧闸
+# （Z0）起是 strict：未标记 i18n_fixture 的用例里只要记下一条违例，这个用例就失败（见下面的
+# pytest_runtest_call），英文模板写坏（占位符对不上）也当场抛，不再退回中文（i18n._bad_pair）。
+# 自己把 i18n.NET 换成别的模式的用例（tests/test_i18n_server.py 专测这张网本身）不按 strict 判。
 # 这张网只罩住经过真 CaptionServer.broadcast / ViewerHub.fanout 的消息。很多用例用自己的替身
 # server（如 tests/test_resilience_asr.py 的 StubServer），生产函数发出的消息根本到不了
-# check_outbound——比如 pipeline._announce_health 的三档提示。所以报告是抽样，不是剩余工作量的
-# 完整清单；完整的以 G4 的逐文件 `i18n: done` 标记与 tools/i18n_pairs.py 为准。
-I18N_NET_MODE = "report"
+# check_outbound——比如 pipeline._announce_health 的三档提示。所以它是抽样，不是全部界面文字的
+# 清单；全部的以 G4（tests/test_i18n_coverage.py，UI_FILES 全量）与 tools/i18n_pairs.py 为准。
+I18N_NET_MODE = "strict"
 # 带 @pytest.mark.i18n_fixture 的用例：它把中文夹具交给生产函数、再由生产函数广播出去
-# （比如 _check("语音识别", …) 造的自检行经 _publish_selfcheck 发出），运行时网不算它的违例
+# （比如 _check("语音识别", …) 造的自检行经 _publish_selfcheck 发出），运行时网不算它的违例。
+# Z0 按 report 模式列出的名单逐个标上（13 个）：tests/test_selfcheck_incident.py 9 个、
+# tests/test_resilience_stream.py 3 个、tests/test_incidents.py 1 个
 _I18N_FIXTURE_TESTS = set()
 
 
@@ -89,7 +93,9 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse=True)
 def _chinese_ui_on_any_machine(monkeypatch):
-    """每个用例都从「闸关着时生产里的样子」开始：界面语言中文、没有一次性覆盖。
+    """每个用例都从中文界面开始：生效语言中文、没有一次性覆盖。发布闸 I18N_ENABLED 不在这里
+    定，用生产里的值：守闸关着或开着某一边语义的用例自己 monkeypatch，这样开闸和把闸改回
+    False 回退时，测试都不用跟着改。
 
     与跑测试的那台机器无关（spec §3.2）：系统语言检测换成「检测不了」，三个 TLT_* 环境变量
     删掉——CI 的 Windows / macOS 跑器、开发机的系统语言都不该让结果不同。模块级状态
@@ -110,8 +116,37 @@ def _net_test_id(current):
     return current.rsplit(" (", 1)[0] if current.endswith(")") else current
 
 
+def _net_line(hit):
+    kind, mtype, path, text, _test = hit
+    where = "{}.{}".format(mtype, path) if kind == "plain" else "没登记的消息类型 {}".format(mtype)
+    return "  {}  「{}」".format(where, text) if text else "  " + where
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    """G9 strict：用例本身过了之后，再看运行时网在这个用例里（setup 与 call 阶段）记下的违例，
+    有就判这个用例失败。用例自己先失败了就照原样报它自己的错，不叠这一条。
+
+    只在用例结束时 i18n.NET 仍是 strict 才判：tests/test_i18n_server.py 专测这张网本身，
+    它把 NET 换成 report、NET_HITS 换成自己的列表，故意造违例再数。"""
+    from app import i18n
+
+    result = yield
+    if i18n.NET != "strict" or item.nodeid in _I18N_FIXTURE_TESTS:
+        return result
+    hits = sorted({h for h in i18n.NET_HITS if _net_test_id(h[4]) == item.nodeid})
+    if hits:
+        pytest.fail("G9 运行时网（strict）：生产代码发往界面的消息里有 {} 处没写成 L() 的中文或"
+                    "没登记的消息类型。\n{}\n要么在产出处补 L()（没登记的类型登记进 "
+                    "app/i18n.py 的 UI_FIELDS / DATA_ONLY），要么这是测试自己交给生产函数的"
+                    "中文夹具——那就给用例加 @pytest.mark.i18n_fixture。".format(
+                        len(hits), "\n".join(_net_line(h) for h in hits)), pytrace=False)
+    return result
+
+
 def pytest_terminal_summary(terminalreporter):
-    """G9 report：把运行时网记下的违例汇总成一份清单（spec §12.1）。-v 时逐句列出用例名。
+    """G9：把运行时网记下的违例汇总成一份清单（spec §12.1）。-v 时逐句列出用例名。strict 模式下
+    未标记用例里的违例已经让那个用例失败了，这里照样列出来，另报标了 i18n_fixture 的有几处。
     只是抽样：替身 server 发的消息不经过这张网（见 I18N_NET_MODE 上面的注释）。"""
     from collections import Counter, defaultdict
 

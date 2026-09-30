@@ -1,8 +1,9 @@
 """G4 覆盖（spec §12.1）：写了 `i18n: done` 的文件，界面中文必须都成对。
 
 标记写在文件自己身上（Python `# i18n: done`、JS `// i18n: done`、HTML `<!-- i18n: done -->`），
-没有共享的进度文件，并行的迁移提交不会互相冲突。没标记的文件这里不管——迁移是一个文件
-一个文件来的；所有界面文件都必须标记是之后收紧闸时的事。
+迁移期间并行的提交不会互相冲突。收紧闸（Z0）起是全量：tests/i18n_rules.py 的 UI_FILES 与写了
+done 的文件一一对应，清单外的文件照同一套规则扫中文字面量，每一处都得在 NON_UI_CHINESE 里
+登记理由——新的界面中文写进了哪个文件都躲不过去。
 
 Python 另查 R11 的四种写法：它们会把 L() 的结果退化成普通中文 str，英文界面上那一句就露中文，
 不报错也不崩，所以只能靠静态检查拦。"""
@@ -10,6 +11,7 @@ import textwrap
 
 import pytest
 
+from tests import i18n_rules as rules
 from tools import i18n_pairs as P
 
 
@@ -35,6 +37,23 @@ def test_every_marked_file_is_fully_covered():
             marked.append(path)
             violations.extend(P.check_coverage(path, src))
     assert not violations, "已标记 {} 个文件：\n{}".format(len(marked), "\n".join(map(str, violations)))
+
+
+def test_ui_files_are_all_marked_and_no_other_file_has_ui_chinese():
+    """G4 全量（Z0）：UI_FILES 与标了 done 的文件一一对应；清单外的文件里每一处中文字面量都登记
+    过理由（NON_UI_CHINESE），登记没有过期。"""
+    files = {path: P.read(path) for path in P.source_files()}
+    violations = P.check_full_coverage(files)
+    assert not violations, "\n".join(map(str, violations))
+    assert len(rules.UI_FILES) == len(set(rules.UI_FILES))
+
+
+def test_the_join_exemptions_still_point_at_a_join():
+    """R11_JOIN_EXEMPT 按「函数 + 分隔符」登记：函数改名或那处 join 没了，登记就过期了。"""
+    for path, entries in rules.R11_JOIN_EXEMPT.items():
+        joins = P.literal_joins(P.read(path))
+        for key in entries:
+            assert key in joins, (path, key)
 
 
 @pytest.mark.parametrize("path,src,marked", [
@@ -121,6 +140,27 @@ def test_audit_arguments_skip_r11_but_chinese_there_still_needs_a_note():
     """R8 只自动豁免 print 的实参；写进审计的中文字面量要在行尾写 # i18n: audit。"""
     assert _py('audit.health(text="、".join(xs))\n') == [(1, "G4")]
     assert _py('audit.health(text="、".join(xs))  # i18n: audit\n') == []
+
+
+def test_r11_join_exemptions_are_per_function_and_separator(monkeypatch):
+    """登记的只放过那一个函数里的那一种分隔符：同一个分隔符在别的函数里、同一个函数里换一种
+    分隔符，都照报。"""
+    monkeypatch.setitem(rules.R11_JOIN_EXEMPT, "app/example.py", {("Box.scan", " "): "数据"})
+    src = '''
+        class Box:
+            def scan(self, parts):
+                a = " ".join(parts)
+                b = "".join(parts)
+                return a, b
+
+
+        def scan(parts):
+            return " ".join(parts)
+    '''
+    assert sorted(_py(src)) == [(5, "R11"), (10, "R11")]
+    assert sorted(_py(src, path="app/other.py")) == [(4, "R11"), (5, "R11"), (10, "R11")]
+    assert P.literal_joins(textwrap.dedent(src)) == {("Box.scan", " "), ("Box.scan", ""),
+                                                     ("scan", " ")}
 
 
 def test_r11_str_of_a_caught_exception():
@@ -246,3 +286,47 @@ def test_data_en_covers_only_the_first_text_node():
         <p data-en-html="Stop, then <b title='go'>Start</b>">停止<b title="开始">x</b>然后开始</p>
     '''
     assert _html(src) == [(2, "G4")]
+
+
+# ---- G4 全量：清单与清单外 ------------------------------------------------------------------
+
+def _full(monkeypatch, files, ui=(), listed=None):
+    monkeypatch.setattr(rules, "UI_FILES", tuple(ui))
+    monkeypatch.setattr(rules, "NON_UI_CHINESE", listed or {})
+    return sorted((v[0], v[1], v.text) for v in P.check_full_coverage(
+        {path: textwrap.dedent(src) for path, src in files.items()}))
+
+
+def test_ui_files_and_done_markers_must_match(monkeypatch):
+    files = {"app/a.py": "# i18n: done\nX = 1\n", "app/b.py": "X = 1\n", "app/c.py": "# i18n: done\n"}
+    got = _full(monkeypatch, files, ui=("app/a.py", "app/b.py", "app/gone.py"))
+    assert got == [("app/b.py", 1, None),                  # 在清单里却没标 done
+                   ("app/c.py", 1, None),                  # 标了 done 却不在清单里
+                   ("app/gone.py", 0, None)]               # 清单里的文件不在了
+
+
+def test_chinese_outside_the_ui_files_needs_a_registered_reason(monkeypatch):
+    files = {
+        "app/data.py": '''
+            """模块说明可以是中文。"""
+            JUNK = ("谢谢观看", "请订阅")
+            print("[警告] 终端里的中文照旧不用管")
+            sep = "、".join(names)                         # R11 在清单外不查
+        ''',
+        "web/x.js": 'var re = /[，。]/g;  // 注释里的中文\nvar s = "中文";\n',
+    }
+    listed = {"app/data.py": {"幻听黑名单（数据）": ("谢谢观看",)}}
+    got = _full(monkeypatch, files, listed=listed)
+    assert got == [("app/data.py", 3, "请订阅"), ("web/x.js", 2, "中文")]
+    listed["app/data.py"]["幻听黑名单（数据）"] += ("请订阅",)
+    listed["web/x.js"] = {"数据": ("中文",)}
+    assert _full(monkeypatch, files, listed=listed) == []
+
+
+def test_a_registration_that_no_longer_matches_is_reported(monkeypatch):
+    """登记的字面量从文件里没了（删了、改了、写成 L() 了），或者登记的文件已经进了 UI_FILES，
+    都要红：清单不许过期。"""
+    files = {"app/data.py": 'JUNK = ("谢谢观看",)\n', "app/ui.py": "# i18n: done\n"}
+    listed = {"app/data.py": {"数据": ("谢谢观看", "请订阅")}, "app/ui.py": {"数据": ("x",)}}
+    got = _full(monkeypatch, files, ui=("app/ui.py",), listed=listed)
+    assert [(path, line) for path, line, _ in got] == [("app/data.py", 0), ("app/ui.py", 0)]

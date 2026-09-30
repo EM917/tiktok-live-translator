@@ -6,14 +6,18 @@
   猜原因的词（because、due to、likely……，EN_CAUSAL）；
 - 没有中文字符：英文界面上这一句不会露中文。
 
-本文件先放 app/pipeline.py 的部分：browser_only_message 不带浏览器观察时（advice 为空，不经过
+本文件管 app/pipeline.py 的部分：browser_only_message 不带浏览器观察时（advice 为空，不经过
 browser_login 的文字）、_resolve_media 的重试横幅与放弃、_confirm_offline / _host_wait 的等待与超时、
-自检提示条。resolver / browser_login 的句子和跨模块组合（advice 的每个分支）由各自的迁移提交补。
+自检提示条。resolver / browser_login / comment_source 各自的句子在 tests/test_rule8_en_lookup.py。
+最后一节是跨模块组合（收紧闸 Z0）：browser_only_message 的固定话术接上 browser_login.browser_only_advice
+的每一个分支，整句中英文都照第八条查。
 """
 import ast
+import re
 
 import pytest
 
+from app import browser_login as bl
 from app import i18n
 from app import resolver as resolver_mod
 from app.i18n import CJK, L
@@ -41,8 +45,8 @@ def assert_rule8_clean(text):
 
 BROWSER_ONLY_3_EN = (
     "TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried 3 times. "
-    "Other live streams worked at the same time, and TikTok doesn’t say why. Sometimes it works "
-    "if you click Start again a little later. Sometimes it doesn’t work for the whole stream. "
+    "TikTok doesn’t say why. Sometimes it works if you click Start again a little later. "
+    "Sometimes it doesn’t work for the whole stream. "
     "To watch now, paste the live link and the .flv URL from your browser together, separated "
     "by a space. A .flv URL usually works for about two weeks.")
 
@@ -63,12 +67,17 @@ def test_the_retry_count_reads_right_in_english(retries, said):
     assert_rule8_clean(text)
 
 
-def test_the_english_drops_the_negated_rate_limit_clause_instead_of_translating_it():
-    """中文「不是网络或限流问题」是否定句，英文照译也会出现 rate limit：整句不译，换成正面的观察。
-    中文一侧一个字不动（test_browser_login.py 的 _FIXED_FACTS 钉着）。"""
+def test_neither_language_claims_a_control_room_or_names_a_cause():
+    """以前中文有一句「不是 X 问题」的否定句，里面点了原因标签的名；英文从一开始就没照译，
+    换成「同一时刻其它直播间正常」。复审（09-29）：那是 09-05 一次同分钟配对的结果，程序运行时
+    并不解析对照房间——本机这边出了问题、所有房间都拿不到时也会这么说，把中控引向「只是这个
+    房间」。两种语言现在都只写接口不给、重试了几次、TikTok 不说原因（CLAUDE.md 第八条）。
+    中文的固定事实由 test_browser_login.py 的 _FIXED_FACTS 钉着。"""
     message = browser_only_message(3, None)
-    assert "不是网络或限流问题" in message
+    assert "其它直播间" not in message and "同一时刻" not in message
+    assert not rules.ZH_LABELS.search(message) and not rules.ZH_CAUSAL.search(message), message
     text = i18n.render(message, EN).lower()
+    assert "other live streams" not in text and "same time" not in text
     assert "limit" not in text and "network" not in text
 
 
@@ -103,7 +112,7 @@ def test_retry_banners_and_the_final_error_are_english_and_only_say_what_was_obs
     for text in banners:
         assert_rule8_clean(text)
     assert i18n.render(i18n.of(caught.value), EN) == BROWSER_ONLY_3_EN
-    assert "不是网络或限流" in str(caught.value)           # 审计与终端拿到的仍是中文
+    assert "原因 TikTok 不说明" in str(caught.value)          # 审计与终端拿到的仍是中文
 
 
 def test_a_dead_pasted_stream_url_says_so_in_english(monkeypatch, tmp_path):
@@ -222,3 +231,47 @@ def test_the_english_of_the_pipeline_rule8_family_is_clean():
     for pair in pairs:
         for en in pair.ens:
             assert_rule8_clean(en)
+
+
+# ---- 跨模块组合（Z0）：固定话术 × browser_only_advice 的每一个分支 --------------------------------
+# 两段文字分属 pipeline（M5a）和 browser_login（M7），各自的测试只看自己那一段；接起来以后整句
+# 还得守第八条，句子之间的空格也得对。每一种观察代码各走一遍，再加几种两个浏览器的组合。
+
+_LOGINS = ([None, {}, {"chrome": bl.NOT_READ}]
+           + [{"chrome": code} for code in (bl.OK, bl.BLOCKED, bl.NO_DATA, bl.NO_TIKTOK,
+                                            bl.NOT_LOGGED_IN, bl.CANNOT_DECRYPT, bl.KEYCHAIN_WAIT,
+                                            bl.READABLE, "error:RuntimeError", "something_new")]
+           + [{"chrome": bl.OK, "safari": bl.OK},
+              {"chrome": bl.OK, "safari": bl.BLOCKED},
+              {"chrome": bl.BLOCKED, "safari": bl.NOT_LOGGED_IN},
+              {"chrome": bl.CANNOT_DECRYPT, "edge": bl.CANNOT_DECRYPT, "safari": bl.KEYCHAIN_WAIT},
+              {"safari": bl.NOT_READ, "chrome": bl.READABLE}])
+# 句号（或右括号）后面紧跟着下一句的大写字母 = 两句英文粘在了一起（中文句子不用空格，英文要）
+_GLUED = re.compile(r"\.(?=[A-Z]|macOS\b)|\)(?=[A-Za-z])")
+_FACTS_ZH = ("代码 4003110", "原因 TikTok 不说明",
+             "把直播间链接和浏览器里的 .flv 地址一起粘进来")
+
+
+@pytest.mark.parametrize("retries,said", [(1, "Retried once."), (3, "Retried 3 times.")])
+@pytest.mark.parametrize("login", _LOGINS, ids=lambda login: ",".join(
+    "{}={}".format(b, c) for b, c in (login or {}).items()) or repr(login))
+def test_the_4003110_message_with_every_browser_observation(monkeypatch, login, retries, said):
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: ["/opt/anaconda3/bin/python3.13"])
+    message = browser_only_message(retries, login)
+    advice = bl.browser_only_advice(login)
+    # 中文：固定事实一句不少，advice 原样夹在中间，整句不贴标签、不猜原因
+    for fact in _FACTS_ZH + ("已自动重试 {} 次".format(retries),):
+        assert fact in message, fact
+    assert str(advice) in message
+    assert not rules.ZH_LABELS.search(message) and not rules.ZH_CAUSAL.search(message), message
+    # 英文：同样的事实、没有中文和两级禁用词、句子之间恰好一个空格
+    text = i18n.render(message, EN)
+    assert_rule8_clean(text)
+    for fact in ("code 4003110", said, "TikTok doesn’t say why", "click Start",
+                 "paste the live link and the .flv URL"):
+        assert fact in text, (fact, text)
+    assert "  " not in text and not _GLUED.search(text), text
+    assert text.endswith("A .flv URL usually works for about two weeks.")
+    assert i18n.render(advice, EN) in text
+    if not {c for c in (login or {}).values() if c != bl.NOT_READ}:
+        assert text == i18n.render(browser_only_message(retries, None), EN)

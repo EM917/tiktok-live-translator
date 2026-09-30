@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=34">
+  <link rel="stylesheet" href="/static/style.css?v=36">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -585,8 +585,11 @@
 
   <script>
     // 有人会解压后直接双击本文件——file:// 下 /static/ 绝对路径全部失效
-    //（样式和上面的 app.js 都加载不出来），必须用内联脚本给出指引
+    //（样式和上面的 app.js 都加载不出来），必须用内联脚本给出指引。
+    // i18n.js 也加载不出来、没有界面语言可读：中文一段、英文一段并列，不做语言判断，
+    // 标题同样两种语言都写（docs/i18n-style.md #8、§4.3 R15）
     if (location.protocol === "file:") {
+      document.title = "TikTok 直播同传 · TikTok Live Translator";
       document.body.innerHTML = "";
       var __note = document.createElement("div");
       __note.style.cssText = "max-width:520px;margin:80px auto;padding:28px;" +
@@ -595,7 +598,10 @@
         "border-radius:12px;text-align:center;background:#fff;";
       __note.innerHTML = "<b>请不要直接打开这个文件</b><br>" +
         "回到解压出来的文件夹，双击 <b>TikTok Live Translator.app</b>（Mac）" +
-        "或 <b>Start.bat</b>（Windows）启动程序，字幕界面会自动打开。";
+        "或 <b>Start.bat</b>（Windows）启动程序，字幕界面会自动打开。" +
+        "<div lang=\"en\" style=\"margin-top:1.2em\"><b>Don’t open this file directly.</b><br>" +
+        "Go back to the unzipped folder and double-click <b>TikTok Live Translator.app</b> (Mac) " +
+        "or <b>Start.bat</b> (Windows). The caption window opens automatically.</div>";
       document.body.appendChild(__note);
     }
   </script>
@@ -609,6 +615,6 @@
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=2"></script>
   <script src="/static/live-ui.js?v=1"></script>
-  <script src="/static/app.js?v=62"></script>
+  <script src="/static/app.js?v=63"></script>
 </body>
 </html>

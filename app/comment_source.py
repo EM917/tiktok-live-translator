@@ -174,8 +174,8 @@ class CommentSource:
     HEALTHY_SEC = 60.0
     OFFLINE_RETRY_SEC = 30.0
     SIGN_ERROR_WAIT_SEC = 600.0
-    # 被 TikTok 风控拦下时的退避。比签名错误还要长：那是「服务忙」，
-    # 这是「你被当成机器人了」，越急着重连越坐实。
+    # 握手回 200 却不升级（退出码 7）之后的退避，比签名服务报错（退出码 4，SIGN_ERROR_WAIT_SEC）
+    # 还长。TikTok 不说明为什么不升级；每次重连都要先用一次签名额度，别急着重连
     BLOCKED_WAIT_SEC = 900.0
     # 评论服务拒绝握手（HTTP 400 等）之后多久重试。找过组件更新还是被拒，
     # 马上重连多半还是拒——别再每分钟烧一次签名额度
@@ -351,8 +351,8 @@ class CommentSource:
             elif returncode == 3:                       # UserOfflineError
                 await self._set_state("offline", L("主播未开播", "The streamer isn’t live"))
                 await asyncio.sleep(self.OFFLINE_RETRY_SEC)
-            elif returncode == 4:                        # 签名服务限流/报错
-                await self._set_state("error", L("评论签名服务繁忙，稍后重试",
+            elif returncode == 4:                        # SignatureRateLimitError / SignAPIError
+                await self._set_state("error", L("评论签名服务返回了错误，稍后重试",
                                                  "The comment signing service returned an error. Retrying later."))
                 await asyncio.sleep(self.SIGN_ERROR_WAIT_SEC)
             elif returncode == 5:                        # 需要登录态
@@ -378,7 +378,8 @@ class CommentSource:
                         _http_note(self._last_http))
                     wait = self.REJECTED_WAIT_SEC
                 else:
-                    prefix = L("TikTok 暂时拒绝了评论连接", "TikTok didn’t accept the comments connection")
+                    # 不写「暂时」：看不出会拒多久，后面的「N 分钟后自动重试」已经说了会再试
+                    prefix = L("TikTok 没有接受评论连接", "TikTok didn’t accept the comments connection")
                     wait = self.BLOCKED_WAIT_SEC
                 # 服务端给的原始原因只进审计，不上面板
                 raw = "{} http_status={}{}".format(

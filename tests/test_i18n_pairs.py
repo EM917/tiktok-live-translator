@@ -205,7 +205,7 @@ def test_bad_python_pairs_are_caught(call, rule):
 
 
 def test_causal_words_are_only_checked_in_the_rule8_family():
-    call = 'L("可能是网络问题", "This is probably a network problem.")'
+    call = 'L("没拿到流地址", "This is probably a network problem.")'
     assert _rules(_py("x = " + call, "app/translator.py")) == []
     assert _rules(_py("x = " + call, "app/resolver.py")) == ["第八条"]
     src = "def browser_only_message(n):\n    return {}\n\ndef other():\n    return {}\n".format(call, call)
@@ -213,6 +213,35 @@ def test_causal_words_are_only_checked_in_the_rule8_family():
     assert [v[1] for v in found] == [2]                 # 只有 browser_only_message 里那一句
     method = "class Pipeline:\n    async def _resolve_media(self):\n        return {}\n".format(call)
     assert _rules(_py(method, "app/pipeline.py")) == ["第八条"]
+
+
+# 09-29 复审：这几种英文以前都能过 G2。前两个是中文 ZH_LABELS「私密」「地区」对应的标签，
+# 然后是排除原因的否定句，最后是 maybe / perhaps 式的猜测
+@pytest.mark.parametrize("en", [
+    "This live stream is private.",
+    "This live stream isn’t available in your region.",
+    "It’s not available in some regions.",
+    "Regional settings can hide it.",
+    "It’s not a network problem. TikTok doesn’t say why.",
+    "This isn’t a sign-in issue.",
+    "This isn't an account problem.",
+    "Maybe the streamer isn’t live.",
+    "Perhaps the link is wrong.",
+])
+def test_family_labels_negations_and_guesses_are_caught_in_english(en):
+    call = 'x = L("TikTok 不给流地址", "{}")'.format(en)
+    assert _rules(_py(call, "app/resolver.py")) == ["第八条"]
+    assert _rules(_py(call, "app/translator.py")) == []      # 家族以外不查（private network 一类照常用）
+
+
+@pytest.mark.parametrize("en", [
+    "This isn’t a live link or username.",                  # 否定句本身没问题，拦的是「不是某某问题」
+    "The streamer may not be live yet.",                     # may 说将来可能发生的事，照常用
+    "Couldn’t reach TikTok. Check your network connection and try again.",
+    "If this keeps happening, report the problem to the developer.",
+])
+def test_plain_statements_still_pass_in_the_english_family(en):
+    assert _rules(_py('x = L("TikTok 不给流地址", "{}")'.format(en), "app/resolver.py")) == []
 
 
 def test_unlikely_is_not_a_causal_word():
@@ -225,6 +254,51 @@ def test_word_exceptions_need_the_exact_chinese_arm(monkeypatch):
     assert _rules(_py(call)) == ["第八条"]
     monkeypatch.setattr(rules, "EN_WORD_EXCEPTIONS", {"电脑被拦截": "夹具：系统防火墙的原名"})
     assert _rules(_py(call)) == []
+
+
+# 第八条家族的中文臂（CLAUDE.md 第八条）：前几条是这一族中文里真实残留过的说法，每一种都要拦得住
+@pytest.mark.parametrize("zh", [
+    "TikTok 不把流地址给程序。不是网络或限流问题",
+    "这个直播间需要登录后才能观看（可能是私密或有观看限制）",
+    "无法连接这个直播间：主播可能没在播，也可能是网络问题或地址有误",
+    "解析直播流超时（网络不通或该地区无法访问 TikTok）",
+    "你给的流地址拉不动（可能已过期），改用自动解析…",
+    "直播流多次中断且自动重连失败——可能直播已结束，或网络不稳",
+    "评论签名服务繁忙，稍后重试",
+    "这个直播间有年龄限制",
+    "多半是没登录",
+    "因为没登录，所以拿不到",
+    # 09-29 复审补的：排除原因的否定句、也许 / 或许 / 恐怕式的猜测
+    "不是网络问题，TikTok 不说明原因",
+    "这不是登录的问题",
+    "主播也许没在播",
+    "或许要登录才能看",
+    "恐怕要等主播重新开播",
+])
+def test_chinese_labels_and_guesses_are_caught_in_the_rule8_family(zh):
+    call = 'x = L("{}", "TikTok didn’t provide a stream URL.")'.format(zh)
+    assert _rules(_py(call, "app/resolver.py")) == ["第八条"]
+    assert _rules(_py(call, "app/translator.py")) == []      # 家族以外不查中文（「Google 会按 IP 限流」照常用）
+
+
+@pytest.mark.parametrize("zh", [
+    "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 3 次，原因 TikTok 不说明；",
+    "无法连接这个直播间。请检查主播是否在播、网络是否正常、地址是否正确，然后重试。",
+    "拒绝访问内网/本机地址的流媒体地址（安全限制）",                  # 程序自己拒绝的，是观察
+    "读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听",      # 将来可能发生的事
+    "第一次打开时，系统可能弹出防火墙提示（Windows），请选允许。",
+])
+def test_chinese_that_states_observations_or_the_future_passes_in_the_rule8_family(zh):
+    call = 'x = L("{}", "TikTok didn’t provide a stream URL.")'.format(zh)
+    assert _rules(_py(call, "app/resolver.py")) == []
+
+
+def test_chinese_is_checked_in_the_pipeline_family_functions_only():
+    call = 'L("可能已过期", "The stream URL you pasted isn’t returning data.")'
+    src = ("class Pipeline:\n    async def _run_session(self):\n        return {}\n\n"
+           "    def other(self):\n        return {}\n").format(call, call)
+    found = P.check_pairs(_py(src, "app/pipeline.py"))
+    assert [(v[1], v[2]) for v in found] == [(3, "第八条")]   # 只有 _run_session 里那一句
 
 
 # ---- G2：JS 与 HTML -------------------------------------------------------------------------
@@ -297,10 +371,14 @@ def test_bad_html_pairs_are_caught(src):
 
 
 def test_the_input_help_box_is_in_the_rule8_family():
-    help_box = '<div id="input-help"><p data-en="This is probably blocked.">可能被挡了</p></div>'
+    help_box = '<div id="input-help"><p data-en="This is probably blocked.">没拿到</p></div>'
     elsewhere = '<div id="other"><p data-en="This is probably fine.">可能没事</p></div>'
     assert _rules(_html(help_box, "web/index.html")) == ["第八条", "第八条"]   # blocked + probably
     assert _rules(_html(elsewhere, "web/index.html")) == []
+    zh_guess = ('<div id="input-help"><p data-en="TikTok didn’t provide a stream URL.">'
+                '可能是私密直播间</p></div>')
+    assert _rules(_html(zh_guess, "web/index.html")) == ["第八条"]
+    assert _rules(_html(zh_guess.replace("input-help", "other"), "web/index.html")) == []
 
 
 # ---- G3 ---------------------------------------------------------------------------------

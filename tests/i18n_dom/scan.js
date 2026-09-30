@@ -53,7 +53,16 @@
       var el = document.querySelector(sel);
       if (!el) { out.measure[sel] = null; return; }
       var r = el.getBoundingClientRect();
-      out.measure[sel] = { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, width: r.width, right: r.right };
+      // scrollWidth/clientWidth 是取整后的整数：文字只比盒子宽零点几个像素时两者相等，
+      // 可 text-overflow 已经用「…」换掉了最后几个字母（PR #70 在 1000px 实测过）。
+      // Range 量的是排好版的文字本身（省略号只影响绘制，不改排版宽度），与盒子的
+      // 内容宽度按小数比较才抓得到。内容宽度 = 盒子宽 - 左右内边距 - 左右边框
+      var cs = getComputedStyle(el), rg = document.createRange();
+      rg.selectNodeContents(el);
+      var inner = r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+                - parseFloat(cs.borderLeftWidth) - parseFloat(cs.borderRightWidth);
+      out.measure[sel] = { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, width: r.width, right: r.right,
+                           textWidth: rg.getBoundingClientRect().width, innerWidth: inner };
     });
     out.viewport = { width: window.innerWidth, height: window.innerHeight };
     var s = document.createElement("script");

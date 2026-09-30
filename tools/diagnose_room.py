@@ -132,7 +132,7 @@ def verdict(target, control):
         return "对照房间的观察本身失败了（{}），这次配对无效，换一个对照重来。".format(control[1])
     if t == "withheld" and c == "ok":
         return ("房间维度的拒绝：同一分钟对照房间正常，只有目标房间被拒。"
-                "原因 TikTok 不说明——**不要贴年龄/限流/封禁之类的标签**。"
+                "原因 TikTok 不说明——**只报这个观察，不给它安原因**。"
                 "能做的：过一会儿再点「开始翻译」；或把直播间链接和浏览器里的 .flv 地址"
                 "并排粘进程序（约两周有效）。")
     if c in ("offline", "no_room"):
@@ -141,8 +141,8 @@ def verdict(target, control):
         return ("对照房间没在播或没查到（{}），这次配对无效，换一个**确定在播**的对照"
                 "重来（--control）。").format(control[1])
     if t == "withheld" and c == "withheld":
-        return ("对照房间也被拒（{}）。先怀疑本机这边：网络、接口变更、本机被挡——"
-                "**别怪目标房间**。换一个确定在播的对照再验一次。").format(control[1])
+        return ("对照房间也被拒（{}）：同一分钟两个房间都拿不到，先查本机这边——"
+                "**别怪目标房间**。先看本机网络，再换一个确定在播的对照验一次。").format(control[1])
     if t == "ok":
         return ("目标房间现在能拿到流地址。如果程序仍然失败，问题在解析之后"
                 "（探活、ffmpeg、模型加载）——看会话日志里的 resolve 记录。")

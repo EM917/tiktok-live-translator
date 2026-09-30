@@ -1,0 +1,4 @@
+/* 繁体中文系统（zh-Hant、zh-TW、zh-HK）上 Dock、菜单栏、⌘Tab 里的程序名。界面在这些系统上
+   是简体中文，程序名跟界面写同一个。见 Info.plist 里的注释 */
+"CFBundleName" = "TikTok 直播同传";
+"CFBundleDisplayName" = "TikTok 直播同传";

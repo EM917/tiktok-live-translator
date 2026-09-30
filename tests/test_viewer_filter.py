@@ -45,7 +45,8 @@ def test_every_known_type_is_decided():
 def test_allowed_types_keep_exactly_the_listed_fields(mtype, lang):
     """给一条塞满了字段的消息，过滤后剩下的键恰好是白名单 + type，再加上双语机制生效时
     从基础字段派生的英文字段（viewer.DERIVED_EN）。写成与闸无关：开闸那一刻这条不用再改。
-    lang=None 是闸关着时生产里的样子；"en" 是一次性覆盖（i18n.enabled() 为真）。"""
+    lang=None 是中文界面、没有一次性覆盖（派生与否跟着闸）；"en" 是一次性覆盖（i18n.enabled()
+    为真）。"""
     fields = dict.fromkeys(viewer.ALLOW[mtype], 1)
     if "demo" in fields:
         fields["demo"] = True          # demo 只认字面的 True，见下面单独那条
@@ -63,7 +64,7 @@ def test_allowed_types_keep_exactly_the_listed_fields(mtype, lang):
     assert set(out) == expected
 
 
-def test_derived_english_fields_only_come_from_the_base_field():
+def test_derived_english_fields_only_come_from_the_base_field(monkeypatch):
     """消息自带的 text_en / why_en 根本不会被读：派生值只可能来自基础字段，注入在结构上不存在。
     基础字段是普通 str（还没迁移的路径）时也派生，值就是它本身；why="" 派生出 ""——
     update 按键合并到手机那一条上，旧的英文原因不会残留（spec §7.2）。"""
@@ -82,8 +83,13 @@ def test_derived_english_fields_only_come_from_the_base_field():
         nested = viewer.filter_payload({"type": "caption", "id": 1, "why": ["a"]})
         assert "why" not in nested and "why_en" not in nested
     # 闸关着、没有一次性覆盖：一个字段都不多派生，手机消息与改造前逐字节相同
+    monkeypatch.setattr(i18n, "I18N_ENABLED", False)
     closed = viewer.filter_payload({"type": "incident", "id": "sleep", "text": bi})
     assert set(closed) == {"type", "id", "text"}
+    # 闸开着、桌面是中文（开闸后的老装机）：照样派生，手机按自己的语言挑（spec §7.1）
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    opened = viewer.filter_payload({"type": "incident", "id": "sleep", "text": bi})
+    assert opened == dict(closed, text_en="The computer was asleep")
 
 
 def test_derived_english_fields_are_scrubbed_and_capped_too():

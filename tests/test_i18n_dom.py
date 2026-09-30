@@ -10,12 +10,20 @@ i18n.js 之前插入场景（scenario.js）和 fake_ws.js，在 app.js 之后插
 viewer.js 的前后（`?v=` 查询串与 /static/、/v/ 路径照原样）。场景串行：先把「当前场景」交给
 服务器，再起 Chrome；--dump-dom 出来的 DOM 里取 #i18n-scan 的 JSON 断言。页面语言由这个服务器
 自己注入，不依赖发布闸。防闪探针（i18n_dom/probe.js）另在页面脚本之前和 scan.js 之前各插一次。
+手机场景不用 --window-size（macOS 的新无头模式窄不过约 500px），改经 DevTools 协议把视口定成
+390 宽，再从页面里取同样的 DOM（run_chrome_cdp）。
 
-TLT_DOM_SHOTS=<目录> 时同一批场景另用 --screenshot 各出一张 PNG，英文 README 截图从这里来。
+TLT_DOM_SHOTS=<目录> 时同一批场景各出一张 PNG，英文 README 截图从这里来：桌面另用 --screenshot
+再开一次，手机在同一次页面上经 DevTools 截（2 倍像素）。
 
-文件末尾几条用例不开 Chrome，平时照常跑：场景组得起来、插入点还在、默认确实跳过。页面结构
-或场景一变普通 CI 就会红，不用等 dom-scan job（它里面「英文页没有中文」「顶栏放得下」两组在 Z0 之前只报告）。
+文件末尾几条用例不开 Chrome，平时照常跑：场景组得起来、插入点还在、默认确实跳过、到点没结果时
+重试一次。页面结构或场景一变普通 CI 就会红，不用等 dom-scan job。收紧闸（Z0）起 dom-scan 整组
+严格跑：英文页上剩下中文、顶栏放不下，PR 都是红的。
 """
+import asyncio
+import base64
+import contextlib
+import itertools
 import json
 import os
 import re
@@ -25,10 +33,12 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import aiohttp
 import pytest
 
 from app import i18n
@@ -41,6 +51,15 @@ FIXTURES = ("fake_ws.js", "scan.js", "probe.js")
 CHROME_NAMES = ("google-chrome", "chromium", "chromium-browser",
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 CHROME_TIMEOUT_SEC = 60
+# 一次 Chrome 到点（CHROME_TIMEOUT_SEC）还没给出结果时，换一个新的配置目录再起一次，最多这么多次。
+# 只对「到点没结果」重试（ChromeNoResult）：Chrome 自己退出了没给结果、页面上的任何断言都不重试。
+# 依据：PR #68 的 CI（macOS 跑器）里 live-full@1100 的 --dump-dom 起来之后 60 秒一个字节都没往
+# stdout 写，stderr 只有每次启动都有的那几行，被杀掉判红；那一轮其余三十多次启动都正常出了结果，
+# 同一场景、同一宽度在 PR #69 的 CI 里也正常出了结果（只是版面断言没过，L1 修的就是它）——是偶发，
+# 与 1100 这个宽度无关。
+# Z0 起整个 dom-scan 严格跑，偶发一次就会让 PR 红；真的每次都卡住的话两次都到点，照样红。
+# 重试过的在 pytest 的 warnings 摘要里留一条，连同当时已经端出去的资源，下回好对照。
+CHROME_RETRIES = 1
 TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".png": "image/png", ".json": "application/json"}
 EN_SCENARIOS = S.DESKTOP_EN + S.PHONE_EN
@@ -208,19 +227,22 @@ def shot_written(out, err):
     return b"written to file" in err
 
 
-def run_chrome(chrome, url, size, lang, profile, extra, finished):
-    """起一个无头 Chrome，等到 finished(stdout, stderr) 成立（结果齐了）或它自己退出，然后收掉
-    整个进程组。不能用 subprocess.run 等它自己退：2026-09-29 本机实测 macOS 上的 Chrome 154
-    --dump-dom 把 DOM 写完之后 25 秒还不退出。60 秒还没齐就杀掉整组并判失败。
-    --use-mock-keychain：macOS 上新建的配置目录不去碰钥匙串，免得跑测试时弹出系统对话框。"""
-    argv = [chrome, "--headless=new", "--disable-gpu", "--no-first-run",
+def _chrome_argv(chrome, size, lang, profile):
+    """两种跑法共用的参数。--use-mock-keychain：macOS 上新建的配置目录不去碰钥匙串，免得跑测试时
+    弹出系统对话框。"""
+    return [chrome, "--headless=new", "--disable-gpu", "--no-first-run",
             "--no-default-browser-check", "--disable-extensions",
             "--disable-background-networking", "--disable-sync", "--use-mock-keychain",
             "--user-data-dir={}".format(profile),
             "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
             "--lang={}".format("en-US" if lang == "en" else "zh-CN"),
-            "--window-size={},{}".format(*size), "--virtual-time-budget=4000"]
-    argv += list(extra) + [url]
+            "--window-size={},{}".format(*size)]
+
+
+@contextlib.contextmanager
+def _chrome(argv):
+    """起一个无头 Chrome，边跑边收它的 stdout / stderr（交出两个一直在长的 bytearray）；
+    出了 with 就收掉整个进程组，读线程也收完。"""
     group = {"start_new_session": True} if os.name == "posix" else {}
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **group)
     out, err = bytearray(), bytearray()
@@ -228,14 +250,8 @@ def run_chrome(chrome, url, size, lang, profile, extra, finished):
                threading.Thread(target=_drain, args=(proc.stderr, err), daemon=True)]
     for reader in readers:
         reader.start()
-    deadline = time.monotonic() + CHROME_TIMEOUT_SEC
-    timed_out = False
     try:
-        while not finished(bytes(out), bytes(err)) and proc.poll() is None:
-            if time.monotonic() > deadline:
-                timed_out = True
-                break
-            time.sleep(0.1)
+        yield proc, out, err
     finally:
         _kill_group(proc)
         proc.wait()
@@ -243,33 +259,203 @@ def run_chrome(chrome, url, size, lang, profile, extra, finished):
             reader.join(5)
         proc.stdout.close()
         proc.stderr.close()
+
+
+def _tail(err):
+    return bytes(err).decode("utf-8", "replace")[-800:]
+
+
+class ChromeNoResult(AssertionError):
+    """Chrome 到点（CHROME_TIMEOUT_SEC）还没给出结果，已经杀掉整个进程组。_Runner 只对它重试。"""
+
+
+def run_chrome(chrome, url, size, lang, profile, extra, finished):
+    """起一个无头 Chrome，等到 finished(stdout, stderr) 成立（结果齐了）或它自己退出，然后收掉
+    整个进程组。不能用 subprocess.run 等它自己退：2026-09-29 本机实测 macOS 上的 Chrome 154
+    --dump-dom 把 DOM 写完之后 25 秒还不退出。60 秒还没齐就杀掉整组并判失败。"""
+    argv = _chrome_argv(chrome, size, lang, profile) + ["--virtual-time-budget=4000"]
+    argv += list(extra) + [url]
+    deadline = time.monotonic() + CHROME_TIMEOUT_SEC
+    timed_out = False
+    with _chrome(argv) as (proc, out, err):
+        while not finished(bytes(out), bytes(err)) and proc.poll() is None:
+            if time.monotonic() > deadline:
+                timed_out = True
+                break
+            time.sleep(0.1)
     if not finished(bytes(out), bytes(err)):
-        why = ("{} 秒没有给出结果，已杀掉整个进程组".format(CHROME_TIMEOUT_SEC) if timed_out
-               else "没给出结果就退出了（退出码 {}）".format(proc.returncode))
-        raise AssertionError("Chrome {}：{}\n{}".format(
-            why, url, bytes(err).decode("utf-8", "replace")[-800:]))
+        if timed_out:
+            raise ChromeNoResult("Chrome {} 秒没有给出结果，已杀掉整个进程组：{}\n{}".format(
+                CHROME_TIMEOUT_SEC, url, _tail(err)))
+        raise AssertionError("Chrome 没给出结果就退出了（退出码 {}）：{}\n{}".format(
+            proc.returncode, url, _tail(err)))
     return bytes(out).decode("utf-8", "replace")
 
 
+# ---- 手机场景：经 DevTools 协议定视口 ---------------------------------------------------------
+# --window-size 在 macOS 的新无头模式里窄不过约 500px：要 390 宽，window.innerWidth 仍是 500
+# 上下，页面按 500 排版，--screenshot 却只截左边 390px——右边的按钮、折行前的半句话被裁掉，
+# 状态胶囊「不出屏」的断言也是拿 500 在量（PR #69 的 dom-shots/phone-*.png 就是这样）。
+# Emulation.setDeviceMetricsOverride 直接定 CSS 视口，不受窗口最小宽度限制。
+
+DEVTOOLS_LINE = re.compile(rb"DevTools listening on (ws://\S+)")
+PHONE_SCALE = 2          # 手机截图按 2 倍像素出，README 用得上；量出来的 CSS 像素不受影响
+READY_JS = 'document.getElementById("i18n-scan") ? document.documentElement.outerHTML : ""'
+
+
+def devtools_url(err, profile):
+    """--remote-debugging-port=0 时 Chrome 自己挑端口：stderr 上报「DevTools listening on ws://…」，
+    同时写进配置目录的 DevToolsActivePort（端口、路径各一行）。哪个先有用哪个；都还没有就 None。"""
+    m = DEVTOOLS_LINE.search(bytes(err))
+    if m:
+        return m.group(1).decode("ascii", "replace")
+    try:
+        lines = (Path(profile) / "DevToolsActivePort").read_text(encoding="utf-8").split()
+    except OSError:
+        return None
+    if len(lines) >= 2 and lines[0].isdigit():          # 文件可能还只写了一半
+        return "ws://127.0.0.1:{}{}".format(lines[0], lines[1])
+    return None
+
+
+class CDPError(Exception):
+    """DevTools 回了 error（方法名、错误体）。"""
+
+
+class _CDP:
+    """最小的 DevTools 协议客户端：一次一条命令，等同 id 的回复；中间来的事件一律略过。"""
+
+    def __init__(self, ws):
+        self.ws, self.last = ws, 0
+
+    async def call(self, method, params=None, session=None):
+        self.last += 1
+        msg = {"id": self.last, "method": method, "params": params or {}}
+        if session:
+            msg["sessionId"] = session
+        await self.ws.send_str(json.dumps(msg))
+        while True:
+            frame = await self.ws.receive()
+            if frame.type != aiohttp.WSMsgType.TEXT:
+                raise AssertionError("DevTools 连接断了（{}）：{}".format(frame.type, method))
+            reply = json.loads(frame.data)
+            if reply.get("id") == self.last:
+                if "error" in reply:
+                    raise CDPError(method, reply["error"])
+                return reply.get("result", {})
+
+
+async def cdp_scan(ws_url, url, size, deadline, shot=False):
+    """新开一个标签页，把 CSS 视口定成 size，打开 url，等 scan.js 写出 #i18n-scan，交回
+    (整页 DOM, PNG 字节或 None)。DOM 取的是 documentElement.outerHTML，跟 --dump-dom 一样是
+    <html>…</html>。mobile 取 False：移动模式会套用 Chrome 安卓的缩放规则，内容溢出时可能把整页
+    缩小、视口跟着变宽，量出来的就不是 390 了；桌面模式下版面实打实 390 宽，溢出的元素照样溢出。
+    同看页没有按设备分支的样式或脚本（只有深浅色），两种模式排出来一样。"""
+    async with aiohttp.ClientSession() as http:
+        async with http.ws_connect(ws_url, max_msg_size=0) as ws:
+            cdp = _CDP(ws)
+            target = (await cdp.call("Target.createTarget", {"url": "about:blank"}))["targetId"]
+            session = (await cdp.call("Target.attachToTarget",
+                                      {"targetId": target, "flatten": True}))["sessionId"]
+            await cdp.call("Page.enable", session=session)
+            await cdp.call("Emulation.setDeviceMetricsOverride", {
+                "width": size[0], "height": size[1], "deviceScaleFactor": PHONE_SCALE,
+                "mobile": False}, session=session)
+            await cdp.call("Page.navigate", {"url": url}, session=session)
+            while True:
+                try:
+                    got = await cdp.call("Runtime.evaluate", {
+                        "expression": READY_JS, "returnByValue": True}, session=session)
+                    dom = got.get("result", {}).get("value")
+                except CDPError:          # 导航途中旧的执行上下文没了：下一轮再问
+                    dom = None
+                if dom:
+                    break
+                if time.monotonic() > deadline:
+                    raise ChromeNoResult("{} 秒内没等到 #i18n-scan：{}".format(CHROME_TIMEOUT_SEC, url))
+                await asyncio.sleep(0.1)
+            png = None
+            if shot:
+                data = (await cdp.call("Page.captureScreenshot", {"format": "png"},
+                                       session=session))["data"]
+                png = base64.b64decode(data)
+            return dom, png
+
+
+def run_chrome_cdp(chrome, url, size, lang, profile, shot=None):
+    """手机场景的跑法：Chrome 开着调试端口起在 about:blank，经 DevTools 定视口、开页面、等扫描。
+    交回整页 DOM；shot 是路径时同一次页面顺手截图写进去。60 秒没完就杀掉整组并判失败。
+    --hide-scrollbars：滚动条不占版面宽度，390 就是 390。"""
+    argv = _chrome_argv(chrome, size, lang, profile) + [
+        "--hide-scrollbars", "--remote-debugging-port=0", "about:blank"]
+    deadline = time.monotonic() + CHROME_TIMEOUT_SEC
+    with _chrome(argv) as (proc, out, err):
+        ws_url = devtools_url(err, profile)
+        while ws_url is None:
+            if proc.poll() is not None:
+                raise AssertionError("Chrome 没报出 DevTools 地址就退出了（退出码 {}）：{}\n{}".format(
+                    proc.poll(), url, _tail(err)))
+            if time.monotonic() > deadline:
+                raise ChromeNoResult("Chrome {} 秒没报出 DevTools 地址，已杀掉整个进程组：{}\n{}".format(
+                    CHROME_TIMEOUT_SEC, url, _tail(err)))
+            time.sleep(0.1)
+            ws_url = devtools_url(err, profile)
+        try:
+            dom, png = asyncio.run(asyncio.wait_for(
+                cdp_scan(ws_url, url, size, deadline, shot is not None),
+                timeout=max(1.0, deadline - time.monotonic())))
+        except asyncio.TimeoutError:
+            raise ChromeNoResult("Chrome {} 秒没有给出结果，已杀掉整个进程组：{}\n{}".format(
+                CHROME_TIMEOUT_SEC, url, _tail(err))) from None
+    if shot is not None:
+        Path(shot).write_bytes(png)
+    return dom
+
+
 class _Runner:
-    """每个场景只开一次 Chrome，结果缓存给同一模块里的各条断言。"""
+    """每个场景只开一次 Chrome（到点没结果时重试一次，见 CHROME_RETRIES），结果缓存给同一模块里的
+    各条断言。"""
 
     def __init__(self, site, chrome, scenarios, tmp, shots=None):
         self.site, self.chrome, self.scenarios, self.tmp = site, chrome, scenarios, tmp
         self.shots = Path(shots) if shots else None
         self._done = {}
+        self._dirs = itertools.count()          # 每次起 Chrome 都用一个新的配置目录
+
+    def _launch(self, name, start):
+        """start(配置目录) 起一次 Chrome。到点没给出结果（ChromeNoResult）时换一个新配置目录再起，
+        最多 CHROME_RETRIES 次（理由见 CHROME_RETRIES）；别的失败原样抛。"""
+        for attempt in range(CHROME_RETRIES + 1):
+            self.site.served.clear()
+            try:
+                return start(self.tmp / "profile-{}".format(next(self._dirs)))
+            except ChromeNoResult as exc:
+                if attempt == CHROME_RETRIES:
+                    raise
+                served = sorted(path for path, status in self.site.served if status == 200)
+                warnings.warn("G10 {}：{}。当时已端出去 {} 个资源：{}。换一个配置目录重试".format(
+                    name, str(exc).split("\n", 1)[0], len(served), served), stacklevel=2)
 
     def _url(self, scenario):
         url = "http://127.0.0.1:{}/".format(self.site.server_address[1])
         return url + ("#k=" + S.FAKE_TOKEN if scenario["page"] == "phone" else "")
 
+    def _shot(self, name):
+        if self.shots is None:
+            return None
+        self.shots.mkdir(parents=True, exist_ok=True)
+        return self.shots / "{}.png".format(name)
+
     def scan(self, name):
         if name not in self._done:
             sc = self.site.scenario = self.scenarios[name]
-            profile = self.tmp / "profile-{}".format(len(self._done))
-            self.site.served.clear()
-            dom = run_chrome(self.chrome, self._url(sc), sc["size"], sc["lang"], profile,
-                             ["--dump-dom"], dumped)
+            url, shot = self._url(sc), self._shot(name)
+            if sc["page"] == "phone":
+                dom = self._launch(name, lambda profile: run_chrome_cdp(
+                    self.chrome, url, sc["size"], sc["lang"], profile, shot))
+            else:
+                dom = self._launch(name, lambda profile: run_chrome(
+                    self.chrome, url, sc["size"], sc["lang"], profile, ["--dump-dom"], dumped))
             ok = {path for path, status in self.site.served if status == 200}
             missing = sorted(self.site.assets(page_html(sc, self.site.web_dir)) - ok)
             if missing:           # 装置自己的问题，不是界面的：页面缺了脚本，结果不可信
@@ -280,12 +466,10 @@ class _Runner:
                     name, dom[:300]))
             result["probe"] = dump_json(dom, "i18n-probe")
             result["dom"] = dom
-            if self.shots is not None:
-                self.shots.mkdir(parents=True, exist_ok=True)
-                run_chrome(self.chrome, self._url(sc), sc["size"], sc["lang"],
-                           self.tmp / "shot-{}".format(len(self._done)),
-                           ["--hide-scrollbars", "--screenshot={}".format(
-                               self.shots / "{}.png".format(name))], shot_written)
+            if shot is not None and sc["page"] == "desktop":
+                self._launch(name, lambda profile: run_chrome(
+                    self.chrome, url, sc["size"], sc["lang"], profile,
+                    ["--hide-scrollbars", "--screenshot={}".format(shot)], shot_written))
             self._done[name] = result
         return self._done[name]
 
@@ -404,19 +588,27 @@ def test_scenario_clicks_took_effect(dom):
 def test_live_top_bar_fits(dom, width):
     """live-full 在各档窗口宽度下：顶栏整行不溢出；状态字、「换主播」确认按钮不被截；
     品牌标签留得出宽度。860/720 两档只看顶栏（spec §12.3 第 7 条）。"""
-    got = dom.scan("live-full@{}".format(width))["measure"]
+    result = dom.scan("live-full@{}".format(width))
+    got = result["measure"]
     problems = []
 
     def need(ok, what):
         if not ok:
             problems.append(what)
 
+    need(result["viewport"]["width"] == width, "窗口不是 {}px 宽：{}".format(width, result["viewport"]))
     bar = got[".topbar"]
     need(bar and bar["scrollWidth"] <= bar["clientWidth"], ".topbar 溢出 {}".format(bar))
     if width in S.LIVE_WIDTHS:
         status, confirm = got[".status-text"], got["#switch-confirm"]
         need(status and status["scrollWidth"] <= status["clientWidth"] + 1,
              ".status-text 被截 {}".format(status))
+        # 整数宽度看不出零点几个像素的截断，省略号却已经换掉了最后几个字母（scan.js 的注释）。
+        # Chrome 只要文字比盒子宽一点点就出省略号：PR #70 在 1000px 实测文字 123.0625、盒子
+        # 123.015625，只差 3/64 像素，"@bellaallnatural" 就显示成 "@bellaallnatu…"。
+        # 排版单位是 1/64 像素，容差取 0.01 只挡浮点噪声
+        need(status and status["textWidth"] <= status["innerWidth"] + 0.01,
+             ".status-text 文字比盒子宽（省略号已出现） {}".format(status))
         need(confirm and confirm["width"] > 0, "换主播面板没打开，#switch-confirm 量不到 {}".format(confirm))
         need(confirm and confirm["scrollWidth"] <= confirm["clientWidth"] + 1,
              "#switch-confirm 被截 {}".format(confirm))
@@ -431,8 +623,11 @@ def test_live_top_bar_fits(dom, width):
 @needs_mac
 @pytest.mark.parametrize("name", S.PHONE_EN)
 def test_phone_status_pill_stays_on_screen(dom, name):
-    """390 宽：状态胶囊不出屏；#conn-text 可以比自己宽（有省略号），不断言。"""
+    """390 宽：状态胶囊不出屏；#conn-text 可以比自己宽（有省略号），不断言。
+    先核对视口真是 390：--window-size 在 macOS 的新无头模式里窄不过约 500px，拿 500 量的话
+    这条断言永远是绿的（所以手机场景改走 DevTools 定视口）。"""
     result = dom.scan(name)
+    assert result["viewport"]["width"] == S.PHONE[0], result["viewport"]
     pill = result["measure"][".status-pill"]
     assert pill and pill["right"] <= result["viewport"]["width"], (pill, result["viewport"])
 
@@ -561,8 +756,135 @@ def test_site_serves_fixtures_the_scenario_and_web_files_only(tmp_path):
         site.server_close()
 
 
+SCAN_DOM = '<html><body><script type="application/json" id="i18n-scan">{"cjk": []}</script></body></html>'
+
+
+def _runner_with(monkeypatch, tmp_path, outcomes):
+    """_Runner 接一个不开 Chrome 的 run_chrome：按 outcomes 依次抛出或交回 DOM（交回前把页面引用的
+    资源都记成端出去过）。交回 (runner, 每次拿到的配置目录, site)。"""
+    site = _Site(WEB_DIR)
+    sc = {"page": "desktop", "page_lang": "en", "lang": "en", "size": [1000, 760]}
+    profiles, script = [], iter(outcomes)
+
+    def fake_run(chrome, url, size, lang, profile, extra, finished):
+        profiles.append(profile)
+        site.served.append(("/static/app.js", 200))
+        outcome = next(script)
+        if isinstance(outcome, Exception):
+            raise outcome
+        site.served.extend((path, 200) for path in site.assets(page_html(sc)))
+        return outcome
+
+    monkeypatch.setattr(sys.modules[__name__], "run_chrome", fake_run)
+    return _Runner(site, "chrome", {"x": sc}, tmp_path), profiles, site
+
+
+def test_a_chrome_that_gives_no_result_in_time_is_retried_once(tmp_path, monkeypatch):
+    """PR #68 那种偶发：第一次到点没结果，换一个新配置目录再起一次就好了。重试留一条 warning，
+    带着当时已经端出去的资源。"""
+    runner, profiles, site = _runner_with(monkeypatch, tmp_path, [
+        ChromeNoResult("Chrome 60 秒没有给出结果，已杀掉整个进程组：http://x/\nstderr"), SCAN_DOM])
+    try:
+        with pytest.warns(UserWarning, match=r"G10 x：Chrome 60 秒没有给出结果.*1 个资源.*重试"):
+            assert runner.scan("x")["cjk"] == []
+        assert len(profiles) == 2 and profiles[0] != profiles[1]
+    finally:
+        site.server_close()
+
+
+@pytest.mark.parametrize("outcomes,raised", [
+    ([ChromeNoResult("到点 1"), ChromeNoResult("到点 2")], ChromeNoResult),   # 每次都卡：照样红
+    ([AssertionError("Chrome 没给出结果就退出了（退出码 1）")], AssertionError),  # 自己退出：不重试
+])
+def test_only_one_retry_and_only_for_no_result_in_time(tmp_path, monkeypatch, outcomes, raised):
+    runner, profiles, site = _runner_with(monkeypatch, tmp_path, outcomes)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(raised) as caught:
+                runner.scan("x")
+        assert type(caught.value) is raised and len(profiles) == len(outcomes)
+    finally:
+        site.server_close()
+
+
 def test_dump_json_reads_the_scan_node():
     dom = ('<html><body><p>x</p><script type="application/json" id="i18n-scan">'
            '{"cjk": [{"at": "p", "text": "中文"}]}</script></body></html>')
     assert dump_json(dom, "i18n-scan") == {"cjk": [{"at": "p", "text": "中文"}]}
     assert dump_json(dom, "i18n-probe") is None
+
+
+def test_devtools_url_comes_from_stderr_or_the_port_file(tmp_path):
+    line = b"\nDevTools listening on ws://127.0.0.1:53111/devtools/browser/ab-12\nother\n"
+    assert devtools_url(bytearray(line), tmp_path) == "ws://127.0.0.1:53111/devtools/browser/ab-12"
+    assert devtools_url(b"", tmp_path) is None                         # 两样都还没有
+    port_file = tmp_path / "DevToolsActivePort"
+    port_file.write_text("53112\n", encoding="utf-8")                  # 只写了一半
+    assert devtools_url(b"", tmp_path) is None
+    port_file.write_text("53112\n/devtools/browser/cd-34\n", encoding="utf-8")
+    assert devtools_url(b"", tmp_path) == "ws://127.0.0.1:53112/devtools/browser/cd-34"
+
+
+def test_phone_scan_sets_the_viewport_over_devtools():
+    """不开 Chrome：对着一个假的 DevTools 端点跑 cdp_scan，核对对话本身。开标签页、挂上会话，
+    页面级命令都带那个 sessionId；先定视口（390×844，桌面模式）再导航；中途插进来的事件跳过；
+    导航途中「执行上下文没了」的报错不算失败，接着问，直到 #i18n-scan 出来才交回 DOM；截图解码。"""
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    dom = '<html><body><script type="application/json" id="i18n-scan">{}</script></body></html>'
+    calls = []
+
+    async def devtools(request):
+        ws = web.WebSocketResponse(max_msg_size=0)
+        await ws.prepare(request)
+        polls = 0
+        async for frame in ws:
+            msg = json.loads(frame.data)
+            calls.append(msg)
+            await ws.send_str(json.dumps({"method": "Page.frameNavigated", "params": {}}))
+            reply = {"id": msg["id"], "result": {}}
+            method = msg["method"]
+            if method == "Target.createTarget":
+                reply["result"] = {"targetId": "T1"}
+            elif method == "Target.attachToTarget":
+                reply["result"] = {"sessionId": "S1"}
+            elif method == "Runtime.evaluate":
+                polls += 1
+                if polls == 1:
+                    reply = {"id": msg["id"], "error": {"code": -32000,
+                                                        "message": "Execution context was destroyed."}}
+                else:
+                    reply["result"] = {"result": {"type": "string", "value": dom if polls == 3 else ""}}
+            elif method == "Page.captureScreenshot":
+                reply["result"] = {"data": base64.b64encode(b"\x89PNG fake").decode("ascii")}
+            if "sessionId" in msg:
+                reply["sessionId"] = msg["sessionId"]
+            await ws.send_str(json.dumps(reply))
+        return ws
+
+    async def go():
+        app = web.Application()
+        app.router.add_get("/devtools/browser/x", devtools)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            ws_url = str(server.make_url("/devtools/browser/x")).replace("http://", "ws://", 1)
+            return await cdp_scan(ws_url, "http://127.0.0.1:9/#k=" + S.FAKE_TOKEN, S.PHONE,
+                                  time.monotonic() + 20, shot=True)
+        finally:
+            await server.close()
+
+    got, png = asyncio.run(go())
+    assert got == dom and png == b"\x89PNG fake"
+    methods = [c["method"] for c in calls]
+    assert methods == ["Target.createTarget", "Target.attachToTarget", "Page.enable",
+                       "Emulation.setDeviceMetricsOverride", "Page.navigate",
+                       "Runtime.evaluate", "Runtime.evaluate", "Runtime.evaluate",
+                       "Page.captureScreenshot"], methods
+    assert calls[1]["params"] == {"targetId": "T1", "flatten": True}
+    assert [c.get("sessionId") for c in calls] == [None, None] + ["S1"] * 7
+    metrics = calls[3]["params"]
+    assert (metrics["width"], metrics["height"], metrics["mobile"]) == (390, 844, False)
+    assert calls[4]["params"] == {"url": "http://127.0.0.1:9/#k=" + S.FAKE_TOKEN}

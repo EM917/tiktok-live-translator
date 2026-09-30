@@ -1,0 +1,3 @@
+/* 非简体中文系统上 Dock、菜单栏、⌘Tab 里的程序名（CFBundleDevelopmentRegion 也是 en）。见 Info.plist 里的注释 */
+"CFBundleName" = "TikTok Live Translator";
+"CFBundleDisplayName" = "TikTok Live Translator";
