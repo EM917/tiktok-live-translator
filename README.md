@@ -438,32 +438,137 @@ times in ten.
 
 ## Fault tolerance
 
-- <a id="fault-tolerance"></a>🔄 **Fault tolerance** — a chain of up to seven stream-resolution layers, tried in order and each isolated so a bug in one cannot take down the rest: **login-first live page** (macOS; uses a TikTok login already in the browser) → **official live API** (independent of yt-dlp, and the only layer that returns a pure-audio track) → **login-first retry** (only when the first login fetch read a usable login but the page carried no address, and the live API did not report the room as ended) → **system WebKit engine loading the live page** (macOS; the way in when TikTok only hands a room's stream URL to a real browser, measured at 2 s) → **yt-dlp, anonymous** → **yt-dlp with a browser's login** → **live-page fallback** (also tries the login first, anonymous last) — because a blocked yt-dlp extractor reports failures as "not currently live". Unless a browser is named (`--cookies-browser` or `cookies_browser_only`), the login-first step reads Safari only — other browsers are read only by the later login-borrowing layers, after the anonymous ones have failed — and once Safari shows a login no other browser's data is read. The login-first retry waits a 3 s gap, or the 8 s gap below when an anonymous request went out in between, then makes the identical fetch once more before the slower layers, and resolution stops there if it finds an address. Measured: some rooms serve their stream URL only to logged-in viewers, and a logged-in request made within 3 s of an anonymous one came back without it, so the app leaves 8 s between them (2026-09-17, on a reconnect where every earlier resolution for that room the same day had taken 0.6–1.4 s: the login page carried no address at 0.5 s, WebKit then timed out after 25 s and both yt-dlp calls reported the room as not live, and the same login fetch returned the address at 31 s, for 37.6 s in total; why the first fetch carried no address is not known). An `http://` TikTok link is resolved as `https://`, so the login is never sent in clear text. The comment connection starts after the first resolution returns, because it opens with an anonymous request for the same page. Reading Safari's cookies requires Full Disk Access for the app (see the "浏览器登录态" self-check row); without a readable login monitoring still starts, resolution stays anonymous, and a persistent notice states what to do. Each resolved URL is verified before the session starts. Dropped streams reconnect with a freshly resolved URL, distinguishing a network interruption from the broadcast ending; segments are dropped automatically when recognition falls behind; yt-dlp is kept current in the background. When none of this yields an address, the app retries a few times 20 s apart and then says so plainly; for such rooms you can paste **the live-room link and a .flv address from your browser together** (separated by a space) — the link drives comments and the glossary, the .flv address is taken as given and used as the audio source, skipping every layer above. Measured: these signed addresses stay valid for about two weeks, so one capture covers a whole broadcast. While monitoring, the machine is kept from going to sleep on its own, and a gap where the program did not run at all is recorded and shown on screen. On reconnect the network is probed first, so an outage does not spend the reconnect budget, and a room that is not reported as ended is waited on for up to 10 minutes
+A live session can fail quietly in three places:
+finding the stream URL, keeping the stream, and keeping up with it. Each is
+handled explicitly.
+
+### Finding the stream URL
+
+Up to seven layers are tried in order, each isolated so a bug in one cannot
+take down the rest. Resolution stops at the first layer that returns an
+address, and each address is checked before the session starts.
+
+1. **Signed-in live page** (macOS) — uses a TikTok sign-in already in the browser
+2. **Official live API** — independent of yt-dlp, and the only layer that
+   returns an audio-only track
+3. **Signed-in retry** — only when the first signed-in fetch read a usable
+   sign-in but the page carried no address, and the live API did not report
+   the stream as ended
+4. **System WebKit engine loading the live page** (macOS) — measured at 2 s;
+   it has returned the stream URL for rooms where the layers before it got none
+5. **yt-dlp, anonymous**
+6. **yt-dlp with a browser's sign-in**
+7. **Live-page fallback** — also tries the sign-in first, anonymous last
+
+yt-dlp can answer "not currently live" for a stream that plays in a browser, so
+its answer alone never ends a session: the app reports a stream as ended only
+when TikTok says so.
+
+How the sign-in is used:
+
+- Unless a browser is named (`--cookies-browser`, or `cookies_browser_only` in
+  `settings.json`), the signed-in step reads Safari only. Other browsers are
+  read only by the later sign-in layers, after the anonymous ones have failed,
+  and once Safari shows a sign-in no other browser's data is read.
+- The signed-in retry waits 3 s, or the rest of the 8 s gap below when an
+  anonymous request went out in between, then makes the identical fetch once
+  more, before the slower layers. Measured: some rooms serve their stream URL
+  only to signed-in viewers, and a signed-in request made within 3 s of an
+  anonymous one came back without it, so the app leaves 8 s between them.
+  One reconnect on 2026-09-17, for a room whose every earlier resolution that
+  day had taken 0.6–1.4 s: the signed-in page carried no address at 0.5 s,
+  WebKit timed out after 25 s, both yt-dlp calls reported the stream as not
+  live, and the same signed-in fetch returned the address at 31 s, 37.6 s in
+  total. Why the first fetch carried no address is not known.
+- An `http://` TikTok link is resolved as `https://`, so the sign-in is never
+  sent in clear text.
+- The comment connection starts only after the first resolution returns:
+  it opens with an anonymous request for the same page.
+- Reading Safari's cookies needs Full Disk Access for the app (see the
+  [Browser Login FAQ](#browser-login)). Without a readable sign-in, monitoring
+  still starts, resolution stays anonymous, and a persistent notice says what
+  to do.
+
+When no layer returns an address, the app tries three times, 20 s apart, and
+then says so on screen. For such streams you can paste **the live link and a
+.flv address from your browser together**, separated by a space: the link
+drives comments and the glossary, and the .flv address is used as given for
+the audio, skipping every layer above. Measured: these signed addresses stay
+valid for about two weeks, so one capture covers a whole stream. See also
+[code 4003110](#code-4003110) in the FAQ.
+
+### Keeping the stream
+
+- A dropped stream reconnects with a freshly resolved URL, telling a network
+  interruption from the end of the stream. Before resolving again the app
+  checks that it can reach TikTok; while it cannot, it waits without spending
+  reconnect attempts, for up to 30 minutes.
+- A stream that TikTok does not report as ended is waited on for up to 10
+  minutes.
+- The app gives up only after several reconnects in a row bring no audio at
+  all (5 for a live link, 1 for a pasted stream URL). A round that played any
+  audio resets the count.
+- yt-dlp is kept current in the background.
+- While monitoring, the computer is kept from going to sleep on its own, and a
+  gap where the app did not run at all is recorded and shown on screen.
+
+### Keeping up
+
+- When recognition falls behind, audio waits in a queue: a notice appears once
+  it is 10 s behind, detection is marked degraded at 30 s, and only audio more
+  than 60 s behind is dropped, with the count shown on screen and written to
+  the audit log.
+- Translation never slows recognition. Its queue holds four lines and drops
+  the oldest when full; a line whose translation was skipped keeps its
+  original text.
 
 ## Banned-Term Alerts
 
-**Banned-term alerting is off by default.** The switch lives under
-**Settings → Banned-term alerts**, a collapsible row on the home screen (not
-the start panel — the feature is kept but no longer prominent; see
-[`CLAUDE.md`](CLAUDE.md)). Inside that row, an "Alert on hit" toggle is
-unchecked by default. With it off, detection still runs and every hit is still
-written to the audit (tagged `suppressed: "alerts_off"`) — it just does not pop
-an alert, fire a system notification, or spend a strong-model re-translation.
-Turning hits into visible alerts requires explicitly enabling this toggle;
-your last choice is remembered and reused on the next start.
+For compliance monitoring of live selling, the app can raise an alert when the
+streamer says something on a banned-term list. Matching runs on the recognised
+source text, never on the translation, so an alert does not wait for a
+translation engine. It has three tiers — exact; variant (plural, gender,
+diminutive); similar (a letter or two misheard, in words of five letters or
+more) — ignores case and accents, and catches a phrase split across two
+captions.
 
-## Validating your term list against a recorded session
+**Alerts are off by default.** The switch is under **Settings → Banned-Term
+Alerts**, a collapsed row on the home page whose summary shows whether alerts
+are on and how many terms are active. Open it and turn on **Show alert on
+match**; the choice is remembered for the next session.
+
+- With the switch off, detection still runs and every match is still written
+  to the audit log (tagged `suppressed: "alerts_off"`); nothing pops up and no
+  strong-model re-translation is spent.
+- With it on, a match opens a red Possible Banned Terms panel at the top of the
+  window, which stays until you clear it. During a session the top bar shows
+  Alerts on, the window title counts unseen alerts while the window is in the
+  background, the matched sentence is
+  [re-translated with the strongest model](#re-translating-with-the-strongest-model),
+  and phones on [Phone Viewing](#phone-viewing) see the alert too.
+- A system notification, without the term and without sound, is sent only if
+  `"alert_os_notify": true` is set in `settings.json`.
+- A problem with the list itself — empty, unreadable, or no entry able to
+  match — fails the Banned-Term List row of the Startup Check. That row opens
+  by itself and a banner stays at the top of the window until it passes.
+
+The list is `banned_terms.txt` in the app folder, one word or phrase per line;
+entries starting with `re:` are regular expressions. Save, then click Stop and
+Start. It is created from `banned_terms.example.txt` on first run, and updates
+never change your copy: compare the two after an update to see what the shipped
+list gained.
+
+### Validating your term list against a recorded session
 
 A term list that never fires looks identical to a clean stream. It is worth
 proving which of the two you have, because the failure is silent — and it is a
 failure of the list, not of the matcher.
 
-`banned_terms.txt` ships as a starting point derived from one company's
-category guide. Two things make it miss on a stream it was not written for: a
-streamer phrases a claim differently from the list (`eliminar grasa` is listed,
-but "eliminando el exceso **de** grasa" inserts words between the anchors and
-misses), and the list has a *pending business review* section of real phrases
-deliberately left commented out.
+The shipped list is a starting point derived from one company's category guide
+for supplement and weight-management streams. It misses when a streamer
+phrases a claim differently from the list: `eliminar grasa` is listed, but
+"eliminando el exceso **de** grasa" inserts words between the anchors and
+misses.
 
 Replay a recorded session against your list before trusting it:
 
@@ -472,25 +577,37 @@ python3 tools/replay_alerts.py                   # re-run a session's audit log 
 python3 tools/collision_audit.py --term <word>   # check a new term for false-positive collisions
 ```
 
-A worked example, from a 4.4-hour supplement stream (2,041 segments):
+**A historical case, from late August 2026.** The list then shipped with 40
+active entries and a *pending business review* section of 7 real phrases
+deliberately left commented out. Replayed over a 4.4-hour supplement stream
+(2,041 segments):
 
-| Term list | Segments alerted |
+| Term list at the time | Segments alerted |
 |---|---|
 | As shipped, 40 active entries | **0** |
 | With the 7 commented-out *pending review* entries enabled | 62 |
 
 The stream contained `derretir toda la manteca` ("melt away all the fat"),
 `acelerar el metabolismo`, and `desinflamarse y quitar la barriga` — the exact
-family the guide bans "all variants" of. The matcher was working the whole time
-(its fuzzy tier caught the ASR misspelling `derritir`); the entries that would
-have fired were switched off.
+family the guide banned "all variants" of. The matcher was working the whole
+time (its fuzzy tier caught the ASR misspelling `derritir`); the entries that
+would have fired were switched off.
 
 A separate pass over the same transcript flagged 126 utterances as worth
-alerting on, of which 99 match neither the active nor the pending entries —
+alerting on, of which 99 matched neither the active nor the pending entries —
 appetite suppression, body shape, organ fat, fatty liver, cholesterol, and one
-cancer claim. Treat output like that as **candidate terms for human review**,
-never as an automatic list update: what counts as a violation is a business
-judgement, and a list padded with false positives buries the operator in noise.
+cancer claim.
+
+On 2026-09-02 the 7 pending entries were enabled, together with 6 from that
+audit whose evidence was unambiguous (fatty liver, a cancer claim, excess fat,
+a flat stomach, appetite, cravings), each checked with the collision audit and
+a replay across 36 recorded sessions. The shipped list has had no pending
+section since; a `banned_terms.txt` created before that date still has those
+entries commented out.
+
+Treat output like that audit as **candidate terms for human review**, never as
+an automatic list update: what counts as a violation is a business judgement,
+and a list padded with false positives buries the operator in noise.
 
 ## Architecture
 
@@ -564,7 +681,7 @@ To restrict the app to one browser persistently, set
 `"cookies_browser_only": "safari"` in `settings.json`; an explicit
 `--cookies-browser` takes precedence over it.
 
-**The "浏览器登录态" self-check row says the system refused the read.** macOS does
+<a id="browser-login"></a>**The "浏览器登录态" self-check row says the system refused the read.** macOS does
 not let other apps read a browser's data directory unless the reading app has
 Full Disk Access. The entry to add is **not** this .app: the app is a launcher
 script that hands over to a Python interpreter, and macOS records the permission
@@ -587,7 +704,7 @@ of these codes in the audit log: `blocked_by_system`, `no_browser_data`,
 not come out of decryption; start again and, if a Keychain dialog asks for
 "Chrome Safe Storage", enter the Mac login password and choose Always Allow.
 
-**"TikTok did not hand this room's stream address to the app (code 4003110)".**
+<a id="code-4003110"></a>**"TikTok did not hand this room's stream address to the app (code 4003110)".**
 That code is TikTok's generic refusal; the response carries no reason, and the
 app does not invent one. Before concluding anything, run the built-in check:
 
