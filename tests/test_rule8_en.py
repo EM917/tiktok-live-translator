@@ -45,8 +45,8 @@ def assert_rule8_clean(text):
 
 BROWSER_ONLY_3_EN = (
     "TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried 3 times. "
-    "Other live streams worked at the same time, and TikTok doesn’t say why. Sometimes it works "
-    "if you click Start again a little later. Sometimes it doesn’t work for the whole stream. "
+    "TikTok doesn’t say why. Sometimes it works if you click Start again a little later. "
+    "Sometimes it doesn’t work for the whole stream. "
     "To watch now, paste the live link and the .flv URL from your browser together, separated "
     "by a space. A .flv URL usually works for about two weeks.")
 
@@ -67,14 +67,17 @@ def test_the_retry_count_reads_right_in_english(retries, said):
     assert_rule8_clean(text)
 
 
-def test_both_languages_state_the_positive_observation_instead_of_a_negated_label():
+def test_neither_language_claims_a_control_room_or_names_a_cause():
     """以前中文有一句「不是 X 问题」的否定句，里面点了原因标签的名；英文从一开始就没照译，
-    换成正面的观察。现在中文也一样（CLAUDE.md 第八条：否定句里也不许出现），
+    换成「同一时刻其它直播间正常」。复审（09-29）：那是 09-05 一次同分钟配对的结果，程序运行时
+    并不解析对照房间——本机这边出了问题、所有房间都拿不到时也会这么说，把中控引向「只是这个
+    房间」。两种语言现在都只写接口不给、重试了几次、TikTok 不说原因（CLAUDE.md 第八条）。
     中文的固定事实由 test_browser_login.py 的 _FIXED_FACTS 钉着。"""
     message = browser_only_message(3, None)
-    assert "同一时刻其它直播间正常" in message
+    assert "其它直播间" not in message and "同一时刻" not in message
     assert not rules.ZH_LABELS.search(message) and not rules.ZH_CAUSAL.search(message), message
     text = i18n.render(message, EN).lower()
+    assert "other live streams" not in text and "same time" not in text
     assert "limit" not in text and "network" not in text
 
 
@@ -109,7 +112,7 @@ def test_retry_banners_and_the_final_error_are_english_and_only_say_what_was_obs
     for text in banners:
         assert_rule8_clean(text)
     assert i18n.render(i18n.of(caught.value), EN) == BROWSER_ONLY_3_EN
-    assert "同一时刻其它直播间正常" in str(caught.value)      # 审计与终端拿到的仍是中文
+    assert "原因 TikTok 不说明" in str(caught.value)          # 审计与终端拿到的仍是中文
 
 
 def test_a_dead_pasted_stream_url_says_so_in_english(monkeypatch, tmp_path):
@@ -245,7 +248,7 @@ _LOGINS = ([None, {}, {"chrome": bl.NOT_READ}]
               {"safari": bl.NOT_READ, "chrome": bl.READABLE}])
 # 句号（或右括号）后面紧跟着下一句的大写字母 = 两句英文粘在了一起（中文句子不用空格，英文要）
 _GLUED = re.compile(r"\.(?=[A-Z]|macOS\b)|\)(?=[A-Za-z])")
-_FACTS_ZH = ("代码 4003110", "同一时刻其它直播间正常", "原因 TikTok 不说明",
+_FACTS_ZH = ("代码 4003110", "原因 TikTok 不说明",
              "把直播间链接和浏览器里的 .flv 地址一起粘进来")
 
 

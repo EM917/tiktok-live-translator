@@ -247,7 +247,7 @@ def test_chinese_labels_and_guesses_are_caught_in_the_rule8_family(zh):
 
 
 @pytest.mark.parametrize("zh", [
-    "同一时刻其它直播间正常，原因 TikTok 不说明",
+    "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 3 次，原因 TikTok 不说明；",
     "无法连接这个直播间。请检查主播是否在播、网络是否正常、地址是否正确，然后重试。",
     "拒绝访问内网/本机地址的流媒体地址（安全限制）",                  # 程序自己拒绝的，是观察
     "读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听",      # 将来可能发生的事

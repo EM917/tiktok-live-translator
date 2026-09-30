@@ -262,10 +262,12 @@
 这些文案里只写两件事：「接口没给流地址」，以及用户能做什么。
 
 - 固定说法：**TikTok didn’t provide a stream URL for this live stream (code 4003110).**
-- 中文原文有一句「不是网络或限流问题」。英文版**整句删掉**，换成正面的观察：
-  **Other live streams worked at the same time, and TikTok doesn’t say why.**
-  否定句里出现 rate limit 也不行。中文后来也照这样改了（「同一时刻其它直播间正常，原因 TikTok 不说明」），
-  两边现在说的是同一件事。
+- 中文原文有一句「不是网络或限流问题」。英文版**整句删掉**，否定句里出现 rate limit 也不行。
+  删掉之后只剩 **Retried {n} times. TikTok doesn’t say why.**，中文是「已自动重试 {} 次，原因 TikTok 不说明」。
+- **不写程序没观察到的事。** 这里曾经写过「同一时刻其它直播间正常」/ *Other live streams worked at the
+  same time*。那是 2026-09-05 一次人工同分钟配对的结果，程序运行时并不去解析对照房间：本机这边出了
+  问题、所有房间都拿不到流地址时，它照样会这么说，把中控引向「只是这个房间的问题」。09-29 复审后
+  中英文都删了。要让用户自己做对照，就写成动作（「换一个正在直播的直播间试试」），不写成已经看到的结果。
 - `browser_login` 的 BLOCKED 状态（macOS 没给完全磁盘访问权限）**不点名浏览器**。`observed_text` 是按浏览器
   逐条拼的（「Chrome：系统拒绝读取；Safari：系统拒绝读取」），写死 Safari 会让 Chrome 那一条说错：
   - `_OBSERVED[BLOCKED]` 写 **macOS didn’t allow access**，拼出来是 `Chrome: macOS didn’t allow access`；
@@ -479,7 +481,7 @@
 | 110 | pipeline.py:667/673/784/828 | 已收到指令，正在连接… / 正在切换到 @B：先停止 @A 的监听… / 正在停止… / 已停止。输入直播间地址可重新开始。 | Connecting… / Switching to @B: stopping @A, then connecting… / Stopping… / Stopped. Enter a live link to start again. |
 | 111 | pipeline.py:2241/2356/2357 | 正在解析直播流地址… / 已连接直播间，开始实时识别（人声降噪已开启） | Getting the stream URL… / Connected. Transcribing live (noise reduction on). |
 | 112 | pipeline.py:2131/2219 | 直播已结束。可以往下翻看这一场的字幕，或在上方输入新的直播间地址。 | The stream has ended. Scroll down to review this session’s captions, or enter a new live link above. |
-| 113 | pipeline.py:154–158 | 4003110 整段 | TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried {n} times. Other live streams worked at the same time, and TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream. {browser advice} To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks. |
+| 113 | pipeline.py:154–158 | 4003110 整段 | TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried {n} times. TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream. {browser advice} To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks. |
 | 114 | pipeline.py:1683 | TikTok 暂时没有把这个直播间的流地址给程序，{s} 秒后自动重试（第 {i}/{n} 次）… | TikTok didn’t provide a stream URL for this live stream. Retrying in {s} sec (attempt {i} of {n})… |
 | 115 | pipeline.py:2400 | 直播流多次中断且自动重连失败——可能直播已结束，或网络不稳。… | The stream was interrupted several times and couldn’t reconnect. Check that the stream is still live and your network is working, then click Start. |
 | 116 | app.js:449/653 | 与本地服务断开，正在重连——稍候再点「开始翻译」 / 本地程序似乎已经关闭——请重新双击打开… | Lost connection to the local service. Reconnecting… Click Start again in a moment. / No connection to the app’s local service for over 20 seconds. If the app has quit, reopen it: on Mac, double-click TikTok Live Translator.app; on Windows, double-click Start.bat. |

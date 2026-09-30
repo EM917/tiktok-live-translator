@@ -160,22 +160,23 @@ def browser_only_message(retries, login=None):
     最后是粘 .flv 地址的办法。只写观察和能照做的事。"""
     from .browser_login import browser_only_advice
 
-    # 中英文都只写正面的观察（同一时刻其它直播间正常），不写「不是 X 问题」这种否定句：否定句里
-    # 也不许出现原因标签（CLAUDE.md 第八条，docs/i18n-style.md §2.6）。句与句之间的空格由后一段
+    # 中英文都只写这次真看到的：接口不给、重试了几次、TikTok 不说原因。不写「不是 X 问题」这种
+    # 否定句，否定句里也不许出现原因标签；也不写「同一时刻其它直播间正常」——那是 09-05 一次
+    # 同分钟配对的结果，程序运行时并不去解析对照房间，本机这边出了问题、所有房间都拿不到时它照样
+    # 会这么说（CLAUDE.md 第八条，docs/i18n-style.md §2.6）。句与句之间的空格由后一段
     # 带在英文开头：第一段英文以句号收尾、不带空格，advice（browser_login）和最后一段的英文
     # 都以一个空格开头，advice 为空时拼出来也正好一个空格。
     return (LN(retries,
-               "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 {} 次。"
-               "同一时刻其它直播间正常，原因 TikTok 不说明；"
+               "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 {} 次，"
+               "原因 TikTok 不说明；"
                "有时过一会儿再点「开始翻译」就好，有时整场都不给。",
                "TikTok didn’t provide a stream URL for this live stream (code 4003110). "
-               "Retried once. Other live streams worked at the same time, and TikTok doesn’t "
-               "say why. Sometimes it works if you click Start again a little later. Sometimes "
-               "it doesn’t work for the whole stream.",
+               "Retried once. TikTok doesn’t say why. Sometimes it works if you click Start "
+               "again a little later. Sometimes it doesn’t work for the whole stream.",
                "TikTok didn’t provide a stream URL for this live stream (code 4003110). "
-               "Retried {} times. Other live streams worked at the same time, and TikTok "
-               "doesn’t say why. Sometimes it works if you click Start again a little later. "
-               "Sometimes it doesn’t work for the whole stream.").format(retries)
+               "Retried {} times. TikTok doesn’t say why. Sometimes it works if you click "
+               "Start again a little later. Sometimes it doesn’t work for the whole stream."
+               ).format(retries)
             + browser_only_advice(login)
             + L("想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
                 "（中间空格隔开），一次约两周有效。",

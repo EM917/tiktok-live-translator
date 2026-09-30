@@ -69,8 +69,10 @@ def test_browser_only_gives_up_with_a_plain_message(monkeypatch, tmp_path):
     with pytest.raises(ResolveError) as exc:
         run(p._resolve_media("https://www.tiktok.com/@x/live"))
     assert exc.value.kind == "browser_only"
-    # 文案只写观察和现在就能用的办法，不给拒绝安原因——否定句也不写（CLAUDE.md 第八条）
-    assert "同一时刻其它直播间正常，原因 TikTok 不说明" in str(exc.value)
+    # 文案只写观察和现在就能用的办法，不给拒绝安原因——否定句也不写；程序没解析过对照房间，
+    # 也不说「其它直播间正常」（CLAUDE.md 第八条）
+    assert "已自动重试 3 次，原因 TikTok 不说明" in str(exc.value)
+    assert "其它直播间" not in str(exc.value)
     assert "限流" not in str(exc.value) and "年龄" not in str(exc.value)
     assert ".flv" in str(exc.value)
 
