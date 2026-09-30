@@ -761,9 +761,9 @@ speaking and nothing appears, try `--denoise off` or a different model size.
 stream drops, the app re-resolves the stream URL and reconnects by itself,
 waiting longer between attempts each time (2 s, then 4, 8, 16 and at most
 30 s). While the computer cannot reach TikTok it waits without spending
-attempts, for up to 30 minutes. It gives up only after six reconnects in a row
-bring no audio at all (two for a pasted stream URL); a reconnect that played
-any audio resets that count, so a patchy connection keeps reconnecting. If the
+attempts, for up to 30 minutes. It gives up only after six connection attempts
+in a row bring no audio at all (two for a pasted stream URL); a connection that
+played any audio resets that count, so a patchy connection keeps reconnecting. If the
 window says the stream was interrupted several times and couldn't reconnect,
 click Start again. Details: [Keeping the stream](#keeping-the-stream).
 
