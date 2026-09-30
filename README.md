@@ -1,4 +1,4 @@
-# TikTok 直播同传 · TikTok Live Translator
+# TikTok Live Translator
 
 <p align="center"><img src="assets/icon-1024.png" width="128" alt="icon"></p>
 
