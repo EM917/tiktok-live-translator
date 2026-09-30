@@ -39,6 +39,10 @@ ENV_OVERRIDE = "TLT_UI_LANG"         # 一次性覆盖（开发、截图）；�
 ENV_SYSTEM = "TLT_SYSTEM_LANG"       # system_lang() 的结果跨 exec 缓存：zh / en / none
 ENV_INSTALL = "TLT_INSTALL_STATE"    # 第一个进程看到的装机状态：fresh / existing（只记第一次）；
                                     # settle 之后改成 existing
+# 「装成功过」的记号：bootstrap 只在 `pip install -r` 返回 0 之后才往 .venv 里写它（app/bootstrap.py
+# 的 REQ_STAMP，tests/test_i18n_core.py 钉着两边同名）。这里直接写文件名：本模块只依赖标准库，
+# 自举期还在系统 Python 里就要 import，不能 import bootstrap
+INSTALL_STAMP = ".requirements.sha256"
 NET = None                    # 测试运行时网："report" / "strict"；生产为 None，零开销
 _state = {"choice": "system", "lang": ZH, "system": None, "override": None}
 _bad_once = set()
@@ -261,8 +265,11 @@ def _peek_settings(path):
 def boot(root, argv=None, environ=None):
     """每个进程都跑一次（main.py 里紧跟 remember_launch_python），**只读**，绝不抛异常。
 
-    1. 装机状态只记第一次：settings.json 存在（不管内容好坏）或 root/.venv 存在记 existing，
-       否则 fresh。必须在第一个进程里判——新装机上 ensure_env 会先建出 .venv 再 execv。
+    1. 装机状态只记第一次：settings.json 存在（不管内容好坏）或 .venv 里有「装成功过」的记号
+       （INSTALL_STAMP）记 existing，否则 fresh。必须在第一个进程里判——新装机上 ensure_env
+       会先建出 .venv、装完写记号再 execv。光有 .venv 目录不算：setup.sh / setup.ps1 一开头就建
+       .venv，再用它跑 main.py --doctor；第一次启动装到一半失败（断网、中途退出）也会留下 .venv。
+       这两种都还没真正用过，按老装机判会把英文系统上的新用户永远固定成中文界面、中文字幕。
     2. 系统语言每次启动只检测一次，结果写进环境变量，exec 之后的进程直接用。
     3. 自己读 settings.json 的字节定出语言，供自举期的对话框用。返回生效语言。"""
     env = os.environ if environ is None else environ
@@ -271,7 +278,8 @@ def boot(root, argv=None, environ=None):
         root = Path(root)
         path = root / "settings.json"
         if not env.get(ENV_INSTALL):
-            env[ENV_INSTALL] = "existing" if _exists(path) or _exists(root / ".venv") else "fresh"
+            stamp = root / ".venv" / INSTALL_STAMP
+            env[ENV_INSTALL] = "existing" if _exists(path) or _exists(stamp) else "fresh"
     except Exception:
         return _state["lang"]
     try:

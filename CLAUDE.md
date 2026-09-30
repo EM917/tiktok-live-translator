@@ -127,8 +127,9 @@ python3 tools/replay_alerts.py
 - **终端、日志、审计 JSONL 永远是中文**：`print`、`audit.*` 照旧写中文，G8 钉着
   中英两种界面下审计和终端逐字节相同。主播名、词条、字幕和弹幕内容是数据，不翻
 - **闸与迁移**：`I18N_ENABLED` 是发布闸。开闸后第一次启动往 `settings.json` 写一次
-  `ui_lang`：已有 `settings.json` 或 `.venv` 的老装机写 `zh`，只有新装写 `system`
-  （跟系统语言）——用户定的，老用户升级后界面不许突然变英文。`boot()` 只读，
+  `ui_lang`：已有 `settings.json`、或 `.venv` 装成功过（有 `.requirements.sha256`）的老装机
+  写 `zh`，只有新装写 `system`（跟系统语言）——用户定的，老用户升级后界面不许突然变英文。
+  光有 `.venv` 不算：`setup.sh` 和装到一半中断的第一次启动都会先留下它。`boot()` 只读，
   `settle()` 在 exec 之后的最终进程里才写：提前碰设置文件，损坏备份的提示会随
   exec 丢掉。回退就是把闸改回 `False`。测闸某一边的语义要显式 `monkeypatch` 它：
   开闸那天有 5 条测试是靠「闸默认关着」才绿的
