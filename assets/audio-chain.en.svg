@@ -314,7 +314,7 @@ rect.c-bg-rect { fill: var(--bg); }
 
         <!-- Connection paths (before components for correct z-order) -->
         <path data-edge-from="tiktok" data-edge-to="resolver" data-edge-label="room info" data-edge-key="0" data-edge-id="room-to-resolver" data-composition-points="210,82;330,82" d="M 210 82 L 330 82" class="a-emphasis" data-animate="edge" style="--step:0" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="checked audio-only URL" data-edge-key="1" data-edge-id="resolver-to-ffmpeg" data-composition-points="500,82;620,82" d="M 500 82 L 620 82" class="a-default" data-animate="edge" style="--step:1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="checked media URL" data-edge-key="1" data-edge-id="resolver-to-ffmpeg" data-composition-points="500,82;620,82" d="M 500 82 L 620 82" class="a-default" data-animate="edge" style="--step:1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="ffmpeg" data-edge-to="resolver" data-edge-label="reconnect on drop" data-edge-key="2" data-edge-id="reconnect" data-composition-points="705,50;705,26;415,26;415,50" d="M 705 50 L 705 34 Q 705 26 697 26 L 423 26 Q 415 26 415 34 L 415 50" class="a-dashed" data-animate="edge" style="--step:2" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
         <path data-edge-from="ffmpeg" data-edge-to="segmenter" data-edge-label="0.1 s PCM frames" data-edge-key="3" data-edge-id="ffmpeg-to-segmenter" data-composition-points="705,114;705,210" d="M 705 114 L 705 210" class="a-emphasis" data-animate="edge" style="--step:3" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="segmenter" data-edge-to="audioq" data-edge-label="speech segment" data-edge-key="4" data-edge-id="segmenter-to-queue" data-composition-points="705,274;705,370" d="M 705 274 L 705 370" class="a-default" data-animate="edge" style="--step:4" stroke-width="1.5" marker-end="url(#arrowhead)"/>
@@ -481,9 +481,9 @@ rect.c-bg-rect { fill: var(--bg); }
           <rect x="243.4" y="62" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
           <text x="270" y="72" class="t-backend" font-size="8" text-anchor="middle">room info</text>
         </g>
-        <g data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="checked audio-only URL" data-edge-key="1" data-edge-id="resolver-to-ffmpeg">
-          <rect x="502.2" y="62" width="115.6" height="14" rx="3" class="c-mask"/>
-          <text x="560" y="72" class="t-muted" font-size="8" text-anchor="middle">checked audio-only URL</text>
+        <g data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="checked media URL" data-edge-key="1" data-edge-id="resolver-to-ffmpeg">
+          <rect x="514.2" y="62" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="560" y="72" class="t-muted" font-size="8" text-anchor="middle">checked media URL</text>
         </g>
         <g data-edge-from="ffmpeg" data-edge-to="resolver" data-edge-label="reconnect on drop" data-edge-key="2" data-edge-id="reconnect">
           <rect x="514.2" y="6" width="91.6" height="14" rx="3" class="c-mask"/>

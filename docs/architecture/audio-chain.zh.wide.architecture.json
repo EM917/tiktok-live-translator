@@ -23,7 +23,7 @@
           "ffmpeg",
           "segmenter"
         ],
-        "note": "从直播间到语音段：解析纯音频地址、神经降噪、能量 VAD 切段。"
+        "note": "从直播间到语音段：解析媒体地址（优先纯音频）、神经降噪、能量 VAD 切段。"
       },
       {
         "id": "captions",
@@ -365,7 +365,7 @@
       "id": "resolver-to-ffmpeg",
       "from": "resolver",
       "to": "ffmpeg",
-      "label": "校验后的纯音频地址"
+      "label": "校验后的媒体地址"
     },
     {
       "id": "reconnect",
@@ -482,7 +482,7 @@
       "title": "采集与切段",
       "items": [
         "解析最多依次试 7 层：登录直播页（macOS）→ 官方接口 → 登录直播页重试 → WebKit 隐藏页（macOS）→ yt-dlp 匿名 → yt-dlp 借 cookie → 直播页兜底",
-        "接口给 only_audio 纯音频档；ffmpeg 先 highpass=70 再 arnndn 降噪，专压背景音乐",
+        "各层都优先取 only_audio 纯音频档；ffmpeg 先 highpass=70 再 arnndn 降噪，专压背景音乐",
         "开始与直播中换主播同一条路：停掉上一场，重读违禁词表与词表、另开审计，再从解析重来"
       ]
     },

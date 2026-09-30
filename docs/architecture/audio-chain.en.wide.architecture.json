@@ -23,7 +23,7 @@
           "ffmpeg",
           "segmenter"
         ],
-        "note": "From live room to speech segments: resolve an audio-only URL, denoise, energy VAD."
+        "note": "From live room to speech segments: resolve a media URL (audio-only preferred), denoise, energy VAD."
       },
       {
         "id": "captions",
@@ -365,7 +365,7 @@
       "id": "resolver-to-ffmpeg",
       "from": "resolver",
       "to": "ffmpeg",
-      "label": "checked audio-only URL"
+      "label": "checked media URL"
     },
     {
       "id": "reconnect",
@@ -482,7 +482,7 @@
       "title": "Capture & segment",
       "items": [
         "Resolves via up to 7 layers: login-first page (macOS) → live API → login retry → WebKit (macOS) → yt-dlp → yt-dlp+login → page fallback",
-        "The live API returns an only_audio rendition; ffmpeg runs highpass=70 then arnndn against background music",
+        "Every layer prefers the only_audio rendition; ffmpeg runs highpass=70 then arnndn against background music",
         "Start and Switch Streamer share one path: stop the last session, re-read the term lists, open a new audit, resolve again"
       ]
     },
