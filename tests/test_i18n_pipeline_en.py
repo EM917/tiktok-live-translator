@@ -128,7 +128,7 @@ def test_a_session_that_loses_the_network_and_gives_up_is_english(monkeypatch, t
     assert texts[0] == "Getting the stream URL…"
     assert texts[1].startswith("Loading speech model ") and "It downloads the first time only" in texts[1]
     assert texts[2:4] == ["Connecting to the stream audio…",
-                          "The stream was interrupted. Reconnecting in 2 sec (attempt 1 of 5)…"]
+                          "The stream was interrupted. Reconnecting in 2 sec (attempt 1 of 6)…"]
     assert texts[4].startswith("This computer can’t reach www.tiktok.com. Nothing has been "
                                "monitored for ")
     assert texts[-1] == ("This computer couldn’t reach www.tiktok.com for over 1 min. Monitoring "
