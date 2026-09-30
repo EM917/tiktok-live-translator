@@ -299,6 +299,21 @@ def test_start_command_dialog_is_bilingual_but_the_terminal_stays_chinese(tmp_pa
     assert "Python is needed" not in out
 
 
+def test_the_launchers_keep_lf_line_endings_in_every_checkout():
+    """启动器是 bash 脚本：core.autocrlf=true 的检出（全局配置写错的 macOS / Linux 克隆）里变成
+    CRLF，bash 报「: command not found」「unexpected end of file」，双击 .app 直接失败。
+    Start.command 靠 *.command 规则；.app 里的启动器没有扩展名，要按文件名单独固定
+    （复审 per-commit-ci）。CI 里只有 Windows 跑器用 autocrlf，而那里不跑 bash，所以在这里钉。"""
+    git = shutil.which("git")
+    if git is None or not (ROOT / ".git").exists():
+        pytest.skip("不是 git 检出")
+    paths = [p.relative_to(ROOT).as_posix() for p in (LAUNCHER, START_COMMAND)]
+    out = subprocess.run([git, "check-attr", "eol", "--"] + paths, cwd=ROOT,
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.splitlines() == ["{}: eol: lf".format(p) for p in paths]
+
+
 @needs_bash
 @pytest.mark.parametrize("script", [LAUNCHER, START_COMMAND], ids=lambda p: p.name)
 def test_the_launchers_parse(script):

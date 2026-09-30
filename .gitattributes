@@ -2,6 +2,8 @@
 # 必须保证 GitHub Download ZIP 交付的也是 CRLF 版本
 *.bat text eol=crlf
 *.ps1 text eol=crlf
-# shell 脚本保持 LF
+# shell 脚本保持 LF。.app 里的启动器是没有扩展名的 bash 脚本，按文件名单独固定：
+# core.autocrlf=true 的检出里它会变成 CRLF，bash 读不了，双击 .app 直接失败
 *.command text eol=lf
 *.sh text eol=lf
+TikTokLiveTranslator text eol=lf
