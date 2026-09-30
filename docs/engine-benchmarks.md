@@ -1,6 +1,6 @@
 # Translation engine benchmarks
 
-*Moved from the README's [Translation Engines](../README.md#translation-engines) section: the engine comparison and the measurement behind strong re-translation, text unchanged.*
+*Moved from the README's [Translation Engines](../README.md#translation-engines) section: the engine comparison and the measurement behind strong re-translation. The text is unchanged except for one sentence in the last section, reworded so that raw percentages are not presented as a win.*
 
 ### Engine comparison
 
@@ -60,10 +60,10 @@ accuracy.
 ### Re-translating with the strongest model
 
 How much better it actually is, measured: 259 captions from a live session,
-each engine's output graded blind by an independent panel. The strong tier beats
-the default on both axes — meaning-changing errors 12.0% against 17.4% and
-first-pass readability 96.1% against 83.4%. Only the readability gap survives
-correction for the number of comparisons made (p<0.0001); the accuracy gap does
-not. So the honest claim is that re-translation is *easier to read*, not
+each engine's output graded blind by an independent panel. On both axes 7B's
+raw rates are better than the default's — meaning-changing errors 12.0% against
+17.4%, first-pass readability 96.1% against 83.4% — but only the readability gap
+survives correction for the number of comparisons made (p<0.0001); the accuracy
+gap does not. So the honest claim is that re-translation is *easier to read*, not
 demonstrably *more correct*. The batch tool still reports what changed rather
 than replacing anything silently.
