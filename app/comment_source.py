@@ -174,8 +174,8 @@ class CommentSource:
     HEALTHY_SEC = 60.0
     OFFLINE_RETRY_SEC = 30.0
     SIGN_ERROR_WAIT_SEC = 600.0
-    # 被 TikTok 风控拦下时的退避。比签名错误还要长：那是「服务忙」，
-    # 这是「你被当成机器人了」，越急着重连越坐实。
+    # 握手回 200 却不升级（退出码 7）之后的退避，比签名服务报错（退出码 4，SIGN_ERROR_WAIT_SEC）
+    # 还长。TikTok 不说明为什么不升级；每次重连都要先用一次签名额度，别急着重连
     BLOCKED_WAIT_SEC = 900.0
     # 评论服务拒绝握手（HTTP 400 等）之后多久重试。找过组件更新还是被拒，
     # 马上重连多半还是拒——别再每分钟烧一次签名额度

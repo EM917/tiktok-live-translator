@@ -921,10 +921,9 @@ def _classify_ytdlp_error(err_text):
     lines = [ln.strip() for ln in err_text.strip().splitlines() if ln.strip()]
     detail = L("\n技术细节：{}", "\nDetails: {}").format(lines[-1][:200]) if lines else ""
     if "not currently live" in lowered or "room is offline" in lowered:
-        # 注意：TikTok 对**未登录**的请求也经常返回「not currently live」——
-        # 浏览器里明明在播、这里却说没开播，多半是这个原因。实测同一时刻
-        # 6 个在播房间里 5 个被判为未开播，只有 1 个能匿名解析。
-        # 所以不能把这条当成板上钉钉的「主播下播了」。
+        # 注意：TikTok 对**未登录**的请求也经常返回「not currently live」——浏览器里在播、
+        # 这里却报未开播的情况实测很常见：同一时刻 6 个在播房间里 5 个被判为未开播，
+        # 只有 1 个能匿名解析。所以不能把这条当成板上钉钉的「主播下播了」。
         return ("offline",
                 L("没能获取到这个直播间的音频流。\n"
                   "· 如果主播确实没在播：等开播后再试即可；\n"
