@@ -20,8 +20,11 @@
 Real-time bilingual captions for TikTok live streams, built for Spanish-language
 live selling. Paste a live link and the app transcribes what the streamer says,
 shows each line as soon as it is recognised, and fills in the translation
-beneath it a moment later. Viewer comments are translated alongside, and
-colleagues can follow on their phones.
+beneath it a moment later. Viewer comments are translated alongside.
+
+It is for teams who follow Spanish-language live selling without speaking
+Spanish: the operator watches on the computer, and colleagues follow on their
+phones. To get started, see [Quick Start](#quick-start).
 
 A caption never waits for its translation: the original goes on screen first.
 When recognition falls behind, audio waits in a queue and the window says so.
@@ -35,14 +38,14 @@ language, and Settings → App Language switches it; see
 ## Features
 
 - 🎙️ **Live captions, original first** — OpenAI Whisper with two backends (faster-whisper / MLX), 90+ languages, limited to Spanish + English by default. Each line appears as soon as it is recognised and its translation fills in beneath it; the latest line is also shown large at the bottom of the window
-- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two sizes through Ollama, with TranslateGemma, DeepL (with a native glossary), Google's free endpoint and Claude · OpenAI-compatible APIs as alternatives. By default Hy-MT2 1.8B is used, then TranslateGemma, and Google's free endpoint when neither is installed; 7B is never picked automatically. See [Translation Engines](#translation-engines)
+- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two sizes through Ollama, with TranslateGemma, DeepL (with a native glossary), Google's free endpoint, the Claude API and any OpenAI-compatible API as alternatives. By default Hy-MT2 1.8B is used, then TranslateGemma, and Google's free endpoint when neither is installed; 7B is never picked automatically. See [Translation Engines](#translation-engines)
 - 🏷️ **Glossaries per brand and streamer** — a global glossary, one per streamer and one per brand (picked in the Brand menu for the session) steer how product names are recognised and translated, with every engine. See [Glossaries](#glossaries)
-- 💬 **Viewer comment translation** — the app fetches comments itself via TikTokLive from the live stream's comment feed (WebSocket signing goes through the third-party Euler Stream service rather than your computer; needs Python 3.10+, and the component installs itself on the first start; usually works signed out, and retries once with the browser's TikTok sign-in when TikTok asks for one). Translations appear in the Comments panel — translation and display only, never part of the alert path. Comments are translated only while the active engine is a local model (Hy-MT2 1.8B or TranslateGemma); with a remote engine or the 7B model the panel shows the original text. The comment WebSocket can go half-open — the panel still shows Connected but no comments ever arrive — so the app reconnects automatically after 15 minutes of silence while connected, and records it in the session audit. Disable with `--no-comments`
+- 💬 **Viewer comment translation** — comments are fetched from the live stream through TikTokLive and translated while a local engine (Hy-MT2 1.8B or TranslateGemma) is active; with a remote engine or 7B the Comments panel shows the original text. Disable with `--no-comments`; see [the FAQ](#viewer-comments)
 - 🔁 **Switch Streamer during a session** — Switch Streamer in the top bar moves to another streamer without clicking Stop first: pick from Recent Streams or paste a live link, choose the brand, then click again to confirm. The spoken language carries over, and a divider in the caption history marks where the new streamer begins
 - 📱 **Phone Viewing** — colleagues on the same Wi-Fi scan a QR code and follow captions and alerts on their phones, each page in its phone's own language; view only, no control; off by default. See [the FAQ](#phone-viewing)
 - 🌍 **English and Chinese interface** — follows the system language on a new install, switchable in Settings. See [Interface Language](#interface-language)
 - ✅ **Startup Check** — each capability is executed rather than inspected: noise reduction processes a sample through RNNoise, translation queries the engine, the audit log performs a write. A failing check opens its row on the home page with a remediation step, and stays in a banner at the top of the window, idle or live, until a later check passes
-- 🔄 **Fault tolerance** — up to seven ways to find the stream URL, reconnects that tell a network drop from the end of the stream, and audio queued rather than lost when recognition falls behind. See [Fault tolerance](#fault-tolerance)
+- 🔄 **Fault tolerance** — up to seven ways to find the stream URL, reconnects that tell a network drop from the end of the stream, and audio queued rather than lost when recognition falls behind. See [Fault Tolerance](#fault-tolerance)
 - 🎵 **Voice-focused noise reduction** — RNNoise suppresses background music, tuned for streams with continuous BGM
 - ⚡ **Automatic hardware configuration** — detects the available accelerator (Apple Silicon GPU / NVIDIA CUDA / CPU) and selects the largest model that still runs in real time
 - 📊 **Observable latency** — a live readout at the bottom of the window: the longest a spoken word waits before it is recognised and checked (median and P95), split into segmentation and recognition, plus the time the translation adds. An audit log records each segment: accepted text, candidates rejected by the quality filter, banned-term matches, and the translation that followed
@@ -52,7 +55,7 @@ language, and Settings → App Language switches it; see
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/screenshots/en/home.png" width="100%" alt="Home page: live link and Start, the Spoken language and Brand menus, Recent Streams, and the Settings group with Startup Check, Translation Engine, Banned-Term Alerts, Storage and App Language"><br><sub>Home: paste a live link and click Start. Settings stays below, collapsed.</sub></td>
+    <td width="50%"><img src="assets/screenshots/en/home.png" width="100%" alt="Home page: live link and Start, the Spoken language and Brand menus, Recent Streams, and the Settings group with Startup Check, Translation Engine, Banned-Term Alerts, Storage and App Language"><br><sub>Home: paste a live link and click Start. Settings sits below, one line per setting until opened.</sub></td>
     <td width="50%"><img src="assets/screenshots/en/live.png" width="100%" alt="During a session: each Spanish line above its English translation, translated comments on the right, the latest line in large type at the bottom, and the latency readout under it"><br><sub>Live: the original first, the translation beneath it, comments alongside.</sub></td>
   </tr>
   <tr>
@@ -60,7 +63,7 @@ language, and Settings → App Language switches it; see
     <td width="50%"><img src="assets/screenshots/en/share-panel.png" width="100%" alt="The Phone Viewing panel: a QR code, the local network link, Copy Link, New Link and Stop Sharing, and 1 watching (limit 12)"><br><sub>Phone Viewing: a QR code and link for phones on the same Wi-Fi.</sub></td>
   </tr>
   <tr>
-    <td width="50%" align="center"><img src="assets/screenshots/en/phone.png" width="240" alt="The phone page: Connected and Live, Spanish lines with English translations and a Retranslate button on each, the Comments bar, View only, a language toggle and the Sound button"><br><sub>A phone on Phone Viewing: view only, in the phone's own language.</sub></td>
+    <td width="50%" align="center"><img src="assets/screenshots/en/phone.png" width="240" alt="The phone page: Connected and Live, Spanish lines with English translations and a Retranslate button on each, the Comments bar, View only, a language toggle and the Sound button"><br><sub>The phone page: view only, in the phone's own language.</sub></td>
     <td width="50%"><img src="assets/screenshots/en/settings-language.png" width="100%" alt="The Settings group with the App Language row open, set to System (English), and the note that Phone Viewing pages follow each phone's language"><br><sub>Settings → App Language: System, 中文 or English.</sub></td>
   </tr>
 </table>
@@ -111,7 +114,7 @@ once a session has been reviewed.
 2. **Install Python** (free, one time only): grab the installer from [python.org/downloads](https://www.python.org/downloads/) and install with the default options. Forgot? No problem — the launcher will detect it and open the download page for you.
 3. **Launch**:
    - **macOS**: double-click **`TikTok Live Translator.app`** in the folder. If the first launch is blocked ("cannot be opened"): on older systems right-click → Open; on **macOS 15 and later** go to **System Settings → Privacy & Security**, scroll to the bottom and click **"Open Anyway"** (one time only). Feel free to drag it to the Dock — but **don't move it out of this folder**.
-   - **Windows**: double-click **`Start.bat`**. If a "publisher unknown" security warning pops up, click "Run" (this tool is fully open source — the code is right there in the folder). A black text window stays open while running — **that's the translation engine, keep it open**; subtitles appear in the separate app window.
+   - **Windows**: double-click **`Start.bat`**. If a "publisher unknown" security warning pops up, click "Run" (this tool is fully open source — the code is right there in the folder). A black text window stays open while running — **that window is the app itself; keep it open**. Captions appear in the separate app window.
 
 The interface window itself is rendered by the system's built-in browser engine
 (WKWebView on macOS, WebView2 on Windows), not a bundled one. On macOS the
@@ -126,7 +129,7 @@ itself, so there is no practical minimum version there — see the "publisher
 unknown" note above if Windows Defender SmartScreen has not seen WebView2 on
 this machine before.
 
-The first launch installs everything automatically (a few minutes, with on-screen progress; the first recognition also downloads the speech model, with progress shown on the page). Every launch after that is instant. Once the window opens: **paste the live link (or just the streamer's username) → check Spoken language (Spanish + English by default) and, in the top bar, the language to translate into → click Start**. During a session, **Switch Streamer** moves to another streamer, and **Stop** takes the window back to the start page, with that session's captions kept below under Previous Session.
+The first launch installs everything automatically (a few minutes, with on-screen progress; the first recognition also downloads the speech model, with progress shown on the page). Every launch after that is instant. Once the window opens: **paste the live link (or just the streamer's username) → check Spoken language (Spanish + English by default) and, in the top bar, the language to translate into → click Start**. During a session, **Switch Streamer** moves to another streamer, and **Stop** takes the window back to the home page, with that session's captions kept below under Previous Session.
 
 ### Command line
 
@@ -150,7 +153,7 @@ python3 main.py --ui-lang en   # English interface for this launch only
 
 > **Cloned an older version before?** Don't re-clone (it fails with `destination path already exists`) — just `cd` into the folder, run `git pull`, and start it; from v0.2.0 on you can update with one click from the page itself.
 
-### Starting the application
+### Starting the app
 
 - **macOS**: double-click **`TikTok Live Translator.app`** (or `Start.command`);
 - **Windows**: double-click **`Start.bat`**;
@@ -239,7 +242,7 @@ Every selected value can be overridden with a command-line flag.
 ## Translation Engines
 
 Installing [Ollama](https://ollama.com/download) completes the setup. On the
-next launch the application starts it if required, downloads the 1.1 GB Hy-MT2
+next launch the app starts it if required, downloads the 1.1 GB Hy-MT2
 1.8B model through Ollama's API with on-screen progress, and switches to it. No
 terminal commands are involved; the Whisper model is provisioned the same way.
 
@@ -257,8 +260,8 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, ~16 GB RAM
 | `hymt2` | Hy-MT2 1.8B (Tencent, Apache 2.0). Recommended for most machines |
 | `hymt2-7b` | Hy-MT2 7B, the larger local tier. Opt-in only; see [Choosing an engine](#choosing-an-engine) |
 | `gemma` | TranslateGemma 4B. `OLLAMA_TRANSLATE_MODEL` selects `translategemma:12b`/`27b`. Not in the Translation Engine menu; pass `--translator gemma` |
-| `deepl` | Key entered in Settings → Translation Engine (or `DEEPL_API_KEY`). A key ending in `:fx` is routed to the free endpoint automatically. Builds and maintains a native DeepL glossary from your [glossaries](#glossaries); see below. Subtitle text is sent to DeepL |
-| `google` | Google Translate's free endpoint, no key required. Subtitle text is sent to Google; rate-limited per IP |
+| `deepl` | Key entered in Settings → Translation Engine (or `DEEPL_API_KEY`). A key ending in `:fx` is routed to the free endpoint automatically. Builds and maintains a native DeepL glossary from your [glossaries](#glossaries); see below. Caption text is sent to DeepL |
+| `google` | Google Translate's free endpoint, no key required. Caption text is sent to Google; rate-limited per IP |
 | `claude` | Key entered in Settings → Translation Engine (or `ANTHROPIC_API_KEY`); model overridable via `CLAUDE_TRANSLATE_MODEL` |
 | `openai` | Key entered in Settings → Translation Engine (or `OPENAI_API_KEY`); optional `OPENAI_BASE_URL`, `OPENAI_MODEL`. Compatible with any OpenAI-style API including local LM Studio / vLLM |
 | `none` | Transcription only, no translation |
@@ -284,12 +287,13 @@ Spanish literally and the local model did not (Spanish → Chinese):
 ### Choosing an engine
 
 Hy-MT2 1.8B is the default: it keeps pace with the stream without slowing
-recognition, and every caption waits for recognition before it appears.
+recognition, which matters because every caption waits for recognition before
+it appears.
 
 Four engines — Hy-MT2 1.8B and 7B, TranslateGemma 12B and DeepL — were graded
 blind on 259 captions from one live session. After correcting for the twelve
 pairwise comparisons, the differences that held were all in readability: 7B
-read more easily than 12B and than 1.8B, and DeepL more easily than 1.8B. No
+read more easily than both 12B and 1.8B, and DeepL more easily than 1.8B. No
 engine, DeepL included, made measurably fewer meaning-changing errors than
 another. That means no difference was measured, not that they are equivalent.
 
@@ -333,12 +337,12 @@ editing them never blocks an update.
 ### DeepL: the native glossary decides everything
 
 DeepL accepts no prompt, so per-sentence glossary injection does nothing for it —
-only a **native glossary** held in the account applies. The application builds one
+only a **native glossary** held in the account applies. The app builds one
 from the glossary in effect for the session (the global, brand and streamer lists
 merged). The glossary name carries a fingerprint of its contents, so an edit, or
 a different streamer or brand, rebuilds it with no manual step.
 
-Measured on the same 60 lines of real subtitles:
+Measured on the same 60 lines of real captions:
 
 | | Glossary compliance | Median latency |
 |---|---|---|
@@ -353,7 +357,7 @@ merely checking that a key is present.
 The following constraints are measured, not assumed:
 
 - **The free tier permits exactly one glossary** (creating a second returns 456).
-  Only glossaries the application created are deleted — their names start with
+  Only glossaries the app created are deleted — their names start with
   `tlt-`. Glossaries you created in the DeepL dashboard are left alone.
 - **A glossary is a hint, not a substitution.** `las gotas → 维生素滴剂` applies,
   while `la limpieza → 排毒粉` does not fire inside `me paso a la limpieza`. The
@@ -378,7 +382,7 @@ much of the free quota your key has used (from the `used / limit` DeepL returns)
 rather than from this table; DeepL's allowance size and renewal terms are theirs
 to change, so check their current pricing before planning around a number here.
 
-**Subtitle text is sent to DeepL.** Local engines never leave the machine; this
+**Caption text is sent to DeepL.** Local engines never leave the machine; this
 one does. The stream being monitored belongs to someone else, and whether that is
 acceptable is a business decision.
 
@@ -434,7 +438,7 @@ change words; and asking a local model to judge agreement fails outright —
 the 1.8B model called every pair inconsistent, and the 7B model was right four
 times in ten.
 
-## Fault tolerance
+## Fault Tolerance
 
 A live session can fail quietly in three places:
 finding the stream URL, keeping the stream, and keeping up with it. Each is
@@ -503,12 +507,15 @@ valid for about two weeks, so one capture covers a whole stream. See also
   interruption from the end of the stream. Before resolving again the app
   checks that it can reach TikTok; while it cannot, it waits without spending
   reconnect attempts, for up to 30 minutes.
-- A stream that TikTok does not report as ended is waited on for up to 10
-  minutes.
+- If TikTok hasn't reported the stream as ended, the app waits up to 10
+  minutes for it to resume.
 - The app gives up once six connection attempts in a row bring no audio at
   all (two for a pasted stream URL); an attempt that played any audio resets
   the count. A pasted stream URL that stops serving data after playing for
   30 s or more ends the session instead of reconnecting.
+- The comment connection can go half-open: the Comments panel still shows
+  Connected, but no comments arrive. After 15 minutes of silence while
+  connected, the app reconnects it and records that in the session audit.
 - yt-dlp is kept current in the background.
 - While monitoring, the computer is kept from going to sleep on its own, and a
   gap where the app did not run at all is recorded and shown on screen.
@@ -559,9 +566,9 @@ Start. It is created from `banned_terms.example.txt` on first run, and updates
 never change your copy: compare the two after an update to see what the shipped
 list gained.
 
-### Validating your term list against a recorded session
+### Validating your banned-term list against a recorded session
 
-A term list that never fires looks identical to a clean stream. It is worth
+A banned-term list that never fires looks identical to a clean stream. It is worth
 proving which of the two you have, because the failure is silent — and it is a
 failure of the list, not of the matcher.
 
@@ -627,7 +634,7 @@ Drawn from the source at [`430fe06`](https://github.com/EM917/tiktok-live-transl
 
 ```mermaid
 flowchart TD
-    URL["TikTok live link"] --> RESOLVE["stream resolver<br/>signed-in page (macOS) → live API → retry → WebKit (macOS) → yt-dlp → +sign-in → page<br/>(audio-only preferred; see Fault tolerance)"]
+    URL["TikTok live link"] --> RESOLVE["stream resolver<br/>signed-in page (macOS) → live API → retry → WebKit (macOS) → yt-dlp → +sign-in → page<br/>(audio-only preferred; see Fault Tolerance)"]
     RESOLVE -->|"checked media URL"| FF["ffmpeg → RNNoise noise reduction → 16 kHz PCM"]
     FF --> VAD["energy-VAD segmenter (2.5–9 s)"]
     VAD --> AQ["audio queue<br/>60 s cap"]
@@ -682,7 +689,7 @@ startup. On older builds, `ollama stop <model>` releases it immediately.
 
 **The stream URL isn't found, although the stream plays in a browser.** yt-dlp
 can answer "not currently live" for such a stream, so the app does not stop
-there: it tries the layers listed under [Fault tolerance](#fault-tolerance), in
+there: it tries the layers listed under [Fault Tolerance](#fault-tolerance), in
 order, and reports a stream as ended only when TikTok says so. Being signed in
 to TikTok in Safari or Chrome helps for some rooms but is usually not required,
 and no file needs exporting; cookies stay between your computer and TikTok. A
@@ -730,7 +737,7 @@ through the same API in the same minute (four requests in total, no browser).
 The verdict distinguishes "this room is refused while others answer" from "this
 machine gets nothing" and never labels a cause. In the meantime, paste the room
 link together with the `.flv` address from your browser (see
-[Fault tolerance](#fault-tolerance) above); one capture stays valid for about
+[Fault Tolerance](#fault-tolerance) above); one capture stays valid for about
 two weeks.
 
 **The first start appears stuck downloading the recognition model.** The model
@@ -739,7 +746,7 @@ is displayed on the page and this occurs only once.
 
 **All translations fail and captions show only the source language.** Google's
 free endpoint, which `auto` uses when no local model is installed,
-rate-limits per IP and returns 429 under sustained use. The application pauses
+rate-limits per IP and returns 429 under sustained use. The app pauses
 requests for two minutes and recovers automatically, with a banner on the page.
 Speech recognition is unaffected. For extended sessions, install a local Hy-MT2
 model or choose another engine in Settings → Translation Engine. No network
@@ -768,7 +775,7 @@ within 6 seconds to confirm. The current session stops and a new one starts
 with the same spoken language, re-reading the glossaries and the banned-term
 list. Neither streamer has captions until the new one starts speaking, and a
 divider in the caption history marks the change. **Stop**, by contrast, ends
-monitoring and returns to the start page.
+monitoring and returns to the home page.
 
 **Recognition cannot keep pace with the stream.** Use a smaller model
 (`--model small`) or `--beam 1`. On Apple Silicon, confirm the Startup Check
@@ -787,7 +794,7 @@ else was under 0.5 GB; the model weights are about 3.1 GB. These buffers are
 wired unified memory and can be neither compressed nor swapped. The machine was
 10 GB into swap at the time, which coincided with the on-demand 7B translation
 model taking 42–60 s to load. MLX keeps freed buffers in a cache for reuse, and without a limit that cache
-grows with the number of distinct segment lengths. The application sets the
+grows with the number of distinct segment lengths. The app sets the
 limit to 256 MB by default. The value comes from a measurement made the same
 day with monitoring stopped (`tools/bench_mlx_cache.py`, the same audio paired
 segment by segment): against no limit, recognition time changed by −0.5% with
@@ -798,7 +805,7 @@ environment variable `TLT_MLX_CACHE_MB`, or with `"mlx_cache_limit_mb"` in
 `settings.json` (the environment variable takes precedence); the value is a
 non-negative integer in MB, `0` keeps no cache, and `off` sets no limit. The
 setting applies to the `mlx` backend only and is read when the recognition
-model loads, so restart the application after changing it. The value in effect
+model loads, so restart the app after changing it. The value in effect
 is written to the session log's `asr_config` record, and `asr_memory` records
 (one when the model is ready, then one every 5 minutes) carry MLX's active,
 cache and peak memory figures.
@@ -808,7 +815,7 @@ suppresses instrumental music effectively but can only partially suppress sung
 vocals. Confidence filtering removes most such segments; occasional
 false positives are expected.
 
-**The interface is not on port 8765.** If 8765 is occupied, the application
+**The interface is not on port 8765.** If 8765 is occupied, the app
 moves to the next free port in 8766–8774 and says so in the terminal. That's
 the control page only; Phone Viewing uses a port of its own and reuses the
 same one across restarts when it is free, so a printed QR code keeps working —
@@ -842,14 +849,23 @@ button to hide everything currently shown — both act only on that one phone:
 the operator's alert panel and the audit log are unaffected, and nothing is
 sent to the server.
 
+<a id="viewer-comments"></a>**Viewer comments.** The app fetches comments itself through TikTokLive,
+which needs Python 3.10 or later; the component installs itself on the first
+start. It usually works signed out, and retries once with the browser's TikTok
+sign-in when TikTok asks for one. Comments are translated only while the active
+engine is a local model (Hy-MT2 1.8B or TranslateGemma); with a remote engine
+or 7B the panel shows the original text. Comment translation is for display
+only and never part of the alert path. The connection is signed through a
+third-party service; see [Privacy](#privacy-and-usage-boundaries).
+
 **Exporting captions.** There is no export function; select and copy the text
 from the page. The page retains the most recent 300 lines, and the server
 replays the last 100 after a reload or reconnection.
 
-**Closing the console window.** On Windows that console window is the
-translation engine, so closing it exits the application. On macOS, closing the
-application window exits it (during a session it asks first); if launched via
-`Start.command`, close the Terminal window or press Ctrl-C.
+**Closing the console window.** On Windows that console window is the app
+itself, so closing it quits the app. On macOS, closing the app window quits it
+(during a session it asks first); if launched via `Start.command`, close the
+Terminal window or press Ctrl-C.
 
 **Installation fails on a managed computer, or space is insufficient.** The
 initial installation requires about 6 GB and access to PyPI, Hugging Face and
