@@ -7,7 +7,10 @@
   <key>CFBundleDisplayName</key>
   <string>TikTok 直播同传</string>
   <!-- Dock、菜单栏、⌘Tab 里的程序名跟 macOS 系统语言：简体中文系统取 Resources/zh-Hans.lproj，
-       其余取 Resources/en.lproj（两份 InfoPlist.strings）。上面两行只在 strings 都读不到时才用。
+       繁体中文系统（zh-Hant、zh-TW、zh-HK）取 zh-Hant.lproj，其余取 en.lproj。两份中文都写简体的
+       「TikTok 直播同传」：界面把 zh 开头的系统语言都当中文（app/i18n.py 的 _lang_of_tag），繁体系统上
+       界面也是简体中文，程序名跟界面一致。少了 zh-Hant，繁体系统会退到 en。上面两行只在 strings
+       都读不到时才用。
        故意不设 LSHasLocalizedDisplayName：访达照旧显示文件名 TikTok Live Translator.app，
        程序和 README 里「双击 TikTok Live Translator.app」的指引才对得上（用户 09-28 决定 2、5） -->
   <key>CFBundleDevelopmentRegion</key>
@@ -16,6 +19,7 @@
   <array>
     <string>en</string>
     <string>zh-Hans</string>
+    <string>zh-Hant</string>
   </array>
   <key>CFBundleIdentifier</key>
   <string>io.github.em917.tiktok-live-translator</string>

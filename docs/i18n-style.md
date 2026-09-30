@@ -633,6 +633,8 @@
 - **R16 系统层的名字。** Dock、菜单栏里的程序名来自 Info.plist 的 `CFBundleName`，原来写死的是中文。
   - 已按 spec §8.6 落地（提交 N1）：加了 `en.lproj/InfoPlist.strings` 和 `zh-Hans.lproj/InfoPlist.strings`，
     系统按系统语言显示；访达照旧显示文件名（不设 `LSHasLocalizedDisplayName`）。
+  - 09-29 复审补了 `zh-Hant.lproj`（内容同样是简体的「TikTok 直播同传」）：只有两份时，繁体中文系统
+    （zh-Hant、zh-TW、zh-HK）上 macOS 挑 en，Dock 显示英文名，界面却是中文。
   - 苹果建议 `CFBundleName` 不超过 15 个字符。“TikTok Live Translator” 有 22 个字符。
     最初的建议是菜单栏名用 “Live Translator”（刚好 15 个）、`CFBundleDisplayName` 保留全名；
     N1 按 spec §8.6 两个键都用全名，与窗口标题、通知里的程序名一致。菜单栏里放不放得下要真机看。

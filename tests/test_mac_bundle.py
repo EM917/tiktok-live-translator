@@ -4,7 +4,7 @@
 变量、不在 pytest、不带无窗口参数、且当前不在 bundle 里时才重新执行；
 execve 的参数形状；壳没备好时静默放弃。测试里绝不真的 exec。
 
-N1（spec §8.5、§8.6）：Info.plist 的两份 InfoPlist.strings 让 Dock、菜单栏里的程序名跟
+N1（spec §8.5、§8.6）：Info.plist 的三份 InfoPlist.strings 让 Dock、菜单栏里的程序名跟
 macOS 系统语言，访达保持文件名；.app 启动器和 Start.command 在 Python 之前弹的对话框
 中英并列。启动器是真的用 bash 跑的，但 PATH 里只有假的 osascript / open：不弹框、
 不开浏览器。"""
@@ -126,8 +126,10 @@ ROOT = Path(__file__).resolve().parent.parent
 CONTENTS = ROOT / macbundle.APP_DIR_NAME / "Contents"
 LAUNCHER = CONTENTS / "MacOS" / "TikTokLiveTranslator"
 START_COMMAND = ROOT / "Start.command"
-# lproj 名 → Dock、菜单栏里的程序名；与界面上的程序名是同一对（app/i18n.py 的 APP_NAME）
-BUNDLE_NAMES = {"en": i18n.text(i18n.APP_NAME, i18n.EN), "zh-Hans": i18n.text(i18n.APP_NAME, i18n.ZH)}
+# lproj 名 → Dock、菜单栏里的程序名；与界面上的程序名是同一对（app/i18n.py 的 APP_NAME）。
+# 繁体中文系统上界面也是简体中文（_lang_of_tag 把 zh 开头的都算中文），程序名跟界面一致
+BUNDLE_NAMES = {"en": i18n.text(i18n.APP_NAME, i18n.EN), "zh-Hans": i18n.text(i18n.APP_NAME, i18n.ZH),
+                "zh-Hant": i18n.text(i18n.APP_NAME, i18n.ZH)}
 BASH = "/bin/bash"
 needs_bash = pytest.mark.skipif(sys.platform == "win32" or not os.path.exists(BASH),
                                 reason="启动器是 macOS 的 bash 脚本")
@@ -135,13 +137,14 @@ on_macos = pytest.mark.skipif(sys.platform != "darwin", reason="用系统自己�
 
 
 def test_the_bundle_names_are_the_app_name_pair():
-    assert BUNDLE_NAMES == {"en": "TikTok Live Translator", "zh-Hans": "TikTok 直播同传"}
+    assert BUNDLE_NAMES == {"en": "TikTok Live Translator", "zh-Hans": "TikTok 直播同传",
+                            "zh-Hant": "TikTok 直播同传"}
 
 
 def test_info_plist_localizes_the_name_but_keeps_the_finder_name():
     info = plistlib.loads((CONTENTS / "Info.plist").read_bytes())
     assert info["CFBundleDevelopmentRegion"] == "en"        # 两种都对不上的系统语言退到英文
-    assert info["CFBundleLocalizations"] == ["en", "zh-Hans"]
+    assert info["CFBundleLocalizations"] == ["en", "zh-Hans", "zh-Hant"]
     lproj = sorted(p.name[:-len(".lproj")] for p in (CONTENTS / "Resources").glob("*.lproj"))
     assert lproj == sorted(info["CFBundleLocalizations"])
     # 访达保持文件名（用户决定 5）：设了它，中文系统的访达里显示「TikTok 直播同传」，
@@ -185,6 +188,22 @@ def test_the_strings_reader_rejects_what_it_cannot_read(tmp_path):
     bad.write_bytes('"CFBundleName" = "直播";\n'.encode("utf-16"))
     with pytest.raises(UnicodeDecodeError):
         _read_strings(bad)
+
+
+@on_macos
+@pytest.mark.parametrize("prefs", [["zh-Hans-CN"], ["zh-CN"], ["zh-Hans-US", "en-US"], ["zh-Hant-TW"],
+                                   ["zh-TW"], ["zh-HK"], ["zh-Hant-HK"], ["en-US"], ["en-GB", "zh-Hans"],
+                                   ["ja-JP"], ["es-MX"]])
+def test_the_dock_name_and_the_ui_agree_on_chinese(prefs):
+    """复审（english-e2e）：以前只有 en、zh-Hans 两份，繁体中文系统上 macOS 挑 en.lproj，Dock 叫
+    TikTok Live Translator，界面却是中文（用户决定 2：中文系统叫「TikTok 直播同传」）。用系统自己
+    挑本地化的那个函数核对：程序名是中文，当且仅当界面按系统语言解析成中文。"""
+    foundation = pytest.importorskip("Foundation")
+    info = plistlib.loads((CONTENTS / "Info.plist").read_bytes())
+    picked = foundation.NSBundle.preferredLocalizationsFromArray_forPreferences_(
+        info["CFBundleLocalizations"], prefs)
+    name = BUNDLE_NAMES[str(picked[0])]
+    assert (name == i18n.text(i18n.APP_NAME, i18n.ZH)) is (i18n._lang_of_tag(prefs[0]) == i18n.ZH)
 
 
 @on_macos
