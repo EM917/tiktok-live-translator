@@ -78,6 +78,24 @@ _FRESHEN_NOTES = {
 }
 
 
+# 终端那行「[弹幕] 字段：…」里各计数键的中文名（终端永远是中文，见 CLAUDE.md 第九条）
+_FIELD_NAMES = {
+    "id": "id", "id_str": "id_str", "sec_uid": "sec_uid",
+    "display_id": "账号名",  # i18n: terminal
+    "identity": "主播或房管",  # i18n: terminal
+    "identity_any": "任一身份标记",  # i18n: terminal
+    "mention": "@了人",  # i18n: terminal
+}
+
+
+def _count(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def _empty_fields():
+    return {"n": 0, "has": {}}
+
+
 def worker_available():
     """子进程是否具备运行条件：Python >= 3.10 且已装 TikTokLive。"""
     if sys.version_info < (3, 10):
@@ -90,9 +108,75 @@ def worker_available():
         return False
 
 
+def _positive_int(v):
+    """真正的正整数（bool 不算）。betterproto 没设的 int 字段是 0，不是 None。"""
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _clean_str(v, limit):
+    """去空白后非空的字符串，截到 limit；不是字符串或是空串返回 None。"""
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    return v[:limit] if v else None
+
+
+def _digits(v):
+    """全数字且不是 0 的字符串（id_str 的「有值」）；否则 None。"""
+    v = _clean_str(v, 32)
+    return v if v and v.isdigit() and v.strip("0") else None
+
+
+def _account_fields(ev, user_obj):
+    """弹幕作者的账号字段（规格 §3.1）：只放有值的键，一个都没有就是空 dict。
+
+    uid 是稳定账号键，一律字符串——TikTok 用户 id 约 19 位，超过 JS 的 2^53，
+    前端当数字解析会丢精度。取值顺序 id → id_str → sec_uid → handle，
+    uid_src 记它从哪来（只有 handle 的人键不稳，不能自动加入关注名单）。
+    角色和 @ 只看 `is True` / 正整数：betterproto 没设的子消息可能是个默认实例。"""
+    out = {}
+    handle = (_clean_str(getattr(user_obj, "display_id", None), 64)
+              or _clean_str(getattr(user_obj, "unique_id", None), 64))
+    sec = _clean_str(getattr(user_obj, "sec_uid", None), 78)
+    sec_key = "s:" + sec if sec else None
+    uid_id = getattr(user_obj, "id", None)
+    id_str = _digits(getattr(user_obj, "id_str", None))
+    if _positive_int(uid_id):
+        out["uid"], out["uid_src"] = str(uid_id), "id"
+    elif id_str:
+        out["uid"], out["uid_src"] = id_str, "id_str"
+    elif sec_key:
+        out["uid"], out["uid_src"] = sec_key, "sec_uid"
+    elif handle:
+        out["uid"], out["uid_src"] = "h:" + handle, "handle"
+    if sec_key and out.get("uid_src") != "sec_uid":
+        out["sec"] = sec_key                  # 多键匹配用：同一个人换了主键也认得出
+    if handle:
+        out["handle"] = handle
+    identity = getattr(ev, "user_identity", None)
+    attr = getattr(user_obj, "user_attr", None)
+    if getattr(identity, "is_anchor", None) is True:
+        out["role"] = "anchor"
+    elif (getattr(identity, "is_moderator_of_anchor", None) is True
+          or getattr(attr, "is_admin", None) is True):
+        out["role"] = "mod"
+    if _mentions_someone(ev):
+        out["mention"] = True
+    return out
+
+
+def _mentions_someone(ev):
+    """这条弹幕 @ 了人：at_user 的 id 是正整数，或 mention_users 非空。"""
+    if _positive_int(getattr(getattr(ev, "at_user", None), "id", None)):
+        return True
+    mentions = getattr(ev, "mention_users", None)
+    return isinstance(mentions, (list, tuple)) and len(mentions) > 0
+
+
 def event_to_item(ev):
     """把 TikTokLive 的 CommentEvent（鸭子类型，纯属性访问）转成
-    `{"id", "user", "text"}`；没有可显示文本时返回 None。
+    `{"id", "user", "text"}`，再加上有值的账号字段（见 _account_fields）；
+    没有可显示文本时返回 None。
 
     刻意用 getattr 而不是直接属性访问：这样传一个 SimpleNamespace 伪造的
     假事件进来也能测，不用真的装 TikTokLive。
@@ -123,7 +207,12 @@ def event_to_item(ev):
         # 重连后被父进程的 id 去重当成重复弹幕整批丢掉
         _t_counter += 1
         cid = "t{}-{}".format(os.getpid(), _t_counter)
-    return {"id": cid, "user": str(user), "text": text}
+    item = {"id": cid, "user": str(user), "text": text}
+    try:
+        item.update(_account_fields(ev, user_obj))
+    except Exception:
+        pass        # 账号字段只是附带的：取不到也照常显示这条弹幕
+    return item
 
 
 def session_cookies(cookies_browser):
@@ -245,6 +334,7 @@ class CommentSource:
         self._silent_restart = False    # 上一次子进程退出是不是看门狗触发的优雅重连
         self._last_silent_restart_at = None  # 上次静默重连的 _clock() 时间，同一窗口最多一次
         self.comments_received = 0      # 本场（start()~stop()）收到的弹幕条数，写进 session_end
+        self.comment_fields = _empty_fields()   # 本场弹幕作者各字段的「非空」次数，写进 session_end
         # stop() 等监督任务超时放手时，仍要保住它的引用——事件循环只弱引用
         # 任务，不保引用的话任务可能在收尾的路上被 GC 收走，子进程/管道就
         # 成了没人清理的孤儿（同 Pipeline._spawn 的理由）
@@ -277,6 +367,7 @@ class CommentSource:
     def _launch(self, unique_id):
         self._unique_id = unique_id
         self.comments_received = 0      # 新的一场，从零重新数（跨这一场内的重连都累加）
+        self.comment_fields = _empty_fields()
         self._task = asyncio.ensure_future(self._supervise(unique_id))
 
     async def stop(self, _external=True):
@@ -562,6 +653,8 @@ class CommentSource:
                         self._last_item_at = self._clock()
                         self.comments_received += len(items)
                         await self._safe_on_items(items)
+                elif kind == "field_stats":
+                    self._add_field_stats(obj)
             returncode = await proc.wait()
         except asyncio.CancelledError:
             await self._terminate(proc)
@@ -600,6 +693,19 @@ class CommentSource:
             healthy = True
             self._silent_restart = False
         return returncode, healthy
+
+    def _add_field_stats(self, obj):
+        """累加子进程吐的增量计数，终端打一行累计值。只认非负整数，别的整行丢掉。"""
+        n, has = obj.get("n"), obj.get("has")
+        if not _count(n) or not isinstance(has, dict):
+            return
+        totals = self.comment_fields
+        totals["n"] += n
+        for key, value in has.items():
+            if isinstance(key, str) and len(key) <= 32 and _count(value):
+                totals["has"][key] = totals["has"].get(key, 0) + min(value, n)
+        print("[弹幕] 字段：累计 {} 条里 {}".format(totals["n"], "、".join(
+            "{} {}".format(_FIELD_NAMES.get(k, k), v) for k, v in totals["has"].items())))
 
     async def _silence_watchdog(self, proc):
         """连着但哑了太久就优雅重连。评论 WebSocket 会「半开」：状态一直是
