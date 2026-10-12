@@ -14,6 +14,10 @@ glossary.apply()），测的就是要发版的那一份。然后两位 Claude �
     nice -n 19 python3 tools/bench_claude_vs_local.py --phase translate --max-cost 1
     nice -n 19 python3 tools/bench_claude_vs_local.py --phase report         # 只出报告，不发请求
 
+只比引擎，不比思考设置：请求体永远是生产那一份（ClaudeTranslator._body），能换的只有 --model。
+eval-plan §7 第 4 步那个比较「关思考 + low / adaptive + low / adaptive + medium」的 pilot **没有
+实现**，关思考和 adaptive 谁的译文更准，这个工具测不出来。
+
 常用参数：--n 样本量（默认 500）、--seed、--root 程序目录（默认本工具所在的仓库；要放着
 glossary.txt、profiles/、brands/ 和它们的 .bak——在 worktree 里跑时指向主目录）、--logs 会话日志
 目录（默认 <root>/logs）、--out 输出目录（默认 <logs>/bench-claude-vs-local，在被 git 忽略的 logs/
