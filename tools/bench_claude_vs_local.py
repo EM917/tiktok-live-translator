@@ -43,19 +43,28 @@ glossary.txt、profiles/、brands/ 和它们的 .bak——在 worktree 里跑时
   已经在 dev_eval 里（文件里的规则：被正式评级的 session 必须在评级开始之前加入）。不在的话
   --phase all / judge 在发出任何请求之前就拒绝开工，并把要加的条目写进 dev_eval-additions.json，
   在 PR 里改；只跑 --phase translate 不受影响（翻译不是评级）。
+* **新主播默认不进样本**：sealed_test 一直空着，规则是「下一个从未分析过的新主播，在任何评审
+  之前整体冻入」。一旦被评过就封不进去了，所以首场在全部日志最新一场之前 NEW_STREAMER_DAYS 天
+  以内的主播（2026-10-12 是 celestepimienta2）默认整场排除，漏斗里点名。要不要冻入是用户的决定：
+  决定拿来评，就给 --include-new-streamer 名字，或者先把它加进 dev_eval。
 
 语料怎么抽（照 eval-plan，2026-10-12）：
   会话日志按 session_start 切块（同一文件可能有多场，seq 每场重编号），按 seq 把 segment 和
-  translation 配对。只要 engine == "hymt2" 的 ok 译文（7B 是 hymt2-7b，translation_strong 不算），
-  language == "es"、至少 3 个词、译文是中文；文本规范化后去重，再按 mine_training_candidates 的
-  骨架去重。每一场当时生效的词表从本机现有文件、.bak 备份和 git 历史里找，**合并后的指纹对上
+  translation 配对。只要 engine == "hymt2" 的那条翻译记录（7B 是 hymt2-7b，translation_strong
+  不算），language == "es"、至少 3 个词；文本规范化后去重，再按 mine_training_candidates 的
+  骨架去重。两边的失败一视同仁：1.8B 当时没有译文（ok=false 或空串）的句子留在池里、按失败计
+  （和 Claude 的拒答、超时一样直接算 major、不可读）；1.8B 的译文不是中文时照样送评，和 Claude
+  的非中文输出一样由评委判（评分表把「输出不是中文」算 non_translation，一律 major）。
+  每一场当时生效的词表从本机现有文件、.bak 备份和 git 历史里找，**合并后的指纹对上
   session_start.merged_glossary_hash 才用**，该场 code_commit 的 app/glossary.py 里与提示和兜底
   有关的函数也要和现在逐字一致（AST 比对）——对不上的整场排除，不猜。profile 开了 vocative_strip
   的场次送翻文本和屏幕原文不同，也整场排除。排除回归集（tools/meaning_cases.txt）和 09-01 四方卷
   已评过的那 260 条。
-  样本两部分：随机 70%（按主播分层，单个主播最多 40%，池子不足 100 句的主播并入「其他」）——
-  代表性的错误率只从这一部分报；难句 30%（复用 bench_live._bucket：价格/数字、商品名/词表、
-  残句、口语/俚语、中英混说，按 50/40/30/15/15 分配）。
+  样本两部分：随机 70%（按主播分层，单个主播最多 40%，池子不足 100 句的主播并入「其他」）；
+  难句 30%（复用 bench_live._bucket：价格/数字、商品名/词表、残句、口语/俚语、中英混说，按
+  50/40/30/15/15 分配）。随机部分是**封顶的分层样本**：bella 在池子里占约 65%，样本里只占 40%，
+  所以它的原始比例不代表池子也不代表日常；报告另给按候选池各主播占比加权的估计（分层 bootstrap
+  区间），池子的分组大小冻结时记进 manifest.json。
 
 公平性：1.8B 当时在提示词里收到了本句命中的词表对，日志里的译文也已经做过 glossary.apply()；
 生产里的 ClaudeTranslator 不收词表提示（给不给是另一项改动，要单独测，而且会把本机词表发给
@@ -133,6 +142,7 @@ DEFAULT_SEED = 20261012
 RANDOM_SHARE = 0.7
 CAP_SHARE = 0.4                              # 单个主播在随机部分最多占的比例
 MIN_GROUP = 100                              # 池子不足这么多句的主播并入「其他」
+NEW_STREAMER_DAYS = 7                        # 首场离全部日志最新一场这么近的主播算新主播
 OTHER = "其他"
 HARD_QUOTA = (("价格/数字", 50), ("商品名/词表", 40), ("残句", 30),
               ("口语/俚语", 15), ("中英混说", 15))
@@ -211,7 +221,9 @@ _CJK = re.compile(r"[一-鿿]")
 
 
 def pairs_of_block(block):
-    """一场里的 (segment, 第一条 ok 的 translation, 上一句, 下一句)，按 seq 顺序。"""
+    """一场里的 (segment, 翻译记录, 上一句, 下一句)，按 seq 顺序。翻译记录取第一条有译文的 ok
+    记录；一条都没有就取这一句的第一条记录（失败：中控当时看到的是没有译文）；这一句根本没有
+    翻译记录时是 None。"""
     segs = [r for r in block["rows"] if r.get("type") == "segment"]
     trs = defaultdict(list)
     for r in block["rows"]:
@@ -220,12 +232,19 @@ def pairs_of_block(block):
     texts = [(s.get("text") or "").strip() for s in segs]
     out = []
     for i, seg in enumerate(segs):
-        ok = [t for t in trs.get(seg.get("seq"), [])
-              if t.get("ok") and (t.get("translated") or "").strip()]
+        rows = trs.get(seg.get("seq"), [])
+        ok = [t for t in rows if t.get("ok") and (t.get("translated") or "").strip()]
         prev = next((texts[j] for j in range(i - 1, -1, -1) if texts[j]), "")
         nxt = next((texts[j] for j in range(i + 1, len(texts)) if texts[j]), "")
-        out.append((seg, ok[0] if ok else None, prev, nxt))
+        out.append((seg, ok[0] if ok else (rows[0] if rows else None), prev, nxt))
     return out
+
+
+def local_translation(tr):
+    """翻译记录里中控当时看到的译文；失败（ok=false 或空串）返回 None。"""
+    if not tr or not tr.get("ok"):
+        return None
+    return (tr.get("translated") or "").strip() or None
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +463,58 @@ def read_holdout(path):
     return tiers
 
 
+def _when(text):
+    try:
+        return datetime.fromisoformat(str(text)[:19])
+    except ValueError:
+        return None
+
+
+def first_seen(logs_dir):
+    """→ ({主播: 首场 started_at}, {会话文件: {主播}}, 全部日志里最新一场的 started_at)。纯读，
+    只看 session_start 行。"""
+    first, by_file, latest = {}, defaultdict(set), None
+    for path in sorted(Path(logs_dir).glob("session-*.jsonl")):
+        try:
+            fh = open(path, encoding="utf-8")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if "session_start" not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("type") != "session_start":
+                    continue
+                when = _when(row.get("started_at"))
+                streamer = (row.get("streamer") or streamer_of(row.get("room_url") or "")
+                            or "").strip()
+                by_file[path.name].add(streamer)
+                if when is None:
+                    continue
+                latest = when if latest is None or when > latest else latest
+                if streamer and (streamer not in first or when < first[streamer]):
+                    first[streamer] = when
+    return first, by_file, latest
+
+
+def new_streamers(logs_dir, holdout, include=(), days=NEW_STREAMER_DAYS):
+    """首场离全部日志最新一场不到 days 天、还没人决定过的主播 → {主播: 首场日期}。
+    「决定过」：命令行 --include-new-streamer 点了名，或者它（或它的某一场）已经在 dev_eval 里。"""
+    first, by_file, latest = first_seen(logs_dir)
+    if latest is None:
+        return {}
+    dev = holdout["dev_eval"]
+    decided = set(include) | set(dev["streamers"])
+    for name in dev["sessions"]:
+        decided |= by_file.get(name, set())
+    return {s: t.date().isoformat() for s, t in sorted(first.items())
+            if s and s not in decided and (latest - t).days < days}
+
+
 def exam_seqs(logs_dir):
     """09-01 四方卷已经评过的 seq（那 260 条不再进样本）。"""
     try:
@@ -454,9 +525,11 @@ def exam_seqs(logs_dir):
 
 
 def build_pool(logs_dir, resolver, holdout, exclude_sessions=(), exclude_streamers=(),
-               regression=None, exam=None):
-    """→ (候选池, 漏斗 Counter, 每场的情况)。纯读。"""
+               regression=None, exam=None, include_new=()):
+    """→ (候选池, 漏斗 Counter, 每场的情况)。纯读。新主播（见 new_streamers）整场排除，
+    漏斗里按名字记。"""
     funnel = Counter()
+    fresh = new_streamers(logs_dir, holdout, include_new)
     sessions = []
     pool = []
     seen_text, seen_skel = set(), set()
@@ -484,6 +557,11 @@ def build_pool(logs_dir, resolver, holdout, exclude_sessions=(), exclude_streame
                 funnel["命令行排除"] += n_seg
                 info["excluded"] = "cli"
                 continue
+            if streamer in fresh:
+                funnel["新主播 {}（首场 {}，待定是否冻入 sealed_test）".format(
+                    streamer, fresh[streamer])] += n_seg
+                info["excluded"] = "new_streamer"
+                continue
             g, why, options = resolver.for_session(start)
             if g is None:
                 funnel[{"no_provenance": "没有来源记录（08-27 之前）",
@@ -502,7 +580,7 @@ def build_pool(logs_dir, resolver, holdout, exclude_sessions=(), exclude_streame
                     funnel["text 为空（整段被拒）"] += 1
                     continue
                 if tr is None:
-                    funnel["没有 ok 译文"] += 1
+                    funnel["没有翻译记录"] += 1
                     continue
                 if tr.get("engine") != LOCAL_ENGINE:
                     funnel["引擎不是 hymt2（{}）".format(tr.get("engine"))] += 1
@@ -513,10 +591,7 @@ def build_pool(logs_dir, resolver, holdout, exclude_sessions=(), exclude_streame
                 if len(text.split()) < 3:
                     funnel["少于 3 个词"] += 1
                     continue
-                local = tr["translated"].strip()
-                if not _CJK.search(local):
-                    funnel["译文不是中文"] += 1
-                    continue
+                local = local_translation(tr)
                 if exam is not None and path.name == EXAM_SESSION and seg.get("seq") in exam:
                     funnel["09-01 四方卷已评过"] += 1
                     continue
@@ -533,6 +608,10 @@ def build_pool(logs_dir, resolver, holdout, exclude_sessions=(), exclude_streame
                     funnel["骨架重复"] += 1
                     continue
                 seen_skel.add(skel)
+                if local is None:
+                    funnel["（留在池里）1.8B 当时没有译文，按失败计"] += 1
+                elif not _CJK.search(local):
+                    funnel["（留在池里）1.8B 译文不是中文，照样送评"] += 1
                 hits = g.matching(text)
                 ms = tr.get("translate_ms")
                 pool.append({
@@ -541,8 +620,8 @@ def build_pool(logs_dir, resolver, holdout, exclude_sessions=(), exclude_streame
                     "streamer": streamer or "", "started_at": start.get("started_at"),
                     "code_commit": start.get("code_commit"),
                     "merged_glossary_hash": start.get("merged_glossary_hash"),
-                    "text": text, "local": local,
-                    "local_ms": ms if isinstance(ms, (int, float)) else None,
+                    "text": text, "local": local, "local_failed": local is None,
+                    "local_ms": ms if isinstance(ms, (int, float)) and local is not None else None,
                     "entries": [[list(variants), zh] for _v, zh, variants in hits],
                     "prev": prev, "next": nxt,
                 })
@@ -1106,10 +1185,15 @@ def gate(run=subprocess.run):
 # 翻译阶段（Claude 一侧，生产请求体）
 # ---------------------------------------------------------------------------
 
-def production_outcome(rec):
-    """生产里中控看到的结果：拒答、撞上限、空输出、超过生产超时都是「没有译文」。"""
+def production_outcome(rec, retried_fails=False):
+    """生产里中控看到的结果：拒答、撞上限、空输出、超过生产超时都是「没有译文」。
+
+    retried_fails：跑批时 429/5xx/超时重试过才拿到的译文也算失败（生产不重试，那一句当时
+    只会显示原文）。只给敏感性分析用。"""
     if rec is None:
         return None, "missing"
+    if retried_fails and (rec.get("attempts") or 1) > 1:
+        return None, "retried"
     if rec.get("stop_reason") == "refusal":
         return None, "refusal"
     if rec.get("stop_reason") == "max_tokens":
@@ -1398,23 +1482,32 @@ def load_overrides(path, ids):
     return out
 
 
-def consensus_labels(items, model, judges, adjudicator, tcache, jcache, acache, overrides=()):
+def failed_side(it, engine, claude_out, why):
+    """这一边是不是「生产里中控看到的是没有译文」。Claude 缺译文（还没跑）不算失败。"""
+    if engine == "local":
+        return bool(it.get("local_failed"))
+    return claude_out is None and why != "missing"
+
+
+def consensus_labels(items, model, judges, adjudicator, tcache, jcache, acache, overrides=(),
+                     retried_fails=False):
     """每条、每个引擎的最终标签：{id: {engine: {"major", "not_good", "error_type", "failed", "source"}}}。
 
-    两位评委一致就用；不一致用裁决；只有一位评委给出了有效评分就用那一位；翻译失败一律
-    major 加不可读。overrides 只改 major，并记下来源。"""
+    两位评委一致就用；不一致用裁决；只有一位评委给出了有效评分就用那一位；翻译失败（任何一边）
+    一律 major 加不可读。overrides 只改 major，并记下来源。"""
     ov = {(r["id"], r["engine"]): r for r in overrides}
     out = {}
     for it in items:
         rec = tcache.get("{}|{}".format(model, it["id"]))
-        claude_out, why = production_outcome(rec)
+        claude_out, why = production_outcome(rec, retried_fails)
         per_judge = [grades_by_engine(jcache.get("{}|main|{}".format(j, it["id"]))) for j in judges]
         adj = grades_by_engine(acache.get("{}|adjudicate|{}".format(adjudicator, it["id"]))) \
             if adjudicator else None
         labels = {}
         for e in ENGINES:
-            failed = e == "claude" and claude_out is None and why != "missing"
-            lab = {"failed": failed, "fail_reason": why if failed else None}
+            failed = failed_side(it, e, claude_out, why)
+            lab = {"failed": failed,
+                   "fail_reason": (why if e == "claude" else "local_failed") if failed else None}
             if e == "claude" and why == "missing":
                 labels[e] = None
                 continue
@@ -1445,15 +1538,19 @@ def consensus_labels(items, model, judges, adjudicator, tcache, jcache, acache, 
 
 
 def judge_labels(items, model, judge, tcache, jcache):
-    """单个评委的标签（翻译失败同样按 major / 不可读）。"""
+    """单个评委的标签（翻译失败同样按 major / 不可读），每边另带 failed。"""
     out = {}
     for it in items:
         claude_out, why = production_outcome(tcache.get("{}|{}".format(model, it["id"])))
         g = grades_by_engine(jcache.get("{}|main|{}".format(judge, it["id"])))
         if g is None or why == "missing":
             continue
-        out[it["id"]] = {e: {k: (True if (e == "claude" and claude_out is None) else f(g[e]))
-                             for k, _l, f in ENDPOINTS} for e in ENGINES}
+        labs = {}
+        for e in ENGINES:
+            failed = failed_side(it, e, claude_out, why)
+            labs[e] = {k: (True if failed else f(g[e])) for k, _l, f in ENDPOINTS}
+            labs[e]["failed"] = failed
+        out[it["id"]] = labs
     return out
 
 
@@ -1480,7 +1577,7 @@ def manual_review(items, labels, model, tcache):
         if not zhs:
             continue
         claude_out, _w = production_outcome(tcache.get("{}|{}".format(model, i)))
-        for e, text in (("local", it["local"]), ("claude", claude_out)):
+        for e, text in (("local", it.get("local")), ("claude", claude_out)):
             le = lab.get(e)
             if not le or not le.get("major") or le.get("failed") or not text:
                 continue
@@ -1542,6 +1639,45 @@ def wording(label, res, adj_p):
     return ("{}：这次检验分辨不出两者。配对差 {:+.1f} 个百分点，95% 区间 [{:+.1f}, {:+.1f}]："
             "既排除不掉 Claude 低 {:.1f} 个点，也排除不掉它高 {:.1f} 个点。**没测出差异，不等于等价。**").format(
         label, 100 * res["diff"], lo, hi, abs(min(lo, 0.0)), max(hi, 0.0))
+
+
+def weighted_random(labels, items, weights, key, rounds=2000, seed=1):
+    """随机部分按候选池里各主播组的占比加权：每组先算自己的比例，再按池子占比加权求和。
+    样本里一条都没有的组不进加权（剩下的组重新归一），在 missing 里点名。区间是分层 bootstrap
+    （每组内有放回重抽）的 2.5% / 97.5% 分位。→ None（没有可用条目或没有分组大小）。"""
+    by_group = defaultdict(list)
+    for it in items:
+        if it.get("part") != "random":
+            continue
+        lab = labels.get(it["id"]) or {}
+        lo, cl = lab.get("local"), lab.get("claude")
+        if not lo or not cl or lo.get(key) is None or cl.get(key) is None:
+            continue
+        by_group[it["group"]].append((bool(lo[key]), bool(cl[key])))
+    groups = sorted(g for g in by_group if (weights or {}).get(g))
+    total = sum(weights[g] for g in groups)
+    if not total:
+        return None
+    w = {g: weights[g] / total for g in groups}
+
+    def est(sample):
+        lo = sum(w[g] * sum(x for x, _y in sample[g]) / len(sample[g]) for g in groups)
+        cl = sum(w[g] * sum(y for _x, y in sample[g]) / len(sample[g]) for g in groups)
+        return lo, cl, cl - lo
+
+    point = est(by_group)
+    rnd = random.Random(seed)
+    boots = [est({g: [rnd.choice(by_group[g]) for _ in by_group[g]] for g in groups})
+             for _ in range(rounds)]
+
+    def ci(i):
+        xs = sorted(b[i] for b in boots)
+        return [xs[int(rounds * 0.025)], xs[min(rounds - 1, int(rounds * 0.975))]]
+
+    return {"local": point[0], "claude": point[1], "diff": point[2],
+            "ci": {"local": ci(0), "claude": ci(1), "diff": ci(2)},
+            "n": sum(len(v) for v in by_group.values()),
+            "weights": w, "missing": sorted(g for g in weights if g not in groups)}
 
 
 def latency_block(items, model, tcache):
@@ -1611,14 +1747,33 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
     for (_k, lab, res), ap in zip(primary, adj):
         L_.append("- " + wording(lab, res, ap))
     L_.append("")
-    L_.append("代表性的错误率只看随机部分；难句部分单独一行（这两行不做校正，只描述）：")
+    L_.append("随机部分和难句部分各一行（只描述，不做校正）。随机部分是按主播封顶分层抽的（单个主播最多 "
+              "{:.0%}），这一行**没加权**，不代表候选池也不代表日常；按候选池各主播占比加权的估计在下面：".format(
+                  CAP_SHARE))
     L_.append("")
     L_.append(TEST_HEAD)
     for k, lab, _f in ENDPOINTS:
-        for part, ids in (("随机部分", random_ids), ("难句部分", hard_ids)):
+        for part, ids in (("随机部分（封顶分层，未加权）", random_ids), ("难句部分", hard_ids)):
             res = paired_test(endpoint_pairs(labels, k, ids))
             L_.append(test_rows("{} · {}".format(lab, part), res))
-            data["primary"]["{}_{}".format(k, "random" if part == "随机部分" else "hard")] = res
+            data["primary"]["{}_{}".format(k, "hard" if part == "难句部分" else "random")] = res
+    weights = manifest.get("pool_groups")
+    L_.append("")
+    if not weights:
+        L_.append("（manifest.json 里没有候选池的分组大小，算不了加权估计。）")
+    for k, lab, _f in ENDPOINTS:
+        wr = weighted_random(labels, items, weights, k) if weights else None
+        data["primary"][k + "_random_weighted"] = wr
+        if wr is None:
+            continue
+        L_.append("- {}，随机部分按候选池主播占比加权（n={}，分层 bootstrap 95%）：1.8B {}（{} 到 {}），"
+                  "Claude {}（{} 到 {}），差 {:+.1f} 个百分点（{:+.1f} 到 {:+.1f}）。{}".format(
+                      lab, wr["n"], pct(wr["local"]), pct(wr["ci"]["local"][0]),
+                      pct(wr["ci"]["local"][1]), pct(wr["claude"]), pct(wr["ci"]["claude"][0]),
+                      pct(wr["ci"]["claude"][1]), 100 * wr["diff"], 100 * wr["ci"]["diff"][0],
+                      100 * wr["ci"]["diff"][1],
+                      "样本里没有的组不进加权：{}。".format("、".join(wr["missing"]))
+                      if wr["missing"] else ""))
     # 各评委单独
     L_.append("")
     L_.append("## 各评委单独分析（主结论要求两位方向一致；这里是评委原判，不含 overrides 的人工改判）")
@@ -1636,12 +1791,28 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
                                     in zip(ENDPOINTS, res, ap)}
     # 敏感性
     L_.append("")
-    L_.append("## 敏感性：排除 Claude 没有译文的条目")
-    ok_ids = {i for i, lab in labels.items() if lab.get("claude") and not lab["claude"]["failed"]}
+    L_.append("## 敏感性（只描述，不做校正）")
+    L_.append("")
+    L_.append("排除任一边没有译文的条目（两边的失败都按 major、不可读计，这里看去掉之后还剩什么）：")
+    ok_ids = {i for i, lab in labels.items() if lab.get("claude") and lab.get("local")
+              and not lab["claude"]["failed"] and not lab["local"]["failed"]}
     L_.append("")
     L_.append(TEST_HEAD)
     for k, lab, _f in ENDPOINTS:
         L_.append(test_rows(lab, paired_test(endpoint_pairs(labels, k, ok_ids))))
+    strict = consensus_labels(items, model, judges, adjudicator, tcache, jcache, acache, overrides,
+                              retried_fails=True)
+    n_retried = sum(1 for lab in strict.values()
+                    if lab.get("claude") and lab["claude"].get("fail_reason") == "retried")
+    L_.append("")
+    L_.append("跑批时重试过才拿到的 Claude 译文按失败计（生产不重试，那一句当时只会显示原文；"
+              "共 {} 条）：".format(n_retried))
+    L_.append("")
+    L_.append(TEST_HEAD)
+    for k, lab, _f in ENDPOINTS:
+        res = paired_test(endpoint_pairs(strict, k))
+        L_.append(test_rows(lab, res))
+        data.setdefault("sensitivity", {})[k + "_retried_as_failed"] = res
     # 切片
     L_.append("")
     L_.append("## 切片（探索性：Holm 校正覆盖全部切片检验，还要在新语料上复现才算数）")
@@ -1676,7 +1847,7 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
     gloss = []
     for it in items:
         claude_out, _w = production_outcome(tcache.get("{}|{}".format(model, it["id"])))
-        lo, cl = objective(it["text"], it["local"]), objective(it["text"], claude_out)
+        lo, cl = objective(it["text"], it.get("local")), objective(it["text"], claude_out)
         if lo is None or cl is None:
             continue
         for k in lo:
@@ -1696,7 +1867,13 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
     data["objective"]["glossary_missing"] = res
     # 失败
     L_.append("")
-    L_.append("## Claude 没有译文的条目（生产里中控看到的是原文）")
+    L_.append("## 没有译文的条目（生产里中控看到的是原文）")
+    n_lf = sum(1 for it in items if it.get("local_failed"))
+    lf_lo, lf_hi = clopper_pearson(n_lf, len(items))
+    L_.append("")
+    L_.append("1.8B 当时没有译文：{}/{} 条（{}，Clopper–Pearson 95% 区间 [{}, {}]）。".format(
+        n_lf, len(items), pct(n_lf / len(items)) if items else "—", pct(lf_lo), pct(lf_hi)))
+    data["local_failures"] = {"n": len(items), "failed": n_lf, "cp95": [lf_lo, lf_hi]}
     reasons = Counter()
     n_rec = 0
     for it in items:
@@ -1710,7 +1887,7 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
     total_fail = sum(reasons.values())
     lo_ci, hi_ci = clopper_pearson(total_fail, n_rec)
     L_.append("")
-    L_.append("共 {}/{} 条（{}，Clopper–Pearson 95% 区间 [{}, {}]）：{}。".format(
+    L_.append("Claude 没有译文：{}/{} 条（{}，Clopper–Pearson 95% 区间 [{}, {}]）：{}。".format(
         total_fail, n_rec, pct(total_fail / n_rec) if n_rec else "—", pct(lo_ci), pct(hi_ci),
         "、".join("{} {}".format({"refusal": "拒答", "max_tokens": "撞 max_tokens", "empty": "空输出",
                                   "over_timeout": "超过生产 {} 秒超时".format(PRODUCTION_TIMEOUT_SEC)}[k], v)
@@ -1815,11 +1992,16 @@ def describe(pool, funnel, sessions, items, notes, holdout, model, judges, adjud
     log("== 语料漏斗（只读 {} 个会话块）==".format(len(sessions)))
     order = ["全部 segment", "测试夹具会话", "sealed_test（密封考卷）", "命令行排除",
              "没有来源记录（08-27 之前）", "该场 glossary.py 版本对不上", "词表无法逐字还原",
-             "vocative_strip 开着（送翻文本无法还原）", "text 为空（整段被拒）", "没有 ok 译文"]
+             "vocative_strip 开着（送翻文本无法还原）", "text 为空（整段被拒）", "没有翻译记录"]
     keys = order + sorted(k for k in funnel if k not in order and k != "候选池") + ["候选池"]
     for k in keys:
         if funnel.get(k):
             log("  {:<28} {:>7}".format(k, funnel[k]))
+    for k in keys:
+        m = re.match(r"新主播 (\S+?)（", k)
+        if m and funnel.get(k):
+            log("  [提示] 新主播 {0} 默认不进样本：要不要冻入 sealed_test 由用户定；决定拿来评就给 "
+                "--include-new-streamer {0}，或先把它加进 dev_eval".format(m.group(1)))
     used = [s for s in sessions if s.get("used")]
     log("  用到的会话块 {} 个；按主播（候选池）：".format(len(used)))
     for name, n in Counter(p["streamer"] or "（未记主播）" for p in pool).most_common():
@@ -1838,6 +2020,9 @@ def describe(pool, funnel, sessions, items, notes, holdout, model, judges, adjud
     log("  特征：" + "，".join("{} {}".format(k, v) for k, v in sorted(flags.items())))
     for note in notes:
         log("  [提示] " + note)
+    n_lf = sum(1 for it in items if it.get("local_failed"))
+    if n_lf:
+        log("  1.8B 当时没有译文的 {} 条留在样本里，按失败计（和 Claude 的失败同一个算法）".format(n_lf))
     ms = [it["local_ms"] for it in items if it.get("local_ms") is not None and it["local_ms"] >= 5]
     if ms:
         log("  1.8B 当时的 translate_ms（样本内、排除 <5ms 缓存命中，n={}）：p50 {:.0f}、p90 {:.0f}、"
@@ -1889,6 +2074,8 @@ def parse_args(argv=None):
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--exclude-session", action="append", default=[])
     ap.add_argument("--exclude-streamer", action="append", default=[])
+    ap.add_argument("--include-new-streamer", action="append", default=[],
+                    help="点名放进这一轮的新主播（默认排除，见文件头）")
     ap.add_argument("--no-git", action="store_true", help="不读 git 历史（会排除对不上版本的场次）")
     args = ap.parse_args(argv)
     args.judges = [j.strip() for j in args.judges.split(",") if j.strip()]
@@ -1919,15 +2106,24 @@ def collect(args, log=print):
     if exam is None:
         log("[提示] 没找到 {}，09-01 四方卷的条目没法逐条排除".format(EXAM_ROWS))
     pool, funnel, sessions = build_pool(args.logs, resolver, holdout, args.exclude_session,
-                                        args.exclude_streamer, [c[0] for c in load_cases()], exam)
+                                        args.exclude_streamer, [c[0] for c in load_cases()], exam,
+                                        args.include_new_streamer)
     if not pool:
         raise Stop("候选池为空（{} 下没有能用的会话）——不出任何结论".format(args.logs))
     items, notes = draw_sample(pool, args.n, args.seed)
     return holdout, pool, funnel, sessions, items, notes
 
 
-def manifest_of(args, items, sample_path):
+def pool_groups(pool):
+    """候选池里每个主播组（和抽样时同一个分法）有多少句：随机部分加权要用。"""
+    sizes = Counter(p["streamer"] for p in pool)
+    return dict(sorted(Counter(group_of(p["streamer"], sizes) for p in pool).items()))
+
+
+def manifest_of(args, items, sample_path, pool=()):
     return {"n": args.n, "seed": args.seed, "model": args.model, "judges": args.judges,
+            "pool_groups": pool_groups(pool),
+            "include_new_streamers": list(getattr(args, "include_new_streamer", []) or []),
             "adjudicator": args.adjudicator, "judge_effort": JUDGE_EFFORT,
             "rubric_sha256": hashlib.sha256(RUBRIC.encode("utf-8")).hexdigest(),
             "request_shape": {k: v for k, v in production_body(args.model, "").items()
@@ -1952,10 +2148,10 @@ def freeze_or_load(args, out, log=print):
             raise Stop("这个输出目录登记的评委是 {} / {}，这次给的是 {} / {}——要换就换 --out".format(
                 manifest.get("judges"), manifest.get("adjudicator"), args.judges, args.adjudicator))
         return json.loads(sample_path.read_text(encoding="utf-8")), manifest
-    _h, _p, _f, _s, items, notes = collect(args, log)
+    _h, pool, _f, _s, items, notes = collect(args, log)
     out.mkdir(parents=True, exist_ok=True)
     sample_path.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
-    manifest = manifest_of(args, items, sample_path)
+    manifest = manifest_of(args, items, sample_path, pool)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
     log("[信息] 样本已冻结：{} 条 → {}（sha256 {}）".format(len(items), sample_path,
                                                     manifest["sample_sha256"][:12]))

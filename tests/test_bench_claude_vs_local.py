@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -74,7 +75,7 @@ def sentence(i, extra=""):
 
 def session_start(streamer, profile_text=None, global_text=GLOBAL, commit=COMMIT, **extra):
     row = {"type": "session_start", "room_url": "https://www.tiktok.com/@{}/live".format(streamer),
-           "streamer": streamer, "started_at": "2026-10-01T12:00:00", "code_commit": commit,
+           "streamer": streamer, "started_at": "2026-09-01T12:00:00", "code_commit": commit,
            "translator_active": "hymt2", "glossary_hash": h12(global_text),
            "profile": streamer if profile_text else None,
            "profile_hash": h12(profile_text) if profile_text else None,
@@ -147,6 +148,10 @@ def world(tmp_path):
     write_jsonl(logs / "session-20261006-120000.jsonl",
                 [session_start("vocal", "vocative_strip: on\n" + PROFILE_OLD)]
                 + seg_rows(1, sentence(5004), "称呼"))
+    # 最新的一场来自一个刚出现的主播：默认整场排除，等用户决定要不要冻入 sealed_test
+    write_jsonl(logs / "session-20261007-120000.jsonl",
+                [session_start("nuevatest", started_at="2026-10-07T12:00:00")]
+                + seg_rows(1, sentence(5005), "新主播一") + seg_rows(2, sentence(5006), "新主播二"))
     holdout = {"dev_eval": {"sessions": {"session-20261001-120000.jsonl": "x"}, "streamers": {}},
                "sealed_test": {"sessions": {"session-20261002-120000.jsonl": "x"}, "streamers": {}}}
     (root / "eval_holdout.json").write_text(json.dumps(holdout), encoding="utf-8")
@@ -197,7 +202,7 @@ def test_pairs_are_matched_by_seq_inside_one_session_with_neighbouring_lines():
 
 def test_the_pool_keeps_only_same_source_hymt2_pairs_and_counts_every_exclusion(world):
     pool, funnel, sessions = pool_for(world)
-    assert funnel["候选池"] == len(pool) == 420
+    assert funnel["候选池"] == len(pool) == 421
     assert funnel["sealed_test（密封考卷）"] == 1
     assert funnel["测试夹具会话"] == 1
     assert funnel["没有来源记录（08-27 之前）"] == 1
@@ -209,7 +214,12 @@ def test_the_pool_keeps_only_same_source_hymt2_pairs_and_counts_every_exclusion(
     assert funnel["非西语"] == 1
     assert funnel["规范化后重复"] == 1
     assert funnel["回归集（meaning_cases）"] == 1
-    assert funnel["没有 ok 译文"] == 1
+    assert funnel["新主播 nuevatest（首场 2026-10-07，待定是否冻入 sealed_test）"] == 2
+    # 1.8B 当时没有译文：留在池里按失败计，和 Claude 的失败一视同仁
+    assert funnel["（留在池里）1.8B 当时没有译文，按失败计"] == 1
+    (failed,) = [p for p in pool if p["local_failed"]]
+    assert failed["text"] == "una frase sin traducción alguna" and failed["local"] is None
+    assert failed["local_ms"] is None
     assert len({p["id"] for p in pool}) == len(pool)
     first = next(p for p in pool if p["streamer"] == "bellatest" and p["seq"] == 1)
     assert first["text"] == sentence(0, " con las gotitas")
@@ -221,6 +231,38 @@ def test_the_pool_keeps_only_same_source_hymt2_pairs_and_counts_every_exclusion(
     second = [p for p in pool if p["streamer"] == "daisytest"]
     assert len(second) == 120 and second[0]["seq"] == 1          # 第二场 seq 重新编号
     assert all(p["prev"] or p["seq"] == 1 for p in second)
+
+
+def test_new_streamers_stay_out_until_someone_decides(world):
+    """sealed_test 等的是「下一个从未分析过的新主播」：评过就封不进去了，所以默认不抽它。"""
+    holdout = bench.read_holdout(world["root"] / "eval_holdout.json")
+    assert bench.new_streamers(world["logs"], holdout) == {"nuevatest": "2026-10-07"}
+    pool, _f, _s = pool_for(world)
+    assert not [p for p in pool if p["streamer"] == "nuevatest"]
+    # 命令行点了名，或者已经放进 dev_eval（主播或它的某一场），就算决定过了
+    pool, funnel, _s = bench.build_pool(world["logs"], resolver_for(world), holdout,
+                                        regression=[world["regression"]], exam=set(),
+                                        include_new=["nuevatest"])
+    assert len([p for p in pool if p["streamer"] == "nuevatest"]) == 2
+    assert not [k for k in funnel if k.startswith("新主播")]
+    holdout["dev_eval"]["sessions"].add("session-20261007-120000.jsonl")
+    assert bench.new_streamers(world["logs"], holdout) == {}
+
+
+def test_a_non_chinese_local_translation_is_judged_and_a_missing_record_is_excluded(world):
+    """1.8B 的非中文输出和 Claude 的一样送评委判；这一句根本没有翻译记录才排除。"""
+    write_jsonl(world["logs"] / "session-20261001-130000.jsonl",
+                [session_start("daisytest")]
+                + seg_rows(1, sentence(7000), "hoy probamos algo")      # 照抄西语原文
+                + [{"type": "segment", "seq": 2, "language": "es", "text": sentence(7001)}]
+                + seg_rows(3, sentence(7002), "", ok=True))            # ok 但是空串：失败
+    pool, funnel, _s = pool_for(world)
+    by_text = {p["text"]: p for p in pool}
+    assert by_text[sentence(7000)]["local"] == "hoy probamos algo"
+    assert not by_text[sentence(7000)]["local_failed"]
+    assert funnel["（留在池里）1.8B 译文不是中文，照样送评"] == 1
+    assert sentence(7001) not in by_text and funnel["没有翻译记录"] == 1
+    assert by_text[sentence(7002)]["local_failed"]
 
 
 def test_a_session_whose_glossary_code_differs_is_excluded_not_guessed(world):
@@ -301,7 +343,9 @@ def test_the_sample_is_reproducible_split_and_capped(world):
     for p in one:
         assert p["bucket"] and set(p["flags"]) == {"has_number", "promo", "fragment", "product_term"}
     hard = [p for p in one if p["part"] == "hard"]
-    assert len(hard) == 30 and all(p["bucket"] == "商品名/词表" for p in hard)
+    # 夹具里的难句几乎都是「商品名/词表」；1.8B 当时没译出来的那一句（无标点）进了「残句」
+    assert len(hard) == 30
+    assert Counter(p["bucket"] for p in hard) == {"商品名/词表": 29, "残句": 1}
 
 
 def test_the_hard_quotas_scale_past_five_hundred():
@@ -633,6 +677,10 @@ def test_a_live_transcription_stops_paid_calls(tmp_path):
 def test_production_outcome_counts_what_the_operator_would_see():
     ok = {"stop_reason": "end_turn", "out": "好", "ms": 800}
     assert bench.production_outcome(ok) == ("好", "ok")
+    # 敏感性：跑批时重试过才拿到的译文，生产里那一句不会有（生产不重试）
+    assert bench.production_outcome(dict(ok, attempts=2)) == ("好", "ok")
+    assert bench.production_outcome(dict(ok, attempts=2), retried_fails=True) == (None, "retried")
+    assert bench.production_outcome(dict(ok, attempts=1), retried_fails=True) == ("好", "ok")
     assert bench.production_outcome(dict(ok, ms=10_500)) == (None, "over_timeout")
     assert bench.production_outcome(dict(ok, stop_reason="max_tokens")) == (None, "max_tokens")
     assert bench.production_outcome(dict(ok, out=None)) == (None, "empty")
@@ -731,6 +779,51 @@ def test_glossary_pinning_is_listed_for_a_human_and_only_a_written_override_clea
     assert "照用中控指定的写法" in path.read_text(encoding="utf-8")
 
 
+def test_a_local_failure_counts_like_a_claude_failure(tmp_path):
+    """1.8B 当时没有译文：和 Claude 的失败一样直接算 major、不可读，不看评委怎么判。"""
+    item = dict(items_for_run(1)[0], id="f1", local=None, local_failed=True, local_ms=None)
+    tcache = bench.JsonlCache(tmp_path / "t.jsonl")
+    tcache.append({"key": "claude-haiku-5-5|f1", "out": "好译文", "stop_reason": "end_turn",
+                   "ms": 500.0, "cost": 0.0})
+    jcache = bench.JsonlCache(tmp_path / "j.jsonl")
+    fine = {"verdict": "correct", "error_type": "none", "tier": "good", "friction": False,
+            "note": "x"}
+    judges = ["claude-sonnet-5-5", "claude-opus-5-5"]
+    for judge in judges:
+        jcache.append({"key": "{}|main|f1".format(judge), "order": ["local", "claude"],
+                       "grades": {"A": fine, "B": fine}, "cost": 0.0})
+    labels = bench.consensus_labels([item], "claude-haiku-5-5", judges, None, tcache, jcache,
+                                    bench.JsonlCache(tmp_path / "a.jsonl"))
+    assert labels["f1"]["local"]["failed"] and labels["f1"]["local"]["major"]
+    assert labels["f1"]["local"]["not_good"] and not labels["f1"]["claude"]["major"]
+    assert bench.judge_labels([item], "claude-haiku-5-5", judges[0], tcache, jcache)["f1"]["local"] \
+        == {"major": True, "not_good": True, "failed": True}
+
+
+def test_the_random_part_is_weighted_by_the_pool_not_by_the_capped_sample():
+    """随机部分按主播封顶分层：bella 池子占大头、样本里只占 40%。加权估计按池子占比合回去。"""
+    items, labels = [], {}
+    for g, n, bad_local, bad_claude in (("bella", 40, 4, 2), ("daisy", 60, 30, 30)):
+        for i in range(n):
+            iid = "{}{}".format(g, i)
+            items.append({"id": iid, "part": "random", "group": g})
+            labels[iid] = {"local": {"major": i < bad_local}, "claude": {"major": i < bad_claude}}
+    items.append({"id": "h", "part": "hard", "group": "bella"})
+    labels["h"] = {"local": {"major": True}, "claude": {"major": True}}
+    wr = bench.weighted_random(labels, items, {"bella": 900, "daisy": 100, "otra": 5}, "major",
+                               rounds=200)
+    # bella 10% / 5%，daisy 50% / 50%；按 900:100 加权（otra 样本里没有，归一时去掉）
+    assert wr["local"] == pytest.approx(0.9 * 0.10 + 0.1 * 0.50)
+    assert wr["claude"] == pytest.approx(0.9 * 0.05 + 0.1 * 0.50)
+    assert wr["diff"] == pytest.approx(wr["claude"] - wr["local"])
+    assert wr["missing"] == ["otra"] and wr["n"] == 100
+    lo, hi = wr["ci"]["diff"]
+    assert lo <= wr["diff"] <= hi
+    # 不加权的随机部分是 (4+30)/100 = 34%：差得远，所以报告里不再管它叫「代表性」
+    assert wr["local"] < 0.34
+    assert bench.weighted_random(labels, items, {}, "major") is None
+
+
 def test_overrides_need_a_reason_and_a_known_item(tmp_path):
     path = tmp_path / "overrides.json"
     path.write_text(json.dumps([{"id": "a", "engine": "claude", "major": False, "reason": " "}]),
@@ -825,6 +918,9 @@ def test_a_full_run_freezes_the_sample_first_and_a_rerun_pays_nothing(world, mon
     manifest = json.loads((world["out"] / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["sample_sha256"] == bench.sha256_file(world["out"] / "sample.json")
     assert manifest["request_shape"]["thinking"] == {"type": "disabled"}
+    assert manifest["pool_groups"] == {"bellatest": 301, "daisytest": 120}
+    report_text = (world["out"] / "report.md").read_text(encoding="utf-8")
+    assert "随机部分按候选池主播占比加权" in report_text
     assert (world["out"] / "report.md").exists() and (world["out"] / "manual-review.md").exists()
     assert holdout == json.loads((world["root"] / "eval_holdout.json").read_text(encoding="utf-8"))
     sent = len(t.calls)
