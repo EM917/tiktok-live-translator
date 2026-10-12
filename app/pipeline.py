@@ -2495,8 +2495,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # 就按正常收尾处理，重试预算也压到 1 次，别对着过期地址空耗。
         direct = is_direct_url(url)
         budget = 1 if direct else 5
-        reconnects = 0        # 连续重连次数：决定退避间隔（2、4、…、30 秒）
+        reconnects = 0        # 连续重连次数：只决定退避间隔（2、4、…、30 秒），不上界面
         silent = 0            # 连续「一帧音频都没有」的轮次：决定何时放弃
+        first_silent = None   # 这一串无声里第一次提示重连时的 silent：界面「第 N/M 次」从它数起
         host_waited = 0.0     # 这次中断里等房间恢复在播已经等了多久；收到音频才清零
         while True:
             await self.server.status("connecting", L("正在连接直播音频流…",
@@ -2521,11 +2522,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                         print("[信息] 直连地址已拉不到数据，监听停止。")
                         sess["end"] = {"reason": "stream_ended", "probes": probes}
                         return
-                reconnects = 0        # 刚才播得好好的：重置重连预算
+                reconnects = 0        # 刚才播得好好的：退避从 2 秒重新算
             # 拿到过音频的轮次不算失败：网络劣化时每轮只播二十几秒就断，
             # 五轮之后主播还在播，监听却宣布「重连失败」放弃了。只有连续几轮
             # 一帧都没有（地址过期、真下播）才放弃；退避间隔照常增长，不空转
             silent = 0 if got_audio else silent + 1
+            if got_audio:
+                first_silent = None
 
             media = None
             while media is None:
@@ -2542,11 +2545,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                                    "silent": silent, "budget": budget}
                     return
                 delay = min(30, 2 ** reconnects)
+                # 「第 N/M 次」按放弃规则数，不按退避计数：reconnects 只在播满 30 秒或房间
+                # 回到在播时清零，每轮只播二十几秒时照它显示会出现「第 6/5 次」。无声轮次每多一轮 silent 加 1，
+                # silent 到 budget 的那一次是最后一次（再无声就放弃），所以从这一串无声的
+                # 第一条提示数起：N 不超过 M，最后一条正好是 M/M。播过一阵才断时 M 是
+                # budget+1，首连就没声音时首连已算掉一轮，M 是 budget。房间回到在播时
+                # silent 不变，N 也不变——那一次没耗预算
+                if first_silent is None:
+                    first_silent = silent
+                attempt, attempts = silent - first_silent + 1, budget - first_silent + 1
                 await self.server.status(
                     "connecting",
                     L("直播流中断，{} 秒后自动重连（第 {}/{} 次）…",
                       "The stream was interrupted. Reconnecting in {} sec (attempt {} of {})…"
-                      ).format(delay, reconnects, budget))
+                      ).format(delay, attempt, attempts))
                 await asyncio.sleep(delay)
                 # 本机连不上 TikTok 时不去解析，也不算进重连预算（直连地址不走这一步）
                 if not direct and not await self._wait_for_network(sess):

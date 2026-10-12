@@ -3,11 +3,15 @@
   * 解析明确说「没在播」（kind=offline）→ 宣布直播结束；
   * 连续重连预算用尽 → 报错收手；
   * 播得久（≥30s 音频）→ 重连预算重置；
-  * 非 offline 的解析失败连续出现 → 触发 yt-dlp 保鲜。
+  * 非 offline 的解析失败连续出现 → 触发 yt-dlp 保鲜；
+  * 界面上的「第 N/M 次」跟着放弃规则数：N 不超过 M，放弃前最后一次正好是 M/M。
 全部用桩件驱动，不碰网络/模型/ffmpeg。"""
 import asyncio
+import random
+import re
 from types import SimpleNamespace
 
+import pytest
 
 from app import pipeline as pipeline_mod
 from app.pipeline import Pipeline
@@ -244,6 +248,175 @@ def test_direct_url_dead_stream_gets_one_retry(monkeypatch, tmp_path):
     run(p._run_stream_inner("https://cdn.example.com/room/dead.flv"))
     assert len(sessions) == 2                    # 首连 + 1 次重试
     assert server.statuses[-1][0] == "error"
+
+
+# ---- 「第 N/M 次」：显示跟放弃规则一致，放弃时机不变 ------------------------------------------
+#
+# 放弃规则：连续无声的轮次（拉流一帧音频都没有，或重连时解析失败）超过预算就放弃；拿到过音频的
+# 轮次把这个计数清零。房间地址预算 5，粘贴的流地址预算 1。以前界面显示的 N 是退避用的计数，
+# 它只在播满 30 秒时清零——网络劣化、每轮只播二十几秒时会出现「第 6/5 次」「第 11/5 次」。
+
+ATTEMPT = re.compile(r"自动重连（第 (\d+)/(\d+) 次）")
+F = (False, 0.0)       # 一帧音频都没有
+S = (True, 20.0)       # 播了 20 秒就断（有声，但不到 30 秒，不清退避）
+LONG = (True, 60.0)    # 播了 60 秒
+ROOM = "https://www.tiktok.com/@x/live"
+DIRECT = "https://cdn.example.com/room/stream.flv"
+
+
+def drive(monkeypatch, tmp_path, url, rounds, resolves=(), back_live=False):
+    """按剧本跑一场，返回 (事件序列, server)。
+
+    rounds：每轮拉流的 (有没有音频, 音频秒数)，演完之后一律无声。resolves：首次解析之后每次
+    重连解析的结果，缺省给地址；ResolveError 照抛。back_live：解析说「没在播」时，房间复查
+    立刻回到在播（_confirm_offline 回 live）。事件按发生顺序记：("round", 有没有音频)、
+    ("resolve_fail",)、("back_live",)、("shown", N, M)。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    events = []
+    rounds, resolves = iter(rounds), iter(resolves)
+    first = [True]
+
+    async def fake_session(media, *a, **k):
+        got, secs = next(rounds, F)
+        events.append(("round", got))
+        return got, secs
+
+    async def fake_resolve(url, cookies=None, cookies_browser="auto", trace=None):
+        if first[0]:
+            first[0] = False
+            return "http://cdn/s.flv"
+        item = next(resolves, "http://cdn/s.flv")
+        if isinstance(item, ResolveError):
+            events.append(("back_live",) if item.kind == "offline" else ("resolve_fail",))
+            raise item
+        return item
+
+    async def still_serving(url, timeout=8):
+        return True                      # 直连地址播满 30 秒后探活：地址还出数据，照常重连
+
+    async def room_back_live(url, exc, sess, waited):
+        return "live", waited
+
+    real_status = server.status
+
+    async def status(state, detail=""):
+        m = ATTEMPT.search(detail)
+        if m:
+            events.append(("shown", int(m.group(1)), int(m.group(2))))
+        await real_status(state, detail)
+
+    import app.resolver
+    monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
+    monkeypatch.setattr(app.resolver, "_media_url_works", still_serving)
+    monkeypatch.setattr(p, "_stream_session", fake_session)
+    if back_live:
+        monkeypatch.setattr(p, "_confirm_offline", room_back_live)
+    server.status = status
+    run(p._run_stream_inner(url))
+    return events, server
+
+
+def shown(events):
+    return [(e[1], e[2]) for e in events if e[0] == "shown"]
+
+
+def rounds_run(events):
+    return sum(1 for e in events if e[0] == "round")
+
+
+def assert_counts_follow_the_rule(events, budget):
+    """从事件序列复核，不照抄实现：
+      * 放弃恰好发生在「上一次有声之后第 budget+1 个无声轮次」，之前一次都没超过；
+      * 每串无声（两次有声之间）里：第一条提示是第 1 次，每多一个无声轮次加 1，只是房间回到
+        在播（没耗预算）时不加；M 在这一串里不变，而且等于从这里起规则还允许的尝试次数；
+      * N 永远不超过 M，放弃前的最后一条提示正好是 M/M。"""
+    silent, prev = 0, None      # prev：这一串里上一条提示 (N, M, 当时的 silent)
+    for ev in events:
+        if ev[0] == "round":
+            silent = 0 if ev[1] else silent + 1
+            if ev[1]:
+                prev = None
+        elif ev[0] == "resolve_fail":
+            silent += 1
+        elif ev[0] == "shown":
+            n, m = ev[1], ev[2]
+            assert 1 <= n <= m, events
+            if prev is None:
+                assert n == 1, events
+                assert m == budget + 1 - silent, events     # 从这里起还能试几次
+            else:
+                assert m == prev[1], events
+                assert n == prev[0] + (silent - prev[2]), events
+            prev = (n, m, silent)
+        assert silent <= budget + 1, events
+    assert silent == budget + 1, events
+    assert prev is not None and prev[0] == prev[1], events
+
+
+@pytest.mark.parametrize("url,rounds,want_shown,want_rounds", [
+    # 首连就没声音：首连算掉一轮，剩 5 次重连，1/5 … 5/5（这条以前就对）
+    (ROOM, [F] * 6, [(n, 5) for n in range(1, 6)], 6),
+    # 播了一阵之后断：还能试 6 次（无声 0…5 各试一次），以前显示到「第 6/5 次」
+    (ROOM, [LONG] + [F] * 6, [(n, 6) for n in range(1, 7)], 7),
+    # 网络劣化、每轮只播 20 秒：每轮有声都把预算清零，以前的 N 却一路涨到 11
+    (ROOM, [S] * 6 + [F] * 6, [(1, 6)] * 6 + [(n, 6) for n in range(2, 7)], 12),
+    # 有声无声交替：每串无声都从第 1 次数起
+    (ROOM, [F, F, S, F, F, F, S] + [F] * 6,
+     [(1, 5), (2, 5), (1, 6), (2, 6), (3, 6), (4, 6)] + [(n, 6) for n in range(1, 7)], 13),
+    # 播满 30 秒同样清零
+    (ROOM, [F, F, F, LONG] + [F] * 6, [(1, 5), (2, 5), (3, 5)] + [(n, 6) for n in range(1, 7)], 10),
+    # 粘贴的流地址，预算 1：首连就没声音 → 只重连 1 次
+    (DIRECT, [F, F], [(1, 1)], 2),
+    # 粘贴的流地址播了一阵后断：还能试 2 次，以前显示「第 2/1 次」
+    (DIRECT, [S, F, F], [(1, 2), (2, 2)], 3),
+    (DIRECT, [LONG, F, F], [(1, 2), (2, 2)], 3),
+    (DIRECT, [S, S, S, F, F], [(1, 2), (1, 2), (1, 2), (2, 2)], 5),
+])
+def test_attempt_count_follows_the_give_up_rule(monkeypatch, tmp_path, url, rounds, want_shown,
+                                                want_rounds):
+    events, server = drive(monkeypatch, tmp_path, url, rounds)
+    assert shown(events) == want_shown
+    assert rounds_run(events) == want_rounds                # 放弃时机与改显示之前一样
+    assert server.statuses[-1][0] == "error"
+    assert_counts_follow_the_rule(events, budget=1 if url == DIRECT else 5)
+
+
+def test_a_failed_lookup_counts_as_one_silent_attempt(monkeypatch, tmp_path):
+    fail = ResolveError("HTTP Error 500", kind="unknown")
+    ok = "http://cdn/s.flv"
+    events, server = drive(monkeypatch, tmp_path, ROOM, [LONG] + [F] * 6,
+                           resolves=[fail, ok, fail, ok, ok, ok])
+    assert shown(events) == [(n, 6) for n in range(1, 7)]
+    assert rounds_run(events) == 5                          # 两次解析失败各顶掉一轮拉流
+    assert server.statuses[-1][0] == "error"
+    assert_counts_follow_the_rule(events, budget=5)
+
+
+def test_a_room_back_live_does_not_use_up_an_attempt(monkeypatch, tmp_path):
+    offline = ResolveError("offline", kind="offline", status=3)
+    events, server = drive(monkeypatch, tmp_path, ROOM, [LONG] + [F] * 6,
+                           resolves=[offline], back_live=True)
+    # 房间复查回到在播：马上重新解析，这一次不算，界面上仍是第 1 次
+    assert shown(events) == [(1, 6)] + [(n, 6) for n in range(1, 7)]
+    assert rounds_run(events) == 7
+    assert server.statuses[-1][0] == "error"
+    assert_counts_follow_the_rule(events, budget=5)
+
+
+@pytest.mark.parametrize("seed", range(24))
+def test_attempt_count_on_random_sound_and_silence(monkeypatch, tmp_path, seed):
+    """随机的有声/无声/解析失败序列：显示规则与放弃规则处处一致。"""
+    rng = random.Random(seed)
+    url = DIRECT if seed % 3 == 0 else ROOM
+    budget = 1 if url == DIRECT else 5
+    head = [rng.choice([F, F, S, LONG]) for _ in range(rng.randint(0, 12))]
+    rounds = head + [F] * (budget + 2)        # 最后一串无声保证走到放弃
+    resolves = [] if url == DIRECT else [
+        ResolveError("HTTP Error 500", kind="unknown") if rng.random() < 0.2 else "http://cdn/s.flv"
+        for _ in range(40)]
+    events, server = drive(monkeypatch, tmp_path, url, rounds, resolves=resolves)
+    assert server.statuses[-1][0] == "error"
+    assert_counts_follow_the_rule(events, budget)
 
 
 def test_resolve_failures_trigger_ytdlp_freshen(monkeypatch, tmp_path):
