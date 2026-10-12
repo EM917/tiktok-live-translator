@@ -320,6 +320,30 @@ test("英文页：字幕卡片、重译按钮、翻译失败横幅", () => {
   assert.deepEqual(leftoverChinese(page), []);
 });
 
+test("英文页：接口拒答的字幕有自己的角标，不算进连续翻译失败，也不顶出那句横幅", () => {
+  const page = runDesktop();
+  hello(page);
+  const banner = () => page.el("status-banner");
+  // 主播在一段话题上反复说同类宣称：连着几条都被拒答
+  for (let id = 1; id <= 6; id++) {
+    page.push({ type: "caption", id, ts: T, original: "x", translate_state: "pending" });
+    page.push({ type: "caption_update", id, translated: null, translate_state: "failed", refused: true });
+  }
+  const chips = () => page.el("history").querySelectorAll(".state-chip").map((c) => c.textContent);
+  assert.deepEqual(chips(), Array(6).fill("Not translated (API refusal)"));
+  assert.ok(!/couldn’t be translated/.test(banner().textContent) || banner().classList.contains("hidden"),
+            "拒答不该顶出「翻译失败」横幅");
+  // 拒答夹在中间不清零：真失败照样数到第四条才出横幅
+  for (let id = 7; id <= 9; id++) page.push({ type: "caption", id, ts: T, original: "x", translate_state: "failed" });
+  page.push({ type: "caption", id: 10, ts: T, original: "x", translate_state: "pending" });
+  page.push({ type: "caption_update", id: 10, translated: null, translate_state: "failed", refused: true });
+  assert.ok(!/couldn’t be translated/.test(banner().textContent) || banner().classList.contains("hidden"));
+  page.push({ type: "caption", id: 11, ts: T, original: "x", translate_state: "failed" });
+  assert.match(banner().textContent, /^The last several captions couldn’t be translated, /);
+  assert.ok(!banner().classList.contains("hidden"));
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
 test("英文页：报警头用弯双引号，译不出来的说明按有没有原因分两句", () => {
   const page = runDesktop();
   hello(page);

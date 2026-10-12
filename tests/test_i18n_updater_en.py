@@ -5,6 +5,7 @@
 两句之间有空格，按钮名写成 Update Now / Start、终端写成 Terminal。中文那一路由原有测试钉着
 （它们一条没改），这里另外钉住终端输出与界面语言无关。
 """
+import functools
 import re
 
 import pytest
@@ -236,6 +237,11 @@ def test_the_terminal_says_the_same_in_both_languages(monkeypatch, isolated, cap
                                                       pip_code):
     """「终端、日志、审计永远是中文」：同一次失败的更新在中文、英文界面下各跑一遍，终端输出
     逐字节相同，界面上一个是中文、一个是英文。"""
+    # 日志文件名带「时分秒」（bootstrap.new_log_path）：两遍之间若正好跨过一秒，终端里
+    # 引用的日志名就不同（PR #74 的 Windows 跑器上 220550 对 220551），比的就不是语言了。
+    # 时间钉死，两遍拿到同一个文件名
+    fixed_log_path = functools.partial(updater_mod.new_log_path, now=1_800_000_000.0)
+    monkeypatch.setattr(updater_mod, "new_log_path", fixed_log_path)
     got = {}
     for lang in (i18n.ZH, i18n.EN):
         settings_mod.save_setting("update_notice_at", 0)

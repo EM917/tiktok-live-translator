@@ -27,7 +27,8 @@ from .redact import strip_query
 from .settings import (load_settings, push_recent_room, recent_rooms,
                        save_setting, save_streamer_brand, streamer_brands)
 from .telemetry import Telemetry
-from .translator import ENGINE_KEY_ENV, create_translator
+from .translator import (ENGINE_KEY_ENV, begin_translate_call, create_translator,
+                         translate_call_outcome)
 
 ROOT = Path(__file__).resolve().parent.parent
 TERMS_FILE = ROOT / "banned_terms.txt"
@@ -3850,8 +3851,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
 
     @staticmethod
     def _model_of(engine):
-        """引擎实际用的模型名：本地引擎和 OpenAI 在实例的 model 上，Claude 在类的
-        MODEL 上；都没有（DeepL、Google）就用引擎名。"""
+        """引擎实际用的模型名：本地引擎、OpenAI、Claude 都在实例的 model 上（Claude 类上
+        还留着一个 MODEL 兜底）；都没有（DeepL、Google）就用引擎名。"""
         inner = getattr(engine, "inner", engine)
         return (getattr(inner, "model", None) or getattr(inner, "MODEL", None)
                 or getattr(engine, "name", None))
@@ -4026,6 +4027,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
           * 回 429 且引擎正在暂停请求：一条提示 + translation_cooldown；
           * 远程引擎回 401/403/404：translation_engine_error；本机有本地模型就本场改用
             它，没有就挂一条横幅、留在原引擎按冷却重试——**绝不**自动改发 Google；
+          * Claude 连续 ENGINE_ERROR_STREAK 次回 400/402：translation_engine_error（带接口
+            原话）+ 引用原话的横幅。不冷却、不换引擎：400 可能只是哪一句的事，402 是账务，
+            换不换引擎要中控自己定；
           * 本地 Ollama 连续 ENGINE_ERROR_STREAK 次非 200：translation_engine_error +
             引用 Ollama 原话的横幅，并重跑备模型（模型不在了会安排停止后重新下载）。
         返回本场改用的本地引擎，没有就是 None。文字只写回应本身和能做的事，不猜原因。"""
@@ -4085,6 +4089,26 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                         else L("重新填写密钥，或换一个引擎",
                                "re-enter the API key or choose another engine")))
             return fallback
+        if name == "claude" and status in (400, 402) \
+                and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
+            # 接口正常回了话、只是不收这些请求：照抄它的原话（error.type: error.message），
+            # 不替它解释原因。单独一次 400 可能只是某一句，连续几次才说
+            self._engine_error_mark = mark
+            if audit is not None:
+                audit.translation_engine_error(name, status, error=said, model=model)
+            what = (L("{} 返回 HTTP {}", "{} returned HTTP {}").format(label, status)
+                    + L("（模型 {}）", " (model {})").format(model))
+            if said:
+                what += L("：", ": ") + said.rstrip(" .。")  # i18n: data（去掉接口原话末尾的句号）
+            print("[警告] " + what)
+            self._engine_incident_up = True
+            self._engine_rejection = None
+            await self._incident(
+                self.ENGINE_INCIDENT, "error",
+                L("{}。字幕先显示原文（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎",
+                  "{}. Captions show the original text (banned-term alerts aren’t affected). "
+                  "You can choose another engine in Settings > Translation Engine.").format(what))
+            return None
         if name in ("hymt2", "hymt2-7b", "gemma") \
                 and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
             self._engine_error_mark = mark
@@ -4106,6 +4130,33 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             if hasattr(self, "_bg_tasks") and (task is None or task.done()):
                 self._provision_task = self._spawn(self._provision_then_check())
         return None
+
+    async def _note_refusal(self, tr, seq, category):
+        """引擎拒绝翻译这一句（Claude：HTTP 200，stop_reason 为 refusal）。
+
+        每一次都记审计（translation 记录里只有 ok=false，没有这一条就分不清「接口出错」和
+        「模型拒答」）并打一行终端；界面上本场只说一次——直播话术重复率高，同一句可能反复
+        拒答，每次都弹提示只会教中控无视提示。拒答类别照抄接口给的 stop_details.category，
+        可能为空，不替它解释原因。类别由调用方从**这一次调用**的结局里取（见
+        translator.translate_call_outcome），不读引擎上的共享状态：报警翻译在并发用同一个引擎。"""
+        from .translator import engine_label
+
+        name = getattr(tr, "name", None)
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.translation_refusal(seq, name, self._model_of(tr), category)
+        print("[警告] {} 没有翻译第 {} 条字幕（stop_reason=refusal，类别 {}），这一条显示原文".format(
+            engine_label(name), seq, category or "未给出"))
+        mark = (tr, audit)
+        if getattr(self, "_refusal_mark", None) == mark:
+            return
+        self._refusal_mark = mark
+        await self.server.broadcast({"type": "notice", "text": L(
+            "{} 没有翻译其中一条字幕（接口返回 refusal），那一条显示原文，违禁词报警不受影响。"
+            "本场之后再遇到只记进审计日志，不再提示",
+            "{} didn’t translate one caption (the API returned a refusal), so that caption shows "
+            "the original text. Banned-term alerts aren’t affected. Later refusals this session go "
+            "to the audit log without another notice.").format(engine_label(name))})
 
     async def _note_engine_ok(self, tr):
         """一条译文成功回来：之前报过的引擎问题解除（横幅撤掉），再出问题会重新说。
@@ -4303,6 +4354,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # 商品名/自造词（Quema Lonja、moringa）通用模型必错，而且换多大的
         # 模型都不会自动变对——这类错误只能靠词表钉死。
         text, hint = self._for_translation(job["text"])
+        # 这一次调用的结局按任务隔离（见 translator.translate_call_outcome）：报警上下文翻译
+        # 是并发的独立任务、用的是同一个引擎，引擎上的计数会把它的拒答记到这条字幕头上。
+        # 必须直接 await，不能套 wait_for（老版本 Python 上 wait_for 另起任务，结局就丢了）
+        begin_translate_call()
         try:
             translated = await tr.translate(
                 text, job["target"], source=job["lang"] or "auto",
@@ -4312,12 +4367,18 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         except Exception as exc:
             print("[警告] 翻译失败: {}".format(exc))
             translated = None
+        outcome = translate_call_outcome()
+        refusal = (outcome if translated is None and outcome and outcome[0] == "refusal"
+                   else None)
         # DeepL 月额度用尽（456）不是这一条的问题，是这个月的问题：不切换的话
         # 后面每条字幕都会「翻译失败」直到月底。切到本地引擎，并用新引擎把
         # 当前这条立刻补上——它不该成为切换的牺牲品。
         fallback = None
         if translated is None and getattr(tr, "quota_exhausted", False):
             fallback = await self._quota_fallback(tr)
+        elif refusal is not None:
+            # 拒答是这一句的事，不是引擎坏了：不换引擎、不挂横幅、不冷却，这一句显示原文
+            await self._note_refusal(tr, job["id"], refusal[1])
         elif translated is None:
             # 说得清的失败（429 暂停、密钥被拒、Ollama 连续报错）告诉中控并记审计；
             # 远程引擎拒绝密钥、本机又有本地模型时，本场改用本地模型
@@ -4346,10 +4407,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             self.audit.translation(job["id"], translated, translate_ms,
                                    bool(translated),
                                    engine=getattr(tr, "name", None))
+        extra = {"e2e_translated_ms": round((time.time() - job["audio_end_ts"]) * 1000.0)}
+        if refusal is not None and not translated:
+            # 页面据此不把这一条算进「连续多条翻译失败」：拒答是接口正常回了话，不是连不上
+            extra["refused"] = True
         await self._publish_translation(
             job["id"], translated, bool(translated), translate_ms,
-            QUALITY_FAST, job["target"],
-            {"e2e_translated_ms": round((time.time() - job["audio_end_ts"]) * 1000.0)})
+            QUALITY_FAST, job["target"], extra)
 
     # ---- 演示模式 ----
     async def start_demo(self):

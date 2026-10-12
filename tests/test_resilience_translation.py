@@ -1045,7 +1045,7 @@ def test_the_rejected_key_banner_stops_promising_retries_once_the_session_ends(
 
 def test_a_rejected_key_switches_to_a_local_model_when_there_is_one(
         monkeypatch, tmp_path, settings_file):
-    engine = ScriptedEngine("claude", model="claude-haiku-4-5-20251001",
+    engine = ScriptedEngine("claude", model="claude-haiku-5-5",
                             script=[("http", 401, None, 120)])
     local = Fast("hymt2", model=HYMT2_SMALL, out="本地译文")
     monkeypatch.setattr("app.pipeline.create_translator", lambda name: local)
@@ -1066,6 +1066,271 @@ def test_a_rejected_key_switches_to_a_local_model_when_there_is_one(
     assert not p.server.of("incident")
     assert [(r["engine"], r["status"]) for r in rows(p.audit, "translation_engine_error")] \
         == [("claude", 401)]
+
+
+class RefusingEngine:
+    """拒答的 Claude 替身：HTTP 200 + stop_reason "refusal"。和真实引擎一样把这一次调用的
+    结局记进 translate_call_outcome（按任务隔离），不动 last_error / fail_streak / 冷却。"""
+
+    def __init__(self, category="general_harms", answers=()):
+        self.name = "claude"
+        self.model = "claude-haiku-5-5"
+        self.category = category
+        self.answers = list(answers)
+        self.refusals = 0
+        self.last_error = None
+        self.fail_streak = 0
+        self.cooldown_until = 0.0
+        self.closed = False
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        if self.answers:
+            return self.answers.pop(0)
+        self.refusals += 1
+        translator.note_refusal(self.category)
+        return None
+
+    async def close(self):
+        self.closed = True
+
+
+def test_a_refusal_shows_the_original_and_never_switches_engines(
+        monkeypatch, tmp_path, settings_file, capsys):
+    """拒答是这一句的事：字幕显示原文，不换引擎、不挂横幅、不冷却；每次记审计，提示本场一次。"""
+    engine = RefusingEngine()
+    built = []
+    monkeypatch.setattr("app.pipeline.create_translator",
+                        lambda name: built.append(name) or Fast("hymt2"))
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, CachedTranslator(engine), engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1))
+        await p._translate_and_update(job(2))
+        return p
+
+    p = run(scenario())
+    assert getattr(p.translator, "inner", None) is engine and not engine.closed
+    assert built == []
+    assert [m["translated"] for m in p.server.of("caption_update")] == [None, None]
+    # 页面靠 refused 把拒答排除在「连续多条翻译失败」之外（web/app.js trackTranslateHealth）
+    assert [(m["translate_state"], m.get("refused")) for m in p.server.of("caption_update")] \
+        == [("failed", True), ("failed", True)]
+    assert not p.server.of("incident")
+    (notice,) = p.server.of("notice")
+    assert "refusal" in plain(notice["text"]) and "原文" in notice["text"]
+    assert "违禁词报警不受影响" in notice["text"]
+    assert notice["text"].en.startswith("Claude didn’t translate one caption")
+    assert [(r["seq"], r["engine"], r["model"], r["category"])
+            for r in rows(p.audit, "translation_refusal")] == [
+        (1, "claude", "claude-haiku-5-5", "general_harms"),
+        (2, "claude", "claude-haiku-5-5", "general_harms")]
+    assert [r["ok"] for r in rows(p.audit, "translation")] == [False, False]
+    assert not rows(p.audit, "translation_engine_error")
+    out = capsys.readouterr().out
+    assert out.count("stop_reason=refusal") == 2
+
+
+def test_a_refusal_without_a_category_says_none_was_given(monkeypatch, tmp_path, settings_file,
+                                                          capsys):
+    engine = RefusingEngine(category=None)
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, engine, engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1))
+        return p
+
+    p = run(scenario())
+    assert [r["category"] for r in rows(p.audit, "translation_refusal")] == [None]
+    assert "类别 未给出" in capsys.readouterr().out
+
+
+class _Delayed:
+    """aiohttp 的 post(...) 上下文：等 delay 秒再回应；回应是 TimeoutError 就照抛。"""
+
+    def __init__(self, delay, resp):
+        self.delay, self.resp = delay, resp
+
+    async def __aenter__(self):
+        await asyncio.sleep(self.delay)
+        if isinstance(self.resp, BaseException):
+            raise self.resp
+        return self.resp
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _ByTextSession:
+    """按请求体里的原文决定多久以后怎么回应。"""
+
+    def __init__(self, plan):
+        self.plan = plan
+
+    def post(self, url, data=None, headers=None, **kw):
+        delay, resp = self.plan[json.loads(data)["messages"][0]["content"]]
+        return _Delayed(delay, resp)
+
+
+def _refusal(category):
+    return {"type": "message", "model": "claude-haiku-5-5", "content": [],
+            "stop_reason": "refusal", "stop_details": {"type": "refusal", "category": category},
+            "usage": {"input_tokens": 50, "output_tokens": 0}}
+
+
+@pytest.mark.parametrize("caption_refused", [False, True])
+def test_a_refusal_on_the_concurrent_alert_call_is_not_pinned_on_the_caption(
+        monkeypatch, tmp_path, settings_file, capsys, caption_refused):
+    """报警上下文翻译是并发的独立任务，和字幕共用同一个 Claude 引擎（复审 2026-10-12）。
+    字幕超时、报警那次被拒答时，这条字幕不能记成拒答；反过来字幕自己被拒答，记的是它自己的类别。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.delenv("CLAUDE_TRANSLATE_MODEL", raising=False)
+    engine = ClaudeTranslator()
+    if caption_refused:
+        plan = {"la frase del subtítulo": (0.01, FakeResp(200, _refusal("bio"))),
+                "la frase de la alerta": (0.05, asyncio.TimeoutError())}
+    else:
+        plan = {"la frase del subtítulo": (0.05, asyncio.TimeoutError()),
+                "la frase de la alerta": (0.01, FakeResp(200, _refusal("general_harms")))}
+    attach(engine, _ByTextSession(plan))
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, CachedTranslator(engine), engine="claude")
+        p._heal_local_engine = noop
+        # 和 _translate_alert 一样，在另一个任务里用同一个引擎对象翻报警那句
+        alert = asyncio.ensure_future(p.translator.translate("la frase de la alerta", "zh-CN"))
+        await p._translate_and_update(job(7, "la frase del subtítulo"))
+        assert await alert is None
+        return p
+
+    p = run(scenario())
+    assert engine.refusals == 1                       # 那一次拒答确实发生了
+    out = capsys.readouterr().out
+    got = [(r["seq"], r["category"]) for r in rows(p.audit, "translation_refusal")]
+    if caption_refused:
+        assert got == [(7, "bio")] and out.count("stop_reason=refusal") == 1
+    else:
+        assert got == [] and "stop_reason=refusal" not in out
+        assert not p.server.of("notice")
+    assert [r["ok"] for r in rows(p.audit, "translation")] == [False]
+
+
+def test_the_next_caption_in_the_same_task_does_not_inherit_a_refusal(
+        monkeypatch, tmp_path, settings_file):
+    """同一个任务里先拒答一句，下一句是别的失败（这个替身不会自己清结局）：管线调用前
+    清掉，下一句不能沿用上一句的拒答。"""
+
+    class RefuseThenFail(RefusingEngine):
+        async def translate(self, text, target, source="auto", glossary=None):
+            if self.refusals:
+                return None
+            return await super().translate(text, target, source, glossary)
+
+    engine = RefuseThenFail()
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, engine, engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1))
+        await p._translate_and_update(job(2))
+        return p
+
+    p = run(scenario())
+    assert [r["seq"] for r in rows(p.audit, "translation_refusal")] == [1]
+    assert [r["ok"] for r in rows(p.audit, "translation")] == [False, False]
+
+
+def test_a_failure_that_is_not_a_refusal_is_not_logged_as_one(monkeypatch, tmp_path,
+                                                              settings_file):
+    engine = ScriptedEngine("claude", model="claude-haiku-5-5",
+                            script=[("http", 500, None, 0)])
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, engine, engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1))
+        return p
+
+    p = run(scenario())
+    assert not rows(p.audit, "translation_refusal")
+    assert not p.server.of("notice")
+    assert [m.get("refused") for m in p.server.of("caption_update")] == [None]
+
+
+def test_a_claude_429_is_announced_and_audited_like_the_other_engines(monkeypatch, tmp_path,
+                                                                     settings_file):
+    """Claude 以前不冷却，管线现成的 429 提示（要求冷却未到期）走不到，每条字幕继续撞接口。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.delenv("CLAUDE_TRANSLATE_MODEL", raising=False)
+    inner = ClaudeTranslator()
+    limited = FakeResp(429, {"type": "error", "error": {"type": "rate_limit_error"}})
+    limited.headers = {"retry-after": "20"}
+    session = FakeSession([limited])
+    attach(inner, session)
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, CachedTranslator(inner), engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1, "hola"))
+        await p._translate_and_update(job(2, "otra"))      # 冷却中：不发、不重复说
+        return p
+
+    p = run(scenario())
+    (notice,) = p.server.of("notice")
+    assert "HTTP 429" in plain(notice["text"]) and "20" in notice["text"]
+    assert notice["text"].en.startswith("Claude returned HTTP 429. Requests are paused for 20 sec")
+    assert [(r["engine"], r["status"], r["seconds"])
+            for r in rows(p.audit, "translation_cooldown")] == [("claude", 429, 20)]
+    assert len(session.calls) == 1
+    assert not p.server.of("incident")
+
+
+@pytest.mark.parametrize("status,said", [
+    (400, {"type": "invalid_request_error", "message": "Your credit balance is too low."}),
+    (402, {"type": "billing_error", "message": "Billing issue on this account."})])
+def test_repeated_claude_400_or_402_puts_the_apis_words_in_a_banner(monkeypatch, tmp_path,
+                                                                   settings_file, status, said):
+    """400/402 以前只在终端打一次（402 连一次都没有），页面上只有连续 4 条失败后的通用横幅。
+    连续 ENGINE_ERROR_STREAK 次才说：单独一次 400 可能只是某一句。只照抄接口原话，不贴原因。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.delenv("CLAUDE_TRANSLATE_MODEL", raising=False)
+    inner = ClaudeTranslator()
+    body = {"type": "error", "error": said}
+    session = FakeSession([FakeResp(status, body) for _ in range(4)]
+                          + [FakeResp(200, {"type": "message", "model": "claude-haiku-5-5",
+                                            "stop_reason": "end_turn",
+                                            "content": [{"type": "text", "text": "你好"}]})])
+    attach(inner, session)
+    built = []
+    monkeypatch.setattr("app.pipeline.create_translator",
+                        lambda name: built.append(name) or Fast("hymt2"))
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, CachedTranslator(inner), engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1, "uno"))
+        await p._translate_and_update(job(2, "dos"))
+        assert not p.server.of("incident")                 # 两次还不说
+        await p._translate_and_update(job(3, "tres"))
+        await p._translate_and_update(job(4, "cuatro"))    # 说过了：不重复
+        await p._translate_and_update(job(5, "cinco"))     # 成功：横幅撤掉
+        return p
+
+    p = run(scenario())
+    incidents = p.server.of("incident")
+    assert [m["level"] for m in incidents] == ["error", "clear"]
+    text = plain(incidents[0]["text"])
+    words = "{}: {}".format(said["type"], said["message"].rstrip("."))
+    assert text.startswith("Claude 返回 HTTP {}（模型 claude-haiku-5-5）：{}。".format(status, words))
+    assert incidents[0]["text"].en.startswith(
+        "Claude returned HTTP {} (model claude-haiku-5-5): {}. Captions show the original "
+        "text".format(status, words))
+    assert [(r["engine"], r["status"], r["model"], r["error"])
+            for r in rows(p.audit, "translation_engine_error")] == [
+        ("claude", status, "claude-haiku-5-5", "{}: {}".format(said["type"], said["message"]))]
+    assert built == [] and len(session.calls) == 5         # 不冷却、不换引擎
+    assert "sk-ant-test-key" not in json.dumps(p.server.sent, ensure_ascii=False, default=str)
 
 
 def test_picking_an_engine_clears_the_engine_banner(monkeypatch, tmp_path, settings_file):
@@ -1150,7 +1415,7 @@ def test_selfcheck_asks_the_paid_api_once(monkeypatch, settings_file, cls, env, 
     assert c["level"] == level
     assert len(session.calls) == 1 and "/models" in session.calls[0]
     if status == 404 and cls is ClaudeTranslator:
-        assert tr.MODEL in c["detail"]
+        assert tr.model in c["detail"]
     elif status != 200:
         assert "HTTP {}".format(status) in c["detail"]
     plain(c["detail"] + c["fix"])

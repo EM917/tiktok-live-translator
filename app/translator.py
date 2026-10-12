@@ -2,6 +2,7 @@
 """翻译引擎。auto：本地 Ollama 里有 TranslateGemma 就用它（完全本地），否则退回
 Google 网页免费接口；也可显式指定 gemma / google / claude / openai / none。"""
 import asyncio
+import contextvars
 import hashlib
 import json
 import os
@@ -9,6 +10,33 @@ import re
 from collections import OrderedDict
 
 from .i18n import L
+
+# 单次 translate 调用的结局，按 asyncio 任务隔离。
+#
+# 报警上下文翻译（pipeline._translate_alert）和字幕翻译是并发的独立任务，用的是同一个引擎
+# 对象：引擎上的计数是大家共用的，字幕那边前后各读一次比较，会把报警那次的拒答记到这条字幕
+# 头上（审计写成 translation_refusal、类别是报警那次的，真正的超时反倒没报）。ContextVar 按
+# 任务隔离：起任务时复制一份上下文，任务里改的值别的任务看不见；同一个任务里直接 await 的
+# 协程改的值，await 回来就看得见。所以调用方要**直接 await** translate，不要套 wait_for
+# （3.11 及以前 wait_for 另起任务，这里记下的结局就丢了，退化成「不是拒答」——不会记成别人
+# 的，只是少记一条）。
+_CALL_OUTCOME = contextvars.ContextVar("translate_call_outcome", default=None)
+
+
+def begin_translate_call():
+    """调 translate 之前清掉本任务上一次留下的结局（缓存命中时引擎根本不会被调用）。"""
+    _CALL_OUTCOME.set(None)
+
+
+def translate_call_outcome():
+    """本任务里最近一次 translate 调用的结局：None（没有要特别说的），或
+    ("refusal", 接口给的类别或 None)。"""
+    return _CALL_OUTCOME.get()
+
+
+def note_refusal(category):
+    """引擎记下「本任务里这一次调用被拒答了」。category 照抄接口给的，可能为 None。"""
+    _CALL_OUTCOME.set(("refusal", category))
 
 def api_key(name):
     """取密钥：环境变量优先，其次界面里填的（存在 settings.json）。
@@ -159,6 +187,9 @@ class CachedTranslator:
     def cooldown_until(self):
         return getattr(self.inner, "cooldown_until", 0.0)
 
+    # 拒答（目前只有 Claude 会）不经过这里：内层引擎把这一次调用的结局记进
+    # translate_call_outcome()，管线在同一个任务里读。拒答返回 None，不进缓存——
+    # 下面只缓存真值，所以同一句下次还会再问一次
     async def translate(self, text, target, source="auto", glossary=None):
         # 词表可以是紧凑串，也可以是词对列表（见 _as_pairs）。列表不可哈希，
         # 直接拿来做缓存键会抛 TypeError 把这次翻译整个打掉——调用方少写一个
@@ -525,11 +556,54 @@ class DeepLTranslator(BaseTranslator):
 
 
 class ClaudeTranslator(BaseTranslator):
-    """通过 Anthropic API（Claude Haiku）翻译，需要环境变量 ANTHROPIC_API_KEY。"""
+    """通过 Anthropic API 翻译，默认模型 Claude Haiku 5.5；需要密钥 ANTHROPIC_API_KEY。
+
+    模型可由环境变量 CLAUDE_TRANSLATE_MODEL 改，构造时读一次。请求规则按模型不同
+    （见 TUNED），回应一律先看 stop_reason、再按块的 type 取译文（见 read_message）。
+    这里的接口规则来自 claude-api skill 的迁移指南「Migrating to Claude Haiku 5.5」一节和
+    它的 Thinking 表，没有凭记忆写。"""
 
     name = "claude"
     URL = "https://api.anthropic.com/v1/messages"
-    MODEL = os.environ.get("CLAUDE_TRANSLATE_MODEL", "claude-haiku-4-5-20251001")
+    API_VERSION = "2023-06-01"
+    # 模型 id 一字不差，不带日期后缀（迁移指南：fixed ID with no date suffix）
+    DEFAULT_MODEL = "claude-haiku-5-5"
+    # 类上的兜底：pipeline._model_of 和自检先读实例的 model，读不到才读这个
+    MODEL = DEFAULT_MODEL
+
+    # 只给逐条核对过请求规则的模型加专门字段；别的模型（包括用 CLAUDE_TRANSLATE_MODEL
+    # 指定的 Haiku 4.5）发通用最小请求体：不写 thinking、不写 output_config、不写采样参数、
+    # 不预填。按 Thinking 表，不写 thinking 在每个现役模型上都合法。
+    #
+    # Haiku 5.5 不写 thinking 就是 adaptive（思考默认开），译文前面会先出思考块，还会吃掉
+    # max_tokens。字幕要的是单句低延迟，所以关掉思考、effort 显式写 low：
+    #   * {"type": "disabled"} 只在 effort 为 low/medium/high 时被接受，xhigh/max 会 400；
+    #   * effort 放在 output_config 里，Haiku 5.5 默认 medium，迁移指南要求显式写；
+    #   * 关思考后那三条限制（单条消息改 effort、block_binding、JSON 输出加工具）这里都碰不到：
+    #     单轮、无工具、无 JSON 格式、不回传思考块。
+    # 迁移指南本身倾向「用 effort 调、别关思考」。这里是有意偏离：字幕的延迟上限很硬（TIMEOUT
+    # 10 秒、切段 9 秒），而关思考的弊端本路线全都碰不到。关思考和 adaptive+low 谁的译文更准，
+    # **没有测过**，测出来之前不要说谁更好（2026-10-12 用户决定这次不做离线对比，原因是评委
+    # 费用；对比工具留在分支 claude/claude-vs-local-bench 上，没有合进来）。
+    #
+    # 不要把这张表泛化成「新模型都关思考」：Opus 5.5 和 Sonnet 5.5 对 disabled 一律 400。
+    # 也不要加 temperature/top_p/top_k（Haiku 5.5 上非默认值 400）、budget_tokens（400）、
+    # fallbacks（Haiku 5.5 没有服务端兜底，列表形式 400）。
+    TUNED = {
+        "claude-haiku-5-5": {"thinking": {"type": "disabled"},
+                             "output_config": {"effort": "low"}},
+    }
+    # 关了思考：原文 p95 约 156 个西语字符，一句译文的输出远小于 100 token
+    MAX_TOKENS_NO_THINKING = 512
+    # 没调过的模型可能默认开思考，思考算进 max_tokens，给它留够地方
+    MAX_TOKENS_MAY_THINK = 2048
+    # 429（rate_limit_error）：按回应的 retry-after 暂停，没给就停这么久；给得太长也只停到上限，
+    # 免得一个离谱的值让整场字幕都不翻。和 Google、DeepL 一样走冷却，管线据此报 429 提示和审计
+    RATE_LIMIT_COOLDOWN_SEC = 30
+    RATE_LIMIT_MAX_SEC = 120
+    # 这两种回应带着接口自己的说明、又不会带密钥：400 说请求体哪里不对（也可能是额度、账务一类
+    # 的 invalid_request_error），402 是 billing_error。原话留下，管线照抄给中控
+    SAYS_WHY_STATUSES = (400, 402)
 
     def __init__(self):
         super().__init__()
@@ -537,17 +611,91 @@ class ClaudeTranslator(BaseTranslator):
         if not self.api_key:
             raise RuntimeError(L("还没有填 Claude 密钥——在页面上的「翻译引擎」里填一次即可",
                                  "No Claude API key yet. Enter it once in Settings > Translation Engine."))
+        self.model = ((os.environ.get("CLAUDE_TRANSLATE_MODEL") or "").strip()
+                      or self.DEFAULT_MODEL)
+        # 拒答（HTTP 200 + stop_reason "refusal"）的本场累计次数，只作统计。某一句是不是
+        # 拒答**不看它**：报警翻译和字幕翻译并发共用这个对象，比较前后的次数会张冠李戴。
+        # 看 translate_call_outcome()（按任务隔离，见文件头）
+        self.refusals = 0
+        self._said_400 = False
 
     # 自检探针查的是这个模型本身：模型下线时回 404，而不只是验密钥
     PROBE_CHECKS_MODEL = True
+
+    def _headers(self):
+        return {"x-api-key": self.api_key, "anthropic-version": self.API_VERSION,
+                "content-type": "application/json"}
+
+    def _body(self, text, target):
+        """这一句的请求体。离线对比工具直接调它，测的就是要发版的这一份。"""
+        extra = self.TUNED.get(self.model) or {}
+        no_think = (extra.get("thinking") or {}).get("type") == "disabled"
+        body = {
+            "model": self.model,
+            "max_tokens": self.MAX_TOKENS_NO_THINKING if no_think else self.MAX_TOKENS_MAY_THINK,
+            "system": ("You are a translation engine for live-stream subtitles. "
+                       "Translate the user's text into {lang}. "
+                       "Output ONLY the translation, nothing else.").format(
+                           lang=LANG_NAMES.get(target, target)),
+            # 以 user 轮结尾：Haiku 5.5 上预填（最后一轮是 assistant）会 400
+            "messages": [{"role": "user", "content": text}],
+        }
+        body.update(json.loads(json.dumps(extra)))      # 深拷贝：请求改不到类上的表
+        return body
+
+    @staticmethod
+    def read_message(data):
+        """Messages API 的 200 回应 → (译文或 None, stop_reason, 拒答类别)。
+
+        先看 stop_reason 再读 content（迁移指南：Branch on stop_reason before reading content）：
+          * refusal：Haiku 5.5 的安全分类器拒答了。content 可能是空的，也可能带着半句——
+            半句不是完整译文，丢掉。类别照抄 stop_details.category（可能为 null），不替它解释；
+          * max_tokens：撞到上限，可能只有思考块，也可能是半句译文，判失败——和 Hy-MT2 的
+            done_reason=length 同一个做法。
+        其余按块的 type 取文本：回应可以以 thinking 块开头，按位置读第一个块会拿到空串。"""
+        if not isinstance(data, dict):
+            return None, None, None
+        stop = data.get("stop_reason")
+        if stop == "refusal":
+            details = data.get("stop_details")
+            return None, stop, (details.get("category") if isinstance(details, dict) else None)
+        if stop == "max_tokens":
+            return None, stop, None
+        text = "".join(str(b.get("text") or "") for b in (data.get("content") or [])  # i18n: data
+                       if isinstance(b, dict) and b.get("type") == "text")
+        return text.strip() or None, stop, None
+
+    @staticmethod
+    async def _error_summary(resp):
+        """400/402 回应里接口自己的说明（error.type: error.message），清洗截断后返回；读不到返回
+        None。只给 SAYS_WHY_STATUSES 用：400 说的是请求体哪里不对，402 是账务，都不带密钥；
+        401/403 的说明里可能带着打码后的密钥片段，那几种一律只记状态码。"""
+        try:
+            err = json.loads(await resp.text()).get("error") or {}
+            said = ": ".join(str(x) for x in (err.get("type"), err.get("message")) if x)  # i18n: data
+        except Exception:
+            return None
+        return clean_error_text(said)
+
+    @classmethod
+    def _retry_after(cls, resp):
+        """429 回应的 retry-after（秒），夹在 1 到 RATE_LIMIT_MAX_SEC 之间；没有或读不懂就用默认值。"""
+        headers = getattr(resp, "headers", None) or {}
+        try:
+            raw = next((v for k, v in headers.items() if str(k).lower() == "retry-after"), None)
+            if raw is not None:
+                return min(max(float(raw), 1.0), float(cls.RATE_LIMIT_MAX_SEC))
+        except (TypeError, ValueError, AttributeError):
+            pass
+        return float(cls.RATE_LIMIT_COOLDOWN_SEC)
 
     async def probe_key(self):
         """不花 token 的探针：GET /v1/models/{模型}，返回 HTTP 状态码。
         连不上时抛异常，由调用方处理（自检那边限时 5 秒）。"""
         from urllib.parse import quote
 
-        headers = {"x-api-key": self.api_key, "anthropic-version": "2023-06-01"}
-        url = self.URL.rsplit("/", 1)[0] + "/models/" + quote(self.MODEL, safe="")
+        headers = {"x-api-key": self.api_key, "anthropic-version": self.API_VERSION}
+        url = self.URL.rsplit("/", 1)[0] + "/models/" + quote(self.model, safe="")
         session = await self.session()
         async with session.get(url, headers=headers) as resp:
             return resp.status
@@ -555,36 +703,45 @@ class ClaudeTranslator(BaseTranslator):
     async def translate(self, text, target, source="auto", glossary=None):
         import time
 
+        _CALL_OUTCOME.set(None)
         if time.monotonic() < self._cooldown_until:
             return None             # 密钥或模型刚被拒过：冷却期内不再发
-        lang = LANG_NAMES.get(target, target)
-        body = {
-            "model": self.MODEL,
-            "max_tokens": 512,
-            "system": ("You are a translation engine for live-stream subtitles. "
-                       "Translate the user's text into {lang}. "
-                       "Output ONLY the translation, nothing else.").format(lang=lang),
-            "messages": [{"role": "user", "content": text}],
-        }
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        }
+        body = self._body(text, target)
         try:
             session = await self.session()
-            async with session.post(self.URL, data=json.dumps(body), headers=headers) as resp:
+            async with session.post(self.URL, data=json.dumps(body),
+                                    headers=self._headers()) as resp:
                 if resp.status != 200:
-                    # 只记状态码：远程接口的错误说明里可能带着打码后的密钥片段
-                    self._note_http_error(resp.status)
+                    # 一般只记状态码：远程接口的错误说明里可能带着打码后的密钥片段。
+                    # 400/402 例外（见 _error_summary）：请求体一旦配错、或者账务出了问题，
+                    # 整场每一句都会这样，不留原话就查不出是哪里
+                    said = (await self._error_summary(resp)
+                            if resp.status in self.SAYS_WHY_STATUSES else None)
+                    self._note_http_error(resp.status, said)
                     if resp.status in self.REJECT_STATUSES:
                         self._cooldown_until = time.monotonic() + self.REJECT_COOLDOWN_SEC
+                    elif resp.status == 429:
+                        wait = self._retry_after(resp)
+                        self._cooldown_until = time.monotonic() + wait
+                        print("[警告] Claude 返回 HTTP 429，暂停请求 {:.0f} 秒后自动重试".format(wait))
+                    if resp.status in self.SAYS_WHY_STATUSES and not self._said_400:
+                        self._said_400 = True
+                        print("[警告] Claude 返回 HTTP {}（{}，模型 {}），这一句显示原文；"
+                              "之后再出现不再打印".format(resp.status, said or "接口没有给说明",
+                                                    self.model))
                     return None
                 self._note_ok()
                 data = await resp.json()
-            return (data.get("content") or [{}])[0].get("text", "").strip() or None
         except Exception:
             return None
+        out, stop, category = self.read_message(data)
+        if stop == "refusal":
+            self.refusals += 1
+            note_refusal(category)
+        elif stop == "max_tokens":
+            print("[警告] Claude 的回应撞到 max_tokens 上限（模型 {}），这一句没有完整译文，"
+                  "已丢弃".format(self.model))
+        return out
 
 
 class OpenAITranslator(BaseTranslator):

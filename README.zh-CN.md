@@ -235,7 +235,7 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，建议 16 GB 以�
 | `gemma` | TranslateGemma 4B。`OLLAMA_TRANSLATE_MODEL` 可切换至 `translategemma:12b`/`27b`。「翻译引擎」菜单里没有这一项，用 `--translator gemma` 指定 |
 | `deepl` | 密钥在「设置 → 翻译引擎」填写（也可用 `DEEPL_API_KEY`）。以 `:fx` 结尾的免费 key 会自动走对应域名。会按[词表](#词表)自动建立并维护 DeepL 原生术语表，见下。**字幕文本会发送给 DeepL** |
 | `google` | Google 翻译免费接口，无需密钥。字幕文本会发送至 Google，且按 IP 限流 |
-| `claude` | 密钥在「设置 → 翻译引擎」填写（也可用 `ANTHROPIC_API_KEY`），模型可由 `CLAUDE_TRANSLATE_MODEL` 覆盖 |
+| `claude` | 密钥在「设置 → 翻译引擎」填写（也可用 `ANTHROPIC_API_KEY`）。默认模型 Claude Haiku 5.5（`claude-haiku-5-5`），为了让每句字幕快出，关掉了思考；可用 `CLAUDE_TRANSLATE_MODEL` 改用别的模型。字幕文本会发送至 Anthropic。Claude 拒绝翻译的那一句显示原文，并记进审计日志 |
 | `openai` | 密钥在「设置 → 翻译引擎」填写（也可用 `OPENAI_API_KEY`），可选 `OPENAI_BASE_URL`、`OPENAI_MODEL`。兼容各类 OpenAI 风格接口，含本地 LM Studio / vLLM |
 | `none` | 仅显示识别原文，不翻译 |
 

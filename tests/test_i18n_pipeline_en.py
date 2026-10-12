@@ -829,3 +829,61 @@ def test_engine_audit_and_terminal_do_not_depend_on_the_ui_language(
     assert "returned HTTP" not in zh_out and "returned HTTP" not in "\n".join(zh_rows)
     assert incidents_en(en_server, Pipeline.ENGINE_INCIDENT)[0].startswith(
         "Claude returned HTTP 401.")
+
+
+# ---- Claude 拒答（Haiku 5.5 升级）：界面英文成对，审计与终端和界面语言无关 ----------------------
+
+class RefusingEngine:
+    name, model = "claude", "claude-haiku-5-5"
+
+    def __init__(self):
+        self.refusals = 0
+        self.last_error, self.fail_streak, self.cooldown_until = None, 0, 0.0
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        from app.translator import note_refusal
+
+        self.refusals += 1
+        note_refusal("general_harms")
+        return None
+
+    async def close(self):
+        pass
+
+
+def _refusals_in(lang, monkeypatch, tmp_path, capsys):
+    from app.audit import AuditLog
+    (tmp_path / lang).mkdir()
+    p, server = make_pipeline(monkeypatch, tmp_path / lang)
+    p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path / lang / "logs")
+    p.translator = RefusingEngine()
+
+    async def scenario():
+        for seq in (1, 2):
+            await p._translate_and_update({"id": seq, "text": "hola amigos", "lang": "es",
+                                           "target": "zh-CN", "audio_end_ts": time.time()})
+
+    i18n._bad_once.clear()
+    capsys.readouterr()
+    with i18n.use(lang):
+        run(scenario())
+    p.audit.close(reason="user_stop")
+    rows = [json.dumps({k: v for k, v in json.loads(line).items()
+                        if k not in ("at", "ts", "started_at", "ended_at", "translate_ms")},
+                       ensure_ascii=False)
+            for line in p.audit.path.read_text(encoding="utf-8").splitlines()]
+    return rows, capsys.readouterr().out, server
+
+
+def test_a_claude_refusal_is_english_and_its_evidence_is_not(monkeypatch, tmp_path, capsys,
+                                                            ascii_engine_labels):
+    zh_rows, zh_out, _ = _refusals_in(i18n.ZH, monkeypatch, tmp_path, capsys)
+    en_rows, en_out, en_server = _refusals_in(i18n.EN, monkeypatch, tmp_path, capsys)
+    assert en_rows == zh_rows and en_out == zh_out
+    assert [json.loads(r)["type"] for r in zh_rows].count("translation_refusal") == 2
+    assert zh_out.count("[警告] Claude 没有翻译第") == 2
+    assert notices_en(en_server) == [
+        "Claude didn’t translate one caption (the API returned a refusal), so that caption shows "
+        "the original text. Banned-term alerts aren’t affected. Later refusals this session go "
+        "to the audit log without another notice."]
+    assert_no_chinese(english_ui(en_server.messages))

@@ -1028,6 +1028,9 @@
 
   function trackTranslateHealth(msg) {
     if (msg.translate_state === "failed") {
+      // 拒答（refused）是接口正常回了话、只是不译这一句：不算进连续失败，否则主播反复说
+      // 同类宣称时，几条拒答就会顶出下面那句「翻译失败」横幅。也不清零——它不说明翻译通了
+      if (msg.refused) return;
       failStreak++;
       // >= 且每条都重刷：状态横幅是共用的，中途被别的 status 覆盖后，
       // 只要翻译还在持续失败，警告就要顶回来
@@ -1221,7 +1224,9 @@
     }
     if (!stateChip) return;
     stateChip.classList.toggle("fail-chip", state === "failed");
-    stateChip.textContent = state === "failed" ? L("翻译失败", "Translation failed")
+    stateChip.textContent = state === "failed"
+      ? (msg.refused ? L("未翻译（接口拒答）", "Not translated (API refusal)")
+        : L("翻译失败", "Translation failed"))
       : (state === "dropped" ? L("翻译已跳过（积压）", "Skipped (backlog)") : "");
   }
 
