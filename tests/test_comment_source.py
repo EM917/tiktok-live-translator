@@ -76,7 +76,123 @@ def test_event_to_item_basic_with_msg_id():
     ev = FakeEvent("hola mundo", user=FakeUser(nickname="Ana", unique_id="ana123"), msg_id=987)
     item = event_to_item(ev)
     # 昵称优先：中控看的是显示名，不是账号 id
-    assert item == {"id": "987", "user": "Ana", "text": "hola mundo"}
+    assert {k: item[k] for k in ("id", "user", "text")} == \
+        {"id": "987", "user": "Ana", "text": "hola mundo"}
+    # 带着 unique_id，所以账号字段里只有它推出来的三个键（键不稳，uid_src 写明是 handle）
+    assert set(item) - {"id", "user", "text"} == {"uid", "uid_src", "handle"}
+    assert (item["uid"], item["uid_src"], item["handle"]) == ("h:ana123", "handle", "ana123")
+
+
+def test_event_to_item_nickname_only_has_exactly_the_original_keys():
+    item = event_to_item(FakeEvent("hola", user=FakeUser(nickname="Ana"), msg_id=5))
+    assert item == {"id": "5", "user": "Ana", "text": "hola"}
+
+
+class RichUser:
+    """TikTokLive 7.0.1 ExtendedUser 的几个字段（鸭子类型）；没设的值照 betterproto 用 0 / ''。"""
+
+    def __init__(self, id=0, id_str="", sec_uid="", display_id="", nickname="Toñita 🇭🇳",
+                 user_attr=None):
+        self.id, self.id_str, self.sec_uid = id, id_str, sec_uid
+        self.display_id, self.nickname, self.user_attr = display_id, nickname, user_attr
+
+    @property
+    def unique_id(self):
+        return self.display_id or None
+
+
+def rich_event(user, identity=None, at_user=None, mention_users=(), text="hola"):
+    ev = FakeEvent(text, user=user, msg_id=77)
+    ev.user_identity = identity
+    ev.at_user = at_user
+    ev.mention_users = list(mention_users)
+    return ev
+
+
+def identity(**flags):
+    base = dict.fromkeys(("is_anchor", "is_moderator_of_anchor", "is_follower_of_anchor",
+                          "is_mutual_following_with_anchor", "is_gift_giver_of_anchor",
+                          "is_subscriber_of_anchor"), False)
+    base.update(flags)
+    return SimpleNamespace(**base)
+
+
+def test_event_to_item_full_account_fields_keep_19_digit_id_as_string():
+    sec = "MS4wLjABAAAA" + "x" * 64
+    ev = rich_event(RichUser(id=7234567890123456789, id_str="7234567890123456789",
+                             sec_uid=sec, display_id="tonita_hn"),
+                    identity=identity(is_follower_of_anchor=True),
+                    at_user=RichUser(id=42))
+    item = event_to_item(ev)
+    assert item["uid"] == "7234567890123456789"          # 原样的字符串，不是 int、不丢精度
+    assert item["uid_src"] == "id"
+    assert item["sec"] == "s:" + sec[:78] and len(item["sec"]) <= 80
+    assert item["handle"] == "tonita_hn"
+    assert item["mention"] is True
+    assert "role" not in item                            # 只是关注了主播，不是主播也不是房管
+    json.loads(json.dumps(item))                         # 整行能原样写进子进程 stdout
+
+
+def test_event_to_item_uid_fallback_order():
+    # id 是 0 或 bool 都不当真；id_str 是 "0" 也不算
+    assert event_to_item(rich_event(RichUser(id=True, id_str="123")))["uid"] == "123"
+    item = event_to_item(rich_event(RichUser(id=0, id_str="0", sec_uid="MS4w")))
+    assert (item["uid"], item["uid_src"]) == ("s:MS4w", "sec_uid")
+    assert "sec" not in item                             # 主键就是它，不重复带
+    item = event_to_item(rich_event(RichUser(display_id="  tonita  ")))
+    assert (item["uid"], item["uid_src"], item["handle"]) == ("h:tonita", "handle", "tonita")
+    assert event_to_item(rich_event(RichUser(id_str="12ab"))).get("uid") is None
+    assert len(event_to_item(rich_event(RichUser(display_id="h" * 200)))["handle"]) == 64
+
+
+def test_event_to_item_role_only_from_explicit_true_flags():
+    assert event_to_item(rich_event(RichUser(id=1), identity(is_anchor=True)))["role"] == "anchor"
+    assert event_to_item(rich_event(RichUser(id=1),
+                                    identity(is_moderator_of_anchor=True)))["role"] == "mod"
+    admin = RichUser(id=1, user_attr=SimpleNamespace(is_admin=True))
+    assert event_to_item(rich_event(admin))["role"] == "mod"
+    # 默认实例（全 False）、真值但不是 True 的东西都不算
+    assert "role" not in event_to_item(rich_event(RichUser(id=1), identity()))
+    odd = SimpleNamespace(is_anchor=1, is_moderator_of_anchor="yes")
+    assert "role" not in event_to_item(rich_event(RichUser(id=1), odd))
+
+
+def test_event_to_item_mention_needs_a_real_target():
+    assert event_to_item(rich_event(RichUser(id=1), mention_users=[RichUser(id=9)]))["mention"] is True
+    assert "mention" not in event_to_item(rich_event(RichUser(id=1), at_user=RichUser(id=0)))
+    assert "mention" not in event_to_item(rich_event(RichUser(id=1)))
+
+
+def test_event_to_item_account_field_errors_keep_the_comment():
+    class Broken(RichUser):
+        @property
+        def id(self):
+            raise RuntimeError("boom")
+
+        @id.setter
+        def id(self, _v):
+            pass
+
+    item = event_to_item(rich_event(Broken(nickname="Ana")))
+    assert item == {"id": "77", "user": "Ana", "text": "hola"}
+
+
+def test_field_stats_counts_non_empty_only():
+    from app.comment_worker import FieldStats
+    stats = FieldStats()
+    assert stats.take() is None
+    # betterproto 没设时的样子：0、''、全 False 的默认实例——一样都不算
+    stats.observe(rich_event(RichUser(), identity=identity(), at_user=RichUser()))
+    stats.observe(rich_event(RichUser(id=5, id_str="5", sec_uid="MS4w", display_id="a",
+                                      user_attr=SimpleNamespace(is_admin=True)),
+                             identity=identity(is_follower_of_anchor=True),
+                             mention_users=[RichUser(id=2)]))
+    stats.observe(SimpleNamespace(comment="sin usuario"))
+    line = stats.take()
+    assert line == {"event": "field_stats", "n": 3, "has": {
+        "id": 1, "id_str": 1, "sec_uid": 1, "display_id": 1,
+        "identity": 1, "identity_any": 1, "mention": 1}}
+    assert stats.take() is None                          # 吐的是增量，吐完清零
 
 
 def test_event_to_item_falls_back_to_unique_id_without_nickname():
@@ -259,6 +375,46 @@ def test_supervise_forwards_status_and_comments_in_order(monkeypatch):
     states = [s for s, _ in state_log]
     assert states.index("connecting") < states.index("connected")
     assert calls == [["abc"]]
+
+
+def test_supervise_accumulates_field_stats_across_reconnects(monkeypatch, capsys):
+    """子进程吐的是增量；重连换了新进程也要接着累加，坏行整行丢掉。"""
+    first = FakeProc(stdout_lines=[
+        jline({"event": "status", "state": "connected"}),
+        jline({"event": "field_stats", "n": 50, "has": {"id": 50, "sec_uid": 48, "identity": 1}}),
+        jline({"event": "field_stats", "n": "50", "has": {"id": 50}}),
+        jline({"event": "field_stats", "n": 5, "has": ["id"]}),
+        jline({"event": "field_stats", "n": 10, "has": {"id": True, "sec_uid": 99, "x": -1}}),
+    ], returncode=0)
+    second = FakeProc(stdout_lines=[
+        jline({"event": "field_stats", "n": 7, "has": {"id": 0, "sec_uid": 7}}),
+    ], hang_after=True)
+    cs, _items, _states, calls = make_source(monkeypatch, [first, second])
+
+    async def scenario():
+        cs.start("abc")
+        assert await wait_until(lambda: cs.comment_fields["n"] == 67)
+        await cs.stop()
+
+    run(scenario())
+    # bool 不当数，超过 n 的计数按 n 封顶，负数丢掉
+    assert cs.comment_fields == {"n": 67, "has": {"id": 50, "sec_uid": 65, "identity": 1}}
+    out = capsys.readouterr().out
+    assert "[弹幕] 字段：累计 50 条里 id 50、sec_uid 48、主播或房管 1" in out
+    assert "[弹幕] 字段：累计 67 条里" in out
+    assert len(calls) == 2
+
+
+def test_new_session_starts_field_stats_from_zero(monkeypatch):
+    cs, _items, _states, _calls = make_source(monkeypatch, [])
+    cs.comment_fields = {"n": 9, "has": {"id": 9}}
+
+    async def scenario():
+        cs.start("abc")
+        await cs.stop()
+
+    run(scenario())
+    assert cs.comment_fields == {"n": 0, "has": {}}
 
 
 def _anon_notes(monkeypatch):
@@ -962,6 +1118,42 @@ def test_end_session_records_comments_received_in_session_end(monkeypatch, tmp_p
     assert end_rec["reason"] == "offline"
 
 
+def test_end_session_records_comment_fields_only_when_counted(monkeypatch, tmp_path):
+    """字段填充率写进 session_end.comment_fields；一条都没数过的场次不加这个键。"""
+    from app import resolver
+    monkeypatch.setattr(resolver, "_login_first_enabled", lambda: False)
+
+    class FakeCommentSource:
+        def __init__(self, fields):
+            self.comments_received = fields["n"]
+            self.comment_fields = fields
+
+        def start(self, unique_id):
+            pass
+
+        async def stop(self):
+            pass
+
+    def session_end(fields):
+        p, _server = make_pipeline(monkeypatch, tmp_path)
+        p.comment_source = FakeCommentSource(fields)
+
+        async def scenario():
+            await p._begin_session("https://www.tiktok.com/@abc/live")
+            audit = p.audit
+            await p._end_session(audit, reason="offline")
+            return audit
+
+        audit = run(scenario())
+        records = [json.loads(line) for line in
+                   audit.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return next(r for r in records if r["type"] == "session_end")
+
+    counted = {"n": 120, "has": {"id": 0, "sec_uid": 120, "identity": 3}}
+    assert session_end(counted)["comment_fields"] == counted
+    assert "comment_fields" not in session_end({"n": 0, "has": {}})
+
+
 # ---------------------------------------------------------------------------
 # 5. server.py：comment_source 广播落盘
 # ---------------------------------------------------------------------------
@@ -1043,6 +1235,64 @@ def test_worker_exits_when_parent_pid_changes():
         cw.asyncio.sleep = orig_sleep
         block.set()
     assert calls == ["gone", ("exit", 0)]
+
+
+def test_worker_flushes_field_stats_every_50_and_on_disconnect(monkeypatch):
+    """用假的 TikTokLive 跑一遍 _run：120 条弹幕 → 第 50、100 条各吐一行增量，
+    剩下 20 条在断开时吐，且排在「disconnected」之前；弹幕一条不少。"""
+    from app import comment_worker as cw
+
+    events_mod = ModuleType("TikTokLive.events")
+    for name in ("CommentEvent", "ConnectEvent", "DisconnectEvent"):
+        setattr(events_mod, name, type(name, (), {}))
+    comments = [rich_event(RichUser(id=i + 1, sec_uid="MS4w" if i % 2 else ""), text="c{}".format(i))
+                for i in range(120)]
+
+    class FakeClient:
+        def __init__(self, unique_id):
+            self.handlers = {}
+            self.room_id = 1
+            self.web = SimpleNamespace(set_session=lambda *a: None)
+
+        def on(self, ev_cls):
+            def deco(fn):
+                self.handlers[ev_cls] = fn
+                return fn
+            return deco
+
+        async def is_live(self):
+            return True
+
+        async def connect(self):
+            await self.handlers[events_mod.ConnectEvent](None)
+            for ev in comments:
+                await self.handlers[events_mod.CommentEvent](ev)
+            await self.handlers[events_mod.DisconnectEvent](None)
+
+        async def disconnect(self):
+            pass
+
+    root = ModuleType("TikTokLive")
+    root.TikTokLiveClient = FakeClient
+    monkeypatch.setitem(sys.modules, "TikTokLive", root)
+    monkeypatch.setitem(sys.modules, "TikTokLive.events", events_mod)
+    emitted = []
+    monkeypatch.setattr(cw, "_emit", emitted.append)
+
+    async def no_watch(_on_gone):        # 真的看门狗会读 stdin、最后 os._exit
+        return None
+
+    monkeypatch.setattr(cw, "_watch_parent", no_watch)
+
+    code = run(cw._run(SimpleNamespace(unique_id="abc", session_id=None, tt_target_idc=None)))
+    assert code == 0
+    stats = [e for e in emitted if e.get("event") == "field_stats"]
+    assert [e["n"] for e in stats] == [50, 50, 20]
+    assert sum(e["has"]["id"] for e in stats) == 120
+    assert sum(e["has"]["sec_uid"] for e in stats) == 60
+    assert sum(len(e["items"]) for e in emitted if e.get("event") == "comments") == 120
+    kinds = [(e.get("event"), e.get("state")) for e in emitted]
+    assert kinds.index(("field_stats", None), 100) < kinds.index(("status", "disconnected"))
 
 
 # ---------------------------------------------------------------------------
