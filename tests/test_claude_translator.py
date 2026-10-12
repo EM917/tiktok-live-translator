@@ -20,10 +20,11 @@ FORBIDDEN_KEYS = ("temperature", "top_p", "top_k", "budget_tokens", "fallbacks")
 
 
 class Resp:
-    def __init__(self, status, payload=None, text=None):
+    def __init__(self, status, payload=None, text=None, headers=None):
         self.status = status
         self._payload = payload
         self._text = text
+        self.headers = headers or {}
 
     async def json(self, content_type=None):
         return self._payload
@@ -274,6 +275,39 @@ def test_a_400_keeps_the_apis_own_words_and_says_so_once(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.count("HTTP 400") == 1 and "claude-haiku-5-5" in out
     assert "sk-ant-test-key" not in out
+
+
+def test_a_402_keeps_the_apis_own_words_too(monkeypatch, capsys):
+    """402 是 billing_error：说的是账务，不带密钥。原话留下，管线照抄给中控。"""
+    tr = make(monkeypatch)
+    said = {"type": "error", "error": {"type": "billing_error",
+                                       "message": "Your credit balance is too low."}}
+    session = RecordingSession([Resp(402, said)])
+    attach(tr, session)
+    assert run(tr.translate("hola", "zh-CN")) is None
+    assert tr.last_error == (402, "billing_error: Your credit balance is too low.")
+    assert tr.cooldown_until <= time.monotonic()        # 不冷却：管线说一次，中控自己定
+    out = capsys.readouterr().out
+    assert "HTTP 402" in out and "sk-ant-test-key" not in out
+
+
+@pytest.mark.parametrize("headers,wait", [({"retry-after": "7"}, 7), ({"Retry-After": "0"}, 1),
+                                          ({"retry-after": "9000"}, 120), ({}, 30),
+                                          ({"retry-after": "soon"}, 30)])
+def test_a_429_pauses_for_what_the_api_asks_within_limits(monkeypatch, capsys, headers, wait):
+    """429 带 retry-after：按它暂停（夹在 1 到 120 秒之间），没给或读不懂就停 30 秒。
+    暂停期间不发请求——管线的 429 提示和 translation_cooldown 审计要靠这个冷却才走得到。"""
+    tr = make(monkeypatch)
+    said = {"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}}
+    session = RecordingSession([Resp(429, said, headers=headers)])
+    attach(tr, session)
+    t0 = time.monotonic()
+    assert run(tr.translate("hola", "zh-CN")) is None
+    assert tr.last_error == (429, None)                 # 429 不留原话
+    assert tr.cooldown_until - t0 == pytest.approx(wait, abs=0.5)
+    assert run(tr.translate("otra", "zh-CN")) is None
+    assert len(session.posts) == 1
+    assert "HTTP 429" in capsys.readouterr().out
 
 
 def test_a_401_still_keeps_no_body(monkeypatch, capsys):

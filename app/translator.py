@@ -596,6 +596,13 @@ class ClaudeTranslator(BaseTranslator):
     MAX_TOKENS_NO_THINKING = 512
     # 没调过的模型可能默认开思考，思考算进 max_tokens，给它留够地方
     MAX_TOKENS_MAY_THINK = 2048
+    # 429（rate_limit_error）：按回应的 retry-after 暂停，没给就停这么久；给得太长也只停到上限，
+    # 免得一个离谱的值让整场字幕都不翻。和 Google、DeepL 一样走冷却，管线据此报 429 提示和审计
+    RATE_LIMIT_COOLDOWN_SEC = 30
+    RATE_LIMIT_MAX_SEC = 120
+    # 这两种回应带着接口自己的说明、又不会带密钥：400 说请求体哪里不对（也可能是额度、账务一类
+    # 的 invalid_request_error），402 是 billing_error。原话留下，管线照抄给中控
+    SAYS_WHY_STATUSES = (400, 402)
 
     def __init__(self):
         super().__init__()
@@ -659,15 +666,27 @@ class ClaudeTranslator(BaseTranslator):
 
     @staticmethod
     async def _error_summary(resp):
-        """400 回应里接口自己的说明（error.type: error.message），清洗截断后返回；读不到返回 None。
-        只给 400 用：400 说的是请求体哪里不对，不带密钥；401/403 的说明里可能带着打码后的密钥片段，
-        那几种一律只记状态码。"""
+        """400/402 回应里接口自己的说明（error.type: error.message），清洗截断后返回；读不到返回
+        None。只给 SAYS_WHY_STATUSES 用：400 说的是请求体哪里不对，402 是账务，都不带密钥；
+        401/403 的说明里可能带着打码后的密钥片段，那几种一律只记状态码。"""
         try:
             err = json.loads(await resp.text()).get("error") or {}
             said = ": ".join(str(x) for x in (err.get("type"), err.get("message")) if x)  # i18n: data
         except Exception:
             return None
         return clean_error_text(said)
+
+    @classmethod
+    def _retry_after(cls, resp):
+        """429 回应的 retry-after（秒），夹在 1 到 RATE_LIMIT_MAX_SEC 之间；没有或读不懂就用默认值。"""
+        headers = getattr(resp, "headers", None) or {}
+        try:
+            raw = next((v for k, v in headers.items() if str(k).lower() == "retry-after"), None)
+            if raw is not None:
+                return min(max(float(raw), 1.0), float(cls.RATE_LIMIT_MAX_SEC))
+        except (TypeError, ValueError, AttributeError):
+            pass
+        return float(cls.RATE_LIMIT_COOLDOWN_SEC)
 
     async def probe_key(self):
         """不花 token 的探针：GET /v1/models/{模型}，返回 HTTP 状态码。
@@ -693,16 +712,22 @@ class ClaudeTranslator(BaseTranslator):
                                     headers=self._headers()) as resp:
                 if resp.status != 200:
                     # 一般只记状态码：远程接口的错误说明里可能带着打码后的密钥片段。
-                    # 400 例外（见 _error_summary）：请求体一旦配错，整场每一句都会 400，
-                    # 不留原话就查不出是哪个字段
-                    said = await self._error_summary(resp) if resp.status == 400 else None
+                    # 400/402 例外（见 _error_summary）：请求体一旦配错、或者账务出了问题，
+                    # 整场每一句都会这样，不留原话就查不出是哪里
+                    said = (await self._error_summary(resp)
+                            if resp.status in self.SAYS_WHY_STATUSES else None)
                     self._note_http_error(resp.status, said)
                     if resp.status in self.REJECT_STATUSES:
                         self._cooldown_until = time.monotonic() + self.REJECT_COOLDOWN_SEC
-                    if resp.status == 400 and not self._said_400:
+                    elif resp.status == 429:
+                        wait = self._retry_after(resp)
+                        self._cooldown_until = time.monotonic() + wait
+                        print("[警告] Claude 返回 HTTP 429，暂停请求 {:.0f} 秒后自动重试".format(wait))
+                    if resp.status in self.SAYS_WHY_STATUSES and not self._said_400:
                         self._said_400 = True
-                        print("[警告] Claude 返回 HTTP 400（{}，模型 {}），这一句显示原文；"
-                              "之后再出现不再打印".format(said or "接口没有给说明", self.model))
+                        print("[警告] Claude 返回 HTTP {}（{}，模型 {}），这一句显示原文；"
+                              "之后再出现不再打印".format(resp.status, said or "接口没有给说明",
+                                                    self.model))
                     return None
                 self._note_ok()
                 data = await resp.json()
