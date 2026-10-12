@@ -1258,6 +1258,81 @@ def test_a_failure_that_is_not_a_refusal_is_not_logged_as_one(monkeypatch, tmp_p
     assert [m.get("refused") for m in p.server.of("caption_update")] == [None]
 
 
+def test_a_claude_429_is_announced_and_audited_like_the_other_engines(monkeypatch, tmp_path,
+                                                                     settings_file):
+    """Claude 以前不冷却，管线现成的 429 提示（要求冷却未到期）走不到，每条字幕继续撞接口。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.delenv("CLAUDE_TRANSLATE_MODEL", raising=False)
+    inner = ClaudeTranslator()
+    limited = FakeResp(429, {"type": "error", "error": {"type": "rate_limit_error"}})
+    limited.headers = {"retry-after": "20"}
+    session = FakeSession([limited])
+    attach(inner, session)
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, CachedTranslator(inner), engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1, "hola"))
+        await p._translate_and_update(job(2, "otra"))      # 冷却中：不发、不重复说
+        return p
+
+    p = run(scenario())
+    (notice,) = p.server.of("notice")
+    assert "HTTP 429" in plain(notice["text"]) and "20" in notice["text"]
+    assert notice["text"].en.startswith("Claude returned HTTP 429. Requests are paused for 20 sec")
+    assert [(r["engine"], r["status"], r["seconds"])
+            for r in rows(p.audit, "translation_cooldown")] == [("claude", 429, 20)]
+    assert len(session.calls) == 1
+    assert not p.server.of("incident")
+
+
+@pytest.mark.parametrize("status,said", [
+    (400, {"type": "invalid_request_error", "message": "Your credit balance is too low."}),
+    (402, {"type": "billing_error", "message": "Billing issue on this account."})])
+def test_repeated_claude_400_or_402_puts_the_apis_words_in_a_banner(monkeypatch, tmp_path,
+                                                                   settings_file, status, said):
+    """400/402 以前只在终端打一次（402 连一次都没有），页面上只有连续 4 条失败后的通用横幅。
+    连续 ENGINE_ERROR_STREAK 次才说：单独一次 400 可能只是某一句。只照抄接口原话，不贴原因。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.delenv("CLAUDE_TRANSLATE_MODEL", raising=False)
+    inner = ClaudeTranslator()
+    body = {"type": "error", "error": said}
+    session = FakeSession([FakeResp(status, body) for _ in range(4)]
+                          + [FakeResp(200, {"type": "message", "model": "claude-haiku-5-5",
+                                            "stop_reason": "end_turn",
+                                            "content": [{"type": "text", "text": "你好"}]})])
+    attach(inner, session)
+    built = []
+    monkeypatch.setattr("app.pipeline.create_translator",
+                        lambda name: built.append(name) or Fast("hymt2"))
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, CachedTranslator(inner), engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1, "uno"))
+        await p._translate_and_update(job(2, "dos"))
+        assert not p.server.of("incident")                 # 两次还不说
+        await p._translate_and_update(job(3, "tres"))
+        await p._translate_and_update(job(4, "cuatro"))    # 说过了：不重复
+        await p._translate_and_update(job(5, "cinco"))     # 成功：横幅撤掉
+        return p
+
+    p = run(scenario())
+    incidents = p.server.of("incident")
+    assert [m["level"] for m in incidents] == ["error", "clear"]
+    text = plain(incidents[0]["text"])
+    words = "{}: {}".format(said["type"], said["message"].rstrip("."))
+    assert text.startswith("Claude 返回 HTTP {}（模型 claude-haiku-5-5）：{}。".format(status, words))
+    assert incidents[0]["text"].en.startswith(
+        "Claude returned HTTP {} (model claude-haiku-5-5): {}. Captions show the original "
+        "text".format(status, words))
+    assert [(r["engine"], r["status"], r["model"], r["error"])
+            for r in rows(p.audit, "translation_engine_error")] == [
+        ("claude", status, "claude-haiku-5-5", "{}: {}".format(said["type"], said["message"]))]
+    assert built == [] and len(session.calls) == 5         # 不冷却、不换引擎
+    assert "sk-ant-test-key" not in json.dumps(p.server.sent, ensure_ascii=False, default=str)
+
+
 def test_picking_an_engine_clears_the_engine_banner(monkeypatch, tmp_path, settings_file):
     monkeypatch.setattr("app.pipeline.create_translator", lambda name: Fast("deepl"))
 

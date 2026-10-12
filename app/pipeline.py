@@ -4027,6 +4027,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
           * 回 429 且引擎正在暂停请求：一条提示 + translation_cooldown；
           * 远程引擎回 401/403/404：translation_engine_error；本机有本地模型就本场改用
             它，没有就挂一条横幅、留在原引擎按冷却重试——**绝不**自动改发 Google；
+          * Claude 连续 ENGINE_ERROR_STREAK 次回 400/402：translation_engine_error（带接口
+            原话）+ 引用原话的横幅。不冷却、不换引擎：400 可能只是哪一句的事，402 是账务，
+            换不换引擎要中控自己定；
           * 本地 Ollama 连续 ENGINE_ERROR_STREAK 次非 200：translation_engine_error +
             引用 Ollama 原话的横幅，并重跑备模型（模型不在了会安排停止后重新下载）。
         返回本场改用的本地引擎，没有就是 None。文字只写回应本身和能做的事，不猜原因。"""
@@ -4086,6 +4089,26 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                         else L("重新填写密钥，或换一个引擎",
                                "re-enter the API key or choose another engine")))
             return fallback
+        if name == "claude" and status in (400, 402) \
+                and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
+            # 接口正常回了话、只是不收这些请求：照抄它的原话（error.type: error.message），
+            # 不替它解释原因。单独一次 400 可能只是某一句，连续几次才说
+            self._engine_error_mark = mark
+            if audit is not None:
+                audit.translation_engine_error(name, status, error=said, model=model)
+            what = (L("{} 返回 HTTP {}", "{} returned HTTP {}").format(label, status)
+                    + L("（模型 {}）", " (model {})").format(model))
+            if said:
+                what += L("：", ": ") + said.rstrip(" .。")  # i18n: data（去掉接口原话末尾的句号）
+            print("[警告] " + what)
+            self._engine_incident_up = True
+            self._engine_rejection = None
+            await self._incident(
+                self.ENGINE_INCIDENT, "error",
+                L("{}。字幕先显示原文（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎",
+                  "{}. Captions show the original text (banned-term alerts aren’t affected). "
+                  "You can choose another engine in Settings > Translation Engine.").format(what))
+            return None
         if name in ("hymt2", "hymt2-7b", "gemma") \
                 and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
             self._engine_error_mark = mark

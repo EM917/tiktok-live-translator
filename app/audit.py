@@ -306,8 +306,9 @@ class AuditLog:
         这个模型、载入失败……），或远程引擎拒绝了密钥/模型（401/403/404）。translation
         记录里只有 ok=false，没有这一条就答不出「这一场的译文为什么整段是空的」。
 
-        error 是 Ollama 的原话；远程引擎不记原话（它们的错误说明里可能带打码后的
-        密钥片段）。同一个引擎在同一场里只记一次，中间成功过才会再记。"""
+        error 是 Ollama 的原话；远程引擎一般不记原话（它们的错误说明里可能带打码后的
+        密钥片段），只有 Claude 的 400/402 记（说的是请求体或账务，不带密钥）。同一个引擎
+        在同一场里只记一次，中间成功过才会再记。"""
         self._write({
             "type": "translation_engine_error",
             "at": datetime.now().isoformat(timespec="milliseconds"),
