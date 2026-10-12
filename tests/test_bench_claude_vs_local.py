@@ -485,9 +485,11 @@ class FakeTransport:
         self.calls = []
         self.closed = False
 
-    async def post(self, url, headers, body):
-        self.calls.append({"url": url, "headers": headers, "body": body})
+    async def post(self, url, headers, body, timeout=None):
+        self.calls.append({"url": url, "headers": headers, "body": body, "timeout": timeout})
         status, payload, hdrs = self.handler(body, len(self.calls))
+        if isinstance(payload, BaseException):
+            raise payload
         text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
         return status, hdrs or {}, text, 250.0
 
@@ -601,6 +603,70 @@ def test_rate_limits_and_overload_are_retried_after_the_servers_wait(tmp_path):
                               cache, bench.Budget(1.0), no_live, lambda *_: None))
     assert waits == [7.0, 4.0] and len(t.calls) == 3
     assert cache.get("claude-haiku-5-5|s#0#0")["attempts"] == 3
+
+
+def test_a_timed_out_attempt_is_charged_at_worst_case_and_counted(tmp_path):
+    """超时的那一次服务端可能已经做完、照样计费：按最坏情况记进预算和 ledger，续跑看得见。"""
+    def slow_then_ok(body, n):
+        if n == 1:
+            return None, asyncio.TimeoutError(), None
+        return handler(body, n)
+
+    t = FakeTransport(slow_then_ok)
+    ledger = bench.JsonlCache(tmp_path / "ledger.jsonl")
+    cache = bench.JsonlCache(tmp_path / "t.jsonl")
+    budget = bench.Budget(1.0)
+    item = items_for_run(1)
+    run(bench.translate_phase(item, "claude-haiku-5-5", bench.Api(KEY, t, sleep=noop_sleep,
+                                                                  ledger=ledger),
+                              cache, budget, no_live, lambda *_: None))
+    (row,) = ledger.rows.values()
+    inp, _o, cap = bench.translate_estimate(item[0], "claude-haiku-5-5")
+    worst = (inp * 1.5 * 0.10 + cap * 0.50) / 1e6
+    assert (row["kind"], row["status"], row["model"]) == ("timeout", None, "claude-haiku-5-5")
+    assert row["cost"] == pytest.approx(worst)
+    assert budget.spent == pytest.approx(worst + (80 * 0.10 + 20 * 0.50) / 1e6)
+    assert bench.JsonlCache(tmp_path / "ledger.jsonl").spent() == pytest.approx(worst)
+    assert [c["timeout"] for c in t.calls] == [bench.CLIENT_TIMEOUT_SEC] * 2
+    assert bench.attempt_stats(ledger) == {"claude-haiku-5-5": {"timeout": 1}}
+
+
+def test_a_retry_is_not_sent_once_the_worst_case_of_the_lost_attempt_used_the_cap(tmp_path):
+    t = FakeTransport(lambda body, n: (None, asyncio.TimeoutError(), None))
+    item = items_for_run(1)
+    inp, _o, cap = bench.translate_estimate(item[0], "claude-haiku-5-5")
+    worst = (inp * 1.5 * 0.10 + cap * 0.50) / 1e6
+    budget = bench.Budget(worst * 1.5)                 # 够发一次，不够再赔一次最坏情况
+    with pytest.raises(bench.Stop, match="没有发"):
+        run(bench.translate_phase(item, "claude-haiku-5-5", bench.Api(KEY, t, sleep=noop_sleep),
+                                  bench.JsonlCache(tmp_path / "t.jsonl"), budget, no_live,
+                                  lambda *_: None))
+    assert len(t.calls) == 1 and budget.spent == pytest.approx(worst)
+
+
+def test_judges_get_a_long_timeout_and_rate_limits_are_counted_per_model(tmp_path):
+    def limited_once(body, n):
+        if body["model"] == "claude-opus-5-5" and n % 7 == 0:
+            return 429, {"type": "error", "error": {"type": "rate_limit_error"}}, {"retry-after": "1"}
+        return handler(body, n)
+
+    items = items_for_run(4)
+    t = FakeTransport(limited_once)
+    ledger = bench.JsonlCache(tmp_path / "ledger.jsonl")
+    api = bench.Api(KEY, t, sleep=noop_sleep, ledger=ledger)
+    tcache = bench.JsonlCache(tmp_path / "t.jsonl")
+    jcache = bench.JsonlCache(tmp_path / "j.jsonl")
+    budget = bench.Budget(5.0)
+    run(bench.translate_phase(items, "claude-haiku-5-5", api, tcache, budget, no_live, print))
+    run(bench.judge_phase(items, "claude-haiku-5-5", ["claude-sonnet-5-5", "claude-opus-5-5"], 3,
+                          api, tcache, jcache, budget, no_live, print))
+    timeouts = {c["body"]["model"]: c["timeout"] for c in t.calls}
+    assert timeouts == {"claude-haiku-5-5": bench.CLIENT_TIMEOUT_SEC,
+                        "claude-sonnet-5-5": bench.JUDGE_TIMEOUT_SEC,
+                        "claude-opus-5-5": bench.JUDGE_TIMEOUT_SEC}
+    stats = bench.attempt_stats(ledger)
+    assert set(stats) == {"claude-opus-5-5"} and stats["claude-opus-5-5"]["http_429"] >= 1
+    assert ledger.spent() == 0.0                       # 拿到了错误状态码的尝试不计费
 
 
 def test_server_errors_that_do_not_clear_stop_without_caching(tmp_path):
@@ -739,6 +805,10 @@ def test_judging_maps_grades_back_adjudicates_disputes_and_reports(tmp_path):
                         tcache, jcache, acache, [], tmp_path)
     text = path.read_text(encoding="utf-8")
     assert "没测出差异，不等于等价" in text and "只信本轮之内的配对比较" in text
+    assert "本报告不完整" not in text
+    # 拒答的那一条（s#0#5）两位评委都被强制判 major：不进 Claude 那一边的 kappa
+    assert "Claude 的 major：claude-sonnet-5-5 与 claude-opus-5-5 的 Cohen kappa = 1.00（n=11" in text
+    assert "Hy-MT2 1.8B（日志） 的 major：claude-sonnet-5-5 与 claude-opus-5-5 的 Cohen kappa" in text
     data = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     res = data["primary"]["major"]
     assert (res["b"], res["c"]) == (len(expect_local - expect_claude),
@@ -935,6 +1005,38 @@ def test_a_full_run_freezes_the_sample_first_and_a_rerun_pays_nothing(world, mon
     assert bench.main(argv_for(world, "--max-cost", "20")[:-2] + ["--n", "30", "--max-cost", "20"],
                       transport=t, run=no_live, log=out3.append) == 2
     assert "换 --out" in out3[-1]
+
+
+def test_a_changed_rubric_or_request_body_refuses_to_resume_into_the_same_caches(world,
+                                                                                monkeypatch):
+    """改了评分表或请求体再续跑，新旧会混在同一份缓存里：拒绝。只出报告时只提示。"""
+    monkeypatch.setattr(bench, "Git", lambda repo: FakeGit())
+    monkeypatch.setattr(bench, "read_key", lambda: (KEY, "环境变量"))
+    t = FakeTransport(handler)
+    assert bench.main(argv_for(world, "--max-cost", "20", "--phase", "translate"), transport=t,
+                      sleep=noop_sleep, run=no_live, log=lambda *_: None) == 0
+    manifest = json.loads((world["out"] / "manifest.json").read_text(encoding="utf-8"))
+    assert {"request_sha256", "judge_sha256", "rubric_sha256"} <= set(manifest)
+    monkeypatch.setattr(bench, "RUBRIC", bench.RUBRIC + "\n- 新加的一条规则。")
+    sent = len(t.calls)
+    out = []
+    assert bench.main(argv_for(world, "--max-cost", "20"), transport=t, sleep=noop_sleep,
+                      run=no_live, log=out.append) == 2
+    assert "评分表" in out[-1] and "换 --out" in out[-1] and len(t.calls) == sent
+    monkeypatch.undo()
+    monkeypatch.setattr(bench, "Git", lambda repo: FakeGit())
+    monkeypatch.setattr(ClaudeTranslator, "TUNED", {"claude-haiku-5-5": {
+        "thinking": {"type": "disabled"}, "output_config": {"effort": "medium"}}})
+    out = []
+    assert bench.main(argv_for(world, "--max-cost", "20", "--phase", "translate"), transport=t,
+                      sleep=noop_sleep, run=no_live, log=out.append) == 2
+    assert "翻译请求体" in out[-1]
+    # 只出报告：不发请求，照出，但说一声；报告开头写明没跑完
+    out = []
+    assert bench.main(argv_for(world, "--phase", "report"), run=no_live, log=out.append) == 0
+    assert any("翻译请求体" in line and "只出报告" in line for line in out)
+    text = (world["out"] / "report.md").read_text(encoding="utf-8")
+    assert "本报告不完整" in text and "评委 claude-sonnet-5-5 还有" in text
 
 
 def test_judging_refuses_until_the_sessions_are_in_dev_eval(world, monkeypatch):

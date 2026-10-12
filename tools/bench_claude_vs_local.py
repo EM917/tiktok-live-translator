@@ -24,12 +24,18 @@ glossary.txt、profiles/、brands/ 和它们的 .bak——在 worktree 里跑时
 
 * **--dry-run 不发任何请求、不写任何文件、不读密钥。** 只读日志和词表，打印漏斗、样本构成、
   延迟基线、请求体形状和费用估算。
-* **--max-cost 是硬上限**：花费按每次回应的 usage 实算并存盘；每发一个请求之前，按这个请求
-  的最坏情况（max_tokens 全用满）检查一次，超了就停，不发。开工前的中位估算已经超过上限时直接拒绝开工。
+* **--max-cost 是硬上限**：花费按每次回应的 usage 实算并存盘；每发一个请求之前（包括重试），
+  按这个请求的最坏情况（max_tokens 全用满）检查一次，超了就停，不发。没拿到回应的尝试（超时、
+  连不上）服务端可能已经做完、照样计费，按最坏情况记进预算和 ledger.jsonl，续跑时一起算。
+  开工前的中位估算已经超过上限时直接拒绝开工。
+* **超时**：翻译请求 CLIENT_TIMEOUT_SEC 秒；评委 effort high、max_tokens 6000、不流式，给
+  JUDGE_TIMEOUT_SEC 秒。每个模型超时、连不上、重试了几次，报告里单列。
 * **断点续跑**：样本、每一句译文、每一次评分、每一次裁决都按条追加进输出目录的缓存
-  （sample.json、translations.jsonl、judgments.jsonl、adjudications.jsonl），重跑只补缺的，
-  不重复花钱。样本先冻结（写盘并记 sha256）再发第一个付费请求；冻结后换 --n/--seed/--model
-  会被拒绝，要换就换 --out。
+  （sample.json、translations.jsonl、judgments.jsonl、adjudications.jsonl、ledger.jsonl），重跑只补
+  缺的，不重复花钱。样本先冻结（写盘并记 sha256）再发第一个付费请求；冻结后换 --n/--seed/--model/
+  评委会被拒绝，翻译请求体（ClaudeTranslator.TUNED、提示词）或评委请求（评分表、输出格式、effort、
+  提示模板）跟冻结时的指纹对不上也会被拒绝——新旧混在一个缓存里就没法比了，要换就换 --out。
+* **没跑完也能出报告**（--phase report），但报告开头会写明哪里不完整，主终点的措辞一律按暂定读。
 * **密钥**只从环境变量 ANTHROPIC_API_KEY 或 settings.json 的 api_keys.ANTHROPIC_API_KEY 读
   （app.translator.api_key），**绝不打印**，错误信息里也不带。401/403 直接停（不打印回应原文，
   里面可能有打码后的密钥片段）；404 停（模型名不对）；400 停并打印接口给的说明；
@@ -149,7 +155,8 @@ HARD_QUOTA = (("价格/数字", 50), ("商品名/词表", 40), ("残句", 30),
 DUP_SHARE = 0.05                             # 两位评委各重评一次，测自洽
 SWAP_SHARE = 0.20                            # 第一位评委按对调的 A/B 再评一次，测位置偏差
 PRODUCTION_TIMEOUT_SEC = ClaudeTranslator.TIMEOUT
-CLIENT_TIMEOUT_SEC = 60                      # 比生产宽：超过生产超时的照样拿回译文，另记一笔
+CLIENT_TIMEOUT_SEC = 60                      # 翻译：比生产宽，超过生产超时的照样拿回译文，另记一笔
+JUDGE_TIMEOUT_SEC = 600                      # 评委：effort high、max_tokens 6000、不流式，长思考要给足
 GATE_EVERY = 25
 LIVE_PATTERNS = ("tiktokcdn", "main.py --browser")
 EXAM_SESSION = "session-20260901-121059.jsonl"
@@ -1068,20 +1075,21 @@ def sha256_file(path):
 # ---------------------------------------------------------------------------
 
 class AiohttpTransport:
-    """真的发请求的那一层。测试换成假的。"""
+    """真的发请求的那一层。测试换成假的。超时按请求给（翻译和评委不一样）。"""
 
     def __init__(self, timeout=CLIENT_TIMEOUT_SEC):
         self.timeout = timeout
         self._session = None
 
-    async def post(self, url, headers, body):
+    async def post(self, url, headers, body, timeout=None):
         import aiohttp
 
         if self._session is None:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=self.timeout))
+            self._session = aiohttp.ClientSession()
         t0 = time.monotonic()
-        async with self._session.post(url, data=json.dumps(body), headers=headers) as resp:
+        limit = aiohttp.ClientTimeout(total=timeout or self.timeout)
+        async with self._session.post(url, data=json.dumps(body), headers=headers,
+                                      timeout=limit) as resp:
             text = await resp.text()
             return resp.status, dict(resp.headers), text, (time.monotonic() - t0) * 1000.0
 
@@ -1095,11 +1103,14 @@ class Api:
 
     RETRY_STATUSES = (429, 500, 502, 503, 504, 529)
 
-    def __init__(self, key, transport, sleep=asyncio.sleep, max_attempts=6):
+    def __init__(self, key, transport, sleep=asyncio.sleep, max_attempts=6, ledger=None):
         self._key = key
         self.transport = transport
         self.sleep = sleep
         self.max_attempts = max_attempts
+        # 每一次没成功的尝试记一行（ledger.jsonl）：超时和连不上按最坏花费记账，报告据此列出
+        # 每个模型的超时和重试次数
+        self.ledger = ledger
 
     def __repr__(self):
         return "Api(<密钥不显示>)"
@@ -1108,19 +1119,36 @@ class Api:
         return {"x-api-key": self._key, "anthropic-version": ClaudeTranslator.API_VERSION,
                 "content-type": "application/json"}
 
-    async def send(self, body):
-        """→ (data, 毫秒, 尝试次数)。可重试的错误重试；其余的抛 Stop。"""
+    def _note_attempt(self, body, tag, attempt, kind, status, charge, budget):
+        """一次没成功的尝试。charge 是按最坏情况记的花费（拿到错误状态码的不计费，记 0）。"""
+        if budget is not None and charge:
+            budget.add(charge)
+        if self.ledger is not None:
+            self.ledger.append({"key": "{}|{}|{}|{}".format(body.get("model"), tag, attempt,
+                                                          time.time_ns()),
+                                "model": body.get("model"), "tag": tag, "attempt": attempt,
+                                "kind": kind, "status": status, "cost": charge,
+                                "at": datetime.now().isoformat(timespec="seconds")})
+
+    async def send(self, body, timeout=CLIENT_TIMEOUT_SEC, worst=0.0, budget=None, tag=""):
+        """→ (data, 毫秒, 尝试次数)。可重试的错误重试；其余的抛 Stop。
+
+        超时和连不上的那一次，服务端可能已经做完、照样计费：按 worst（这个请求的最坏花费）记进
+        budget 和 ledger，重试之前再按 worst 查一次上限——--max-cost 才真是硬上限。"""
         for attempt in range(1, self.max_attempts + 1):
+            if attempt > 1 and budget is not None:
+                budget.check(worst)
             try:
-                status, headers, text, ms = await self.transport.post(API_URL, self._headers(), body)
+                status, headers, text, ms = await self.transport.post(
+                    API_URL, self._headers(), body, timeout=timeout)
             except asyncio.TimeoutError:
-                status, headers, text, ms = None, {}, "", None
-                why = "超过 {} 秒没有回应".format(CLIENT_TIMEOUT_SEC)
+                status, headers, text, ms, kind = None, {}, "", None, "timeout"
+                why = "超过 {} 秒没有回应".format(timeout)
             except Exception as exc:          # 连不上：只报类型，不报对象（里面可能带请求头）
-                status, headers, text, ms = None, {}, "", None
+                status, headers, text, ms, kind = None, {}, "", None, "connect"
                 why = "连不上接口（{}）".format(type(exc).__name__)
             else:
-                why = "HTTP {}".format(status)
+                why, kind = "HTTP {}".format(status), "http"
             if status == 200:
                 try:
                     return json.loads(text), ms, attempt
@@ -1136,6 +1164,8 @@ class Api:
                     error_summary(text) or "没有说明"))
             if status is not None and status not in self.RETRY_STATUSES:
                 raise Stop("接口返回 HTTP {}（{}），停在这里".format(status, error_summary(text) or "没有说明"))
+            self._note_attempt(body, tag, attempt, kind, status,
+                               worst if status is None else 0.0, budget)
             if attempt == self.max_attempts:
                 raise Stop("重试 {} 次仍然失败（{}）。这一条没进缓存，过一会儿重跑会接着来".format(
                     self.max_attempts, why))
@@ -1216,8 +1246,10 @@ async def translate_phase(items, model, api, cache, budget, run=subprocess.run, 
         body = production_body(model, it["text"])
         inp, _o, cap = translate_estimate(it, model)
         p_in, p_out = price(model, inp)
-        budget.check((inp * 1.5 * p_in + cap * p_out) / 1e6)
-        data, ms_http, attempts = await api.send(body)
+        worst = (inp * 1.5 * p_in + cap * p_out) / 1e6
+        budget.check(worst)
+        data, ms_http, attempts = await api.send(body, timeout=CLIENT_TIMEOUT_SEC, worst=worst,
+                                                 budget=budget, tag=key)
         t_read = time.monotonic()
         cost = usage_cost(model, data.get("usage"))
         budget.add(cost)
@@ -1375,7 +1407,8 @@ async def judge_one(api, budget, cache, key, judge, body, extra, log=print):
     cost, tries = 0.0, 0
     while True:
         budget.check(worst)
-        data, ms, _attempts = await api.send(body)
+        data, ms, _attempts = await api.send(body, timeout=JUDGE_TIMEOUT_SEC, worst=worst,
+                                             budget=budget, tag=key)
         spent = usage_cost(judge, data.get("usage"))
         budget.add(spent)
         cost += spent
@@ -1463,6 +1496,37 @@ async def adjudicate_phase(items, model, judges, adjudicator, seed, api, tcache,
 # ---------------------------------------------------------------------------
 # 分析与报告
 # ---------------------------------------------------------------------------
+
+def completeness(items, model, judges, adjudicator, tcache, jcache, acache):
+    """这一轮跑完了没有：缺 Claude 译文的条数；每位评委还没评的条数（missing）和评了但没给出
+    有效评分的条数（unusable：拒答、撞上限、格式不对——这是结果，不是没跑完）；还没裁决的分歧。"""
+    t_missing = sum(1 for it in items if "{}|{}".format(model, it["id"]) not in tcache)
+    per = {}
+    for judge in judges:
+        miss = unusable = 0
+        for it in items:
+            row = jcache.get("{}|main|{}".format(judge, it["id"]))
+            if row is None:
+                miss += 1
+            elif row.get("grades") is None:
+                unusable += 1
+        per[judge] = {"missing": miss, "unusable": unusable}
+    a_missing = 0
+    if adjudicator:
+        a_missing = sum(1 for it in disputed(items, judges, jcache)
+                        if "{}|adjudicate|{}".format(adjudicator, it["id"]) not in acache)
+    return {"translations_missing": t_missing, "judges": per, "adjudications_missing": a_missing,
+            "incomplete": bool(t_missing or a_missing or any(v["missing"] for v in per.values()))}
+
+
+def attempt_stats(ledger):
+    """ledger.jsonl → {模型: Counter(timeout=, connect=, http_429=, …, cost=)}。"""
+    out = defaultdict(Counter)
+    for r in (ledger.rows.values() if ledger is not None else ()):
+        kind = r.get("kind") or "?"
+        out[r.get("model") or "?"][kind if kind != "http" else "http_{}".format(r.get("status"))] += 1
+    return {m: dict(c) for m, c in sorted(out.items())}
+
 
 def load_overrides(path, ids):
     """人工逐条处理的结论：[{"id", "engine": local|claude, "major": bool, "reason": "…"}]。"""
@@ -1708,15 +1772,18 @@ def latency_block(items, model, tcache):
     return lines
 
 
-def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, overrides, out_dir):
+def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, overrides, out_dir,
+           ledger=None):
     """写 report.md / report.json / manual-review.md，返回 report.md 的路径。不发请求。"""
     labels = consensus_labels(items, model, judges, adjudicator, tcache, jcache, acache, overrides)
+    done = completeness(items, model, judges, adjudicator, tcache, jcache, acache)
     review = manual_review(items, labels, model, tcache)
     random_ids = {it["id"] for it in items if it["part"] == "random"}
     hard_ids = {it["id"] for it in items if it["part"] == "hard"}
     data = {"generated_at": datetime.now().isoformat(timespec="seconds"), "manifest": manifest,
             "primary": {}, "per_judge": {}, "slices": [], "objective": {}, "failures": {},
-            "judge_quality": {}, "overrides": list(overrides), "manual_review_pending": len(review)}
+            "judge_quality": {}, "overrides": list(overrides), "manual_review_pending": len(review),
+            "completeness": done, "attempts": attempt_stats(ledger)}
     L_ = []
     L_.append("# Claude 对本地 Hy-MT2 1.8B：离线翻译对比报告")
     L_.append("")
@@ -1725,6 +1792,20 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
                   data["generated_at"], len(items), manifest.get("sample_sha256", "?")[:12],
                   manifest.get("seed"), model, json.dumps(manifest.get("request_shape"), ensure_ascii=False),
                   "、".join(judges) or "无", adjudicator or "无"))
+    L_.append("")
+    if done["incomplete"]:
+        parts = []
+        if done["translations_missing"]:
+            parts.append("{} 条还没有 Claude 译文".format(done["translations_missing"]))
+        for judge, v in done["judges"].items():
+            if v["missing"]:
+                parts.append("评委 {} 还有 {} 条没评".format(judge, v["missing"]))
+        if done["adjudications_missing"]:
+            parts.append("{} 条分歧还没裁决".format(done["adjudications_missing"]))
+        L_.append("")
+        L_.append("> **本报告不完整**：{}。缺的条目不进配对表（下面的 N 会比样本 {} 条小），只有一位评委"
+                  "评过的条目用那一位的判定，没裁决的分歧不进主终点。所有结论都按**暂定**读；跑完再出一次。"
+                  .format("；".join(parts), len(items)))
     L_.append("")
     L_.append("> **怎么读**：只信本轮之内的配对比较；不要拿这里的百分比和任何旧轮次比（同样 259 条换一批"
               "评委重评，major 率会从 9.3% 漂到 12.0%）。p>0.05 是「没测出差异」，不是「等价」。切片只是"
@@ -1901,11 +1982,17 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
         j1 = judge_labels(items, model, judges[0], tcache, jcache)
         j2 = judge_labels(items, model, judges[1], tcache, jcache)
         for e in ENGINES:
-            common = sorted(set(j1) & set(j2))
+            # 没有译文的那一边两位评委都被强制判 major：算进来会把一致性虚抬，排除
+            common = sorted(i for i in set(j1) & set(j2) if not j1[i][e]["failed"])
             k = cohen_kappa([j1[i][e]["major"] for i in common], [j2[i][e]["major"] for i in common])
-            L_.append("- {} 的 major：{} 与 {} 的 Cohen kappa = {}（n={}）".format(
+            L_.append("- {} 的 major：{} 与 {} 的 Cohen kappa = {}（n={}，不含这一边没有译文的条目）".format(
                 LABEL[e], judges[0], judges[1], "—" if k is None else "{:.2f}".format(k), len(common)))
             data["judge_quality"]["kappa_major_" + e] = k
+    for judge in judges:
+        v = done["judges"].get(judge) or {}
+        if v.get("unusable"):
+            L_.append("- {} 有 {} 条没给出有效评分（拒答、撞上限或格式不对），这些条目对它算缺失".format(
+                judge, v["unusable"]))
     for judge in judges:
         for variant, what in (("dup", "重评自洽"), ("swap", "对调 A/B 后翻转")):
             same = flips = 0
@@ -1914,7 +2001,10 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
                 g1 = grades_by_engine(jcache.get("{}|{}|{}".format(judge, variant, it["id"])))
                 if g0 is None or g1 is None:
                     continue
+                claude_out, why = production_outcome(tcache.get("{}|{}".format(model, it["id"])))
                 for e in ENGINES:
+                    if failed_side(it, e, claude_out, why):
+                        continue              # 没有译文的那一边：两次都会判 major，不说明自洽
                     if is_major(g0[e]) == is_major(g1[e]):
                         same += 1
                     else:
@@ -1925,6 +2015,17 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
     srcs = Counter(lab[e].get("major_source") for lab in labels.values() for e in ENGINES if lab.get(e))
     L_.append("- 共识 major 标签的来源：{}".format("、".join("{} {}".format(k, v) for k, v in sorted(
         srcs.items(), key=lambda kv: str(kv[0])))))
+    # 重试与超时
+    L_.append("")
+    L_.append("## 重试与超时（ledger.jsonl）")
+    L_.append("")
+    stats = data["attempts"]
+    if not stats:
+        L_.append("没有失败的尝试。")
+    for m, c in stats.items():
+        L_.append("- {}：{}".format(m, "、".join(
+            "{} {} 次".format({"timeout": "超时", "connect": "连不上"}.get(k, k.replace("http_", "HTTP ")), v)
+            for k, v in sorted(c.items()))))
     # 延迟
     L_.append("")
     L_.append("## 延迟（只描述）")
@@ -1935,16 +2036,18 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
     L_.append("## 费用（按回应 usage 实算）")
     spent = {"翻译": sum(float(r.get("cost") or 0) for r in tcache.rows.values()),
              "评委": sum(float(r.get("cost") or 0) for r in jcache.rows.values()),
-             "裁决": sum(float(r.get("cost") or 0) for r in acache.rows.values())}
+             "裁决": sum(float(r.get("cost") or 0) for r in acache.rows.values()),
+             "没拿到回应的尝试（按最坏情况记）": ledger.spent() if ledger is not None else 0.0}
     tok = Counter()
     for r in tcache.rows.values():
         for k, v in (r.get("usage") or {}).items():
             if isinstance(v, int):
                 tok[k] += v
     L_.append("")
-    L_.append("翻译 ${:.4f}、评委 ${:.4f}、裁决 ${:.4f}，合计 ${:.4f}。翻译用掉 input {} / output {} token"
-              "（每句平均 output {:.1f}）。".format(
-                  spent["翻译"], spent["评委"], spent["裁决"], sum(spent.values()),
+    L_.append("翻译 ${:.4f}、评委 ${:.4f}、裁决 ${:.4f}、没拿到回应的尝试按最坏情况记 ${:.4f}，合计 ${:.4f}。"
+              "翻译用掉 input {} / output {} token（每句平均 output {:.1f}）。".format(
+                  spent["翻译"], spent["评委"], spent["裁决"], spent["没拿到回应的尝试（按最坏情况记）"],
+                  sum(spent.values()),
                   tok.get("input_tokens", 0), tok.get("output_tokens", 0),
                   tok.get("output_tokens", 0) / max(len(tcache.rows), 1)))
     data["spent"] = spent
@@ -2120,21 +2223,43 @@ def pool_groups(pool):
     return dict(sorted(Counter(group_of(p["streamer"], sizes) for p in pool).items()))
 
 
+_PROBE_ITEM = {"text": "<原文>", "prev": "<上一句>", "next": "<下一句>",
+               "entries": [[["<原文>"], "<词表译法>"]]}
+
+
+def run_shape(model):
+    """冻结时记下、续跑时核对的那几样：翻译请求体（含提示词和 TUNED 的思考/effort）、评委请求
+    （评分表、输出格式、effort、max_tokens、提示模板）的指纹。"""
+    def sha(obj):
+        return hashlib.sha256(json.dumps(obj, ensure_ascii=False, sort_keys=True)
+                              .encode("utf-8")).hexdigest()
+
+    body = production_body(model, "<原文>")
+    return {"rubric_sha256": hashlib.sha256(RUBRIC.encode("utf-8")).hexdigest(),
+            "judge_sha256": sha(judge_body("<评委>", _PROBE_ITEM, "<译文甲>", "<译文乙>")),
+            "request_sha256": sha(body),
+            "request_shape": {k: v for k, v in production_body(model, "").items()
+                              if k not in ("system", "messages")}}
+
+
 def manifest_of(args, items, sample_path, pool=()):
-    return {"n": args.n, "seed": args.seed, "model": args.model, "judges": args.judges,
-            "pool_groups": pool_groups(pool),
-            "include_new_streamers": list(getattr(args, "include_new_streamer", []) or []),
-            "adjudicator": args.adjudicator, "judge_effort": JUDGE_EFFORT,
-            "rubric_sha256": hashlib.sha256(RUBRIC.encode("utf-8")).hexdigest(),
-            "request_shape": {k: v for k, v in production_body(args.model, "").items()
-                              if k not in ("system", "messages")},
-            "sample_size": len(items), "sample_sha256": sha256_file(sample_path),
-            "frozen_at": datetime.now().isoformat(timespec="seconds"),
-            "code_commit": (Git(REPO).run("rev-parse", "--short", "HEAD") or b"?").decode().strip()}
+    manifest = {"n": args.n, "seed": args.seed, "model": args.model, "judges": args.judges,
+                "adjudicator": args.adjudicator, "judge_effort": JUDGE_EFFORT,
+                "pool_groups": pool_groups(pool),
+                "include_new_streamers": list(getattr(args, "include_new_streamer", []) or [])}
+    manifest.update(run_shape(args.model))
+    manifest.update({
+        "sample_size": len(items), "sample_sha256": sha256_file(sample_path),
+        "frozen_at": datetime.now().isoformat(timespec="seconds"),
+        "code_commit": (Git(REPO).run("rev-parse", "--short", "HEAD") or b"?").decode().strip()})
+    return manifest
 
 
-def freeze_or_load(args, out, log=print):
-    """样本冻结：第一次写盘并记 sha256；之后只读，配置不一致就拒绝。"""
+def freeze_or_load(args, out, log=print, strict=True):
+    """样本冻结：第一次写盘并记 sha256；之后只读，配置不一致就拒绝。
+
+    strict：请求体或评委请求的指纹和冻结时不一样也拒绝（付费阶段）。只出报告时（False）只提示：
+    缓存里的东西本来就是同一版做的，不会再混进新的。"""
     sample_path, manifest_path = out / "sample.json", out / "manifest.json"
     if sample_path.exists() and manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -2147,6 +2272,17 @@ def freeze_or_load(args, out, log=print):
         if manifest.get("judges") != args.judges or manifest.get("adjudicator") != args.adjudicator:
             raise Stop("这个输出目录登记的评委是 {} / {}，这次给的是 {} / {}——要换就换 --out".format(
                 manifest.get("judges"), manifest.get("adjudicator"), args.judges, args.adjudicator))
+        now = run_shape(args.model)
+        what = {"request_sha256": "翻译请求体（提示词、思考、effort、max_tokens）",
+                "judge_sha256": "评委请求（评分表、输出格式、effort、提示模板）",
+                "rubric_sha256": "评分表"}
+        changed = [what[k] for k in what if manifest.get(k) != now[k]]
+        if changed:
+            msg = ("这个输出目录冻结时的{}和现在的代码不一样（或者是旧版工具冻结的，没记指纹）。"
+                   "新旧混进同一份缓存就没法比了".format("、".join(changed)))
+            if strict:
+                raise Stop(msg + "——要换就换 --out")
+            log("[提示] " + msg + "；这次只出报告，缓存里的都是冻结时那一版做的")
         return json.loads(sample_path.read_text(encoding="utf-8")), manifest
     _h, pool, _f, _s, items, notes = collect(args, log)
     out.mkdir(parents=True, exist_ok=True)
@@ -2189,7 +2325,8 @@ async def run_paid(args, items, manifest, out, transport=None, sleep=asyncio.sle
     tcache = JsonlCache(out / "translations.jsonl")
     jcache = JsonlCache(out / "judgments.jsonl")
     acache = JsonlCache(out / "adjudications.jsonl")
-    spent = tcache.spent() + jcache.spent() + acache.spent()
+    ledger = JsonlCache(out / "ledger.jsonl")
+    spent = tcache.spent() + jcache.spent() + acache.spent() + ledger.spent()
     remaining = remaining_estimate(items, args.model, args.judges, args.adjudicator, args.phase,
                                    tcache, jcache, acache)
     log("[信息] 已花 ${:.4f}；这一轮剩余工作的中位估算 ${:.3f}（已缓存的不会重复花）；上限 ${:.2f}".format(
@@ -2207,7 +2344,7 @@ async def run_paid(args, items, manifest, out, transport=None, sleep=asyncio.sle
         log("[信息] 已读到密钥（来源：{}，内容不显示）".format(source))
     own = transport is None
     transport = transport or AiohttpTransport()
-    api = Api(key, transport, sleep=sleep)
+    api = Api(key, transport, sleep=sleep, ledger=ledger)
     budget = Budget(args.max_cost, spent)
     try:
         if args.phase in ("all", "translate"):
@@ -2217,6 +2354,8 @@ async def run_paid(args, items, manifest, out, transport=None, sleep=asyncio.sle
             missing = [it for it in items if "{}|{}".format(args.model, it["id"]) not in tcache]
             if missing:
                 raise Stop("还有 {} 条没有 Claude 译文，先跑完翻译阶段再评分".format(len(missing)))
+            # 评委要等的比翻译长得多：开头提醒一句，免得以为卡住了
+            log("[信息] 评委请求单次最长等 {} 秒（effort high、不流式）".format(JUDGE_TIMEOUT_SEC))
             n = await judge_phase(items, args.model, args.judges, args.seed, api, tcache, jcache,
                                   budget, run, log)
             log("[信息] 评分阶段完成：新评 {} 次，已花 ${:.4f}".format(n, budget.spent))
@@ -2227,7 +2366,7 @@ async def run_paid(args, items, manifest, out, transport=None, sleep=asyncio.sle
     finally:
         if own:
             await transport.close()
-    return tcache, jcache, acache
+    return tcache, jcache, acache, ledger
 
 
 def main(argv=None, transport=None, sleep=asyncio.sleep, run=subprocess.run, log=print):
@@ -2243,7 +2382,8 @@ def main(argv=None, transport=None, sleep=asyncio.sleep, run=subprocess.run, log
             spent = 0.0
             if out.exists():
                 spent = sum(JsonlCache(out / name).spent() for name in
-                            ("translations.jsonl", "judgments.jsonl", "adjudications.jsonl"))
+                            ("translations.jsonl", "judgments.jsonl", "adjudications.jsonl",
+                             "ledger.jsonl"))
             describe(pool, funnel, sessions, items, notes, holdout, args.model, args.judges,
                      args.adjudicator, spent, log)
             log("")
@@ -2252,18 +2392,18 @@ def main(argv=None, transport=None, sleep=asyncio.sleep, run=subprocess.run, log
         if args.phase == "report":
             if not (out / "sample.json").exists():
                 raise Stop("{} 里还没有样本".format(out))
-            items, manifest = freeze_or_load(args, out, log)
-            tcache, jcache, acache = (JsonlCache(out / n) for n in
-                                      ("translations.jsonl", "judgments.jsonl", "adjudications.jsonl"))
+            items, manifest = freeze_or_load(args, out, log, strict=False)
+            tcache, jcache, acache, ledger = (JsonlCache(out / n) for n in (
+                "translations.jsonl", "judgments.jsonl", "adjudications.jsonl", "ledger.jsonl"))
         else:
             items, manifest = freeze_or_load(args, out, log)
             if args.phase == "sample":
                 return 0
-            tcache, jcache, acache = asyncio.run(run_paid(args, items, manifest, out, transport,
-                                                          sleep, run, log))
+            tcache, jcache, acache, ledger = asyncio.run(run_paid(args, items, manifest, out,
+                                                                  transport, sleep, run, log))
         overrides = load_overrides(out / "overrides.json", {it["id"] for it in items})
         path = report(items, manifest, args.model, args.judges, args.adjudicator, tcache, jcache,
-                      acache, overrides, out)
+                      acache, overrides, out, ledger)
         log("[信息] 报告：{}".format(path))
         return 0
     except Stop as exc:
