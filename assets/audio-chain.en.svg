@@ -1,4 +1,4 @@
-<svg viewBox="0 0 830 720" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" style="" width="830" height="720" xmlns="http://www.w3.org/2000/svg"><style>@font-face { font-family: 'JetBrains Mono'; font-weight: 400; src: local('JetBrains Mono'), local('JetBrainsMono-Regular'); }
+<svg viewBox="0 0 830 810" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" style="" width="830" height="810" xmlns="http://www.w3.org/2000/svg"><style>@font-face { font-family: 'JetBrains Mono'; font-weight: 400; src: local('JetBrains Mono'), local('JetBrainsMono-Regular'); }
 @font-face { font-family: 'JetBrains Mono'; font-weight: 500; src: local('JetBrains Mono'), local('JetBrainsMono-Regular'); }
 @font-face { font-family: 'JetBrains Mono'; font-weight: 600; src: local('JetBrains Mono'), local('JetBrainsMono-Regular'); }
 @font-face { font-family: 'JetBrains Mono'; font-weight: 700; src: local('JetBrains Mono'), local('JetBrainsMono-Regular'); }
@@ -313,207 +313,229 @@ rect.c-bg-rect { fill: var(--bg); }
 
 
         <!-- Connection paths (before components for correct z-order) -->
-        <path data-edge-from="tiktok" data-edge-to="resolver" data-edge-label="room info" data-edge-key="0" data-edge-id="room-to-resolver" data-composition-points="210,92;330,92" d="M 210 92 L 330 92" class="a-emphasis" data-animate="edge" style="--step:0" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="checked audio-only URL" data-edge-key="1" data-edge-id="resolver-to-ffmpeg" data-composition-points="500,92;620,92" d="M 500 92 L 620 92" class="a-default" data-animate="edge" style="--step:1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="ffmpeg" data-edge-to="resolver" data-edge-label="reconnect on drop" data-edge-key="2" data-edge-id="reconnect" data-composition-points="705,124;705,180;415,180;415,124" d="M 705 124 L 705 172 Q 705 180 697 180 L 423 180 Q 415 180 415 172 L 415 124" class="a-dashed" data-animate="edge" style="--step:2" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="ffmpeg" data-edge-to="segmenter" data-edge-label="0.1 s PCM frames" data-edge-key="3" data-edge-id="ffmpeg-to-segmenter" data-composition-points="705,124;705,240" d="M 705 124 L 705 240" class="a-emphasis" data-animate="edge" style="--step:3" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="segmenter" data-edge-to="audioq" data-edge-label="speech segment" data-edge-key="4" data-edge-id="segmenter-to-queue" data-composition-points="620,272;500,272" d="M 620 272 L 500 272" class="a-default" data-animate="edge" style="--step:4" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="audioq" data-edge-to="asr" data-edge-label="sequential decode" data-edge-key="5" data-edge-id="queue-to-asr" data-composition-points="330,265;210,265" d="M 330 265 L 210 265" class="a-default" data-animate="edge" style="--step:5" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="asr" data-edge-to="detector" data-edge-label="raw_text (incl. filtered)" data-edge-key="6" data-edge-id="asr-to-detector" data-composition-points="210,279;270,279;270,445;330,445" d="M 210 279 L 262 279 Q 270 279 270 287 L 270 437 Q 270 445 278 445 L 330 445" class="a-security" data-animate="edge" style="--step:6" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="asr" data-edge-to="server" data-edge-label="source caption, no wait" data-edge-key="7" data-edge-id="asr-to-server" data-composition-points="125,304;125,420" d="M 125 304 L 125 420" class="a-emphasis" data-animate="edge" style="--step:7" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="asr" data-edge-to="transq" data-edge-label="translation job" data-edge-key="8" data-edge-id="asr-to-transq" data-composition-points="125,304;125,365;705,365;705,420" d="M 125 304 L 125 357 Q 125 365 133 365 L 697 365 Q 705 365 705 373 L 705 420" class="a-default" data-animate="edge" style="--step:8" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="transq" data-edge-to="translator" data-edge-label="drop oldest at 4" data-edge-key="9" data-edge-id="transq-to-translator" data-composition-points="620,452;560,452;560,632;500,632" d="M 620 452 L 568 452 Q 560 452 560 460 L 560 624 Q 560 632 552 632 L 500 632" class="a-dashed" data-animate="edge" style="--step:9" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="translator" data-edge-to="server" data-edge-label="translation filled in" data-edge-key="10" data-edge-id="translator-to-server" data-composition-points="330,632;270,632;270,459;210,459" d="M 330 632 L 278 632 Q 270 632 270 624 L 270 467 Q 270 459 262 459 L 210 459" class="a-default" data-animate="edge" style="--step:10" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="detector" data-edge-to="server" data-edge-label="banned-term alert" data-edge-key="11" data-edge-id="detector-to-server" data-composition-points="330,459;306,459;306,475;234,475;234,445;210,445" d="M 330 459 L 314 459 Q 306 459 306 467 L 306 467 Q 306 475 298 475 L 242 475 Q 234 475 234 467 L 234 453 Q 234 445 226 445 L 210 445" class="a-security" data-animate="edge" style="--step:11" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="server" data-edge-to="ui" data-edge-label="WebSocket /ws" data-edge-key="12" data-edge-id="server-to-ui" data-composition-points="125,484;125,600" d="M 125 484 L 125 600" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="tiktok" data-edge-to="resolver" data-edge-label="room info" data-edge-key="0" data-edge-id="room-to-resolver" data-composition-points="210,82;330,82" d="M 210 82 L 330 82" class="a-emphasis" data-animate="edge" style="--step:0" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="checked media URL" data-edge-key="1" data-edge-id="resolver-to-ffmpeg" data-composition-points="500,82;620,82" d="M 500 82 L 620 82" class="a-default" data-animate="edge" style="--step:1" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="ffmpeg" data-edge-to="resolver" data-edge-label="reconnect on drop" data-edge-key="2" data-edge-id="reconnect" data-composition-points="705,50;705,26;415,26;415,50" d="M 705 50 L 705 34 Q 705 26 697 26 L 423 26 Q 415 26 415 34 L 415 50" class="a-dashed" data-animate="edge" style="--step:2" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="ffmpeg" data-edge-to="segmenter" data-edge-label="0.1 s PCM frames" data-edge-key="3" data-edge-id="ffmpeg-to-segmenter" data-composition-points="705,114;705,210" d="M 705 114 L 705 210" class="a-emphasis" data-animate="edge" style="--step:3" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="segmenter" data-edge-to="audioq" data-edge-label="speech segment" data-edge-key="4" data-edge-id="segmenter-to-queue" data-composition-points="705,274;705,370" d="M 705 274 L 705 370" class="a-default" data-animate="edge" style="--step:4" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="audioq" data-edge-to="asr" data-edge-label="sequential decode" data-edge-key="5" data-edge-id="queue-to-asr" data-composition-points="620,402;500,402" d="M 620 402 L 500 402" class="a-default" data-animate="edge" style="--step:5" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="glossary" data-edge-to="asr" data-edge-label="hotword prompt" data-edge-key="6" data-edge-id="glossary-to-asr" data-composition-points="415,274;415,370" d="M 415 274 L 415 370" class="a-default" data-animate="edge" style="--step:6" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="glossary" data-edge-to="translator" data-edge-label="term hints · fix-ups" data-edge-key="7" data-edge-id="glossary-to-translator" data-composition-points="330,242;20,242;20,562;40,562" d="M 330 242 L 28 242 Q 20 242 20 250 L 20 554 Q 20 562 28 562 L 40 562" class="a-default" data-animate="edge" style="--step:7" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="asr" data-edge-to="server" data-edge-label="source caption, no wait" data-edge-key="8" data-edge-id="asr-to-server" data-composition-points="408,434;408,530" d="M 408 434 L 408 530" class="a-emphasis" data-animate="edge" style="--step:8" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="asr" data-edge-to="transq" data-edge-label="translation job" data-edge-key="9" data-edge-id="asr-to-transq" data-composition-points="330,402;210,402" d="M 330 402 L 210 402" class="a-default" data-animate="edge" style="--step:9" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="transq" data-edge-to="translator" data-edge-label="drop oldest at 4" data-edge-key="10" data-edge-id="transq-to-translator" data-composition-points="125,434;125,530" d="M 125 434 L 125 530" class="a-dashed" data-animate="edge" style="--step:10" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="translator" data-edge-to="server" data-edge-label="translation filled in" data-edge-key="11" data-edge-id="translator-to-server" data-composition-points="210,562;330,562" d="M 210 562 L 330 562" class="a-default" data-animate="edge" style="--step:11" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="asr" data-edge-to="detector" data-edge-label="raw_text (incl. filtered)" data-edge-key="12" data-edge-id="asr-to-detector" data-composition-points="422,434;422,482;705,482;705,530" d="M 422 434 L 422 474 Q 422 482 430 482 L 697 482 Q 705 482 705 490 L 705 530" class="a-security" data-animate="edge" style="--step:12" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="detector" data-edge-to="server" data-edge-label="alert (when on)" data-edge-key="13" data-edge-id="detector-to-server" data-composition-points="620,562;500,562" d="M 620 562 L 500 562" class="a-security" data-animate="edge" style="--step:12" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="server" data-edge-to="ui" data-edge-label="WebSocket /ws" data-edge-key="14" data-edge-id="server-to-ui" data-composition-points="415,594;415,690" d="M 415 594 L 415 690" class="a-default" data-animate="edge" style="--step:12" stroke-width="1.5" marker-end="url(#arrowhead)"/>
 
         <!-- Components -->
         <g id="node-tiktok" data-node-id="tiktok" data-node-label="TikTok Live Room" tabindex="0" role="button" aria-label="Focus TikTok Live Room, webcast API · live page, Architecture component" aria-pressed="false" data-node-kind="external" data-node-sublabel="webcast API · live page" data-node-context="Architecture component">
           <title>TikTok Live Room · webcast API · live page · Architecture component</title>
-          <rect x="40" y="60" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="40" y="60" width="170" height="64" rx="6" class="c-external" data-animate="node" style="--step:0" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(46 66) scale(0.6875)">
+          <rect x="40" y="50" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="40" y="50" width="170" height="64" rx="6" class="c-external" data-animate="node" style="--step:0" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(46 56) scale(0.6875)">
             <rect x="2.5" y="5" width="8.5" height="8" rx="1.5"/>
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
-          <text data-node-label="" x="125" y="90" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">TikTok Live Room</text>
-        <text x="125" y="106" class="t-muted" font-size="9" text-anchor="middle">webcast API · live page</text>
+          <text data-node-label="" x="125" y="80" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">TikTok Live Room</text>
+        <text x="125" y="96" class="t-muted" font-size="9" text-anchor="middle">webcast API · live page</text>
         </g>
 
         <g id="node-resolver" data-node-id="resolver" data-node-label="Stream resolver" tabindex="0" role="button" aria-label="Focus Stream resolver, up to 7 fallback layers, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="up to 7 fallback layers" data-node-context="Architecture component">
           <title>Stream resolver · up to 7 fallback layers · Architecture component</title>
-          <rect x="330" y="60" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="330" y="60" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(336 66) scale(0.6875)">
+          <rect x="330" y="50" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="330" y="50" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(336 56) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" x="415" y="90" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Stream resolver</text>
-        <text x="415" y="106" class="t-muted" font-size="9" text-anchor="middle">up to 7 fallback layers</text>
+          <text data-node-label="" x="415" y="80" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Stream resolver</text>
+        <text x="415" y="96" class="t-muted" font-size="9" text-anchor="middle">up to 7 fallback layers</text>
         </g>
 
         <g id="node-ffmpeg" data-node-id="ffmpeg" data-node-label="ffmpeg denoise" tabindex="0" role="button" aria-label="Focus ffmpeg denoise, 16 kHz mono PCM, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="16 kHz mono PCM" data-node-tag="RNNoise" data-node-context="Architecture component">
           <title>ffmpeg denoise · 16 kHz mono PCM · Architecture component · RNNoise</title>
-          <rect x="620" y="60" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="620" y="60" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:2" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(626 66) scale(0.6875)">
+          <rect x="620" y="50" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="620" y="50" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:2" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(626 56) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" x="705" y="90" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">ffmpeg denoise</text>
-        <text x="705" y="106" class="t-muted" font-size="9" text-anchor="middle">16 kHz mono PCM</text>
-        <text x="705" y="116" class="t-backend" font-size="7" text-anchor="middle">RNNoise</text>
+          <text data-node-label="" x="705" y="80" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">ffmpeg denoise</text>
+        <text x="705" y="96" class="t-muted" font-size="9" text-anchor="middle">16 kHz mono PCM</text>
+        <text x="705" y="106" class="t-backend" font-size="7" text-anchor="middle">RNNoise</text>
         </g>
 
         <g id="node-segmenter" data-node-id="segmenter" data-node-label="Energy VAD" tabindex="0" role="button" aria-label="Focus Energy VAD, 2.5–9 s · 0.7 s trailing, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="2.5–9 s · 0.7 s trailing" data-node-context="Architecture component">
           <title>Energy VAD · 2.5–9 s · 0.7 s trailing · Architecture component</title>
-          <rect x="620" y="240" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="620" y="240" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:4" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(626 246) scale(0.6875)">
+          <rect x="620" y="210" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="620" y="210" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:4" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(626 216) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" x="705" y="270" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Energy VAD</text>
-        <text x="705" y="286" class="t-muted" font-size="9" text-anchor="middle">2.5–9 s · 0.7 s trailing</text>
-        </g>
-
-        <g id="node-detector" data-node-id="detector" data-node-label="Banned-term scan" tabindex="0" role="button" aria-label="Focus Banned-term scan, exact · variant · fuzzy, Architecture component" aria-pressed="false" data-node-kind="security" data-node-sublabel="exact · variant · fuzzy" data-node-context="Architecture component">
-          <title>Banned-term scan · exact · variant · fuzzy · Architecture component</title>
-          <rect x="330" y="420" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="330" y="420" width="170" height="64" rx="6" class="c-security" data-animate="node" style="--step:7" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(336 426) scale(0.6875)">
-            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
-            <path d="m5.8 8 1.5 1.5 3-3"/>
-          </g>
-          <text data-node-label="" x="415" y="450" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Banned-term scan</text>
-        <text x="415" y="466" class="t-muted" font-size="9" text-anchor="middle">exact · variant · fuzzy</text>
-        </g>
-
-        <g id="node-asr" data-node-id="asr" data-node-label="Whisper ASR" tabindex="0" role="button" aria-label="Focus Whisper ASR, faster-whisper / MLX, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="faster-whisper / MLX" data-node-tag="1 thread" data-node-context="Architecture component">
-          <title>Whisper ASR · faster-whisper / MLX · Architecture component · 1 thread</title>
-          <rect x="40" y="240" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="40" y="240" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:6" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(46 246) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" x="125" y="270" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Whisper ASR</text>
-        <text x="125" y="286" class="t-muted" font-size="9" text-anchor="middle">faster-whisper / MLX</text>
-        <text x="125" y="296" class="t-backend" font-size="7" text-anchor="middle">1 thread</text>
+          <text data-node-label="" x="705" y="240" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Energy VAD</text>
+        <text x="705" y="256" class="t-muted" font-size="9" text-anchor="middle">2.5–9 s · 0.7 s trailing</text>
         </g>
 
         <g id="node-audioq" data-node-id="audioq" data-node-label="Audio queue" tabindex="0" role="button" aria-label="Focus Audio queue, by seconds · 60 s cap, Architecture component" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="by seconds · 60 s cap" data-node-context="Architecture component">
           <title>Audio queue · by seconds · 60 s cap · Architecture component</title>
-          <rect x="330" y="240" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="330" y="240" width="170" height="64" rx="6" class="c-messagebus" data-animate="node" style="--step:5" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(336 246) scale(0.6875)">
+          <rect x="620" y="370" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="620" y="370" width="170" height="64" rx="6" class="c-messagebus" data-animate="node" style="--step:5" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(626 376) scale(0.6875)">
             <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
             <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
             <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
             <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
           </g>
-          <text data-node-label="" x="415" y="270" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Audio queue</text>
-        <text x="415" y="286" class="t-muted" font-size="9" text-anchor="middle">by seconds · 60 s cap</text>
+          <text data-node-label="" x="705" y="400" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Audio queue</text>
+        <text x="705" y="416" class="t-muted" font-size="9" text-anchor="middle">by seconds · 60 s cap</text>
         </g>
 
-        <g id="node-ui" data-node-id="ui" data-node-label="Caption surface" tabindex="0" role="button" aria-label="Focus Caption surface, local web · phone viewer, Architecture component" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="local web · phone viewer" data-node-context="Architecture component">
-          <title>Caption surface · local web · phone viewer · Architecture component</title>
-          <rect x="40" y="600" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="40" y="600" width="170" height="64" rx="6" class="c-frontend" data-animate="node" style="--step:12" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(46 606) scale(0.6875)">
+        <g id="node-asr" data-node-id="asr" data-node-label="Whisper ASR" tabindex="0" role="button" aria-label="Focus Whisper ASR, faster-whisper / MLX, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="faster-whisper / MLX" data-node-tag="1 thread" data-node-context="Architecture component">
+          <title>Whisper ASR · faster-whisper / MLX · Architecture component · 1 thread</title>
+          <rect x="330" y="370" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="330" y="370" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:6" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(336 376) scale(0.6875)">
+            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
+          </g>
+          <text data-node-label="" x="415" y="400" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Whisper ASR</text>
+        <text x="415" y="416" class="t-muted" font-size="9" text-anchor="middle">faster-whisper / MLX</text>
+        <text x="415" y="426" class="t-backend" font-size="7" text-anchor="middle">1 thread</text>
+        </g>
+
+        <g id="node-glossary" data-node-id="glossary" data-node-label="Glossary" tabindex="0" role="button" aria-label="Focus Glossary, global · brand · streamer, Architecture component" aria-pressed="false" data-node-kind="database" data-node-sublabel="global · brand · streamer" data-node-context="Architecture component">
+          <title>Glossary · global · brand · streamer · Architecture component</title>
+          <rect x="330" y="210" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="330" y="210" width="170" height="64" rx="6" class="c-database" data-animate="node" style="--step:6" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(336 216) scale(0.6875)">
+            <ellipse cx="8" cy="4" rx="5" ry="2"/>
+            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+          </g>
+          <text data-node-label="" x="415" y="240" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Glossary</text>
+        <text x="415" y="256" class="t-muted" font-size="9" text-anchor="middle">global · brand · streamer</text>
+        </g>
+
+        <g id="node-transq" data-node-id="transq" data-node-label="Translation queue" tabindex="0" role="button" aria-label="Focus Translation queue, maxsize=4 · drop oldest, Architecture component" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="maxsize=4 · drop oldest" data-node-context="Architecture component">
+          <title>Translation queue · maxsize=4 · drop oldest · Architecture component</title>
+          <rect x="40" y="370" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="40" y="370" width="170" height="64" rx="6" class="c-messagebus" data-animate="node" style="--step:10" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(46 376) scale(0.6875)">
+            <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
+            <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
+            <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
+            <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
+          </g>
+          <text data-node-label="" x="125" y="400" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Translation queue</text>
+        <text x="125" y="416" class="t-muted" font-size="9" text-anchor="middle">maxsize=4 · drop oldest</text>
+        </g>
+
+        <g id="node-translator" data-node-id="translator" data-node-label="Translation engine" tabindex="0" role="button" aria-label="Focus Translation engine, Hy-MT2 / Gemma / cloud, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Hy-MT2 / Gemma / cloud" data-node-context="Architecture component">
+          <title>Translation engine · Hy-MT2 / Gemma / cloud · Architecture component</title>
+          <rect x="40" y="530" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="40" y="530" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:8" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(46 536) scale(0.6875)">
+            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
+          </g>
+          <text data-node-label="" x="125" y="560" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Translation engine</text>
+        <text x="125" y="576" class="t-muted" font-size="9" text-anchor="middle">Hy-MT2 / Gemma / cloud</text>
+        </g>
+
+        <g id="node-detector" data-node-id="detector" data-node-label="Banned-term scan" tabindex="0" role="button" aria-label="Focus Banned-term scan, exact · variant · fuzzy, Architecture component" aria-pressed="false" data-node-kind="security" data-node-sublabel="exact · variant · fuzzy" data-node-context="Architecture component">
+          <title>Banned-term scan · exact · variant · fuzzy · Architecture component</title>
+          <rect x="620" y="530" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="620" y="530" width="170" height="64" rx="6" class="c-security" data-animate="node" style="--step:12" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(626 536) scale(0.6875)">
+            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
+            <path d="m5.8 8 1.5 1.5 3-3"/>
+          </g>
+          <text data-node-label="" x="705" y="560" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Banned-term scan</text>
+        <text x="705" y="576" class="t-muted" font-size="9" text-anchor="middle">exact · variant · fuzzy</text>
+        </g>
+
+        <g id="node-server" data-node-id="server" data-node-label="CaptionServer" tabindex="0" role="button" aria-label="Focus CaptionServer, aiohttp :8765, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="aiohttp :8765" data-node-context="Architecture component">
+          <title>CaptionServer · aiohttp :8765 · Architecture component</title>
+          <rect x="330" y="530" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="330" y="530" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:9" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(336 536) scale(0.6875)">
+            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
+          </g>
+          <text data-node-label="" x="415" y="560" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">CaptionServer</text>
+        <text x="415" y="576" class="t-muted" font-size="9" text-anchor="middle">aiohttp :8765</text>
+        </g>
+
+        <g id="node-ui" data-node-id="ui" data-node-label="Caption surface" tabindex="0" role="button" aria-label="Focus Caption surface, local web · Phone Viewing, Architecture component" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="local web · Phone Viewing" data-node-context="Architecture component">
+          <title>Caption surface · local web · Phone Viewing · Architecture component</title>
+          <rect x="330" y="690" width="170" height="64" rx="6" class="c-mask"/>
+          <rect x="330" y="690" width="170" height="64" rx="6" class="c-frontend" data-animate="node" style="--step:12" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(336 696) scale(0.6875)">
             <rect x="2" y="3" width="12" height="10" rx="2"/>
             <path d="M2 6.5h12"/>
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" x="125" y="630" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Caption surface</text>
-        <text x="125" y="646" class="t-muted" font-size="9" text-anchor="middle">local web · phone viewer</text>
-        </g>
-
-        <g id="node-server" data-node-id="server" data-node-label="CaptionServer" tabindex="0" role="button" aria-label="Focus CaptionServer, aiohttp :8765, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="aiohttp :8765" data-node-context="Architecture component">
-          <title>CaptionServer · aiohttp :8765 · Architecture component</title>
-          <rect x="40" y="420" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="40" y="420" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:8" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(46 426) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" x="125" y="450" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">CaptionServer</text>
-        <text x="125" y="466" class="t-muted" font-size="9" text-anchor="middle">aiohttp :8765</text>
-        </g>
-
-        <g id="node-translator" data-node-id="translator" data-node-label="Translation engine" tabindex="0" role="button" aria-label="Focus Translation engine, Hy-MT2 / Gemma / cloud, Architecture component" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Hy-MT2 / Gemma / cloud" data-node-context="Architecture component">
-          <title>Translation engine · Hy-MT2 / Gemma / cloud · Architecture component</title>
-          <rect x="330" y="600" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="330" y="600" width="170" height="64" rx="6" class="c-backend" data-animate="node" style="--step:10" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(336 606) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" x="415" y="630" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Translation engine</text>
-        <text x="415" y="646" class="t-muted" font-size="9" text-anchor="middle">Hy-MT2 / Gemma / cloud</text>
-        </g>
-
-        <g id="node-transq" data-node-id="transq" data-node-label="Translation queue" tabindex="0" role="button" aria-label="Focus Translation queue, maxsize=4 · drop oldest, Architecture component" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="maxsize=4 · drop oldest" data-node-context="Architecture component">
-          <title>Translation queue · maxsize=4 · drop oldest · Architecture component</title>
-          <rect x="620" y="420" width="170" height="64" rx="6" class="c-mask"/>
-          <rect x="620" y="420" width="170" height="64" rx="6" class="c-messagebus" data-animate="node" style="--step:9" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(626 426) scale(0.6875)">
-            <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
-            <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
-            <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
-            <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
-          </g>
-          <text data-node-label="" x="705" y="450" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Translation queue</text>
-        <text x="705" y="466" class="t-muted" font-size="9" text-anchor="middle">maxsize=4 · drop oldest</text>
+          <text data-node-label="" x="415" y="720" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Caption surface</text>
+        <text x="415" y="736" class="t-muted" font-size="9" text-anchor="middle">local web · Phone Viewing</text>
         </g>
 
         <!-- Connection labels -->
         <g data-edge-from="tiktok" data-edge-to="resolver" data-edge-label="room info" data-edge-key="0" data-edge-id="room-to-resolver">
-          <rect x="243.4" y="72" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
-          <text x="270" y="82" class="t-backend" font-size="8" text-anchor="middle">room info</text>
+          <rect x="243.4" y="62" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
+          <text x="270" y="72" class="t-backend" font-size="8" text-anchor="middle">room info</text>
         </g>
-        <g data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="checked audio-only URL" data-edge-key="1" data-edge-id="resolver-to-ffmpeg">
-          <rect x="502.2" y="72" width="115.6" height="14" rx="3" class="c-mask"/>
-          <text x="560" y="82" class="t-muted" font-size="8" text-anchor="middle">checked audio-only URL</text>
+        <g data-edge-from="resolver" data-edge-to="ffmpeg" data-edge-label="checked media URL" data-edge-key="1" data-edge-id="resolver-to-ffmpeg">
+          <rect x="514.2" y="62" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="560" y="72" class="t-muted" font-size="8" text-anchor="middle">checked media URL</text>
         </g>
         <g data-edge-from="ffmpeg" data-edge-to="resolver" data-edge-label="reconnect on drop" data-edge-key="2" data-edge-id="reconnect">
-          <rect x="514.2" y="160" width="91.6" height="14" rx="3" class="c-mask"/>
-          <text x="560" y="170" class="t-messagebus" font-size="8" text-anchor="middle">reconnect on drop</text>
+          <rect x="514.2" y="6" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="560" y="16" class="t-messagebus" font-size="8" text-anchor="middle">reconnect on drop</text>
         </g>
         <g data-edge-from="ffmpeg" data-edge-to="segmenter" data-edge-label="0.1 s PCM frames" data-edge-key="3" data-edge-id="ffmpeg-to-segmenter">
-          <rect x="661.6" y="204" width="86.8" height="14" rx="3" class="c-mask"/>
-          <text x="705" y="214" class="t-backend" font-size="8" text-anchor="middle">0.1 s PCM frames</text>
+          <rect x="661.6" y="155" width="86.8" height="14" rx="3" class="c-mask"/>
+          <text x="705" y="165" class="t-backend" font-size="8" text-anchor="middle">0.1 s PCM frames</text>
         </g>
         <g data-edge-from="segmenter" data-edge-to="audioq" data-edge-label="speech segment" data-edge-key="4" data-edge-id="segmenter-to-queue">
-          <rect x="521.4" y="252" width="77.2" height="14" rx="3" class="c-mask"/>
-          <text x="560" y="262" class="t-muted" font-size="8" text-anchor="middle">speech segment</text>
+          <rect x="666.4" y="315" width="77.2" height="14" rx="3" class="c-mask"/>
+          <text x="705" y="325" class="t-muted" font-size="8" text-anchor="middle">speech segment</text>
         </g>
         <g data-edge-from="audioq" data-edge-to="asr" data-edge-label="sequential decode" data-edge-key="5" data-edge-id="queue-to-asr">
-          <rect x="224.2" y="245" width="91.6" height="14" rx="3" class="c-mask"/>
-          <text x="270" y="255" class="t-muted" font-size="8" text-anchor="middle">sequential decode</text>
+          <rect x="514.2" y="382" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="560" y="392" class="t-muted" font-size="8" text-anchor="middle">sequential decode</text>
         </g>
-        <g data-edge-from="asr" data-edge-to="detector" data-edge-label="raw_text (incl. filtered)" data-edge-key="6" data-edge-id="asr-to-detector">
-          <rect x="205" y="342" width="130" height="14" rx="3" class="c-mask"/>
-          <text x="270" y="352" class="t-security" font-size="8" text-anchor="middle">raw_text (incl. filtered)</text>
+        <g data-edge-from="glossary" data-edge-to="asr" data-edge-label="hotword prompt" data-edge-key="6" data-edge-id="glossary-to-asr">
+          <rect x="376.4" y="315" width="77.2" height="14" rx="3" class="c-mask"/>
+          <text x="415" y="325" class="t-muted" font-size="8" text-anchor="middle">hotword prompt</text>
         </g>
-        <g data-edge-from="asr" data-edge-to="server" data-edge-label="source caption, no wait" data-edge-key="7" data-edge-id="asr-to-server">
-          <rect x="64.80000000000001" y="394" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="125" y="404" class="t-backend" font-size="8" text-anchor="middle">source caption, no wait</text>
+        <g data-edge-from="glossary" data-edge-to="translator" data-edge-label="term hints · fix-ups" data-edge-key="7" data-edge-id="glossary-to-translator">
+          <rect x="122" y="222" width="106" height="14" rx="3" class="c-mask"/>
+          <text x="175" y="232" class="t-muted" font-size="8" text-anchor="middle">term hints · fix-ups</text>
         </g>
-        <g data-edge-from="asr" data-edge-to="transq" data-edge-label="translation job" data-edge-key="8" data-edge-id="asr-to-transq">
-          <rect x="374" y="345" width="82" height="14" rx="3" class="c-mask"/>
-          <text x="415" y="355" class="t-muted" font-size="8" text-anchor="middle">translation job</text>
+        <g data-edge-from="asr" data-edge-to="server" data-edge-label="source caption, no wait" data-edge-key="8" data-edge-id="asr-to-server">
+          <rect x="347.8" y="498" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="408" y="508" class="t-backend" font-size="8" text-anchor="middle">source caption, no wait</text>
         </g>
-        <g data-edge-from="transq" data-edge-to="translator" data-edge-label="drop oldest at 4" data-edge-key="9" data-edge-id="transq-to-translator">
-          <rect x="516.6" y="522" width="86.8" height="14" rx="3" class="c-mask"/>
-          <text x="560" y="532" class="t-messagebus" font-size="8" text-anchor="middle">drop oldest at 4</text>
+        <g data-edge-from="asr" data-edge-to="transq" data-edge-label="translation job" data-edge-key="9" data-edge-id="asr-to-transq">
+          <rect x="229" y="382" width="82" height="14" rx="3" class="c-mask"/>
+          <text x="270" y="392" class="t-muted" font-size="8" text-anchor="middle">translation job</text>
         </g>
-        <g data-edge-from="translator" data-edge-to="server" data-edge-label="translation filled in" data-edge-key="10" data-edge-id="translator-to-server">
-          <rect x="214.6" y="525.5" width="110.8" height="14" rx="3" class="c-mask"/>
-          <text x="270" y="535.5" class="t-muted" font-size="8" text-anchor="middle">translation filled in</text>
+        <g data-edge-from="transq" data-edge-to="translator" data-edge-label="drop oldest at 4" data-edge-key="10" data-edge-id="transq-to-translator">
+          <rect x="81.6" y="475" width="86.8" height="14" rx="3" class="c-mask"/>
+          <text x="125" y="485" class="t-messagebus" font-size="8" text-anchor="middle">drop oldest at 4</text>
         </g>
-        <g data-edge-from="detector" data-edge-to="server" data-edge-label="banned-term alert" data-edge-key="11" data-edge-id="detector-to-server">
-          <rect x="320.2" y="488" width="91.6" height="14" rx="3" class="c-mask"/>
-          <text x="366" y="498" class="t-security" font-size="8" text-anchor="middle">banned-term alert</text>
+        <g data-edge-from="translator" data-edge-to="server" data-edge-label="translation filled in" data-edge-key="11" data-edge-id="translator-to-server">
+          <rect x="214.6" y="542" width="110.8" height="14" rx="3" class="c-mask"/>
+          <text x="270" y="552" class="t-muted" font-size="8" text-anchor="middle">translation filled in</text>
         </g>
-        <g data-edge-from="server" data-edge-to="ui" data-edge-label="WebSocket /ws" data-edge-key="12" data-edge-id="server-to-ui">
-          <rect x="88.8" y="542" width="72.4" height="14" rx="3" class="c-mask"/>
-          <text x="125" y="552" class="t-muted" font-size="8" text-anchor="middle">WebSocket /ws</text>
+        <g data-edge-from="asr" data-edge-to="detector" data-edge-label="raw_text (incl. filtered)" data-edge-key="12" data-edge-id="asr-to-detector">
+          <rect x="498.5" y="462" width="130" height="14" rx="3" class="c-mask"/>
+          <text x="563.5" y="472" class="t-security" font-size="8" text-anchor="middle">raw_text (incl. filtered)</text>
+        </g>
+        <g data-edge-from="detector" data-edge-to="server" data-edge-label="alert (when on)" data-edge-key="13" data-edge-id="detector-to-server">
+          <rect x="519" y="542" width="82" height="14" rx="3" class="c-mask"/>
+          <text x="560" y="552" class="t-security" font-size="8" text-anchor="middle">alert (when on)</text>
+        </g>
+        <g data-edge-from="server" data-edge-to="ui" data-edge-label="WebSocket /ws" data-edge-key="14" data-edge-id="server-to-ui">
+          <rect x="378.8" y="635" width="72.4" height="14" rx="3" class="c-mask"/>
+          <text x="415" y="645" class="t-muted" font-size="8" text-anchor="middle">WebSocket /ws</text>
         </g>
 
         <!-- Boundary labels (foreground masks keep routes out of titles) -->
@@ -521,26 +543,30 @@ rect.c-bg-rect { fill: var(--bg); }
 
         <!-- Legend -->
         <g data-legend="">
-          <text x="40" y="684" class="t-primary" font-size="12" font-weight="650">Legend</text>
-          <g data-legend-semantic-kind="frontend" data-legend-x="40" data-legend-baseline="704" data-legend-width="83">
-            <rect x="40" y="695" width="16" height="10" rx="2.5" class="c-frontend" stroke-width="1"/>
-            <text x="62" y="704" class="t-muted" font-size="10" font-weight="500">Frontend</text>
+          <text x="40" y="774" class="t-primary" font-size="12" font-weight="650">Legend</text>
+          <g data-legend-semantic-kind="frontend" data-legend-x="40" data-legend-baseline="794" data-legend-width="83">
+            <rect x="40" y="785" width="16" height="10" rx="2.5" class="c-frontend" stroke-width="1"/>
+            <text x="62" y="794" class="t-muted" font-size="10" font-weight="500">Frontend</text>
           </g>
-          <g data-legend-semantic-kind="backend" data-legend-x="145" data-legend-baseline="704" data-legend-width="78">
-            <rect x="145" y="695" width="16" height="10" rx="2.5" class="c-backend" stroke-width="1"/>
-            <text x="167" y="704" class="t-muted" font-size="10" font-weight="500">Backend</text>
+          <g data-legend-semantic-kind="backend" data-legend-x="145" data-legend-baseline="794" data-legend-width="78">
+            <rect x="145" y="785" width="16" height="10" rx="2.5" class="c-backend" stroke-width="1"/>
+            <text x="167" y="794" class="t-muted" font-size="10" font-weight="500">Backend</text>
           </g>
-          <g data-legend-semantic-kind="security" data-legend-x="245" data-legend-baseline="704" data-legend-width="83">
-            <rect x="245" y="695" width="16" height="10" rx="2.5" class="c-security" stroke-width="1"/>
-            <text x="267" y="704" class="t-muted" font-size="10" font-weight="500">Security</text>
+          <g data-legend-semantic-kind="database" data-legend-x="245" data-legend-baseline="794" data-legend-width="83">
+            <rect x="245" y="785" width="16" height="10" rx="2.5" class="c-database" stroke-width="1"/>
+            <text x="267" y="794" class="t-muted" font-size="10" font-weight="500">Database</text>
           </g>
-          <g data-legend-semantic-kind="messagebus" data-legend-x="350" data-legend-baseline="704" data-legend-width="98">
-            <rect x="350" y="695" width="16" height="10" rx="2.5" class="c-messagebus" stroke-width="1"/>
-            <text x="372" y="704" class="t-muted" font-size="10" font-weight="500">Message bus</text>
+          <g data-legend-semantic-kind="security" data-legend-x="350" data-legend-baseline="794" data-legend-width="83">
+            <rect x="350" y="785" width="16" height="10" rx="2.5" class="c-security" stroke-width="1"/>
+            <text x="372" y="794" class="t-muted" font-size="10" font-weight="500">Security</text>
           </g>
-          <g data-legend-semantic-kind="external" data-legend-x="470" data-legend-baseline="704" data-legend-width="83">
-            <rect x="470" y="695" width="16" height="10" rx="2.5" class="c-external" stroke-width="1"/>
-            <text x="492" y="704" class="t-muted" font-size="10" font-weight="500">External</text>
+          <g data-legend-semantic-kind="messagebus" data-legend-x="455" data-legend-baseline="794" data-legend-width="98">
+            <rect x="455" y="785" width="16" height="10" rx="2.5" class="c-messagebus" stroke-width="1"/>
+            <text x="477" y="794" class="t-muted" font-size="10" font-weight="500">Message bus</text>
+          </g>
+          <g data-legend-semantic-kind="external" data-legend-x="575" data-legend-baseline="794" data-legend-width="83">
+            <rect x="575" y="785" width="16" height="10" rx="2.5" class="c-external" stroke-width="1"/>
+            <text x="597" y="794" class="t-muted" font-size="10" font-weight="500">External</text>
           </g>
         </g>
       </svg>

@@ -4,11 +4,13 @@
 
 | 源文件 | 产物 | 画布 | 为什么 |
 |---|---|---|---|
-| `audio-chain.{zh,en}.architecture.json` | `assets/*.svg`（README） | 830×720 | README 栏宽只有约 1012px，画布必须窄，字才够大 |
-| `audio-chain.{zh,en}.wide.architecture.json` | `docs/architecture/*.html`（网页版） | 1240×600 | 网页版不受栏宽限制，宽扁才能一屏放下、不用滚 |
+| `audio-chain.{zh,en}.architecture.json` | `assets/*.svg`（README） | 830×810 | README 栏宽只有约 1012px，画布必须窄，字才够大 |
+| `audio-chain.{zh,en}.wide.architecture.json` | `docs/architecture/*.html`（网页版） | 1240×580 | 网页版不受栏宽限制，宽扁才能一屏放下、不用滚 |
 
-两份的节点、关系、卡片、引导视图、标题逐字相同，只有坐标、画布尺寸和边界框不同
-（窄版为了腾出宽度去掉了边界框，宽版保留）。改内容时**两份都要改**。
+两份的节点、关系、卡片、引导视图、标题逐字相同，只有坐标、节点和画布尺寸、边界框不同
+（窄版为了腾出宽度去掉了边界框，宽版保留；宽版把 TikTok 直播间单放在最左一列，边界框才
+框得住本机的十个组件而不把它也圈进去）。改内容时**两份都要改**，改完跑
+`python3 tools/check_architecture_sync.py` 确认两份没有分叉。
 
 每个组件都带 `sources` 字段，指向它在仓库里的实际位置——渲染时会逐条核对，对不上就渲染失败。
 
