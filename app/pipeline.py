@@ -1690,6 +1690,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 # 这一场收到过多少条弹幕一起写进 session_end——弹幕连接哪怕全程
                 # "connected"，事后也要能看出它是不是哑了一整场（见看门狗）。
                 fields.setdefault("comments_received", comment_source.comments_received)
+                # 弹幕作者各字段的填充率：只有数过才写，没弹幕的场次 session_end 照旧
+                comment_fields = getattr(comment_source, "comment_fields", None)
+                if isinstance(comment_fields, dict) and comment_fields.get("n"):
+                    fields.setdefault("comment_fields", {
+                        "n": comment_fields["n"], "has": dict(comment_fields["has"])})
             await self._stop_comment_source()
         if still_current and self._stats_task is not None \
                 and not self._stats_task.done():

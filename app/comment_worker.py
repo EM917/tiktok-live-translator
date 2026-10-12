@@ -10,7 +10,8 @@ app/comment_source.py 的 CommentSource._supervise）。
 
 协议：stdout 逐行 JSON、每行立刻 flush，父进程按行解析：
     {"event": "status", "state": ..., "detail": "...", "room_id": ...}
-    {"event": "comments", "items": [{"id", "user", "text"}, ...]}
+    {"event": "comments", "items": [{"id", "user", "text", 有值才带的账号字段}, ...]}
+    {"event": "field_stats", "n": 50, "has": {"id": 50, ...}}   每 50 条和断开时一行，增量
 stderr 只留 TikTokLive 库自己的日志，父进程会读走它（不读会堵住管道）。
 
 退出码：0 正常断开；3 未开播；4 签名服务限流/报错；5 需要登录态；
@@ -46,6 +47,58 @@ def _status(state, detail="", room_id=None, http_status=None, handshake_msg=None
         # 服务端写在 Handshake-Msg 头里的原话：7.0.0 的报错文本不带它，只能从头里取
         obj["handshake_msg"] = handshake_msg
     _emit(obj)
+
+
+class FieldStats:
+    """匿名连接下弹幕作者的各个字段到底有没有值（规格 §3.2）：只数「非空」，
+    不记内容。每 FLUSH_EVERY 条和断开时 take() 一次，吐的是上次以来的增量，
+    父进程负责累加（子进程每次重连都是新进程）。
+
+    「非空」逐字段定义，不用 `is not None`：betterproto 没设的 int 是 0、
+    字符串是 ''，子消息没设时也可能是个默认实例。"""
+
+    FLUSH_EVERY = 50
+    KEYS = ("id", "id_str", "sec_uid", "display_id", "identity", "identity_any", "mention")
+    _IDENTITY_FLAGS = ("is_anchor", "is_moderator_of_anchor", "is_follower_of_anchor",
+                       "is_mutual_following_with_anchor", "is_gift_giver_of_anchor",
+                       "is_subscriber_of_anchor")
+
+    def __init__(self):
+        self._reset()
+
+    def _reset(self):
+        self.n = 0
+        self.has = dict.fromkeys(self.KEYS, 0)
+
+    def observe(self, ev):
+        from .comment_source import _clean_str, _digits, _mentions_someone, _positive_int
+        user = getattr(ev, "user", None)
+        identity = getattr(ev, "user_identity", None)
+        flags = [getattr(identity, f, None) is True for f in self._IDENTITY_FLAGS]
+        hits = {
+            "id": _positive_int(getattr(user, "id", None)),
+            "id_str": _digits(getattr(user, "id_str", None)) is not None,
+            "sec_uid": _clean_str(getattr(user, "sec_uid", None), 1) is not None,
+            "display_id": _clean_str(getattr(user, "display_id", None), 1) is not None,
+            # 主播本人、房管或管理员：这几种人以后不判定、不自动加入关注名单
+            "identity": flags[0] or flags[1]
+                        or getattr(getattr(user, "user_attr", None), "is_admin", None) is True,
+            # 任一身份标记为真：全场都是 0 就说明这条连接根本没带 user_identity
+            "identity_any": any(flags),
+            "mention": _mentions_someone(ev),
+        }
+        self.n += 1
+        for k, hit in hits.items():
+            if hit:
+                self.has[k] += 1
+
+    def take(self):
+        """上次 take() 以来的增量行；一条都没数过返回 None。"""
+        if not self.n:
+            return None
+        line = {"event": "field_stats", "n": self.n, "has": dict(self.has)}
+        self._reset()
+        return line
 
 
 def _parse_args(argv):
@@ -228,6 +281,13 @@ async def _run(args):
 
     from .comment_source import event_to_item
 
+    stats = FieldStats()
+
+    def _flush_stats():
+        line = stats.take()
+        if line is not None:
+            _emit(line)
+
     unique_id = args.unique_id if str(args.unique_id).startswith("@") \
         else "@" + str(args.unique_id)
     client = TikTokLiveClient(unique_id=unique_id)
@@ -240,6 +300,7 @@ async def _run(args):
 
     @client.on(DisconnectEvent)
     async def _on_disconnect(_ev):
+        _flush_stats()
         _status("disconnected")
 
     @client.on(CommentEvent)
@@ -247,6 +308,12 @@ async def _run(args):
         item = event_to_item(ev)
         if item is not None:
             _emit({"event": "comments", "items": [item]})
+        try:                    # 计数只是附带的，出错也不能挡弹幕
+            stats.observe(ev)
+            if stats.n >= stats.FLUSH_EVERY:
+                _flush_stats()
+        except Exception:
+            pass
 
     def _handle_signal():
         # 尽力优雅断开；disconnect() 本身可能耗时，起个任务不阻塞信号处理器。
@@ -279,10 +346,12 @@ async def _run(args):
     try:
         await client.connect()
     except Exception as exc:
+        _flush_stats()
         state, code = _classify_exc(exc)
         _status(state, _detail_of(exc), **_handshake_fields(exc))
         return code
 
+    _flush_stats()
     # connect() 正常返回（对方停播/主动断开）：无论 DisconnectEvent 是否已经
     # 报过一次，这里都兜底再报一次，确保父进程一定能看到「已断开」。
     _status("disconnected")
