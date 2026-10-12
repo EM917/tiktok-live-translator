@@ -1113,6 +1113,9 @@ def test_a_refusal_shows_the_original_and_never_switches_engines(
     assert getattr(p.translator, "inner", None) is engine and not engine.closed
     assert built == []
     assert [m["translated"] for m in p.server.of("caption_update")] == [None, None]
+    # 页面靠 refused 把拒答排除在「连续多条翻译失败」之外（web/app.js trackTranslateHealth）
+    assert [(m["translate_state"], m.get("refused")) for m in p.server.of("caption_update")] \
+        == [("failed", True), ("failed", True)]
     assert not p.server.of("incident")
     (notice,) = p.server.of("notice")
     assert "refusal" in plain(notice["text"]) and "原文" in notice["text"]
@@ -1252,6 +1255,7 @@ def test_a_failure_that_is_not_a_refusal_is_not_logged_as_one(monkeypatch, tmp_p
     p = run(scenario())
     assert not rows(p.audit, "translation_refusal")
     assert not p.server.of("notice")
+    assert [m.get("refused") for m in p.server.of("caption_update")] == [None]
 
 
 def test_picking_an_engine_clears_the_engine_banner(monkeypatch, tmp_path, settings_file):

@@ -4384,10 +4384,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             self.audit.translation(job["id"], translated, translate_ms,
                                    bool(translated),
                                    engine=getattr(tr, "name", None))
+        extra = {"e2e_translated_ms": round((time.time() - job["audio_end_ts"]) * 1000.0)}
+        if refusal is not None and not translated:
+            # 页面据此不把这一条算进「连续多条翻译失败」：拒答是接口正常回了话，不是连不上
+            extra["refused"] = True
         await self._publish_translation(
             job["id"], translated, bool(translated), translate_ms,
-            QUALITY_FAST, job["target"],
-            {"e2e_translated_ms": round((time.time() - job["audio_end_ts"]) * 1000.0)})
+            QUALITY_FAST, job["target"], extra)
 
     # ---- 演示模式 ----
     async def start_demo(self):
