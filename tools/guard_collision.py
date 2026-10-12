@@ -1,0 +1,258 @@
+"""弹幕留意词表的碰撞计数：每条词条（含注释在「待业务确认」里的红条档，按已打开来算）在主播口播里
+撞了多少个不同的句子、跨几场。
+
+为什么要这个工具：判定词表是业务判断，agent 只产出候选。候选词条进表前必须知道它在带货西语里
+本身有多常见——首稿词表在 85,394 个不同口播句子上有 345 句 alert，删掉撞车词、改成句式后降到
+48 句（`tapadera` 119 次是瓶盖量勺，`basura` 91 次是 tirar a la basura）。这是口播不是弹幕，
+回答的是「这个词在这个行业里多常见」，不是弹幕的误报率。
+
+纯 CPU、只读：读 logs/ 里的 `session-*.jsonl`（走 provenance.corpus，不 glob 目录，夹具进不来），
+不碰模型、不联网、不写词表。**直播转写进行中拒绝运行**（CLAUDE.md 第三条）：开头先查
+`pgrep -f`，命中就退出。跑的时候用 `nice -n 19`。
+
+用法：
+    nice -n 19 python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs
+    python3 tools/guard_collision.py --section insult/threat --section accuse/call
+    python3 tools/guard_collision.py --term "te voy a matar" --as insult/threat   # 入表前的风险报告
+    python3 tools/guard_collision.py --json out.json        # 机器可读，不进仓库
+
+「待业务确认」块的约定（comment_guard/README.md）：块从 `# ====… 待业务确认 …====` 一行开始，
+块里单个 `#` 开头的行是注释掉的词条或 [段名]，`##` 开头的行是说明。
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from collections import defaultdict
+from pathlib import Path
+
+sys.path.insert(0, ".")
+
+from app.stdio import harden_stdio                     # noqa: E402
+
+harden_stdio()
+
+from app import comment_guard as cg                    # noqa: E402
+from app import provenance                             # noqa: E402
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULTS = ROOT / "comment_guard" / "defaults"
+# 直播转写进行中的进程特征（CLAUDE.md 第三条）；拆开写，免得本文件自己被这条 pgrep 扫到
+LIVE_PATTERNS = ("tiktok" + "cdn", "main" + ".py --browser")
+PENDING_MARK = re.compile(r"^#\s*=+\s*待业务确认\s*=+\s*$")
+SENTENCE_SPLIT = re.compile(r"(?<=[.!?¡¿])\s+")
+MIN_SENTENCE = 4
+
+
+def live_running():
+    """直播转写还在跑：返回命中的进程特征，没有返回 None。没有 pgrep（Windows）时查不了，当没有。"""
+    for pat in LIVE_PATTERNS:
+        try:
+            hit = subprocess.run(["pgrep", "-f", pat], capture_output=True).returncode == 0
+        except OSError:
+            return None
+        if hit:
+            return pat
+    return None
+
+
+def uncomment_pending(text):
+    """把「待业务确认」块里注释掉的词条和 [段名] 当成已打开，返回新文本；块外原样。"""
+    out, pending = [], False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not pending:
+            out.append(line)
+            pending = bool(PENDING_MARK.match(stripped))
+        elif stripped.startswith("##") or not stripped:
+            out.append(line)
+        elif stripped.startswith("#"):
+            out.append(stripped[1:].strip())
+        else:
+            out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def count_pending(text):
+    """「待业务确认」块里注释掉的词条数（不含 [段名]）。"""
+    pending, n = False, 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not pending:
+            pending = bool(PENDING_MARK.match(stripped))
+        elif stripped.startswith("#") and not stripped.startswith("##"):
+            body = stripped[1:].strip()
+            if body and not re.match(r"^\[[a-z0-9\-]+\]$", body):
+                n += 1
+    return n
+
+
+def build_all_rules(defaults_dir, local_dir):
+    """(只含已打开的词条的 Rules, 把待确认块也打开的 Rules)。临时目录里放去掉注释的副本。"""
+    enabled = cg.load_rules(defaults_dir, local_dir)
+    tmp = tempfile.TemporaryDirectory()
+    for path in Path(defaults_dir).glob("*.txt"):
+        (Path(tmp.name) / path.name).write_text(
+            uncomment_pending(path.read_text(encoding="utf-8")), encoding="utf-8")
+    return enabled, cg.load_rules(tmp.name, local_dir), tmp
+
+
+def corpus_sentences(log_dir=None):
+    """口播里不同的句子：{句子: [场次集合, 出现次数]}。同一句话出现几次、在几场里都记下。"""
+    sents, segments, sessions = {}, 0, 0
+    for meta in provenance.corpus(log_dir=log_dir):
+        sessions += 1
+        try:
+            lines = Path(meta["path"]).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("type") != "segment" or not (row.get("raw_text") or "").strip():
+                continue
+            segments += 1
+            for sent in SENTENCE_SPLIT.split(row["raw_text"]):
+                sent = sent.strip()
+                if len(sent) < MIN_SENTENCE:
+                    continue
+                slot = sents.setdefault(sent, [set(), 0])
+                slot[0].add(meta["path"])
+                slot[1] += 1
+    return sents, segments, sessions
+
+
+def collide(rules, sents, keep_examples=2):
+    """每条词条的碰撞：({(文件, 段, 词条): {"sentences", "sessions", "occurrences", "examples"}},
+    {(文件, 段): 这一段命中的不同句子数})。
+
+    走 CommentGuard.lex_hits：和真判定同一条路径（豁免短语先盖住、否认式剪掉、目标词只在
+    指向对方的句式里算），数的是「这条词条真的会命中的句子」。一个句子同时命中同一段的几条词条
+    （estafa / estafas 这种单复数）时，段的合计只算一次。"""
+    guard = cg.CommentGuard(rules)
+    out, per_section = {}, defaultdict(int)
+    for sent, (sess, occ) in sents.items():
+        hits = guard.lex_hits(sent)
+        hits.pop("_flags", None)
+        for (file, sec), terms in hits.items():
+            per_section[(file, sec)] += 1
+            for term in set(terms):
+                row = out.setdefault((file, sec, term), {
+                    "sentences": 0, "occurrences": 0, "sessions": set(), "examples": []})
+                row["sentences"] += 1
+                row["occurrences"] += occ
+                row["sessions"] |= sess
+                if len(row["examples"]) < keep_examples:
+                    row["examples"].append(sent[:140])
+    return out, per_section
+
+
+def entry_table(enabled, allr, hits, only=None):
+    """按词表里的顺序列出每条词条：状态（enabled / pending）和碰撞数据。"""
+    rows = []
+    for (file, sec), entries in allr.entries.items():
+        if cg.SECTIONS[file][sec] == cg.EXEMPT:
+            continue
+        if only and "%s/%s" % (file, sec) not in only:
+            continue
+        on = set(enabled.entries.get((file, sec), ()))
+        for key in entries:
+            row = hits.get((file, sec, key), {})
+            rows.append({
+                "file": file, "section": sec, "tier": cg.SECTIONS[file][sec],
+                "entry": key, "original": allr.originals[(file, sec)].get(key, key),
+                "status": "enabled" if key in on else "pending",
+                "sentences": row.get("sentences", 0),
+                "sessions": len(row.get("sessions", ())),
+                "occurrences": row.get("occurrences", 0),
+                "examples": row.get("examples", [])})
+    return rows
+
+
+def render(rows, args, per_section):
+    lines = []
+    by_sec = defaultdict(list)
+    for r in rows:
+        by_sec[(r["file"], r["section"])].append(r)
+    for (file, sec), items in by_sec.items():
+        hit = [r for r in items if r["sentences"]]
+        status = items[0]["status"]
+        lines.append("")
+        lines.append("== %s/%s  [%s档，%s]  共 %d 条，有命中 %d 条，命中的不同句子 %d" % (
+            file, sec, items[0]["tier"], "已打开" if status == "enabled" else "待业务确认",
+            len(items), len(hit), per_section.get((file, sec), 0)))
+        for r in items:
+            if r["sentences"] < args.min_hits and not args.all:
+                continue
+            lines.append("  %5d 句 / %2d 场  %s" % (r["sentences"], r["sessions"], r["entry"]))
+            for ex in r["examples"][:args.examples]:
+                lines.append("            e.g. %s" % ex)
+    return "\n".join(lines)
+
+
+def candidate_rules(term, section):
+    """--term：只含这一条候选词条的 Rules（入表前的风险报告）。"""
+    file, _, sec = section.partition("/")
+    if file not in cg.SECTIONS or sec not in cg.SECTIONS[file]:
+        raise SystemExit("[错误] --as 要写成 文件/段，例如 insult/strong；认得的段：{}".format(
+            "、".join("%s/%s" % (f, s) for f, secs in cg.SECTIONS.items() for s in secs)))
+    tmp = tempfile.TemporaryDirectory()
+    (Path(tmp.name) / (file + ".txt")).write_text("[%s]\n%s\n" % (sec, term), encoding="utf-8")
+    rules = cg.load_rules(tmp.name, Path(tmp.name) / "no-local")
+    return rules, tmp
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="弹幕留意词表在主播口播里的碰撞计数（只读，纯 CPU）")
+    ap.add_argument("--logs", default=None, help="语料目录（默认 logs/）")
+    ap.add_argument("--defaults", default=str(DEFAULTS), help="词表目录（默认 comment_guard/defaults）")
+    ap.add_argument("--local", default=None,
+                    help="本机叠加目录；默认不叠加（报告只看入库的词表，可复现）")
+    ap.add_argument("--section", action="append", default=[],
+                    help="只看这一段，例如 insult/threat（可重复）")
+    ap.add_argument("--term", default=None, help="只审计这一条候选词条（入表前的风险报告）")
+    ap.add_argument("--as", dest="as_section", default="insult/strong",
+                    help="--term 当作哪一段的词条（默认 insult/strong）")
+    ap.add_argument("--examples", type=int, default=2, help="每条词条最多列几个口播例句")
+    ap.add_argument("--min-hits", type=int, default=1, help="只列命中不少于这么多句的词条")
+    ap.add_argument("--all", action="store_true", help="没命中的词条也列出来")
+    ap.add_argument("--json", default=None, help="把逐条数据另存成 JSON（不要放进仓库）")
+    args = ap.parse_args(argv)
+
+    # 硬闸：第一件事，在读任何语料之前
+    hit = live_running()
+    if hit:
+        raise SystemExit("直播转写仍在进行（命中进程特征：{}），拒绝跑碰撞计数".format(hit))
+
+    # 默认不叠加本机文件：报告只看入库的词表，别人跑出来的数字能对上（指向一个不存在的目录）
+    local = Path(args.local) if args.local else Path(tempfile.gettempdir()) / (
+        "guard-collision-no-local-%d" % os.getpid())
+    keep = None
+    if args.term:
+        rules, keep = candidate_rules(args.term, args.as_section)
+        enabled = allr = rules
+    else:
+        enabled, allr, keep = build_all_rules(args.defaults, local)
+    sents, segments, sessions = corpus_sentences(args.logs)
+    print("语料：{} 场 / {} 段 / {} 个不同的口播句子（来源 provenance.corpus，非 glob；"
+          "主播口播，不是弹幕）".format(sessions, segments, len(sents)))
+    hits, per_section = collide(allr, sents, max(args.examples, 2))
+    rows = entry_table(enabled, allr, hits, only=set(args.section) or None)
+    print(render(rows, args, per_section))
+    if args.json:
+        data = {"corpus": {"sessions": sessions, "segments": segments, "sentences": len(sents)},
+                "sections": {"%s/%s" % key: n for key, n in sorted(per_section.items())},
+                "entries": rows}
+        Path(args.json).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    if keep is not None:
+        keep.cleanup()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

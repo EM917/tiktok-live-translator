@@ -1,0 +1,200 @@
+# 指称假货/欺诈 + 号召举报/抵制（candidate 起始集）。
+# 格式同 banned_terms.txt：一行一个词或短语，re: 开头是正则；注释只能整行写
+# （行尾的 # 会被当成词条的一部分，自检会报）。[段名] 一行切换后面条目的档位。
+# 词条写什么形式都行：加载时统一折叠一遍（Estafa / estáfa 等价）；正则跑在折叠后的文本上，
+# 要写成无重音、无标点、ñ 写 n 的形式。
+# 本文件随代码入库、程序直接读、不复制；本机增减写在 comment_guard/local/ 下同名文件里
+# （普通行 = 追加，“-词条” = 关掉一条默认）。机制和档位说明见 comment_guard/README.md。
+#
+# 问句（有 ? / ¿、疑问词开头、句尾追问 verdad / o no / o que）和否认式（no es estafa）
+# 由规则层判断，不靠词表。
+# 线索档（启用）：institution 机构名 / negative 对商品效果的差评 —— 只记 note。
+# 红条档（待业务确认，见文件末尾）：call 号召举报或不买 / report 扬言举报 /
+# assert 断言骗局 / assert-frame 只在“es / son / producto + 词”句式里才算断言的词。
+
+[institution]
+profeco
+cofepris
+fiscalia
+policia cibernetica
+ciberpolicia
+denuncia
+denunciar
+reportar
+
+[negative]
+no sirve
+no funciona
+no hace nada
+porqueria
+pura agua
+no sirve para nada
+me hizo dano
+me cayo mal
+
+[exempt-phrases]
+pestanas falsas
+unas falsas
+unas postizas
+cejas falsas
+dientes falsos
+joyeria falsa
+falsa alarma
+falso positivo
+falsa modestia
+ladrona de corazones
+ladron de corazones
+ladrona de miradas
+ladrona de sonrisas
+no es mentira
+no es estafa
+no es fraude
+no es falso
+no es falsa
+no son falsos
+no son falsas
+no soy estafador
+no somos estafadores
+no somos fraude
+reporte de ventas
+reporte del pedido
+
+# ============================ 待业务确认 ============================
+## 下面整块是红条档：单独命中就标红的词条，是业务判断，agent 只产出候选，不擅自打开。
+## 打开方式：用户逐条（或整段）确认后，把那几行行首的「# 」去掉（段标题 [段名] 一起去掉）。
+## 去掉之前先跑碰撞计数看看它们在主播口播里撞多少：python3 tools/guard_collision.py
+## 块里的说明一律用 ## 开头（单个 # 开头的行会被碰撞工具当成待确认的词条）。
+
+## ---- 第一批：号召举报 / 不买（先确认这一段） ----
+# [call]
+# dont buy
+# do not buy
+# dont buy from
+# report her
+# report this
+# report them
+# report this live
+# boycott
+# no compren
+# no le compren
+# no les compren
+# no caigan
+# no se dejen enganar
+# no confien
+# no le crean
+# no les crean
+# nadie compre
+# boicot
+# boicotear
+# reporten
+# reportenla
+# reportenlo
+# reportenlos
+# reportemos
+# denuncien
+# denunciemos
+# denunciala
+# a reportar
+# vamos a reportar
+# hay que reportar
+# hay que denunciar
+# re:\b(reporten|denuncien|bloqueen)\b.{0,25}\b(live|vivo|cuenta|tienda|perfil|esta|este|ella|esa)\b
+# re:\b(cuidado|ojo|aguas|alerta)\b\s*(con|a)?\s*(esta|este|ella|esa)?\s*(senora|cuenta|tienda|live|vendedora|marca|gente|pagina|persona|mujer|muchacha)\b
+
+## ---- 扬言举报 ----
+# [report]
+# re:\b(i will|ill|im going to|i m going to|gonna|going to)\s+report\b
+# re:\b(voy a|vamos a|ire a|iremos a)\s*(reportar|denunciar|demandar)(los|las|lo|la|les|le)?\b
+# re:\b(los|la|lo)\s+(reporto|denuncio|demando|reporte|denuncie|reportare|denunciare)\b
+# re:\bya (los|la|lo)? ?(reporte|denuncie)\b
+# re:\b(ir|voy|vamos)\b.{0,12}\b(a )?(profeco|cofepris|fiscalia|policia cibernetica|la policia)\b
+# te voy a demandar
+# los voy a demandar
+# mi abogado
+# vamos a bajar esta cuenta
+# van a cerrar esta cuenta
+
+## ---- 断言骗局 ----
+# [assert]
+# scam
+# scams
+# scammer
+# scammers
+# fraud
+# liar
+# liars
+# thief
+# thieves
+# ripoff
+# rip off
+# she is lying
+# they are lying
+# not legit
+# estafar
+# estafarnos
+# estafarlos
+# estafarme
+# estafa
+# estafas
+# estafador
+# estafadora
+# estafadores
+# estafadoras
+# estafaron
+# estafan
+# estafando
+# fraude
+# fraudes
+# fraudulento
+# fraudulenta
+# ladron
+# ladrona
+# ladrones
+# ladronas
+# ratero
+# ratera
+# rateros
+# rateras
+# farsante
+# farsantes
+# charlatan
+# charlatana
+# tramposa
+# tramposo
+# mentirosa
+# mentiroso
+# mentirosas
+# mentirosos
+# mienten
+# mintieron
+# engana bobos
+# timo
+# timador
+# timadora
+# puro cuento
+# puro humo
+# venden humo
+# puras mentiras
+# todo es mentira
+# es mentira
+# es puro cuento
+# no es original
+# no es real
+# no es autentico
+# no es verdadero
+# no es de verdad
+# producto pirata
+
+## ---- 断言框架词（falso / fake / chafa / pirata……） ----
+# [assert-frame]
+# falso
+# falsa
+# falsos
+# falsas
+# fake
+# chafa
+# pirata
+# falsificado
+# falsificada
+# falsificacion
+# engano

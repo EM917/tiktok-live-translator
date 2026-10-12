@@ -1,0 +1,33 @@
+# 规则层阈值：key: value（# 开头整行是注释）。本机 comment_guard/local/thresholds.txt 里同名的行覆盖这里。
+# 单位：a/b = b 秒内 a 条（刷屏）或 a 个账号（多账号同句）。
+
+# C1 单人高频（不同句）：10 秒 4 条记 note，10 秒 6 条或 60 秒 12 条标红
+user_burst_note: 4/10
+user_burst_alert: 6/10
+user_burst_alert_long: 12/60
+
+# C3 同人同句（折叠后相同）：60 秒 3 次记 note，5 次标红；问句最多到 note
+same_text_note: 3/60
+same_text_alert: 5/60
+
+# C2 多账号同句：20 秒窗口，3 个账号记 note，5 个账号出一个琥珀事件（v1 不单独标红）
+brigade_note: 3/20
+brigade_alert: 5/20
+brigade_min_words: 3
+brigade_jaccard: 0.8
+
+# 累计：insult 线索档（medium / watch / sexual-soft）10 分钟内同一人第 2 次 -> 琥珀
+accumulate: 2/600
+
+# 负面线索：全大写字母占比 / 至少几个词（只决定送不送模型）
+caps_lead: 0.6/3
+
+# 预算：滚动 1 秒累计超过 budget_ms 毫秒，就进 budget_structure_sec 秒的结构模式（只跑链接、电话、刷屏）
+budget_ms: 50
+budget_window_sec: 1
+budget_structure_sec: 5
+
+# ============================ 待业务确认 ============================
+## 累计升级直接标红是红条档开关：打开前要业务确认。缺省 = off（累计结果只是琥珀，不自动加入）。
+## 打开方式：去掉下面这行行首的「# 」。
+# accumulate_red: on
