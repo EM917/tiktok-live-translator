@@ -67,3 +67,53 @@ survives correction for the number of comparisons made (p<0.0001); the accuracy
 gap does not. So the honest claim is that re-translation is *easier to read*, not
 demonstrably *more correct*. The batch tool still reports what changed rather
 than replacing anything silently.
+
+### Claude Haiku 5.5 against Hy-MT2 1.8B (set up, not yet run)
+
+*Added 2026-10-12; not part of the text moved from the README.*
+
+The Claude engine now defaults to Claude Haiku 5.5. Whether it misleads the
+operator less often than the local 1.8B model has not been measured.
+`tools/bench_claude_vs_local.py` sets up that comparison on recorded sessions,
+without touching the live pipeline:
+
+- The 1.8B side is the translation each session logged at the time. No local
+  model is re-run.
+- The Claude side uses the production request (thinking off, effort low) and
+  response handling, followed by the same glossary fallback the pipeline
+  applies. Claude gets no glossary hints in its prompt, while 1.8B did, so the
+  comparison is between the two engines as they run in production, not between
+  bare models.
+- A session is used only when the glossary in effect at the time can be rebuilt
+  exactly from the local files, their backups and the repository history.
+- Two Claude judges grade every pair blind with the 2026-09-01 rubric, and a
+  third call settles their disagreements.
+
+Run it from the app folder:
+
+```
+nice -n 19 python3 tools/bench_claude_vs_local.py --dry-run         # no requests, no files, no key
+nice -n 19 python3 tools/bench_claude_vs_local.py --max-cost 60     # the full run
+nice -n 19 python3 tools/bench_claude_vs_local.py --phase report    # rebuild the report only
+```
+
+On the logs as of 2026-10-12, the dry run found 38,543 usable sentences and
+estimated about $44 (up to about $63) for the default 500, almost all of it for
+the judges; translating them with Haiku 5.5 comes to about two cents. These are
+estimates from character counts, not measured token counts.
+
+Before anything is paid for, three things have to be in place. The run needs an
+API key (environment or Settings) and refuses to start without `--max-cost` or
+while a live transcription is running. The sampled sessions have to be added to
+`dev_eval` in `eval_holdout.json` before grading starts; the tool writes the
+list to `dev_eval-additions.json`. And the sampled captions, their neighbouring
+lines and their matched glossary pairs are sent to Anthropic.
+
+Reading the result: the two endpoints (meaning-changing errors, and captions not
+understood on first pass) are compared with paired exact McNemar tests and Holm
+correction. A non-significant result means no difference was measured, not that
+the engines are equivalent. Slices are exploratory, and only comparisons within
+this round count. The judges and the engine under test are all Claude models,
+so the report's judge-free checks and a human spot check carry weight. Majors
+that may be glossary pinning are listed for a human decision, recorded with a
+reason in `overrides.json`, never exempted by substring matching.
