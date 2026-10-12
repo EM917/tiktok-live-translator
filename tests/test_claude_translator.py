@@ -131,6 +131,9 @@ def test_haiku_5_5_turns_thinking_off_at_an_effort_that_accepts_it(monkeypatch):
     assert body["output_config"]["effort"] in ("low", "medium", "high")
     assert body["output_config"] == {"effort": "low"}
     assert body["max_tokens"] == ClaudeTranslator.MAX_TOKENS_NO_THINKING
+    # 下限：原文 p95 约 156 个西语字符，新 tokenizer 同样文本约多三成。调得太小，长句译文会
+    # 撞上 max_tokens 被整句丢掉，而那时测试还是绿的（复审 2026-10-12：改成 16 照样全过）
+    assert body["max_tokens"] >= 256
     # 以 user 轮结尾：预填会 400
     assert body["messages"] == [{"role": "user", "content": "hola amigos"}]
     assert "Simplified Chinese" in body["system"]
@@ -159,8 +162,9 @@ def test_disabled_thinking_is_never_sent_to_models_that_reject_it(monkeypatch, m
     assert body["model"] == model
     assert "thinking" not in body and "output_config" not in body
     assert not keys_anywhere(body) & set(FORBIDDEN_KEYS)
-    # 这些模型默认开思考，思考算进 max_tokens
+    # 这些模型默认开思考，思考算进 max_tokens：给思考留出地方，下限 1024
     assert body["max_tokens"] == ClaudeTranslator.MAX_TOKENS_MAY_THINK
+    assert body["max_tokens"] >= 1024
 
 
 @pytest.mark.parametrize("model", ["claude-haiku-4-5-20251001", "claude-haiku-4-5"])
@@ -191,7 +195,11 @@ def test_the_probe_asks_about_the_model_actually_in_use(monkeypatch):
     session = RecordingSession([Resp(200, {})])
     attach(tr, session)
     assert run(tr.probe_key()) == 200
-    assert session.gets[0]["url"].endswith("/v1/models/claude-haiku-4-5")
+    (get,) = session.gets
+    assert get["url"].endswith("/v1/models/claude-haiku-4-5")
+    # 少了版本头接口回 400，自检那一行就成了黄色的「验证密钥时接口返回 HTTP 400」
+    assert get["headers"]["anthropic-version"] == "2023-06-01"
+    assert get["headers"]["x-api-key"] == "sk-ant-test-key"
 
 
 # ---------------------------------------------------------------------------
