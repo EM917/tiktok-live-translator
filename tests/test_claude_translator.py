@@ -12,7 +12,8 @@ import time
 
 import pytest
 
-from app.translator import CachedTranslator, ClaudeTranslator
+from app.translator import (CachedTranslator, ClaudeTranslator, begin_translate_call,
+                            translate_call_outcome)
 from tests.helpers import run
 
 FORBIDDEN_KEYS = ("temperature", "top_p", "top_k", "budget_tokens", "fallbacks")
@@ -220,18 +221,27 @@ def test_a_refusal_is_no_translation_even_with_half_a_sentence(monkeypatch, cont
     refusal = dict(message(*content, stop="refusal"),
                    stop_details={"type": "refusal", "category": "general_harms",
                                  "explanation": "x"})
-    session = RecordingSession([Resp(200, refusal), Resp(200, refusal)])
+    session = RecordingSession([Resp(200, refusal), Resp(200, refusal),
+                                Resp(200, message(text_block("你好")))])
     attach(tr, session)
     cached = CachedTranslator(tr)
-    assert run(cached.translate("hola", "zh-CN")) is None
-    assert tr.refusals == cached.refusals == 1
-    assert tr.last_refusal == cached.last_refusal == "general_harms"
+
+    async def ask(text):
+        begin_translate_call()
+        out = await cached.translate(text, "zh-CN")
+        return out, translate_call_outcome()
+
+    # 这一次调用的结局按任务记（管线据此判断「这一句」是不是拒答），类别照抄接口
+    assert run(ask("hola")) == (None, ("refusal", "general_harms"))
+    assert tr.refusals == 1
     # 拒答是 HTTP 200：不记 HTTP 错误、不冷却
     assert tr.last_error is None and tr.fail_streak == 0
     assert tr.cooldown_until <= time.monotonic()
     # 不进缓存：同一句再问一次
-    assert run(cached.translate("hola", "zh-CN")) is None
+    assert run(ask("hola")) == (None, ("refusal", "general_harms"))
     assert len(session.posts) == 2 and tr.refusals == 2
+    # 下一次调用不是拒答：结局清空
+    assert run(ask("adiós")) == ("你好", None)
 
 
 def test_a_refusal_without_a_category_keeps_it_empty():

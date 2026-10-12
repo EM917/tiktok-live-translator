@@ -1069,8 +1069,8 @@ def test_a_rejected_key_switches_to_a_local_model_when_there_is_one(
 
 
 class RefusingEngine:
-    """拒答的 Claude 替身：HTTP 200 + stop_reason "refusal"，和真实引擎一样记次数和类别，
-    不动 last_error / fail_streak / 冷却。"""
+    """拒答的 Claude 替身：HTTP 200 + stop_reason "refusal"。和真实引擎一样把这一次调用的
+    结局记进 translate_call_outcome（按任务隔离），不动 last_error / fail_streak / 冷却。"""
 
     def __init__(self, category="general_harms", answers=()):
         self.name = "claude"
@@ -1078,7 +1078,6 @@ class RefusingEngine:
         self.category = category
         self.answers = list(answers)
         self.refusals = 0
-        self.last_refusal = None
         self.last_error = None
         self.fail_streak = 0
         self.cooldown_until = 0.0
@@ -1088,7 +1087,7 @@ class RefusingEngine:
         if self.answers:
             return self.answers.pop(0)
         self.refusals += 1
-        self.last_refusal = self.category
+        translator.note_refusal(self.category)
         return None
 
     async def close(self):
@@ -1142,6 +1141,101 @@ def test_a_refusal_without_a_category_says_none_was_given(monkeypatch, tmp_path,
     p = run(scenario())
     assert [r["category"] for r in rows(p.audit, "translation_refusal")] == [None]
     assert "类别 未给出" in capsys.readouterr().out
+
+
+class _Delayed:
+    """aiohttp 的 post(...) 上下文：等 delay 秒再回应；回应是 TimeoutError 就照抛。"""
+
+    def __init__(self, delay, resp):
+        self.delay, self.resp = delay, resp
+
+    async def __aenter__(self):
+        await asyncio.sleep(self.delay)
+        if isinstance(self.resp, BaseException):
+            raise self.resp
+        return self.resp
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _ByTextSession:
+    """按请求体里的原文决定多久以后怎么回应。"""
+
+    def __init__(self, plan):
+        self.plan = plan
+
+    def post(self, url, data=None, headers=None, **kw):
+        delay, resp = self.plan[json.loads(data)["messages"][0]["content"]]
+        return _Delayed(delay, resp)
+
+
+def _refusal(category):
+    return {"type": "message", "model": "claude-haiku-5-5", "content": [],
+            "stop_reason": "refusal", "stop_details": {"type": "refusal", "category": category},
+            "usage": {"input_tokens": 50, "output_tokens": 0}}
+
+
+@pytest.mark.parametrize("caption_refused", [False, True])
+def test_a_refusal_on_the_concurrent_alert_call_is_not_pinned_on_the_caption(
+        monkeypatch, tmp_path, settings_file, capsys, caption_refused):
+    """报警上下文翻译是并发的独立任务，和字幕共用同一个 Claude 引擎（复审 2026-10-12）。
+    字幕超时、报警那次被拒答时，这条字幕不能记成拒答；反过来字幕自己被拒答，记的是它自己的类别。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.delenv("CLAUDE_TRANSLATE_MODEL", raising=False)
+    engine = ClaudeTranslator()
+    if caption_refused:
+        plan = {"la frase del subtítulo": (0.01, FakeResp(200, _refusal("bio"))),
+                "la frase de la alerta": (0.05, asyncio.TimeoutError())}
+    else:
+        plan = {"la frase del subtítulo": (0.05, asyncio.TimeoutError()),
+                "la frase de la alerta": (0.01, FakeResp(200, _refusal("general_harms")))}
+    attach(engine, _ByTextSession(plan))
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, CachedTranslator(engine), engine="claude")
+        p._heal_local_engine = noop
+        # 和 _translate_alert 一样，在另一个任务里用同一个引擎对象翻报警那句
+        alert = asyncio.ensure_future(p.translator.translate("la frase de la alerta", "zh-CN"))
+        await p._translate_and_update(job(7, "la frase del subtítulo"))
+        assert await alert is None
+        return p
+
+    p = run(scenario())
+    assert engine.refusals == 1                       # 那一次拒答确实发生了
+    out = capsys.readouterr().out
+    got = [(r["seq"], r["category"]) for r in rows(p.audit, "translation_refusal")]
+    if caption_refused:
+        assert got == [(7, "bio")] and out.count("stop_reason=refusal") == 1
+    else:
+        assert got == [] and "stop_reason=refusal" not in out
+        assert not p.server.of("notice")
+    assert [r["ok"] for r in rows(p.audit, "translation")] == [False]
+
+
+def test_the_next_caption_in_the_same_task_does_not_inherit_a_refusal(
+        monkeypatch, tmp_path, settings_file):
+    """同一个任务里先拒答一句，下一句是别的失败（这个替身不会自己清结局）：管线调用前
+    清掉，下一句不能沿用上一句的拒答。"""
+
+    class RefuseThenFail(RefusingEngine):
+        async def translate(self, text, target, source="auto", glossary=None):
+            if self.refusals:
+                return None
+            return await super().translate(text, target, source, glossary)
+
+    engine = RefuseThenFail()
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, engine, engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1))
+        await p._translate_and_update(job(2))
+        return p
+
+    p = run(scenario())
+    assert [r["seq"] for r in rows(p.audit, "translation_refusal")] == [1]
+    assert [r["ok"] for r in rows(p.audit, "translation")] == [False, False]
 
 
 def test_a_failure_that_is_not_a_refusal_is_not_logged_as_one(monkeypatch, tmp_path,
