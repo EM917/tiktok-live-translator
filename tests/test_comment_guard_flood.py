@@ -104,7 +104,7 @@ def test_proto_6_five_accounts_with_the_same_red_sentence_one_amber_event_each_m
 
 
 def test_proto_7_six_accounts_wishing_happy_birthday_is_not_flooding():
-    res = run([(1000 + i * 2, "u%d" % i, "Feliz cumpleaños Bella 🎂") for i in range(6)])
+    res = run([(1000 + i * 2, "u%d" % i, "Feliz cumpleaños Luna 🎂") for i in range(6)])
     assert lvls(res) == [None] * 6 and not brigades(res)
 
 
