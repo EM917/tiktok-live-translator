@@ -837,12 +837,14 @@ class RefusingEngine:
     name, model = "claude", "claude-haiku-5-5"
 
     def __init__(self):
-        self.refusals, self.last_refusal = 0, None
+        self.refusals = 0
         self.last_error, self.fail_streak, self.cooldown_until = None, 0, 0.0
 
     async def translate(self, text, target, source="auto", glossary=None):
+        from app.translator import note_refusal
+
         self.refusals += 1
-        self.last_refusal = "general_harms"
+        note_refusal("general_harms")
         return None
 
     async def close(self):

@@ -2,6 +2,7 @@
 """翻译引擎。auto：本地 Ollama 里有 TranslateGemma 就用它（完全本地），否则退回
 Google 网页免费接口；也可显式指定 gemma / google / claude / openai / none。"""
 import asyncio
+import contextvars
 import hashlib
 import json
 import os
@@ -9,6 +10,33 @@ import re
 from collections import OrderedDict
 
 from .i18n import L
+
+# 单次 translate 调用的结局，按 asyncio 任务隔离。
+#
+# 报警上下文翻译（pipeline._translate_alert）和字幕翻译是并发的独立任务，用的是同一个引擎
+# 对象：引擎上的计数是大家共用的，字幕那边前后各读一次比较，会把报警那次的拒答记到这条字幕
+# 头上（审计写成 translation_refusal、类别是报警那次的，真正的超时反倒没报）。ContextVar 按
+# 任务隔离：起任务时复制一份上下文，任务里改的值别的任务看不见；同一个任务里直接 await 的
+# 协程改的值，await 回来就看得见。所以调用方要**直接 await** translate，不要套 wait_for
+# （3.11 及以前 wait_for 另起任务，这里记下的结局就丢了，退化成「不是拒答」——不会记成别人
+# 的，只是少记一条）。
+_CALL_OUTCOME = contextvars.ContextVar("translate_call_outcome", default=None)
+
+
+def begin_translate_call():
+    """调 translate 之前清掉本任务上一次留下的结局（缓存命中时引擎根本不会被调用）。"""
+    _CALL_OUTCOME.set(None)
+
+
+def translate_call_outcome():
+    """本任务里最近一次 translate 调用的结局：None（没有要特别说的），或
+    ("refusal", 接口给的类别或 None)。"""
+    return _CALL_OUTCOME.get()
+
+
+def note_refusal(category):
+    """引擎记下「本任务里这一次调用被拒答了」。category 照抄接口给的，可能为 None。"""
+    _CALL_OUTCOME.set(("refusal", category))
 
 def api_key(name):
     """取密钥：环境变量优先，其次界面里填的（存在 settings.json）。
@@ -159,16 +187,9 @@ class CachedTranslator:
     def cooldown_until(self):
         return getattr(self.inner, "cooldown_until", 0.0)
 
-    # 拒答（目前只有 Claude 会）：管线比较调用前后的次数。拒答返回 None，不进缓存——
+    # 拒答（目前只有 Claude 会）不经过这里：内层引擎把这一次调用的结局记进
+    # translate_call_outcome()，管线在同一个任务里读。拒答返回 None，不进缓存——
     # 下面只缓存真值，所以同一句下次还会再问一次
-    @property
-    def refusals(self):
-        return getattr(self.inner, "refusals", 0)
-
-    @property
-    def last_refusal(self):
-        return getattr(self.inner, "last_refusal", None)
-
     async def translate(self, text, target, source="auto", glossary=None):
         # 词表可以是紧凑串，也可以是词对列表（见 _as_pairs）。列表不可哈希，
         # 直接拿来做缓存键会抛 TypeError 把这次翻译整个打掉——调用方少写一个
@@ -584,10 +605,10 @@ class ClaudeTranslator(BaseTranslator):
                                  "No Claude API key yet. Enter it once in Settings > Translation Engine."))
         self.model = ((os.environ.get("CLAUDE_TRANSLATE_MODEL") or "").strip()
                       or self.DEFAULT_MODEL)
-        # 拒答（HTTP 200 + stop_reason "refusal"）：次数和最近一次的类别。管线比较调用前后的
-        # 次数，判断「这一句没译出来」是不是拒答——拒答不是引擎坏了，不冷却、不换引擎
+        # 拒答（HTTP 200 + stop_reason "refusal"）的本场累计次数，只作统计。某一句是不是
+        # 拒答**不看它**：报警翻译和字幕翻译并发共用这个对象，比较前后的次数会张冠李戴。
+        # 看 translate_call_outcome()（按任务隔离，见文件头）
         self.refusals = 0
-        self.last_refusal = None
         self._said_400 = False
 
     # 自检探针查的是这个模型本身：模型下线时回 404，而不只是验密钥
@@ -662,6 +683,7 @@ class ClaudeTranslator(BaseTranslator):
     async def translate(self, text, target, source="auto", glossary=None):
         import time
 
+        _CALL_OUTCOME.set(None)
         if time.monotonic() < self._cooldown_until:
             return None             # 密钥或模型刚被拒过：冷却期内不再发
         body = self._body(text, target)
@@ -689,7 +711,7 @@ class ClaudeTranslator(BaseTranslator):
         out, stop, category = self.read_message(data)
         if stop == "refusal":
             self.refusals += 1
-            self.last_refusal = category
+            note_refusal(category)
         elif stop == "max_tokens":
             print("[警告] Claude 的回应撞到 max_tokens 上限（模型 {}），这一句没有完整译文，"
                   "已丢弃".format(self.model))
