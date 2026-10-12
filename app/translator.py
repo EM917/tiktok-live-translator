@@ -583,7 +583,8 @@ class ClaudeTranslator(BaseTranslator):
     #     单轮、无工具、无 JSON 格式、不回传思考块。
     # 迁移指南本身倾向「用 effort 调、别关思考」。这里是有意偏离：字幕的延迟上限很硬（TIMEOUT
     # 10 秒、切段 9 秒），而关思考的弊端本路线全都碰不到。关思考和 adaptive+low 谁的译文更准，
-    # **没有测过**——离线对比见 tools/bench_claude_vs_local.py，测出来之前不要说谁更好。
+    # **没有测过**，测出来之前不要说谁更好（2026-10-12 用户决定这次不做离线对比，原因是评委
+    # 费用；对比工具留在分支 claude/claude-vs-local-bench 上，没有合进来）。
     #
     # 不要把这张表泛化成「新模型都关思考」：Opus 5.5 和 Sonnet 5.5 对 disabled 一律 400。
     # 也不要加 temperature/top_p/top_k（Haiku 5.5 上非默认值 400）、budget_tokens（400）、
