@@ -317,6 +317,19 @@ class AuditLog:
             "error": (error or "")[:200] or None,
         })
 
+    def translation_refusal(self, seq, engine, model, category):
+        """引擎拒绝翻译这一句（Claude：HTTP 200，stop_reason 为 refusal），按 seq 对应。
+        translation 记录里只有 ok=false，没有这一条就分不清「接口出错」和「模型拒答」。
+        category 照抄接口的 stop_details.category，可能为 null。每一次拒答都记。"""
+        self._write({
+            "type": "translation_refusal",
+            "seq": seq,
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "engine": engine,
+            "model": model,
+            "category": category,
+        })
+
     def translation_cooldown(self, engine, status, seconds):
         """翻译接口回了 429、程序暂停请求的那一刻。暂停期间每条字幕都是 ok=false，
         有这一条才分得清「接口让等一会儿」和「引擎坏了」。中间成功过才会再记。"""

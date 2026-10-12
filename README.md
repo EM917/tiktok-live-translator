@@ -262,7 +262,7 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, ~16 GB RAM
 | `gemma` | TranslateGemma 4B. `OLLAMA_TRANSLATE_MODEL` selects `translategemma:12b`/`27b`. Not in the Translation Engine menu; pass `--translator gemma` |
 | `deepl` | Key entered in Settings → Translation Engine (or `DEEPL_API_KEY`). A key ending in `:fx` is routed to the free endpoint automatically. Builds and maintains a native DeepL glossary from your [glossaries](#glossaries); see below. Caption text is sent to DeepL |
 | `google` | Google Translate's free endpoint, no key required. Caption text is sent to Google; rate-limited per IP |
-| `claude` | Key entered in Settings → Translation Engine (or `ANTHROPIC_API_KEY`); model overridable via `CLAUDE_TRANSLATE_MODEL` |
+| `claude` | Key entered in Settings → Translation Engine (or `ANTHROPIC_API_KEY`). Default model Claude Haiku 5.5 (`claude-haiku-5-5`), with thinking turned off to keep each caption fast; `CLAUDE_TRANSLATE_MODEL` selects another model. Caption text is sent to Anthropic. A caption Claude declines to translate shows the original text and is recorded in the audit log |
 | `openai` | Key entered in Settings → Translation Engine (or `OPENAI_API_KEY`); optional `OPENAI_BASE_URL`, `OPENAI_MODEL`. Compatible with any OpenAI-style API including local LM Studio / vLLM |
 | `none` | Transcription only, no translation |
 
