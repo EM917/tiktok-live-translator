@@ -404,6 +404,49 @@ def test_kappa_clopper_pearson_and_percentiles():
     assert bench.median([3, 1, 2, 4]) == 2.5
 
 
+def test_the_exact_interval_and_the_exact_test_never_disagree():
+    """复审 2026-10-12：b=2、c=9、n=500 时精确检验 p=0.065，Wald 区间却是 [+0.1, +2.7]，措辞自相
+    矛盾。精确条件区间和精确 McNemar 是同一个检验：同一水平下区间不含 0 当且仅当 p 显著。"""
+    for level in (0.95, 0.975, 0.9875):
+        for b in range(0, 31):
+            for c in range(0, 31):
+                lo, hi = bench.exact_conditional_ci(b, c, 500, level)
+                assert lo <= (c - b) / 500 <= hi
+                assert (lo > 0 or hi < 0) == (bench.mcnemar_exact(b, c) < 1 - level), (b, c, level)
+    lo, hi = bench.exact_conditional_ci(2, 9, 500)
+    assert lo < 0 < hi
+    assert bench.exact_conditional_ci(0, 0, 500) == (0.0, 0.0)
+
+
+def _res(b, c, n=500, level=0.975):
+    return bench.paired_test([(True, False)] * b + [(False, True)] * c + [(False, False)] * (n - b - c),
+                             level)
+
+
+def test_the_wording_follows_the_test_and_says_what_is_still_missing():
+    # 不显著：区间也含 0，两句话说的是同一件事
+    res = _res(2, 9)
+    text = bench.wording("major", res, bench.mcnemar_exact(2, 9))
+    assert "分辨不出" in text and "97.5% 精确条件区间" in text and "没测出差异，不等于等价" in text
+    # 显著、但还缺东西：写「暂定」和缺什么
+    res = _res(30, 5)
+    p = bench.mcnemar_exact(30, 5)
+    text = bench.wording("major", res, p, ["人工抽检还没做完（spot-check.md，已评 0/60 条）"])
+    assert text.startswith("**暂定**——major：") and "低 5.0 个百分点" in text
+    assert "暂定的原因：人工抽检还没做完" in text
+    text = bench.wording("major", res, p)
+    assert "暂定" not in text and "两位评委各自方向一致" in text
+    # Holm 第二步显著、97.5% 区间却含 0：照实说
+    res = _res(11, 24)
+    assert 0.025 < bench.mcnemar_exact(11, 24) < 0.05
+    text = bench.wording("major", res, 0.049)
+    assert "仍含 0" in text and "差多大估不准" in text
+    # 反过来的情况（区间不含 0、校正后却不显著）单独一句，不再拼出「排除不掉 0.0 个点」
+    res = dict(_res(2, 9), exact=[0.001, 0.02])
+    text = bench.wording("major", res, 0.06)
+    assert "两种算法给的结论不一致" in text and "排除不掉 Claude 低 0.0" not in text
+
+
 def test_paired_test_counts_the_table():
     res = bench.paired_test([(True, True), (True, False), (True, False), (False, True),
                              (False, False)])
@@ -894,6 +937,151 @@ def test_the_random_part_is_weighted_by_the_pool_not_by_the_capped_sample():
     assert bench.weighted_random(labels, items, {}, "major") is None
 
 
+def test_a_major_without_the_glossary_term_also_goes_to_a_human(tmp_path):
+    """生产里的 Claude 不收词表提示：译文里没有目标词、被判 product_term 的 major，可能只是没用
+    中控指定的写法。也列进 manual-review.md（缺提示候选），不自动豁免。"""
+    item = dict(items_for_run(1)[0], id="g2", text="hoy con las gotitas chicas",
+                local="今天用维生素滴剂", entries=[[["las gotitas"], "维生素滴剂"]])
+    tcache = bench.JsonlCache(tmp_path / "t.jsonl")
+    tcache.append({"key": "claude-haiku-5-5|g2", "out": "今天用小滴瓶", "stop_reason": "end_turn",
+                   "ms": 500.0, "cost": 0.0})
+    jcache = bench.JsonlCache(tmp_path / "j.jsonl")
+    wrong_term = {"verdict": "major", "error_type": "product_term", "tier": "good",
+                  "friction": False, "note": "没用词表里的商品名"}
+    fine = {"verdict": "correct", "error_type": "none", "tier": "good", "friction": False,
+            "note": "x"}
+    judges = ["claude-sonnet-5-5", "claude-opus-5-5"]
+    for judge in judges:
+        jcache.append({"key": "{}|main|g2".format(judge), "order": ["claude", "local"],
+                       "grades": {"A": wrong_term, "B": fine}, "cost": 0.0})
+    acache = bench.JsonlCache(tmp_path / "a.jsonl")
+    labels = bench.consensus_labels([item], "claude-haiku-5-5", judges, None, tcache, jcache, acache)
+    review = bench.manual_review([item], labels, "claude-haiku-5-5", tcache)
+    assert [(r["id"], r["engine"], r["kind"]) for r in review] == [("g2", "claude", "missing_term")]
+    bench.report([item], {"seed": 1}, "claude-haiku-5-5", judges, None, tcache, jcache, acache, [],
+                 tmp_path)
+    text = (tmp_path / "manual-review.md").read_text(encoding="utf-8")
+    assert "## 缺提示候选 · g2 · Claude" in text and "今天用小滴瓶" in text
+    report_text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "两边拿到的词表提示不一样" in report_text and "缺提示候选 1 条" in report_text
+
+
+def _significant_world(tmp_path, n=40, local_bad=20, second_judge_flips=False):
+    """n 条：前 local_bad 条只有 1.8B 被判 major，其余两边都好。两位评委一致（除非 second_judge_flips：
+    第二位评委反过来，只判 Claude major）。一半条目命中词表。"""
+    items, judges = [], ["claude-sonnet-5-5", "claude-opus-5-5"]
+    tcache = bench.JsonlCache(tmp_path / "t.jsonl")
+    jcache = bench.JsonlCache(tmp_path / "j.jsonl")
+    bad = {"verdict": "major", "error_type": "meaning", "tier": "awkward", "friction": True,
+           "note": "x"}
+    good = {"verdict": "correct", "error_type": "none", "tier": "good", "friction": False,
+            "note": "x"}
+    for i in range(n):
+        iid = "s#{}".format(i)
+        items.append(dict(items_for_run(1)[0], id=iid, local="本地{}".format(i),
+                          part="random" if i % 2 else "hard", group="bellatest",
+                          entries=[[["gotitas"], "滴剂"]] if i % 2 else []))
+        tcache.append({"key": "claude-haiku-5-5|" + iid, "out": "云端{}".format(i),
+                       "stop_reason": "end_turn", "ms": 500.0, "attempts": 1, "cost": 0.0})
+        for j, judge in enumerate(judges):
+            local_g, claude_g = (bad, good) if i < local_bad else (good, good)
+            if second_judge_flips and j == 1 and i < local_bad:
+                local_g, claude_g = good, bad
+            jcache.append({"key": "{}|main|{}".format(judge, iid), "order": ["local", "claude"],
+                           "grades": {"A": local_g, "B": claude_g}, "cost": 0.0})
+    return items, judges, tcache, jcache, bench.JsonlCache(tmp_path / "a.jsonl")
+
+
+def test_a_significant_result_stays_provisional_until_the_human_spot_check_is_done(tmp_path):
+    items, judges, tcache, jcache, acache = _significant_world(tmp_path)
+    manifest = {"seed": 5}
+    bench.report(items, manifest, "claude-haiku-5-5", judges, None, tcache, jcache, acache, [],
+                 tmp_path)
+    data = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert data["primary"]["major"]["holm_p"] < 0.05
+    assert data["primary"]["major"]["provisional"] == ["人工抽检还没做完（spot-check.md，已评 0/40 条）"]
+    text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "**暂定**——改变意思的错误（major）" in text
+    # 抽检表：盲的（没有引擎名、没有层），答案另存；按层抽，20 条「Claude 更好」+ 20 条一致
+    sheet = (tmp_path / "spot-check.md").read_text(encoding="utf-8")
+    assert "Claude" not in sheet and "1.8B" not in sheet and "local" not in sheet
+    key = json.loads((tmp_path / "spot-check-key.json").read_text(encoding="utf-8"))
+    assert Counter(r["stratum"] for r in key["rows"]) == {"claude_better": 20, "concordant": 20}
+    # 人工照评分表填完、和评委一致：暂定去掉
+    labels = []
+    for r in key["rows"]:
+        g = {e: ({"verdict": "major", "tier": "awkward"} if (e == "local" and r["stratum"] ==
+                 "claude_better") else {"verdict": "correct", "tier": "good"}) for e in bench.ENGINES}
+        labels.append({"sheet": r["sheet"], "A": g[r["order"][0]], "B": g[r["order"][1]]})
+    (tmp_path / "spot-check-labels.json").write_text(json.dumps(labels), encoding="utf-8")
+    bench.report(items, manifest, "claude-haiku-5-5", judges, None, tcache, jcache, acache, [],
+                 tmp_path)
+    data = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert data["primary"]["major"]["provisional"] == []
+    assert data["spot_check"]["strata"]["claude_better"]["confirmed"] == 20
+    text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "两位评委各自方向一致" in text and "**暂定**——改变意思的错误" not in text
+    # 答案文件在就不重抽：表是冻结的
+    assert json.loads((tmp_path / "spot-check-key.json").read_text(encoding="utf-8")) == key
+
+
+def test_judges_that_disagree_on_direction_keep_the_result_provisional(tmp_path):
+    items, judges, tcache, jcache, acache = _significant_world(tmp_path, second_judge_flips=True)
+    acache_rows = []
+    # 让裁决站在第一位评委那边：共识显著，但第二位评委单独看方向相反
+    for it in items[:20]:
+        acache.append({"key": "claude-opus-5-5|adjudicate|{}".format(it["id"]),
+                       "order": ["local", "claude"], "cost": 0.0,
+                       "grades": {"A": {"verdict": "major", "error_type": "meaning", "tier": "awkward",
+                                        "friction": True, "note": "x"},
+                                  "B": {"verdict": "correct", "error_type": "none", "tier": "good",
+                                        "friction": False, "note": "x"}}})
+        acache_rows.append(it["id"])
+    bench.report(items, {"seed": 5}, "claude-haiku-5-5", judges, "claude-opus-5-5", tcache, jcache,
+                 acache, [], tmp_path)
+    data = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    why = data["primary"]["major"]["provisional"]
+    assert any(w.startswith("评委 claude-opus-5-5 单独看方向不同") for w in why)
+
+
+def test_bad_spot_check_labels_are_refused(tmp_path):
+    items, judges, tcache, jcache, acache = _significant_world(tmp_path)
+    bench.report(items, {"seed": 5}, "claude-haiku-5-5", judges, None, tcache, jcache, acache, [],
+                 tmp_path)
+    (tmp_path / "spot-check-labels.json").write_text(json.dumps(
+        [{"sheet": "S01", "A": {"verdict": "fine", "tier": "good"}, "B": {}}]), encoding="utf-8")
+    with pytest.raises(bench.Stop, match="spot-check-labels.json"):
+        bench.report(items, {"seed": 5}, "claude-haiku-5-5", judges, None, tcache, jcache, acache,
+                     [], tmp_path)
+
+
+def test_no_spot_check_sheet_is_frozen_from_an_unfinished_run(tmp_path):
+    items, judges, tcache, jcache, acache = _significant_world(tmp_path)
+    jcache.rows.pop("claude-opus-5-5|main|s#3")
+    bench.report(items, {"seed": 5}, "claude-haiku-5-5", judges, None, tcache, jcache, acache, [],
+                 tmp_path)
+    assert not (tmp_path / "spot-check-key.json").exists()
+    data = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert "这一轮还没跑完" in data["primary"]["major"]["provisional"]
+
+
+def test_the_glossary_split_is_reported_for_both_groups(tmp_path):
+    items, judges, tcache, jcache, acache = _significant_world(tmp_path)
+    bench.report(items, {"seed": 5}, "claude-haiku-5-5", judges, None, tcache, jcache, acache, [],
+                 tmp_path)
+    data = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    groups = [(r["group"], r["endpoint"], r["n"]) for r in data["glossary_split"]]
+    assert groups == [("没命中词表（干净的模型比较）", "major", 20), ("没命中词表（干净的模型比较）", "not_good", 20),
+                      ("命中词表（1.8B 收到了提示、Claude 没有）", "major", 20),
+                      ("命中词表（1.8B 收到了提示、Claude 没有）", "not_good", 20)]
+    assert all(r["exact_level"] == pytest.approx(0.9875) for r in data["glossary_split"])
+    text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "没命中词表（干净的模型比较） · 改变意思的错误（major）：在这 20 条上" in text
+    # 分组那一节在主终点（含随机/难句两行）之后、各评委之前
+    assert text.index("## 主终点") < text.index("· 难句部分") < text.index("## 按词表命中分组") \
+        < text.index("## 各评委单独分析")
+
+
 def test_overrides_need_a_reason_and_a_known_item(tmp_path):
     path = tmp_path / "overrides.json"
     path.write_text(json.dumps([{"id": "a", "engine": "claude", "major": False, "reason": " "}]),
@@ -989,6 +1177,7 @@ def test_a_full_run_freezes_the_sample_first_and_a_rerun_pays_nothing(world, mon
     assert manifest["sample_sha256"] == bench.sha256_file(world["out"] / "sample.json")
     assert manifest["request_shape"]["thinking"] == {"type": "disabled"}
     assert manifest["pool_groups"] == {"bellatest": 301, "daisytest": 120}
+    assert "glossary_split" in manifest["analysis_plan"]           # 事先登记：冻结时就写好
     report_text = (world["out"] / "report.md").read_text(encoding="utf-8")
     assert "随机部分按候选池主播占比加权" in report_text
     assert (world["out"] / "report.md").exists() and (world["out"] / "manual-review.md").exists()

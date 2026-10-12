@@ -78,14 +78,21 @@ operator less often than the local 1.8B model has not been measured.
 without touching the live pipeline:
 
 - The 1.8B side is the translation each session logged at the time. No local
-  model is re-run.
+  model is re-run. Captions where 1.8B showed no translation stay in and count
+  as failures, the same way Claude's refusals and timeouts do.
 - The Claude side uses the production request (thinking off, effort low) and
   response handling, followed by the same glossary fallback the pipeline
   applies. Claude gets no glossary hints in its prompt, while 1.8B did, so the
   comparison is between the two engines as they run in production, not between
-  bare models.
+  bare models. The report says so at the top. Before the run, it also commits
+  to reporting both endpoints separately for captions with and without a
+  glossary match; the group without one (about 300 of the default 500) is the
+  clean model comparison.
 - A session is used only when the glossary in effect at the time can be rebuilt
   exactly from the local files, their backups and the repository history.
+- Streamers first seen in the last week of logs are left out by default, so
+  they can still go into the sealed test set. `--include-new-streamer` brings
+  one in.
 - Two Claude judges grade every pair blind with the 2026-09-01 rubric, and a
   third call settles their disagreements.
 
@@ -97,7 +104,7 @@ nice -n 19 python3 tools/bench_claude_vs_local.py --max-cost 60     # the full r
 nice -n 19 python3 tools/bench_claude_vs_local.py --phase report    # rebuild the report only
 ```
 
-On the logs as of 2026-10-12, the dry run found 38,543 usable sentences and
+On the logs as of 2026-10-12, the dry run found 37,832 usable sentences and
 estimated about $44 (up to about $63) for the default 500, almost all of it for
 the judges; translating them with Haiku 5.5 comes to about two cents. These are
 estimates from character counts, not measured token counts.
@@ -111,9 +118,14 @@ lines and their matched glossary pairs are sent to Anthropic.
 
 Reading the result: the two endpoints (meaning-changing errors, and captions not
 understood on first pass) are compared with paired exact McNemar tests and Holm
-correction. A non-significant result means no difference was measured, not that
-the engines are equivalent. Slices are exploratory, and only comparisons within
-this round count. The judges and the engine under test are all Claude models,
-so the report's judge-free checks and a human spot check carry weight. Majors
-that may be glossary pinning are listed for a human decision, recorded with a
-reason in `overrides.json`, never exempted by substring matching.
+correction, with an exact interval that always agrees with the test. A
+non-significant result means no difference was measured, not that the engines
+are equivalent. Slices are exploratory, and only comparisons within this round
+count. The judges and the engine under test are all Claude models, so a
+significant result stays marked provisional until four things are done: the
+run is complete, each judge on its own points the same way, a person has graded
+the 60-caption blind spot check the report writes (`spot-check.md`), and the
+glossary candidates have been reviewed. Majors that may be glossary pinning, or
+that may only be a missing glossary term, are listed for a human decision,
+recorded with a reason in `overrides.json`, never exempted by substring
+matching.

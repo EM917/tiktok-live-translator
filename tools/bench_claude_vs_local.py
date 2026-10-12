@@ -72,9 +72,17 @@ glossary.txt、profiles/、brands/ 和它们的 .bak——在 worktree 里跑时
   所以它的原始比例不代表池子也不代表日常；报告另给按候选池各主播占比加权的估计（分层 bootstrap
   区间），池子的分组大小冻结时记进 manifest.json。
 
-公平性：1.8B 当时在提示词里收到了本句命中的词表对，日志里的译文也已经做过 glossary.apply()；
-生产里的 ClaudeTranslator 不收词表提示（给不给是另一项改动，要单独测，而且会把本机词表发给
-Anthropic），两边都做同一版 apply()。报告比较的是「两个引擎按现在的生产方式跑」，不是裸模型。
+公平性（2026-10-12 复审后明确的取舍，eval-plan §2.5 的选项 B）：1.8B 当时在提示词里收到了本句
+命中的词表对，日志里的译文也已经做过 glossary.apply()；生产里的 ClaudeTranslator 不收词表提示
+（给不给是另一项生产改动，要单独的 PR 和测试，而且会把本机词表发给 Anthropic），两边都做同一版
+apply()。所以这一轮比的是「两个引擎按现在的生产方式跑」，不是裸模型，而且评委看到的词表对被说成
+中控指定的写法——命中词表的条目上 Claude 吃亏，照用词表的那条也多半是 1.8B 的。报告这样处理：
+  * report.md 开头写明两边提示不一样；
+  * **事先登记**按本句命中 / 没命中词表分两组报两个主终点（4 个检验 Holm 校正、98.75% 区间），
+    没命中词表那组（dry-run 约六成）是干净的模型比较；
+  * 命中词表的条目上，被判 product_term/fabrication 的 major 不论译文里有没有词表目标词都列进
+    manual-review.md 交人工（没有目标词的那一类，可能只是没用中控指定的写法）；
+  * 客观指标里「词表目标词缺失」那一行主要反映提示差异，报告里注明。
 
 评委（默认 Sonnet 5.5 + Opus 5.5，effort high；Opus 5.5 裁决两位评委在 major 或可读性上的分歧）：
   每一条重新随机 A/B 顺序，评委看不到引擎名；两条译文各自独立打分（verdict/error_type/tier/
@@ -86,18 +94,28 @@ Anthropic），两边都做同一版 apply()。报告比较的是「两个引擎
 
 结果怎么读（CLAUDE.md 第四条，报告里会再印一遍）：
   * 主终点两个：改变意思的错误（major）和「一遍读不懂」（tier 不是 good）。用**精确 McNemar**
-    （不一致对的双侧二项检验），两个终点做 Holm 校正；配对差（Claude − 1.8B）报 Wald 95% 区间
-    （和 docs/engine-benchmarks.md 的口径一致），另报 Newcombe 区间作敏感性检验。
+    （不一致对的双侧二项检验），两个终点做 Holm 校正。配对差（Claude − 1.8B）的主区间是**精确
+    条件区间**：以不一致对数为条件，Clopper–Pearson 区间换算到差值，和精确 McNemar 是同一个检验
+    （区间不含 0 当且仅当同水平下 p 显著）；主终点用 97.5%（两个终点的 Bonferroni 水平）。Wald 95%
+    （和 docs/engine-benchmarks.md 的口径一致）和 Newcombe 95% 另列，标明未校正。
+  * 显著的措辞默认是**暂定**，四件事都齐了才去掉：这一轮跑完；两位评委各自单独看方向和共识一致；
+    人工抽检做完（见下）；词表候选人工处理完。没齐的会在那句话后面写明缺什么。
+  * 评委偏差：评委是 Claude，被测的也是 Claude，同家族评委倾向偏爱和自己文风相近的输出。跑完后
+    报告写一张**盲评抽检表**（spot-check.md，60 条，按共识分三层各 20：评委判 Claude 更好的不一致对、
+    评委判 1.8B 更好的不一致对、两边一致的；固定种子，答案另存 spot-check-key.json，评完之前别打开）。
+    人工照同一张评分表填 spot-check-labels.json 再重出报告，报告按层给出人工和评委的一致率。
+    「Claude 更好」那一层人工确认得明显少，就说明评委偏向 Claude，结论要打折（eval-plan §4.3）。
   * **p > 0.05 是「没测出差异」，不是「等价」。** 要主张不劣或等价，必须事先定界值，
     并看整个置信区间落在界内。
   * 切片（难句各桶、各主播）只是探索性的：按切片数做 Holm 校正，还要在新语料上复现才算数。
   * **只信轮内配对。** 同样 259 条换一批评委重评，major 率会从 9.3% 漂到 12.0%；
     不要拿本轮的百分比和任何旧轮次的数字比。
-  * 评委是 Claude，被测的也是 Claude：两位评委压得低噪声，消除不了家族偏差。报告附上不依赖
-    评委的客观指标（词表遵从、数字和问句丢失、外文混入、looks_fabricated），人工抽检请另做。
-  * **词表钉写会被评委当成捏造**：共识判 major、error_type 是 product_term/fabrication、且译文里
-    出现了词表目标词的条目，报告列进 manual-review.md，**逐条人工过**，结论写进 overrides.json
-    （每条必须写理由）再重出报告。不用子串匹配自动豁免——09-01 那轮这么做，DeepL 的 7 条里至少
+  * 两位评委压得低噪声，消除不了家族偏差。报告附上不依赖评委的客观指标（词表遵从、数字和
+    问句丢失、外文混入、looks_fabricated）。
+  * **词表钉写会被评委当成捏造**：共识判 major、error_type 是 product_term/fabrication、且本句
+    命中了词表的条目，报告列进 manual-review.md（译文里有词表目标词的是钉写候选，没有的是缺提示
+    候选），**逐条人工过**，结论写进 overrides.json（每条必须写理由）再重出报告。不用子串匹配自动
+    豁免——09-01 那轮这么做，DeepL 的 7 条里至少
     判错了 4 条（其中 3 条是真缺陷）。
 
 请求用原始 HTTP（aiohttp），不引入 anthropic SDK：生产代码一直这么写，CI 也只装 pytest、numpy、
@@ -896,8 +914,26 @@ def bootstrap_median_ci(xs, seed=1, rounds=2000, alpha=0.05):
     return meds[int(rounds * alpha / 2)], meds[min(rounds - 1, int(rounds * (1 - alpha / 2)))]
 
 
-def paired_test(pairs):
-    """pairs: [(1.8B 坏?, Claude 坏?)] → 检验结果 dict。"""
+def exact_conditional_ci(b, c, n, level=0.95):
+    """配对差 (c − b)/n 的精确条件区间。以不一致对数 m = b + c 为条件，c ~ 二项(m, π)；π 的
+    Clopper–Pearson 区间换算到差值 m/n·(2π − 1)。
+
+    和精确 McNemar 是同一个检验：同一水平下，区间不含 0 当且仅当 p < 1 − level（tests 钉着）。
+    所以不会出现「检验说分辨不出、区间却排除了 0」那种自相矛盾。代价是把 m 当成固定的，
+    不计不一致对数自己的抽样波动——Wald 和 Newcombe 另列作对照。"""
+    m = b + c
+    if n <= 0 or m == 0:
+        return 0.0, 0.0
+    lo, hi = clopper_pearson(c, m, alpha=1 - level)
+    return m / n * (2 * lo - 1), m / n * (2 * hi - 1)
+
+
+MAIN_LEVEL = 1 - 0.05 / 2        # 两个主终点：Bonferroni 水平（Holm 第一步就是这个）
+SPLIT_LEVEL = 1 - 0.05 / 4       # 按词表命中分组：两组 × 两个终点
+
+
+def paired_test(pairs, level=0.95):
+    """pairs: [(1.8B 坏?, Claude 坏?)] → 检验结果 dict。exact 是 level 水平的精确条件区间。"""
     a = sum(1 for x, y in pairs if x and y)
     b = sum(1 for x, y in pairs if x and not y)
     c = sum(1 for x, y in pairs if y and not x)
@@ -905,8 +941,10 @@ def paired_test(pairs):
     n = len(pairs)
     diff, wl, wh = wald_ci(b, c, n)
     _d, nl, nh = newcombe_ci(a, b, c, d)
+    el, eh = exact_conditional_ci(b, c, n, level)
     return {"n": n, "local_bad": a + b, "claude_bad": a + c, "a": a, "b": b, "c": c, "d": d,
-            "p": mcnemar_exact(b, c), "diff": diff, "wald": [wl, wh], "newcombe": [nl, nh]}
+            "p": mcnemar_exact(b, c), "diff": diff, "exact": [el, eh], "exact_level": level,
+            "wald": [wl, wh], "newcombe": [nl, nh]}
 
 
 # ---------------------------------------------------------------------------
@@ -1631,8 +1669,11 @@ def endpoint_pairs(labels, key, ids=None):
 
 
 def manual_review(items, labels, model, tcache):
-    """要人工逐条过的钉写候选：共识 major、error_type 是 product_term/fabrication、
-    译文里出现了本句词表的目标词。**只列出来，不自动豁免。**"""
+    """要人工逐条过的两类候选：本句命中了词表、共识判 major、error_type 是 product_term/fabrication。
+    **只列出来，不自动豁免。**
+      * pinned：译文里出现了词表目标词——可能是评委把照用中控指定的写法当成了捏造；
+      * missing_term：译文里一个目标词都没有——可能只是没用中控指定的写法、自己的译法没错。
+        生产里的 Claude 不收词表提示，评委又被告知词表对是中控指定的写法，这一类会偏向压它。"""
     out = []
     by_id = {it["id"]: it for it in items}
     for i, lab in labels.items():
@@ -1647,12 +1688,144 @@ def manual_review(items, labels, model, tcache):
                 continue
             if le.get("major_source") == "override":
                 continue
-            if le.get("error_type") in ("product_term", "fabrication") \
-                    and any(term_present(zh, text) for zh in zhs):
-                out.append({"id": i, "engine": e, "text": it["text"], "translation": text,
-                            "glossary": [[v[0], zh] for v, zh in it["entries"]],
-                            "error_type": le.get("error_type")})
+            if le.get("error_type") not in ("product_term", "fabrication"):
+                continue
+            kind = "pinned" if any(term_present(zh, text) for zh in zhs) else "missing_term"
+            out.append({"id": i, "engine": e, "kind": kind, "text": it["text"], "translation": text,
+                        "glossary": [[v[0], zh] for v, zh in it["entries"]],
+                        "error_type": le.get("error_type")})
     return out
+
+
+# ---------------------------------------------------------------------------
+# 人工抽检（评委偏差的校准）
+# ---------------------------------------------------------------------------
+
+SPOT_PER_STRATUM = 20
+SPOT_STRATA = (("claude_better", "评委判 Claude 更好的不一致对（只有 1.8B 被判 major）"),
+               ("local_better", "评委判 1.8B 更好的不一致对（只有 Claude 被判 major）"),
+               ("concordant", "两边判定一致的条目"))
+SPOT_SHEET, SPOT_KEY, SPOT_LABELS = "spot-check.md", "spot-check-key.json", "spot-check-labels.json"
+
+
+def spot_check_pick(items, labels, seed):
+    """按 major 共识分三层，每层用固定种子抽 SPOT_PER_STRATUM 条（不够就全要），整张表再打乱。
+    两边都要有译文：没有译文的那一边是强制判的 major，人工没有可复核的。"""
+    strata = defaultdict(list)
+    for it in sorted(items, key=lambda x: x["id"]):
+        lab = labels.get(it["id"]) or {}
+        lo, cl = lab.get("local"), lab.get("claude")
+        if not lo or not cl or lo.get("failed") or cl.get("failed") \
+                or lo.get("major") is None or cl.get("major") is None:
+            continue
+        stratum = ("concordant" if lo["major"] == cl["major"]
+                   else "claude_better" if lo["major"] else "local_better")
+        strata[stratum].append(it["id"])
+    rnd = random.Random("{}|spot-check".format(seed))
+    picked = []
+    for stratum, _desc in SPOT_STRATA:
+        ids = strata.get(stratum, [])
+        picked += [(stratum, i) for i in rnd.sample(ids, min(SPOT_PER_STRATUM, len(ids)))]
+    rnd.shuffle(picked)
+    return picked
+
+
+def write_spot_check(items, labels, model, tcache, seed, out_dir):
+    """写盲评抽检表和答案。表里只有原文、上下句、词表对和 A/B 两条译文，没有引擎名、没有层。"""
+    by_id = {it["id"]: it for it in items}
+    rnd = random.Random("{}|spot-check-order".format(seed))
+    rows, sheet = [], [
+        "# 人工盲评抽检", "",
+        "每题两条中文译文，各自独立打分，用 report 里评委用的同一张评分表（verdict：correct/minor/major；"
+        "error_type：none/meaning/product_term/fabrication/price_number/non_translation/softened_claim；"
+        "tier：good/awkward/unusable）。不知道哪条来自哪个引擎，也不要猜；**评完之前别打开 {}**。".format(
+            SPOT_KEY),
+        "结果写进同目录的 {}，例如：".format(SPOT_LABELS), "",
+        '    [{"sheet": "S01", "A": {"verdict": "correct", "error_type": "none", "tier": "good"},',
+        '      "B": {"verdict": "major", "error_type": "meaning", "tier": "awkward"}}]', ""]
+    for n, (stratum, iid) in enumerate(spot_check_pick(items, labels, seed), 1):
+        it = by_id[iid]
+        claude_out, _w = production_outcome(tcache.get("{}|{}".format(model, iid)))
+        order = ["local", "claude"]
+        rnd.shuffle(order)
+        texts = {"local": it.get("local"), "claude": claude_out}
+        sid = "S{:02d}".format(n)
+        rows.append({"sheet": sid, "id": iid, "stratum": stratum, "order": order})
+        pairs = mini_glossary(it.get("entries")).translation_pairs(it["text"])
+        sheet += ["## " + sid, "", "- 原文：{}".format(it["text"]),
+                  "- 上一句 / 下一句（只用来判断是不是半句话）：{} / {}".format(
+                      it.get("prev") or "（无）", it.get("next") or "（无）"),
+                  "- 词表（中控指定的写法）：{}".format(
+                      "；".join("{} → {}".format(es, zh) for es, zh in pairs) or "（本句没有命中词表）"),
+                  "- 译文 A：{}".format(blind_form(texts[order[0]])),
+                  "- 译文 B：{}".format(blind_form(texts[order[1]])), ""]
+    out_dir = Path(out_dir)
+    (out_dir / SPOT_SHEET).write_text("\n".join(sheet) + "\n", encoding="utf-8")
+    (out_dir / SPOT_KEY).write_text(json.dumps(
+        {"seed": seed, "created_at": datetime.now().isoformat(timespec="seconds"), "rows": rows},
+        ensure_ascii=False, indent=1), encoding="utf-8")
+    return rows
+
+
+def load_spot_labels(path, sheets):
+    """人工填的抽检结果 → {sheet: {"A": grade, "B": grade}}。字段照评分表，error_type 可省（按 none）。"""
+    if not Path(path).exists():
+        return {}
+    try:
+        rows = json.loads(Path(path).read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise Stop("{} 不是合法 JSON（{}）".format(SPOT_LABELS, exc)) from None
+    out = {}
+    for r in rows if isinstance(rows, list) else [None]:
+        ok = isinstance(r, dict) and r.get("sheet") in sheets
+        grades = {}
+        for slot in ("A", "B"):
+            g = r.get(slot) if ok else None
+            if not isinstance(g, dict) or g.get("verdict") not in VERDICTS \
+                    or g.get("tier") not in TIERS or g.get("error_type", "none") not in ERROR_TYPES:
+                ok = False
+                break
+            grades[slot] = {"verdict": g["verdict"], "tier": g["tier"],
+                            "error_type": g.get("error_type", "none")}
+        if not ok:
+            raise Stop("{} 里这一条不合格（sheet 要在抽检表里；A、B 各要 verdict 和 tier，取值照评分表）："
+                       "{}".format(SPOT_LABELS, json.dumps(r, ensure_ascii=False)))
+        out[r["sheet"]] = grades
+    return out
+
+
+def spot_check(items, labels, model, tcache, seed, out_dir, incomplete):
+    """抽检表：跑完之后第一次出报告时生成并冻结（答案文件在就不再重抽）；读回人工结果，按层算
+    人工和评委共识的一致率。→ {"complete", "why", "strata", "rows"}。"""
+    key_path = Path(out_dir) / SPOT_KEY
+    if key_path.exists():
+        rows = json.loads(key_path.read_text(encoding="utf-8")).get("rows") or []
+    elif incomplete:
+        return {"complete": False, "why": "人工抽检表要等这一轮跑完才生成", "strata": {}, "rows": []}
+    else:
+        rows = write_spot_check(items, labels, model, tcache, seed, out_dir)
+    human = load_spot_labels(Path(out_dir) / SPOT_LABELS, {r["sheet"] for r in rows})
+    strata = {s: {"picked": 0, "labeled": 0, "confirmed": 0, "agree_local": 0, "agree_claude": 0}
+              for s, _d in SPOT_STRATA}
+    for r in rows:
+        st = strata.setdefault(r["stratum"], {"picked": 0, "labeled": 0, "confirmed": 0,
+                                              "agree_local": 0, "agree_claude": 0})
+        st["picked"] += 1
+        g = human.get(r["sheet"])
+        lab = labels.get(r["id"]) or {}
+        if g is None or not lab.get("local") or not lab.get("claude"):
+            continue
+        h = {r["order"][0]: is_major(g["A"]), r["order"][1]: is_major(g["B"])}
+        st["labeled"] += 1
+        st["agree_local"] += h["local"] == bool(lab["local"]["major"])
+        st["agree_claude"] += h["claude"] == bool(lab["claude"]["major"])
+        st["confirmed"] += {"claude_better": h["local"] and not h["claude"],
+                            "local_better": h["claude"] and not h["local"],
+                            "concordant": h["local"] == h["claude"]}.get(r["stratum"], False)
+    labeled = sum(v["labeled"] for v in strata.values())
+    complete = bool(rows) and labeled == len(rows)
+    why = "" if complete else "人工抽检还没做完（{}，已评 {}/{} 条）".format(SPOT_SHEET, labeled, len(rows))
+    return {"complete": complete, "why": why, "strata": strata, "rows": rows}
 
 
 _DIGIT = re.compile(r"\d")
@@ -1678,31 +1851,64 @@ def fmt_p(p):
     return "—" if p is None else ("<0.0001" if p < 1e-4 else "{:.4f}".format(p))
 
 
+def fmt_level(level):
+    return "{:g}%".format(round(100 * level, 2))
+
+
+def p_is(p):
+    """句子里的「p=…」：太小的写成 p<0.0001，不写 p=<0.0001。"""
+    return "p" + (fmt_p(p) if fmt_p(p).startswith("<") else "=" + fmt_p(p))
+
+
 def test_rows(name, res, adj_p=None):
     return ("| {} | {} | {}/{}（{}） | {}/{}（{}） | {} / {} | {} | {} | {:+.1f} 个百分点 | "
-            "[{:+.1f}, {:+.1f}] | [{:+.1f}, {:+.1f}] |").format(
+            "[{:+.1f}, {:+.1f}]（{}） | [{:+.1f}, {:+.1f}] | [{:+.1f}, {:+.1f}] |").format(
         name, res["n"], res["local_bad"], res["n"], pct(res["local_bad"] / res["n"]) if res["n"] else "—",
         res["claude_bad"], res["n"], pct(res["claude_bad"] / res["n"]) if res["n"] else "—",
         res["b"], res["c"], fmt_p(res["p"]), fmt_p(adj_p), 100 * res["diff"],
+        100 * res["exact"][0], 100 * res["exact"][1], fmt_level(res["exact_level"]),
         100 * res["wald"][0], 100 * res["wald"][1], 100 * res["newcombe"][0], 100 * res["newcombe"][1])
 
 
 TEST_HEAD = ("| 范围 | N | 1.8B 坏 | Claude 坏 | 不一致 b / c | McNemar p | Holm 后 p | 差（Claude − 1.8B） | "
-             "Wald 95% | Newcombe 95% |\n|---|---|---|---|---|---|---|---|---|---|")
+             "精确条件区间（水平） | Wald 95%（未校正） | Newcombe 95%（未校正） |\n"
+             "|---|---|---|---|---|---|---|---|---|---|---|")
 
 
-def wording(label, res, adj_p):
-    lo, hi = 100 * res["wald"][0], 100 * res["wald"][1]
+def wording(label, res, adj_p, provisional=()):
+    """一个终点的一句话结论。区间用精确条件区间（和精确 McNemar 同一个检验；主终点是 97.5%）。
+
+    provisional：显著时为什么还只能算暂定（没跑完、两位评委方向不一致、人工抽检没做完、词表
+    候选没处理完……）。为空才去掉「暂定」。"""
+    lo, hi = 100 * res["exact"][0], 100 * res["exact"][1]
+    lvl = fmt_level(res["exact_level"])
     if res["n"] == 0:
         return "{}：没有可比的条目。".format(label)
-    if adj_p is not None and adj_p < 0.05:
+    sig = adj_p is not None and adj_p < 0.05
+    excludes_zero = lo > 0 or hi < 0
+    if sig:
         better = "低" if res["diff"] < 0 else "高"
-        return ("{}：在这 {} 条上，Claude 的比例比 1.8B {} {:.1f} 个百分点（95% 区间 [{:+.1f}, {:+.1f}]，"
-                "McNemar p={}，Holm 校正后 p={}，校正后仍成立）。只在本轮语料和本轮评委上成立。").format(
-            label, res["n"], better, abs(100 * res["diff"]), lo, hi, fmt_p(res["p"]), fmt_p(adj_p))
-    return ("{}：这次检验分辨不出两者。配对差 {:+.1f} 个百分点，95% 区间 [{:+.1f}, {:+.1f}]："
+        head = ("{}：在这 {} 条上，Claude 的比例比 1.8B {} {:.1f} 个百分点（McNemar {}，Holm 校正后 {}）"
+                .format(label, res["n"], better, abs(100 * res["diff"]), p_is(res["p"]), p_is(adj_p)))
+        if excludes_zero:
+            head += "，{} 精确条件区间 [{:+.1f}, {:+.1f}]。".format(lvl, lo, hi)
+        else:
+            head += ("。但 {} 精确条件区间 [{:+.1f}, {:+.1f}] 仍含 0：方向只在 Holm 逐步检验下成立，"
+                     "差多大估不准。".format(lvl, lo, hi))
+        if provisional:
+            return "**暂定**——" + head + "暂定的原因：{}。".format("；".join(provisional))
+        return head + "两位评委各自方向一致，人工抽检见下。只在本轮语料和本轮评委上成立。"
+    if excludes_zero:
+        return ("{}：{} 精确条件区间 [{:+.1f}, {:+.1f}] 不含 0，但 Holm 校正后 {}，检验不显著——两种"
+                "算法给的结论不一致，按不显著读，不下结论。**没测出差异，不等于等价。**").format(
+            label, lvl, lo, hi, p_is(adj_p))
+    return ("{}：这次检验分辨不出两者。配对差 {:+.1f} 个百分点，{} 精确条件区间 [{:+.1f}, {:+.1f}]："
             "既排除不掉 Claude 低 {:.1f} 个点，也排除不掉它高 {:.1f} 个点。**没测出差异，不等于等价。**").format(
-        label, 100 * res["diff"], lo, hi, abs(min(lo, 0.0)), max(hi, 0.0))
+        label, 100 * res["diff"], lvl, lo, hi, abs(min(lo, 0.0)), max(hi, 0.0))
+
+
+def _sign(x):
+    return (x > 0) - (x < 0)
 
 
 def weighted_random(labels, items, weights, key, rounds=2000, seed=1):
@@ -1774,16 +1980,39 @@ def latency_block(items, model, tcache):
 
 def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, overrides, out_dir,
            ledger=None):
-    """写 report.md / report.json / manual-review.md，返回 report.md 的路径。不发请求。"""
+    """写 report.md / report.json / manual-review.md（跑完后第一次还有抽检表），返回 report.md 的
+    路径。不发请求。"""
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
     labels = consensus_labels(items, model, judges, adjudicator, tcache, jcache, acache, overrides)
     done = completeness(items, model, judges, adjudicator, tcache, jcache, acache)
     review = manual_review(items, labels, model, tcache)
+    spot = spot_check(items, labels, model, tcache, manifest.get("seed"), out_dir, done["incomplete"])
+    jlabels = {judge: judge_labels(items, model, judge, tcache, jcache) for judge in judges}
+
+    def provisional(key, res, ids=None):
+        """显著结论还缺什么（见 wording）。两位评委各自在同一批条目上的方向要和共识一致。"""
+        why = []
+        if done["incomplete"]:
+            why.append("这一轮还没跑完")
+        if len(judges) < 2:
+            why.append("只有一位评委，看不了两位各自的方向")
+        for judge in judges:
+            r = paired_test(endpoint_pairs(jlabels[judge], key, ids))
+            if _sign(r["diff"]) != _sign(res["diff"]):
+                why.append("评委 {} 单独看方向不同（差 {:+.1f} 个百分点）".format(judge, 100 * r["diff"]))
+        if not spot["complete"]:
+            why.append(spot["why"])
+        if review:
+            why.append("还有 {} 条词表候选没人工处理（manual-review.md）".format(len(review)))
+        return why
+
     random_ids = {it["id"] for it in items if it["part"] == "random"}
     hard_ids = {it["id"] for it in items if it["part"] == "hard"}
     data = {"generated_at": datetime.now().isoformat(timespec="seconds"), "manifest": manifest,
             "primary": {}, "per_judge": {}, "slices": [], "objective": {}, "failures": {},
             "judge_quality": {}, "overrides": list(overrides), "manual_review_pending": len(review),
-            "completeness": done, "attempts": attempt_stats(ledger)}
+            "completeness": done, "attempts": attempt_stats(ledger), "glossary_split": [],
+            "spot_check": {k: spot[k] for k in ("complete", "why", "strata")}}
     L_ = []
     L_.append("# Claude 对本地 Hy-MT2 1.8B：离线翻译对比报告")
     L_.append("")
@@ -1792,7 +2021,6 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
                   data["generated_at"], len(items), manifest.get("sample_sha256", "?")[:12],
                   manifest.get("seed"), model, json.dumps(manifest.get("request_shape"), ensure_ascii=False),
                   "、".join(judges) or "无", adjudicator or "无"))
-    L_.append("")
     if done["incomplete"]:
         parts = []
         if done["translations_missing"]:
@@ -1806,27 +2034,35 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
         L_.append("> **本报告不完整**：{}。缺的条目不进配对表（下面的 N 会比样本 {} 条小），只有一位评委"
                   "评过的条目用那一位的判定，没裁决的分歧不进主终点。所有结论都按**暂定**读；跑完再出一次。"
                   .format("；".join(parts), len(items)))
+    n_hit = sum(1 for it in items if it.get("entries"))
+    L_.append("")
+    L_.append("> **两边拿到的词表提示不一样**：1.8B 当时在提示词里收到了本句命中的词表对，生产里的 Claude "
+              "不收（只有译完的 glossary.apply() 兜底）。评委看到的词表对又被说成「中控指定的写法」，所以命中"
+              "词表的 {} 条上 Claude 吃亏，照用词表写法的那条也多半是 1.8B 的，盲评打了折扣。这一轮比的是"
+              "「两个引擎按现在的生产方式跑」；干净的模型比较看下面事先登记的「没命中词表」那一组（{} 条）。"
+              .format(n_hit, len(items) - n_hit))
     L_.append("")
     L_.append("> **怎么读**：只信本轮之内的配对比较；不要拿这里的百分比和任何旧轮次比（同样 259 条换一批"
               "评委重评，major 率会从 9.3% 漂到 12.0%）。p>0.05 是「没测出差异」，不是「等价」。切片只是"
-              "探索性的。评委和被测引擎同属 Claude，家族偏差消除不了。")
+              "探索性的。评委和被测引擎同属 Claude，家族偏差消除不了：显著的结论要等两位评委各自方向一致、"
+              "人工抽检做完才去掉「暂定」。")
     if review:
         L_.append("")
-        L_.append("> **结论未定稿**：还有 {} 条词表钉写候选没人工处理（见 manual-review.md）。逐条看完、"
+        L_.append("> **结论未定稿**：还有 {} 条词表候选没人工处理（见 manual-review.md）。逐条看完、"
                   "把结论和理由写进 overrides.json 再重出报告；不要用子串匹配自动豁免。".format(len(review)))
     # 主终点
     L_.append("")
-    L_.append("## 主终点（共识标签，两个终点 Holm 校正）")
-    primary = [(k, lab, paired_test(endpoint_pairs(labels, k))) for k, lab, _f in ENDPOINTS]
+    L_.append("## 主终点（共识标签，两个终点 Holm 校正，精确条件区间 {}）".format(fmt_level(MAIN_LEVEL)))
+    primary = [(k, lab, paired_test(endpoint_pairs(labels, k), MAIN_LEVEL)) for k, lab, _f in ENDPOINTS]
     adj = holm([r["p"] for _k, _l, r in primary])
     L_.append("")
     L_.append(TEST_HEAD)
     for (k, lab, res), ap in zip(primary, adj):
         L_.append(test_rows(lab, res, ap))
-        data["primary"][k] = dict(res, holm_p=ap)
+        data["primary"][k] = dict(res, holm_p=ap, provisional=provisional(k, res))
     L_.append("")
-    for (_k, lab, res), ap in zip(primary, adj):
-        L_.append("- " + wording(lab, res, ap))
+    for (k, lab, res), ap in zip(primary, adj):
+        L_.append("- " + wording(lab, res, ap, data["primary"][k]["provisional"]))
     L_.append("")
     L_.append("随机部分和难句部分各一行（只描述，不做校正）。随机部分是按主播封顶分层抽的（单个主播最多 "
               "{:.0%}），这一行**没加权**，不代表候选池也不代表日常；按候选池各主播占比加权的估计在下面：".format(
@@ -1855,12 +2091,32 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
                       100 * wr["ci"]["diff"][1],
                       "样本里没有的组不进加权：{}。".format("、".join(wr["missing"]))
                       if wr["missing"] else ""))
+    # 按词表命中分组（事先登记）
+    L_.append("")
+    L_.append("## 按词表命中分组（事先登记：两组 × 两个终点，4 个检验 Holm 校正，精确条件区间 {}）".format(
+        fmt_level(SPLIT_LEVEL)))
+    L_.append("")
+    hit_ids = {it["id"] for it in items if it.get("entries")}
+    groups_ = (("没命中词表（干净的模型比较）", {it["id"] for it in items} - hit_ids),
+               ("命中词表（1.8B 收到了提示、Claude 没有）", hit_ids))
+    split = [(g, ids, k, lab, paired_test(endpoint_pairs(labels, k, ids), SPLIT_LEVEL))
+             for g, ids in groups_ for k, lab, _f in ENDPOINTS]
+    sadj = holm([r["p"] for *_x, r in split])
+    L_.append(TEST_HEAD)
+    for (g, _ids, k, lab, res), ap in zip(split, sadj):
+        L_.append(test_rows("{} · {}".format(g, lab), res, ap))
+        data["glossary_split"].append(dict(res, group=g, endpoint=k, holm_p=ap))
+    L_.append("")
+    for (g, ids, k, lab, res), ap in zip(split, sadj):
+        if ids is hit_ids:
+            continue
+        L_.append("- " + wording("{} · {}".format(g, lab), res, ap, provisional(k, res, ids)))
     # 各评委单独
     L_.append("")
     L_.append("## 各评委单独分析（主结论要求两位方向一致；这里是评委原判，不含 overrides 的人工改判）")
     for judge in judges:
-        jl = judge_labels(items, model, judge, tcache, jcache)
-        res = [(lab, paired_test(endpoint_pairs(jl, k))) for k, lab, _f in ENDPOINTS]
+        jl = jlabels[judge]
+        res = [(lab, paired_test(endpoint_pairs(jl, k), MAIN_LEVEL)) for k, lab, _f in ENDPOINTS]
         ap = holm([r["p"] for _l, r in res])
         L_.append("")
         L_.append("### {}".format(judge))
@@ -1946,6 +2202,8 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
     res = paired_test(gloss)
     L_.append(test_rows("词表目标词缺失（命中词表的条目，term_present）", res))
     data["objective"]["glossary_missing"] = res
+    L_.append("")
+    L_.append("「词表目标词缺失」这一行主要反映提示差异：1.8B 当时收到了词表对，Claude 没有，不是模型本身的差异。")
     # 失败
     L_.append("")
     L_.append("## 没有译文的条目（生产里中控看到的是原文）")
@@ -2026,6 +2284,27 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
         L_.append("- {}：{}".format(m, "、".join(
             "{} {} 次".format({"timeout": "超时", "connect": "连不上"}.get(k, k.replace("http_", "HTTP ")), v)
             for k, v in sorted(c.items()))))
+    # 人工抽检
+    L_.append("")
+    L_.append("## 人工抽检（评委偏差的校准，eval-plan §4.3）")
+    L_.append("")
+    if not spot["rows"]:
+        L_.append(spot["why"] + "。")
+    else:
+        L_.append("抽检表 {}（{} 条，盲评；答案在 {}）。人工照评分表填 {} 后重出报告。{}".format(
+            SPOT_SHEET, len(spot["rows"]), SPOT_KEY, SPOT_LABELS,
+            "" if spot["complete"] else spot["why"] + "。"))
+        L_.append("")
+        L_.append("| 层 | 抽到 | 人工已评 | 人工也这么判 | 1.8B major 和共识一致 | Claude major 和共识一致 |")
+        L_.append("|---|---|---|---|---|---|")
+        for stratum, desc in SPOT_STRATA:
+            v = spot["strata"].get(stratum) or {}
+            n = v.get("labeled", 0)
+            fr = ["{}/{}（{}）".format(v.get(k, 0), n, pct(v.get(k, 0) / n)) if n else "—"
+                  for k in ("confirmed", "agree_local", "agree_claude")]
+            L_.append("| {} | {} | {} | {} | {} | {} |".format(desc, v.get("picked", 0), n, *fr))
+        L_.append("")
+        L_.append("「评委判 Claude 更好」那一层人工确认的比例明显低于另外两层，就说明评委偏向 Claude，结论要打折。")
     # 延迟
     L_.append("")
     L_.append("## 延迟（只描述）")
@@ -2055,14 +2334,19 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
     L_.append("")
     L_.append("## 人工处理")
     L_.append("")
-    L_.append("- 待人工逐条处理的词表钉写候选：{} 条（manual-review.md）".format(len(review)))
+    L_.append("- 待人工逐条处理的词表候选：{} 条（manual-review.md；钉写候选 {} 条、缺提示候选 {} 条）".format(
+        len(review), sum(r["kind"] == "pinned" for r in review),
+        sum(r["kind"] == "missing_term" for r in review)))
+    L_.append("- 人工抽检：{}".format("已做完" if spot["complete"] else spot["why"]))
     L_.append("- 已应用的人工结论：{} 条（overrides.json）".format(len(overrides)))
     for r in overrides:
         L_.append("  - {} · {} → major={}：{}".format(r["id"], LABEL[r["engine"]], r["major"], r["reason"]))
     L_.append("")
     L_.append("## 解读规则（CLAUDE.md 第四条）")
     L_.append("")
-    L_.append("- 同源语料用 McNemar 配对检验，不比原始百分比；主终点两个，Holm 校正。")
+    L_.append("- 同源语料用 McNemar 配对检验，不比原始百分比；主终点两个，Holm 校正；区间用和检验一致的"
+              "精确条件区间，主终点是 {}。".format(fmt_level(MAIN_LEVEL)))
+    L_.append("- 显著的结论在这一轮跑完、两位评委各自方向一致、人工抽检做完、词表候选处理完之前都是暂定。")
     L_.append("- p>0.05 是「没测出差异」，不是「等价」；要主张不劣或等价，得事先定界值、看整个区间。")
     L_.append("- 切片是探索性的，按切片数校正，还要在新语料上复现。")
     L_.append("- 只信轮内配对，不和旧轮次的绝对数字比。")
@@ -2071,17 +2355,24 @@ def report(items, manifest, model, judges, adjudicator, tcache, jcache, acache, 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "report.md").write_text("\n".join(L_) + "\n", encoding="utf-8")
     (out_dir / "report.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    mr = ["# 待人工处理的词表钉写候选", "",
-          "共识判了 major、error_type 是 product_term 或 fabrication、而译文里出现了本句词表的目标词。",
-          "逐条看：是钉写伪影（照用了中控指定的写法）还是真错（原文不指那个商品还照套、凭空加了功效）。",
-          "结论写进同目录的 overrides.json，例如：",
+    mr = ["# 待人工处理的词表候选", "",
+          "本句命中了词表、共识判了 major、error_type 是 product_term 或 fabrication 的条目，分两类：",
+          "", "- **钉写候选**：译文里出现了词表的目标词。逐条看：是钉写伪影（照用了中控指定的写法）还是"
+          "真错（原文不指那个商品还照套、凭空加了功效）。",
+          "- **缺提示候选**：译文里一个目标词都没有。生产里的 Claude 不收词表提示，评委又被告知词表对是"
+          "中控指定的写法。逐条看：只是没用中控指定的写法、自己的译法没把意思弄错（写 major=false），"
+          "还是真的译错了（major=true，也要写理由）。", "",
+          "结论写进同目录的 overrides.json，每条都要写理由，例如：",
           "", '    [{"id": "...", "engine": "claude", "major": false, "reason": "照用词表写法，原文指的就是这款商品"}]',
           ""]
-    for r in review:
-        mr += ["## {} · {}".format(r["id"], LABEL[r["engine"]]), "", "- 原文：{}".format(r["text"]),
-               "- 译文：{}".format(r["translation"]),
-               "- 词表：{}".format("；".join("{} → {}".format(a, b) for a, b in r["glossary"])),
-               "- error_type：{}".format(r["error_type"]), ""]
+    for kind, title in (("pinned", "钉写候选"), ("missing_term", "缺提示候选")):
+        for r in review:
+            if r["kind"] != kind:
+                continue
+            mr += ["## {} · {} · {}".format(title, r["id"], LABEL[r["engine"]]), "",
+                   "- 原文：{}".format(r["text"]), "- 译文：{}".format(r["translation"]),
+                   "- 词表：{}".format("；".join("{} → {}".format(a, b) for a, b in r["glossary"])),
+                   "- error_type：{}".format(r["error_type"]), ""]
     (out_dir / "manual-review.md").write_text("\n".join(mr) + "\n", encoding="utf-8")
     return out_dir / "report.md"
 
@@ -2223,6 +2514,18 @@ def pool_groups(pool):
     return dict(sorted(Counter(group_of(p["streamer"], sizes) for p in pool).items()))
 
 
+# 事先登记（样本冻结时写进 manifest.json，在第一个付费请求之前）
+ANALYSIS_PLAN = {
+    "primary": "两个终点（major；tier 不是 good），共识标签，精确 McNemar，Holm 校正，"
+               "精确条件区间 97.5%",
+    "glossary_split": "按本句是否命中词表分两组（1.8B 收到了词表提示、生产里的 Claude 没有），"
+                      "两组 × 两个终点 4 个检验 Holm 校正、区间 98.75%；没命中词表那组是干净的模型比较",
+    "random_weighted": "随机部分按候选池各主播组占比加权，分层 bootstrap 95%",
+    "spot_check": "跑完后 60 条人工盲评（按共识分三层各 20）；「评委判 Claude 更好」那层人工确认得明显少，"
+                  "就说明评委偏向 Claude",
+    "provisional_until": "跑完、两位评委各自方向和共识一致、人工抽检做完、词表候选人工处理完",
+}
+
 _PROBE_ITEM = {"text": "<原文>", "prev": "<上一句>", "next": "<下一句>",
                "entries": [[["<原文>"], "<词表译法>"]]}
 
@@ -2246,7 +2549,8 @@ def manifest_of(args, items, sample_path, pool=()):
     manifest = {"n": args.n, "seed": args.seed, "model": args.model, "judges": args.judges,
                 "adjudicator": args.adjudicator, "judge_effort": JUDGE_EFFORT,
                 "pool_groups": pool_groups(pool),
-                "include_new_streamers": list(getattr(args, "include_new_streamer", []) or [])}
+                "include_new_streamers": list(getattr(args, "include_new_streamer", []) or []),
+                "analysis_plan": ANALYSIS_PLAN}
     manifest.update(run_shape(args.model))
     manifest.update({
         "sample_size": len(items), "sample_sha256": sha256_file(sample_path),
