@@ -1045,7 +1045,7 @@ def test_the_rejected_key_banner_stops_promising_retries_once_the_session_ends(
 
 def test_a_rejected_key_switches_to_a_local_model_when_there_is_one(
         monkeypatch, tmp_path, settings_file):
-    engine = ScriptedEngine("claude", model="claude-haiku-4-5-20251001",
+    engine = ScriptedEngine("claude", model="claude-haiku-5-5",
                             script=[("http", 401, None, 120)])
     local = Fast("hymt2", model=HYMT2_SMALL, out="本地译文")
     monkeypatch.setattr("app.pipeline.create_translator", lambda name: local)
@@ -1066,6 +1066,98 @@ def test_a_rejected_key_switches_to_a_local_model_when_there_is_one(
     assert not p.server.of("incident")
     assert [(r["engine"], r["status"]) for r in rows(p.audit, "translation_engine_error")] \
         == [("claude", 401)]
+
+
+class RefusingEngine:
+    """拒答的 Claude 替身：HTTP 200 + stop_reason "refusal"，和真实引擎一样记次数和类别，
+    不动 last_error / fail_streak / 冷却。"""
+
+    def __init__(self, category="general_harms", answers=()):
+        self.name = "claude"
+        self.model = "claude-haiku-5-5"
+        self.category = category
+        self.answers = list(answers)
+        self.refusals = 0
+        self.last_refusal = None
+        self.last_error = None
+        self.fail_streak = 0
+        self.cooldown_until = 0.0
+        self.closed = False
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        if self.answers:
+            return self.answers.pop(0)
+        self.refusals += 1
+        self.last_refusal = self.category
+        return None
+
+    async def close(self):
+        self.closed = True
+
+
+def test_a_refusal_shows_the_original_and_never_switches_engines(
+        monkeypatch, tmp_path, settings_file, capsys):
+    """拒答是这一句的事：字幕显示原文，不换引擎、不挂横幅、不冷却；每次记审计，提示本场一次。"""
+    engine = RefusingEngine()
+    built = []
+    monkeypatch.setattr("app.pipeline.create_translator",
+                        lambda name: built.append(name) or Fast("hymt2"))
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, CachedTranslator(engine), engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1))
+        await p._translate_and_update(job(2))
+        return p
+
+    p = run(scenario())
+    assert getattr(p.translator, "inner", None) is engine and not engine.closed
+    assert built == []
+    assert [m["translated"] for m in p.server.of("caption_update")] == [None, None]
+    assert not p.server.of("incident")
+    (notice,) = p.server.of("notice")
+    assert "refusal" in plain(notice["text"]) and "原文" in notice["text"]
+    assert "违禁词报警不受影响" in notice["text"]
+    assert notice["text"].en.startswith("Claude didn’t translate one caption")
+    assert [(r["seq"], r["engine"], r["model"], r["category"])
+            for r in rows(p.audit, "translation_refusal")] == [
+        (1, "claude", "claude-haiku-5-5", "general_harms"),
+        (2, "claude", "claude-haiku-5-5", "general_harms")]
+    assert [r["ok"] for r in rows(p.audit, "translation")] == [False, False]
+    assert not rows(p.audit, "translation_engine_error")
+    out = capsys.readouterr().out
+    assert out.count("stop_reason=refusal") == 2
+
+
+def test_a_refusal_without_a_category_says_none_was_given(monkeypatch, tmp_path, settings_file,
+                                                          capsys):
+    engine = RefusingEngine(category=None)
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, engine, engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1))
+        return p
+
+    p = run(scenario())
+    assert [r["category"] for r in rows(p.audit, "translation_refusal")] == [None]
+    assert "类别 未给出" in capsys.readouterr().out
+
+
+def test_a_failure_that_is_not_a_refusal_is_not_logged_as_one(monkeypatch, tmp_path,
+                                                              settings_file):
+    engine = ScriptedEngine("claude", model="claude-haiku-5-5",
+                            script=[("http", 500, None, 0)])
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, engine, engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1))
+        return p
+
+    p = run(scenario())
+    assert not rows(p.audit, "translation_refusal")
+    assert not p.server.of("notice")
 
 
 def test_picking_an_engine_clears_the_engine_banner(monkeypatch, tmp_path, settings_file):
@@ -1150,7 +1242,7 @@ def test_selfcheck_asks_the_paid_api_once(monkeypatch, settings_file, cls, env, 
     assert c["level"] == level
     assert len(session.calls) == 1 and "/models" in session.calls[0]
     if status == 404 and cls is ClaudeTranslator:
-        assert tr.MODEL in c["detail"]
+        assert tr.model in c["detail"]
     elif status != 200:
         assert "HTTP {}".format(status) in c["detail"]
     plain(c["detail"] + c["fix"])

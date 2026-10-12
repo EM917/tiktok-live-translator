@@ -3850,8 +3850,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
 
     @staticmethod
     def _model_of(engine):
-        """引擎实际用的模型名：本地引擎和 OpenAI 在实例的 model 上，Claude 在类的
-        MODEL 上；都没有（DeepL、Google）就用引擎名。"""
+        """引擎实际用的模型名：本地引擎、OpenAI、Claude 都在实例的 model 上（Claude 类上
+        还留着一个 MODEL 兜底）；都没有（DeepL、Google）就用引擎名。"""
         inner = getattr(engine, "inner", engine)
         return (getattr(inner, "model", None) or getattr(inner, "MODEL", None)
                 or getattr(engine, "name", None))
@@ -4107,6 +4107,33 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self._provision_task = self._spawn(self._provision_then_check())
         return None
 
+    async def _note_refusal(self, tr, seq):
+        """引擎拒绝翻译这一句（Claude：HTTP 200，stop_reason 为 refusal）。
+
+        每一次都记审计（translation 记录里只有 ok=false，没有这一条就分不清「接口出错」和
+        「模型拒答」）并打一行终端；界面上本场只说一次——直播话术重复率高，同一句可能反复
+        拒答，每次都弹提示只会教中控无视提示。拒答类别照抄接口给的 stop_details.category，
+        可能为空，不替它解释原因。"""
+        from .translator import engine_label
+
+        name = getattr(tr, "name", None)
+        category = getattr(tr, "last_refusal", None)
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.translation_refusal(seq, name, self._model_of(tr), category)
+        print("[警告] {} 没有翻译第 {} 条字幕（stop_reason=refusal，类别 {}），这一条显示原文".format(
+            engine_label(name), seq, category or "未给出"))
+        mark = (tr, audit)
+        if getattr(self, "_refusal_mark", None) == mark:
+            return
+        self._refusal_mark = mark
+        await self.server.broadcast({"type": "notice", "text": L(
+            "{} 没有翻译其中一条字幕（接口返回 refusal），那一条显示原文，违禁词报警不受影响。"
+            "本场之后再遇到只记进审计日志，不再提示",
+            "{} didn’t translate one caption (the API returned a refusal), so that caption shows "
+            "the original text. Banned-term alerts aren’t affected. Later refusals this session go "
+            "to the audit log without another notice.").format(engine_label(name))})
+
     async def _note_engine_ok(self, tr):
         """一条译文成功回来：之前报过的引擎问题解除（横幅撤掉），再出问题会重新说。
         缓存命中不算——引擎自己最近一次 HTTP 回应仍是失败（fail_streak>0）时不解除。"""
@@ -4303,6 +4330,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # 商品名/自造词（Quema Lonja、moringa）通用模型必错，而且换多大的
         # 模型都不会自动变对——这类错误只能靠词表钉死。
         text, hint = self._for_translation(job["text"])
+        refused_before = getattr(tr, "refusals", 0)
         try:
             translated = await tr.translate(
                 text, job["target"], source=job["lang"] or "auto",
@@ -4318,6 +4346,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         fallback = None
         if translated is None and getattr(tr, "quota_exhausted", False):
             fallback = await self._quota_fallback(tr)
+        elif translated is None and getattr(tr, "refusals", 0) > refused_before:
+            # 拒答是这一句的事，不是引擎坏了：不换引擎、不挂横幅、不冷却，这一句显示原文
+            await self._note_refusal(tr, job["id"])
         elif translated is None:
             # 说得清的失败（429 暂停、密钥被拒、Ollama 连续报错）告诉中控并记审计；
             # 远程引擎拒绝密钥、本机又有本地模型时，本场改用本地模型
