@@ -177,11 +177,15 @@ def render(rows, args, per_section):
 
 
 def candidate_rules(term, section):
-    """--term：只含这一条候选词条的 Rules（入表前的风险报告）。"""
+    """--term：只含这一条候选词条的 Rules（入表前的风险报告）。`--as insult/strong:pending` 和
+    `insult/strong` 是同一段：候选还没入表，谈不上待确认还是已确认；统一成不带 :pending 的写法，
+    报告标题里「命中的不同句子」才查得到。"""
     file, _, sec = section.partition("/")
+    sec = cg.base_sec(sec)
     if file not in cg.SECTIONS or sec not in cg.SECTIONS[file]:
         raise SystemExit("[错误] --as 要写成 文件/段，例如 insult/strong；认得的段：{}".format(
-            "、".join("%s/%s" % (f, s) for f, secs in cg.SECTIONS.items() for s in secs)))
+            "、".join("%s/%s" % (f, s) for f, secs in cg.SECTIONS.items() for s in secs
+                     if not cg.is_pending(s))))
     tmp = tempfile.TemporaryDirectory()
     (Path(tmp.name) / (file + ".txt")).write_text("[%s]\n%s\n" % (sec, term), encoding="utf-8")
     rules = cg.load_rules(tmp.name, Path(tmp.name) / "no-local")

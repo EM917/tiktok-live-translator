@@ -207,6 +207,42 @@ def test_pending_sections_are_labelled_pending_in_the_text_report(logs, no_live,
     assert "[red档，待确认]" in text and "[red档，已打开]" in text
 
 
+def header_counts(text):
+    """报告里每个分段标题的 (文件/段, 档位+状态, 命中的不同句子数)。"""
+    out = {}
+    for line in text.splitlines():
+        if line.startswith("== "):
+            name, _, rest = line[3:].partition("  [")
+            out[name] = (rest.split("]")[0], int(rest.rsplit("命中的不同句子", 1)[1]))
+    return out
+
+
+def test_the_header_sentence_count_is_right_for_a_pending_group(logs, no_live, capsys, tmp_path):   # #66
+    d = tmp_path / "defaults"
+    d.mkdir()
+    (d / "insult.txt").write_text("[strong:pending]\npendeja\n", encoding="utf-8")
+    (d / "accuse.txt").write_text("[call:pending]\nno compren\n[assert]\nestafa\n", encoding="utf-8")
+    G.main(["--logs", str(logs), "--defaults", str(d), "--all"])
+    got = header_counts(capsys.readouterr().out)
+    assert got["insult/strong"] == ("red档，待确认", 1)           # 同一个句子在 2 场里各出现过，只算 1 个
+    assert got["accuse/call"] == ("red档，待确认", 1)
+    assert got["accuse/assert"] == ("red档，已打开", 0)
+
+
+@pytest.mark.parametrize("as_section", ["accuse/call", "accuse/call:pending"])
+def test_term_mode_accepts_the_pending_spelling_of_a_section_and_counts_the_same(logs, no_live, capsys, as_section):   # #66
+    G.main(["--logs", str(logs), "--term", "no compren", "--as", as_section, "--all"])
+    text = capsys.readouterr().out
+    assert header_counts(text)["accuse/call"] == ("red档，候选（未入表）", 1), text
+    assert "1 句 / " in text or "    1 句" in text
+
+
+def test_term_mode_error_lists_only_the_plain_section_names(logs, no_live):                # #66
+    with pytest.raises(SystemExit) as exc:
+        G.main(["--logs", str(logs), "--term", "x", "--as", "nada/nada"])
+    assert "insult/strong" in str(exc.value.code) and ":pending" not in str(exc.value.code)
+
+
 def test_an_empty_corpus_is_an_error_not_a_clean_looking_report(no_live, capsys, tmp_path):   # #20
     empty = tmp_path / "empty-logs"
     empty.mkdir()
