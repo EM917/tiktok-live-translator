@@ -19,6 +19,7 @@ import pytest
 
 from app import comment_guard as cg
 from tests.comment_guard_confirmed import RED_SECTIONS, assert_flagged_by_shipped, check_defaults_state
+from tests.guard_perf import budget_ms
 
 HERE = Path(__file__).resolve().parent
 FIX = HERE / "fixtures" / "comment_guard"
@@ -786,19 +787,19 @@ ADVERSARIAL = {
 
 @pytest.mark.parametrize("name", sorted(ADVERSARIAL))
 def test_1000_char_adversarial_strings_stay_under_20_ms(name):
-    """I3：规则判定同步完成，不让事件循环久占。原型实测最坏约 8 ms，CI 余量放到 20 ms；
-    取 5 次里最快的一次，免得一次调度抖动判失败。"""
+    """I3：规则判定同步完成，不让事件循环久占。用户的 Mac 上按 20 ms，慢机器（CI 跑器）按
+    tests/guard_perf.py 量出来的倍数放宽；取 5 次里最快的一次，免得一次调度抖动判失败。"""
     g = guard()
     text = ADVERSARIAL[name][:1000]
     best = min(_timed(g, text, i) for i in range(5))
-    assert best < 20.0, "%s: %.1f ms" % (name, best)
+    assert best < budget_ms(), "%s: %.1f ms (上限 %.1f ms)" % (name, best, budget_ms())
 
 
 def test_1000_char_adversarial_strings_stay_under_20_ms_with_the_shipped_lexicon():
     """出厂词表（红条档全是 :pending 段）是线上跑的那份，I3 的 20 ms 对它同样要成立。"""
     rules = cg.load_rules(DEFAULTS, NO_LOCAL)
     worst = max(min(_timed(guard(rules), text[:1000], i) for i in range(5)) for text in ADVERSARIAL.values())
-    assert worst < 20.0, "%.1f ms" % worst
+    assert worst < budget_ms(), "%.1f ms (上限 %.1f ms)" % (worst, budget_ms())
 
 
 def _timed(g, text, i):

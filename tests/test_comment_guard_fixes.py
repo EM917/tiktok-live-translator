@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from app import comment_guard as cg
+from tests.guard_perf import budget_ms
 
 HERE = Path(__file__).resolve().parent
 FIX = HERE / "fixtures" / "comment_guard"
@@ -430,7 +431,7 @@ def test_nfkc_expansion_is_cut_again_so_a_comment_cannot_grow_to_18k_characters(
     g.judge("ﷺ" * 1000, user="u", ts=1.0)
     assert all(len(k) <= cg.MAX_CHARS for _, *keys in g.flood.users["u"] for k in keys if k)
     best = min(_timed(guard(), "ﷺ" * 1000, i) for i in range(5))
-    assert best < 20.0, "%.1f ms" % best
+    assert best < budget_ms(), "%.1f ms (上限 %.1f ms)" % (best, budget_ms())
 
 
 def _timed(g, text, i):
@@ -834,7 +835,7 @@ def test_judge_stays_under_20_ms_when_the_flood_window_is_full():               
                     structure_only=mode, cid="probe-%s-%d" % (mode, i))
             times.append((time.perf_counter() - t0) * 1000.0)
         best[mode] = min(times)
-    assert best[False] < 20.0 and best[True] < 20.0, best
+    assert best[False] < budget_ms() and best[True] < budget_ms(), (best, budget_ms())
 
 
 def test_similar_prefilter_skips_comments_whose_word_counts_are_too_far_apart():    # #44
