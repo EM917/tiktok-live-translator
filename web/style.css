@@ -1116,6 +1116,14 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cap.redoing .redo { opacity: 1; color: var(--label); }
 .redo:disabled { cursor: default; }
 
+/* 点「重译」没有开始或没成功时，显示在被点的那条字幕下面几秒（app.js showRedoNote）。
+   用 --warn-bg/--warn-fg：深浅色各有自己的低饱和度版本，不抢直播字幕的视线 */
+.redo-note {
+  margin-top: 6px; padding: 5px 9px; max-width: 100%;
+  font-size: var(--fs-footnote); line-height: 1.45;
+  color: var(--warn-fg); background: var(--warn-bg); border-radius: 6px;
+}
+
 /* ---------- 换主播：场次分隔 ---------- */
 /* 上一场（换过主播）的字幕：变淡，「重译」按钮彻底不可交互。用 CSS 的
    display:none（而不是只在换场那一刻切一次 JS 的 disabled/hidden）是因为

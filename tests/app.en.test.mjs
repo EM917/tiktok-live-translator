@@ -320,6 +320,49 @@ test("英文页：字幕卡片、重译按钮、翻译失败横幅", () => {
   assert.deepEqual(leftoverChinese(page), []);
 });
 
+test("英文页：点「重译」被拒或没成功，说明显示在被点的那条字幕旁边几秒，不走页脚", () => {
+  const page = runDesktop();
+  hello(page);
+  page.push({ type: "caption", id: 1, ts: T, original: "hola", translated: "hello", translate_state: "ok" });
+  page.push({ type: "caption", id: 2, ts: T, original: "que tal", translated: "how are you", translate_state: "ok" });
+  const [card1, card2] = page.el("history").querySelectorAll(".cap");
+  const notes = (card) => card.querySelectorAll(".redo-note").map((n) => n.textContent);
+  const footer = () => page.el("app-version").textContent;
+  const before = footer();
+  const sorry = "Couldn’t retranslate: Claude returned HTTP 500. The current translation is unchanged.";
+
+  page.push({ type: "retranslate_note", id: 1, text: sorry });
+  assert.deepEqual(notes(card1), [sorry]);
+  assert.deepEqual(notes(card2), []);                       // 只在被点的那一条
+  assert.equal(footer(), before);                           // 不再落在页脚那一行
+  assert.equal(card1.querySelector(".redo-note").getAttribute("role"), "status");
+
+  // 同一条再来一句：换掉，不叠加
+  page.push({ type: "retranslate_note", id: 1, text: "This caption is already being retranslated." });
+  assert.deepEqual(notes(card1), ["This caption is already being retranslated."]);
+  // 到点收起（也只收这一条自己的计时器）
+  page.fire(7000);
+  assert.deepEqual(notes(card1), []);
+
+  // 失败状态本身不收说明（服务端先发 failed 再发说明；顺序反过来也不该把说明吞掉）
+  page.push({ type: "retranslate_note", id: 2, text: sorry });
+  page.push({ type: "caption_update", id: 2, strong_state: "failed" });
+  assert.deepEqual(notes(card2), [sorry]);
+  // 又点了一次、或这次成了：上一次的说明不再适用
+  page.push({ type: "caption_update", id: 2, strong_state: "pending" });
+  assert.deepEqual(notes(card2), []);
+  page.push({ type: "retranslate_note", id: 2, text: sorry });
+  page.push({ type: "caption_update", id: 2, translated: "a better translation", strong: true, strong_state: "ok", quality: 2 });
+  assert.deepEqual(notes(card2), []);
+
+  // 那条字幕已经不在页面上了（清空了、被挤出去）：话退回页脚那一行，不能丢
+  page.push({ type: "retranslate_note", id: 99, text: "This caption has no saved original to retranslate." });
+  assert.match(footer(), /This caption has no saved original to retranslate\./);
+  page.push({ type: "retranslate_note", id: 1, text: "" });  // 空话不画
+  assert.deepEqual(notes(card1), []);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
 test("英文页：接口拒答的字幕有自己的角标，不算进连续翻译失败，也不顶出那句横幅", () => {
   const page = runDesktop();
   hello(page);
@@ -565,6 +608,8 @@ test("英文页：翻译引擎说明与密钥框、自检的读屏级别、复�
   }
   assert.equal(notes.auto, "Uses a local model: fully offline, unlimited, and captions never leave this computer.");
   assert.equal(notes.google, "Captions are sent to Google. Google caps how many requests one IP address can make.");
+  // 弹幕和重译也走 Claude：数据去哪了要在选引擎的地方说清
+  assert.equal(notes.claude, "Captions, viewer comments and retranslation requests are sent to Anthropic and billed by usage.");
   select.value = "claude";
   select.fire("change");
   assert.equal(key.placeholder, "Paste API key");

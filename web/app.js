@@ -850,6 +850,10 @@
       case "notice":
         if (msg.text) showVersionNote(msg.text, 6000);
         break;
+      // 点「重译」没有开始或没成功：话显示在被点的那条字幕旁边（不是页脚那一行）
+      case "retranslate_note":
+        showRedoNote(msg.id, msg.text);
+        break;
       case "config":
         if (msg.target_lang) targetSel.value = msg.target_lang;
         if (msg.source_lang && !sourceTouched) selectSourceLang(msg.source_lang);
@@ -1088,7 +1092,8 @@
     trans.className = "trans";
     card.appendChild(trans);
 
-    // 「重译」：用本机最强的模型重来一次。按条触发而不是开一个时段，
+    // 「重译」：用最强的模型重来一次（字幕引擎是 Claude 时是 Claude Sonnet 5.5，否则是本机最强的
+    // 本地模型）。按条触发而不是开一个时段，
     // 是因为值得动用强模型的是具体某句话，而那只有看着的人知道是哪一句。
     var redo = document.createElement("button");
     redo.className = "redo";
@@ -1130,6 +1135,41 @@
       liveOriginal.classList.toggle("hidden", !msg.translated);
       liveBarId = msg.id;
     }
+  }
+
+  // 点「重译」没有开始或没成功时，服务端发 retranslate_note：显示在被点的那条字幕旁边几秒。
+  // 以前这些话走 notice，落在页脚版本号那一行（6 秒、小字），中控点完像是什么都没发生。
+  // 文字由服务端给（中英两句已按界面语言换好，只写观察到的事实和能做的事，不猜原因）。
+  // 卡片已经不在页面上（清空了字幕、被挤出 300 条）时才退回页脚那一行：话不能丢。
+  var REDO_NOTE_MS = 7000;
+  var redoNoteTimers = {};
+
+  function clearRedoNote(card) {
+    var id = card.dataset.id;
+    if (redoNoteTimers[id]) {
+      clearTimeout(redoNoteTimers[id]);
+      delete redoNoteTimers[id];
+    }
+    var old = card.querySelector(".redo-note");
+    if (old) old.remove();
+  }
+
+  function showRedoNote(id, text) {
+    if (!text) return;
+    var card = cardsById[id];
+    if (!card) {
+      showVersionNote(text, 6000);
+      return;
+    }
+    clearRedoNote(card);
+    var note = document.createElement("div");
+    note.className = "redo-note";
+    note.setAttribute("role", "status");
+    note.textContent = text;
+    card.appendChild(note);
+    redoNoteTimers[id] = setTimeout(function () { clearRedoNote(card); }, REDO_NOTE_MS);
+    // 译文行下面多了一行：正在贴底看的人得跟着再贴一次
+    stickToBottom(false);
   }
 
   // 译文后补：原地更新那张卡片，不新增一条
@@ -1183,6 +1223,8 @@
     // 服务端不会再广播，页面就永远停在那里，好译文也没了。
     if (msg.strong_state) {
       var redoBtn = card.querySelector(".redo");
+      // 又点了一次、或者这次成了：上一次的说明不再适用
+      if (msg.strong_state === "pending" || msg.strong_state === "ok") clearRedoNote(card);
       card.classList.toggle("redoing", msg.strong_state === "pending");
       if (redoBtn) {
         redoBtn.disabled = msg.strong_state === "pending";
@@ -2716,7 +2758,9 @@
     deepl: L("字幕文本会发送给 DeepL。免费额度以此处显示的用量为准；额度周期与续用方式取决于你的 DeepL 账户方案。",
              "Captions are sent to DeepL. Free quota usage is shown here. Your DeepL plan sets the quota " +
              "period and renewal."),
-    claude: L("字幕文本会发送给 Anthropic，按用量计费。", "Captions are sent to Anthropic and billed by usage."),
+    // 观众弹幕和重译也走 Claude（2026-10-13）：数据去哪了不能含糊
+    claude: L("字幕文本、观众弹幕和重译的请求会发送给 Anthropic，按用量计费。",
+              "Captions, viewer comments and retranslation requests are sent to Anthropic and billed by usage."),
     openai: L("字幕文本会发送给该接口的提供方，按用量计费。",
               "Captions are sent to this API’s provider and billed by usage."),
     // 不写 rate limit 一类的词（CLAUDE.md 第八条的禁用词对全仓英文都查）
