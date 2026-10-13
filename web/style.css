@@ -1265,11 +1265,13 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cmt-head { padding-right: 26px; }              /* 给右上角的 ☆ 按钮留位置 */
 /* 标了的弹幕整行抻到列表边缘（列表自己有 16px 左右内边距），左边条贴着边 */
 .cmt-item.guard-alert, .cmt-item.guard-amber, .cmt-item.guard-marked, .cmt-item.guard-weak {
-  margin: 0 -16px; padding-left: 13px; padding-right: 16px;
+  margin: 0 -16px; padding-left: 13px; padding-right: 16px; border-left: 3px solid transparent;   /* 3 + 13 = 列表自己的 16px 内边距：文字不挪位 */
 }
-.cmt-item.guard-alert { border-left: 3px solid var(--red); background: var(--a-red-8); }
-.cmt-item.guard-amber { border-left: 3px solid var(--orange); background: var(--a-orange-8); }
-.cmt-item.guard-marked { box-shadow: inset 3px 0 0 var(--indigo); }   /* 与红 / 橙条并排时紧贴在它右边 */
+.cmt-item.guard-marked { border-left-color: var(--indigo); }
+.cmt-item.guard-alert { border-left-color: var(--red); background: var(--a-red-8); }       /* 要写在 marked 之后：红 / 橙盖过靛蓝 */
+.cmt-item.guard-amber { border-left-color: var(--orange); background: var(--a-orange-8); }
+/* 关注的人同时又是红 / 橙条：靛蓝条紧贴在红 / 橙条右边 */
+.cmt-item.guard-alert.guard-marked, .cmt-item.guard-amber.guard-marked { box-shadow: inset 3px 0 0 var(--indigo); }
 .guard-star { margin-right: 3px; color: var(--indigo); font-weight: 600; }
 .guard-pill {
   display: inline-block; max-width: 100%; margin-left: 6px; padding: 0 6px; border-radius: 4px;
