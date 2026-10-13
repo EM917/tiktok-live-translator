@@ -5,6 +5,7 @@
 viewer、selfcheck、disk）带着设置、路径、含 token 的链接。写成黑名单的话，
 以后谁加一种新消息，默认就是发给手机。
 """
+import json
 from contextlib import nullcontext
 
 import pytest
@@ -20,6 +21,8 @@ KNOWN_TYPES = (
     "alert", "comment", "comment_update", "comment_source", "stats", "incident",
     "health", "watchlist", "recent_rooms", "disk", "engine", "selfcheck", "viewer",
     "session_break",
+    # 弹幕留意（PR-3，用户决定 8）：标红、提示条、关注名单一律不发手机，三种新类型都不进白名单
+    "comment_guard", "guard_event", "guard_mark",
 )
 
 ALLOWED_TYPES = frozenset({
@@ -304,3 +307,65 @@ def test_scrub_text_truncates_and_leaves_plain_chinese_alone():
     assert viewer.scrub_text(plain) == plain
     assert viewer.scrub_text(None) == ""
     assert viewer.scrub_text(12) == "12"
+
+
+# ---- 弹幕留意（PR-3，用户决定 8）：标红、提示条、关注名单一律不发手机 ----------------------------------------
+
+GUARD_TYPES = ("comment_guard", "guard_event", "guard_mark")
+COMMENT_KEYS_ON_PHONE = {"type", "id", "user", "text", "ts", "translated", "state", "replay"}
+
+
+def test_the_three_guard_message_types_are_known_and_never_allowed():
+    for mtype in GUARD_TYPES:
+        assert mtype in KNOWN_TYPES and mtype not in ALLOWED_TYPES
+        assert mtype not in viewer.ALLOW and mtype in viewer.DENY and mtype in viewer.GUARD_TYPES
+        full = {"type": mtype, "id": "c1", "guard": {"lvl": "alert"}, "ev": {"id": "g1"}, "key": "100",
+                "entry": {"keys": ["100"]}}
+        assert viewer.filter_payload(full) is None
+
+
+def test_a_comment_with_guard_fields_reaches_the_phone_with_only_the_original_keys():
+    msg = {"type": "comment", "id": "c1", "user": "Ana", "text": "hola", "ts": 1.5, "translated": "你好",
+           "state": "ok", "replay": True,
+           # 守卫和账号字段：一个都不该到手机
+           "uid": "7234567890123456789", "uid_ok": True, "sec": "s:MS4wLjAB", "handle": "ana_demo",
+           "guard": {"lvl": "alert", "cats": ["threat"], "ev": "g1", "why": ["insult/threat:x"]},
+           "marked": True, "role": "mod", "mention": True, "uid_src": "id"}
+    out = viewer.filter_payload(msg)
+    assert set(out) == COMMENT_KEYS_ON_PHONE
+    assert out["text"] == "hola" and out["translated"] == "你好"
+    for gone in ("uid", "uid_ok", "sec", "handle", "guard", "marked", "role", "mention", "uid_src"):
+        assert gone not in out
+    assert not [k for k in viewer.ALLOW["comment"] if "guard" in k or k.startswith("uid")]
+
+
+def test_the_phones_replay_snapshot_has_no_guard_data_even_when_the_cache_holds_it():
+    from types import SimpleNamespace
+
+    server = SimpleNamespace(
+        config={"status": {"state": "live"}, "comment_backend": "connected",
+                "guard_state": {"enabled": True}, "guard_events": {"g1": {"id": "g1"}},
+                "guard_marked": {"100": {"keys": ["100"]}}},
+        alerts=[], history=[],
+        comments=[{"type": "comment", "id": "c1", "user": "Ana", "text": "hola", "ts": 1.0,
+                   "translated": None, "state": "pending", "uid": "100", "uid_ok": True,
+                   "guard": {"lvl": "alert"}}])
+    out = viewer.replay_snapshot(server)
+    comments = [m for m in out if m["type"] == "comment"]
+    assert len(comments) == 1 and set(comments[0]) == COMMENT_KEYS_ON_PHONE
+    blob = json.dumps(out)
+    for needle in ("guard", "uid", "marked", "7234"):
+        assert needle not in blob, needle
+
+
+def test_fanout_does_not_queue_guard_messages_for_phones():
+    from types import SimpleNamespace
+
+    hub = viewer.ViewerHub.__new__(viewer.ViewerHub)
+    queue = __import__("asyncio").Queue()
+    hub._viewers = [SimpleNamespace(queue=queue)]
+    for mtype in GUARD_TYPES:
+        hub.fanout({"type": mtype, "id": "c1", "guard": {"lvl": "alert"}, "ev": {"id": "g1"}, "key": "1"})
+    assert queue.qsize() == 0
+    hub.fanout({"type": "comment", "id": "c1", "user": "a", "text": "hola", "guard": {"lvl": "alert"}})
+    assert queue.qsize() == 1 and "guard" not in queue.get_nowait()

@@ -327,6 +327,79 @@ def test_dedupe_by_id_and_content(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 2b. 弹幕留意（PR-3）：账号字段和守卫判定只做透传
+# ---------------------------------------------------------------------------
+
+OLD_KEYS = {"type", "id", "user", "text", "ts", "translated", "state"}
+BIG_UID = "7234567890123456789"          # 19 位：超过 JS 的 2^53，必须原样是字符串
+GOOD_GUARD = {"lvl": "alert", "amb": None, "cats": ["threat"], "sub": "threat", "tier": "red",
+              "src": "rule", "rv": None, "ev": "g1", "why": ["insult/threat:te voy a matar"]}
+
+
+def shown(monkeypatch, tmp_path, items):
+    ct, messages = make_translator(monkeypatch, tmp_path, None)
+
+    async def scenario():
+        await ct.accept({"type": "viewer_comments", "items": items})
+
+    run(scenario())
+    return [m for m in messages if m.get("type") == "comment"]
+
+
+def test_plain_comments_keep_exactly_the_old_keys(tmp_path, monkeypatch):
+    out = shown(monkeypatch, tmp_path, [{"id": "c1", "user": "a", "text": "hola mundo"}])
+    assert set(out[0]) == OLD_KEYS                       # 没有这些键就一个都不加，老断言照旧成立
+
+
+def test_account_fields_and_the_guard_verdict_are_passed_through(tmp_path, monkeypatch):
+    out = shown(monkeypatch, tmp_path, [{
+        "id": "c1", "user": "a", "text": "hola mundo", "uid": BIG_UID, "uid_ok": True, "sec": "s:MS4wLjAB",
+        "handle": "ana_demo", "guard": dict(GOOD_GUARD, junk="x"),
+        # 抓取端或守卫留在条目里、但不该进消息的：
+        "uid_src": "id", "role": "mod", "mention": True, "marked": True}])
+    msg = out[0]
+    assert set(msg) == OLD_KEYS | {"uid", "uid_ok", "sec", "handle", "guard"}
+    assert msg["uid"] == BIG_UID and isinstance(msg["uid"], str) and msg["uid_ok"] is True
+    assert msg["sec"] == "s:MS4wLjAB" and msg["handle"] == "ana_demo"
+    assert msg["guard"] == GOOD_GUARD                    # 只留 spec §6 列出的键（junk 被丢掉）
+    assert "marked" not in msg and "role" not in msg and "mention" not in msg and "uid_src" not in msg
+
+
+def test_overlong_or_mistyped_guard_fields_are_dropped(tmp_path, monkeypatch):
+    out = shown(monkeypatch, tmp_path, [{
+        "id": "c1", "user": "a", "text": "hola", "uid": "9" * 97, "uid_ok": "yes", "sec": "s" * 81,
+        "handle": "h" * 65, "guard": {"lvl": "danger"}}])
+    assert set(out[0]) == OLD_KEYS                       # 超长、类型不对、lvl 不认识：全部丢掉
+    out = shown(monkeypatch, tmp_path, [{"id": "c2", "user": "a", "text": "hola dos", "uid": 12345,
+                                         "sec": ["s:x"], "handle": {"x": 1}, "guard": "alert"}])
+    assert set(out[0]) == OLD_KEYS
+    ok = shown(monkeypatch, tmp_path, [{"id": "c3", "user": "a", "text": "hola tres", "uid": "9" * 96,
+                                        "sec": "s" * 80, "handle": "h" * 64}])
+    assert len(ok[0]["uid"]) == 96 and len(ok[0]["sec"]) == 80 and len(ok[0]["handle"]) == 64
+
+
+def test_guard_keys_are_cleaned_one_by_one(tmp_path, monkeypatch):
+    dirty = {"lvl": "amber", "amb": "x" * 25, "cats": ["ok", 5, "y" * 25] + ["z"] * 10, "sub": 7,
+             "tier": "bogus", "src": "model", "rv": "agree", "ev": "g2",
+             "why": ["a"] * 12, "evidence": "e" * 301}
+    g = shown(monkeypatch, tmp_path, [{"id": "c1", "user": "a", "text": "hola", "guard": dirty}])[0]["guard"]
+    assert g["lvl"] == "amber" and g["amb"] is None and g["sub"] is None and g["tier"] is None
+    assert "src" not in g and g["rv"] == "agree" and g["ev"] == "g2" and g["evidence"] is None
+    assert g["cats"] == ["ok"] + ["z"] * 5 and g["why"] == ["a"] * 8      # 列表最多 6 / 8 项，坏项丢掉
+
+
+def test_a_nested_guard_is_a_snapshot_not_the_callers_dict(tmp_path, monkeypatch):
+    item = {"id": "c1", "user": "a", "text": "hola", "guard": GOOD_GUARD}
+    msg = shown(monkeypatch, tmp_path, [item])[0]
+    assert msg["guard"] is not GOOD_GUARD and msg["guard"]["cats"] is not GOOD_GUARD["cats"]
+
+
+def test_comment_without_a_text_or_id_is_still_dropped_with_guard_fields(tmp_path, monkeypatch):
+    assert shown(monkeypatch, tmp_path, [{"id": "c1", "user": "a", "text": "   ", "uid": BIG_UID}]) == []
+    assert shown(monkeypatch, tmp_path, [{"user": "a", "text": "hola", "uid": BIG_UID}]) == []
+
+
+# ---------------------------------------------------------------------------
 # 3. server 侧评论历史留存与回放合并
 # ---------------------------------------------------------------------------
 
