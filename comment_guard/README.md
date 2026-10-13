@@ -88,7 +88,8 @@ comment_guard/
 
 1. 先跑碰撞计数，看每条词条在主播口播里撞了多少句：
    `nice -n 19 python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs --section insult/threat`
-   （纯 CPU、只读；**直播转写进行中会拒绝运行**）。
+   （纯 CPU、只读；**直播转写进行中会拒绝运行**；语料为空会报错退出，不会打一份看着干净的空报告。
+   `--logs` 不写时，仓库自己的 `logs/` 不存在就退到 `~/tiktok-live-translator/logs`。）
 2. 把确认过的词条从 `defaults/*.txt` 里的 `[段名:pending]` 挪到**同一个文件里**不带 `:pending` 的同名 `[段名]`
    （没有就新建一段）。整段确认就把段名的 `:pending` 去掉。
 3. **同一个提交里**改 `tests/test_comment_guard_rules.py`：

@@ -45,7 +45,9 @@ def forbid_work(monkeypatch):
 
     monkeypatch.setattr(G.provenance, "corpus", boom)
     monkeypatch.setattr(G, "build_rules", boom)
+    monkeypatch.setattr(G, "candidate_rules", boom)
     monkeypatch.setattr(G, "corpus_sentences", boom)
+    monkeypatch.setattr(G, "collide", boom)
 
 
 @pytest.mark.parametrize("pattern", ["tiktokcdn", "main.py --browser"])
@@ -61,18 +63,32 @@ def test_refuses_to_run_while_the_live_transcription_is_going(monkeypatch, patte
     assert capsys.readouterr().out == ""                 # 一个字都没输出过报告
 
 
+@pytest.mark.parametrize("pattern", ["tiktokcdn", "main.py --browser"])
+def test_the_refusal_also_covers_term_mode_and_writes_no_json(monkeypatch, pattern, capsys, tmp_path):   # #64
+    stub_pgrep(monkeypatch, {pattern: 0})
+    forbid_work(monkeypatch)
+    out = tmp_path / "out.json"
+    with pytest.raises(SystemExit) as exc:
+        G.main(["--logs", "/nonexistent", "--term", "no compren", "--as", "accuse/call", "--json", str(out)])
+    assert exc.value.code not in (0, None) and "直播转写仍在进行" in str(exc.value.code)
+    assert capsys.readouterr().out == "" and not out.exists()
+
+
 def test_the_gate_checks_both_live_process_patterns(monkeypatch, tmp_path):
     calls = stub_pgrep(monkeypatch, {})
     assert G.live_running() is None
     assert [c[2] for c in calls] == ["tiktokcdn", "main.py --browser"]
 
 
-def test_without_pgrep_the_gate_cannot_tell_and_lets_it_run(monkeypatch):
+def test_without_pgrep_the_gate_cannot_tell_but_says_so_on_stderr(monkeypatch, capsys):   # #64
     def no_pgrep(argv, **kwargs):
         raise FileNotFoundError("pgrep")
 
     monkeypatch.setattr(G.subprocess, "run", no_pgrep)
-    assert G.live_running() is None
+    assert G.live_running() is None                       # 行为不变：查不了就当没有
+    err = capsys.readouterr()
+    assert "查不了直播是否在进行" in err.err and err.out == ""
+    assert err.err.count("\n") == 1                      # 就一行
 
 
 def test_gate_is_the_first_thing_main_does(monkeypatch):
@@ -169,6 +185,69 @@ def test_term_mode_audits_one_candidate_before_it_goes_into_the_list(logs, no_li
     assert "accuse/call" in text and "no compren" in text and "1 句" in text
     with pytest.raises(SystemExit):
         G.main(["--logs", str(logs), "--term", "x", "--as", "nada/nada"])
+
+
+def test_term_mode_labels_the_candidate_as_not_in_the_list_yet(logs, no_live, capsys, tmp_path):   # #66
+    out = tmp_path / "out.json"
+    G.main(["--logs", str(logs), "--term", "no compren", "--as", "accuse/call", "--all", "--json", str(out)])
+    text = capsys.readouterr().out
+    assert "候选（未入表）" in text and "已打开" not in text
+    rows = json.loads(out.read_text(encoding="utf-8"))["entries"]
+    assert [r["status"] for r in rows] == ["candidate"]
+
+
+def test_pending_sections_are_labelled_pending_in_the_text_report(logs, no_live, capsys, tmp_path):   # #66
+    d = tmp_path / "defaults"
+    d.mkdir()
+    (d / "accuse.txt").write_text("[call:pending]\nno compren\n[assert]\nestafa\n", encoding="utf-8")
+    G.main(["--logs", str(logs), "--defaults", str(d), "--all"])
+    text = capsys.readouterr().out
+    assert "[red档，待确认]" in text and "[red档，已打开]" in text
+
+
+def test_an_empty_corpus_is_an_error_not_a_clean_looking_report(no_live, capsys, tmp_path):   # #20
+    empty = tmp_path / "empty-logs"
+    empty.mkdir()
+    for argv in (["--logs", str(empty)], ["--logs", str(tmp_path / "missing")],
+                 ["--logs", str(empty), "--term", "no compren", "--as", "accuse/call"]):
+        with pytest.raises(SystemExit) as exc:
+            G.main(argv)
+        assert exc.value.code not in (0, None) and "语料为空" in str(exc.value.code), argv
+        assert capsys.readouterr().out == "", "一份空报告都不许打印"
+
+
+def test_sessions_without_any_segment_text_are_also_an_empty_corpus(no_live, tmp_path):   # #20
+    d = tmp_path / "logs"
+    d.mkdir()
+    write_session(d, "session-1.jsonl", "https://www.tiktok.com/@luna_demo/live", [])
+    with pytest.raises(SystemExit) as exc:
+        G.main(["--logs", str(d)])
+    assert "语料为空" in str(exc.value.code)
+
+
+def test_default_logs_falls_back_to_the_home_checkout_when_the_repo_has_none(monkeypatch, tmp_path):   # #20
+    monkeypatch.setattr(G.provenance, "LOG_DIR", tmp_path / "no-such-logs")
+    monkeypatch.setattr(G.Path, "home", classmethod(lambda cls: tmp_path))
+    assert G.default_logs() == tmp_path / "tiktok-live-translator" / "logs"
+    real = tmp_path / "logs"
+    real.mkdir()
+    monkeypatch.setattr(G.provenance, "LOG_DIR", real)
+    assert G.default_logs() is None                       # 仓库自己的 logs/ 在：走 provenance 的默认
+
+
+def test_main_uses_the_fallback_logs_dir_when_none_is_given(no_live, monkeypatch, logs, tmp_path, capsys):   # #20
+    home_logs = tmp_path / "home" / "tiktok-live-translator" / "logs"
+    home_logs.parent.mkdir(parents=True)
+    logs.rename(home_logs)
+    monkeypatch.setattr(G.provenance, "LOG_DIR", tmp_path / "no-such-logs")
+    monkeypatch.setattr(G.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    G.main(["--defaults", str(FIX)])
+    assert "2 场" in capsys.readouterr().out
+
+
+def test_readme_collision_command_names_the_logs_directory():                        # #20
+    text = (HERE.parent / "comment_guard" / "README.md").read_text(encoding="utf-8")
+    assert "tools/guard_collision.py --logs ~/tiktok-live-translator/logs" in text
 
 
 def test_the_tool_imports_no_network_or_model_code():

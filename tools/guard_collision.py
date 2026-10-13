@@ -10,11 +10,14 @@
 不碰模型、不联网、不写词表。**直播转写进行中拒绝运行**（CLAUDE.md 第三条）：开头先查
 `pgrep -f`，命中就退出。跑的时候用 `nice -n 19`。
 
-用法：
+用法（agent 在 worktree 里跑时，仓库自己的 logs/ 是空的，语料在 ~/tiktok-live-translator/logs；
+`--logs` 不写时，仓库的 logs/ 不存在就自动退到那里）：
     nice -n 19 python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs
-    python3 tools/guard_collision.py --section insult/threat --section accuse/call
-    python3 tools/guard_collision.py --term "te voy a matar" --as insult/threat   # 入表前的风险报告
+    python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs --section insult/threat
+    python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs \\
+        --term "te voy a matar" --as insult/threat      # 入表前的风险报告，状态写「候选（未入表）」
     python3 tools/guard_collision.py --json out.json        # 机器可读，不进仓库
+语料为空（0 场或 0 段）时报错退出，不会打一份看着很干净的空报告。
 
 红条档的约定（comment_guard/README.md）：没确认的词条写在 `[段名:pending]` 里（命中只出琥珀），
 确认后挪到不带 `:pending` 的同名段。本工具两种都算，报告里分别标「已打开」和「待确认」。
@@ -47,15 +50,26 @@ MIN_SENTENCE = 4
 
 
 def live_running():
-    """直播转写还在跑：返回命中的进程特征，没有返回 None。没有 pgrep（Windows）时查不了，当没有。"""
+    """直播转写还在跑：返回命中的进程特征，没有返回 None。没有 pgrep（Windows）时查不了：行为不变
+    （当没有），但往 stderr 打一行警告，让人知道这道闸这次没起作用。"""
     for pat in LIVE_PATTERNS:
         try:
             hit = subprocess.run(["pgrep", "-f", pat], capture_output=True).returncode == 0
         except OSError:
+            print("[警告] 查不了直播是否在进行（pgrep 不可用）：请自己确认没有直播转写在跑再继续",
+                  file=sys.stderr)
             return None
         if hit:
             return pat
     return None
+
+
+def default_logs():
+    """没传 --logs 时的语料目录：仓库自己的 logs/ 在就用它（返回 None 让 provenance 走默认），不在
+    （agent 的 worktree 里就是这样）就退到 ~/tiktok-live-translator/logs。"""
+    if provenance.LOG_DIR.is_dir():
+        return None
+    return Path.home() / "tiktok-live-translator" / "logs"
 
 
 def build_rules(defaults_dir, local_dir):
@@ -176,7 +190,8 @@ def candidate_rules(term, section):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="弹幕留意词表在主播口播里的碰撞计数（只读，纯 CPU）")
-    ap.add_argument("--logs", default=None, help="语料目录（默认 logs/）")
+    ap.add_argument("--logs", default=None,
+                    help="语料目录（默认仓库的 logs/；它不存在就退到 ~/tiktok-live-translator/logs）")
     ap.add_argument("--defaults", default=str(DEFAULTS), help="词表目录（默认 comment_guard/defaults）")
     ap.add_argument("--local", default=None,
                     help="本机叠加目录；默认不叠加（报告只看入库的词表，可复现）")
@@ -205,7 +220,12 @@ def main(argv=None):
         status = "candidate"
     else:
         rules = build_rules(args.defaults, local)
-    sents, segments, sessions = corpus_sentences(args.logs)
+    logs = Path(args.logs).expanduser() if args.logs else default_logs()
+    sents, segments, sessions = corpus_sentences(logs)
+    if not sessions or not segments:
+        raise SystemExit("语料为空（{} 场 / {} 段）：{} 里没有真实直播会话，碰撞数全是 0 不代表词条安全。"
+                         "用 --logs 指向 ~/tiktok-live-translator/logs".format(
+                             sessions, segments, logs or provenance.LOG_DIR))
     print("语料：{} 场 / {} 段 / {} 个不同的口播句子（来源 provenance.corpus，非 glob；"
           "主播口播，不是弹幕）".format(sessions, segments, len(sents)))
     hits, per_section = collide(rules, sents, max(args.examples, 2))
