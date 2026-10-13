@@ -98,6 +98,70 @@ def parse_batch(output, n):
     return out
 
 
+# ---- 弹幕留意（PR-3）：账号字段和守卫判定只做透传 ----
+# 抓取端（comment_source）给的 uid / sec / handle，和守卫（pipeline_guard）加的 uid_ok / guard，
+# 校验类型和长度后原样带进 `comment` 消息。**不带 marked**：关注高亮由页面按 config.guard_marked 现算，
+# 缓存里不存，移出之后刷新才不会又亮回来。没有这些键就一个都不加，老消息逐字节不变。
+MAX_UID = 96
+MAX_SEC = 80
+MAX_HANDLE = 64
+GUARD_LVLS = ("alert", "amber", "note", "lead")
+GUARD_TIERS = ("red", "clue", "struct")
+GUARD_SRC = ("rule", "review")
+
+
+def _str_field(value, limit):
+    return value if isinstance(value, str) and 0 < len(value) <= limit else None
+
+
+def _str_list(value, item_limit, max_items):
+    if not isinstance(value, list):
+        return None
+    return [x for x in value if isinstance(x, str) and 0 < len(x) <= item_limit][:max_items]
+
+
+def clean_guard(guard):
+    """守卫判定只留 spec §6 列出的键，类型和长度不对的键整个丢掉；lvl 不对就整条丢掉。"""
+    if not isinstance(guard, dict) or guard.get("lvl") not in GUARD_LVLS:
+        return None
+    out = {"lvl": guard["lvl"]}
+    for key, limit in (("amb", 24), ("sub", 24), ("rv", 16), ("ev", 64), ("evidence", 300)):
+        if key in guard:
+            value = guard[key]
+            out[key] = value if value is None else _str_field(value, limit)
+    if "tier" in guard:
+        out["tier"] = guard["tier"] if guard["tier"] in GUARD_TIERS else None
+    if "src" in guard and guard["src"] in GUARD_SRC:
+        out["src"] = guard["src"]
+    cats = _str_list(guard.get("cats"), 24, 6)
+    if cats is not None:
+        out["cats"] = cats
+    why = _str_list(guard.get("why"), 120, 8)
+    if why is not None:
+        out["why"] = why
+    return out
+
+
+def account_fields(item):
+    """一条弹幕里要透传给 `comment` 消息的账号字段和守卫判定（没有的不出现）。"""
+    out = {}
+    uid = _str_field(item.get("uid"), MAX_UID)
+    if uid is not None:
+        out["uid"] = uid
+        if isinstance(item.get("uid_ok"), bool):
+            out["uid_ok"] = item["uid_ok"]
+    sec = _str_field(item.get("sec"), MAX_SEC)
+    if sec is not None:
+        out["sec"] = sec
+    handle = _str_field(item.get("handle"), MAX_HANDLE)
+    if handle is not None:
+        out["handle"] = handle
+    guard = clean_guard(item.get("guard"))
+    if guard is not None:
+        out["guard"] = guard
+    return out
+
+
 class CommentTranslator:
     """把观众弹幕攒批、排队、翻译，翻完广播出去。
 
@@ -187,7 +251,7 @@ class CommentTranslator:
                 continue
             self._remember(cid, key, now)
             accepted += 1
-            await self._enqueue(cid, user, text, now)
+            await self._enqueue(cid, user, text, now, account_fields(item))
         return accepted
 
     def _remember(self, cid, content_key, ts):
@@ -201,7 +265,7 @@ class CommentTranslator:
             self._seen_content = {k: v for k, v in self._seen_content.items()
                                   if v >= cutoff}
 
-    async def _enqueue(self, cid, user, text, ts):
+    async def _enqueue(self, cid, user, text, ts, extra=None):
         translator = self._translator()
         target = self._target()
         hint = None
@@ -214,9 +278,11 @@ class CommentTranslator:
             hint = original_only_hint(translator)
         else:
             state = "pending"
-        await self._broadcast({"type": "comment", "id": cid, "user": user,
-                               "text": text, "ts": ts, "translated": None,
-                               "state": state})
+        msg = {"type": "comment", "id": cid, "user": user, "text": text, "ts": ts,
+               "translated": None, "state": state}
+        if extra:
+            msg.update(extra)
+        await self._broadcast(msg)
         if hint:
             await self._hint_original_only(hint)
         if state != "pending":

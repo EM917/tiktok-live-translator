@@ -466,6 +466,8 @@ UI_FIELDS = {
 DATA_ONLY = frozenset({
     "update_available", "updating", "update_aborted", "glossary_migration", "comment",
     "comment_update", "stats", "watchlist", "alert_mode", "recent_rooms", "session_break",
+    # 弹幕留意（PR-3）：只带代码、数字和弹幕样例（数据），文案在前端按代码映射
+    "comment_guard", "guard_event", "guard_mark",
 })
 # check_outbound 记下的违例：(kind, type, path, text, test)。kind 是 "unregistered"（没登记的
 # 消息类型）或 "plain"（界面字段上的普通中文 str，即漏写了 L()）。tests/conftest.py 汇总。

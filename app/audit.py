@@ -516,6 +516,27 @@ class AuditLog:
             "raw": (raw or "")[:300],
         })
 
+    # ---- 弹幕留意（spec §8）：只记计数、模型调用和闸门转折 ----
+    # 弹幕原文、昵称、账号 id 一律不进审计（沿用 PR #58 以来「弹幕与审计隔离」的约定）；字段值只用代码
+    # 和数字，中英两种界面下逐字节相同。会话头/尾的 comment_guard 键由 Pipeline 并进 session_start /
+    # session_end，不在这里。写入只用守卫在 bind 时拿到的本场自己的 audit，晚到的复核结果换场后不写。
+
+    def comment_guard_review(self, backend, model, n, ms, outcome, refusal_category=None,
+                             backlog_sec=None, asr_inflight=None, waited_ms=None, in_tokens=None,
+                             out_tokens=None, cache_read_tokens=None):
+        """一次模型复核调用（PR-5 起写）。outcome：ok / timeout / http_4xx / http_5xx / refusal /
+        max_tokens / invalid / cancelled。每分钟至多 10 次由调用方控制。"""
+        self._write({"type": "comment_guard_review", "at": _now_ms(), "backend": backend,
+                     "model": model, "n": n, "ms": ms, "outcome": outcome,
+                     "refusal_category": refusal_category, "backlog_sec": backlog_sec,
+                     "asr_inflight": asr_inflight, "waited_ms": waited_ms, "in_tokens": in_tokens,
+                     "out_tokens": out_tokens, "cache_read_tokens": cache_read_tokens})
+
+    def comment_guard_gate(self, backend, state, reason=None, backlog_sec=None):
+        """复核的闸门或状态转折（PR-5 起写）。state：paused / resumed / tripped / reenabled / locked。"""
+        self._write({"type": "comment_guard_gate", "at": _now_ms(), "backend": backend,
+                     "state": state, "reason": reason, "backlog_sec": backlog_sec})
+
     # ---- 拉流这一侧的观察：断在哪、断了多久、程序有没有在跑、为什么结束 ----
     # 以前这些只打在终端上，而打包运行时 stdout 指向 /dev/null：事后对着一段没有字幕的
     # 时间，分不清是主播没说话、流断了、网断了，还是电脑睡着了。所有错误文本里的 URL

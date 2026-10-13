@@ -130,9 +130,15 @@ DERIVED_EN = {
     "alert_update": ("why", "why_en", WHY_LIMIT_EN),
 }
 
+# 弹幕留意（用户决定 8，2026-10-12）：标红、提示条、关注名单一律不发手机，只在中控电脑显示。
+# 默认拒绝本来就挡得住（ALLOW["comment"] 只有 7 个键，不认 uid / guard 这些字段；这三种类型不在 ALLOW 里），
+# 这里再显式写一遍：将来谁往 ALLOW 里加东西，这三种也不会跟着出去。手机入站只认 retranslate
+# （_handle_inbound），所以手机发 guard_mark 是发不进来的。
+GUARD_TYPES = frozenset({"comment_guard", "guard_event", "guard_mark"})
+
 # 显式拒绝。viewer 必须单独钉死：它的载荷里带着含 token 的 URL，
 # 一旦漏进 fanout，已经扫过码的人就能看到别人的钥匙。
-DENY = frozenset({"viewer", "config", "hello"})
+DENY = frozenset({"viewer", "config", "hello"}) | GUARD_TYPES
 
 # 弹幕来源状态归一：_publish_comment_source 的取值是 connecting/connected/
 # disconnected/error/unavailable/idle，手机端只需要四档
