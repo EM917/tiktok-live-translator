@@ -110,6 +110,7 @@ jobs:
           node --check web/viewer.js
           node --check web/qrcanvas.js
           node --check web/live-ui.js
+          node --check web/guard.js
           node --check tests/i18n_dom/fake_ws.js
           node --check tests/i18n_dom/scan.js
           node --check tests/i18n_dom/probe.js
