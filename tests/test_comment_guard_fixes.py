@@ -1483,6 +1483,7 @@ def test_a_real_phone_number_next_to_an_at_mention_is_still_a_red_contact(text):
 @pytest.mark.parametrize("text", [                                                  # #31 复核
     "visita a@mitienda.com/promo", "x@wa.me/5512345678", "mi@bit.ly/abc123", "x@t.me/canal_ofertas",
     "ig@instagram.com/tienda_x", "a@mitienda.com:8080/x", "a@mitienda.com\\promo", "a@mitienda.com#promo",
+    "x@tienda.com.mx/promo", "x@tienda.com.co/oferta", "x@sub.tienda.com/promo",     # 三段以上的域名
 ])
 def test_a_link_with_an_x_at_in_front_of_the_domain_is_still_a_link(text):
     assert cg.email_hits(cg.light(text)) == [], text

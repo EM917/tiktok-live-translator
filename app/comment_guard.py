@@ -319,12 +319,13 @@ _URL_RE = re.compile(
 # 邮箱：用户名要从头开始（不是链接 `https://x@evil.shop` 或 `www.tiktok.com@evil.shop` 的一截），
 # 也不能以顶级域结尾（`tiktok.com@evil.shop` 是伪装成登录信息的链接，不是邮箱）。右边界：域名后面紧跟
 # 路径、端口或查询串（`a@mitienda.com/promo`、`x@wa.me/5512345678`）的是「前面粘了个 x@ 的链接」，
-# 不是邮箱，要留给链接识别：不然在域名前面打一个 `x@` 就能躲过链接检测
+# 不是邮箱，要留给链接识别：不然在域名前面打一个 `x@` 就能躲过链接检测。右边界里的 `\.[a-z0-9]`
+# 不让正则回退到更短的域名（`x@tienda.com.mx/promo` 只匹配到 `x@tienda.com` 就停）
 _EMAIL_RE = re.compile(
     r"(?<![a-z0-9._%+\-])(?<!://)(?!www\.)"
     r"(?![a-z0-9._%+\-]*\.(?:com|net|org|mx|shop|store|link|ly|me|io|co|tv|app|info|biz|xyz|site|online|cc)@)"
     r"[a-z0-9][a-z0-9._%+\-]*@[a-z0-9\-]+(?:\.[a-z0-9\-]+)*\.[a-z]{2,}"
-    r"(?![a-z0-9\-]|[/\\#]|:\d|\?[a-z0-9])")
+    r"(?![a-z0-9\-]|\.[a-z0-9]|[/\\#]|:\d|\?[a-z0-9])")
 _PHONE_RE = re.compile(r"(?<![\d])(\+?\d(?:[\s\-.()]{0,2}\d){7,13})(?![\d])")
 _SPELLED_RE = re.compile(
     r"(?:\b(?:cero|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)\b[\s,.\-]*){8,}")
