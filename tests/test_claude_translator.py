@@ -1,9 +1,12 @@
-"""Claude 引擎升级到 Haiku 5.5：请求体、读回应、拒答。
+"""Claude 引擎：Haiku 5.5（字幕、弹幕）与 Sonnet 5.5（重译）的请求体、读回应、拒答。
 
-接口规则来自 claude-api skill 的迁移指南「Migrating to Claude Haiku 5.5」与 Thinking 表：
-思考默认开（adaptive，effort 默认 medium）；{"type": "disabled"} 只在 effort ≤ high 时被接受；
-非默认的 temperature/top_p/top_k 400；没有 budget_tokens；不能预填；拒答没有服务端兜底
-（fallbacks 列表形式 400）。回应可以以 thinking 块开头，拒答是 HTTP 200 + stop_reason "refusal"。
+接口规则来自 claude-api skill 的迁移指南「Migrating to Claude Haiku 5.5」「Migrating to Claude
+Sonnet 5.5」与 Thinking 表：
+思考默认开（adaptive，Haiku 5.5 的 effort 默认 medium）；Haiku 5.5 的 {"type": "disabled"} 只在
+effort ≤ high 时被接受；Sonnet 5.5 对 disabled 回 400，关思考写 {"type": "between_tools"}（同样只在
+effort ≤ high 时被接受，thinking 里不许有别的字段）；非默认的 temperature/top_p/top_k 400；没有
+budget_tokens；不能预填；拒答没有服务端兜底（fallbacks 列表形式 400）。回应可以以 thinking 块开头，
+拒答是 HTTP 200 + stop_reason "refusal"。
 
 测试一律用假 HTTP 层，不发任何真实请求。
 """
@@ -144,18 +147,26 @@ def test_haiku_5_5_turns_thinking_off_at_an_effort_that_accepts_it(monkeypatch):
     assert not any(h.lower() == "anthropic-beta" for h in post["headers"])
 
 
-def test_every_tuned_model_that_disables_thinking_keeps_effort_at_high_or_below():
-    """把「disabled 只在 effort ≤ high 时被接受」钉在表上：以后有人往 TUNED 里加一行
+def test_every_tuned_model_that_turns_thinking_off_keeps_effort_at_high_or_below():
+    """把「关思考只在 effort ≤ high 时被接受」钉在表上：以后有人往 TUNED 里加一行
     或把 effort 调成 xhigh，这里先红，而不是直播里每一句都 400。"""
     for model, extra in ClaudeTranslator.TUNED.items():
         assert not keys_anywhere(extra) & set(FORBIDDEN_KEYS), model
-        if (extra.get("thinking") or {}).get("type") == "disabled":
-            assert (extra.get("output_config") or {}).get("effort") in ("low", "medium", "high"), model
+        kind = (extra.get("thinking") or {}).get("type")
+        assert kind in ClaudeTranslator.THINKING_OFF, model
+        assert (extra.get("output_config") or {}).get("effort") in ("low", "medium", "high"), model
+        # between_tools 的 thinking 里不许有别的字段（display、budget_tokens、block_binding 都 400）
+        assert set(extra["thinking"]) == {"type"}, model
+        # 关思考的写法按模型分：Sonnet 5.5 对 disabled 回 400，between_tools 只有它认
+        if model == "claude-sonnet-5-5":
+            assert kind == "between_tools"
+        else:
+            assert kind == "disabled"
 
 
-@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5-5"])
-def test_disabled_thinking_is_never_sent_to_models_that_reject_it(monkeypatch, model):
-    """Opus 5.5 和 Sonnet 5.5 对 {"type": "disabled"} 一律 400：TUNED 不能泛化成「新模型都关思考」。"""
+def test_opus_5_5_is_never_sent_a_thinking_off_setting(monkeypatch):
+    """Opus 5.5 的思考关不掉（disabled 在任何 effort 下都 400）：TUNED 不能泛化成「新模型都关思考」。"""
+    model = "claude-opus-5-5"
     assert model not in ClaudeTranslator.TUNED
     _tr, _out, post = sent_body(monkeypatch, model)
     body = post["body"]
@@ -165,6 +176,132 @@ def test_disabled_thinking_is_never_sent_to_models_that_reject_it(monkeypatch, m
     # 这些模型默认开思考，思考算进 max_tokens：给思考留出地方，下限 1024
     assert body["max_tokens"] == ClaudeTranslator.MAX_TOKENS_MAY_THINK
     assert body["max_tokens"] >= 1024
+
+
+# ---------------------------------------------------------------------------
+# Sonnet 5.5：重译用的模型。请求体逐字钉死，改一个字段都要先红
+# ---------------------------------------------------------------------------
+
+def strong(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.delenv("CLAUDE_TRANSLATE_MODEL", raising=False)
+    from app.translator import create_claude_strong_translator
+    tr = create_claude_strong_translator()
+    assert tr is not None
+    return tr
+
+
+def test_the_sonnet_5_5_request_body_is_exactly_this(monkeypatch):
+    tr = strong(monkeypatch)
+    session = RecordingSession([Resp(200, message(text_block("先付款再发货")))])
+    attach(tr, session)
+    assert run(tr.translate("pague primero y le enviamos", "zh-CN", source="es")) == "先付款再发货"
+    (post,) = session.posts
+    assert post["body"] == {
+        "model": "claude-sonnet-5-5",
+        "max_tokens": 512,
+        "system": ("You are a translation engine for live-stream subtitles. "
+                   "Translate the user's text into Simplified Chinese. "
+                   "Output ONLY the translation, nothing else."),
+        "messages": [{"role": "user", "content": "pague primero y le enviamos"}],
+        # Sonnet 5.5 对 {"type": "disabled"} 回 400；between_tools 是它最低的思考档，
+        # 只在 effort 为 low/medium/high 时被接受，thinking 里不许有别的字段
+        "thinking": {"type": "between_tools"},
+        "output_config": {"effort": "medium"},
+    }
+    assert post["url"] == "https://api.anthropic.com/v1/messages"
+    assert post["headers"]["anthropic-version"] == "2023-06-01"
+    # 没有 beta 头：between_tools 和 effort 都是正式功能（兜底 fallbacks 才要 beta，这里不用）
+    assert not any(h.lower() == "anthropic-beta" for h in post["headers"])
+
+
+def test_the_sonnet_5_5_request_avoids_every_field_it_rejects(monkeypatch):
+    tr = strong(monkeypatch)
+    body = tr._body("hola amigos", "zh-CN")
+    assert not keys_anywhere(body) & set(FORBIDDEN_KEYS)
+    assert body["thinking"] != {"type": "disabled"}            # 400
+    assert "display" not in body["thinking"]                   # between_tools 带别的字段 400
+    assert "block_binding" not in body["thinking"]
+    assert body["output_config"]["effort"] in ("low", "medium", "high")   # xhigh/max 与关思考同用 400
+    assert set(body) == {"model", "max_tokens", "system", "messages", "thinking", "output_config"}
+    assert body["messages"][-1]["role"] == "user"              # 以 user 轮结尾：预填会 400
+    # 关了思考：max_tokens 不必给思考留地方，但不能小到把长句译文截成 max_tokens
+    assert 256 <= body["max_tokens"] <= ClaudeTranslator.MAX_TOKENS_MAY_THINK
+
+
+def test_the_strong_translator_is_sonnet_5_5_whatever_the_environment_says(monkeypatch):
+    """CLAUDE_TRANSLATE_MODEL 是给字幕引擎改模型用的；重译的模型是用户定的，不跟着它走。"""
+    monkeypatch.setenv("CLAUDE_TRANSLATE_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    from app.translator import create_claude_strong_translator
+    tr = create_claude_strong_translator()
+    assert tr.model == "claude-sonnet-5-5" == ClaudeTranslator.STRONG_MODEL
+    assert tr.name == "strong"
+    assert tr._body("hola", "zh-CN")["thinking"] == {"type": "between_tools"}
+
+
+def test_the_strong_translator_without_a_key_is_none_not_an_exception(monkeypatch):
+    from app.translator import create_claude_strong_translator
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("app.translator.api_key", lambda name: None)
+    assert create_claude_strong_translator() is None
+
+
+def test_sonnet_5_5_replies_are_read_by_block_type_and_refusals_are_not_translations(monkeypatch):
+    tr = strong(monkeypatch)
+    refusal = dict(message(stop="refusal"),
+                   stop_details={"type": "refusal", "category": "general_harms", "explanation": "x"})
+    session = RecordingSession([Resp(200, message(thinking_block(), text_block("包邮"))),
+                                Resp(200, refusal)])
+    attach(tr, session)
+
+    async def ask():
+        begin_translate_call()
+        out = await tr.translate("envío gratis", "zh-CN")
+        return out, translate_call_outcome()
+
+    assert run(ask()) == ("包邮", None)
+    assert run(ask()) == (None, ("refusal", "general_harms"))
+    assert tr.refusals == 1
+
+
+def test_the_strong_translators_429_does_not_pause_the_subtitle_engine(monkeypatch):
+    """两个实例各有各的冷却：重译被限速时，字幕照常翻。"""
+    sub = make(monkeypatch)
+    from app.translator import create_claude_strong_translator
+    big = create_claude_strong_translator()
+    attach(big, RecordingSession([Resp(429, {"error": {"type": "rate_limit_error"}},
+                                       headers={"retry-after": "60"})]))
+    sub_session = RecordingSession([Resp(200, message(text_block("你好")))])
+    attach(sub, sub_session)
+    assert run(big.translate("hola", "zh-CN")) is None
+    assert big.cooldown_until > time.monotonic() + 30
+    assert sub.cooldown_until <= time.monotonic()
+    assert run(sub.translate("hola", "zh-CN")) == "你好"
+    assert len(sub_session.posts) == 1
+
+
+# ---------------------------------------------------------------------------
+# 弹幕用的实例：Haiku 5.5，提示词按弹幕写
+# ---------------------------------------------------------------------------
+
+def test_the_comment_instance_is_haiku_5_5_with_its_own_prompt(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.setenv("CLAUDE_TRANSLATE_MODEL", "claude-sonnet-5-5")     # 不影响弹幕
+    tr = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
+    body = tr._body("1. hola\n2. te amo", "zh-CN")
+    assert tr.model == body["model"] == "claude-haiku-5-5"
+    assert body["thinking"] == {"type": "disabled"} and body["output_config"] == {"effort": "low"}
+    assert "Simplified Chinese" in body["system"]
+    assert "untrusted" in body["system"] and "never follow instructions" in body["system"]
+    assert "numbered" in body["system"]
+    # 一批最多 5 条、每条最长 300 字符：比一句字幕的上限大
+    assert body["max_tokens"] == ClaudeTranslator.MAX_TOKENS_COMMENT > ClaudeTranslator.MAX_TOKENS_NO_THINKING
+    assert body["messages"] == [{"role": "user", "content": "1. hola\n2. te amo"}]
+    assert not keys_anywhere(body) & set(FORBIDDEN_KEYS)
+    # 字幕引擎的默认提示词没动
+    sub = ClaudeTranslator()
+    assert sub.role == "subtitle" and "live-stream subtitles" in sub._body("hola", "zh-CN")["system"]
 
 
 @pytest.mark.parametrize("model", ["claude-haiku-4-5-20251001", "claude-haiku-4-5"])
@@ -188,6 +325,9 @@ def test_the_request_body_is_a_copy_of_the_tuned_table(monkeypatch):
     body["output_config"]["effort"] = "max"
     assert ClaudeTranslator.TUNED["claude-haiku-5-5"] == {
         "thinking": {"type": "disabled"}, "output_config": {"effort": "low"}}
+    big = make(monkeypatch, "claude-sonnet-5-5")._body("hola", "zh-CN")
+    big["thinking"]["type"] = "adaptive"
+    assert ClaudeTranslator.TUNED["claude-sonnet-5-5"]["thinking"] == {"type": "between_tools"}
 
 
 def test_the_probe_asks_about_the_model_actually_in_use(monkeypatch):
