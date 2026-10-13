@@ -609,7 +609,8 @@ async def wait_for(cond, limit=200):
     return cond()
 
 
-@pytest.mark.parametrize("name", ["google", "deepl", "claude", "openai", "hymt2-7b"])
+# claude 不在这里：字幕引擎是 Claude 时弹幕用另建的 Haiku 5.5 实例翻，见 tests/test_claude_comments.py
+@pytest.mark.parametrize("name", ["google", "deepl", "openai", "hymt2-7b"])
 def test_comments_are_never_sent_to_a_non_resident_engine(name):
     engine = Fast(name)
     holder = {"tr": engine, "session": object()}
