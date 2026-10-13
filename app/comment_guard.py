@@ -79,14 +79,30 @@ _INVISIBLE.update({cp: None for cp in (0x180B, 0x180C, 0x180D, 0x180F, 0x2065) +
 # 韩文填充符、盲文空白、蒙古文元音分隔符、组合用的圈、高棉固有元音：看不见，却能把一个词劈成两个
 _INVISIBLE.update({cp: None for cp in (0x3164, 0x115F, 0x1160, 0xFFA0, 0x2800, 0x180E,
                                        0x0488, 0x0489, 0x17B4, 0x17B5)})
-# 其中这五个有一个空格的宽度：`est\u2800afa` 是把词劈开，`eres\u2800una\u2800pendeja` 却是拿它当空格用。两种
-# 读法都要判，所以词表匹配另跑一遍把它们当空格的版本（CommentGuard._prep），两遍命中取并集
-# 用码点拼，不写成字符串字面量：韩文填充符落在 CJK 区间，界面中文的扫描会把字面量当成一句中文
-_BLANKS = "".join(map(chr, (0x2800, 0x3164, 0x115F, 0x1160, 0xFFA0)))
-_BLANK_RE = re.compile("[" + _BLANKS + "]")
-_BLANK_AS_SPACE = {ord(c): " " for c in _BLANKS}
+# 这些字符看不见，却可能是两个词之间唯一的分隔（`eres<U+2066>una<U+2066>pendeja`、`hola<U+2069>pendeja`），
+# 也可能是把一个词劈开（`est<U+2800>afa`）。两种读法都要判，所以词表匹配另跑一遍把它们当空格的版本
+# （CommentGuard._prep），两遍命中取并集。表情的粘合符（变体选择符 FE0E/FE0F、ZWJ、keycap）不当空格读：
+# 不然每个带红心的弹幕都要多跑一遍
+_EMOJI_GLUE = frozenset((0xFE0E, 0xFE0F, 0x200D, 0x20E3))
 # Unicode 类别 Cf（格式字符，如双向隔离符 U+2066..2069）和 Cs（孤立代理码点）一律删掉
 _DROP_CATEGORIES = frozenset(("Cf", "Cs"))
+
+
+class _AsSpace(dict):
+    """str.translate 用的映射：被 light() 删掉的看不见的字符（_INVISIBLE、Unicode 类别 Cf / Cs）换成一个空格，
+    表情的粘合符和其余字符原样。按码点缓存。"""
+
+    def __missing__(self, cp):
+        ch = chr(cp)
+        out = " " if cp not in _EMOJI_GLUE and (
+            cp in _INVISIBLE or unicodedata.category(ch) in _DROP_CATEGORIES) else ch
+        if len(self) >= 20000:
+            self.clear()
+        self[cp] = out
+        return out
+
+
+_AS_SPACE = _AsSpace()
 NFKC_EXPAND_MAX = 4          # 一个字符 NFKC 之后最多留这么多个字符（U+FDFA 展开成 18 个）
 # 西里尔/希腊同形字 -> 拉丁（写成转义：字面字符和拉丁字母肉眼分不出）
 _CONFUSABLE = {
@@ -170,9 +186,10 @@ def _join_letter_runs(tokens):
     return out
 
 
-def fold(text):
+def fold(text, slang=True):
     """给词表匹配用的折叠：light -> 去撇号 -> ñ 写成 n -> 同一字母连续 3 个以上压成 1 个 ->
-    连续单字母拼回 -> leet 还原 -> detector.normalize() -> 再拼一遍单字母 -> 俚语展开。
+    连续单字母拼回 -> leet 还原 -> detector.normalize() -> 再拼一遍单字母 -> 俚语展开（slang=False 时不展开：按子句分开折叠的调用方要等子句拼回去、
+    单字母再拼一遍之后才展开，不然 `f, a, k, e` 里的 k 会先被展开成 que，拼不回 fake）。
 
     弹幕是手机打字，常省 ñ，和违禁词那边（语音识别，保留 ñ）相反，所以两边（输入和词条）
     都写成 n。normalize 是 app.detector 的那个，原样调用。
@@ -184,7 +201,8 @@ def fold(text):
     t = _REPEAT.sub(r"\1", t)                                  # holaaaa -> hola；ll rr cc 双写不动
     t = _SPACED.sub(_join_spaced, t)                           # e s t a f a -> estafa
     t = " ".join(_leet_token(tok) for tok in t.split(" "))     # h1j0 d3 put4 -> hijo de puta
-    return " ".join(_SLANG.get(tok, tok) for tok in _join_letter_runs(normalize(t).split()))
+    toks = _join_letter_runs(normalize(t).split())
+    return " ".join(_SLANG.get(tok, tok) for tok in toks) if slang else " ".join(toks)
 
 
 def fold_key(text):
@@ -294,14 +312,19 @@ _URL_RE = re.compile(
     r"\b(?:wa\.me|t\.me|bit\.ly|tinyurl\.com|linktr\.ee|cutt\.ly|ig\.me|fb\.me|youtu\.be|"
     r"vm\.tiktok\.com|instagram\.com|facebook\.com|tiktok\.com|onlyfans\.com|chat\.whatsapp\.com|"
     r"discord\.gg)/?[^\s]*|"
-    r"\b[a-z0-9][a-z0-9\-]{1,}(?:\.[a-z0-9\-]+)*\.(?:com|net|org|mx|shop|store|link|ly|tv|app|info|biz|xyz|site|"
-    r"online|cc|gt|hn|sv|cr)(?:\.[a-z]{2})?(?:/[^\s]*)?(?![a-z0-9])")
+    # 域名的标签认 Unicode 字母数字（señor.com、marcaejemplo.com.éxito.shop）：只认 ASCII 的话，下一个标签
+    # 一带重音字母，链接就在那里被截断，前半截看起来像自家域名
+    r"\b[^\W_](?:[^\W_]|-){1,}(?:\.(?:[^\W_]|-)+)*\.(?:com|net|org|mx|shop|store|link|ly|tv|app|info|biz|xyz|site|"
+    r"online|cc|gt|hn|sv|cr)(?:\.[a-z]{2})?(?:/[^\s]*)?(?![^\W_])")
 # 邮箱：用户名要从头开始（不是链接 `https://x@evil.shop` 或 `www.tiktok.com@evil.shop` 的一截），
-# 也不能以顶级域结尾（`tiktok.com@evil.shop` 是伪装成登录信息的链接，不是邮箱）
+# 也不能以顶级域结尾（`tiktok.com@evil.shop` 是伪装成登录信息的链接，不是邮箱）。右边界：域名后面紧跟
+# 路径、端口或查询串（`a@mitienda.com/promo`、`x@wa.me/5512345678`）的是「前面粘了个 x@ 的链接」，
+# 不是邮箱，要留给链接识别：不然在域名前面打一个 `x@` 就能躲过链接检测
 _EMAIL_RE = re.compile(
     r"(?<![a-z0-9._%+\-])(?<!://)(?!www\.)"
     r"(?![a-z0-9._%+\-]*\.(?:com|net|org|mx|shop|store|link|ly|me|io|co|tv|app|info|biz|xyz|site|online|cc)@)"
-    r"[a-z0-9][a-z0-9._%+\-]*@[a-z0-9\-]+(?:\.[a-z0-9\-]+)*\.[a-z]{2,}")
+    r"[a-z0-9][a-z0-9._%+\-]*@[a-z0-9\-]+(?:\.[a-z0-9\-]+)*\.[a-z]{2,}"
+    r"(?![a-z0-9\-]|[/\\#]|:\d|\?[a-z0-9])")
 _PHONE_RE = re.compile(r"(?<![\d])(\+?\d(?:[\s\-.()]{0,2}\d){7,13})(?![\d])")
 _SPELLED_RE = re.compile(
     r"(?:\b(?:cero|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)\b[\s,.\-]*){8,}")
@@ -319,13 +342,16 @@ _HANDLE_LABELS_AT = (r"(?:" + _HANDLE_PLATFORMS[3:-1] + r"|cuenta|perfil|usuario
                      r"sigueme en|siganme en|buscame como|me encuentras como|encuentrame como|"
                      + _HANDLE_IMPERATIVES + r")")
 _HANDLE_LABEL_RE = re.compile(r"\b" + _HANDLE_PLATFORMS + r"\s*[:\-]\s*@?([a-z0-9_.]{3,24})")
-_HANDLE_LABEL_AT_RE = re.compile(r"\b" + _HANDLE_LABELS_AT + r"\s*[:\-]?\s*@([a-z0-9_.]{3,24})")
+# 标签和 @ 之间可以隔一小段非字母（空格、冒号、破折号、箭头、手指、表情、感叹号：`IG ➡️ @x`、`siganme 👉 @x`、
+# `siganme!! @x`），或 es / de / en / on / at / a / is / como 这类连接词（`mi ig es @x`、`instagram de @x`）
+_AT_GAP = r"(?:[^\w@]{0,8}(?:(?:es|de|en|on|at|a|is|como)(?!\w)[^\w@]{0,8})*)"
+_HANDLE_LABEL_AT_RE = re.compile(r"\b" + _HANDLE_LABELS_AT + _AT_GAP + r"@([a-z0-9_.]{3,24})")
 # 第一人称的账号标签（mi ig @x / sigueme en @x / buscame como @x）：这本身就是拉人关注，不需要
 # 再有别的话术
 _SELF_HANDLE_RE = re.compile(
     r"\b(?:mi\s+(?:ig|insta|instagram|fb|facebook|tiktok|tt|cuenta|perfil|pagina|page)|"
     r"sigueme en|siganme en|buscame como|me encuentras como|encuentrame como|" + _HANDLE_IMPERATIVES
-    + r")\s*[:\-]?\s*@([a-z0-9_.]{3,24})")
+    + r")" + _AT_GAP + r"@([a-z0-9_.]{3,24})")
 # 起点限定在数字串开头，否则长数字串/长点串上是平方级回溯
 _MONEY_RE = re.compile(
     r"\$\s?\d[\d.,]*|(?<![\d.,])\d[\d.,]*\s?(?:pesos|mxn|usd|dolares|lempiras|quetzales|colones)\b")
@@ -385,9 +411,10 @@ def _phone_text(light_text):
     return _LONGNUM_RE.sub(" ", _DATE_RE.sub(" ", _MONEY_RE.sub(" ", _EMAIL_RE.sub(" ", light_text))))
 
 
-def phone_hits(light_text):
-    """电话号码候选：8~12 位数字（带 + 可到 13 位），排除金额/日期/单号上下文，14 位以上无分隔
-    的当快递单号。另认连续 >= 8 个西语数字词。返回数字串列表（读法绕写返回 "spelled"）。"""
+def phone_matches(light_text):
+    """电话号码候选，带原始写法：[(数字串, 原文)]，8~12 位数字（带 + 或墨西哥 044 / 045 前缀可到 13 位），
+    排除金额/日期/单号上下文，14 位以上无分隔的当快递单号。另认连续 >= 8 个西语数字词，读法绕写返回
+    ("spelled", None)。"""
     t = _phone_text(light_text)
     hits = []
     for m in _PHONE_RE.finditer(t):
@@ -399,10 +426,42 @@ def phone_hits(light_text):
         # 单号上下文：只看号码前 16 个字符，但左边界（「telefono」里的 no 不是「no.」）要看得到更前面
         if _ORDERNO_RE.search(t, max(0, m.start() - 16), m.start()):
             continue
-        hits.append(digits)
+        hits.append((digits, m.group(1)))
     if _SPELLED_RE.search(normalize(t)):
-        hits.append("spelled")
+        hits.append(("spelled", None))
     return hits
+
+
+def phone_hits(light_text):
+    """电话号码候选：8~12 位数字（带 + 可到 13 位），排除金额/日期/单号上下文，14 位以上无分隔
+    的当快递单号。另认连续 >= 8 个西语数字词。返回数字串列表（读法绕写返回 "spelled"）。"""
+    return [digits for digits, _ in phone_matches(light_text)]
+
+
+_YEAR_GROUP = re.compile(r"(?:19|20)\d\d$")
+
+
+def plausible_phone(digits, raw):
+    """像不像真的电话（给「电话 + 任何 @账号」这条没有话术的红条用）：打招呼的 `@luna 666666666`、
+    尺码 `@luna tienen en 36 37 38 39?`、`@luna cuanto cuesta 350 450 550`、年份 `@ana 2024-2025-2026`
+    不是联系方式。电话要有至少 3 种数字、不是 12345678 这种连号；整串连写的 8~12 位，或 2-4-4 / 3-3-4 /
+    4-4 这类分组，或带 + 的国际号，或读法绕写。只由 1~2 位一组拼成的（`36 37 38 39`）不认。"""
+    if raw is None:
+        return True                           # 读法绕写（cero cinco cinco……）
+    if len(set(digits)) <= 2:
+        return False
+    steps = {int(b) - int(a) for a, b in zip(digits, digits[1:])}
+    if steps in ({1}, {-1}):
+        return False                          # 12345678 / 87654321
+    if raw.startswith("+"):
+        return True
+    groups = re.findall(r"\d+", raw)
+    if len(groups) == 1:
+        return True
+    if all(_YEAR_GROUP.match(g) for g in groups):
+        return False                          # 2024-2025-2026
+    sizes = tuple(len(g) for g in groups)
+    return max(sizes) >= 4 or sizes == (3, 3, 4)
 
 
 def email_hits(light_text):
@@ -456,14 +515,14 @@ def _split_url(url):
     """链接 -> (host, 余下的部分)：去协议、尾随标点、用户信息、端口；host 小写。
 
     `\\` 当 `/` 用（浏览器对 http / https 就是这么读的：`https://evil.com\\@www.tiktok.com/x` 去的是
-    evil.com）。host 只取字母数字 . -，后面粘着的表情、逗号、别的链接都进「余下的部分」，由调用方
-    判断。"""
+    evil.com）。host 只取字母数字（含带重音的字母）. -，后面粘着的表情、逗号、别的链接都进「余下的部分」，
+    由调用方判断。"""
     u = url.strip().rstrip(_URL_TRAIL).replace("\\", "/")
     u = re.sub(r"^[a-z][a-z0-9+.\-]*://", "", u)
     cut = re.search(r"[/?#]", u)
     auth_end = cut.start() if cut else len(u)
     start = u.rfind("@", 0, auth_end) + 1                      # 用户信息（user:pw@）不是 host
-    raw = re.match(r"[a-z0-9.\-]*", u[start:auth_end]).group(0)
+    raw = re.match(r"(?:[^\W_]|[.\-])*", u[start:auth_end]).group(0)
     rest = re.sub(r"^:\d{1,5}(?!\d)", "", u[start + len(raw):])   # 端口
     return raw.strip("."), rest
 
@@ -471,8 +530,10 @@ def _split_url(url):
 def _host_matches(host, path, entry):
     """豁免名单里的一条是否盖住这个链接：host == 条目，或 host 以 `.条目` 结尾；条目带路径时还要
     路径以它开头。按 host 比，不按子串比：`tienda-marcaejemplo.com`、`marcaejemplo.com.ofertas.shop`
-    都不是 `marcaejemplo.com`。邮箱形式的条目（含 @）只按整个地址比，不拿它的域名去盖链接。"""
-    if "@" in entry:
+    都不是 `marcaejemplo.com`。邮箱形式的条目（@ 在域名那一段里）只按整个地址比，不拿它的域名去盖链接；
+    @ 在路径里的（`tiktok.com/@marcaejemplo`、`youtube.com/@canalejemplo`）是账号主页，照常比。"""
+    authority = re.split(r"[/?#\\]", re.sub(r"^[a-z][a-z0-9+.\-]*://", "", entry), maxsplit=1)[0]
+    if "@" in authority:
         return False
     eh, ep = _split_url(entry)
     if not eh or "." not in eh:
@@ -480,6 +541,9 @@ def _host_matches(host, path, entry):
     if not (host == eh or host.endswith("." + eh)):
         return False
     if ep and not path.startswith(ep):
+        return False
+    # 条目是路径前缀时，要在一个完整的名字上结束：`/@marca` 不盖 `/@marcaejemplo2`
+    if ep and not ep.endswith("/") and re.match(r"[^\W_.\-]|[_.\-]\w", path[len(ep):len(ep) + 2]):
         return False
     # 名单盖住的只是这一个链接：后面粘着的第二个链接（`www.marcaejemplo.com,https://evil.com`）不能
     # 跟着被放过
@@ -1052,46 +1116,74 @@ def _finish(rules):
                if " " not in x and not x.startswith("re:")]
     allw = "|".join(re.escape(x) for x in singles + list(rules.frame_words)
                     + list(rules.frame_words_pending))
-    # 否认式整体剪掉，不计分：断言词前面带 no/nunca/ni/nada/sin/not（中间可隔 es/hay/haya……）、
+    # 否认式整体剪掉，不计分：断言词前面带 no/nunca/ni/nada/sin/cero/not（中间可隔 es/hay/haya……）、
     # 「cómo va a haber estafa」这种反问式否认；担心、求证、替主播辩护的说法同理：espero que no sea、
-    # no creo que sea、ojala no sea、dudo que sea、tenia miedo de que fuera、pense que era……pero、
-    # dicen que es ……pero；英语 not a scam / isnt a scam / never a scam。否认和确认状态无关。
-    # 剪得要窄：每一条都是「说话人在否定或转述」的明确句式，不是「断言词前面碰巧有个 no / ni」
+    # no creo que sea、ojala no sea、dudo que sea、tengo miedo de que sea、pense que era……pero、
+    # dicen que es ……pero；英语 not a scam / isnt a scam / never a scam / i dont think its a scam。
+    # 否认和确认状态无关。
+    # 剪得要窄：每一条都是「说话人在否定、担心或转述」的明确句式，不是「断言词前面碰巧有个 no / ni」。
+    # 虚拟式 sea / sean / fuera / fuese / parezca / haya 不能直接接在任何否定词后面：「no sean estafadores」
+    # 「no sea ladrona y devuelva mi dinero」是对着对方的指控，「dudo mucho que no sea estafa」是双重否定
+    # （意思是它就是骗局）。它们只在前面有希望/怀疑的引子（espero que no、ojala、dudo que、no creo que）
+    # 时才剪。过去式的「pense que era estafa」「temia que fuera estafa」要后面有 pero（才说明后来证明不是），
+    # 单独的「pense que era estafa, no me equivoque」是确认
     rules.neg_re = rules.quote_re = None
     if allw:
-        neg = r"(?:no|nunca|ni|jamas|tampoco|nada|sin|not|isnt|wasnt|arent|werent|never|aint|dudo que|dudo|descarto)"
-        cop = (r"(?:es|son|fue|fueron|soy|somos|eres|seria|hay|haya|existe|is|are|was|va a haber|habra|"
-               r"tiene|tienen|hablando con|hablo de|sea|sean|fuera|fuese|parece|parezca|creo que sea|"
-               r"creo que sean|creo que es|creo que son|quiero que sea|vaya a ser|vaya a haber|me parece)")
+        neg = (r"(?:no|nunca|ni|jamas|tampoco|nada|sin|cero|not|isnt|wasnt|arent|werent|never|aint|"
+               r"dudo que|dudo|descarto que|descarto)")
+        cop = (r"(?:es|son|fue|fueron|soy|somos|eres|seria|hay|existe|is|are|was|va a haber|habra|"
+               r"tiene|tienen|hablando con|hablo de|parece|creo que sea|creo que sean|creo que es|"
+               r"creo que son|quiero que sea|vaya a ser(?:\s+que\s+(?:sea|fuera|fuese))?|vaya a haber|me parece)")
+        subj = r"(?:sea|sean|fuera|fuese|parezca|haya)"
+        hedge = (r"(?:(?:espero|esperemos|ojala|quiero|quisiera|deseo)(?:\s+que)?\s+no|dudo que|descarto que|"
+                 r"no creo que|no pienso que|no me parece que)")
         art = r"(?:una?|an?|the|ningun[a]?|nada de|de)"
         # 代词只认 me te nos le les：la / lo / los 后面接名词的更常见（「ni la ladrona esa me contesta」），
         # se 只能紧挨着断言词（「aqui no se estafa a nadie」），不能后面再接系动词（「no se parece estafa」
         # 是「no sé, parece estafa」）
         refl = r"(?:me|te|nos|le|les)"
-        bank = r"(?:banco|tarjeta|cuenta|pago|bancari[oa])"
+        # 银行语境只认 banco / tarjeta / pago：cuenta 在直播间多半是主播的 TikTok 账号（esta cuenta tiene
+        # alerta de fraude 是指控），所以不算；银行词和断言词之间不能夹着 cuenta / tienda / esta 这类
+        # 指向主播的词
+        bank = r"(?:banco|tarjeta|pago|bancari[oa])"
+        gap = r"(?:(?!\b(?:cuenta|tienda|live|vendedor\w*|esta|este|esa|ese)\b).){0,40}?"
+        bank_alert = r"(?:alerta de|alerta por|proteccion contra|seguro contra|prevencion de|deteccion de)\s+fraudes?"
+        bank_possible = r"por\s+(?:un\s+)?(?:posible|presunto)\s+fraudes?"
+        thing = r"(?:paquete|package|pedido|envio|caja|box|entrega|delivery)"
+        # 「ladrones se llevaron mi paquete del porche」：要有门廊 / 门口的位置才剪，「ladrones se llevaron mi
+        # pedido de esta tienda」「estos ladrones se llevaron mi pedido y no me devuelven nada」是指控
+        porch = (r"(?:porche|porch|puerta|door|doorstep|entrada|portal|buzon|mailbox)")
         rules.neg_re = re.compile(
             r"\b" + neg + r"\s+(?:" + refl + r"\s+)?(?:" + cop + r"\s+)*(?:" + art + r"\s+)?(?:" + allw + r")\b|"
             r"\b" + neg + r"\s+se\s+(?:" + allw + r")\b|"
+            r"\b" + hedge + r"\s+(?:" + refl + r"\s+)?" + subj + r"\s+(?:" + art + r"\s+)?(?:" + allw + r")\b|"
             r"\bcomo\s+(?:va a|puede|podria)\s+(?:haber|ser)\s+(?:una?\s+)?(?:" + allw + r")\b|"
-            r"\b(?:pense|creia|crei|imagine|suponia|temia|temi|tenia miedo de|tengo miedo de|miedo de|"
-            r"miedo a)\s+que\s+(?:(?:es|era|fuera|fuese|seria|sea|sean|son|eran|fueran)\s+)?"
-            r"(?:una?\s+)?(?:" + allw + r")\b|"
+            r"\b(?:tengo miedo|me da miedo|miedo|temo|me preocupa)\s+(?:de\s+|a\s+)?que\s+"
+            r"(?:(?:es|era|fuera|fuese|seria|sea|sean|son|eran|fueran)\s+)?(?:una?\s+)?(?:" + allw + r")\b|"
             r"\b(?:cuidado|ojo|aguas|alerta)\s+con\s+(?:las?|los|el)\s+(?:" + allw + r")\s+(?:en|por|de)\s+"
             r"(?:tiktok|redes|internet|linea|ahi|la red|facebook|instagram|whatsapp)\b|"
-            # 银行通知：「por posible fraude」；「alerta de fraude」「proteccion contra fraudes」只在银行语境里。
-            # posible / presunto / alerta de estafa 是对主播的指控，不剪
-            r"\bpor\s+(?:un\s+)?(?:posible|presunto)\s+fraudes?\b|"
-            r"\b" + bank + r"\b.{0,40}\b(?:alerta de|alerta por|proteccion contra|seguro contra|"
-            r"prevencion de|deteccion de)\s+fraudes?\b|"
-            r"\b(?:alerta de|alerta por|proteccion contra|seguro contra|prevencion de|deteccion de)\s+fraudes?\b"
-            r".{0,40}\b" + bank + r"\b|"
+            r"\b" + bank + r"\b" + gap + r"\b" + bank_possible + r"\b|"
+            r"\b" + bank_possible + r"\b" + gap + r"\b" + bank + r"\b|"
+            r"\b" + bank + r"\b" + gap + r"\b" + bank_alert + r"\b|"
+            r"\b" + bank_alert + r"\b" + gap + r"\b" + bank + r"\b|"
             r"\b(?:ladrones?|ladrona|thieves|thief)\s+(?:se llevaron|se llevo|se robaron|robaron|took|stole)\s+"
-            r"(?:mi|my|el|la|los|las|de|del)?\s*(?:paquete|package|pedido|envio|caja|box|entrega|delivery)\b")
-        # 「dicen que es estafa, pero a mi me llego rapido」：转述别人的话，自己是在替主播说话。要看后面有没有
-        # pero / aunque / sin embargo，而子句拆开之后后面的 pero 在另一个子句里，所以单独编一份，由 _deny 判
+            r"(?:mi|my|el|la|los|las|de|del)?\s*" + thing + r"\s+(?:(?:que\s+)?(?:estaba|dejaron|dejo|left)\s+)?"
+            r"(?:del?|en|from|at|on|in)\s+(?:(?:la|mi|el|my|the)\s+)?" + porch + r"\b|"
+            r"\b(?:i\s+)?(?:dont|do not|didnt|did not|wouldnt|never)\s+(?:think|believe|feel|say)\s+(?:that\s+)?"
+            r"(?:its|it is|this is|thats|that is|she is|shes|he is|hes|they are|theyre)\s+(?:an?\s+)?(?:" + allw + r")\b|"
+            r"\b(?:im|i m|i am)\s+(?:afraid|scared|worried|nervous)\s+(?:that\s+)?(?:its|it is|this is|"
+            r"it might be|it may be|it could be)\s+(?:an?\s+)?(?:" + allw + r")\b")
+        # 「dicen que es estafa, pero a mi me llego rapido」「pense que era estafa pero me llego」：转述别人的话
+        # 或者自己当初的怀疑，后面接着否定它，自己是在替主播说话。要看后面有没有 pero / aunque / sin embargo / but，
+        # 而子句拆开之后后面的 pero 在另一个子句里，所以单独编一份，由 _deny 判
         rules.quote_re = re.compile(
             r"\b(?:dicen|decian|dijeron|dice|escuche|lei|oi)\s+que\s+(?:(?:es|era|son|eran|fuera|seria)\s+)?"
-            r"(?:una?\s+)?(?:" + allw + r")\b")
+            r"(?:una?\s+)?(?:" + allw + r")\b|"
+            r"\b(?:pense|creia|crei|imagine|suponia|temia|temi|tenia miedo de|tenia miedo|tuve miedo de|tuve miedo|"
+            r"me daba miedo)\s+que\s+(?:(?:es|era|fuera|fuese|seria|sea|sean|son|eran|fueran)\s+)?"
+            r"(?:una?\s+)?(?:" + allw + r")\b|"
+            r"\bi\s+(?:thought|assumed|feared|was afraid|was scared)\s+(?:that\s+)?(?:it|this|she|he|they|everything)\s+"
+            r"(?:was|were|is|would be)\s+(?:an?\s+)?(?:" + allw + r")\b")
     # falso/fake/chafa 这类词只在「说某物是假的」的句式里才算断言
     rules.frame_re = _frame_regex(rules.frame_words)
     rules.frame_re_pending = _frame_regex(rules.frame_words_pending)
@@ -1101,7 +1193,11 @@ _DEGREE = r"(?:(?:muy|tan|bien|re|una|un|so|really|very|too|such a)\s+)*"
 # 英语目标词后面接这些是商品词（fat burner / fat burning / fat loss），不是骂人；光秃秃的 ur 只认句尾
 _EN_COMPOUND = r"(?!\s+(?:burn\w*|loss|free|melt\w*|blast\w*|content|cutting)\b)"
 _BARE_UR = re.compile(r"\bur\s")
+# 表情、标点、括号、破折号这类非字母的一串：判否定时换成占位词，免得 fold 把它们抹掉之后 no 显得紧挨着句式词
+_SYMBOL_RUN = re.compile(r"[^\w\s'\u2019`\u00b4]+")
+_MARK = " zzmark "
 _EN_TAIL = r"(?:\s+(?:lol|lmao|lmfao|haha|hahaha|omg|bro|girl|tho|though|fr|ngl|af|asf|xd|honestly))*\s*$"
+_EN_LEAD = r"(?:lol|lmao|lmfao|haha|hahaha|omg|bro|girl|wow|damn|ew|eww|ugh|well|so|and|but|also|just|yeah|ok|okay|hey|no)"
 # 句式前面紧挨着否定（no / nunca / jamas / ni / tampoco / para nada，中间最多隔 te|me|ya|nada|tan，或
 # 「digas|creas|pienses… que」）：「no eres fea」「ya no estas gorda」「nunca me pareces fea」是安慰，不是骂。
 # 否定词要紧挨着句式词：「no inventes eres fea」「ni modo eres fea」「no tu eres fea」（no，你才丑）里的 no
@@ -1109,10 +1205,17 @@ _EN_TAIL = r"(?:\s+(?:lol|lmao|lmfao|haha|hahaha|omg|bro|girl|tho|though|fr|ngl|
 _NEG_BEFORE = re.compile(
     r"\b(?:no|nunca|jamas|ni|tampoco|para nada)\s+(?:(?:te|me|ya|nada|tan)\s+)?"
     r"(?:(?:digas|creas|pienses|sientas|veas|crees|dices|pense|pensaba|creo)\s+que\s+)?$")
-# 条件句里的泛指「你」：「si estas operada puedes usar la faja」「if you are fat this works」。
-# 「si que」「tu si eres fea」「ahora si estas gorda」「claro que si eres fea」里的 si 是「确实」，不是「如果」
-_COND_BEFORE = re.compile(r"\b(?:si|cuando|aunque|if|when)\s+(?!que\b)(?:\w+\s+)?$")
-_EMPHATIC_SI = re.compile(r"\b(?:tu|ella|vos|usted|ahora|claro que)\s+si\s+(?:\w+\s+)?$")
+# 条件句里的泛指「你」：「si estas operada puedes usar la faja」「if you are fat this works」。条件词和句式
+# 之间最多隔 3 个词（「si tu ya estas operada」「si de verdad estas gorda」「if you think you are fat」）：
+# 同一个子句里的才算，隔得更远的（「cuando te ves al espejo estas fea」）、或中间有 pero / y / porque 这类
+# 连接词的（「no se si te importa pero eres fea」）不当条件。fold 之后标点没了，
+# 「si, estas gorda」这种逗号隔开的由 target_by_clause 按子句重判。
+# 「si que」「tu si eres fea」「ahora si estas gorda」「claro que si eres fea」「pero si estas gorda」「mira si
+# eres fea」「hoy si estas fea」里的 si 是「确实」，不是「如果」
+_COND_LINK = r"(?:pero|y|e|ni|o|porque|pues|entonces|sino|but|and|or|because|so|then)"
+_COND_BEFORE = re.compile(
+    r"\b(?:si|cuando|aunque|if|when)\s+(?!que\b)(?:(?!" + _COND_LINK + r"\b)\w+\s+){0,3}$")
+_EMPHATIC_SI = re.compile(r"\b(?:tu|ella|vos|usted|ahora|claro que|pero|mira|hoy)\s+si\s+(?:\w+\s+)?$")
 # 带重音的 sí 是「是的」，fold 之后和 si（如果）分不出来：逐子句重判时先把它标成另一个词
 _SI_ACCENT = re.compile(r"\bs\u00ed\b")
 # 句式要查什么：西语的系动词句式查否定和条件；英语的只查条件（英语的安慰是 you are not ugly，句式根本匹配
@@ -1138,8 +1241,10 @@ def _target_frames(words, universe=()):
         (re.compile(r"\b(?:eres|te ves|pareces|fuiste)\s+" + _DEGREE + r"(" + w + r")\b"), NEG_COND),
         (re.compile(r"\b(?:you are|youre|you re|u r|u are|ur(?=\s+(?:so|such|very|really|too)\b))\s+"
                     + _DEGREE + r"(" + w + r")\b" + _EN_COMPOUND), COND_ONLY),
-        # 光秃秃的 ur 只认目标词收尾的句子（`ur ugly` `ur fat lol`）：后面还有话的多半是「你的」（ur fat burner）
-        (re.compile(r"\bur\s+" + _DEGREE + r"(" + w + r")\b" + _EN_TAIL), COND_ONLY),
+        # 光秃秃的 ur 只认目标词收尾、而且 ur 在子句开头（前面最多垫几个语气词）的句子（`ur ugly` `ur fat lol`
+        # `omg ur fat`）：后面还有话的（ur fat burner）、或 ur 前面是动词介词的（burn ur fat、melt ur fat、
+        # on ur fat）多半是「你的」
+        (re.compile(r"^\s*(?:" + _EN_LEAD + r"\s+)*ur\s+" + _DEGREE + r"(" + w + r")\b" + _EN_TAIL), COND_ONLY),
         (re.compile(r"\bque\s+(" + w + r")\s+(?:eres|te ves)\b"), None),
         (re.compile(r"\bpinche\s+(" + w + r")\b"), None),
         (re.compile(r"\b(" + w + r")\s+(?:de mierda|asquerosa|inutil)\b"), None),
@@ -1217,7 +1322,8 @@ class FloodEngine:
       {"kind": "user_burst"|"same_text"|"brigade", "lvl": "alert"|"amber"|"note",
        "n": 条数或账号数, "window": 秒, "ev": 多账号事件的稳定 id（其余为 None）}
     多账号事件另有 first_ts、last_ts 和 accounts（前 20 个账号），C2 在 v1 里只到琥珀（一个事件、
-    账号数原地增长）：主播喊口令时观众会齐刷同一句。
+    账号数原地增长）：主播喊口令时观众会齐刷同一句。n 是整个事件累计的账号数；note / 琥珀看的是
+    窗口里（20 秒）相似的账号数（>= 3 / >= 5），事件还活着时来的零散相似弹幕不出事件。
 
     ts 要传调用方的时钟读数（PR-3 传 time.time()）：窗口计数只算 ts - window <= t <= ts 的条目，
     系统时钟被往回拨时，比 ts 更晚的旧条目不会被算进去。"""
@@ -1307,19 +1413,32 @@ class FloodEngine:
         （账号数原地增长、id 不变）；最后一条相似弹幕之后窗口 + BRIGADE_GAP 秒没有新的，事件结束。
         id 不是句子的哈希：同一句口令隔几分钟再刷一波，是新事件、新 id。
 
+        出不出事件、是 note 还是琥珀，都只看窗口（20 秒）里和这一句相似的账号数：note 要 >= 3 个、琥珀要
+        >= 5 个（规格 §4.5 C2）。事件上记的账号数 n 是整个事件累计的，只用来显示；事件还活着的时候来的
+        一个零散的相似弹幕，窗口里只有它自己，既不出事件也不升琥珀（不然一个事件一旦存在，之后每个说同一句
+        常见话的顾客都会被报成刷屏）。
+
         并进已有事件时也回看一遍窗口，把所有和这一条相似的账号补进去：事件的账号集合只靠「和创建它的
         那一句相似」收人的话，一句只和中间的变体相似的弹幕（V0 与 V2 不相似，V1 和两边都相似）永远
-        不会被数进来，琥珀会晚到甚至丢掉。"""
+        不会被数进来，琥珀会晚到甚至丢掉。同理，一句和事件里存的句子都不相似、但和窗口里一条已经属于这个
+        事件的弹幕相似的（V2 看 V1 看 V0），并进那个事件，不另开一个：不然一波口令会出两个事件。"""
         th = self.th
         n_note, window = th["brigade_note"]
         n_alert, _ = th["brigade_alert"]
         self.recent.append((ts, user, key, toks))
         self._expire_clusters(ts, window)
-        cl = self._find_cluster(key, toks)
-        users, first = self._similar_accounts(key, toks, ts, window)
+        users, first, near = self._similar_accounts(key, toks, ts, window)
+        matched = self._find_clusters(key, toks)
+        cl = matched[0] if matched else None
+        for other in matched[1:]:
+            self._merge_clusters(cl, other)           # 这一句同时是两个事件的桥：并成最早的那个
+        if cl is None and len(users) >= n_note:
+            cl = self._cluster_via(near)
+        if len(users) < n_note:
+            if cl is not None:
+                cl["last_ts"] = max(cl["last_ts"], ts)
+            return None
         if cl is None:
-            if len(users) < n_note:
-                return None
             self._ev_seq += 1
             ev = "%s%d" % (hashlib.sha1(key.encode("utf-8", "replace")).hexdigest()[:6], self._ev_seq)
             cl = self.clusters[ev] = {"ev": ev, "first_ts": first, "last_ts": ts, "users": users,
@@ -1335,14 +1454,14 @@ class FloodEngine:
                 cl["users"].setdefault(account, None)
             if len(cl["keys"]) < BRIGADE_KEYS and all(key != k for k, _ in cl["keys"]):
                 cl["keys"].append((key, toks))
-        n = len(cl["users"])
-        return {"kind": "brigade", "lvl": "amber" if n >= n_alert else "note",
-                "n": n, "window": window, "ev": cl["ev"], "first_ts": cl["first_ts"],
+        return {"kind": "brigade", "lvl": "amber" if len(users) >= n_alert else "note",
+                "n": len(cl["users"]), "window": window, "ev": cl["ev"], "first_ts": cl["first_ts"],
                 "last_ts": cl["last_ts"], "accounts": list(islice(cl["users"], 20))}
 
     def _similar_accounts(self, key, toks, ts, window):
-        """窗口里和这一句相似的账号（按各自第一次说这句的先后排，先到的在前）和其中最早的时间。"""
-        found, first = {}, ts
+        """窗口里和这一句相似的账号（按各自第一次说这句的先后排，先到的在前）、其中最早的时间、
+        以及这些相似弹幕各自的句子（去重，从新到旧，最多 BRIGADE_KEYS 句）。"""
+        found, first, near, seen = {}, ts, [], set()
         for t, u, k, tk in islice(reversed(self.recent), RECENT_SCAN):
             if t < ts - window:
                 break
@@ -1351,7 +1470,10 @@ class FloodEngine:
             if self._similar(key, toks, k, tk):
                 found[u] = t              # 从新往旧扫，最后留下的是这个账号最早的一条
                 first = min(first, t)
-        return OrderedDict(sorted(reversed(found.items()), key=lambda kv: kv[1])), first
+                if k != key and k not in seen and len(near) < BRIGADE_KEYS:
+                    seen.add(k)
+                    near.append((k, tk))
+        return OrderedDict(sorted(reversed(found.items()), key=lambda kv: kv[1])), first, near
 
     def _expire_clusters(self, ts, window):
         stale = [ev for ev, cl in self.clusters.items()
@@ -1359,12 +1481,36 @@ class FloodEngine:
         for ev in stale:
             del self.clusters[ev]
 
-    def _find_cluster(self, key, toks):
-        for cl in self.clusters.values():
-            for k, tk in cl["keys"]:
-                if self._similar(key, toks, k, tk):
-                    return cl
+    def _cluster_via(self, near):
+        """窗口里和当前这句相似的那些弹幕，有没有哪一句已经属于某个事件。"""
+        for k, tk in near:
+            cl = self._find_cluster(k, tk)
+            if cl is not None:
+                return cl
         return None
+
+    def _find_clusters(self, key, toks):
+        """和这一句相似的事件（按创建先后）。"""
+        return [cl for cl in self.clusters.values()
+                if any(self._similar(key, toks, k, tk) for k, tk in cl["keys"])]
+
+    def _find_cluster(self, key, toks):
+        found = self._find_clusters(key, toks)
+        return found[0] if found else None
+
+    def _merge_clusters(self, keep, other):
+        """V0 和 V2 互相不相似、V1 和两边都相似：先来了一串 V0、又来了一串 V2 时会各开一个事件，V1 一出现就
+        并成一个，之后的弹幕只往 keep 里记，另一个自然过期。"""
+        for account in other["users"]:
+            if len(keep["users"]) >= BRIGADE_USERS:
+                break
+            keep["users"].setdefault(account, None)
+        for k, tk in other["keys"]:
+            if len(keep["keys"]) < BRIGADE_KEYS and all(k != k2 for k2, _ in keep["keys"]):
+                keep["keys"].append((k, tk))
+        keep["first_ts"] = min(keep["first_ts"], other["first_ts"])
+        keep["last_ts"] = max(keep["last_ts"], other["last_ts"])
+        self.clusters.pop(other["ev"], None)
 
     def _similar(self, key, toks, key2, toks2):
         if key == key2:
@@ -1509,7 +1655,7 @@ _MASK_EXTRA_WORDS = ("fuck",)
 _MASK_PUNCT = "!?\u00a1\u00bf,;:()\"'[]{}<>\u2026"
 
 
-_PERO = re.compile(r"\b(?:pero|aunque|sin embargo)\b")
+_PERO = re.compile(r"\b(?:pero|aunque|sin embargo|but|however|although|though|resulta que|hasta que)\b")
 
 
 def _deny(rules, text, pero_after):
@@ -1593,16 +1739,19 @@ class CommentGuard:
         """(light 文本, 去掉遮挡符之后的 light 文本, fold 文本, 第二种读法)。链接、电话、问号看 light 文本；
         词表匹配看 fold 文本；p*ta 这类词内遮挡符只在词表匹配那一路还原。
 
-        第二种读法：文本里有盲文空白、韩文填充符这类占一个空格宽的字符时，它既可能是把一个词劈开
-        （est[U+2800]afa），也可能当空格用（eres[U+2800]una[U+2800]pendeja）。light() 按前一种读（删掉），这里再给出把它们
-        当空格的 (src, fold)，词表匹配两种读法各跑一遍、命中取并集；没有这类字符时是 None。"""
+        第二种读法：文本里有看不见的字符（盲文空白、韩文填充符、双向隔离符、Cf 类格式字符……）时，它既可能
+        是把一个词劈开（est[U+2800]afa），也可能当空格用（eres[U+2066]una[U+2066]pendeja）。light() 按前一种读
+        （删掉），这里再给出把它们当空格的 (src, fold)，词表匹配两种读法各跑一遍、命中取并集；没有这类字符
+        （表情的粘合符不算）时是 None。"""
         light_text = light(text)
         src = self._unmask(light_text)
         alt = None
-        if _BLANK_RE.search(text):
-            alt_src = self._unmask(light(text.translate(_BLANK_AS_SPACE)))
-            if alt_src != src:
-                alt = (alt_src, fold(alt_src))
+        if not text.isascii():
+            spaced = text.translate(_AS_SPACE)
+            if spaced != text:
+                alt_src = self._unmask(light(spaced))
+                if alt_src != src:
+                    alt = (alt_src, fold(alt_src))
         return light_text, src, fold(src), alt
 
     def _lex_all(self, light_text, folded, src, alt):
@@ -1627,16 +1776,16 @@ class CommentGuard:
         rules, out = self.rules, {}
         flags = {"target_vocative": False, "target_vocative_pending": False, "ask": False}
 
-        def strip(file, text):
+        def strip(file, text, fill=" "):
             rx = rules.exempt.get(file)
             if not rx:
                 return text
             if file != "insult":
-                return rx.sub(" ", text)
+                return rx.sub(fill, text)
             # 「puta madre」是感叹，但「hijo de la / tu puta madre」「tu puta madre」「vete a tu puta
             # madre」是骂人：这些情形前面的词不能让它被整个盖住
             return rx.sub(lambda m: m.group(0) if "puta madre" in m.group(0)
-                          and _PUTA_KEEP.search(text[:m.start()]) else " ", text)
+                          and _PUTA_KEEP.search(text[:m.start()]) else fill, text)
 
         def scan(file, secs, text):
             for sec in secs:
@@ -1659,6 +1808,14 @@ class CommentGuard:
                     return found
             return None
 
+        def target_marked(frames):
+            # 否定词和句式之间隔着被豁免的短语、表情或符号（`no no manches eres fea`、`no 🙄 eres fea`、
+            # `no (eres fea)`）：fold 把它们抹成空白，no 就显得紧挨着句式词，其实不是。把它们换成占位词再判一遍，
+            # 占位词挡在中间的不算被否定（宁可多报一个可见的，不静默丢掉）
+            text = fold_src if fold_src is not None else light_text
+            found, _ = _first_target(frames, strip("insult", fold(_SYMBOL_RUN.sub(_MARK, text)), _MARK))
+            return found
+
         for sec, frames, voc, flag in (
                 ("target", rules._frames, rules.target_vocative, "target_vocative"),
                 ("target" + PENDING, rules._frames_pending, rules.target_vocative_pending,
@@ -1666,8 +1823,10 @@ class CommentGuard:
             if not frames:
                 continue
             m, skipped = _first_target(frames, fi)
+            if m is None and skipped:
+                m = target_marked(frames)
             if m is None and (skipped or _BARE_UR.search(fi)):
-                m = target_by_clause(frames)           # 光秃秃的 ur 要看它是不是子句的结尾
+                m = target_by_clause(frames)           # 光秃秃的 ur 要看它是不是子句的开头和结尾
             if m:
                 out[("insult", sec)] = [m.group(1)]
                 continue
@@ -1681,12 +1840,13 @@ class CommentGuard:
             src = fold_src if fold_src is not None else light_text
             if _CLAUSE_SPLIT.search(src):
                 # 否认式在保留标点的子句里判：「no, es una estafa」的 no 不否认后面那句
-                clauses = [strip("accuse", fold(c)) for c in _CLAUSE_SPLIT.split(src) if c.strip()]
+                clauses = [strip("accuse", fold(c, slang=False)) for c in _CLAUSE_SPLIT.split(src) if c.strip()]
                 pero_after, parts = False, []
                 for c in reversed(clauses):                  # 转述句看后面的子句里有没有 pero
                     parts.append(_deny(rules, c, pero_after))
                     pero_after = pero_after or bool(_PERO.search(c))
-                fa = clip_words(" ".join(_join_letter_runs(" ".join(reversed(parts)).split())))
+                fa = clip_words(" ".join(_SLANG.get(t, t)
+                                         for t in _join_letter_runs(" ".join(reversed(parts)).split())))
             else:
                 fa = _deny(rules, fa, False)
         scan("accuse", ("assert", "call", "report", "assert" + PENDING, "call" + PENDING,
@@ -1933,18 +2093,25 @@ class CommentGuard:
     def _promo(self, hits, flags, light_text, folded, plain_q, structure_only):
         rules = self.rules
         out = []
-        urls = [u for u in url_hits(light_text) if not self._link_exempt(u)]
-        phones = phone_hits(light_text)
+        found = url_hits(light_text)
+        urls = [u for u in found if not self._link_exempt(u)]
+        # 被豁免的自家链接里的数字（视频 id）和 @主页名不是电话和账号：先拿掉再找
+        scan_text = light_text
+        for u in found:
+            if u not in urls:
+                scan_text = scan_text.replace(u, " ")
+        phone_ms = phone_matches(scan_text)
         emails = [e for e in email_hits(light_text) if not self._email_exempt(e)]
-        handles = handle_hits(light_text, self.streamer)                          # 被账号标签引出的
-        any_handles = handle_hits(light_text, self.streamer, labeled_only=False)  # 所有 @
-        self_handles = self_handle_hits(light_text, self.streamer)               # mi ig @x 这类
+        handles = handle_hits(scan_text, self.streamer)                          # 被账号标签引出的
+        any_handles = handle_hits(scan_text, self.streamer, labeled_only=False)  # 所有 @
+        self_handles = self_handle_hits(scan_text, self.streamer)               # mi ig @x 这类
         if rules.mine:
-            phones = [p for p in phones if not any(m in p for m in rules.mine)]
+            phone_ms = [(d, r) for d, r in phone_ms if not any(m in d for m in rules.mine)]
             own = {m.lstrip("@") for m in rules.mine}
             handles = [h for h in handles if h.rstrip(".") not in own]
             any_handles = [h for h in any_handles if h.rstrip(".") not in own]
             self_handles = [h for h in self_handles if h.rstrip(".") not in own]
+        phones = [d for d, _ in phone_ms]
         pulls = hits.get(("promo", "pull"), [])
         scams = hits.get(("promo", "scam-strong"), [])
         pulls_p = hits.get(("promo", "pull" + PENDING), [])       # 待确认的：只出琥珀
@@ -1992,9 +2159,10 @@ class CommentGuard:
             else:
                 out.append(_finding("promo_contact", "contact", STRUCT, "alert",
                                     ["promo/contact+cue"]))
-        elif phones and any_handles and not ordering:
+        elif (any(plausible_phone(d, r) for d, r in phone_ms) and any_handles and not ordering):
             # 电话 + @账号（任何 @，包括呼叫朋友的那种）同现：一份联系方式清单。下单语境
-            # （quiero comprar 5512345678 @ana）同上，只记 note
+            # （quiero comprar 5512345678 @ana）同上，只记 note。没有话术垫底，所以电话要像真的：
+            # `@luna 666666666`、`@luna tienen en 36 37 38 39?` 这类打招呼、尺码、年份不算（见 plausible_phone）
             out.append(_finding("promo_contact", "contact", STRUCT, "alert",
                                 ["promo/phone+handle"]))
         elif phones:

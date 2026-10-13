@@ -54,8 +54,9 @@ comment_guard/
 
 折叠（`fold()`）会处理手机打字常见的拼写漂移：大小写、重音、拉长（`holaaaa`）、拆字（`e s t a f a`，
 空格、点、逗号、斜杠、表情隔开的都认，>= 4 个连续单字母才拼回）、leet（`m13rd4`）、同形字、`q` / `xq` 这类俚语缩写、
-格式字符和不可见字符（Unicode 类别 Cf、蒙古文自由变体选择符、标签字符、韩文填充符等一律删掉；其中盲文空白 U+2800 和韩文
-填充符这类占一个空格宽的，词表匹配另跑一遍把它们当空格的读法，两遍的命中取并集：`est[U+2800]afa` 和 `eres[U+2800]una[U+2800]pendeja` 都认），以及词内遮挡符（`p*ta`、`est*fa`、
+格式字符和不可见字符（Unicode 类别 Cf、蒙古文自由变体选择符、标签字符、韩文填充符等一律删掉；它们既可能把一个词劈开，
+也可能是两个词之间唯一的分隔，所以词表匹配另跑一遍把它们当空格的读法，两遍的命中取并集：`est[U+2800]afa` 和
+`eres[U+2066]una[U+2066]pendeja`、`hola[U+2069]pendeja` 都认；表情的粘合符 FE0E / FE0F / ZWJ / keycap 不当空格读），以及词内遮挡符（`p*ta`、`est*fa`、
 `f*ck`：一个遮挡符代表一个任意字母，只对 `strong` 和 `assert` 段里 >= 4 个字母的单词条生效）。
 
 ## 三层档位
@@ -80,17 +81,26 @@ comment_guard/
   `o no` / `o que`、选择问句 `X o Y`）不计分，句里有指称词时才作为升级型送模型。
   `hay` / `tienen` / `dan` / `pueden` / `alguien` 和感叹的 `cuanta estafa` / `what a scam` 不是疑问词：没有问号时不算问句，
   带 `maybe_question` 标记出琥珀。
-- `target` 的系动词句式前面紧挨着否定（`no eres fea`、`ya no estas gorda`）或条件（`si estas operada`、`if you are fat`）不算；
-  否定词要紧挨着句式词，`no inventes eres fea`、`ni modo eres fea`、`no tu eres fea` 照样算；`no, eres fea`、`dije que no. eres fea` 的
-  no 是应答，按子句重判；`tu si eres fea`、`si, eres fea`、`sí eres fea` 的 si 是「确实」，不是条件；`pinche X`、`X de mierda`、
+- `target` 的系动词句式前面紧挨着否定（`no eres fea`、`ya no estas gorda`）或条件（`si estas operada`、`si tu ya estas operada`、
+  `if you are fat`、`if you think you are fat`：条件词在同一个子句里、和句式之间隔不超过 3 个词，中间有 `pero` / `y` /
+  `porque` 的不算）不算；否定词要紧挨着句式词，`no inventes eres fea`、`ni modo eres fea`、`no tu eres fea` 照样算，
+  否定词和句式词之间隔着被豁免的短语、表情或符号（`no no manches eres fea`、`no 🙄 eres fea`、`no (eres fea)`）也照样算
+  （宁可多报一个可见的）；`no, eres fea`、`dije que no. eres fea` 的 no 是应答，按子句重判；`tu si eres fea`、`si, eres fea`、`sí eres fea` 的 si 是「确实」，不是条件；`pinche X`、`X de mierda`、
   `que X eres` 不查否定。裸 `estas` 只接单数目标词（`estas feas manchas`、`que feas estas fajas` 的 feas 是复数）；
-  英语的裸 `ur` 只认目标词收尾的句子（`ur ugly`、`ur fat lol`），后面还有话的（`ur fat burner`、`ur ugly sweater`）不算；
+  英语的裸 `ur` 只认在子句开头（前面最多垫 `omg` / `lol` 这类语气词）、目标词收尾的句子（`ur ugly`、`ur fat lol`、`omg ur fat`），
+  后面还有话的（`ur fat burner`、`ur ugly sweater`）、`ur` 前面是动词介词的（`burn ur fat`、`melt ur fat`）不算；
   `you are fat burning`、`fat loss` 这类商品词不算。
 - @账号只有被账号标签引出时才算引流的载荷：平台名（`ig: x`、`wsp: x`，不写 @ 也行）、`mi ig @x`、`sigueme en @x`、
   `mi cuenta @x`，以及紧挨在 @ 前面的命令式（`sigueme @x`、`dm me @x`、`follow me @x`）；标签按去重音的文本认（`sígueme`、`página`）。
+  标签和 @ 之间可以隔一小段非字母（`IG ➡️ @x`、`siganme 👉 @x`、`siganme!! @x`）或 `es` / `de` / `en` / `a` 这类连接词
+  （`mi ig es @x`、`instagram de @x`）。顾客报自己的号（`mi ig @x para el sorteo`、`mi cuenta @x no me deja entrar`）和
+  `mi ig @x` 的引流写法分不开，也会出红条（结构信号，不自动加人）：这是已知的取舍，要不要为抽奖、账号问题单独放行由用户决定。
   `cuenta` / `perfil` / `pagina` 这类泛称必须带 @（`mi perfil: privado` 不是账号）；纯数字的不算账号（`wsp: 5512345678` 的号码）。
   句首或句中呼叫朋友的 `@名字 ……` 不算。电话 + 任何 @账号同现仍是红条（结构信号），有下单语境词（`quiero comprar 5512345678 @ana`）
-  时只记 note。邮箱地址不是链接，是联系方式；`https://x@evil.shop`、`tiktok.com@evil.shop` 这种把链接伪装成登录信息的，仍然是链接。
+  时只记 note；这条没有话术垫底，所以电话要像真的：只有 1~2 种数字（`666666666`）、连号（`12345678`）、只由 1~2 位一组
+  拼成的（`36 37 38 39`）、3-3-3 分组（`350 450 550`）、年份串（`2024-2025-2026`）都不算，连写的 8~12 位、2-4-4 / 3-3-4 / 4-4 分组、
+  带 + 的国际号、西语数字词读法照旧算。邮箱地址不是链接，是联系方式；`https://x@evil.shop`、`tiktok.com@evil.shop` 这种把链接伪装成登录信息的，
+  以及域名后面紧跟路径、端口、查询串的（`a@mitienda.com/promo`、`x@wa.me/5512345678`），仍然是链接。
 - 强词出现在第一人称自指的句子里（`que pendeja soy`，没有第二人称标记）降为琥珀（`amb == "self"`）。
 
 ## 确认红条档词条
@@ -140,8 +150,8 @@ comment_guard/
 | `insult.txt` `accuse.txt` `promo.txt` | 同名同格式：普通行 = 追加到所在的 `[段]`；`-词条` = 关掉一条默认（按折叠形式匹配，以后版本里同名词条仍保持关掉） |
 | `exempt.txt` | 本机豁免短语（行业词、主播口头禅）。可用 `[insult]` `[accuse]` `[promo]` 分段，不分段就三类都适用 |
 | `competitors.txt` | 竞品店名、账号、品牌（引流类用）。默认空；仓库里不放任何具体竞品 |
-| `mine.txt` | 自己的号码、链接、账号、邮箱，永不算引流。号码按子串比；账号是精确匹配（`marcaejemplo` 不盖 `@marcaejemplo_oficial`）；域名按 host 比（见下），自家域名下的邮箱（`soporte@marcaejemplo.com`）同样不算 |
-| `exempt_domains.txt` | 无害的域名（物流官网等），命中的链接不算引流。按 host 比：host 等于条目或以 `.条目` 结尾，条目带路径时路径还要以它开头；`tienda-marcaejemplo.com`、`marcaejemplo.com.evil.shop`、`marcaejemplo.com.mx` 不被 `marcaejemplo.com` 盖住；host 后面直接粘着表情或标点（`www.marcaejemplo.com😍`）不影响，粘着第二个链接（`…com,https://evil.com`）则不放过 |
+| `mine.txt` | 自己的号码、链接、账号、邮箱，永不算引流。号码按子串比；账号是精确匹配（`marcaejemplo` 不盖 `@marcaejemplo_oficial`）；域名按 host 比（见下），自家域名下的邮箱（`soporte@marcaejemplo.com`）同样不算；条目可以带账号主页路径（`tiktok.com/@marcaejemplo`，盖住 `…/@marcaejemplo/video/…`，不盖 `…/@marcaejemplo2`） |
+| `exempt_domains.txt` | 无害的域名（物流官网等），命中的链接不算引流。按 host 比：host 等于条目或以 `.条目` 结尾，条目带路径时路径还要以它开头；`tienda-marcaejemplo.com`、`marcaejemplo.com.evil.shop`、`marcaejemplo.com.mx`、`marcaejemplo.com.éxito.shop`（带重音的标签也算标签）不被 `marcaejemplo.com` 盖住；host 后面直接粘着表情或标点（`www.marcaejemplo.com😍`）不影响，粘着第二个链接（`…com,https://evil.com`）则不放过 |
 | `thresholds.txt` | `key: value`，覆盖 `defaults/thresholds.txt` |
 | `trusted/<主播>.txt` | 该主播本人、房管、助理的 uid，一行一个，永不提醒。`judge()` 的 `user` 或 `keys` 里任一个命中就算（不分大小写） |
 
@@ -205,7 +215,10 @@ pestanas ejemplo
 - 多账号同句是一个事件：第一次到 `brigade_note` 时分配 id，之后相似的弹幕并进同一个事件（账号数原地增长、id 不变；并进来的时候
   回看窗口，把所有和这一条相似的账号补进去，所以只和中间的变体相似的弹幕也数得进来），
   最后一条相似弹幕之后「窗口 + 20 秒」没有新的就结束；`judge().last_flood` 里的事件带 `ev`、`n`、`first_ts`、`last_ts`、`accounts`（前 20 个，按各自第一次说这句的先后排）。
-  **n 是整个事件累计的账号数，不是 20 秒窗口里的**：一个 3 账号的小爆发之后，每隔不到 40 秒来一个新账号，事件一直活着，第 5 个账号起出琥珀（旧算法的 20 秒窗口永远凑不到 5 个）。要不要改回「只数窗口里的」由用户决定。
+  **出不出事件、note 还是琥珀，只看 20 秒窗口里和这一句相似的账号数**（>= 3 记 note，>= 5 出琥珀，规格 §4.5 C2）；事件上的
+  `n` 是整个事件累计的账号数，只用来显示。事件还活着时来的零散相似弹幕（窗口里只有它自己）不出事件、不升琥珀，所以每 9 秒
+  来一个新账号说「me gusta mucho el color rosa」永远到不了琥珀。口令的变体 V0 / V2 互不相似、V1 和两边都相似时：V2 看窗口里
+  已经属于某个事件的 V1，并进那个事件；先各自开了两个事件的，V1 一出现就并成最早的那个。
 
 ## 词表体检
 

@@ -1362,3 +1362,184 @@ def test_the_same_text_counts_have_an_upper_bound_at_now():                     
         eng.feed("u", "quiero el combo", toks, ts)
     out = eng.feed("u", "quiero el combo", toks, 1000.0)          # 5 条都在「未来」
     assert [e for e in out if e["kind"] == "same_text"] == [], out
+
+
+# ------------------------------------------------------------------------------------------
+# 复核第一轮之后找出的回归和漏网（每条一个测试，修复前会失败）
+# ------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [                                                  # #2 复核
+    "no no manches eres fea", "no no mames eres fea", "no chingona eres fea",
+    "no \U0001F602 eres fea", "no \U0001F644 eres fea", "no - eres fea", "no (eres fea)", 'no "eres fea"',
+    "no *eres fea*", "no / eres fea", "no-eres fea", "no, no manches, eres fea",
+])
+def test_a_no_that_is_separated_from_the_target_frame_by_a_phrase_or_a_symbol_does_not_deny_it(text):
+    r = judge(text)
+    assert (r["lvl"], r["tier"]) == ("alert", "red"), (text, r)
+
+
+@pytest.mark.parametrize("text", [                                                  # #2 复核：紧挨着的仍是安慰
+    "no eres fea", "no eres fea!!", "no eres fea \U0001F60D", "no estas gorda \U0001F495", "no te ves gorda",
+    "no eres fea (eres hermosa)", "ya no estas gorda felicidades",
+])
+def test_a_no_that_hugs_the_target_frame_still_denies_it_even_with_symbols_elsewhere(text):
+    assert lvl(text) is None, text
+
+
+@pytest.mark.parametrize("text", [                                                  # #5 复核：真指控仍然报
+    "estos ladrones se llevaron mi pedido y no me devuelven nada", "la ladrona se llevo mi envio y nunca llego",
+    "los ladrones se llevaron mi pedido de esta tienda", "ladrones robaron mi paquete en esta tienda",
+    "esta tienda esta en revision por posible fraude", "esta cuenta fue reportada por posible fraude",
+    "esta cuenta tiene alerta de fraude", "alerta de fraude en esta cuenta",
+    "mi banco dijo que esta cuenta tiene alerta de fraude",
+    "no sean estafadores", "no sea ladrona y devuelva mi dinero", "no sean ladrones, bajen el precio",
+    "no seas ladrona", "dudo mucho que no sea estafa", "no creo que no sea estafa",
+    "pense que era estafa, no me equivoque", "creia que era estafa y lo confirme", "temia que fuera estafa y lo fue",
+    "pense que era estafa y si lo es",
+])
+def test_real_accusations_that_share_words_with_the_worried_buyer_phrasings_are_not_cut(text):
+    assert lvl(text) in ("alert", "amber"), text
+
+
+@pytest.mark.parametrize("text", [                                                  # #5 复核：担心 / 辩护的变体仍然剪
+    "no vaya a ser que sea estafa", "no vaya a ser que sea una estafa", "tengo miedo que sea estafa",
+    "me da miedo que sea estafa", "ojala que no sea estafa", "i dont think its a scam", "im afraid its a scam",
+    "i thought it was a scam but it arrived", "cero estafa", "mi tarjeta tiene alerta de fraude",
+    "los ladrones se llevaron mi paquete del porche",
+])
+def test_more_worried_buyer_phrasings_are_cut_like_a_denial(text):
+    assert lvl(text) is None, text
+
+
+@pytest.mark.parametrize("text", [                                                  # #7 复核
+    "Sígueme en TikTok \U0001F449 @tienda22", "IG ➡️ @tienda22 escribeme", "siganme \U0001F449 @tienda22",
+    "sigueme en mi ig es @tienda22", "siganme en instagram de @tienda22", "siganme!! @tienda22",
+    "tiktok: @tienda22 escribeme", "ig - @tienda22 escribeme",
+])
+def test_an_account_label_followed_by_an_emoji_or_a_connector_word_and_the_handle_is_still_a_redirect(text):
+    r = judge(text)
+    assert (r["lvl"], r["cats"], r["tier"]) == ("alert", ["promo_contact"], "struct"), (text, r)
+    assert set(cg.handle_hits(cg.light(text))) == {"tienda22"}, text
+
+
+@pytest.mark.parametrize("text", [                                                  # #7 复核：朋友对话仍不算
+    "@lupita escribeme al privado", "@nancy sigueme que te sigo", "hola @ana como estas",
+    "gracias a @ana por el tip", "vi a @ana en el live de ayer", "@ana @luis vean esto",
+])
+def test_the_wider_label_gap_does_not_turn_friend_mentions_into_redirects(text):
+    assert cg.handle_hits(cg.light(text)) == [], text
+    assert lvl(text) in (None, "note"), text
+
+
+@pytest.mark.parametrize("text", [                                                  # #8 复核
+    "si tu ya estas operada puedes usar la faja?", "si de verdad estas gorda usa la talla xl",
+    "if you think you are fat this will help", "si estas operada puedes usar la faja?",
+])
+def test_a_conditional_that_leads_the_clause_a_few_words_before_the_frame_is_not_an_insult(text):
+    assert lvl(text) is None, text
+
+
+@pytest.mark.parametrize("text", [                                                  # #8 复核：这些结果不变
+    "si, estas gorda", "tu si eres fea", "cuando te ves al espejo estas fea", "no se si te importa pero eres fea",
+    "pero si estas gorda", "mira si eres fea", "hoy si estas fea",
+])
+def test_conditionals_far_from_the_frame_or_with_an_emphatic_si_stay_insults(text):
+    assert lvl(text) == "alert", text
+
+
+@pytest.mark.parametrize("text", [                                                  # #8 复核：ur 是「你的」
+    "burn ur fat", "this will melt ur fat", "does it work on ur fat", "i can see ur fat",
+])
+def test_a_bare_ur_in_the_middle_of_a_sentence_is_a_possessive_not_an_insult(text):
+    assert lvl(text) is None, text
+
+
+@pytest.mark.parametrize("text", ["omg ur fat", "lol ur ugly", "lol. ur fat", "ur fat"])
+def test_a_bare_ur_that_starts_the_clause_is_still_an_insult(text):
+    assert lvl(text) == "alert", text
+
+
+@pytest.mark.parametrize("text", [                                                  # #19 复核
+    "@luna 666666666", "@luna 88888888", "@luna 1 1 1 1 1 1 1 1 1", "@luna tienen en 36 37 38 39?",
+    "@ana tienen 38 40 42 44?", "@luna cuanto cuesta 350 450 550", "@luna sorteo numero 05 12 18 23 31",
+    "@ana 2024-2025-2026", "@ana 12345678",
+])
+def test_greetings_size_lists_and_years_next_to_an_at_mention_are_not_a_contact_list(text):
+    r = judge(text)
+    assert (r["lvl"], r["tier"]) in ((None, None), ("note", "struct")), (text, r)
+    assert r["lvl"] != "alert", (text, r)
+
+
+@pytest.mark.parametrize("text", [                                                  # #19 复核：真电话 + @ 仍是红条
+    "+504 9999 8888 @tienda_x", "55 1234 5678 @x_tienda", "@ana 5512345678", "5512345678 @ana_tienda",
+    "555 123 4567 @ana_tienda", "cero cinco cinco uno dos tres cuatro cinco seis siete @ana_tienda",
+])
+def test_a_real_phone_number_next_to_an_at_mention_is_still_a_red_contact(text):
+    r = judge(text)
+    assert (r["lvl"], r["cats"], r["tier"], r["why"]) == ("alert", ["promo_contact"], "struct",
+                                                           ["promo/phone+handle"]), (text, r)
+
+
+@pytest.mark.parametrize("text", [                                                  # #31 复核
+    "visita a@mitienda.com/promo", "x@wa.me/5512345678", "mi@bit.ly/abc123", "x@t.me/canal_ofertas",
+    "ig@instagram.com/tienda_x", "a@mitienda.com:8080/x", "a@mitienda.com\\promo", "a@mitienda.com#promo",
+])
+def test_a_link_with_an_x_at_in_front_of_the_domain_is_still_a_link(text):
+    assert cg.email_hits(cg.light(text)) == [], text
+    assert cg.url_hits(cg.light(text)), text
+    r = judge(text)
+    assert (r["lvl"], r["cats"]) == ("alert", ["promo_link"]), (text, r)
+
+
+@pytest.mark.parametrize("text", ["escribeme a ana@gmail.com", "ana@gmail.com.", "ana@gmail.com, gracias",
+                                  "ana@gmail.com.mx"])
+def test_a_plain_email_address_is_still_an_email_not_a_link(text):
+    assert cg.email_hits(cg.light(text)) and cg.url_hits(cg.light(text)) == [], text
+
+
+@pytest.mark.parametrize("cp", [0x2066, 0x2069, 0x061C, 0x180E, 0x0488, 0x17B4, 0xE0041, 0x200B, 0x200E, 0x00AD,
+                                0x2800, 0x3164])
+@pytest.mark.parametrize("pattern", ["eres{c}una{c}pendeja", "estafa{c}total", "hola{c}pendeja", "est{c}afa total"])
+def test_an_invisible_character_is_read_both_as_a_split_and_as_a_separator(cp, pattern):   # #43 复核
+    text = pattern.format(c=chr(cp))
+    assert lvl(text) in ("alert", "amber"), (hex(cp), text)
+
+
+def test_emoji_glue_characters_do_not_trigger_the_second_reading():                  # #43 复核
+    guard_ = guard()
+    for text in ("hola ❤️ amiga", "\U0001F469‍\U0001F469‍\U0001F467 hola", "1️⃣ quiero"):
+        assert guard_._prep(text)[3] is None, text
+    assert guard_._prep("eres⁦una⁦pendeja")[3] is not None
+
+
+def test_mine_and_exempt_domains_entries_with_an_at_in_the_path_are_profile_pages(tmp_path):   # #49 复核
+    write(tmp_path, "mine.txt", "tiktok.com/@marcaejemplo\n")
+    write(tmp_path, "exempt_domains.txt", "youtube.com/@canalejemplo\n")
+    rules = cg.load_rules(FIX, tmp_path)
+    for text in ("mira https://www.tiktok.com/@marcaejemplo/video/7123456789", "mira tiktok.com/@marcaejemplo",
+                 "mira https://www.youtube.com/@canalejemplo", "mira https://www.youtube.com/@canalejemplo/videos"):
+        assert lvl(text, rules=rules) is None, text
+    for text in ("mira tiktok.com/@marcaejemplo2", "mira https://www.tiktok.com/@otra",
+                 "mira youtube.com/@canalejemplo2"):
+        assert lvl(text, rules=rules) == "alert", text
+
+
+def test_a_lookalike_with_a_non_ascii_label_is_not_covered_by_the_own_domain(tmp_path):   # #49 复核
+    write(tmp_path, "mine.txt", "marcaejemplo.com\ndiseñosluna.com\n")
+    rules = cg.load_rules(FIX, tmp_path)
+    for text in ("www.marcaejemplo.com.éxito.shop", "https://marcaejemplo.com.ñandu.shop/oferta",
+                 "marcaejemplo.com.ñandu.shop", "www.marcaejemplo.comé.shop",
+                 "www.marcaejemplo.com.evil.shop"):
+        assert lvl(text, rules=rules) == "alert", text
+    for text in ("www.marcaejemplo.com", "https://www.marcaejemplo.com/p/1", "www.diseñosluna.com"):
+        assert lvl(text, rules=rules) is None, text
+
+
+@pytest.mark.parametrize("text,expected", [                                         # #50 复核
+    ("es f, a, k, e", "amber"), ("es f. a. k. e", "amber"), ("e, s, t, a, f, a", "alert"),
+    ("no, es una estafa", "amber"), ("No. Estafa.", "alert"),
+])
+def test_clause_wise_folding_still_joins_spaced_letters_that_contain_slang_letters(text, expected):
+    assert lvl(text) == expected, text
+    r = judge("p, o, r, q, u, e, r, i, a")
+    assert r["lvl"] == "note"

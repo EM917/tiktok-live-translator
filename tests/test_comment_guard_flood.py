@@ -410,16 +410,75 @@ def test_a_later_flood_of_the_same_slogan_is_a_new_event_with_a_new_id():       
     assert len(set(ids)) == 2 and ids[0] != ids[-1]
 
 
-def test_event_expires_after_the_window_plus_a_gap_and_a_straggler_does_not_revive_it():   # #17
+def test_event_expires_after_the_window_plus_a_gap_and_a_lone_straggler_does_not_raise_it():   # #17
     g = guard()
     first = run([(1000 + i, "a%d" % i, "participo en el sorteo 7") for i in range(4)], g)
     old_ev = brigades(first)[-1]["ev"]
-    # 窗口 20 秒 + 间隔 20 秒之内再来一个：并进同一个事件
+    # 窗口 20 秒 + 间隔 20 秒之内来一个零散的：窗口里只有它自己，不出事件（也不升琥珀）
     again = run([(1030, "late1", "participo en el sorteo 7")], g)
-    assert brigades(again)[0]["ev"] == old_ev and brigades(again)[0]["n"] == 5
-    # 隔了很久，只来一个：不成事件（凑不够 3 个账号）
+    assert not brigades(again) and again[0][0]["lvl"] is None
+    # 隔了很久，只来一个：不成事件（凑不够 3 个账号），旧事件也已经清掉
     alone = run([(2000, "late2", "participo en el sorteo 7")], g)
     assert not brigades(alone) and not g.flood.clusters
+    # 间隔之内又齐刷一波（窗口里 3 个账号）：并进同一个事件，id 不变，n 是累计的
+    g = guard()
+    run([(1000 + i, "a%d" % i, "participo en el sorteo 7") for i in range(4)], g)
+    wave = run([(1030 + i, "b%d" % i, "participo en el sorteo 7") for i in range(3)], g)
+    evs = brigades(wave)
+    assert [e["ev"] for e in evs] == [old_ev] * len(evs) and evs[-1]["n"] == 7 and evs[-1]["lvl"] == "note"
+
+
+def test_brigade_amber_follows_the_window_count_not_the_accounts_accumulated_over_the_events_life():   # #17
+    # 5 个账号 20 秒内说同一句：琥珀。之后每隔 35 秒来一个新账号，窗口里只有它自己：不出事件，不是琥珀
+    res = run([(1000 + i, "a%d" % i, "que precio tiene") for i in range(5)])
+    assert brigades(res)[-1]["lvl"] == "amber" and brigades(res)[-1]["n"] == 5
+    g = guard()
+    run([(1000 + i, "a%d" % i, "que precio tiene") for i in range(5)], g)
+    late = run([(1035, "late", "que precio tiene"), (1070, "late2", "que precio tiene")], g)
+    assert not brigades(late) and [r["lvl"] for r, _ in late] == [None, None]
+
+
+def test_a_neutral_sentence_from_a_new_account_every_nine_seconds_is_never_amber():   # #17
+    # 每 9 秒一个新账号：窗口（20 秒）里最多 3 个，是 note 级的事件，永远升不到琥珀
+    res = run([(1000 + 9 * i, "c%d" % i, "me gusta mucho el color rosa") for i in range(14)])
+    assert brigades(res) and not any(e["lvl"] == "amber" for e in brigades(res))
+    assert all(r["lvl"] in (None, "note") for r, _ in res)
+    assert brigades(res)[-1]["n"] == 14                   # n 是累计的账号数，只用来显示
+    # 3 个账号 2 秒内，然后每 15 秒一个新账号：窗口里始终不到 5 个，不升琥珀
+    res = run([(1000, "x0", "me gusta mucho el color rosa"), (1001, "x1", "me gusta mucho el color rosa"),
+               (1002, "x2", "me gusta mucho el color rosa")]
+              + [(1017 + 15 * i, "y%d" % i, "me gusta mucho el color rosa") for i in range(6)])
+    assert not any(e["lvl"] == "amber" for e in brigades(res))
+
+
+def test_a_non_transitive_variant_chorus_is_one_event_not_two():                     # #17
+    v0 = "quiero el combo rosa por favor"
+    v1, v2 = v0 + " ya", v0 + " ya mismo"
+    order = [("a", v1), ("b", v0), ("c", v0), ("d", v2), ("e", v2), ("f", v0), ("g", v2), ("h", v0),
+             ("i", v2), ("j", v0)]
+    res = run([(1000 + i, user, text) for i, (user, text) in enumerate(order)])
+    assert len({e["ev"] for e in brigades(res)}) == 1
+    # V0 和 V2 互相不相似，V1 和两边都相似：先各自开了事件的话，V1 一出现就并成一个，之后只剩一个 id
+    rng = random.Random(7)
+    for _ in range(60):
+        texts = []
+        for i in range(32):
+            texts.append(v1 if i % 4 == 3 else rng.choice((v0, v2)))
+        res = run([(1000 + i, "p%d" % i, t) for i, t in enumerate(texts)])
+        later = {e["ev"] for r, evs in res[12:] for e in evs if e["kind"] == "brigade"}
+        assert len(later) == 1, texts
+
+
+def test_a_message_that_bridges_two_events_merges_them_into_the_older_one():          # #17
+    v0 = "quiero el combo rosa por favor"
+    v1, v2 = v0 + " ya", v0 + " ya mismo"
+    g = guard()
+    res = run([(1000 + i, "a%d" % i, v0) for i in range(3)] + [(1010 + i, "b%d" % i, v2) for i in range(3)], g)
+    first, second = brigades(res)[0]["ev"], brigades(res)[-1]["ev"]
+    assert first != second and len(g.flood.clusters) == 2
+    res = run([(1014, "bridge", v1)], g)
+    assert [e["ev"] for e in brigades(res)] == [first] and list(g.flood.clusters) == [first]
+    assert brigades(res)[0]["n"] == 7
 
 
 def test_flood_event_bookkeeping_is_bounded():                                       # #17
