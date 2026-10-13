@@ -137,8 +137,60 @@
 ### 1.5 设计过程中出现过、现在不用的词
 
 三份实现方案里与本表冲突的写法一律不用：**prohibited term**（用 banned term）、**Phone view**（用 Phone Viewing）、
-**Self-check**（用 Startup Check）、分级里的 **Possible**（用 Exact / Variant / Similar；Possible 只出现在
-“Possible Banned Terms” 这个面板标题里）、**Start translating**（按钮就叫 Start）。
+**Self-check**（用 Startup Check）、**报警分级**里的 **Possible**（报警分级一律用 Exact / Variant / Similar）、
+**Start translating**（按钮就叫 Start）。
+
+**Possible 的两处用法，别混：**
+
+- 违禁词报警：面板标题 “Possible Banned Terms”，分级只用 Exact / Variant / Similar，不再往分级里加 Possible。
+- 弹幕留意（§1.6）：每个类别名写成 “Possible …”（Possible insult、Possible threat of harm……）。
+  理由同「疑似」：程序只看到文字，没人工确认之前不下结论。这是弹幕留意类别名的固定前缀，
+  不用在别的地方（Suspected、Likely 都不用：Likely 撞 `EN_CAUSAL`）。
+
+### 1.6 弹幕留意（Comment Review）
+
+2026-10-13 起。功能说明见 `comment_guard/README.md`。界面文字在 `web/guard.js`、`web/index.html`（`#guard-bar`、
+`#guard-drawer`、`#guard-card`）和 `app/pipeline_guard.py`；后端只发代码，文案由前端按代码映射。
+
+| 中文 | English | 不用 | 理由 |
+|---|---|---|---|
+| 弹幕留意 | **Comment Review**；状态写 **Comment Review: …** | Moderation, Comment Moderation, Comment Guard | Moderation 暗示程序能处理，而本程序只读：不能删弹幕、不能禁言。Guard 是代码里的名字 |
+| 需要留意的弹幕 | **comments to review**；标题写 **Comments to Review**；顶部条写 “{n} comment to review / {n} comments to review” | flagged comments, alerts, warnings | alert 已经是违禁词报警的名字，warning 留给自检的「提醒」；flagged 带判断 |
+| 拿不准 | **unclear** | uncertain, maybe | maybe 撞 `EN_CAUSAL` |
+| 关注名单 | **Marked Viewers** | Watch List, Follow List, Block List | Watch 已被手机同看的在看人数占用；Follow 撞 TikTok 的关注；Block List 撞 `EN_LABELS` |
+| 加入关注名单 / 移出关注名单 | **Mark / Unmark** | Follow / Unfollow, Add to List, Watch | 动词对，短。中文按钮写全，不用单独一个「关注」：在中文 TikTok 语境里它就是 follow |
+| 模型复核 | **model review**；设置行的字段标签写 **Model review** | AI review, Auto review | 「AI」不说明做了什么 |
+| 模型意见 | **Model: …**（如 “Model: agrees with rules”） | Review: …, AI says | 单独的 “Review: …” 会跟 “Comment Review: …” 挨在一起读不清 |
+| 刷屏 | **flooding**；类别名 “Possible flooding” | spam | spam 带判断 |
+| 引流 | **redirect**；类别名 “Possible redirect (link)” 等 | promotion, traffic diversion, spam | 说的是「把人引去别处」这个动作 |
+| 本场重新启用 | **Turn Back On for This Session** | Re-enable, Restart | |
+| 弱信号 | **weak signals** | low confidence | 只是线索，还没有定论 |
+| 规则 / 规则文件夹 | **rules** / **Open Rules Folder** | lexicon, dictionary | 词表（glossary）是翻译用的，这里是判定规则 |
+
+**类别名**（后端只发代码；中文一律写「疑似……」，英文一律写 “Possible …”，`flood_brigade` 只写观察，不加「疑似」）：
+
+| 代码 | 中文 | English |
+|---|---|---|
+| `insult` | 疑似辱骂 | Possible insult |
+| `threat` | 疑似人身威胁 | Possible threat of harm |
+| `sexual` | 疑似涉性言语 | Possible sexual remark |
+| `accuse_claim` | 疑似指称假货或骗局 | Possible claim of fakes or scams |
+| `accuse_call` | 疑似号召举报或不买 | Possible call to report or not buy |
+| `accuse_report` | 疑似扬言举报 | Possible threat to report |
+| `flood_user` | 疑似刷屏 | Possible flooding |
+| `flood_repeat` | 疑似反复发同一句 | Possible repeated comment |
+| `flood_brigade` | 多账号同一句 | Same comment from several accounts |
+| `promo_link` | 疑似引流（链接） | Possible redirect (link) |
+| `promo_contact` | 疑似引流（联系方式） | Possible redirect (contact info) |
+| `promo_pull` | 疑似拉人去别处 | Possible redirect to another stream or shop |
+| `promo_scam` | 疑似冒充官方或诈骗信息 | Possible impersonation or scam offer |
+
+**琥珀（拿不准）的理由只写观察**（第八条）：「没有问号」「第 2 次」，不写「也可能是提问」。英文同样不用
+because / likely / maybe / probably。`pending`（命中的词条还没经业务确认）、`self`（第一人称）两条是规则层后来
+加的，同样只写事实。
+
+**英文页的 “Comment Review: …” 状态行**和**模型意见 “Model: …”** 分开写：前者说功能整体处于什么状态，
+后者说模型对某一条弹幕的看法。
 
 ---
 
