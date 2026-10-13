@@ -116,6 +116,7 @@
   var guardDrawer = document.getElementById("guard-drawer");
   var guardDrawerState = document.getElementById("guard-drawer-state");
   var guardReenableBtn = document.getElementById("guard-reenable");
+  var guardReenableCap = document.getElementById("guard-reenable-cap");
   var guardDrawerClose = document.getElementById("guard-drawer-close");
   var guardTabRecent = document.getElementById("guard-tab-recent");
   var guardTabMarked = document.getElementById("guard-tab-marked");
@@ -1684,6 +1685,7 @@
   // 面板（CLAUDE.md 第六条）；设置分组在直播中整块隐藏，所以直播中要用的（看名单、移出、重新启用）都在抽屉里。
   // 手机同看页上没有这些（用户决定 8）：后端不发，手机页也不加载 guard.js。
   var GUARD_SEEN_KEY = "guardSeenTs";
+  var REENABLE_WAIT_NOTE = L("识别稳定追上 60 秒后可用", "Available after speech recognition has kept up for 60 sec");
   var GUARD_BAR_GAP_MS = 1000;                 // 顶部条每秒最多重画 1 次：冲场时只是数字在变
   var guardState = null;                       // config.guard_state；老后端没有，整个功能就不出现
   var guardEvents = Object.create(null);       // 事件 id -> 事件（config.guard_events + guard_event）
@@ -1816,11 +1818,18 @@
     var cap = guardCapsule(guardState);
     var show = streamActive && !!cap;
     if (guardStateBtn) guardStateBtn.classList.toggle("hidden", !show);
+    if (guardReenableCap && !show) guardReenableCap.classList.add("hidden");
     if (!show || !guardStateBtn) return;
     guardStateTextEl.textContent = cap.text;
     guardStateBtn.className = "guard-state " + cap.tone;
     guardStateBtn.title = cap.unreviewed ? cap.title + "\n" + cap.unreviewed : cap.title;
     guardStateBtn.setAttribute("aria-expanded", guardDrawerOpen ? "true" : "false");
+    // 熔断后胶囊下面也有「本场重新启用」：不必先打开抽屉
+    if (guardReenableCap) {
+      guardReenableCap.classList.toggle("hidden", !cap.reenable);
+      guardReenableCap.disabled = !!(cap.reenable && !cap.reenableOk);
+      guardReenableCap.title = guardReenableCap.disabled ? REENABLE_WAIT_NOTE : "";
+    }
   }
 
   function guardTranslationOf(cid) {
@@ -1848,8 +1857,7 @@
     }
     guardReenableBtn.classList.toggle("hidden", !(cap && cap.reenable));
     guardReenableBtn.disabled = !!(cap && cap.reenable && !cap.reenableOk);
-    guardReenableBtn.title = guardReenableBtn.disabled
-      ? L("识别稳定追上 60 秒后可用", "Available after speech recognition has kept up for 60 sec") : "";
+    guardReenableBtn.title = guardReenableBtn.disabled ? REENABLE_WAIT_NOTE : "";
     var recent = guardTab === "recent";
     guardTabRecent.classList.toggle("on", recent);
     guardTabMarked.classList.toggle("on", !recent);
@@ -1955,7 +1963,9 @@
   [[guardTabRecent, "recent"], [guardTabMarked, "marked"]].forEach(function (pair) {
     if (pair[0]) pair[0].addEventListener("click", function () { guardTab = pair[1]; drawGuardDrawer(); });
   });
-  if (guardReenableBtn) guardReenableBtn.addEventListener("click", function () { send({ type: "guard_reenable" }); });
+  [guardReenableBtn, guardReenableCap].forEach(function (btn) {
+    if (btn) btn.addEventListener("click", function () { send({ type: "guard_reenable" }); });
+  });
   if (guardDrawer) {
     guardDrawer.addEventListener("mousedown", function () { guardPressing = true; });
     window.addEventListener("mouseup", function () {

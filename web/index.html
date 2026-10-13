@@ -642,7 +642,10 @@
         <!-- 弹幕留意的覆盖情况（只用规则 / 规则 + Claude / 已停用……）；点它打开上面的抽屉。文字由 guard.js 写 -->
         <button id="guard-state" class="guard-state hidden" type="button" aria-expanded="false" aria-controls="guard-drawer">
           <span class="guard-state-dot" aria-hidden="true"></span><span id="guard-state-text"></span>
-        </button></span>
+        </button>
+        <!-- 模型复核熔断后，胶囊下面就能重新启用（抽屉的状态行里也有同一个按钮）；设置分组在直播中是隐藏的 -->
+        <button id="guard-reenable-cap" class="btn small guard-reenable-cap hidden" type="button"
+                data-en="Turn Back On for This Session">本场重新启用</button></span>
       <span class="comment-actions">
         <button id="toggle-comments" class="btn small" title="收起弹幕列，字幕独占整行"
                 data-en-title="Hide comments to widen captions" data-en="Hide">收起</button>

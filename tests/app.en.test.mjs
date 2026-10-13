@@ -793,6 +793,11 @@ test("英文页：模型复核熔断后，胶囊和抽屉都有原因和「本�
   helloGuard(page, { guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "tripped", lag_sec: 12, unreviewed: 3 }) });
   assert.equal(page.el("guard-state-text").textContent, "Model review is off for this session: speech recognition fell 12 s behind. Rules only.");
   assert.ok(page.el("guard-state").cls.includes("warn"));
+  // 不开抽屉也能重新启用：胶囊下面有同一个按钮
+  const inline = page.el("guard-reenable-cap");
+  assert.equal(inline.cls.includes("hidden"), false);
+  inline.click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_reenable" });
   page.el("guard-state").click();
   const again = page.el("guard-reenable");
   assert.equal(again.cls.includes("hidden"), false);
@@ -803,8 +808,11 @@ test("英文页：模型复核熔断后，胶囊和抽屉都有原因和「本�
   page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "tripped", lag_sec: 12, reenable_ok: false }) });
   assert.equal(again.disabled, true);
   assert.equal(again.title, "Available after speech recognition has kept up for 60 sec");
+  assert.equal(inline.disabled, true);
+  assert.equal(inline.title, again.title);
   page.push({ type: "config", guard_state: GUARD_STATE });
   assert.equal(again.cls.includes("hidden"), true);
+  assert.equal(inline.cls.includes("hidden"), true);
   assert.deepEqual(leftoverChinese(page), []);
 });
 
