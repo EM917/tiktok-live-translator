@@ -94,8 +94,15 @@ def test_without_pgrep_the_gate_cannot_tell_but_says_so_on_stderr(monkeypatch, c
 def test_gate_is_the_first_thing_main_does(monkeypatch):
     order = []
     monkeypatch.setattr(G, "live_running", lambda: order.append("gate") or None)
-    monkeypatch.setattr(G, "build_rules", lambda *a, **k: order.append("rules") or (_ for _ in ()).throw(StopIteration))
-    with pytest.raises(StopIteration):
+    class Stop(Exception):
+        pass
+
+    def stop(*a, **k):
+        order.append("rules")
+        raise Stop()
+
+    monkeypatch.setattr(G, "build_rules", stop)
+    with pytest.raises(Stop):
         G.main(["--logs", "/nonexistent"])
     assert order == ["gate", "rules"]
 

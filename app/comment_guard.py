@@ -53,6 +53,10 @@ LOCAL_DIR = ROOT / "comment_guard" / "local"
 MAX_CHARS = 1000            # comment_worker 给的全文上限；结构正则在这上面跑
 HEAD_WORDS = 60             # 长文：词表只匹配头 60 个词 + 尾 20 个词
 TAIL_WORDS = 20
+# 第二种读法（看不见的字符当空格，见 _prep）只为抓「拿盲文空白之类的字符当空格」的躲避写法，词表再全文跑一遍
+# 会让这类输入的判定时间翻倍（1000 字时本机约 18–23 ms，超过 I3 的 20 ms）。它只匹配头 30 + 尾 10 个词
+ALT_HEAD_WORDS = 30
+ALT_TAIL_WORDS = 10
 BREAK_WORD = "zzbreak"      # 头尾之间的断点词，防止拼出假短语
 HANDLE_MARK = "zzat"        # promo 词表正则里的「同句有 @账号」标记词（见 CommentGuard._lex_hits）
 SEEN_IDS = 2000
@@ -210,12 +214,12 @@ def fold_key(text):
     return hashlib.sha1(fold(text).encode("utf-8")).hexdigest()[:16]
 
 
-def clip_words(folded):
+def clip_words(folded, head=HEAD_WORDS, tail=TAIL_WORDS):
     """长文：只留头 60 + 尾 20 个词，中间插一个断点词，防止拼出假短语。"""
     toks = folded.split()
-    if len(toks) <= HEAD_WORDS + TAIL_WORDS:
+    if len(toks) <= head + tail:
         return folded
-    return " ".join(toks[:HEAD_WORDS] + [BREAK_WORD] + toks[-TAIL_WORDS:])
+    return " ".join(toks[:head] + [BREAK_WORD] + toks[-tail:])
 
 
 # ------------------------------------------------------------------------------------------
@@ -314,7 +318,9 @@ _URL_RE = re.compile(
     r"discord\.gg)/?[^\s]*|"
     # 域名的标签认 Unicode 字母数字（señor.com、marcaejemplo.com.éxito.shop）：只认 ASCII 的话，下一个标签
     # 一带重音字母，链接就在那里被截断，前半截看起来像自家域名
-    r"\b[^\W_](?:[^\W_]|-){1,}(?:\.(?:[^\W_]|-)+)*\.(?:com|net|org|mx|shop|store|link|ly|tv|app|info|biz|xyz|site|"
+    # 中间的标签最多 4 段：写成 * 的话，「a.ba.ba.b…」这种一长串点号在每个起点都要回溯整串，1000 字要 6.5 ms；
+    # 更长的域名照样认得出（从后面的标签起匹配），只是匹配到的是后半截
+    r"\b[^\W_](?:[^\W_]|-){1,}(?:\.(?:[^\W_]|-)+){0,4}\.(?:com|net|org|mx|shop|store|link|ly|tv|app|info|biz|xyz|site|"
     r"online|cc|gt|hn|sv|cr)(?:\.[a-z]{2})?(?:/[^\s]*)?(?![^\W_])")
 # 邮箱：用户名要从头开始（不是链接 `https://x@evil.shop` 或 `www.tiktok.com@evil.shop` 的一截），
 # 也不能以顶级域结尾（`tiktok.com@evil.shop` 是伪装成登录信息的链接，不是邮箱）。右边界：域名后面紧跟
@@ -1758,7 +1764,7 @@ class CommentGuard:
     def _lex_all(self, light_text, folded, src, alt):
         hits = self._lex_hits(light_text, folded, src)
         if alt is not None:
-            more = self._lex_hits(light_text, clip_words(alt[1]), alt[0])
+            more = self._lex_hits(light_text, clip_words(alt[1], ALT_HEAD_WORDS, ALT_TAIL_WORDS), alt[0])
             flags = hits.pop("_flags")
             more_flags = more.pop("_flags")
             for key, terms in more.items():

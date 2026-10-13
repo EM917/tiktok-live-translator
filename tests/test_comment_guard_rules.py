@@ -792,14 +792,14 @@ def test_1000_char_adversarial_strings_stay_under_20_ms(name):
     g = guard()
     text = ADVERSARIAL[name][:1000]
     best = min(_timed(g, text, i) for i in range(5))
-    assert best < budget_ms(), "%s: %.1f ms (上限 %.1f ms)" % (name, best, budget_ms())
+    assert best < budget_ms(guard), "%s: %.1f ms (上限 %.1f ms)" % (name, best, budget_ms(guard))
 
 
 def test_1000_char_adversarial_strings_stay_under_20_ms_with_the_shipped_lexicon():
     """出厂词表（红条档全是 :pending 段）是线上跑的那份，I3 的 20 ms 对它同样要成立。"""
     rules = cg.load_rules(DEFAULTS, NO_LOCAL)
     worst = max(min(_timed(guard(rules), text[:1000], i) for i in range(5)) for text in ADVERSARIAL.values())
-    assert worst < budget_ms(), "%.1f ms (上限 %.1f ms)" % (worst, budget_ms())
+    assert worst < budget_ms(guard), "%.1f ms (上限 %.1f ms)" % (worst, budget_ms(guard))
 
 
 def _timed(g, text, i):

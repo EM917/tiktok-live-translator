@@ -1,52 +1,45 @@
-"""弹幕留意规则层的耗时上限（规格 I3：单条 1000 字的弹幕判定 ≤20 ms）按机器快慢折算。
+"""弹幕留意规则层的耗时上限（规格 I3：单条 1000 字的弹幕判定 ≤20 ms）。
 
-20 ms 是对用户那台 Mac（M 系列，弹幕留意真正跑的地方）定的。GitHub 的 CI 跑器同一段代码要慢
-两到三倍（2026-10-13 实测：本机最坏 18.0 ms 的输入，ubuntu 跑器上 51.9 ms），照搬 20 ms 会把
-「跑器慢」误判成「代码变慢」。所以先量一段和规则层同类的参考负载（正则 + 字符串处理），
-跑得比本机慢多少倍，上限就放宽多少倍；比本机快的机器不收紧，仍按 20 ms。
+20 ms 是对用户那台 Mac（M 系列，弹幕留意真正跑的地方）定的，本机（没有 CI 环境变量）照这个数判。
 
-参考负载不调用 app.comment_guard：规则层自己整体变慢时，上限不会跟着放宽。
+GitHub 的 CI 跑器同一段代码要慢一到三倍，而且慢的倍数随代码路径变：2026-10-13 实测，本机最坏
+18.0 ms 的输入，在三种跑器上是 28.5 / 37.2 / 57.7 ms；拿一段和规则层无关的正则 + 字符串参考负载
+去折算，只量出 1.2–1.4 倍，判不准。所以 CI 上改用规则层自己判一条普通的 1000 字弹幕作参考：
+它和对抗输入走同一套词表匹配（detector 的逐词比对占大头），跑器慢多少倍，上限就放宽多少倍，
+再留三成余量。代价是规则层整体一起变慢时 CI 上看不出来——本机的 20 ms 仍然照判，那时会红。
 """
-import re
+import os
 import time
 
-# 本机（用户的 Mac）上 _reference_ms() 的 7 次最快值，2026-10-13 量的
-REF_MAC_MS = 4.7
-# 参考负载和规则层的快慢比例不完全一致（规则层更吃正则回溯），明显更慢（1.5 倍以上）的机器多留两成余量；
-# 本机自己的测量抖动（几个百分点）不触发这份余量
-SLOW_MACHINE_SLACK = 1.2
-SLOW_MACHINE = 1.5
-
-_TEXT = ("hola eres una estafa www.tienda.com 5512345678 @luna_demo jajaja " * 20)[:1000]
-_PATTERNS = [re.compile(p) for p in (
-    r"[a-z0-9._%+\-]+@[a-z0-9\-]+(?:\.[a-z0-9\-]+)+",
-    r"(?<!\d)\+?\d(?:[\s\-.()]{0,2}\d){7,13}(?!\d)",
-    r"\b(?:estafa|fraude|ladron\w*|mentir\w*)\b",
-    r"([a-z])\1{2,}",
-    r"(?:www\.|https?://)?[a-z0-9\-]+\.(?:com|net|org|mx|shop)\b",
-)]
+BASE_MS = 20.0
+# 本机（用户的 Mac）上 reference_ms(夹具词表的守卫) 的 7 次最快值，2026-10-13 量的（三次 9.73–9.93 ms）
+REF_MAC_MS = 9.8
+CI_SLACK = 1.3
+_REF_TEXT = ("hola amiga cuanto cuesta la faja talla m color rosa envio gratis gracias " * 14)[:1000]
 _factor = None
 
 
-def _reference_ms():
-    t0 = time.perf_counter()
-    for _ in range(40):
-        for pat in _PATTERNS:
-            pat.findall(_TEXT)
-        " ".join("".join(c if c.isalnum() else " " for c in _TEXT.lower()).split())
-    return (time.perf_counter() - t0) * 1000.0
+def on_ci():
+    return bool(os.environ.get("CI"))
 
 
-def speed_factor():
-    """这台机器比用户的 Mac 慢几倍（不小于 1）。整个测试进程只量一次。"""
+def reference_ms(make_guard):
+    """规则层判一条普通 1000 字弹幕的 7 次最快值（毫秒）。make_guard() 每次给一个新守卫。"""
+    best = None
+    for i in range(7):
+        g = make_guard()
+        t0 = time.perf_counter()
+        g.judge(_REF_TEXT, user="ref%d" % i, ts=1000.0 + i)
+        ms = (time.perf_counter() - t0) * 1000.0
+        best = ms if best is None else min(best, ms)
+    return best
+
+
+def budget_ms(make_guard):
+    """本机：20 ms。CI：20 ms × 跑器比本机慢的倍数（不小于 1）× CI_SLACK。整个测试进程只量一次。"""
     global _factor
+    if not on_ci():
+        return BASE_MS
     if _factor is None:
-        ref = min(_reference_ms() for _ in range(7))
-        _factor = max(1.0, ref / REF_MAC_MS)
-    return _factor
-
-
-def budget_ms(base=20.0):
-    """本机按 base 毫秒；慢机器按慢的倍数放宽，明显慢的再多留 SLOW_MACHINE_SLACK。"""
-    factor = speed_factor()
-    return base * factor * (SLOW_MACHINE_SLACK if factor >= SLOW_MACHINE else 1.0)
+        _factor = max(1.0, reference_ms(make_guard) / REF_MAC_MS)
+    return BASE_MS * _factor * CI_SLACK

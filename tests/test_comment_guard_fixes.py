@@ -431,7 +431,7 @@ def test_nfkc_expansion_is_cut_again_so_a_comment_cannot_grow_to_18k_characters(
     g.judge("ﷺ" * 1000, user="u", ts=1.0)
     assert all(len(k) <= cg.MAX_CHARS for _, *keys in g.flood.users["u"] for k in keys if k)
     best = min(_timed(guard(), "ﷺ" * 1000, i) for i in range(5))
-    assert best < budget_ms(), "%.1f ms (上限 %.1f ms)" % (best, budget_ms())
+    assert best < budget_ms(guard), "%.1f ms (上限 %.1f ms)" % (best, budget_ms(guard))
 
 
 def _timed(g, text, i):
@@ -835,7 +835,7 @@ def test_judge_stays_under_20_ms_when_the_flood_window_is_full():               
                     structure_only=mode, cid="probe-%s-%d" % (mode, i))
             times.append((time.perf_counter() - t0) * 1000.0)
         best[mode] = min(times)
-    assert best[False] < budget_ms() and best[True] < budget_ms(), (best, budget_ms())
+    assert best[False] < budget_ms(guard) and best[True] < budget_ms(guard), (best, budget_ms(guard))
 
 
 def test_similar_prefilter_skips_comments_whose_word_counts_are_too_far_apart():    # #44
