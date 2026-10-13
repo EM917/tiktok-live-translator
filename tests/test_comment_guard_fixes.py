@@ -6,6 +6,7 @@
 """
 import json
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -427,7 +428,7 @@ def test_nfkc_expansion_is_cut_again_so_a_comment_cannot_grow_to_18k_characters(
     assert len(cg.light("ﷺ" * 1000)) <= cg.MAX_CHARS
     g = guard()
     g.judge("ﷺ" * 1000, user="u", ts=1.0)
-    assert all(len(key) <= cg.MAX_CHARS for _, key in g.flood.users["u"])
+    assert all(len(k) <= cg.MAX_CHARS for _, *keys in g.flood.users["u"] for k in keys if k)
     best = min(_timed(guard(), "ﷺ" * 1000, i) for i in range(5))
     assert best < 20.0, "%.1f ms" % best
 
@@ -844,3 +845,520 @@ def test_similar_prefilter_skips_comments_whose_word_counts_are_too_far_apart():
     c = frozenset("w%d" % i for i in range(9)) | {"zz"}
     assert eng._similar("a", a, "c", c) is (9 / 11 >= 0.8)      # 与旧的 |a ∪ b| 算法同值
     assert eng._similar("k", a, "k", b)                        # 句子键相同 -> 相同
+
+
+# ==========================================================================================
+# 复核之后（第三轮）：上一轮修复自己带来的新缺口。每条对着复核员给的复现例句写，修复前会失败
+# ==========================================================================================
+
+# ---- 否定 / 条件 / 句式（#2 #8）
+
+@pytest.mark.parametrize("text", [                                                  # #2
+    "no inventes eres fea", "ni modo eres fea", "ni modo, eres fea", "no jodas eres gorda", "no te creas eres fea",
+    "no me hables eres una gorda", "no llores eres fea", "nunca cambias, eres fea", "ya no te aguanto eres fea",
+    "no te soporto eres fea",                                           # 否定词和句式词之间隔着别的动词
+    "no tu eres fea", "no. tu eres fea", "pues no, tu eres fea",        # 反驳：「不，你才丑」
+    "no, eres fea", "no se, eres fea", "me caes mal. no. eres fea", "dije que no. eres fea",   # 应答 / 跨句
+    "no way you are ugly", "no, you are fat", "no u r ugly", "no you are ugly",                # 英语
+    "no inventes pinche gorda", "ni modo pinche gorda", "no, gorda de mierda", "ni modo gorda de mierda",
+    "no, que gorda eres",                                                # 非系动词句式本来就是骂
+])
+def test_an_interjection_or_a_reply_before_a_target_frame_is_not_a_reassurance(text):
+    r = judge(text)
+    assert (r["lvl"], r["tier"]) == ("alert", "red") and cg.auto_markable(r), (text, r)
+
+
+@pytest.mark.parametrize("text", [                                                  # #2
+    "no digas que estas gorda", "para nada eres fea", "jamas pense que eres fea", "tu no estas gorda",
+    "no te ves gorda", "nunca me pareces fea", "ya no estas gorda", "ni eres fea ni estas gorda",
+])
+def test_reassurances_that_hug_the_target_frame_are_still_cut(text):
+    assert lvl(text) is None, text
+
+
+@pytest.mark.parametrize("text", [                                                  # #8
+    "que feas estas fajas, no me gustan", "que feas estas manchas", "que gordas estas llantas",
+    "que feas estas ojeras me salieron", "you are a fat burner", "you are a fat loss expert",
+])
+def test_que_plural_estas_and_a_before_the_target_word_are_not_target_frames(text):
+    assert lvl(text) is None, text
+
+
+@pytest.mark.parametrize("text", [                                                  # #8
+    "ur ugly", "ur fat", "ur fat lol", "ur ugly bro", "ur fat. whatever", "ur ugly, i dont care", "UR UGLY!!",
+])
+def test_a_bare_ur_that_ends_the_sentence_is_an_insult(text):
+    assert lvl(text) == "alert", text
+
+
+@pytest.mark.parametrize("text", [                                                  # #8
+    "ur fat burner", "ur fat burner. ok", "ur ugly sweater is cute", "i love ur ugly sweater", "if ur ugly. ok",
+    "you are fat burning queen", "you are fat loss queen", "your fat burner is great",
+])
+def test_a_bare_ur_with_more_words_after_it_and_fat_burning_compounds_are_not_insults(text):
+    assert lvl(text) is None, text
+
+
+def test_que_singular_estas_is_still_an_insult():                                   # #8
+    assert lvl("que fea estas") == "alert"
+    assert lvl("que gorda estas") == "alert"
+
+
+@pytest.mark.parametrize("text", [                                                  # #8
+    "tu si que eres fea", "tu si eres fea", "si, eres fea", "sí eres fea", "si. estas gorda", "ahora si estas gorda",
+    "pues si, estas gorda", "claro que si eres fea", "ella si te ves gorda",
+])
+def test_an_emphatic_si_is_not_a_conditional(text):
+    assert lvl(text) == "alert", text
+
+
+def test_plural_target_words_are_judged_against_confirmed_and_pending_together(tmp_path):   # #8
+    """只确认了 fea 和 gorda、feas 和 gordas 还在 :pending 里：待确认那一边的复数也不能当单数。"""
+    d = small_defaults(tmp_path, insult="[target]\nfea\ngorda\n[target:pending]\nfeas\ngordas\n")
+    rules = cg.load_rules(d, NO_LOCAL)
+    for text in ("estas feas manchas", "mira estas gordas llantas", "que feas estas fajas"):
+        assert lvl(text, rules=rules) is None, text
+    assert lvl("estas fea", rules=rules) == "alert"
+
+
+# ---- 担心 / 辩护的说法只剪窄（#5 #50）
+
+@pytest.mark.parametrize("text", [                                                  # #5
+    "posible estafa", "posible estafa en este live", "esto es una posible estafa", "posible ladron",
+    "esa presunta estafadora no responde", "presunto ladron", "presunta ladrona", "alerta de estafa",
+    "alerta por estafa", "proteccion contra estafas",                  # 对主播的指控 / 短警告
+    "ni la ladrona esa me contesta", "ni la ladrona de la tienda responde",
+    "ni los estafadores de la tienda me responden", "no los ladrones estos",       # la / los 后面接名词
+    "no se parece estafa", "no se creo que es estafa", "no se me parece estafa", "no se, parece estafa",
+])
+def test_possible_scam_short_warnings_and_article_plus_noun_are_still_accusations(text):
+    assert lvl(text) in ("alert", "amber"), text
+
+
+@pytest.mark.parametrize("text", [                                                  # #5
+    "mi banco me bloqueo el pago por posible fraude", "mi tarjeta tiene alerta de fraude",
+    "aqui no se estafa a nadie", "no se roba a nadie aqui",
+])
+def test_bank_notices_and_se_denials_are_still_cut(text):
+    assert lvl(text) is None, text
+
+
+@pytest.mark.parametrize("text", [                                                  # #5 #50
+    "dicen que es estafa, pero a mi me llego rapido",
+    "Dicen que es una estafa, pero yo ya compre tres veces y llego perfecto",
+    "escuche que es una estafa, pero a mi me llego", "dicen que es fraude, aunque yo compre y llego bien",
+    "dicen que es fraude, sin embargo me llego", "dicen que es estafa. pero a mi me llego rapido",
+    "dicen que es estafa pero a mi me llego rapido",
+])
+def test_a_quoted_accusation_followed_by_pero_after_a_comma_is_cut_too(text):
+    assert lvl(text) is None, text
+
+
+@pytest.mark.parametrize("text", ["dicen que es estafa", "dicen que es estafa, y creo que tienen razon",
+                                  "pero dicen que es estafa"])
+def test_a_quoted_accusation_without_a_pero_after_it_is_still_amber(text):
+    assert lvl(text) == "amber", text
+
+
+# ---- @账号标签、电话、邮箱、链接（#7 #19 #31 #15 #16 #49 #36）
+
+@pytest.mark.parametrize("text", [                                                  # #7
+    "sígueme en @tienda22", "síganme en @tienda22", "SÍGANME EN @TIENDA22", "mi página @tienda22 escribeme",
+    "búscame como @tienda22", "encuéntrame como @tienda22",
+])
+def test_accented_account_labels_still_make_the_at_handle_a_redirect(text):
+    r = judge(text)
+    assert (r["lvl"], r["cats"], r["tier"]) == ("alert", ["promo_contact"], "struct"), text
+    assert cg.handle_hits(cg.light(text)) == ["tienda22"]
+
+
+@pytest.mark.parametrize("text", [                                                  # #7
+    "sigueme @lupita_ventas", "dm me @lupita_ventas", "follow me @x_tienda", "siganme @tienda.bella22",
+    "escribeme @tienda22", "agregame @tienda22",
+])
+def test_an_imperative_right_before_the_at_handle_is_a_redirect(text):
+    assert lvl(text) == "alert", text
+
+
+@pytest.mark.parametrize("text", [                                                  # #7
+    "mi perfil: privado, dime por privado", "tu pagina: preciosa, mandame mensaje", "mi usuario: pedro, escribeme",
+    "perfil: nuevo, sigueme", "mi cuenta-nueva, escribeme", "mi cuenta: 1234 mandame mensaje",
+    "escribeme mi cuenta: bloqueada", "mi cuenta - ahorita no sirve mandame mensaje",
+])
+def test_a_generic_noun_with_a_colon_but_no_at_is_not_an_account(text):
+    assert cg.handle_hits(cg.light(text)) == [], text
+    assert lvl(text) in (None, "note"), text
+
+
+@pytest.mark.parametrize("text", [                                                  # #19
+    "wsp: 5512345678 para el pedido", "WhatsApp: 5512345678 quiero 2 vestidos", "whatsapp: 5512345678",
+    "whatsapp:5512345678", "wasap: 5512345678", "wa-5512345678", "ws - 5512345678", "telegram: 5512345678",
+    "tg: 5512345678", "ig: 5512345678", "whatsapp @5512345678", "perfil: 5512345678", "cuenta: 5512345678",
+])
+def test_a_labelled_phone_number_is_a_phone_not_also_an_account(text):
+    assert cg.handle_hits(cg.light(text)) == [], text
+    assert cg.handle_hits(cg.light(text), labeled_only=False) == [], text
+    r = judge(text)
+    assert (r["lvl"], r["cats"], r["sub"]) == ("note", ["promo_contact"], "phone"), (text, r)
+
+
+@pytest.mark.parametrize("text", ["quiero comprar 5512345678 @ana", "@ana quiero pedir 5512345678",
+                                  "mi numero 5512345678 para pedir @ana", "pedido 2 vestidos 5512345678 @ana_lopez"])
+def test_a_phone_and_an_account_in_an_order_message_is_only_a_note(text):             # #19
+    r = judge(text)
+    assert (r["lvl"], r["cats"], r["tier"]) == ("note", ["promo_contact"], "struct"), (text, r)
+
+
+def test_the_own_account_in_mine_txt_ignores_a_trailing_dot(tmp_path):               # #19
+    write(tmp_path, "mine.txt", "@tienda_luna\n5598765432\n")
+    rules = cg.load_rules(FIX, tmp_path)
+    assert lvl("5512345678 @tienda_luna.", rules=rules) == "note"
+    assert lvl("5512345678 @tienda_luna", rules=rules) == "note"
+    assert lvl("5512345678 @otra_tienda", rules=rules) == "alert"
+
+
+@pytest.mark.parametrize("text", [                                                  # #31
+    "gana un iphone gratis aqui https://www.tiktok.com@evil-tienda.shop", "http://luna_demo@evil-tienda.shop",
+    "https://instagram.com@evil.shop", "http://wa.me@evil.shop", "http://soporte@evil-tienda.com",
+    "tiktok.com@evil.shop", "www.tiktok.com@evil.shop", "https://www.tiktok.com@evil.shop ya",
+])
+def test_a_link_disguised_with_a_login_part_is_not_an_email(text):
+    assert cg.email_hits(cg.light(text)) == [], text
+    r = judge(text)
+    assert (r["lvl"], r["cats"]) == ("alert", ["promo_link"]), (text, r)
+
+
+def test_an_email_on_the_shops_own_domain_is_not_a_contact(tmp_path):                # #31
+    write(tmp_path, "mine.txt", "marcaejemplo.com\nventas@otra-casa.com\n")
+    write(tmp_path, "exempt_domains.txt", "correos-ejemplo.mx\n")
+    rules = cg.load_rules(FIX, tmp_path)
+    assert lvl("escribanos a soporte@marcaejemplo.com", rules=rules) is None
+    assert lvl("escribeme a soporte@marcaejemplo.com", rules=rules) in (None, "note")    # 只剩 offer 词的 note
+    assert lvl("escribeme a atencion@correos-ejemplo.mx", rules=rules) in (None, "note")
+    assert lvl("escribeme a ventas@otra-casa.com", rules=rules) in (None, "note")        # 整个地址写进了 mine
+    assert lvl("escribeme a atencion@otra-casa.com", rules=rules) == "alert"
+    assert lvl("escribeme a soporte@marcaejemplo.com.evil.shop", rules=rules) == "alert"
+
+
+@pytest.mark.parametrize("text", [                                                  # #15 #16
+    "https://www.tiktok.com/@luna_demo,https://evil.com/promo", "https://www.tiktok.com/@luna_demo,evil.com/promo",
+    "https://www.tiktok.com/@luna_demo🔥https://evil.com", "https://www.tiktok.com/@luna_demo|https://wa.me/5512345678",
+    "https://www.tiktok.com/@luna_demo/video/1,https://evil.com",
+    "https://evil.com\\@www.tiktok.com/@luna_demo", "http://evil.com:80\\@m.tiktok.com/@luna_demo",
+    "https://www.tiktok.com,https://evil.com/@luna_demo",
+])
+def test_a_second_link_glued_to_the_streamers_page_or_a_backslash_host_is_a_redirect(text):
+    r = judge(text)
+    assert (r["lvl"], r["cats"][0]) == ("alert", "promo_link"), (text, r)
+
+
+@pytest.mark.parametrize("text", [                                                  # #15
+    "https://www.tiktok.com/@luna_demo/video/7123456789012345678?_r=1&_t=ZM-8abc&lang=es",
+    "https://www.tiktok.com/@luna_demo/live", "mira https://www.tiktok.com/@luna_demo, es la mejor",
+])
+def test_real_share_links_to_the_streamers_page_are_still_exempt(text):
+    assert lvl(text) is None, text
+
+
+def test_the_userinfo_and_port_of_a_link_are_not_the_host():                          # #16
+    assert cg._split_url("https://user:pw@host.com:8080/x?y") == ("host.com", "/x?y")
+    assert cg._split_url("https://www.tiktok.com@evil.shop/x") == ("evil.shop", "/x")
+    assert cg._split_url("https://evil.com\\@www.tiktok.com/x")[0] == "evil.com"
+    assert cg._split_url("www.marcaejemplo.com😍") == ("www.marcaejemplo.com", "😍")
+
+
+def test_text_glued_to_the_shops_own_link_does_not_make_it_a_redirect(tmp_path):      # #49
+    write(tmp_path, "mine.txt", "marcaejemplo.com\n")
+    rules = cg.load_rules(FIX, tmp_path)
+    for tail in ("😍", "❤️", "🔥🔥", ",gracias", "*", "|gracias", "<3", "=)", "~", "!!!", ")"):
+        for head in ("pedido en www.marcaejemplo.com", "pedido en https://marcaejemplo.com"):
+            assert lvl(head + tail, rules=rules) is None, head + tail
+    # 粘着的是第二个链接就不放过
+    assert lvl("pedido en www.marcaejemplo.com,https://evil.com", rules=rules) == "alert"
+
+
+def test_country_code_second_level_lookalikes_are_not_covered_by_the_shops_domain(tmp_path):   # #49
+    write(tmp_path, "mine.txt", "marcaejemplo.com\n")
+    rules = cg.load_rules(FIX, tmp_path)
+    for text in ("visita marcaejemplo.com.mx", "visita marcaejemplo.com.br", "visita marcaejemplo.com.ar",
+                 "visita marcaejemplo.com.co", "visita marcaejemplo.com.mx/oferta"):
+        assert lvl(text, rules=rules) == "alert", text
+    # 反过来：自家就是 .com.mx 的，整个域名才算自己的
+    write(tmp_path, "mine.txt", "marcaejemplo.com.mx\n")
+    rules = cg.load_rules(FIX, tmp_path)
+    assert lvl("pedido en marcaejemplo.com.mx", rules=rules) is None
+    assert lvl("pedido en marcaejemplo.com", rules=rules) == "alert"
+
+
+@pytest.mark.parametrize("text", [                                                  # #36
+    "hola, link porfa", "si, link por favor", "yes, link please", "hello, link pls",
+    "Hola buenas noches, link de compra porfa", "Gracias. Link por favor", "Hola. Info por favor", "Precio. Link",
+    "Ok. Shop?", "Hola, store open?", "Que bonito. Link?", "buen dia. link?", "mucho gusto. Info?", "mira, shop",
+    "me gusta, net", "Hola. Online hay?", "hola. app nueva?", "gracias. tv nueva",
+])
+def test_ordinary_sentences_with_a_word_that_is_also_a_tld_are_not_links(text):
+    assert cg.url_hits(cg.light(text)) == [], text
+    assert lvl(text) is None, text
+
+
+# ---- 隐形字符（#43）
+
+@pytest.mark.parametrize("ch", ["\u180b", "\u180c", "\u180d", "\u180f", "\u2065", "\ufff0", "\ufff8",
+                                "\U000e0080", "\U000e00ff", "\U000e01f0", "\U000e0fff"],
+                         ids=lambda c: "U+%04X" % ord(c))
+@pytest.mark.parametrize("word,mid", [("hijueputa", 4), ("estafa", 3), ("pendeja", 3)])
+def test_other_default_ignorable_code_points_do_not_split_a_word_either(ch, word, mid):
+    text = word[:mid] + ch + word[mid:]
+    assert cg.fold(text) == cg.fold(word)
+    assert lvl(text) == "alert", repr(text)
+
+
+@pytest.mark.parametrize("text", [
+    "eres\u2800una\u2800pendeja", "hola\u2800estafa", "eres\u3164pendeja", "eres\uffa0pendeja",
+    "no\u2800compren\u2800esta\u2800tienda", "estafa\u2800total\u2800no\u2800compren", "eres\u115fpendeja",
+    "est\u2800afa", "hiju\u3164eputa",
+])
+def test_blank_looking_characters_are_read_both_as_a_gap_and_as_a_space(text):        # #43
+    """盲文空白、韩文填充符占一个空格宽：既可能把词劈开（est\u2800afa），也可能拿来当空格（eres\u2800una\u2800pendeja）。"""
+    assert lvl(text) == "alert", repr(text)
+    hits = guard().lex_hits(text)
+    hits.pop("_flags")
+    assert hits, repr(text)
+
+
+def test_the_second_reading_of_a_blank_character_only_adds_what_the_plain_text_would_hit():   # #43
+    g = guard()
+    assert g.lex_hits("estafa\u2800total") == g.lex_hits("estafa total")
+    assert g.lex_hits("hola\u2800buenas") == g.lex_hits("hola buenas")
+
+
+# ---- 刷屏事件（#17 #59）与其它
+
+def test_a_message_that_only_resembles_the_middle_variant_is_still_counted():         # #17
+    v0 = "quiero el combo rosa por favor"
+    v1, v2 = v0 + " ya", v0 + " ya mismo"
+    g = guard()
+    r = None
+    for user, text, dt in (("A", v1, 0), ("B", v0, 1), ("C", v0, 2), ("D", v2, 3), ("E", v1, 4)):
+        r = g.judge(text, user=user, ts=1000.0 + dt)
+    ev = [e for e in g.last_flood if e["kind"] == "brigade"]
+    assert len(ev) == 1 and ev[0]["n"] == 5 and ev[0]["lvl"] == "amber", g.last_flood
+    assert (r["lvl"], r["amb"]) == ("amber", "brigade")
+    assert ev[0]["first_ts"] == 1000.0 and ev[0]["last_ts"] == 1004.0
+    assert ev[0]["accounts"] == ["A", "B", "C", "D", "E"]
+
+
+def test_the_brigade_event_keeps_one_id_while_it_backfills(tmp_path):                  # #17
+    v0 = "quiero el combo rosa por favor"
+    g = guard()
+    ids = set()
+    for i in range(12):
+        g.judge(v0 if i % 2 else v0 + " ya", user="u%d" % i, ts=1000.0 + i * 0.5)
+        ids |= {e["ev"] for e in g.last_flood if e["kind"] == "brigade"}
+    assert len(ids) == 1
+
+
+def test_the_events_accounts_are_listed_in_the_order_they_first_said_it():            # #17
+    eng = cg.FloodEngine()
+    toks = frozenset(("uno", "dos", "tres", "cuatro"))
+    for user, ts in (("A", 1000.0), ("B", 1001.0), ("A", 1002.0), ("C", 1003.0)):
+        out = eng.feed(user, "uno dos tres cuatro", toks, ts)
+    ev = [e for e in out if e["kind"] == "brigade"][0]
+    assert ev["accounts"] == ["A", "B", "C"] and ev["n"] == 3
+
+
+def test_a_clock_step_back_never_moves_the_events_last_timestamp_backwards():          # #17
+    eng = cg.FloodEngine()
+    toks = frozenset(("uno", "dos", "tres", "cuatro"))
+    for i, ts in enumerate((1000.0, 1001.0, 1003.0, 1002.5)):
+        out = eng.feed("u%d" % i, "uno dos tres cuatro", toks, ts)
+    ev = [e for e in out if e["kind"] == "brigade"][0]
+    assert ev["last_ts"] == 1003.0 and ev["first_ts"] <= ev["last_ts"]
+
+
+def test_a_customer_repeating_a_weak_question_five_times_is_a_note_not_a_flood_alert():   # #4
+    """'alguien me ayuda' / 'hay descuento' / 'tienen talla M' 没有问号，规则词表那边不当问句（可能是陈述），
+    刷屏这边照样当问句：被冷落的顾客每隔几秒重复一次，最多到 note。"""
+    for text in ("alguien me ayuda", "hay descuento", "tienen talla M", "cuanta ganga"):
+        g = guard()
+        out = [g.judge(text, user="u", ts=1000.0 + 6 * i) for i in range(5)]
+        flood = [e for e in g.last_flood if e["kind"] == "same_text"]
+        assert flood and flood[0]["lvl"] == "note", (text, g.last_flood)
+        assert out[-1]["lvl"] in (None, "note"), (text, out[-1])
+
+
+def test_the_accumulation_window_only_counts_entries_up_to_now():                      # #59
+    g = guard()
+    assert g.judge("stupid", user="u", ts=10000.0)["lvl"] == "note"
+    r = g.judge("stupid", user="u", ts=9000.0)         # 时钟往回拨了 1000 秒：第一条在「未来」
+    assert r["lvl"] == "note" and "accumulated" not in r["tags"], r
+    # 单调的两条仍然累计出琥珀
+    g = guard()
+    g.judge("stupid", user="u", ts=9000.0)
+    assert g.judge("stupid", user="u", ts=9100.0)["amb"] == "accumulated"
+
+
+def test_future_entries_are_ignored_by_the_same_text_counts_and_the_cost_budget():     # #59
+    g = guard()
+    for ts in (1030.0, 1031.0, 1032.0, 1033.0):
+        g.judge("quiero el combo rosa", user="u", ts=ts)
+    g.judge("quiero el combo rosa", user="u", ts=1000.0)            # 往回拨之后第 5 次：前 4 次都在「未来」
+    assert not [e for e in g.last_flood if e["kind"] == "same_text"], g.last_flood
+    b = cg.CostBudget()
+    b.charge(100.0, 60)
+    b.charge(50.0, 10)                                               # 往回拨：未来的那条被清掉
+    assert [t for t, _ in b.spent] == [50.0]
+
+
+# ---- 长度、类型（#56 #58 #68）
+
+def test_a_payload_behind_a_run_of_expanding_characters_is_still_found():              # #56
+    link = " wa.me/5512345678 vengan a mi tienda www.evil-shop.com"
+    for pad in (54, 55, 56, 100, 150):
+        r = judge("ﷺ" * pad + link)
+        assert r["lvl"] == "alert" and "promo_link" in r["cats"] and "promo_contact" in r["cats"], pad
+    assert judge("ﷻ" * 126 + link)["lvl"] == "alert"
+    assert judge("ﷺ" * 56 + " hijueputa")["lvl"] == "alert"
+    assert len(cg.light("ﷺ" * 150)) <= 150 * cg.NFKC_EXPAND_MAX
+    assert len(cg.light("ﷺ" * 1000)) <= cg.MAX_CHARS
+
+
+def test_ordinary_nfkc_expansions_keep_their_full_text():                              # #56
+    assert cg.light("㍿") == "株式会社" and cg.light("…") == "..." and cg.light("ﬃ") == "ffi"
+    assert cg.light("⑽") == "(10)" and cg.light("Ｈｏｌａ") == "hola"
+
+
+def test_lex_hits_cuts_the_text_the_same_way_judge_does():                             # #56
+    text = "e\u0301" * 600 + " hijueputa"           # 分解写法的 é：1200 个码点，NFKC 之后才缩成 600；脏话在 MAX_CHARS 之后
+    assert judge(text)["lvl"] is None
+    g = guard()
+    hits = g.lex_hits(text)
+    hits.pop("_flags")
+    assert hits == {}
+
+
+def test_odd_user_and_cid_arguments_are_hashed_before_the_flood_engine_sees_them():    # #58
+    g = guard()
+    # 用一条不被互动词豁免的文本：豁免词整条返回，根本碰不到 user
+    assert g.judge("x", user=["u"], ts=1.0, cid=["c"])["lvl"] is None
+    assert g.judge("quiero el 1", user={"a": 1}, ts=2.0, cid={"b": 2})["lvl"] is None
+    assert g.judge("quiero el 2", user=["u"], ts=3.0)["lvl"] is None
+    # 空的不可哈希值和 None 一样是「没有」：不会变成共用的 "[]" 键、被当成同一个人刷屏
+    g = guard()
+    for i in range(12):
+        r = g.judge("quiero comprar", user=[], ts=1000.0 + i)
+    assert r["lvl"] is None and not g.flood.users
+    g2 = guard()
+    assert g2.judge("quiero comprar", user=set(), ts=1.0)["lvl"] is None and not g2.flood.users
+
+
+def test_non_iterable_keys_do_not_break_the_trusted_check():                            # #58
+    g = guard(trusted=["7234567890123456789"])
+    assert g.judge("hola", user="x", ts=1.0, keys=5)["lvl"] is None
+    assert g.judge("eres una pendeja", user="x", ts=2.0, keys=7234567890123456789)["tags"] == ["trusted"]
+
+
+def test_load_trusted_survives_a_lone_surrogate_name(tmp_path):                         # #58
+    assert cg.load_trusted("\ud800", tmp_path) == frozenset()
+    assert cg.load_trusted("ab\ud800cd", tmp_path) == frozenset()
+
+
+def test_a_nickname_only_viewer_is_not_auto_markable_even_when_uid_src_is_absent():      # #68
+    from types import SimpleNamespace
+
+    from app.comment_source import event_to_item
+
+    def item(user_obj):
+        return event_to_item(SimpleNamespace(comment="eres una pendeja", user=user_obj,
+                                             common=SimpleNamespace(msg_id=5)))
+
+    nick_only = item(SimpleNamespace(nickname="Ana"))
+    assert "uid_src" not in nick_only
+    r = judge(nick_only["text"], user=nick_only["user"])
+    assert r["lvl"] == "alert"
+    assert not cg.auto_markable(r, nick_only.get("uid_src"))             # 显式的 None：没有稳定账号键
+    assert not cg.auto_markable(r, uid_src=None)
+    assert cg.auto_markable(r)                                           # 不传：只看判定本身
+    with_id = item(SimpleNamespace(nickname="Ana", id=1234567890123456789))
+    assert with_id["uid_src"] == "id" and cg.auto_markable(r, with_id.get("uid_src"))
+    handle_only = item(SimpleNamespace(nickname="", unique_id="ana_demo"))
+    assert handle_only["uid_src"] == "handle" and not cg.auto_markable(r, handle_only.get("uid_src"))
+    assert not cg.uid_ok(None) and not cg.uid_ok(["id"]) and not cg.uid_ok({})
+
+
+# ---- 词表机制（#60 #61 #70）
+
+@pytest.mark.parametrize("line", [
+    "same_text_note: 1" + "0" * 309 + "/60", "user_burst_note: 4/" + "9" * 400, "caps_lead: 0.6/" + "9" * 400,
+    "caps_lead: " + "9" * 400 + "/3", "budget_ms: -" + "9" * 400,
+])
+def test_a_huge_integer_threshold_is_a_warning_and_keeps_the_default(tmp_path, line):       # #60
+    d = small_defaults(tmp_path, thresholds=line + "\n")
+    rules = cg.load_rules(d, NO_LOCAL)                 # 309 位的整数连 math.isfinite 都会抛 OverflowError：不能漏出来
+    key = line.split(":")[0]
+    assert rules.thresholds[key] == cg.DEFAULT_THRESHOLDS[key], line
+    assert [w["reason"] for w in rules.warnings] == ["bad_threshold"], line
+
+
+def test_an_emoji_newer_than_this_pythons_unicode_database_is_still_an_emoji(tmp_path, monkeypatch):   # #61
+    """Python 3.9 的 Unicode 数据库里 🫶 🩷 🫠 还没分配（类别 Cn）：不能因此被当成空词条丢掉。"""
+    real = cg.unicodedata.category
+    new_emoji = {"\U0001FAF6", "\U0001FA77", "\U0001FAE0"}
+    monkeypatch.setattr(cg.unicodedata, "category", lambda c: "Cn" if c in new_emoji else real(c))
+    d = small_defaults(tmp_path, insult="[strong]\n\U0001FAF6\n\U0001FA77\n\U0001FAE0\n")
+    rules = cg.load_rules(d, NO_LOCAL)
+    assert rules.warnings == [] and judge("hola \U0001FAF6 amiga", rules=rules)["lvl"] == "alert"
+    # 纯 ASCII 标点和别的标点仍然丢掉
+    d2 = small_defaults(tmp_path / "b", insult="[strong]\n:)\n@\n$\n!!!\n") if (tmp_path / "b").mkdir() is None else None
+    assert [w["reason"] for w in cg.load_rules(d2, NO_LOCAL).warnings] == ["empty"] * 4
+
+
+def test_an_emoji_entry_with_a_skin_tone_or_a_math_symbol_is_matched_literally(tmp_path):   # #61
+    d = small_defaults(tmp_path, insult="[strong]\n\U0001F595\U0001F3FD\n≠\n")
+    rules = cg.load_rules(d, NO_LOCAL)
+    assert rules.warnings == []
+    assert judge("hola \U0001F595\U0001F3FD", rules=rules)["lvl"] == "alert"
+    assert judge("a ≠ b", rules=rules)["lvl"] == "alert"
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="需要非 root 的 POSIX 用户")
+def test_an_unreadable_defaults_directory_degrades_to_read_errors_instead_of_raising(tmp_path):   # #70
+    d = small_defaults(tmp_path, insult="[strong]\nidiota\n")
+    os.chmod(d, 0)
+    try:
+        rules = cg.load_rules(d, NO_LOCAL)
+        assert rules.count == 0 and rules.warnings
+        assert {w["reason"] for w in rules.warnings} <= {"read_error", "defaults_missing"}
+    finally:
+        os.chmod(d, 0o700)
+    # 整个上级目录进不去
+    parent = tmp_path / "locked"
+    parent.mkdir()
+    inner = small_defaults(parent, insult="[strong]\nidiota\n")
+    os.chmod(parent, 0)
+    try:
+        assert cg.load_rules(inner, NO_LOCAL).count == 0
+    finally:
+        os.chmod(parent, 0o700)
+
+
+def test_the_brigade_scan_ignores_entries_from_the_future():                         # #59
+    eng = cg.FloodEngine()
+    toks = frozenset(("uno", "dos", "tres", "cuatro"))
+    for i in range(3):
+        eng.feed("old%d" % i, "uno dos tres cuatro", toks, 2000.0 + i * 0.1)
+    assert len(eng.clusters) == 1
+    # 时钟往回拨了 1000 秒：旧事件到期，新来的两个账号只能和「未来」的三条凑成事件
+    out = eng.feed("new0", "uno dos tres cuatro", toks, 1000.0)
+    out += eng.feed("new1", "uno dos tres cuatro", toks, 1000.1)
+    assert [e for e in out if e["kind"] == "brigade"] == [], out
+    assert len(eng.clusters) == 0
+
+
+def test_the_same_text_counts_have_an_upper_bound_at_now():                           # #59
+    eng = cg.FloodEngine()
+    toks = frozenset(("quiero", "el", "combo"))
+    for ts in (1030.0, 1031.0, 1032.0, 1033.0, 1034.0):
+        eng.feed("u", "quiero el combo", toks, ts)
+    out = eng.feed("u", "quiero el combo", toks, 1000.0)          # 5 条都在「未来」
+    assert [e for e in out if e["kind"] == "same_text"] == [], out

@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from app import comment_guard as cg
+from tests.comment_guard_confirmed import RED_SECTIONS, assert_flagged_by_shipped, check_defaults_state
 
 HERE = Path(__file__).resolve().parent
 FIX = HERE / "fixtures" / "comment_guard"
@@ -26,10 +27,8 @@ NO_LOCAL = HERE / "no-such-local-dir"
 STREAMER = "luna_demo"
 RULES = cg.load_rules(FIX, NO_LOCAL)
 
-# 出厂词表里已确认的红条档段（不带 :pending 的）：用户确认后才往里加（comment_guard/README.md
-# 「确认红条档词条」）。现在没有任何一段被确认；用户先确认的是 insult/threat 和 accuse/call 两小段。
-# 下面三条出厂词表测试都由它驱动：确认一段，只改这个集合（和词表文件）就行
-RED_CONFIRMED = frozenset()
+# RED_CONFIRMED（出厂词表里已确认的红条档段）住在 tests/comment_guard_confirmed.py，几个读出厂词表的测试
+# 文件共用：确认一段，只改那里（和词表文件、夹具）就行
 
 RESULT_KEYS = {"lvl", "amb", "cats", "sub", "why", "tier", "tags", "route"}
 
@@ -776,6 +775,12 @@ ADVERSARIAL = {
     "spaced letters": "e s " * 250, "inverted ?": "¿" * 1000, "keycap": "5️⃣" * 300,
     "nfkc 18x": "\ufdfa" * 1000, "nfkc 8x": "\ufdfb" * 1000,       # 审查 #56：NFKC 展开 18 倍
     "masked": "p*ta est*fa " * 90, "spaced emoji": "p🔥u " * 250, "mask hint": "a*b#c%d " * 140,
+    # 复核之后新增的路径：逐子句重判否定 / 条件、盲文空白的第二种读法、空格点空格、粘在一起的链接、邮箱
+    "negated frames": "no eres fea, " * 77, "emphatic si": "si, eres fea. " * 77,
+    "blank glyphs": "eres\u2800pendeja " * 90, "spaced dot com": "a . com " * 125,
+    "glued tiktok urls": "https://www.tiktok.com/@luna_demo,evil.com/x," * 23, "emails": "a@b.co " * 140,
+    "dotted chain": "a.b" * 333, "denial clauses": "dicen que es estafa, pero no es estafa, " * 25,
+    "bare ur clauses": "ur fat burner, " * 70, "bare ur words": "ur " * 330,
 }
 
 
@@ -930,8 +935,6 @@ RED_SAMPLES = {
     ("promo", "pull"): "vengan a mi live",
     ("promo", "scam-strong"): "somos el soporte de tiktok",
 }
-RED_SECTIONS = sorted((f, sec) for f, secs in cg.SECTIONS.items() for sec, tier in secs.items()
-                      if tier == cg.RED and not cg.is_pending(sec))
 
 
 def test_every_red_tier_section_has_a_sample_and_the_samples_are_red_in_the_fixture():
@@ -947,23 +950,7 @@ def test_defaults_load_clean_and_confirmed_red_sections_are_exactly_red_confirme
     RED_CONFIRMED。出厂词表里已确认（不带 :pending）的红条档段 == RED_CONFIRMED；其余红条档
     都只存在于 :pending 段里。"""
     rules = cg.load_rules(DEFAULTS, NO_LOCAL)
-    assert rules.warnings == []
-    confirmed = {key for key, n in rules.counts.items()
-                 if n and cg.SECTIONS[key[0]][key[1]] == cg.RED and not cg.is_pending(key[1])}
-    assert confirmed == set(RED_CONFIRMED), \
-        "出厂词表里已确认的红条档段和 RED_CONFIRMED 对不上（见 comment_guard/README.md 的确认流程）：%s" % sorted(confirmed)
-    pending = {(f, cg.base_sec(sec)) for (f, sec), n in rules.counts.items()
-               if n and cg.is_pending(sec)}
-    assert pending == set(RED_SECTIONS), "每个红条档段都该有待确认的词条（至少现在）"
-    assert rules.pending_count > 150
-    clue = {key for key, n in rules.counts.items() if n and cg.SECTIONS[key[0]][key[1]] == cg.CLUE}
-    assert {("insult", "medium"), ("insult", "watch"), ("insult", "sexual-soft"), ("accuse", "institution"),
-            ("accuse", "negative"), ("promo", "offer"), ("promo", "lure"), ("promo", "scam-weak"),
-            ("cues", "irony"), ("cues", "neg-emoji")} <= clue
-    exempt = {key for key, n in rules.counts.items() if n and cg.SECTIONS[key[0]][key[1]] == cg.EXEMPT}
-    assert {("insult", "exempt-phrases"), ("accuse", "exempt-phrases"), ("promo", "ask"),
-            ("interact", "words"), ("interact", "places"), ("interact", "positive"),
-            ("interact", "positive-emoji")} <= exempt
+    check_defaults_state(rules)
 
 
 @pytest.mark.parametrize("key", RED_SECTIONS, ids=["%s/%s" % k for k in RED_SECTIONS])
@@ -971,12 +958,7 @@ def test_with_the_default_lexicon_an_unconfirmed_red_section_only_shows_amber(ke
     """用户决定 7：没确认的红条档词条只出琥珀，不标红，不自动加入关注名单。"""
     rules = cg.load_rules(DEFAULTS, NO_LOCAL)
     r = judge(RED_SAMPLES[key], rules=rules)
-    if key in RED_CONFIRMED:
-        assert (r["lvl"], r["tier"]) == ("alert", "red"), r
-        assert cg.auto_markable(r)
-        return
-    assert (r["lvl"], r["amb"], r["tier"], r["route"]) == ("amber", "pending", "red", "confirm"), r
-    assert "pending" in r["tags"] and not cg.auto_markable(r)
+    assert_flagged_by_shipped(r, RED_SAMPLES[key])
     assert r["why"] and r["sub"] == key[1]
 
 
@@ -1013,7 +995,7 @@ def test_fixture_lexicon_equals_the_defaults_without_pending(name):
 def test_readme_documents_the_pending_confirmation_flow():
     text = (HERE.parent / "comment_guard" / "README.md").read_text(encoding="utf-8")
     assert "[段名:pending]" in text and "RED_CONFIRMED" in text
-    assert "tests/test_comment_guard_rules.py" in text
+    assert "tests/comment_guard_confirmed.py" in text
     assert "待业务确认" not in text, "旧的「待业务确认」注释块约定已取消"
 
 

@@ -341,6 +341,20 @@ def test_same_sentence_flood_compares_the_exact_sentence_so_numbered_orders_are_
     assert lvls(res) == [None, None, "note", "note", "alert"]
 
 
+def test_a_spammer_who_only_varies_a_number_is_still_a_repeat_when_enough_words_remain():   # #1
+    """只改一个数字躲同人同句的刷屏：去掉数字之后还剩 3 个以上的词，就按去数字的键也算同一句。"""
+    res = run([(1000 + 7 * n, "u1", "esto es una burla %d" % d) for n, d in enumerate((3, 10, 17, 24, 31, 38))])
+    assert lvls(res) == [None, None, "note", "note", "alert", "alert"]
+    assert kinds(res[4]) == [("same_text", "alert", 5)]
+    # 顾客点单的写法照旧不报：去掉数字之后只剩 2 个词（quiero el / la talla）
+    res = run([(1000 + 7 * n, "u2", "quiero el %d" % d) for n, d in enumerate((3, 10, 17, 24, 31, 38))])
+    assert lvls(res) == [None] * 6 and not any(evs for _, evs in res)
+    # 有数字的和没数字的算同一句，别人的同一句不算
+    res = run([(1000, "u3", "esto es una burla"), (1005, "u3", "esto es una burla 7"), (1010, "u3", "esto es una burla 8"),
+               (1015, "u4", "esto es una burla 9")])
+    assert kinds(res[2]) == [("same_text", "note", 3)] and kinds(res[3]) == []
+
+
 def test_multi_account_flood_still_ignores_the_number_in_the_slogan():               # #1
     res = run([(1000 + 2 * i, "u%d" % i, "participo en el sorteo %d" % (i + 3)) for i in range(5)])
     assert [e["n"] for e in brigades(res)] == [3, 4, 5] and brigades(res)[-1]["lvl"] == "amber"

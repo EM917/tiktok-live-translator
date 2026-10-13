@@ -44,6 +44,8 @@ comment_guard/
   `invalid_regex`；能匹配空串、或对任何弹幕都匹配（`re:`、`re:.*`、`re:x|`）的报 `matches_empty`，这一条丢掉，
   免得每条弹幕都成了红条。
 - 同一词条写在多个段里，取最严的档。
+- promo 段的 `re:` 里写 `zzat` 表示「同句有 @账号」：折叠会把 `@` 变成字母 `a`，正则里没法直接认 `@`，所以规则层在折叠文本
+  末尾补一个标记词 `zzat`（主播自己的账号不算）。`felicidades ganaste @premios`、`seguidores gratis en @x` 就靠它。
 - 红条档里带 `re:` 的词条，多半是**收窄过的写法**：词条后面接正常说法就不算（`te voy a matar de risa`、`no compren tantos`、
   `reporten su pedido aqui`、`ojala te pase algo bueno`、`mas barato en mi pais`）。写成 `(?!\s+…)` 的否定前瞻或前置的 `(?<!…)`，
   跑在折叠后的文本上。agent 新写、还没经用户确认的候选词条在文件里用 `# 候选（agent 新写，待确认）` 标出来。
@@ -52,7 +54,8 @@ comment_guard/
 
 折叠（`fold()`）会处理手机打字常见的拼写漂移：大小写、重音、拉长（`holaaaa`）、拆字（`e s t a f a`，
 空格、点、逗号、斜杠、表情隔开的都认，>= 4 个连续单字母才拼回）、leet（`m13rd4`）、同形字、`q` / `xq` 这类俚语缩写、
-格式字符和不可见字符（双向隔离符、韩文填充符、标签字符等一律删掉），以及词内遮挡符（`p*ta`、`est*fa`、
+格式字符和不可见字符（Unicode 类别 Cf、蒙古文自由变体选择符、标签字符、韩文填充符等一律删掉；其中盲文空白 U+2800 和韩文
+填充符这类占一个空格宽的，词表匹配另跑一遍把它们当空格的读法，两遍的命中取并集：`est[U+2800]afa` 和 `eres[U+2800]una[U+2800]pendeja` 都认），以及词内遮挡符（`p*ta`、`est*fa`、
 `f*ck`：一个遮挡符代表一个任意字母，只对 `strong` 和 `assert` 段里 >= 4 个字母的单词条生效）。
 
 ## 三层档位
@@ -77,10 +80,17 @@ comment_guard/
   `o no` / `o que`、选择问句 `X o Y`）不计分，句里有指称词时才作为升级型送模型。
   `hay` / `tienen` / `dan` / `pueden` / `alguien` 和感叹的 `cuanta estafa` / `what a scam` 不是疑问词：没有问号时不算问句，
   带 `maybe_question` 标记出琥珀。
-- `target` 句式前面有否定（`no eres fea`）或条件（`si estas operada`、`if you are fat`）不算；裸 `estas` 只接单数目标词
-  （`estas feas manchas` 的 feas 是复数）；英语不认裸 `ur`（`ur fat burner`）。
-- @账号只有被账号标签引出时才算引流的载荷（`ig: x`、`mi ig @x`、`sigueme en @x`、`mi cuenta @x`）；
-  句首或句中呼叫朋友的 `@名字 ……` 不算。电话 + 任何 @账号同现仍是红条（结构信号）。邮箱地址不是链接，是联系方式。
+- `target` 的系动词句式前面紧挨着否定（`no eres fea`、`ya no estas gorda`）或条件（`si estas operada`、`if you are fat`）不算；
+  否定词要紧挨着句式词，`no inventes eres fea`、`ni modo eres fea`、`no tu eres fea` 照样算；`no, eres fea`、`dije que no. eres fea` 的
+  no 是应答，按子句重判；`tu si eres fea`、`si, eres fea`、`sí eres fea` 的 si 是「确实」，不是条件；`pinche X`、`X de mierda`、
+  `que X eres` 不查否定。裸 `estas` 只接单数目标词（`estas feas manchas`、`que feas estas fajas` 的 feas 是复数）；
+  英语的裸 `ur` 只认目标词收尾的句子（`ur ugly`、`ur fat lol`），后面还有话的（`ur fat burner`、`ur ugly sweater`）不算；
+  `you are fat burning`、`fat loss` 这类商品词不算。
+- @账号只有被账号标签引出时才算引流的载荷：平台名（`ig: x`、`wsp: x`，不写 @ 也行）、`mi ig @x`、`sigueme en @x`、
+  `mi cuenta @x`，以及紧挨在 @ 前面的命令式（`sigueme @x`、`dm me @x`、`follow me @x`）；标签按去重音的文本认（`sígueme`、`página`）。
+  `cuenta` / `perfil` / `pagina` 这类泛称必须带 @（`mi perfil: privado` 不是账号）；纯数字的不算账号（`wsp: 5512345678` 的号码）。
+  句首或句中呼叫朋友的 `@名字 ……` 不算。电话 + 任何 @账号同现仍是红条（结构信号），有下单语境词（`quiero comprar 5512345678 @ana`）
+  时只记 note。邮箱地址不是链接，是联系方式；`https://x@evil.shop`、`tiktok.com@evil.shop` 这种把链接伪装成登录信息的，仍然是链接。
 - 强词出现在第一人称自指的句子里（`que pendeja soy`，没有第二人称标记）降为琥珀（`amb == "self"`）。
 
 ## 确认红条档词条
@@ -99,11 +109,24 @@ comment_guard/
    碰撞的删掉或收窄，并在 `tests/test_comment_guard_lexicon.py` 里钉一条正常说法和一条恶意说法。
 2. 把确认过的词条从 `defaults/*.txt` 里的 `[段名:pending]` 挪到**同一个文件里**不带 `:pending` 的同名 `[段名]`
    （没有就新建一段）。整段确认就把段名的 `:pending` 去掉。
-3. **同一个提交里**改 `tests/test_comment_guard_rules.py`：
-   - `RED_CONFIRMED` 加上这一段（元组 `(文件, 段名)`，例如 `("insult", "threat")`）；
+3. **同一个提交里**改测试，**只有两处**：
+   - `tests/comment_guard_confirmed.py` 的 `RED_CONFIRMED` 加上这一段（元组 `(文件, 段名)`，例如 `("insult", "threat")`）。
+     读出厂词表的测试都由它驱动，不需要再改别的期望：`tests/test_comment_guard_rules.py` 钉「出厂词表里已确认的段集合
+     == `RED_CONFIRMED`、不在里面的段命中只出琥珀」；`tests/test_comment_guard_lexicon.py` 里收窄词条和候选词条的期望
+     （已确认的段里，恶意说法是红条，或者那一条还没确认时是琥珀）也跟着它走。
    - `tests/fixtures/comment_guard/` 里的夹具是出厂词表去掉 `:pending` 之后的快照，要同步成一样的内容
-     （`test_fixture_lexicon_equals_the_defaults_without_pending` 钉着这条，红了就是两份漂移了）；
-   - 三条出厂词表测试都由 `RED_CONFIRMED` 驱动：已确认的段集合必须等于它，不在里面的段命中只出琥珀。
+     （`test_fixture_lexicon_equals_the_defaults_without_pending` 钉着这条，红了就是两份漂移了）。整段确认只改了段头，
+     去掉 `:pending` 之后内容不变，夹具不用动；逐条挪过去的话，重新生成一遍：
+     ```
+     for f in insult accuse promo interact cues thresholds; do
+       { head -1 tests/fixtures/comment_guard/$f.txt
+         sed -E 's/^\[([a-z0-9-]+):pending\]$/[\1]/' comment_guard/defaults/$f.txt; } > /tmp/$f.fx
+       mv /tmp/$f.fx tests/fixtures/comment_guard/$f.txt
+     done
+     ```
+   `test_confirming_threat_and_call_the_way_the_readme_says_keeps_these_tests_green`（`tests/test_comment_guard_lexicon.py`）
+   在出厂词表的临时副本上把「威胁」和「号召举报·别买」两段按上面的步骤确认一遍，再用同一批期望去判：它红了，就说明这份
+   流程写的和测试对不上了。
 
 `thresholds.txt` 里的 `accumulate_red` 同样算红条档开关，写成一行生效的 `accumulate_red: off`：同一个人 10 分钟内
 第二次触发线索档辱骂，默认只是琥珀（`accumulated`），不标红、不自动加入关注名单。改成 `on` 等于打开一档红条，须用户确认。
@@ -117,8 +140,8 @@ comment_guard/
 | `insult.txt` `accuse.txt` `promo.txt` | 同名同格式：普通行 = 追加到所在的 `[段]`；`-词条` = 关掉一条默认（按折叠形式匹配，以后版本里同名词条仍保持关掉） |
 | `exempt.txt` | 本机豁免短语（行业词、主播口头禅）。可用 `[insult]` `[accuse]` `[promo]` 分段，不分段就三类都适用 |
 | `competitors.txt` | 竞品店名、账号、品牌（引流类用）。默认空；仓库里不放任何具体竞品 |
-| `mine.txt` | 自己的号码、链接、账号，永不算引流。号码按子串比；账号是精确匹配（`marcaejemplo` 不盖 `@marcaejemplo_oficial`）；域名按 host 比（见下） |
-| `exempt_domains.txt` | 无害的域名（物流官网等），命中的链接不算引流。按 host 比：host 等于条目或以 `.条目` 结尾，条目带路径时路径还要以它开头；`tienda-marcaejemplo.com`、`marcaejemplo.com.evil.shop` 不被 `marcaejemplo.com` 盖住 |
+| `mine.txt` | 自己的号码、链接、账号、邮箱，永不算引流。号码按子串比；账号是精确匹配（`marcaejemplo` 不盖 `@marcaejemplo_oficial`）；域名按 host 比（见下），自家域名下的邮箱（`soporte@marcaejemplo.com`）同样不算 |
+| `exempt_domains.txt` | 无害的域名（物流官网等），命中的链接不算引流。按 host 比：host 等于条目或以 `.条目` 结尾，条目带路径时路径还要以它开头；`tienda-marcaejemplo.com`、`marcaejemplo.com.evil.shop`、`marcaejemplo.com.mx` 不被 `marcaejemplo.com` 盖住；host 后面直接粘着表情或标点（`www.marcaejemplo.com😍`）不影响，粘着第二个链接（`…com,https://evil.com`）则不放过 |
 | `thresholds.txt` | `key: value`，覆盖 `defaults/thresholds.txt` |
 | `trusted/<主播>.txt` | 该主播本人、房管、助理的 uid，一行一个，永不提醒。`judge()` 的 `user` 或 `keys` 里任一个命中就算（不分大小写） |
 
@@ -141,7 +164,7 @@ pestanas ejemplo
 |---|---|---|
 | `user_burst_note` / `user_burst_alert` | `4/10`、`6/10` | 单人不同句：10 秒内 4 条记 note，6 条标红 |
 | `user_burst_alert_long` | `12/60` | 60 秒内 12 条标红 |
-| `same_text_note` / `same_text_alert` | `3/60`、`5/60` | 同人同句：60 秒内 3 次记 note，5 次标红；问句最多 note |
+| `same_text_note` / `same_text_alert` | `3/60`、`5/60` | 同人同句：60 秒内 3 次记 note，5 次标红；问句（含没有问号的 `hay` / `tienen` / `alguien` 起头的短句）最多 note。按原句比，`quiero el 1` / `quiero el 2` 是不同的句子；但去掉数字之后还剩 3 个以上的词时，只改数字的刷屏（`esto es una burla 3` / `10` / `17`）也算同一句 |
 | `brigade_note` / `brigade_alert` | `3/20`、`5/20` | 多账号同句：20 秒内 3 个账号记 note，5 个账号出一个琥珀事件（v1 不单独标红） |
 | `brigade_min_words` / `brigade_jaccard` | `3`、`0.8` | 近似句：词集合 Jaccard >= 0.8 且至少 3 个词 |
 | `accumulate` | `2/600` | 线索档辱骂 10 分钟内第 2 次 -> 琥珀 |
@@ -171,15 +194,18 @@ pestanas ejemplo
   不算红条、不自动加入关注名单；**note** 不上界面，只计数；**lead** 只命中负面线索，只决定送不送模型。
 - 自动加入关注名单只认 `lvl == "alert"` 且 `tier == "red"` 且没有不确定标记（`auto_markable(result)`）；
   账号键还要稳定：`auto_markable(result, uid_src=...)` 在 `uid_src` 不是 `id` / `id_str` / `sec_uid`（只有 handle 或昵称）时返回 False
-  （`uid_ok()`）。链接、电话组合、刷屏都是 `tier == "struct"`，永远不自动加人。
+  （`uid_ok()`）；**显式传 `None` 也是 False**——只有昵称的观众在 `event_to_item` 里压根没有 `uid_src` 这个键，
+  `auto_markable(r, item.get("uid_src"))` 拿到的就是 `None`。不传这个参数时只看判定本身。链接、电话组合、刷屏都是 `tier == "struct"`，永远不自动加人。
 - 类别 id（`insult` `threat` `sexual` `accuse_call` `accuse_report` `accuse_claim` `flood_user` `flood_repeat`
   `flood_brigade` `promo_link` `promo_contact` `promo_pull` `promo_scam`）只是代码，界面文字另有来源。
 - 刷屏必须传真实时间戳：`judge(..., ts=...)` 的 `ts` 是必填关键字，必须是有限的 int / float（否则在改任何状态之前抛
   `TypeError` / `ValueError`）。`text` 不是 str 就转成 str，`user` / `cid` 不可哈希就转成 str。
 - 主播自己的账号用 `judge(..., handle=...)` 的 handle 字段比（不分大小写），**不按昵称比**：任何人都能把昵称改成主播名；
   `role` 是 anchor / mod 的、trusted 名单命中 `user` 或 `keys` 的也整条豁免。
-- 多账号同句是一个事件：第一次到 `brigade_note` 时分配 id，之后相似的弹幕并进同一个事件（账号数原地增长、id 不变），
-  最后一条相似弹幕之后「窗口 + 20 秒」没有新的就结束；`judge().last_flood` 里的事件带 `ev`、`n`、`first_ts`、`last_ts`、`accounts`（前 20 个）。
+- 多账号同句是一个事件：第一次到 `brigade_note` 时分配 id，之后相似的弹幕并进同一个事件（账号数原地增长、id 不变；并进来的时候
+  回看窗口，把所有和这一条相似的账号补进去，所以只和中间的变体相似的弹幕也数得进来），
+  最后一条相似弹幕之后「窗口 + 20 秒」没有新的就结束；`judge().last_flood` 里的事件带 `ev`、`n`、`first_ts`、`last_ts`、`accounts`（前 20 个，按各自第一次说这句的先后排）。
+  **n 是整个事件累计的账号数，不是 20 秒窗口里的**：一个 3 账号的小爆发之后，每隔不到 40 秒来一个新账号，事件一直活着，第 5 个账号起出琥珀（旧算法的 20 秒窗口永远凑不到 5 个）。要不要改回「只数窗口里的」由用户决定。
 
 ## 词表体检
 
