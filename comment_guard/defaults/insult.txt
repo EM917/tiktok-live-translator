@@ -8,7 +8,8 @@
 #
 # 线索档（启用）：medium 中档辱骂 / watch 只记分的粗口 / sexual-soft 调情式性暗示 ——
 # 单独命中只记 note，不上界面；exempt-phrases 命中被它整个盖住时当没命中。
-# 红条档（全部写在 [段名:pending] 里，命中只出琥珀，见文件末尾）：strong / threat / sexual / target。
+# （咒人死的说法 ojala te mueras / que te mueras / muerete 原来在 medium，现在是 threat 的候选词条。）
+# 红条档（全部写在 [段名:pending] 里，命中只出琥珀，见文件末尾）：strong / threat / sexual / target / slur。
 
 [medium]
 stupid
@@ -23,8 +24,6 @@ sinverguenza
 sinverguenzas
 asquerosa
 asquerosas
-ojala te mueras
-ojala y te mueras
 zorra
 zorras
 cabrona
@@ -63,8 +62,6 @@ mugrosa
 pobretona
 cierra el hocico
 callate la boca
-que te mueras
-muerete
 que te lleve la chingada
 que te cargue la chingada
 
@@ -117,17 +114,37 @@ mamacita linda
 #   nice -n 19 python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs --section insult/threat
 
 # ---- 第一批：人身威胁（先确认这一段） ----
+# 带 re: 的是收窄过的写法：后面接正常说法（te voy a matar de risa、ojala te pase algo bueno）就不算。
 [threat:pending]
-kill yourself
+re:(?<!\bcant )(?<!\bcannot )(?<!\bwont )(?<!\bdont )(?<!\bnever )(?<!\bnot )(?<!\bto )\bkill yourself\b(?!\s+(?:if|laughing|lol)\b)
 kys
 hope you die
 i will kill you
 go to hell
-te voy a matar
-te vamos a matar
-se donde vives
-se donde vive
-ojala te pase algo
+re:\bte voy a matar\b(?!\s+(?:de risa|con (?:los|estos|ese|esos) precios?|con las ofertas|con tanta|(?:ja)+|(?:je)+|lol|xd)\b)
+re:\bte vamos a matar\b(?!\s+(?:de risa|con (?:los|estos|ese|esos) precios?|con las ofertas|con tanta|(?:ja)+|(?:je)+|lol|xd)\b)
+re:(?<!\bno )(?<!\bni )(?<!\bnunca )(?<!\bjamas )\bse donde vives\b
+re:(?<!\bno )(?<!\bni )(?<!\bnunca )(?<!\bjamas )\bse donde vive\b
+re:\bojala te pase algo\b(?!\s+(?:bueno|buena|lindo|bonito|padre|chido|bien|good|hermoso|increible|maravilloso|mejor|especial|genial|positivo)\b)
+# 候选（agent 新写，待确认）：暴力、纵火、强奸、咒人死
+re:\bte (?:voy|vamos) a (?:partir|romper) (?:la madre|la cara|tu madre|el hocico|los dientes)\b
+te voy a golpear
+te vamos a golpear
+voy a ir a tu casa
+re:\b(?:te|la|lo|los|les) (?:voy|vamos) a quemar (?:la|el|su|tu|sus|tus) (?:tienda|casa|negocio|local|carro|coche|auto)\b
+te voy a violar
+te vamos a violar
+voy a violarte
+re:\bojala(?: y)? te mueras\b(?!\s+(?:de|del) (?:la )?(?:risa|envidia|amor|gusto|ganas|hambre|verguenza|miedo|celos|sueno|calor|frio|emocion|felicidad)\b)
+re:\bque te mueras\b(?!\s+(?:de|del) (?:la )?(?:risa|envidia|amor|gusto|ganas|hambre|verguenza|miedo|celos|sueno|calor|frio|emocion|felicidad)\b)
+re:\bmuerete\b(?!\s+(?:de|del) (?:la )?(?:risa|envidia|amor|gusto|ganas|hambre|verguenza|miedo|celos|sueno|calor|frio|emocion|felicidad)\b)
+mereces morir
+re:\b(?:i will|ill) find you\b(?!\s+(?:a|an|the|some|that|it|one|those|these|your|my|on|in|at|there|later|tomorrow|tonight)\b)
+i know where you live
+i hope you get cancer
+hope you get cancer
+unalive yourself
+re:\bgo die\b(?!\s+(?:trying|laughing|lol|happy|peacefully)\b)
 
 # ---- 明确脏话（最后一行是中指表情：只有符号的词条按字面匹配） ----
 [strong:pending]
@@ -192,12 +209,26 @@ lacras
 🖕
 
 # ---- 露骨性要求 ----
+# 衣物、护肤品、怎么穿怎么涂（faja、licra、brasier、crema、como se ve……）出现在动词和部位之间或部位之后 20 个字内时不算：
+# 塑身衣、内衣、胸霜的直播里「muestranos como se ve en las nalgas」是在看商品。
 [sexual:pending]
-re:\b(ensena|ensename|ensenanos|muestra|muestrame|muestranos|ensenen|muestren)\b.{0,20}\b(tetas|chichis|pechos|senos|nalgas|culo)\b
-re:\b(desnudate|encuerate|quitate la ropa|quitate todo)\b
+re:\b(?:ensena|ensename|ensenanos|muestra|muestrame|muestranos|ensenen|muestren)\b(?:(?!\b(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|ropa|como se|como queda|como te queda|como me queda|que tal)\b).){0,20}?\b(?:tetas|chichis|pechos|senos|nalgas|culo|culito|nalguitas|tetitas|chichitas|pechitos)\b(?!.{0,20}\b(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|ropa|como se|como queda|como te queda|como me queda|que tal)\b)
+re:\b(?:desnudate|encuerate|quitate la ropa)\b
+re:\bquitate (?:todo|toda) (?:la ropa|el vestido|el brasier|eso)\b(?!\s+vieja\b)(?!.{0,40}\b(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|como se|como queda|como te queda|como me queda|que tal)\b)
 te cojo
 cojerte
-me la como
+# 候选（agent 新写，待确认）
+quiero cogerte
+re:\bte quiero coger\b(?!\s+(?:el|la|los|las|un|una|mi|tu|mis|tus)\b)
+te quiero cojer
+re:\bte voy a coger\b(?!\s+(?:el|la|los|las|un|una|mi|tu|mis|tus)\b)
+send nudes
+re:\bshow (?:me )?(?:your |ur )?(?:tits|boobs|titties|ass|pussy)\b
+re:\bquitate (?:la blusa|la camisa|el brasier|el sosten|los pantalones|el calzon)\b(?!.{0,40}\b(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|ropa|como se|como queda|como te queda|como me queda|que tal)\b)
+re:\bquiero verte (?:desnuda|sin ropa)\b(?!.{0,40}\b(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|como se|como queda|como te queda|como me queda|que tal)\b)
+chupamela
+mamamela
+mamame la verga
 
 # ---- 身材/年龄/性别词，只在指向对方的句式里计分（eres / te ves / pinche + 词） ----
 [target:pending]
@@ -221,6 +252,29 @@ foca
 operada
 siliconada
 plastica
+
+# ---- 种族 / 排外辱骂（候选，agent 新写，待确认） ----
+# mojado / mojada 在西语里首先是「湿的」（cabello mojado、piel mojada）：只认前面带辱骂词或后面带辱骂词的写法。
+# 用 [slur:pending] 单独成段：确认以后可以和 strong 分开开关。
+[slur:pending]
+beaner
+beaners
+wetback
+wetbacks
+nigger
+niggers
+faggot
+faggots
+sudaca
+sudacas
+sucia india
+re:(?<!\bto )(?<!\bi )(?<!\bwe )(?<!\bwanna )(?<!\bgonna )(?<!\blets )\bgo back to (?:your country|your own country|mexico|where you came from)\b
+illegals go home
+go home illegals
+re:\b(?:vete|largate|regresate|vuelvete) a tu pais\b
+re:\b(?:pinche|sucia|sucio|maldita|maldito) mojad[oa]s?\b
+re:\bmojad[oa]s? (?:de mierda|ilegal|ilegales|sucia|sucio|asquerosa|asqueroso|apestosa|apestoso)\b
+re:\beres una? mojad[oa]\b
 
 # ---- 地区俚语：按观众来源决定开不开 ----
 [strong:pending]

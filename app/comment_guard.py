@@ -22,6 +22,8 @@
   `amb == "pending"`：命中的是还没经用户确认的红条档词条（`tier` 仍是 "red"，`tags` 含
   "pending"，`route == "confirm"`）；同一条弹幕里既有已确认命中又有待确认命中时按已确认的出红条。
   `amb == "self"`：强词出现在第一人称自指的句子里（que pendeja soy），降为琥珀，不自动加入。
+  `sub == "slur"`（`cats == ["insult"]`）：insult 文件里 `slur` 段（种族 / 排外辱骂）的命中，
+  和 `strong` 分开成段，确认时可以分开开关。
 * 刷屏要传真实时间戳（`judge(..., ts=...)` 的 ts 是必填关键字，必须是有限的 int / float）：不传会让
   滑动窗口永不过期，传了坏值在改任何状态之前就抛。窗口计数只算 ts - 窗口 <= t <= ts 的条目。
 * 内存有界：每个用户的时间戳只留 120 秒、每人最多 200 条，用户表满 3000 清掉最旧的 500，
@@ -425,7 +427,7 @@ PENDING = ":pending"
 # 文件 -> {段名: 档位}。认不出的段名在体检里报 unknown_section，不静默忽略。
 # 红条档的每个段另有一个 `:pending` 版本（见文件末尾的循环）
 SECTIONS = {
-    "insult": {"strong": RED, "threat": RED, "sexual": RED, "target": RED,
+    "insult": {"strong": RED, "threat": RED, "sexual": RED, "target": RED, "slur": RED,
                "medium": CLUE, "watch": CLUE, "sexual-soft": CLUE, "exempt-phrases": EXEMPT},
     "accuse": {"call": RED, "report": RED, "assert": RED, "assert-frame": RED,
                "institution": CLUE, "negative": CLUE, "exempt-phrases": EXEMPT},
@@ -452,11 +454,11 @@ def base_sec(sec):
 
 # 交给 BannedTermDetector 匹配的段（其余段是词表、短语或正则，另有专用的匹配方式）
 MATCHED = frozenset(
-    [("insult", s) for s in ("strong", "threat", "sexual")]
+    [("insult", s) for s in ("strong", "threat", "sexual", "slur")]
     + [("accuse", s) for s in ("call", "report", "assert")]
     + [("promo", s) for s in ("pull", "scam-strong")]
     + [(f, s + PENDING) for f, s in
-       [("insult", "strong"), ("insult", "threat"), ("insult", "sexual"),
+       [("insult", "strong"), ("insult", "threat"), ("insult", "sexual"), ("insult", "slur"),
         ("accuse", "call"), ("accuse", "report"), ("accuse", "assert"),
         ("promo", "pull"), ("promo", "scam-strong")]]
     + [("insult", "medium"), ("insult", "watch"), ("insult", "sexual-soft"),
@@ -471,7 +473,7 @@ VARIANT_OK = frozenset((("insult", "strong"), ("accuse", "assert"),
                         ("insult", "strong" + PENDING), ("accuse", "assert" + PENDING)))
 # 同一词条写在多个段里时取最严的档：已确认的红条档 > 待确认的红条档 > 线索档；同档里靠前的更严
 _STRICT_ORDER = {
-    "insult": ("threat", "strong", "sexual", "target", "medium", "sexual-soft", "watch"),
+    "insult": ("threat", "strong", "slur", "sexual", "target", "medium", "sexual-soft", "watch"),
     "accuse": ("call", "report", "assert", "assert-frame", "institution", "negative"),
     "promo": ("scam-strong", "pull", "offer", "lure", "scam-weak"),
 }
@@ -1450,8 +1452,8 @@ class CommentGuard:
                     out[(file, sec)] = terms
 
         fi = strip("insult", folded)
-        scan("insult", ("strong", "threat", "sexual", "strong" + PENDING, "threat" + PENDING,
-                        "sexual" + PENDING, "medium", "watch", "sexual-soft"), fi)
+        scan("insult", ("strong", "threat", "sexual", "slur", "strong" + PENDING, "threat" + PENDING,
+                        "sexual" + PENDING, "slur" + PENDING, "medium", "watch", "sexual-soft"), fi)
         for sec, frames, voc, flag in (
                 ("target", rules._frames, rules.target_vocative, "target_vocative"),
                 ("target" + PENDING, rules._frames_pending, rules.target_vocative_pending,
@@ -1626,7 +1628,7 @@ class CommentGuard:
                                 route="confirm", pending=pend)
             return _finding(cat, sub, RED, "alert", why(key), pending=pend)
 
-        for sec, cat in (("strong", "insult"), ("threat", "threat"), ("sexual", "sexual")):
+        for sec, cat in (("strong", "insult"), ("threat", "threat"), ("sexual", "sexual"), ("slur", "insult")):
             for key in (sec, sec + PENDING):
                 if ("insult", key) in hits:
                     out.append(red(cat, sec, key))

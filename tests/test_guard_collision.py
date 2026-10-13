@@ -148,7 +148,9 @@ def test_counts_distinct_sentences_and_sessions_per_entry(logs, no_live, capsys,
     assert rows[("insult", "target", "basura")]["sentences"] == 0
     # 否认式 / 豁免短语先剪掉：「no es estafa」不撞
     assert rows[("accuse", "assert", "estafa")]["sentences"] == 0
-    assert rows[("accuse", "call", "no compren")]["sentences"] == 1
+    # `no compren` 是收窄过的正则写法（后面接 tantos / todo 不算）：按前缀找那一行
+    no_compren = [r for (f, s, e), r in rows.items() if (f, s) == ("accuse", "call") and e.startswith("re:\\bno compren")]
+    assert len(no_compren) == 1 and no_compren[0]["sentences"] == 1
 
 
 def test_pending_entries_are_counted_and_marked_pending_not_enabled(logs, no_live, tmp_path, capsys):
@@ -254,3 +256,16 @@ def test_the_tool_imports_no_network_or_model_code():
     text = Path(G.__file__).read_text(encoding="utf-8")
     for word in ("ollama", "import requests", "urllib", "aiohttp", "socket", "mlx"):
         assert word not in text.lower(), word
+
+
+def test_term_mode_knows_the_slur_section_and_regex_candidates(logs, no_live, capsys, tmp_path):
+    """insult/slur 是新的红条档段；候选可以直接写 re: 正则（收窄过的写法），报告里照样按句子计数。"""
+    out = tmp_path / "out.json"
+    G.main(["--logs", str(logs), "--term", "beaner", "--as", "insult/slur", "--all", "--json", str(out)])
+    rows = json.loads(out.read_text(encoding="utf-8"))["entries"]
+    assert [(r["file"], r["section"], r["status"], r["sentences"]) for r in rows] == [
+        ("insult", "slur", "candidate", 0)]
+    G.main(["--logs", str(logs), "--term", r"re:\bno compren\b(?!\s+ese)", "--as", "accuse/call", "--all",
+            "--json", str(out)])
+    rows = json.loads(out.read_text(encoding="utf-8"))["entries"]
+    assert [(r["section"], r["status"], r["sentences"]) for r in rows] == [("call", "candidate", 0)]   # 「ya no compren ese frasco」被 (?!\s+ese) 排除

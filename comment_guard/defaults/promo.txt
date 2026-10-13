@@ -97,14 +97,15 @@ re:\b(do you have|can i have|can i get|what is|whats|what s)\b.{0,30}\b(whatsapp
 #   nice -n 19 python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs --section promo/pull
 
 # ---- 拉人去别处 ----
+# 带 re: 的是收窄过的写法：mas barato en mi / mejor precio en mi / cheaper in my 后面要接 tienda、live、perfil、页面一类的词，
+# 「mejor precio en mi opinion」「mas barato en mi pais」不算。
 [pull:pending]
 join my live
 come to my live
 check my bio
 visit my shop
 visit my store
-cheaper at my
-cheaper in my
+re:\bcheaper (?:at|in) my (?:store|shop|page|profile|live|bio)\b
 vengan a mi live
 ven a mi live
 vente a mi live
@@ -118,29 +119,58 @@ visiten mi perfil
 visita mi perfil
 entra a mi perfil
 entren a mi perfil
-mas barato en mi
+re:\bmas barato en mi (?:tienda|live|perfil|pagina|cuenta)\b
 mas barato alla
 en mi tienda mas barato
-aqui es mas caro
-mejor precio en mi
+re:\baqui es mas caro\b(?=.{0,40}\b(?:mi|vengan|ven|pasen|visiten|visita)\b)
+re:\bmejor precio en mi (?:tienda|live|perfil|pagina|cuenta)\b
 tengo lo mismo mas barato
+# 候选（agent 新写，待确认）：pasate / visita / checa / unete + mi live、mi perfil
+pasate a mi live
+pasate por mi live
+pasate por mi perfil
+visita mi live
+visiten mi live
+checa mi perfil
+checa mi live
+checa mi tienda
+unete a mi live
+unanse a mi live
+check out my page
+check out my live
+check my page
+check my profile
+unete a mi grupo de telegram
 
 # ---- 冒充官方 / 诈骗信息 ----
+# 带 re: 的是收窄过的写法：felicidades ganaste 要同句有领奖动作（reclama / escribe / entra / click……）或号码，
+# soporte (de) tiktok / tiktok support 要自称（somos / soy / le escribe / de parte de）或同句有 su cuenta / verifica，
+# seguidores gratis 要同句有 entra / click / escribe / manda / link。顾客聊抽奖祝贺、聊客服工单不算。
 [scam-strong:pending]
 free followers
 free likes
-tiktok support
+re:\b(?:somos|soy|le escribe|te escribe|le saluda|de parte de)\b.{0,30}\b(?:soporte (?:de )?tiktok|tiktok support)\b
+re:\b(?:soporte (?:de )?tiktok|tiktok support)\b.{0,60}\b(?:su cuenta|tu cuenta|your account|verifica\w*|verify)\b
+re:\b(?:su cuenta|tu cuenta|your account|verifica\w*|verify)\b.{0,60}\b(?:soporte (?:de )?tiktok|tiktok support)\b
 your account will be suspended
-soporte tiktok
-soporte de tiktok
-felicidades ganaste
+re:\bfelicidades ganaste\b(?=.{0,80}(?:\b(?:reclama|reclame|escribe|escribenos|escribeme|contacta|contactanos|envia|manda|mandanos|click|clic|entra|link|www|http|https|whatsapp|wasap|telegram)\b|\d{4} ?\d{4}))
+re:(?:\b(?:reclama|reclame|escribe|escribenos|escribeme|contacta|contactanos|envia|manda|mandanos|click|clic|entra|link|www|http|https|whatsapp|wasap|telegram)\b|\d{4} ?\d{4}).{0,80}\bfelicidades ganaste\b
 usted ha ganado
 tu cuenta sera suspendida
 su cuenta sera suspendida
 violacion de las normas
-seguidores gratis
+re:\bseguidores gratis\b(?:\s+(?:aqui|por aqui|en mi \w+)\b|(?=.{0,80}\b(?:entra|entren|click|clic|escribe|escribenos|manda|mandanos|link|www|http|https|sigueme|siganme)\b))
+re:\b(?:entra|entren|click|clic|escribe|escribenos|manda|mandanos|link|www|http|https|sigueme|siganme)\b.{0,80}\bseguidores gratis\b
 likes gratis
 compra seguidores
+# 候选（agent 新写，待确认）：卖粉、卖号、互粉
+vendo seguidores
+vendo likes
+compra likes
+venta de seguidores
+venta de cuentas
+f4f
+sub4sub
 bitcoin
 criptomonedas
 forex

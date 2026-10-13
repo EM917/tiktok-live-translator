@@ -44,6 +44,11 @@ comment_guard/
   `invalid_regex`；能匹配空串、或对任何弹幕都匹配（`re:`、`re:.*`、`re:x|`）的报 `matches_empty`，这一条丢掉，
   免得每条弹幕都成了红条。
 - 同一词条写在多个段里，取最严的档。
+- 红条档里带 `re:` 的词条，多半是**收窄过的写法**：词条后面接正常说法就不算（`te voy a matar de risa`、`no compren tantos`、
+  `reporten su pedido aqui`、`ojala te pase algo bueno`、`mas barato en mi pais`）。写成 `(?!\s+…)` 的否定前瞻或前置的 `(?<!…)`，
+  跑在折叠后的文本上。agent 新写、还没经用户确认的候选词条在文件里用 `# 候选（agent 新写，待确认）` 标出来。
+- `insult` 的 `slur`（种族 / 排外辱骂）是单独一段：确认以后可以和 `strong` 分开开关。`mojado / mojada` 在西语里首先是「湿的」
+  （`cabello mojado`），所以只认前面或后面带辱骂词的写法。
 
 折叠（`fold()`）会处理手机打字常见的拼写漂移：大小写、重音、拉长（`holaaaa`）、拆字（`e s t a f a`，
 空格、点、逗号、斜杠、表情隔开的都认，>= 4 个连续单字母才拼回）、leet（`m13rd4`）、同形字、`q` / `xq` 这类俚语缩写、
@@ -54,7 +59,7 @@ comment_guard/
 
 | 层 | 段 | 单独命中的结果 | 默认状态 |
 |---|---|---|---|
-| **红条档** | insult：`strong` `threat` `sexual` `target`；accuse：`call` `report` `assert` `assert-frame`；promo：`pull` `scam-strong` | 已确认（`[x]`）：红条，带不确定标记时降为琥珀；待确认（`[x:pending]`）：琥珀，`amb == "pending"` | **全部是 `[x:pending]`**，零个已确认段 |
+| **红条档** | insult：`strong` `threat` `sexual` `target` `slur`；accuse：`call` `report` `assert` `assert-frame`；promo：`pull` `scam-strong` | 已确认（`[x]`）：红条，带不确定标记时降为琥珀；待确认（`[x:pending]`）：琥珀，`amb == "pending"` | **全部是 `[x:pending]`**，零个已确认段 |
 | **线索档** | insult：`medium` `watch` `sexual-soft`；accuse：`institution` `negative`；promo：`offer` `lure` `scam-weak`；`cues.txt` | note：不上界面，只计数；负面线索 `lead` 只决定送不送模型 | 启用 |
 | **豁免档** | 各文件的 `exempt-phrases`；promo 的 `ask`；`interact.txt` | 不计分 | 启用 |
 
@@ -90,6 +95,8 @@ comment_guard/
    `nice -n 19 python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs --section insult/threat`
    （纯 CPU、只读；**直播转写进行中会拒绝运行**；语料为空会报错退出，不会打一份看着干净的空报告。
    `--logs` 不写时，仓库自己的 `logs/` 不存在就退到 `~/tiktok-live-translator/logs`。）
+   新增或收窄一条词条之前，除了碰撞计数，还要拿一批虚构的「顾客正常说法」过一遍，确认没有新增任何可见（红或琥珀）的误报；
+   碰撞的删掉或收窄，并在 `tests/test_comment_guard_lexicon.py` 里钉一条正常说法和一条恶意说法。
 2. 把确认过的词条从 `defaults/*.txt` 里的 `[段名:pending]` 挪到**同一个文件里**不带 `:pending` 的同名 `[段名]`
    （没有就新建一段）。整段确认就把段名的 `:pending` 去掉。
 3. **同一个提交里**改 `tests/test_comment_guard_rules.py`：

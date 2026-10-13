@@ -127,13 +127,15 @@ SINGLE = [
     ('no compren, es mentira', 'alert', 'accuse_call', 'red', '号召+断言'),
     ('puro cuento', 'alert', 'accuse_claim', 'red', ''),
     ('ladrona', 'alert', 'accuse_claim', 'red', ''),
-    ('los voy a reportar', 'alert', 'accuse_call', 'red', '号召（原型备注「威胁举报」，v2 的类别是 call）'),
+    # D 词表收窄：删了 call 里的 `a reportar`（会把「我自己要举报」算进去），「los voy a reportar」只剩 report 段（扬言举报）
+    ('los voy a reportar', 'alert', 'accuse_report', 'red', '扬言举报（原型里是 call，D 词表收窄后只剩 report）'),
     ('vamos a denunciarlos en profeco', 'alert', 'accuse_report', 'red', 'enclitic'),
     ('reporten este live', 'alert', 'accuse_call', 'red', '号召举报'),
     ('ya la reporté', 'alert', 'accuse_report', 'red', '已举报'),
     ('producto falso', 'alert', 'accuse_claim', 'red', 'falso 断言'),
     ('esto es fake', 'alert', 'accuse_claim', 'red', ''),
-    ('cuidado con esta señora', 'alert', 'accuse_call', 'red', '警示'),
+    # D 词表收窄：cuidado / ojo / aguas / alerta 那条要求 20 个字内有负面词，光一句「cuidado con esta señora」不算
+    ('cuidado con esta señora que no envia nada', 'alert', 'accuse_call', 'red', '警示 + 负面词'),
     # v2: me estafaron/robaron/engañaron -> grievance -> 琥珀（规则自己拿不准：可能是真客诉）
     ('me estafaron, nunca llegó mi pedido', 'amber', 'accuse_claim', 'red', '亲身经历(客诉) -> grievance'),
     # v2: 以 no es 开头的 3 词短句、没有问号 -> 琥珀 maybe_question
@@ -920,12 +922,13 @@ RED_SAMPLES = {
     ("insult", "threat"): "te voy a matar",
     ("insult", "sexual"): "enseña las tetas",
     ("insult", "target"): "eres una gorda",
+    ("insult", "slur"): "beaner",
     ("accuse", "call"): "reporten este live",
     ("accuse", "report"): "voy a ir a profeco",
     ("accuse", "assert"): "ladrona",
     ("accuse", "assert-frame"): "producto falso",
     ("promo", "pull"): "vengan a mi live",
-    ("promo", "scam-strong"): "soporte de tiktok",
+    ("promo", "scam-strong"): "somos el soporte de tiktok",
 }
 RED_SECTIONS = sorted((f, sec) for f, secs in cg.SECTIONS.items() for sec, tier in secs.items()
                       if tier == cg.RED and not cg.is_pending(sec))
