@@ -130,6 +130,8 @@ def _locked_transcribe(transcriber, segment):
 # 强译就会先落地，随后排到的快译再把它盖回去。用等级判断从逻辑上消灭这个竞态。
 QUALITY_FAST = 1
 QUALITY_STRONG = 2
+# 「重译」能找回原文的字幕条数（Pipeline._recent）；更早的点了只能得到一句说明
+RECENT_KEEP = 120
 
 AUDIO_BACKLOG_WARN_SEC = 10.0
 AUDIO_BACKLOG_DEGRADED_SEC = 30.0
@@ -736,15 +738,39 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
 
     async def _strong_translator(self):
         """按需创建强模型翻译器；本场探测过「没有」就不再探——探测是同步 urllib，
-        直播中每条报警都在事件循环上重探一遍，每次最坏几秒，直接加到检测延迟上。"""
-        from .translator import create_strong_translator
+        直播中每条报警都在事件循环上重探一遍，每次最坏几秒，直接加到检测延迟上。
 
+        强模型是什么，看字幕引擎（2026-10-13 用户决定）：字幕引擎是 Claude 时用 Claude
+        Sonnet 5.5（create_claude_strong_translator，不需要本机有 Ollama 和任何本地模型），
+        其余引擎照旧用本机最强的本地模型（按需载入、用完卸载）。「重译」和报警上下文翻译
+        都走这里，所以这一个判断管住两处。引擎会在直播中途换（界面切换、密钥被拒后回退
+        本地、额度用尽回退），所以每次都对一遍：引擎的类型变了，或 Claude 引擎换成了新对象
+        （重填了密钥），缓存的强模型实例和「本场探测过没有」的记号一起作废。"""
+        from .translator import (create_claude_strong_translator, create_strong_translator,
+                                 engine_is_claude)
+
+        fast = getattr(self, "translator", None)
+        want = ("claude", getattr(fast, "inner", fast)) if engine_is_claude(fast) \
+            else ("local", None)
+        have = getattr(self, "_strong_for", None)
+        if have is not None and (have[0] != want[0] or have[1] is not want[1]):
+            self._strong_missing = False
+            self._drop_strong()
+        self._strong_for = want
         if self._strong is None and not self._strong_missing:
             loop = asyncio.get_running_loop()
-            self._strong = await loop.run_in_executor(None, create_strong_translator)
+            make = create_claude_strong_translator if want[0] == "claude" \
+                else create_strong_translator
+            self._strong = await loop.run_in_executor(None, make)
             if self._strong is None:
                 self._strong_missing = True
         return self._strong
+
+    def _strong_is_remote(self):
+        """强模型是不是 Claude（走网络，不占本机显存和内存）。"""
+        from .translator import engine_is_claude
+
+        return engine_is_claude(getattr(self, "translator", None))
 
     def _spawn(self, coro):
         """起一个不等结果的任务，但保住引用。事件循环只弱引用任务：不保引用的
@@ -3357,7 +3383,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         job = {"id": seq, "text": result.text, "lang": lang,
                "target": self.target, "audio_end_ts": audio_end_ts}
         self._recent[seq] = job
-        while len(self._recent) > 120:
+        while len(self._recent) > RECENT_KEEP:
             self._recent.popitem(last=False)
 
         # 命中时**不再**额外强译这条字幕。
@@ -3749,7 +3775,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         下一条报警重新探测——7B 可能在两场之间被磁盘面板删了，以前每条报警都去叫
         一个不存在的模型，直到重启程序。识别正在积压、或另一条报警正占着强模型时，
         一开始就用常驻引擎：违禁词报警延迟排在译文质量前面（CLAUDE.md §6），7B 和
-        Whisper 抢内存会把识别拖得更慢。每一次都记一条 alert_translation。"""
+        Whisper 抢内存会把识别拖得更慢。每一次都记一条 alert_translation。
+
+        字幕引擎是 Claude 时强模型是 Claude Sonnet 5.5（见 _strong_translator）：它走网络、
+        不占本机内存，所以上面「识别积压 / 另一条报警占着」两条让路规矩对它不适用，强模型
+        失败时也不丢实例（它带着自己的 429 冷却）。"""
         from .translator import looks_fabricated
 
         if not context.strip():
@@ -3771,9 +3801,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                                              "why": why})
 
         fast = self.translator
+        # 积压和占用这两条让路规矩是怕本地强模型和 Whisper 抢显存、内存。强模型是 Claude 时
+        # （字幕引擎是 Claude）走的是网络，不占本机资源，没有要让的路；同时到几条报警也可以
+        # 各翻各的（它们的上下文不同）
+        remote = self._strong_is_remote()
         backlog = getattr(getattr(self, "telemetry", None), "audio_backlog_sec", 0.0) or 0.0
-        for_backlog = backlog >= AUDIO_BACKLOG_WARN_SEC
-        for_busy = not for_backlog and getattr(self, "_alert_strong_busy", False)
+        for_backlog = not remote and backlog >= AUDIO_BACKLOG_WARN_SEC
+        for_busy = (not for_backlog and not remote
+                    and getattr(self, "_alert_strong_busy", False))
         # 占住强模型要在探测之前：探测会让出事件循环，同时到的另一条报警得看得见
         claimed = not (for_backlog or for_busy)
         if claimed:
@@ -3830,8 +3865,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 err = getattr(strong, "last_error", None)
                 if err and err[0] is not None:
                     error = "HTTP {}{}".format(err[0], "：" + err[1] if err[1] else "")  # i18n: audit
-                if getattr(self, "_strong", None) is strong:
-                    self._drop_strong()       # 下一条报警重新探测（探测在线程池里）
+                if getattr(self, "_strong", None) is strong and not remote:
+                    # 下一条报警重新探测（探测在线程池里）。Claude 的实例不丢：它的 429 冷却和
+                    # 400 记录挂在实例上，丢了就等于忘了刚被限速，下一条报警又去撞一次
+                    self._drop_strong()
                 if fast is not None and fast is not strong:
                     print("[警告] 强模型没有给出报警上下文译文，改用常驻引擎再译一次")
                     fallback, used, hard_fail = True, fast, False
@@ -4242,30 +4279,50 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         return True
 
     async def retranslate(self, seq, trigger="manual"):
-        """用本机最强的翻译模型重译某一条字幕。
+        """用强模型重译某一条字幕。强模型是什么见 _strong_translator：字幕引擎是 Claude
+        时是 Claude Sonnet 5.5，否则是本机最强的本地模型。
 
         为什么是「按条」而不是「按时段」：值得动用强模型的是**具体某句话**
         （价格、促销条件、功效宣称），而那是内容驱动的，只有看着的人知道是
-        哪一句。实测强模型装卸只要约 2 秒，按需调用完全划算；常驻反而会把
+        哪一句。实测本地强模型装卸只要约 2 秒，按需调用完全划算；常驻反而会把
         识别从 1.4 秒拖到 3.2 秒，直接推高违禁词报警延迟。
+
+        **每一条不重译的出路都要让点的人看见。** 以前三处静默 return、一处只发页脚的
+        notice，中控点了「重译」什么都没发生，分不清是没点上还是被拒了（2026-10-13）。
+        现在都走 _retranslate_note，在被点的那条字幕旁边显示（只对桌面点的那一下
+        trigger=="manual" 说；手机点的、报警自动触发的，桌面上不该冒出没人点过的提示）。
+        文字只写观察到的事实和能做的事，不猜原因（CLAUDE.md 第八条）。
         """
         from .translator import looks_fabricated
 
         job = self._recent.get(seq)
         if job is None:
+            await self._retranslate_refused(seq, trigger, L(
+                "这条字幕没有可重译的原文记录（程序只保留最近 {} 条需要翻译的字幕）",
+                "This caption has no saved original to retranslate. The app keeps only the "
+                "latest {} captions that needed translation.").format(RECENT_KEEP))
             return
         # 拿本地引用：报警翻译失败时会把 self._strong 清掉，而这边可能还在等译文
         strong = await self._strong_translator()
         if strong is None:
-            await self.server.broadcast({
-                "type": "notice",
-                "text": L("没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）",
-                          "No local model is available, so this can’t be retranslated. See the "
-                          "Translation Engine row in Settings > Startup Check.")})
+            if self._strong_is_remote():
+                text = L("重译需要 Claude 密钥，现在没有可用的密钥（在「设置 > 翻译引擎」里重新填写）",
+                         "Retranslating needs a Claude API key, and none is available. Enter one "
+                         "in Settings > Translation Engine.")
+            else:
+                text = L("没有可用的本地模型，无法重译（见首页自检的「翻译引擎」一项）",
+                         "No local model is available, so this can’t be retranslated. See the "
+                         "Translation Engine row in Settings > Startup Check.")
+            await self._retranslate_refused(seq, trigger, text)
             return
         if self._quality.get(seq, 0) >= QUALITY_STRONG:
-            return                        # 这一条已经是强模型译的，不重复
+            # 这一条已经是强模型译的，不重复。按钮没有为此变灰，点了不能没有回音
+            await self._retranslate_note(seq, trigger, L(
+                "这一条已经是重译过的版本了", "This caption is already retranslated."))
+            return
         if seq in self._strong_inflight:
+            await self._retranslate_note(seq, trigger, L(
+                "这一条正在重译中", "This caption is already being retranslated."))
             return                        # 同一条已经在跑了
         # 重译用**独立的状态位**，绝不复用普通翻译的 translate_state=pending。
         #
@@ -4282,6 +4339,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                                      "strong_state": "pending"})
         t0 = time.monotonic()
         text, hint = self._for_translation(job["text"])
+        # 失败时要说清楚「看到了什么」：这一次调用的结局（拒答）、引擎自己记下的 HTTP 回应。
+        # last_error 在 200 时清空、非 200 时换一个新元组，所以「调用前后是不是同一个对象」
+        # 能分出这一次有没有新的 HTTP 回应——连不上时它不变，旧的状态码不能算到这一次头上
+        begin_translate_call()
+        error_before = getattr(strong, "last_error", None)
+        discarded = False
         try:
             out = await strong.translate(
                 text, job["target"], source=job["lang"] or "auto",
@@ -4290,13 +4353,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 # 强模型在「长句 + 带疑问」上会改成回话而不是翻译。
                 # 宁可留着快译，也不能把凭空生成的内容写进屏幕和审计记录。
                 print("[警告] 重译结果不像译文（疑似模型在回话），已丢弃")
-                out = None
+                out, discarded = None, True
             elif out and self.glossary:
                 out = self.glossary.apply(text, out)
         except Exception as exc:
             print("[警告] 重译失败: {}".format(exc))
             out = None
         ms = (time.monotonic() - t0) * 1000.0
+        outcome = translate_call_outcome()
         self._strong_inflight.discard(seq)
         self._release_strong(strong)
         if audit is not None:
@@ -4306,7 +4370,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             await self._publish_translation(seq, out, True, ms, QUALITY_STRONG,
                                             job["target"],
                                             {"strong": True, "strong_state": "ok"})
-        elif had:
+            return
+        if had:
             # 已有译文时：只报告重译失败，屏幕上那一版原样留着
             await self.server.broadcast({"type": "caption_update", "id": seq,
                                          "strong_state": "failed"})
@@ -4314,6 +4379,50 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             # 连快译都还没有：这时才是真的「这条没有译文」
             await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
                                             job["target"], {"strong_state": "failed"})
+        await self._retranslate_note(seq, trigger, self._retranslate_failure_text(
+            strong, error_before, outcome, discarded, had))
+
+    def _retranslate_failure_text(self, strong, error_before, outcome, discarded, had):
+        """这次重译没出译文：把观察到的事说出来，后面接上这一条现在是什么样。"""
+        engine = (L("本地模型", "the local model") if not self._strong_is_remote()
+                  else "Claude")
+        error = getattr(strong, "last_error", None)
+        paused = getattr(strong, "cooldown_until", 0.0) - time.monotonic()
+        if discarded:
+            head = L("重译没有成功：结果不像译文，已丢弃",
+                     "Couldn’t retranslate: the result didn’t look like a translation, so it "
+                     "was discarded")
+        elif outcome and outcome[0] == "refusal":
+            head = L("重译没有成功：{} 拒绝翻译这一条（接口返回 refusal）",
+                     "Couldn’t retranslate: {} declined to translate this caption (the API "
+                     "returned a refusal)").format(engine)
+        elif error and error[0] is not None and paused > 0:
+            head = L("重译没有成功：{} 返回 HTTP {}，程序暂停请求 {} 秒",
+                     "Couldn’t retranslate: {} returned HTTP {}. Requests are paused for {} sec"
+                     ).format(engine, error[0], int(round(paused)))
+        elif error and error[0] is not None and error is not error_before:
+            head = L("重译没有成功：{} 返回 HTTP {}",
+                     "Couldn’t retranslate: {} returned HTTP {}").format(engine, error[0])
+        else:
+            head = L("重译没有成功：没有拿到译文", "Couldn’t retranslate: no translation came back")
+        tail = (L("原译文保持不变", "The current translation is unchanged.") if had
+                else L("这一条仍然没有译文", "This caption still has no translation."))
+        return L("{}，{}", "{}. {}").format(head, tail)
+
+    async def _retranslate_refused(self, seq, trigger, text):
+        """这次点击没有开始重译（找不到原文、没有可用的强模型）：按钮和手机上都标成失败，
+        再在字幕旁边说明。"""
+        await self.server.broadcast({"type": "caption_update", "id": seq,
+                                     "strong_state": "failed"})
+        await self._retranslate_note(seq, trigger, text)
+
+    async def _retranslate_note(self, seq, trigger, text):
+        """在被点的那条字幕旁边显示几秒（web/app.js 的 retranslate_note）。只对桌面上点的
+        那一下说：trigger 是 viewer（手机）或报警自动触发时，桌面上没人点过，不冒提示。
+        手机不转发这个类型（app/viewer.py 的白名单默认拒绝），手机靠按钮上的失败状态。"""
+        if trigger != "manual":
+            return
+        await self.server.broadcast({"type": "retranslate_note", "id": seq, "text": text})
 
     def _for_translation(self, text):
         """送给翻译器的那一份文本，以及配套的词表提示。
