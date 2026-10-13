@@ -10,7 +10,7 @@
 # 问句（有 ? / ¿、疑问词开头、句尾追问 verdad / o no / o que）和否认式（no es estafa）
 # 由规则层判断，不靠词表。
 # 线索档（启用）：institution 机构名 / negative 对商品效果的差评 —— 只记 note。
-# 红条档（全部写在 [段名:pending] 里，命中只出琥珀，见文件末尾）：call 号召举报或不买 / report 扬言举报 /
+# 红条档（用户确认过的写在 [段名] 里、命中标红；其余写在 [段名:pending] 里、命中只出琥珀；call 已确认大部分）：call 号召举报或不买 / report 扬言举报 /
 # assert 断言骗局 / assert-frame 只在“es / son / producto + 词”句式里才算断言的词。
 
 [institution]
@@ -87,17 +87,15 @@ no es un producto chafa
 # 带 re: 的是收窄过的写法：后面接正常说法（no compren tantos、no caigan en la tentacion、reporten su pedido aqui）就不算；
 # cuidado / ojo / aguas / alerta 那条要求 20 个字内有负面词（estafa、fraude、falso、roba、mentir、enganar、no llega、no envia）。
 [call]
+# 用户 2026-10-13 按确认表的建议确认（命中标红；没有不确定标记时自动加入关注名单）
 re:\b(?:dont|do not) buy\b(?!\s+(?:more|too many|too much|so many|so much|a lot|everything|(?:it |this |that |them )?if)\b)
 report her
-report this
-report them
 report this live
 re:\bboycott\b(?!\s+(?:high|expensive|the high)\b)
 re:\bno compren\b(?!\s+(?:tantos|tanto|todo|todos|mas|muchos|muchas|en otr[oa]s?|si no (?:lo |la )?(?:necesitan|quieren|ocupan))\b)
 no le compren
 no les compren
 re:\bno caigan\b(?!\s+en la (?:tentacion|oferta|promo|promocion)\b)
-re:\bno se dejen enganar\b(?!\s+(?:esto si es|es original|son originales)\b)
 re:\bno confien en (?:ella|esta|esa|este|ese|ellos|ellas|la tienda|la senora|la marca|el live)\b
 re:\bno (?:le|les) crean\b(?!\s+a (?:las criticas|los comentarios|los haters|esos comentarios)\b)
 re:\bnadie compre\b(?!\s+mas que\b)
@@ -106,20 +104,12 @@ re:\b(?:hagan|hagamos|hacer|haganle) (?:un )?boicot\b(?!\s+al precio)
 boicotear
 re:\breporten\b(?!\s+(?:sus pedidos|su pedido|aqui|por aqui|por inbox|su pago)\b)
 reportenla
-reportenlo
-reportenlos
-reportemos
 denuncien
-denunciemos
 denunciala
-vamos a reportar
-hay que reportar
-hay que denunciar
 re:\b(reporten|denuncien|bloqueen)\b(?!\s+(?:sus pedidos|su pedido|aqui|por aqui|por inbox|su pago)\b).{0,25}\b(live|vivo|cuenta|tienda|perfil|esta|este|ella|esa)\b
 re:\b(cuidado|ojo|aguas|alerta)\b\s*(con|a)?\s*(esta|este|ella|esa)?\s*(senora|cuenta|tienda|live|vendedora|marca|gente|pagina|persona|mujer|muchacha)\b(?=.{0,20}\b(?:estafa\w*|fraud\w*|fals[oa]\w*|roba\w*|robo|robar\w*|ladron\w*|mient\w*|mentir\w*|mentiro\w*|engan\w*|no lleg\w*|no envi\w*)\b)
 # 候选（agent 新写，待确认）：单数命令式、别给钱、别点赞。no compres 单独一句是顾客之间的劝阻，也是主播自己的话
 # （口播里撞过一句「no compres nada」），所以只认带对象的写法：no le / les / la compres、no compres aqui / en esta tienda / a esta senora。
-re:\bno (?:le |les |la )compres\b(?!\s+(?:tantos|tanto|todo|todos|mas|muchos|muchas|en otr[oa]s?|si no (?:lo |la )?(?:necesitas|quieres|ocupas))\b)
 re:\bno compres (?:nada )?(?:aqui|en (?:esta|este|ese|esa|su|sus)|a (?:esta|este|esa|ese|ella|ellos|esos|estos)|de (?:esta|este|ella|esa))\b
 re:\bno (?:le |les |la )?(?:den|des) (?:su|tu) (?:dinero|plata)\b(?!\s+a nadie\b)
 re:\bno (?:pierdan|pierdas|gasten|gastes|tiren|tires) (?:su|tu) (?:dinero|plata) (?:aqui|en esta|en este|en ella|con ella|con esta)\b
@@ -127,6 +117,20 @@ re:\bno (?:le |les )?den likes?(?: a (?:ella|esta|esa|este|ese|la senora|la tien
 no le crean nada
 no crean nada de lo que dice
 re:\bdont (?:waste|spend) your money (?:here|on this|on her|with her)\b
+
+[call]
+# 用户 2026-10-13 选「先不开」：没有对象（会和「向平台 / 客服报订单问题」混在一起）、对象不明的提醒、卖家式的反话
+report this
+report them
+re:\bno se dejen enganar\b(?!\s+(?:esto si es|es original|son originales)\b)
+reportenlo
+reportenlos
+reportemos
+denunciemos
+vamos a reportar
+hay que reportar
+hay que denunciar
+re:\bno (?:le |les |la )compres\b(?!\s+(?:tantos|tanto|todo|todos|mas|muchos|muchas|en otr[oa]s?|si no (?:lo |la )?(?:necesitas|quieres|ocupas))\b)
 
 # ---- 扬言举报 ----
 [report]

@@ -10,7 +10,7 @@
 # 线索档（启用）：medium 中档辱骂 / watch 只记分的粗口 / sexual-soft 调情式性暗示 ——
 # 单独命中只记 note，不上界面；exempt-phrases 命中被它整个盖住时当没命中。
 # （咒人死的说法 ojala te mueras / que te mueras / muerete 原来在 medium，现在是 threat 的候选词条。）
-# 红条档（全部写在 [段名:pending] 里，命中只出琥珀，见文件末尾）：strong / threat / sexual / target / slur。
+# 红条档（用户确认过的写在 [段名] 里、命中标红；其余写在 [段名:pending] 里、命中只出琥珀；threat 已确认大部分）：strong / threat / sexual / target / slur。
 
 [medium]
 stupid
@@ -117,13 +117,12 @@ mamacita linda
 # ---- 第一批：人身威胁（先确认这一段） ----
 # 带 re: 的是收窄过的写法：后面接正常说法（te voy a matar de risa、ojala te pase algo bueno）就不算。
 [threat]
+# 用户 2026-10-13 按确认表的建议确认（命中标红；没有不确定标记时自动加入关注名单）
 re:(?<!\bcant )(?<!\bcannot )(?<!\bwont )(?<!\bdont )(?<!\bnever )\bkill yourself\b(?!\s+(?:if|laughing|lol)\b)
 kys
 hope you die
 i will kill you
-go to hell
 re:\bte voy a matar\b(?!\s+(?:de risa|con (?:los|estos|ese|esos) precios?|con las ofertas|con tanta)\b)
-re:\bte vamos a matar\b(?!\s+(?:de risa|con (?:los|estos|ese|esos) precios?|con las ofertas|con tanta)\b)
 re:(?:(?<!\bno )(?<!\bni )(?<!\bnunca )(?<!\bjamas )|(?<=\bque no ))\bse donde vives\b
 re:(?:(?<!\bno )(?<!\bni )(?<!\bnunca )(?<!\bjamas )|(?<=\bque no ))\bse donde vive\b
 re:\bojala te pase algo\b(?!\s+(?:bueno|buena|lindo|bonito|padre|chido|bien(?!\s+(?:feo|malo|mal|gacho|horrible)\b)|good|hermoso|increible|maravilloso|mejor|especial|genial|positivo)\b)
@@ -131,7 +130,6 @@ re:\bojala te pase algo\b(?!\s+(?:bueno|buena|lindo|bonito|padre|chido|bien(?!\s
 re:\bte (?:voy|vamos) a (?:partir|romper) (?:la madre|la cara|tu madre|el hocico|los dientes)\b
 te voy a golpear
 te vamos a golpear
-voy a ir a tu casa
 re:\b(?:te|la|lo|los|les) (?:voy|vamos) a quemar (?:la|el|su|tu|sus|tus) (?:tienda|casa|negocio|local|carro|coche|auto)\b
 te voy a violar
 te vamos a violar
@@ -147,6 +145,12 @@ i hope you get cancer
 hope you get cancer
 unalive yourself
 re:\bgo die\b(?!\s+(?:trying|laughing|lol|happy|peacefully)\b)
+
+[threat]
+# 用户 2026-10-13 选「先不开」：go to hell 更像诅咒；te vamos a matar 口播撞过；voy a ir a tu casa 分不出威胁和拜访
+go to hell
+re:\bte vamos a matar\b(?!\s+(?:de risa|con (?:los|estos|ese|esos) precios?|con las ofertas|con tanta)\b)
+voy a ir a tu casa
 
 # ---- 明确脏话（最后一行是中指表情：只有符号的词条按字面匹配） ----
 [strong]

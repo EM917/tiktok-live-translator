@@ -16,9 +16,9 @@
 """
 from app import comment_guard as cg
 
-# 出厂词表里已确认（不带 :pending）的红条档段。现在没有任何一段被确认；用户先确认的是 insult/threat 和
-# accuse/call 两小段
-RED_CONFIRMED = frozenset()
+# 出厂词表里已确认（不带 :pending）的红条档段。用户 2026-10-13 按确认表的建议确认了 insult/threat 和
+# accuse/call 两段里的大部分词条（各留几条在同名的 :pending 段里）
+RED_CONFIRMED = frozenset({("insult", "threat"), ("accuse", "call")})
 
 # 判定结果的主类别 -> 它所在的词表文件
 FILE_OF_CAT = {"threat": "insult", "insult": "insult", "sexual": "insult", "accuse_call": "accuse",

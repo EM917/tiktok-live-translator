@@ -63,7 +63,7 @@ comment_guard/
 
 | 层 | 段 | 单独命中的结果 | 默认状态 |
 |---|---|---|---|
-| **红条档** | insult：`strong` `threat` `sexual` `target` `slur`；accuse：`call` `report` `assert` `assert-frame`；promo：`pull` `scam-strong` | 已确认（`[x]`）：红条，带不确定标记时降为琥珀；待确认（`[x:pending]`）：琥珀，`amb == "pending"` | **全部是 `[x:pending]`**，零个已确认段 |
+| **红条档** | insult：`strong` `threat` `sexual` `target` `slur`；accuse：`call` `report` `assert` `assert-frame`；promo：`pull` `scam-strong` | 已确认（`[x]`）：红条，带不确定标记时降为琥珀；待确认（`[x:pending]`）：琥珀，`amb == "pending"` | `insult/threat` 与 `accuse/call` 的大部分词条已由用户确认（2026-10-13，各留几条在同名 `:pending` 段）；其余红条档段全部是 `[x:pending]` |
 | **线索档** | insult：`medium` `watch` `sexual-soft`；accuse：`institution` `negative`；promo：`offer` `lure` `scam-weak`；`cues.txt` | note：不上界面，只计数；负面线索 `lead` 只决定送不送模型 | 启用 |
 | **豁免档** | 各文件的 `exempt-phrases`；promo 的 `ask`；`interact.txt` | 不计分 | 启用 |
 
