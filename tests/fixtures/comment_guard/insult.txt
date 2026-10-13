@@ -110,23 +110,23 @@ mamacita linda
 # ============================ 红条档（全部待确认） ============================
 # 下面每一段都是红条档：词条还没经用户确认，所以段名带 :pending，命中只出琥珀（不标红、不自动加入关注名单）。
 # 用户确认某一条，就把它从 [段名:pending] 挪到同一个文件里不带 :pending 的同名 [段名]（没有就新建一段），
-# 同一个提交里改 tests/test_comment_guard_rules.py 的 RED_CONFIRMED。流程见 comment_guard/README.md。
+# 同一个提交里改 tests/comment_guard_confirmed.py 的 RED_CONFIRMED（只改那一处）。流程见 comment_guard/README.md。
 # 挪之前先跑碰撞计数看它在主播口播里撞多少：
 #   nice -n 19 python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs --section insult/threat
 
 # ---- 第一批：人身威胁（先确认这一段） ----
 # 带 re: 的是收窄过的写法：后面接正常说法（te voy a matar de risa、ojala te pase algo bueno）就不算。
 [threat]
-re:(?<!\bcant )(?<!\bcannot )(?<!\bwont )(?<!\bdont )(?<!\bnever )(?<!\bnot )(?<!\bto )\bkill yourself\b(?!\s+(?:if|laughing|lol)\b)
+re:(?<!\bcant )(?<!\bcannot )(?<!\bwont )(?<!\bdont )(?<!\bnever )\bkill yourself\b(?!\s+(?:if|laughing|lol)\b)
 kys
 hope you die
 i will kill you
 go to hell
-re:\bte voy a matar\b(?!\s+(?:de risa|con (?:los|estos|ese|esos) precios?|con las ofertas|con tanta|(?:ja)+|(?:je)+|lol|xd)\b)
-re:\bte vamos a matar\b(?!\s+(?:de risa|con (?:los|estos|ese|esos) precios?|con las ofertas|con tanta|(?:ja)+|(?:je)+|lol|xd)\b)
-re:(?<!\bno )(?<!\bni )(?<!\bnunca )(?<!\bjamas )\bse donde vives\b
-re:(?<!\bno )(?<!\bni )(?<!\bnunca )(?<!\bjamas )\bse donde vive\b
-re:\bojala te pase algo\b(?!\s+(?:bueno|buena|lindo|bonito|padre|chido|bien|good|hermoso|increible|maravilloso|mejor|especial|genial|positivo)\b)
+re:\bte voy a matar\b(?!\s+(?:de risa|con (?:los|estos|ese|esos) precios?|con las ofertas|con tanta)\b)
+re:\bte vamos a matar\b(?!\s+(?:de risa|con (?:los|estos|ese|esos) precios?|con las ofertas|con tanta)\b)
+re:(?:(?<!\bno )(?<!\bni )(?<!\bnunca )(?<!\bjamas )|(?<=\bque no ))\bse donde vives\b
+re:(?:(?<!\bno )(?<!\bni )(?<!\bnunca )(?<!\bjamas )|(?<=\bque no ))\bse donde vive\b
+re:\bojala te pase algo\b(?!\s+(?:bueno|buena|lindo|bonito|padre|chido|bien(?!\s+(?:feo|malo|mal|gacho|horrible)\b)|good|hermoso|increible|maravilloso|mejor|especial|genial|positivo)\b)
 # 候选（agent 新写，待确认）：暴力、纵火、强奸、咒人死
 re:\bte (?:voy|vamos) a (?:partir|romper) (?:la madre|la cara|tu madre|el hocico|los dientes)\b
 te voy a golpear
@@ -138,7 +138,8 @@ te vamos a violar
 voy a violarte
 re:\bojala(?: y)? te mueras\b(?!\s+(?:de|del) (?:la )?(?:risa|envidia|amor|gusto|ganas|hambre|verguenza|miedo|celos|sueno|calor|frio|emocion|felicidad)\b)
 re:\bque te mueras\b(?!\s+(?:de|del) (?:la )?(?:risa|envidia|amor|gusto|ganas|hambre|verguenza|miedo|celos|sueno|calor|frio|emocion|felicidad)\b)
-re:\bmuerete\b(?!\s+(?:de|del) (?:la )?(?:risa|envidia|amor|gusto|ganas|hambre|verguenza|miedo|celos|sueno|calor|frio|emocion|felicidad)\b)
+re:\bmuerete\b(?=\s+(?:ya|vieja|perra|maldita|maldito|bruja|zorra|puta|pendeja|pendejo|desgraciada|desgraciado|basura|asquerosa|hijueputa|hdp|ojala|de una vez)\b)
+re:^muerete$
 mereces morir
 re:\b(?:i will|ill) find you\b(?!\s+(?:a|an|the|some|that|it|one|those|these|your|my|on|in|at|there|later|tomorrow|tonight)\b)
 i know where you live
@@ -210,10 +211,11 @@ lacras
 🖕
 
 # ---- 露骨性要求 ----
-# 衣物、护肤品、怎么穿怎么涂（faja、licra、brasier、crema、como se ve……）出现在动词和部位之间或部位之后 20 个字内时不算：
-# 塑身衣、内衣、胸霜的直播里「muestranos como se ve en las nalgas」是在看商品。
+# 衣物、护肤品、怎么穿怎么涂（faja、licra、brasier、crema、como se ve……）出现在动词和部位之间，或部位之后 20 个字内以 de / del / en +
+# 衣物的形式出现时不算：塑身衣、内衣、胸霜的直播里「muestranos como se ve en las nalgas」「el culito de la faja」是在看商品。
+# 「enseña las tetas sin ropa」「enseña tus tetas con ese top」里的衣物是 sin / con 引出的，照算。
 [sexual]
-re:\b(?:ensena|ensename|ensenanos|muestra|muestrame|muestranos|ensenen|muestren)\b(?:(?!\b(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|ropa|como se|como queda|como te queda|como me queda|que tal)\b).){0,20}?\b(?:tetas|chichis|pechos|senos|nalgas|culo|culito|nalguitas|tetitas|chichitas|pechitos)\b(?!.{0,20}\b(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|ropa|como se|como queda|como te queda|como me queda|que tal)\b)
+re:\b(?:ensena|ensename|ensenanos|muestra|muestrame|muestranos|ensenen|muestren)\b(?:(?!\b(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|ropa|como se|como queda|como te queda|como me queda|que tal)\b).){0,20}?\b(?:tetas|chichis|pechos|senos|nalgas|culo|culito|nalguitas|tetitas|chichitas|pechitos)\b(?!.{0,20}\b(?:(?:de|del|en) (?:(?:el|la|los|las|este|esta|ese|esa|tu|su) )?(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|ropa)|como se|como queda|como te queda|como me queda|que tal)\b)
 re:\b(?:desnudate|encuerate|quitate la ropa)\b
 re:\bquitate (?:todo|toda) (?:la ropa|el vestido|el brasier|eso)\b(?!\s+vieja\b)(?!.{0,40}\b(?:faja|licra|pantalon|jeans|brasier|bra|crema|vestido|short|leggins|calzon|top|body|como se|como queda|como te queda|como me queda|que tal)\b)
 te cojo

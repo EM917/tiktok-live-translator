@@ -4,17 +4,22 @@
 至少钉一条会命中的句子，带「后面接正常说法」的收窄写法再钉一条不报的。同一份期望对两份词表各跑一遍：
 
 * 夹具词表（红条档全部已确认）：恶意说法是红条（alert，tier == "red"，可自动加入关注名单）；
-* 出厂词表（红条档全部是 `:pending`）：恶意说法是琥珀（amb == "pending"，route == "confirm"），
-  绝不自动加入关注名单。
+* 出厂词表（红条档是 `:pending`，用户确认过的段除外）：恶意说法是琥珀（amb == "pending"，route == "confirm"），
+  绝不自动加入关注名单。哪些段已确认由 tests/comment_guard_confirmed.py 的 RED_CONFIRMED 说了算——
+  确认一段只改那里，这个文件不用动（已确认的段里，恶意说法是红条，或者那一条还没确认时是琥珀）。
 
 正常说法在两份词表里都必须完全不可见（lvl 不是 alert / amber）。句子全是虚构的。纯 CPU，不联网、不加载
 模型、不 import main.py。
 """
+import re
+import shutil
 from pathlib import Path
 
 import pytest
 
 from app import comment_guard as cg
+from tests.comment_guard_confirmed import (RED_CONFIRMED, assert_flagged_by_shipped, assert_red,
+                                           check_defaults_state, section_of)
 
 HERE = Path(__file__).resolve().parent
 FIX = HERE / "fixtures" / "comment_guard"
@@ -34,15 +39,14 @@ def assert_quiet(text, which):
     assert r["lvl"] not in VISIBLE, (text, which, r)
 
 
-def assert_flagged(text, cat, which):
-    r = judge(text, which)
+def assert_flagged(text, cat, which, rules=None, confirmed=None):
+    """which == "fixture"：红条；其余（出厂词表，或确认流程模拟出来的副本）：按 confirmed 判。"""
+    r = cg.CommentGuard(rules or LEX[which], streamer=STREAMER).judge(text, user="u1", ts=1000.0)
     assert cat in r["cats"], (text, which, r)
     if which == "fixture":
-        assert (r["lvl"], r["tier"]) == ("alert", "red"), (text, r)
-        assert cg.auto_markable(r), (text, r)
+        assert_red(r, text)
     else:
-        assert (r["lvl"], r["amb"], r["route"]) == ("amber", "pending", "confirm"), (text, r)
-        assert "pending" in r["tags"] and not cg.auto_markable(r), (text, r)
+        assert_flagged_by_shipped(r, text, confirmed)
 
 
 def cases(table):
@@ -77,21 +81,32 @@ NARROWED = {
          ("hagamos un boicot", "accuse_call")]),
     "te voy a matar / te vamos a matar": (
         ["te voy a matar de risa con este video", "te voy a matar con las ofertas", "te voy a matar con tanta belleza",
-         "te vamos a matar con estos precios", "te vamos a matar de risa bella", "te voy a matar jajaja",
+         "te vamos a matar con estos precios", "te vamos a matar de risa bella",
          "con el 10% de descuento te vamos a matar con ese precio"],
         [("te voy a matar", "threat"), ("te vamos a matar", "threat"), ("te voy a matar hijueputa", "threat"),
-         ("te voy a matar pendeja", "threat")]),
+         ("te voy a matar pendeja", "threat"),
+         # 末尾加个 jaja / lol 不能让威胁躲过去
+         ("te voy a matar jajaja", "threat"), ("te voy a matar lol", "threat"), ("te vamos a matar jeje", "threat"),
+         ("te voy a matar xd", "threat")]),
     "se donde vives / se donde vive": (
         ["no sé dónde vives, pasame tu direccion", "yo no se donde vive", "ni se donde vives", "nunca se donde vives"],
-        [("se donde vives", "threat"), ("yo se donde vive", "threat"), ("ya se donde vives, vieja", "threat")]),
+        [("se donde vives", "threat"), ("yo se donde vive", "threat"), ("ya se donde vives, vieja", "threat"),
+         # 双重否定的威胁：「别以为我不知道你住哪」
+         ("no creas que no se donde vives", "threat"), ("no pienses que no se donde vives", "threat"),
+         ("jamas pienses que no se donde vive", "threat")]),
     "kill yourself": (
         ["kill yourself laughing at these prices lol", "you cant kill yourself with vitamins",
          "dont kill yourself over the price", "kill yourself if you want but the combo is cheap"],
-        [("kill yourself", "threat"), ("go kill yourself", "threat"), ("just kill yourself already", "threat")]),
+        [("kill yourself", "threat"), ("go kill yourself", "threat"), ("just kill yourself already", "threat"),
+         ("you need to kill yourself", "threat"), ("i want you to kill yourself", "threat"),
+         ("why not kill yourself", "threat")]),
     "ojala te pase algo": (
         ["ojala te pase algo bueno hoy", "ojala te pase algo bonito hoy bella", "ojala te pase algo lindo en tu cumple",
          "ojala te pase algo padre", "ojala te pase algo chido", "ojala te pase algo bien", "ojala te pase algo good"],
-        [("ojala te pase algo", "threat"), ("ojala te pase algo malo", "threat"), ("ojala te pase algo feo vieja", "threat")]),
+        [("ojala te pase algo", "threat"), ("ojala te pase algo malo", "threat"), ("ojala te pase algo feo vieja", "threat"),
+         # bien 单独是祝福，bien feo / bien malo / bien gacho 是咒人
+         ("ojala te pase algo bien feo", "threat"), ("ojala te pase algo bien malo", "threat"),
+         ("ojala te pase algo bien gacho", "threat")]),
     "no caigan": (
         ["no caigan en la tentacion jaja", "no caigan en la tentacion, yo ya compre 3", "no caigan en la oferta, yo ya gaste mi sueldo"],
         [("no caigan", "accuse_call"), ("no caigan en su trampa", "accuse_call"), ("no caigan, es una estafa", "accuse_call")]),
@@ -108,6 +123,7 @@ NARROWED = {
         ["felicidades ganaste el sorteo", "felicidades ganaste bella, te lo mereces", "felicidades, ganaste!!",
          "felicidades ganaste"],
         [("felicidades ganaste, reclama tu premio aqui", "promo_scam"),
+         ("felicidades ganaste @premios_oficial", "promo_scam"), ("escribe a @premios_oficial, felicidades ganaste", "promo_scam"),
          ("felicidades ganaste escribe al 5512345678", "promo_scam"),
          ("reclama tu premio, felicidades ganaste", "promo_scam"), ("felicidades ganaste, entra al link", "promo_scam")]),
     "soporte de tiktok / tiktok support": (
@@ -119,13 +135,17 @@ NARROWED = {
     "seguidores gratis": (
         ["quiero seguidores gratis jaja", "como consigo seguidores gratis"],
         [("seguidores gratis aqui", "promo_scam"), ("seguidores gratis, entra a mi perfil", "promo_scam"),
+         ("seguidores gratis en @mi_cuenta", "promo_scam"),
          ("click para seguidores gratis", "promo_scam")]),
     "muestra / ensena + 部位（衣物、怎么穿）": (
         ["muestranos como se ve en las nalgas", "muéstrame cómo se ve en el culo la licra",
          "enseñame la parte de las nalgas del pantalon", "muestra como se aplica la crema en los senos",
          "enseñanos el brasier en los senos", "muestranos como queda la faja en las nalgas"],
         [("enseña las tetas", "sexual"), ("muestra el culo", "sexual"), ("muestrame las nalgas", "sexual"),
-         ("muestranos las tetas", "sexual")]),
+         ("muestranos las tetas", "sexual"),
+         # sin / con 引出的衣物不是在看商品
+         ("enseñame las tetas sin ropa", "sexual"), ("muestrame los senos sin brasier", "sexual"),
+         ("enseña las nalgas sin calzon", "sexual"), ("enseña tus tetas con ese top", "sexual")]),
     "quitate todo": (
         ["quitate todo el estres con este te", "quitate todo el cansancio con esta vitamina"],
         [("quitate toda la ropa", "sexual"), ("quitate todo eso", "sexual"), ("quitate la ropa", "sexual"),
@@ -146,6 +166,7 @@ NARROWED = {
         ["mi abogado tambien lo compro", "mi abogado me dijo que este suplemento le sirvio", "mi abogado ya vio el contrato",
          "mi abogado esta de viaje"],
         [("mi abogado los va a demandar", "accuse_report"), ("voy a hablar con mi abogado", "accuse_report"),
+         ("llamare a mi abogado", "accuse_report"), ("ya hable con mi abogado", "accuse_report"),
          ("mi abogado ya esta en camino", "accuse_report"), ("llamar a mi abogado ahorita mismo", "accuse_report")]),
 }
 NARROWED_QUIET, NARROWED_FLAGGED = cases(NARROWED)
@@ -182,9 +203,11 @@ CANDIDATES = {
          ("te voy a quemar la casa", "threat"), ("te voy a violar", "threat"), ("voy a violarte", "threat")]),
     "threat：咒人死": (
         ["que te mueras de la risa con este live", "muerete de envidia con mi faja nueva", "ojala y te mueras de la risa",
-         "me muero de risa", "te vas a morir de la risa", "muerete de amor con este precio"],
+         "me muero de risa", "te vas a morir de la risa", "muerete de amor con este precio",
+         "muerete que hoy hace frio", "ay muerete, que rico huele"],
         [("ojala te mueras", "threat"), ("ojala y te mueras", "threat"), ("que te mueras", "threat"),
-         ("que te mueras vieja", "threat"), ("muerete vieja", "threat"), ("mereces morir", "threat")]),
+         ("que te mueras vieja", "threat"), ("muerete vieja", "threat"), ("mereces morir", "threat"),
+         ("muerete", "threat"), ("muerete ya", "threat")]),
     "threat：英语": (
         ["i will find you a coupon code", "i will find the link", "go die trying lol", "hope you get the combo",
          "ill find you on instagram", "i will find you tomorrow"],
@@ -198,8 +221,11 @@ CANDIDATES = {
          "dont waste your money on cheap ones, buy this one", "no confien en mi, voy a comprar todo",
          "no le crean a las criticas, a mi me funciono", "nadie compre mas que yo jaja",
          "dont buy more than you need", "dont buy it if you dont need it", "we boycott high prices, buy here",
-         "no compres en otra tienda, aqui hay de todo", "no compres si no lo necesitas"],
-        [("no compres aqui", "accuse_call"), ("no le compres a esta vieja", "accuse_call"), ("no compres nada", "accuse_call"),
+         "no compres en otra tienda, aqui hay de todo", "no compres si no lo necesitas", "no compres nada",
+         "no compres nada si no lo necesitas amiga"],
+        [("no compres aqui", "accuse_call"), ("no le compres a esta vieja", "accuse_call"),
+         ("no compres nada aqui", "accuse_call"), ("no compres en esta tienda", "accuse_call"),
+         ("no les compres", "accuse_call"), ("no compres a esa senora", "accuse_call"),
          ("no le den su dinero", "accuse_call"), ("no les den su dinero a estos", "accuse_call"),
          ("no gasten su dinero aqui", "accuse_call"), ("no pierdan su dinero aqui", "accuse_call"),
          ("no le den like a esta senora", "accuse_call"), ("no le crean nada", "accuse_call"),
@@ -208,9 +234,12 @@ CANDIDATES = {
          ("dont buy from her", "accuse_call"), ("we boycott this store", "accuse_call")]),
     "assert：整句指称": (
         ["no estan mintiendo, a mi me llego", "esto no es un negocio piramidal verdad", "no es un esquema piramidal",
-         "no son fakes, son originales", "le dije a mi hermana que no son productos chafas"],
+         "no son fakes, son originales", "le dije a mi hermana que no son productos chafas",
+         "aqui no roban a la gente, todo llega", "no engañan a la gente, ya compre 3 veces",
+         "esto no es esquema ponzi", "nunca estafan a la gente"],
         [("roban a la gente", "accuse_claim"), ("aqui roban a la gente", "accuse_claim"), ("engañan a la gente", "accuse_claim"),
          ("estan engañando a la gente", "accuse_claim"), ("ya vi, es un negocio piramidal", "accuse_claim"),
+         ("ya vi, es un esquema ponzi", "accuse_claim"),
          ("estan mintiendo", "accuse_claim"), ("productos chafas", "accuse_claim"), ("ya vi, son fakes", "accuse_claim"),
          ("vendes productos falsificados", "accuse_claim"), ("all lies", "accuse_claim"),
          ("she is lying to you", "accuse_claim")]),
@@ -262,18 +291,59 @@ def test_death_wishes_moved_from_medium_to_threat_and_are_no_longer_a_clue_note(
         medium = set(rules.entries[("insult", "medium")])
         assert not medium & {"ojala te mueras", "ojala y te mueras", "que te mueras", "muerete"}
     r = judge("que te mueras", "defaults")
-    assert (r["lvl"], r["amb"], r["cats"], r["sub"], r["tier"]) == ("amber", "pending", ["threat"], "threat", "red")
+    assert (r["cats"], r["sub"], r["tier"]) == (["threat"], "threat", "red")
+    assert_flagged_by_shipped(r, "que te mueras")
 
 
-def test_no_candidate_or_narrowed_entry_is_confirmed_in_the_shipped_lexicon():
-    """用户还没确认任何一条：出厂词表里这些词条全在 :pending 段里（threat / call 是先确认的两段，也一样）。"""
+def test_no_candidate_or_narrowed_entry_is_confirmed_unless_its_section_is_in_red_confirmed():
+    """用户还没确认的段：出厂词表里这些词条全在 :pending 段里，命中只出琥珀；确认过的段（RED_CONFIRMED，
+    threat / call 是先确认的两段）由 tests/comment_guard_confirmed.py 说了算。"""
     rules = LEX["defaults"]
     for key, n in rules.counts.items():
-        if cg.SECTIONS[key[0]][key[1]] == cg.RED:
-            assert cg.is_pending(key[1]) or n == 0, key
+        if cg.SECTIONS[key[0]][key[1]] == cg.RED and not cg.is_pending(key[1]):
+            assert n == 0 or key in RED_CONFIRMED, key
     for text in ("te voy a violar", "no compres aqui", "beaner", "send nudes", "pasate a mi live"):
         r = judge(text, "defaults")
-        assert r["lvl"] == "amber" and not cg.auto_markable(r), (text, r)
+        assert r["lvl"] in VISIBLE and (section_of(r) in RED_CONFIRMED or not cg.auto_markable(r)), (text, r)
+        assert_flagged_by_shipped(r, text)
+
+
+# ------------------------------------------------------------------------------------------
+# 确认流程模拟（#47）：按 README 的步骤确认「威胁」和「号召举报·别买」，上面这些测试仍然是绿的
+# ------------------------------------------------------------------------------------------
+
+def test_confirming_threat_and_call_the_way_the_readme_says_keeps_these_tests_green(tmp_path):
+    """README「确认红条档词条」第 2 步：整段确认就把段名的 :pending 去掉；第 3 步：RED_CONFIRMED 加上这两段。
+    在出厂词表的临时副本上照做一遍，用同一批期望（assert_flagged 和 tests/comment_guard_confirmed.py 的
+    check_defaults_state）去判：只改 RED_CONFIRMED 就够，不需要再改任何期望。"""
+    copy = tmp_path / "defaults"
+    shutil.copytree(DEFAULTS, copy)
+    for name, header in (("insult", "[threat:pending]"), ("accuse", "[call:pending]")):
+        path = copy / (name + ".txt")
+        text = path.read_text(encoding="utf-8")
+        # 真的确认过以后这两段已经是不带 :pending 的了：这一步什么也不用做
+        path.write_text(text.replace(header + "\n", header.replace(":pending", "") + "\n"), encoding="utf-8")
+        assert header not in path.read_text(encoding="utf-8")
+    confirmed = frozenset(RED_CONFIRMED | {("insult", "threat"), ("accuse", "call")})
+    rules = cg.load_rules(copy, NO_LOCAL)
+    check_defaults_state(rules, confirmed)
+    for _entry, text, cat in NARROWED_FLAGGED + CAND_FLAGGED:
+        assert_flagged(text, cat, "sim", rules=rules, confirmed=confirmed)
+    # 确认过的两段里的恶意说法真的变红了，别的段还是琥珀
+    guard = cg.CommentGuard(rules, streamer=STREAMER)
+    assert_red(guard.judge("te voy a matar", user="a", ts=1.0), "te voy a matar")
+    assert_red(guard.judge("reporten este live", user="b", ts=2.0), "reporten este live")
+    assert_flagged_by_shipped(guard.judge("eres una pendeja", user="c", ts=3.0), "eres una pendeja", confirmed)
+    if ("insult", "strong") not in confirmed:
+        assert guard.judge("eres una pendeja", user="d", ts=4.0)["lvl"] == "amber"
+    # 夹具是出厂词表去掉 :pending 之后的快照：整段确认只改了段头，去掉 :pending 之后的内容和确认前一模一样，
+    # 夹具不用动
+    for name in ("insult", "accuse"):
+        assert _without_pending(copy / (name + ".txt")) == _without_pending(DEFAULTS / (name + ".txt"))
+
+
+def _without_pending(path):
+    return re.sub(r"^\[([a-z0-9\-]+):pending\]$", r"[\1]", path.read_text(encoding="utf-8"), flags=re.M)
 
 
 # ------------------------------------------------------------------------------------------
@@ -318,7 +388,13 @@ def test_moving_a_slur_from_pending_to_confirmed_changes_the_rules_hash(tmp_path
     assert a.hash != b.hash
 
 
-def test_the_shipped_slur_section_is_pending_only():
+def test_the_shipped_slur_section_is_pending_unless_it_is_in_red_confirmed():
+    """出厂词表里 slur 在待确认还是已确认，由 RED_CONFIRMED 说了算；夹具里它永远是已确认的那一份。"""
     rules = LEX["defaults"]
-    assert rules.counts[("insult", "slur:pending")] >= 10 and rules.counts.get(("insult", "slur"), 0) == 0
-    assert cg.load_rules(FIX, NO_LOCAL).counts[("insult", "slur")] == rules.counts[("insult", "slur:pending")]
+    total = rules.counts.get(("insult", "slur:pending"), 0) + rules.counts.get(("insult", "slur"), 0)
+    assert total >= 10
+    if ("insult", "slur") in RED_CONFIRMED:
+        assert rules.counts.get(("insult", "slur:pending"), 0) == 0
+    else:
+        assert rules.counts.get(("insult", "slur"), 0) == 0
+    assert cg.load_rules(FIX, NO_LOCAL).counts[("insult", "slur")] == total
