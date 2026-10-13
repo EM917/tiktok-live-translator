@@ -3780,7 +3780,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         字幕引擎是 Claude 时强模型是 Claude Sonnet 5.5（见 _strong_translator）：它走网络、
         不占本机内存，所以上面「识别积压 / 另一条报警占着」两条让路规矩对它不适用，强模型
         失败时也不丢实例（它带着自己的 429 冷却）。"""
-        from .translator import looks_fabricated
+        from .translator import looks_fabricated, model_label
 
         if not context.strip():
             return
@@ -3813,7 +3813,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         claimed = not (for_backlog or for_busy)
         if claimed:
             self._alert_strong_busy = True
-        strong = used = out = error = None
+        strong = used = out = error = strong_outcome = None
         fallback = hard_fail = held = False
         try:
             if claimed:
@@ -3844,9 +3844,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                                                for_backlog, for_busy, None)
                 return
             text, hint = self._for_translation(context)
+            # 这一次调用的结局要在换引擎再译之前取：下一次 translate 会把它清掉。强模型是 Claude
+            # 时它可能被拒答（以前的本地 7B 不会），审计里要看得出，不能只剩「模型没有返回译文」
+            begin_translate_call()
             try:
                 out = await first.translate(text, self.target, source=lang or "auto",
                                             glossary=hint)
+                strong_outcome = translate_call_outcome()
                 if out and looks_fabricated(context, out):
                     print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
                           "改用常规引擎")
@@ -3863,7 +3867,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self._alert_strong_busy = claimed = False
             if not out and first is strong and strong is not None and not fallback:
                 err = getattr(strong, "last_error", None)
-                if err and err[0] is not None:
+                if strong_outcome and strong_outcome[0] == "refusal":
+                    # 拒答是 HTTP 200，last_error 是空的：不记这一条，审计就分不清拒答和「没返回」。
+                    # 报警编号和字幕 seq 是两套号，所以不写 translation_refusal，写在这一行的 error 里
+                    error = self._refusal_record(strong_outcome)
+                    print("[警告] {} 拒绝翻译报警上下文（stop_reason=refusal，类别 {}）".format(
+                        model_label(self._model_of(strong)), strong_outcome[1] or "未给出"))
+                elif err and err[0] is not None:
                     error = "HTTP {}{}".format(err[0], "：" + err[1] if err[1] else "")  # i18n: audit
                 if getattr(self, "_strong", None) is strong and not remote:
                     # 下一条报警重新探测（探测在线程池里）。Claude 的实例不丢：它的 429 冷却和
@@ -3872,9 +3882,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 if fast is not None and fast is not strong:
                     print("[警告] 强模型没有给出报警上下文译文，改用常驻引擎再译一次")
                     fallback, used, hard_fail = True, fast, False
+                    begin_translate_call()
                     try:
                         out = await fast.translate(text, self.target,
                                                    source=lang or "auto", glossary=hint)
+                        fast_outcome = translate_call_outcome()
+                        if not out and fast_outcome and fast_outcome[0] == "refusal":
+                            # 备用的也拒答：两边都记下，别让 error 只剩强模型那一半
+                            also = "{}（常驻引擎）".format(self._refusal_record(fast_outcome))  # i18n: audit
+                            error = "{}；{}".format(error, also) if error else also  # i18n: audit
                         if out and self.glossary:
                             out = self.glossary.apply(text, out)
                     except Exception as exc:
@@ -4173,20 +4189,33 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 self._provision_task = self._spawn(self._provision_then_check())
         return None
 
-    async def _note_refusal(self, tr, seq, category):
+    async def _note_refusal(self, tr, seq, category, retranslate=None):
         """引擎拒绝翻译这一句（Claude：HTTP 200，stop_reason 为 refusal）。
 
         每一次都记审计（translation 记录里只有 ok=false，没有这一条就分不清「接口出错」和
         「模型拒答」）并打一行终端；界面上本场只说一次——直播话术重复率高，同一句可能反复
         拒答，每次都弹提示只会教中控无视提示。拒答类别照抄接口给的 stop_details.category，
         可能为空，不替它解释原因。类别由调用方从**这一次调用**的结局里取（见
-        translator.translate_call_outcome），不读引擎上的共享状态：报警翻译在并发用同一个引擎。"""
-        from .translator import engine_label
+        translator.translate_call_outcome），不读引擎上的共享状态：报警翻译在并发用同一个引擎。
+
+        retranslate 是重译的 trigger（manual / viewer / banned_term），重译被拒时传：Sonnet
+        也会拒答，而以前本地 7B 不会，这条路是新的。审计和终端照记（审计带上 trigger，和字幕
+        快译被拒分得开），界面上的话不在这里说——点重译的人在字幕旁边已经收到说明了
+        （_retranslate_note），本场一次的那个全局提示是给「字幕没译出来」的，用在这里会说错。"""
+        from .translator import engine_label, model_label
 
         name = getattr(tr, "name", None)
         audit = getattr(self, "audit", None)
         if audit is not None:
-            audit.translation_refusal(seq, name, self._model_of(tr), category)
+            if retranslate is None:
+                audit.translation_refusal(seq, name, self._model_of(tr), category)
+            else:
+                audit.translation_refusal(seq, name, self._model_of(tr), category,
+                                          trigger=retranslate)
+        if retranslate is not None:
+            print("[警告] {} 拒绝重译第 {} 条字幕（stop_reason=refusal，类别 {}），这一条没有新译文".format(
+                model_label(self._model_of(tr)), seq, category or "未给出"))
+            return
         print("[警告] {} 没有翻译第 {} 条字幕（stop_reason=refusal，类别 {}），这一条显示原文".format(
             engine_label(name), seq, category or "未给出"))
         mark = (tr, audit)
@@ -4363,29 +4392,44 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         outcome = translate_call_outcome()
         self._strong_inflight.discard(seq)
         self._release_strong(strong)
+        refusal = outcome if not out and outcome and outcome[0] == "refusal" else None
         if audit is not None:
-            audit.translation_strong(seq, out, ms, bool(out),
-                                     getattr(strong, "model", None), trigger)
+            audit.translation_strong(
+                seq, out, ms, bool(out), getattr(strong, "model", None), trigger,
+                error=None if out else self._strong_failure_record(
+                    strong, error_before, outcome, discarded))
         if out:
             await self._publish_translation(seq, out, True, ms, QUALITY_STRONG,
                                             job["target"],
                                             {"strong": True, "strong_state": "ok"})
             return
+        if refusal is not None:
+            await self._note_refusal(strong, seq, refusal[1], retranslate=trigger)
         if had:
             # 已有译文时：只报告重译失败，屏幕上那一版原样留着
             await self.server.broadcast({"type": "caption_update", "id": seq,
                                          "strong_state": "failed"})
         else:
-            # 连快译都还没有：这时才是真的「这条没有译文」
+            # 连快译都还没有：这时才是真的「这条没有译文」。被拒答的话带上 refused：快译那条
+            # 路径也是这么标的（_translate_and_update_inner），页面据此保留「未翻译（接口拒答）」
+            # 角标、不把这一条算进「连续多条翻译失败」。少了它，重译一被拒，角标就换成
+            # 「翻译失败」，点几条就顶出那句整体翻译坏了的横幅，而 API 其实正常回了话
+            extra = {"strong_state": "failed"}
+            if refusal is not None:
+                extra["refused"] = True
             await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
-                                            job["target"], {"strong_state": "failed"})
+                                            job["target"], extra)
         await self._retranslate_note(seq, trigger, self._retranslate_failure_text(
             strong, error_before, outcome, discarded, had))
 
     def _retranslate_failure_text(self, strong, error_before, outcome, discarded, had):
         """这次重译没出译文：把观察到的事说出来，后面接上这一条现在是什么样。"""
+        from .translator import model_label
+
+        # Claude 这时同时有三个模型在用（字幕 Haiku、弹幕 Haiku、重译 Sonnet），只写「Claude」
+        # 看不出是哪一个在报错：写模型名
         engine = (L("本地模型", "the local model") if not self._strong_is_remote()
-                  else "Claude")
+                  else model_label(getattr(strong, "model", None) or "Claude"))
         error = getattr(strong, "last_error", None)
         paused = getattr(strong, "cooldown_until", 0.0) - time.monotonic()
         if discarded:
@@ -4397,9 +4441,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                      "Couldn’t retranslate: {} declined to translate this caption (the API "
                      "returned a refusal)").format(engine)
         elif error and error[0] is not None and paused > 0:
-            head = L("重译没有成功：{} 返回 HTTP {}，程序暂停请求 {} 秒",
-                     "Couldn’t retranslate: {} returned HTTP {}. Requests are paused for {} sec"
-                     ).format(engine, error[0], int(round(paused)))
+            # 暂停的只是重译用的这个连接：字幕翻译另有自己的，不受影响，所以写「重译请求」
+            head = L("重译没有成功：{} 返回 HTTP {}，程序暂停重译请求 {} 秒",
+                     "Couldn’t retranslate: {} returned HTTP {}. Retranslate requests are paused "
+                     "for {} sec").format(engine, error[0], int(round(paused)))
         elif error and error[0] is not None and error is not error_before and error[1]:
             # 400/402 带着接口自己的说明（引擎只在这两种回应里留原话，见 ClaudeTranslator.
             # SAYS_WHY_STATUSES）：照抄，和引擎横幅一样，不替它解释
@@ -4414,6 +4459,27 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         tail = (L("原译文保持不变", "The current translation is unchanged.") if had
                 else L("这一条仍然没有译文", "This caption still has no translation."))
         return L("{}，{}", "{}. {}").format(head, tail)
+
+    @staticmethod
+    def _refusal_record(outcome):
+        """审计 error 字段里的拒答写法：refusal 或 refusal:<接口给的类别>。"""
+        return "refusal:{}".format(outcome[1]) if outcome[1] else "refusal"
+
+    @staticmethod
+    def _strong_failure_record(strong, error_before, outcome, discarded):
+        """强模型这一次没出译文：看到了什么，写给审计的 error 字段（None 表示没有要说的）。
+        和 _retranslate_failure_text 看同样的东西，只是写成一行机器好 grep 的短句，不翻译、
+        不解释：refusal[:类别] / HTTP 状态码[：400、402 的接口原话] / 译文被丢弃。"""
+        if discarded:
+            return "译文不像译文，已丢弃"                # i18n: audit
+        if outcome and outcome[0] == "refusal":
+            return Pipeline._refusal_record(outcome)
+        error = getattr(strong, "last_error", None)
+        if error and error[0] is not None:
+            paused = getattr(strong, "cooldown_until", 0.0) - time.monotonic()
+            if error is not error_before or paused > 0:
+                return "HTTP {}{}".format(error[0], "：" + error[1] if error[1] else "")  # i18n: audit
+        return None
 
     async def _retranslate_refused(self, seq, trigger, text):
         """这次点击没有开始重译（找不到原文、没有可用的强模型）：按钮和手机上都标成失败，

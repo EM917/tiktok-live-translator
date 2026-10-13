@@ -396,22 +396,28 @@ def failed_retranslate(tmp_path, strong, quality=QUALITY_FAST, trigger="manual",
 
 @pytest.mark.parametrize("flaky,zh,english", [
     (dict(refuse="general_harms"),
-     "重译没有成功：Claude 拒绝翻译这一条（接口返回 refusal），原译文保持不变",
-     "Couldn’t retranslate: Claude declined to translate this caption (the API returned a "
-     "refusal). The current translation is unchanged."),
+     "重译没有成功：Claude Sonnet 5.5 拒绝翻译这一条（接口返回 refusal），原译文保持不变",
+     "Couldn’t retranslate: Claude Sonnet 5.5 declined to translate this caption (the API "
+     "returned a refusal). The current translation is unchanged."),
     (dict(error=(500, None)),
-     "重译没有成功：Claude 返回 HTTP 500，原译文保持不变",
-     "Couldn’t retranslate: Claude returned HTTP 500. The current translation is unchanged."),
+     "重译没有成功：Claude Sonnet 5.5 返回 HTTP 500，原译文保持不变",
+     "Couldn’t retranslate: Claude Sonnet 5.5 returned HTTP 500. The current translation is "
+     "unchanged."),
     # 400/402 带着接口自己的说明：照抄，不解释
     (dict(error=(400, "invalid_request_error: thinking.type.between_tools is not supported.")),
-     "重译没有成功：Claude 返回 HTTP 400（invalid_request_error: thinking.type.between_tools is "
-     "not supported），原译文保持不变",
-     "Couldn’t retranslate: Claude returned HTTP 400 (invalid_request_error: "
+     "重译没有成功：Claude Sonnet 5.5 返回 HTTP 400（invalid_request_error: "
+     "thinking.type.between_tools is not supported），原译文保持不变",
+     "Couldn’t retranslate: Claude Sonnet 5.5 returned HTTP 400 (invalid_request_error: "
      "thinking.type.between_tools is not supported). The current translation is unchanged."),
+    # 暂停的只是重译用的连接：写「重译请求」，不写成「请求」让人以为字幕也停了
     (dict(error=(429, None), cooldown=30.0),
-     "重译没有成功：Claude 返回 HTTP 429，程序暂停请求 30 秒，原译文保持不变",
-     "Couldn’t retranslate: Claude returned HTTP 429. Requests are paused for 30 sec. The "
-     "current translation is unchanged."),
+     "重译没有成功：Claude Sonnet 5.5 返回 HTTP 429，程序暂停重译请求 30 秒，原译文保持不变",
+     "Couldn’t retranslate: Claude Sonnet 5.5 returned HTTP 429. Retranslate requests are "
+     "paused for 30 sec. The current translation is unchanged."),
+    (dict(error=(404, None), cooldown=120.0),
+     "重译没有成功：Claude Sonnet 5.5 返回 HTTP 404，程序暂停重译请求 120 秒，原译文保持不变",
+     "Couldn’t retranslate: Claude Sonnet 5.5 returned HTTP 404. Retranslate requests are "
+     "paused for 120 sec. The current translation is unchanged."),
     (dict(),
      "重译没有成功：没有拿到译文，原译文保持不变",
      "Couldn’t retranslate: no translation came back. The current translation is unchanged."),
@@ -484,3 +490,179 @@ def test_every_retranslate_note_is_a_registered_ui_message_type():
 def test_the_phone_never_receives_a_retranslate_note():
     from app import viewer
     assert "retranslate_note" not in viewer.ALLOW
+
+
+# ---------------------------------------------------------------------------
+# 5. 重译被拒答：角标、审计、终端（2026-10-13 评审）
+#
+# 以前的强模型是本地 7B，不会拒答；Sonnet 会。字幕快译被拒答时有三样东西：页面上的
+# 「未翻译（接口拒答）」角标（靠 refused 标记）、审计里的 translation_refusal、终端一行。
+# 重译这条路是新的，不能少任何一样。
+# ---------------------------------------------------------------------------
+
+def test_a_refused_retranslate_of_an_untranslated_caption_keeps_the_refusal_mark(tmp_path):
+    """快译已经被拒答过（角标写着「未翻译（接口拒答）」），点重译 Sonnet 也拒答：服务端要带
+    refused，页面才不把角标换成「翻译失败」、也不把这几条算进「连续多条翻译失败」横幅。"""
+    p = failed_retranslate(tmp_path, Flaky(refuse="general_harms"), quality=0)
+    last = of(p, "caption_update")[-1]
+    assert last["id"] == 7 and last["translated"] is None
+    assert last["translate_state"] == "failed" and last["strong_state"] == "failed"
+    assert last["refused"] is True
+    # 这条消息的形状由 tests/app.en.test.mjs 原样喂给页面（角标留着、不顶横幅）
+    assert sorted(k for k in last if k != "translate_ms") == [
+        "id", "quality", "refused", "strong_state", "target_lang", "translate_state",
+        "translated", "type"]
+
+
+def test_a_retranslate_that_failed_for_another_reason_is_not_marked_refused(tmp_path):
+    """连不上 / HTTP 错误是真的翻译失败，要照常算进横幅；只有拒答带 refused。"""
+    p = failed_retranslate(tmp_path, Flaky(error=(500, None)), quality=0)
+    last = of(p, "caption_update")[-1]
+    assert last["translate_state"] == "failed" and "refused" not in last
+
+
+def test_a_refused_retranslate_of_a_translated_caption_touches_nothing_on_screen(tmp_path):
+    p = failed_retranslate(tmp_path, Flaky(refuse="general_harms"), quality=QUALITY_FAST)
+    assert all("refused" not in m and "translated" not in m for m in of(p, "caption_update"))
+    assert [m.get("strong_state") for m in of(p, "caption_update")] == ["pending", "failed"]
+
+
+@pytest.mark.parametrize("trigger", ["manual", "viewer", "banned_term"])
+def test_a_refused_retranslate_is_recorded_in_the_audit_with_who_asked(tmp_path, capsys, trigger):
+    p = failed_retranslate(tmp_path, Flaky(refuse="general_harms"), trigger=trigger)
+    (refusal,) = rows(p.audit, "translation_refusal")
+    assert (refusal["seq"], refusal["category"], refusal["trigger"]) == (7, "general_harms", trigger)
+    assert refusal["model"] == "claude-sonnet-5-5" and refusal["engine"] == "strong"
+    (strong,) = rows(p.audit, "translation_strong")
+    assert strong["ok"] is False and strong["error"] == "refusal:general_harms"
+    out = capsys.readouterr().out
+    assert "[警告] Claude Sonnet 5.5 拒绝重译第 7 条字幕" in out and "general_harms" in out
+    # 本场一次的全局提示是给「字幕没译出来」的：重译被拒的人在字幕旁边已经收到说明了
+    assert not of(p, "notice")
+
+
+def test_a_refusal_without_a_category_is_recorded_as_such(tmp_path, capsys):
+    p = failed_retranslate(tmp_path, Flaky(refuse=""))
+    (refusal,) = rows(p.audit, "translation_refusal")
+    assert refusal["category"] is None
+    assert rows(p.audit, "translation_strong")[0]["error"] == "refusal"
+    assert "类别 未给出" in capsys.readouterr().out
+
+
+def test_the_subtitle_refusal_row_keeps_its_old_shape(tmp_path):
+    """字幕快译的拒答记录没有 trigger 这个键（老记录和消费它的人看到的形状不变）。"""
+    p = bare_pipeline(tmp_path, Fast("claude", model="claude-haiku-5-5"))
+    run(p._note_refusal(p.translator, 3, "general_harms"))
+    (row,) = rows(p.audit, "translation_refusal")
+    assert "trigger" not in row and row["seq"] == 3
+
+
+@pytest.mark.parametrize("flaky,expected", [
+    (dict(error=(500, None)), "HTTP 500"),
+    (dict(error=(429, None), cooldown=30.0), "HTTP 429"),
+    (dict(error=(404, None), cooldown=120.0), "HTTP 404"),
+    # 400/402 带着接口自己的说明：照抄
+    (dict(error=(400, "invalid_request_error: bad body")), "HTTP 400：invalid_request_error: bad body"),
+])
+def test_an_http_failed_retranslate_records_the_status_in_the_audit(tmp_path, flaky, expected):
+    p = failed_retranslate(tmp_path, Flaky(**flaky))
+    (strong,) = rows(p.audit, "translation_strong")
+    assert strong["ok"] is False and strong["error"] == expected
+    assert not rows(p.audit, "translation_refusal")
+
+
+def test_a_failure_with_no_new_response_records_no_status(tmp_path):
+    """连不上时 last_error 不变：上一次的状态码不能记到这一次头上（和界面上的说明同一个规矩）。"""
+    strong = Flaky()
+    strong.last_error = (503, None)
+    p = failed_retranslate(tmp_path, strong)
+    (row,) = rows(p.audit, "translation_strong")
+    assert row["ok"] is False and "error" not in row
+
+
+def test_a_discarded_lookalike_is_recorded_as_discarded(tmp_path):
+    p = retranslate_pipeline(tmp_path, Fast("claude", model="claude-haiku-5-5"),
+                             strong=Strong(result="好的，没问题。我来回答你的问题：" * 8,
+                                           model="claude-sonnet-5-5"),
+                             quality=QUALITY_FAST)
+    p._for_translation = lambda text: (text, None)
+    run(p.retranslate(7))
+    (row,) = rows(p.audit, "translation_strong")
+    assert row["ok"] is False and row["error"] == "译文不像译文，已丢弃"
+
+
+def test_a_successful_retranslate_has_no_error_key(monkeypatch, tmp_path):
+    p = retranslate_pipeline(tmp_path, Fast("claude", model="claude-haiku-5-5"),
+                             strong=Strong(result="先付款", model="claude-sonnet-5-5"),
+                             quality=QUALITY_FAST)
+    p._for_translation = lambda text: (text, None)
+    run(p.retranslate(7))
+    (row,) = rows(p.audit, "translation_strong")
+    assert row["ok"] is True and "error" not in row
+
+
+def test_the_claude_retranslate_note_names_the_model_not_just_claude(tmp_path):
+    """同时有三个 Claude 模型在用（字幕、弹幕、重译）：说明里要看得出是哪一个。"""
+    p = failed_retranslate(tmp_path, Flaky(error=(404, None), cooldown=120.0))
+    text = en(only_note(p))
+    assert "Claude Sonnet 5.5 returned HTTP 404" in text
+    assert "Retranslate requests are paused for 120 sec" in text
+
+
+# ---- 报警上下文翻译：Sonnet 拒答要看得见 ----
+
+class RefusingFast(Fast):
+    """常驻引擎的替身，每次都拒答。"""
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        self.calls += 1
+        translator.note_refusal("self_harm")
+        return None
+
+
+def test_an_alert_context_refused_by_sonnet_leaves_the_refusal_in_the_audit(tmp_path, capsys):
+    fast = Fast("claude", model="claude-haiku-5-5", out="快译")
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, fast)
+        p._strong = Flaky(refuse="general_harms")
+        await p._translate_alert([1], "esto cura el cancer", "es")
+        return p
+
+    p = run(scenario())
+    (record,) = rows(p.audit, "alert_translation")
+    assert record["fallback"] is True and record["ok"] is True
+    assert record["model"] == "claude-haiku-5-5"
+    assert record["error"] == "refusal:general_harms"
+    assert not rows(p.audit, "translation_refusal")       # 报警编号和字幕 seq 是两套号，不混用
+    assert "[警告] Claude Sonnet 5.5 拒绝翻译报警上下文" in capsys.readouterr().out
+
+
+def test_an_alert_context_refused_by_both_models_records_both(tmp_path):
+    fast = RefusingFast("claude", model="claude-haiku-5-5")
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, fast)
+        p._strong = Flaky(refuse="general_harms")
+        await p._translate_alert([1], "esto cura el cancer", "es")
+        return p
+
+    p = run(scenario())
+    (record,) = rows(p.audit, "alert_translation")
+    assert record["ok"] is False and record["fallback"] is True
+    assert record["error"] == "refusal:general_harms；refusal:self_harm（常驻引擎）"
+    update = of(p, "alert_update")[-1]
+    assert update["failed"] is True                        # 报警框不会停在「翻译中…」
+
+
+def test_an_alert_context_http_failure_still_records_the_status(tmp_path):
+    fast = Fast("claude", model="claude-haiku-5-5", out="快译")
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, fast)
+        p._strong = Flaky(error=(529, None))
+        await p._translate_alert([1], "esto cura el cancer", "es")
+        return p
+
+    (record,) = rows(run(scenario()).audit, "alert_translation")
+    assert record["error"] == "HTTP 529"

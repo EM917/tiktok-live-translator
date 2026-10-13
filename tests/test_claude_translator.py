@@ -466,3 +466,114 @@ def test_a_401_still_keeps_no_body(monkeypatch, capsys):
     assert run(tr.translate("hola", "zh-CN")) is None
     assert tr.last_error == (401, None)
     assert "sk-an" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 词表：只有重译（role="strong"）把命中的词条写进提示词
+#
+# 本地 7B 的提示词里有词表；重译又正是中控嫌商品名译错了才点的。换成 Sonnet 之后只剩译后
+# 兜底的话，「Sonnet 把 las gotitas D3 译成『D3 小滴剂』」这种错它救不回来（兜底只替换仍留着
+# 西语的词条）。字幕引擎（Haiku）和弹幕不带词表：那是这次之前就有的行为，没有测过加了更好。
+# ---------------------------------------------------------------------------
+
+HINT = (("las gotitas D3", "D3维生素滴剂"), ("Quema Lonja", "燃脂贴"))
+SYSTEM_PLAIN = ("You are a translation engine for live-stream subtitles. "
+                "Translate the user's text into Simplified Chinese. "
+                "Output ONLY the translation, nothing else.")
+
+
+def test_the_sonnet_request_with_a_glossary_is_exactly_this(monkeypatch):
+    tr = strong(monkeypatch)
+    session = RecordingSession([Resp(200, message(text_block("现在买 D3维生素滴剂")))])
+    attach(tr, session)
+    assert run(tr.translate("compren las gotitas D3 ahora", "zh-CN", source="es",
+                            glossary=HINT)) == "现在买 D3维生素滴剂"
+    (post,) = session.posts
+    assert post["body"] == {
+        "model": "claude-sonnet-5-5",
+        "max_tokens": 512,
+        # 词表在 system 里，用户轮仍然只有要翻的那一句
+        "system": (SYSTEM_PLAIN + "\nWhere the text contains one of these terms, translate it "
+                   "exactly as given here:\nlas gotitas D3 = D3维生素滴剂\nQuema Lonja = 燃脂贴"),
+        "messages": [{"role": "user", "content": "compren las gotitas D3 ahora"}],
+        "thinking": {"type": "between_tools"},
+        "output_config": {"effort": "medium"},
+    }
+
+
+def test_the_compact_string_glossary_form_works_too(monkeypatch):
+    tr = strong(monkeypatch)
+    body = tr._body("hola", "zh-CN", "las gotitas D3 = D3维生素滴剂; Quema Lonja = 燃脂贴")
+    assert body["system"].endswith("\nlas gotitas D3 = D3维生素滴剂\nQuema Lonja = 燃脂贴")
+
+
+@pytest.mark.parametrize("empty", [None, (), [], ""])
+def test_no_glossary_leaves_the_sonnet_request_unchanged(monkeypatch, empty):
+    tr = strong(monkeypatch)
+    assert tr._body("hola", "zh-CN", empty)["system"] == SYSTEM_PLAIN
+
+
+def test_the_subtitle_and_comment_instances_do_not_send_the_glossary(monkeypatch):
+    sub = make(monkeypatch)
+    assert sub._body("hola", "zh-CN", HINT) == sub._body("hola", "zh-CN")
+    comment = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
+    assert comment._body("1. hola", "zh-CN", HINT) == comment._body("1. hola", "zh-CN")
+    assert "Quema Lonja" not in json.dumps(sub._body("hola", "zh-CN", HINT), ensure_ascii=False)
+
+
+def test_the_glossary_sits_in_the_system_prompt_not_in_the_text_to_translate(monkeypatch):
+    tr = strong(monkeypatch)
+    body = tr._body("compren las gotitas D3 ahora", "zh-CN", HINT)
+    assert body["messages"] == [{"role": "user", "content": "compren las gotitas D3 ahora"}]
+    assert not keys_anywhere(body) & set(FORBIDDEN_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# 401/403/404：弹幕和重译这两个实例进冷却时自己打一行终端，带模型名；字幕引擎那个由管线说
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_the_strong_instance_says_in_the_terminal_when_it_enters_a_rejection_pause(
+        monkeypatch, capsys, status):
+    tr = strong(monkeypatch)
+    attach(tr, RecordingSession([Resp(status, {"error": {"type": "x", "message": "sk-an****key"}})]))
+    assert run(tr.translate("hola", "zh-CN")) is None
+    out = capsys.readouterr().out
+    assert "[警告] Claude 返回 HTTP {}（模型 claude-sonnet-5-5），重译暂停请求 120 秒".format(status) in out
+    assert "字幕翻译用的是另一个连接" in out
+    assert "sk-an" not in out                                  # 401/403 的说明里可能有密钥片段
+    assert tr.cooldown_until > time.monotonic() + 100
+
+
+def test_the_comment_instance_says_so_too(monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    tr = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
+    attach(tr, RecordingSession([Resp(404, {"error": {"type": "not_found_error"}})]))
+    assert run(tr.translate("1. hola", "zh-CN")) is None
+    assert "弹幕翻译暂停请求 120 秒" in capsys.readouterr().out
+
+
+def test_the_subtitle_engine_stays_quiet_because_the_pipeline_reports_it(monkeypatch, capsys):
+    """字幕引擎的 401/403/404 由 Pipeline._note_engine_failure 说（审计 + 横幅），这里再打一行
+    就是重复。"""
+    tr = make(monkeypatch)
+    attach(tr, RecordingSession([Resp(404, {"error": {"type": "not_found_error"}})]))
+    assert run(tr.translate("hola", "zh-CN")) is None
+    assert "暂停请求" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 给人看的模型名
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("model,label", [
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+    ("claude-haiku-5-5", "Claude Haiku 5.5"),
+    ("claude-opus-5-5", "Claude Opus 5.5"),
+    ("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001"),    # 带日期后缀的老写法：照抄
+    ("hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M", "Hy-MT2 7B"),
+    ("something-else", "something-else"),
+])
+def test_model_label(model, label):
+    from app.translator import model_label
+    assert model_label(model) == label

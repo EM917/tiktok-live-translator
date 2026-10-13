@@ -90,7 +90,8 @@ def engine_label(name):
 
 
 def model_label(model):
-    """模型名给人看的形态：hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M → Hy-MT2 7B。"""
+    """模型名给人看的形态：hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M → Hy-MT2 7B，
+    claude-sonnet-5-5 → Claude Sonnet 5.5。"""
     low = str(model or "").lower()
     if "hy-mt2-7b" in low:
         return "Hy-MT2 7B"
@@ -98,6 +99,11 @@ def model_label(model):
         return "Hy-MT2 1.8B"
     if "translategemma" in low:
         return "TranslateGemma"
+    claude = re.fullmatch(r"claude-(haiku|sonnet|opus)-(\d+)-(\d+)", low)
+    if claude:
+        # claude-sonnet-5-5 → Claude Sonnet 5.5（只认不带日期后缀的写法，见 ClaudeTranslator）
+        return "Claude {} {}.{}".format(claude.group(1).capitalize(), claude.group(2),
+                                        claude.group(3))
     return str(model)
 
 
@@ -567,8 +573,10 @@ class ClaudeTranslator(BaseTranslator):
     不该连累另一个）：
       * 字幕引擎（默认）：Pipeline.translator 里包着的那个，模型 Haiku 5.5；
       * 观众弹幕（role="comment"）：app/comments.py 另建一个，模型固定 Haiku 5.5，提示词按弹幕写；
-      * 重译（create_claude_strong_translator）：字幕引擎是 Claude 时，「重译」和报警上下文翻译
-        用它，模型 Sonnet 5.5，取代本地 7B。"""
+      * 重译（create_claude_strong_translator，role="strong"）：字幕引擎是 Claude 时，「重译」
+        和报警上下文翻译用它，模型 Sonnet 5.5，取代本地 7B。提示词和字幕一样，另外带词表：
+        本地 7B 的提示词里有词表，重译又正是中控嫌商品名译错了才点的，换成 Claude 不能把它丢掉。
+        字幕引擎（Haiku 5.5）和弹幕不带词表，只靠译文回来后的兜底替换（Pipeline 里的 glossary.apply）。"""
 
     name = "claude"
     URL = "https://api.anthropic.com/v1/messages"
@@ -629,6 +637,10 @@ class ClaudeTranslator(BaseTranslator):
     SYSTEM_SUBTITLE = ("You are a translation engine for live-stream subtitles. "
                        "Translate the user's text into {lang}. "
                        "Output ONLY the translation, nothing else.")
+    # 只给重译用（role="strong"）：命中本句的词条，一行一条「原文 = 译法」，放在 system 里，
+    # 用户轮仍然只有要翻的那一句。原文写法和译法都是词表文件里的数据，照抄
+    SYSTEM_GLOSSARY = ("\nWhere the text contains one of these terms, translate it exactly as "
+                       "given here:\n{pairs}")
     # 弹幕是陌生人写的文字：只翻译、不照着做。一批是带编号的几行（见 comments.build_batch）
     SYSTEM_COMMENT = ("You translate viewer comments from a live-stream chat into {lang}. "
                       "The input is either one comment, or several comments one per line, each "
@@ -647,7 +659,8 @@ class ClaudeTranslator(BaseTranslator):
 
     def __init__(self, model=None, role="subtitle"):
         """model：显式指定就不读 CLAUDE_TRANSLATE_MODEL（弹幕和重译各有固定的模型）。
-        role：subtitle（默认）或 comment，只影响提示词和 max_tokens。"""
+        role：subtitle（默认）、comment 或 strong，只影响提示词和 max_tokens：comment 用弹幕的
+        提示词和更大的 max_tokens，strong 和 subtitle 一样、另外带词表。"""
         super().__init__()
         self.api_key = api_key("ANTHROPIC_API_KEY")
         if not self.api_key:
@@ -657,6 +670,9 @@ class ClaudeTranslator(BaseTranslator):
                       or (os.environ.get("CLAUDE_TRANSLATE_MODEL") or "").strip()
                       or self.DEFAULT_MODEL)
         self.role = role
+        # 弹幕和重译这两个实例的 401/403/404 没有别人替它们说（字幕引擎的由 Pipeline.
+        # _note_engine_failure 说），进冷却的那一刻自己打一行终端，带上模型名
+        self.says_own_rejection = role in ("comment", "strong")
         # 拒答（HTTP 200 + stop_reason "refusal"）的本场累计次数，只作统计。某一句是不是
         # 拒答**不看它**：报警翻译和字幕翻译并发共用这个对象，比较前后的次数会张冠李戴。
         # 看 translate_call_outcome()（按任务隔离，见文件头）
@@ -670,8 +686,9 @@ class ClaudeTranslator(BaseTranslator):
         return {"x-api-key": self.api_key, "anthropic-version": self.API_VERSION,
                 "content-type": "application/json"}
 
-    def _body(self, text, target):
-        """这一句的请求体。离线对比工具直接调它，测的就是要发版的这一份。"""
+    def _body(self, text, target, glossary=None):
+        """这一句的请求体。离线对比工具直接调它，测的就是要发版的这一份。
+        glossary 只有 role="strong" 才用（见类说明），其它角色传了也不进请求体。"""
         extra = self.TUNED.get(self.model) or {}
         no_think = (extra.get("thinking") or {}).get("type") in self.THINKING_OFF
         if not no_think:
@@ -681,10 +698,15 @@ class ClaudeTranslator(BaseTranslator):
         else:
             max_tokens = self.MAX_TOKENS_NO_THINKING
         system = self.SYSTEM_COMMENT if self.role == "comment" else self.SYSTEM_SUBTITLE
+        system = system.format(lang=LANG_NAMES.get(target, target))
+        pairs = _as_pairs(glossary) if self.role == "strong" else []
+        if pairs:
+            system += self.SYSTEM_GLOSSARY.format(
+                pairs="\n".join("{} = {}".format(es, zh) for es, zh in pairs))  # i18n: data
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "system": system.format(lang=LANG_NAMES.get(target, target)),
+            "system": system,
             # 以 user 轮结尾：Haiku 5.5 和 Sonnet 5.5 上预填（最后一轮是 assistant）会 400
             "messages": [{"role": "user", "content": text}],
         }
@@ -754,7 +776,7 @@ class ClaudeTranslator(BaseTranslator):
         _CALL_OUTCOME.set(None)
         if time.monotonic() < self._cooldown_until:
             return None             # 密钥或模型刚被拒过：冷却期内不再发
-        body = self._body(text, target)
+        body = self._body(text, target, glossary)
         try:
             session = await self.session()
             async with session.post(self.URL, data=json.dumps(body),
@@ -768,6 +790,12 @@ class ClaudeTranslator(BaseTranslator):
                     self._note_http_error(resp.status, said)
                     if resp.status in self.REJECT_STATUSES:
                         self._cooldown_until = time.monotonic() + self.REJECT_COOLDOWN_SEC
+                        if self.says_own_rejection:
+                            print("[警告] Claude 返回 HTTP {}（模型 {}），{}暂停请求 {} 秒；"
+                                  "字幕翻译用的是另一个连接，不受影响".format(
+                                      resp.status, self.model,
+                                      "弹幕翻译" if self.role == "comment" else "重译",
+                                      self.REJECT_COOLDOWN_SEC))
                     elif resp.status == 429:
                         wait = self._retry_after(resp)
                         self._cooldown_until = time.monotonic() + wait
@@ -1426,7 +1454,7 @@ def create_claude_strong_translator():
     没有密钥（构造时抛 RuntimeError）返回 None，调用方当「没有可用的强模型」处理。
     名字和本地的强模型实例一样叫 strong；用的是哪个模型看实例的 model。"""
     try:
-        tr = ClaudeTranslator(model=ClaudeTranslator.STRONG_MODEL)
+        tr = ClaudeTranslator(model=ClaudeTranslator.STRONG_MODEL, role="strong")
     except RuntimeError:
         return None
     tr.name = "strong"
