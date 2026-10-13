@@ -173,7 +173,7 @@ def test_the_instance_is_built_once_and_rebuilt_when_the_subtitle_engine_is_repl
     async def scenario():
         for i in range(2):
             await ct.accept({"items": [{"id": "x%d" % i, "user": "u", "text": "hola %d" % i}]})
-            assert await wait_for(lambda: len(updates(sent)) == i + 1)
+            assert await wait_for(lambda n=i + 1: len(updates(sent)) == n)
         assert len(made.made) == 1                        # 同一个字幕引擎：接着用
         old = made.made[0]
         wrapped2, _i2, _s2 = subtitle_engine(monkeypatch)        # 重填密钥：新的字幕引擎对象
