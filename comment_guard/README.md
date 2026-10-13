@@ -31,16 +31,24 @@ comment_guard/
 
 - 一行一个词或短语；`re:` 开头是正则；空行忽略。
 - **注释只能整行写**。行尾的 `#` 会连同词条一起去匹配（和违禁词表同一条规则），自检会报。
-- `[段名]` 一行切换后面条目的档位。段名认不出来时，自检报一条 `unknown_section`，不会静默忽略。
+- `[段名]` 一行切换后面条目的档位。`[` 开头的行一律是段头，绝不当词条：大小写、两边空格、`_` 写成 `-`、
+  全角括号都认（`[ Sexual_Soft ]` 等于 `[sexual-soft]`）。段名认不出来时，自检报一条 `unknown_section`，不会静默忽略；
+  缺 `]` 的行（`[medium`、`[medium]:`）报 `bad_section`，这一行丢掉，**后面的词条也跳过**，不会悄悄落进上一段。
   红条档的段名后面可以加 `:pending`（`[threat:pending]`）：这一段的词条还没经用户确认，命中只出琥珀。
   `:pending` 只允许加在红条档的段名上，加在别的段上报 `pending_not_red_tier`，按普通段处理。
 - 词条写什么形式都行：加载时统一折叠一遍，`Estafa`、`ESTAFA`、`estáfa` 等价；ñ 写成 n。
   `re:` 条目原样使用，跑在**折叠后**的文本上（无重音、无标点、ñ 写 n、小写），要按这个形式写。
-- 只有符号或表情的词条（没有字母数字，例如一个手势表情）按字面匹配。
+- 只有符号或表情的词条（没有字母数字，例如一个手势表情）按字面匹配，但只认非 ASCII 的符号类字符
+  （Unicode 类别 So / Sk / Sm）；`!!!`、`?`、`.`、`-`、`====` 这种纯标点会匹配几乎每一条弹幕，报 `empty` 并丢掉。
+- `re:` 条目只能写在交给检测器匹配的段和 `promo` 的 `ask` 段；别的段写了报 `regex_not_supported`。写错的正则报
+  `invalid_regex`；能匹配空串、或对任何弹幕都匹配（`re:`、`re:.*`、`re:x|`）的报 `matches_empty`，这一条丢掉，
+  免得每条弹幕都成了红条。
 - 同一词条写在多个段里，取最严的档。
 
-折叠（`fold()`）会处理手机打字常见的拼写漂移：大小写、重音、拉长（`holaaaa`）、拆字（`e s t a f a`）、
-leet（`m13rd4`）、同形字、`q` / `xq` 这类俚语缩写。
+折叠（`fold()`）会处理手机打字常见的拼写漂移：大小写、重音、拉长（`holaaaa`）、拆字（`e s t a f a`，
+空格、点、逗号、斜杠、表情隔开的都认，>= 4 个连续单字母才拼回）、leet（`m13rd4`）、同形字、`q` / `xq` 这类俚语缩写、
+格式字符和不可见字符（双向隔离符、韩文填充符、标签字符等一律删掉），以及词内遮挡符（`p*ta`、`est*fa`、
+`f*ck`：一个遮挡符代表一个任意字母，只对 `strong` 和 `assert` 段里 >= 4 个字母的单词条生效）。
 
 ## 三层档位
 
@@ -57,8 +65,18 @@ leet（`m13rd4`）、同形字、`q` / `xq` 这类俚语缩写。
 - `assert-frame` 段的词（`falso`、`fake`……）只在「es / son / producto / puro + 词」的句式里才算断言。
 - 变体档（单复数、阴阳性）只对 `insult/strong` 和 `accuse/assert` 开；其余段只认原样，免得 perro 被当成 perra。
 - 模糊匹配（编辑距离）全关：打字的错误是漏字、换位、拉长，不是听错字母，而且 5–7 个字母的词撞车严重。
-- 豁免短语命中被它整个盖住时当没命中；否认式（`no es estafa`）整体剪掉；问句（有 `?` / `¿`、疑问词开头、
-  句尾追问 `verdad` / `o no` / `o que`、选择问句 `X o Y`）不计分，句里有指称词时才作为升级型送模型。
+- 豁免短语命中被它整个盖住时当没命中（`puta madre` 是感叹，但 `hijo de la / tu puta madre`、`tu puta madre`
+  前面带这些词时是骂人，不盖）；否认式（`no es estafa`）整体剪掉，担心、求证、替主播辩护的说法
+  （`espero que no sea estafa`、`no creo que sea`、`pense que era estafa pero……`、`not a scam`）同理；否认只在一个
+  子句里算（`no, es una estafa` 的 no 不否认后面那句）；问句（有 `?` / `¿`、疑问词开头、句尾追问 `verdad` /
+  `o no` / `o que`、选择问句 `X o Y`）不计分，句里有指称词时才作为升级型送模型。
+  `hay` / `tienen` / `dan` / `pueden` / `alguien` 和感叹的 `cuanta estafa` / `what a scam` 不是疑问词：没有问号时不算问句，
+  带 `maybe_question` 标记出琥珀。
+- `target` 句式前面有否定（`no eres fea`）或条件（`si estas operada`、`if you are fat`）不算；裸 `estas` 只接单数目标词
+  （`estas feas manchas` 的 feas 是复数）；英语不认裸 `ur`（`ur fat burner`）。
+- @账号只有被账号标签引出时才算引流的载荷（`ig: x`、`mi ig @x`、`sigueme en @x`、`mi cuenta @x`）；
+  句首或句中呼叫朋友的 `@名字 ……` 不算。电话 + 任何 @账号同现仍是红条（结构信号）。邮箱地址不是链接，是联系方式。
+- 强词出现在第一人称自指的句子里（`que pendeja soy`，没有第二人称标记）降为琥珀（`amb == "self"`）。
 
 ## 确认红条档词条
 
@@ -91,10 +109,10 @@ leet（`m13rd4`）、同形字、`q` / `xq` 这类俚语缩写。
 | `insult.txt` `accuse.txt` `promo.txt` | 同名同格式：普通行 = 追加到所在的 `[段]`；`-词条` = 关掉一条默认（按折叠形式匹配，以后版本里同名词条仍保持关掉） |
 | `exempt.txt` | 本机豁免短语（行业词、主播口头禅）。可用 `[insult]` `[accuse]` `[promo]` 分段，不分段就三类都适用 |
 | `competitors.txt` | 竞品店名、账号、品牌（引流类用）。默认空；仓库里不放任何具体竞品 |
-| `mine.txt` | 自己的号码、链接、账号，永不算引流（子串匹配） |
-| `exempt_domains.txt` | 无害的域名（物流官网等），命中的链接不算引流（子串匹配） |
+| `mine.txt` | 自己的号码、链接、账号，永不算引流。号码按子串比；账号是精确匹配（`marcaejemplo` 不盖 `@marcaejemplo_oficial`）；域名按 host 比（见下） |
+| `exempt_domains.txt` | 无害的域名（物流官网等），命中的链接不算引流。按 host 比：host 等于条目或以 `.条目` 结尾，条目带路径时路径还要以它开头；`tienda-marcaejemplo.com`、`marcaejemplo.com.evil.shop` 不被 `marcaejemplo.com` 盖住 |
 | `thresholds.txt` | `key: value`，覆盖 `defaults/thresholds.txt` |
-| `trusted/<主播>.txt` | 该主播本人、房管、助理的 uid，一行一个，永不提醒 |
+| `trusted/<主播>.txt` | 该主播本人、房管、助理的 uid，一行一个，永不提醒。`judge()` 的 `user` 或 `keys` 里任一个命中就算（不分大小写） |
 
 示例（虚构）：`local/accuse.txt`
 
@@ -121,7 +139,11 @@ pestanas ejemplo
 | `accumulate` | `2/600` | 线索档辱骂 10 分钟内第 2 次 -> 琥珀 |
 | `accumulate_red` | off | 红条档开关：累计结果直接标红（改成 on 须用户确认） |
 | `caps_lead` | `0.6/3` | 全大写字母占比 / 至少几个词：负面线索 |
-| `budget_ms` 等 | `50` | 规则判定超预算的降级（滚动 1 秒累计超过 50 毫秒，进 5 秒结构模式） |
+| `budget_ms` 等 | `50` | 规则判定超预算的降级（滚动 1 秒累计超过 50 毫秒，进 5 秒结构模式）。`CostBudget` 要传单调时钟 |
+
+阈值有范围：条数 / 账号数 >= 1、窗口 > 0、`0 < brigade_jaccard <= 1`、`budget_ms` > 0；越界的行报 `bad_threshold`，
+保留默认值（不会因为一行 `user_burst_note: 0/10` 让每条弹幕都成了刷屏）。窗口计数只算 `ts - 窗口 <= t <= ts` 的条目，
+系统时钟被往回拨时比 `ts` 更晚的旧条目不会被算进去。
 
 ## 判定结果
 
@@ -129,7 +151,7 @@ pestanas ejemplo
 
 ```
 {"lvl": "alert" | "amber" | "note" | "lead" | None,
- "amb": None | "maybe_question" | "grievance" | "quote" | "accumulated" | "question_link" | "brigade" | "pending",
+ "amb": None | "maybe_question" | "grievance" | "quote" | "accumulated" | "question_link" | "brigade" | "pending" | "self",
  "cats": ["insult"], "sub": "strong",
  "why": ["insult/strong:hijueputa"],        # 命中的词表条目，是我们的数据
  "tier": "red" | "clue" | "struct" | None,  # 来自红条档词表、线索档，还是结构信号（链接/电话/刷屏）
@@ -139,18 +161,27 @@ pestanas ejemplo
 
 - **alert** 是红条；**amber** 是规则自己拿不准的（含命中了还没确认的红条档词条：`amb == "pending"`），
   不算红条、不自动加入关注名单；**note** 不上界面，只计数；**lead** 只命中负面线索，只决定送不送模型。
-- 自动加入关注名单只认 `lvl == "alert"` 且 `tier == "red"` 且没有不确定标记（`auto_markable()`）。
-  链接、电话组合、刷屏都是 `tier == "struct"`，永远不自动加人。
+- 自动加入关注名单只认 `lvl == "alert"` 且 `tier == "red"` 且没有不确定标记（`auto_markable(result)`）；
+  账号键还要稳定：`auto_markable(result, uid_src=...)` 在 `uid_src` 不是 `id` / `id_str` / `sec_uid`（只有 handle 或昵称）时返回 False
+  （`uid_ok()`）。链接、电话组合、刷屏都是 `tier == "struct"`，永远不自动加人。
 - 类别 id（`insult` `threat` `sexual` `accuse_call` `accuse_report` `accuse_claim` `flood_user` `flood_repeat`
   `flood_brigade` `promo_link` `promo_contact` `promo_pull` `promo_scam`）只是代码，界面文字另有来源。
-- 刷屏必须传真实时间戳：`judge(..., ts=...)` 的 `ts` 是必填关键字。
+- 刷屏必须传真实时间戳：`judge(..., ts=...)` 的 `ts` 是必填关键字，必须是有限的 int / float（否则在改任何状态之前抛
+  `TypeError` / `ValueError`）。`text` 不是 str 就转成 str，`user` / `cid` 不可哈希就转成 str。
+- 主播自己的账号用 `judge(..., handle=...)` 的 handle 字段比（不分大小写），**不按昵称比**：任何人都能把昵称改成主播名；
+  `role` 是 anchor / mod 的、trusted 名单命中 `user` 或 `keys` 的也整条豁免。
+- 多账号同句是一个事件：第一次到 `brigade_note` 时分配 id，之后相似的弹幕并进同一个事件（账号数原地增长、id 不变），
+  最后一条相似弹幕之后「窗口 + 20 秒」没有新的就结束；`judge().last_flood` 里的事件带 `ev`、`n`、`first_ts`、`last_ts`、`accounts`（前 20 个）。
 
 ## 词表体检
 
 `load_rules()` 返回的 `Rules.warnings` 是一组只含代码的字典，用来在自检里报告：
-`unknown_section`、`pending_not_red_tier`、`entry_before_section`、`invalid_regex`、`trailing_comment`、`accent`、`punctuation`、
-`empty`、`unknown_threshold`、`bad_threshold`、`read_error`、`decode_error`、`skipped_line`。
-`Rules.hash` 是生效词条加阈值的指纹，审计里用它还原「当时用的是哪份词表」。
+`unknown_section`、`bad_section`、`pending_not_red_tier`、`entry_before_section`、`invalid_regex`、`matches_empty`、
+`regex_not_supported`、`trailing_comment`、`accent`、`punctuation`、`empty`、`removal_unmatched`、`missing_file`、
+`defaults_missing`、`unknown_threshold`、`bad_threshold`、`read_error`、`decode_error`、`skipped_line`。
+最多留 50 条，多出来的按 reason 聚合成最后一条 `{"reason": "more", "n": …, "by_reason": {…}}`。
+`Rules.hash` 是生效词条、阈值，加上本机叠加里同样会改判定的几份（`exempt.txt`、`competitors.txt`、`mine.txt`、
+`exempt_domains.txt`）的指纹，审计里用它还原「当时用的是哪份词表」；`trusted/` 不进（它按主播在开场时读）。
 
 ## 不做的事
 

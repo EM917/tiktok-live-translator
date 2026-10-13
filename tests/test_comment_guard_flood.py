@@ -195,7 +195,8 @@ def test_review_row_six_accounts_giving_their_giveaway_number_is_one_amber_event
 def test_five_accounts_with_the_same_neutral_sentence_in_20_seconds_make_exactly_one_amber_event():
     res = run([(4 * i, "z%d" % i, "alguien me explica como se usa el codigo") for i in range(5)])
     ev = brigades(res)
-    assert ev[-1] == {"kind": "brigade", "lvl": "amber", "n": 5, "window": 20, "ev": ev[-1]["ev"]}
+    assert ev[-1] == {"kind": "brigade", "lvl": "amber", "n": 5, "window": 20, "ev": ev[-1]["ev"],
+                      "first_ts": 0, "last_ts": 16, "accounts": ["z0", "z1", "z2", "z3", "z4"]}
     assert "alert" not in lvls(res)
 
 
@@ -299,8 +300,10 @@ def test_five_hundred_comments_a_minute_for_ten_minutes_stays_bounded():
     assert all(len(d) <= cg.USER_HISTORY_MAX for d in g.flood.users.values())
     assert len(g.flood.recent) <= cg.RECENT_MAX
     assert len(g._seen) <= cg.SEEN_IDS and len(g._acc) <= cg.USER_TABLE
-    # 引擎一侧的「消息上界」：红条/琥珀只会来自真正的刷屏，不会随总条数线性增长
-    assert alerts + ambers <= total // 4, (alerts, ambers)
+    # 引擎一侧的「消息上界」：红条/琥珀只会来自真正的刷屏，不会随总条数线性增长。
+    # 这批弹幕没有一条该标红（审查 #48：上界太松的话，凭空多出来的红条抓不住）
+    assert alerts == 0, alerts
+    assert ambers <= total // 10, ambers       # 琥珀只会落在每 10 条里的那一条口令上
 
 
 def test_brigade_window_is_capped_even_if_thousands_arrive_in_one_second():
@@ -322,3 +325,114 @@ def test_flood_engine_works_standalone_without_the_lexicon():
                         200.0 + i)
     assert [e["kind"] for e in brig] == ["brigade"] and brig[0]["lvl"] == "amber" and brig[0]["n"] == 5
     assert pytest.approx(0.8) == eng.th["brigade_jaccard"]
+
+
+# ------------------------------------------------------------------------------------------
+# 第二轮审查（回归）
+# ------------------------------------------------------------------------------------------
+
+def test_same_sentence_flood_compares_the_exact_sentence_so_numbered_orders_are_not_repeats():   # #1
+    res = run([(1000 + 10 * n, "u1", "quiero el %d" % n) for n in range(1, 6)])
+    assert lvls(res) == [None] * 5 and not any(evs for _, evs in res)
+    res = run([(1000 + 10 * n, "u2", "la talla %d" % (30 + n)) for n in range(7)])
+    assert lvls(res) == [None] * 7
+    # 同一句（数字也一样）还是照旧：第 3 次 note、第 5 次 alert
+    res = run([(1000 + 10 * n, "u3", "quiero el 1") for n in range(5)])
+    assert lvls(res) == [None, None, "note", "note", "alert"]
+
+
+def test_multi_account_flood_still_ignores_the_number_in_the_slogan():               # #1
+    res = run([(1000 + 2 * i, "u%d" % i, "participo en el sorteo %d" % (i + 3)) for i in range(5)])
+    assert [e["n"] for e in brigades(res)] == [3, 4, 5] and brigades(res)[-1]["lvl"] == "amber"
+
+
+def test_exempt_interaction_comments_do_not_feed_the_next_comments_burst_count():   # #3
+    g = guard()
+    for i in range(6):
+        assert g.judge("yo", user="u1", ts=1000 + i)["lvl"] is None
+    assert "u1" not in g.flood.users                                  # 互动词整条豁免：不进这个人的历史
+    r = g.judge("cuanto cuesta el rosa?", user="u1", ts=1007)
+    assert r["lvl"] is None and g.last_flood == []
+    for i, heart in enumerate(("❤️", "😍", "🔥", "❤️❤️", "❤️", "😍")):
+        assert g.judge(heart, user="u2", ts=2000 + i)["lvl"] is None
+    r = g.judge("hola, cuanto cuesta?", user="u2", ts=2006)
+    assert r["lvl"] is None and g.last_flood == []
+
+
+def test_positive_phrases_still_count_toward_the_burst_but_not_the_repeat():         # #3
+    res = run([(1000 + i, "u1", "Feliz cumpleaños bella %d" % i) for i in range(6)])
+    assert kinds(res[-1]) == [("user_burst", "alert", 6)]
+    res = run([(1000 + 10 * i, "u2", "Feliz cumpleaños bella") for i in range(6)])
+    assert lvls(res) == [None] * 6
+
+
+SLOGANS = ("quiero el combo rosa por favor ya", "quiero el combo rosa por favor")
+
+
+def test_multi_account_event_keeps_one_id_while_the_jaccard_path_slides():           # #17
+    res = run([(1000 + 3 * i, "u%d" % i, SLOGANS[i % 2]) for i in range(14)])
+    evs = brigades(res)
+    assert len({e["ev"] for e in evs}) == 1, [e["ev"] for e in evs]
+    assert [e["n"] for e in evs] == sorted(e["n"] for e in evs)           # 账号数只增不减，原地增长
+    assert evs[-1]["n"] == 14 and evs[0]["n"] == 3
+    assert evs[-1]["first_ts"] == 1000 and evs[-1]["last_ts"] == 1000 + 3 * 13
+    assert evs[-1]["accounts"] == ["u%d" % i for i in range(14)][:20]
+
+
+def test_three_variants_of_one_slogan_and_a_long_brigade_stay_one_event():           # #17
+    base = "alguien me explica como se usa el codigo"
+    tails = ["rapido", "ahora", "xfa", "ya", "hoy", "pls", "siempre", "urgente", "porfa", "aqui", "mismo",
+             "bien", "claro", "ok", "dale"]
+    res = run([(1000 + 3 * i, "acct%d" % i, "%s %s" % (base, tails[i])) for i in range(15)])
+    evs = brigades(res)
+    assert len({e["ev"] for e in evs}) == 1
+    assert evs[-1]["n"] == 15
+
+
+def test_a_later_flood_of_the_same_slogan_is_a_new_event_with_a_new_id():            # #17
+    res = run([(1000 + i, "a%d" % i, "participo en el sorteo 7") for i in range(6)]
+              + [(1400 + i, "b%d" % i, "participo en el sorteo 9") for i in range(6)])
+    ids = [e["ev"] for e in brigades(res)]
+    assert len(set(ids)) == 2 and ids[0] != ids[-1]
+
+
+def test_event_expires_after_the_window_plus_a_gap_and_a_straggler_does_not_revive_it():   # #17
+    g = guard()
+    first = run([(1000 + i, "a%d" % i, "participo en el sorteo 7") for i in range(4)], g)
+    old_ev = brigades(first)[-1]["ev"]
+    # 窗口 20 秒 + 间隔 20 秒之内再来一个：并进同一个事件
+    again = run([(1030, "late1", "participo en el sorteo 7")], g)
+    assert brigades(again)[0]["ev"] == old_ev and brigades(again)[0]["n"] == 5
+    # 隔了很久，只来一个：不成事件（凑不够 3 个账号）
+    alone = run([(2000, "late2", "participo en el sorteo 7")], g)
+    assert not brigades(alone) and not g.flood.clusters
+
+
+def test_flood_event_bookkeeping_is_bounded():                                       # #17
+    eng = cg.FloodEngine()
+    for k in range(cg.BRIGADE_CLUSTERS + 20):
+        for i in range(3):
+            eng.feed("c%d-%d" % (k, i), "frase numero %d de este grupo" % (k * 1000),
+                     frozenset(("frase", "numero", str(k * 1000), "de", "este", "grupo")), 1000.0 + k * 0.01)
+    assert len(eng.clusters) <= cg.BRIGADE_CLUSTERS
+    big = cg.FloodEngine()
+    toks = frozenset(("un", "mismo", "texto", "largo"))
+    for i in range(cg.BRIGADE_USERS + 300):
+        big.feed("x%d" % i, "un mismo texto largo", toks, 1000.0 + i * 0.001)
+    (cl,) = big.clusters.values()
+    assert len(cl["users"]) == cg.BRIGADE_USERS
+
+
+def test_event_tokens_are_capped_so_long_comments_stay_cheap():                      # #44
+    g = guard()
+    g.judge(" ".join("w%d" % i for i in range(400)), user="u1", ts=1000.0)
+    key_toks = g.flood.recent[-1][3]
+    assert len(key_toks) <= cg.BRIGADE_TOKENS
+
+
+def test_a_bad_timestamp_never_reaches_the_flood_history():                          # #45
+    eng = cg.FloodEngine()
+    for bad in (None, "1", float("nan"), True):
+        with pytest.raises((TypeError, ValueError)):
+            eng.feed("u", "hola", frozenset(("hola",)), bad)
+    assert not eng.users and not eng.recent

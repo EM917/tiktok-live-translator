@@ -550,15 +550,18 @@ def test_phone_alone_and_with_order_words_are_only_notes():
         assert (r["lvl"], r["cats"], r["tier"], r["route"]) == ("note", ["promo_contact"], "struct", None), text
 
 
-def test_phone_with_offer_pull_or_handle_cue_is_red_but_structural():
-    for text in ("escribeme al 5512345678", "mandame mensaje 5512345678", "vengan a mi live 5512345678",
-                 "siganme en @ejemplo_tienda"):
-        r = judge(text)
-        assert (r["lvl"], r["tier"]) in (("alert", "struct"), ("alert", "red")), text
-        assert not cg.auto_markable(r) or r["tier"] == "red"
-    assert judge("escribeme al 5512345678")["tier"] == "struct"
-    # 顾客下单语境：有拉人话术时不降级
-    assert judge("vengan a mi live 5512345678 quiero")["lvl"] == "alert"
+@pytest.mark.parametrize("text,lvl,tier,cat,auto", [
+    ("escribeme al 5512345678", "alert", "struct", "promo_contact", False),        # 电话 + offer：结构信号
+    ("mandame mensaje 5512345678", "alert", "struct", "promo_contact", False),
+    ("siganme en @ejemplo_tienda", "alert", "struct", "promo_contact", False),     # 账号标签 + offer
+    ("5512345678 @ejemplo_tienda", "alert", "struct", "promo_contact", False),     # 电话 + @账号
+    # pull 本身就是红条档词条，电话只是顺带：主类别是 promo_pull，tier 是 red（规格 §5.7：pull 可自动加入）
+    ("vengan a mi live 5512345678", "alert", "red", "promo_pull", True),
+    ("vengan a mi live 5512345678 quiero", "alert", "red", "promo_pull", True),    # 下单语境词不降级
+])
+def test_phone_with_offer_pull_or_handle_cue_is_red_with_the_exact_tier_and_cat(text, lvl, tier, cat, auto):
+    r = judge(text)
+    assert (r["lvl"], r["tier"], r["cats"][0], cg.auto_markable(r)) == (lvl, tier, cat, auto), r
 
 
 def test_handle_alone_is_not_even_a_note_and_the_streamers_own_handle_never_counts():
@@ -670,10 +673,11 @@ def test_auto_markable_only_for_a_clean_red_tier_hit():
 
 def test_anchor_mod_trusted_and_the_streamer_are_exempt_whole():
     g = guard(trusted=["12345"])
-    for kw in ({"role": "anchor"}, {"role": "mod"}, {"user": "12345"}, {"user": "Luna_Demo"}):
+    for kw in ({"role": "anchor"}, {"role": "mod"}, {"user": "12345"}, {"handle": "Luna_Demo"},
+               {"handle": "@luna_demo"}, {"keys": ("s:abc", "12345")}):
         user = kw.pop("user", "u1")
         r = g.judge("eres una pendeja www.x.com", user=user, ts=1.0, **kw)
-        assert (r["lvl"], r["tags"]) == (None, ["trusted"])
+        assert (r["lvl"], r["tags"]) == (None, ["trusted"]), kw
     assert g.judge("eres una pendeja", user="u9", ts=2.0)["lvl"] == "alert"
 
 
@@ -768,6 +772,8 @@ ADVERSARIAL = {
     "no es": "no es " * 160, "nbsp": "a\u00a0" * 500, "punto com": "tienda punto com " * 58,
     "brackets": "a[.]" * 250, "wa me": "wa . me / " * 100, "tiktok urls": "tiktok.com/@x " * 70,
     "spaced letters": "e s " * 250, "inverted ?": "¿" * 1000, "keycap": "5️⃣" * 300,
+    "nfkc 18x": "\ufdfa" * 1000, "nfkc 8x": "\ufdfb" * 1000,       # 审查 #56：NFKC 展开 18 倍
+    "masked": "p*ta est*fa " * 90, "spaced emoji": "p🔥u " * 250, "mask hint": "a*b#c%d " * 140,
 }
 
 
@@ -779,6 +785,13 @@ def test_1000_char_adversarial_strings_stay_under_20_ms(name):
     text = ADVERSARIAL[name][:1000]
     best = min(_timed(g, text, i) for i in range(5))
     assert best < 20.0, "%s: %.1f ms" % (name, best)
+
+
+def test_1000_char_adversarial_strings_stay_under_20_ms_with_the_shipped_lexicon():
+    """出厂词表（红条档全是 :pending 段）是线上跑的那份，I3 的 20 ms 对它同样要成立。"""
+    rules = cg.load_rules(DEFAULTS, NO_LOCAL)
+    worst = max(min(_timed(guard(rules), text[:1000], i) for i in range(5)) for text in ADVERSARIAL.values())
+    assert worst < 20.0, "%.1f ms" % worst
 
 
 def _timed(g, text, i):
