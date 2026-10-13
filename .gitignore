@@ -27,3 +27,9 @@ logs/
 # .app 里的 venv 外壳：含本机路径，由 app/macbundle.py 启动时生成
 TikTok Live Translator.app/Contents/pyvenv.cfg
 TikTok Live Translator.app/Contents/lib
+# 弹幕留意：用户自己的叠加词表、关注名单、本地模型实测记录、留存样本——个人数据，不入库
+# （说明在 comment_guard/README.md，默认词表在 comment_guard/defaults/，都入库）
+comment_guard/local/
+comment_guard/marked/
+comment_guard/bench/
+comment_guard/retained/

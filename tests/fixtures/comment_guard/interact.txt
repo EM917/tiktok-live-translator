@@ -1,0 +1,123 @@
+# 测试夹具（tests/fixtures/comment_guard/）：出厂词表去掉 :pending 之后的快照，红条档全部是已确认。tests 只读这里，不依赖 comment_guard/defaults 的内容。
+# 豁免档：互动词、国家名、正向词簇、正向表情 —— 刷屏规则不对它们计分
+# （主播让观众刷“yo”、国家名，粉丝刷爱心、生日祝福，这些不是刷屏）。
+# 格式同 banned_terms.txt：一行一个词或短语，re: 开头是正则；注释只能整行写
+# （行尾的 # 会被当成词条的一部分，自检会报）。[段名] 一行切换后面条目的档位。
+
+# 整条等于这些词（折叠后）才算互动词
+[words]
+yo
+yoo
+quiero
+lo quiero
+la quiero
+yo quiero
+si
+presente
+hola
+buenas
+buenos dias
+buenas tardes
+buenas noches
+saludos
+precio
+cuanto
+cuanto cuesta
+link
+codigo
+talla
+color
+envio
+1
+2
+3
+ya
+me interesa
+informacion
+info
+
+# 整条等于这些国家/州名（折叠后）；“de dónde son” 之类的口令会让一屋子人刷同一个词
+[places]
+mexico
+guatemala
+honduras
+salvador
+el salvador
+nicaragua
+costa rica
+panama
+colombia
+peru
+ecuador
+venezuela
+argentina
+chile
+bolivia
+paraguay
+uruguay
+cuba
+republica dominicana
+puerto rico
+espana
+usa
+texas
+california
+florida
+
+# 句里出现就算正向（祝福、感谢、夸奖）：只影响同人同句 / 多账号同句，不影响单人高频
+[positive]
+felicidades
+feliz
+cumpleanos
+bendiciones
+bendiga
+te amo
+te quiero
+te adoro
+hermosa
+bella
+preciosa
+guapa
+linda
+gracias
+amen
+saludos
+bonito
+bonita
+genial
+excelente
+
+# 整条只由这些表情组成才算正向表情（每行一个或几个字符；没有字母数字的行按字面处理）
+[positive-emoji]
+❤
+💕
+😍
+🔥
+👏
+🙌
+🥰
+😘
+🌹
+💖
+💗
+💓
+💞
+🤩
+✨
+👍
+😂
+🤣
+😊
+💋
+💜
+💙
+💚
+💛
+🧡
+🤍
+💝
+💘
+🎉
+🎂
+🥳
+🙏

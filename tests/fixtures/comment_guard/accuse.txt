@@ -1,0 +1,244 @@
+# 测试夹具（tests/fixtures/comment_guard/）：出厂词表去掉 :pending 之后的快照，红条档全部是已确认。tests 只读这里，不依赖 comment_guard/defaults 的内容。
+# 指称假货/欺诈 + 号召举报/抵制（candidate 起始集）。
+# 格式同 banned_terms.txt：一行一个词或短语，re: 开头是正则；注释只能整行写
+# （行尾的 # 会被当成词条的一部分，自检会报）。[段名] 一行切换后面条目的档位。
+# 词条写什么形式都行：加载时统一折叠一遍（Estafa / estáfa 等价）；正则跑在折叠后的文本上，
+# 要写成无重音、无标点、ñ 写 n 的形式。
+# 本文件随代码入库、程序直接读、不复制；本机增减写在 comment_guard/local/ 下同名文件里
+# （普通行 = 追加，“-词条” = 关掉一条默认）。机制和档位说明见 comment_guard/README.md。
+#
+# 问句（有 ? / ¿、疑问词开头、句尾追问 verdad / o no / o que）和否认式（no es estafa）
+# 由规则层判断，不靠词表。
+# 线索档（启用）：institution 机构名 / negative 对商品效果的差评 —— 只记 note。
+# 红条档（用户确认过的写在 [段名] 里、命中标红；其余写在 [段名:pending] 里、命中只出琥珀；call 已确认大部分）：call 号召举报或不买 / report 扬言举报 /
+# assert 断言骗局 / assert-frame 只在“es / son / producto + 词”句式里才算断言的词。
+
+[institution]
+profeco
+cofepris
+fiscalia
+policia cibernetica
+ciberpolicia
+denuncia
+denunciar
+reportar
+
+[negative]
+no sirve
+no funciona
+no hace nada
+porqueria
+pura agua
+no sirve para nada
+me hizo dano
+me cayo mal
+
+[exempt-phrases]
+pestanas falsas
+unas falsas
+unas postizas
+fake nails
+fake lashes
+fake eyelashes
+fake hair
+fake tan
+fake plants
+fake flowers
+cejas falsas
+dientes falsos
+joyeria falsa
+falsa alarma
+falso positivo
+falsa modestia
+ladrona de corazones
+ladron de corazones
+ladrona de miradas
+ladrona de sonrisas
+no es mentira
+no es estafa
+no es fraude
+no es falso
+no es falsa
+no son falsos
+no son falsas
+no soy estafador
+no somos estafadores
+no somos fraude
+reporte de ventas
+reporte del pedido
+no es un negocio piramidal
+no es negocio piramidal
+no es un esquema piramidal
+no es esquema piramidal
+no es un esquema ponzi
+no es esquema ponzi
+no parece un negocio piramidal
+no son productos chafas
+no es un producto chafa
+
+# ============================ 红条档（全部待确认） ============================
+# 下面每一段都是红条档：词条还没经用户确认，所以段名带 :pending，命中只出琥珀（不标红、不自动加入关注名单）。
+# 用户确认某一条，就把它从 [段名:pending] 挪到同一个文件里不带 :pending 的同名 [段名]（没有就新建一段），
+# 同一个提交里改 tests/comment_guard_confirmed.py 的 RED_CONFIRMED（只改那一处）。流程见 comment_guard/README.md。
+# 挪之前先跑碰撞计数看它在主播口播里撞多少：
+#   nice -n 19 python3 tools/guard_collision.py --logs ~/tiktok-live-translator/logs --section accuse/call
+
+# ---- 第一批：号召举报 / 不买（先确认这一段） ----
+# 带 re: 的是收窄过的写法：后面接正常说法（no compren tantos、no caigan en la tentacion、reporten su pedido aqui）就不算；
+# cuidado / ojo / aguas / alerta 那条要求 20 个字内有负面词（estafa、fraude、falso、roba、mentir、enganar、no llega、no envia）。
+[call]
+# 用户 2026-10-13 按确认表的建议确认（命中标红；没有不确定标记时自动加入关注名单）
+re:\b(?:dont|do not) buy\b(?!\s+(?:more|too many|too much|so many|so much|a lot|everything|(?:it |this |that |them )?if)\b)
+report her
+report this live
+re:\bboycott\b(?!\s+(?:high|expensive|the high)\b)
+re:\bno compren\b(?!\s+(?:tantos|tanto|todo|todos|mas|muchos|muchas|en otr[oa]s?|si no (?:lo |la )?(?:necesitan|quieren|ocupan))\b)
+no le compren
+no les compren
+re:\bno caigan\b(?!\s+en la (?:tentacion|oferta|promo|promocion)\b)
+re:\bno confien en (?:ella|esta|esa|este|ese|ellos|ellas|la tienda|la senora|la marca|el live)\b
+re:\bno (?:le|les) crean\b(?!\s+a (?:las criticas|los comentarios|los haters|esos comentarios)\b)
+re:\bnadie compre\b(?!\s+mas que\b)
+re:\bboicot a (?:esta|este|esa|ese|ella|la tienda|la marca|el live|la cuenta)\b
+re:\b(?:hagan|hagamos|hacer|haganle) (?:un )?boicot\b(?!\s+al precio)
+boicotear
+re:\breporten\b(?!\s+(?:sus pedidos|su pedido|aqui|por aqui|por inbox|su pago)\b)
+reportenla
+denuncien
+denunciala
+re:\b(reporten|denuncien|bloqueen)\b(?!\s+(?:sus pedidos|su pedido|aqui|por aqui|por inbox|su pago)\b).{0,25}\b(live|vivo|cuenta|tienda|perfil|esta|este|ella|esa)\b
+re:\b(cuidado|ojo|aguas|alerta)\b\s*(con|a)?\s*(esta|este|ella|esa)?\s*(senora|cuenta|tienda|live|vendedora|marca|gente|pagina|persona|mujer|muchacha)\b(?=.{0,20}\b(?:estafa\w*|fraud\w*|fals[oa]\w*|roba\w*|robo|robar\w*|ladron\w*|mient\w*|mentir\w*|mentiro\w*|engan\w*|no lleg\w*|no envi\w*)\b)
+# 候选（agent 新写，待确认）：单数命令式、别给钱、别点赞。no compres 单独一句是顾客之间的劝阻，也是主播自己的话
+# （口播里撞过一句「no compres nada」），所以只认带对象的写法：no le / les / la compres、no compres aqui / en esta tienda / a esta senora。
+re:\bno compres (?:nada )?(?:aqui|en (?:esta|este|ese|esa|su|sus)|a (?:esta|este|esa|ese|ella|ellos|esos|estos)|de (?:esta|este|ella|esa))\b
+re:\bno (?:le |les |la )?(?:den|des) (?:su|tu) (?:dinero|plata)\b(?!\s+a nadie\b)
+re:\bno (?:pierdan|pierdas|gasten|gastes|tiren|tires) (?:su|tu) (?:dinero|plata) (?:aqui|en esta|en este|en ella|con ella|con esta)\b
+re:\bno (?:le |les )?den likes?(?: a (?:ella|esta|esa|este|ese|la senora|la tienda|la cuenta|el live)\b|$)
+no le crean nada
+no crean nada de lo que dice
+re:\bdont (?:waste|spend) your money (?:here|on this|on her|with her)\b
+
+[call]
+# 用户 2026-10-13 选「先不开」：没有对象（会和「向平台 / 客服报订单问题」混在一起）、对象不明的提醒、卖家式的反话
+report this
+report them
+re:\bno se dejen enganar\b(?!\s+(?:esto si es|es original|son originales)\b)
+reportenlo
+reportenlos
+reportemos
+denunciemos
+vamos a reportar
+hay que reportar
+hay que denunciar
+re:\bno (?:le |les |la )compres\b(?!\s+(?:tantos|tanto|todo|todos|mas|muchos|muchas|en otr[oa]s?|si no (?:lo |la )?(?:necesitas|quieres|ocupas))\b)
+
+# ---- 扬言举报 ----
+[report]
+re:\b(i will|ill|im going to|i m going to|gonna|going to)\s+report\b
+re:\b(voy a|vamos a|ire a|iremos a)\s*(reportar|denunciar|demandar)(los|las|lo|la|les|le)?\b
+re:\b(los|la|lo)\s+(reporto|denuncio|demando|reporte|denuncie|reportare|denunciare)\b
+re:\bya (los|la|lo)? ?(reporte|denuncie)\b
+re:\b(ir|voy|vamos)\b.{0,12}\b(a )?(profeco|cofepris|fiscalia|policia cibernetica|la policia)\b
+te voy a demandar
+los voy a demandar
+re:\b(?:voy a|vamos a|llamar a|llamare a|llamo a|llame a|hablar con|hablare con|hable con|hablo con|dire a|le dire a|ire con)\b.{0,25}\bmi abogado\b|\bmi abogado\b.{0,25}\b(?:los va a|las va a|te va a|lo va a|la va a|demanda\w*|denuncia\w*|llamar|en camino|se comunicara|los contactara)\b
+vamos a bajar esta cuenta
+van a cerrar esta cuenta
+
+# ---- 断言骗局 ----
+[assert]
+scam
+scams
+scammer
+scammers
+fraud
+liar
+liars
+thief
+thieves
+ripoff
+rip off
+she is lying
+they are lying
+not legit
+estafar
+estafarnos
+estafarlos
+estafarme
+estafa
+estafas
+estafador
+estafadora
+estafadores
+estafadoras
+estafaron
+estafan
+estafando
+fraude
+fraudes
+fraudulento
+fraudulenta
+ladron
+ladrona
+ladrones
+ladronas
+ratero
+ratera
+rateros
+rateras
+farsante
+farsantes
+charlatan
+charlatana
+tramposa
+tramposo
+mentirosa
+mentiroso
+mentirosas
+mentirosos
+mienten
+mintieron
+engana bobos
+timo
+timador
+timadora
+puro cuento
+puro humo
+venden humo
+puras mentiras
+todo es mentira
+es mentira
+es puro cuento
+no es original
+no es real
+no es autentico
+no es verdadero
+no es de verdad
+producto pirata
+# 候选（agent 新写，待确认）：说「这家人在骗/偷」的整句，不看单个词
+re:(?<!\bno )(?<!\bnunca )(?<!\bjamas )\b(?:roban|robando|enganan|enganando|estafan) a la gente\b
+negocio piramidal
+esquema piramidal
+esquema ponzi
+all lies
+re:\b(?:is|shes|hes|theyre|they are) lying to you\b
+re:(?<!\bno )(?<!\bnunca )\bestan mintiendo\b
+
+# ---- 断言框架词（falso / fake / chafa / pirata……） ----
+[assert-frame]
+falso
+falsa
+falsos
+falsas
+fake
+chafa
+pirata
+falsificado
+falsificada
+falsificacion
+engano
+# 候选（agent 新写，待确认）：复数 / 外来词写法，同样只在 es / son / producto + 词 的句式里才算
+chafas
+fakes
+falsificados
+falsificadas
