@@ -262,7 +262,7 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, ~16 GB RAM
 | `gemma` | TranslateGemma 4B. `OLLAMA_TRANSLATE_MODEL` selects `translategemma:12b`/`27b`. Not in the Translation Engine menu; pass `--translator gemma` |
 | `deepl` | Key entered in Settings → Translation Engine (or `DEEPL_API_KEY`). A key ending in `:fx` is routed to the free endpoint automatically. Builds and maintains a native DeepL glossary from your [glossaries](#glossaries); see below. Caption text is sent to DeepL |
 | `google` | Google Translate's free endpoint, no key required. Caption text is sent to Google; rate-limited per IP |
-| `claude` | Key entered in Settings → Translation Engine (or `ANTHROPIC_API_KEY`). Default model Claude Haiku 5.5 (`claude-haiku-5-5`), with thinking turned off to keep each caption fast; `CLAUDE_TRANSLATE_MODEL` selects another model. Caption text is sent to Anthropic. A caption Claude declines to translate shows the original text and is recorded in the audit log. With this engine, viewer comments are translated by Claude Haiku 5.5 on its own connection (a pause there never pauses captions), and Retranslate and the alert-context translation use Claude Sonnet 5.5 instead of a local model, so no local model is needed for them |
+| `claude` | Key entered in Settings → Translation Engine (or `ANTHROPIC_API_KEY`). Default model Claude Haiku 5.5 (`claude-haiku-5-5`), with thinking turned off to keep each caption fast; `CLAUDE_TRANSLATE_MODEL` selects another model. Caption text is sent to Anthropic. A caption Claude declines to translate shows the original text and is recorded in the audit log; a declined Retranslate is recorded there too, with the trigger. With this engine, viewer comments are translated by Claude Haiku 5.5 on its own connection (a pause there never pauses captions), and Retranslate and the alert-context translation use Claude Sonnet 5.5 instead of a local model, so no local model is needed for them |
 | `openai` | Key entered in Settings → Translation Engine (or `OPENAI_API_KEY`); optional `OPENAI_BASE_URL`, `OPENAI_MODEL`. Compatible with any OpenAI-style API including local LM Studio / vLLM |
 | `none` | Transcription only, no translation |
 
@@ -312,9 +312,11 @@ short list of them is the most direct fix. The glossary is one set of entries
 used in three places: the first entries are given to speech recognition as a
 hint; entries that occur in a line are passed with that line to a local
 translation model (DeepL uses a native glossary instead, see below, while
-Google's free endpoint, Claude and OpenAI-compatible APIs take no hints, so
-only the fix-up applies to them); and a rule-based fix-up replaces any
-glossary entry the translation left untranslated.
+Google's free endpoint, Claude's caption and comment translation and
+OpenAI-compatible APIs take no hints, so only the fix-up applies to them; the
+exception is Retranslate and alert-context translation with Claude Sonnet 5.5,
+which get the hints in their prompt like the local model does); and a rule-based
+fix-up replaces any glossary entry the translation left untranslated.
 
 It is merged from three files, most specific first:
 
@@ -389,9 +391,10 @@ acceptable is a business decision.
 ### Re-translating with the strongest model
 
 The strongest model available is applied per sentence rather than for a period
-of time. With a local engine that is the strongest local model installed (Hy-MT2
-7B if you pulled it, otherwise 1.8B). With Claude as the engine it is Claude
-Sonnet 5.5, so no local model has to be installed for it. What justifies
+of time. With any engine other than Claude (a local model, Google, DeepL or an
+OpenAI-compatible API) that is the strongest local model installed (Hy-MT2 7B if
+you pulled it, otherwise 1.8B), which needs Ollama. With Claude as the engine it
+is Claude Sonnet 5.5, so no local model has to be installed for it. What justifies
 it is specific content — prices, promotional conditions, health claims — which
 is episodic, and only the operator or the detector knows which sentence that
 is. Measured cost: loading the model takes 1.9 s and a complete one-shot call

@@ -1098,7 +1098,9 @@
     var redo = document.createElement("button");
     redo.className = "redo";
     redo.type = "button";
-    redo.title = L("用最强模型重新翻译这一条", "Retranslate with the most accurate model");
+    // 「更强」不写成「最准」：Claude 引擎下的 Sonnet 5.5 档位没有测过准确率，测出来之前不说它更准
+    // （docs/engine-benchmarks.zh-CN.md：只能说读起来更顺，不能说更准）
+    redo.title = L("用更强的模型重新翻译这一条", "Retranslate with the stronger model");
     redo.textContent = L("重译", "Retranslate");
     redo.addEventListener("click", function () {
       send({ type: "retranslate", id: msg.id });

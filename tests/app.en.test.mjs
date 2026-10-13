@@ -303,7 +303,7 @@ test("英文页：字幕卡片、重译按钮、翻译失败横幅", () => {
   const card = page.el("history").querySelector(".cap");
   assert.equal(card.querySelector(".trans").textContent, "Translating…");
   const redo = card.querySelector(".redo");
-  assert.deepEqual([redo.textContent, redo.title], ["Retranslate", "Retranslate with the most accurate model"]);
+  assert.deepEqual([redo.textContent, redo.title], ["Retranslate", "Retranslate with the stronger model"]);
   page.push({ type: "caption_update", id: 1, strong_state: "pending" });
   assert.equal(redo.textContent, "Retranslating…");
   page.push({ type: "caption_update", id: 1, strong_state: "failed" });
@@ -385,6 +385,47 @@ test("英文页：接口拒答的字幕有自己的角标，不算进连续翻�
   assert.match(banner().textContent, /^The last several captions couldn’t be translated, /);
   assert.ok(!banner().classList.contains("hidden"));
   assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：被拒答的字幕点重译又被拒答，角标留着「未翻译（接口拒答）」，不顶出横幅", () => {
+  // 点重译的人最可能点的就是快译被拒答的那几条。Sonnet 也拒答时服务端发的消息形状由
+  // tests/test_claude_strong.py 钉着：带 refused，页面据此保留角标、不计入连续失败
+  const page = runDesktop();
+  hello(page);
+  const banner = () => page.el("status-banner");
+  const chips = () => page.el("history").querySelectorAll(".state-chip").map((c) => c.textContent);
+  const bannerUp = () => /couldn’t be translated/.test(banner().textContent) && !banner().classList.contains("hidden");
+  const refusedAgain = (id, extra) => {
+    page.push({ type: "caption_update", id, strong_state: "pending" });
+    page.push(Object.assign({ type: "caption_update", id, translated: null, translate_state: "failed",
+                              target_lang: "zh-CN", translate_ms: 0, quality: 2, strong_state: "failed" }, extra));
+    page.push({ type: "retranslate_note", id, text: "Couldn’t retranslate: Claude Sonnet 5.5 declined to translate this caption (the API returned a refusal). This caption still has no translation." });
+  };
+  for (let id = 1; id <= 4; id++) {
+    page.push({ type: "caption", id, ts: T, original: "x", translate_state: "pending" });
+    page.push({ type: "caption_update", id, translated: null, translate_state: "failed", refused: true });
+  }
+  assert.deepEqual(chips(), Array(4).fill("Not translated (API refusal)"));
+  for (let id = 1; id <= 4; id++) refusedAgain(id, { refused: true });
+  assert.deepEqual(chips(), Array(4).fill("Not translated (API refusal)"));
+  assert.ok(!bannerUp(), "重译被拒答不该顶出「翻译失败」横幅");
+  assert.equal(page.el("history").querySelectorAll(".cap")[0].querySelectorAll(".redo-note").length, 1);
+  assert.deepEqual(leftoverChinese(page), []);
+
+  // 对照：同一串消息少了 refused（评审之前的服务端），角标换成「Translation failed」，第四条把横幅顶出来
+  const control = runDesktop();
+  hello(control);
+  for (let id = 1; id <= 4; id++) {
+    control.push({ type: "caption", id, ts: T, original: "x", translate_state: "pending" });
+    control.push({ type: "caption_update", id, translated: null, translate_state: "failed", refused: true });
+  }
+  for (let id = 1; id <= 4; id++) {
+    control.push({ type: "caption_update", id, translated: null, translate_state: "failed",
+                   target_lang: "zh-CN", translate_ms: 0, quality: 2, strong_state: "failed" });
+  }
+  assert.deepEqual(control.el("history").querySelectorAll(".state-chip").map((c) => c.textContent),
+                   Array(4).fill("Translation failed"));
+  assert.match(control.el("status-banner").textContent, /^The last several captions couldn’t be translated, /);
 });
 
 test("英文页：报警头用弯双引号，译不出来的说明按有没有原因分两句", () => {

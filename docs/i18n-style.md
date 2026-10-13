@@ -470,7 +470,7 @@
 | 98 | index.html:504/505 | 收起 / 清空弹幕 | Hide / Clear | title 写 “Hide comments to widen captions” |
 | 99 | index.html:514 | 弹幕 {n}（悬浮入口）/ 展开观众弹幕 | Comments {n} / Show comments | |
 | 100 | index.html:521 | 回到最新 | Jump to Latest | |
-| 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用最强模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the most accurate model | 悬停时才出现的按钮，68+16px |
+| 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用更强的模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the stronger model | 悬停时才出现的按钮，68+16px |
 | 102 | app.js:1138/1146 | 翻译中… / 翻译失败 / 翻译已跳过（积压） | Translating… / Translation failed / Skipped (backlog) | |
 | 103 | session-divider.js:27 | ── 14:01:29 以下为 @x ── / 以下为新的一场 | ── 14:01:29 Now monitoring @x ── / New session | |
 | 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空警报 / 上一场 / 命中·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | |
