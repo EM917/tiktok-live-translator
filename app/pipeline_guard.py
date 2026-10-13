@@ -1,6 +1,7 @@
 # i18n: done
 """弹幕留意的接线（PR-3，spec §4.7、§6、§8）：把规则层（app/comment_guard.py）和关注名单
-（app/comment_marks.py）挂到弹幕读取协程上。没有界面；`comment_guard.enabled` 默认关。
+（app/comment_marks.py）挂到弹幕读取协程上。界面在 web/guard.js（PR-4）；`comment_guard.enabled` 从 PR-4
+起默认开（只影响 settings.json 里没写过这个键的人；写过 false 的照旧关着）。
 
 **对识别零影响靠结构保证，不靠运气**（spec I1/I2）：守卫只出现在这些地方——`on_items`（弹幕读取
 协程）、开场/收尾（`_begin_session` / `_end_session`）、控制消息、统计循环。识别、违禁词检测、
@@ -26,22 +27,55 @@
 """
 import asyncio
 import os
+import tempfile
 import time
 from collections import OrderedDict, deque
+from pathlib import Path
 
 from . import comment_guard as cg
 from .comment_marks import MAX_VIEWERS, SESSION_PREFIX, MarkStore, clean_key
-from .comments import CommentTranslator
+from .comments import CommentTranslator, account_fields
 from .i18n import L
 from .settings import load_settings
 
 ENV_SWITCH = "TLT_COMMENT_GUARD"            # =off：应急总开关，界面坏了也能整体关掉
 SETTINGS_KEY = "comment_guard"              # settings.json 里的键：{enabled, backend, weak}
 BACKENDS = ("none", "claude")               # 用户决定 6：直播时只用 Claude Haiku 5.5，没有本地模型
-GUARD_CONTROL_TYPES = frozenset(("guard_set", "guard_mark", "guard_dismiss"))
+# guard_reenable：熔断后「本场重新启用」（模型复核是 PR-5，现在没有熔断，收到了也只是一句空话）；
+# guard_clear_auto：设置行里的「清空自动加入的」；打开规则文件夹是 open_guard_dir，在 pipeline.handle_control
+GUARD_CONTROL_TYPES = frozenset(("guard_set", "guard_mark", "guard_dismiss", "guard_reenable",
+                                 "guard_clear_auto"))
 UID_SOURCES = ("id", "id_str", "sec_uid", "handle")
 RV_LABELS = ("agree", "question", "complaint", "friendly", "neutral", "unsure", "skipped")
 SHOWN_LEVELS = ("alert", "amber", "note")   # 带 guard 字段的档位；lead 只决定送不送模型
+
+
+# --demo 的虚构弹幕流（停播时用来验界面；演示不连任何直播，主播、观众、账号全是虚构的）。
+# 每条：(昵称, 账号, handle, 西语原文, 中文译文, 发完后等几秒)。几类情形都有：正常弹幕、号召举报（红条，
+# 并自动加入关注名单，之后同一个人的弹幕会高亮）、没确认的词条（琥珀）、链接（红条）、多账号同一句（琥珀事件）。
+# 账号 id 是 19 位的字符串，同真实账号一样超过 JS 的 2^53。内容是数据，不随界面语言变。
+DEMO_STREAMER = "luna_demo"
+DEMO_TRANSLATE_DELAY = 0.5          # 演示里「翻译中」停多久再补译文
+DEMO_COMMENTS = (  # i18n: data
+    ("Maria", "7100000000000000011", "maria_demo", "hola luna, cuánto cuesta el sérum?",
+     "你好 Luna，这瓶精华多少钱？", 3.0),
+    ("Caro", "7100000000000000012", "caro_demo", "ya compré dos y me llegaron rápido",
+     "我已经买了两瓶，到货很快", 3.0),
+    ("Rival Demo", "7100000000000000099", "rival_demo", "no compren, es una estafa, denuncien este live",
+     "别买，这是骗局，大家举报这个直播间", 3.5),
+    ("Lupita", "7100000000000000013", "lupita_demo", "es falso", "是假的", 3.0),
+    ("Pedro", "7100000000000000014", "pedro_demo", "entra a mi live https://ejemplo.example.com/pedro",
+     "来我的直播间 https://ejemplo.example.com/pedro", 3.5),
+    ("Sofia", "7100000000000000015", "sofia_demo", "cuánto tarda el envío a Monterrey?",
+     "寄到蒙特雷要多久？", 3.0),
+    ("Rival Demo", "7100000000000000099", "rival_demo", "ya les dije lo que pienso", "我已经说了我的想法", 3.0),
+    ("Cuenta A", "7100000000000000021", "cuenta_a_demo", "quiero uno ya mismo luna", "Luna，我现在就要一个", 1.2),
+    ("Cuenta B", "7100000000000000022", "cuenta_b_demo", "quiero uno ya mismo luna", "Luna，我现在就要一个", 1.2),
+    ("Cuenta C", "7100000000000000023", "cuenta_c_demo", "quiero uno ya mismo luna", "Luna，我现在就要一个", 1.2),
+    ("Cuenta D", "7100000000000000024", "cuenta_d_demo", "quiero uno ya mismo luna", "Luna，我现在就要一个", 1.2),
+    ("Cuenta E", "7100000000000000025", "cuenta_e_demo", "quiero uno ya mismo luna", "Luna，我现在就要一个", 3.0),
+    ("Maria", "7100000000000000011", "maria_demo", "gracias luna, hasta pronto", "谢谢 Luna，回头见", 4.0),
+)
 
 
 def env_disabled():
@@ -50,10 +84,11 @@ def env_disabled():
 
 def normalize_settings(raw):
     """settings.json 里的 comment_guard -> {enabled, backend, weak}。类型不对的键按默认：
-    enabled 只认真正的 True（PR-3 默认 False，PR-4 才改默认），backend 只认 BACKENDS。"""
+    enabled 默认开（PR-4 起；没写过这个键的人，写了 false 的不变），backend 只认 BACKENDS。"""
     raw = raw if isinstance(raw, dict) else {}
     backend = raw.get("backend")
-    return {"enabled": raw.get("enabled") is True,
+    enabled = raw.get("enabled")
+    return {"enabled": enabled if isinstance(enabled, bool) else True,
             "backend": backend if backend in BACKENDS else "none",
             "weak": raw.get("weak") is True}
 
@@ -170,7 +205,9 @@ class GuardRuntime:
         return {"enabled": enabled, "backend": self.cfg["backend"], "status": status,
                 "since": self._since, "trip": None, "rules": rules,
                 "n_marked": len(self.marks), "unreviewed": self.unreviewed,
-                "weak": self.cfg["weak"]}
+                "weak": self.cfg["weak"],
+                # 设置行里「关注名单 · 主播」写的是哪个主播：待机时就是上一场载入的那份；关着的那一场没有名单，空串
+                "streamer": self.marks.streamer or ""}
 
     def preview_rules(self):
         """开着但还没开播时，设置行也要能显示「规则 N 条已生效」。同步、毫秒级；开场仍会重新载入。"""
@@ -478,8 +515,8 @@ class GuardRuntime:
 
     def mark(self, key, on, nick="", handle=None, now=None):
         """中控在页面上加入/移出关注名单（只有本机页面发得出 guard_mark）。返回状态代码：
-        ok / full / bad_key / disabled。"""
-        if not self.enabled:
+        ok / full / bad_key / disabled。待机时（没有在场）只能移出，改的是上一场载入的那份名单。"""
+        if not self.enabled and (on or not self._marks_editable()):
             return "disabled"
         key = clean_key(key)
         if key is None:
@@ -511,6 +548,27 @@ class GuardRuntime:
                 self._pending_marks[primary] = None
         self._state_dirty = True
         return "ok"
+
+    def _marks_editable(self):
+        """名单现在能不能改：直播中（守卫开着）能；待机时也能——设置行里的「移出」「清空自动加入的」
+        改的是上一场载入的那份（它还在内存里，主播名也合规）。关着的那一场（名单已清空）改不了。"""
+        return self.enabled or (not self._open and self.marks.streamer is not None)
+
+    def clear_auto(self):
+        """设置行里的「清空自动加入的」：移出所有 by=auto 的人，手动加入的不动。返回移出了几个。"""
+        if not self._marks_editable():
+            return 0
+        gone = self.marks.clear_auto()
+        for primary in gone:
+            self.unmarked_auto += 1
+            self._pending_marks[primary] = None
+        if gone:
+            self._state_dirty = True
+        return len(gone)
+
+    def reenable(self):
+        """熔断后的「本场重新启用」。模型复核（PR-5）才会熔断；现在没有熔断，什么都不做。"""
+        return False
 
     def dismiss(self, ev_id):
         """抽屉里「忽略」一个事件：从事件表里拿掉，并告诉页面。"""
@@ -765,7 +823,7 @@ class CommentGuardMixin:
     """Pipeline 的弹幕留意接线。方法都不抛：守卫是附加功能，绝不能拖累弹幕、识别和审计。"""
 
     def _init_comment_guard(self):
-        """Pipeline.__init__ 调：读设置、造守卫。默认关（PR-3）；关着时开场不载词表、不读写任何文件。"""
+        """Pipeline.__init__ 调：读设置、造守卫。默认开（PR-4 起）；关着时开场不载词表、不读写任何文件。"""
         guard = self.guard = GuardRuntime()
         guard.cfg = normalize_settings(load_settings().get(SETTINGS_KEY))
         if guard.effective_enabled():
@@ -920,9 +978,15 @@ class CommentGuardMixin:
                     text = guard_notice("marks_full")
                     print("[弹幕] " + text)
                     await self.server.broadcast({"type": "notice", "text": text})
-                await guard.flush(self.server.broadcast)
+                await self._flush_guard_edit()
+            elif mtype == "guard_clear_auto":
+                if guard.clear_auto():
+                    await self._flush_guard_edit()
             elif mtype == "guard_dismiss":
                 if guard.dismiss(msg.get("ev_id")):
+                    await guard.flush(self.server.broadcast)
+            elif mtype == "guard_reenable":
+                if guard.reenable():
                     await guard.flush(self.server.broadcast)
         except asyncio.CancelledError:
             raise
@@ -930,13 +994,91 @@ class CommentGuardMixin:
             print("[弹幕] 处理 {} 出错: {}".format(mtype, exc))
         return None
 
+    # ---- --demo：虚构弹幕流 ----
+    async def _demo_comment_stream(self):
+        """演示模式里的一路虚构弹幕：走和真实弹幕一样的守卫（observe → comment → flush），好在停播时看界面。
+        关注名单写进一个临时目录，演示完丢掉：不往 comment_guard/marked/ 里留文件，也不碰真实主播的名单。
+        守卫在设置里关着就只显示弹幕。从不抛。"""
+        guard = getattr(self, "guard", None)
+        if guard is None:
+            return
+        real_marks = guard.marks
+        guard.marks = MarkStore(directory=Path(tempfile.mkdtemp(prefix="tlt-demo-marks-")))
+        try:
+            await self._begin_comment_guard(DEMO_STREAMER)
+            await self._bind_comment_guard(None)
+            n = 0
+            while True:
+                for user, uid, handle, text, zh, gap in DEMO_COMMENTS:
+                    n += 1
+                    await self._demo_comment("demo-c%d" % n, user, uid, handle, text, zh)
+                    await asyncio.sleep(gap)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[弹幕] 演示弹幕出错：{}".format(exc))
+        finally:
+            try:
+                await guard.end(None, broadcast=self.server.broadcast)
+                await self._publish_comment_guard_config(reset=False)
+            except (Exception, asyncio.CancelledError) as exc:
+                print("[弹幕] 演示弹幕收尾出错：{}".format(exc))
+            guard.marks.close()
+            guard.marks = real_marks
+
+    async def _demo_comment(self, cid, user, uid, handle, text, zh):
+        item = {"id": cid, "user": user, "text": text, "uid": uid, "uid_src": "id", "handle": handle}
+        guard = self.guard
+        if guard.enabled:
+            item = guard.observe([item], now=time.time())[0]
+        await self.server.broadcast(dict(
+            {"type": "comment", "id": cid, "user": user, "text": text, "ts": time.time(),
+             "translated": None, "state": "pending"}, **account_fields(item)))
+        await guard.flush(self.server.broadcast)
+        await asyncio.sleep(DEMO_TRANSLATE_DELAY)
+        await self.server.broadcast({"type": "comment_update", "id": cid, "translated": zh, "state": "ok"})
+
+    def _open_guard_dir(self):
+        """设置行里的「打开规则文件夹」：comment_guard/local/ 是用户自己放词表的地方，平时程序不生成它，
+        点了才建（不存在就打不开），再用系统方式打开。只在本机控制面可用（手机入站只认 retranslate）。
+        打不开不算错误：只打一行警告、给界面提一次性提示，同 _open_brands_dir。"""
+        try:
+            cg.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+            self._brand_dir_opener(cg.LOCAL_DIR)
+        except OSError as exc:
+            print("[弹幕] 打开规则文件夹失败：{}".format(exc))
+            return self.server.broadcast(
+                {"type": "notice", "text": L("无法打开文件夹：{}",
+                                             "Couldn’t open the folder: {}").format(cg.LOCAL_DIR)})
+        return None
+
+    async def _flush_guard_edit(self):
+        """名单改了之后把消息发出去。直播中走平时的节流；待机时（设置行里改）马上发、马上写盘——
+        下一场的 load 会丢掉没写完的脏标记。"""
+        guard = self.guard
+        if guard.enabled:
+            await guard.flush(self.server.broadcast)
+            return
+        await guard.flush(self.server.broadcast, final=True)
+        await guard.marks.flush_now()
+
     async def _guard_set(self, msg):
         """设置里的开关和模型复核选择。只在待机时改：直播中这一场的开关已经定了（同违禁词警示），
-        设置分组在直播中也是整块隐藏的。只在改了的时候写一次 settings.json。`key` 先不处理（PR-5）。"""
+        设置分组在直播中也是整块隐藏的。只在改了的时候写一次 settings.json。
+
+        `key`：选 Claude 时设置行里的密钥框。写进和翻译引擎同一个 Claude 密钥（api_keys），**不切换翻译引擎**；
+        回传页面的只有打码后的尾四位（_publish_engine）。真正用它做复核是 PR-5。"""
         guard = self.guard
         if self._stream_active() or (guard._open and getattr(self, "audit", None) is not None):
             print("[弹幕] 直播进行中，弹幕留意的设置要停止后再改")
             return
+        key = msg.get("key")
+        if isinstance(key, str) and key.strip():
+            from .translator import saved_keys
+            keys = saved_keys()
+            keys[self.ENGINE_KEY_ENV["claude"]] = key.strip()
+            self._save_setting("api_keys", keys)
+            await self._publish_engine()
         new = dict(guard.cfg)
         if isinstance(msg.get("enabled"), bool):
             new["enabled"] = msg["enabled"]

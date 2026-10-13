@@ -516,6 +516,9 @@ def test_cancelled_model_load_does_not_poison_key(monkeypatch, tmp_path):
     """模型加载中被取消后，「已就绪 key」不能被在途 key 污染——否则换了识别
     参数再启动会静默复用旧模型，新参数至死不生效。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
+    # 本用例把 run_in_executor 换成「永不完成」的假件，要它只在加载模型时被调用。弹幕留意默认开了
+    # （PR-4），开场载入词表也走线程池，会先撞上这个假件——这条测的是模型加载，把守卫关掉
+    p.guard.cfg["enabled"] = False
     p._transcriber = object()                  # 假装上一场已加载好模型 T1
     p._transcriber_key = ("old-key",)
 

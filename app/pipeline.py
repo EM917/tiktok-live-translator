@@ -510,6 +510,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                  "brands": self.server.config.get("brands", {})})
         elif mtype == "open_brands_dir":
             return self._open_brands_dir()
+        elif mtype == "open_guard_dir":
+            return self._open_guard_dir()      # 弹幕留意的规则文件夹，见 pipeline_guard.py
         elif mtype in GUARD_CONTROL_TYPES:
             # 弹幕留意的开关、关注名单、忽略事件：只有本机页面发得出来（手机入站只认 retranslate）
             return self._handle_guard_control(msg)
@@ -4450,6 +4452,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self.server.status("live", L("演示模式：内置台词模拟直播字幕（未连接真实直播）",
                                            "Demo mode: built-in sample lines simulate live "
                                            "captions (not connected to a real stream)"))
+        # 弹幕留意的虚构弹幕流（停播时验界面用），跟字幕并行；停止时跟着一起收掉
+        demo_comments = asyncio.ensure_future(self._demo_comment_stream())
+        try:
+            await self._run_demo_captions()
+        finally:
+            demo_comments.cancel()
+            await asyncio.gather(demo_comments, return_exceptions=True)
+
+    async def _run_demo_captions(self):
         while True:
             for original, translated in DEMO_SCRIPT:
                 self._counter += 1

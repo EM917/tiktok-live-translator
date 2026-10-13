@@ -202,10 +202,17 @@ def test_a_flush_error_never_reaches_the_comment_source(monkeypatch, tmp_path, c
     assert len(server.of_type("comment")) == 1 and "留意消息发送出错" in capsys.readouterr().out
 
 
-# ---- 默认关、应急开关 -------------------------------------------------------------------
+# ---- 默认开（PR-4 起）、关着时什么都不碰、应急开关 ----------------------------------------------
 
-def test_default_is_off_observe_never_runs_nothing_is_read_or_written(monkeypatch, tmp_path):
+def test_a_fresh_install_has_the_guard_on_rules_only(monkeypatch, tmp_path):
+    """settings.json 里没写过 comment_guard：默认开、只用规则（PR-4 起；PR-3 单独存在时默认关）。"""
     p, server = make_pipeline(monkeypatch, tmp_path, enabled=None)
+    assert p.guard.cfg == {"enabled": True, "backend": "none", "weak": False}
+    assert server.config["guard_state"]["enabled"] is True and server.config["guard_state"]["status"] == "rules"
+
+
+def test_switched_off_observe_never_runs_nothing_is_read_or_written(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path, enabled=False)
     assert p.guard.cfg == {"enabled": False, "backend": "none", "weak": False}
     called = []
 
@@ -269,12 +276,14 @@ def test_other_values_of_the_switch_do_not_turn_it_off(monkeypatch):
 
 
 def test_settings_are_normalised_defensively():
-    assert normalize_settings(None) == {"enabled": False, "backend": "none", "weak": False}
+    assert normalize_settings(None) == {"enabled": True, "backend": "none", "weak": False}      # PR-4 起默认开
     assert normalize_settings({"enabled": "yes", "backend": "local", "weak": 1}) == \
-        {"enabled": False, "backend": "none", "weak": False}              # 用户决定 6：没有本地模型这个选项
+        {"enabled": True, "backend": "none", "weak": False}               # 用户决定 6：没有本地模型这个选项；类型不对按默认
+    assert normalize_settings({"enabled": False, "backend": "claude", "weak": True}) == \
+        {"enabled": False, "backend": "claude", "weak": True}             # 明确写过 false 的人照旧关着
     assert normalize_settings({"enabled": True, "backend": "claude", "weak": True}) == \
         {"enabled": True, "backend": "claude", "weak": True}
-    assert normalize_settings([1, 2]) == {"enabled": False, "backend": "none", "weak": False}
+    assert normalize_settings([1, 2]) == {"enabled": True, "backend": "none", "weak": False}
 
 
 # ---- 开启后：标注随 comment 到、审计只有计数 ----------------------------------------------------
@@ -722,7 +731,7 @@ def test_notices_are_chinese_and_english_pairs_and_free_of_cause_labels():
 # ---- 设置与控制消息 ---------------------------------------------------------------------------
 
 def test_guard_set_persists_once_and_updates_the_state(monkeypatch, tmp_path):
-    p, server = make_pipeline(monkeypatch, tmp_path, enabled=None)
+    p, server = make_pipeline(monkeypatch, tmp_path, enabled=False)
     saves = []
     real = p._save_setting
     monkeypatch.setattr(p, "_save_setting", lambda k, v: (saves.append((k, dict(v))), real(k, v)))
@@ -733,14 +742,12 @@ def test_guard_set_persists_once_and_updates_the_state(monkeypatch, tmp_path):
         await p.handle_control({"type": "guard_set", "backend": "claude", "weak": True})
         await p.handle_control({"type": "guard_set", "backend": "local"})            # 用户决定 6：没有这个选项
         await p.handle_control({"type": "guard_set", "enabled": "yes", "weak": 1})   # 类型不对：忽略
-        await p.handle_control({"type": "guard_set", "key": "sk-test-not-a-real-key"})   # key 先不处理
 
     run(scenario())
     assert saves == [("comment_guard", {"enabled": True, "backend": "none", "weak": False}),
                      ("comment_guard", {"enabled": True, "backend": "claude", "weak": True})]
     saved = settings.load_settings()["comment_guard"]
     assert saved == {"enabled": True, "backend": "claude", "weak": True}
-    assert "sk-test" not in (tmp_path / "settings.json").read_text(encoding="utf-8")
     state = server.config["guard_state"]
     assert state["enabled"] is True and state["backend"] == "claude" and state["status"] == "no_sdk"
     assert state["weak"] is True and state["rules"]["count"] > 0 and state["n_marked"] == 0
@@ -848,8 +855,9 @@ def test_guard_dismiss_drops_the_event_and_is_counted(monkeypatch, tmp_path):
     assert of(audit_records(audit), "session_end")[0]["comment_guard"]["dismissed"] == 1
 
 
-def test_control_message_types_are_exactly_the_three(monkeypatch, tmp_path):
-    assert GUARD_CONTROL_TYPES == frozenset({"guard_set", "guard_mark", "guard_dismiss"})
+def test_control_message_types_are_exactly_these_five(monkeypatch, tmp_path):
+    assert GUARD_CONTROL_TYPES == frozenset({"guard_set", "guard_mark", "guard_dismiss", "guard_reenable",
+                                             "guard_clear_auto"})
 
 
 # ---- 状态随 hello 走 ---------------------------------------------------------------------------
@@ -868,7 +876,8 @@ def test_guard_state_events_and_marks_live_in_config_so_a_refreshed_page_gets_th
     assert list(config["guard_events"].values())[0]["cat"] == "threat"
     assert config["guard_marked"][UID]["cat"] == "threat"
     assert set(config["guard_state"]) == {"enabled", "backend", "status", "since", "trip", "rules", "n_marked",
-                                          "unreviewed", "weak"}
+                                          "unreviewed", "weak", "streamer"}
+    assert config["guard_state"]["streamer"] == "luna_demo"
 
 
 # ---- 刷屏与 accept 去重：升级打在已显示的那一条上，只发一条 comment_guard（spec §4.7）-----------------------
@@ -1598,3 +1607,213 @@ def test_a_lead_verdict_only_decides_routing_it_never_gets_a_guard_object_or_a_c
 
     out = run(scenario())
     assert "guard" not in out[0] and rt.counts == {} and rt._ann == {} and rt.events == {}
+
+
+# ---- PR-4 界面要用的后端：密钥、待机时改名单、清空自动加入的、打开规则文件夹、演示弹幕 ---------------------
+
+PRODUCTION_DEFAULTS = cg.DEFAULTS_DIR            # 模块导入时还没被夹具改过：出厂词表目录
+
+
+def test_guard_set_saves_the_claude_key_without_switching_the_engine(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path, enabled=True)
+    p.args.translator = "auto"
+    key = "sk-ant-test-not-a-real-key-4242"
+
+    async def scenario():
+        await p.handle_control({"type": "guard_set", "backend": "claude", "key": "  " + key + "  "})
+        await p.handle_control({"type": "guard_set", "key": 5})            # 类型不对：忽略
+        await p.handle_control({"type": "guard_set", "key": "   "})        # 空白：忽略
+
+    run(scenario())
+    assert settings.load_settings()["api_keys"] == {"ANTHROPIC_API_KEY": key}
+    assert p.args.translator == "auto"                                      # 翻译引擎没被切换
+    assert settings.load_settings().get("translator") is None
+    assert p.guard.cfg["backend"] == "claude"
+    # 回传页面的只有打码后的尾四位，完整的密钥不出现在任何一条消息里
+    assert server.config["engine"]["keys"]["ANTHROPIC_API_KEY"] == "…" + key[-4:]
+    assert key not in json.dumps(server.messages, ensure_ascii=False, default=str)
+    assert key not in json.dumps(dict(server.config), ensure_ascii=False, default=str)
+
+
+def test_guard_set_key_is_ignored_while_a_session_is_running(monkeypatch, tmp_path, capsys):
+    p, server = make_pipeline(monkeypatch, tmp_path, enabled=True)
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        await p.handle_control({"type": "guard_set", "key": "sk-ant-test-not-a-real-key-4242"})
+        await p._end_session(p.audit, reason="user_stop")
+
+    run(scenario())
+    assert "api_keys" not in settings.load_settings()
+    assert "直播进行中" in capsys.readouterr().out
+
+
+def _marked_file(tmp_path):
+    return json.loads((tmp_path / "marked" / "luna_demo.json").read_text(encoding="utf-8"))["viewers"]
+
+
+def test_marked_viewers_can_be_unmarked_between_sessions_and_it_is_written_at_once(monkeypatch, tmp_path):
+    """设置分组在直播中整块隐藏，所以「移出」在待机时也得能用：改的是上一场载入的那份名单，马上写盘。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        await comments(p, item("c1", "Ana", RED_TEXT, uid=UID), item("c2", "Bea", "hola buenas", uid="2"))
+        await p.handle_control({"type": "guard_mark", "key": "2", "on": True, "nick": "Bea"})
+        await p._end_session(p.audit, reason="user_stop")
+        assert set(server.config["guard_marked"]) == {UID, "2"}
+        assert server.config["guard_state"]["streamer"] == "luna_demo" and server.config["guard_state"]["n_marked"] == 2
+        await p.handle_control({"type": "guard_mark", "key": "2", "on": False})
+        assert set(server.config["guard_marked"]) == {UID}
+        assert set(_marked_file(tmp_path)) == {UID}                       # 不等 2 秒的合并：马上落盘
+        assert server.of_type("guard_mark")[-1] == {"type": "guard_mark", "key": "2", "entry": None}
+        assert server.config["guard_state"]["n_marked"] == 1
+        # 待机时不能加入（没有弹幕可点，名单也不是这一场的）
+        await p.handle_control({"type": "guard_mark", "key": "3", "on": True, "nick": "Cai"})
+        assert set(server.config["guard_marked"]) == {UID} and set(_marked_file(tmp_path)) == {UID}
+        # 下一场开场：名单从文件读回来，是移出之后的样子
+        await p._begin_session(ROOM)
+        assert set(server.config["guard_marked"]) == {UID}
+        await p._end_session(p.audit, reason="user_stop")
+
+    run(scenario())
+
+
+def test_clear_auto_removes_only_the_automatically_added_ones(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        await comments(p, item("c1", "Ana", RED_TEXT, uid=UID), item("c2", "Bea", "hola buenas", uid="2"))
+        await p.handle_control({"type": "guard_mark", "key": "2", "on": True, "nick": "Bea"})
+        assert server.config["guard_marked"][UID]["by"] == "auto" and server.config["guard_marked"]["2"]["by"] == "manual"
+        await p.handle_control({"type": "guard_clear_auto"})                   # 直播中也能用
+        assert set(server.config["guard_marked"]) == {"2"}
+        audit = p.audit
+        await comments(p, item("c3", "Cai", RED_TEXT, uid="3"))
+        await p._end_session(audit, reason="user_stop")
+        assert set(server.config["guard_marked"]) == {"2", "3"}
+        await p.handle_control({"type": "guard_clear_auto"})                   # 待机时：马上写盘
+        assert set(server.config["guard_marked"]) == {"2"} and set(_marked_file(tmp_path)) == {"2"}
+        await p.handle_control({"type": "guard_clear_auto"})                   # 已经没有自动加入的：不发消息
+        n = len(server.of_type("guard_mark"))
+        await p.handle_control({"type": "guard_clear_auto"})
+        assert len(server.of_type("guard_mark")) == n
+        return audit
+
+    audit = run(scenario())
+    # session_end 里只有这一场之内的（待机时清掉的那一个不在审计里）
+    assert of(audit_records(audit), "session_end")[0]["comment_guard"]["unmarked_auto"] == 1
+    assert [m["key"] for m in server.of_type("guard_mark") if m["entry"] is None] == [UID, "3"]
+
+
+def test_a_session_with_the_guard_off_leaves_nothing_to_edit_in_standby(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path, enabled=False)
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        await p._end_session(p.audit, reason="user_stop")
+        await p.handle_control({"type": "guard_mark", "key": UID, "on": False})
+        await p.handle_control({"type": "guard_clear_auto"})
+
+    run(scenario())
+    assert server.guard_messages() == [] and not (tmp_path / "marked").exists()
+    assert p.guard.clear_auto() == 0 and p.guard.mark(UID, False) == "disabled"
+
+
+def test_reenable_has_nothing_to_do_before_model_review_exists(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        before = len(server.messages)
+        await p.handle_control({"type": "guard_reenable"})
+        assert len(server.messages) == before
+        await p._end_session(p.audit, reason="user_stop")
+
+    run(scenario())
+    assert p.guard.reenable() is False
+
+
+def test_open_guard_dir_creates_the_local_folder_and_opens_it(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    opened = []
+    p._brand_dir_opener = opened.append
+    local = tmp_path / "no-local-dir"
+    assert not local.exists()                                          # 平时程序不生成它
+
+    assert p.handle_control({"type": "open_guard_dir"}) is None          # 同步完成，没有要等的东西
+    assert local.is_dir() and opened == [local]
+    assert server.of_type("notice") == []
+
+
+def test_open_guard_dir_failure_is_one_paired_notice_not_an_error(monkeypatch, tmp_path, capsys):
+    from app import i18n
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    def boom(path):
+        raise OSError("no file manager")
+
+    p._brand_dir_opener = boom
+    run(p.handle_control({"type": "open_guard_dir"}))      # 失败时返回一个要等的广播
+    assert "打开规则文件夹失败" in capsys.readouterr().out
+    assert [m["text"] for m in server.of_type("notice")] == [
+        i18n.L("无法打开文件夹：{}", "Couldn’t open the folder: {}").format(tmp_path / "no-local-dir")]
+
+
+def test_the_demo_comment_stream_goes_through_the_guard_and_leaves_no_trace(monkeypatch, tmp_path):
+    """--demo：虚构弹幕走和真实弹幕一样的守卫；关注名单进临时目录，演示完丢掉，真实的名单对象原样还回去。"""
+    from app import pipeline_guard
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(cg, "DEFAULTS_DIR", PRODUCTION_DEFAULTS)          # 演示用的是出厂词表
+    monkeypatch.setattr(pipeline_guard, "DEMO_TRANSLATE_DELAY", 0.0)
+    monkeypatch.setattr(pipeline_guard, "DEMO_COMMENTS", tuple(
+        c[:5] + (0.0,) for c in pipeline_guard.DEMO_COMMENTS))
+    total = len(pipeline_guard.DEMO_COMMENTS)
+    real_marks = p.guard.marks
+    p.guard.EVENT_MSG_GAP_SEC = p.guard.CID_MSG_GAP_SEC = 0.0           # 演示在毫秒内跑完：别让节流压住事件
+
+    async def scenario():
+        task = asyncio.ensure_future(p._demo_comment_stream())
+        for _ in range(500):
+            if len(server.of_type("comment")) >= total + 2:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    run(scenario())
+    sent = server.of_type("comment")
+    assert len(sent) >= total
+    assert all(re.fullmatch(r"\d{19}", c["uid"]) and c["user"] and c["text"] for c in sent)
+    assert len(server.of_type("comment_update")) >= total - 1
+    assert p.guard.marks is real_marks and not p.guard._open and not p.guard.enabled
+    assert not (tmp_path / "marked").exists()                              # 没往真实的 marked/ 里写
+    import app.comment_marks as cm
+    assert not list(Path(cm.MARKED_DIR).glob("*")) if Path(cm.MARKED_DIR).exists() else True
+    guards = [c["guard"] for c in sent if "guard" in c]
+    assert guards, "演示弹幕里至少有一条被守卫标出来"
+    if ("accuse", "call") in __import__("tests.comment_guard_confirmed", fromlist=["x"]).RED_CONFIRMED:
+        assert any(g["lvl"] == "alert" and "accuse_call" in g["cats"] for g in guards)
+        assert any(g["lvl"] == "alert" and "promo_link" in g["cats"] for g in guards)
+        assert server.of_type("guard_mark"), "号召举报那条红条自动加入了关注名单"
+    assert any(e["kind"] == "brigade" for m in server.of_type("guard_event") for e in [m["ev"]] if "kind" in e)
+
+
+def test_the_demo_stream_with_the_guard_off_only_shows_comments(monkeypatch, tmp_path):
+    from app import pipeline_guard
+    p, server = make_pipeline(monkeypatch, tmp_path, enabled=False)
+    monkeypatch.setattr(pipeline_guard, "DEMO_TRANSLATE_DELAY", 0.0)
+    monkeypatch.setattr(pipeline_guard, "DEMO_COMMENTS", tuple(c[:5] + (0.0,) for c in pipeline_guard.DEMO_COMMENTS)[:3])
+
+    async def scenario():
+        task = asyncio.ensure_future(p._demo_comment_stream())
+        for _ in range(500):
+            if len(server.of_type("comment")) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    run(scenario())
+    assert all("guard" not in c for c in server.of_type("comment")) and server.guard_messages() == []
