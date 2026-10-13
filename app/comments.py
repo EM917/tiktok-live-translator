@@ -21,7 +21,7 @@ import time
 from collections import OrderedDict
 
 from .i18n import L
-from .translator import CachedTranslator, ClaudeTranslator, engine_is_claude
+from .translator import CachedTranslator, ClaudeTranslator, engine_is_claude, looks_fabricated
 
 # 「有没有可译内容」的粗判：至少要有 2 个字母（含各语言字母，排除数字和下划线）。
 # 纯 emoji / 数字 / 标点的弹幕（"😂😂😂"、"1111"）翻不出东西，白白占用引擎。
@@ -79,6 +79,32 @@ def needs_translation(text, target):
     if len(_ALPHA_RE.findall(text)) < 2:
         return False
     if str(target or "").lower().startswith("zh") and _CJK_RE.search(text):
+        return False
+    return True
+
+
+# 短弹幕的译文长度上限：looks_fabricated 的长度比只管 20 字以上的原文，「Sii todo」这种两个词的
+# 弹幕被当成对话、回一整句话（2026-10-13 实录，约 150 字符）它管不到
+SHORT_REPLY_MAX = 60
+
+
+def plausible_translation(text, out, target):
+    """这条译文像不像是在翻译这条弹幕（而不是在回话、在问问题）。不像就当没译出来，只显示原文。
+
+    用结构信号，不猜语义：
+      * looks_fabricated 的几条（问句被吃掉、数字消失、比原文长出一大截）；
+      * 原文很短、译文却长出一大截；
+      * 目标语言是中文，原文不是中文，译文里却一个汉字都没有、还比原文多出好几个词——回话多半是
+        英文的一句话（「Could you paste the comments?」）。只差一两个词的不算：品牌名、人名原样
+        保留是正常译文。"""
+    if not out:
+        return False
+    if looks_fabricated(text, out):
+        return False
+    if len(out) > max(SHORT_REPLY_MAX, len(text) * 4):
+        return False
+    if str(target or "").lower().startswith("zh") and not _CJK_RE.search(text) \
+            and not _CJK_RE.search(out) and len(out.split()) >= len(text.split()) + 3:
         return False
     return True
 
@@ -329,6 +355,10 @@ class CommentTranslator:
         else:
             outs = await self._translate_many(translator, texts, target, glossary)
         for item, out in zip(batch, outs):
+            if out and not plausible_translation(item["text"], out, target):
+                print("[警告] 弹幕译文不像是在翻译这条弹幕（{} 字 → {} 字），只显示原文".format(
+                    len(item["text"]), len(out)))
+                out = None
             if out:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": out, "state": "ok"})

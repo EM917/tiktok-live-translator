@@ -145,7 +145,7 @@ def test_comments_are_translated_by_a_separate_haiku_instance(monkeypatch):
     body = post["body"]
     assert body["model"] == "claude-haiku-5-5"
     assert body["thinking"] == {"type": "disabled"} and body["output_config"] == {"effort": "low"}
-    assert body["messages"] == [{"role": "user", "content": "1. hola amigos\n2. que precio tiene"}]
+    assert body["messages"] == [{"role": "user", "content": "<comments>\n1. hola amigos\n2. que precio tiene\n</comments>"}]
     assert "untrusted" in body["system"]
     assert not [m for m in sent if m["type"] == "notice"]    # Claude 翻弹幕：没有「只显示原文」的提示
 
@@ -161,7 +161,7 @@ def test_a_single_comment_goes_out_as_plain_text(monkeypatch):
 
     run(scenario())
     assert updates(sent) == {"c0": ("ok", "我爱你")}
-    assert made.made[0].session_log.posts[0]["body"]["messages"][0]["content"] == "te amo"
+    assert made.made[0].session_log.posts[0]["body"]["messages"][0]["content"] == "<comments>\nte amo\n</comments>"
 
 
 def test_the_instance_is_built_once_and_rebuilt_when_the_subtitle_engine_is_replaced(monkeypatch):
@@ -316,3 +316,73 @@ def test_the_pipeline_translates_comments_with_claude_through_its_own_instance(
     assert sub_session.posts == [] and len(made.made) == 1
     assert json.loads(json.dumps(made.made[0].session_log.posts[0]["body"]))["model"] == (
         "claude-haiku-5-5")
+
+
+# ---------------------------------------------------------------------------
+# 回话不是译文（2026-10-13 直播实录）
+# ---------------------------------------------------------------------------
+# 单独一条两个词的弹幕「Sii todo」，Haiku 5.5 当成了对它说的话，用英文回了一句「没有要翻译的
+# 弹幕，请贴给我」，这句话被当成译文显示在弹幕栏里
+
+META_REPLY = ('I see only "Sii todo" with no comment list or content to translate. Could you paste '
+              "the viewer comments you'd like translated into Simplified Chinese?")
+
+
+def test_the_comment_prompt_says_the_input_is_always_comments_and_never_to_reply(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    tr = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
+    body = tr._body("Sii todo", "zh-CN")
+    assert body["messages"] == [{"role": "user", "content": "<comments>\nSii todo\n</comments>"}]
+    system = body["system"]
+    assert "<comments>" in system and "never reply" in system and "never ask for more input" in system
+    assert "even a very short one" in system
+    # 字幕和重译不包标签
+    sub = ClaudeTranslator()
+    assert sub._body("Sii todo", "zh-CN")["messages"][0]["content"] == "Sii todo"
+
+
+@pytest.mark.parametrize("text,out,target,ok", [
+    ("Sii todo", META_REPLY, "zh-CN", False),            # 实录：英文回话
+    ("Sii todo", "是的，全部", "zh-CN", True),
+    ("hola", "你好", "zh-CN", True),
+    ("hola", "hello", "en", True),                        # 目标语言不是中文时不查汉字
+    ("ok", "好的，我明白了，请问您想翻译哪些弹幕？我可以帮您把它们翻译成中文，" * 2, "zh-CN", False),
+    ("te amo", "Could you paste the comments?", "zh-CN", False),   # 没有汉字、还多出好几个词
+    ("Luna Demo Shop", "Luna Demo Shop", "zh-CN", True),     # 品牌名原样保留是正常译文
+    ("你好主播", "你好主播", "zh-CN", True),                # 原文就是中文：不按「没有汉字」判
+    ("precio 350", "价格", "zh-CN", False),               # 数字丢了（looks_fabricated）
+])
+def test_plausible_translation(text, out, target, ok):
+    assert comments_mod.plausible_translation(text, out, target) is ok
+
+
+def test_a_reply_instead_of_a_translation_shows_the_original_only(monkeypatch):
+    tr, inner, _ = subtitle_engine(monkeypatch)
+    made = Sibling([reply(META_REPLY)])
+    holder = {"tr": tr}
+    ct, sent = make(holder, made)
+
+    async def scenario():
+        await ct.accept(items("Sii todo"))
+        await wait_for(lambda: updates(sent).get("c0", (None,))[0] in ("ok", "failed"))
+        await ct.close()
+
+    run(scenario())
+    assert updates(sent)["c0"] == ("failed", None)
+
+
+def test_in_a_batch_only_the_reply_like_line_is_dropped(monkeypatch):
+    tr, inner, _ = subtitle_engine(monkeypatch)
+    made = Sibling([reply("1. 你好朋友们\n2. " + META_REPLY)])
+    holder = {"tr": tr}
+    ct, sent = make(holder, made)
+
+    async def scenario():
+        await ct.accept(items("hola amigos", "Sii todo"))
+        await wait_for(lambda: len(updates(sent)) == 2)
+        await ct.close()
+
+    run(scenario())
+    got = updates(sent)
+    assert got["c0"] == ("ok", "你好朋友们")
+    assert got["c1"] == ("failed", None)
