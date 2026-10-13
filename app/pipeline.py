@@ -4400,6 +4400,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             head = L("重译没有成功：{} 返回 HTTP {}，程序暂停请求 {} 秒",
                      "Couldn’t retranslate: {} returned HTTP {}. Requests are paused for {} sec"
                      ).format(engine, error[0], int(round(paused)))
+        elif error and error[0] is not None and error is not error_before and error[1]:
+            # 400/402 带着接口自己的说明（引擎只在这两种回应里留原话，见 ClaudeTranslator.
+            # SAYS_WHY_STATUSES）：照抄，和引擎横幅一样，不替它解释
+            head = L("重译没有成功：{} 返回 HTTP {}（{}）",
+                     "Couldn’t retranslate: {} returned HTTP {} ({})").format(
+                engine, error[0], error[1].rstrip(" .。"))  # i18n: data（接口原话，去掉末尾句号）
         elif error and error[0] is not None and error is not error_before:
             head = L("重译没有成功：{} 返回 HTTP {}",
                      "Couldn’t retranslate: {} returned HTTP {}").format(engine, error[0])

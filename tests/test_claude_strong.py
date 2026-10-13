@@ -402,6 +402,12 @@ def failed_retranslate(tmp_path, strong, quality=QUALITY_FAST, trigger="manual",
     (dict(error=(500, None)),
      "重译没有成功：Claude 返回 HTTP 500，原译文保持不变",
      "Couldn’t retranslate: Claude returned HTTP 500. The current translation is unchanged."),
+    # 400/402 带着接口自己的说明：照抄，不解释
+    (dict(error=(400, "invalid_request_error: thinking.type.between_tools is not supported.")),
+     "重译没有成功：Claude 返回 HTTP 400（invalid_request_error: thinking.type.between_tools is "
+     "not supported），原译文保持不变",
+     "Couldn’t retranslate: Claude returned HTTP 400 (invalid_request_error: "
+     "thinking.type.between_tools is not supported). The current translation is unchanged."),
     (dict(error=(429, None), cooldown=30.0),
      "重译没有成功：Claude 返回 HTTP 429，程序暂停请求 30 秒，原译文保持不变",
      "Couldn’t retranslate: Claude returned HTTP 429. Requests are paused for 30 sec. The "
@@ -449,7 +455,8 @@ def test_a_discarded_lookalike_is_reported_as_discarded(tmp_path):
 def test_a_local_model_failure_names_the_local_model_not_claude(monkeypatch, tmp_path):
     p = failed_retranslate(tmp_path, Flaky(error=(500, "boom"), model=HYMT2_LARGE),
                            engine=Fast("hymt2", model=HYMT2_SMALL))
-    assert en(only_note(p)) == ("Couldn’t retranslate: the local model returned HTTP 500. "
+    # Ollama 的原话也照抄（和引擎横幅一样）
+    assert en(only_note(p)) == ("Couldn’t retranslate: the local model returned HTTP 500 (boom). "
                                 "The current translation is unchanged.")
 
 
