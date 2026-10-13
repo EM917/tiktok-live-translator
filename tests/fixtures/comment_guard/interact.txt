@@ -1,4 +1,4 @@
-# 测试夹具（tests/fixtures/comment_guard/）：红条档已打开的词表快照。tests 只读这里，不依赖 comment_guard/defaults 的内容。
+# 测试夹具（tests/fixtures/comment_guard/）：出厂词表去掉 :pending 之后的快照，红条档全部是已确认。tests 只读这里，不依赖 comment_guard/defaults 的内容。
 # 豁免档：互动词、国家名、正向词簇、正向表情 —— 刷屏规则不对它们计分
 # （主播让观众刷“yo”、国家名，粉丝刷爱心、生日祝福，这些不是刷屏）。
 # 格式同 banned_terms.txt：一行一个词或短语，re: 开头是正则；注释只能整行写

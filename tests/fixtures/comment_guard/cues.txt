@@ -1,4 +1,4 @@
-# 测试夹具（tests/fixtures/comment_guard/）：红条档已打开的词表快照。tests 只读这里，不依赖 comment_guard/defaults 的内容。
+# 测试夹具（tests/fixtures/comment_guard/）：出厂词表去掉 :pending 之后的快照，红条档全部是已确认。tests 只读这里，不依赖 comment_guard/defaults 的内容。
 # 负面线索（线索档）：没有词表命中时，只决定要不要把这条弹幕送去模型复核；不上界面、不算红条。
 # 全大写（字母里大写占比和最少词数）的阈值在 thresholds.txt 的 caps_lead。
 

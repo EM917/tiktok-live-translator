@@ -1,8 +1,9 @@
 """弹幕留意规则层（app/comment_guard.py）：单条判定、词表机制、第二版评审例句。
 
-**用 tests/fixtures/comment_guard/ 的测试词表**（红条档在里面是打开的），不依赖正式默认词表的内容：
-正式默认词表的红条档整段注释在「待业务确认」里，用户逐条确认后才打开（comment_guard/README.md）。
-唯一读正式默认词表的是最底下 `test_defaults_*` 那几条，它们钉的恰恰是「红条档没有擅自打开」。
+**用 tests/fixtures/comment_guard/ 的测试词表**（红条档在里面全部是已确认的），不依赖正式默认词表的内容：
+正式默认词表的红条档一律写在 `[段名:pending]` 里，命中只出琥珀，用户逐条确认后才挪成红条
+（comment_guard/README.md）。读正式默认词表的只有最底下 `test_defaults_*` 那几条，它们钉的是
+「没确认的红条档只出琥珀」，以及夹具和出厂词表不漂移。
 
 原型（scratchpad 里的 inv-rules-proto）的 133 条用例：117 条单条在本文件，3 条累计和 13 条刷屏序列
 分别在本文件的累计一节和 tests/test_comment_guard_flood.py。期望值按 spec §4 更新，每处改动在表里
@@ -10,6 +11,7 @@
 
 纯 CPU：不联网、不加载模型、不 import main.py。
 """
+import re
 import time
 from pathlib import Path
 
@@ -24,8 +26,9 @@ NO_LOCAL = HERE / "no-such-local-dir"
 STREAMER = "luna_demo"
 RULES = cg.load_rules(FIX, NO_LOCAL)
 
-# 默认词表里已经打开的红条档段：用户确认后才往里加（comment_guard/README.md「待业务确认块」）。
-# 现在没有任何一段被确认；用户先确认的是 insult/threat 和 accuse/call 两小段
+# 出厂词表里已确认的红条档段（不带 :pending 的）：用户确认后才往里加（comment_guard/README.md
+# 「确认红条档词条」）。现在没有任何一段被确认；用户先确认的是 insult/threat 和 accuse/call 两小段。
+# 下面三条出厂词表测试都由它驱动：确认一段，只改这个集合（和词表文件）就行
 RED_CONFIRMED = frozenset()
 
 RESULT_KEYS = {"lvl", "amb", "cats", "sub", "why", "tier", "tags", "route"}
@@ -895,14 +898,48 @@ def test_non_utf8_lexicon_file_is_reported_not_fatal(tmp_path):
 
 
 # ------------------------------------------------------------------------------------------
-# 正式默认词表：红条档没有擅自打开（CLAUDE.md 第五条、spec I7）
+# 正式默认词表：红条档一律 :pending（命中只出琥珀），CLAUDE.md 第五条、spec I7、用户决定 7
 # ------------------------------------------------------------------------------------------
 
-def test_defaults_load_clean_and_enable_only_the_clue_and_exempt_tiers():
+# 每个红条档段一句典型的话：按已确认的词表它会出红条（夹具），出厂词表里没确认的段只出琥珀
+RED_SAMPLES = {
+    ("insult", "strong"): "eres una pendeja",
+    ("insult", "threat"): "te voy a matar",
+    ("insult", "sexual"): "enseña las tetas",
+    ("insult", "target"): "eres una gorda",
+    ("accuse", "call"): "reporten este live",
+    ("accuse", "report"): "voy a ir a profeco",
+    ("accuse", "assert"): "ladrona",
+    ("accuse", "assert-frame"): "producto falso",
+    ("promo", "pull"): "vengan a mi live",
+    ("promo", "scam-strong"): "soporte de tiktok",
+}
+RED_SECTIONS = sorted((f, sec) for f, secs in cg.SECTIONS.items() for sec, tier in secs.items()
+                      if tier == cg.RED and not cg.is_pending(sec))
+
+
+def test_every_red_tier_section_has_a_sample_and_the_samples_are_red_in_the_fixture():
+    assert sorted(RED_SAMPLES) == RED_SECTIONS
+    for key, text in RED_SAMPLES.items():
+        r = judge(text)
+        assert (r["lvl"], r["tier"]) == ("alert", "red"), (key, r)
+        assert r["sub"] == key[1] or key[1] == "assert-frame", (key, r)
+
+
+def test_defaults_load_clean_and_confirmed_red_sections_are_exactly_red_confirmed():
+    """README「确认红条档词条」：确认一段 = 把词条挪到不带 :pending 的同名段 + 同一个提交改
+    RED_CONFIRMED。出厂词表里已确认（不带 :pending）的红条档段 == RED_CONFIRMED；其余红条档
+    都只存在于 :pending 段里。"""
     rules = cg.load_rules(DEFAULTS, NO_LOCAL)
     assert rules.warnings == []
-    enabled_red = {key for key, n in rules.counts.items() if n and cg.SECTIONS[key[0]][key[1]] == cg.RED}
-    assert enabled_red == set(RED_CONFIRMED), "默认词表里有没经用户确认的红条档段：%s" % sorted(enabled_red)
+    confirmed = {key for key, n in rules.counts.items()
+                 if n and cg.SECTIONS[key[0]][key[1]] == cg.RED and not cg.is_pending(key[1])}
+    assert confirmed == set(RED_CONFIRMED), \
+        "出厂词表里已确认的红条档段和 RED_CONFIRMED 对不上（见 comment_guard/README.md 的确认流程）：%s" % sorted(confirmed)
+    pending = {(f, cg.base_sec(sec)) for (f, sec), n in rules.counts.items()
+               if n and cg.is_pending(sec)}
+    assert pending == set(RED_SECTIONS), "每个红条档段都该有待确认的词条（至少现在）"
+    assert rules.pending_count > 150
     clue = {key for key, n in rules.counts.items() if n and cg.SECTIONS[key[0]][key[1]] == cg.CLUE}
     assert {("insult", "medium"), ("insult", "watch"), ("insult", "sexual-soft"), ("accuse", "institution"),
             ("accuse", "negative"), ("promo", "offer"), ("promo", "lure"), ("promo", "scam-weak"),
@@ -913,59 +950,145 @@ def test_defaults_load_clean_and_enable_only_the_clue_and_exempt_tiers():
             ("interact", "positive-emoji")} <= exempt
 
 
-def test_defaults_accumulate_red_is_off_and_only_commented_in_the_pending_block():
-    text = (DEFAULTS / "thresholds.txt").read_text(encoding="utf-8")
-    active = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
-    assert not any(ln.startswith("accumulate_red") for ln in active)
-    assert "# accumulate_red: on" in text
-    assert cg.load_rules(DEFAULTS, NO_LOCAL).thresholds["accumulate_red"] is False
-
-
-def test_with_the_default_lexicon_red_words_are_inert_but_structure_signals_still_work():
+@pytest.mark.parametrize("key", RED_SECTIONS, ids=["%s/%s" % k for k in RED_SECTIONS])
+def test_with_the_default_lexicon_an_unconfirmed_red_section_only_shows_amber(key):
+    """用户决定 7：没确认的红条档词条只出琥珀，不标红，不自动加入关注名单。"""
     rules = cg.load_rules(DEFAULTS, NO_LOCAL)
-    for text in ("eres una pendeja", "te voy a matar", "es una estafa", "reporten este live", "fuck you"):
-        r = judge(text, rules=rules)
-        assert r["lvl"] is None and not cg.auto_markable(r), text
+    r = judge(RED_SAMPLES[key], rules=rules)
+    if key in RED_CONFIRMED:
+        assert (r["lvl"], r["tier"]) == ("alert", "red"), r
+        assert cg.auto_markable(r)
+        return
+    assert (r["lvl"], r["amb"], r["tier"], r["route"]) == ("amber", "pending", "red", "confirm"), r
+    assert "pending" in r["tags"] and not cg.auto_markable(r)
+    assert r["why"] and r["sub"] == key[1]
+
+
+def test_with_the_default_lexicon_structure_signals_and_clue_notes_still_work():
+    rules = cg.load_rules(DEFAULTS, NO_LOCAL)
     r = judge("visita www.tienda-ejemplo.com", rules=rules)
     assert (r["lvl"], r["tier"]) == ("alert", "struct")
     assert judge("es ridículo el precio", rules=rules)["lvl"] == "note"     # 线索档照常记 note
 
 
-def test_default_pending_block_follows_the_documented_convention():
-    from tools.guard_collision import PENDING_MARK, count_pending, uncomment_pending
-
-    def block_of(text):
-        lines = text.splitlines()
-        marks = [n for n, ln in enumerate(lines) if PENDING_MARK.match(ln.strip())]
-        assert len(marks) == 1, "每个文件恰好一个「待业务确认」块"
-        return lines[marks[0] + 1:]
-
-    first = {"insult": "threat", "accuse": "call"}                  # 用户先确认的两小段排在块的最前面
-    for name in ("insult", "accuse", "promo"):
-        text = (DEFAULTS / (name + ".txt")).read_text(encoding="utf-8")
-        assert count_pending(text) > 10, name
-        headers = [ln.strip()[1:].strip() for ln in block_of(text)
-                   if ln.strip().startswith("#") and not ln.strip().startswith("##")
-                   and ln.strip()[1:].strip().startswith("[")]
-        if name in first:
-            assert headers[0] == "[%s]" % first[name], (name, headers[:3])
-        # 块里单个 # 开头的行只能是词条（词表是西语/英语，不会有中文）；说明必须用 ##
-        active = block_of(uncomment_pending(text))
-        assert not [ln for ln in active if ln and not ln.startswith("#")
-                    and any(0x4E00 <= ord(ch) <= 0x9FFF for ch in ln)], name
-        # 块外没有被碰过：启用的部分在块之前，块之后不再有启用的行
-        assert not [ln for ln in block_of(text) if ln.strip() and not ln.lstrip().startswith("#")], name
+def test_defaults_accumulate_red_is_an_active_off_line_with_the_confirmation_note():
+    text = (DEFAULTS / "thresholds.txt").read_text(encoding="utf-8")
+    active = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    assert "accumulate_red: off" in active
+    assert "改成 on 等于打开一档红条，须用户确认" in text
+    assert cg.load_rules(DEFAULTS, NO_LOCAL).thresholds["accumulate_red"] is False
 
 
-def test_default_pending_block_loads_clean_when_switched_on():
-    """候选词条本身是合法的：去掉注释之后没有体检警告，红条档的条数从 0 变成上百。"""
-    from tools.guard_collision import build_all_rules
+def _without_pending(text):
+    return re.sub(r"^\[([a-z0-9\-]+):pending\]$", r"[\1]", text, flags=re.M)
 
-    enabled, allr, tmp = build_all_rules(DEFAULTS, NO_LOCAL)
-    try:
-        assert allr.warnings == [], allr.warnings
-        assert allr.counts[("insult", "threat")] == 10 and allr.counts[("accuse", "call")] > 20
-        assert sum(1 for k, n in enabled.counts.items() if n and cg.SECTIONS[k[0]][k[1]] == cg.RED) == 0
-        assert allr.count > enabled.count + 150
-    finally:
-        tmp.cleanup()
+
+@pytest.mark.parametrize("name", ["insult", "accuse", "promo", "interact", "cues", "thresholds"])
+def test_fixture_lexicon_equals_the_defaults_without_pending(name):
+    """夹具是出厂词表去掉 :pending 之后的快照（红条档全部已确认）：两份不许漂移，否则规则测试
+    测的就不是出厂的东西。忽略夹具的文件头注释行和 accumulate_red 那一行。"""
+    fixture = (FIX / (name + ".txt")).read_text(encoding="utf-8").splitlines()
+    assert fixture[0].startswith("# 测试夹具"), "夹具第一行是说明它是什么的注释"
+    defaults = _without_pending((DEFAULTS / (name + ".txt")).read_text(encoding="utf-8")).splitlines()
+    drop = lambda lines: [ln for ln in lines if not ln.startswith("accumulate_red")]      # noqa: E731
+    assert drop(fixture[1:]) == drop(defaults)
+
+
+def test_readme_documents_the_pending_confirmation_flow():
+    text = (HERE.parent / "comment_guard" / "README.md").read_text(encoding="utf-8")
+    assert "[段名:pending]" in text and "RED_CONFIRMED" in text
+    assert "tests/test_comment_guard_rules.py" in text
+    assert "待业务确认" not in text, "旧的「待业务确认」注释块约定已取消"
+
+
+# ------------------------------------------------------------------------------------------
+# :pending 段的语义（用 tmp 小词表，不依赖出厂词表的内容）
+# ------------------------------------------------------------------------------------------
+
+def pending_rules(tmp_path, insult="", accuse="", promo=""):
+    return cg.load_rules(small_defaults(tmp_path, insult=insult, accuse=accuse, promo=promo), NO_LOCAL)
+
+
+def test_pending_hit_is_amber_pending_confirm_and_never_auto_markable(tmp_path):
+    rules = pending_rules(tmp_path, insult="[threat:pending]\nte voy a matar\n")
+    r = judge("te voy a matar", rules=rules)
+    assert (r["lvl"], r["amb"], r["tier"], r["route"]) == ("amber", "pending", "red", "confirm")
+    assert r["cats"] == ["threat"] and r["sub"] == "threat" and "pending" in r["tags"]
+    assert r["why"] == ["insult/threat:te voy a matar"]               # why 里不带 :pending
+    assert not cg.auto_markable(r)
+    assert rules.pending_count == 1 and rules.counts[("insult", "threat:pending")] == 1
+
+
+def test_confirmed_hit_wins_over_a_pending_hit_in_the_same_comment(tmp_path):
+    rules = pending_rules(tmp_path, insult="[strong]\nidiota\n[threat:pending]\nte voy a matar\n")
+    r = judge("te voy a matar idiota", rules=rules)
+    assert (r["lvl"], r["tier"], r["cats"]) == ("alert", "red", ["insult"])
+    assert r["amb"] is None and "pending" not in r["tags"] and cg.auto_markable(r)
+    assert judge("te voy a matar", rules=rules)["lvl"] == "amber"
+
+
+def test_moving_an_entry_from_pending_to_confirmed_turns_amber_into_red(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    before = pending_rules(tmp_path / "a", accuse="[call:pending]\nno compren\n")
+    after = pending_rules(tmp_path / "b", accuse="[call]\nno compren\n")
+    assert judge("no compren nada aqui", rules=before)["lvl"] == "amber"
+    r = judge("no compren nada aqui", rules=after)
+    assert (r["lvl"], r["cats"]) == ("alert", ["accuse_call"]) and cg.auto_markable(r)
+    assert before.hash != after.hash                                   # 确认前后的指纹不同
+
+
+def test_same_entry_in_pending_and_confirmed_keeps_the_confirmed_one(tmp_path):
+    rules = pending_rules(tmp_path, insult="[strong:pending]\nidiota\n[strong]\nidiota\n")
+    assert rules.entries[("insult", "strong")] == ["idiota"]
+    assert rules.entries.get(("insult", "strong:pending"), []) == []
+    assert judge("idiota", rules=rules)["lvl"] == "alert"
+
+
+def test_pending_on_a_non_red_section_is_a_warning_and_the_section_stays_plain(tmp_path):
+    rules = pending_rules(tmp_path, insult="[medium:pending]\ntonta\n[nada:pending]\nfoo\n")
+    reasons = sorted((w["section"], w["reason"]) for w in rules.warnings)
+    assert ("medium:pending", "pending_not_red_tier") in reasons
+    assert ("nada:pending", "unknown_section") in reasons
+    assert rules.entries[("insult", "medium")] == ["tonta"]              # 按普通线索段处理
+    assert judge("eres tonta", rules=rules)["lvl"] == "note"
+
+
+def test_pending_target_and_assert_frame_words_work_through_their_sentence_frames(tmp_path):
+    rules = pending_rules(tmp_path, insult="[target:pending]\ngorda\n",
+                          accuse="[assert-frame:pending]\nfalso\n")
+    r = judge("eres una gorda", rules=rules)
+    assert (r["lvl"], r["amb"], r["sub"]) == ("amber", "pending", "target")
+    assert judge("la gorda del fondo", rules=rules)["lvl"] is None        # 句式规则一样适用
+    assert judge("gorda", rules=rules)["lvl"] == "note"                  # 单词昵称：note，带 pending 标记
+    assert "pending" in judge("gorda", rules=rules)["tags"]
+    r = judge("producto falso", rules=rules)
+    assert (r["lvl"], r["amb"], r["cats"]) == ("amber", "pending", ["accuse_claim"])
+    assert judge("no es falso", rules=rules)["lvl"] is None               # 否认式不看确认状态
+
+
+def test_pending_pull_and_scam_strong_are_amber_and_do_not_open_the_phone_combo(tmp_path):
+    rules = pending_rules(tmp_path, promo="[pull:pending]\nvengan a mi live\n[scam-strong:pending]\nsoporte de tiktok\n"
+                                          "[offer]\nescribeme\n")
+    r = judge("vengan a mi live", rules=rules)
+    assert (r["lvl"], r["amb"], r["cats"]) == ("amber", "pending", ["promo_pull"])
+    r = judge("soporte de tiktok", rules=rules)
+    assert (r["lvl"], r["amb"], r["cats"]) == ("amber", "pending", ["promo_scam"])
+    # 电话 + 没确认的 pull 不升红（红条要靠已确认的词条或 offer 线索）；offer + 电话仍然红
+    r = judge("vengan a mi live 5512345678", rules=rules)
+    assert r["lvl"] == "amber" and r["amb"] == "pending"
+    assert judge("escribeme al 5512345678", rules=rules)["lvl"] == "alert"
+
+
+def test_pending_questions_quotes_and_question_marks_still_apply(tmp_path):
+    rules = pending_rules(tmp_path, accuse="[assert:pending]\nestafa\n")
+    r = judge("¿es una estafa?", rules=rules)
+    assert (r["lvl"], r["tags"]) == ("note", ["question_exempt", "pending"])
+    assert judge("dicen que es estafa", rules=rules)["amb"] == "pending"      # 待确认永远是琥珀的第一理由
+    assert "quote" in judge("dicen que es estafa", rules=rules)["tags"]
+
+
+def test_pending_hits_never_count_toward_accumulation_or_flood_levels(tmp_path):
+    rules = pending_rules(tmp_path, insult="[strong:pending]\nidiota\n")
+    a, b = seq(guard(rules), [("u1", "eres idiota", 0), ("u1", "eres idiota", 100)])
+    assert (a["lvl"], b["lvl"]) == ("amber", "amber") and not cg.auto_markable(b)

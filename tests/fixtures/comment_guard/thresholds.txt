@@ -1,4 +1,4 @@
-# 测试夹具（tests/fixtures/comment_guard/）：红条档已打开的词表快照。tests 只读这里，不依赖 comment_guard/defaults 的内容。
+# 测试夹具（tests/fixtures/comment_guard/）：出厂词表去掉 :pending 之后的快照，红条档全部是已确认。tests 只读这里，不依赖 comment_guard/defaults 的内容。
 # 规则层阈值：key: value（# 开头整行是注释）。本机 comment_guard/local/thresholds.txt 里同名的行覆盖这里。
 # 单位：a/b = b 秒内 a 条（刷屏）或 a 个账号（多账号同句）。
 
@@ -28,7 +28,6 @@ budget_ms: 50
 budget_window_sec: 1
 budget_structure_sec: 5
 
-# ============================ 待业务确认 ============================
-## 累计升级直接标红是红条档开关：打开前要业务确认。缺省 = off（累计结果只是琥珀，不自动加入）。
-## 打开方式：去掉下面这行行首的「# 」。
-# accumulate_red: on
+# 累计升级的结果直接标红是红条档开关，缺省 off：累计结果只是琥珀（accumulated），不标红、不自动加入。
+# 改成 on 等于打开一档红条，须用户确认。
+accumulate_red: off

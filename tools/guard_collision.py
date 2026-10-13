@@ -1,4 +1,4 @@
-"""弹幕留意词表的碰撞计数：每条词条（含注释在「待业务确认」里的红条档，按已打开来算）在主播口播里
+"""弹幕留意词表的碰撞计数：每条词条（含写在 `[段名:pending]` 里还没确认的红条档）在主播口播里
 撞了多少个不同的句子、跨几场。
 
 为什么要这个工具：判定词表是业务判断，agent 只产出候选。候选词条进表前必须知道它在带货西语里
@@ -16,8 +16,8 @@
     python3 tools/guard_collision.py --term "te voy a matar" --as insult/threat   # 入表前的风险报告
     python3 tools/guard_collision.py --json out.json        # 机器可读，不进仓库
 
-「待业务确认」块的约定（comment_guard/README.md）：块从 `# ====… 待业务确认 …====` 一行开始，
-块里单个 `#` 开头的行是注释掉的词条或 [段名]，`##` 开头的行是说明。
+红条档的约定（comment_guard/README.md）：没确认的词条写在 `[段名:pending]` 里（命中只出琥珀），
+确认后挪到不带 `:pending` 的同名段。本工具两种都算，报告里分别标「已打开」和「待确认」。
 """
 import argparse
 import json
@@ -42,7 +42,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULTS = ROOT / "comment_guard" / "defaults"
 # 直播转写进行中的进程特征（CLAUDE.md 第三条）；拆开写，免得本文件自己被这条 pgrep 扫到
 LIVE_PATTERNS = ("tiktok" + "cdn", "main" + ".py --browser")
-PENDING_MARK = re.compile(r"^#\s*=+\s*待业务确认\s*=+\s*$")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?¡¿])\s+")
 MIN_SENTENCE = 4
 
@@ -59,45 +58,9 @@ def live_running():
     return None
 
 
-def uncomment_pending(text):
-    """把「待业务确认」块里注释掉的词条和 [段名] 当成已打开，返回新文本；块外原样。"""
-    out, pending = [], False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not pending:
-            out.append(line)
-            pending = bool(PENDING_MARK.match(stripped))
-        elif stripped.startswith("##") or not stripped:
-            out.append(line)
-        elif stripped.startswith("#"):
-            out.append(stripped[1:].strip())
-        else:
-            out.append(line)
-    return "\n".join(out) + "\n"
-
-
-def count_pending(text):
-    """「待业务确认」块里注释掉的词条数（不含 [段名]）。"""
-    pending, n = False, 0
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not pending:
-            pending = bool(PENDING_MARK.match(stripped))
-        elif stripped.startswith("#") and not stripped.startswith("##"):
-            body = stripped[1:].strip()
-            if body and not re.match(r"^\[[a-z0-9\-]+\]$", body):
-                n += 1
-    return n
-
-
-def build_all_rules(defaults_dir, local_dir):
-    """(只含已打开的词条的 Rules, 把待确认块也打开的 Rules)。临时目录里放去掉注释的副本。"""
-    enabled = cg.load_rules(defaults_dir, local_dir)
-    tmp = tempfile.TemporaryDirectory()
-    for path in Path(defaults_dir).glob("*.txt"):
-        (Path(tmp.name) / path.name).write_text(
-            uncomment_pending(path.read_text(encoding="utf-8")), encoding="utf-8")
-    return enabled, cg.load_rules(tmp.name, local_dir), tmp
+def build_rules(defaults_dir, local_dir):
+    """词表：已确认和待确认（`:pending`）的红条档都在里面，线索档照常。"""
+    return cg.load_rules(defaults_dir, local_dir)
 
 
 def corpus_sentences(log_dir=None):
@@ -152,21 +115,22 @@ def collide(rules, sents, keep_examples=2):
     return out, per_section
 
 
-def entry_table(enabled, allr, hits, only=None):
-    """按词表里的顺序列出每条词条：状态（enabled / pending）和碰撞数据。"""
+def entry_table(rules, hits, only=None, status=None):
+    """按词表里的顺序列出每条词条：状态（enabled / pending / candidate）和碰撞数据。
+    status 不传时按段名定：带 `:pending` 的是 pending，其余 enabled；--term 传 candidate。"""
     rows = []
-    for (file, sec), entries in allr.entries.items():
+    for (file, sec), entries in rules.entries.items():
         if cg.SECTIONS[file][sec] == cg.EXEMPT:
             continue
-        if only and "%s/%s" % (file, sec) not in only:
+        base = cg.base_sec(sec)
+        if only and "%s/%s" % (file, base) not in only:
             continue
-        on = set(enabled.entries.get((file, sec), ()))
         for key in entries:
             row = hits.get((file, sec, key), {})
             rows.append({
-                "file": file, "section": sec, "tier": cg.SECTIONS[file][sec],
-                "entry": key, "original": allr.originals[(file, sec)].get(key, key),
-                "status": "enabled" if key in on else "pending",
+                "file": file, "section": base, "tier": cg.SECTIONS[file][sec],
+                "entry": key, "original": rules.originals[(file, sec)].get(key, key),
+                "status": status or ("pending" if cg.is_pending(sec) else "enabled"),
                 "sentences": row.get("sentences", 0),
                 "sessions": len(row.get("sessions", ())),
                 "occurrences": row.get("occurrences", 0),
@@ -174,18 +138,21 @@ def entry_table(enabled, allr, hits, only=None):
     return rows
 
 
+STATUS_LABEL = {"enabled": "已打开", "pending": "待确认", "candidate": "候选（未入表）"}
+
+
 def render(rows, args, per_section):
     lines = []
     by_sec = defaultdict(list)
     for r in rows:
-        by_sec[(r["file"], r["section"])].append(r)
-    for (file, sec), items in by_sec.items():
+        by_sec[(r["file"], r["section"], r["status"])].append(r)
+    for (file, sec, status), items in by_sec.items():
         hit = [r for r in items if r["sentences"]]
-        status = items[0]["status"]
+        key = (file, sec + cg.PENDING if status == "pending" else sec)
         lines.append("")
         lines.append("== %s/%s  [%s档，%s]  共 %d 条，有命中 %d 条，命中的不同句子 %d" % (
-            file, sec, items[0]["tier"], "已打开" if status == "enabled" else "待业务确认",
-            len(items), len(hit), per_section.get((file, sec), 0)))
+            file, sec, items[0]["tier"], STATUS_LABEL[status],
+            len(items), len(hit), per_section.get(key, 0)))
         for r in items:
             if r["sentences"] < args.min_hits and not args.all:
                 continue
@@ -232,17 +199,17 @@ def main(argv=None):
     # 默认不叠加本机文件：报告只看入库的词表，别人跑出来的数字能对上（指向一个不存在的目录）
     local = Path(args.local) if args.local else Path(tempfile.gettempdir()) / (
         "guard-collision-no-local-%d" % os.getpid())
-    keep = None
+    keep, status = None, None
     if args.term:
         rules, keep = candidate_rules(args.term, args.as_section)
-        enabled = allr = rules
+        status = "candidate"
     else:
-        enabled, allr, keep = build_all_rules(args.defaults, local)
+        rules = build_rules(args.defaults, local)
     sents, segments, sessions = corpus_sentences(args.logs)
     print("语料：{} 场 / {} 段 / {} 个不同的口播句子（来源 provenance.corpus，非 glob；"
           "主播口播，不是弹幕）".format(sessions, segments, len(sents)))
-    hits, per_section = collide(allr, sents, max(args.examples, 2))
-    rows = entry_table(enabled, allr, hits, only=set(args.section) or None)
+    hits, per_section = collide(rules, sents, max(args.examples, 2))
+    rows = entry_table(rules, hits, only=set(args.section) or None, status=status)
     print(render(rows, args, per_section))
     if args.json:
         data = {"corpus": {"sessions": sessions, "segments": segments, "sentences": len(sents)},

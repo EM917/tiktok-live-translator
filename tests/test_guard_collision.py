@@ -3,8 +3,8 @@
 两件事要钉住：
   * 直播转写进行中必须拒绝运行（CLAUDE.md 第三条：批量工作叠在直播 ASR 上，丢过 16 段音频）——
     `pgrep` 打桩成命中：退出码非零，而且一份语料都没读、一份词表都没载；
-  * 计数本身：数的是「这条词条真的会命中的不同句子」、跨几场，「待业务确认」块里注释掉的词条
-    按已打开来算。
+  * 计数本身：数的是「这条词条真的会命中的不同句子」、跨几场；写在 `[段名:pending]` 里还没确认的
+    红条档词条照样算，报告里标「待确认」，--term 的候选标「候选（未入表）」。
 
 测试里不跑真 pgrep（直播中跑测试也不能被它影响），不碰模型和网络。主播名用虚构的。
 """
@@ -44,7 +44,7 @@ def forbid_work(monkeypatch):
         raise AssertionError("直播转写进行中，不该读语料或载词表")
 
     monkeypatch.setattr(G.provenance, "corpus", boom)
-    monkeypatch.setattr(G, "build_all_rules", boom)
+    monkeypatch.setattr(G, "build_rules", boom)
     monkeypatch.setattr(G, "corpus_sentences", boom)
 
 
@@ -78,7 +78,7 @@ def test_without_pgrep_the_gate_cannot_tell_and_lets_it_run(monkeypatch):
 def test_gate_is_the_first_thing_main_does(monkeypatch):
     order = []
     monkeypatch.setattr(G, "live_running", lambda: order.append("gate") or None)
-    monkeypatch.setattr(G, "build_all_rules", lambda *a, **k: order.append("rules") or (_ for _ in ()).throw(StopIteration))
+    monkeypatch.setattr(G, "build_rules", lambda *a, **k: order.append("rules") or (_ for _ in ()).throw(StopIteration))
     with pytest.raises(StopIteration):
         G.main(["--logs", "/nonexistent"])
     assert order == ["gate", "rules"]
@@ -135,19 +135,23 @@ def test_counts_distinct_sentences_and_sessions_per_entry(logs, no_live, capsys,
     assert rows[("accuse", "call", "no compren")]["sentences"] == 1
 
 
-def test_pending_block_entries_are_counted_as_if_they_were_switched_on(logs, no_live, tmp_path):
+def test_pending_entries_are_counted_and_marked_pending_not_enabled(logs, no_live, tmp_path, capsys):
     d = tmp_path / "defaults"
     d.mkdir()
     (d / "insult.txt").write_text(
-        "[medium]\ntonta\n\n# ======== 待业务确认 ========\n## 说明用两个井号\n"
-        "# [strong]\n# pendeja\n# zoquete\n", encoding="utf-8")
+        "[medium]\ntonta\n\n# 红条档\n[strong:pending]\npendeja\nzoquete\n[strong]\nidiota\n",
+        encoding="utf-8")
     out = tmp_path / "out.json"
     G.main(["--logs", str(logs), "--defaults", str(d), "--json", str(out), "--all"])
-    rows = {r["entry"]: r for r in json.loads(out.read_text(encoding="utf-8"))["entries"]}
+    data = json.loads(out.read_text(encoding="utf-8"))
+    rows = {r["entry"]: r for r in data["entries"]}
     assert rows["pendeja"]["status"] == "pending" and rows["pendeja"]["sentences"] == 1
-    assert rows["tonta"]["status"] == "enabled"
-    assert rows["zoquete"]["sentences"] == 0
-    assert "说明用两个井号" not in rows and "说明用两个井号" not in "".join(rows)
+    assert rows["pendeja"]["section"] == "strong" and rows["pendeja"]["tier"] == "red"
+    assert rows["tonta"]["status"] == "enabled" and rows["idiota"]["status"] == "enabled"
+    assert rows["zoquete"]["status"] == "pending" and rows["zoquete"]["sentences"] == 0
+    assert data["sections"]["insult/strong:pending"] == 1             # 待确认的段单独计
+    text = capsys.readouterr().out
+    assert "待确认" in text and "已打开" in text
 
 
 def test_section_filter_and_min_hits_limit_the_report(logs, no_live, capsys):
@@ -165,15 +169,6 @@ def test_term_mode_audits_one_candidate_before_it_goes_into_the_list(logs, no_li
     assert "accuse/call" in text and "no compren" in text and "1 句" in text
     with pytest.raises(SystemExit):
         G.main(["--logs", str(logs), "--term", "x", "--as", "nada/nada"])
-
-
-def test_uncomment_pending_only_touches_the_pending_block():
-    src = ("# 普通注释\n[medium]\ntonta\n# 另一条普通注释\n\n"
-           "# =========== 待业务确认 ===========\n## 说明\n# [strong]\n# pendeja\n#\n\nrest\n")
-    out = G.uncomment_pending(src).splitlines()
-    assert "# 普通注释" in out and "# 另一条普通注释" in out          # 块外原样
-    assert "[strong]" in out and "pendeja" in out and "## 说明" in out
-    assert G.count_pending(src) == 1                                # 只数词条，不数 [段名] 和说明
 
 
 def test_the_tool_imports_no_network_or_model_code():

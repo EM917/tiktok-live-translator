@@ -8,16 +8,19 @@
   会抹掉 `?¿@#` 和表情，所以问句和结构信号必须在它之前判。
 * 词表匹配复用 `app.detector.BannedTermDetector` 的公开接口（一段一个实例，每条弹幕先
   `reset_state()` 再 `scan(folded, ts=0)`），模糊档全关；detector.py 一行不改。
-* 词表分三层（见 comment_guard/README.md）：红条档（单独命中就标红，默认整段注释在「待业务确认」
-  里，用户确认后才打开）、线索档（只记 note，不上界面）、豁免档（不计分）。词表是业务判断，
-  agent 只产出候选。
+* 词表分三层（见 comment_guard/README.md）：红条档（用户确认过的词条单独命中就标红；没确认的写在
+  `[段名:pending]` 里，命中只出琥珀）、线索档（只记 note，不上界面）、豁免档（不计分）。
+  词表是业务判断，agent 只产出候选，出厂词表里的红条档一律是 `:pending`。
 * 结果的形状固定（`CommentGuard.judge` 的返回值）：
     {"lvl": "alert"|"amber"|"note"|"lead"|None, "amb": None|"maybe_question"|"grievance"|
-     "quote"|"accumulated"|"question_link"|"brigade", "cats": [...], "sub": ..., "why": [...],
-     "tier": "red"|"clue"|"struct"|None, "tags": [...], "route": None|"confirm"|"upgrade"}
+     "quote"|"accumulated"|"question_link"|"brigade"|"pending", "cats": [...], "sub": ...,
+     "why": [...], "tier": "red"|"clue"|"struct"|None, "tags": [...],
+     "route": None|"confirm"|"upgrade"}
   `lvl` 里 alert 是红条，amber 是拿不准（不算红条、不自动加入），note 不上界面只计数，
   lead 是只命中负面线索、只决定送不送模型。`tier` 说命中来自红条档词表、线索档，还是结构信号
   （链接/电话/刷屏）；自动加入关注名单只认 tier == "red" 且没有不确定标记（`auto_markable`）。
+  `amb == "pending"`：命中的是还没经用户确认的红条档词条（`tier` 仍是 "red"，`tags` 含
+  "pending"，`route == "confirm"`）；同一条弹幕里既有已确认命中又有待确认命中时按已确认的出红条。
 * 刷屏要传真实时间戳（`judge(..., ts=...)` 的 ts 是必填关键字）：不传会让滑动窗口永不过期。
 * 内存有界：每个用户的时间戳只留 120 秒、每人最多 200 条，用户表满 3000 清掉最旧的 500，
   多账号同句窗口最多 1000 条（每条最多回看 500 条），id 去重 LRU 2000，累计表同样 3000/500。
@@ -251,8 +254,12 @@ def handle_hits(light_text, streamer=""):
 
 RED, CLUE, EXEMPT = "red", "clue", "exempt"
 STRUCT = "struct"
+# 红条档的段名后面可以加 `:pending`：`[threat:pending]` = 词条还没经用户确认，命中只出琥珀
+# （amb == "pending"，不标红，不自动加入）；用户确认一条，就把它从 `[x:pending]` 挪到 `[x]`
+PENDING = ":pending"
 
-# 文件 -> {段名: 档位}。认不出的段名在体检里报 unknown_section，不静默忽略
+# 文件 -> {段名: 档位}。认不出的段名在体检里报 unknown_section，不静默忽略。
+# 红条档的每个段另有一个 `:pending` 版本（见文件末尾的循环）
 SECTIONS = {
     "insult": {"strong": RED, "threat": RED, "sexual": RED, "target": RED,
                "medium": CLUE, "watch": CLUE, "sexual-soft": CLUE, "exempt-phrases": EXEMPT},
@@ -263,27 +270,56 @@ SECTIONS = {
     "interact": {"words": EXEMPT, "places": EXEMPT, "positive": EXEMPT, "positive-emoji": EXEMPT},
     "cues": {"neg-emoji": CLUE, "irony": CLUE},
 }
+for _secs in SECTIONS.values():
+    for _sec in [name for name, tier in _secs.items() if tier == RED]:
+        _secs[_sec + PENDING] = RED
 LEX_FILES = tuple(SECTIONS)
 LOCAL_LEX_FILES = ("insult", "accuse", "promo")
+
+
+def is_pending(sec):
+    return sec.endswith(PENDING)
+
+
+def base_sec(sec):
+    """`threat:pending` -> `threat`。"""
+    return sec[:-len(PENDING)] if sec.endswith(PENDING) else sec
+
+
 # 交给 BannedTermDetector 匹配的段（其余段是词表、短语或正则，另有专用的匹配方式）
-MATCHED = frozenset((
-    ("insult", "strong"), ("insult", "threat"), ("insult", "sexual"), ("insult", "medium"),
-    ("insult", "watch"), ("insult", "sexual-soft"),
-    ("accuse", "call"), ("accuse", "report"), ("accuse", "assert"), ("accuse", "institution"),
-    ("accuse", "negative"),
-    ("promo", "pull"), ("promo", "scam-strong"), ("promo", "offer"), ("promo", "lure"),
-    ("promo", "scam-weak"),
-    ("cues", "irony")))
+MATCHED = frozenset(
+    [("insult", s) for s in ("strong", "threat", "sexual")]
+    + [("accuse", s) for s in ("call", "report", "assert")]
+    + [("promo", s) for s in ("pull", "scam-strong")]
+    + [(f, s + PENDING) for f, s in
+       [("insult", "strong"), ("insult", "threat"), ("insult", "sexual"),
+        ("accuse", "call"), ("accuse", "report"), ("accuse", "assert"),
+        ("promo", "pull"), ("promo", "scam-strong")]]
+    + [("insult", "medium"), ("insult", "watch"), ("insult", "sexual-soft"),
+       ("accuse", "institution"), ("accuse", "negative"),
+       ("promo", "offer"), ("promo", "lure"), ("promo", "scam-weak"),
+       ("cues", "irony")])
 # 只有这两段允许检测器的「变体」档（单复数/阴阳性）：其余段变体档会把 perro 当 perra、zorro 当 zorra
-VARIANT_OK = frozenset((("insult", "strong"), ("accuse", "assert")))
-# 同一词条写在多个段里时取最严的档：靠前的更严
+VARIANT_OK = frozenset((("insult", "strong"), ("accuse", "assert"),
+                        ("insult", "strong" + PENDING), ("accuse", "assert" + PENDING)))
+# 同一词条写在多个段里时取最严的档：已确认的红条档 > 待确认的红条档 > 线索档；同档里靠前的更严
 _STRICT_ORDER = {
     "insult": ("threat", "strong", "sexual", "target", "medium", "sexual-soft", "watch"),
     "accuse": ("call", "report", "assert", "assert-frame", "institution", "negative"),
     "promo": ("scam-strong", "pull", "offer", "lure", "scam-weak"),
 }
-_SECTION_RE = re.compile(r"^\[([a-z0-9\-]+)\]$")
+_SECTION_RE = re.compile(r"^\[([a-z0-9\-]+(?::pending)?)\]$")
 _TRAILING_COMMENT = re.compile(r"\s#")
+
+
+def _strictness(file, sec):
+    order = _STRICT_ORDER.get(file, ())
+    base = base_sec(sec)
+    idx = order.index(base) if base in order else len(order)
+    if SECTIONS[file][sec] == RED:
+        return (1 if is_pending(sec) else 0, idx)
+    return (2, idx)
+
 
 DEFAULT_THRESHOLDS = {
     "user_burst_note": (4, 10),          # 条数/秒
@@ -359,7 +395,8 @@ class Rules:
 
     属性：
       warnings    词表体检：[{"src", "file", "section", "line", "entry", "reason"}]，只有代码；
-      counts      {(文件, 段): 生效条数}；count 是红条档 + 线索档的合计（「规则 N 条已生效」）；
+      counts      {(文件, 段): 生效条数}（待确认的红条档段名带 `:pending`）；count 是红条档（含待确认的）
+                  + 线索档的合计（「规则 N 条已生效」），pending_count 是其中待确认的条数；
       hash        生效词条 + 阈值的指纹（审计里「当时为什么标红」靠它还原）；
       thresholds  合并后的阈值。
     """
@@ -375,6 +412,8 @@ class Rules:
         self.exempt = {}         # 类别 -> 豁免短语的正则（盖住就当没命中）
         self.target_words = ()
         self.frame_words = ()
+        self.target_words_pending = ()
+        self.frame_words_pending = ()
         self.ask_res = ()
         self.interaction = frozenset()
         self.positive_re = None
@@ -384,12 +423,16 @@ class Rules:
         self.exempt_domains = ()
         self.hash = "?"
         self.count = 0
+        self.pending_count = 0
         self.local_dir = None
-        # 下面几个由 _finish 按词表编译；红条档整段注释时目标词、断言词是空的，对应的句式就是 None
+        # 下面几个由 _finish 按词表编译；目标词、断言词是空的，对应的句式就是 None
         self._frames = None
+        self._frames_pending = None
         self.target_vocative = None
+        self.target_vocative_pending = None
         self.neg_re = None
         self.frame_re = None
+        self.frame_re_pending = None
 
     # 体检警告：只给代码
     def _warn(self, src, file, section, line, entry, reason):
@@ -415,6 +458,11 @@ def _read_sections(path, file, src, rules):
         m = _SECTION_RE.match(line)
         if m:
             current = m.group(1)
+            if is_pending(current) and current not in known:
+                # `:pending` 只允许加在红条档的段名上；加在别的段上按普通段处理
+                if base_sec(current) in known:
+                    rules._warn(src, file, current, number, line, "pending_not_red_tier")
+                    current = base_sec(current)
             if current not in known:
                 rules._warn(src, file, current, number, line, "unknown_section")
             sections.setdefault(current, [])
@@ -478,8 +526,6 @@ def load_rules(defaults_dir=None, local_dir=None):
     per_section = {}           # (文件, 段) -> OrderedDict(键 -> (种类, 原写法, 行号, 来源))
     for file in LEX_FILES:
         tiers = SECTIONS[file]
-        order = _STRICT_ORDER.get(file, ())
-        rank = {sec: i for i, sec in enumerate(order)}
         best = {}              # 键 -> (排名, 段)
         staged = []
         for sec, number, raw, src in parsed[file]:
@@ -497,7 +543,7 @@ def load_rules(defaults_dir=None, local_dir=None):
                 rules._warn(src, file, sec, number, raw, "trailing_comment")
             staged.append((sec, number, raw, src, kind, key))
             if tiers[sec] != EXEMPT and kind != "re":
-                r = rank.get(sec, len(order))
+                r = _strictness(file, sec)
                 if key not in best or r < best[key][0]:
                     best[key] = (r, sec)
         for sec, number, raw, src, kind, key in staged:
@@ -561,8 +607,12 @@ def _build_sections(rules, per_section):
             rules.ask_res = tuple(ask)
         elif sec == "target":
             rules.target_words = tuple(k for k in plain if not k.startswith("re:"))
+        elif sec == "target" + PENDING:
+            rules.target_words_pending = tuple(k for k in plain if not k.startswith("re:"))
         elif sec == "assert-frame":
             rules.frame_words = tuple(k for k in plain if not k.startswith("re:"))
+        elif sec == "assert-frame" + PENDING:
+            rules.frame_words_pending = tuple(k for k in plain if not k.startswith("re:"))
         rules.entries[(file, sec)] = plain + sorted(emoji_set)
         rules.counts[(file, sec)] = alive
     rules.interaction = frozenset(interaction)
@@ -610,6 +660,7 @@ def _load_local_extras(rules, local_path):
 def _finish(rules):
     rules.count = sum(n for (file, sec), n in rules.counts.items()
                       if SECTIONS[file][sec] in (RED, CLUE) and file != "cues")
+    rules.pending_count = sum(n for (file, sec), n in rules.counts.items() if is_pending(sec))
     h = hashlib.sha256()
     for key in sorted(rules.entries):
         for entry in sorted(rules.entries[key]):
@@ -617,26 +668,16 @@ def _finish(rules):
     for key in sorted(rules.thresholds):
         h.update(("%s=%r\n" % (key, rules.thresholds[key])).encode("utf-8"))
     rules.hash = h.hexdigest()[:12]
-    # 目标词/断言框架词的正则：词表是空的（红条档整段注释时）就没有这些句式
-    w = "|".join(re.escape(x) for x in rules.target_words)
-    rules._frames = None
-    if w:
-        rules._frames = [
-            re.compile(r"\b(?:eres|estas|te ves|pareces|fuiste|you are|youre|you re|ur|u r|u are)"
-                       r"\s+(?:(?:muy|tan|bien|re|una|un)\s+)*(" + w + r")\b"),
-            re.compile(r"\bque\s+(" + w + r")\s+(?:eres|estas|te ves)\b"),
-            re.compile(r"\bpinche\s+(" + w + r")\b"),
-            re.compile(r"\b(" + w + r")\s+(?:de mierda|asquerosa|inutil)\b"),
-        ]
-        rules.target_vocative = re.compile(r"^(" + w + r")$")
-    else:
-        rules.target_vocative = None
-    fw = "|".join(re.escape(x) for x in rules.frame_words)
-    singles = [x for x in rules.entries.get(("accuse", "assert"), ())
+    # 目标词/断言框架词的正则：词表是空的就没有这些句式。已确认和待确认的各编一份
+    rules._frames, rules.target_vocative = _target_frames(rules.target_words)
+    rules._frames_pending, rules.target_vocative_pending = _target_frames(rules.target_words_pending)
+    singles = [x for sec in ("assert", "assert" + PENDING)
+               for x in rules.entries.get(("accuse", sec), ())
                if " " not in x and not x.startswith("re:")]
-    allw = "|".join(re.escape(x) for x in singles + list(rules.frame_words))
     # 否认：断言词前面带 no/nunca/ni/nada/sin（中间可隔 es/hay/haya……）整体当作否认；
-    # 「cómo va a haber estafa」这种反问式否认同理
+    # 「cómo va a haber estafa」这种反问式否认同理。否认和确认状态无关，两种断言词都认
+    allw = "|".join(re.escape(x) for x in singles + list(rules.frame_words)
+                    + list(rules.frame_words_pending))
     rules.neg_re = None
     if allw:
         rules.neg_re = re.compile(
@@ -645,13 +686,33 @@ def _finish(rules):
             r"(?:(?:una?|ningun[a]?|nada de|de)\s+)?(?:" + allw + r")\b|"
             r"\bcomo\s+(?:va a|puede|podria)\s+(?:haber|ser)\s+(?:una?\s+)?(?:" + allw + r")\b")
     # falso/fake/chafa 这类词只在「说某物是假的」的句式里才算断言
-    rules.frame_re = None
-    if fw:
-        rules.frame_re = re.compile(
-            r"\b(?:es|son|esta|estan|esto es|eso es|todo es|todo esta|producto|productos|puro|pura|"
-            r"marca|cuenta|live|medicina|vitaminas?|suplemento|gotas|vende|venden|un|its|it is|"
-            r"this is|that is|thats|is|are|so|totally|completely)\s+"
-            r"(?:(?:muy|re|100|cien|completamente|totalmente|todo)\s+)*(" + fw + r")\b")
+    rules.frame_re = _frame_regex(rules.frame_words)
+    rules.frame_re_pending = _frame_regex(rules.frame_words_pending)
+
+
+def _target_frames(words):
+    w = "|".join(re.escape(x) for x in words)
+    if not w:
+        return None, None
+    frames = [
+        re.compile(r"\b(?:eres|estas|te ves|pareces|fuiste|you are|youre|you re|ur|u r|u are)"
+                   r"\s+(?:(?:muy|tan|bien|re|una|un)\s+)*(" + w + r")\b"),
+        re.compile(r"\bque\s+(" + w + r")\s+(?:eres|estas|te ves)\b"),
+        re.compile(r"\bpinche\s+(" + w + r")\b"),
+        re.compile(r"\b(" + w + r")\s+(?:de mierda|asquerosa|inutil)\b"),
+    ]
+    return frames, re.compile(r"^(" + w + r")$")
+
+
+def _frame_regex(words):
+    fw = "|".join(re.escape(x) for x in words)
+    if not fw:
+        return None
+    return re.compile(
+        r"\b(?:es|son|esta|estan|esto es|eso es|todo es|todo esta|producto|productos|puro|pura|"
+        r"marca|cuenta|live|medicina|vitaminas?|suplemento|gotas|vende|venden|un|its|it is|"
+        r"this is|that is|thats|is|are|so|totally|completely)\s+"
+        r"(?:(?:muy|re|100|cien|completamente|totalmente|todo)\s+)*(" + fw + r")\b")
 
 
 def load_trusted(streamer, local_dir=None):
@@ -800,7 +861,7 @@ CAT_ORDER = ("threat", "insult", "sexual", "accuse_call", "accuse_report", "accu
              "promo_scam", "promo_pull", "promo_link", "promo_contact", "flood_repeat",
              "flood_user", "flood_brigade")
 UNCERTAIN_TAGS = frozenset(("maybe_question", "grievance", "quote", "vocative", "self",
-                            "accumulated", "rhetorical_question", "question_exempt"))
+                            "accumulated", "rhetorical_question", "question_exempt", "pending"))
 
 
 def auto_markable(result):
@@ -810,9 +871,22 @@ def auto_markable(result):
                 and not (set(result["tags"]) & UNCERTAIN_TAGS))
 
 
-def _finding(cat, sub, tier, lvl, why, amb=None, tags=(), route=None):
-    return {"cat": cat, "sub": sub, "tier": tier, "lvl": lvl, "amb": amb,
-            "why": list(why), "tags": list(tags), "route": route}
+def _finding(cat, sub, tier, lvl, why, amb=None, tags=(), route=None, pending=False):
+    f = {"cat": cat, "sub": sub, "tier": tier, "lvl": lvl, "amb": amb,
+         "why": list(why), "tags": list(tags), "route": route}
+    return _as_pending(f) if pending else f
+
+
+def _as_pending(f):
+    """待确认的红条档词条命中：红条和琥珀一律出琥珀（amb == "pending"，route == "confirm"），
+    note 仍是 note；tier 仍是 "red"（来源是红条档词表），tags 带上 "pending"。"""
+    f = dict(f)
+    f["tags"] = list(f["tags"])
+    if "pending" not in f["tags"]:
+        f["tags"].append("pending")
+    if f["lvl"] in ("alert", "amber"):
+        f["lvl"], f["amb"], f["route"] = "amber", "pending", "confirm"
+    return f
 
 
 def _result(findings=(), extra_tags=()):
@@ -886,47 +960,52 @@ class CommentGuard:
 
     def _lex_hits(self, light_text, folded):
         rules, out = self.rules, {}
-        flags = {"target_frame": False, "target_vocative": False, "ask": False}
+        flags = {"target_vocative": False, "target_vocative_pending": False, "ask": False}
 
         def strip(file, text):
             rx = rules.exempt.get(file)
             return rx.sub(" ", text) if rx else text
 
+        def scan(file, secs, text):
+            for sec in secs:
+                terms = self._scan((file, sec), text)
+                if terms:
+                    out[(file, sec)] = terms
+
         fi = strip("insult", folded)
-        for sec in ("strong", "threat", "sexual", "medium", "watch", "sexual-soft"):
-            terms = self._scan(("insult", sec), fi)
-            if terms:
-                out[("insult", sec)] = terms
-        if rules._frames:
-            for rx in rules._frames:
+        scan("insult", ("strong", "threat", "sexual", "strong" + PENDING, "threat" + PENDING,
+                        "sexual" + PENDING, "medium", "watch", "sexual-soft"), fi)
+        for sec, frames, voc, flag in (
+                ("target", rules._frames, rules.target_vocative, "target_vocative"),
+                ("target" + PENDING, rules._frames_pending, rules.target_vocative_pending,
+                 "target_vocative_pending")):
+            if not frames:
+                continue
+            for rx in frames:
                 m = rx.search(fi)
                 if m:
-                    out[("insult", "target")] = [m.group(1)]
-                    flags["target_frame"] = True
+                    out[("insult", sec)] = [m.group(1)]
                     break
             else:
-                m = rules.target_vocative.match(fi.strip())
+                m = voc.match(fi.strip())
                 if m:
-                    out[("insult", "target")] = [m.group(1)]
-                    flags["target_vocative"] = True
+                    out[("insult", sec)] = [m.group(1)]
+                    flags[flag] = True
 
         fa = strip("accuse", folded)
         if rules.neg_re is not None:
             fa = rules.neg_re.sub(" ", fa)
-        for sec in ("assert", "call", "report", "institution", "negative"):
-            terms = self._scan(("accuse", sec), fa)
-            if terms:
-                out[("accuse", sec)] = terms
-        if rules.frame_re is not None:
-            m = rules.frame_re.search(fa)
-            if m:
-                out[("accuse", "assert-frame")] = [m.group(1)]
+        scan("accuse", ("assert", "call", "report", "assert" + PENDING, "call" + PENDING,
+                        "report" + PENDING, "institution", "negative"), fa)
+        for sec, rx in (("assert-frame", rules.frame_re), ("assert-frame" + PENDING, rules.frame_re_pending)):
+            if rx is not None:
+                m = rx.search(fa)
+                if m:
+                    out[("accuse", sec)] = [m.group(1)]
 
         fp = strip("promo", folded)
-        for sec in ("pull", "scam-strong", "offer", "lure", "scam-weak"):
-            terms = self._scan(("promo", sec), fp)
-            if terms:
-                out[("promo", sec)] = terms
+        scan("promo", ("pull", "scam-strong", "pull" + PENDING, "scam-strong" + PENDING, "offer",
+                       "lure", "scam-weak"), fp)
         flags["ask"] = any(rx.search(folded) for rx in rules.ask_res)
 
         terms = self._scan(("cues", "irony"), folded)
@@ -1029,22 +1108,21 @@ class CommentGuard:
     def _insult(self, hits, flags, folded, quote):
         out = []
 
-        def why(sec):
-            return ["insult/%s:%s" % (sec, t) for t in hits[("insult", sec)][:3]]
+        def why(key):
+            return ["insult/%s:%s" % (base_sec(key), t) for t in hits[("insult", key)][:3]]
 
-        def red(cat, sec):
-            # 红条档命中；像在转述别人的话就降为琥珀
+        def red(cat, sub, key):
+            # 红条档命中；像在转述别人的话就降为琥珀；待确认的词条一律出琥珀（_as_pending）
+            pend = is_pending(key)
             if quote:
-                return _finding(cat, sec, RED, "amber", why(sec), amb="quote", tags=["quote"],
-                                route="confirm")
-            return _finding(cat, sec, RED, "alert", why(sec))
+                return _finding(cat, sub, RED, "amber", why(key), amb="quote", tags=["quote"],
+                                route="confirm", pending=pend)
+            return _finding(cat, sub, RED, "alert", why(key), pending=pend)
 
-        if ("insult", "strong") in hits:
-            out.append(red("insult", "strong"))
-        if ("insult", "threat") in hits:
-            out.append(red("threat", "threat"))
-        if ("insult", "sexual") in hits:
-            out.append(red("sexual", "sexual"))
+        for sec, cat in (("strong", "insult"), ("threat", "threat"), ("sexual", "sexual")):
+            for key in (sec, sec + PENDING):
+                if ("insult", key) in hits:
+                    out.append(red(cat, sec, key))
         if ("insult", "sexual-soft") in hits:
             out.append(_finding("sexual", "sexual-soft", CLUE, "note", why("sexual-soft")))
         if ("insult", "medium") in hits:
@@ -1055,24 +1133,29 @@ class CommentGuard:
                                 route="upgrade" if targeted else None))
         if ("insult", "watch") in hits:
             out.append(_finding("insult", "watch", CLUE, "note", why("watch")))
-        if ("insult", "target") in hits:
-            if flags.get("target_vocative"):
+        for key, voc in (("target", "target_vocative"), ("target" + PENDING, "target_vocative_pending")):
+            if ("insult", key) not in hits:
+                continue
+            pend = is_pending(key)
+            if flags.get(voc):
                 # 单独一个词（「gorda」）：可能是骂也可能是昵称
-                out.append(_finding("insult", "target", RED, "note", why("target"),
-                                    tags=["vocative"], route="upgrade"))
+                out.append(_finding("insult", "target", RED, "note", why(key),
+                                    tags=["vocative"], route="upgrade", pending=pend))
             elif _SELFREF.search(folded):
                 # 顾客自述（estoy muy gorda）：减重品类里这是目标词最常见的用法
-                out.append(_finding("insult", "target", RED, "note", why("target"),
-                                    tags=["self"], route="upgrade"))
+                out.append(_finding("insult", "target", RED, "note", why(key),
+                                    tags=["self"], route="upgrade", pending=pend))
             else:
-                out.append(red("insult", "target"))
+                out.append(red("insult", "target", key))
         return out
 
     # ---- B 假货、骗子、举报
     def _accuse(self, hits, folded, question, quote):
         subs = (("call", "accuse_call"), ("report", "accuse_report"), ("assert", "accuse_claim"),
                 ("assert-frame", "accuse_claim"))
-        reds = [(sec, cat, hits[("accuse", sec)]) for sec, cat in subs if ("accuse", sec) in hits]
+        reds = [(sec, cat, hits[("accuse", key)], is_pending(key))
+                for sec, cat in subs for key in (sec, sec + PENDING) if ("accuse", key) in hits]
+        reds.sort(key=lambda r: r[3])             # 已确认的排前面（sort 稳定）
         if not reds:
             out = []
             if question:
@@ -1082,12 +1165,13 @@ class CommentGuard:
                     out.append(_finding("accuse_claim", sec, CLUE, "note",
                                         ["accuse/%s:%s" % (sec, t) for t in hits[("accuse", sec)][:3]]))
             return out[:1]
-        sec0, cat0, _ = reds[0]
-        why = ["accuse/%s:%s" % (sec, t) for sec, _, terms in reds for t in terms[:2]]
+        sec0, cat0, _, pend0 = reds[0]
+        why = ["accuse/%s:%s" % (sec, t) for sec, _, terms, _ in reds for t in terms[:2]]
         if question:
             # 问句不计分，但句里有指称词：作为升级型送模型（没有模型时不显示）
             tag = "rhetorical_question" if _RHETORICAL.search(folded) else "question_exempt"
-            return [_finding(cat0, sec0, RED, "note", why, tags=[tag], route="upgrade")]
+            return [_finding(cat0, sec0, RED, "note", why, tags=[tag], route="upgrade",
+                             pending=pend0)]
         tags = []
         if _VICTIM.search(folded):
             tags.append("grievance")
@@ -1096,13 +1180,13 @@ class CommentGuard:
         if _COPULA_START.match(folded) and len(folded.split()) <= 6:
             tags.append("maybe_question")
         out = []
-        for sec, cat, terms in reds:
+        for sec, cat, terms, pend in reds:
             w = ["accuse/%s:%s" % (sec, t) for t in terms[:2]]
             if tags:
                 out.append(_finding(cat, sec, RED, "amber", w, amb=tags[0], tags=tags,
-                                    route="confirm"))
+                                    route="confirm", pending=pend))
             else:
-                out.append(_finding(cat, sec, RED, "alert", w))
+                out.append(_finding(cat, sec, RED, "alert", w, pending=pend))
         return out
 
     # ---- D 引流
@@ -1118,13 +1202,15 @@ class CommentGuard:
             handles = [h for h in handles if h not in own]
         pulls = hits.get(("promo", "pull"), [])
         scams = hits.get(("promo", "scam-strong"), [])
+        pulls_p = hits.get(("promo", "pull" + PENDING), [])       # 待确认的：只出琥珀
+        scams_p = hits.get(("promo", "scam-strong" + PENDING), [])
         offers = hits.get(("promo", "offer"), [])
         lures = hits.get(("promo", "lure"), [])
         weak = sorted(set(hits.get(("promo", "scam-weak"), [])))
         payload = bool(phones or handles)
         cue = bool(offers or pulls)
 
-        if flags.get("ask") and not (urls or payload or scams):
+        if flags.get("ask") and not (urls or payload or scams or scams_p):
             return []                 # 顾客向主播要联系方式：整条豁免；只说 WhatsApp 这个词绝不报
         if urls:
             if plain_q:
@@ -1136,8 +1222,14 @@ class CommentGuard:
         if scams:
             out.append(_finding("promo_scam", "scam-strong", RED, "alert",
                                 ["promo/scam-strong:" + scams[0]]))
+        if scams_p:
+            out.append(_finding("promo_scam", "scam-strong", RED, "alert",
+                                ["promo/scam-strong:" + scams_p[0]], pending=True))
         if pulls:
             out.append(_finding("promo_pull", "pull", RED, "alert", ["promo/pull:" + pulls[0]]))
+        if pulls_p:
+            out.append(_finding("promo_pull", "pull", RED, "alert", ["promo/pull:" + pulls_p[0]],
+                                pending=True))
         if weak:
             reason = "promo/scam-weak:" + ",".join(weak[:3])
             if len(weak) >= 2 or urls or payload or cue:
@@ -1157,7 +1249,7 @@ class CommentGuard:
         elif phones:
             out.append(_finding("promo_contact", "phone", STRUCT, "note", ["promo/phone"]))
         # 单独的 @账号只记 1 分：不到 note
-        if not (payload or urls or scams or pulls):
+        if not (payload or urls or scams or pulls or scams_p or pulls_p):
             if offers:
                 out.append(_finding("promo_contact", "offer", CLUE, "note",
                                     ["promo/offer:" + offers[0]]))
