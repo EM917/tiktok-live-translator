@@ -270,8 +270,40 @@ def test_unreadable_file_is_not_renamed_and_not_overwritten(tmp_path, monkeypatc
         await s.flush_now()
         return code
 
-    assert run(scenario()) == "marks_corrupt"
+    assert run(scenario()) == "marks_unreadable"       # 没有备份，所以不能叫 marks_corrupt
     assert writes == [] and target.exists() and not list(folder.glob("*.bak-*"))
+    assert s.persist is False
+
+
+def test_a_corrupt_file_that_cannot_be_moved_aside_is_unreadable_and_left_alone(tmp_path, monkeypatch, writes):
+    folder = tmp_path / "marked"
+    folder.mkdir()
+    target = folder / (STREAMER + ".json")
+    target.write_text("{ not json", encoding="utf-8")
+
+    def refuse(src, dst):
+        raise OSError("read-only volume")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    s = store(tmp_path)
+
+    async def scenario():
+        code = await s.load(STREAMER)
+        s.add([UID], "Ana", by="manual")
+        await s.flush_now()
+        return code
+
+    assert run(scenario()) == "marks_unreadable"
+    assert target.read_text(encoding="utf-8") == "{ not json" and not list(folder.glob("*.bak-*"))
+    assert writes == [] and s.persist is False
+
+
+def test_only_a_real_backup_is_reported_as_one(tmp_path):
+    folder = tmp_path / "marked"
+    folder.mkdir()
+    (folder / (STREAMER + ".json")).write_text("{ not json", encoding="utf-8")
+    assert run(store(tmp_path).load(STREAMER)) == "marks_corrupt"
+    assert len(list(folder.glob("*.bak-*"))) == 1
 
 
 def test_entries_with_bad_fields_are_cleaned_or_dropped_on_load(tmp_path):
@@ -492,3 +524,225 @@ def test_trusted_accounts_are_exempt_they_get_no_verdict_and_are_never_added(mon
     assert [("guard" in o) for o in out] == [False, False, False, False, True]
     assert list(rt.marks.viewers) == ["5"] and rt.marked_auto == 1
     assert rt.counts == {"threat": {"alert": 1, "amber": 0, "note": 0}}
+
+
+# ---- 写盘失败不丢脏标记：收尾和下一次改动都会再试 ----------------------------------------------------
+
+def fail_first_write(monkeypatch):
+    """_write_safe 第一次返回一句错误说明，之后恢复正常（磁盘满了一下又好了）。"""
+    real = comment_marks._write_safe
+    calls = {"n": 0}
+
+    def flaky(path, text):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "OSError: No space left on device"
+        return real(path, text)
+
+    monkeypatch.setattr(comment_marks, "_write_safe", flaky)
+    return calls
+
+
+def test_a_failed_write_keeps_the_dirty_flag_so_the_end_of_session_flush_retries(tmp_path, monkeypatch,
+                                                                                 fast_save):
+    calls = fail_first_write(monkeypatch)
+    s = store(tmp_path)
+
+    async def scenario():
+        await s.load(STREAMER)
+        s.add([UID], "Ana", by="manual")
+        await asyncio.sleep(0.3)
+        assert s.write_errors == 1 and s.failing and calls["n"] == 1
+        assert not (tmp_path / "marked" / (STREAMER + ".json")).exists()
+        await s.flush_now()                           # 收尾：脏标记还在，再写一次
+        assert not s.failing
+
+    run(scenario())
+    assert calls["n"] == 2 and list(read(tmp_path)["viewers"]) == [UID]
+
+
+def test_a_failed_last_seen_only_write_is_retried_at_the_end_too(tmp_path, monkeypatch, fast_save):
+    monkeypatch.setattr(comment_marks, "LAZY_SAVE_SEC", 0.05)
+    s = store(tmp_path)
+
+    async def scenario():
+        await s.load(STREAMER)
+        s.add([UID], "Ana", by="manual")
+        await asyncio.sleep(0.2)                      # 第一次写盘正常
+        fail_first_write(monkeypatch)
+        s.touch(UID, [], "Ana", NOW + 5)              # 只是 last_seen / 条数变了：轻量脏标记
+        await asyncio.sleep(0.3)
+        assert s.failing and s.write_errors == 1
+        await s.flush_now()
+
+    run(scenario())
+    assert read(tmp_path)["viewers"][UID]["hits"] == 1 and read(tmp_path)["viewers"][UID]["last_seen"] == NOW + 5
+
+
+def test_after_a_failed_write_the_next_change_writes_everything(tmp_path, monkeypatch, fast_save):
+    fail_first_write(monkeypatch)
+    s = store(tmp_path)
+
+    async def scenario():
+        await s.load(STREAMER)
+        s.add(["100"], "A", by="manual")
+        await asyncio.sleep(0.3)
+        assert s.failing
+        s.add(["200"], "B", by="manual")              # 磁盘好了，下一次改动照常排一次写盘
+        await asyncio.sleep(0.3)
+        assert not s.failing
+
+    run(scenario())
+    assert sorted(read(tmp_path)["viewers"]) == ["100", "200"]
+
+
+def test_loading_another_streamer_resets_the_failing_flag(tmp_path, monkeypatch, fast_save):
+    fail_first_write(monkeypatch)
+    s = store(tmp_path)
+
+    async def scenario():
+        await s.load(STREAMER)
+        s.add([UID], "Ana", by="manual")
+        await asyncio.sleep(0.3)
+        assert s.failing
+        await s.load("marca_demo")
+        assert not s.failing
+
+    run(scenario())
+
+
+# ---- 一些只在规格里写了数字、测试却引用符号的口径 --------------------------------------------------------
+
+def test_the_limits_are_the_numbers_in_the_spec():
+    assert comment_marks.MAX_VIEWERS == 500
+    assert comment_marks.SAVE_DELAY_SEC == 2.0 and comment_marks.LAZY_SAVE_SEC == 60.0
+    assert comment_marks.AUTO_EXPIRE_SEC == 30 * 86400
+    assert comment_marks.MAX_KEYS == 4 and comment_marks.MAX_AKA == 3
+
+
+def test_structural_changes_are_scheduled_2_seconds_out_and_last_seen_ones_60(tmp_path):
+    s = store(tmp_path)
+
+    async def scenario():
+        await s.load(STREAMER)
+        loop = asyncio.get_running_loop()
+        delays = []
+        real = loop.call_later
+        loop.call_later = lambda delay, callback, *args: (delays.append(delay), real(delay, callback, *args))[1]
+        s.add([UID], "Ana", by="manual")
+        await s.flush_now()
+        s.touch(UID, [], "Ana", NOW + 5)
+        s.close()
+        return delays
+
+    assert run(scenario()) == [2.0, 60.0]
+
+
+def test_the_write_syncs_the_tmp_file_before_it_replaces_the_real_one(tmp_path, monkeypatch):
+    order = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: (order.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(os, "replace", lambda a, b: (order.append("replace"), real_replace(a, b))[1])
+    comment_marks._write_atomic(tmp_path / "marked" / "x.json", '{"a": 1}')
+    assert order == ["fsync", "replace"]
+
+
+# ---- 关注名单里的人又发言了：接线（touch）要钉住 -------------------------------------------------------
+
+def test_a_marked_viewer_speaking_again_updates_hits_last_seen_and_new_keys(monkeypatch, tmp_path):
+    rt = new_runtime(monkeypatch, tmp_path)
+    marks_sent = []
+
+    async def broadcast(msg):
+        if msg["type"] == "guard_mark":
+            marks_sent.append(msg)
+
+    async def scenario():
+        await start(rt)
+        feed(rt, [item("c1", "Ana", RED_TEXT, uid=UID, sec="s:AAA")], now=1000.0)      # 自动加入
+        assert rt.marks.entry(UID)["keys"] == [UID, "s:AAA"] and rt.marked_auto == 1
+        await rt.flush(broadcast)
+        del marks_sent[:]
+
+        # 第一次再发言：带了一个新的 handle——键并进来，hits / last_seen 前进，恰好排一条 guard_mark
+        out = feed(rt, [item("h0", "Ana", "hola buenas tardes", uid=UID, sec="s:AAA", handle="ana_demo")],
+                   now=2000.0)
+        assert "guard" not in out[0]
+        entry = rt.marks.entry(UID)
+        assert entry["hits"] == 1 and entry["last_seen"] == 2000
+        assert entry["keys"] == [UID, "s:AAA", "h:ana_demo"] and rt.marks.match(["h:ana_demo"]) == UID
+        assert list(rt._pending_marks) == [UID]
+        await rt.flush(broadcast)
+        assert [m["key"] for m in marks_sent] == [UID] and marks_sent[0]["entry"]["keys"][-1] == "h:ana_demo"
+        del marks_sent[:]
+
+        # 之后的发言没有任何新东西：计数照涨，但一条 guard_mark 都不排
+        feed(rt, [item("h1", "Ana", "gracias por la info", uid=UID, sec="s:AAA", handle="ana_demo")], now=2001.0)
+        feed(rt, [item("h2", "Ana", "me interesa el rosa", uid=UID, sec="s:AAA", handle="ana_demo")], now=2002.0)
+        entry = rt.marks.entry(UID)
+        assert entry["hits"] == 3 and entry["last_seen"] == 2002 and rt._pending_marks == {}
+        await rt.flush(broadcast)
+        assert marks_sent == []
+
+        # 换了个昵称：aka 记下来，排一条
+        feed(rt, [item("h3", "Ana B", "hola otra vez", uid=UID, sec="s:AAA", handle="ana_demo")], now=2003.0)
+        assert rt.marks.entry(UID)["aka"] == ["Ana B"] and list(rt._pending_marks) == [UID]
+        assert rt.marks.entry(UID)["hits"] == 4
+        # 名单里的人再说一次红条的话：不会再自动加一个人
+        feed(rt, [item("h4", "Ana", "ojala te mueras", uid=UID, sec="s:AAA", handle="ana_demo")], now=2004.0)
+        assert len(rt.marks) == 1 and rt.marked_auto == 1
+
+    run(scenario())
+
+
+def test_a_marked_viewer_who_keeps_talking_does_not_expire_after_30_days(monkeypatch, tmp_path):
+    base = 1_760_000_000
+    day = 86400
+    rt = new_runtime(monkeypatch, tmp_path)
+    audit = object()
+
+    async def scenario():
+        await start(rt, audit=audit)
+        feed(rt, [item("c1", "Ana", RED_TEXT, uid=UID), item("c2", "Bea", RED_TEXT, uid="2")], now=base)
+        feed(rt, [item("h1", "Ana", "hola buenas tardes", uid=UID)], now=base + 20 * day)   # 一直在聊
+        await rt.end(audit)                                                                  # 收尾强制写盘
+        later = MarkStore(directory=tmp_path / "marked", clock=lambda: base + 40 * day)
+        await later.load(STREAMER)
+        return later
+
+    later = run(scenario())
+    assert list(later.viewers) == [UID]                    # 40 天前加入、但 20 天前还发过言的留下；沉默的 Bea 过期
+    assert later.entry(UID)["last_seen"] == base + 20 * day and later.entry(UID)["hits"] == 1
+
+
+def test_handles_match_whatever_their_case(monkeypatch, tmp_path):
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        rt.mark("h:ana_demo", True, nick="Ana")
+        feed(rt, [item("c1", "Ana B", "hola buenas tardes", handle="Ana_Demo")], now=1000.0)
+
+    run(scenario())
+    assert rt.marks.entry("h:ana_demo")["hits"] == 1
+
+
+def test_a_nickname_only_viewer_is_flood_checked_and_a_nick_mark_matches_them(monkeypatch, tmp_path):
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        out = None
+        for i in range(6):                                  # 没有 uid / sec / handle：只有昵称这一把钥匙
+            out = feed(rt, [item("b%d" % i, "Burst", "texto numero %s hermoso" % "abcdef"[i])],
+                       now=1010.0 + i * 1.2)
+        assert out[0]["guard"]["lvl"] == "alert" and out[0]["guard"]["cats"] == ["flood_user"]
+        assert rt.marked_auto == 0 and len(rt.marks) == 0   # 刷屏、昵称都不自动加人
+        rt.mark("n:Burst", True, nick="Burst")              # 手动加入：键是 n:<昵称>，只在本场有效
+        feed(rt, [item("b9", "Burst", "hola buenas")], now=1040.0)
+        # 带 uid 的同昵称观众不是同一个人：不能被昵称键认走
+        feed(rt, [item("b10", "Burst", "hola de nuevo", uid="555")], now=1041.0)
+
+    run(scenario())
+    entry = rt.marks.entry("n:Burst")
+    assert entry["session"] is True and entry["hits"] == 1

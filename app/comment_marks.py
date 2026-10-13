@@ -1,12 +1,15 @@
 """关注名单的存储（弹幕留意 PR-3，spec §3.3）：comment_guard/marked/<主播小写>.json。
 
-没有界面文字：这里只返回 `marks_corrupt` 这类代码，提示文字由 app/pipeline_guard.py 用 L() 写。
+没有界面文字：这里只返回 `marks_corrupt` / `marks_unreadable` 这类代码，提示文字由 app/pipeline_guard.py 用 L() 写。
 
 * **内存为准**：改动只标脏，2 秒合并成一次写盘；写盘在 `loop.run_in_executor` 里做（`.tmp` → fsync →
   `os.replace`），事件循环上没有磁盘 IO。只更新「最近发言时间 / 条数」的改动是轻量脏标记，最多每
   60 秒写一次：一个常发言的被关注者不该让磁盘每 2 秒落一次盘。收尾（`flush_now`）一律强制写。
-* **载入**放在线程池里。文件读不了（不是合法 JSON、结构不对、版本不认识）：改名成 `.bak-<时间>`，
-  按空名单继续，返回 `marks_corrupt`；只是读不到（权限）就不改名、也不覆盖它，本场只在内存里记。
+* 写盘失败**不丢脏标记**：写之前清掉的标记在失败时放回去，下一次改动和收尾的 `flush_now` 都会再试一次；
+  `failing` 为真表示最近一次写盘没成功（pipeline_guard 据此提示一次）。
+* **载入**放在线程池里。文件内容不对（不是合法 JSON、结构不对、版本不认识）：改名成 `.bak-<时间>`，
+  按空名单继续，返回 `marks_corrupt`（这一条才有备份）；读不到（权限）、或内容不对而改名失败，就不改名、
+  也不覆盖它，返回 `marks_unreadable`，本场只在内存里记、不写盘。
 * **键**：`keys` 里任一命中就算同一个人（uid、`s:<sec_uid>`、`h:<handle>`）。只有昵称的人用
   `n:<昵称>`，只在本场内存里有效，**不落盘**。
 * **上限与过期**：每个主播最多 500 人，满了先淘汰 `by=auto` 里 `last_seen` 最旧的，手动加入的不淘汰；
@@ -129,14 +132,15 @@ def _clean_entry(raw, primary, now):
 
 
 def _read_file(path, now):
-    """线程池里跑。返回 (viewers: OrderedDict, code, persist)。code：None 或 "marks_corrupt"；
-    persist 为假表示这场不能往这个文件里写（读不了又挪不走它：别拿空名单覆盖）。"""
+    """线程池里跑。返回 (viewers: OrderedDict, code, persist)。code：None、"marks_corrupt"（内容不对、
+    已改名成备份）或 "marks_unreadable"（读不到，或挪不走它：没有备份）；persist 为假表示这场不能往这个
+    文件里写（别拿空名单覆盖）。"""
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
         return OrderedDict(), None, True
     except OSError:
-        return OrderedDict(), "marks_corrupt", False
+        return OrderedDict(), "marks_unreadable", False
     viewers = OrderedDict()
     try:
         data = json.loads(raw)
@@ -150,7 +154,7 @@ def _read_file(path, now):
                 raise OSError("no free backup name")
             os.replace(str(path), str(backup))
         except OSError:
-            return viewers, "marks_corrupt", False
+            return viewers, "marks_unreadable", False
         return viewers, "marks_corrupt", True
     for primary, raw_entry in data["viewers"].items():
         entry = _clean_entry(raw_entry, primary, now)
@@ -185,6 +189,7 @@ class MarkStore:
         self.persist = False
         self._dirty = False
         self._lazy = False
+        self.failing = False              # 最近一次写盘没成功（成功一次就复位）
 
     # ---- 路径 ----
     def _dir(self):
@@ -195,7 +200,8 @@ class MarkStore:
 
     # ---- 载入 / 写盘 ----
     async def load(self, streamer):
-        """换场：先把上一份收尾（调用方已 flush_now），再读这个主播的名单。返回 None 或 "marks_corrupt"。
+        """换场：先把上一份收尾（调用方已 flush_now），再读这个主播的名单。返回 None、"marks_corrupt"
+        或 "marks_unreadable"。
         主播名不合规时名单只在内存里，不读也不写任何文件。"""
         self._cancel_timer()
         self._reset()
@@ -262,13 +268,20 @@ class MarkStore:
     async def _write_loop(self):
         loop = asyncio.get_running_loop()
         while (self._dirty or self._lazy) and self.persist and self.path is not None:
+            dirty, lazy = self._dirty, self._lazy
             self._dirty = self._lazy = False
             error = await loop.run_in_executor(None, _write_safe, self.path, self._render())
             if error:
                 self.write_errors += 1
                 self.last_error = error
+                self.failing = True
+                # 脏标记放回去：不然收尾的 flush_now 看到「没有待写的」就什么都不做，名单只活在内存里。
+                # 这里不自己重试（不至于紧循环）；下一次改动和收尾会再写一次
+                self._dirty = self._dirty or dirty
+                self._lazy = self._lazy or lazy
                 print("[弹幕] 关注名单写不进去：{}".format(error))
-                break                     # 不重试：下一次改动会重新排一次，不至于紧循环
+                break
+            self.failing = False
 
     async def flush_now(self):
         """收尾：把还没写的立刻写完（含轻量脏标记）。不抛异常。"""

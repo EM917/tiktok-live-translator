@@ -14,12 +14,15 @@
 **消息**（spec §6）：规则判定随 `comment` 消息立即到（`guard` 字段）；之后只有标注变了才发
 `comment_guard`（每个 cid 每秒至多 1 条）；`guard_event` 是聚合后的事件，全局每秒至多 1 条；
 `guard_mark` 是名单的增删。三种消息都只发本机页面，手机同看一律不发（用户决定 8，app/viewer.py）。
+`flush` 的收集和发送在一把锁里：评论读取、统计循环、控制消息、定时器都会调它，发送遇到慢页面会挂起，
+不串行的话先收集的消息可能在后收集的之后才到页面。
 
 **审计**（spec §8）：只记计数、不记弹幕原文、昵称、账号。`session_start.comment_guard` 在开场写，
 `session_end.comment_guard` 在收尾写；两处都只用守卫在 `bind` 时拿到的**本场自己的** audit
 （CLAUDE.md 第七条 my_audit）：晚到的旧任务关不掉新一场的守卫，也写不进新一场的审计。
 
-界面文字只在文件末尾 `guard_notice` 里（关注名单损坏、名单已满、规则文件被改）；别的地方只出代码。
+界面文字只在文件末尾 `guard_notice` 里（关注名单损坏、读不了、存不进磁盘、名单已满、规则文件被改）；
+别的地方只出代码。
 """
 import asyncio
 import os
@@ -101,10 +104,12 @@ class GuardRuntime:
     SAMPLE_TEXT = 120
     REVIEW_QUEUE_MAX = 50
     REVIEW_BATCH = 8
+    STOP_REVIEW_WAIT_SEC = 1.0      # 收尾时取消复核任务，最多等它这么久
 
-    def __init__(self, clock=time.time, mono=time.monotonic, marks=None):
+    def __init__(self, clock=time.time, mono=time.monotonic, marks=None, perf=time.perf_counter):
         self._clock = clock
         self._mono = mono
+        self._perf = perf               # 量单条判定耗时的时钟；测试里换成假的，机器卡一下不会误触预算
         self.cfg = normalize_settings(None)
         self.marks = marks if marks is not None else MarkStore(clock=clock)
         self.reviewer = None            # PR-5 的 ClaudeReviewer 挂在这里；PR-3 没有，只用规则
@@ -126,6 +131,8 @@ class GuardRuntime:
         self._broadcast = None
         self._flush_timer = None
         self._flush_task = None
+        self._flush_lock = None         # flush 的收集+发送串行化；在事件循环里惰性创建
+        self._flush_lock_loop = None
         self._review_task = None
         self._review_event = None
         self._reset_session()
@@ -200,6 +207,7 @@ class GuardRuntime:
         self._last_state_msg = float("-inf")
         self._review_q = deque(maxlen=self.REVIEW_QUEUE_MAX)
         self._rules_notified = None
+        self._marks_fail_told = False
 
     async def close_session(self):
         """收掉上一场（换场、重复开场）：名单写完盘，不再 observe，取消定时器和复核任务。"""
@@ -257,31 +265,56 @@ class GuardRuntime:
         self.audit = audit
         self.enabled = bool(self._ready and self._open)
 
+    def _is_mine(self, token, owner_audit):
+        """end() 的每个 await 之后都要问一句：这一场还是我入口时的那一场吗？换场（begin）会把
+        token 加一、audit 换成新的；晚到的旧 end() 看到不是了，就不许再碰运行态（CLAUDE.md 第七条）。"""
+        return self._open and self._token == token and (owner_audit is None or self.audit is owner_audit)
+
     async def end(self, owner_audit, broadcast=None):
         """收尾。owner_audit 是调用方会话自己的 audit：不是守卫这一场的就什么都不做（返回 None）——
         晚死的旧任务关不掉新一场的守卫，也拿不到新一场的计数（CLAUDE.md 第七条）。
-        返回要并进 session_end.comment_guard 的字典；这一场守卫没开就返回 None。"""
+        返回要并进 session_end.comment_guard 的字典；这一场守卫没开就返回 None。
+
+        入口时在任何 await 之前先记下这一场的 token 和计数；每个 await 之后重新核对。收尾期间下一场
+        已经开始（_stop_locked 的 3 秒宽限过了）：这个旧 end() 只把入口时记下的、属于旧一场的计数
+        交回去，不碰 _open / _ready / audit / enabled，也不替下一场发消息、写名单。"""
         if not self._open or (owner_audit is not None and self.audit is not owner_audit):
             return None
-        record = None
+        token = self._token
+        was_on = self._session_enabled and self._ready
+        record = self._session_end_record() if was_on else None
         try:
-            was_on = self._session_enabled and self._ready
             self.enabled = False
             self._cancel_flush_timer()
             await self._stop_review()
-            if was_on:
+            if was_on and self._is_mine(token, owner_audit):
                 if broadcast is not None:
-                    await self.flush(broadcast, final=True)
-                await self.marks.flush_now()
-                record = self._session_end_record()
+                    await self.flush(broadcast, final=True, token=token)
+                if self._is_mine(token, owner_audit):
+                    await self.marks.flush_now()
+                if self._is_mine(token, owner_audit):
+                    self.poll_marks_health()
+                    record = self._session_end_record()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             print("[弹幕] 留意收尾出错：{}".format(exc))
+        if not self._is_mine(token, owner_audit):
+            return record                # 已经换场：新一场的运行态不是我的
         self._open = False
         self._ready = False
         self.audit = None
         return record
+
+    def poll_marks_health(self):
+        """关注名单写盘失败：每一段失败期只说一次（写成功了再失败才再说）。终端在打包后的程序里看不到，
+        所以进 notices，由接线层发给页面。"""
+        if self.marks.failing:
+            if not self._marks_fail_told:
+                self._marks_fail_told = True
+                self.notices.append("marks_write_failed")
+        else:
+            self._marks_fail_told = False
 
     # ------------------------------------------------------------------------------------
     # 审计记录（只有计数和代码）
@@ -346,10 +379,10 @@ class GuardRuntime:
         keys = [k for k in (uid, sec, "h:" + handle.lower() if handle else None) if k]
 
         mono = self._mono()
-        t0 = time.perf_counter()
+        t0 = self._perf()
         r = self.engine.judge(text, user=ukey, ts=now, cid=cid, role=role, mention=item.get("mention") is True,
                               structure_only=self.budget.structure_only(mono), handle=handle, keys=tuple(keys))
-        ms = (time.perf_counter() - t0) * 1000.0
+        ms = (self._perf() - t0) * 1000.0
         self.budget.charge(mono, ms)
         if ms > self.observe_ms_max:
             self.observe_ms_max = ms
@@ -581,7 +614,7 @@ class GuardRuntime:
         self._review_q.clear()
         if task is not None and not task.done():
             task.cancel()
-            await asyncio.wait([task], timeout=1.0)
+            await asyncio.wait([task], timeout=self.STOP_REVIEW_WAIT_SEC)
 
     async def _review_loop(self):
         """惰性启动，永不向外抛异常。结果回来时如果已经换场就丢掉；影子期只往旁边写一句模型意见
@@ -663,29 +696,47 @@ class GuardRuntime:
         return bool(self._pending_cg or self._pending_marks or self._ev_dirty or self._state_dirty
                     or self._pending_dismiss)
 
-    async def flush(self, broadcast, final=False):
+    def _get_flush_lock(self):
+        loop = asyncio.get_running_loop()
+        if self._flush_lock is None or self._flush_lock_loop is not loop:
+            self._flush_lock = asyncio.Lock()
+            self._flush_lock_loop = loop
+        return self._flush_lock
+
+    async def flush(self, broadcast, final=False, token=None):
         """把攒着的守卫消息发出去（节流见类常量），再把复核候选交给复核任务。永不抛。
-        没开、没有待发的消息就立刻返回，零开销。"""
+        没开、没有待发的消息就立刻返回，零开销。
+
+        收集和发送是一把锁里的一件事：评论读取、统计循环、控制消息、定时器都会调进来，发送遇到慢页面
+        会挂起——不串行的话，先收集的消息可能在后收集的之后才发出去（名单的「加入」排在「移出」之后到页面，
+        同一条弹幕的旧标注盖掉新标注）。token 是调用方入口时那一场的编号：等锁期间换了场就不替下一场发。"""
         if not (self.enabled or final):
             return
         if not final and self._review_q:
             self._ensure_review_task()          # 候选交给复核任务（只是放进队列叫醒它，不等它）
         if not self._wants_flush():
             return
-        try:
-            self._broadcast = broadcast
-            msgs = self._collect(self._clock(), final=final)
-        except Exception as exc:
-            print("[弹幕] 留意消息整理出错：{}".format(exc))
-            return
-        for msg in msgs:
+        async with self._get_flush_lock():
+            if token is not None and token != self._token:
+                return
+            if not (self.enabled or final) or not self._wants_flush():
+                return                          # 等锁的时候别人已经替我发完了，或者这一场收尾了
+            session = self._token
             try:
-                await broadcast(msg)
-                self.guard_msgs += 1
-            except asyncio.CancelledError:
-                raise
+                self._broadcast = broadcast
+                msgs = self._collect(self._clock(), final=final)
             except Exception as exc:
-                print("[弹幕] 留意消息发送出错：{}".format(exc))
+                print("[弹幕] 留意消息整理出错：{}".format(exc))
+                return
+            for msg in msgs:
+                try:
+                    await broadcast(msg)
+                    if self._token == session:
+                        self.guard_msgs += 1    # 发送期间换场了：这条不算进新一场的计数
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print("[弹幕] 留意消息发送出错：{}".format(exc))
         if not final and self._wants_flush():
             self._arm_flush_timer(self.CID_MSG_GAP_SEC)
 
@@ -767,15 +818,20 @@ class CommentGuardMixin:
             elif guard.cfg["enabled"] and guard._env_off:
                 print("[弹幕] 已用 {}=off 关闭弹幕留意".format(ENV_SWITCH))
             await self._publish_comment_guard_config()
-            for code in guard.notices:
-                text = guard_notice(code)
-                print("[弹幕] " + text)
-                await self.server.broadcast({"type": "notice", "text": text})
-            guard.notices = []
+            await self._send_guard_notices()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             print("[弹幕] 留意启动出错：{}".format(exc))
+
+    async def _send_guard_notices(self):
+        """守卫攒下的提示代码 -> 文字 -> 终端和页面各一份，发完清掉。"""
+        guard = self.guard
+        codes, guard.notices = guard.notices, []
+        for code in codes:
+            text = guard_notice(code)
+            print("[弹幕] " + text)
+            await self.server.broadcast({"type": "notice", "text": text})
 
     async def _publish_comment_guard_config(self, reset=True):
         """把状态（reset=True 时连同清空的事件表和这个主播的名单）写进 server.config 并广播；
@@ -803,6 +859,7 @@ class CommentGuardMixin:
             record = await guard.end(owner, broadcast=self.server.broadcast)
             if not guard._open:
                 await self._publish_comment_guard_config(reset=False)
+                await self._send_guard_notices()       # 收尾时名单还是写不进去：停止之后页面还在，说一句
             return record
         except asyncio.CancelledError:
             raise
@@ -822,6 +879,8 @@ class CommentGuardMixin:
                 # 名单里的人 last_seen / 条数的变化不广播（页面自己按弹幕现算），这里悄悄补进 config，
                 # 刷新后的 hello 拿到的是新的
                 self.server.config["guard_marked"] = dict(guard.marks.snapshot())
+                guard.poll_marks_health()
+                await self._send_guard_notices()
             await self._check_guard_rules_changed()
         except asyncio.CancelledError:
             raise
@@ -901,6 +960,14 @@ def guard_notice(code):
         return L("关注名单文件读不了，已另存一份备份，先按空名单继续",
                  "The marked-viewers file couldn’t be read. A backup was saved and the list "
                  "starts empty.")
+    if code == "marks_unreadable":
+        return L("关注名单文件读不了，先按空名单继续，本场的改动不会存盘",
+                 "The marked-viewers file couldn’t be read. The list starts empty, and this "
+                 "session’s changes won’t be saved.")
+    if code == "marks_write_failed":
+        return L("关注名单暂时存不进磁盘，名单先留在内存里，下次改动和收尾时会再试",
+                 "The marked-viewers list couldn’t be saved. It stays in memory, and saving is "
+                 "retried on the next change and when the session ends.")
     if code == "marks_full":
         return L("关注名单已满（{} 人），先移出几位再加入",
                  "The marked-viewers list is full ({} viewers). Unmark someone first.").format(MAX_VIEWERS)

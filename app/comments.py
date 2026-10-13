@@ -105,6 +105,7 @@ def parse_batch(output, n):
 MAX_UID = 96
 MAX_SEC = 80
 MAX_HANDLE = 64
+WHY_ITEM_MAX = 200                  # why 里一条词表条目最多留这么长，再长的截断（不丢）
 GUARD_LVLS = ("alert", "amber", "note", "lead")
 GUARD_TIERS = ("red", "clue", "struct")
 GUARD_SRC = ("rule", "review")
@@ -114,10 +115,22 @@ def _str_field(value, limit):
     return value if isinstance(value, str) and 0 < len(value) <= limit else None
 
 
-def _str_list(value, item_limit, max_items):
+def _str_list(value, item_limit, max_items, clip=False):
+    """字符串列表：非字符串、空串丢掉，最多 max_items 项。超过 item_limit 的项：clip=False 丢掉，
+    clip=True 截断并以「…」结尾（给 `why` 用：出厂词表里最长的正则条目有 580 多字，丢掉就让红条
+    没了依据）。"""
     if not isinstance(value, list):
         return None
-    return [x for x in value if isinstance(x, str) and 0 < len(x) <= item_limit][:max_items]
+    out = []
+    for x in value:
+        if not isinstance(x, str) or not x:
+            continue
+        if len(x) > item_limit:
+            if not clip:
+                continue
+            x = x[:item_limit - 1] + "…"
+        out.append(x)
+    return out[:max_items]
 
 
 def clean_guard(guard):
@@ -136,7 +149,7 @@ def clean_guard(guard):
     cats = _str_list(guard.get("cats"), 24, 6)
     if cats is not None:
         out["cats"] = cats
-    why = _str_list(guard.get("why"), 120, 8)
+    why = _str_list(guard.get("why"), WHY_ITEM_MAX, 8, clip=True)
     if why is not None:
         out["why"] = why
     return out

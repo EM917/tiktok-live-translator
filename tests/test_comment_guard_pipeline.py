@@ -27,7 +27,7 @@ from app.pipeline import Pipeline
 from app.pipeline_guard import (GUARD_CONTROL_TYPES, GuardRuntime, env_disabled, guard_notice,
                                 normalize_settings)
 from tests.guard_support import (LINK_TEXT, RED_TEXT, ROUTED_TEXT, UID, FakeSource, RecServer,
-                                 audit_records, item, new_runtime, of, start, use_fixture_rules, virtual_mono)
+                                 audit_records, item, new_runtime, of, start, use_fixture_rules, virtual_mono, virtual_perf)
 from tests.helpers import run
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -58,12 +58,16 @@ def make_pipeline(monkeypatch, tmp_path, enabled=True, terms=()):
     p.translator = None
     p.alerts_enabled = True
     p.guard._mono = virtual_mono()                   # 预算不被慢机器上的紧循环触发（要测预算的用例自己换）
+    p.guard._perf = virtual_perf()                   # 单条耗时也是假的：机器卡一下不会误触预算
     return p, server
+
+
+NOTICE_CODES = ("marks_corrupt", "marks_unreadable", "marks_write_failed", "marks_full", "rules_changed")
 
 
 def guard_notices(server):
     """这一场发出的提示里，弹幕留意自己的那几条（别的提示，比如「违禁词表为空」，不算）。"""
-    mine = {str(guard_notice(c)): c for c in ("marks_corrupt", "marks_full", "rules_changed")}
+    mine = {str(guard_notice(c)): c for c in NOTICE_CODES}
     return [mine[str(m["text"])] for m in server.of_type("notice") if str(m["text"]) in mine]
 
 
@@ -706,9 +710,12 @@ def test_a_corrupt_marked_file_gives_one_paired_notice_and_starts_empty(monkeypa
 def test_notices_are_chinese_and_english_pairs_and_free_of_cause_labels():
     from app import i18n
 
-    for code in ("marks_corrupt", "marks_full", "rules_changed"):
+    texts = set()
+    for code in NOTICE_CODES:
         text = guard_notice(code)
         assert isinstance(text, i18n.Bi) and str(text) and text.en and text.en != str(text)
+        texts.add(str(text))
+    assert len(texts) == len(NOTICE_CODES)              # 每个代码一句，没有两个代码共用一句话
     assert guard_notice("nope") == ""
 
 
@@ -1105,7 +1112,8 @@ def test_a_burst_of_500_a_minute_for_ten_minutes_keeps_guard_messages_and_memory
 # ---- I3：规则判定的预算 --------------------------------------------------------------------------
 
 def test_a_slow_rule_trips_the_budget_and_the_rest_run_structure_only(monkeypatch, tmp_path):
-    rt = new_runtime(monkeypatch, tmp_path, mono=lambda: 500.0)
+    perf = virtual_perf()
+    rt = new_runtime(monkeypatch, tmp_path, mono=lambda: 500.0, perf=perf)
 
     async def scenario():
         await start(rt)
@@ -1114,9 +1122,7 @@ def test_a_slow_rule_trips_the_budget_and_the_rest_run_structure_only(monkeypatc
 
         def slow(text, **kw):
             modes.append(kw["structure_only"])
-            end = time.perf_counter() + 0.03
-            while time.perf_counter() < end:             # 每条 30 ms 的慢规则
-                pass
+            perf.advance(0.031)                          # 每条 31 ms 的慢规则：耗时从注入的时钟里量，不靠真等
             return real(text, **kw)
 
         monkeypatch.setattr(rt.engine, "judge", slow)
@@ -1128,6 +1134,25 @@ def test_a_slow_rule_trips_the_budget_and_the_rest_run_structure_only(monkeypatc
     assert modes[:2] == [False, False] and modes[2:] == [True, True]      # 超过 50 ms 之后降级
     assert rt.budget.trips == 1 and rt.observe_ms_max >= 30
     assert rt._session_end_record()["budget_trips"] == 1
+
+
+def test_one_slow_moment_on_the_machine_does_not_degrade_the_rules(monkeypatch, tmp_path):
+    """单条耗时从注入的时钟量：真实时间过去多久都不算（GC 停顿、别的进程抢 CPU 不该让琥珀和词表判定消失）。"""
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        real = rt.engine.judge
+
+        def stalled(text, **kw):
+            time.sleep(0.06)                             # 真的卡 60 ms
+            return real(text, **kw)
+
+        monkeypatch.setattr(rt.engine, "judge", stalled)
+        return rt.observe([item("w1", "Ana", RED_TEXT, uid=UID)], now=1000.0)
+
+    out = run(scenario())
+    assert out[0]["guard"]["lvl"] == "alert" and rt.budget.trips == 0 and rt.observe_ms_max == 0.0
 
 
 def test_structure_mode_still_catches_links_and_flooding(monkeypatch, tmp_path):
@@ -1143,3 +1168,433 @@ def test_structure_mode_still_catches_links_and_flooding(monkeypatch, tmp_path):
     out = run(scenario())
     assert out[0]["guard"]["lvl"] == "alert" and out[0]["guard"]["cats"] == ["promo_link"]
     assert "guard" not in out[1]                       # 词表那一半在结构模式下不跑：只跑链接、电话、刷屏
+
+
+# ---- 收尾期间下一场开始了：晚到的旧 end() 不碰新一场（CLAUDE.md 第七条）-----------------------------------
+
+def test_an_old_end_still_awaiting_its_final_flush_leaves_the_next_session_alone(monkeypatch, tmp_path):
+    """旧一场的 end() 挂在最后一次 flush 里（控制页面卡了一下），_stop_locked 的 3 秒宽限过了、下一场
+    的 begin() + bind() 已经跑完——旧 end() 醒来后什么都不许碰：不关新一场的守卫，不替它冲名单，
+    不把新一场的计数当成旧一场的交回去。"""
+    rt = new_runtime(monkeypatch, tmp_path)
+    audit_a, audit_b = object(), object()
+    flushes = []
+    real_flush_now = rt.marks.flush_now
+
+    async def counting_flush_now():
+        flushes.append(rt.marks.streamer)
+        await real_flush_now()
+
+    monkeypatch.setattr(rt.marks, "flush_now", counting_flush_now)
+
+    async def scenario():
+        await start(rt, audit=audit_a)
+        rt.observe([item("c1", "Ana", RED_TEXT, uid=UID)], now=1000.0)      # 名单、事件、config 都有待发的
+        gate = asyncio.Event()
+
+        async def slow(msg):                                  # 卡住的控制页面
+            await gate.wait()
+
+        old = asyncio.ensure_future(rt.end(audit_a, broadcast=slow))
+        await asyncio.sleep(0.05)                             # 旧 end() 现在挂在最后一次 flush 里
+        await start(rt, streamer="marca_demo", audit=audit_b)
+        rt.observe([item("b1", "Cy", RED_TEXT, uid="42"), item("b2", "Di", RED_TEXT, uid="43")], now=2000.0)
+        before = list(flushes)
+        gate.set()
+        old_record = await old
+        state = (rt.enabled, rt._open, rt._ready, rt.audit is audit_b, rt.streamer)
+        assert flushes == before                              # 旧 end() 醒来后没有碰新一场的名单
+        assert rt.guard_msgs == 0                             # 旧 flush 剩下的发送不算进新一场的计数
+        new_record = await rt.end(audit_b)
+        return old_record, state, new_record
+
+    old_record, state, new_record = run(scenario())
+    assert state == (True, True, True, True, "marca_demo")
+    assert old_record["observed"] == 1 and old_record["counts"]["threat"]["alert"] == 1     # 旧一场自己的计数
+    assert new_record is not None and new_record["observed"] == 2                          # 新一场收尾照常，且是自己的
+    assert new_record["counts"]["threat"]["alert"] == 2
+
+
+def test_a_late_old_end_session_does_not_strip_the_next_sessions_audit_block(monkeypatch, tmp_path):
+    """同一个形态走完整条 Pipeline：旧一场的 _end_session 卡在守卫的最后一次 flush 里，
+    新一场开始、收尾——新一场的 session_end 里必须有自己的 comment_guard。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    real_broadcast = server.broadcast
+    state = {"block": False, "blocked": 0}
+
+    async def scenario():
+        gate = asyncio.Event()
+
+        async def broadcast(msg):
+            if state["block"] and not state["blocked"] and msg.get("type") in ("comment_guard", "guard_event",
+                                                                              "guard_mark"):
+                state["blocked"] += 1
+                await gate.wait()
+            await real_broadcast(msg)
+
+        p.server.broadcast = broadcast
+        await p._begin_session(ROOM)
+        audit_a = p.audit
+        await comments(p, item("c1", "Ana", RED_TEXT, uid=UID))
+        p.guard._pending_cg["c1"] = {"lvl": "alert", "amb": None, "cats": ["threat"], "sub": "threat",
+                                     "tier": "red", "src": "rule", "rv": None, "ev": "g1", "why": []}
+        p.guard._cg_sent.clear()
+        state["block"] = True
+        old = asyncio.ensure_future(p._end_session(audit_a, reason="user_stop"))
+        await asyncio.sleep(0.2)
+        assert state["blocked"] == 1                           # 旧 _end_session 确实挂在守卫的 flush 里
+        p._close_audit(audit_a, "user_stop")                   # _stop_locked 宽限过后做的事
+        p.audit = None
+        state["block"] = False
+        await p._begin_session(ROOM)
+        audit_b = p.audit
+        newer = asyncio.ensure_future(comments(p, item("c9", "Bea", RED_TEXT, uid="222")))
+        await asyncio.sleep(0.05)               # 新一场的 flush 排在旧的那次发送后面（同一把锁），不会插队
+        gate.set()
+        await old
+        await newer
+        assert p.guard.enabled and p.guard._open and p.guard.audit is audit_b
+        await comments(p, item("c10", "Cy", RED_TEXT, uid="333"))
+        await p._end_session(audit_b, reason="user_stop")
+        return audit_b
+
+    audit_b = run(scenario())
+    end_b = of(audit_records(audit_b), "session_end")[0]
+    assert end_b["comment_guard"]["observed"] == 2 and end_b["comment_guard"]["counts"]["threat"]["alert"] == 2
+
+
+# ---- flush 串行化：先收集的消息先发出去 ----------------------------------------------------------------
+
+def test_concurrent_flushes_send_in_collection_order_so_a_stale_add_cannot_follow_a_remove(monkeypatch, tmp_path):
+    rt = new_runtime(monkeypatch, tmp_path)
+    server = RecServer()
+    sent = []
+
+    async def scenario():
+        await start(rt)
+        gate = asyncio.Event()
+
+        async def broadcast(msg):
+            await server.broadcast(msg)                       # 缓存（config.guard_marked）在发之前就更新了
+            if msg["type"] == "guard_mark":
+                sent.append((msg["key"], msg["entry"] is not None))
+            if len(sent) == 1:
+                await gate.wait()                             # 第一条发给一个慢页面，挂在这里
+
+        rt.mark("J", True, nick="J")
+        rt.mark("K", True, nick="K")
+        first = asyncio.ensure_future(rt.flush(broadcast))
+        await asyncio.sleep(0.02)                             # 第一次 flush 卡在发 J；K 的「加入」已收集
+        rt.mark("K", False)                                   # 中控又把 K 移出
+        second = asyncio.ensure_future(rt.flush(broadcast))
+        await asyncio.sleep(0.02)
+        gate.set()
+        await asyncio.gather(first, second)
+
+    run(scenario())
+    assert sent == [("J", True), ("K", True), ("K", False)]   # K 的移出在后，不会被旧的「加入」盖掉
+    assert list(server.config["guard_marked"]) == ["J"] == list(rt.marks.viewers)
+
+
+def test_a_flush_waiting_for_the_lock_does_not_send_for_the_next_session(monkeypatch, tmp_path):
+    rt = new_runtime(monkeypatch, tmp_path)
+    sent = []
+
+    async def scenario():
+        await start(rt)
+        gate = asyncio.Event()
+
+        async def slow(msg):
+            sent.append(msg["type"])
+            await gate.wait()
+
+        rt.mark("J", True, nick="J")
+        rt.observe([item("c1", "Ana", RED_TEXT, uid=UID)], now=1000.0)
+        first = asyncio.ensure_future(rt.flush(slow))
+        await asyncio.sleep(0.02)
+        old_token = rt._token
+        waiting = asyncio.ensure_future(rt.flush(slow, final=True, token=old_token))   # 旧一场的收尾 flush 在等锁
+        await asyncio.sleep(0.02)
+        rt._token += 1                                        # 下一场开始了（begin 做的事）
+        rt._pending_marks["Z"] = {"keys": ["Z"]}
+        gate.set()
+        await asyncio.gather(first, waiting)
+
+    run(scenario())
+    assert rt._pending_marks == {"Z": {"keys": ["Z"]}}        # 等锁的旧 flush 没有替下一场把它发掉
+
+
+# ---- 复核任务不配合取消：收尾最多等 1 秒 ------------------------------------------------------------------
+
+def test_a_review_that_ignores_cancellation_cannot_hang_the_session_end(monkeypatch, tmp_path):
+    class StubbornReviewer:
+        async def review(self, batch):
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass                                          # 吞掉第一次取消，接着睡
+            await asyncio.sleep(3600)                         # 退出时 asyncio.run 的最后一次取消仍能收掉它
+
+    rt = new_runtime(monkeypatch, tmp_path)
+    rt.reviewer = StubbornReviewer()
+    audit = object()
+    timings = {}
+
+    async def broadcast(msg):
+        pass
+
+    async def scenario():
+        await start(rt, audit=audit)
+        rt.observe([item("q1", "Ana", ROUTED_TEXT, uid=UID)], now=1000.0)
+        await rt.flush(broadcast)
+        await asyncio.sleep(0.05)
+        assert rt._review_task is not None and not rt._review_task.done()
+        t0 = time.perf_counter()
+        await asyncio.wait_for(rt.end(audit, broadcast=broadcast), timeout=5)
+        timings["end"] = time.perf_counter() - t0
+        assert not rt._open and rt.audit is None
+        await start(rt, audit=audit)
+        rt.observe([item("q2", "Bea", ROUTED_TEXT, uid="2")], now=1001.0)
+        await rt.flush(broadcast)
+        await asyncio.sleep(0.05)
+        t0 = time.perf_counter()
+        await asyncio.wait_for(rt.close_session(), timeout=5)
+        timings["close"] = time.perf_counter() - t0
+
+    run(scenario())
+    assert rt.STOP_REVIEW_WAIT_SEC == 1.0
+    assert 0.9 <= timings["end"] < 1.6 and 0.9 <= timings["close"] < 1.6    # 等满 1 秒就放弃，不无限等
+
+
+# ---- 差一点没人钉住的接线：节流消息自己会到、统计循环里的那一跳 ------------------------------------------------
+
+def test_a_throttled_guard_event_arrives_on_its_own_without_any_further_comment(monkeypatch, tmp_path):
+    rt = new_runtime(monkeypatch, tmp_path)                    # 真时钟
+    rt.CID_MSG_GAP_SEC = rt.EVENT_MSG_GAP_SEC = 0.05            # 把「每秒一条」缩短，别拖慢测试
+    sent = []
+
+    async def broadcast(msg):
+        sent.append(msg)
+
+    def events():
+        return [m["ev"]["id"] for m in sent if m["type"] == "guard_event"]
+
+    async def scenario():
+        await start(rt)
+        rt.observe([item("a1", "Ana", RED_TEXT, uid="111"), item("b1", "Bea", RED_TEXT, uid="222")],
+                   now=time.time())                             # 一次来两个事件
+        await rt.flush(broadcast)
+        assert events() == ["g1"]                               # 全局节流：先发一个
+        for _ in range(60):                                     # 之后没有新弹幕、没有统计循环：只靠定时器
+            if len(events()) == 2:
+                break
+            await asyncio.sleep(0.05)
+        await rt.close_session()
+
+    run(scenario())
+    assert events() == ["g1", "g2"]
+
+
+def test_the_stats_loop_runs_the_guard_tick(monkeypatch, tmp_path):
+    """词表被改的提示、名单 last_seen 的悄悄刷新只在统计循环那一跳里：把那一跳摘掉，这里要红。"""
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    for f in (ROOT / "tests" / "fixtures" / "comment_guard").glob("*.txt"):
+        (rules_dir / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(cg, "DEFAULTS_DIR", rules_dir)
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        target = rules_dir / "insult.txt"
+        target.write_text(target.read_text(encoding="utf-8") + "\nzzpalabra\n", encoding="utf-8")
+        task = asyncio.ensure_future(p._stats_loop(interval=0.02))
+        for _ in range(100):
+            if guard_notices(server):
+                break
+            await asyncio.sleep(0.02)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await p._end_session(p.audit, reason="user_stop")
+
+    run(scenario())
+    assert guard_notices(server) == ["rules_changed"]
+
+
+def test_the_stats_loop_source_calls_the_guard_tick():
+    source = ast.parse((ROOT / "app" / "pipeline.py").read_text(encoding="utf-8"))
+    loop = [n for n in ast.walk(source) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_stats_loop"][0]
+    assert "_guard_tick" in _self_calls(loop)
+
+
+# ---- 名单文件读不了、写不进去：提示要说真话 ----------------------------------------------------------------
+
+def test_an_unreadable_marked_file_gets_a_notice_that_does_not_claim_a_backup(monkeypatch, tmp_path):
+    folder = tmp_path / "marked"
+    folder.mkdir()
+    target = folder / "luna_demo.json"
+    target.write_text(json.dumps({"version": 1, "streamer": "luna_demo", "viewers": {
+        UID: {"keys": [UID], "nick": "Ana", "by": "manual", "first": 1, "last_seen": 1, "hits": 0}}}),
+        encoding="utf-8")
+    real = type(target).read_bytes
+
+    def deny(self):
+        if self == target:
+            raise PermissionError("denied")
+        return real(self)
+
+    monkeypatch.setattr(type(target), "read_bytes", deny)
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        p.guard.mark("777", True, nick="Zed")
+        await p._end_session(p.audit, reason="user_stop")
+
+    run(scenario())
+    assert guard_notices(server) == ["marks_unreadable"]
+    text = guard_notice("marks_unreadable")
+    assert "备份" not in str(text) and "backup" not in text.en.lower()
+    assert "不会存盘" in str(text) and "won’t be saved" in text.en           # 说清楚这一场的改动存不下来
+    assert not list(folder.glob("*.bak-*")) and json.loads(target.read_text())["viewers"].keys() == {UID}
+
+
+def test_a_failing_disk_is_announced_once_per_failure_and_again_after_it_recovers(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    real = comment_marks._write_safe
+    disk = {"ok": False}
+    monkeypatch.setattr(comment_marks, "_write_safe",
+                        lambda path, text: real(path, text) if disk["ok"] else "OSError: no space")
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        marks = p.guard.marks
+        p.guard.mark("100", True, nick="A")
+        await marks.flush_now()
+        await p._guard_tick()
+        await p._guard_tick()
+        assert guard_notices(server) == ["marks_write_failed"]       # 同一段失败只说一次
+        disk["ok"] = True
+        await marks.flush_now()                                       # 好了
+        assert not marks.failing and (tmp_path / "marked" / "luna_demo.json").exists()
+        await p._guard_tick()
+        disk["ok"] = False
+        p.guard.mark("200", True, nick="B")
+        await marks.flush_now()
+        await p._guard_tick()
+        assert guard_notices(server) == ["marks_write_failed", "marks_write_failed"]   # 又坏了：再说一次
+        disk["ok"] = True
+        await p._end_session(p.audit, reason="user_stop")
+
+    run(scenario())
+    assert sorted(json.loads((tmp_path / "marked" / "luna_demo.json").read_text())["viewers"]) == ["100", "200"]
+    assert guard_notices(server) == ["marks_write_failed", "marks_write_failed"]       # 收尾时写成功了：不再提示
+
+
+def test_a_disk_that_is_still_failing_at_the_end_is_announced_after_the_stop(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(comment_marks, "_write_safe", lambda path, text: "OSError: no space")
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        await comments(p, item("a1", "Ana", RED_TEXT, uid=UID))      # 自动加入：名单里有一个人要落盘
+        await p._end_session(p.audit, reason="user_stop")
+
+    run(scenario())
+    assert guard_notices(server) == ["marks_write_failed"]
+    assert p.guard.marks.write_errors >= 1 and not (tmp_path / "marked" / "luna_demo.json").exists()
+
+
+# ---- why 不丢：红条要有依据 ---------------------------------------------------------------------------------
+
+def test_every_lexicon_entry_survives_as_a_why_item_and_the_long_ones_are_clipped_not_dropped():
+    from app.comments import WHY_ITEM_MAX, clean_guard
+
+    rules = cg.load_rules()                                           # 出厂词表（含最长的正则条目）
+    longest = 0
+    for (section, sub), terms in rules.entries.items():
+        for term in terms:
+            why = "%s/%s:%s" % (section, sub, term)
+            longest = max(longest, len(why))
+            kept = clean_guard({"lvl": "alert", "why": [why]})["why"]
+            assert len(kept) == 1 and len(kept[0]) <= WHY_ITEM_MAX, why
+            assert kept[0] == why if len(why) <= WHY_ITEM_MAX else kept[0] == why[:WHY_ITEM_MAX - 1] + "…"
+    assert longest > WHY_ITEM_MAX                                     # 确实有被截的，这条测试不是空转
+
+
+def test_a_confirmed_red_comment_keeps_its_reason_on_the_wire(monkeypatch, tmp_path):
+    """出厂词表里最长的正则条目有 580 多字：红条的 why 不能因为它太长就变成空列表。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(cg, "DEFAULTS_DIR", ROOT / "comment_guard" / "defaults")
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        await comments(p, item("c1", "Ana", "no compren aqui", uid=UID))
+
+    run(scenario())
+    guard = server.of_type("comment")[0]["guard"]
+    assert guard["lvl"] == "alert" and guard["why"]                    # 有依据；具体是哪条词条不钉（词表归业务改）
+
+
+# ---- 其它写在报告里、却没有测试钉住的行为 --------------------------------------------------------------------
+
+def test_a_duplicate_longer_than_300_chars_escalates_the_row_accept_actually_shows(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    head = "hola " * 70                                                  # 前 300 字完全一样（accept 只认这一段）
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        await comments(p, item("c1", "Ana", head + "uno", uid=UID))
+        await comments(p, item("c2", "Ana", head + "visita https://evil.example.com/x", uid=UID))
+
+    run(scenario())
+    shown = server.of_type("comment")
+    assert [m["id"] for m in shown] == ["c1"]                             # accept 去重：第二条没有显示
+    updates = server.of_type("comment_guard")
+    assert [u["id"] for u in updates] == ["c1"]                           # 标注打在显示出来的那一条上
+    assert updates[0]["guard"]["lvl"] == "alert" and updates[0]["guard"]["cats"] == ["promo_link"]
+
+
+def test_events_go_out_never_sent_first_then_higher_level_then_oldest(monkeypatch, tmp_path):
+    clock = {"t": 1000.0}
+    rt = new_runtime(monkeypatch, tmp_path, clock=lambda: clock["t"])
+    sent = []
+
+    async def broadcast(msg):
+        if msg["type"] == "guard_event":
+            sent.append(msg["ev"]["id"])
+
+    async def scenario():
+        await start(rt)
+        rt.observe([item("a1", "Ana", THREATS[0], uid="1")], now=1000.0)           # g1：红条
+        await rt.flush(broadcast)
+        assert sent == ["g1"]
+        rt.observe([item("a2", "Ana", THREATS[1], uid="1")], now=1001.0)           # g1 又有更新（已发过）
+        for i in range(5):                                                         # b1：琥珀的多账号同句事件（没发过）
+            rt.observe([item("m%d" % i, "Acc %d" % i, "quiero el combo rosa", uid="3%d" % i)], now=1002.0 + i * 0.1)
+        rt.observe([item("a3", "Bea", THREATS[2], uid="2")], now=1003.0)           # g2：红条（没发过）
+        brigade = [eid for eid in rt.events if eid.startswith("b")]
+        assert len(brigade) == 1 and rt.events[brigade[0]]["lvl"] == "amber"
+        assert set(rt._ev_dirty) == {"g1", "g2", brigade[0]}
+        for step in range(1, 4):
+            clock["t"] = 1000.0 + 2 * step
+            await rt.flush(broadcast)
+        await rt.close_session()
+        return brigade[0]
+
+    brigade = run(scenario())
+    assert sent == ["g1", "g2", brigade, "g1"]                             # 没发过的先发（红的在琥珀之前），更新过的 g1 最后
+
+
+def test_a_lead_verdict_only_decides_routing_it_never_gets_a_guard_object_or_a_count(monkeypatch, tmp_path):
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        return rt.observe([item("l1", "Ana", "🤡", uid=UID)], now=1000.0)
+
+    out = run(scenario())
+    assert "guard" not in out[0] and rt.counts == {} and rt._ann == {} and rt.events == {}

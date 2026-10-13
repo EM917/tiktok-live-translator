@@ -23,7 +23,7 @@ from app.asr import ASRResult
 from app.audit import RETAIN_TYPES, AuditLog
 from app.pipeline import Pipeline
 from tests.guard_support import (RED_TEXT, UID, FakeSource, RecServer, audit_records, item, of,
-                                 use_fixture_rules, virtual_mono)
+                                 use_fixture_rules, virtual_mono, virtual_perf)
 from tests.helpers import run
 
 ROOM = "https://www.tiktok.com/@luna_demo/live"
@@ -166,6 +166,7 @@ def play_session(monkeypatch, tmp_path, lang):
         p.comment_source = FakeSource()
         p.translator = None
         p.guard._mono = virtual_mono()
+        p.guard._perf = virtual_perf()
         await p._begin_session(ROOM)
         audit = p.audit
         batches = [

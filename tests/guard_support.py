@@ -35,9 +35,28 @@ def virtual_mono():
     return lambda: float(next(ticks))
 
 
+class VirtualPerf:
+    """量单条判定耗时的假时钟：读数自己不走，机器卡一下、垃圾回收一下，都不会让某一条显得「慢」。
+    要测「慢规则」的用例用 advance() 把耗时注进去（在被量的那一段里调）。"""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, seconds):
+        self.t += seconds
+
+
+def virtual_perf():
+    return VirtualPerf()
+
+
 def new_runtime(monkeypatch, tmp_path, enabled=True, **kw):
     use_fixture_rules(monkeypatch, tmp_path)
     kw.setdefault("mono", virtual_mono())
+    kw.setdefault("perf", virtual_perf())
     runtime = GuardRuntime(marks=MarkStore(directory=Path(tmp_path) / "marked"), **kw)
     runtime.cfg["enabled"] = enabled
     return runtime
