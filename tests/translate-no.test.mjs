@@ -350,6 +350,50 @@ test("桌面：磁盘列表按 kind 分——模型名是名字，日志项的�
                            ["早于 30 天的会话审计日志（3 个文件）", null]]);
 });
 
+// 弹幕留意（web/guard.js）动态画出来的节点：昵称、账号是名字；弹幕原文、译文、模型给的证据片段是正文；
+// 类别胶囊、琥珀理由、按钮是界面文字，两样都不带（它们要查漏翻）。手机页上没有这些：不加载 guard.js
+test("桌面：弹幕留意——昵称、账号是名字，原文、译文、证据是正文，类别胶囊和按钮是界面文字", () => {
+  const page = runPage("index.html", desktopScripts());
+  const uid = "7234567890123456789";
+  const state = { enabled: true, backend: "none", status: "rules", rules: { count: 5, warnings: 0 }, n_marked: 1,
+                  unreviewed: 0, weak: false, streamer: "luna_demo" };
+  const entry = { keys: [uid], nick: "李四", handle: "lisi_demo", aka: [], by: "auto", cat: "threat",
+                  first: T, last_seen: T, hits: 1 };
+  page.push({ type: "hello", config: { status: { state: "live", detail: "" }, room_url: ROOM,
+    guard_state: state, guard_events: {}, guard_marked: { [uid]: entry } } });
+  page.push({ type: "comment", id: "c1", ts: T, user: "李四", text: "te voy a matar", state: "pending", uid, uid_ok: true,
+    handle: "lisi_demo", guard: { lvl: "amber", amb: "review", cats: ["threat"], src: "review", rv: "agree",
+                                    evidence: "te voy a matar", why: [], ev: "g1" } });
+  page.push({ type: "comment_update", id: "c1", state: "ok", translated: "我要杀了你" });
+  const item = page.el("comment-list").children[0];
+  const head = byClass(item, "cmt-head");
+  assert.deepEqual(nameTexts(head), ["李四"], "昵称之外，★ 和胶囊都不是名字");
+  assert.equal(kind(byClass(head, "guard-pill")), null);
+  assert.equal(kind(byClass(head, "guard-mark-btn")), null);
+  assert.equal(kind(byClass(item, "guard-note")), null);
+  assert.equal(kind(byClass(item, "guard-ev")), "body");
+  assert.equal(byClass(head, "guard-pill").textContent, "疑似人身威胁");
+  // 抽屉：事件行和关注名单
+  page.push({ type: "guard_event", ev: { id: "g1", kind: "comment", cat: "threat", lvl: "amber", amb: "review", n: 1,
+    accounts: [], window_sec: 60, first_ts: Date.now() / 1000, ts: Date.now() / 1000, rv: "agree",
+    sample: { cid: "c1", user: "李四", text: "te voy a matar", uid, uid_src: "id", handle: "lisi_demo" } } });
+  page.el("guard-state").click();
+  const row = byClass(page.el("guard-events"), "guard-ev-row");
+  assert.deepEqual(nameTexts(row), ["李四"]);
+  assert.equal(kind(byClass(row, "gev-text")), "body");
+  assert.deepEqual([byClass(row, "gev-zh").textContent, kind(byClass(row, "gev-zh"))], ["我要杀了你", "body"]);
+  assert.equal(kind(byClass(row, "guard-pill")), null);
+  assert.equal(kind(byClass(row, "gev-note")), null);
+  page.el("guard-tab-marked").click();
+  const mk = byClass(page.el("guard-marked"), "guard-mk-row");
+  assert.deepEqual(nameTexts(mk), ["李四", "@lisi_demo"]);
+  assert.equal(kind(byClass(mk, "gmk-meta")), null);
+  // 设置行里的名单标题：「关注名单 · @主播」只有主播名是名字
+  assert.deepEqual(nameTexts(page.el("guard-marked-heading")), ["@luna_demo"]);
+  assert.equal(page.el("guard-marked-heading").textContent, "关注名单 · @luna_demo");
+  assert.equal(page.el("guard-summary").textContent, "开启 · 只用规则 · 关注 1 人");
+});
+
 // ---- 3. 手机 viewer.js ------------------------------------------------------------------------
 function phoneLive() {
   const page = runPage("viewer.html", ["viewer.js"]);
