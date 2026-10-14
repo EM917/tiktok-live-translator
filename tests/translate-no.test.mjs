@@ -328,6 +328,26 @@ test("桌面：弹幕的观众名是名字；原文、译文是正文；「翻�
   assert.deepEqual([other.textContent, kind(other)], ["que bonito", "body"], "译不出来就显示原文本身，仍是正文");
 });
 
+test("桌面：弹幕的「重译」按钮和它的说明是界面文字——不标 translate，不带正文 class；中文文案", () => {
+  const page = desktopLive();
+  page.push({ type: "comment_update", id: "c1", state: "ok", translated: "多少钱" });
+  const item = page.el("comment-list").children[0];
+  const btn = byClass(item, "cmt-redo");
+  // 还没有 engine 消息、或引擎不是 Claude：灰的，悬停说明为什么
+  assert.deepEqual([btn.textContent, btn.title, btn.disabled, kind(btn)],
+                   ["重译", "弹幕重译需要 Claude 引擎", true, null]);
+  page.push({ type: "engine", engine: "claude", keys: {}, active: "claude", active_label: "Claude", note: "" });
+  assert.deepEqual([btn.title, btn.disabled], ["用更强的模型重新翻译这条弹幕", false]);
+  page.push({ type: "comment_redo", id: "c1", redo_state: "pending" });
+  assert.deepEqual([btn.textContent, btn.disabled], ["重译中…", true]);
+  const said = "弹幕重译没有成功：Claude Sonnet 5.5 返回 HTTP 500，原译文保持不变";
+  page.push({ type: "comment_redo", id: "c1", redo_state: "failed", text: said });
+  assert.equal(btn.textContent, "重译失败");
+  const note = byClass(item, "redo-note");
+  assert.deepEqual([note.textContent, kind(note)], [said, null], "说明是界面文字，不是正文");
+  assert.deepEqual([byClass(item, "cmt-zh").textContent, kind(byClass(item, "cmt-zh"))], ["多少钱", "body"]);
+});
+
 test("桌面：最近直播间 chip 是主播名；换主播面板里「（当前）」不算名字", () => {
   const page = desktopLive();
   const chips = page.el("recent-list").children;
@@ -530,7 +550,8 @@ test("G10 scan.js 扫桌面：名字（translate=\"no\"）和正文（class）�
      ["（当前）", /button\.recent-chip > span$/], ["早于 30 天的会话审计日志（3 个文件）", /span\.disk-name$/],
      ["点击开始翻译 @maria.ventas", /button\.recent-chip @title$/],
      ["疑似", /span\.alert-tier$/], ["」 " + hhmmss(T + 2), /div\.alert-head > span$/],
-     ["重译", /button\.redo$/], ["翻译失败", /div\.meta > span\.lang-chip$/]]);
+     ["重译", /button\.redo$/], ["翻译失败", /div\.meta > span\.lang-chip$/],
+     ["重译", /button\.cmt-redo$/], ["弹幕重译需要 Claude 引擎", /button\.cmt-redo @title$/]]);
 });
 
 test("G10 scan.js 扫手机：名字和正文都豁免，界面提示照查", () => {
