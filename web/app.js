@@ -885,6 +885,8 @@
           pendingStart = null;
           if (startWatchdog) clearTimeout(startWatchdog);
         }
+        // homeActive === false：明确知道刚才是待机（null 是页面刚加载还不知道，offline 不改它）
+        if (homeActive === false && (msg.state === "connecting" || msg.state === "live")) guardNewSession();
         setStatus(msg);
         break;
       // 一次性提示（如手动检查更新的结果）：只改版本号处的文案，
@@ -1749,6 +1751,9 @@
       guardEvents = Object.create(null);
       var evs = cfg.guard_events && typeof cfg.guard_events === "object" ? cfg.guard_events : {};
       Object.keys(evs).forEach(function (k) { if (evs[k] && evs[k].id) guardEvents[evs[k].id] = evs[k]; });
+      // 事件表是按场整份换的（开场清空 / hello 重放）：「关注的人本场发言」跟着归零，
+      // 不然上一场的数会带到下一场（换主播时则是挂在新主播的名单上）
+      markedSpoke = [];
     }
     if ("guard_marked" in cfg) {
       guardMarked = Object.create(null);
@@ -1762,6 +1767,14 @@
     }
     if (stateChanged || "guard_marked" in cfg) decorateAllComments();
     drawGuardAll();
+  }
+
+  // 一场新的开始（待机 -> 连接中/直播中）：上一场的事件和「关注的人发言」不再显示。后端的重置
+  // config（事件表清空）要等模型和审计就绪才到，这之前「连接中…」不该露出上一场的未读红条。
+  // 只在 status 消息里调：hello 是整份重放，那里的事件正是要显示的
+  function guardNewSession() {
+    guardEvents = Object.create(null);
+    markedSpoke = [];
   }
 
   function receiveGuardEvent(msg) {

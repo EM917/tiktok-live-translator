@@ -883,3 +883,60 @@ test("英文页：停止之后顶部条、胶囊、抽屉都收起；开场的 c
   assert.equal(page.el("guard-clear-auto").cls.includes("hidden"), true);
   assert.deepEqual(leftoverChinese(page), []);
 });
+
+test("英文页：上一场的「关注的人发言」和未读红条不带进下一场——开场的 config 归零，连接中就先收起", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const bar = page.el("guard-bar");
+  const text = () => page.el("guard-bar-text").textContent;
+  page.advance(1500);
+  page.push(guardComment({ id: "c1", ts: T + 5 }));
+  page.push(guardComment({ id: "c2", ts: T + 6 }));
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", lvl: "amber", cat: "insult", ts: T + 7 }) });
+  page.fire(1000);
+  assert.match(text(), /2 from marked viewers/);
+  // 停止、再开一场：先是「连接中」，后端的重置 config 要等模型和审计就绪才到
+  page.push({ type: "status", state: "idle", detail: "" });
+  assert.equal(bar.cls.includes("hidden"), true);
+  page.advance(60000);
+  page.push({ type: "status", state: "connecting", detail: "Connecting" });
+  page.advance(1500);
+  page.fire(1000);
+  assert.equal(bar.cls.includes("hidden"), true, "连接中不露出上一场的未读");
+  page.push({ type: "config", guard_state: GUARD_STATE, guard_events: {}, guard_marked: { [GUARD_UID]: GUARD_ENTRY } });
+  page.push({ type: "status", state: "live", detail: "" });
+  page.advance(1500);
+  page.fire(1000);
+  assert.equal(bar.cls.includes("hidden"), true, "新一场还没人说话");
+  // 新一场里关注的人说话：只算这一场的
+  page.push(guardComment({ id: "n1", ts: T + 100 }));
+  page.fire(1000);
+  assert.equal(text(), "1 from marked viewers");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：直播中换主播——开场的 config（事件表清空）把关注的人发言数归零，不挂在新主播的名单上", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const bar = page.el("guard-bar");
+  page.advance(1500);
+  page.push(guardComment({ id: "c1", ts: T + 5 }));
+  page.fire(1000);
+  assert.equal(bar.cls.includes("hidden"), false);
+  // 换主播不经过待机：live -> connecting，新开场的 config 带来新名单
+  page.push({ type: "status", state: "connecting", detail: "Connecting" });
+  page.push({ type: "config", guard_state: GUARD_STATE, guard_events: {}, guard_marked: {} });
+  page.push({ type: "status", state: "live", detail: "" });
+  page.advance(1500);
+  page.fire(1000);
+  assert.equal(bar.cls.includes("hidden"), true);
+});
+
+test("英文页：刷新或重连时 hello 里的事件照常显示在抽屉里，不被「新一场」清掉", () => {
+  const page = runDesktop();
+  // 页面一开始就知道是待机，随后 hello 说其实在直播（比如另一个窗口开的）
+  page.push({ type: "status", state: "idle", detail: "" });
+  helloGuard(page);
+  page.el("guard-state").click();
+  assert.equal(page.el("guard-events").querySelectorAll(".guard-ev-row").length, 1);
+});
