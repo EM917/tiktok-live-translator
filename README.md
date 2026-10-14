@@ -272,23 +272,15 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 <p align="center"><img src="assets/icon-1024.png" width="128" alt="icon"></p>
 
-<p align="center"><img src="assets/demo.zh.gif" width="760" alt="演示：每句西语原文先上屏，中文译文稍后在下方补上；右侧弹幕面板同时翻译观众评论"></p>
+<p align="center"><img src="assets/demo.zh.gif" width="760" alt="演示：每句西语原文下面是中文译文，右边是翻译后的观众弹幕"></p>
 
 **Language / 语言：[English](#en) | 中文**
 
 ---
 
-TikTok 直播的实时双语字幕工具，为西语带货直播而做。粘贴直播间地址，程序就把主播说的话
-实时转写：每句识别出来立刻上屏，译文稍后在它下方补上。观众弹幕同时翻译。
+给 TikTok 西语直播加实时字幕，每句话下面是译文，观众弹幕也一起翻。粘贴直播间地址，点「开始翻译」就行。
 
-给不懂西语、又要跟西语带货直播的团队用：中控在电脑上看，同事用手机跟着看。上手见
-[快速开始](#快速开始)。
-
-字幕从不等译文：原文先上屏。识别跟不上时音频在队列里排着，窗口上会说明。语音识别
-永远在本机完成，用本地模型时翻译也在本机——不需要 API Key，没有使用费用。
-
-界面有中文和英文两种。新装的程序跟随系统语言，「设置 → 界面语言 · Language」可以切换，
-见[界面语言](docs/interface-language.zh-CN.md)。
+给不懂西语、又要看西语带货直播的团队用：中控在电脑上开程序，同事用手机跟着看。字幕不等译文，识别出来先上屏，译文过一会儿补上。语音识别在你的电脑上跑，装了 Ollama 之后翻译也在本机，不用注册，不用 API Key。
 
 <a id="zh-features"></a>
 
@@ -296,20 +288,15 @@ TikTok 直播的实时双语字幕工具，为西语带货直播而做。粘贴�
 
 <sub>[English](#en-features)</sub>
 
-- 🎙️ **实时字幕，原文先出** —— OpenAI Whisper 双后端（faster-whisper / MLX），支持 90+ 语言，默认只在西语和英语之间识别。每句识别出来立刻上屏，译文随后补在它下方；最新一句还会以大字显示在窗口底部
-- 🌐 **本地优先的翻译** —— Hy-MT2（Apache 2.0，离线免费）经 Ollama 提供两档，另可选 TranslateGemma、DeepL（带原生术语表）、Google 免费接口、Claude API 和任意 OpenAI 兼容接口。默认用 Hy-MT2 1.8B，其次 TranslateGemma，两个都没装时用 Google 免费接口；7B 不会被自动选用。见[翻译引擎](#翻译引擎)
-- 🏷️ **按品牌、按主播的词表** —— 全局词表、主播词表、品牌词表（在「本场品牌」下拉里按场选择）共同决定商品名怎么识别、怎么翻译，对所有引擎都生效。见[词表](docs/translation-engines.zh-CN.md#词表)
-- 💬 **观众弹幕翻译** —— 评论通过 TikTokLive 从直播间获取，当前引擎是本地模型（Hy-MT2 1.8B 或 TranslateGemma）或 Claude 时翻译；用 Google、DeepL、OpenAI 或 7B 时「观众弹幕」面板只显示原文。可用 `--no-comments` 关闭，见[常见问题](docs/faq.zh-CN.md#zh-viewer-comments)
-- 🔁 **直播中换主播** —— 点顶栏「换主播」，不用先点「停止」就能改听另一个主播：从「最近的直播间」里选或粘贴直播间地址，选好本场品牌，再点一次确认。主播语言沿用当前设置，字幕历史里会插一条分隔线标出新主播从哪里开始
-- 📱 **手机同看** —— 同一 Wi-Fi 下的同事扫二维码，就能在手机上看字幕和报警，页面按各自手机的语言显示；只看，不能操作；默认关闭。见[常见问题](docs/faq.zh-CN.md#zh-phone-viewing)
-- 🌍 **中英文界面** —— 新装跟随系统语言，也可以在「设置」里切换。见[界面语言](docs/interface-language.zh-CN.md)
-- ✅ **启动自检** —— 每项能力实际执行而非检查配置：降噪实跑 RNNoise，翻译实际请求引擎，审计日志实际写入。有项目未生效时，首页上那一行自动展开并附处理步骤，页面顶部还会出现一条提示，待机和直播中都在，直到之后的自检通过
-- 🔄 **抗故障** —— 最多七种办法找流地址；重连时分得清断网和下播；识别跟不上时音频排队而不是丢掉。见[抗故障](docs/fault-tolerance.zh-CN.md)
-- 🎵 **人声降噪** —— RNNoise 抑制背景音乐，针对持续 BGM 的直播间调校
-- ⚡ **硬件自动配置** —— 检测可用加速器（Apple Silicon GPU / NVIDIA CUDA / CPU），选择仍能实时运行的最大模型
-- 📊 **延迟可观测** —— 窗口底部实时显示：一个词说出口后最多要等多久才被识别并检查完（中位数与 P95），拆成切段与识别两部分，另加译文再等多久。审计日志逐段记录：采纳的文本、被质量过滤丢弃的候选、命中的违禁词，以及随后到达的译文
-- 🚨 **违禁词报警（默认关闭）** —— 用于带货直播的合规监听：在识别出的原文上做三级匹配（命中 / 变体 / 疑似），不依赖翻译，短语跨字幕边界同样可命中。开关在「设置 → 违禁词报警」。见[违禁词报警](#违禁词报警)
-- 👀 **弹幕留意（默认开，只用规则）** —— 在观众弹幕里发现辱骂和威胁、说假货或号召举报、刷屏、引流：规则明确命中标红，拿不准标琥珀，窗口顶部有一行提示，关注名单里的人每条弹幕都高亮。只读，不能删弹幕或禁言；手机同看上没有。可选 Claude Haiku 5.5 复核，只加不减。「设置 → 弹幕留意」里可以关。见[弹幕留意](#弹幕留意)
+- 实时字幕：西语一识别出来就上屏，译文稍后补在下面。
+- 观众弹幕也会翻译，显示在字幕旁边的面板里。
+- 翻译默认用本机的模型。DeepL、Google、Claude 和 OpenAI 兼容 API 也能选。
+- 按主播、按品牌配词表，商品名翻得前后一致。
+- 「换主播」不用先停止，直接改听另一个直播间。
+- 手机同看：同事在同一个 Wi-Fi 下扫二维码，就能用手机看。只能看，不能操作。
+- 弹幕留意：标出辱骂、威胁、说假货、刷屏和引流的弹幕。它只读，不会删弹幕。
+- 直播流断了会自动重连，来不及识别的音频先排队等着。
+- 违禁词报警：有，默认关闭。
 
 <a id="zh-screenshots"></a>
 
@@ -319,20 +306,15 @@ TikTok 直播的实时双语字幕工具，为西语带货直播而做。粘贴�
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/screenshots/zh/home.png" width="100%" alt="首页：直播间地址与「开始翻译」、主播语言与本场品牌下拉、最近的直播间，以及含启动自检、翻译引擎、违禁词报警、磁盘空间、界面语言的「设置」分组"><br><sub>首页：粘贴直播间地址，点「开始翻译」。「设置」在下方，每项一行，点开才展开。</sub></td>
-    <td width="50%"><img src="assets/screenshots/zh/live.png" width="100%" alt="直播中：每句西语原文下面是中文译文，右侧是翻译后的观众弹幕，底部大字显示最新一句，下方是延迟统计"><br><sub>直播中：原文先出，译文在下，弹幕在旁。</sub></td>
+    <td width="50%"><img src="assets/screenshots/zh/home.png" width="100%" alt="首页：直播间地址、开始翻译按钮、主播语言和本场品牌下拉、设置"><br><sub>首页：粘贴直播间地址，点「开始翻译」。「设置」在下面，每项一行。</sub></td>
+    <td width="50%"><img src="assets/screenshots/zh/live.png" width="100%" alt="直播中：每句西语原文下面是中文译文，右边是弹幕"><br><sub>直播中：原文在上，译文在下，弹幕在旁边。</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="assets/screenshots/zh/switch-streamer.png" width="100%" alt="直播中的「换主播」面板：新主播地址、标出当前主播的最近直播间、本场品牌下拉、沿用的主播语言，以及要求再点一次才切换的按钮"><br><sub>换主播：选好下一个主播，再点一次确认。</sub></td>
-    <td width="50%"><img src="assets/screenshots/zh/share-panel.png" width="100%" alt="「手机同看」面板：二维码、局域网链接、复制链接、换一个链接、停止同看，以及 1 人在看（上限 12）"><br><sub>手机同看：同一 Wi-Fi 下的手机扫码或打开链接观看。</sub></td>
-  </tr>
-  <tr>
-    <td width="50%" align="center"><img src="assets/screenshots/zh/phone.png" width="240" alt="手机页：已连接、直播中，每句西语原文带中文译文和「重译」按钮，观众弹幕栏，只看模式提示，语言切换与提示音按钮"><br><sub>手机页：只看，按手机自己的语言显示。</sub></td>
-    <td width="50%"><img src="assets/screenshots/zh/settings-language.png" width="100%" alt="「设置」分组里展开的「界面语言 · Language」一行，选的是跟随系统（中文），并说明手机同看页按各自手机的语言显示"><br><sub>设置 → 界面语言 · Language：跟随系统、中文或 English。</sub></td>
+    <td colspan="2" align="center"><img src="assets/screenshots/zh/phone.png" width="240" alt="手机页：每句西语原文带中文译文和「重译」按钮"><br><sub>手机页：只能看，按手机自己的语言显示。</sub></td>
   </tr>
 </table>
 
-<sub>上面的截图和演示动图都是虚构的直播，由 <code>tools/readme_shots.py</code> 生成。</sub>
+<sub>截图和演示动图里的直播都是虚构的。</sub>
 
 <a id="zh-quick-start"></a>
 
@@ -340,61 +322,46 @@ TikTok 直播的实时双语字幕工具，为西语带货直播而做。粘贴�
 
 <sub>[English](#en-quick-start)</sub>
 
-### 无需终端的安装方式（推荐）
+需要 macOS 12.3 或更新的系统，或者 Windows，另外留出约 6 GB 的磁盘空间。第一次启动要从 PyPI、Hugging Face 和 ollama.com 下载组件和模型。公司网络连不上这几个网站，就装不下去。
 
-1. **下载**：到[最新 Release](https://github.com/EM917/tiktok-live-translator/releases/latest) 的 Assets 里下载 **TikTok-Live-Translator-vX.Y.Z.zip**，解压到任意位置（例如桌面）——下载「Source code (zip)」也一样能用。也可以点仓库页绿色 **Code** 按钮 → **Download ZIP**（取的是最新开发版）。
-2. **装 Python**（免费，只装一次）：到 [python.org/downloads](https://www.python.org/downloads/) 下载安装包，按默认选项装完即可。忘了装也没关系——启动器发现没有 Python 时会自动打开下载页提示你。
-3. **启动**：
-   - **macOS**：双击文件夹里的 **`TikTok Live Translator.app`**。首次打开如提示「无法打开」：旧系统右键 → 打开；**macOS 15 及以后**要到 **系统设置 → 隐私与安全性**，拉到页面底部点 **「仍要打开」**（只需一次）。可以把它拖到 Dock 常驻，但**不要把它拖出这个文件夹**。
-   - **Windows**：双击 **`Start.bat`**。若弹出「发布者未知」的安全警告，点「运行」即可（本工具完全开源，代码就在这个文件夹里）。运行期间会有一个黑色文字窗口——**它就是程序本身，请保持打开**，字幕显示在另外弹出的应用窗口里。
+1. 到[最新 Release](https://github.com/EM917/tiktok-live-translator/releases/latest) 下载 `TikTok-Live-Translator-vX.Y.Z.zip`，解压到任意位置。
 
-系统要求与窗口内核：[docs/hardware.zh-CN.md](docs/hardware.zh-CN.md#最低系统要求与窗口内核)。
+2. 从 [python.org](https://www.python.org/downloads/) 装 Python 3.9 或更新的版本，安装选项保持默认。没装的话，启动程序时会自动打开下载页。
 
-首次启动会自动安装全部组件（需要几分钟，屏幕上有提示；首次识别还会自动下载语音模型，页面上能看到进度），之后每次秒开。窗口打开后：**粘贴直播间地址（或只输入主播用户名）→ 确认「主播语言」（默认西班牙语 + 英语）和顶栏里要译成的语言 → 点「开始翻译」**。直播中点「**换主播**」可以改听另一个主播；点「**停止**」回到首页，这一场的字幕留在下方「上一场字幕」里。
+3. 装 [Ollama](https://ollama.com/download)，装完打开一次。Windows 上安装包约 1.5 GB，需要管理员权限。程序启动后会下载翻译模型 Hy-MT2 1.8B（约 1 GB）。不装 Ollama 也能用，翻译会改走 Google 的免费接口，字幕文本会发给 Google。
 
-### 命令行方式
+4. 启动程序。macOS 上双击 `TikTok Live Translator.app`，别把它拖出所在的文件夹。Windows 上双击 `Start.bat`。
 
-装好 [Python 3.9+](https://www.python.org/downloads/) 后两条命令：
+5. 粘贴直播间地址或 `@用户名`，确认「主播语言」（默认西语 + 英语），点「开始翻译」。
+
+第一次启动要几分钟。语音模型（最大约 3 GB）在第一次点「开始翻译」时下载，页面上有进度。
+
+macOS 如果提示打不开，到「系统设置 → 隐私与安全性」点「仍要打开」。macOS 14 及更早的系统，改成右键点程序，选「打开」。
+
+Windows 如果弹出「发布者未知」的警告，点「运行」。程序旁边那个黑色的文字窗口就是程序本身，要一直开着。
+
+字幕译成哪种语言，在顶栏的菜单里选，默认是中文。界面有中文和英文两种，跟着系统语言走，想改就到「设置 → 界面语言 · Language」。
+
+直播中点「换主播」，可以改听另一个主播。点「停止」回到首页，这一场的字幕留在「上一场字幕」里。
+
+### 从命令行启动
 
 ```bash
 git clone https://github.com/EM917/tiktok-live-translator.git
-cd tiktok-live-translator && python3 main.py
+cd tiktok-live-translator && python3 main.py     # Windows 用 python main.py
 ```
-
-（Windows 用 `python main.py`）其余全自动：首次运行自动创建虚拟环境、安装全部依赖（含内置 ffmpeg 和降噪模型）。也可以直接传参：
 
 ```bash
-python3 main.py "https://www.tiktok.com/@主播用户名/live" --source es
-python3 main.py --demo      # 不连直播，预览界面
-python3 main.py --doctor    # 打印硬件检测结果和推荐配置
-python3 main.py --ui-lang zh   # 只这一次用中文界面
+python3 main.py --demo        # 不连直播，预览界面
+python3 main.py --doctor      # 打印硬件检测结果
+python3 main.py --ui-lang zh  # 只这一次用中文界面
 ```
 
-手动安装与更新克隆：[docs/command-line.zh-CN.md](docs/command-line.zh-CN.md#克隆安装与更新)。
+加上 `--browser`，界面就在浏览器标签页里打开，不用应用窗口。更多内容：[全部命令行参数](docs/command-line.zh-CN.md)、[磁盘空间和硬件](docs/hardware.zh-CN.md)、[界面语言](docs/interface-language.zh-CN.md)。
 
-### 启动方式
+### 更新
 
-- **macOS**：双击 **`TikTok Live Translator.app`**（或 `Start.command`）；
-- **Windows**：双击 **`Start.bat`**；
-- 命令行：`cd ~/tiktok-live-translator && python3 main.py`。
-
-界面在**独立应用窗口**中打开（不占浏览器标签页），上次填过的直播间地址、选过的主播语言和目标语言都会记住，点「开始翻译」即可；输入框下方的「**最近的直播间**」列着最近打开过的主播，点一下就直接开始。关掉窗口就是退出，直播中会先问一句。想改回浏览器界面加 `--browser`。
-
-更多：
-
-- 磁盘空间：[docs/hardware.zh-CN.md](docs/hardware.zh-CN.md#磁盘空间)。
-- 硬件自动配置：[docs/hardware.zh-CN.md](docs/hardware.zh-CN.md#硬件自动配置)。
-- 命令行参数：[docs/command-line.zh-CN.md](docs/command-line.zh-CN.md#命令行参数)。
-- 界面语言：[docs/interface-language.zh-CN.md](docs/interface-language.zh-CN.md)。
-
-### 自动更新
-
-每次启动时会静默检查 GitHub 上的最新版本（网络失败一律无声跳过）。有新版本时页面顶部会出现横幅：
-
-- **git 安装**（`git clone` 的）→ 点「一键更新」自动 `git pull --ff-only` 并重启程序。本地有未提交修改时会拒绝更新以免覆盖你的改动；
-- **ZIP 安装** → 横幅提供下载页链接，手动替换即可。
-
-界面底部会显示当前版本号。
+程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。
 
 <a id="zh-translation-engines"></a>
 
@@ -402,7 +369,30 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 <sub>[English](#en-translation-engines)</sub>
 
-已移到 [docs/translation-engines.zh-CN.md](docs/translation-engines.zh-CN.md)。
+引擎在首页的「设置 → 翻译引擎」里选，API 密钥也填在那里，保存在你电脑上的 `settings.json` 里。
+
+| 引擎 | 在哪里跑 | 要密钥吗 |
+|---|---|---|
+| 自动（默认） | 装了本地模型就在本机，没装就走 Google 的服务器 | 不要 |
+| 本地 Hy-MT2 1.8B | 本机，通过 Ollama | 不要 |
+| 本地 Hy-MT2 7B | 本机，通过 Ollama。要另外下载，需要约 16 GB 内存 | 不要 |
+| DeepL | DeepL 的服务器 | 要 |
+| Claude | Anthropic 的服务器 | 要 |
+| OpenAI 兼容 API | 服务商的服务器，也可以是你自己的，比如 LM Studio | 要 |
+| Google 免费接口 | Google 的服务器 | 不要 |
+| 不翻译，只显示原文 | 什么都不跑，字幕只有原文 | 不要 |
+
+「自动」先用 Hy-MT2 1.8B，没装就用 TranslateGemma，再没有就用 Google 的免费接口。它不会自动选 7B。
+
+词表帮你把商品名翻对，有三份文件：
+
+- `profiles/<用户名>.txt`：某个主播的写法
+- `brands/<品牌>.txt`：某个品牌的商品，在「本场品牌」菜单里选
+- `glossary.txt`：通用的词
+
+改完要点「停止」再点「开始翻译」才生效。这些文件只在你的电脑上。用 DeepL 时，程序还会在你的 DeepL 账号里建一份术语表。
+
+想用手头最强的模型重翻某一句，把鼠标移到字幕上，点「重译」。四个引擎的对比评测见 [docs/engine-benchmarks.zh-CN.md](docs/engine-benchmarks.zh-CN.md)。词表、DeepL 和重译的细节见 [docs/translation-engines.zh-CN.md](docs/translation-engines.zh-CN.md)。
 
 <a id="zh-phone-viewing"></a>
 
@@ -410,7 +400,11 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 <sub>[English](#en-phone-viewing)</sub>
 
-已移到 [docs/faq.zh-CN.md](docs/faq.zh-CN.md#zh-phone-viewing)。
+同事可以用手机跟着看字幕。点顶栏的手机图标，再点「开始同看」。手机连上同一个 Wi-Fi，扫二维码，或者输入面板里显示的地址。第一次打开时，macOS 可能问是否允许接受网络连接，Windows 可能弹出防火墙提示，都选允许。
+
+手机上能看字幕和报警，也能请求重译某一句，不能开始、停止或改设置。每台手机按自己的语言显示，最多 12 台一起看。
+
+链接里带着密钥，要像密码一样保管。点「换一个链接」，所有手机都会断开。同看默认关闭，只能在同一个局域网里用。
 
 <a id="zh-comment-review"></a>
 
@@ -418,7 +412,18 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 <sub>[English](#en-comment-review)</sub>
 
-已移到 [docs/comment-review.zh-CN.md](docs/comment-review.zh-CN.md)。
+程序会标出这几类弹幕：
+
+- 辱骂和威胁
+- 说商品是假货、骗局，或者号召举报、号召别买
+- 刷屏
+- 把观众引到别的直播间或店铺
+
+直播时，窗口顶部有一行提示，汇总还没看的标记。
+
+红条表示规则明确命中，琥珀色表示规则拿不准。你还没确认的词条，命中了也只显示琥珀色。出厂词表里，威胁类和举报类的词条大多已经确认，其他类别还没有。比如辱骂，在你确认之前都只显示琥珀色。
+
+弹幕留意只读，不能删弹幕，也不能禁言，手机页上看不到它。它默认开着，只用规则，规则在你的电脑上跑，不用模型。要关掉，到「设置 → 弹幕留意」。关注名单、可选的 Claude 复核和规则文件夹，见 [docs/comment-review.zh-CN.md](docs/comment-review.zh-CN.md)。
 
 <a id="zh-banned-term-alerts"></a>
 
@@ -426,24 +431,58 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 <sub>[English](#en-banned-term-alerts)</sub>
 
-已移到 [docs/banned-terms.zh-CN.md](docs/banned-terms.zh-CN.md)。
+报警默认关闭。要用的话，到「设置 → 违禁词报警」，打开「命中时弹出报警」。
+
+匹配跑在识别出的西语原文上，不用等译文。命中后，窗口顶部会出现红色的「疑似违禁词」面板。词表是程序文件夹里的 `banned_terms.txt`，一行一个词或短语。保存后点「停止」再点「开始翻译」才生效。报警关着的时候，命中照样写进审计日志。出厂词表只是个起点，用之前请自己过一遍。更多见 [docs/banned-terms.zh-CN.md](docs/banned-terms.zh-CN.md)。
 
 <a id="zh-when-something-goes-wrong"></a>
 
-## 出问题时
+## 遇到问题
 
 <sub>[English](#en-when-something-goes-wrong)</sub>
 
-- 常见问题：[docs/faq.zh-CN.md](docs/faq.zh-CN.md)。
-- 抗故障：[docs/fault-tolerance.zh-CN.md](docs/fault-tolerance.zh-CN.md)。
+**提示拿不到流地址（代码 4003110）。** TikTok 的接口没有给这个直播间返回流地址，返回里也没有任何说明。过一会儿再点「开始翻译」，或者把直播间地址和从浏览器里复制的 `.flv` 地址一起粘进来，中间用空格隔开。想看这台电脑上这个主播的历史，运行 `python3 tools/diagnose_room.py @主播用户名 --history-only`。它不发任何请求。
+
+**「启动自检」有一行是红的。** 打开「设置 → 启动自检」，每一行下面写着怎么处理。没处理好的项会一直在窗口顶部显示一条提示，直到之后的自检通过，每次启动都会再查一遍。降噪模型没下载完整是常见情况：删掉 `models/bd.rnnn`，再启动一次。
+
+**「浏览器登录态」说 macOS 没有放行。** 要加进「完全磁盘访问权限」的是 Python 解释器，不是程序本身，这一行会显示要加的路径。
+
+1. 打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」，点「+」。
+
+2. 在选文件的窗口里按 ⌘⇧G，粘贴路径，按回车，点「打开」，再打开这一项的开关。列表里它叫 `python3.x`。
+
+3. 每个路径都这样加一遍，然后完全退出程序，重新打开。
+
+用 `Start.command` 启动的话，也要把「终端」加进去。只有 TikTok 要求登录才给流地址的直播间用得到这一步。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」。如果弹出「钥匙串」对话框，要访问 "Chrome Safe Storage"，输入这台电脑的登录密码，点「始终允许」。
+
+**「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，下面有一条带「复制」按钮的命令，复制后在终端里运行。如果提示列出了改动过的程序文件，这条命令会丢掉这些改动，是你有意改的就别运行。
+
+**字幕越来越落后，窗口提示有积压。** 运行 `ollama ps`。如果载入了不止一个模型，用 `ollama stop <模型名>` 卸掉多余的那个。还不行就换小一点的语音模型，比如 `python3 main.py --model small`。8 GB 内存的 Mac 上，用 `--model large-v3-turbo` 或 `--model small` 比默认的更合适。
+
+**状态是「直播中」，却没有字幕。** 没声音、或者识别没把握的片段会被有意跳过，比如主播在放音乐或没说话的时候。明明有人在说话却一直没字幕，试试 `python3 main.py --denoise off`，或者换一个尺寸的语音模型。
+
+**「观众弹幕」面板是空的，或者只有原文。** 只有用本地模型（Hy-MT2 1.8B 或 TranslateGemma）或 Claude 时，弹幕才会翻译。弹幕还要求 Python 3.10 或更新的版本。只粘贴流地址的话没有弹幕，要粘贴直播间地址或 `@用户名`。
+
+**手机打不开「手机同看」的链接。** 程序这边只知道没有连接进来。按顺序查：手机和电脑是不是连着同一个 Wi-Fi；换面板里列出的另一个地址试试；在电脑的浏览器里打开同一个链接。微信里如果出现警告，点右上角的菜单，用浏览器打开。
+
+**Windows 上关掉黑色窗口，程序也退出了。** 那个窗口就是程序本身。用 `Start.bat` 重新启动，别再关它。
+
+其他问题，比如下载卡住、端口被占用，见 [docs/faq.zh-CN.md](docs/faq.zh-CN.md)。
 
 <a id="zh-limits"></a>
 
-## 做不到的
+## 已知限制
 
 <sub>[English](#en-limits)</sub>
 
-这一节还没有中文版，英文见 [Limits](#en-limits)。
+- TikTok 的接口是非官方的，可能会变。有些直播间 TikTok 不给流地址，程序也拿不到。
+- 译文可能出错，商品名和俚语最容易错。
+- 没有 Apple 芯片或 NVIDIA 显卡的电脑，识别可能跟不上。
+- 音频积压超过 60 秒，才会开始丢最旧的，窗口会显示丢了多少。
+- 观众弹幕只有用本地模型或 Claude 时才翻译。
+- 手机同看只能在同一个局域网里用。它走的是普通 http，所以手机收不到系统通知，锁屏后声音可能会断。
+- 没有导出功能。可以在窗口里选中文字复制，窗口只保留最近 300 行。
+- 终端、日志和审计日志一直是中文，不随界面语言变。
 
 <a id="zh-privacy"></a>
 
@@ -451,10 +490,17 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 <sub>[English](#en-privacy)</sub>
 
-- 识别永远在本地；翻译用 `hymt2`、`hymt2-7b`、`gemma` 或 `none` 时不出本机，用 `deepl`、`google`、`claude` 或 `openai` 时字幕文本会发给对应服务商（`openai` 的 `OPENAI_BASE_URL` 指向 LM Studio 这类本机服务时除外）。用 `claude` 时，翻译后的观众弹幕和「重译」的请求也会发给 Anthropic。观众弹幕经 TikTokLive 从 TikTok 获取，连接签名经第三方 Euler Stream 服务。
-- 弹幕留意默认只用规则，全部在本机完成。选了 Claude Haiku 5.5 复核之后，需要复核的那一条弹幕（加上同一人 2 分钟内的前一条）会发给 Anthropic：电话、数字串、链接、邮箱和 `@账号` 先打码，昵称、账号 id、主播名、时间和字幕不发。见[弹幕留意](#弹幕留意)。
-- 本工具仅供个人学习、语言辅助用途；请遵守 TikTok 服务条款与当地法律，不要用于转播、录制分发他人内容。
-- 手机同看只在打开期间才监听 `0.0.0.0`，关闭即停；控制面始终只在 `127.0.0.1`。手机端拿到的是白名单过滤后的字段，看不到设置、文件路径、Cookie、直播流地址；链接里的钥匙存在本机 `settings.json`（已在 `.gitignore` 里）；数据不出局域网。
+语音识别一直在你的电脑上跑。本地引擎（Hy-MT2 和 TranslateGemma）和「不翻译」不会往外发任何东西。
+
+用 DeepL、Google 或 Claude 时，字幕文本会发给对应的服务商。用 OpenAI 兼容 API 时，发给你设置的那个服务器，可以是你自己的。用 Claude 时，翻译后的弹幕和「重译」请求也会发给 Anthropic。
+
+观众弹幕通过 TikTokLive 从 TikTok 获取，它的连接签名要经过第三方的 Euler Stream 服务。另外，程序会联系 TikTok 取直播流，联系 GitHub 查更新。下载组件和模型时，还会联系 Hugging Face、PyPI 和 ollama.com。
+
+弹幕留意只用规则，在本机完成。如果你选了 Claude 复核，一次只把一条弹幕发给 Anthropic，电话、链接、邮箱和 `@账号` 会先打码。
+
+手机同看只在打开期间才在你的网络上开一个端口。手机看到的是字幕，看不到设置、文件路径、Cookie 和流地址。控制页只能在这台电脑上打开。
+
+这个程序只适合个人学习和语言辅助。请遵守 TikTok 的服务条款和当地法律，不要转播或分发别人的内容。
 
 <a id="zh-how-it-works"></a>
 
@@ -463,12 +509,14 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 <sub>[English](#en-how-it-works)</sub>
 
 <p align="center">
-  <img src="assets/audio-chain.zh.svg" width="1000" alt="音频链路：TikTok 直播间 → 流地址解析 → ffmpeg 抽音降噪 → 能量 VAD 切段 → 音频队列 → Whisper 识别（领域词表供识别热词），再分出翻译队列 → 翻译引擎（同一份词表供术语提示与译文兜底）与违禁词检测两条支线，汇入 CaptionServer 与字幕界面">
+  <img src="assets/audio-chain.zh.svg" width="1000" alt="音频链路：直播流、降噪、识别，再分到字幕、翻译和报警">
 </p>
 
-**[打开可探索版本 ↗](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.zh.html)** —— 搜索节点、聚焦某个组件看它的上下游、追踪有向路径、播放引导章节。
+程序先找到流地址，用 ffmpeg 拉出音频，压低背景音乐，切成短段。Whisper 把每一段转成文字，文字立刻上屏。翻译和违禁词匹配都从同一份文字出发，不会拖慢它。
 
-同一份拓扑的 Mermaid 版本和图的出处：[docs/architecture/mermaid.zh-CN.md](docs/architecture/mermaid.zh-CN.md)。
+启动时，「启动自检」把每个环节（降噪、翻译、审计日志）各跑一遍，哪项出了问题，旁边就给出处理办法。窗口底部有一个读数，显示一个词说出口到识别出来要多久，翻译又多花多久。
+
+每一场还会在 `logs/` 里写一份审计日志，每段一条记录：采用的文字、被质量过滤丢掉的候选、违禁词命中和译文。[打开可探索的架构图](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.zh.html)。
 
 <a id="zh-credits-and-license"></a>
 
@@ -476,10 +524,10 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 <sub>[English](#en-credits-and-license)</sub>
 
-- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) / [mlx-whisper](https://github.com/ml-explore/mlx-examples) —— 语音识别
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) —— 直播流解析
-- [FFmpeg](https://ffmpeg.org/) —— 音频处理（内置 RNNoise `arnndn` 滤镜）
-- [rnnoise-models](https://github.com/GregorR/rnnoise-models) —— 降噪模型（beguiling-drafter）
-- [Ollama](https://github.com/ollama/ollama) + [Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2) / [TranslateGemma](https://ollama.com/library/translategemma) —— 本地翻译
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) 和 [mlx-whisper](https://github.com/ml-explore/mlx-examples)：语音识别
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp)：查找直播流地址
+- [FFmpeg](https://ffmpeg.org/)：音频处理，内置 RNNoise 降噪滤镜
+- [rnnoise-models](https://github.com/GregorR/rnnoise-models)：降噪模型（beguiling-drafter）
+- [Ollama](https://github.com/ollama/ollama)、[Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2) 和 [TranslateGemma](https://ollama.com/library/translategemma)：本地翻译
 
 Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917)，以 [MIT 许可](LICENSE) 发布。

@@ -966,14 +966,8 @@ def _doc_text(name):
     return (REPO / name).read_text(encoding="utf-8")
 
 
-# 完全磁盘访问怎么加：README 每种语言各有一份短的，FAQ 文档里有完整的（长节搬到了 docs/）。
-# 中文那一半正在改写、暂时只剩指向 FAQ 文档的链接，所以先标 xfail；strict=True 保证中文写回来
-# 的那一刻这条测试会变红，逼着把这个标记删掉，不会悄悄留在那儿。
-@pytest.mark.parametrize("name", [
-    "docs/faq.md", "docs/faq.zh-CN.md", "README.md#en",
-    pytest.param("README.md#zh", marks=pytest.mark.xfail(
-        strict=True, reason="README 中文那一半还没改写，完全磁盘访问的步骤暂时只在 docs/faq.zh-CN.md")),
-])
+# 完全磁盘访问怎么加：README 每种语言各有一份短的，FAQ 文档里有完整的（长节搬到了 docs/）
+@pytest.mark.parametrize("name", ["docs/faq.md", "docs/faq.zh-CN.md", "README.md#en", "README.md#zh"])
 def test_readme_does_not_tell_the_operator_to_add_the_bundle(name):
     text = _doc_text(name)
     assert 'add "TikTok Live Translator"' not in text
