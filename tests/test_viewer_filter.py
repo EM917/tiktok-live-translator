@@ -359,13 +359,18 @@ def test_the_phones_replay_snapshot_has_no_guard_data_even_when_the_cache_holds_
 
 
 def test_fanout_does_not_queue_guard_messages_for_phones():
+    import asyncio
     from types import SimpleNamespace
 
-    hub = viewer.ViewerHub.__new__(viewer.ViewerHub)
-    queue = __import__("asyncio").Queue()
-    hub._viewers = [SimpleNamespace(queue=queue)]
-    for mtype in GUARD_TYPES:
-        hub.fanout({"type": mtype, "id": "c1", "guard": {"lvl": "alert"}, "ev": {"id": "g1"}, "key": "1"})
-    assert queue.qsize() == 0
-    hub.fanout({"type": "comment", "id": "c1", "user": "a", "text": "hola", "guard": {"lvl": "alert"}})
-    assert queue.qsize() == 1 and "guard" not in queue.get_nowait()
+    async def scenario():
+        # 队列要在事件循环里建：Python 3.9 的 asyncio.Queue() 在循环外构造会找不到当前循环
+        hub = viewer.ViewerHub.__new__(viewer.ViewerHub)
+        queue = asyncio.Queue()
+        hub._viewers = [SimpleNamespace(queue=queue)]
+        for mtype in GUARD_TYPES:
+            hub.fanout({"type": mtype, "id": "c1", "guard": {"lvl": "alert"}, "ev": {"id": "g1"}, "key": "1"})
+        assert queue.qsize() == 0
+        hub.fanout({"type": "comment", "id": "c1", "user": "a", "text": "hola", "guard": {"lvl": "alert"}})
+        assert queue.qsize() == 1 and "guard" not in queue.get_nowait()
+
+    asyncio.run(scenario())
