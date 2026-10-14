@@ -199,7 +199,7 @@ are translated by Claude Haiku 5.5 through a connection of their own and wait
 for caption translation first, so a pause on that connection never delays
 captions. Comment translation is for display
 only and never part of the alert path. The connection is signed through a
-third-party service; see [Privacy](../README.md#privacy-and-usage-boundaries).
+third-party service; see [Privacy](../README.md#privacy).
 
 **Exporting captions.** There is no export function; select and copy the text
 from the page. The page retains the most recent 300 lines, and the server

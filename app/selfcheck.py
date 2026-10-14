@@ -809,7 +809,7 @@ async def _comment_review_note(reviewer):
     return (L("{} 复核可用（密钥已验证）", "{} review is available (key verified)").format(model), "")
 
 
-# 一次完整安装的实测占用（见 README「磁盘空间」）：
+# 一次完整安装的实测占用（见 docs/hardware.zh-CN.md「磁盘空间」）：
 #   运行环境 1.4 GB + 语音模型 large-v3 2.9 GB + 翻译模型 1.8B 1.1 GB ≈ 6 GB
 # 门槛按这个来，别让用户下到一半才发现放不下。
 INSTALL_NEED_GB = 6
@@ -828,9 +828,9 @@ async def check_disk():
                         "Only {:.1f} GB available. A full install needs about {} GB (runtime "
                         "1.4 GB + speech model 2.9 GB + translation model 1.1 GB).").format(
                           free, INSTALL_NEED_GB),
-                      # 英文 README 那一节叫 Disk Space；「磁盘空间」在界面上是 Storage 那一行
-                      L("腾出空间后重开程序；各部分体积见 README「磁盘空间」",
-                        "Free up space, then reopen the app. Disk Space in the README lists each "
+                      # 体积表在 docs/hardware.md 的 Disk Space 一节；「磁盘空间」在界面上是 Storage 那一行
+                      L("腾出空间后重开程序；各部分体积见 docs/hardware.zh-CN.md",
+                        "Free up space, then reopen the app. docs/hardware.md lists each "
                         "part’s size, and Settings > Storage shows what the app is using."))
     if free < INSTALL_NEED_GB:
         return _check(NAMES["disk"], WARN,

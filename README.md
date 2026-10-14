@@ -7,35 +7,19 @@
 <p align="center">
   <a href="https://github.com/EM917/tiktok-live-translator/releases/latest"><img src="https://img.shields.io/github/v/release/EM917/tiktok-live-translator" alt="release"></a>
   <a href="https://github.com/EM917/tiktok-live-translator/actions/workflows/ci.yml"><img src="https://github.com/EM917/tiktok-live-translator/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="python 3.9+">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="platform">
-  <img src="https://img.shields.io/badge/privacy-local--first,_no_API_key_needed-success" alt="local-first, no API key needed">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/EM917/tiktok-live-translator" alt="license"></a>
 </p>
 
-<p align="center"><img src="assets/demo.en.gif" width="760" alt="Demo: each Spanish caption appears first and its English translation fills in a moment later, while viewer comments are translated in the panel on the right"></p>
+<p align="center"><img src="assets/demo.en.gif" width="760" alt="Demo: Spanish captions with English translations underneath, and translated viewer comments on the right"></p>
 
 **Language / 语言：English | [中文](#zh)**
 
 ---
 
-Real-time bilingual captions for TikTok live streams, built for Spanish-language
-live selling. Paste a live link and the app transcribes what the streamer says,
-shows each line as soon as it is recognised, and fills in the translation
-beneath it a moment later. Viewer comments are translated alongside.
+Live captions for Spanish TikTok streams, with the translation under each line. Viewer comments are translated too. Paste a live link and click Start.
 
-It is for teams who follow Spanish-language live selling without speaking
-Spanish: the operator watches on the computer, and colleagues follow on their
-phones. To get started, see [Quick Start](#quick-start).
-
-A caption never waits for its translation: the original goes on screen first.
-When recognition falls behind, audio waits in a queue and the window says so.
-Speech recognition always runs on your computer, and with a local model so does
-translation — no API key and no fees.
-
-The interface is in English or Chinese. A new install follows the system
-language, and Settings → App Language switches it; see
-[Interface Language](#interface-language).
+It is for teams who follow Spanish live selling without speaking Spanish. One person runs the app on a computer and colleagues watch on their phones. A caption never waits for its translation: the Spanish appears as soon as it is recognized, and the translation fills in a moment later. Recognition runs on your computer. Translation does too once Ollama is installed, so there is no account and no API key.
 
 <a id="en-features"></a>
 
@@ -43,20 +27,15 @@ language, and Settings → App Language switches it; see
 
 <sub>[中文](#zh-features)</sub>
 
-- 🎙️ **Live captions, original first** — OpenAI Whisper with two backends (faster-whisper / MLX), 90+ languages, limited to Spanish + English by default. Each line appears as soon as it is recognised and its translation fills in beneath it; the latest line is also shown large at the bottom of the window
-- 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two sizes through Ollama, with TranslateGemma, DeepL (with a native glossary), Google's free endpoint, the Claude API and any OpenAI-compatible API as alternatives. By default Hy-MT2 1.8B is used, then TranslateGemma, and Google's free endpoint when neither is installed; 7B is never picked automatically. See [Translation Engines](#translation-engines)
-- 🏷️ **Glossaries per brand and streamer** — a global glossary, one per streamer and one per brand (picked in the Brand menu for the session) steer how product names are recognised and translated, with every engine. See [Glossaries](docs/translation-engines.md#glossaries)
-- 💬 **Viewer comment translation** — comments are fetched from the live stream through TikTokLive and translated while a local engine (Hy-MT2 1.8B or TranslateGemma) or Claude is active; with Google, DeepL, OpenAI or 7B the Comments panel shows the original text. Disable with `--no-comments`; see [the FAQ](docs/faq.md#viewer-comments)
-- 🔁 **Switch Streamer during a session** — Switch Streamer in the top bar moves to another streamer without clicking Stop first: pick from Recent Streams or paste a live link, choose the brand, then click again to confirm. The spoken language carries over, and a divider in the caption history marks where the new streamer begins
-- 📱 **Phone Viewing** — colleagues on the same Wi-Fi scan a QR code and follow captions and alerts on their phones, each page in its phone's own language; view only, no control; off by default. See [the FAQ](docs/faq.md#phone-viewing)
-- 🌍 **English and Chinese interface** — follows the system language on a new install, switchable in Settings. See [Interface Language](#interface-language)
-- ✅ **Startup Check** — each capability is executed rather than inspected: noise reduction processes a sample through RNNoise, translation queries the engine, the audit log performs a write. A failing check opens its row on the home page with a remediation step, and stays in a banner at the top of the window, idle or live, until a later check passes
-- 🔄 **Fault tolerance** — up to seven ways to find the stream URL, reconnects that tell a network drop from the end of the stream, and audio queued rather than lost when recognition falls behind. See [Fault Tolerance](#fault-tolerance)
-- 🎵 **Voice-focused noise reduction** — RNNoise suppresses background music, tuned for streams with continuous BGM
-- ⚡ **Automatic hardware configuration** — detects the available accelerator (Apple Silicon GPU / NVIDIA CUDA / CPU) and selects the largest model that still runs in real time
-- 📊 **Observable latency** — a live readout at the bottom of the window: the longest a spoken word waits before it is recognised and checked (median and P95), split into segmentation and recognition, plus the time the translation adds. An audit log records each segment: accepted text, candidates rejected by the quality filter, banned-term matches, and the translation that followed
-- 🚨 **Banned-term alerts, off by default** — for compliance monitoring of live selling: three-tier matching (exact / variant / similar) against the recognised source text, independent of translation and across caption boundaries. The switch is in Settings → Banned-Term Alerts. See [Banned-Term Alerts](#banned-term-alerts)
-- 👀 **Comment Review, on by default with rules only** — spots insults and threats, claims of fakes or calls to report, flooding and redirects among viewer comments: a clear rule match is marked red, an unsure one amber, a line at the top of the window sums it up, and marked viewers are highlighted on every comment. Read-only — it cannot delete comments or mute anyone — and absent from Phone Viewing. Optional Claude Haiku 5.5 review only ever adds. Switch it off in Settings → Comment Review. See [Comment Review](#comment-review)
+- Captions in real time: the Spanish line appears as soon as it is recognized, with the translation underneath.
+- Viewer comments are translated too, in a panel beside the captions.
+- Translation runs on your computer with a local model. DeepL, Google, Claude and OpenAI-compatible APIs are optional.
+- Glossaries for each streamer and each brand keep product names consistent.
+- Switch Streamer moves to another live stream without stopping first.
+- Phone Viewing: colleagues on the same Wi-Fi scan a QR code and follow along on their phones. View only.
+- Comment Review marks insults and threats, fake-product claims, flooding and redirects in viewer comments. It only reads.
+- If the stream drops, the app reconnects. Audio that recognition has not caught up with waits in a queue.
+- Banned-term alerts are available and off by default.
 
 <a id="en-screenshots"></a>
 
@@ -66,122 +45,99 @@ language, and Settings → App Language switches it; see
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/screenshots/en/home.png" width="100%" alt="Home page: live link and Start, the Spoken language and Brand menus, Recent Streams, and the Settings group with Startup Check, Translation Engine, Banned-Term Alerts, Storage and App Language"><br><sub>Home: paste a live link and click Start. Settings sits below, one line per setting until opened.</sub></td>
-    <td width="50%"><img src="assets/screenshots/en/live.png" width="100%" alt="During a session: each Spanish line above its English translation, translated comments on the right, the latest line in large type at the bottom, and the latency readout under it"><br><sub>Live: the original first, the translation beneath it, comments alongside.</sub></td>
+    <td width="50%"><img src="assets/screenshots/en/home.png" width="100%" alt="Home page: live link, Start button, Spoken language and Brand menus, Settings"><br><sub>Home: paste a live link and click Start. Settings are below, one line each.</sub></td>
+    <td width="50%"><img src="assets/screenshots/en/live.png" width="100%" alt="During a session: Spanish lines with English translations, comments on the right"><br><sub>Live: the original first, the translation under it, comments beside.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="assets/screenshots/en/switch-streamer.png" width="100%" alt="The Switch Streamer panel during a session: a new live link, Recent Streams with the current streamer marked, a Brand menu, the carried-over spoken language, and the button asking for a second click to switch"><br><sub>Switch Streamer: pick the next streamer, then click again to confirm.</sub></td>
-    <td width="50%"><img src="assets/screenshots/en/share-panel.png" width="100%" alt="The Phone Viewing panel: a QR code, the local network link, Copy Link, New Link and Stop Sharing, and 1 watching (limit 12)"><br><sub>Phone Viewing: a QR code and link for phones on the same Wi-Fi.</sub></td>
-  </tr>
-  <tr>
-    <td width="50%" align="center"><img src="assets/screenshots/en/phone.png" width="240" alt="The phone page: Connected and Live, Spanish lines with English translations and a Retranslate button on each, the Comments bar, View only, a language toggle and the Sound button"><br><sub>The phone page: view only, in the phone's own language.</sub></td>
-    <td width="50%"><img src="assets/screenshots/en/settings-language.png" width="100%" alt="The Settings group with the App Language row open, set to System (English), and the note that Phone Viewing pages follow each phone's language"><br><sub>Settings → App Language: System, 中文 or English.</sub></td>
+    <td colspan="2" align="center"><img src="assets/screenshots/en/phone.png" width="240" alt="The phone page: Spanish lines with translations and a Retranslate button"><br><sub>Phone page: view only, in the phone's own language.</sub></td>
   </tr>
 </table>
 
-<sub>The screenshots and the demo above show made-up streams and are generated by <code>tools/readme_shots.py</code>.</sub>
-
-<a id="en-disk-space"></a>
-
-## Disk Space
-
-<sub>[中文](#zh-disk-space)</sub>
-
-Moved to [docs/hardware.md](docs/hardware.md#disk-space).
+<sub>The screenshots and the demo show made-up streams.</sub>
 
 <a id="en-quick-start"></a>
 
-## Quick Start
+## Quick start
 
 <sub>[中文](#zh-quick-start)</sub>
 
-### Installation without a terminal (recommended)
+You need macOS 12.3 or later, or Windows, and about 6 GB of free disk space. The first launch downloads software and models from PyPI, Hugging Face and ollama.com. A work network that cannot reach those sites stops the install.
 
-1. **Download**: grab **TikTok-Live-Translator-vX.Y.Z.zip** from the [latest release](https://github.com/EM917/tiktok-live-translator/releases/latest)'s Assets and unzip it anywhere (e.g. your Desktop) — "Source code (zip)" works too. The green **Code** button → **Download ZIP** also works (latest dev snapshot).
-2. **Install Python** (free, one time only): grab the installer from [python.org/downloads](https://www.python.org/downloads/) and install with the default options. Forgot? No problem — the launcher will detect it and open the download page for you.
-3. **Launch**:
-   - **macOS**: double-click **`TikTok Live Translator.app`** in the folder. If the first launch is blocked ("cannot be opened"): on older systems right-click → Open; on **macOS 15 and later** go to **System Settings → Privacy & Security**, scroll to the bottom and click **"Open Anyway"** (one time only). Feel free to drag it to the Dock — but **don't move it out of this folder**.
-   - **Windows**: double-click **`Start.bat`**. If a "publisher unknown" security warning pops up, click "Run" (this tool is fully open source — the code is right there in the folder). A black text window stays open while running — **that window is the app itself; keep it open**. Captions appear in the separate app window.
+1. Download `TikTok-Live-Translator-vX.Y.Z.zip` from the [latest release](https://github.com/EM917/tiktok-live-translator/releases/latest) and unzip it anywhere.
 
-System requirements and the window engine: [docs/hardware.md](docs/hardware.md#minimum-system-and-the-window-engine).
+2. Install Python 3.9 or newer from [python.org](https://www.python.org/downloads/) with the default options. If it is missing, the launcher opens the download page.
 
-The first launch installs everything automatically (a few minutes, with on-screen progress; the first recognition also downloads the speech model, with progress shown on the page). Every launch after that is instant. Once the window opens: **paste the live link (or just the streamer's username) → check Spoken language (Spanish + English by default) and, in the top bar, the language to translate into → click Start**. During a session, **Switch Streamer** moves to another streamer, and **Stop** takes the window back to the home page, with that session's captions kept below under Previous Session.
+3. Install [Ollama](https://ollama.com/download) and open it once. On Windows the installer is about 1.5 GB and needs administrator rights. When the app starts, it downloads the Hy-MT2 1.8B translation model (about 1 GB). Without Ollama, the app translates with Google's free endpoint, which sends caption text to Google.
 
-### Command line
+4. Start the app. On macOS, double-click `TikTok Live Translator.app` and keep it inside its folder. On Windows, double-click `Start.bat`.
 
-With [Python 3.9+](https://www.python.org/downloads/) installed, two commands:
+5. Paste a live link or `@username`, check Spoken language (Spanish + English by default), and click Start.
+
+The first launch takes a few minutes. The speech model (up to 3 GB) downloads the first time you click Start, and the page shows the progress.
+
+If macOS says the app cannot be opened, go to System Settings → Privacy & Security and click Open Anyway. On macOS 14 and earlier, right-click the app and choose Open instead.
+
+On Windows, if a warning names an unknown publisher, click Run. The black text window that opens next to the app is the app itself, so keep it open.
+
+Choose the language to translate into from the menu in the top bar. A new install with an English interface starts on English. The interface follows your system language, English or Chinese, and Settings → App Language changes it.
+
+During a session, Switch Streamer moves to another streamer. Stop returns to the home page and keeps that session's captions under Previous Session.
+
+### From a terminal
 
 ```bash
 git clone https://github.com/EM917/tiktok-live-translator.git
-cd tiktok-live-translator && python3 main.py
+cd tiktok-live-translator && python3 main.py     # python main.py on Windows
 ```
-
-(On Windows use `python main.py`.) Everything else is automatic: the first run creates a virtual environment and installs all dependencies (including a bundled static ffmpeg and the denoising model). CLI flags work too:
 
 ```bash
-python3 main.py "https://www.tiktok.com/@streamer_username/live" --source es
-python3 main.py --demo      # preview the UI without connecting to a stream
-python3 main.py --doctor    # print the hardware check and recommended config
-python3 main.py --ui-lang en   # English interface for this launch only
+python3 main.py --demo        # preview the window without a stream
+python3 main.py --doctor      # print the hardware check
+python3 main.py --ui-lang en  # English interface for this launch only
 ```
 
-Manual install and updating a clone: [docs/command-line.md](docs/command-line.md#installing-and-updating-a-clone).
+Add `--browser` to use a browser tab instead of the app window. More: [all flags](docs/command-line.md), [disk space and hardware](docs/hardware.md), [interface language](docs/interface-language.md).
 
-### Starting the app
+### Updating
 
-- **macOS**: double-click **`TikTok Live Translator.app`** (or `Start.command`);
-- **Windows**: double-click **`Start.bat`**;
-- CLI: `cd ~/tiktok-live-translator && python3 main.py`.
-
-The UI opens in its **own app window** (no browser tab), remembering the last live link, spoken language and target language — just click Start. **Recent Streams** under the input box lists the streamers you opened recently; one click starts one. Closing the window quits the app, and asks first during a session. Pass `--browser` if you prefer the browser UI.
-
-<a id="en-interface-language"></a>
-
-## Interface Language
-
-<sub>[中文](#zh-interface-language)</sub>
-
-Moved to [docs/interface-language.md](docs/interface-language.md).
-
-<a id="en-automatic-hardware-configuration"></a>
-
-## Automatic Hardware Configuration
-
-<sub>[中文](#zh-automatic-hardware-configuration)</sub>
-
-Moved to [docs/hardware.md](docs/hardware.md#automatic-hardware-configuration).
-
-<a id="en-command-line-flags"></a>
-
-## Command-Line Flags
-
-<sub>[中文](#zh-command-line-flags)</sub>
-
-Moved to [docs/command-line.md](docs/command-line.md#command-line-flags).
+The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip.
 
 <a id="en-translation-engines"></a>
 
-## Translation Engines
+## Translation engines
 
 <sub>[中文](#zh-translation-engines)</sub>
 
-Moved to [docs/translation-engines.md](docs/translation-engines.md).
+Choose the engine in Settings → Translation Engine on the home page. API keys go there too and are saved in `settings.json` on your computer.
 
-<a id="en-fault-tolerance"></a>
+| Engine | Runs | Key |
+|---|---|---|
+| Automatic (default) | On your computer if a local model is installed, otherwise on Google's servers | No |
+| Local Hy-MT2 1.8B | On your computer, through Ollama | No |
+| Local Hy-MT2 7B | On your computer, through Ollama. Needs a separate download and about 16 GB of RAM | No |
+| DeepL | DeepL's servers | Yes |
+| Claude | Anthropic's servers | Yes |
+| OpenAI-compatible API | The provider's servers, or your own such as LM Studio | Yes |
+| Google (free) | Google's servers | No |
+| Don't Translate | Nothing runs: captions show the original only | No |
 
-## Fault Tolerance
+Automatic uses Hy-MT2 1.8B if it is installed, then TranslateGemma, then Google's free endpoint. It never picks the 7B model.
 
-<sub>[中文](#zh-fault-tolerance)</sub>
+Glossaries keep product names right. Put one streamer's wording in `profiles/<username>.txt`, one brand's products in `brands/<brand>.txt` (pick the brand in the Brand menu), and shared terms in `glossary.txt`. Changes apply after Stop and Start. These files stay on your computer. With DeepL, the app also keeps a glossary in your DeepL account.
 
-Moved to [docs/fault-tolerance.md](docs/fault-tolerance.md).
+To redo one caption with the strongest model you have, hover it and click Retranslate. A graded comparison of four engines is in [docs/engine-benchmarks.md](docs/engine-benchmarks.md). Glossaries, DeepL and Retranslate are covered in [docs/translation-engines.md](docs/translation-engines.md).
 
-<a id="en-banned-term-alerts"></a>
+<a id="en-phone-viewing"></a>
 
-## Banned-Term Alerts
+## Phone Viewing
 
-<sub>[中文](#zh-banned-term-alerts)</sub>
+<sub>[中文](#zh-phone-viewing)</sub>
 
-Moved to [docs/banned-terms.md](docs/banned-terms.md).
+Colleagues can follow the captions on their phones. Click the phone icon in the top bar, then Start Sharing. A phone on the same Wi-Fi scans the QR code or types the address shown. Allow incoming connections if macOS or Windows asks.
+
+A phone shows captions and alerts. It can ask for one line to be retranslated, and it cannot start, stop or change anything. Each page uses the phone's own language, and up to 12 phones can watch at once.
+
+The link contains a key, so treat it like a password. New Link disconnects every phone. Sharing is off until you turn it on, and it works on the same network only.
 
 <a id="en-comment-review"></a>
 
@@ -189,71 +145,122 @@ Moved to [docs/banned-terms.md](docs/banned-terms.md).
 
 <sub>[中文](#zh-comment-review)</sub>
 
-Moved to [docs/comment-review.md](docs/comment-review.md).
+The app marks viewer comments that:
 
-<a id="en-architecture"></a>
+- insult or threaten
+- call products fake or a scam, or call for reports or for people not to buy
+- flood the chat
+- pull people to another stream or shop
 
-## Architecture
+During a session, a line at the top of the window sums up what is waiting.
 
-<sub>[中文](#zh-architecture)</sub>
+A red bar means a rule matched clearly. Amber means the rules are unsure. Entries you have not confirmed show amber even on a match. Most shipped threat and report entries are confirmed. The others are not, so insults, for example, show amber until you confirm them.
+
+Comment Review only reads. It cannot delete comments or mute anyone, and phones do not show it. It is on by default and uses rules only, which run on your computer with no model. Turn it off in Settings → Comment Review. Marked viewers, the optional Claude review and the rules folder are in [docs/comment-review.md](docs/comment-review.md).
+
+<a id="en-banned-term-alerts"></a>
+
+## Banned-Term Alerts
+
+<sub>[中文](#zh-banned-term-alerts)</sub>
+
+Alerts are off by default. Turn them on in Settings → Banned-Term Alerts with Show alert on match.
+
+Matching runs on the recognized Spanish text, so an alert does not wait for the translation. A match opens a red Possible Banned Terms panel at the top of the window. The list is `banned_terms.txt` in the app folder, one word or phrase per line. Save it, then click Stop and Start. With alerts off, matches are still written to the audit log. The shipped list is a starting point: review it before you rely on it. More in [docs/banned-terms.md](docs/banned-terms.md).
+
+<a id="en-when-something-goes-wrong"></a>
+
+## When something goes wrong
+
+<sub>[中文](#zh-when-something-goes-wrong)</sub>
+
+**The app says TikTok didn't provide a stream URL (code 4003110).** TikTok's interface did not return a stream URL for this live link, and it gives no reason. Click Start again a little later, or paste the live link and a `.flv` URL copied from your browser together, separated by a space. To see this room's history on your computer, run `python3 tools/diagnose_room.py @streamer --history-only`. It sends no requests.
+
+**A Startup Check row is red.** Open Settings → Startup Check. Each row shows its fix underneath. A failing check also stays in a banner at the top of the window until a later check passes, and the checks run again at every launch. An incomplete noise-reduction model is a common cause: delete `models/bd.rnnn` and start again.
+
+**Browser Login says macOS did not allow access.** Add the Python interpreter to Full Disk Access, not the app. The Browser Login row shows the path to add.
+
+1. Open System Settings → Privacy & Security → Full Disk Access and click +.
+
+2. In the file window press ⌘⇧G, paste the path, press Return, click Open, and turn the entry on. It is listed as `python3.x`, not under the app's name.
+
+3. Repeat for each path shown, then quit the app completely and reopen it.
+
+Add Terminal too if you start with `Start.command`. Only streams where TikTok gives the stream URL only to signed-in viewers need this. If the audit log shows `cannot_decrypt`, click Start again. When a Keychain dialog asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
+
+**Update Now does not start or finish.** The message says why and shows a command with a Copy button. Run it in Terminal. If the message lists changed app files, the command discards those changes, so do not run it if you changed them on purpose.
+
+**Captions fall behind and the window warns about a backlog.** Run `ollama ps`. If more than one model is loaded, unload the extra one with `ollama stop <model>`. If that does not help, use a smaller speech model, for example `python3 main.py --model small`. On a Mac with 8 GB of RAM, `--model large-v3-turbo` or `--model small` fits better than the default.
+
+**The status says Live but no captions appear.** Silent or low-confidence audio is skipped on purpose, for example while the streamer plays music or is not speaking. If someone is clearly speaking and nothing appears, try `python3 main.py --denoise off` or a different model size.
+
+**The Comments panel is empty or shows only the original text.** Comments are translated only while the engine is a local model (Hy-MT2 1.8B or TranslateGemma) or Claude. They need Python 3.10 or newer, and a stream URL pasted on its own has no comments, so use the live link or `@username`.
+
+**A phone cannot open the Phone Viewing link.** The app only knows that no connection came in. Check, in order: the phone is on the same Wi-Fi as the computer, another address from the list in the panel works, and the same link opens in a browser on the computer. If WeChat shows a warning, open the link in a browser from its top-right menu.
+
+**The app quit when the black window on Windows closed.** That window is the app itself. Start it again with `Start.bat` and keep the window open.
+
+Other problems, such as a stuck download or a busy port, are in [docs/faq.md](docs/faq.md).
+
+<a id="en-limits"></a>
+
+## Limits
+
+<sub>[中文](#zh-limits)</sub>
+
+- TikTok's interfaces are unofficial and may change. For some live streams TikTok does not provide a stream URL, and the app cannot get one.
+- Translations can be wrong, most often on product names and slang.
+- On a computer without Apple Silicon or an NVIDIA GPU, recognition can fall behind. Only audio more than 60 seconds behind is dropped, and the window counts it.
+- Viewer comments are translated only with a local model or Claude.
+- Phone Viewing works on the same network only. It uses plain http, so phones get no system notifications, and sound may stop when a phone locks.
+- There is no export. Select and copy text from the window; it keeps the last 300 lines.
+- The terminal, the logs and the audit log are always in Chinese, whatever the interface language.
+
+<a id="en-privacy"></a>
+
+## Privacy
+
+<sub>[中文](#zh-privacy)</sub>
+
+Speech recognition always runs on your computer. The local engines (Hy-MT2 and TranslateGemma) and Don't Translate send nothing out.
+
+With DeepL, Google or Claude, caption text goes to that provider. With an OpenAI-compatible API it goes to the server you set up, which can be your own. With Claude, translated comments and Retranslate requests go to Anthropic too.
+
+Viewer comments come from TikTok through TikTokLive, which signs its connection through the third-party Euler Stream service. The app also contacts TikTok for the stream, GitHub to check for updates, and Hugging Face, PyPI and ollama.com to download software and models.
+
+Comment Review uses rules only, on your computer. If you choose the Claude review, one comment at a time goes to Anthropic, with phone numbers, links, emails and `@handles` masked first.
+
+Phone Viewing opens a port on your network only while it is on. Phones see captions, not settings, file paths, cookies or the stream address. The control page itself can be opened from this computer only.
+
+Use the app for personal learning and language help. Follow TikTok's Terms of Service and local laws, and do not rebroadcast or redistribute other people's content.
+
+<a id="en-how-it-works"></a>
+
+## How it works
+
+<sub>[中文](#zh-how-it-works)</sub>
 
 <p align="center">
-  <img src="assets/audio-chain.en.svg" width="1000" alt="Audio pipeline: TikTok live room → stream resolver → ffmpeg denoise → energy VAD → audio queue → Whisper ASR (the glossary supplies hotwords), branching into a translation queue → translation engine (the same glossary supplies term hints and fix-ups) and a banned-term scan, both converging on CaptionServer and the caption surface">
+  <img src="assets/audio-chain.en.svg" width="1000" alt="Audio chain: stream, denoise, recognition, then captions, translation and alerts">
 </p>
 
-**[Open the explorable version ↗](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.en.html)** — search nodes, focus a component to see its authored upstream and downstream, trace a directed route, play the guided chapters.
+The app finds the stream URL, pulls the audio with ffmpeg, quiets background music, and cuts it into short segments. Whisper turns each segment into text. The text goes to the window at once. Translation and banned-term matching start from the same text and never hold it up.
 
-The same topology as Mermaid and where the diagram was drawn from: [docs/architecture/mermaid.md](docs/architecture/mermaid.md).
+When the app starts, Startup Check runs each part once (noise reduction, translation, the audit log) and shows a fix next to anything that fails. A readout at the bottom of the window shows how long a spoken word takes to be recognized and how much the translation adds.
 
-<a id="en-auto-update"></a>
+Each session also writes an audit log in `logs/`, one record per segment: the accepted text, the candidates the quality filter rejected, banned-term matches and the translation. [Explore the diagram](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.en.html).
 
-## Auto-update
+<a id="en-credits-and-license"></a>
 
-<sub>[中文](#zh-auto-update)</sub>
+## Credits and license
 
-On every launch the app silently checks GitHub for the latest release (network failures are silently ignored). When a new version exists, a banner appears at the top of the page:
+<sub>[中文](#zh-credits-and-license)</sub>
 
-- **git install** (cloned via `git clone`) → click **Update Now** to run `git pull --ff-only` and restart automatically. If you have uncommitted local changes, the update is refused to avoid overwriting them;
-- **ZIP install** → the banner links to the download page instead.
-
-The current version is shown in the page footer.
-
-<a id="en-faq"></a>
-
-## FAQ
-
-<sub>[中文](#zh-faq)</sub>
-
-Moved to [docs/faq.md](docs/faq.md).
-
-<a id="en-privacy-and-usage-boundaries"></a>
-
-## Privacy and Usage Boundaries
-
-<sub>[中文](#zh-privacy-and-usage-boundaries)</sub>
-
-- Recognition always runs locally. Translation stays on your computer with `hymt2`, `hymt2-7b`, `gemma` or `none`; with `deepl`, `google`, `claude` or `openai`, caption text is sent to that provider (for `openai`, unless `OPENAI_BASE_URL` points at a local server such as LM Studio). With `claude`, translated viewer comments and Retranslate requests are sent to Anthropic as well. Viewer comments come from TikTok through TikTokLive, whose connection signing goes through the third-party Euler Stream service.
-- Comment Review uses rules only by default, entirely on your computer. If you choose Claude Haiku 5.5 review, the one comment to review (plus the same viewer's previous comment from the last 2 minutes) is sent to Anthropic, with phone numbers, digit strings, links, emails and `@handles` masked first; nicknames, account ids, the streamer's name, timestamps and captions are not sent. See [Comment Review](#comment-review).
-- This tool is for personal learning and language-assistance use only. Please comply with TikTok's Terms of Service and local laws — don't use it to rebroadcast or redistribute recordings of other people's content.
-- Phone Viewing binds `0.0.0.0` only while it's turned on, and stops as soon as it's turned off; the control page always stays on `127.0.0.1` only. What a phone receives is filtered through an allowlist — it never sees settings, file paths, cookies, or the stream address. The share link's key lives in the local `settings.json` (already gitignored); no data leaves the local network.
-
-<a id="en-acknowledgments"></a>
-
-## Acknowledgments
-
-<sub>[中文](#zh-acknowledgments)</sub>
-
-- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) / [mlx-whisper](https://github.com/ml-explore/mlx-examples) — speech recognition
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — livestream resolution
-- [FFmpeg](https://ffmpeg.org/) — audio processing (built-in RNNoise `arnndn` filter)
-- [rnnoise-models](https://github.com/GregorR/rnnoise-models) — denoising model (beguiling-drafter)
-- [Ollama](https://github.com/ollama/ollama) + [Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2) / [TranslateGemma](https://ollama.com/library/translategemma) — local translation
-
-<a id="en-author-license"></a>
-
-## Author & License
-
-<sub>[中文](#zh-author-license)</sub>
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and [mlx-whisper](https://github.com/ml-explore/mlx-examples): speech recognition
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp): stream lookup
+- [FFmpeg](https://ffmpeg.org/): audio processing, including its RNNoise filter
+- [rnnoise-models](https://github.com/GregorR/rnnoise-models): the noise-reduction model (beguiling-drafter)
+- [Ollama](https://github.com/ollama/ollama), [Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2) and [TranslateGemma](https://ollama.com/library/translategemma): local translation
 
 Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under the [MIT License](LICENSE).
 
@@ -281,7 +288,7 @@ TikTok 直播的实时双语字幕工具，为西语带货直播而做。粘贴�
 永远在本机完成，用本地模型时翻译也在本机——不需要 API Key，没有使用费用。
 
 界面有中文和英文两种。新装的程序跟随系统语言，「设置 → 界面语言 · Language」可以切换，
-见[界面语言](#界面语言)。
+见[界面语言](docs/interface-language.zh-CN.md)。
 
 <a id="zh-features"></a>
 
@@ -295,9 +302,9 @@ TikTok 直播的实时双语字幕工具，为西语带货直播而做。粘贴�
 - 💬 **观众弹幕翻译** —— 评论通过 TikTokLive 从直播间获取，当前引擎是本地模型（Hy-MT2 1.8B 或 TranslateGemma）或 Claude 时翻译；用 Google、DeepL、OpenAI 或 7B 时「观众弹幕」面板只显示原文。可用 `--no-comments` 关闭，见[常见问题](docs/faq.zh-CN.md#zh-viewer-comments)
 - 🔁 **直播中换主播** —— 点顶栏「换主播」，不用先点「停止」就能改听另一个主播：从「最近的直播间」里选或粘贴直播间地址，选好本场品牌，再点一次确认。主播语言沿用当前设置，字幕历史里会插一条分隔线标出新主播从哪里开始
 - 📱 **手机同看** —— 同一 Wi-Fi 下的同事扫二维码，就能在手机上看字幕和报警，页面按各自手机的语言显示；只看，不能操作；默认关闭。见[常见问题](docs/faq.zh-CN.md#zh-phone-viewing)
-- 🌍 **中英文界面** —— 新装跟随系统语言，也可以在「设置」里切换。见[界面语言](#界面语言)
+- 🌍 **中英文界面** —— 新装跟随系统语言，也可以在「设置」里切换。见[界面语言](docs/interface-language.zh-CN.md)
 - ✅ **启动自检** —— 每项能力实际执行而非检查配置：降噪实跑 RNNoise，翻译实际请求引擎，审计日志实际写入。有项目未生效时，首页上那一行自动展开并附处理步骤，页面顶部还会出现一条提示，待机和直播中都在，直到之后的自检通过
-- 🔄 **抗故障** —— 最多七种办法找流地址；重连时分得清断网和下播；识别跟不上时音频排队而不是丢掉。见[抗故障](#zh-fault-tolerance)
+- 🔄 **抗故障** —— 最多七种办法找流地址；重连时分得清断网和下播；识别跟不上时音频排队而不是丢掉。见[抗故障](docs/fault-tolerance.zh-CN.md)
 - 🎵 **人声降噪** —— RNNoise 抑制背景音乐，针对持续 BGM 的直播间调校
 - ⚡ **硬件自动配置** —— 检测可用加速器（Apple Silicon GPU / NVIDIA CUDA / CPU），选择仍能实时运行的最大模型
 - 📊 **延迟可观测** —— 窗口底部实时显示：一个词说出口后最多要等多久才被识别并检查完（中位数与 P95），拆成切段与识别两部分，另加译文再等多久。审计日志逐段记录：采纳的文本、被质量过滤丢弃的候选、命中的违禁词，以及随后到达的译文
@@ -326,14 +333,6 @@ TikTok 直播的实时双语字幕工具，为西语带货直播而做。粘贴�
 </table>
 
 <sub>上面的截图和演示动图都是虚构的直播，由 <code>tools/readme_shots.py</code> 生成。</sub>
-
-<a id="zh-disk-space"></a>
-
-## 磁盘空间
-
-<sub>[English](#en-disk-space)</sub>
-
-已移到 [docs/hardware.zh-CN.md](docs/hardware.zh-CN.md#磁盘空间)。
 
 <a id="zh-quick-start"></a>
 
@@ -381,29 +380,21 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 界面在**独立应用窗口**中打开（不占浏览器标签页），上次填过的直播间地址、选过的主播语言和目标语言都会记住，点「开始翻译」即可；输入框下方的「**最近的直播间**」列着最近打开过的主播，点一下就直接开始。关掉窗口就是退出，直播中会先问一句。想改回浏览器界面加 `--browser`。
 
-<a id="zh-interface-language"></a>
+更多：
 
-## 界面语言
+- 磁盘空间：[docs/hardware.zh-CN.md](docs/hardware.zh-CN.md#磁盘空间)。
+- 硬件自动配置：[docs/hardware.zh-CN.md](docs/hardware.zh-CN.md#硬件自动配置)。
+- 命令行参数：[docs/command-line.zh-CN.md](docs/command-line.zh-CN.md#命令行参数)。
+- 界面语言：[docs/interface-language.zh-CN.md](docs/interface-language.zh-CN.md)。
 
-<sub>[English](#en-interface-language)</sub>
+### 自动更新
 
-已移到 [docs/interface-language.zh-CN.md](docs/interface-language.zh-CN.md)。
+每次启动时会静默检查 GitHub 上的最新版本（网络失败一律无声跳过）。有新版本时页面顶部会出现横幅：
 
-<a id="zh-automatic-hardware-configuration"></a>
+- **git 安装**（`git clone` 的）→ 点「一键更新」自动 `git pull --ff-only` 并重启程序。本地有未提交修改时会拒绝更新以免覆盖你的改动；
+- **ZIP 安装** → 横幅提供下载页链接，手动替换即可。
 
-## 硬件自动配置
-
-<sub>[English](#en-automatic-hardware-configuration)</sub>
-
-已移到 [docs/hardware.zh-CN.md](docs/hardware.zh-CN.md#硬件自动配置)。
-
-<a id="zh-command-line-flags"></a>
-
-## 命令行参数
-
-<sub>[English](#en-command-line-flags)</sub>
-
-已移到 [docs/command-line.zh-CN.md](docs/command-line.zh-CN.md#命令行参数)。
+界面底部会显示当前版本号。
 
 <a id="zh-translation-engines"></a>
 
@@ -413,21 +404,13 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 已移到 [docs/translation-engines.zh-CN.md](docs/translation-engines.zh-CN.md)。
 
-<a id="zh-fault-tolerance"></a>
+<a id="zh-phone-viewing"></a>
 
-## 抗故障
+## 手机同看
 
-<sub>[English](#en-fault-tolerance)</sub>
+<sub>[English](#en-phone-viewing)</sub>
 
-已移到 [docs/fault-tolerance.zh-CN.md](docs/fault-tolerance.zh-CN.md)。
-
-<a id="zh-banned-term-alerts"></a>
-
-## 违禁词报警
-
-<sub>[English](#en-banned-term-alerts)</sub>
-
-已移到 [docs/banned-terms.zh-CN.md](docs/banned-terms.zh-CN.md)。
+已移到 [docs/faq.zh-CN.md](docs/faq.zh-CN.md#zh-phone-viewing)。
 
 <a id="zh-comment-review"></a>
 
@@ -437,11 +420,47 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 已移到 [docs/comment-review.zh-CN.md](docs/comment-review.zh-CN.md)。
 
-<a id="zh-architecture"></a>
+<a id="zh-banned-term-alerts"></a>
 
-## 架构
+## 违禁词报警
 
-<sub>[English](#en-architecture)</sub>
+<sub>[English](#en-banned-term-alerts)</sub>
+
+已移到 [docs/banned-terms.zh-CN.md](docs/banned-terms.zh-CN.md)。
+
+<a id="zh-when-something-goes-wrong"></a>
+
+## 出问题时
+
+<sub>[English](#en-when-something-goes-wrong)</sub>
+
+- 常见问题：[docs/faq.zh-CN.md](docs/faq.zh-CN.md)。
+- 抗故障：[docs/fault-tolerance.zh-CN.md](docs/fault-tolerance.zh-CN.md)。
+
+<a id="zh-limits"></a>
+
+## 做不到的
+
+<sub>[English](#en-limits)</sub>
+
+这一节还没有中文版，英文见 [Limits](#en-limits)。
+
+<a id="zh-privacy"></a>
+
+## 隐私
+
+<sub>[English](#en-privacy)</sub>
+
+- 识别永远在本地；翻译用 `hymt2`、`hymt2-7b`、`gemma` 或 `none` 时不出本机，用 `deepl`、`google`、`claude` 或 `openai` 时字幕文本会发给对应服务商（`openai` 的 `OPENAI_BASE_URL` 指向 LM Studio 这类本机服务时除外）。用 `claude` 时，翻译后的观众弹幕和「重译」的请求也会发给 Anthropic。观众弹幕经 TikTokLive 从 TikTok 获取，连接签名经第三方 Euler Stream 服务。
+- 弹幕留意默认只用规则，全部在本机完成。选了 Claude Haiku 5.5 复核之后，需要复核的那一条弹幕（加上同一人 2 分钟内的前一条）会发给 Anthropic：电话、数字串、链接、邮箱和 `@账号` 先打码，昵称、账号 id、主播名、时间和字幕不发。见[弹幕留意](#弹幕留意)。
+- 本工具仅供个人学习、语言辅助用途；请遵守 TikTok 服务条款与当地法律，不要用于转播、录制分发他人内容。
+- 手机同看只在打开期间才监听 `0.0.0.0`，关闭即停；控制面始终只在 `127.0.0.1`。手机端拿到的是白名单过滤后的字段，看不到设置、文件路径、Cookie、直播流地址；链接里的钥匙存在本机 `settings.json`（已在 `.gitignore` 里）；数据不出局域网。
+
+<a id="zh-how-it-works"></a>
+
+## 工作原理
+
+<sub>[English](#en-how-it-works)</sub>
 
 <p align="center">
   <img src="assets/audio-chain.zh.svg" width="1000" alt="音频链路：TikTok 直播间 → 流地址解析 → ffmpeg 抽音降噪 → 能量 VAD 切段 → 音频队列 → Whisper 识别（领域词表供识别热词），再分出翻译队列 → 翻译引擎（同一份词表供术语提示与译文兜底）与违禁词检测两条支线，汇入 CaptionServer 与字幕界面">
@@ -451,54 +470,16 @@ python3 main.py --ui-lang zh   # 只这一次用中文界面
 
 同一份拓扑的 Mermaid 版本和图的出处：[docs/architecture/mermaid.zh-CN.md](docs/architecture/mermaid.zh-CN.md)。
 
-<a id="zh-auto-update"></a>
+<a id="zh-credits-and-license"></a>
 
-## 自动更新
+## 致谢与许可
 
-<sub>[English](#en-auto-update)</sub>
-
-每次启动时会静默检查 GitHub 上的最新版本（网络失败一律无声跳过）。有新版本时页面顶部会出现横幅：
-
-- **git 安装**（`git clone` 的）→ 点「一键更新」自动 `git pull --ff-only` 并重启程序。本地有未提交修改时会拒绝更新以免覆盖你的改动；
-- **ZIP 安装** → 横幅提供下载页链接，手动替换即可。
-
-界面底部会显示当前版本号。
-
-<a id="zh-faq"></a>
-
-## 常见问题
-
-<sub>[English](#en-faq)</sub>
-
-已移到 [docs/faq.zh-CN.md](docs/faq.zh-CN.md)。
-
-<a id="zh-privacy-and-usage-boundaries"></a>
-
-## 隐私与使用边界
-
-<sub>[English](#en-privacy-and-usage-boundaries)</sub>
-
-- 识别永远在本地；翻译用 `hymt2`、`hymt2-7b`、`gemma` 或 `none` 时不出本机，用 `deepl`、`google`、`claude` 或 `openai` 时字幕文本会发给对应服务商（`openai` 的 `OPENAI_BASE_URL` 指向 LM Studio 这类本机服务时除外）。用 `claude` 时，翻译后的观众弹幕和「重译」的请求也会发给 Anthropic。观众弹幕经 TikTokLive 从 TikTok 获取，连接签名经第三方 Euler Stream 服务。
-- 弹幕留意默认只用规则，全部在本机完成。选了 Claude Haiku 5.5 复核之后，需要复核的那一条弹幕（加上同一人 2 分钟内的前一条）会发给 Anthropic：电话、数字串、链接、邮箱和 `@账号` 先打码，昵称、账号 id、主播名、时间和字幕不发。见[弹幕留意](#弹幕留意)。
-- 本工具仅供个人学习、语言辅助用途；请遵守 TikTok 服务条款与当地法律，不要用于转播、录制分发他人内容。
-- 手机同看只在打开期间才监听 `0.0.0.0`，关闭即停；控制面始终只在 `127.0.0.1`。手机端拿到的是白名单过滤后的字段，看不到设置、文件路径、Cookie、直播流地址；链接里的钥匙存在本机 `settings.json`（已在 `.gitignore` 里）；数据不出局域网。
-
-<a id="zh-acknowledgments"></a>
-
-## 致谢
-
-<sub>[English](#en-acknowledgments)</sub>
+<sub>[English](#en-credits-and-license)</sub>
 
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) / [mlx-whisper](https://github.com/ml-explore/mlx-examples) —— 语音识别
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) —— 直播流解析
 - [FFmpeg](https://ffmpeg.org/) —— 音频处理（内置 RNNoise `arnndn` 滤镜）
 - [rnnoise-models](https://github.com/GregorR/rnnoise-models) —— 降噪模型（beguiling-drafter）
 - [Ollama](https://github.com/ollama/ollama) + [Hy-MT2](https://github.com/Tencent-Hunyuan/Hy-MT2) / [TranslateGemma](https://ollama.com/library/translategemma) —— 本地翻译
-
-<a id="zh-author-license"></a>
-
-## 作者与许可
-
-<sub>[English](#en-author-license)</sub>
 
 Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917)，以 [MIT 许可](LICENSE) 发布。

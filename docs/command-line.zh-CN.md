@@ -21,12 +21,12 @@
 | `--beam` | beam search 宽度（越大越准越慢，`1`=贪心；仅 ct2 后端） | `5` |
 | `--context` | 开启滚动上下文。**默认关闭**：实测它会诱发复读死循环，反而大幅拉低召回率 | 关 |
 | `--asr-temperature` | 识别解码温度。**默认 0（只解码一次）**：Whisper 默认会在质量不达标时用更高温度重解最多 6 次，音乐段上实测单次识别可达 25 秒 | `0` |
-| `--translator` | 翻译引擎：`auto`/`hymt2`/`hymt2-7b`/`gemma`/`deepl`/`google`/`claude`/`openai`/`none`，见[翻译引擎](../README.md#翻译引擎) | 界面上次的选择；没有则 `auto` |
+| `--translator` | 翻译引擎：`auto`/`hymt2`/`hymt2-7b`/`gemma`/`deepl`/`google`/`claude`/`openai`/`none`，见[翻译引擎](../README.md#zh-translation-engines) | 界面上次的选择；没有则 `auto` |
 | `--denoise` | RNNoise 人声降噪：`auto`/`on`/`off` | `auto`（开） |
 | `--port` | 本地 UI 端口 | `8765` |
 | `--cookies` | yt-dlp cookies.txt 路径（yt-dlp 报告直播间要登录才能看时用） | 无 |
 | `--glossary` | 领域词表文件，见[词表](translation-engines.zh-CN.md#词表) | 项目目录下的 `glossary.txt`，首次运行时由 `glossary.example.txt` 生成 |
-| `--banned-terms` | 违禁词表文件，见[违禁词报警](../README.md#违禁词报警) | 项目目录下的 `banned_terms.txt`，首次运行时由 `banned_terms.example.txt` 生成 |
+| `--banned-terms` | 违禁词表文件，见[违禁词报警](../README.md#zh-banned-term-alerts) | 项目目录下的 `banned_terms.txt`，首次运行时由 `banned_terms.example.txt` 生成 |
 | `--demo` | 演示模式，仅驱动 UI | 关 |
 | `--doctor` | 打印硬件体检和推荐配置后退出 | 关 |
 | `--no-open` | 启动后不自动打开应用窗口或浏览器 | 关 |
