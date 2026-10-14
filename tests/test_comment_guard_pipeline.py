@@ -921,25 +921,125 @@ def test_a_question_repeated_five_times_is_at_most_a_note_and_sends_nothing(monk
     assert server.of_type("comment_guard") == [] and server.of_type("guard_event") == []
 
 
-def test_several_accounts_with_the_same_sentence_are_one_amber_event_and_zero_red(monkeypatch, tmp_path):
+CHANT = "¡Más ofertas en la cesta de la compra!"          # 2026-10-14 直播里 6 个账号刷的那一句
+
+
+def test_several_accounts_with_the_same_sentence_are_counted_but_never_shown(monkeypatch, tmp_path):
+    """多账号同一句几乎都是主播要求的抽奖口令（用户 2026-10-14 决定）：没有琥珀、没有 comment_guard、
+    没有 guard_event、抽屉里没有事件；数记进 session_end.comment_guard.chorus，数据不丢。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
 
     async def scenario():
         await p._begin_session(ROOM)
-        for i in range(5):
-            await comments(p, item("a%d" % i, "Acc %d" % i, "quiero el combo rosa", uid="3%d" % i))
+        audit = p.audit
+        for i in range(8):
+            await comments(p, item("a%d" % i, "Acc %d" % i, CHANT, uid="3%d" % i))
         await p._guard_tick()
+        live_events = dict(server.config.get("guard_events") or {})
+        await p._end_session(audit, reason="user_stop")
+        return audit, live_events
 
-    run(scenario())
+    audit, live_events = run(scenario())
     shown = server.of_type("comment")
-    assert len(shown) == 5 and not [m for m in shown if m.get("guard", {}).get("lvl") == "alert"]
-    assert shown[-1]["guard"]["lvl"] == "amber" and shown[-1]["guard"]["amb"] == "brigade"
-    events = list(server.config["guard_events"].values())
-    assert len(events) == 1 and events[0]["kind"] == "brigade" and events[0]["n"] == 5
-    assert events[0]["lvl"] == "amber" and events[0]["cat"] == "flood_brigade" and events[0]["window_sec"] == 20
-    assert len(events[0]["accounts"]) == 5 and events[0]["accounts"][0] == {"user": "Acc 0", "uid": "30"}
-    assert shown[-1]["guard"]["ev"] == events[0]["id"] and events[0]["sample"]["cid"] == "a4"
+    assert len(shown) == 8 and all("guard" not in m for m in shown)          # 一条标注也没有，第一条也没有
+    assert server.guard_messages() == [] and live_events == {}
     assert p.guard.marked_auto == 0 and len(p.guard.marks) == 0
+    end = of(audit_records(audit), "session_end")[0]["comment_guard"]
+    assert end["counts"] == {} and end["amber_by_reason"] == {}              # 操作员没看到的东西不进「看到的」计数
+    # 第 3 个账号起每条触发一次（共 6 条）、同一波只算 1 个事件、最大一波 8 个账号
+    assert end["chorus"] == {"events": 1, "comments": 6, "max_accounts": 8}
+    assert end["observed"] == 8
+
+
+def test_two_separate_waves_of_the_same_chant_count_as_two_events(monkeypatch, tmp_path):
+    clock = {"t": 1000.0}
+    rt = new_runtime(monkeypatch, tmp_path, clock=lambda: clock["t"])
+
+    async def scenario():
+        await start(rt)
+        for wave, t0 in enumerate((1000.0, 1200.0)):                          # 隔 200 秒再刷一波：新事件
+            for i in range(5 + wave):
+                rt.observe([item("w%d-%d" % (wave, i), "Acc %d-%d" % (wave, i), CHANT, uid="4%d%d" % (wave, i))],
+                           now=t0 + i * 0.5)
+        return rt._session_end_record()
+
+    record = run(scenario())
+    assert record["chorus"] == {"events": 2, "comments": 3 + 4, "max_accounts": 6}
+    assert rt.events == {} and record["counts"] == {}
+
+
+def test_a_chorus_with_a_confirmed_red_sentence_is_still_red_and_counted_once_each(monkeypatch, tmp_path):
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        out = []
+        for i in range(6):
+            out += rt.observe([item("r%d" % i, "Rival %d" % i, THREATS[0], uid="5%d" % i)], now=1000.0 + i)
+        return out
+
+    out = run(scenario())
+    assert all(o["guard"]["lvl"] == "alert" and o["guard"]["cats"] == ["threat"] for o in out)
+    assert rt.counts == {"threat": {"alert": 6, "amber": 0, "note": 0}}        # 6 条红条，各自按自己的规则计
+    assert rt.chorus["events"] == 1 and rt.chorus["max_accounts"] == 6        # 同时照样被数
+    assert not any(e["kind"] == "brigade" or e["cat"] == "flood_brigade" for e in rt.events.values())
+
+
+def test_counting_the_chorus_can_never_cost_a_comment_its_annotation(monkeypatch, tmp_path):
+    """计数这一步出错（这里让它的去重表坏掉）：口令那几条照常放行，之后红条的标注一个字都不少。"""
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        monkeypatch.setattr(rt, "_chorus_seen", None)
+        out = []
+        for i in range(4):
+            out += rt.observe([item("e%d" % i, "Acc %d" % i, CHANT, uid="6%d" % i)], now=1000.0 + i)
+        out += rt.observe([item("t1", "Rival", THREATS[0], uid="7")], now=1010.0)
+        return out
+
+    out = run(scenario())
+    assert out[-1]["guard"]["lvl"] == "alert" and rt.errors >= 1
+    assert [o.get("guard") for o in out[:4]] == [None] * 4
+
+
+def test_one_account_flooding_is_never_counted_as_a_chorus(monkeypatch, tmp_path):
+    """chorus 只数多账号同一句（brigade）。同一个人连发（C1）和同一句反复发（C3）也在 last_flood 里，但不是口令：
+    它们照旧标红，数不进 chorus，去重表里也没有它们。"""
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        burst, repeat = [], []
+        for i in range(6):                                                        # C1：8 秒内 6 句不同的话
+            burst += rt.observe([item("b%d" % i, "Burst", "texto numero %s hermoso" % "abcdef"[i], uid="103")],
+                                now=1000.0 + i * 1.6)
+        for i in range(5):                                                        # C3：同一个人 60 秒内同一句 5 次
+            repeat += rt.observe([item("s%d" % i, "Same", "quiero el combo rosa para mi hermana", uid="104")],
+                                 now=1100.0 + i * 5)
+        return burst, repeat
+
+    burst, repeat = run(scenario())
+    assert burst[-1]["guard"]["cats"] == ["flood_user"] and repeat[-1]["guard"]["cats"] == ["flood_repeat"]   # 确实触发了
+    assert rt.chorus == {"events": 0, "comments": 0, "max_accounts": 0} and not rt._chorus_seen
+    assert rt._session_end_record()["chorus"] == {"events": 0, "comments": 0, "max_accounts": 0}
+
+
+def test_a_new_session_starts_its_chorus_count_from_zero(monkeypatch, tmp_path):
+    """第二场写进 session_end 的口令数只能是它自己的：上一场的数和去重表都不能带过来。"""
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        for i in range(6):
+            rt.observe([item("k%d" % i, "Acc %d" % i, CHANT, uid="8%d" % i)], now=1000.0 + i)
+        first = (dict(rt.chorus), len(rt._chorus_seen), rt._session_end_record()["chorus"])
+        await start(rt)                                                           # 同一个进程里的下一场
+        return first, (dict(rt.chorus), len(rt._chorus_seen), rt._session_end_record()["chorus"])
+
+    first, second = run(scenario())
+    assert first == ({"events": 1, "comments": 4, "max_accounts": 6}, 1, {"events": 1, "comments": 4, "max_accounts": 6})
+    assert second == ({"events": 0, "comments": 0, "max_accounts": 0}, 0, {"events": 0, "comments": 0, "max_accounts": 0})
 
 
 def test_common_chatter_from_many_accounts_is_not_reported(monkeypatch, tmp_path):
@@ -1587,20 +1687,17 @@ def test_events_go_out_never_sent_first_then_higher_level_then_oldest(monkeypatc
         await rt.flush(broadcast)
         assert sent == ["g1"]
         rt.observe([item("a2", "Ana", THREATS[1], uid="1")], now=1001.0)           # g1 又有更新（已发过）
-        for i in range(5):                                                         # b1：琥珀的多账号同句事件（没发过）
-            rt.observe([item("m%d" % i, "Acc %d" % i, "quiero el combo rosa", uid="3%d" % i)], now=1002.0 + i * 0.1)
-        rt.observe([item("a3", "Bea", THREATS[2], uid="2")], now=1003.0)           # g2：红条（没发过）
-        brigade = [eid for eid in rt.events if eid.startswith("b")]
-        assert len(brigade) == 1 and rt.events[brigade[0]]["lvl"] == "amber"
-        assert set(rt._ev_dirty) == {"g1", "g2", brigade[0]}
+        rt.observe([item("m1", "Maybe", "es falso", uid="105")], now=1002.0)       # g2：琥珀（没发过）
+        rt.observe([item("a3", "Bea", THREATS[2], uid="2")], now=1003.0)           # g3：红条（没发过）
+        assert rt.events["g2"]["lvl"] == "amber" and rt.events["g3"]["lvl"] == "alert"
+        assert set(rt._ev_dirty) == {"g1", "g2", "g3"}
         for step in range(1, 4):
             clock["t"] = 1000.0 + 2 * step
             await rt.flush(broadcast)
         await rt.close_session()
-        return brigade[0]
 
-    brigade = run(scenario())
-    assert sent == ["g1", "g2", brigade, "g1"]                             # 没发过的先发（红的在琥珀之前），更新过的 g1 最后
+    run(scenario())
+    assert sent == ["g1", "g3", "g2", "g1"]                                # 没发过的先发（红的在琥珀之前），更新过的 g1 最后
 
 
 def test_a_lead_verdict_only_decides_routing_it_never_gets_a_guard_object_or_a_count(monkeypatch, tmp_path):
@@ -1802,7 +1899,10 @@ def test_the_demo_comment_stream_goes_through_the_guard_and_leaves_no_trace(monk
         assert any(g["lvl"] == "alert" and "accuse_call" in g["cats"] for g in guards)
         assert any(g["lvl"] == "alert" and "promo_link" in g["cats"] for g in guards)
         assert server.of_type("guard_mark"), "号召举报那条红条自动加入了关注名单"
-    assert any(e["kind"] == "brigade" for m in server.of_type("guard_event") for e in [m["ev"]] if "kind" in e)
+    # 那一波「Cuenta A–E」同一句是主播喊口令：什么都不标，抽屉里也没有它的事件（2026-10-14）
+    assert all("guard" not in c for c in sent if c["user"].startswith("Cuenta "))
+    assert not any(e.get("kind") == "brigade" or e.get("cat") == "flood_brigade"
+                   for m in server.of_type("guard_event") for e in [m["ev"]])
 
 
 def test_the_demo_stream_with_the_guard_off_only_shows_comments(monkeypatch, tmp_path):

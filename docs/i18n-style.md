@@ -157,7 +157,7 @@
 |---|---|---|---|
 | 弹幕留意 | **Comment Review**；状态写 **Comment Review: …** | Moderation, Comment Moderation, Comment Guard | Moderation 暗示程序能处理，而本程序只读：不能删弹幕、不能禁言。Guard 是代码里的名字 |
 | 需要留意的弹幕 | **comments to review**；标题写 **Comments to Review**；空态写 “No comments to review yet.” | flagged comments, alerts, warnings | alert 已经是违禁词报警的名字，warning 留给自检的「提醒」；flagged 带判断 |
-| 需要留意 n 件（顶部条、浮钮上的数） | 数的是事件：写 **{n} item to review / {n} items to review**，不写 comments | {n} comments to review, events, incidents, flagged | 用户 2026-10-13 决定：一次刷屏、一次多账号同句各算 1 件，不数其中的弹幕条数；写成 “60 comments to review” 会把一个事件说成 60 条；events 是代码里的词；incident 已被别处占用。中文量词用「件」，不用「条」（「条」留给数弹幕本身的地方，如抽屉里的「共 12 条」） |
+| 需要留意 n 件（顶部条、浮钮上的数） | 数的是事件：写 **{n} item to review / {n} items to review**，不写 comments | {n} comments to review, events, incidents, flagged | 用户 2026-10-13 决定：一次刷屏算 1 件，不数其中的弹幕条数（多账号同句曾经也算 1 件，2026-10-14 起不再显示，见下）；写成 “60 comments to review” 会把一个事件说成 60 条；events 是代码里的词；incident 已被别处占用。中文量词用「件」，不用「条」（「条」留给数弹幕本身的地方，如抽屉里的「共 12 条」） |
 | 拿不准 | **unclear** | uncertain, maybe | maybe 撞 `EN_CAUSAL` |
 | 关注名单 | **Marked Viewers** | Watch List, Follow List, Block List | Watch 已被手机同看的在看人数占用；Follow 撞 TikTok 的关注；Block List 撞 `EN_LABELS` |
 | 加入关注名单 / 移出关注名单 | **Mark / Unmark** | Follow / Unfollow, Add to List, Watch | 动词对，短。中文按钮写全，不用单独一个「关注」：在中文 TikTok 语境里它就是 follow |
@@ -171,7 +171,9 @@
 | 弱信号 | **weak signals** | low confidence | 只是线索，还没有定论 |
 | 规则 / 规则文件夹 | **rules** / **Open Rules Folder** | lexicon, dictionary | 词表（glossary）是翻译用的，这里是判定规则 |
 
-**类别名**（后端只发代码；中文一律写「疑似……」，英文一律写 “Possible …”，`flood_brigade` 只写观察，不加「疑似」）：
+**类别名**（后端只发代码；中文一律写「疑似……」，英文一律写 “Possible …”，`flood_brigade` 只写观察，不加「疑似」。
+`flood_brigade` 和琥珀理由 `brigade` 从 2026-10-14 起后端不再发——多账号同一句几乎都是主播要求的抽奖口令，只在审计里计数；
+这两句文案留在表里，只为认得旧数据。账号数或秒数缺失、为 0 时不写这句理由，绝不写「0 个账号，0 秒内同一句」）：
 
 | 代码 | 中文 | English |
 |---|---|---|
@@ -286,7 +288,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | pipeline.py:961 丢段 | 1 audio segment | {n} audio segments |
 | pipeline.py:154 已重试 | Retried once. | Retried {n} times. |
 | selfcheck.py:434 词表生效 | 1 entry active | {n} entries active |
-| guard.js guardAmberText 多账号同一句 | Same comment from 1 account in {s} seconds | Same comment from {n} accounts in {s} seconds |
+| guard.js guardAmberText 多账号同一句（2026-10-14 起后端不再发，认旧数据；n 或 s 缺失、小于 1 时整句不写） | Same comment from 1 account in {s} seconds | Same comment from {n} accounts in {s} seconds |
 | guard.js guardCountText 事件条数 | 1 comment in {s} seconds / 1 comment | {m} comments in {s} seconds / {m} comments |
 | guard.js guardBarSummary、guardFabTitle 顶部条和浮钮（按事件计） | 1 item to review | {n} items to review |
 | guard.js guardBarSummary 拿不准、关注的人发言 | {n} unclear / {n} from marked viewers | 同左（不变形；中文是「拿不准 {n} 件」「关注的人发言 {n} 条」） |

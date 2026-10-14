@@ -406,7 +406,8 @@ GUARD_STATE = {"enabled": True, "backend": "none", "status": "rules", "since": N
 
 
 def _guard_comments():
-    """弹幕栏里的几种行：普通、红条（带模型给的证据）、琥珀（各种理由）、关注的人、多账号同句。"""
+    """弹幕栏里的几种行：普通、红条（带模型给的证据）、琥珀（各种理由）、关注的人、多账号同句
+    （后者是旧数据的形状：后端 2026-10-14 起不再发，页面还要认得它，所以场景留着）。"""
     def comment(cid, user, text, uid, handle, guard=None, offset=0):
         msg = {"type": "comment", "id": cid, "user": user, "text": text, "ts": NOW - 200 + offset,
                "translated": None, "state": "pending", "uid": uid, "uid_ok": True, "handle": handle}

@@ -4,7 +4,8 @@ C3 同人同句、C2 多账号同句，以及内存有界。
 原型 13 条刷屏序列按 spec §4.5 更新（期望值变在哪里，用 `# v2:` 注明）：
   * 刷屏一律不自动加入（tier == "struct"）；
   * 同人同句的问句最多到 note；
-  * 多账号同句 v1 只出琥珀事件、不单独标红（主播喊口令时观众会齐刷同一句）。
+  * 多账号同句（C2）：引擎照常数（`last_flood` 里的 "brigade" 事件），但判定不报——不同账号发同一句几乎都是
+    主播要求的抽奖口令（用户 2026-10-14 决定），所以 `judge()` 对它没有琥珀、没有类别、没有 why。
 
 所有序列都传真实时间戳（CLAUDE.md 第七条：不传 ts，滑动窗口永不过期）。纯 CPU，不碰模型和网络，
 不 import main.py。用 tests/fixtures/comment_guard 的测试词表；主播名用虚构的 luna_demo。
@@ -94,9 +95,9 @@ def test_proto_5_same_sentence_three_times_is_only_a_note():
     assert res[-1][0]["cats"] == ["flood_repeat"]
 
 
-def test_proto_6_five_accounts_with_the_same_red_sentence_one_amber_event_each_message_red_on_its_own():
-    """v2: 原型这里是 brigade alert。现在多账号同句只出琥珀事件；这句话本身带红条档词条，所以每条
-    本来就是红条（事件只是把它们聚在一起）。"""
+def test_proto_6_five_accounts_with_the_same_red_sentence_each_message_is_red_on_its_own():
+    """v2: 原型这里是 brigade alert。现在多账号同句只数不报（引擎里仍有事件）；这句话本身带红条档词条，
+    所以每条本来就是红条，和有没有口令这回事无关。"""
     res = run([(1000 + i * 3, "u%d" % i, "no compren es estafa") for i in range(5)])
     assert [e["lvl"] for e in brigades(res)] == ["note", "note", "amber"]
     assert brigades(res)[-1]["n"] == 5
@@ -118,18 +119,19 @@ def test_proto_9_twelve_accounts_with_hearts_is_positive_not_flooding():
     assert lvls(res) == [None] * 12 and not brigades(res)
 
 
-def test_proto_10_four_accounts_with_the_same_neutral_long_sentence_is_a_note():
+def test_proto_10_four_accounts_with_the_same_neutral_long_sentence_is_counted_but_not_reported():
     res = run([(1000 + i * 4, "u%d" % i, "Aqui seguimos esperando a que respondan las preguntas del chat de hoy")
                for i in range(4)])
-    assert kinds(res[-1]) == [("brigade", "note", 4)]
-    assert lvls(res) == [None, None, "note", "note"]
+    assert kinds(res[-1]) == [("brigade", "note", 4)]                # 引擎数到了
+    assert lvls(res) == [None] * 4                                    # v3: 判定不报（原来后两条是 note）
+    assert all(r["cats"] == [] and r["why"] == [] for r, _ in res)
 
 
-def test_proto_11_five_accounts_with_near_identical_sentences_is_an_amber_event():
+def test_proto_11_five_accounts_with_near_identical_sentences_is_counted_but_not_reported():
     words = ["hoy", "ya", "aqui", "ahora", "mismo"]
     res = run([(1000 + i * 3, "u%d" % i, "vengan al live de maria es mas barato %s" % words[i]) for i in range(5)])
-    assert kinds(res[-1]) == [("brigade", "amber", 5)]            # v2: 原型是 alert
-    assert res[-1][0]["lvl"] == "amber" and res[-1][0]["amb"] == "brigade"
+    assert kinds(res[-1]) == [("brigade", "amber", 5)]            # v2: 原型是 alert；引擎里仍到琥珀这一档
+    assert lvls(res) == [None] * 5 and res[-1][0]["amb"] is None   # v3: 判定不报
 
 
 def test_proto_12_the_same_comment_id_replayed_is_not_flooding():
@@ -174,30 +176,111 @@ def test_tag_questions_also_cap_the_repeated_sentence_at_note():
         assert "alert" not in lvls(res), text
 
 
-def test_review_row_seven_accounts_with_the_same_slogan_one_amber_event_zero_red():
+def test_review_row_seven_accounts_with_the_same_slogan_one_counted_event_nothing_reported():
     res = run([(1.5 * i, "v%d" % i, "quiero el combo rosa") for i in range(7)])
-    assert "alert" not in lvls(res)
+    assert lvls(res) == [None] * 7
     ev = brigades(res)
     assert [e["lvl"] for e in ev] == ["note", "note", "amber", "amber", "amber"]
     assert [e["n"] for e in ev] == [3, 4, 5, 6, 7]
     assert len({e["ev"] for e in ev}) == 1                       # 一个事件，账号数原地增长
-    assert res[-1][0]["amb"] == "brigade" and not cg.auto_markable(res[-1][0])
+    assert res[-1][0]["amb"] is None and not cg.auto_markable(res[-1][0])
 
 
-def test_review_row_six_accounts_giving_their_giveaway_number_is_one_amber_event():
+def test_review_row_six_accounts_giving_their_giveaway_number_is_one_counted_event_nothing_reported():
     res = run([(1.0 * i, "w%d" % i, "participo en el sorteo %d" % (i + 1)) for i in range(6)])
-    assert "alert" not in lvls(res)
+    assert lvls(res) == [None] * 6
     ev = brigades(res)
     assert [e["lvl"] for e in ev][-2:] == ["amber", "amber"] and ev[-1]["n"] == 6
     assert len({e["ev"] for e in ev}) == 1
 
 
-def test_five_accounts_with_the_same_neutral_sentence_in_20_seconds_make_exactly_one_amber_event():
+def test_five_accounts_with_the_same_neutral_sentence_in_20_seconds_make_exactly_one_counted_event():
     res = run([(4 * i, "z%d" % i, "alguien me explica como se usa el codigo") for i in range(5)])
     ev = brigades(res)
     assert ev[-1] == {"kind": "brigade", "lvl": "amber", "n": 5, "window": 20, "ev": ev[-1]["ev"],
                       "first_ts": 0, "last_ts": 16, "accounts": ["z0", "z1", "z2", "z3", "z4"]}
-    assert "alert" not in lvls(res)
+    assert lvls(res) == [None] * 5
+
+
+# ---- C2 多账号同一句只数不报（用户 2026-10-14 决定：几乎都是主播要求的抽奖口令） -----------------------------
+
+CHANT = "¡Más ofertas en la cesta de la compra!"          # 2026-10-14 直播里 6 个账号刷的那一句
+
+
+def chant(text, n, user="ch%d", gap=1.0, t0=1000.0):
+    return [(t0 + gap * i, user % i, text) for i in range(n)]
+
+
+def test_an_eight_account_chant_of_a_neutral_sentence_shows_nothing_at_any_level():
+    res = run(chant(CHANT, 8))
+    assert lvls(res) == [None] * 8                               # 没有红条、琥珀，连 note 都没有
+    for r, _ in res:
+        assert r["amb"] is None and r["cats"] == [] and r["why"] == [] and r["tier"] is None
+        assert r["sub"] is None and r["route"] is None and r["tags"] == []
+        assert not cg.auto_markable(r)
+
+
+def test_the_chant_is_still_counted_by_the_engine_so_the_data_is_not_lost():
+    res = run(chant(CHANT, 8))
+    ev = brigades(res)
+    assert [e["n"] for e in ev] == [3, 4, 5, 6, 7, 8]            # 引擎照常数：第 3 个账号起每条一个事件
+    assert [e["lvl"] for e in ev] == ["note", "note", "amber", "amber", "amber", "amber"]
+    assert len({e["ev"] for e in ev}) == 1 and ev[-1]["accounts"] == ["ch%d" % i for i in range(8)]
+
+
+def test_no_chant_message_carries_the_multi_account_category_or_reason():
+    for text in (CHANT, "participo en el sorteo %d", "quiero el combo rosa", "yo quiero ganar el sorteo de hoy"):
+        res = run([(1000 + i, "q%d" % i, text.replace("%d", str(i))) for i in range(10)])
+        for r, _ in res:
+            assert "flood_brigade" not in r["cats"] and r["amb"] != "brigade", text
+            assert not any(w.startswith("flood/brigade") for w in r["why"]), text
+
+
+def test_a_chant_made_of_a_confirmed_red_tier_sentence_is_still_red_on_every_message():
+    res = run(chant("no compren es estafa", 8, gap=2.0))
+    assert len(brigades(res)) == 6                               # 口令照样被数
+    for r, _ in res:
+        assert r["lvl"] == "alert" and r["tier"] == "red" and r["cats"][0] == "accuse_call", r
+        assert "flood_brigade" not in r["cats"] and r["amb"] is None
+        assert not any(w.startswith("flood/") for w in r["why"])
+
+
+def test_a_chant_that_carries_a_link_is_still_red_on_every_message():
+    res = run(chant("entren a https://evil.example.com/sorteo ya", 8, gap=2.0))
+    for r, _ in res:
+        assert r["lvl"] == "alert" and r["tier"] == "struct" and r["cats"] == ["promo_link"], r
+        assert r["amb"] is None
+
+
+def test_a_chant_that_carries_a_phone_number_is_still_flagged_by_the_redirect_rule():
+    res = run(chant("mandame whatsapp al 5512345678 para el sorteo", 8, gap=2.0))
+    assert brigades(res)
+    for r, _ in res:
+        assert r["lvl"] == "alert" and r["cats"] == ["promo_contact"] and r["why"] == ["promo/contact+cue"], r
+
+
+def test_one_account_repeating_the_chant_is_still_single_user_flooding():
+    """C3 同人同句不受影响：一个账号把口令连发 5 次照样红条（flood_repeat），其他账号一句一次什么都没有。"""
+    events = []
+    for i in range(5):
+        events.append((1000 + 2.0 * i, "loud", CHANT))
+        events.append((1000.5 + 2.0 * i, "quiet%d" % i, CHANT))
+    res = run(events)
+    loud = [r for (r, _), ev in zip(res, events) if ev[1] == "loud"]
+    quiet = [r for (r, _), ev in zip(res, events) if ev[1] != "loud"]
+    assert [r["lvl"] for r in loud] == [None, None, "note", "note", "alert"]
+    assert loud[-1]["cats"] == ["flood_repeat"] and loud[-1]["tier"] == "struct"
+    assert [r["lvl"] for r in quiet] == [None] * 5
+
+
+def test_one_account_bursting_inside_a_chant_is_still_single_user_flooding():
+    """C1 单人高频不受影响：口令进行中，有人 8 秒内连发 6 条不同的话，照样红条。"""
+    events = chant(CHANT, 6, gap=0.5, t0=1000.0)
+    events += [(1003.0 + 1.0 * i, "spammer", "texto numero %s hermoso" % "abcdef"[i]) for i in range(6)]
+    res = run(sorted(events))
+    spam = [r for (r, _), ev in zip(res, sorted(events)) if ev[1] == "spammer"]
+    assert spam[-1]["lvl"] == "alert" and spam[-1]["cats"] == ["flood_user"]
+    assert all(r["lvl"] is None for (r, _), ev in zip(res, sorted(events)) if ev[1].startswith("ch"))
 
 
 def test_thirty_accounts_spamming_yo_hearts_or_a_birthday_wish_are_not_reported():
@@ -303,7 +386,7 @@ def test_five_hundred_comments_a_minute_for_ten_minutes_stays_bounded():
     # 引擎一侧的「消息上界」：红条/琥珀只会来自真正的刷屏，不会随总条数线性增长。
     # 这批弹幕没有一条该标红（审查 #48：上界太松的话，凭空多出来的红条抓不住）
     assert alerts == 0, alerts
-    assert ambers <= total // 10, ambers       # 琥珀只会落在每 10 条里的那一条口令上
+    assert ambers == 0, ambers                 # 每 10 条里那条口令是多账号同一句：只数不报，一条琥珀都没有
 
 
 def test_brigade_window_is_capped_even_if_thousands_arrive_in_one_second():

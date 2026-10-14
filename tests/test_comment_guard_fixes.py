@@ -1144,7 +1144,7 @@ def test_a_message_that_only_resembles_the_middle_variant_is_still_counted():   
         r = g.judge(text, user=user, ts=1000.0 + dt)
     ev = [e for e in g.last_flood if e["kind"] == "brigade"]
     assert len(ev) == 1 and ev[0]["n"] == 5 and ev[0]["lvl"] == "amber", g.last_flood
-    assert (r["lvl"], r["amb"]) == ("amber", "brigade")
+    assert (r["lvl"], r["amb"]) == (None, None)            # 引擎数到了，判定不报（2026-10-14）
     assert ev[0]["first_ts"] == 1000.0 and ev[0]["last_ts"] == 1004.0
     assert ev[0]["accounts"] == ["A", "B", "C", "D", "E"]
 

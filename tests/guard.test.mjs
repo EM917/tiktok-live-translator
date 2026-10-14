@@ -246,7 +246,53 @@ test("多账号同句的琥珀理由取事件里的账号数和秒数", () => {
   const g = { lvl: "amber", amb: "brigade", cats: ["flood_brigade"], ev: "b1", why: [] };
   const events = { b1: { id: "b1", n: 5, window_sec: 20 } };
   assert.equal(G.guardCommentView(comment({ guard: g }), STATE, {}, undefined, events).note, "5 个账号，20 秒内同一句");
-  assert.equal(G.guardCommentView(comment({ guard: g }), STATE, {}).note, "0 个账号，0 秒内同一句", "事件还没到：不抛");
+});
+
+// 2026-10-14 直播：一波口令的第一条先画出来，它的事件消息还没到页面，理由写成了「0 个账号，0 秒内同一句」。
+// 数拿不全就不写这句理由（类别胶囊照旧），绝不写 0
+test("多账号同句的事件还没到：不写「0 个账号，0 秒内同一句」，理由留空、胶囊照旧", () => {
+  const g = { lvl: "amber", amb: "brigade", cats: ["flood_brigade"], ev: "b1", why: [] };
+  for (const events of [undefined, null, {}, { other: { id: "other", n: 5, window_sec: 20 } },
+                        { b1: { id: "b1" } }, { b1: { id: "b1", n: 0, window_sec: 0 } }]) {
+    const v = G.guardCommentView(comment({ guard: g }), STATE, {}, undefined, events);
+    assert.equal(v.note, "", JSON.stringify(events));
+    assert.equal(v.pill.text, "多账号同一句");
+    assert.doesNotMatch(v.pill.title, /\d/, "提示里也没有数");
+    assert.deepEqual(v.cls, ["guard-amber"]);
+  }
+});
+
+const BAD_EVENTS = [null, undefined, 0, "b1", {}, { n: 0, window_sec: 0 }, { n: 5 }, { window_sec: 20 }, { n: 0, window_sec: 20 },
+  { n: 5, window_sec: 0 }, { n: -3, window_sec: -1 }, { n: "x", window_sec: "y" }, { n: NaN, window_sec: NaN },
+  { n: Infinity, window_sec: 20 }, { n: 5, window_sec: Infinity }, { n: "5", window_sec: null }, { n: 0.4, window_sec: 20 },
+  { n: 5, window_sec: 0.4 }];
+
+test("琥珀理由里的数永远不写 0、不缺、不是 NaN：每个代码 × 各种残缺的事件", () => {
+  for (const code of AMBER_CODES) {
+    for (const bad of BAD_EVENTS) {
+      const t = G.guardAmberText(code, bad);
+      assert.equal(typeof t, "string");
+      assert.doesNotMatch(t, /(^|\D)0 ?(个账号|秒|条)/, code + " " + JSON.stringify(bad));
+      assert.doesNotMatch(t, /NaN|undefined|null|Infinity/, code + " " + JSON.stringify(bad));
+    }
+  }
+  for (const bad of BAD_EVENTS) assert.equal(G.guardAmberText("brigade", bad), "", JSON.stringify(bad));
+  assert.equal(G.guardAmberText("brigade", { n: "5", window_sec: "20" }), "5 个账号，20 秒内同一句", "数字字符串照样认");
+  assert.equal(G.guardAmberText("brigade", { n: 1, window_sec: 20 }), "1 个账号，20 秒内同一句");
+});
+
+test("抽屉：多账号同句的事件数残缺时一行里没有「0 个账号」，类别和账号照旧", () => {
+  const doc = makeDoc();
+  for (const part of [{}, { n: 0, window_sec: 0 }, { n: 5 }, { window_sec: 20 }]) {
+    const box = doc.createElement("div");
+    const ev = event(Object.assign({ id: "b2", kind: "brigade", cat: "flood_brigade", lvl: "amber", amb: "brigade",
+                                     accounts: [{ user: "Cuenta 1" }], window_sec: undefined, n: undefined }, part));
+    G.guardRenderEvents(doc, box, { b2: ev }, { marked: {} });
+    const row = box.querySelector(".guard-ev-row");
+    assert.equal(row.querySelector(".gev-note"), null, JSON.stringify(part));
+    assert.equal(row.querySelector(".guard-pill").textContent, "多账号同一句");
+    for (const t of uiTexts(box)) assert.doesNotMatch(t, /(^|\D)0 ?(个账号|秒)|NaN|undefined/, t);
+  }
 });
 
 test("弱信号（note）只在设置里开了才有标记，开了是浅灰描边", () => {

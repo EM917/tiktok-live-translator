@@ -1,5 +1,5 @@
 # 规则层阈值：key: value（# 开头整行是注释）。本机 comment_guard/local/thresholds.txt 里同名的行覆盖这里。
-# 单位：a/b = b 秒内 a 条（刷屏）或 a 个账号（多账号同句）。
+# 单位：a/b = b 秒内 a 条（刷屏）或 a 个账号（多账号同句，只数不报）。
 
 # C1 单人高频（不同句）：10 秒 4 条记 note，10 秒 6 条或 60 秒 12 条标红
 user_burst_note: 4/10
@@ -10,7 +10,9 @@ user_burst_alert_long: 12/60
 same_text_note: 3/60
 same_text_alert: 5/60
 
-# C2 多账号同句：20 秒窗口，3 个账号记 note，5 个账号出一个琥珀事件（v1 不单独标红）
+# C2 多账号同句：20 秒窗口，3 个账号开始算一波口令。只数不报（用户 2026-10-14 决定）：不同账号发同一句几乎都是
+# 主播要求的抽奖口令，所以界面上没有琥珀、顶部条和抽屉，只在审计 session_end.comment_guard.chorus 里计数。
+# 5 个账号只决定引擎事件落在哪一档（note / 琥珀），界面和审计都不看这一档。这几行改的是计数，不是报警。
 brigade_note: 3/20
 brigade_alert: 5/20
 brigade_min_words: 3

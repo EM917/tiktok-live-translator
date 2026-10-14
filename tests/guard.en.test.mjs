@@ -64,6 +64,38 @@ test("琥珀理由：只写观察；多账号同句 1 个账号用单数", () =>
   for (const code of AMBER_CODES) english(G.guardAmberText(code, { n: 3, window_sec: 20 }));
 });
 
+// 2026-10-14 直播里一条口令的理由写成了 0 个账号、0 秒：数拿不全就不写这句理由，绝不写 0
+test("琥珀理由里的数永远不写 0、不缺、不是 NaN：每个代码 × 各种残缺的事件", () => {
+  const bad = [null, undefined, 0, "b1", {}, { n: 0, window_sec: 0 }, { n: 5 }, { window_sec: 20 }, { n: 0, window_sec: 20 },
+    { n: 5, window_sec: 0 }, { n: -3, window_sec: -1 }, { n: "x", window_sec: "y" }, { n: NaN, window_sec: NaN },
+    { n: Infinity, window_sec: 20 }, { n: 5, window_sec: Infinity }, { n: "5", window_sec: null }, { n: 0.4, window_sec: 20 },
+    { n: 5, window_sec: 0.4 }];
+  for (const code of AMBER_CODES) {
+    for (const ev of bad) {
+      const t = G.guardAmberText(code, ev);
+      assert.equal(typeof t, "string");
+      assert.doesNotMatch(t, /(^|\D)0 (accounts?|seconds?|comments?)\b/, code + " " + JSON.stringify(ev));
+      assert.doesNotMatch(t, /NaN|undefined|null|Infinity/, code + " " + JSON.stringify(ev));
+      if (t) english(t);
+    }
+  }
+  for (const ev of bad) assert.equal(G.guardAmberText("brigade", ev), "", JSON.stringify(ev));
+});
+
+test("多账号同句的事件还没到：理由留空、类别胶囊照旧，一个 0 都不写", () => {
+  const g = { lvl: "amber", amb: "brigade", cats: ["flood_brigade"], ev: "b1", why: [] };
+  for (const events of [undefined, null, {}, { other: { id: "other", n: 5, window_sec: 20 } },
+                        { b1: { id: "b1" } }, { b1: { id: "b1", n: 0, window_sec: 0 } }]) {
+    const v = G.guardCommentView(comment({ guard: g }), STATE, {}, undefined, events);
+    assert.equal(v.note, "", JSON.stringify(events));
+    assert.equal(english(v.pill.text), "Same comment from several accounts");
+    assert.doesNotMatch(v.pill.title, /\d/);
+  }
+  const events = { b1: { id: "b1", n: 5, window_sec: 20 } };
+  assert.equal(G.guardCommentView(comment({ guard: g }), STATE, {}, undefined, events).note,
+               "Same comment from 5 accounts in 20 seconds");
+});
+
 test("模型意见：英文写 “Model: …”，与功能状态的 “Comment Review: …” 分开", () => {
   assert.equal(G.guardReviewText("pending"), "Model reviewing…");
   assert.equal(G.guardReviewText("agree"), "Model: agrees with rules");
