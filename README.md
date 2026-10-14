@@ -19,7 +19,7 @@
 
 Live captions for Spanish TikTok streams, with the translation under each line. Viewer comments are translated too. Paste a live link and click Start.
 
-It is for teams who follow Spanish live selling without speaking Spanish. One person runs the app on a computer and colleagues watch on their phones. A caption never waits for its translation: the Spanish appears as soon as it is recognized, and the translation fills in a moment later. Recognition runs on your computer, and so can translation once Ollama is installed, so there is no account, no API key and no fee.
+It is for teams who follow Spanish live selling without speaking Spanish. One person runs the app on a computer, and colleagues watch on their phones. The Spanish appears as soon as it is recognized and the translation fills in a moment later, so a slow translation never holds a caption back. Speech recognition runs on your computer, and translation can too once Ollama is installed. You need no account and no API key, and nothing to pay.
 
 It does not work for every stream. For some, TikTok gives the app no stream URL, and then there is nothing to caption. See [Limits](#en-limits).
 
@@ -29,14 +29,13 @@ It does not work for every stream. For some, TikTok gives the app no stream URL,
 
 <sub>[中文](#zh-features)</sub>
 
-- Captions in real time: the Spanish line appears as soon as it is recognized, with the translation underneath.
-- Viewer comments are translated too, in a panel beside the captions.
-- Translation runs on your computer with a local model. DeepL, Google, Claude and OpenAI-compatible APIs are optional.
+- Captions in real time, with the translation under each line and the viewer comments in a panel beside them.
+- Translation through a local model in Ollama. DeepL, Google, Claude and OpenAI-compatible APIs are optional.
 - Glossaries for each streamer and each brand keep product names consistent.
 - Switch Streamer moves to another live stream without stopping first.
-- Phone Viewing: colleagues on the same Wi-Fi scan a QR code and follow along on their phones. View only.
-- Comment Review marks insults and threats, fake-product claims, flooding and redirects in viewer comments. It only reads.
-- If the stream drops, the app reconnects. Audio that recognition has not caught up with waits in a queue.
+- Phone Viewing: colleagues on the same Wi-Fi scan a QR code and watch on their phones. They cannot change anything.
+- Comment Review marks insults and threats, fake-product claims, flooding, and comments that pull viewers to another stream or shop. It never deletes or mutes.
+- If the stream drops, the app reconnects and keeps the audio it has not recognized yet in a queue.
 - Banned-term alerts are available and off by default.
 
 <a id="en-screenshots"></a>
@@ -69,17 +68,18 @@ You need macOS 12.3 or later, or Windows, and about 6 GB of free disk space. The
 
 2. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/) with the default options. Python 3.9 also runs the app, but without viewer comments. If Python is missing, the launcher opens the download page.
 
-3. Install [Ollama](https://ollama.com/download) and open it once. On Windows the installer is about 1.5 GB and needs administrator rights. When the app starts, it downloads the Hy-MT2 1.8B translation model (about 1 GB). Without Ollama, the app translates with Google's free endpoint, which sends caption text to Google.
+3. Install [Ollama](https://ollama.com/download), a free app that runs models on your computer, and open it once. On Windows the installer is about 1.5 GB and needs administrator rights. When the app starts, it downloads the Hy-MT2 1.8B translation model (about 1 GB). Without Ollama, the app translates through Google's free endpoint, which sends caption text to Google.
 
-4. Start the app. On macOS, double-click `TikTok Live Translator.app` and keep it inside its folder. On Windows, double-click `Start.bat`.
+4. Start the app.
+
+   - On macOS, double-click `TikTok Live Translator.app` and keep it inside its folder. If macOS says it cannot be opened, go to System Settings → Privacy & Security and click Open Anyway. On macOS 14 and earlier, right-click the app and choose Open instead. `Start.command` starts the app from a Terminal window instead.
+   - On Windows, double-click `Start.bat`. If a warning names an unknown publisher, click Run.
+
+   `Start.bat` opens a black text window and `Start.command` opens a Terminal window. Each one is the app itself, so closing it quits the app.
 
 5. Paste a live link or `@username`, check Spoken language (Spanish + English by default), and click Start. Next time, Recent Streams under the box lists the streamers you opened lately, and one click starts one.
 
-The first launch takes a few minutes: the app sets up its own Python environment and installs what it needs, including ffmpeg and the noise-reduction model. The speech model (up to 3 GB) downloads the first time you click Start, and the page shows the progress.
-
-If macOS says the app cannot be opened, go to System Settings → Privacy & Security and click Open Anyway. On macOS 14 and earlier, right-click the app and choose Open instead.
-
-On Windows, if a warning names an unknown publisher, click Run. The black text window that opens next to the app is the app itself, so keep it open.
+The first launch takes a few minutes. The app sets up its own Python environment and installs what it needs, including ffmpeg and the noise-reduction model. The speech model (up to 3 GB) downloads the first time you click Start, with the progress shown on the page.
 
 Choose the language to translate into from the menu in the top bar. It offers 13: Simplified and Traditional Chinese, English, Japanese, Korean, Spanish, French, German, Russian, Portuguese, Vietnamese, Thai and Indonesian. It starts on Chinese, or on English for a new install with an English interface.
 
@@ -100,7 +100,7 @@ python3 main.py --doctor      # print the hardware check
 python3 main.py --ui-lang en  # English interface for this launch only
 ```
 
-Add `--browser` to use a browser tab instead of the app window. More: [all flags](docs/command-line.md), [disk space and hardware](docs/hardware.md), [interface language](docs/interface-language.md).
+Flags need a terminal: the `.app` does not take them, while `Start.command` and `Start.bat` pass them on. Add `--browser` to use a browser tab instead of the app window. More: [all flags](docs/command-line.md), [disk space and hardware](docs/hardware.md), [interface language](docs/interface-language.md).
 
 ### Updating
 
@@ -123,13 +123,19 @@ Choose the engine in Settings → Translation Engine on the home page. API keys 
 | Claude | Anthropic's servers | Yes |
 | OpenAI-compatible API | The provider's servers, or your own such as LM Studio | Yes |
 | Google (free) | Google's servers | No |
-| Don't Translate | Nothing runs: captions show the original only | No |
+| Don't Translate | Nothing runs: captions stay in the original language | No |
 
 Automatic uses Hy-MT2 1.8B if it is installed, then TranslateGemma, then Google's free endpoint. It never picks the 7B model.
 
-Glossaries keep product names right. Put one streamer's wording in `profiles/<username>.txt`, one brand's products in `brands/<brand>.txt` (pick the brand in the Brand menu), and shared terms in `glossary.txt`. Changes apply after Stop and Start. These files stay on your computer. With DeepL, the app also keeps a glossary in your DeepL account.
+Glossaries keep product names right. There are three files:
 
-To redo one caption with the strongest model you have, hover it and click Retranslate. A graded comparison of four engines is in [docs/engine-benchmarks.md](docs/engine-benchmarks.md). Glossaries, DeepL and Retranslate are covered in [docs/translation-engines.md](docs/translation-engines.md).
+- `profiles/<username>.txt`: one streamer's wording
+- `brands/<brand>.txt`: one brand's products, picked in the Brand menu
+- `glossary.txt`: terms for everyone
+
+Changes apply after Stop and Start. These files stay on your computer. With DeepL, the app also keeps a glossary in your DeepL account.
+
+To translate one caption again with the strongest model you have, hover over it and click Retranslate. [docs/engine-benchmarks.md](docs/engine-benchmarks.md) compares four engines on captions from a real session. For glossaries, DeepL and Retranslate in detail, see [docs/translation-engines.md](docs/translation-engines.md).
 
 <a id="en-phone-viewing"></a>
 
@@ -141,7 +147,7 @@ Colleagues can follow the captions on their phones. Click the phone icon in the 
 
 A phone shows captions and alerts. It can ask for one line to be retranslated, and it cannot start, stop or change anything. Each page uses the phone's own language, and up to 12 phones can watch at once.
 
-The link contains a key, so treat it like a password. New Link disconnects every phone. Sharing is off until you turn it on, and it works on the same network only.
+The link contains a key, so treat it like a password. New Link disconnects every phone. Sharing is off until you turn it on, and the phone must be on the same network.
 
 <a id="en-comment-review"></a>
 
@@ -156,11 +162,11 @@ The app marks viewer comments that:
 - flood the chat
 - pull people to another stream or shop
 
-During a session, a line at the top of the window counts what you have not looked at yet, for example “2 items to review · 1 unclear”.
+During a session, a line at the top of the window counts what you have not looked at yet, for example "2 items to review · 1 unclear".
 
-A red bar means a rule matched clearly. An orange bar means the rules are unsure. Entries you have not confirmed show orange even on a match. Most shipped threat and report entries are confirmed. The others are not, so insults, for example, show orange until you confirm them.
+A flagged comment gets a bar on its left edge: red when a rule matched clearly, orange when the rules are not sure. A rule you have not confirmed makes an orange bar at most, even on a clear match. The threat and report rules that come with the app are mostly confirmed. The rest, insults for example, stay orange until you confirm them.
 
-Comment Review only reads. It cannot delete comments or mute anyone, and phones do not show it. It is on by default and uses rules only, which run on your computer with no model. Turn it off in Settings → Comment Review. Marked viewers, the optional Claude review and the rules folder are in [docs/comment-review.md](docs/comment-review.md).
+Comment Review only reads: it cannot delete comments or mute anyone, and phones do not show it. It is on by default, and its rules run on your computer without any model. To turn it off, go to Settings → Comment Review. For confirming rules, marking viewers, the optional Claude review and the rules folder, see [docs/comment-review.md](docs/comment-review.md).
 
 <a id="en-banned-term-alerts"></a>
 
@@ -170,7 +176,7 @@ Comment Review only reads. It cannot delete comments or mute anyone, and phones 
 
 Alerts are off by default. Turn them on in Settings → Banned-Term Alerts with Show alert on match.
 
-Matching runs on the recognized Spanish text, so an alert does not wait for the translation. A match opens a red Possible Banned Terms panel at the top of the window. The list is `banned_terms.txt` in the app folder, one word or phrase per line. Save it, then click Stop and Start. With alerts off, matches are still written to the audit log. The shipped list is a starting point: review it before you rely on it. More in [docs/banned-terms.md](docs/banned-terms.md).
+Matching runs on the recognized Spanish text, so an alert does not wait for the translation. A match opens a red Possible Banned Terms panel at the top of the window. The list is `banned_terms.txt` in the app folder, one word or phrase per line. Save it, then click Stop and Start. With alerts off, matches are still written to the audit log. The shipped list is a starting point, so review it before you rely on it. Details: [docs/banned-terms.md](docs/banned-terms.md).
 
 <a id="en-when-something-goes-wrong"></a>
 
@@ -178,33 +184,41 @@ Matching runs on the recognized Spanish text, so an alert does not wait for the 
 
 <sub>[中文](#zh-when-something-goes-wrong)</sub>
 
-**The app says TikTok didn't provide a stream URL for this live stream (code 4003110).** TikTok's interface did not return a stream URL for this live link, and it gives no reason. Click Start again a little later, or paste the live link and a `.flv` URL copied from your browser together, separated by a space. To see this room's history on your computer, run `python3 tools/diagnose_room.py @streamer --history-only`. It sends no requests.
+**The app says TikTok didn't provide a stream URL for this live stream (code 4003110).** TikTok's interface gave the app no stream URL for this live link, and it does not say why. Click Start again a little later. If the stream plays in your browser, you can copy its `.flv` address from there and paste it after the live link, separated by a space ([details](docs/fault-tolerance.md)). To check your own logs for this streamer, run `python3 tools/diagnose_room.py @streamer --history-only` in a terminal. It sends no requests.
 
-**A Startup Check row is red.** Open Settings → Startup Check. Each row shows its fix underneath. A failing check also stays in a banner at the top of the window until a later check passes, and the checks run again at every launch. An incomplete noise-reduction model is a common cause: delete `models/bd.rnnn` and start again.
+**A Startup Check row is red.** Open Settings → Startup Check. Each row shows its fix underneath, and a failing check stays in a banner at the top of the window until a later check passes. A common cause is an incomplete noise-reduction model: delete `models/bd.rnnn` and start again.
 
-**Browser Login says macOS did not allow access.** Add the Python interpreter to Full Disk Access, not the app. The Browser Login row shows the path to add.
+**Browser Login says macOS did not allow access.** Only streams where TikTok gives the stream URL to signed-in viewers need this step. macOS wants Full Disk Access for the Python interpreter, not for the app, and the Browser Login row shows the path to add.
 
 1. Open System Settings → Privacy & Security → Full Disk Access and click +.
-
 2. In the file window press ⌘⇧G, paste the path, press Return, click Open, and turn the entry on. It is listed as `python3.x`, not under the app's name.
-
 3. Repeat for each path shown, then quit the app completely and reopen it.
 
-Add Terminal too if you start with `Start.command`. Only streams where TikTok gives the stream URL only to signed-in viewers need this. If the audit log shows `cannot_decrypt`, click Start again. When a Keychain dialog asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
+If you start with `Start.command`, add Terminal as well. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
 
-**Update Now does not start or finish.** The message says why and shows a command with a Copy button. Run it in Terminal. If the message lists changed app files, the command discards those changes, so do not run it if you changed them on purpose.
+**Update Now does not start or finish.** The message says what went wrong and shows a command with a Copy button. Run it in Terminal. If the message lists app files you changed, the command discards those changes, so skip it if the changes were on purpose.
 
-**Captions fall behind and the window warns about a backlog.** Run `ollama ps`. If more than one model is loaded, unload the extra one with `ollama stop <model>`. If that does not help, use a smaller speech model, for example `python3 main.py --model small`. On a Mac with 8 GB of RAM, `--model large-v3-turbo` or `--model small` fits better than the default.
+**Captions fall behind and the window warns about a backlog.** In a terminal, run `ollama ps`. If more than one model is loaded, unload the extra one with `ollama stop <model>`. If that does not help, use a smaller speech model, which is a flag, so start the app from a terminal: `python3 main.py --model small`. On a Mac with 8 GB of RAM, `--model large-v3-turbo` or `--model small` fits better than the default.
 
-**The status says Live but no captions appear.** Silent or low-confidence audio is skipped on purpose, for example while the streamer plays music or is not speaking. If someone is clearly speaking and nothing appears, try `python3 main.py --denoise off` or a different model size.
+**The status says Live but no captions appear.** The app skips silent or low-confidence audio on purpose, for example while the streamer plays music or is not speaking. If someone is clearly speaking and nothing appears, start from a terminal with `python3 main.py --denoise off`, or try a different `--model` size.
 
-**The Comments panel is empty or shows only the original text.** Comments are translated only while the engine is a local model (Hy-MT2 1.8B or TranslateGemma) or Claude. They need Python 3.10 or newer, and a stream URL pasted on its own has no comments, so use the live link or `@username`.
+**The Comments panel is empty or shows the original text without a translation.** Check these:
 
-**A phone cannot open the Phone Viewing link.** The app only knows that no connection came in. Check, in order: the phone is on the same Wi-Fi as the computer, another address from the list in the panel works, and the same link opens in a browser on the computer. If WeChat shows a warning, open the link in a browser from its top-right menu.
+- Comments are translated by Hy-MT2 1.8B, TranslateGemma or Claude, and by no other engine.
+- Comments need Python 3.10 or newer.
+- A stream URL pasted on its own has no comments. Use the live link or `@username`.
 
-**The app quit when the black window on Windows closed.** That window is the app itself. Start it again with `Start.bat` and keep the window open.
+**A phone cannot open the Phone Viewing link.** Check in this order:
 
-Other problems, such as a stuck download or a busy port, are in [docs/faq.md](docs/faq.md).
+- The phone is on the same Wi-Fi as the computer.
+- Another address from the list in the panel works.
+- The same link opens in a browser on the computer.
+
+If WeChat shows a warning, open the link in a browser from its top-right menu.
+
+**The app quit when the black window on Windows closed.** Closing that window quits the app. Start it again with `Start.bat`.
+
+For a stuck download, a busy port and other problems, see [docs/faq.md](docs/faq.md).
 
 <a id="en-limits"></a>
 
@@ -214,12 +228,12 @@ Other problems, such as a stuck download or a busy port, are in [docs/faq.md](do
 
 - TikTok's interfaces are unofficial and may change. For some live streams TikTok does not provide a stream URL, and the app cannot get one.
 - Translations can be wrong, most often on product names and slang.
-- On a computer without Apple Silicon or an NVIDIA GPU, recognition can fall behind. Only audio more than 60 seconds behind is dropped, and the window counts it.
-- Viewer comments need Python 3.10 or newer. They are translated only with Hy-MT2 1.8B, TranslateGemma or Claude.
-- Phone Viewing works on the same network only. It uses plain http, so phones get no system notifications, and sound may stop when a phone locks.
+- On a computer without Apple Silicon or an NVIDIA GPU, recognition can fall behind. Audio more than 60 seconds behind is dropped, oldest first, and the window shows how much.
+- Viewer comments need Python 3.10 or newer. Hy-MT2 1.8B, TranslateGemma and Claude translate them; the other engines show the original.
+- Phone Viewing needs the phone to be on the same network. It uses plain http, so phones get no system notifications, and sound may stop when a phone locks.
 - There is no export. Select and copy text from the window; it keeps the last 300 lines.
 - The terminal, the logs and the audit log are always in Chinese, whatever the interface language.
-- Follow TikTok's Terms of Service and local laws, and do not rebroadcast or redistribute other people's content.
+- Follow TikTok's Terms of Service and local laws. Do not rebroadcast or redistribute other people's content.
 
 <a id="en-privacy"></a>
 
@@ -233,9 +247,9 @@ With DeepL, Google or Claude, caption text goes to that provider. With an OpenAI
 
 Viewer comments come from TikTok through TikTokLive, which signs its connection through the third-party Euler Stream service. The app also contacts TikTok for the stream and GitHub to check for updates. It downloads software and models from PyPI, Hugging Face, ollama.com and GitHub.
 
-Comment Review uses rules only, on your computer. If you choose the Claude review, comments the rules are unsure about go to Anthropic, up to 8 in one call and each with the same viewer's previous comment from the last 2 minutes. Phone numbers, strings of 7 or more digits, links, emails and `@handles` are masked first.
+Comment Review's rules run on your computer. If you choose the Claude review, comments the rules are unsure about go to Anthropic, up to 8 in one call and each with the same viewer's previous comment from the last 2 minutes. Phone numbers, strings of 7 or more digits, links, emails and `@handles` are masked first.
 
-Phone Viewing opens a port on your network only while it is on. Phones see captions, not settings, file paths, cookies or the stream address. The control page itself can be opened from this computer only.
+Phone Viewing opens a port on your network while sharing is on and closes it when sharing is off. Phones see captions, not settings, file paths, cookies or the stream address. The app's own window, where you start and stop and change settings, opens from this computer only.
 
 <a id="en-how-it-works"></a>
 
@@ -251,7 +265,9 @@ The app finds the stream URL, pulls the audio with ffmpeg, quiets background mus
 
 When the app starts, Startup Check runs each part once (noise reduction, translation, the audit log) and shows a fix next to anything that fails. A readout at the bottom of the window shows how long a spoken word takes to be recognized and how much the translation adds.
 
-Each session also writes an audit log in `logs/`, one record per segment: the accepted text, the candidates the quality filter rejected, banned-term matches and the translation. [Open the interactive diagram](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.en.html) to search components, trace a route and step through the chapters. The same chain as editable text is in [docs/architecture/mermaid.md](docs/architecture/mermaid.md), and [docs/fault-tolerance.md](docs/fault-tolerance.md) covers how the app keeps a stream alive.
+Each session also writes an audit log in `logs/`, one record per segment: the accepted text, the candidates the quality filter rejected, banned-term matches and the translation.
+
+[Open the interactive diagram](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.en.html) to search components, trace a route and step through the chapters. The same chain as editable text is in [docs/architecture/mermaid.md](docs/architecture/mermaid.md), and [docs/fault-tolerance.md](docs/fault-tolerance.md) explains how the app keeps a stream alive.
 
 <a id="en-credits-and-license"></a>
 
@@ -294,14 +310,13 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 <sub>[English](#en-features)</sub>
 
-- 实时字幕：西语一识别出来就上屏，译文稍后补在下面。
-- 观众弹幕也会翻译，显示在字幕旁边的面板里。
-- 翻译默认用本机的模型。DeepL、Google、Claude 和 OpenAI 兼容 API 也能选。
+- 实时字幕：西语一识别出来就上屏，译文稍后补在下面，观众弹幕在旁边的面板里。
+- 翻译可以用本机的模型，通过 Ollama 运行。DeepL、Google、Claude 和 OpenAI 兼容 API 也能选。
 - 按主播、按品牌配词表，商品名翻得前后一致。
 - 「换主播」不用先停止，直接改听另一个直播间。
 - 手机同看：同事在同一个 Wi-Fi 下扫二维码，就能用手机看。只能看，不能操作。
-- 弹幕留意：标出辱骂、威胁、说商品是假货、刷屏和引流的弹幕。它只读，不会删弹幕。
-- 直播流断了会自动重连，来不及识别的音频先排队等着。
+- 弹幕留意：标出辱骂、威胁、说商品是假货、刷屏和引流的弹幕。它只读，不会删弹幕，也不会禁言。
+- 直播流断了会自动重连，还没识别的音频在队列里等着。
 - 违禁词报警：有，默认关闭。
 
 <a id="zh-screenshots"></a>
@@ -334,17 +349,18 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 2. 从 [python.org](https://www.python.org/downloads/) 装 Python 3.10 或更新的版本，安装选项保持默认。Python 3.9 也能运行程序，但没有观众弹幕。没装 Python 的话，启动程序时会自动打开下载页。
 
-3. 装 [Ollama](https://ollama.com/download)，装完打开一次。Windows 上安装包约 1.5 GB，需要管理员权限。程序启动后会下载翻译模型 Hy-MT2 1.8B（约 1 GB）。不装 Ollama 也能用，翻译会改走 Google 的免费接口，字幕文本会发给 Google。
+3. 装 [Ollama](https://ollama.com/download)（免费的，在你电脑上运行模型的软件），装完打开一次。Windows 上安装包约 1.5 GB，需要管理员权限。程序启动后会下载翻译模型 Hy-MT2 1.8B（约 1 GB）。不装 Ollama 也能用，翻译会改走 Google 的免费接口，字幕文本会发给 Google。
 
-4. 启动程序。macOS 上双击 `TikTok Live Translator.app`，别把它拖出所在的文件夹。Windows 上双击 `Start.bat`。
+4. 启动程序。
+
+   - macOS：双击 `TikTok Live Translator.app`，别把它拖出所在的文件夹。如果提示打不开，到「系统设置 → 隐私与安全性」点「仍要打开」；macOS 14 及更早的系统，改成右键点程序，选「打开」。`Start.command` 是另一种启动方式，会在「终端」窗口里启动。
+   - Windows：双击 `Start.bat`。如果弹出「发布者未知」的警告，点「运行」。
+
+   `Start.bat` 会多开一个黑色的文字窗口，`Start.command` 会多开一个「终端」窗口。它们就是程序本身，关掉它们程序就退出。
 
 5. 粘贴直播间地址或 `@用户名`，确认「主播语言」（默认西语 + 英语），点「开始翻译」。下次可以直接点输入框下面的「最近的直播间」，列出的是你最近打开过的主播，点一下就开始。
 
 第一次启动要几分钟：程序会建好自己的 Python 环境，装上需要的组件，包括 ffmpeg 和降噪模型。语音模型最多约 3 GB，在第一次点「开始翻译」时下载，页面上有进度。
-
-macOS 如果提示打不开，到「系统设置 → 隐私与安全性」点「仍要打开」。macOS 14 及更早的系统，改成右键点程序，选「打开」。
-
-Windows 如果弹出「发布者未知」的警告，点「运行」。程序旁边那个黑色的文字窗口就是程序本身，要一直开着。
 
 字幕译成哪种语言，在顶栏的菜单里选，共 13 种：简体中文、繁体中文、英语、日语、韩语、西班牙语、法语、德语、俄语、葡萄牙语、越南语、泰语、印尼语。默认是中文，新装且界面是英文时默认是英文。
 
@@ -365,7 +381,7 @@ python3 main.py --doctor      # 打印硬件检测结果
 python3 main.py --ui-lang zh  # 只这一次用中文界面
 ```
 
-加上 `--browser`，界面就在浏览器标签页里打开，不用应用窗口。更多内容：[全部命令行参数](docs/command-line.zh-CN.md)、[磁盘空间和硬件](docs/hardware.zh-CN.md)、[界面语言](docs/interface-language.zh-CN.md)。
+启动参数只能在终端里加：`.app` 不接受参数，`Start.command` 和 `Start.bat` 会把参数传给程序。加上 `--browser`，界面就在浏览器标签页里打开，不用应用窗口。更多内容：[全部命令行参数](docs/command-line.zh-CN.md)、[磁盘空间和硬件](docs/hardware.zh-CN.md)、[界面语言](docs/interface-language.zh-CN.md)。
 
 ### 更新
 
@@ -400,7 +416,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 改完要点「停止」再点「开始翻译」才生效。这些文件只在你的电脑上。用 DeepL 时，程序还会在你的 DeepL 账号里建一份术语表。
 
-想用手头最强的模型重翻某一句，把鼠标移到字幕上，点「重译」。四个引擎的对比评测见 [docs/engine-benchmarks.zh-CN.md](docs/engine-benchmarks.zh-CN.md)。词表、DeepL 和重译的细节见 [docs/translation-engines.zh-CN.md](docs/translation-engines.zh-CN.md)。
+想用手头最强的模型重翻某一句，把鼠标移到字幕上，点「重译」。[docs/engine-benchmarks.zh-CN.md](docs/engine-benchmarks.zh-CN.md) 在一场真实直播的字幕上比较了四个引擎。词表、DeepL 和重译的细节，见 [docs/translation-engines.zh-CN.md](docs/translation-engines.zh-CN.md)。
 
 <a id="zh-phone-viewing"></a>
 
@@ -429,9 +445,9 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 直播时，窗口顶部有一行提示，汇总还没看的标记，比如「需要留意 2 件 · 拿不准 1 件」。
 
-红条表示规则明确命中，橙色表示规则拿不准。你还没确认的词条，命中了也只显示橙色。出厂词表里，威胁类和举报类的词条大多已经确认，其他类别还没有。比如辱骂，在你确认之前都只显示橙色。
+命中的弹幕左边会有一条色条：红条表示规则明确命中，橙色表示规则拿不准。没确认过的词条，命中了也只显示橙色。出厂词表里，威胁类和举报类的词条大多已经确认，辱骂等其他类别还没有，要你逐条确认。
 
-弹幕留意只读，不能删弹幕，也不能禁言，手机页上看不到它。它默认开着，只用规则，规则在你的电脑上跑，不用模型。要关掉，到「设置 → 弹幕留意」。关注名单、可选的 Claude 复核和规则文件夹，见 [docs/comment-review.zh-CN.md](docs/comment-review.zh-CN.md)。
+弹幕留意只读，不能删弹幕，也不能禁言，手机页上看不到它。它默认开着，规则在你的电脑上跑，不用模型。要关掉，到「设置 → 弹幕留意」。怎么确认词条，以及关注名单、可选的 Claude 复核和规则文件夹，见 [docs/comment-review.zh-CN.md](docs/comment-review.zh-CN.md)。
 
 <a id="zh-banned-term-alerts"></a>
 
@@ -441,7 +457,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 报警默认关闭。要用的话，到「设置 → 违禁词报警」，打开「命中时弹出报警」。
 
-匹配跑在识别出的西语原文上，不用等译文。命中后，窗口顶部会出现红色的「疑似违禁词」面板。词表是程序文件夹里的 `banned_terms.txt`，一行一个词或短语。保存后点「停止」再点「开始翻译」才生效。报警关着的时候，命中照样写进审计日志。出厂词表只是个起点，用之前请自己过一遍。更多见 [docs/banned-terms.zh-CN.md](docs/banned-terms.zh-CN.md)。
+匹配跑在识别出的西语原文上，不用等译文。命中后，窗口顶部会出现红色的「疑似违禁词」面板。词表是程序文件夹里的 `banned_terms.txt`，一行一个词或短语。保存后点「停止」再点「开始翻译」才生效。报警关着的时候，命中照样写进审计日志。出厂词表只是个起点，用之前请自己过一遍。详见 [docs/banned-terms.zh-CN.md](docs/banned-terms.zh-CN.md)。
 
 <a id="zh-when-something-goes-wrong"></a>
 
@@ -449,33 +465,41 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 <sub>[English](#en-when-something-goes-wrong)</sub>
 
-**TikTok 不把这个直播间的流地址给程序（代码 4003110）。** TikTok 的接口没有给这个直播间返回流地址，返回里也没有任何说明。过一会儿再点「开始翻译」，或者把直播间地址和从浏览器里复制的 `.flv` 地址一起粘进来，中间用空格隔开。想看这台电脑上这个主播的历史，运行 `python3 tools/diagnose_room.py @主播用户名 --history-only`。它不发任何请求。
+**TikTok 不把这个直播间的流地址给程序（代码 4003110）。** TikTok 的接口没有给这个直播间返回流地址，也不说明原因。过一会儿再点「开始翻译」。如果这场直播在浏览器里能播放，也可以从浏览器里复制它的 `.flv` 地址，接在直播间地址后面粘进来，中间用空格隔开（[做法说明](docs/fault-tolerance.zh-CN.md)）。想看你自己的日志里这个主播的记录，在终端里运行 `python3 tools/diagnose_room.py @主播用户名 --history-only`，它不发任何请求。
 
-**「启动自检」有一行是红的。** 打开「设置 → 启动自检」，每一行下面写着怎么处理。没处理好的项会一直在窗口顶部显示一条提示，直到之后的自检通过，每次启动都会再查一遍。降噪模型没下载完整是常见情况：删掉 `models/bd.rnnn`，再启动一次。
+**「启动自检」有一行是红的。** 打开「设置 → 启动自检」，每一行下面写着怎么处理。没处理好的项会一直在窗口顶部显示提示，直到下一次自检通过。常见的原因是降噪模型没下载完整：删掉 `models/bd.rnnn`，再启动一次。
 
-**「浏览器登录态」说 macOS 没有放行。** 要加进「完全磁盘访问权限」的是 Python 解释器，不是程序本身，这一行会显示要加的路径。
+**「浏览器登录态」说 macOS 没有放行。** 只有 TikTok 要登录才给流地址的直播间需要这一步。要加进「完全磁盘访问权限」的是 Python 解释器，不是程序本身，这一行会显示要加的路径。
 
 1. 打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」，点「+」。
-
 2. 在选文件的窗口里按 ⌘⇧G，粘贴路径，按回车，点「打开」，再打开这一项的开关。列表里它叫 `python3.x`。
-
 3. 每个路径都这样加一遍，然后完全退出程序，重新打开。
 
-用 `Start.command` 启动的话，也要把「终端」加进去。只有 TikTok 要求登录才给流地址的直播间用得到这一步。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」。如果弹出「钥匙串」对话框，要访问 "Chrome Safe Storage"，输入这台电脑的登录密码，点「始终允许」。
+用 `Start.command` 启动的话，也要把「终端」加进去。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
 
-**「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，下面有一条带「复制」按钮的命令，复制后在终端里运行。如果提示列出了改动过的程序文件，这条命令会丢掉这些改动，是你有意改的就别运行。
+**「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，下面有一条带「复制」按钮的命令，复制后在终端里运行。如果提示列出了你改过的程序文件，这条命令会丢掉这些改动，改动是有意的就别运行。
 
-**字幕越来越落后，窗口提示有积压。** 运行 `ollama ps`。如果载入了不止一个模型，用 `ollama stop <模型名>` 卸掉多余的那个。还不行就换小一点的语音模型，比如 `python3 main.py --model small`。8 GB 内存的 Mac 上，用 `--model large-v3-turbo` 或 `--model small` 比默认的更合适。
+**字幕越来越落后，窗口提示有积压。** 在终端里运行 `ollama ps`。如果载入了不止一个模型，用 `ollama stop <模型名>` 卸掉多余的那个。还不行就换小一点的语音模型，这要加启动参数，所以得从终端启动：`python3 main.py --model small`。8 GB 内存的 Mac 上，用 `--model large-v3-turbo` 或 `--model small` 比默认的更合适。
 
-**状态是「直播中」，却没有字幕。** 没声音、或者识别没把握的片段会被有意跳过，比如主播在放音乐或没说话的时候。明明有人在说话却一直没字幕，试试 `python3 main.py --denoise off`，或者换一个尺寸的语音模型。
+**状态是「直播中」，却没有字幕。** 没声音、或者识别没把握的片段，程序会故意略过，比如主播在放音乐或没说话的时候。明明有人在说话却一直没字幕，试试从终端运行 `python3 main.py --denoise off`，或者用 `--model` 换一个尺寸的语音模型。
 
-**「观众弹幕」面板是空的，或者只有原文。** 只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时，弹幕才会翻译。弹幕还要求 Python 3.10 或更新的版本。只粘贴流地址的话没有弹幕，要粘贴直播间地址或 `@用户名`。
+**「观众弹幕」面板是空的，或者只有原文。** 按这几条查：
 
-**手机打不开「手机同看」的链接。** 程序这边只知道没有连接进来。按顺序查：手机和电脑是不是连着同一个 Wi-Fi；换面板里列出的另一个地址试试；在电脑的浏览器里打开同一个链接。微信里如果出现警告，点右上角的菜单，用浏览器打开。
+- 只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时，弹幕才会翻译。
+- 弹幕要 Python 3.10 或更新的版本。
+- 只粘贴流地址的话没有弹幕，要粘贴直播间地址或 `@用户名`。
 
-**Windows 上关掉黑色窗口，程序也退出了。** 那个窗口就是程序本身。用 `Start.bat` 重新启动，别再关它。
+**手机打不开「手机同看」的链接。** 按顺序查：
 
-其他问题，比如下载卡住、端口被占用，见 [docs/faq.zh-CN.md](docs/faq.zh-CN.md)。
+- 手机和电脑是不是连着同一个 Wi-Fi。
+- 换面板里列出的另一个地址试试。
+- 在电脑的浏览器里能不能打开同一个链接。
+
+微信里如果出现警告，点右上角的菜单，用浏览器打开。
+
+**Windows 上关掉黑色窗口，程序也退出了。** 关掉那个窗口就会退出程序。用 `Start.bat` 重新启动就行。
+
+下载卡住、端口被占用等其他问题，见 [docs/faq.zh-CN.md](docs/faq.zh-CN.md)。
 
 <a id="zh-limits"></a>
 
@@ -507,7 +531,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 弹幕留意只用规则，在本机完成。如果你选了 Claude 复核，规则拿不准的弹幕会发给 Anthropic，一次最多 8 条，每条带上同一个人 2 分钟内的前一条弹幕。电话、连续 7 位以上的数字、链接、邮箱和 `@账号` 会先打码。
 
-手机同看只在打开期间才在你的网络上开一个端口。手机看到的是字幕，看不到设置、文件路径、Cookie 和流地址。控制页只能在这台电脑上打开。
+手机同看只在打开期间才在你的网络上开一个端口。手机看到的是字幕，看不到设置、文件路径、Cookie 和流地址。你用来开始、停止和改设置的程序窗口，只能在这台电脑上打开。
 
 <a id="zh-how-it-works"></a>
 
@@ -519,11 +543,13 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
   <img src="assets/audio-chain.zh.svg" width="1000" alt="音频链路：直播流、降噪、识别，再分到字幕、翻译和报警">
 </p>
 
-程序先找到流地址，用 ffmpeg 拉出音频，压低背景音乐，切成短段。Whisper 把每一段转成文字，文字立刻上屏。翻译和违禁词匹配都从同一份文字出发，不会拖慢它。
+程序先找到流地址，用 ffmpeg 拉出音频，压低背景音乐，切成短段。Whisper 把每一段转成文字，文字立刻上屏。翻译和违禁词匹配用的是同一份文字，不会拖慢上屏。
 
 启动时，「启动自检」把每个环节（降噪、翻译、审计日志）各跑一遍，哪项出了问题，旁边就给出处理办法。窗口底部有一个读数，显示一个词说出口到识别出来要多久，翻译又多花多久。
 
-每一场还会在 `logs/` 里写一份审计日志，每段一条记录：采用的文字、被质量过滤丢掉的候选、违禁词命中和译文。[打开可交互的架构图](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.zh.html)，可以搜索组件、追踪一条路径、按章节播放。同一条链路的可编辑文字版在 [docs/architecture/mermaid.zh-CN.md](docs/architecture/mermaid.zh-CN.md)，程序怎么保住直播流见 [docs/fault-tolerance.zh-CN.md](docs/fault-tolerance.zh-CN.md)。
+每一场还会在 `logs/` 里写一份审计日志，每段一条记录：采用的文字、被质量过滤丢掉的候选、违禁词命中和译文。
+
+[打开可交互的架构图](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.zh.html)，可以搜索组件、追踪一条路径、按章节播放。同一条链路的可编辑文字版在 [docs/architecture/mermaid.zh-CN.md](docs/architecture/mermaid.zh-CN.md)，程序怎么保住直播流见 [docs/fault-tolerance.zh-CN.md](docs/fault-tolerance.zh-CN.md)。
 
 <a id="zh-credits-and-license"></a>
 
