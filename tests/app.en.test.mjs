@@ -304,7 +304,7 @@ test("英文页：字幕卡片、重译按钮、翻译失败横幅", () => {
   const card = page.el("history").querySelector(".cap");
   assert.equal(card.querySelector(".trans").textContent, "Translating…");
   const redo = card.querySelector(".redo");
-  assert.deepEqual([redo.textContent, redo.title], ["Retranslate", "Retranslate with the most accurate model"]);
+  assert.deepEqual([redo.textContent, redo.title], ["Retranslate", "Retranslate with the stronger model"]);
   page.push({ type: "caption_update", id: 1, strong_state: "pending" });
   assert.equal(redo.textContent, "Retranslating…");
   page.push({ type: "caption_update", id: 1, strong_state: "failed" });
@@ -318,6 +318,49 @@ test("英文页：字幕卡片、重译按钮、翻译失败横幅", () => {
   assert.equal(page.el("history").querySelectorAll(".state-chip")[2].textContent, "Translation failed");
   assert.match(page.el("status-banner").textContent,
                /^The last several captions couldn’t be translated, so captions show the original text\. /);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：点「重译」被拒或没成功，说明显示在被点的那条字幕旁边几秒，不走页脚", () => {
+  const page = runDesktop();
+  hello(page);
+  page.push({ type: "caption", id: 1, ts: T, original: "hola", translated: "hello", translate_state: "ok" });
+  page.push({ type: "caption", id: 2, ts: T, original: "que tal", translated: "how are you", translate_state: "ok" });
+  const [card1, card2] = page.el("history").querySelectorAll(".cap");
+  const notes = (card) => card.querySelectorAll(".redo-note").map((n) => n.textContent);
+  const footer = () => page.el("app-version").textContent;
+  const before = footer();
+  const sorry = "Couldn’t retranslate: Claude returned HTTP 500. The current translation is unchanged.";
+
+  page.push({ type: "retranslate_note", id: 1, text: sorry });
+  assert.deepEqual(notes(card1), [sorry]);
+  assert.deepEqual(notes(card2), []);                       // 只在被点的那一条
+  assert.equal(footer(), before);                           // 不再落在页脚那一行
+  assert.equal(card1.querySelector(".redo-note").getAttribute("role"), "status");
+
+  // 同一条再来一句：换掉，不叠加
+  page.push({ type: "retranslate_note", id: 1, text: "This caption is already being retranslated." });
+  assert.deepEqual(notes(card1), ["This caption is already being retranslated."]);
+  // 到点收起（也只收这一条自己的计时器）
+  page.fire(7000);
+  assert.deepEqual(notes(card1), []);
+
+  // 失败状态本身不收说明（服务端先发 failed 再发说明；顺序反过来也不该把说明吞掉）
+  page.push({ type: "retranslate_note", id: 2, text: sorry });
+  page.push({ type: "caption_update", id: 2, strong_state: "failed" });
+  assert.deepEqual(notes(card2), [sorry]);
+  // 又点了一次、或这次成了：上一次的说明不再适用
+  page.push({ type: "caption_update", id: 2, strong_state: "pending" });
+  assert.deepEqual(notes(card2), []);
+  page.push({ type: "retranslate_note", id: 2, text: sorry });
+  page.push({ type: "caption_update", id: 2, translated: "a better translation", strong: true, strong_state: "ok", quality: 2 });
+  assert.deepEqual(notes(card2), []);
+
+  // 那条字幕已经不在页面上了（清空了、被挤出去）：话退回页脚那一行，不能丢
+  page.push({ type: "retranslate_note", id: 99, text: "This caption has no saved original to retranslate." });
+  assert.match(footer(), /This caption has no saved original to retranslate\./);
+  page.push({ type: "retranslate_note", id: 1, text: "" });  // 空话不画
+  assert.deepEqual(notes(card1), []);
   assert.deepEqual(leftoverChinese(page), []);
 });
 
@@ -343,6 +386,47 @@ test("英文页：接口拒答的字幕有自己的角标，不算进连续翻�
   assert.match(banner().textContent, /^The last several captions couldn’t be translated, /);
   assert.ok(!banner().classList.contains("hidden"));
   assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：被拒答的字幕点重译又被拒答，角标留着「未翻译（接口拒答）」，不顶出横幅", () => {
+  // 点重译的人最可能点的就是快译被拒答的那几条。Sonnet 也拒答时服务端发的消息形状由
+  // tests/test_claude_strong.py 钉着：带 refused，页面据此保留角标、不计入连续失败
+  const page = runDesktop();
+  hello(page);
+  const banner = () => page.el("status-banner");
+  const chips = () => page.el("history").querySelectorAll(".state-chip").map((c) => c.textContent);
+  const bannerUp = () => /couldn’t be translated/.test(banner().textContent) && !banner().classList.contains("hidden");
+  const refusedAgain = (id, extra) => {
+    page.push({ type: "caption_update", id, strong_state: "pending" });
+    page.push(Object.assign({ type: "caption_update", id, translated: null, translate_state: "failed",
+                              target_lang: "zh-CN", translate_ms: 0, quality: 2, strong_state: "failed" }, extra));
+    page.push({ type: "retranslate_note", id, text: "Couldn’t retranslate: Claude Sonnet 5.5 declined to translate this caption (the API returned a refusal). This caption still has no translation." });
+  };
+  for (let id = 1; id <= 4; id++) {
+    page.push({ type: "caption", id, ts: T, original: "x", translate_state: "pending" });
+    page.push({ type: "caption_update", id, translated: null, translate_state: "failed", refused: true });
+  }
+  assert.deepEqual(chips(), Array(4).fill("Not translated (API refusal)"));
+  for (let id = 1; id <= 4; id++) refusedAgain(id, { refused: true });
+  assert.deepEqual(chips(), Array(4).fill("Not translated (API refusal)"));
+  assert.ok(!bannerUp(), "重译被拒答不该顶出「翻译失败」横幅");
+  assert.equal(page.el("history").querySelectorAll(".cap")[0].querySelectorAll(".redo-note").length, 1);
+  assert.deepEqual(leftoverChinese(page), []);
+
+  // 对照：同一串消息少了 refused（评审之前的服务端），角标换成「Translation failed」，第四条把横幅顶出来
+  const control = runDesktop();
+  hello(control);
+  for (let id = 1; id <= 4; id++) {
+    control.push({ type: "caption", id, ts: T, original: "x", translate_state: "pending" });
+    control.push({ type: "caption_update", id, translated: null, translate_state: "failed", refused: true });
+  }
+  for (let id = 1; id <= 4; id++) {
+    control.push({ type: "caption_update", id, translated: null, translate_state: "failed",
+                   target_lang: "zh-CN", translate_ms: 0, quality: 2, strong_state: "failed" });
+  }
+  assert.deepEqual(control.el("history").querySelectorAll(".state-chip").map((c) => c.textContent),
+                   Array(4).fill("Translation failed"));
+  assert.match(control.el("status-banner").textContent, /^The last several captions couldn’t be translated, /);
 });
 
 test("英文页：报警头用弯双引号，译不出来的说明按有没有原因分两句", () => {
@@ -377,6 +461,11 @@ test("英文页：弹幕面板的状态与空态、统计行", () => {
   assert.deepEqual(source(), ["Disconnected. Reconnecting…", "Disconnected. Reconnecting…"]);
   page.push({ type: "comment", id: "c1", ts: T, user: "Ana", text: "hola", state: "pending" });
   assert.equal(page.el("comment-list").querySelector(".cmt-zh").textContent, "Translating…");
+  // 和主播的关系：互关就不再单独标 Follower；认不出的标签不画
+  page.push({ type: "comment", id: "c2", ts: T, user: "Bea", text: "hola", state: "pending",
+              rel: ["follower", "mutual", "gifter", "boss"] });
+  const chips = [...page.el("comment-list").querySelectorAll(".cmt-rel")].map(c => c.textContent);
+  assert.deepEqual(chips, ["Mutual", "Gifter"]);
   page.push({ type: "stats", e2e: {}, asr: { p50: 1100 }, translate: { p50: 2000 }, segment: { p50: 800 },
               detect_worst: { p50: 1900, p95: 3400 }, audio_backlog_sec: 5, audio_segments_dropped: 2,
               asr_overruns: 1, translation_jobs_dropped: 3, asr_queue_depth: 1, translation_queue_depth: 2 });
@@ -566,6 +655,8 @@ test("英文页：翻译引擎说明与密钥框、自检的读屏级别、复�
   }
   assert.equal(notes.auto, "Uses a local model: fully offline, unlimited, and captions never leave this computer.");
   assert.equal(notes.google, "Captions are sent to Google. Google caps how many requests one IP address can make.");
+  // 弹幕和重译也走 Claude：数据去哪了要在选引擎的地方说清
+  assert.equal(notes.claude, "Captions, viewer comments and retranslation requests are sent to Anthropic and billed by usage.");
   select.value = "claude";
   select.fire("change");
   assert.equal(key.placeholder, "Paste API key");
@@ -681,6 +772,23 @@ test("英文页：弹幕栏里的标记——红条类别、关注的人 ★、�
   assert.deepEqual(leftoverChinese(page), []);
 });
 
+test("英文页：同一条弹幕既有关系标签（Gifter）又有守卫标记：两样都在，且复核结果补上来之后关系标签还在", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(guardComment({ rel: ["follower", "gifter"], guard: RED_GUARD }));
+  const item = page.el("comment-list").querySelector(".cmt-item");
+  const head = item.querySelector(".cmt-head");
+  assert.deepEqual([...head.querySelectorAll(".cmt-rel")].map((c) => c.textContent), ["Follower", "Gifter"]);
+  assert.equal(head.querySelector(".guard-pill").textContent, "Possible threat of harm");
+  assert.ok(head.querySelector(".guard-star"), "名单里的人有 ★");
+  assert.ok(item.cls.includes("guard-alert") && item.cls.includes("guard-marked"));
+  // 复核结果经 comment_guard 补上来：守卫的节点重画，关系标签不被一并撤掉
+  page.push({ type: "comment_guard", id: "c1", guard: Object.assign({}, RED_GUARD, { rv: "agree", src: "review" }) });
+  assert.deepEqual([...head.querySelectorAll(".cmt-rel")].map((c) => c.textContent), ["Follower", "Gifter"]);
+  assert.equal(head.querySelectorAll(".guard-pill").length, 1, "守卫的节点重画而不是叠加");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
 test("英文页：顶部条——新事件弹出，每秒最多重画一次；关注的人发言单独计；全部看过收起", () => {
   const page = runDesktop();
   helloGuard(page);
@@ -691,23 +799,23 @@ test("英文页：顶部条——新事件弹出，每秒最多重画一次；�
   page.fire(1000);
   assert.equal(bar.cls.includes("hidden"), false);
   assert.ok(bar.cls.includes("has-red"));
-  assert.equal(text(), "1 comment to review · Possible threat of harm 1 · Latest " + (new Date((T + 5) * 1000)).toTimeString().slice(0, 8));
+  assert.equal(text(), "1 item to review · Possible threat of harm 1 · Latest " + (new Date((T + 5) * 1000)).toTimeString().slice(0, 8));
   assert.equal(page.el("guard-bar-main").title, text());
-  // 冲场：事件被同一个 id 持续更新，页面只是改数字
+  // 冲场：事件被同一个 id 持续更新，条数在涨，但事件还是 1 件（用户决定 10：按事件计，不数里面的弹幕）
   page.advance(1500);
   page.push({ type: "guard_event", ev: guardEvent({ id: "g1", kind: "flood", cat: "flood_user", n: 60, ts: T + 6 }) });
-  assert.match(text(), /^60 comments to review · Possible flooding 60 · Latest /);
+  assert.match(text(), /^1 item to review · Possible flooding 1 · Latest /);
   // 琥珀不出红点，但算「拿不准」
   page.advance(1500);
   page.push({ type: "guard_event", ev: guardEvent({ id: "g2", cat: "accuse_claim", lvl: "amber", amb: "pending", ts: T + 7 }) });
-  assert.match(text(), /^60 comments to review · 1 unclear · /);
+  assert.match(text(), /^1 item to review · 1 unclear · /);
   // 关注的人发言：回放的不算，实时的算
   page.advance(1500);
   page.push(guardComment({ id: "c8", replay: true, ts: T + 8 }));
   assert.doesNotMatch(text(), /marked viewers/);
   page.push(guardComment({ id: "c9", ts: T + 9 }));
   page.fire(1000);                                   // 这一秒内已经画过一次：压住的那次到点补上
-  assert.match(text(), /^60 comments to review · 1 unclear · 1 from marked viewers · /);
+  assert.match(text(), /^1 item to review · 1 unclear · 1 from marked viewers · /);
   // 全部看过（假时钟走到事件之后，已看的时刻才盖得住它们）
   page.advance(30000);
   page.el("guard-bar-seen").click();
@@ -724,7 +832,7 @@ test("英文页：顶部条——新事件弹出，每秒最多重画一次；�
   assert.deepEqual(leftoverChinese(page), []);
 });
 
-test("英文页：浮钮上只显示未读红条数，琥珀不出红点", () => {
+test("英文页：浮钮上只显示未读红条的事件数（一个事件里有几条弹幕不算），琥珀不出红点", () => {
   const page = runDesktop();
   helloGuard(page);
   const dot = page.el("comment-fab-guard");
@@ -734,8 +842,14 @@ test("英文页：浮钮上只显示未读红条数，琥珀不出红点", () =>
   page.advance(1500);
   page.push({ type: "guard_event", ev: guardEvent({ id: "a2", n: 3, ts: T + 6 }) });
   assert.equal(dot.cls.includes("hidden"), false);
+  assert.equal(dot.textContent, "1", "一个事件里有 3 条弹幕，还是 1 件");
+  assert.equal(dot.title, "1 item to review");
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "a3", cat: "promo_link", ts: T + 7 }) });
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "a4", kind: "flood", cat: "flood_user", n: 40, ts: T + 8 }) });
   assert.equal(dot.textContent, "3");
-  assert.equal(dot.title, "3 comments to review");
+  assert.equal(dot.title, "3 items to review");
 });
 
 test("英文页：抽屉——点条或胶囊展开，两个页签，忽略 / 加入 / 定位 / 重新启用都发对的消息", () => {

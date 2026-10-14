@@ -333,7 +333,7 @@ test("uid_ok 为假（只有 handle 的人）不加 data-uid；守卫关着没�
 
 // ---- 顶部条 ----------------------------------------------------------------------------------------------
 
-test("顶部条：红条数、琥珀数、关注的人发言数分开计，为 0 的不写，未读按已看的时刻算", () => {
+test("顶部条：红条事件数、琥珀事件数、关注的人发言数分开计，为 0 的不写，未读按已看的时刻算", () => {
   const events = {
     a: event({ id: "a", cat: "threat", lvl: "alert", n: 2, ts: 1000 }),
     b: event({ id: "b", cat: "insult", lvl: "amber", n: 1, ts: 1005 }),
@@ -341,15 +341,16 @@ test("顶部条：红条数、琥珀数、关注的人发言数分开计，为 0
   };
   const all = G.guardBarSummary(events, 0, { markedTs: [1001, 1002] });
   assert.equal(all.show, true);
-  assert.deepEqual([all.red, all.amber, all.marked], [3, 1, 2]);
-  assert.deepEqual(all.parts.slice(0, 3), ["需要留意的弹幕 3 条", "拿不准 1 条", "关注的人发言 2"]);
-  assert.equal(all.parts[3], "疑似人身威胁 2、疑似辱骂 1、疑似引流（链接） 1", "人身威胁排最前");
+  // 按事件计：a 里有 2 条弹幕也只算 1 件（用户决定 10）
+  assert.deepEqual([all.red, all.amber, all.marked], [2, 1, 2]);
+  assert.deepEqual(all.parts.slice(0, 3), ["需要留意 2 件", "拿不准 1 件", "关注的人发言 2"]);
+  assert.equal(all.parts[3], "疑似人身威胁 1、疑似辱骂 1、疑似引流（链接） 1", "人身威胁排最前");
   assert.equal(all.parts[4], "最新 " + G.guardTimeText(1005));
   assert.equal(all.text, all.parts.join(" · "));
   // 已看到 1000：只剩 b 是未读
   const later = G.guardBarSummary(events, 1000, { markedTs: [1001, 999] });
   assert.deepEqual([later.red, later.amber, later.marked], [0, 1, 1]);
-  assert.equal(later.parts[0], "拿不准 1 条", "为 0 的不写");
+  assert.equal(later.parts[0], "拿不准 1 件", "为 0 的不写");
   // 全部看过：不显示
   const none = G.guardBarSummary(events, 1005, { markedTs: [1001] });
   assert.equal(none.show, false);
@@ -374,7 +375,7 @@ test("顶部条：超过 3 类只写前 3 类，其余折成「另 n 类」；�
   assert.ok(!three.text.includes("另"));
 });
 
-test("顶部条只数红条和琥珀的事件；忽略的事件和形状不对的事件不算；冲场的一个事件按条数计", () => {
+test("顶部条只数红条和琥珀的事件；忽略的事件和形状不对的事件不算；冲场的一个事件算 1 件，不数其中的弹幕条数", () => {
   const events = [
     event({ id: "x", kind: "flood", cat: "flood_user", lvl: "alert", n: 60, ts: 3000 }),
     event({ id: "y", lvl: "note", ts: 3001 }),
@@ -382,9 +383,32 @@ test("顶部条只数红条和琥珀的事件；忽略的事件和形状不对�
     null, "bad", { ts: 3003 },
   ];
   const sum = G.guardBarSummary(events, 0);
-  assert.equal(sum.red, 60);
-  assert.equal(sum.parts[0], "需要留意的弹幕 60 条");
+  assert.equal(sum.red, 1);
+  assert.equal(sum.parts[0], "需要留意 1 件");
+  assert.equal(sum.parts[1], "疑似刷屏 1", "类别也按事件计");
   assert.equal(G.guardEventList(events).length, 2, "列表只去掉忽略的和形状不对的；note 档由条自己筛掉");
+});
+
+test("顶部条按事件计：一次冲场、一次多账号同句各算 1 件；事件里的 n 不进条上的数字", () => {
+  const flood = event({ id: "f", kind: "flood", cat: "flood_user", lvl: "alert", n: 60, window_sec: 20, ts: 4000 });
+  const brigade = event({ id: "b", kind: "brigade", cat: "flood_brigade", lvl: "amber", amb: "brigade", n: 12,
+                          accounts: [{ user: "a" }, { user: "b" }], ts: 4001 });
+  const single = event({ id: "s", cat: "threat", lvl: "alert", n: 1, ts: 4002 });
+  const one = G.guardBarSummary([flood], 0);
+  assert.deepEqual([one.red, one.amber], [1, 0]);
+  const sum = G.guardBarSummary([flood, brigade, single], 0);
+  assert.deepEqual([sum.red, sum.amber], [2, 1], "60 条冲场 + 12 个账号同句 + 1 条威胁 = 2 件红 + 1 件琥珀");
+  assert.deepEqual(sum.parts.slice(0, 2), ["需要留意 2 件", "拿不准 1 件"]);
+  assert.equal(sum.parts[2], "疑似人身威胁 1、疑似刷屏 1、多账号同一句 1");
+  // 同一个冲场事件被后端持续更新（同一个 id、n 在涨）：仍然是 1 件
+  const grown = G.guardBarSummary({ f: Object.assign({}, flood, { n: 400, ts: 4010 }) }, 0);
+  assert.equal(grown.red, 1);
+  // 事件没有 n（老后端）也是 1 件
+  const noN = event({ id: "z", ts: 4020 });
+  delete noN.n;
+  assert.equal(G.guardBarSummary([noN], 0).red, 1);
+  // 抽屉那一行仍然写事件里的条数——那是在说这件事本身有多大
+  assert.equal(G.guardCountText(flood), "20 秒内 60 条");
 });
 
 test("事件按最近更新排序，新的在前", () => {
@@ -393,8 +417,8 @@ test("事件按最近更新排序，新的在前", () => {
 });
 
 test("浮钮上红点的提示", () => {
-  assert.equal(G.guardFabTitle(1), "1 条需要留意的弹幕");
-  assert.equal(G.guardFabTitle(7), "7 条需要留意的弹幕");
+  assert.equal(G.guardFabTitle(1), "1 件需要留意");
+  assert.equal(G.guardFabTitle(7), "7 件需要留意");
 });
 
 // ---- 抽屉 ------------------------------------------------------------------------------------------------

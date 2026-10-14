@@ -894,6 +894,10 @@
       case "notice":
         if (msg.text) showVersionNote(msg.text, 6000);
         break;
+      // 点「重译」没有开始或没成功：话显示在被点的那条字幕旁边（不是页脚那一行）
+      case "retranslate_note":
+        showRedoNote(msg.id, msg.text);
+        break;
       case "config":
         if (msg.target_lang) targetSel.value = msg.target_lang;
         if (msg.source_lang && !sourceTouched) selectSourceLang(msg.source_lang);
@@ -1145,12 +1149,15 @@
     trans.className = "trans";
     card.appendChild(trans);
 
-    // 「重译」：用本机最强的模型重来一次。按条触发而不是开一个时段，
+    // 「重译」：用最强的模型重来一次（字幕引擎是 Claude 时是 Claude Sonnet 5.5，否则是本机最强的
+    // 本地模型）。按条触发而不是开一个时段，
     // 是因为值得动用强模型的是具体某句话，而那只有看着的人知道是哪一句。
     var redo = document.createElement("button");
     redo.className = "redo";
     redo.type = "button";
-    redo.title = L("用最强模型重新翻译这一条", "Retranslate with the most accurate model");
+    // 「更强」不写成「最准」：Claude 引擎下的 Sonnet 5.5 档位没有测过准确率，测出来之前不说它更准
+    // （docs/engine-benchmarks.zh-CN.md：只能说读起来更顺，不能说更准）
+    redo.title = L("用更强的模型重新翻译这一条", "Retranslate with the stronger model");
     redo.textContent = L("重译", "Retranslate");
     redo.addEventListener("click", function () {
       send({ type: "retranslate", id: msg.id });
@@ -1187,6 +1194,41 @@
       liveOriginal.classList.toggle("hidden", !msg.translated);
       liveBarId = msg.id;
     }
+  }
+
+  // 点「重译」没有开始或没成功时，服务端发 retranslate_note：显示在被点的那条字幕旁边几秒。
+  // 以前这些话走 notice，落在页脚版本号那一行（6 秒、小字），中控点完像是什么都没发生。
+  // 文字由服务端给（中英两句已按界面语言换好，只写观察到的事实和能做的事，不猜原因）。
+  // 卡片已经不在页面上（清空了字幕、被挤出 300 条）时才退回页脚那一行：话不能丢。
+  var REDO_NOTE_MS = 7000;
+  var redoNoteTimers = {};
+
+  function clearRedoNote(card) {
+    var id = card.dataset.id;
+    if (redoNoteTimers[id]) {
+      clearTimeout(redoNoteTimers[id]);
+      delete redoNoteTimers[id];
+    }
+    var old = card.querySelector(".redo-note");
+    if (old) old.remove();
+  }
+
+  function showRedoNote(id, text) {
+    if (!text) return;
+    var card = cardsById[id];
+    if (!card) {
+      showVersionNote(text, 6000);
+      return;
+    }
+    clearRedoNote(card);
+    var note = document.createElement("div");
+    note.className = "redo-note";
+    note.setAttribute("role", "status");
+    note.textContent = text;
+    card.appendChild(note);
+    redoNoteTimers[id] = setTimeout(function () { clearRedoNote(card); }, REDO_NOTE_MS);
+    // 译文行下面多了一行：正在贴底看的人得跟着再贴一次
+    stickToBottom(false);
   }
 
   // 译文后补：原地更新那张卡片，不新增一条
@@ -1240,6 +1282,8 @@
     // 服务端不会再广播，页面就永远停在那里，好译文也没了。
     if (msg.strong_state) {
       var redoBtn = card.querySelector(".redo");
+      // 又点了一次、或者这次成了：上一次的说明不再适用
+      if (msg.strong_state === "pending" || msg.strong_state === "ok") clearRedoNote(card);
       card.classList.toggle("redoing", msg.strong_state === "pending");
       if (redoBtn) {
         redoBtn.disabled = msg.strong_state === "pending";
@@ -1535,6 +1579,27 @@
     if (!has) commentEmpty.textContent = emptyText;
   }
 
+  // 弹幕作者和主播的关系：TikTok 随每条弹幕发的标记（app/comment_source.py _REL_FLAGS）。
+  // 互关就不再单独标「粉丝」；只在电脑上显示，手机页收不到这个字段
+  var REL_LABELS = {
+    follower: [L("粉丝", "Follower"), L("关注了主播", "Follows the streamer")],
+    mutual: [L("互关", "Mutual"), L("和主播互相关注", "Follows the streamer, and the streamer follows back")],
+    gifter: [L("送过礼", "Gifter"), L("给主播送过礼物", "Has sent the streamer a gift")],
+    subscriber: [L("订阅", "Subscriber"), L("订阅了主播", "Subscribes to the streamer")],
+  };
+  function relTags(rel) {
+    if (!Array.isArray(rel)) return [];
+    var tags = rel.filter(function (t) { return REL_LABELS[t]; });
+    if (tags.indexOf("mutual") >= 0) tags = tags.filter(function (t) { return t !== "follower"; });
+    return tags.map(function (t) {
+      var chip = document.createElement("span");
+      chip.className = "cmt-rel cmt-rel-" + t;
+      chip.textContent = REL_LABELS[t][0];
+      chip.title = REL_LABELS[t][1];
+      return chip;
+    });
+  }
+
   function renderComment(msg) {
     var item = document.createElement("div");
     item.className = "cmt-item";
@@ -1544,6 +1609,7 @@
     head.className = "cmt-head";
     var ts = new Date((msg.ts || Date.now() / 1000) * 1000);
     head.appendChild(nameSpan(msg.user || ""));   // 观众名
+    relTags(msg.rel).forEach(function (tag) { head.appendChild(tag); });
     head.appendChild(document.createTextNode(" " +
       pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds())));
     item.appendChild(head);
@@ -3106,7 +3172,9 @@
     deepl: L("字幕文本会发送给 DeepL。免费额度以此处显示的用量为准；额度周期与续用方式取决于你的 DeepL 账户方案。",
              "Captions are sent to DeepL. Free quota usage is shown here. Your DeepL plan sets the quota " +
              "period and renewal."),
-    claude: L("字幕文本会发送给 Anthropic，按用量计费。", "Captions are sent to Anthropic and billed by usage."),
+    // 观众弹幕和重译也走 Claude（2026-10-13）：数据去哪了不能含糊
+    claude: L("字幕文本、观众弹幕和重译的请求会发送给 Anthropic，按用量计费。",
+              "Captions, viewer comments and retranslation requests are sent to Anthropic and billed by usage."),
     openai: L("字幕文本会发送给该接口的提供方，按用量计费。",
               "Captions are sent to this API’s provider and billed by usage."),
     // 不写 rate limit 一类的词（CLAUDE.md 第八条的禁用词对全仓英文都查）

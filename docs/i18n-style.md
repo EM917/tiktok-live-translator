@@ -78,6 +78,7 @@
 | 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Bella All Natural” 和中文差不多宽 |
 | 不限（默认） | **Any (default)** | None, All brands | None 会被读成「没有品牌」，实际意思是「不限定某一个品牌」 |
 | 品牌词表 | **brand glossary** | brand list | |
+| 粉丝 / 互关 / 送过礼 / 订阅（弹幕作者旁的小标签） | **Follower / Mutual / Gifter / Subscriber** | Fan, Friend, Donor | TikTok 随弹幕发的「和主播的关系」。Fan 太泛（粉丝团另有等级），Friend 不等于互关，Donor 带慈善含义 |
 | 词表 / 领域词表（glossary.txt） | **glossary** | dictionary, term list | 帮助翻译用的 |
 | 违禁词表（banned_terms.txt） | **banned-term list** | blacklist, banned glossary | 必须和 glossary 分开：list 决定报不报警，glossary 决定怎么翻译 |
 | 违禁词 | **banned term** | prohibited word, prohibited term, forbidden word, blacklisted word | README 已经在用。term 也覆盖短语 |
@@ -155,7 +156,8 @@
 | 中文 | English | 不用 | 理由 |
 |---|---|---|---|
 | 弹幕留意 | **Comment Review**；状态写 **Comment Review: …** | Moderation, Comment Moderation, Comment Guard | Moderation 暗示程序能处理，而本程序只读：不能删弹幕、不能禁言。Guard 是代码里的名字 |
-| 需要留意的弹幕 | **comments to review**；标题写 **Comments to Review**；顶部条写 “{n} comment to review / {n} comments to review” | flagged comments, alerts, warnings | alert 已经是违禁词报警的名字，warning 留给自检的「提醒」；flagged 带判断 |
+| 需要留意的弹幕 | **comments to review**；标题写 **Comments to Review**；空态写 “No comments to review yet.” | flagged comments, alerts, warnings | alert 已经是违禁词报警的名字，warning 留给自检的「提醒」；flagged 带判断 |
+| 需要留意 n 件（顶部条、浮钮上的数） | 数的是事件：写 **{n} item to review / {n} items to review**，不写 comments | {n} comments to review, events, incidents, flagged | 用户 2026-10-13 决定：一次刷屏、一次多账号同句各算 1 件，不数其中的弹幕条数；写成 “60 comments to review” 会把一个事件说成 60 条；events 是代码里的词；incident 已被别处占用。中文量词用「件」，不用「条」（「条」留给数弹幕本身的地方，如抽屉里的「共 12 条」） |
 | 拿不准 | **unclear** | uncertain, maybe | maybe 撞 `EN_CAUSAL` |
 | 关注名单 | **Marked Viewers** | Watch List, Follow List, Block List | Watch 已被手机同看的在看人数占用；Follow 撞 TikTok 的关注；Block List 撞 `EN_LABELS` |
 | 加入关注名单 / 移出关注名单 | **Mark / Unmark** | Follow / Unfollow, Add to List, Watch | 动词对，短。中文按钮写全，不用单独一个「关注」：在中文 TikTok 语境里它就是 follow |
@@ -277,7 +279,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | selfcheck.py:434 词表生效 | 1 entry active | {n} entries active |
 | guard.js guardAmberText 多账号同一句 | Same comment from 1 account in {s} seconds | Same comment from {n} accounts in {s} seconds |
 | guard.js guardCountText 事件条数 | 1 comment in {s} seconds / 1 comment | {m} comments in {s} seconds / {m} comments |
-| guard.js guardBarSummary、guardFabTitle 顶部条和浮钮 | 1 comment to review | {n} comments to review |
+| guard.js guardBarSummary、guardFabTitle 顶部条和浮钮（按事件计） | 1 item to review | {n} items to review |
 | guard.js guardBarSummary 拿不准、关注的人发言 | {n} unclear / {n} from marked viewers | 同左（不变形） |
 | guard.js guardUnreviewedText 没经过模型复核 | 1 comment wasn’t reviewed by the model this session. | {n} comments weren’t reviewed by the model this session. |
 | guard.js guardSummary 关注的人数 | {n} marked | 同左（不变形） |
@@ -531,7 +533,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 98 | index.html:504/505 | 收起 / 清空弹幕 | Hide / Clear | title 写 “Hide comments to widen captions” |
 | 99 | index.html:514 | 弹幕 {n}（悬浮入口）/ 展开观众弹幕 | Comments {n} / Show comments | |
 | 100 | index.html:521 | 回到最新 | Jump to Latest | |
-| 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用最强模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the most accurate model | 悬停时才出现的按钮，68+16px |
+| 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用更强的模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the stronger model | 悬停时才出现的按钮，68+16px |
 | 102 | app.js:1138/1146 | 翻译中… / 翻译失败 / 翻译已跳过（积压） | Translating… / Translation failed / Skipped (backlog) | |
 | 103 | session-divider.js:27 | ── 14:01:29 以下为 @x ── / 以下为新的一场 | ── 14:01:29 Now monitoring @x ── / New session | |
 | 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空警报 / 上一场 / 命中·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | |
@@ -572,7 +574,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 126 | 未开始 / 连接中 / 直播中 / 已停止 | Not started / Connecting / Live / Stopped | |
 | 127 | 已经 {n} 秒没连上。请找中控确认同看是否还开着，或重新扫码 | Not connected for {n} sec. Ask the operator whether sharing is still on, or scan the QR code again. | can’t 不跟一段时长连用 |
 | 128 | 疑似违禁词 / 清除已看过的报警 / 只在这台手机上隐藏，中控电脑和记录不受影响 | Possible Banned Terms / Clear Seen / Hides alerts on this phone only. The operator’s computer and records aren’t affected. | |
-| 129 | 重译会用中控电脑上的大模型，稍等几秒 | Retranslation uses the larger model on the operator’s computer and takes a few seconds. | |
+| 129 | 重译会用更强的模型重新翻这一句，稍等几秒 | Retranslation uses a stronger model and takes a few seconds. | 2026-10-13 改：字幕引擎是 Claude 时重译用的是 Claude Sonnet 5.5，不在中控电脑上 |
 | 130 | 最新 / 弹幕 / 只看模式 · 不能操作 / 提示音 | Latest / Comments / View only / Sound | |
 | 131 | 页面切到后台或锁屏后，手机可能停掉提示音。 | Sounds may stop when this page is in the background or the phone is locked. | |
 | 132 | 演示数据，不是真实直播 / 违禁词警示已关闭（中控开播时未开启） | Demo data, not a real stream / Banned-term alerts are off for this session. | |

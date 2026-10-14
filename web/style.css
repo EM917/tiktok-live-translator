@@ -1118,6 +1118,14 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cap.redoing .redo { opacity: 1; color: var(--label); }
 .redo:disabled { cursor: default; }
 
+/* 点「重译」没有开始或没成功时，显示在被点的那条字幕下面几秒（app.js showRedoNote）。
+   用 --warn-bg/--warn-fg：深浅色各有自己的低饱和度版本，不抢直播字幕的视线 */
+.redo-note {
+  margin-top: 6px; padding: 5px 9px; max-width: 100%;
+  font-size: var(--fs-footnote); line-height: 1.45;
+  color: var(--warn-fg); background: var(--warn-bg); border-radius: 6px;
+}
+
 /* ---------- 换主播：场次分隔 ---------- */
 /* 上一场（换过主播）的字幕：变淡，「重译」按钮彻底不可交互。用 CSS 的
    display:none（而不是只在换场那一刻切一次 JS 的 disabled/hidden）是因为
@@ -1216,6 +1224,10 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
 .cmt-item:last-child { border-bottom: 0; }
 .cmt-head { font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
+.cmt-rel { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 11px;
+  line-height: 16px; vertical-align: 1px; color: var(--label-2); background: var(--fill); }
+.cmt-rel-mutual, .cmt-rel-follower { color: var(--blue); background: var(--tint-blue-10); }
+.cmt-rel-gifter { color: #bf5af2; background: rgba(191,90,242,.12); }
 .cmt-zh { font-size: 15px; line-height: 1.5; margin-top: 1px; }
 .cmt-zh.pending { color: var(--label-3); font-style: italic; font-size: var(--fs-callout); }
 .cmt-zh.failed { color: var(--label-2); }

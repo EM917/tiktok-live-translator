@@ -699,16 +699,20 @@ def test_demo_terms_brands_and_retranslate_notes_are_english(monkeypatch, tmp_pa
 
     with i18n.use(EN):
         run(scenario())
-    assert_no_chinese(english_ui(server.messages))
+    assert_no_chinese(english_ui(server.messages, OWNED + ("retranslate_note",)))
     assert statuses_en(server)[:2] == [
         "Starting demo mode…",
         "Demo mode: built-in sample lines simulate live captions (not connected to a real "
         "stream)"]
     assert notices_en(server) == [
         "The banned-term list changed. Click Stop, then Start, to apply it.",
-        "Couldn’t open the folder: {}".format(tmp_path / "brands"),
+        "Couldn’t open the folder: {}".format(tmp_path / "brands")]
+    # 点「重译」被拒：不再是页脚的 notice，而是显示在被点的那条字幕旁边的 retranslate_note
+    (note,) = [m for m in server.messages if m.get("type") == "retranslate_note"]
+    assert note["id"] == 7
+    assert i18n.render(note["text"], EN) == (
         "No local model is available, so this can’t be retranslated. See the Translation Engine "
-        "row in Settings > Startup Check."]
+        "row in Settings > Startup Check.")
 
 
 def test_local_model_download_notes_are_english(monkeypatch, tmp_path):

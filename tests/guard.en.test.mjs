@@ -164,11 +164,11 @@ test("渲染的标记：按钮 Mark / Unmark，整棵子树里没有汉字（昵
   for (const el of mine) for (const t of uiTexts(el, false)) english(t.replace(/[★☆]/g, ""));
 });
 
-test("顶部条：1 条用单数；类别超过 3 个写 “n more”；Latest 时刻", () => {
+test("顶部条：1 件用单数；按事件计（一次冲场只算 1 件）；类别超过 3 个写 “n more”；Latest 时刻", () => {
   const one = G.guardBarSummary({ a: event({ id: "a", cat: "threat", ts: 1000 }) }, 0, { markedTs: [1001] });
-  assert.deepEqual(one.parts, ["1 comment to review", "1 from marked viewers", "Possible threat of harm 1",
+  assert.deepEqual(one.parts, ["1 item to review", "1 from marked viewers", "Possible threat of harm 1",
                                "Latest " + G.guardTimeText(1000)]);
-  assert.equal(one.text, "1 comment to review · 1 from marked viewers · Possible threat of harm 1 · Latest " + G.guardTimeText(1000));
+  assert.equal(one.text, "1 item to review · 1 from marked viewers · Possible threat of harm 1 · Latest " + G.guardTimeText(1000));
   const events = {
     a: event({ id: "a", cat: "threat", lvl: "alert", n: 2, ts: 1000 }),
     b: event({ id: "b", cat: "insult", lvl: "amber", n: 3, ts: 1001 }),
@@ -177,12 +177,20 @@ test("顶部条：1 条用单数；类别超过 3 个写 “n more”；Latest �
     e: event({ id: "e", cat: "promo_contact", lvl: "alert", ts: 1004 }),
   };
   const sum = G.guardBarSummary(events, 0);
-  assert.deepEqual(sum.parts.slice(0, 2), ["5 comments to review", "3 unclear"]);
-  assert.equal(sum.parts[2], "Possible threat of harm 2, Possible insult 3, Possible redirect (link) 1, 2 more");
+  // a 里有 2 条弹幕、b 里有 3 条，各算 1 件（用户决定 10）：4 件红 + 1 件琥珀
+  assert.deepEqual(sum.parts.slice(0, 2), ["4 items to review", "1 unclear"]);
+  assert.equal(sum.parts[2], "Possible threat of harm 1, Possible insult 1, Possible redirect (link) 1, 2 more");
   for (const t of sum.parts) english(t);
   assert.equal(G.guardBarSummary(events, 5000).show, false);
-  assert.equal(G.guardFabTitle(1), "1 comment to review");
-  assert.equal(G.guardFabTitle(4), "4 comments to review");
+  assert.equal(G.guardFabTitle(1), "1 item to review");
+  assert.equal(G.guardFabTitle(4), "4 items to review");
+  // 一次冲场、一次多账号同句：各 1 件，不是 60 件、12 件
+  const flood = event({ id: "f", kind: "flood", cat: "flood_user", lvl: "alert", n: 60, window_sec: 20, ts: 2000 });
+  const brigade = event({ id: "b", kind: "brigade", cat: "flood_brigade", lvl: "amber", amb: "brigade", n: 12, ts: 2001 });
+  const two = G.guardBarSummary([flood, brigade], 0);
+  assert.deepEqual(two.parts.slice(0, 2), ["1 item to review", "1 unclear"]);
+  assert.equal(two.parts[2], "Possible flooding 1, Same comment from several accounts 1");
+  assert.ok(!two.text.includes("comments to review"));
 });
 
 test("抽屉：按钮 Show in Comments / Mark / Unmark / Dismiss，空态一句话，多账号 “n more”", () => {
