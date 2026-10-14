@@ -959,10 +959,17 @@ def test_bundle_relaunch_passes_the_launch_python_along(tmp_path, monkeypatch):
     assert seen["TLT_LAUNCH_PYTHON"] == "/opt/homebrew/bin/python3.14"
 
 
-@pytest.mark.parametrize("lang", ["en", "zh"])
-def test_readme_does_not_tell_the_operator_to_add_the_bundle(lang):
-    # README.md 一页两种语言：英文、中文各取一半，两半都要说清楚
-    text = readme_part(lang)
+def _doc_text(name):
+    """"README.md#en" / "README.md#zh" 取 README 的一半（一页两种语言）；其余是仓库里的文件。"""
+    if name.startswith("README.md#"):
+        return readme_part(name.split("#", 1)[1])
+    return (REPO / name).read_text(encoding="utf-8")
+
+
+# 完全磁盘访问怎么加：README 每种语言各有一份短的，FAQ 文档里有完整的（长节搬到了 docs/）
+@pytest.mark.parametrize("name", ["docs/faq.md", "docs/faq.zh-CN.md", "README.md#en", "README.md#zh"])
+def test_readme_does_not_tell_the_operator_to_add_the_bundle(name):
+    text = _doc_text(name)
     assert 'add "TikTok Live Translator"' not in text
     assert "加入「TikTok Live Translator」" not in text
     assert "cannot_decrypt" in text and "⌘⇧G" in text

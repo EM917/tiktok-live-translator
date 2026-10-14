@@ -929,12 +929,12 @@ def _classify_ytdlp_error(err_text):
                   "· 如果主播确实没在播：等开播后再试即可；\n"
                   "· 如果你在浏览器里看得到这个直播：TikTok 对未登录访问经常"
                   "返回「未开播」，需要导出登录 cookies 后用 --cookies 指定"
-                  "（见 README 常见问题）。",
+                  "（见 docs/faq.zh-CN.md）。",
                   "Couldn’t get the audio stream for this live stream.\n"
                   "· If the streamer isn’t live: try again after the stream starts.\n"
                   "· If you can see this live stream in your browser: TikTok often answers "
                   "“not live” to visitors who aren’t signed in. Export your sign-in cookies and "
-                  "pass them with --cookies (see the README FAQ)."))
+                  "pass them with --cookies (see docs/faq.md)."))
     if ("unable to find room" in lowered or "http error 404" in lowered
             or "unsupported url" in lowered or "does not exist" in lowered):
         return ("not_found",
@@ -950,10 +950,10 @@ def _classify_ytdlp_error(err_text):
         return ("login",
                 L("yt-dlp 报告这个直播间需要登录后才能观看，"
                   "换一个直播间试试吧。（进阶：若你在浏览器里能看这个直播，"
-                  "可用 --cookies 导入登录信息，见 README 常见问题）",
+                  "可用 --cookies 导入登录信息，见 docs/faq.zh-CN.md）",
                   "yt-dlp reported that this live stream needs a sign-in to watch. Try another "
                   "live stream. (Advanced: if you can watch it in your browser, import your "
-                  "sign-in with --cookies. See the README FAQ.)") + detail)
+                  "sign-in with --cookies. See docs/faq.md.)") + detail)
     if ("timed out" in lowered or "connection" in lowered
             or "network" in lowered or "temporary failure" in lowered
             or "getaddrinfo" in lowered or "nodename" in lowered
