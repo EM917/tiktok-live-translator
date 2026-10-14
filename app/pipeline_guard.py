@@ -27,6 +27,7 @@
 """
 import asyncio
 import os
+import shutil
 import tempfile
 import time
 from collections import OrderedDict, deque
@@ -252,8 +253,7 @@ class GuardRuntime:
         self._ready = False
         self._cancel_flush_timer()
         await self._stop_review()
-        if self._open:
-            await self.marks.flush_now()
+        await self.marks.flush_now()        # 待机时在设置行里改过、当时没写成的，换场前再试一次，不让载入把它丢掉
         self._open = False
         self.audit = None
 
@@ -893,14 +893,14 @@ class CommentGuardMixin:
 
     async def _publish_comment_guard_config(self, reset=True):
         """把状态（reset=True 时连同清空的事件表和这个主播的名单）写进 server.config 并广播；
-        和已有的一致就不发（默认关时开场零消息）。收尾时 reset=False：只更新状态，页面上这一场的
+        和已有的一致就不发（守卫关着时开场零消息）。收尾时 reset=False：只更新状态，页面上这一场的
         事件和名单留着，到下一场开场才换。"""
         guard = self.guard
         config = self.server.config
         new = {"guard_state": guard.state()}
         if reset:
             new["guard_events"] = {}
-            new["guard_marked"] = dict(guard.marks.snapshot()) if guard.enabled else {}
+            new["guard_marked"] = dict(guard.marks.snapshot()) if guard._marks_editable() else {}
         if all(config.get(k) == v for k, v in new.items()):
             return
         config.update(new)
@@ -1003,7 +1003,12 @@ class CommentGuardMixin:
         if guard is None:
             return
         real_marks = guard.marks
-        guard.marks = MarkStore(directory=Path(tempfile.mkdtemp(prefix="tlt-demo-marks-")))
+        tmp_dir = None
+        if guard.effective_enabled():        # 守卫关着时名单根本不会载入，也就不需要临时目录
+            tmp_dir = tempfile.mkdtemp(prefix="tlt-demo-marks-")
+            guard.marks = MarkStore(directory=Path(tmp_dir))
+        else:
+            guard.marks = MarkStore()
         try:
             await self._begin_comment_guard(DEMO_STREAMER)
             await self._bind_comment_guard(None)
@@ -1018,13 +1023,21 @@ class CommentGuardMixin:
         except Exception as exc:
             print("[弹幕] 演示弹幕出错：{}".format(exc))
         finally:
+            demo_marks = guard.marks
             try:
                 await guard.end(None, broadcast=self.server.broadcast)
-                await self._publish_comment_guard_config(reset=False)
             except (Exception, asyncio.CancelledError) as exc:
                 print("[弹幕] 演示弹幕收尾出错：{}".format(exc))
-            guard.marks.close()
+            # 先把真实的名单还回去，再按它重发页面上的状态：演示的名单和事件不留在设置行里，
+            # 「移出」「清空自动加入的」也不会对着一份已经丢掉的名单空转
+            demo_marks.close()
             guard.marks = real_marks
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            try:
+                await self._publish_comment_guard_config(reset=True)
+            except (Exception, asyncio.CancelledError) as exc:
+                print("[弹幕] 演示弹幕收尾出错：{}".format(exc))
 
     async def _demo_comment(self, cid, user, uid, handle, text, zh):
         item = {"id": cid, "user": user, "text": text, "uid": uid, "uid_src": "id", "handle": handle}
@@ -1061,6 +1074,10 @@ class CommentGuardMixin:
             return
         await guard.flush(self.server.broadcast, final=True)
         await guard.marks.flush_now()
+        # 待机时没有统计循环替它查：写盘失败要在这里说，否则页面上已经「移出」了，下一场它又回来，
+        # 而打包后的程序看不到终端
+        guard.poll_marks_health()
+        await self._send_guard_notices()
 
     async def _guard_set(self, msg):
         """设置里的开关和模型复核选择。只在待机时改：直播中这一场的开关已经定了（同违禁词警示），

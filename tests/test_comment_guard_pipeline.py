@@ -11,6 +11,7 @@ import ast
 import asyncio
 import json
 import re
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1817,3 +1818,112 @@ def test_the_demo_stream_with_the_guard_off_only_shows_comments(monkeypatch, tmp
 
     run(scenario())
     assert all("guard" not in c for c in server.of_type("comment")) and server.guard_messages() == []
+
+
+# ---- 待机时改名单写盘失败、--demo 收尾（PR-4 复审）-----------------------------------------------------------------
+
+@pytest.mark.parametrize("edit", [{"type": "guard_mark", "key": UID, "on": False}, {"type": "guard_clear_auto"}])
+def test_a_standby_edit_whose_write_fails_is_announced_and_retried_at_the_next_start(monkeypatch, tmp_path, edit):
+    """设置分组在直播中整块隐藏，「移出」「清空自动加入的」是待机时做的：统计循环那时没有在跑，写盘失败要在这里
+    告诉页面（打包后的程序没有终端）；没写成的改动也不能被下一场的载入悄悄丢掉。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    real = comment_marks._write_safe
+    disk = {"ok": True}
+    monkeypatch.setattr(comment_marks, "_write_safe",
+                        lambda path, text: real(path, text) if disk["ok"] else "OSError: no space")
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        await comments(p, item("c1", "Ana", RED_TEXT, uid=UID))          # 自动加入
+        await p._end_session(p.audit, reason="user_stop")
+        assert set(_marked_file(tmp_path)) == {UID} and guard_notices(server) == []
+        disk["ok"] = False
+        await p.handle_control(edit)
+        assert server.config["guard_marked"] == {}                          # 页面上已经移出了
+        assert p.guard.marks.failing and set(_marked_file(tmp_path)) == {UID}
+        assert guard_notices(server) == ["marks_write_failed"]              # 所以必须说一声
+        await p.handle_control({"type": "guard_mark", "key": "9", "on": False})   # 同一段失败里再改：不重复说
+        assert guard_notices(server) == ["marks_write_failed"]
+        disk["ok"] = True
+        await p._begin_session(ROOM)                                        # 磁盘好了：下一场开场先把没写的写掉
+        assert server.config["guard_marked"] == {} and _marked_file(tmp_path) == {}
+        await p._end_session(p.audit, reason="user_stop")
+
+    run(scenario())
+    assert guard_notices(server) == ["marks_write_failed"]
+
+
+def _run_the_demo_to_the_end(monkeypatch, p, server):
+    from app import pipeline_guard
+    monkeypatch.setattr(cg, "DEFAULTS_DIR", PRODUCTION_DEFAULTS)
+    monkeypatch.setattr(pipeline_guard, "DEMO_TRANSLATE_DELAY", 0.0)
+    monkeypatch.setattr(pipeline_guard, "DEMO_COMMENTS", tuple(c[:5] + (0.0,) for c in pipeline_guard.DEMO_COMMENTS))
+    total = len(pipeline_guard.DEMO_COMMENTS)
+    p.guard.EVENT_MSG_GAP_SEC = p.guard.CID_MSG_GAP_SEC = 0.0
+
+    async def scenario():
+        task = asyncio.ensure_future(p._demo_comment_stream())
+        for _ in range(500):
+            if len(server.of_type("comment")) >= total + 2:
+                break
+            await asyncio.sleep(0.01)
+        assert server.config["guard_marked"], "演示进行中，演示的关注名单在页面上"
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    run(scenario())
+
+
+def test_after_the_demo_stops_the_settings_row_does_not_keep_the_demo_list(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    _run_the_demo_to_the_end(monkeypatch, p, server)
+    assert server.config["guard_marked"] == {} and server.config["guard_events"] == {}
+    assert server.config["guard_state"]["n_marked"] == 0 and not server.config["guard_state"]["streamer"]
+    assert server.of_type("config")[-1]["guard_marked"] == {}              # 页面也收到了，不只是缓存
+
+
+def test_after_the_demo_the_standby_controls_work_on_the_real_list_not_the_demo_one(monkeypatch, tmp_path):
+    """不经 main.py 也走得到的顺序：同一个进程里先有过一场真实的，再演示。演示完设置行回到真实的名单，
+    「清空自动加入的」改的就是页面上这份。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
+    async def real_session():
+        await p._begin_session(OTHER_ROOM)
+        await comments(p, item("c1", "Ana", RED_TEXT, uid=UID))
+        await p._end_session(p.audit, reason="user_stop")
+
+    run(real_session())
+    assert set(server.config["guard_marked"]) == {UID}
+    _run_the_demo_to_the_end(monkeypatch, p, server)
+    assert set(server.config["guard_marked"]) == {UID}                       # 演示的人不在，真实的还在
+    assert server.config["guard_state"]["streamer"] == "marca_demo" and server.config["guard_state"]["n_marked"] == 1
+    run(p.handle_control({"type": "guard_clear_auto"}))
+    assert server.config["guard_marked"] == {}
+    assert json.loads((tmp_path / "marked" / "marca_demo.json").read_text(encoding="utf-8"))["viewers"] == {}
+
+
+@pytest.mark.parametrize("guard_on", [True, False])
+def test_the_demo_leaves_no_temp_folder_behind_and_only_makes_one_when_the_guard_is_on(monkeypatch, tmp_path, guard_on):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    made = []
+    real_mkdtemp = tempfile.mkdtemp
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda *a, **k: made.append(1) or real_mkdtemp(*a, **k))
+    p, server = make_pipeline(monkeypatch, tmp_path, enabled=guard_on)
+    from app import pipeline_guard
+    monkeypatch.setattr(pipeline_guard, "DEMO_TRANSLATE_DELAY", 0.0)
+    monkeypatch.setattr(pipeline_guard, "DEMO_COMMENTS", tuple(c[:5] + (0.0,) for c in pipeline_guard.DEMO_COMMENTS)[:3])
+
+    async def scenario():
+        task = asyncio.ensure_future(p._demo_comment_stream())
+        for _ in range(500):
+            if len(server.of_type("comment")) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    run(scenario())
+    assert len(made) == (1 if guard_on else 0)
+    assert list(scratch.iterdir()) == []
