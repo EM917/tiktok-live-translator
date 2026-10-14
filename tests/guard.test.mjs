@@ -84,7 +84,7 @@ test("状态文案：每个代码都有话，带数字的取 state 里的数；�
   const expect = {
     off: "弹幕留意：已关闭", rules: "弹幕留意：只用规则", claude: "弹幕留意：规则 + Claude",
     starting: "弹幕留意：Claude 组件载入中，先只用规则",
-    no_key: "没有 Claude 密钥，只用规则", no_sdk: "缺少 Claude 组件，只用规则", offline: "连不上 Claude，先只用规则",
+    no_key: "没有 Claude 密钥，只用规则", no_sdk: "缺少 Claude 组件，只用规则", no_review: "这个版本还没有模型复核，只用规则", offline: "连不上 Claude，先只用规则",
   };
   for (const [status, text] of Object.entries(expect)) assert.equal(G.guardStateText({ status }), text, status);
   assert.match(G.guardStateText({ status: "env_off" }), /TLT_COMMENT_GUARD/);
@@ -115,7 +115,7 @@ test("状态胶囊：气色（tone）、重新启用、没有状态返回 null",
   const rules = G.guardCapsule(STATE);
   assert.deepEqual([rules.text, rules.tone, rules.reenable], ["弹幕留意：只用规则", "idle", false]);
   assert.equal(G.guardCapsule({ status: "claude", backend: "claude" }).tone, "on");
-  for (const status of ["starting", "paused", "tripped", "no_key", "no_sdk", "key_rejected", "offline", "cooldown"]) {
+  for (const status of ["starting", "paused", "tripped", "no_key", "no_sdk", "no_review", "key_rejected", "offline", "cooldown"]) {
     assert.equal(G.guardCapsule({ status }).tone, "warn", status);
   }
   const tripped = G.guardCapsule({ status: "tripped", lag_sec: 9, backend: "claude", unreviewed: 4 });
@@ -131,6 +131,7 @@ test("设置行摘要：开关 · 实际在起作用的复核方式 · 关注人
   assert.equal(G.guardSummary(Object.assign({}, STATE, { status: "claude", backend: "claude" }), 12), "开启 · 规则 + Claude · 关注 12 人");
   // 选了 Claude 但没在复核：写实际在起作用的
   assert.equal(G.guardSummary(Object.assign({}, STATE, { status: "no_sdk", backend: "claude" }), 0), "开启 · 只用规则");
+  assert.equal(G.guardSummary(Object.assign({}, STATE, { status: "no_review", backend: "claude" }), 0), "开启 · 只用规则");
   assert.equal(G.guardSummary(Object.assign({}, STATE, { enabled: false, status: "off" }), 3), "关闭 · 关注 3 人");
   assert.equal(G.guardSummary(STATE), "开启 · 只用规则", "没传人数就看 state.n_marked");
   assert.equal(G.guardSummary(Object.assign({}, STATE, { n_marked: 2 })), "开启 · 只用规则 · 关注 2 人");

@@ -608,10 +608,10 @@ def test_guard_scenario_clicks_took_effect(dom):
     assert "Comment Review: rules only" in html
     marked = dom.scan("live-guard-marked")["dom"]
     assert _hidden(marked, "guard-pane-recent") and not _hidden(marked, "guard-pane-marked")
-    assert "Added automatically: Possible call to report or not buy" in marked and "Added by you" in marked
+    assert "Added automatically: possible call to report or not buy" in marked and "Added by you" in marked
     tripped = dom.scan("live-guard-tripped")["dom"]
     assert not _hidden(tripped, "guard-reenable") and "Turn Back On for This Session" in tripped
-    assert "speech recognition fell 14 s behind" in tripped
+    assert "speech recognition fell 14 sec behind" in tripped
 
 
 @needs_chrome

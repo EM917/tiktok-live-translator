@@ -1909,7 +1909,8 @@
   function syncGuardKeyRow() {
     var claude = guardBackendSel.value === "claude";
     guardKeyRow.classList.toggle("hidden", !(claude && !(engineKeys && engineKeys.ANTHROPIC_API_KEY)));
-    guardPrivacy.classList.toggle("hidden", !claude);
+    // 「需要复核的弹幕会发给 Anthropic」：这个版本还没有模型复核（no_review）时什么都不会发，就不说
+    guardPrivacy.classList.toggle("hidden", !claude || !!(guardState && guardState.status === "no_review"));
   }
 
   function syncGuardLive() {

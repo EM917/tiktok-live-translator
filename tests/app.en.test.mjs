@@ -791,7 +791,7 @@ test("英文页：抽屉——点条或胶囊展开，两个页签，忽略 / �
 test("英文页：模型复核熔断后，胶囊和抽屉都有原因和「本场重新启用」", () => {
   const page = runDesktop();
   helloGuard(page, { guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "tripped", lag_sec: 12, unreviewed: 3 }) });
-  assert.equal(page.el("guard-state-text").textContent, "Model review is off for this session: speech recognition fell 12 s behind. Rules only.");
+  assert.equal(page.el("guard-state-text").textContent, "Model review is off for this session: speech recognition fell 12 sec behind. Rules only.");
   assert.ok(page.el("guard-state").cls.includes("warn"));
   // 不开抽屉也能重新启用：胶囊下面有同一个按钮
   const inline = page.el("guard-reenable-cap");
@@ -840,14 +840,22 @@ test("英文页：设置行的控件发 guard_set；选 Claude 没有密钥时�
   page.el("guard-key").value = "   ";
   page.el("guard-key-save").click();
   assert.equal(page.sent.length, 0, "空的不发");
+  // 后端确认了选择（假的 guard_set 不会改 state，这里补一条）：密钥框还在，因为翻译引擎那边还是没有 Claude 密钥
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "no_review" }) });
+  assert.equal(page.el("guard-backend").value, "claude");
+  assert.equal(page.el("guard-key-row").cls.includes("hidden"), false, "没有 Claude 密钥：密钥框留着");
   // 后端存好密钥、广播打码后的尾四位：密钥框收起
   page.push({ type: "engine", engine: "deepl", keys: { DEEPL_API_KEY: "…abcd", ANTHROPIC_API_KEY: "…1234" }, active_label: "DeepL", note: "" });
   assert.equal(page.el("guard-key-row").cls.includes("hidden"), true);
-  // 状态变化：选了 Claude 但组件缺失，摘要写实际在起作用的
-  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "no_sdk" }) });
+  // 状态变化：选了 Claude 但这个版本还没有模型复核，摘要写实际在起作用的，也不说「会发给 Anthropic」
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "no_review" }) });
   assert.equal(page.el("guard-summary").textContent, "On · Rules only · 1 marked");
-  assert.equal(page.el("guard-status").textContent, "The Claude component isn’t installed. Using rules only.");
+  assert.equal(page.el("guard-status").textContent, "Model review isn’t in this version yet. Using rules only.");
   assert.equal(page.el("guard-backend").value, "claude");
+  assert.equal(page.el("guard-privacy").cls.includes("hidden"), true, "没有复核就没有东西发出去");
+  // 组件缺失（复核接上之后才会有）：照常说
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "no_sdk" }) });
+  assert.equal(page.el("guard-status").textContent, "The Claude component isn’t installed. Using rules only.");
   // 其余按钮
   page.el("guard-clear-auto").click();
   assert.deepEqual(page.sent.pop(), { type: "guard_clear_auto" });
@@ -939,4 +947,38 @@ test("英文页：刷新或重连时 hello 里的事件照常显示在抽屉里�
   helloGuard(page);
   page.el("guard-state").click();
   assert.equal(page.el("guard-events").querySelectorAll(".guard-ev-row").length, 1);
+});
+
+test("英文页：抽屉——定位后不被新弹幕拉回底部；行已不在列表里时说一声；胶囊再点一次收起", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const list = page.el("comment-list");
+  list.scrollHeight = 5000;
+  page.push(guardComment({ id: "c1", guard: RED_GUARD }));
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5 }) });
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g2", ts: T + 6, sample: { cid: "gone", user: "Ana", text: "x",
+    uid: GUARD_UID, uid_src: "id", handle: "ana_demo" } }) });
+  page.el("guard-state").click();
+  const drawer = page.el("guard-drawer");
+  assert.equal(drawer.cls.includes("hidden"), false);
+  const locate = (id) => page.el("guard-events").querySelectorAll(".guard-ev-row")
+    .find((r) => r.getAttribute("data-ev") === id).querySelectorAll(".btn")[0];
+  // 定位到还在列表里的那一条：视野停在那儿，下一条弹幕来了也不拉回底部
+  assert.equal(list.scrollTop, 5000, "一直跟着最新的，滚在底部");
+  list.querySelector(".cmt-item").getBoundingClientRect = () => ({ top: -300 });
+  locate("g1").click();
+  assert.equal(list.scrollTop, 4700);
+  page.push(guardComment({ id: "c2", ts: T + 10, text: "hola" }));
+  assert.equal(list.scrollTop, 4700, "定位之后不再自动跟随");
+  // 那条弹幕已经滚出列表：在页脚版本号旁说一声，视野不动
+  locate("g2").click();
+  assert.equal(page.el("app-version").textContent, " \u00b7 That comment is no longer in the list");
+  assert.equal(list.scrollTop, 4700);
+  // 同一个入口再点一次收起
+  page.el("guard-state").click();
+  assert.equal(drawer.cls.includes("hidden"), true);
+  page.el("guard-state").click();
+  assert.equal(drawer.cls.includes("hidden"), false);
+  assert.deepEqual(leftoverChinese(page), []);
 });

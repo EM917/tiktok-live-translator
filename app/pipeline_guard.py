@@ -182,14 +182,15 @@ class GuardRuntime:
         return self.cfg["enabled"] and not env_disabled()
 
     def status_code(self):
-        """config.guard_state.status：只发代码，文案在前端。PR-3 没有复核后端：选了 Claude 也只用规则，
-        状态写 no_sdk（缺少 Claude 组件，只用规则），不假装在复核。"""
+        """config.guard_state.status：只发代码，文案在前端。这个版本还没有复核后端（PR-5 才有）：选了 Claude
+        也只用规则，状态写 no_review（这个版本还没有模型复核，只用规则），不假装在复核，也不说成缺了什么组件——
+        那是操作员做不了的事。复核接上之后，没有后端才是 no_sdk / no_key 等（spec §9）。"""
         if env_disabled():
             return "env_off"
         if not self.effective_enabled():
             return "off"
         if self.cfg["backend"] == "claude":
-            return "no_sdk" if self.reviewer is None else "claude"
+            return "no_review" if self.reviewer is None else "claude"
         return "rules"
 
     def state(self):

@@ -101,6 +101,14 @@ function guardCountText(ev) {
   return LN(m, "共 " + m + " 条", "1 comment", m + " comments");
 }
 
+/* 冒号后面除非是专有名词或完整句子，否则小写（docs/i18n-style.md §2.2）。类别名是标签式的 “Possible …”；
+ * 第二个字母也是大写的（缩写、TikTok 这类专有名词）就原样留着 */
+function guardLowerFirst(text) {
+  var s = String(text == null ? "" : text);
+  if (s.length > 1 && s.charAt(1) === s.charAt(1).toUpperCase() && s.charAt(1) !== s.charAt(1).toLowerCase()) return s;
+  return s.charAt(0).toLowerCase() + s.slice(1);
+}
+
 function guardLagSec(state) {
   var t = state && state.trip;
   var sec = state && state.lag_sec != null ? state.lag_sec : (t && typeof t === "object" ? t.sec : null);
@@ -122,11 +130,13 @@ function guardStateText(state) {
                               "Comment Review: loading the Claude component. Rules only for now.");
     case "claude": return L("弹幕留意：规则 + Claude", "Comment Review: rules + Claude");
     case "paused": return L("模型复核暂停：识别落后 " + sec + " 秒",
-                            "Model review paused: speech recognition is " + sec + " s behind");
+                            "Model review paused: speech recognition is " + sec + " sec behind");
     case "tripped": return L("本场模型复核已停用：识别落后 " + sec + " 秒。只用规则。",
                              "Model review is off for this session: speech recognition fell " + sec
-                             + " s behind. Rules only.");
+                             + " sec behind. Rules only.");
     case "no_key": return L("没有 Claude 密钥，只用规则", "No Claude API key. Using rules only.");
+    case "no_review": return L("这个版本还没有模型复核，只用规则",
+                               "Model review isn’t in this version yet. Using rules only.");
     case "no_sdk": return L("缺少 Claude 组件，只用规则", "The Claude component isn’t installed. Using rules only.");
     case "key_rejected": {
       var code = Math.round(Number(st.http) || 0);
@@ -513,7 +523,7 @@ function guardMarkedRows(marked, nowSec) {
     if (!e || typeof e !== "object") return;
     var keys = Array.isArray(e.keys) ? e.keys : [];
     var onlyHandle = keys.length > 0 && keys.every(function (k) { return typeof k === "string" && k.indexOf("h:") === 0; });
-    var catText = e.cat ? guardCatLabel(e.cat) : "";
+    var catText = e.cat ? guardLowerFirst(guardCatLabel(e.cat)) : "";    // 冒号后小写；中文不受影响
     var how = e.by === "auto"
       ? (catText ? L("自动加入：" + catText, "Added automatically: " + catText) : L("自动加入", "Added automatically"))
       : L("手动加入", "Added by you");

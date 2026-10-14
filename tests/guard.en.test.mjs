@@ -89,14 +89,15 @@ test("状态文案：每个代码都是英文，功能状态写 “Comment Revie
     starting: "Comment Review: loading the Claude component. Rules only for now.",
     no_key: "No Claude API key. Using rules only.",
     no_sdk: "The Claude component isn’t installed. Using rules only.",
+    no_review: "Model review isn’t in this version yet. Using rules only.",
     offline: "Can’t reach Claude. Using rules only for now.",
   };
   for (const [status, text] of Object.entries(expect)) assert.equal(G.guardStateText({ status }), text, status);
   assert.equal(G.guardStateText({ status: "env_off" }),
     "Comment Review: turned off by the TLT_COMMENT_GUARD environment variable");
-  assert.equal(G.guardStateText({ status: "paused", lag_sec: 4.4 }), "Model review paused: speech recognition is 4 s behind");
+  assert.equal(G.guardStateText({ status: "paused", lag_sec: 4.4 }), "Model review paused: speech recognition is 4 sec behind");
   assert.equal(G.guardStateText({ status: "tripped", lag_sec: 12 }),
-    "Model review is off for this session: speech recognition fell 12 s behind. Rules only.");
+    "Model review is off for this session: speech recognition fell 12 sec behind. Rules only.");
   assert.equal(G.guardStateText({ status: "key_rejected", http: 401 }),
     "The Claude API key wasn’t accepted (HTTP 401). Using rules only.");
   assert.equal(G.guardStateText({ status: "cooldown", wait_min: 5 }), "Claude asked the app to wait. Using rules only for 5 min.");
@@ -214,7 +215,7 @@ test("关注名单：Added automatically / Added by you / Last comment；Unmark�
   assert.equal(rows[0].keyNote, "Saved by @handle. It won’t match if they change it.");
   assert.equal(rows[0].lastText, "Last comment 09:05:07");
   assert.equal(rows[1].keyNote, "Name only. Works for this session only.");
-  assert.equal(rows[2].how, "Added automatically: Possible threat of harm");
+  assert.equal(rows[2].how, "Added automatically: possible threat of harm");
   assert.equal(rows[2].lastText, "Last comment 1 day ago");
   const doc = makeDoc();
   const box = doc.createElement("div");

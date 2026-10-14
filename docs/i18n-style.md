@@ -274,6 +274,14 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | pipeline.py:961 丢段 | 1 audio segment | {n} audio segments |
 | pipeline.py:154 已重试 | Retried once. | Retried {n} times. |
 | selfcheck.py:434 词表生效 | 1 entry active | {n} entries active |
+| guard.js guardAmberText 多账号同一句 | Same comment from 1 account in {s} seconds | Same comment from {n} accounts in {s} seconds |
+| guard.js guardCountText 事件条数 | 1 comment in {s} seconds / 1 comment | {m} comments in {s} seconds / {m} comments |
+| guard.js guardBarSummary、guardFabTitle 顶部条和浮钮 | 1 comment to review | {n} comments to review |
+| guard.js guardBarSummary 拿不准、关注的人发言 | {n} unclear / {n} from marked viewers | 同左（不变形） |
+| guard.js guardUnreviewedText 没经过模型复核 | 1 comment wasn’t reviewed by the model this session. | {n} comments weren’t reviewed by the model this session. |
+| guard.js guardSummary 关注的人数 | {n} marked | 同左（不变形） |
+| guard.js guardRulesText 规则条数和体检警告 | 1 rule active · 1 rule check warning | {n} rules active · {w} rule check warnings |
+| guard.js guardLastSeenText 几天前 | 1 day ago | {n} days ago |
 | 在看人数（live-ui.js:16、app.js:1869、viewer.py:409） | {n} watching | {n} watching（不变形） |
 | 窗口标题（alerts.js:9、window_attention.py:20） | ({n}) Possible Banned Terms · TikTok Live Translator | 同左（标签式写法，不变形） |
 

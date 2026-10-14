@@ -750,7 +750,7 @@ def test_guard_set_persists_once_and_updates_the_state(monkeypatch, tmp_path):
     saved = settings.load_settings()["comment_guard"]
     assert saved == {"enabled": True, "backend": "claude", "weak": True}
     state = server.config["guard_state"]
-    assert state["enabled"] is True and state["backend"] == "claude" and state["status"] == "no_sdk"
+    assert state["enabled"] is True and state["backend"] == "claude" and state["status"] == "no_review"
     assert state["weak"] is True and state["rules"]["count"] > 0 and state["n_marked"] == 0
     configs = [m for m in server.of_type("config") if "guard_state" in m]
     assert len(configs) == 2 and configs[0]["guard_state"]["status"] == "rules"
