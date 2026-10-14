@@ -14,14 +14,20 @@ app/comment_source.py），与字幕（主播语音）是完全独立的两条�
 比字幕密得多，撞上 429 时暂停的只能是弹幕这个实例，字幕翻译不能跟着停。
 字幕翻译永远优先：弹幕 worker 每轮攒批后都要等字幕翻译空闲，最多等
 `IDLE_WAIT_MAX_SEC` 防止在字幕持续繁忙时弹幕被活活饿死。
+
+弹幕重译（2026-10-14）：中控在某条弹幕上点「重译」时，字幕引擎是 Claude 才翻，用**另建的**
+Sonnet 5.5 实例（第三个，和字幕、弹幕的 Haiku 各管各的冷却）；其它引擎一律不翻，仍然不碰
+`create_strong_translator()`。账本、限额和给中控看的话在 app/comment_redo.py。
 """
 import asyncio
 import re
 import time
 from collections import OrderedDict
 
+from . import comment_redo as redo
 from .i18n import L
-from .translator import CachedTranslator, ClaudeTranslator, engine_is_claude, looks_fabricated
+from .translator import (CachedTranslator, ClaudeTranslator, begin_translate_call,
+                         engine_is_claude, looks_fabricated, translate_call_outcome)
 
 # 「有没有可译内容」的粗判：至少要有 2 个字母（含各语言字母，排除数字和下划线）。
 # 纯 emoji / 数字 / 标点的弹幕（"😂😂😂"、"1111"）翻不出东西，白白占用引擎。
@@ -66,6 +72,12 @@ def original_only_hint(translator):
 def _comment_claude():
     """弹幕专用的 Claude 实例：Haiku 5.5，提示词按弹幕写。没有密钥时抛 RuntimeError。"""
     return ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
+
+
+def _comment_claude_strong():
+    """弹幕重译专用的 Claude 实例：Sonnet 5.5（和字幕重译同一档，见 ClaudeTranslator.TUNED），
+    提示词按弹幕写。没有密钥时抛 RuntimeError。"""
+    return ClaudeTranslator(model=ClaudeTranslator.STRONG_MODEL, role="comment_strong")
 
 
 def needs_translation(text, target):
@@ -257,14 +269,15 @@ class CommentTranslator:
     DEDUPE_CONTENT_SEC = 60.0
 
     def __init__(self, broadcast, translator, target, glossary=None, busy=None,
-                 session=None, claude_factory=None):
+                 session=None, claude_factory=None, claude_strong_factory=None):
         """broadcast: async fn(msg)。translator/target/glossary：零参可调用
         （getter）——引擎能在界面里热切换、目标语言能改，弹幕翻译不能拿着
         构造时刻的快照用一整场。busy：零参可调用 -> bool，字幕翻译排队/在途
         时返回 True，弹幕翻译据此让路。session：零参可调用，返回「这一场」的
         标识（管线传审计对象），「弹幕只显示原文」的提示每场只发一次。
         claude_factory：零参可调用，造弹幕专用的 Claude 实例（默认 Haiku 5.5，见
-        _engine_for）；测试用它换成不联网的替身。
+        _engine_for）；测试用它换成不联网的替身。claude_strong_factory 同理，造弹幕重译专用的
+        实例（默认 Sonnet 5.5，见 _redo_engine_for）。
         """
         self._session = session if session is not None else (lambda: None)
         self._hinted_session = _NOT_YET
@@ -286,6 +299,12 @@ class CommentTranslator:
         self._claude_engine = None
         self._claude_for = None
         self._closing = set()               # 换下来的实例正在关连接的任务，保引用
+        # 弹幕重译：最近 ORIGINAL_KEEP 条的原文、在途的 id、每分钟的次数（账本），以及重译专用
+        # 的 Sonnet 实例和它是照哪个字幕引擎对象建的（换了对象就跟着重建，同 _claude_for）
+        self._ledger = redo.RedoLedger()
+        self._claude_strong_factory = claude_strong_factory or _comment_claude_strong
+        self._redo_engine = None
+        self._redo_for = None
 
     # ---- 入站：抓取端送来的一批观众评论 ----
     async def accept(self, data):
@@ -330,6 +349,7 @@ class CommentTranslator:
             if last is not None and now - last < self.DEDUPE_CONTENT_SEC:
                 continue
             self._remember(cid, key, now)
+            self._ledger.remember(cid, text)
             accepted += 1
             await self._enqueue(cid, user, text, now, account_fields(item),
                                 rel=_rel_tags(item.get("rel")))
@@ -505,13 +525,116 @@ class CommentTranslator:
         task.add_done_callback(self._closing.discard)
 
     async def close(self):
-        """关掉弹幕专用 Claude 实例的连接（如果建过）。"""
+        """关掉弹幕专用 Claude 实例（翻译的、重译的）的连接，建过的话。"""
         engine, self._claude_engine, self._claude_for = self._claude_engine, None, None
-        if engine is not None:
-            try:
-                await engine.close()
-            except Exception:
-                pass
+        redo_engine, self._redo_engine, self._redo_for = self._redo_engine, None, None
+        for one in (engine, redo_engine):
+            if one is not None:
+                try:
+                    await one.close()
+                except Exception:
+                    pass
+
+    # ---- 弹幕重译（见 app/comment_redo.py）----
+    def _redo_engine_for(self, translator):
+        """弹幕重译实际交给哪个引擎；造不出来（没有密钥）返回 None。
+
+        另建一个 Sonnet 5.5 实例，不和字幕引擎、弹幕的 Haiku 共用：冷却、400 记录、拒答计数
+        都挂在实例上，重译被 429 暂停不能连累字幕，也不能连累弹幕自己的翻译。不套
+        CachedTranslator：重译就是要重新问一次，命中缓存等于白点。字幕引擎换了对象（重填密钥）
+        就跟着重建。"""
+        inner = getattr(translator, "inner", translator)
+        if self._redo_engine is not None and self._redo_for is inner:
+            return self._redo_engine
+        self._close_later(self._redo_engine)
+        self._redo_engine = self._redo_for = None
+        try:
+            self._redo_engine = self._claude_strong_factory()
+        except Exception as exc:
+            print("[警告] 弹幕重译没能建起 Claude 实例: {}".format(exc))
+            return None
+        self._redo_for = inner
+        return self._redo_engine
+
+    async def retranslate(self, cid):
+        """中控在某条弹幕上点了「重译」（web/app.js 发 retranslate_comment）。永不抛异常。
+
+        每一条不重译的出路都用 comment_redo 消息回话，页面把话显示在那条弹幕下面（文字见
+        comment_redo.py）；译文出来了就用 comment_update 换掉那条弹幕的译文——服务端的留存
+        和手机页都跟着换。手机发不出这个动作（app/viewer.py 的入站只认 retranslate）。"""
+        try:
+            await self._retranslate(cid)
+        except Exception as exc:
+            print("[警告] 弹幕重译出错: {}".format(exc))
+
+    async def _retranslate(self, cid):
+        if not isinstance(cid, str) or not cid:
+            return                  # 不是弹幕 id：没有哪条弹幕可以回话
+        cid = cid[: self.MAX_ID]
+        text = self._ledger.original(cid)
+        if text is None:
+            await self._redo_refused(cid, redo.note_gone())
+            return
+        translator = self._translator()
+        # 铁律：只有 Claude 能翻弹幕重译。别的引擎（尤其是本地 7B）到这里就停，不去叫强模型
+        if not engine_is_claude(translator):
+            await self._redo_refused(cid, redo.note_needs_claude(translator))
+            return
+        engine = self._redo_engine_for(translator)
+        if engine is None:
+            await self._redo_refused(cid, redo.note_no_key())
+            return
+        refused = self._ledger.begin(cid)
+        if refused is not None:
+            kind, wait = refused
+            if kind == "busy":
+                await self._redo_say(cid, redo.note_busy())          # 按钮已经是「重译中…」
+            else:
+                await self._redo_refused(cid, redo.note_full(wait))
+            return
+        try:
+            await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "pending"})
+            out, why = await self._redo_translate(engine, text)
+        except Exception as exc:
+            print("[警告] 弹幕重译出错: {}".format(exc))
+            out, why = None, redo.note_unknown()
+        finally:
+            self._ledger.finish(cid)
+        if out:
+            await self._safe_broadcast({"type": "comment_update", "id": cid,
+                                        "translated": out, "state": "ok"})
+            await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "ok"})
+        else:
+            await self._redo_refused(cid, why)
+
+    async def _redo_translate(self, engine, text):
+        """用重译实例译一次。返回 (译文, None) 或 (None, 给中控的说明)。
+
+        译文过的关和批量翻译一样：词表兜底替换，再过 plausible_translation（弹幕是陌生人的话，
+        模型可能把它当成对自己说的，回一整句话）——不像译文就当没译出来，原译文留着。
+        直接 await translate：拒答的结局记在本任务的上下文里（translator.translate_call_outcome），
+        套 wait_for 会让它丢掉；实例自己的 HTTP 超时（BaseTranslator.TIMEOUT）兜住不返回的情况。"""
+        target = self._target()
+        begin_translate_call()
+        error_before = getattr(engine, "last_error", None)
+        out = await self._translate_one(engine, text, target, self._glossary())
+        discarded = False
+        if out and not plausible_translation(text, out, target):
+            print("[警告] 弹幕重译的译文不像是在翻译这条弹幕（{} 字 → {} 字），已丢弃".format(
+                len(text), len(out)))
+            out, discarded = None, True
+        if out:
+            return out, None
+        return None, redo.failure_text(engine, error_before, translate_call_outcome(), discarded)
+
+    async def _redo_say(self, cid, text):
+        """只说一句话，不动按钮的状态。"""
+        await self._safe_broadcast({"type": "comment_redo", "id": cid, "text": text})
+
+    async def _redo_refused(self, cid, text):
+        """这次点击没有换出新译文：按钮标成失败，再在那条弹幕下面说明。"""
+        await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "failed",
+                                    "text": text})
 
     async def _translate_many(self, translator, texts, target, glossary):
         joined = "\n".join(texts)                   # i18n: data（弹幕原文，喂给翻译引擎）

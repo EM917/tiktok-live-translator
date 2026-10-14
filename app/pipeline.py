@@ -483,6 +483,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return self.set_engine(msg.get("engine"), msg.get("api_key"))
         elif mtype == "retranslate":
             return self.retranslate(msg.get("id"))
+        elif mtype == "retranslate_comment":
+            # 弹幕重译（app/comments.py）：Sonnet 要等几秒，放后台跑，不在这个页面的消息循环里
+            # 等（同 apply_update）；中控可以接着点别的弹幕，每条自己排队、自己限额。
+            # 只有本机页面发得出来：手机入站只认 retranslate（app/viewer.py _handle_inbound）
+            self._spawn(self.comments.retranslate(msg.get("id")))
+            return None
         elif mtype == "migrate_glossary":
             return self._migrate_glossary(bool(msg.get("confirm")))
         elif mtype == "apply_update":

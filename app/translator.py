@@ -569,10 +569,13 @@ class ClaudeTranslator(BaseTranslator):
     这里的接口规则来自 claude-api skill 的迁移指南「Migrating to Claude Haiku 5.5」「Migrating to
     Claude Sonnet 5.5」两节和它的 Thinking 表，没有凭记忆写。
 
-    同一个类有三种用法，各用各的**实例**（冷却、400 记录、拒答计数都挂在实例上，一个用法被 429
+    同一个类有四种用法，各用各的**实例**（冷却、400 记录、拒答计数都挂在实例上，一个用法被 429
     不该连累另一个）：
       * 字幕引擎（默认）：Pipeline.translator 里包着的那个，模型 Haiku 5.5；
       * 观众弹幕（role="comment"）：app/comments.py 另建一个，模型固定 Haiku 5.5，提示词按弹幕写；
+      * 弹幕重译（role="comment_strong"）：中控在某条弹幕上点「重译」时 app/comments.py 另建一个，
+        模型固定 Sonnet 5.5（同下面重译的那一档），提示词和弹幕一样（弹幕是陌生人的文字，只翻译、
+        不照着做），所以它不带词表，译文回来后的兜底替换由 app/comments.py 做；
       * 重译（create_claude_strong_translator，role="strong"）：字幕引擎是 Claude 时，「重译」
         和报警上下文翻译用它，模型 Sonnet 5.5，取代本地 7B。提示词和字幕一样，另外带词表：
         本地 7B 的提示词里有词表，重译又正是中控嫌商品名译错了才点的，换成 Claude 不能把它丢掉。
@@ -589,6 +592,8 @@ class ClaudeTranslator(BaseTranslator):
     # 重译固定用 Sonnet 5.5，同一天定的
     COMMENT_MODEL = "claude-haiku-5-5"
     STRONG_MODEL = "claude-sonnet-5-5"
+    # 用弹幕提示词（陌生人的文字，用 <comments> 标签包起来）的角色
+    COMMENT_ROLES = ("comment", "comment_strong")
 
     # 只给逐条核对过请求规则的模型加专门字段；别的模型（包括用 CLAUDE_TRANSLATE_MODEL
     # 指定的 Haiku 4.5）发通用最小请求体：不写 thinking、不写 output_config、不写采样参数、
@@ -605,7 +610,7 @@ class ClaudeTranslator(BaseTranslator):
     # **没有测过**，测出来之前不要说谁更好（2026-10-12 用户决定这次不做离线对比，原因是评委
     # 费用；对比工具留在分支 claude/claude-vs-local-bench 上，没有合进来）。
     #
-    # Sonnet 5.5（只给重译用）对 {"type": "disabled"} 回 400（迁移指南 Breaking change 1），
+    # Sonnet 5.5（只给重译用：字幕重译和弹幕重译）对 {"type": "disabled"} 回 400（迁移指南 Breaking change 1），
     # 关思考的写法是 {"type": "between_tools"}：
     #   * 只在 effort 为 low/medium/high 时被接受，xhigh/max 会 400；
     #   * thinking 里**不许有别的字段**（display、budget_tokens、block_binding 都 400）；
@@ -666,8 +671,9 @@ class ClaudeTranslator(BaseTranslator):
 
     def __init__(self, model=None, role="subtitle"):
         """model：显式指定就不读 CLAUDE_TRANSLATE_MODEL（弹幕和重译各有固定的模型）。
-        role：subtitle（默认）、comment 或 strong，只影响提示词和 max_tokens：comment 用弹幕的
-        提示词和更大的 max_tokens，strong 和 subtitle 一样、另外带词表。"""
+        role：subtitle（默认）、comment、comment_strong 或 strong，只影响提示词和 max_tokens：
+        comment 和 comment_strong 用弹幕的提示词和更大的 max_tokens（两者只差模型），strong 和
+        subtitle 一样、另外带词表。"""
         super().__init__()
         self.api_key = api_key("ANTHROPIC_API_KEY")
         if not self.api_key:
@@ -677,9 +683,9 @@ class ClaudeTranslator(BaseTranslator):
                       or (os.environ.get("CLAUDE_TRANSLATE_MODEL") or "").strip()
                       or self.DEFAULT_MODEL)
         self.role = role
-        # 弹幕和重译这两个实例的 401/403/404 没有别人替它们说（字幕引擎的由 Pipeline.
+        # 弹幕、弹幕重译和重译这三个实例的 401/403/404 没有别人替它们说（字幕引擎的由 Pipeline.
         # _note_engine_failure 说），进冷却的那一刻自己打一行终端，带上模型名
-        self.says_own_rejection = role in ("comment", "strong")
+        self.says_own_rejection = role in ("comment", "comment_strong", "strong")
         # 拒答（HTTP 200 + stop_reason "refusal"）的本场累计次数，只作统计。某一句是不是
         # 拒答**不看它**：报警翻译和字幕翻译并发共用这个对象，比较前后的次数会张冠李戴。
         # 看 translate_call_outcome()（按任务隔离，见文件头）
@@ -698,13 +704,14 @@ class ClaudeTranslator(BaseTranslator):
         glossary 只有 role="strong" 才用（见类说明），其它角色传了也不进请求体。"""
         extra = self.TUNED.get(self.model) or {}
         no_think = (extra.get("thinking") or {}).get("type") in self.THINKING_OFF
+        about_comment = self.role in self.COMMENT_ROLES
         if not no_think:
             max_tokens = self.MAX_TOKENS_MAY_THINK
-        elif self.role == "comment":
+        elif about_comment:
             max_tokens = self.MAX_TOKENS_COMMENT
         else:
             max_tokens = self.MAX_TOKENS_NO_THINKING
-        system = self.SYSTEM_COMMENT if self.role == "comment" else self.SYSTEM_SUBTITLE
+        system = self.SYSTEM_COMMENT if about_comment else self.SYSTEM_SUBTITLE
         system = system.format(lang=LANG_NAMES.get(target, target))
         pairs = _as_pairs(glossary) if self.role == "strong" else []
         if pairs:
@@ -716,7 +723,7 @@ class ClaudeTranslator(BaseTranslator):
             "system": system,
             # 以 user 轮结尾：Haiku 5.5 和 Sonnet 5.5 上预填（最后一轮是 assistant）会 400
             "messages": [{"role": "user", "content": (
-                "<comments>\n{}\n</comments>".format(text) if self.role == "comment"  # i18n: data
+                "<comments>\n{}\n</comments>".format(text) if about_comment  # i18n: data
                 else text)}],
         }
         body.update(json.loads(json.dumps(extra)))      # 深拷贝：请求改不到类上的表
@@ -803,7 +810,8 @@ class ClaudeTranslator(BaseTranslator):
                             print("[警告] Claude 返回 HTTP {}（模型 {}），{}暂停请求 {} 秒；"
                                   "字幕翻译用的是另一个连接，不受影响".format(
                                       resp.status, self.model,
-                                      "弹幕翻译" if self.role == "comment" else "重译",
+                                      {"comment": "弹幕翻译", "comment_strong": "弹幕重译"}.get(
+                                          self.role, "重译"),
                                       self.REJECT_COOLDOWN_SEC))
                     elif resp.status == 429:
                         wait = self._retry_after(resp)

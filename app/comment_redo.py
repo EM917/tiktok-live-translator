@@ -1,0 +1,139 @@
+# i18n: done
+"""弹幕重译（2026-10-14 用户要的）：中控在某条弹幕上点「重译」，用 Claude Sonnet 5.5 再译一次。
+
+这个模块只放不碰网络、不碰引擎的部分：记原文的账本（RedoLedger）和给中控看的话。真正翻译的
+编排在 app/comments.py 的 CommentTranslator.retranslate。几条定下来的规矩：
+
+  * 只有字幕引擎是 Claude 时才翻（弹幕专用的 Sonnet 实例，提示词按弹幕写）。其它引擎一律不翻：
+    **弹幕绝不触发 create_strong_translator()**（comments.py 开头的铁律——那是临时装载 5.3 GB 的
+    7B），所以非 Claude 引擎下按钮是灰的，服务端也再拒一次；
+  * 服务端只留最近 ORIGINAL_KEEP 条弹幕的原文，点的时候按 id 取回；取不到就说明；
+  * 同一条弹幕同时只重译一次；全局每分钟最多 PER_MINUTE 次（Sonnet 按量计费，手滑连点不该
+    烧钱）。超了的那一下什么都不翻，在那条弹幕下面说一句；
+  * 每一条不重译的出路都要让点的人看见（同字幕重译的 retranslate_note），文字只写观察到的事和
+    能做的事，不猜原因（CLAUDE.md 第八条，英文同样适用）；
+  * 不写审计：弹幕的原文和观众名不进审计（comments.py 开头：弹幕不碰检测/审计链路）。
+"""
+import math
+import time
+from collections import OrderedDict, deque
+
+from .i18n import L
+from .translator import engine_label, model_label
+
+ORIGINAL_KEEP = 200            # 服务端留多少条弹幕的原文，供「重译」按 id 取回
+PER_MINUTE = 20                # 全局每分钟最多几次弹幕重译
+WINDOW_SEC = 60.0
+
+
+class RedoLedger:
+    """弹幕重译的账本：最近 ORIGINAL_KEEP 条的原文、在途的 id、最近一分钟的次数。
+
+    只在事件循环里用（同步方法，没有 await，所以「查是否在途 + 占位」是原子的）。时钟可以注入，
+    测试不用等真实的一分钟。"""
+
+    def __init__(self, clock=None):
+        self._clock = clock or time.monotonic
+        self._originals = OrderedDict()      # id -> 原文，最近的在后
+        self._inflight = set()
+        self._stamps = deque()               # 最近几次重译开始的时刻
+
+    def remember(self, cid, text):
+        self._originals[cid] = text
+        self._originals.move_to_end(cid)
+        while len(self._originals) > ORIGINAL_KEEP:
+            self._originals.popitem(last=False)
+
+    def original(self, cid):
+        return self._originals.get(cid)
+
+    def begin(self, cid):
+        """占一个名额。可以开始返回 None（这一次已记账，完事后要调 finish）；
+        不行返回 ("busy", 0)（这条正在重译）或 ("full", 还要等几秒)（这一分钟用满了）。"""
+        if cid in self._inflight:
+            return ("busy", 0)
+        now = self._clock()
+        while self._stamps and now - self._stamps[0] >= WINDOW_SEC:
+            self._stamps.popleft()
+        if len(self._stamps) >= PER_MINUTE:
+            return ("full", max(1, int(math.ceil(self._stamps[0] + WINDOW_SEC - now))))
+        self._stamps.append(now)
+        self._inflight.add(cid)
+        return None
+
+    def finish(self, cid):
+        self._inflight.discard(cid)
+
+
+# ---- 给中控看的话 ------------------------------------------------------------------------
+# 显示在被点的那条弹幕下面几秒（web/app.js 的 comment_redo）。不转发手机（app/viewer.py 的
+# ALLOW 里没有它，默认拒绝）。
+
+def note_gone():
+    return L("这条弹幕没有可重译的原文记录（程序只保留最近 {} 条弹幕）",
+             "This comment has no saved original to retranslate. The app keeps only the "
+             "latest {} comments.").format(ORIGINAL_KEEP)
+
+
+def note_needs_claude(translator):
+    name = getattr(translator, "name", None)
+    return L("弹幕重译需要 Claude 翻译引擎，现在用的是{}（在「设置 > 翻译引擎」里选择 Claude）",
+             "Retranslating comments needs the Claude engine, and the current engine is {}. "
+             "Choose Claude in Settings > Translation Engine.").format(engine_label(name))
+
+
+def note_no_key():
+    return L("弹幕重译需要 Claude 密钥，现在没有可用的密钥（在「设置 > 翻译引擎」里重新填写）",
+             "Retranslating comments needs a Claude API key, and none is available. Enter one "
+             "in Settings > Translation Engine.")
+
+
+def note_busy():
+    return L("这条弹幕正在重译中", "This comment is already being retranslated.")
+
+
+def note_full(wait):
+    return L("弹幕重译每分钟最多 {} 次，约 {} 秒后可以再点",
+             "At most {} comments can be retranslated per minute. Try again in about {} sec."
+             ).format(PER_MINUTE, wait)
+
+
+def note_unknown():
+    """账本和引擎之外的意外：没拿到译文，也不知道看到了什么。"""
+    return failure_text(None, None, None, False)
+
+
+def failure_text(strong, error_before, outcome, discarded):
+    """这次重译没出译文：把观察到的事说出来，后面接上屏幕上现在是什么样。
+
+    和 Pipeline._retranslate_failure_text 看同样的东西（这一次调用的结局、引擎自己记下的 HTTP
+    回应），只是说的是弹幕。last_error 在 200 时清空、非 200 时换一个新元组，所以「调用前后是不是
+    同一个对象」能分出这一次有没有新的 HTTP 回应——连不上时它不变，旧的状态码不能算到这一次头上。"""
+    engine = model_label(getattr(strong, "model", None) or "Claude")
+    error = getattr(strong, "last_error", None)
+    paused = getattr(strong, "cooldown_until", 0.0) - time.monotonic()
+    if discarded:
+        head = L("弹幕重译没有成功：结果不像译文，已丢弃",
+                 "Couldn’t retranslate this comment: the result didn’t look like a translation, "
+                 "so it was discarded")
+    elif outcome and outcome[0] == "refusal":
+        head = L("弹幕重译没有成功：{} 拒绝翻译这条弹幕（接口返回 refusal）",
+                 "Couldn’t retranslate this comment: {} declined to translate it (the API "
+                 "returned a refusal)").format(engine)
+    elif error and error[0] is not None and paused > 0:
+        # 暂停的只是弹幕重译用的这个连接：字幕翻译、弹幕翻译另有自己的，不受影响
+        head = L("弹幕重译没有成功：{} 返回 HTTP {}，程序暂停弹幕重译请求 {} 秒",
+                 "Couldn’t retranslate this comment: {} returned HTTP {}. Comment retranslation "
+                 "requests are paused for {} sec").format(engine, error[0], int(round(paused)))
+    elif error and error[0] is not None and error is not error_before and error[1]:
+        # 400/402 带着接口自己的说明（引擎只在这两种回应里留原话）：照抄，不替它解释
+        head = L("弹幕重译没有成功：{} 返回 HTTP {}（{}）",
+                 "Couldn’t retranslate this comment: {} returned HTTP {} ({})").format(
+            engine, error[0], error[1].rstrip(" .。"))  # i18n: data（接口原话，去掉末尾句号）
+    elif error and error[0] is not None and error is not error_before:
+        head = L("弹幕重译没有成功：{} 返回 HTTP {}",
+                 "Couldn’t retranslate this comment: {} returned HTTP {}").format(engine, error[0])
+    else:
+        head = L("弹幕重译没有成功：没有拿到译文",
+                 "Couldn’t retranslate this comment: no translation came back")
+    return L("{}，原译文保持不变", "{}. The current translation is unchanged.").format(head)

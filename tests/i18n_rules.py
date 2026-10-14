@@ -34,7 +34,8 @@ DONE_TAG = "done"
 UI_FILES = (
     "main.py",
     "app/alert_notify.py", "app/audio.py", "app/audit.py", "app/bootstrap.py",
-    "app/browser_login.py", "app/comment_source.py", "app/comments.py", "app/detector.py",
+    "app/browser_login.py", "app/comment_redo.py", "app/comment_source.py", "app/comments.py",
+    "app/detector.py",
     "app/diskspace.py", "app/ffmpeg_bin.py", "app/hwdetect.py", "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
     "app/pipeline_engine.py", "app/pipeline_guard.py", "app/power.py", "app/resolver.py",
