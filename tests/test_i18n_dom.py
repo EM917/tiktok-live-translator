@@ -631,6 +631,24 @@ def test_guard_panels_do_not_overflow(dom, name):
 
 
 @needs_chrome
+def test_guard_drawer_is_a_third_of_the_window_and_both_tabs_are_equally_tall(dom):
+    """抽屉的高度是固定的：最近需要留意、关注名单、熔断的三个场景（状态行长短不一）里一样高，不超过窗口的约三分之一；
+    滚的是列表区（.guard-pane），不是整个抽屉。静态的规则在 tests/guard-css.test.mjs，这里量真的排版。"""
+    names = ("live-guard", "live-guard-marked", "live-guard-tripped")
+    scans = {name: dom.scan(name) for name in names}
+    heights = {name: scans[name]["measure"][".guard-drawer"]["height"] for name in names}
+    viewport = scans["live-guard"]["viewport"]["height"]
+    assert max(heights.values()) - min(heights.values()) < 1, "切页签或状态行变长时抽屉高度变了：{}".format(heights)
+    assert max(heights.values()) <= viewport / 3 + 4, "抽屉 {} 超过窗口 {} 的三分之一".format(heights, viewport)
+    for name in names:
+        got = scans[name]["measure"]
+        drawer, pane = got[".guard-drawer"], got[".guard-pane:not(.hidden)"]
+        assert drawer["scrollHeight"] <= drawer["clientHeight"] + 1, "{}：整个抽屉在滚，应该是列表区在滚 {}".format(name, drawer)
+        assert pane["scrollHeight"] > pane["clientHeight"], "{}：场景里的内容应该多到要滚动 {}".format(name, pane)
+        assert pane["bottom"] <= drawer["bottom"] + 1 and pane["top"] >= drawer["top"], "{}：列表区跑出了抽屉".format(name)
+
+
+@needs_chrome
 @pytest.mark.parametrize("name", S.GUARD_ZH)
 def test_guard_chinese_pages_are_chinese(dom, name):
     """中文对照页：同一批场景，界面是中文（不扫漏翻，只核对确实是中文的守卫界面），顺便出中文截图。"""

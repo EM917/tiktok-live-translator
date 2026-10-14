@@ -163,9 +163,9 @@ test("渲染的标记：按钮 Mark / Unmark，整棵子树里没有汉字（昵
 
 test("顶部条：1 件用单数；按事件计（一次冲场只算 1 件）；类别超过 3 个写 “n more”；Latest 时刻", () => {
   const one = G.guardBarSummary({ a: event({ id: "a", cat: "threat", ts: 1000 }) }, 0, { markedTs: [1001] });
-  assert.deepEqual(one.parts, ["1 item to review", "1 from marked viewers", "Possible threat of harm 1",
+  assert.deepEqual(one.parts, ["1 item to review", "1 from marked viewers", "Possible threat of harm ×1",
                                "Latest " + G.guardTimeText(1000)]);
-  assert.equal(one.text, "1 item to review · 1 from marked viewers · Possible threat of harm 1 · Latest " + G.guardTimeText(1000));
+  assert.equal(one.text, "1 item to review · 1 from marked viewers · Possible threat of harm ×1 · Latest " + G.guardTimeText(1000));
   const events = {
     a: event({ id: "a", cat: "threat", lvl: "alert", n: 2, ts: 1000 }),
     b: event({ id: "b", cat: "insult", lvl: "amber", n: 3, ts: 1001 }),
@@ -176,7 +176,7 @@ test("顶部条：1 件用单数；按事件计（一次冲场只算 1 件）；
   const sum = G.guardBarSummary(events, 0);
   // a 里有 2 条弹幕、b 里有 3 条，各算 1 件（用户决定 10）：4 件红 + 1 件琥珀
   assert.deepEqual(sum.parts.slice(0, 2), ["4 items to review", "1 unclear"]);
-  assert.equal(sum.parts[2], "Possible threat of harm 1, Possible insult 1, Possible redirect (link) 1, 2 more");
+  assert.equal(sum.parts[2], "Possible threat of harm ×1, Possible insult ×1, Possible redirect (link) ×1, 2 more");
   for (const t of sum.parts) english(t);
   assert.equal(G.guardBarSummary(events, 5000).show, false);
   assert.equal(G.guardFabTitle(1), "1 item to review");
@@ -186,8 +186,37 @@ test("顶部条：1 件用单数；按事件计（一次冲场只算 1 件）；
   const brigade = event({ id: "b", kind: "brigade", cat: "flood_brigade", lvl: "amber", amb: "brigade", n: 12, ts: 2001 });
   const two = G.guardBarSummary([flood, brigade], 0);
   assert.deepEqual(two.parts.slice(0, 2), ["1 item to review", "1 unclear"]);
-  assert.equal(two.parts[2], "Possible flooding 1, Same comment from several accounts 1");
+  assert.equal(two.parts[2], "Possible flooding ×1, Same comment from several accounts ×1");
   assert.ok(!two.text.includes("comments to review"));
+});
+
+test("顶部条：每个类别后面的计数都写成 “Name ×n”，一个写法，数字不紧贴名字（n 是事件数）", () => {
+  for (const cat of ALL_CATS) {
+    for (const n of [1, 2, 12]) {
+      const events = {};
+      for (let i = 0; i < n; i++) events["e" + i] = event({ id: "e" + i, cat, lvl: "alert", n: 40, ts: 5000 + i });
+      const sum = G.guardBarSummary(events, 0);
+      assert.equal(sum.parts[0], n === 1 ? "1 item to review" : n + " items to review", "events, not the 40 comments inside");
+      assert.equal(english(sum.parts[1]), G.guardCatLabel(cat) + " ×" + n, cat + " ×" + n);
+      assert.doesNotMatch(sum.parts[1], /[^×\s]\s\d+$/, "a bare number after a name doesn’t read as a count: " + sum.parts[1]);
+      assert.doesNotMatch(sum.parts[1], /\(\d+\)$/, "no (n) after the name: category names carry their own parentheses");
+    }
+  }
+  assert.equal(G.guardCatCount("Possible flooding", 2), "Possible flooding ×2");
+  assert.equal(G.guardCatCount("Possible redirect (link)", 1), "Possible redirect (link) ×1");
+  assert.equal(G.guardCatCount("Possible flooding", NaN), "Possible flooding ×0");
+  const cats = ["promo_contact", "flood_user", "insult", "threat", "accuse_call"];
+  const events = {};
+  cats.forEach((cat, i) => { events["e" + i] = event({ id: "e" + i, cat, lvl: i === 4 ? "amber" : "alert", ts: 6000 + i }); });
+  const full = G.guardBarSummary(events, 0, { markedTs: [6001, 6002, 6003] });
+  assert.deepEqual(full.parts.slice(0, 3), ["4 items to review", "1 unclear", "3 from marked viewers"]);
+  assert.equal(full.parts[3], "Possible threat of harm ×1, Possible insult ×1, Possible call to report or not buy ×1, 2 more");
+  for (const part of full.parts) english(part);
+});
+
+test("顶部条右侧控件的字：抽屉收着写 “View”，开着写 “Hide”", () => {
+  assert.equal(english(G.guardBarViewText(false)), "View");
+  assert.equal(english(G.guardBarViewText(true)), "Hide");
 });
 
 test("抽屉：按钮 Show in Comments / Mark / Unmark / Dismiss，空态一句话，多账号 “n more”", () => {

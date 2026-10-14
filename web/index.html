@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=39">
+  <link rel="stylesheet" href="/static/style.css?v=40">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -241,7 +241,7 @@
     <button id="guard-bar-main" class="guard-bar-main" type="button" aria-expanded="false" aria-controls="guard-drawer">
       <svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>
       <span id="guard-bar-text" class="guard-bar-text"></span>
-      <span class="guard-bar-view" data-en="View">查看</span>
+      <span id="guard-bar-view" class="guard-bar-view" data-en="View">查看</span>
     </button>
     <button id="guard-bar-seen" class="btn small" type="button" data-en="All Seen">全部看过</button>
   </div>
@@ -258,8 +258,12 @@
       <button id="guard-tab-marked" class="guard-tab" type="button" role="tab" aria-selected="false"
               aria-controls="guard-pane-marked"><span data-en="Marked Viewers">关注名单</span> <span id="guard-tab-marked-n" class="guard-tab-n"></span></button>
     </div>
-    <div id="guard-pane-recent" class="guard-pane" role="tabpanel"><div id="guard-events"></div></div>
-    <div id="guard-pane-marked" class="guard-pane hidden" role="tabpanel"><div id="guard-marked"></div></div>
+    <!-- 两个页签共用同一块固定高度的区域（切页签时抽屉不跳），区域里的列表自己滚动；底部的渐隐是滚动的提示
+         （style.css .guard-panes::after） -->
+    <div class="guard-panes">
+      <div id="guard-pane-recent" class="guard-pane" role="tabpanel"><div id="guard-events"></div></div>
+      <div id="guard-pane-marked" class="guard-pane hidden" role="tabpanel"><div id="guard-marked"></div></div>
+    </div>
   </section>
 
   <!-- 违禁词警报：本工具的核心产出，不自动消失，只能手动清空 -->
@@ -713,7 +717,7 @@
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=2"></script>
   <script src="/static/live-ui.js?v=1"></script>
-  <script src="/static/guard.js?v=3"></script>
-  <script src="/static/app.js?v=68"></script>
+  <script src="/static/guard.js?v=6"></script>
+  <script src="/static/app.js?v=70"></script>
 </body>
 </html>
