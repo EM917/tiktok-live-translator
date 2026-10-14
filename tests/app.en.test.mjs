@@ -772,6 +772,23 @@ test("英文页：弹幕栏里的标记——红条类别、关注的人 ★、�
   assert.deepEqual(leftoverChinese(page), []);
 });
 
+test("英文页：同一条弹幕既有关系标签（Gifter）又有守卫标记：两样都在，且复核结果补上来之后关系标签还在", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(guardComment({ rel: ["follower", "gifter"], guard: RED_GUARD }));
+  const item = page.el("comment-list").querySelector(".cmt-item");
+  const head = item.querySelector(".cmt-head");
+  assert.deepEqual([...head.querySelectorAll(".cmt-rel")].map((c) => c.textContent), ["Follower", "Gifter"]);
+  assert.equal(head.querySelector(".guard-pill").textContent, "Possible threat of harm");
+  assert.ok(head.querySelector(".guard-star"), "名单里的人有 ★");
+  assert.ok(item.cls.includes("guard-alert") && item.cls.includes("guard-marked"));
+  // 复核结果经 comment_guard 补上来：守卫的节点重画，关系标签不被一并撤掉
+  page.push({ type: "comment_guard", id: "c1", guard: Object.assign({}, RED_GUARD, { rv: "agree", src: "review" }) });
+  assert.deepEqual([...head.querySelectorAll(".cmt-rel")].map((c) => c.textContent), ["Follower", "Gifter"]);
+  assert.equal(head.querySelectorAll(".guard-pill").length, 1, "守卫的节点重画而不是叠加");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
 test("英文页：顶部条——新事件弹出，每秒最多重画一次；关注的人发言单独计；全部看过收起", () => {
   const page = runDesktop();
   helloGuard(page);
@@ -782,23 +799,23 @@ test("英文页：顶部条——新事件弹出，每秒最多重画一次；�
   page.fire(1000);
   assert.equal(bar.cls.includes("hidden"), false);
   assert.ok(bar.cls.includes("has-red"));
-  assert.equal(text(), "1 comment to review · Possible threat of harm 1 · Latest " + (new Date((T + 5) * 1000)).toTimeString().slice(0, 8));
+  assert.equal(text(), "1 item to review · Possible threat of harm 1 · Latest " + (new Date((T + 5) * 1000)).toTimeString().slice(0, 8));
   assert.equal(page.el("guard-bar-main").title, text());
-  // 冲场：事件被同一个 id 持续更新，页面只是改数字
+  // 冲场：事件被同一个 id 持续更新，条数在涨，但事件还是 1 件（用户决定 10：按事件计，不数里面的弹幕）
   page.advance(1500);
   page.push({ type: "guard_event", ev: guardEvent({ id: "g1", kind: "flood", cat: "flood_user", n: 60, ts: T + 6 }) });
-  assert.match(text(), /^60 comments to review · Possible flooding 60 · Latest /);
+  assert.match(text(), /^1 item to review · Possible flooding 1 · Latest /);
   // 琥珀不出红点，但算「拿不准」
   page.advance(1500);
   page.push({ type: "guard_event", ev: guardEvent({ id: "g2", cat: "accuse_claim", lvl: "amber", amb: "pending", ts: T + 7 }) });
-  assert.match(text(), /^60 comments to review · 1 unclear · /);
+  assert.match(text(), /^1 item to review · 1 unclear · /);
   // 关注的人发言：回放的不算，实时的算
   page.advance(1500);
   page.push(guardComment({ id: "c8", replay: true, ts: T + 8 }));
   assert.doesNotMatch(text(), /marked viewers/);
   page.push(guardComment({ id: "c9", ts: T + 9 }));
   page.fire(1000);                                   // 这一秒内已经画过一次：压住的那次到点补上
-  assert.match(text(), /^60 comments to review · 1 unclear · 1 from marked viewers · /);
+  assert.match(text(), /^1 item to review · 1 unclear · 1 from marked viewers · /);
   // 全部看过（假时钟走到事件之后，已看的时刻才盖得住它们）
   page.advance(30000);
   page.el("guard-bar-seen").click();
@@ -815,7 +832,7 @@ test("英文页：顶部条——新事件弹出，每秒最多重画一次；�
   assert.deepEqual(leftoverChinese(page), []);
 });
 
-test("英文页：浮钮上只显示未读红条数，琥珀不出红点", () => {
+test("英文页：浮钮上只显示未读红条的事件数（一个事件里有几条弹幕不算），琥珀不出红点", () => {
   const page = runDesktop();
   helloGuard(page);
   const dot = page.el("comment-fab-guard");
@@ -825,8 +842,14 @@ test("英文页：浮钮上只显示未读红条数，琥珀不出红点", () =>
   page.advance(1500);
   page.push({ type: "guard_event", ev: guardEvent({ id: "a2", n: 3, ts: T + 6 }) });
   assert.equal(dot.cls.includes("hidden"), false);
+  assert.equal(dot.textContent, "1", "一个事件里有 3 条弹幕，还是 1 件");
+  assert.equal(dot.title, "1 item to review");
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "a3", cat: "promo_link", ts: T + 7 }) });
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "a4", kind: "flood", cat: "flood_user", n: 40, ts: T + 8 }) });
   assert.equal(dot.textContent, "3");
-  assert.equal(dot.title, "3 comments to review");
+  assert.equal(dot.title, "3 items to review");
 });
 
 test("英文页：抽屉——点条或胶囊展开，两个页签，忽略 / 加入 / 定位 / 重新启用都发对的消息", () => {

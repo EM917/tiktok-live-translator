@@ -393,20 +393,22 @@ function guardEventList(events) {
 }
 
 /* 顶部条那一行。events 是事件表，seenTs 是「已看」的时刻（秒），opts.markedTs 是关注的人本场发言的时刻们。
- * 未读 = 晚于 seenTs 的事件。红条数、琥珀数、关注的人发言数分开计，为 0 的不写；类别按严重程度排，
- * 超过 3 类写「另 n 类」。show 为假（三项全 0）时整条不显示。返回 { red, amber, marked, cats, more,
- * latestTs, parts, text, show }：parts 是各段文字，text 是用 " · " 连起来的整行。 */
+ * 未读 = 晚于 seenTs 的事件。红条、琥珀、关注的人发言分开计，为 0 的不写；类别按严重程度排，
+ * 超过 3 类写「另 n 类」。show 为假（三项全 0）时整条不显示。
+ * **红条、琥珀和各类别都按事件计**（用户 2026-10-13 决定）：一次冲场、一次多账号同句各算 1 件，不数事件里的弹幕条数
+ * （ev.n 只用在抽屉那一行的说明里，见 guardCountText）；关注的人发言数的是发言本身，按条计。
+ * 返回 { red, amber, marked, cats, more, latestTs, parts, text, show }：red / amber 是事件数，
+ * parts 是各段文字，text 是用 " · " 连起来的整行。 */
 function guardBarSummary(events, seenTs, opts) {
   var seen = Number(seenTs) || 0;
   var red = 0, amber = 0, latest = 0, tally = Object.create(null);
   guardEventList(events).forEach(function (ev) {
     var ts = Number(ev.ts) || 0;
     if (ts <= seen || (ev.lvl !== "alert" && ev.lvl !== "amber")) return;
-    var n = Math.max(1, Math.round(Number(ev.n) || 1));
-    if (ev.lvl === "alert") red += n; else amber += n;
+    if (ev.lvl === "alert") red++; else amber++;
     if (ts > latest) latest = ts;
     var cat = ev.cat || "other";
-    tally[cat] = (tally[cat] || 0) + n;
+    tally[cat] = (tally[cat] || 0) + 1;
   });
   var spoke = 0, markedTs = opts && Array.isArray(opts.markedTs) ? opts.markedTs : [];
   for (var i = 0; i < markedTs.length; i++) if (Number(markedTs[i]) > seen) spoke++;
@@ -417,8 +419,8 @@ function guardBarSummary(events, seenTs, opts) {
   });
   var shown = cats.slice(0, GUARD_BAR_CATS), more = cats.length - shown.length;
   var parts = [];
-  if (red) parts.push(LN(red, "需要留意的弹幕 " + red + " 条", "1 comment to review", red + " comments to review"));
-  if (amber) parts.push(LN(amber, "拿不准 " + amber + " 条", amber + " unclear", amber + " unclear"));
+  if (red) parts.push(LN(red, "需要留意 " + red + " 件", "1 item to review", red + " items to review"));
+  if (amber) parts.push(LN(amber, "拿不准 " + amber + " 件", amber + " unclear", amber + " unclear"));
   if (spoke) parts.push(LN(spoke, "关注的人发言 " + spoke, spoke + " from marked viewers", spoke + " from marked viewers"));
   var show = parts.length > 0;
   if (show && shown.length) {
@@ -572,9 +574,9 @@ function guardFillHeading(doc, el, streamer) {
   }
 }
 
-/* 弹幕栏收起时，浮钮上红点旁的提示：未读红条的条数 */
+/* 弹幕栏收起时，浮钮上红点旁的提示：未读红条的事件数（和顶部条同口径：一次冲场算 1 件） */
 function guardFabTitle(red) {
-  return LN(red, red + " 条需要留意的弹幕", "1 comment to review", red + " comments to review");
+  return LN(red, red + " 件需要留意", "1 item to review", red + " items to review");
 }
 
 if (typeof module !== "undefined" && module.exports) {
