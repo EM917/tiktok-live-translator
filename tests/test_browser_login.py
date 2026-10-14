@@ -29,6 +29,7 @@ from app.i18n import CJK
 from app.pipeline import Pipeline, browser_only_message
 from tests.helpers import run
 from tests.i18n_rules import EN_CAUSAL, EN_LABELS
+from tests.readme_parts import readme_part
 
 SENTINEL = "S3NTINEL-c00kie-VALUE-9f2e"
 GUESSED_LABELS = ("年龄", "限流", "封禁", "多半")
@@ -958,9 +959,10 @@ def test_bundle_relaunch_passes_the_launch_python_along(tmp_path, monkeypatch):
     assert seen["TLT_LAUNCH_PYTHON"] == "/opt/homebrew/bin/python3.14"
 
 
-@pytest.mark.parametrize("readme", ["README.md", "README.zh-CN.md"])
-def test_readme_does_not_tell_the_operator_to_add_the_bundle(readme):
-    text = (REPO / readme).read_text(encoding="utf-8")
+@pytest.mark.parametrize("lang", ["en", "zh"])
+def test_readme_does_not_tell_the_operator_to_add_the_bundle(lang):
+    # README.md 一页两种语言：英文、中文各取一半，两半都要说清楚
+    text = readme_part(lang)
     assert 'add "TikTok Live Translator"' not in text
     assert "加入「TikTok Live Translator」" not in text
     assert "cannot_decrypt" in text and "⌘⇧G" in text

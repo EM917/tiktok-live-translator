@@ -13,8 +13,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.readme_parts import readme_part
+
 REPO = Path(__file__).resolve().parent.parent
-DOCS = ["README.md", "README.zh-CN.md", "docs/engine-benchmarks.md",
+# README.md 是一页两种语言（英文在前，从 <a id="zh"> 起是中文）；"README.md#en" / "README.md#zh" 各取一半
+DOCS = ["README.md#en", "README.md#zh", "docs/engine-benchmarks.md",
         "docs/engine-benchmarks.zh-CN.md"]
 
 _CODE_SPAN = re.compile(r"(`+)(.+?)\1")
@@ -85,9 +88,15 @@ def bad_bold(text):
     return out
 
 
+def _read(name):
+    if name.startswith("README.md#"):
+        return readme_part(name.split("#", 1)[1])
+    return (REPO / name).read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("name", DOCS)
 def test_bold_markers_render_as_bold(name):
-    assert bad_bold((REPO / name).read_text(encoding="utf-8")) == []
+    assert bad_bold(_read(name)) == []
 
 
 @pytest.mark.parametrize("sample, bad", [
