@@ -18,7 +18,17 @@ from tests.readme_parts import readme_part
 REPO = Path(__file__).resolve().parent.parent
 # README.md 是一页两种语言（英文在前，从 <a id="zh"> 起是中文）；"README.md#en" / "README.md#zh" 各取一半
 DOCS = ["README.md#en", "README.md#zh", "docs/engine-benchmarks.md",
-        "docs/engine-benchmarks.zh-CN.md"]
+        "docs/engine-benchmarks.zh-CN.md",
+        # 从 README 搬出来的长节：同样的文字，同样要在 GitHub 上真的是加粗
+        "docs/hardware.md", "docs/hardware.zh-CN.md",
+        "docs/command-line.md", "docs/command-line.zh-CN.md",
+        "docs/interface-language.md", "docs/interface-language.zh-CN.md",
+        "docs/translation-engines.md", "docs/translation-engines.zh-CN.md",
+        "docs/fault-tolerance.md", "docs/fault-tolerance.zh-CN.md",
+        "docs/banned-terms.md", "docs/banned-terms.zh-CN.md",
+        "docs/comment-review.md", "docs/comment-review.zh-CN.md",
+        "docs/faq.md", "docs/faq.zh-CN.md",
+        "docs/architecture/mermaid.md", "docs/architecture/mermaid.zh-CN.md"]
 
 _CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 _BLOCK_START = re.compile(r"^\s*(?:[-*+] |\d+\. |#{1,6} |\||>)")
