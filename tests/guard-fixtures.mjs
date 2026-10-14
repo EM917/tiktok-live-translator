@@ -10,7 +10,7 @@ export const AMBER_CODES = ["maybe_question", "grievance", "quote", "accumulated
   "self", "review", "brigade"];
 export const RV_CODES = ["pending", "agree", "question", "complaint", "friendly", "neutral", "unsure", "skipped"];
 export const STATUS_CODES = ["off", "env_off", "rules", "starting", "claude", "paused", "tripped", "no_key",
-  "no_sdk", "no_review", "key_rejected", "offline", "cooldown"];
+  "no_sdk", "no_review", "prompt_missing", "key_rejected", "offline", "cooldown", "model_missing", "invalid"];
 
 export const STATE = { enabled: true, backend: "none", status: "rules", since: 1, trip: null,
   rules: { count: 510, warnings: 0 }, n_marked: 0, unreviewed: 0, weak: false, streamer: "luna_demo" };

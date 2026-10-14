@@ -1012,6 +1012,14 @@ test("英文页：设置行的控件发 guard_set；选 Claude 没有密钥时�
   // 组件缺失（复核接上之后才会有）：照常说
   page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "no_sdk" }) });
   assert.equal(page.el("guard-status").textContent, "The Claude component isn’t installed. Using rules only.");
+  // 有密钥、读不到复核提示词：照实说（不是「没有密钥」），什么都发不出去，所以也不说「会发给 Anthropic」
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "prompt_missing" }) });
+  assert.equal(page.el("guard-status").textContent, "The review prompt file couldn’t be read. Using rules only.");
+  assert.equal(page.el("guard-privacy").cls.includes("hidden"), true);
+  // 没有密钥：填了就会发，隐私那一行照说
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "no_key" }) });
+  assert.equal(page.el("guard-status").textContent, "No Claude API key. Using rules only.");
+  assert.equal(page.el("guard-privacy").cls.includes("hidden"), false);
   // 其余按钮
   page.el("guard-clear-auto").click();
   assert.deepEqual(page.sent.pop(), { type: "guard_clear_auto" });

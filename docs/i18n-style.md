@@ -163,6 +163,7 @@
 | 加入关注名单 / 移出关注名单 | **Mark / Unmark** | Follow / Unfollow, Add to List, Watch | 动词对，短。中文按钮写全，不用单独一个「关注」：在中文 TikTok 语境里它就是 follow |
 | 模型复核 | **model review**；设置行的字段标签写 **Model review** | AI review, Auto review | 「AI」不说明做了什么 |
 | 模型意见 | **Model: …**（如 “Model: agrees with rules”） | Review: …, AI says | 单独的 “Review: …” 会跟 “Comment Review: …” 挨在一起读不清 |
+| 同一人的前一条（随弹幕一起送去复核的上下文） | **the same viewer’s previous comment** | the last message, context, history | 设置行的隐私说明里用；弹幕在界面里一律叫 comment，看直播的人叫 viewer（同 Marked Viewers） |
 | 刷屏 | **flooding**；类别名 “Possible flooding” | spam | spam 带判断 |
 | 引流 | **redirect**；类别名 “Possible redirect (link)” 等 | promotion, traffic diversion, spam | 说的是「把人引去别处」这个动作 |
 | 本场重新启用 | **Turn Back On for This Session** | Re-enable, Restart | |

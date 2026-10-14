@@ -71,3 +71,16 @@ def test_in_the_start_panel_only_the_settings_row_carries_comment_review_ids():
               if ident.startswith("guard-") and "start-panel" in ancestors]
     assert inside, "设置行应该在开始面板的设置分组里"
     assert all(ident == "guard-card" or "guard-card" in parser.by_id[ident][2] for ident in inside), inside
+
+
+def test_the_privacy_line_tells_the_operator_about_everything_that_leaves_the_machine():
+    """选 Claude 之前操作员只看得到这一句：除了需要复核的那条弹幕，送去复核的还有同一个人 2 分钟内的前一条
+    （同样打码）。漏了这一半，同意就是在不知情的情况下给的。"""
+    import re
+    text = INDEX.read_text(encoding="utf-8")
+    block = re.search(r'<p id="guard-privacy"[^>]*?data-en="([^"]*)"[^>]*>(.*?)</p>', text, re.S)
+    assert block, "找不到 #guard-privacy"
+    en, zh = block.group(1), " ".join(block.group(2).split())
+    assert "previous comment" in en and "same viewer" in en and "masked" in en and "Anthropic" in en
+    assert "Names and accounts aren’t sent" in en
+    assert "前一条" in zh and "同一人" in zh and "打码" in zh and "Anthropic" in zh and "昵称和账号不发送" in zh

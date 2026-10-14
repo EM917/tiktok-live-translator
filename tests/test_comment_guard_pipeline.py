@@ -20,6 +20,7 @@ import pytest
 
 from app import comment_guard as cg
 from app import comment_marks
+from app import comment_review as cr
 from app import pipeline as pipeline_mod
 from app import resolver, settings
 from app.asr import ASRResult
@@ -60,6 +61,7 @@ def make_pipeline(monkeypatch, tmp_path, enabled=True, terms=()):
     p.alerts_enabled = True
     p.guard._mono = virtual_mono()                   # 预算不被慢机器上的紧循环触发（要测预算的用例自己换）
     p.guard._perf = virtual_perf()                   # 单条耗时也是假的：机器卡一下不会误触预算
+    p.guard.REVIEW_WINDOW_SEC = 0.0                  # 复核的攒批窗口（生产里 2 秒）：测试里不等
     return p, server
 
 
@@ -417,9 +419,10 @@ def test_the_recognition_and_detection_hot_path_never_references_the_guard():
 
 
 def test_guard_references_in_pipeline_py_are_only_at_the_allowed_places():
-    """守卫只出现在 on_items、开场/收尾、控制消息、统计循环这几处（spec I1）。"""
+    """守卫只出现在 on_items、开场/收尾、控制消息、统计循环这几处（spec I1）；PR-5 加了启动自检（run_selfcheck）：
+    自检里的「弹幕留意」一行要读守卫的状态，它不在识别、翻译、报警的路径上。"""
     tree = ast.parse((ROOT / "app/pipeline.py").read_text(encoding="utf-8"))
-    allowed = {"__init__", "handle_control", "_stats_loop", "_begin_session", "_end_session"}
+    allowed = {"__init__", "handle_control", "_stats_loop", "_begin_session", "_end_session", "run_selfcheck"}
     offenders = set()
     for f in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
         if "sleep_guard" in f.name:              # 防睡眠断言的 guard 是另一回事
@@ -551,7 +554,7 @@ def test_a_review_opinion_is_written_beside_the_verdict_and_never_changes_the_le
             sent.append(msg)
 
         out = rt.observe([item("q1", "Ana", "es falso", uid=UID)], now=1000.0)
-        assert out[0]["guard"]["lvl"] == "amber" and out[0]["guard"]["rv"] is None
+        assert out[0]["guard"]["lvl"] == "amber" and out[0]["guard"]["rv"] == "pending"      # 复核中…
         await rt.flush(broadcast)
         await asyncio.sleep(0.05)
         await rt.flush(broadcast)
@@ -750,7 +753,8 @@ def test_guard_set_persists_once_and_updates_the_state(monkeypatch, tmp_path):
     saved = settings.load_settings()["comment_guard"]
     assert saved == {"enabled": True, "backend": "claude", "weak": True}
     state = server.config["guard_state"]
-    assert state["enabled"] is True and state["backend"] == "claude" and state["status"] == "no_review"
+    # 选了 Claude 而这台机器上没有 Claude 密钥（conftest 清掉了环境变量，临时 settings.json 里也没有）：只用规则
+    assert state["enabled"] is True and state["backend"] == "claude" and state["status"] == "no_key"
     assert state["weak"] is True and state["rules"]["count"] > 0 and state["n_marked"] == 0
     configs = [m for m in server.of_type("config") if "guard_state" in m]
     assert len(configs) == 2 and configs[0]["guard_state"]["status"] == "rules"
@@ -1927,3 +1931,133 @@ def test_the_demo_leaves_no_temp_folder_behind_and_only_makes_one_when_the_guard
     run(scenario())
     assert len(made) == (1 if guard_on else 0)
     assert list(scratch.iterdir()) == []
+
+
+# ---- 模型复核（PR-5）接线：设置、密钥、识别健康探针、自检那一行 -----------------------------------------------------
+
+def test_choosing_claude_with_a_key_builds_the_reviewer_and_the_key_never_reaches_the_page(monkeypatch, tmp_path):
+    from app import comment_review as cr
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    key = "sk-ant-test-wiring-0123456789"
+
+    async def scenario():
+        await p.handle_control({"type": "guard_set", "backend": "claude"})
+        assert p.guard.reviewer is None and server.config["guard_state"]["status"] == "no_key"
+        await p.handle_control({"type": "guard_set", "key": key})            # 只补了密钥，选择没变
+        assert isinstance(p.guard.reviewer, cr.ClaudeReviewer)
+        assert server.config["guard_state"]["status"] == "claude"
+        await p.handle_control({"type": "guard_set", "backend": "none"})
+        assert p.guard.reviewer is None and server.config["guard_state"]["status"] == "rules"
+
+    run(scenario())
+    assert settings.load_settings()["api_keys"]["ANTHROPIC_API_KEY"] == key        # 和翻译引擎同一把密钥
+    assert key not in json.dumps(server.messages) and key not in json.dumps(server.config, default=str)
+    # 重启后：设置里选的是 none，密钥还在；再选 Claude 的话重启就能直接用
+    again, _ = make_pipeline(monkeypatch, tmp_path, enabled=None)
+    assert again.guard.cfg["backend"] == "none" and again.guard.reviewer is None
+    settings.save_setting("comment_guard", {"enabled": True, "backend": "claude", "weak": False})
+    third, _ = make_pipeline(monkeypatch, tmp_path, enabled=None)
+    assert isinstance(third.guard.reviewer, cr.ClaudeReviewer) and third.guard.state()["status"] == "claude"
+
+
+def test_the_health_probe_reads_the_live_backlog_and_whether_recognition_is_in_flight(monkeypatch, tmp_path):
+    p, _ = make_pipeline(monkeypatch, tmp_path)
+    assert p.guard._probe_health() == (0.0, False)
+    p.telemetry.audio_backlog_sec = 12.5
+    p._asr_inflight = time.monotonic()
+    assert p.guard._probe_health() == (12.5, True)
+
+
+def test_the_model_review_code_is_not_reachable_from_the_recognition_hot_path():
+    """I1 的补充：复核（comment_review）和守卫一样，不出现在识别、翻译、报警的热路径里。"""
+    tree = ast.parse((ROOT / "app" / "pipeline.py").read_text(encoding="utf-8"))
+    names = {"comment_review", "reviewer", "review_once", "_review_loop", "_queue_review", "tick_review"}
+    hot = {"asr_worker", "translation_worker", "_emit_original", "_translate_and_update"}
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in hot:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Attribute) and sub.attr in names or isinstance(sub, ast.Name) and sub.id in names:
+                    hits.append(node.name)
+    assert hits == []
+
+
+def test_run_selfcheck_adds_a_comment_review_row_that_is_never_worse_than_ok(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.guard.cfg["backend"] = "claude"                      # 选了 Claude 而没有密钥：这一行说清楚，但不变成警告
+
+    async def scenario():
+        await p.run_selfcheck()
+
+    run(scenario())
+    rows = {c["name"]: c for c in server.config["selfcheck"]["checks"]}
+    row = rows["弹幕留意"]
+    assert row["level"] == "ok" and "密钥" in row["detail"] and "规则" in row["detail"]
+
+
+# ---- 统计循环那一跳推进复核的状态（PR-5 复审）---------------------------------------------------------------------
+
+def test_the_guard_tick_moves_the_review_state_along_even_when_no_comment_arrives(monkeypatch, tmp_path):
+    """tick_review 只在 _guard_tick 里被调：识别落后后的恢复（回到 ok 满 30 秒）、限流冷却到期，都要在没有新弹幕
+    进来的时候让状态胶囊更新、审计写 resumed。把 _guard_tick 里 guard.tick_review() 摘掉，这里要红。"""
+    from tests.test_comment_review import KEY, Clock, Resp, Session, answer
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    clock = Clock()
+    p.guard._clock = clock                              # 复核后端在开场时拿这个钟
+    p.guard.cfg["backend"] = "claude"
+    backlog = [0.0]
+    p.guard.health_probe = lambda: (backlog[0], True)
+    answers = {"limit": False}
+
+    def responder(body, n):
+        if body is None:                                # 开场自检的探针（GET /v1/models/…）
+            return Resp(200, {})
+        return Resp(429, {}, headers={"Retry-After": "90"}) if answers["limit"] else answer(body)
+
+    session = Session(responder)
+
+    async def get_session():
+        return session
+
+    # 开场就会造后端、跑自检的探针：假会话要在 _begin_session 之前就接上，测试从不联网
+    monkeypatch.setattr(cr.ClaudeReviewer, "session", lambda self: get_session())
+
+    def shown():
+        return [m["guard_state"]["status"] for m in server.of_type("config") if "guard_state" in m][-1]
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        assert shown() == "claude" and session.posts == []
+        # 识别落后 12 秒：下一跳暂停
+        backlog[0] = 12.0
+        clock.advance(3)
+        await p._guard_tick()
+        assert shown() == "paused"
+        # 回到 ok：刚回来不恢复；满 30 秒的那一跳恢复，页面收到新状态——这中间没有任何一条新弹幕
+        backlog[0] = 0.0
+        clock.advance(3)
+        await p._guard_tick()
+        assert shown() == "paused"
+        clock.advance(31)
+        await p._guard_tick()
+        assert shown() == "claude"
+        # 被限流：冷却 90 秒；到期那一跳状态回到 claude
+        answers["limit"] = True
+        p.guard.observe([item("a1", "Ana", "es falso", uid=UID)], now=1000.0)
+        await p.guard.flush(server.broadcast)
+        await asyncio.sleep(0.05)
+        clock.advance(3)                                 # 状态消息至少隔 2 秒才发（STATE_MSG_GAP_SEC）
+        await p._guard_tick()
+        assert shown() == "cooldown" and len(session.posts) == 1
+        clock.advance(91)
+        await p._guard_tick()
+        assert shown() == "claude"
+        audit = p.audit
+        await p._end_session(p.audit, reason="user_stop")
+        return audit
+
+    audit = run(scenario())
+    gates = [(g["state"], g["reason"]) for g in of(audit_records(audit), "comment_guard_gate")]
+    assert gates == [("paused", "lagging"), ("resumed", "lagging"), ("paused", "rate_limit"), ("resumed", "rate_limit")]

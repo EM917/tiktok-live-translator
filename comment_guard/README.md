@@ -7,7 +7,8 @@
 > 当前状态：规则引擎、词表机制和界面都就位，**`comment_guard.enabled` 默认开**（只影响 `settings.json` 里没写过这个键的人，
 > 只用规则、不调模型）。弹幕读取协程先让守卫看一遍再显示，判定随 `comment` 消息的 `guard` 字段到达本机页面；关注名单按
 > 主播存在 `marked/`。红条档词表里没确认的词条写在 `[段名:pending]` 里：用户逐条确认之前，命中只出琥珀，不标红、不自动加入
-> 关注名单。模型复核（Claude Haiku 5.5）是后续的 PR：设置里能选，但在那之前选了也只用规则，状态行会这么写。
+> 关注名单。**模型复核**（Claude Haiku 5.5，云端，设置里选，默认「不用模型」）是规则之后的第二道：只给规则拿不准的弹幕补一句
+> 意见，能把琥珀升红、把 note/线索升成琥珀，**不能撤红、不能降级**；没有密钥、断网、被限流、识别落后时只用规则。见下面「模型复核」。
 
 ## 界面在哪
 
@@ -41,9 +42,10 @@ comment_guard/
     interact.txt         互动词、国家名、正向词簇、正向表情（刷屏豁免）
     cues.txt             负面线索（只决定送不送模型）
     thresholds.txt       阈值
+    prompt-v1.txt        模型复核的提示词（英文数据；改了升版本号，哈希写进审计）
   local/                 gitignored，用户自己编辑；目录不存在也行，程序不主动生成（设置里点「打开规则文件夹」才建）
   marked/<主播小写>.json  gitignored：关注名单（见下面「接线、开关和关注名单」）
-  bench/                 gitignored：本地模型实测记录（后续 PR）
+  bench/                 gitignored：本地模型实测记录（本地模型没有排期）
   retained/              gitignored：可选留存（后续 PR）
 ```
 
@@ -52,7 +54,7 @@ comment_guard/
 代码在 `app/pipeline_guard.py`（接线）和 `app/comment_marks.py`（关注名单的存储）。
 
 - **开关**：`settings.json` 里的 `comment_guard: {"enabled": true, "backend": "none", "weak": false}`，缺省就是开（PR-4 起；写过 `false` 的照旧关着）。
-  `backend` 只有 `none`（只用规则）和 `claude`（Claude Haiku 5.5，PR-5 才有实现；现在选了也只用规则）。
+  `backend` 只有 `none`（只用规则）和 `claude`（Claude Haiku 5.5，见下面「模型复核」；没有密钥时只用规则）。
   直播中不改：设置在待机时改、下一场生效。**应急总开关**：环境变量 `TLT_COMMENT_GUARD=off`（也认 `0` `false` `no`），
   不管设置里写什么都整体关掉，弹幕照常显示。关着的时候开场不读词表、不碰 `marked/`，`observe` 一次都不调用。
 - **一场的流程**：`_begin_session` 里载入词表、阈值、可信名单（`local/trusted/<主播>.txt`）和这个主播的关注名单；
@@ -62,7 +64,7 @@ comment_guard/
 - **消息**（只发本机页面，手机同看一律不发）：`comment.guard`（规则判定，随消息到）、`comment_guard`（标注变了才发，
   每个 cid 每秒至多 1 条）、`guard_event`（聚合后的事件，全局每秒至多 1 条）、`guard_mark`（名单增删）；
   `config` 里有 `guard_state`、`guard_events`（最多 50 条）、`guard_marked`（只放当前主播）。
-  页面发 `guard_set`（开关、模型复核选择、弱信号、Claude 密钥）、`guard_mark`（加入/移出；待机时只能移出）、`guard_clear_auto`（清空自动加入的）、`guard_dismiss`（忽略一个事件）、`guard_reenable`（熔断后本场重新启用，模型复核上线前不起作用）、`open_guard_dir`（打开规则文件夹）。
+  页面发 `guard_set`（开关、模型复核选择、弱信号、Claude 密钥）、`guard_mark`（加入/移出；待机时只能移出）、`guard_clear_auto`（清空自动加入的）、`guard_dismiss`（忽略一个事件）、`guard_reenable`（熔断后本场重新启用；Claude 后端不熔断，只在识别落后时暂停、自己恢复，所以现在什么都不做）、`open_guard_dir`（打开规则文件夹）。
 - **关注名单文件** `marked/<主播小写>.json`：`{"version": 1, "streamer": …, "viewers": {主键: {keys, nick, handle, aka,
   by, cat, first, last_seen, hits}}}`。`keys` 里任一命中就算同一个人；不存弹幕原文；`aka` 最多 3 个；每个主播最多
   500 人，满了先淘汰 `by=auto` 里 `last_seen` 最旧的，手动加入的不淘汰；`by=auto` 的人 30 天没再发言，下一场载入时
@@ -73,6 +75,43 @@ comment_guard/
   不写盘，提示里也这么说。
 - **审计**只记计数：`session_start.comment_guard`（开关、词表指纹、条数、体检警告、阈值）、`session_end.comment_guard`
   （按类别的红条/琥珀/note 计数、预算降级次数、自动/手动加入和移出的人数……）。弹幕原文、昵称、账号一律不进审计。
+
+## 模型复核（Claude Haiku 5.5）
+
+代码在 `app/comment_review.py`，提示词在 `defaults/prompt-v1.txt`（英文、固定不变；改了要升版本号，哈希写进 `session_start.comment_guard.prompt_hash`）。
+设置 → 弹幕留意 → 模型复核：**不用模型（默认）** / **Claude Haiku 5.5（云端）**。没有本地模型，直播时也不会装任何模型。
+
+- **送什么、不送什么**：只送规则筛出来的灰区——确认型（琥珀：没问号的短断言、说自己的遭遇、转述、同一人累计）和升级型
+  （note / 只命中负面线索的弹幕）。明确的红条、刷屏、链接和电话、互动词、主播本人、房管、可信名单里的人都不送。
+  同一句话（送出去的打码文本、规则提示和前一条一模一样，问号、表情、大小写也算）30 分钟内只问一次——不按 fold 之后的文本
+  认「同一句」：`¿es falso?` 是提问、`es falso 🤡` 是断言，不能共用一个判定；同一个人 30 秒内最多送 1 条；一次最多 8 条；每分钟至多 10 次、每场至多
+  600 次；队列 40 条，满了先丢最旧的线索档。
+- **打码后才出本机**：电话、数字合计 7 位以上的串（不管上下文；数字之间隔着空白、标点或符号，如 `: _ | * ~ +`，都算）、西语数字读法、链接（含 `punto com`、`[.]`、`wa . me`
+  这类绕写）、邮箱、`@账号` 和 `ig: 名字` 一律换成 `#NUM#`、`[link]`、`@usuario`，`<` `>` 换成 `‹` `›`，截到 280 字。
+  **不发**昵称、uid、handle、主播名、时间戳、主播字幕。上下文只带同一个人 2 分钟内的前一条（同样打码）。
+  打码之后还认得出链接、电话或账号的，不送。
+- **合并只加不减**（影子期）：确认型琥珀 + 模型判「攻击」且有把握 → 升红，写「模型意见：同意规则」；非攻击 → 琥珀保留，
+  写「模型意见：提问 / 客诉 / 友好 / 未见攻击」；拿不准 → 写「拿不准」。升级型 note / 线索 + 模型判攻击且有把握 → 升为琥珀
+  （「模型标出」）。**模型升出来的红条不自动加入关注名单**（自动加入只认规则的明确命中）。命中还没确认的词条（`pending`）
+  和第一人称自指（`self`）的琥珀只写模型意见，不升红：没确认的词条不被模型绕过。证据片段要是打码文本的子串，否则清空
+  （判定保留）；界面只显示类别名和从原文里截出的证据，模型自己写的句子一律不上界面。
+- **闸门**：识别积压 >= 10 秒（健康等级不是 ok）暂停送审，回到 ok 满 30 秒自动恢复；没密钥（`no_key`）、密钥被拒
+  （`key_rejected`，换了密钥才再试）、模型找不到（`model_missing`，本场）、被限流（`cooldown`，按 `retry-after`，最长 300 秒）、
+  连不上（`offline`，连续 3 次暂停 120 秒）、请求被拒（`invalid`，连续 3 次本场停用）、复核提示词文件读不到
+  （`prompt_missing`，和没密钥分开说）时只用规则。规则永远照常。收尾时还排着、还在问模型的弹幕记成「未复核」，
+  算进 `session_end.comment_guard.unreviewed`。
+- **请求**：裸 aiohttp 直发 `https://api.anthropic.com/v1/messages`（不读 `ANTHROPIC_BASE_URL`），模型 `claude-haiku-5-5`，
+  关思考、`effort: low`、结构化输出（`output_config.format`）、`cache_control` 写在系统提示上；没有 temperature / top_p / top_k /
+  fallbacks / 预填。密钥和翻译引擎共用（`ANTHROPIC_API_KEY` 环境变量优先，其次设置里的 `api_keys`）。单次 8 秒时限。
+- **审计**（只有计数和代码，没有弹幕内容）：`comment_guard_review`（每次调用一条：`n`、`ms`、`outcome`、token 数……）、
+  `comment_guard_gate`（暂停 / 恢复 / 停用的转折）、`session_start.comment_guard.{model, prompt_hash}`、
+  `session_end.comment_guard.{reviews, unreviewed, review_invalid, review_agree, review_disagree, review_promoted}`
+  （`review_invalid` 只数模型回应不合格和请求被拒一类；限流、密钥被拒、模型找不到不算，看 `comment_guard_review.outcome`）。
+- **评估**：`tools/guard_review_eval.py claude tests/fixtures/comment_guard/review_cases.jsonl out.json`——约 150 条虚构弹幕 ×
+  3 遍打真的接口，只测格式合格率、几遍一致率、P50 / P95 延迟、拒答率和花费，**不主张准确率**。直播转写进行中拒绝运行；
+  花费有硬上限（默认 $0.10，每次调用前按最坏情况算）；价格表只有 Haiku 5.5 的，`TLT_GUARD_CLAUDE_MODEL` 换了别的模型就拒绝运行；
+  延迟统计包含超时的那几次，格式合格率只算拿到回应的调用（超时、HTTP 错误另报）；密钥不打印、不写报告。
+  准确率要靠真实弹幕标注（后续的留存功能）。
 
 ## 词表格式
 
@@ -246,7 +285,7 @@ pestanas ejemplo
  "why": ["insult/strong:hijueputa"],        # 命中的词表条目，是我们的数据
  "tier": "red" | "clue" | "struct" | None,  # 来自红条档词表、线索档，还是结构信号（链接/电话/刷屏）
  "tags": [...],
- "route": None | "confirm" | "upgrade"}     # 给后续的模型复核看的路由
+ "route": None | "confirm" | "upgrade"}     # 给模型复核看的路由
 ```
 
 - **alert** 是红条；**amber** 是规则自己拿不准的（含命中了还没确认的红条档词条：`amb == "pending"`），
@@ -284,3 +323,5 @@ pestanas ejemplo
 - 程序对 TikTok 只读：不删弹幕、不禁言、不拉黑。
 - 不改 `banned_terms.txt`、`app/detector.py`；违禁词报警的任何行为都不受这里影响。
 - 弹幕原文、昵称、账号不进审计。
+- 手机同看一律没有：标红、顶部条、关注名单、模型意见都不发手机，复核的结果也只回到中控电脑。
+- 模型复核不撤红、不降级、不自动加人，也不会因为模型说「没问题」就把规则标出来的东西藏起来。

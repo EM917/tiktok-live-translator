@@ -34,6 +34,20 @@ def _comment_guard_emergency_switch_is_not_inherited(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_claude_key_is_inherited(monkeypatch, tmp_path_factory):
+    """开发机上设过 ANTHROPIC_API_KEY、或者在界面里存过 Claude 密钥（settings.json 的 api_keys）的话，选了 Claude
+    的用例会造出真的复核后端，探针还会带着真密钥去联网。api_key() 先看环境变量、再看 settings.json，所以两处都要
+    隔开：环境变量删掉，SETTINGS_FILE 指到一个空的临时目录。要密钥的用例自己 setenv，并换掉发请求的那一层
+    （tests/test_comment_review.py 的假 HTTP），测试从不联网；要读写设置文件的用例自己再 monkeypatch SETTINGS_FILE
+    （它们本来就这么做）。"""
+    from app import settings
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("TLT_GUARD_CLAUDE_MODEL", raising=False)
+    monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path_factory.mktemp("no-saved-keys") / "settings.json")
+
+
+@pytest.fixture(autouse=True)
 def _reset_active_glossary(monkeypatch):
     """会话词表的模块级全局态不能在测试之间泄漏。
 

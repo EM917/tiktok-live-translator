@@ -6,8 +6,9 @@
 **对识别零影响靠结构保证，不靠运气**（spec I1/I2）：守卫只出现在这些地方——`on_items`（弹幕读取
 协程）、开场/收尾（`_begin_session` / `_end_session`）、控制消息、统计循环。识别、违禁词检测、
 审计的热路径（`asr_worker`、`translation_worker`、`_emit_original`、`_translate_and_update`）里
-没有一处引用守卫，tests/test_comment_guard_pipeline.py 用 AST 钉着这一条。复核（PR-5 的 Claude）
-是守卫自己的 asyncio 任务，惰性启动、永不向外抛异常；`flush` 只往队列里放候选、从不等它。
+没有一处引用守卫，tests/test_comment_guard_pipeline.py 用 AST 钉着这一条。复核（PR-5 的 Claude Haiku 5.5，
+app/comment_review.py）是守卫自己的 asyncio 任务，惰性启动、永不向外抛异常；`flush` 只往队列里放候选、从不等它。
+复核只加不减（影子期）：能把琥珀升红、把 note/线索升成琥珀，不能撤红；模型升出来的红条不自动加入关注名单。
 
 **永不抛、永不阻塞**（I4）：`observe()` 逐条 try/except，出任何错都把这一批原样交给 `accept`；
 `flush()` 同理。守卫不碰通知和声音（I5）：这个模块不 import alert_notify / window_attention。
@@ -30,10 +31,11 @@ import os
 import shutil
 import tempfile
 import time
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from pathlib import Path
 
 from . import comment_guard as cg
+from . import comment_review as cr
 from .comment_marks import MAX_VIEWERS, SESSION_PREFIX, MarkStore, clean_key
 from .comments import CommentTranslator, account_fields
 from .i18n import L
@@ -42,7 +44,8 @@ from .settings import load_settings
 ENV_SWITCH = "TLT_COMMENT_GUARD"            # =off：应急总开关，界面坏了也能整体关掉
 SETTINGS_KEY = "comment_guard"              # settings.json 里的键：{enabled, backend, weak}
 BACKENDS = ("none", "claude")               # 用户决定 6：直播时只用 Claude Haiku 5.5，没有本地模型
-# guard_reenable：熔断后「本场重新启用」（模型复核是 PR-5，现在没有熔断，收到了也只是一句空话）；
+# guard_reenable：熔断后「本场重新启用」（Claude 后端不占显存、不熔断，只有识别落后时的暂停，会自己恢复；
+# 这条消息留着给以后的本地后端，现在收到了什么都不做）；
 # guard_clear_auto：设置行里的「清空自动加入的」；打开规则文件夹是 open_guard_dir，在 pipeline.handle_control
 GUARD_CONTROL_TYPES = frozenset(("guard_set", "guard_mark", "guard_dismiss", "guard_reenable",
                                  "guard_clear_auto"))
@@ -138,9 +141,10 @@ class GuardRuntime:
     ACCOUNTS_MAX = 500
     MAX_NICK = 64
     SAMPLE_TEXT = 120
-    REVIEW_QUEUE_MAX = 50
-    REVIEW_BATCH = 8
+    REVIEW_WINDOW_SEC = 2.0         # 攒批窗口：第一条候选进队后等这么久再一起送（凑满一批就不等）
     STOP_REVIEW_WAIT_SEC = 1.0      # 收尾时取消复核任务，最多等它这么久
+    PREV_TEXT = 300                 # 同一个人的前一条弹幕，留这么多字（送审时才打码）
+    PREV_USERS = 500
 
     def __init__(self, clock=time.time, mono=time.monotonic, marks=None, perf=time.perf_counter):
         self._clock = clock
@@ -148,7 +152,9 @@ class GuardRuntime:
         self._perf = perf               # 量单条判定耗时的时钟；测试里换成假的，机器卡一下不会误触预算
         self.cfg = normalize_settings(None)
         self.marks = marks if marks is not None else MarkStore(clock=clock)
-        self.reviewer = None            # PR-5 的 ClaudeReviewer 挂在这里；PR-3 没有，只用规则
+        self.reviewer = None            # 复核后端（comment_review.ClaudeReviewer）；None = 只用规则
+        self.policy = cr.ReviewPolicy()     # 复核的限频、缓存、识别健康闸（纯逻辑，时钟由这里传）
+        self.health_probe = None        # () -> (识别积压秒数, 识别是否在途)；Pipeline 在 _init_comment_guard 里接上
         self.enabled = False            # observe 看这个：bind 之后才为真
         self.audit = None               # 本场自己的 audit（my_audit）
         self.rules = None
@@ -171,6 +177,7 @@ class GuardRuntime:
         self._flush_lock_loop = None
         self._review_task = None
         self._review_event = None
+        self._gate_seen = None          # 上次写进审计的复核闸门状态（(state, reason) 或 None），转折才再写
         self._reset_session()
 
     # ------------------------------------------------------------------------------------
@@ -182,19 +189,34 @@ class GuardRuntime:
         return self.cfg["enabled"] and not env_disabled()
 
     def status_code(self):
-        """config.guard_state.status：只发代码，文案在前端。这个版本还没有复核后端（PR-5 才有）：选了 Claude
-        也只用规则，状态写 no_review（这个版本还没有模型复核，只用规则），不假装在复核，也不说成缺了什么组件——
-        那是操作员做不了的事。复核接上之后，没有后端才是 no_sdk / no_key 等（spec §9）。"""
+        """config.guard_state.status：只发代码，文案在前端。选了 Claude：没有密钥 no_key；识别落后时 paused；
+        后端自己的状态（cooldown / key_rejected / model_missing / offline / invalid，见 ClaudeReviewer.status）；
+        其余 claude。选「不用模型」是 rules。"""
+        return self._status()[0]
+
+    def _status(self):
+        """(状态代码, 要并进 guard_state 的附带数字)。附带的键只在对应状态下才有：lag_sec（paused）、
+        http（key_rejected）、wait_min（cooldown），平时 guard_state 的键集不变。"""
         if env_disabled():
-            return "env_off"
+            return "env_off", {}
         if not self.effective_enabled():
-            return "off"
-        if self.cfg["backend"] == "claude":
-            return "no_review" if self.reviewer is None else "claude"
-        return "rules"
+            return "off", {}
+        if self.cfg["backend"] != "claude":
+            return "rules", {}
+        reviewer = self.reviewer
+        if reviewer is None:
+            return "no_key", {}
+        if self.policy.paused:
+            return "paused", {"lag_sec": int(round(self.policy.lag_sec))}
+        status = getattr(reviewer, "status", None)
+        if status is not None:
+            code, extra = status(self._clock())
+            if code != "claude":
+                return code, extra
+        return "claude", {}
 
     def state(self):
-        status = self.status_code()
+        status, extra = self._status()
         enabled = self.effective_enabled()
         if (status, enabled) != self._last_status:
             self._last_status = (status, enabled)
@@ -204,12 +226,14 @@ class GuardRuntime:
             rules = {"count": self.rules.count,
                      "warnings": sum(w.get("n", 1) if w.get("reason") == "more" else 1
                                      for w in self.rules.warnings)}
-        return {"enabled": enabled, "backend": self.cfg["backend"], "status": status,
-                "since": self._since, "trip": None, "rules": rules,
-                "n_marked": len(self.marks), "unreviewed": self.unreviewed,
-                "weak": self.cfg["weak"],
-                # 设置行里「关注名单 · 主播」写的是哪个主播：待机时就是上一场载入的那份；关着的那一场没有名单，空串
-                "streamer": self.marks.streamer or ""}
+        out = {"enabled": enabled, "backend": self.cfg["backend"], "status": status,
+               "since": self._since, "trip": None, "rules": rules,
+               "n_marked": len(self.marks), "unreviewed": self.unreviewed,
+               "weak": self.cfg["weak"],
+               # 设置行里「关注名单 · 主播」写的是哪个主播：待机时就是上一场载入的那份；关着的那一场没有名单，空串
+               "streamer": self.marks.streamer or ""}
+        out.update(extra)
+        return out
 
     def preview_rules(self):
         """开着但还没开播时，设置行也要能显示「规则 N 条已生效」。同步、毫秒级；开场仍会重新载入。"""
@@ -244,7 +268,14 @@ class GuardRuntime:
         self._accounts = OrderedDict()       # 账号键 -> 昵称、sec、handle：加入名单时补全
         self._state_dirty = False
         self._last_state_msg = float("-inf")
-        self._review_q = deque(maxlen=self.REVIEW_QUEUE_MAX)
+        self._review_q = cr.ReviewQueue(self.policy.QUEUE_MAX)
+        self._inflight = []                  # 正在问模型的那一批候选（收尾时还没回来的，要记成「未复核」）
+        self.policy.reset()
+        self._prev = OrderedDict()           # 账号键 -> (时刻, 上一条弹幕原文)：送审时带同一个人的前一条做上下文
+        self._gate_seen = None
+        self.reviews = self.review_invalid = self.review_agree = 0
+        self.review_disagree = {}
+        self.review_promoted = {"amber_to_red": 0, "note_to_amber": 0}
         self._rules_notified = None
         self._marks_fail_told = False
 
@@ -254,6 +285,7 @@ class GuardRuntime:
         self._ready = False
         self._cancel_flush_timer()
         await self._stop_review()
+        await self._close_reviewer()
         await self.marks.flush_now()        # 待机时在设置行里改过、当时没写成的，换场前再试一次，不让载入把它丢掉
         self._open = False
         self.audit = None
@@ -279,6 +311,9 @@ class GuardRuntime:
                     info["env_off"] = True
                 return info
             loop = asyncio.get_running_loop()
+            self.configure_reviewer()
+            if self.reviewer is not None and hasattr(self.reviewer, "new_session"):
+                self.reviewer.new_session()
             self.rules = await loop.run_in_executor(None, cg.load_rules)
             trusted = await loop.run_in_executor(None, cg.load_trusted, self.streamer)
             code = await self.marks.load(self.streamer)
@@ -326,6 +361,9 @@ class GuardRuntime:
             self._cancel_flush_timer()
             await self._stop_review()
             if was_on and self._is_mine(token, owner_audit):
+                record = self._session_end_record()     # 收尾时还排着、还在问的候选这时已记成「未复核」
+            await self._close_reviewer()
+            if was_on and self._is_mine(token, owner_audit):
                 if broadcast is not None:
                     await self.flush(broadcast, final=True, token=token)
                 if self._is_mine(token, owner_audit):
@@ -360,18 +398,25 @@ class GuardRuntime:
     def _session_start_record(self):
         rules = self.rules
         keep = ("src", "file", "section", "line", "reason", "n", "by_reason")
-        return {"enabled": True, "backend": self.cfg["backend"], "model": None,
+        model = prompt_hash = None
+        if self.cfg["backend"] == "claude":
+            # 选了 Claude：记下打算用的模型和提示词指纹（没有密钥时后端是 None，照样记，事后答得出「当时用的哪一版」）
+            reviewer = self.reviewer
+            model = getattr(reviewer, "model", None) or cr.guard_model()
+            prompt_hash = getattr(reviewer, "prompt_hash", None) or cr.load_prompt()[1]
+        return {"enabled": True, "backend": self.cfg["backend"], "model": model,
                 "rules_hash": rules.hash, "rules_count": rules.count,
                 "rules_pending": rules.pending_count,
                 "warnings": [{k: w[k] for k in keep if k in w} for w in rules.warnings],
-                "thresholds": dict(rules.thresholds), "prompt_hash": None, "bench_pass_hash": None}
+                "thresholds": dict(rules.thresholds), "prompt_hash": prompt_hash, "bench_pass_hash": None}
 
     def _session_end_record(self):
         return {"counts": {c: dict(v) for c, v in sorted(self.counts.items())},
                 "amber_by_reason": dict(sorted(self.amber_by_reason.items())),
                 "observed": self.observed,
-                "reviews": 0, "unreviewed": self.unreviewed, "review_invalid": 0, "review_agree": 0,
-                "review_disagree": {}, "review_promoted": {"amber_to_red": 0, "note_to_amber": 0},
+                "reviews": self.reviews, "unreviewed": self.unreviewed, "review_invalid": self.review_invalid,
+                "review_agree": self.review_agree, "review_disagree": dict(sorted(self.review_disagree.items())),
+                "review_promoted": dict(self.review_promoted),
                 "trips": 0, "budget_trips": self.budget.trips if self.budget else 0,
                 "observe_ms_max": round(self.observe_ms_max, 1),
                 "marked_auto": self.marked_auto, "marked_manual": self.marked_manual,
@@ -426,6 +471,10 @@ class GuardRuntime:
             self.observe_ms_max = ms
         if "dup_id" in r["tags"]:
             return item                      # 连接重放的历史评论：accept 也会按 id 丢掉
+        try:
+            prev_text = self._take_prev(ukey, text, now)
+        except Exception:
+            prev_text = None
         self.observed += 1
         if ukey:
             self._remember_account(ukey, nick, sec, handle)
@@ -478,8 +527,27 @@ class GuardRuntime:
                     self._ann[display_cid] = guard
                     self._pending_cg[display_cid] = guard
         if r["route"]:
-            self._queue_review(cid, r["route"], text, now)
+            try:
+                self._queue_review(guard, r, cid, display_cid, text, now, ukey, sample, prev_text)
+            except Exception as exc:
+                # 复核这一路出任何错，都不能让规则已经做好的标注丢掉（外层的 except 会把这条原样放行，
+                # 红条就没了）：只记一笔
+                self.errors += 1
+                print("[弹幕] 复核候选出错：{}".format(exc))
         return new
+
+    def _take_prev(self, ukey, text, now):
+        """同一个人 2 分钟内的前一条弹幕原文（送审时的上下文，打码在送审时做），并记下这一条给下一次用。"""
+        if not ukey:
+            return None
+        old = self._prev.get(ukey)
+        self._prev[ukey] = (now, text[:self.PREV_TEXT])
+        self._prev.move_to_end(ukey)
+        while len(self._prev) > self.PREV_USERS:
+            self._prev.popitem(last=False)
+        if old is not None and 0 <= now - old[0] <= cr.PREV_MAX_SEC:
+            return old[1]
+        return None
 
     def _remember_account(self, ukey, nick, sec, handle):
         self._accounts[ukey] = {"nick": nick, "sec": sec, "handle": handle}
@@ -568,7 +636,8 @@ class GuardRuntime:
         return len(gone)
 
     def reenable(self):
-        """熔断后的「本场重新启用」。模型复核（PR-5）才会熔断；现在没有熔断，什么都不做。"""
+        """熔断后的「本场重新启用」。Claude 后端不熔断（它不占显存，识别落后只暂停、自己恢复），所以现在没有
+        东西可重新启用，什么都不做；消息和接口留着，给以后有会熔断的后端用。"""
         return False
 
     def dismiss(self, ev_id):
@@ -649,14 +718,135 @@ class GuardRuntime:
         return {"user": nick, "uid": ukey}
 
     # ------------------------------------------------------------------------------------
-    # 复核（PR-5 接 Claude）：守卫自己的任务，flush 只往队列里放候选、从不等它（I2）
+    # 复核（PR-5，Claude Haiku 5.5）：守卫自己的任务，flush 只往队列里放候选、从不等它（I2）
     # ------------------------------------------------------------------------------------
-    def _queue_review(self, cid, route, text, now):
-        if self.reviewer is None:
-            self.unreviewed += 1
+    def configure_reviewer(self):
+        """按设置和当前密钥备好复核后端：选了 Claude 且有密钥就造一个（同一把密钥沿用，它记着这把密钥被拒过），
+        没有密钥就是 None（状态 no_key）。选「不用模型」时撤掉自己造的；外面塞进来的（测试里的替身）不碰。"""
+        mine = isinstance(self.reviewer, cr.ClaudeReviewer)
+        if self.cfg["backend"] != "claude":
+            if mine:
+                self.reviewer = None
             return
-        self._review_q.append({"cid": cid, "route": route, "text": text[:CommentTranslator.MAX_TEXT],
-                               "ts": now, "token": self._token})
+        if self.reviewer is not None and not mine:
+            return
+        self.reviewer = cr.make_reviewer(clock=self._clock, existing=self.reviewer if mine else None)
+
+    async def _close_reviewer(self):
+        close = getattr(self.reviewer, "close", None)
+        if close is not None:
+            try:
+                await asyncio.wait_for(close(), timeout=2.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+        self.policy.paused = False          # 这一场结束了，暂停状态不留到待机界面上
+
+    def _probe_health(self):
+        """(识别积压秒数, 识别是否在途)。探针没接上、或出错，就当识别没有积压。"""
+        probe = self.health_probe
+        if probe is None:
+            return 0.0, False
+        try:
+            backlog, inflight = probe()
+            return float(backlog or 0.0), bool(inflight)
+        except Exception:
+            return 0.0, False
+
+    def _poll_health(self, t):
+        """识别落后时暂停送审，回到 ok 满 30 秒再恢复（spec §5.8 云端）。规则照常。"""
+        if self.reviewer is None or self.cfg["backend"] != "claude":
+            return
+        backlog, _ = self._probe_health()
+        if self.policy.update_health(t, backlog):
+            self._state_dirty = True
+        self._sync_gate(t, backlog)
+
+    def _gate_label(self, t):
+        """现在复核被什么挡着：(审计里的 state, reason)，没挡着是 None。"""
+        if self.policy.paused:
+            return "paused", "lagging"
+        blocked = getattr(self.reviewer, "blocked", None)
+        code = blocked(t) if blocked is not None else None
+        return {None: None, "cooldown": ("paused", "rate_limit"), "offline": ("paused", "offline"),
+                "key_rejected": ("locked", "key_rejected"), "model_missing": ("locked", "model_missing"),
+                "prompt_missing": ("locked", "prompt_missing"),
+                "invalid": ("locked", "invalid")}.get(code, ("paused", code))
+
+    def _sync_gate(self, t, backlog=None):
+        """闸门状态转折才写一条审计 comment_guard_gate，并让页面上的状态胶囊更新。"""
+        label = self._gate_label(t)
+        if label == self._gate_seen:
+            return
+        before, self._gate_seen = self._gate_seen, label
+        self._state_dirty = True
+        if backlog is None:
+            backlog = self._probe_health()[0]
+        if label is None:
+            self._audit("comment_guard_gate", "claude", "resumed", reason=before[1], backlog_sec=round(backlog, 1))
+        else:
+            self._audit("comment_guard_gate", "claude", label[0], reason=label[1], backlog_sec=round(backlog, 1))
+
+    def _audit(self, method, *args, **kwargs):
+        """往本场自己的审计里写一条（my_audit）。审计出错不影响守卫。"""
+        fn = getattr(self.audit, method, None)
+        if fn is None:
+            return
+        try:
+            fn(*args, **kwargs)
+        except Exception as exc:
+            print("[弹幕] 复核审计写入出错：{}".format(exc))
+
+    def _queue_review(self, guard, r, cid, disp, text, now, ukey, sample, prev):
+        """规则层给了 route 的候选：放进队列（或记「未复核」）。guard 是刚给这条弹幕做的标注（note 以上才有），
+        在 comment 消息发出去之前就地改它的 rv，不用再发一条消息。"""
+        prio = cr.priority(r)
+        if prio is None:
+            return
+        entry = {"cid": cid, "disp": disp, "text": text, "prev": prev, "ts": now, "queued": self._clock(),
+                 "token": self._token, "prio": prio, "route": r["route"], "lvl": r["lvl"], "amb": r["amb"],
+                 "cats": list(r["cats"]), "sub": r["sub"], "tier": r["tier"], "why": list(r["why"])[:8],
+                 "hint": cr.hint_of(r["cats"], r["sub"]), "flags": cr.flags_of(r), "sample": sample, "ukey": ukey}
+        if self.reviewer is None:
+            self._skip_review(entry, fresh=guard)
+            return
+        self._poll_health(entry["queued"])
+        if self._gate_label(entry["queued"]) is not None or not self.policy.user_allowed(ukey, now):
+            self._skip_review(entry, fresh=guard)
+            return
+        evicted = self._review_q.push(entry)
+        if guard is not None and guard.get("lvl") == "amber" and all(e is not entry for e in evicted):
+            guard["rv"] = "pending"                 # 复核中…（随 comment 消息一起到，不另发）
+        for gone in evicted:
+            self._skip_review(gone, fresh=guard if gone is entry else None)
+
+    def tick_review(self):
+        """统计循环每一跳调一次：识别健康闸、冷却到期这些随时间变的状态，没有候选进来时也要更新。"""
+        if self.enabled and self.reviewer is not None and self.cfg["backend"] == "claude":
+            t = self._clock()
+            self._poll_health(t)
+            self._sync_gate(t)
+
+    def _skip_review(self, entry, fresh=None):
+        """这条候选没能得到模型意见：计数；选了 Claude 的话，显示出来的那一条写「未经模型复核」。
+        选「不用模型」的人不需要被提醒没复核（rv 不动）。fresh 是刚做的标注（还没发出去）：就地改，不另发。"""
+        self.unreviewed += 1
+        if self.cfg["backend"] != "claude":
+            return
+        self._state_dirty = True
+        if fresh is not None:
+            if fresh.get("lvl") in ("alert", "amber"):
+                fresh["rv"] = "skipped"
+            return
+        cur = self._ann.get(entry["disp"])
+        if cur is not None and cur.get("lvl") in ("alert", "amber") and cur.get("rv") in (None, "pending"):
+            self._set_ann(entry["disp"], dict(cur, rv="skipped"))
+
+    def _set_ann(self, tid, guard):
+        self._ann[tid] = guard
+        self._ann.move_to_end(tid)
+        self._pending_cg[tid] = guard
 
     def _ensure_review_task(self):
         if self.reviewer is None or not self._review_q:
@@ -667,42 +857,246 @@ class GuardRuntime:
         self._review_event.set()
 
     async def _stop_review(self):
-        """取消复核任务并等它真的收掉（最多 1 秒）：永不返回的复核不能挂住收尾，也不留下悬着的任务。"""
+        """取消复核任务并等它真的收掉（最多 1 秒）：永不返回的复核不能挂住收尾，也不留下悬着的任务。
+        还排在队里的、正在问模型还没回来的候选一律记成「未复核」（计数 + 弹幕上的「模型复核中…」改成
+        「未经模型复核」）：没拿到模型意见的弹幕，合规计数不能少报。"""
         task = self._review_task
         self._review_task = None
-        self._review_q.clear()
+        for entry in self._review_q.drain():
+            self._skip_review(entry)
         if task is not None and not task.done():
             task.cancel()
             await asyncio.wait([task], timeout=self.STOP_REVIEW_WAIT_SEC)
+        # 任务按时收掉的话，它自己已经记过（_skip_inflight）；没按时收掉（卡住、吞了取消）的，这里替它记
+        batch, self._inflight = self._inflight, []
+        for entry in batch:
+            self._skip_review(entry)
+
+    def _skip_inflight(self, batch):
+        """正在问的这一批没有结果：记成「未复核」。只记一次（_stop_review 先替它记过的，这里不再重复）。"""
+        if self._inflight is not batch:
+            return
+        self._inflight = []
+        for entry in batch:
+            self._skip_review(entry)
 
     async def _review_loop(self):
-        """惰性启动，永不向外抛异常。结果回来时如果已经换场就丢掉；影子期只往旁边写一句模型意见
-        （rv），不改红条/琥珀（spec §5.6 的子集，升降级放到 PR-5）。"""
+        """惰性启动，永不向外抛异常。攒 2 秒（或凑满一批）再一起送；结果回来时如果已经换场就丢掉。"""
         while True:
             try:
                 while not self._review_q:
                     self._review_event.clear()
                     await self._review_event.wait()
-                batch = [self._review_q.popleft() for _ in range(min(self.REVIEW_BATCH, len(self._review_q)))]
-                token = self._token
-                results = await self.reviewer.review(batch)
-                if token != self._token or not isinstance(results, dict):
-                    continue
-                for cid, label in results.items():
-                    self._apply_review(cid, label)
+                if self.REVIEW_WINDOW_SEC > 0 and len(self._review_q) < self.policy.batch_limit:
+                    await asyncio.sleep(self.REVIEW_WINDOW_SEC)
+                await self._review_once()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 print("[弹幕] 复核出错：{}".format(exc))
                 await asyncio.sleep(1.0)
 
+    async def _take_batch(self, t):
+        """从队列里取一批要问模型的候选。排太久的、打码之后没什么可判的、同句缓存里已经有答案的，当场处理；
+        送出去的内容一模一样的（cr.review_key：打码文本、hint、flags、前一条都相同）只问一次，其余的跟着用这一条的答案。
+        返回 (要问的, {cid: 跟着用答案的候选})。
+        每条之间让出事件循环：打码一条约 1 毫秒，队列满时一口气几十条，别占着循环（音频读取也在上面）。"""
+        leaders, followers, seen = [], {}, {}
+        try:
+            while self._review_q and len(leaders) < self.policy.batch_limit:
+                await asyncio.sleep(0)
+                entry = self._review_q.pop_first()
+                if entry is None:
+                    break
+                if entry["token"] != self._token:
+                    continue
+                if t - entry["queued"] > self.policy.MAX_AGE_SEC:
+                    self._skip_review(entry)
+                    continue
+                masked = cr.mask(entry["text"])
+                if not cr.reviewable(masked):
+                    self._skip_review(entry)
+                    continue
+                entry["masked"] = masked
+                entry["prev_masked"] = cr.mask(entry["prev"]) if entry.get("prev") else None
+                # 键 = 模型看到的一切（见 cr.review_key），不是 fold 之后的文本：问句和断言不能共用一个判定
+                entry["key"] = key = cr.review_key(masked, entry["hint"], entry["flags"], entry["prev_masked"])
+                cached = self.policy.cache_get(key, t)
+                if cached is not None:
+                    self._apply_verdict(entry, cached)
+                    continue
+                if key in seen:
+                    followers.setdefault(seen[key]["cid"], []).append(entry)
+                    continue
+                seen[key] = entry
+                leaders.append(entry)
+        except asyncio.CancelledError:
+            # 收尾时取消：已经从队里取出来、还没送出去的，记成「未复核」（让出事件循环只发生在循环开头，
+            # 手里没有拿着一半的候选）
+            for entry in leaders + [e for group in followers.values() for e in group]:
+                self._skip_review(entry)
+            raise
+        return leaders, followers
+
+    async def _review_once(self):
+        t = self._clock()
+        self._poll_health(t)
+        leaders, followers = await self._take_batch(t)
+        if not leaders:
+            return
+        everyone = leaders + [e for group in followers.values() for e in group]
+        if self._gate_label(t) is not None or not self.policy.call_allowed(t):
+            for entry in everyone:
+                self._skip_review(entry)
+            for entry in self._review_q.drain():
+                self._skip_review(entry)
+            return
+        self.policy.note_call(t)
+        token = self._token
+        waited_ms = int((t - min(e["queued"] for e in leaders)) * 1000)
+        t0 = time.perf_counter()
+        self._inflight = everyone
+        try:
+            result = await self.reviewer.review(leaders)
+        except asyncio.CancelledError:
+            if token == self._token:
+                self._audit_review(None, len(leaders), int((time.perf_counter() - t0) * 1000), "cancelled", waited_ms)
+                self._skip_inflight(everyone)       # 收尾 / 换场取消：这一批没有拿到模型意见
+            raise
+        except Exception as exc:
+            # 后端自己的 bug（真后端永不抛）：这一批记「未复核」，别让「复核中…」一直挂在界面上
+            print("[弹幕] 复核后端出错：{}".format(exc))
+            if token == self._token:
+                self._skip_inflight(everyone)
+            return
+        finally:
+            # 回来了（或出错了）：不再是「在途」。_inflight 已经不是这一批：收尾的 _stop_review 等不及（后端没理会
+            # 取消）已经替它们记过「未复核」，晚到的结果就不再算数，免得同一条既算未复核又算已复核
+            still_mine = self._inflight is everyone
+            if still_mine:
+                self._inflight = []
+        if token != self._token or not still_mine:
+            return                              # 换场了、或这一批已被收尾记成未复核：晚到的结果不写
+        t = self._clock()
+        if not isinstance(result, cr.ReviewResult):
+            # 只给一句模型意见的简单后端（{cid: rv 代码}）：照单写到旁边，不改档位
+            result = result if isinstance(result, dict) else {}
+            for entry in everyone:
+                if entry["cid"] in result:
+                    self._apply_verdict(entry, result[entry["cid"]])
+                else:
+                    self._skip_review(entry)
+            return
+        self.reviews += 1
+        if cr.counts_as_invalid(result):
+            self.review_invalid += 1
+        self._audit_review(result, len(leaders), result.ms, result.outcome, waited_ms)
+        self.policy.note_max_tokens_streak(getattr(self.reviewer, "max_tokens_streak", 0))
+        self._sync_gate(t)
+        self._state_dirty = True
+        for entry in leaders:
+            verdict = result.get(entry["cid"])
+            group = [entry] + followers.get(entry["cid"], [])
+            if verdict is None:
+                for member in group:
+                    self._skip_review(member)
+                continue
+            self.policy.cache_put(entry["key"], verdict, t)
+            for member in group:
+                self._apply_verdict(member, verdict)
+
+    def _audit_review(self, result, n, ms, outcome, waited_ms):
+        """一次模型调用写一条审计（只有计数和代码，没有弹幕内容）。每分钟至多 10 次由 ReviewPolicy 保证。"""
+        backlog, inflight = self._probe_health()
+        self._audit("comment_guard_review", "claude", getattr(self.reviewer, "model", None), n, ms, outcome,
+                    refusal_category=getattr(result, "refusal_category", None), backlog_sec=round(backlog, 1),
+                    asr_inflight=inflight, waited_ms=waited_ms, in_tokens=getattr(result, "in_tokens", None),
+                    out_tokens=getattr(result, "out_tokens", None),
+                    cache_read_tokens=getattr(result, "cache_read_tokens", None))
+
+    # ---- 把模型的判定写到标注上（合并规则在 comment_review.decide，这里只落地）----
     def _apply_review(self, cid, label):
+        """只写一句模型意见（rv），不改档位。简单后端和测试用。"""
         current = self._ann.get(cid)
         if current is None or label not in RV_LABELS:
             return
-        updated = dict(current, rv=label)
-        self._ann[cid] = updated
-        self._pending_cg[cid] = updated
+        self._set_ann(cid, dict(current, rv=label))
+
+    def _apply_verdict(self, entry, verdict):
+        if isinstance(verdict, str):
+            self._apply_review(entry["disp"], verdict)
+            return
+        d = cr.decide(entry, verdict)
+        if d.agree:
+            self.review_agree += 1
+        if d.disagree:
+            self.review_disagree[d.disagree] = self.review_disagree.get(d.disagree, 0) + 1
+        tid = entry["disp"]
+        cur = self._ann.get(tid)
+        evidence = ""
+        if d.evidence and verdict.evidence:
+            evidence = entry["masked"].evidence_in(verdict.evidence) or ""
+        if entry["route"] == "confirm":
+            if cur is None:
+                return
+            new = dict(cur, rv=d.rv)
+            if evidence:
+                new["evidence"] = evidence
+            if d.promote == "amber_to_red" and cg.LVL_RANK[cur["lvl"]] < cg.LVL_RANK["alert"]:
+                new.update(lvl="alert", amb=None, src="review")
+                self.review_promoted["amber_to_red"] += 1
+                self._recount(cur, new, "amber_to_red")
+            self._set_ann(tid, new)
+            self._sync_event(new)
+            return
+        if d.promote != "note_to_amber":
+            return                              # 非攻击、拿不准：保持隐藏
+        if cur is not None and cg.LVL_RANK[cur["lvl"]] >= cg.LVL_RANK["amber"]:
+            return                              # 这一条已经被别的原因标成琥珀以上：不降也不重复计
+        new = {"lvl": "amber", "amb": "review", "cats": d.cats, "sub": entry["sub"], "tier": entry["tier"],
+               "src": "review", "rv": None, "ev": None, "why": list(entry["why"])[:8]}
+        if evidence:
+            new["evidence"] = evidence
+        self.review_promoted["note_to_amber"] += 1
+        self._recount(cur, new, "note_to_amber")
+        self._ev_seq += 1
+        eid = "g%d" % self._ev_seq
+        self._put_event(eid, {"kind": "comment", "cat": d.cats[0], "lvl": "amber", "amb": "review", "n": 1,
+                              "accounts": [], "window_sec": int(self.EVENT_MERGE_SEC), "first_ts": entry["ts"],
+                              "ts": entry["ts"], "sample": entry["sample"], "rv": None}, entry["ts"], count_up=False)
+        new["ev"] = eid
+        self._set_ann(tid, new)
+
+    def _recount(self, old, new, kind):
+        """模型改了档位：session_end 里的 counts / amber_by_reason 跟着改，写的是操作员最后看到的样子。"""
+        old_cat = ((old or {}).get("cats") or [None])[0] or "other"
+        new_cat = (new.get("cats") or [None])[0] or "other"
+        if kind == "amber_to_red":
+            row = self.counts.setdefault(old_cat, {"alert": 0, "amber": 0, "note": 0})
+            row["amber"] = max(0, row["amber"] - 1)
+            row["alert"] += 1
+            reason = (old or {}).get("amb") or "other"
+            if self.amber_by_reason.get(reason):
+                self.amber_by_reason[reason] -= 1
+                if not self.amber_by_reason[reason]:
+                    del self.amber_by_reason[reason]
+            return
+        if old is not None and old.get("lvl") == "note":
+            row = self.counts.setdefault(old_cat, {"alert": 0, "amber": 0, "note": 0})
+            row["note"] = max(0, row["note"] - 1)
+        row = self.counts.setdefault(new_cat, {"alert": 0, "amber": 0, "note": 0})
+        row["amber"] += 1
+        self.amber_by_reason["review"] = self.amber_by_reason.get("review", 0) + 1
+
+    def _sync_event(self, guard):
+        """标注的档位和模型意见变了：它所属的事件跟着变，抽屉和顶部条才对得上。"""
+        ev = self.events.get(guard.get("ev"))
+        if ev is None:
+            return
+        ev["rv"] = guard.get("rv")
+        if guard.get("lvl") == "alert" and ev["lvl"] != "alert":
+            ev["lvl"], ev["amb"] = "alert", None
+        self._ev_dirty[ev["id"]] = True
 
     # ------------------------------------------------------------------------------------
     # 发出去
@@ -827,6 +1221,10 @@ class CommentGuardMixin:
         """Pipeline.__init__ 调：读设置、造守卫。默认开（PR-4 起）；关着时开场不载词表、不读写任何文件。"""
         guard = self.guard = GuardRuntime()
         guard.cfg = normalize_settings(load_settings().get(SETTINGS_KEY))
+        # 识别落后时暂停送审（只读两个属性；Telemetry 和 _asr_inflight 在 Pipeline.__init__ 里先于这里建好）
+        guard.health_probe = lambda: (getattr(self.telemetry, "audio_backlog_sec", 0.0),
+                                      getattr(self, "_asr_inflight", None) is not None)
+        guard.configure_reviewer()
         if guard.effective_enabled():
             try:
                 guard.preview_rules()
@@ -933,6 +1331,7 @@ class CommentGuardMixin:
         if guard is None:
             return
         try:
+            guard.tick_review()
             await guard.flush(self.server.broadcast)
             if guard.enabled:
                 # 名单里的人 last_seen / 条数的变化不广播（页面自己按弹幕现算），这里悄悄补进 config，
@@ -1085,13 +1484,14 @@ class CommentGuardMixin:
         设置分组在直播中也是整块隐藏的。只在改了的时候写一次 settings.json。
 
         `key`：选 Claude 时设置行里的密钥框。写进和翻译引擎同一个 Claude 密钥（api_keys），**不切换翻译引擎**；
-        回传页面的只有打码后的尾四位（_publish_engine）。真正用它做复核是 PR-5。"""
+        回传页面的只有打码后的尾四位（_publish_engine）。复核用的就是这把密钥（comment_review.make_reviewer）。"""
         guard = self.guard
         if self._stream_active() or (guard._open and getattr(self, "audit", None) is not None):
             print("[弹幕] 直播进行中，弹幕留意的设置要停止后再改")
             return
         key = msg.get("key")
-        if isinstance(key, str) and key.strip():
+        key_saved = isinstance(key, str) and bool(key.strip())
+        if key_saved:
             from .translator import saved_keys
             keys = saved_keys()
             keys[self.ENGINE_KEY_ENV["claude"]] = key.strip()
@@ -1104,10 +1504,12 @@ class CommentGuardMixin:
             new["backend"] = msg["backend"]
         if isinstance(msg.get("weak"), bool):
             new["weak"] = msg["weak"]
-        if new == guard.cfg:
+        if new == guard.cfg and not key_saved:
             return
-        guard.cfg = new
-        self._save_setting(SETTINGS_KEY, dict(new))
+        if new != guard.cfg:
+            guard.cfg = new
+            self._save_setting(SETTINGS_KEY, dict(new))
+        guard.configure_reviewer()                  # 选了 Claude 且有密钥就备好后端；换了密钥就按新密钥重来
         if guard.effective_enabled() and guard.rules is None:
             loop = asyncio.get_running_loop()
             guard.rules = await loop.run_in_executor(None, cg.load_rules)
