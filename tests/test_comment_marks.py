@@ -174,8 +174,7 @@ def test_only_last_seen_changes_are_lazy_and_do_not_write_every_two_seconds(tmp_
     async def scenario():
         await s.load(STREAMER)
         s.add([UID], "Ana", by="manual")
-        await asyncio.sleep(0.2)
-        assert len(writes) == 1
+        assert await settled(s, lambda: len(writes) == 1)
         for i in range(20):
             s.touch(UID, [], "Ana", NOW + i)          # 常发言的被关注者
         await asyncio.sleep(0.3)
@@ -528,6 +527,53 @@ def test_trusted_accounts_are_exempt_they_get_no_verdict_and_are_never_added(mon
 
 # ---- 写盘失败不丢脏标记：收尾和下一次改动都会再试 ----------------------------------------------------
 
+async def settled(store_, cond, limit=5.0):
+    """等到 cond() 成立、且这时没有在途的写盘任务；最多等 limit 秒（慢的 CI 跑器上写盘要更久）。"""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + limit
+    while loop.time() < end:
+        task = store_._task
+        if cond() and (task is None or task.done()) and store_._timer is None:
+            return True
+        await asyncio.sleep(0.02)
+    return cond()
+
+
+def test_lazy_changes_during_an_in_flight_write_wait_for_the_lazy_timer(tmp_path, fast_save, monkeypatch):
+    """写盘正在进行时来的只有 last_seen / hits 这类轻量改动：写完不立刻再写，交回 LAZY_SAVE_SEC 的定时器。"""
+    monkeypatch.setattr(comment_marks, "LAZY_SAVE_SEC", 60.0)
+    gate = threading.Event()
+    calls = []
+    real = comment_marks._write_safe
+
+    def slow(path, text):
+        calls.append(text)
+        gate.wait(5)                                   # 模拟慢磁盘：写到一半
+        return real(path, text)
+
+    monkeypatch.setattr(comment_marks, "_write_safe", slow)
+    s = store(tmp_path)
+
+    async def scenario():
+        await s.load(STREAMER)
+        s.add([UID], "Ana", by="manual")
+        loop = asyncio.get_running_loop()
+        end = loop.time() + 5
+        while not calls and loop.time() < end:
+            await asyncio.sleep(0.01)
+        for i in range(5):
+            s.touch(UID, [], "Ana", NOW + i)           # 写盘进行中又发言了
+        gate.set()
+        await asyncio.sleep(0.3)
+        assert len(calls) == 1
+        assert s._lazy and s._timer is not None        # 轻量改动还在，等定时器
+        await s.flush_now()
+        assert len(calls) == 2
+
+    run(scenario())
+    assert read(tmp_path)["viewers"][UID]["hits"] == 5
+
+
 def fail_first_write(monkeypatch):
     """_write_safe 第一次返回一句错误说明，之后恢复正常（磁盘满了一下又好了）。"""
     real = comment_marks._write_safe
@@ -586,11 +632,9 @@ def test_after_a_failed_write_the_next_change_writes_everything(tmp_path, monkey
     async def scenario():
         await s.load(STREAMER)
         s.add(["100"], "A", by="manual")
-        await asyncio.sleep(0.3)
-        assert s.failing
+        assert await settled(s, lambda: s.failing)
         s.add(["200"], "B", by="manual")              # 磁盘好了，下一次改动照常排一次写盘
-        await asyncio.sleep(0.3)
-        assert not s.failing
+        assert await settled(s, lambda: not s.failing and not s._dirty)
 
     run(scenario())
     assert sorted(read(tmp_path)["viewers"]) == ["100", "200"]

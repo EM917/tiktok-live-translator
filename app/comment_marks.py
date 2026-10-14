@@ -267,7 +267,12 @@ class MarkStore:
 
     async def _write_loop(self):
         loop = asyncio.get_running_loop()
-        while (self._dirty or self._lazy) and self.persist and self.path is not None:
+        first = True
+        # 第一轮把手上的全写掉（结构改动和轻量的 last_seen / hits 都算）。之后只为写盘期间新来的
+        # **结构**改动再写；写盘期间只来了轻量改动的，交回 LAZY_SAVE_SEC 的定时器，不立刻再写一次
+        # ——常发言的被关注者每条弹幕都会 touch()，赶上正在写盘就会多写一遍（Windows 跑器上实测）
+        while (self._dirty or (first and self._lazy)) and self.persist and self.path is not None:
+            first = False
             dirty, lazy = self._dirty, self._lazy
             self._dirty = self._lazy = False
             error = await loop.run_in_executor(None, _write_safe, self.path, self._render())
@@ -282,6 +287,8 @@ class MarkStore:
                 print("[弹幕] 关注名单写不进去：{}".format(error))
                 break
             self.failing = False
+        if self._lazy and not self._dirty and not self.failing:
+            self._schedule(LAZY_SAVE_SEC)
 
     async def flush_now(self):
         """收尾：把还没写的立刻写完（含轻量脏标记）。不抛异常。"""
