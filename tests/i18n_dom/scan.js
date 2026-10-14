@@ -62,7 +62,9 @@
       var inner = r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
                 - parseFloat(cs.borderLeftWidth) - parseFloat(cs.borderRightWidth);
       out.measure[sel] = { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, width: r.width, right: r.right,
-                           textWidth: rg.getBoundingClientRect().width, innerWidth: inner };
+                           textWidth: rg.getBoundingClientRect().width, innerWidth: inner,
+                           // 竖向的几项：弹幕留意的抽屉高度、列表区会不会滚（tests/test_i18n_dom.py 的 guard 抽屉那条）
+                           height: r.height, top: r.top, bottom: r.bottom, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
     });
     out.viewport = { width: window.innerWidth, height: window.innerHeight };
     var s = document.createElement("script");

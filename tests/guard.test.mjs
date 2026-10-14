@@ -343,8 +343,8 @@ test("顶部条：红条事件数、琥珀事件数、关注的人发言数分�
   assert.equal(all.show, true);
   // 按事件计：a 里有 2 条弹幕也只算 1 件（用户决定 10）
   assert.deepEqual([all.red, all.amber, all.marked], [2, 1, 2]);
-  assert.deepEqual(all.parts.slice(0, 3), ["需要留意 2 件", "拿不准 1 件", "关注的人发言 2"]);
-  assert.equal(all.parts[3], "疑似人身威胁 1、疑似辱骂 1、疑似引流（链接） 1", "人身威胁排最前");
+  assert.deepEqual(all.parts.slice(0, 3), ["需要留意 2 件", "拿不准 1 件", "关注的人发言 2 条"]);
+  assert.equal(all.parts[3], "疑似人身威胁 ×1、疑似辱骂 ×1、疑似引流（链接） ×1", "人身威胁排最前");
   assert.equal(all.parts[4], "最新 " + G.guardTimeText(1005));
   assert.equal(all.text, all.parts.join(" · "));
   // 已看到 1000：只剩 b 是未读
@@ -360,6 +360,41 @@ test("顶部条：红条事件数、琥珀事件数、关注的人发言数分�
   assert.equal(G.guardBarSummary(null, 0).show, false);
 });
 
+test("顶部条：每个类别后面的计数都写成「名字 ×n」，一个写法，数字不紧贴名字（n 是事件数）", () => {
+  for (const cat of ALL_CATS) {
+    for (const n of [1, 2, 12]) {
+      const events = {};
+      for (let i = 0; i < n; i++) events["e" + i] = event({ id: "e" + i, cat, lvl: "alert", n: 40, ts: 5000 + i });
+      const sum = G.guardBarSummary(events, 0);
+      assert.equal(sum.parts[0], "需要留意 " + n + " 件", "数的是事件，不是事件里 40 条弹幕");
+      assert.equal(sum.parts[1], G.guardCatLabel(cat) + " ×" + n, cat + " ×" + n);
+      assert.doesNotMatch(sum.parts[1], /[^×\s]\s\d+$/, "名字后面光一个空格加数字读不出是计数：" + sum.parts[1]);
+    }
+  }
+  assert.equal(G.guardCatCount("疑似刷屏", 2), "疑似刷屏 ×2");
+  assert.equal(G.guardCatCount("疑似引流（链接）", 1), "疑似引流（链接） ×1", "类别名自带括号时不再套括号");
+  assert.equal(G.guardCatCount("疑似刷屏", -3), "疑似刷屏 ×0", "坏数据不写出负数");
+  assert.equal(G.guardCatCount("疑似刷屏", "x"), "疑似刷屏 ×0");
+  // 整行里每一段数字都读得出是计数：件 / 条 / ×n / 另 n 类（「最新 时刻」是时刻，不是计数）
+  const cats = ["promo_contact", "flood_user", "insult", "threat", "accuse_call"];
+  const events = {};
+  cats.forEach((cat, i) => { events["e" + i] = event({ id: "e" + i, cat, lvl: i === 4 ? "amber" : "alert", ts: 6000 + i }); });
+  const full = G.guardBarSummary(events, 0, { markedTs: [6001, 6002, 6003] });
+  assert.deepEqual(full.parts.slice(0, 3), ["需要留意 4 件", "拿不准 1 件", "关注的人发言 3 条"]);
+  for (const part of full.parts.filter((x) => !x.startsWith("最新"))) {
+    for (const piece of part.split("、")) {
+      if (/\d$/.test(piece)) assert.match(piece, / ×\d+$|[件条]$/, "数字没有量词或 ×：" + piece);
+      else assert.match(piece, /\d+ [件条类]$|^疑似|^多账号|^需要|^拿不准|^关注|^另 \d+ 类$/, piece);
+    }
+  }
+});
+
+test("顶部条右侧控件的字：抽屉收着写「查看」，开着写「收起」", () => {
+  assert.equal(G.guardBarViewText(false), "查看");
+  assert.equal(G.guardBarViewText(true), "收起");
+  assert.equal(G.guardBarViewText(undefined), "查看");
+});
+
 test("顶部条：超过 3 类只写前 3 类，其余折成「另 n 类」；没有的类别不凭空出现", () => {
   const cats = ["promo_contact", "flood_user", "insult", "threat", "accuse_call"];
   const events = {};
@@ -367,7 +402,7 @@ test("顶部条：超过 3 类只写前 3 类，其余折成「另 n 类」；�
   const sum = G.guardBarSummary(events, 0);
   assert.deepEqual(sum.cats.map((c) => c.code), ["threat", "insult", "accuse_call", "promo_contact", "flood_user"]);
   assert.equal(sum.more, 2);
-  assert.equal(sum.parts[1], "疑似人身威胁 1、疑似辱骂 1、疑似号召举报或不买 1、另 2 类");
+  assert.equal(sum.parts[1], "疑似人身威胁 ×1、疑似辱骂 ×1、疑似号召举报或不买 ×1、另 2 类");
   assert.ok(!sum.text.includes("疑似刷屏"));
   // 刚好 3 类：不写「另」
   const three = G.guardBarSummary({ a: events.e0, b: events.e1, c: events.e2 }, 0);
@@ -385,7 +420,7 @@ test("顶部条只数红条和琥珀的事件；忽略的事件和形状不对�
   const sum = G.guardBarSummary(events, 0);
   assert.equal(sum.red, 1);
   assert.equal(sum.parts[0], "需要留意 1 件");
-  assert.equal(sum.parts[1], "疑似刷屏 1", "类别也按事件计");
+  assert.equal(sum.parts[1], "疑似刷屏 ×1", "类别也按事件计");
   assert.equal(G.guardEventList(events).length, 2, "列表只去掉忽略的和形状不对的；note 档由条自己筛掉");
 });
 
@@ -399,7 +434,7 @@ test("顶部条按事件计：一次冲场、一次多账号同句各算 1 件�
   const sum = G.guardBarSummary([flood, brigade, single], 0);
   assert.deepEqual([sum.red, sum.amber], [2, 1], "60 条冲场 + 12 个账号同句 + 1 条威胁 = 2 件红 + 1 件琥珀");
   assert.deepEqual(sum.parts.slice(0, 2), ["需要留意 2 件", "拿不准 1 件"]);
-  assert.equal(sum.parts[2], "疑似人身威胁 1、疑似刷屏 1、多账号同一句 1");
+  assert.equal(sum.parts[2], "疑似人身威胁 ×1、疑似刷屏 ×1、多账号同一句 ×1");
   // 同一个冲场事件被后端持续更新（同一个 id、n 在涨）：仍然是 1 件
   const grown = G.guardBarSummary({ f: Object.assign({}, flood, { n: 400, ts: 4010 }) }, 0);
   assert.equal(grown.red, 1);

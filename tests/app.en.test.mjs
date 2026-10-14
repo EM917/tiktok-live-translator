@@ -808,12 +808,12 @@ test("英文页：顶部条——新事件弹出，每秒最多重画一次；�
   page.fire(1000);
   assert.equal(bar.cls.includes("hidden"), false);
   assert.ok(bar.cls.includes("has-red"));
-  assert.equal(text(), "1 item to review · Possible threat of harm 1 · Latest " + (new Date((T + 5) * 1000)).toTimeString().slice(0, 8));
+  assert.equal(text(), "1 item to review · Possible threat of harm ×1 · Latest " + (new Date((T + 5) * 1000)).toTimeString().slice(0, 8));
   assert.equal(page.el("guard-bar-main").title, text());
   // 冲场：事件被同一个 id 持续更新，条数在涨，但事件还是 1 件（用户决定 10：按事件计，不数里面的弹幕）
   page.advance(1500);
   page.push({ type: "guard_event", ev: guardEvent({ id: "g1", kind: "flood", cat: "flood_user", n: 60, ts: T + 6 }) });
-  assert.match(text(), /^1 item to review · Possible flooding 1 · Latest /);
+  assert.match(text(), /^1 item to review · Possible flooding ×1 · Latest /);
   // 琥珀不出红点，但算「拿不准」
   page.advance(1500);
   page.push({ type: "guard_event", ev: guardEvent({ id: "g2", cat: "accuse_claim", lvl: "amber", amb: "pending", ts: T + 7 }) });
@@ -908,6 +908,39 @@ test("英文页：抽屉——点条或胶囊展开，两个页签，忽略 / �
   // 收起
   page.el("guard-drawer-close").click();
   assert.equal(drawer.cls.includes("hidden"), true);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：顶部条右侧的控件写的是点了会怎样——抽屉收着是 View，开着是 Hide，aria-expanded 跟着一致", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "v1", ts: T + 5 }) });
+  page.fire(1000);
+  const view = page.el("guard-bar-view");
+  const main = page.el("guard-bar-main");
+  const drawer = page.el("guard-drawer");
+  const shows = (label, open) => {
+    assert.equal(view.textContent, label);
+    assert.equal(main.getAttribute("aria-expanded"), open ? "true" : "false");
+    assert.equal(drawer.cls.includes("hidden"), !open);
+  };
+  shows("View", false);
+  main.click();                                   // 点条本身：展开
+  shows("Hide", true);
+  main.click();                                   // 同一个控件再点：收起
+  shows("View", false);
+  page.el("guard-state").click();                 // 点弹幕栏里的胶囊展开：条上也跟着写 Hide
+  shows("Hide", true);
+  page.el("guard-drawer-close").click();          // 抽屉右上角的 ×：收起
+  shows("View", false);
+  page.el("guard-state").click();
+  page.el("guard-tab-marked").click();            // 换页签不改写它
+  shows("Hide", true);
+  // 直播停了：抽屉跟着收起，条上写回 View（下一场的条不会带着「Hide」出现）
+  page.push({ type: "status", state: "idle", detail: "" });
+  shows("View", false);
+  assert.equal(page.el("guard-bar").cls.includes("hidden"), true);
   assert.deepEqual(leftoverChinese(page), []);
 });
 

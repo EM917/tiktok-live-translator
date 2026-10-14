@@ -73,6 +73,16 @@
   --a-red-28: rgba(255, 59, 48, 0.28);
   --a-blue-30: rgba(0, 122, 255, 0.30);
   --a-label-4: rgba(29, 29, 31, 0.04);
+  /* 抽屉底部渐隐的起点：与 --card 同色、全透明（不写 transparent：Safari 15.4 以前会渐变成灰） */
+  --card-clear: rgba(255, 255, 255, 0);
+
+  /* 弹幕栏里观众与主播的关系标签（粉丝 / 互关 / 送过礼 / 订阅）：11px 的小字，浅色模式下要 4.5:1 以上。
+     底色一律不透明，免得落在红 / 琥珀的行底上对比度又掉下去（原来的 #007aff / #bf5af2 在自己的底色上只有 3.5 / 3.1，
+     送过礼落在红行上只有 2.6）。实测：蓝 #0062cc 在 #e6f2ff 上 5.1，紫 #8e24c4 在 #f3e6fb 上 5.5，
+     灰 #505056 在 #e5e5ea 上 6.4。深色模式的取值与改之前逐项相同（见下面 prefers-color-scheme: dark 里） */
+  --rel-blue-ink: #0062cc;
+  --rel-purple-ink: #8e24c4;  --rel-purple-bg: #f3e6fb;
+  --rel-gray-ink: #505056;    --rel-gray-bg: #e5e5ea;
 
   /* 不透明的两色混合（旧代码里跟 var(--bg) 而不是 transparent 混，数学上不是
      简单的 rgba，需要按主题各自预先算出混合结果）：update-bar/comment-panel
@@ -155,6 +165,12 @@
     --a-red-28: rgba(255, 69, 58, 0.28);
     --a-blue-30: rgba(10, 132, 255, 0.30);
     --a-label-4: rgba(245, 245, 247, 0.04);
+    --card-clear: rgba(44, 44, 46, 0);
+
+    /* 关系标签：深色模式保持原样（蓝取 --blue，紫是原来的 #bf5af2 加 12% 紫底，灰取 --label-2 配 --fill） */
+    --rel-blue-ink: var(--blue);
+    --rel-purple-ink: #bf5af2;  --rel-purple-bg: rgba(191, 90, 242, 0.12);
+    --rel-gray-ink: var(--label-2);  --rel-gray-bg: var(--fill);
 
     --tint-accent-8: #1b2430;
     --tint-blue-10: #1a2634;
@@ -1224,10 +1240,10 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
 .cmt-item:last-child { border-bottom: 0; }
 .cmt-head { font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
-.cmt-rel { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 11px;
-  line-height: 16px; vertical-align: 1px; color: var(--label-2); background: var(--fill); }
-.cmt-rel-mutual, .cmt-rel-follower { color: var(--blue); background: var(--tint-blue-10); }
-.cmt-rel-gifter { color: #bf5af2; background: rgba(191,90,242,.12); }
+.cmt-rel { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px;
+  line-height: 16px; color: var(--rel-gray-ink); background: var(--rel-gray-bg); }
+.cmt-rel-mutual, .cmt-rel-follower { color: var(--rel-blue-ink); background: var(--tint-blue-10); }
+.cmt-rel-gifter { color: var(--rel-purple-ink); background: var(--rel-purple-bg); }
 .cmt-zh { font-size: 15px; line-height: 1.5; margin-top: 1px; }
 .cmt-zh.pending { color: var(--label-3); font-style: italic; font-size: var(--fs-callout); }
 .cmt-zh.failed { color: var(--label-2); }
@@ -1274,7 +1290,10 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
    靛蓝＝关注的人；弱信号只是一圈浅灰描边。形状也跟着变（左边条的颜色之外有类别胶囊的字、
    关注的人有 ★），不只靠颜色。令牌全部复用上面的，深浅色自动跟着走 */
 .cmt-item { position: relative; }
-.cmt-head { padding-right: 26px; }              /* 给右上角的 ☆ 按钮留位置 */
+/* 头一行：昵称、关系标签、时刻、类别胶囊排成一行，放不下就折行。间隔用 gap 而不是各自的 margin-left：
+   折到下一行的那个胶囊不会带着左边距缩进（以前是 6px），每一行都从同一条左边线开始。右边给 ☆ 按钮留位置 */
+.cmt-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 5px; padding-right: 26px; }
+.cmt-head > * { max-width: 100%; overflow-wrap: anywhere; }
 /* 标了的弹幕整行抻到列表边缘（列表自己有 16px 左右内边距），左边条贴着边 */
 .cmt-item.guard-alert, .cmt-item.guard-amber, .cmt-item.guard-marked, .cmt-item.guard-weak {
   margin: 0 -16px; padding-left: 13px; padding-right: 16px; border-left: 3px solid transparent;   /* 3 + 13 = 列表自己的 16px 内边距：文字不挪位 */
@@ -1284,9 +1303,9 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cmt-item.guard-amber { border-left-color: var(--orange); background: var(--a-orange-8); }
 /* 关注的人同时又是红 / 橙条：靛蓝条紧贴在红 / 橙条右边 */
 .cmt-item.guard-alert.guard-marked, .cmt-item.guard-amber.guard-marked { box-shadow: inset 3px 0 0 var(--indigo); }
-.guard-star { margin-right: 3px; color: var(--indigo); font-weight: 600; }
+.guard-star { margin-right: -2px; color: var(--indigo); font-weight: 600; }       /* 头里的 gap 是 5px，★ 与昵称之间留 3px */
 .guard-pill {
-  display: inline-block; max-width: 100%; margin-left: 6px; padding: 0 6px; border-radius: 4px;
+  display: inline-block; max-width: 100%; padding: 0 6px; border-radius: 4px;
   font-size: var(--fs-footnote); font-weight: 600; line-height: 18px; vertical-align: baseline;
   overflow-wrap: anywhere; font-variant-numeric: normal;
 }
@@ -1352,21 +1371,27 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .guard-bar-main:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); border-radius: 6px; }
 .guard-bar-text { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .guard-bar-view { flex: none; margin-left: auto; font-weight: 500; }
-.guard-bar-view::after { content: " \203A"; }
+/* 箭头 ›：抽屉收着朝右（查看），开着转成朝上（收起） */
+.guard-bar-view::after { content: "\203A"; display: inline-block; margin-left: 4px; }
+.guard-bar-main[aria-expanded="true"] .guard-bar-view::after { transform: rotate(-90deg); }
 
-/* 抽屉：在条的正下方展开（不是弹窗），自己滚动，最多占窗口高度的 40% */
+/* 抽屉：在条的正下方展开（不是弹窗）。高度固定为窗口的三分之一（上下限 168 / 340px，1000×760 的默认窗口里约 250px），
+   两个页签共用同一块列表区，所以切页签时抽屉不跳；列表在这块区域里自己滚动，状态行和页签不跟着滚走。
+   自己的 overflow-y 只是兜底：状态行折得很长（熔断的几行说明 + 按钮）、窗口又很矮时，列表区缩到最小高度后整个抽屉可滚，
+   不会盖住下面的字幕 */
 .guard-drawer {
-  flex: none; max-height: 40vh; overflow-y: auto; padding: 8px 20px 10px;
+  position: relative; flex: none; display: flex; flex-direction: column;
+  height: clamp(168px, 33vh, 340px); overflow-y: auto; padding: 8px 20px 0;
   background: var(--card); border-bottom: 0.5px solid var(--separator);
 }
 @media (max-width: 640px) {
   .guard-bar { padding: 4px 12px; }
-  .guard-drawer { padding: 8px 12px 10px; }
+  .guard-drawer { padding: 8px 12px 0; }
 }
-.guard-drawer-top { display: flex; align-items: center; gap: 8px; }
+.guard-drawer-top { flex: none; display: flex; align-items: center; gap: 8px; }
 .guard-drawer-state { flex: 1; min-width: 0; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
 .guard-drawer-state .gds-extra { display: block; color: var(--warn-fg); }
-.guard-tabs { display: flex; gap: 4px; margin: 6px 0 4px; border-bottom: 0.5px solid var(--separator); }
+.guard-tabs { flex: none; display: flex; gap: 4px; margin: 6px 0 4px; border-bottom: 0.5px solid var(--separator); }
 .guard-tab {
   padding: 4px 10px 6px; border: none; border-bottom: 2px solid transparent; background: none; cursor: pointer;
   font-family: inherit; font-size: var(--fs-callout); color: var(--label-2);
@@ -1376,6 +1401,24 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .guard-tab-n { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--fill); color: var(--label);
   font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 .guard-tab-n:empty { display: none; }
+/* 列表区：两个页签的 .guard-pane 叠在同一块固定高度里（只显示一个），各自滚动。
+   滚动的提示有两个：右边一条一直可见的滚动条（::-webkit-scrollbar 把 macOS 默认「滚动时才出现」的细条换成常驻的），
+   和底部 28px 的渐隐——被截断的那张卡片淡出，一眼看出下面还有。列表末尾留 30px 空白，滚到底时最后一张卡片
+   整张（包括按钮）停在渐隐上方，不会被盖住；没有溢出时渐隐落在空白的底色上，看不见 */
+.guard-panes { position: relative; flex: 1 1 0; min-height: 72px; display: flex; flex-direction: column; }
+.guard-panes::after {
+  content: ""; position: absolute; left: 0; right: 10px; bottom: 0; height: 28px; pointer-events: none;
+  background: linear-gradient(to bottom, var(--card-clear), var(--card));
+}
+.guard-pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scroll-padding-bottom: 30px; }
+#guard-events, #guard-marked { padding-bottom: 30px; }
+.guard-pane::-webkit-scrollbar { width: 8px; }
+.guard-pane::-webkit-scrollbar-track { background: var(--fill); border-radius: 4px; }
+.guard-pane::-webkit-scrollbar-thumb { background: var(--gray); border-radius: 4px; }
+.guard-pane::-webkit-scrollbar-thumb:hover { background: var(--label-2); }
+@supports not selector(::-webkit-scrollbar) {      /* Firefox：没有 ::-webkit-scrollbar */
+  .guard-pane { scrollbar-width: thin; scrollbar-color: var(--gray) var(--fill); }
+}
 .guard-empty { padding: 12px 0; font-size: var(--fs-footnote); color: var(--label-2); }
 .guard-ev-row { padding: 8px 0 8px 10px; border-top: 0.5px solid var(--separator); border-left: 3px solid var(--orange); margin-left: 0; }
 .guard-ev-row:first-child { border-top: none; }
@@ -1383,7 +1426,6 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .gev-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--fs-footnote); color: var(--label-2); }
 .gev-time { font-variant-numeric: tabular-nums; }
 .gev-user { font-weight: 600; color: var(--label); }
-.gev-top .guard-pill { margin-left: 0; }
 .gev-text { margin-top: 2px; font-size: var(--fs-callout); line-height: 1.45; overflow-wrap: anywhere; }
 .gev-zh { font-size: var(--fs-callout); line-height: 1.45; color: var(--label-2); overflow-wrap: anywhere; }
 .gev-note { margin-top: 2px; font-size: var(--fs-footnote); line-height: 1.4; color: var(--warn-fg); }

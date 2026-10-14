@@ -167,6 +167,7 @@
 | 刷屏 | **flooding**；类别名 “Possible flooding” | spam | spam 带判断 |
 | 引流 | **redirect**；类别名 “Possible redirect (link)” 等 | promotion, traffic diversion, spam | 说的是「把人引去别处」这个动作 |
 | 本场重新启用 | **Turn Back On for This Session** | Re-enable, Restart | |
+| 查看 / 收起（顶部条右侧的控件） | **View** / **Hide** | Open, Show, Close, Details | 同一个控件，字写它点了之后会做什么：抽屉收着写「查看 / View」，抽屉开着写「收起 / Hide」（带一个朝上的箭头）。「收起 / Hide」与弹幕栏里收起整列弹幕的按钮同词，那个按钮在另一块区域，不会同时被误会 |
 | 弱信号 | **weak signals** | low confidence | 只是线索，还没有定论 |
 | 规则 / 规则文件夹 | **rules** / **Open Rules Folder** | lexicon, dictionary | 词表（glossary）是翻译用的，这里是判定规则 |
 
@@ -187,6 +188,14 @@
 | `promo_contact` | 疑似引流（联系方式） | Possible redirect (contact info) |
 | `promo_pull` | 疑似拉人去别处 | Possible redirect to another stream or shop |
 | `promo_scam` | 疑似冒充官方或诈骗信息 | Possible impersonation or scam offer |
+
+**顶部条里的计数写法**（2026-10-13，看了截图后定）：数字紧贴类别名（“Possible flooding 1” / 「疑似刷屏 1」）读不出是计数，
+像名字的一部分。类别后面的计数一律写成 **`{类别名} ×{n}`**，两种语言相同：× 前面一个空格、后面紧贴数字，
+如 “Possible flooding ×2”、「疑似引流（链接） ×1」。不用括号（类别名自带括号，会变成 “Possible redirect (link) (1)”），
+不用冒号（同一行的 “Latest 20:00:00” 是时刻，冒号会混），也不改成复数名词（13 个类别名各配一个复数，术语表跟着膨胀）。
+数的仍是事件（用户决定 10）。同一行里另外几段本来就带量词，不动：「需要留意 n 件」/ “n items to review”、「拿不准 n 件」/
+“n unclear”、「关注的人发言 n 条」/ “n from marked viewers”（后者数的是发言本身，所以中文用「条」不用「件」）。
+同一规矩适用于以后顶部条里任何「名字 + 数」的写法：数字前面要有 × 或量词，不能只靠一个空格。
 
 **琥珀（拿不准）的理由只写观察**（第八条）：「没有问号」「第 2 次」，不写「也可能是提问」。英文同样不用
 because / likely / maybe / probably。`pending`（命中的词条还没经业务确认）、`self`（第一人称）两条是规则层后来
@@ -280,7 +289,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | guard.js guardAmberText 多账号同一句 | Same comment from 1 account in {s} seconds | Same comment from {n} accounts in {s} seconds |
 | guard.js guardCountText 事件条数 | 1 comment in {s} seconds / 1 comment | {m} comments in {s} seconds / {m} comments |
 | guard.js guardBarSummary、guardFabTitle 顶部条和浮钮（按事件计） | 1 item to review | {n} items to review |
-| guard.js guardBarSummary 拿不准、关注的人发言 | {n} unclear / {n} from marked viewers | 同左（不变形） |
+| guard.js guardBarSummary 拿不准、关注的人发言 | {n} unclear / {n} from marked viewers | 同左（不变形；中文是「拿不准 {n} 件」「关注的人发言 {n} 条」） |
+| guard.js guardBarSummary 类别计数 | {类别名} ×{n} | 同左（不变形，写法见 §1.6） |
 | guard.js guardUnreviewedText 没经过模型复核 | 1 comment wasn’t reviewed by the model this session. | {n} comments weren’t reviewed by the model this session. |
 | guard.js guardSummary 关注的人数 | {n} marked | 同左（不变形） |
 | guard.js guardRulesText 规则条数和体检警告 | 1 rule active · 1 rule check warning | {n} rules active · {w} rule check warnings |

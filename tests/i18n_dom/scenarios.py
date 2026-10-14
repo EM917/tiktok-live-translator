@@ -54,7 +54,8 @@ PHONE = (390, 844)
 LIVE_WIDTHS = (1000, 1100, 1101, 1199, 1200)   # 版面断言的五档（spec §12.3 第 7 条）
 NARROW_WIDTHS = (860, 720)                     # 这两档只断言 .topbar 不溢出
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm")
-GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".comment-list", ".guard-state")
+GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
+                 ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
 
 # 弹幕留意（Comment Review）的四个场景，英文页进 G10 的扫描，中文页（-zh）只为核对中文界面和出截图。

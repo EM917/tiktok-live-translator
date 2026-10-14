@@ -113,6 +113,7 @@
   var guardBarMain = document.getElementById("guard-bar-main");
   var guardBarText = document.getElementById("guard-bar-text");
   var guardBarSeen = document.getElementById("guard-bar-seen");
+  var guardBarView = document.getElementById("guard-bar-view");
   var guardDrawer = document.getElementById("guard-drawer");
   var guardDrawerState = document.getElementById("guard-drawer-state");
   var guardReenableBtn = document.getElementById("guard-reenable");
@@ -1923,6 +1924,8 @@
     guardDrawer.classList.toggle("hidden", !open);
     if (guardBarMain) guardBarMain.setAttribute("aria-expanded", open ? "true" : "false");
     if (guardStateBtn) guardStateBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    // 条右侧的控件写的是点了会怎样：抽屉开着就是「收起」，不再写「查看」
+    if (guardBarView) guardBarView.textContent = guardBarViewText(open);
     if (!open) return;
     if (guardPressing) { guardDrawerDirty = true; return; }
     guardDrawerDirty = false;

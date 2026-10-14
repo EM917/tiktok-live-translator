@@ -401,11 +401,23 @@ function guardEventList(events) {
             .sort(function (a, b) { return (Number(b.ts) || 0) - (Number(a.ts) || 0); });
 }
 
+/* 类别名后面的计数：「疑似刷屏 ×2」/ “Possible flooding ×2”。两种语言同一个写法（docs/i18n-style.md §1.6）：
+ * 数字紧贴名字读不出是计数；用括号会撞类别名自带的括号（“Possible redirect (link) (1)”）。n 是事件数 */
+function guardCatCount(label, n) {
+  return label + " \u00d7" + Math.max(0, Math.round(Number(n) || 0));
+}
+
+/* 顶部条右侧那个控件的字：抽屉收着写「查看」，开着写「收起」——写的是点了之后会发生什么 */
+function guardBarViewText(open) {
+  return open ? L("收起", "Hide") : L("查看", "View");
+}
+
 /* 顶部条那一行。events 是事件表，seenTs 是「已看」的时刻（秒），opts.markedTs 是关注的人本场发言的时刻们。
  * 未读 = 晚于 seenTs 的事件。红条、琥珀、关注的人发言分开计，为 0 的不写；类别按严重程度排，
  * 超过 3 类写「另 n 类」。show 为假（三项全 0）时整条不显示。
  * **红条、琥珀和各类别都按事件计**（用户 2026-10-13 决定）：一次冲场、一次多账号同句各算 1 件，不数事件里的弹幕条数
  * （ev.n 只用在抽屉那一行的说明里，见 guardCountText）；关注的人发言数的是发言本身，按条计。
+ * 类别后面的计数写成「名字 ×n」（guardCatCount），关注的人发言写「n 条」：数字不紧贴名字。
  * 返回 { red, amber, marked, cats, more, latestTs, parts, text, show }：red / amber 是事件数，
  * parts 是各段文字，text 是用 " · " 连起来的整行。 */
 function guardBarSummary(events, seenTs, opts) {
@@ -430,10 +442,10 @@ function guardBarSummary(events, seenTs, opts) {
   var parts = [];
   if (red) parts.push(LN(red, "需要留意 " + red + " 件", "1 item to review", red + " items to review"));
   if (amber) parts.push(LN(amber, "拿不准 " + amber + " 件", amber + " unclear", amber + " unclear"));
-  if (spoke) parts.push(LN(spoke, "关注的人发言 " + spoke, spoke + " from marked viewers", spoke + " from marked viewers"));
+  if (spoke) parts.push(LN(spoke, "关注的人发言 " + spoke + " 条", spoke + " from marked viewers", spoke + " from marked viewers"));
   var show = parts.length > 0;
   if (show && shown.length) {
-    var names = shown.map(function (c) { return c.label + " " + c.n; });
+    var names = shown.map(function (c) { return guardCatCount(c.label, c.n); });
     if (more > 0) names.push(L("另 " + more + " 类", more + " more"));
     parts.push(names.join(L("、", ", ")));
   }
@@ -594,7 +606,7 @@ if (typeof module !== "undefined" && module.exports) {
     guardCatLabel, guardAmberText, guardReviewText, guardCountText, guardStateText, guardUnreviewedText,
     guardCapsule, guardSummary, guardRulesText, guardTimeText, guardLastSeenText,
     guardKeys, guardMarkIndex, guardIsMarked, guardMarkKey, guardMarkMessage, guardCommentView,
-    guardDecorateComment, guardEventList, guardBarSummary, guardEventRow, guardRenderEvents,
+    guardDecorateComment, guardEventList, guardCatCount, guardBarViewText, guardBarSummary, guardEventRow, guardRenderEvents,
     guardMarkedRows, guardRenderMarked, guardFillHeading, guardFabTitle,
   };
 }
