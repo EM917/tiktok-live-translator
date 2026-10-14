@@ -112,6 +112,15 @@ const ATTR = /([\w-]+)=(?:"([^"]*)"|'([^']*)')/g;
 
 // 按 index.html 的顺序在一个新的 vm 上下文里跑桌面页的脚本。带 id 的元素照页面源码建好
 // （标签名和属性与真页面一致；静态属性不算脚本写的），不建树：脚本只经 getElementById 拿它们
+// 每个页面都在自己的新上下文里跑一遍这些脚本，但脚本只编译一次。以前每个页面都把 app.js（3000 多行）
+// 重新编译一遍：守卫的页面用例加进来以后，整组 `node --test tests/*.test.mjs` 并行跑时，这个文件的子进程
+// 约三成概率在 V8 的垃圾回收里崩掉（Node 24.14.1，SIGSEGV，退出码 1，单跑从不崩）；只编译一次后连跑 40 次没有再崩。
+const scriptCache = new Map();
+function compiled(name) {
+  if (!scriptCache.has(name)) scriptCache.set(name, new vm.Script(web(name), { filename: "web/" + name }));
+  return scriptCache.get(name);
+}
+
 function runDesktop() {
   const html = web("index.html");
   const scripts = [...html.matchAll(/<script src="\/static\/([\w.-]+)\?v=\d+"><\/script>/g)].map((m) => m[1]);
@@ -169,7 +178,7 @@ function runDesktop() {
   sandbox.window = sandbox;
   vm.createContext(sandbox);
   vm.runInContext("Date.now = function () { return __now(); };", sandbox);
-  for (const name of scripts) vm.runInContext(web(name), sandbox, { filename: "web/" + name });
+  for (const name of scripts) compiled(name).runInContext(sandbox);
   assert.equal(vm.runInContext("UI_LANG", sandbox), "en", "i18n.js 应该从 <html lang> 读到英文");
   assert.equal(sockets.length, 1, "页面加载时应该连一次 WebSocket");
   const ws = () => sockets[sockets.length - 1];
