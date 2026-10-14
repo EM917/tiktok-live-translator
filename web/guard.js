@@ -117,7 +117,10 @@ function guardLagSec(state) {
 
 /* 功能状态（#guard-state 胶囊和设置行的状态行共用）。后端只发 status 代码；
  * 带数字的几种从 state 里取：lag_sec / trip.sec（识别落后几秒）、http（密钥被拒的 HTTP 状态码）、
- * wait_min（Claude 要求等几分钟）。这几个键是模型复核（PR-5）才有的，规则层不发 */
+ * wait_min（Claude 要求等几分钟）。这几个键是模型复核才有的，规则层不发。
+ * 现在的 Claude 后端发：rules / claude / paused / no_key / prompt_missing / key_rejected / offline / cooldown /
+ * model_missing / invalid；no_review、no_sdk、starting、tripped 是更早的版本和以后可能有的熔断型后端用的，
+ * 现在没有谁发，文案留着，万一收到也不会落到默认的一句 */
 function guardStateText(state) {
   var st = state || {};
   var sec = guardLagSec(st);
@@ -135,6 +138,8 @@ function guardStateText(state) {
                              "Model review is off for this session: speech recognition fell " + sec
                              + " sec behind. Rules only.");
     case "no_key": return L("没有 Claude 密钥，只用规则", "No Claude API key. Using rules only.");
+    case "prompt_missing": return L("读不到复核提示词文件，只用规则",
+                                    "The review prompt file couldn’t be read. Using rules only.");
     case "no_review": return L("这个版本还没有模型复核，只用规则",
                                "Model review isn’t in this version yet. Using rules only.");
     case "no_sdk": return L("缺少 Claude 组件，只用规则", "The Claude component isn’t installed. Using rules only.");

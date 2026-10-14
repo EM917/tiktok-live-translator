@@ -269,6 +269,7 @@ class GuardRuntime:
         self._state_dirty = False
         self._last_state_msg = float("-inf")
         self._review_q = cr.ReviewQueue(self.policy.QUEUE_MAX)
+        self._inflight = []                  # 正在问模型的那一批候选（收尾时还没回来的，要记成「未复核」）
         self.policy.reset()
         self._prev = OrderedDict()           # 账号键 -> (时刻, 上一条弹幕原文)：送审时带同一个人的前一条做上下文
         self._gate_seen = None
@@ -359,6 +360,8 @@ class GuardRuntime:
             self.enabled = False
             self._cancel_flush_timer()
             await self._stop_review()
+            if was_on and self._is_mine(token, owner_audit):
+                record = self._session_end_record()     # 收尾时还排着、还在问的候选这时已记成「未复核」
             await self._close_reviewer()
             if was_on and self._is_mine(token, owner_audit):
                 if broadcast is not None:
@@ -633,7 +636,8 @@ class GuardRuntime:
         return len(gone)
 
     def reenable(self):
-        """熔断后的「本场重新启用」。模型复核（PR-5）才会熔断；现在没有熔断，什么都不做。"""
+        """熔断后的「本场重新启用」。Claude 后端不熔断（它不占显存，识别落后只暂停、自己恢复），所以现在没有
+        东西可重新启用，什么都不做；消息和接口留着，给以后有会熔断的后端用。"""
         return False
 
     def dismiss(self, ev_id):
@@ -767,6 +771,7 @@ class GuardRuntime:
         code = blocked(t) if blocked is not None else None
         return {None: None, "cooldown": ("paused", "rate_limit"), "offline": ("paused", "offline"),
                 "key_rejected": ("locked", "key_rejected"), "model_missing": ("locked", "model_missing"),
+                "prompt_missing": ("locked", "prompt_missing"),
                 "invalid": ("locked", "invalid")}.get(code, ("paused", code))
 
     def _sync_gate(self, t, backlog=None):
@@ -852,13 +857,28 @@ class GuardRuntime:
         self._review_event.set()
 
     async def _stop_review(self):
-        """取消复核任务并等它真的收掉（最多 1 秒）：永不返回的复核不能挂住收尾，也不留下悬着的任务。"""
+        """取消复核任务并等它真的收掉（最多 1 秒）：永不返回的复核不能挂住收尾，也不留下悬着的任务。
+        还排在队里的、正在问模型还没回来的候选一律记成「未复核」（计数 + 弹幕上的「模型复核中…」改成
+        「未经模型复核」）：没拿到模型意见的弹幕，合规计数不能少报。"""
         task = self._review_task
         self._review_task = None
-        self._review_q.clear()
+        for entry in self._review_q.drain():
+            self._skip_review(entry)
         if task is not None and not task.done():
             task.cancel()
             await asyncio.wait([task], timeout=self.STOP_REVIEW_WAIT_SEC)
+        # 任务按时收掉的话，它自己已经记过（_skip_inflight）；没按时收掉（卡住、吞了取消）的，这里替它记
+        batch, self._inflight = self._inflight, []
+        for entry in batch:
+            self._skip_review(entry)
+
+    def _skip_inflight(self, batch):
+        """正在问的这一批没有结果：记成「未复核」。只记一次（_stop_review 先替它记过的，这里不再重复）。"""
+        if self._inflight is not batch:
+            return
+        self._inflight = []
+        for entry in batch:
+            self._skip_review(entry)
 
     async def _review_loop(self):
         """惰性启动，永不向外抛异常。攒 2 秒（或凑满一批）再一起送；结果回来时如果已经换场就丢掉。"""
@@ -878,35 +898,44 @@ class GuardRuntime:
 
     async def _take_batch(self, t):
         """从队列里取一批要问模型的候选。排太久的、打码之后没什么可判的、同句缓存里已经有答案的，当场处理；
-        同一句话（fold 之后相同）只问一次，其余的跟着用这一条的答案。返回 (要问的, {cid: 跟着用答案的候选})。
+        送出去的内容一模一样的（cr.review_key：打码文本、hint、flags、前一条都相同）只问一次，其余的跟着用这一条的答案。
+        返回 (要问的, {cid: 跟着用答案的候选})。
         每条之间让出事件循环：打码一条约 1 毫秒，队列满时一口气几十条，别占着循环（音频读取也在上面）。"""
         leaders, followers, seen = [], {}, {}
-        while self._review_q and len(leaders) < self.policy.batch_limit:
-            await asyncio.sleep(0)
-            entry = self._review_q.pop_first()
-            if entry is None:
-                break
-            if entry["token"] != self._token:
-                continue
-            if t - entry["queued"] > self.policy.MAX_AGE_SEC:
+        try:
+            while self._review_q and len(leaders) < self.policy.batch_limit:
+                await asyncio.sleep(0)
+                entry = self._review_q.pop_first()
+                if entry is None:
+                    break
+                if entry["token"] != self._token:
+                    continue
+                if t - entry["queued"] > self.policy.MAX_AGE_SEC:
+                    self._skip_review(entry)
+                    continue
+                masked = cr.mask(entry["text"])
+                if not cr.reviewable(masked):
+                    self._skip_review(entry)
+                    continue
+                entry["masked"] = masked
+                entry["prev_masked"] = cr.mask(entry["prev"]) if entry.get("prev") else None
+                # 键 = 模型看到的一切（见 cr.review_key），不是 fold 之后的文本：问句和断言不能共用一个判定
+                entry["key"] = key = cr.review_key(masked, entry["hint"], entry["flags"], entry["prev_masked"])
+                cached = self.policy.cache_get(key, t)
+                if cached is not None:
+                    self._apply_verdict(entry, cached)
+                    continue
+                if key in seen:
+                    followers.setdefault(seen[key]["cid"], []).append(entry)
+                    continue
+                seen[key] = entry
+                leaders.append(entry)
+        except asyncio.CancelledError:
+            # 收尾时取消：已经从队里取出来、还没送出去的，记成「未复核」（让出事件循环只发生在循环开头，
+            # 手里没有拿着一半的候选）
+            for entry in leaders + [e for group in followers.values() for e in group]:
                 self._skip_review(entry)
-                continue
-            masked = cr.mask(entry["text"])
-            if not cr.reviewable(masked):
-                self._skip_review(entry)
-                continue
-            entry["masked"] = masked
-            entry["key"] = key = cg.fold_key(entry["text"])
-            cached = self.policy.cache_get(key, t)
-            if cached is not None:
-                self._apply_verdict(entry, cached)
-                continue
-            if key in seen:
-                followers.setdefault(seen[key]["cid"], []).append(entry)
-                continue
-            seen[key] = entry
-            entry["prev_masked"] = cr.mask(entry["prev"]) if entry.get("prev") else None
-            leaders.append(entry)
+            raise
         return leaders, followers
 
     async def _review_once(self):
@@ -926,21 +955,28 @@ class GuardRuntime:
         token = self._token
         waited_ms = int((t - min(e["queued"] for e in leaders)) * 1000)
         t0 = time.perf_counter()
+        self._inflight = everyone
         try:
             result = await self.reviewer.review(leaders)
         except asyncio.CancelledError:
             if token == self._token:
                 self._audit_review(None, len(leaders), int((time.perf_counter() - t0) * 1000), "cancelled", waited_ms)
+                self._skip_inflight(everyone)       # 收尾 / 换场取消：这一批没有拿到模型意见
             raise
         except Exception as exc:
             # 后端自己的 bug（真后端永不抛）：这一批记「未复核」，别让「复核中…」一直挂在界面上
             print("[弹幕] 复核后端出错：{}".format(exc))
             if token == self._token:
-                for entry in everyone:
-                    self._skip_review(entry)
+                self._skip_inflight(everyone)
             return
-        if token != self._token:
-            return                              # 换场了：上一场的复核结果不写进这一场
+        finally:
+            # 回来了（或出错了）：不再是「在途」。_inflight 已经不是这一批：收尾的 _stop_review 等不及（后端没理会
+            # 取消）已经替它们记过「未复核」，晚到的结果就不再算数，免得同一条既算未复核又算已复核
+            still_mine = self._inflight is everyone
+            if still_mine:
+                self._inflight = []
+        if token != self._token or not still_mine:
+            return                              # 换场了、或这一批已被收尾记成未复核：晚到的结果不写
         t = self._clock()
         if not isinstance(result, cr.ReviewResult):
             # 只给一句模型意见的简单后端（{cid: rv 代码}）：照单写到旁边，不改档位
@@ -952,7 +988,7 @@ class GuardRuntime:
                     self._skip_review(entry)
             return
         self.reviews += 1
-        if result.outcome in ("invalid", "http_4xx"):
+        if cr.counts_as_invalid(result):
             self.review_invalid += 1
         self._audit_review(result, len(leaders), result.ms, result.outcome, waited_ms)
         self.policy.note_max_tokens_streak(getattr(self.reviewer, "max_tokens_streak", 0))

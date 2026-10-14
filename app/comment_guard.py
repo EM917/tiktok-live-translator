@@ -261,7 +261,9 @@ def fold(text, slang=True):
 
 
 def fold_key(text):
-    """折叠后文本的短哈希：同一句话（拼写漂移之后）的缓存键，给 PR-5 的同句缓存用。"""
+    """折叠后文本的短哈希：同一句话（拼写漂移之后）的键。**不要拿它当模型判定的缓存键**：fold 会丢掉问号和
+    表情，`¿es falso?` 和 `es falso 🤡` 折叠后一样，但对模型是一问一断言（模型复核的缓存键见
+    comment_review.review_key，是它实际看到的那一份）。"""
     return hashlib.sha1(fold(text).encode("utf-8")).hexdigest()[:16]
 
 

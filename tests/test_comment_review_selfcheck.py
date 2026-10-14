@@ -146,3 +146,47 @@ def test_run_all_includes_the_row_when_a_guard_is_given(monkeypatch, tmp_path):
     assert "弹幕留意" in names and names.index("弹幕留意") == len(names) - 2         # 在「磁盘空间」前面
     assert asyncio.iscoroutinefunction(selfcheck.check_comment_guard)
     assert cr.GUARD_CLAUDE_MODEL == "claude-haiku-5-5"
+
+
+def test_a_missing_prompt_file_is_not_reported_as_a_missing_key(monkeypatch, tmp_path):
+    """密钥在，读不到的是复核提示词：这一行不能说「没有 Claude 密钥」（让人去重填一把好密钥），也不用去探针。"""
+    from tests.i18n_rules import EN_CAUSAL, EN_LABELS
+    monkeypatch.setattr(cr, "PROMPT_FILE", tmp_path / "gone.txt")
+    rt = guard_with(monkeypatch, tmp_path)
+    session = probe_with(rt, lambda body, n: Resp(200, {}))
+    row = check(rt)
+    zh, en = both(row)
+    assert zh["level"] == "ok" and "读不到复核提示词文件" in zh["detail"] and "只用规则" in zh["detail"]
+    assert "密钥" not in zh["detail"] and "密钥" not in zh["fix"] and zh["fix"]
+    assert "prompt file couldn’t be read" in en["detail"] and "Rules only" in en["detail"]
+    assert "no Claude API key" not in en["detail"] and "key" not in en["fix"].lower()
+    for field in ("detail", "fix"):
+        assert not CJK.search(en[field]) and not UNFILLED.search(en[field]), en[field]
+        assert not EN_LABELS.search(en[field]) and not EN_CAUSAL.search(en[field]), en[field]
+    assert session.gets == [] and session.posts == []
+
+
+def test_the_probe_is_given_five_seconds_and_a_probe_that_hangs_is_still_an_ok_row(monkeypatch, tmp_path):
+    """探针限时 5 秒：把时限改大，一个卡住的接口会把启动自检拖得更久。这里不真等 5 秒——记下传给 wait_for 的时限，
+    再把真正的等待缩成 0.05 秒。"""
+    rt = guard_with(monkeypatch, tmp_path)
+
+    class Hang:
+        async def __aenter__(self):
+            await asyncio.Event().wait()
+
+        async def __aexit__(self, *a):
+            return False
+
+    probe_with(rt, lambda body, n: Hang())
+    real_wait_for, limits = asyncio.wait_for, []
+
+    async def spy(awaitable, timeout=None):
+        limits.append(timeout)
+        return await real_wait_for(awaitable, 0.05)
+
+    monkeypatch.setattr(selfcheck.asyncio, "wait_for", spy)
+    zh, en = both(check(rt))
+    assert limits.count(5) == 1 and limits[-1] == 5          # 前面还有开场时关后端的 2 秒（_close_reviewer），探针是最后一个
+    assert zh["level"] == "ok" and "这次没连上 Claude" in zh["detail"] and "只用规则" in zh["detail"]
+    assert "Couldn’t reach Claude this time" in en["detail"] and "Rules only" in en["detail"]

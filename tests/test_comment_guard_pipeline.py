@@ -20,6 +20,7 @@ import pytest
 
 from app import comment_guard as cg
 from app import comment_marks
+from app import comment_review as cr
 from app import pipeline as pipeline_mod
 from app import resolver, settings
 from app.asr import ASRResult
@@ -1992,3 +1993,71 @@ def test_run_selfcheck_adds_a_comment_review_row_that_is_never_worse_than_ok(mon
     rows = {c["name"]: c for c in server.config["selfcheck"]["checks"]}
     row = rows["弹幕留意"]
     assert row["level"] == "ok" and "密钥" in row["detail"] and "规则" in row["detail"]
+
+
+# ---- 统计循环那一跳推进复核的状态（PR-5 复审）---------------------------------------------------------------------
+
+def test_the_guard_tick_moves_the_review_state_along_even_when_no_comment_arrives(monkeypatch, tmp_path):
+    """tick_review 只在 _guard_tick 里被调：识别落后后的恢复（回到 ok 满 30 秒）、限流冷却到期，都要在没有新弹幕
+    进来的时候让状态胶囊更新、审计写 resumed。把 _guard_tick 里 guard.tick_review() 摘掉，这里要红。"""
+    from tests.test_comment_review import KEY, Clock, Resp, Session, answer
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    clock = Clock()
+    p.guard._clock = clock                              # 复核后端在开场时拿这个钟
+    p.guard.cfg["backend"] = "claude"
+    backlog = [0.0]
+    p.guard.health_probe = lambda: (backlog[0], True)
+    answers = {"limit": False}
+
+    def responder(body, n):
+        if body is None:                                # 开场自检的探针（GET /v1/models/…）
+            return Resp(200, {})
+        return Resp(429, {}, headers={"Retry-After": "90"}) if answers["limit"] else answer(body)
+
+    session = Session(responder)
+
+    async def get_session():
+        return session
+
+    # 开场就会造后端、跑自检的探针：假会话要在 _begin_session 之前就接上，测试从不联网
+    monkeypatch.setattr(cr.ClaudeReviewer, "session", lambda self: get_session())
+
+    def shown():
+        return [m["guard_state"]["status"] for m in server.of_type("config") if "guard_state" in m][-1]
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        assert shown() == "claude" and session.posts == []
+        # 识别落后 12 秒：下一跳暂停
+        backlog[0] = 12.0
+        clock.advance(3)
+        await p._guard_tick()
+        assert shown() == "paused"
+        # 回到 ok：刚回来不恢复；满 30 秒的那一跳恢复，页面收到新状态——这中间没有任何一条新弹幕
+        backlog[0] = 0.0
+        clock.advance(3)
+        await p._guard_tick()
+        assert shown() == "paused"
+        clock.advance(31)
+        await p._guard_tick()
+        assert shown() == "claude"
+        # 被限流：冷却 90 秒；到期那一跳状态回到 claude
+        answers["limit"] = True
+        p.guard.observe([item("a1", "Ana", "es falso", uid=UID)], now=1000.0)
+        await p.guard.flush(server.broadcast)
+        await asyncio.sleep(0.05)
+        clock.advance(3)                                 # 状态消息至少隔 2 秒才发（STATE_MSG_GAP_SEC）
+        await p._guard_tick()
+        assert shown() == "cooldown" and len(session.posts) == 1
+        clock.advance(91)
+        await p._guard_tick()
+        assert shown() == "claude"
+        audit = p.audit
+        await p._end_session(p.audit, reason="user_stop")
+        return audit
+
+    audit = run(scenario())
+    gates = [(g["state"], g["reason"]) for g in of(audit_records(audit), "comment_guard_gate")]
+    assert gates == [("paused", "lagging"), ("resumed", "lagging"), ("paused", "rate_limit"), ("resumed", "rate_limit")]

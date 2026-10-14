@@ -565,7 +565,7 @@ def test_the_same_sentence_later_is_answered_from_the_cache_for_thirty_minutes(m
         await settle(rt, sink)
         assert len(session.posts) == 1
         clock.advance(600)
-        rt.observe([item("b", "Bea", ROUTED_TEXT.upper(), uid="1002")], now=1600.0)         # 大小写不同，fold 之后同一句
+        rt.observe([item("b", "Bea", ROUTED_TEXT, uid="1002")], now=1600.0)                 # 另一个人，一字不差的同一句
         await settle(rt, sink)
         assert len(session.posts) == 1 and rt._ann["b"]["lvl"] == "amber"
         clock.advance(cr.ReviewPolicy.CACHE_TTL_SEC + 1)
@@ -633,6 +633,15 @@ def test_the_per_minute_and_per_session_call_limits(monkeypatch, tmp_path):
         assert len(session.posts) == 3                                    # 每场 3 次（这里调小了）
 
     run(scenario())
+
+
+def test_the_spec_constants_are_pinned_to_their_literal_values():
+    """这些常量在别的测试里是拿常量本身当边界用的（`PREV_MAX_SEC + 1`、`<= SEND_MAX_CHARS`），常量改了测试跟着动，
+    什么都拦不住：字面值钉在这里。"""
+    from app.pipeline_guard import GuardRuntime
+    assert (cr.SEND_MAX_CHARS, cr.EVIDENCE_MAX, cr.PREV_MAX_SEC, cr.MIN_MASK_DIGITS) == (280, 120, 120.0, 7)
+    assert GuardRuntime.PREV_USERS == 500 and GuardRuntime.PREV_TEXT == 300
+    assert cr.ClaudeReviewer.TIMEOUT_SEC == 8.0 and cr.HEALTH_PAUSE_SEC == 10.0 and cr.HEALTH_RESUME_SEC == 30.0
 
 
 def test_defaults_match_the_spec_table():
@@ -1202,12 +1211,30 @@ def test_the_configured_backend_follows_the_setting_and_leaves_injected_ones_alo
     assert rt.reviewer is fake
 
 
-def test_make_reviewer_needs_a_key_and_a_prompt(monkeypatch, tmp_path):
+def test_make_reviewer_needs_a_key_and_a_missing_prompt_is_its_own_state(monkeypatch, tmp_path):
     assert cr.make_reviewer() is None                        # conftest 清掉了环境变量，临时 settings.json 里也没有
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
-    assert isinstance(cr.make_reviewer(), cr.ClaudeReviewer)
+    good = cr.make_reviewer()
+    assert isinstance(good, cr.ClaudeReviewer) and good.status() == ("claude", {})
+    real_prompt = cr.PROMPT_FILE
     monkeypatch.setattr(cr, "PROMPT_FILE", tmp_path / "missing.txt")
-    assert cr.make_reviewer() is None
+    bad = cr.make_reviewer()
+    # 密钥是好的、读不到的是提示词：造得出来，但它的状态是 prompt_missing，不是「没有密钥」
+    assert isinstance(bad, cr.ClaudeReviewer) and bad.prompt is None and bad.status() == ("prompt_missing", {})
+    assert bad.blocked() == "prompt_missing"
+    monkeypatch.setattr(cr, "PROMPT_FILE", real_prompt)
+    # 提示词回来了（比如换了文件）：不沿用那个没有提示词的后端
+    fixed = cr.make_reviewer(existing=bad)
+    assert fixed is not bad and fixed.status() == ("claude", {})
+
+
+def test_the_suite_never_sees_a_key_saved_in_the_real_settings_file():
+    """api_key() 先看环境变量、再看 settings.json 的 api_keys。conftest 只删环境变量的话，开发机上在界面里存过
+    Claude 密钥，选了 Claude 的用例就会造出真后端、探针带着真密钥联网：SETTINGS_FILE 必须被指到临时目录。"""
+    from app import settings, translator
+    real = Path(settings.__file__).resolve().parent.parent / "settings.json"
+    assert settings.SETTINGS_FILE.resolve() != real
+    assert translator.saved_keys() == {} and cr.make_reviewer() is None
 
 
 def test_probe_key_lists_the_model_without_spending_tokens(monkeypatch):
@@ -1340,3 +1367,334 @@ def test_whatever_the_model_says_no_comment_is_ever_demoted_and_nobody_is_added(
         assert g["lvl"] in ("alert", "amber", "note") and g["rv"] in (None, "pending", "agree", "question", "complaint",
                                                                         "friendly", "neutral", "unsure", "skipped")
         assert len(g.get("evidence", "")) <= cr.EVIDENCE_MAX
+
+
+# ---- PR-5 复审修复 ---------------------------------------------------------------------------------------------
+# 同句缓存的键、收尾时挂着的候选、提示词读不到、review_invalid 的口径、没有账号键的弹幕、晚到的结果
+
+QUESTION_VS_ASSERTION = {"¿": ("question", "none", True, ""),
+                         "🤡": ("fraud_claim", "seller_or_product", True, "es falso")}
+
+
+def test_the_premise_fold_cannot_tell_a_question_from_an_assertion():
+    """这条是前提：fold 把 ¿ ? 和表情都丢了，所以不能拿 fold 之后的文本当模型判定的缓存键。"""
+    assert cg.fold("es falso") == cg.fold("¿es falso?") == cg.fold("es falso 🤡")
+    assert cg.fold_key("¿es falso?") == cg.fold_key("es falso 🤡")
+    m = cr.mask
+    assert cr.review_key(m("¿es falso?")) != cr.review_key(m("es falso 🤡")) != cr.review_key(m("es falso"))
+
+
+def test_the_review_key_is_everything_the_model_sees_and_nothing_else():
+    m = cr.mask
+    base = cr.review_key(m("es falso"), "accuse_claim", ["maybe_question"], None)
+    assert base == cr.review_key(m("es falso"), "accuse_claim", ("maybe_question",), None)
+    assert base == cr.review_key(m("es falso"), "accuse_claim", ["maybe_question"], cr.mask(""))      # 前一条是空的 = 没有
+    for name, other in {
+        "question mark": cr.review_key(m("es falso?"), "accuse_claim", ["maybe_question"], None),
+        "inverted mark": cr.review_key(m("¿es falso"), "accuse_claim", ["maybe_question"], None),
+        "emoji": cr.review_key(m("es falso 🤡"), "accuse_claim", ["maybe_question"], None),
+        "case": cr.review_key(m("ES FALSO"), "accuse_claim", ["maybe_question"], None),
+        "hint": cr.review_key(m("es falso"), "insult_medium", ["maybe_question"], None),
+        "no hint": cr.review_key(m("es falso"), "", ["maybe_question"], None),
+        "flags": cr.review_key(m("es falso"), "accuse_claim", ["quote"], None),
+        "no flags": cr.review_key(m("es falso"), "accuse_claim", [], None),
+        "previous comment": cr.review_key(m("es falso"), "accuse_claim", ["maybe_question"], m("hola bella")),
+    }.items():
+        assert other != base, name
+    with_prev = cr.review_key(m("es falso"), "accuse_claim", ["maybe_question"], m("hola bella"))
+    assert with_prev == cr.review_key(m("es falso"), "accuse_claim", ["maybe_question"], m("hola bella"))
+    assert with_prev != cr.review_key(m("es falso"), "accuse_claim", ["maybe_question"], m("hola luna"))
+
+
+def test_a_cached_question_verdict_is_not_reused_for_the_assertion_variant(monkeypatch, tmp_path):
+    """评审的场景 A：先问了 ¿es falso?（提问），十秒后另一个人发 es falso 🤡（断言）。以前后者被缓存喂了
+    「提问」，琥珀升不了红。"""
+    rt, session, log = runtime(monkeypatch, tmp_path, always(QUESTION_VS_ASSERTION))
+    sink = Sink()
+
+    async def scenario():
+        await start(rt, audit=log)
+        rt.observe([item("q1", "Ana", "¿es falso?", uid=UID)], now=1000.0)
+        await settle(rt, sink)
+        rt.observe([item("s1", "Bea", "es falso 🤡", uid="7002")], now=1010.0)
+        await settle(rt, sink)
+
+    run(scenario())
+    assert len(session.posts) == 2                                  # 两句各问各的
+    s1 = rt._ann["s1"]
+    assert (s1["lvl"], s1["src"], s1["rv"]) == ("alert", "review", "agree") and rt.review_promoted["amber_to_red"] == 1
+    assert rt._ann["q1"]["lvl"] == "note"                           # 提问没有被抬成琥珀
+
+
+def test_a_cached_attack_verdict_is_not_reused_for_the_innocent_question_variant(monkeypatch, tmp_path):
+    """评审的场景 B（反过来）：断言先被缓存成攻击，无辜的提问不能凭缓存变成「模型标出」的琥珀。"""
+    rt, session, log = runtime(monkeypatch, tmp_path, always(QUESTION_VS_ASSERTION))
+    sink = Sink()
+
+    async def scenario():
+        await start(rt, audit=log)
+        rt.observe([item("s1", "Bea", "es falso 🤡", uid="7002")], now=1000.0)
+        await settle(rt, sink)
+        rt.observe([item("q1", "Ana", "¿es falso?", uid=UID)], now=1010.0)
+        await settle(rt, sink)
+
+    run(scenario())
+    assert len(session.posts) == 2
+    q1 = rt._ann["q1"]
+    assert q1["lvl"] == "note" and q1.get("src") != "review" and rt.review_promoted["note_to_amber"] == 0
+    assert rt._ann["s1"]["lvl"] == "alert"
+
+
+def test_the_two_variants_in_one_batch_are_asked_separately_not_answered_by_one_leader(monkeypatch, tmp_path):
+    rt, session, log = runtime(monkeypatch, tmp_path, always(QUESTION_VS_ASSERTION))
+    sink = Sink()
+
+    async def scenario():
+        await start(rt, audit=log)
+        rt.observe([item("q1", "Ana", "¿es falso?", uid=UID), item("s1", "Bea", "es falso 🤡", uid="7002")], now=1000.0)
+        await settle(rt, sink)
+
+    run(scenario())
+    assert len(session.posts) == 1 and len(asked(session.posts[0]["body"])) == 2        # 一次调用，两条
+    assert rt._ann["s1"]["lvl"] == "alert" and rt._ann["q1"]["lvl"] == "note"
+
+
+def test_the_same_words_with_a_different_previous_comment_are_asked_again(monkeypatch, tmp_path):
+    """模型看到的还有同一个人的前一条：前一条不同，就不是同一个输入。"""
+    rt, session, log = runtime(monkeypatch, tmp_path)
+    sink = Sink()
+
+    async def scenario():
+        await start(rt, audit=log)
+        rt.observe([item("p0", "Ana", "hola bella buenas noches", uid=UID),
+                    item("p1", "Ana", "es falso", uid=UID),
+                    item("p2", "Bea", "es falso", uid="7002")], now=1000.0)
+        await settle(rt, sink)
+
+    run(scenario())
+    bodies = [row for post in session.posts for row in asked(post["body"])]
+    assert len(session.posts) == 1 and len(bodies) == 2
+    assert sum('flags="' in attrs and "prev" in attrs for _, attrs, _ in bodies) == 1       # 只有 Ana 那条带着前一条
+
+
+def test_identical_text_from_two_people_is_still_one_model_call(monkeypatch, tmp_path):
+    """键认的是「一字不差」，不是「根本不去重」：复制粘贴的同一句（冲场最常见的样子）还是只问一次。"""
+    rt, session, log = runtime(monkeypatch, tmp_path)
+    sink = Sink()
+
+    async def scenario():
+        await start(rt, audit=log)
+        rt.observe([item("x1", "Ana", "es falso", uid=UID), item("x2", "Bea", "es falso", uid="7002")], now=1000.0)
+        await settle(rt, sink)
+
+    run(scenario())
+    assert len(session.posts) == 1 and len(asked(session.posts[0]["body"])) == 1
+
+
+# ---- 收尾时还挂着的候选 ---------------------------------------------------------------------------------------
+
+def test_ending_a_session_marks_queued_and_in_flight_candidates_unreviewed_and_tells_the_page(monkeypatch, tmp_path):
+    rt, session, log = runtime(monkeypatch, tmp_path, lambda body, n: Hang())
+    sink = Sink()
+
+    async def scenario():
+        await start(rt, audit=log)
+        out = rt.observe([item("a1", "Ana", "es falso", uid=UID), item("a2", "Bea", "es falso 2 ", uid="7002"),
+                          item("n1", "Cleo", ROUTED_TEXT, uid="7003")], now=1000.0)
+        assert [o["guard"]["rv"] for o in out[:2]] == ["pending", "pending"]
+        await rt.flush(sink)
+        await asyncio.sleep(0.05)                                    # 第一批在路上（Hang），永不回来
+        rt.observe([item("a3", "Dan", "es falso otra vez", uid="7004")], now=1001.0)    # 排在后面
+        await rt.flush(sink)
+        assert rt._ann["a3"]["rv"] == "pending"
+        return await rt.end(log, broadcast=sink)
+
+    record = run(scenario())
+    assert {cid: g["rv"] for cid, g in rt._ann.items() if g["lvl"] == "amber"} == \
+        {"a1": "skipped", "a2": "skipped", "a3": "skipped"}
+    told = {}
+    for msg in sink.of("comment_guard"):
+        told[msg["id"]] = msg["guard"]["rv"]
+    assert told == {"a1": "skipped", "a2": "skipped", "a3": "skipped"}       # 页面上的「模型复核中…」撤掉了
+    assert record["unreviewed"] == 4 and rt.unreviewed == 4 and record["reviews"] == 0      # 3 条在路上（含隐藏的线索）+ 1 条排队
+    assert [r["outcome"] for r in of(audit_records(log), "comment_guard_review")] == ["cancelled"]
+
+
+def test_a_backend_that_ignores_cancellation_does_not_leave_the_batch_pending_or_count_it_twice(monkeypatch, tmp_path):
+    rt, session, log = runtime(monkeypatch, tmp_path)
+    rt.STOP_REVIEW_WAIT_SEC = 0.05
+    sink = Sink()
+
+    async def scenario():
+        release = asyncio.Event()
+        calls = []
+
+        class Stubborn:
+            async def review(self, batch):
+                calls.append(batch)
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        pass                                         # 不理会取消
+                result = cr.ReviewResult()
+                for e in batch:
+                    result[e["cid"]] = verdict_row()
+                result.valid = len(batch)
+                return result
+
+        rt.reviewer = Stubborn()
+        await start(rt, audit=log)
+        rt.observe([item("a1", "Ana", "es falso", uid=UID)], now=1000.0)
+        await rt.flush(sink)
+        await asyncio.sleep(0.05)
+        assert len(calls) == 1
+        record = await rt.end(log, broadcast=sink)
+        release.set()
+        await asyncio.sleep(0.05)                                    # 晚到的结果回来了
+        return record
+
+    record = run(scenario())
+    assert record["unreviewed"] == 1 and rt.unreviewed == 1
+    assert rt.reviews == 0 and rt.review_agree == 0 and rt.review_promoted["amber_to_red"] == 0     # 晚到的不再算数
+    assert rt._ann["a1"]["rv"] == "skipped" and rt._ann["a1"]["lvl"] == "amber"
+
+
+def test_a_result_that_arrives_after_the_session_changed_is_dropped_even_without_a_cancellation(monkeypatch, tmp_path):
+    """换场的 token 核对：这里不经过 begin（它会先取消任务），只把 token 加一，模拟「结果回来时已经不是这一场」。"""
+    rt, session, log = runtime(monkeypatch, tmp_path)
+    sink = Sink()
+
+    async def scenario():
+        release = asyncio.Event()
+
+        class Slow:
+            async def review(self, batch):
+                await release.wait()
+                result = cr.ReviewResult()
+                for e in batch:
+                    result[e["cid"]] = verdict_row()
+                result.valid = len(batch)
+                return result
+
+        rt.reviewer = Slow()
+        await start(rt, audit=log)
+        rt.observe([item("n1", "Cleo", ROUTED_TEXT, uid="7003")], now=1000.0)
+        await rt.flush(sink)
+        await asyncio.sleep(0.05)
+        rt._token += 1
+        release.set()
+        await asyncio.sleep(0.05)
+
+    run(scenario())
+    assert rt.reviews == 0 and rt.review_promoted["note_to_amber"] == 0
+    assert rt._ann["n1"]["lvl"] == "note"                            # 上一场的结果没有把线索抬成琥珀
+
+
+# ---- 提示词读不到 ---------------------------------------------------------------------------------------------
+
+def test_a_missing_prompt_file_is_its_own_status_and_never_reads_as_a_missing_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(cr, "PROMPT_FILE", tmp_path / "gone.txt")
+    rt, session, log = runtime(monkeypatch, tmp_path)                 # 密钥是有的
+    assert rt.reviewer is not None and rt.status_code() == "prompt_missing"
+    sink = Sink()
+
+    async def scenario():
+        info = await start(rt, audit=log)
+        out = rt.observe([item("a1", "Ana", "es falso", uid=UID)], now=1000.0)
+        assert out[0]["guard"]["rv"] == "skipped"                     # 不送，规则的琥珀照出
+        await settle(rt, sink)
+        await rt.end(log, broadcast=sink)
+        return info
+
+    info = run(scenario())
+    assert session.posts == [] and session.gets == [] and rt.unreviewed == 1
+    assert info["prompt_hash"] is None and info["model"] == "claude-haiku-5-5"
+    assert [(g["state"], g["reason"]) for g in of(audit_records(log), "comment_guard_gate")] == [("locked", "prompt_missing")]
+    assert rt.state()["status"] == "prompt_missing"
+
+
+def test_a_reviewer_without_a_prompt_never_sends_even_if_asked_directly(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    monkeypatch.setattr(cr, "PROMPT_FILE", tmp_path / "gone.txt")
+    reviewer = cr.make_reviewer()
+    session = Session(lambda body, n: answer(body))
+
+    async def get_session():
+        return session
+
+    reviewer.session = get_session
+    result = run(reviewer.review([{"cid": "a", "masked": cr.mask("es falso"), "prev_masked": None, "hint": "", "flags": []}]))
+    assert result.outcome == "skipped" and not result and session.posts == []
+
+
+# ---- session_end.review_invalid 的口径 ------------------------------------------------------------------------
+
+@pytest.mark.parametrize("status,headers,expected", [
+    (429, {"retry-after": "5"}, 0),          # 限流：不是模型的输出有问题
+    (401, {}, 0),                            # 密钥被拒
+    (403, {}, 0),
+    (404, {}, 0),                            # 模型找不到
+    (400, {}, 1),                            # 接口认为我们的请求不对（spec：BadRequest 记 invalid）
+    (422, {}, 1),
+])
+def test_review_invalid_counts_bad_model_output_and_bad_requests_but_not_rate_limits_or_rejected_keys(
+        monkeypatch, tmp_path, status, headers, expected):
+    rt, session, log = runtime(monkeypatch, tmp_path, lambda body, n: Resp(status, {}, headers=headers))
+    sink = Sink()
+
+    async def scenario():
+        await start(rt, audit=log)
+        await one_comment(rt, sink)
+        return await rt.end(log, broadcast=sink)
+
+    record = run(scenario())
+    assert record["review_invalid"] == expected and record["reviews"] == 1 and record["unreviewed"] == 1
+    assert of(audit_records(log), "comment_guard_review")[0]["outcome"] == "http_4xx"       # 限流等照样看得到
+
+
+def test_counts_as_invalid_reads_the_outcome_and_the_http_code():
+    def result(outcome, http=None):
+        r = cr.ReviewResult()
+        r.outcome, r.http = outcome, http
+        return r
+
+    assert cr.counts_as_invalid(result("invalid"))
+    assert cr.counts_as_invalid(result("http_4xx", 400))
+    for ok in (result("ok"), result("refusal"), result("max_tokens"), result("timeout"), result("http_5xx", 503),
+               result("http_4xx", 429), result("http_4xx", 401), result("http_4xx", 403), result("http_4xx", 404)):
+        assert not cr.counts_as_invalid(ok), (ok.outcome, ok.http)
+
+
+# ---- 没有账号键的弹幕、以及几个只靠常量撑着的闸 -----------------------------------------------------------------
+
+def test_a_comment_with_no_account_key_at_all_is_never_rate_limited_per_person():
+    p = cr.ReviewPolicy()
+    assert p.user_allowed(None, 0.0) and p.user_allowed(None, 0.1) and p.user_allowed("", 0.2)
+    assert p.user_allowed("u1", 0.0) and not p.user_allowed("u1", 29.9) and p.user_allowed("u1", 30.0)
+
+
+def test_comments_without_a_uid_or_a_nickname_are_still_reviewed(monkeypatch, tmp_path):
+    rt, session, log = runtime(monkeypatch, tmp_path)
+    sink = Sink()
+
+    async def scenario():
+        await start(rt, audit=log)
+        out = rt.observe([item("z1", "", "es falso"), item("z2", "", "es falso 2 ")], now=1000.0)
+        assert [o["guard"]["rv"] for o in out] == ["pending", "pending"]
+        await settle(rt, sink)
+
+    run(scenario())
+    assert len(session.posts) == 1 and len(asked(session.posts[0]["body"])) == 2 and rt.unreviewed == 0
+
+
+def test_a_masked_text_that_still_shows_contact_data_is_never_reviewable(monkeypatch):
+    """打码层漏了的话，reviewable 里的 leaks 检查是最后一道：把 mask 的输出改成带链接的，必须不送。"""
+    m = cr.mask("es una estafa")
+    assert cr.reviewable(m)
+    m.text = "es una estafa https://evil.example.com/x"
+    assert not cr.reviewable(m)
+    m.text = "es una estafa @ana_demo"
+    assert not cr.reviewable(m)
+    m.text = "es una estafa 5512345678"
+    assert not cr.reviewable(m)

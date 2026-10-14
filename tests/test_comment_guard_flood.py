@@ -216,9 +216,9 @@ def test_replaying_the_same_ids_twice_reports_nothing_the_second_time():
     assert len(first) == len(second) == 6
 
 
-def test_forty_accounts_with_the_same_sentence_share_one_event_and_one_cache_key():
-    """PR-5 的同句缓存按 fold_key 做键，冲场时 40 个账号发同一句只问一次模型；这里钉住它依赖的前提：
-    同一个事件 id、同一个 fold_key。"""
+def test_forty_accounts_with_the_same_sentence_share_one_event_and_one_fold_key():
+    """冲场时 40 个账号发同一句（拼写有漂移）：规则层把它们并成同一个事件 id、同一个 fold_key。
+    （模型复核的缓存不按 fold_key 认同一句，见 comment_review.review_key。）"""
     texts = ["Quiero el combo ROSA!!", "quiero el combo rosa", "quierooo el combo rosa", "QUIERO EL COMBO ROSA"]
     res = run([(0.25 * i, "a%d" % i, texts[i % 4]) for i in range(40)])
     assert len({e["ev"] for e in brigades(res)}) == 1

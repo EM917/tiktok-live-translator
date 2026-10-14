@@ -85,6 +85,7 @@ test("状态文案：每个代码都有话，带数字的取 state 里的数；�
     off: "弹幕留意：已关闭", rules: "弹幕留意：只用规则", claude: "弹幕留意：规则 + Claude",
     starting: "弹幕留意：Claude 组件载入中，先只用规则",
     no_key: "没有 Claude 密钥，只用规则", no_sdk: "缺少 Claude 组件，只用规则", no_review: "这个版本还没有模型复核，只用规则", offline: "连不上 Claude，先只用规则",
+    prompt_missing: "读不到复核提示词文件，只用规则",
     model_missing: "Claude 接口里找不到复核用的模型，只用规则", invalid: "Claude 没接受复核请求，本场只用规则",
   };
   for (const [status, text] of Object.entries(expect)) assert.equal(G.guardStateText({ status }), text, status);
@@ -116,8 +117,8 @@ test("状态胶囊：气色（tone）、重新启用、没有状态返回 null",
   const rules = G.guardCapsule(STATE);
   assert.deepEqual([rules.text, rules.tone, rules.reenable], ["弹幕留意：只用规则", "idle", false]);
   assert.equal(G.guardCapsule({ status: "claude", backend: "claude" }).tone, "on");
-  for (const status of ["starting", "paused", "tripped", "no_key", "no_sdk", "no_review", "key_rejected", "offline", "cooldown",
-    "model_missing", "invalid"]) {
+  for (const status of ["starting", "paused", "tripped", "no_key", "no_sdk", "no_review", "prompt_missing", "key_rejected", "offline",
+    "cooldown", "model_missing", "invalid"]) {
     assert.equal(G.guardCapsule({ status }).tone, "warn", status);
   }
   const tripped = G.guardCapsule({ status: "tripped", lag_sec: 9, backend: "claude", unreviewed: 4 });

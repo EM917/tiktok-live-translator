@@ -784,6 +784,12 @@ async def _comment_review_note(reviewer):
                   "key yet. ") + use_rules,
                 L("在设置的「弹幕留意」里填写密钥，或把模型复核留在「不用模型」",
                   "Enter a key under Settings > Comment Review, or leave Model review on None."))
+    if getattr(reviewer, "prompt", True) is None:
+        # 密钥是有的，读不到的是复核提示词：不能说「没有密钥」，也不用去探针（反正不会送）
+        return (L("选了 Claude 复核，但读不到复核提示词文件，", "Claude review is selected, but the review prompt "
+                  "file couldn’t be read. ") + use_rules,
+                L("重新安装或更新程序，或把模型复核留在「不用模型」",
+                  "Reinstall or update the app, or leave Model review on None."))
     model = "Claude Haiku 5.5" if reviewer.model == "claude-haiku-5-5" else reviewer.model
     try:
         status = await asyncio.wait_for(reviewer.probe_key(), timeout=5)

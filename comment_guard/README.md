@@ -81,9 +81,10 @@ comment_guard/
 
 - **送什么、不送什么**：只送规则筛出来的灰区——确认型（琥珀：没问号的短断言、说自己的遭遇、转述、同一人累计）和升级型
   （note / 只命中负面线索的弹幕）。明确的红条、刷屏、链接和电话、互动词、主播本人、房管、可信名单里的人都不送。
-  同一句话（折叠拼写漂移之后）30 分钟内只问一次；同一个人 30 秒内最多送 1 条；一次最多 8 条；每分钟至多 10 次、每场至多
+  同一句话（送出去的打码文本、规则提示和前一条一模一样，问号、表情、大小写也算）30 分钟内只问一次——不按 fold 之后的文本
+  认「同一句」：`¿es falso?` 是提问、`es falso 🤡` 是断言，不能共用一个判定；同一个人 30 秒内最多送 1 条；一次最多 8 条；每分钟至多 10 次、每场至多
   600 次；队列 40 条，满了先丢最旧的线索档。
-- **打码后才出本机**：电话、数字合计 7 位以上的串（不管上下文）、西语数字读法、链接（含 `punto com`、`[.]`、`wa . me`
+- **打码后才出本机**：电话、数字合计 7 位以上的串（不管上下文；数字之间隔着空白、标点或符号，如 `: _ | * ~ +`，都算）、西语数字读法、链接（含 `punto com`、`[.]`、`wa . me`
   这类绕写）、邮箱、`@账号` 和 `ig: 名字` 一律换成 `#NUM#`、`[link]`、`@usuario`，`<` `>` 换成 `‹` `›`，截到 280 字。
   **不发**昵称、uid、handle、主播名、时间戳、主播字幕。上下文只带同一个人 2 分钟内的前一条（同样打码）。
   打码之后还认得出链接、电话或账号的，不送。
@@ -94,16 +95,21 @@ comment_guard/
   （判定保留）；界面只显示类别名和从原文里截出的证据，模型自己写的句子一律不上界面。
 - **闸门**：识别积压 >= 10 秒（健康等级不是 ok）暂停送审，回到 ok 满 30 秒自动恢复；没密钥（`no_key`）、密钥被拒
   （`key_rejected`，换了密钥才再试）、模型找不到（`model_missing`，本场）、被限流（`cooldown`，按 `retry-after`，最长 300 秒）、
-  连不上（`offline`，连续 3 次暂停 120 秒）、请求被拒（`invalid`，连续 3 次本场停用）时只用规则。规则永远照常。
+  连不上（`offline`，连续 3 次暂停 120 秒）、请求被拒（`invalid`，连续 3 次本场停用）、复核提示词文件读不到
+  （`prompt_missing`，和没密钥分开说）时只用规则。规则永远照常。收尾时还排着、还在问模型的弹幕记成「未复核」，
+  算进 `session_end.comment_guard.unreviewed`。
 - **请求**：裸 aiohttp 直发 `https://api.anthropic.com/v1/messages`（不读 `ANTHROPIC_BASE_URL`），模型 `claude-haiku-5-5`，
   关思考、`effort: low`、结构化输出（`output_config.format`）、`cache_control` 写在系统提示上；没有 temperature / top_p / top_k /
   fallbacks / 预填。密钥和翻译引擎共用（`ANTHROPIC_API_KEY` 环境变量优先，其次设置里的 `api_keys`）。单次 8 秒时限。
 - **审计**（只有计数和代码，没有弹幕内容）：`comment_guard_review`（每次调用一条：`n`、`ms`、`outcome`、token 数……）、
   `comment_guard_gate`（暂停 / 恢复 / 停用的转折）、`session_start.comment_guard.{model, prompt_hash}`、
-  `session_end.comment_guard.{reviews, unreviewed, review_invalid, review_agree, review_disagree, review_promoted}`。
+  `session_end.comment_guard.{reviews, unreviewed, review_invalid, review_agree, review_disagree, review_promoted}`
+  （`review_invalid` 只数模型回应不合格和请求被拒一类；限流、密钥被拒、模型找不到不算，看 `comment_guard_review.outcome`）。
 - **评估**：`tools/guard_review_eval.py claude tests/fixtures/comment_guard/review_cases.jsonl out.json`——约 150 条虚构弹幕 ×
   3 遍打真的接口，只测格式合格率、几遍一致率、P50 / P95 延迟、拒答率和花费，**不主张准确率**。直播转写进行中拒绝运行；
-  花费有硬上限（默认 $0.10，每次调用前按最坏情况算）；密钥不打印、不写报告。准确率要靠真实弹幕标注（后续的留存功能）。
+  花费有硬上限（默认 $0.10，每次调用前按最坏情况算）；价格表只有 Haiku 5.5 的，`TLT_GUARD_CLAUDE_MODEL` 换了别的模型就拒绝运行；
+  延迟统计包含超时的那几次，格式合格率只算拿到回应的调用（超时、HTTP 错误另报）；密钥不打印、不写报告。
+  准确率要靠真实弹幕标注（后续的留存功能）。
 
 ## 词表格式
 

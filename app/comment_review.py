@@ -5,7 +5,8 @@
 产品一贯漏报代价远高于误报，CLAUDE.md 第六条）。模型升出来的红条不自动加入关注名单（spec I14，
 自动加入只看规则的明确命中，见 pipeline_guard._track_marks）。
 
-* **打码**（§5.3）：电话、数字合计 >= 7 位的串（含西语数字词）、链接和邮箱、@账号一律在送出去之前换掉；
+* **打码**（§5.3）：电话、数字合计 >= 7 位的串（含西语数字词；数字之间隔着任何标点、符号、空白都算，不列举）、
+  链接和邮箱、@账号一律在送出去之前换掉；
   不发昵称、uid、handle、主播名、时间戳、主播字幕。`mask_for_model` 记下每处替换在原文里的位置，
   证据片段校验和高亮都靠它映射回原文。
 * **路由**（§5.2）：规则层给的 route（confirm / upgrade）加上优先级（P1 / P2）。同句缓存、同一个人
@@ -37,7 +38,8 @@ from . import comment_guard as cg
 from .translator import ClaudeTranslator, api_key
 
 GUARD_CLAUDE_MODEL = "claude-haiku-5-5"
-MODEL_ENV = "TLT_GUARD_CLAUDE_MODEL"       # 评估用：覆盖复核用的模型（没调过的模型发通用最小请求体）
+MODEL_ENV = "TLT_GUARD_CLAUDE_MODEL"       # 评估用：覆盖复核用的模型（没调过的模型发通用最小请求体）。
+#   tools/guard_review_eval.py 的价格表只有 Haiku 5.5 的，别的模型它拒绝运行（花费上限算不准）
 KEY_NAME = "ANTHROPIC_API_KEY"
 URL = ClaudeTranslator.URL
 API_VERSION = ClaudeTranslator.API_VERSION
@@ -108,10 +110,13 @@ def load_prompt(path=None):
 # ------------------------------------------------------------------------------------------
 
 _DIGIT_WORDS = "cero|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve"
-# 数字或西语数字词，之间最多隔 3 个分隔符（空白 - . , ( ) / 以及隐形连接符）；合计 >= 7 个就整串打码。
-# 比规则层的电话识别（_PHONE_RE、_SPELLED_RE）宽：规则层要少误报，这里宁可多打
-_NUM_SEP = r"[\s\-.,()/\u00b7\u2010-\u2015\u200b-\u200f\u2060\ufe0f\u20e3]{0,3}"
-_NUM_TOKEN = r"(?:\d|\b(?:" + _DIGIT_WORDS + r")\b)"
+# 数字或西语数字词，之间最多隔 3 个分隔符；合计 >= 7 个就整串打码。比规则层的电话识别（_PHONE_RE、
+# _SPELLED_RE）宽：规则层要少误报，这里宁可多打。分隔符是「任何不是字母、数字的字符」（\W 加下划线：空白、
+# 标点、符号、表情、隐形字符都算）：之前只列了 空白 - . , ( ) / 这几个，换成 : _ | * ~ + 就整串漏过去，
+# 列举永远列不完。字母隔开的（1a2b3c…）不是能用的号码，不算
+_NUM_SEP = r"[\W_]{0,3}"
+# 数字词前后不能紧挨着字母或数字；下划线算分隔符，所以不用 \b（\b 把 _ 当字母，cuatro_cinco 里的 cinco 就认不出来）
+_NUM_TOKEN = r"(?:\d|(?<![^\W_])(?:" + _DIGIT_WORDS + r")(?![^\W_]))"
 # 起止都是数字或数字词（不吞结尾的分隔符，打码之后词与词之间的空格还在）
 _NUM_RE = re.compile(r"(?:\+\s*)?" + _NUM_TOKEN + r"(?:" + _NUM_SEP + _NUM_TOKEN + r"){%d,}"
                      % (MIN_MASK_DIGITS - 1))
@@ -313,6 +318,25 @@ def build_user_message(items):
         if it.get("prev"):
             lines.append('<prev k="%s">%s</prev>' % (it["k"], it["prev"]))
     return "\n".join(lines)
+
+
+def review_key(masked, hint="", flags=(), prev_masked=None):
+    """同句缓存和同一批里「跟着用答案」的键：模型这一条看到的一切——送出去的打码文本（问号、¿、表情、大小写
+    原样）、hint、flags、同一个人的前一条——的短哈希。**不拿 cg.fold_key 当键**：fold 会丢掉问号和表情，
+    而「问句还是断言」正是提示词要模型区分的东西（`¿es falso?` 是 question，`es falso 🤡` 是 fraud_claim），
+    键一样就会把一句的判定用到另一句头上。route 不进键：模型看不到它，合并（decide）是每条自己算的。"""
+    prev = prev_masked.text if prev_masked is not None else ""
+    item = {"k": "0", "text": masked.text, "hint": hint or "", "flags": list(flags or ()), "prev": prev}
+    return hashlib.sha1(build_user_message([item]).encode("utf-8")).hexdigest()[:16]
+
+
+def counts_as_invalid(result):
+    """session_end.review_invalid 数哪些调用：模型的回应不合格（outcome == invalid：解析不了、k 对不上、形状不对），
+    或者接口认为我们的请求有问题（400 一类，会累计到「请求被拒」而停用）。不数 429（限流）、401 / 403（密钥被拒）、
+    404（模型找不到）：它们是别的状态，在 comment_guard_review 的 outcome 和闸门记录里看得到。"""
+    if result.outcome == "invalid":
+        return True
+    return result.outcome == "http_4xx" and result.http not in (401, 403, 404, 429)
 
 
 # ------------------------------------------------------------------------------------------
@@ -598,6 +622,7 @@ class ClaudeReviewer:
     """Claude 复核后端。review() 永不抛（除了取消）：出任何错这一批都记「未复核」，状态见 status()。
 
     状态机（spec §5.9 的错误表，从最具体的往下接）：
+      提示词文件读不到 -> prompt_missing：不送（密钥没问题，所以不叫 no_key）；
       401 / 403  -> key_rejected：停用，直到密钥被改（密钥的指纹变了才重新试，见 GuardRuntime.configure_reviewer）；
       404        -> model_missing：本场停用；
       429        -> cooldown：按 retry-after 冷却，最长 300 秒；
@@ -642,6 +667,8 @@ class ClaudeReviewer:
     def status(self, now=None):
         """(状态代码, 附带数字)。claude 表示可以送。"""
         now = self._clock() if now is None else now
+        if self.prompt is None:
+            return "prompt_missing", {}         # 密钥在、提示词文件读不到：不是密钥的问题，别让人去重填密钥
         if self.key_rejected is not None:
             return "key_rejected", {"http": self.key_rejected}
         if self.model_missing:
@@ -727,8 +754,8 @@ class ClaudeReviewer:
         返回 ReviewResult（{cid: Verdict}）。永不抛（取消除外）。"""
         result = ReviewResult()
         result.n = len(batch)
-        if not batch:
-            result.outcome = "skipped"
+        if not batch or self.prompt is None:
+            result.outcome = "skipped"          # 没有提示词就不能送（系统提示是空的）
             return result
         keys = {}
         items = []
@@ -821,15 +848,14 @@ class ClaudeReviewer:
 
 
 def make_reviewer(clock=time.monotonic, existing=None):
-    """按当前密钥造 Claude 复核后端。没有密钥、提示词读不到返回 None。同一把密钥且模型没变就沿用
-    existing（它记着这把密钥被拒过）。"""
+    """按当前密钥造 Claude 复核后端。没有密钥返回 None。同一把密钥且模型没变就沿用 existing（它记着这把密钥
+    被拒过）。提示词读不到：照样造，但它的状态是 prompt_missing（不送、不联网），和「没有密钥」分开说——
+    密钥是好的，让人去重填密钥是错的方向。"""
     key = api_key(KEY_NAME)
     if not key:
         return None
     model = guard_model()
-    if existing is not None and getattr(existing, "api_key", None) == key and existing.model == model:
+    if existing is not None and getattr(existing, "api_key", None) == key and existing.model == model \
+            and existing.prompt is not None:
         return existing
-    reviewer = ClaudeReviewer(key, model=model, clock=clock)
-    if reviewer.prompt is None:
-        return None
-    return reviewer
+    return ClaudeReviewer(key, model=model, clock=clock)

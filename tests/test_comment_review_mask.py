@@ -10,6 +10,7 @@
 纯函数，不联网。号码、链接、账号、昵称都是虚构的。
 """
 import random
+import string
 
 import pytest
 
@@ -255,6 +256,46 @@ def test_random_digits_and_separators_never_leak_seven_digits():
         m = cr.mask(text)
         assert sum(c.isdigit() for c in m.text) < cr.MIN_MASK_DIGITS, (text, m.text)
         assert not cr.leaks(m.text), (text, m.text)
+
+
+SEPARATORS = list(string.punctuation) + [" | ", " : ", " - ", " * ", " ~ ", " + ", "·", "•", "—", "…", "🔥", "\u00a0", "\u3000",
+                                         "\t", "\n", ", ", ". ", "_ ", " _"]
+
+
+@pytest.mark.parametrize("sep", SEPARATORS, ids=lambda sep: repr(sep))
+def test_seven_digits_are_masked_whatever_punctuation_or_symbol_joins_them(sep):
+    """评审：分隔符只列了 空白 - . , ( ) / 这几个，换成 : _ | * ~ + 整串漏过去，连 leaks() 这道兜底也认不出
+    （它用同一个正则）。现在任何不是字母、数字的字符都算分隔符。"""
+    rng = random.Random(31)
+    for _ in range(25):
+        digits = [rng.choice("0123456789") for _ in range(rng.randint(7, 12))]
+        groups, i = [], 0
+        while i < len(digits):
+            n = rng.randint(1, 4)
+            groups.append("".join(digits[i:i + n]))
+            i += n
+        text = "mi numero es " + sep.join(groups)
+        m = cr.mask(text)
+        assert sum(c.isdigit() for c in m.text) < cr.MIN_MASK_DIGITS, (text, m.text)
+        assert not cr.leaks(m.text), (text, m.text)
+        assert m.text.startswith("mi numero es ")
+
+
+@pytest.mark.parametrize("text", [
+    "mi numero es 5793:834:701", "9_7778_1_88_0_4", "4 | 5384 | 0 | 1", "2*6*0*1*8*1*5*9*0", "4+3+7+3+2+3+3+2+4",
+    "5~5~1~2~3~4~5~6~7", "5/5\\1|2:3_4*5~6", "uno*dos|tres:cuatro_cinco~seis+siete",
+])
+def test_the_reviewers_examples_no_longer_leak(text):
+    m = cr.mask(text)
+    assert cr.MASK_NUM in m.text and not [c for c in m.text if c.isdigit()], (text, m.text)
+    assert not cr.reviewable(m) or not cr.leaks(m.text)
+
+
+def test_widening_the_separators_does_not_eat_numbers_that_are_not_contact_data():
+    for text in ("quiero 3 de los de 350 pesos", "talla 36 37 38", "a las 8:30 pm", "12:30:45 hora", "1:1 fue el marcador",
+                 "pagué $1,299 y 2 envíos", "3 + 4 = 7", "somos 6 | ellos 5", "123456 solamente", "no 123a456b7"):
+        m = cr.mask(text)
+        assert cr.MASK_NUM not in m.text, (text, m.text)
 
 
 def test_masking_is_fast_enough_for_the_event_loop():
