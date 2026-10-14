@@ -71,8 +71,15 @@ class Gated:
     cooldown_until = 0.0
 
     def __init__(self):
-        self.gate = asyncio.Event()
+        # Event 在第一次用到时才建：Python 3.9 的 asyncio.Event() 在事件循环外构造会找不到当前循环
+        self._gate = None
         self.calls = 0
+
+    @property
+    def gate(self):
+        if self._gate is None:
+            self._gate = asyncio.Event()
+        return self._gate
 
     async def translate(self, text, target, source="auto", glossary=None):
         self.calls += 1
