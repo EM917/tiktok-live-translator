@@ -186,11 +186,11 @@ is Claude: it asks Claude Sonnet 5.5 on its own connection, with the same
 instructions the comment translation uses, and the result has to pass the same
 check that it reads as a translation and not as a reply. With any other engine
 the button is greyed out and its tooltip says so, because comments never load a
-local model, the 7B included. One comment is retranslated at a time, at most 20
-retranslations per minute are accepted, and the app keeps the original text of
-only the latest 200 comments; a click it cannot serve gets a short note under
-that comment and the existing translation stays. Comment text and viewer names
-are not written to the audit log.
+local model, the 7B included. A comment that is already being retranslated is
+not sent again, at most 20 retranslations per minute are accepted, and the app
+keeps the original text of only the latest 200 comments; a click it cannot serve
+gets a short note under that comment and the existing translation stays. Comment
+text and viewer names are not written to the audit log.
 
 Measured on the same 259 captions, re-translation with 7B reads more easily
 than 1.8B — that difference survived the correction — but it was not shown to

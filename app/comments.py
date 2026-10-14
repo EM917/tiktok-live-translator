@@ -571,6 +571,10 @@ class CommentTranslator:
         if not isinstance(cid, str) or not cid:
             return                  # 不是弹幕 id：没有哪条弹幕可以回话
         cid = cid[: self.MAX_ID]
+        if cid.startswith(redo.DEMO_ID_PREFIX):
+            # --demo 的虚构弹幕：从来没进过账本，不能当成「挤出了最近 200 条」来答
+            await self._redo_refused(cid, redo.note_demo())
+            return
         text = self._ledger.original(cid)
         if text is None:
             await self._redo_refused(cid, redo.note_gone())

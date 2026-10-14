@@ -37,6 +37,7 @@ from pathlib import Path
 from . import comment_guard as cg
 from . import comment_review as cr
 from .comment_marks import MAX_VIEWERS, SESSION_PREFIX, MarkStore, clean_key
+from .comment_redo import DEMO_ID_PREFIX
 from .comments import CommentTranslator, account_fields
 from .i18n import L
 from .settings import load_settings
@@ -1416,7 +1417,7 @@ class CommentGuardMixin:
             while True:
                 for user, uid, handle, text, zh, gap in DEMO_COMMENTS:
                     n += 1
-                    await self._demo_comment("demo-c%d" % n, user, uid, handle, text, zh)
+                    await self._demo_comment("%sc%d" % (DEMO_ID_PREFIX, n), user, uid, handle, text, zh)
                     await asyncio.sleep(gap)
         except asyncio.CancelledError:
             raise
