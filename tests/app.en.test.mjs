@@ -460,6 +460,11 @@ test("英文页：弹幕面板的状态与空态、统计行", () => {
   assert.deepEqual(source(), ["Disconnected. Reconnecting…", "Disconnected. Reconnecting…"]);
   page.push({ type: "comment", id: "c1", ts: T, user: "Ana", text: "hola", state: "pending" });
   assert.equal(page.el("comment-list").querySelector(".cmt-zh").textContent, "Translating…");
+  // 和主播的关系：互关就不再单独标 Follower；认不出的标签不画
+  page.push({ type: "comment", id: "c2", ts: T, user: "Bea", text: "hola", state: "pending",
+              rel: ["follower", "mutual", "gifter", "boss"] });
+  const chips = [...page.el("comment-list").querySelectorAll(".cmt-rel")].map(c => c.textContent);
+  assert.deepEqual(chips, ["Mutual", "Gifter"]);
   page.push({ type: "stats", e2e: {}, asr: { p50: 1100 }, translate: { p50: 2000 }, segment: { p50: 800 },
               detect_worst: { p50: 1900, p95: 3400 }, audio_backlog_sec: 5, audio_segments_dropped: 2,
               asr_overruns: 1, translation_jobs_dropped: 3, asr_queue_depth: 1, translation_queue_depth: 2 });

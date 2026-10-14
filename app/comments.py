@@ -120,6 +120,18 @@ def plausible_translation(text, out, target):
     return True
 
 
+# 弹幕作者和主播的关系（comment_source._REL_FLAGS），页面上显示成「粉丝 / 互关 / 送过礼 / 订阅」
+REL_TAGS = ("follower", "mutual", "gifter", "subscriber")
+
+
+def _rel_tags(value):
+    """抓取端给的关系标签：只留认得的、去重、保持顺序；不是列表就当没有。"""
+    if not isinstance(value, list):
+        return None
+    out = [t for t in REL_TAGS if t in value]
+    return out or None
+
+
 def build_batch(texts):
     """把多条弹幕拼成带编号的一段文本，一次 translate() 调用搞定一批。"""
     return "\n".join("{}. {}".format(i + 1, t) for i, t in enumerate(texts))   # i18n: data
@@ -242,7 +254,7 @@ class CommentTranslator:
                 continue
             self._remember(cid, key, now)
             accepted += 1
-            await self._enqueue(cid, user, text, now)
+            await self._enqueue(cid, user, text, now, _rel_tags(item.get("rel")))
         return accepted
 
     def _remember(self, cid, content_key, ts):
@@ -256,7 +268,7 @@ class CommentTranslator:
             self._seen_content = {k: v for k, v in self._seen_content.items()
                                   if v >= cutoff}
 
-    async def _enqueue(self, cid, user, text, ts):
+    async def _enqueue(self, cid, user, text, ts, rel=None):
         translator = self._translator()
         target = self._target()
         hint = None
@@ -269,9 +281,11 @@ class CommentTranslator:
             hint = original_only_hint(translator)
         else:
             state = "pending"
-        await self._broadcast({"type": "comment", "id": cid, "user": user,
-                               "text": text, "ts": ts, "translated": None,
-                               "state": state})
+        msg = {"type": "comment", "id": cid, "user": user, "text": text, "ts": ts,
+               "translated": None, "state": state}
+        if rel:
+            msg["rel"] = rel                    # 只给电脑页；手机页的白名单里没有它（app/viewer.py）
+        await self._broadcast(msg)
         if hint:
             await self._hint_original_only(hint)
         if state != "pending":
