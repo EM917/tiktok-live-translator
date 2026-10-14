@@ -138,8 +138,70 @@
 ### 1.5 设计过程中出现过、现在不用的词
 
 三份实现方案里与本表冲突的写法一律不用：**prohibited term**（用 banned term）、**Phone view**（用 Phone Viewing）、
-**Self-check**（用 Startup Check）、分级里的 **Possible**（用 Exact / Variant / Similar；Possible 只出现在
-“Possible Banned Terms” 这个面板标题里）、**Start translating**（按钮就叫 Start）。
+**Self-check**（用 Startup Check）、**报警分级**里的 **Possible**（报警分级一律用 Exact / Variant / Similar）、
+**Start translating**（按钮就叫 Start）。
+
+**Possible 的两处用法，别混：**
+
+- 违禁词报警：面板标题 “Possible Banned Terms”，分级只用 Exact / Variant / Similar，不再往分级里加 Possible。
+- 弹幕留意（§1.6）：每个类别名写成 “Possible …”（Possible insult、Possible threat of harm……）。
+  理由同「疑似」：程序只看到文字，没人工确认之前不下结论。这是弹幕留意类别名的固定前缀，
+  不用在别的地方（Suspected、Likely 都不用：Likely 撞 `EN_CAUSAL`）。
+
+### 1.6 弹幕留意（Comment Review）
+
+2026-10-13 起。功能说明见 `comment_guard/README.md`。界面文字在 `web/guard.js`、`web/index.html`（`#guard-bar`、
+`#guard-drawer`、`#guard-card`）和 `app/pipeline_guard.py`；后端只发代码，文案由前端按代码映射。
+
+| 中文 | English | 不用 | 理由 |
+|---|---|---|---|
+| 弹幕留意 | **Comment Review**；状态写 **Comment Review: …** | Moderation, Comment Moderation, Comment Guard | Moderation 暗示程序能处理，而本程序只读：不能删弹幕、不能禁言。Guard 是代码里的名字 |
+| 需要留意的弹幕 | **comments to review**；标题写 **Comments to Review**；空态写 “No comments to review yet.” | flagged comments, alerts, warnings | alert 已经是违禁词报警的名字，warning 留给自检的「提醒」；flagged 带判断 |
+| 需要留意 n 件（顶部条、浮钮上的数） | 数的是事件：写 **{n} item to review / {n} items to review**，不写 comments | {n} comments to review, events, incidents, flagged | 用户 2026-10-13 决定：一次刷屏、一次多账号同句各算 1 件，不数其中的弹幕条数；写成 “60 comments to review” 会把一个事件说成 60 条；events 是代码里的词；incident 已被别处占用。中文量词用「件」，不用「条」（「条」留给数弹幕本身的地方，如抽屉里的「共 12 条」） |
+| 拿不准 | **unclear** | uncertain, maybe | maybe 撞 `EN_CAUSAL` |
+| 关注名单 | **Marked Viewers** | Watch List, Follow List, Block List | Watch 已被手机同看的在看人数占用；Follow 撞 TikTok 的关注；Block List 撞 `EN_LABELS` |
+| 加入关注名单 / 移出关注名单 | **Mark / Unmark** | Follow / Unfollow, Add to List, Watch | 动词对，短。中文按钮写全，不用单独一个「关注」：在中文 TikTok 语境里它就是 follow |
+| 模型复核 | **model review**；设置行的字段标签写 **Model review** | AI review, Auto review | 「AI」不说明做了什么 |
+| 模型意见 | **Model: …**（如 “Model: agrees with rules”） | Review: …, AI says | 单独的 “Review: …” 会跟 “Comment Review: …” 挨在一起读不清 |
+| 刷屏 | **flooding**；类别名 “Possible flooding” | spam | spam 带判断 |
+| 引流 | **redirect**；类别名 “Possible redirect (link)” 等 | promotion, traffic diversion, spam | 说的是「把人引去别处」这个动作 |
+| 本场重新启用 | **Turn Back On for This Session** | Re-enable, Restart | |
+| 查看 / 收起（顶部条右侧的控件） | **View** / **Hide** | Open, Show, Close, Details | 同一个控件，字写它点了之后会做什么：抽屉收着写「查看 / View」，抽屉开着写「收起 / Hide」（带一个朝上的箭头）。「收起 / Hide」与弹幕栏里收起整列弹幕的按钮同词，那个按钮在另一块区域，不会同时被误会 |
+| 弱信号 | **weak signals** | low confidence | 只是线索，还没有定论 |
+| 规则 / 规则文件夹 | **rules** / **Open Rules Folder** | lexicon, dictionary | 词表（glossary）是翻译用的，这里是判定规则 |
+
+**类别名**（后端只发代码；中文一律写「疑似……」，英文一律写 “Possible …”，`flood_brigade` 只写观察，不加「疑似」）：
+
+| 代码 | 中文 | English |
+|---|---|---|
+| `insult` | 疑似辱骂 | Possible insult |
+| `threat` | 疑似人身威胁 | Possible threat of harm |
+| `sexual` | 疑似涉性言语 | Possible sexual remark |
+| `accuse_claim` | 疑似指称假货或骗局 | Possible claim of fakes or scams |
+| `accuse_call` | 疑似号召举报或不买 | Possible call to report or not buy |
+| `accuse_report` | 疑似扬言举报 | Possible threat to report |
+| `flood_user` | 疑似刷屏 | Possible flooding |
+| `flood_repeat` | 疑似反复发同一句 | Possible repeated comment |
+| `flood_brigade` | 多账号同一句 | Same comment from several accounts |
+| `promo_link` | 疑似引流（链接） | Possible redirect (link) |
+| `promo_contact` | 疑似引流（联系方式） | Possible redirect (contact info) |
+| `promo_pull` | 疑似拉人去别处 | Possible redirect to another stream or shop |
+| `promo_scam` | 疑似冒充官方或诈骗信息 | Possible impersonation or scam offer |
+
+**顶部条里的计数写法**（2026-10-13，看了截图后定）：数字紧贴类别名（“Possible flooding 1” / 「疑似刷屏 1」）读不出是计数，
+像名字的一部分。类别后面的计数一律写成 **`{类别名} ×{n}`**，两种语言相同：× 前面一个空格、后面紧贴数字，
+如 “Possible flooding ×2”、「疑似引流（链接） ×1」。不用括号（类别名自带括号，会变成 “Possible redirect (link) (1)”），
+不用冒号（同一行的 “Latest 20:00:00” 是时刻，冒号会混），也不改成复数名词（13 个类别名各配一个复数，术语表跟着膨胀）。
+数的仍是事件（用户决定 10）。同一行里另外几段本来就带量词，不动：「需要留意 n 件」/ “n items to review”、「拿不准 n 件」/
+“n unclear”、「关注的人发言 n 条」/ “n from marked viewers”（后者数的是发言本身，所以中文用「条」不用「件」）。
+同一规矩适用于以后顶部条里任何「名字 + 数」的写法：数字前面要有 × 或量词，不能只靠一个空格。
+
+**琥珀（拿不准）的理由只写观察**（第八条）：「没有问号」「第 2 次」，不写「也可能是提问」。英文同样不用
+because / likely / maybe / probably。`pending`（命中的词条还没经业务确认）、`self`（第一人称）两条是规则层后来
+加的，同样只写事实。
+
+**英文页的 “Comment Review: …” 状态行**和**模型意见 “Model: …”** 分开写：前者说功能整体处于什么状态，
+后者说模型对某一条弹幕的看法。
 
 ---
 
@@ -223,6 +285,15 @@
 | pipeline.py:961 丢段 | 1 audio segment | {n} audio segments |
 | pipeline.py:154 已重试 | Retried once. | Retried {n} times. |
 | selfcheck.py:434 词表生效 | 1 entry active | {n} entries active |
+| guard.js guardAmberText 多账号同一句 | Same comment from 1 account in {s} seconds | Same comment from {n} accounts in {s} seconds |
+| guard.js guardCountText 事件条数 | 1 comment in {s} seconds / 1 comment | {m} comments in {s} seconds / {m} comments |
+| guard.js guardBarSummary、guardFabTitle 顶部条和浮钮（按事件计） | 1 item to review | {n} items to review |
+| guard.js guardBarSummary 拿不准、关注的人发言 | {n} unclear / {n} from marked viewers | 同左（不变形；中文是「拿不准 {n} 件」「关注的人发言 {n} 条」） |
+| guard.js guardBarSummary 类别计数 | {类别名} ×{n} | 同左（不变形，写法见 §1.6） |
+| guard.js guardUnreviewedText 没经过模型复核 | 1 comment wasn’t reviewed by the model this session. | {n} comments weren’t reviewed by the model this session. |
+| guard.js guardSummary 关注的人数 | {n} marked | 同左（不变形） |
+| guard.js guardRulesText 规则条数和体检警告 | 1 rule active · 1 rule check warning | {n} rules active · {w} rule check warnings |
+| guard.js guardLastSeenText 几天前 | 1 day ago | {n} days ago |
 | 在看人数（live-ui.js:16、app.js:1869、viewer.py:409） | {n} watching | {n} watching（不变形） |
 | 窗口标题（alerts.js:9、window_attention.py:20） | ({n}) Possible Banned Terms · TikTok Live Translator | 同左（标签式写法，不变形） |
 

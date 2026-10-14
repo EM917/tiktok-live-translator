@@ -63,6 +63,7 @@
      的颜色/百分比各存一份，深浅色分别取各自主题下的 rgba，不再依赖
      color-mix() 本身 */
   --a-green-16: rgba(52, 199, 89, 0.16);
+  --a-orange-8: rgba(255, 149, 0, 0.08);
   --a-orange-16: rgba(255, 149, 0, 0.16);
   --a-orange-40: rgba(255, 149, 0, 0.40);
   --a-red-8: rgba(255, 59, 48, 0.08);
@@ -72,6 +73,16 @@
   --a-red-28: rgba(255, 59, 48, 0.28);
   --a-blue-30: rgba(0, 122, 255, 0.30);
   --a-label-4: rgba(29, 29, 31, 0.04);
+  /* 抽屉底部渐隐的起点：与 --card 同色、全透明（不写 transparent：Safari 15.4 以前会渐变成灰） */
+  --card-clear: rgba(255, 255, 255, 0);
+
+  /* 弹幕栏里观众与主播的关系标签（粉丝 / 互关 / 送过礼 / 订阅）：11px 的小字，浅色模式下要 4.5:1 以上。
+     底色一律不透明，免得落在红 / 琥珀的行底上对比度又掉下去（原来的 #007aff / #bf5af2 在自己的底色上只有 3.5 / 3.1，
+     送过礼落在红行上只有 2.6）。实测：蓝 #0062cc 在 #e6f2ff 上 5.1，紫 #8e24c4 在 #f3e6fb 上 5.5，
+     灰 #505056 在 #e5e5ea 上 6.4。深色模式的取值与改之前逐项相同（见下面 prefers-color-scheme: dark 里） */
+  --rel-blue-ink: #0062cc;
+  --rel-purple-ink: #8e24c4;  --rel-purple-bg: #f3e6fb;
+  --rel-gray-ink: #505056;    --rel-gray-bg: #e5e5ea;
 
   /* 不透明的两色混合（旧代码里跟 var(--bg) 而不是 transparent 混，数学上不是
      简单的 rgba，需要按主题各自预先算出混合结果）：update-bar/comment-panel
@@ -144,6 +155,7 @@
 
     /* 同上，换成深色模式下 --green/--orange/--red/--label/--blue/--bg 各自的值 */
     --a-green-16: rgba(48, 209, 88, 0.16);
+    --a-orange-8: rgba(255, 159, 10, 0.08);
     --a-orange-16: rgba(255, 159, 10, 0.16);
     --a-orange-40: rgba(255, 159, 10, 0.40);
     --a-red-8: rgba(255, 69, 58, 0.08);
@@ -153,6 +165,12 @@
     --a-red-28: rgba(255, 69, 58, 0.28);
     --a-blue-30: rgba(10, 132, 255, 0.30);
     --a-label-4: rgba(245, 245, 247, 0.04);
+    --card-clear: rgba(44, 44, 46, 0);
+
+    /* 关系标签：深色模式保持原样（蓝取 --blue，紫是原来的 #bf5af2 加 12% 紫底，灰取 --label-2 配 --fill） */
+    --rel-blue-ink: var(--blue);
+    --rel-purple-ink: #bf5af2;  --rel-purple-bg: rgba(191, 90, 242, 0.12);
+    --rel-gray-ink: var(--label-2);  --rel-gray-bg: var(--fill);
 
     --tint-accent-8: #1b2430;
     --tint-blue-10: #1a2634;
@@ -1222,10 +1240,10 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
 .cmt-item:last-child { border-bottom: 0; }
 .cmt-head { font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
-.cmt-rel { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 11px;
-  line-height: 16px; vertical-align: 1px; color: var(--label-2); background: var(--fill); }
-.cmt-rel-mutual, .cmt-rel-follower { color: var(--blue); background: var(--tint-blue-10); }
-.cmt-rel-gifter { color: #bf5af2; background: rgba(191,90,242,.12); }
+.cmt-rel { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px;
+  line-height: 16px; color: var(--rel-gray-ink); background: var(--rel-gray-bg); }
+.cmt-rel-mutual, .cmt-rel-follower { color: var(--rel-blue-ink); background: var(--tint-blue-10); }
+.cmt-rel-gifter { color: var(--rel-purple-ink); background: var(--rel-purple-bg); }
 .cmt-zh { font-size: 15px; line-height: 1.5; margin-top: 1px; }
 .cmt-zh.pending { color: var(--label-3); font-style: italic; font-size: var(--fs-callout); }
 .cmt-zh.failed { color: var(--label-2); }
@@ -1266,6 +1284,174 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .comment-fab > .i { color: var(--label-2); }
 .comment-fab:hover { color: var(--blue); }
 .comment-fab:focus-visible { outline: 2px solid transparent; box-shadow: var(--float-shadow), var(--focus); }
+
+/* ---------- 弹幕留意（Comment Review，web/guard.js） ----------
+   颜色含义固定：红＝规则明确命中（计入「需要留意」），琥珀＝拿不准（单独计数，不算红条），
+   靛蓝＝关注的人；弱信号只是一圈浅灰描边。形状也跟着变（左边条的颜色之外有类别胶囊的字、
+   关注的人有 ★），不只靠颜色。令牌全部复用上面的，深浅色自动跟着走 */
+.cmt-item { position: relative; }
+/* 头一行：昵称、关系标签、时刻、类别胶囊排成一行，放不下就折行。间隔用 gap 而不是各自的 margin-left：
+   折到下一行的那个胶囊不会带着左边距缩进（以前是 6px），每一行都从同一条左边线开始。右边给 ☆ 按钮留位置 */
+.cmt-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 5px; padding-right: 26px; }
+.cmt-head > * { max-width: 100%; overflow-wrap: anywhere; }
+/* 标了的弹幕整行抻到列表边缘（列表自己有 16px 左右内边距），左边条贴着边 */
+.cmt-item.guard-alert, .cmt-item.guard-amber, .cmt-item.guard-marked, .cmt-item.guard-weak {
+  margin: 0 -16px; padding-left: 13px; padding-right: 16px; border-left: 3px solid transparent;   /* 3 + 13 = 列表自己的 16px 内边距：文字不挪位 */
+}
+.cmt-item.guard-marked { border-left-color: var(--indigo); }
+.cmt-item.guard-alert { border-left-color: var(--red); background: var(--a-red-8); }       /* 要写在 marked 之后：红 / 橙盖过靛蓝 */
+.cmt-item.guard-amber { border-left-color: var(--orange); background: var(--a-orange-8); }
+/* 关注的人同时又是红 / 橙条：靛蓝条紧贴在红 / 橙条右边 */
+.cmt-item.guard-alert.guard-marked, .cmt-item.guard-amber.guard-marked { box-shadow: inset 3px 0 0 var(--indigo); }
+.guard-star { margin-right: -2px; color: var(--indigo); font-weight: 600; }       /* 头里的 gap 是 5px，★ 与昵称之间留 3px */
+.guard-pill {
+  display: inline-block; max-width: 100%; padding: 0 6px; border-radius: 4px;
+  font-size: var(--fs-footnote); font-weight: 600; line-height: 18px; vertical-align: baseline;
+  overflow-wrap: anywhere; font-variant-numeric: normal;
+}
+.guard-pill.alert { color: var(--red-ink); background: var(--a-red-14); }
+.guard-pill.amber { color: var(--warn-fg); background: var(--a-orange-16); }
+/* 弱信号：空心，描边胶囊（同 .alert-tier 的最低一档），灰底上 --label-2 去掉底色后 4.86:1 */
+.guard-pill.weak { color: var(--label-2); background: transparent; font-weight: 500; box-shadow: inset 0 0 0 0.5px var(--separator); }
+.guard-note { margin-top: 1px; font-size: var(--fs-footnote); line-height: 1.4; color: var(--warn-fg); }
+.cmt-item.guard-alert .guard-note { color: var(--red-ink); }
+.guard-ev {
+  display: inline-block; max-width: 100%; margin-top: 2px; padding: 0 5px; border-radius: 4px;
+  font-size: var(--fs-footnote); line-height: 1.5; color: var(--label); background: var(--a-red-14);
+  overflow-wrap: anywhere;
+}
+.guard-mark-btn {
+  position: absolute; top: 5px; right: 8px; width: 22px; height: 22px; padding: 0;
+  border: none; border-radius: 6px; background: transparent; color: var(--label-2);
+  font-family: inherit; font-size: 14px; line-height: 22px; text-align: center; cursor: pointer; opacity: 0;
+}
+.cmt-item:hover .guard-mark-btn, .guard-mark-btn:focus-visible, .guard-mark-btn.on { opacity: 1; }
+.guard-mark-btn.on { color: var(--indigo); }
+.guard-mark-btn:hover { background: var(--fill); }
+.guard-mark-btn:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
+/* 「定位」之后闪一下；减少动态效果时改成一圈描边 */
+.cmt-item.guard-flash { animation: guard-flash 1.4s ease; }
+@keyframes guard-flash { 0%, 55% { background-color: var(--a-blue-30); } 100% { background-color: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .cmt-item.guard-flash { animation: none; outline: 2px solid var(--blue); outline-offset: -2px; }
+}
+/* 弹幕栏里的状态胶囊：另起一行，最多 3 行，圆点同 .cmt-source 的画法（绿＝Claude 在复核，橙环＝没在复核） */
+.guard-state {
+  flex: 1 1 100%; display: flex; align-items: flex-start; gap: 6px;
+  padding: 0; border: none; background: none; text-align: left; cursor: pointer;
+  font-family: inherit; font-size: var(--fs-footnote); font-weight: 400; line-height: 16px; color: var(--label-2);
+}
+.guard-state:hover #guard-state-text { text-decoration: underline; }
+.guard-state:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); border-radius: 4px; }
+.guard-state-dot { flex: none; width: 6px; height: 6px; margin-top: 5px; border-radius: 50%; background: var(--gray); }
+.guard-state.on .guard-state-dot { background: var(--green); }
+.guard-state.warn .guard-state-dot { width: 7px; height: 7px; margin-top: 4.5px; background: transparent; border: 1.5px solid var(--orange); }
+#guard-state-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere;
+}
+.guard-reenable-cap { margin-top: 2px; }
+/* 弹幕列收起时浮钮上的未读红条数 */
+.fab-guard {
+  display: inline-block; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--red-fill); color: #fff; text-align: center;
+  font-size: 11px; line-height: 18px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+
+/* 顶部条：永远一行，放不下用省略号（完整的在 title 里）。有红条就是红底，只有琥珀 / 关注的人发言就是琥珀底 */
+.guard-bar {
+  flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 20px;
+  color: var(--warn-fg); background: var(--warn-bg); border-bottom: 0.5px solid var(--a-orange-40);
+}
+.guard-bar.has-red { color: var(--red-ink); background: var(--a-red-8); border-bottom-color: var(--a-red-28); }
+.guard-bar-main {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 3px 0;
+  border: none; background: none; color: inherit; cursor: pointer; text-align: left;
+  font-family: inherit; font-size: var(--fs-callout); font-weight: 600;
+}
+.guard-bar-main:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); border-radius: 6px; }
+.guard-bar-text { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.guard-bar-view { flex: none; margin-left: auto; font-weight: 500; }
+/* 箭头 ›：抽屉收着朝右（查看），开着转成朝上（收起） */
+.guard-bar-view::after { content: "\203A"; display: inline-block; margin-left: 4px; }
+.guard-bar-main[aria-expanded="true"] .guard-bar-view::after { transform: rotate(-90deg); }
+
+/* 抽屉：在条的正下方展开（不是弹窗）。高度固定为窗口的三分之一（上下限 168 / 340px，1000×760 的默认窗口里约 250px），
+   两个页签共用同一块列表区，所以切页签时抽屉不跳；列表在这块区域里自己滚动，状态行和页签不跟着滚走。
+   自己的 overflow-y 只是兜底：状态行折得很长（熔断的几行说明 + 按钮）、窗口又很矮时，列表区缩到最小高度后整个抽屉可滚，
+   不会盖住下面的字幕 */
+.guard-drawer {
+  position: relative; flex: none; display: flex; flex-direction: column;
+  height: clamp(168px, 33vh, 340px); overflow-y: auto; padding: 8px 20px 0;
+  background: var(--card); border-bottom: 0.5px solid var(--separator);
+}
+@media (max-width: 640px) {
+  .guard-bar { padding: 4px 12px; }
+  .guard-drawer { padding: 8px 12px 0; }
+}
+.guard-drawer-top { flex: none; display: flex; align-items: center; gap: 8px; }
+.guard-drawer-state { flex: 1; min-width: 0; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
+.guard-drawer-state .gds-extra { display: block; color: var(--warn-fg); }
+.guard-tabs { flex: none; display: flex; gap: 4px; margin: 6px 0 4px; border-bottom: 0.5px solid var(--separator); }
+.guard-tab {
+  padding: 4px 10px 6px; border: none; border-bottom: 2px solid transparent; background: none; cursor: pointer;
+  font-family: inherit; font-size: var(--fs-callout); color: var(--label-2);
+}
+.guard-tab.on { color: var(--label); font-weight: 600; border-bottom-color: var(--blue); }
+.guard-tab:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); border-radius: 6px; }
+.guard-tab-n { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--fill); color: var(--label);
+  font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.guard-tab-n:empty { display: none; }
+/* 列表区：两个页签的 .guard-pane 叠在同一块固定高度里（只显示一个），各自滚动。
+   滚动的提示有两个：右边一条一直可见的滚动条（::-webkit-scrollbar 把 macOS 默认「滚动时才出现」的细条换成常驻的），
+   和底部 28px 的渐隐——被截断的那张卡片淡出，一眼看出下面还有。列表末尾留 30px 空白，滚到底时最后一张卡片
+   整张（包括按钮）停在渐隐上方，不会被盖住；没有溢出时渐隐落在空白的底色上，看不见 */
+.guard-panes { position: relative; flex: 1 1 0; min-height: 72px; display: flex; flex-direction: column; }
+.guard-panes::after {
+  content: ""; position: absolute; left: 0; right: 10px; bottom: 0; height: 28px; pointer-events: none;
+  background: linear-gradient(to bottom, var(--card-clear), var(--card));
+}
+.guard-pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scroll-padding-bottom: 30px; }
+#guard-events, #guard-marked { padding-bottom: 30px; }
+.guard-pane::-webkit-scrollbar { width: 8px; }
+.guard-pane::-webkit-scrollbar-track { background: var(--fill); border-radius: 4px; }
+.guard-pane::-webkit-scrollbar-thumb { background: var(--gray); border-radius: 4px; }
+.guard-pane::-webkit-scrollbar-thumb:hover { background: var(--label-2); }
+@supports not selector(::-webkit-scrollbar) {      /* Firefox：没有 ::-webkit-scrollbar */
+  .guard-pane { scrollbar-width: thin; scrollbar-color: var(--gray) var(--fill); }
+}
+.guard-empty { padding: 12px 0; font-size: var(--fs-footnote); color: var(--label-2); }
+.guard-ev-row { padding: 8px 0 8px 10px; border-top: 0.5px solid var(--separator); border-left: 3px solid var(--orange); margin-left: 0; }
+.guard-ev-row:first-child { border-top: none; }
+.guard-ev-row.alert { border-left-color: var(--red); }
+.gev-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--fs-footnote); color: var(--label-2); }
+.gev-time { font-variant-numeric: tabular-nums; }
+.gev-user { font-weight: 600; color: var(--label); }
+.gev-text { margin-top: 2px; font-size: var(--fs-callout); line-height: 1.45; overflow-wrap: anywhere; }
+.gev-zh { font-size: var(--fs-callout); line-height: 1.45; color: var(--label-2); overflow-wrap: anywhere; }
+.gev-note { margin-top: 2px; font-size: var(--fs-footnote); line-height: 1.4; color: var(--warn-fg); }
+.guard-ev-row.alert .gev-note { color: var(--red-ink); }
+.gev-accounts { margin-top: 2px; font-size: var(--fs-footnote); color: var(--label-2); }
+.gev-accounts summary { cursor: pointer; }
+.gev-account-list { margin: 2px 0 0 16px; }
+.gev-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.guard-mk-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; padding: 8px 0; border-top: 0.5px solid var(--separator); }
+.guard-mk-row:first-child { border-top: none; }
+.gmk-main { grid-column: 1; min-width: 0; font-size: var(--fs-callout); overflow-wrap: anywhere; }
+.gmk-nick { font-weight: 600; }
+.gmk-handle { margin-left: 6px; color: var(--label-2); }
+.gmk-meta, .gmk-note { grid-column: 1; font-size: var(--fs-footnote); line-height: 1.4; color: var(--label-2); }
+.gmk-un { grid-column: 2; grid-row: 1 / span 3; align-self: center; }
+
+/* 设置行（#guard-card）：开关、复核方式、状态、关注名单、规则。直播中整块隐藏，所以只有待机时用 */
+.guard-field { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: var(--fs-callout); color: var(--label-2); }
+.guard-field select { flex: 1; min-width: 0; max-width: 100%; }
+.guard-key-row { margin-top: 8px; }
+.guard-marked-box { margin-top: 14px; }
+.guard-sub { margin-bottom: 4px; font-size: var(--fs-footnote); font-weight: 600; color: var(--label-2); }
+.guard-marked-list { max-height: 220px; overflow-y: auto; }
+.guard-marked-box > .btn { margin-top: 8px; }
+.guard-rules-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 14px; }
+.guard-rules { font-size: var(--fs-footnote); color: var(--label-2); }
 
 /* ---------- 最近直播间 ----------
    开始面板与换主播面板共用这组类。chip 是无描边的胶囊：首页灰底上用白色，

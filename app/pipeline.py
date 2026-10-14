@@ -353,7 +353,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._alert_seq = 0              # 报警编号，供译文回来后对上号
         self._alert_tasks = []
         self._init_viewer_share()        # 手机同看的 8 个专属字段，见 app/viewer_share.py
-        self._init_comment_guard()       # 弹幕留意的守卫（默认关），见 app/pipeline_guard.py
+        self._init_comment_guard()       # 弹幕留意的守卫（默认开，可关），见 app/pipeline_guard.py
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -512,6 +512,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                  "brands": self.server.config.get("brands", {})})
         elif mtype == "open_brands_dir":
             return self._open_brands_dir()
+        elif mtype == "open_guard_dir":
+            return self._open_guard_dir()      # 弹幕留意的规则文件夹，见 pipeline_guard.py
         elif mtype in GUARD_CONTROL_TYPES:
             # 弹幕留意的开关、关注名单、忽略事件：只有本机页面发得出来（手机入站只认 retranslate）
             return self._handle_guard_control(msg)
@@ -1283,7 +1285,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         alerts_enabled = getattr(self, "alerts_enabled", False)
         if self.audit is not None:
             self.audit.close()
-        # 弹幕留意：词表、阈值、可信名单、这个主播的关注名单在这里载入（默认关时什么都不读）。
+        # 弹幕留意：词表、阈值、可信名单、这个主播的关注名单在这里载入（关着时什么都不读）。
         # 要在建审计之前：session_start 里记 rules_hash 等，事后答得出「当时为什么标红」
         guard_start = await self._begin_comment_guard(streamer)
         # requested 是用户的选择，active 是实际生效的对象——这两列并排记，
@@ -4631,6 +4633,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self.server.status("live", L("演示模式：内置台词模拟直播字幕（未连接真实直播）",
                                            "Demo mode: built-in sample lines simulate live "
                                            "captions (not connected to a real stream)"))
+        # 弹幕留意的虚构弹幕流（停播时验界面用），跟字幕并行；停止时跟着一起收掉
+        demo_comments = asyncio.ensure_future(self._demo_comment_stream())
+        try:
+            await self._run_demo_captions()
+        finally:
+            demo_comments.cancel()
+            await asyncio.gather(demo_comments, return_exceptions=True)
+
+    async def _run_demo_captions(self):
         while True:
             for original, translated in DEMO_SCRIPT:
                 self._counter += 1

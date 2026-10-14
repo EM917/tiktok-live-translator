@@ -373,6 +373,9 @@ def test_inbound_messages_never_reach_on_control():
               "handle": "ana_demo", "uid_src": "id"}),
         text({"type": "guard_set", "enabled": True}),
         text({"type": "guard_dismiss", "ev_id": "g1"}),
+        text({"type": "guard_clear_auto"}),
+        text({"type": "guard_reenable"}),
+        text({"type": "open_guard_dir"}),
     ])
     run_handshake(hub, ws)
     assert calls == []
@@ -414,6 +417,9 @@ def test_a_lone_retranslate_frame_does_not_trip_the_flood_cap():
     {"type": "guard_mark", "id": 7},                # 凑成 {type, id} 的形状也不行：类型不是 retranslate
     {"type": "guard_set", "enabled": True},
     {"type": "guard_dismiss", "ev_id": "g1"},
+    {"type": "guard_clear_auto"},
+    {"type": "guard_reenable"},
+    {"type": "open_guard_dir"},
 ])
 def test_malformed_or_irrelevant_inbound_is_silently_ignored(bad):
     """既不解析出动作，也不回消息、不断连接——坏页面和探测本就不该有回音。"""

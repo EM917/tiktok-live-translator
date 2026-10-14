@@ -41,7 +41,7 @@ UI_FILES = (
     "app/selfcheck.py",
     "app/translator.py", "app/updater.py", "app/viewer.py", "app/viewer_share.py",
     "app/window_attention.py", "app/window_close.py", "app/window_lang.py",
-    "web/alerts.js", "web/app.js", "web/brand.js", "web/i18n.js", "web/live-ui.js",
+    "web/alerts.js", "web/app.js", "web/brand.js", "web/guard.js", "web/i18n.js", "web/live-ui.js",
     "web/session-divider.js", "web/settings-rows.js", "web/switch.js", "web/viewer.js",
     "web/index.html", "web/viewer.html",
 )
@@ -187,9 +187,10 @@ RULE8_FAMILY = {
     "app/viewer.py": "*",
     "app/viewer_share.py": "*",
     "app/pipeline_guard.py": "*",
+    "web/guard.js": "*",
     "web/viewer.js": "*",
     "web/viewer.html": "*",
-    "web/index.html": ("#input-help",),
+    "web/index.html": ("#input-help", "#guard-bar", "#guard-drawer", "#guard-card"),
     "app/pipeline.py": ("browser_only_message", "_resolve_media", "_confirm_offline",
                         "_host_wait", "_run_session", "_selfcheck_incident_text"),
 }

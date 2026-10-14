@@ -107,6 +107,45 @@
   var commentFabCount = document.getElementById("comment-fab-count");
   var commentEmpty = document.getElementById("comment-empty");
   var commentSource = document.getElementById("comment-source");
+  // 弹幕留意（Comment Review，web/guard.js）：顶部条 + 抽屉 + 弹幕栏状态胶囊 + 设置行。
+  // 规则 / 文案 / 渲染在 guard.js，这里只接线：收消息、存状态、把回调传进去
+  var guardBar = document.getElementById("guard-bar");
+  var guardBarMain = document.getElementById("guard-bar-main");
+  var guardBarText = document.getElementById("guard-bar-text");
+  var guardBarSeen = document.getElementById("guard-bar-seen");
+  var guardBarView = document.getElementById("guard-bar-view");
+  var guardDrawer = document.getElementById("guard-drawer");
+  var guardDrawerState = document.getElementById("guard-drawer-state");
+  var guardReenableBtn = document.getElementById("guard-reenable");
+  var guardReenableCap = document.getElementById("guard-reenable-cap");
+  var guardDrawerClose = document.getElementById("guard-drawer-close");
+  var guardTabRecent = document.getElementById("guard-tab-recent");
+  var guardTabMarked = document.getElementById("guard-tab-marked");
+  var guardTabMarkedN = document.getElementById("guard-tab-marked-n");
+  var guardPaneRecent = document.getElementById("guard-pane-recent");
+  var guardPaneMarked = document.getElementById("guard-pane-marked");
+  var guardEventsEl = document.getElementById("guard-events");
+  var guardMarkedEl = document.getElementById("guard-marked");
+  var guardStateBtn = document.getElementById("guard-state");
+  var guardStateTextEl = document.getElementById("guard-state-text");
+  var commentFabGuard = document.getElementById("comment-fab-guard");
+  var guardCard = document.getElementById("guard-card");
+  var guardHead = document.getElementById("guard-head");
+  var guardBodyEl = document.getElementById("guard-body");
+  var guardSummaryEl = document.getElementById("guard-summary");
+  var guardToggle = document.getElementById("guard-toggle");
+  var guardBackendSel = document.getElementById("guard-backend");
+  var guardKeyRow = document.getElementById("guard-key-row");
+  var guardKeyInput = document.getElementById("guard-key");
+  var guardKeySave = document.getElementById("guard-key-save");
+  var guardStatusEl = document.getElementById("guard-status");
+  var guardPrivacy = document.getElementById("guard-privacy");
+  var guardWeak = document.getElementById("guard-weak");
+  var guardMarkedHeading = document.getElementById("guard-marked-heading");
+  var guardMarkedList = document.getElementById("guard-marked-list");
+  var guardClearAuto = document.getElementById("guard-clear-auto");
+  var guardDirBtn = document.getElementById("guard-dir-btn");
+  var guardRulesEl = document.getElementById("guard-rules");
   var backendState = "idle";   // 后端 TikTokLive 抓取协程的状态：idle/connecting/connected/disconnected/error/unavailable
   var backendDetail = "";      // backendState 为 error/unavailable 时的说明文字
   var streamActive = false;    // 直播中/连接中：这时面板即使空着也要显示
@@ -175,6 +214,7 @@
   }
   bindRow(engineHead, engineBody);
   bindRow(watchHead, watchBody);
+  bindRow(guardHead, guardBodyEl);        // 弹幕留意：默认收起，永不自动展开（会自己展开的只有自检和翻译引擎）
   bindRow(inputHelpBtn, inputHelp);
   bindRow(langHead, langBody);
 
@@ -760,6 +800,7 @@
         // 弹幕同理：服务器会重放最近的评论，先清掉本地已有的
         commentList.innerHTML = "";
         commentById = Object.create(null);
+        commentMeta = Object.create(null);
         commentCount.textContent = "0";
         commentFollowing = true;   // 回放重建整个列表：从最新处开始看
         commentPanel.classList.add("hidden");
@@ -770,6 +811,8 @@
         if (msg.config) {
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
           if (msg.config.comment_detail != null) backendDetail = msg.config.comment_detail;
+          // 弹幕留意：状态、事件、关注名单以服务端为准，整份换掉；回放里带来的事件不算新事件
+          applyGuardConfig(msg.config, true);
           if (msg.config.watchlist) renderWatchlist(msg.config.watchlist);
           // 违禁词警示开关：hello 每次都带真实值（默认关闭），不猜测、不沿用上一场
           setAlertsEnabled(!!msg.config.alerts_enabled);
@@ -843,6 +886,8 @@
           pendingStart = null;
           if (startWatchdog) clearTimeout(startWatchdog);
         }
+        // homeActive === false：明确知道刚才是待机（null 是页面刚加载还不知道，offline 不改它）
+        if (homeActive === false && (msg.state === "connecting" || msg.state === "live")) guardNewSession();
         setStatus(msg);
         break;
       // 一次性提示（如手动检查更新的结果）：只改版本号处的文案，
@@ -870,6 +915,8 @@
         // 键，不该被当成「清空品牌」处理
         if ("active_brand" in msg) setActiveBrand(msg.active_brand);
         if (msg.alerts_session) setAlertSession(msg.alerts_session);
+        // 弹幕留意：开场时事件表清空、名单换成这个主播的，状态变化时只带 guard_state。不带这些键的广播不动它
+        if ("guard_state" in msg || "guard_events" in msg || "guard_marked" in msg) applyGuardConfig(msg, false);
         if ("update_check" in msg) renderUpdateCheck(msg.update_check);
         // 设置里换了界面语言（app/pipeline.py _set_ui_lang 广播语言那几个键）：刷新这一行，
         // 本页语言和新的不一样就重载。别的 config 广播（set_target 等）不带这些键，不动这一行
@@ -901,6 +948,16 @@
         break;
       case "comment_update":
         updateComment(msg);
+        break;
+      // 弹幕留意：复核结果 / 刷屏升级后补的标注、聚合后的事件、关注名单的增删（都只发本机页面）
+      case "comment_guard":
+        updateCommentGuard(msg);
+        break;
+      case "guard_event":
+        receiveGuardEvent(msg);
+        break;
+      case "guard_mark":
+        receiveGuardMark(msg);
         break;
       case "comment_source":
         if (msg.backend) {
@@ -983,6 +1040,7 @@
     syncCaptionDependentUi(); // 「上一场字幕」标题只在首页才显示，随 streamActive 变化
     syncConnectHint(state);
     refreshCommentPanel();
+    syncGuardLive();    // 顶部条 / 抽屉 / 状态胶囊只在直播中出现
     // 「停止」之后桌面页面留残留（大字幕压住开始面板、回到最新按钮悬空、
     // 上一场弹幕还挂着）：这两步把「直播中才有意义」的 UI 收掉/摆好，
     // 只在活跃↔非活跃真正切换的那一刻各触发一次
@@ -1480,6 +1538,7 @@
     // 收起时整列不显示，只在字幕区右上角留一个带条数的入口
     commentFab.classList.toggle("hidden", !(show && collapsed));
     commentFabCount.textContent = commentItemCount();
+    scheduleGuardBar();       // 浮钮上的未读红条数跟顶部条同一份数，同一个节流
     // 「回到最新」是 fixed 定位在右下角的，弹幕列展开时把它往左挪，别盖在弹幕上
     var panelOpen = show && !collapsed;
     jumpBtn.style.right = (panelOpen ? commentPanel.offsetWidth + 20 : 20) + "px";
@@ -1579,6 +1638,7 @@
     // 正序：新的追加在底部，和字幕列表同一个方向，从上往下读就是时间顺序
     commentList.appendChild(item);
     commentById[msg.id] = item;
+    noteCommentGuard(msg, item);
     // 满 100 条从顶部删最旧的。用户正往上翻着看时，眼前那条不能跟着跑：
     // 删之前记下第一条可见弹幕的位置，删完量它实际移动了多少再补回来。
     // 不按「删掉多高」去减——Chromium 自带滚动锚定会先补一次，再减就补过头
@@ -1595,6 +1655,7 @@
     while (commentList.children.length > 100) {
       var oldest = commentList.firstChild;
       delete commentById[oldest.dataset.cmtId];
+      delete commentMeta[oldest.dataset.cmtId];
       commentList.removeChild(oldest);
     }
     if (anchor) {
@@ -1681,10 +1742,340 @@
   clearCommentsBtn.addEventListener("click", function () {
     commentList.innerHTML = "";
     commentById = Object.create(null);
+    commentMeta = Object.create(null);
     commentCount.textContent = "0";
     commentFollowing = true;
     refreshCommentPanel();    // 直播中清空后面板留着，只是回到空态
   });
+
+  // ---- 弹幕留意（Comment Review，web/guard.js；spec §7） ----
+  // 规则判定随 comment 消息的 guard 字段到；复核结果经 comment_guard 补；事件聚合成 guard_event；关注名单经
+  // guard_mark 增删。状态都存在这里，文案、匹配、渲染在 guard.js。守卫的东西只在直播中出现，不进首页或开始
+  // 面板（CLAUDE.md 第六条）；设置分组在直播中整块隐藏，所以直播中要用的（看名单、移出、重新启用）都在抽屉里。
+  // 手机同看页上没有这些（用户决定 8）：后端不发，手机页也不加载 guard.js。
+  var GUARD_SEEN_KEY = "guardSeenTs";
+  var REENABLE_WAIT_NOTE = L("识别稳定追上 60 秒后可用", "Available after speech recognition has kept up for 60 sec");
+  var GUARD_BAR_GAP_MS = 1000;                 // 顶部条每秒最多重画 1 次：冲场时只是数字在变
+  var guardState = null;                       // config.guard_state；老后端没有，整个功能就不出现
+  var guardEvents = Object.create(null);       // 事件 id -> 事件（config.guard_events + guard_event）
+  var guardMarked = Object.create(null);       // 主键 -> 条目（config.guard_marked + guard_mark）
+  var guardMarkIdx = Object.create(null);      // 名单里任一键 -> 主键，按弹幕现算高亮用
+  var guardTab = "recent";
+  var guardDrawerOpen = false;
+  var guardSeenTs = Number(lsGet(GUARD_SEEN_KEY)) || 0;   // 「已看」：晚于它的事件才算未读。存 localStorage，读写都兜住了
+  var commentMeta = Object.create(null);       // 弹幕 id -> 账号字段和判定：关注名单或设置变了，按它重画标记
+  var markedSpoke = [];                        // 关注的人本场发言的时刻（秒）：顶部条的「关注的人发言 n」
+  var guardBarTimer = null, guardBarAt = 0;
+  var guardPressing = false, guardDrawerDirty = false;     // 鼠标按着时不重画抽屉，免得点击落空
+
+  function guardCtx() {
+    return {
+      state: guardState, marked: guardMarked, index: guardMarkIdx, events: guardEvents, now: Date.now() / 1000,
+      onMark: function (who, on) { send(guardMarkMessage(who, on)); },
+      onUnmark: function (key) { send({ type: "guard_mark", key: key, on: false }); },
+      onLocate: guardLocate, onDismiss: guardDismiss, translationOf: guardTranslationOf
+    };
+  }
+
+  // 收到一条弹幕：记下账号字段和判定，画标记；关注的人发言了就记一笔（回放里的不算）
+  function noteCommentGuard(msg, item) {
+    commentMeta[msg.id] = { uid: msg.uid, uid_ok: msg.uid_ok, sec: msg.sec, handle: msg.handle,
+                            user: msg.user, guard: msg.guard };
+    var view = guardDecorateComment(document, item, commentMeta[msg.id], guardCtx());
+    if (view && view.marked && !msg.replay) {
+      markedSpoke.push(msg.ts || Date.now() / 1000);
+      if (markedSpoke.length > 200) markedSpoke.splice(0, markedSpoke.length - 200);
+      scheduleGuardBar();
+    }
+  }
+
+  function decorateComment(id, ctx) {
+    var item = commentById[id], meta = commentMeta[id];
+    if (item && meta) guardDecorateComment(document, item, meta, ctx || guardCtx());
+  }
+
+  function decorateAllComments() {
+    var ctx = guardCtx();
+    Object.keys(commentMeta).forEach(function (id) { decorateComment(id, ctx); });
+  }
+
+  function updateCommentGuard(msg) {
+    var meta = commentMeta[msg.id];
+    if (!meta) return;
+    meta.guard = msg.guard && typeof msg.guard === "object" ? msg.guard : null;
+    decorateComment(msg.id);
+  }
+
+  // hello / config：整份换掉本地的。hello 里带来的事件是回放，不算新事件：把「已看」推到此刻
+  function applyGuardConfig(cfg, hello) {
+    if (!cfg) return;
+    var stateChanged = false;
+    if ("guard_state" in cfg) {
+      guardState = cfg.guard_state && typeof cfg.guard_state === "object" ? cfg.guard_state : null;
+      stateChanged = true;
+    }
+    if ("guard_events" in cfg) {
+      guardEvents = Object.create(null);
+      var evs = cfg.guard_events && typeof cfg.guard_events === "object" ? cfg.guard_events : {};
+      Object.keys(evs).forEach(function (k) { if (evs[k] && evs[k].id) guardEvents[evs[k].id] = evs[k]; });
+      // 事件表是按场整份换的（开场清空 / hello 重放）：「关注的人本场发言」跟着归零，
+      // 不然上一场的数会带到下一场（换主播时则是挂在新主播的名单上）
+      markedSpoke = [];
+    }
+    if ("guard_marked" in cfg) {
+      guardMarked = Object.create(null);
+      var mk = cfg.guard_marked && typeof cfg.guard_marked === "object" ? cfg.guard_marked : {};
+      Object.keys(mk).forEach(function (k) { if (mk[k] && typeof mk[k] === "object") guardMarked[k] = mk[k]; });
+      guardMarkIdx = guardMarkIndex(guardMarked);
+    }
+    if (hello) {
+      markedSpoke = [];
+      markGuardSeen();
+    }
+    if (stateChanged || "guard_marked" in cfg) decorateAllComments();
+    drawGuardAll();
+  }
+
+  // 一场新的开始（待机 -> 连接中/直播中）：上一场的事件和「关注的人发言」不再显示。后端的重置
+  // config（事件表清空）要等模型和审计就绪才到，这之前「连接中…」不该露出上一场的未读红条。
+  // 只在 status 消息里调：hello 是整份重放，那里的事件正是要显示的
+  function guardNewSession() {
+    guardEvents = Object.create(null);
+    markedSpoke = [];
+  }
+
+  function receiveGuardEvent(msg) {
+    var ev = msg.ev;
+    if (!ev || typeof ev !== "object" || !ev.id) return;
+    if (ev.dismissed) delete guardEvents[ev.id]; else guardEvents[ev.id] = ev;
+    drawGuardDrawer();
+    scheduleGuardBar();
+  }
+
+  function receiveGuardMark(msg) {
+    if (!msg.key) return;
+    if (msg.entry && typeof msg.entry === "object") guardMarked[msg.key] = msg.entry;
+    else delete guardMarked[msg.key];
+    guardMarkIdx = guardMarkIndex(guardMarked);
+    decorateAllComments();
+    drawGuardDrawer();
+    syncGuardSettings();
+  }
+
+  function markGuardSeen() {
+    guardSeenTs = Math.max(guardSeenTs, Date.now() / 1000);
+    lsSet(GUARD_SEEN_KEY, String(guardSeenTs));
+  }
+
+  // ---- 画：顶部条（节流）、浮钮红点、胶囊、抽屉、设置行 ----
+  function scheduleGuardBar() {
+    var wait = GUARD_BAR_GAP_MS - (Date.now() - guardBarAt);
+    if (wait <= 0) { drawGuardBar(); return; }
+    if (guardBarTimer) return;
+    guardBarTimer = setTimeout(function () { guardBarTimer = null; drawGuardBar(); }, wait);
+  }
+
+  function drawGuardBar() {
+    guardBarAt = Date.now();
+    if (!guardBar) return;
+    var sum = guardBarSummary(guardEvents, guardSeenTs, { markedTs: markedSpoke });
+    var show = streamActive && !!guardState && !!guardState.enabled && sum.show;
+    guardBar.classList.toggle("hidden", !show);
+    if (show) {
+      guardBarText.textContent = sum.text;
+      guardBarMain.title = sum.text;
+      guardBar.classList.toggle("has-red", sum.red > 0);
+    }
+    // 弹幕列收起时，浮钮上显示未读红条数（琥珀不出红点）
+    var dot = streamActive && !!guardState && !!guardState.enabled && sum.red > 0;
+    if (commentFabGuard) {
+      commentFabGuard.classList.toggle("hidden", !dot);
+      if (dot) { commentFabGuard.textContent = String(sum.red); commentFabGuard.title = guardFabTitle(sum.red); }
+    }
+  }
+
+  function drawGuardCapsule() {
+    var cap = guardCapsule(guardState);
+    var show = streamActive && !!cap;
+    if (guardStateBtn) guardStateBtn.classList.toggle("hidden", !show);
+    if (guardReenableCap && !show) guardReenableCap.classList.add("hidden");
+    if (!show || !guardStateBtn) return;
+    guardStateTextEl.textContent = cap.text;
+    guardStateBtn.className = "guard-state " + cap.tone;
+    guardStateBtn.title = cap.unreviewed ? cap.title + "\n" + cap.unreviewed : cap.title;
+    guardStateBtn.setAttribute("aria-expanded", guardDrawerOpen ? "true" : "false");
+    // 熔断后胶囊下面也有「本场重新启用」：不必先打开抽屉
+    if (guardReenableCap) {
+      guardReenableCap.classList.toggle("hidden", !cap.reenable);
+      guardReenableCap.disabled = !!(cap.reenable && !cap.reenableOk);
+      guardReenableCap.title = guardReenableCap.disabled ? REENABLE_WAIT_NOTE : "";
+    }
+  }
+
+  function guardTranslationOf(cid) {
+    var item = cid ? commentById[cid] : null;
+    var zh = item ? item.querySelector(".cmt-zh") : null;
+    return zh && !zh.classList.contains("pending") ? zh.textContent : "";
+  }
+
+  function drawGuardDrawer() {
+    if (!guardDrawer) return;
+    var open = guardDrawerOpen && streamActive && !!guardState;
+    guardDrawer.classList.toggle("hidden", !open);
+    if (guardBarMain) guardBarMain.setAttribute("aria-expanded", open ? "true" : "false");
+    if (guardStateBtn) guardStateBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    // 条右侧的控件写的是点了会怎样：抽屉开着就是「收起」，不再写「查看」
+    if (guardBarView) guardBarView.textContent = guardBarViewText(open);
+    if (!open) return;
+    if (guardPressing) { guardDrawerDirty = true; return; }
+    guardDrawerDirty = false;
+    var cap = guardCapsule(guardState);
+    guardDrawerState.textContent = cap ? cap.text : "";
+    if (cap && cap.unreviewed) {
+      var extra = document.createElement("span");
+      extra.className = "gds-extra";
+      extra.textContent = cap.unreviewed;
+      guardDrawerState.appendChild(extra);
+    }
+    guardReenableBtn.classList.toggle("hidden", !(cap && cap.reenable));
+    guardReenableBtn.disabled = !!(cap && cap.reenable && !cap.reenableOk);
+    guardReenableBtn.title = guardReenableBtn.disabled ? REENABLE_WAIT_NOTE : "";
+    var recent = guardTab === "recent";
+    guardTabRecent.classList.toggle("on", recent);
+    guardTabMarked.classList.toggle("on", !recent);
+    guardTabRecent.setAttribute("aria-selected", recent ? "true" : "false");
+    guardTabMarked.setAttribute("aria-selected", recent ? "false" : "true");
+    guardPaneRecent.classList.toggle("hidden", !recent);
+    guardPaneMarked.classList.toggle("hidden", recent);
+    var nMarked = Object.keys(guardMarked).length;
+    guardTabMarkedN.textContent = nMarked ? String(nMarked) : "";
+    var ctx = guardCtx();
+    if (recent) guardRenderEvents(document, guardEventsEl, guardEvents, ctx);
+    else guardRenderMarked(document, guardMarkedEl, guardMarked, ctx);
+  }
+
+  function syncGuardSettings() {
+    if (!guardCard) return;
+    var st = guardState;
+    guardCard.classList.toggle("hidden", !st);         // 老后端没有这个功能：整行不出现
+    if (!st) return;
+    var nMarked = Object.keys(guardMarked).length;
+    guardSummaryEl.textContent = guardSummary(st, nMarked);
+    guardToggle.checked = !!st.enabled;
+    guardToggle.disabled = st.status === "env_off";     // 应急开关关着：设置里改不动
+    guardBackendSel.value = st.backend === "claude" ? "claude" : "none";
+    guardWeak.checked = !!st.weak;
+    var statusText = guardStateText(st), unrev = guardUnreviewedText(st);
+    guardStatusEl.textContent = unrev ? statusText + " " + unrev : statusText;
+    syncGuardKeyRow();
+    guardFillHeading(document, guardMarkedHeading, st.streamer || "");
+    guardRenderMarked(document, guardMarkedList, guardMarked, guardCtx());
+    guardClearAuto.classList.toggle("hidden", !Object.keys(guardMarked).some(function (k) { return guardMarked[k].by === "auto"; }));
+    guardRulesEl.textContent = guardRulesText(st);
+  }
+
+  // 选了 Claude、而翻译引擎那边还没有 Claude 密钥：显示密钥框。写进同一个密钥，不切换翻译引擎
+  function syncGuardKeyRow() {
+    var claude = guardBackendSel.value === "claude";
+    guardKeyRow.classList.toggle("hidden", !(claude && !(engineKeys && engineKeys.ANTHROPIC_API_KEY)));
+    // 「需要复核的弹幕会发给 Anthropic」：这个版本还没有模型复核（no_review）时什么都不会发，就不说
+    guardPrivacy.classList.toggle("hidden", !claude || !!(guardState && guardState.status === "no_review"));
+  }
+
+  function syncGuardLive() {
+    if (!streamActive) guardDrawerOpen = false;
+    drawGuardBar();
+    drawGuardCapsule();
+    drawGuardDrawer();
+  }
+
+  function drawGuardAll() {
+    drawGuardBar();
+    drawGuardCapsule();
+    drawGuardDrawer();
+    syncGuardSettings();
+  }
+
+  // ---- 抽屉里的动作 ----
+  function guardLocate(ev) {
+    var cid = ev && ev.sample ? ev.sample.cid : null;
+    var item = cid ? commentById[cid] : null;
+    if (!item) {      // 弹幕列表只留最近 100 条：这一条已经滚出去了
+      showVersionNote(L("这条弹幕已经不在列表里", "That comment is no longer in the list"), 4000);
+      return;
+    }
+    if (commentPanel.classList.contains("collapsed")) {     // 面板收起着就先展开
+      commentPanel.classList.remove("collapsed");
+      lsSet("commentPanelCollapsed", "0");
+      refreshCommentPanel();
+    }
+    commentFollowing = false;       // 不然自动跟随下一条弹幕来时又把视野拉回底部
+    var delta = item.getBoundingClientRect().top - commentList.getBoundingClientRect().top
+                - commentList.clientHeight / 2;
+    commentList.scrollTop += delta;
+    item.classList.add("guard-flash");
+    setTimeout(function () { item.classList.remove("guard-flash"); }, 1600);
+  }
+
+  function guardDismiss(ev) {
+    send({ type: "guard_dismiss", ev_id: ev.id });
+    delete guardEvents[ev.id];
+    drawGuardDrawer();
+    scheduleGuardBar();
+  }
+
+  function openGuardDrawer(tab) {
+    if (tab) guardTab = tab;
+    guardDrawerOpen = !(guardDrawerOpen && !tab);      // 同一个入口再点一次收起；指明页签（点胶囊 / 条）就只展开
+    drawGuardDrawer();
+    drawGuardCapsule();
+  }
+
+  if (guardBarMain) guardBarMain.addEventListener("click", function () { openGuardDrawer(); });
+  if (guardStateBtn) guardStateBtn.addEventListener("click", function () { openGuardDrawer(); });
+  if (guardDrawerClose) guardDrawerClose.addEventListener("click", function () {
+    guardDrawerOpen = false;
+    drawGuardDrawer();
+    drawGuardCapsule();
+  });
+  if (guardBarSeen) guardBarSeen.addEventListener("click", function () {
+    markedSpoke = [];
+    markGuardSeen();
+    drawGuardBar();
+  });
+  [[guardTabRecent, "recent"], [guardTabMarked, "marked"]].forEach(function (pair) {
+    if (pair[0]) pair[0].addEventListener("click", function () { guardTab = pair[1]; drawGuardDrawer(); });
+  });
+  [guardReenableBtn, guardReenableCap].forEach(function (btn) {
+    if (btn) btn.addEventListener("click", function () { send({ type: "guard_reenable" }); });
+  });
+  if (guardDrawer) {
+    guardDrawer.addEventListener("mousedown", function () { guardPressing = true; });
+    window.addEventListener("mouseup", function () {
+      guardPressing = false;
+      if (guardDrawerDirty) drawGuardDrawer();
+    });
+  }
+
+  // ---- 设置行里的控件（直播中设置分组是隐藏的，这些只在待机时用） ----
+  if (guardToggle) guardToggle.addEventListener("change", function () {
+    send({ type: "guard_set", enabled: guardToggle.checked });
+  });
+  if (guardBackendSel) guardBackendSel.addEventListener("change", function () {
+    syncGuardKeyRow();
+    send({ type: "guard_set", backend: guardBackendSel.value });
+  });
+  if (guardWeak) guardWeak.addEventListener("change", function () {
+    send({ type: "guard_set", weak: guardWeak.checked });
+  });
+  if (guardKeySave) guardKeySave.addEventListener("click", function () {
+    var key = (guardKeyInput.value || "").trim();
+    if (!key) return;
+    send({ type: "guard_set", backend: "claude", key: key });
+    guardKeyInput.value = "";
+  });
+  if (guardClearAuto) guardClearAuto.addEventListener("click", function () { send({ type: "guard_clear_auto" }); });
+  if (guardDirBtn) guardDirBtn.addEventListener("click", function () { send({ type: "open_guard_dir" }); });
 
   // ---- 延迟统计 ----
   function fmtMs(v) { return v == null ? "—" : (v / 1000).toFixed(1) + "s"; }
@@ -2842,6 +3233,7 @@
     var r = nextAutoOpen(engineNoteSig, engSum.sig, true);
     engineNoteSig = r.sig;
     if (r.changed && engSum.hasNote) setRowOpen(engineHead, engineBody, true);
+    syncGuardSettings();      // 弹幕留意选了 Claude 时要不要显示密钥框，看的是同一个 Claude 密钥
   }
 
   function syncEngineRow() {

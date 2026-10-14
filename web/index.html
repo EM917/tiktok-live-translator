@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=38">
+  <link rel="stylesheet" href="/static/style.css?v=40">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -233,6 +233,38 @@
   <!-- 识别落后/降级：中控必须看得见「检测正在落后多少秒」 -->
   <div id="incident-bar" class="incident-bar hidden"></div>
   <div id="health-bar" class="health-bar hidden"></div>
+
+  <!-- 弹幕留意（Comment Review）：顶部永远只有一行，点开是下方的抽屉（不是弹窗）。只在直播中出现，
+       不进首页或开始面板；不复用 #incident-bar（它会原样发到手机，而且点不开）。手机同看页上没有这些：
+       标红、提示条、关注名单一律不发手机（用户决定 8）。文字全部由 web/guard.js 按后端的代码写。 -->
+  <div id="guard-bar" class="guard-bar hidden">
+    <button id="guard-bar-main" class="guard-bar-main" type="button" aria-expanded="false" aria-controls="guard-drawer">
+      <svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>
+      <span id="guard-bar-text" class="guard-bar-text"></span>
+      <span id="guard-bar-view" class="guard-bar-view" data-en="View">查看</span>
+    </button>
+    <button id="guard-bar-seen" class="btn small" type="button" data-en="All Seen">全部看过</button>
+  </div>
+  <section id="guard-drawer" class="guard-drawer hidden" aria-label="弹幕留意" data-en-aria-label="Comment Review">
+    <div class="guard-drawer-top">
+      <div id="guard-drawer-state" class="guard-drawer-state"></div>
+      <button id="guard-reenable" class="btn small hidden" type="button" data-en="Turn Back On for This Session">本场重新启用</button>
+      <button id="guard-drawer-close" class="popover-close" type="button" title="关闭" aria-label="关闭"
+              data-en-title="Close" data-en-aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-xmark"/></svg></button>
+    </div>
+    <div class="guard-tabs" role="tablist">
+      <button id="guard-tab-recent" class="guard-tab on" type="button" role="tab" aria-selected="true"
+              aria-controls="guard-pane-recent" data-en="Recent">最近需要留意</button>
+      <button id="guard-tab-marked" class="guard-tab" type="button" role="tab" aria-selected="false"
+              aria-controls="guard-pane-marked"><span data-en="Marked Viewers">关注名单</span> <span id="guard-tab-marked-n" class="guard-tab-n"></span></button>
+    </div>
+    <!-- 两个页签共用同一块固定高度的区域（切页签时抽屉不跳），区域里的列表自己滚动；底部的渐隐是滚动的提示
+         （style.css .guard-panes::after） -->
+    <div class="guard-panes">
+      <div id="guard-pane-recent" class="guard-pane" role="tabpanel"><div id="guard-events"></div></div>
+      <div id="guard-pane-marked" class="guard-pane hidden" role="tabpanel"><div id="guard-marked"></div></div>
+    </div>
+  </section>
 
   <!-- 违禁词警报：本工具的核心产出，不自动消失，只能手动清空 -->
   <section id="alert-panel" class="alert-panel hidden">
@@ -462,6 +494,68 @@
             </div>
           </div>
 
+          <!-- 弹幕留意（Comment Review）：发现并提醒恶意弹幕（辱骂威胁、说假货骗子要举报、刷屏、引流），
+               并按主播记一份关注名单。程序对 TikTok 只读，只提醒，不能删弹幕或禁言。按用户 2026-09-23 的
+               决定（CLAUDE.md 第六条）放在设置分组里、默认收起、永不自动展开，不放首页或开始面板；
+               直播中设置分组整块隐藏，直播中要用的（看名单、移出、重新启用）在弹幕栏的抽屉里。
+               摘要＝开关 · 复核方式 · 关注人数（guard.js guardSummary） -->
+          <div id="guard-card" class="set-item">
+            <button id="guard-head" class="set-row" type="button" aria-expanded="false" aria-controls="guard-body">
+              <span class="set-icon indigo" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M3.5 2.5h9A1.5 1.5 0 0 1 14 4v6a1.5 1.5 0 0 1-1.5 1.5H8.3L5 14.2v-2.7H3.5A1.5 1.5 0 0 1 2 10V4a1.5 1.5 0 0 1 1.5-1.5Z"/>
+                  <path d="M8 4.6v2.7" stroke="var(--indigo)" stroke-width="1.5" stroke-linecap="round"/>
+                  <circle cx="8" cy="9.2" r=".8" fill="var(--indigo)"/>
+                </svg>
+              </span>
+              <span class="set-name" data-en="Comment Review">弹幕留意</span>
+              <span id="guard-summary" class="set-value"></span>
+              <span class="set-chevron" aria-hidden="true"></span>
+            </button>
+            <div id="guard-body" class="set-body hidden">
+              <label class="watch-toggle-row">
+                <span data-en="Flag comments to review">标出需要留意的弹幕</span>
+                <input type="checkbox" id="guard-toggle" class="toggle-input">
+                <span class="switch" aria-hidden="true"></span>
+              </label>
+              <div class="guard-field">
+                <label for="guard-backend" data-en="Model review">模型复核</label>
+                <select id="guard-backend">
+                  <option value="none" data-en="None (rules only)">不用模型（只用规则）</option>
+                  <option value="claude" data-en="Claude Haiku 5.5 (cloud)">Claude Haiku 5.5（云端）</option>
+                </select>
+              </div>
+              <!-- 选了 Claude 而还没有 Claude 密钥时才出现。写进和翻译引擎同一个 Claude 密钥，不切换翻译引擎 -->
+              <div id="guard-key-row" class="engine-row guard-key-row hidden">
+                <input id="guard-key" type="password" spellcheck="false" autocomplete="off"
+                       placeholder="粘贴 API 密钥" data-en-placeholder="Paste API key">
+                <button id="guard-key-save" class="btn" type="button" data-en="Save">保存</button>
+              </div>
+              <p id="guard-status" class="watch-desc"></p>
+              <p id="guard-privacy" class="watch-how hidden"
+                 data-en="With Claude, comments that need review are sent to Anthropic with numbers, links and @handles masked. Names and accounts aren’t sent.">
+                选 Claude 时，需要复核的弹幕（号码、链接、@账号先打码）会发送给 Anthropic；昵称和账号不发送。
+              </p>
+              <p class="watch-how" data-en="The app is read-only. It can’t delete comments or mute viewers.">
+                本程序只读：不能删除弹幕，也不能对观众禁言。
+              </p>
+              <label class="watch-toggle-row">
+                <span data-en="Also show weak signals (light)">也显示弱信号（浅色）</span>
+                <input type="checkbox" id="guard-weak" class="toggle-input">
+                <span class="switch" aria-hidden="true"></span>
+              </label>
+              <div class="guard-marked-box">
+                <div id="guard-marked-heading" class="guard-sub"></div>
+                <div id="guard-marked-list" class="guard-marked-list"></div>
+                <button id="guard-clear-auto" class="btn small hidden" type="button" data-en="Clear Auto-Added">清空自动加入的</button>
+              </div>
+              <div class="guard-rules-row">
+                <button id="guard-dir-btn" class="btn small" type="button" data-en="Open Rules Folder">打开规则文件夹</button>
+                <span id="guard-rules" class="guard-rules"></span>
+              </div>
+            </div>
+          </div>
+
           <!-- 磁盘空间：程序往硬盘放的模型和日志散在三处，用户看不到也没地方删。
                实测一台用了三周的机器缓存里躺着 50 多 GB，一半是本程序不用的模型。
                展开时才向服务端要盘点（见 app.js diskHead 的点击处理） -->
@@ -548,7 +642,14 @@
   <aside id="comment-panel" class="comment-panel hidden">
     <div class="comment-bar">
       <span class="comment-title" data-en="Comments "><svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>观众弹幕 <span id="comment-count">0</span>
-        <span id="comment-source" class="cmt-source" data-en="Not connected">未连接</span></span>
+        <span id="comment-source" class="cmt-source" data-en="Not connected">未连接</span>
+        <!-- 弹幕留意的覆盖情况（只用规则 / 规则 + Claude / 已停用……）；点它打开上面的抽屉。文字由 guard.js 写 -->
+        <button id="guard-state" class="guard-state hidden" type="button" aria-expanded="false" aria-controls="guard-drawer">
+          <span class="guard-state-dot" aria-hidden="true"></span><span id="guard-state-text"></span>
+        </button>
+        <!-- 模型复核熔断后，胶囊下面就能重新启用（抽屉的状态行里也有同一个按钮）；设置分组在直播中是隐藏的 -->
+        <button id="guard-reenable-cap" class="btn small guard-reenable-cap hidden" type="button"
+                data-en="Turn Back On for This Session">本场重新启用</button></span>
       <span class="comment-actions">
         <button id="toggle-comments" class="btn small" title="收起弹幕列，字幕独占整行"
                 data-en-title="Hide comments to widen captions" data-en="Hide">收起</button>
@@ -563,6 +664,7 @@
   <button id="comment-fab" class="comment-fab hidden" type="button" title="展开观众弹幕"
           data-en-title="Show comments" data-en="Comments ">
     <svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>弹幕 <span id="comment-fab-count">0</span>
+    <span id="comment-fab-guard" class="fab-guard hidden"></span>
   </button>
   </div>
 
@@ -615,6 +717,7 @@
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=2"></script>
   <script src="/static/live-ui.js?v=1"></script>
-  <script src="/static/app.js?v=66"></script>
+  <script src="/static/guard.js?v=6"></script>
+  <script src="/static/app.js?v=70"></script>
 </body>
 </html>

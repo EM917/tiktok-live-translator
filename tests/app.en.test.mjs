@@ -112,6 +112,15 @@ const ATTR = /([\w-]+)=(?:"([^"]*)"|'([^']*)')/g;
 
 // 按 index.html 的顺序在一个新的 vm 上下文里跑桌面页的脚本。带 id 的元素照页面源码建好
 // （标签名和属性与真页面一致；静态属性不算脚本写的），不建树：脚本只经 getElementById 拿它们
+// 每个页面都在自己的新上下文里跑一遍这些脚本，但脚本只编译一次。以前每个页面都把 app.js（3000 多行）
+// 重新编译一遍：守卫的页面用例加进来以后，整组 `node --test tests/*.test.mjs` 并行跑时，这个文件的子进程
+// 约三成概率在 V8 的垃圾回收里崩掉（Node 24.14.1，SIGSEGV，退出码 1，单跑从不崩）；只编译一次后连跑 40 次没有再崩。
+const scriptCache = new Map();
+function compiled(name) {
+  if (!scriptCache.has(name)) scriptCache.set(name, new vm.Script(web(name), { filename: "web/" + name }));
+  return scriptCache.get(name);
+}
+
 function runDesktop() {
   const html = web("index.html");
   const scripts = [...html.matchAll(/<script src="\/static\/([\w.-]+)\?v=\d+"><\/script>/g)].map((m) => m[1]);
@@ -143,9 +152,10 @@ function runDesktop() {
     addEventListener() {}, querySelector: () => null, querySelectorAll: () => [], hasFocus: () => true,
   };
   const sockets = [];
+  const sent = [];                                   // 页面发给后端的消息（JSON 解开）
   function FakeWebSocket(url) { this.url = url; this.readyState = 1; sockets.push(this); }
   FakeWebSocket.OPEN = 1;
-  FakeWebSocket.prototype.send = function () {};
+  FakeWebSocket.prototype.send = function (data) { sent.push(JSON.parse(data)); };
   FakeWebSocket.prototype.close = function () {};
   const storage = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) }; };
   const timers = [];
@@ -168,7 +178,7 @@ function runDesktop() {
   sandbox.window = sandbox;
   vm.createContext(sandbox);
   vm.runInContext("Date.now = function () { return __now(); };", sandbox);
-  for (const name of scripts) vm.runInContext(web(name), sandbox, { filename: "web/" + name });
+  for (const name of scripts) compiled(name).runInContext(sandbox);
   assert.equal(vm.runInContext("UI_LANG", sandbox), "en", "i18n.js 应该从 <html lang> 读到英文");
   assert.equal(sockets.length, 1, "页面加载时应该连一次 WebSocket");
   const ws = () => sockets[sockets.length - 1];
@@ -176,7 +186,7 @@ function runDesktop() {
   return {
     el: (id) => byId.get(id),
     all: () => [...byId.values()],
-    document, confirms, sandbox,
+    document, confirms, sandbox, sent,
     push: (msg) => ws().onmessage({ data: JSON.stringify(msg) }),
     offline: () => { ws().readyState = 3; },
     online: () => { ws().readyState = 1; },
@@ -677,5 +687,454 @@ test("英文页：翻译引擎说明与密钥框、自检的读屏级别、复�
   page.sandbox.navigator.clipboard = { writeText: () => ({ then: (ok) => ok() }) };
   copy.click();
   assert.equal(copy.textContent, "Copied");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+// ---- 弹幕留意（Comment Review）的接线：web/app.js 里收消息、存状态、把回调传给 web/guard.js 的那部分 ----------
+// 文案和渲染的细节在 tests/guard.test.mjs / guard.en.test.mjs；这里钉的是接线：
+// 设置行默认收起且永不自动展开；hello 里的回放不算新事件；顶部条每秒最多重画一次；
+// 加入 / 移出 / 忽略 / 重新启用 / 设置里的开关发出去的消息；直播结束后这些东西都收起；整页没有剩下的中文。
+
+const GUARD_UID = "7234567890123456789";
+const GUARD_STATE = { enabled: true, backend: "none", status: "rules", since: 1, trip: null,
+  rules: { count: 510, warnings: 0 }, n_marked: 1, unreviewed: 0, weak: false, streamer: "luna_demo" };
+const GUARD_ENTRY = { keys: [GUARD_UID, "h:ana_demo"], nick: "Ana", handle: "ana_demo", aka: [], by: "auto",
+  cat: "threat", first: T - 3600, last_seen: T - 600, hits: 2 };
+const guardEvent = (over) => Object.assign({ id: "g1", kind: "comment", cat: "threat", lvl: "alert", amb: null, n: 1,
+  accounts: [], window_sec: 60, first_ts: T + 5, ts: T + 5, rv: null,
+  sample: { cid: "c1", user: "Ana", text: "te voy a matar", uid: GUARD_UID, uid_src: "id", handle: "ana_demo" } }, over || {});
+const guardComment = (over) => Object.assign({ type: "comment", id: "c1", user: "Ana", text: "te voy a matar", ts: T + 5,
+  translated: null, state: "pending", uid: GUARD_UID, uid_ok: true, handle: "ana_demo" }, over || {});
+const RED_GUARD = { lvl: "alert", amb: null, cats: ["threat"], sub: "threat", tier: "red", src: "rule", rv: null, ev: "g1",
+  why: ["insult/threat:te voy a matar"] };
+
+function helloGuard(page, extra) {
+  hello(page, Object.assign({ guard_state: GUARD_STATE, guard_events: { g0: guardEvent({ id: "g0", ts: T - 30 }) },
+    guard_marked: { [GUARD_UID]: GUARD_ENTRY } }, extra || {}));
+}
+
+test("英文页：弹幕留意——胶囊、设置行都是英文，设置行默认收起；hello 里回放的事件不算新事件", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const cap = page.el("guard-state");
+  assert.ok(!cap.cls.includes("hidden"));
+  assert.equal(page.el("guard-state-text").textContent, "Comment Review: rules only");
+  assert.ok(cap.cls.includes("idle"));
+  assert.equal(page.el("guard-bar").cls.includes("hidden"), true, "回放里带来的事件不弹顶部条");
+  const card = page.el("guard-card");
+  assert.ok(!card.cls.includes("hidden"));
+  assert.equal(page.el("guard-summary").textContent, "On · Rules only · 1 marked");
+  assert.equal(page.el("guard-body").cls.includes("hidden"), true, "永不自动展开");
+  assert.equal(page.el("guard-head").getAttribute("aria-expanded"), "false");
+  assert.equal(page.el("guard-toggle").checked, true);
+  assert.equal(page.el("guard-backend").value, "none");
+  assert.equal(page.el("guard-status").textContent, "Comment Review: rules only");
+  assert.equal(page.el("guard-rules").textContent, "510 rules active");
+  assert.equal(page.el("guard-marked-heading").textContent, "Marked Viewers · @luna_demo");
+  assert.equal(page.el("guard-marked-list").querySelectorAll(".guard-mk-row").length, 1);
+  assert.equal(page.el("guard-clear-auto").cls.includes("hidden"), false, "名单里有自动加入的人");
+  assert.equal(page.el("guard-key-row").cls.includes("hidden"), true);
+  assert.equal(page.el("guard-privacy").cls.includes("hidden"), true);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：没有 guard_state（老后端）时整个功能不出现，也不报错", () => {
+  const page = runDesktop();
+  hello(page);
+  assert.equal(page.el("guard-card").cls.includes("hidden"), true);
+  assert.equal(page.el("guard-state").cls.includes("hidden"), true);
+  assert.equal(page.el("guard-bar").cls.includes("hidden"), true);
+  page.push(guardComment());                          // 老后端不会带 guard 字段
+  const item = page.el("comment-list").querySelector(".cmt-item");
+  assert.deepEqual(item.cls.filter((c) => c.startsWith("guard-")), []);
+  assert.equal(item.querySelector(".guard-mark-btn"), null, "守卫没开：没有加入按钮");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：弹幕栏里的标记——红条类别、关注的人 ★、琥珀理由；加入 / 移出消息", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(guardComment({ guard: RED_GUARD }));
+  page.push(guardComment({ id: "c2", user: "Lupita", uid: "11", handle: "lupita", text: "es falso",
+    guard: { lvl: "amber", amb: "maybe_question", cats: ["accuse_claim"], why: [], ev: "g2" } }));
+  const [first, second] = page.el("comment-list").querySelectorAll(".cmt-item");
+  assert.ok(first.cls.includes("guard-alert") && first.cls.includes("guard-marked"));
+  assert.equal(first.dataset.uid, GUARD_UID);
+  assert.equal(first.querySelector(".guard-pill").textContent, "Possible threat of harm");
+  assert.equal(first.querySelector(".guard-mark-btn").getAttribute("aria-label"), "Unmark");
+  assert.ok(second.cls.includes("guard-amber") && !second.cls.includes("guard-marked"));
+  assert.equal(second.querySelector(".guard-note").textContent, "Short, with no question mark");
+  // 点 ☆：发加入消息（键是字符串，19 位原样）
+  second.querySelector(".guard-mark-btn").click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_mark", key: "11", on: true, nick: "Lupita", handle: "lupita", uid_src: null });
+  first.querySelector(".guard-mark-btn").click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_mark", key: GUARD_UID, on: false, nick: "Ana", handle: "ana_demo", uid_src: null });
+  // 后端确认加入：已显示的弹幕即时亮起；确认移出：即时熄灭
+  page.push({ type: "guard_mark", key: "11", entry: Object.assign({}, GUARD_ENTRY, { keys: ["11"], nick: "Lupita", by: "manual" }) });
+  assert.ok(second.cls.includes("guard-marked"));
+  page.push({ type: "guard_mark", key: GUARD_UID, entry: null });
+  assert.ok(!first.cls.includes("guard-marked") && first.cls.includes("guard-alert"));
+  assert.equal(first.querySelector(".guard-mark-btn").getAttribute("aria-label"), "Mark");
+  // 复核结果经 comment_guard 后补
+  page.push({ type: "comment_guard", id: "c2", guard: { lvl: "amber", amb: "review", cats: ["accuse_claim"], src: "review", rv: "unsure", why: [] } });
+  assert.equal(second.querySelector(".guard-note").textContent, "Flagged by the model · Model: unsure");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：同一条弹幕既有关系标签（Gifter）又有守卫标记：两样都在，且复核结果补上来之后关系标签还在", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(guardComment({ rel: ["follower", "gifter"], guard: RED_GUARD }));
+  const item = page.el("comment-list").querySelector(".cmt-item");
+  const head = item.querySelector(".cmt-head");
+  assert.deepEqual([...head.querySelectorAll(".cmt-rel")].map((c) => c.textContent), ["Follower", "Gifter"]);
+  assert.equal(head.querySelector(".guard-pill").textContent, "Possible threat of harm");
+  assert.ok(head.querySelector(".guard-star"), "名单里的人有 ★");
+  assert.ok(item.cls.includes("guard-alert") && item.cls.includes("guard-marked"));
+  // 复核结果经 comment_guard 补上来：守卫的节点重画，关系标签不被一并撤掉
+  page.push({ type: "comment_guard", id: "c1", guard: Object.assign({}, RED_GUARD, { rv: "agree", src: "review" }) });
+  assert.deepEqual([...head.querySelectorAll(".cmt-rel")].map((c) => c.textContent), ["Follower", "Gifter"]);
+  assert.equal(head.querySelectorAll(".guard-pill").length, 1, "守卫的节点重画而不是叠加");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：顶部条——新事件弹出，每秒最多重画一次；关注的人发言单独计；全部看过收起", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const bar = page.el("guard-bar");
+  const text = () => page.el("guard-bar-text").textContent;
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5 }) });
+  assert.equal(bar.cls.includes("hidden"), true, "距上一次重画不到 1 秒：先压住");
+  page.fire(1000);
+  assert.equal(bar.cls.includes("hidden"), false);
+  assert.ok(bar.cls.includes("has-red"));
+  assert.equal(text(), "1 item to review · Possible threat of harm ×1 · Latest " + (new Date((T + 5) * 1000)).toTimeString().slice(0, 8));
+  assert.equal(page.el("guard-bar-main").title, text());
+  // 冲场：事件被同一个 id 持续更新，条数在涨，但事件还是 1 件（用户决定 10：按事件计，不数里面的弹幕）
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", kind: "flood", cat: "flood_user", n: 60, ts: T + 6 }) });
+  assert.match(text(), /^1 item to review · Possible flooding ×1 · Latest /);
+  // 琥珀不出红点，但算「拿不准」
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g2", cat: "accuse_claim", lvl: "amber", amb: "pending", ts: T + 7 }) });
+  assert.match(text(), /^1 item to review · 1 unclear · /);
+  // 关注的人发言：回放的不算，实时的算
+  page.advance(1500);
+  page.push(guardComment({ id: "c8", replay: true, ts: T + 8 }));
+  assert.doesNotMatch(text(), /marked viewers/);
+  page.push(guardComment({ id: "c9", ts: T + 9 }));
+  page.fire(1000);                                   // 这一秒内已经画过一次：压住的那次到点补上
+  assert.match(text(), /^1 item to review · 1 unclear · 1 from marked viewers · /);
+  // 全部看过（假时钟走到事件之后，已看的时刻才盖得住它们）
+  page.advance(30000);
+  page.el("guard-bar-seen").click();
+  assert.equal(bar.cls.includes("hidden"), true);
+  assert.ok(Number(page.sandbox.localStorage.getItem("guardSeenTs")) > 0, "已看的时刻记在 localStorage");
+  // 忽略的事件（后端广播 dismissed）不再计
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g3", ts: T + 100 }) });
+  assert.equal(bar.cls.includes("hidden"), false);
+  page.push({ type: "guard_event", ev: { id: "g3", dismissed: true } });
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g4", lvl: "amber", cat: "insult", ts: T + 101 }) });
+  assert.match(text(), /^1 unclear/);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：浮钮上只显示未读红条的事件数（一个事件里有几条弹幕不算），琥珀不出红点", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const dot = page.el("comment-fab-guard");
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "a1", lvl: "amber", cat: "insult", ts: T + 5 }) });
+  assert.equal(dot.cls.includes("hidden"), true);
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "a2", n: 3, ts: T + 6 }) });
+  assert.equal(dot.cls.includes("hidden"), false);
+  assert.equal(dot.textContent, "1", "一个事件里有 3 条弹幕，还是 1 件");
+  assert.equal(dot.title, "1 item to review");
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "a3", cat: "promo_link", ts: T + 7 }) });
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "a4", kind: "flood", cat: "flood_user", n: 40, ts: T + 8 }) });
+  assert.equal(dot.textContent, "3");
+  assert.equal(dot.title, "3 items to review");
+});
+
+test("英文页：抽屉——点条或胶囊展开，两个页签，忽略 / 加入 / 定位 / 重新启用都发对的消息", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(guardComment({ id: "c1", guard: RED_GUARD }));
+  page.push({ type: "comment_update", id: "c1", translated: "I'm going to kill you", state: "ok" });
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5, sample: { cid: "c1", user: "Pedro", text: "te voy a matar",
+    uid: "55", uid_src: "id", handle: "pedro" } }) });
+  const drawer = page.el("guard-drawer");
+  assert.equal(drawer.cls.includes("hidden"), true);
+  page.el("guard-state").click();
+  assert.equal(drawer.cls.includes("hidden"), false);
+  assert.equal(page.el("guard-state").getAttribute("aria-expanded"), "true");
+  assert.equal(page.el("guard-drawer-state").textContent, "Comment Review: rules only");
+  const row = page.el("guard-events").querySelector(".guard-ev-row");
+  assert.equal(row.querySelector(".gev-user").textContent, "Pedro");
+  assert.equal(row.querySelector(".gev-zh").textContent, "I'm going to kill you", "取弹幕栏里已有的译文");
+  assert.deepEqual(row.querySelectorAll(".btn").map((b) => b.textContent), ["Show in Comments", "Mark", "Dismiss"]);
+  // 加入
+  row.querySelectorAll(".btn")[1].click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_mark", key: "55", on: true, nick: "Pedro", handle: "pedro", uid_src: "id" });
+  // 定位：面板收起着就先展开
+  page.el("comment-panel").classList.add("collapsed");
+  row.querySelectorAll(".btn")[0].click();
+  assert.equal(page.el("comment-panel").cls.includes("collapsed"), false);
+  assert.ok(page.el("comment-list").querySelector(".cmt-item").cls.includes("guard-flash"));
+  page.fire(1600);
+  assert.ok(!page.el("comment-list").querySelector(".cmt-item").cls.includes("guard-flash"));
+  // 忽略：这一行没了，hello 里带来的那条（g0）还在；也忽略掉就是空态
+  row.querySelectorAll(".btn")[2].click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_dismiss", ev_id: "g1" });
+  const left = page.el("guard-events").querySelectorAll(".guard-ev-row");
+  assert.deepEqual(left.map((r) => r.getAttribute("data-ev")), ["g0"]);
+  left[0].querySelectorAll(".btn").pop().click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_dismiss", ev_id: "g0" });
+  assert.equal(page.el("guard-events").querySelector(".guard-ev-row"), null);
+  assert.equal(page.el("guard-events").querySelector(".guard-empty").textContent, "No comments to review yet.");
+  // 第二个页签：关注名单
+  page.el("guard-tab-marked").click();
+  assert.equal(page.el("guard-pane-marked").cls.includes("hidden"), false);
+  assert.equal(page.el("guard-pane-recent").cls.includes("hidden"), true);
+  assert.equal(page.el("guard-tab-marked-n").textContent, "1");
+  page.el("guard-marked").querySelector(".gmk-un").click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_mark", key: GUARD_UID, on: false });
+  // 收起
+  page.el("guard-drawer-close").click();
+  assert.equal(drawer.cls.includes("hidden"), true);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：顶部条右侧的控件写的是点了会怎样——抽屉收着是 View，开着是 Hide，aria-expanded 跟着一致", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "v1", ts: T + 5 }) });
+  page.fire(1000);
+  const view = page.el("guard-bar-view");
+  const main = page.el("guard-bar-main");
+  const drawer = page.el("guard-drawer");
+  const shows = (label, open) => {
+    assert.equal(view.textContent, label);
+    assert.equal(main.getAttribute("aria-expanded"), open ? "true" : "false");
+    assert.equal(drawer.cls.includes("hidden"), !open);
+  };
+  shows("View", false);
+  main.click();                                   // 点条本身：展开
+  shows("Hide", true);
+  main.click();                                   // 同一个控件再点：收起
+  shows("View", false);
+  page.el("guard-state").click();                 // 点弹幕栏里的胶囊展开：条上也跟着写 Hide
+  shows("Hide", true);
+  page.el("guard-drawer-close").click();          // 抽屉右上角的 ×：收起
+  shows("View", false);
+  page.el("guard-state").click();
+  page.el("guard-tab-marked").click();            // 换页签不改写它
+  shows("Hide", true);
+  // 直播停了：抽屉跟着收起，条上写回 View（下一场的条不会带着「Hide」出现）
+  page.push({ type: "status", state: "idle", detail: "" });
+  shows("View", false);
+  assert.equal(page.el("guard-bar").cls.includes("hidden"), true);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：模型复核熔断后，胶囊和抽屉都有原因和「本场重新启用」", () => {
+  const page = runDesktop();
+  helloGuard(page, { guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "tripped", lag_sec: 12, unreviewed: 3 }) });
+  assert.equal(page.el("guard-state-text").textContent, "Model review is off for this session: speech recognition fell 12 sec behind. Rules only.");
+  assert.ok(page.el("guard-state").cls.includes("warn"));
+  // 不开抽屉也能重新启用：胶囊下面有同一个按钮
+  const inline = page.el("guard-reenable-cap");
+  assert.equal(inline.cls.includes("hidden"), false);
+  inline.click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_reenable" });
+  page.el("guard-state").click();
+  const again = page.el("guard-reenable");
+  assert.equal(again.cls.includes("hidden"), false);
+  assert.equal(again.disabled, false);
+  assert.match(page.el("guard-drawer-state").textContent, /3 comments weren’t reviewed by the model this session\.$/);
+  again.click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_reenable" });
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "tripped", lag_sec: 12, reenable_ok: false }) });
+  assert.equal(again.disabled, true);
+  assert.equal(again.title, "Available after speech recognition has kept up for 60 sec");
+  assert.equal(inline.disabled, true);
+  assert.equal(inline.title, again.title);
+  page.push({ type: "config", guard_state: GUARD_STATE });
+  assert.equal(again.cls.includes("hidden"), true);
+  assert.equal(inline.cls.includes("hidden"), true);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：设置行的控件发 guard_set；选 Claude 没有密钥时出现密钥框，存了密钥就收起", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const toggle = page.el("guard-toggle");
+  toggle.checked = false;
+  toggle.fire("change");
+  assert.deepEqual(page.sent.pop(), { type: "guard_set", enabled: false });
+  const weak = page.el("guard-weak");
+  weak.checked = true;
+  weak.fire("change");
+  assert.deepEqual(page.sent.pop(), { type: "guard_set", weak: true });
+  const select = page.el("guard-backend");
+  select.value = "claude";
+  select.fire("change");
+  assert.deepEqual(page.sent.pop(), { type: "guard_set", backend: "claude" });
+  assert.equal(page.el("guard-key-row").cls.includes("hidden"), false, "翻译引擎那边没有 Claude 密钥");
+  assert.equal(page.el("guard-privacy").cls.includes("hidden"), false);
+  page.el("guard-key").value = "  sk-ant-test-not-a-real-key  ";
+  page.el("guard-key-save").click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_set", backend: "claude", key: "sk-ant-test-not-a-real-key" });
+  assert.equal(page.el("guard-key").value, "", "密钥框清空，不留在页面上");
+  page.el("guard-key").value = "   ";
+  page.el("guard-key-save").click();
+  assert.equal(page.sent.length, 0, "空的不发");
+  // 后端确认了选择（假的 guard_set 不会改 state，这里补一条）：密钥框还在，因为翻译引擎那边还是没有 Claude 密钥
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "no_review" }) });
+  assert.equal(page.el("guard-backend").value, "claude");
+  assert.equal(page.el("guard-key-row").cls.includes("hidden"), false, "没有 Claude 密钥：密钥框留着");
+  // 后端存好密钥、广播打码后的尾四位：密钥框收起
+  page.push({ type: "engine", engine: "deepl", keys: { DEEPL_API_KEY: "…abcd", ANTHROPIC_API_KEY: "…1234" }, active_label: "DeepL", note: "" });
+  assert.equal(page.el("guard-key-row").cls.includes("hidden"), true);
+  // 状态变化：选了 Claude 但这个版本还没有模型复核，摘要写实际在起作用的，也不说「会发给 Anthropic」
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "no_review" }) });
+  assert.equal(page.el("guard-summary").textContent, "On · Rules only · 1 marked");
+  assert.equal(page.el("guard-status").textContent, "Model review isn’t in this version yet. Using rules only.");
+  assert.equal(page.el("guard-backend").value, "claude");
+  assert.equal(page.el("guard-privacy").cls.includes("hidden"), true, "没有复核就没有东西发出去");
+  // 组件缺失（复核接上之后才会有）：照常说
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { backend: "claude", status: "no_sdk" }) });
+  assert.equal(page.el("guard-status").textContent, "The Claude component isn’t installed. Using rules only.");
+  // 其余按钮
+  page.el("guard-clear-auto").click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_clear_auto" });
+  page.el("guard-dir-btn").click();
+  assert.deepEqual(page.sent.pop(), { type: "open_guard_dir" });
+  page.el("guard-marked-list").querySelector(".gmk-un").click();
+  assert.deepEqual(page.sent.pop(), { type: "guard_mark", key: GUARD_UID, on: false });
+  // 应急开关关着：开关灰掉
+  page.push({ type: "config", guard_state: Object.assign({}, GUARD_STATE, { enabled: false, status: "env_off" }) });
+  assert.equal(page.el("guard-toggle").disabled, true);
+  assert.equal(page.el("guard-summary").textContent, "Off · 1 marked");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：停止之后顶部条、胶囊、抽屉都收起；开场的 config 把事件表和名单整份换掉", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5 }) });
+  page.el("guard-state").click();
+  assert.equal(page.el("guard-bar").cls.includes("hidden"), false);
+  assert.equal(page.el("guard-drawer").cls.includes("hidden"), false);
+  page.push({ type: "status", state: "idle", detail: "" });
+  assert.equal(page.el("guard-bar").cls.includes("hidden"), true);
+  assert.equal(page.el("guard-drawer").cls.includes("hidden"), true);
+  assert.equal(page.el("guard-state").cls.includes("hidden"), true);
+  // 再开一场：config 里事件表清空、名单是这个主播的
+  page.push({ type: "status", state: "live", detail: "" });
+  page.push({ type: "config", guard_events: {}, guard_marked: {} });
+  assert.equal(page.el("guard-bar").cls.includes("hidden"), true);
+  assert.equal(page.el("guard-marked-list").querySelectorAll(".guard-mk-row").length, 0);
+  assert.equal(page.el("guard-marked-list").querySelector(".guard-empty").textContent, "No marked viewers yet.");
+  assert.equal(page.el("guard-clear-auto").cls.includes("hidden"), true);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：上一场的「关注的人发言」和未读红条不带进下一场——开场的 config 归零，连接中就先收起", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const bar = page.el("guard-bar");
+  const text = () => page.el("guard-bar-text").textContent;
+  page.advance(1500);
+  page.push(guardComment({ id: "c1", ts: T + 5 }));
+  page.push(guardComment({ id: "c2", ts: T + 6 }));
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", lvl: "amber", cat: "insult", ts: T + 7 }) });
+  page.fire(1000);
+  assert.match(text(), /2 from marked viewers/);
+  // 停止、再开一场：先是「连接中」，后端的重置 config 要等模型和审计就绪才到
+  page.push({ type: "status", state: "idle", detail: "" });
+  assert.equal(bar.cls.includes("hidden"), true);
+  page.advance(60000);
+  page.push({ type: "status", state: "connecting", detail: "Connecting" });
+  page.advance(1500);
+  page.fire(1000);
+  assert.equal(bar.cls.includes("hidden"), true, "连接中不露出上一场的未读");
+  page.push({ type: "config", guard_state: GUARD_STATE, guard_events: {}, guard_marked: { [GUARD_UID]: GUARD_ENTRY } });
+  page.push({ type: "status", state: "live", detail: "" });
+  page.advance(1500);
+  page.fire(1000);
+  assert.equal(bar.cls.includes("hidden"), true, "新一场还没人说话");
+  // 新一场里关注的人说话：只算这一场的
+  page.push(guardComment({ id: "n1", ts: T + 100 }));
+  page.fire(1000);
+  assert.equal(text(), "1 from marked viewers");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：直播中换主播——开场的 config（事件表清空）把关注的人发言数归零，不挂在新主播的名单上", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const bar = page.el("guard-bar");
+  page.advance(1500);
+  page.push(guardComment({ id: "c1", ts: T + 5 }));
+  page.fire(1000);
+  assert.equal(bar.cls.includes("hidden"), false);
+  // 换主播不经过待机：live -> connecting，新开场的 config 带来新名单
+  page.push({ type: "status", state: "connecting", detail: "Connecting" });
+  page.push({ type: "config", guard_state: GUARD_STATE, guard_events: {}, guard_marked: {} });
+  page.push({ type: "status", state: "live", detail: "" });
+  page.advance(1500);
+  page.fire(1000);
+  assert.equal(bar.cls.includes("hidden"), true);
+});
+
+test("英文页：刷新或重连时 hello 里的事件照常显示在抽屉里，不被「新一场」清掉", () => {
+  const page = runDesktop();
+  // 页面一开始就知道是待机，随后 hello 说其实在直播（比如另一个窗口开的）
+  page.push({ type: "status", state: "idle", detail: "" });
+  helloGuard(page);
+  page.el("guard-state").click();
+  assert.equal(page.el("guard-events").querySelectorAll(".guard-ev-row").length, 1);
+});
+
+test("英文页：抽屉——定位后不被新弹幕拉回底部；行已不在列表里时说一声；胶囊再点一次收起", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  const list = page.el("comment-list");
+  list.scrollHeight = 5000;
+  page.push(guardComment({ id: "c1", guard: RED_GUARD }));
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5 }) });
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g2", ts: T + 6, sample: { cid: "gone", user: "Ana", text: "x",
+    uid: GUARD_UID, uid_src: "id", handle: "ana_demo" } }) });
+  page.el("guard-state").click();
+  const drawer = page.el("guard-drawer");
+  assert.equal(drawer.cls.includes("hidden"), false);
+  const locate = (id) => page.el("guard-events").querySelectorAll(".guard-ev-row")
+    .find((r) => r.getAttribute("data-ev") === id).querySelectorAll(".btn")[0];
+  // 定位到还在列表里的那一条：视野停在那儿，下一条弹幕来了也不拉回底部
+  assert.equal(list.scrollTop, 5000, "一直跟着最新的，滚在底部");
+  list.querySelector(".cmt-item").getBoundingClientRect = () => ({ top: -300 });
+  locate("g1").click();
+  assert.equal(list.scrollTop, 4700);
+  page.push(guardComment({ id: "c2", ts: T + 10, text: "hola" }));
+  assert.equal(list.scrollTop, 4700, "定位之后不再自动跟随");
+  // 那条弹幕已经滚出列表：在页脚版本号旁说一声，视野不动
+  locate("g2").click();
+  assert.equal(page.el("app-version").textContent, " \u00b7 That comment is no longer in the list");
+  assert.equal(list.scrollTop, 4700);
+  // 同一个入口再点一次收起
+  page.el("guard-state").click();
+  assert.equal(drawer.cls.includes("hidden"), true);
+  page.el("guard-state").click();
+  assert.equal(drawer.cls.includes("hidden"), false);
   assert.deepEqual(leftoverChinese(page), []);
 });

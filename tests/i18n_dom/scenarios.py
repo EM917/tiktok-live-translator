@@ -46,15 +46,24 @@ CONTEXT_ZH = "这款面霜能治好色斑"              # 报警上下文的中�
 DATA_ZH = (BRAND_ZH, CAPTION_ZH, CONTEXT_ZH)
 
 NOW = datetime(2026, 9, 28, 20, 0, 0).timestamp()   # 固定时刻：日志文件的新旧、时钟间隙都按它算
+# 弹幕留意的页面用浏览器的真实时钟判断「新事件」（hello 里回放的不算新）：实时消息的时刻放到很远的将来，
+# 顶部条才会在场景里弹出来
+FUTURE = NOW + 10 * 365 * 86400
 DESKTOP = (1280, 860)
 PHONE = (390, 844)
 LIVE_WIDTHS = (1000, 1100, 1101, 1199, 1200)   # 版面断言的五档（spec §12.3 第 7 条）
 NARROW_WIDTHS = (860, 720)                     # 这两档只断言 .topbar 不溢出
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm")
+GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
+                 ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
 
+# 弹幕留意（Comment Review）的四个场景，英文页进 G10 的扫描，中文页（-zh）只为核对中文界面和出截图。
+# 设置行展开、直播中抽屉的「最近需要留意」页签、抽屉的「关注名单」页签、熔断后的胶囊与「本场重新启用」
+GUARD_NAMES = ("home-guard", "live-guard", "live-guard-marked", "live-guard-tripped")
+GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
 DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "connecting", "offline",
-              "error-4003110")
+              "error-4003110") + GUARD_NAMES
 PHONE_EN = ("phone-live", "phone-denied", "phone-full", "phone-local-en")
 CONTROL_ZH = "live-full-zh"
 
@@ -386,6 +395,132 @@ def _status_only(tmp, name, state, detail="", close=None):
         return _scenario(name, "desktop", "en", _desktop_messages(server, "en"), close=close)
 
 
+# ---- 弹幕留意（Comment Review） -----------------------------------------------------------
+# 后端只发代码（类别、琥珀理由、模型意见、状态），界面文字由 web/guard.js 按代码写，所以这里没有任何
+# 要上界面的中文或英文，只有数据：昵称、账号（19 位，超过 2^53）、西语弹幕。形状同 app/pipeline_guard.py。
+
+GUARD_UID = "7234567890123456789"
+GUARD_STATE = {"enabled": True, "backend": "none", "status": "rules", "since": NOW, "trip": None,
+               "rules": {"count": 510, "warnings": 2}, "n_marked": 3, "unreviewed": 0, "weak": False,
+               "streamer": STREAMER}
+
+
+def _guard_comments():
+    """弹幕栏里的几种行：普通、红条（带模型给的证据）、琥珀（各种理由）、关注的人、多账号同句。"""
+    def comment(cid, user, text, uid, handle, guard=None, offset=0):
+        msg = {"type": "comment", "id": cid, "user": user, "text": text, "ts": NOW - 200 + offset,
+               "translated": None, "state": "pending", "uid": uid, "uid_ok": True, "handle": handle}
+        if guard:
+            msg["guard"] = guard
+        return msg
+
+    def red(cat, ev, why, **extra):
+        return dict({"lvl": "alert", "amb": None, "cats": [cat], "sub": cat, "tier": "red", "src": "rule",
+                     "rv": None, "ev": ev, "why": why}, **extra)
+
+    def amber(cat, amb, ev, **extra):
+        return dict({"lvl": "amber", "amb": amb, "cats": [cat], "sub": "assert", "tier": "red", "src": "rule",
+                     "rv": None, "ev": ev, "why": []}, **extra)
+
+    return [
+        comment("g1", "maria_g", "¿Cuánto cuesta el sérum?", "7100000000000000011", "maria_g"),
+        {"type": "comment_update", "id": "g1", "translated": "How much is the serum?", "state": "ok"},
+        comment("g2", "rival_demo", "no compren, es una estafa, denuncien este live", GUARD_UID, "rival_demo",
+                red("accuse_call", "g-ev1", ["accuse/call:no compren"], evidence="no compren", rv="agree"), 20),
+        {"type": "comment_update", "id": "g2", "translated": "Don't buy, it's a scam, report this live", "state": "ok"},
+        comment("g3", "lupita88", "es falso", "7100000000000000013", "lupita88",
+                amber("accuse_claim", "maybe_question", "g-ev2"), 40),
+        {"type": "comment_update", "id": "g3", "translated": "It's fake", "state": "ok"},
+        comment("g4", "pedro_demo", "mira https://ejemplo.example.com/pedro", "7100000000000000014", "pedro_demo",
+                red("promo_link", "g-ev3", ["promo/link"]), 60),
+        comment("g5", "sofia_ventas", "me llegó roto y nadie contesta", "7100000000000000015", "sofia_ventas",
+                amber("accuse_claim", "grievance", "g-ev4", rv="neutral"), 80),
+        comment("g6", "rival_demo", "ya les dije lo que pienso", GUARD_UID, "rival_demo", None, 100),
+        {"type": "comment_update", "id": "g6", "translated": "I already told you what I think", "state": "ok"},
+        comment("g7", "cuenta_e", "quiero uno ya mismo luna", "7100000000000000025", "cuenta_e",
+                amber("flood_brigade", "brigade", "g-ev5"), 120),
+    ]
+
+
+def _guard_events():
+    """聚合后的事件（config.guard_events 里的样子）：红条、琥珀的几种理由、多账号同句。"""
+    def ev(eid, cat, lvl, ts, sample_cid, user, text, uid, **extra):
+        return dict({"type": "guard_event", "ev": dict({
+            "id": eid, "kind": "comment", "cat": cat, "lvl": lvl, "amb": None, "n": 1, "accounts": [],
+            "window_sec": 60, "first_ts": ts, "ts": ts, "rv": None,
+            "sample": {"cid": sample_cid, "user": user, "text": text, "uid": uid, "uid_src": "id", "handle": user}},
+            **extra)})
+    accounts = [{"user": "cuenta_" + c, "uid": "71000000000000000" + str(i)} for i, c in enumerate("abcde")]
+    return [
+        ev("g-ev1", "accuse_call", "alert", NOW - 180, "g2", "rival_demo", "no compren, es una estafa, denuncien este live",
+           GUARD_UID, rv="agree"),
+        ev("g-ev2", "accuse_claim", "amber", NOW - 160, "g3", "lupita88", "es falso", "7100000000000000013",
+           amb="maybe_question"),
+        ev("g-ev3", "promo_link", "alert", NOW - 140, "g4", "pedro_demo", "mira https://ejemplo.example.com/pedro",
+           "7100000000000000014"),
+        ev("g-ev4", "accuse_claim", "amber", NOW - 120, "g5", "sofia_ventas", "me llegó roto y nadie contesta",
+           "7100000000000000015", amb="grievance", rv="neutral"),
+        ev("g-ev5", "flood_brigade", "amber", NOW - 100, "g7", "cuenta_e", "quiero uno ya mismo luna",
+           "7100000000000000025", kind="brigade", amb="brigade", n=5, window_sec=20, accounts=accounts),
+    ]
+
+
+def _guard_marked():
+    """关注名单：一个自动加入的、一个手动加入的、一个只有 handle 的。"""
+    def entry(keys, nick, handle, by, cat, seen):
+        return {"type": "guard_mark", "key": keys[0], "entry": {
+            "keys": keys, "nick": nick, "handle": handle, "aka": [], "by": by, "cat": cat,
+            "first": NOW - 86400, "last_seen": seen, "hits": 3}}
+    return [
+        entry([GUARD_UID, "s:MS4wLjAB", "h:rival_demo"], "rival_demo", "rival_demo", "auto", "accuse_call", NOW - 90),
+        entry(["7100000000000000013"], "lupita88", "lupita88", "manual", None, NOW - 3 * 86400),
+        entry(["h:tienda_rival"], "Tienda Rival", "tienda_rival", "manual", None, NOW - 7200),
+    ]
+
+
+def _guard_scenario(tmp, lang, name, *, live, state=None, clicks=()):
+    """live=False：待机的首页（设置行展开）；live=True：直播中，弹幕栏有几种标记、顶部条弹出。
+    guard_* 的缓存经真的 CaptionServer.broadcast 进 config 和弹幕缓存，同真实连接的 hello 一致。"""
+    with i18n.use(lang):
+        server = _server(lang, tmp)
+        server.config["guard_state"] = dict(GUARD_STATE, **(state or {}))
+        if not live:
+            _feed(server, _guard_marked())
+            sc_name = name + ("" if lang == "en" else "-zh")
+            return _scenario(sc_name, "desktop", lang, _desktop_messages(server, lang), clicks=clicks,
+                             replies=_disk_reply(server, lang))
+        server.config.update(alerts_enabled=True, alerts_session={"session": "s1", "streamer": STREAMER, "total": 0})
+        _feed(server, [{"type": "status", "state": "live", "detail": ""}])
+        _feed(server, _captions() + _guard_marked() + _guard_events() + _guard_comments())
+        # 实时消息（不进缓存）：一条新事件和一条关注的人的发言，时刻在页面的真实时钟之后，顶部条才会弹出
+        fresh = [
+            {"type": "guard_event", "ev": {"id": "g-ev6", "kind": "flood", "cat": "flood_user", "lvl": "alert", "amb": None,
+                                          "n": 7, "accounts": [], "window_sec": 10, "first_ts": FUTURE, "ts": FUTURE,
+                                          "rv": None, "sample": {"cid": "g8", "user": "spam_demo", "text": "oferta oferta oferta",
+                                                                 "uid": "7100000000000000031", "uid_src": "id",
+                                                                 "handle": "spam_demo"}}},
+            {"type": "comment", "id": "g8", "user": "rival_demo", "text": "otra vez yo", "ts": FUTURE, "translated": None,
+             "state": "pending", "uid": GUARD_UID, "uid_ok": True, "handle": "rival_demo"},
+            {"type": "comment_update", "id": "g8", "translated": "Me again", "state": "ok"},
+        ]
+        sc_name = name + ("" if lang == "en" else "-zh")
+        sc = _scenario(sc_name, "desktop", lang, _desktop_messages(server, lang, fresh), clicks=clicks)
+        sc["measure"] = list(DESKTOP_MEASURE + GUARD_MEASURE)
+        return sc
+
+
+def _guard_scenarios(tmp):
+    out = []
+    for lang in ("en", "zh"):
+        out.append(_guard_scenario(tmp, lang, "home-guard", live=False, clicks=["#guard-head"],
+                                   state={"backend": "claude", "status": "no_sdk"}))
+        out.append(_guard_scenario(tmp, lang, "live-guard", live=True, clicks=["#guard-state"]))
+        out.append(_guard_scenario(tmp, lang, "live-guard-marked", live=True, clicks=["#guard-state", "#guard-tab-marked"]))
+        out.append(_guard_scenario(tmp, lang, "live-guard-tripped", live=True, clicks=["#guard-state"],
+                                   state={"backend": "claude", "status": "tripped", "lag_sec": 14, "unreviewed": 6}))
+    return out
+
+
 def _phone(tmp):
     """手机四个场景。phone-live：每条后端文字都带 text_en / why_en，最后一条 status 是 ended。"""
     with i18n.use("en"):
@@ -421,7 +556,7 @@ def build(tmp):
                  _status_only(tmp, "offline", "idle", close={"code": 1006}),
                  _status_only(tmp, "error-4003110", "error", browser_only_message(3, login={
                      "safari": browser_login.BLOCKED, "chrome": browser_login.NOT_LOGGED_IN})),
-                 _live_full(tmp, "zh")] + _phone(tmp)
+                 _live_full(tmp, "zh")] + _guard_scenarios(tmp) + _phone(tmp)
     out = {sc["name"]: sc for sc in scenarios}
     for width in LIVE_WIDTHS + NARROW_WIDTHS:
         sc = resized(out["live-full"], width)

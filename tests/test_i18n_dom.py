@@ -582,6 +582,87 @@ def test_scenario_clicks_took_effect(dom):
     assert confirm and confirm["width"] > 0, "换主播没有武装：{}".format(confirm)
 
 
+def _hidden(html, element_id):
+    """--dump-dom 里这个元素的开标签带 hidden 类。"""
+    tag = re.search(r'<[^>]*\bid="{}"[^>]*>'.format(re.escape(element_id)), html)
+    return bool(tag) and "hidden" in _classes(tag.group(0))
+
+
+@needs_chrome
+def test_guard_scenario_clicks_took_effect(dom):
+    """弹幕留意的场景：点击没点到的话，展开后才有的文字就没被扫到而扫描照样绿。设置行展开了；
+    直播中顶部条弹出、红条和琥珀和关注的人都画到弹幕栏里、抽屉在正确的页签；熔断的场景有重新启用按钮。"""
+    home = dom.scan("home-guard")["dom"]
+    assert _expanded(home, "guard-head"), "设置行没展开"
+    assert not _hidden(home, "guard-card") and not _hidden(home, "guard-key-row"), "选了 Claude 且没有密钥：密钥框该出现"
+    live = dom.scan("live-guard")
+    html = live["dom"]
+    assert not _hidden(html, "guard-bar") and not _hidden(html, "guard-state"), "顶部条或状态胶囊没出现"
+    assert not _hidden(html, "guard-drawer") and _expanded(html, "guard-state"), "抽屉没展开"
+    assert not _hidden(html, "guard-pane-recent") and _hidden(html, "guard-pane-marked")
+    for cls in ("guard-alert", "guard-amber", "guard-marked"):
+        assert cls in html, "弹幕栏里没有 {} 的行".format(cls)
+    for name in ("Possible call to report or not buy", "Possible redirect (link)", "Short, with no question mark",
+                 "Same comment from 5 accounts in 20 seconds", "Model: agrees with rules"):
+        assert name in html, "页面上没有「{}」".format(name)
+    assert "Comment Review: rules only" in html
+    marked = dom.scan("live-guard-marked")["dom"]
+    assert _hidden(marked, "guard-pane-recent") and not _hidden(marked, "guard-pane-marked")
+    assert "Added automatically: possible call to report or not buy" in marked and "Added by you" in marked
+    tripped = dom.scan("live-guard-tripped")["dom"]
+    assert not _hidden(tripped, "guard-reenable") and "Turn Back On for This Session" in tripped
+    assert "speech recognition fell 14 sec behind" in tripped
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("name", ("live-guard", "live-guard-marked", "live-guard-tripped"))
+def test_guard_panels_do_not_overflow(dom, name):
+    """顶部条永远一行（放不下用省略号，不撑宽）；抽屉和弹幕列不出现横向滚动条。"""
+    got = dom.scan(name)["measure"]
+    problems = []
+    for sel in (".guard-bar", ".guard-drawer", ".comment-list"):
+        m = got.get(sel)
+        if not m:
+            problems.append("{} 量不到：{}".format(sel, m))
+        elif m["scrollWidth"] > m["clientWidth"] + 1:
+            problems.append("{} 横向溢出 {}".format(sel, m))
+    assert not problems, "\n".join(problems)
+
+
+@needs_chrome
+def test_guard_drawer_is_a_third_of_the_window_and_both_tabs_are_equally_tall(dom):
+    """抽屉的高度是固定的：最近需要留意、关注名单、熔断的三个场景（状态行长短不一）里一样高，不超过窗口的约三分之一；
+    滚的是列表区（.guard-pane），不是整个抽屉。静态的规则在 tests/guard-css.test.mjs，这里量真的排版。"""
+    names = ("live-guard", "live-guard-marked", "live-guard-tripped")
+    scans = {name: dom.scan(name) for name in names}
+    heights = {name: scans[name]["measure"][".guard-drawer"]["height"] for name in names}
+    viewport = scans["live-guard"]["viewport"]["height"]
+    assert max(heights.values()) - min(heights.values()) < 1, "切页签或状态行变长时抽屉高度变了：{}".format(heights)
+    assert max(heights.values()) <= viewport / 3 + 4, "抽屉 {} 超过窗口 {} 的三分之一".format(heights, viewport)
+    for name in names:
+        got = scans[name]["measure"]
+        drawer, pane = got[".guard-drawer"], got[".guard-pane:not(.hidden)"]
+        assert drawer["scrollHeight"] <= drawer["clientHeight"] + 1, "{}：整个抽屉在滚，应该是列表区在滚 {}".format(name, drawer)
+        assert pane["scrollHeight"] > pane["clientHeight"], "{}：场景里的内容应该多到要滚动 {}".format(name, pane)
+        assert pane["bottom"] <= drawer["bottom"] + 1 and pane["top"] >= drawer["top"], "{}：列表区跑出了抽屉".format(name)
+
+
+@needs_chrome
+@pytest.mark.parametrize("name", S.GUARD_ZH)
+def test_guard_chinese_pages_are_chinese(dom, name):
+    """中文对照页：同一批场景，界面是中文（不扫漏翻，只核对确实是中文的守卫界面），顺便出中文截图。"""
+    result = dom.scan(name)
+    html = result["dom"]
+    assert '<html lang="zh-CN"' in html
+    expect = {"home-guard-zh": ("弹幕留意", "本程序只读", "打开规则文件夹"),
+              "live-guard-zh": ("疑似号召举报或不买", "句子很短，没有问号", "模型意见：同意规则", "展开账号"),
+              "live-guard-marked-zh": ("自动加入：疑似号召举报或不买", "手动加入"),
+              "live-guard-tripped-zh": ("本场模型复核已停用：识别落后 14 秒。只用规则。", "本场重新启用")}[name]
+    for text in expect:
+        assert text in html, "{}：页面上没有「{}」".format(name, text)
+
+
 @needs_chrome
 @needs_mac
 @pytest.mark.parametrize("width", S.LIVE_WIDTHS + S.NARROW_WIDTHS)
@@ -698,6 +779,29 @@ def test_scenarios_carry_real_backend_text_and_the_chinese_data(tmp_path):
             assert "why_en" in msg
     assert built["phone-local-en"]["page_lang"] == "zh"
     assert built["phone-local-en"]["storage"] == {"tlt.viewer.lang": "en"}
+
+
+def test_guard_scenarios_carry_the_data_the_page_needs(tmp_path):
+    """不开 Chrome：弹幕留意的场景确实带着守卫的状态、事件、名单、带标记的弹幕，和实时的那两条（时刻在页面真实
+    时钟之后，顶部条才会弹出）；英文和中文对照页是同一批数据。"""
+    built = S.build(tmp_path)
+    assert set(S.GUARD_NAMES + S.GUARD_ZH) <= set(built)
+    live = built["live-guard"]["messages"]
+    config = live[0]["config"]
+    assert config["guard_state"]["status"] == "rules" and config["guard_state"]["streamer"] == S.STREAMER
+    assert len(config["guard_events"]) == 5 and len(config["guard_marked"]) == 3
+    assert all(len(m["uid"]) == 19 for m in live if m["type"] == "comment" and m.get("uid"))
+    replayed = [m for m in live if m["type"] == "comment" and m.get("replay")]
+    assert {m["guard"]["lvl"] for m in replayed if "guard" in m} == {"alert", "amber"}
+    fresh = [m for m in live if m["type"] in ("guard_event", "comment") and not m.get("replay")]
+    assert fresh and all((m.get("ev") or m)["ts"] > S.NOW + 5 * 365 * 86400 for m in fresh)
+    assert built["home-guard"]["messages"][0]["config"]["guard_state"]["status"] == "no_sdk"
+    assert built["live-guard-tripped"]["messages"][0]["config"]["guard_state"]["status"] == "tripped"
+    for name in S.GUARD_NAMES:
+        assert built[name + "-zh"]["lang"] == "zh" and built[name]["lang"] == "en"
+        assert built[name + "-zh"]["clicks"] == built[name]["clicks"]
+        assert built[name + "-zh"]["messages"][0]["config"].get("guard_events") == \
+            built[name]["messages"][0]["config"].get("guard_events")
 
 
 @pytest.mark.parametrize("page, lang, html_tag", [

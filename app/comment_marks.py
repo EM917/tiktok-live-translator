@@ -410,6 +410,13 @@ class MarkStore:
             self._mark_dirty(structural=True)
         return primary, entry
 
+    def clear_auto(self):
+        """移出所有 by=auto 的人（手动加入的不动）。返回被移出的主键列表。"""
+        gone = [p for p, e in self.viewers.items() if e["by"] == "auto"]
+        for primary in gone:
+            self.remove(primary)
+        return gone
+
     def touch(self, primary, keys=(), nick="", ts=None):
         """名单里的人又发言了：更新 last_seen、条数、新出现的昵称（最多留 3 个）和多出来的键。
         返回这条记录的键或昵称有没有变化（调用方据此决定要不要广播）。"""

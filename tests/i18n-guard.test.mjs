@@ -14,7 +14,7 @@ import vm from "node:vm";
 const web = (name) =>
   readFileSync(new URL("../web/" + name, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const GOLDEN = JSON.parse(readFileSync(new URL("./i18n_golden.json", import.meta.url), "utf8"));
-const GUARDED = ["alerts.js", "brand.js", "live-ui.js", "session-divider.js", "settings-rows.js", "switch.js"];
+const GUARDED = ["alerts.js", "brand.js", "guard.js", "live-ui.js", "session-divider.js", "settings-rows.js", "switch.js"];
 
 function pageScripts() {
   const srcs = [...web("index.html").matchAll(/<script src="\/static\/([^"?]+)/g)].map((m) => m[1]);
@@ -40,7 +40,7 @@ function runPage(lang) {
   return { ctx, L0, classes };
 }
 
-test("页面里 i18n.js 排第一，带守卫的六个模块都在 app.js 之前加载", () => {
+test("页面里 i18n.js 排第一，带守卫的七个模块都在 app.js 之前加载", () => {
   const scripts = pageScripts();
   assert.equal(scripts[0], "i18n.js");
   for (const name of GUARDED) {
@@ -62,6 +62,7 @@ test("中文页：守卫不执行，L 还是 i18n.js 的那个，各模块照旧
   assert.equal(ctx.switchButtonLabel(null, "").text, "确认换主播");
   assert.match(ctx.sessionDividerText({ ts: 1, streamer: "x" }), / 以下为 @x ──$/);
   assert.equal(ctx.buildBrandOptionList([])[0].label, "不限（默认）");
+  assert.equal(ctx.guardCatLabel("threat"), "疑似人身威胁");
   assert.ok(classes.has("i18n-done"));
 });
 
@@ -77,4 +78,6 @@ test("英文页：守卫同样不执行，各模块出英文（窗口标题与�
   assert.match(ctx.sessionDividerText({ ts: 1, streamer: "x" }), / Now monitoring @x ──$/);
   assert.equal(ctx.buildBrandOptionList([])[0].label, "Any (default)");
   assert.equal(ctx.alertTierText("fuzzy"), "Similar");
+  assert.equal(ctx.guardCatLabel("threat"), "Possible threat of harm");
+  assert.equal(ctx.guardStateText({ status: "rules" }), "Comment Review: rules only");
 });
