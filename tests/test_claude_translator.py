@@ -297,7 +297,7 @@ def test_the_comment_instance_is_haiku_5_5_with_its_own_prompt(monkeypatch):
     assert "numbered" in body["system"]
     # 一批最多 5 条、每条最长 300 字符：比一句字幕的上限大
     assert body["max_tokens"] == ClaudeTranslator.MAX_TOKENS_COMMENT > ClaudeTranslator.MAX_TOKENS_NO_THINKING
-    assert body["messages"] == [{"role": "user", "content": "1. hola\n2. te amo"}]
+    assert body["messages"] == [{"role": "user", "content": "<comments>\n1. hola\n2. te amo\n</comments>"}]
     assert not keys_anywhere(body) & set(FORBIDDEN_KEYS)
     # 字幕引擎的默认提示词没动
     sub = ClaudeTranslator()
