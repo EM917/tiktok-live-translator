@@ -4,8 +4,9 @@
 这里只说机制。**示例一律用虚构内容**（虚构主播 `luna_demo`、虚构品牌 Marca Ejemplo）；真实的主播词表、
 品牌词表、竞品名单、关注名单都是个人数据，只放本机，不进仓库。
 
-> 当前状态：规则引擎和词表机制已就位，**还没有接进直播管线**，也没有界面。
-> 红条档词表的词条全部写在 `[段名:pending]` 里：用户逐条确认之前，命中只出琥珀，不标红、不自动加入关注名单。
+> 当前状态：规则引擎和词表机制已就位，**已经接进直播管线（`comment_guard.enabled` 默认关）**，还没有界面。
+> 打开之后：弹幕读取协程先让守卫看一遍再显示，判定随 `comment` 消息的 `guard` 字段到达本机页面；关注名单按主播存在
+> `marked/`。红条档词表里没确认的词条写在 `[段名:pending]` 里：用户逐条确认之前，命中只出琥珀，不标红、不自动加入关注名单。
 
 ## 目录
 
@@ -20,10 +21,37 @@ comment_guard/
     cues.txt             负面线索（只决定送不送模型）
     thresholds.txt       阈值
   local/                 gitignored，用户自己编辑；目录不存在也行，程序不主动生成
-  marked/                gitignored：关注名单（后续 PR）
+  marked/<主播小写>.json  gitignored：关注名单（见下面「接线、开关和关注名单」）
   bench/                 gitignored：本地模型实测记录（后续 PR）
   retained/              gitignored：可选留存（后续 PR）
 ```
+
+## 接线、开关和关注名单
+
+代码在 `app/pipeline_guard.py`（接线）和 `app/comment_marks.py`（关注名单的存储）。
+
+- **开关**：`settings.json` 里的 `comment_guard: {"enabled": false, "backend": "none", "weak": false}`，缺省就是关。
+  `backend` 只有 `none`（只用规则）和 `claude`（Claude Haiku 5.5，PR-5 才有实现；现在选了也只用规则）。
+  直播中不改：设置在待机时改、下一场生效。**应急总开关**：环境变量 `TLT_COMMENT_GUARD=off`（也认 `0` `false` `no`），
+  不管设置里写什么都整体关掉，弹幕照常显示。关着的时候开场不读词表、不碰 `marked/`，`observe` 一次都不调用。
+- **一场的流程**：`_begin_session` 里载入词表、阈值、可信名单（`local/trusted/<主播>.txt`）和这个主播的关注名单；
+  每批弹幕先 `observe`（同步、纯 CPU、自带预算，出任何错都原样放行）、再交给 `accept`、最后 `flush`；
+  `_end_session` 里把名单写完盘，并把计数并进 `session_end.comment_guard`。词表文件在直播中被改了只提示一次，
+  下一场才生效。
+- **消息**（只发本机页面，手机同看一律不发）：`comment.guard`（规则判定，随消息到）、`comment_guard`（标注变了才发，
+  每个 cid 每秒至多 1 条）、`guard_event`（聚合后的事件，全局每秒至多 1 条）、`guard_mark`（名单增删）；
+  `config` 里有 `guard_state`、`guard_events`（最多 50 条）、`guard_marked`（只放当前主播）。
+  页面发 `guard_set`（开关、模型复核选择）、`guard_mark`（加入/移出）、`guard_dismiss`（忽略一个事件）。
+- **关注名单文件** `marked/<主播小写>.json`：`{"version": 1, "streamer": …, "viewers": {主键: {keys, nick, handle, aka,
+  by, cat, first, last_seen, hits}}}`。`keys` 里任一命中就算同一个人；不存弹幕原文；`aka` 最多 3 个；每个主播最多
+  500 人，满了先淘汰 `by=auto` 里 `last_seen` 最旧的，手动加入的不淘汰；`by=auto` 的人 30 天没再发言，下一场载入时
+  自动移出；只有昵称的人（`n:<昵称>`）只在本场内存里有效、不落盘。内存为准，改动 2 秒合并成一次写盘（线程池里
+  `.tmp` → fsync → `os.replace`）。写盘失败不丢脏标记：下一次改动和收尾都会再写一次，仍然写不进去就提示一次。
+  文件内容不对（不是合法 JSON、结构或版本不认识）时改名成 `.bak-<时间>`，按空名单继续，并提示一次；
+  文件读不到（权限），或内容不对但改名失败时，没有备份：不改名、不覆盖，按空名单继续，本场的改动只在内存里、
+  不写盘，提示里也这么说。
+- **审计**只记计数：`session_start.comment_guard`（开关、词表指纹、条数、体检警告、阈值）、`session_end.comment_guard`
+  （按类别的红条/琥珀/note 计数、预算降级次数、自动/手动加入和移出的人数……）。弹幕原文、昵称、账号一律不进审计。
 
 ## 词表格式
 

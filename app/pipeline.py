@@ -271,9 +271,10 @@ from .viewer_share import (  # noqa: E402
 )
 from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
+from .pipeline_guard import GUARD_CONTROL_TYPES, CommentGuardMixin  # noqa: E402
 
 
-class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
+class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -352,6 +353,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         self._alert_seq = 0              # 报警编号，供译文回来后对上号
         self._alert_tasks = []
         self._init_viewer_share()        # 手机同看的 8 个专属字段，见 app/viewer_share.py
+        self._init_comment_guard()       # 弹幕留意的守卫（默认关），见 app/pipeline_guard.py
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -371,8 +373,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         # WebSocket 弄到本地，弄到后喂给 self.comments.accept()。
         # 出错只影响弹幕，绝不碰音频/检测/审计链路。
         self.comment_source = CommentSource(
-            on_items=lambda items: self.comments.accept(
-                {"type": "viewer_comments", "items": items}),
+            on_items=self._on_comment_items,        # 守卫在 accept 之前看一遍，见 pipeline_guard.py
             on_state=self._publish_comment_source,
             cookies_browser=getattr(args, "cookies_browser", "auto"))
         # on_provision 惰性读 self.updater：Pipeline 构造时 main.py 还没把
@@ -511,6 +512,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                  "brands": self.server.config.get("brands", {})})
         elif mtype == "open_brands_dir":
             return self._open_brands_dir()
+        elif mtype in GUARD_CONTROL_TYPES:
+            # 弹幕留意的开关、关注名单、忽略事件：只有本机页面发得出来（手机入站只认 retranslate）
+            return self._handle_guard_control(msg)
         return None
 
     def _set_ui_lang(self, value):
@@ -950,6 +954,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                 await self._watch_detection(snap)
                 await self._check_audit_health()
                 self._asr_memory_tick()
+                await self._guard_tick()      # 弹幕留意：发掉被节流压住的消息（自带保护，不抛）
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1278,6 +1283,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
         alerts_enabled = getattr(self, "alerts_enabled", False)
         if self.audit is not None:
             self.audit.close()
+        # 弹幕留意：词表、阈值、可信名单、这个主播的关注名单在这里载入（默认关时什么都不读）。
+        # 要在建审计之前：session_start 里记 rules_hash 等，事后答得出「当时为什么标红」
+        guard_start = await self._begin_comment_guard(streamer)
         # requested 是用户的选择，active 是实际生效的对象——这两列并排记，
         # 是因为 2026-08-26 它们恰恰不一致：requested=deepl 被启动逻辑静默
         # 重置，实际整场跑的是 1.8B，事后只能靠延迟指纹反推。有了这两列，
@@ -1311,12 +1319,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
             # 本场违禁词警示是开是关（见 handle_control 的 start 分支）：状态
             # 必须落审计，否则事后没法回答「那场命中为什么没报警」
             "alerts_enabled": alerts_enabled,
+            **({"comment_guard": guard_start} if guard_start is not None else {}),
             **self._sleep_guard_extra(),
             **self._banned_terms_provenance(),
             **self._evidence_session_extras(),
             # 解析组件版本、上次连上更新服务器的时间、这一场是不是更新后自动接上的
             **self._update_session_extras(),
         })
+        # 守卫记住本场自己的 audit 并开始 observe（my_audit：晚到的旧任务关不掉它）
+        await self._bind_comment_guard(self.audit)
         # 这一场就按上面算出来的值走到底（即便 self.alerts_enabled 在别处被改，
         # 也不会跟审计头和这条广播错位）
         self.alerts_enabled = alerts_enabled
@@ -1722,6 +1733,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin):
                     fields.setdefault("comment_fields", {
                         "n": comment_fields["n"], "has": dict(comment_fields["has"])})
             await self._stop_comment_source()
+            # 弹幕留意的计数（只有计数，没有弹幕内容）。放在停弹幕之后：在途的最后一批弹幕也判完了；
+            # 守卫自己按 audit 核对是不是这一场的（CLAUDE.md 第七条）
+            guard_end = await self._end_comment_guard(my_audit)
+            if guard_end is not None:
+                fields.setdefault("comment_guard", guard_end)
         if still_current and self._stats_task is not None \
                 and not self._stats_task.done():
             try:      # 收尾前推一次终值，别让界面停在半截数据上

@@ -27,6 +27,13 @@ def _keep_audit_out_of_the_real_log_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _comment_guard_emergency_switch_is_not_inherited(monkeypatch):
+    """TLT_COMMENT_GUARD=off 是弹幕留意的应急总开关（app/pipeline_guard.py）：开发机上设过它，
+    不该让依赖「守卫开着」的用例变红。要测应急开关的用例自己 setenv。"""
+    monkeypatch.delenv("TLT_COMMENT_GUARD", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_active_glossary(monkeypatch):
     """会话词表的模块级全局态不能在测试之间泄漏。
 

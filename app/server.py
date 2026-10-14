@@ -55,6 +55,7 @@ class CaptionServer:
     # 都会清空面板重放。
     SEND_TIMEOUT_SEC = 2.0
     MAX_CLIENT_BUFFER = 2 * 1024 * 1024
+    GUARD_EVENTS_MAX = 50       # config["guard_events"] 最多留几个事件（弹幕留意的抽屉）
     # 由 Pipeline 注入：(reason, buffered_bytes) -> None，写审计、打一行日志
     on_client_dropped = None
 
@@ -218,6 +219,37 @@ class CaptionServer:
                     c["translated"] = msg.get("translated")
                     c["state"] = msg.get("state")
                     break
+        elif msg.get("type") == "comment_guard":
+            # 弹幕留意（PR-3）：标注变了才发。只覆盖缓存里那条弹幕的 guard 键，不碰 translated /
+            # state（所以不借 comment_update：它会无条件把 translated 抹成 None），刷新后的回放带着新标注
+            for c in reversed(self.comments):
+                if c.get("id") == msg.get("id"):
+                    if isinstance(msg.get("guard"), dict):
+                        c["guard"] = msg["guard"]
+                    else:
+                        c.pop("guard", None)
+                    break
+        elif msg.get("type") == "guard_event":
+            # 聚合后的事件：按 id 覆盖，最近更新的放最后，最多 GUARD_EVENTS_MAX 条；dismissed 是「忽略」
+            ev = msg.get("ev")
+            if isinstance(ev, dict) and ev.get("id"):
+                events = self.config.setdefault("guard_events", {})
+                key = str(ev["id"])
+                events.pop(key, None)
+                if not ev.get("dismissed"):
+                    events[key] = ev
+                while len(events) > self.GUARD_EVENTS_MAX:
+                    events.pop(next(iter(events)))
+        elif msg.get("type") == "guard_mark":
+            # 关注名单的增删：只放当前主播（开场时 config 里的名单整份换掉）。缓存弹幕里不存 marked，
+            # 页面按这里的 keys 现算高亮，移出后刷新才不会又亮回来
+            key = str(msg.get("key") or "")
+            if key:
+                marked = self.config.setdefault("guard_marked", {})
+                if isinstance(msg.get("entry"), dict):
+                    marked[key] = msg["entry"]
+                else:
+                    marked.pop(key, None)
         elif msg.get("type") == "incident":
             # 持续提示：按 id 覆盖，level=clear 去掉；落进 config，刷新或重连的页面照样看得到。
             # 最多留 20 条，超出时丢最久没更新的那条

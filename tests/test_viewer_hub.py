@@ -368,6 +368,11 @@ def test_inbound_messages_never_reach_on_control():
         text({"type": "set_engine", "engine": "deepl", "api_key": "k"}),
         text({"type": "refresh_brands"}),
         text({"type": "open_brands_dir"}),
+        # 弹幕留意（用户决定 8）：关注名单只在中控电脑上改，手机发这些一律进不来
+        text({"type": "guard_mark", "key": "7234567890123456789", "on": True, "nick": "Ana",
+              "handle": "ana_demo", "uid_src": "id"}),
+        text({"type": "guard_set", "enabled": True}),
+        text({"type": "guard_dismiss", "ev_id": "g1"}),
     ])
     run_handshake(hub, ws)
     assert calls == []
@@ -405,6 +410,10 @@ def test_a_lone_retranslate_frame_does_not_trip_the_flood_cap():
     "not a dict at all",
     {"type": "refresh_brands"},                     # 本机控制面专属：手机不该碰
     {"type": "open_brands_dir"},                    # 同上
+    {"type": "guard_mark", "key": "100", "on": True, "nick": "Ana", "handle": "ana_demo", "uid_src": "id"},
+    {"type": "guard_mark", "id": 7},                # 凑成 {type, id} 的形状也不行：类型不是 retranslate
+    {"type": "guard_set", "enabled": True},
+    {"type": "guard_dismiss", "ev_id": "g1"},
 ])
 def test_malformed_or_irrelevant_inbound_is_silently_ignored(bad):
     """既不解析出动作，也不回消息、不断连接——坏页面和探测本就不该有回音。"""
