@@ -163,6 +163,57 @@ def light(text):
     return _SPACE.sub(" ", t).strip()
 
 
+def _clusters(text):
+    """(起, 止) 的列表：一个起点字符加上它后面的组合符号（combining class 非 0）。NFKC 的组合只发生在这样
+    的一小段里，所以按段做 NFKC 和整串做 NFKC 结果一样，又能记下每段对应原文的哪一截。"""
+    out, start, n = [], 0, len(text)
+    while start < n:
+        end = start + 1
+        while end < n and unicodedata.combining(text[end]):
+            end += 1
+        out.append((start, end))
+        start = end
+    return out
+
+
+def light_map(text):
+    """light() 带位置的版本（PR-5 的打码用）：返回 (light_text, starts, ends)。light_text 与 light(text) 相同
+    （tests/test_comment_review.py 钉着）；light_text 的第 i 个字符来自原文的 text[starts[i]:ends[i]]。
+    NFKC 展开出来的几个字符、被压成一个空格的一串空白，都对着原文里它们占的整段。"""
+    text = text or ""
+    chars, lo, hi = [], [], []
+    seen = 0                                    # NFKC 之后数到的字符数：MAX_CHARS 的口径与 light() 一致
+    for a, b in _clusters(text):
+        seg = text[a:b]
+        if not seg.isascii():
+            seg = seg.translate(_EXPANSION_CAP)
+        for ch in unicodedata.normalize("NFKC", seg):
+            if seen >= MAX_CHARS:
+                break
+            seen += 1
+            if ord(ch) in _INVISIBLE:
+                continue
+            for c in ch.lower():
+                c = _CONFUSABLE.get(c, c)
+                if unicodedata.category(c) in _DROP_CATEGORIES:
+                    continue
+                if c.isspace():
+                    if not chars:
+                        continue                # 开头的空白被 strip 掉
+                    if chars[-1] == " ":
+                        hi[-1] = b              # 连续空白压成一个空格，占原文的整段
+                        continue
+                    c = " "
+                chars.append(c)
+                lo.append(a)
+                hi.append(b)
+    if chars and chars[-1] == " ":
+        chars.pop()
+        lo.pop()
+        hi.pop()
+    return "".join(chars), lo, hi
+
+
 def _join_spaced(match):
     return re.sub(r"[\s.\-_*]", "", match.group(0))
 
@@ -404,14 +455,17 @@ def _join_single_chars(t):
     return " ".join(out)
 
 
+_URL_HXXP = re.compile(r"\bhxxp")
+# 链接绕写还原的步骤，顺序固定。url_hits 和带位置的 url_spans（PR-5 的打码用）读的是同一张表：
+# 改这里，两边一起变，不会漂开
+_URL_STEPS = ((_URL_BRACKET_DOT, "."), (_URL_PUNTO, r".\1"), (_URL_SPACED_DOT, "."), (_URL_COMMA, "."),
+              (_URL_HXXP, "http"), (_URL_SCHEME, r"\1://"), (_URL_WA, r"\1.me/"))
+
+
 def _url_normalize(t):
-    t = _URL_BRACKET_DOT.sub(".", t)
-    t = _URL_PUNTO.sub(r".\1", t)
-    t = _URL_SPACED_DOT.sub(".", t)
-    t = _URL_COMMA.sub(".", t)
-    t = re.sub(r"\bhxxp", "http", t)
-    t = _URL_SCHEME.sub(r"\1://", t)
-    return _URL_WA.sub(r"\1.me/", t)
+    for pattern, repl in _URL_STEPS:
+        t = pattern.sub(repl, t)
+    return t
 
 
 def _phone_text(light_text):
@@ -487,6 +541,111 @@ def url_hits(light_text):
             if m.group(0) not in found:
                 found.append(m.group(0))
     return found
+
+
+class _MapText:
+    """一段文字加上「每个字符来自起点文本的哪一截 [lo, hi)」。url_spans 把绕写还原成链接的每一步都经过它，
+    还原之后匹配到的链接就能对回最初那段文字上。"""
+
+    __slots__ = ("t", "lo", "hi")
+
+    def __init__(self, t, lo=None, hi=None):
+        self.t = t
+        self.lo = list(range(len(t))) if lo is None else lo
+        self.hi = list(range(1, len(t) + 1)) if hi is None else hi
+
+    def sub(self, pattern, repl):
+        """pattern.sub(repl, self.t) 的带位置版本：被换掉的那段，换出来的每个字符都对着被换掉的整段。"""
+        t, lo, hi = self.t, self.lo, self.hi
+        out, olo, ohi, pos = [], [], [], 0
+        for m in pattern.finditer(t):
+            a, b = m.span()
+            if a == b:
+                continue
+            out.append(t[pos:a])
+            olo.extend(lo[pos:a])
+            ohi.extend(hi[pos:a])
+            new = m.expand(repl)
+            if new:
+                out.append(new)
+                olo.extend([min(lo[a:b])] * len(new))
+                ohi.extend([max(hi[a:b])] * len(new))
+            pos = b
+        out.append(t[pos:])
+        olo.extend(lo[pos:])
+        ohi.extend(hi[pos:])
+        return _MapText("".join(out), olo, ohi)
+
+    def normalized(self):
+        """_url_normalize 的带位置版本：同一张步骤表。"""
+        mt = self
+        for pattern, repl in _URL_STEPS:
+            mt = mt.sub(pattern, repl)
+        return mt
+
+    def joined(self):
+        """_join_single_chars 的带位置版本（拼回去的字符各自留着自己的位置，被吃掉的空格不留）。"""
+        t = self.t
+        pieces, run, pos = [], [], 0
+
+        def flush():
+            if run:
+                pieces.append(list(run) if len(run) >= 2 else [run[0]])
+                del run[:]
+
+        for tok in t.split(" ") + [""]:
+            if len(tok) == 1 and (tok.isalpha() or tok in ".:/"):
+                run.append(pos)
+                pos += 2
+                continue
+            flush()
+            if tok:
+                pieces.append(list(range(pos, pos + len(tok))))
+            pos += len(tok) + 1
+        chars, lo, hi = [], [], []
+        for n, idxs in enumerate(pieces):
+            if n:
+                chars.append(" ")
+                lo.append(self.lo[pieces[n - 1][-1]])
+                hi.append(self.hi[pieces[n - 1][-1]])
+            for i in idxs:
+                chars.append(t[i])
+                lo.append(self.lo[i])
+                hi.append(self.hi[i])
+        return _MapText("".join(chars), lo, hi)
+
+    def spans(self, regex):
+        """regex 在这段文字上的匹配，换算成最初那段文字上的 (起, 止)。"""
+        return [(min(self.lo[a:b]), max(self.hi[a:b])) for a, b in (m.span() for m in regex.finditer(self.t))
+                if b > a]
+
+
+def url_spans(light_text):
+    """url_hits 找到的链接，在 light_text 里占的位置 [(起, 止)]（半开）。`punto com`、`[.]`、`w a . m e /` 这类
+    绕写要还原之后才认得出，返回的是它们在 light_text 里占的整段。找到的链接和 url_hits 相同
+    （tests/test_comment_review.py 钉着）。"""
+    mt = _MapText(light_text).sub(_EMAIL_RE, " ").normalized()
+    spans = mt.spans(_URL_RE)
+    joined = mt.joined().normalized()
+    if joined.t != mt.t:
+        spans += joined.spans(_URL_RE)
+    return spans
+
+
+def email_spans(light_text):
+    """邮箱地址在 light_text 里的位置（联系方式，打码时和链接同样处理）。"""
+    return [m.span() for m in _EMAIL_RE.finditer(light_text)]
+
+
+_AT_ANY_RE = re.compile(r"@[\w.\-]{1,32}")
+
+
+def handle_spans(light_text):
+    """账号在 light_text 里的位置：所有 `@名字`（不论有没有标签引出），以及 `ig: 名字` 这类带平台前缀、不写 @
+    的账号（只取名字那一截）。比 handle_hits 宽：打码宁可多打。"""
+    spans = [m.span() for m in _AT_ANY_RE.finditer(light_text)]
+    spans += [m.span(1) for m in _HANDLE_LABEL_RE.finditer(light_text)]
+    return spans
 
 
 def _deaccent(text):
