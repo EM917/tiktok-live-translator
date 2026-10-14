@@ -83,6 +83,14 @@ def needs_translation(text, target):
     return True
 
 
+# 回话里才会出现的说法（模型在跟人说话：要上下文、说自己拿不准、提「翻译」这件事）。原文里本来就在说
+# 翻译 / 上下文的弹幕不按这条判（「¿me puedes traducir?」译成「你能帮我翻译吗」是对的）
+_META_REPLY_RE = re.compile(
+    r"上下文|更多信息|请提供|请您提供|如果您能|不太确定|无法确定|无法翻译|确切含义|"   # i18n: data
+    r"\bcontext\b|\bcould you\b|\bplease (?:provide|paste|share)\b|\bi(?:'m| am) not sure\b|"
+    r"\btranslat", re.IGNORECASE)
+_META_IN_SOURCE_RE = re.compile(r"tradu|translat|context|contexto", re.IGNORECASE)
+
 # 短弹幕的译文长度上限：looks_fabricated 的长度比只管 20 字以上的原文，「Sii todo」这种两个词的
 # 弹幕被当成对话、回一整句话（2026-10-13 实录，约 150 字符）它管不到
 SHORT_REPLY_MAX = 60
@@ -93,6 +101,7 @@ def plausible_translation(text, out, target):
 
     用结构信号，不猜语义：
       * looks_fabricated 的几条（问句被吃掉、数字消失、比原文长出一大截）；
+      * 译文里有只在回话里才出现的说法（要上下文、说拿不准、提「翻译」这件事）；
       * 原文很短、译文却长出一大截；
       * 目标语言是中文，原文不是中文，译文里却一个汉字都没有、还比原文多出好几个词——回话多半是
         英文的一句话（「Could you paste the comments?」）。只差一两个词的不算：品牌名、人名原样
@@ -100,6 +109,8 @@ def plausible_translation(text, out, target):
     if not out:
         return False
     if looks_fabricated(text, out):
+        return False
+    if _META_REPLY_RE.search(out) and not _META_IN_SOURCE_RE.search(text):
         return False
     if len(out) > max(SHORT_REPLY_MAX, len(text) * 4):
         return False

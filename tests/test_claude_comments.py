@@ -351,6 +351,13 @@ def test_the_comment_prompt_says_the_input_is_always_comments_and_never_to_reply
     ("Luna Demo Shop", "Luna Demo Shop", "zh-CN", True),     # 品牌名原样保留是正常译文
     ("你好主播", "你好主播", "zh-CN", True),                # 原文就是中文：不按「没有汉字」判
     ("precio 350", "价格", "zh-CN", False),               # 数字丢了（looks_fabricated）
+    # 同一天第二次实录：中文回话，拿不准、要上下文
+    ("pero no se", "我不太确定\"pero no se\"的确切含义,它是西班牙语的口语表达,通常意思是\"但我不知道\"或"
+     "\"不过我不清楚\"。如果您能提供更多上下文,或者这是直播评论中的某一条,我可以再帮您更准确地翻译。",
+     "zh-CN", False),
+    ("pero no se", "请提供更多上下文。", "zh-CN", False),     # 短的回话也拦
+    ("pero no se", "但我不知道", "zh-CN", True),
+    ("me puedes traducir esto?", "你能帮我翻译这个吗？", "zh-CN", True),   # 原文就在说翻译
 ])
 def test_plausible_translation(text, out, target, ok):
     assert comments_mod.plausible_translation(text, out, target) is ok
