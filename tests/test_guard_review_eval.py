@@ -289,3 +289,101 @@ def test_the_cancelled_prompt_does_not_run_anything(monkeypatch, tmp_path):
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
     assert E.main(["claude", str(CASES)]) == 1 and ran == []
     assert asyncio.iscoroutinefunction(E.run_eval)
+
+
+# ---- 复审修复：价格表只有 Haiku 5.5 的；超时算进延迟；网络问题不算格式不合格 ---------------------------------------------
+
+def test_a_model_without_a_price_table_refuses_to_run_before_any_request(monkeypatch, tmp_path, capsys):
+    """TLT_GUARD_CLAUDE_MODEL 是给评估换模型用的覆盖，但价格表只有 Haiku 5.5 的：换了别的模型，$0.10 的硬上限
+    就按错的单价算，实际花费可能是上限的几十倍。必须在确认之前、第一个请求之前拒绝。"""
+    stub_pgrep(monkeypatch, {})
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    monkeypatch.setenv("TLT_GUARD_CLAUDE_MODEL", "claude-opus-4-1")
+    session = Session(lambda body, n: answer(body))
+
+    async def get_session():
+        return session
+
+    touched = []
+    monkeypatch.setattr(cr.ClaudeReviewer, "session", lambda self: get_session())
+    monkeypatch.setattr(E, "find_key", lambda paths: touched.append("key") or (KEY, "env"))
+    monkeypatch.setattr(E.asyncio, "run", lambda *a, **k: touched.append("run"))
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("不该走到要人确认这一步"))
+    out = tmp_path / "out.json"
+    code = E.main(["claude", str(CASES), str(out), "--yes"])
+    assert code == 3 and session.posts == [] and session.gets == [] and not out.exists()
+    assert touched == []                                       # 连密钥都没读、没起任何异步任务
+    err = capsys.readouterr().err
+    assert "价格表" in err and "claude-opus-4-1" in err and "claude-haiku-5-5" in err
+    assert KEY not in err
+
+
+def test_run_eval_itself_also_refuses_a_model_it_has_no_prices_for(monkeypatch):
+    monkeypatch.setenv("TLT_GUARD_CLAUDE_MODEL", "claude-opus-4-1")
+    reviewer, session = fake_reviewer()
+    assert reviewer.model == "claude-opus-4-1"
+    with pytest.raises(ValueError, match="价格表"):
+        run(E.run_eval(reviewer, entries_for(16), runs=3, batch=8, cap=0.10))
+    assert session.posts == []
+    monkeypatch.delenv("TLT_GUARD_CLAUDE_MODEL")
+    reviewer, session = fake_reviewer()
+    assert E.price_problem(reviewer.model) is None and E.PRICED_MODEL == cr.GUARD_CLAUDE_MODEL
+    assert "价格表" in E.price_problem("claude-opus-4-1") and "价格表" in E.price_problem(None)
+    report = run(E.run_eval(reviewer, entries_for(8), runs=1, batch=8, cap=0.10))
+    assert report["calls"] == 1
+
+
+def synthetic_call(outcome="ok", n=8, valid=None, ms=1000, run_no=1, **kw):
+    row = {"run": run_no, "n": n, "valid": n if valid is None and outcome == "ok" else (valid or 0), "outcome": outcome,
+           "ms": ms, "in_tokens": None, "out_tokens": None, "cache_read_tokens": None, "cache_write_tokens": None,
+           "cost_usd": 0.0, "cost_estimated": True, "refusal_category": None, "http": None, "evidence_cleared": 0}
+    row.update(kw)
+    return row
+
+
+def test_a_timed_out_call_counts_in_the_latency_and_is_not_a_format_failure():
+    """评审在真跑的报告里看到的：四次调用里一次 8640 ms 的超时，延迟表只算了三次（最大 3238），格式合格率
+    写 75%（24/32），其实回来的 24 条全合格。"""
+    entries = entries_for(16)
+    calls = [synthetic_call(ms=2968), synthetic_call(ms=3238), synthetic_call(ms=1735, run_no=2),
+             synthetic_call("timeout", ms=8640, run_no=2, valid=0)]
+    rep = E.summarize(entries, {1: {}}, calls, 0.0013, 0.10, 3, "api_error:timeout", 8)
+    assert rep["latency_ms"]["n"] == 4 and rep["latency_ms"]["max"] == 8640 and rep["latency_ms"]["timeouts"] == 1
+    assert rep["latency_ms"]["p95"] > 3238
+    f = rep["format"]
+    assert (f["verdicts_valid"], f["verdicts_asked"], f["valid_rate"]) == (24, 24, 1.0)
+    assert (f["calls_answered"], f["calls_without_answer"], f["cases_without_answer"]) == (3, 1, 8)
+    assert f["calls_total"] == 4 and f["calls_ok"] == 3 and f["calls_ok_rate"] == 0.75
+    text = E.format_report(rep)
+    assert "24 / 24" in text and "100.0%" in text and "超时 1 次" in text and "没拿到回应" in text and "8640" in text
+
+
+def test_http_errors_and_a_real_timeout_run_are_kept_out_of_the_format_denominator():
+    def timeout_on_second(body, n):
+        return answer(body) if n == 1 else TimeoutError("slow")
+
+    reviewer, session = fake_reviewer(timeout_on_second)
+    report = run(E.run_eval(reviewer, entries_for(16), runs=1, batch=8, cap=0.10))
+    f = report["format"]
+    assert report["stopped_early"] == "api_error:timeout" and len(session.posts) == 2
+    assert f["verdicts_valid"] == 8 and f["verdicts_asked"] == 8 and f["valid_rate"] == 1.0
+    assert f["calls_without_answer"] == 1 and report["latency_ms"]["n"] == 2 and report["latency_ms"]["timeouts"] == 1
+    # 拒答和坏 JSON 是拿到了回应的，照旧算在分母里（见上面 test_a_refusal_or_bad_json_is_a_result_not_an_error）
+
+
+def test_the_worst_case_input_estimate_is_not_below_what_a_real_request_weighs():
+    """硬上限靠这个估算：每个 token 按多少字符算改成 10 倍，估算就低到不设防。真实的西语 + 英文提示约 3~4 字符
+    一个 token，所以估出来的输入 token 数至少是请求体字符数的四分之一。"""
+    reviewer, _ = fake_reviewer()
+    chunk = entries_for(8)
+    items = [{"k": str(i + 1), "text": e["masked"].text, "hint": e.get("hint"), "flags": e.get("flags"), "prev": ""}
+             for i, e in enumerate(chunk)]
+    body = reviewer.build_body(cr.build_user_message(items))
+    chars = len(json.dumps(body, ensure_ascii=False))
+    worst = E.worst_case_usd(reviewer, chunk)
+    in_part = worst * 1e6 - body["max_tokens"] * E.PRICE_OUT
+    assumed_in_tokens = in_part / (E.PRICE_IN * E.CACHE_WRITE_FACTOR)
+    assert assumed_in_tokens >= chars / 4
+    assert E.CHARS_PER_TOKEN_FLOOR <= 3.0
+    # 真跑的一批 8 条（2026-10-13）输入是 2160~2176 token——估算要盖得住
+    assert assumed_in_tokens >= 2200

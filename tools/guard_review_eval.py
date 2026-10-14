@@ -15,6 +15,8 @@
   * **花费硬上限**（默认 $0.10）：每次调用之前先按最坏情况（输入按估计上界、输出按 max_tokens 全用满）算一遍，
     已花的加上这次的最坏情况超过上限就不发了；每次回来按回应里的 usage 记真实花费（Haiku 5.5：输入 $0.10 /
     输出 $0.50 每百万 token；缓存写按 1.25 倍、缓存读按 0.1 倍），没有 usage 的按最坏情况记。
+  * **只认 Haiku 5.5**：价格表只有它的。环境变量 TLT_GUARD_CLAUDE_MODEL 指定了别的模型（那个覆盖是给评估换模型用的），
+    花费硬上限就算不准，所以直接拒绝运行（读密钥之前、确认之前、第一个请求之前，退出码 3）。
   * **密钥**从环境变量 ANTHROPIC_API_KEY 或 settings.json 的 api_keys 里读，**不打印、不写日志、不写报告**
     （连尾四位都不写）。请求只发给 api.anthropic.com，不读 ANTHROPIC_BASE_URL。
   * 接口出错（密钥被拒、模型找不到、限流、连不上）：记下来、停下来，**不循环重试**。
@@ -48,11 +50,22 @@ harden_stdio()      # 重定向到文件时（Windows 的 GBK 代码页）中文
 LIVE_PATTERNS = ("tiktok" + "cdn", "main" + ".py --browser")
 DEFAULT_CASES = ROOT / "tests" / "fixtures" / "comment_guard" / "review_cases.jsonl"
 
-# Claude Haiku 5.5 的价格（美元 / 百万 token；提示不超过 100K token 时），claude-api 技能缓存于 2026-10-06
+# Claude Haiku 5.5 的价格（美元 / 百万 token；提示不超过 100K token 时），claude-api 技能缓存于 2026-10-06。
+# **只有这一个模型有价格**：花费硬上限靠它算，换了模型（环境变量 TLT_GUARD_CLAUDE_MODEL）上限就不作数了，
+# 所以别的模型一律拒绝运行（price_problem）
+PRICED_MODEL = cr.GUARD_CLAUDE_MODEL
 PRICE_IN, PRICE_OUT = 0.10, 0.50
 CACHE_WRITE_FACTOR, CACHE_READ_FACTOR = 1.25, 0.10
 # 估算输入 token 数时每个 token 按多少个字符算：取得很保守（真实西语 + 英文约 3~4 字符一个 token）
 CHARS_PER_TOKEN_FLOOR = 2.0
+
+
+def price_problem(model):
+    """这个模型有价格表吗？有返回 None；没有返回一句话（评估的价格表只有 PRICED_MODEL 的）。"""
+    if model == PRICED_MODEL:
+        return None
+    return ("评估的价格表只有 {} 的，当前复核模型是 {}（环境变量 {} 指定）：花费上限算不准，不运行。".format(
+        PRICED_MODEL, model, cr.MODEL_ENV))
 
 
 def live_running():
@@ -152,10 +165,17 @@ def percentile(values, q):
 
 
 HARD_ERRORS = ("http_4xx", "http_5xx", "timeout")
+# 拿到了回应正文的结局：格式合格率只在这些调用上算。超时、连不上、HTTP 错误没有模型的输出可看，
+# 算进分母就把「网络出了问题」记成了「模型格式不合格」
+BODY_OUTCOMES = ("ok", "invalid", "refusal", "max_tokens")
 
 
 async def run_eval(reviewer, entries, runs=3, batch=8, cap=0.10, max_calls=120, clock=time.monotonic):
-    """跑 runs 遍，每遍把 entries 按同样的次序切成 batch 条一批。返回报告 dict（不含密钥、不含弹幕原文）。"""
+    """跑 runs 遍，每遍把 entries 按同样的次序切成 batch 条一批。返回报告 dict（不含密钥、不含弹幕原文）。
+    模型没有价格表就直接拒绝（ValueError），一个请求都不发：花费上限是这个工具唯一的钱的保险。"""
+    problem = price_problem(getattr(reviewer, "model", None))
+    if problem:
+        raise ValueError(problem)
     chunks = [entries[i:i + batch] for i in range(0, len(entries), batch)]
     spent, calls, observed_in = 0.0, [], 0
     verdicts = {}                      # run -> {cid: Verdict}
@@ -196,8 +216,10 @@ async def run_eval(reviewer, entries, runs=3, batch=8, cap=0.10, max_calls=120, 
 
 
 def summarize(entries, verdicts, calls, spent, cap, runs_requested, stopped, batch):
-    asked = sum(c["n"] for c in calls)
-    valid = sum(c["valid"] for c in calls)
+    answered = [c for c in calls if c["outcome"] in BODY_OUTCOMES]
+    transport = [c for c in calls if c["outcome"] not in BODY_OUTCOMES]
+    asked = sum(c["n"] for c in answered)
+    valid = sum(c["valid"] for c in answered)
     completed = [r for r in verdicts if verdicts[r] or any(c["run"] == r for c in calls)]
     full_runs = [r for r in completed if sum(c["n"] for c in calls if c["run"] == r) == len(entries)]
     ok_calls = [c for c in calls if c["outcome"] == "ok"]
@@ -214,7 +236,8 @@ def summarize(entries, verdicts, calls, spent, cap, runs_requested, stopped, bat
         same_label += len(set(labels)) == 1
         same_attack += len(set(attacks)) == 1
         same_pair += len(set(pairs)) == 1
-    lat = [c["ms"] for c in calls if c["outcome"] in ("ok", "invalid", "refusal", "max_tokens")]
+    # 延迟看每一次发出去的调用，超时的也算（它等满了时限，正是「时限定得对不对」要看的尾部）
+    lat = [c["ms"] for c in calls]
 
     def rate(a, b):
         return round(a / float(b), 4) if b else None
@@ -235,6 +258,8 @@ def summarize(entries, verdicts, calls, spent, cap, runs_requested, stopped, bat
                  "cache_read_tokens": sum(c["cache_read_tokens"] or 0 for c in calls),
                  "prices_usd_per_mtok": {"in": PRICE_IN, "out": PRICE_OUT}},
         "format": {"calls_ok": len(ok_calls), "calls_total": len(calls), "calls_ok_rate": rate(len(ok_calls), len(calls)),
+                   "calls_answered": len(answered), "calls_without_answer": len(transport),
+                   "cases_without_answer": sum(c["n"] for c in transport),
                    "verdicts_valid": valid, "verdicts_asked": asked, "valid_rate": rate(valid, asked),
                    "outcomes": dict(Counter(c["outcome"] for c in calls)),
                    "evidence_cleared": sum(c["evidence_cleared"] for c in calls)},
@@ -243,7 +268,8 @@ def summarize(entries, verdicts, calls, spent, cap, runs_requested, stopped, bat
                       "attack_or_not_identical": same_attack, "attack_or_not_rate": rate(same_attack, len(comparable)),
                       "label_and_sure_identical": same_pair, "label_and_sure_rate": rate(same_pair, len(comparable))},
         "latency_ms": {"n": len(lat), "p50": percentile(lat, 0.5), "p95": percentile(lat, 0.95),
-                       "max": max(lat) if lat else None},
+                       "max": max(lat) if lat else None,
+                       "timeouts": sum(1 for c in calls if c["outcome"] == "timeout")},
         "refusal": {"calls": len(refusals), "rate": rate(len(refusals), len(calls)),
                     "cases": sum(c["n"] for c in refusals),
                     "categories": dict(Counter(str(c["refusal_category"]) for c in refusals))},
@@ -271,12 +297,16 @@ def format_report(rep):
         "- 花费 ${:.4f}（上限 ${:.2f}，{}）；输入 {} token（缓存读 {}）、输出 {} token".format(
             cost["usd"], cost["cap_usd"], "未超" if cost["within_cap"] else "超了", cost["in_tokens"],
             cost["cache_read_tokens"], cost["out_tokens"]),
-        "- 格式合格：{} / {} 条判定（{}）；调用 ok {} / {}；各结局 {}".format(
-            f["verdicts_valid"], f["verdicts_asked"], pct(f["valid_rate"]), f["calls_ok"], f["calls_total"], f["outcomes"]),
+        "- 格式合格：{} / {} 条判定（{}；只算拿到回应的 {} 次调用）；调用 ok {} / {}；各结局 {}{}".format(
+            f["verdicts_valid"], f["verdicts_asked"], pct(f["valid_rate"]), f["calls_answered"], f["calls_ok"],
+            f["calls_total"], f["outcomes"],
+            "；另有 {} 次调用（{} 条）没拿到回应，不在格式合格率的分母里".format(
+                f["calls_without_answer"], f["cases_without_answer"]) if f["calls_without_answer"] else ""),
         "- 同一输入跑 {} 遍：标签一致 {} / {}（{}），攻击与否一致 {}，标签与 sure 都一致 {}".format(
             a["runs_compared"], a["label_identical"], a["cases_compared"], pct(a["label_rate"]),
             pct(a["attack_or_not_rate"]), pct(a["label_and_sure_rate"])),
-        "- 延迟（每次调用）：P50 {} ms，P95 {} ms，最大 {} ms（{} 次）".format(lat["p50"], lat["p95"], lat["max"], lat["n"]),
+        "- 延迟（每次发出的调用，含超时）：P50 {} ms，P95 {} ms，最大 {} ms（{} 次，其中超时 {} 次）".format(
+            lat["p50"], lat["p95"], lat["max"], lat["n"], lat["timeouts"]),
         "- 拒答：{} 次调用（{}），涉及 {} 条；类别 {}".format(ref["calls"], pct(ref["rate"]), ref["cases"], ref["categories"]),
         "- 第一遍的标签分布：{}".format(rep["labels_run1"]),
         "- 与作者自己写的标签一眼对比（不是准确率）：一致 {}，不一致 {}".format(
@@ -310,6 +340,12 @@ def main(argv=None):
         print("直播转写仍在进行（命中进程特征 {}），拒绝运行评估。等停播再跑（CLAUDE.md 第三条）。".format(live),
               file=sys.stderr)
         return 2
+
+    # 第二道：复核模型没有价格表（环境变量换了模型）就退出。同样在读密钥、建任何网络对象之前，也在确认之前
+    problem = price_problem(cr.guard_model())
+    if problem:
+        print(problem, file=sys.stderr)
+        return 3
 
     key, source = find_key([Path(p) for p in (args.settings or default_settings_paths())])
     if not key:
