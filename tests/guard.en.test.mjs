@@ -91,6 +91,8 @@ test("状态文案：每个代码都是英文，功能状态写 “Comment Revie
     no_sdk: "The Claude component isn’t installed. Using rules only.",
     no_review: "Model review isn’t in this version yet. Using rules only.",
     offline: "Can’t reach Claude. Using rules only for now.",
+    model_missing: "The Claude API doesn’t have the review model. Using rules only.",
+    invalid: "Claude didn’t accept the review requests. Using rules only for this session.",
   };
   for (const [status, text] of Object.entries(expect)) assert.equal(G.guardStateText({ status }), text, status);
   assert.equal(G.guardStateText({ status: "env_off" }),

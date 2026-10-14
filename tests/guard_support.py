@@ -59,6 +59,7 @@ def new_runtime(monkeypatch, tmp_path, enabled=True, **kw):
     kw.setdefault("perf", virtual_perf())
     runtime = GuardRuntime(marks=MarkStore(directory=Path(tmp_path) / "marked"), **kw)
     runtime.cfg["enabled"] = enabled
+    runtime.REVIEW_WINDOW_SEC = 0.0                 # 复核的攒批窗口（生产里 2 秒）：测试里不等
     return runtime
 
 

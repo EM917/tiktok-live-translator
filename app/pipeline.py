@@ -1501,8 +1501,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._selfcheck_tiktoklive = _tiktoklive_version()
         asr_state = self._asr_check_state()
         try:
+            guard = getattr(self, "guard", None)       # 弹幕留意那一行要用；没有守卫的半成品实例不传
             checks = await run_all(self.args, self.detector, self.glossary,
-                                   self.translator, asr_state=asr_state)
+                                   self.translator, asr_state=asr_state,
+                                   **({"guard": guard} if guard is not None else {}))
         except Exception as exc:
             print("[警告] 自检执行失败: {}".format(exc))
             return

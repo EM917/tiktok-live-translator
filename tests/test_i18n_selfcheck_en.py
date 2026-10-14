@@ -33,7 +33,7 @@ OBSERVED = "Chrome: no TikTok sign-in"                               # browser_l
 
 ENGLISH_NAMES = {"Audio (ffmpeg)", "Noise Reduction", "Speech Recognition", "Translation Engine",
                  "Banned-Term List", "Glossary", "Audit Log", "Stream Lookup", "Browser Login",
-                 "Comments", "Storage"}
+                 "Comments", "Comment Review", "Storage"}
 UNFILLED = re.compile(r"\{[^{}]*\}")
 
 
@@ -368,8 +368,8 @@ def test_every_selfcheck_row_reads_as_english(scenario, monkeypatch, tmp_path):
         assert set(en) == {"name", "level", "detail", "fix"} and en["level"] == row["level"]
 
 
-def test_the_eleven_row_names_follow_the_glossary():
-    """11 行的英文名与规范（docs/i18n-style.md §1.3、spec §4.2 ⑧）一字不差。"""
+def test_the_twelve_row_names_follow_the_glossary():
+    """12 行的英文名与规范（docs/i18n-style.md §1.3；「弹幕留意」那一行见 §1.6）一字不差。"""
     assert {i18n.text(n, i18n.EN) for n in selfcheck.NAMES.values()} == ENGLISH_NAMES
     assert selfcheck.NAMES["asr"] == "语音识别"        # 中文照旧：pipeline 按它认出识别那一行
 

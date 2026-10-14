@@ -36,7 +36,8 @@ NAMES = {"ffmpeg": L("音频组件 ffmpeg", "Audio (ffmpeg)"), "denoise": L("人
          "watchlist": L("违禁词表", "Banned-Term List"), "glossary": L("领域词表", "Glossary"),
          "audit": L("审计日志", "Audit Log"), "resolver": L("直播流解析", "Stream Lookup"),
          "browser_login": L("浏览器登录态", "Browser Login"),
-         "comments": L("观众弹幕", "Comments"), "disk": L("磁盘空间", "Storage")}
+         "comments": L("观众弹幕", "Comments"), "comment_guard": L("弹幕留意", "Comment Review"),
+         "disk": L("磁盘空间", "Storage")}
 
 
 def _check(name, level, detail, fix=""):
@@ -745,6 +746,63 @@ async def check_comments(args):
     return _check(name, OK, L("弹幕组件 TikTokLive {}", "TikTokLive {}").format(version))
 
 
+async def check_comment_guard(guard):
+    """弹幕留意：规则条数和体检警告；选了 Claude 复核就再问一次接口（列模型，不花 token，最多等 5 秒）。
+
+    **这一行最高只到 OK（info 级）**：弹幕留意是次要功能（CLAUDE.md 第六条），不能让「启动自检」因为它
+    变成要自己展开的状态。复核有问题（没密钥、密钥被拒、连不上）写在这一行的字里，复核先退回只用规则，
+    规则照常。只写观察到的事和能做的事。"""
+    name = NAMES["comment_guard"]
+    state = guard.state()
+    if state["status"] == "env_off":
+        return _check(name, OK, L("已被环境变量 TLT_COMMENT_GUARD 关闭",
+                                  "Turned off by the TLT_COMMENT_GUARD environment variable"))
+    if not state["enabled"]:
+        return _check(name, OK, L("已关闭", "Turned off"))
+    notes = []
+    rules = state.get("rules")
+    if rules:
+        notes.append(LN(rules["count"], "规则 {} 条已生效", "1 rule active", "{} rules active").format(
+            rules["count"]))
+        if rules["warnings"]:
+            notes.append(LN(rules["warnings"], "{} 条体检警告", "1 rule check warning",
+                            "{} rule check warnings").format(rules["warnings"]))
+    fix = ""
+    if state["backend"] != "claude":
+        notes.append(L("不用模型复核", "No model review"))
+    else:
+        text, fix = await _comment_review_note(guard.reviewer)
+        notes.append(text)
+    return _check(name, OK, L("；", ". ").join(notes), fix)
+
+
+async def _comment_review_note(reviewer):
+    """选了 Claude 复核时，这一行里关于复核的那一句，和（有问题时）能做的事。"""
+    use_rules = L("只用规则", "Rules only")
+    if reviewer is None:
+        return (L("选了 Claude 复核，但还没有 Claude 密钥，", "Claude review is selected, but there is no Claude API "
+                  "key yet. ") + use_rules,
+                L("在设置的「弹幕留意」里填写密钥，或把模型复核留在「不用模型」",
+                  "Enter a key under Settings > Comment Review, or leave Model review on None."))
+    model = "Claude Haiku 5.5" if reviewer.model == "claude-haiku-5-5" else reviewer.model
+    try:
+        status = await asyncio.wait_for(reviewer.probe_key(), timeout=5)
+    except Exception as exc:
+        return (L("这次没连上 Claude（{}），先", "Couldn’t reach Claude this time ({}). ").format(type(exc).__name__)
+                + use_rules, "")
+    if status in (401, 403):
+        return (L("Claude 拒绝了当前密钥（HTTP {}），", "Claude rejected the current API key (HTTP {}). ").format(status)
+                + use_rules,
+                L("在设置的「弹幕留意」里重新填写密钥", "Enter the key again under Settings > Comment Review."))
+    if status == 404:
+        return (L("Claude 接口里找不到模型 {}（HTTP 404），", "The Claude API doesn’t have the model {} (HTTP 404). ")
+                .format(model) + use_rules, "")
+    if status != 200:
+        return (L("验证 Claude 密钥时接口返回 HTTP {}，", "The Claude API returned HTTP {} when checking the key. ")
+                .format(status) + use_rules, "")
+    return (L("{} 复核可用（密钥已验证）", "{} review is available (key verified)").format(model), "")
+
+
 # 一次完整安装的实测占用（见 README「磁盘空间」）：
 #   运行环境 1.4 GB + 语音模型 large-v3 2.9 GB + 翻译模型 1.8B 1.1 GB ≈ 6 GB
 # 门槛按这个来，别让用户下到一半才发现放不下。
@@ -779,7 +837,7 @@ async def check_disk():
     return _check(NAMES["disk"], OK, L("剩余 {:.0f} GB", "{:.0f} GB available").format(free))
 
 
-async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None):
+async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None, guard=None):
     """跑完所有自检。任一项抛异常都不影响其余项——自检自己绝不能拖垮启动。
 
     探测崩了算 **FAIL，不是 WARN**：崩了意味着这项能力压根没被验证过，和
@@ -799,6 +857,8 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
         (NAMES["comments"], check_comments(args)),
         (NAMES["disk"], check_disk()),
     ]
+    if guard is not None:
+        probes.insert(-1, (NAMES["comment_guard"], check_comment_guard(guard)))
     results = await asyncio.gather(*(c for _, c in probes), return_exceptions=True)
     checks = []
     for (name, _), r in zip(probes, results):

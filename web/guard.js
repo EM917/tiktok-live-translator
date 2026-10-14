@@ -144,6 +144,10 @@ function guardStateText(state) {
                "The Claude API key wasn’t accepted (HTTP " + code + "). Using rules only.");
     }
     case "offline": return L("连不上 Claude，先只用规则", "Can’t reach Claude. Using rules only for now.");
+    case "model_missing": return L("Claude 接口里找不到复核用的模型，只用规则",
+                                   "The Claude API doesn’t have the review model. Using rules only.");
+    case "invalid": return L("Claude 没接受复核请求，本场只用规则",
+                             "Claude didn’t accept the review requests. Using rules only for this session.");
     case "cooldown": {
       var mins = Math.max(1, Math.round(Number(st.wait_min) || 0));
       return L("Claude 要求稍后再试，" + mins + " 分钟内只用规则",
