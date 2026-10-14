@@ -7,9 +7,11 @@ app/comment_source.py），与字幕（主播语音）是完全独立的两条�
 只记日志，绝不影响直播翻译主链路（这个产品的 KPI 是违禁词召回和检测延迟，
 弹幕翻译再怎么出错都不该波及那两样）。
 
-铁律：只用常驻快速引擎（Pipeline.translator），绝不触发
-`create_strong_translator()` —— 那是每次调用临时装载 5.3 GB 的 7B 模型，
-弹幕这种锦上添花的功能不配抢这份显存，尤其是在直播 ASR 正跑着的时候。
+铁律：弹幕绝不触发 `create_strong_translator()` —— 那是每次调用临时装载 5.3 GB 的 7B 模型，
+弹幕这种锦上添花的功能不配抢这份显存，尤其是在直播 ASR 正跑着的时候。弹幕只用两类引擎：
+常驻的本地快速模型（hymt2、gemma）；以及字幕引擎是 Claude 时的 Claude Haiku 5.5
+（2026-10-13 用户决定）——后者是**另建的一个实例**，不和字幕引擎共用：弹幕约 0.3 秒一批，
+比字幕密得多，撞上 429 时暂停的只能是弹幕这个实例，字幕翻译不能跟着停。
 字幕翻译永远优先：弹幕 worker 每轮攒批后都要等字幕翻译空闲，最多等
 `IDLE_WAIT_MAX_SEC` 防止在字幕持续繁忙时弹幕被活活饿死。
 """
@@ -19,6 +21,7 @@ import time
 from collections import OrderedDict
 
 from .i18n import L
+from .translator import CachedTranslator, ClaudeTranslator, engine_is_claude, looks_fabricated
 
 # 「有没有可译内容」的粗判：至少要有 2 个字母（含各语言字母，排除数字和下划线）。
 # 纯 emoji / 数字 / 标点的弹幕（"😂😂😂"、"1111"）翻不出东西，白白占用引擎。
@@ -29,16 +32,19 @@ _CJK_RE = re.compile(r"[㐀-鿿]")                        # i18n: data
 # 我们喂进去的编号原样保留甚至换个符号，统一在这里剥掉。
 _LEADING_NUM_RE = re.compile(r"^\s*\d+\s*[.。、)）:：]\s*")   # i18n: data
 
-# 弹幕只用常驻的本地快速模型翻：hymt2（1.8B）和 gemma。
+# 弹幕只用这几种引擎翻：常驻的本地快速模型 hymt2（1.8B）、gemma，以及 claude。
 #   * hymt2-7b 不算——弹幕绝不用 7B（见模块开头的铁律）；
-#   * 远程引擎也不算。弹幕约 0.3 秒一批，比字幕（约 9 秒一条）密得多：打在 Google
-#     免费接口上会让它回 429，整个引擎实例暂停 120 秒，字幕和（没有本地强模型时的）
-#     报警上下文跟着一起没有译文；打在 DeepL 上是在花按字符计费的额度。
+#   * claude 用的是另建的实例（见 CommentTranslator._engine_for），模型固定 Haiku 5.5；
+#   * 其余远程引擎不算。弹幕约 0.3 秒一批，比字幕（约 9 秒一条）密得多：打在 Google
+#     免费接口上会让它回 429，整个引擎实例暂停 120 秒，字幕和（没有强模型时的）
+#     报警上下文跟着一起没有译文；打在 DeepL 上是在花按字符计费的额度；OpenAI 同样按量计费，
+#     而且接的可能是用户自己的本机服务，用量和能力都不知道。
 # 其它引擎下弹幕只显示原文，每场提示一次。
-COMMENT_ENGINES = ("hymt2", "gemma")
-REMOTE_ENGINE_HINT = L("当前翻译引擎不是本地模型，弹幕只显示原文",
-                       "The current translation engine isn’t a local model, so comments show "
-                       "the original text.")
+COMMENT_ENGINES = ("hymt2", "gemma", "claude")
+REMOTE_ENGINE_HINT = L("当前翻译引擎不翻译弹幕（只有本地 Hy-MT2 1.8B、本地 TranslateGemma 和 Claude 会），弹幕只显示原文",
+                       "The current translation engine doesn’t translate comments. Only Local "
+                       "Hy-MT2 1.8B, Local TranslateGemma and Claude do, so comments show the "
+                       "original text.")
 LARGE_MODEL_HINT = L("弹幕不用本地 Hy-MT2 7B 翻译，只显示原文",
                      "Comments aren’t translated with local Hy-MT2 7B. They show the original text.")
 _NOT_YET = object()
@@ -50,11 +56,16 @@ def engine_allows_comments(translator):
 
 
 def original_only_hint(translator):
-    """弹幕只显示原文时对中控说的那句话。7B 是本地模型，不能和远程引擎一样说成
-    「不是本地模型」。"""
+    """弹幕只显示原文时对中控说的那句话。7B 是本地模型，不能和其它引擎一样说成
+    「不翻译弹幕的引擎」。"""
     if getattr(translator, "name", None) == "hymt2-7b":
         return LARGE_MODEL_HINT
     return REMOTE_ENGINE_HINT
+
+
+def _comment_claude():
+    """弹幕专用的 Claude 实例：Haiku 5.5，提示词按弹幕写。没有密钥时抛 RuntimeError。"""
+    return ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
 
 
 def needs_translation(text, target):
@@ -70,6 +81,55 @@ def needs_translation(text, target):
     if str(target or "").lower().startswith("zh") and _CJK_RE.search(text):
         return False
     return True
+
+
+# 回话里才会出现的说法（模型在跟人说话：要上下文、说自己拿不准、提「翻译」这件事）。原文里本来就在说
+# 翻译 / 上下文的弹幕不按这条判（「¿me puedes traducir?」译成「你能帮我翻译吗」是对的）
+_META_REPLY_RE = re.compile(
+    r"上下文|更多信息|请提供|请您提供|如果您能|不太确定|无法确定|无法翻译|确切含义|"   # i18n: data
+    r"\bcontext\b|\bcould you\b|\bplease (?:provide|paste|share)\b|\bi(?:'m| am) not sure\b|"
+    r"\btranslat", re.IGNORECASE)
+_META_IN_SOURCE_RE = re.compile(r"tradu|translat|context|contexto", re.IGNORECASE)
+
+# 短弹幕的译文长度上限：looks_fabricated 的长度比只管 20 字以上的原文，「Sii todo」这种两个词的
+# 弹幕被当成对话、回一整句话（2026-10-13 实录，约 150 字符）它管不到
+SHORT_REPLY_MAX = 60
+
+
+def plausible_translation(text, out, target):
+    """这条译文像不像是在翻译这条弹幕（而不是在回话、在问问题）。不像就当没译出来，只显示原文。
+
+    用结构信号，不猜语义：
+      * looks_fabricated 的几条（问句被吃掉、数字消失、比原文长出一大截）；
+      * 译文里有只在回话里才出现的说法（要上下文、说拿不准、提「翻译」这件事）；
+      * 原文很短、译文却长出一大截；
+      * 目标语言是中文，原文不是中文，译文里却一个汉字都没有、还比原文多出好几个词——回话多半是
+        英文的一句话（「Could you paste the comments?」）。只差一两个词的不算：品牌名、人名原样
+        保留是正常译文。"""
+    if not out:
+        return False
+    if looks_fabricated(text, out):
+        return False
+    if _META_REPLY_RE.search(out) and not _META_IN_SOURCE_RE.search(text):
+        return False
+    if len(out) > max(SHORT_REPLY_MAX, len(text) * 4):
+        return False
+    if str(target or "").lower().startswith("zh") and not _CJK_RE.search(text) \
+            and not _CJK_RE.search(out) and len(out.split()) >= len(text.split()) + 3:
+        return False
+    return True
+
+
+# 弹幕作者和主播的关系（comment_source._REL_FLAGS），页面上显示成「粉丝 / 互关 / 送过礼 / 订阅」
+REL_TAGS = ("follower", "mutual", "gifter", "subscriber")
+
+
+def _rel_tags(value):
+    """抓取端给的关系标签：只留认得的、去重、保持顺序；不是列表就当没有。"""
+    if not isinstance(value, list):
+        return None
+    out = [t for t in REL_TAGS if t in value]
+    return out or None
 
 
 def build_batch(texts):
@@ -197,12 +257,14 @@ class CommentTranslator:
     DEDUPE_CONTENT_SEC = 60.0
 
     def __init__(self, broadcast, translator, target, glossary=None, busy=None,
-                 session=None):
+                 session=None, claude_factory=None):
         """broadcast: async fn(msg)。translator/target/glossary：零参可调用
         （getter）——引擎能在界面里热切换、目标语言能改，弹幕翻译不能拿着
         构造时刻的快照用一整场。busy：零参可调用 -> bool，字幕翻译排队/在途
         时返回 True，弹幕翻译据此让路。session：零参可调用，返回「这一场」的
         标识（管线传审计对象），「弹幕只显示原文」的提示每场只发一次。
+        claude_factory：零参可调用，造弹幕专用的 Claude 实例（默认 Haiku 5.5，见
+        _engine_for）；测试用它换成不联网的替身。
         """
         self._session = session if session is not None else (lambda: None)
         self._hinted_session = _NOT_YET
@@ -219,6 +281,11 @@ class CommentTranslator:
         self._worker_task = None
         self._seen_ids = OrderedDict()      # id -> True，LRU，最多 DEDUPE_ID_HISTORY 个
         self._seen_content = {}             # (user, text) -> 上次接受的时间戳
+        # 字幕引擎是 Claude 时，弹幕用的那个独立实例，以及它是照哪个字幕引擎对象建的
+        self._claude_factory = claude_factory or _comment_claude
+        self._claude_engine = None
+        self._claude_for = None
+        self._closing = set()               # 换下来的实例正在关连接的任务，保引用
 
     # ---- 入站：抓取端送来的一批观众评论 ----
     async def accept(self, data):
@@ -264,7 +331,8 @@ class CommentTranslator:
                 continue
             self._remember(cid, key, now)
             accepted += 1
-            await self._enqueue(cid, user, text, now, account_fields(item))
+            await self._enqueue(cid, user, text, now, account_fields(item),
+                                rel=_rel_tags(item.get("rel")))
         return accepted
 
     def _remember(self, cid, content_key, ts):
@@ -278,7 +346,7 @@ class CommentTranslator:
             self._seen_content = {k: v for k, v in self._seen_content.items()
                                   if v >= cutoff}
 
-    async def _enqueue(self, cid, user, text, ts, extra=None):
+    async def _enqueue(self, cid, user, text, ts, extra=None, rel=None):
         translator = self._translator()
         target = self._target()
         hint = None
@@ -294,7 +362,9 @@ class CommentTranslator:
         msg = {"type": "comment", "id": cid, "user": user, "text": text, "ts": ts,
                "translated": None, "state": state}
         if extra:
-            msg.update(extra)
+            msg.update(extra)                   # 守卫字段（弹幕留意）：同样只给电脑页
+        if rel:
+            msg["rel"] = rel                    # 只给电脑页；手机页的白名单里没有它（app/viewer.py）
         await self._broadcast(msg)
         if hint:
             await self._hint_original_only(hint)
@@ -371,13 +441,17 @@ class CommentTranslator:
         # 每批开头抓一次快照：引擎可能在这批翻译进行中被界面上的操作换掉，
         # 但这一批必须自始至终用同一个对象，行为才可预期。
         translator = self._translator()
-        if not engine_allows_comments(translator):
-            # 入队之后引擎被关掉，或被换成了非本地模型：这批不送出去，原样显示原文
-            state = "failed" if translator is None else "skipped"
+        engine = self._engine_for(translator) if engine_allows_comments(translator) else None
+        if engine is None:
+            # 入队之后引擎被关掉，或被换成了不翻弹幕的引擎：这批不送出去，原样显示原文。
+            # 引擎还是 Claude、却造不出弹幕那个实例（密钥没了）：当作这批翻译失败
+            state = "failed" if translator is None or engine_allows_comments(translator) \
+                else "skipped"
             for item in batch:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": state})
             return
+        translator = engine
         target = self._target()
         glossary = self._glossary()
         texts = [item["text"] for item in batch]
@@ -386,6 +460,10 @@ class CommentTranslator:
         else:
             outs = await self._translate_many(translator, texts, target, glossary)
         for item, out in zip(batch, outs):
+            if out and not plausible_translation(item["text"], out, target):
+                print("[警告] 弹幕译文不像是在翻译这条弹幕（{} 字 → {} 字），只显示原文".format(
+                    len(item["text"]), len(out)))
+                out = None
             if out:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": out, "state": "ok"})
@@ -393,12 +471,60 @@ class CommentTranslator:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": "failed"})
 
+    def _engine_for(self, translator):
+        """这一批弹幕实际交给哪个引擎翻；造不出来返回 None。
+
+        本地引擎就是常驻的那个。字幕引擎是 Claude 时**另建一个实例**（模型固定 Haiku 5.5，
+        提示词按弹幕写，套重复句缓存）：冷却、400 记录都挂在实例上，弹幕被 429 暂停
+        不能连累字幕。字幕引擎换了对象（重填密钥）就跟着重建；换成别的引擎时先留着，
+        下次又换回 Claude 且是同一个字幕引擎对象时接着用。"""
+        inner = getattr(translator, "inner", translator)
+        if getattr(inner, "name", None) != "claude":
+            return translator
+        if self._claude_engine is not None and self._claude_for is inner:
+            return self._claude_engine
+        self._close_later(self._claude_engine)
+        self._claude_engine = self._claude_for = None
+        try:
+            self._claude_engine = CachedTranslator(self._claude_factory())
+        except Exception as exc:
+            print("[警告] 弹幕翻译没能建起 Claude 实例: {}".format(exc))
+            return None
+        self._claude_for = inner
+        return self._claude_engine
+
+    def _close_later(self, engine):
+        """不等结果地关掉换下来的实例的连接；出什么错都只能放弃。"""
+        if engine is None:
+            return
+        try:
+            task = asyncio.ensure_future(engine.close())
+        except Exception:
+            return
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
+
+    async def close(self):
+        """关掉弹幕专用 Claude 实例的连接（如果建过）。"""
+        engine, self._claude_engine, self._claude_for = self._claude_engine, None, None
+        if engine is not None:
+            try:
+                await engine.close()
+            except Exception:
+                pass
+
     async def _translate_many(self, translator, texts, target, glossary):
         joined = "\n".join(texts)                   # i18n: data（弹幕原文，喂给翻译引擎）
         hint = tuple(glossary.translation_pairs(joined)) if glossary else None
         raw = await translator.translate(build_batch(texts), target, source="auto",
                                           glossary=hint)
         parsed = parse_batch(raw, len(texts)) if raw else None
+        if parsed is None and not raw and engine_is_claude(translator) \
+                and getattr(translator, "fail_streak", 0) > 0:
+            # 接口这一次回的是错（HTTP 非 200）：逐条重发是同样的结果，只会把一批的请求翻成
+            # 六倍。拒答是 HTTP 200（fail_streak 为 0），不走这里——逐条重译正好把拒答的那
+            # 一条隔离出来，其余照常翻
+            return [None] * len(texts)
         if parsed is None:
             # 行数对不上：宁可逐条重译（顺序不变），也不能把译文安给错的弹幕
             return [await self._translate_one(translator, t, target, glossary)

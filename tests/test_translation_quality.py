@@ -160,7 +160,7 @@ def test_failed_strong_leaves_the_existing_translation_alone():
     p._strong = FakeStrong(None)                  # 模拟约 2% 的空返回
     p._quality[7] = QUALITY_FAST
     run(p.retranslate(7))
-    last = p.server.sent[-1]
+    last = [m for m in p.server.sent if m["type"] == "caption_update"][-1]
     assert last["strong_state"] == "failed"
     assert "translated" not in last                # 不覆盖屏幕上那一版
     assert p._quality[7] == QUALITY_FAST           # 等级不被失败占用
@@ -171,7 +171,7 @@ def test_failed_strong_reports_failure_when_there_was_nothing():
     p = make_with_recent()
     p._strong = FakeStrong(None)
     run(p.retranslate(7))
-    last = p.server.sent[-1]
+    last = [m for m in p.server.sent if m["type"] == "caption_update"][-1]
     assert last["translate_state"] == "failed"
 
 
