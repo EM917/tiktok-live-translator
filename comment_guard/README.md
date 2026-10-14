@@ -19,10 +19,10 @@
   关注的人（★ 和靛蓝边）；每条右上角有 ☆ 按钮，悬停或键盘聚焦时出现，点一下加入 / 移出关注名单。标题旁的状态胶囊写覆盖情况
   （「弹幕留意：只用规则」……），点它打开抽屉。
 - **顶部条**：永远一行，只在直播中、有未读时出现（红条、拿不准、关注的人发言，类别最多写 3 类，其余折成「另 n 类」）。
-  红条和拿不准**按事件计**：一次刷屏、一次多账号同句各算 1 件，不数事件里的弹幕条数；关注的人发言数的是发言本身（写「n 条」）。
+  红条和拿不准**按事件计**：一次刷屏算 1 件，不数事件里的弹幕条数；关注的人发言数的是发言本身（写「n 条」）。
   类别后面的计数一律写成「疑似刷屏 ×2」（英文 “Possible flooding ×2”），数字不紧贴名字。条右侧的控件写的是点了会怎样：抽屉收着写「查看 ›」，开着写「收起 ⌃」。
   点开是条下方的**抽屉**（不是弹窗）：「最近需要留意」页签（每行有时间、昵称、类别、原文、译文、理由，按钮「定位」「加入 / 移出关注名单」
-  「忽略」；多账号同句折叠成一行）和「关注名单」页签。抽屉高度固定（窗口的约三分之一，两个页签一样高），列表在里面自己滚动，右边有常驻的滚动条、底部渐隐提示还有更多。「全部看过」把未读清零；弹幕列收起时，浮钮上有未读红条的事件数。
+  「忽略」）和「关注名单」页签。抽屉高度固定（窗口的约三分之一，两个页签一样高），列表在里面自己滚动，右边有常驻的滚动条、底部渐隐提示还有更多。「全部看过」把未读清零；弹幕列收起时，浮钮上有未读红条的事件数。
 - **设置 → 弹幕留意**（和「违禁词报警」一样是设置分组里的一行，默认收起，永不自动展开）：开关、模型复核（不用模型 / Claude Haiku 5.5，
   选 Claude 且没有密钥时出现密钥框，写进和翻译引擎同一个 Claude 密钥，不切换翻译引擎）、状态、也显示弱信号、本主播的关注名单
   （「移出」「清空自动加入的」，待机时可改）、「打开规则文件夹」（点了才建 `local/`）、规则条数。设置分组在直播中整块隐藏，
@@ -75,6 +75,12 @@ comment_guard/
   不写盘，提示里也这么说。
 - **审计**只记计数：`session_start.comment_guard`（开关、词表指纹、条数、体检警告、阈值）、`session_end.comment_guard`
   （按类别的红条/琥珀/note 计数、预算降级次数、自动/手动加入和移出的人数……）。弹幕原文、昵称、账号一律不进审计。
+- **多账号同一句只数、不报**（用户 2026-10-14 决定）：不同账号发同一句话，几乎都是主播要求的抽奖口令（giveaway），
+  所以它**没有琥珀、没有顶部条的数、没有抽屉事件、没有 `guard_event`**，`judge()` 也不为它出任何类别。引擎照常数，
+  数记在 `session_end.comment_guard.chorus`：`events`（几波口令；同一波只算 1 个事件）、`comments`（落在事件上的弹幕条数，
+  从第 3 个账号起每条算 1）、`max_accounts`（最大一波的账号数）。这是「操作员没看到的」，所以不进 `counts` 和
+  `amber_by_reason`（那两个写的是操作员看到的样子）。同一条弹幕被别的规则命中——红条档词条、引流（链接、电话）、单人刷屏
+  （C1 / C3）——时，照旧按那条规则标，口令不会把它盖住或降级。
 
 ## 模型复核（Claude Haiku 5.5）
 
@@ -263,8 +269,8 @@ pestanas ejemplo
 | `user_burst_note` / `user_burst_alert` | `4/10`、`6/10` | 单人不同句：10 秒内 4 条记 note，6 条标红 |
 | `user_burst_alert_long` | `12/60` | 60 秒内 12 条标红 |
 | `same_text_note` / `same_text_alert` | `3/60`、`5/60` | 同人同句：60 秒内 3 次记 note，5 次标红；问句（含没有问号的 `hay` / `tienen` / `alguien` 起头的短句）最多 note。按原句比，`quiero el 1` / `quiero el 2` 是不同的句子；但去掉数字之后还剩 3 个以上的词时，只改数字的刷屏（`esto es una burla 3` / `10` / `17`）也算同一句 |
-| `brigade_note` / `brigade_alert` | `3/20`、`5/20` | 多账号同句：20 秒内 3 个账号记 note，5 个账号出一个琥珀事件（v1 不单独标红） |
-| `brigade_min_words` / `brigade_jaccard` | `3`、`0.8` | 近似句：词集合 Jaccard >= 0.8 且至少 3 个词 |
+| `brigade_note` / `brigade_alert` | `3/20`、`5/20` | 多账号同句（**只数不报**，见上）：20 秒内 3 个账号开始算一波口令（记进 `chorus`）；5 个账号只决定引擎事件落在 note 还是琥珀这一档，界面和审计都不看这一档 |
+| `brigade_min_words` / `brigade_jaccard` | `3`、`0.8` | 近似句：词集合 Jaccard >= 0.8 且至少 3 个词（同上，只影响 `chorus` 计数） |
 | `accumulate` | `2/600` | 线索档辱骂 10 分钟内第 2 次 -> 琥珀 |
 | `accumulate_red` | off | 红条档开关：累计结果直接标红（改成 on 须用户确认） |
 | `caps_lead` | `0.6/3` | 全大写字母占比 / 至少几个词：负面线索 |
@@ -280,7 +286,7 @@ pestanas ejemplo
 
 ```
 {"lvl": "alert" | "amber" | "note" | "lead" | None,
- "amb": None | "maybe_question" | "grievance" | "quote" | "accumulated" | "question_link" | "brigade" | "pending" | "self",
+ "amb": None | "maybe_question" | "grievance" | "quote" | "accumulated" | "question_link" | "pending" | "self",
  "cats": ["insult"], "sub": "strong",
  "why": ["insult/strong:hijueputa"],        # 命中的词表条目，是我们的数据
  "tier": "red" | "clue" | "struct" | None,  # 来自红条档词表、线索档，还是结构信号（链接/电话/刷屏）
@@ -295,17 +301,18 @@ pestanas ejemplo
   （`uid_ok()`）；**显式传 `None` 也是 False**——只有昵称的观众在 `event_to_item` 里压根没有 `uid_src` 这个键，
   `auto_markable(r, item.get("uid_src"))` 拿到的就是 `None`。不传这个参数时只看判定本身。链接、电话组合、刷屏都是 `tier == "struct"`，永远不自动加人。
 - 类别 id（`insult` `threat` `sexual` `accuse_call` `accuse_report` `accuse_claim` `flood_user` `flood_repeat`
-  `flood_brigade` `promo_link` `promo_contact` `promo_pull` `promo_scam`）只是代码，界面文字另有来源。
+  `promo_link` `promo_contact` `promo_pull` `promo_scam`）只是代码，界面文字另有来源。`flood_brigade` 和 `amb == "brigade"`
+  是 2026-10-14 之前的多账号同句：现在判定不再产生它们，只留在 `web/guard.js` 里认旧数据。
 - 刷屏必须传真实时间戳：`judge(..., ts=...)` 的 `ts` 是必填关键字，必须是有限的 int / float（否则在改任何状态之前抛
   `TypeError` / `ValueError`）。`text` 不是 str 就转成 str，`user` / `cid` 不可哈希就转成 str。
 - 主播自己的账号用 `judge(..., handle=...)` 的 handle 字段比（不分大小写），**不按昵称比**：任何人都能把昵称改成主播名；
   `role` 是 anchor / mod 的、trusted 名单命中 `user` 或 `keys` 的也整条豁免。
-- 多账号同句是一个事件：第一次到 `brigade_note` 时分配 id，之后相似的弹幕并进同一个事件（账号数原地增长、id 不变；并进来的时候
+- 多账号同句在引擎里是一个事件（只数不报，见上；`judge()` 的结果里没有它，只有 `judge().last_flood` 里有）：第一次到 `brigade_note` 时分配 id，之后相似的弹幕并进同一个事件（账号数原地增长、id 不变；并进来的时候
   回看窗口，把所有和这一条相似的账号补进去，所以只和中间的变体相似的弹幕也数得进来），
   最后一条相似弹幕之后「窗口 + 20 秒」没有新的就结束；`judge().last_flood` 里的事件带 `ev`、`n`、`first_ts`、`last_ts`、`accounts`（前 20 个，按各自第一次说这句的先后排）。
-  **出不出事件、note 还是琥珀，只看 20 秒窗口里和这一句相似的账号数**（>= 3 记 note，>= 5 出琥珀，规格 §4.5 C2）；事件上的
-  `n` 是整个事件累计的账号数，只用来显示。事件还活着时来的零散相似弹幕（窗口里只有它自己）不出事件、不升琥珀，所以每 9 秒
-  来一个新账号说「me gusta mucho el color rosa」永远到不了琥珀。口令的变体 V0 / V2 互不相似、V1 和两边都相似时：V2 看窗口里
+  **出不出事件、note 还是琥珀这一档，只看 20 秒窗口里和这一句相似的账号数**（>= 3 记 note，>= 5 到琥珀这一档，规格 §4.5 C2）；
+  事件上的 `n` 是整个事件累计的账号数，`chorus.max_accounts` 记的就是它的最大值。事件还活着时来的零散相似弹幕（窗口里只有它自己）
+  不出事件、不升档，所以每 9 秒来一个新账号说「me gusta mucho el color rosa」永远算不成一波口令。口令的变体 V0 / V2 互不相似、V1 和两边都相似时：V2 看窗口里
   已经属于某个事件的 V1，并进那个事件；先各自开了两个事件的，V1 一出现就并成最早的那个。
 
 ## 词表体检

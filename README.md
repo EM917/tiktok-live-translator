@@ -159,8 +159,10 @@ The app marks viewer comments that:
 
 - insult or threaten
 - call products fake or a scam, or call for reports or for people not to buy
-- flood the chat
+- flood the chat: one viewer posting in bursts or repeating one sentence
 - pull people to another stream or shop
+
+Different accounts sending the same sentence are not flagged, because that is usually a giveaway chant the streamer asked for. The app only counts it in the audit log.
 
 During a session, a line at the top of the window counts what you have not looked at yet, for example "2 items to review · 1 unclear".
 
@@ -440,8 +442,10 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 - 辱骂和威胁
 - 说商品是假货、骗局，或者号召举报、号召别买
-- 刷屏
+- 刷屏：同一个人连发，或反复发同一句
 - 把观众引到别的直播间或店铺
+
+不同账号发同一句话不会标出来，因为这通常是主播要求的抽奖口令。程序只在审计日志里给它计数。
 
 直播时，窗口顶部有一行提示，汇总还没看的标记，比如「需要留意 2 件 · 拿不准 1 件」。
 

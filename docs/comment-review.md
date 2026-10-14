@@ -21,9 +21,11 @@ comments there is nothing to review (`--no-comments`, or the comment component n
 - **Calling products fake or a scam, calling for reports or for people not to buy** — claims that something is
   fake or a scam, calls not to buy or to report the shop, threats to report.
 - **Flooding** — one viewer posting in quick bursts (by default 6 comments in 10 seconds or 12 in 60 seconds), or the
-  same sentence 5 times in 60 seconds; several accounts posting the same sentence within 20 seconds (from 5 accounts)
-  is reported as one "same comment from several accounts" event. The thresholds can be changed in
-  `comment_guard/local/thresholds.txt` on your machine.
+  same viewer posting the same sentence 5 times in 60 seconds. The thresholds can be changed in
+  `comment_guard/local/thresholds.txt` on your machine. **Different accounts posting the same sentence is not flagged:**
+  that is almost always a giveaway or raffle chant the streamer asked for. It is only counted in the audit log
+  (`chorus` in `session_end.comment_guard`), never shown. A comment in such a chant is still flagged by every other
+  rule as usual, for example a confirmed red entry, a link or phone number, or one viewer flooding on their own.
 - **Redirects** — links, phone numbers or WhatsApp, email addresses, an `@handle` offered with a "follow me" line,
   pulling people to another stream or shop, and fake official prizes or scam offers.
 
@@ -35,8 +37,7 @@ comments there is nothing to review (`--no-comments`, or the comment component n
   phone numbers and one viewer's flooding are structural signals and also come out red.
 - **Amber** — the rules themselves are unsure. The reason beside it states what was observed and does not guess a
   cause: "Short, with no question mark", "Describes the viewer's own experience", "Reads like a quote",
-  "Second time from this viewer in 10 min". Several accounts posting one sentence produce one amber event, never red
-  on its own.
+  "Second time from this viewer in 10 min".
 - **Entries you have not confirmed show amber, even on a match.** In the shipped rules only most entries for threats
   and for calls to report or not buy are confirmed. For the rest (insults, sexual remarks, claims of fakes, threats
   to report, pulling people elsewhere, scam offers) a match comes out amber until you confirm the entry one by one: it
@@ -47,8 +48,8 @@ comments there is nothing to review (`--no-comments`, or the comment component n
   counted. Off by default.
 
 A line at the top of the window appears during a session when there is something unseen, for example
-"2 items to review · 1 unclear · 3 from marked viewers · Possible threat of harm 1". It counts **events**: one flood,
-or one sentence posted by several accounts, is 1 item however many comments it holds. Click it to open a drawer
+"2 items to review · 1 unclear · 3 from marked viewers · Possible threat of harm 1". It counts **events**: one flood
+is 1 item however many comments it holds. Click it to open a drawer
 under it listing recent events (time, nickname, category, original and translation, reason). From there you can
 **Show in Comments** to jump to the comment in the panel, **Dismiss** the event, or **Mark** the viewer; **All Seen** clears the unread count.
 With the Comments panel collapsed, the floating button shows the number of unseen red items. There is no system
