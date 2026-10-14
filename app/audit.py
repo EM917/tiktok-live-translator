@@ -281,7 +281,7 @@ class AuditLog:
         })
 
     def translation_strong(self, seq, translated, translate_ms, ok, model,
-                           trigger):
+                           trigger, error=None):
         """用最强模型重译的结果，**单独一种记录类型**。
 
         不复用上面的 translation：同一个 seq 会同时存在快译和强译两条，若类型
@@ -289,8 +289,13 @@ class AuditLog:
         东西。收工后的批量重译工具写的也是这个类型，两条路径保持一致。
 
         trigger 说明这次重译是谁发起的：banned_term（命中违禁词自动升级）
-        或 manual（中控点了「重译」）。"""
-        self._write({
+        或 manual（中控点了「重译」）。
+
+        error 是这一次没出译文时看到了什么：refusal 或 refusal:<接口给的类别>（Claude 拒答）、
+        HTTP <状态码>（再接 400/402 的接口原话）、译文不像译文被丢弃。强模型是 Claude 时
+        才有可能写：本地模型不会拒答，失败只剩 ok=false 也分得清。没有要说的就不写这个键，
+        老记录和成功的记录形状不变。"""
+        row = {
             "type": "translation_strong",
             "seq": seq,
             "at": datetime.now().isoformat(timespec="milliseconds"),
@@ -299,7 +304,10 @@ class AuditLog:
             "ok": bool(ok),
             "model": model,
             "trigger": trigger,
-        })
+        }
+        if error:
+            row["error"] = str(error)[:200]
+        self._write(row)
 
     def translation_engine_error(self, engine, status, error=None, model=None):
         """翻译引擎的 HTTP 回应说明它这会儿用不了：本地 Ollama 连续几次非 200（没有
@@ -318,18 +326,24 @@ class AuditLog:
             "error": (error or "")[:200] or None,
         })
 
-    def translation_refusal(self, seq, engine, model, category):
+    def translation_refusal(self, seq, engine, model, category, trigger=None):
         """引擎拒绝翻译这一句（Claude：HTTP 200，stop_reason 为 refusal），按 seq 对应。
         translation 记录里只有 ok=false，没有这一条就分不清「接口出错」和「模型拒答」。
-        category 照抄接口的 stop_details.category，可能为 null。每一次拒答都记。"""
-        self._write({
+        category 照抄接口的 stop_details.category，可能为 null。每一次拒答都记。
+
+        trigger 只在「重译」被拒时写（manual / viewer / banned_term，和 translation_strong 的
+        同名字段一样）：没有它，这一行和同一个 seq 的字幕快译被拒分不开。字幕那一条不写这个键。"""
+        row = {
             "type": "translation_refusal",
             "seq": seq,
             "at": datetime.now().isoformat(timespec="milliseconds"),
             "engine": engine,
             "model": model,
             "category": category,
-        })
+        }
+        if trigger:
+            row["trigger"] = trigger
+        self._write(row)
 
     def translation_cooldown(self, engine, status, seconds):
         """翻译接口回了 429、程序暂停请求的那一刻。暂停期间每条字幕都是 ok=false，

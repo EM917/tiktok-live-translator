@@ -78,6 +78,7 @@
 | 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Bella All Natural” 和中文差不多宽 |
 | 不限（默认） | **Any (default)** | None, All brands | None 会被读成「没有品牌」，实际意思是「不限定某一个品牌」 |
 | 品牌词表 | **brand glossary** | brand list | |
+| 粉丝 / 互关 / 送过礼 / 订阅（弹幕作者旁的小标签） | **Follower / Mutual / Gifter / Subscriber** | Fan, Friend, Donor | TikTok 随弹幕发的「和主播的关系」。Fan 太泛（粉丝团另有等级），Friend 不等于互关，Donor 带慈善含义 |
 | 词表 / 领域词表（glossary.txt） | **glossary** | dictionary, term list | 帮助翻译用的 |
 | 违禁词表（banned_terms.txt） | **banned-term list** | blacklist, banned glossary | 必须和 glossary 分开：list 决定报不报警，glossary 决定怎么翻译 |
 | 违禁词 | **banned term** | prohibited word, prohibited term, forbidden word, blacklisted word | README 已经在用。term 也覆盖短语 |
@@ -530,7 +531,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 98 | index.html:504/505 | 收起 / 清空弹幕 | Hide / Clear | title 写 “Hide comments to widen captions” |
 | 99 | index.html:514 | 弹幕 {n}（悬浮入口）/ 展开观众弹幕 | Comments {n} / Show comments | |
 | 100 | index.html:521 | 回到最新 | Jump to Latest | |
-| 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用最强模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the most accurate model | 悬停时才出现的按钮，68+16px |
+| 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用更强的模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the stronger model | 悬停时才出现的按钮，68+16px |
 | 102 | app.js:1138/1146 | 翻译中… / 翻译失败 / 翻译已跳过（积压） | Translating… / Translation failed / Skipped (backlog) | |
 | 103 | session-divider.js:27 | ── 14:01:29 以下为 @x ── / 以下为新的一场 | ── 14:01:29 Now monitoring @x ── / New session | |
 | 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空警报 / 上一场 / 命中·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | |
@@ -571,7 +572,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 126 | 未开始 / 连接中 / 直播中 / 已停止 | Not started / Connecting / Live / Stopped | |
 | 127 | 已经 {n} 秒没连上。请找中控确认同看是否还开着，或重新扫码 | Not connected for {n} sec. Ask the operator whether sharing is still on, or scan the QR code again. | can’t 不跟一段时长连用 |
 | 128 | 疑似违禁词 / 清除已看过的报警 / 只在这台手机上隐藏，中控电脑和记录不受影响 | Possible Banned Terms / Clear Seen / Hides alerts on this phone only. The operator’s computer and records aren’t affected. | |
-| 129 | 重译会用中控电脑上的大模型，稍等几秒 | Retranslation uses the larger model on the operator’s computer and takes a few seconds. | |
+| 129 | 重译会用更强的模型重新翻这一句，稍等几秒 | Retranslation uses a stronger model and takes a few seconds. | 2026-10-13 改：字幕引擎是 Claude 时重译用的是 Claude Sonnet 5.5，不在中控电脑上 |
 | 130 | 最新 / 弹幕 / 只看模式 · 不能操作 / 提示音 | Latest / Comments / View only / Sound | |
 | 131 | 页面切到后台或锁屏后，手机可能停掉提示音。 | Sounds may stop when this page is in the background or the phone is locked. | |
 | 132 | 演示数据，不是真实直播 / 违禁词警示已关闭（中控开播时未开启） | Demo data, not a real stream / Banned-term alerts are off for this session. | |

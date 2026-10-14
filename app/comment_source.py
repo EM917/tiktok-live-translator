@@ -85,6 +85,11 @@ _FIELD_NAMES = {
     "identity": "主播或房管",  # i18n: terminal
     "identity_any": "任一身份标记",  # i18n: terminal
     "mention": "@了人",  # i18n: terminal
+    "follower": "关注了主播",  # i18n: terminal
+    "mutual": "互关",  # i18n: terminal
+    "gifter": "送过礼",  # i18n: terminal
+    "subscriber": "订阅",  # i18n: terminal
+    "fans_club": "粉丝团等级",  # i18n: terminal
 }
 
 
@@ -160,9 +165,25 @@ def _account_fields(ev, user_obj):
     elif (getattr(identity, "is_moderator_of_anchor", None) is True
           or getattr(attr, "is_admin", None) is True):
         out["role"] = "mod"
+    rel = [tag for flag, tag in _REL_FLAGS if getattr(identity, flag, None) is True]
+    if rel:
+        out["rel"] = rel                       # 和主播的关系：follower / mutual / gifter / subscriber
     if _mentions_someone(ev):
         out["mention"] = True
     return out
+
+
+# user_identity 里和主播的关系 -> 弹幕条目里的标签（界面再翻成「粉丝 / 互关 / 送过礼 / 订阅」）
+_REL_FLAGS = (("is_follower_of_anchor", "follower"), ("is_mutual_following_with_anchor", "mutual"),
+              ("is_gift_giver_of_anchor", "gifter"), ("is_subscriber_of_anchor", "subscriber"))
+
+
+def fans_club_level(user_obj):
+    """粉丝团等级（大于 0 才算有）；没有或读不出返回 0。不登录时 TikTok 发不发它还没量过，
+    先只进字段统计（comment_worker.FieldStats 的 fans_club），量过再决定显不显示。"""
+    data = getattr(getattr(user_obj, "fans_club", None), "data", None)
+    level = getattr(data, "level", None)
+    return level if isinstance(level, int) and not isinstance(level, bool) and level > 0 else 0
 
 
 def _mentions_someone(ev):

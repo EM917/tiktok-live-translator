@@ -417,3 +417,47 @@ def test_server_keeps_comment_history_with_translation():
     assert stored
     assert stored[0]["translated"] == "[zh] hola"
     assert stored[0]["state"] == "ok"
+
+
+def test_relationship_tags_reach_the_desktop_message_and_unknown_tags_are_dropped(tmp_path, monkeypatch):
+    """弹幕作者和主播的关系（粉丝 / 互关 / 送过礼 / 订阅）跟着 comment 消息到电脑页；认不出的丢掉。"""
+    ct, messages = make_translator(monkeypatch, tmp_path, FastTranslator())
+
+    async def scenario():
+        await ct.accept({"items": [
+            {"id": "c1", "user": "a", "text": "hola", "rel": ["gifter", "follower", "boss", "follower"]},
+            {"id": "c2", "user": "b", "text": "adios", "rel": "follower"},
+            {"id": "c3", "user": "c", "text": "que tal"},
+        ]})
+
+    run(scenario())
+    first = {m["id"]: m for m in messages if m.get("type") == "comment"}
+    assert first["c1"]["rel"] == ["follower", "gifter"]
+    assert "rel" not in first["c2"] and "rel" not in first["c3"]
+
+
+def test_guard_fields_and_relationship_tags_reach_the_desktop_together_and_neither_reaches_the_phone(
+        tmp_path, monkeypatch):
+    """PR-3 和 #79 各加了一批字段：账号字段 + 守卫判定，和关系标签。一条弹幕两样都带时，
+    电脑页的消息里两样都要在；手机页的白名单一样都不能漏出去。"""
+    out = shown(monkeypatch, tmp_path, [{
+        "id": "c1", "user": "a", "text": "hola mundo", "uid": BIG_UID, "uid_ok": True,
+        "sec": "s:MS4wLjAB", "handle": "ana_demo", "guard": GOOD_GUARD,
+        "rel": ["gifter", "boss", "follower"]}])
+    msg = out[0]
+    assert set(msg) == OLD_KEYS | {"uid", "uid_ok", "sec", "handle", "guard", "rel"}
+    assert msg["guard"] == GOOD_GUARD and msg["rel"] == ["follower", "gifter"]
+
+    from app import viewer
+    phone = viewer.filter_payload(dict(msg))
+    assert phone is not None
+    assert set(phone) <= set(viewer.ALLOW["comment"]) | {"type"}
+    for gone in ("uid", "uid_ok", "sec", "handle", "guard", "rel"):
+        assert gone not in phone
+
+
+def test_relationship_tags_never_reach_the_phone():
+    from app import viewer
+    out = viewer.filter_payload({"type": "comment", "id": "c1", "user": "a", "text": "hola", "ts": 1.0,
+                                 "translated": None, "state": "pending", "rel": ["follower"]})
+    assert out is not None and "rel" not in out

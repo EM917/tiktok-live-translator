@@ -40,7 +40,7 @@ language, and Settings → App Language switches it; see
 - 🎙️ **Live captions, original first** — OpenAI Whisper with two backends (faster-whisper / MLX), 90+ languages, limited to Spanish + English by default. Each line appears as soon as it is recognised and its translation fills in beneath it; the latest line is also shown large at the bottom of the window
 - 🌐 **Local-first translation** — Hy-MT2 (Apache 2.0, offline, free) in two sizes through Ollama, with TranslateGemma, DeepL (with a native glossary), Google's free endpoint, the Claude API and any OpenAI-compatible API as alternatives. By default Hy-MT2 1.8B is used, then TranslateGemma, and Google's free endpoint when neither is installed; 7B is never picked automatically. See [Translation Engines](#translation-engines)
 - 🏷️ **Glossaries per brand and streamer** — a global glossary, one per streamer and one per brand (picked in the Brand menu for the session) steer how product names are recognised and translated, with every engine. See [Glossaries](#glossaries)
-- 💬 **Viewer comment translation** — comments are fetched from the live stream through TikTokLive and translated while a local engine (Hy-MT2 1.8B or TranslateGemma) is active; with a remote engine or 7B the Comments panel shows the original text. Disable with `--no-comments`; see [the FAQ](#viewer-comments)
+- 💬 **Viewer comment translation** — comments are fetched from the live stream through TikTokLive and translated while a local engine (Hy-MT2 1.8B or TranslateGemma) or Claude is active; with Google, DeepL, OpenAI or 7B the Comments panel shows the original text. Disable with `--no-comments`; see [the FAQ](#viewer-comments)
 - 🔁 **Switch Streamer during a session** — Switch Streamer in the top bar moves to another streamer without clicking Stop first: pick from Recent Streams or paste a live link, choose the brand, then click again to confirm. The spoken language carries over, and a divider in the caption history marks where the new streamer begins
 - 📱 **Phone Viewing** — colleagues on the same Wi-Fi scan a QR code and follow captions and alerts on their phones, each page in its phone's own language; view only, no control; off by default. See [the FAQ](#phone-viewing)
 - 🌍 **English and Chinese interface** — follows the system language on a new install, switchable in Settings. See [Interface Language](#interface-language)
@@ -262,7 +262,7 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, ~16 GB RAM
 | `gemma` | TranslateGemma 4B. `OLLAMA_TRANSLATE_MODEL` selects `translategemma:12b`/`27b`. Not in the Translation Engine menu; pass `--translator gemma` |
 | `deepl` | Key entered in Settings → Translation Engine (or `DEEPL_API_KEY`). A key ending in `:fx` is routed to the free endpoint automatically. Builds and maintains a native DeepL glossary from your [glossaries](#glossaries); see below. Caption text is sent to DeepL |
 | `google` | Google Translate's free endpoint, no key required. Caption text is sent to Google; rate-limited per IP |
-| `claude` | Key entered in Settings → Translation Engine (or `ANTHROPIC_API_KEY`). Default model Claude Haiku 5.5 (`claude-haiku-5-5`), with thinking turned off to keep each caption fast; `CLAUDE_TRANSLATE_MODEL` selects another model. Caption text is sent to Anthropic. A caption Claude declines to translate shows the original text and is recorded in the audit log |
+| `claude` | Key entered in Settings → Translation Engine (or `ANTHROPIC_API_KEY`). Default model Claude Haiku 5.5 (`claude-haiku-5-5`), with thinking turned off to keep each caption fast; `CLAUDE_TRANSLATE_MODEL` selects another model. Caption text is sent to Anthropic. A caption Claude declines to translate shows the original text and is recorded in the audit log; a declined Retranslate is recorded there too, with the trigger. With this engine, viewer comments are translated by Claude Haiku 5.5 on its own connection (a pause there never pauses captions), and Retranslate and the alert-context translation use Claude Sonnet 5.5 instead of a local model, so no local model is needed for them |
 | `openai` | Key entered in Settings → Translation Engine (or `OPENAI_API_KEY`); optional `OPENAI_BASE_URL`, `OPENAI_MODEL`. Compatible with any OpenAI-style API including local LM Studio / vLLM |
 | `none` | Transcription only, no translation |
 
@@ -312,9 +312,11 @@ short list of them is the most direct fix. The glossary is one set of entries
 used in three places: the first entries are given to speech recognition as a
 hint; entries that occur in a line are passed with that line to a local
 translation model (DeepL uses a native glossary instead, see below, while
-Google's free endpoint, Claude and OpenAI-compatible APIs take no hints, so
-only the fix-up applies to them); and a rule-based fix-up replaces any
-glossary entry the translation left untranslated.
+Google's free endpoint, Claude's caption and comment translation and
+OpenAI-compatible APIs take no hints, so only the fix-up applies to them; the
+exception is Retranslate and alert-context translation with Claude Sonnet 5.5,
+which get the hints in their prompt like the local model does); and a rule-based
+fix-up replaces any glossary entry the translation left untranslated.
 
 It is merged from three files, most specific first:
 
@@ -388,19 +390,25 @@ acceptable is a business decision.
 
 ### Re-translating with the strongest model
 
-The strongest local model installed (Hy-MT2 7B if you pulled it, otherwise
-1.8B) is applied per sentence rather than for a period of time. What justifies
+The strongest model available is applied per sentence rather than for a period
+of time. With any engine other than Claude (a local model, Google, DeepL or an
+OpenAI-compatible API) that is the strongest local model installed (Hy-MT2 7B if
+you pulled it, otherwise 1.8B), which needs Ollama. With Claude as the engine it
+is Claude Sonnet 5.5, so no local model has to be installed for it. What justifies
 it is specific content — prices, promotional conditions, health claims — which
 is episodic, and only the operator or the detector knows which sentence that
 is. Measured cost: loading the model takes 1.9 s and a complete one-shot call
 2.3 s, after which it is unloaded, leaving recognition unaffected. Keeping it
 resident instead would raise recognition from 1.4 s to 3.2 s and alert latency
-from 6.8 s to 10.6 s.
+from 6.8 s to 10.6 s. Those figures are for the local models; Claude Sonnet 5.5
+runs on Anthropic's servers, so it adds no memory load on this computer.
 
 Three ways to invoke it:
 
 - **Per caption** — hover a caption and click Retranslate. The line is
-  re-translated and marked in the margin. Phones on
+  re-translated and marked in the margin. If the click cannot start a
+  retranslation or it does not produce one, a short note appears right under
+  that caption for a few seconds and the existing translation stays. Phones on
   [Phone Viewing](#phone-viewing) have the same button
 - **On a banned-term match** — with [alerts](#banned-term-alerts) on, the
   matched sentence is re-translated automatically. The fast translation appears
@@ -841,7 +849,8 @@ a secure context, so there are no system notifications and no screen
 wake-lock, and the alert sound may stop once the page is backgrounded or the
 phone is locked. v1 only works within the same local network — not across
 networks. Each caption also has a **Retranslate** button that asks the
-operator's computer's strongest local model to redo that one line; it's
+operator's computer to redo that one line with the strongest model (Claude
+Sonnet 5.5 when the engine is Claude, otherwise the strongest local model); it's
 rate-limited per phone (at least 3 seconds between taps, at most 10 a minute)
 so one phone tapping repeatedly can't queue up work or slow down the
 operator's computer. Each alert has a ✕ to hide it, plus a **Clear Seen**
@@ -853,8 +862,11 @@ sent to the server.
 which needs Python 3.10 or later; the component installs itself on the first
 start. It usually works signed out, and retries once with the browser's TikTok
 sign-in when TikTok asks for one. Comments are translated only while the active
-engine is a local model (Hy-MT2 1.8B or TranslateGemma); with a remote engine
-or 7B the panel shows the original text. Comment translation is for display
+engine is a local model (Hy-MT2 1.8B or TranslateGemma) or Claude; with Google,
+DeepL, OpenAI or 7B the panel shows the original text. With Claude, comments
+are translated by Claude Haiku 5.5 through a connection of their own and wait
+for caption translation first, so a pause on that connection never delays
+captions. Comment translation is for display
 only and never part of the alert path. The connection is signed through a
 third-party service; see [Privacy](#privacy-and-usage-boundaries).
 
@@ -874,7 +886,7 @@ frequently block these.
 
 ## Privacy and Usage Boundaries
 
-- Recognition always runs locally. Translation stays on your computer with `hymt2`, `hymt2-7b`, `gemma` or `none`; with `deepl`, `google`, `claude` or `openai`, caption text is sent to that provider (for `openai`, unless `OPENAI_BASE_URL` points at a local server such as LM Studio). Viewer comments come from TikTok through TikTokLive, whose connection signing goes through the third-party Euler Stream service.
+- Recognition always runs locally. Translation stays on your computer with `hymt2`, `hymt2-7b`, `gemma` or `none`; with `deepl`, `google`, `claude` or `openai`, caption text is sent to that provider (for `openai`, unless `OPENAI_BASE_URL` points at a local server such as LM Studio). With `claude`, translated viewer comments and Retranslate requests are sent to Anthropic as well. Viewer comments come from TikTok through TikTokLive, whose connection signing goes through the third-party Euler Stream service.
 - This tool is for personal learning and language-assistance use only. Please comply with TikTok's Terms of Service and local laws — don't use it to rebroadcast or redistribute recordings of other people's content.
 - Phone Viewing binds `0.0.0.0` only while it's turned on, and stops as soon as it's turned off; the control page always stays on `127.0.0.1` only. What a phone receives is filtered through an allowlist — it never sees settings, file paths, cookies, or the stream address. The share link's key lives in the local `settings.json` (already gitignored); no data leaves the local network.
 
