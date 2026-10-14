@@ -211,6 +211,6 @@ itself, so closing it quits the app. On macOS, closing the app window quits it
 Terminal window or press Ctrl-C.
 
 **Installation fails on a managed computer, or space is insufficient.** The
-initial installation requires about 6 GB and access to PyPI, Hugging Face and
-ollama.com; see "Disk Space" for the breakdown. Corporate security policies
+initial installation requires about 6 GB and access to PyPI, Hugging Face,
+ollama.com and GitHub; see "Disk Space" for the breakdown. Corporate security policies
 frequently block these.

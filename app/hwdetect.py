@@ -158,7 +158,7 @@ def doctor():
         gemma = _ollama_has_gemma()
         print("本地翻译 Gemma  : {}".format(
             "✅ Ollama + TranslateGemma 就绪" if gemma else
-            "— 未检测到（将用 Google 免费接口；本地化安装见 README「翻译引擎」）"))
+            "— 未检测到（将用 Google 免费接口；本地化安装见 README「快速开始」第 3 步）"))
     except ImportError:
         print("本地翻译 Gemma  : ？（依赖未安装，先运行 setup.sh / setup.ps1）")
 
