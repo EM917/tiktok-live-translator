@@ -177,6 +177,35 @@ def test_event_to_item_account_field_errors_keep_the_comment():
     assert item == {"id": "77", "user": "Ana", "text": "hola"}
 
 
+def test_event_to_item_relationship_tags_only_from_true_flags():
+    ev = rich_event(RichUser(id=1), identity(is_follower_of_anchor=True, is_gift_giver_of_anchor=True))
+    assert event_to_item(ev)["rel"] == ["follower", "gifter"]
+    ev = rich_event(RichUser(id=1), identity(is_follower_of_anchor=True, is_mutual_following_with_anchor=True,
+                                             is_subscriber_of_anchor=True))
+    assert event_to_item(ev)["rel"] == ["follower", "mutual", "subscriber"]
+    assert "rel" not in event_to_item(rich_event(RichUser(id=1), identity()))     # 默认实例：全是 False
+    odd = SimpleNamespace(is_follower_of_anchor=1, is_gift_giver_of_anchor="yes")
+    assert "rel" not in event_to_item(rich_event(RichUser(id=1), odd))
+
+
+def test_fans_club_level_counts_only_a_positive_level():
+    from app.comment_source import fans_club_level
+    from app.comment_worker import FieldStats
+    club = lambda lv: SimpleNamespace(data=SimpleNamespace(level=lv))      # noqa: E731
+    with_club = RichUser(id=1)
+    with_club.fans_club = club(7)
+    assert fans_club_level(with_club) == 7
+    for lv in (0, True, None, "3"):
+        u = RichUser(id=1)
+        u.fans_club = club(lv)
+        assert fans_club_level(u) == 0
+    assert fans_club_level(RichUser(id=1)) == 0                             # 没有这个字段
+    stats = FieldStats()
+    stats.observe(rich_event(with_club))
+    stats.observe(rich_event(RichUser(id=2)))
+    assert stats.take()["has"]["fans_club"] == 1
+
+
 def test_field_stats_counts_non_empty_only():
     from app.comment_worker import FieldStats
     stats = FieldStats()
@@ -191,7 +220,8 @@ def test_field_stats_counts_non_empty_only():
     line = stats.take()
     assert line == {"event": "field_stats", "n": 3, "has": {
         "id": 1, "id_str": 1, "sec_uid": 1, "display_id": 1,
-        "identity": 1, "identity_any": 1, "mention": 1}}
+        "identity": 1, "identity_any": 1, "mention": 1,
+        "follower": 1, "mutual": 0, "gifter": 0, "subscriber": 0, "fans_club": 0}}
     assert stats.take() is None                          # 吐的是增量，吐完清零
 
 

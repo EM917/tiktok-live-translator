@@ -344,3 +344,27 @@ def test_server_keeps_comment_history_with_translation():
     assert stored
     assert stored[0]["translated"] == "[zh] hola"
     assert stored[0]["state"] == "ok"
+
+
+def test_relationship_tags_reach_the_desktop_message_and_unknown_tags_are_dropped(tmp_path, monkeypatch):
+    """弹幕作者和主播的关系（粉丝 / 互关 / 送过礼 / 订阅）跟着 comment 消息到电脑页；认不出的丢掉。"""
+    ct, messages = make_translator(monkeypatch, tmp_path, FastTranslator())
+
+    async def scenario():
+        await ct.accept({"items": [
+            {"id": "c1", "user": "a", "text": "hola", "rel": ["gifter", "follower", "boss", "follower"]},
+            {"id": "c2", "user": "b", "text": "adios", "rel": "follower"},
+            {"id": "c3", "user": "c", "text": "que tal"},
+        ]})
+
+    run(scenario())
+    first = {m["id"]: m for m in messages if m.get("type") == "comment"}
+    assert first["c1"]["rel"] == ["follower", "gifter"]
+    assert "rel" not in first["c2"] and "rel" not in first["c3"]
+
+
+def test_relationship_tags_never_reach_the_phone():
+    from app import viewer
+    out = viewer.filter_payload({"type": "comment", "id": "c1", "user": "a", "text": "hola", "ts": 1.0,
+                                 "translated": None, "state": "pending", "rel": ["follower"]})
+    assert out is not None and "rel" not in out

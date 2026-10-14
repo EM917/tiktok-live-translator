@@ -58,7 +58,8 @@ class FieldStats:
     字符串是 ''，子消息没设时也可能是个默认实例。"""
 
     FLUSH_EVERY = 50
-    KEYS = ("id", "id_str", "sec_uid", "display_id", "identity", "identity_any", "mention")
+    KEYS = ("id", "id_str", "sec_uid", "display_id", "identity", "identity_any", "mention",
+            "follower", "mutual", "gifter", "subscriber", "fans_club")
     _IDENTITY_FLAGS = ("is_anchor", "is_moderator_of_anchor", "is_follower_of_anchor",
                        "is_mutual_following_with_anchor", "is_gift_giver_of_anchor",
                        "is_subscriber_of_anchor")
@@ -71,7 +72,8 @@ class FieldStats:
         self.has = dict.fromkeys(self.KEYS, 0)
 
     def observe(self, ev):
-        from .comment_source import _clean_str, _digits, _mentions_someone, _positive_int
+        from .comment_source import (_clean_str, _digits, _mentions_someone, _positive_int,
+                                     fans_club_level)
         user = getattr(ev, "user", None)
         identity = getattr(ev, "user_identity", None)
         flags = [getattr(identity, f, None) is True for f in self._IDENTITY_FLAGS]
@@ -86,6 +88,12 @@ class FieldStats:
             # 任一身份标记为真：全场都是 0 就说明这条连接根本没带 user_identity
             "identity_any": any(flags),
             "mention": _mentions_someone(ev),
+            # 和主播的关系（弹幕栏要显示「粉丝」标签），以及粉丝团等级（先量一场再决定显不显示）
+            "follower": getattr(identity, "is_follower_of_anchor", None) is True,
+            "mutual": getattr(identity, "is_mutual_following_with_anchor", None) is True,
+            "gifter": getattr(identity, "is_gift_giver_of_anchor", None) is True,
+            "subscriber": getattr(identity, "is_subscriber_of_anchor", None) is True,
+            "fans_club": fans_club_level(user) > 0,
         }
         self.n += 1
         for k, hit in hits.items():

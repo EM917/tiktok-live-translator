@@ -1222,6 +1222,10 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
 .cmt-item:last-child { border-bottom: 0; }
 .cmt-head { font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
+.cmt-rel { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 11px;
+  line-height: 16px; vertical-align: 1px; color: var(--label-2); background: var(--fill); }
+.cmt-rel-mutual, .cmt-rel-follower { color: var(--blue); background: var(--tint-blue-10); }
+.cmt-rel-gifter { color: #bf5af2; background: rgba(191,90,242,.12); }
 .cmt-zh { font-size: 15px; line-height: 1.5; margin-top: 1px; }
 .cmt-zh.pending { color: var(--label-3); font-style: italic; font-size: var(--fs-callout); }
 .cmt-zh.failed { color: var(--label-2); }

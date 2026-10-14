@@ -1521,6 +1521,27 @@
     if (!has) commentEmpty.textContent = emptyText;
   }
 
+  // 弹幕作者和主播的关系：TikTok 随每条弹幕发的标记（app/comment_source.py _REL_FLAGS）。
+  // 互关就不再单独标「粉丝」；只在电脑上显示，手机页收不到这个字段
+  var REL_LABELS = {
+    follower: [L("粉丝", "Follower"), L("关注了主播", "Follows the streamer")],
+    mutual: [L("互关", "Mutual"), L("和主播互相关注", "Follows the streamer, and the streamer follows back")],
+    gifter: [L("送过礼", "Gifter"), L("给主播送过礼物", "Has sent the streamer a gift")],
+    subscriber: [L("订阅", "Subscriber"), L("订阅了主播", "Subscribes to the streamer")],
+  };
+  function relTags(rel) {
+    if (!Array.isArray(rel)) return [];
+    var tags = rel.filter(function (t) { return REL_LABELS[t]; });
+    if (tags.indexOf("mutual") >= 0) tags = tags.filter(function (t) { return t !== "follower"; });
+    return tags.map(function (t) {
+      var chip = document.createElement("span");
+      chip.className = "cmt-rel cmt-rel-" + t;
+      chip.textContent = REL_LABELS[t][0];
+      chip.title = REL_LABELS[t][1];
+      return chip;
+    });
+  }
+
   function renderComment(msg) {
     var item = document.createElement("div");
     item.className = "cmt-item";
@@ -1530,6 +1551,7 @@
     head.className = "cmt-head";
     var ts = new Date((msg.ts || Date.now() / 1000) * 1000);
     head.appendChild(nameSpan(msg.user || ""));   // 观众名
+    relTags(msg.rel).forEach(function (tag) { head.appendChild(tag); });
     head.appendChild(document.createTextNode(" " +
       pad(ts.getHours()) + ":" + pad(ts.getMinutes()) + ":" + pad(ts.getSeconds())));
     item.appendChild(head);

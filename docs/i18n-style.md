@@ -78,6 +78,7 @@
 | 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Bella All Natural” 和中文差不多宽 |
 | 不限（默认） | **Any (default)** | None, All brands | None 会被读成「没有品牌」，实际意思是「不限定某一个品牌」 |
 | 品牌词表 | **brand glossary** | brand list | |
+| 粉丝 / 互关 / 送过礼 / 订阅（弹幕作者旁的小标签） | **Follower / Mutual / Gifter / Subscriber** | Fan, Friend, Donor | TikTok 随弹幕发的「和主播的关系」。Fan 太泛（粉丝团另有等级），Friend 不等于互关，Donor 带慈善含义 |
 | 词表 / 领域词表（glossary.txt） | **glossary** | dictionary, term list | 帮助翻译用的 |
 | 违禁词表（banned_terms.txt） | **banned-term list** | blacklist, banned glossary | 必须和 glossary 分开：list 决定报不报警，glossary 决定怎么翻译 |
 | 违禁词 | **banned term** | prohibited word, prohibited term, forbidden word, blacklisted word | README 已经在用。term 也覆盖短语 |
