@@ -1142,6 +1142,28 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
   color: var(--warn-fg); background: var(--warn-bg); border-radius: 6px;
 }
 
+/* 观众弹幕的「重译」（app.js syncCommentRedo）：和字幕的 .redo 一样悬停才出现，放在 ☆ 按钮（right 8px、
+   22px 宽）的左边。译文行和头一行都可能排到这个位置，所以做成不透明的悬浮小胶囊（同「回到最新」），
+   不用 .redo 那种半透明灰底——后者会让底下的字透出来。字幕引擎不是 Claude 时是灰的，悬停有说明 */
+.cmt-redo {
+  position: absolute; top: 4px; right: 36px; z-index: 1;
+  height: 22px; padding: 0 9px; font-size: var(--fs-footnote); font-family: inherit;
+  color: var(--label-2); background: var(--card);
+  border: none; border-radius: 11px;
+  box-shadow: var(--float-shadow);
+  cursor: pointer; opacity: 0;
+  transition: opacity .12s;
+}
+.cmt-item:hover .cmt-redo, .cmt-redo:focus-visible { opacity: 1; }
+.cmt-redo:hover { color: var(--label); }
+.cmt-redo:focus-visible { outline: 2px solid transparent; box-shadow: var(--float-shadow), var(--focus); }
+.cmt-redo:disabled { cursor: default; }
+.cmt-item:hover .cmt-redo:disabled { opacity: .55; }
+.cmt-redo:disabled:hover { color: var(--label-2); }
+/* 进行中、刚失败：按钮常驻可见，让人知道自己点的那一下生效了（译文原样留着，不换成占位字） */
+.cmt-item.redoing .cmt-redo, .cmt-item.redoing:hover .cmt-redo:disabled,
+.cmt-item.redo-failed .cmt-redo, .cmt-item.redo-failed:hover .cmt-redo:disabled { opacity: 1; color: var(--label); }
+
 /* ---------- 换主播：场次分隔 ---------- */
 /* 上一场（换过主播）的字幕：变淡，「重译」按钮彻底不可交互。用 CSS 的
    display:none（而不是只在换场那一刻切一次 JS 的 disabled/hidden）是因为

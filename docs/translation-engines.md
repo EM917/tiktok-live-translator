@@ -23,7 +23,7 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB, ~16 GB RAM
 | `gemma` | TranslateGemma 4B. `OLLAMA_TRANSLATE_MODEL` selects `translategemma:12b`/`27b`. Not in the Translation Engine menu; pass `--translator gemma` |
 | `deepl` | Key entered in Settings → Translation Engine (or `DEEPL_API_KEY`). A key ending in `:fx` is routed to the free endpoint automatically. Builds and maintains a native DeepL glossary from your [glossaries](#glossaries); see below. Caption text is sent to DeepL |
 | `google` | Google Translate's free endpoint, no key required. Caption text is sent to Google; rate-limited per IP |
-| `claude` | Key entered in Settings → Translation Engine (or `ANTHROPIC_API_KEY`). Default model Claude Haiku 5.5 (`claude-haiku-5-5`), with thinking turned off to keep each caption fast; `CLAUDE_TRANSLATE_MODEL` selects another model. Caption text is sent to Anthropic. A caption Claude declines to translate shows the original text and is recorded in the audit log; a declined Retranslate is recorded there too, with the trigger. With this engine, viewer comments are translated by Claude Haiku 5.5 on its own connection (a pause there never pauses captions), and Retranslate and the alert-context translation use Claude Sonnet 5.5 instead of a local model, so no local model is needed for them |
+| `claude` | Key entered in Settings → Translation Engine (or `ANTHROPIC_API_KEY`). Default model Claude Haiku 5.5 (`claude-haiku-5-5`), with thinking turned off to keep each caption fast; `CLAUDE_TRANSLATE_MODEL` selects another model. Caption text is sent to Anthropic. A caption Claude declines to translate shows the original text and is recorded in the audit log; a declined Retranslate is recorded there too, with the trigger. With this engine, viewer comments are translated by Claude Haiku 5.5 on its own connection (a pause there never pauses captions), and Retranslate and the alert-context translation use Claude Sonnet 5.5 instead of a local model, so no local model is needed for them. A viewer comment can be retranslated only with this engine (see below) |
 | `openai` | Key entered in Settings → Translation Engine (or `OPENAI_API_KEY`); optional `OPENAI_BASE_URL`, `OPENAI_MODEL`. Compatible with any OpenAI-style API including local LM Studio / vLLM |
 | `none` | Transcription only, no translation |
 
@@ -179,6 +179,18 @@ Three ways to invoke it:
   session's audit log, appending `translation_strong` records without altering
   any existing line, and prints the segments whose translation changed rather
   than replacing anything silently
+
+A translated viewer comment has a Retranslate button too, in the comment
+column on this computer (phones do not have it). It works only when the engine
+is Claude: it asks Claude Sonnet 5.5 on its own connection, with the same
+instructions the comment translation uses, and the result has to pass the same
+check that it reads as a translation and not as a reply. With any other engine
+the button is greyed out and its tooltip says so, because comments never load a
+local model, the 7B included. A comment that is already being retranslated is
+not sent again, at most 20 retranslations per minute are accepted, and the app
+keeps the original text of only the latest 200 comments; a click it cannot serve
+gets a short note under that comment and the existing translation stays. Comment
+text and viewer names are not written to the audit log.
 
 Measured on the same 259 captions, re-translation with 7B reads more easily
 than 1.8B — that difference survived the correction — but it was not shown to

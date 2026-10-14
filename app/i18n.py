@@ -445,6 +445,7 @@ UI_FIELDS = {
     "status": ("detail",),
     "notice": ("text",),
     "retranslate_note": ("text",),     # 点「重译」没有开始或没成功时，显示在被点的那条字幕旁边
+    "comment_redo": ("text",),         # 弹幕重译：同上，显示在被点的那条弹幕下面（app/comment_redo.py）
     "incident": ("text",),
     "health": ("text",),
     "caption": ("why",),

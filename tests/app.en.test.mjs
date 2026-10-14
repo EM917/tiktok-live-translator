@@ -373,6 +373,115 @@ test("英文页：点「重译」被拒或没成功，说明显示在被点的�
   assert.deepEqual(leftoverChinese(page), []);
 });
 
+// 弹幕重译（2026-10-14）：服务端的消息形状和文字由 tests/test_comment_redo.py 钉着，这里钉页面怎么画、
+// 怎么发、怎么收
+const CLAUDE_ENGINE = { type: "engine", engine: "claude", keys: { ANTHROPIC_API_KEY: "…abcd" },
+                        active: "claude", active_label: "Claude", note: "" };
+const LOCAL_ENGINE = { type: "engine", engine: "hymt2", keys: {}, active: "hymt2",
+                       active_label: "Local Hy-MT2 1.8B", note: "" };
+const REDO_OFF = "Comment retranslation needs the Claude engine";
+const REDO_ON = "Retranslate this comment with the stronger model";
+
+test("英文页：弹幕的「重译」——译好了才有；只有 Claude 引擎能点（别的引擎是灰的，悬停说明）；点了发 retranslate_comment", () => {
+  const page = runDesktop();
+  hello(page);                                              // 引擎是 DeepL，没有 active 字段
+  page.push({ type: "comment", id: "c1", ts: T, user: "Ana", text: "cuanto cuesta", state: "pending" });
+  const item = page.el("comment-list").querySelector(".cmt-item");
+  assert.equal(item.querySelector(".cmt-redo"), null, "还在翻译中：没有可重译的");
+  page.push({ type: "comment_update", id: "c1", state: "ok", translated: "how much is it" });
+  const btn = item.querySelector(".cmt-redo");
+  assert.ok(btn, "译好了的弹幕有「重译」");
+  assert.deepEqual([btn.textContent, btn.title, btn.disabled], ["Retranslate", REDO_OFF, true]);
+  btn.click();
+  assert.deepEqual(page.sent.filter((m) => m.type === "retranslate_comment"), [], "灰的按钮点不出消息");
+
+  page.push(CLAUDE_ENGINE);                                 // 字幕引擎换成 Claude：已经画出来的按钮跟着亮
+  assert.deepEqual([btn.textContent, btn.title, btn.disabled], ["Retranslate", REDO_ON, false]);
+  btn.click();
+  assert.deepEqual(page.sent.filter((m) => m.type === "retranslate_comment"),
+                   [{ type: "retranslate_comment", id: "c1" }]);
+
+  page.push({ type: "engine", ...LOCAL_ENGINE });          // 回退到本地模型：又灰了
+  assert.deepEqual([btn.title, btn.disabled], [REDO_OFF, true]);
+
+  // 没译出来的（失败、已被挤掉）没有按钮；原文本身不需要重译
+  page.push({ type: "comment_update", id: "c1", state: "failed" });
+  assert.equal(item.querySelector(".cmt-redo"), null);
+  page.push({ type: "comment", id: "c2", ts: T, user: "Bea", text: "hello", state: "same" });
+  page.push({ type: "comment", id: "c3", ts: T, user: "Cy", text: "hola", state: "skipped" });
+  assert.equal(page.el("comment-list").querySelectorAll(".cmt-redo").length, 0);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：重新连上（hello + 回放）时，回放出来的已译弹幕按当时的引擎画按钮；手机页没有这个按钮", () => {
+  const page = runDesktop();
+  hello(page, { engine: { engine: "claude", keys: {}, active: "claude", active_label: "Claude", note: "" } });
+  page.push({ type: "comment", id: "c1", ts: T, user: "Ana", text: "hola", translated: "hello",
+              state: "ok", replay: true });
+  const btn = page.el("comment-list").querySelector(".cmt-redo");
+  assert.deepEqual([btn.title, btn.disabled], [REDO_ON, false]);
+  assert.doesNotMatch(web("viewer.js") + web("viewer.html"), /retranslate_comment|cmt-redo/,
+                      "弹幕重译只在电脑页");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：弹幕重译的进行中、成功、失败；说明显示在那条弹幕下面几秒", () => {
+  const page = runDesktop();
+  hello(page);
+  page.push(CLAUDE_ENGINE);
+  page.push({ type: "comment", id: "c1", ts: T, user: "Ana", text: "cuanto cuesta", translated: "how much",
+              state: "ok" });
+  page.push({ type: "comment", id: "c2", ts: T, user: "Bea", text: "hola", translated: "hi", state: "ok" });
+  const [item1, item2] = page.el("comment-list").querySelectorAll(".cmt-item");
+  const [btn1, btn2] = [item1, item2].map((it) => it.querySelector(".cmt-redo"));
+  const notes = (item) => item.querySelectorAll(".redo-note").map((n) => n.textContent);
+  const zh = (item) => item.querySelector(".cmt-zh");
+  const footer = () => page.el("app-version").textContent;
+  const before = footer();
+  const sorry = "Couldn’t retranslate this comment: Claude Sonnet 5.5 returned HTTP 500. The current translation is unchanged.";
+
+  page.push({ type: "comment_redo", id: "c1", redo_state: "pending" });
+  assert.deepEqual([btn1.textContent, btn1.disabled, item1.cls.includes("redoing")], ["Retranslating…", true, true]);
+  assert.equal(zh(item1).textContent, "how much", "进行中不把译文换成占位字");
+  assert.deepEqual([btn2.textContent, btn2.disabled], ["Retranslate", false], "别的弹幕不受影响");
+
+  // 成了：新译文换上，按钮回到原样
+  page.push({ type: "comment_update", id: "c1", state: "ok", translated: "how much is it" });
+  page.push({ type: "comment_redo", id: "c1", redo_state: "ok" });
+  assert.equal(zh(item1).textContent, "how much is it");
+  assert.deepEqual([btn1.textContent, btn1.disabled, item1.cls.includes("redoing")], ["Retranslate", false, false]);
+
+  // 没成：按钮写「Couldn’t retranslate」4 秒，说明在弹幕下面，不落在页脚，原译文不动
+  page.push({ type: "comment_redo", id: "c1", redo_state: "pending" });
+  page.push({ type: "comment_redo", id: "c1", redo_state: "failed", text: sorry });
+  assert.equal(btn1.textContent, "Couldn’t retranslate");
+  assert.deepEqual(notes(item1), [sorry]);
+  assert.deepEqual(notes(item2), []);
+  assert.equal(footer(), before);
+  assert.equal(item1.querySelector(".redo-note").getAttribute("role"), "status");
+  assert.equal(zh(item1).textContent, "how much is it");
+  page.fire(4000);
+  assert.equal(btn1.textContent, "Retranslate");
+  assert.deepEqual(notes(item1), [sorry], "按钮复原了，说明还在");
+  page.fire(7000);
+  assert.deepEqual(notes(item1), []);
+
+  // 同一条再来一句：换掉，不叠加；只有说明、没有状态的（正在重译）不动按钮
+  page.push({ type: "comment_redo", id: "c2", redo_state: "failed", text: "This comment has no saved original to retranslate." });
+  page.push({ type: "comment_redo", id: "c2", text: "This comment is already being retranslated." });
+  assert.deepEqual(notes(item2), ["This comment is already being retranslated."]);
+  // 又点了一次：上一次的说明不再适用
+  page.push({ type: "comment_redo", id: "c2", redo_state: "pending" });
+  assert.deepEqual(notes(item2), []);
+
+  // 那条弹幕已经不在页面上了（清空了、被挤出去）：话退回页脚那一行，不能丢
+  page.push({ type: "comment_redo", id: "nunca", redo_state: "failed", text: "This comment has no saved original to retranslate." });
+  assert.match(footer(), /This comment has no saved original to retranslate\./);
+  page.push({ type: "comment_redo", id: "c1", text: "" });   // 空话不画
+  assert.deepEqual(notes(item1), []);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
 test("英文页：接口拒答的字幕有自己的角标，不算进连续翻译失败，也不顶出那句横幅", () => {
   const page = runDesktop();
   hello(page);

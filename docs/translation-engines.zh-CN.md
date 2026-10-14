@@ -21,7 +21,7 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，建议 16 GB 以�
 | `gemma` | TranslateGemma 4B。`OLLAMA_TRANSLATE_MODEL` 可切换至 `translategemma:12b`/`27b`。「翻译引擎」菜单里没有这一项，用 `--translator gemma` 指定 |
 | `deepl` | 密钥在「设置 → 翻译引擎」填写（也可用 `DEEPL_API_KEY`）。以 `:fx` 结尾的免费 key 会自动走对应域名。会按[词表](#词表)自动建立并维护 DeepL 原生术语表，见下。**字幕文本会发送给 DeepL** |
 | `google` | Google 翻译免费接口，无需密钥。字幕文本会发送至 Google，且按 IP 限流 |
-| `claude` | 密钥在「设置 → 翻译引擎」填写（也可用 `ANTHROPIC_API_KEY`）。默认模型 Claude Haiku 5.5（`claude-haiku-5-5`），为了让每句字幕快出，关掉了思考；可用 `CLAUDE_TRANSLATE_MODEL` 改用别的模型。字幕文本会发送至 Anthropic。Claude 拒绝翻译的那一句显示原文，并记进审计日志；重译被拒也记在那里，并写明是谁触发的。用这个引擎时，观众弹幕由 Claude Haiku 5.5 另开一条连接翻译（那条连接暂停不会拖住字幕），「重译」和报警上下文翻译改用 Claude Sonnet 5.5、不再用本地模型，所以它们不需要本机装任何本地模型 |
+| `claude` | 密钥在「设置 → 翻译引擎」填写（也可用 `ANTHROPIC_API_KEY`）。默认模型 Claude Haiku 5.5（`claude-haiku-5-5`），为了让每句字幕快出，关掉了思考；可用 `CLAUDE_TRANSLATE_MODEL` 改用别的模型。字幕文本会发送至 Anthropic。Claude 拒绝翻译的那一句显示原文，并记进审计日志；重译被拒也记在那里，并写明是谁触发的。用这个引擎时，观众弹幕由 Claude Haiku 5.5 另开一条连接翻译（那条连接暂停不会拖住字幕），「重译」和报警上下文翻译改用 Claude Sonnet 5.5、不再用本地模型，所以它们不需要本机装任何本地模型。观众弹幕的重译也只有这个引擎能用（见下） |
 | `openai` | 密钥在「设置 → 翻译引擎」填写（也可用 `OPENAI_API_KEY`），可选 `OPENAI_BASE_URL`、`OPENAI_MODEL`。兼容各类 OpenAI 风格接口，含本地 LM Studio / vLLM |
 | `none` | 仅显示识别原文，不翻译 |
 
@@ -139,6 +139,12 @@ DeepL、OpenAI 兼容接口都算），它是本机装着的最强本地模型�
 - **收工后批量重译** —— `python3 tools/retranslate_audit.py` 重译一场的审计
   日志，仅**追加** `translation_strong` 记录，不改动原有任何一行，并列出译文
   发生变化的段落交由人复核，而不是静默覆盖
+
+译好了的观众弹幕也有「重译」按钮，在这台电脑的弹幕栏里（手机上没有）。只有引擎是 Claude 时能用：
+它另开一条连接请 Claude Sonnet 5.5 再译一次，提示词和弹幕翻译一样，译文要过同一道检查——像译文、
+而不是在回话——才会显示。其它引擎下按钮是灰的，悬停有说明：弹幕从不载入本地模型，7B 也不例外。
+同一条弹幕同时只重译一次，每分钟最多受理 20 次，程序只留最近 200 条弹幕的原文；点了没能服务的，
+那条弹幕下面会有一行说明，原来的译文保持不变。弹幕原文和观众名不写进审计日志。
 
 在同样这 259 条字幕上，用 7B 重译比 1.8B 更**好读**（这一差异经得起多重比较校正），
 但没有证明它**更准**。详见

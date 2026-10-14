@@ -376,6 +376,8 @@ def test_inbound_messages_never_reach_on_control():
         text({"type": "guard_clear_auto"}),
         text({"type": "guard_reenable"}),
         text({"type": "open_guard_dir"}),
+        # 弹幕重译（2026-10-14）：只有本机页面能点，手机发这个一律进不来
+        text({"type": "retranslate_comment", "id": "7234567890123456789"}),
     ])
     run_handshake(hub, ws)
     assert calls == []
@@ -420,6 +422,8 @@ def test_a_lone_retranslate_frame_does_not_trip_the_flood_cap():
     {"type": "guard_clear_auto"},
     {"type": "guard_reenable"},
     {"type": "open_guard_dir"},
+    {"type": "retranslate_comment", "id": "c7"},    # 恰好 {type, id} 的形状也不行：类型不是 retranslate
+    {"type": "retranslate_comment", "id": 7},
 ])
 def test_malformed_or_irrelevant_inbound_is_silently_ignored(bad):
     """既不解析出动作，也不回消息、不断连接——坏页面和探测本就不该有回音。"""
