@@ -554,6 +554,49 @@ def test_forty_accounts_saying_the_same_sentence_cost_one_model_call(monkeypatch
     assert rt.review_promoted["note_to_amber"] == 40
 
 
+CAPS_CHANT = "¡MÁS OFERTAS EN LA CESTA DE LA COMPRA!"          # 全大写：只带语气线索（lead），2026-10-14 直播里那一句的大写版
+
+
+def test_a_giveaway_chant_that_only_has_a_tone_cue_stops_costing_model_budget_once_it_is_a_chorus(monkeypatch, tmp_path):
+    """口令（多账号同一句）没有 finding 之后，全大写的口令不再被口令的琥珀压住 route；不处理的话，这 6 条会全送模型。
+    口令一波的第 3 个账号起不送（和 2026-10-14 之前一样）；单个账号发同一句、以及别的规则自己命中的口令照送。"""
+    rt, session, log = runtime(monkeypatch, tmp_path)
+    rt.REVIEW_WINDOW_SEC = 3600                    # 窗口很长：候选都留在队列里
+
+    async def scenario():
+        await start(rt, audit=log)
+        out = []
+        for i in range(6):
+            out += rt.observe([item("l%d" % i, "Cuenta %d" % i, CAPS_CHANT, uid="71%02d" % i)], now=1000.0 + 2 * i)
+        queued = [e["cid"] for e in rt._review_q._items]
+        rt.observe([item("solo", "Solo", CAPS_CHANT, uid="7200")], now=2000.0)         # 隔了一分多钟、窗口里只有它自己
+        return out, queued, [e["cid"] for e in rt._review_q._items]
+
+    out, queued, after_solo = run(scenario())
+    assert all("guard" not in o for o in out)                                          # lead 本来就不上界面，口令也不报
+    assert queued == ["l0", "l1"]                                                      # 口令成形之前的两条照送，第 3 条起不送
+    assert after_solo == ["l0", "l1", "solo"]                                          # 没有口令的同一句话照旧是 lead 候选
+    assert rt.unreviewed == 0 and rt.chorus["events"] == 1 and rt.chorus["comments"] == 4
+
+
+def test_a_chant_in_caps_does_not_inflate_the_not_reviewed_count_wave_after_wave(monkeypatch, tmp_path):
+    """选了 Claude 而没有密钥（每个候选都记「未复核」）：5 波各 12 个账号的全大写口令，只有每波成形前的 2 条算候选。
+    不处理的话是 60，状态胶囊上「N 条弹幕没经模型复核」会被一场抽奖口令刷高。"""
+    rt, session, log = runtime(monkeypatch, tmp_path, key=None)
+
+    async def scenario():
+        await start(rt, audit=log)
+        for wave in range(5):
+            for i in range(12):
+                n = wave * 12 + i
+                rt.observe([item("w%d" % n, "Cuenta %d" % n, "¡QUIERO GANAR EL SORTEO %d!" % n, uid="73%02d" % n)],
+                           now=1000.0 + 50 * wave + 0.7 * i)
+
+    run(scenario())
+    assert rt.reviewer is None and rt.unreviewed == 10
+    assert rt.chorus["events"] == 5 and rt.chorus["max_accounts"] == 12
+
+
 def test_the_same_sentence_later_is_answered_from_the_cache_for_thirty_minutes(monkeypatch, tmp_path):
     clock = Clock()
     rt, session, log = runtime(monkeypatch, tmp_path, always({"estafa": ("fraud_claim", "seller_or_product", True, "")}), clock=clock)

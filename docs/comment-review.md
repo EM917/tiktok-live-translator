@@ -76,7 +76,8 @@ Under **Settings → Comment Review → Model review**, choose **Claude Haiku 5.
 loaded during a session.
 
 - **It adds an opinion on the grey zone only.** Clear red items, flooding, links and phone numbers, and the
-  streamer and moderators are not sent.
+  streamer and moderators are not sent. A comment that only has a tone hint (all caps, emoji) is not sent either once
+  several accounts are posting the same sentence, so a giveaway chant does not use up the review limits.
 - **Shadow mode: it only adds, never removes.** It can promote an amber comment to red or a weak hint to amber, with
   "Model: agrees with rules" or "Flagged by the model" beside it. When it finds no attack the amber stays, labelled
   "question", "complaint", "friendly" or "no attack found". **It cannot take a red away or lower a level**, and a

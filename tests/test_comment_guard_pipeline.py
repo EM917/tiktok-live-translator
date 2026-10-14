@@ -1003,6 +1003,45 @@ def test_counting_the_chorus_can_never_cost_a_comment_its_annotation(monkeypatch
     assert [o.get("guard") for o in out[:4]] == [None] * 4
 
 
+def test_one_account_flooding_is_never_counted_as_a_chorus(monkeypatch, tmp_path):
+    """chorus 只数多账号同一句（brigade）。同一个人连发（C1）和同一句反复发（C3）也在 last_flood 里，但不是口令：
+    它们照旧标红，数不进 chorus，去重表里也没有它们。"""
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        burst, repeat = [], []
+        for i in range(6):                                                        # C1：8 秒内 6 句不同的话
+            burst += rt.observe([item("b%d" % i, "Burst", "texto numero %s hermoso" % "abcdef"[i], uid="103")],
+                                now=1000.0 + i * 1.6)
+        for i in range(5):                                                        # C3：同一个人 60 秒内同一句 5 次
+            repeat += rt.observe([item("s%d" % i, "Same", "quiero el combo rosa para mi hermana", uid="104")],
+                                 now=1100.0 + i * 5)
+        return burst, repeat
+
+    burst, repeat = run(scenario())
+    assert burst[-1]["guard"]["cats"] == ["flood_user"] and repeat[-1]["guard"]["cats"] == ["flood_repeat"]   # 确实触发了
+    assert rt.chorus == {"events": 0, "comments": 0, "max_accounts": 0} and not rt._chorus_seen
+    assert rt._session_end_record()["chorus"] == {"events": 0, "comments": 0, "max_accounts": 0}
+
+
+def test_a_new_session_starts_its_chorus_count_from_zero(monkeypatch, tmp_path):
+    """第二场写进 session_end 的口令数只能是它自己的：上一场的数和去重表都不能带过来。"""
+    rt = new_runtime(monkeypatch, tmp_path)
+
+    async def scenario():
+        await start(rt)
+        for i in range(6):
+            rt.observe([item("k%d" % i, "Acc %d" % i, CHANT, uid="8%d" % i)], now=1000.0 + i)
+        first = (dict(rt.chorus), len(rt._chorus_seen), rt._session_end_record()["chorus"])
+        await start(rt)                                                           # 同一个进程里的下一场
+        return first, (dict(rt.chorus), len(rt._chorus_seen), rt._session_end_record()["chorus"])
+
+    first, second = run(scenario())
+    assert first == ({"events": 1, "comments": 4, "max_accounts": 6}, 1, {"events": 1, "comments": 4, "max_accounts": 6})
+    assert second == ({"events": 0, "comments": 0, "max_accounts": 0}, 0, {"events": 0, "comments": 0, "max_accounts": 0})
+
+
 def test_common_chatter_from_many_accounts_is_not_reported(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
 

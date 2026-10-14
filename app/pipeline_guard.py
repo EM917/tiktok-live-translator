@@ -25,7 +25,7 @@ app/comment_review.py）是守卫自己的 asyncio 任务，惰性启动、永�
 
 **多账号同一句（C2）只数、不报**（用户 2026-10-14 决定）：不同账号发同一句几乎都是主播要求的抽奖口令，
 所以它没有琥珀、没有顶部条的数、没有抽屉事件、没有 `guard_event`。引擎照常数它，守卫把数记进
-`session_end.comment_guard.chorus`（`events` 波数、`comments` 落在事件上的弹幕条数、`max_accounts` 最大一波的
+`session_end.comment_guard.chorus`（`events` 引擎事件 id 的个数、`comments` 落在事件上的弹幕条数、`max_accounts` 最大一波的
 账号数），数据不丢，界面看不到。同一条弹幕被别的规则命中（红条档词条、引流、单人刷屏）时照旧标。
 
 界面文字只在文件末尾 `guard_notice` 里（关注名单损坏、读不了、存不进磁盘、名单已满、规则文件被改）；
@@ -537,7 +537,7 @@ class GuardRuntime:
                 if old is None or cg.LVL_RANK[lvl] > cg.LVL_RANK[old["lvl"]]:
                     self._ann[display_cid] = guard
                     self._pending_cg[display_cid] = guard
-        if r["route"]:
+        if r["route"] and not self._is_chorus_lead(r, flood):
             try:
                 self._queue_review(guard, r, cid, display_cid, text, now, ukey, sample, prev_text)
             except Exception as exc:
@@ -711,6 +711,13 @@ class GuardRuntime:
             old, _ = self.events.popitem(last=False)
             self._ev_dirty.pop(old, None)
             self._ev_sent.discard(old)
+
+    @staticmethod
+    def _is_chorus_lead(r, flood):
+        """口令里只带语气线索（全大写、表情）的弹幕不送模型：和 2026-10-14 之前一样，口令一波的第 3 条起不占复核预算。
+        那天之前是口令的琥珀压住了这条的 route；现在口令没有 finding，route 不会再被盖住，所以在这里明说。
+        只管 lead：别的规则自己命中的 note / 琥珀（比如 `es estafa o no`）照常送，口令不盖它们。"""
+        return r["lvl"] == "lead" and any(fe.get("kind") == "brigade" for fe in flood)
 
     def _count_chorus(self, flood):
         """C2 多账号同一句只数、不报（用户 2026-10-14 决定）：数进 session_end 的 chorus，不碰界面。
