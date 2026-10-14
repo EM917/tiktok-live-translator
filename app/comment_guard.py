@@ -13,7 +13,7 @@
   词表是业务判断，agent 只产出候选，出厂词表里的红条档一律是 `:pending`。
 * 结果的形状固定（`CommentGuard.judge` 的返回值）：
     {"lvl": "alert"|"amber"|"note"|"lead"|None, "amb": None|"maybe_question"|"grievance"|
-     "quote"|"accumulated"|"question_link"|"brigade"|"pending"|"self", "cats": [...], "sub": ...,
+     "quote"|"accumulated"|"question_link"|"pending"|"self", "cats": [...], "sub": ...,
      "why": [...], "tier": "red"|"clue"|"struct"|None, "tags": [...],
      "route": None|"confirm"|"upgrade"}
   `lvl` 里 alert 是红条，amber 是拿不准（不算红条、不自动加入），note 不上界面只计数，
@@ -26,6 +26,10 @@
   和 `strong` 分开成段，确认时可以分开开关。
 * 刷屏要传真实时间戳（`judge(..., ts=...)` 的 ts 是必填关键字，必须是有限的 int / float）：不传会让
   滑动窗口永不过期，传了坏值在改任何状态之前就抛。窗口计数只算 ts - 窗口 <= t <= ts 的条目。
+* **多账号同一句（C2）只数、不报**（用户 2026-10-14 决定）：不同账号发同一句，几乎都是主播要求的抽奖口令
+  （giveaway），`judge` 不为它出任何 finding，所以不会有琥珀、不进 `cats` / `why`。FloodEngine 照常数，
+  事件留在 `judge().last_flood` 里，由 pipeline_guard 记进 `session_end.comment_guard.chorus`。同一条弹幕
+  被别的规则命中（红条档词条、引流、单人刷屏 C1 / C3）时，照旧按那条规则标。
 * 内存有界：每个用户的时间戳只留 120 秒、每人最多 200 条，用户表满 3000 清掉最旧的 500，
   多账号同句窗口最多 1000 条（每条最多回看 500 条、比较只取前 64 个词），多账号事件最多 50 个
   （每个最多记 2000 个账号），id 去重 LRU 2000，累计表同样 3000/500，体检警告最多 50 条。
@@ -1489,9 +1493,13 @@ class FloodEngine:
     feed() 返回这一条弹幕触发的刷屏事件：
       {"kind": "user_burst"|"same_text"|"brigade", "lvl": "alert"|"amber"|"note",
        "n": 条数或账号数, "window": 秒, "ev": 多账号事件的稳定 id（其余为 None）}
-    多账号事件另有 first_ts、last_ts 和 accounts（前 20 个账号），C2 在 v1 里只到琥珀（一个事件、
-    账号数原地增长）：主播喊口令时观众会齐刷同一句。n 是整个事件累计的账号数；note / 琥珀看的是
-    窗口里（20 秒）相似的账号数（>= 3 / >= 5），事件还活着时来的零散相似弹幕不出事件。
+    多账号事件另有 first_ts、last_ts 和 accounts（前 20 个账号）：一个事件、账号数原地增长。n 是整个事件
+    累计的账号数；note / 琥珀看的是窗口里（20 秒）相似的账号数（>= 3 / >= 5），事件还活着时来的零散相似弹幕
+    不出事件。
+
+    **C2 引擎只数，不判**（用户 2026-10-14 决定）：不同账号发同一句几乎都是主播要求的抽奖口令（giveaway），
+    所以这里的 "brigade" 事件只是计数——`CommentGuard._flood` 不把它变成 finding，pipeline_guard 把它记进
+    session_end 的 chorus。它的 "lvl"（note / amber）只表示账号数过了哪一档，界面上看不到。
 
     ts 要传调用方的时钟读数（PR-3 传 time.time()）：窗口计数只算 ts - window <= t <= ts 的条目，
     系统时钟被往回拨时，比 ts 更晚的旧条目不会被算进去。"""
@@ -1582,9 +1590,9 @@ class FloodEngine:
         id 不是句子的哈希：同一句口令隔几分钟再刷一波，是新事件、新 id。
 
         出不出事件、是 note 还是琥珀，都只看窗口（20 秒）里和这一句相似的账号数：note 要 >= 3 个、琥珀要
-        >= 5 个（规格 §4.5 C2）。事件上记的账号数 n 是整个事件累计的，只用来显示；事件还活着的时候来的
-        一个零散的相似弹幕，窗口里只有它自己，既不出事件也不升琥珀（不然一个事件一旦存在，之后每个说同一句
-        常见话的顾客都会被报成刷屏）。
+        >= 5 个（规格 §4.5 C2）。事件上记的账号数 n 是整个事件累计的（只用来计数：2026-10-14 起这个事件不再
+        报给界面，见 FloodEngine 的说明）；事件还活着的时候来的一个零散的相似弹幕，窗口里只有它自己，既不出
+        事件也不升档（不然一个事件一旦存在，之后每个说同一句常见话的顾客都会被算进这一波）。
 
         并进已有事件时也回看一遍窗口，把所有和这一条相似的账号补进去：事件的账号集合只靠「和创建它的
         那一句相似」收人的话，一句只和中间的变体相似的弹幕（V0 与 V2 不相似，V1 和两边都相似）永远
@@ -1733,7 +1741,8 @@ class CostBudget:
 
 LVL_RANK = {"alert": 4, "amber": 3, "note": 2, "lead": 1, None: 0}
 TIER_RANK = {RED: 3, STRUCT: 2, CLUE: 1, None: 0}
-# 同级同档时谁当主类别：人身威胁排最前
+# 同级同档时谁当主类别：人身威胁排最前。flood_brigade 留在表里只是为了和 web/guard.js 的 GUARD_CAT_ORDER 一致：
+# 2026-10-14 起判定不再产生这个类别（C2 只数不报，见 _flood）
 CAT_ORDER = ("threat", "insult", "sexual", "accuse_call", "accuse_report", "accuse_claim",
              "promo_scam", "promo_pull", "promo_link", "promo_contact", "flood_repeat",
              "flood_user", "flood_brigade")
@@ -1879,7 +1888,7 @@ class CommentGuard:
         self.streamer = (streamer or "").lower()
         self.trusted = frozenset(str(t).lower() for t in trusted)
         self.flood = FloodEngine(rules.thresholds)
-        self.last_flood = []                  # 最近一次 judge 触发的刷屏事件（给事件聚合用）
+        self.last_flood = []                  # 最近一次 judge 触发的刷屏事件（给事件聚合和 C2 计数用，含 brigade）
         self._seen = OrderedDict()
         self._acc = OrderedDict()             # 用户 -> deque[ts]：insult 线索档命中的累计
 
@@ -2390,13 +2399,13 @@ class CommentGuard:
         self.last_flood = events
         out = []
         for ev in events:
-            cat = {"user_burst": "flood_user", "same_text": "flood_repeat",
-                   "brigade": "flood_brigade"}[ev["kind"]]
+            if ev["kind"] == "brigade":
+                # C2 多账号同一句：几乎都是主播要求的抽奖口令（用户 2026-10-14 决定）。事件留在 last_flood 里
+                # 让 pipeline_guard 计数，这里不出 finding：没有琥珀、没有类别、没有 why
+                continue
+            cat = {"user_burst": "flood_user", "same_text": "flood_repeat"}[ev["kind"]]
             why = ["flood/%s:n=%d,window=%d" % (ev["kind"], ev["n"], ev["window"])]
-            if ev["lvl"] == "amber":
-                out.append(_finding(cat, ev["kind"], STRUCT, "amber", why, amb="brigade"))
-            else:
-                out.append(_finding(cat, ev["kind"], STRUCT, ev["lvl"], why))
+            out.append(_finding(cat, ev["kind"], STRUCT, ev["lvl"], why))
         return out
 
     # ---- 累计（只在 insult 线索档之间算）

@@ -23,6 +23,11 @@ app/comment_review.py）是守卫自己的 asyncio 任务，惰性启动、永�
 `session_end.comment_guard` 在收尾写；两处都只用守卫在 `bind` 时拿到的**本场自己的** audit
 （CLAUDE.md 第七条 my_audit）：晚到的旧任务关不掉新一场的守卫，也写不进新一场的审计。
 
+**多账号同一句（C2）只数、不报**（用户 2026-10-14 决定）：不同账号发同一句几乎都是主播要求的抽奖口令，
+所以它没有琥珀、没有顶部条的数、没有抽屉事件、没有 `guard_event`。引擎照常数它，守卫把数记进
+`session_end.comment_guard.chorus`（`events` 波数、`comments` 落在事件上的弹幕条数、`max_accounts` 最大一波的
+账号数），数据不丢，界面看不到。同一条弹幕被别的规则命中（红条档词条、引流、单人刷屏）时照旧标。
+
 界面文字只在文件末尾 `guard_notice` 里（关注名单损坏、读不了、存不进磁盘、名单已满、规则文件被改）；
 别的地方只出代码。
 """
@@ -56,7 +61,8 @@ SHOWN_LEVELS = ("alert", "amber", "note")   # 带 guard 字段的档位；lead �
 
 # --demo 的虚构弹幕流（停播时用来验界面；演示不连任何直播，主播、观众、账号全是虚构的）。
 # 每条：(昵称, 账号, handle, 西语原文, 中文译文, 发完后等几秒)。几类情形都有：正常弹幕、号召举报（红条，
-# 并自动加入关注名单，之后同一个人的弹幕会高亮）、没确认的词条（琥珀）、链接（红条）、多账号同一句（琥珀事件）。
+# 并自动加入关注名单，之后同一个人的弹幕会高亮）、没确认的词条（琥珀）、链接（红条），还有一波多账号同一句
+# （主播喊口令：什么都不标，只在 session_end 的 chorus 里计数）。
 # 账号 id 是 19 位的字符串，同真实账号一样超过 JS 的 2^53。内容是数据，不随界面语言变。
 DEMO_STREAMER = "luna_demo"
 DEMO_TRANSLATE_DELAY = 0.5          # 演示里「翻译中」停多久再补译文
@@ -139,6 +145,7 @@ class GuardRuntime:
     SHOWN_MAX = 1000                # accept 的内容去重表同量级
     ANN_MAX = 500
     ACCOUNTS_MAX = 500
+    CHORUS_SEEN_MAX = 500           # 数过的多账号同句事件 id：引擎里同时活着的最多 50 个，500 个够防重复
     MAX_NICK = 64
     SAMPLE_TEXT = 120
     REVIEW_WINDOW_SEC = 2.0         # 攒批窗口：第一条候选进队后等这么久再一起送（凑满一批就不等）
@@ -247,6 +254,8 @@ class GuardRuntime:
     def _reset_session(self):
         self.counts = {}
         self.amber_by_reason = {}
+        self.chorus = {"events": 0, "comments": 0, "max_accounts": 0}   # C2 多账号同一句：只数不报
+        self._chorus_seen = OrderedDict()    # 数过的 C2 事件 id（有界；引擎里同时活着的事件最多 50 个）
         self.observed = 0
         self.observe_ms_max = 0.0
         self.errors = 0
@@ -413,6 +422,7 @@ class GuardRuntime:
     def _session_end_record(self):
         return {"counts": {c: dict(v) for c, v in sorted(self.counts.items())},
                 "amber_by_reason": dict(sorted(self.amber_by_reason.items())),
+                "chorus": dict(self.chorus),
                 "observed": self.observed,
                 "reviews": self.reviews, "unreviewed": self.unreviewed, "review_invalid": self.review_invalid,
                 "review_agree": self.review_agree, "review_disagree": dict(sorted(self.review_disagree.items())),
@@ -479,6 +489,7 @@ class GuardRuntime:
         if ukey:
             self._remember_account(ukey, nick, sec, handle)
         flood = list(self.engine.last_flood)
+        self._count_chorus(flood)
 
         # accept 会按 (昵称, 文本) 60 秒去重：被它吞掉的重复，标注要打在最近一条已显示的那条上
         shown_key = (nick, text.strip()[:CommentTranslator.MAX_TEXT])
@@ -655,22 +666,11 @@ class GuardRuntime:
     # 事件聚合（spec §6：同类事件 60 秒内合成一条，同一个 id 持续更新计数）
     # ------------------------------------------------------------------------------------
     def _upsert_events(self, r, flood, ukey, cid, sample, now):
-        own = None
-        by_kind = {}
-        for fe in flood:
-            by_kind[fe["kind"]] = fe
-            if fe["kind"] == "brigade" and fe["lvl"] == "amber":
-                eid = "b" + str(fe["ev"])
-                accounts = [self._account_entry(k) for k in (fe.get("accounts") or ())]
-                self._put_event(eid, {"kind": "brigade", "cat": "flood_brigade", "lvl": "amber",
-                                      "amb": "brigade", "n": fe["n"], "accounts": accounts,
-                                      "window_sec": fe["window"], "first_ts": fe.get("first_ts") or now,
-                                      "ts": now, "sample": sample, "rv": None}, now, count_up=False)
-                if (r["cats"] or [None])[0] == "flood_brigade":
-                    own = eid
+        # 多账号同一句（C2）没有事件：它不进判定（comment_guard._flood），这里也不为它建抽屉事件
+        by_kind = {fe["kind"]: fe for fe in flood}
         lvl = r["lvl"]
-        if lvl not in ("alert", "amber") or own is not None:
-            return own
+        if lvl not in ("alert", "amber"):
+            return None
         cat = (r["cats"] or ["other"])[0] or "other"
         flood_kind = {"flood_user": "user_burst", "flood_repeat": "same_text"}.get(cat)
         fe = by_kind.get(flood_kind) if flood_kind else None
@@ -712,10 +712,23 @@ class GuardRuntime:
             self._ev_dirty.pop(old, None)
             self._ev_sent.discard(old)
 
-    def _account_entry(self, ukey):
-        meta = self._accounts.get(ukey) or {}
-        nick = meta.get("nick") or (ukey[len(SESSION_PREFIX):] if ukey.startswith(SESSION_PREFIX) else "")
-        return {"user": nick, "uid": ukey}
+    def _count_chorus(self, flood):
+        """C2 多账号同一句只数、不报（用户 2026-10-14 决定）：数进 session_end 的 chorus，不碰界面。
+        永不抛：这一步出错不能让这一条弹幕丢掉规则已经做好的标注。"""
+        try:
+            for fe in flood:
+                if fe.get("kind") != "brigade":
+                    continue
+                self.chorus["comments"] += 1
+                self.chorus["max_accounts"] = max(self.chorus["max_accounts"], int(fe.get("n") or 0))
+                ev = fe.get("ev")
+                if ev is not None and ev not in self._chorus_seen:
+                    self._chorus_seen[ev] = None
+                    self.chorus["events"] += 1
+                    while len(self._chorus_seen) > self.CHORUS_SEEN_MAX:
+                        self._chorus_seen.popitem(last=False)
+        except Exception:
+            self.errors += 1
 
     # ------------------------------------------------------------------------------------
     # 复核（PR-5，Claude Haiku 5.5）：守卫自己的任务，flush 只往队列里放候选、从不等它（I2）

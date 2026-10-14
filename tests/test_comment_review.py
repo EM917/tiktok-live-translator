@@ -321,7 +321,7 @@ def test_routing_table_p1_p2_or_not_sent(text, extra, expected):
 
 def test_flood_results_are_never_sent_and_a_trusted_account_is_exempt():
     results = judge_all([("quiero el combo rosa ya mismo", {"user": "acc%d" % i}) for i in range(7)])
-    assert all(cr.priority(r) is None for r in results)                # 多账号同句（琥珀事件）不送
+    assert all(cr.priority(r) is None for r in results)                # 多账号同句（只数不报，没有任何 finding）不送
     (trusted,) = judge_all([("es falso", {"user": "amigo"})], trusted=("amigo",))
     assert cr.priority(trusted) is None
 
@@ -544,7 +544,7 @@ def test_forty_accounts_saying_the_same_sentence_cost_one_model_call(monkeypatch
 
     async def scenario():
         await start(rt, audit=log)
-        # 间隔 25 秒：同一句话在 20 秒窗口里来自 3 个账号以上就是多账号事件（不送模型），这里要的是普通的 note 候选
+        # 间隔 25 秒：一个账号一波；多账号同句 2026-10-14 起只数不报，不再压住候选，间隔多少这 40 条都是普通的 note 候选
         for i in range(40):
             rt.observe([item("m%d" % i, "Cuenta %d" % i, ROUTED_TEXT, uid="70%02d" % i)], now=1000.0 + 25 * i)
         await settle(rt, sink)

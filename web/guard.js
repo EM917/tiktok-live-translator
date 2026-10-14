@@ -30,12 +30,13 @@ var GUARD_CAT_ORDER = ["threat", "insult", "sexual", "accuse_call", "accuse_repo
                        "flood_user", "flood_brigade"];
 var GUARD_BAR_CATS = 3;          // 顶部条最多写几类，其余折成「另 n 类」
 var GUARD_EVENTS_MAX = 50;       // 抽屉里最多列几条
-var GUARD_ACCOUNTS_MAX = 20;     // 多账号同句事件展开后最多列几个账号
+var GUARD_ACCOUNTS_MAX = 20;     // 多账号同句事件展开后最多列几个账号（后端 2026-10-14 起不再发这种事件，认旧数据用）
 var GUARD_MAX_NICK = 64;         // 与后端 GuardRuntime.MAX_NICK 相同：只有昵称的人按前 64 个字比
 
 // ---- 文案：按代码映射 --------------------------------------------------------------------------
 
-/* 类别名。中文一律「疑似……」、英文一律 “Possible …”；flood_brigade 只写观察，不加「疑似」 */
+/* 类别名。中文一律「疑似……」、英文一律 “Possible …”；flood_brigade 只写观察，不加「疑似」（后端 2026-10-14 起不再发它，
+ * 留着认旧数据） */
 function guardCatLabel(code) {
   switch (code) {
     case "insult": return L("疑似辱骂", "Possible insult");
@@ -55,7 +56,12 @@ function guardCatLabel(code) {
   }
 }
 
-/* 琥珀（拿不准）的理由：只写观察。ev 是事件，只有 brigade 用得上它的账号数和窗口秒数 */
+/* 琥珀（拿不准）的理由：只写观察。ev 是事件，只有 brigade 用得上它的账号数和窗口秒数。
+ * **理由里的数永远不写 0，也不缺**：brigade 的账号数、秒数取自事件表，而 guard_event 消息可能比这条弹幕晚到
+ * （弹幕先画、事件还没进表），当时读到的是空——拿不到完整的数就不写这句理由（返回空串），
+ * 不写「0 个账号，0 秒内同一句」（2026-10-14 直播里出现过）。
+ * 另外，2026-10-14 起后端不再产生 brigade（多账号同一句几乎都是主播要求的抽奖口令，只在审计里计数）；
+ * 这里留着它只为认得旧数据。 */
 function guardAmberText(amb, ev) {
   switch (amb) {
     case "maybe_question": return L("句子很短，没有问号", "Short, with no question mark");
@@ -67,8 +73,9 @@ function guardAmberText(amb, ev) {
     case "self": return L("句子是第一人称", "Written in the first person");
     case "review": return L("模型标出", "Flagged by the model");
     case "brigade": {
-      var n = Math.max(0, Math.round(Number(ev && ev.n) || 0));
-      var s = Math.max(0, Math.round(Number(ev && ev.window_sec) || 0));
+      var n = Math.round(Number(ev && ev.n));
+      var s = Math.round(Number(ev && ev.window_sec));
+      if (!isFinite(n) || !isFinite(s) || n < 1 || s < 1) return "";
       return LN(n, n + " 个账号，" + s + " 秒内同一句", "Same comment from 1 account in " + s + " seconds",
                 "Same comment from " + n + " accounts in " + s + " seconds");
     }
@@ -415,7 +422,7 @@ function guardBarViewText(open) {
 /* 顶部条那一行。events 是事件表，seenTs 是「已看」的时刻（秒），opts.markedTs 是关注的人本场发言的时刻们。
  * 未读 = 晚于 seenTs 的事件。红条、琥珀、关注的人发言分开计，为 0 的不写；类别按严重程度排，
  * 超过 3 类写「另 n 类」。show 为假（三项全 0）时整条不显示。
- * **红条、琥珀和各类别都按事件计**（用户 2026-10-13 决定）：一次冲场、一次多账号同句各算 1 件，不数事件里的弹幕条数
+ * **红条、琥珀和各类别都按事件计**（用户 2026-10-13 决定）：一次冲场算 1 件，不数事件里的弹幕条数
  * （ev.n 只用在抽屉那一行的说明里，见 guardCountText）；关注的人发言数的是发言本身，按条计。
  * 类别后面的计数写成「名字 ×n」（guardCatCount），关注的人发言写「n 条」：数字不紧贴名字。
  * 返回 { red, amber, marked, cats, more, latestTs, parts, text, show }：red / amber 是事件数，

@@ -416,11 +416,12 @@ def test_what_never_adds_anyone_and_never_writes(monkeypatch, tmp_path, writes):
             out = feed(rt, [item("s%d" % i, "Same", "quiero el combo rosa para mi hermana", uid="104")],
                        now=1100.0 + i * 5)
         assert out[0]["guard"]["cats"] == ["flood_repeat"] and out[0]["guard"]["lvl"] == "alert"
-        # C2 多账号同句：琥珀事件
+        # C2 多账号同句：只数不报（2026-10-14），既没有标注也不加人
         for i in range(6):
             out = feed(rt, [item("a%d" % i, "Acc%d" % i, "participo en el sorteo", uid="2%d" % i)],
                        now=1200.0 + i * 1.5)
-        assert out[0]["guard"]["lvl"] == "amber" and out[0]["guard"]["amb"] == "brigade"
+        assert "guard" not in out[0]
+        assert rt.chorus["events"] == 1
         # 琥珀（没问号的短断言）
         out = feed(rt, [item("m1", "Maybe", "es falso", uid="105")], now=1300.0)
         assert out[0]["guard"]["lvl"] == "amber"
