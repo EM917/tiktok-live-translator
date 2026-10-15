@@ -152,7 +152,7 @@ function statsLineParts(msg) {
   var parts = [];
   if (wait.p50 != null) {
     parts.push(L("字幕 " + fmtMs(wait.p50) + " / P95 " + fmtMs(wait.p95) + " 后出现",
-                 "Captions " + fmtMs(wait.p50) + " (P95 " + fmtMs(wait.p95) + ")"));
+                 "Captions +" + fmtMs(wait.p50) + " (P95 " + fmtMs(wait.p95) + ")"));
   }
   parts.push(
     L("违禁词最迟 " + fmtMs(det.p50) + " / P95 " + fmtMs(det.p95) + " 内报警",

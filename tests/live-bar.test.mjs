@@ -303,7 +303,7 @@ for (const lang of ["zh", "en"]) {
   const FOOT = {
     zh: { wait: "字幕 4.2s / P95 7.1s 后出现", alert: "违禁词最迟 1.9s / P95 3.4s 内报警",
           rest: "其中 切段 0.8s + 识别 1.1s · 译文再等 2.0s" },
-    en: { wait: "Captions 4.2s (P95 7.1s)", alert: "Alerts ≤1.9s (P95 3.4s)",
+    en: { wait: "Captions +4.2s (P95 7.1s)", alert: "Alerts ≤1.9s (P95 3.4s)",
           rest: "Segment 0.8s + ASR 1.1s · Translation +2.0s" },
   }[lang];
 
