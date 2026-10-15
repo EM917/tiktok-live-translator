@@ -539,8 +539,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 
 .cap .fail-chip { color: var(--fail); text-transform: none; letter-spacing: 0; }
 
-.cap .orig { font-size: calc(13px * var(--cap-scale)); color: var(--text-dim); line-height: 1.5; }
-.cap .trans { font-size: calc(17px * var(--cap-scale)); line-height: 1.55; margin-top: 2px; }
+.cap .orig { font-size: calc(13px * var(--cap-scale)); color: var(--text-dim); line-height: 1.5; overflow-wrap: anywhere; }
+.cap .trans { font-size: calc(17px * var(--cap-scale)); line-height: 1.55; margin-top: 2px; overflow-wrap: anywhere; }
 
 /* ---------- 启动面板（待机首页） ----------
    一列 600px，从上到下：标题区 → 输入框 + 开始 → 常用选项 → 最近直播间 → 设置分组。
@@ -1288,10 +1288,11 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
   line-height: 16px; color: var(--rel-gray-ink); background: var(--rel-gray-bg); }
 .cmt-rel-mutual, .cmt-rel-follower { color: var(--rel-blue-ink); background: var(--tint-blue-10); }
 .cmt-rel-gifter { color: var(--rel-purple-ink); background: var(--rel-purple-bg); }
-.cmt-zh { font-size: calc(15px * var(--cap-scale)); line-height: 1.5; margin-top: 1px; }
+/* 长网址、长串没有空格可断：放大字号后会顶出弹幕栏被裁掉（2026-10-15 演示里一条带网址的弹幕） */
+.cmt-zh { font-size: calc(15px * var(--cap-scale)); line-height: 1.5; margin-top: 1px; overflow-wrap: anywhere; }
 .cmt-zh.pending { color: var(--label-2); font-style: italic; font-size: calc(var(--fs-callout) * var(--cap-scale)); }
 .cmt-zh.failed { color: var(--label-2); }
-.cmt-orig { font-size: calc(var(--fs-footnote) * var(--cap-scale)); color: var(--label-2); }
+.cmt-orig { font-size: calc(var(--fs-footnote) * var(--cap-scale)); color: var(--label-2); overflow-wrap: anywhere; }
 .cmt-empty { padding: 12px 16px; font-size: var(--fs-footnote); color: var(--label-2); line-height: 1.5; }
 /* 评论流状态：前面一个小圆点表达状态（连上＝绿色实心、有问题＝橙色空心环、
    其余＝灰），文字本身不上色——跟自检列表同一种画法（designer.md #1）。
