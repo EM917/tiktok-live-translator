@@ -80,6 +80,9 @@
   var engineNote = document.getElementById("engine-note");
   var liveTranslated = document.getElementById("live-translated");
   var liveOriginal = document.getElementById("live-original");
+  var liveMeta = document.getElementById("live-meta");     // 大字幕下面一小行：翻译状态角标 + 「约 N 秒前」
+  var liveState = document.getElementById("live-state");
+  var liveLag = document.getElementById("live-lag");
   var connectHintEl = document.getElementById("connect-hint");
   var connectHintText = document.getElementById("connect-hint-text");
   var targetSel = document.getElementById("target-lang");
@@ -296,11 +299,16 @@
   var homeActive = null;
 
   // ---- 设置 ----
+  // 字幕字号。服务端（settings.json）是正本：localStorage 按「协议+主机+端口」隔离，端口一漂移
+  // （8765 被占用时程序自动改用下一个）调好的字号就没了。所以这里只做两件事：
+  //   1. 页面一加载先用 localStorage 里的值画出来（hello 到之前不闪成默认字号）；
+  //   2. 之后以服务端为准：hello/config 带来的 caption_size 覆盖它，服务端没记过而本机记着
+  //      就交给服务端存起来（旧版本只存在这里的字号这样不丢）。
   // 只有用户显式调过字号才覆盖 CSS 默认值（否则会压掉移动端媒体查询的 26px）
-  var savedFont = lsGet("subFontSize");
-  if (savedFont) {
-    fontSlider.value = parseInt(savedFont, 10);
-    applyFont(parseInt(savedFont, 10));
+  var savedFont = captionSizeFromConfig(lsGet("subFontSize"));
+  if (savedFont != null) {
+    fontSlider.value = savedFont;
+    applyFont(savedFont);
   } else {
     var cssSize = parseInt(getComputedStyle(document.documentElement)
       .getPropertyValue("--sub-size"), 10);
@@ -430,11 +438,49 @@
   }
   roomInput.addEventListener("input", onRoomInputChanged);
 
+  // 本页里用户拖过滑块：之后服务端广播来的字号不再覆盖他手上的（其它窗口的改动也一样，以这一页为准）
+  var captionSizeTouched = false;
+  // 松手时没能发给服务端（连接断着）的字号；重连后的 hello 里补发，免得被服务端的旧值盖回去
+  var captionSizeUnsent = null;
+
   fontSlider.addEventListener("input", function () {
     var size = parseInt(fontSlider.value, 10);
+    captionSizeTouched = true;
     applyFont(size);
     lsSet("subFontSize", String(size));
   });
+  // 拖动中只改本页的显示；松手（change）才存进服务端，免得一次拖动写几十次 settings.json
+  fontSlider.addEventListener("change", function () {
+    var size = captionSizeFromConfig(fontSlider.value);
+    if (size == null) return;
+    captionSizeTouched = true;
+    applyFont(size);
+    lsSet("subFontSize", String(size));
+    captionSizeUnsent = send({ type: "set_caption_size", value: size }) ? null : size;
+  });
+
+  // 服务端说的字号（hello 的 config.caption_size，或另一个窗口调整后的 config 广播）
+  function adoptCaptionSize(value) {
+    var size = captionSizeFromConfig(value);
+    if (size == null || captionSizeTouched) return;
+    fontSlider.value = size;
+    applyFont(size);
+    lsSet("subFontSize", String(size));
+  }
+
+  // hello 里调：重连时先补发没发出去的；服务端有记录就以它为准；服务端没记过而本机记着，交给它存
+  function syncCaptionSize(config) {
+    if (captionSizeUnsent != null) {
+      captionSizeUnsent = send({ type: "set_caption_size", value: captionSizeUnsent }) ? null : captionSizeUnsent;
+      return;
+    }
+    if (captionSizeFromConfig(config.caption_size) != null) {
+      adoptCaptionSize(config.caption_size);
+      return;
+    }
+    var local = captionSizeFromConfig(lsGet("subFontSize"));
+    if (local != null) send({ type: "set_caption_size", value: local });
+  }
 
   // 目标语言以服务端为准（跟随 --target 启动参数），UI 切换即时生效但不做本地持久化
   targetSel.addEventListener("change", function () {
@@ -459,8 +505,7 @@
     var caps = historyEl.querySelectorAll(".cap, .session-sep");
     for (var i = 0; i < caps.length; i++) caps[i].remove();
     cardsById = {};              // 卡片没了，id 映射也要清，否则一直涨
-    liveBarId = null;
-    liveBar.classList.add("hidden");
+    hideLiveBar();
     syncCaptionDependentUi();
   });
 
@@ -736,8 +781,12 @@
     if (!versionNoticeTimer) restoreVersion();   // 正在显示的一次性提示到点后会带上它
   }
 
+  // 滑块一个值带三处：底部大字幕的字号（--sub-size），历史卡片和弹幕栏的比例（--cap-scale）
   function applyFont(size) {
-    document.documentElement.style.setProperty("--sub-size", size + "px");
+    var vars = captionSizeVars(size);
+    Object.keys(vars).forEach(function (name) {
+      document.documentElement.style.setProperty(name, vars[name]);
+    });
   }
 
   // ---- WebSocket ----
@@ -813,6 +862,7 @@
         transBannerOn = false;
         clearBtn.click();
         if (msg.config) {
+          syncCaptionSize(msg.config);
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
           if (msg.config.comment_detail != null) backendDetail = msg.config.comment_detail;
           // 弹幕留意：状态、事件、关注名单以服务端为准，整份换掉；回放里带来的事件不算新事件
@@ -904,6 +954,8 @@
         showRedoNote(msg.id, msg.text);
         break;
       case "config":
+        // 另一个窗口调了字幕字号（或本页松手后服务端的回执）：本页没动过滑块就跟上
+        if (msg.caption_size != null) adoptCaptionSize(msg.caption_size);
         if (msg.target_lang) targetSel.value = msg.target_lang;
         if (msg.source_lang && !sourceTouched) selectSourceLang(msg.source_lang);
         // 同一条 config 广播里 room_url 和 brands 一起到达时，room_url 要先填
@@ -1203,7 +1255,53 @@
       liveOriginal.textContent = msg.translated ? (msg.original || "") : "";
       liveOriginal.classList.toggle("hidden", !msg.translated);
       liveBarId = msg.id;
+      paintLiveState(msg);
+      liveSpokenAt = captionSpokenAt(msg, Date.now());
+      paintLiveLag();
     }
+  }
+
+  // ---- 底部大字幕下面的一小行：翻译状态角标 + 「约 N 秒前」 ----
+  // 大字幕没译成（译失败、被拒答、结果不像译文、因积压被跳过）时显示的是原文。
+  // 以前这时什么说明都没有，大字号的西语看着像程序没在翻译；现在和历史卡片同款的角标写在下面
+  // （字从 web/live-ui.js 的同一个函数来），原文照旧留在大字幕上。还在等译文的不画角标（见 liveBarChip）。
+  // 「约 N 秒前」：这一句最早一个词说出口到现在，数字每秒涨一次，大字幕上的这一句停多久它就老多久。
+  var liveSpokenAt = null;   // 大字幕这一句最早一个词说出口的时刻（毫秒，本机时钟）；不知道是 null
+  liveLag.title = L("从主播开始说这一句算起", "Counted from when the streamer started this line");
+
+  function syncLiveMeta() {
+    var any = !liveState.classList.contains("hidden") || !liveLag.classList.contains("hidden");
+    liveMeta.classList.toggle("hidden", !any);
+  }
+
+  function paintLiveState(msg) {
+    var chip = liveBarChip(msg);
+    liveState.textContent = chip.text;
+    liveState.classList.toggle("hidden", !chip.text);
+    liveState.classList.toggle("fail", chip.fail);
+    syncLiveMeta();
+  }
+
+  function paintLiveLag() {
+    var text = liveBarId == null || liveSpokenAt == null ? "" : captionAgeText(Date.now() - liveSpokenAt);
+    liveLag.textContent = text;
+    liveLag.classList.toggle("hidden", !text);
+    syncLiveMeta();
+  }
+  setInterval(function () {
+    if (liveBarId != null && !document.hidden) paintLiveLag();
+  }, 1000);
+
+  // 收起大字幕：场次分隔、清空字幕、回到首页都走这里，角标和滞后数一起清掉，不留给下一句
+  function hideLiveBar() {
+    liveBar.classList.add("hidden");
+    liveBarId = null;
+    liveSpokenAt = null;
+    liveState.textContent = "";
+    liveState.classList.add("hidden");
+    liveLag.textContent = "";
+    liveLag.classList.add("hidden");
+    liveMeta.classList.add("hidden");
   }
 
   // 点「重译」没有开始或没成功时，服务端发 retranslate_note：显示在被点的那条字幕旁边几秒。
@@ -1253,6 +1351,9 @@
       liveOriginal.classList.remove("hidden");
       liveTranslated.textContent = msg.translated;
     }
+    // 角标跟着这一句的翻译状态走。只带 strong_state 的重译进度消息不动它——和 applyTranslation
+    // 对卡片的处理一致（那类消息不带 translate_state，没有话可说）
+    if (liveBarId === msg.id && (msg.translated || msg.translate_state)) paintLiveState(msg);
     trackTranslateHealth(msg);
   }
 
@@ -1272,8 +1373,7 @@
     insertSessionDivider(historyEl, msg);
     // 底部大字幕清空，等新一场第一条字幕自己把它揭开（同 enterHomeLayout
     // 的道理：不主动显示，交给下一条真实字幕）
-    liveBar.classList.add("hidden");
-    liveBarId = null;
+    hideLiveBar();
     insertSessionDivider(commentList, msg);
     syncConnectHint(statusPill ? statusPill.dataset.state : "");
     stickToBottom(false);
@@ -1334,12 +1434,10 @@
       trans.classList.remove("pending");
     }
     if (!stateChip) return;
-    stateChip.classList.toggle("fail-chip", state === "failed");
-    stateChip.textContent = state === "failed"
-      ? (msg.refused ? L("未翻译（接口拒答）", "Not translated (API refusal)")
-        : msg.not_translation ? L("未翻译（结果不像译文）", "Not translated (the result didn’t look like a translation)")
-        : L("翻译失败", "Translation failed"))
-      : (state === "dropped" ? L("翻译已跳过（积压）", "Skipped (backlog)") : "");
+    // 角标的字在 web/live-ui.js：底部大字幕画的是同一个函数的结果
+    var chip = captionStateChip(msg);
+    stateChip.classList.toggle("fail-chip", chip.fail);
+    stateChip.textContent = chip.text;
   }
 
   // ---- 违禁词警报 ----
@@ -2178,38 +2276,10 @@
   if (guardDirBtn) guardDirBtn.addEventListener("click", function () { send({ type: "open_guard_dir" }); });
 
   // ---- 延迟统计 ----
-  function fmtMs(v) { return v == null ? "—" : (v / 1000).toFixed(1) + "s"; }
-
+  // 一行里写什么、什么顺序在 web/live-ui.js 的 statsLineParts：第一个数是字幕等待（说出这一句到
+  // 中控读到字幕），违禁词报警的延迟紧跟其后——它仍是产品的 KPI，只是排在第二
   function renderStats(msg) {
-    var e2e = msg.e2e || {};
-    var asr = msg.asr || {};
-    var tr = msg.translate || {};
-    var seg = msg.segment || {};
-    var det = msg.detect_worst || {};
-    // 第一指标是检测延迟（最坏情况）：违禁词说出口到报警最久要多少秒。
-    // 字幕延迟只是副产品，合规上该被考核的是这个数。
-    // 英文用紧凑写法（docs/i18n-style.md §3 #121）：所有计数都出现时逐字翻译会超过一行
-    var parts = [
-      L("违禁词最迟 " + fmtMs(det.p50) + " / P95 " + fmtMs(det.p95) + " 内报警",
-        "Alerts ≤" + fmtMs(det.p50) + " (P95 " + fmtMs(det.p95) + ")"),
-      L("其中 切段 " + fmtMs(seg.p50) + " + 识别 " + fmtMs(asr.p50),
-        "Segment " + fmtMs(seg.p50) + " + ASR " + fmtMs(asr.p50)),
-      L("译文再等 " + fmtMs(tr.p50), "Translation +" + fmtMs(tr.p50)),
-    ];
-    if (msg.audio_backlog_sec >= 3) {
-      parts.push(L("积压 " + msg.audio_backlog_sec.toFixed(0) + "s",
-                   "Backlog " + msg.audio_backlog_sec.toFixed(0) + "s"));
-    }
-    if (msg.audio_segments_dropped) parts.push(L("丢音频 " + msg.audio_segments_dropped,
-                                                 "Dropped " + msg.audio_segments_dropped));
-    // 识别跑飞是丢音频的前兆，出现就该看见
-    if (msg.asr_overruns) parts.push(L("识别超时 " + msg.asr_overruns, "ASR timeouts " + msg.asr_overruns));
-    if (msg.translation_jobs_dropped) parts.push(L("跳过翻译 " + msg.translation_jobs_dropped,
-                                                   "Skipped " + msg.translation_jobs_dropped));
-    if (msg.asr_queue_depth || msg.translation_queue_depth) {
-      parts.push(L("积压 " + msg.asr_queue_depth + "/" + msg.translation_queue_depth,
-                   "Queue " + msg.asr_queue_depth + "/" + msg.translation_queue_depth));
-    }
+    var parts = statsLineParts(msg);
     statsEl.textContent = parts.join(" · ");
     // 只在直播中/连接中揭开。后端每场收尾会补推一次终值（pipeline 的 _end_session），
     // 出错那条路上它晚于 status=error 到达——这时页面已经回到首页、enterHomeLayout
@@ -3184,8 +3254,7 @@
   // 让人以为还在直播（2026-09-24 用户报告的残留）。弹幕面板本身的隐藏交给
   // refreshCommentPanel（已在调用处按 streamActive 处理），这里不重复。
   function enterHomeLayout() {
-    liveBar.classList.add("hidden");
-    liveBarId = null;
+    hideLiveBar();
     following = false;
     scrollToTopNow();
     updateJumpButton();

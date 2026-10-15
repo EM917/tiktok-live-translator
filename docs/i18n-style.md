@@ -305,7 +305,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 - 时刻统一用 **24 小时制 `HH:MM:SS`**，补零，两种语言都一样，用于字幕、弹幕、报警、场次分隔线和审计里的时间段。
   理由：这些时间要拿去跟审计 JSONL 和终端日志逐秒对照；换成 12 小时制要多 3 个字符的 AM/PM，行宽也跟中文版不一样。
 - 日期很少出现，出现时写 `Sep 28, 2026`（月份缩写）。不写 `9/28`，美式和欧式会读反。
-- 相对时间写 `just now`、`5 min ago`。
+- 相对时间写 `just now`、`5 min ago`。底部大字幕的滞后（2026-10-15）按秒数写：`Just now`（3 秒内）、`About 8 sec ago`、
+  `About 2 min ago`（一分钟以上）；中文「刚刚」「约 8 秒前」「约 2 分钟前」。「约」译 About，不用 `~`（那一行有地方）。
 
 ### 2.5 错误与提示的句式
 
@@ -549,6 +550,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 102 | app.js:1138/1146 | 翻译中… / 翻译失败 / 翻译已跳过（积压） | Translating… / Translation failed / Skipped (backlog) | |
 | 103 | session-divider.js:27 | ── 14:01:29 以下为 @x ── / 以下为新的一场 | ── 14:01:29 Now monitoring @x ── / New session | |
 | 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空警报 / 上一场 / 命中·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | |
+| 105a | live-ui.js captionStateChip / liveBarChip，app.js paintLiveState | （大字幕下面的角标，与历史卡片同一句）翻译失败 / 未翻译（接口拒答） / 未翻译（结果不像译文） / 翻译已跳过（积压） | Translation failed / Not translated (API refusal) / Not translated (the result didn’t look like a translation) / Skipped (backlog) | 2026-10-15 起大字幕也画角标，字取自同一个函数，卡片和大字幕不会分叉。只写看到的结局，不写原因（第八条）。还在等译文（翻译中…）的不画角标：每句都要走几秒，会闪 |
+| 105b | live-ui.js captionAgeText，app.js paintLiveLag | 刚刚 / 约 {n} 秒前 / 约 {n} 分钟前（悬停：从主播开始说这一句算起） | Just now / About {n} sec ago / About {n} min ago（hover: Counted from when the streamer started this line） | 按 ts − e2e_ms − segment_ms 算，每秒涨一次；缺字段、负数、超过 6 小时不写。数字和单位不变形，不用分单复数 |
 | 105 | app.js:1297、viewer.js:724/819 | 译文失败（{why}）——请看上面的原话 | Couldn’t translate ({why}). See the original above. | 报警译到本场的目标语言，不一定是中文，中文也只说「译文」。手机报警的「译文正在补…」写 Translating…，不提具体语言 |
 
 ### H. 常见的提示条和横幅
@@ -570,7 +573,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 118 | pipeline.py:3826 | {engine} 返回 HTTP 429，程序暂停请求 {s} 秒后自动重试… | {engine} returned HTTP 429. Requests are paused for {s} sec, then retried automatically. Captions show the original text meanwhile. Banned-term alerts aren’t affected. |
 | 119 | pipeline.py:1946 | {t} 电脑休眠或挂起了约 {d}… | {t} This computer was asleep for about {d}. The app wasn’t running, so that part of the stream wasn’t monitored. During streams, keep the computer plugged in with the lid open. |
 | 120 | app.js:530–538、516/524 | 发现新版本 / 一键更新 / 更新说明 / 前往下载新版本 / 再点一次确认更新：更新期间监听暂停，更新完自动恢复 / 更新中… | A new version is available / Update Now / Release Notes / Download New Version / Click Again to Update. Monitoring pauses and resumes afterward. / Updating… |
-| 121 | app.js:1517–1529 延迟统计行 | 违禁词最迟 {a} / P95 {b} 内报警 · 其中 切段 {c} + 识别 {d} · 译文再等 {e} · 积压 … | Alerts ≤{a} (P95 {b}) · Segment {c} + ASR {d} · Translation +{e} · Backlog {n}s · Dropped {n} · ASR timeouts {n} · Skipped {n} · Queue {x}/{y} |
+| 121 | live-ui.js statsLineParts 延迟统计行（2026-10-15 前在 app.js:1517–1529） | 字幕 {w} / P95 {v} 后出现 · 违禁词最迟 {a} / P95 {b} 内报警 · 其中 切段 {c} + 识别 {d} · 译文再等 {e} · 积压 … | Captions {w} (P95 {v}) · Alerts ≤{a} (P95 {b}) · Segment {c} + ASR {d} · Translation +{e} · Backlog {n}s · Dropped {n} · ASR timeouts {n} · Skipped {n} · Queue {x}/{y} | 第一段是字幕等待（说出这一句 → 中控读到的那一版字幕上屏），第一条译文回来前没有这一段，不写「—」。违禁词报警延迟排第二，一个字没删（CLAUDE.md 第六条） |
 
 #107–#109 的英文保留与中文相同的行首 emoji（⚠️ 🔴 ✅）：桌面提示条由 `live-ui.js` 的 `stripStatusEmoji`
 统一去掉，两臂保持一样，G2 按 emoji 的多重集比。
@@ -682,6 +685,10 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 - **R8 底部延迟统计行会折行。**
   - 所有计数都出现时，逐字翻译约 1013px，超过 1000 宽窗口的 960px 可用宽度，折行后会盖到底部的大字幕上。
   - 用 #121 的紧凑写法（约 800px），而且只有这一行保留 `1.8s` 写法。
+  - 2026-10-15 在最前面加了 “Captions 4.2s (P95 7.1s) · ”（约 155px），满格约 955px，离 960px 只剩 5px。
+    满格只在积压、丢段、超时、跳过翻译、队列全不为零时出现；窗口窄于约 1000px 时那一刻会折行。
+    G10 的统计行场景（tests/i18n_dom/scenarios.py `_stats`）已带上字幕等待，页面上画出来的就是满格这一行；
+    G10 只查有没有漏翻的中文，不量这一行折不折行，要量得另写。
 - **R9 开始页的选项行可能折行。**
   - 英文宽度：`Spoken language` 104 + 下拉 199 + 间距 24 + `Brand` 36 + 品牌下拉 119–220 + 文件夹按钮，合计 552–653px。容器是 600px。
   - 品牌名超过约 18 个字符时，品牌那一组会折到第二行。

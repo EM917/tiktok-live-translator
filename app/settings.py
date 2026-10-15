@@ -3,6 +3,7 @@
 只依赖标准库——启动自举阶段（依赖还没装齐时）也要能安全导入。
 """
 import json
+import math
 import os
 from datetime import datetime
 from pathlib import Path
@@ -97,6 +98,38 @@ def resolve_source(cli_value, saved):
     if s == "auto":
         return None               # 用户明确选过自动检测，尊重它
     return s[:12] if s else DEFAULT_SOURCE_LANG
+
+
+# 字幕字号（界面顶栏的滑块，决定底部大字幕的字号，历史卡片和弹幕栏按同一比例跟着变）。
+# 范围与 web/index.html 里 #font-size 的 min/max 一致。以前只记在浏览器的 localStorage 里：
+# 它按「协议+主机+端口」隔离，端口一漂移（8765 被占用时程序自动改用下一个）调好的字号就没了。
+# 现在记在 settings.json，localStorage 只作为服务端没有记录时的退路。
+CAPTION_SIZE_MIN = 20
+CAPTION_SIZE_MAX = 60
+
+
+def normalize_caption_size(value):
+    """把页面发来的（或 settings.json 里读到的）字号变成整数；不是合法字号返回 None。
+
+    只认 CAPTION_SIZE_MIN..MAX 之间的数：设置文件可能被手改过，消息也可能来自旧页面。
+    越界、非数字、bool、NaN 一律当没有，不是夹到边界——夹了会把一个坏值写成「看起来像用户选的」。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    size = int(math.floor(number + 0.5))          # 四舍五入（同页面里的 Math.round，不用银行家舍入）
+    if size < CAPTION_SIZE_MIN or size > CAPTION_SIZE_MAX:
+        return None
+    return size
+
+
+def saved_caption_size():
+    """settings.json 里记着的字号；没记过或记坏了是 None（界面保持今天的默认字号）。"""
+    return normalize_caption_size(load_settings().get("caption_size"))
 
 
 # 首页「最近直播间」最多留几个。够一屏点选即可，多了首页反而乱。

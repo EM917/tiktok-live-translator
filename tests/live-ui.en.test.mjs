@@ -43,3 +43,56 @@ test("报警分级：Exact / Variant / Similar，认不出的分级按 Exact（�
     assert.equal(U.alertTierText(tier), "Exact", String(tier));
   }
 });
+
+// ---- 底部大字幕的翻译状态、滞后，页脚各段，字幕字号（2026-10-15）。中文断言在 tests/live-ui.test.mjs ----
+
+test("字幕翻译状态角标（英文）：不贴原因标签，只写看到的", () => {
+  assert.deepEqual(U.captionStateChip({ translate_state: "failed" }), { text: "Translation failed", fail: true });
+  assert.deepEqual(U.captionStateChip({ translate_state: "failed", refused: true }),
+                   { text: "Not translated (API refusal)", fail: true });
+  assert.deepEqual(U.captionStateChip({ translate_state: "failed", not_translation: true }),
+                   { text: "Not translated (the result didn’t look like a translation)", fail: true });
+  assert.deepEqual(U.captionStateChip({ translate_state: "dropped" }), { text: "Skipped (backlog)", fail: false });
+  for (const msg of [{ translate_state: "failed" }, { translate_state: "failed", refused: true },
+                     { translate_state: "failed", not_translation: true }, { translate_state: "dropped" }]) {
+    english(U.captionStateChip(msg).text);
+  }
+});
+
+test("大字幕角标（英文）：没译成的写同样的英文，还在等译文不画，译文到了没有", () => {
+  assert.deepEqual(U.liveBarChip({ translate_state: "pending" }), { text: "", fail: false });
+  assert.equal(U.liveBarChip({ translate_state: "ok", translated: "你好" }).text, "");
+  assert.equal(U.liveBarChip({ translate_state: "failed", refused: true }).text, "Not translated (API refusal)");
+  assert.equal(U.liveBarChip({ translate_state: "dropped" }).text, "Skipped (backlog)");
+});
+
+test("约 N 秒前（英文）：Just now / About N sec ago / About N min ago，单位缩写、数字与单位间一个空格", () => {
+  assert.equal(U.captionAgeText(1200), "Just now");
+  assert.equal(U.captionAgeText(8300), "About 8 sec ago");
+  assert.equal(U.captionAgeText(59000), "About 59 sec ago");
+  assert.equal(U.captionAgeText(60000), "About 1 min ago");
+  assert.equal(U.captionAgeText(125000), "About 2 min ago");
+  for (const ms of [0, 1500, 8300, 45000, 60000, 3600000]) english(U.captionAgeText(ms));
+  assert.equal(U.captionAgeText(-1), "");
+  assert.equal(U.captionAgeText(NaN), "");
+});
+
+test("页脚（英文）：Captions 打头，Alerts 紧跟其后，其余各段照旧", () => {
+  const base = { asr: { p50: 1100 }, translate: { p50: 2000 }, segment: { p50: 800 },
+                 detect_worst: { p50: 1900, p95: 3400 }, caption_wait: { p50: 4200, p95: 7100, n: 20 } };
+  assert.deepEqual(U.statsLineParts(base), [
+    "Captions 4.2s (P95 7.1s)", "Alerts ≤1.9s (P95 3.4s)", "Segment 0.8s + ASR 1.1s", "Translation +2.0s"]);
+  assert.equal(U.statsLineParts(Object.assign({}, base, { caption_wait: { p50: null, p95: null, n: 0 } }))[0],
+               "Alerts ≤1.9s (P95 3.4s)");
+  const full = U.statsLineParts(Object.assign({ audio_backlog_sec: 5, audio_segments_dropped: 2, asr_overruns: 1,
+    translation_jobs_dropped: 3, asr_queue_depth: 1, translation_queue_depth: 2 }, base));
+  assert.deepEqual(full.slice(4), ["Backlog 5s", "Dropped 2", "ASR timeouts 1", "Skipped 3", "Queue 1/2"]);
+  for (const part of full) english(part);
+});
+
+test("字幕字号（英文界面里同一套比例）", () => {
+  assert.equal(U.captionScale(34), 1);
+  assert.deepEqual(U.captionSizeVars(51), { "--sub-size": "51px", "--cap-scale": "1.5" });
+  assert.equal(U.captionSizeFromConfig("40"), 40);
+  assert.equal(U.captionSizeFromConfig(61), null);
+});

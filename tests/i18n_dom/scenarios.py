@@ -202,6 +202,7 @@ def _stats():
     for asr_ms, e2e_ms, seg_ms in ((1100, 2300, 1800), (1300, 2700, 2100), (900, 2000, 1600)):
         tel.record_asr(asr_ms, e2e_ms, seg_ms)
         tel.record_translation(800)
+        tel.record_caption_wait(seg_ms + e2e_ms + 800)       # 统计行最前面的「字幕」一段也要在满格里
     tel.set_backlog(12.0)
     tel.audio_segments_dropped, tel.asr_overruns, tel.translation_jobs_dropped = 3, 1, 2
     tel.asr_queue_depth, tel.translation_queue_depth = 2, 5

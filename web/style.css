@@ -117,6 +117,10 @@
   --accent: var(--blue);
 
   --sub-size: 34px;
+  /* 字幕字号滑块带动的比例：历史卡片和弹幕栏的译文/原文 = 今天的固定字号 × 这个数。
+     1 就是今天的 17/13/15px；只有用户拖过滑块（或服务端记着他选过的字号）时 app.js 才改它
+     （web/live-ui.js captionScale），所以没调过字号的人看到的和以前逐像素相同 */
+  --cap-scale: 1;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -509,7 +513,7 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 4px 20px 180px;
+  padding: 4px 20px 204px;   /* 比大字幕条（含下面多出的一小行）略高，最后一条不被盖住 */
   scroll-behavior: smooth;
 }
 
@@ -535,8 +539,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 
 .cap .fail-chip { color: var(--fail); text-transform: none; letter-spacing: 0; }
 
-.cap .orig { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
-.cap .trans { font-size: 17px; line-height: 1.55; margin-top: 2px; }
+.cap .orig { font-size: calc(13px * var(--cap-scale)); color: var(--text-dim); line-height: 1.5; }
+.cap .trans { font-size: calc(17px * var(--cap-scale)); line-height: 1.55; margin-top: 2px; }
 
 /* ---------- 启动面板（待机首页） ----------
    一列 600px，从上到下：标题区 → 输入框 + 开始 → 常用选项 → 最近直播间 → 设置分组。
@@ -680,11 +684,27 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   color: var(--text-dim);
 }
 
+/* 大字幕下面的一小行：翻译状态角标 + 「约 N 秒前」。两样都是说明，不是字幕，字号固定不跟滑块走
+   （跟着变大反而盖住字幕）。行只在有内容时出现；有滞后数的时候这一行一直在，角标来来去去不会让
+   大字幕条的高度跳。 */
+.live-meta {
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  gap: 4px 8px; margin-top: 6px; min-height: 18px;
+}
+.live-state {
+  display: inline-block; padding: 0 8px; border-radius: 9px;
+  font-size: var(--fs-footnote); line-height: 18px; font-weight: 500;
+  color: var(--label-2); background: var(--fill);
+}
+/* 没译成：同卡片上的红色角标，底色取 14% 红（--red-ink 在上面 5:1），不只靠颜色——字本身就写着「未翻译」 */
+.live-state.fail { color: var(--red-ink); background: var(--a-red-14); }
+.live-lag { font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); font-variant-numeric: tabular-nums; }
+
 .hidden { display: none !important; }
 
 @media (max-width: 640px) {
   .topbar { padding: 8px 12px; }
-  .history { padding: 4px 12px 150px; }
+  .history { padding: 4px 12px 174px; }
   :root { --sub-size: 26px; }
 }
 
@@ -752,8 +772,9 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   pointer-events: none;
 }
 
-/* 译文未到达时的占位 */
-.cap .trans.pending { color: var(--text-faint); font-style: italic; font-size: 14px; }
+/* 译文未到达时的占位。以前用 --label-3（占位符那一档，约 2:1），这一行是中控此刻要读的状态提示，
+   提到 --label-2 的 4.5:1 以上；斜体和字号不变（字号跟着字幕字号滑块走，同 .trans） */
+.cap .trans.pending { color: var(--text-dim); font-style: italic; font-size: calc(14px * var(--cap-scale)); }
 
 /* ---------- 识别落后 / 降级 ---------- */
 /* 以前写死浅黄 #ffeaa7：深色模式下这条会变成一整条刺眼的亮黄带，跟 #1c1c1e
@@ -1193,7 +1214,7 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
   font-style: normal;
   opacity: 1;
 }
-.alert-zh.pending { color: var(--text-faint); font-style: italic; }
+.alert-zh.pending { color: var(--text-dim); font-style: italic; }   /* 同 .cap .trans.pending：占位提示不用 --label-3 */
 
 /* 短时间内已提示过：条目仍在、按钮可用，但不抢注意力 */
 .update-bar.quiet { opacity: .62; }
@@ -1258,7 +1279,7 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
   font-size: 11px; line-height: 18px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
 /* 底部留白与 .history 一致：底部通栏大字幕是 fixed 的，不留就会盖住最后几条 */
-.comment-list { flex: 1; overflow-y: auto; padding: 0 16px 180px; }
+.comment-list { flex: 1; overflow-y: auto; padding: 0 16px 204px; }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
 .cmt-item:last-child { border-bottom: 0; }
 .cmt-head { font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
@@ -1266,10 +1287,10 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
   line-height: 16px; color: var(--rel-gray-ink); background: var(--rel-gray-bg); }
 .cmt-rel-mutual, .cmt-rel-follower { color: var(--rel-blue-ink); background: var(--tint-blue-10); }
 .cmt-rel-gifter { color: var(--rel-purple-ink); background: var(--rel-purple-bg); }
-.cmt-zh { font-size: 15px; line-height: 1.5; margin-top: 1px; }
-.cmt-zh.pending { color: var(--label-3); font-style: italic; font-size: var(--fs-callout); }
+.cmt-zh { font-size: calc(15px * var(--cap-scale)); line-height: 1.5; margin-top: 1px; }
+.cmt-zh.pending { color: var(--label-2); font-style: italic; font-size: calc(var(--fs-callout) * var(--cap-scale)); }
 .cmt-zh.failed { color: var(--label-2); }
-.cmt-orig { font-size: var(--fs-footnote); color: var(--label-2); }
+.cmt-orig { font-size: calc(var(--fs-footnote) * var(--cap-scale)); color: var(--label-2); }
 .cmt-empty { padding: 12px 16px; font-size: var(--fs-footnote); color: var(--label-2); line-height: 1.5; }
 /* 评论流状态：前面一个小圆点表达状态（连上＝绿色实心、有问题＝橙色空心环、
    其余＝灰），文字本身不上色——跟自检列表同一种画法（designer.md #1）。

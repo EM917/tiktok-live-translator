@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=41">
+  <link rel="stylesheet" href="/static/style.css?v=42">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -679,6 +679,12 @@
   <footer id="live-bar" class="live-bar hidden">
     <div id="live-translated" class="live-translated i18n-data"></div>
     <div id="live-original" class="live-original i18n-data"></div>
+    <!-- 翻译状态角标 + 「约 N 秒前」：界面文字（app.js 用 L() 写），不是字幕，所以不带 i18n-data。
+         整行没内容时 app.js 加 hidden -->
+    <div id="live-meta" class="live-meta hidden">
+      <span id="live-state" class="live-state hidden"></span>
+      <span id="live-lag" class="live-lag hidden"></span>
+    </div>
   </footer>
 
   <div id="stats-line" class="stats-line hidden"></div>
@@ -716,8 +722,8 @@
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=2"></script>
-  <script src="/static/live-ui.js?v=1"></script>
+  <script src="/static/live-ui.js?v=2"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/app.js?v=71"></script>
+  <script src="/static/app.js?v=72"></script>
 </body>
 </html>
