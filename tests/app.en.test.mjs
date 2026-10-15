@@ -587,13 +587,22 @@ test("英文页：弹幕面板的状态与空态、统计行", () => {
   const page = runDesktop();
   hello(page);
   const source = () => [page.el("comment-source").textContent, page.el("comment-empty").textContent];
+  const sourceShown = () => !page.el("comment-source").cls.includes("hidden");
   assert.deepEqual(source(), ["Not connected", "Comments connect when the stream starts."]);
+  assert.equal(sourceShown(), true);
+  assert.equal(page.el("comment-title-text").title, "");
+  // 连上是常态：小字整个收起（圆点在它里面），“Connected” 挪进标题的 title；空态那句照旧
   page.push({ type: "comment_source", backend: "connected" });
-  assert.deepEqual(source(), ["Connected", "Connected. Waiting for comments…"]);
+  assert.deepEqual(source(), ["", "Connected. Waiting for comments…"]);
+  assert.equal(sourceShown(), false);
+  assert.equal(page.el("comment-title-text").title, "Connected");
   page.push({ type: "comment_source", backend: "connecting" });
   assert.deepEqual(source(), ["Connecting…", "Connecting…"]);
+  assert.equal(sourceShown(), true);
+  assert.equal(page.el("comment-title-text").title, "");
   page.push({ type: "comment_source", backend: "disconnected" });
   assert.deepEqual(source(), ["Disconnected. Reconnecting…", "Disconnected. Reconnecting…"]);
+  assert.equal(sourceShown(), true);
   page.push({ type: "comment", id: "c1", ts: T, user: "Ana", text: "hola", state: "pending" });
   assert.equal(page.el("comment-list").querySelector(".cmt-zh").textContent, "Translating…");
   // 和主播的关系：互关就不再单独标 Follower；认不出的标签不画
@@ -842,7 +851,9 @@ test("英文页：弹幕留意——胶囊、设置行都是英文，设置行�
   helloGuard(page);
   const cap = page.el("guard-state");
   assert.ok(!cap.cls.includes("hidden"));
-  assert.equal(page.el("guard-state-text").textContent, "Comment Review: rules only");
+  // 只用规则是常态：胶囊上只画名字，完整一句在按钮的 title 里；抽屉里的状态行（下面的 guard-drawer-state）仍是整句
+  assert.equal(page.el("guard-state-text").textContent, "Comment Review");
+  assert.equal(cap.title, "Comment Review: rules only\nSee recent comments to review");
   assert.ok(cap.cls.includes("idle"));
   assert.equal(page.el("guard-bar").cls.includes("hidden"), true, "回放里带来的事件不弹顶部条");
   const card = page.el("guard-card");

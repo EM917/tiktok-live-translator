@@ -16,9 +16,14 @@ const { selfcheckSummary, engineSummary, watchSummary, nextAutoOpen, transcriptS
 
 // ---- selfcheckSummary：三种结论 + 签名 ----
 
-test("全部通过：摘要写总数，图标 pass", () => {
+test("全部通过：只写结论、不写检查了几项，图标 pass；签名里仍带总数", () => {
   assert.deepEqual(selfcheckSummary({ fail: 0, warn: 0, total: 11 }),
-    { text: "全部通过 · 11 项", icon: "pass", sig: "0/0/11" });
+    { text: "全部通过", icon: "pass", sig: "0/0/11" });
+  // 总数不同，文字相同（总数每个版本都在变，不该出现在摘要里）；签名因总数变而变，nextAutoOpen 才认得出「检查项增减」
+  const a = selfcheckSummary({ fail: 0, warn: 0, total: 12 });
+  assert.equal(a.text, "全部通过");
+  assert.equal(a.sig, "0/0/12");
+  assert.doesNotMatch(a.text, /\d/);
 });
 
 test("只有提醒：摘要写提醒数，图标 warn", () => {

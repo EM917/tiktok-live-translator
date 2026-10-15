@@ -104,13 +104,12 @@
   var clearAlertsBtn = document.getElementById("clear-alerts");
   var commentPanel = document.getElementById("comment-panel");
   var commentList = document.getElementById("comment-list");
-  var commentCount = document.getElementById("comment-count");
   var toggleCommentsBtn = document.getElementById("toggle-comments");
   var clearCommentsBtn = document.getElementById("clear-comments");
   var commentFab = document.getElementById("comment-fab");
-  var commentFabCount = document.getElementById("comment-fab-count");
   var commentEmpty = document.getElementById("comment-empty");
   var commentSource = document.getElementById("comment-source");
+  var commentTitleEl = document.getElementById("comment-title-text");
   // 弹幕留意（Comment Review，web/guard.js）：顶部条 + 抽屉 + 弹幕栏状态胶囊 + 设置行。
   // 规则 / 文案 / 渲染在 guard.js，这里只接线：收消息、存状态、把回调传进去
   var guardBar = document.getElementById("guard-bar");
@@ -678,6 +677,7 @@
     delete updateBtn.dataset.confirm;
     updateBtn.disabled = false;
     updateBtn.textContent = L("一键更新", "Update Now");
+    updateRunning = false;          // 按钮回到可点：这次更新不在进行了（条要不要摆由 syncNoticeBars 定）
   }
 
   updateBtn.addEventListener("click", function () {
@@ -696,8 +696,22 @@
     delete updateBtn.dataset.confirm;
     updateBtn.disabled = true;
     updateBtn.textContent = L("更新中…", "Updating…");
+    updateRunning = true;
     send({ type: "apply_update" });
   });
+
+  // 「有新版本」条和「迁移旧词表」条：都是可以晚点做的事，不是问题。直播中不摆（中控在看字幕，
+  // 不该被它们占一行），回到首页（enterHomeLayout）再露出来；页脚版本号照旧能点来手动检查更新。
+  // 唯一的例外是更新已经在进行（服务端回过 updating）：按钮上的「更新中…」是这次更新唯一的进度，
+  // 监听又恰恰是更新暂停的，这时收起会让中控以为什么都没发生
+  var updateOffered = false;      // 服务端说有新版本（showUpdate 收到过）
+  var updateRunning = false;      // 点了「一键更新」、服务端回了 updating，还没结束
+  var migrateOffered = false;     // 词表里有旧模板遗留的条目
+
+  function syncNoticeBars() {
+    updateBar.classList.toggle("hidden", !updateOffered || (streamActive && !updateRunning));
+    if (migrateBar) migrateBar.classList.toggle("hidden", !migrateOffered || streamActive);
+  }
 
   function showUpdate(info) {
     if (!info || !info.version) return;
@@ -714,7 +728,8 @@
       updateLink.className = "btn primary";
     }
     updateLink.href = info.url || "#";
-    updateBar.classList.remove("hidden");
+    updateOffered = true;
+    syncNoticeBars();       // 直播中先不摆，回到首页时再露出来（见 syncNoticeBars）
     // 静默模式：短时间内已经提示过了。按钮照常可用，但不再改标题——
     // 标题会闪在任务栏/标签页上，连续几个 patch 的日子那是纯粹的骚扰。
     if (!info.quiet) document.title = L("有新版本 · TikTok 直播同传", "Update Available · TikTok Live Translator");
@@ -742,7 +757,8 @@
         "It also affects other streamers’ translations.",
         "glossary.txt has " + msg.count + " streamer-specific entries left over from the old template. " +
         "They also affect other streamers’ translations.");
-      migrateBar.classList.remove("hidden");
+      migrateOffered = true;
+      syncNoticeBars();
     } else if (msg.stage === "plan") {
       if (!msg.entries || !msg.entries.length) {
         showVersionNote(L("没有可以安全自动迁移的条目（改动过的条目需手动移到 profiles/）",
@@ -771,7 +787,8 @@
     } else if (msg.stage === "done") {
       migrateBtn.disabled = false;
       if (msg.result && msg.result.total) {
-        migrateBar.classList.add("hidden");
+        migrateOffered = false;
+        syncNoticeBars();
         var note = LN(msg.result.total, "已迁移 " + msg.result.total + " 条（备份：" +
                    msg.result.backup + "）",
                    "Moved 1 entry (backup: " + msg.result.backup + ")",
@@ -900,7 +917,6 @@
         commentById = Object.create(null);
         commentMeta = Object.create(null);
         resetCommentRedo();         // 断线期间那次重译的结果收不到了：「重译中…」不能一直挂着
-        commentCount.textContent = "0";
         commentFollowing = true;   // 回放重建整个列表：从最新处开始看
         commentsBelow = 0;
         commentPanel.classList.add("hidden");
@@ -961,8 +977,9 @@
           // 重连/刷新时回放的提示从来不是「新」提示：不许再改标题打扰直播中的中控
           if (msg.config.update) showUpdate(Object.assign({}, msg.config.update, { quiet: true }));
           else {
-            updateBar.classList.add("hidden");
+            updateOffered = false;
             resetUpdateBtn();
+            syncNoticeBars();
           }
           // 界面语言：闸关着时 config 里没有这几个键，行保持隐藏、不比对、不重载
           renderLang(msg.config);
@@ -976,10 +993,13 @@
       case "updating":
         updateBtn.disabled = true;
         updateBtn.textContent = L("更新中…", "Updating…");
+        updateRunning = true;
+        syncNoticeBars();       // 直播中收起着的条，更新一开始就要露出来
         break;
       // 这次没更新成（原因另有提示/状态说明）：按钮恢复，可以再试
       case "update_aborted":
         resetUpdateBtn();
+        syncNoticeBars();       // 直播中没更新成：监听没断，条跟着收起
         break;
       case "status":
         // connecting/live/error 任一状态到达即视为服务器已接管「开始」指令
@@ -1706,9 +1726,8 @@
     var collapsed = commentPanel.classList.contains("collapsed");
     commentPanel.classList.toggle("hidden", !show);
     commentEmpty.classList.toggle("hidden", has);
-    // 收起时整列不显示，只在字幕区右上角留一个带条数的入口
+    // 收起时整列不显示，只在字幕区右上角留一个入口（不带条数：列表封顶 100 条，数字一直停在 100）
     commentFab.classList.toggle("hidden", !(show && collapsed));
-    commentFabCount.textContent = commentItemCount();
     scheduleGuardBar();       // 浮钮上的未读红条数跟顶部条同一份数，同一个节流
     // 「回到最新」是 fixed 定位在右下角的，弹幕列展开时把它往左挪，别盖在弹幕上
     var panelOpen = show && !collapsed;
@@ -1719,11 +1738,14 @@
     // 「抓取本身出了问题」，两者处理方式完全不同（前者等，后者去修）。
     // 后端说明原样写进去，太长由 CSS 截成最多 6 行（style.css .cmt-source）：以前在这里按
     // 80 个字符截，英文只截得出半句话（spec §11 第 6 条）
-    var title, cls = "cmt-source", emptyText;
+    var title, cls = "cmt-source", emptyText, headTip = "";
     // 小字状态就放在 Comments 标题旁边，英文不再重复「评论流」这个主语
     if (backendState === "connected") {
-      title = L("评论流已连接", "Connected");
-      cls += " on";
+      // 连上是常态，不占一行：整个小字元素收起（圆点是绝对定位在它里面的，只清文字会留下一颗孤零零的点），
+      // 这句话挪进标题的 title。其余状态（连接中、断开、出错、带原因的）照旧写在标题旁边
+      title = "";
+      cls += " on hidden";
+      headTip = L("评论流已连接", "Connected");
       emptyText = L("已连接，等待观众发评论…", "Connected. Waiting for comments…");
     } else if (backendState === "connecting") {
       // 带说明的连接中（读浏览器登录态、组件刚更新完正在重连）要让中控看得见
@@ -1749,6 +1771,10 @@
 
     commentSource.textContent = title;
     commentSource.className = cls;
+    if (commentTitleEl) {
+      if (headTip) commentTitleEl.title = headTip;
+      else commentTitleEl.removeAttribute("title");
+    }
     if (!has) commentEmpty.textContent = emptyText;
   }
 
@@ -1837,18 +1863,11 @@
       var drift = anchor.getBoundingClientRect().top - anchorTop;
       if (Math.abs(drift) >= 1) commentList.scrollTop += drift;
     }
-    commentCount.textContent = commentItemCount();
     // 往上翻着看时，新弹幕不会把视野拉走：数着，「回到最新」按钮上显示（回放的不算）
     if (!msg.replay && streamActive && !commentFollowing) commentsBelow++;
     refreshCommentPanel();
     if (commentFollowing) commentsToBottomNow();
     updateCommentJump();
-  }
-
-  // 弹幕条数：只数 .cmt-item，不数换主播时插进同一个列表里的 .session-sep
-  // 分隔条——否则条数徽标会把分隔线也算进去，显得比实际弹幕数多
-  function commentItemCount() {
-    return commentList.querySelectorAll(".cmt-item").length;
   }
 
   function updateComment(msg) {
@@ -2097,7 +2116,6 @@
     commentList.innerHTML = "";
     commentById = Object.create(null);
     commentMeta = Object.create(null);
-    commentCount.textContent = "0";
     commentFollowing = true;
     commentsBelow = 0;
     refreshCommentPanel();    // 直播中清空后面板留着，只是回到空态
@@ -2276,7 +2294,7 @@
     if (guardStateBtn) guardStateBtn.classList.toggle("hidden", !show);
     if (guardReenableCap && !show) guardReenableCap.classList.add("hidden");
     if (!show || !guardStateBtn) return;
-    guardStateTextEl.textContent = cap.text;
+    guardStateTextEl.textContent = cap.label;     // 常态只画「弹幕留意」，完整一句在 title 里
     guardStateBtn.className = "guard-state " + cap.tone;
     guardStateBtn.title = cap.unreviewed ? cap.title + "\n" + cap.unreviewed : cap.title;
     guardStateBtn.setAttribute("aria-expanded", guardDrawerOpen ? "true" : "false");
@@ -3461,6 +3479,8 @@
     // 换主播面板只在直播中有意义（按钮本身这时也被隐藏了）：停止之后若还开着，
     // 关掉它，不然会变成一块摆在待机页面上的残留浮层
     closeSwitchPanel();
+    // 直播中收起着的「有新版本」「迁移旧词表」两条，回到首页再露出来
+    syncNoticeBars();
   }
 
   // 离开首页状态（viewTransition 的 exitHome）：直播状态从非活跃变为活跃
@@ -3468,6 +3488,7 @@
   // 它等第一条真正的字幕到达时由 renderCaption 自己揭开；这里只需要让接下来到达的新字幕照常跟到底部。
   function exitHomeLayout() {
     following = true;
+    syncNoticeBars();       // 开播：「有新版本」「迁移旧词表」两条先收起（更新进行中的除外）
   }
 
   // 按钮只在「确实有内容在下面」时出现。不可测量时不显示——那时什么都判断不了，

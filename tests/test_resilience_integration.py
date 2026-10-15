@@ -143,7 +143,7 @@ def test_a_late_stream_round_writes_failures_into_its_own_session_audit(monkeypa
 
     async def scenario():
         loop = asyncio.get_running_loop()
-        return await p._stream_session("http://cdn/s.flv", Broken(), None, "note", loop, sess=sess)
+        return await p._stream_session("http://cdn/s.flv", Broken(), None, loop, sess=sess)
 
     run(scenario())
     old.close()

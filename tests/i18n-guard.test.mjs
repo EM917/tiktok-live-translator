@@ -57,7 +57,7 @@ test("中文页：守卫不执行，L 还是 i18n.js 的那个，各模块照旧
   assert.equal(ctx.I18N_, undefined, "守卫那一块没执行");
   assert.equal(ctx.UI_LANG, "zh");
   assert.equal(ctx.alertTitle(2), "(2) 疑似违禁词 · TikTok 直播同传");
-  assert.equal(ctx.selfcheckSummary({ fail: 0, warn: 0, total: 11 }).text, "全部通过 · 11 项");
+  assert.equal(ctx.selfcheckSummary({ fail: 0, warn: 0, total: 11 }).text, "全部通过");
   assert.equal(ctx.shareButtonText(true, 2).text, "手机同看 · 2 人");
   assert.equal(ctx.switchButtonLabel(null, "").text, "确认换主播");
   assert.match(ctx.sessionDividerText({ ts: 1, streamer: "x" }), / 以下为 @x ──$/);
@@ -72,7 +72,7 @@ test("英文页：守卫同样不执行，各模块出英文（窗口标题与�
   assert.equal(ctx.I18N_, undefined);
   assert.equal(ctx.UI_LANG, "en");
   assert.equal(ctx.alertTitle(2), GOLDEN.window_title_2_en);
-  assert.equal(ctx.selfcheckSummary({ fail: 0, warn: 0, total: 11 }).text, "All 11 checks passed");
+  assert.equal(ctx.selfcheckSummary({ fail: 0, warn: 0, total: 11 }).text, "All passed");
   assert.equal(ctx.shareButtonText(true, 2).text, "Phone Viewing · 2");
   assert.equal(ctx.switchButtonLabel(null, "").text, "Switch Streamer");
   assert.match(ctx.sessionDividerText({ ts: 1, streamer: "x" }), / Now monitoring @x ──$/);

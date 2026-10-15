@@ -73,9 +73,8 @@ def incidents_en(server, key):
 # ---- 固定句子与拼进别的句子里的片段 ----------------------------------------------------------
 
 def test_fixed_texts_and_fragments_read_as_english():
-    assert i18n.render(LIVE_ENDED_NOTE, EN) == (
-        "The stream has ended. Scroll down to review this session’s captions, or enter a new "
-        "live link above.")
+    assert i18n.render(LIVE_ENDED_NOTE, EN) == "The previous session’s captions are below."
+    assert LIVE_ENDED_NOTE == "上一场字幕在下方。"
     assert [i18n.render(Pipeline._duration_text(s), EN) for s in (30, 300, 7260)] == [
         "30 sec", "5 min", "2 hr 1 min"]
     assert [Pipeline._duration_text(s) for s in (30, 300, 7260)] == ["30 秒", "5 分钟", "2 小时 1 分钟"]
@@ -426,7 +425,7 @@ def test_start_switch_and_stop_acks_are_english(monkeypatch, tmp_path):
         "Connecting…",
         "Switching to @bob: stopping @alice, then connecting…",
         "Stopping…",
-        "Stopped. Enter a live link to start again.",
+        "",     # 停止之后横幅收起：空 detail，不再有「已停止。输入直播间地址…」
         "This address isn’t valid. Enter a live link that starts with http:// or https://."]
     assert [d for _, d in server.statuses][:3] == [
         "已收到指令，正在连接…", "正在切换到 @bob：先停止 @alice 的监听，再连接新的直播间…", "正在停止…"]

@@ -555,7 +555,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
    跟随系统惯例用 labelColor（次级），不是 tintColor */
 .sp-glyph { display: block; width: 44px; height: 44px; margin: 0 auto 12px; color: var(--label-2); }
 .start-panel h2 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; letter-spacing: -0.01em; }
-.sp-sub { margin-top: 6px; font-size: var(--fs-callout); line-height: 18px; color: var(--label-2); }
+/* 标题和「输入说明」ⓘ 并排居中。ⓘ 不放进 <h2> 里：它会进标题的无障碍名称，读屏会念成「输入……输入说明」 */
+.sp-title { display: flex; align-items: center; justify-content: center; gap: 2px; }
 
 /* 展开原来那两段灰字（#input-help）；图标用 SF Symbols「info.circle」而不是
    圆圈问号——后者更像第三方网页产品的帮助气泡，不是苹果系统的「更多信息」惯用语。
@@ -1260,11 +1261,6 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 }
 .comment-title > .i { color: var(--label-2); }
 .comment-actions { display: flex; gap: 6px; flex: none; }
-#comment-count, #comment-fab-count {
-  display: inline-block; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 9px;
-  background: var(--fill); color: var(--label); text-align: center;
-  font-size: 11px; line-height: 18px; font-weight: 600; font-variant-numeric: tabular-nums;
-}
 /* 底部留白与 .history 一致：底部通栏大字幕是 fixed 的，不留就会盖住最后几条 */
 .comment-list { flex: 1; overflow-y: auto; padding: 0 16px 204px; }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
@@ -1302,7 +1298,7 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cmt-source.warn::before { background: transparent; border: 1.5px solid var(--orange); width: 7px; height: 7px; top: 4.5px; }
 /* 收起：整列让出去（字幕独占整行），弹幕继续在后台收；展开时全在 */
 .comment-panel.collapsed { display: none; }
-/* 收起后的入口：字幕区右上角一颗白色悬浮胶囊，带条数（同「回到最新」） */
+/* 收起后的入口：字幕区右上角一颗白色悬浮胶囊（同「回到最新」）；有未读红条时右边带红点数 */
 .comment-fab {
   position: absolute; top: 10px; right: 16px; z-index: 4;
   display: inline-flex; align-items: center; gap: 6px;

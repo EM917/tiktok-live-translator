@@ -125,7 +125,7 @@ def fake_audio(monkeypatch, frames):
 def stream_once(p, slot):
     async def scenario():
         loop = asyncio.get_running_loop()
-        return await p._stream_session("http://cdn/s.flv", slot, None, "note", loop)
+        return await p._stream_session("http://cdn/s.flv", slot, None, loop)
     return run(scenario())
 
 
@@ -505,9 +505,9 @@ def _cuda_world(monkeypatch, create):
     real = Pipeline._stream_session
     slots = []
 
-    async def once(self_, media, slot, denoise, live_note, loop, sess=None):
+    async def once(self_, media, slot, denoise, loop, sess=None):
         slots.append(slot)
-        await real(self_, media, slot, denoise, live_note, loop, sess=sess)
+        await real(self_, media, slot, denoise, loop, sess=sess)
         return True, 60.0
 
     monkeypatch.setattr(Pipeline, "_stream_session", once)
@@ -725,7 +725,7 @@ def test_health_stays_red_while_every_asr_call_fails(monkeypatch, tmp_path):
     async def scenario():
         loop = asyncio.get_running_loop()
         await p._check_asr_stall(p.telemetry.snapshot(), now=0.0)
-        await p._stream_session("http://cdn/s.flv", slot, None, "note", loop)
+        await p._stream_session("http://cdn/s.flv", slot, None, loop)
         snap = p.telemetry.snapshot()
         await p._check_asr_stall(snap, now=10.0)              # 下一轮统计：丢段数涨了
         await p._announce_health(p._health_level(0.0), 0.0)   # 统计循环：积压回到 0

@@ -105,7 +105,7 @@ Flags need a terminal: the `.app` does not take them, while `Start.command` and 
 
 ### Updating
 
-The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip.
+The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen; click the version number at the bottom of the window to check by hand.
 
 <a id="en-translation-engines"></a>
 
@@ -268,7 +268,7 @@ Phone Viewing opens a port on your network while sharing is on and closes it whe
 
 The app finds the stream URL, pulls the audio with ffmpeg, quiets background music, and cuts it into short segments. Whisper turns each segment into text. The text goes to the window at once. Translation and banned-term matching start from the same text and never hold it up.
 
-When the app starts, Startup Check runs each part once (noise reduction, translation, the audit log) and shows a fix next to anything that fails. A readout at the bottom of the window shows how long a spoken word takes to be recognized and how much the translation adds.
+When the app starts, Startup Check runs each part once (noise reduction, translation, the audit log) and shows a fix next to anything that fails.
 
 Each session also writes an audit log in `logs/`, one record per segment: the accepted text, the candidates the quality filter rejected, banned-term matches and the translation.
 
@@ -393,7 +393,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 ### 更新
 
-程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。
+程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示；也可以随时点窗口底部的版本号，手动检查。
 
 <a id="zh-translation-engines"></a>
 
@@ -557,7 +557,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 程序先找到流地址，用 ffmpeg 拉出音频，压低背景音乐，切成短段。Whisper 把每一段转成文字，文字立刻上屏。翻译和违禁词匹配用的是同一份文字，不会拖慢上屏。
 
-启动时，「启动自检」把每个环节（降噪、翻译、审计日志）各跑一遍，哪项出了问题，旁边就给出处理办法。窗口底部有一个读数，显示一个词说出口到识别出来要多久，翻译又多花多久。
+启动时，「启动自检」把每个环节（降噪、翻译、审计日志）各跑一遍，哪项出了问题，旁边就给出处理办法。
 
 每一场还会在 `logs/` 里写一份审计日志，每段一条记录：采用的文字、被质量过滤丢掉的候选、违禁词命中和译文。
 

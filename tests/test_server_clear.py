@@ -71,7 +71,7 @@ def test_the_replay_depth_is_what_the_page_itself_keeps():
 
 def test_the_comment_panel_trims_with_the_named_constant_not_a_bare_number():
     """弹幕栏的裁剪都用 maxComments：留一个裸 100 的话，改常量时它会被漏掉。"""
-    body = APP_JS[APP_JS.index("function renderComment("):APP_JS.index("function commentItemCount(")]
+    body = APP_JS[APP_JS.index("function renderComment("):APP_JS.index("function updateComment(")]
     assert "maxComments" in body
     assert not re.search(r"\b100\b", re.sub(r"//[^\n]*", "", body))
 

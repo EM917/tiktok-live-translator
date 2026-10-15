@@ -149,7 +149,18 @@ test("没经过模型复核的条数：单复数各一句", () => {
 
 test("状态胶囊和设置行摘要", () => {
   const cap = G.guardCapsule(STATE);
-  assert.deepEqual([cap.text, cap.title, cap.tone], ["Comment Review: rules only", "See recent comments to review", "idle"]);
+  assert.deepEqual([cap.text, cap.label, cap.title, cap.tone],
+    ["Comment Review: rules only", "Comment Review", "Comment Review: rules only\nSee recent comments to review", "idle"]);
+  const claude = G.guardCapsule({ status: "claude", backend: "claude", enabled: true });
+  assert.deepEqual([claude.label, claude.text, claude.title],
+    ["Comment Review", "Comment Review: rules + Claude", "Comment Review: rules + Claude\nSee recent comments to review"]);
+  // 关闭和所有 warn 照旧写全：label 就是整句，title 只写点了会怎样
+  for (const status of STATUS_CODES.filter((c) => c !== "rules" && c !== "claude")) {
+    const other = G.guardCapsule({ status, lag_sec: 3, http: 401, wait_min: 2 });
+    assert.equal(other.label, other.text, status);
+    assert.equal(other.title, "See recent comments to review", status);
+  }
+  english(cap.label); english(claude.label); english(cap.title.split("\n")[0]);
   assert.equal(G.guardCapsule({ status: "tripped", lag_sec: 9 }).reenable, true);
   assert.equal(G.guardSummary(STATE, 0), "On · Rules only");
   assert.equal(G.guardSummary(Object.assign({}, STATE, { status: "claude", backend: "claude" }), 12), "On · Rules + Claude · 12 marked");

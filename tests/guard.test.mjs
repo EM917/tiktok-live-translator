@@ -129,6 +129,30 @@ test("状态胶囊：气色（tone）、重新启用、没有状态返回 null",
   assert.equal(G.guardCapsule({ status: "rules" }).reenable, false);
 });
 
+test("状态胶囊：只用规则 / 规则 + Claude 只画「弹幕留意」，完整一句在 title；关闭和所有 warn 照旧写全", () => {
+  // 常态：胶囊上只有名字；text（抽屉状态行、设置行用的）仍是整句；title 第一行是整句、第二行是点了会怎样
+  const rules = G.guardCapsule(STATE);
+  assert.equal(rules.label, "弹幕留意");
+  assert.equal(rules.text, "弹幕留意：只用规则");
+  assert.equal(rules.title, "弹幕留意：只用规则\n查看最近需要留意的弹幕");
+  const claude = G.guardCapsule({ status: "claude", backend: "claude", enabled: true });
+  assert.deepEqual([claude.label, claude.text, claude.tone], ["弹幕留意", "弹幕留意：规则 + Claude", "on"]);
+  assert.equal(claude.title, "弹幕留意：规则 + Claude\n查看最近需要留意的弹幕");
+  // 不是常态的都写全：关闭、被环境变量关闭，以及每一个 warn（没复核绝不显示成没问题）
+  const others = STATUS_CODES.filter((c) => c !== "rules" && c !== "claude");
+  assert.ok(others.length >= 10 && others.includes("tripped") && others.includes("off"), others.join());
+  for (const status of others) {
+    const cap = G.guardCapsule({ status, lag_sec: 3, http: 401, wait_min: 2 });
+    assert.equal(cap.label, cap.text, status);
+    assert.equal(cap.title, "查看最近需要留意的弹幕", status);
+    assert.ok(cap.label.length > "弹幕留意".length, status);
+  }
+  assert.match(G.guardCapsule({ status: "env_off" }).label, /TLT_COMMENT_GUARD/);
+  assert.equal(G.guardCapsule({ status: "off" }).label, "弹幕留意：已关闭");
+  // 短标签不带「只用规则」这类字，也过第八条的中文臂
+  assert.ok(!ZH_LABELS.test(rules.label) && !ZH_CAUSAL.test(rules.label));
+});
+
 test("设置行摘要：开关 · 实际在起作用的复核方式 · 关注人数", () => {
   assert.equal(G.guardSummary(STATE, 0), "开启 · 只用规则");
   assert.equal(G.guardSummary(Object.assign({}, STATE, { status: "claude", backend: "claude" }), 12), "开启 · 规则 + Claude · 关注 12 人");

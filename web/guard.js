@@ -178,14 +178,21 @@ function guardUnreviewedText(state) {
             n + " comments weren’t reviewed by the model this session.");
 }
 
-/* 弹幕栏状态胶囊：{ text, title, tone, unreviewed, reenable, reenableOk }。state 还没到（老后端）返回 null。
+/* 弹幕栏状态胶囊：{ text, label, title, tone, unreviewed, reenable, reenableOk }。state 还没到（老后端）返回 null。
+ * text 永远是完整一句（抽屉里的状态行也用它）；label 才是胶囊上画的那几个字：
+ * 只用规则、规则 + Claude 是常态，胶囊上只留名字「弹幕留意」，圆点颜色已经分得出两种（绿＝Claude 在复核，
+ * 灰＝只用规则），完整一句放进按钮的 title。已关闭、被环境变量关闭和所有 warn 照旧写全。
  * tone：on＝Claude 在复核；warn＝选了 Claude 但没在复核（暂停、停用、没密钥……）；idle＝只用规则或已关闭。
  * 「没复核」绝不显示成「没问题」：warn 的几种一直带着说明 */
 function guardCapsule(state) {
   if (!state || typeof state !== "object" || !state.status) return null;
   var st = state.status;
   var tone = st === "claude" ? "on" : (st === "rules" || st === "off" || st === "env_off" ? "idle" : "warn");
-  return { text: guardStateText(state), title: L("查看最近需要留意的弹幕", "See recent comments to review"),
+  var text = guardStateText(state);
+  var short = st === "rules" || st === "claude";
+  var action = L("查看最近需要留意的弹幕", "See recent comments to review");
+  return { text: text, label: short ? L("弹幕留意", "Comment Review") : text,
+           title: short ? text + "\n" + action : action,
            tone: tone, unreviewed: guardUnreviewedText(state),
            reenable: st === "tripped", reenableOk: state.reenable_ok !== false };
 }
