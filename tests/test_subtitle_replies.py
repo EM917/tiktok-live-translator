@@ -1,6 +1,6 @@
 """字幕译文在「回话」而不是在翻译：这一句显示原文（2026-10-14）。
 
-2026-10-13/14 五场 Claude 字幕 2527 句里 82 句（3.2%）不是干净的译文：英语短句被当成对它的请求
+2026-10-13/14 五场 Claude 字幕 2527 句里 97 句（3.8%）不是干净的译文：英语短句被当成对它的请求
 （「I can't tell what "them" refers to…」「I can't draw images here」）、一段拒绝加就医建议、
 译完加「Note:」「Wait, let me correct that」。这里钉住：
   * 检测规则（translator.looks_like_reply）认得出这几类，正常译文不误判；
@@ -44,6 +44,20 @@ def test_an_english_reply_to_a_spanish_line_is_caught_without_any_keyword():
     assert looks_like_reply("¿Por cuánto están? 40 dólares.", out, ZH) == "reply_no_cjk"
 
 
+@pytest.mark.parametrize("source,out", [
+    ("¿Tú tienes? Sí, sí. Ok, aquí está.", "¿Tienes tú? Sí, sí. Vale, aquí está."),     # 改写后回成西语
+    ("Y no te pierdas de ninguno de nuestros...", "Y no te pierdas de ninguno de nuestros..."),
+    ("The mushroom coffee? Luna? Luna, ¿estás ahí?", "¿El café de hongos? ¿Luna? Luna, ¿estás ahí?"),
+])
+def test_a_line_returned_in_its_own_language_is_caught(source, out):
+    assert looks_like_reply(source, out, ZH) == "reply_untranslated"
+
+
+@pytest.mark.parametrize("source,out", [("Luna?", "Luna?"), ("Gracias.", "Gracias."), ("BB. BB.", "BB. BB.")])
+def test_a_name_or_a_word_kept_as_is_is_not_flagged(source, out):
+    assert looks_like_reply(source, out, ZH) is None
+
+
 def test_a_long_aside_after_a_short_line_is_caught_by_length():
     out = "把你的朋友叫过来吧！(Spanish slang \"Mándala pa' acá\" = \"Send her over here, comadre!\")"
     assert looks_like_reply("¡Mándala comadre pa' acá!", out, ZH) == "reply_too_long"
@@ -81,6 +95,8 @@ def test_the_subtitle_request_wraps_the_line_and_says_it_is_not_addressed_to_the
     system = body["system"]
     assert "<subtitle>" in system and "not a message to you" in system
     assert "Never reply" in system and "never add notes" in system
+    # 不提语音识别会听错：第一版这么写，模型去校对西语原文了
+    assert "never return the line in its original language" in system and "mishear" not in system
     assert "Simplified Chinese" in system
 
 
