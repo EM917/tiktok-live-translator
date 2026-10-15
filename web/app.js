@@ -164,12 +164,15 @@
   var commentRedoTimers = Object.create(null);   // 弹幕 id -> 说明的收起计时器
   // 弹幕的译文和重译状态按 id 另记一份（不靠弹幕栏的 DOM）：弹幕栏只留最近 100 条，「需要留意」抽屉里的
   // 事件可能更早；抽屉也要在译文、重译结果到了的时候跟着重画（2026-10-15：抽屉里的弹幕一直没有译文）
-  var commentTr = Object.create(null), commentTrOrder = [];
+  var commentTr = Object.create(null), commentTrOrder = [], commentTrSeq = 0;
   var COMMENT_TR_KEEP = 500;
+  // 服务端只留最近 200 条弹幕的原文（app/comment_redo.py 的 ORIGINAL_KEEP）：更早的弹幕不再给「重译」
+  var COMMENT_REDO_KEEP = 200;
   var commentRedoState = Object.create(null);    // 弹幕 id -> "pending" | "failed"
   var commentRedoNotes = Object.create(null);    // 弹幕 id -> 正在显示的重译说明
-  // 能点「重译」的状态：译好了的，和没译出来的（失败、积压跳过）——被标出来的弹幕常常正是 Haiku
-  // 不肯译的那几条，重译用 Sonnet 再试一次。已是目标语言（same）、引擎不翻弹幕（skipped）的没有可重译的
+  var commentRedoStateTimers = Object.create(null), commentRedoNoteTimers = Object.create(null);
+  // 能点「重译」的状态：译好了的，和没译出来的（失败、积压跳过）。
+  // 已是目标语言（same）、引擎不翻弹幕（skipped）的没有可重译的
   var COMMENT_REDO_STATES = { ok: true, failed: true, dropped: true };
   var statsEl = document.getElementById("stats-line");
   var healthBar = document.getElementById("health-bar");
@@ -814,6 +817,7 @@
         commentList.innerHTML = "";
         commentById = Object.create(null);
         commentMeta = Object.create(null);
+        resetCommentRedo();         // 断线期间那次重译的结果收不到了：「重译中…」不能一直挂着
         commentCount.textContent = "0";
         commentFollowing = true;   // 回放重建整个列表：从最新处开始看
         commentPanel.classList.add("hidden");
@@ -1657,8 +1661,8 @@
     // 正序：新的追加在底部，和字幕列表同一个方向，从上往下读就是时间顺序
     commentList.appendChild(item);
     commentById[msg.id] = item;
-    item.dataset.cmtState = msg.state || "";
     noteCommentTr(msg.id, msg.state, msg.translated);
+    if (msg.replay) guardCommentChanged(msg.id);   // 重连回放：抽屉里的这一行补上译文
     syncCommentRedo(item);
     noteCommentGuard(msg, item);
     // 满 100 条从顶部删最旧的。用户正往上翻着看时，眼前那条不能跟着跑：
@@ -1705,7 +1709,6 @@
     if (!zh) return;
     zh.classList.remove("pending");
     markBody(zh, true);   // 下面两路放的都是正文：译文，或者原文本身
-    item.dataset.cmtState = msg.state || "";
     if (msg.state === "ok") {
       zh.textContent = msg.translated || "";
       zh.classList.remove("failed");
@@ -1722,26 +1725,31 @@
   }
 
   // ---- 弹幕重译 ----
-  // 译好了的弹幕（state ok）悬停时右上角出一个「重译」：服务端用 Claude Sonnet 5.5 再译一次
+  // 译好了的、和没译出来的弹幕，悬停时右上角出一个「重译」（「弹幕留意」抽屉里那一行也有）：服务端用 Claude Sonnet 5.5 再译一次
   // （app/comments.py retranslate）。只有字幕引擎是 Claude 时才能点——别的引擎下按钮是灰的，
   // 悬停说明为什么：弹幕重译从不去叫本地的 7B。手机页没有这个按钮。
-  // 状态（进行中 / 失败）记在弹幕条目的 class 上（redoing / redo-failed），按钮的字由 syncCommentRedo
-  // 现算：引擎变了、状态变了都走同一处，不会有的路径忘了改字。
+  // 译好了的、和没译出来的（失败、积压跳过）都能重译；状态（进行中 / 失败）按 id 记在 commentRedoState，
+  // 按钮的样子由 commentRedoView 现算，弹幕栏和「弹幕留意」抽屉共用：引擎变了、状态变了都走同一处。
   var COMMENT_REDO_NOTE_MS = 7000;
 
   function noteCommentTr(id, state, translated) {
     if (!id) return;
+    var seq;
     if (!(id in commentTr)) {
       commentTrOrder.push(id);
       if (commentTrOrder.length > COMMENT_TR_KEEP) delete commentTr[commentTrOrder.shift()];
+      seq = ++commentTrSeq;
+    } else {
+      seq = commentTr[id].seq;
     }
-    commentTr[id] = { state: state || "", text: translated || "" };
+    commentTr[id] = { state: state || "", text: translated || "", seq: seq };
   }
 
   // 「重译」按钮的样子：弹幕栏和抽屉共用。没有可重译的返回 null
   function commentRedoView(id) {
     var t = id ? commentTr[id] : null;
     if (!t || !COMMENT_REDO_STATES[t.state]) return null;
+    if (commentTrSeq - t.seq >= COMMENT_REDO_KEEP) return null;     // 服务端已经不记得它的原文
     var usable = commentRedoEngine === "claude";
     var busy = commentRedoState[id] === "pending";
     return {
@@ -1756,6 +1764,15 @@
 
   function sendCommentRedo(id) {
     if (id) send({ type: "retranslate_comment", id: id });
+  }
+
+  function resetCommentRedo() {
+    Object.keys(commentRedoStateTimers).forEach(function (id) { clearTimeout(commentRedoStateTimers[id]); });
+    Object.keys(commentRedoNoteTimers).forEach(function (id) { clearTimeout(commentRedoNoteTimers[id]); });
+    commentRedoState = Object.create(null);
+    commentRedoNotes = Object.create(null);
+    commentRedoStateTimers = Object.create(null);
+    commentRedoNoteTimers = Object.create(null);
   }
 
   function syncCommentRedo(item) {
@@ -1800,10 +1817,14 @@
       else delete commentRedoState[msg.id];
       // 又点了一次、或这次成了：上一次的说明不再适用
       if (pending || msg.redo_state === "ok") delete commentRedoNotes[msg.id];
+      clearTimeout(commentRedoStateTimers[msg.id]);
+      delete commentRedoStateTimers[msg.id];
       if (failed) {
-        setTimeout(function () {
+        commentRedoStateTimers[msg.id] = setTimeout(function () {
+          delete commentRedoStateTimers[msg.id];
           if (commentRedoState[msg.id] === "failed") delete commentRedoState[msg.id];
-          if (item) { item.classList.remove("redo-failed"); syncCommentRedo(item); }
+          var now = commentById[msg.id];           // 到点时再取：期间可能重连重画过
+          if (now) { now.classList.remove("redo-failed"); syncCommentRedo(now); }
           guardCommentChanged(msg.id);
         }, 4000);
       }
@@ -1817,16 +1838,19 @@
     if (msg.text) {
       // 抽屉里那一行也显示这句说明，几秒后收起
       commentRedoNotes[msg.id] = msg.text;
-      setTimeout(function () {
-        if (commentRedoNotes[msg.id] === msg.text) delete commentRedoNotes[msg.id];
+      clearTimeout(commentRedoNoteTimers[msg.id]);
+      commentRedoNoteTimers[msg.id] = setTimeout(function () {
+        delete commentRedoNoteTimers[msg.id];
+        delete commentRedoNotes[msg.id];
         guardCommentChanged(msg.id);
       }, COMMENT_REDO_NOTE_MS);
     }
     guardCommentChanged(msg.id);
     if (!msg.text) return;
-    // 那条弹幕已经不在页面上了（清空了、被挤出 100 条）：话退回页脚那一行，不能丢
+    // 那条弹幕已经不在页面上了（清空了、被挤出 100 条）：话退回页脚那一行，不能丢——
+    // 抽屉里正显示着这一行的话就不用了，说明已经在那里
     if (!item) {
-      showVersionNote(msg.text, 6000);
+      if (!guardDrawerShows(msg.id)) showVersionNote(msg.text, 6000);
       return;
     }
     clearCommentRedoNote(item, msg.id);
@@ -1929,11 +1953,16 @@
 
   // 一条弹幕的译文或重译状态变了：抽屉开着、而且「最近需要留意」里有这一条，就重画
   function guardCommentChanged(cid) {
-    if (!cid || !guardDrawerOpen || guardTab !== "recent") return;
+    if (guardDrawerShows(cid)) drawGuardDrawer();
+  }
+
+  function guardDrawerShows(cid) {
+    if (!cid || !guardDrawerOpen || guardTab !== "recent") return false;
     for (var id in guardEvents) {
       var ev = guardEvents[id];
-      if (ev && ev.sample && ev.sample.cid === cid) { drawGuardDrawer(); return; }
+      if (ev && !ev.dismissed && ev.sample && ev.sample.cid === cid) return true;
     }
+    return false;
   }
 
   // 收到一条弹幕：记下账号字段和判定，画标记；关注的人发言了就记一笔（回放里的不算）
@@ -2071,6 +2100,25 @@
     }
   }
 
+  function guardFocusedButton() {
+    var el = document.activeElement;
+    if (!el || !guardEventsEl || !guardEventsEl.contains || !guardEventsEl.contains(el)) return null;
+    var row = el.closest ? el.closest(".guard-ev-row") : null;
+    var btns = row ? Array.prototype.slice.call(row.querySelectorAll("button")) : [];
+    var at = btns.indexOf(el);
+    return row && at >= 0 ? { ev: row.getAttribute("data-ev"), at: at } : null;
+  }
+
+  function guardRestoreFocus(focusAt) {
+    var rows = guardEventsEl.querySelectorAll(".guard-ev-row");
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute("data-ev") !== focusAt.ev) continue;
+      var btn = rows[i].querySelectorAll("button")[focusAt.at];
+      if (btn && btn.focus) btn.focus();
+      return;
+    }
+  }
+
   function guardTranslationOf(cid) {
     var t = cid ? commentTr[cid] : null;
     return t && t.state === "ok" ? t.text : "";
@@ -2108,8 +2156,11 @@
     var nMarked = Object.keys(guardMarked).length;
     guardTabMarkedN.textContent = nMarked ? String(nMarked) : "";
     var ctx = guardCtx();
+    // 重画会重建每一行：键盘焦点在抽屉里的某个按钮上时，记下它在哪一行、是哪个按钮，画完放回去
+    var focusAt = guardFocusedButton();
     if (recent) guardRenderEvents(document, guardEventsEl, guardEvents, ctx);
     else guardRenderMarked(document, guardMarkedEl, guardMarked, ctx);
+    if (focusAt) guardRestoreFocus(focusAt);
   }
 
   function syncGuardSettings() {

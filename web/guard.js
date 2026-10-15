@@ -536,12 +536,6 @@ function guardRenderEvents(doc, box, events, ctx) {
       locate.addEventListener("click", function () { if (ctx && ctx.onLocate) ctx.onLocate(ev); });
       actions.appendChild(locate);
     }
-    if (redo) {
-      var rb = guardButton(doc, "btn small gev-redo", redo.text, redo.title);
-      rb.disabled = !!redo.disabled;
-      rb.addEventListener("click", function () { if (ctx && ctx.onRedo) ctx.onRedo(row.cid); });
-      actions.appendChild(rb);
-    }
     if (row.markKey) {
       var mark = guardButton(doc, "btn small", row.marked ? L("移出关注名单", "Unmark") : L("加入关注名单", "Mark"));
       mark.addEventListener("click", function () { if (ctx && ctx.onMark) ctx.onMark(ev.sample || {}, !row.marked); });
@@ -550,6 +544,15 @@ function guardRenderEvents(doc, box, events, ctx) {
     var dismiss = guardButton(doc, "btn small", L("忽略", "Dismiss"));
     dismiss.addEventListener("click", function () { if (ctx && ctx.onDismiss) ctx.onDismiss(ev); });
     actions.appendChild(dismiss);
+    // 「重译」放最后：它是后出现的（译文回来以后才有），字也会变（重译中… / 重译失败），放前面会把
+    // 「加入关注名单」「忽略」挤得挪位置，点歪。说明只放 title，可见的字就是按钮的名字
+    if (redo) {
+      var rb = guardButton(doc, "btn small gev-redo", redo.text);
+      if (redo.title) rb.setAttribute("title", redo.title);
+      rb.disabled = !!redo.disabled;
+      rb.addEventListener("click", function () { if (ctx && ctx.onRedo) ctx.onRedo(row.cid); });
+      actions.appendChild(rb);
+    }
     el.appendChild(actions);
     box.appendChild(el);
   });
