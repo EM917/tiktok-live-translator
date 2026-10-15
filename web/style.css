@@ -1453,6 +1453,7 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .gev-zh { font-size: var(--fs-callout); line-height: 1.45; color: var(--label-2); overflow-wrap: anywhere; }
 .gev-note { margin-top: 2px; font-size: var(--fs-footnote); line-height: 1.4; color: var(--warn-fg); }
 .guard-ev-row.alert .gev-note { color: var(--red-ink); }
+.gev-redo-note { margin-top: 2px; font-size: var(--fs-footnote); line-height: 1.4; color: var(--label-2); }
 .gev-accounts { margin-top: 2px; font-size: var(--fs-footnote); color: var(--label-2); }
 .gev-accounts summary { cursor: pointer; }
 .gev-account-list { margin: 2px 0 0 16px; }

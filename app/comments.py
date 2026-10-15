@@ -534,6 +534,7 @@ class CommentTranslator:
                     out = None
             if out:
                 ok += 1
+                self._ledger.mark_translated(item["id"])
             else:
                 failed[why or "no_output"] = failed.get(why or "no_output", 0) + 1
             if out:
@@ -677,22 +678,24 @@ class CommentTranslator:
             else:
                 await self._redo_refused(cid, redo.note_full(wait))
             return
+        had = self._ledger.has_translation(cid)
         try:
             await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "pending"})
-            out, why = await self._redo_translate(engine, text)
+            out, why = await self._redo_translate(engine, text, had)
         except Exception as exc:
             print("[警告] 弹幕重译出错: {}".format(exc))
-            out, why = None, redo.note_unknown()
+            out, why = None, redo.note_unknown(had)
         finally:
             self._ledger.finish(cid)
         if out:
+            self._ledger.mark_translated(cid)
             await self._safe_broadcast({"type": "comment_update", "id": cid,
                                         "translated": out, "state": "ok"})
             await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "ok"})
         else:
             await self._redo_refused(cid, why)
 
-    async def _redo_translate(self, engine, text):
+    async def _redo_translate(self, engine, text, had=True):
         """用重译实例译一次。返回 (译文, None) 或 (None, 给中控的说明)。
 
         译文过的关和批量翻译一样：词表兜底替换，再过 plausible_translation（弹幕是陌生人的话，
@@ -710,7 +713,7 @@ class CommentTranslator:
             out, discarded = None, True
         if out:
             return out, None
-        return None, redo.failure_text(engine, error_before, translate_call_outcome(), discarded)
+        return None, redo.failure_text(engine, error_before, translate_call_outcome(), discarded, had)
 
     async def _redo_say(self, cid, text):
         """只说一句话，不动按钮的状态。"""

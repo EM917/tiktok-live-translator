@@ -180,17 +180,19 @@ Three ways to invoke it:
   any existing line, and prints the segments whose translation changed rather
   than replacing anything silently
 
-A translated viewer comment has a Retranslate button too, in the comment
-column on this computer (phones do not have it). It works only when the engine
-is Claude: it asks Claude Sonnet 5.5 on its own connection, with the same
-instructions the comment translation uses, and the result has to pass the same
-check that it reads as a translation and not as a reply. With any other engine
-the button is greyed out and its tooltip says so, because comments never load a
-local model, the 7B included. A comment that is already being retranslated is
-not sent again, at most 20 retranslations per minute are accepted, and the app
-keeps the original text of only the latest 200 comments; a click it cannot serve
-gets a short note under that comment and the existing translation stays. Comment
-text and viewer names are not written to the audit log.
+A viewer comment that was translated, or that came back untranslated, has a
+Retranslate button too, in the comment column and the Comment Review drawer on
+this computer (phones do not have it); a comment already in your language has
+none. It works only when the engine is Claude: it asks Claude Sonnet 5.5 on its
+own connection, with the same instructions the comment translation uses, and the
+result has to pass the same check that it reads as a translation and not as a
+reply. With any other engine the button is greyed out and its tooltip says so,
+because comments never load a local model, the 7B included. A comment that is
+already being retranslated is not sent again, at most 20 retranslations per
+minute are accepted, and the app keeps the original text of only the latest 200
+comments; a click it cannot serve gets a short note under that comment, and the
+existing translation (or the original text, for a comment that had none) stays.
+Comment text and viewer names are not written to the audit log.
 
 Measured on the same 259 captions, re-translation with 7B reads more easily
 than 1.8B — that difference survived the correction — but it was not shown to
