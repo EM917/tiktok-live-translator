@@ -233,7 +233,7 @@ For a stuck download, a busy port and other problems, see [docs/faq.md](docs/faq
 - On a computer without Apple Silicon or an NVIDIA GPU, recognition can fall behind. Audio more than 60 seconds behind is dropped, oldest first, and the window shows how much.
 - Viewer comments need Python 3.10 or newer. Hy-MT2 1.8B, TranslateGemma and Claude translate them; the other engines show the original.
 - Phone Viewing needs the phone to be on the same network. It uses plain http, so phones get no system notifications, and sound may stop when a phone locks.
-- There is no export. Select and copy text from the window; it keeps the last 300 lines.
+- There is no export. Select and copy text from the window. It keeps the last 300 captions and 100 comments, and a reload shows the same ones again. Clear removes them from the app too, so they do not come back after a reload. A phone that connects later sees the last 100 of each.
 - The terminal, the logs and the audit log are always in Chinese, whatever the interface language.
 - Follow TikTok's Terms of Service and local laws. Do not rebroadcast or redistribute other people's content.
 
@@ -517,7 +517,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 - 音频积压超过 60 秒，才会开始丢最旧的，窗口会显示丢了多少。
 - 观众弹幕要 Python 3.10 或更新的版本，而且只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时才翻译。
 - 手机同看只能在同一个局域网里用。它走的是普通 http，所以手机收不到系统通知，锁屏后声音可能会断。
-- 没有导出功能。可以在窗口里选中文字复制，窗口只保留最近 300 行。
+- 没有导出功能。可以在窗口里选中文字复制。窗口保留最近 300 条字幕和 100 条弹幕，刷新后原样放回来；点「清空字幕」「清空弹幕」会连程序里存着的一起清掉，刷新后不会再回来。之后才连上的手机，每类只看到最近 100 条。
 - 终端、日志和审计日志一直是中文，不随界面语言变。
 - 请遵守 TikTok 的服务条款和当地法律，不要转播或分发别人的内容。
 

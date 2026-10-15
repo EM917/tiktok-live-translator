@@ -1107,6 +1107,7 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
   color: var(--label); background: var(--card);
   border: none; border-radius: 16px; cursor: pointer;
   box-shadow: var(--float-shadow);
+  white-space: nowrap;      /* 带条数的「回到最新 · 12 条新字幕」比光秃秃的名字长，不许折行（高度是定死的） */
 }
 .jump-latest:hover { color: var(--blue); }
 .jump-latest:active { transform: translateY(1px); }

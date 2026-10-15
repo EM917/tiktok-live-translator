@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=41">
+  <link rel="stylesheet" href="/static/style.css?v=42">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -659,6 +659,11 @@
     <!-- 空态要说清楚是「没人发」还是「评论流没连上」，两者对中控意义完全不同 -->
     <div id="comment-empty" class="cmt-empty hidden"></div>
     <div id="comment-list" class="comment-list"></div>
+    <!-- 回到最新（弹幕栏的）：弹幕栏自己滚，往上翻着看时新弹幕不会把视野拉走，按钮上数着又来了几条。
+         和字幕区那颗同样式、同样是 fixed，位置由 app.js updateCommentJump 定（躲开底部大字幕） -->
+    <button id="comment-jump" class="jump-latest hidden" type="button" data-en="Jump to Latest">
+      <svg class="i" aria-hidden="true"><use href="#i-arrow-down"/></svg>回到最新
+    </button>
   </aside>
   <!-- 弹幕列收起后的入口：带条数，新弹幕来了也能看出来 -->
   <button id="comment-fab" class="comment-fab hidden" type="button" title="展开观众弹幕"
@@ -716,8 +721,8 @@
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=2"></script>
-  <script src="/static/live-ui.js?v=1"></script>
+  <script src="/static/live-ui.js?v=2"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/app.js?v=71"></script>
+  <script src="/static/app.js?v=72"></script>
 </body>
 </html>
