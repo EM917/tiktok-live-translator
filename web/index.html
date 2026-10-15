@@ -556,6 +556,38 @@
             </div>
           </div>
 
+          <!-- 字幕记录：每一场的字幕（原文、译文）和观众弹幕边听边存成本机上的一个文件
+               （程序文件夹的 transcripts/，app/transcript.py），这一行负责导出和打开文件夹。
+               和违禁词报警、弹幕留意一样放在设置分组里、默认收起、永不自动展开（CLAUDE.md 第六条）。
+               摘要＝已经存了几场（config.transcripts.count，settings-rows.js transcriptSummary）。
+               设置分组在直播中整块隐藏：导出的是最近一场（直播已停）。导出的文件和记录放在一起，
+               导出后程序会打开这个文件夹，结果通过页脚的 notice 说明 -->
+          <div id="transcript-card" class="set-item">
+            <button id="transcript-head" class="set-row" type="button" aria-expanded="false" aria-controls="transcript-body">
+              <span class="set-icon blue" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M4.5 1.5h4.9L13 5.1v8.4a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 13.5v-10A2 2 0 0 1 4.5 1.5Z"/>
+                  <path d="M5.4 8.4h5.2M5.4 11h5.2M5.4 5.8h2" stroke="var(--blue)" stroke-width="1.2" stroke-linecap="round"/>
+                </svg>
+              </span>
+              <span class="set-name" data-en="Transcripts">字幕记录</span>
+              <span id="transcript-summary" class="set-value"></span>
+              <span class="set-chevron" aria-hidden="true"></span>
+            </button>
+            <div id="transcript-body" class="set-body hidden">
+              <p class="set-note"
+                 data-en-html="Each session’s captions, translations and comments are saved on this computer, in the <code>transcripts</code> folder inside the app folder. Export Latest Session adds a Markdown file, a CSV file for Excel and an SRT subtitle file next to the saved file.">
+                每一场的字幕、译文和观众弹幕都会存在这台电脑上，放在程序文件夹里的 <code>transcripts</code> 文件夹。
+                导出最近一场，会在记录文件旁边生成 Markdown、能用 Excel 打开的 CSV 和 SRT 字幕文件。
+              </p>
+              <div class="tr-actions">
+                <button id="transcript-export" class="btn small" type="button" data-en="Export Latest Session">导出最近一场</button>
+                <button id="transcript-dir-btn" class="btn small" type="button" data-en="Open Folder">打开文件夹</button>
+              </div>
+              <p id="transcript-status" class="set-note" role="status"></p>
+            </div>
+          </div>
+
           <!-- 磁盘空间：程序往硬盘放的模型和日志散在三处，用户看不到也没地方删。
                实测一台用了三周的机器缓存里躺着 50 多 GB，一半是本程序不用的模型。
                展开时才向服务端要盘点（见 app.js diskHead 的点击处理） -->
@@ -720,7 +752,7 @@
   <script src="/static/qrcanvas.js?v=1"></script>
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
-  <script src="/static/settings-rows.js?v=2"></script>
+  <script src="/static/settings-rows.js?v=3"></script>
   <script src="/static/live-ui.js?v=2"></script>
   <script src="/static/guard.js?v=6"></script>
   <script src="/static/app.js?v=72"></script>

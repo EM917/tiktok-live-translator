@@ -19,6 +19,8 @@ brands/*.txt
 !brands/*.example.txt
 # 审计日志
 logs/
+# 字幕记录：每场的字幕、译文和观众弹幕（含昵称），以及导出的 .md/.csv/.srt——个人数据，不入库
+transcripts/
 # 用户/程序在目录里留下的杂物——它们不入库，也绝不该挡住一键更新
 *.bak
 *.bak-*

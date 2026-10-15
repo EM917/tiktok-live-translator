@@ -27,6 +27,16 @@ def _keep_audit_out_of_the_real_log_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _keep_transcripts_out_of_the_real_folder(tmp_path, monkeypatch):
+    """字幕记录（app/transcript.py）同理：测试写的记录必须落在临时目录，不能在开发者的
+    transcripts/ 里留下夹具字幕和虚构弹幕，更不能让「导出最近一场」导出到别人的真实记录。
+    autouse：靠每个测试自己记得传 directory，已经被审计那一份证明会漏。"""
+    from app import transcript
+
+    monkeypatch.setattr(transcript, "TRANSCRIPT_DIR", tmp_path / "transcripts")
+
+
+@pytest.fixture(autouse=True)
 def _comment_guard_emergency_switch_is_not_inherited(monkeypatch):
     """TLT_COMMENT_GUARD=off 是弹幕留意的应急总开关（app/pipeline_guard.py）：开发机上设过它，
     不该让依赖「守卫开着」的用例变红。要测应急开关的用例自己 setenv。"""

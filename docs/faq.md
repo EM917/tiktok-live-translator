@@ -201,14 +201,36 @@ captions. Comment translation is for display
 only and never part of the alert path. The connection is signed through a
 third-party service; see [Privacy](../README.md#privacy).
 
-**Exporting captions.** There is no export function; select and copy the text
-from the page. The page keeps the most recent 300 captions and 100 comments,
-and the app replays the same ones after a reload or reconnection. **Clear**
-removes them from the app as well, so a cleared caption or comment does not
-come back after a reload. The audit log is not touched. A phone that connects
-later gets the last 100 captions and 100 comments. While you are scrolled up,
-the **Jump to Latest** button shows how many new captions have arrived since
-(in the comment column, how many new comments).
+**Exporting captions.** Every session is saved as it happens in the
+`transcripts` folder inside the app folder: each caption with its translation
+(a Retranslate result replaces the first one) and each viewer comment with its
+translation and display name. The file is written line by line, so a crash loses
+at most the line being written. It is separate from the audit log, which never
+holds comment text, and the app never uploads or deletes it.
+
+The page keeps the most recent 300 captions and 100 comments, and the app
+replays the same ones after a reload or reconnection. **Clear** removes them
+from the app as well, so a cleared caption or comment does not come back after
+a reload; the transcript and the audit log are not touched. A phone that
+connects later gets the last 100 captions and 100 comments. While you are
+scrolled up, the **Jump to Latest** button shows how many new captions have
+arrived since (in the comment column, how many new comments).
+
+To export, stop the session, open Settings → Transcripts and click Export
+Latest Session. The app writes three files next to the saved one and opens the
+folder: a Markdown file (captions and comments in separate sections, each with
+the original and its translation), a CSV file with the columns `time`, `kind`,
+`user`, `original` and `translation` (UTF-8 with a byte-order mark, so Excel
+shows Chinese correctly, with captions and comments in time order) and an SRT
+subtitle file (translation line first, then the original, with times counted from
+the start of the session; each caption stays up until the next one, at most
+8 seconds). In the CSV, a cell that begins with `=`, `+`, `-` or `@` gets a
+leading apostrophe, so Excel never runs a viewer's comment as a formula.
+Settings is hidden while a session runs; the export covers the latest finished
+session that recorded something. A start that got no stream address, or that
+you stopped at once, leaves a file with only a header: it stays in the folder,
+but Export Latest Session and the session count in Settings skip it. "Open
+Folder" opens the `transcripts` folder without exporting.
 
 **Closing the console window.** On Windows that console window is the app
 itself, so closing it quits the app. On macOS, closing the app window quits it

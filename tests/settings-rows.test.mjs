@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { selfcheckSummary, engineSummary, watchSummary, nextAutoOpen } =
+const { selfcheckSummary, engineSummary, watchSummary, nextAutoOpen, transcriptSummary } =
   require("../web/settings-rows.js");
 
 // ---- selfcheckSummary：三种结论 + 签名 ----
@@ -176,4 +176,15 @@ test("引擎回退式用法：同一条提示重放不重开；换新提示才�
   r = nextAutoOpen(prevSig, sum.sig, true);
   assert.equal(r.changed, true);
   assert.equal(sum.hasNote, false, "提示清除后 hasNote 为假，调用方据此跳过 setRowOpen");
+});
+
+// ---- transcriptSummary：字幕记录行的摘要（已经存了几场）----
+
+test("字幕记录摘要：写场数；没有、0、不是数字都写「还没有」", () => {
+  assert.equal(transcriptSummary({ count: 1 }), "1 场");
+  assert.equal(transcriptSummary({ count: 12 }), "12 场");
+  assert.equal(transcriptSummary({ count: 2.9 }), "2 场", "不会写出小数");
+  for (const none of [undefined, null, {}, { count: 0 }, { count: -3 }, { count: "x" }, { count: null }]) {
+    assert.equal(transcriptSummary(none), "还没有");
+  }
 });

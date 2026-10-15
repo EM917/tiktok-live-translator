@@ -35,6 +35,7 @@ It does not work for every stream. For some, TikTok gives the app no stream URL,
 - Switch Streamer moves to another live stream without stopping first.
 - Phone Viewing: colleagues on the same Wi-Fi scan a QR code and watch on their phones. They cannot change anything.
 - Comment Review marks insults and threats, fake-product claims, flooding, and comments that pull viewers to another stream or shop. It never deletes or mutes.
+- Transcripts: every session is saved on your computer as it happens, and Settings → Transcripts exports the latest one as Markdown, CSV and SRT.
 - If the stream drops, the app reconnects and keeps the audio it has not recognized yet in a queue.
 - Banned-term alerts are available and off by default.
 
@@ -233,7 +234,7 @@ For a stuck download, a busy port and other problems, see [docs/faq.md](docs/faq
 - On a computer without Apple Silicon or an NVIDIA GPU, recognition can fall behind. Audio more than 60 seconds behind is dropped, oldest first, and the window shows how much.
 - Viewer comments need Python 3.10 or newer. Hy-MT2 1.8B, TranslateGemma and Claude translate them; the other engines show the original.
 - Phone Viewing needs the phone to be on the same network. It uses plain http, so phones get no system notifications, and sound may stop when a phone locks.
-- There is no export. Select and copy text from the window. It keeps the last 300 captions and 100 comments, and a reload shows the same ones again. Clear removes them from the app too, so they do not come back after a reload. A phone that connects later sees the last 100 of each.
+- Select and copy text from the window, or export a whole session from Settings → Transcripts. The window keeps the last 300 captions and 100 comments, and a reload shows the same ones again. Clear removes them from the app too, so they do not come back after a reload; the session's transcript file still has them. A phone that connects later sees the last 100 of each. The app never deletes transcripts, so clear the `transcripts` folder yourself when you no longer need them.
 - The terminal, the logs and the audit log are always in Chinese, whatever the interface language.
 - Follow TikTok's Terms of Service and local laws. Do not rebroadcast or redistribute other people's content.
 
@@ -250,6 +251,8 @@ With DeepL, Google or Claude, caption text goes to that provider. With an OpenAI
 Viewer comments come from TikTok through TikTokLive, which signs its connection through the third-party Euler Stream service. The app also contacts TikTok for the stream and GitHub to check for updates. It downloads software and models from PyPI, Hugging Face, ollama.com and GitHub.
 
 Comment Review's rules run on your computer. If you choose the Claude review, comments the rules are unsure about go to Anthropic, up to 8 in one call and each with the same viewer's previous comment from the last 2 minutes. Phone numbers, strings of 7 or more digits, links, emails and `@handles` are masked first.
+
+Transcripts stay on your computer. A transcript holds what the streamer said, its translation, and the viewers' comments with their display names. It is a separate file from the audit log, which never holds comment text. The app never uploads transcripts or deletes them.
 
 Phone Viewing opens a port on your network while sharing is on and closes it when sharing is off. Phones see captions, not settings, file paths, cookies or the stream address. The app's own window, where you start and stop and change settings, opens from this computer only.
 
@@ -268,6 +271,8 @@ The app finds the stream URL, pulls the audio with ffmpeg, quiets background mus
 When the app starts, Startup Check runs each part once (noise reduction, translation, the audit log) and shows a fix next to anything that fails. A readout at the bottom of the window shows how long a spoken word takes to be recognized and how much the translation adds.
 
 Each session also writes an audit log in `logs/`, one record per segment: the accepted text, the candidates the quality filter rejected, banned-term matches and the translation.
+
+A second file per session, the transcript, goes in `transcripts/`. It is written line by line as things happen: each caption with its translation (a Retranslate result replaces the first one), and each viewer comment with its translation. If the app crashes, everything written so far is still there. In Settings → Transcripts, Export Latest Session writes three files next to it and opens the folder: a Markdown file with captions and comments in separate sections, a CSV file you can open in Excel, and an SRT subtitle file with the translation first and the original under it. Comments never go into the audit log; they are only in the transcript.
 
 [Open the interactive diagram](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.en.html) to search components, trace a route and step through the chapters. The same chain as editable text is in [docs/architecture/mermaid.md](docs/architecture/mermaid.md), and [docs/fault-tolerance.md](docs/fault-tolerance.md) explains how the app keeps a stream alive.
 
@@ -318,6 +323,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 - 「换主播」不用先停止，直接改听另一个直播间。
 - 手机同看：同事在同一个 Wi-Fi 下扫二维码，就能用手机看。只能看，不能操作。
 - 弹幕留意：标出辱骂、威胁、说商品是假货、刷屏和引流的弹幕。它只读，不会删弹幕，也不会禁言。
+- 字幕记录：每一场都边听边存在你的电脑上，「设置 → 字幕记录」可以把最近一场导出成 Markdown、CSV 和 SRT。
 - 直播流断了会自动重连，还没识别的音频在队列里等着。
 - 违禁词报警：有，默认关闭。
 
@@ -517,7 +523,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 - 音频积压超过 60 秒，才会开始丢最旧的，窗口会显示丢了多少。
 - 观众弹幕要 Python 3.10 或更新的版本，而且只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时才翻译。
 - 手机同看只能在同一个局域网里用。它走的是普通 http，所以手机收不到系统通知，锁屏后声音可能会断。
-- 没有导出功能。可以在窗口里选中文字复制。窗口保留最近 300 条字幕和 100 条弹幕，刷新后原样放回来；点「清空字幕」「清空弹幕」会连程序里存着的一起清掉，刷新后不会再回来。之后才连上的手机，每类只看到最近 100 条。
+- 可以在窗口里选中文字复制，也可以在「设置 → 字幕记录」导出整场。窗口保留最近 300 条字幕和 100 条弹幕，刷新后原样放回来；点「清空字幕」「清空弹幕」会连程序里存着的一起清掉，刷新后不会再回来，但这一场的字幕记录文件里还有。之后才连上的手机，每类只看到最近 100 条。程序不会删除字幕记录，不再需要时请自己清理 `transcripts` 文件夹。
 - 终端、日志和审计日志一直是中文，不随界面语言变。
 - 请遵守 TikTok 的服务条款和当地法律，不要转播或分发别人的内容。
 
@@ -534,6 +540,8 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 观众弹幕通过 TikTokLive 从 TikTok 获取，它的连接签名要经过第三方的 Euler Stream 服务。另外，程序会联系 TikTok 取直播流，联系 GitHub 查更新。组件和模型从 PyPI、Hugging Face、ollama.com 和 GitHub 下载。
 
 弹幕留意只用规则，在本机完成。如果你选了 Claude 复核，规则拿不准的弹幕会发给 Anthropic，一次最多 8 条，每条带上同一个人 2 分钟内的前一条弹幕。电话、连续 7 位以上的数字、链接、邮箱和 `@账号` 会先打码。
+
+字幕记录只留在你的电脑上。里面有主播说的话、译文，以及观众弹幕和他们的昵称。它和审计日志是两个文件，审计日志里从来没有弹幕内容。程序不会上传字幕记录，也不会删除它。
 
 手机同看只在打开期间才在你的网络上开一个端口。手机看到的是字幕，看不到设置、文件路径、Cookie 和流地址。你用来开始、停止和改设置的程序窗口，只能在这台电脑上打开。
 
@@ -552,6 +560,8 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 启动时，「启动自检」把每个环节（降噪、翻译、审计日志）各跑一遍，哪项出了问题，旁边就给出处理办法。窗口底部有一个读数，显示一个词说出口到识别出来要多久，翻译又多花多久。
 
 每一场还会在 `logs/` 里写一份审计日志，每段一条记录：采用的文字、被质量过滤丢掉的候选、违禁词命中和译文。
+
+每一场另有一份字幕记录，放在 `transcripts/` 里。它是边发生边一行一行写下的：每条字幕和它的译文（「重译」的结果会替换最初那条译文），以及每条观众弹幕和它的译文。程序中途崩溃，写下的部分都还在。在「设置 → 字幕记录」点「导出最近一场」，会在它旁边生成三个文件并打开文件夹：字幕和弹幕分节的 Markdown，能用 Excel 打开的 CSV，以及译文在上、原文在下的 SRT 字幕文件。弹幕内容不会进审计日志，只在字幕记录里。
 
 [打开可交互的架构图](https://em917.github.io/tiktok-live-translator/architecture/audio-chain.zh.html)，可以搜索组件、追踪一条路径、按章节播放。同一条链路的可编辑文字版在 [docs/architecture/mermaid.zh-CN.md](docs/architecture/mermaid.zh-CN.md)，程序怎么保住直播流见 [docs/fault-tolerance.zh-CN.md](docs/fault-tolerance.zh-CN.md)。
 

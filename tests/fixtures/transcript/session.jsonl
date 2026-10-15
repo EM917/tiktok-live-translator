@@ -1,0 +1,14 @@
+{"type":"transcript_start","v":1,"started_at":"2026-10-15T20:00:00.000+00:00","streamer":"luna_demo","target_lang":"zh-CN"}
+{"type":"caption","seq":1,"time":"2026-10-15T20:00:03.200+00:00","src_lang":"es","original":"Hola a todos, bienvenidos a mi directo."}
+{"type":"translation","seq":1,"time":"2026-10-15T20:00:04.000+00:00","translated":"大家好，欢迎来到我的直播间。","quality":"fast"}
+{"type":"comment","id":"c1","time":"2026-10-15T20:00:05.500+00:00","user":"ana_demo","text":"Hola Luna, te veo muy bien!"}
+{"type":"comment_translation","id":"c1","translated":"你好 Luna，你看起来气色很好！"}
+{"type":"caption","seq":2,"time":"2026-10-15T20:00:12.100+00:00","src_lang":"es","original":"Hoy tenemos 20% de descuento, solo hoy."}
+{"type":"translation","seq":2,"time":"2026-10-15T20:00:13.000+00:00","translated":"今天有八折优惠。","quality":"fast"}
+{"type":"comment","id":"c2","time":"2026-10-15T20:00:14.000+00:00","user":"=oferta_demo","text":"=HYPERLINK(\"http://example.invalid\",\"gratis\")"}
+{"type":"translation","seq":2,"time":"2026-10-15T20:00:20.000+00:00","translated":"今天全场八折，仅限今天。","quality":"strong"}
+{"type":"caption","seq":3,"time":"2026-10-15T20:00:21.500+00:00","src_lang":"es","original":"Gracias por el *regalo*,\nde corazón."}
+{"type":"comment","id":"c3","time":"2026-10-15T20:00:22.000+00:00","user":"pedro_demo","text":"+34 600 000 000"}
+{"type":"caption","seq":4,"time":"2026-10-15T20:00:58.250+00:00","src_lang":"es","original":"1. Primero el sérum."}
+{"type":"translation","seq":4,"time":"2026-10-15T20:00:59.000+00:00","translated":"1. 先说精华液。","quality":"fast"}
+{"type":"transcript_end","ended_at":"2026-10-15T20:01:30.000+00:00"}

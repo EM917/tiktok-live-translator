@@ -72,3 +72,12 @@ test("界面语言行：英文界面里也没有中文（语言名「中文」�
   english(R.langSystemLabel("en"));
   assert.equal(R.langName("zh"), "中文");
 });
+
+test("字幕记录行摘要：1 用单数，没有时写 None yet，英文里没有中文", () => {
+  assert.equal(english(R.transcriptSummary({ count: 1 })), "1 session");
+  assert.equal(english(R.transcriptSummary({ count: 2 })), "2 sessions");
+  assert.equal(english(R.transcriptSummary({ count: 30 })), "30 sessions");
+  for (const none of [undefined, {}, { count: 0 }, { count: "x" }]) {
+    assert.equal(english(R.transcriptSummary(none)), "None yet");
+  }
+});

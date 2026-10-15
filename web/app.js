@@ -212,6 +212,13 @@
   var langSummaryEl = document.getElementById("lang-summary");
   var uiLangSelect = document.getElementById("ui-lang-select");
   var uiLangSystemOpt = document.getElementById("ui-lang-system");
+  // 字幕记录行：和违禁词报警、弹幕留意一样默认收起、永不自动展开（CLAUDE.md 第六条）
+  var transcriptHead = document.getElementById("transcript-head");
+  var transcriptBody = document.getElementById("transcript-body");
+  var transcriptSummaryEl = document.getElementById("transcript-summary");
+  var transcriptStatusEl = document.getElementById("transcript-status");
+  var transcriptExportBtn = document.getElementById("transcript-export");
+  var transcriptDirBtn = document.getElementById("transcript-dir-btn");
 
   // 设置分组的行：展开状态记在行的 aria-expanded 上（CSS 据此转箭头），内容区
   // 照旧靠 .hidden 收放。引擎、报警、输入说明这三行没有额外的开合时机，直接
@@ -234,6 +241,7 @@
   bindRow(guardHead, guardBodyEl);        // 弹幕留意：默认收起，永不自动展开（会自己展开的只有自检和翻译引擎）
   bindRow(inputHelpBtn, inputHelp);
   bindRow(langHead, langBody);
+  bindRow(transcriptHead, transcriptBody);
 
   // 手机同看卡片（#share-card）：只在打开期间监听 0.0.0.0，控制面本身始终只在
   // 127.0.0.1；这张卡片只发/收 viewer_share / viewer_rotate，看不到任何观众数据
@@ -910,6 +918,7 @@
           // 界面语言：闸关着时 config 里没有这几个键，行保持隐藏、不比对、不重载
           renderLang(msg.config);
           reloadForLang(msg.config);
+          renderTranscripts(msg.config.transcripts);
         }
         break;
       case "update_available":
@@ -938,6 +947,8 @@
       // 不碰状态机——直播中收到它不该影响「停止」按钮等 UI
       case "notice":
         if (msg.text) showVersionNote(msg.text, 6000);
+        // 字幕记录行的按钮（导出、打开文件夹）：同一句话也写在按钮下面，页脚常常不在视野里
+        if (msg.text && msg.where === "transcripts") showTranscriptStatus(msg.text);
         break;
       // 点「重译」没有开始或没成功：话显示在被点的那条字幕旁边（不是页脚那一行）
       case "retranslate_note":
@@ -968,6 +979,8 @@
           renderLang(msg);
           reloadForLang(msg);
         }
+        // 新的一场开始时后端推一次已经存了几场（字幕记录行的摘要）
+        if ("transcripts" in msg) renderTranscripts(msg.transcripts);
         break;
       case "glossary_migration":
         handleMigration(msg);
@@ -3574,6 +3587,26 @@
         engineSave.textContent = L("保存", "Save");
       }, 2500);
     });
+  }
+
+  // ---- 字幕记录（设置分组里的一行，app/pipeline_transcript.py） ----
+  function renderTranscripts(info) {
+    if (transcriptSummaryEl) transcriptSummaryEl.textContent = transcriptSummary(info);
+  }
+  function showTranscriptStatus(text) {
+    if (transcriptStatusEl) transcriptStatusEl.textContent = text;
+  }
+  if (transcriptExportBtn) {
+    transcriptExportBtn.addEventListener("click", function () {
+      showTranscriptStatus(L("正在导出…", "Exporting…"));
+      if (!send({ type: "export_transcript" })) {
+        showTranscriptStatus(L("与本地服务断开，正在重连——稍候再试。",
+                               "Lost connection to the local service. Reconnecting… Try again in a moment."));
+      }
+    });
+  }
+  if (transcriptDirBtn) {
+    transcriptDirBtn.addEventListener("click", function () { send({ type: "open_transcripts_dir" }); });
   }
 
   // ---- 界面语言（spec §3.4、§3.5） ----
