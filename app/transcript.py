@@ -16,6 +16,10 @@
   transcript_end    ended_at（正常收尾才有；崩溃的文件没有，不影响读取）
 time 是带时区偏移的本地时间（ISO 8601，毫秒），夏令时换挡也对得上。
 
+**空的一场不算一场**：每次开始监听都先建文件，没拿到流地址、开错房间、马上停止的那几次一条
+字幕也没有，只留下文件头。程序从不删记录（README、FAQ 都这么承诺），所以这些文件留在文件夹里，
+但「最近一场」（latest_transcript）和「存了几场」（count_transcripts）会绕开它们——见 has_content。
+
 **写失败绝不能影响直播**：写不进去（磁盘满、目录没权限）只在终端打一次中文警告，之后这一场
 的记录静默停下，识别、检测、审计、翻译一概不受牵连——这个文件是锦上添花，不在两个 KPI
 的关键路径上。所有写入都发生在事件循环线程里，不加锁。
@@ -323,8 +327,40 @@ def _add_translation(out, by_seq, rec, stamp):
 
 # ---- 找 ----------------------------------------------------------------------------
 
-def list_transcripts(directory=None):
-    """文件夹里的记录文件，从旧到新（按文件名里的开始时间，同一秒再按修改时间）。"""
+# 算「有内容」的记录类型 -> 它非空的那个字段。弹幕译文单独不算（它得挂在一条弹幕上）；
+# 译文单独算——字幕行写失败过时，read_transcript 会把它留成一条只有译文的字幕
+_CONTENT_FIELD = {"caption": "original", "translation": "translated", "comment": "text"}
+
+
+def has_content(path):
+    """这个记录文件里有没有至少一条字幕或弹幕。
+
+    每次开始监听都先建文件，而房间不给流地址、开错房间、马上点停止的那些「场」一条字幕都不会
+    有，只留下文件头（崩溃的没有收尾，正常结束的多一行收尾）。程序从不删记录，所以「最近一场」
+    和「存了几场」靠这个函数绕开它们。读到第一条有内容的记录就返回：空文件只有两三行，有内容的
+    文件也只读开头，数几百个文件不慢。读不了的文件当作有内容——说不准就别悄悄藏起来，让导出
+    去报那个具体的错。"""
+    try:
+        with Path(path).open("rb") as fh:
+            for raw in fh:
+                try:
+                    rec = json.loads(raw.decode("utf-8", errors="replace"))
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                kind = rec.get("type")
+                key = _CONTENT_FIELD.get(kind) if isinstance(kind, str) else None
+                if key and rec.get(key):
+                    return True
+    except OSError:
+        return True
+    return False
+
+
+def list_transcripts(directory=None, *, recorded_only=False):
+    """文件夹里的记录文件，从旧到新（按文件名里的开始时间，同一秒再按修改时间）。
+    recorded_only=True 只要有内容的（见 has_content）；默认是文件夹里有什么列什么。"""
     folder = Path(directory) if directory else TRANSCRIPT_DIR
     found = []
     try:
@@ -339,14 +375,19 @@ def list_transcripts(directory=None):
     except OSError:
         return []
     found.sort(key=lambda item: item[:3])
-    return [item[3] for item in found]
+    paths = [item[3] for item in found]
+    return [path for path in paths if has_content(path)] if recorded_only else paths
 
 
 def latest_transcript(directory=None):
-    """最近开始的一场的记录文件；一场都没有返回 None。"""
-    found = list_transcripts(directory)
-    return found[-1] if found else None
+    """最近开始、并且真的记到了字幕或弹幕的一场的记录文件；没有返回 None。
+    排在后面的空文件（没拿到流地址的那几次开始）不算：不然导出会拿一份空的去顶替真正那一场。"""
+    for path in reversed(list_transcripts(directory)):
+        if has_content(path):
+            return path
+    return None
 
 
 def count_transcripts(directory=None):
-    return len(list_transcripts(directory))
+    """存了几场（只数有内容的，同 latest_transcript）。"""
+    return len(list_transcripts(directory, recorded_only=True))

@@ -39,18 +39,22 @@ class TranscriptMixin:
 
     def _close_transcript(self, owner=None):
         """owner 为 None：不问是谁的，直接关当前这份。给了 owner：只有这份记录就是该审计那一场
-        的才关——晚到的旧任务拿旧审计来关，碰不到已经属于下一场的记录。"""
+        的才关——晚到的旧任务拿旧审计来关，碰不到已经属于下一场的记录。关了一份返回 True，
+        调用方据此重新推一次「存了几场」（这一场有没有内容，要到收尾才有定论）。"""
         writer = getattr(self, "transcript", None)
         if writer is None or (owner is not None and writer.owner is not owner):
-            return
+            return False
         self.transcript = None
         try:
             writer.close()
         except Exception:
             pass
+        return True
 
     async def _publish_transcripts(self):
-        """存了几场，告诉设置行（config.transcripts）。新的一场开始时调一次。"""
+        """存了几场，告诉设置行（config.transcripts）。新的一场开始时调一次，一场收尾时再调一次：
+        只数有内容的（tr.count_transcripts），开始时这一场还是空的，设置分组在监听期间又是隐藏的，
+        停下来回到首页时那个数字得已经是对的。"""
         try:
             info = {"count": tr.count_transcripts()}
             self.server.config["transcripts"] = info
@@ -107,15 +111,26 @@ class TranscriptMixin:
         return None
 
     async def _export_transcript(self):
-        """「导出最近一场」：正在记的这一场（有的话），否则最近开始的那一场。生成 .md / .csv /
-        .srt 放在记录文件旁边，打开文件夹，用 notice 说明文件在哪里或者出了什么事。"""
+        """「导出最近一场」：正在记的这一场（有的话），否则最近开始的、记到了内容的那一场（没拿到
+        流地址的那几次开始只留一个文件头，不算，见 tr.latest_transcript）。生成 .md / .csv / .srt
+        放在记录文件旁边，打开文件夹，用 notice 说明文件在哪里或者出了什么事。选中的这一场里什么
+        都没有时直说没有，不报「已导出 0 条字幕、0 条弹幕」。"""
         writer = getattr(self, "transcript", None)
         if writer is not None and writer.path is None:
             await self._transcript_notice(L(
                 "这一场的字幕记录没能创建，没有可导出的内容",
                 "This session’s transcript couldn’t be created, so there is nothing to export."))
             return
-        path = writer.path if writer is not None else tr.latest_transcript()
+        if writer is not None:
+            path = writer.path
+            if not tr.has_content(path):
+                await self._transcript_notice(L(
+                    "这一场还没有记到字幕或弹幕，等有内容了再导出。",
+                    "Nothing has been recorded in this session yet. Export again once captions "
+                    "or comments come in."))
+                return
+        else:
+            path = tr.latest_transcript()
         if path is None:
             await self._transcript_notice(L(
                 "还没有字幕记录。开始监听后，每一场会自动记录。",
@@ -130,6 +145,13 @@ class TranscriptMixin:
             await self._transcript_notice(L(
                 "没能导出字幕记录。详情：{}",
                 "Couldn’t export the transcript. Details: {}").format(of(exc)))
+            return
+        if not (result.captions or result.comments):
+            # 文件里有字幕记录的外形、读出来却一条都没有（被手改坏）：别报一个成功的 0 和 0
+            await self._transcript_notice(L(
+                "这份字幕记录里读不出字幕或弹幕，没有可导出的内容：{}",
+                "No captions or comments could be read from this transcript, so there is "
+                "nothing to export: {}").format(str(path)))
             return
         text = L("已导出 {}（Markdown、CSV、SRT 各一份），文件在 {}",
                  "Exported {} (Markdown, CSV and SRT files) to {}").format(

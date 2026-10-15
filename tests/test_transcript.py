@@ -6,6 +6,7 @@ tests/test_pipeline_transcript.py。
 """
 import errno
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -357,10 +358,18 @@ def test_a_value_json_cannot_serialise_is_a_logged_failure_not_an_exception(tmp_
 
 # ---- 找最近一场 -------------------------------------------------------------------------------
 
+def recorded(tmp_path, streamer="luna_demo", now=T0, text="hola"):
+    """一场听到了一条字幕的记录（收好尾）。"""
+    w = writer(tmp_path, streamer=streamer, now=now)
+    w.caption(1, now + 1, "es", text)
+    w.close()
+    return w
+
+
 def test_the_latest_transcript_is_the_one_that_started_last(tmp_path):
-    first = writer(tmp_path, streamer="luna_demo", now=T0)
-    second = writer(tmp_path, streamer="mia_demo", now=T0 + 3600)
-    third = writer(tmp_path, streamer="luna_demo", now=T0 + 7200)
+    first = recorded(tmp_path, streamer="luna_demo", now=T0)
+    second = recorded(tmp_path, streamer="mia_demo", now=T0 + 3600)
+    third = recorded(tmp_path, streamer="luna_demo", now=T0 + 7200)
     (tmp_path / "notes.txt").write_text("not a transcript", encoding="utf-8")
     (tmp_path / "transcript-20251009-000000-x.md").write_text("an export", encoding="utf-8")
     assert list_transcripts(tmp_path) == [first.path, second.path, third.path]
@@ -372,6 +381,103 @@ def test_there_is_no_latest_transcript_in_an_empty_or_missing_folder(tmp_path):
     assert latest_transcript(tmp_path) is None
     assert latest_transcript(tmp_path / "missing") is None
     assert list_transcripts(tmp_path / "missing") == []
+
+
+# ---- 空的一场不算一场 -------------------------------------------------------------------------
+# 每次开始监听都先建文件；房间不给流地址、开错房间、马上停止，都会留下只有文件头（和收尾）的
+# 文件。程序从不删记录（README/FAQ 都这么承诺），所以靠「找」的时候绕开它们。
+
+def test_a_file_with_only_a_header_and_an_end_record_has_no_content(tmp_path):
+    w = writer(tmp_path)
+    assert not tr.has_content(w.path)                     # 只有文件头（崩溃留下的也是这样）
+    w.close()
+    assert not tr.has_content(w.path)                     # 文件头加收尾
+
+
+def test_a_caption_a_comment_or_a_lone_translation_is_content(tmp_path):
+    with_caption = writer(tmp_path, now=T0)
+    with_caption.caption(1, T0, "es", "hola")
+    with_comment = writer(tmp_path, now=T0 + 1)
+    with_comment.comment("c1", T0, "ana_demo", "hola")
+    lone = tmp_path / "transcript-20251009-000000-x.jsonl"        # 字幕行没写进去、只剩译文
+    lone.write_text('{"type":"translation","seq":3,"time":"2025-10-09T00:00:00.000+00:00",'
+                    '"translated":"你好","quality":"fast"}\n', encoding="utf-8")
+    assert tr.has_content(with_caption.path) and tr.has_content(with_comment.path)
+    assert tr.has_content(lone)
+
+
+def test_has_content_ignores_garbage_empty_values_and_odd_types(tmp_path):
+    path = tmp_path / "transcript-20251009-000000-x.jsonl"
+    path.write_bytes(b'{"type":"transcript_start","v":1}\n'
+                     b'not json at all\n'
+                     b'\xff\xfe broken bytes\n'
+                     b'[1, 2, 3]\n'
+                     b'{"type":["caption"],"original":"x"}\n'     # 类型不是字符串
+                     b'{"type":"caption","seq":1,"original":""}\n'  # 没有文字
+                     b'{"type":"comment","id":"c1","text":""}\n'
+                     b'{"type":"comment_translation","id":"c1","translated":"x"}\n'  # 单独的弹幕译文不算
+                     b'{"type":"transcript_end"}\n')
+    assert not tr.has_content(path)
+    with path.open("ab") as fh:
+        fh.write(b'{"type":"caption","seq":2,"original":"hola"}\n')
+    assert tr.has_content(path)
+
+
+def test_has_content_stops_at_the_first_record_instead_of_parsing_the_whole_file(tmp_path, monkeypatch):
+    """数「存了几场」要把每个文件都看一遍：有内容的文件读到第一条字幕就该收手，不能整份解析。"""
+    w = writer(tmp_path)
+    for seq in range(1, 2001):
+        w.caption(seq, T0 + seq, "es", "linea {}".format(seq))
+    parsed = []
+    real_loads = json.loads
+
+    def counting_loads(*a, **k):
+        parsed.append(1)
+        return real_loads(*a, **k)
+
+    monkeypatch.setattr(tr.json, "loads", counting_loads)
+    assert tr.has_content(w.path)
+    assert len(parsed) == 2                               # 文件头 + 第一条字幕
+
+
+def test_a_file_that_cannot_be_read_is_not_hidden(tmp_path):
+    """读不了就说不准有没有内容：留在列表里，让导出去报那个具体的错，别悄悄略过。"""
+    w = writer(tmp_path)
+    w.caption(1, T0, "es", "hola")
+    w.path.chmod(0)
+    try:
+        if os.access(w.path, os.R_OK):
+            pytest.skip("this account can read files whatever their mode")
+        assert tr.has_content(w.path)
+        assert latest_transcript(tmp_path) == w.path
+    finally:
+        w.path.chmod(0o644)
+
+
+def test_latest_and_count_skip_sessions_that_never_recorded_anything(tmp_path):
+    real = recorded(tmp_path, now=T0)
+    empty_closed = writer(tmp_path, streamer="mia_demo", now=T0 + 3600)       # 开了就关：文件头加收尾
+    empty_closed.close()
+    crashed = writer(tmp_path, streamer="zoe_demo", now=T0 + 7200)             # 崩溃：只有文件头
+    assert list_transcripts(tmp_path) == [real.path, empty_closed.path, crashed.path]   # 文件夹里都还在
+    assert latest_transcript(tmp_path) == real.path
+    assert tr.count_transcripts(tmp_path) == 1
+    assert tr.list_transcripts(tmp_path, recorded_only=True) == [real.path]
+    assert empty_closed.path.exists() and crashed.path.exists()                 # 没有谁被删
+
+
+def test_a_session_counts_the_moment_it_hears_something(tmp_path):
+    live = writer(tmp_path)
+    assert latest_transcript(tmp_path) is None and tr.count_transcripts(tmp_path) == 0
+    live.comment("c1", T0, "ana_demo", "hola")
+    assert latest_transcript(tmp_path) == live.path and tr.count_transcripts(tmp_path) == 1
+
+
+def test_a_folder_of_nothing_but_empty_sessions_has_no_latest_transcript(tmp_path):
+    for n in range(3):
+        writer(tmp_path, now=T0 + n).close()
+    assert latest_transcript(tmp_path) is None
+    assert tr.count_transcripts(tmp_path) == 0
 
 
 def test_the_folder_is_called_transcripts_and_git_ignores_it():

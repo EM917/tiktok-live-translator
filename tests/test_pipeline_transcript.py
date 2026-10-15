@@ -106,13 +106,43 @@ def test_the_settings_row_learns_how_many_sessions_are_saved(monkeypatch, tmp_pa
     p, server = make_pipeline(monkeypatch, tmp_path)
     assert server.config["transcripts"] == {"count": 0}
 
+    async def one_caption():
+        await p._emit_original(res("Hola"), time.time() - 1, 900)
+
+    scripted_session(monkeypatch, p, one_caption)
+    assert server.config["transcripts"] == {"count": 1}
+    announced = [m for m in server.messages if m.get("type") == "config" and "transcripts" in m]
+    assert announced and announced[-1]["transcripts"] == {"count": 1}
+
+
+def test_the_count_is_pushed_again_when_a_session_ends_because_settings_is_hidden_while_it_runs(
+        monkeypatch, tmp_path):
+    """开始时推一次（那时这一场还是空的，不算），结束时再推一次：中控停下来回到首页，设置行上
+    的数字得是对的，不能要等到下一场开始才变。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    seen_while_running = []
+
+    async def one_caption():
+        await p._emit_original(res("Hola"), time.time() - 1, 900)
+        seen_while_running.append(dict(server.config["transcripts"]))
+
+    scripted_session(monkeypatch, p, one_caption)
+    assert seen_while_running == [{"count": 0}]
+    assert server.config["transcripts"] == {"count": 1}
+    pushed = [m["transcripts"]["count"] for m in server.messages
+              if m.get("type") == "config" and "transcripts" in m]
+    assert pushed == [0, 1]
+
+
+def test_a_session_that_heard_nothing_is_not_counted_as_saved(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+
     async def nothing():
         return None
 
     scripted_session(monkeypatch, p, nothing)
-    assert server.config["transcripts"] == {"count": 1}
-    announced = [m for m in server.messages if m.get("type") == "config" and "transcripts" in m]
-    assert announced and announced[-1]["transcripts"] == {"count": 1}
+    assert len(transcript_files(tmp_path)) == 1            # 文件还在（程序从不删记录）……
+    assert server.config["transcripts"] == {"count": 0}    # ……但不算「存了一场」
 
 
 def test_a_second_session_gets_its_own_file_and_the_first_is_not_touched(monkeypatch, tmp_path):
@@ -358,6 +388,96 @@ def test_export_with_nothing_recorded_yet_says_so_and_opens_nothing(monkeypatch,
     assert note["text"] == "还没有字幕记录。开始监听后，每一场会自动记录。" and note["where"] == "transcripts"
     assert i18n.render(note["text"], i18n.EN).startswith("There are no transcripts yet.")
     assert opened == [] and not (tmp_path / "transcripts").exists()
+
+
+def failed_start(monkeypatch, p):
+    """一次开始监听：房间不给流地址，一场没听到就结束了（文件头写了，一条字幕都没有）。"""
+    scripted_resolve(monkeypatch, [ResolveError("没开播", kind="offline", status=4)])
+    run(p._run_stream_inner(ROOM))
+
+
+@pytest.mark.i18n_fixture      # 解析失败的中文提示是测试交给生产代码的夹具
+def test_a_failed_start_after_a_real_session_does_not_hide_the_real_one_from_export(monkeypatch, tmp_path):
+    p, server = recorded_session(monkeypatch, tmp_path)
+    (real,) = transcript_files(tmp_path)
+    failed_start(monkeypatch, p)
+    assert len(transcript_files(tmp_path)) == 2            # 空的那份还躺在文件夹里
+    assert server.config["transcripts"] == {"count": 1}    # 但设置行只数有内容的
+    opened = opened_with(p)
+    server.messages.clear()
+    run(p.handle_control({"type": "export_transcript"}))
+    (note,) = notices(server)
+    assert "1 条字幕" in note["text"] and "1 条弹幕" in note["text"]
+    assert [real.with_suffix(s).exists() for s in (".md", ".csv", ".srt")] == [True, True, True]
+    empty = transcript_files(tmp_path)[-1]
+    assert not empty.with_suffix(".md").exists()           # 没有为空的那份导出三个空文件
+    assert opened == [real.parent]
+
+
+@pytest.mark.i18n_fixture      # 解析失败的中文提示是测试交给生产代码的夹具
+def test_a_second_failed_start_changes_nothing_either(monkeypatch, tmp_path):
+    p, server = recorded_session(monkeypatch, tmp_path)
+    for _ in range(2):
+        failed_start(monkeypatch, p)
+    assert len(transcript_files(tmp_path)) == 3
+    assert tr.latest_transcript() == transcript_files(tmp_path)[0]
+    assert server.config["transcripts"] == {"count": 1}
+
+
+@pytest.mark.i18n_fixture      # 解析失败的中文提示是测试交给生产代码的夹具
+def test_export_after_nothing_but_failed_starts_says_there_are_no_transcripts_yet(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    failed_start(monkeypatch, p)
+    assert len(transcript_files(tmp_path)) == 1
+    opened = opened_with(p)
+    server.messages.clear()
+    run(p.handle_control({"type": "export_transcript"}))
+    (note,) = notices(server)
+    assert note["text"] == "还没有字幕记录。开始监听后，每一场会自动记录。"
+    assert opened == []
+    assert not transcript_files(tmp_path)[0].with_suffix(".md").exists()
+
+
+def test_export_says_plainly_when_the_session_being_recorded_has_nothing_yet(monkeypatch, tmp_path):
+    """正在记的这一场还一条都没有：不报「已导出 0 条字幕、0 条弹幕」，直说还没有内容。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    older = tr.TranscriptWriter("mia_demo", "zh-CN", directory=tmp_path / "transcripts", now=1_760_000_000)
+    older.caption(1, 1_760_000_001, "es", "vieja")
+    older.close()
+    p._open_transcript("luna_demo", object())
+    opened = opened_with(p)
+    run(p.handle_control({"type": "export_transcript"}))
+    (note,) = notices(server)
+    assert note["where"] == "transcripts" and "已导出" not in note["text"]
+    assert note["text"] == "这一场还没有记到字幕或弹幕，等有内容了再导出。"
+    english = i18n.render(note["text"], i18n.EN)
+    assert english == "Nothing has been recorded in this session yet. Export again once captions or comments come in."
+    assert not CJK.search(english)
+    assert opened == [] and not older.path.with_suffix(".md").exists()
+    p._transcript_caption(1, time.time(), "es", "Hola")        # 有了第一条，就导出这一场
+    server.messages.clear()
+    run(p.handle_control({"type": "export_transcript"}))
+    (note,) = notices(server)
+    assert "1 条字幕" in note["text"] and p.transcript.path.with_suffix(".md").exists()
+
+
+def test_export_does_not_claim_success_when_the_file_has_nothing_the_exporter_can_use(monkeypatch, tmp_path):
+    """文件里有字幕记录的外形、但读出来一条都没有（被手改坏）：同样直说，不报成功的 0 和 0。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    folder = tmp_path / "transcripts"
+    folder.mkdir()
+    broken = folder / "transcript-20251009-000000-luna_demo.jsonl"
+    broken.write_text('{"type":"transcript_start","v":1,"started_at":"nope"}\n'
+                      '{"type":"caption","time":"nope","original":"sin numero"}\n', encoding="utf-8")
+    opened = opened_with(p)
+    run(p.handle_control({"type": "export_transcript"}))
+    (note,) = notices(server)
+    assert "已导出" not in note["text"]
+    assert note["text"] == "这份字幕记录里读不出字幕或弹幕，没有可导出的内容：{}".format(broken)
+    english = i18n.render(note["text"], i18n.EN)
+    assert english == ("No captions or comments could be read from this transcript, "
+                       "so there is nothing to export: {}".format(broken))
+    assert opened == []
 
 
 def test_export_says_what_happened_when_it_fails_and_the_terminal_stays_chinese(monkeypatch, tmp_path, capsys):

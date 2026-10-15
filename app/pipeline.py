@@ -910,11 +910,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if closed is not None:
             self._close_audit(closed, self._stop_reason)
             self.audit = None
-        self._close_transcript(closed)   # 字幕记录跟审计同生同灭；认本场的审计，见 pipeline_transcript.py
+        # 字幕记录跟审计同生同灭；认本场的审计，见 pipeline_transcript.py
+        closed_transcript = self._close_transcript(closed)
         self._stop_reason = None
         self._release_sleep_guard()
         if closed is not None:
             await self._settle_audit_incident(closed)
+        if closed_transcript:
+            await self._publish_transcripts()   # 设置行的「存了几场」：这一场此刻才算数
         # 旧任务可能超时没走到 _end_session（识别线程停不下来），这里也撤一次
         await self._clear_ongoing_incidents()
         await self._settle_engine_incident()
@@ -1779,8 +1782,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             self._close_audit(target, reason, **fields)
             if self.audit is target:
                 self.audit = None
-            self._close_transcript(target)     # 只关本场自己的那份（my_audit 的道理）
+            closed_transcript = self._close_transcript(target)   # 只关本场自己的那份（my_audit 的道理）
             await self._settle_audit_incident(target)
+            if closed_transcript:
+                await self._publish_transcripts()   # 设置行的「存了几场」：这一场此刻才算数
         if still_current:
             await self._settle_engine_incident()
         if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks"):

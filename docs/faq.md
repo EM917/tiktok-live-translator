@@ -221,7 +221,10 @@ the start of the session; each caption stays up until the next one, at most
 8 seconds). In the CSV, a cell that begins with `=`, `+`, `-` or `@` gets a
 leading apostrophe, so Excel never runs a viewer's comment as a formula.
 Settings is hidden while a session runs; the export covers the latest finished
-session. "Open Folder" opens the `transcripts` folder without exporting.
+session that recorded something. A start that got no stream address, or that
+you stopped at once, leaves a file with only a header: it stays in the folder,
+but Export Latest Session and the session count in Settings skip it. "Open
+Folder" opens the `transcripts` folder without exporting.
 
 **Closing the console window.** On Windows that console window is the app
 itself, so closing it quits the app. On macOS, closing the app window quits it
