@@ -177,3 +177,100 @@ def test_mixed_spanish_english_stream_is_never_an_outlier():
         fold([(0.1, 1.2, -0.3, "Hola chicas {}".format(i))], f=f)
     (out, _), _ = fold([(0.1, 1.2, -0.2, "Oh my god it's so good, twenty dollars")], f=f)
     assert "twenty" in out
+
+
+# ---- YouTube 片尾：不看置信度（2026-10-14：114 份日志里按旧表有 276 段整段套话上了屏）----
+
+def test_youtube_outro_dropped_even_with_high_confidence():
+    """「¡Gracias por ver el video!」的置信度常贴着 -0.6，拦没拦住近乎抛硬币：10-14 直播录音
+    离线重跑，第 549 段就是 -0.38 上的屏。字幕组署名、提到「视频」的片尾语、「¡Suscríbete al
+    canal!」整段只有这些就是训练集套话，置信度再高也丢；raw_text 照旧留给违禁词检测。"""
+    for text in ("¡Gracias por ver el video!", "¡Gracias por ver este video!",
+                 "¡Suscríbete al canal!", "Gracias por ver el video.",
+                 "¡Gracias por ver el video! ¡Suscríbete al canal!",
+                 "¡Gracias por ver este video! ¡Suscríbete al canal para no perderte los próximos videos!",
+                 "Si te gustó el video, dale like, suscríbete y comparte."):
+        res, f = fold([(0.1, 1.2, -0.38, text)])
+        assert res.text == "", text
+        assert res.raw_text == text                       # 违禁词检测的输入不受影响
+        assert res.rejected[-1]["reason"] == "hallucination"
+        assert f._context == ""                           # 套话不进滚动上下文
+
+
+def test_every_youtube_outro_entry_is_live():
+    """表里每一条都要真能比中：条目中间带了句末标点（拆成两句），这一条就永远比不中。"""
+    from app.asr import _HALLUCINATIONS, _YOUTUBE_OUTROS
+    assert _YOUTUBE_OUTROS <= _HALLUCINATIONS
+    for entry in _YOUTUBE_OUTROS:
+        (out, _), _ = fold([(0.1, 1.2, -0.1, entry)])
+        assert out == "", entry
+
+
+def test_ambiguous_phrase_mixed_with_an_outro_dropped():
+    """整段都是套话、其中有一句只可能是片尾，那句 thank you 也不是主播说的。"""
+    (out, _), _ = fold([(0.1, 1.2, -0.2, "Thank you. ¡Suscríbete al canal!")])
+    assert out == ""
+
+
+# 主播真会说的话：TikTok 有订阅和点赞，有主播把自己的页面叫「mi canal」，双语主播会用英文
+# 道别。这些放进「不看置信度」那一层就会误丢真话，钉住它们只在低置信时才丢。
+STREAMER_SAYS = ("¡Suscríbete!", "¡Nos vemos!", "Música", "¡Hasta la próxima!", "Gracias por ver.",
+                 "Dale like y suscríbete.", "¡Suscríbete a mi canal!", "¡Suscríbete a nuestro canal!",
+                 "No olvides suscribirte.", "Thank you for watching!", "Please subscribe.",
+                 "Thank you.", "Bye!", "Gracias por su atención.")
+
+
+def test_phrases_a_streamer_really_says_still_need_low_confidence():
+    for text in STREAMER_SAYS:
+        (out, _), _ = fold([(0.1, 1.2, -0.2, text)])
+        assert out == text, text
+        (low, _), _ = fold([(0.1, 1.2, -0.9, text)])
+        assert low == "", text                            # 低置信时照旧当套话丢
+
+
+def test_every_conditional_entry_needs_low_confidence():
+    """要看置信度那一层逐条钉住：哪一条被挪进 _YOUTUBE_OUTROS，这里就红。"""
+    from app.asr import _HALLUCINATIONS, _YOUTUBE_OUTROS
+    for entry in _HALLUCINATIONS - _YOUTUBE_OUTROS:
+        (out, _), _ = fold([(0.1, 1.2, -0.2, entry)])
+        assert out == entry, entry
+        (low, _), _ = fold([(0.1, 1.2, -0.9, entry)])
+        assert low == "", entry
+
+
+def test_split_keeps_every_old_entry():
+    """分层前的表一条都不能丢（2026-10-14 分层时的全集）。"""
+    from app.asr import _HALLUCINATIONS
+    old = {
+        "thank you", "thanks for watching", "thank you for watching", "you",
+        "please subscribe", "subscribe", "bye", "so", "thanks for watching!", "see you next time",
+        "subtitles by the amara.org community", "subtitles by amara.org",
+        "subtitled by the amara.org community", "legendas pela comunidade amara.org",
+        "sous-titres realises par la communaute d'amara.org",
+        "gracias por ver", "gracias por ver el video", "gracias por ver este video", "gracias por vernos",
+        "suscribete", "suscribete al canal", "suscribanse", "no olvides suscribirte",
+        "no olviden suscribirse", "hasta la proxima", "nos vemos", "gracias por su atencion",
+        "subtitulos realizados por la comunidad de amara.org", "mas videos", "dale like y suscribete",
+        "aplausos", "musica", "risas", "mas informacion", "obrigado", "obrigada",
+        "字幕由amara.org社区提供", "请不吝点赞订阅转发打赏支持明镜与点点栏目", "谢谢观看", "请订阅",
+        "감사합니다", "구독과 좋아요 부탁드립니다", "다음 영상에서 만나요",
+        "المترجمات لكثير من الاشتراك في القناة", "اشتركوا في القناة",
+        "субтитры сделал dimatorzok", "субтитры создавал dimatorzok", "продолжение следует",
+        "ご視聴ありがとうございました", "チャンネル登録お願いします", "תודה רבה",
+    }
+    assert old <= _HALLUCINATIONS
+
+
+def test_outro_words_inside_real_speech_survive():
+    """日志里有一段识别成「Suscríbete al canal y usa los cupones de TikTok」：整段不全是套话就不动。"""
+    for text in ("Suscríbete al canal y usa los cupones de TikTok.",
+                 "Gracias por ver el video. Ahora vamos con la moringa."):
+        (out, _), _ = fold([(0.1, 1.2, -0.2, text)])
+        assert out == text, text
+
+
+def test_empty_and_punctuation_only_input_is_not_a_hallucination():
+    from app.asr import _has_youtube_outro, _is_all_hallucination
+    for text in ("", None, ".", "¡¿?!", "..."):
+        assert not _is_all_hallucination(text), text
+        assert not _has_youtube_outro(text), text
