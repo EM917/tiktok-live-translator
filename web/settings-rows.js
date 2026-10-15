@@ -22,8 +22,8 @@ function selfcheckSummary(summary) {
                                   sum.fail + " features aren’t working"), icon: "fail", sig: sig };
   if (sum.warn) return { text: LN(sum.warn, "通过 · " + sum.warn + " 项提醒", "Passed · 1 warning",
                                   "Passed · " + sum.warn + " warnings"), icon: "warn", sig: sig };
-  return { text: LN(sum.total, "全部通过 · " + sum.total + " 项", "1 check passed",
-                    "All " + sum.total + " checks passed"), icon: "pass", sig: sig };
+  // 全绿是常态：只说结论，不报检查了几项（那个数每个版本都在变，对中控没有信息量）
+  return { text: L("全部通过", "All passed"), icon: "pass", sig: sig };
 }
 
 /* 引擎摘要：人话名 + 回退前缀 + 免费额度提示，全部拼进一行 active 文案。

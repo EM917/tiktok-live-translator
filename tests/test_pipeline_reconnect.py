@@ -79,7 +79,9 @@ def test_offline_resolve_ends_stream(monkeypatch, tmp_path):
     run(p._run_stream_inner("https://www.tiktok.com/@x/live"))
     assert sessions == ["http://cdn/stream.flv"]
     assert server.statuses[-1][0] == "ended"           # 真下播 → 正常结束
-    assert "直播已结束" in server.statuses[-1][1]
+    # 状态栏那句只指一个方向：上一场字幕在页面下方（输入新地址的框本来就在上面，不再重复）
+    assert server.statuses[-1][1] == "上一场字幕在下方。"
+    assert server.statuses[-1][1] == pipeline_mod.LIVE_ENDED_NOTE
 
 
 def test_reconnect_resumes_with_fresh_url(monkeypatch, tmp_path):
@@ -188,12 +190,14 @@ def test_stream_session_accounts_real_audio_duration(monkeypatch, tmp_path):
     async def scenario():
         loop = asyncio.get_running_loop()
         return await p._stream_session(
-            "http://cdn/s.flv", DummyTranscriber(), None, "live-note", loop)
+            "http://cdn/s.flv", DummyTranscriber(), None, loop)
 
     got_audio, audio_secs = run(scenario())
     assert got_audio is True
     assert abs(audio_secs - 4.0) < 1e-6
-    assert ("live", "live-note") in server.statuses   # 收到首帧才宣布直播中
+    # 收到首帧才宣布直播中；detail 为空，状态横幅收起（「已连接」是常态，胶囊已经写了「直播中」）
+    assert ("live", "") in server.statuses
+    assert [d for st, d in server.statuses if st == "live"] == [""]
 
 
 def test_direct_url_ends_cleanly_after_good_run(monkeypatch, tmp_path):

@@ -95,19 +95,6 @@ test("约 N 秒前（英文）：About N sec ago / About N min ago，15 秒以�
   assert.equal(U.captionAgeText(NaN), "");
 });
 
-test("页脚（英文）：Captions 打头，Alerts 紧跟其后，其余各段照旧", () => {
-  const base = { asr: { p50: 1100 }, translate: { p50: 2000 }, segment: { p50: 800 },
-                 detect_worst: { p50: 1900, p95: 3400 }, caption_wait: { p50: 4200, p95: 7100, n: 20 } };
-  assert.deepEqual(U.statsLineParts(base), [
-    "Captions +4.2s (P95 7.1s)", "Alerts ≤1.9s (P95 3.4s)", "Segment 0.8s + ASR 1.1s", "Translation +2.0s"]);
-  assert.equal(U.statsLineParts(Object.assign({}, base, { caption_wait: { p50: null, p95: null, n: 0 } }))[0],
-               "Alerts ≤1.9s (P95 3.4s)");
-  const full = U.statsLineParts(Object.assign({ audio_backlog_sec: 5, audio_segments_dropped: 2, asr_overruns: 1,
-    translation_jobs_dropped: 3, asr_queue_depth: 1, translation_queue_depth: 2 }, base));
-  assert.deepEqual(full.slice(4), ["Backlog 5s", "Dropped 2", "ASR timeouts 1", "Skipped 3", "Queue 1/2"]);
-  for (const part of full) english(part);
-});
-
 test("字幕字号（英文界面里同一套比例）", () => {
   assert.equal(U.captionScale(34), 1);
   assert.deepEqual(U.captionSizeVars(51), { "--sub-size": "51px", "--cap-scale": "1.5" });

@@ -295,9 +295,8 @@
           <path d="M6 6A11.31 11.31 0 0 0 6 22"/>
           <path d="M22 6A11.31 11.31 0 0 1 22 22"/>
         </svg>
-        <h2 data-en="Enter a TikTok Live Link">输入 TikTok 直播间地址</h2>
-        <p class="sp-sub" data-en="Paste a live link, or just the streamer’s username (such as @somebody) ">
-          粘贴直播间链接，或只输入主播用户名（如 @somebody）
+        <div class="sp-title">
+          <h2 data-en="Enter a TikTok Live Link or @username">输入 TikTok 直播间地址或 @用户名</h2>
           <button id="input-help-btn" class="help-btn" type="button" aria-expanded="false"
                   aria-controls="input-help" title="输入说明" data-en-title="About links">
             <!-- SF Symbols「info.circle」，跟设置行图标同一套画法（描边、currentColor） -->
@@ -307,7 +306,7 @@
               <circle cx="8" cy="5.15" r="0.6" fill="currentColor" stroke="none"/>
             </svg>
           </button>
-        </p>
+        </div>
       </div>
 
       <div class="sp-input-row">
@@ -673,7 +672,10 @@
   <!-- 观众弹幕：程序自己通过 TikTokLive 抓取评论流；只翻译、只显示，不进报警链路 -->
   <aside id="comment-panel" class="comment-panel hidden">
     <div class="comment-bar">
-      <span class="comment-title" data-en="Comments "><svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>观众弹幕 <span id="comment-count">0</span>
+      <!-- 标题上不放条数（列表封顶 100 条，数字一直停在 100）。评论流已连接时，「评论流已连接」写在
+           #comment-title-text 的 title 里、#comment-source 整个收起；别的状态 #comment-source 照旧写在标题旁边
+           （app.js refreshCommentPanel） -->
+      <span class="comment-title"><svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg><span id="comment-title-text" data-en="Comments">观众弹幕</span>
         <span id="comment-source" class="cmt-source" data-en="Not connected">未连接</span>
         <!-- 弹幕留意的覆盖情况（只用规则 / 规则 + Claude / 已停用……）；点它打开上面的抽屉。文字由 guard.js 写 -->
         <button id="guard-state" class="guard-state hidden" type="button" aria-expanded="false" aria-controls="guard-drawer">
@@ -697,10 +699,11 @@
       <svg class="i" aria-hidden="true"><use href="#i-arrow-down"/></svg>回到最新
     </button>
   </aside>
-  <!-- 弹幕列收起后的入口：带条数，新弹幕来了也能看出来 -->
+  <!-- 弹幕列收起后的入口。不带条数（列表封顶 100 条，数字一直停在 100）；有未读红条时右边是红点数。
+       data-en 末尾的空格留着：中文文字节点挨着后面的红点 span，test_i18n_static_html 查这个 -->
   <button id="comment-fab" class="comment-fab hidden" type="button" title="展开观众弹幕"
           data-en-title="Show comments" data-en="Comments ">
-    <svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>弹幕 <span id="comment-fab-count">0</span>
+    <svg class="i" aria-hidden="true"><use href="#i-bubble"/></svg>弹幕
     <span id="comment-fab-guard" class="fab-guard hidden"></span>
   </button>
   </div>
@@ -724,7 +727,6 @@
     </div>
   </footer>
 
-  <div id="stats-line" class="stats-line hidden"></div>
 
   <div class="copyright">Copyright &copy; 2026 Elon Mei (EM917). All rights reserved. &middot; <a href="https://github.com/EM917/tiktok-live-translator" target="_blank" rel="noopener">MIT License</a><span id="app-version" title="点击检查更新" data-en-title="Click to check for updates"></span></div>
 

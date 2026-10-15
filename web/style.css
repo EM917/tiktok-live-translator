@@ -555,7 +555,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
    跟随系统惯例用 labelColor（次级），不是 tintColor */
 .sp-glyph { display: block; width: 44px; height: 44px; margin: 0 auto 12px; color: var(--label-2); }
 .start-panel h2 { font-size: var(--fs-title); line-height: 28px; font-weight: 600; letter-spacing: -0.01em; }
-.sp-sub { margin-top: 6px; font-size: var(--fs-callout); line-height: 18px; color: var(--label-2); }
+/* 标题和「输入说明」ⓘ 并排居中。ⓘ 不放进 <h2> 里：它会进标题的无障碍名称，读屏会念成「输入……输入说明」 */
+.sp-title { display: flex; align-items: center; justify-content: center; gap: 2px; }
 
 /* 展开原来那两段灰字（#input-help）；图标用 SF Symbols「info.circle」而不是
    圆圈问号——后者更像第三方网页产品的帮助气泡，不是苹果系统的「更多信息」惯用语。
@@ -616,8 +617,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .sp-options select:hover, .popover select:hover { background-color: var(--card); filter: brightness(0.98); }
 .sp-options select:focus-visible, .popover select:focus-visible { box-shadow: var(--ring), var(--focus); }
 /* 品牌下拉旁边的空态提示：brands 文件夹里一个词表都没有时说明这个功能是
-   干什么的、该去哪加（pm.md #6）。用 --label-2（跟 .disk-hint/.watch-desc/
-   .sp-sub 同一档），--label-3 太浅快读不出来 */
+   干什么的、该去哪加（pm.md #6）。用 --label-2（跟 .disk-hint/.watch-desc
+   同一档），--label-3 太浅快读不出来 */
 .brand-hint { display: block; margin-top: 6px; max-width: 600px; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
 /* 句子里那个可点的「打开 brands 文件夹」：跟 .update-bar a 同一种「文字链接」
    处理，不单独起一块按钮底色——这句话本身就是一句提示，链接只是其中一段 */
@@ -642,15 +643,12 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .icon-btn:focus-visible { outline: 2px solid transparent; box-shadow: var(--ring), var(--focus); color: var(--blue); }
 
 /* ---------- 底部大字幕 ---------- */
-/* 堵缝：.stats-line 在第一批延迟数据到达前是隐藏的（bottom:22px），这里以前
-   是 bottom:42px，中间空出 20px，右下角会露出弹幕列的背景色（designer.md #5）。
-   把 bottom 改到跟 .stats-line 一致，用 padding-bottom 把露出来的这一截吃掉——
-   大字幕条顶边的位置不变（padding-top 仍是 14px），.stats-line 在 DOM 里更靠后，
-   真出现时照样叠在这层上面 */
+/* 贴着底部署名（bottom:22px）。以前下边留 36px 给叠在上面的延迟统计行；2026-10-15 统计行删了，
+   下边距和上边距一样 */
 .live-bar {
   position: fixed;
   left: 0; right: 0; bottom: 22px;
-  padding: 14px 24px 36px;
+  padding: 14px 24px 14px;
   text-align: center;
   background: var(--bg);
   border-top: 0.5px solid var(--separator);
@@ -760,18 +758,6 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   color: var(--label-2); background: var(--fill);
 }
 
-/* ---------- 延迟统计 ---------- */
-.stats-line {
-  position: fixed;
-  left: 0; right: 0; bottom: 22px;
-  padding: 3px 20px;
-  font-size: var(--fs-footnote);
-  font-variant-numeric: tabular-nums;
-  color: var(--label-2);
-  text-align: center;
-  background: var(--bg);
-  pointer-events: none;
-}
 
 /* 译文未到达时的占位。以前用 --label-3（占位符那一档，约 2:1），这一行是中控此刻要读的状态提示，
    提到 --label-2 的 4.5:1 以上；斜体和字号不变（字号跟着字幕字号滑块走，同 .trans） */
@@ -1275,11 +1261,6 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 }
 .comment-title > .i { color: var(--label-2); }
 .comment-actions { display: flex; gap: 6px; flex: none; }
-#comment-count, #comment-fab-count {
-  display: inline-block; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 9px;
-  background: var(--fill); color: var(--label); text-align: center;
-  font-size: 11px; line-height: 18px; font-weight: 600; font-variant-numeric: tabular-nums;
-}
 /* 底部留白与 .history 一致：底部通栏大字幕是 fixed 的，不留就会盖住最后几条 */
 .comment-list { flex: 1; overflow-y: auto; padding: 0 16px 204px; }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
@@ -1317,7 +1298,7 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cmt-source.warn::before { background: transparent; border: 1.5px solid var(--orange); width: 7px; height: 7px; top: 4.5px; }
 /* 收起：整列让出去（字幕独占整行），弹幕继续在后台收；展开时全在 */
 .comment-panel.collapsed { display: none; }
-/* 收起后的入口：字幕区右上角一颗白色悬浮胶囊，带条数（同「回到最新」） */
+/* 收起后的入口：字幕区右上角一颗白色悬浮胶囊（同「回到最新」）；有未读红条时右边带红点数 */
 .comment-fab {
   position: absolute; top: 10px; right: 16px; z-index: 4;
   display: inline-flex; align-items: center; gap: 6px;

@@ -506,7 +506,7 @@ def test_offline_confirmed_by_the_recheck_ends_the_session(monkeypatch, tmp_path
     monkeypatch.setattr(resolver, "probe_room_status", probe)
     monkeypatch.setattr(p, "_stream_session", fake_session)
     run(p._run_stream_inner(ROOM))
-    assert server.statuses[-1][0] == "ended" and "直播已结束" in server.statuses[-1][1]
+    assert server.statuses[-1][0] == "ended" and server.statuses[-1][1] == "上一场字幕在下方。"
     # 两个钟一起走多了（Windows 休眠或事件循环卡住）：不说休眠
     rechecks = [d for _, d in server.statuses if "再查一次" in d]
     assert rechecks == ["程序刚才约 60 秒没有运行，TikTok 接口返回房间状态 4（已结束）；"
@@ -1028,7 +1028,7 @@ class Silence:
 def _round(p, sess):
     async def scenario():
         loop = asyncio.get_running_loop()
-        return await p._stream_session("http://cdn/s.flv", Silence(), None, "note", loop, sess=sess)
+        return await p._stream_session("http://cdn/s.flv", Silence(), None, loop, sess=sess)
 
     return run(scenario())
 
@@ -1073,7 +1073,7 @@ def test_a_cancelled_round_is_recorded_as_cancelled(monkeypatch, tmp_path):
     async def scenario():
         loop = asyncio.get_running_loop()
         task = asyncio.ensure_future(
-            p._stream_session("http://cdn/s.flv", Silence(), None, "note", loop, sess=sess))
+            p._stream_session("http://cdn/s.flv", Silence(), None, loop, sess=sess))
         for _ in range(50):
             await asyncio.sleep(0)
             if sess["last_frame_wall"] is not None:

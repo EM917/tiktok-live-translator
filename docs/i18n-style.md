@@ -158,7 +158,7 @@
 
 | 中文 | English | 不用 | 理由 |
 |---|---|---|---|
-| 弹幕留意 | **Comment Review**；状态写 **Comment Review: …** | Moderation, Comment Moderation, Comment Guard | Moderation 暗示程序能处理，而本程序只读：不能删弹幕、不能禁言。Guard 是代码里的名字 |
+| 弹幕留意 | **Comment Review**；状态写 **Comment Review: …**（弹幕栏胶囊上只有「只用规则」「规则 + Claude」这两种常态，只画 **Comment Review**，整句放进按钮的 title；关闭和所有 warn 照旧写整句） | Moderation, Comment Moderation, Comment Guard | Moderation 暗示程序能处理，而本程序只读：不能删弹幕、不能禁言。Guard 是代码里的名字 |
 | 需要留意的弹幕 | **comments to review**；标题写 **Comments to Review**；空态写 “No comments to review yet.” | flagged comments, alerts, warnings | alert 已经是违禁词报警的名字，warning 留给自检的「提醒」；flagged 带判断 |
 | 需要留意 n 件（顶部条、浮钮上的数） | 数的是事件：写 **{n} item to review / {n} items to review**，不写 comments | {n} comments to review, events, incidents, flagged | 用户 2026-10-13 决定：一次刷屏算 1 件，不数其中的弹幕条数（多账号同句曾经也算 1 件，2026-10-14 起不再显示，见下）；写成 “60 comments to review” 会把一个事件说成 60 条；events 是代码里的词；incident 已被别处占用。中文量词用「件」，不用「条」（「条」留给数弹幕本身的地方，如抽屉里的「共 12 条」） |
 | 拿不准 | **unclear** | uncertain, maybe | maybe 撞 `EN_CAUSAL` |
@@ -225,8 +225,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 下拉菜单项 | 项名用 Title Case，括号里的补充说明用小写开头 | Spanish + English (default), Local Hy-MT2 7B (more accurate, uses more memory) |
 | 控件左边的字段标签 | Sentence case | Spoken language, Brand, Translate to |
 | 开关 / 复选框标签 | Sentence case | Show alert on match |
-| 状态文字、胶囊、标签、设置行右侧的摘要 | Sentence case | Live, Stream ended, Alerts on, All 11 checks passed, Off · 53 terms, In use |
-| 说明、提示条、横幅、错误、对话框正文、通知正文 | Sentence case，完整句子带句号 | Stopped. Enter a live link to start again. |
+| 状态文字、胶囊、标签、设置行右侧的摘要 | Sentence case | Live, Stream ended, Alerts on, All passed, Off · 53 terms, In use |
+| 说明、提示条、横幅、错误、对话框正文、通知正文 | Sentence case，完整句子带句号 | The previous session’s captions are below. |
 | 输入框占位文字 | Sentence case，不加句号 | New streamer’s live link or @username |
 | tooltip（title）、aria-label | Sentence case；只有一个短语时不加句号，完整句子才加 | Clear caption history |
 
@@ -269,7 +269,6 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 - 时长有两种写法：
   - 正文空间够的时候写全称：*12 seconds*、*3 minutes*；
   - 摘要、胶囊、进度这类紧凑位置用苹果的缩写：`sec`、`min`、`hr`。
-  - 例外：底部的延迟统计行是技术读数，沿用现在的 `1.8s` 写法（没有空格），否则放不下（见 §4 R8）。
 - 范围用 en dash：`2–5 minutes`。
 - 第几次：「第 2/5 次」→ `attempt 2 of 5`。
 - 模型规格原样写：`1.8B`、`7B`、`large-v3-turbo`。
@@ -280,7 +279,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 |---|---|---|
 | settings-rows.js:17 自检失败 | 1 feature isn’t working | {n} features aren’t working |
 | settings-rows.js:18 自检提醒 | Passed · 1 warning | Passed · {n} warnings |
-| settings-rows.js:19 全部通过 | 1 check passed | All {n} checks passed |
+| settings-rows.js:19 全部通过 | （2026-10-15 起不带总数，没有单复数：只写 All passed） | |
 | settings-rows.js:49 词表条数 | 1 term | {n} terms |
 | pipeline.py:1458 自检提示条 | Startup Check: 1 item isn’t working ({names}) | Startup Check: {n} items aren’t working ({names}) |
 | app.js:1719 删除所选 | Delete 1 Item ({size}) | Delete {n} Items ({size}) |
@@ -464,8 +463,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
-| 33 | index.html:251 | 输入 TikTok 直播间地址 | Enter a TikTok Live Link | 232 → 236 |
-| 34 | index.html:253 | 粘贴直播间链接，或只输入主播用户名（如 @somebody） | Paste a live link, or just the streamer’s username (such as @somebody) | 340 → 436，在 600 宽的容器里仍是一行 |
+| 33 | index.html:298 | 输入 TikTok 直播间地址或 @用户名 | Enter a TikTok Live Link or @username | 232 → 约 330（按字符数估算，未实测），在 600 宽的容器里仍是一行。2026-10-15 并进了原 #34；ⓘ（#35 的按钮）挪到标题右边，同在 `.sp-title` 里居中，不放进 `<h2>`（否则读屏会把「输入说明」念进标题） |
+| 34 | （已删）标题下面的说明行 | — | — | 2026-10-15 并进 #33；原来是「粘贴直播间链接，或只输入主播用户名（如 @somebody）」 |
 | 35 | index.html:255 title | 输入说明 | About links | |
 | 36 | index.html:268 | https://www.tiktok.com/@主播用户名/live | https://www.tiktok.com/@username/live | 占位文字 |
 | 37 | index.html:269 | 开始翻译 | **Start** | 96 → 78（含内边距） |
@@ -490,7 +489,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
 | 53 | index.html:363 / 364 | 启动自检 / 自检中… | Startup Check / Checking… | 56 → 93 |
-| 54 | settings-rows.js:17–19 | {n} 项功能未生效 / 通过 · {n} 项提醒 / 全部通过 · {n} 项 | {n} features aren’t working / Passed · {n} warnings / All {n} checks passed | 复数写法见 §2.3 |
+| 54 | settings-rows.js:17–19 | {n} 项功能未生效 / 通过 · {n} 项提醒 / 全部通过 | {n} features aren’t working / Passed · {n} warnings / All passed | 复数写法见 §2.3；全部通过 2026-10-15 起不带「· {n} 项」（检查项的总数每个版本都在变，对中控没有信息量），失败和提醒照旧 |
 | 55 | selfcheck.py:597–607 | 音频组件 ffmpeg / 人声降噪 / 语音识别 / 翻译引擎 / 违禁词表 / 领域词表 / 审计日志 / 直播流解析 / 浏览器登录态 / 观众弹幕 / 磁盘空间 | Audio (ffmpeg) / Noise Reduction / Speech Recognition / Translation Engine / Banned-Term List / Glossary / Audit Log / Stream Lookup / Browser Login / Comments / Storage | 最宽 120px，见 §4 R5。pipeline.py:1513 用中文名做匹配的地方要改成按 id |
 | 56 | selfcheck 常见 detail | 实测可用（内置）/ 降噪模型加载失败 / 重启程序后再试 / 已缓存 / 可写入 logs/ / {n} 条 / 剩余 {n} GB | Working (built-in) / Couldn’t load the noise reduction model / Restart the app and try again. / cached / Can write to logs/ / {n} terms / {n} GB available | 截图 3 里那一组 |
 | 57 | index.html:384 | 翻译引擎 | Translation Engine | 56 → 119 |
@@ -546,11 +545,11 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
 | 94 | live-ui.js:30 †index.html:489 | 正在连接 @x… / 正在连接… | Connecting to @x… / Connecting… | 161 → 194 |
-| 95 | index.html:501 | 观众弹幕 | Comments | 52 → 70（13px/600）。不用 “Viewer Comments”（119） |
-| 96 | app.js:1336–1358 | 评论流已连接 / 正在连接评论流… / 评论流断开，重连中… / 未连接 | Connected / Connecting… / Disconnected. Reconnecting… / Not connected | 放在 Comments 标题旁边，上下文已经够了 |
+| 95 | index.html:501 | 观众弹幕 | Comments | 52 → 70（13px/600）。不用 “Viewer Comments”（119）。2026-10-15 起标题后面不再有条数（列表封顶 100 条，数字一直停在 100） |
+| 96 | app.js:1336–1358 | 评论流已连接 / 正在连接评论流… / 评论流断开，重连中… / 未连接 | Connected / Connecting… / Disconnected. Reconnecting… / Not connected | 放在 Comments 标题旁边，上下文已经够了。2026-10-15 起「评论流已连接 / Connected」不再画在标题旁边：`#comment-source` 整个收起，这句话写进 Comments 标题的 title；其余状态照旧 |
 | 97 | app.js:1338/1358 | 已连接，等待观众发评论… / 开播后自动连接评论流 | Connected. Waiting for comments… / Comments connect when the stream starts. | 空状态文字 |
 | 98 | index.html:504/505 | 收起 / 清空弹幕 | Hide / Clear | title 写 “Hide comments to widen captions” |
-| 99 | index.html:514 | 弹幕 {n}（悬浮入口）/ 展开观众弹幕 | Comments {n} / Show comments | |
+| 99 | index.html:514 | 弹幕（悬浮入口）/ 展开观众弹幕 | Comments / Show comments | 2026-10-15 起入口上不带条数；未读红点（`#comment-fab-guard`）照旧 |
 | 100 | index.html:521 | 回到最新 | Jump to Latest | |
 | 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用更强的模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the stronger model | 悬停时才出现的按钮，68+16px |
 | 102 | app.js:1138/1146 | 翻译中… / 翻译失败 / 翻译已跳过（积压） | Translating… / Translation failed / Skipped (backlog) | |
@@ -570,9 +569,9 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 107 | pipeline.py:968 | ⚠️ 识别开始落后（积压 {n} 秒），报警会相应延迟 | ⚠️ Speech recognition is falling behind ({n} sec backlog). Alerts will be delayed. |
 | 108 | pipeline.py:961/965 | 🔴 检测已降级：识别落后 {n} 秒；… | 🔴 Detection degraded: recognition is {n} sec behind. {k} audio segments older than {m} sec were dropped and weren’t checked for banned terms. |
 | 109 | pipeline.py:970 | ✅ 识别已追上，检测恢复正常 | ✅ Speech recognition caught up. Detection is back to normal. |
-| 110 | pipeline.py:667/673/784/828 | 已收到指令，正在连接… / 正在切换到 @B：先停止 @A 的监听… / 正在停止… / 已停止。输入直播间地址可重新开始。 | Connecting… / Switching to @B: stopping @A, then connecting… / Stopping… / Stopped. Enter a live link to start again. |
-| 111 | pipeline.py:2241/2356/2357 | 正在解析直播流地址… / 已连接直播间，开始实时识别（人声降噪已开启） | Getting the stream URL… / Connected. Transcribing live (noise reduction on). |
-| 112 | pipeline.py:2131/2219 | 直播已结束。可以往下翻看这一场的字幕，或在上方输入新的直播间地址。 | The stream has ended. Scroll down to review this session’s captions, or enter a new live link above. |
+| 110 | pipeline.py:667/673/784/828 | 已收到指令，正在连接… / 正在切换到 @B：先停止 @A 的监听… / 正在停止… | Connecting… / Switching to @B: stopping @A, then connecting… / Stopping… | 2026-10-15 起停止完成后不再发「已停止。输入直播间地址可重新开始。」（Stopped. Enter a live link to start again.）：状态是空 detail，横幅收起 |
+| 111 | pipeline.py:2241/2356/2357 | 正在解析直播流地址… | Getting the stream URL… | 2026-10-15 起收到首帧音频后不再发「已连接直播间，开始实时识别（人声降噪已开启）」（Connected. Transcribing live (noise reduction on).）：状态是空 detail，横幅收起，状态胶囊的「直播中」已经说了。演示模式那句「演示模式：内置台词模拟直播字幕（未连接真实直播）」照旧显示，它要提醒这不是真的 |
+| 112 | pipeline.py:2131/2219 | 上一场字幕在下方。 | The previous session’s captions are below. | 2026-10-15 由「直播已结束。可以往下翻看这一场的字幕，或在上方输入新的直播间地址。」缩短；「直播已结束」胶囊已经说了，输入框本来就在上面。「上一场」按 §1.2 写 previous session，跟标题 #52 一致 |
 | 113 | pipeline.py:154–158 | 4003110 整段 | TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried {n} times. TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream. {browser advice} To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks. |
 | 114 | pipeline.py:1683 | TikTok 暂时没有把这个直播间的流地址给程序，{s} 秒后自动重试（第 {i}/{n} 次）… | TikTok didn’t provide a stream URL for this live stream. Retrying in {s} sec (attempt {i} of {n})… |
 | 115 | pipeline.py:2400 | 直播流多次中断且自动重连失败——可能直播已结束，或网络不稳。… | The stream was interrupted several times and couldn’t reconnect. Check that the stream is still live and your network is working, then click Start. |
@@ -581,7 +580,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 118 | pipeline.py:3826 | {engine} 返回 HTTP 429，程序暂停请求 {s} 秒后自动重试… | {engine} returned HTTP 429. Requests are paused for {s} sec, then retried automatically. Captions show the original text meanwhile. Banned-term alerts aren’t affected. |
 | 119 | pipeline.py:1946 | {t} 电脑休眠或挂起了约 {d}… | {t} This computer was asleep for about {d}. The app wasn’t running, so that part of the stream wasn’t monitored. During streams, keep the computer plugged in with the lid open. |
 | 120 | app.js:530–538、516/524 | 发现新版本 / 一键更新 / 更新说明 / 前往下载新版本 / 再点一次确认更新：更新期间监听暂停，更新完自动恢复 / 更新中… | A new version is available / Update Now / Release Notes / Download New Version / Click Again to Update. Monitoring pauses and resumes afterward. / Updating… |
-| 121 | live-ui.js statsLineParts 延迟统计行（2026-10-15 前在 app.js:1517–1529） | 字幕 {w} / P95 {v} 后出现 · 违禁词最迟 {a} / P95 {b} 内报警 · 其中 切段 {c} + 识别 {d} · 译文再等 {e} · 积压 … | Captions +{w} (P95 {v}) · Alerts ≤{a} (P95 {b}) · Segment {c} + ASR {d} · Translation +{e} · Backlog {n}s · Dropped {n} · ASR timeouts {n} · Skipped {n} · Queue {x}/{y} | 第一段是字幕等待（说出这一句 → 中控读到的那一版字幕上屏），第一条译文回来前没有这一段，不写「—」。违禁词报警延迟排第二，一个字没删（CLAUDE.md 第六条） |
+| 120a | app.js showUpdate | 有新版本 {v}，停止监听后在首页查看 | Version {v} is available. Check the home screen after you stop monitoring. | 2026-10-15 起直播中「有新版本」条不摆；中控在直播中点页脚版本号手动检查、找到新版本时，页脚写这一句作答（其余检查结果「已是最新版本」「检查更新失败」本来就在页脚）。自动检查到的不写，静默提示不写。{v} 沿用 #120 的写法，带 v 前缀；英文不重复 “Update”，因为直播中没有更新入口 |
+| 121 | （已删）底部延迟统计行 | — | — | 2026-10-15 用户觉得是噪音，整行删掉；落后、丢音频走 health / incident 提示 |
 
 #107–#109 的英文保留与中文相同的行首 emoji（⚠️ 🔴 ✅）：桌面提示条由 `live-ui.js` 的 `stripStatusEmoji`
 统一去掉，两臂保持一样，G2 按 emoji 的多重集比。
@@ -690,13 +690,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
   - 可以改成只有铃铛图标的胶囊（22px），完整文字放进 title 和 aria-label：“Banned-term alerts are on”。
 - **R7 离线时的状态胶囊。** 完整写成 “Reconnecting to local service…” 要 185px，会跟品牌标签抢位置。
   胶囊里只写 “Reconnecting…”，完整说明交给横幅（#116）。
-- **R8 底部延迟统计行会折行。**
-  - 所有计数都出现时，逐字翻译约 1013px，超过 1000 宽窗口的 960px 可用宽度，折行后会盖到底部的大字幕上。
-  - 用 #121 的紧凑写法（约 800px），而且只有这一行保留 `1.8s` 写法。
-  - 2026-10-15 在最前面加了 “Captions +4.2s (P95 7.1s) · ”（约 160px；「+」和 “Translation +” 一样表示晚了多久，不加的话会被读成字幕显示了多久），满格约 960px，几乎贴边。
-    满格只在积压、丢段、超时、跳过翻译、队列全不为零时出现；窗口窄于约 1000px 时那一刻会折行。
-    G10 的统计行场景（tests/i18n_dom/scenarios.py `_stats`）已带上字幕等待，页面上画出来的就是满格这一行；
-    G10 只查有没有漏翻的中文，不量这一行折不折行，要量得另写。
+- **R8 底部延迟统计行会折行。** 已不适用：2026-10-15 这一行删了。
 - **R9 开始页的选项行可能折行。**
   - 英文宽度：`Spoken language` 104 + 下拉 199 + 间距 24 + `Brand` 36 + 品牌下拉 119–220 + 文件夹按钮，合计 552–653px。容器是 600px。
   - 品牌名超过约 18 个字符时，品牌那一组会折到第二行。
@@ -739,7 +733,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
   手机同看浮层是 480 宽（按钮排法和中文一样）；
   Comments 标题栏里，状态会折到第二行，截图 4 的中文版就是这样；
   磁盘删除按钮英文 159px、中文 163px，一样宽；
-  悬浮的 “Jump to Latest” 和 “Comments 4” 也没问题。
+  悬浮的 “Jump to Latest” 和 “Comments” 也没问题。
 
 ### 4.4 落地与实测（提交 L1，2026-09-29）
 

@@ -178,3 +178,8 @@ def test_quiet_stop_does_not_announce(quiet):
 
     p = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(scenario())
     assert (len(p.server.statuses) == 0) is quiet
+    if not quiet:
+        # 真正停止：先是过渡提示「正在停止…」，最后一条是空 detail——页面上的状态横幅收起
+        # （停止后回到的就是输入框，不再多说一句「已停止……」）
+        assert p.server.statuses[-1] == ("idle", "")
+        assert [d for _, d in p.server.statuses].count("") == 1

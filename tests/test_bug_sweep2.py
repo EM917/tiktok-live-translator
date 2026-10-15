@@ -105,7 +105,7 @@ def test_stream_end_with_a_full_translation_queue_returns_instead_of_raising(mon
 
     async def scenario():
         loop = asyncio.get_running_loop()
-        return await p._stream_session("http://cdn/s.flv", Transcriber(), None, "note", loop)
+        return await p._stream_session("http://cdn/s.flv", Transcriber(), None, loop)
 
     got_audio, secs = run(scenario())
     assert got_audio is True and secs > 0

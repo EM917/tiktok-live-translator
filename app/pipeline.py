@@ -139,10 +139,8 @@ AUDIO_BACKLOG_DEGRADED_SEC = 30.0
 AUDIO_BACKLOG_HARD_SEC = 60.0
 
 # 房间接口说直播已结束时状态栏的话（_confirm_offline 与 _host_wait 两处，必须一字不差）
-LIVE_ENDED_NOTE = L("直播已结束。可以往下翻看这一场的字幕，"
-                    "或在上方输入新的直播间地址。",
-                    "The stream has ended. Scroll down to review this session’s captions, "
-                    "or enter a new live link above.")
+LIVE_ENDED_NOTE = L("上一场字幕在下方。",
+                    "The previous session’s captions are below.")
 
 
 def _media_label(url):
@@ -953,8 +951,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 否则刷新页面或第二个页面重连会看到一个其实已经不生效的品牌
             self.server.config["active_brand"] = None
             await self.server.broadcast({"type": "config", "active_brand": None})
-            await self.server.status("idle", L("已停止。输入直播间地址可重新开始。",
-                                               "Stopped. Enter a live link to start again."))
+            # 空 detail：横幅收起。停止后回到的就是输入框本身，不必再用一句话告诉用户
+            # 「可以重新开始」；「正在停止…」那句过渡提示照旧
+            await self.server.status("idle", "")
 
     # ---- 实际的直播管线 ----
     async def _run_stream(self, url):
@@ -2586,8 +2585,6 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         slot = _ASRSlot(transcriber, config=config, key=key, audit=my_audit)
 
         denoise = await self._ensure_denoise_model()
-        live_note = (L("已连接直播间，开始实时识别", "Connected. Transcribing live")
-                     + (L("（人声降噪已开启）", " (noise reduction on)") if denoise else ""))
 
         # ---- 断流自动重连 ----
         # TikTok 的流地址会过期、网络会抖动，ffmpeg 一断不等于主播下播了。
@@ -2605,7 +2602,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             await self.server.status("connecting", L("正在连接直播音频流…",
                                                      "Connecting to the stream audio…"))
             got_audio, audio_secs = await self._stream_session(
-                media, slot, denoise, live_note, loop, sess=sess)
+                media, slot, denoise, loop, sess=sess)
             if got_audio:
                 host_waited = 0.0
             if audio_secs >= 30:
@@ -2691,7 +2688,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     silent += 1       # 解析不出地址也是一轮没有音频
                     print("[错误] 重连解析失败: {}".format(exc))
 
-    async def _stream_session(self, media, transcriber, denoise, live_note, loop, sess=None):
+    async def _stream_session(self, media, transcriber, denoise, loop, sess=None):
         """跑一轮拉流→识别→翻译，直到流断开。返回 (是否收到过音频, 音频时长秒)。
 
         sess 是这一场的观察状态（见 _new_session_state）：这一轮怎么断的、断之前收到多少
@@ -2805,7 +2802,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     if not got_audio:
                         got_audio = True
                         self._note_stream_resumed(sess, now)
-                        await self.server.status("live", live_note)
+                        # 空 detail：横幅收起。「已连接，开始识别」是常态不是问题，
+                        # 状态胶囊的「直播中」已经说了；横幅只留给真出了问题的时候
+                        await self.server.status("live", "")
                     audio_secs += FRAME_SEC
                     sess["last_frame_wall"] = now
                     segments = segmenter.feed(frame)

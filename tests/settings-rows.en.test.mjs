@@ -29,8 +29,8 @@ test("自检摘要：失败 / 提醒 / 全部通过，1 用单数，图标和签
     { text: "Passed · 1 warning", icon: "warn", sig: "0/1/11" });
   assert.equal(R.selfcheckSummary({ fail: 0, warn: 2, total: 11 }).text, "Passed · 2 warnings");
   assert.deepEqual(R.selfcheckSummary({ fail: 0, warn: 0, total: 11 }),
-    { text: "All 11 checks passed", icon: "pass", sig: "0/0/11" });
-  assert.equal(R.selfcheckSummary({ fail: 0, warn: 0, total: 1 }).text, "1 check passed");
+    { text: "All passed", icon: "pass", sig: "0/0/11" });
+  assert.equal(R.selfcheckSummary({ fail: 0, warn: 0, total: 1 }).text, "All passed");   // 一项也一样，不分单复数
   for (const sum of [{ fail: 0, warn: 0, total: 0 }, {}, undefined]) english(R.selfcheckSummary(sum).text);
 });
 

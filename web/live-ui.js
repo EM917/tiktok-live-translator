@@ -1,7 +1,7 @@
 // i18n: done
 /* 直播中界面几处「显示什么」的纯逻辑（web/live-ui.js）：顶栏手机同看按钮的文案、
  * 连接中提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签、「回到最新」按钮上的未读条数，以及底部大字幕的
- * 翻译状态角标、「约 N 秒前」、页脚延迟统计行、字幕字号的比例。
+ * 翻译状态角标、「约 N 秒前」、字幕字号的比例。
  * 这些判断本身不碰 DOM，放进 app.js 的立即执行函数就没法被 node 测试 require
  * （同 web/settings-rows.js 的起因）。写法和加载方式照 web/switch.js：浏览器里
  * 是全局函数，Node 测试环境走 module.exports。 */
@@ -152,48 +152,6 @@ function captionAgeText(ageMs) {
   return L("约 " + min + " 分钟前", "About " + min + " min ago");
 }
 
-/* ---- 页脚延迟统计行 ----
- * 第一个数是字幕等待：从主播说出这一句到中控读到的那一版字幕上屏（译出来的是译文），
- * 这是用这个工具看直播的人实际等的时间。违禁词报警的延迟（最迟的情况：词在片段最开头）紧跟其后，
- * 一个字都没删——它仍是产品的 KPI（CLAUDE.md 第六条），只是排在第二。
- * 字幕等待要等第一条译文回来才有数；那之前这一段不写（写「—」会像出了故障）。
- * 英文用紧凑写法（docs/i18n-style.md §3 #121）：所有计数都出现时逐字翻译会超过一行 */
-function fmtMs(v) { return v == null ? "—" : (v / 1000).toFixed(1) + "s"; }
-
-function statsLineParts(msg) {
-  var asr = msg.asr || {};
-  var tr = msg.translate || {};
-  var seg = msg.segment || {};
-  var det = msg.detect_worst || {};
-  var wait = msg.caption_wait || {};
-  var parts = [];
-  if (wait.p50 != null) {
-    parts.push(L("字幕 " + fmtMs(wait.p50) + " / P95 " + fmtMs(wait.p95) + " 后出现",
-                 "Captions +" + fmtMs(wait.p50) + " (P95 " + fmtMs(wait.p95) + ")"));
-  }
-  parts.push(
-    L("违禁词最迟 " + fmtMs(det.p50) + " / P95 " + fmtMs(det.p95) + " 内报警",
-      "Alerts ≤" + fmtMs(det.p50) + " (P95 " + fmtMs(det.p95) + ")"),
-    L("其中 切段 " + fmtMs(seg.p50) + " + 识别 " + fmtMs(asr.p50),
-      "Segment " + fmtMs(seg.p50) + " + ASR " + fmtMs(asr.p50)),
-    L("译文再等 " + fmtMs(tr.p50), "Translation +" + fmtMs(tr.p50)));
-  if (msg.audio_backlog_sec >= 3) {
-    parts.push(L("积压 " + msg.audio_backlog_sec.toFixed(0) + "s",
-                 "Backlog " + msg.audio_backlog_sec.toFixed(0) + "s"));
-  }
-  if (msg.audio_segments_dropped) parts.push(L("丢音频 " + msg.audio_segments_dropped,
-                                               "Dropped " + msg.audio_segments_dropped));
-  // 识别跑飞是丢音频的前兆，出现就该看见
-  if (msg.asr_overruns) parts.push(L("识别超时 " + msg.asr_overruns, "ASR timeouts " + msg.asr_overruns));
-  if (msg.translation_jobs_dropped) parts.push(L("跳过翻译 " + msg.translation_jobs_dropped,
-                                                 "Skipped " + msg.translation_jobs_dropped));
-  if (msg.asr_queue_depth || msg.translation_queue_depth) {
-    parts.push(L("积压 " + msg.asr_queue_depth + "/" + msg.translation_queue_depth,
-                 "Queue " + msg.asr_queue_depth + "/" + msg.translation_queue_depth));
-  }
-  return parts;
-}
-
 /* ---- 字幕字号 ----
  * 顶栏滑块（20–60，宽窗口默认 34）定底部大字幕的字号；历史卡片的译文/原文和弹幕栏的译文/原文
  * 按同一个比例跟着变，不再各自固定 17/13/15px。比例 = 滑块值 / 34，夹在 0.85–1.75 之间：
@@ -236,7 +194,6 @@ if (typeof module !== "undefined" && module.exports) {
                      captionStateChip: captionStateChip, liveBarChip: liveBarChip,
                      captionAudioEndAt: captionAudioEndAt, captionAgeText: captionAgeText,
                      CAPTION_LAG_SHOW_SEC: CAPTION_LAG_SHOW_SEC,
-                     fmtMs: fmtMs, statsLineParts: statsLineParts,
                      captionScale: captionScale, captionSizeVars: captionSizeVars,
                      captionSizeFromConfig: captionSizeFromConfig };
 }

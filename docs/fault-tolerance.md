@@ -75,8 +75,8 @@ valid for about two weeks, so one capture covers a whole stream. See also
   all (two for a pasted stream URL); an attempt that played any audio resets
   the count. A pasted stream URL that stops serving data after playing for
   30 s or more ends the session instead of reconnecting.
-- The comment connection can go half-open: the Comments panel still shows
-  Connected, but no comments arrive. After 15 minutes of silence while
+- The comment connection can go half-open: the Comments panel shows no
+  warning, but no comments arrive. After 15 minutes of silence while
   connected, the app reconnects it and records that in the session audit.
 - yt-dlp is kept current in the background.
 - While monitoring, the computer is kept from going to sleep on its own, and a
