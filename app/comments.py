@@ -110,6 +110,12 @@ SHORT_REPLY_MAX = 60
 
 def plausible_translation(text, out, target):
     """这条译文像不像是在翻译这条弹幕（而不是在回话、在问问题）。不像就当没译出来，只显示原文。
+    判据见 implausible_reason。"""
+    return bool(out) and implausible_reason(text, out, target) is None
+
+
+def implausible_reason(text, out, target):
+    """译文不像在翻译这条弹幕时给出原因代码（写进审计），像就返回 None。
 
     用结构信号，不猜语义：
       * looks_fabricated 的几条（问句被吃掉、数字消失、比原文长出一大截）；
@@ -119,17 +125,43 @@ def plausible_translation(text, out, target):
         英文的一句话（「Could you paste the comments?」）。只差一两个词的不算：品牌名、人名原样
         保留是正常译文。"""
     if not out:
-        return False
+        return "reply_empty"
     if looks_fabricated(text, out):
-        return False
+        return "reply_fabricated"
     if _META_REPLY_RE.search(out) and not _META_IN_SOURCE_RE.search(text):
-        return False
+        return "reply_meta"
     if len(out) > max(SHORT_REPLY_MAX, len(text) * 4):
-        return False
+        return "reply_too_long"
     if str(target or "").lower().startswith("zh") and not _CJK_RE.search(text) \
             and not _CJK_RE.search(out) and len(out.split()) >= len(text.split()) + 3:
-        return False
-    return True
+        return "reply_no_cjk"
+    return None
+
+
+def why_no_output(translator, paused, error_before, outcome):
+    """translate() 没给译文时，这一次是怎么回事（原因代码，写进审计）。
+
+    paused：发请求之前引擎就在冷却里；error_before：调用前引擎记着的最近一次 HTTP 回应——
+    last_error 在 200 时清空、非 200 时换一个新元组，「前后是不是同一个对象」分得出这一次有没有
+    新的 HTTP 回应（同 comment_redo.failure_text）。只给代码，不替接口解释原因。"""
+    if paused:
+        return "cooldown"
+    if outcome and outcome[0] == "refusal":
+        return "refusal"
+    error = getattr(translator, "last_error", None)
+    if error and error[0] is not None and error is not error_before:
+        return "http_{}".format(error[0])
+    return "no_output"
+
+
+def _forget(translator, text, target):
+    """译文被判成不像译文：从重复句缓存里拿掉，同一句下次还会再问一次，不会一整场都钉死在回话上。"""
+    forget = getattr(translator, "forget", None)
+    if forget is not None:
+        try:
+            forget(text, target)
+        except Exception:
+            pass
 
 
 # 弹幕作者和主播的关系（comment_source._REL_FLAGS），页面上显示成「粉丝 / 互关 / 送过礼 / 订阅」
@@ -305,6 +337,11 @@ class CommentTranslator:
         self._claude_strong_factory = claude_strong_factory or _comment_claude_strong
         self._redo_engine = None
         self._redo_for = None
+        # 这一场弹幕翻译的结局计数（只有代码和数字），会话结束时并进 session_end。CommentTranslator
+        # 跨场常驻，计数挂在本场的 audit 上：换场就从零数（见 _tally）
+        self._tally_owner = _NOT_YET
+        self._tally_ok = 0
+        self._tally_failed = {}
 
     # ---- 入站：抓取端送来的一批观众评论 ----
     async def accept(self, data):
@@ -448,18 +485,23 @@ class CommentTranslator:
         while self._busy() and waited < self.IDLE_WAIT_MAX_SEC:
             await asyncio.sleep(0.05)
             waited += 0.05
+        audit = self._session()
+        t0 = time.monotonic()
         try:
-            await asyncio.wait_for(self._translate_batch(batch),
+            await asyncio.wait_for(self._translate_batch(batch, audit, t0),
                                    timeout=self.TRANSLATE_TIMEOUT_SEC)
         except Exception as exc:
             print("[警告] 弹幕翻译失败: {}".format(exc))
+            why = "timeout" if isinstance(exc, asyncio.TimeoutError) else "exception"
+            self._note_outcome(audit, self._translator(), len(batch), 0, {why: len(batch)}, t0)
             for item in batch:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": "failed"})
 
-    async def _translate_batch(self, batch):
+    async def _translate_batch(self, batch, audit=None, t0=None):
         # 每批开头抓一次快照：引擎可能在这批翻译进行中被界面上的操作换掉，
         # 但这一批必须自始至终用同一个对象，行为才可预期。
+        t0 = time.monotonic() if t0 is None else t0
         translator = self._translator()
         engine = self._engine_for(translator) if engine_allows_comments(translator) else None
         if engine is None:
@@ -467,6 +509,8 @@ class CommentTranslator:
             # 引擎还是 Claude、却造不出弹幕那个实例（密钥没了）：当作这批翻译失败
             state = "failed" if translator is None or engine_allows_comments(translator) \
                 else "skipped"
+            if state == "failed":
+                self._note_outcome(audit, translator, len(batch), 0, {"no_engine": len(batch)}, t0)
             for item in batch:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": state})
@@ -476,20 +520,57 @@ class CommentTranslator:
         glossary = self._glossary()
         texts = [item["text"] for item in batch]
         if len(texts) == 1:
-            outs = [await self._translate_one(translator, texts[0], target, glossary)]
+            outs = [await self._translate_one_why(translator, texts[0], target, glossary)]
         else:
             outs = await self._translate_many(translator, texts, target, glossary)
-        for item, out in zip(batch, outs):
-            if out and not plausible_translation(item["text"], out, target):
-                print("[警告] 弹幕译文不像是在翻译这条弹幕（{} 字 → {} 字），只显示原文".format(
-                    len(item["text"]), len(out)))
-                out = None
+        failed, ok = {}, 0
+        for item, (out, why) in zip(batch, outs):
+            if out:
+                why = implausible_reason(item["text"], out, target)
+                if why:
+                    print("[警告] 弹幕译文不像是在翻译这条弹幕（{} 字 → {} 字），只显示原文".format(
+                        len(item["text"]), len(out)))
+                    _forget(translator, item["text"], target)
+                    out = None
+            if out:
+                ok += 1
+            else:
+                failed[why or "no_output"] = failed.get(why or "no_output", 0) + 1
             if out:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": out, "state": "ok"})
             else:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": "failed"})
+        self._note_outcome(audit, translator, len(batch), ok, failed, t0)
+
+    def _tally(self, audit):
+        """本场的计数；audit 换了（新的一场）就从零数。"""
+        if self._tally_owner is not audit:
+            self._tally_owner, self._tally_ok, self._tally_failed = audit, 0, {}
+
+    def _note_outcome(self, audit, translator, batch, ok, failed, t0):
+        """记下一批的结局：计数照记；有没译出来的，往本场审计写一条（只有代码和数字）。"""
+        try:
+            self._tally(audit)
+            self._tally_ok += ok
+            for why, n in failed.items():
+                self._tally_failed[why] = self._tally_failed.get(why, 0) + n
+            if failed and audit is not None:
+                inner = getattr(translator, "inner", translator)
+                audit.comment_translation_failed(
+                    getattr(inner, "name", None), getattr(inner, "model", None), batch,
+                    failed, round((time.monotonic() - t0) * 1000.0))
+        except Exception as exc:          # 记账出错不能连累弹幕翻译本身
+            print("[警告] 弹幕翻译结局记录失败: {}".format(exc))
+
+    def translation_summary(self, audit):
+        """这一场（audit 指定）弹幕翻译的结局计数，给 session_end；没翻过或不是这一场的返回 None。"""
+        if audit is None or self._tally_owner is not audit:
+            return None
+        if not self._tally_ok and not self._tally_failed:
+            return None
+        return {"ok": self._tally_ok, "failed": dict(self._tally_failed)}
 
     def _engine_for(self, translator):
         """这一批弹幕实际交给哪个引擎翻；造不出来返回 None。
@@ -641,31 +722,46 @@ class CommentTranslator:
                                     "text": text})
 
     async def _translate_many(self, translator, texts, target, glossary):
+        """一批几条：返回 [(译文或 None, 没译出来的原因代码或 None), ...]，顺序同 texts。"""
         joined = "\n".join(texts)                   # i18n: data（弹幕原文，喂给翻译引擎）
         hint = tuple(glossary.translation_pairs(joined)) if glossary else None
-        raw = await translator.translate(build_batch(texts), target, source="auto",
-                                          glossary=hint)
+        raw, why = await self._call(translator, build_batch(texts), target, hint)
         parsed = parse_batch(raw, len(texts)) if raw else None
         if parsed is None and not raw and engine_is_claude(translator) \
                 and getattr(translator, "fail_streak", 0) > 0:
             # 接口这一次回的是错（HTTP 非 200）：逐条重发是同样的结果，只会把一批的请求翻成
             # 六倍。拒答是 HTTP 200（fail_streak 为 0），不走这里——逐条重译正好把拒答的那
             # 一条隔离出来，其余照常翻
-            return [None] * len(texts)
+            return [(None, why)] * len(texts)
         if parsed is None:
             # 行数对不上：宁可逐条重译（顺序不变），也不能把译文安给错的弹幕
-            return [await self._translate_one(translator, t, target, glossary)
+            return [await self._translate_one_why(translator, t, target, glossary)
                    for t in texts]
-        return [self._apply_glossary(glossary, texts[i], parsed[i])
+        return [(self._apply_glossary(glossary, texts[i], parsed[i]), None)
                for i in range(len(texts))]
 
     async def _translate_one(self, translator, text, target, glossary):
+        return (await self._translate_one_why(translator, text, target, glossary))[0]
+
+    async def _translate_one_why(self, translator, text, target, glossary):
+        """一条：(译文或 None, 没译出来的原因代码或 None)。"""
         hint = tuple(glossary.translation_pairs(text)) if glossary else None
+        out, why = await self._call(translator, text, target, hint)
+        return self._apply_glossary(glossary, text, out), why
+
+    async def _call(self, translator, text, target, hint):
+        """调一次 translate：(译文或 None, 没译出来的原因代码或 None)。直接 await，不套 wait_for：
+        拒答的结局记在本任务的上下文里（translator.translate_call_outcome），另起任务就丢了。"""
+        paused = getattr(translator, "cooldown_until", 0.0) > time.monotonic()
+        error_before = getattr(translator, "last_error", None)
+        begin_translate_call()
         try:
             out = await translator.translate(text, target, source="auto", glossary=hint)
         except Exception:
-            return None
-        return self._apply_glossary(glossary, text, out)
+            return None, "exception"
+        if out:
+            return out, None
+        return None, why_no_output(translator, paused, error_before, translate_call_outcome())
 
     def _apply_glossary(self, glossary, text, out):
         if not out or not glossary:
