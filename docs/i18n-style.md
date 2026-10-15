@@ -109,6 +109,9 @@
 | 审计 / 审计日志 | **audit log** | compliance log, record | 和 README 同名。审计文件的内容不翻译 |
 | 磁盘空间 | **Storage** | Disk Space, Disk Usage | macOS 系统设置里同一个功能就叫 Storage，而且更短。自检那一行也用 Storage |
 | 模型与日志 | **models and logs** | data | |
+| 字幕记录（设置行；一场一个文件，含字幕、译文和观众弹幕） | **Transcripts**（设置行名）；正文说一场的那份文件时写 **transcript** | Caption History, Recordings, Logs | Recordings 会被读成录音录像；Logs 是审计日志的叫法，而审计日志里没有弹幕内容，字幕记录里有，两者不能混着叫。Caption History 撞「清空字幕」的 tooltip（Clear caption history） |
+| 导出最近一场 | **Export Latest Session** | Export Last, Download | session 同上；Latest 不会被读成「最后一条字幕」 |
+| 打开文件夹 | **Open Folder** | Show in Finder, Reveal | 要跨平台，访达和资源管理器的叫法不通用。与 Open Brands Folder、Open Rules Folder 同一个构词 |
 | 正在用 / 本程序 / 非本程序 | **In use / This app / Not this app** | Other | 「非本程序」的意思是「不一定是别人的」，照字面翻最诚实 |
 | 更新 / 一键更新 / 更新说明 | **Update / Update Now / Release Notes** | Upgrade | |
 | 设置 | **Settings** | Preferences | |
