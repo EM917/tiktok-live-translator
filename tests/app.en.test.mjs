@@ -1271,3 +1271,43 @@ test("英文页：抽屉——定位后不被新弹幕拉回底部；行已不�
   assert.equal(drawer.cls.includes("hidden"), false);
   assert.deepEqual(leftoverChinese(page), []);
 });
+
+test("英文页：字幕记录行——摘要、两个按钮发的消息、按钮下面的回音；默认收起且永不被消息弹开", () => {
+  const page = runDesktop();
+  hello(page, { transcripts: { count: 3 } });
+  const head = page.el("transcript-head");
+  const body = page.el("transcript-body");
+  const status = page.el("transcript-status");
+  assert.equal(page.el("transcript-summary").textContent, "3 sessions");
+  // CLAUDE.md 第六条：和违禁词报警、弹幕留意一样默认收起，hello 和后面的消息都不会替中控展开它
+  assert.equal(head.getAttribute("aria-expanded"), "false");
+  assert.ok(body.cls.includes("hidden"));
+  page.push({ type: "config", transcripts: { count: 1 } });
+  assert.equal(page.el("transcript-summary").textContent, "1 session");
+  page.push({ type: "config", transcripts: { count: 0 } });
+  assert.equal(page.el("transcript-summary").textContent, "None yet");
+  assert.equal(head.getAttribute("aria-expanded"), "false");
+  head.click();
+  assert.equal(head.getAttribute("aria-expanded"), "true");
+  assert.ok(!body.cls.includes("hidden"));
+  // 导出：发 export_transcript，先写「正在导出」，后端的 notice 带 where 就把同一句话写在按钮下面
+  page.el("transcript-export").click();
+  assert.deepEqual(page.sent.filter((m) => m.type === "export_transcript"), [{ type: "export_transcript" }]);
+  assert.equal(status.textContent, "Exporting…");
+  const done = "Exported 2 captions, 1 comment (Markdown, CSV and SRT files) to /app/transcripts";
+  page.push({ type: "notice", text: done, where: "transcripts" });
+  assert.equal(status.textContent, done);
+  assert.equal(page.el("app-version").textContent, " · " + done, "页脚那一句照旧");
+  // 别处的 notice 不往这一行写
+  page.push({ type: "notice", text: "Update check finished" });
+  assert.equal(status.textContent, done);
+  // 打开文件夹
+  page.el("transcript-dir-btn").click();
+  assert.deepEqual(page.sent.filter((m) => m.type === "open_transcripts_dir"), [{ type: "open_transcripts_dir" }]);
+  // 连不上本地服务时点导出：说清楚，不留在「正在导出」
+  page.offline();
+  page.el("transcript-export").click();
+  assert.equal(status.textContent,
+               "Lost connection to the local service. Reconnecting… Try again in a moment.");
+  assert.deepEqual(leftoverChinese(page), []);
+});
