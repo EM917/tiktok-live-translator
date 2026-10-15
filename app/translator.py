@@ -196,13 +196,22 @@ class CachedTranslator:
     # 拒答（目前只有 Claude 会）不经过这里：内层引擎把这一次调用的结局记进
     # translate_call_outcome()，管线在同一个任务里读。拒答返回 None，不进缓存——
     # 下面只缓存真值，所以同一句下次还会再问一次
-    async def translate(self, text, target, source="auto", glossary=None):
+    @staticmethod
+    def _key(text, target, source, glossary):
         # 词表可以是紧凑串，也可以是词对列表（见 _as_pairs）。列表不可哈希，
         # 直接拿来做缓存键会抛 TypeError 把这次翻译整个打掉——调用方少写一个
         # tuple() 就会踩到。这里统一成可哈希形式。
-        key = (text.strip(), target, source,
-               tuple(map(tuple, glossary)) if isinstance(glossary, list)
-               else (glossary or ""))
+        return (text.strip(), target, source,
+                tuple(map(tuple, glossary)) if isinstance(glossary, list)
+                else (glossary or ""))
+
+    def forget(self, text, target, source="auto", glossary=None):
+        """把一句已缓存的结果拿掉：调用方事后判定它不是译文（是在回话），同一句下次要重新问，
+        不能一整场都从缓存里拿回同一句回话。"""
+        self._cache.pop(self._key(text, target, source, glossary), None)
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        key = self._key(text, target, source, glossary)
         if key in self._cache:
             self._cache.move_to_end(key)
             self.hits += 1

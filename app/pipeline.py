@@ -1743,6 +1743,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     fields.setdefault("comment_fields", {
                         "n": comment_fields["n"], "has": dict(comment_fields["has"])})
             await self._stop_comment_source()
+            # 弹幕翻译的结局计数（只有代码和数字）：按 my_audit 取，晚到的旧任务拿不到下一场的数
+            comments = getattr(self, "comments", None)
+            translated = comments.translation_summary(my_audit if my_audit is not None
+                                                      else self.audit) if comments else None
+            if translated is not None:
+                fields.setdefault("comment_translation", translated)
             # 弹幕留意的计数（只有计数，没有弹幕内容）。放在停弹幕之后：在途的最后一批弹幕也判完了；
             # 守卫自己按 audit 核对是不是这一场的（CLAUDE.md 第七条）
             guard_end = await self._end_comment_guard(my_audit)
