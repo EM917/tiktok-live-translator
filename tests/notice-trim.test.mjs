@@ -7,6 +7,7 @@
 //      句子挪进标题的 title；别的状态（连接中、断开、出错）照旧写在标题旁边；
 //   3. 弹幕条数：标题上和收起后的入口上都没有数字了（列表封顶 100，数字一直停在 100），入口上的红点照旧；
 //   4. 「有新版本」条和「迁移旧词表」条：直播中不摆，回到首页再摆；更新进行中（updating）不收；
+//      直播中点页脚版本号手动检查、找到新版本时，条仍不摆，页脚写一句作答（否则那次点击没有任何回应）；
 //   5. 首页标题把「或 @用户名」并进去，下面那行字没了，ⓘ 按钮还在、还管着 #input-help；
 //   6. 自检行：全绿只写「全部通过」，失败照旧自动展开。
 // 纯函数的文案在 tests/guard*.test.mjs、tests/settings-rows*.test.mjs；后端那几句在 tests/test_pipeline_reconnect.py、
@@ -173,6 +174,54 @@ for (const lang of ["en", "zh"]) {
     assert.ok(!shown(bar));
     status(page, "idle", "");
     assert.ok(shown(bar), "回到首页又摆出来");
+    if (lang === "en") assert.deepEqual(leftoverChinese(page), []);
+  });
+
+  test(lang + "：直播中手动检查更新找到新版本：条不摆，页脚写一句作答；自动提示和静默提示不写", () => {
+    const page = runDesktop(lang);
+    const foot = () => page.el("app-version").textContent;
+    hello(page, "live");
+    const manualCheck = () => {
+      page.el("app-version").click();
+      assert.match(foot(), lang === "en" ? /Checking for updates/ : /检查更新中/);
+    };
+    // 手动点：服务端回 update_available（手动检查永远不是静默的）
+    manualCheck();
+    page.push({ type: "update_available", version: "9.9.9", can_auto: true, url: "https://example.invalid/r", quiet: false });
+    assert.ok(!shown(page.el("update-bar")), "直播中条照旧不摆");
+    assert.match(foot(), /9\.9\.9/, "但页脚有回应，不是「检查中…」8 秒后悄悄变回版本号");
+    assert.ok(!/检查更新中|Checking for updates/.test(foot()));
+    assert.equal(foot().includes("1.2.3"), false, "回应顶替了版本号那一行");
+    page.fire(8000);                              // 一次性提示到点：版本号回来
+    assert.match(foot(), /v1\.2\.3/);
+    // 没人点：自动检查到的提示（非静默）直播中不在页脚打扰
+    page.push({ type: "update_available", version: "9.9.10", can_auto: true, url: "https://example.invalid/r", quiet: false });
+    assert.match(foot(), /v1\.2\.3/, "没点过就不写");
+    // 点过但答案已经过期（超过窗口）：同样不写
+    manualCheck();
+    page.advance(13000);
+    page.push({ type: "update_available", version: "9.9.11", can_auto: true, url: "https://example.invalid/r", quiet: false });
+    assert.ok(!/9\.9\.11/.test(foot()), "超过窗口的不算这次手动检查的答案");
+    // 静默提示不写
+    manualCheck();
+    page.push({ type: "update_available", version: "9.9.12", can_auto: true, url: "https://example.invalid/r", quiet: true });
+    assert.ok(!/9\.9\.12/.test(foot()));
+    // 一次点击只答一次
+    page.push({ type: "update_available", version: "9.9.13", can_auto: true, url: "https://example.invalid/r", quiet: false });
+    assert.match(foot(), /9\.9\.13/, "窗口内第一条非静默的作答");
+    page.fire(8000);
+    page.push({ type: "update_available", version: "9.9.14", can_auto: true, url: "https://example.invalid/r", quiet: false });
+    assert.ok(!/9\.9\.14/.test(foot()), "答过一次就不再写");
+    // 回到首页：条摆出来，是最新的那个版本
+    status(page, "idle", "");
+    assert.ok(shown(page.el("update-bar")));
+    assert.match(page.el("update-text").textContent, /9\.9\.14/);
+    // 首页上手动检查：条本来就在，不再多写一句
+    page.fire(8000);
+    manualCheck();
+    page.push({ type: "update_available", version: "9.9.15", can_auto: true, url: "https://example.invalid/r", quiet: false });
+    assert.ok(shown(page.el("update-bar")));
+    assert.ok(!/9\.9\.15/.test(foot()), "条已经摆着，页脚不重复");
     if (lang === "en") assert.deepEqual(leftoverChinese(page), []);
   });
 

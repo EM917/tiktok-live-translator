@@ -706,6 +706,10 @@
   // 监听又恰恰是更新暂停的，这时收起会让中控以为什么都没发生
   var updateOffered = false;      // 服务端说有新版本（showUpdate 收到过）
   var updateRunning = false;      // 点了「一键更新」、服务端回了 updating，还没结束
+  // 点页脚版本号手动检查的那一刻。直播中条不摆，而这是中控自己问的，必须有回应：
+  // 这个窗口内到的、条被收起的「有新版本」改在页脚写一句（「已是最新」「检查失败」本来就在页脚）
+  var manualCheckAt = 0;
+  var MANUAL_CHECK_WINDOW_MS = 12000;   // 服务端请求 GitHub 最多等 8 秒
   var migrateOffered = false;     // 词表里有旧模板遗留的条目
 
   function syncNoticeBars() {
@@ -730,6 +734,13 @@
     updateLink.href = info.url || "#";
     updateOffered = true;
     syncNoticeBars();       // 直播中先不摆，回到首页时再露出来（见 syncNoticeBars）
+    if (!info.quiet && streamActive && !updateRunning && manualCheckAt
+        && Date.now() - manualCheckAt < MANUAL_CHECK_WINDOW_MS) {
+      manualCheckAt = 0;
+      showVersionNote(L("有新版本 " + info.version + "，停止监听后在首页查看",
+                        "Version " + info.version + " is available. Check the home screen after you stop monitoring."),
+                      8000);
+    }
     // 静默模式：短时间内已经提示过了。按钮照常可用，但不再改标题——
     // 标题会闪在任务栏/标签页上，连续几个 patch 的日子那是纯粹的骚扰。
     if (!info.quiet) document.title = L("有新版本 · TikTok 直播同传", "Update Available · TikTok Live Translator");
@@ -742,6 +753,7 @@
       showVersionNote(L("未连接到本地服务", "Not connected to the local service"), 3000);
       return;
     }
+    manualCheckAt = Date.now();
     // 「检查中…」的恢复定时器要能被随后到达的结果提示接管，
     // 否则结果刚显示就被这个定时器抹回版本号
     showVersionNote(L("检查更新中…", "Checking for updates…"), 8000);

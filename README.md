@@ -105,7 +105,7 @@ Flags need a terminal: the `.app` does not take them, while `Start.command` and 
 
 ### Updating
 
-The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen; click the version number at the bottom of the window to check by hand.
+The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen. Click the version number at the bottom of the window to check by hand. During a stream, the answer appears next to the version number.
 
 <a id="en-translation-engines"></a>
 
@@ -393,7 +393,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 ### 更新
 
-程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示；也可以随时点窗口底部的版本号，手动检查。
+程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示。也可以随时点窗口底部的版本号手动检查，直播中检查的结果写在版本号旁边。
 
 <a id="zh-translation-engines"></a>
 
