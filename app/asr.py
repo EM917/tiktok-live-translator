@@ -113,14 +113,31 @@ def _is_all_hallucination(normalized):
     """
     global _HALLUCINATION_KEYS
     if _HALLUCINATION_KEYS is None:
-        _HALLUCINATION_KEYS = {_hallucination_key(_norm_for_hallucination(h))
-                               for h in _HALLUCINATIONS}
-    if not normalized:
-        return False
-    parts = [p for p in re.split(r"[.!?！？。]+", normalized) if p.strip()]
-    if not parts:
-        return False
-    return all(_hallucination_key(p) in _HALLUCINATION_KEYS for p in parts)
+        _HALLUCINATION_KEYS = _table_keys(_HALLUCINATIONS)
+    parts = _sentence_keys(normalized)
+    return bool(parts) and all(p in _HALLUCINATION_KEYS for p in parts)
+
+
+_OUTRO_KEYS = None
+
+
+def _has_youtube_outro(normalized):
+    """有没有一句属于 _YOUTUBE_OUTROS（训练集的片尾/署名，主播几乎不会整段只说这句）。
+    只在 _is_all_hallucination 已经成立时用：整段都是套话，又有一句属于这一层。"""
+    global _OUTRO_KEYS
+    if _OUTRO_KEYS is None:
+        _OUTRO_KEYS = _table_keys(_YOUTUBE_OUTROS)
+    return any(p in _OUTRO_KEYS for p in _sentence_keys(normalized))
+
+
+def _table_keys(table):
+    return {_hallucination_key(_norm_for_hallucination(h)) for h in table}
+
+
+def _sentence_keys(normalized):
+    """按句末标点拆句，每句取比对键；空句不算。"""
+    return [_hallucination_key(p) for p in re.split(r"[.!?！？。]+", normalized or "")
+            if p.strip()]
 
 
 @dataclass
@@ -161,8 +178,8 @@ DEFAULT_TEMPERATURE = 0.0
 # 只有英文和中文条目，西语的全部漏了过去。这类幻觉不只是脏字幕：它会污染
 # 违禁词检测的上下文窗口，还白白占用翻译。
 #
-# 判定是**整段完全等于**这些短语才丢弃（见 _fold），所以不会误伤主播真的
-# 在句子里说「gracias」。
+# 判定是**整段每一句都是**这些短语才丢弃（见 _is_all_hallucination），所以
+# 不会误伤主播真的在句子里说「gracias」。
 # 实测记录（bella.pcm 20 段 + s_purple23.0.pcm 23 段，2026-08）：
 # 曾试过用 Silero VAD 的「人声占比」当闸门，先判定一段有没有人在说话，
 # 没有就不送去识别——想法是幻觉都出在纯背景音乐段。测下来不成立：
@@ -173,33 +190,74 @@ DEFAULT_TEMPERATURE = 0.0
 # 注意区分：废弃的是「我们自己在切段后再加一道 VAD 闸门」，不是 ct2 路径里
 # 那个 vad_filter=True——后者是 faster-whisper 在解码内部按段裁剪，作用不同，
 # 别顺手删掉。
-_HALLUCINATIONS = {
+#
+# 表分两层。下面 _YOUTUBE_OUTROS 这一层只收四类：字幕组署名、整句片尾语里提到
+# 「视频」的、「¡Suscríbete al canal!」这一句（及其别的语言版本）、YouTube 的小铃铛。
+# 整段都是套话、且其中至少有一句属于这一层，就不看置信度直接丢。其余条目（thank you、
+# nos vemos、suscríbete、dale like……）主播真会说——TikTok 有订阅功能，有主播把自己的
+# 页面叫「mi canal」——仍然要置信度低于 -0.6 才丢；光一句「más videos」算不上片尾语，
+# 也留在这边。
+# 为什么要分层（2026-10-14 实测）：
+#   - 本机 114 份会话日志里，按旧表有 276 段整段都是套话的字幕上了屏，前三名都属于
+#     这一层（按去掉重音、不分大小写的整段文字计：「¡Gracias por ver el video!
+#     ¡Suscríbete al canal!」67 段、「¡Gracias por ver este video!」58 段、「¡Gracias
+#     por ver el video!」50 段）；
+#   - 10-14 直播录音（13:20–14:40，608 段）离线重跑 large-v3，整段属于这一层的 9 段
+#     置信度落在 -0.38 到 -0.70，大多贴着 -0.6，拦没拦住近乎抛硬币：4 段上了屏；
+#   - 同样这 9 段音频，large-v3-turbo 有 7 段写出了一整段真话（「Otro producto
+#     que yo recomiendo…」这类）——套话是顶替了真话，不是主播在说这句；
+#   - 「¡Suscríbete al canal!」在日志里整段出现 283 次（上屏 33、被拒 250）。上屏的 33 次
+#     逐条看过前后文：大多夹在讲价讲货中间，2 次落在道别处——那里就算主播在请大家
+#     关注，屏幕上这句也多半不是原话。
+# 丢的只是字幕：raw_text 原样保留，违禁词检测的输入一个字不少。
+# 长尾变体是从同一批日志里捞出来补进来的，最多的是「¡Gracias por ver este video!
+# ¡Suscríbete al canal para no perderte los próximos videos!」41 段，另有 8 段近似写法。
+# 「suscríbete a mi canal / a nuestro canal」也是这次新补的，放在要看置信度的那层：
+# 日志里整段出现 5 次，都夹在讲货中间。
+_YOUTUBE_OUTROS = {
+    # 字幕组署名（英 / 葡 / 法 / 西 / 中 / 俄 / 阿），及中文训练集里节目的订阅打赏套话
+    "subtitles by the amara.org community", "subtitles by amara.org",
+    "subtitled by the amara.org community",
+    "legendas pela comunidade amara.org",
+    "sous-titres realises par la communaute d'amara.org",
+    "subtitulos realizados por la comunidad de amara.org",
+    "字幕由amara.org社区提供", "请不吝点赞订阅转发打赏支持明镜与点点栏目",
+    "субтитры сделал dimatorzok", "субтитры создавал dimatorzok",
+    "المترجمات لكثير من الاشتراك في القناة",
+    # 提到「视频」的片尾语
+    "gracias por ver el video", "gracias por ver este video",
+    "gracias por ver nuestro video", "muchas gracias por ver este video",
+    "suscribete al canal para no perderte los proximos videos",
+    "suscribete al canal para que no te pierdas los proximos videos",
+    "suscribete para no perderte nuestros proximos videos",
+    "suscribete al canal para mas videos",
+    "si te gusto el video dale like suscribete y comparte",
+    "si te ha gustado este video dale like suscribete y comparte",
+    "si te ha gustado este video dale a like suscribete y comparte",
+    "nos vemos en el proximo video", "다음 영상에서 만나요",
+    # 「¡Suscríbete al canal!」及其别的语言版本、YouTube 的小铃铛
+    "suscribete al canal", "suscribete y activa la campanita",
+    "اشتركوا في القناة", "チャンネル登録お願いします",
+}
+
+_HALLUCINATIONS = _YOUTUBE_OUTROS | {
     # 英文
     "thank you", "thanks for watching", "thank you for watching", "you",
     "please subscribe", "subscribe", "bye", "so",
     "thanks for watching!", "see you next time",
-    "subtitles by the amara.org community", "subtitles by amara.org",
-    "subtitled by the amara.org community",
-    # 葡语 / 法语：同一个训练集署名，Whisper 在西语直播里也会吐
-    "legendas pela comunidade amara.org",
-    "sous-titres realises par la communaute d'amara.org",
     # 西语（带货直播的主力语种，之前完全没覆盖）
-    "gracias por ver", "gracias por ver el video",
-    "gracias por ver este video", "gracias por vernos",
-    "suscribete", "suscribete al canal", "suscribanse",
+    "gracias por ver", "gracias por vernos",
+    "suscribete", "suscribanse", "suscribete a mi canal", "suscribete a nuestro canal",
     "no olvides suscribirte", "no olviden suscribirse",
     "hasta la proxima", "nos vemos", "gracias por su atencion",
-    "subtitulos realizados por la comunidad de amara.org",
     "mas videos", "dale like y suscribete",
     "aplausos", "musica", "risas", "mas informacion", "obrigado", "obrigada",
     # 中文
-    "字幕由amara.org社区提供", "请不吝点赞订阅转发打赏支持明镜与点点栏目",
     "谢谢观看", "请订阅",
     # 其它语言的同类套话（文字系统规则通常先扣下它们；这里是第二道）
-    "감사합니다", "구독과 좋아요 부탁드립니다", "다음 영상에서 만나요",
-    "المترجمات لكثير من الاشتراك في القناة", "اشتركوا في القناة",
-    "субтитры сделал dimatorzok", "субтитры создавал dimatorzok", "продолжение следует",
-    "ご視聴ありがとうございました", "チャンネル登録お願いします", "תודה רבה",
+    "감사합니다", "구독과 좋아요 부탁드립니다",
+    "продолжение следует",
+    "ご視聴ありがとうございました", "תודה רבה",
 }
 
 
@@ -509,7 +567,8 @@ class _FilterMixin:
         normalized = _norm_for_hallucination(text)
         if _is_all_hallucination(normalized):
             mean_logprob = sum(logprobs) / len(logprobs) if logprobs else -10.0
-            if mean_logprob < -0.6 or _is_subtitle_credit(normalized):
+            if (mean_logprob < -0.6 or _is_subtitle_credit(normalized)
+                    or _has_youtube_outro(normalized)):
                 if text:
                     rejected.append({"text": text, "reason": "hallucination"})
                 return ASRResult(text="", language=detected_lang,
