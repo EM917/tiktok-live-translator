@@ -121,10 +121,14 @@ def make(holder, strong, **overrides):
     return ct, sent
 
 
-def seed(ct, *pairs):
-    """把几条弹幕的原文记进账本（不走翻译）：id, 原文。"""
+def seed(ct, *pairs, translated=True):
+    """把几条弹幕的原文记进账本（不走翻译）：id, 原文。默认当作已经译出来过——这些测试点的是
+    「译好了的弹幕再译一次」；没译出来过的弹幕重译失败时说明的结尾不同（见
+    test_a_failed_retranslation_of_a_comment_that_never_had_a_translation_says_the_original_stays）。"""
     for cid, text in pairs:
         ct._ledger.remember(cid, text)
+        if translated:
+            ct._ledger.mark_translated(cid)
 
 
 def redos(sent):
@@ -226,6 +230,59 @@ def test_a_click_retranslates_one_comment_with_sonnet_and_replaces_its_translati
     assert len(haiku.made[0].session_log.posts) == 1      # Haiku 只翻了最初那一次
     assert sub_session.posts == []                        # 字幕引擎一次都没用
     assert len(strong.made) == 1 and strong.made[0] is not inner
+
+
+def test_a_comment_haiku_did_not_translate_can_be_retranslated_with_sonnet(monkeypatch, tmp_path):
+    """2026-10-15：被弹幕留意标出来的弹幕常常正是 Haiku 不肯译的。页面现在给没译出来的弹幕也放「重译」，
+    服务端要能接住：账本里记着原文，Sonnet 译出来就换上，状态变成 ok。"""
+    from tests.test_claude_translator import Resp, message
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    refusal = dict(message(stop="refusal"), stop_details={"type": "refusal", "category": None})
+    p.comments._claude_factory = Sibling([Resp(200, refusal)])
+    strong = StrongFactory([sonnet_reply("这个多少钱")])
+    p.comments._claude_strong_factory = strong
+    p.comments.BATCH_WINDOW_SEC = 0.01
+
+    async def scenario():
+        await p.comments.accept({"items": [{"id": "c0", "user": USER, "text": SOURCE}]})
+        assert await wait_for(lambda: p.server.of("comment_update"))
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
+        await drain(p)
+
+    run(scenario())
+    assert shape(p.server.sent[1:]) == [("update", "failed", None), ("redo", "pending", False),
+                                        ("update", "ok", "这个多少钱"), ("redo", "ok", False)]
+    assert len(strong.posts) == 1
+
+
+def test_a_failed_retranslation_of_a_comment_that_never_had_a_translation_says_the_original_stays(
+        monkeypatch, tmp_path):
+    """原来就没有译文的弹幕，重译也没成：不能说「原译文保持不变」（它没有译文），说仍显示原文。"""
+    from tests.test_claude_translator import Resp, message
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    refusal = dict(message(stop="refusal"), stop_details={"type": "refusal", "category": None})
+    p.comments._claude_factory = Sibling([Resp(200, refusal), reply("你好")])
+    p.comments._claude_strong_factory = StrongFactory([Resp(500, {"error": {"type": "api_error"}})] * 2)
+    p.comments.BATCH_WINDOW_SEC = 0.01
+
+    async def scenario():
+        await p.comments.accept({"items": [{"id": "c0", "user": USER, "text": SOURCE}]})
+        assert await wait_for(lambda: p.server.of("comment_update"))
+        await p.comments.accept({"items": [{"id": "c1", "user": USER, "text": "hola amigos"}]})
+        assert await wait_for(lambda: len(p.server.of("comment_update")) == 2)
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
+        p.handle_control({"type": "retranslate_comment", "id": "c1"})
+        await drain(p)
+
+    run(scenario())
+    notes = {m["id"]: m["text"] for m in redos(p.server.sent) if m.get("text")}
+    assert notes["c0"].endswith("这条弹幕仍显示原文")
+    assert en(notes["c0"]).endswith("The comment still shows the original text.")
+    assert notes["c1"].endswith("原译文保持不变")               # 译出来过的：照旧
+    for text in notes.values():
+        check_rule8(text)
 
 
 def test_the_new_translation_reaches_the_replay_cache_so_a_reload_shows_it():

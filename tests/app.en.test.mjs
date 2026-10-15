@@ -404,12 +404,13 @@ test("英文页：弹幕的「重译」——译好了才有；只有 Claude 引
   page.push({ type: "engine", ...LOCAL_ENGINE });          // 回退到本地模型：又灰了
   assert.deepEqual([btn.title, btn.disabled], [REDO_OFF, true]);
 
-  // 没译出来的（失败、已被挤掉）没有按钮；原文本身不需要重译
+  // 没译出来的（失败）也能重译（2026-10-15）：被标出来的弹幕常常正是 Haiku 不肯译的，用 Sonnet 再试一次。
+  // 已是目标语言（same）、引擎不翻弹幕（skipped）的原文本身不需要重译，没有按钮
   page.push({ type: "comment_update", id: "c1", state: "failed" });
-  assert.equal(item.querySelector(".cmt-redo"), null);
+  assert.ok(item.querySelector(".cmt-redo"), "没译出来的也有「重译」");
   page.push({ type: "comment", id: "c2", ts: T, user: "Bea", text: "hello", state: "same" });
   page.push({ type: "comment", id: "c3", ts: T, user: "Cy", text: "hola", state: "skipped" });
-  assert.equal(page.el("comment-list").querySelectorAll(".cmt-redo").length, 0);
+  assert.equal(page.el("comment-list").querySelectorAll(".cmt-redo").length, 1, "只有 c1（失败）有");
   assert.deepEqual(leftoverChinese(page), []);
 });
 
@@ -1003,7 +1004,8 @@ test("英文页：抽屉——点条或胶囊展开，两个页签，忽略 / �
   const row = page.el("guard-events").querySelector(".guard-ev-row");
   assert.equal(row.querySelector(".gev-user").textContent, "Pedro");
   assert.equal(row.querySelector(".gev-zh").textContent, "I'm going to kill you", "取弹幕栏里已有的译文");
-  assert.deepEqual(row.querySelectorAll(".btn").map((b) => b.textContent), ["Show in Comments", "Mark", "Dismiss"]);
+  assert.deepEqual(row.querySelectorAll(".btn").map((b) => b.textContent),
+                   ["Show in Comments", "Mark", "Dismiss", "Retranslate"], "「重译」放最后：后出现、字会变，别把别的按钮挤走");
   // 加入
   row.querySelectorAll(".btn")[1].click();
   assert.deepEqual(page.sent.pop(), { type: "guard_mark", key: "55", on: true, nick: "Pedro", handle: "pedro", uid_src: "id" });
@@ -1019,7 +1021,7 @@ test("英文页：抽屉——点条或胶囊展开，两个页签，忽略 / �
   assert.deepEqual(page.sent.pop(), { type: "guard_dismiss", ev_id: "g1" });
   const left = page.el("guard-events").querySelectorAll(".guard-ev-row");
   assert.deepEqual(left.map((r) => r.getAttribute("data-ev")), ["g0"]);
-  left[0].querySelectorAll(".btn").pop().click();
+  left[0].querySelectorAll(".btn").find((b) => b.textContent === "Dismiss").click();
   assert.deepEqual(page.sent.pop(), { type: "guard_dismiss", ev_id: "g0" });
   assert.equal(page.el("guard-events").querySelector(".guard-ev-row"), null);
   assert.equal(page.el("guard-events").querySelector(".guard-empty").textContent, "No comments to review yet.");
@@ -1309,5 +1311,131 @@ test("英文页：字幕记录行——摘要、两个按钮发的消息、按�
   page.el("transcript-export").click();
   assert.equal(status.textContent,
                "Lost connection to the local service. Reconnecting… Try again in a moment.");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+// ---- 抽屉里的译文和重译（2026-10-15：抽屉里被标出来的弹幕一直没有译文、也没有重译）--------------------------
+
+test("英文页：抽屉——事件先到、译文后到时，译文一到就画上；弹幕被挤出弹幕栏后抽屉里照样有译文", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(guardComment({ id: "c1", guard: RED_GUARD }));                 // 还在翻译
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5 }) });
+  page.el("guard-state").click();
+  const row = () => page.el("guard-events").querySelectorAll(".guard-ev-row").find((r) => r.getAttribute("data-ev") === "g1");
+  assert.equal(row().querySelector(".gev-zh"), null, "还没有译文");
+  assert.equal(row().querySelector(".gev-redo"), null, "还在翻译：没有可重译的");
+  page.push({ type: "comment_update", id: "c1", translated: "I'm going to kill you", state: "ok" });
+  assert.equal(row().querySelector(".gev-zh").textContent, "I'm going to kill you", "抽屉开着：译文到了就重画");
+  // 弹幕栏只留 100 条：挤出去以后抽屉里的这一行仍然有译文
+  for (let i = 0; i < 105; i++) page.push({ type: "comment", id: "x" + i, ts: T + 10, user: "u", text: "hola", state: "same" });
+  assert.equal(page.el("comment-list").querySelectorAll(".cmt-item").filter((n) => n.dataset.cmtId === "c1").length, 0);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g2", lvl: "amber", cat: "insult", ts: T + 11,
+    sample: { cid: "x3", user: "u", text: "hola" } }) });                  // 触发一次重画
+  assert.equal(row().querySelector(".gev-zh").textContent, "I'm going to kill you");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：抽屉里的「重译」——没译出来的也能点；只有 Claude 引擎能点；进行中、说明都画在那一行", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(guardComment({ id: "c1", guard: RED_GUARD }));
+  page.push({ type: "comment_update", id: "c1", state: "failed" });       // Haiku 没译出来
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5 }) });
+  page.el("guard-state").click();
+  const row = () => page.el("guard-events").querySelectorAll(".guard-ev-row").find((r) => r.getAttribute("data-ev") === "g1");
+  const redo = () => row().querySelector(".gev-redo");
+  assert.deepEqual([redo().textContent, redo().disabled, redo().title], ["Retranslate", true, REDO_OFF],
+                   "不是 Claude：灰的，悬停说明");
+  page.push(CLAUDE_ENGINE);
+  assert.deepEqual([redo().disabled, redo().title], [false, REDO_ON], "换成 Claude：抽屉里的按钮跟着亮");
+  redo().click();
+  assert.deepEqual(page.sent.filter((m) => m.type === "retranslate_comment"), [{ type: "retranslate_comment", id: "c1" }]);
+  page.push({ type: "comment_redo", id: "c1", redo_state: "pending" });
+  assert.deepEqual([redo().textContent, redo().disabled], ["Retranslating…", true]);
+  // 成了：抽屉和弹幕栏都换上译文，弹幕栏里原文行回来
+  page.push({ type: "comment_update", id: "c1", state: "ok", translated: "I'm going to kill you" });
+  page.push({ type: "comment_redo", id: "c1", redo_state: "ok" });
+  assert.equal(row().querySelector(".gev-zh").textContent, "I'm going to kill you");
+  assert.deepEqual([redo().textContent, redo().disabled], ["Retranslate", false]);
+  const item = page.el("comment-list").querySelector(".cmt-item");
+  assert.equal(item.querySelector(".cmt-zh").textContent, "I'm going to kill you");
+  assert.equal(item.querySelector(".cmt-orig").cls.includes("hidden"), false, "先失败、重译成了：原文行回来");
+  // 没成：说明画在抽屉那一行，几秒后收起
+  const sorry = "Couldn’t retranslate this comment: Claude Sonnet 5.5 returned HTTP 500. The current translation is unchanged.";
+  page.push({ type: "comment_redo", id: "c1", redo_state: "failed", text: sorry });
+  assert.equal(redo().textContent, "Couldn’t retranslate");
+  assert.equal(row().querySelector(".gev-redo-note").textContent, sorry);
+  assert.equal(row().querySelector(".gev-redo-note").getAttribute("role"), "status");
+  page.fire(4000);                                   // 「重译失败」4 秒后回到「重译」
+  assert.equal(redo().textContent, "Retranslate");
+  assert.equal(row().querySelector(".gev-redo-note").textContent, sorry, "说明还在");
+  page.fire(7000);
+  assert.equal(row().querySelector(".gev-redo-note"), null);
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+
+test("英文页：重译进行中断了线——重连（hello + 回放）后按钮不再卡在「重译中…」；抽屉开着时回放补上译文", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(CLAUDE_ENGINE);
+  page.push(guardComment({ id: "c1", guard: RED_GUARD }));
+  page.push({ type: "comment_update", id: "c1", state: "failed" });
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5 }) });
+  page.el("guard-state").click();
+  page.push({ type: "comment_redo", id: "c1", redo_state: "pending" });
+  const row = () => page.el("guard-events").querySelectorAll(".guard-ev-row").find((r) => r.getAttribute("data-ev") === "g1");
+  assert.equal(row().querySelector(".gev-redo").textContent, "Retranslating…");
+  // 断线期间服务端译完了，这次的 comment_redo 没收到；重连回放的是译好了的这一条
+  helloGuard(page, { guard_events: { g1: guardEvent({ id: "g1", ts: T + 5 }) }, engine: CLAUDE_ENGINE });
+  page.push(guardComment({ id: "c1", guard: RED_GUARD, state: "ok", translated: "I'm going to kill you", replay: true }));
+  const btn = page.el("comment-list").querySelector(".cmt-redo");
+  assert.deepEqual([btn.textContent, btn.disabled], ["Retranslate", false]);
+  if (page.el("guard-drawer").cls.includes("hidden")) page.el("guard-state").click();
+  assert.deepEqual([row().querySelector(".gev-redo").textContent, row().querySelector(".gev-redo").disabled],
+                   ["Retranslate", false]);
+  assert.equal(row().querySelector(".gev-zh").textContent, "I'm going to kill you");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
+test("英文页：服务端只留最近 200 条弹幕的原文——更早的弹幕在抽屉里还看得到译文，但不再给「重译」", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(CLAUDE_ENGINE);
+  page.push(guardComment({ id: "c1", guard: RED_GUARD }));
+  page.push({ type: "comment_update", id: "c1", state: "ok", translated: "I'm going to kill you" });
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5 }) });
+  page.el("guard-state").click();
+  const row = () => page.el("guard-events").querySelectorAll(".guard-ev-row").find((r) => r.getAttribute("data-ev") === "g1");
+  assert.ok(row().querySelector(".gev-redo"));
+  for (let i = 0; i < 200; i++) page.push({ type: "comment", id: "y" + i, ts: T + 10, user: "u", text: "hola", state: "same" });
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g2", lvl: "amber", cat: "insult", ts: T + 11,
+    sample: { cid: "y3", user: "u", text: "hola" } }) });                  // 触发一次重画
+  assert.equal(row().querySelector(".gev-redo"), null, "第 201 条以前的弹幕：服务端已经不记得原文");
+  assert.equal(row().querySelector(".gev-zh").textContent, "I'm going to kill you");
+});
+
+test("英文页：抽屉里正显示着的那一行，重译的说明只出现在那一行，不再同时挤到页脚", () => {
+  const page = runDesktop();
+  helloGuard(page);
+  page.push(CLAUDE_ENGINE);
+  page.push(guardComment({ id: "c1", guard: RED_GUARD }));
+  page.push({ type: "comment_update", id: "c1", state: "failed" });
+  for (let i = 0; i < 105; i++) page.push({ type: "comment", id: "z" + i, ts: T + 10, user: "u", text: "hola", state: "same" });
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: guardEvent({ id: "g1", ts: T + 5 }) });
+  page.el("guard-state").click();
+  const footer = () => page.el("app-version").textContent;
+  const before = footer();
+  const sorry = "Couldn’t retranslate this comment: Claude Sonnet 5.5 returned HTTP 500. The comment still shows the original text.";
+  page.push({ type: "comment_redo", id: "c1", redo_state: "failed", text: sorry });
+  const row = page.el("guard-events").querySelectorAll(".guard-ev-row").find((r) => r.getAttribute("data-ev") === "g1");
+  assert.equal(row.querySelector(".gev-redo-note").textContent, sorry);
+  assert.equal(footer(), before, "抽屉里已经有了，页脚不再重复");
   assert.deepEqual(leftoverChinese(page), []);
 });
