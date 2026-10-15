@@ -177,8 +177,8 @@ def test_the_default_factory_is_wired_in_and_the_caption_retranslation_prompt_is
     strong = translator.create_claude_strong_translator()            # 字幕重译：role strong，老样子
     assert strong.role == "strong"
     body = strong._body("hola", "zh-CN", glossary=(("quema lonja", "燃脂带"),))
-    assert body["messages"] == [{"role": "user", "content": "hola"}]
-    assert "quema lonja = 燃脂带" in body["system"]
+    assert body["messages"] == [{"role": "user", "content": "<subtitle>\nhola\n</subtitle>"}]
+    assert "quema lonja = 燃脂带" in body["system"] and "<comments>" not in body["system"]
 
 
 def test_a_rejected_key_on_this_instance_says_so_in_the_terminal(monkeypatch, capsys):

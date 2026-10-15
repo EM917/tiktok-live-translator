@@ -6,6 +6,7 @@
 """
 import asyncio
 import json
+import re
 import threading
 import time
 from types import SimpleNamespace
@@ -101,7 +102,7 @@ def attach(engine, session):
 class Fast:
     """常驻快速引擎的替身。"""
 
-    def __init__(self, name, model=None, out="译文"):
+    def __init__(self, name, model=None, out="你好朋友"):
         self.name = name
         self.model = model
         self.out = out
@@ -158,7 +159,7 @@ class ScriptedEngine:
         if time.monotonic() < self._cooldown_until:
             return None
         self.calls += 1
-        step = self.script.pop(0) if self.script else ("ok", "译文")
+        step = self.script.pop(0) if self.script else ("ok", "你好朋友")
         if step[0] == "ok":
             self.last_error, self.fail_streak = None, 0
             return step[1]
@@ -492,7 +493,7 @@ def test_after_a_strong_failure_the_next_alert_probes_again_off_the_loop(
 
     def create_strong():
         probes.append(threading.get_ident())
-        return Strong(result="重新探测到的强模型译文", model="fresh-7b")
+        return Strong(result="重新探测到的强模型结果", model="fresh-7b")
 
     monkeypatch.setattr(translator, "create_strong_translator", create_strong)
 
@@ -505,7 +506,7 @@ def test_after_a_strong_failure_the_next_alert_probes_again_off_the_loop(
 
     p, loop_thread = run(scenario())
     assert len(probes) == 1 and probes[0] != loop_thread
-    assert p.server.of("alert_update")[-1]["context_zh"] == "重新探测到的强模型译文"
+    assert p.server.of("alert_update")[-1]["context_zh"] == "重新探测到的强模型结果"
 
 
 def test_each_session_starts_without_the_previous_strong_model(monkeypatch, tmp_path):
@@ -1048,7 +1049,7 @@ def test_a_rejected_key_switches_to_a_local_model_when_there_is_one(
         monkeypatch, tmp_path, settings_file):
     engine = ScriptedEngine("claude", model="claude-haiku-5-5",
                             script=[("http", 401, None, 120)])
-    local = Fast("hymt2", model=HYMT2_SMALL, out="本地译文")
+    local = Fast("hymt2", model=HYMT2_SMALL, out="本地引擎的结果")
     monkeypatch.setattr("app.pipeline.create_translator", lambda name: local)
 
     async def scenario():
@@ -1060,7 +1061,7 @@ def test_a_rejected_key_switches_to_a_local_model_when_there_is_one(
     p = run(scenario())
     assert p.translator is local and engine.closed
     assert p.args.translator == "claude"                # 下拉框里的选择不动
-    assert p.server.of("caption_update")[-1]["translated"] == "本地译文"
+    assert p.server.of("caption_update")[-1]["translated"] == "本地引擎的结果"
     (notice,) = p.server.of("notice")
     assert "Claude 返回 HTTP 401" in plain(notice["text"])
     assert "本地 Hy-MT2 1.8B" in notice["text"]
@@ -1170,7 +1171,9 @@ class _ByTextSession:
         self.plan = plan
 
     def post(self, url, data=None, headers=None, **kw):
-        delay, resp = self.plan[json.loads(data)["messages"][0]["content"]]
+        content = json.loads(data)["messages"][0]["content"]
+        content = re.sub(r"^<subtitle>\n|\n</subtitle>$", "", content)     # 字幕包着标签（2026-10-14 起）
+        delay, resp = self.plan[content]
         return _Delayed(delay, resp)
 
 

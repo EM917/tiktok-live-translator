@@ -345,6 +345,20 @@ class AuditLog:
             row["trigger"] = trigger
         self._write(row)
 
+    def translation_rejected(self, seq, engine, model, reason, rejected):
+        """引擎回来的不是译文（在回话、说不能翻译、加注释，见 translator.looks_like_reply），这一句
+        显示原文。translation 记录里只有 ok=false；没有这一条，分不清「接口出错」和「模型在回话」，
+        也看不到它回了什么。rejected 是模型的原话（截 300 字），和 translation 记录里的译文同一类数据。"""
+        self._write({
+            "type": "translation_rejected",
+            "seq": seq,
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "engine": engine,
+            "model": model,
+            "reason": reason,
+            "rejected": (rejected or "")[:300],
+        })
+
     def translation_cooldown(self, engine, status, seconds):
         """翻译接口回了 429、程序暂停请求的那一刻。暂停期间每条字幕都是 ok=false，
         有这一条才分得清「接口让等一会儿」和「引擎坏了」。中间成功过才会再记。"""

@@ -182,7 +182,8 @@ def test_retranslate_with_a_claude_engine_sends_the_sonnet_request_and_publishes
     (post,) = session.posts
     assert post["body"]["model"] == "claude-sonnet-5-5"
     assert post["body"]["thinking"] == {"type": "between_tools"}
-    assert post["body"]["messages"] == [{"role": "user", "content": "pague primero y le enviamos"}]
+    assert post["body"]["messages"] == [{"role": "user",
+                                         "content": "<subtitle>\npague primero y le enviamos\n</subtitle>"}]
     assert sub_session.posts == []
     final = [m for m in of(p, "caption_update") if m.get("translated")][-1]
     assert final["translated"] == "先付款，再发货" and final["strong"] is True

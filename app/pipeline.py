@@ -28,7 +28,7 @@ from .settings import (load_settings, push_recent_room, recent_rooms,
                        save_setting, save_streamer_brand, streamer_brands)
 from .telemetry import Telemetry
 from .translator import (ENGINE_KEY_ENV, begin_translate_call, create_translator,
-                         translate_call_outcome)
+                         looks_like_reply, translate_call_outcome)
 
 ROOT = Path(__file__).resolve().parent.parent
 TERMS_FILE = ROOT / "banned_terms.txt"
@@ -3812,7 +3812,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         字幕引擎是 Claude 时强模型是 Claude Sonnet 5.5（见 _strong_translator）：它走网络、
         不占本机内存，所以上面「识别积压 / 另一条报警占着」两条让路规矩对它不适用，强模型
         失败时也不丢实例（它带着自己的 429 冷却）。"""
-        from .translator import looks_fabricated, model_label
+        from .translator import looks_fabricated, looks_like_reply, model_label
 
         if not context.strip():
             return
@@ -3883,7 +3883,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 out = await first.translate(text, self.target, source=lang or "auto",
                                             glossary=hint)
                 strong_outcome = translate_call_outcome()
-                if out and looks_fabricated(context, out):
+                if out and (looks_fabricated(context, out)
+                            or looks_like_reply(text, out, self.target)):
                     print("[警告] 报警上下文的译文不像译文（疑似模型在回话），"
                           "改用常规引擎")
                     fallback, used = True, fast
@@ -4221,6 +4222,18 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 self._provision_task = self._spawn(self._provision_then_check())
         return None
 
+    def _note_reply(self, tr, seq, reply):
+        """引擎回来的不是译文（translator.looks_like_reply）：记审计、打一行终端，这一句显示原文。
+        每一次都记——打包运行时终端指向 /dev/null，审计是事后唯一看得到它回了什么的地方。"""
+        from .translator import engine_label
+
+        why, said = reply
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            audit.translation_rejected(seq, getattr(tr, "name", None), self._model_of(tr), why, said)
+        print("[警告] {} 回来的不是第 {} 条字幕的译文（{}），这一条显示原文".format(
+            engine_label(getattr(tr, "name", None)), seq, why))
+
     async def _note_refusal(self, tr, seq, category, retranslate=None):
         """引擎拒绝翻译这一句（Claude：HTTP 200，stop_reason 为 refusal）。
 
@@ -4354,7 +4367,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         trigger=="manual" 说；手机点的、报警自动触发的，桌面上不该冒出没人点过的提示）。
         文字只写观察到的事实和能做的事，不猜原因（CLAUDE.md 第八条）。
         """
-        from .translator import looks_fabricated
+        from .translator import looks_fabricated, looks_like_reply
 
         job = self._recent.get(seq)
         if job is None:
@@ -4410,7 +4423,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             out = await strong.translate(
                 text, job["target"], source=job["lang"] or "auto",
                 glossary=hint)
-            if out and looks_fabricated(job["text"], out):
+            if out and (looks_fabricated(job["text"], out)
+                        or looks_like_reply(text, out, job["target"])):
                 # 强模型在「长句 + 带疑问」上会改成回话而不是翻译。
                 # 宁可留着快译，也不能把凭空生成的内容写进屏幕和审计记录。
                 print("[警告] 重译结果不像译文（疑似模型在回话），已丢弃")
@@ -4449,6 +4463,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             extra = {"strong_state": "failed"}
             if refusal is not None:
                 extra["refused"] = True
+            elif discarded:
+                extra["not_translation"] = True     # 同理：回来的不是译文，接口是通的
             await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
                                             job["target"], extra)
         await self._retranslate_note(seq, trigger, self._retranslate_failure_text(
@@ -4576,11 +4592,19 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 是并发的独立任务、用的是同一个引擎，引擎上的计数会把它的拒答记到这条字幕头上。
         # 必须直接 await，不能套 wait_for（老版本 Python 上 wait_for 另起任务，结局就丢了）
         begin_translate_call()
+        reply = None                   # (原因代码, 引擎的原话)：回来的不是译文
         try:
             translated = await tr.translate(
                 text, job["target"], source=job["lang"] or "auto",
                 glossary=hint)
-            if self.glossary:
+            # 在词表兜底替换之前判：替换会把品牌名展开，长度规则就误判了
+            why = looks_like_reply(text, translated, job["target"]) if translated else None
+            if why:
+                reply, translated = (why, translated), None
+                forget = getattr(tr, "forget", None)
+                if forget is not None:       # 别让同一句一整场都从缓存里拿回这句回话
+                    forget(text, job["target"], job["lang"] or "auto", hint)
+            elif self.glossary:
                 translated = self.glossary.apply(text, translated)
         except Exception as exc:
             print("[警告] 翻译失败: {}".format(exc))
@@ -4592,7 +4616,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 后面每条字幕都会「翻译失败」直到月底。切到本地引擎，并用新引擎把
         # 当前这条立刻补上——它不该成为切换的牺牲品。
         fallback = None
-        if translated is None and getattr(tr, "quota_exhausted", False):
+        if reply is not None:
+            # 接口正常回了话、只是回的不是译文：不换引擎、不挂横幅，这一句显示原文
+            self._note_reply(tr, job["id"], reply)
+        elif translated is None and getattr(tr, "quota_exhausted", False):
             fallback = await self._quota_fallback(tr)
         elif refusal is not None:
             # 拒答是这一句的事，不是引擎坏了：不换引擎、不挂横幅、不冷却，这一句显示原文
@@ -4610,14 +4637,18 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 translated = await tr.translate(
                     text, job["target"], source=job["lang"] or "auto",
                     glossary=hint)
-                if self.glossary:
+                why = looks_like_reply(text, translated, job["target"]) if translated else None
+                if why:
+                    reply, translated = (why, translated), None
+                    self._note_reply(tr, job["id"], reply)
+                elif self.glossary:
                     translated = self.glossary.apply(text, translated)
             except Exception as exc:
                 print("[警告] 降级引擎翻译失败: {}".format(exc))
                 translated = None
-        if translated is None and hasattr(self, "_bg_tasks"):
+        if translated is None and reply is None and hasattr(self, "_bg_tasks"):
             self._spawn(self._heal_local_engine())   # Ollama 掉了就拉起来（节流）
-        elif translated is not None:
+        elif translated is not None or reply is not None:
             await self._note_engine_ok(tr)        # 之前报过的引擎问题就此解除
         translate_ms = (time.monotonic() - t0) * 1000.0
         self.telemetry.record_translation(translate_ms)
@@ -4629,6 +4660,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if refusal is not None and not translated:
             # 页面据此不把这一条算进「连续多条翻译失败」：拒答是接口正常回了话，不是连不上
             extra["refused"] = True
+        elif reply is not None and not translated:
+            extra["not_translation"] = True        # 同上，页面标「结果不像译文」
         await self._publish_translation(
             job["id"], translated, bool(translated), translate_ms,
             QUALITY_FAST, job["target"], extra)

@@ -506,6 +506,22 @@ test("英文页：接口拒答的字幕有自己的角标，不算进连续翻�
   assert.deepEqual(leftoverChinese(page), []);
 });
 
+test("英文页：回来的不是译文（模型在回话）的字幕有自己的角标，也不算进连续翻译失败", () => {
+  // 服务端在 translator.looks_like_reply 拦下回话时带 not_translation（tests/test_subtitle_replies.py 钉着）
+  const page = runDesktop();
+  hello(page);
+  const banner = () => page.el("status-banner");
+  for (let id = 1; id <= 5; id++) {
+    page.push({ type: "caption", id, ts: T, original: "x", translate_state: "pending" });
+    page.push({ type: "caption_update", id, translated: null, translate_state: "failed", not_translation: true });
+  }
+  const chips = () => page.el("history").querySelectorAll(".state-chip").map((c) => c.textContent);
+  assert.deepEqual(chips(), Array(5).fill("Not translated (the result didn’t look like a translation)"));
+  assert.ok(!/couldn’t be translated/.test(banner().textContent) || banner().classList.contains("hidden"),
+            "回话不该顶出「翻译失败」横幅");
+  assert.deepEqual(leftoverChinese(page), []);
+});
+
 test("英文页：被拒答的字幕点重译又被拒答，角标留着「未翻译（接口拒答）」，不顶出横幅", () => {
   // 点重译的人最可能点的就是快译被拒答的那几条。Sonnet 也拒答时服务端发的消息形状由
   // tests/test_claude_strong.py 钉着：带 refused，页面据此保留角标、不计入连续失败
