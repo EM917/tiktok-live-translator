@@ -485,6 +485,8 @@
 
   clearBtn.addEventListener("click", function () {
     clearCaptionsView();
+    // 直播中点的：和弹幕栏一样，清空之后从最新处接着跟（首页状态不碰，见 following 的说明）
+    if (streamActive) following = true;
     forgetOnServer("captions");
   });
 
@@ -1294,7 +1296,7 @@
   // 每场都发，前端只在页面里已经有字幕卡片时才画分隔线，所以程序启动后的
   // 第一场不会多出一条线（那时 #history 里还没有任何 .cap）。回放（重连）时
   // 同样调用这个函数，走的是和实时一样的路径，不需要额外的「回放」分支：
-  // hello 处理会先用 clearBtn.click() 清场，之后回放按原始顺序重新触发
+  // hello 处理会先用 clearCaptionsView() 清场（只清本页，不告诉服务端），之后回放按原始顺序重新触发
   // caption/session_break，历史上的场次边界就这样被原样重建一遍。
   function renderSessionBreak(msg) {
     var caps = historyEl.querySelectorAll(".cap");

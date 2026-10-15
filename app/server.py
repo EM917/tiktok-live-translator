@@ -88,6 +88,10 @@ class CaptionServer:
     SEND_TIMEOUT_SEC = 2.0
     MAX_CLIENT_BUFFER = 2 * 1024 * 1024
     GUARD_EVENTS_MAX = 50       # config["guard_events"] 最多留几个事件（弹幕留意的抽屉）
+    # 一个页面在回放期间最多攒多少条广播（见 _ws）。正常回放只要几毫秒，这个数只为拦住「连上了
+    # 却一条都不读」的页面：它卡在回放里，期间的每条广播都要替它留着，不设上限就是内存泄漏。
+    # 超了就断开它——页面会自己重连，hello 之后补回完整回放
+    MAX_REPLAY_BACKLOG = 2000
     # 由 Pipeline 注入：(reason, buffered_bytes) -> None，写审计、打一行日志
     on_client_dropped = None
 
@@ -95,6 +99,7 @@ class CaptionServer:
         self.port = port
         self.clients = set()
         self._transports = {}    # ws -> 这个连接的 transport（断开卡死的页面要 abort 它）
+        self._replaying = {}     # ws -> 它回放期间发生的广播（list）；回放完、入册的同一步里清掉
         self.history = deque(maxlen=HISTORY_MAX + HISTORY_BREAK_ROOM)
         # 违禁词警报必须跨刷新/重连留存：中控没看到就等于漏报，
         # 不能因为页面重载而消失
@@ -173,14 +178,35 @@ class CaptionServer:
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         try:
+            # 「快照」和「开始替这个页面攒广播」必须在同一个同步步骤里（和 app/viewer.py 的
+            # ViewerHub.register 同一个道理）：下面每发一条都要 await，回放期间别处的广播照常
+            # 进行，而此时这个页面还不在 self.clients 里——不攒的话，那些广播进了缓存却永远
+            # 到不了这个页面（一条违禁词警报就这样漏掉）。反过来，攒的起点就是快照的终点，
+            # 所以回放和 backlog 之间既没有缺口也没有重复。
             # 缓存里存的是原消息（界面文字是 Bi），这里按「此刻」的界面语言现渲染：
             # 切换语言后重连的页面拿到的是新语言，不会残留旧的。中文时 render 原样返回
-            await ws.send_json({"type": "hello", "config": i18n.render(self.config)})
-            # 先补发历史警报（刷新页面不能丢报警），再回放字幕，最后是观众弹幕。
-            # 回放完成后才加入广播集合，避免新字幕插进回放序列中间
-            for payload in self.replay_messages():
-                await ws.send_json(i18n.render(payload))
+            hello = {"type": "hello", "config": i18n.render(self.config)}
+            replay = self.replay_messages()
+            backlog = self._replaying[ws] = []
             self._transports[ws] = request.transport
+            await ws.send_json(hello)
+            # 先补发历史警报（刷新页面不能丢报警），再回放字幕，最后是观众弹幕。
+            for payload in replay:
+                await ws.send_json(i18n.render(payload))
+            # 回放期间发生的广播（新字幕、新警报、译文补丁、清空通知……）照发生顺序补上。补的时候
+            # 又有新的进来就再补一轮，直到队列在检查的那一刻是空的；检查和入册之间没有 await，
+            # 所以不会再有漏网的。这些是真正的实时消息，不带 replay 标记，页面照常处理（警报照常提醒）
+            while True:
+                if ws not in self._replaying:
+                    return ws        # 积压超限被 _drop_client 摘掉了：连接已 abort，没有再发的意义
+                if not backlog:
+                    break
+                batch = backlog[:]
+                del backlog[:]
+                for out in batch:
+                    await ws.send_json(out)
+            # 以下到 async for 之前一个 await 都不能有：回放完了才加入广播集合，避免新字幕插进回放序列中间
+            del self._replaying[ws]
             self.clients.add(ws)
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -207,6 +233,7 @@ class CaptionServer:
         finally:
             self.clients.discard(ws)
             self._transports.pop(ws, None)
+            self._replaying.pop(ws, None)
         return ws
 
     def replay_messages(self):
@@ -355,6 +382,18 @@ class CaptionServer:
         # check_outbound 是测试里的运行时网，生产里第一行就返回
         i18n.check_outbound(msg)
         out = i18n.render(msg)
+        # 正在回放的页面还不在 self.clients 里，广播够不着它：这里替它攒着，回放完补发（见 _ws）。
+        # 同步、没有 await，和上面缓存的写入在同一个步骤里——所以一条广播要么在它的快照里，
+        # 要么在它的 backlog 里，不会两头落空。getattr：个别测试用 __new__ 造的服务端没有这个字段
+        replaying = getattr(self, "_replaying", None)
+        if replaying:
+            for ws, backlog in list(replaying.items()):
+                if len(backlog) >= self.MAX_REPLAY_BACKLOG:
+                    print("[警告] 本机页面卡在回放里，积压已达 {} 条，已断开（页面会自己重连）".format(len(backlog)))
+                    self._drop_client(ws, (getattr(self, "_transports", None) or {}).get(ws),
+                                      "replay_backlog", None)
+                else:
+                    backlog.append(out)
         # 逐个页面发，每个都有上限。以前是不限时的 await：一个不读消息的页面（浏览器
         # 冻结的后台标签、DevTools 断点、弹着 confirm 的 WebView2）把发送缓冲塞满后，
         # send_json 永远不返回——识别循环在等报警广播，于是识别整个停下、音频积压
@@ -384,6 +423,9 @@ class CaptionServer:
         对一个不读的页面永远等不完。页面会自己重连，hello 之后补回报警。"""
         registered = ws in self.clients
         self.clients.discard(ws)
+        replaying = getattr(self, "_replaying", None)
+        if replaying is not None:
+            replaying.pop(ws, None)
         transports = getattr(self, "_transports", None)
         if transports is not None:
             transports.pop(ws, None)
