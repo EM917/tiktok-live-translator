@@ -297,42 +297,13 @@ for (const lang of ["zh", "en"]) {
 
   // ---- 3. 页脚 -----------------------------------------------------------------------------
 
-  const STATS = { type: "stats", asr: { p50: 1100 }, translate: { p50: 2000 }, segment: { p50: 800 },
-                  detect_worst: { p50: 1900, p95: 3400 }, e2e: {} };
-  const WAIT = { caption_wait: { p50: 4200, p95: 7100, n: 20 } };
-  const FOOT = {
-    zh: { wait: "字幕 4.2s / P95 7.1s 后出现", alert: "违禁词最迟 1.9s / P95 3.4s 内报警",
-          rest: "其中 切段 0.8s + 识别 1.1s · 译文再等 2.0s" },
-    en: { wait: "Captions +4.2s (P95 7.1s)", alert: "Alerts ≤1.9s (P95 3.4s)",
-          rest: "Segment 0.8s + ASR 1.1s · Translation +2.0s" },
-  }[lang];
-
-  test(L("页脚：字幕等待排第一，违禁词延迟紧跟其后，其余各段照旧"), () => {
+  test(L("页脚：没有延迟统计行（2026-10-15 删了），统计消息照收不画，也不报错"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(Object.assign({}, STATS, WAIT));
-    assert.equal(page.el("stats-line").textContent, [FOOT.wait, FOOT.alert, FOOT.rest].join(" · "));
-  });
-
-  test(L("页脚：第一条译文回来之前没有字幕等待这一段，违禁词延迟照常打头（不写「—」）"), () => {
-    const page = loadDesktop({ lang });
-    hello(page);
-    page.push(Object.assign({}, STATS, { caption_wait: { p50: null, p95: null, n: 0 } }));
-    assert.equal(page.el("stats-line").textContent, [FOOT.alert, FOOT.rest].join(" · "));
-    page.push(STATS);                                                   // 老版本服务端：根本没有这个键
-    assert.equal(page.el("stats-line").textContent, [FOOT.alert, FOOT.rest].join(" · "));
-  });
-
-  test(L("页脚：计数全出现时顺序是 字幕 → 报警 → 切段 → 译文 → 积压 → 丢音频 → 超时 → 跳过 → 队列"), () => {
-    const page = loadDesktop({ lang });
-    hello(page);
-    page.push(Object.assign({}, STATS, WAIT, {
-      audio_backlog_sec: 5, audio_segments_dropped: 2, asr_overruns: 1, translation_jobs_dropped: 3,
-      asr_queue_depth: 1, translation_queue_depth: 2 }));
-    const parts = page.el("stats-line").textContent.split(" · ");
-    assert.equal(parts.length, 9);
-    assert.deepEqual(parts.slice(0, 2), [FOOT.wait, FOOT.alert]);
-    assert.equal(parts[2] + " · " + parts[3], FOOT.rest);
+    page.push({ type: "stats", asr: { p50: 1100 }, translate: { p50: 2000 }, segment: { p50: 800 },
+                detect_worst: { p50: 1900, p95: 3400 }, caption_wait: { p50: 4200, p95: 7100, n: 20 },
+                audio_backlog_sec: 5, audio_segments_dropped: 2, asr_overruns: 1 });
+    assert.ok(!page.el("stats-line"));
   });
 
   // ---- 4. 字幕字号滑块 ----------------------------------------------------------------------

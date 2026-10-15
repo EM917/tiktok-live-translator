@@ -178,7 +178,6 @@
   // 能点「重译」的状态：译好了的，和没译出来的（失败、积压跳过）。
   // 已是目标语言（same）、引擎不翻弹幕（skipped）的没有可重译的
   var COMMENT_REDO_STATES = { ok: true, failed: true, dropped: true };
-  var statsEl = document.getElementById("stats-line");
   var healthBar = document.getElementById("health-bar");
   var incidentBar = document.getElementById("incident-bar");
   var watchState = document.getElementById("watch-state");
@@ -1085,9 +1084,8 @@
         }
         refreshCommentPanel();
         break;
-      case "stats":
-        renderStats(msg);
-        break;
+      // stats（每 10 秒一次的延迟统计）页面不再显示：2026-10-15 用户嫌底部那行数字是噪音，删掉了。
+      // 落后、丢音频这类真要中控看见的，走 health 和 incident 两条提示
       case "incident":
         renderIncident(msg);
         break;
@@ -2478,19 +2476,6 @@
   if (guardClearAuto) guardClearAuto.addEventListener("click", function () { send({ type: "guard_clear_auto" }); });
   if (guardDirBtn) guardDirBtn.addEventListener("click", function () { send({ type: "open_guard_dir" }); });
 
-  // ---- 延迟统计 ----
-  // 一行里写什么、什么顺序在 web/live-ui.js 的 statsLineParts：第一个数是字幕等待（说出这一句到
-  // 中控读到字幕），违禁词报警的延迟紧跟其后——它仍是产品的 KPI，只是排在第二
-  function renderStats(msg) {
-    var parts = statsLineParts(msg);
-    statsEl.textContent = parts.join(" · ");
-    // 只在直播中/连接中揭开。后端每场收尾会补推一次终值（pipeline 的 _end_session），
-    // 出错那条路上它晚于 status=error 到达——这时页面已经回到首页、enterHomeLayout
-    // 已经把统计行收掉了，无条件揭开会让一行全是「—」的统计压在设置列表上
-    // （2026-09-28 用户截图）。文字照常更新，下一场开播时的第一条统计再揭开。
-    if (streamActive) statsEl.classList.remove("hidden");
-  }
-
   // 识别落后时必须让中控看见——假装一切正常比晚几秒报警危险得多
   // 持续提示（电脑休眠过、审计日志写不进去、识别改用 CPU……）：按 id 覆盖，level=clear 去掉。
   // 和 health（识别积压，会被「已追上」覆盖）、notice（几秒后消失）不同：这类状况中控必须
@@ -2527,7 +2512,7 @@
 
   function renderHealth(msg) {
     // 「识别落后/已降级」只对正在进行的这一场成立；停止或出错回到首页后，
-    // 晚到的一条不该再把它揭开（同 renderStats 的道理）
+    // 晚到的一条不该再把它揭开
     if (msg.level === "ok" || !streamActive) {
       healthBar.classList.add("hidden");
       return;
@@ -3470,7 +3455,6 @@
     captionsBelow = 0;
     scrollToTopNow();
     updateJumpButton();
-    statsEl.classList.add("hidden");
     // 识别落后提示只描述正在进行的那一场：后端停止时不会补发 level=ok，
     // 一场在落后状态下结束，这条会一直留在首页上
     healthBar.classList.add("hidden");
@@ -3480,9 +3464,8 @@
   }
 
   // 离开首页状态（viewTransition 的 exitHome）：直播状态从非活跃变为活跃
-  // （点了「开始翻译」、后端确认 connecting/live）。大字幕和统计行不在这里
-  // 主动显示——它们等第一条真正的字幕/统计数据到达时由 renderCaption /
-  // renderStats 自己揭开；这里只需要让接下来到达的新字幕照常跟到底部。
+  // （点了「开始翻译」、后端确认 connecting/live）。大字幕不在这里主动显示——
+  // 它等第一条真正的字幕到达时由 renderCaption 自己揭开；这里只需要让接下来到达的新字幕照常跟到底部。
   function exitHomeLayout() {
     following = true;
   }

@@ -604,9 +604,7 @@ test("英文页：弹幕面板的状态与空态、统计行", () => {
   page.push({ type: "stats", e2e: {}, asr: { p50: 1100 }, translate: { p50: 2000 }, segment: { p50: 800 },
               detect_worst: { p50: 1900, p95: 3400 }, audio_backlog_sec: 5, audio_segments_dropped: 2,
               asr_overruns: 1, translation_jobs_dropped: 3, asr_queue_depth: 1, translation_queue_depth: 2 });
-  assert.equal(page.el("stats-line").textContent,
-               "Alerts ≤1.9s (P95 3.4s) · Segment 0.8s + ASR 1.1s · Translation +2.0s · Backlog 5s · " +
-               "Dropped 2 · ASR timeouts 1 · Skipped 3 · Queue 1/2");
+  assert.ok(!page.el("stats-line"), "延迟统计行已删（2026-10-15），统计消息照收不画");
   assert.deepEqual(leftoverChinese(page), []);
 });
 

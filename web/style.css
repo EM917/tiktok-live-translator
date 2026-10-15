@@ -642,15 +642,12 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .icon-btn:focus-visible { outline: 2px solid transparent; box-shadow: var(--ring), var(--focus); color: var(--blue); }
 
 /* ---------- 底部大字幕 ---------- */
-/* 堵缝：.stats-line 在第一批延迟数据到达前是隐藏的（bottom:22px），这里以前
-   是 bottom:42px，中间空出 20px，右下角会露出弹幕列的背景色（designer.md #5）。
-   把 bottom 改到跟 .stats-line 一致，用 padding-bottom 把露出来的这一截吃掉——
-   大字幕条顶边的位置不变（padding-top 仍是 14px），.stats-line 在 DOM 里更靠后，
-   真出现时照样叠在这层上面 */
+/* 贴着底部署名（bottom:22px）。以前下边留 36px 给叠在上面的延迟统计行；2026-10-15 统计行删了，
+   下边距和上边距一样 */
 .live-bar {
   position: fixed;
   left: 0; right: 0; bottom: 22px;
-  padding: 14px 24px 36px;
+  padding: 14px 24px 14px;
   text-align: center;
   background: var(--bg);
   border-top: 0.5px solid var(--separator);
@@ -760,18 +757,6 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   color: var(--label-2); background: var(--fill);
 }
 
-/* ---------- 延迟统计 ---------- */
-.stats-line {
-  position: fixed;
-  left: 0; right: 0; bottom: 22px;
-  padding: 3px 20px;
-  font-size: var(--fs-footnote);
-  font-variant-numeric: tabular-nums;
-  color: var(--label-2);
-  text-align: center;
-  background: var(--bg);
-  pointer-events: none;
-}
 
 /* 译文未到达时的占位。以前用 --label-3（占位符那一档，约 2:1），这一行是中控此刻要读的状态提示，
    提到 --label-2 的 4.5:1 以上；斜体和字号不变（字号跟着字幕字号滑块走，同 .trans） */

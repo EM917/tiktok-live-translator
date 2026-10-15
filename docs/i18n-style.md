@@ -269,7 +269,6 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 - 时长有两种写法：
   - 正文空间够的时候写全称：*12 seconds*、*3 minutes*；
   - 摘要、胶囊、进度这类紧凑位置用苹果的缩写：`sec`、`min`、`hr`。
-  - 例外：底部的延迟统计行是技术读数，沿用现在的 `1.8s` 写法（没有空格），否则放不下（见 §4 R8）。
 - 范围用 en dash：`2–5 minutes`。
 - 第几次：「第 2/5 次」→ `attempt 2 of 5`。
 - 模型规格原样写：`1.8B`、`7B`、`large-v3-turbo`。
@@ -581,7 +580,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 118 | pipeline.py:3826 | {engine} 返回 HTTP 429，程序暂停请求 {s} 秒后自动重试… | {engine} returned HTTP 429. Requests are paused for {s} sec, then retried automatically. Captions show the original text meanwhile. Banned-term alerts aren’t affected. |
 | 119 | pipeline.py:1946 | {t} 电脑休眠或挂起了约 {d}… | {t} This computer was asleep for about {d}. The app wasn’t running, so that part of the stream wasn’t monitored. During streams, keep the computer plugged in with the lid open. |
 | 120 | app.js:530–538、516/524 | 发现新版本 / 一键更新 / 更新说明 / 前往下载新版本 / 再点一次确认更新：更新期间监听暂停，更新完自动恢复 / 更新中… | A new version is available / Update Now / Release Notes / Download New Version / Click Again to Update. Monitoring pauses and resumes afterward. / Updating… |
-| 121 | live-ui.js statsLineParts 延迟统计行（2026-10-15 前在 app.js:1517–1529） | 字幕 {w} / P95 {v} 后出现 · 违禁词最迟 {a} / P95 {b} 内报警 · 其中 切段 {c} + 识别 {d} · 译文再等 {e} · 积压 … | Captions +{w} (P95 {v}) · Alerts ≤{a} (P95 {b}) · Segment {c} + ASR {d} · Translation +{e} · Backlog {n}s · Dropped {n} · ASR timeouts {n} · Skipped {n} · Queue {x}/{y} | 第一段是字幕等待（说出这一句 → 中控读到的那一版字幕上屏），第一条译文回来前没有这一段，不写「—」。违禁词报警延迟排第二，一个字没删（CLAUDE.md 第六条） |
+| 121 | （已删）底部延迟统计行 | — | — | 2026-10-15 用户觉得是噪音，整行删掉；落后、丢音频走 health / incident 提示 |
 
 #107–#109 的英文保留与中文相同的行首 emoji（⚠️ 🔴 ✅）：桌面提示条由 `live-ui.js` 的 `stripStatusEmoji`
 统一去掉，两臂保持一样，G2 按 emoji 的多重集比。
@@ -690,13 +689,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
   - 可以改成只有铃铛图标的胶囊（22px），完整文字放进 title 和 aria-label：“Banned-term alerts are on”。
 - **R7 离线时的状态胶囊。** 完整写成 “Reconnecting to local service…” 要 185px，会跟品牌标签抢位置。
   胶囊里只写 “Reconnecting…”，完整说明交给横幅（#116）。
-- **R8 底部延迟统计行会折行。**
-  - 所有计数都出现时，逐字翻译约 1013px，超过 1000 宽窗口的 960px 可用宽度，折行后会盖到底部的大字幕上。
-  - 用 #121 的紧凑写法（约 800px），而且只有这一行保留 `1.8s` 写法。
-  - 2026-10-15 在最前面加了 “Captions +4.2s (P95 7.1s) · ”（约 160px；「+」和 “Translation +” 一样表示晚了多久，不加的话会被读成字幕显示了多久），满格约 960px，几乎贴边。
-    满格只在积压、丢段、超时、跳过翻译、队列全不为零时出现；窗口窄于约 1000px 时那一刻会折行。
-    G10 的统计行场景（tests/i18n_dom/scenarios.py `_stats`）已带上字幕等待，页面上画出来的就是满格这一行；
-    G10 只查有没有漏翻的中文，不量这一行折不折行，要量得另写。
+- **R8 底部延迟统计行会折行。** 已不适用：2026-10-15 这一行删了。
 - **R9 开始页的选项行可能折行。**
   - 英文宽度：`Spoken language` 104 + 下拉 199 + 间距 24 + `Brand` 36 + 品牌下拉 119–220 + 文件夹按钮，合计 552–653px。容器是 600px。
   - 品牌名超过约 18 个字符时，品牌那一组会折到第二行。

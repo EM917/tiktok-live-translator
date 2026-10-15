@@ -8,7 +8,7 @@ const { shareButtonText, connectHint, stripStatusEmoji, barIconFor,
         popoverRight, alertTierText, jumpLatestCaptionsText,
         jumpLatestCommentsText,
         captionStateChip, liveBarChip, captionAudioEndAt,
-        captionAgeText, CAPTION_LAG_SHOW_SEC, statsLineParts, captionScale, captionSizeVars,
+        captionAgeText, CAPTION_LAG_SHOW_SEC, captionScale, captionSizeVars,
         captionSizeFromConfig } = require("../web/live-ui.js");
 
 test("同看关着：只写功能名，没有人数", () => {
@@ -154,28 +154,6 @@ test("约 N 秒前：负数、离谱的大数、不是数的都不写", () => {
   for (const bad of [-1, -5000, -20000, 6 * 3600 * 1000 + 1, NaN, Infinity, null, undefined, "20000"]) {
     assert.equal(captionAgeText(bad), "", String(bad));
   }
-});
-
-const WAIT = { p50: 4200, p95: 7100, n: 20 };
-const BASE = { asr: { p50: 1100 }, translate: { p50: 2000 }, segment: { p50: 800 }, detect_worst: { p50: 1900, p95: 3400 } };
-test("页脚：字幕等待打头，违禁词报警延迟紧跟其后，其余各段照旧", () => {
-  assert.deepEqual(statsLineParts(Object.assign({ caption_wait: WAIT }, BASE)), [
-    "字幕 4.2s / P95 7.1s 后出现", "违禁词最迟 1.9s / P95 3.4s 内报警",
-    "其中 切段 0.8s + 识别 1.1s", "译文再等 2.0s"]);
-});
-test("页脚：还没有字幕等待的数就不写这一段；违禁词延迟一个字不少", () => {
-  for (const wait of [undefined, { p50: null, p95: null, n: 0 }, {}]) {
-    const parts = statsLineParts(Object.assign({ caption_wait: wait }, BASE));
-    assert.equal(parts[0], "违禁词最迟 1.9s / P95 3.4s 内报警");
-    assert.equal(parts.length, 3);
-  }
-  assert.deepEqual(statsLineParts({}).slice(0, 1), ["违禁词最迟 — / P95 — 内报警"], "没数据写「—」，不抛");
-});
-test("页脚：计数从第四段起按 积压、丢音频、识别超时、跳过翻译、队列 的顺序追加", () => {
-  const parts = statsLineParts(Object.assign({ caption_wait: WAIT, audio_backlog_sec: 5, audio_segments_dropped: 2,
-    asr_overruns: 1, translation_jobs_dropped: 3, asr_queue_depth: 1, translation_queue_depth: 2 }, BASE));
-  assert.deepEqual(parts.slice(4), ["积压 5s", "丢音频 2", "识别超时 1", "跳过翻译 3", "积压 1/2"]);
-  assert.equal(statsLineParts(Object.assign({ audio_backlog_sec: 2.9 }, BASE)).length, 3, "积压不到 3 秒不写");
 });
 
 test("字幕字号比例：34 是 1（今天的固定字号），按 字号/34 走，夹在 0.85–1.75", () => {

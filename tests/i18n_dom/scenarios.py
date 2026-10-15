@@ -197,12 +197,13 @@ def _alert_whys(server, context):
 
 
 def _stats():
-    """统计行满格：真 Telemetry 的 snapshot，积压、丢段、超时、跳过翻译、队列都不为零。"""
+    """服务端照常每 10 秒推一次的统计（真 Telemetry 的 snapshot，各项计数都不为零）。页面 2026-10-15 起
+    不再画延迟统计行，留着它是为了确认页面收到这条消息也不出漏翻的中文、不报错。"""
     tel = Telemetry()
     for asr_ms, e2e_ms, seg_ms in ((1100, 2300, 1800), (1300, 2700, 2100), (900, 2000, 1600)):
         tel.record_asr(asr_ms, e2e_ms, seg_ms)
         tel.record_translation(800)
-        tel.record_caption_wait(seg_ms + e2e_ms + 800)       # 统计行最前面的「字幕」一段也要在满格里
+        tel.record_caption_wait(seg_ms + e2e_ms + 800)
     tel.set_backlog(12.0)
     tel.audio_segments_dropped, tel.asr_overruns, tel.translation_jobs_dropped = 3, 1, 2
     tel.asr_queue_depth, tel.translation_queue_depth = 2, 5
