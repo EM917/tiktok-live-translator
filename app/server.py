@@ -40,6 +40,38 @@ def replay_payloads(history):
     return payloads
 
 
+# 回放的深度。中控页回放多少，由页面自己最多留多少决定：
+#   HISTORY_MAX  = web/app.js 的 maxHistory（字幕卡片最多留几张）
+#   COMMENTS_MAX = web/app.js 的 maxComments（弹幕栏最多留几条）
+# 两个数在 tests/test_server_clear.py 里拿正则从 app.js 读出来比对：一边改了另一边没改，测试就红。
+# 手机的回放有自己的上限（app/viewer.py 的 PHONE_HISTORY_MAX / PHONE_COMMENTS_MAX），不跟着这里涨：
+# 手机的入站队列是固定的，回放压不进去会被判定为落后。
+HISTORY_MAX = 300
+COMMENTS_MAX = 100
+ALERTS_MAX = 50
+# history 里除了字幕还混着场次分隔（session_break），它们不算字幕、页面也不把它们算进 300 张卡片。
+# deque 多留一点余量，回放时再按「最后 HISTORY_MAX 条字幕」切（captions_tail）——换主播换得再勤，
+# 回放的字幕条数也是 HISTORY_MAX，而不是少一条分隔线就少一条字幕
+HISTORY_BREAK_ROOM = 30
+
+
+def captions_tail(items, limit):
+    """items 里最后 limit 条 caption，连同夹在它们中间和之后的 session_break。
+
+    页面只数 caption（.cap 卡片）的上限，分隔线不占名额；这里按同一个口径切。
+    够不到 limit 条就原样返回。"""
+    items = list(items)
+    if limit <= 0:
+        return []
+    seen = 0
+    for i in range(len(items) - 1, -1, -1):
+        if items[i].get("type") == "caption":
+            seen += 1
+            if seen == limit:
+                return items[i:]
+    return items
+
+
 def _write_buffer_size(transport):
     if transport is None:
         return None
@@ -63,12 +95,12 @@ class CaptionServer:
         self.port = port
         self.clients = set()
         self._transports = {}    # ws -> 这个连接的 transport（断开卡死的页面要 abort 它）
-        self.history = deque(maxlen=100)
+        self.history = deque(maxlen=HISTORY_MAX + HISTORY_BREAK_ROOM)
         # 违禁词警报必须跨刷新/重连留存：中控没看到就等于漏报，
         # 不能因为页面重载而消失
-        self.alerts = deque(maxlen=50)
+        self.alerts = deque(maxlen=ALERTS_MAX)
         # 观众弹幕：同样要跨刷新/重连留存，不然中控重连一次就看不到刚才谁说了什么
-        self.comments = deque(maxlen=100)
+        self.comments = deque(maxlen=COMMENTS_MAX)
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
         # 弹幕抓取（TikTokLive）的状态：中控要能区分「还没开播」「正在连」
@@ -144,15 +176,10 @@ class CaptionServer:
             # 缓存里存的是原消息（界面文字是 Bi），这里按「此刻」的界面语言现渲染：
             # 切换语言后重连的页面拿到的是新语言，不会残留旧的。中文时 render 原样返回
             await ws.send_json({"type": "hello", "config": i18n.render(self.config)})
-            # 先补发历史警报（刷新页面不能丢报警），再回放字幕
-            for alert in list(self.alerts):
-                await ws.send_json(i18n.render(dict(alert, replay=True)))
+            # 先补发历史警报（刷新页面不能丢报警），再回放字幕，最后是观众弹幕。
             # 回放完成后才加入广播集合，避免新字幕插进回放序列中间
-            for payload in replay_payloads(self.history):
+            for payload in self.replay_messages():
                 await ws.send_json(i18n.render(payload))
-            # 观众弹幕历史同样要回放，且同样带 replay 标记
-            for c in list(self.comments):
-                await ws.send_json(i18n.render(dict(c, replay=True)))
             self._transports[ws] = request.transport
             self.clients.add(ws)
             async for msg in ws:
@@ -163,6 +190,11 @@ class CaptionServer:
                 except ValueError:
                     continue
                 if not isinstance(data, dict):   # 非对象 JSON 会让下游 .get 崩掉
+                    continue
+                if data.get("type") == "clear_history":
+                    # 缓存归服务端自己管，不必绕到 Pipeline。只认本机页面（上面的来源检查已拦住其余）；
+                    # 手机入站只认 retranslate，发不到这里
+                    await self.clear_history(data.get("kind"))
                     continue
                 if self.on_control is not None:
                     try:
@@ -176,6 +208,37 @@ class CaptionServer:
             self.clients.discard(ws)
             self._transports.pop(ws, None)
         return ws
+
+    def replay_messages(self):
+        """hello 之后补给本机页面的历史，按发送顺序：警报、字幕（含场次分隔）、观众弹幕。
+        每条都带 replay=True；最后一条字幕另带 restore（见 replay_payloads）。
+
+        深度是中控页自己的上限（HISTORY_MAX / COMMENTS_MAX），不是手机的：手机拿的是
+        app/viewer.py 的 replay_snapshot，它对同一份缓存再切一刀。纯同步，只读缓存。"""
+        out = [dict(alert, replay=True) for alert in list(self.alerts)]
+        out.extend(replay_payloads(captions_tail(self.history, HISTORY_MAX)))
+        out.extend(dict(c, replay=True) for c in list(self.comments)[-COMMENTS_MAX:])
+        return out
+
+    async def clear_history(self, kind):
+        """中控点了「清空字幕」/「清空弹幕」：把服务端缓存里那一类也清掉。
+
+        以前只有页面把自己的节点删了，缓存原样留着，刷新或重连后 hello 又把这些行放了回来——
+        「清空」只在没刷新之前成立。警报不在这里：违禁词警报跨刷新留存是合规要求（没看到就等于漏报），
+        有自己的「清空警报」，那一个也只清页面，缓存里的警报留着。
+
+        不碰审计：审计日志是另一条独立的记录，清的只是中控页上能回看的那一份。
+        手机之后重连也不会再回放被清掉的行（replay_snapshot 读的是同一份缓存）；已经连着的手机页面
+        不受影响，history_cleared 不在手机白名单里。
+        返回是否认得这个 kind；认得时广播 history_cleared，让同时开着的其他本机页面也跟着清。"""
+        if kind == "captions":
+            self.history.clear()
+        elif kind == "comments":
+            self.comments.clear()
+        else:
+            return False
+        await self.broadcast({"type": "history_cleared", "kind": kind})
+        return True
 
     async def broadcast(self, msg):
         if msg.get("type") == "caption" and not msg.get("replay"):

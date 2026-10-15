@@ -73,6 +73,7 @@
   var statusBanner = document.getElementById("status-banner");
   var liveBar = document.getElementById("live-bar");
   var jumpBtn = document.getElementById("jump-latest");
+  var commentJump = document.getElementById("comment-jump");
   var engineSelect = document.getElementById("engine-select");
   var engineKey = document.getElementById("engine-key");
   var engineSave = document.getElementById("engine-save");
@@ -279,7 +280,11 @@
 
   var ws = null;
   var retries = 0;
+  // 页面最多留几张字幕卡片、几条弹幕。服务端 hello 回放的深度取同一个数（app/server.py 的 HISTORY_MAX /
+  // COMMENTS_MAX），刷新或重连后看到的就是刷新前能往上翻的那些。tests/test_server_clear.py 读这两行
+  // 比对，改一边不改另一边测试会红；弹幕栏的裁剪也都用 maxComments，别再写裸数字
   var maxHistory = 300;
+  var maxComments = 100;
   var currentVersion = "";
   var startWatchdog = null;
   var pendingStart = null;   // 已发出但服务器还没回执的「开始」指令（重连后补发）
@@ -451,17 +456,36 @@
     if (prevCapsTitle) prevCapsTitle.classList.toggle("hidden", streamActive || !hasCaps);
   }
 
-  clearBtn.addEventListener("click", function () {
+  // 只清这一页的字幕：点「清空」、hello 重建前的清场、别的页面点了清空后的同步，都走这里
+  function clearCaptionsView() {
     // 分隔条（.session-sep，换主播时插的「── HH:MM:SS 以下为 @B ──」）跟着
-    // 字幕一起清掉，不然重连回放前调这个函数清场时，旧分隔条会越攒越多——
-    // 这个函数也被 hello 处理里的 clearBtn.click() 当内部重置用，不只是
-    // 用户手点「清空」那一条路径
+    // 字幕一起清掉，不然重连回放前清场时，旧分隔条会越攒越多
     var caps = historyEl.querySelectorAll(".cap, .session-sep");
     for (var i = 0; i < caps.length; i++) caps[i].remove();
     cardsById = {};              // 卡片没了，id 映射也要清，否则一直涨
     liveBarId = null;
     liveBar.classList.add("hidden");
+    captionsBelow = 0;           // 没有字幕了，「N 条新字幕」也就没有意义
     syncCaptionDependentUi();
+    updateJumpButton();
+  }
+
+  // 让服务端也忘掉那一类：以前只删页面上的节点，缓存原样留着，刷新或重连后 hello 又把这些行
+  // 放了回来——「清空」只在没刷新之前成立。连接断着时服务端收不到，只清了本页：说一声，
+  // 别装作已经清掉了（重新连上后 hello 会把缓存里的放回来）
+  function forgetOnServer(kind) {
+    if (send({ type: "clear_history", kind: kind })) return;
+    showVersionNote(kind === "comments"
+      ? L("与本地服务断开，只清空了本页——重新连上后这些弹幕会回来。",
+          "Lost connection to the local service. Only this page was cleared, and the comments come back once it reconnects.")
+      : L("与本地服务断开，只清空了本页——重新连上后这些字幕会回来。",
+          "Lost connection to the local service. Only this page was cleared, and the captions come back once it reconnects."),
+      8000);
+  }
+
+  clearBtn.addEventListener("click", function () {
+    clearCaptionsView();
+    forgetOnServer("captions");
   });
 
   // 地址输入归一化在 normalize.js（独立成文件以便单元测试），
@@ -807,11 +831,12 @@
         commentMeta = Object.create(null);
         commentCount.textContent = "0";
         commentFollowing = true;   // 回放重建整个列表：从最新处开始看
+        commentsBelow = 0;
         commentPanel.classList.add("hidden");
         // 失败连击也归零——回放的陈旧字幕不该累积成新警告
         failStreak = 0;
         transBannerOn = false;
-        clearBtn.click();
+        clearCaptionsView();
         if (msg.config) {
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
           if (msg.config.comment_detail != null) backendDetail = msg.config.comment_detail;
@@ -940,6 +965,12 @@
         break;
       case "session_break":
         renderSessionBreak(msg);
+        break;
+      // 服务端清掉了一类缓存（这一页或别的本机页面点了「清空」）：这一页也跟着清。
+      // 这一页自己点的那次会收到回声，再清一遍是空操作
+      case "history_cleared":
+        if (msg.kind === "captions") clearCaptionsView();
+        else if (msg.kind === "comments") clearCommentsView();
         break;
       case "alert_update":
         updateAlert(msg);
@@ -1186,6 +1217,9 @@
     }
 
     applyTranslation(card, msg);
+    // 翻上去看的时候，新字幕不会把视野拉走，但按钮上要数出下面攒了多少没看的（回放的不算）。
+    // 在 stickToBottom 之前数：贴底跟随时它会把计数归零
+    if (!msg.replay && streamActive && !following) captionsBelow++;
     // force 只在「重连时回放、且当前确实处于直播中」才为 true：那是唯一
     // 该无视用户滚动状态、强制跳到最新的场景。待机时收到的回放（刚停止/刚
     // 打开就是上一场留下的历史）不该跟着强制滚到底——否则 enterHomeLayout
@@ -1552,6 +1586,7 @@
     // 「回到最新」是 fixed 定位在右下角的，弹幕列展开时把它往左挪，别盖在弹幕上
     var panelOpen = show && !collapsed;
     jumpBtn.style.right = (panelOpen ? commentPanel.offsetWidth + 20 : 20) + "px";
+    updateCommentJump();      // 面板收起/展开、直播起止都会改变这颗按钮该不该露面
 
     // 标题旁的小字状态 + 空态文案：中控要能一眼分清「没人发弹幕」和
     // 「抓取本身出了问题」，两者处理方式完全不同（前者等，后者去修）。
@@ -1651,12 +1686,12 @@
     item.dataset.cmtState = msg.state || "";
     syncCommentRedo(item);
     noteCommentGuard(msg, item);
-    // 满 100 条从顶部删最旧的。用户正往上翻着看时，眼前那条不能跟着跑：
+    // 满 maxComments 条（100）从顶部删最旧的。用户正往上翻着看时，眼前那条不能跟着跑：
     // 删之前记下第一条可见弹幕的位置，删完量它实际移动了多少再补回来。
     // 不按「删掉多高」去减——Chromium 自带滚动锚定会先补一次，再减就补过头
     // （实测每删一条视野往上窜一条）；WebKit 不一定锚定。量实际位移两边都对。
     var anchor = null, anchorTop = 0;
-    var excess = commentList.children.length - 100;
+    var excess = commentList.children.length - maxComments;
     if (excess > 0 && !commentFollowing && isMeasurable(commentList)) {
       var listTop = commentList.getBoundingClientRect().top;
       for (var i = excess; i < commentList.children.length; i++) {
@@ -1664,7 +1699,7 @@
         if (rect.bottom > listTop) { anchor = commentList.children[i]; anchorTop = rect.top; break; }
       }
     }
-    while (commentList.children.length > 100) {
+    while (commentList.children.length > maxComments) {
       var oldest = commentList.firstChild;
       delete commentById[oldest.dataset.cmtId];
       delete commentMeta[oldest.dataset.cmtId];
@@ -1675,8 +1710,11 @@
       if (Math.abs(drift) >= 1) commentList.scrollTop += drift;
     }
     commentCount.textContent = commentItemCount();
+    // 往上翻着看时，新弹幕不会把视野拉走：数着，「回到最新」按钮上显示（回放的不算）
+    if (!msg.replay && streamActive && !commentFollowing) commentsBelow++;
     refreshCommentPanel();
     if (commentFollowing) commentsToBottomNow();
+    updateCommentJump();
   }
 
   // 弹幕条数：只数 .cmt-item，不数换主播时插进同一个列表里的 .session-sep
@@ -1807,10 +1845,38 @@
   commentList.addEventListener("scroll", function () {
     commentFollowing = nextFollowing(commentList, commentFollowing,
                                      Date.now() - lastCommentInput < 700);
+    if (commentFollowing) commentsBelow = 0;
+    updateCommentJump();
   }, { passive: true });
+
+  // 弹幕栏自己滚（和字幕区各管各的），所以自己也要有一个「回到最新」：往上翻着看时，按钮在
+  // 弹幕栏右下角，写着翻上去之后又来了几条。bottom 与字幕那颗取同一个值（躲开底部大字幕）
+  var commentsBelow = 0;
+  var commentJumpLabel = jumpLatestCommentsText(0);   // 与 index.html 里的静态文字相同，没变就不重写
+  function updateCommentJump() {
+    if (!commentJump) return;
+    var show = streamActive && !commentPanel.classList.contains("collapsed")
+      && isMeasurable(commentList) && !atBottom(commentList);
+    if (show) commentJump.style.bottom = jumpBottomPx() + "px";
+    commentJump.classList.toggle("hidden", !show);
+    var label = jumpLatestCommentsText(commentsBelow);
+    if (label !== commentJumpLabel) {
+      commentJumpLabel = label;
+      setIconText(commentJump, "arrow-down", label);
+    }
+  }
+
+  if (commentJump) {
+    commentJump.addEventListener("click", function () {
+      commentFollowing = true;          // 点了就是要看最新，恢复跟随
+      commentsToBottomNow();
+      updateCommentJump();
+    });
+  }
 
   // 瞬时滚到底：理由同字幕的 scrollToBottomNow（平滑动画追不上连续追加）
   function commentsToBottomNow() {
+    commentsBelow = 0;         // 只在跟随着（或刚点了「回到最新」）时才会滚到底：没有没看的了
     var prev = commentList.style.scrollBehavior;
     commentList.style.scrollBehavior = "auto";
     commentList.scrollTop = commentList.scrollHeight;
@@ -1837,13 +1903,21 @@
 
   window.addEventListener("resize", refreshCommentPanel);
 
-  clearCommentsBtn.addEventListener("click", function () {
+  // 只清这一页的弹幕：点「清空」、别的页面点了清空后的同步，都走这里
+  function clearCommentsView() {
     commentList.innerHTML = "";
     commentById = Object.create(null);
     commentMeta = Object.create(null);
     commentCount.textContent = "0";
     commentFollowing = true;
+    commentsBelow = 0;
     refreshCommentPanel();    // 直播中清空后面板留着，只是回到空态
+    updateCommentJump();
+  }
+
+  clearCommentsBtn.addEventListener("click", function () {
+    clearCommentsView();
+    forgetOnServer("comments");   // 服务端缓存也清，刷新后不会又回来
   });
 
   // ---- 弹幕留意（Comment Review，web/guard.js；spec §7） ----
@@ -3127,6 +3201,10 @@
   // 进入直播中（exitHomeLayout）才恢复跟随；这之前不该有任何东西把 #history
   // 拽向底部。
   var following = false;
+  // 翻上去看的时候（following 为假）又来了几条新字幕，显示在「回到最新」按钮上。
+  // 回到底部（点按钮、自己滚下去、清空）就归零；回放的字幕不算
+  var captionsBelow = 0;
+  var jumpLabel = jumpLatestCaptionsText(0);   // 与 index.html 里的静态文字相同，没变就不重写
 
   // 记下最近一次真实的用户输入。浏览器在元素重新可渲染时会把 scrollTop
   // 重置为 0 并抛出 scroll 事件，不区分来源的话那次重置会被当成
@@ -3142,6 +3220,7 @@
   historyEl.addEventListener("scroll", function () {
     following = nextFollowing(historyEl, following,
                               Date.now() - lastUserInput < 700);
+    if (following) captionsBelow = 0;
     updateJumpButton();
   }, { passive: true });
 
@@ -3174,7 +3253,10 @@
 
   function stickToBottom(force) {
     if (force) following = true;
-    if (following) scrollToBottomNow();
+    if (following) {
+      scrollToBottomNow();
+      captionsBelow = 0;
+    }
     updateJumpButton();
   }
 
@@ -3187,6 +3269,7 @@
     liveBar.classList.add("hidden");
     liveBarId = null;
     following = false;
+    captionsBelow = 0;
     scrollToTopNow();
     updateJumpButton();
     statsEl.classList.add("hidden");
@@ -3212,23 +3295,31 @@
   function updateJumpButton() {
     if (!jumpBtn) return;
     var show = streamActive && isMeasurable(historyEl) && !atBottom(historyEl);
-    if (show) {
-      // 底部大字幕是 fixed 且高度随字号变化，按钮得让开它。
-      // 上限夹在视口 40% 处：布局异常时测出的 barTop 可能贴近顶部，
-      // 不夹的话按钮会被顶到屏幕上方，看起来像个飞出来的东西。
-      var vh = window.innerHeight || 800;
-      var barTop = (liveBar && !liveBar.classList.contains("hidden"))
-        ? liveBar.getBoundingClientRect().top : vh - 56;
-      var offset = vh - barTop + 12;
-      if (!(offset > 0)) offset = 68;                 // NaN / 负数兜底
-      jumpBtn.style.bottom = Math.min(Math.max(offset, 56), vh * 0.4) + "px";
-    }
+    if (show) jumpBtn.style.bottom = jumpBottomPx() + "px";
     jumpBtn.classList.toggle("hidden", !show);
+    var label = jumpLatestCaptionsText(captionsBelow);
+    if (label !== jumpLabel) {
+      jumpLabel = label;
+      setIconText(jumpBtn, "arrow-down", label);
+    }
+  }
+
+  // 两颗「回到最新」（字幕区的、弹幕栏的）共用的 bottom 值：底部大字幕是 fixed 且高度随字号
+  // 变化，按钮得让开它。上限夹在视口 40% 处：布局异常时测出的 barTop 可能贴近顶部，
+  // 不夹的话按钮会被顶到屏幕上方，看起来像个飞出来的东西。
+  function jumpBottomPx() {
+    var vh = window.innerHeight || 800;
+    var barTop = (liveBar && !liveBar.classList.contains("hidden"))
+      ? liveBar.getBoundingClientRect().top : vh - 56;
+    var offset = vh - barTop + 12;
+    if (!(offset > 0)) offset = 68;                 // NaN / 负数兜底
+    return Math.min(Math.max(offset, 56), vh * 0.4);
   }
 
   if (jumpBtn) {
     jumpBtn.addEventListener("click", function () {
       following = true;                 // 点了就是要看最新，恢复跟随
+      captionsBelow = 0;
       scrollToBottomNow();
       updateJumpButton();
     });
@@ -3254,6 +3345,7 @@
     if (needsResync(historyEl, following)) scrollToBottomNow();
     if (needsResync(commentList, commentFollowing)) commentsToBottomNow();
     updateJumpButton();
+    updateCommentJump();
   }, 2000);
 
   // ---- 翻译引擎 ----

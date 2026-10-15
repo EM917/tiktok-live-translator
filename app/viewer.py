@@ -61,7 +61,12 @@ SCRUB_LIMIT = 120
 # 英文比同样意思的中文长 2–3 倍，派生的英文字段另有上限；安全边界靠 _SCRUB_PATTERNS，不靠长度
 SCRUB_LIMIT_EN = 300
 WHY_LIMIT, WHY_LIMIT_EN = 160, 400
-REPLAY_MAX = 273              # 1+1+1+20+50+100+100，见 replay_snapshot
+# 手机回放的字幕、弹幕条数。写死在这里、不跟 server.py 的 HISTORY_MAX / COMMENTS_MAX 走：
+# 中控页能回看 300 条字幕，但手机的入站队列是固定的（QUEUE_MAX），回放多了每个新观众一进来就被
+# 判定为落后。数值与中控页没有开放回看之前的 deque 上限相同——手机看到的东西没有变
+PHONE_HISTORY_MAX = 100       # 字幕，含场次分隔标记（数的是 history 里的条目）
+PHONE_COMMENTS_MAX = 100
+REPLAY_MAX = 273              # 1+1+1+20+50 + PHONE_HISTORY_MAX + PHONE_COMMENTS_MAX，见 replay_snapshot
 
 VIEWER_FILES = ("viewer.html", "viewer.js", "viewer.css", "icon.png")
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -586,17 +591,20 @@ def replay_snapshot(server, viewers=0, share_since=None):
             payload = filter_payload(dict(alert, replay=True))
             if payload is not None:
                 out.append(payload)
-    for item in replay_payloads(list(getattr(server, "history", None) or [])):
+    # 缓存比手机该看的深（中控页回看 300 条）：先切到手机的上限再回放。切的是最近的那段，
+    # 所以最后一条字幕（restore 打在它身上）还是最后一条
+    history = list(getattr(server, "history", None) or [])[-PHONE_HISTORY_MAX:]
+    for item in replay_payloads(history):
         payload = filter_payload(item)
         if payload is not None:
             out.append(payload)
-    for comment in list(getattr(server, "comments", None) or []):
+    for comment in list(getattr(server, "comments", None) or [])[-PHONE_COMMENTS_MAX:]:
         if isinstance(comment, dict):
             payload = filter_payload(dict(comment, replay=True))
             if payload is not None:
                 out.append(payload)
-    # 按当前各集合的上限，回放序列本就不会超过 REPLAY_MAX；这里切一刀是保险，
-    # 不是当前会触发的路径——某个集合的上限以后涨了，也不该让回放悄悄超过 QUEUE_MAX。
+    # 按手机的上限（上面几行的切片），回放序列本就不会超过 REPLAY_MAX；这里切一刀是保险，
+    # 不是当前会触发的路径——警报、持续提示的上限以后涨了，也不该让回放悄悄超过 QUEUE_MAX。
     return out[:REPLAY_MAX]
 
 
