@@ -154,6 +154,8 @@ export function runDesktop(lang = "en") {
   FakeWebSocket.prototype.close = function () {};
   const storage = () => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) }; };
   const timers = [];
+  const frames = [];                                 // requestAnimationFrame 排下的回调，nextFrame() 才跑
+  const winListeners = {};                           // window 上的监听（focus / resize），winFire() 触发
   const confirms = [];
   let confirmAnswer = false;
   let now = 1759000000000;
@@ -163,10 +165,12 @@ export function runDesktop(lang = "en") {
     navigator: {}, localStorage: storage(), sessionStorage: storage(),
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
     clearTimeout: (id) => { if (timers[id - 1]) timers[id - 1].fn = null; },
-    setInterval: () => 0, clearInterval() {}, requestAnimationFrame: () => 0,
+    setInterval: () => 0, clearInterval() {},
+    requestAnimationFrame: (fn) => { frames.push(fn); return 0; },
     getComputedStyle: () => ({ getPropertyValue: () => "17px" }),
     getSelection: () => ({ removeAllRanges() {}, addRange() {} }),
-    addEventListener() {}, removeEventListener() {},
+    addEventListener: (type, cb) => { (winListeners[type] = winListeners[type] || []).push(cb); },
+    removeEventListener() {},
     confirm: (t) => { confirms.push(String(t)); return confirmAnswer; },
     __now: () => now,
   };
@@ -189,6 +193,9 @@ export function runDesktop(lang = "en") {
     closeSocket: () => ws().onclose(),
     answerConfirm: (v) => { confirmAnswer = v; },
     advance: (ms) => { now += ms; },
+    winFire: (type) => (winListeners[type] || []).slice().forEach((cb) => cb({ type })),
+    // 跑完当前排着的那一帧（回调里再排的留到下一次）
+    nextFrame: () => frames.splice(0).forEach((fn) => fn()),
     // 触发某个时长的定时器（按注册顺序，每个只触发一次）
     fire: (ms) => {
       for (const t of timers.slice()) if (t.fn && t.ms === ms) { const fn = t.fn; t.fn = null; fn(); }

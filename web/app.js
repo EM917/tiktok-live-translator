@@ -2105,7 +2105,7 @@
 
   function resyncComments() {
     if (document.hidden || !commentFollowing) return;
-    requestAnimationFrame(commentsToBottomNow);
+    requestAnimationFrame(function () { if (commentFollowing) commentsToBottomNow(); });  // 理由同 resync
   }
 
   toggleCommentsBtn.addEventListener("click", function () {
@@ -3544,9 +3544,12 @@
 
   // 重新可见/重新获得焦点时补一次：不可见期间的滚动请求全部落空了。
   // rAF 等布局稳定后再滚——刚显示出来时尺寸还没算完。
+  // 到那一帧再看一眼还跟不跟：点「停止」时窗口先收到 focus，排下这一帧；停止的状态若赶在
+  // 这一帧之前到达，页面已经回到首页、滚到顶（enterHomeLayout），这一帧不能再把它拽到底
+  // ——10-15 实测停止后偶尔停在「上一场字幕」底部，就是这一帧晚到了。
   function resync() {
     if (document.hidden || !following) return;
-    requestAnimationFrame(scrollToBottomNow);
+    requestAnimationFrame(function () { if (following) scrollToBottomNow(); });
   }
 
   document.addEventListener("visibilitychange", resync);

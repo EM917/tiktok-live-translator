@@ -274,6 +274,24 @@ test("英文页：新写进页面的字（两颗按钮、断线说明）一个�
   assert.deepEqual(leftoverChinese(page), []);
 });
 
+// 点「停止」时窗口先拿到 focus，resync 排下一帧「滚到底」；停止的状态赶在那一帧之前到达时，
+// 页面已经回到首页、滚到顶——那一帧晚到也不能再把首页拽到「上一场字幕」底部（10-15 实测偶发）
+test("停止赶在 focus 排下的那一帧之前到达：首页留在顶上", () => {
+  const page = liveWithCaptions("zh");
+  const box = page.el("history");
+  box.clientHeight = 500;
+  box.scrollHeight = 4000;
+  // 对照：直播中 focus 排下的那一帧照常滚到底（不然下面的断言是空转）
+  page.winFire("focus");
+  page.nextFrame();
+  assert.equal(box.scrollTop, 4000);
+  page.winFire("focus");
+  page.push({ type: "status", state: "idle", detail: "" });
+  assert.equal(box.scrollTop, 0, "回到首页滚到顶");
+  page.nextFrame();
+  assert.equal(box.scrollTop, 0, "晚到的那一帧不能把首页拽到底");
+});
+
 test("英文页查漏本身不瞎：按钮上写了一句中文就会被报出来", () => {
   const page = liveWithCaptions("en");
   scrollAway(page.el("history"));
