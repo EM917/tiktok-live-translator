@@ -336,9 +336,10 @@ def test_the_comment_prompt_says_the_input_is_always_comments_and_never_to_reply
     system = body["system"]
     assert "<comments>" in system and "never reply" in system and "never ask for more input" in system
     assert "even a very short one" in system
-    # 字幕和重译不包标签
+    # 字幕和重译包的是另一种标签（2026-10-14 起），提示词也是另一份
     sub = ClaudeTranslator()
-    assert sub._body("Sii todo", "zh-CN")["messages"][0]["content"] == "Sii todo"
+    assert sub._body("Sii todo", "zh-CN")["messages"][0]["content"] == "<subtitle>\nSii todo\n</subtitle>"
+    assert "<comments>" not in sub._body("Sii todo", "zh-CN")["system"]
 
 
 @pytest.mark.parametrize("text,out,target,ok", [
