@@ -1256,7 +1256,7 @@
       liveOriginal.classList.toggle("hidden", !msg.translated);
       liveBarId = msg.id;
       paintLiveState(msg);
-      liveSpokenAt = captionSpokenAt(msg, Date.now());
+      liveAudioEndAt = captionAudioEndAt(msg, Date.now());
       paintLiveLag();
     }
   }
@@ -1265,9 +1265,12 @@
   // 大字幕没译成（译失败、被拒答、结果不像译文、因积压被跳过）时显示的是原文。
   // 以前这时什么说明都没有，大字号的西语看着像程序没在翻译；现在和历史卡片同款的角标写在下面
   // （字从 web/live-ui.js 的同一个函数来），原文照旧留在大字幕上。还在等译文的不画角标（见 liveBarChip）。
-  // 「约 N 秒前」：这一句最早一个词说出口到现在，数字每秒涨一次，大字幕上的这一句停多久它就老多久。
-  var liveSpokenAt = null;   // 大字幕这一句最早一个词说出口的时刻（毫秒，本机时钟）；不知道是 null
-  liveLag.title = L("从主播开始说这一句算起", "Counted from when the streamer started this line");
+  // 「约 N 秒前」：这一句的声音结束到现在，数字每秒涨一次，大字幕上的这一句停多久它就老多久。
+  // 只在超过 CAPTION_LAG_SHOW_SEC 秒（web/live-ui.js）才出现：健康的直播里一句话换下一句的间隔不到那么久，
+  // 它一出现就说明这一句比平常停得久（主播停了，或者积压了）；这里只写数字，不猜是哪一种。
+  var liveAudioEndAt = null;   // 大字幕这一句音频结束的时刻（毫秒，本机时钟）；不知道是 null
+  liveLag.title = L("从这一句的声音结束算起，超过 " + CAPTION_LAG_SHOW_SEC + " 秒才显示",
+                    "Counted from when the audio for this line ended. Shown after " + CAPTION_LAG_SHOW_SEC + " sec");
 
   function syncLiveMeta() {
     var any = !liveState.classList.contains("hidden") || !liveLag.classList.contains("hidden");
@@ -1283,7 +1286,7 @@
   }
 
   function paintLiveLag() {
-    var text = liveBarId == null || liveSpokenAt == null ? "" : captionAgeText(Date.now() - liveSpokenAt);
+    var text = liveBarId == null || liveAudioEndAt == null ? "" : captionAgeText(Date.now() - liveAudioEndAt);
     liveLag.textContent = text;
     liveLag.classList.toggle("hidden", !text);
     syncLiveMeta();
@@ -1296,7 +1299,7 @@
   function hideLiveBar() {
     liveBar.classList.add("hidden");
     liveBarId = null;
-    liveSpokenAt = null;
+    liveAudioEndAt = null;
     liveState.textContent = "";
     liveState.classList.add("hidden");
     liveLag.textContent = "";

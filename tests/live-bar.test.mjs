@@ -2,7 +2,8 @@
 //
 // 页面是 node:vm 里真跑的 web/app.js（tests/desktop-page.mjs），中文、英文两种界面各跑一遍：
 //   1. 大字幕下面的角标：译文没到、没译成的每一种结局都留着原文，并且和历史卡片上是同一句话；
-//   2. 「约 N 秒前」：按 ts − e2e_ms − segment_ms 算，每秒涨一次，新的一句重置，缺字段就不写；
+//   2. 「约 N 秒前」：按这一段音频结束的时刻（ts − e2e_ms）算，超过 15 秒才出现，每秒涨一次，
+//      新的一句重置，缺 e2e_ms 就不写；健康的直播（上屏 2～3 秒、下一句八九秒后来）这一行始终不出现；
 //   3. 页脚：字幕等待排第一，违禁词报警延迟紧跟其后、一个字没少（CLAUDE.md 第六条）；
 //   4. 滑块：一个值带大字幕、历史卡片、弹幕栏三处；松手存进服务端，localStorage 只是退路。
 // 纯函数（角标取字、年龄文案、统计行各段、字号比例）在 tests/live-ui.test.mjs / live-ui.en.test.mjs。
@@ -18,14 +19,14 @@ const TEXT = {
   zh: {
     pending: "翻译中…", failed: "翻译失败", refused: "未翻译（接口拒答）",
     notTranslation: "未翻译（结果不像译文）", dropped: "翻译已跳过（积压）",
-    sec: (n) => "约 " + n + " 秒前", min: (n) => "约 " + n + " 分钟前", justNow: "刚刚",
-    lagTitle: "从主播开始说这一句算起",
+    sec: (n) => "约 " + n + " 秒前", min: (n) => "约 " + n + " 分钟前",
+    lagTitle: "从这一句的声音结束算起，超过 15 秒才显示",
   },
   en: {
     pending: "Translating…", failed: "Translation failed", refused: "Not translated (API refusal)",
     notTranslation: "Not translated (the result didn’t look like a translation)", dropped: "Skipped (backlog)",
-    sec: (n) => "About " + n + " sec ago", min: (n) => "About " + n + " min ago", justNow: "Just now",
-    lagTitle: "Counted from when the streamer started this line",
+    sec: (n) => "About " + n + " sec ago", min: (n) => "About " + n + " min ago",
+    lagTitle: "Counted from when the audio for this line ended. Shown after 15 sec",
   },
 };
 const CJK = /[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯]/;
@@ -143,86 +144,114 @@ for (const lang of ["zh", "en"]) {
   });
 
   // ---- 2. 「约 N 秒前」 ---------------------------------------------------------------------
+  // 默认的 caption() 是健康的一句：音频结束后 2.3 秒上屏（e2e_ms 2300）。LATE 是上屏时就已经落后很多的一句。
+  const LATE = { e2e_ms: 20000 };
 
-  test(L("滞后：按 ts − e2e_ms − segment_ms 算，每秒涨一次，一分钟以上改写分钟"), () => {
+  test(L("滞后：健康的直播里始终不出现——上屏 2.3 秒，下一句 8～10 秒后才来，整个周期都低于 15 秒"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "hola", { ts: T, e2e_ms: 2300, segment_ms: 6000 }));      // 最早一个词在 8.3 秒前
-    assert.equal(bar(page).lag, X.sec(8));
+    page.push(caption(1, "hola", { ts: T, e2e_ms: 2300 }));
+    assert.deepEqual([bar(page).lag, bar(page).meta], [null, false], "刚上屏：没有数字，也没有空着的一行");
+    for (const ms of [2000, 3000, 3000, 2000, 1000, 1000]) {            // 累计 12 秒，音频结束后 14.3 秒
+      page.advance(ms);
+      page.tick(1000);
+      assert.equal(bar(page).lag, null, "已经 " + (page.now() / 1000 - T + 2.3) + " 秒");
+    }
+    page.push(caption(2, "adiós", { ts: T + 12, e2e_ms: 2500 }));        // 下一句来了
+    assert.deepEqual([bar(page).lag, bar(page).meta], [null, false]);
+  });
+
+  test(L("滞后：从这一段音频结束算起，满 15 秒才出现，之后每秒涨一次，一分钟以上改写分钟"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    page.push(caption(1, "hola", { ts: T, e2e_ms: 2300 }));              // 音频在 2.3 秒前结束
+    page.advance(12699);                                                // 14.999 秒
+    page.tick(1000);
+    assert.equal(bar(page).lag, null, "差 1 毫秒不写");
+    page.advance(1);                                                    // 15.0 秒
+    page.tick(1000);
+    assert.deepEqual([bar(page).lag, bar(page).meta], [X.sec(15), true]);
     page.advance(4000);
     page.tick(1000);
-    assert.equal(bar(page).lag, X.sec(12));
-    page.advance(50000);                                                            // 62.3 秒
+    assert.equal(bar(page).lag, X.sec(19));
+    page.advance(46000);                                                // 65 秒
     page.tick(1000);
     assert.equal(bar(page).lag, X.min(1));
-    page.advance(60000);                                                            // 122.3 秒
+    page.advance(60000);                                                // 125 秒
     page.tick(1000);
     assert.equal(bar(page).lag, X.min(2));
   });
 
-  test(L("滞后：译文回来不重置它（它算的是这一句什么时候说的）；新的一句才重置"), () => {
+  test(L("滞后：积压时一上屏就写——这一句上屏的时候已经比平常老得多"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "hola", { ts: T, e2e_ms: 2000, segment_ms: 5000 }));
-    page.advance(3000);
+    page.push(caption(1, "atrasado", LATE));
+    assert.deepEqual([bar(page).lag, bar(page).meta], [X.sec(20), true]);
+    page.push(caption(2, "al día", { e2e_ms: 2400 }));                  // 追上了：新的一句，数字收起来
+    assert.deepEqual([bar(page).lag, bar(page).meta], [null, false]);
+  });
+
+  test(L("滞后：不依赖 segment_ms——老版本、新版本服务端算出来一样（只看 ts 和 e2e_ms）"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    page.push(caption(1, "sin segmento", LATE));
+    assert.equal(bar(page).lag, X.sec(20));
+    page.push(caption(2, "con segmento", Object.assign({ segment_ms: 7000 }, LATE)));
+    assert.equal(bar(page).lag, X.sec(20), "带了也不多算一个片段");
+  });
+
+  test(L("滞后：译文回来不重置它（它算的是这一句的声音什么时候结束的）；新的一句才重置"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    page.push(caption(1, "hola", { ts: T, e2e_ms: 2000 }));
+    page.advance(14000);                                                // 音频结束后 16 秒
     page.push({ type: "caption_update", id: 1, translated: "你好", translate_state: "ok", quality: 1 });
     page.tick(1000);
-    assert.equal(bar(page).lag, X.sec(10));
+    assert.equal(bar(page).lag, X.sec(16));
     page.advance(6000);
-    page.push(caption(2, "adiós", { ts: T + 9, e2e_ms: 2400, segment_ms: 5200 }));  // 9 秒后的下一句
-    assert.equal(bar(page).lag, X.sec(8), "新的一句 ts 就是此刻：2.4 + 5.2 = 7.6 秒，四舍五入");
+    page.push(caption(2, "adiós", { ts: T + 20, e2e_ms: 2400 }));       // 下一句，正常
+    assert.deepEqual([bar(page).lag, bar(page).meta], [null, false], "新的一句：重新从 2.4 秒数起，低于 15 秒不写");
   });
 
-  test(L("滞后：不到 3 秒写「刚刚」；本机时钟拨回（负数）和离谱的大数不写"), () => {
+  test(L("滞后：本机时钟拨回（负数）和离谱的大数不写，同样的数据再老 20 秒就写"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "sí", { ts: T, e2e_ms: 400, segment_ms: 900 }));
-    assert.equal(bar(page).lag, X.justNow);
-    const quiet = { e2e_ms: 400, segment_ms: 900 };
-    page.push(caption(2, "no", Object.assign({ ts: T + 100 }, quiet)));                // ts 在「未来」
+    page.push(caption(1, "no", { ts: T + 100, e2e_ms: 400 }));         // ts 在「未来」
     assert.deepEqual([bar(page).lag, bar(page).meta], [null, false], "负数不写，整行也收起来");
-    page.push(caption(3, "ok", Object.assign({ ts: T - 8 * 3600 }, quiet)));           // 8 小时前
+    page.push(caption(2, "ok", { ts: T - 8 * 3600, e2e_ms: 400 }));    // 8 小时前
     assert.equal(bar(page).lag, null);
+    page.push(caption(3, "sí", { ts: T - 20, e2e_ms: 400 }));          // 同样的字段，只是 20 秒前
+    assert.equal(bar(page).lag, X.sec(20));
   });
 
-  test(L("滞后：服务端没给片段时长或 e2e（演示模式、老版本）就不写，不拿残缺的数冒充"), () => {
+  test(L("滞后：服务端没给 e2e（演示模式、老版本）就不写，不拿残缺的数冒充"), () => {
     const page = loadDesktop({ lang });
     hello(page);
     const demo = caption(1, "demo line");
-    delete demo.e2e_ms; delete demo.segment_ms;
+    delete demo.e2e_ms;
     page.push(demo);
     assert.deepEqual([bar(page).lag, bar(page).meta], [null, false]);
-    const noSegment = caption(2, "sin segmento");
-    delete noSegment.segment_ms;
-    page.push(noSegment);
-    assert.equal(bar(page).lag, null, "只有 e2e 会少算一整个片段");
-    const noE2e = caption(3, "sin e2e");
-    delete noE2e.e2e_ms;
-    page.push(noE2e);
-    assert.equal(bar(page).lag, null);
-    page.push(caption(4, "con todo", { e2e_ms: null }));
+    page.push(caption(2, "sin e2e", { ts: T - 60, e2e_ms: undefined }));
+    assert.equal(bar(page).lag, null, "再老也不写：没有 e2e 就不知道音频什么时候结束");
+    page.push(caption(3, "nulo", { ts: T - 60, e2e_ms: null }));
     assert.equal(bar(page).lag, null, "null 不当 0");
-    page.push(caption(5, "completo"));
-    assert.equal(bar(page).lag, X.sec(8));
+    page.push(caption(4, "completo", { ts: T - 60, e2e_ms: 2300 }));
+    assert.equal(bar(page).lag, X.min(1), "62 秒前");
   });
 
   test(L("滞后：和角标同在一行；只有一样也行；整行没内容时收起"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "no se oye"));
-    assert.deepEqual(bar(page), { big: "no se oye", small: null, chip: null, lag: X.sec(8), meta: true }, "只有滞后");
+    page.push(caption(1, "no se oye", LATE));
+    assert.deepEqual(bar(page), { big: "no se oye", small: null, chip: null, lag: X.sec(20), meta: true }, "只有滞后");
     page.push({ type: "caption_update", id: 1, translated: null, translate_state: "failed", refused: true });
-    assert.deepEqual(bar(page), { big: "no se oye", small: null, chip: X.refused, lag: X.sec(8), meta: true }, "角标 + 滞后");
+    assert.deepEqual(bar(page), { big: "no se oye", small: null, chip: X.refused, lag: X.sec(20), meta: true }, "角标 + 滞后");
     page.push({ type: "caption_update", id: 1, translated: "听不清", translate_state: "ok", quality: 2 });
-    assert.deepEqual([bar(page).chip, bar(page).lag, bar(page).meta], [null, X.sec(8), true]);
-    const bare = caption(2, "sin datos");
-    delete bare.segment_ms;
-    page.push(bare);
+    assert.deepEqual([bar(page).chip, bar(page).lag, bar(page).meta], [null, X.sec(20), true]);
+    page.push(caption(2, "sin datos"));
     assert.deepEqual([bar(page).chip, bar(page).lag, bar(page).meta], [null, null, false], "什么都没有：整行收起");
-    const noLagButFailed = caption(3, "falla", { translate_state: "failed" });
-    delete noLagButFailed.segment_ms;
-    page.push(noLagButFailed);
-    assert.deepEqual([bar(page).chip, bar(page).lag, bar(page).meta], [X.failed, null, true], "只有角标");
+    page.push(caption(3, "falla", { translate_state: "failed" }));
+    assert.deepEqual([bar(page).chip, bar(page).lag, bar(page).meta], [X.failed, null, true], "只有角标（这一句不老）");
   });
 
   test(L("滞后：断线重连后的 restore 那一句也算，按它自己的 ts；回放里别的句子不动大字幕"), () => {
@@ -231,14 +260,18 @@ for (const lang of ["zh", "en"]) {
     page.push(caption(1, "vieja", { replay: true }));
     assert.equal(bar(page).big, "", "普通回放不画大字幕");
     page.push(caption(2, "ultima", { replay: true, restore: true, ts: T }));
-    assert.deepEqual([bar(page).big, bar(page).lag], ["ultima", X.sec(38)]);   // 30 + 2.3 + 6
+    assert.deepEqual([bar(page).big, bar(page).lag], ["ultima", X.sec(32)]);   // 30 + 2.3
+    const fresh = loadDesktop({ lang, startMs: (T + 5) * 1000 });
+    hello(fresh);
+    fresh.push(caption(2, "reciente", { replay: true, restore: true, ts: T }));
+    assert.equal(bar(fresh).lag, null, "刚断开几秒就重连：7.3 秒，不写");
   });
 
   test(L("滞后：清空字幕、换场、回到首页，角标和滞后一起收掉，不留给下一句"), () => {
     const page = loadDesktop({ lang });
     const fresh = () => {
       hello(page);
-      page.push(caption(1, "hola", { translate_state: "failed" }));
+      page.push(caption(1, "hola", Object.assign({ translate_state: "failed" }, LATE)));
       assert.ok(bar(page).meta && bar(page).lag && bar(page).chip);
     };
     fresh();

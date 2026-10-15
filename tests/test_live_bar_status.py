@@ -1,8 +1,9 @@
 """底部大字幕的翻译状态、滞后数，页脚的字幕等待，和字幕字号滑块的持久化（2026-10-15）。
 
 页面怎么画由 tests/live-bar.test.mjs 钉着（node:vm 里真跑 app.js）；这里钉服务端这一侧：
-  * caption 消息带 segment_ms，页面用 ts − e2e_ms − segment_ms 算「这一句最早一个词是多久以前说的」；
-    片段时长不知道就不发这个键（页面宁可不写）；手机的白名单照旧不放这两个内部耗时；
+  * caption 消息只带 ts 和 e2e_ms：页面用 ts − e2e_ms（这一段音频结束的时刻）算「约 N 秒前」，超过 15 秒才写。
+    片段时长不进消息——从最早一个词算会让数字被句子长短主导，健康的直播也在 10～18 秒之间转圈；
+    手机的白名单照旧不放内部耗时；
   * 字幕等待（说出这一句 → 中控读到的那一版字幕上屏）进遥测，页脚统计行的第一个数；
     违禁词那一档 detect_worst 一个字没动（CLAUDE.md 第六条）；
   * 字幕字号存进 settings.json：合法值才存，坏值不存，重启读得回，没存过就不放这个键（界面保持今天的默认）；
@@ -100,28 +101,41 @@ def test_changing_the_size_is_not_audit_evidence(monkeypatch, tmp_path):
     assert p.audit is None
 
 
-# ---- caption 消息：片段时长 ---------------------------------------------------------------------
+# ---- caption 消息：页面算「约 N 秒前」要的两个数 ----------------------------------------------
 
-def test_the_caption_carries_the_segment_length_the_page_needs_for_how_long_ago(monkeypatch, tmp_path):
+def test_the_caption_carries_ts_and_e2e_so_the_page_can_find_when_the_audio_ended(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path, translator=FastTranslator())
     monkeypatch.setattr("app.pipeline.time.time", lambda: 1000.0)
     run(p._emit_original(result("hola amigas"), audio_end_ts=992.0, asr_ms=1100, segment_ms=6400))
     (caption,) = server.of_type("caption")
-    assert caption["segment_ms"] == 6400 and caption["e2e_ms"] == 8000 and caption["ts"] == 1000.0
-    # 页面的算法（web/live-ui.js captionSpokenAt）：ts − e2e − segment = 最早一个词说出口的时刻
-    assert caption["ts"] * 1000 - caption["e2e_ms"] - caption["segment_ms"] == (992.0 - 6.4) * 1000
+    assert caption["e2e_ms"] == 8000 and caption["ts"] == 1000.0
+    # 页面的算法（web/live-ui.js captionAudioEndAt）：ts − e2e = 这一段音频结束的时刻，也就是 audio_end_ts
+    assert caption["ts"] * 1000 - caption["e2e_ms"] == 992.0 * 1000
 
 
-def test_an_unknown_segment_length_is_left_out_not_made_up(monkeypatch, tmp_path):
-    p, server = make_pipeline(monkeypatch, tmp_path, translator=FastTranslator())
+def test_the_segment_length_stays_out_of_the_caption_but_still_feeds_the_footer(monkeypatch, tmp_path):
+    """片段时长让大字幕的数被句子长短主导（上屏就是 10 秒上下），所以不发给页面；
+    页脚的字幕等待和违禁词延迟照旧用它，那两个数在服务端算。"""
+    p, server = make_pipeline(monkeypatch, tmp_path, translator=None)
+    monkeypatch.setattr("app.pipeline.time.time", lambda: 1000.0)
+    run(p._emit_original(result("hola amigas"), audio_end_ts=996.0, asr_ms=900, segment_ms=5000))
+    (caption,) = server.of_type("caption")
+    assert "segment_ms" not in caption and caption["e2e_ms"] == 4000
+    snap = p.telemetry.snapshot()
+    assert snap["caption_wait"]["p50"] == pytest.approx(9000) and snap["detect_worst"]["p50"] == pytest.approx(9000)
+
+
+def test_an_unknown_segment_length_does_not_stop_the_caption(monkeypatch, tmp_path):
+    p, server = make_pipeline(monkeypatch, tmp_path, translator=None)
     run(p._emit_original(result("hola amigas"), audio_end_ts=100.0, asr_ms=1100))
     (caption,) = server.of_type("caption")
-    assert "segment_ms" not in caption and "e2e_ms" in caption
+    assert "e2e_ms" in caption and "segment_ms" not in caption
+    assert p.telemetry.snapshot()["caption_wait"]["n"] == 0        # 不知道片段多长就不记这一样
 
 
-def test_the_phone_still_gets_neither_internal_timing():
+def test_the_phone_still_gets_no_internal_timing():
     msg = {"type": "caption", "id": 1, "ts": 1.0, "original": "hola", "translated": None,
-           "translate_state": "pending", "asr_ms": 1100, "e2e_ms": 2300, "segment_ms": 6400}
+           "translate_state": "pending", "asr_ms": 1100, "e2e_ms": 2300}
     out = viewer.filter_payload(msg)
     assert out["original"] == "hola"
     assert not {"asr_ms", "e2e_ms", "segment_ms"} & set(out)

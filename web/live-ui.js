@@ -98,26 +98,35 @@ function liveBarChip(msg) {
   return captionStateChip(msg);
 }
 
-/* ---- 底部大字幕的滞后：这一句是多久以前说的 ----
- * 服务端的 caption 消息带 ts（原文上屏的时刻）、e2e_ms（这一段音频结束 → 上屏）、segment_ms（这一段
- * 音频有多长）。最早一个词说出口的时刻 = ts − e2e_ms − segment_ms，和页脚「违禁词最迟」是同一个口径。
- * 任何一项缺了（演示模式、老版本服务端、没记片段时长）就返回 null：不知道就不写，不拿只含 e2e 的
- * 数字冒充「说出多久了」。ts 缺失时按收到的这一刻算（nowMs）。 */
-function captionSpokenAt(msg, nowMs) {
-  if (!msg || typeof msg.e2e_ms !== "number" || typeof msg.segment_ms !== "number") return null;
-  if (!(msg.e2e_ms >= 0) || !(msg.segment_ms > 0)) return null;
+/* ---- 底部大字幕的滞后：大字幕上这一句的声音结束多久了 ----
+ * 服务端的 caption 消息带 ts（原文上屏的时刻）和 e2e_ms（这一段音频结束 → 上屏）。
+ * ts − e2e_ms = 这一段音频结束的时刻，和违禁词报警延迟（now − audio_end_ts）是同一个起点。
+ * 不从「最早一个词说出口」算：那个数被句子长短主导。一条新字幕上屏时就已经是 片段时长 + e2e ≈ 10 秒，
+ * 下一句八九秒后才来，所以健康的直播里它一直在 10～18 秒之间转圈，永远写不出「刚刚」，
+ * 中控没有基线，分不出这是正常还是积压了 10 秒。从最早一个词算的数留给页脚的「字幕等待」
+ * （服务端 Telemetry.caption_wait），那个是一整场的 p50 / P95，有对照。
+ * e2e_ms 缺了（演示模式、老版本服务端）就返回 null：不知道就不写。ts 缺失时按收到的这一刻算（nowMs）。 */
+function captionAudioEndAt(msg, nowMs) {
+  if (!msg || typeof msg.e2e_ms !== "number" || !(msg.e2e_ms >= 0)) return null;
   var shownAt = typeof msg.ts === "number" && msg.ts > 0 ? msg.ts * 1000 : nowMs;
   if (typeof shownAt !== "number" || !isFinite(shownAt)) return null;
-  return shownAt - msg.e2e_ms - msg.segment_ms;
+  return shownAt - msg.e2e_ms;
 }
 
-/* 「约 N 秒前」。ageMs 是从说出口到现在的毫秒数，页面每秒重算一次，所以数字会随时间涨——
- * 大字幕上的这一句停多久，它就老多久。负数（本机时钟被拨回）和离谱的大数（超过 6 小时）
- * 不写，返回空串。秒数四舍五入；一分钟以上改写分钟（大字幕停着不动多半是主播不说话了）。
+/* 多久才值得写。2026-10-13～15 三场直播的 3216 次换句，「音频结束 → 被下一句换掉」p50 10.4 秒、
+ * p90 11.8 秒、p99 13.0 秒：分段上限 9 秒 + 上屏 p90 2.8 秒，所以 12 秒会在健康的直播里闪（6.1% 的换句
+ * 超过它），15 秒只剩 0.6%——那些是主播停了很久，或者真的积压了。低于它这一行不出现：
+ * 正常的时候不让一个数字在主阅读区底下一秒一跳，它出现就是一个信号。 */
+var CAPTION_LAG_SHOW_SEC = 15;
+
+/* 「约 N 秒前」。ageMs 是从这一段音频结束到现在的毫秒数，页面每秒重算一次，所以数字会随时间涨——
+ * 大字幕上的这一句停多久，它就老多久。不到 CAPTION_LAG_SHOW_SEC 秒、负数（本机时钟被拨回）、
+ * 离谱的大数（超过 6 小时）都不写，返回空串。秒数四舍五入；一分钟以上改写分钟
+ * （大字幕停着不动多半是主播不说话了）。只写观察，不猜原因（CLAUDE.md 第八条）。
  * 英文照 docs/i18n-style.md §2.3、§2.4：sec / min 缩写，数字和单位之间一个空格 */
 function captionAgeText(ageMs) {
-  if (typeof ageMs !== "number" || !isFinite(ageMs) || ageMs < 0 || ageMs > 6 * 3600 * 1000) return "";
-  if (ageMs < 3000) return L("刚刚", "Just now");
+  if (typeof ageMs !== "number" || !isFinite(ageMs) || ageMs > 6 * 3600 * 1000) return "";
+  if (ageMs < CAPTION_LAG_SHOW_SEC * 1000) return "";
   if (ageMs < 60000) {
     var sec = Math.round(ageMs / 1000);
     return L("约 " + sec + " 秒前", "About " + sec + " sec ago");
@@ -206,7 +215,8 @@ if (typeof module !== "undefined" && module.exports) {
                      stripStatusEmoji: stripStatusEmoji, barIconFor: barIconFor,
                      popoverRight: popoverRight, alertTierText: alertTierText,
                      captionStateChip: captionStateChip, liveBarChip: liveBarChip,
-                     captionSpokenAt: captionSpokenAt, captionAgeText: captionAgeText,
+                     captionAudioEndAt: captionAudioEndAt, captionAgeText: captionAgeText,
+                     CAPTION_LAG_SHOW_SEC: CAPTION_LAG_SHOW_SEC,
                      fmtMs: fmtMs, statsLineParts: statsLineParts,
                      captionScale: captionScale, captionSizeVars: captionSizeVars,
                      captionSizeFromConfig: captionSizeFromConfig };

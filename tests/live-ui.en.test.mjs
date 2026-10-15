@@ -66,13 +66,14 @@ test("大字幕角标（英文）：没译成的写同样的英文，还在等�
   assert.equal(U.liveBarChip({ translate_state: "dropped" }).text, "Skipped (backlog)");
 });
 
-test("约 N 秒前（英文）：Just now / About N sec ago / About N min ago，单位缩写、数字与单位间一个空格", () => {
-  assert.equal(U.captionAgeText(1200), "Just now");
-  assert.equal(U.captionAgeText(8300), "About 8 sec ago");
+test("约 N 秒前（英文）：About N sec ago / About N min ago，15 秒以内什么都不写，单位缩写、数字与单位间一个空格", () => {
+  for (const ms of [0, 1200, 8300, 14999]) assert.equal(U.captionAgeText(ms), "", String(ms));
+  assert.equal(U.captionAgeText(15000), "About 15 sec ago");
+  assert.equal(U.captionAgeText(18300), "About 18 sec ago");
   assert.equal(U.captionAgeText(59000), "About 59 sec ago");
   assert.equal(U.captionAgeText(60000), "About 1 min ago");
   assert.equal(U.captionAgeText(125000), "About 2 min ago");
-  for (const ms of [0, 1500, 8300, 45000, 60000, 3600000]) english(U.captionAgeText(ms));
+  for (const ms of [15000, 18300, 45000, 60000, 3600000]) english(U.captionAgeText(ms));
   assert.equal(U.captionAgeText(-1), "");
   assert.equal(U.captionAgeText(NaN), "");
 });

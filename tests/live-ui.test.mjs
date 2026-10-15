@@ -5,8 +5,8 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { shareButtonText, connectHint, stripStatusEmoji, barIconFor,
-        popoverRight, alertTierText, captionStateChip, liveBarChip, captionSpokenAt,
-        captionAgeText, statsLineParts, captionScale, captionSizeVars,
+        popoverRight, alertTierText, captionStateChip, liveBarChip, captionAudioEndAt,
+        captionAgeText, CAPTION_LAG_SHOW_SEC, statsLineParts, captionScale, captionSizeVars,
         captionSizeFromConfig } = require("../web/live-ui.js");
 
 test("同看关着：只写功能名，没有人数", () => {
@@ -111,32 +111,32 @@ test("大字幕角标：译文到了没有；没译成与卡片同款；还在�
   assert.deepEqual(liveBarChip(null), none);
 });
 
-test("这一句什么时候说的：ts − e2e_ms − segment_ms；缺任何一项就是 null", () => {
-  assert.equal(captionSpokenAt({ ts: 1000, e2e_ms: 2300, segment_ms: 6000 }, 5), 1000 * 1000 - 8300);
-  assert.equal(captionSpokenAt({ e2e_ms: 2300, segment_ms: 6000 }, 50000), 50000 - 8300, "没有 ts 按收到的这一刻");
-  assert.equal(captionSpokenAt({ ts: 1000, e2e_ms: 0, segment_ms: 500 }, 5), 1000 * 1000 - 500);
-  for (const bad of [{ ts: 1000, e2e_ms: 2300 }, { ts: 1000, segment_ms: 6000 },
-                     { ts: 1000, e2e_ms: null, segment_ms: 6000 }, { ts: 1000, e2e_ms: "2300", segment_ms: 6000 },
-                     { ts: 1000, e2e_ms: -1, segment_ms: 6000 }, { ts: 1000, e2e_ms: 2300, segment_ms: 0 },
-                     { ts: 1000, e2e_ms: NaN, segment_ms: 6000 }, {}, null, undefined]) {
-    assert.equal(captionSpokenAt(bad, 5), null, JSON.stringify(bad));
+test("这一句的音频什么时候结束的：ts − e2e_ms；e2e_ms 缺了就是 null，segment_ms 有没有都不影响", () => {
+  assert.equal(captionAudioEndAt({ ts: 1000, e2e_ms: 2300 }, 5), 1000 * 1000 - 2300);
+  assert.equal(captionAudioEndAt({ ts: 1000, e2e_ms: 2300, segment_ms: 6000 }, 5), 1000 * 1000 - 2300, "不再减片段时长");
+  assert.equal(captionAudioEndAt({ e2e_ms: 2300 }, 50000), 50000 - 2300, "没有 ts 按收到的这一刻");
+  assert.equal(captionAudioEndAt({ ts: 1000, e2e_ms: 0 }, 5), 1000 * 1000);
+  for (const bad of [{ ts: 1000 }, { ts: 1000, segment_ms: 6000 }, { ts: 1000, e2e_ms: null },
+                     { ts: 1000, e2e_ms: "2300" }, { ts: 1000, e2e_ms: -1 }, { ts: 1000, e2e_ms: NaN },
+                     {}, null, undefined]) {
+    assert.equal(captionAudioEndAt(bad, 5), null, JSON.stringify(bad));
   }
-  assert.equal(captionSpokenAt({ e2e_ms: 1, segment_ms: 1 }, undefined), null, "ts 和现在都不知道");
+  assert.equal(captionAudioEndAt({ e2e_ms: 1 }, undefined), null, "ts 和现在都不知道");
 });
 
-test("约 N 秒前：三秒内「刚刚」，一分钟内写秒，之后写分钟", () => {
-  assert.equal(captionAgeText(0), "刚刚");
-  assert.equal(captionAgeText(2999), "刚刚");
-  assert.equal(captionAgeText(3000), "约 3 秒前");
-  assert.equal(captionAgeText(8300), "约 8 秒前");
-  assert.equal(captionAgeText(8500), "约 9 秒前");
+test("约 N 秒前：不到 15 秒不写（健康的直播里一句话停不到那么久），之后一分钟内写秒，再之后写分钟", () => {
+  assert.equal(CAPTION_LAG_SHOW_SEC, 15);
+  for (const ms of [0, 2300, 3000, 8300, 11800, 13000, 14999]) assert.equal(captionAgeText(ms), "", String(ms));
+  assert.equal(captionAgeText(15000), "约 15 秒前");
+  assert.equal(captionAgeText(15499), "约 15 秒前");
+  assert.equal(captionAgeText(15500), "约 16 秒前");
   assert.equal(captionAgeText(59000), "约 59 秒前");
   assert.equal(captionAgeText(60000), "约 1 分钟前");
   assert.equal(captionAgeText(125000), "约 2 分钟前");
   assert.equal(captionAgeText(6 * 3600 * 1000), "约 360 分钟前");
 });
 test("约 N 秒前：负数、离谱的大数、不是数的都不写", () => {
-  for (const bad of [-1, -5000, 6 * 3600 * 1000 + 1, NaN, Infinity, null, undefined, "8000"]) {
+  for (const bad of [-1, -5000, -20000, 6 * 3600 * 1000 + 1, NaN, Infinity, null, undefined, "20000"]) {
     assert.equal(captionAgeText(bad), "", String(bad));
   }
 });

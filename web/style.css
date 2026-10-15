@@ -685,8 +685,9 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 }
 
 /* 大字幕下面的一小行：翻译状态角标 + 「约 N 秒前」。两样都是说明，不是字幕，字号固定不跟滑块走
-   （跟着变大反而盖住字幕）。行只在有内容时出现；有滞后数的时候这一行一直在，角标来来去去不会让
-   大字幕条的高度跳。 */
+   （跟着变大反而盖住字幕）。行只在有内容时出现：滞后数只在这一句停得比平常久（超过 15 秒）时才有，
+   所以正常的直播里这一行平时是收起的，出现的那一下大字幕条会长高一行（24px）；这是有意的，
+   一个平时不在的东西出现，本身就是信号。 */
 .live-meta {
   display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
   gap: 4px 8px; margin-top: 6px; min-height: 18px;

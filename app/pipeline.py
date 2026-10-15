@@ -3430,11 +3430,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "asr_ms": round(asr_ms),
             "e2e_ms": round((now - audio_end_ts) * 1000.0),
         }
-        if segment_ms:
-            # 这一句音频有多长。底部大字幕的「约 N 秒前」= 片段时长 + e2e_ms（最早一个词说出口到
-            # 原文上屏），页面据此算，不再猜。不知道片段时长（None）就不发这个键：页面宁可不写，
-            # 也不拿只含 e2e 的数字冒充「说出多久了」
-            caption["segment_ms"] = round(segment_ms)
+        # 底部大字幕的「约 N 秒前」只用 ts 和 e2e_ms：ts − e2e_ms = 这一段音频结束的时刻（web/live-ui.js
+        # captionAudioEndAt）。片段时长不进消息——它让数字被句子长短主导（一条刚上屏的字幕就已经
+        # 10 秒上下，见 docs/i18n-style.md #105b），页脚的字幕等待才要它，那个数在服务端算（下面的
+        # record_caption_wait），不经页面
         await self.server.broadcast(caption)
         if not needs_translation:
             # 不用译：屏幕上的就是原文，字幕等待 = 片段时长 + e2e（同 detect_worst 的那个数）

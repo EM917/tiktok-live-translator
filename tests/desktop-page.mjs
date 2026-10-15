@@ -203,5 +203,5 @@ export function hello(page, config = {}) {
 /** 形状同 Pipeline 的 caption 广播：先是「翻译中」，译文由 caption_update 补上。 */
 export function caption(id, original, extra = {}) {
   return Object.assign({ type: "caption", id, ts: T, original, translated: null, translate_state: "pending",
-                         src_lang: "es", target_lang: "zh-CN", asr_ms: 1100, e2e_ms: 2300, segment_ms: 6000 }, extra);
+                         src_lang: "es", target_lang: "zh-CN", asr_ms: 1100, e2e_ms: 2300 }, extra);
 }
