@@ -229,7 +229,7 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
 
 /* ---------- 顶栏 ---------- */
 /* 顶栏固定一行：浮层（.popover）挂在这里面，top:100% 就是顶栏底边；顶栏自己
-   z-index 20 是为了让浮层盖住后面 fixed 的大字幕/统计行/回到最新（都 ≤5）。
+   z-index 20 是为了让浮层盖住后面 fixed 的大字幕/回到最新（都 ≤5）。
    放不下时左边的状态区先省略号截断（.brand 可以缩到 0），控件区不缩；
    再窄就按 media query 一档档收起次要控件，最后 600px 以下才允许折行 */
 .topbar {

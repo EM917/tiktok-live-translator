@@ -237,7 +237,7 @@ def _comments(lang, rows, ts0):
 
 
 def _stats():
-    """统计行：真 Telemetry 的 snapshot，没有积压、丢段、超时。"""
+    """stats 消息：真 Telemetry 的 snapshot，没有积压、丢段、超时（页面 2026-10-15 起不画它，照真实消息流发着）。"""
     tel = Telemetry()
     for asr_ms, e2e_ms, seg_ms in ((1050, 2150, 1700), (1150, 2350, 1900), (980, 2050, 1650)):
         tel.record_asr(asr_ms, e2e_ms, seg_ms)
@@ -277,7 +277,7 @@ def settings_language(lang, tmp):
 
 
 def live(lang, tmp):
-    """直播中：字幕历史 + 右侧弹幕 + 底部大字幕 + 统计行，顶栏带本场品牌。"""
+    """直播中：字幕历史 + 右侧弹幕 + 底部大字幕，顶栏带本场品牌。"""
     with i18n.use(lang):
         return _desktop("live", lang, _live_server(lang, tmp), live=[_stats()])
 

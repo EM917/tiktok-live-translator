@@ -102,7 +102,7 @@
 | 弹幕 / 观众弹幕 / 评论流 | **comments / Comments**；实在需要时才说 **comment stream** | danmaku, bullet comments, chat | TikTok 英文界面就叫 comments。「弹幕」是中文平台的概念 |
 | 开始翻译 | **Start** | Start Translating, Start translating, Go | 和 Stop 成对。十几条后端提示要引用这个按钮，“click Start” 最短（38px，中文是 56px；“Start Translating” 要 123px） |
 | 停止 | **Stop** | End, Disconnect | |
-| 语音识别 / 识别 | **speech recognition / recognition** | ASR, transcription | 只有延迟统计行这种技术读数可以写 ASR |
+| 语音识别 / 识别 | **speech recognition / recognition** | ASR, transcription | 界面上一律不写 ASR（以前只有底部延迟统计行这种技术读数用过，那一行 2026-10-15 删了） |
 | 识别落后 / 积压 | **falling behind / backlog** | lagging, queue | |
 | 检测已降级 | **Detection degraded** | Detection impaired | |
 | 人声降噪 / 降噪 | **Noise Reduction** | Voice Isolation, Denoise | Voice Isolation 是苹果麦克风模式的名字，意思是「只留人声」，RNNoise 做不到这么强。合规工具不该夸大 |
@@ -581,7 +581,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 119 | pipeline.py:1946 | {t} 电脑休眠或挂起了约 {d}… | {t} This computer was asleep for about {d}. The app wasn’t running, so that part of the stream wasn’t monitored. During streams, keep the computer plugged in with the lid open. |
 | 120 | app.js:530–538、516/524 | 发现新版本 / 一键更新 / 更新说明 / 前往下载新版本 / 再点一次确认更新：更新期间监听暂停，更新完自动恢复 / 更新中… | A new version is available / Update Now / Release Notes / Download New Version / Click Again to Update. Monitoring pauses and resumes afterward. / Updating… |
 | 120a | app.js showUpdate | 有新版本 {v}，停止监听后在首页查看 | Version {v} is available. Check the home screen after you stop monitoring. | 2026-10-15 起直播中「有新版本」条不摆；中控在直播中点页脚版本号手动检查、找到新版本时，页脚写这一句作答（其余检查结果「已是最新版本」「检查更新失败」本来就在页脚）。自动检查到的不写，静默提示不写。{v} 沿用 #120 的写法，带 v 前缀；英文不重复 “Update”，因为直播中没有更新入口 |
-| 121 | （已删）底部延迟统计行 | — | — | 2026-10-15 用户觉得是噪音，整行删掉；落后、丢音频走 health / incident 提示 |
+| 121 | （已删）底部延迟统计行 | — | — | 2026-10-15 用户觉得是噪音，整行删掉。积压期间的落后和丢段走 health 提示，识别连续出错走 incident；单次识别出错、识别超时次数、积压追上之后的丢段总数只进审计和终端 |
 
 #107–#109 的英文保留与中文相同的行首 emoji（⚠️ 🔴 ✅）：桌面提示条由 `live-ui.js` 的 `stripStatusEmoji`
 统一去掉，两臂保持一样，G2 按 emoji 的多重集比。

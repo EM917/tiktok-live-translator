@@ -3450,7 +3450,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         }
         # 底部大字幕的「约 N 秒前」只用 ts 和 e2e_ms：ts − e2e_ms = 这一段音频结束的时刻（web/live-ui.js
         # captionAudioEndAt）。片段时长不进消息——它让数字被句子长短主导（一条刚上屏的字幕就已经
-        # 10 秒上下，见 docs/i18n-style.md #105b），页脚的字幕等待才要它，那个数在服务端算（下面的
+        # 10 秒上下，见 docs/i18n-style.md #105b），服务端的字幕等待才要它（下面的
         # record_caption_wait），不经页面
         await self.server.broadcast(caption)
         if not needs_translation:
