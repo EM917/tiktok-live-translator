@@ -50,8 +50,10 @@ comments there is nothing to review (`--no-comments`, or the comment component n
 A line at the top of the window appears during a session when there is something unseen, for example
 "2 items to review · 1 unclear · 3 from marked viewers · Possible threat of harm 1". It counts **events**: one flood
 is 1 item however many comments it holds. Click it to open a drawer
-under it listing recent events (time, nickname, category, original and translation, reason). From there you can
-**Show in Comments** to jump to the comment in the panel, **Dismiss** the event, or **Mark** the viewer; **All Seen** clears the unread count.
+under it listing recent events (time, nickname, category, original and translation, reason). A translation that
+arrives after the event appears in the drawer as soon as it arrives. From there you can **Show in Comments** to jump to
+the comment in the panel, **Retranslate** it (Claude engine only, as in the comment column, including a comment the
+first translation did not cover), **Dismiss** the event, or **Mark** the viewer; **All Seen** clears the unread count.
 With the Comments panel collapsed, the floating button shows the number of unseen red items. There is no system
 notification and no sound.
 

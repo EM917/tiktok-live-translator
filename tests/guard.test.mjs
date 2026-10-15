@@ -646,3 +646,23 @@ test("界面文字里没有标签词、因果词（中文臂，第八条）", ()
   texts.push(...uiTexts(box));
   for (const t of texts) assert.ok(t && !ZH_LABELS.test(t) && !ZH_CAUSAL.test(t), "写了原因或标签：" + t);
 });
+
+
+test("抽屉：redoOf 给了就画「重译」按钮和说明，点了回调 onRedo(cid)；没给（或返回 null）就没有", () => {
+  const doc = makeDoc();
+  const box = doc.createElement("div");
+  const ev = event({ id: "e1", sample: { cid: "c9", user: "Ana", text: "te voy a matar" } });
+  G.guardRenderEvents(doc, box, { e1: ev }, { marked: {} });
+  assert.equal(box.querySelector(".gev-redo"), null);
+  const clicked = [];
+  G.guardRenderEvents(doc, box, { e1: ev }, { marked: {}, redoOf: () => null });
+  assert.equal(box.querySelector(".gev-redo"), null);
+  G.guardRenderEvents(doc, box, { e1: ev }, {
+    marked: {}, onRedo: (cid) => clicked.push(cid),
+    redoOf: (cid) => ({ text: "重译", title: "用更强的模型重新翻译这条弹幕", disabled: false, note: "弹幕重译没有成功" }) });
+  const btn = box.querySelector(".gev-redo");
+  assert.equal(btn.textContent, "重译");
+  btn.click();
+  assert.deepEqual(clicked, ["c9"]);
+  assert.equal(box.querySelector(".gev-redo-note").textContent, "弹幕重译没有成功");
+});

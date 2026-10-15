@@ -38,6 +38,7 @@ class RedoLedger:
     def __init__(self, clock=None):
         self._clock = clock or time.monotonic
         self._originals = OrderedDict()      # id -> 原文，最近的在后
+        self._translated = set()             # 译出来过的 id（失败了再点重译时，说明的结尾要按这个说）
         self._inflight = set()
         self._stamps = deque()               # 最近几次重译开始的时刻
 
@@ -45,10 +46,18 @@ class RedoLedger:
         self._originals[cid] = text
         self._originals.move_to_end(cid)
         while len(self._originals) > ORIGINAL_KEEP:
-            self._originals.popitem(last=False)
+            gone, _ = self._originals.popitem(last=False)
+            self._translated.discard(gone)
 
     def original(self, cid):
         return self._originals.get(cid)
+
+    def mark_translated(self, cid):
+        if cid in self._originals:
+            self._translated.add(cid)
+
+    def has_translation(self, cid):
+        return cid in self._translated
 
     def begin(self, cid):
         """占一个名额。可以开始返回 None（这一次已记账，完事后要调 finish）；
@@ -108,12 +117,12 @@ def note_full(wait):
              ).format(PER_MINUTE, wait)
 
 
-def note_unknown():
+def note_unknown(had=True):
     """账本和引擎之外的意外：没拿到译文，也不知道看到了什么。"""
-    return failure_text(None, None, None, False)
+    return failure_text(None, None, None, False, had)
 
 
-def failure_text(strong, error_before, outcome, discarded):
+def failure_text(strong, error_before, outcome, discarded, had=True):
     """这次重译没出译文：把观察到的事说出来，后面接上屏幕上现在是什么样。
 
     和 Pipeline._retranslate_failure_text 看同样的东西（这一次调用的结局、引擎自己记下的 HTTP
@@ -146,4 +155,7 @@ def failure_text(strong, error_before, outcome, discarded):
     else:
         head = L("弹幕重译没有成功：没有拿到译文",
                  "Couldn’t retranslate this comment: no translation came back")
+    # had：这条弹幕原来有没有译文。没译出来过的（失败、积压跳过）屏幕上是原文，不能说「原译文保持不变」
+    if not had:
+        return L("{}，这条弹幕仍显示原文", "{}. The comment still shows the original text.").format(head)
     return L("{}，原译文保持不变", "{}. The current translation is unchanged.").format(head)
