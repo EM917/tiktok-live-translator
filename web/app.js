@@ -2309,6 +2309,9 @@
     guardStateTextEl.textContent = cap.label;     // 常态只画「弹幕留意」，完整一句在 title 里
     guardStateBtn.className = "guard-state " + cap.tone;
     guardStateBtn.title = cap.unreviewed ? cap.title + "\n" + cap.unreviewed : cap.title;
+    // 读屏读到的名字以看得见的字开头，再接完整一句（键盘用户看不到 title）
+    if (cap.text && cap.text !== cap.label) guardStateBtn.setAttribute("aria-label", cap.text);
+    else guardStateBtn.removeAttribute("aria-label");
     guardStateBtn.setAttribute("aria-expanded", guardDrawerOpen ? "true" : "false");
     // 熔断后胶囊下面也有「本场重新启用」：不必先打开抽屉
     if (guardReenableCap) {

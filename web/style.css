@@ -617,8 +617,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .sp-options select:hover, .popover select:hover { background-color: var(--card); filter: brightness(0.98); }
 .sp-options select:focus-visible, .popover select:focus-visible { box-shadow: var(--ring), var(--focus); }
 /* 品牌下拉旁边的空态提示：brands 文件夹里一个词表都没有时说明这个功能是
-   干什么的、该去哪加（pm.md #6）。用 --label-2（跟 .disk-hint/.watch-desc/
-   .sp-sub 同一档），--label-3 太浅快读不出来 */
+   干什么的、该去哪加（pm.md #6）。用 --label-2（跟 .disk-hint/.watch-desc
+   同一档），--label-3 太浅快读不出来 */
 .brand-hint { display: block; margin-top: 6px; max-width: 600px; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); }
 /* 句子里那个可点的「打开 brands 文件夹」：跟 .update-bar a 同一种「文字链接」
    处理，不单独起一块按钮底色——这句话本身就是一句提示，链接只是其中一段 */
