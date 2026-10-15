@@ -1,6 +1,6 @@
 // i18n: done
 /* 直播中界面几处「显示什么」的纯逻辑（web/live-ui.js）：顶栏手机同看按钮的文案、
- * 连接中提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签。
+ * 连接中提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签、「回到最新」按钮上的未读条数。
  * 这些判断本身不碰 DOM，放进 app.js 的立即执行函数就没法被 node 测试 require
  * （同 web/settings-rows.js 的起因）。写法和加载方式照 web/switch.js：浏览器里
  * 是全局函数，Node 测试环境走 module.exports。 */
@@ -69,9 +69,28 @@ function alertTierText(tier) {
   return Object.prototype.hasOwnProperty.call(ALERT_TIER_TEXT, tier) ? ALERT_TIER_TEXT[tier] : L("命中", "Exact");
 }
 
+/* 「回到最新」按钮上的字。翻上去看的时候，新来的行不会把视野拉走，但得让人知道下面攒了多少没看的：
+ * 「回到最新 · 12 条新字幕」。n 是翻上去之后新来的条数（回放的不算）；0、负数、不是数字时只写按钮
+ * 本来的名字。字幕和弹幕各一个函数：英文的名词和单复数都不同（caption / comment），整句写成模板，
+ * 不拼接（docs/i18n-style.md §0 第 5 条） */
+function jumpLatestCaptionsText(n) {
+  var k = Math.floor(Number(n));
+  if (!(k > 0)) return L("回到最新", "Jump to Latest");
+  return LN(k, "回到最新 · " + k + " 条新字幕",
+            "Jump to Latest · 1 new caption", "Jump to Latest · " + k + " new captions");
+}
+function jumpLatestCommentsText(n) {
+  var k = Math.floor(Number(n));
+  if (!(k > 0)) return L("回到最新", "Jump to Latest");
+  return LN(k, "回到最新 · " + k + " 条新弹幕",
+            "Jump to Latest · 1 new comment", "Jump to Latest · " + k + " new comments");
+}
+
 /* Node 测试环境导出；浏览器里作为全局函数被 app.js 使用 */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { shareButtonText: shareButtonText, connectHint: connectHint,
                      stripStatusEmoji: stripStatusEmoji, barIconFor: barIconFor,
-                     popoverRight: popoverRight, alertTierText: alertTierText };
+                     popoverRight: popoverRight, alertTierText: alertTierText,
+                     jumpLatestCaptionsText: jumpLatestCaptionsText,
+                     jumpLatestCommentsText: jumpLatestCommentsText };
 }

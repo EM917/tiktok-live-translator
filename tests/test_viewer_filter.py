@@ -21,6 +21,8 @@ KNOWN_TYPES = (
     "alert", "comment", "comment_update", "comment_source", "stats", "incident",
     "health", "watchlist", "recent_rooms", "disk", "engine", "selfcheck", "viewer",
     "session_break",
+    # 中控点了「清空」后服务端的回声：只给本机页面，手机不收（手机也没有清空的按钮）
+    "history_cleared",
     # 弹幕留意（PR-3，用户决定 8）：标红、提示条、关注名单一律不发手机，三种新类型都不进白名单
     "comment_guard", "guard_event", "guard_mark",
 )

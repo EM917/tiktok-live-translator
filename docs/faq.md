@@ -206,9 +206,15 @@ third-party service; see [Privacy](../README.md#privacy).
 (a Retranslate result replaces the first one) and each viewer comment with its
 translation and display name. The file is written line by line, so a crash loses
 at most the line being written. It is separate from the audit log, which never
-holds comment text, and the app never uploads or deletes it. The page itself
-retains only the most recent 300 lines, and the server replays the last 100
-after a reload or reconnection.
+holds comment text, and the app never uploads or deletes it.
+
+The page keeps the most recent 300 captions and 100 comments, and the app
+replays the same ones after a reload or reconnection. **Clear** removes them
+from the app as well, so a cleared caption or comment does not come back after
+a reload; the transcript and the audit log are not touched. A phone that
+connects later gets the last 100 captions and 100 comments. While you are
+scrolled up, the **Jump to Latest** button shows how many new captions have
+arrived since (in the comment column, how many new comments).
 
 To export, stop the session, open Settings → Transcripts and click Export
 Latest Session. The app writes three files next to the saved one and opens the

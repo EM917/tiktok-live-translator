@@ -468,6 +468,7 @@ UI_FIELDS = {
 DATA_ONLY = frozenset({
     "update_available", "updating", "update_aborted", "glossary_migration", "comment",
     "comment_update", "stats", "watchlist", "alert_mode", "recent_rooms", "session_break",
+    "history_cleared",     # 服务端清掉了字幕或弹幕缓存的回声：只带 kind（captions / comments）
     # 弹幕留意（PR-3）：只带代码、数字和弹幕样例（数据），文案在前端按代码映射
     "comment_guard", "guard_event", "guard_mark",
 })

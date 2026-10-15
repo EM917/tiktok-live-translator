@@ -40,6 +40,38 @@ def replay_payloads(history):
     return payloads
 
 
+# 回放的深度。中控页回放多少，由页面自己最多留多少决定：
+#   HISTORY_MAX  = web/app.js 的 maxHistory（字幕卡片最多留几张）
+#   COMMENTS_MAX = web/app.js 的 maxComments（弹幕栏最多留几条）
+# 两个数在 tests/test_server_clear.py 里拿正则从 app.js 读出来比对：一边改了另一边没改，测试就红。
+# 手机的回放有自己的上限（app/viewer.py 的 PHONE_HISTORY_MAX / PHONE_COMMENTS_MAX），不跟着这里涨：
+# 手机的入站队列是固定的，回放压不进去会被判定为落后。
+HISTORY_MAX = 300
+COMMENTS_MAX = 100
+ALERTS_MAX = 50
+# history 里除了字幕还混着场次分隔（session_break），它们不算字幕、页面也不把它们算进 300 张卡片。
+# deque 多留一点余量，回放时再按「最后 HISTORY_MAX 条字幕」切（captions_tail）——换主播换得再勤，
+# 回放的字幕条数也是 HISTORY_MAX，而不是少一条分隔线就少一条字幕
+HISTORY_BREAK_ROOM = 30
+
+
+def captions_tail(items, limit):
+    """items 里最后 limit 条 caption，连同夹在它们中间和之后的 session_break。
+
+    页面只数 caption（.cap 卡片）的上限，分隔线不占名额；这里按同一个口径切。
+    够不到 limit 条就原样返回。"""
+    items = list(items)
+    if limit <= 0:
+        return []
+    seen = 0
+    for i in range(len(items) - 1, -1, -1):
+        if items[i].get("type") == "caption":
+            seen += 1
+            if seen == limit:
+                return items[i:]
+    return items
+
+
 def _write_buffer_size(transport):
     if transport is None:
         return None
@@ -56,6 +88,10 @@ class CaptionServer:
     SEND_TIMEOUT_SEC = 2.0
     MAX_CLIENT_BUFFER = 2 * 1024 * 1024
     GUARD_EVENTS_MAX = 50       # config["guard_events"] 最多留几个事件（弹幕留意的抽屉）
+    # 一个页面在回放期间最多攒多少条广播（见 _ws）。正常回放只要几毫秒，这个数只为拦住「连上了
+    # 却一条都不读」的页面：它卡在回放里，期间的每条广播都要替它留着，不设上限就是内存泄漏。
+    # 超了就断开它——页面会自己重连，hello 之后补回完整回放
+    MAX_REPLAY_BACKLOG = 2000
     # 由 Pipeline 注入：(reason, buffered_bytes) -> None，写审计、打一行日志
     on_client_dropped = None
 
@@ -63,12 +99,13 @@ class CaptionServer:
         self.port = port
         self.clients = set()
         self._transports = {}    # ws -> 这个连接的 transport（断开卡死的页面要 abort 它）
-        self.history = deque(maxlen=100)
+        self._replaying = {}     # ws -> 它回放期间发生的广播（list）；回放完、入册的同一步里清掉
+        self.history = deque(maxlen=HISTORY_MAX + HISTORY_BREAK_ROOM)
         # 违禁词警报必须跨刷新/重连留存：中控没看到就等于漏报，
         # 不能因为页面重载而消失
-        self.alerts = deque(maxlen=50)
+        self.alerts = deque(maxlen=ALERTS_MAX)
         # 观众弹幕：同样要跨刷新/重连留存，不然中控重连一次就看不到刚才谁说了什么
-        self.comments = deque(maxlen=100)
+        self.comments = deque(maxlen=COMMENTS_MAX)
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
         # 弹幕抓取（TikTokLive）的状态：中控要能区分「还没开播」「正在连」
@@ -141,19 +178,35 @@ class CaptionServer:
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         try:
+            # 「快照」和「开始替这个页面攒广播」必须在同一个同步步骤里（和 app/viewer.py 的
+            # ViewerHub.register 同一个道理）：下面每发一条都要 await，回放期间别处的广播照常
+            # 进行，而此时这个页面还不在 self.clients 里——不攒的话，那些广播进了缓存却永远
+            # 到不了这个页面（一条违禁词警报就这样漏掉）。反过来，攒的起点就是快照的终点，
+            # 所以回放和 backlog 之间既没有缺口也没有重复。
             # 缓存里存的是原消息（界面文字是 Bi），这里按「此刻」的界面语言现渲染：
             # 切换语言后重连的页面拿到的是新语言，不会残留旧的。中文时 render 原样返回
-            await ws.send_json({"type": "hello", "config": i18n.render(self.config)})
-            # 先补发历史警报（刷新页面不能丢报警），再回放字幕
-            for alert in list(self.alerts):
-                await ws.send_json(i18n.render(dict(alert, replay=True)))
-            # 回放完成后才加入广播集合，避免新字幕插进回放序列中间
-            for payload in replay_payloads(self.history):
-                await ws.send_json(i18n.render(payload))
-            # 观众弹幕历史同样要回放，且同样带 replay 标记
-            for c in list(self.comments):
-                await ws.send_json(i18n.render(dict(c, replay=True)))
+            hello = {"type": "hello", "config": i18n.render(self.config)}
+            replay = self.replay_messages()
+            backlog = self._replaying[ws] = []
             self._transports[ws] = request.transport
+            await ws.send_json(hello)
+            # 先补发历史警报（刷新页面不能丢报警），再回放字幕，最后是观众弹幕。
+            for payload in replay:
+                await ws.send_json(i18n.render(payload))
+            # 回放期间发生的广播（新字幕、新警报、译文补丁、清空通知……）照发生顺序补上。补的时候
+            # 又有新的进来就再补一轮，直到队列在检查的那一刻是空的；检查和入册之间没有 await，
+            # 所以不会再有漏网的。这些是真正的实时消息，不带 replay 标记，页面照常处理（警报照常提醒）
+            while True:
+                if ws not in self._replaying:
+                    return ws        # 积压超限被 _drop_client 摘掉了：连接已 abort，没有再发的意义
+                if not backlog:
+                    break
+                batch = backlog[:]
+                del backlog[:]
+                for out in batch:
+                    await ws.send_json(out)
+            # 以下到 async for 之前一个 await 都不能有：回放完了才加入广播集合，避免新字幕插进回放序列中间
+            del self._replaying[ws]
             self.clients.add(ws)
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -163,6 +216,11 @@ class CaptionServer:
                 except ValueError:
                     continue
                 if not isinstance(data, dict):   # 非对象 JSON 会让下游 .get 崩掉
+                    continue
+                if data.get("type") == "clear_history":
+                    # 缓存归服务端自己管，不必绕到 Pipeline。只认本机页面（上面的来源检查已拦住其余）；
+                    # 手机入站只认 retranslate，发不到这里
+                    await self.clear_history(data.get("kind"))
                     continue
                 if self.on_control is not None:
                     try:
@@ -175,7 +233,39 @@ class CaptionServer:
         finally:
             self.clients.discard(ws)
             self._transports.pop(ws, None)
+            self._replaying.pop(ws, None)
         return ws
+
+    def replay_messages(self):
+        """hello 之后补给本机页面的历史，按发送顺序：警报、字幕（含场次分隔）、观众弹幕。
+        每条都带 replay=True；最后一条字幕另带 restore（见 replay_payloads）。
+
+        深度是中控页自己的上限（HISTORY_MAX / COMMENTS_MAX），不是手机的：手机拿的是
+        app/viewer.py 的 replay_snapshot，它对同一份缓存再切一刀。纯同步，只读缓存。"""
+        out = [dict(alert, replay=True) for alert in list(self.alerts)]
+        out.extend(replay_payloads(captions_tail(self.history, HISTORY_MAX)))
+        out.extend(dict(c, replay=True) for c in list(self.comments)[-COMMENTS_MAX:])
+        return out
+
+    async def clear_history(self, kind):
+        """中控点了「清空字幕」/「清空弹幕」：把服务端缓存里那一类也清掉。
+
+        以前只有页面把自己的节点删了，缓存原样留着，刷新或重连后 hello 又把这些行放了回来——
+        「清空」只在没刷新之前成立。警报不在这里：违禁词警报跨刷新留存是合规要求（没看到就等于漏报），
+        有自己的「清空警报」，那一个也只清页面，缓存里的警报留着。
+
+        不碰审计：审计日志是另一条独立的记录，清的只是中控页上能回看的那一份。
+        手机之后重连也不会再回放被清掉的行（replay_snapshot 读的是同一份缓存）；已经连着的手机页面
+        不受影响，history_cleared 不在手机白名单里。
+        返回是否认得这个 kind；认得时广播 history_cleared，让同时开着的其他本机页面也跟着清。"""
+        if kind == "captions":
+            self.history.clear()
+        elif kind == "comments":
+            self.comments.clear()
+        else:
+            return False
+        await self.broadcast({"type": "history_cleared", "kind": kind})
+        return True
 
     async def broadcast(self, msg):
         if msg.get("type") == "caption" and not msg.get("replay"):
@@ -292,6 +382,18 @@ class CaptionServer:
         # check_outbound 是测试里的运行时网，生产里第一行就返回
         i18n.check_outbound(msg)
         out = i18n.render(msg)
+        # 正在回放的页面还不在 self.clients 里，广播够不着它：这里替它攒着，回放完补发（见 _ws）。
+        # 同步、没有 await，和上面缓存的写入在同一个步骤里——所以一条广播要么在它的快照里，
+        # 要么在它的 backlog 里，不会两头落空。getattr：个别测试用 __new__ 造的服务端没有这个字段
+        replaying = getattr(self, "_replaying", None)
+        if replaying:
+            for ws, backlog in list(replaying.items()):
+                if len(backlog) >= self.MAX_REPLAY_BACKLOG:
+                    print("[警告] 本机页面卡在回放里，积压已达 {} 条，已断开（页面会自己重连）".format(len(backlog)))
+                    self._drop_client(ws, (getattr(self, "_transports", None) or {}).get(ws),
+                                      "replay_backlog", None)
+                else:
+                    backlog.append(out)
         # 逐个页面发，每个都有上限。以前是不限时的 await：一个不读消息的页面（浏览器
         # 冻结的后台标签、DevTools 断点、弹着 confirm 的 WebView2）把发送缓冲塞满后，
         # send_json 永远不返回——识别循环在等报警广播，于是识别整个停下、音频积压
@@ -321,6 +423,9 @@ class CaptionServer:
         对一个不读的页面永远等不完。页面会自己重连，hello 之后补回报警。"""
         registered = ws in self.clients
         self.clients.discard(ws)
+        replaying = getattr(self, "_replaying", None)
+        if replaying is not None:
+            replaying.pop(ws, None)
         transports = getattr(self, "_transports", None)
         if transports is not None:
             transports.pop(ws, None)
