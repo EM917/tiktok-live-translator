@@ -716,6 +716,12 @@
   <footer id="live-bar" class="live-bar hidden">
     <div id="live-translated" class="live-translated i18n-data"></div>
     <div id="live-original" class="live-original i18n-data"></div>
+    <!-- 翻译状态角标 + 「约 N 秒前」：界面文字（app.js 用 L() 写），不是字幕，所以不带 i18n-data。
+         整行没内容时 app.js 加 hidden -->
+    <div id="live-meta" class="live-meta hidden">
+      <span id="live-state" class="live-state hidden"></span>
+      <span id="live-lag" class="live-lag hidden"></span>
+    </div>
   </footer>
 
   <div id="stats-line" class="stats-line hidden"></div>

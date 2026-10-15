@@ -4,6 +4,8 @@
   asr_ms        音频段结束 → 识别完成
   translate_ms  识别完成   → 翻译完成
   e2e_ms        音频段结束 → 字幕（原文）出现在界面上
+  caption_wait  最早一个词说出口 → 中控读到的那一版字幕上屏（译出来的是译文，不用译的是原文）；
+                页脚统计行的第一个数。违禁词报警延迟（detect_ms）另算，不受它影响
 配合两个队列深度和三个计数器，就能区分「VAD 等太久 / ASR 慢 / ASR 积压 /
 翻译慢 / 翻译积压」这几种完全不同的情况。
 """
@@ -33,6 +35,9 @@ class Telemetry:
         # 这跟字幕延迟是两个数——同一套系统，词在片段头尾能差出整整一个片段，
         # 而合规上该被考核的是最坏值，不是平均值。
         self.detect_ms = deque(maxlen=window)
+        # 字幕等待：最早一个词说出口 → 屏幕上出现中控读的那一版字幕（译出来的是译文，
+        # 不用译的是原文）。比 detect_ms 多出翻译排队和翻译本身；页脚统计行的第一个数
+        self.caption_wait_ms = deque(maxlen=window)
         self.audio_segments_total = 0
         self.audio_segments_dropped = 0
         # 其中因为识别调用出错而没检测的段（其余是积压超过上限被挤掉的）。健康条说「积压
@@ -58,6 +63,7 @@ class Telemetry:
         self.e2e_ms.clear()
         self.segment_ms.clear()
         self.detect_ms.clear()
+        self.caption_wait_ms.clear()
         self.audio_segments_total = 0
         self.audio_segments_dropped = 0
         self.audio_segments_asr_failed = 0
@@ -79,6 +85,9 @@ class Telemetry:
 
     def record_translation(self, translate_ms):
         self.translate_ms.append(translate_ms)
+
+    def record_caption_wait(self, wait_ms):
+        self.caption_wait_ms.append(wait_ms)
 
     def set_backlog(self, seconds):
         self.audio_backlog_sec = seconds
@@ -107,6 +116,7 @@ class Telemetry:
             "e2e": stats(self.e2e_ms),
             "segment": stats(self.segment_ms),
             "detect_worst": stats(self.detect_ms),
+            "caption_wait": stats(self.caption_wait_ms),
             "audio_segments_total": self.audio_segments_total,
             "audio_segments_dropped": self.audio_segments_dropped,
             "audio_segments_asr_failed": self.audio_segments_asr_failed,

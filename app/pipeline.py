@@ -24,8 +24,9 @@ from .detector import BannedTermDetector, TermsFile, load_fuzzy_policy, read_ter
 from .glossary import brand_options, brand_path, load as load_glossary
 from .nethttp import read_all
 from .redact import strip_query
-from .settings import (load_settings, push_recent_room, recent_rooms,
-                       save_setting, save_streamer_brand, streamer_brands)
+from .settings import (load_settings, normalize_caption_size, push_recent_room,
+                       recent_rooms, save_setting, save_streamer_brand,
+                       saved_caption_size, streamer_brands)
 from .telemetry import Telemetry
 from .translator import (ENGINE_KEY_ENV, begin_translate_call, create_translator,
                          looks_like_reply, translate_call_outcome)
@@ -295,6 +296,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         saved_source = load_settings().get("source_lang")
         if saved_source:
             self.server.config["source_lang"] = str(saved_source)[:12]
+        # 字幕字号同理走服务端持久化（localStorage 按端口隔离，端口一漂移调好的字号就没了）。
+        # 没记过就不放这个键：界面保持今天的默认字号，不替用户选一个
+        caption_size = saved_caption_size()
+        if caption_size is not None:
+            self.server.config["caption_size"] = caption_size
         # 违禁词警示模式：每场在界面上选一次，默认关闭（产品负责人明确要求
         # 「不要默认开」）。记住上次选择的道理和手机同看一样——opt-in 功能
         # 默认关，settings 里存过才在下次启动时回填。关闭不代表不扫：命中
@@ -424,6 +430,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 return self.server.broadcast({"type": "config", "target_lang": value})
         elif mtype == "set_ui_lang":
             return self._set_ui_lang(msg.get("value"))
+        elif mtype == "set_caption_size":
+            return self._set_caption_size(msg.get("value"))
         elif mtype == "start":
             url = str(msg.get("url", "")).strip()
             source = str(msg.get("source", "") or "").strip()
@@ -531,6 +539,18 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 弹幕留意的开关、关注名单、忽略事件：只有本机页面发得出来（手机入站只认 retranslate）
             return self._handle_guard_control(msg)
         return None
+
+    def _set_caption_size(self, value):
+        """顶栏的字幕字号滑块松手了：存进 settings.json，并广播给其它开着的桌面页面跟上。
+
+        不合法的值（越界、非数字）忽略，什么也不写——不夹到边界，免得把坏值存成「用户选的」。
+        不写审计：这是界面偏好，不是合规证据。"""
+        size = normalize_caption_size(value)
+        if size is None:
+            return None
+        self._save_setting("caption_size", size)
+        self.server.config["caption_size"] = size
+        return self.server.broadcast({"type": "config", "caption_size": size})
 
     def _set_ui_lang(self, value):
         """设置里换了界面语言（spec §3.5）：存设置、更新全局语言、把新的语言字段广播出去，
@@ -3417,7 +3437,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         now = time.time()
         self.telemetry.record_asr(asr_ms, (now - audio_end_ts) * 1000.0, segment_ms)
         self._transcript_caption(seq, now, lang, result.text)   # 先记再广播，见 pipeline_transcript.py
-        await self.server.broadcast({
+        caption = {
             "type": "caption",
             "id": seq,
             "ts": now,
@@ -3428,11 +3448,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "target_lang": self.target,
             "asr_ms": round(asr_ms),
             "e2e_ms": round((now - audio_end_ts) * 1000.0),
-        })
+        }
+        # 底部大字幕的「约 N 秒前」只用 ts 和 e2e_ms：ts − e2e_ms = 这一段音频结束的时刻（web/live-ui.js
+        # captionAudioEndAt）。片段时长不进消息——它让数字被句子长短主导（一条刚上屏的字幕就已经
+        # 10 秒上下，见 docs/i18n-style.md #105b），页脚的字幕等待才要它，那个数在服务端算（下面的
+        # record_caption_wait），不经页面
+        await self.server.broadcast(caption)
         if not needs_translation:
+            # 不用译：屏幕上的就是原文，字幕等待 = 片段时长 + e2e（同 detect_worst 的那个数）
+            if segment_ms:
+                self.telemetry.record_caption_wait(segment_ms + (now - audio_end_ts) * 1000.0)
             return None
         job = {"id": seq, "text": result.text, "lang": lang,
-               "target": self.target, "audio_end_ts": audio_end_ts}
+               "target": self.target, "audio_end_ts": audio_end_ts,
+               "segment_ms": segment_ms}
         self._recent[seq] = job
         while len(self._recent) > RECENT_KEEP:
             self._recent.popitem(last=False)
@@ -4678,7 +4707,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             self.audit.translation(job["id"], translated, translate_ms,
                                    bool(translated),
                                    engine=getattr(tr, "name", None))
-        extra = {"e2e_translated_ms": round((time.time() - job["audio_end_ts"]) * 1000.0)}
+        e2e_translated_ms = (time.time() - job["audio_end_ts"]) * 1000.0
+        extra = {"e2e_translated_ms": round(e2e_translated_ms)}
+        if translated and job.get("segment_ms"):
+            # 字幕等待：最早一个词说出口 → 译文上屏。只记译出来的；失败、被跳过的屏幕上还是原文，
+            # 它们的等待已经在 detect_worst 里了
+            self.telemetry.record_caption_wait(job["segment_ms"] + e2e_translated_ms)
         if refusal is not None and not translated:
             # 页面据此不把这一条算进「连续多条翻译失败」：拒答是接口正常回了话，不是连不上
             extra["refused"] = True
