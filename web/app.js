@@ -162,6 +162,15 @@
   // 其它引擎下按钮是灰的。值来自 engine 消息的 active（renderEngine）；还没收到时按不是处理
   var commentRedoEngine = "";
   var commentRedoTimers = Object.create(null);   // 弹幕 id -> 说明的收起计时器
+  // 弹幕的译文和重译状态按 id 另记一份（不靠弹幕栏的 DOM）：弹幕栏只留最近 100 条，「需要留意」抽屉里的
+  // 事件可能更早；抽屉也要在译文、重译结果到了的时候跟着重画（2026-10-15：抽屉里的弹幕一直没有译文）
+  var commentTr = Object.create(null), commentTrOrder = [];
+  var COMMENT_TR_KEEP = 500;
+  var commentRedoState = Object.create(null);    // 弹幕 id -> "pending" | "failed"
+  var commentRedoNotes = Object.create(null);    // 弹幕 id -> 正在显示的重译说明
+  // 能点「重译」的状态：译好了的，和没译出来的（失败、积压跳过）——被标出来的弹幕常常正是 Haiku
+  // 不肯译的那几条，重译用 Sonnet 再试一次。已是目标语言（same）、引擎不翻弹幕（skipped）的没有可重译的
+  var COMMENT_REDO_STATES = { ok: true, failed: true, dropped: true };
   var statsEl = document.getElementById("stats-line");
   var healthBar = document.getElementById("health-bar");
   var incidentBar = document.getElementById("incident-bar");
@@ -1649,6 +1658,7 @@
     commentList.appendChild(item);
     commentById[msg.id] = item;
     item.dataset.cmtState = msg.state || "";
+    noteCommentTr(msg.id, msg.state, msg.translated);
     syncCommentRedo(item);
     noteCommentGuard(msg, item);
     // 满 100 条从顶部删最旧的。用户正往上翻着看时，眼前那条不能跟着跑：
@@ -1686,6 +1696,8 @@
   }
 
   function updateComment(msg) {
+    noteCommentTr(msg.id, msg.state, msg.translated);
+    guardCommentChanged(msg.id);     // 抽屉里有这条：译文到了就重画（弹幕栏里已经没有它也一样）
     var item = commentById[msg.id];
     if (!item) return;
     var zh = item.querySelector(".cmt-zh");
@@ -1697,6 +1709,7 @@
     if (msg.state === "ok") {
       zh.textContent = msg.translated || "";
       zh.classList.remove("failed");
+      if (orig) orig.classList.remove("hidden");     // 先失败、重译成了：原文行回来
       syncCommentRedo(item);
       return;
     }
@@ -1716,9 +1729,39 @@
   // 现算：引擎变了、状态变了都走同一处，不会有的路径忘了改字。
   var COMMENT_REDO_NOTE_MS = 7000;
 
+  function noteCommentTr(id, state, translated) {
+    if (!id) return;
+    if (!(id in commentTr)) {
+      commentTrOrder.push(id);
+      if (commentTrOrder.length > COMMENT_TR_KEEP) delete commentTr[commentTrOrder.shift()];
+    }
+    commentTr[id] = { state: state || "", text: translated || "" };
+  }
+
+  // 「重译」按钮的样子：弹幕栏和抽屉共用。没有可重译的返回 null
+  function commentRedoView(id) {
+    var t = id ? commentTr[id] : null;
+    if (!t || !COMMENT_REDO_STATES[t.state]) return null;
+    var usable = commentRedoEngine === "claude";
+    var busy = commentRedoState[id] === "pending";
+    return {
+      disabled: busy || !usable,
+      text: busy ? L("重译中…", "Retranslating…")
+        : (commentRedoState[id] === "failed" ? L("重译失败", "Couldn’t retranslate") : L("重译", "Retranslate")),
+      title: usable ? L("用更强的模型重新翻译这条弹幕", "Retranslate this comment with the stronger model")
+                    : L("弹幕重译需要 Claude 引擎", "Comment retranslation needs the Claude engine"),
+      note: commentRedoNotes[id] || ""
+    };
+  }
+
+  function sendCommentRedo(id) {
+    if (id) send({ type: "retranslate_comment", id: id });
+  }
+
   function syncCommentRedo(item) {
     var btn = item.querySelector(".cmt-redo");
-    if (item.dataset.cmtState !== "ok") {          // 没译出来的（原文、已是目标语言）没有可重译的
+    var view = commentRedoView(item.dataset.cmtId);
+    if (!view) {          // 已是目标语言、还在翻、引擎不翻弹幕：没有可重译的
       if (btn) btn.remove();
       return;
     }
@@ -1726,19 +1769,12 @@
       btn = document.createElement("button");
       btn.className = "cmt-redo";
       btn.type = "button";
-      btn.addEventListener("click", function () {
-        send({ type: "retranslate_comment", id: item.dataset.cmtId });
-      });
+      btn.addEventListener("click", function () { sendCommentRedo(item.dataset.cmtId); });
       item.appendChild(btn);
     }
-    var usable = commentRedoEngine === "claude";
-    var busy = item.classList.contains("redoing");
-    btn.disabled = busy || !usable;
-    btn.textContent = busy ? L("重译中…", "Retranslating…")
-      : (item.classList.contains("redo-failed") ? L("重译失败", "Couldn’t retranslate")
-                                                : L("重译", "Retranslate"));
-    btn.title = usable ? L("用更强的模型重新翻译这条弹幕", "Retranslate this comment with the stronger model")
-                       : L("弹幕重译需要 Claude 引擎", "Comment retranslation needs the Claude engine");
+    btn.disabled = view.disabled;
+    btn.textContent = view.text;
+    btn.title = view.title;
   }
 
   function syncAllCommentRedo() {
@@ -1757,21 +1793,36 @@
 
   function receiveCommentRedo(msg) {
     var item = commentById[msg.id];
-    if (item && msg.redo_state) {
+    if (msg.redo_state) {
       var pending = msg.redo_state === "pending";
       var failed = msg.redo_state === "failed";
-      item.classList.toggle("redoing", pending);
-      item.classList.toggle("redo-failed", failed);
+      if (pending || failed) commentRedoState[msg.id] = msg.redo_state;
+      else delete commentRedoState[msg.id];
       // 又点了一次、或这次成了：上一次的说明不再适用
-      if (pending || msg.redo_state === "ok") clearCommentRedoNote(item, msg.id);
-      syncCommentRedo(item);
+      if (pending || msg.redo_state === "ok") delete commentRedoNotes[msg.id];
       if (failed) {
         setTimeout(function () {
-          item.classList.remove("redo-failed");
-          syncCommentRedo(item);
+          if (commentRedoState[msg.id] === "failed") delete commentRedoState[msg.id];
+          if (item) { item.classList.remove("redo-failed"); syncCommentRedo(item); }
+          guardCommentChanged(msg.id);
         }, 4000);
       }
+      if (item) {
+        item.classList.toggle("redoing", pending);
+        item.classList.toggle("redo-failed", failed);
+        if (pending || msg.redo_state === "ok") clearCommentRedoNote(item, msg.id);
+        syncCommentRedo(item);
+      }
     }
+    if (msg.text) {
+      // 抽屉里那一行也显示这句说明，几秒后收起
+      commentRedoNotes[msg.id] = msg.text;
+      setTimeout(function () {
+        if (commentRedoNotes[msg.id] === msg.text) delete commentRedoNotes[msg.id];
+        guardCommentChanged(msg.id);
+      }, COMMENT_REDO_NOTE_MS);
+    }
+    guardCommentChanged(msg.id);
     if (!msg.text) return;
     // 那条弹幕已经不在页面上了（清空了、被挤出 100 条）：话退回页脚那一行，不能丢
     if (!item) {
@@ -1871,8 +1922,18 @@
       state: guardState, marked: guardMarked, index: guardMarkIdx, events: guardEvents, now: Date.now() / 1000,
       onMark: function (who, on) { send(guardMarkMessage(who, on)); },
       onUnmark: function (key) { send({ type: "guard_mark", key: key, on: false }); },
-      onLocate: guardLocate, onDismiss: guardDismiss, translationOf: guardTranslationOf
+      onLocate: guardLocate, onDismiss: guardDismiss, translationOf: guardTranslationOf,
+      redoOf: commentRedoView, onRedo: sendCommentRedo
     };
+  }
+
+  // 一条弹幕的译文或重译状态变了：抽屉开着、而且「最近需要留意」里有这一条，就重画
+  function guardCommentChanged(cid) {
+    if (!cid || !guardDrawerOpen || guardTab !== "recent") return;
+    for (var id in guardEvents) {
+      var ev = guardEvents[id];
+      if (ev && ev.sample && ev.sample.cid === cid) { drawGuardDrawer(); return; }
+    }
   }
 
   // 收到一条弹幕：记下账号字段和判定，画标记；关注的人发言了就记一笔（回放里的不算）
@@ -2011,9 +2072,8 @@
   }
 
   function guardTranslationOf(cid) {
-    var item = cid ? commentById[cid] : null;
-    var zh = item ? item.querySelector(".cmt-zh") : null;
-    return zh && !zh.classList.contains("pending") ? zh.textContent : "";
+    var t = cid ? commentTr[cid] : null;
+    return t && t.state === "ok" ? t.text : "";
   }
 
   function drawGuardDrawer() {
@@ -3301,6 +3361,7 @@
     engineSelect.value = info.engine || "auto";
     commentRedoEngine = info.active || "";
     syncAllCommentRedo();     // 字幕引擎换了：已经画出来的「重译」按钮跟着变灰或可点
+    if (guardDrawerOpen) drawGuardDrawer();
     // 说人话的引擎名由服务端给（app/translator.py engine_label），页面不再自己
     // 维护一份对照表——以前这里的 ENGINE_LABEL 和服务端那份已经不一致（同一个
     // openai 一边叫「OpenAI 兼容接口」一边叫「OpenAI」，见 pm.md #7）。摘要文案

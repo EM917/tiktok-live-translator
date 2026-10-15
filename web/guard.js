@@ -487,7 +487,8 @@ function guardEventRow(ev, marked, index, translation) {
   };
 }
 
-/* 画抽屉的「最近需要留意」页签。ctx：{ marked, index, translationOf(cid), onLocate(ev), onMark(who, on), onDismiss(ev) }。
+/* 画抽屉的「最近需要留意」页签。ctx：{ marked, index, translationOf(cid), redoOf(cid), onLocate(ev), onRedo(cid),
+ * onMark(who, on), onDismiss(ev) }。redoOf 返回「重译」按钮的样子（{ text, title, disabled, note }），没有可重译的返回 null。
  * 最多 GUARD_EVENTS_MAX 条，新的在上；多账号同句的事件折叠成一行，展开后列出前 20 个账号和样例句 */
 function guardRenderEvents(doc, box, events, ctx) {
   while (box.firstChild) box.removeChild(box.firstChild);
@@ -512,6 +513,12 @@ function guardRenderEvents(doc, box, events, ctx) {
       el.appendChild(guardBody(guardEl(doc, "div", "gev-zh", row.translation)));
     }
     if (row.note) el.appendChild(guardEl(doc, "div", "gev-note", row.note));
+    var redo = row.cid && ctx && ctx.redoOf ? ctx.redoOf(row.cid) : null;
+    if (redo && redo.note) {
+      var said = guardEl(doc, "div", "gev-redo-note", redo.note);
+      said.setAttribute("role", "status");
+      el.appendChild(said);
+    }
     if (row.kind === "brigade" && row.accounts.length) {
       var det = guardEl(doc, "details", "gev-accounts");
       det.appendChild(guardEl(doc, "summary", "", L("展开账号", "Show accounts")));
@@ -528,6 +535,12 @@ function guardRenderEvents(doc, box, events, ctx) {
       var locate = guardButton(doc, "btn small", L("定位", "Show in Comments"));
       locate.addEventListener("click", function () { if (ctx && ctx.onLocate) ctx.onLocate(ev); });
       actions.appendChild(locate);
+    }
+    if (redo) {
+      var rb = guardButton(doc, "btn small gev-redo", redo.text, redo.title);
+      rb.disabled = !!redo.disabled;
+      rb.addEventListener("click", function () { if (ctx && ctx.onRedo) ctx.onRedo(row.cid); });
+      actions.appendChild(rb);
     }
     if (row.markKey) {
       var mark = guardButton(doc, "btn small", row.marked ? L("移出关注名单", "Unmark") : L("加入关注名单", "Mark"));

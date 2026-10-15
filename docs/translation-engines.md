@@ -180,8 +180,9 @@ Three ways to invoke it:
   any existing line, and prints the segments whose translation changed rather
   than replacing anything silently
 
-A translated viewer comment has a Retranslate button too, in the comment
-column on this computer (phones do not have it). It works only when the engine
+A viewer comment has a Retranslate button too, in the comment column and the
+Comment Review drawer on this computer (phones do not have it), once its first
+translation has finished, including one that came back untranslated. It works only when the engine
 is Claude: it asks Claude Sonnet 5.5 on its own connection, with the same
 instructions the comment translation uses, and the result has to pass the same
 check that it reads as a translation and not as a reply. With any other engine

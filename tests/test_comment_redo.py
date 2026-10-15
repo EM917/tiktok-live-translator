@@ -228,6 +228,30 @@ def test_a_click_retranslates_one_comment_with_sonnet_and_replaces_its_translati
     assert len(strong.made) == 1 and strong.made[0] is not inner
 
 
+def test_a_comment_haiku_did_not_translate_can_be_retranslated_with_sonnet(monkeypatch, tmp_path):
+    """2026-10-15：被弹幕留意标出来的弹幕常常正是 Haiku 不肯译的。页面现在给没译出来的弹幕也放「重译」，
+    服务端要能接住：账本里记着原文，Sonnet 译出来就换上，状态变成 ok。"""
+    from tests.test_claude_translator import Resp, message
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    refusal = dict(message(stop="refusal"), stop_details={"type": "refusal", "category": None})
+    p.comments._claude_factory = Sibling([Resp(200, refusal)])
+    strong = StrongFactory([sonnet_reply("这个多少钱")])
+    p.comments._claude_strong_factory = strong
+    p.comments.BATCH_WINDOW_SEC = 0.01
+
+    async def scenario():
+        await p.comments.accept({"items": [{"id": "c0", "user": USER, "text": SOURCE}]})
+        assert await wait_for(lambda: p.server.of("comment_update"))
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
+        await drain(p)
+
+    run(scenario())
+    assert shape(p.server.sent[1:]) == [("update", "failed", None), ("redo", "pending", False),
+                                        ("update", "ok", "这个多少钱"), ("redo", "ok", False)]
+    assert len(strong.posts) == 1
+
+
 def test_the_new_translation_reaches_the_replay_cache_so_a_reload_shows_it():
     async def scenario():
         server = CaptionServer(port=8765)
