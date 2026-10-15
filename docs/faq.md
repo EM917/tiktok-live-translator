@@ -202,8 +202,13 @@ only and never part of the alert path. The connection is signed through a
 third-party service; see [Privacy](../README.md#privacy).
 
 **Exporting captions.** There is no export function; select and copy the text
-from the page. The page retains the most recent 300 lines, and the server
-replays the last 100 after a reload or reconnection.
+from the page. The page keeps the most recent 300 captions and 100 comments,
+and the app replays the same ones after a reload or reconnection. **Clear**
+removes them from the app as well, so a cleared caption or comment does not
+come back after a reload. The audit log is not touched. A phone that connects
+later gets the last 100 captions and 100 comments. While you are scrolled up,
+the **Jump to Latest** button shows how many new captions have arrived since
+(in the comment column, how many new comments).
 
 **Closing the console window.** On Windows that console window is the app
 itself, so closing it quits the app. On macOS, closing the app window quits it

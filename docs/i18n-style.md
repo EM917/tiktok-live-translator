@@ -297,6 +297,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | guard.js guardSummary 关注的人数 | {n} marked | 同左（不变形） |
 | guard.js guardRulesText 规则条数和体检警告 | 1 rule active · 1 rule check warning | {n} rules active · {w} rule check warnings |
 | guard.js guardLastSeenText 几天前 | 1 day ago | {n} days ago |
+| live-ui.js jumpLatestCaptionsText 「回到最新」按钮上的新字幕数 | Jump to Latest · 1 new caption | Jump to Latest · {n} new captions |
+| live-ui.js jumpLatestCommentsText 弹幕栏那颗按钮上的新弹幕数 | Jump to Latest · 1 new comment | Jump to Latest · {n} new comments |
 | 在看人数（live-ui.js:16、app.js:1869、viewer.py:409） | {n} watching | {n} watching（不变形） |
 | 窗口标题（alerts.js:9、window_attention.py:20） | ({n}) Possible Banned Terms · TikTok Live Translator | 同左（标签式写法，不变形） |
 
@@ -550,6 +552,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 103 | session-divider.js:27 | ── 14:01:29 以下为 @x ── / 以下为新的一场 | ── 14:01:29 Now monitoring @x ── / New session | |
 | 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空警报 / 上一场 / 命中·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | |
 | 105 | app.js:1297、viewer.js:724/819 | 译文失败（{why}）——请看上面的原话 | Couldn’t translate ({why}). See the original above. | 报警译到本场的目标语言，不一定是中文，中文也只说「译文」。手机报警的「译文正在补…」写 Translating…，不提具体语言 |
+| 134 | live-ui.js jumpLatestCaptionsText / jumpLatestCommentsText | 回到最新 · {n} 条新字幕 / 回到最新 · {n} 条新弹幕（没有新的就只写「回到最新」） | Jump to Latest · {n} new captions / Jump to Latest · {n} new comments (nothing new: Jump to Latest) | 按钮名 Title Case，条数用 ` · ` 接在后面、小写（同 Passed · 1 warning）；字幕叫 captions，弹幕叫 comments（§1.3）。弹幕栏有自己的一颗，字幕区那颗不数弹幕 |
+| 135 | app.js forgetOnServer | 与本地服务断开，只清空了本页——重新连上后这些字幕会回来。（弹幕同） | Lost connection to the local service. Only this page was cleared, and the captions come back once it reconnects. (comments: same) | 点「清空」时服务端收不到的说明，显示在页脚版本号那一行；第八条：只写观察到的（连接断了）和结果，不猜原因 |
 
 ### H. 常见的提示条和横幅
 
