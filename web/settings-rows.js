@@ -69,6 +69,15 @@ function watchSummary(alertsEnabled, count) {
   };
 }
 
+/* 字幕记录摘要（index.html #transcript-card）：已经存了几场。info 是后端推来的
+ * config.transcripts（app/pipeline_transcript.py）；没有、或 count 不是正数，都当「还没有」。 */
+function transcriptSummary(info) {
+  "use strict";
+  var n = info ? Math.floor(Number(info.count)) : 0;
+  if (!(n > 0)) return L("还没有", "None yet");
+  return LN(n, n + " 场", "1 session", n + " sessions");
+}
+
 /* 折叠行的「结论变了才自动展开/收起」判定，自检、引擎回退提示两处共用。
  *
  * prevSig 是上一次记住的签名，sig 是这一条广播算出来的新签名（selfcheckSummary
@@ -132,6 +141,6 @@ function langReload(target, uiLang, stored, now) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { selfcheckSummary, engineSummary, watchSummary, nextAutoOpen,
+  module.exports = { selfcheckSummary, engineSummary, watchSummary, nextAutoOpen, transcriptSummary,
                      langName, langSummary, langSystemLabel, langReload, LANG_RELOAD_WINDOW_MS };
 }

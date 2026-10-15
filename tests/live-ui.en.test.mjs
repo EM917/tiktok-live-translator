@@ -44,6 +44,23 @@ test("报警分级：Exact / Variant / Similar，认不出的分级按 Exact（�
   }
 });
 
+test("“Jump to Latest”：没有新的只写按钮名，有新的带条数；单复数分开；字幕 captions，弹幕 comments", () => {
+  for (const n of [0, -3, NaN, undefined, null, "abc", 0.4]) {
+    assert.equal(U.jumpLatestCaptionsText(n), "Jump to Latest", String(n));
+    assert.equal(U.jumpLatestCommentsText(n), "Jump to Latest", String(n));
+  }
+  assert.equal(U.jumpLatestCaptionsText(1), "Jump to Latest · 1 new caption");
+  assert.equal(U.jumpLatestCaptionsText(2), "Jump to Latest · 2 new captions");
+  assert.equal(U.jumpLatestCaptionsText(12), "Jump to Latest · 12 new captions");
+  assert.equal(U.jumpLatestCaptionsText("7"), "Jump to Latest · 7 new captions");
+  assert.equal(U.jumpLatestCommentsText(1), "Jump to Latest · 1 new comment");
+  assert.equal(U.jumpLatestCommentsText(120), "Jump to Latest · 120 new comments");
+  for (const n of [0, 1, 2, 99]) {
+    english(U.jumpLatestCaptionsText(n));
+    english(U.jumpLatestCommentsText(n));
+  }
+});
+
 // ---- 底部大字幕的翻译状态、滞后，页脚各段，字幕字号（2026-10-15）。中文断言在 tests/live-ui.test.mjs ----
 
 test("字幕翻译状态角标（英文）：不贴原因标签，只写看到的", () => {

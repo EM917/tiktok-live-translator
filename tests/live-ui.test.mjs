@@ -5,7 +5,9 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { shareButtonText, connectHint, stripStatusEmoji, barIconFor,
-        popoverRight, alertTierText, captionStateChip, liveBarChip, captionAudioEndAt,
+        popoverRight, alertTierText, jumpLatestCaptionsText,
+        jumpLatestCommentsText,
+        captionStateChip, liveBarChip, captionAudioEndAt,
         captionAgeText, CAPTION_LAG_SHOW_SEC, statsLineParts, captionScale, captionSizeVars,
         captionSizeFromConfig } = require("../web/live-ui.js");
 
@@ -81,6 +83,19 @@ test("报警分级文字；认不出的按「命中」，原型链上的键也�
   assert.equal(alertTierText(undefined), "命中");
   assert.equal(alertTierText("toString"), "命中");
   assert.equal(alertTierText("__proto__"), "命中");
+});
+
+test("「回到最新」：没有新的就只写按钮名，有新的带上条数（字幕写「条新字幕」，弹幕写「条新弹幕」）", () => {
+  for (const n of [0, -3, NaN, undefined, null, "abc", 0.4]) {
+    assert.equal(jumpLatestCaptionsText(n), "回到最新", String(n));
+    assert.equal(jumpLatestCommentsText(n), "回到最新", String(n));
+  }
+  assert.equal(jumpLatestCaptionsText(1), "回到最新 · 1 条新字幕");
+  assert.equal(jumpLatestCaptionsText(12), "回到最新 · 12 条新字幕");
+  assert.equal(jumpLatestCaptionsText("7"), "回到最新 · 7 条新字幕");
+  assert.equal(jumpLatestCaptionsText(3.9), "回到最新 · 3 条新字幕");
+  assert.equal(jumpLatestCommentsText(1), "回到最新 · 1 条新弹幕");
+  assert.equal(jumpLatestCommentsText(120), "回到最新 · 120 条新弹幕");
 });
 
 // ---- 底部大字幕的翻译状态、滞后，页脚各段，字幕字号（2026-10-15）。页面接线在 tests/live-bar.test.mjs ----

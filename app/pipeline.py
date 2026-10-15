@@ -273,9 +273,11 @@ from .viewer_share import (  # noqa: E402
 from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
 from .pipeline_guard import GUARD_CONTROL_TYPES, CommentGuardMixin  # noqa: E402
+from .pipeline_transcript import TranscriptMixin  # noqa: E402
 
 
-class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin):
+class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin,
+               TranscriptMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -360,6 +362,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._alert_tasks = []
         self._init_viewer_share()        # 手机同看的 8 个专属字段，见 app/viewer_share.py
         self._init_comment_guard()       # 弹幕留意的守卫（默认开，可关），见 app/pipeline_guard.py
+        self._init_transcript()          # 字幕记录（每场一个本地文件，可导出），见 app/pipeline_transcript.py
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -370,7 +373,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 排队或在途时弹幕让路，见 _subtitle_translation_busy。
         self._subtitle_busy = 0          # 在途的字幕翻译数（弹幕翻译要让路）
         self.comments = CommentTranslator(
-            broadcast=self.server.broadcast,
+            broadcast=self._comment_broadcast,      # 先记进字幕记录再广播，见 pipeline_transcript.py
             translator=lambda: self.translator, target=lambda: self.target,
             glossary=lambda: self.glossary, busy=self._subtitle_translation_busy,
             session=lambda: self.audit)     # 「弹幕只显示原文」的提示每场说一次
@@ -528,6 +531,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return self._open_brands_dir()
         elif mtype == "open_guard_dir":
             return self._open_guard_dir()      # 弹幕留意的规则文件夹，见 pipeline_guard.py
+        elif mtype == "export_transcript":
+            return self._export_transcript()   # 设置里「字幕记录」：导出最近一场，见 pipeline_transcript.py
+        elif mtype == "open_transcripts_dir":
+            return self._open_transcripts_dir()
         elif mtype in GUARD_CONTROL_TYPES:
             # 弹幕留意的开关、关注名单、忽略事件：只有本机页面发得出来（手机入站只认 retranslate）
             return self._handle_guard_control(msg)
@@ -923,10 +930,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if closed is not None:
             self._close_audit(closed, self._stop_reason)
             self.audit = None
+        # 字幕记录跟审计同生同灭；认本场的审计，见 pipeline_transcript.py
+        closed_transcript = self._close_transcript(closed)
         self._stop_reason = None
         self._release_sleep_guard()
         if closed is not None:
             await self._settle_audit_incident(closed)
+        if closed_transcript:
+            await self._publish_transcripts()   # 设置行的「存了几场」：这一场此刻才算数
         # 旧任务可能超时没走到 _end_session（识别线程停不下来），这里也撤一次
         await self._clear_ongoing_incidents()
         await self._settle_engine_incident()
@@ -1356,6 +1367,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         })
         # 守卫记住本场自己的 audit 并开始 observe（my_audit：晚到的旧任务关不掉它）
         await self._bind_comment_guard(self.audit)
+        # 字幕记录：这一场的字幕和弹幕边听边存成一个本地文件（不进审计，见 app/transcript.py）。
+        # 建不起来也只是没有记录，开播照常
+        self._open_transcript(streamer, self.audit)
+        await self._publish_transcripts()
         # 这一场就按上面算出来的值走到底（即便 self.alerts_enabled 在别处被改，
         # 也不会跟审计头和这条广播错位）
         self.alerts_enabled = alerts_enabled
@@ -1787,7 +1802,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             self._close_audit(target, reason, **fields)
             if self.audit is target:
                 self.audit = None
+            closed_transcript = self._close_transcript(target)   # 只关本场自己的那份（my_audit 的道理）
             await self._settle_audit_incident(target)
+            if closed_transcript:
+                await self._publish_transcripts()   # 设置行的「存了几场」：这一场此刻才算数
         if still_current:
             await self._settle_engine_incident()
         if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks"):
@@ -3418,6 +3436,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
         now = time.time()
         self.telemetry.record_asr(asr_ms, (now - audio_end_ts) * 1000.0, segment_ms)
+        self._transcript_caption(seq, now, lang, result.text)   # 先记再广播，见 pipeline_transcript.py
         caption = {
             "type": "caption",
             "id": seq,
@@ -4378,6 +4397,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                "quality": level}
         if extra:
             msg.update(extra)
+        if ok and translated:
+            # 强模型重译再发一次（quality 更高），导出时它盖过快译；先记再广播
+            self._transcript_translation(seq, translated, level >= QUALITY_STRONG)
         await self.server.broadcast(msg)
         return True
 
