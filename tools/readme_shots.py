@@ -25,9 +25,10 @@ PATH 上有 pngquant 时 PNG 交给它压）。项目的 .venv 里没装 Pillow�
 事件的间隔，所以动图的节奏与截图快慢无关。
 
 每张图出图前都核对一遍：视口对、数据真的到了（状态不是「等待连接…」、字幕条数对）、没有
-提示条、没有被省略号截断的文字、没有被滚动切掉一截的字幕卡片、没有被浮层下沿切成两半的
-文字行、英文图里没有一个汉字（切换语言按钮上的「中文」这个语言自称除外）。对不上就报错退出，
-不写这张图。同一台机器、同一版 Chrome 重跑，出来的文件逐字节相同（2026-09-29 实测），
+提示条、没有被省略号截断的文字、没有被滚动切掉一截的字幕卡片、没有被浮层下沿或右沿切开的
+文字行、首页设置分组的底边没被底部版权行盖住（行数多了、中文行更高时一屏放不下，就把页面往上
+滚到分组底边离版权行 12px，滚掉的只是顶上的空白，最多 48px）、弹幕留意的顶部条没弹出来、英文图里没有
+一个汉字（切换语言按钮上的「中文」这个语言自称除外）。对不上就报错退出，不写这张图。同一台机器、同一版 Chrome 重跑，出来的文件逐字节相同（2026-09-29 实测），
 所以图的 diff 就是界面的变化。
 
 直播转写进行中拒绝运行（CLAUDE.md 第三条）：无头 Chrome 是一整个浏览器进程。
@@ -133,10 +134,14 @@ DEMO_COMMENTS = (
     ("vale.demo", "¿Se puede usar con retinol?", "Can you use it with retinol?", "能和A醇一起用吗？"),
     ("anita.demo", "Necesito dos, ya lo agregué", "I need two, I already added them", "我要两瓶，已经加购了"),
 )
-# 打开浮层（换主播、手机同看）的那两张：浮层下沿不能把一行字切成两半，上半截盖在浮层底下、
-# 下半截露在外面（出图前的核对会拦）。1000×760 里手机同看面板的下沿正好压在第 4 张字幕卡片的
-# 译文行上（英文），两个浮层的下沿都压在第 5 条弹幕上（英文同看、中文换主播），所以这两张少放几条
-POPOVER_COMMENTS = COMMENTS[:4]
+# 打开浮层（换主播、手机同看）的那两张：浮层不能把一行字切开，一半盖在浮层底下、另一半露在
+# 外面（出图前的核对会拦）。浮层盖住弹幕列的左半边，弹幕那几行字从浮层右沿后面冒出半截
+# （「ew」「eto?」），所以这两张先点「收起」把弹幕列收掉（字幕独占整行，右上角留一个「弹幕」入口），
+# 再开浮层。英文换主播那一张里浮层的右沿还压着「Comments」入口的图标（字是完整的），是浮层盖在
+# 按钮上的样子，不算切字，接受。1000×760 里手机同看面板的下沿正好压在第 4 张字幕卡片的译文行上
+# （英文），所以同看那一张少放几条字幕
+FOLD_COMMENTS = "#toggle-comments"
+POPOVER_SCENES = ("switch-streamer", "share-panel")
 SHARE_CAPTIONS = CAPTIONS[:3]
 # 动图时间轴（秒）：("cap", DEMO_CAPTIONS 下标) 在 t 秒出原文、t + TRANSLATE_SEC 秒补译文；
 # ("cmt", DEMO_COMMENTS 下标) 在 t 秒出原文、t + COMMENT_TRANSLATE_SEC 秒补译文
@@ -180,6 +185,14 @@ def _clean_checks():
             disk]
 
 
+# 弹幕留意（#75–#82）默认开、只用规则：新装的首页「设置」里有这一行。页面只在 config.guard_state 到了
+# 才画它（老后端没有这个键就整个功能不出现），所以场景要带上这个键，否则 README 的设置分组比真机少
+# 一行，正文里的「设置 → 弹幕留意」在图上找不到。干净状态：没有关注的人、没有待看的、没有规则体检警告，
+# 顶部条和抽屉都不会弹出来（出图前的核对会拦）
+GUARD_STATE = dict(S.GUARD_STATE, n_marked=0, unreviewed=0, trip=None, streamer=STREAMER,
+                   rules={"count": S.GUARD_STATE["rules"]["count"], "warnings": 0})
+
+
 def _version():
     try:
         return (ROOT / "VERSION").read_text(encoding="utf-8").strip() or "0.0.0"
@@ -197,6 +210,7 @@ def _server(lang, tmp, *, viewers=None, alerts=False):
         "brands": {STREAMER: BRAND["id"]}, "brand_options": BRAND_OPTIONS,
         "source_lang": "es,en", "alerts_enabled": alerts,
         "viewer": _share(viewers) if viewers is not None else server.config["viewer"],
+        "guard_state": dict(GUARD_STATE),
     })
     S._produce(server, lambda p: p._publish_selfcheck(_clean_checks()))
     return server
@@ -285,17 +299,18 @@ def live(lang, tmp):
 def switch_streamer(lang, tmp):
     """直播中点「换主播」，再点一个最近直播间：已武装，确认按钮可点。"""
     with i18n.use(lang):
-        server = _live_server(lang, tmp, comments=POPOVER_COMMENTS)
+        server = _live_server(lang, tmp)
         return _desktop("switch-streamer", lang, server, live=[_stats()],
-                        clicks=["#switch-btn", "#switch-recent-list .recent-chip:not([disabled])"])
+                        clicks=[FOLD_COMMENTS, "#switch-btn",
+                                "#switch-recent-list .recent-chip:not([disabled])"])
 
 
 def share_panel(lang, tmp):
     """直播中打开顶栏「手机同看」面板：二维码、链接、在看人数。"""
     with i18n.use(lang):
-        server = _live_server(lang, tmp, captions=SHARE_CAPTIONS, comments=POPOVER_COMMENTS,
-                              viewers=1)
-        return _desktop("share-panel", lang, server, live=[_stats()], clicks=["#share-btn"])
+        server = _live_server(lang, tmp, captions=SHARE_CAPTIONS, viewers=1)
+        return _desktop("share-panel", lang, server, live=[_stats()],
+                        clicks=[FOLD_COMMENTS, "#share-btn"])
 
 
 def phone(lang, tmp):
@@ -424,7 +439,7 @@ FACTS_JS = r"""
   var bars = ["incident-bar", "health-bar", "alert-panel", "status-banner", "update-bar",
               "migrate-bar", "fix-command", "alert-mode-tag",
               "alert-mode-line", "stale-line", "demo-banner", "health-line", "alert-section",
-              "alert-badge"].filter(function (id) { var el = byId(id); return el && shown(el); });
+              "alert-badge", "guard-bar", "guard-drawer"].filter(function (id) { var el = byId(id); return el && shown(el); });
   var incidents = byId("incident-list");
   if (incidents && incidents.children.length) bars.push("incident-list");
   var expanded = {};
@@ -439,8 +454,9 @@ FACTS_JS = r"""
     var r = el.getBoundingClientRect();
     if (shown(el) && r.top < top - 0.5 && r.bottom > top) clipped.push(el.textContent.trim().slice(0, 40));
   });
-  // 被打开的浮层（换主播、手机同看）下沿切成两半的文字行：上半截盖在浮层底下、下半截露在
-  // 外面，截图里看着像渲染坏了。浮层自己的文字不算
+  // 被打开的浮层（换主播、手机同看）切成两半的文字行：下沿的——上半截盖在浮层底下、下半截露在
+  // 外面；右沿的——从浮层后面冒出半个词，截图里看着像渲染坏了。左沿不算：一行字往浮层底下
+  // 钻进去，是浮层盖住内容该有的样子。浮层自己的文字不算
   var straddle = [];
   ["switch-panel", "share-panel"].forEach(function (id) {
     var pop = byId(id);
@@ -455,17 +471,31 @@ FACTS_JS = r"""
       var lines = rg.getClientRects();
       for (var i = 0; i < lines.length; i++) {
         var r = lines[i];
-        if (r.width > 0 && r.top < p.bottom - 0.5 && r.bottom > p.bottom + 0.5
-            && r.right > p.left && r.left < p.right) {
-          straddle.push(id + "：" + n.nodeValue.trim().slice(0, 40));
+        if (r.width <= 0) continue;
+        var below = r.top < p.bottom - 0.5 && r.bottom > p.bottom + 0.5
+                    && r.right > p.left && r.left < p.right;
+        var beside = r.top < p.bottom && r.bottom > p.top
+                     && r.left < p.right - 0.5 && r.right > p.right + 0.5;
+        if (below || beside) {
+          straddle.push(id + (below ? "下沿" : "右沿") + "：" + n.nodeValue.trim().slice(0, 40));
           break;
         }
       }
     }
   });
+  // 首页「设置」分组的底边被底部版权行（position: fixed）盖住多少：行数多了、中文行更高时，
+  // 最后一行的下半截会被盖住，截图里看着像卡片被切了一刀
+  var settings = document.querySelector("#start-panel .settings");
+  var foot = document.querySelector(".copyright");
+  var covered = 0;
+  if (settings && foot && shown(settings)) {
+    covered = Math.max(0, settings.getBoundingClientRect().bottom - foot.getBoundingClientRect().top);
+  }
   var qr = byId("share-qr");
   var confirm = byId("switch-confirm");
   return {
+    settingsCovered: Math.round(covered * 10) / 10,
+    scrolled: Math.round(byId("history") ? byId("history").scrollTop : 0),
     page: byId("status-text") ? "desktop" : "phone",
     status: text("status-text"), conn: text("conn-text"), stream: text("stream-text"),
     caps: document.querySelectorAll("#history .cap, #caption-list > *").length,
@@ -473,6 +503,7 @@ FACTS_JS = r"""
     liveBar: !!(byId("live-bar") && shown(byId("live-bar"))),
     startPanel: !!(byId("start-panel") && shown(byId("start-panel"))),
     commentPanel: !!(byId("comment-panel") && shown(byId("comment-panel"))),
+    commentFab: !!(byId("comment-fab") && shown(byId("comment-fab"))),
     switchPanel: !!(byId("switch-panel") && shown(byId("switch-panel"))),
     switchArmed: !!(confirm && !confirm.disabled),
     sharePanel: !!(byId("share-panel") && shown(byId("share-panel"))),
@@ -489,6 +520,7 @@ FACTS_JS = r"""
 # 英文图里唯一允许出现的汉字：切换语言的按钮上写的是另一种语言的自称（手机页 #lang-toggle，
 # translate="no"），这是语言名，不是没翻的界面文字
 AUTONYMS = {"中文"}
+HOME_MAX_SCROLL = 48     # 首页最多滚这么多 CSS 像素（.start-panel 顶上的空白最多 72px，滚掉的只是空白）
 STARTING = {"等待连接…", "Starting…", "连接中…", "Connecting…"}
 STATUS_LIVE = {"en": "Live · ", "zh": "直播中 · "}
 STATUS_IDLE = {"en": "Ready", "zh": "待机"}
@@ -508,7 +540,7 @@ def problems(name, lang, facts, expect_caps=None):
     need(not facts["bars"], "露着提示条：{}".format(facts["bars"]))
     need(not facts["cut"], "文字被截断：\n  " + "\n  ".join(facts["cut"]))
     need(not facts["clipped"], "字幕卡片顶上被切掉一截：{}".format(facts["clipped"]))
-    need(not facts.get("straddle"), "文字行被浮层下沿切成两半：{}".format(facts.get("straddle")))
+    need(not facts.get("straddle"), "文字行被浮层切成两半：{}".format(facts.get("straddle")))
     if lang == "en":
         leaks = ["{}「{}」".format(v["at"], v["text"]) for v in facts["visible"]
                  if CJK.search(v["text"]) and not (v["data"] and v["text"] in AUTONYMS)]
@@ -522,7 +554,14 @@ def problems(name, lang, facts, expect_caps=None):
     if name in ("home", "settings-language"):
         need(facts["status"] == STATUS_IDLE[lang], "首页状态应为待机：{}".format(facts["status"]))
         need(facts["startPanel"] and facts["caps"] == 0, "首页应只有开始面板")
-        opened = [k for k in ("sc-head", "engine-head", "watch-head", "disk-head")
+        need(facts.get("settingsCovered", 0) <= 0.5,
+             "设置分组的底边被底部版权行盖住 {}px".format(facts.get("settingsCovered")))
+        if name == "home":       # 设置那一张本来就滚到展开行底下，不看这一条
+            need(facts.get("scrolled", 0) <= HOME_MAX_SCROLL,
+                 "首页滚了 {}px 才放下设置分组（上限 {}）：行太多，一屏放不下".format(
+                     facts.get("scrolled"), HOME_MAX_SCROLL))
+        opened = [k for k in ("sc-head", "engine-head", "guard-head", "watch-head",
+                              "transcript-head", "disk-head")
                   if facts["expanded"].get(k)]
         need(not opened, "设置分组里这些行展开了：{}".format(opened))
         need(facts["expanded"].get("lang-head") == (name == "settings-language"),
@@ -535,7 +574,11 @@ def problems(name, lang, facts, expect_caps=None):
     wanted = len(CAPTIONS) if expect_caps is None else expect_caps
     need(facts["caps"] == wanted, "字幕 {} 条，应为 {}".format(facts["caps"], wanted))
     need(facts["liveBar"], "底部大字幕没露出来")
-    need(facts["commentPanel"] and facts["comments"] > 0, "右侧弹幕列没有内容")
+    if name in POPOVER_SCENES:
+        need(not facts["commentPanel"] and facts.get("commentFab") and facts["comments"] > 0,
+             "弹幕列该收起（右上角留「弹幕」入口）、弹幕已经到了")
+    else:
+        need(facts["commentPanel"] and facts["comments"] > 0, "右侧弹幕列没有内容")
     need(facts["brandTag"], "顶栏没有本场品牌")
     if name == "switch-streamer":
         need(facts["switchPanel"] and facts["switchArmed"], "换主播面板没打开或没武装")
@@ -776,15 +819,32 @@ SETTINGS_CLIP_JS = r"""
 """
 
 
+# 首页那一张：设置分组有七行，1000×760 的窗口里放不下时，把 .history 往上滚到分组底边离版权行
+# 12px（和手动滚一下一样；滚掉的是 .start-panel 顶上的空白）。放得下就不动
+HOME_FIT_JS = r"""
+(function () {
+  var box = document.getElementById("history");
+  var foot = document.querySelector(".copyright").getBoundingClientRect().top;
+  var over = document.querySelector("#start-panel .settings").getBoundingClientRect().bottom - (foot - 12);
+  if (over > 0) box.scrollBy({ top: over, behavior: "instant" });
+  return box.scrollTop;
+})()
+"""
+
+
 async def _shoot(page, name, lang, out):
     clip = None
     if name == "settings-language":
         clip = await page.eval(SETTINGS_CLIP_JS)
         await asyncio.sleep(SETTLE_SEC)
-    await _check(page, name, lang, expect_caps=SCENE_CAPTIONS.get(name))
+    elif name == "home":
+        if await page.eval(HOME_FIT_JS):
+            await asyncio.sleep(SETTLE_SEC)
+    facts = await _check(page, name, lang, expect_caps=SCENE_CAPTIONS.get(name))
     path = shot_path(out, lang, name)
     size = save_png(await page.screenshot(clip), path)
-    print("  {}  {:.0f} KB".format(path.relative_to(out), size / 1024))
+    note = "，首页滚了 {}px".format(facts["scrolled"]) if name == "home" and facts["scrolled"] else ""
+    print("  {}  {:.0f} KB{}".format(path.relative_to(out), size / 1024, note))
 
 
 async def _record(page, lang, out):

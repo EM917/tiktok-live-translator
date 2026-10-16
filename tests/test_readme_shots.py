@@ -78,19 +78,33 @@ def test_scenes_are_the_clean_state(built):
                 assert summary["fail"] == 0 and summary["warn"] == 0, summary
                 assert not config.get("incidents")
                 assert not config["alerts_enabled"]                # 报警默认关着
+                # 弹幕留意默认开：设置里要有这一行（页面靠 guard_state 才画它），但干净——没有待看的、
+                # 没有关注的人、没有规则警告，顶部条不会弹出来
+                guard = config["guard_state"]
+                assert guard["enabled"] and guard["status"] == "rules", guard
+                assert guard["unreviewed"] == 0 and guard["n_marked"] == 0 and not guard["trip"], guard
+                assert guard["rules"]["warnings"] == 0, guard
         phone = built[lang]["phone"]["messages"]
         # 手机页：报警开着、没有命中，顶上不会常驻「违禁词警示已关闭」
         assert {"type": "alert_mode", "on": True} in phone
         assert phone[-1]["type"] != "status" or phone[-1]["state"] == "live"
 
 
-def test_popover_scenes_leave_out_the_rows_under_the_popover_edge(built):
+def test_popover_scenes_fold_the_comment_column_before_opening_the_popover(built):
+    """浮层盖住弹幕列的左半边，弹幕的字从浮层右沿后面冒出半截：这两张先点「收起」，再开浮层。
+    同看那张的字幕少放几条（浮层下沿不压在第 4 张卡片的译文行上）。"""
+    assert set(R.POPOVER_SCENES) == {"switch-streamer", "share-panel"}
     for lang in R.LANGS:
-        for name in ("switch-streamer", "share-panel"):
-            msgs = built[lang][name]["messages"]
+        for name in R.POPOVER_SCENES:
+            sc = built[lang][name]
+            msgs = sc["messages"]
             caps = [m for m in msgs if m["type"] == "caption"]
             assert len(caps) == R.SCENE_CAPTIONS.get(name, len(R.CAPTIONS)), (lang, name)
-            assert len([m for m in msgs if m["type"] == "comment"]) == len(R.POPOVER_COMMENTS)
+            assert len([m for m in msgs if m["type"] == "comment"]) == len(R.COMMENTS)
+            assert sc["clicks"][0] == R.FOLD_COMMENTS == "#toggle-comments", (lang, name)
+            assert len(sc["clicks"]) > 1, (lang, name)        # 收起之后才点开浮层
+    for name in set(R.SCENES) - set(R.POPOVER_SCENES):
+        assert R.FOLD_COMMENTS not in built["en"][name]["clicks"], name   # 别的场景弹幕列照常开着
 
 
 def test_live_scenes_fit_one_screen(built):
@@ -165,7 +179,7 @@ def test_refuses_while_live_transcription_runs(monkeypatch):
 def _facts(**over):
     facts = {"page": "desktop", "status": "Live · luna.demo", "conn": None, "stream": None,
              "caps": len(R.CAPTIONS), "comments": 5, "liveBar": True,
-             "startPanel": False, "commentPanel": True, "switchPanel": False,
+             "startPanel": False, "commentPanel": True, "commentFab": False, "switchPanel": False,
              "switchArmed": False, "sharePanel": False, "qr": 0, "langBody": False,
              "brandTag": True, "bars": [], "expanded": {}, "cut": [], "clipped": [],
              "visible": [{"at": "div", "text": "Today we have free shipping", "data": True}],
@@ -179,10 +193,39 @@ def test_the_pre_shot_check_catches_what_the_readme_must_not_show():
     assert R.problems("live", "en", _facts(status="Starting…"))              # 数据没到
     assert R.problems("live", "en", _facts(caps=3))
     assert R.problems("live", "en", _facts(bars=["health-bar"]))
+    assert R.problems("live", "en", _facts(bars=["guard-bar"]))              # 弹幕留意的顶部条弹出来了
+    home = _facts(status="Ready", caps=0, startPanel=True, commentPanel=False, liveBar=False,
+                  brandTag=False, expanded={"lang-head": False, "guard-head": False,
+                                            "transcript-head": False})
+    assert R.problems("home", "en", home) == []
+    assert R.problems("home", "en", dict(home, expanded=dict(home["expanded"], **{"guard-head": True})))
+    assert R.problems("home", "en", dict(home, expanded=dict(home["expanded"], **{"transcript-head": True})))
+    # 设置分组七行时一屏放不下：最后一行被底部版权行盖住的图不能进 README，滚得太多（放不下）也不行
+    assert R.problems("home", "zh", dict(home, status="待机", settingsCovered=0, scrolled=14)) == []
+    assert R.problems("home", "zh", dict(home, status="待机", settingsCovered=11.5))
+    assert R.problems("home", "zh", dict(home, status="待机", scrolled=R.HOME_MAX_SCROLL + 1))
+    lang_open = dict(home, status="待机", langBody=True, scrolled=113,        # 设置那一张本来就滚得远
+                     expanded=dict(home["expanded"], **{"lang-head": True}))
+    assert R.problems("settings-language", "zh", lang_open) == []
+    assert R.problems("settings-language", "zh", dict(lang_open, settingsCovered=9))
     assert R.problems("live", "en", _facts(cut=["span#status-text：Live · @luna.de…"]))
     assert R.problems("live", "en", _facts(clipped=["19:57:30 ES Hoy les…"]))
-    assert R.problems("share-panel", "en", _facts(                          # 浮层下沿切过一行字
-        sharePanel=True, qr=580, straddle=["share-panel：Today we have free shipping"]))
+    # 浮层那两张：弹幕列收起（右上角留入口）、弹幕已经到了；列开着就是没收起，浮层会盖住它的左半边
+    def share(facts):
+        return R.problems("share-panel", "en", facts, R.SCENE_CAPTIONS["share-panel"])
+
+    folded = _facts(sharePanel=True, qr=580, commentPanel=False, commentFab=True,
+                    caps=len(R.SHARE_CAPTIONS))
+    assert share(folded) == []
+    assert share(dict(folded, commentPanel=True, commentFab=False))
+    assert share(dict(folded, commentFab=False))                                # 收起了但没有入口
+    assert share(dict(folded, comments=0))                                      # 弹幕没到
+    assert R.problems("switch-streamer", "zh", _facts(
+        status="直播中 · luna.demo", switchPanel=True, switchArmed=True,
+        commentPanel=False, commentFab=True)) == []
+    assert R.problems("live", "en", _facts(commentPanel=False, commentFab=True))   # 别的场景列必须开着
+    assert share(dict(folded, straddle=["share-panel下沿：Today we have free shipping"]))
+    assert share(dict(folded, straddle=["share-panel右沿：¿Cuánto cuesta el set completo?"]))
     assert R.problems("live", "en", _facts(viewport={"width": 1280, "height": 760}))
     leak = [{"at": "span.set-name", "text": "违禁词报警", "data": False}]
     assert R.problems("live", "en", _facts(visible=leak))                    # 英文图里有汉字
