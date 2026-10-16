@@ -728,6 +728,8 @@ def run_with_window(args):
                 stop_after_close(state.get("loop"), state.get("pipeline"))
                 os._exit(0)
             follow_main_window(window, float_host, stuck=exit_when_stuck)
+            # 多块屏时第一次开浮窗靠它认出主窗口在哪块屏上（在开窗的工作线程里读，不碰事件循环）
+            float_host.anchor = lambda: (window.x, window.width)
         # 窗口被盖住时新报警改原生标题：pywebview 的标题不跟页面的 document.title
         expose_window_lang(window, expose_attention(window))
         webview.start(**({} if loc else localization_kwargs(webview.start, lang)))

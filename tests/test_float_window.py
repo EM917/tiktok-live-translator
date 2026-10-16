@@ -201,6 +201,205 @@ def test_screens_from_webview_reads_the_list_and_survives_a_platform_without_it(
     assert fw.screens_from_webview(NoScreens())() == []
 
 
+# ---- macOS 的坐标（多块屏） ---------------------------------------------------------------
+# pywebview 的 moved(x, y) 和 create_window(x, y) 在原点不是 (0, 0) 的屏幕上对不齐（见 app/float_window.py）。
+# 这里的屏幕：主屏 1440x900 在 (0, 0)；外接屏 1920x1080 放在它右边、上沿对齐，所以原点是 (1440, -180)
+
+P_OBJ, E_OBJ, T_OBJ = (SimpleNamespace(name=n) for n in ("primary", "external", "above"))
+MAC_P = fw.ScreenBox(0, 0, 1440, 900, P_OBJ)
+MAC_E = fw.ScreenBox(1440, -180, 1920, 1080, E_OBJ)
+MAC_T = fw.ScreenBox(-240, 900, 1920, 1080, T_OBJ)             # 在主屏正上方的一块 1920x1080
+MAC_RIGHT = [MAC_P, MAC_E]
+MAC_ABOVE = [MAC_P, MAC_T]
+
+
+def reported_by_pywebview(left, top, screen):
+    """pywebview 6.2.1 cocoa.py windowDidMove_ 对一个全局左上角 (left, top) 会报出的 (x, y)：
+    x = 全局 origin.x，y = 所在屏的高 - 窗口高 - 全局 origin.y（不含屏的 origin.y）；
+    窗口的 origin.y = top - 窗口高，所以 y = 所在屏的高 - top。"""
+    return left, screen[3] - top
+
+
+def placed_by_pywebview(screen, x, y):
+    """pywebview 6.2.1 cocoa.py move()：create_window(screen=, x=, y=) 摆到的全局左上角。"""
+    sx, sy, _sw, sh = tuple(screen)
+    return sx + x, sy + sh - y
+
+
+def test_on_the_main_screen_the_reported_position_is_already_the_global_one():
+    x, y = reported_by_pywebview(200, 800, MAC_P)
+    assert (x, y) == (200, 100)
+    assert fw.mac_top_left(x, y, 460, 330, MAC_RIGHT) == (200, 800)
+
+
+def test_on_an_external_screen_whose_origin_is_not_zero_the_reported_position_is_converted():
+    # 窗口在外接屏上，距那块屏左边 200、距上沿 100：全局左上角 (1640, -180 + 1080 - 100 = 800)
+    x, y = reported_by_pywebview(1640, 800, MAC_E)
+    assert (x, y) == (1640, 280)
+    assert fw.mac_top_left(x, y, 460, 330, MAC_RIGHT) == (1640, 800)
+
+
+def test_on_a_screen_above_the_main_one_the_reported_y_is_negative_and_still_converts():
+    top = 900 + 1080 - 100                                   # 距上面那块屏的上沿 100
+    x, y = reported_by_pywebview(300, top, MAC_T)
+    assert y == -800
+    assert fw.mac_top_left(x, y, 460, 330, MAC_ABOVE) == (300, top)
+
+
+def test_a_reported_position_that_fits_no_screen_is_not_converted():
+    assert fw.mac_top_left(9000, 10, 460, 330, MAC_RIGHT) is None
+    assert fw.mac_top_left(100, 10, 460, 330, []) is None
+    assert fw.mac_top_left(100, 10, 460, 330, None) is None
+
+
+@pytest.mark.parametrize("screens,left,top,expected", [
+    (MAC_RIGHT, 200, 800, P_OBJ), (MAC_RIGHT, 1640, 800, E_OBJ), (MAC_RIGHT, 3200, 800, E_OBJ),
+    (MAC_ABOVE, 300, 1880, T_OBJ), (MAC_ABOVE, 300, 700, P_OBJ),
+])
+def test_a_saved_global_position_is_given_back_to_pywebview_on_its_own_screen(screens, left, top, expected):
+    obj, x, y = fw.mac_create_position(left, top, 460, 330, screens)
+    assert obj is expected
+    box = next(b for b in screens if b.screen is expected)
+    assert placed_by_pywebview(box, x, y) == (left, top)       # pywebview 摆回的正是记下的那一点
+
+
+@pytest.mark.parametrize("screens,left,top", [
+    ([MAC_P], 1440 * 3, 800),                  # 位置在右边很远（外接屏拔了）
+    ([MAC_P], 1640, 800),                      # 外接屏拔了，只剩主屏
+    ([MAC_P], -2000, 800),
+    ([MAC_P], 200, 900 + 1),                   # 窗口上沿在主屏上沿之上
+    ([MAC_P], 200, 40 - 1),                    # 标题栏在主屏下沿之下
+    (MAC_RIGHT, 3360 - 79, 700),               # 外接屏上只剩 79px，标题栏够不着
+])
+def test_a_saved_position_that_no_screen_shows_is_dropped(screens, left, top):
+    got = fw.normalize_geometry({"x": left, "y": top, "width": 460, "height": 330}, screens, mac=True)
+    assert (got["x"], got["y"]) == (None, None)
+    assert (got["width"], got["height"]) == (460, 330)
+
+
+def test_mac_geometry_is_checked_screen_by_screen_not_by_bounding_box():
+    kept = fw.normalize_geometry({"x": 1640, "y": 800, "width": 460, "height": 330}, MAC_RIGHT, mac=True)
+    assert (kept["x"], kept["y"]) == (1640, 800)
+    # 副屏在主屏的右上方：整体包围盒里有一块哪块屏都不是的空地
+    diagonal = [MAC_P, fw.ScreenBox(1440, 900, 1920, 1080, E_OBJ)]
+    raw = {"x": 100, "y": 1500, "width": 460, "height": 330}
+    assert fw.normalize_geometry(raw, diagonal, mac=True)["x"] is None
+    assert fw.normalize_geometry(raw, diagonal)["x"] == 100          # 非 macOS 的粗判断放得过
+
+
+def mac_host(saved=None, screens=MAC_RIGHT, factory=None, anchor=None):
+    store = Store({fw.SETTINGS_KEY: saved} if saved else None)
+    host, factory, store, changes = make_host(factory=factory, store=store, platform="darwin",
+                                              screens=screens, mac_tweaks=lambda w: None)
+    host.anchor = anchor
+    return host, factory, store, changes
+
+
+def test_a_saved_position_on_the_external_screen_comes_back_on_the_external_screen():
+    host, factory, _s, _c = mac_host({"x": 1640, "y": 800, "width": 460, "height": 330})
+    host.request_open()
+    kwargs = factory.calls[0][2]
+    assert kwargs["screen"] is E_OBJ and (kwargs["x"], kwargs["y"]) == (200, 100)
+    assert placed_by_pywebview(MAC_E, kwargs["x"], kwargs["y"]) == (1640, 800)
+
+
+def test_dragging_on_the_external_screen_is_saved_as_the_global_position_and_reopened_there():
+    host, factory, store, _c = mac_host({"x": 1640, "y": 800, "width": 460, "height": 330})
+    host.request_open()
+    window = factory.windows[0]
+    # 用户把窗口拖到外接屏上距左 300、距上沿 150 的地方：全局左上角 (1740, 750)；pywebview 报 (1740, 330)
+    window.events.moved.fire(*reported_by_pywebview(1740, 750, MAC_E))
+    host.request_close()
+    assert store.data[fw.SETTINGS_KEY] == {"x": 1740, "y": 750, "width": 460, "height": 330}
+    host2, factory2, _s2, _c2 = mac_host(store.data[fw.SETTINGS_KEY])
+    host2.request_open()
+    kwargs = factory2.calls[0][2]
+    assert kwargs["screen"] is E_OBJ
+    assert placed_by_pywebview(MAC_E, kwargs["x"], kwargs["y"]) == (1740, 750)
+
+
+def test_a_move_that_fits_no_known_screen_is_not_saved():
+    host, factory, store, _c = mac_host()
+    host.request_open()
+    factory.windows[0].events.moved.fire(90000, 5)           # 超出合理范围
+    factory.windows[0].events.moved.fire(9000, 5)            # 不在任何已知屏幕上
+    host.request_close()
+    assert store.saves == []
+
+
+def test_the_first_open_sits_in_the_bottom_right_corner_of_the_only_screen():
+    host, factory, store, _c = mac_host(screens=[MAC_P])
+    host.request_open()
+    kwargs = factory.calls[0][2]
+    assert kwargs["screen"] is P_OBJ
+    assert (kwargs["x"], kwargs["y"]) == (1440 - 460 - fw.DEFAULT_MARGIN[0], 900 - 330 - fw.DEFAULT_MARGIN[1])
+    left, top = placed_by_pywebview(MAC_P, kwargs["x"], kwargs["y"])
+    assert left + 460 <= 1440 and top - 330 >= 0 and top <= 900 - fw.MENU_BAR_ROOM
+    host.request_close()
+    assert store.saves == []          # 没动过就不写：下次还是这个默认位置，不是被「记住」的
+
+
+def test_with_several_screens_the_first_open_goes_to_the_screen_the_main_window_is_on():
+    on_external = mac_host(anchor=lambda: (1800, 1000))[0]
+    on_external.request_open()
+    kwargs = on_external._create.calls[0][2]
+    assert kwargs["screen"] is E_OBJ
+    assert (kwargs["x"], kwargs["y"]) == (1920 - 460 - fw.DEFAULT_MARGIN[0], 1080 - 330 - fw.DEFAULT_MARGIN[1])
+    on_main = mac_host(anchor=lambda: (100, 1000))[0]
+    on_main.request_open()
+    assert on_main._create.calls[0][2]["screen"] is P_OBJ
+
+
+@pytest.mark.parametrize("anchor", [None, lambda: None, lambda: (float("nan"), 1000), lambda: (99999, 100),
+                                    lambda: 1 / 0])
+def test_with_several_screens_and_no_usable_main_window_position_the_system_places_it(anchor):
+    host, factory, _s, _c = mac_host(anchor=anchor)
+    host.request_open()
+    kwargs = factory.calls[0][2]
+    assert host.is_open() and "x" not in kwargs and "y" not in kwargs and "screen" not in kwargs
+
+
+def test_a_pywebview_without_the_screen_argument_gets_no_position_at_all():
+    def old_create(title, url, width=1, height=1, x=None, y=None, on_top=False, min_size=None, resizable=True,
+                   focus=True, transparent=False, background_color="#fff"):
+        calls.append({"x": x, "y": y})
+        return FakeWindow(title, url, {})
+    calls = []
+    host, _f, _s, _c = make_host(factory=old_create, platform="darwin", screens=[MAC_P],
+                                 mac_tweaks=lambda w: None)
+    host.request_open()
+    assert calls == [{"x": None, "y": None}]          # 相对那块屏的 x、y 不能单独用，也不能当成相对主屏
+
+
+def test_a_screen_without_a_screen_object_cannot_be_placed_on_so_the_system_does():
+    host, factory, _s, _c = make_host(platform="darwin", screens=[(0, 0, 1440, 900)], mac_tweaks=lambda w: None)
+    host.request_open()
+    kwargs = factory.calls[0][2]
+    assert "x" not in kwargs and "screen" not in kwargs
+
+
+def test_other_platforms_still_pass_the_saved_position_as_is_and_have_no_default_corner():
+    host, factory, _s, _c = make_host(store=Store({fw.SETTINGS_KEY: {"x": 200, "y": 80, "width": 600,
+                                                                      "height": 400}}),
+                                      screens=[MAC_P])
+    host.request_open()
+    kwargs = factory.calls[0][2]
+    assert (kwargs["x"], kwargs["y"]) == (200, 80) and "screen" not in kwargs
+    fresh, factory2, _s2, _c2 = make_host(screens=[MAC_P])
+    fresh.request_open()
+    assert "x" not in factory2.calls[0][2] and "screen" not in factory2.calls[0][2]
+
+
+def test_screens_from_webview_keeps_the_screen_objects_for_macos_placement():
+    objs = [SimpleNamespace(x=0, y=0, width=1440, height=900), SimpleNamespace(x=1440, y=-180, width=1920, height=1080)]
+    got = fw.screens_from_webview(SimpleNamespace(screens=objs))()
+    assert got == [(0, 0, 1440, 900), (1440, -180, 1920, 1080)]
+    assert [b.screen for b in got] == objs
+    assert fw.mac_create_position(1640, 800, 460, 330, got)[0] is objs[1]
+    # 五元组（最后一项是 Screen 对象）也认
+    assert fw.mac_create_position(200, 800, 460, 330, [(0, 0, 1440, 900, "P")])[0] == "P"
+
+
 def test_supported_kwargs_drops_what_an_older_pywebview_does_not_take():
     def old(title, url, width=1, height=1, on_top=False):
         pass

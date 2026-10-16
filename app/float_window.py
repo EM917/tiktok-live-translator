@@ -39,6 +39,8 @@ DEBOUNCE_SEC = 0.8              # 位置、大小停稳这么久才写 settings.
 STUCK_EXIT_SEC = 10.0           # 主窗口关了、10 秒后 GUI 循环还没退出，走一遍收尾直接退出
 SHOWN_WAIT_SEC = 8.0            # create_window 返回后最多等这么久窗口才算真的显示出来
 SOLID_BACKGROUND = "#101218"
+DEFAULT_MARGIN = (24, 110)      # 第一次开（没记过位置）：贴屏幕右下角，离右边 24、离下边 110（让开 Dock）
+MENU_BAR_ROOM = 40              # 靠上放时离屏幕顶端至少这么多（菜单栏）
 LIMITS = {"x": (-POSITION_LIMIT, POSITION_LIMIT), "y": (-POSITION_LIMIT, POSITION_LIMIT),
           "width": (MIN_SIZE[0], MAX_SIZE[0]), "height": (MIN_SIZE[1], MAX_SIZE[1])}
 
@@ -64,7 +66,7 @@ def _boxes(screens):
     boxes = []
     for item in screens or ():
         try:
-            x, y, w, h = (int(v) for v in item)
+            x, y, w, h = (int(v) for v in item[:4])
         except (TypeError, ValueError):
             continue
         if w > 0 and h > 0:
@@ -73,10 +75,8 @@ def _boxes(screens):
 
 
 def on_screen(x, y, width, screens):
-    """位置还落在已知屏幕上吗。粗略判断，目的只是显示器拔了之后不把窗口开到屏幕外。
-
-    pywebview 的窗口坐标是左上角、y 向下，而 cocoa 的屏幕列表是左下角原点的全局坐标，
-    多显示器时两者对不齐：一块屏时严格判断，多块屏时放宽到整体包围盒。"""
+    """位置还落在已知屏幕上吗（非 macOS 用；macOS 见 mac_screen_for）。粗略判断，目的只是显示器拔了之后
+    不把窗口开到屏幕外：一块屏时严格判断，多块屏时放宽到整体包围盒。"""
     boxes = _boxes(screens)
     if not boxes:
         return False
@@ -93,11 +93,12 @@ def on_screen(x, y, width, screens):
     return top - span + need_h <= y <= bottom - need_h
 
 
-def normalize_geometry(raw, screens=None):
+def normalize_geometry(raw, screens=None, mac=False):
     """settings.json 里记的浮窗位置和大小 → {"width","height","x","y"}，x、y 可能是 None（让系统摆）。
 
     宽高必须同时合法，否则用默认大小；位置要同时有 x、y、落在屏幕上才用。读不到屏幕列表也不用位置：
-    宁可让系统摆，不赌它还在屏幕里。"""
+    宁可让系统摆，不赌它还在屏幕里。mac=True：x、y 是 Cocoa 全局坐标里窗口的左上角（见下面的
+    macOS 坐标一节），逐块屏幕判断；否则是 pywebview 的窗口坐标（on_screen）。"""
     raw = raw if isinstance(raw, dict) else {}
     width = _number(raw.get("width"), MIN_SIZE[0], MAX_SIZE[0])
     height = _number(raw.get("height"), MIN_SIZE[1], MAX_SIZE[1])
@@ -105,16 +106,134 @@ def normalize_geometry(raw, screens=None):
         width, height = DEFAULT_SIZE
     x = _number(raw.get("x"), -POSITION_LIMIT, POSITION_LIMIT)
     y = _number(raw.get("y"), -POSITION_LIMIT, POSITION_LIMIT)
-    if x is None or y is None or not on_screen(x, y, width, screens):
+    if x is None or y is None:
+        x = y = None
+    elif mac:
+        if mac_screen_for(x, y, width, height, screens) is None:
+            x = y = None
+    elif not on_screen(x, y, width, screens):
         x = y = None
     return {"width": width, "height": height, "x": x, "y": y}
 
 
+# ---- macOS 的坐标 -------------------------------------------------------------------------
+# pywebview 6.2.1 的 cocoa 后端（webview/platforms/cocoa.py），三处对不上：
+#   moved(x, y)       x = 窗口 frame.origin.x（Cocoa 全局坐标，原点在主屏左下角），
+#                     y = 窗口所在那块屏的高 - 窗口高 - frame.origin.y（没有加那块屏自己的 origin.y）；
+#   create_window(x, y)  落在 (screen.origin.x + x, screen.origin.y + screen.height - y)，
+#                     screen 是 create_window(screen=) 传的那块，没传就是当时的 NSScreen.mainScreen()。
+# 只有那块屏的原点恰好是 (0, 0)（单屏，或窗口在主屏上）时，把 moved 报的数原样喂回 create_window 才对得上；
+# 窗口在原点不是 (0, 0) 的外接屏上，整体会偏一块屏。所以记的不是 moved 报的数，而是换算出来的
+# Cocoa 全局左上角 (left, top)（top 是窗口上沿，y 向上），开窗时再按「它在哪块屏上」换成
+# create_window(screen=, x=, y=)。不认识 screen= 的老版本 pywebview 就不传位置，让系统摆。
+
+class ScreenBox(tuple):
+    """一块屏幕：(x, y, 宽, 高)，另带 pywebview 的 Screen 对象（macOS 开窗时 screen= 要用它）。
+    比较、解包都和普通四元组一样。"""
+
+    def __new__(cls, x, y, width, height, screen=None):
+        box = super().__new__(cls, (x, y, width, height))
+        box.screen = screen
+        return box
+
+
+def _mac_screens(screens):
+    """[(x, y, 宽, 高, Screen 对象或 None)]；坐标是 Cocoa 全局的（y 向上）。认不出的条目跳过。"""
+    out = []
+    for item in screens or ():
+        try:
+            x, y, w, h = (int(v) for v in item[:4])
+        except (TypeError, ValueError):
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        obj = getattr(item, "screen", None)
+        if obj is None and len(item) > 4:
+            obj = item[4]
+        out.append((x, y, w, h, obj))
+    return out
+
+
+def _overlap(ax, ay, aw, ah, bx, by, bw, bh):
+    w = min(ax + aw, bx + bw) - max(ax, bx)
+    h = min(ay + ah, by + bh) - max(ay, by)
+    return w * h if w > 0 and h > 0 else 0
+
+
+def mac_top_left(x, y, width, height, screens):
+    """pywebview 在 macOS 上 moved(x, y) 报的数 → 窗口左上角的 Cocoa 全局坐标 (left, top)；认不出就是 None。
+
+    窗口上沿 top = 窗口所在屏幕的高 - y。窗口在哪块屏上要从屏幕列表里推：逐块屏幕试一遍 top，
+    取窗口矩形和这块屏重叠最多的那块。"""
+    best = None
+    for sx, sy, sw, sh, _obj in _mac_screens(screens):
+        top = sh - y
+        area = _overlap(x, top - height, width, height, sx, sy, sw, sh)
+        if area > 0 and (best is None or area > best[0]):
+            best = (area, top)
+    return None if best is None else (x, best[1])
+
+
+def mac_screen_for(left, top, width, height, screens):
+    """窗口左上角 (left, top)（Cocoa 全局）该放在哪块屏上：标题栏够得着（边距同 on_screen）的屏里，
+    窗口和它重叠最多的那块；没有就是 None。返回 (x, y, 宽, 高, Screen 对象)。"""
+    need_w, need_h = VISIBLE_MARGIN
+    best = None
+    for box in _mac_screens(screens):
+        sx, sy, sw, sh, _obj = box
+        if left + width < sx + need_w or left > sx + sw - need_w:
+            continue
+        if top > sy + sh or top < sy + need_h:
+            continue
+        area = _overlap(left, top - height, width, height, sx, sy, sw, sh)
+        if best is None or area > best[0]:
+            best = (area, box)
+    return None if best is None else best[1]
+
+
+def mac_create_position(left, top, width, height, screens):
+    """记下的 Cocoa 全局左上角 → (Screen 对象, x, y)，交给 create_window(screen=, x=, y=)。
+    pywebview 会把它摆回 (screen.x + x, screen.y + screen.height - y)，正好是 (left, top)。
+    屏幕不在了、或没有 Screen 对象可传，返回 None。"""
+    box = mac_screen_for(left, top, width, height, screens)
+    if box is None or box[4] is None:
+        return None
+    sx, sy, sw, sh, obj = box
+    return obj, left - sx, sy + sh - top
+
+
+def mac_default_position(width, height, screens, anchor=None):
+    """没记过位置时第一次开：贴着屏幕右下角（不再压在屏幕正中间）。返回 (Screen 对象, x, y) 或 None。
+
+    哪块屏：只有一块就是它；多块时是主窗口所在的那块（anchor() 给主窗口的 (x, 宽)，x 是 Cocoa 全局的），
+    认不出主窗口在哪块屏上就返回 None，让系统摆——系统摆在有键盘焦点的主窗口那块屏的正中间。"""
+    boxes = _mac_screens(screens)
+    chosen = None
+    if len(boxes) == 1:
+        chosen = boxes[0]
+    elif len(boxes) > 1 and anchor is not None:
+        try:
+            ax, aw = anchor()
+            center = float(ax) + float(aw) / 2.0
+        except Exception:
+            center = None
+        if center is not None and math.isfinite(center):
+            for box in boxes:
+                if box[0] <= center < box[0] + box[2]:
+                    chosen = box
+                    break
+    if chosen is None or chosen[4] is None:
+        return None
+    sx, sy, sw, sh, obj = chosen
+    return (obj, max(0, sw - width - DEFAULT_MARGIN[0]),
+            max(MENU_BAR_ROOM, sh - height - DEFAULT_MARGIN[1]))
+
+
 def screens_from_webview(webview):
-    """pywebview 的屏幕列表 → [(x, y, 宽, 高)]。读不到（还没初始化、平台不支持）返回空列表。"""
+    """pywebview 的屏幕列表 → [ScreenBox]（比较起来就是 (x, y, 宽, 高)）。读不到（还没初始化、平台不支持）返回空列表。"""
     def read():
         try:
-            return [(s.x, s.y, s.width, s.height) for s in webview.screens]
+            return [ScreenBox(s.x, s.y, s.width, s.height, s) for s in webview.screens]
         except Exception:
             return []
     return read
@@ -183,7 +302,8 @@ class FloatWindowHost:
         self._create = create_window
         self._shown_wait = shown_wait
         self._base_url = str(base_url).rstrip("/")
-        self._transparent = (sys.platform if platform is None else platform) == "darwin"
+        self._mac = (sys.platform if platform is None else platform) == "darwin"
+        self._transparent = self._mac
         self._screens = screens or (lambda: [])
         self._load = load or load_settings
         self._save = save or save_setting
@@ -192,12 +312,15 @@ class FloatWindowHost:
         self._mac_tweaks = mac_tweaks if mac_tweaks is not None else (
             mac_float_tweaks if self._transparent else None)
         self.on_change = on_change
+        # 主窗口的 (x, 宽)，macOS 多块屏时第一次开靠它认出主窗口在哪块屏上（main.py 在建好主窗口之后设）
+        self.anchor = None
         self._lock = threading.Lock()           # 串行化建窗 / 销毁
         self._state = threading.Lock()          # 保护下面几个字段，持有时间极短
         self._window = None
         self._want = False
         self._dead = False
         self._geom = {}
+        self._screens_seen = []                 # 开窗时的屏幕列表，moved 事件换算位置用
         self._saved = None
         self._timer = None
 
@@ -236,15 +359,30 @@ class FloatWindowHost:
                 else:
                     self._close_locked()
 
-    def _window_kwargs(self, geom):
+    def _window_kwargs(self, geom, screens=()):
         kwargs = {"width": geom["width"], "height": geom["height"], "min_size": MIN_SIZE,
                   "resizable": True, "on_top": True,
                   # 不抢键盘焦点：它只是显示，操作员正在别的窗口里打字
                   "focus": False, "transparent": self._transparent,
                   "background_color": "#000000" if self._transparent else SOLID_BACKGROUND}
-        if geom["x"] is not None and geom["y"] is not None:
+        if self._mac:
+            place = self._mac_place(geom, screens)
+            if place is not None:
+                kwargs["screen"], kwargs["x"], kwargs["y"] = place
+        elif geom["x"] is not None and geom["y"] is not None:
             kwargs["x"], kwargs["y"] = geom["x"], geom["y"]
-        return supported_kwargs(self._create, kwargs)
+        accepted = supported_kwargs(self._create, kwargs)
+        if "screen" in kwargs and "screen" not in accepted:
+            # x、y 是相对 screen 的：不认 screen= 的老版本只能让系统摆
+            accepted.pop("x", None)
+            accepted.pop("y", None)
+        return accepted
+
+    def _mac_place(self, geom, screens):
+        """macOS 开窗的 (Screen 对象, x, y)：记过位置就还原它，没记过就贴右下角；认不出就是 None（系统摆）。"""
+        if geom["x"] is not None and geom["y"] is not None:
+            return mac_create_position(geom["x"], geom["y"], geom["width"], geom["height"], screens)
+        return mac_default_position(geom["width"], geom["height"], screens, self.anchor)
 
     def _open_locked(self):
         try:
@@ -252,8 +390,9 @@ class FloatWindowHost:
                 screens = self._screens()
             except Exception:
                 screens = []
-            geom = normalize_geometry(self._load().get(SETTINGS_KEY), screens)
-            window = self._create(i18n.text(FLOAT_TITLE), self.url(), **self._window_kwargs(geom))
+            geom = normalize_geometry(self._load().get(SETTINGS_KEY), screens, mac=self._mac)
+            window = self._create(i18n.text(FLOAT_TITLE), self.url(),
+                                  **self._window_kwargs(geom, screens))
             if window is None:
                 raise RuntimeError("create_window 没有返回窗口")  # i18n: terminal
             # create_window 在 start() 之后从非主线程调用时立刻返回，窗口是在 GUI 线程上稍后才建的；
@@ -272,6 +411,7 @@ class FloatWindowHost:
             self._window = window
             self._geom = {k: v for k, v in geom.items() if v is not None}
             self._saved = dict(self._geom)
+            self._screens_seen = list(screens)
         self._attach(window)
         if self._mac_tweaks is not None:
             self._spawn(lambda: self._mac_tweaks(window))
@@ -307,6 +447,11 @@ class FloatWindowHost:
         events = getattr(window, "events", None)
 
         def on_moved(x, y):
+            if self._mac:
+                pos = self._mac_stored_position(x, y)
+                if pos is None:
+                    return
+                x, y = pos
             self._note(window, ("x", x), ("y", y))
 
         def on_resized(width, height):
@@ -323,6 +468,17 @@ class FloatWindowHost:
                 event += handler
             except Exception as exc:
                 print("[警告] 浮窗的 {} 事件没挂上：{}".format(name, exc))
+
+    def _mac_stored_position(self, x, y):
+        """moved 事件报的 (x, y) → 要记的 Cocoa 全局左上角；报的不合法或认不出在哪块屏上就是 None。"""
+        x, y = _number(x, *LIMITS["x"]), _number(y, *LIMITS["y"])
+        if x is None or y is None:
+            return None
+        with self._state:
+            width = self._geom.get("width", DEFAULT_SIZE[0])
+            height = self._geom.get("height", DEFAULT_SIZE[1])
+            screens = self._screens_seen
+        return mac_top_left(x, y, width, height, screens)
 
     def _note(self, window, *pairs):
         """窗口动了：(键, 值) 成对到——位置一对、大小一对。一对里有一个不合法，整对都不要
