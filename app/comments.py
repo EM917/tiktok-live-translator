@@ -350,6 +350,8 @@ class CommentTranslator:
         self._tally_failed = {}
         self._tally_retried = 0          # 被判成回话后原样重发的次数
         self._tally_rescued = 0          # 其中重发后译出来的条数
+        self._tally_retried_by = {}      # 重发的条数，按第一次被判成什么（reply_*）分
+        self._tally_rescued_by = {}      # 其中译出来的条数，同样按第一次的原因分
 
     # ---- 入站：抓取端送来的一批观众评论 ----
     async def accept(self, data):
@@ -532,6 +534,7 @@ class CommentTranslator:
         else:
             outs = await self._translate_many(translator, texts, target, glossary)
         failed, ok, retried, rescued = {}, 0, 0, 0
+        retried_by, rescued_by = {}, {}        # 重发 / 救回的条数，按第一次被判成什么分
         # 被判成回话（reply_*）的弹幕：只有 Claude 原样再问一次（它不能设温度，再发一次是重新抽一次；
         # 本地模型温度为 0，再问是同一个答案）。其余失败（冷却、HTTP 错误、拒答、没有输出）不重试。
         # 已经译好的和不重试的先发出去，不等这几条的重试；重试的那几条各只发一次 comment_update
@@ -563,8 +566,11 @@ class CommentTranslator:
         for item, why in again:
             out, asked = await self._retry_reply(translator, item["text"], target, glossary, t0)
             retried += asked
+            if asked:
+                retried_by[why] = retried_by.get(why, 0) + 1
             if out:
                 ok, rescued = ok + 1, rescued + 1
+                rescued_by[why] = rescued_by.get(why, 0) + 1
                 self._ledger.mark_translated(item["id"])
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": out, "state": "ok"})
@@ -573,7 +579,8 @@ class CommentTranslator:
                 failed[why] = failed.get(why, 0) + 1
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": "failed"})
-        self._note_outcome(audit, translator, len(batch), ok, failed, t0, retried, rescued)
+        self._note_outcome(audit, translator, len(batch), ok, failed, t0, retried, rescued,
+                           retried_by, rescued_by)
 
     @staticmethod
     def _hint_for(glossary, text):
@@ -615,23 +622,34 @@ class CommentTranslator:
         if self._tally_owner is not audit:
             self._tally_owner, self._tally_ok, self._tally_failed = audit, 0, {}
             self._tally_retried = self._tally_rescued = 0
+            self._tally_retried_by, self._tally_rescued_by = {}, {}
 
-    def _note_outcome(self, audit, translator, batch, ok, failed, t0, retried=0, rescued=0):
+    def _note_outcome(self, audit, translator, batch, ok, failed, t0, retried=0, rescued=0,
+                      retried_by=None, rescued_by=None):
         """记下一批的结局：计数照记；有没译出来的，往本场审计写一条（只有代码和数字）。
 
         ok 里含 rescued（被判成回话、重发一次后译出来的）；failed 里每条记的是**第一次**被判成什么。
         retried / rescued 只在真的重发过（retried > 0）时才进计数和审计记录，没重发的批次和以前一模一样。
+        retried_by / rescued_by 是同样两个数按第一次的原因代码拆开（{reply_meta: 1, …}）：被救回的
+        那几条不在 failed 里，不拆开的话，各代码的救回率事后算不出来（复盘「救回率低于两成就撤掉
+        重发」要按代码看，reply_fabricated 可能多是对正常闲聊的误判、救不回来，不该拖累别的代码）。
         一批全被重发救回来（failed 为空）不写 comment_translation_failed，只进场末计数。"""
         try:
             self._tally(audit)
             self._tally_ok += ok
             self._tally_retried += retried
             self._tally_rescued += rescued
+            for why, n in (retried_by or {}).items():
+                self._tally_retried_by[why] = self._tally_retried_by.get(why, 0) + n
+            for why, n in (rescued_by or {}).items():
+                self._tally_rescued_by[why] = self._tally_rescued_by.get(why, 0) + n
             for why, n in failed.items():
                 self._tally_failed[why] = self._tally_failed.get(why, 0) + n
             if failed and audit is not None:
                 inner = getattr(translator, "inner", translator)
-                extra = {"retried": retried, "rescued": rescued} if retried else {}
+                extra = {"retried": retried, "rescued": rescued,
+                         "retried_reasons": dict(retried_by or {}),
+                         "rescued_reasons": dict(rescued_by or {})} if retried else {}
                 audit.comment_translation_failed(
                     getattr(inner, "name", None), getattr(inner, "model", None), batch,
                     failed, round((time.monotonic() - t0) * 1000.0), **extra)
@@ -640,7 +658,8 @@ class CommentTranslator:
 
     def translation_summary(self, audit):
         """这一场（audit 指定）弹幕翻译的结局计数，给 session_end；没翻过或不是这一场的返回 None。
-        本场重发过（被判成回话后原样再问一次）才多 retried / rescued 两个键。"""
+        本场重发过（被判成回话后原样再问一次）才多 retried / rescued 两个数，以及按第一次原因拆开
+        的 retried_reasons / rescued_reasons（共四个键）。"""
         if audit is None or self._tally_owner is not audit:
             return None
         if not self._tally_ok and not self._tally_failed:
@@ -648,6 +667,8 @@ class CommentTranslator:
         summary = {"ok": self._tally_ok, "failed": dict(self._tally_failed)}
         if self._tally_retried:
             summary["retried"], summary["rescued"] = self._tally_retried, self._tally_rescued
+            summary["retried_reasons"] = dict(self._tally_retried_by)
+            summary["rescued_reasons"] = dict(self._tally_rescued_by)
         return summary
 
     def _engine_for(self, translator):
