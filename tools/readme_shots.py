@@ -25,7 +25,7 @@ PATH 上有 pngquant 时 PNG 交给它压）。项目的 .venv 里没装 Pillow�
 事件的间隔，所以动图的节奏与截图快慢无关。
 
 每张图出图前都核对一遍：视口对、数据真的到了（状态不是「等待连接…」、字幕条数对）、没有
-提示条、没有被省略号截断的文字、没有被滚动切掉一截的字幕卡片、没有被浮层下沿切成两半的
+提示条、没有被省略号截断的文字、没有被滚动切掉一截的字幕卡片、没有被浮层下沿或右沿切开的
 文字行、首页设置分组的底边没被底部版权行盖住（行数多了、中文行更高时一屏放不下，就把页面往上
 滚到分组底边离版权行 12px，滚掉的只是顶上的空白，最多 48px）、弹幕留意的顶部条没弹出来、英文图里没有
 一个汉字（切换语言按钮上的「中文」这个语言自称除外）。对不上就报错退出，不写这张图。同一台机器、同一版 Chrome 重跑，出来的文件逐字节相同（2026-09-29 实测），
@@ -134,10 +134,14 @@ DEMO_COMMENTS = (
     ("vale.demo", "¿Se puede usar con retinol?", "Can you use it with retinol?", "能和A醇一起用吗？"),
     ("anita.demo", "Necesito dos, ya lo agregué", "I need two, I already added them", "我要两瓶，已经加购了"),
 )
-# 打开浮层（换主播、手机同看）的那两张：浮层下沿不能把一行字切成两半，上半截盖在浮层底下、
-# 下半截露在外面（出图前的核对会拦）。1000×760 里手机同看面板的下沿正好压在第 4 张字幕卡片的
-# 译文行上（英文），两个浮层的下沿都压在第 5 条弹幕上（英文同看、中文换主播），所以这两张少放几条
-POPOVER_COMMENTS = COMMENTS[:4]
+# 打开浮层（换主播、手机同看）的那两张：浮层不能把一行字切开，一半盖在浮层底下、另一半露在
+# 外面（出图前的核对会拦）。浮层盖住弹幕列的左半边，弹幕那几行字从浮层右沿后面冒出半截
+# （「ew」「eto?」），所以这两张先点「收起」把弹幕列收掉（字幕独占整行，右上角留一个「弹幕」入口），
+# 再开浮层。英文换主播那一张里浮层的右沿还压着「Comments」入口的图标（字是完整的），是浮层盖在
+# 按钮上的样子，不算切字，接受。1000×760 里手机同看面板的下沿正好压在第 4 张字幕卡片的译文行上
+# （英文），所以同看那一张少放几条字幕
+FOLD_COMMENTS = "#toggle-comments"
+POPOVER_SCENES = ("switch-streamer", "share-panel")
 SHARE_CAPTIONS = CAPTIONS[:3]
 # 动图时间轴（秒）：("cap", DEMO_CAPTIONS 下标) 在 t 秒出原文、t + TRANSLATE_SEC 秒补译文；
 # ("cmt", DEMO_COMMENTS 下标) 在 t 秒出原文、t + COMMENT_TRANSLATE_SEC 秒补译文
@@ -295,17 +299,18 @@ def live(lang, tmp):
 def switch_streamer(lang, tmp):
     """直播中点「换主播」，再点一个最近直播间：已武装，确认按钮可点。"""
     with i18n.use(lang):
-        server = _live_server(lang, tmp, comments=POPOVER_COMMENTS)
+        server = _live_server(lang, tmp)
         return _desktop("switch-streamer", lang, server, live=[_stats()],
-                        clicks=["#switch-btn", "#switch-recent-list .recent-chip:not([disabled])"])
+                        clicks=[FOLD_COMMENTS, "#switch-btn",
+                                "#switch-recent-list .recent-chip:not([disabled])"])
 
 
 def share_panel(lang, tmp):
     """直播中打开顶栏「手机同看」面板：二维码、链接、在看人数。"""
     with i18n.use(lang):
-        server = _live_server(lang, tmp, captions=SHARE_CAPTIONS, comments=POPOVER_COMMENTS,
-                              viewers=1)
-        return _desktop("share-panel", lang, server, live=[_stats()], clicks=["#share-btn"])
+        server = _live_server(lang, tmp, captions=SHARE_CAPTIONS, viewers=1)
+        return _desktop("share-panel", lang, server, live=[_stats()],
+                        clicks=[FOLD_COMMENTS, "#share-btn"])
 
 
 def phone(lang, tmp):
@@ -449,8 +454,9 @@ FACTS_JS = r"""
     var r = el.getBoundingClientRect();
     if (shown(el) && r.top < top - 0.5 && r.bottom > top) clipped.push(el.textContent.trim().slice(0, 40));
   });
-  // 被打开的浮层（换主播、手机同看）下沿切成两半的文字行：上半截盖在浮层底下、下半截露在
-  // 外面，截图里看着像渲染坏了。浮层自己的文字不算
+  // 被打开的浮层（换主播、手机同看）切成两半的文字行：下沿的——上半截盖在浮层底下、下半截露在
+  // 外面；右沿的——从浮层后面冒出半个词，截图里看着像渲染坏了。左沿不算：一行字往浮层底下
+  // 钻进去，是浮层盖住内容该有的样子。浮层自己的文字不算
   var straddle = [];
   ["switch-panel", "share-panel"].forEach(function (id) {
     var pop = byId(id);
@@ -465,9 +471,13 @@ FACTS_JS = r"""
       var lines = rg.getClientRects();
       for (var i = 0; i < lines.length; i++) {
         var r = lines[i];
-        if (r.width > 0 && r.top < p.bottom - 0.5 && r.bottom > p.bottom + 0.5
-            && r.right > p.left && r.left < p.right) {
-          straddle.push(id + "：" + n.nodeValue.trim().slice(0, 40));
+        if (r.width <= 0) continue;
+        var below = r.top < p.bottom - 0.5 && r.bottom > p.bottom + 0.5
+                    && r.right > p.left && r.left < p.right;
+        var beside = r.top < p.bottom && r.bottom > p.top
+                     && r.left < p.right - 0.5 && r.right > p.right + 0.5;
+        if (below || beside) {
+          straddle.push(id + (below ? "下沿" : "右沿") + "：" + n.nodeValue.trim().slice(0, 40));
           break;
         }
       }
@@ -493,6 +503,7 @@ FACTS_JS = r"""
     liveBar: !!(byId("live-bar") && shown(byId("live-bar"))),
     startPanel: !!(byId("start-panel") && shown(byId("start-panel"))),
     commentPanel: !!(byId("comment-panel") && shown(byId("comment-panel"))),
+    commentFab: !!(byId("comment-fab") && shown(byId("comment-fab"))),
     switchPanel: !!(byId("switch-panel") && shown(byId("switch-panel"))),
     switchArmed: !!(confirm && !confirm.disabled),
     sharePanel: !!(byId("share-panel") && shown(byId("share-panel"))),
@@ -529,7 +540,7 @@ def problems(name, lang, facts, expect_caps=None):
     need(not facts["bars"], "露着提示条：{}".format(facts["bars"]))
     need(not facts["cut"], "文字被截断：\n  " + "\n  ".join(facts["cut"]))
     need(not facts["clipped"], "字幕卡片顶上被切掉一截：{}".format(facts["clipped"]))
-    need(not facts.get("straddle"), "文字行被浮层下沿切成两半：{}".format(facts.get("straddle")))
+    need(not facts.get("straddle"), "文字行被浮层切成两半：{}".format(facts.get("straddle")))
     if lang == "en":
         leaks = ["{}「{}」".format(v["at"], v["text"]) for v in facts["visible"]
                  if CJK.search(v["text"]) and not (v["data"] and v["text"] in AUTONYMS)]
@@ -563,7 +574,11 @@ def problems(name, lang, facts, expect_caps=None):
     wanted = len(CAPTIONS) if expect_caps is None else expect_caps
     need(facts["caps"] == wanted, "字幕 {} 条，应为 {}".format(facts["caps"], wanted))
     need(facts["liveBar"], "底部大字幕没露出来")
-    need(facts["commentPanel"] and facts["comments"] > 0, "右侧弹幕列没有内容")
+    if name in POPOVER_SCENES:
+        need(not facts["commentPanel"] and facts.get("commentFab") and facts["comments"] > 0,
+             "弹幕列该收起（右上角留「弹幕」入口）、弹幕已经到了")
+    else:
+        need(facts["commentPanel"] and facts["comments"] > 0, "右侧弹幕列没有内容")
     need(facts["brandTag"], "顶栏没有本场品牌")
     if name == "switch-streamer":
         need(facts["switchPanel"] and facts["switchArmed"], "换主播面板没打开或没武装")
