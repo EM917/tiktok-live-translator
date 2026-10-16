@@ -10,7 +10,8 @@
   * Claude 字幕的请求把这一句包在 <subtitle> 里，提示词写明不是对它说的话；
   * 只有 Claude 字幕被拦下后原样重试一次（2026-10-15：#90 之后 6/2098 = 0.29%，都是模型把自言自语
     写进了译文）：重试要绕过重复句缓存、请求体和第一次一模一样、最多两次请求；第一次没有返回文字
-    （超时、HTTP 错误、429、冷却、拒答）不重试；引擎在冷却或字幕队列里有 2 条以上在等时跳过；
+    （超时、HTTP 错误、429、冷却、拒答）不重试；引擎在冷却、已被换掉或字幕队列里有 2 条以上在等时跳过；重试被拒答记 retry=refusal 和
+    translation_refusal（这一条仍标「结果不像译文」）；
     本地 Hy-MT2 等温度为 0 的引擎不重试。审计的 translation_rejected 只在 Claude 重试这条路上多
     attempt / retry / retry_ms 三个键。
 
@@ -373,21 +374,70 @@ def test_a_retry_that_returns_nothing_keeps_the_original_and_is_not_escalated(tm
     assert "重试一次没有返回译文，这一条显示原文" in capsys.readouterr().out
 
 
-def test_a_retry_that_is_refused_stays_a_reply_not_a_refusal(monkeypatch, tmp_path):
-    """第一次回了话、重试被拒答：这一条按「回的不是译文」显示原文，不改标成 refused，也不记 refusal。"""
+def test_a_retry_that_is_refused_stays_not_a_translation_but_is_recorded_as_a_refusal(
+        monkeypatch, tmp_path, capsys):
+    """第一次回了话、重试被拒答：这一条按「回的不是译文」显示原文（不改标成 refused），但拒答照老规矩
+    记 translation_refusal、打终端、本场提示一次——敏感的句子最容易在重发时真被拒，不记的话事后
+    分不清它和超时、空输出。"""
     from tests.test_claude_comments import subtitle_engine
     from tests.test_claude_translator import Resp, message, text_block
     wrapped, _inner, session = subtitle_engine(monkeypatch)
     session.responses = [Resp(200, message(text_block(REPLY))),
                          Resp(200, dict(message(stop="refusal"),
-                                        stop_details={"type": "refusal", "category": None}))]
+                                        stop_details={"type": "refusal", "category": "general_harms"}))]
     p = one_line(tmp_path, wrapped)
     assert len(session.posts) == 2
     update = caption(p)
-    assert update["not_translation"] is True and "refused" not in update
+    assert update["translated"] is None and update["not_translation"] is True
+    assert "refused" not in update
+    (rejected,) = rows(p.audit, "translation_rejected")
+    assert (rejected["attempt"], rejected["retry"]) == (1, "refusal")
+    assert isinstance(rejected["retry_ms"], int)
+    (refusal,) = rows(p.audit, "translation_refusal")
+    assert (refusal["seq"], refusal["engine"], refusal["model"], refusal["category"]) == \
+        (1, "claude", "claude-haiku-5-5", "general_harms")
+    (notice,) = p.server.of("notice")
+    assert "refusal" in notice["text"] and "原文" in notice["text"]
+    assert not p.server.of("incident") and rows(p.audit, "translation_engine_error") == []
+    assert not p._bg_tasks
+    out = capsys.readouterr().out
+    assert "重试一次被拒答，这一条显示原文" in out
+    assert out.count("stop_reason=refusal，类别 general_harms") == 1
+
+
+def test_a_second_refused_retry_is_audited_again_without_a_second_notice(monkeypatch, tmp_path):
+    from tests.test_claude_comments import subtitle_engine
+    from tests.test_claude_translator import Resp, message, text_block
+    wrapped, _inner, session = subtitle_engine(monkeypatch)
+    refused = dict(message(stop="refusal"), stop_details={"type": "refusal", "category": None})
+    session.responses = [Resp(200, message(text_block(REPLY))), Resp(200, refused),
+                         Resp(200, message(text_block(REPLY))), Resp(200, refused)]
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, wrapped, engine="claude")
+        p._heal_local_engine = noop
+        await p._translate_and_update(job(1, "Just add them."))
+        await p._translate_and_update(job(2, "Just add them."))
+        return p
+
+    p = run(scenario())
+    assert len(session.posts) == 4
+    assert [r["seq"] for r in rows(p.audit, "translation_refusal")] == [1, 2]
+    assert [r["retry"] for r in rows(p.audit, "translation_rejected")] == ["refusal", "refusal"]
+    assert len(p.server.of("notice")) == 1
+
+
+def test_a_retry_that_returns_empty_text_is_no_output_not_a_refusal(monkeypatch, tmp_path):
+    """HTTP 200 但没有文字、也不是 refusal：还是 no_output，不写 translation_refusal。"""
+    from tests.test_claude_comments import subtitle_engine
+    from tests.test_claude_translator import Resp, message, text_block
+    wrapped, _inner, session = subtitle_engine(monkeypatch)
+    session.responses = [Resp(200, message(text_block(REPLY))), Resp(200, message(text_block("")))]
+    p = one_line(tmp_path, wrapped)
+    assert len(session.posts) == 2
     (rejected,) = rows(p.audit, "translation_rejected")
     assert rejected["retry"] == "no_output"
-    assert rows(p.audit, "translation_refusal") == []
+    assert rows(p.audit, "translation_refusal") == [] and p.server.of("notice") == []
 
 
 @pytest.mark.parametrize("trouble", [{"cooldown_until": "future"}, {"fail_streak": 1}])
@@ -400,6 +450,39 @@ def test_the_retry_is_skipped_while_the_engine_is_in_trouble(tmp_path, trouble):
     assert (rejected["attempt"], rejected["retry"]) == (1, "skipped")
     assert "retry_ms" not in rejected             # 没发请求，没有耗时
     assert caption(p)["not_translation"] is True
+
+
+def test_the_retry_is_skipped_when_the_engine_was_replaced_during_the_first_request(
+        tmp_path, capsys):
+    """中控在第一次请求在途时换了引擎：set_engine 已经把旧的 close 了，BaseTranslator.session() 在会话
+    关掉后会悄悄新建一个，重试会在换引擎之后再向 Anthropic 发一条，还留下没人关的会话。"""
+    engine = Scripted([REPLY, GOOD])
+    other = Scripted(["别的引擎的译文"], )
+    holder = {}
+    first_request = engine.translate
+
+    async def swapping(text, target, source="auto", glossary=None):
+        out = await first_request(text, target, source=source, glossary=glossary)
+        holder["p"].translator = other             # set_engine 换引擎的那一刻
+        return out
+
+    engine.translate = swapping
+
+    async def scenario():
+        p = bare_pipeline(tmp_path, engine, engine="claude")
+        p._heal_local_engine = noop
+        holder["p"] = p
+        await p._translate_and_update(job(1, "Just add them."))
+        return p
+
+    p = run(scenario())
+    assert engine.calls == 1 and other.calls == 0       # 旧引擎没有第二次请求，新引擎也没被借用
+    (rejected,) = rows(p.audit, "translation_rejected")
+    assert (rejected["attempt"], rejected["retry"]) == (1, "skipped")
+    assert "retry_ms" not in rejected
+    update = caption(p)
+    assert update["translated"] is None and update["not_translation"] is True
+    assert "已被换掉" in capsys.readouterr().out
 
 
 def test_the_retry_is_skipped_when_two_or_more_captions_are_waiting(tmp_path):

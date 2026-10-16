@@ -4286,10 +4286,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             engine_label(getattr(tr, "name", None)), seq, why))
 
     def _retry_reply_skipped(self, tr):
-        """这一次不重试：引擎在暂停请求（429、密钥被拒后的冷却）、最近几次回应不是 200，或字幕
-        队列里已经有 2 条以上在等。队列最多 4 条、满了丢最旧的（_put_translation），前面的字幕
-        还在排队时再多花一次请求只会让后面的更晚上屏。_trans_queue 只在直播会话里有，
+        """这一次不重试：引擎已经被换掉了（tr 是这一条开始时抓的快照）、引擎在暂停请求（429、
+        密钥被拒后的冷却）、最近几次回应不是 200，或字幕队列里已经有 2 条以上在等。
+
+        被换掉的引擎不能再发：set_engine 换引擎时已经 close 了旧的，而 BaseTranslator.session()
+        在会话关了之后会悄悄新建一个 aiohttp 会话——重试会在中控刚选了别的引擎之后再向 Anthropic
+        发一条字幕，还留下一个没人关的会话。队列最多 4 条、满了丢最旧的（_put_translation），前面的
+        字幕还在排队时再多花一次请求只会让后面的更晚上屏。_trans_queue 只在直播会话里有，
         最小 Pipeline（测试用 __new__ 搭的）没有，按没有排队算。"""
+        if getattr(self, "translator", tr) is not tr:
+            return True
         if getattr(tr, "fail_streak", 0) > 0:
             return True
         if time.monotonic() < getattr(tr, "cooldown_until", 0.0):
@@ -4305,17 +4311,22 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
           直接从缓存拿回同一句回话、0 毫秒、等于没重试。第一次的由调用方在进来之前 forget（没重试
           也要拿掉）；这里第二次也被拦下就再 forget 一次；译出来了就让缓存照常存；
         * 直接 await、前面清结局，不套 wait_for（见 translator.begin_translate_call）；
-        * 重试返回 None（超时、HTTP 错误、拒答、空输出）不升级处理：这一句按「回话」显示原文，
+        * 重试返回 None（超时、HTTP 错误、空输出）不升级处理：这一句按「回话」显示原文，
           下一句的正常调用会通过 _note_engine_failure 暴露一个真有问题的引擎；
+        * 重试被拒答（HTTP 200、stop_reason=refusal）也是这一句显示原文，但结局记 "refusal" 而不是
+          "no_output"，类别放进返回值，调用方照拒答的老规矩记 translation_refusal、打终端、本场提示一次
+          （敏感的句子最容易在重发时真被拒，不记的话事后分不清拒答和超时、空输出）；
         * 不改提示词、不换更大的模型：没有配对数据支持（CLAUDE.md 第四条），基线只有约 0.3%。
 
         返回 {"rejected": [(原因, 原话), …] 每次被拦下的那一句, "steps": [(结局, 耗时毫秒), …]
-        第 2、3… 次请求的结局, "translated": 译出来的文字或 None}。"""
+        第 2、3… 次请求的结局（ok / rejected / no_output / refusal / skipped）, "translated": 译出来的
+        文字或 None, "refusal": 重试被拒答时的 ("refusal", 类别或 None)，否则 None}。"""
         forget = getattr(tr, "forget", None)
         source = job["lang"] or "auto"
         rejected = [first]
         steps = []
         translated = None
+        refusal = None
         for _ in range(REPLY_RETRIES):
             if self._retry_reply_skipped(tr):
                 steps.append(("skipped", None))
@@ -4329,7 +4340,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 out = None
             ms = round((time.monotonic() - started) * 1000.0)
             if not out:
-                steps.append(("no_output", ms))
+                outcome = translate_call_outcome()      # 上面清过，这是这一次重试的结局
+                if outcome and outcome[0] == "refusal":
+                    steps.append(("refusal", ms))
+                    refusal = outcome
+                else:
+                    steps.append(("no_output", ms))
                 break
             why = looks_like_reply(text, out, job["target"])
             if not why:
@@ -4340,7 +4356,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             rejected.append((why, out))
             if forget is not None:
                 forget(text, job["target"], source, hint)
-        return {"rejected": rejected, "steps": steps, "translated": translated}
+        return {"rejected": rejected, "steps": steps, "translated": translated, "refusal": refusal}
 
     def _note_reply_retry(self, tr, seq, retry):
         """Claude 的回话被拦下并（或没有）重试之后：每一次被拦下的都记一条 translation_rejected
@@ -4366,8 +4382,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 rejected[-1][0])
         elif result == "no_output":
             tail = "重试一次没有返回译文，这一条显示原文"                  # i18n: terminal
+        elif result == "refusal":
+            tail = "重试一次被拒答，这一条显示原文"                       # i18n: terminal
         elif result == "skipped":
-            tail = "引擎在暂停或字幕在排队，没有重试，这一条显示原文"        # i18n: terminal
+            tail = "引擎在暂停、已被换掉或字幕在排队，没有重试，这一条显示原文"  # i18n: terminal
         else:
             tail = "没有重试，这一条显示原文"                              # i18n: terminal
         print("[警告] {} 回来的不是第 {} 条字幕的译文（{}），{}".format(label, seq, why, tail))
@@ -4769,6 +4787,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if retry is not None:
             # 重试译出来了也要记：审计里得看得见这一句被拦过、重试花了多久
             self._note_reply_retry(tr, job["id"], retry)
+            if retry["refusal"] is not None:
+                # 重试被拒答：这一条仍标「结果不像译文」，但拒答照老规矩记 translation_refusal、
+                # 打终端、本场提示一次，不然事后分不清它和超时、空输出
+                await self._note_refusal(tr, job["id"], retry["refusal"][1])
         if reply is not None:
             # 接口正常回了话、只是回的不是译文：不换引擎、不挂横幅，这一句显示原文
             if retry is None:
