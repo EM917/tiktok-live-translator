@@ -194,7 +194,15 @@ function canRetranslate(lastTapTs, now, connected) {
 // 不发服务端：桌面报警面板和审计日志都不受影响。storage 可注入（真 localStorage
 // 或测试里的假存储）；取不到/抛错都不影响功能，只是刷新后记不住已取消的报警——
 // 这本身就是「本地、best-effort」的设计，不是缺陷。
+//
+// **取消记录只在发出这些 id 的那一次共享里有效。** alert_id 是程序进程内的计数器，
+// 重启后从 1 重新数：手机上存着的「取消过 7 号」会把重启后全新的 7 号报警也藏掉，
+// 而桌面面板和审计都有它——手机这边静默漏看。所以记录连同 viewer_hello 带来的
+// share_since（每次共享启动时定下，进程重启必变）一起存，hello 到了对不上就清空。
+// 代价：中控在同一进程里关了再开共享，share_since 也会变，已取消的报警会再出现一次——
+// 多看一遍可以，漏看不行。
 var DISMISSED_ALERTS_KEY = "viewerDismissedAlerts";
+var DISMISSED_SCOPE_KEY = "viewerDismissedAlertsScope";
 var DISMISSED_ALERTS_MAX = 500;
 
 function loadDismissedAlerts(storage) {
@@ -215,11 +223,27 @@ function saveDismissedAlerts(storage, ids, max) {
   } catch (e) { /* 没有存储也要能正常用，只是刷新后记不住 */ }
 }
 
-// 工厂：内存态 + best-effort 持久化，浏览器分支和测试共用同一套 has/add/addMany。
+// 取消记录属于哪一次共享（share_since 转成的字符串）；没存过（老版本留下的记录）返回 null。
+function loadDismissedScope(storage) {
+  try {
+    var raw = storage && storage.getItem(DISMISSED_SCOPE_KEY);
+    return typeof raw === "string" ? raw : null;
+  } catch (e) { return null; }
+}
+
+function saveDismissedScope(storage, scope) {
+  try {
+    if (storage) storage.setItem(DISMISSED_SCOPE_KEY, scope);
+  } catch (e) { /* 同上：存不下就记不住，不影响这场 */ }
+}
+
+// 工厂：内存态 + best-effort 持久化，浏览器分支和测试共用同一套 has/add/addMany/bind。
 // 只留最新 max 个（默认 500，超过就挤掉最老的）——最近取消的更值得记住。
+// bind(share_since)：viewer_hello 到了就调一次，对不上存着的那次共享就清空（见上面的说明）。
 function createDismissedStore(storage, max) {
   var cap = max > 0 ? max : DISMISSED_ALERTS_MAX;
   var ids = loadDismissedAlerts(storage);
+  var scope = loadDismissedScope(storage);
   var set = Object.create(null);
   ids.forEach(function (id) { set[id] = true; });
 
@@ -241,6 +265,20 @@ function createDismissedStore(storage, max) {
       var changed = false;
       (list || []).forEach(function (id) { if (addOne(id)) changed = true; });
       if (changed) saveDismissedAlerts(storage, ids, cap);
+    },
+    // 注意 share_since 取 0 也是合法值（测试里就是），不能用真假判断，只把 null/undefined 当缺省。
+    // 返回是否清掉了东西。先写清空的 id 再写新的归属：中途写失败最多是下次 hello 再清一遍，
+    // 不会出现「旧 id 挂着新归属」。
+    bind: function (shareSince) {
+      var next = shareSince == null ? "" : String(shareSince);
+      if (next === scope) return false;
+      var cleared = ids.length > 0;
+      scope = next;
+      ids = [];
+      set = Object.create(null);
+      saveDismissedAlerts(storage, ids, cap);
+      saveDismissedScope(storage, scope);
+      return cleared;
     },
   };
 }
@@ -661,6 +699,9 @@ if (typeof document !== "undefined") {
         case "viewer_hello":
           retryCount = 0;
           lastConnectedAt = Date.now();
+          // 取消记录先对齐这一次共享，再收回放的报警：程序重启后 alert_id 从头数，
+          // 上一次共享里取消过的 7 号不能藏掉这一次的 7 号
+          dismissedAlerts.bind(msg.share_since);
           resetForNewSession();
           setConnState("connected");
           break;
@@ -777,7 +818,8 @@ if (typeof document !== "undefined") {
     function renderAlert(msg) {
       if (!alertSection || !alertList) return;
       // 之前在本机取消过：回放（重连/刷新补发的历史）也不复活。不是「自动取消」，
-      // 是记住了「取消过」——真正的新报警（新 alert_id）永远照常显示。
+      // 是记住了「取消过」——真正的新报警（新 alert_id，或程序重启后重新数到的同一个
+      // 数字，见 createDismissedStore.bind）永远照常显示。
       if (dismissedAlerts.has(msg.alert_id)) return;
       if (msg.demo) { demoMode = true; updateDemoBanner(); }
       alertSection.classList.remove("hidden");
@@ -1086,6 +1128,7 @@ if (typeof module !== "undefined" && module.exports) {
     canRetranslate: canRetranslate,
     loadDismissedAlerts: loadDismissedAlerts,
     saveDismissedAlerts: saveDismissedAlerts,
+    loadDismissedScope: loadDismissedScope,
     createDismissedStore: createDismissedStore,
     shouldRenderSessionDivider: shouldRenderSessionDivider,
     sessionDividerText: sessionDividerText,

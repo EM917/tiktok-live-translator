@@ -269,6 +269,68 @@ test("createDismissedStore storage 抛错/没有 storage 也不影响内存态�
   assert.equal(noStorage.has("a1"), true);
 });
 
+// ---- 取消记录属于「发出这些 id 的那一次共享」----
+// 事故（2026-10-16 审阅）：alert_id 是进程内计数器，程序重启后从 1 重新数；手机 localStorage
+// 里存的是光秃秃的 id，于是「取消过 7 号」把重启后全新的 7 号报警也静默藏了。
+test("createDismissedStore.bind：同一次共享留着取消记录，换了一次共享就清空并落盘", () => {
+  const storage = fakeStorage();
+  const first = V.createDismissedStore(storage);
+  first.bind(1000.5);
+  first.add("7");
+  assert.equal(first.has("7"), true);
+  assert.equal(storage.getItem("viewerDismissedAlertsScope"), "1000.5");
+
+  // 刷新页面/断线重连：新建一个 store，hello 带来同一个 share_since → 记录还在
+  const sameRun = V.createDismissedStore(storage);
+  assert.equal(sameRun.bind(1000.5), false, "同一次共享不该清东西");
+  assert.equal(sameRun.has("7"), true);
+
+  // 程序重启：share_since 变了 → 旧 id 全部作废，包括落盘的那份
+  const afterRestart = V.createDismissedStore(storage);
+  assert.equal(afterRestart.bind(2000.25), true, "换了一次共享，应报告清掉了东西");
+  assert.equal(afterRestart.has("7"), false, "上一次共享里取消过的 7 号，不能藏这一次的 7 号");
+  assert.deepEqual(JSON.parse(storage.getItem("viewerDismissedAlerts")), []);
+  assert.equal(storage.getItem("viewerDismissedAlertsScope"), "2000.25");
+  afterRestart.add("7");                       // 这一次共享里取消的 7 号照样记得住
+  assert.equal(V.createDismissedStore(storage).has("7"), true);
+});
+test("createDismissedStore.bind：老版本留下的记录没有归属，第一次 hello 就清掉", () => {
+  const storage = fakeStorage({ viewerDismissedAlerts: JSON.stringify(["1", "7"]) });
+  const store = V.createDismissedStore(storage);
+  assert.equal(V.loadDismissedScope(storage), null);
+  assert.equal(store.bind(1000), true);
+  assert.equal(store.has("1"), false);
+  assert.equal(store.has("7"), false);
+  assert.equal(V.loadDismissedScope(storage), "1000");
+});
+test("createDismissedStore.bind：share_since 为 0 是合法归属；缺省（null/undefined）当同一个空归属", () => {
+  const storage = fakeStorage();
+  const store = V.createDismissedStore(storage);
+  store.bind(0);
+  store.add("3");
+  assert.equal(V.createDismissedStore(storage).bind(0), false, "0 不是「没有」，不能被当成缺省");
+  assert.equal(V.createDismissedStore(storage).bind(1), true);
+
+  const a = V.createDismissedStore(fakeStorage());
+  assert.doesNotThrow(() => a.bind(undefined));
+  a.add("3");
+  assert.equal(a.bind(null), false, "undefined 与 null 同属缺省，不互相清");
+  assert.equal(a.has("3"), true);
+});
+test("createDismissedStore.bind：storage 抛错/没有 storage 也不抛，内存态照常清", () => {
+  const throwing = V.createDismissedStore({
+    getItem: () => { throw new Error("boom"); },
+    setItem: () => { throw new Error("boom"); },
+  });
+  throwing.bind(1);
+  throwing.add("7");
+  assert.equal(throwing.has("7"), true);
+  assert.doesNotThrow(() => throwing.bind(2));
+  assert.equal(throwing.has("7"), false);
+  const none = V.createDismissedStore(undefined);
+  assert.doesNotThrow(() => none.bind(1));
+});
+
 // ---- DOM 回归：断线时不能让 stream-text 停在最后一次「直播中」不动 ----
 // 评审发现：setConnState/onSocketDown（上面那道 `typeof document` 门之内）只
 // 更新了 conn-text/conn-dot，从没碰过 stream-text——它只由 "status" 消息写，
@@ -600,6 +662,57 @@ test("手机端「取消警报」：✕ 只在本机隐藏、回放不复活；�
     const stored = JSON.parse(store.get("viewerDismissedAlerts"));
     assert.ok(["a1", "a2", "a3"].every((id) => stored.includes(id)));
     assert.ok(!stored.includes("a4"));
+  });
+});
+
+// ---- DOM 回归：取消记录跟着「这一次共享」走 ----
+function helloMsg(shareSince) {
+  return JSON.stringify({ type: "viewer_hello", ok: true, ts: Date.now() / 1000, share_since: shareSince, viewers: 1, max_viewers: 12, read_only: true });
+}
+function alertMsg(id, extra) {
+  return JSON.stringify(Object.assign({ type: "alert", alert_id: id, term: "x", tier: "exact", ts: Date.now() / 1000, context: "ctx" + id }, extra || {}));
+}
+
+test("手机端「取消警报」：程序重启后 alert_id 从头数，上一次共享里取消过的号不藏这一次的新报警", () => {
+  withFakeViewerPage(({ elements, ws, store }) => {
+    const alertList = elements["alert-list"];
+    ws.onmessage({ data: alertMsg(7) });
+    assert.equal(alertList.children.length, 1);
+    alertList.children[0].children[0].children[1].click();            // 在这一次共享里取消 7 号
+    assert.equal(alertList.children.length, 0);
+
+    // 中控重启了程序：手机断线重连，viewer_hello 带来新的 share_since，计数器又数到了 7
+    ws.onclose({ code: 1006 });
+    ws.onmessage({ data: helloMsg(1760600000.5) });
+    ws.onmessage({ data: alertMsg(7) });
+    assert.equal(alertList.children.length, 1, "重启后的新 7 号报警必须显示（桌面和审计里都有它）");
+    assert.equal(store.get("viewerDismissedAlertsScope"), "1760600000.5");
+    assert.deepEqual(JSON.parse(store.get("viewerDismissedAlerts")), [], "旧的取消记录应已作废");
+
+    // 这一次共享里再取消它，照样生效
+    alertList.children[0].children[0].children[1].click();
+    ws.onmessage({ data: alertMsg(7, { replay: true }) });
+    assert.equal(alertList.children.length, 0);
+  });
+});
+
+test("手机端「取消警报」：同一次共享里断线重连，取消过的报警仍不复活", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const alertList = elements["alert-list"];
+    ws.onmessage({ data: alertMsg(7) });
+    ws.onmessage({ data: alertMsg(8) });
+    assert.equal(alertList.children.length, 2);
+    alertList.children[0].children[0].children[1].click();            // 取消先到的 7 号
+    assert.equal(alertList.children.length, 1);
+
+    // 手机网络抖了一下：重连后 hello 的 share_since 没变，回放里 7、8 都会再发一遍
+    ws.onclose({ code: 1006 });
+    ws.onmessage({ data: helloMsg(0) });
+    ws.onmessage({ data: alertMsg(7, { replay: true }) });
+    ws.onmessage({ data: alertMsg(8, { replay: true }) });
+    assert.equal(alertList.children.length, 1, "7 号取消过，回放不复活；8 号没取消，照常显示");
+    ws.onmessage({ data: alertMsg(9) });
+    assert.equal(alertList.children.length, 2, "新报警照常显示");
   });
 });
 
