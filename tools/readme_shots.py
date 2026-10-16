@@ -26,8 +26,9 @@ PATH 上有 pngquant 时 PNG 交给它压）。项目的 .venv 里没装 Pillow�
 
 每张图出图前都核对一遍：视口对、数据真的到了（状态不是「等待连接…」、字幕条数对）、没有
 提示条、没有被省略号截断的文字、没有被滚动切掉一截的字幕卡片、没有被浮层下沿切成两半的
-文字行、英文图里没有一个汉字（切换语言按钮上的「中文」这个语言自称除外）。对不上就报错退出，
-不写这张图。同一台机器、同一版 Chrome 重跑，出来的文件逐字节相同（2026-09-29 实测），
+文字行、首页设置分组的底边没被底部版权行盖住（行数多了、中文行更高时一屏放不下，就把页面往上
+滚到分组底边离版权行 12px，滚掉的只是顶上的空白，最多 48px）、弹幕留意的顶部条没弹出来、英文图里没有
+一个汉字（切换语言按钮上的「中文」这个语言自称除外）。对不上就报错退出，不写这张图。同一台机器、同一版 Chrome 重跑，出来的文件逐字节相同（2026-09-29 实测），
 所以图的 diff 就是界面的变化。
 
 直播转写进行中拒绝运行（CLAUDE.md 第三条）：无头 Chrome 是一整个浏览器进程。
@@ -180,6 +181,14 @@ def _clean_checks():
             disk]
 
 
+# 弹幕留意（#75–#82）默认开、只用规则：新装的首页「设置」里有这一行。页面只在 config.guard_state 到了
+# 才画它（老后端没有这个键就整个功能不出现），所以场景要带上这个键，否则 README 的设置分组比真机少
+# 一行，正文里的「设置 → 弹幕留意」在图上找不到。干净状态：没有关注的人、没有待看的、没有规则体检警告，
+# 顶部条和抽屉都不会弹出来（出图前的核对会拦）
+GUARD_STATE = dict(S.GUARD_STATE, n_marked=0, unreviewed=0, trip=None, streamer=STREAMER,
+                   rules={"count": S.GUARD_STATE["rules"]["count"], "warnings": 0})
+
+
 def _version():
     try:
         return (ROOT / "VERSION").read_text(encoding="utf-8").strip() or "0.0.0"
@@ -197,6 +206,7 @@ def _server(lang, tmp, *, viewers=None, alerts=False):
         "brands": {STREAMER: BRAND["id"]}, "brand_options": BRAND_OPTIONS,
         "source_lang": "es,en", "alerts_enabled": alerts,
         "viewer": _share(viewers) if viewers is not None else server.config["viewer"],
+        "guard_state": dict(GUARD_STATE),
     })
     S._produce(server, lambda p: p._publish_selfcheck(_clean_checks()))
     return server
@@ -424,7 +434,7 @@ FACTS_JS = r"""
   var bars = ["incident-bar", "health-bar", "alert-panel", "status-banner", "update-bar",
               "migrate-bar", "fix-command", "alert-mode-tag",
               "alert-mode-line", "stale-line", "demo-banner", "health-line", "alert-section",
-              "alert-badge"].filter(function (id) { var el = byId(id); return el && shown(el); });
+              "alert-badge", "guard-bar", "guard-drawer"].filter(function (id) { var el = byId(id); return el && shown(el); });
   var incidents = byId("incident-list");
   if (incidents && incidents.children.length) bars.push("incident-list");
   var expanded = {};
@@ -463,9 +473,19 @@ FACTS_JS = r"""
       }
     }
   });
+  // 首页「设置」分组的底边被底部版权行（position: fixed）盖住多少：行数多了、中文行更高时，
+  // 最后一行的下半截会被盖住，截图里看着像卡片被切了一刀
+  var settings = document.querySelector("#start-panel .settings");
+  var foot = document.querySelector(".copyright");
+  var covered = 0;
+  if (settings && foot && shown(settings)) {
+    covered = Math.max(0, settings.getBoundingClientRect().bottom - foot.getBoundingClientRect().top);
+  }
   var qr = byId("share-qr");
   var confirm = byId("switch-confirm");
   return {
+    settingsCovered: Math.round(covered * 10) / 10,
+    scrolled: Math.round(byId("history") ? byId("history").scrollTop : 0),
     page: byId("status-text") ? "desktop" : "phone",
     status: text("status-text"), conn: text("conn-text"), stream: text("stream-text"),
     caps: document.querySelectorAll("#history .cap, #caption-list > *").length,
@@ -489,6 +509,7 @@ FACTS_JS = r"""
 # 英文图里唯一允许出现的汉字：切换语言的按钮上写的是另一种语言的自称（手机页 #lang-toggle，
 # translate="no"），这是语言名，不是没翻的界面文字
 AUTONYMS = {"中文"}
+HOME_MAX_SCROLL = 48     # 首页最多滚这么多 CSS 像素（.start-panel 顶上的空白最多 72px，滚掉的只是空白）
 STARTING = {"等待连接…", "Starting…", "连接中…", "Connecting…"}
 STATUS_LIVE = {"en": "Live · ", "zh": "直播中 · "}
 STATUS_IDLE = {"en": "Ready", "zh": "待机"}
@@ -522,7 +543,14 @@ def problems(name, lang, facts, expect_caps=None):
     if name in ("home", "settings-language"):
         need(facts["status"] == STATUS_IDLE[lang], "首页状态应为待机：{}".format(facts["status"]))
         need(facts["startPanel"] and facts["caps"] == 0, "首页应只有开始面板")
-        opened = [k for k in ("sc-head", "engine-head", "watch-head", "disk-head")
+        need(facts.get("settingsCovered", 0) <= 0.5,
+             "设置分组的底边被底部版权行盖住 {}px".format(facts.get("settingsCovered")))
+        if name == "home":       # 设置那一张本来就滚到展开行底下，不看这一条
+            need(facts.get("scrolled", 0) <= HOME_MAX_SCROLL,
+                 "首页滚了 {}px 才放下设置分组（上限 {}）：行太多，一屏放不下".format(
+                     facts.get("scrolled"), HOME_MAX_SCROLL))
+        opened = [k for k in ("sc-head", "engine-head", "guard-head", "watch-head",
+                              "transcript-head", "disk-head")
                   if facts["expanded"].get(k)]
         need(not opened, "设置分组里这些行展开了：{}".format(opened))
         need(facts["expanded"].get("lang-head") == (name == "settings-language"),
@@ -776,15 +804,32 @@ SETTINGS_CLIP_JS = r"""
 """
 
 
+# 首页那一张：设置分组有七行，1000×760 的窗口里放不下时，把 .history 往上滚到分组底边离版权行
+# 12px（和手动滚一下一样；滚掉的是 .start-panel 顶上的空白）。放得下就不动
+HOME_FIT_JS = r"""
+(function () {
+  var box = document.getElementById("history");
+  var foot = document.querySelector(".copyright").getBoundingClientRect().top;
+  var over = document.querySelector("#start-panel .settings").getBoundingClientRect().bottom - (foot - 12);
+  if (over > 0) box.scrollBy({ top: over, behavior: "instant" });
+  return box.scrollTop;
+})()
+"""
+
+
 async def _shoot(page, name, lang, out):
     clip = None
     if name == "settings-language":
         clip = await page.eval(SETTINGS_CLIP_JS)
         await asyncio.sleep(SETTLE_SEC)
-    await _check(page, name, lang, expect_caps=SCENE_CAPTIONS.get(name))
+    elif name == "home":
+        if await page.eval(HOME_FIT_JS):
+            await asyncio.sleep(SETTLE_SEC)
+    facts = await _check(page, name, lang, expect_caps=SCENE_CAPTIONS.get(name))
     path = shot_path(out, lang, name)
     size = save_png(await page.screenshot(clip), path)
-    print("  {}  {:.0f} KB".format(path.relative_to(out), size / 1024))
+    note = "，首页滚了 {}px".format(facts["scrolled"]) if name == "home" and facts["scrolled"] else ""
+    print("  {}  {:.0f} KB{}".format(path.relative_to(out), size / 1024, note))
 
 
 async def _record(page, lang, out):

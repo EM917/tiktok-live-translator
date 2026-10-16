@@ -78,6 +78,12 @@ def test_scenes_are_the_clean_state(built):
                 assert summary["fail"] == 0 and summary["warn"] == 0, summary
                 assert not config.get("incidents")
                 assert not config["alerts_enabled"]                # 报警默认关着
+                # 弹幕留意默认开：设置里要有这一行（页面靠 guard_state 才画它），但干净——没有待看的、
+                # 没有关注的人、没有规则警告，顶部条不会弹出来
+                guard = config["guard_state"]
+                assert guard["enabled"] and guard["status"] == "rules", guard
+                assert guard["unreviewed"] == 0 and guard["n_marked"] == 0 and not guard["trip"], guard
+                assert guard["rules"]["warnings"] == 0, guard
         phone = built[lang]["phone"]["messages"]
         # 手机页：报警开着、没有命中，顶上不会常驻「违禁词警示已关闭」
         assert {"type": "alert_mode", "on": True} in phone
@@ -179,6 +185,21 @@ def test_the_pre_shot_check_catches_what_the_readme_must_not_show():
     assert R.problems("live", "en", _facts(status="Starting…"))              # 数据没到
     assert R.problems("live", "en", _facts(caps=3))
     assert R.problems("live", "en", _facts(bars=["health-bar"]))
+    assert R.problems("live", "en", _facts(bars=["guard-bar"]))              # 弹幕留意的顶部条弹出来了
+    home = _facts(status="Ready", caps=0, startPanel=True, commentPanel=False, liveBar=False,
+                  brandTag=False, expanded={"lang-head": False, "guard-head": False,
+                                            "transcript-head": False})
+    assert R.problems("home", "en", home) == []
+    assert R.problems("home", "en", dict(home, expanded=dict(home["expanded"], **{"guard-head": True})))
+    assert R.problems("home", "en", dict(home, expanded=dict(home["expanded"], **{"transcript-head": True})))
+    # 设置分组七行时一屏放不下：最后一行被底部版权行盖住的图不能进 README，滚得太多（放不下）也不行
+    assert R.problems("home", "zh", dict(home, status="待机", settingsCovered=0, scrolled=14)) == []
+    assert R.problems("home", "zh", dict(home, status="待机", settingsCovered=11.5))
+    assert R.problems("home", "zh", dict(home, status="待机", scrolled=R.HOME_MAX_SCROLL + 1))
+    lang_open = dict(home, status="待机", langBody=True, scrolled=113,        # 设置那一张本来就滚得远
+                     expanded=dict(home["expanded"], **{"lang-head": True}))
+    assert R.problems("settings-language", "zh", lang_open) == []
+    assert R.problems("settings-language", "zh", dict(lang_open, settingsCovered=9))
     assert R.problems("live", "en", _facts(cut=["span#status-text：Live · @luna.de…"]))
     assert R.problems("live", "en", _facts(clipped=["19:57:30 ES Hoy les…"]))
     assert R.problems("share-panel", "en", _facts(                          # 浮层下沿切过一行字
