@@ -290,6 +290,23 @@ def test_a_window_that_fails_to_open_reports_a_plain_observation_and_stays_close
     assert changes == [(False, error)]
 
 
+def test_a_window_that_never_gets_shown_is_a_failure_not_a_lit_button(capsys):
+    # create_window 立刻返回，建窗在 GUI 线程上稍后才做；那边失败时 shown 永远不会来
+    factory = Factory()
+    original = factory.__call__
+
+    def never_shown(title, url, **kwargs):
+        window = original(title, url, **kwargs)
+        window.events.shown.wait = lambda timeout=None: False
+        return window
+    host, _f, _s, changes = make_host(factory=never_shown)
+    host.request_open()
+    assert not host.is_open()
+    assert changes == [(False, fw.OPEN_FAILED)]
+    assert "窗口没有在 8.0 秒内显示出来" in capsys.readouterr().out
+    assert factory.windows[0].destroyed == 1          # 事后清理一下，免得它迟到地冒出来
+
+
 def test_create_window_returning_none_is_a_failure_too():
     host, _f, _s, changes = make_host(factory=Factory(none=True))
     host.request_open()

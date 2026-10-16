@@ -37,6 +37,7 @@ POSITION_LIMIT = 20000
 VISIBLE_MARGIN = (80, 40)       # 窗口至少要有这么宽、这么高的一块落在屏幕里，标题栏才够得着
 DEBOUNCE_SEC = 0.8              # 位置、大小停稳这么久才写 settings.json
 STUCK_EXIT_SEC = 10.0           # 主窗口关了、10 秒后 GUI 循环还没退出，走一遍收尾直接退出
+SHOWN_WAIT_SEC = 8.0            # create_window 返回后最多等这么久窗口才算真的显示出来
 SOLID_BACKGROUND = "#101218"
 LIMITS = {"x": (-POSITION_LIMIT, POSITION_LIMIT), "y": (-POSITION_LIMIT, POSITION_LIMIT),
           "width": (MIN_SIZE[0], MAX_SIZE[0]), "height": (MIN_SIZE[1], MAX_SIZE[1])}
@@ -177,8 +178,10 @@ class FloatWindowHost:
     - on_change(is_open, error)：状态变了（任何线程里调），error 是要告诉用户的一句双语话或 None。"""
 
     def __init__(self, create_window, base_url, platform=None, screens=None, load=None, save=None,
-                 spawn=None, timer_factory=None, mac_tweaks=None, on_change=None):
+                 spawn=None, timer_factory=None, mac_tweaks=None, on_change=None,
+                 shown_wait=SHOWN_WAIT_SEC):
         self._create = create_window
+        self._shown_wait = shown_wait
         self._base_url = str(base_url).rstrip("/")
         self._transparent = (sys.platform if platform is None else platform) == "darwin"
         self._screens = screens or (lambda: [])
@@ -253,6 +256,13 @@ class FloatWindowHost:
             window = self._create(i18n.text(FLOAT_TITLE), self.url(), **self._window_kwargs(geom))
             if window is None:
                 raise RuntimeError("create_window 没有返回窗口")  # i18n: terminal
+            # create_window 在 start() 之后从非主线程调用时立刻返回，窗口是在 GUI 线程上稍后才建的；
+            # 建窗在那边失败（后端不支持某个参数之类）的话 shown 永远不会来。等到它真的显示了才算开成，
+            # 否则页面上的按钮会亮着，屏幕上却什么也没有
+            shown = getattr(getattr(window, "events", None), "shown", None)
+            if shown is not None and not shown.wait(self._shown_wait):
+                self._spawn(lambda: self._destroy_quietly(window))
+                raise RuntimeError("窗口没有在 {} 秒内显示出来".format(self._shown_wait))  # i18n: terminal
         except Exception as exc:
             self._want = False
             print("[警告] 打开浮窗失败：{}".format(exc))
@@ -268,6 +278,13 @@ class FloatWindowHost:
         print("[信息] 浮窗已打开")
         self._notify(True, None)
         return True
+
+    @staticmethod
+    def _destroy_quietly(window):
+        try:
+            window.destroy()
+        except Exception:
+            pass
 
     def _close_locked(self):
         with self._state:
