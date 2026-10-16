@@ -1,6 +1,11 @@
 .venv/
 .venv.lock
 settings.json
+# app/settings.py 写 settings.json 时的临时文件，以及读到损坏文件时改名留下的备份
+# （settings.json.corrupt-<时间>[-n]）。里面是整份设置，含 Claude/DeepL 密钥——
+# 和 settings.json 一样不入库，也不能挡住一键更新（工作区要保持干净）
+settings.json.tmp
+settings.json.corrupt-*
 __pycache__/
 *.pyc
 .DS_Store
