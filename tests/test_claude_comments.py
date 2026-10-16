@@ -520,6 +520,37 @@ def test_comments_that_are_already_fine_are_sent_before_the_retries(monkeypatch)
     assert sorted(ids) == ["c0", "c1", "c2"]                  # 每条恰好一次
 
 
+def test_no_retry_after_the_operator_switches_engines(monkeypatch):
+    """第一次请求在路上时中控换了引擎：被判成回话的那条不再发给旧引擎（字幕那边同一条规矩）。"""
+    holder = {}
+
+    class SwitchOnFirstPost(Sibling):
+        def __call__(self):
+            tr = super().__call__()
+            session, original = tr.session_log, tr.session_log.post
+
+            def post(url, data=None, headers=None, **kw):
+                holder["tr"] = Fast("hymt2", out="不该被用到")
+                return original(url, data=data, headers=headers, **kw)
+
+            session.post = post
+            return tr
+
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    holder["tr"] = wrapped
+    made = SwitchOnFirstPost([reply(META_REPLY), reply("是的，全部")])
+    ct, sent = make(holder, made)
+
+    async def scenario():
+        await ct.accept(items("Sii todo"))
+        assert await wait_for(lambda: len(updates(sent)) == 1)
+        await ct.close()
+
+    run(scenario())
+    assert len(posts_of(made)) == 1
+    assert updates(sent) == {"c0": ("failed", None)}
+
+
 def test_a_local_engine_is_not_retried(monkeypatch):
     """Hy-MT2 温度为 0，再问是同一个答案。"""
     engine = Fast("hymt2", out=META_REPLY)

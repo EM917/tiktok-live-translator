@@ -525,6 +525,7 @@ class CommentTranslator:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": state})
             return
+        picked = translator          # 中控选的引擎（弹幕用的是它派生的 engine）：重试前看它还在不在
         translator = engine
         target = self._target()
         glossary = self._glossary()
@@ -564,7 +565,8 @@ class CommentTranslator:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": "failed"})
         for item, why in again:
-            out, asked = await self._retry_reply(translator, item["text"], target, glossary, t0)
+            out, asked = await self._retry_reply(translator, item["text"], target, glossary, t0,
+                                                 picked)
             retried += asked
             if asked:
                 retried_by[why] = retried_by.get(why, 0) + 1
@@ -587,7 +589,7 @@ class CommentTranslator:
         """这一句带给翻译器的词表提示（缓存键里有它，forget 要用同一个）。"""
         return tuple(glossary.translation_pairs(text)) if glossary else None
 
-    async def _retry_reply(self, translator, text, target, glossary, t0):
+    async def _retry_reply(self, translator, text, target, glossary, t0, picked=None):
         """一条弹幕的译文被判成回话后，把它单独作为一次请求原样再发一次（最多 REPLY_RETRIES 次）。
         返回 (译文或 None, 有没有真的发出请求)。
 
@@ -600,6 +602,9 @@ class CommentTranslator:
         asked = False
         for _ in range(REPLY_RETRIES):
             if time.monotonic() - t0 > self.RETRY_START_MAX_SEC:
+                break
+            if picked is not None and self._translator() is not picked:
+                # 中控刚换了引擎：这一批的弹幕实例跟着旧引擎，再发就是把弹幕发给已经不用的引擎
                 break
             if getattr(translator, "fail_streak", 0) > 0 \
                     or getattr(translator, "cooldown_until", 0.0) > time.monotonic():
