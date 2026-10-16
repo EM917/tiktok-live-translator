@@ -82,8 +82,16 @@ class Stuck:
     name = "hymt2"
 
     def __init__(self):
-        self.started = asyncio.Event()
+        self._started = None
         self.calls = 0
+
+    @property
+    def started(self):
+        # 用到时才建：Python 3.9 的 asyncio.Event() 构造时就绑当前事件循环，测试体（循环外）
+        # 里 Stuck() 一建就报「There is no current event loop」（CI 的 3.9 任务）
+        if self._started is None:
+            self._started = asyncio.Event()
+        return self._started
 
     async def translate(self, text, target, source="auto", glossary=None):
         self.calls += 1
