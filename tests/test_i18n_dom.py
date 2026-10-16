@@ -669,11 +669,14 @@ def test_guard_chinese_pages_are_chinese(dom, name):
 
 @needs_chrome
 @needs_mac
+@pytest.mark.parametrize("base", ("live-full", "live-float"))
 @pytest.mark.parametrize("width", S.LIVE_WIDTHS + S.NARROW_WIDTHS)
-def test_live_top_bar_fits(dom, width):
+def test_live_top_bar_fits(dom, base, width):
     """live-full 在各档窗口宽度下：顶栏整行不溢出；状态字、「换主播」确认按钮不被截；
-    品牌标签留得出宽度。860/720 两档只看顶栏（spec §12.3 第 7 条）。"""
-    result = dom.scan("live-full@{}".format(width))
+    品牌标签留得出宽度。860/720 两档只看顶栏（spec §12.3 第 7 条）。
+    live-float 是同一个场景加上窗口模式才有的「浮窗」按钮（顶栏多 36px，字号滑块收窄 24px 抵消，
+    见 web/style.css）：下限和 live-full 一样，这是窗口模式（所有人的默认模式）真实的顶栏。"""
+    result = dom.scan("{}@{}".format(base, width))
     got = result["measure"]
     problems = []
 
@@ -850,6 +853,20 @@ def test_guard_scenarios_carry_the_data_the_page_needs(tmp_path):
         assert built[name + "-zh"]["clicks"] == built[name]["clicks"]
         assert built[name + "-zh"]["messages"][0]["config"].get("guard_events") == \
             built[name]["messages"][0]["config"].get("guard_events")
+
+
+def test_the_float_button_scenario_differs_from_live_full_only_by_the_config_key(tmp_path):
+    built = S.build(tmp_path)
+    full, float_ = built["live-full"], built["live-float"]
+    assert full["messages"][0]["config"].get("float_window") is None
+    assert float_["messages"][0]["config"]["float_window"] == {"available": True, "open": False}
+    stripped = json.loads(json.dumps(float_))
+    del stripped["messages"][0]["config"]["float_window"]
+    stripped["name"] = full["name"]
+    assert stripped == full
+    for width in S.LIVE_WIDTHS + S.NARROW_WIDTHS:       # 每档宽度两个基础场景都有
+        assert built["live-float@{}".format(width)]["size"][0] == width
+        assert built["live-full@{}".format(width)]["size"][0] == width
 
 
 def test_float_scenario_is_what_the_float_connection_really_receives(tmp_path):

@@ -402,6 +402,22 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
    switch-btn 推开，对「点错换主播/停止」这个风险毫无帮助 */
 .switch-btn { margin-right: 16px; }
 
+/* 浮窗：和手机同看同一种画法（图标 + .btn-label），打开时变绿，跟其余「on」状态同一个颜色。
+   顶栏放不下文字：窄于 1400px 只留图标，文字视觉隐藏而不是 display:none（读屏照念，同 #share-btn 的写法）；
+   宽屏才露出文字。图标 28px 宽 + 8px 间距 = 顶栏多出 36px，默认窗口 1000px 下品牌标签只有约 25px 余量
+   （docs/i18n-style.md §4.1），所以按钮露出时（app.js 给 body 加 has-float-btn）字号滑块从 96px 收到 72px，
+   省回 24px，细节见下面 */
+#float-btn { gap: 4px; padding: 0 10px 0 7px; }
+#float-btn.on { color: var(--green-ink); background-color: var(--a-green-16); }
+@media (max-width: 1399px) {
+  #float-btn { padding: 0 6px; min-width: 28px; }
+  #float-btn .btn-label {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; white-space: nowrap; border: 0; clip: rect(0, 0, 0, 0);
+  }
+  body.has-float-btn #font-size { width: 72px; }
+}
+
 input[type="range"] { accent-color: var(--blue); width: 96px; }
 
 /* 窄窗口：顶栏先省掉「目标语言」四个字（下拉本身有 title），再让控件整行换到第二行。

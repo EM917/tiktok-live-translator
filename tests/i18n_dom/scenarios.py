@@ -64,7 +64,7 @@ FLOAT_MEASURE = (".f-root", "#f-caption", "#f-comments")
 # 设置行展开、直播中抽屉的「最近需要留意」页签、抽屉的「关注名单」页签、熔断后的胶囊与「本场重新启用」
 GUARD_NAMES = ("home-guard", "live-guard", "live-guard-marked", "live-guard-tripped")
 GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
-DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "connecting", "offline",
+DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "live-float", "connecting", "offline",
               "error-4003110") + GUARD_NAMES
 PHONE_EN = ("phone-live", "phone-denied", "phone-full", "phone-local-en")
 FLOAT_EN = ("float-live",)           # 浮窗页（web/float.html）：直播中，有红 / 琥珀 / 关注的弹幕，最新一条字幕没译成
@@ -568,6 +568,15 @@ def _float(tmp):
         return _scenario("float-live", "float", "en", [i18n.render(m, "en") for m in out])
 
 
+def with_float_button(scenario, name):
+    """同一个直播中场景，加上桌面应用窗口模式才有的 config.float_window：顶栏多出「浮窗」按钮。
+    live-full 不带它——浏览器模式和 README 截图里没有这颗按钮；窗口模式的顶栏宽度另外用这个场景量。"""
+    out = copy.deepcopy(scenario)
+    out["name"] = name
+    out["messages"][0]["config"]["float_window"] = {"available": True, "open": False}
+    return out
+
+
 def resized(scenario, width, height=None):
     """同一个场景换一个窗口大小：live-full@1100 这样命名。"""
     out = copy.deepcopy(scenario)
@@ -587,7 +596,9 @@ def build(tmp):
                      "safari": browser_login.BLOCKED, "chrome": browser_login.NOT_LOGGED_IN})),
                  _live_full(tmp, "zh")] + _guard_scenarios(tmp) + _phone(tmp) + [_float(tmp)]
     out = {sc["name"]: sc for sc in scenarios}
-    for width in LIVE_WIDTHS + NARROW_WIDTHS:
-        sc = resized(out["live-full"], width)
-        out[sc["name"]] = sc
+    out["live-float"] = with_float_button(out["live-full"], "live-float")
+    for base in ("live-full", "live-float"):
+        for width in LIVE_WIDTHS + NARROW_WIDTHS:
+            sc = resized(out[base], width)
+            out[sc["name"]] = sc
     return out

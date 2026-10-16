@@ -614,6 +614,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 139 | float.js floatCommentView | 翻译中… | Translating… | 同 #102 |
 | 140 | float_window.py OPEN_FAILED | 无法打开浮窗。 | Couldn’t open the floating window. | 一次性提示（notice）。不写原因 |
 | 141 | float.js（经 live-ui.js liveBarChip） | 翻译失败 / 未翻译（接口拒答） / 未翻译（结果不像译文） / 翻译已跳过（积压） | 同 #105a | 浮窗里最新一条字幕的角标，和中控页底部大字幕是同一个函数；翻译中不画 |
+| 142 | index.html #float-btn | 浮窗（悬停：在始终置顶的小窗里看最新字幕和弹幕） | Floating Window（悬停：Show the latest caption and comments in a window that stays on top） | 默认只留图标，宽于 1400px 才露文字（英文文字约 110px，放不进 1000px 的顶栏）；图标按钮 28px + 间距 8px，见 §4.2 |
 
 ---
 
@@ -667,6 +668,9 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
   - 中文版同一宽度 controls 718，余量还有 +14。
   - **建议**：英文版把这条断点从 1100 挪到 1200，可以写成 `html[lang="en"]` 作用域下的规则，
     即 ≤1199px 时只留图标。1200px 时 controls 817，可用 335，放得下。
+- **「浮窗」按钮（桌面应用窗口模式的直播中）**：多一颗 28px 的图标按钮，加间距 8px，顶栏多 36px。1000px 时英文版品牌标签只有
+  约 25px 余量（G10 的下限 100px），所以按钮露出时 `body.has-float-btn` 把字号滑块从 96px 收到 72px（<1400px），省回 24px；
+  文字窄于 1400px 视觉隐藏（读屏照念）。G10 的 `live-float@宽度` 场景用同一组下限量这个真实的顶栏。
 - **≤860 / ≤720 / ≤600**：两种语言都靠现有断点逐级收起，英文版不会更糟。
   600px 以下本来就允许折行。
 
