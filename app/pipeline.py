@@ -2795,6 +2795,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 if stale is not None:
                     _drop_job(stale)
             trans_queue.put_nowait(None)
+            self.telemetry.translation_queue_depth = trans_queue.qsize()
 
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
@@ -2898,6 +2899,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         async def translation_worker():
             while True:
                 job = await trans_queue.get()
+                # 出队就刷新深度：它原来只在入队时写，worker 取走后一直停在 1，直到下一段
+                # 才变——_subtitle_translation_busy 因此几乎永远为真，弹幕每批都白等满
+                # 3 秒（约 1.2 条/秒封顶）。取走到下面 _subtitle_busy 记上之间没有 await，
+                # 「排队」与「在途」交接时不会出现两个都为零的空档
+                self.telemetry.translation_queue_depth = trans_queue.qsize()
                 if job is None:
                     break
                 await self._translate_and_update(job)
@@ -2935,6 +2941,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         break
                     if pending is not None:
                         _drop_job(pending)
+                # 取空了就归零：这一场收尾后队列不在了，残留的深度会让下一场开头的弹幕白等
+                self.telemetry.translation_queue_depth = trans_queue.qsize()
 
         reason, error = "eof", None
         try:
