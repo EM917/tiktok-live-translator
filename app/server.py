@@ -81,6 +81,15 @@ def captions_tail(items, limit):
     return items
 
 
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _ts_of(msg):
+    ts = msg.get("ts")
+    return ts if _is_number(ts) else 0.0
+
+
 def _write_buffer_size(transport):
     if transport is None:
         return None
@@ -118,6 +127,9 @@ class CaptionServer:
         self.alerts = deque(maxlen=ALERTS_MAX)
         # 观众弹幕：同样要跨刷新/重连留存，不然中控重连一次就看不到刚才谁说了什么
         self.comments = deque(maxlen=COMMENTS_MAX)
+        # 最近一次（非回放的）session_break 本身。history 是有限的 deque，一场播得够久它就会被挤出去；
+        # 弹幕缓存又不随换场清空——浮窗页的回放靠它认出「哪些弹幕是上一个主播的」（见 replay_messages）
+        self._last_break = None
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
         # 由 Pipeline 注入（桌面应用模式）：每条 status 广播之后同步调一次，参数是那条消息。
@@ -288,15 +300,38 @@ class CaptionServer:
         深度是中控页自己的上限（HISTORY_MAX / COMMENTS_MAX），不是手机的：手机拿的是
         app/viewer.py 的 replay_snapshot，它对同一份缓存再切一刀。纯同步，只读缓存。
 
-        role="float"：浮窗页只要最后几条字幕和弹幕，不要报警（它不显示报警）。"""
+        role="float"：浮窗页只要最后几条字幕和弹幕，不要报警（它不显示报警）。弹幕缓存不随换主播清空，
+        而浮窗只回放最后 3 条字幕，换场的分隔线常常不在里面；所以最近一次换场的分隔线无论如何都放在
+        回放最前面（页面据此清空并记下那一刻），比它老的弹幕不回放——不然重连的浮窗会把上一个主播的
+        弹幕当成本场最新的。"""
         if role == "float":
-            out = replay_payloads(captions_tail(self.history, FLOAT_REPLAY_CAPTIONS))
-            out.extend(dict(c, replay=True) for c in list(self.comments)[-FLOAT_REPLAY_COMMENTS:])
+            tail = captions_tail(self.history, FLOAT_REPLAY_CAPTIONS)
+            comments = list(self.comments)
+            brk = self._latest_break()
+            if brk is not None:
+                if not any(item is brk for item in tail):
+                    tail = [brk] + tail
+                since = brk.get("ts")
+                if _is_number(since):
+                    comments = [c for c in comments if not (_is_number(c.get("ts")) and c["ts"] < since)]
+            out = replay_payloads(tail)
+            out.extend(dict(c, replay=True) for c in comments[-FLOAT_REPLAY_COMMENTS:])
             return out
         out = [dict(alert, replay=True) for alert in list(self.alerts)]
         out.extend(replay_payloads(captions_tail(self.history, HISTORY_MAX)))
         out.extend(dict(c, replay=True) for c in list(self.comments)[-COMMENTS_MAX:])
         return out
+
+    def _latest_break(self):
+        """最近一次换场的 session_break 消息，没有就是 None。broadcast 记下的那份优先（history 一场播久了
+        会把它挤出去，clear_history 也会清掉它）；个别测试手搭的缓存里只有 history，也认。"""
+        best = getattr(self, "_last_break", None)
+        for item in reversed(getattr(self, "history", None) or ()):
+            if item.get("type") == "session_break":
+                if best is None or _ts_of(item) >= _ts_of(best):
+                    best = item
+                break
+        return best
 
     async def clear_history(self, kind):
         """中控点了「清空字幕」/「清空弹幕」：把服务端缓存里那一类也清掉。
@@ -325,6 +360,7 @@ class CaptionServer:
             # 和 caption 混进同一个 deque：顺序就是发生顺序，回放时分隔线
             # 落在它该在的两条字幕之间，不用另开一路时间线去对齐
             self.history.append(msg)
+            self._last_break = msg
         elif msg.get("type") == "caption_update":
             # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文
             # 只覆盖消息里带的键：重译的「pending/failed」通知不带 translated，

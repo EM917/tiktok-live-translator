@@ -142,6 +142,21 @@ test("换主播：字幕和弹幕清空，之后重连回放里比这一刻更�
   assert.deepEqual(s.comments.map((c) => c.id), ["new", "nots"]);
 });
 
+test("重连回放：服务端把最近一次换场放在最前面，页面只留换场之后的弹幕和字幕", () => {
+  // 形状同 CaptionServer.replay_messages("float")：[session_break, 最后 3 条字幕, 最后 10 条弹幕里不早于换场的]
+  const s = F.floatInitialState();
+  F.floatReduce(s, { type: "hello", config: {} });
+  F.floatReduce(s, { type: "session_break", ts: T + 100, streamer: "otra", replay: true });
+  for (const [i, text] of ["uno", "dos", "tres"].entries()) F.floatReduce(s, caption(i + 1, text, { replay: true }));
+  F.floatReduce(s, comment("n0", "ana", "nuevo", { ts: T + 150, replay: true }));
+  assert.equal(F.floatCaptionView(s).big, "tres");
+  assert.deepEqual(s.comments.map((c) => c.id), ["n0"]);
+  assert.equal(s.breakTs, T + 100);
+  // 万一服务端漏过滤，页面自己也挡得住比换场老的
+  F.floatReduce(s, comment("o0", "ana", "viejo", { ts: T + 99, replay: true }));
+  assert.deepEqual(s.comments.map((c) => c.id), ["n0"]);
+});
+
 test("清空字幕 / 清空弹幕各清各的", () => {
   const s = F.floatInitialState();
   F.floatReduce(s, caption(1, "hola"));

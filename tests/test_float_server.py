@@ -111,6 +111,104 @@ def test_the_float_replay_is_short_and_has_no_alerts():
     assert all(c["replay"] for c in comments)
 
 
+def two_sessions(old_comments=6, new_captions=4, new_comments=1, extra_captions=0):
+    """上一个主播 A（3 条字幕、old_comments 条弹幕）→ 换场 → 新主播 B（new_captions 条字幕、new_comments 条弹幕）。
+    弹幕缓存不随换场清空，所以 A 的弹幕还在里面。时间戳：A 在 100 附近，换场 200，B 在 300 以后。"""
+    server = CaptionServer(port=0)
+
+    async def fill():
+        await server.broadcast({"type": "status", "state": "live", "detail": ""})
+        for i in range(3):
+            await server.broadcast(dict(caption(0), id="a%d" % i, ts=100.0 + i))
+        for i in range(old_comments):
+            await server.broadcast(dict(comment(i), id="a%d" % i, ts=110.0 + i))
+        await server.broadcast({"type": "session_break", "ts": 200.0, "streamer": "b"})
+        for i in range(new_captions + extra_captions):
+            await server.broadcast(dict(caption(0), id="b%d" % i, ts=300.0 + i))
+        for i in range(new_comments):
+            await server.broadcast(dict(comment(i), id="b%d" % i, ts=400.0 + i))
+    asyncio.run(fill())
+    return server
+
+
+def float_replay(server):
+    async def body(client):
+        ws = await client.ws_connect("/ws?role=float")
+        got = await read_until_quiet(ws)
+        await ws.close()
+        return got[1:]                       # 去掉 hello
+    return asyncio.run(with_client(server, body))
+
+
+def test_a_float_page_opened_mid_session_does_not_get_the_previous_streamers_comments():
+    """浮窗只回放最后 3 条字幕，换场的分隔线常常不在里面；弹幕缓存又不随换场清空。
+    新主播只有 1 条弹幕时，缓存里最后 10 条里有 6 条是上一个主播的。"""
+    server = two_sessions(old_comments=6, new_captions=4, new_comments=1)
+    got = float_replay(server)
+    assert [m["type"] for m in got][:1] == ["session_break"] and got[0]["replay"] is True
+    assert [m["type"] for m in got].count("session_break") == 1
+    assert [m["id"] for m in got if m["type"] == "caption"] == ["b1", "b2", "b3"]
+    assert [m["id"] for m in got if m["type"] == "comment"] == ["b0"]
+
+
+def test_the_break_still_reaches_the_float_page_after_it_scrolled_out_of_history():
+    """一场播得够久，分隔线会被 history 的 deque 挤出去（HISTORY_MAX + 余量条之后）；这时仍要靠记下来的那份。"""
+    server = two_sessions(old_comments=6, new_captions=4, new_comments=2, extra_captions=400)
+    assert not any(m.get("type") == "session_break" for m in server.history)
+    got = float_replay(server)
+    assert got[0]["type"] == "session_break" and got[0]["ts"] == 200.0
+    assert [m["id"] for m in got if m["type"] == "comment"] == ["b0", "b1"]
+    assert [m["id"] for m in got if m["type"] == "caption"] == ["b401", "b402", "b403"]
+
+
+def test_a_break_inside_the_replayed_captions_is_not_sent_twice():
+    server = two_sessions(old_comments=3, new_captions=1, new_comments=1)       # 尾部 3 条：a1 a2 [break] b0
+    got = float_replay(server)
+    kinds = [(m["type"], m.get("id")) for m in got]
+    assert kinds[:4] == [("caption", "a2"), ("session_break", None), ("caption", "b0"), ("comment", "b0")] or \
+        [k for k in kinds if k[0] == "session_break"] == [("session_break", None)]
+    assert [k for k in kinds if k[0] == "session_break"] == [("session_break", None)]
+    assert [m["id"] for m in got if m["type"] == "comment"] == ["b0"]
+
+
+def test_clearing_the_captions_does_not_bring_the_old_comments_back_to_the_float_page():
+    server = two_sessions(old_comments=6, new_captions=4, new_comments=1)
+    asyncio.run(server.clear_history("captions"))
+    got = float_replay(server)
+    assert [m["type"] for m in got] == ["session_break", "comment"]
+    assert got[1]["id"] == "b0"
+
+
+def test_before_any_session_break_nothing_is_added_or_filtered():
+    server = CaptionServer(port=0)
+
+    async def fill():
+        await server.broadcast(caption(1))
+        await server.broadcast(comment(1))
+    asyncio.run(fill())
+    got = float_replay(server)
+    assert [m["type"] for m in got] == ["caption", "comment"]
+
+
+def test_a_hand_built_cache_without_the_remembered_break_still_filters():
+    """个别测试用 __new__ 手搭服务端（没有 _last_break）：分隔线在 history 里就照样认。"""
+    server = CaptionServer.__new__(CaptionServer)
+    server.alerts = []
+    server.history = [caption(i, ts=100.0 + i) for i in range(2)] + \
+        [{"type": "session_break", "ts": 200.0, "streamer": "b"}] + [caption(i, ts=300.0 + i) for i in range(2, 7)]
+    server.comments = [dict(comment(i), ts=110.0 + i) for i in range(5)] + [dict(comment(9), ts=400.0)]
+    out = server.replay_messages("float")
+    assert [m["type"] for m in out][0] == "session_break"
+    assert [m["id"] for m in out if m["type"] == "comment"] == ["c9"]
+
+
+def test_the_control_page_replay_is_not_filtered_by_the_float_rule():
+    server = two_sessions(old_comments=6, new_captions=4, new_comments=1)
+    out = server.replay_messages("control")
+    assert len([m for m in out if m["type"] == "comment"]) == 7
+    assert [m["type"] for m in out if m["type"] == "session_break"] == ["session_break"]
+
+
 def test_the_control_page_still_gets_everything():
     server = seeded_server()
 
