@@ -198,9 +198,12 @@ the main window, and the last five comments with their translations. Comments
 that Comment Review marks red or amber keep their marks there. It only displays:
 no buttons, no alerts, and it sends nothing to the app. Drag it or resize it; the
 position and size are saved in `settings.json` (`float_window`) and used the
-next time, unless that spot is no longer on a screen. It closes when you click
+next time, unless that spot is no longer on a screen. The first time, a Mac puts it
+near the bottom-right corner of the screen your main window is on; other systems place it themselves. It closes when you click
 its close button, when monitoring stops or ends, or when you close the main
-window. The button does not exist when you open the interface in a browser.
+window. The button exists only when the app runs in its own window, so it is not there
+with `--browser`. (A browser tab opened on the address of a running app window does show
+it, and clicking it opens the window in the app.)
 
 <a id="viewer-comments"></a>**Viewer comments.** The app fetches comments itself through TikTokLive,
 which needs Python 3.10 or later; the component installs itself on the first

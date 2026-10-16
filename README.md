@@ -157,7 +157,7 @@ The link contains a key, so treat it like a password. New Link disconnects every
 
 <sub>[中文](#zh-floating-window)</sub>
 
-While a stream is running, click Floating Window in the top bar to open a small dark window that stays on top of other apps. It shows the latest caption, with the original under it, and the last five comments with their translations. Drag it or resize it, and the app remembers where you left it. It only shows things: it has no buttons, and banned-term alerts stay in the main window. It closes by itself when monitoring stops, and it is only in the app window, not when you open the page in a browser.
+While a stream is running, click the Floating Window button in the top bar (only an icon while the app window is narrower than 1,400 px) to open a small dark window that stays on top of other apps. It shows the latest caption, with the original under it, and the last five comments with their translations. Drag it or resize it, and the app remembers where you left it. It only shows things: it has no buttons, and banned-term alerts stay in the main window. It closes by itself when monitoring stops. The button is there only when the app runs in its own window, not with `--browser`.
 
 <a id="en-comment-review"></a>
 
@@ -454,7 +454,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 <sub>[English](#en-floating-window)</sub>
 
-监听期间，点顶栏的「浮窗」，会打开一个深色的小窗，始终在别的软件上面。里面是最新一条字幕（原文在译文下面）和最近五条弹幕与它们的译文。可以拖动、拉大缩小，下次打开还在你放的位置。它只显示，没有按钮，违禁词报警仍然只在主窗口里。监听一停它就自己关掉；只有程序自己的窗口里有这个按钮，用浏览器打开界面时没有。
+监听期间，点顶栏的「浮窗」按钮（应用窗口窄于 1400 像素时只显示一个图标），会打开一个深色的小窗，始终在别的软件上面。里面是最新一条字幕（原文在译文下面）和最近五条弹幕与它们的译文。可以拖动、拉大缩小，下次打开还在你放的位置。它只显示，没有按钮，违禁词报警仍然只在主窗口里。监听一停它就自己关掉。只有程序在自己的窗口里运行时才有这个按钮，加了 `--browser` 就没有。
 
 <a id="zh-comment-review"></a>
 
