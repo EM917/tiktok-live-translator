@@ -26,8 +26,9 @@ from collections import OrderedDict
 
 from . import comment_redo as redo
 from .i18n import L
-from .translator import (CachedTranslator, ClaudeTranslator, begin_translate_call,
-                         engine_is_claude, looks_fabricated, translate_call_outcome)
+from .translator import (REPLY_RETRIES, CachedTranslator, ClaudeTranslator,
+                         begin_translate_call, engine_is_claude, looks_fabricated,
+                         translate_call_outcome)
 
 # 「有没有可译内容」的粗判：至少要有 2 个字母（含各语言字母，排除数字和下划线）。
 # 纯 emoji / 数字 / 标点的弹幕（"😂😂😂"、"1111"）翻不出东西，白白占用引擎。
@@ -154,12 +155,13 @@ def why_no_output(translator, paused, error_before, outcome):
     return "no_output"
 
 
-def _forget(translator, text, target):
-    """译文被判成不像译文：从重复句缓存里拿掉，同一句下次还会再问一次，不会一整场都钉死在回话上。"""
+def _forget(translator, text, target, hint=None):
+    """译文被判成不像译文：从重复句缓存里拿掉，同一句下次还会再问一次，不会一整场都钉死在回话上。
+    hint 是这一句当时带给翻译器的词表提示：它在缓存键里，不传的话命中词表的弹幕拿不掉。"""
     forget = getattr(translator, "forget", None)
     if forget is not None:
         try:
-            forget(text, target)
+            forget(text, target, "auto", hint)
         except Exception:
             pass
 
@@ -295,6 +297,10 @@ class CommentTranslator:
     MAX_ID = 64
     IDLE_WAIT_MAX_SEC = 3.0
     TRANSLATE_TIMEOUT_SEC = 20.0
+    # 被判成回话（reply_*）的弹幕原样再问一次（_retry_reply），只在这批开始后的这么多秒内才发。
+    # 这一批整体受 TRANSLATE_TIMEOUT_SEC 管，超了会把整批（含已经显示的）改标成失败；重试自己的
+    # HTTP 超时是 10 秒（BaseTranslator.TIMEOUT），所以只在前 8 秒里开始，最坏 18 秒收工
+    RETRY_START_MAX_SEC = 8.0
     # 去重窗口：最近 500 个 id 精确去重（抓取端断线重连会把同一条再报一次），
     # 同一 (user, text) 60 秒内只收一次。
     DEDUPE_ID_HISTORY = 500
@@ -342,6 +348,8 @@ class CommentTranslator:
         self._tally_owner = _NOT_YET
         self._tally_ok = 0
         self._tally_failed = {}
+        self._tally_retried = 0          # 被判成回话后原样重发的次数
+        self._tally_rescued = 0          # 其中重发后译出来的条数
 
     # ---- 入站：抓取端送来的一批观众评论 ----
     async def accept(self, data):
@@ -523,15 +531,24 @@ class CommentTranslator:
             outs = [await self._translate_one_why(translator, texts[0], target, glossary)]
         else:
             outs = await self._translate_many(translator, texts, target, glossary)
-        failed, ok = {}, 0
+        failed, ok, retried, rescued = {}, 0, 0, 0
+        # 被判成回话（reply_*）的弹幕：只有 Claude 原样再问一次（它不能设温度，再发一次是重新抽一次；
+        # 本地模型温度为 0，再问是同一个答案）。其余失败（冷却、HTTP 错误、拒答、没有输出）不重试。
+        # 已经译好的和不重试的先发出去，不等这几条的重试；重试的那几条各只发一次 comment_update
+        again = []
+        can_retry = REPLY_RETRIES > 0 and engine_is_claude(translator)
         for item, (out, why) in zip(batch, outs):
             if out:
                 why = implausible_reason(item["text"], out, target)
                 if why:
                     print("[警告] 弹幕译文不像是在翻译这条弹幕（{} 字 → {} 字），只显示原文".format(
                         len(item["text"]), len(out)))
-                    _forget(translator, item["text"], target)
+                    _forget(translator, item["text"], target,
+                            self._hint_for(glossary, item["text"]))
                     out = None
+            if not out and can_retry and (why or "").startswith("reply_"):
+                again.append((item, why))
+                continue
             if out:
                 ok += 1
                 self._ledger.mark_translated(item["id"])
@@ -543,35 +560,95 @@ class CommentTranslator:
             else:
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": "failed"})
-        self._note_outcome(audit, translator, len(batch), ok, failed, t0)
+        for item, why in again:
+            out, asked = await self._retry_reply(translator, item["text"], target, glossary, t0)
+            retried += asked
+            if out:
+                ok, rescued = ok + 1, rescued + 1
+                self._ledger.mark_translated(item["id"])
+                await self._safe_broadcast({"type": "comment_update", "id": item["id"],
+                                            "translated": out, "state": "ok"})
+            else:
+                # 记第一次被判成回话的原因代码：重试没出结果不改写它，各代码的比例才和以前可比
+                failed[why] = failed.get(why, 0) + 1
+                await self._safe_broadcast({"type": "comment_update", "id": item["id"],
+                                            "translated": None, "state": "failed"})
+        self._note_outcome(audit, translator, len(batch), ok, failed, t0, retried, rescued)
+
+    @staticmethod
+    def _hint_for(glossary, text):
+        """这一句带给翻译器的词表提示（缓存键里有它，forget 要用同一个）。"""
+        return tuple(glossary.translation_pairs(text)) if glossary else None
+
+    async def _retry_reply(self, translator, text, target, glossary, t0):
+        """一条弹幕的译文被判成回话后，把它单独作为一次请求原样再发一次（最多 REPLY_RETRIES 次）。
+        返回 (译文或 None, 有没有真的发出请求)。
+
+        * 先 forget：缓存在判定之前就存了那句回话，不拿掉的话重试直接从缓存拿回它、0 毫秒；
+        * 这批已经用掉 RETRY_START_MAX_SEC 以上、或这个实例在冷却/刚收到非 200，就不发：整批受
+          TRANSLATE_TIMEOUT_SEC 管，超时会把已经显示的译文也改标成失败；
+        * 直接 await 现成的 _call（拒答的结局记在本任务上下文里，另起任务就丢了）；
+        * 重试出来的也要过 implausible_reason：又是回话就再 forget、这条只显示原文，不继续重试；
+        * 一条的重试不会拖住别的弹幕：其余都已经发出去了。"""
+        asked = False
+        for _ in range(REPLY_RETRIES):
+            if time.monotonic() - t0 > self.RETRY_START_MAX_SEC:
+                break
+            if getattr(translator, "fail_streak", 0) > 0 \
+                    or getattr(translator, "cooldown_until", 0.0) > time.monotonic():
+                break
+            hint = self._hint_for(glossary, text)
+            _forget(translator, text, target, hint)
+            asked = True
+            out, _why = await self._translate_one_why(translator, text, target, glossary)
+            if out and implausible_reason(text, out, target) is None:
+                print("[信息] 弹幕译文第一次不像译文，原样重试一次后译出")
+                return out, asked
+            if out:
+                _forget(translator, text, target, hint)
+        if asked:
+            print("[警告] 弹幕译文重试一次后仍没有译出，只显示原文")
+        return None, asked
 
     def _tally(self, audit):
         """本场的计数；audit 换了（新的一场）就从零数。"""
         if self._tally_owner is not audit:
             self._tally_owner, self._tally_ok, self._tally_failed = audit, 0, {}
+            self._tally_retried = self._tally_rescued = 0
 
-    def _note_outcome(self, audit, translator, batch, ok, failed, t0):
-        """记下一批的结局：计数照记；有没译出来的，往本场审计写一条（只有代码和数字）。"""
+    def _note_outcome(self, audit, translator, batch, ok, failed, t0, retried=0, rescued=0):
+        """记下一批的结局：计数照记；有没译出来的，往本场审计写一条（只有代码和数字）。
+
+        ok 里含 rescued（被判成回话、重发一次后译出来的）；failed 里每条记的是**第一次**被判成什么。
+        retried / rescued 只在真的重发过（retried > 0）时才进计数和审计记录，没重发的批次和以前一模一样。
+        一批全被重发救回来（failed 为空）不写 comment_translation_failed，只进场末计数。"""
         try:
             self._tally(audit)
             self._tally_ok += ok
+            self._tally_retried += retried
+            self._tally_rescued += rescued
             for why, n in failed.items():
                 self._tally_failed[why] = self._tally_failed.get(why, 0) + n
             if failed and audit is not None:
                 inner = getattr(translator, "inner", translator)
+                extra = {"retried": retried, "rescued": rescued} if retried else {}
                 audit.comment_translation_failed(
                     getattr(inner, "name", None), getattr(inner, "model", None), batch,
-                    failed, round((time.monotonic() - t0) * 1000.0))
+                    failed, round((time.monotonic() - t0) * 1000.0), **extra)
         except Exception as exc:          # 记账出错不能连累弹幕翻译本身
             print("[警告] 弹幕翻译结局记录失败: {}".format(exc))
 
     def translation_summary(self, audit):
-        """这一场（audit 指定）弹幕翻译的结局计数，给 session_end；没翻过或不是这一场的返回 None。"""
+        """这一场（audit 指定）弹幕翻译的结局计数，给 session_end；没翻过或不是这一场的返回 None。
+        本场重发过（被判成回话后原样再问一次）才多 retried / rescued 两个键。"""
         if audit is None or self._tally_owner is not audit:
             return None
         if not self._tally_ok and not self._tally_failed:
             return None
-        return {"ok": self._tally_ok, "failed": dict(self._tally_failed)}
+        summary = {"ok": self._tally_ok, "failed": dict(self._tally_failed)}
+        if self._tally_retried:
+            summary["retried"], summary["rescued"] = self._tally_retried, self._tally_rescued
+        return summary
 
     def _engine_for(self, translator):
         """这一批弹幕实际交给哪个引擎翻；造不出来返回 None。
@@ -748,8 +825,7 @@ class CommentTranslator:
 
     async def _translate_one_why(self, translator, text, target, glossary):
         """一条：(译文或 None, 没译出来的原因代码或 None)。"""
-        hint = tuple(glossary.translation_pairs(text)) if glossary else None
-        out, why = await self._call(translator, text, target, hint)
+        out, why = await self._call(translator, text, target, self._hint_for(glossary, text))
         return self._apply_glossary(glossary, text, out), why
 
     async def _call(self, translator, text, target, hint):

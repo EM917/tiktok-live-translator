@@ -577,13 +577,21 @@ class AuditLog:
                      "asr_inflight": asr_inflight, "waited_ms": waited_ms, "in_tokens": in_tokens,
                      "out_tokens": out_tokens, "cache_read_tokens": cache_read_tokens})
 
-    def comment_translation_failed(self, engine, model, batch, reasons, ms):
+    def comment_translation_failed(self, engine, model, batch, reasons, ms, retried=None,
+                                   rescued=None):
         """一批弹幕里有没译出来的（界面上那几条只显示原文）。打包运行时终端输出指向 /dev/null，
         2026-10-14 直播中一条弹幕没译出来，事后查不到是接口报错、冷却、拒答还是回了一句话。
         reasons：{原因代码: 条数}，代码见 app/comments.py 的 implausible_reason / why_no_output，
-        外加 timeout / exception / no_engine。弹幕原文和模型的回话都不进审计（弹幕与审计隔离）。"""
-        self._write({"type": "comment_translation_failed", "at": _now_ms(), "engine": engine,
-                     "model": model, "batch": batch, "reasons": dict(reasons), "ms": ms})
+        外加 timeout / exception / no_engine。弹幕原文和模型的回话都不进审计（弹幕与审计隔离）。
+
+        retried / rescued：这一批里有弹幕被判成回话（reply_*）后原样重发过一次，重发了几条、
+        其中几条译出来了（译出来的不在 reasons 里）。只在重发过（retried > 0）时才写这两个键，
+        没重发的批次保持原来的 5 个键。reasons 里记的是第一次被判成什么。"""
+        row = {"type": "comment_translation_failed", "at": _now_ms(), "engine": engine,
+               "model": model, "batch": batch, "reasons": dict(reasons), "ms": ms}
+        if retried:
+            row["retried"], row["rescued"] = retried, rescued or 0
+        self._write(row)
 
     def comment_guard_gate(self, backend, state, reason=None, backlog_sec=None):
         """复核的闸门或状态转折（PR-5 起写）。state：paused / resumed / tripped / reenabled / locked。"""
