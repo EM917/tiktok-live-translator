@@ -698,6 +698,18 @@ def run_with_window(args):
     from app.window_close import guard_close, localization_kwargs, stop_after_close
     from app.window_lang import expose_window_lang
     brand_mac_app(ROOT)
+    # 浮窗（只显示，见 app/float_window.py）：宿主挂到管线上，hello 里才会带 float_window，顶栏才画
+    # 「浮窗」按钮。要在开主窗口之前挂：页面一加载就会读 hello。任何失败都只是没有这个功能
+    float_host = None
+    try:
+        from app.float_window import FloatWindowHost, screens_from_webview
+        if state.get("pipeline") is not None:
+            float_host = FloatWindowHost(webview.create_window, url,
+                                         screens=screens_from_webview(webview))
+            state["pipeline"].attach_float_host(float_host, state.get("loop"))
+    except Exception as exc:
+        float_host = None
+        print("[警告] 浮窗不可用：{}".format(exc))
     try:
         # 标题和关窗确认框先用启动时的界面语言；页面加载好后经 JS 桥告诉窗口它的语言（运行中
         # 在设置里换了语言，页面会重载），标题与确认框再跟着换（app/window_lang.py）
@@ -707,12 +719,23 @@ def run_with_window(args):
         window = webview.create_window(i18n.text(APP_NAME, lang), url,
                                        width=1000, height=760, min_size=(420, 480), **loc)
         guard_close(window, state.get("pipeline"))
+        if float_host is not None:
+            # 主窗口一关浮窗跟着关：否则 GUI 循环不退出，下面的收尾（停管线）不会执行。
+            # 兜底：浮窗销毁了 10 秒、start() 还没返回，就在这里走同样的收尾后直接退出
+            from app.float_window import follow_main_window
+
+            def exit_when_stuck():
+                stop_after_close(state.get("loop"), state.get("pipeline"))
+                os._exit(0)
+            follow_main_window(window, float_host, stuck=exit_when_stuck)
         # 窗口被盖住时新报警改原生标题：pywebview 的标题不跟页面的 document.title
         expose_window_lang(window, expose_attention(window))
         webview.start(**({} if loc else localization_kwargs(webview.start, lang)))
     except Exception as exc:
         # 本机没有可用的 webview 后端（如部分 Linux 桌面）——退回浏览器
         print("[信息] 无法创建应用窗口（{}），改在浏览器中打开".format(exc))
+        if float_host is not None:
+            state["pipeline"].detach_float_host()    # 浏览器里没有浮窗：别让页面画出按钮
         webbrowser.open(url)
         thread.join()
         return
