@@ -1348,6 +1348,14 @@ def looks_fabricated(source, translated):
 # 被词表把品牌名展开得比原文长（现在在替换之前判，不会再这样误判）、把「teluguero」译成「泰卢固语
 # 翻译工具」；另有几句人名串、拟声词原样留着，显示原文和显示这句「译文」本来就是同一串字。
 # 误判的代价是这一句只显示原文，中控能点重译。
+# Claude 字幕被 looks_like_reply 拦下后，原样再问几次（Pipeline._retry_claude_reply）。上限是 1：
+# Haiku 5.5 / Sonnet 5.5 不接受 temperature、top_p、top_k 和预填（给了就 400），请求只能走默认
+# 采样，同一个请求再发一次是**重新抽一次**，不是重放（同一句 37 条里有 13 条两次回的不一样）；
+# 拦下的多是模型把自言自语写进了译文（「Wait, correction:…」「Actually, …」），不由输入决定。
+# 弹幕（app/comments.py）用同一个次数。本地 Hy-MT2 / Gemma / Google / DeepL 温度为 0，再问一次是
+# 同一个答案，所以只有 Claude 重试。
+REPLY_RETRIES = 1
+
 _SRC_TALKS_ABOUT_IT = re.compile(r"tradu|translat|interpret|context|contexto|\bnota\b|\bnote\b",
                                  re.IGNORECASE)
 _MENTIONS_TRANSLATING = re.compile(r"翻译|译文|直译|\btranslat", re.IGNORECASE)   # i18n: data

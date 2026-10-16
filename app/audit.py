@@ -345,11 +345,21 @@ class AuditLog:
             row["trigger"] = trigger
         self._write(row)
 
-    def translation_rejected(self, seq, engine, model, reason, rejected):
+    def translation_rejected(self, seq, engine, model, reason, rejected,
+                             attempt=None, retry=None, retry_ms=None):
         """引擎回来的不是译文（在回话、说不能翻译、加注释，见 translator.looks_like_reply），这一句
         显示原文。translation 记录里只有 ok=false；没有这一条，分不清「接口出错」和「模型在回话」，
-        也看不到它回了什么。rejected 是模型的原话（截 300 字），和 translation 记录里的译文同一类数据。"""
-        self._write({
+        也看不到它回了什么。rejected 是模型的原话（截 300 字），和 translation 记录里的译文同一类数据。
+
+        Claude 字幕被拦下后会原样再问一次（Pipeline._retry_claude_reply），只有这条路写下面三个键，
+        其余引擎的记录保持原来的 7 个键：
+          * attempt：这是第几次请求被拦下的（1 或 2）；
+          * retry：紧接着那次重试的结局——ok（重试译出来了，这一句不再显示原文）/ rejected（重试
+            也不是译文）/ no_output（重试没有返回文字）/ skipped（没有重试：引擎在暂停或有字幕在排队）；
+            最后一次被拦下的那条没有下一次，不写这个键；
+          * retry_ms：那次重试的耗时（毫秒）；skipped 没有请求，不写。
+        三个键里只有代码和数字，不写中文——审计在中英两种界面下逐字节相同。"""
+        row = {
             "type": "translation_rejected",
             "seq": seq,
             "at": datetime.now().isoformat(timespec="milliseconds"),
@@ -357,7 +367,14 @@ class AuditLog:
             "model": model,
             "reason": reason,
             "rejected": (rejected or "")[:300],
-        })
+        }
+        if attempt is not None:
+            row["attempt"] = attempt
+            if retry is not None:
+                row["retry"] = retry
+            if retry_ms is not None:
+                row["retry_ms"] = retry_ms
+        self._write(row)
 
     def translation_cooldown(self, engine, status, seconds):
         """翻译接口回了 429、程序暂停请求的那一刻。暂停期间每条字幕都是 ok=false，

@@ -28,8 +28,9 @@ from .settings import (load_settings, normalize_caption_size, push_recent_room,
                        recent_rooms, save_setting, save_streamer_brand,
                        saved_caption_size, streamer_brands)
 from .telemetry import Telemetry
-from .translator import (ENGINE_KEY_ENV, begin_translate_call, create_translator,
-                         looks_like_reply, translate_call_outcome)
+from .translator import (ENGINE_KEY_ENV, REPLY_RETRIES, begin_translate_call,
+                         create_translator, engine_is_claude, looks_like_reply,
+                         translate_call_outcome)
 
 ROOT = Path(__file__).resolve().parent.parent
 TERMS_FILE = ROOT / "banned_terms.txt"
@@ -370,6 +371,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # self.target，热切换时弹幕翻译立刻跟着变，不用重启）；字幕翻译
         # 排队或在途时弹幕让路，见 _subtitle_translation_busy。
         self._subtitle_busy = 0          # 在途的字幕翻译数（弹幕翻译要让路）
+        self._trans_queue = None         # 直播会话里的字幕翻译队列（只读它的深度，见 _retry_reply_skipped）
         self.comments = CommentTranslator(
             broadcast=self._comment_broadcast,      # 先记进字幕记录再广播，见 pipeline_transcript.py
             translator=lambda: self.translator, target=lambda: self.target,
@@ -2721,6 +2723,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 翻译独立成队列：翻译慢/卡住绝不能反压到识别链路上——那会让音频被丢弃，
         # 直接变成漏词。积压时丢的是**旧的翻译任务**，音频一段都不丢。
         trans_queue = asyncio.Queue(maxsize=4)
+        self._trans_queue = trans_queue      # 字幕翻译看排队深度决定要不要重试（_retry_reply_skipped）
         asr_pool = ThreadPoolExecutor(max_workers=1)   # 本轮会话专用，停止时随之丢弃
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
@@ -2948,6 +2951,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 await source.stop()
             finally:
                 asr_pool.shutdown(wait=False)
+                self._trans_queue = None
                 # 这一轮怎么断的写进本场审计：打包运行时终端输出没人看得到
                 self._record_stream_break(sess, source, reason, error, got_audio,
                                           audio_secs, meter)
@@ -4281,6 +4285,93 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         print("[警告] {} 回来的不是第 {} 条字幕的译文（{}），这一条显示原文".format(
             engine_label(getattr(tr, "name", None)), seq, why))
 
+    def _retry_reply_skipped(self, tr):
+        """这一次不重试：引擎在暂停请求（429、密钥被拒后的冷却）、最近几次回应不是 200，或字幕
+        队列里已经有 2 条以上在等。队列最多 4 条、满了丢最旧的（_put_translation），前面的字幕
+        还在排队时再多花一次请求只会让后面的更晚上屏。_trans_queue 只在直播会话里有，
+        最小 Pipeline（测试用 __new__ 搭的）没有，按没有排队算。"""
+        if getattr(tr, "fail_streak", 0) > 0:
+            return True
+        if time.monotonic() < getattr(tr, "cooldown_until", 0.0):
+            return True
+        queue = getattr(self, "_trans_queue", None)
+        return queue is not None and queue.qsize() >= 2
+
+    async def _retry_claude_reply(self, tr, text, job, hint, first):
+        """Claude 字幕的回话被 looks_like_reply 拦下后，把**同一个请求**原样再发一次（最多
+        REPLY_RETRIES 次，有界循环）。first 是第一次被拦下的 (原因代码, 模型原话)。
+
+        * 要先 forget：CachedTranslator 在流水线判定之前就把任何真值存进了缓存，不拿掉的话第二次
+          直接从缓存拿回同一句回话、0 毫秒、等于没重试。第一次的由调用方在进来之前 forget（没重试
+          也要拿掉）；这里第二次也被拦下就再 forget 一次；译出来了就让缓存照常存；
+        * 直接 await、前面清结局，不套 wait_for（见 translator.begin_translate_call）；
+        * 重试返回 None（超时、HTTP 错误、拒答、空输出）不升级处理：这一句按「回话」显示原文，
+          下一句的正常调用会通过 _note_engine_failure 暴露一个真有问题的引擎；
+        * 不改提示词、不换更大的模型：没有配对数据支持（CLAUDE.md 第四条），基线只有约 0.3%。
+
+        返回 {"rejected": [(原因, 原话), …] 每次被拦下的那一句, "steps": [(结局, 耗时毫秒), …]
+        第 2、3… 次请求的结局, "translated": 译出来的文字或 None}。"""
+        forget = getattr(tr, "forget", None)
+        source = job["lang"] or "auto"
+        rejected = [first]
+        steps = []
+        translated = None
+        for _ in range(REPLY_RETRIES):
+            if self._retry_reply_skipped(tr):
+                steps.append(("skipped", None))
+                break
+            begin_translate_call()
+            started = time.monotonic()
+            try:
+                out = await tr.translate(text, job["target"], source=source, glossary=hint)
+            except Exception as exc:
+                print("[警告] 翻译失败: {}".format(exc))
+                out = None
+            ms = round((time.monotonic() - started) * 1000.0)
+            if not out:
+                steps.append(("no_output", ms))
+                break
+            why = looks_like_reply(text, out, job["target"])
+            if not why:
+                steps.append(("ok", ms))
+                translated = out
+                break
+            steps.append(("rejected", ms))
+            rejected.append((why, out))
+            if forget is not None:
+                forget(text, job["target"], source, hint)
+        return {"rejected": rejected, "steps": steps, "translated": translated}
+
+    def _note_reply_retry(self, tr, seq, retry):
+        """Claude 的回话被拦下并（或没有）重试之后：每一次被拦下的都记一条 translation_rejected
+        （attempt / retry / retry_ms 的含义见 AuditLog.translation_rejected），再打一行终端。
+        每一次都记，理由同 _note_reply。"""
+        from .translator import engine_label
+
+        rejected, steps = retry["rejected"], retry["steps"]
+        audit = getattr(self, "audit", None)
+        if audit is not None:
+            for n, (why, said) in enumerate(rejected):
+                step = steps[n] if n < len(steps) else (None, None)
+                audit.translation_rejected(seq, getattr(tr, "name", None), self._model_of(tr),
+                                           why, said, attempt=n + 1,
+                                           retry=step[0], retry_ms=step[1])
+        label = engine_label(getattr(tr, "name", None))
+        why = rejected[0][0]
+        result = steps[-1][0] if steps else None
+        if result == "ok":
+            tail = "重试一次后译出"                                    # i18n: terminal
+        elif result == "rejected":
+            tail = "重试一次也不是译文（{}），这一条显示原文".format(      # i18n: terminal
+                rejected[-1][0])
+        elif result == "no_output":
+            tail = "重试一次没有返回译文，这一条显示原文"                  # i18n: terminal
+        elif result == "skipped":
+            tail = "引擎在暂停或字幕在排队，没有重试，这一条显示原文"        # i18n: terminal
+        else:
+            tail = "没有重试，这一条显示原文"                              # i18n: terminal
+        print("[警告] {} 回来的不是第 {} 条字幕的译文（{}），{}".format(label, seq, why, tail))
+
     async def _note_refusal(self, tr, seq, category, retranslate=None):
         """引擎拒绝翻译这一句（Claude：HTTP 200，stop_reason 为 refusal）。
 
@@ -4643,6 +4734,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 必须直接 await，不能套 wait_for（老版本 Python 上 wait_for 另起任务，结局就丢了）
         begin_translate_call()
         reply = None                   # (原因代码, 引擎的原话)：回来的不是译文
+        retry = None                   # Claude 被拦下后的重试经过（_retry_claude_reply）；别的引擎恒为 None
         try:
             translated = await tr.translate(
                 text, job["target"], source=job["lang"] or "auto",
@@ -4654,21 +4746,33 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 forget = getattr(tr, "forget", None)
                 if forget is not None:       # 别让同一句一整场都从缓存里拿回这句回话
                     forget(text, job["target"], job["lang"] or "auto", hint)
-            elif self.glossary:
+                if engine_is_claude(tr):
+                    # 只有 Claude 重试：它不能设温度，同一个请求再发一次是重新抽一次；别的引擎温度为 0，
+                    # 再问是同一个答案。attempt 1 回了文字才走到这里，超时、HTTP 错误、拒答、空输出
+                    # （translated 为 None）不重试，各走各的老路径
+                    retry = await self._retry_claude_reply(tr, text, job, hint, reply)
+                    translated = retry["translated"]
+                    reply = None if translated else retry["rejected"][-1]
+            if translated and self.glossary:
                 translated = self.glossary.apply(text, translated)
         except Exception as exc:
             print("[警告] 翻译失败: {}".format(exc))
             translated = None
         outcome = translate_call_outcome()
-        refusal = (outcome if translated is None and outcome and outcome[0] == "refusal"
-                   else None)
+        # 重试那一次若被拒答，这一条仍按「回的不是译文」处理（reply 优先），不改标成 refused
+        refusal = (outcome if translated is None and reply is None and outcome
+                   and outcome[0] == "refusal" else None)
         # DeepL 月额度用尽（456）不是这一条的问题，是这个月的问题：不切换的话
         # 后面每条字幕都会「翻译失败」直到月底。切到本地引擎，并用新引擎把
         # 当前这条立刻补上——它不该成为切换的牺牲品。
         fallback = None
+        if retry is not None:
+            # 重试译出来了也要记：审计里得看得见这一句被拦过、重试花了多久
+            self._note_reply_retry(tr, job["id"], retry)
         if reply is not None:
             # 接口正常回了话、只是回的不是译文：不换引擎、不挂横幅，这一句显示原文
-            self._note_reply(tr, job["id"], reply)
+            if retry is None:
+                self._note_reply(tr, job["id"], reply)
         elif translated is None and getattr(tr, "quota_exhausted", False):
             fallback = await self._quota_fallback(tr)
         elif refusal is not None:
