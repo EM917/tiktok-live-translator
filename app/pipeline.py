@@ -2724,6 +2724,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 直接变成漏词。积压时丢的是**旧的翻译任务**，音频一段都不丢。
         trans_queue = asyncio.Queue(maxsize=4)
         self._trans_queue = trans_queue      # 字幕翻译看排队深度决定要不要重试（_retry_reply_skipped）
+        # 已经出队、正在翻译的那一条。它不在队列里，收尾时的排空看不见它；翻译被取消
+        # （停止/换房间/断流收尾超时）时若不给它一个结局，那张卡片就永远停在「翻译中…」
+        inflight = {"job": None}
         asr_pool = ThreadPoolExecutor(max_workers=1)   # 本轮会话专用，停止时随之丢弃
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
@@ -2760,7 +2763,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
         def _drop_job(job):
             """告诉界面这条不会有译文了——否则它永远停在「翻译中…」。"""
-            self.telemetry.drop_translation()
+            self.telemetry.drop_translation()      # 快译这一条确实没跑成，计数照记
+            if self._quality.get(job["id"], 0) > 0:
+                # 卡片上已有可用译文（快译卡住时中控点了「重译」，强译先上了屏）：
+                # 广播里的 translated=None 会把它擦掉，和 _publish_translation 不拿失败
+                # 覆盖已生效译文是同一条规则
+                return
             self._spawn(self.server.broadcast({
                 "type": "caption_update", "id": job["id"], "translated": None,
                 "translate_state": "dropped",
@@ -2795,6 +2803,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 if stale is not None:
                     _drop_job(stale)
             trans_queue.put_nowait(None)
+            self.telemetry.translation_queue_depth = trans_queue.qsize()
 
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
@@ -2898,9 +2907,18 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         async def translation_worker():
             while True:
                 job = await trans_queue.get()
+                # 出队就刷新深度：它原来只在入队时写，worker 取走后一直停在 1，直到下一段
+                # 才变——_subtitle_translation_busy 因此几乎永远为真，弹幕每批都白等满
+                # 3 秒（约 1.2 条/秒封顶）。取走到下面 _subtitle_busy 记上之间没有 await，
+                # 「排队」与「在途」交接时不会出现两个都为零的空档
+                self.telemetry.translation_queue_depth = trans_queue.qsize()
                 if job is None:
                     break
-                await self._translate_and_update(job)
+                inflight["job"] = job
+                try:
+                    await self._translate_and_update(job)
+                finally:
+                    inflight["job"] = None
 
         async def run_workers():
             trans_task = asyncio.ensure_future(translation_worker())
@@ -2926,6 +2944,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 for task in (reader_task, asr_task, trans_task):
                     if not task.done():
                         task.cancel()
+                # 在途那一条：取消在它翻译到一半时落下，它既没发出译文也不在队列里。
+                # 和下面排空的是同一个结局（界面显示「已跳过」），在这里同步收掉——
+                # 此时仍在这一场的收尾里，计数和广播都落在这一场。译文已经开始发布的
+                # （publishing）不动：再补一条「已跳过」会把刚上屏的译文盖掉
+                stuck = inflight["job"]
+                if stuck is not None and not stuck.get("publishing"):
+                    inflight["job"] = None
+                    _drop_job(stuck)
                 # 被取消（用户点停止/换房间）时不 drain 队列：等积压的翻译跑完
                 # 最多要 5 秒，而停止应当立刻生效——剩下的直接告知界面已跳过
                 while True:
@@ -2935,6 +2961,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         break
                     if pending is not None:
                         _drop_job(pending)
+                # 取空了就归零：这一场收尾后队列不在了，残留的深度会让下一场开头的弹幕白等
+                self.telemetry.translation_queue_depth = trans_queue.qsize()
 
         reason, error = "eof", None
         try:
@@ -4843,6 +4871,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             extra["refused"] = True
         elif reply is not None and not translated:
             extra["not_translation"] = True        # 同上，页面标「结果不像译文」
+        # 从这里起结局由 _publish_translation 负责：取消落在广播中途时，会话收尾
+        # 不能再补一条「已跳过」把它盖掉（见 _stream_session 里的 inflight）
+        job["publishing"] = True
         await self._publish_translation(
             job["id"], translated, bool(translated), translate_ms,
             QUALITY_FAST, job["target"], extra)

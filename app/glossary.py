@@ -32,6 +32,20 @@ MAX_ASR_TERMS = 18
 BRAND_ASR_TERMS = 3
 
 
+# 兜底替换的词边界只认**拉丁**字母、数字、下划线（含带重音的拉丁字母，如 ñ é ü）。
+# 不能用 \w：Python 3 里它把汉字也算词字符，而译文里品牌名两侧常紧挨着汉字——
+# 「试试Quema Lonja吧」「我喜欢moringa茶」——两侧都是 \w，整条词表永远替换不上。
+# 汉字相邻要放行；拉丁词内部（moringas、xmoringa）仍然拦住，免得把别的词切碎。
+_LATIN_WORD_CHARS = r"A-Za-z0-9_\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u024f\u1e00-\u1eff"
+
+
+def _whole_latin_word(variant):
+    """`variant` 的整词匹配式：前后不能紧贴拉丁字母/数字，紧贴汉字或标点可以。"""
+    return re.compile(
+        "(?<![" + _LATIN_WORD_CHARS + "])" + re.escape(variant)
+        + "(?![" + _LATIN_WORD_CHARS + "])", re.IGNORECASE)
+
+
 class Glossary:
     def __init__(self, entries, asr_entries=None):
         # entries: [(西语变体列表, 中文译法)]，保持文件顺序（前面的优先级高）
@@ -109,14 +123,15 @@ class Glossary:
         if not translated:
             return translated
         for _es, zh, variants in self.matching(source_text):
+            # 译文里已经有这个中文就不动，哪怕别处还残留着西语写法：中文译法若把西语
+            # 原词包在里面（如「Sol Dorado 牌」），再替换会把它展开两遍。宁可漏换也不改坏
             if zh in translated:
                 continue          # 模型已经翻对了
             # 译文里残留了西语原词才替换。逐个变体试——源文里是 "la moringa"，
             # 译文里残留的往往是不带冠词的 "moringa"。长的先试，避免
             # 短变体先命中把长写法切碎。
             for v in sorted(variants, key=len, reverse=True):
-                pattern = re.compile(r"(?<![\w])" + re.escape(v) + r"(?![\w])",
-                                     re.IGNORECASE)
+                pattern = _whole_latin_word(v)
                 if pattern.search(translated):
                     translated = pattern.sub(zh, translated)
                     break

@@ -67,6 +67,19 @@ test("场次分隔线：不带主播名、不带时间", () => {
   assert.equal(V.sessionDividerText({ streamer: "bella", ts: 1 }), "── New session ──");
 });
 
+test("取消记录跟着这一次共享走：英文页同样，重启后重新数到的同一个 id 不被藏", () => {
+  const data = new Map();
+  const storage = { getItem: (k) => (data.has(k) ? data.get(k) : null), setItem: (k, v) => { data.set(k, String(v)); } };
+  const store = V.createDismissedStore(storage);
+  store.bind(1000);
+  store.add(7);
+  assert.equal(V.createDismissedStore(storage).bind(1000), false);
+  const later = V.createDismissedStore(storage);
+  assert.equal(later.has(7), true, "bind 之前沿用存着的记录（hello 总是先于回放的报警）");
+  later.bind(2000);
+  assert.equal(later.has(7), false);
+});
+
 // ---- 浏览器分支 ----------------------------------------------------------------------------
 
 function makeNode(tag, attrs) {
