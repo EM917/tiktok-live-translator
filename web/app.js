@@ -1119,7 +1119,7 @@
       // stats（每 10 秒一次的延迟统计）页面不再显示：2026-10-15 用户嫌底部那行数字是噪音，删掉了。
       // 积压期间的落后和丢段由 health 提示条说（积压 ≥10 秒才出现，追上就收起）；识别连续出错
       // ASR_FAILURES_BEFORE_RECOVERY 次走 incident。单次识别出错、识别超时次数、积压追上之后的
-      // 丢段总数，界面上不再有痕迹，只在审计（asr_failed / asr_overrun / dropped_audio）和终端里
+      // 丢段总数，界面上不再有痕迹，只在审计（asr_failed / asr_overrun / audio_dropped 三种记录）和终端里
       case "incident":
         renderIncident(msg);
         break;
