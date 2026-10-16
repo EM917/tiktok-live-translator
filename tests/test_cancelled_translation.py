@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import pipeline as pipeline_mod
-from app.pipeline import Pipeline
+from app.pipeline import Pipeline, QUALITY_STRONG
 from app.server import CaptionServer
 from tests.helpers import run
 
@@ -250,3 +250,56 @@ def test_finished_translations_are_left_alone(monkeypatch, tmp_path):
     assert set(states(server).values()) == {"ok"}
     assert len(states(server)) == 3
     assert p.telemetry.translation_jobs_dropped == 0
+
+
+def test_a_strong_retranslation_survives_the_cancel_of_the_fast_job(monkeypatch, tmp_path):
+    """快译卡住时中控点了「重译」，强模型的译文已经上屏；这时停止/换房间取消了快译 worker，
+    收掉在途那一条不能把已上屏的强译擦成「已跳过」。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    tr = Stuck()
+    p.translator = tr
+    fake_audio(monkeypatch, frames=1, hang=True)
+
+    async def scenario():
+        task = asyncio.ensure_future(stream(p))
+        await asyncio.wait_for(tr.started.wait(), 5)
+        assert states(server) == {1: "pending"}
+        await p._publish_translation(1, "强模型译文", True, 10.0, QUALITY_STRONG, "zh-CN")
+        assert states(server) == {1: "ok"}
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await settle()
+
+    run(scenario())
+    assert states(server) == {1: "ok"}                   # 没有被盖成 dropped
+    item = next(i for i in server.history if i.get("type") == "caption")
+    assert item["translated"] == "强模型译文"
+    assert p.telemetry.translation_jobs_dropped == 1     # 快译这一条确实没跑完，计数照记
+
+
+def test_the_queued_drain_does_not_wipe_a_strong_retranslation_either(monkeypatch, tmp_path):
+    """排在后面的任务被收掉时同理：卡片上已经有强模型的译文就留着，没有的才标「已跳过」。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    tr = Stuck()
+    p.translator = tr
+    fake_audio(monkeypatch, frames=3, hang=True)
+
+    async def scenario():
+        task = asyncio.ensure_future(stream(p))
+        await asyncio.wait_for(tr.started.wait(), 5)
+        for _ in range(200):                           # 等 3 段都出了字幕
+            if len(states(server)) == 3:
+                break
+            await asyncio.sleep(0.01)
+        assert len(states(server)) == 3
+        await p._publish_translation(2, "第二句的强译", True, 10.0, QUALITY_STRONG, "zh-CN")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await settle()
+
+    run(scenario())
+    assert states(server) == {1: "dropped", 2: "ok", 3: "dropped"}
+    second = next(i for i in server.history if i.get("type") == "caption" and i["id"] == 2)
+    assert second["translated"] == "第二句的强译"

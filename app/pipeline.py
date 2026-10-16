@@ -2763,7 +2763,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
         def _drop_job(job):
             """告诉界面这条不会有译文了——否则它永远停在「翻译中…」。"""
-            self.telemetry.drop_translation()
+            self.telemetry.drop_translation()      # 快译这一条确实没跑成，计数照记
+            if self._quality.get(job["id"], 0) > 0:
+                # 卡片上已有可用译文（快译卡住时中控点了「重译」，强译先上了屏）：
+                # 广播里的 translated=None 会把它擦掉，和 _publish_translation 不拿失败
+                # 覆盖已生效译文是同一条规则
+                return
             self._spawn(self.server.broadcast({
                 "type": "caption_update", "id": job["id"], "translated": None,
                 "translate_state": "dropped",
