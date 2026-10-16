@@ -2724,6 +2724,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 直接变成漏词。积压时丢的是**旧的翻译任务**，音频一段都不丢。
         trans_queue = asyncio.Queue(maxsize=4)
         self._trans_queue = trans_queue      # 字幕翻译看排队深度决定要不要重试（_retry_reply_skipped）
+        # 已经出队、正在翻译的那一条。它不在队列里，收尾时的排空看不见它；翻译被取消
+        # （停止/换房间/断流收尾超时）时若不给它一个结局，那张卡片就永远停在「翻译中…」
+        inflight = {"job": None}
         asr_pool = ThreadPoolExecutor(max_workers=1)   # 本轮会话专用，停止时随之丢弃
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
@@ -2906,7 +2909,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 self.telemetry.translation_queue_depth = trans_queue.qsize()
                 if job is None:
                     break
-                await self._translate_and_update(job)
+                inflight["job"] = job
+                try:
+                    await self._translate_and_update(job)
+                finally:
+                    inflight["job"] = None
 
         async def run_workers():
             trans_task = asyncio.ensure_future(translation_worker())
@@ -2932,6 +2939,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 for task in (reader_task, asr_task, trans_task):
                     if not task.done():
                         task.cancel()
+                # 在途那一条：取消在它翻译到一半时落下，它既没发出译文也不在队列里。
+                # 和下面排空的是同一个结局（界面显示「已跳过」），在这里同步收掉——
+                # 此时仍在这一场的收尾里，计数和广播都落在这一场。译文已经开始发布的
+                # （publishing）不动：再补一条「已跳过」会把刚上屏的译文盖掉
+                stuck = inflight["job"]
+                if stuck is not None and not stuck.get("publishing"):
+                    inflight["job"] = None
+                    _drop_job(stuck)
                 # 被取消（用户点停止/换房间）时不 drain 队列：等积压的翻译跑完
                 # 最多要 5 秒，而停止应当立刻生效——剩下的直接告知界面已跳过
                 while True:
@@ -4851,6 +4866,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             extra["refused"] = True
         elif reply is not None and not translated:
             extra["not_translation"] = True        # 同上，页面标「结果不像译文」
+        # 从这里起结局由 _publish_translation 负责：取消落在广播中途时，会话收尾
+        # 不能再补一条「已跳过」把它盖掉（见 _stream_session 里的 inflight）
+        job["publishing"] = True
         await self._publish_translation(
             job["id"], translated, bool(translated), translate_ms,
             QUALITY_FAST, job["target"], extra)
