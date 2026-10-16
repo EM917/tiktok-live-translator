@@ -366,7 +366,7 @@ def test_plausible_translation(text, out, target, ok):
 
 def test_a_reply_instead_of_a_translation_shows_the_original_only(monkeypatch):
     tr, inner, _ = subtitle_engine(monkeypatch)
-    made = Sibling([reply(META_REPLY)])
+    made = Sibling([reply(META_REPLY), reply(META_REPLY)])      # 第一次和原样重发都是回话
     holder = {"tr": tr}
     ct, sent = make(holder, made)
 
@@ -377,11 +377,12 @@ def test_a_reply_instead_of_a_translation_shows_the_original_only(monkeypatch):
 
     run(scenario())
     assert updates(sent)["c0"] == ("failed", None)
+    assert len(made.made[0].session_log.posts) == 2
 
 
 def test_in_a_batch_only_the_reply_like_line_is_dropped(monkeypatch):
     tr, inner, _ = subtitle_engine(monkeypatch)
-    made = Sibling([reply("1. 你好朋友们\n2. " + META_REPLY)])
+    made = Sibling([reply("1. 你好朋友们\n2. " + META_REPLY), reply(META_REPLY)])
     holder = {"tr": tr}
     ct, sent = make(holder, made)
 
@@ -394,3 +395,196 @@ def test_in_a_batch_only_the_reply_like_line_is_dropped(monkeypatch):
     got = updates(sent)
     assert got["c0"] == ("ok", "你好朋友们")
     assert got["c1"] == ("failed", None)
+
+
+# ---------------------------------------------------------------------------
+# 被判成回话的弹幕原样再问一次（2026-10-15：最近 4 场 31 条失败全是 reply_*，26 批只有 1 条）
+# ---------------------------------------------------------------------------
+# 只有 Claude 重发（它不能设温度，重发是重新抽一次）；只重发 reply_*，冷却、HTTP 错误、拒答、没有输出
+# 不重发；整批用掉 RETRY_START_MAX_SEC 以上就不发；已经译好的先发出去，重发的每条只发一次 comment_update
+
+def run_comments(monkeypatch, responses, *texts, **overrides):
+    """弹幕走完整条链路（字幕引擎是缓存包着的 Claude，弹幕另建 Haiku 实例，会话由脚本给）。
+    返回 (ct, sent, made)；等到每一条都有了结果。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    made = Sibling(responses)
+    ct, sent = make({"tr": wrapped}, made, **overrides)
+
+    async def scenario():
+        await ct.accept(items(*texts))
+        assert await wait_for(lambda: len(updates(sent)) == len(texts))
+        await ct.close()
+
+    run(scenario())
+    return ct, sent, made
+
+
+def posts_of(made):
+    return made.made[0].session_log.posts
+
+
+def test_a_lone_rejected_comment_is_asked_again_as_the_identical_request(monkeypatch):
+    _ct, sent, made = run_comments(monkeypatch, [reply(META_REPLY), reply("是的，全部")], "Sii todo")
+    first, second = posts_of(made)
+    assert first["body"] == second["body"] and first["url"] == second["url"]
+    assert second["body"]["messages"] == [{"role": "user",
+                                           "content": "<comments>\nSii todo\n</comments>"}]
+    for key in ("temperature", "top_p", "top_k"):
+        assert key not in second["body"]
+    assert updates(sent) == {"c0": ("ok", "是的，全部")}
+    assert [m["state"] for m in sent if m["type"] == "comment_update"] == ["ok"]   # 只发一次
+
+
+def test_a_second_rejection_shows_the_original_after_exactly_one_retry(monkeypatch):
+    _ct, sent, made = run_comments(
+        monkeypatch, [reply(META_REPLY), reply(META_REPLY), reply("不应该被问到")], "Sii todo")
+    assert len(posts_of(made)) == 2
+    assert updates(sent) == {"c0": ("failed", None)}
+    assert len([m for m in sent if m["type"] == "comment_update"]) == 1
+
+
+@pytest.mark.parametrize("kind", ["http_500", "http_429", "refusal", "no_output"])
+def test_only_reply_failures_are_retried(monkeypatch, kind):
+    first = {"http_500": Resp(500, {"error": {"type": "api_error"}}),
+             "http_429": Resp(429, {"error": {"type": "rate_limit_error"}},
+                              headers={"retry-after": "60"}),
+             "refusal": Resp(200, dict(message(stop="refusal"),
+                                       stop_details={"type": "refusal", "category": None})),
+             "no_output": Resp(200, message(text_block("")))}[kind]
+    _ct, sent, made = run_comments(monkeypatch, [first, reply("是的，全部")], "Sii todo")
+    assert len(posts_of(made)) == 1
+    assert updates(sent) == {"c0": ("failed", None)}
+
+
+def test_a_comment_skipped_for_the_cooldown_is_not_retried(monkeypatch):
+    made = Sibling([Resp(429, {"error": {"type": "rate_limit_error"}}, headers={"retry-after": "60"})])
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    ct, sent = make({"tr": wrapped}, made)
+
+    async def scenario():
+        await ct.accept(items("hola amigos"))
+        assert await wait_for(lambda: len(updates(sent)) == 1)
+        await ct.accept({"items": [{"id": "later", "user": "u", "text": "Sii todo"}]})
+        assert await wait_for(lambda: len(updates(sent)) == 2)
+        await ct.close()
+
+    run(scenario())
+    assert len(posts_of(made)) == 1                 # 暂停期间一次请求都没有，更没有重发
+
+
+def test_a_batch_that_has_used_its_time_does_not_retry(monkeypatch):
+    """整批受 20 秒管：用掉 RETRY_START_MAX_SEC 以上，重发就不开始，免得超时把已译好的也改标成失败。"""
+    _ct, sent, made = run_comments(monkeypatch, [reply(META_REPLY), reply("是的，全部")], "Sii todo",
+                                   RETRY_START_MAX_SEC=-1.0)
+    assert len(posts_of(made)) == 1
+    assert updates(sent) == {"c0": ("failed", None)}
+
+
+def test_comments_that_are_already_fine_are_sent_before_the_retries(monkeypatch):
+    class Snapshots(Sibling):
+        """每次请求发出的那一刻，记下页面已经收到哪些弹幕的结果。"""
+
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.sent = []
+            self.seen = []
+
+        def __call__(self):
+            tr = super().__call__()
+            session, original = tr.session_log, tr.session_log.post
+
+            def post(url, data=None, headers=None, **kw):
+                self.seen.append(sorted(m["id"] for m in self.sent if m["type"] == "comment_update"))
+                return original(url, data=data, headers=headers, **kw)
+
+            session.post = post
+            return tr
+
+    made = Snapshots([reply("1. 你好朋友们\n2. " + META_REPLY + "\n3. " + META_REPLY),
+                      reply("是的，全部"), reply(META_REPLY)])
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    ct, sent = make({"tr": wrapped}, made)
+    made.sent = sent
+
+    async def scenario():
+        await ct.accept(items("hola amigos", "Sii todo", "Sii tambien"))
+        assert await wait_for(lambda: len(updates(sent)) == 3)
+        await ct.close()
+
+    run(scenario())
+    # 整批一次请求，然后 c1、c2 各重发一次；c0 在重发开始之前就已经发给页面了
+    assert made.seen == [[], ["c0"], ["c0", "c1"]]
+    assert updates(sent) == {"c0": ("ok", "你好朋友们"), "c1": ("ok", "是的，全部"),
+                             "c2": ("failed", None)}
+    ids = [m["id"] for m in sent if m["type"] == "comment_update"]
+    assert sorted(ids) == ["c0", "c1", "c2"]                  # 每条恰好一次
+
+
+def test_no_retry_after_the_operator_switches_engines(monkeypatch):
+    """第一次请求在路上时中控换了引擎：被判成回话的那条不再发给旧引擎（字幕那边同一条规矩）。"""
+    holder = {}
+
+    class SwitchOnFirstPost(Sibling):
+        def __call__(self):
+            tr = super().__call__()
+            session, original = tr.session_log, tr.session_log.post
+
+            def post(url, data=None, headers=None, **kw):
+                holder["tr"] = Fast("hymt2", out="不该被用到")
+                return original(url, data=data, headers=headers, **kw)
+
+            session.post = post
+            return tr
+
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    holder["tr"] = wrapped
+    made = SwitchOnFirstPost([reply(META_REPLY), reply("是的，全部")])
+    ct, sent = make(holder, made)
+
+    async def scenario():
+        await ct.accept(items("Sii todo"))
+        assert await wait_for(lambda: len(updates(sent)) == 1)
+        await ct.close()
+
+    run(scenario())
+    assert len(posts_of(made)) == 1
+    assert updates(sent) == {"c0": ("failed", None)}
+
+
+def test_a_local_engine_is_not_retried(monkeypatch):
+    """Hy-MT2 温度为 0，再问是同一个答案。"""
+    engine = Fast("hymt2", out=META_REPLY)
+    ct, sent = make({"tr": engine}, Sibling([]))
+
+    async def scenario():
+        await ct.accept(items("Sii todo"))
+        assert await wait_for(lambda: len(updates(sent)) == 1)
+        await ct.close()
+
+    run(scenario())
+    assert engine.calls == 1
+    assert updates(sent) == {"c0": ("failed", None)}
+
+
+def test_the_retry_gets_past_the_cache_even_for_a_comment_that_matches_the_glossary(monkeypatch):
+    """词表命中时词表提示在缓存键里：忘掉那句回话要带上同一个提示，否则重发直接从缓存拿回回话。"""
+    class Glossary:
+        def translation_pairs(self, text):
+            return (("todo", "全部"),)
+
+        def apply(self, text, out):
+            return out
+
+    made = Sibling([reply(META_REPLY), reply("是的，全部")])
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    ct, sent = make({"tr": wrapped}, made)
+    ct._glossary = lambda: Glossary()
+
+    async def scenario():
+        await ct.accept(items("Sii todo"))
+        assert await wait_for(lambda: len(updates(sent)) == 1)
+        await ct.close()
+
+    run(scenario())
+    assert len(posts_of(made)) == 2
+    assert updates(sent) == {"c0": ("ok", "是的，全部")}

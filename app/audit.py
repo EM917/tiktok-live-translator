@@ -345,11 +345,22 @@ class AuditLog:
             row["trigger"] = trigger
         self._write(row)
 
-    def translation_rejected(self, seq, engine, model, reason, rejected):
+    def translation_rejected(self, seq, engine, model, reason, rejected,
+                             attempt=None, retry=None, retry_ms=None):
         """引擎回来的不是译文（在回话、说不能翻译、加注释，见 translator.looks_like_reply），这一句
         显示原文。translation 记录里只有 ok=false；没有这一条，分不清「接口出错」和「模型在回话」，
-        也看不到它回了什么。rejected 是模型的原话（截 300 字），和 translation 记录里的译文同一类数据。"""
-        self._write({
+        也看不到它回了什么。rejected 是模型的原话（截 300 字），和 translation 记录里的译文同一类数据。
+
+        Claude 字幕被拦下后会原样再问一次（Pipeline._retry_claude_reply），只有这条路写下面三个键，
+        其余引擎的记录保持原来的 7 个键：
+          * attempt：这是第几次请求被拦下的（1 或 2）；
+          * retry：紧接着那次重试的结局——ok（重试译出来了，这一句不再显示原文）/ rejected（重试
+            也不是译文）/ no_output（重试没有返回文字：超时、HTTP 错误、空输出）/ refusal（重试被
+            拒答，拒答本身另记一条 translation_refusal）/ skipped（没有重试：引擎在暂停、已被换掉，
+            或有字幕在排队）；最后一次被拦下的那条没有下一次，不写这个键；
+          * retry_ms：那次重试的耗时（毫秒）；skipped 没有请求，不写。
+        三个键里只有代码和数字，不写中文——审计在中英两种界面下逐字节相同。"""
+        row = {
             "type": "translation_rejected",
             "seq": seq,
             "at": datetime.now().isoformat(timespec="milliseconds"),
@@ -357,7 +368,14 @@ class AuditLog:
             "model": model,
             "reason": reason,
             "rejected": (rejected or "")[:300],
-        })
+        }
+        if attempt is not None:
+            row["attempt"] = attempt
+            if retry is not None:
+                row["retry"] = retry
+            if retry_ms is not None:
+                row["retry_ms"] = retry_ms
+        self._write(row)
 
     def translation_cooldown(self, engine, status, seconds):
         """翻译接口回了 429、程序暂停请求的那一刻。暂停期间每条字幕都是 ok=false，
@@ -560,13 +578,25 @@ class AuditLog:
                      "asr_inflight": asr_inflight, "waited_ms": waited_ms, "in_tokens": in_tokens,
                      "out_tokens": out_tokens, "cache_read_tokens": cache_read_tokens})
 
-    def comment_translation_failed(self, engine, model, batch, reasons, ms):
+    def comment_translation_failed(self, engine, model, batch, reasons, ms, retried=None,
+                                   rescued=None, retried_reasons=None, rescued_reasons=None):
         """一批弹幕里有没译出来的（界面上那几条只显示原文）。打包运行时终端输出指向 /dev/null，
         2026-10-14 直播中一条弹幕没译出来，事后查不到是接口报错、冷却、拒答还是回了一句话。
         reasons：{原因代码: 条数}，代码见 app/comments.py 的 implausible_reason / why_no_output，
-        外加 timeout / exception / no_engine。弹幕原文和模型的回话都不进审计（弹幕与审计隔离）。"""
-        self._write({"type": "comment_translation_failed", "at": _now_ms(), "engine": engine,
-                     "model": model, "batch": batch, "reasons": dict(reasons), "ms": ms})
+        外加 timeout / exception / no_engine。弹幕原文和模型的回话都不进审计（弹幕与审计隔离）。
+
+        retried / rescued：这一批里有弹幕被判成回话（reply_*）后原样重发过一次，重发了几条、
+        其中几条译出来了（译出来的不在 reasons 里）。retried_reasons / rescued_reasons 是这两个数
+        按**第一次**被判成什么（reply_*）拆开的 {代码: 条数}：被救回的不在 reasons 里，不拆开就算不出
+        各代码的救回率。只在重发过（retried > 0）时才写这四个键，没重发的批次保持原来的 5 个键。
+        reasons 里记的也是第一次被判成什么。"""
+        row = {"type": "comment_translation_failed", "at": _now_ms(), "engine": engine,
+               "model": model, "batch": batch, "reasons": dict(reasons), "ms": ms}
+        if retried:
+            row["retried"], row["rescued"] = retried, rescued or 0
+            row["retried_reasons"] = dict(retried_reasons or {})
+            row["rescued_reasons"] = dict(rescued_reasons or {})
+        self._write(row)
 
     def comment_guard_gate(self, backend, state, reason=None, backlog_sec=None):
         """复核的闸门或状态转折（PR-5 起写）。state：paused / resumed / tripped / reenabled / locked。"""

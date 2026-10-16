@@ -890,3 +890,106 @@ def test_a_claude_refusal_is_english_and_its_evidence_is_not(monkeypatch, tmp_pa
         "the original text. Banned-term alerts aren’t affected. Later refusals this session go "
         "to the audit log without another notice."]
     assert_no_chinese(english_ui(en_server.messages))
+
+
+# ---- Claude 字幕回话后重试：审计与终端和界面语言无关，也没有新的界面文字 --------------------------
+
+class RetryingEngine:
+    """第一句：第一次回话、重试译出来；第二句：两次都回话。"""
+    name, model = "claude", "claude-haiku-5-5"
+
+    def __init__(self):
+        self.answers = ["I can't tell what \"them\" refers to, since your message has no text.",
+                        "加进去就行。",
+                        "Please send the line you want translated into Simplified Chinese.",
+                        "Wait, correction: I should only output the translation."]
+        self.last_error, self.fail_streak, self.cooldown_until = None, 0, 0.0
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        return self.answers.pop(0)
+
+    async def close(self):
+        pass
+
+
+def _reply_retries_in(lang, monkeypatch, tmp_path, capsys, engine=None):
+    from app.audit import AuditLog
+    (tmp_path / lang).mkdir()
+    p, server = make_pipeline(monkeypatch, tmp_path / lang)
+    p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path / lang / "logs")
+    p.translator = engine() if engine else RetryingEngine()
+
+    async def scenario():
+        for seq in (1, 2):
+            await p._translate_and_update({"id": seq, "text": "Just add them.", "lang": "es",
+                                           "target": "zh-CN", "audio_end_ts": time.time()})
+
+    i18n._bad_once.clear()
+    capsys.readouterr()
+    with i18n.use(lang):
+        run(scenario())
+    p.audit.close(reason="user_stop")
+    rows = [json.dumps({k: v for k, v in json.loads(line).items()
+                        if k not in ("at", "ts", "started_at", "ended_at", "translate_ms",
+                                     "retry_ms")},
+                       ensure_ascii=False)
+            for line in p.audit.path.read_text(encoding="utf-8").splitlines()]
+    return rows, capsys.readouterr().out, server
+
+
+def test_a_reply_retry_leaves_audit_and_terminal_the_same_in_both_languages(
+        monkeypatch, tmp_path, capsys, ascii_engine_labels):
+    zh_rows, zh_out, _ = _reply_retries_in(i18n.ZH, monkeypatch, tmp_path, capsys)
+    en_rows, en_out, en_server = _reply_retries_in(i18n.EN, monkeypatch, tmp_path, capsys)
+    assert en_rows == zh_rows and en_out == zh_out
+    rejected = [json.loads(r) for r in zh_rows if json.loads(r)["type"] == "translation_rejected"]
+    assert [(r["seq"], r["attempt"], r.get("retry")) for r in rejected] == [
+        (1, 1, "ok"), (2, 1, "rejected"), (2, 2, None)]
+    # 重试的终端行是中文，两种界面语言下逐字节相同
+    assert "[警告] Claude 回来的不是第 1 条字幕的译文（reply_meta），重试一次后译出" in zh_out
+    assert "重试一次也不是译文（reply_meta），这一条显示原文" in zh_out
+    # 页面上没有新文字：不弹提示、不挂横幅，译出来的那句和原来一样上屏
+    assert [m for m in en_server.messages if m.get("type") in ("notice", "incident")] == []
+    assert_no_chinese(english_ui(en_server.messages))
+
+
+class RefusedOnRetryEngine:
+    """每一句：第一次回话、重试被拒答（接口 200 + stop_reason=refusal）。"""
+    name, model = "claude", "claude-haiku-5-5"
+
+    def __init__(self):
+        self.calls = 0
+        self.last_error, self.fail_streak, self.cooldown_until = None, 0, 0.0
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        from app.translator import note_refusal
+
+        self.calls += 1
+        if self.calls % 2:
+            return "I can't tell what \"them\" refers to, since your message has no text."
+        note_refusal("general_harms")
+        return None
+
+    async def close(self):
+        pass
+
+
+def test_a_refused_retry_is_english_on_the_page_and_chinese_in_audit_and_terminal(
+        monkeypatch, tmp_path, capsys, ascii_engine_labels):
+    zh_rows, zh_out, _ = _reply_retries_in(i18n.ZH, monkeypatch, tmp_path, capsys,
+                                           engine=RefusedOnRetryEngine)
+    en_rows, en_out, en_server = _reply_retries_in(i18n.EN, monkeypatch, tmp_path, capsys,
+                                                   engine=RefusedOnRetryEngine)
+    assert en_rows == zh_rows and en_out == zh_out
+    kinds = [json.loads(r)["type"] for r in zh_rows]
+    assert kinds.count("translation_refusal") == 2 and kinds.count("translation_rejected") == 2
+    assert [json.loads(r).get("retry") for r in zh_rows
+            if json.loads(r)["type"] == "translation_rejected"] == ["refusal", "refusal"]
+    assert "重试一次被拒答，这一条显示原文" in zh_out
+    assert zh_out.count("[警告] Claude 没有翻译第") == 2
+    # 页面上只有拒答原来那一句提示（已有的成对文字），本场一次
+    assert notices_en(en_server) == [
+        "Claude didn’t translate one caption (the API returned a refusal), so that caption shows "
+        "the original text. Banned-term alerts aren’t affected. Later refusals this session go "
+        "to the audit log without another notice."]
+    assert_no_chinese(english_ui(en_server.messages))
