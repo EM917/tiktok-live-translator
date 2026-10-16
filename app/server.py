@@ -144,6 +144,7 @@ class CaptionServer:
         app = web.Application(middlewares=[no_cache])
         app.router.add_get("/", self._index)
         app.router.add_get("/ws", self._ws)
+        app.router.add_get("/float", self._float_page)
         app.router.add_static("/static", WEB_DIR)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -154,6 +155,16 @@ class CaptionServer:
         """桌面页。中文时照旧端文件本身，字节与改造前相同；英文时只把 <html lang> 换成 en，
         页面里的 web/i18n.js 按它换文字（spec §2.2）。桌面页不加 data-i18n：那是手机页的闸标记。"""
         path = WEB_DIR / "index.html"
+        if i18n.current() == i18n.ZH:
+            return web.FileResponse(path)
+        html = i18n.inject_lang(path.read_text(encoding="utf-8"), i18n.EN)
+        return web.Response(text=html, content_type="text/html", charset="utf-8")
+
+    async def _float_page(self, request):
+        """浮窗页（app/float_window.py 开的那个置顶小窗）。语言的处理同 _index：中文时端文件本身，
+        英文时只把 <html lang> 换成 en，web/i18n.js 按它换文字。它没有 <meta name="tlt-app">：
+        双击第二次时 main.py 靠那个指纹认「这是不是本程序的主界面」，浮窗页不是。"""
+        path = WEB_DIR / "float.html"
         if i18n.current() == i18n.ZH:
             return web.FileResponse(path)
         html = i18n.inject_lang(path.read_text(encoding="utf-8"), i18n.EN)

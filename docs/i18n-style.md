@@ -74,6 +74,7 @@
 | 中文 | English | 不用 | 理由 |
 |---|---|---|---|
 | 手机同看 | **Phone Viewing** | Phone Viewer, Phone view, Mirror to Phone, Screen Share | README 写的是 “Phone viewer”，但界面里 viewer(s) 还要用来指人；用作功能名会和人数打架。Viewing 跟 Screen Mirroring 的构词一样。建议 README 顺手改成 “Phone viewing” |
+| 浮窗 | **Floating Window** | Float, Mini Player, Pop-out, Overlay, Picture in Picture | 顶栏按钮、窗口标题、页面标题都叫这个。开着的是一个始终在最上面的小窗，放最新一条字幕和最近几条弹幕。Overlay 会被读成盖在直播画面上；Picture in Picture 是苹果的视频画中画；Float 单独做名词不成立 |
 | 开始同看 / 停止同看 | **Start Sharing / Stop Sharing** | Turn On / Turn Off | 动词加对象，两个按钮成对 |
 | 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Bella All Natural” 和中文差不多宽 |
 | 不限（默认） | **Any (default)** | None, All brands | None 会被读成「没有品牌」，实际意思是「不限定某一个品牌」 |
@@ -602,6 +603,17 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 131 | 页面切到后台或锁屏后，手机可能停掉提示音。 | Sounds may stop when this page is in the background or the phone is locked. | |
 | 132 | 演示数据，不是真实直播 / 违禁词警示已关闭（中控开播时未开启） | Demo data, not a real stream / Banned-term alerts are off for this session. | |
 | 133 | 识别开始落后，报警会有延迟 / 检测已降级，识别明显落后 | Recognition is falling behind. Alerts will be delayed. / Detection degraded: recognition is far behind. | |
+
+### J. 浮窗（float.html / float.js）
+
+| # | 位置 | 中文 | English | 备注 |
+|---|---|---|---|---|
+| 136 | float_window.py FLOAT_TITLE | 浮窗 | Floating Window | 原生窗口标题（页面 `<title>` 是 “Floating Window · TikTok Live Translator”）。窗口窄，标题栏放得下的只有前半 |
+| 137 | float.html #f-empty、float.js floatPlaceholder | 等待第一句字幕… / 连接中… | Waiting for the first caption… / Connecting… | 窗口里还没有字幕时的占位，只写观察到的状态 |
+| 138 | float.html #f-comments | 弹幕 | Comments | aria-label；窗口里没有可见的标题 |
+| 139 | float.js floatCommentView | 翻译中… | Translating… | 同 #102 |
+| 140 | float_window.py OPEN_FAILED | 无法打开浮窗。 | Couldn’t open the floating window. | 一次性提示（notice）。不写原因 |
+| 141 | float.js（经 live-ui.js liveBarChip） | 翻译失败 / 未翻译（接口拒答） / 未翻译（结果不像译文） / 翻译已跳过（积压） | 同 #105a | 浮窗里最新一条字幕的角标，和中控页底部大字幕是同一个函数；翻译中不画 |
 
 ---
 

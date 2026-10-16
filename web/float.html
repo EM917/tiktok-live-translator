@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title data-en="Floating Window · TikTok Live Translator">浮窗 · TikTok 直播同传</title>
+<link rel="stylesheet" href="/static/float.css?v=1">
+<!-- i18n: done -->
+</head>
+<body>
+  <!-- 浮窗：app/float_window.py 开的置顶小窗。只显示最新一条字幕和最近几条弹幕，不显示报警，不发任何消息
+       （连的是 /ws?role=float，服务端对它只转发需要的几种消息）。样子和规则见 web/float.js。
+       字幕和弹幕正文带 class i18n-data（留给浏览器翻译，英文界面的检查也豁免）；昵称由 float.js 标 translate="no" -->
+  <main id="f-root" class="f-root">
+    <div id="f-empty" class="f-empty" role="status" data-en="Waiting for the first caption…">等待第一句字幕…</div>
+    <section id="f-caption" class="f-caption hidden">
+      <div id="f-big" class="f-big i18n-data"></div>
+      <div id="f-small" class="f-small i18n-data hidden"></div>
+      <!-- 翻译状态角标（没译成、被积压跳过时才有），字来自 live-ui.js，同中控页底部大字幕 -->
+      <div id="f-chip" class="f-chip hidden"></div>
+    </section>
+    <section id="f-comments" class="f-comments" aria-label="弹幕" data-en-aria-label="Comments"></section>
+  </main>
+  <script src="/static/i18n.js?v=1"></script>
+  <script src="/static/live-ui.js?v=2"></script>
+  <script src="/static/guard.js?v=6"></script>
+  <script src="/static/float.js?v=1"></script>
+</body>
+</html>

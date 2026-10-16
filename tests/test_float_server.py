@@ -4,12 +4,15 @@
 Pipeline._alert_stamp 把页面数写进每条报警的审计，浮窗数进去会让「有页面接收了这条报警」变成假话。
 """
 import asyncio
+import re
 
 from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from app.pipeline import Pipeline
-from app.server import FLOAT_CONFIG_KEYS, FLOAT_REPLAY_CAPTIONS, FLOAT_REPLAY_COMMENTS, CaptionServer
+from app import i18n
+from app.server import (FLOAT_CONFIG_KEYS, FLOAT_REPLAY_CAPTIONS, FLOAT_REPLAY_COMMENTS, FLOAT_TYPES,
+                        WEB_DIR, CaptionServer)
 
 
 def caption(i, **extra):
@@ -175,6 +178,19 @@ def test_live_broadcasts_reach_the_float_page_only_when_it_uses_them():
     assert got[-1] == {"type": "config", "caption_size": 44}       # 只留浮窗用得上的键
 
 
+def test_every_type_the_float_page_handles_is_forwarded_and_nothing_else():
+    """web/float.js 的 floatReduce 里 case 了哪些类型，和 FLOAT_TYPES 一一对应：
+    服务端多转发一种，页面白收；页面多认一种，服务端不转发它就永远等不到。一边改了另一边没改就红。"""
+    src = (WEB_DIR / "float.js").read_text(encoding="utf-8")
+    body = src.split("function floatReduce(", 1)[1].split("\nfunction ", 1)[0]
+    handled = set(re.findall(r'case "([a-z_]+)":', body))
+    assert handled == set(FLOAT_TYPES) | {"hello"}
+    # hello / config 里页面读的键，也和服务端留的键一一对应
+    keys = set(re.findall(r'"([a-z_]+)" in cfg', src))
+    assert keys <= set(FLOAT_CONFIG_KEYS), keys
+    assert set(FLOAT_CONFIG_KEYS) - keys <= {"status", "target_lang"}, keys     # status 单独读；目标语言页面暂不用
+
+
 def test_float_clients_see_no_alerts_during_a_replay_backlog():
     """回放期间攒的广播也要过同一道滤网。"""
     server = CaptionServer(port=0)
@@ -326,3 +342,51 @@ def test_a_bare_server_without_the_hook_attribute_still_broadcasts():
     server.history = server.alerts = server.comments = []
     asyncio.run(server.broadcast({"type": "status", "state": "idle"}))
     assert server.config["status"]["state"] == "idle"
+
+
+# ---- 页面本身 -----------------------------------------------------------------------------
+
+async def fetch_float(server, lang):
+    app = web.Application()
+    app.router.add_get("/float", server._float_page)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        with i18n.use(lang):
+            resp = await client.get("/float")
+            return resp.status, resp.headers.get("Content-Type", ""), await resp.text()
+    finally:
+        await client.close()
+
+
+def test_the_float_page_is_served_in_the_current_interface_language():
+    server = CaptionServer(port=0)
+    status, ctype, html = asyncio.run(fetch_float(server, "zh"))
+    assert status == 200 and ctype.startswith("text/html")
+    assert html == (WEB_DIR / "float.html").read_text(encoding="utf-8")          # 中文：端文件本身，字节不变
+    assert '<html lang="zh-CN">' in html
+
+    status, ctype, html = asyncio.run(fetch_float(server, "en"))
+    assert status == 200 and ctype.startswith("text/html")
+    assert '<html lang="en">' in html and '<html lang="zh-CN">' not in html
+    assert html.replace('<html lang="en">', '<html lang="zh-CN">') == \
+        (WEB_DIR / "float.html").read_text(encoding="utf-8")                      # 只换了 <html> 开标签
+
+
+def test_the_float_page_is_not_mistaken_for_the_main_interface():
+    """双击第二次时 main.py 靠 <meta name="tlt-app"> 认主界面（app/instance.py）；浮窗页没有它。"""
+    html = (WEB_DIR / "float.html").read_text(encoding="utf-8")
+    assert "tlt-app" not in html
+    assert "tlt-app" in (WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+
+def test_the_server_registers_the_float_route():
+    async def go():
+        server = CaptionServer(port=0)
+        await server.start()
+        try:
+            routes = {r.resource.canonical for r in server._runner.app.router.routes()}
+        finally:
+            await server._runner.cleanup()
+        return routes
+    assert "/float" in asyncio.run(go())

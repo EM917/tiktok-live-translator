@@ -62,7 +62,7 @@ CHROME_TIMEOUT_SEC = 60
 CHROME_RETRIES = 1
 TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".png": "image/png", ".json": "application/json"}
-EN_SCENARIOS = S.DESKTOP_EN + S.PHONE_EN
+EN_SCENARIOS = S.DESKTOP_EN + S.PHONE_EN + S.FLOAT_EN
 
 
 def find_chrome(environ=None):
@@ -106,15 +106,19 @@ def _only_tag(html, src):
     return tags[0]
 
 
+# 每种页面：(文件, 资源路径前缀, 第一个脚本, 最后一个脚本)。浮窗页（web/float.html）和桌面页走同一个 /static/
+PAGE_FILES = {"desktop": ("index.html", "/static/", "i18n.js", "app.js"),
+              "float": ("float.html", "/static/", "i18n.js", "float.js"),
+              "phone": ("viewer.html", "/v/", "viewer.js", "viewer.js")}
+
+
 def page_html(scenario, web_dir=WEB_DIR):
     """服务器在 / 上端的页面：注入语言，再在页面脚本前后插入替身。别的字节一个不动。"""
-    desktop = scenario["page"] == "desktop"
-    name, base, first, last = (("index.html", "/static/", "i18n.js", "app.js") if desktop
-                               else ("viewer.html", "/v/", "viewer.js", "viewer.js"))
+    name, base, first, last = PAGE_FILES[scenario["page"]]
     html = (Path(web_dir) / name).read_text(encoding="utf-8")
     if html.count('<html lang="zh-CN">') != 1:       # inject_lang 靠它；没有就会静默不注入
         raise AssertionError('{} 里 <html lang="zh-CN"> 应恰好一个'.format(name))
-    html = i18n.inject_lang(html, scenario["page_lang"], marker=not desktop)
+    html = i18n.inject_lang(html, scenario["page_lang"], marker=scenario["page"] == "phone")
     before = "".join(_script_tag(base + n) for n in ("probe.js", "scenario.js", "fake_ws.js"))
     after = "".join(_script_tag(base + n) for n in ("probe.js", "scan.js"))
     head = _only_tag(html, base + first)
@@ -466,7 +470,7 @@ class _Runner:
                     name, dom[:300]))
             result["probe"] = dump_json(dom, "i18n-probe")
             result["dom"] = dom
-            if shot is not None and sc["page"] == "desktop":
+            if shot is not None and sc["page"] in ("desktop", "float"):
                 self._launch(name, lambda profile: run_chrome(
                     self.chrome, url, sc["size"], sc["lang"], profile,
                     ["--hide-scrollbars", "--screenshot={}".format(shot)], shot_written))
@@ -713,6 +717,50 @@ def test_phone_status_pill_stays_on_screen(dom, name):
     assert pill and pill["right"] <= result["viewport"]["width"], (pill, result["viewport"])
 
 
+@needs_chrome
+def test_float_page_keeps_its_chinese_data_in_the_data_areas(dom):
+    """浮窗场景故意放了中文昵称（名字，translate="no"）和中文的弹幕译文（正文，class i18n-data）：
+    它们确实画到了页面上，英文页的扫描不许把它们算作漏翻。"""
+    result = dom.scan("float-live")
+    html = result["dom"]
+    for text in ("小明", S.CAPTION_ZH):
+        assert text in html, "浮窗场景里的中文数据没画到页面上：{}".format(text)
+        assert not [x for x in result["cjk"] if text in x["text"]], "数据区里的中文被计入了：{}".format(text)
+    for text, named in (("小明", True), (S.CAPTION_ZH, False)):
+        for tag in _holders(html, text):
+            assert ('translate="no"' in tag) == named and ("i18n-data" in _classes(tag)) != named, tag
+
+
+@needs_chrome
+def test_float_page_shows_what_the_scenario_says(dom):
+    """核对页面真的画出了红 / 琥珀 / 关注的标记和没译成的角标（扫描绿了也可能只是什么都没画）。"""
+    html = dom.scan("float-live")["dom"]
+    for cls in ("guard-alert", "guard-amber"):
+        assert cls in html, "弹幕里没有 {} 的行".format(cls)
+    for text in ("Possible redirect (link)", "Short, with no question mark", "Not translated (API refusal)"):
+        assert text in html, "页面上没有「{}」".format(text)
+    assert "guard-mark-btn" not in html, "浮窗只显示，不该有加入关注名单的按钮"
+
+
+@needs_chrome
+@needs_mac
+def test_float_page_fits_its_window(dom):
+    """460×330 的默认窗口：不横向溢出，弹幕列表不超出窗口底边（放不下时被裁掉的是最旧的）。"""
+    result = dom.scan("float-live")
+    got, view = result["measure"], result["viewport"]
+    problems = []
+    for sel in (".f-root", "#f-caption", "#f-comments"):
+        m = got.get(sel)
+        if not m:
+            problems.append("{} 量不到：{}".format(sel, m))
+        elif m["scrollWidth"] > m["clientWidth"] + 1:
+            problems.append("{} 横向溢出 {}".format(sel, m))
+    comments = got.get("#f-comments")
+    if comments and comments["bottom"] > view["height"] + 1:
+        problems.append("弹幕列表超出窗口底边 {} > {}".format(comments["bottom"], view["height"]))
+    assert not problems, "\n".join(problems)
+
+
 # ---- 不开 Chrome 的用例（平时照常跑） --------------------------------------------------------
 
 def test_the_scan_is_opt_in():
@@ -745,7 +793,7 @@ def test_scenarios_carry_real_backend_text_and_the_chinese_data(tmp_path):
     built = S.build(tmp_path)
     assert set(EN_SCENARIOS + (S.CONTROL_ZH,)) <= set(built)
     for name, sc in built.items():
-        assert sc["page"] in ("desktop", "phone") and sc["size"][0] > 0, name
+        assert sc["page"] in PAGE_FILES and sc["size"][0] > 0, name
         assert json.loads(json.dumps(sc)) == sc, name        # scenario.js 里原样可用
         if sc["page"] == "desktop":
             hello = sc["messages"][0]
@@ -804,29 +852,48 @@ def test_guard_scenarios_carry_the_data_the_page_needs(tmp_path):
             built[name]["messages"][0]["config"].get("guard_events")
 
 
+def test_float_scenario_is_what_the_float_connection_really_receives(tmp_path):
+    """不开 Chrome：浮窗场景的消息是 /ws?role=float 真的会收到的那些——hello 只带浮窗用得上的键，回放里没有报警，
+    类型都在 FLOAT_TYPES 里；数据里有红 / 琥珀 / 关注的弹幕、中文昵称和没译成的最新字幕。"""
+    from app.server import FLOAT_CONFIG_KEYS, FLOAT_TYPES
+    sc = S.build(tmp_path)["float-live"]
+    assert sc["page"] == "float" and sc["lang"] == "en" and sc["size"] == list(S.FLOAT)
+    msgs = sc["messages"]
+    assert msgs[0]["type"] == "hello" and set(msgs[0]["config"]) <= set(FLOAT_CONFIG_KEYS)
+    assert msgs[0]["config"]["caption_size"] == 40 and msgs[0]["config"]["guard_marked"]
+    assert {m["type"] for m in msgs[1:]} <= set(FLOAT_TYPES)
+    assert not [m for m in msgs if m["type"].startswith("alert")]
+    assert {m["guard"]["lvl"] for m in msgs if m["type"] == "comment" and "guard" in m} == {"alert", "amber"}
+    assert any(m.get("user") == "小明" for m in msgs if m["type"] == "comment")
+    assert msgs[-1]["translate_state"] == "failed" and msgs[-1]["refused"] is True
+    assert [m["restore"] for m in msgs if m["type"] == "caption" and m.get("restore")]   # 回放的最后一条带 restore
+    assert sc["measure"] == list(S.FLOAT_MEASURE)
+
+
 @pytest.mark.parametrize("page, lang, html_tag", [
     ("desktop", "en", '<html lang="en">'),
     ("desktop", "zh", '<html lang="zh-CN">'),
+    ("float", "en", '<html lang="en">'),
+    ("float", "zh", '<html lang="zh-CN">'),
     ("phone", "en", '<html lang="en" data-i18n="on">'),
     ("phone", "zh", '<html lang="zh-CN" data-i18n="on">'),
 ])
 def test_page_gets_the_fixtures_around_its_own_scripts(page, lang, html_tag):
-    desktop = page == "desktop"
+    name, base, first_js, last_js = PAGE_FILES[page]
     html = page_html({"page": page, "page_lang": lang})
-    base = "/static/" if desktop else "/v/"
-    original = (WEB_DIR / ("index.html" if desktop else "viewer.html")).read_text(encoding="utf-8")
+    original = (WEB_DIR / name).read_text(encoding="utf-8")
     assert html.count(html_tag) == 1
     for tag in re.findall(r'<script src="[^"]+"></script>', original):
         assert html.count(tag) == 1, tag                   # 原来的脚本（连 ?v=）一个不少
-    first = _only_tag(original, base + ("i18n.js" if desktop else "viewer.js"))
-    last = _only_tag(original, base + ("app.js" if desktop else "viewer.js"))
+    first = _only_tag(original, base + first_js)
+    last = _only_tag(original, base + last_js)
     fixtures = "".join(_script_tag(base + n) for n in ("probe.js", "scenario.js", "fake_ws.js"))
     assert fixtures + first in html
     assert last + _script_tag(base + "probe.js") + _script_tag(base + "scan.js") in html
     stripped = html
     for n in ("probe.js", "scenario.js", "fake_ws.js", "scan.js"):
         stripped = stripped.replace(_script_tag(base + n), "")
-    assert stripped == i18n.inject_lang(original, lang, marker=not desktop)   # 别的字节不动
+    assert stripped == i18n.inject_lang(original, lang, marker=page == "phone")   # 别的字节不动；只有手机页带 data-i18n
 
 
 def test_page_refuses_to_serve_without_its_anchor(tmp_path):

@@ -51,12 +51,14 @@ NOW = datetime(2026, 9, 28, 20, 0, 0).timestamp()   # 固定时刻：日志文�
 FUTURE = NOW + 10 * 365 * 86400
 DESKTOP = (1280, 860)
 PHONE = (390, 844)
+FLOAT = (460, 330)                             # 浮窗的默认大小（app/float_window.py DEFAULT_SIZE）
 LIVE_WIDTHS = (1000, 1100, 1101, 1199, 1200)   # 版面断言的五档（spec §12.3 第 7 条）
 NARROW_WIDTHS = (860, 720)                     # 这两档只断言 .topbar 不溢出
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm")
 GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
                  ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
+FLOAT_MEASURE = (".f-root", "#f-caption", "#f-comments")
 
 # 弹幕留意（Comment Review）的四个场景，英文页进 G10 的扫描，中文页（-zh）只为核对中文界面和出截图。
 # 设置行展开、直播中抽屉的「最近需要留意」页签、抽屉的「关注名单」页签、熔断后的胶囊与「本场重新启用」
@@ -65,6 +67,7 @@ GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
 DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "connecting", "offline",
               "error-4003110") + GUARD_NAMES
 PHONE_EN = ("phone-live", "phone-denied", "phone-full", "phone-local-en")
+FLOAT_EN = ("float-live",)           # 浮窗页（web/float.html）：直播中，有红 / 琥珀 / 关注的弹幕，最新一条字幕没译成
 CONTROL_ZH = "live-full-zh"
 
 
@@ -328,11 +331,12 @@ def _scenario(name, page, lang, messages, *, page_lang=None, replies=None, close
               clicks=(), storage=None):
     """一个场景（spec §12.3 第 2 条的形状）。另有两个键：page_lang 是服务器往 <html> 里注入的
     语言（手机本机选了英文、服务端给中文页时两者不同），storage 是开页前预置的 localStorage。"""
-    desktop = page == "desktop"
-    return {"name": name, "page": page, "size": list(DESKTOP if desktop else PHONE),
+    size = {"desktop": DESKTOP, "phone": PHONE, "float": FLOAT}[page]
+    measure = {"desktop": DESKTOP_MEASURE, "phone": PHONE_MEASURE, "float": FLOAT_MEASURE}[page]
+    return {"name": name, "page": page, "size": list(size),
             "lang": lang, "page_lang": page_lang or lang, "messages": _plain(messages),
             "replies": _plain(replies or {}), "close": close, "clicks": list(clicks),
-            "measure": list(DESKTOP_MEASURE if desktop else PHONE_MEASURE),
+            "measure": list(measure),
             "storage": dict(storage or {})}
 
 
@@ -542,6 +546,28 @@ def _phone(tmp):
     ]
 
 
+def _float(tmp):
+    """浮窗页：消息照真实连接的样子——/ws?role=float 的 hello（只带浮窗用得上的键）、短回放（最后几条字幕和弹幕，
+    没有报警）、再接不进缓存的实时消息：一条中文昵称、中文译文的弹幕（数据，必须落在数据区里），
+    和最后一条没译成的字幕（角标才会画出来）。回放由真的 CaptionServer.replay_messages("float") 给出。"""
+    with i18n.use("en"):
+        server = CaptionServer(port=8765)
+        server.config.update(caption_size=40, target_lang="en", guard_state=dict(GUARD_STATE))
+        _feed(server, [{"type": "status", "state": "live", "detail": ""}])
+        _feed(server, _captions() + _guard_marked() + _guard_comments() + _alerts())
+        live = [
+            {"type": "comment", "id": "gz", "user": "小明", "text": "Ya compré dos", "ts": NOW - 100,
+             "translated": None, "state": "pending"},
+            {"type": "comment_update", "id": "gz", "translated": CAPTION_ZH, "state": "ok"},
+            _caption(20, "Nos vemos mañana a la misma hora", ts=NOW - 90),
+            _caption_update(20, None, state="failed", refused=True),
+        ]
+        out = [{"type": "hello", "config": server._float_config(server.config)}]
+        out += server.replay_messages("float")
+        out += live
+        return _scenario("float-live", "float", "en", [i18n.render(m, "en") for m in out])
+
+
 def resized(scenario, width, height=None):
     """同一个场景换一个窗口大小：live-full@1100 这样命名。"""
     out = copy.deepcopy(scenario)
@@ -559,7 +585,7 @@ def build(tmp):
                  _status_only(tmp, "offline", "idle", close={"code": 1006}),
                  _status_only(tmp, "error-4003110", "error", browser_only_message(3, login={
                      "safari": browser_login.BLOCKED, "chrome": browser_login.NOT_LOGGED_IN})),
-                 _live_full(tmp, "zh")] + _guard_scenarios(tmp) + _phone(tmp)
+                 _live_full(tmp, "zh")] + _guard_scenarios(tmp) + _phone(tmp) + [_float(tmp)]
     out = {sc["name"]: sc for sc in scenarios}
     for width in LIVE_WIDTHS + NARROW_WIDTHS:
         sc = resized(out["live-full"], width)

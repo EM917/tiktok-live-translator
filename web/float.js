@@ -1,0 +1,298 @@
+// i18n: done
+/* 浮窗页（web/float.html，app/float_window.py 开的那个小窗）：最新一条字幕 + 最近几条弹幕。
+ *
+ * 只显示，不发任何消息：连的是 /ws?role=float，服务端对这种连接只转发 FLOAT_TYPES 里的类型
+ * （app/server.py），入站一律丢弃。这里没有 send()，也没有按钮。不显示报警（报警留在中控页，
+ * CLAUDE.md 第六条）。
+ *
+ * 分三层，跟 web/guard.js、web/live-ui.js 一样：
+ *   1. 纯函数（状态归并、取字、字号）：node 测试直接 require，tests/float.test.mjs / float.en.test.mjs；
+ *   2. 渲染函数：第一个参数是 document，只用 createElement / appendChild / removeChild / classList /
+ *      setAttribute / textContent，node 测试里的假 DOM 也能跑；
+ *   3. 页面里的胶水（IIFE，文件末尾）：连 WebSocket、把消息交给归并函数、再渲染。node 里没有
+ *      document，直接跳过。
+ * 字幕的角标（翻译中不画，失败 / 拒答 / 不像译文 / 积压跳过才画）用 live-ui.js 的 liveBarChip，
+ * 弹幕的红 / 琥珀标记用 guard.js 的 guardDecorateComment——和中控页是同一份判断，不抄第二遍。
+ *
+ * 几条不变量：
+ * - **账号 id 一律当字符串比**，这里不碰 uid 的数值（同 guard.js）；
+ * - **只写观察，不写原因**（CLAUDE.md 第八条）；
+ * - 昵称标 translate="no"，字幕和弹幕正文带 class i18n-data（同 app.js 的 markName / markBody）。 */
+
+"use strict";
+
+// 浏览器里这些都是前面几个脚本定义的全局；node 测试里从各自的模块取
+if (typeof L === "undefined") { var I18N_ = require("./i18n.js"); var L = I18N_.L, LN = I18N_.LN, APP_NAME = I18N_.APP_NAME; }
+if (typeof liveBarChip === "undefined") {
+  var LIVE_ = require("./live-ui.js");
+  var liveBarChip = LIVE_.liveBarChip, captionSizeFromConfig = LIVE_.captionSizeFromConfig;
+}
+if (typeof guardDecorateComment === "undefined") {
+  var GUARD_ = require("./guard.js");
+  var guardDecorateComment = GUARD_.guardDecorateComment, guardMarkIndex = GUARD_.guardMarkIndex;
+}
+
+var FLOAT_COMMENTS_MAX = 5;          // 窗口里最多留几条弹幕（新的在底部）
+
+// ---- 状态归并 -----------------------------------------------------------------------------
+
+function floatInitialState() {
+  return { caption: null, comments: [], breakTs: 0, status: "", captionSize: null,
+           guardState: null, marked: Object.create(null), markIdx: Object.create(null) };
+}
+
+function floatSetMarked(state, marked) {
+  var next = Object.create(null);
+  var src = marked && typeof marked === "object" ? marked : {};
+  Object.keys(src).forEach(function (k) { if (src[k] && typeof src[k] === "object") next[k] = src[k]; });
+  state.marked = next;
+  state.markIdx = guardMarkIndex(next);
+}
+
+function floatApplyConfig(state, cfg) {
+  if (!cfg || typeof cfg !== "object") return;
+  if ("caption_size" in cfg) state.captionSize = captionSizeFromConfig(cfg.caption_size);
+  if (cfg.status && typeof cfg.status === "object") state.status = cfg.status.state || "";
+  if ("guard_state" in cfg) state.guardState = cfg.guard_state && typeof cfg.guard_state === "object" ? cfg.guard_state : null;
+  if ("guard_marked" in cfg) floatSetMarked(state, cfg.guard_marked);
+}
+
+function floatFindComment(state, id) {
+  for (var i = state.comments.length - 1; i >= 0; i--) if (state.comments[i].id === id) return state.comments[i];
+  return null;
+}
+
+/* 一条消息 → 新状态（原地改 state 并返回它）。认不出的类型原样放过。
+ * 换主播（session_break）清掉字幕和弹幕，并记下那一刻：缓存里的弹幕不会随换场清空，重连回放时
+ * 比这一刻老的弹幕是上一个主播的，不要。 */
+function floatReduce(state, msg) {
+  if (!msg || typeof msg !== "object") return state;
+  switch (msg.type) {
+    case "hello": {
+      var fresh = floatInitialState();
+      Object.keys(fresh).forEach(function (k) { state[k] = fresh[k]; });
+      floatApplyConfig(state, msg.config);
+      break;
+    }
+    case "config":
+      floatApplyConfig(state, msg);
+      break;
+    case "status":
+      state.status = msg.state || "";
+      break;
+    case "caption":
+      state.caption = { id: msg.id, original: msg.original || "", translated: msg.translated || null,
+                        translate_state: msg.translate_state, refused: !!msg.refused,
+                        not_translation: !!msg.not_translation };
+      break;
+    case "caption_update":
+      // 只覆盖消息里带的键：重译的「进行中」通知不带 translated，整段照抄会把已有的译文抹掉
+      if (state.caption && state.caption.id === msg.id) {
+        var cap = state.caption;
+        if ("translated" in msg) cap.translated = msg.translated || null;
+        if ("translate_state" in msg) cap.translate_state = msg.translate_state;
+        if ("refused" in msg) cap.refused = !!msg.refused;
+        if ("not_translation" in msg) cap.not_translation = !!msg.not_translation;
+      }
+      break;
+    case "session_break":
+      state.caption = null;
+      state.comments = [];
+      state.breakTs = typeof msg.ts === "number" ? msg.ts : 0;
+      break;
+    case "history_cleared":
+      if (msg.kind === "captions") state.caption = null;
+      else if (msg.kind === "comments") state.comments = [];
+      break;
+    case "comment": {
+      if (typeof msg.ts === "number" && msg.ts < state.breakTs) break;
+      var item = { id: msg.id, user: msg.user || "", text: msg.text || "", ts: msg.ts,
+                   translated: msg.translated || null, state: msg.state || "",
+                   uid: msg.uid, uid_ok: msg.uid_ok, sec: msg.sec, handle: msg.handle,
+                   guard: msg.guard && typeof msg.guard === "object" ? msg.guard : null };
+      var old = floatFindComment(state, msg.id);
+      if (old) state.comments[state.comments.indexOf(old)] = item;
+      else state.comments.push(item);
+      while (state.comments.length > FLOAT_COMMENTS_MAX) state.comments.shift();
+      break;
+    }
+    case "comment_update": {
+      var target = floatFindComment(state, msg.id);
+      if (target) {
+        target.translated = msg.translated || null;
+        target.state = msg.state || "";
+      }
+      break;
+    }
+    case "comment_guard": {
+      var tagged = floatFindComment(state, msg.id);
+      if (tagged) tagged.guard = msg.guard && typeof msg.guard === "object" ? msg.guard : null;
+      break;
+    }
+    case "guard_mark": {
+      var key = String(msg.key || "");
+      if (key) {
+        var marked = Object.assign({}, state.marked);
+        if (msg.entry && typeof msg.entry === "object") marked[key] = msg.entry;
+        else delete marked[key];
+        floatSetMarked(state, marked);
+      }
+      break;
+    }
+  }
+  return state;
+}
+
+// ---- 取字 ---------------------------------------------------------------------------------
+
+/* 最新一条字幕怎么显示。和中控页底部大字幕同一套：译文到了译文大字、原文小字；没译成就是原文大字
+ * （没有小字），下面的角标说明为什么（翻译中不画，见 liveBarChip）。没有字幕返回 null。 */
+function floatCaptionView(state) {
+  var c = state && state.caption;
+  if (!c) return null;
+  var chip = liveBarChip(c);
+  return { id: c.id, big: c.translated || c.original || "", small: c.translated ? (c.original || "") : "",
+           chip: chip.text, fail: chip.fail };
+}
+
+/* 还没有字幕时窗口里写的话：只写观察到的状态 */
+function floatPlaceholder(state) {
+  return state && state.status === "connecting" ? L("连接中…", "Connecting…")
+                                                : L("等待第一句字幕…", "Waiting for the first caption…");
+}
+
+/* 一条弹幕怎么显示：昵称、译文行、原文行。照中控页弹幕栏的规则（app.js renderComment / updateComment）：
+ * 翻译中占位；同语言 / 没翻译的（same、skipped）译文行就是原文本身、不再重复一遍；
+ * 译不出来的（failed、dropped）显示原文本身，不写「失败」字样——原文就是内容，中控照样看得懂。 */
+function floatCommentView(c) {
+  var text = c.text || "";
+  var out = { id: c.id, user: c.user || "", zh: text, orig: text, showOrig: false, pending: false, failed: false };
+  if (c.state === "pending") {
+    out.zh = L("翻译中…", "Translating…");
+    out.pending = true;
+    out.showOrig = !!text;
+  } else if (c.translated && c.state !== "same" && c.state !== "skipped") {
+    out.zh = c.translated;
+    out.showOrig = !!text;
+  } else if (c.state === "failed" || c.state === "dropped") {
+    out.failed = true;
+  }
+  return out;
+}
+
+/* 字号。config.caption_size（20–60，中控页顶栏滑块，默认 34）定中控页底部大字幕的字号；这里的窗口小得多，
+ * 按 0.62 缩（34 → 21px），夹在 16–40 之间；原文和弹幕按译文的比例跟着变。没设过就按默认的 34 算 */
+function floatSizes(captionSize) {
+  var size = captionSizeFromConfig(captionSize);
+  var big = Math.max(16, Math.min(40, Math.round((size == null ? 34 : size) * 0.62)));
+  return { big: big, small: Math.max(12, Math.round(big * 0.62)),
+           cmt: Math.max(13, Math.min(20, Math.round(big * 0.66))),
+           cmtSmall: Math.max(11, Math.min(16, Math.round(big * 0.55))) };
+}
+
+// ---- 渲染 ---------------------------------------------------------------------------------
+
+function floatEl(doc, tag, cls, text) {
+  var el = doc.createElement(tag);
+  if (cls) el.className = cls;
+  if (text != null) el.textContent = text;
+  return el;
+}
+
+/* 一条弹幕的节点。结构同中控页的 .cmt-item（.cmt-head / .cmt-zh / .cmt-orig），guardDecorateComment 靠它
+ * 找位置。ctx.guard 是传给它的 { state, marked, index, events, onMark }：这里 state.enabled 恒为 false，
+ * 所以不会出现「加入关注名单」的按钮——浮窗只显示。 */
+function floatBuildComment(doc, c, guardCtx) {
+  var v = floatCommentView(c);
+  var item = floatEl(doc, "div", "cmt-item f-cmt");
+  item.dataset.cmtId = String(c.id);
+  var head = floatEl(doc, "div", "cmt-head f-head");
+  var name = floatEl(doc, "span", "f-user", v.user);
+  name.setAttribute("translate", "no");                      // 昵称是名字，不是正文
+  head.appendChild(name);
+  item.appendChild(head);
+  item.appendChild(floatEl(doc, "div", "cmt-zh f-zh i18n-data" + (v.pending ? " pending" : "") + (v.failed ? " failed" : ""), v.zh));
+  item.appendChild(floatEl(doc, "div", "cmt-orig f-orig i18n-data" + (v.showOrig ? "" : " hidden"), v.orig));
+  guardDecorateComment(doc, item, { uid: c.uid, uid_ok: c.uid_ok, sec: c.sec, handle: c.handle, user: c.user,
+                                    guard: c.guard }, guardCtx);
+  return item;
+}
+
+function floatGuardCtx(state) {
+  var gs = state.guardState || {};
+  return { state: { enabled: false, weak: !!gs.weak }, marked: state.marked, index: state.markIdx,
+           events: null, onMark: null };
+}
+
+/* 把状态画出来。els：{ empty, caption, big, small, chip, comments }。整个重画：最多 5 条，不值得做差量 */
+function floatRender(doc, els, state) {
+  var cv = floatCaptionView(state);
+  els.caption.classList.toggle("hidden", !cv);
+  els.empty.classList.toggle("hidden", !!cv);
+  if (cv) {
+    els.big.textContent = cv.big;
+    els.small.textContent = cv.small;
+    els.small.classList.toggle("hidden", !cv.small);
+    els.chip.textContent = cv.chip;
+    els.chip.classList.toggle("hidden", !cv.chip);
+    els.chip.classList.toggle("fail", cv.fail);
+  } else {
+    els.empty.textContent = floatPlaceholder(state);
+  }
+  while (els.comments.firstChild) els.comments.removeChild(els.comments.firstChild);
+  var ctx = floatGuardCtx(state);
+  for (var i = 0; i < state.comments.length; i++) els.comments.appendChild(floatBuildComment(doc, state.comments[i], ctx));
+}
+
+// ---- 页面里的胶水 -------------------------------------------------------------------------
+
+(function () {
+  if (typeof document === "undefined" || typeof WebSocket === "undefined" || !document.getElementById("f-root")) return;
+  var root = document.documentElement;
+  // 非 macOS 的窗口不透明（app/float_window.py 往地址里写 ?solid=1）
+  if (/[?&]solid=1(?:&|$)/.test((typeof location !== "undefined" && location.search) || "")) root.classList.add("solid");
+  var els = { empty: document.getElementById("f-empty"), caption: document.getElementById("f-caption"),
+              big: document.getElementById("f-big"), small: document.getElementById("f-small"),
+              chip: document.getElementById("f-chip"), comments: document.getElementById("f-comments") };
+  var state = floatInitialState();
+  var retries = 0;
+
+  function applySizes() {
+    var s = floatSizes(state.captionSize);
+    root.style.setProperty("--f-big", s.big + "px");
+    root.style.setProperty("--f-small", s.small + "px");
+    root.style.setProperty("--f-cmt", s.cmt + "px");
+    root.style.setProperty("--f-cmt-small", s.cmtSmall + "px");
+  }
+
+  function handle(msg) {
+    floatReduce(state, msg);
+    if (msg && (msg.type === "hello" || msg.type === "config")) applySizes();
+    floatRender(document, els, state);
+  }
+
+  function connect() {
+    var ws = new WebSocket("ws://" + location.host + "/ws?role=float");
+    ws.onopen = function () { retries = 0; };
+    ws.onclose = function () { setTimeout(connect, Math.min(5000, 700 * Math.pow(2, retries++))); };
+    ws.onerror = function () { try { ws.close(); } catch (e) { /* noop */ } };
+    ws.onmessage = function (evt) {
+      var msg;
+      try { msg = JSON.parse(evt.data); } catch (e) { return; }
+      handle(msg);
+    };
+  }
+
+  applySizes();
+  floatRender(document, els, state);
+  connect();
+})();
+
+/* Node 测试环境导出；浏览器里作为全局函数被上面的胶水使用 */
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { FLOAT_COMMENTS_MAX: FLOAT_COMMENTS_MAX, floatInitialState: floatInitialState,
+                     floatReduce: floatReduce, floatCaptionView: floatCaptionView,
+                     floatPlaceholder: floatPlaceholder, floatCommentView: floatCommentView,
+                     floatSizes: floatSizes, floatBuildComment: floatBuildComment,
+                     floatGuardCtx: floatGuardCtx, floatRender: floatRender };
+}

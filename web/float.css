@@ -1,0 +1,95 @@
+/* 浮窗页（web/float.html）的样式：深色半透明小窗，白字。
+   只有一套深色，不跟系统深浅色走——它浮在别的软件上面，背景是什么不由我们定，深底白字最稳。
+   macOS 上窗口本身是透明的（app/float_window.py 的 transparent），这里的 rgba 底就是半透明的来源；
+   别的平台地址带 ?solid=1，float.js 给 <html> 加 solid，换成不透明的深色底。
+   字号走 CSS 变量，float.js 按 config.caption_size 写（译文 = 顶栏滑块的值 × 0.62，夹在 16–40px）。 */
+:root {
+  color-scheme: dark;
+  --f-big: 21px;            /* 最新一条字幕的译文 */
+  --f-small: 13px;          /* 它的原文 */
+  --f-cmt: 14px;            /* 弹幕译文 */
+  --f-cmt-small: 12px;      /* 弹幕原文、昵称 */
+  --f-bg: rgba(16, 18, 24, 0.82);
+  --f-solid: #101218;
+  --f-fg: #ffffff;
+  --f-dim: rgba(255, 255, 255, 0.66);      /* 浅底透出来时（最坏 #3b3d41 上）仍有 6:1 以上 */
+  --f-line: rgba(255, 255, 255, 0.16);
+  --f-red: #ff453a;  --f-red-ink: #ff8f88;
+  --f-amber: #ff9f0a; --f-amber-ink: #f6cd7b;
+  --f-indigo: #8f8df0;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--f-bg);
+  color: var(--f-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-size: var(--f-cmt);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  cursor: default;
+  user-select: none; -webkit-user-select: none;
+}
+html.solid body { background: var(--f-solid); }
+.hidden { display: none !important; }
+
+/* 英文页防闪：同 style.css，i18n.js 把静态文案换成英文之前先不显示（它万一没加载，1.5 秒后照样显示） */
+html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-reveal 0s 1.5s forwards; }
+@keyframes i18n-reveal { to { visibility: visible; } }
+
+.f-root { height: 100%; display: flex; flex-direction: column; }
+
+/* ---- 最新一条字幕 ---- */
+.f-empty { flex: none; padding: 14px; color: var(--f-dim); font-size: var(--f-cmt); line-height: 1.4; }
+.f-caption { flex: none; max-height: 62%; overflow: hidden; padding: 12px 14px 8px; }
+.f-big { font-size: var(--f-big); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.f-small { margin-top: 4px; font-size: var(--f-small); line-height: 1.4; color: var(--f-dim); overflow-wrap: anywhere; }
+/* 翻译状态角标：没译成时用红字（字本身写着「未翻译」，不只靠颜色），被积压跳过的是中性 */
+.f-chip {
+  display: inline-block; margin-top: 6px; padding: 0 8px; border-radius: 9px;
+  font-size: 12px; line-height: 18px; font-weight: 500;
+  color: var(--f-dim); background: rgba(255, 255, 255, 0.12);
+}
+.f-chip.fail { color: var(--f-red-ink); background: rgba(255, 69, 58, 0.22); }
+
+/* ---- 最近的弹幕：新的在底部，放不下时挤掉最旧的（上面被裁，最新那条永远在） ---- */
+.f-comments {
+  flex: 1 1 auto; min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  padding: 4px 14px 10px; border-top: 0.5px solid var(--f-line);
+}
+.f-cmt { position: relative; flex: none; padding: 5px 0; border-left: 3px solid transparent; }
+.f-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 5px; font-size: var(--f-cmt-small); color: var(--f-dim); }
+.f-user { font-weight: 600; max-width: 100%; overflow-wrap: anywhere; }
+.f-zh { margin-top: 1px; font-size: var(--f-cmt); line-height: 1.4; overflow-wrap: anywhere; }
+.f-zh.pending { color: var(--f-dim); font-style: italic; }
+.f-zh.failed { color: var(--f-dim); }
+.f-orig { font-size: var(--f-cmt-small); line-height: 1.35; color: var(--f-dim); overflow-wrap: anywhere; }
+
+/* ---- 弹幕留意的标记（web/guard.js 的 guardDecorateComment 加的类和节点），颜色含义同中控页：
+   红＝规则明确命中，琥珀＝拿不准，靛蓝＝关注的人，弱信号只是一圈浅描边。形状跟着变（类别胶囊的字、★），
+   不只靠颜色。标了的整行抻到窗口边缘，左边条贴着边（列表自己有 14px 内边距：3 + 11 = 14，文字不挪位）。 */
+.f-cmt.guard-alert, .f-cmt.guard-amber, .f-cmt.guard-marked, .f-cmt.guard-weak {
+  margin: 0 -14px; padding-left: 11px; padding-right: 14px;
+}
+.f-cmt.guard-marked { border-left-color: var(--f-indigo); }
+.f-cmt.guard-alert { border-left-color: var(--f-red); background: rgba(255, 69, 58, 0.14); }      /* 写在 marked 之后：红 / 橙盖过靛蓝 */
+.f-cmt.guard-amber { border-left-color: var(--f-amber); background: rgba(255, 159, 10, 0.12); }
+.f-cmt.guard-alert.guard-marked, .f-cmt.guard-amber.guard-marked { box-shadow: inset 3px 0 0 var(--f-indigo); }
+.guard-star { margin-right: -2px; color: var(--f-indigo); font-weight: 600; }
+.guard-pill {
+  display: inline-block; max-width: 100%; padding: 0 6px; border-radius: 4px;
+  font-size: 11px; line-height: 16px; font-weight: 600; overflow-wrap: anywhere;
+}
+.guard-pill.alert { color: var(--f-red-ink); background: rgba(255, 69, 58, 0.24); }
+.guard-pill.amber { color: var(--f-amber-ink); background: rgba(255, 159, 10, 0.22); }
+.guard-pill.weak { color: var(--f-dim); background: transparent; font-weight: 500; box-shadow: inset 0 0 0 0.5px var(--f-line); }
+.guard-note { margin-top: 1px; font-size: var(--f-cmt-small); line-height: 1.4; color: var(--f-amber-ink); }
+.f-cmt.guard-alert .guard-note { color: var(--f-red-ink); }
+.guard-ev {
+  display: inline-block; max-width: 100%; margin-top: 2px; padding: 0 5px; border-radius: 4px;
+  font-size: var(--f-cmt-small); line-height: 1.5; color: var(--f-fg); background: rgba(255, 69, 58, 0.22);
+  overflow-wrap: anywhere;
+}
