@@ -40,7 +40,7 @@ async def with_client(server, body):
         await client.close()
 
 
-async def read_until_quiet(ws, wait=0.15):
+async def read_until_quiet(ws, wait=0.3):
     got = []
     while True:
         try:
