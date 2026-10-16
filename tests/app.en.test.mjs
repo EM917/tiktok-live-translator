@@ -583,7 +583,7 @@ test("英文页：报警头用弯双引号，译不出来的说明按有没有�
   assert.deepEqual(leftoverChinese(page), []);
 });
 
-test("英文页：弹幕面板的状态与空态、统计行", () => {
+test("英文页：弹幕面板的状态与空态、统计消息不画", () => {
   const page = runDesktop();
   hello(page);
   const source = () => [page.el("comment-source").textContent, page.el("comment-empty").textContent];

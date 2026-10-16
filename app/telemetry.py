@@ -5,7 +5,7 @@
   translate_ms  识别完成   → 翻译完成
   e2e_ms        音频段结束 → 字幕（原文）出现在界面上
   caption_wait  最早一个词说出口 → 中控读到的那一版字幕上屏（译出来的是译文，不用译的是原文）；
-                页脚统计行的第一个数。违禁词报警延迟（detect_ms）另算，不受它影响
+                随 stats 消息发出（页面 2026-10-15 起不画）。违禁词报警延迟（detect_ms）另算，不受它影响
 配合两个队列深度和三个计数器，就能区分「VAD 等太久 / ASR 慢 / ASR 积压 /
 翻译慢 / 翻译积压」这几种完全不同的情况。
 """
@@ -36,7 +36,7 @@ class Telemetry:
         # 而合规上该被考核的是最坏值，不是平均值。
         self.detect_ms = deque(maxlen=window)
         # 字幕等待：最早一个词说出口 → 屏幕上出现中控读的那一版字幕（译出来的是译文，
-        # 不用译的是原文）。比 detect_ms 多出翻译排队和翻译本身；页脚统计行的第一个数
+        # 不用译的是原文）。比 detect_ms 多出翻译排队和翻译本身；随 stats 消息发出，页面不画
         self.caption_wait_ms = deque(maxlen=window)
         self.audio_segments_total = 0
         self.audio_segments_dropped = 0

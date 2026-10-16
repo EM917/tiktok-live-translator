@@ -1,12 +1,12 @@
-// 底部大字幕的翻译状态、「约 N 秒前」，页脚统计行的顺序，字幕字号滑块（2026-10-15）。
+// 底部大字幕的翻译状态、「约 N 秒前」，页脚不画统计消息，字幕字号滑块（2026-10-15）。
 //
 // 页面是 node:vm 里真跑的 web/app.js（tests/desktop-page.mjs），中文、英文两种界面各跑一遍：
 //   1. 大字幕下面的角标：译文没到、没译成的每一种结局都留着原文，并且和历史卡片上是同一句话；
 //   2. 「约 N 秒前」：按这一段音频结束的时刻（ts − e2e_ms）算，超过 15 秒才出现，每秒涨一次，
 //      新的一句重置，缺 e2e_ms 就不写；健康的直播（上屏 2～3 秒、下一句八九秒后来）这一行始终不出现；
-//   3. 页脚：字幕等待排第一，违禁词报警延迟紧跟其后、一个字没少（CLAUDE.md 第六条）；
+//   3. 页脚：延迟统计行 2026-10-15 删了，stats 消息照收不画、也不报错；
 //   4. 滑块：一个值带大字幕、历史卡片、弹幕栏三处；松手存进服务端，localStorage 只是退路。
-// 纯函数（角标取字、年龄文案、统计行各段、字号比例）在 tests/live-ui.test.mjs / live-ui.en.test.mjs。
+// 纯函数（角标取字、年龄文案、字号比例）在 tests/live-ui.test.mjs / live-ui.en.test.mjs。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";

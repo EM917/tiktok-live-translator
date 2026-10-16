@@ -120,8 +120,9 @@ function liveBarChip(msg) {
  * ts − e2e_ms = 这一段音频结束的时刻，和违禁词报警延迟（now − audio_end_ts）是同一个起点。
  * 不从「最早一个词说出口」算：那个数被句子长短主导。一条新字幕上屏时就已经是 片段时长 + e2e ≈ 10 秒，
  * 下一句八九秒后才来，所以健康的直播里它一直在 10～18 秒之间转圈，永远写不出「刚刚」，
- * 中控没有基线，分不出这是正常还是积压了 10 秒。从最早一个词算的数留给页脚的「字幕等待」
- * （服务端 Telemetry.caption_wait），那个是一整场的 p50 / P95，有对照。
+ * 中控没有基线，分不出这是正常还是积压了 10 秒。从最早一个词算的那个数是服务端的「字幕等待」
+ * （Telemetry.caption_wait，最近 200 句的 p50 / P95）：以前写在页脚统计行，2026-10-15 那一行删了，
+ * 现在只随 stats 消息发出，页面不画。
  * e2e_ms 缺了（演示模式、老版本服务端）就返回 null：不知道就不写。ts 缺失时按收到的这一刻算（nowMs）。 */
 function captionAudioEndAt(msg, nowMs) {
   if (!msg || typeof msg.e2e_ms !== "number" || !(msg.e2e_ms >= 0)) return null;

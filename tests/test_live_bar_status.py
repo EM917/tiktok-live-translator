@@ -1,10 +1,10 @@
-"""底部大字幕的翻译状态、滞后数，页脚的字幕等待，和字幕字号滑块的持久化（2026-10-15）。
+"""底部大字幕的翻译状态、滞后数，服务端的字幕等待，和字幕字号滑块的持久化（2026-10-15）。
 
 页面怎么画由 tests/live-bar.test.mjs 钉着（node:vm 里真跑 app.js）；这里钉服务端这一侧：
   * caption 消息只带 ts 和 e2e_ms：页面用 ts − e2e_ms（这一段音频结束的时刻）算「约 N 秒前」，超过 15 秒才写。
     片段时长不进消息——从最早一个词算会让数字被句子长短主导，健康的直播也在 10～18 秒之间转圈；
     手机的白名单照旧不放内部耗时；
-  * 字幕等待（说出这一句 → 中控读到的那一版字幕上屏）进遥测，页脚统计行的第一个数；
+  * 字幕等待（说出这一句 → 中控读到的那一版字幕上屏）进遥测，随 stats 消息发出（页面 2026-10-15 起不画）；
     违禁词那一档 detect_worst 一个字没动（CLAUDE.md 第六条）；
   * 字幕字号存进 settings.json：合法值才存，坏值不存，重启读得回，没存过就不放这个键（界面保持今天的默认）；
   * 三处写着字号范围的地方（滑块、服务端、页面模块）是同一对数。
@@ -113,9 +113,9 @@ def test_the_caption_carries_ts_and_e2e_so_the_page_can_find_when_the_audio_ende
     assert caption["ts"] * 1000 - caption["e2e_ms"] == 992.0 * 1000
 
 
-def test_the_segment_length_stays_out_of_the_caption_but_still_feeds_the_footer(monkeypatch, tmp_path):
+def test_the_segment_length_stays_out_of_the_caption_but_still_feeds_the_caption_wait(monkeypatch, tmp_path):
     """片段时长让大字幕的数被句子长短主导（上屏就是 10 秒上下），所以不发给页面；
-    页脚的字幕等待和违禁词延迟照旧用它，那两个数在服务端算。"""
+    服务端的字幕等待和违禁词延迟照旧用它。"""
     p, server = make_pipeline(monkeypatch, tmp_path, translator=None)
     monkeypatch.setattr("app.pipeline.time.time", lambda: 1000.0)
     run(p._emit_original(result("hola amigas"), audio_end_ts=996.0, asr_ms=900, segment_ms=5000))

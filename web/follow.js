@@ -57,7 +57,7 @@ function needsResync(box, following) {
 
    返回 { active, enterHome, exitHome }：
      - active：这条消息之后，「直播中」这件事本身该算 true 还是 false。
-     - enterHome：这一步要不要执行「进入首页」的动作（隐藏大字幕/统计行/
+     - enterHome：这一步要不要执行「进入首页」的动作（隐藏大字幕/
        弹幕面板、字幕区回到顶部）。只在从活跃变为非活跃的**那一刻**触发一次，
        同为非活跃的后续状态（如 error → idle）不重复触发。
      - exitHome：这一步要不要执行「离开首页」的动作（字幕跟随恢复到底部）。
