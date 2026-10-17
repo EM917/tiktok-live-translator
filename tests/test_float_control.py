@@ -170,7 +170,7 @@ def test_a_failed_open_also_says_so_in_a_notice():
     error = asyncio.run(go())
     assert [m["type"] for m in sent] == ["config", "notice"]
     assert sent[0]["float_window"]["open"] is False
-    assert sent[1]["text"] == error and error.en == "Couldn’t open the floating window."
+    assert sent[1]["text"] == error and error.en == "Couldn’t open the Floating Window."
     # 话里只有观察，没有原因（CLAUDE.md 第八条）
     assert not any(w in error.en.lower() for w in ("because", "probably", "likely", "due to"))
 

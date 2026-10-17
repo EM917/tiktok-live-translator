@@ -562,7 +562,7 @@ def test_a_window_that_fails_to_open_reports_a_plain_observation_and_stays_close
     assert not host.is_open()
     (is_open, error), = changes
     assert is_open is False and error == fw.OPEN_FAILED
-    assert error.en == "Couldn’t open the floating window."
+    assert error.en == "Couldn’t open the Floating Window."
     assert "[警告] 打开浮窗失败：no display" in capsys.readouterr().out
     # 失败之后不会因为 want 还挂着而反复重试
     host.request_close()

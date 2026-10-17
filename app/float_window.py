@@ -29,7 +29,7 @@ from .settings import load_settings, save_setting
 SETTINGS_KEY = "float_window"
 FLOAT_PATH = "/float"
 FLOAT_TITLE = L("浮窗", "Floating Window")
-OPEN_FAILED = L("无法打开浮窗。", "Couldn’t open the floating window.")
+OPEN_FAILED = L("无法打开浮窗。", "Couldn’t open the Floating Window.")
 
 DEFAULT_SIZE = (460, 330)
 MIN_SIZE = (260, 140)
