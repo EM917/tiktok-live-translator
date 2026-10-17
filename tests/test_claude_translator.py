@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from app.glossary import HintPair
 from app.translator import (CachedTranslator, ClaudeTranslator, begin_translate_call,
                             translate_call_outcome)
 from tests.helpers import run
@@ -530,8 +531,17 @@ def test_the_comment_instances_do_not_send_the_glossary(monkeypatch):
         assert "Quema Lonja" not in json.dumps(tr._body("1. hola", "zh-CN", HINT), ensure_ascii=False)
 
 
+def layer(name, *pairs):
+    """管线给的词条（glossary.translation_pairs）都带着来自哪一层；字幕请求只带 brand 和 profile 的"""
+    return tuple(HintPair(p, name) for p in pairs)
+
+
+def brand(*pairs):
+    return layer("brand", *pairs)
+
+
 # 虚构品牌 acme（brands/README.md 的例子），不用任何真实词表内容
-ACME = (("la crema acme", "ACME 面霜"), ("suero acme", "ACME 精华液"))
+ACME = brand(("la crema acme", "ACME 面霜"), ("suero acme", "ACME 精华液"))
 
 
 def test_the_haiku_subtitle_request_with_a_glossary_is_exactly_this(monkeypatch):
@@ -593,7 +603,7 @@ BLOCK = "\nWhere the text contains one of these terms, translate it exactly as g
 @pytest.mark.parametrize("text", ["un acmeador nuevo", "el superacme", "acmes2"])
 def test_a_term_that_is_only_part_of_a_longer_word_stays_out_of_the_subtitle_request(monkeypatch, text):
     tr = make(monkeypatch)
-    body = tr._body(text, "zh-CN", (("acme", "ACME 牌"),))
+    body = tr._body(text, "zh-CN", brand(("acme", "ACME 牌")))
     assert body == tr._body(text, "zh-CN")
     assert "ACME" not in body["system"]
 
@@ -606,7 +616,7 @@ def test_a_term_that_is_only_part_of_a_longer_word_stays_out_of_the_subtitle_req
 ])
 def test_a_whole_word_plural_or_contracted_term_still_goes_into_the_subtitle_request(monkeypatch, text, pair):
     tr = make(monkeypatch)
-    assert tr._body(text, "zh-CN", (pair,))["system"] == SYSTEM_SLANG + BLOCK + "{} = {}".format(*pair)
+    assert tr._body(text, "zh-CN", brand(pair))["system"] == SYSTEM_SLANG + BLOCK + "{} = {}".format(*pair)
 
 
 @pytest.mark.parametrize("rendering", ["ACME 面霜（小瓶）", "ACME 面霜 (小瓶)", "ACME 面霜【小瓶】", "ACME 面霜[小瓶]"])
@@ -614,7 +624,7 @@ def test_a_rendering_with_a_bracketed_note_stays_out_of_the_subtitle_request(mon
     """括注是给译法加的说明，不是要上屏的字；字幕请求不带这条，不是去掉括号再带。"""
     tr = make(monkeypatch)
     text = "la crema acme y el suero acme"
-    pairs = (("la crema acme", rendering), ("suero acme", "ACME 精华液"))
+    pairs = brand(("la crema acme", rendering), ("suero acme", "ACME 精华液"))
     assert tr._body(text, "zh-CN", pairs)["system"] == SYSTEM_SLANG + BLOCK + "suero acme = ACME 精华液"
     only = tr._body("la crema acme", "zh-CN", pairs[:1])
     assert only == tr._body("la crema acme", "zh-CN")
@@ -628,6 +638,63 @@ def test_retranslate_still_gets_every_matched_line(monkeypatch):
     pairs = (("acme", "ACME 牌"), ("la crema acme", "ACME 面霜（小瓶）"))
     system = redo._body("un acmeador y la crema acme", "zh-CN", pairs)["system"]
     assert system == SYSTEM_SLANG + BLOCK + "acme = ACME 牌\nla crema acme = ACME 面霜（小瓶）"
+
+
+# 字幕请求只带品牌表和主播 profile 的词条，全局表（glossary.txt，首启从公开模板复制）的不带：用户要的是
+# 「字幕也带上品牌词表提示」，模板里的日常短语按语境本不该照着译（见 translator._subtitle_pairs）。
+# 管线给的词条都是 glossary.HintPair，层记在 .layer 上；没有 .layer 的普通二元组来源不明，也不带
+TEXT3 = "la crema acme, el combo y la loción zeta"
+PROFILE = ("la loción zeta", "ZETA 乳液")
+GLOBAL = ("el combo", "套装")
+
+
+def test_the_subtitle_request_carries_brand_and_profile_lines_but_not_global_ones(monkeypatch):
+    tr = make(monkeypatch)
+    pairs = brand(ACME[0]) + layer("global", GLOBAL) + layer("profile", PROFILE)
+    assert tr._body(TEXT3, "zh-CN", pairs)["system"] == (
+        SYSTEM_SLANG + BLOCK + "la crema acme = ACME 面霜\nla loción zeta = ZETA 乳液")
+
+
+@pytest.mark.parametrize("pairs", [layer("global", GLOBAL), (GLOBAL,), "el combo = 套装"],
+                         ids=["global-layer", "plain-tuple", "compact-string"])
+def test_a_line_that_is_not_from_the_brand_or_profile_layer_stays_out_of_the_subtitle_request(
+        monkeypatch, pairs):
+    tr = make(monkeypatch)
+    body = tr._body("llévate el combo", "zh-CN", pairs)
+    assert body == tr._body("llévate el combo", "zh-CN")
+    assert "套装" not in body["system"]
+
+
+def test_retranslate_still_gets_the_lines_of_every_layer(monkeypatch):
+    redo = strong(monkeypatch)
+    pairs = brand(ACME[0]) + layer("global", GLOBAL) + layer("profile", PROFILE)
+    assert redo._body(TEXT3, "zh-CN", pairs)["system"] == (
+        SYSTEM_SLANG + BLOCK + "la crema acme = ACME 面霜\nel combo = 套装\nla loción zeta = ZETA 乳液")
+
+
+def test_the_repeat_cache_tells_the_same_line_from_different_layers_apart():
+    """同一个词对换场后可能换了层（这一场没选那个品牌）：字幕请求一边带、一边不带，不能共用一条缓存。"""
+    class Inner:
+        name = "claude"
+
+        def __init__(self):
+            self.seen = []
+
+        async def translate(self, text, target, source="auto", glossary=None):
+            self.seen.append([getattr(p, "layer", None) for p in glossary])
+            return "译文{}".format(len(self.seen))
+
+    inner = Inner()
+    cached = CachedTranslator(inner)
+
+    async def scenario():
+        a = await cached.translate("el combo", "zh-CN", glossary=brand(GLOBAL))
+        b = await cached.translate("el combo", "zh-CN", glossary=layer("global", GLOBAL))
+        c = await cached.translate("el combo", "zh-CN", glossary=brand(GLOBAL))
+        return a, b, c
+
+    assert run(scenario()) == ("译文1", "译文2", "译文1")
+    assert inner.seen == [["brand"], ["global"]]
 
 
 def test_the_glossary_sits_in_the_system_prompt_not_in_the_text_to_translate(monkeypatch):

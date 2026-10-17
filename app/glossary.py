@@ -67,14 +67,39 @@ def in_text_as_word(variant, text):
     return _word_in_source(variant).search(text) is not None
 
 
+# 一条词条来自哪一层（见 load()）。分层的理由在 HintPair。
+LAYER_PROFILE, LAYER_BRAND, LAYER_GLOBAL = "profile", "brand", "global"
+
+
+class HintPair(tuple):
+    """translation_pairs() 给出的一条 (西语, 中文)，另外记着它来自哪一层词表（.layer）。
+
+    为什么要记层：Claude 字幕请求只带品牌表（brands/）和主播 profile（profiles/）的词条，不带全局表
+    （glossary.txt）。全局表是每个用户首启从公开模板 glossary.example.txt 复制的，里面有日常短语
+    （agotado、en la noche、ir al baño 这一类），按语境本不该照着译；字幕带词表是为了让主播自造的品名
+    别被意译掉，用户的原话是「字幕也带上品牌词表提示」。见 app/translator.py 的 _subtitle_pairs。
+
+    它仍是一个二元组：各引擎照旧 `for es, zh in pairs`，比较和哈希也和普通二元组一样（层不参与；
+    重复句缓存的键另外把层算进去，见 CachedTranslator._key）。普通二元组没有 .layer，字幕请求
+    一律不带——只认明确来自品牌表或 profile 的。"""
+
+    def __new__(cls, pair, layer=LAYER_GLOBAL):
+        self = super().__new__(cls, pair)
+        self.layer = layer
+        return self
+
+
 class Glossary:
-    def __init__(self, entries, asr_entries=None):
+    def __init__(self, entries, asr_entries=None, layers=None):
         # entries: [(西语变体列表, 中文译法)]，保持文件顺序（前面的优先级高）
         self.entries = entries
         # 识别热词单独一份列表，默认就是 entries（没有品牌词表时的老行为）。
         # 品牌词表生效时二者会不同：见 load() 里的构造逻辑——热词表只取品牌表
         # 前 BRAND_ASR_TERMS 条，matching()/apply() 用的 entries 不受影响。
         self.asr_entries = entries if asr_entries is None else asr_entries
+        # 写法（小写）-> 来自哪一层，只记品牌表和 profile 的；不在里面的写法都算全局表。
+        # 只有 load() 知道每条来自哪一层：直接用 Glossary(entries) 建的（测试、离线工具）整份算全局表
+        self.layers = layers or {}
 
     @property
     def enabled(self):
@@ -135,8 +160,12 @@ class Glossary:
 
         与 translation_hint 的区别只是形态：TranslateGemma 吃一行紧凑串，
         Hy-MT2 的官方术语格式是逐行的 "X translates to Y"。同一份命中结果，
-        让各引擎按自己的模板拼，别让某一家的格式渗到词表里。"""
-        return [(es, zh) for es, zh, _ in self.matching(text)[:limit]]
+        让各引擎按自己的模板拼，别让某一家的格式渗到词表里。
+
+        每条是 HintPair，带着来自哪一层（Claude 字幕请求按层筛，见 HintPair）。合并时每个写法只归一层
+        （_merge 按变体去重），所以按命中的写法查层就够了。"""
+        return [HintPair((es, zh), self.layers.get(es.lower(), LAYER_GLOBAL))
+                for es, zh, _ in self.matching(text)[:limit]]
 
     def apply(self, source_text, translated):
         """译文兜底：源文里出现过的词条，若译文里没有对应中文，就把该词条的
@@ -399,7 +428,15 @@ def load(path=None, streamer=None, brand=None):
                 hot_brand.append((rest, zh))
         asr_entries = profile_entries + hot_brand + global_entries
 
-    return Glossary(entries, asr_entries=asr_entries)
+    # 每个写法来自哪一层（HintPair 说了为什么要记）。profile 先记：同一写法两层都有时合并后归 profile；
+    # 全局表里被这两层认领的写法，_merge 已经从全局条目里去掉了，不会被记错层
+    layers = {}
+    for layer, layer_entries in ((LAYER_PROFILE, profile_entries), (LAYER_BRAND, brand_entries)):
+        for variants, _zh in layer_entries:
+            for v in variants:
+                layers.setdefault(v.lower(), layer)
+
+    return Glossary(entries, asr_entries=asr_entries, layers=layers)
 
 
 # profile 文件里的开关行：`选项名: on/off`。parse() 认不出它（没有 =>），
