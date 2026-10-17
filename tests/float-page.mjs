@@ -26,6 +26,7 @@ export const T = 1759000000;
  *   sockets / urls 建过的连接和它们的地址
  *   closeSocket()  模拟连接断开（页面会安排重连）
  *   runTimers()    把排队的 setTimeout 都跑掉（重连）
+ *   tick()         每个 setInterval 跑一次；fireWindow(type) 触发 window 上的事件（resize）
  *   root / cssVars <html> 和它上面 setProperty 写过的 CSS 变量
  *   comments()     弹幕列表里现在的 .cmt-item
  */
@@ -63,11 +64,16 @@ export function loadFloat({ lang = "en", search = "" } = {}) {
   FakeWebSocket.prototype.send = function () { throw new Error("浮窗页是只读的，不该发任何消息"); };
   FakeWebSocket.prototype.close = function () {};
   const timers = [];
+  const intervals = [];
+  const winListeners = {};
   const sandbox = {
     document, console, WebSocket: FakeWebSocket,
     location: { host: "127.0.0.1:0", protocol: "http:", search },
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
     clearTimeout() {},
+    setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
+    clearInterval() {},
+    addEventListener: (type, fn) => { (winListeners[type] = winListeners[type] || []).push(fn); },
   };
   sandbox.window = sandbox;
   vm.createContext(sandbox);
@@ -84,6 +90,9 @@ export function loadFloat({ lang = "en", search = "" } = {}) {
     comments: () => byId.get("f-comments").children,
     closeSocket: () => ws().onclose(),
     runTimers: () => { for (const t of timers.splice(0)) t.fn(); },
+    intervals,
+    tick: () => { for (const t of intervals) t.fn(); },          // 每个 setInterval 跑一次
+    fireWindow: (type) => { for (const fn of winListeners[type] || []) fn({ type }); },
     reopen: () => { const s = ws(); if (s.onopen) s.onopen(); },
   };
 }

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title data-en="Floating Window · TikTok Live Translator">浮窗 · TikTok 直播同传</title>
-<link rel="stylesheet" href="/static/float.css?v=1">
+<link rel="stylesheet" href="/static/float.css?v=2">
 <!-- i18n: done -->
 </head>
 <body>
@@ -14,16 +14,19 @@
   <main id="f-root" class="f-root">
     <div id="f-empty" class="f-empty" role="status" data-en="Waiting for the first caption…">等待第一句字幕…</div>
     <section id="f-caption" class="f-caption hidden">
+      <!-- 状态行：翻译状态角标（没译成、被积压跳过时才有，字来自 live-ui.js，同中控页底部大字幕）。
+           放在字幕上面：字幕长到窗口装不下时从下面裁（先裁原文），这一行永远看得见 -->
+      <div id="f-meta" class="f-meta hidden">
+        <span id="f-chip" class="f-chip hidden"></span>
+      </div>
       <div id="f-big" class="f-big i18n-data"></div>
       <div id="f-small" class="f-small i18n-data hidden"></div>
-      <!-- 翻译状态角标（没译成、被积压跳过时才有），字来自 live-ui.js，同中控页底部大字幕 -->
-      <div id="f-chip" class="f-chip hidden"></div>
     </section>
     <section id="f-comments" class="f-comments" aria-label="弹幕" data-en-aria-label="Comments"></section>
   </main>
   <script src="/static/i18n.js?v=1"></script>
   <script src="/static/live-ui.js?v=3"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/float.js?v=1"></script>
+  <script src="/static/float.js?v=2"></script>
 </body>
 </html>

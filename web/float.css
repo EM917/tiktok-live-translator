@@ -43,12 +43,19 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
 
 /* ---- 最新一条字幕 ---- */
 .f-empty { flex: none; padding: 14px; color: var(--f-dim); font-size: var(--f-cmt); line-height: 1.4; }
+/* 字幕区最多占窗口六成，装不下的从下面裁：先裁原文小字，再裁译文的结尾。状态行（角标）在最上面，裁不到。
+   float.js 量出装不下时加 .clipped：底部渐隐，看得出下面还有字，不是一句话到此为止 */
 .f-caption { flex: none; max-height: 62%; overflow: hidden; padding: 12px 14px 8px; }
+.f-caption.clipped {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+}
+.f-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-bottom: 6px; }
 .f-big { font-size: var(--f-big); font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
 .f-small { margin-top: 4px; font-size: var(--f-small); line-height: 1.4; color: var(--f-dim); overflow-wrap: anywhere; }
 /* 翻译状态角标：没译成时用红字（字本身写着「未翻译」，不只靠颜色），被积压跳过的是中性 */
 .f-chip {
-  display: inline-block; margin-top: 6px; padding: 0 8px; border-radius: 9px;
+  display: inline-block; max-width: 100%; padding: 0 8px; border-radius: 9px;
   font-size: 12px; line-height: 18px; font-weight: 500;
   color: var(--f-dim); background: rgba(255, 255, 255, 0.12);
 }

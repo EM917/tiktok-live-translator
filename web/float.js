@@ -224,7 +224,17 @@ function floatGuardCtx(state) {
            events: null, onMark: null };
 }
 
-/* 把状态画出来。els：{ empty, caption, big, small, chip, comments }。整个重画：最多 5 条，不值得做差量 */
+/* 字幕区装不下（字号调大、句子很长）时给它加 clipped：底部渐隐，看得出下面还有字被裁掉了。
+ * 状态行在字幕上面，裁不到它（web/float.css）。量的是真排版；node 测试里的假元素 scrollHeight、
+ * clientHeight 都是 0，不会加。 */
+function floatMarkClipped(els) {
+  var cap = els.caption;
+  var over = !cap.classList.contains("hidden") && typeof cap.scrollHeight === "number" &&
+             typeof cap.clientHeight === "number" && cap.scrollHeight > cap.clientHeight + 1;
+  cap.classList.toggle("clipped", over);
+}
+
+/* 把状态画出来。els：{ empty, caption, meta, big, small, chip, comments }。整个重画：最多 5 条，不值得做差量 */
 function floatRender(doc, els, state) {
   var cv = floatCaptionView(state);
   els.caption.classList.toggle("hidden", !cv);
@@ -236,12 +246,14 @@ function floatRender(doc, els, state) {
     els.chip.textContent = cv.chip;
     els.chip.classList.toggle("hidden", !cv.chip);
     els.chip.classList.toggle("fail", cv.fail);
+    els.meta.classList.toggle("hidden", !cv.chip);
   } else {
     els.empty.textContent = floatPlaceholder(state);
   }
   while (els.comments.firstChild) els.comments.removeChild(els.comments.firstChild);
   var ctx = floatGuardCtx(state);
   for (var i = 0; i < state.comments.length; i++) els.comments.appendChild(floatBuildComment(doc, state.comments[i], ctx));
+  floatMarkClipped(els);
 }
 
 // ---- 页面里的胶水 -------------------------------------------------------------------------
@@ -252,6 +264,7 @@ function floatRender(doc, els, state) {
   // 非 macOS 的窗口不透明（app/float_window.py 往地址里写 ?solid=1）
   if (/[?&]solid=1(?:&|$)/.test((typeof location !== "undefined" && location.search) || "")) root.classList.add("solid");
   var els = { empty: document.getElementById("f-empty"), caption: document.getElementById("f-caption"),
+              meta: document.getElementById("f-meta"),
               big: document.getElementById("f-big"), small: document.getElementById("f-small"),
               chip: document.getElementById("f-chip"), comments: document.getElementById("f-comments") };
   var state = floatInitialState();
@@ -286,6 +299,10 @@ function floatRender(doc, els, state) {
   applySizes();
   floatRender(document, els, state);
   connect();
+  // 拉大缩小窗口会改变装不装得下：重新量一次
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("resize", function () { floatMarkClipped(els); });
+  }
 })();
 
 /* Node 测试环境导出；浏览器里作为全局函数被上面的胶水使用 */
@@ -294,5 +311,5 @@ if (typeof module !== "undefined" && module.exports) {
                      floatReduce: floatReduce, floatCaptionView: floatCaptionView,
                      floatPlaceholder: floatPlaceholder, floatCommentView: floatCommentView,
                      floatSizes: floatSizes, floatBuildComment: floatBuildComment,
-                     floatGuardCtx: floatGuardCtx, floatRender: floatRender };
+                     floatGuardCtx: floatGuardCtx, floatRender: floatRender, floatMarkClipped: floatMarkClipped };
 }

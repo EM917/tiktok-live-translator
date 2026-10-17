@@ -266,6 +266,33 @@ for (const lang of ["zh", "en"]) {
     });
   }
 
+  test(L("状态行：只有角标时才露出来；译好了就收起，不留一条空行"), () => {
+    const page = loadFloat({ lang });
+    hello(page);
+    page.push(caption(1, "no se oye bien"));
+    assert.ok(hidden(page, "f-meta"));                               // 翻译中：没有角标
+    page.push({ type: "caption_update", id: 1, translated: null, translate_state: "failed", refused: true });
+    assert.ok(!hidden(page, "f-meta") && !hidden(page, "f-chip"));
+    page.push(caption(2, "hola"));
+    page.push({ type: "caption_update", id: 2, translated: "你好", translate_state: "ok" });
+    assert.ok(hidden(page, "f-meta"));
+  });
+
+  test(L("字幕装不下时加 clipped（底部渐隐）；窗口拉大装得下了就去掉"), () => {
+    const page = loadFloat({ lang });
+    hello(page);
+    const cap = page.el("f-caption");
+    cap.scrollHeight = 420; cap.clientHeight = 190;               // 字号调大后的一段长西语
+    page.push(caption(1, "una frase muy larga ".repeat(12)));
+    assert.ok(cap.classList.contains("clipped"));
+    cap.clientHeight = 430;                                        // 用户把窗口拉高了
+    page.fireWindow("resize");
+    assert.ok(!cap.classList.contains("clipped"));
+    cap.scrollHeight = 100; cap.clientHeight = 100;                // 刚好装下（差 1px 以内）不算裁
+    page.push(caption(2, "hola"));
+    assert.ok(!cap.classList.contains("clipped"));
+  });
+
   test(L("弹幕：昵称 + 译文 + 原文，新的在底部，最多 5 条"), () => {
     const page = loadFloat({ lang });
     hello(page);
@@ -385,6 +412,25 @@ test("float.html 只载入四个脚本，顺序对，每个都带 ?v=；样式�
   assert.match(html, /<link rel="stylesheet" href="\/static\/float\.css\?v=\d+">/);
   assert.ok(!html.includes('name="tlt-app"'), "实例指纹只属于主界面");
   assert.ok(!/<button|<input|<select|<textarea|<a\s/.test(html), "浮窗没有任何可点的东西");
+});
+
+test("角标在字幕上面：字幕区从下面裁，状态行永远裁不到；裁了有渐隐", () => {
+  // 假 DOM 没有版面，G10 的无头 Chrome 只在 CI 上跑：这里静态钉住结构和样式规则。
+  // 以前角标排在译文、原文后面，字号调大或一段长西语没译成时，max-height 62% + overflow:hidden
+  // 把「未翻译（接口拒答）」和句子结尾一起从底部裁掉，看上去像程序没在翻译
+  const html = readFileSync(new URL("../web/float.html", import.meta.url), "utf8").replace(/<!--[\s\S]*?-->/g, "");
+  const section = /<section id="f-caption"[\s\S]*?<\/section>/.exec(html)[0];
+  const at = (id) => section.indexOf('id="' + id + '"');
+  assert.ok(at("f-meta") > 0 && at("f-chip") > at("f-meta"), "角标在状态行里");
+  assert.ok(at("f-chip") < at("f-big") && at("f-big") < at("f-small"), "顺序：状态行、译文、原文");
+  const css = readFileSync(new URL("../web/float.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = (sel) => {
+    const m = new RegExp("(?:^|\\n)" + sel.replace(/\./g, "\\.") + "\\s*\\{([^}]*)\\}").exec(css);
+    return m ? m[1] : "";
+  };
+  assert.match(rule(".f-caption"), /overflow:\s*hidden/);
+  assert.match(rule(".f-caption.clipped"), /-webkit-mask-image:\s*linear-gradient/);
+  assert.ok(!/margin-top/.test(rule(".f-chip")), "角标在最上面，不要再往下推");
 });
 
 test("float.js 里没有 send，也没有任何往服务端发东西的写法", () => {
