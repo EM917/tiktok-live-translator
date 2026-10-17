@@ -483,6 +483,30 @@ test("角标在字幕上面：字幕区从下面裁，状态行永远裁不到�
   assert.ok(!/margin-top/.test(rule(".f-chip")), "角标在最上面，不要再往下推");
 });
 
+test("弹幕列表最上面被挤出去的那一行渐隐到分隔线底下，不会被线拦腰切开", () => {
+  // 2026-10-16 真窗口截图：弹幕从底部往上排、放不下时最旧那条只露下半截，字被字幕下面那条分隔线横着切开，
+  // 看着像页面坏了。假 DOM 没有版面：这里静态钉住样式规则（G10 的截图里能看到效果）
+  const css = readFileSync(new URL("../web/float.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const m = /(?:^|\n)\.f-comments\s*\{([^}]*)\}/.exec(css);
+  assert.ok(m, "float.css 里找不到 .f-comments");
+  const body = m[1];
+  const decl = (prop) => {
+    const d = new RegExp("(?:^|[;{\\s])" + prop.replace(/-/g, "\\-") + ":\\s*([^;]+);").exec(body);
+    return d ? d[1].trim() : "";
+  };
+  // 新的在底部、放不下从上面裁；分隔线是这个列表自己的上边框
+  assert.match(decl("justify-content"), /^flex-end$/);
+  assert.match(decl("overflow"), /^hidden$/);
+  assert.match(decl("border-top"), /solid/);
+  // 渐隐段：列表顶上留出 --f-fade 的内边距，装得下时整行都在它下面、不受影响；遮罩从分隔线下面的透明
+  // 渐变到 --f-fade 处的不透明，最上面 1px 不透明留住分隔线
+  assert.ok(decl("--f-fade"), "要有 --f-fade");
+  assert.match(decl("padding"), /^var\(--f-fade\)\s/, "内边距的上边就是渐隐段的高");
+  const gradient = /^linear-gradient\(to bottom,\s*#000 1px,\s*transparent 1px,\s*#000 calc\(var\(--f-fade\) \+ 1px\)\)$/;
+  assert.match(decl("-webkit-mask-image"), gradient);
+  assert.match(decl("mask-image"), gradient);
+});
+
 test("小字的对比度：窗口透明、盖在白色或黑色的软件上，都在 4.5:1 以上", () => {
   // macOS 上窗口本身透明、没有模糊，页面的 rgba 底直接按 alpha 叠在下面的东西上。浮窗正是要盖在
   // 白色的 TikTok 页面、表格上用的，所以最坏的背景是纯白。颜色全从 float.css 里读，改了就重算

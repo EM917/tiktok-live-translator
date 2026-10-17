@@ -68,11 +68,18 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
 /* 「约 N 秒前」：不带底色的小字，数字等宽，每秒跳一次不晃 */
 .f-lag { font-size: 12px; line-height: 18px; color: var(--f-dim); font-variant-numeric: tabular-nums; }
 
-/* ---- 最近的弹幕：新的在底部，放不下时挤掉最旧的（上面被裁，最新那条永远在） ---- */
+/* ---- 最近的弹幕：新的在底部，放不下时挤掉最旧的（上面被裁，最新那条永远在） ----
+   被挤出去的那一行不能被分隔线拦腰切开（以前就是这样，看着像坏了）。列表顶上留 --f-fade 高的一段空：
+   装得下的时候字到不了这一段；装不下时多出来的那一行滑进这一段，越往上越淡，到分隔线底下就看不见了。
+   溢出的内容画在内边距里（overflow 裁在内边距的外沿），所以渐隐只落在被挤出去的那一行上，整行都在的不受影响。
+   遮罩最上面 1px 不透明：分隔线本身（border-top）也在遮罩里，要留着它 */
 .f-comments {
+  --f-fade: calc(var(--f-cmt) * 1.2);   /* 约一行弹幕的高：被切开的那一行在这一段里淡完 */
   flex: 1 1 auto; min-height: 0; overflow: hidden;
   display: flex; flex-direction: column; justify-content: flex-end;
-  padding: 4px 14px 10px; border-top: 0.5px solid var(--f-line);
+  padding: var(--f-fade) 14px 10px; border-top: 0.5px solid var(--f-line);
+  -webkit-mask-image: linear-gradient(to bottom, #000 1px, transparent 1px, #000 calc(var(--f-fade) + 1px));
+  mask-image: linear-gradient(to bottom, #000 1px, transparent 1px, #000 calc(var(--f-fade) + 1px));
 }
 .f-cmt { position: relative; flex: none; padding: 5px 0; border-left: 3px solid transparent; }
 .f-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 5px; font-size: var(--f-cmt-small); color: var(--f-dim); }
