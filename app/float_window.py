@@ -331,6 +331,9 @@ def _spawn_thread(fn):
     threading.Thread(target=fn, daemon=True).start()
 
 
+_DEFAULT_TWEAKS = object()      # mac_tweaks 没传：macOS 上用 mac_float_tweaks；传 None 是明确关掉
+
+
 class FloatWindowHost:
     """浮窗的建立、销毁和位置记忆。create_window 是 pywebview 的 webview.create_window（main.py 注入）。
 
@@ -341,7 +344,7 @@ class FloatWindowHost:
     - on_change(is_open, error)：状态变了（任何线程里调），error 是要告诉用户的一句双语话或 None。"""
 
     def __init__(self, create_window, base_url, platform=None, screens=None, load=None, save=None,
-                 spawn=None, timer_factory=None, mac_tweaks=None, on_change=None,
+                 spawn=None, timer_factory=None, mac_tweaks=_DEFAULT_TWEAKS, on_change=None,
                  shown_wait=SHOWN_WAIT_SEC):
         self._create = create_window
         self._shown_wait = shown_wait
@@ -353,8 +356,11 @@ class FloatWindowHost:
         self._save = save or save_setting
         self._spawn = spawn or _spawn_thread
         self._timer_factory = timer_factory or threading.Timer
-        self._mac_tweaks = mac_tweaks if mac_tweaks is not None else (
-            mac_float_tweaks if self._transparent else None)
+        # macOS 的收尾调整（加入所有桌面空间、深色标题栏）尽力而为、没在真机上验证过：
+        # 不传就是 macOS 上用 mac_float_tweaks，传 None 关掉
+        if mac_tweaks is _DEFAULT_TWEAKS:
+            mac_tweaks = mac_float_tweaks if self._transparent else None
+        self._mac_tweaks = mac_tweaks
         self.on_change = on_change
         # 主窗口的 (x, 宽)，macOS 多块屏时第一次开靠它认出主窗口在哪块屏上（main.py 在建好主窗口之后设）
         self.anchor = None

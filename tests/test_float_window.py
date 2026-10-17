@@ -1000,3 +1000,27 @@ def test_only_the_mac_host_runs_the_tweaks_and_never_under_the_lock():
     host2, _f2, _s2, _c2 = make_host(platform="linux", mac_tweaks=None)
     host2.request_open()                          # 非 macOS 没有收尾调整，也不会因此出错
     assert host2.is_open()
+
+
+def test_left_out_the_mac_host_uses_the_tweaks_and_none_really_turns_them_off(monkeypatch):
+    """PR 里写的关闭开关是「传 mac_tweaks=None」：它必须真的关掉，而不是又落回默认的 mac_float_tweaks。"""
+    ran = []
+    monkeypatch.setattr(fw, "mac_float_tweaks", ran.append)
+    store = Store()
+
+    def host_with(**extra):
+        factory = Factory()
+        host = fw.FloatWindowHost(factory, "http://127.0.0.1:8765/", platform="darwin", screens=lambda: SCREEN,
+                                  load=store.load, save=store.save, spawn=lambda fn: fn(),
+                                  timer_factory=FakeTimer, **extra)
+        host.request_open()
+        return factory
+
+    default = host_with()
+    assert ran == [default.windows[0]]                 # 不传：macOS 上照常做收尾调整
+    off = host_with(mac_tweaks=None)
+    assert off.windows and ran == [default.windows[0]]  # 传 None：窗口照开，收尾调整不做
+    linux = fw.FloatWindowHost(Factory(), "http://x/", platform="linux", spawn=lambda fn: fn(),
+                               load=store.load, save=store.save, timer_factory=FakeTimer)
+    linux.request_open()
+    assert ran == [default.windows[0]]                 # 别的平台不传也没有
