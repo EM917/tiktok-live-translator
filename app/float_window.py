@@ -230,6 +230,33 @@ def mac_default_position(width, height, screens, anchor=None):
             max(MENU_BAR_ROOM, sh - height - DEFAULT_MARGIN[1]))
 
 
+def mac_window_frame(window):
+    """macOS 上这扇窗此刻真实的位置和大小，按 settings.json 的记法：{"x": 左边, "y": 上沿（都是 Cocoa
+    全局坐标，y 向上）, "width", "height"}（宽高是含标题栏的 frame，同 create_window 的 width / height
+    和 resized 事件）。读不到（没有 native、读的时候抛了、数不合理）是 None。
+
+    记位置以它为准，moved / resized 事件只当「动过了」的信号，不信它报的数。2026-10-16 真机实测：第一次
+    开在右下角，没动它就关，记下的位置比窗口真实的位置高 84pt、左 1pt，再开就跳了上去；之后开关不再漂。
+    哪一条事件报了那个数没有查实，但已知有一条路会报旧数：pywebview 6.2.1 的 Event.set 每次新开一个线程，
+    **到那个线程跑起来时**才去遍历处理函数，建窗过程中（BrowserView.__init__ 里先 setFrameOrigin_ 到屏幕
+    原点、再 setFrameTopLeftPoint_ 到目标位置）的 moved 就可能落进刚挂上的处理函数，报的是早就不是现在的
+    位置。所以不管事件说了什么，记下的都是窗口真实的 frame。读法同 pywebview 自己的 get_position：在调用
+    线程上直接读 NSWindow.frame()。"""
+    native = getattr(window, "native", None)
+    if native is None:
+        return None
+    try:
+        frame = native.frame()
+        left, bottom = frame.origin.x, frame.origin.y
+        width, height = frame.size.width, frame.size.height
+        top = bottom + height
+    except Exception:
+        return None
+    out = {"x": _number(left, *LIMITS["x"]), "y": _number(top, *LIMITS["y"]),
+           "width": _number(width, *LIMITS["width"]), "height": _number(height, *LIMITS["height"])}
+    return None if None in out.values() else out
+
+
 def screens_from_webview(webview):
     """pywebview 的屏幕列表 → [ScreenBox]（比较起来就是 (x, y, 宽, 高)）。读不到（还没初始化、平台不支持）返回空列表。"""
     def read():
@@ -332,6 +359,7 @@ def _spawn_thread(fn):
 
 
 _DEFAULT_TWEAKS = object()      # mac_tweaks 没传：macOS 上用 mac_float_tweaks；传 None 是明确关掉
+_DEFAULT_FRAME = object()       # frame_reader 没传：macOS 上用 mac_window_frame；传 None 是只信事件报的数
 
 
 class FloatWindowHost:
@@ -345,7 +373,7 @@ class FloatWindowHost:
 
     def __init__(self, create_window, base_url, platform=None, screens=None, load=None, save=None,
                  spawn=None, timer_factory=None, mac_tweaks=_DEFAULT_TWEAKS, on_change=None,
-                 shown_wait=SHOWN_WAIT_SEC):
+                 shown_wait=SHOWN_WAIT_SEC, frame_reader=_DEFAULT_FRAME):
         self._create = create_window
         self._shown_wait = shown_wait
         self._base_url = str(base_url).rstrip("/")
@@ -361,6 +389,11 @@ class FloatWindowHost:
         if mac_tweaks is _DEFAULT_TWEAKS:
             mac_tweaks = mac_float_tweaks if self._transparent else None
         self._mac_tweaks = mac_tweaks
+        # 窗口此刻真实的位置和大小（同 settings.json 的记法），记位置以它为准、事件只当信号（见 mac_window_frame）。
+        # 别的平台事件报的数和 create_window 的 x、y 是同一套，也没有实测出问题，照旧用事件的数
+        if frame_reader is _DEFAULT_FRAME:
+            frame_reader = mac_window_frame if self._mac else None
+        self._frame_reader = frame_reader
         self.on_change = on_change
         # 主窗口的 (x, 宽)，macOS 多块屏时第一次开靠它认出主窗口在哪块屏上（main.py 在建好主窗口之后设）
         self.anchor = None
@@ -461,9 +494,14 @@ class FloatWindowHost:
             print("[警告] 打开浮窗失败：{}".format(exc))
             self._notify(False, OPEN_FAILED)
             return False
+        # 窗口真的显示出来了：它此刻的 frame 就是起点。以后存不存、存什么都跟它比——没动过就不写
+        # （没记过位置的第一次开，关掉也不会凭空记下一个位置，下次还是默认的角落）
+        real = self._read_frame(window)
         with self._state:
             self._window = window
             self._geom = {k: v for k, v in geom.items() if v is not None}
+            if real is not None:
+                self._geom = dict(real)
             self._saved = dict(self._geom)
             self._screens_seen = list(screens)
         self._attach(window)
@@ -489,7 +527,7 @@ class FloatWindowHost:
         if window is None:
             return
         self._cancel_timer()
-        self._flush()               # 销毁之前先把最后的位置和大小记下来
+        self._flush(window)         # 销毁之前先把最后的位置和大小记下来（读的是这时真实的 frame）
         try:
             window.destroy()
         except Exception as exc:
@@ -547,7 +585,7 @@ class FloatWindowHost:
             if window is not self._window:
                 return
             self._geom.update(values)
-            self._arm_timer()
+            self._arm_timer(window)
 
     def _closed(self, window):
         """用户点了标题栏的关闭，或系统把窗口关了。我们自己销毁的那一条已经在 _close_locked 里
@@ -558,16 +596,16 @@ class FloatWindowHost:
             self._window = None
             self._want = False
         self._cancel_timer()
-        self._flush()
+        self._flush(window)         # 关掉的窗口对象还在（pywebview 设了 releasedWhenClosed=False），frame 照样读得到
         print("[信息] 浮窗已关闭")
         self._notify(False, None)
 
     # -- 记住位置和大小 --
-    def _arm_timer(self):
-        """在 _state 里调。"""
+    def _arm_timer(self, window=None):
+        """在 _state 里调。window：动的是哪扇窗，定时器到点时读它的 frame（它已经不是当前那扇就不读）。"""
         if self._timer is not None:
             self._timer.cancel()
-        timer = self._timer_factory(DEBOUNCE_SEC, self._flush)
+        timer = self._timer_factory(DEBOUNCE_SEC, functools.partial(self._flush, window, True))
         try:
             timer.daemon = True
         except Exception:
@@ -581,8 +619,25 @@ class FloatWindowHost:
         if timer is not None:
             timer.cancel()
 
-    def _flush(self):
+    def _read_frame(self, window):
+        """window 此刻真实的位置和大小（frame_reader 给的，见 mac_window_frame）；没有读法或读不到是 None。"""
+        if self._frame_reader is None or window is None:
+            return None
+        try:
+            return self._frame_reader(window)
+        except Exception:
+            return None
+
+    def _flush(self, window=None, live=False):
+        """把位置和大小写进 settings.json（和上次写的一样就不写）。window：读得到真实 frame 时以它为准，
+        事件报的数只是读不到时的退路。live=True 是去抖定时器到点：那扇窗已经不是当前的（关了、又开了一扇
+        新的）就什么都不做——关窗那一路已经替它写过了，读它的 frame 只会把旧窗的位置写进新窗的记录。"""
+        real = self._read_frame(window)
         with self._state:
+            if live and window is not self._window:
+                return
+            if real is not None:
+                self._geom.update(real)
             geom = dict(self._geom)
             if geom == self._saved:
                 return

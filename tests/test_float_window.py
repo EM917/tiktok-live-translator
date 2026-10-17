@@ -400,6 +400,173 @@ def test_screens_from_webview_keeps_the_screen_objects_for_macos_placement():
     assert fw.mac_create_position(200, 800, 460, 330, [(0, 0, 1440, 900, "P")])[0] == "P"
 
 
+# ---- macOS：记下的是窗口真实的 frame，不是事件报的数 ------------------------------------------
+# 2026-10-16 真机（一块 1512x982 的屏）：第一次开在右下角 CG (1028, 542)，没动就关，记下的却是
+# {x: 1027, y: 524}（Cocoa 上沿 524 = CG 458），再开就往上跳了 84pt。pywebview 的 Event.set 到新线程跑起来
+# 时才遍历处理函数，建窗时的 moved 可能晚到、落进刚挂上的处理函数。下面的窗口替身照 pywebview 6.2.1
+# cocoa.py 摆窗、算 moved 的数，模拟晚到的事件，核对「记下的 = 真实 frame、再开不跳」。
+
+MBP = fw.ScreenBox(0, 0, 1512, 982, SimpleNamespace(name="built-in"))     # 实测那台的屏幕
+
+
+class CocoaFrame:
+    """NSWindow.frame() 的替身：origin 是左下角（Cocoa 全局，y 向上），size 含标题栏。"""
+
+    def __init__(self, left, bottom, width, height):
+        self.origin = SimpleNamespace(x=left, y=bottom)
+        self.size = SimpleNamespace(width=width, height=height)
+
+
+class CocoaNative:
+    def __init__(self):
+        self.rect = None
+
+    def frame(self):
+        left, bottom, width, height = self.rect
+        return CocoaFrame(left, bottom, width, height)
+
+    def top_left(self):
+        left, bottom, _width, height = self.rect
+        return left, bottom + height
+
+
+class CocoaFactory(Factory):
+    """create_window 的替身，照 pywebview 6.2.1 cocoa.py 的 BrowserView.__init__ 摆窗：frame 大小就是 width × height；
+    先 setFrameOrigin_(屏幕原点)，有 x、y 就 move() = setFrameTopLeftPoint_(屏.x + x, 屏.y + 屏.高 - y)，没有就
+    center()。每摆一次都记下 windowDidMove_ 会报的 (x, y)（moves），测试拿它当晚到的事件。"""
+
+    def __init__(self, screens):
+        super().__init__()
+        self.screens = list(screens)
+        self.moves = []
+
+    def __call__(self, title, url, **kwargs):
+        window = super().__call__(title, url, **kwargs)
+        window.native = CocoaNative()
+        box = next((b for b in self.screens if b.screen is kwargs.get("screen")), self.screens[0])
+        sx, sy, sw, sh = tuple(box)
+        width, height = kwargs["width"], kwargs["height"]
+        self.place(window, sx, sy, width, height)                                # setFrameOrigin_(屏幕原点)
+        if "x" in kwargs and "y" in kwargs:
+            self.place(window, sx + kwargs["x"], sy + sh - kwargs["y"] - height, width, height)   # move()
+        else:
+            self.place(window, sx + (sw - width) / 2, sy + (sh - height) / 2, width, height)      # center()
+        return window
+
+    def place(self, window, left, bottom, width, height):
+        window.native.rect = (left, bottom, width, height)
+        self.moves.append(self.reported(window))
+
+    def reported(self, window):
+        """windowDidMove_：x = origin.x，y = 窗口所在那块屏的高 - 窗口高 - origin.y。"""
+        left, bottom, width, height = window.native.rect
+        on = max(self.screens, key=lambda b: fw._overlap(left, bottom, width, height, *tuple(b)))
+        return left, on[3] - height - bottom
+
+
+def cg_top_left(window, screen=MBP):
+    """CGWindowList 量到的左上角（原点在主屏左上、y 向下），实测记录用的就是它。"""
+    left, top = window.native.top_left()
+    return left, screen[3] - top
+
+
+def test_the_first_open_without_moving_reopens_where_it_was_whatever_the_late_events_said():
+    factory = CocoaFactory([MBP])
+    host, factory, store, _c = mac_host(screens=[MBP], factory=factory)
+    host.request_open()
+    first = factory.windows[0]
+    assert cg_top_left(first) == (1028, 542)                  # 实测第一次开的位置
+    # 建窗时的两次摆放晚到（先到的是目标位置，后到的是屏幕原点），再加实测记下的那个数
+    stale = factory.moves[:2]
+    assert stale == [(0, 982 - 330), (1028, 542)]
+    for args in (stale[1], stale[0], (1027, 458)):
+        first.events.moved.fire(*args)
+    FakeTimer.made[-1].fire()                                 # 去抖到点
+    host.request_close()
+    assert store.saves == []                                  # 窗口没动过：什么都不记，下次还是默认的角落
+    host.request_open()
+    assert cg_top_left(factory.windows[1]) == (1028, 542)     # 不跳
+
+
+def test_a_drag_is_saved_as_the_real_frame_even_when_the_event_numbers_are_stale():
+    factory = CocoaFactory(MAC_RIGHT)
+    host, factory, store, _c = mac_host({"x": 1640, "y": 800, "width": 460, "height": 330}, factory=factory)
+    host.request_open()
+    window = factory.windows[0]
+    assert window.native.top_left() == (1640, 800)
+    # 用户把它拖到外接屏的 (1740, 750)、拉大到 600×400；事件报的却还是建窗时的旧数
+    window.native.rect = (1740, 750 - 400, 600, 400)
+    window.events.moved.fire(*factory.moves[0])
+    window.events.resized.fire(460, 330)
+    FakeTimer.made[-1].fire()
+    assert store.data[fw.SETTINGS_KEY] == {"x": 1740, "y": 750, "width": 600, "height": 400}
+    host.request_close()
+    host.request_open()
+    reopened = factory.windows[1]
+    assert reopened.native.top_left() == (1740, 750) and reopened.native.rect[2:] == (600, 400)
+
+
+def test_the_user_closing_the_title_bar_saves_the_frame_it_closed_at():
+    factory = CocoaFactory([MBP])
+    host, factory, store, _c = mac_host(screens=[MBP], factory=factory)
+    host.request_open()
+    window = factory.windows[0]
+    window.native.rect = (200, 300, 460, 330)                 # 拖过去了，moved 还没到就点了关闭
+    window.events.closed.fire()
+    assert store.data[fw.SETTINGS_KEY] == {"x": 200, "y": 630, "width": 460, "height": 330}
+    host.request_open()
+    assert factory.windows[1].native.top_left() == (200, 630)
+
+
+def test_the_debounce_of_a_closed_window_never_writes_into_the_next_one():
+    factory = CocoaFactory([MBP])
+    host, factory, store, _c = mac_host(screens=[MBP], factory=factory)
+    host.request_open()
+    old = factory.windows[0]
+    old.native.rect = (100, 200, 460, 330)
+    old.events.moved.fire(*factory.reported(old))
+    late = FakeTimer.made[-1]
+    host.request_close()                                      # 关窗那一路已经记下了旧窗最后的位置
+    saved = dict(store.data[fw.SETTINGS_KEY])
+    host.request_open()
+    new = factory.windows[1]
+    old.native.rect = (900, 500, 460, 330)                    # 旧窗对象还在，frame 变了也不该算数
+    late.fn()                                                 # 已被取消的定时器线程恰好已经在跑
+    assert store.data[fw.SETTINGS_KEY] == saved
+    assert host._geom == fw.mac_window_frame(new)
+
+
+def test_mac_window_frame_reads_the_top_left_and_gives_up_on_nonsense():
+    native = CocoaNative()
+    native.rect = (100.4, 109.5, 460.0, 330.0)
+    assert fw.mac_window_frame(SimpleNamespace(native=native)) == {"x": 100, "y": 440, "width": 460, "height": 330}
+    assert fw.mac_window_frame(SimpleNamespace(native=None)) is None
+    assert fw.mac_window_frame(SimpleNamespace()) is None
+    native.rect = (100, 100, 10, 10)                          # 比最小尺寸还小
+    assert fw.mac_window_frame(SimpleNamespace(native=native)) is None
+
+    class Broken:
+        def frame(self):
+            raise RuntimeError("window is gone")
+    assert fw.mac_window_frame(SimpleNamespace(native=Broken())) is None
+
+
+def test_only_macos_reads_the_frame_by_default_and_none_turns_it_off():
+    factory = CocoaFactory([MBP])
+    linux, factory, store, _c = make_host(factory=factory, screens=[MBP])
+    linux.request_open()
+    factory.windows[0].native.rect = (5, 5, 460, 330)
+    factory.windows[0].events.moved.fire(321, 123)            # 别的平台：事件报的数就是要记的数
+    linux.request_close()
+    assert (store.data[fw.SETTINGS_KEY]["x"], store.data[fw.SETTINGS_KEY]["y"]) == (321, 123)
+    factory2 = CocoaFactory([MBP])
+    off = fw.FloatWindowHost(factory2, "http://x/", platform="darwin", screens=lambda: [MBP], spawn=lambda fn: fn(),
+                             load=Store().load, save=Store().save, timer_factory=FakeTimer, mac_tweaks=None,
+                             frame_reader=None)
+    off.request_open()
+    assert off._geom == {"width": 460, "height": 330}         # 传 None：不读 frame，起点照旧是记下的设置
+
+
 def test_supported_kwargs_drops_what_an_older_pywebview_does_not_take():
     def old(title, url, width=1, height=1, on_top=False):
         pass
