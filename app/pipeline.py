@@ -1266,7 +1266,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             raise
         finally:
             # 无论怎么结束（下播、预算耗尽、解析失败、模型加载失败、被取消），
-            # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字
+            # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字。
+            # 先最多等 1 秒在途的证据写盘，session_end 里的证据计数才和目录对得上
+            await self._evidence_drain(sess)
             await self._end_session(my_audit, **self._asr_session_end(sess, end))
 
     async def _begin_session(self, url):
@@ -2010,7 +2012,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     def _asr_session_end(self, sess, end):
         """session_end 带上这一场的识别风险计数和证据音频计数（只有数字），顺手放掉证据的环形缓冲。
         只读这一场自己的会话状态：晚到的旧任务数不进下一场（CLAUDE.md 第七条）。算不出来就不带，
-        收尾照常。在途的证据写盘不等：它们写完就在目录里，只是这里的计数少算那一两份。"""
+        收尾照常。在途的证据写盘由调用方先等过（_evidence_drain，最多 1 秒）；还没写完的份数记在
+        evidence.pending 里，计数和目录差多少看得出来。"""
         counter = (sess or {}).get("asr_risk")
         if counter is None:
             return end
@@ -3482,8 +3485,6 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 self.audit.segment(seq, result, audio_end_ts, asr_ms, hits)
             else:
                 self.audit.segment(seq, result, audio_end_ts, asr_ms, hits, asr=risk.audit)
-        # 证据音频：被标记的、命中的（含下面警示关闭时被抑制的）、对照段，交给线程池去写
-        self._evidence_after_segment(seq, result, risk, hits, audio_end_ts, asr_meta, sess)
 
         alert_ids = []
         for hit in hits:
@@ -3522,6 +3523,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             self._alert_tasks.append(asyncio.ensure_future(
                 self._translate_alert(alert_ids, hits[0].get("context") or "",
                                       result.language)))
+
+        # 证据音频：被标记的、命中的（含上面警示关闭时被抑制的）、对照段，交给线程池去写。排在报警广播
+        # 之后：切 PCM、建索引行虽然只要一毫秒上下，也不该排在检测延迟的路上
+        self._evidence_after_segment(seq, result, risk, hits, audio_end_ts, asr_meta, sess)
 
         if not result.text:
             return None

@@ -136,7 +136,9 @@ def test_the_phone_viewer_never_receives_the_chip():
     assert "asr_flag" not in viewer.ALLOW["caption_update"]
 
 
-TIME_KEYS = ("at", "ts", "started_at", "ended_at", "e2e_ms", "asr_ms")
+# ms 是报警翻译记录的耗时（alert_translation，四舍五入到 0.1 毫秒）：线程池里写证据的线程抢 GIL 时
+# 会在 0.0 和 0.1 之间跳，和界面语言无关
+TIME_KEYS = ("at", "ts", "started_at", "ended_at", "e2e_ms", "asr_ms", "ms")
 
 
 def _g8(lang, monkeypatch, tmp_path, capsys):

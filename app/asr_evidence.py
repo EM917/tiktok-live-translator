@@ -53,12 +53,18 @@ CTX_AFTER_SEC = 1.0
 PRUNE_EVERY = 20                 # 每存这么多份清一次上限（开场也清一次）
 MAP_KEEP = 200                   # 记住最近这么多段的位置和识别输出（手动重译要回头找）
 DISK_LOW_BYTES = 1024 ** 3       # 同 Pipeline.DISK_LOW_BYTES：剩这么多就不存，空间让给审计
+# 内存缓冲最长 30 分钟（约 58 MB）。再长也没用：段表只记最近 MAP_KEEP 段（约 25 分钟），更早的段
+# 找不回来。不设上限的话，把秒写成毫秒（600000）这种笔误会让缓冲在长直播里涨到十几 GB——
+# 换页就是 08-31 那种识别 38–55 秒一段，内存不够则读流的协程直接崩、整场不再收音频
+RING_SEC_MAX = 1800
 
 DEFAULTS = {"on": True, "max_mb": 300, "max_files": 2000, "days": 14, "ring_sec": 600,
             "control_every": 50}
-_INT_KEYS = (("max_mb", "asr_evidence_max_mb", 1), ("max_files", "asr_evidence_max_files", 1),
-             ("days", "asr_evidence_days", 1), ("ring_sec", "asr_evidence_ring_sec", 1),
-             ("control_every", "asr_evidence_control_every", 0))
+_INT_KEYS = (("max_mb", "asr_evidence_max_mb", 1, None),
+             ("max_files", "asr_evidence_max_files", 1, None),
+             ("days", "asr_evidence_days", 1, None),
+             ("ring_sec", "asr_evidence_ring_sec", 1, RING_SEC_MAX),
+             ("control_every", "asr_evidence_control_every", 0, None))
 _OFF_WORDS = ("0", "off", "false", "no")
 _said = set()
 
@@ -85,15 +91,19 @@ def load_config(settings=None, environ=None):
     elif raw_on is not None:
         _say_once("[警告] settings.json 的 asr_evidence 的值 {!r} 不是 true / false，已忽略"
                   .format(raw_on))
-    for key, name, low in _INT_KEYS:
+    for key, name, low, high in _INT_KEYS:
         raw = settings.get(name)
         if raw is None:
             continue
-        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= low:
+        if (isinstance(raw, int) and not isinstance(raw, bool) and raw >= low
+                and (high is None or raw <= high)):
             cfg[key] = raw
-        else:
+        elif high is None:
             _say_once("[警告] settings.json 的 {} 的值 {!r} 不是不小于 {} 的整数，已忽略"
                       .format(name, raw, low))
+        else:
+            _say_once("[警告] settings.json 的 {} 的值 {!r} 不是 {} 到 {} 之间的整数，已忽略"
+                      .format(name, raw, low, high))
     if str(env.get(EVIDENCE_ENV, "")).strip().lower() in _OFF_WORDS:
         cfg["on"] = False
     if not asr_risk.master_switch_on(env):
@@ -147,7 +157,9 @@ class FrameRing:
 
 
 def _dir_stats(path):
-    """(字节数, 文件数, 最新的修改时间)。不跟随符号链接。"""
+    """(字节数, 文件数, 最新的修改时间)。不跟随符号链接。
+    空目录没有文件可看，用目录自己的修改时间：以前记成 0，按天数永远不算过期、也碰不到上限，
+    就一直留着，「存储」里还多出一行「0 段」。"""
     size = files = 0
     newest = 0.0
     try:
@@ -163,6 +175,11 @@ def _dir_stats(path):
                 newest = max(newest, st.st_mtime)
     except OSError:
         pass
+    if files == 0:
+        try:
+            newest = os.lstat(str(path)).st_mtime
+        except OSError:
+            pass
     return size, files, newest
 
 
@@ -214,8 +231,38 @@ def prune(base, keep_name, max_bytes, max_files, days, now=None):
     return removed, freed, total_b, total_f
 
 
+def prune_for(audit_path, cfg):
+    """按上限清一次这份审计旁边的证据目录（在线程池里跑）。证据关着的场次开场时也调：关掉只是
+    不再存，已经存下的混音照样过了天数、超了大小就删——文档和「存储」那一行都是这么写的，
+    为了隐私关掉证据的人会当真。出错只打一行中文警告。"""
+    audit_path = Path(audit_path)
+    try:
+        return prune(evidence_dir(audit_path.parent), audit_path.stem,
+                     cfg["max_mb"] * 1024 * 1024, cfg["max_files"], cfg["days"])
+    except Exception as exc:
+        _say_once("[警告] 清理识别证据音频出错（{}），识别、检测和字幕不受影响"
+                  .format(str(exc)[:160]))
+        return None
+
+
+def _free_bytes(path):
+    """path 所在磁盘的剩余字节。path 还没建时往上找已经有的那一级：不为了查空间先把目录建出来。"""
+    p = Path(path)
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    return shutil.disk_usage(str(p)).free
+
+
+def _tmp_of(path):
+    return path.with_name(path.name + ".tmp")
+
+
+def _ms(n_bytes):
+    return int(round(n_bytes * 1000.0 / BYTES_PER_SEC))
+
+
 def _write_wav(path, pcm):
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = _tmp_of(path)
     with wave.open(str(tmp), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
@@ -237,7 +284,15 @@ class EvidenceRecorder:
         self.round = 0
         self.ring = None
         self._seg = OrderedDict()        # seq -> 这一段的位置和识别输出
-        self._saved = {}                 # seq -> 已经写过的 wav 文件名
+        # seq -> 已经交出去写的 wav：{"wav": 文件名, "offset": 本段在 wav 里的起点, "after": 本段之后
+        # 还有多少字节}（都是字节）。后来再补的索引行照抄这几个数，不写成 0 / null 冒充另一种切法
+        self._saved = {}
+        # 两把锁，事件循环上只拿 _lock：
+        #   _io_lock  线程池里串行写盘和清理。清理要 os.walk 每一场、rmtree 整场目录，可能要好几百
+        #             毫秒，所以事件循环上**永远不拿**它——以前计数和写盘共用一把，开场清理那一下
+        #             就能把读流、识别、报警广播一起卡住（实测卡 455 ms）；
+        #   _lock     只护 counts / by_reason，拿着的时候不做任何 IO，事件循环上拿也只等几微秒
+        self._io_lock = threading.Lock()
         self._lock = threading.Lock()
         self._pending = set()
         self._own_bytes = 0
@@ -300,50 +355,55 @@ class EvidenceRecorder:
         return reasons
 
     def save(self, seq, reasons, loop):
-        """存这一段（没有原因就不存）。PCM 在这里切好，写盘交给默认线程池。返回是否交出去了。"""
+        """存这一段（没有原因就不存）。PCM 在这里切好，写盘交给默认线程池。返回是否交出去了。
+
+        这一段的 wav 已经交出去过（比如先被标记、后来又点了重译）：只补一行索引，用不着环形缓冲里的
+        音频，所以重连换了一轮、这一场到了自己的上限也照补。手动重译是「通顺的错句」唯一的人工信号
+        （设计 §6.2、§12.2），在有重连、标记多的场次上丢掉它，「被标记 / 没被标记的字幕被重译的比例」
+        就偏了。"""
         if not reasons:
             return False
         info = self._seg.get(seq)
-        ring = self.ring
-        if info is None or ring is None or info["round"] != self.round:
-            self._count("skipped_old")
+        if info is None:
+            self._bump("skipped_old")
             return False
-        if self._full:
-            self._count("skipped_cap")
-            return False
-        wav = self._saved.get(seq)
+        saved = self._saved.get(seq)
         pcm = None
-        offset = 0
-        if wav is None:
-            lo = info["start"] - int(CTX_BEFORE_SEC * BYTES_PER_SEC)
-            hi = info["end"] + int(CTX_AFTER_SEC * BYTES_PER_SEC)
-            if info["start"] < ring.start:
-                self._count("skipped_old")
+        if saved is None:
+            ring = self.ring
+            if ring is None or info["round"] != self.round:
+                self._bump("skipped_old")
                 return False
-            lo = max(lo, ring.start)
+            if self._full:
+                self._bump("skipped_cap")
+                return False
+            if info["start"] < ring.start:
+                self._bump("skipped_old")
+                return False
+            lo = max(info["start"] - int(CTX_BEFORE_SEC * BYTES_PER_SEC), ring.start)
+            hi = info["end"] + int(CTX_AFTER_SEC * BYTES_PER_SEC)
             pcm = ring.slice(lo, hi)
             if not pcm:
-                self._count("skipped_old")
+                self._bump("skipped_old")
                 return False
             offset = info["start"] - lo
-            wav = "seq-{:06d}.wav".format(seq)
-            self._saved[seq] = wav
-        seg_bytes = info["end"] - info["start"]
+            saved = {"wav": "seq-{:06d}.wav".format(seq), "offset": offset,
+                     "after": len(pcm) - offset - (info["end"] - info["start"])}
+            self._saved[seq] = saved
         record = {
             "seq": seq, "reasons": list(reasons), "audio_end_ts": info["audio_end_ts"],
-            "wav": wav, "round": info["round"],
-            "seg_offset_ms": int(round(offset * 1000.0 / BYTES_PER_SEC)),
-            "seg_ms": int(round(seg_bytes * 1000.0 / BYTES_PER_SEC)),
-            "ctx_before_ms": int(round(offset * 1000.0 / BYTES_PER_SEC)),
-            "ctx_after_ms": (int(round((len(pcm) - offset - seg_bytes) * 1000.0 / BYTES_PER_SEC))
-                             if pcm is not None else None),
+            "wav": saved["wav"], "round": info["round"],
+            "seg_offset_ms": _ms(saved["offset"]),
+            "seg_ms": _ms(info["end"] - info["start"]),
+            "ctx_before_ms": _ms(saved["offset"]),
+            "ctx_after_ms": _ms(saved["after"]),
             "asr": info["asr"], "language": info["language"],
             "relabeled_from": info["relabeled_from"], "text": info["text"],
             "raw_text": info["raw_text"], "rejected": info["rejected"],
             "windows": info["windows"], "hits": info["hits"],
             "backend": info["backend"], "model": info["model"], "audit": self.audit_name,
             "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-        fut = loop.run_in_executor(None, self._write, record, pcm)
+        fut = loop.run_in_executor(None, self._write, record, pcm, saved)
         self._pending.add(fut)
         fut.add_done_callback(self._pending.discard)
         return True
@@ -354,35 +414,54 @@ class EvidenceRecorder:
         self._pending.add(fut)
         fut.add_done_callback(self._pending.discard)
 
-    async def drain(self):
-        """等在途的写盘都结束（测试和收尾用）。"""
+    async def drain(self, timeout=None):
+        """等在途的写盘和清理结束（收尾和测试用）。给了 timeout 就最多等这么多秒，返回还没完的份数。
+        用 asyncio.wait 不用 wait_for(gather(...))：超时时后者会把线程池里还在排队、没开跑的写盘
+        一起取消，等于丢证据；wait 超时什么都不取消，没完的照样写完，只是这里不再等。"""
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
         while self._pending:
-            await asyncio.gather(*list(self._pending), return_exceptions=True)
+            left = None if deadline is None else deadline - loop.time()
+            if left is not None and left <= 0:
+                break
+            await asyncio.wait(list(self._pending), timeout=left)
+        return len(self._pending)
 
     # ---- 线程池里：写盘与清理 --------------------------------------------------------------
-    def _write(self, record, pcm):
-        with self._lock:
+    def _write(self, record, pcm, entry):
+        with self._io_lock:
+            tmp = None
             try:
+                seq = record["seq"]
                 if pcm is not None:
-                    self.dir.mkdir(parents=True, exist_ok=True)
-                    if shutil.disk_usage(str(self.dir)).free < DISK_LOW_BYTES:
-                        self.counts["skipped_disk"] += 1
-                        self._saved.pop(record["seq"], None)
-                        return
                     size = len(pcm) + 44
+                    # 先查空间和上限、再建目录：查完不存时不留一个空的场次目录
+                    if _free_bytes(self.dir) < DISK_LOW_BYTES:
+                        self._bump("skipped_disk")
+                        self._drop_saved(seq, entry)
+                        return
                     if (self._own_bytes + size > self.cfg["max_mb"] * 1024 * 1024
                             or self._own_files + 1 > self.cfg["max_files"]):
                         self._full = True
-                        self.counts["skipped_cap"] += 1
-                        self._saved.pop(record["seq"], None)
+                        self._bump("skipped_cap")
+                        self._drop_saved(seq, entry)
                         return
-                    _write_wav(self.dir / record["wav"], pcm)
+                    self.dir.mkdir(parents=True, exist_ok=True)
+                    path = self.dir / record["wav"]
+                    tmp = _tmp_of(path)
+                    _write_wav(path, pcm)
+                    tmp = None
                     self._own_bytes += size
                     self._own_files += 1
-                    self.counts["saved"] += 1
-                    self.counts["bytes"] += size
+                    self._bump("saved")
+                    self._bump("bytes", size)
                 else:
-                    self.counts["index_only"] += 1
+                    if self._saved.get(seq) is not entry:
+                        # 那份 wav 最后没写成（磁盘满、写失败、到了上限）：这一行照记（重译的信号不丢），
+                        # 但不指向一个不存在的文件
+                        record = dict(record, wav=None, seg_offset_ms=None, ctx_before_ms=None,
+                                      ctx_after_ms=None)
+                    self._bump("index_only")
                 line = (json.dumps(_finite_json(record), ensure_ascii=False, allow_nan=False)
                         + "\n").encode("utf-8")
                 self.dir.mkdir(parents=True, exist_ok=True)
@@ -391,51 +470,69 @@ class EvidenceRecorder:
                 with open(str(index), "ab") as fh:
                     fh.write(line)
                 self._own_bytes += len(line)
-                self.counts["bytes"] += len(line)
+                self._bump("bytes", len(line))
                 if new_index:
                     self._own_files += 1
-                for reason in record["reasons"]:
-                    self.by_reason[reason] = self.by_reason.get(reason, 0) + 1
+                with self._lock:
+                    for reason in record["reasons"]:
+                        self.by_reason[reason] = self.by_reason.get(reason, 0) + 1
                 self._since_prune += 1
                 if self._since_prune >= PRUNE_EVERY:
-                    self._prune_locked()
+                    self._prune_io()
             except Exception as exc:
-                self.counts["failed"] += 1
+                if tmp is not None:
+                    # wav 没写成：从「已存」里拿掉，后面的重译会从缓冲里重新存，而不是补一行指向
+                    # 不存在的文件；写了一半的 .tmp 也删掉——它不算进这一场的上限，留着就一直占地方
+                    self._drop_saved(record["seq"], entry)
+                    try:
+                        os.unlink(str(tmp))
+                    except OSError:
+                        pass
+                self._bump("failed")
                 if not self._warned:
                     self._warned = True
                     print("[警告] 识别证据音频没存下来（{}），这一场后面再出错不再提示；"
                           "识别、检测和字幕不受影响".format(str(exc)[:160]))
 
-    def _prune_locked(self):
+    def _drop_saved(self, seq, entry):
+        if self._saved.get(seq) is entry:
+            self._saved.pop(seq, None)
+
+    def _prune_io(self):
+        """调用方必须已持有 _io_lock（线程池里）。"""
         self._since_prune = 0
         removed, _freed, _b, _f = prune(self.base, self.dir.name,
                                         self.cfg["max_mb"] * 1024 * 1024,
                                         self.cfg["max_files"], self.cfg["days"])
-        self.counts["pruned_dirs"] += removed
+        self._bump("pruned_dirs", removed)
 
     def _prune_locked_safe(self):
-        with self._lock:
+        with self._io_lock:
             try:
-                self._prune_locked()
+                self._prune_io()
             except Exception as exc:
-                self.counts["failed"] += 1
+                self._bump("failed")
                 if not self._warned:
                     self._warned = True
                     print("[警告] 清理识别证据音频出错（{}），识别、检测和字幕不受影响"
                           .format(str(exc)[:160]))
 
-    def _count(self, key):
+    def _bump(self, key, n=1):
+        """计数加 n。事件循环和线程池两边都调：只拿 _lock，拿着的时候不做 IO。"""
         with self._lock:
-            self.counts[key] += 1
+            self.counts[key] += n
 
     def summary(self):
+        """这一场的计数（只有数字）。pending 是此刻线程池里还没写完的份数：收尾时先等过一会儿
+        （Pipeline._evidence_drain），还不是 0 就说明计数比目录里少这么几份，不是悄悄少算。"""
         with self._lock:
             out = {"on": True}
             out.update(self.counts)
             out["by_reason"] = dict(sorted(self.by_reason.items()))
-            out.update({k: self.cfg[k] for k in ("max_mb", "max_files", "days", "ring_sec",
-                                                 "control_every")})
-            return out
+        out["pending"] = len(self._pending)
+        out.update({k: self.cfg[k] for k in ("max_mb", "max_files", "days", "ring_sec",
+                                             "control_every")})
+        return out
 
     def close(self):
         """收尾：放掉环形缓冲和段表（约 19 MB），在途的写盘照常写完。"""

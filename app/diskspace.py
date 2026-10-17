@@ -8,8 +8,9 @@
 
 规则：
 - 条目由这里盘点并编 id；删除只按 id 回查，**永远不接受路径**。
-- 每条标明角色：in_use（本场正在用）/ app（本程序会用，删了下次自动重下）/
-  other（不是本程序下载的，可能是别的工具的）。删 other 由用户自己判断。
+- 每条标明角色：in_use（本场正在用）/ app（本程序的：模型删了下次自动重下；审计日志和识别音频
+  片段删了就没了，各自的 note 写着）/ other（不是本程序下载的，可能是别的工具的）。删 other 由用户
+  自己判断。index.html #disk-hint 那句「自动重下」只说模型，就是因为 app 这一类里有删了回不来的。
 - 运行环境 .venv 不列：删了程序就没了。
 - 当前会话的审计文件不列、不删；当前会话的识别证据音频（logs/asr-evidence/<这一场>/）同样不列、不删。
 """
@@ -147,9 +148,11 @@ def inventory(hf_dir=None, ollama_models=(), log_dir=None, active_asr=None,
                                 "Contains banned-term evidence. Make sure you no longer need it "
                                 "first.")})
     evidence = _evidence_dirs(log_dir, current_log)
-    if evidence:
+    evidence_size = sum(dir_size(d) for d in evidence)
+    if evidence_size:
         # 识别证据音频（app/asr_evidence.py）：直播的混音片段，只在本机。默认开着，所以必须让用户
-        # 看得到、删得掉，不能只靠上限自己滚掉。label 和日志两项一样是界面句子（kind=evidence）
+        # 看得到、删得掉，不能只靠上限自己滚掉。label 和日志两项一样是界面句子（kind=evidence）。
+        # 只有空目录时不列：一行「0 段」没有可删的东西
         clips = sum(_wav_count(d) for d in evidence)
         cfg = _evidence_caps()
         items.append({"id": "evidence:all", "kind": "evidence",
@@ -157,7 +160,7 @@ def inventory(hf_dir=None, ollama_models=(), log_dir=None, active_asr=None,
                                   "Recognition audio clips (1 clip, not including this session)",
                                   "Recognition audio clips ({} clips, not including this session)")
                       .format(clips),
-                      "size": sum(dir_size(d) for d in evidence), "role": "app",
+                      "size": evidence_size, "role": "app",
                       "note": L("被标记、命中违禁词、点过重译的段和少量对照段的直播混音，"
                                 "只存在这台电脑上，超过 {} MB 或 {} 天从最旧的删起。删了不影响程序",
                                 "Mixed stream audio from flagged segments, banned-term matches, "

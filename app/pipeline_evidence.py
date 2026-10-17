@@ -33,6 +33,10 @@ class AsrEvidenceMixin:
         try:
             cfg = asr_evidence.load_config()
             if not cfg["on"]:
+                # 关着（asr_evidence=false、TLT_ASR_EVIDENCE=0、总闸）也按上限清一次：关掉只是不再存，
+                # 已经存下的混音照样过 14 天 / 超 300 MB 就删——文档和「存储」那一行都这么写，
+                # 为了隐私关掉证据的人会当真。在线程池里清，不挡开播
+                asyncio.get_running_loop().run_in_executor(None, asr_evidence.prune_for, path, cfg)
                 return None
             recorder = asr_evidence.EvidenceRecorder(path, cfg)
             recorder.prune_soon(asyncio.get_running_loop())
@@ -83,6 +87,21 @@ class AsrEvidenceMixin:
         if not getattr(self, "_evidence_warned", False):
             self._evidence_warned = True
             print("[警告] 识别证据音频出错（{}），识别、检测和字幕不受影响".format(str(exc)[:160]))
+
+    # 收尾时最多等在途的写盘这么久。平时一份 wav 几毫秒就写完；等得再长会顶到 STOP_GRACE_SEC（3 秒）：
+    # 旧任务过了宽限期，_stop_locked 就自己写 session_end，这一场的识别风险计数整个都没了
+    EVIDENCE_DRAIN_SEC = 1.0
+
+    async def _evidence_drain(self, sess):
+        """收尾、写 session_end 之前：等一会儿在途的证据写盘，让 session_end.asr_risk.evidence 的计数和
+        目录对得上（停止前最后一两秒标记的段、最后一次清理）。等不完不取消，计数里的 pending 记下差几份。"""
+        recorder = sess.get("evidence") if isinstance(sess, dict) else None
+        if recorder is None:
+            return
+        try:
+            await recorder.drain(self.EVIDENCE_DRAIN_SEC)
+        except Exception:
+            pass
 
     @staticmethod
     def _evidence_summary(sess):

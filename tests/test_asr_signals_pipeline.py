@@ -372,7 +372,9 @@ def test_the_master_switch_is_recorded_in_the_asr_config(monkeypatch, tmp_path):
 
 # ---- G8：中英两种界面下审计和终端逐字节相同 ------------------------------------------------------
 
-TIME_KEYS = ("at", "ts", "started_at", "ended_at", "e2e_ms", "asr_ms")
+# ms 是报警翻译记录的耗时（alert_translation，四舍五入到 0.1 毫秒）：线程池里写证据的线程抢 GIL 时
+# 会在 0.0 和 0.1 之间跳，和界面语言无关
+TIME_KEYS = ("at", "ts", "started_at", "ended_at", "e2e_ms", "asr_ms", "ms")
 
 
 def _g8_run(lang, monkeypatch, tmp_path, capsys):

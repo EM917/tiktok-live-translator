@@ -63,6 +63,18 @@ def test_bad_settings_are_ignored_with_one_warning(capsys):
     assert all(line.startswith("[警告]") for line in out.splitlines())
 
 
+def test_the_ring_length_has_an_upper_bound(capsys):
+    """缓冲长度写成毫秒（600000）这种笔误不能让内存缓冲涨到十几 GB：超过 30 分钟提示一次、当没写。"""
+    asr_evidence._said.clear()
+    assert load_config({"asr_evidence_ring_sec": 600000}, {})["ring_sec"] == 600
+    assert load_config({"asr_evidence_ring_sec": asr_evidence.RING_SEC_MAX}, {})["ring_sec"] == 1800
+    out = capsys.readouterr().out
+    assert out.strip() == ("[警告] settings.json 的 asr_evidence_ring_sec 的值 600000 不是 1 到 1800 "
+                           "之间的整数，已忽略")
+    # 最长的缓冲也装不下比段表更早的段：段表约 25 分钟，缓冲上限 30 分钟
+    assert asr_evidence.RING_SEC_MAX * asr_evidence.BYTES_PER_SEC < 64 * 1024 * 1024
+
+
 def test_constants_match_the_audio_source():
     assert asr_evidence.SAMPLE_RATE == app.audio.SAMPLE_RATE
 
@@ -204,8 +216,11 @@ def test_a_manual_retranslate_saves_the_segment_from_the_ring(monkeypatch, tmp_p
     # 写盘在默认线程池里，几行索引的先后不保证：按 (seq, 原因) 对
     index = {(r["seq"], r["reasons"][0]): r for r in _index(recorder)}
     assert sorted(index) == [(1, "retranslate"), (2, "flagged"), (2, "retranslate")]
-    again = index[(2, "retranslate")]
-    assert again["wav"] == index[(2, "flagged")]["wav"] and again["ctx_after_ms"] is None
+    again, first = index[(2, "retranslate")], index[(2, "flagged")]
+    # 补的那一行和第一行说的是同一份 wav 里的同一刀：离线复听按哪一行切都切对
+    for key in ("wav", "seg_offset_ms", "seg_ms", "ctx_before_ms", "ctx_after_ms"):
+        assert again[key] == first[key], key
+    assert (first["seg_offset_ms"], first["ctx_after_ms"]) == (2000, 1000)
     assert sorted(f.name for f in recorder.dir.glob("*.wav")) == ["seq-000001.wav",
                                                                    "seq-000002.wav"]
     s = recorder.summary()
@@ -241,6 +256,110 @@ def test_a_new_round_cannot_reach_the_previous_rounds_audio(monkeypatch, tmp_pat
 
     recorder = run(go())
     assert recorder.round == 2 and recorder.summary()["skipped_old"] == 1
+
+
+def test_a_retranslate_of_a_clip_already_on_disk_is_kept_after_a_reconnect_or_at_the_cap(
+        monkeypatch, tmp_path):
+    """wav 已经存过的段，补一行索引用不着缓冲里的音频：重连换了一轮、这一场到了上限都照补。
+    手动重译是通顺错句唯一的人工信号，丢在有重连的场次上，「被标记的段被重译的比例」就偏了。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+
+    async def go():
+        recorder = await _feed(p, sess, 200, [(result("antes del corte", lp=-1.2), 80, 30),
+                                              (result("y otra mas", lp=-1.2), 150, 30)])
+        p._evidence_round(sess)                        # 断流重连：新的一轮
+        await p.retranslate(1, trigger="manual")
+        recorder._full = True                          # 这一场到了自己的上限
+        await p.retranslate(2, trigger="manual")
+        await recorder.drain()
+        return recorder
+
+    recorder = run(go())
+    index = {(r["seq"], r["reasons"][0]): r for r in _index(recorder)}
+    assert sorted(index) == [(1, "flagged"), (1, "retranslate"), (2, "flagged"), (2, "retranslate")]
+    for seq in (1, 2):
+        assert index[(seq, "retranslate")]["wav"] == "seq-{:06d}.wav".format(seq)
+        assert (index[(seq, "retranslate")]["seg_offset_ms"]
+                == index[(seq, "flagged")]["seg_offset_ms"])
+    s = recorder.summary()
+    assert (s["skipped_old"], s["skipped_cap"], s["index_only"], s["saved"]) == (0, 0, 2, 2)
+
+
+def test_the_loop_never_waits_for_a_prune_in_progress(monkeypatch, tmp_path):
+    """清理在线程池里 os.walk、rmtree，可能要好几百毫秒。事件循环上的计数（跳过、找不到）和收尾的
+    summary 不能排在它后面等——以前共用一把锁，实测把整个事件循环卡了 455 ms。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+    started, release = threading.Event(), threading.Event()
+    real = asr_evidence.prune
+
+    def slow_prune(*a, **k):
+        started.set()
+        release.wait(5)
+        return real(*a, **k)
+
+    monkeypatch.setattr(asr_evidence, "prune", slow_prune)
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        recorder = p._evidence_round(sess)             # 开场清理：在线程池里卡住
+        assert await loop.run_in_executor(None, started.wait, 5)
+        t0 = time.monotonic()
+        assert recorder.save(77, ["retranslate"], loop) is False      # 这一场没有这一段：只计数
+        recorder.save(1, ["flagged"], loop)
+        s = recorder.summary()
+        spent = time.monotonic() - t0
+        release.set()
+        await recorder.drain()
+        return spent, s
+
+    spent, s = run(go())
+    assert spent < 0.1, spent
+    assert s["skipped_old"] == 2 and s["pending"] == 1
+
+
+def test_a_failed_wav_is_not_referenced_and_leaves_no_tmp(monkeypatch, tmp_path, capsys):
+    """wav 写到一半失败：.tmp 删掉；在它失败之前就排上的那行重译索引不指向它（wav 记 null）；
+    之后再点重译，从缓冲里重新存一份，而不是补一行指向不存在的文件。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+    entered, gate = threading.Event(), threading.Event()
+    real = asr_evidence._write_wav
+
+    def broken(path, pcm):
+        asr_evidence._tmp_of(path).write_bytes(b"RIFF half")        # 写了一半
+        entered.set()
+        gate.wait(5)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(asr_evidence, "_write_wav", broken)
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        recorder = p._evidence_round(sess)
+        await recorder.drain()
+        for i in range(200):
+            recorder.feed(frame(i))
+        meta = dict(PAUSE_META, round=1, pcm_end=150 * FRAME_BYTES, pcm_len=30 * FRAME_BYTES)
+        await p._emit_original(result("x", lp=-2.0), 100.0, 900, segment_ms=3000, asr_meta=meta,
+                               sess=sess)
+        # wav 还卡在写盘里（拿着写盘锁）时点了重译：只排上一行索引，排在 wav 后面
+        assert await loop.run_in_executor(None, entered.wait, 5)
+        recorder.save(1, ["retranslate"], loop)
+        gate.set()
+        await recorder.drain()
+        monkeypatch.setattr(asr_evidence, "_write_wav", real)        # 磁盘又能写了
+        recorder.save(1, ["retranslate"], loop)
+        await recorder.drain()
+        return recorder
+
+    recorder = run(go())
+    lines = _index(recorder)
+    assert [(r["reasons"], r["wav"]) for r in lines] == [(["retranslate"], None),
+                                                          (["retranslate"], "seq-000001.wav")]
+    assert lines[0]["seg_offset_ms"] is None and lines[1]["seg_offset_ms"] == 2000
+    assert [f.name for f in recorder.dir.iterdir() if f.suffix != ".jsonl"] == ["seq-000001.wav"]
+    s = recorder.summary()
+    assert (s["failed"], s["saved"], s["index_only"]) == (1, 1, 1)
+    assert capsys.readouterr().out.count("[警告] 识别证据音频没存下来") == 1
 
 
 def test_switched_off_means_no_ring_and_no_files(monkeypatch, tmp_path):
@@ -327,7 +446,8 @@ def test_low_disk_space_skips_saving(monkeypatch, tmp_path):
     monkeypatch.setattr(asr_evidence.shutil, "disk_usage", lambda path: Usage())
     recorder = run(_feed(p, sess, 100, [(result("x", lp=-2.0), 90, 30)]))
     assert recorder.summary()["skipped_disk"] == 1
-    assert list(recorder.dir.glob("*.wav")) == []
+    # 先查空间再建目录：不存的时候不留一个空的场次目录
+    assert not recorder.dir.exists()
 
 
 # ---- 上限 -----------------------------------------------------------------------------------
@@ -380,6 +500,21 @@ def test_prune_does_not_follow_symlinks(tmp_path):
     assert (outside / "keep.wav").exists()
 
 
+def test_empty_session_dirs_expire_by_their_own_time_and_are_not_listed(tmp_path):
+    """空目录没有文件可看：按目录自己的修改时间过期（以前记成 0、永远不清），「存储」里也不列一行「0 段」。"""
+    logs = tmp_path / "logs"
+    base = logs / "asr-evidence"
+    old, fresh = base / "session-20260901-100000", base / "session-20261015-100000"
+    old.mkdir(parents=True)
+    fresh.mkdir()
+    t = time.time() - 40 * 86400
+    os.utime(str(old), (t, t))
+    assert [it for it in diskspace.inventory(hf_dir=tmp_path / "none", log_dir=logs)
+            if it["kind"] == "evidence"] == []
+    removed, *_ = prune(base, "session-x", max_bytes=10 ** 9, max_files=100, days=14)
+    assert removed == 1 and not old.exists() and fresh.exists()
+
+
 def test_the_current_session_stops_saving_at_its_own_cap(monkeypatch, tmp_path):
     p, _, sess = _session(monkeypatch, tmp_path, settings={"asr_evidence_max_files": 2})
     segments = [(result("x{}".format(i), lp=-2.0), 20 + i * 20, 10) for i in range(5)]
@@ -401,6 +536,27 @@ def test_a_new_session_prunes_old_ones_at_start(monkeypatch, tmp_path):
 
     run(go())
     assert not stale.exists()
+
+
+@pytest.mark.parametrize("settings, env", [({"asr_evidence": False}, {}),
+                                           ({}, {"TLT_ASR_EVIDENCE": "0"}),
+                                           ({}, {"TLT_ASR_SAFEGUARDS": "off"})])
+def test_retention_still_runs_when_saving_is_off(monkeypatch, tmp_path, settings, env):
+    """关掉证据只是不再存：已经存下的混音照样按 14 天 / 300 MB 清（开场时），文档和「存储」那一行
+    都是这么写的。为了隐私关掉证据的人会当真。"""
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    base = tmp_path / "logs" / "asr-evidence"
+    stale = _old_session(base, "session-20200101-000000", 2, 100, age_days=30)
+    recent = _old_session(base, "session-20261015-100000", 2, 100, age_days=1)
+    p, _, sess = _session(monkeypatch, tmp_path, settings=settings)
+
+    async def go():
+        assert p._evidence_round(sess) is None
+
+    run(go())                     # asyncio.run 收尾时等默认线程池跑完
+    assert not stale.exists() and recent.exists()
+    assert not (base / p.audit.path.stem).exists()      # 关着就不建这一场的目录
 
 
 # ---- 位置与隐私 ------------------------------------------------------------------------------
@@ -447,6 +603,72 @@ def test_session_end_counts_the_evidence(monkeypatch, tmp_path):
     assert sess["evidence"].ring is None                              # 环形缓冲已经放掉
     p.audit.close(**end)
     assert rows(p.audit.path, "session_end")[0]["asr_risk"]["evidence"]["saved"] == 1
+
+
+def test_session_end_waits_briefly_for_writes_in_flight(monkeypatch, tmp_path):
+    """停止前最后一秒标记的段：session_end 先等一会儿在途的写盘，计数和目录才对得上。走真的
+    _run_stream_inner 收尾那一段（拉流用剧本代替）。"""
+    from tests.test_pipeline_transcript import scripted_session
+    from tests.test_resilience_stream import audit_rows
+    from tests.test_resilience_stream import make_pipeline as stream_pipeline
+    p, _ = stream_pipeline(monkeypatch, tmp_path)
+    real = asr_evidence._write_wav
+
+    def slow_write(path, pcm):
+        time.sleep(0.3)
+        real(path, pcm)
+
+    monkeypatch.setattr(asr_evidence, "_write_wav", slow_write)
+
+    async def body():
+        sess = p._session_state
+        recorder = p._evidence_round(sess)
+        for i in range(100):
+            recorder.feed(frame(i))
+        meta = dict(PAUSE_META, round=recorder.round, pcm_end=90 * FRAME_BYTES,
+                    pcm_len=30 * FRAME_BYTES)
+        await p._emit_original(result("x", lp=-2.0), time.time(), 900, segment_ms=3000,
+                               asr_meta=meta, sess=sess)
+
+    scripted_session(monkeypatch, p, body)
+    ends = [r for r in audit_rows(tmp_path) if r.get("type") == "session_end"]
+    ev = ends[0]["asr_risk"]["evidence"]
+    assert (ev["saved"], ev["pending"], ev["by_reason"]) == (1, 0, {"flagged": 1})
+
+
+def test_a_drain_that_times_out_cancels_nothing_and_says_how_many_are_left(monkeypatch, tmp_path):
+    p, _, sess = _session(monkeypatch, tmp_path)
+    gate = threading.Event()
+    real = asr_evidence._write_wav
+
+    def stuck(path, pcm):
+        gate.wait(5)
+        real(path, pcm)
+
+    monkeypatch.setattr(asr_evidence, "_write_wav", stuck)
+    monkeypatch.setattr(p, "EVIDENCE_DRAIN_SEC", 0.05)
+
+    async def go():
+        recorder = p._evidence_round(sess)
+        await recorder.drain()
+        for i in range(100):
+            recorder.feed(frame(i))
+        meta = dict(PAUSE_META, round=1, pcm_end=90 * FRAME_BYTES, pcm_len=30 * FRAME_BYTES)
+        await p._emit_original(result("x", lp=-2.0), 100.0, 900, segment_ms=3000, asr_meta=meta,
+                               sess=sess)
+        t0 = time.monotonic()
+        await p._evidence_drain(sess)
+        waited = time.monotonic() - t0
+        end = p._asr_session_end(sess, {"reason": "user_stop"})
+        gate.set()
+        await recorder.drain()                         # 没被取消：照样写完
+        return recorder, end, waited
+
+    recorder, end, waited = run(go())
+    assert waited < 1.0
+    assert end["asr_risk"]["evidence"]["pending"] == 1
+    assert end["asr_risk"]["evidence"]["saved"] == 0
+    assert (recorder.dir / "seq-000001.wav").exists() and recorder.summary()["saved"] == 1
 
 
 # ---- 「存储」那一行 ---------------------------------------------------------------------------
@@ -510,7 +732,9 @@ def test_no_clips_means_no_row(tmp_path):
 
 # ---- G8 -------------------------------------------------------------------------------------
 
-TIME_KEYS = ("at", "ts", "started_at", "ended_at", "e2e_ms", "asr_ms")
+# ms 是报警翻译记录的耗时（alert_translation，四舍五入到 0.1 毫秒）：线程池里写证据的线程抢 GIL 时
+# 会在 0.0 和 0.1 之间跳，和界面语言无关
+TIME_KEYS = ("at", "ts", "started_at", "ended_at", "e2e_ms", "asr_ms", "ms")
 
 
 def _g8(lang, monkeypatch, tmp_path, capsys, fail):
