@@ -582,6 +582,54 @@ def test_a_subtitle_model_from_the_environment_does_not_send_the_glossary(monkey
     assert ClaudeTranslator.SUBTITLE_GLOSSARY_MODELS == ("claude-haiku-5-5",)
 
 
+# 字幕请求只带「整词出现、译法不带括注」的词条（见 translator._subtitle_pairs）。管线给的命中
+# 词条是子串匹配算的：2026-10-17 审查扫本机一位主播的全部实录 34,109 句，253 句的提示里有只是
+# 更长单词一部分的词条（maca 在 estomacal 里、inflamada 在 desinflamada 里），118 句带着括注译法；
+# 两次探针里各有被带偏的例子（licuadora 译成冲调饮品、「为了食欲焦虑（嘴馋）」括号上了屏）。
+# 重译不在这次改动范围里，照旧拿全部命中词条，下面也钉着
+BLOCK = "\nWhere the text contains one of these terms, translate it exactly as given here:\n"
+
+
+@pytest.mark.parametrize("text", ["un acmeador nuevo", "el superacme", "acmes2"])
+def test_a_term_that_is_only_part_of_a_longer_word_stays_out_of_the_subtitle_request(monkeypatch, text):
+    tr = make(monkeypatch)
+    body = tr._body(text, "zh-CN", (("acme", "ACME 牌"),))
+    assert body == tr._body(text, "zh-CN")
+    assert "ACME" not in body["system"]
+
+
+@pytest.mark.parametrize("text,pair", [
+    ("compren las acmes", ("acme", "ACME 牌")),                       # 复数 -s
+    ("dos cremas acmees", ("cremas acme", "ACME 面霜")),               # 复数 -es
+    ("un poco del suero acme", ("el suero acme", "ACME 精华液")),      # del = de + el
+    ("ACME, la crema", ("acme", "ACME 牌")),                          # 大小写、紧贴标点
+])
+def test_a_whole_word_plural_or_contracted_term_still_goes_into_the_subtitle_request(monkeypatch, text, pair):
+    tr = make(monkeypatch)
+    assert tr._body(text, "zh-CN", (pair,))["system"] == SYSTEM_SLANG + BLOCK + "{} = {}".format(*pair)
+
+
+@pytest.mark.parametrize("rendering", ["ACME 面霜（小瓶）", "ACME 面霜 (小瓶)", "ACME 面霜【小瓶】", "ACME 面霜[小瓶]"])
+def test_a_rendering_with_a_bracketed_note_stays_out_of_the_subtitle_request(monkeypatch, rendering):
+    """括注是给译法加的说明，不是要上屏的字；字幕请求不带这条，不是去掉括号再带。"""
+    tr = make(monkeypatch)
+    text = "la crema acme y el suero acme"
+    pairs = (("la crema acme", rendering), ("suero acme", "ACME 精华液"))
+    assert tr._body(text, "zh-CN", pairs)["system"] == SYSTEM_SLANG + BLOCK + "suero acme = ACME 精华液"
+    only = tr._body("la crema acme", "zh-CN", pairs[:1])
+    assert only == tr._body("la crema acme", "zh-CN")
+    import hashlib
+    assert hashlib.sha256(only["system"].encode("utf-8")).hexdigest() == TESTED_SYSTEM_SHA256
+
+
+def test_retranslate_still_gets_every_matched_line(monkeypatch):
+    """这次只改字幕请求：重译拿到的仍是管线给的全部命中词条，子串命中和括注译法都在。"""
+    redo = strong(monkeypatch)
+    pairs = (("acme", "ACME 牌"), ("la crema acme", "ACME 面霜（小瓶）"))
+    system = redo._body("un acmeador y la crema acme", "zh-CN", pairs)["system"]
+    assert system == SYSTEM_SLANG + BLOCK + "acme = ACME 牌\nla crema acme = ACME 面霜（小瓶）"
+
+
 def test_the_glossary_sits_in_the_system_prompt_not_in_the_text_to_translate(monkeypatch):
     tr = strong(monkeypatch)
     body = tr._body("compren las gotitas D3 ahora", "zh-CN", HINT)

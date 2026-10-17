@@ -9,6 +9,7 @@ import os
 import re
 from collections import OrderedDict
 
+from .glossary import in_text_as_word
 from .i18n import L
 
 # 单次 translate 调用的结局，按 asyncio 任务隔离。
@@ -583,8 +584,10 @@ class ClaudeTranslator(BaseTranslator):
       * 字幕引擎（默认）：Pipeline.translator 里包着的那个，模型 Haiku 5.5，提示词是
         SYSTEM_SUBTITLE_SLANG（SYSTEM_SUBTITLE 加墨西哥俚语例词那一段）；用 CLAUDE_TRANSLATE_MODEL
         换成别的模型时仍是 SYSTEM_SUBTITLE（俚语那段只在 SLANG_PROMPT_MODELS 列的模型上测过）。
-        Haiku 5.5 的字幕请求后面接本句命中的词表（和重译同一段 SYSTEM_GLOSSARY，见 SUBTITLE_GLOSSARY_MODELS），
-        别的模型不接。报警上下文翻译在强模型没给出译文、或译文像回话时，也用这个实例再译一次；
+        Haiku 5.5 的字幕请求后面接本句命中的词表（和重译同一段 SYSTEM_GLOSSARY，见 SUBTITLE_GLOSSARY_MODELS；
+        只带整词出现、译法不带括注的，见 _subtitle_pairs），别的模型不接。报警上下文翻译在没有强模型、
+        强模型没给出译文、或译文像回话时，也用这个实例译：前两种管线传了词表，请求就带；像回话那次管线
+        不传，就不带；
       * 观众弹幕（role="comment"）：app/comments.py 另建一个，模型固定 Haiku 5.5，提示词按弹幕写
         （SYSTEM_COMMENT_HAIKU：SYSTEM_COMMENT 加上俚语例词和「不解释」那句）；
       * 弹幕重译（role="comment_strong"）：中控在某条弹幕上点「重译」时 app/comments.py 另建一个，
@@ -720,7 +723,8 @@ class ClaudeTranslator(BaseTranslator):
     SLANG_PROMPT_MODELS = {"subtitle": ("claude-haiku-5-5",), "strong": ("claude-sonnet-5-5",)}
     # 词表提示：命中本句的词条（Pipeline._for_translation 里 glossary.translation_pairs 算好的，最多 6 条），
     # 一行一条「原文 = 译法」，接在 system 最后，用户轮仍然只有要翻的那一句。原文写法和译法都是词表文件里的
-    # 数据，照抄。带它的只有重译（role="strong"，一直带）和 SUBTITLE_GLOSSARY_MODELS 里的字幕引擎
+    # 数据，照抄。带它的只有重译（role="strong"，一直带）和 SUBTITLE_GLOSSARY_MODELS 里的字幕引擎（滤过一道，
+    # 见 _subtitle_pairs）
     SYSTEM_GLOSSARY = ("\nWhere the text contains one of these terms, translate it exactly as "
                        "given here:\n{pairs}")
     # 字幕引擎带词表提示的模型。以前字幕请求不带词表，不是测出来的：最早的 Claude 字幕请求只有一句「只输出
@@ -730,24 +734,41 @@ class ClaudeTranslator(BaseTranslator):
     # 上的注释），所以字幕也带上和重译同一段词表提示。
     # 以前各引擎在词表上踩过的坑，这里怎么对上的：
     #   * DeepL 原生术语表是词级强制替换，会把没在说商品的句子也换成商品名、凭空造出功效宣称 —— 这里是提示，
-    #     模型按语境用；只给本句命中的词条（和重译同一套匹配），没命中的句子（实录约七成）请求体一字不变；
-    #   * TranslateGemma 会把指令区的术语映射当括注抄进译文 —— 下面的硬检查查了加括号和 = 号外泄；
-    #   * 全局词表曾让别的主播的直播里冒出别家商品 —— 词表按主播 / 品牌分层加载，这里只拿命中的；
-    #   * 延迟：命中词条在管线里本来就每句都算（以前算完被这里丢掉），这里只多拼一段字符串，不读文件、
-    #     不多发请求。
+    #     模型按语境用；只给本句命中的词条，没命中的句子请求体一字不变。命中用的是管线的子串匹配，字幕请求
+    #     再滤一道（_subtitle_pairs）：只是更长单词一部分的词条不带。审查扫本机一位主播全部实录 34,109 句：
+    #     8,369 句有命中，253 句（0.74%）里有词条不是整词（maca 在 estomacal 里、inflamada 在 desinflamada
+    #     里）；放行复数和 del 以后还有 70 句要滤。加上下一条，滤完 8,242 句带词表，127 句一条不剩（请求和
+    #     没命中时一字不差）。重译不滤（不在这次范围）；
+    #   * TranslateGemma 会把指令区的术语映射当括注抄进译文 —— 下面的评估样本里没有一条译法带括号，「加括号」
+    #     这项硬检查没机会触发；审查探针里 Haiku 把「食欲焦虑（嘴馋）」原样抄上了屏。所以译法带括注的词条
+    #     字幕请求不带（同一份实录里 118 句，模板里 4 条）；
+    #   * 全局词表曾让别的主播的直播里冒出别家商品 —— 词表按主播 / 品牌分层加载，这里只拿命中的。但全局模板
+    #     （glossary.example.txt，每个用户首启都会复制一份）里有日常短语词条，按语境本不该用：agotado => 售罄
+    #     也命中「estamos agotados」（累坏了），en la noche => 睡前也命中「半夜醒来」。以前只在中控点重译时
+    #     进提示，现在每句字幕都进。审查探针 6 句里 Haiku 4 句按语境没用，2 句被带偏（一句是上面括注那句，
+    #     已不带；一句是「半夜醒来」译成「睡前总是醒来」）。改不改模板等用户定（见 PR）；
+    #   * 延迟：命中词条在管线里本来就每句都算（约 100 微秒，以前算完被这里丢掉），这里多一道整词过滤（约
+    #     1 微秒，正则按写法缓存）和拼一段字符串，不读文件、不多发请求。
     # 2026-10-17 留出集配对对比（判定规则调 API 之前登记好）：俚语轮的留出集里命中词表或提到自造品名的 103 句，
     # 字幕 Haiku 5.5、俚语提示词，带词表和不带各一份，同一轮请求打乱；按生产流程，回话重发一次、再做兜底替换。
+    # 后加的整词过滤和括注规则在这 103 句上一条都没滤掉，请求体和测的时候逐字节相同（审查后核对过）。
     #   * 提到自造品名的 32 句，屏幕上留住西语品名：带 14 句、不带 0 句（精确 McNemar 14:0，p≈1e-4）。没留住的
-    #     17 句写的是词表译法里的中文部分，认得出是哪件商品（这一条是读完译文才数的）；剩下 1 句品名连写成
-    #     一个词，词表匹配不到，两边请求一样、都意译了。
-    #   * 其余 71 句命中词表的，屏幕上照词表译法写：带 63 句、不带 33 句（32:2，p≈7e-8；那 2 句只差一个空格）。
+    #     17 句写的是词表译法里的中文部分，认得出是哪件商品（这一条是读完译文才数的）。剩下 1 句品名连写成
+    #     一个词，词表匹配不到，两边请求一样，带词表这边照样编出了「燃脂腰封」。
+    #   * 其余 71 句命中词表的，屏幕上照词表译法写：带 63 句、不带 33 句（32:2，p≈7e-8）。这一项量的是照不照
+    #     词表写，不是译得对不对：带词表多出来的 32 句里，至少 2 句是词表用错了地方（limpieza 当动作、llanta
+    #     在比喻里），两位评委都判不带的好，还有 1 句一位评委这么判。
     #   * 两位评委盲评（同俚语修正轮，两位判同一边才算胜；评委看得到本句的词表，说明里写了别把照词表写当成
-    #     编造）：俚语 68 句 19:6（p=0.015）、普通 35 句 4:2（p=0.69），5 组 Bonferroni 阈值 0.01，都没测出
-    #     差异；去掉提到自造品名的 32 句，俚语 5:5。评委一致性低（kappa 0.20、0.08）。
+    #     编造、也别因此偏向哪边）：俚语 68 句 19:6（p=0.015）、普通 35 句 4:2（p=0.69），5 组 Bonferroni 阈值
+    #     0.01，都没测出差异。Sonnet 评委没照说明做：它判带词表赢的 64 次里 49 次理由是照了词表；两位都判带
+    #     词表赢的 23 句里 17 句至少一位这么说。去掉理由提到词表的判决，俚语 4:3、普通 2:2。所以「评委没测出
+    #     变差」这条在这一轮没有检出力，不能当「别处没变差」的证据；那条靠的是人读两位都判不带词表好的 8 对。
+    #     评委一致性低（kappa 0.20、0.08）。
     #   * 硬检查（无输出、回话、非中文、解释、加括号、多行、译文里出现原文没有的词条、= 号外泄）：带 0 句、
-    #     不带 1 句。这 103 句里每条词表提示都对应原文里真有的词，「塞进原文没有的词条」这条没有机会出现。
-    #   * 延迟：第一次请求中位数 908 对 902 毫秒，配对差中位数 -17 毫秒（Wilcoxon p=0.42），没测出差异；本机拼
-    #     请求体多约 1 微秒。命中词表的请求多约 40 个输入 token；实录约三到四成字幕命中，每小时多花不到 0.001 美元。
+    #     不带 1 句。这只是下限：中文译文前面多一个西语前缀（带词表那边有一句以「Respectivamente:」开头）
+    #     这几项都查不到；这 103 句里每条提示都是整词、没有括注译法，「塞进原文没有的词条」「加括号」没机会出现。
+    #   * 延迟：第一次请求中位数 908 对 902 毫秒，配对差中位数 -17 毫秒（Wilcoxon p=0.42），没测出差异。
+    #     命中词表的请求多约 40 个输入 token，每小时多花不到 0.001 美元。
     # 只在测过的 Haiku 5.5 上带；用 CLAUDE_TRANSLATE_MODEL 换了模型的字幕照旧不带。只测了一位主播、一份品牌词表
     SUBTITLE_GLOSSARY_MODELS = ("claude-haiku-5-5",)
     # 弹幕是陌生人写的文字：只翻译、不照着做。一批是带编号的几行（见 comments.build_batch），
@@ -865,6 +886,8 @@ class ClaudeTranslator(BaseTranslator):
             system = self.SYSTEM_COMMENT if about_comment else self.SYSTEM_SUBTITLE
         system = system.format(lang=LANG_NAMES.get(target, target), avoid=_avoid_langs(target))
         pairs = _as_pairs(glossary) if self._sends_glossary() else []
+        if pairs and self.role == "subtitle":
+            pairs = _subtitle_pairs(text, pairs)
         if pairs:
             system += self.SYSTEM_GLOSSARY.format(
                 pairs="\n".join("{} = {}".format(es, zh) for es, zh in pairs))  # i18n: data
@@ -1545,6 +1568,26 @@ def _as_pairs(glossary):
                 out.append((es.strip(), zh.strip()))
         return out
     return list(glossary)
+
+
+# 译法里的括注（全角、半角、方头括号），见 _subtitle_pairs
+_BRACKET_NOTE = re.compile(r"[（(【\[]")  # i18n: data
+
+
+def _subtitle_pairs(text, pairs):
+    """字幕请求（role="subtitle"）真正带上的词表提示：管线给的命中词条里，再去掉两种。
+
+      * 写法只是原文里某个更长单词的一部分（maca 在 estomacal 里、licuado 在 licuadora 里）：
+        matching() 是子串匹配，兜底替换那边无害，进了提示就成了「照这个译」。整词判断见
+        glossary.in_text_as_word（放行复数和 del）；
+      * 译法带括注（如「水肿（体液滞留）」）：括注是给译法加的说明，不是要上屏的字，Haiku 却会把
+        它原样抄上屏。这类词条不带，回到没带词表时的请求；不去掉括号再发：去掉括号的译法没测过，
+        有的括注正是那条词条要的提示（「下单满（金额，美元）」是为本地模型把数字读成钱调出来的）。
+
+    只管字幕：重译（role="strong"）照旧拿管线给的全部命中词条。去掉之后一条不剩的句子，请求体
+    和没命中词表时一字不差。"""
+    return [(es, zh) for es, zh in pairs
+            if in_text_as_word(es, text) and not _BRACKET_NOTE.search(zh)]
 
 
 def _avoid_langs(target):

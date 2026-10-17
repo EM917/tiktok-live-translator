@@ -13,6 +13,7 @@
      注意力、撑爆小模型的上下文）。
   3. 译文兜底 —— 模型没照做时用规则强制替换，确定性地保证译法一致。
 """
+import functools
 import re
 from pathlib import Path
 
@@ -44,6 +45,26 @@ def _whole_latin_word(variant):
     return re.compile(
         "(?<![" + _LATIN_WORD_CHARS + "])" + re.escape(variant)
         + "(?![" + _LATIN_WORD_CHARS + "])", re.IGNORECASE)
+
+
+@functools.lru_cache(maxsize=2048)
+def _word_in_source(variant):
+    head = "d?" if variant.lower().startswith("el ") else ""
+    return re.compile(
+        "(?<![" + _LATIN_WORD_CHARS + "])" + head + re.escape(variant)
+        + "(?:e?s)?(?![" + _LATIN_WORD_CHARS + "])", re.IGNORECASE)
+
+
+def in_text_as_word(variant, text):
+    """词表写法在西语原文里是不是整词出现，而不只是一个更长单词的一部分。
+
+    matching() 是子串匹配：「maca」也命中 estomacal、「licuado」也命中 licuadora、「inflamada」
+    也命中 desinflamada（意思相反）。兜底替换只换译文里残留的西语，子串误命中在那里无害；
+    写进 Claude 字幕请求的词表提示就是「照这个译」的指令了，所以字幕请求只带这里认的词条
+    （见 app/translator.py 的 _subtitle_pairs）。末尾放行复数 -s/-es（mis pedidos 里的 mis pedido），
+    el 开头的写法放行 del（de + el：del colágeno 里的 el colágeno）；al 里没有 el 这两个字母，
+    matching() 本来就不命中，不用管。正则按写法缓存，每句最多 6 条，微秒级。"""
+    return _word_in_source(variant).search(text) is not None
 
 
 class Glossary:
