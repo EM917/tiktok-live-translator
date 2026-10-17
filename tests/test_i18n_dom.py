@@ -802,14 +802,39 @@ def test_float_page_keeps_its_chinese_data_in_the_data_areas(dom):
             assert ('translate="no"' in tag) == named and ("i18n-data" in _classes(tag)) != named, tag
 
 
+def float_kept_comments(messages):
+    """浮窗页最后留下的弹幕，照 web/float.js 的 floatReduce：同一个 id 原地换，新的接在后面，只留最后
+    FLOAT_COMMENTS_MAX 条；换主播清空（换场之后回放里更早的弹幕要丢掉那一条没有照抄，场景里没有换场）。
+    上限从 float.js 里读，改了这里跟着变。"""
+    keep = int(re.search(r"var FLOAT_COMMENTS_MAX = (\d+);", (WEB_DIR / "float.js").read_text("utf-8")).group(1))
+    kept = []
+    for msg in messages:
+        if msg["type"] == "session_break":
+            kept = []
+        elif msg["type"] == "comment":
+            ids = [c["id"] for c in kept]
+            if msg["id"] in ids:
+                kept[ids.index(msg["id"])] = msg
+            else:
+                kept = (kept + [msg])[-keep:]
+    return kept
+
+
 @needs_chrome
 def test_float_page_shows_what_the_scenario_says(dom):
-    """核对页面真的画出了红 / 琥珀 / 关注的标记和没译成的角标（扫描绿了也可能只是什么都没画）。"""
+    """核对页面真的画出了红 / 琥珀 / 关注的标记、琥珀行的理由和没译成的角标（扫描绿了也可能只是什么都没画）。
+
+    琥珀的理由（「说的是自己的遭遇」这一行，guard.js 的 guard-note）浮窗照中控页弹幕栏一样显示：琥珀是「拿不准」，
+    没有这句，中控只看见一个「疑似指称假货或骗局」，分不出是攻击还是顾客在说自己的遭遇。只有一行小字。
+    浮窗只留最近 5 条弹幕：场景里「句子很短，没有问号」那条（g3）比它们都早，不在窗口里，也就不该出现
+    （以前这里写的正是它，G10 一跑就红）。"""
     html = dom.scan("float-live")["dom"]
-    for cls in ("guard-alert", "guard-amber"):
+    for cls in ("guard-alert", "guard-amber", "guard-marked", "guard-note"):
         assert cls in html, "弹幕里没有 {} 的行".format(cls)
-    for text in ("Possible redirect (link)", "Short, with no question mark", "Not translated (API refusal)"):
+    for text in ("Possible redirect (link)", "Describes the viewer’s own experience", "Model: no attack found",
+                 "Not translated (API refusal)"):
         assert text in html, "页面上没有「{}」".format(text)
+    assert "Short, with no question mark" not in html, "比最近 5 条都早的弹幕还留在浮窗里"
     assert "guard-mark-btn" not in html, "浮窗只显示，不该有加入关注名单的按钮"
 
 
@@ -983,6 +1008,24 @@ def test_float_scenario_is_what_the_float_connection_really_receives(tmp_path):
     assert msgs[-1]["translate_state"] == "failed" and msgs[-1]["refused"] is True
     assert [m["restore"] for m in msgs if m["type"] == "caption" and m.get("restore")]   # 回放的最后一条带 restore
     assert sc["measure"] == list(S.FLOAT_MEASURE)
+    # test_float_page_shows_what_the_scenario_says 找的字要真的在浮窗留下的那几条里：琥珀行带理由（grievance，
+    # 外加模型意见），「句子很短，没有问号」（maybe_question）那条已经被挤出去了
+    kept = float_kept_comments(msgs)
+    guards = [m["guard"] for m in kept if m.get("guard")]
+    assert {(g["lvl"], g["amb"], g["rv"]) for g in guards if g["lvl"] == "amber"} >= {("amber", "grievance", "neutral")}
+    assert "maybe_question" not in {g["amb"] for g in guards}
+    assert "maybe_question" in {m["guard"]["amb"] for m in msgs if m["type"] == "comment" and m.get("guard")}
+    assert {g["cats"][0] for g in guards if g["lvl"] == "alert"} >= {"promo_link"}
+    assert any(m.get("user") == "小明" for m in kept)
+
+
+def test_float_kept_comments_follows_the_page_rules():
+    def c(cid, **extra):
+        return dict({"type": "comment", "id": cid}, **extra)
+    msgs = [c(i) for i in "abcdef"] + [c("c", text="again"), {"type": "comment_update", "id": "d"}]
+    assert [m["id"] for m in float_kept_comments(msgs)] == list("bcdef")
+    assert float_kept_comments(msgs)[1]["text"] == "again"
+    assert [m["id"] for m in float_kept_comments(msgs + [{"type": "session_break"}, c("g")])] == ["g"]
 
 
 @pytest.mark.parametrize("page, lang, html_tag", [
