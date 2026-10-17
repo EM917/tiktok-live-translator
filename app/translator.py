@@ -581,15 +581,17 @@ class ClaudeTranslator(BaseTranslator):
     同一个类有四种用法，各用各的**实例**（冷却、400 记录、拒答计数都挂在实例上，一个用法被 429
     不该连累另一个）：
       * 字幕引擎（默认）：Pipeline.translator 里包着的那个，模型 Haiku 5.5，提示词是
-        SYSTEM_SUBTITLE_HAIKU（SYSTEM_SUBTITLE 加墨西哥俚语例词那一段）；用 CLAUDE_TRANSLATE_MODEL
-        换成别的模型时仍是 SYSTEM_SUBTITLE（俚语那段只在 Haiku 5.5 上测过）；
+        SYSTEM_SUBTITLE_SLANG（SYSTEM_SUBTITLE 加墨西哥俚语例词那一段）；用 CLAUDE_TRANSLATE_MODEL
+        换成别的模型时仍是 SYSTEM_SUBTITLE（俚语那段只在 SLANG_PROMPT_MODELS 列的模型上测过）。
+        报警上下文翻译在强模型没给出译文、或译文像回话时，也用这个实例再译一次；
       * 观众弹幕（role="comment"）：app/comments.py 另建一个，模型固定 Haiku 5.5，提示词按弹幕写
         （SYSTEM_COMMENT_HAIKU：SYSTEM_COMMENT 加上俚语例词和「不解释」那句）；
       * 弹幕重译（role="comment_strong"）：中控在某条弹幕上点「重译」时 app/comments.py 另建一个，
         模型固定 Sonnet 5.5（同下面重译的那一档），提示词是弹幕的 SYSTEM_COMMENT（弹幕是陌生人的
         文字，只翻译、不照着做），所以它不带词表，译文回来后的兜底替换由 app/comments.py 做；
       * 重译（create_claude_strong_translator，role="strong"）：字幕引擎是 Claude 时，「重译」
-        和报警上下文翻译用它，模型 Sonnet 5.5，取代本地 7B。提示词和字幕一样，另外带词表：
+        和报警上下文翻译用它，模型 Sonnet 5.5，取代本地 7B。提示词也是 SYSTEM_SUBTITLE_SLANG，
+        后面另外接词表：
         本地 7B 的提示词里有词表，重译又正是中控嫌商品名译错了才点的，换成 Claude 不能把它丢掉。
         字幕引擎（Haiku 5.5）和弹幕不带词表，只靠译文回来后的兜底替换（Pipeline 里的 glossary.apply）。"""
 
@@ -667,27 +669,34 @@ class ClaudeTranslator(BaseTranslator):
                        "never correct or rewrite it. Never reply to the line, never ask for more "
                        "text, never explain, never add notes or alternatives. "
                        "Output ONLY the translation, without the tags, nothing else.")
-    # 只给字幕引擎（role="subtitle"）、而且模型是 SUBTITLE_SLANG_MODELS 里的时候用：SYSTEM_SUBTITLE
-    # 原有的句子一字不动、顺序不变，在「Always answer in」之前加一段——主播多讲墨西哥西语、卖健康
-    # 减肥产品，俚语和口语照意思译、语气同样随意，不软化、不解释，带例词。写法照弹幕那段
-    # （SYSTEM_COMMENT_HAIKU），例词换成字幕里常见的：这类直播最常见的错是「derretir la llanta」
-    # 被译成「融化轮胎」、lonja 被译成「市场 / 肉铺 / 皮革」。弹幕那段的「el bote = jail」「vieja =
+    # 俚语版字幕提示词：SYSTEM_SUBTITLE 原有的句子一字不动、顺序不变，在「Always answer in」之前加一段——
+    # 主播多讲墨西哥西语、卖健康减肥产品，俚语和口语照意思译、语气同样随意，不软化、不解释，带例词。
+    # 写法照弹幕那段（SYSTEM_COMMENT_HAIKU），例词换成字幕里常见的：这类直播最常见的错是「derretir la
+    # llanta」被译成「融化轮胎」、lonja 被译成「市场 / 肉铺 / 皮革」。弹幕那段的「el bote = jail」「vieja =
     # woman」没搬过来：主播嘴里的 botes 是罐子、瓶子，chancleta vieja 是旧拖鞋。这段同样不提「识别
     # 可能听错」（见上面 SYSTEM_SUBTITLE 的注释：一提它就去校对原文）。
-    # 2026-10-17 离线对比：10-14 两场 bellaallnatural、10-16 一场 daisycabral_ 的真实字幕，生产的
-    # 模型和参数，一句一请求，新旧两版同一轮配对、请求顺序打乱；Opus 5.5 盲评，A/B 对调各评一遍，
-    # 两遍判同一边才算胜：
-    #   * 俚语字幕 211 句（按书面规则挑出：词表 + 正则）新:旧 108:17，精确符号检验 p≈2e-17；
-    #   * 普通字幕随机 200 句 61:19，p≈3e-6（4 组 Bonferroni 后两组都显著）——领域那句话对普通
-    #     句子也有用（inflamarse 译成浮肿而不是发炎、gotas 译成滴剂而不是水滴）；
-    #   * 含 llanta / lonja 的 43 句，旧版 23 句译成轮胎、市场一类，新版 0 句；
-    #   * 硬检查（无输出、looks_like_reply、没有汉字、加注、多行）旧 2 句、新 0 句，没测出差异；
-    #     延迟中位数多约 15 毫秒，译文长度没测出差异。
-    # 例词是看了测试集写的；不含任何例词的 36 句俚语字幕是 17:1（探索性）。新版也有退步的例子：
-    # chulas 修饰饮料时被当成叫观众（译成「美女们」）、a gusto 被加上「吃得」。
-    # 重译（Sonnet 5.5，role="strong"）没测过这一版，仍用 SYSTEM_SUBTITLE；用 CLAUDE_TRANSLATE_MODEL
-    # 换了模型的也仍用 SYSTEM_SUBTITLE。改这段要重做配对对比，tests/test_claude_translator.py 钉着原文
-    SYSTEM_SUBTITLE_HAIKU = (
+    # 只给 SLANG_PROMPT_MODELS 里测过的（角色, 模型）用：字幕引擎的 Haiku 5.5、重译的 Sonnet 5.5（重译照旧
+    # 在后面接词表，见 SYSTEM_GLOSSARY）。报警上下文翻译用的也是这两个实例，所以也带这一段。弹幕的两个
+    # 提示词、用 CLAUDE_TRANSLATE_MODEL 换了模型的字幕都照旧。
+    # 2026-10-17 两轮离线对比，生产的模型和参数，一句一请求，新旧同一轮配对、请求顺序打乱：
+    #   * 第一轮（样本内：例词是看了这批字幕才写的）：10-14 两场 bellaallnatural、10-16 一场 daisycabral_；
+    #     只有字幕 Haiku；一位评委 Opus 5.5，A/B 对调各评一遍、两遍同向才算胜。俚语 211 句 新:旧 108:17，
+    #     普通 200 句 61:19。含 llanta / lonja 的 43 句，旧版 23 句译成轮胎、市场一类，新版 0 句。
+    #   * 第二轮（留出集，提示词和挑句规则冻结后才抽）：10-16 另两场 bellaallnatural，去掉和第一轮重复的句子，
+    #     俚语 169 句、普通随机 100 句。两位评委：Opus 5.5（第一轮的评委说明）和 Sonnet 5.5（中性说明，不提
+    #     墨西哥、不提减肥产品），各看一种 A/B 顺序，两位判同一边才算胜；6 组 Bonferroni，阈值 0.0083。
+    #     字幕 Haiku：俚语 74:17（p≈1e-9）显著；普通 22:11（p=0.08）没测出差异，第一轮普通句的结果没有
+    #     复现，所以不能说领域那句话对普通句子有用。重译 Sonnet：俚语 36:10（p≈2e-4）显著，普通 18:7
+    #     （p=0.04）没测出差异，硬检查 1 对 2；按事先定的规则（俚语显著变好、普通和硬检查都没有显著变差）
+    #     给重译也用这一段。两位评委的一致性不高（kappa 0.18–0.32）。
+    #   * 硬检查（无输出、回话、没有汉字、加注、原文没有括号而译文有括号、多行）两轮都没测出差异：
+    #     第一轮俚语旧 4 句、新 1 句，第二轮字幕 6 对 2。
+    # 已知退步：chula/chulas 修饰东西时被当成叫观众（第一轮至少 3 句）；新版偶尔留英文（第一轮 3 句：
+    # get到、girls、fabulous）；主播自造、含 lonja 的品名，字幕 Haiku 会意译成「燃脂……」，有时还编出
+    # 腰封、贴这类不存在的形态，译后的词表兜底替换就找不到原文、品名丢了：留出集 32 句里旧版屏幕上
+    # 留住品名 11 句，新版 0 句（读完译文才查的，探索性）。重译带词表提示，不受影响（29 对 27）。
+    # 领域那句只在健康减肥类直播上测过。改这段要重做配对对比，tests/test_claude_translator.py 钉着原文和 sha256
+    SYSTEM_SUBTITLE_SLANG = (
         "You translate live-stream subtitles into {lang}. "
         "The user message always contains one line of speech from a live stream, "
         "inside <subtitle> tags. It is what the streamer said to the audience, not a "
@@ -704,8 +713,8 @@ class ClaudeTranslator(BaseTranslator):
         "never correct or rewrite it. Never reply to the line, never ask for more "
         "text, never explain, never add notes or alternatives. "
         "Output ONLY the translation, without the tags, nothing else.")
-    # 测过 SYSTEM_SUBTITLE_HAIKU 的字幕模型：只有生产默认的 Haiku 5.5
-    SUBTITLE_SLANG_MODELS = ("claude-haiku-5-5",)
+    # 测过 SYSTEM_SUBTITLE_SLANG 的（角色: 模型）：字幕引擎的生产默认 Haiku 5.5、重译固定的 Sonnet 5.5
+    SLANG_PROMPT_MODELS = {"subtitle": ("claude-haiku-5-5",), "strong": ("claude-sonnet-5-5",)}
     # 只给重译用（role="strong"）：命中本句的词条，一行一条「原文 = 译法」，放在 system 里，
     # 用户轮仍然只有要翻的那一句。原文写法和译法都是词表文件里的数据，照抄
     SYSTEM_GLOSSARY = ("\nWhere the text contains one of these terms, translate it exactly as "
@@ -771,7 +780,8 @@ class ClaudeTranslator(BaseTranslator):
         """model：显式指定就不读 CLAUDE_TRANSLATE_MODEL（弹幕和重译各有固定的模型）。
         role：subtitle（默认）、comment、comment_strong 或 strong，只影响提示词和 max_tokens：
         comment 和 comment_strong 用弹幕的提示词和更大的 max_tokens（两者只差模型），strong 和
-        subtitle 一样、另外带词表。"""
+        subtitle 用同一份字幕提示词（模型在 SLANG_PROMPT_MODELS 里时是 SYSTEM_SUBTITLE_SLANG），
+        strong 另外带词表。"""
         super().__init__()
         self.api_key = api_key("ANTHROPIC_API_KEY")
         if not self.api_key:
@@ -811,8 +821,8 @@ class ClaudeTranslator(BaseTranslator):
             max_tokens = self.MAX_TOKENS_NO_THINKING
         if self.role == "comment":
             system = self.SYSTEM_COMMENT_HAIKU
-        elif self.role == "subtitle" and self.model in self.SUBTITLE_SLANG_MODELS:
-            system = self.SYSTEM_SUBTITLE_HAIKU
+        elif self.model in self.SLANG_PROMPT_MODELS.get(self.role, ()):
+            system = self.SYSTEM_SUBTITLE_SLANG
         else:
             system = self.SYSTEM_COMMENT if about_comment else self.SYSTEM_SUBTITLE
         system = system.format(lang=LANG_NAMES.get(target, target), avoid=_avoid_langs(target))

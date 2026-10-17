@@ -200,7 +200,8 @@ def test_the_sonnet_5_5_request_body_is_exactly_this(monkeypatch):
     assert post["body"] == {
         "model": "claude-sonnet-5-5",
         "max_tokens": 512,
-        "system": SYSTEM_PLAIN,
+        # 和字幕引擎同一份俚语版提示词（第二轮留出集对比后给重译也用上，见 SYSTEM_SUBTITLE_SLANG）
+        "system": SYSTEM_SLANG,
         "messages": [{"role": "user", "content": "<subtitle>\npague primero y le enviamos\n</subtitle>"}],
         # Sonnet 5.5 对 {"type": "disabled"} 回 400；between_tools 是它最低的思考档，
         # 只在 effort 为 low/medium/high 时被接受，thinking 里不许有别的字段
@@ -497,7 +498,7 @@ def test_the_sonnet_request_with_a_glossary_is_exactly_this(monkeypatch):
         "model": "claude-sonnet-5-5",
         "max_tokens": 512,
         # 词表在 system 里，用户轮仍然只有要翻的那一句
-        "system": (SYSTEM_PLAIN + "\nWhere the text contains one of these terms, translate it "
+        "system": (SYSTEM_SLANG + "\nWhere the text contains one of these terms, translate it "
                    "exactly as given here:\nlas gotitas D3 = D3维生素滴剂\nQuema Lonja = 燃脂贴"),
         "messages": [{"role": "user", "content": "<subtitle>\ncompren las gotitas D3 ahora\n</subtitle>"}],
         "thinking": {"type": "between_tools"},
@@ -514,7 +515,7 @@ def test_the_compact_string_glossary_form_works_too(monkeypatch):
 @pytest.mark.parametrize("empty", [None, (), [], ""])
 def test_no_glossary_leaves_the_sonnet_request_unchanged(monkeypatch, empty):
     tr = strong(monkeypatch)
-    assert tr._body("hola", "zh-CN", empty)["system"] == SYSTEM_PLAIN
+    assert tr._body("hola", "zh-CN", empty)["system"] == SYSTEM_SLANG
 
 
 def test_the_subtitle_and_comment_instances_do_not_send_the_glossary(monkeypatch):
@@ -533,9 +534,10 @@ def test_the_glossary_sits_in_the_system_prompt_not_in_the_text_to_translate(mon
 
 
 # ---------------------------------------------------------------------------
-# 字幕引擎（Haiku 5.5）的俚语提示词：SYSTEM_SUBTITLE 一字不动，在「Always answer in」前面多一段
-# 墨西哥俚语例词。2026-10-17 离线配对对比测的就是这一份（结果见 SYSTEM_SUBTITLE_HAIKU 上的注释）；
-# 重译（Sonnet 5.5）、弹幕、换了模型的字幕都没测过它，照旧
+# 俚语版字幕提示词（SYSTEM_SUBTITLE_SLANG）：SYSTEM_SUBTITLE 一字不动，在「Always answer in」前面多一段
+# 墨西哥俚语例词。2026-10-17 两轮离线配对对比测的就是这一份（结果见 SYSTEM_SUBTITLE_SLANG 上的注释）。
+# 用它的只有测过的两处：字幕引擎的 Haiku 5.5、重译的 Sonnet 5.5（后面照旧接词表）。弹幕的两个
+# 提示词、用 CLAUDE_TRANSLATE_MODEL 换了模型的字幕都没测过它，照旧
 # ---------------------------------------------------------------------------
 
 SUBTITLE_SLANG = (
@@ -546,9 +548,9 @@ SUBTITLE_SLANG = (
     "viewers); comadre = girlfriend, sis; mija = honey; neta = really; güey/wey = dude; "
     "no mames/no manches = no way; chido = cool; pinche = damn, lousy; ahorita = right now; "
     "nomás = just; a gusto = comfortable; refri = fridge; ocupar = need; pedos = farts. ")
-SYSTEM_HAIKU = SYSTEM_PLAIN.replace("Always answer in Simplified Chinese: ",
+SYSTEM_SLANG = SYSTEM_PLAIN.replace("Always answer in Simplified Chinese: ",
                                     SUBTITLE_SLANG + "Always answer in Simplified Chinese: ")
-# 对比时请求里 system 的 sha256：上面两处一起改了、测试照样绿的话，这一行会红
+# 两轮对比时请求里 system 的 sha256：上面两处一起改了、测试照样绿的话，这一行会红
 TESTED_SYSTEM_SHA256 = "c2ca93785cbc97f8cbc9e91217b07936af4ab3b7c8f2a947ac3a7ab1219058da"
 
 
@@ -559,9 +561,9 @@ def test_the_haiku_subtitle_prompt_is_the_tested_one(monkeypatch):
 
     _tr, out, post = sent_body(monkeypatch)
     assert out == "你好"
-    assert SYSTEM_HAIKU != SYSTEM_PLAIN and SYSTEM_HAIKU.count(SUBTITLE_SLANG) == 1
-    assert post["body"]["system"] == SYSTEM_HAIKU
-    assert hashlib.sha256(SYSTEM_HAIKU.encode("utf-8")).hexdigest() == TESTED_SYSTEM_SHA256
+    assert SYSTEM_SLANG != SYSTEM_PLAIN and SYSTEM_SLANG.count(SUBTITLE_SLANG) == 1
+    assert post["body"]["system"] == SYSTEM_SLANG
+    assert hashlib.sha256(SYSTEM_SLANG.encode("utf-8")).hexdigest() == TESTED_SYSTEM_SHA256
     # 只换了 system：模型、思考、effort、max_tokens、用户轮都和以前一样
     assert post["body"]["model"] == "claude-haiku-5-5"
     assert post["body"]["thinking"] == {"type": "disabled"}
@@ -570,23 +572,43 @@ def test_the_haiku_subtitle_prompt_is_the_tested_one(monkeypatch):
     assert post["body"]["messages"] == [{"role": "user", "content": "<subtitle>\nhola amigos\n</subtitle>"}]
 
 
+def test_the_redo_prompt_is_the_tested_one_with_the_glossary_after_it(monkeypatch):
+    """重译（Sonnet 5.5）用同一份俚语版提示词，词表照旧接在最后：第二轮对比测的就是这个顺序。"""
+    tr = strong(monkeypatch)
+    assert tr._body("hola", "zh-CN")["system"] == SYSTEM_SLANG
+    system = tr._body("compren las gotitas D3 ahora", "zh-CN", HINT)["system"]
+    assert system.startswith(SYSTEM_SLANG + "\nWhere the text contains one of these terms")
+    assert system.endswith("Quema Lonja = 燃脂贴")
+
+
 def test_the_subtitle_slang_never_mentions_recognition_or_the_comment_only_examples(monkeypatch):
     """10-14 教训：提示词一提「识别可能听错」，模型就去校对原文、整句回成西语。弹幕那段的
     「el bote = jail」「vieja = woman」不能搬过来：主播嘴里的 botes 是罐子，chancleta vieja 是旧拖鞋。"""
-    system = make(monkeypatch)._body("hola", "zh-CN")["system"].lower()
-    for word in ("recogni", "transcri", "mishear", "misheard", "speech-to-text", "typo"):
-        assert word not in system, word
-    assert "bote" not in system and "vieja" not in system and "jail" not in system
+    for tr in (make(monkeypatch), strong(monkeypatch)):
+        system = tr._body("hola", "zh-CN")["system"].lower()
+        for word in ("recogni", "transcri", "mishear", "misheard", "speech-to-text", "typo"):
+            assert word not in system, word
+        assert "bote" not in system and "vieja" not in system and "jail" not in system
 
 
 @pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-5-5"])
 def test_a_subtitle_model_from_the_environment_keeps_the_plain_prompt(monkeypatch, model):
-    """俚语那段只在 Haiku 5.5 上测过：CLAUDE_TRANSLATE_MODEL 换成别的模型时照旧用 SYSTEM_SUBTITLE。"""
+    """字幕引擎上俚语那段只在 Haiku 5.5 上测过（Sonnet 5.5 只作为重译测过）：
+    CLAUDE_TRANSLATE_MODEL 换成别的模型时照旧用 SYSTEM_SUBTITLE。"""
     assert make(monkeypatch, model)._body("hola", "zh-CN")["system"] == SYSTEM_PLAIN
 
 
-def test_the_redo_and_the_comment_prompts_do_not_get_the_subtitle_slang(monkeypatch):
-    assert strong(monkeypatch)._body("hola", "zh-CN")["system"] == SYSTEM_PLAIN
+@pytest.mark.parametrize("role,model", [("strong", "claude-haiku-5-5"), ("strong", "claude-haiku-4-5"),
+                                        ("subtitle", "claude-sonnet-5-5")])
+def test_only_the_tested_role_and_model_pairs_get_the_slang(monkeypatch, role, model):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    assert ClaudeTranslator(model=model, role=role)._body("hola", "zh-CN")["system"] == SYSTEM_PLAIN
+    assert ClaudeTranslator.SLANG_PROMPT_MODELS == {"subtitle": ("claude-haiku-5-5",),
+                                                    "strong": ("claude-sonnet-5-5",)}
+
+
+def test_the_comment_prompts_do_not_get_the_subtitle_slang(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
     comment = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
     assert comment._body("1. hola", "zh-CN")["system"] == ClaudeTranslator.SYSTEM_COMMENT_HAIKU.format(
         lang="Simplified Chinese", avoid="Spanish or English")
@@ -599,12 +621,13 @@ def test_the_redo_and_the_comment_prompts_do_not_get_the_subtitle_slang(monkeypa
 
 @pytest.mark.parametrize("target,lang", [("zh-CN", "Simplified Chinese"), ("en", "English"),
                                          ("es", "Spanish"), ("ja", "Japanese")])
-def test_the_haiku_subtitle_prompt_fills_in_every_target_language(monkeypatch, target, lang):
-    system = make(monkeypatch)._body("hola", target)["system"]
-    assert "{" not in system and "}" not in system
-    assert system.startswith("You translate live-stream subtitles into {}. ".format(lang))
-    assert "llanta/llantita/lonja = belly fat roll" in system
-    assert "Always answer in {}: never return the line".format(lang) in system
+def test_the_slang_prompt_fills_in_every_target_language(monkeypatch, target, lang):
+    for tr in (make(monkeypatch), strong(monkeypatch)):
+        system = tr._body("hola", target)["system"]
+        assert "{" not in system and "}" not in system
+        assert system.startswith("You translate live-stream subtitles into {}. ".format(lang))
+        assert "llanta/llantita/lonja = belly fat roll" in system
+        assert "Always answer in {}: never return the line".format(lang) in system
 
 
 # ---------------------------------------------------------------------------
