@@ -457,19 +457,24 @@ async def fetch_float(server, lang):
         await client.close()
 
 
+def lf(text):
+    return text.replace("\r\n", "\n")
+
+
 def test_the_float_page_is_served_in_the_current_interface_language():
     server = CaptionServer(port=0)
     status, ctype, html = asyncio.run(fetch_float(server, "zh"))
     assert status == 200 and ctype.startswith("text/html")
-    # 按字节读：Windows 上 git 检出成 CRLF，read_text 会把 \r\n 换成 \n，而服务端发的是原字节
-    assert html == (WEB_DIR / "float.html").read_bytes().decode("utf-8")      # 中文：端文件本身，字节不变
+    # 换行统一成 \n 再比：Windows 上 git 检出成 CRLF，中文页按原字节发（CRLF），英文页是读成文本
+    # 换了 <html> 开标签再发（LF）；这里比的是内容，不是换行符
+    assert lf(html) == lf((WEB_DIR / "float.html").read_bytes().decode("utf-8"))  # 中文：端文件本身
     assert '<html lang="zh-CN">' in html
 
     status, ctype, html = asyncio.run(fetch_float(server, "en"))
     assert status == 200 and ctype.startswith("text/html")
     assert '<html lang="en">' in html and '<html lang="zh-CN">' not in html
-    assert html.replace('<html lang="en">', '<html lang="zh-CN">') == \
-        (WEB_DIR / "float.html").read_bytes().decode("utf-8")                     # 只换了 <html> 开标签
+    assert lf(html.replace('<html lang="en">', '<html lang="zh-CN">')) == \
+        lf((WEB_DIR / "float.html").read_bytes().decode("utf-8"))                 # 只换了 <html> 开标签
 
 
 def test_the_float_page_is_not_mistaken_for_the_main_interface():
