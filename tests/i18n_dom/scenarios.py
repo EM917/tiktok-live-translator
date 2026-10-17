@@ -153,6 +153,11 @@ def _inventory(tmp):
     logs.mkdir(exist_ok=True)
     for stem in ("session-20260801-100000", "session-20260927-100000"):
         (logs / (stem + ".jsonl")).write_text("{}\n", encoding="utf-8")
+    # 识别音频片段（app/asr_evidence.py）：一场的证据目录，英文页上那一行也要扫到
+    clips = logs / "asr-evidence" / "session-20260927-100000"
+    clips.mkdir(parents=True, exist_ok=True)
+    (clips / "seq-000050.wav").write_bytes(b"\0" * 4096)
+    (clips / "index.jsonl").write_text("{}\n", encoding="utf-8")
     ollama = [{"name": "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M", "size": 4509715660}]
     return diskspace.inventory(hf_dir=tmp / "hub", ollama_models=ollama, log_dir=logs,
                                active_asr=("mlx", "large-v3-turbo"),
@@ -255,6 +260,9 @@ def _captions():
         _caption(7, "Thank you so much for watching", src="en"),
         _caption(8, "Les dejo el enlace abajo"),
         _caption_update(8, "I'll leave you the link below", strong_state="failed"),
+        # 「语音识别不确定」角标（默认关；开着时服务端才带 asr_flag）：英文页上卡片里的那句也要扫到
+        dict(_caption(10, "Y ya"), asr_flag=["few_words"]),
+        _caption_update(10, "And that's it"),
         _caption(9, "Ahorita les enseño el precio"),   # 停在「翻译中」
     ]
 

@@ -1,6 +1,6 @@
 # Hardware, disk space and system requirements
 
-*Moved from the README (Disk Space, Quick Start and Automatic Hardware Configuration). The text is unchanged except for relative links.*
+*Moved from the README (Disk Space, Quick Start and Automatic Hardware Configuration). The text is unchanged except for relative links and the later note on recognition audio clips.*
 
 ## Disk Space
 
@@ -32,11 +32,18 @@ Where they are stored, if you need to reclaim space:
 ~/.ollama/models             translation models
 <project>/.venv              runtime environment
 <project>/logs               audit logs
+<project>/logs/asr-evidence  recognition audio clips (up to 300 MB)
 ```
 
 Audit logs grow by roughly **0.3 MB per hour** of monitoring — about 2 MB for
 an eight-hour day, or 0.1 GB a month. They are plain JSONL and safe to delete
 once a session has been reviewed.
+
+Recognition audio clips are on by default and grow by roughly **15–20 MB per
+hour**: a few seconds of the stream's mixed audio around flagged segments,
+banned-term matches, captions you retranslate and one segment in 50. They are
+capped at 300 MB, 2000 files and 14 days, oldest session first, and
+Settings → Storage can delete them. See [the FAQ](faq.md#recognition-audio).
 
 ## Minimum system and the window engine
 

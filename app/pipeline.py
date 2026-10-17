@@ -15,7 +15,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import i18n
+from . import asr_risk, i18n
 from .asr import DEFAULT_TEMPERATURE
 from .i18n import LN, L, of
 from .comment_source import CommentSource
@@ -271,13 +271,14 @@ from .viewer_share import (  # noqa: E402
 )
 from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
+from .pipeline_evidence import AsrEvidenceMixin  # noqa: E402
 from .pipeline_float import FloatWindowMixin  # noqa: E402
 from .pipeline_guard import GUARD_CONTROL_TYPES, CommentGuardMixin  # noqa: E402
 from .pipeline_transcript import TranscriptMixin  # noqa: E402
 
 
 class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin,
-               TranscriptMixin, FloatWindowMixin):
+               TranscriptMixin, FloatWindowMixin, AsrEvidenceMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -1265,8 +1266,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             raise
         finally:
             # 无论怎么结束（下播、预算耗尽、解析失败、模型加载失败、被取消），
-            # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字
-            await self._end_session(my_audit, **end)
+            # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字。
+            # 先最多等 1 秒在途的证据写盘，session_end 里的证据计数才和目录对得上。等的时候被取消
+            # （自己结束的场次收尾到一半点了停止）：session_end 照样由这一场自己写、记真正的原因，
+            # 写完再把取消抛出去，见 _evidence_drain
+            cancelled = await self._evidence_drain(sess)
+            await self._end_session(my_audit, **self._asr_session_end(sess, end))
+            if cancelled:
+                raise asyncio.CancelledError()
 
     async def _begin_session(self, url):
         from .audit import AuditLog
@@ -1988,6 +1995,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """一场直播的观察状态。重连循环、拉流 reader 和统计循环共用这一份；晚到的旧任务
         手里拿的是自己那一份，写不进下一场（同 my_audit 的道理）。"""
         return {
+            # 识别风险的逐场计数（app/asr_risk.py），收尾时写进 session_end.asr_risk。总闸
+            # TLT_ASR_SAFEGUARDS 每场开始时读一次，同一场里不会一半段有标记一半没有
+            "asr_risk": asr_risk.RiskCounter(enabled=asr_risk.master_switch_on()),
+            # 字幕上的「语音识别不确定」角标开不开，同样每场读一次（见 _asr_chip_setting）
+            "asr_chip": self._asr_chip_setting(),
             "audit": audit,
             "clock": (time.time(), time.monotonic()),   # _check_clock_gap 上一次的读数
             "gap": None,              # 最近一次时钟跳变；之后收到音频就清掉
@@ -2000,6 +2012,25 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "meter": None,            # AudioFlowMeter，第一轮拉流时建
             "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
         }
+
+    def _asr_session_end(self, sess, end):
+        """session_end 带上这一场的识别风险计数和证据音频计数（只有数字），顺手放掉证据的环形缓冲。
+        只读这一场自己的会话状态：晚到的旧任务数不进下一场（CLAUDE.md 第七条）。算不出来就不带，
+        收尾照常。在途的证据写盘由调用方先等过（_evidence_drain，最多 1 秒）；还没写完的份数记在
+        evidence.pending 里，计数和目录差多少看得出来。"""
+        counter = (sess or {}).get("asr_risk")
+        if counter is None:
+            return end
+        end = dict(end)
+        try:
+            summary = counter.summary()
+            evidence = self._evidence_summary(sess)
+            if evidence is not None:
+                summary["evidence"] = evidence
+            end.setdefault("asr_risk", summary)
+        except Exception:
+            pass
+        return end
 
     def _hold_sleep_guard(self, task):
         """开播时阻止空闲睡眠（见 app/power.py，合盖休眠阻止不了），记下是哪个任务开的。"""
@@ -2736,6 +2767,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
         segmenter = SilenceSegmenter()
+        # 识别证据音频（app/asr_evidence.py）：这一轮的环形缓冲。关着时是 None，下面每帧只多一次判断
+        evidence = self._evidence_round(sess)
         sess["source"] = source
         meter = sess.get("meter")
         if meter is None:
@@ -2747,12 +2780,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if segment is None:
                 queue.put_nowait(None)
                 return
-            chunk, _ts = segment
+            # 队列元素是 (pcm, 切出的墙钟时刻, 切段器的 last_cut)，这里只用 pcm
+            chunk = segment[0]
             dur = len(chunk) / 2.0 / SAMPLE_RATE
             # 硬上限之前一律留着：识别慢只该推迟报警，不该让这段话永远消失
             while backlog["sec"] + dur > AUDIO_BACKLOG_HARD_SEC:
                 try:
-                    stale, _ = queue.get_nowait()
+                    stale = queue.get_nowait()[0]
                 except asyncio.QueueEmpty:
                     break
                 backlog["sec"] -= len(stale) / 2.0 / SAMPLE_RATE
@@ -2810,6 +2844,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             trans_queue.put_nowait(None)
             self.telemetry.translation_queue_depth = trans_queue.qsize()
 
+        def _cut_meta(segments):
+            """切段器这一刀是怎么切的（见 SilenceSegmenter.last_cut），给识别风险分用；证据开着时
+            再补上这一段在环形缓冲里的位置。测试里的假切段器没有这个属性；一次吐出好几段时对不上
+            是哪一段，都当没有。"""
+            meta = getattr(segmenter, "last_cut", None)
+            meta = dict(meta) if isinstance(meta, dict) and len(segments) == 1 else None
+            return self._evidence_cut_meta(evidence, meta, segments)
+
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
             nonlocal got_audio, audio_secs
@@ -2824,16 +2866,18 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         await self.server.status("live", "")
                     audio_secs += FRAME_SEC
                     sess["last_frame_wall"] = now
+                    if evidence is not None:
+                        evidence.feed(frame)       # 先进缓冲：切出来的段包含这一帧
                     segments = segmenter.feed(frame)
                     for segment in segments:
-                        _put((segment, time.time()))
+                        _put((segment, time.time(), _cut_meta(segments)))
                     # 实际收到多少音频、有没有切出语音段：每帧只计数，有事件才 await
                     events = meter.feed(frame, segments=len(segments))
                     if events:
                         await self._on_audio_events(sess, events)
                 rest = segmenter.flush()
                 for segment in rest:   # 别丢掉最后一段话
-                    _put((segment, time.time()))
+                    _put((segment, time.time(), _cut_meta(rest)))
                 events = meter.cut(len(rest))
                 if events:
                     await self._on_audio_events(sess, events)
@@ -2848,7 +2892,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 item = await queue.get()
                 if item is None:
                     break
-                segment, audio_end_ts = item
+                segment, audio_end_ts = item[0], item[1]
+                cut_meta = item[2] if len(item) > 2 else None
                 backlog["sec"] = max(0.0, backlog["sec"] - len(segment) / 2.0 / SAMPLE_RATE)
                 self.telemetry.set_backlog(backlog["sec"])
                 t0 = time.monotonic()
@@ -2904,8 +2949,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         sess["audit"].asr_overrun(asr_ms=asr_ms, segment_ms=segment_ms)
                 self.telemetry.asr_queue_depth = queue.qsize()
                 self.telemetry.translation_queue_depth = trans_queue.qsize()
+                # 风险分要知道这一段是哪个识别器听的（lp 那两条只对 mlx large-v3 生效）
+                asr_meta = dict(cut_meta or {},
+                                backend=getattr(slot.transcriber, "backend", None),
+                                model=getattr(slot.transcriber, "model_size", None))
                 job = await self._emit_original(result, audio_end_ts, asr_ms,
-                                                segment_ms=segment_ms)
+                                                segment_ms=segment_ms, asr_meta=asr_meta,
+                                                sess=sess)
                 if job is not None:
                     _put_translation(job)
 
@@ -3011,6 +3061,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         record = dict(active, note=config.get("note"))
         # 实际设上的 MLX 缓冲缓存上限（MB）；没配置、没设上、不是 mlx 后端都是 null
         record["mlx_cache_limit_mb"] = getattr(transcriber, "mlx_cache_limit_mb", None)
+        # 识别风险分要的上下文：主播语言、温度、热词提示的指纹（只记指纹，提示里是主播和品牌名），
+        # 以及这一场用的是哪一版规则和阈值。换提示词 logprob 的分布就会动，阈值不能跨提示词比
+        record["language"] = config.get("language")
+        record["temperature"] = config.get("temperature")
+        record["prompt_sha16"] = asr_risk.prompt_sha16(
+            getattr(transcriber, "hotwords", None) or config.get("hotwords"))
+        record["asr_risk"] = asr_risk.config_record(asr_risk.master_switch_on())
         if (active["backend"] != config.get("backend") or active["model"] != config.get("model")
                 or (config.get("device") not in (None, "auto")
                     and active["device"] != config.get("device"))):
@@ -3407,10 +3464,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         print("[警告] 降噪模型不可用（下载失败或校验未过），本次不降噪")
         return None
 
-    async def _emit_original(self, result, audio_end_ts, asr_ms, segment_ms=None):
+    async def _emit_original(self, result, audio_end_ts, asr_ms, segment_ms=None,
+                             asr_meta=None, sess=None):
         """识别一出结果就立刻做两件事：扫违禁词、把西语原文推给界面。
         两者都不等翻译——翻译是可降级的，报警和原文不是。
-        返回待翻译任务（无需翻译时返回 None）。"""
+        返回待翻译任务（无需翻译时返回 None）。
+
+        asr_meta 是这一段的切法和识别器（_stream_session 的 asr_worker 给），sess 是这一场的会话状态；
+        两者只用来算识别风险分（app/asr_risk.py），而且排在违禁词扫描之后。"""
         # 违禁词扫的是 raw_text（含被质量过滤丢掉的部分）：宁可多报，不能漏报
         hits = []
         if self.detector is not None and self.detector.enabled:
@@ -3420,46 +3481,60 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
         self._counter += 1
         seq = self._counter
+        # 风险分在扫描之后算，出错就当没有：检测和上屏不能被它拖住
+        sess = self._segment_session(sess)
+        risk = self._asr_risk_of(result, segment_ms, asr_meta, sess)
         if self.audit is not None:
-            self.audit.segment(seq, result, audio_end_ts, asr_ms, hits)
+            if risk is None:
+                self.audit.segment(seq, result, audio_end_ts, asr_ms, hits)
+            else:
+                self.audit.segment(seq, result, audio_end_ts, asr_ms, hits, asr=risk.audit)
 
         alert_ids = []
-        for hit in hits:
-            # 主播、场次、此刻连着几个界面：换过房间后认得出哪条是上一场的；事后答得出
-            # 「这条报警响的时候有没有页面开着」。audit.alert 原样带上这几列
-            hit.update(self._alert_stamp())
-            if not getattr(self, "alerts_enabled", False):
-                # 警示关闭：证据不能因此丢——命中照样进审计，只是多打一个
-                # suppressed 标记；不广播、不计数、不占强模型、不进系统通知
-                hit["suppressed"] = "alerts_off"
+        try:
+            for hit in hits:
+                # 主播、场次、此刻连着几个界面：换过房间后认得出哪条是上一场的；事后答得出
+                # 「这条报警响的时候有没有页面开着」。audit.alert 原样带上这几列
+                hit.update(self._alert_stamp())
+                if not getattr(self, "alerts_enabled", False):
+                    # 警示关闭：证据不能因此丢——命中照样进审计，只是多打一个
+                    # suppressed 标记；不广播、不计数、不占强模型、不进系统通知
+                    hit["suppressed"] = "alerts_off"
+                    if self.audit is not None:
+                        self.audit.alert(hit)
+                    continue
                 if self.audit is not None:
                     self.audit.alert(hit)
-                continue
-            if self.audit is not None:
-                self.audit.alert(hit)
-            print("[警报] 疑似违禁词「{}」（{}）：{}".format(
-                hit["term"], hit["tier"], hit["context"][-80:]))
-            self._alert_seq += 1
-            hit["alert_id"] = self._alert_seq
-            alert_ids.append(self._alert_seq)
-            await self.server.broadcast({"type": "alert", **hit, **self._count_alert()})
-        if alert_ids:
-            self._notify_alert_burst()
+                print("[警报] 疑似违禁词「{}」（{}）：{}".format(
+                    hit["term"], hit["tier"], hit["context"][-80:]))
+                self._alert_seq += 1
+                hit["alert_id"] = self._alert_seq
+                alert_ids.append(self._alert_seq)
+                await self.server.broadcast({"type": "alert", **hit, **self._count_alert()})
+            if alert_ids:
+                self._notify_alert_burst()
 
-        # 报警的上下文是西语原话。中控读不了西语就无从判断该不该处理，
-        # 而报警恰恰是最需要人工复核的地方——所以补一份中文，用最强模型：
-        # 这句话可能要拿去跟平台交涉，值这 2 秒。
-        #
-        # **一次扫描只翻一遍。** 同一次扫描的多个命中共用同一段 context
-        # （实测一句话同时命中 3 个词是常事），逐个翻是拿同一段文本跑三遍
-        # temperature 0 的模型，输出必然一样。强模型的原则是稀疏、按需、
-        # 短暂占内存，不能因为一次报警就成倍放大调用量——它每跑一次都在和
-        # Whisper 抢内存，而识别就在报警链路上。
-        if alert_ids:
-            self._alert_tasks = [t for t in self._alert_tasks if not t.done()]
-            self._alert_tasks.append(asyncio.ensure_future(
-                self._translate_alert(alert_ids, hits[0].get("context") or "",
-                                      result.language)))
+            # 报警的上下文是西语原话。中控读不了西语就无从判断该不该处理，
+            # 而报警恰恰是最需要人工复核的地方——所以补一份中文，用最强模型：
+            # 这句话可能要拿去跟平台交涉，值这 2 秒。
+            #
+            # **一次扫描只翻一遍。** 同一次扫描的多个命中共用同一段 context
+            # （实测一句话同时命中 3 个词是常事），逐个翻是拿同一段文本跑三遍
+            # temperature 0 的模型，输出必然一样。强模型的原则是稀疏、按需、
+            # 短暂占内存，不能因为一次报警就成倍放大调用量——它每跑一次都在和
+            # Whisper 抢内存，而识别就在报警链路上。
+            if alert_ids:
+                self._alert_tasks = [t for t in self._alert_tasks if not t.done()]
+                self._alert_tasks.append(asyncio.ensure_future(
+                    self._translate_alert(alert_ids, hits[0].get("context") or "",
+                                          result.language)))
+        finally:
+            # 证据音频：被标记的、命中的（含上面警示关闭时被抑制的）、对照段，交给证据线程去写。排在报警
+            # 广播之后：切 PCM、建索引行虽然只要一毫秒上下，也不该排在检测延迟的路上。放在 finally 里：
+            # 广播要等页面收（一个不读的页面最多 2 秒），这时点了停止，取消就落在广播里——以前证据跟着
+            # 一起丢，偏偏丢的是命中违禁词的那一段。这里只切一段 bytes、交给证据线程，中间没有 await，
+            # 取消打断不了它
+            self._evidence_after_segment(seq, result, risk, hits, audio_end_ts, asr_meta, sess)
 
         if not result.text:
             return None
@@ -3485,6 +3560,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "asr_ms": round(asr_ms),
             "e2e_ms": round((now - audio_end_ts) * 1000.0),
         }
+        # 「语音识别不确定」角标（默认关）：只在开关开着、这一段命中会挂角标的标记时才多带一个键，
+        # 其余字幕和以前逐字节相同。只是提示，不改原文、不改译文、不给翻译引擎加任何话——
+        # 10-14 实测提示词里提「识别可能听错」，模型就去校对西语、整句回成西语。也不进报警
+        if risk is not None and risk.chip and isinstance(sess, dict) and sess.get("asr_chip"):
+            caption["asr_flag"] = [f for f in risk.flags if f in asr_risk.CHIP_FLAGS]
         # 底部大字幕的「约 N 秒前」只用 ts 和 e2e_ms：ts − e2e_ms = 这一段音频结束的时刻（web/live-ui.js
         # captionAudioEndAt）。片段时长不进消息——它让数字被句子长短主导（一条刚上屏的字幕就已经
         # 10 秒上下，见 docs/i18n-style.md #105b），服务端的字幕等待才要它（下面的
@@ -3512,6 +3592,56 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 「重译」按钮仍然随时可用。
 
         return job
+
+    @staticmethod
+    def _asr_chip_setting():
+        """settings.json 的 asr_uncertain_chip，默认 false（2026-10-16 用户定的：先只记数跑 2–3 场，
+        看过真实的标记率再决定开不开）。总闸 TLT_ASR_SAFEGUARDS=off 时一律不挂。写错了提示一次、当没写。"""
+        if not asr_risk.master_switch_on():
+            return False
+        try:
+            value = load_settings().get("asr_uncertain_chip")
+        except Exception:
+            return False
+        if value is None or isinstance(value, bool):
+            return bool(value)
+        if not getattr(Pipeline, "_asr_chip_warned", False):
+            Pipeline._asr_chip_warned = True
+            print("[警告] settings.json 的 asr_uncertain_chip 的值 {!r} 不是 true / false，已忽略"
+                  .format(value))
+        return False
+
+    def _segment_session(self, sess):
+        """这一段属于哪一场的会话状态。拉流循环会传自己那一份；直接调用（测试、演示）时没人传，
+        只认属于当前审计的那一份。"""
+        if sess is None:
+            current = getattr(self, "_session_state", None)
+            if isinstance(current, dict) and current.get("audit") is self.audit:
+                sess = current
+        return sess
+
+    def _asr_risk_of(self, result, segment_ms, asr_meta, sess):
+        """这一段的识别风险（app/asr_risk.Risk），并记进这一场的计数。任何一步出错都返回 None：
+        只是这一段没有风险分，违禁词检测、审计的其余字段、字幕和翻译照旧。"""
+        meta = asr_meta if isinstance(asr_meta, dict) else {}
+        counter = sess.get("asr_risk") if isinstance(sess, dict) else None
+        try:
+            enabled = counter.enabled if counter is not None else asr_risk.master_switch_on()
+            transcriber = getattr(self, "_transcriber", None)
+            risk = asr_risk.assess(
+                result, segment_ms, meta,
+                meta.get("backend") or getattr(transcriber, "backend", None),
+                meta.get("model") or getattr(transcriber, "model_size", None),
+                enabled=enabled)
+            if counter is not None:
+                counter.add(risk)
+            return risk
+        except Exception as exc:
+            if not getattr(self, "_asr_risk_warned", False):
+                self._asr_risk_warned = True
+                print("[警告] 识别风险分出错，这一段没有风险分（检测和字幕不受影响）：{}"
+                      .format(str(exc)[:160]))
+            return None
 
     # ---- 合规证据：审计写入健康、报警的场次戳、界面断开留痕 ----
     DISK_LOW_BYTES = 1024 ** 3                 # 剩这么多就提醒：满了审计就写不进去
@@ -4570,6 +4700,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """
         from .translator import looks_fabricated, looks_like_reply
 
+        if trigger == "manual":
+            # 中控点「重译」是线上唯一能留住「通顺的错句」的人工信号：先把这一段的音频存下来，
+            # 不管下面重译成不成（app/pipeline_evidence.py；手机点的不算）
+            self._evidence_retranslate(seq)
         job = self._recent.get(seq)
         if job is None:
             await self._retranslate_refused(seq, trigger, L(

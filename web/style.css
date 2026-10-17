@@ -576,6 +576,14 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 
 .cap .fail-chip { color: var(--fail); text-transform: none; letter-spacing: 0; }
 
+/* 「语音识别不确定」角标（默认关，web/live-ui.js captionAsrChip）：是一句话，不是语言码，所以不转大写；
+   用提醒的琥珀色，不用红色——红色留给「翻译失败」。图标是线性三角（#i-warn），不用 emoji */
+.cap .asr-chip {
+  display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 9px;
+  text-transform: none; letter-spacing: 0; color: var(--warn-fg); background: var(--warn-bg);
+}
+.asr-chip .i, .live-asr .i { width: 12px; height: 12px; }
+
 .cap .orig { font-size: calc(13px * var(--cap-scale)); color: var(--text-dim); line-height: 1.5; overflow-wrap: anywhere; }
 .cap .trans { font-size: calc(17px * var(--cap-scale)); line-height: 1.55; margin-top: 2px; overflow-wrap: anywhere; }
 
@@ -734,6 +742,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 }
 /* 没译成：同卡片上的红色角标，底色取 14% 红（--red-ink 在上面 5:1），不只靠颜色——字本身就写着「未翻译」 */
 .live-state.fail { color: var(--red-ink); background: var(--a-red-14); }
+.live-state.live-asr { display: inline-flex; align-items: center; gap: 3px; color: var(--warn-fg); background: var(--warn-bg); }
 .live-lag { font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); font-variant-numeric: tabular-nums; }
 
 .hidden { display: none !important; }
