@@ -15,6 +15,7 @@
     误识别）的段直接丢弃，宁缺毋滥。
 """
 import gc
+import math
 import os
 import re
 import sys
@@ -159,6 +160,14 @@ class ASRResult:
     raw_text: str = ""
     rejected: List[dict] = field(default_factory=list)
     relabeled_from: str = ""
+    # 识别器自己报的数，见 _decode_signals：lp（各子段里最小的 avg_logprob）、nsp / cr（最大的
+    # no_speech_prob / compression_ratio）、tok、t、calls（解码了几遍，重转过是 2）、win（几个窗口）。
+    # 只给识别风险分（app/asr_risk.py）和审计用，过滤（_fold）不看它，一条规则都不因此改。
+    # 以前一个数都不往外给：线上 64,821 段没有一段记过 logprob，阈值只能在离线录音上猜
+    signals: dict = field(default_factory=dict)
+    # Whisper 吐出的各个子段（start / end / lp / nsp / cr / t / tok / text）。只进证据音频的索引
+    # （logs/asr-evidence/），不进审计的 asr 子对象——审计那边只放数字
+    windows: List[dict] = field(default_factory=list)
 
     def __iter__(self):
         """兼容旧的 `text, lang = transcribe(...)` 解包写法。"""
@@ -495,8 +504,80 @@ def create_transcriber(backend, model_size, device="auto", compute_type="auto",
                        temperature=temperature, hotwords=hotwords)
 
 
+def _num(value):
+    """识别器给的数转成 float；没有、转不了是 None。NaN / inf 原样留着：风险分要认出 NaN
+    （10-14 录音 #355 只写出一个「!」，avg_logprob 就是 NaN），写审计时才换成 null。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _seg_field(seg, name):
+    """mlx 的子段是 dict，faster-whisper 的是 Segment 对象：两种都按名字取。"""
+    return seg.get(name) if isinstance(seg, dict) else getattr(seg, name, None)
+
+
+def _odd_or(values, pick):
+    """有非有限数（NaN / inf）就返回第一个，否则 pick(values)；空的是 None。
+    min / max 遇到 NaN 的结果取决于顺序，不能直接用。"""
+    if not values:
+        return None
+    odd = [v for v in values if not math.isfinite(v)]
+    return odd[0] if odd else pick(values)
+
+
+def _decode_signals(segments, calls):
+    """从解码输出的子段里取风险分要的数，返回 (signals, windows)。
+
+    同一个 30 秒窗口里的子段共用 avg_logprob / no_speech_prob / compression_ratio（mlx_whisper
+    transcribe.py 的 new_segment），而段长不超过 9 秒，所以通常只有一个窗口；取最小 / 最大是为了
+    万一跨窗口时取最可疑的那个。只读不改，和 _fold 看到的是同一份子段。"""
+    windows, seeks = [], set()
+    lps, nsps, crs, temps = [], [], [], []
+    tok = 0
+    for seg in segments:
+        lp, nsp, cr, temp = (_num(_seg_field(seg, k)) for k in
+                             ("avg_logprob", "no_speech_prob", "compression_ratio", "temperature"))
+        tokens = _seg_field(seg, "tokens")
+        try:
+            n_tok = len(tokens) if tokens is not None else 0
+        except TypeError:
+            n_tok = 0
+        seek = _seg_field(seg, "seek")
+        if seek is not None:
+            seeks.add(seek)
+        text = _seg_field(seg, "text")
+        windows.append({"start": _num(_seg_field(seg, "start")), "end": _num(_seg_field(seg, "end")),
+                        "lp": lp, "nsp": nsp, "cr": cr, "t": temp, "tok": n_tok,
+                        "text": text.strip() if isinstance(text, str) else ""})
+        tok += n_tok
+        for bucket, value in ((lps, lp), (nsps, nsp), (crs, cr), (temps, temp)):
+            if value is not None:
+                bucket.append(value)
+    signals = {"lp": _odd_or(lps, min), "nsp": _odd_or(nsps, max), "cr": _odd_or(crs, max),
+               "tok": tok, "t": _odd_or(temps, max), "calls": calls,
+               # 没有 seek 字段（假识别器、老版本）时数不出窗口：有子段就当一个
+               "win": len(seeks) if seeks else (1 if windows else 0)}
+    return signals, windows
+
+
 class _FilterMixin:
     """两个后端共用的质量过滤 + 滚动上下文。"""
+
+    @staticmethod
+    def _attach_signals(result, segments, calls, first_call=None):
+        """把识别器报的数挂到结果上（见 ASRResult.signals）。出任何错都只是没有这些数：
+        识别结果、过滤、违禁词检测的输入一个字不受影响。first_call 是重转之前那一遍的语言和
+        文字，留给证据索引（被推翻的那一遍写了什么，事后要能看到）。"""
+        try:
+            result.signals, result.windows = _decode_signals(segments, calls)
+            if first_call and result.windows:
+                result.windows[0]["first_call"] = first_call
+        except Exception:
+            result.signals, result.windows = {}, []
 
     def _script_outlier(self, text):
         """这段的文字系统在最近接受的字幕里一次都没出现过，且不是连着第二段同种文字。"""
@@ -638,12 +719,15 @@ class Transcriber(_FilterMixin):
         )
         segments = list(segments)
         detected_lang, relabeled_from = info.language, None
+        first_call = None
         # 主播语言设了允许列表（如 "es,en"）时：检测到的语言不在列表里，整段
         # 用主语言强制重转一遍——比如把误判成韩语的一段纠正回西语。这一步很少
         # 触发（只在检测跑偏时才会走到），比放一段错误语言标签的字幕流入
         # 后面的展示/翻译/脚本离群判定划算。
         if self.allowed_langs and detected_lang not in self.allowed_langs:
             relabeled_from = detected_lang
+            first_call = {"language": detected_lang,
+                          "text": " ".join(str(getattr(s, "text", "")).strip() for s in segments)}
             segments, info = self.model.transcribe(
                 audio,
                 language=self.primary_lang,
@@ -661,6 +745,7 @@ class Transcriber(_FilterMixin):
         )
         if relabeled_from:
             result.relabeled_from = relabeled_from
+        self._attach_signals(result, segments, 2 if relabeled_from else 1, first_call)
         return result
 
 
@@ -718,10 +803,12 @@ class MLXTranscriber(_FilterMixin):
             **kwargs
         )
         detected_lang, relabeled_from = out.get("language"), None
+        first_call = None
         # 见 Transcriber.transcribe 里的同一段说明：允许列表框住了主播语言、
         # 检测结果又不在列表里时，整段用主语言强制重转一遍再用
         if self.allowed_langs and detected_lang not in self.allowed_langs:
             relabeled_from = detected_lang
+            first_call = {"language": detected_lang, "text": str(out.get("text") or "").strip()}
             out = self._mlx.transcribe(
                 audio,
                 path_or_hf_repo=self.repo,
@@ -739,4 +826,6 @@ class MLXTranscriber(_FilterMixin):
         )
         if relabeled_from:
             result.relabeled_from = relabeled_from
+        self._attach_signals(result, out.get("segments", []), 2 if relabeled_from else 1,
+                             first_call)
         return result

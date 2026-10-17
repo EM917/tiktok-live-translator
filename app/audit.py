@@ -9,6 +9,7 @@
 写入失败不抛给实时链路（日志不能拖累报警），但也不再静默：见 AuditLog._write。
 """
 import json
+import math
 import os
 import threading
 from collections import deque
@@ -69,6 +70,19 @@ def _now_ms():
     return datetime.now().isoformat(timespec="milliseconds")
 
 
+def _finite_json(value):
+    """把记录里的 NaN / inf 换成 None（写出来是 null），dict / list / tuple 逐层换，别的原样返回。
+    json.dumps 默认把 NaN 写成裸的 NaN，那不是合法 JSON：严格的解析器（jq、浏览器的 JSON.parse、
+    别的语言的库）读到这一行就报错，整份审计跟着读不了。10-14 录音里就有一段 avg_logprob 是 NaN。"""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_json(v) for v in value]
+    return value
+
+
 class AuditLog:
     def __init__(self, room_url="", log_dir=None, extra=None):
         self._lock = threading.Lock()
@@ -125,9 +139,15 @@ class AuditLog:
         if self._fh is None:
             return
         try:
-            data = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+            data = (json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
         except ValueError:
-            return
+            # 记录里有 NaN / inf：换成 null 再写（见 _finite_json）。正常的记录走上面那一步，
+            # 逐字节和以前相同；换完还写不出来（循环引用之类）才像以前一样放弃这一条
+            try:
+                data = (json.dumps(_finite_json(record), ensure_ascii=False, allow_nan=False)
+                        + "\n").encode("utf-8")
+            except (ValueError, RecursionError):
+                return
         started = None
         with self._lock:
             if self._fh is None:
@@ -238,8 +258,11 @@ class AuditLog:
         except (OSError, ValueError):
             return False
 
-    def segment(self, seq, result, audio_end_ts, asr_ms, hits):
-        """一段音频的完整记录：接受的文本、被丢弃的候选及原因、命中的违禁词。"""
+    def segment(self, seq, result, audio_end_ts, asr_ms, hits, asr=None):
+        """一段音频的完整记录：接受的文本、被丢弃的候选及原因、命中的违禁词。
+
+        asr 是识别风险的子对象（app/asr_risk.py assess 的 audit：只有数字和 ASCII 代码，不含文字）。
+        不传时这一行和以前逐字节相同；传了才多一个 "asr" 键，放在最后。"""
         record = {
             "type": "segment",
             "seq": seq,
@@ -257,6 +280,8 @@ class AuditLog:
         relabeled_from = getattr(result, "relabeled_from", None)
         if relabeled_from:
             record["relabeled_from"] = relabeled_from
+        if asr is not None:
+            record["asr"] = asr
         self._write(record)
 
     def translation(self, seq, translated, translate_ms, ok, engine=None):
