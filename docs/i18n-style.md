@@ -615,6 +615,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 140 | float_window.py OPEN_FAILED | 无法打开浮窗。 | Couldn’t open the floating window. | 一次性提示（notice）。不写原因 |
 | 141 | float.js（经 live-ui.js liveBarChip） | 翻译失败 / 未翻译（接口拒答） / 未翻译（结果不像译文） / 翻译已跳过（积压） | 同 #105a | 浮窗里最新一条字幕的角标，和中控页底部大字幕是同一个函数；翻译中不画 |
 | 142 | index.html #float-btn | 浮窗（悬停：在始终置顶的小窗里看最新字幕和弹幕） | Floating Window（悬停：Show the latest caption and comments in a window that stays on top） | 默认只留图标，宽于 1400px 才露文字（英文文字约 110px，放不进 1000px 的顶栏）；图标按钮 28px + 间距 8px，见 §4.2 |
+| 143 | float.js floatCaptionMeta（#f-conn、#f-lag） | 连接中… / 约 N 秒前、约 N 分钟前 | Connecting… / About N sec ago, About N min ago | 已经有字幕时字幕上面状态行里的过时信号：同 #137 的「连接中…」（状态是连接中、或浮窗页和程序断了线），和中控页底部大字幕的「约 N 秒前」（live-ui.js captionAgeText，超过 15 秒才有）。只写观察 |
 
 ---
 

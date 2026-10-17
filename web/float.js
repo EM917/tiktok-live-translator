@@ -12,6 +12,7 @@
  *   3. 页面里的胶水（IIFE，文件末尾）：连 WebSocket、把消息交给归并函数、再渲染。node 里没有
  *      document，直接跳过。
  * 字幕的角标（翻译中不画，失败 / 拒答 / 不像译文 / 积压跳过才画）用 live-ui.js 的 liveBarChip，
+ * 「约 N 秒前」用它的 captionAudioEndAt / captionAgeText，
  * 弹幕的红 / 琥珀标记用 guard.js 的 guardDecorateComment——和中控页是同一份判断，不抄第二遍。
  *
  * 几条不变量：
@@ -26,6 +27,7 @@ if (typeof L === "undefined") { var I18N_ = require("./i18n.js"); var L = I18N_.
 if (typeof liveBarChip === "undefined") {
   var LIVE_ = require("./live-ui.js");
   var liveBarChip = LIVE_.liveBarChip, captionSizeFromConfig = LIVE_.captionSizeFromConfig;
+  var captionAudioEndAt = LIVE_.captionAudioEndAt, captionAgeText = LIVE_.captionAgeText;
 }
 if (typeof guardDecorateComment === "undefined") {
   var GUARD_ = require("./guard.js");
@@ -64,8 +66,10 @@ function floatFindComment(state, id) {
 
 /* 一条消息 → 新状态（原地改 state 并返回它）。认不出的类型原样放过。
  * 换主播（session_break）清掉字幕和弹幕，并记下那一刻：缓存里的弹幕不会随换场清空，重连回放时
- * 比这一刻老的弹幕是上一个主播的，不要。 */
-function floatReduce(state, msg) {
+ * 比这一刻老的弹幕是上一个主播的，不要。
+ * nowMs：收到这条消息的时刻（毫秒，缺省是此刻）。字幕记下「这一句的声音结束于何时」（live-ui.js 的
+ * captionAudioEndAt，同中控页底部大字幕）：消息带 ts 时不看 nowMs，所以回放来的那几条也算得对。 */
+function floatReduce(state, msg, nowMs) {
   if (!msg || typeof msg !== "object") return state;
   switch (msg.type) {
     case "hello": {
@@ -83,7 +87,8 @@ function floatReduce(state, msg) {
     case "caption":
       state.caption = { id: msg.id, original: msg.original || "", translated: msg.translated || null,
                         translate_state: msg.translate_state, refused: !!msg.refused,
-                        not_translation: !!msg.not_translation };
+                        not_translation: !!msg.not_translation,
+                        audioEndAt: captionAudioEndAt(msg, typeof nowMs === "number" ? nowMs : Date.now()) };
       break;
     case "caption_update":
       // 只覆盖消息里带的键：重译的「进行中」通知不带 translated，整段照抄会把已有的译文抹掉
@@ -153,6 +158,19 @@ function floatCaptionView(state) {
   var chip = liveBarChip(c);
   return { id: c.id, big: c.translated || c.original || "", small: c.translated ? (c.original || "") : "",
            chip: chip.text, fail: chip.fail };
+}
+
+/* 有字幕时，字幕上面的状态行除了翻译角标还写什么。浮窗常常是中控唯一看着的地方，而它没有中控页的
+ * 顶栏状态胶囊：断流重连、等主播开播、浮窗页自己和程序断了线，大字幕都还停在最后一句，看着像刚说的。
+ * 只写观察到的（CLAUDE.md 第八条）：
+ *   connecting  状态是「连接中」时写「连接中…」（和没字幕时的占位同一句）；
+ *   lag         这一句的声音结束多久了，live-ui.js 的 captionAgeText：超过 15 秒才有字，规则同中控页
+ *               底部大字幕下面那个「约 N 秒前」。不知道（缺 e2e_ms）就不写。 */
+function floatCaptionMeta(state, nowMs) {
+  var c = state && state.caption;
+  if (!c) return { connecting: "", lag: "" };
+  return { connecting: state.status === "connecting" ? L("连接中…", "Connecting…") : "",
+           lag: typeof c.audioEndAt === "number" ? captionAgeText(nowMs - c.audioEndAt) : "" };
 }
 
 /* 还没有字幕时窗口里写的话：只写观察到的状态 */
@@ -234,8 +252,24 @@ function floatMarkClipped(els) {
   cap.classList.toggle("clipped", over);
 }
 
-/* 把状态画出来。els：{ empty, caption, meta, big, small, chip, comments }。整个重画：最多 5 条，不值得做差量 */
-function floatRender(doc, els, state) {
+/* 字幕上面的状态行：「连接中…」、翻译角标、「约 N 秒前」，哪个都没有就整行收起。页面每秒调一次（数字会涨） */
+function floatPaintMeta(els, state, nowMs) {
+  var cv = floatCaptionView(state);
+  var meta = floatCaptionMeta(state, nowMs);
+  var chip = cv ? cv.chip : "";
+  els.conn.textContent = meta.connecting;
+  els.conn.classList.toggle("hidden", !meta.connecting);
+  els.chip.textContent = chip;
+  els.chip.classList.toggle("hidden", !chip);
+  els.chip.classList.toggle("fail", !!(cv && cv.fail));
+  els.lag.textContent = meta.lag;
+  els.lag.classList.toggle("hidden", !meta.lag);
+  els.meta.classList.toggle("hidden", !(meta.connecting || chip || meta.lag));
+}
+
+/* 把状态画出来。els：{ empty, caption, meta, conn, chip, lag, big, small, comments }。
+ * 整个重画：最多 5 条，不值得做差量。nowMs 缺省是此刻 */
+function floatRender(doc, els, state, nowMs) {
   var cv = floatCaptionView(state);
   els.caption.classList.toggle("hidden", !cv);
   els.empty.classList.toggle("hidden", !!cv);
@@ -243,13 +277,10 @@ function floatRender(doc, els, state) {
     els.big.textContent = cv.big;
     els.small.textContent = cv.small;
     els.small.classList.toggle("hidden", !cv.small);
-    els.chip.textContent = cv.chip;
-    els.chip.classList.toggle("hidden", !cv.chip);
-    els.chip.classList.toggle("fail", cv.fail);
-    els.meta.classList.toggle("hidden", !cv.chip);
   } else {
     els.empty.textContent = floatPlaceholder(state);
   }
+  floatPaintMeta(els, state, typeof nowMs === "number" ? nowMs : Date.now());
   while (els.comments.firstChild) els.comments.removeChild(els.comments.firstChild);
   var ctx = floatGuardCtx(state);
   for (var i = 0; i < state.comments.length; i++) els.comments.appendChild(floatBuildComment(doc, state.comments[i], ctx));
@@ -264,9 +295,10 @@ function floatRender(doc, els, state) {
   // 非 macOS 的窗口不透明（app/float_window.py 往地址里写 ?solid=1）
   if (/[?&]solid=1(?:&|$)/.test((typeof location !== "undefined" && location.search) || "")) root.classList.add("solid");
   var els = { empty: document.getElementById("f-empty"), caption: document.getElementById("f-caption"),
-              meta: document.getElementById("f-meta"),
+              meta: document.getElementById("f-meta"), conn: document.getElementById("f-conn"),
+              chip: document.getElementById("f-chip"), lag: document.getElementById("f-lag"),
               big: document.getElementById("f-big"), small: document.getElementById("f-small"),
-              chip: document.getElementById("f-chip"), comments: document.getElementById("f-comments") };
+              comments: document.getElementById("f-comments") };
   var state = floatInitialState();
   var retries = 0;
 
@@ -287,7 +319,11 @@ function floatRender(doc, els, state) {
   function connect() {
     var ws = new WebSocket("ws://" + location.host + "/ws?role=float");
     ws.onopen = function () { retries = 0; };
-    ws.onclose = function () { setTimeout(connect, Math.min(5000, 700 * Math.pow(2, retries++))); };
+    ws.onclose = function () {
+      // 和程序断了线：大字幕上那一句不会再更新了，状态行写「连接中…」，重连后的 hello 会整份换掉
+      handle({ type: "status", state: "connecting" });
+      setTimeout(connect, Math.min(5000, 700 * Math.pow(2, retries++)));
+    };
     ws.onerror = function () { try { ws.close(); } catch (e) { /* noop */ } };
     ws.onmessage = function (evt) {
       var msg;
@@ -303,6 +339,14 @@ function floatRender(doc, els, state) {
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("resize", function () { floatMarkClipped(els); });
   }
+  // 「约 N 秒前」每秒涨一次（同中控页底部大字幕）；状态行出现、消失会改变装不装得下，顺手再量
+  if (typeof setInterval === "function") {
+    setInterval(function () {
+      if (!state.caption || document.hidden) return;
+      floatPaintMeta(els, state, Date.now());
+      floatMarkClipped(els);
+    }, 1000);
+  }
 })();
 
 /* Node 测试环境导出；浏览器里作为全局函数被上面的胶水使用 */
@@ -311,5 +355,6 @@ if (typeof module !== "undefined" && module.exports) {
                      floatReduce: floatReduce, floatCaptionView: floatCaptionView,
                      floatPlaceholder: floatPlaceholder, floatCommentView: floatCommentView,
                      floatSizes: floatSizes, floatBuildComment: floatBuildComment,
-                     floatGuardCtx: floatGuardCtx, floatRender: floatRender, floatMarkClipped: floatMarkClipped };
+                     floatGuardCtx: floatGuardCtx, floatRender: floatRender, floatMarkClipped: floatMarkClipped,
+                     floatCaptionMeta: floatCaptionMeta, floatPaintMeta: floatPaintMeta };
 }

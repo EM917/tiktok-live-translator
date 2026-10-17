@@ -60,6 +60,10 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
   color: var(--f-dim); background: rgba(255, 255, 255, 0.12);
 }
 .f-chip.fail { color: var(--f-red-ink); background: rgba(255, 69, 58, 0.22); }
+/* 「连接中…」：大字幕上那一句是旧的。琥珀字，和角标同一个胶囊形状 */
+.f-conn { color: var(--f-amber-ink); }
+/* 「约 N 秒前」：不带底色的小字，数字等宽，每秒跳一次不晃 */
+.f-lag { font-size: 12px; line-height: 18px; color: var(--f-dim); font-variant-numeric: tabular-nums; }
 
 /* ---- 最近的弹幕：新的在底部，放不下时挤掉最旧的（上面被裁，最新那条永远在） ---- */
 .f-comments {

@@ -21,13 +21,14 @@ const TEXT = {
     waiting: "等待第一句字幕…", connecting: "连接中…", translating: "翻译中…",
     failed: "翻译失败", refused: "未翻译（接口拒答）", notTranslation: "未翻译（结果不像译文）",
     dropped: "翻译已跳过（积压）", callPill: "疑似号召举报或不买", noQuestionMark: "句子很短，没有问号",
+    lagRe: /^约 3\d 秒前$/,
   },
   en: {
     waiting: "Waiting for the first caption…", connecting: "Connecting…", translating: "Translating…",
     failed: "Translation failed", refused: "Not translated (API refusal)",
     notTranslation: "Not translated (the result didn’t look like a translation)",
     dropped: "Skipped (backlog)", callPill: "Possible call to report or not buy",
-    noQuestionMark: "Short, with no question mark",
+    noQuestionMark: "Short, with no question mark", lagRe: /^About 3\d sec ago$/,
   },
 };
 
@@ -200,6 +201,27 @@ test("关注名单的增删即时生效", () => {
   F.floatReduce(s, { type: "guard_mark", key: "", entry: {} });          // 没有键：忽略
 });
 
+test("过时信号：这一句的声音结束超过 15 秒才写「约 N 秒前」，连接中写连接中（同中控页底部大字幕）", () => {
+  const s = F.floatInitialState();
+  assert.deepEqual(F.floatCaptionMeta(s, 0), { connecting: "", lag: "" });
+  const shown = 1760000000;                                  // 上屏时刻（秒）；e2e 2.3 秒 → 声音结束于 shown*1000 - 2300
+  F.floatReduce(s, caption(1, "hola", { ts: shown, e2e_ms: 2300, replay: true }), 0);   // 回放来的也按 ts 算，不看收到的时刻
+  const end = shown * 1000 - 2300;
+  assert.equal(s.caption.audioEndAt, end);
+  assert.deepEqual(F.floatCaptionMeta(s, end + 14000), { connecting: "", lag: "" });    // 健康直播里的换句间隔：不写
+  assert.equal(F.floatCaptionMeta(s, end + 20000).lag, "约 20 秒前");
+  assert.equal(F.floatCaptionMeta(s, end + 150000).lag, "约 3 分钟前");
+  F.floatReduce(s, { type: "caption_update", id: 1, translated: "你好", translate_state: "ok" });
+  assert.equal(s.caption.audioEndAt, end, "补译文不改这一句的时刻");
+  F.floatReduce(s, { type: "status", state: "connecting" });
+  assert.deepEqual(F.floatCaptionMeta(s, end + 1000), { connecting: "连接中…", lag: "" });
+  F.floatReduce(s, { type: "status", state: "live" });
+  assert.equal(F.floatCaptionMeta(s, end + 1000).connecting, "");
+  // 不知道 e2e（演示模式、老版本服务端）：不写
+  F.floatReduce(s, caption(2, "sin e2e", { e2e_ms: undefined }), end);
+  assert.equal(F.floatCaptionMeta(s, end + 600000).lag, "");
+});
+
 test("乱七八糟的输入不抛、不改状态", () => {
   const s = F.floatInitialState();
   for (const bad of [null, undefined, 3, "x", [], {}, { type: "alert", alert_id: 1 }, { type: "stats" }]) {
@@ -276,6 +298,34 @@ for (const lang of ["zh", "en"]) {
     page.push(caption(2, "hola"));
     page.push({ type: "caption_update", id: 2, translated: "你好", translate_state: "ok" });
     assert.ok(hidden(page, "f-meta"));
+  });
+
+  test(L("已经有字幕时：连接中、和程序断线都在状态行写连接中；旧了写约 N 秒前，每秒重算"), () => {
+    const page = loadFloat({ lang });
+    hello(page);
+    page.push(caption(1, "hola a todas", { ts: Date.now() / 1000 - 30, e2e_ms: 2000 }));
+    assert.ok(!hidden(page, "f-meta") && !hidden(page, "f-lag") && hidden(page, "f-conn"));
+    assert.match(page.el("f-lag").textContent, X.lagRe);
+    page.el("f-lag").textContent = "";
+    assert.equal(page.intervals.length, 1);
+    assert.equal(page.intervals[0].ms, 1000);
+    page.tick();                                                   // 每秒重画：数字会涨
+    assert.match(page.el("f-lag").textContent, X.lagRe);
+    page.push({ type: "status", state: "connecting", detail: "" });       // 断流重连 / 等主播开播
+    assert.ok(!hidden(page, "f-conn"));
+    assert.equal(page.el("f-conn").textContent, X.connecting);
+    assert.equal(page.el("f-big").textContent, "hola a todas");          // 字幕留着，只是标明了
+    page.push({ type: "status", state: "live", detail: "" });
+    assert.ok(hidden(page, "f-conn"));
+    page.closeSocket();                                            // 浮窗页自己和程序断了线
+    assert.ok(!hidden(page, "f-conn") && !hidden(page, "f-meta"));
+  });
+
+  test(L("新鲜的字幕没有过时信号，状态行不露出来"), () => {
+    const page = loadFloat({ lang });
+    hello(page);
+    page.push(caption(1, "hola", { ts: Date.now() / 1000, e2e_ms: 2000 }));
+    assert.ok(hidden(page, "f-meta") && hidden(page, "f-lag") && hidden(page, "f-conn"));
   });
 
   test(L("字幕装不下时加 clipped（底部渐隐）；窗口拉大装得下了就去掉"), () => {
