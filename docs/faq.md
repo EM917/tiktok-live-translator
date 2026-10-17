@@ -193,8 +193,10 @@ sent to the server.
 window. While a stream is running, click **Floating Window** in the top bar
 (an icon until the window is at least 1,400 px wide). A small dark window opens
 and stays above other apps. It shows the
-latest caption large, with the original under it and the same status labels as
-the main window, and the last five comments with their translations. Comments
+latest caption large, with the original under it and, above it, the same status
+labels as the main window ("About N sec ago" once the line is more than 15 seconds
+old, "Connecting…" while it reconnects), and the most recent comments with their
+translations (up to five; make the window taller to see all five). Comments
 that Comment Review marks red or amber keep their marks there. It only displays:
 no buttons, no alerts, and it sends nothing to the app. Drag it or resize it; the
 position and size are saved in `settings.json` (`float_window`) and used the
