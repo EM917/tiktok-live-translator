@@ -180,10 +180,14 @@ rules v1 (`low_conf`, `nan_lp`, `few_words`, `loop`; `outro_only` and `relabel` 
 recorded). The thresholds are frozen as version 1 and written to `asr_config`, and
 `session_end.asr_risk` counts the session. A flag means the segment looks like a gross
 recognition failure; no flag doesn't mean recognition was right. Banned-term matching still
-runs first on the raw recognized text and uses none of this. To switch off the risk flags and
-the audio clips together, start the app with `TLT_ASR_SAFEGUARDS=off`; the numbers stay in the
-audit log. To roll back the code, revert the commits that added `app/asr_risk.py` and
-`app/asr_evidence.py`; no other code reads the new audit keys, and deleting
+runs first on the raw recognized text and uses none of this. With `"asr_uncertain_chip": true`
+in `settings.json` (off by default; read when a session starts), captions whose segment hit one
+of the first four rules get a "Recognition unclear · check the original" badge on the caption
+card and under the large caption; hover it to see what was observed. The text itself is never
+changed, the translation engine is not told anything, and the badge never appears on alerts, the
+phone page or the Floating Window. To switch off the risk flags, the audio clips and the badge
+together, start the app with `TLT_ASR_SAFEGUARDS=off`; the numbers stay in the audit log. To roll back the code, revert the commits that added `app/asr_risk.py`,
+`app/asr_evidence.py` and the badge; no other code reads the new audit keys, and deleting
 `logs/asr-evidence/` has no effect on the app.
 
 **The interface is not on port 8765.** If 8765 is occupied, the app

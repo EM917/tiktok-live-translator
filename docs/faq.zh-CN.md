@@ -125,9 +125,12 @@ M3 Pro 上实测（macOS 27、mlx 0.32.1、Whisper large-v3、fp16、进程已�
 概率、无人声概率和压缩比，以及风险规则 v1 的标记（`low_conf`、`nan_lp`、`few_words`、`loop`；
 `outro_only` 和 `relabel` 只记录）。阈值冻结为第 1 版，写在 `asr_config` 里；`session_end.asr_risk`
 是这一场的计数。有标记说明这一段像是识别出了大问题；没有标记不代表识别对了。违禁词匹配仍然最先在
-识别出的原始文字上跑，不用这里的任何东西。要把风险标记和识别音频片段一起关掉，用
-`TLT_ASR_SAFEGUARDS=off` 启动程序，数字照样记进审计日志。要回退代码，撤掉加入 `app/asr_risk.py`
-和 `app/asr_evidence.py` 的那几个提交；别的代码不读这些新的审计键，删掉 `logs/asr-evidence/`
+识别出的原始文字上跑，不用这里的任何东西。在 `settings.json` 里写 `"asr_uncertain_chip": true`
+（默认关，每场开始时读一次）后，命中前四条规则的字幕会在卡片和底部大字幕下面挂一个「语音识别不确定，
+建议查看原文」的角标，鼠标停在上面能看到具体看到了什么。字幕文字一个字不改，也不给翻译引擎加任何话；
+报警、手机同看页和浮窗都不显示这个角标。要把风险标记、识别音频片段和角标一起关掉，用
+`TLT_ASR_SAFEGUARDS=off` 启动程序，数字照样记进审计日志。要回退代码，撤掉加入 `app/asr_risk.py`、
+`app/asr_evidence.py` 和角标的那几个提交；别的代码不读这些新的审计键，删掉 `logs/asr-evidence/`
 对程序没有影响。
 
 **界面地址不是 8765。** 8765 被占用时程序会顺延至 8766–8774 中的空闲端口，

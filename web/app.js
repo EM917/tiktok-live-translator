@@ -83,6 +83,7 @@
   var liveOriginal = document.getElementById("live-original");
   var liveMeta = document.getElementById("live-meta");     // 大字幕下面一小行：翻译状态角标 + 「约 N 秒前」
   var liveState = document.getElementById("live-state");
+  var liveAsr = document.getElementById("live-asr");       // 「语音识别不确定」角标（默认关）
   var liveLag = document.getElementById("live-lag");
   var connectHintEl = document.getElementById("connect-hint");
   var connectHintText = document.getElementById("connect-hint-text");
@@ -1338,6 +1339,17 @@
     var stateChip = document.createElement("span");
     stateChip.className = "lang-chip state-chip";
     meta.appendChild(stateChip);
+    // 「语音识别不确定」角标：服务端只在开关打开、这一段命中识别风险规则时才带 asr_flag（web/live-ui.js
+    // captionAsrChip）。只在 caption 消息里有，caption_update 不带，所以只在建卡片时画一次；
+    // 重连回放的 caption 里还留着这个键，角标跟着回来
+    var asrChip = captionAsrChip(msg);
+    if (asrChip.text) {
+      var asrEl = document.createElement("span");
+      asrEl.className = "lang-chip asr-chip";
+      setIconText(asrEl, "warn", asrChip.text);
+      asrEl.title = asrChip.title;
+      meta.appendChild(asrEl);
+    }
     card.appendChild(meta);
 
     // 原文永远先显示（不等翻译）；译文回来前译文行留空
@@ -1399,6 +1411,7 @@
       liveOriginal.classList.toggle("hidden", !msg.translated);
       liveBarId = msg.id;
       paintLiveState(msg);
+      paintLiveAsr(msg);
       liveAudioEndAt = captionAudioEndAt(msg, Date.now());
       paintLiveLag();
     }
@@ -1416,8 +1429,24 @@
                     "Counted from when the audio for this line ended. Shown after " + CAPTION_LAG_SHOW_SEC + " sec");
 
   function syncLiveMeta() {
-    var any = !liveState.classList.contains("hidden") || !liveLag.classList.contains("hidden");
+    var any = !liveState.classList.contains("hidden") || !liveLag.classList.contains("hidden")
+      || (liveAsr && !liveAsr.classList.contains("hidden"));
     liveMeta.classList.toggle("hidden", !any);
+  }
+
+  // 「语音识别不确定」角标跟着大字幕上的这一句走：换句时重画，caption_update 不动它（那类消息不带 asr_flag）
+  function paintLiveAsr(msg) {
+    if (!liveAsr) return;
+    var chip = captionAsrChip(msg);
+    if (chip.text) {
+      setIconText(liveAsr, "warn", chip.text);
+      liveAsr.title = chip.title;
+    } else {
+      liveAsr.textContent = "";
+      liveAsr.removeAttribute("title");
+    }
+    liveAsr.classList.toggle("hidden", !chip.text);
+    syncLiveMeta();
   }
 
   function paintLiveState(msg) {
@@ -1445,6 +1474,11 @@
     liveAudioEndAt = null;
     liveState.textContent = "";
     liveState.classList.add("hidden");
+    if (liveAsr) {
+      liveAsr.textContent = "";
+      liveAsr.removeAttribute("title");
+      liveAsr.classList.add("hidden");
+    }
     liveLag.textContent = "";
     liveLag.classList.add("hidden");
     liveMeta.classList.add("hidden");

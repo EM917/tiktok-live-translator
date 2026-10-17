@@ -1992,6 +1992,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 识别风险的逐场计数（app/asr_risk.py），收尾时写进 session_end.asr_risk。总闸
             # TLT_ASR_SAFEGUARDS 每场开始时读一次，同一场里不会一半段有标记一半没有
             "asr_risk": asr_risk.RiskCounter(enabled=asr_risk.master_switch_on()),
+            # 字幕上的「语音识别不确定」角标开不开，同样每场读一次（见 _asr_chip_setting）
+            "asr_chip": self._asr_chip_setting(),
             "audit": audit,
             "clock": (time.time(), time.monotonic()),   # _check_clock_gap 上一次的读数
             "gap": None,              # 最近一次时钟跳变；之后收到音频就清掉
@@ -3545,6 +3547,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "asr_ms": round(asr_ms),
             "e2e_ms": round((now - audio_end_ts) * 1000.0),
         }
+        # 「语音识别不确定」角标（默认关）：只在开关开着、这一段命中会挂角标的标记时才多带一个键，
+        # 其余字幕和以前逐字节相同。只是提示，不改原文、不改译文、不给翻译引擎加任何话——
+        # 10-14 实测提示词里提「识别可能听错」，模型就去校对西语、整句回成西语。也不进报警
+        if risk is not None and risk.chip and isinstance(sess, dict) and sess.get("asr_chip"):
+            caption["asr_flag"] = [f for f in risk.flags if f in asr_risk.CHIP_FLAGS]
         # 底部大字幕的「约 N 秒前」只用 ts 和 e2e_ms：ts − e2e_ms = 这一段音频结束的时刻（web/live-ui.js
         # captionAudioEndAt）。片段时长不进消息——它让数字被句子长短主导（一条刚上屏的字幕就已经
         # 10 秒上下，见 docs/i18n-style.md #105b），服务端的字幕等待才要它（下面的
@@ -3572,6 +3579,24 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 「重译」按钮仍然随时可用。
 
         return job
+
+    @staticmethod
+    def _asr_chip_setting():
+        """settings.json 的 asr_uncertain_chip，默认 false（2026-10-16 用户定的：先只记数跑 2–3 场，
+        看过真实的标记率再决定开不开）。总闸 TLT_ASR_SAFEGUARDS=off 时一律不挂。写错了提示一次、当没写。"""
+        if not asr_risk.master_switch_on():
+            return False
+        try:
+            value = load_settings().get("asr_uncertain_chip")
+        except Exception:
+            return False
+        if value is None or isinstance(value, bool):
+            return bool(value)
+        if not getattr(Pipeline, "_asr_chip_warned", False):
+            Pipeline._asr_chip_warned = True
+            print("[警告] settings.json 的 asr_uncertain_chip 的值 {!r} 不是 true / false，已忽略"
+                  .format(value))
+        return False
 
     def _segment_session(self, sess):
         """这一段属于哪一场的会话状态。拉流循环会传自己那一份；直接调用（测试、演示）时没人传，

@@ -260,6 +260,9 @@ def _captions():
         _caption(7, "Thank you so much for watching", src="en"),
         _caption(8, "Les dejo el enlace abajo"),
         _caption_update(8, "I'll leave you the link below", strong_state="failed"),
+        # 「语音识别不确定」角标（默认关；开着时服务端才带 asr_flag）：英文页上卡片里的那句也要扫到
+        dict(_caption(10, "Y ya"), asr_flag=["few_words"]),
+        _caption_update(10, "And that's it"),
         _caption(9, "Ahorita les enseño el precio"),   # 停在「翻译中」
     ]
 
