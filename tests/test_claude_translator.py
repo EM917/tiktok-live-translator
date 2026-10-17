@@ -533,6 +533,81 @@ def test_the_glossary_sits_in_the_system_prompt_not_in_the_text_to_translate(mon
 
 
 # ---------------------------------------------------------------------------
+# 字幕引擎（Haiku 5.5）的俚语提示词：SYSTEM_SUBTITLE 一字不动，在「Always answer in」前面多一段
+# 墨西哥俚语例词。2026-10-17 离线配对对比测的就是这一份（结果见 SYSTEM_SUBTITLE_HAIKU 上的注释）；
+# 重译（Sonnet 5.5）、弹幕、换了模型的字幕都没测过它，照旧
+# ---------------------------------------------------------------------------
+
+SUBTITLE_SLANG = (
+    "Most streamers speak Mexican Spanish and sell health and weight-loss products. "
+    "Translate slang and colloquial or regional words by what the streamer means, in an equally "
+    "casual register: do not soften them, do not explain them. For example: "
+    "llanta/llantita/lonja = belly fat roll, not a tire; chula/chulas = gorgeous (said to the "
+    "viewers); comadre = girlfriend, sis; mija = honey; neta = really; güey/wey = dude; "
+    "no mames/no manches = no way; chido = cool; pinche = damn, lousy; ahorita = right now; "
+    "nomás = just; a gusto = comfortable; refri = fridge; ocupar = need; pedos = farts. ")
+SYSTEM_HAIKU = SYSTEM_PLAIN.replace("Always answer in Simplified Chinese: ",
+                                    SUBTITLE_SLANG + "Always answer in Simplified Chinese: ")
+# 对比时请求里 system 的 sha256：上面两处一起改了、测试照样绿的话，这一行会红
+TESTED_SYSTEM_SHA256 = "c2ca93785cbc97f8cbc9e91217b07936af4ab3b7c8f2a947ac3a7ab1219058da"
+
+
+def test_the_haiku_subtitle_prompt_is_the_tested_one(monkeypatch):
+    """原有的句子一字不动、顺序不变，只多一段。要改这段，先重做配对对比（CLAUDE.md 第四条），
+    别只改测试。"""
+    import hashlib
+
+    _tr, out, post = sent_body(monkeypatch)
+    assert out == "你好"
+    assert SYSTEM_HAIKU != SYSTEM_PLAIN and SYSTEM_HAIKU.count(SUBTITLE_SLANG) == 1
+    assert post["body"]["system"] == SYSTEM_HAIKU
+    assert hashlib.sha256(SYSTEM_HAIKU.encode("utf-8")).hexdigest() == TESTED_SYSTEM_SHA256
+    # 只换了 system：模型、思考、effort、max_tokens、用户轮都和以前一样
+    assert post["body"]["model"] == "claude-haiku-5-5"
+    assert post["body"]["thinking"] == {"type": "disabled"}
+    assert post["body"]["output_config"] == {"effort": "low"}
+    assert post["body"]["max_tokens"] == ClaudeTranslator.MAX_TOKENS_NO_THINKING
+    assert post["body"]["messages"] == [{"role": "user", "content": "<subtitle>\nhola amigos\n</subtitle>"}]
+
+
+def test_the_subtitle_slang_never_mentions_recognition_or_the_comment_only_examples(monkeypatch):
+    """10-14 教训：提示词一提「识别可能听错」，模型就去校对原文、整句回成西语。弹幕那段的
+    「el bote = jail」「vieja = woman」不能搬过来：主播嘴里的 botes 是罐子，chancleta vieja 是旧拖鞋。"""
+    system = make(monkeypatch)._body("hola", "zh-CN")["system"].lower()
+    for word in ("recogni", "transcri", "mishear", "misheard", "speech-to-text", "typo"):
+        assert word not in system, word
+    assert "bote" not in system and "vieja" not in system and "jail" not in system
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-5-5"])
+def test_a_subtitle_model_from_the_environment_keeps_the_plain_prompt(monkeypatch, model):
+    """俚语那段只在 Haiku 5.5 上测过：CLAUDE_TRANSLATE_MODEL 换成别的模型时照旧用 SYSTEM_SUBTITLE。"""
+    assert make(monkeypatch, model)._body("hola", "zh-CN")["system"] == SYSTEM_PLAIN
+
+
+def test_the_redo_and_the_comment_prompts_do_not_get_the_subtitle_slang(monkeypatch):
+    assert strong(monkeypatch)._body("hola", "zh-CN")["system"] == SYSTEM_PLAIN
+    comment = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
+    assert comment._body("1. hola", "zh-CN")["system"] == ClaudeTranslator.SYSTEM_COMMENT_HAIKU.format(
+        lang="Simplified Chinese", avoid="Spanish or English")
+    redo = ClaudeTranslator(model=ClaudeTranslator.STRONG_MODEL, role="comment_strong")
+    assert redo._body("1. hola", "zh-CN")["system"] == ClaudeTranslator.SYSTEM_COMMENT.format(
+        lang="Simplified Chinese")
+    for tr in (comment, redo):
+        assert "llanta" not in tr._body("1. hola", "zh-CN")["system"]
+
+
+@pytest.mark.parametrize("target,lang", [("zh-CN", "Simplified Chinese"), ("en", "English"),
+                                         ("es", "Spanish"), ("ja", "Japanese")])
+def test_the_haiku_subtitle_prompt_fills_in_every_target_language(monkeypatch, target, lang):
+    system = make(monkeypatch)._body("hola", target)["system"]
+    assert "{" not in system and "}" not in system
+    assert system.startswith("You translate live-stream subtitles into {}. ".format(lang))
+    assert "llanta/llantita/lonja = belly fat roll" in system
+    assert "Always answer in {}: never return the line".format(lang) in system
+
+
+# ---------------------------------------------------------------------------
 # 401/403/404：弹幕和重译这两个实例进冷却时自己打一行终端，带模型名；字幕引擎那个由管线说
 # ---------------------------------------------------------------------------
 
