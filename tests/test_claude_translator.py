@@ -468,11 +468,13 @@ def test_a_401_still_keeps_no_body(monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
-# 词表：只有重译（role="strong"）把命中的词条写进提示词
+# 词表：重译（role="strong"）和字幕引擎的 Haiku 5.5 把命中的词条写进提示词，弹幕两种角色不写
 #
 # 本地 7B 的提示词里有词表；重译又正是中控嫌商品名译错了才点的。换成 Sonnet 之后只剩译后
 # 兜底的话，「Sonnet 把 las gotitas D3 译成『D3 小滴剂』」这种错它救不回来（兜底只替换仍留着
-# 西语的词条）。字幕引擎（Haiku）和弹幕不带词表：那是这次之前就有的行为，没有测过加了更好。
+# 西语的词条）。字幕 Haiku 换上俚语提示词以后同样的事发生在主播自造的品名上：意译成别的说法，
+# 兜底找不到西语原文、品名就上不了屏。2026-10-17 留出集配对对比后，字幕 Haiku 5.5 也带同一段
+# 词表（数字见 ClaudeTranslator.SUBTITLE_GLOSSARY_MODELS 上的注释）；换了模型的字幕和弹幕照旧不带。
 # ---------------------------------------------------------------------------
 
 HINT = (("las gotitas D3", "D3维生素滴剂"), ("Quema Lonja", "燃脂贴"))
@@ -518,12 +520,66 @@ def test_no_glossary_leaves_the_sonnet_request_unchanged(monkeypatch, empty):
     assert tr._body("hola", "zh-CN", empty)["system"] == SYSTEM_SLANG
 
 
-def test_the_subtitle_and_comment_instances_do_not_send_the_glossary(monkeypatch):
-    sub = make(monkeypatch)
-    assert sub._body("hola", "zh-CN", HINT) == sub._body("hola", "zh-CN")
-    comment = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
-    assert comment._body("1. hola", "zh-CN", HINT) == comment._body("1. hola", "zh-CN")
-    assert "Quema Lonja" not in json.dumps(sub._body("hola", "zh-CN", HINT), ensure_ascii=False)
+def test_the_comment_instances_do_not_send_the_glossary(monkeypatch):
+    """弹幕是陌生人的文字，不带词表；译文回来后的兜底替换由 app/comments.py 做。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    for role, model in (("comment", ClaudeTranslator.COMMENT_MODEL),
+                        ("comment_strong", ClaudeTranslator.STRONG_MODEL)):
+        tr = ClaudeTranslator(model=model, role=role)
+        assert tr._body("1. hola", "zh-CN", HINT) == tr._body("1. hola", "zh-CN")
+        assert "Quema Lonja" not in json.dumps(tr._body("1. hola", "zh-CN", HINT), ensure_ascii=False)
+
+
+# 虚构品牌 acme（brands/README.md 的例子），不用任何真实词表内容
+ACME = (("la crema acme", "ACME 面霜"), ("suero acme", "ACME 精华液"))
+
+
+def test_the_haiku_subtitle_request_with_a_glossary_is_exactly_this(monkeypatch):
+    """字幕 Haiku 5.5 带的词表和重译是同一段、同一个位置：测过的俚语提示词一字不动，后面接词表，
+    用户轮仍然只有这一句。其余字段和不带词表时一模一样。"""
+    tr = make(monkeypatch)
+    session = RecordingSession([Resp(200, message(text_block("今天买 ACME 面霜")))])
+    attach(tr, session)
+    assert run(tr.translate("compren la crema acme hoy", "zh-CN", source="es",
+                            glossary=ACME[:1])) == "今天买 ACME 面霜"
+    (post,) = session.posts
+    assert post["body"] == {
+        "model": "claude-haiku-5-5",
+        "max_tokens": ClaudeTranslator.MAX_TOKENS_NO_THINKING,
+        "system": (SYSTEM_SLANG + "\nWhere the text contains one of these terms, translate it "
+                   "exactly as given here:\nla crema acme = ACME 面霜"),
+        "messages": [{"role": "user", "content": "<subtitle>\ncompren la crema acme hoy\n</subtitle>"}],
+        "thinking": {"type": "disabled"},
+        "output_config": {"effort": "low"},
+    }
+
+
+@pytest.mark.parametrize("empty", [None, (), [], ""])
+def test_a_subtitle_line_without_a_glossary_match_sends_the_tested_request_unchanged(monkeypatch, empty):
+    """没命中词表的句子（实录约七成）请求体和加词表之前一字不差。"""
+    import hashlib
+
+    tr = make(monkeypatch)
+    body = tr._body("hola amigos", "zh-CN", empty)
+    assert body == tr._body("hola amigos", "zh-CN")
+    assert hashlib.sha256(body["system"].encode("utf-8")).hexdigest() == TESTED_SYSTEM_SHA256
+
+
+def test_subtitle_and_redo_append_the_same_glossary_block(monkeypatch):
+    sub, redo = make(monkeypatch), strong(monkeypatch)
+    tail = "\nWhere the text contains one of these terms, translate it exactly as given here:\n" \
+           "la crema acme = ACME 面霜\nsuero acme = ACME 精华液"
+    for tr in (sub, redo):
+        system = tr._body("la crema acme y el suero acme", "zh-CN", ACME)["system"]
+        assert system == SYSTEM_SLANG + tail
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-5-5"])
+def test_a_subtitle_model_from_the_environment_does_not_send_the_glossary(monkeypatch, model):
+    """字幕带词表只在 Haiku 5.5 上测过：CLAUDE_TRANSLATE_MODEL 换成别的模型时照旧不带。"""
+    tr = make(monkeypatch, model)
+    assert tr._body("la crema acme", "zh-CN", ACME) == tr._body("la crema acme", "zh-CN")
+    assert ClaudeTranslator.SUBTITLE_GLOSSARY_MODELS == ("claude-haiku-5-5",)
 
 
 def test_the_glossary_sits_in_the_system_prompt_not_in_the_text_to_translate(monkeypatch):

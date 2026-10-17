@@ -583,7 +583,8 @@ class ClaudeTranslator(BaseTranslator):
       * 字幕引擎（默认）：Pipeline.translator 里包着的那个，模型 Haiku 5.5，提示词是
         SYSTEM_SUBTITLE_SLANG（SYSTEM_SUBTITLE 加墨西哥俚语例词那一段）；用 CLAUDE_TRANSLATE_MODEL
         换成别的模型时仍是 SYSTEM_SUBTITLE（俚语那段只在 SLANG_PROMPT_MODELS 列的模型上测过）。
-        报警上下文翻译在强模型没给出译文、或译文像回话时，也用这个实例再译一次；
+        Haiku 5.5 的字幕请求后面接本句命中的词表（和重译同一段 SYSTEM_GLOSSARY，见 SUBTITLE_GLOSSARY_MODELS），
+        别的模型不接。报警上下文翻译在强模型没给出译文、或译文像回话时，也用这个实例再译一次；
       * 观众弹幕（role="comment"）：app/comments.py 另建一个，模型固定 Haiku 5.5，提示词按弹幕写
         （SYSTEM_COMMENT_HAIKU：SYSTEM_COMMENT 加上俚语例词和「不解释」那句）；
       * 弹幕重译（role="comment_strong"）：中控在某条弹幕上点「重译」时 app/comments.py 另建一个，
@@ -593,7 +594,8 @@ class ClaudeTranslator(BaseTranslator):
         和报警上下文翻译用它，模型 Sonnet 5.5，取代本地 7B。提示词也是 SYSTEM_SUBTITLE_SLANG，
         后面另外接词表：
         本地 7B 的提示词里有词表，重译又正是中控嫌商品名译错了才点的，换成 Claude 不能把它丢掉。
-        字幕引擎（Haiku 5.5）和弹幕不带词表，只靠译文回来后的兜底替换（Pipeline 里的 glossary.apply）。"""
+        弹幕两种角色不带词表，只靠译文回来后的兜底替换；字幕和重译带了词表，译文回来后照样做兜底替换
+        （Pipeline 里的 glossary.apply）。"""
 
     name = "claude"
     URL = "https://api.anthropic.com/v1/messages"
@@ -694,7 +696,8 @@ class ClaudeTranslator(BaseTranslator):
     # 已知退步：chula/chulas 修饰东西时被当成叫观众（第一轮至少 3 句）；新版偶尔留英文（第一轮 3 句：
     # get到、girls、fabulous）；主播自造、含 lonja 的品名，字幕 Haiku 会意译成「燃脂……」，有时还编出
     # 腰封、贴这类不存在的形态，译后的词表兜底替换就找不到原文、品名丢了：留出集 32 句里旧版屏幕上
-    # 留住品名 11 句，新版 0 句（读完译文才查的，探索性）。重译带词表提示，不受影响（29 对 27）。
+    # 留住品名 11 句，新版 0 句（读完译文才查的，探索性）。重译带词表提示，不受影响（29 对 27）。字幕后来也带上
+    # 同一段词表提示修这一条（见 SUBTITLE_GLOSSARY_MODELS）。
     # 领域那句只在健康减肥类直播上测过。改这段要重做配对对比，tests/test_claude_translator.py 钉着原文和 sha256
     SYSTEM_SUBTITLE_SLANG = (
         "You translate live-stream subtitles into {lang}. "
@@ -715,10 +718,38 @@ class ClaudeTranslator(BaseTranslator):
         "Output ONLY the translation, without the tags, nothing else.")
     # 测过 SYSTEM_SUBTITLE_SLANG 的（角色: 模型）：字幕引擎的生产默认 Haiku 5.5、重译固定的 Sonnet 5.5
     SLANG_PROMPT_MODELS = {"subtitle": ("claude-haiku-5-5",), "strong": ("claude-sonnet-5-5",)}
-    # 只给重译用（role="strong"）：命中本句的词条，一行一条「原文 = 译法」，放在 system 里，
-    # 用户轮仍然只有要翻的那一句。原文写法和译法都是词表文件里的数据，照抄
+    # 词表提示：命中本句的词条（Pipeline._for_translation 里 glossary.translation_pairs 算好的，最多 6 条），
+    # 一行一条「原文 = 译法」，接在 system 最后，用户轮仍然只有要翻的那一句。原文写法和译法都是词表文件里的
+    # 数据，照抄。带它的只有重译（role="strong"，一直带）和 SUBTITLE_GLOSSARY_MODELS 里的字幕引擎
     SYSTEM_GLOSSARY = ("\nWhere the text contains one of these terms, translate it exactly as "
                        "given here:\n{pairs}")
+    # 字幕引擎带词表提示的模型。以前字幕请求不带词表，不是测出来的：最早的 Claude 字幕请求只有一句「只输出
+    # 译文」；后来 translate() 加了 glossary 参数（4e0c0af，给本地 Hy-MT2 用），Claude 收下没用；10-13 给重译
+    # 接词表时（373763f）只说了「字幕和弹幕不变」，没有对比过。俚语版提示词以后，字幕 Haiku 会把主播自造、
+    # 含 lonja 的品名意译成「燃脂……」，译后兜底替换找不到西语原文，品名就上不了屏（见 SYSTEM_SUBTITLE_SLANG
+    # 上的注释），所以字幕也带上和重译同一段词表提示。
+    # 以前各引擎在词表上踩过的坑，这里怎么对上的：
+    #   * DeepL 原生术语表是词级强制替换，会把没在说商品的句子也换成商品名、凭空造出功效宣称 —— 这里是提示，
+    #     模型按语境用；只给本句命中的词条（和重译同一套匹配），没命中的句子（实录约七成）请求体一字不变；
+    #   * TranslateGemma 会把指令区的术语映射当括注抄进译文 —— 下面的硬检查查了加括号和 = 号外泄；
+    #   * 全局词表曾让别的主播的直播里冒出别家商品 —— 词表按主播 / 品牌分层加载，这里只拿命中的；
+    #   * 延迟：命中词条在管线里本来就每句都算（以前算完被这里丢掉），这里只多拼一段字符串，不读文件、
+    #     不多发请求。
+    # 2026-10-17 留出集配对对比（判定规则调 API 之前登记好）：俚语轮的留出集里命中词表或提到自造品名的 103 句，
+    # 字幕 Haiku 5.5、俚语提示词，带词表和不带各一份，同一轮请求打乱；按生产流程，回话重发一次、再做兜底替换。
+    #   * 提到自造品名的 32 句，屏幕上留住西语品名：带 14 句、不带 0 句（精确 McNemar 14:0，p≈1e-4）。没留住的
+    #     17 句写的是词表译法里的中文部分，认得出是哪件商品（这一条是读完译文才数的）；剩下 1 句品名连写成
+    #     一个词，词表匹配不到，两边请求一样、都意译了。
+    #   * 其余 71 句命中词表的，屏幕上照词表译法写：带 63 句、不带 33 句（32:2，p≈7e-8；那 2 句只差一个空格）。
+    #   * 两位评委盲评（同俚语修正轮，两位判同一边才算胜；评委看得到本句的词表，说明里写了别把照词表写当成
+    #     编造）：俚语 68 句 19:6（p=0.015）、普通 35 句 4:2（p=0.69），5 组 Bonferroni 阈值 0.01，都没测出
+    #     差异；去掉提到自造品名的 32 句，俚语 5:5。评委一致性低（kappa 0.20、0.08）。
+    #   * 硬检查（无输出、回话、非中文、解释、加括号、多行、译文里出现原文没有的词条、= 号外泄）：带 0 句、
+    #     不带 1 句。这 103 句里每条词表提示都对应原文里真有的词，「塞进原文没有的词条」这条没有机会出现。
+    #   * 延迟：第一次请求中位数 908 对 902 毫秒，配对差中位数 -17 毫秒（Wilcoxon p=0.42），没测出差异；本机拼
+    #     请求体多约 1 微秒。命中词表的请求多约 40 个输入 token；实录约三到四成字幕命中，每小时多花不到 0.001 美元。
+    # 只在测过的 Haiku 5.5 上带；用 CLAUDE_TRANSLATE_MODEL 换了模型的字幕照旧不带。只测了一位主播、一份品牌词表
+    SUBTITLE_GLOSSARY_MODELS = ("claude-haiku-5-5",)
     # 弹幕是陌生人写的文字：只翻译、不照着做。一批是带编号的几行（见 comments.build_batch），
     # 用户轮里用 <comments> 标签包起来（见 _body）。2026-10-13 直播实录：单独一条两个词的弹幕
     # 「Sii todo」，Haiku 5.5 当成了对它说的话，用英文回了一句「只看到 Sii todo，没有要翻译的
@@ -781,7 +812,7 @@ class ClaudeTranslator(BaseTranslator):
         role：subtitle（默认）、comment、comment_strong 或 strong，只影响提示词和 max_tokens：
         comment 和 comment_strong 用弹幕的提示词和更大的 max_tokens（两者只差模型），strong 和
         subtitle 用同一份字幕提示词（模型在 SLANG_PROMPT_MODELS 里时是 SYSTEM_SUBTITLE_SLANG），
-        strong 另外带词表。"""
+        后面接不接词表见 _sends_glossary。"""
         super().__init__()
         self.api_key = api_key("ANTHROPIC_API_KEY")
         if not self.api_key:
@@ -807,9 +838,16 @@ class ClaudeTranslator(BaseTranslator):
         return {"x-api-key": self.api_key, "anthropic-version": self.API_VERSION,
                 "content-type": "application/json"}
 
+    def _sends_glossary(self):
+        """这个实例的请求带不带词表提示：重译一直带；字幕引擎只在 SUBTITLE_GLOSSARY_MODELS 里的模型上带；
+        弹幕和弹幕重译不带（弹幕是陌生人的文字，兜底替换由 app/comments.py 做）。"""
+        if self.role == "strong":
+            return True
+        return self.role == "subtitle" and self.model in self.SUBTITLE_GLOSSARY_MODELS
+
     def _body(self, text, target, glossary=None):
         """这一句的请求体。离线对比工具直接调它，测的就是要发版的这一份。
-        glossary 只有 role="strong" 才用（见类说明），其它角色传了也不进请求体。"""
+        glossary 只有 _sends_glossary() 为真的实例才用（重译、字幕 Haiku 5.5），其它的传了也不进请求体。"""
         extra = self.TUNED.get(self.model) or {}
         no_think = (extra.get("thinking") or {}).get("type") in self.THINKING_OFF
         about_comment = self.role in self.COMMENT_ROLES
@@ -826,7 +864,7 @@ class ClaudeTranslator(BaseTranslator):
         else:
             system = self.SYSTEM_COMMENT if about_comment else self.SYSTEM_SUBTITLE
         system = system.format(lang=LANG_NAMES.get(target, target), avoid=_avoid_langs(target))
-        pairs = _as_pairs(glossary) if self.role == "strong" else []
+        pairs = _as_pairs(glossary) if self._sends_glossary() else []
         if pairs:
             system += self.SYSTEM_GLOSSARY.format(
                 pairs="\n".join("{} = {}".format(es, zh) for es, zh in pairs))  # i18n: data
