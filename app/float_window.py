@@ -396,6 +396,10 @@ class FloatWindowHost:
     # -- 内部 --
     def _reconcile(self):
         with self._lock:
+            if self._dead:
+                # request_open 先看 _dead、再置 _want：shutdown 正好跑在这两步之间的话，_want 会在它之后
+                # 又变成 True。主窗口已经关了，这里拦住，别在一个没有主窗口的进程里建出浮窗
+                self._want = False
             while self._want != (self._window is not None):
                 if self._want:
                     if not self._open_locked():

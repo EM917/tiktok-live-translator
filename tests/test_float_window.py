@@ -675,6 +675,20 @@ def test_shutdown_closes_synchronously_and_refuses_later_opens():
     assert changes == [(True, None), (False, None)]
 
 
+def test_an_open_request_that_straddles_shutdown_never_creates_a_window():
+    """request_open 在事件循环线程上先看 _dead、再置 _want 并排工作线程；shutdown 在主窗口 closed 的
+    处理线程里。按「看过 _dead → shutdown 跑完 → 置 _want、排工作线程」的顺序确定性地重放一遍。"""
+    jobs = []
+    host, factory, _s, changes = make_host(spawn=jobs.append)
+    assert not host._dead          # request_open 看过了：还活着
+    host.shutdown()                # 主窗口这时关了：_dead、_want=False，什么都不用关
+    host._want = True              # request_open 接着往下走
+    host._spawn(host._reconcile)
+    for job in jobs:
+        job()
+    assert factory.calls == [] and not host.is_open() and changes == []
+
+
 def test_shutdown_without_a_window_is_a_no_op():
     host, _f, _s, changes = make_host()
     host.shutdown()
