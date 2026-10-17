@@ -189,6 +189,24 @@ button to hide everything currently shown — both act only on that one phone:
 the operator's alert panel and the audit log are unaffected, and nothing is
 sent to the server.
 
+<a id="floating-window"></a>**Can I keep the captions on top of other apps?** Yes, in the app's own
+window. While a stream is running, click **Floating Window** in the top bar
+(an icon until the window is at least 1,400 px wide). A small dark window opens
+and stays above other apps. It shows the
+latest caption large, with the original under it and, above it, the same status
+labels as the main window ("About N sec ago" once the line is more than 15 seconds
+old, "Connecting…" while it reconnects), and the most recent comments with their
+translations (up to five; make the window taller to see all five). Comments
+that Comment Review marks red or amber keep their marks there. It only displays:
+no buttons, no alerts, and it sends nothing to the app. Drag it or resize it; the
+position and size are saved in `settings.json` (`float_window`) and used the
+next time, unless that spot is no longer on a screen. The first time, a Mac puts it
+near the bottom-right corner of the screen your main window is on; other systems place it themselves. It closes when you click
+its close button, when monitoring stops or ends, or when you close the main
+window. The button exists only when the app runs in its own window, so it is not there
+with `--browser`. (A browser tab opened on the address of a running app window does show
+it, and clicking it opens the window in the app.)
+
 <a id="viewer-comments"></a>**Viewer comments.** The app fetches comments itself through TikTokLive,
 which needs Python 3.10 or later; the component installs itself on the first
 start. It usually works signed out, and retries once with the browser's TikTok

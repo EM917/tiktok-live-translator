@@ -180,7 +180,7 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {
     el: (id) => byId.get(id),
     all: () => [...byId.values()],
     push: (msg) => ws().onmessage({ data: JSON.stringify(msg) }),
-    sent, cssVars, store, root,
+    sent, cssVars, store, root, body: document.body,
     advance: (ms) => { now += ms; },
     now: () => now,
     tick: (ms) => { intervals.filter((t) => t.ms === ms).forEach((t) => t.fn()); },

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { shareButtonText, connectHint, stripStatusEmoji, barIconFor,
+const { shareButtonText, floatButtonState, connectHint, stripStatusEmoji, barIconFor,
         popoverRight, alertTierText, jumpLatestCaptionsText,
         jumpLatestCommentsText,
         captionStateChip, liveBarChip, captionAudioEndAt,
@@ -23,6 +23,16 @@ test("开着没人看：写「已打开」", () => {
 test("有人在看：写人数，count 给窄窗口的徽标", () => {
   assert.deepEqual(shareButtonText(true, 2), { text: "手机同看 · 2 人", count: "2" });
   assert.deepEqual(shareButtonText(true, "3"), { text: "手机同看 · 3 人", count: "3" });
+});
+
+test("浮窗按钮：服务端提供这个功能 + 正在监听才露出；开着才点亮；等回执时禁用", () => {
+  assert.deepEqual(floatButtonState(true, true, false, false), { hidden: false, on: false, pressed: false, disabled: false });
+  assert.deepEqual(floatButtonState(true, true, true, false), { hidden: false, on: true, pressed: true, disabled: false });
+  assert.deepEqual(floatButtonState(true, true, true, true), { hidden: false, on: true, pressed: true, disabled: true });
+  // 浏览器模式（服务端没有这个键）、待机 / 结束：整个藏起来，点亮和禁用也不留
+  assert.deepEqual(floatButtonState(false, true, true, true), { hidden: true, on: false, pressed: false, disabled: false });
+  assert.deepEqual(floatButtonState(true, false, true, true), { hidden: true, on: false, pressed: false, disabled: false });
+  assert.deepEqual(floatButtonState(undefined, undefined, undefined, undefined), { hidden: true, on: false, pressed: false, disabled: false });
 });
 
 test("连接中：带主播名；没有主播名用通用文案", () => {

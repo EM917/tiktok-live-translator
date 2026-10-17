@@ -49,6 +49,15 @@ def replay_payloads(history):
 HISTORY_MAX = 300
 COMMENTS_MAX = 100
 ALERTS_MAX = 50
+# 浮窗页（web/float.html，app/float_window.py）：它连 /ws?role=float，只读。收什么、回放多深，都在这里定死：
+#   FLOAT_TYPES        广播里只转发这几种消息（报警、审计提示、incident、health 一概不发；
+#                      tests/test_float_server.py 拿正则从 web/float.js 读出它处理的类型来比对）
+#   FLOAT_CONFIG_KEYS  hello 和 config 广播里只留这几个键（不把引擎、磁盘、同看链接这些带给它）
+FLOAT_TYPES = frozenset({"caption", "caption_update", "session_break", "comment", "comment_update",
+                         "comment_guard", "guard_mark", "history_cleared", "status", "config"})
+FLOAT_CONFIG_KEYS = ("caption_size", "target_lang", "status", "guard_state", "guard_marked")
+FLOAT_REPLAY_CAPTIONS = 3
+FLOAT_REPLAY_COMMENTS = 10
 # history 里除了字幕还混着场次分隔（session_break），它们不算字幕、页面也不把它们算进 300 张卡片。
 # deque 多留一点余量，回放时再按「最后 HISTORY_MAX 条字幕」切（captions_tail）——换主播换得再勤，
 # 回放的字幕条数也是 HISTORY_MAX，而不是少一条分隔线就少一条字幕
@@ -70,6 +79,15 @@ def captions_tail(items, limit):
             if seen == limit:
                 return items[i:]
     return items
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _ts_of(msg):
+    ts = msg.get("ts")
+    return ts if _is_number(ts) else 0.0
 
 
 def _write_buffer_size(transport):
@@ -100,14 +118,23 @@ class CaptionServer:
         self.clients = set()
         self._transports = {}    # ws -> 这个连接的 transport（断开卡死的页面要 abort 它）
         self._replaying = {}     # ws -> 它回放期间发生的广播（list）；回放完、入册的同一步里清掉
+        # 浮窗页的连接（也在 clients 里，共用同一条发送路径和卡死保护）：不算「显示报警的界面页面」
+        # （ui_client_count），入站一律丢弃，只收 FLOAT_TYPES
+        self._float_ws = set()
         self.history = deque(maxlen=HISTORY_MAX + HISTORY_BREAK_ROOM)
         # 违禁词警报必须跨刷新/重连留存：中控没看到就等于漏报，
         # 不能因为页面重载而消失
         self.alerts = deque(maxlen=ALERTS_MAX)
         # 观众弹幕：同样要跨刷新/重连留存，不然中控重连一次就看不到刚才谁说了什么
         self.comments = deque(maxlen=COMMENTS_MAX)
+        # 最近一次（非回放的）session_break 本身。history 是有限的 deque，一场播得够久它就会被挤出去；
+        # 弹幕缓存又不随换场清空——浮窗页的回放靠它认出「哪些弹幕是上一个主播的」（见 replay_messages）
+        self._last_break = None
         self.config = {"target_lang": "zh-CN", "status": {"state": "idle", "detail": ""}}
         self.on_control = None  # 由 Pipeline 注入，处理来自 UI 的控制消息
+        # 由 Pipeline 注入（桌面应用模式）：每条 status 广播之后同步调一次，参数是那条消息。
+        # 必须同步、不阻塞——它在广播的路径上；浮窗靠它在监听结束时自己关掉
+        self.on_status = None
         # 弹幕抓取（TikTokLive）的状态：中控要能区分「还没开播」「正在连」
         # 「连上了」「装不上/需要登录」——面板空着时「没人发」和「没连上」
         # 对中控的意义完全不同
@@ -129,6 +156,7 @@ class CaptionServer:
         app = web.Application(middlewares=[no_cache])
         app.router.add_get("/", self._index)
         app.router.add_get("/ws", self._ws)
+        app.router.add_get("/float", self._float_page)
         app.router.add_static("/static", WEB_DIR)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -139,6 +167,16 @@ class CaptionServer:
         """桌面页。中文时照旧端文件本身，字节与改造前相同；英文时只把 <html lang> 换成 en，
         页面里的 web/i18n.js 按它换文字（spec §2.2）。桌面页不加 data-i18n：那是手机页的闸标记。"""
         path = WEB_DIR / "index.html"
+        if i18n.current() == i18n.ZH:
+            return web.FileResponse(path)
+        html = i18n.inject_lang(path.read_text(encoding="utf-8"), i18n.EN)
+        return web.Response(text=html, content_type="text/html", charset="utf-8")
+
+    async def _float_page(self, request):
+        """浮窗页（app/float_window.py 开的那个置顶小窗）。语言的处理同 _index：中文时端文件本身，
+        英文时只把 <html lang> 换成 en，web/i18n.js 按它换文字。它没有 <meta name="tlt-app">：
+        双击第二次时 main.py 靠那个指纹认「这是不是本程序的主界面」，浮窗页不是。"""
+        path = WEB_DIR / "float.html"
         if i18n.current() == i18n.ZH:
             return web.FileResponse(path)
         html = i18n.inject_lang(path.read_text(encoding="utf-8"), i18n.EN)
@@ -177,6 +215,11 @@ class CaptionServer:
             raise web.HTTPForbidden(text="origin not allowed")
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
+        # 浮窗页自报家门（只能降权：它因此少收东西、不能发指令、不被当成显示报警的页面）。
+        # 来源检查照旧：只有本机同端口的页面连得进来
+        is_float = request.query.get("role") == "float"
+        if is_float:
+            self._float_ws.add(ws)
         try:
             # 「快照」和「开始替这个页面攒广播」必须在同一个同步步骤里（和 app/viewer.py 的
             # ViewerHub.register 同一个道理）：下面每发一条都要 await，回放期间别处的广播照常
@@ -185,8 +228,9 @@ class CaptionServer:
             # 所以回放和 backlog 之间既没有缺口也没有重复。
             # 缓存里存的是原消息（界面文字是 Bi），这里按「此刻」的界面语言现渲染：
             # 切换语言后重连的页面拿到的是新语言，不会残留旧的。中文时 render 原样返回
-            hello = {"type": "hello", "config": i18n.render(self.config)}
-            replay = self.replay_messages()
+            hello = {"type": "hello", "config": i18n.render(self._float_config(self.config)
+                                                            if is_float else self.config)}
+            replay = self.replay_messages("float" if is_float else "control")
             backlog = self._replaying[ws] = []
             self._transports[ws] = request.transport
             await ws.send_json(hello)
@@ -217,6 +261,8 @@ class CaptionServer:
                     continue
                 if not isinstance(data, dict):   # 非对象 JSON 会让下游 .get 崩掉
                     continue
+                if is_float:
+                    continue         # 浮窗页只读：它发什么都不理（连清空缓存也不认）
                 if data.get("type") == "clear_history":
                     # 缓存归服务端自己管，不必绕到 Pipeline。只认本机页面（上面的来源检查已拦住其余）；
                     # 手机入站只认 retranslate，发不到这里
@@ -232,20 +278,60 @@ class CaptionServer:
                         print("[警告] 处理控制消息失败: {}".format(exc))
         finally:
             self.clients.discard(ws)
+            self._float_ws.discard(ws)
             self._transports.pop(ws, None)
             self._replaying.pop(ws, None)
         return ws
 
-    def replay_messages(self):
+    def ui_client_count(self):
+        """显示报警的界面页面有几个：不数浮窗页。审计里每条报警记着发出时的页面数
+        （Pipeline._alert_stamp），浮窗不显示报警，数进去会让「有页面接收了报警」的证据变假。"""
+        return len(self.clients - (getattr(self, "_float_ws", None) or set()))
+
+    @staticmethod
+    def _float_config(config):
+        """config（或一条 config 广播）里浮窗页用得上的那几个键；没有就是空 dict。"""
+        return {k: config[k] for k in FLOAT_CONFIG_KEYS if k in config}
+
+    def replay_messages(self, role="control"):
         """hello 之后补给本机页面的历史，按发送顺序：警报、字幕（含场次分隔）、观众弹幕。
         每条都带 replay=True；最后一条字幕另带 restore（见 replay_payloads）。
 
         深度是中控页自己的上限（HISTORY_MAX / COMMENTS_MAX），不是手机的：手机拿的是
-        app/viewer.py 的 replay_snapshot，它对同一份缓存再切一刀。纯同步，只读缓存。"""
+        app/viewer.py 的 replay_snapshot，它对同一份缓存再切一刀。纯同步，只读缓存。
+
+        role="float"：浮窗页只要最后几条字幕和弹幕，不要报警（它不显示报警）。弹幕缓存不随换主播清空，
+        而浮窗只回放最后 3 条字幕，换场的分隔线常常不在里面；所以最近一次换场的分隔线无论如何都放在
+        回放最前面（页面据此清空并记下那一刻），比它老的弹幕不回放——不然重连的浮窗会把上一个主播的
+        弹幕当成本场最新的。"""
+        if role == "float":
+            tail = captions_tail(self.history, FLOAT_REPLAY_CAPTIONS)
+            comments = list(self.comments)
+            brk = self._latest_break()
+            if brk is not None:
+                if not any(item is brk for item in tail):
+                    tail = [brk] + tail
+                since = brk.get("ts")
+                if _is_number(since):
+                    comments = [c for c in comments if not (_is_number(c.get("ts")) and c["ts"] < since)]
+            out = replay_payloads(tail)
+            out.extend(dict(c, replay=True) for c in comments[-FLOAT_REPLAY_COMMENTS:])
+            return out
         out = [dict(alert, replay=True) for alert in list(self.alerts)]
         out.extend(replay_payloads(captions_tail(self.history, HISTORY_MAX)))
         out.extend(dict(c, replay=True) for c in list(self.comments)[-COMMENTS_MAX:])
         return out
+
+    def _latest_break(self):
+        """最近一次换场的 session_break 消息，没有就是 None。broadcast 记下的那份优先（history 一场播久了
+        会把它挤出去，clear_history 也会清掉它）；个别测试手搭的缓存里只有 history，也认。"""
+        best = getattr(self, "_last_break", None)
+        for item in reversed(getattr(self, "history", None) or ()):
+            if item.get("type") == "session_break":
+                if best is None or _ts_of(item) >= _ts_of(best):
+                    best = item
+                break
+        return best
 
     async def clear_history(self, kind):
         """中控点了「清空字幕」/「清空弹幕」：把服务端缓存里那一类也清掉。
@@ -274,6 +360,7 @@ class CaptionServer:
             # 和 caption 混进同一个 deque：顺序就是发生顺序，回放时分隔线
             # 落在它该在的两条字幕之间，不用另开一路时间线去对齐
             self.history.append(msg)
+            self._last_break = msg
         elif msg.get("type") == "caption_update":
             # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文
             # 只覆盖消息里带的键：重译的「pending/failed」通知不带 translated，
@@ -363,6 +450,12 @@ class CaptionServer:
             self.config["status"] = {"state": msg.get("state"),
                                      "detail": msg.get("detail", ""),
                                      "command": msg.get("command")}
+            hook = getattr(self, "on_status", None)
+            if hook is not None:
+                try:
+                    hook(msg)
+                except Exception as exc:       # 钩子里的任何问题都不许影响状态广播
+                    print("[警告] 处理状态钩子失败: {}".format(exc))
         elif msg.get("type") == "config":
             self.config.update({k: v for k, v in msg.items() if k != "type"})
         # 手机同看：同步交棒，绝不 await。fanout 只做「白名单过滤 + put_nowait」，
@@ -385,15 +478,19 @@ class CaptionServer:
         # 正在回放的页面还不在 self.clients 里，广播够不着它：这里替它攒着，回放完补发（见 _ws）。
         # 同步、没有 await，和上面缓存的写入在同一个步骤里——所以一条广播要么在它的快照里，
         # 要么在它的 backlog 里，不会两头落空。getattr：个别测试用 __new__ 造的服务端没有这个字段
+        float_ws = getattr(self, "_float_ws", None) or ()
+        float_out = self._float_payload(msg, out) if float_ws else None
         replaying = getattr(self, "_replaying", None)
         if replaying:
             for ws, backlog in list(replaying.items()):
+                if ws in float_ws and float_out is None:
+                    continue         # 浮窗页不收这种消息
                 if len(backlog) >= self.MAX_REPLAY_BACKLOG:
                     print("[警告] 本机页面卡在回放里，积压已达 {} 条，已断开（页面会自己重连）".format(len(backlog)))
                     self._drop_client(ws, (getattr(self, "_transports", None) or {}).get(ws),
                                       "replay_backlog", None)
                 else:
-                    backlog.append(out)
+                    backlog.append(float_out if ws in float_ws else out)
         # 逐个页面发，每个都有上限。以前是不限时的 await：一个不读消息的页面（浏览器
         # 冻结的后台标签、DevTools 断点、弹着 confirm 的 WebView2）把发送缓冲塞满后，
         # send_json 永远不返回——识别循环在等报警广播，于是识别整个停下、音频积压
@@ -402,13 +499,17 @@ class CaptionServer:
         transports = getattr(self, "_transports", None) or {}
         dead = []
         for ws in list(self.clients):
+            is_float = ws in float_ws
+            if is_float and float_out is None:
+                continue
             transport = transports.get(ws)
             buffered = _write_buffer_size(transport)
             if buffered is not None and buffered > self.MAX_CLIENT_BUFFER:
                 self._drop_client(ws, transport, "buffer_full", buffered)
                 continue
             try:
-                await asyncio.wait_for(ws.send_json(out), self.SEND_TIMEOUT_SEC)
+                await asyncio.wait_for(ws.send_json(float_out if is_float else out),
+                                       self.SEND_TIMEOUT_SEC)
             except asyncio.TimeoutError:
                 self._drop_client(ws, transport, "send_timeout",
                                   _write_buffer_size(transport))
@@ -418,11 +519,24 @@ class CaptionServer:
             self.clients.discard(ws)
             transports.pop(ws, None)
 
+    def _float_payload(self, msg, out):
+        """这条广播发给浮窗页的样子；浮窗页不收这种消息就是 None。out 是已经按界面语言渲染过的那份。"""
+        mtype = msg.get("type")
+        if mtype not in FLOAT_TYPES:
+            return None
+        if mtype == "config":
+            keys = self._float_config(out)
+            return dict(keys, type="config") if keys else None
+        return out
+
     def _drop_client(self, ws, transport, reason, buffered):
         """断开一个收不下消息的页面。用 abort 不用 close：close 要等缓冲区发完，
         对一个不读的页面永远等不完。页面会自己重连，hello 之后补回报警。"""
         registered = ws in self.clients
+        is_float = ws in (getattr(self, "_float_ws", None) or ())
         self.clients.discard(ws)
+        if is_float:
+            self._float_ws.discard(ws)
         replaying = getattr(self, "_replaying", None)
         if replaying is not None:
             replaying.pop(ws, None)
@@ -435,6 +549,10 @@ class CaptionServer:
             except Exception:
                 pass
         # 两条并发的广播可能同时卡在同一个页面上：只报一次
+        if is_float:
+            # 浮窗页不显示报警：不写审计，也不说「会补回报警」；它会自己重连
+            print("[警告] 浮窗页收不下消息（{}），已断开（会自动重连）".format(reason))
+            return
         hook = self.on_client_dropped
         if registered and hook is not None:
             try:

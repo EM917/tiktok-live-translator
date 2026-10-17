@@ -36,16 +36,19 @@ UI_FILES = (
     "app/alert_notify.py", "app/audio.py", "app/audit.py", "app/bootstrap.py",
     "app/browser_login.py", "app/comment_redo.py", "app/comment_source.py", "app/comments.py",
     "app/detector.py",
-    "app/diskspace.py", "app/ffmpeg_bin.py", "app/hwdetect.py", "app/localmodel.py",
+    "app/diskspace.py", "app/ffmpeg_bin.py", "app/float_window.py", "app/hwdetect.py",
+    "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
-    "app/pipeline_engine.py", "app/pipeline_guard.py", "app/pipeline_transcript.py", "app/power.py",
+    "app/pipeline_engine.py", "app/pipeline_float.py", "app/pipeline_guard.py",
+    "app/pipeline_transcript.py", "app/power.py",
     "app/resolver.py", "app/selfcheck.py",
     "app/transcript_export.py",
     "app/translator.py", "app/updater.py", "app/viewer.py", "app/viewer_share.py",
     "app/window_attention.py", "app/window_close.py", "app/window_lang.py",
-    "web/alerts.js", "web/app.js", "web/brand.js", "web/guard.js", "web/i18n.js", "web/live-ui.js",
+    "web/alerts.js", "web/app.js", "web/brand.js", "web/float.js", "web/guard.js", "web/i18n.js",
+    "web/live-ui.js",
     "web/session-divider.js", "web/settings-rows.js", "web/switch.js", "web/viewer.js",
-    "web/index.html", "web/viewer.html",
+    "web/float.html", "web/index.html", "web/viewer.html",
 )
 
 # UI_FILES 以外的文件里确实有、又不上界面的中文字面量：路径 → {理由: (字面量全文, …)}。

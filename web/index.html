@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=42">
+  <link rel="stylesheet" href="/static/style.css?v=45">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -19,6 +19,7 @@
   <svg class="icon-sprite" aria-hidden="true" focusable="false">
     <symbol id="i-bubble" viewBox="0 0 16 16"><path d="M8 2.75c3.45 0 6.25 2.2 6.25 4.9S11.45 12.55 8 12.55c-.68 0-1.33-.08-1.94-.24L3 13.75l.62-2.55C2.4 10.3 1.75 9.03 1.75 7.65 1.75 4.95 4.55 2.75 8 2.75Z"/></symbol>
     <symbol id="i-iphone" viewBox="0 0 16 16"><rect x="4.25" y="1.5" width="7.5" height="13" rx="1.75"/><path d="M7.1 12.1h1.8"/></symbol>
+    <symbol id="i-float" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.75"/><rect x="7.25" y="7.25" width="5.25" height="3.75" rx=".75"/></symbol>
     <symbol id="i-arrow-down" viewBox="0 0 16 16"><path d="M8 2.5v11M3.5 9 8 13.5 12.5 9"/></symbol>
     <symbol id="i-xmark" viewBox="0 0 16 16"><path d="M4.25 4.25l7.5 7.5M11.75 4.25l-7.5 7.5"/></symbol>
     <symbol id="i-arrow-clockwise" viewBox="0 0 16 16"><path d="M13.1 9.8a5.4 5.4 0 1 1-1.28-5.62L14.6 6.8M14.6 3.2v3.6H11"/></symbol>
@@ -161,6 +162,18 @@
           </div>
         </div>
       </div>
+      <!-- 浮窗：把最新一条字幕和最近几条弹幕放进一个始终在最上面的小窗（app/float_window.py），
+           开着时按钮变绿。只在桌面应用窗口里、监听中/连接中才露出：config.float_window.available 由 main.py 在窗口模式
+           挂上宿主时才有（--browser 模式没有这个键），显示规则同下面的换主播（见 app.js updateFloatBtn）。
+           顶栏放不下图标加文字，窄于 1400px 只留图标（文字视觉隐藏，读屏照念，同 #share-btn）；
+           中文页放得下「浮窗」两个字的宽度（1000–1100px、1140–1399px，且「报警开」标签没亮）露出文字、去掉图标，
+           见 style.css 的 html[lang^="zh"] 那一段。 -->
+      <button id="float-btn" class="btn float-btn hidden" type="button" aria-pressed="false"
+              title="在始终置顶的小窗里看最新字幕和弹幕"
+              data-en-title="Show the latest caption and comments in a window that stays on top">
+        <svg class="i" aria-hidden="true"><use href="#i-float"/></svg>
+        <span class="btn-label" data-en="Floating Window">浮窗</span>
+      </button>
       <!-- 换主播：只在直播中/连接中露出，和停止按钮同一处切换（见 app.js setStatus）。
            跟停止之间留出明显间距（.switch-btn 的 margin-right），防止手滑点错——
            点错「换主播」是可挽回的（面板里还要再确认一次），点错「停止」是直接断流。 -->
@@ -761,8 +774,8 @@
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=3"></script>
-  <script src="/static/live-ui.js?v=2"></script>
+  <script src="/static/live-ui.js?v=3"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/app.js?v=72"></script>
+  <script src="/static/app.js?v=74"></script>
 </body>
 </html>

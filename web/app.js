@@ -273,6 +273,51 @@
   // 浮层标题旁的 ⓘ：三段「手机连不上时」的排查说明，跟首页输入框旁那颗同一种收放
   bindRow(shareHelpBtn, shareHelp);
 
+  // 浮窗（app/float_window.py）：顶栏 #float-btn 开关一个始终在最上面的小窗。只有桌面应用窗口模式才有
+  // （config.float_window.available），而且只在监听中/连接中露出，和 #switch-btn 同一处切换（setStatus）；
+  // 监听结束服务端会把浮窗关掉，按钮的点亮状态以服务端回执（config.float_window.open）为准
+  var floatBtn = document.getElementById("float-btn");
+  var floatAvailable = false;      // config.float_window.available
+  var floatOpen = false;           // config.float_window.open
+  var floatPending = false;        // 点过了、还没等到服务端回执：按钮暂时禁用
+  var floatPendingTimer = null;
+
+  function updateFloatBtn() {
+    if (!floatBtn) return;
+    var st = floatButtonState(floatAvailable, streamActive, floatOpen, floatPending);
+    floatBtn.classList.toggle("hidden", st.hidden);
+    floatBtn.classList.toggle("on", st.on);
+    floatBtn.setAttribute("aria-pressed", st.pressed ? "true" : "false");
+    floatBtn.disabled = st.disabled;
+    // 顶栏多了一个按钮：样式表据此把字号滑块收窄一点（style.css 的 has-float-btn）
+    document.body.classList.toggle("has-float-btn", !st.hidden);
+  }
+
+  // hello 里整份换（没有这个键 = 这个服务端不提供浮窗），config 广播里只在带这个键时换
+  function applyFloatConfig(cfg) {
+    var ok = cfg && typeof cfg === "object";
+    floatAvailable = ok && !!cfg.available;
+    floatOpen = ok && !!cfg.open;
+    floatPending = false;
+    if (floatPendingTimer) { clearTimeout(floatPendingTimer); floatPendingTimer = null; }
+    updateFloatBtn();
+  }
+
+  if (floatBtn) {
+    floatBtn.addEventListener("click", function () {
+      if (floatPending) return;
+      // 没发出去（断线）就不装作点成了：状态等重连后的 hello 来说
+      if (!send({ type: "float_window", on: !floatOpen })) return;
+      floatPending = true;
+      floatPendingTimer = setTimeout(function () {
+        floatPending = false;
+        floatPendingTimer = null;
+        updateFloatBtn();
+      }, 4000);
+      updateFloatBtn();
+    });
+  }
+
   // 换主播：直播中不停止监听、直接改听另一个主播。面板照 #share-panel 挂在
   // #start-panel/#history 之外，跟直播状态无关地独立开关——但按钮本身（顶栏
   // #switch-btn）只在直播中/连接中才露出，和 #stop-btn 同一处切换（见 setStatus）。
@@ -965,6 +1010,7 @@
           if (msg.config.selfcheck) renderSelfcheck(msg.config.selfcheck);
           if (msg.config.engine) renderEngine(msg.config.engine);
           if (msg.config.viewer) renderShare(msg.config.viewer);
+          applyFloatConfig(msg.config.float_window);
           // 持续提示以服务端为准：重连时整份重放，先清掉本地的
           incidents = Object.create(null);
           if (msg.config.incidents) {
@@ -1064,6 +1110,8 @@
         }
         // 新的一场开始时后端推一次已经存了几场（字幕记录行的摘要）
         if ("transcripts" in msg) renderTranscripts(msg.transcripts);
+        // 浮窗开了 / 关了（含监听结束时服务端替我们关掉）：按钮跟着变
+        if ("float_window" in msg) applyFloatConfig(msg.float_window);
         break;
       case "glossary_migration":
         handleMigration(msg);
@@ -1186,6 +1234,7 @@
     if (switchBtn) switchBtn.classList.toggle("hidden", !active);
     startBtn.disabled = state === "connecting";
     streamActive = active;
+    updateFloatBtn();       // 浮窗按钮跟换主播同一条显示规则
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
     updateActiveBrandTag(); // 本场品牌标签同一个显示条件，见该函数注释
     syncCaptionDependentUi(); // 「上一场字幕」标题只在首页才显示，随 streamActive 变化
@@ -3253,6 +3302,9 @@
     var show = streamActive && alertsEnabled;
     alertModeTag.classList.toggle("hidden", !show);
     if (show) alertModeTag.textContent = L("报警开", "Alerts on");
+    // 标签在 .brand 里，「浮窗」按钮在 .controls 里，样式选不到兄弟的兄弟：标签亮着时由 body 的类告诉样式表，
+    // 顶栏已经没有余量给「浮窗」两个字（style.css 的 has-alert-tag）
+    document.body.classList.toggle("has-alert-tag", !!show);
   }
 
   // 本场品牌标签：config.active_brand（{id, name} 或 null）来自 hello/config

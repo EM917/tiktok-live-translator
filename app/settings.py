@@ -5,6 +5,7 @@
 import json
 import math
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +13,10 @@ SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
 
 # 本次运行里发现 settings.json 内容损坏时备份成的文件名，以及界面提示是否已发过
 _corrupt = {"backup": None, "announced": False}
+# save_setting 是「读全部 → 改一项 → 整个写回」：两个线程同时写不同的键，后写的会把先写的那一项冲掉。
+# 以前写设置的都在事件循环线程上；浮窗记位置和大小的定时器线程（app/float_window.py）是第二个写手，
+# 所以进程内串行化。跨进程（双击第二次）不在这里管
+_save_lock = threading.Lock()
 
 
 def load_settings():
@@ -209,15 +214,16 @@ def streamer_brands():
 def save_setting(key, value):
     """写入单个设置项（读-合并-原子替换）。写失败静默忽略——
     持久化是锦上添花，不能因为磁盘/权限问题影响主流程。"""
-    data = load_settings()
-    data[key] = value
-    try:
-        tmp = SETTINGS_FILE.with_suffix(".json.tmp")
-        with open(str(tmp), "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, ensure_ascii=False, indent=2))
-            f.flush()
-            # 先落盘再替换：写完就断电时，不至于换上一个 0 字节的 settings.json
-            os.fsync(f.fileno())
-        os.replace(tmp, SETTINGS_FILE)
-    except OSError:
-        pass
+    with _save_lock:
+        data = load_settings()
+        data[key] = value
+        try:
+            tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+            with open(str(tmp), "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, ensure_ascii=False, indent=2))
+                f.flush()
+                # 先落盘再替换：写完就断电时，不至于换上一个 0 字节的 settings.json
+                os.fsync(f.fileno())
+            os.replace(tmp, SETTINGS_FILE)
+        except OSError:
+            pass

@@ -34,6 +34,7 @@ It does not work for every stream. For some, TikTok gives the app no stream URL,
 - Glossaries for each streamer and each brand keep product names consistent.
 - Switch Streamer moves to another live stream without stopping first.
 - Phone Viewing: colleagues on the same Wi-Fi scan a QR code and watch on their phones. They cannot change anything.
+- Floating Window: the latest caption and the last few comments in a small window that stays on top of other apps.
 - Comment Review marks insults and threats, fake-product claims, flooding, and comments that pull viewers to another stream or shop. It never deletes or mutes.
 - Transcripts: every session is saved on your computer as it happens, and Settings → Transcripts exports the latest one as Markdown, CSV and SRT.
 - If the stream drops, the app reconnects and keeps the audio it has not recognized yet in a queue.
@@ -149,6 +150,14 @@ Colleagues can follow the captions on their phones. Click the phone icon in the 
 A phone shows captions and alerts. It can ask for one line to be retranslated, and it cannot start, stop or change anything. Each page uses the phone's own language, and up to 12 phones can watch at once.
 
 The link contains a key, so treat it like a password. New Link disconnects every phone. Sharing is off until you turn it on, and the phone must be on the same network.
+
+<a id="en-floating-window"></a>
+
+## Floating Window
+
+<sub>[中文](#zh-floating-window)</sub>
+
+While a stream is running, click the Floating Window button in the top bar (only an icon while the app window is narrower than 1,400 px) to open a small dark window that stays on top of other apps. It shows the latest caption, with the original under it, and the most recent comments with their translations (up to five; make the window taller to see all five). Drag it or resize it, and the app remembers where you left it. It only shows things: it has no buttons, and banned-term alerts stay in the main window. It closes by itself when monitoring stops. The button is there only when the app runs in its own window, not with `--browser`.
 
 <a id="en-comment-review"></a>
 
@@ -322,6 +331,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 - 按主播、按品牌配词表，商品名翻得前后一致。
 - 「换主播」不用先停止，直接改听另一个直播间。
 - 手机同看：同事在同一个 Wi-Fi 下扫二维码，就能用手机看。只能看，不能操作。
+- 浮窗：把最新一条字幕和最近几条弹幕放进一个始终在最上面的小窗，盖在别的软件上也看得见。
 - 弹幕留意：标出辱骂、威胁、说商品是假货、刷屏和引流的弹幕。它只读，不会删弹幕，也不会禁言。
 - 字幕记录：每一场都边听边存在你的电脑上，「设置 → 字幕记录」可以把最近一场导出成 Markdown、CSV 和 SRT。
 - 直播流断了会自动重连，还没识别的音频在队列里等着。
@@ -437,6 +447,14 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 手机上能看字幕和报警，也能请求重译某一句，不能开始、停止或改设置。每台手机按自己的语言显示，最多 12 台一起看。
 
 链接里带着密钥，要像密码一样保管。点「换一个链接」，所有手机都会断开。同看默认关闭，只能在同一个局域网里用。
+
+<a id="zh-floating-window"></a>
+
+## 浮窗
+
+<sub>[English](#en-floating-window)</sub>
+
+监听期间，点顶栏的「浮窗」按钮（应用窗口窄于 1400 像素时去掉图标、只显示「浮窗」两个字；顶栏放不下这两个字的时候，比如「报警开」标签亮着，或者窗口很窄，只显示图标），会打开一个深色的小窗，始终在别的软件上面。里面是最新一条字幕（原文在译文下面）和最近几条弹幕与它们的译文（最多五条，窗口拉高才看得全）。可以拖动、拉大缩小，下次打开还在你放的位置。它只显示，没有按钮，违禁词报警仍然只在主窗口里。监听一停它就自己关掉。只有程序在自己的窗口里运行时才有这个按钮，加了 `--browser` 就没有。
 
 <a id="zh-comment-review"></a>
 

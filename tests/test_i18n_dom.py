@@ -62,7 +62,7 @@ CHROME_TIMEOUT_SEC = 60
 CHROME_RETRIES = 1
 TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".png": "image/png", ".json": "application/json"}
-EN_SCENARIOS = S.DESKTOP_EN + S.PHONE_EN
+EN_SCENARIOS = S.DESKTOP_EN + S.PHONE_EN + S.FLOAT_EN
 
 
 def find_chrome(environ=None):
@@ -106,15 +106,19 @@ def _only_tag(html, src):
     return tags[0]
 
 
+# 每种页面：(文件, 资源路径前缀, 第一个脚本, 最后一个脚本)。浮窗页（web/float.html）和桌面页走同一个 /static/
+PAGE_FILES = {"desktop": ("index.html", "/static/", "i18n.js", "app.js"),
+              "float": ("float.html", "/static/", "i18n.js", "float.js"),
+              "phone": ("viewer.html", "/v/", "viewer.js", "viewer.js")}
+
+
 def page_html(scenario, web_dir=WEB_DIR):
     """服务器在 / 上端的页面：注入语言，再在页面脚本前后插入替身。别的字节一个不动。"""
-    desktop = scenario["page"] == "desktop"
-    name, base, first, last = (("index.html", "/static/", "i18n.js", "app.js") if desktop
-                               else ("viewer.html", "/v/", "viewer.js", "viewer.js"))
+    name, base, first, last = PAGE_FILES[scenario["page"]]
     html = (Path(web_dir) / name).read_text(encoding="utf-8")
     if html.count('<html lang="zh-CN">') != 1:       # inject_lang 靠它；没有就会静默不注入
         raise AssertionError('{} 里 <html lang="zh-CN"> 应恰好一个'.format(name))
-    html = i18n.inject_lang(html, scenario["page_lang"], marker=not desktop)
+    html = i18n.inject_lang(html, scenario["page_lang"], marker=scenario["page"] == "phone")
     before = "".join(_script_tag(base + n) for n in ("probe.js", "scenario.js", "fake_ws.js"))
     after = "".join(_script_tag(base + n) for n in ("probe.js", "scan.js"))
     head = _only_tag(html, base + first)
@@ -466,7 +470,7 @@ class _Runner:
                     name, dom[:300]))
             result["probe"] = dump_json(dom, "i18n-probe")
             result["dom"] = dom
-            if shot is not None and sc["page"] == "desktop":
+            if shot is not None and sc["page"] in ("desktop", "float"):
                 self._launch(name, lambda profile: run_chrome(
                     self.chrome, url, sc["size"], sc["lang"], profile,
                     ["--hide-scrollbars", "--screenshot={}".format(shot)], shot_written))
@@ -665,11 +669,14 @@ def test_guard_chinese_pages_are_chinese(dom, name):
 
 @needs_chrome
 @needs_mac
+@pytest.mark.parametrize("base", ("live-full", "live-float"))
 @pytest.mark.parametrize("width", S.LIVE_WIDTHS + S.NARROW_WIDTHS)
-def test_live_top_bar_fits(dom, width):
+def test_live_top_bar_fits(dom, base, width):
     """live-full 在各档窗口宽度下：顶栏整行不溢出；状态字、「换主播」确认按钮不被截；
-    品牌标签留得出宽度。860/720 两档只看顶栏（spec §12.3 第 7 条）。"""
-    result = dom.scan("live-full@{}".format(width))
+    品牌标签留得出宽度。860/720 两档只看顶栏（spec §12.3 第 7 条）。
+    live-float 是同一个场景加上窗口模式才有的「浮窗」按钮（顶栏多 36px，字号滑块收窄 24px 抵消，
+    见 web/style.css）：下限和 live-full 一样，这是窗口模式（所有人的默认模式）真实的顶栏。"""
+    result = dom.scan("{}@{}".format(base, width))
     got = result["measure"]
     problems = []
 
@@ -700,6 +707,74 @@ def test_live_top_bar_fits(dom, width):
     assert not problems, "\n".join(problems)
 
 
+# 中文页的「浮窗」按钮（web/style.css 的 html[lang^="zh"] 那一段，docs/i18n-style.md §4.2）：
+# 宽度 -> (两个字露出, 图标露出)。1000–1100 和 1140–1399 去图标露字；1101 起「手机同看」露出文字，
+# 按钮带字会超出余量，仍是只有图标；1400 起图标加文字
+def _body_classes(html):
+    """--dump-dom 里 <body> 开标签上的类（顺序不论）。"""
+    tag = re.search(r"<body\b[^>]*>", html)
+    return _classes(tag.group(0)) if tag else []
+
+
+ZH_FLOAT_SHAPE = {1000: (True, False), 1100: (True, False), 1101: (False, True),
+                  1140: (True, False), 1399: (True, False), 1400: (True, True)}
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("width", S.ZH_FLOAT_WIDTHS)
+def test_zh_float_button_shows_its_label_where_it_fits(dom, width):
+    """报警关着的中文直播顶栏（品牌 Bella All Natural，和 §4.2 的余量表同一个基线）：
+    顶栏不溢出、状态字不被截（中文页的品牌标签只比状态胶囊先缩一倍，余量为负时主播名先被截）、品牌标签下限同英文页、
+    「浮窗」两个字和图标露不露出符合表里的宽度范围，只有字的按钮约 46px 宽。"""
+    result = dom.scan("live-float-zh-quiet@{}".format(width))
+    got = result["measure"]
+    label_shown, icon_shown = ZH_FLOAT_SHAPE[width]
+    problems = []
+
+    def need(ok, what):
+        if not ok:
+            problems.append(what)
+
+    need(result["viewport"]["width"] == width, "窗口不是 {}px 宽：{}".format(width, result["viewport"]))
+    bar, status, button = got[".topbar"], got[".status-text"], got["#float-btn"]
+    label, icon = got["#float-btn .btn-label"], got["#float-btn .i"]
+    need(bar and bar["scrollWidth"] <= bar["clientWidth"], ".topbar 溢出 {}".format(bar))
+    need(status and status["scrollWidth"] <= status["clientWidth"] + 1, ".status-text 被截 {}".format(status))
+    need(status and status["textWidth"] <= status["innerWidth"] + 0.01,
+         ".status-text 文字比盒子宽（省略号已出现） {}".format(status))
+    brand = got["#active-brand-tag"]
+    floor = 100 if width == 1000 else 120 if 1101 <= width <= 1199 else 0
+    need(brand and brand["width"] >= floor, "#active-brand-tag 窄于 {}px {}".format(floor, brand))
+    need(button and button["width"] > 0, "浮窗按钮没露出 {}".format(button))
+    # 视觉隐藏的文字是 1px 宽；露出来的两个 13px 汉字是 26px
+    need(label and (label["width"] >= 20) == label_shown,
+         "「浮窗」两个字应{}露出 {}".format("" if label_shown else "不", label))
+    need(icon and (icon["width"] > 0) == icon_shown, "图标应{}露出 {}".format("" if icon_shown else "不", icon))
+    if label_shown and not icon_shown:
+        need(button and 40 <= button["width"] <= 52, "只有字的按钮应约 46px 宽 {}".format(button))
+    body = _body_classes(result["dom"])
+    need("has-float-btn" in body and "has-alert-tag" not in body, "body 的类不对（该有 has-float-btn、没有 has-alert-tag）：{}".format(body))
+    assert not problems, "\n".join(problems)
+
+
+@needs_chrome
+@needs_mac
+def test_zh_float_button_gives_way_to_the_alert_tag(dom):
+    """满编（报警开、长品牌名）的中文 1000px：「报警开」标签亮着，body 带 has-alert-tag，「浮窗」退回只有图标。
+    不断言状态字不被截：这一档在没有浮窗按钮时就只有 −4px，只有图标的按钮再多 −12px（§4.2），这一条不是这次引入的。"""
+    result = dom.scan("live-float-zh@1000")
+    got = result["measure"]
+    body = _body_classes(result["dom"])
+    assert "has-alert-tag" in body and "has-float-btn" in body, "body 的类不对：{}".format(body)
+    bar, label, icon = got[".topbar"], got["#float-btn .btn-label"], got["#float-btn .i"]
+    brand = got["#active-brand-tag"]
+    assert bar and bar["scrollWidth"] <= bar["clientWidth"], ".topbar 溢出 {}".format(bar)
+    assert label and label["width"] < 20, "报警标签亮着，「浮窗」两个字该是视觉隐藏的 {}".format(label)
+    assert icon and icon["width"] > 0, "报警标签亮着，图标该露出 {}".format(icon)
+    assert brand and brand["width"] >= 100, "#active-brand-tag 窄于 100px {}".format(brand)
+
+
 @needs_chrome
 @needs_mac
 @pytest.mark.parametrize("name", S.PHONE_EN)
@@ -711,6 +786,75 @@ def test_phone_status_pill_stays_on_screen(dom, name):
     assert result["viewport"]["width"] == S.PHONE[0], result["viewport"]
     pill = result["measure"][".status-pill"]
     assert pill and pill["right"] <= result["viewport"]["width"], (pill, result["viewport"])
+
+
+@needs_chrome
+def test_float_page_keeps_its_chinese_data_in_the_data_areas(dom):
+    """浮窗场景故意放了中文昵称（名字，translate="no"）和中文的弹幕译文（正文，class i18n-data）：
+    它们确实画到了页面上，英文页的扫描不许把它们算作漏翻。"""
+    result = dom.scan("float-live")
+    html = result["dom"]
+    for text in ("小明", S.CAPTION_ZH):
+        assert text in html, "浮窗场景里的中文数据没画到页面上：{}".format(text)
+        assert not [x for x in result["cjk"] if text in x["text"]], "数据区里的中文被计入了：{}".format(text)
+    for text, named in (("小明", True), (S.CAPTION_ZH, False)):
+        for tag in _holders(html, text):
+            assert ('translate="no"' in tag) == named and ("i18n-data" in _classes(tag)) != named, tag
+
+
+def float_kept_comments(messages):
+    """浮窗页最后留下的弹幕，照 web/float.js 的 floatReduce：同一个 id 原地换，新的接在后面，只留最后
+    FLOAT_COMMENTS_MAX 条；换主播清空（换场之后回放里更早的弹幕要丢掉那一条没有照抄，场景里没有换场）。
+    上限从 float.js 里读，改了这里跟着变。"""
+    keep = int(re.search(r"var FLOAT_COMMENTS_MAX = (\d+);", (WEB_DIR / "float.js").read_text("utf-8")).group(1))
+    kept = []
+    for msg in messages:
+        if msg["type"] == "session_break":
+            kept = []
+        elif msg["type"] == "comment":
+            ids = [c["id"] for c in kept]
+            if msg["id"] in ids:
+                kept[ids.index(msg["id"])] = msg
+            else:
+                kept = (kept + [msg])[-keep:]
+    return kept
+
+
+@needs_chrome
+def test_float_page_shows_what_the_scenario_says(dom):
+    """核对页面真的画出了红 / 琥珀 / 关注的标记、琥珀行的理由和没译成的角标（扫描绿了也可能只是什么都没画）。
+
+    琥珀的理由（「说的是自己的遭遇」这一行，guard.js 的 guard-note）浮窗照中控页弹幕栏一样显示：琥珀是「拿不准」，
+    没有这句，中控只看见一个「疑似指称假货或骗局」，分不出是攻击还是顾客在说自己的遭遇。只有一行小字。
+    浮窗只留最近 5 条弹幕：场景里「句子很短，没有问号」那条（g3）比它们都早，不在窗口里，也就不该出现
+    （以前这里写的正是它，G10 一跑就红）。"""
+    html = dom.scan("float-live")["dom"]
+    for cls in ("guard-alert", "guard-amber", "guard-marked", "guard-note"):
+        assert cls in html, "弹幕里没有 {} 的行".format(cls)
+    for text in ("Possible redirect (link)", "Describes the viewer’s own experience", "Model: no attack found",
+                 "Not translated (API refusal)"):
+        assert text in html, "页面上没有「{}」".format(text)
+    assert "Short, with no question mark" not in html, "比最近 5 条都早的弹幕还留在浮窗里"
+    assert "guard-mark-btn" not in html, "浮窗只显示，不该有加入关注名单的按钮"
+
+
+@needs_chrome
+@needs_mac
+def test_float_page_fits_its_window(dom):
+    """460×330 的默认窗口：不横向溢出，弹幕列表不超出窗口底边（放不下时被裁掉的是最旧的）。"""
+    result = dom.scan("float-live")
+    got, view = result["measure"], result["viewport"]
+    problems = []
+    for sel in (".f-root", "#f-caption", "#f-comments"):
+        m = got.get(sel)
+        if not m:
+            problems.append("{} 量不到：{}".format(sel, m))
+        elif m["scrollWidth"] > m["clientWidth"] + 1:
+            problems.append("{} 横向溢出 {}".format(sel, m))
+    comments = got.get("#f-comments")
+    if comments and comments["bottom"] > view["height"] + 1:
+        problems.append("弹幕列表超出窗口底边 {} > {}".format(comments["bottom"], view["height"]))
+    assert not problems, "\n".join(problems)
 
 
 # ---- 不开 Chrome 的用例（平时照常跑） --------------------------------------------------------
@@ -745,7 +889,7 @@ def test_scenarios_carry_real_backend_text_and_the_chinese_data(tmp_path):
     built = S.build(tmp_path)
     assert set(EN_SCENARIOS + (S.CONTROL_ZH,)) <= set(built)
     for name, sc in built.items():
-        assert sc["page"] in ("desktop", "phone") and sc["size"][0] > 0, name
+        assert sc["page"] in PAGE_FILES and sc["size"][0] > 0, name
         assert json.loads(json.dumps(sc)) == sc, name        # scenario.js 里原样可用
         if sc["page"] == "desktop":
             hello = sc["messages"][0]
@@ -804,29 +948,110 @@ def test_guard_scenarios_carry_the_data_the_page_needs(tmp_path):
             built[name]["messages"][0]["config"].get("guard_events")
 
 
+def test_the_float_button_scenario_differs_from_live_full_only_by_the_config_key(tmp_path):
+    built = S.build(tmp_path)
+    full, float_ = built["live-full"], built["live-float"]
+    assert full["messages"][0]["config"].get("float_window") is None
+    assert float_["messages"][0]["config"]["float_window"] == {"available": True, "open": False}
+    stripped = json.loads(json.dumps(float_))
+    del stripped["messages"][0]["config"]["float_window"]
+    stripped["name"] = full["name"]
+    assert stripped == full
+    for width in S.LIVE_WIDTHS + S.NARROW_WIDTHS:       # 每档宽度两个基础场景都有
+        assert built["live-float@{}".format(width)]["size"][0] == width
+        assert built["live-full@{}".format(width)]["size"][0] == width
+
+
+def test_the_chinese_float_scenarios_differ_from_the_chinese_control_only_where_they_say(tmp_path):
+    """中文页的浮窗场景（顶栏「浮窗」两个字的 G10）：live-float-zh 是 live-full-zh 加 config.float_window；
+    live-float-zh-quiet 再把报警关掉、品牌换成 §4.1 基线的 Bella All Natural，别的一样。"""
+    built = S.build(tmp_path)
+    control, zh, quiet = built[S.CONTROL_ZH], built["live-float-zh"], built["live-float-zh-quiet"]
+    assert zh["lang"] == quiet["lang"] == "zh" and zh["page"] == quiet["page"] == "desktop"
+    assert control["messages"][0]["config"]["alerts_enabled"] is True        # 满编：报警开着
+    assert zh["messages"][0]["config"]["float_window"] == {"available": True, "open": False}
+    stripped = json.loads(json.dumps(zh))
+    del stripped["messages"][0]["config"]["float_window"]
+    stripped["name"] = control["name"]
+    assert stripped == control
+    assert quiet["messages"][0]["config"]["float_window"] == {"available": True, "open": False}
+    assert quiet["messages"][0]["config"]["alerts_enabled"] is False
+    assert quiet["messages"][0]["config"]["active_brand"] == {"id": S.BRAND_ID, "name": S.ZH_QUIET_BRAND}
+    rest = json.loads(json.dumps(quiet))
+    for key, value in (("alerts_enabled", True), ("active_brand", zh["messages"][0]["config"]["active_brand"])):
+        rest["messages"][0]["config"][key] = value
+    rest["name"] = zh["name"]
+    assert rest == zh
+    assert built["live-float-zh@1000"]["size"][0] == 1000
+    assert built["live-float-zh@1000"]["messages"][0]["config"]["alerts_enabled"] is True
+    for width in S.ZH_FLOAT_WIDTHS:
+        sc = built["live-float-zh-quiet@{}".format(width)]
+        assert sc["size"][0] == width and sc["messages"][0]["config"]["alerts_enabled"] is False
+    assert set(S.ZH_FLOAT_WIDTHS) == set(ZH_FLOAT_SHAPE)       # 每一档宽度都有预期的样子
+    for selector in ("#float-btn", "#float-btn .btn-label", "#float-btn .i", ".topbar", ".status-text"):
+        assert selector in built["live-float-zh@1000"]["measure"]
+
+
+def test_float_scenario_is_what_the_float_connection_really_receives(tmp_path):
+    """不开 Chrome：浮窗场景的消息是 /ws?role=float 真的会收到的那些——hello 只带浮窗用得上的键，回放里没有报警，
+    类型都在 FLOAT_TYPES 里；数据里有红 / 琥珀 / 关注的弹幕、中文昵称和没译成的最新字幕。"""
+    from app.server import FLOAT_CONFIG_KEYS, FLOAT_TYPES
+    sc = S.build(tmp_path)["float-live"]
+    assert sc["page"] == "float" and sc["lang"] == "en" and sc["size"] == list(S.FLOAT)
+    msgs = sc["messages"]
+    assert msgs[0]["type"] == "hello" and set(msgs[0]["config"]) <= set(FLOAT_CONFIG_KEYS)
+    assert msgs[0]["config"]["caption_size"] == 40 and msgs[0]["config"]["guard_marked"]
+    assert {m["type"] for m in msgs[1:]} <= set(FLOAT_TYPES)
+    assert not [m for m in msgs if m["type"].startswith("alert")]
+    assert {m["guard"]["lvl"] for m in msgs if m["type"] == "comment" and "guard" in m} == {"alert", "amber"}
+    assert any(m.get("user") == "小明" for m in msgs if m["type"] == "comment")
+    assert msgs[-1]["translate_state"] == "failed" and msgs[-1]["refused"] is True
+    assert [m["restore"] for m in msgs if m["type"] == "caption" and m.get("restore")]   # 回放的最后一条带 restore
+    assert sc["measure"] == list(S.FLOAT_MEASURE)
+    # test_float_page_shows_what_the_scenario_says 找的字要真的在浮窗留下的那几条里：琥珀行带理由（grievance，
+    # 外加模型意见），「句子很短，没有问号」（maybe_question）那条已经被挤出去了
+    kept = float_kept_comments(msgs)
+    guards = [m["guard"] for m in kept if m.get("guard")]
+    assert {(g["lvl"], g["amb"], g["rv"]) for g in guards if g["lvl"] == "amber"} >= {("amber", "grievance", "neutral")}
+    assert "maybe_question" not in {g["amb"] for g in guards}
+    assert "maybe_question" in {m["guard"]["amb"] for m in msgs if m["type"] == "comment" and m.get("guard")}
+    assert {g["cats"][0] for g in guards if g["lvl"] == "alert"} >= {"promo_link"}
+    assert any(m.get("user") == "小明" for m in kept)
+
+
+def test_float_kept_comments_follows_the_page_rules():
+    def c(cid, **extra):
+        return dict({"type": "comment", "id": cid}, **extra)
+    msgs = [c(i) for i in "abcdef"] + [c("c", text="again"), {"type": "comment_update", "id": "d"}]
+    assert [m["id"] for m in float_kept_comments(msgs)] == list("bcdef")
+    assert float_kept_comments(msgs)[1]["text"] == "again"
+    assert [m["id"] for m in float_kept_comments(msgs + [{"type": "session_break"}, c("g")])] == ["g"]
+
+
 @pytest.mark.parametrize("page, lang, html_tag", [
     ("desktop", "en", '<html lang="en">'),
     ("desktop", "zh", '<html lang="zh-CN">'),
+    ("float", "en", '<html lang="en">'),
+    ("float", "zh", '<html lang="zh-CN">'),
     ("phone", "en", '<html lang="en" data-i18n="on">'),
     ("phone", "zh", '<html lang="zh-CN" data-i18n="on">'),
 ])
 def test_page_gets_the_fixtures_around_its_own_scripts(page, lang, html_tag):
-    desktop = page == "desktop"
+    name, base, first_js, last_js = PAGE_FILES[page]
     html = page_html({"page": page, "page_lang": lang})
-    base = "/static/" if desktop else "/v/"
-    original = (WEB_DIR / ("index.html" if desktop else "viewer.html")).read_text(encoding="utf-8")
+    original = (WEB_DIR / name).read_text(encoding="utf-8")
     assert html.count(html_tag) == 1
     for tag in re.findall(r'<script src="[^"]+"></script>', original):
         assert html.count(tag) == 1, tag                   # 原来的脚本（连 ?v=）一个不少
-    first = _only_tag(original, base + ("i18n.js" if desktop else "viewer.js"))
-    last = _only_tag(original, base + ("app.js" if desktop else "viewer.js"))
+    first = _only_tag(original, base + first_js)
+    last = _only_tag(original, base + last_js)
     fixtures = "".join(_script_tag(base + n) for n in ("probe.js", "scenario.js", "fake_ws.js"))
     assert fixtures + first in html
     assert last + _script_tag(base + "probe.js") + _script_tag(base + "scan.js") in html
     stripped = html
     for n in ("probe.js", "scenario.js", "fake_ws.js", "scan.js"):
         stripped = stripped.replace(_script_tag(base + n), "")
-    assert stripped == i18n.inject_lang(original, lang, marker=not desktop)   # 别的字节不动
+    assert stripped == i18n.inject_lang(original, lang, marker=page == "phone")   # 别的字节不动；只有手机页带 data-i18n
 
 
 def test_page_refuses_to_serve_without_its_anchor(tmp_path):

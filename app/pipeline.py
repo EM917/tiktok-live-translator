@@ -271,12 +271,13 @@ from .viewer_share import (  # noqa: E402
 )
 from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
+from .pipeline_float import FloatWindowMixin  # noqa: E402
 from .pipeline_guard import GUARD_CONTROL_TYPES, CommentGuardMixin  # noqa: E402
 from .pipeline_transcript import TranscriptMixin  # noqa: E402
 
 
 class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin,
-               TranscriptMixin):
+               TranscriptMixin, FloatWindowMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -362,6 +363,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._init_viewer_share()        # 手机同看的 8 个专属字段，见 app/viewer_share.py
         self._init_comment_guard()       # 弹幕留意的守卫（默认开，可关），见 app/pipeline_guard.py
         self._init_transcript()          # 字幕记录（每场一个本地文件，可导出），见 app/pipeline_transcript.py
+        self._init_float_window()        # 浮窗（只显示；桌面应用模式才有宿主），见 app/pipeline_float.py
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -511,6 +513,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         elif mtype == "check_update":
             if getattr(self, "updater", None) is not None:
                 return self.updater.check_and_notify(delay=0, manual=True)
+        elif mtype == "float_window":
+            # 顶栏「浮窗」按钮：只显示，不碰识别、检测、审计。浏览器模式没有宿主，直接忽略
+            return self._set_float_window(bool(msg.get("on")))
         elif mtype == "viewer_share":
             return self._set_viewer_share(bool(msg.get("on")))
         elif mtype == "viewer_rotate":
@@ -3666,8 +3671,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     def on_ui_client_dropped(self, reason, buffered_bytes=None):
         """服务端断开了一个收不下消息的页面（CaptionServer.on_client_dropped）：打一行、
         记审计。页面会自己重连并补回报警。"""
-        clients = getattr(self.server, "clients", None)
-        left = len(clients) if clients is not None else None
+        left = self._ui_client_count()
         if reason == "buffer_full":
             what = "积压了 {} KB 消息没读".format(int((buffered_bytes or 0) / 1024))  # i18n: terminal
         else:
@@ -3681,10 +3685,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     def _alert_stamp(self):
         scope = getattr(self, "_alert_scope", None) or {}
-        clients = getattr(getattr(self, "server", None), "clients", None)
+        count = self._ui_client_count()
         return {"streamer": scope.get("streamer") or "",
                 "session": scope.get("session") or "",
-                "ui_clients": len(clients) if clients is not None else 0}
+                "ui_clients": count if count is not None else 0}
+
+    def _ui_client_count(self):
+        """此刻连着的、显示报警的界面页面数（不含浮窗页，见 CaptionServer.ui_client_count）；
+        拿不到是 None。个别测试用的替身 server 只有 clients 列表，没有 ui_client_count。"""
+        server = getattr(self, "server", None)
+        counter = getattr(server, "ui_client_count", None)
+        if callable(counter):
+            return counter()
+        clients = getattr(server, "clients", None)
+        return len(clients) if clients is not None else None
 
     def _count_alert(self):
         """本场报警计数：面板只留最近 50 条，页面要说得出「本场共 N 条」。

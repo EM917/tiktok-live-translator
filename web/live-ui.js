@@ -21,6 +21,15 @@ function shareButtonText(on, viewers) {
   return { text: L("手机同看 · " + n + " 人", "Phone Viewing · " + n), count: String(n) };
 }
 
+/* 顶栏「浮窗」按钮（app/float_window.py）：什么时候露出、点亮、禁用。
+ * 露出 = 服务端说这个功能存在（config.float_window.available，只有桌面应用窗口模式才有）而且正在监听中/连接中——
+ * 和「换主播」按钮同一条显示规则（app.js setStatus），监听一结束服务端会把浮窗关掉，按钮也跟着收起。
+ * 点亮 = 浮窗开着（aria-pressed 同步）。禁用 = 刚点过、还没等到服务端回执，防止连点开关出一串请求。 */
+function floatButtonState(available, active, open, pending) {
+  var show = !!available && !!active;
+  return { hidden: !show, on: show && !!open, pressed: show && !!open, disabled: show && !!pending };
+}
+
 /* 连接中提示：只在 connecting 时显示。有主播名就带上——点错了要等连上才看得出来，
  * 而失败的连接要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索
  * （pm.md #5）。已有字幕时 inline：改成字幕末尾的一行，不把旧字幕盖住。
@@ -187,7 +196,8 @@ function captionSizeVars(size) {
 
 /* Node 测试环境导出；浏览器里作为全局函数被 app.js 使用 */
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { shareButtonText: shareButtonText, connectHint: connectHint,
+  module.exports = { shareButtonText: shareButtonText, floatButtonState: floatButtonState,
+                     connectHint: connectHint,
                      stripStatusEmoji: stripStatusEmoji, barIconFor: barIconFor,
                      popoverRight: popoverRight, alertTierText: alertTierText,
                      jumpLatestCaptionsText: jumpLatestCaptionsText,

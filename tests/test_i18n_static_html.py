@@ -17,7 +17,8 @@ from app import i18n
 from tests import i18n_rules as rules
 from tools import i18n_pairs as P
 
-PAGES = ("web/index.html", "web/viewer.html")
+PAGES = ("web/index.html", "web/viewer.html", "web/float.html")
+MIN_TAGS = {"web/float.html": 12}       # 浮窗页只有一屏小东西；别的页面都是整屏界面，要超过 50 个标签
 
 
 @pytest.mark.parametrize("path", PAGES)
@@ -41,7 +42,7 @@ def test_the_pages_parse_into_a_real_tree(path):
     """解析器读错了（比如把整页当成一段文字），上面那条会假装通过。"""
     root = P.parse_html(P.read(path))
     tags = [el.tag for el in P.iter_elements(root)]
-    assert tags[0] == "html" and "title" in tags and "body" in tags and len(tags) > 50
+    assert tags[0] == "html" and "title" in tags and "body" in tags and len(tags) > MIN_TAGS.get(path, 50)
 
 
 def _spacing_problems(src):

@@ -402,6 +402,43 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
    switch-btn 推开，对「点错换主播/停止」这个风险毫无帮助 */
 .switch-btn { margin-right: 16px; }
 
+/* 浮窗：和手机同看同一种画法（图标 + .btn-label），打开时变绿，跟其余「on」状态同一个颜色。
+   顶栏放不下图标加文字：窄于 1400px 默认只留图标，文字视觉隐藏而不是 display:none（读屏照念，同 #share-btn 的写法）；
+   宽屏才露出图标加文字。图标 28px 宽 + 8px 间距 = 顶栏多出 36px，默认窗口 1000px 下品牌标签只有约 25px 余量
+   （docs/i18n-style.md §4.1），所以按钮露出时（app.js 给 body 加 has-float-btn）字号滑块从 96px 收到 72px，
+   省回 24px，细节见下面 */
+#float-btn { gap: 4px; padding: 0 10px 0 7px; }
+#float-btn.on { color: var(--green-ink); background-color: var(--a-green-16); }
+@media (max-width: 1399px) {
+  #float-btn { padding: 0 6px; min-width: 28px; }
+  #float-btn .btn-label {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; white-space: nowrap; border: 0; clip: rect(0, 0, 0, 0);
+  }
+  body.has-float-btn #font-size { width: 72px; }
+}
+/* 1101–1139px：「手机同看」刚露出文字（+63px），只有浮窗图标时按账只剩约 +2px；CI 的 Linux 字体实测
+   状态字已被挤出 0.03px（中文页 G10 live-float-zh-quiet@1101）。这一小段把滑块再收 8px，留出余量 */
+@media (min-width: 1101px) and (max-width: 1139px) {
+  body.has-float-btn #font-size { width: 64px; }
+}
+/* 中文页：「浮窗」两个字（2 × 13px = 26px）比图标好认，顶栏放得下的地方就把字露出来，放不下才退回只有图标。
+   窄于 1400px 时不带图标（图标 16px + 间距 4px 放不下）：左右内边距各 10px，按钮 46px，比只有图标的 28px 多 18px。
+   按 docs/i18n-style.md §4.2 的账，字号滑块已收到 72px，1000px 时品牌标签还剩约 +26px 余量，1140px 起约 +23px：
+   ① 1000–1100px：默认窗口 1000×760 就在这一段；再窄没量过，退回只有图标
+   ② 1140–1399px：1101px 起「手机同看」露出文字（+63px），按钮带字后只剩 −16px，要到约 1117px 才回到 0，
+      再留一点估算误差，所以 1101–1139px 这一小段仍是只有图标
+   ③ 顶栏「报警开」标签亮着（app.js 给 body 加 has-alert-tag，标签在 .brand 里，样式选不到它）：标签占约 60px，
+      中文页 1000px 时只有图标就已经是 −16px，不再加字；1400px 起宽屏有的是地方，图标加文字照旧
+   只挂在 html[lang^="zh"] 下：英文页的文字约 110px，放不进 1000px 的顶栏，照旧只有图标（tests/test_i18n_layout_css.py 静态钉住） */
+@media (min-width: 1000px) and (max-width: 1100px), (min-width: 1140px) and (max-width: 1399px) {
+  html[lang^="zh"] body:not(.has-alert-tag) #float-btn { padding: 0 10px; }
+  html[lang^="zh"] body:not(.has-alert-tag) #float-btn .i { display: none; }
+  html[lang^="zh"] body:not(.has-alert-tag) #float-btn .btn-label {
+    position: static; width: auto; height: auto; margin: 0; overflow: visible;
+  }
+}
+
 input[type="range"] { accent-color: var(--blue); width: 96px; }
 
 /* 窄窗口：顶栏先省掉「目标语言」四个字（下拉本身有 title），再让控件整行换到第二行。

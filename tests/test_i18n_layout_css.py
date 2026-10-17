@@ -68,3 +68,34 @@ def test_the_english_layout_rules_are_there(name):
                  for part in sel}
     missing = [s for s in L1_RULES[name] if s not in selectors]
     assert not missing, "{} 里少了这些英文版面规则：{}".format(name, missing)
+
+
+# 中文专属的规则（目前只有顶栏「浮窗」两个字，docs/i18n-style.md §4.2）挂在 html[lang^="zh"] 下，
+# 同样的陷阱：选择器列表只给第一项加前缀，第二项就连英文页一起改了。英文页的顶栏只量英文页（G10 的
+# live-float@宽度），所以这里静态查；写法和上面英文那条一样
+ZH = 'html[lang^="zh"]'
+
+
+def test_chinese_only_rules_never_reach_the_english_page():
+    lists = selector_lists((WEB_DIR / "style.css").read_text(encoding="utf-8"))
+    chinese = [sel for sel in lists if any(ZH in part for part in sel)]
+    assert chinese, "style.css 里一条中文专属的规则都没找到，检查解析"
+    leaked = [sel for sel in chinese if not all(part.startswith(ZH) for part in sel)]
+    assert not leaked, "这些选择器列表里有一项没带 {} 前缀，会连英文页一起改：{}".format(ZH, leaked)
+
+
+def test_the_chinese_float_label_rules_are_there():
+    """删掉任何一条，中文页的「浮窗」就又只剩图标（或者露字时图标和文字一起挤进顶栏）。
+    宽度范围和各规则的内容在 tests/float-button.test.mjs 里钉住。"""
+    selectors = {part for sel in selector_lists((WEB_DIR / "style.css").read_text(encoding="utf-8"))
+                 for part in sel}
+    base = ZH + " body:not(.has-alert-tag) #float-btn"
+    missing = [s for s in (base, base + " .i", base + " .btn-label") if s not in selectors]
+    assert not missing, "style.css 里少了这些中文版的浮窗规则：{}".format(missing)
+
+
+def test_the_alert_tag_class_the_float_label_waits_on_is_set_by_app_js():
+    """样式表选不到兄弟的兄弟（标签在 .brand、按钮在 .controls），has-alert-tag 只能由脚本给 body 加；
+    脚本里没人加，:not(.has-alert-tag) 就永远成立，报警标签亮着时「浮窗」两个字照样挤进已经满的顶栏。"""
+    js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+    assert re.search(r'document\.body\.classList\.toggle\("has-alert-tag",\s*!!show\)', js)

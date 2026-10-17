@@ -51,20 +51,29 @@ NOW = datetime(2026, 9, 28, 20, 0, 0).timestamp()   # 固定时刻：日志文�
 FUTURE = NOW + 10 * 365 * 86400
 DESKTOP = (1280, 860)
 PHONE = (390, 844)
+FLOAT = (460, 330)                             # 浮窗的默认大小（app/float_window.py DEFAULT_SIZE）
 LIVE_WIDTHS = (1000, 1100, 1101, 1199, 1200)   # 版面断言的五档（spec §12.3 第 7 条）
 NARROW_WIDTHS = (860, 720)                     # 这两档只断言 .topbar 不溢出
-DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm")
+# 中文页「浮窗」两个字（web/style.css 的 html[lang^="zh"] 那一段，docs/i18n-style.md §4.2）的六档：
+# 1000 / 1100 是露字范围的两头，1101 是「手机同看」露出文字之后仍是只有图标的第一档，1140 是第二段露字的起点，
+# 1399 是它的另一头，1400 起图标加文字
+ZH_FLOAT_WIDTHS = (1000, 1100, 1101, 1140, 1399, 1400)
+ZH_QUIET_BRAND = "Bella All Natural"           # §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限
+DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
+                   "#float-btn", "#float-btn .btn-label", "#float-btn .i")
 GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
                  ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
+FLOAT_MEASURE = (".f-root", "#f-caption", "#f-comments")
 
 # 弹幕留意（Comment Review）的四个场景，英文页进 G10 的扫描，中文页（-zh）只为核对中文界面和出截图。
 # 设置行展开、直播中抽屉的「最近需要留意」页签、抽屉的「关注名单」页签、熔断后的胶囊与「本场重新启用」
 GUARD_NAMES = ("home-guard", "live-guard", "live-guard-marked", "live-guard-tripped")
 GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
-DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "connecting", "offline",
+DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "live-float", "connecting", "offline",
               "error-4003110") + GUARD_NAMES
 PHONE_EN = ("phone-live", "phone-denied", "phone-full", "phone-local-en")
+FLOAT_EN = ("float-live",)           # 浮窗页（web/float.html）：直播中，有红 / 琥珀 / 关注的弹幕，最新一条字幕没译成
 CONTROL_ZH = "live-full-zh"
 
 
@@ -328,11 +337,12 @@ def _scenario(name, page, lang, messages, *, page_lang=None, replies=None, close
               clicks=(), storage=None):
     """一个场景（spec §12.3 第 2 条的形状）。另有两个键：page_lang 是服务器往 <html> 里注入的
     语言（手机本机选了英文、服务端给中文页时两者不同），storage 是开页前预置的 localStorage。"""
-    desktop = page == "desktop"
-    return {"name": name, "page": page, "size": list(DESKTOP if desktop else PHONE),
+    size = {"desktop": DESKTOP, "phone": PHONE, "float": FLOAT}[page]
+    measure = {"desktop": DESKTOP_MEASURE, "phone": PHONE_MEASURE, "float": FLOAT_MEASURE}[page]
+    return {"name": name, "page": page, "size": list(size),
             "lang": lang, "page_lang": page_lang or lang, "messages": _plain(messages),
             "replies": _plain(replies or {}), "close": close, "clicks": list(clicks),
-            "measure": list(DESKTOP_MEASURE if desktop else PHONE_MEASURE),
+            "measure": list(measure),
             "storage": dict(storage or {})}
 
 
@@ -542,6 +552,49 @@ def _phone(tmp):
     ]
 
 
+def _float(tmp):
+    """浮窗页：消息照真实连接的样子——/ws?role=float 的 hello（只带浮窗用得上的键）、短回放（最后几条字幕和弹幕，
+    没有报警）、再接不进缓存的实时消息：一条中文昵称、中文译文的弹幕（数据，必须落在数据区里），
+    和最后一条没译成的字幕（角标才会画出来）。回放由真的 CaptionServer.replay_messages("float") 给出。"""
+    with i18n.use("en"):
+        server = CaptionServer(port=8765)
+        server.config.update(caption_size=40, target_lang="en", guard_state=dict(GUARD_STATE))
+        _feed(server, [{"type": "status", "state": "live", "detail": ""}])
+        _feed(server, _captions() + _guard_marked() + _guard_comments() + _alerts())
+        live = [
+            {"type": "comment", "id": "gz", "user": "小明", "text": "Ya compré dos", "ts": NOW - 100,
+             "translated": None, "state": "pending"},
+            {"type": "comment_update", "id": "gz", "translated": CAPTION_ZH, "state": "ok"},
+            _caption(20, "Nos vemos mañana a la misma hora", ts=NOW - 90),
+            _caption_update(20, None, state="failed", refused=True),
+        ]
+        out = [{"type": "hello", "config": server._float_config(server.config)}]
+        out += server.replay_messages("float")
+        out += live
+        return _scenario("float-live", "float", "en", [i18n.render(m, "en") for m in out])
+
+
+def with_float_button(scenario, name):
+    """同一个直播中场景，加上桌面应用窗口模式才有的 config.float_window：顶栏多出「浮窗」按钮。
+    live-full 不带它——浏览器模式和 README 截图里没有这颗按钮；窗口模式的顶栏宽度另外用这个场景量。"""
+    out = copy.deepcopy(scenario)
+    out["name"] = name
+    out["messages"][0]["config"]["float_window"] = {"available": True, "open": False}
+    return out
+
+
+def zh_quiet(scenario, name):
+    """中文的直播中场景，报警关着（顶栏没有「报警开」标签）、品牌是 ZH_QUIET_BRAND：「浮窗」两个字才露得出来。
+    live-full-zh 是满编（报警开、BRAND_ZH），顶栏已经满了，按钮在那里是只有图标（has-alert-tag）；
+    docs/i18n-style.md §4.2 的余量表按这里的基线算（报警关、品牌标签约 143px）。"""
+    out = copy.deepcopy(scenario)
+    out["name"] = name
+    config = out["messages"][0]["config"]
+    config["alerts_enabled"] = False
+    config["active_brand"] = {"id": BRAND_ID, "name": ZH_QUIET_BRAND}
+    return out
+
+
 def resized(scenario, width, height=None):
     """同一个场景换一个窗口大小：live-full@1100 这样命名。"""
     out = copy.deepcopy(scenario)
@@ -559,9 +612,19 @@ def build(tmp):
                  _status_only(tmp, "offline", "idle", close={"code": 1006}),
                  _status_only(tmp, "error-4003110", "error", browser_only_message(3, login={
                      "safari": browser_login.BLOCKED, "chrome": browser_login.NOT_LOGGED_IN})),
-                 _live_full(tmp, "zh")] + _guard_scenarios(tmp) + _phone(tmp)
+                 _live_full(tmp, "zh")] + _guard_scenarios(tmp) + _phone(tmp) + [_float(tmp)]
     out = {sc["name"]: sc for sc in scenarios}
-    for width in LIVE_WIDTHS + NARROW_WIDTHS:
-        sc = resized(out["live-full"], width)
+    out["live-float"] = with_float_button(out["live-full"], "live-float")
+    for base in ("live-full", "live-float"):
+        for width in LIVE_WIDTHS + NARROW_WIDTHS:
+            sc = resized(out[base], width)
+            out[sc["name"]] = sc
+    # 中文页的浮窗按钮：满编（报警开）的 1000px 一档，和报警关着的六档（ZH_FLOAT_WIDTHS）
+    out["live-float-zh"] = with_float_button(out[CONTROL_ZH], "live-float-zh")
+    out["live-float-zh-quiet"] = zh_quiet(out["live-float-zh"], "live-float-zh-quiet")
+    sc = resized(out["live-float-zh"], 1000)
+    out[sc["name"]] = sc
+    for width in ZH_FLOAT_WIDTHS:
+        sc = resized(out["live-float-zh-quiet"], width)
         out[sc["name"]] = sc
     return out

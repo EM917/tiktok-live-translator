@@ -10,6 +10,7 @@
 跳过 web/viewer.js：手机页是独立页面 viewer.html，元素 id 集合跟桌面页
 index.html 完全不是一回事（tests/test_viewer_routes.py、
 tests/test_viewer_texts.py 已经覆盖手机页自己的一致性）。
+web/float.js 同理：浮窗页是独立页面 float.html，它的 id 对 float.html 查（文件末尾）。
 """
 import re
 
@@ -27,9 +28,12 @@ GET_ELEMENT_BY_ID = re.compile(r"""getElementById\(\s*['"]([^'"]+)['"]\s*\)""")
 ARIA_CONTROLS = re.compile(r'\baria-controls="([^"]+)"')
 
 
+OTHER_PAGES_JS = ("viewer.js", "float.js")      # 各自有独立的页面，id 集合不是 index.html 的
+
+
 def desktop_js_files():
-    """web/*.js，排除手机页专用的 viewer.js。"""
-    return sorted(p for p in WEB_DIR.glob("*.js") if p.name != "viewer.js")
+    """web/*.js，排除手机页和浮窗页专用的脚本。"""
+    return sorted(p for p in WEB_DIR.glob("*.js") if p.name not in OTHER_PAGES_JS)
 
 
 def test_the_repo_actually_has_element_ids_to_check_against():
@@ -50,3 +54,12 @@ def test_every_aria_controls_target_exists_in_index_html():
     assert targets, "index.html 里没有找到任何 aria-controls，检查正则/文件内容"
     missing = sorted(targets - HTML_IDS)
     assert not missing, "aria-controls 指向了 index.html 里不存在的 id: {}".format(missing)
+
+
+def test_every_get_element_by_id_target_of_the_float_page_exists_in_float_html():
+    html = (WEB_DIR / "float.html").read_text(encoding="utf-8")
+    ids = set(re.findall(r'\bid="([^"]+)"', html))
+    assert len(ids) >= 5, "float.html 里的 id 少得反常，检查路径/正则"
+    targets = set(GET_ELEMENT_BY_ID.findall((WEB_DIR / "float.js").read_text(encoding="utf-8")))
+    assert targets, "float.js 里没有找到任何 getElementById，检查正则"
+    assert not sorted(targets - ids), "float.js 引用了 float.html 里不存在的 id: {}".format(sorted(targets - ids))
