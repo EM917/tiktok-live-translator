@@ -105,11 +105,13 @@
 | 停止 | **Stop** | End, Disconnect | |
 | 语音识别 / 识别 | **speech recognition / recognition** | ASR, transcription | 界面上一律不写 ASR（以前只有底部延迟统计行这种技术读数用过，那一行 2026-10-15 删了） |
 | 识别落后 / 积压 | **falling behind / backlog** | lagging, queue | |
+| 语音识别不确定（字幕角标） | **Recognition unclear** | Uncertain recognition, Low confidence, Possible error | 「不确定」照「拿不准」译 unclear（§1.6），不用 uncertain；不写 error、wrong——角标只说这一段像是出了大问题，没说识别错了。low confidence 是其中一条规则的读数，不是角标的意思 |
 | 检测已降级 | **Detection degraded** | Detection impaired | |
 | 人声降噪 / 降噪 | **Noise Reduction** | Voice Isolation, Denoise | Voice Isolation 是苹果麦克风模式的名字，意思是「只留人声」，RNNoise 做不到这么强。合规工具不该夸大 |
 | 审计 / 审计日志 | **audit log** | compliance log, record | 和 README 同名。审计文件的内容不翻译 |
 | 磁盘空间 | **Storage** | Disk Space, Disk Usage | macOS 系统设置里同一个功能就叫 Storage，而且更短。自检那一行也用 Storage |
 | 模型与日志 | **models and logs** | data | |
+| 识别音频片段（logs/asr-evidence/，「磁盘空间」里的一行） | **recognition audio clips**；数量写 **{n} clips** | evidence audio, recordings | Recordings 会被读成整场录音，而这里只有零散几秒的片段；evidence 在「违禁词证据」里已经指审计日志，再用会混。按段数（clip）数，不按文件数：一段一个 WAV，索引文件不算 |
 | 字幕记录（设置行；一场一个文件，含字幕、译文和观众弹幕） | **Transcripts**（设置行名）；正文说一场的那份文件时写 **transcript** | Caption History, Recordings, Logs | Recordings 会被读成录音录像；Logs 是审计日志的叫法，而审计日志里没有弹幕内容，字幕记录里有，两者不能混着叫。Caption History 撞「清空字幕」的 tooltip（Clear caption history） |
 | 导出最近一场 | **Export Latest Session** | Export Last, Download | session 同上；Latest 不会被读成「最后一条字幕」 |
 | 打开文件夹 | **Open Folder** | Show in Finder, Reveal | 要跨平台，访达和资源管理器的叫法不通用。与 Open Brands Folder、Open Rules Folder 同一个构词 |
@@ -506,8 +508,9 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 67 | index.html:437 | 编辑项目文件夹里的 banned_terms.txt，一行一个词或短语，保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色警报并写入审计日志。 | Edit banned_terms.txt in the app folder, one word or phrase per line. Save, then click Stop and Start to apply. Matches show a red alert at the top of the window and are written to the audit log. | |
 | 68 | index.html:455 | 磁盘空间 | Storage | 56 → 52 |
 | 69 | app.js:1667 | 剩余 {free} · 本机模型与日志 {total} | {free} available · Models and logs {total} | 238 → 约 250 |
-| 70 | app.js:1676、index.html:462 | 正在用 / 本程序 / 非本程序 + 说明 | In use / This app / Not this app · Items marked In use can’t be deleted. Items marked This app download again when needed. Items marked Not this app may be used by other tools, so check before deleting. | 标签和说明里的用词必须逐字一致 |
+| 70 | app.js:1676、index.html:462 | 正在用 / 本程序 / 非本程序 + 说明 | In use / This app / Not this app · Items marked In use can’t be deleted. Models marked This app download again when needed. Items marked Not this app may be used by other tools, so check before deleting. | 标签和说明里的用词必须逐字一致。「自动重下」只说模型（中文「标『本程序』的模型删了……」、英文 Models marked）：审计日志和识别音频片段也标「本程序」，删了就没了，各自的说明写着 |
 | 71 | index.html:463、app.js:1719/1740/1738 | 删除所选 / 删除所选（{n} 项，{size}）/ 删除中… / 确定删除以下内容？删了就没有了。 | Delete Selected / Delete {n} Items ({size}) / Deleting… / Delete these items? This can’t be undone. | |
+| 144 | diskspace.py inventory（kind=evidence） | 识别音频片段（{n} 段，不含本场）/ 被标记、命中违禁词、点过重译的段和少量对照段的直播混音，只存在这台电脑上，超过 {mb} MB 或 {d} 天从最旧的删起。删了不影响程序 | Recognition audio clips ({n} clips, not including this session) / Mixed stream audio from flagged segments, banned-term matches, retranslated captions and a few comparison segments. It stays on this computer, and the oldest clips are removed past {mb} MB or {d} days. Deleting them doesn’t affect the app. | 「磁盘空间」列表里的一行，和两行审计日志一样是界面句子（app.js 按 kind 不给它标 translate="no"）。单数写 1 clip。上限的两个数取当前设置（默认 300 MB、14 天）。只写存了什么、在哪、什么时候删，不写为什么会被标记 |
 
 ### E. 换主播浮层
 
@@ -560,6 +563,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 105b | live-ui.js captionAgeText，app.js paintLiveLag | 约 {n} 秒前 / 约 {n} 分钟前（悬停：从这一句的声音结束算起，超过 15 秒才显示） | About {n} sec ago / About {n} min ago（hover: Counted from when the audio for this line ended. Shown after 15 sec） | 按 ts − e2e_ms（这一段音频结束的时刻）算，每秒涨一次。**超过 15 秒才出现**：健康的直播里一句上屏时是 2～3 秒，下一句 8～10 秒后来，换句前最老 12 秒上下（2026-10-13～15 的 3216 次换句：p50 10.4、p99 13.0 秒），所以平时这一行不在，它出现就是这一句停得比平常久（主播停了，或者积压了——只写数字，不猜是哪一种）。不到 15 秒、负数、缺 e2e_ms、超过 6 小时不写。不从最早一个词算：那样上屏就是 10 秒上下、一直在 10～18 秒之间转圈，中控没有基线。数字和单位不变形，不用分单复数 |
 | 105 | app.js:1297、viewer.js:724/819 | 译文失败（{why}）——请看上面的原话 | Couldn’t translate ({why}). See the original above. | 报警译到本场的目标语言，不一定是中文，中文也只说「译文」。手机报警的「译文正在补…」写 Translating…，不提具体语言 |
 | 134 | live-ui.js jumpLatestCaptionsText / jumpLatestCommentsText | 回到最新 · {n} 条新字幕 / 回到最新 · {n} 条新弹幕（没有新的就只写「回到最新」） | Jump to Latest · {n} new captions / Jump to Latest · {n} new comments (nothing new: Jump to Latest) | 按钮名 Title Case，条数用 ` · ` 接在后面、小写（同 Passed · 1 warning）；字幕叫 captions，弹幕叫 comments（§1.3）。弹幕栏有自己的一颗，字幕区那颗不数弹幕 |
+| 145 | live-ui.js captionAsrChip，app.js renderCaption / paintLiveAsr（卡片 .meta 行、#live-asr） | 语音识别不确定，建议查看原文（悬停：识别出的字数和有声时长对不上。/ 识别置信度偏低。/ 这一段没有拿到识别置信度。/ 识别出的文字有重复。/ 这一段的识别被标记为不确定。+ 原文和译文都照识别结果显示，没有删改。） | Recognition unclear · check the original（hover: The word count didn’t match how long there was sound. / Recognition confidence was low. / No recognition confidence was reported for this segment. / The recognized text repeats. / This segment’s recognition was marked unclear. + The original and translation are shown as recognized, with nothing removed.） | **默认关**（settings.json 的 asr_uncertain_chip）。胶囊 sentence case、不加句号，分隔用 ` · `，后半是祈使句、不写 please（§0、§2.2）。图标是线性三角 #i-warn，不用 ⚠️（桌面界面禁 emoji）。悬停说明按命中的规则逐句写观察，每句都是整句（nan_lp 是没拿到置信度，不写成「偏低」），最后接同一句「照原样显示」；认不出的规则代码用笼统那一句。「有声时长」不写成「说话时长」：切段器量的是能量，背景音乐也算（第八条）。手机页、浮窗、报警面板都不显示 |
 | 135 | app.js forgetOnServer | 与本地服务断开，只清空了本页——重新连上后这些字幕会回来。（弹幕同） | Lost connection to the local service. Only this page was cleared, and the captions come back once it reconnects. (comments: same) | 点「清空」时服务端收不到的说明，显示在页脚版本号那一行；第八条：只写观察到的（连接断了）和结果，不猜原因 |
 
 ### H. 常见的提示条和横幅

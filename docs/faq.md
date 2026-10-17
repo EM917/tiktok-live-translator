@@ -154,6 +154,45 @@ suppresses instrumental music effectively but can only partially suppress sung
 vocals. Confidence filtering removes most such segments; occasional
 false positives are expected.
 
+<a id="recognition-audio"></a>**What are the recognition audio clips in Storage?** The app
+saves a few seconds of stream audio around some segments in `logs/asr-evidence/`, so that
+someone can listen later and check what was recognized: segments the recognition risk rules
+flag, banned-term matches (also when alerts are off), captions you retranslate in this window
+(not from a phone), and one segment in 50 that nothing flagged, for comparison. Each clip is a
+WAV of the segment plus 2 s before and 1 s after, with a line in `index.jsonl` that holds the
+recognition output. It is the stream's mixed audio, so anyone else on the stream and the
+background music are in it too. The clips stay on this computer: nothing uploads them, sends
+them to an API or puts them in an export, and `logs/` is not in git. Once the folder passes
+300 MB, 2000 files or 14 days, the oldest sessions are removed first; the current session is
+never removed. This is checked when a session starts, so clips older than 14 days stay until
+the next session. Settings → Storage shows the folder and can delete it. Saving runs off the
+recognition path, and a failed write only prints a warning in the terminal. Turn it off with
+`"asr_evidence": false` in `settings.json` or the environment variable `TLT_ASR_EVIDENCE=0`.
+Turning it off stops new clips; clips already saved stay until the limits remove them at a
+session start, or until you delete them in Storage.
+The limits are `asr_evidence_max_mb`, `asr_evidence_max_files`, `asr_evidence_days`,
+`asr_evidence_ring_sec` (recent audio kept in memory, 600 by default) and
+`asr_evidence_control_every` (50; `0` saves no comparison segments). They are read when a
+session starts.
+
+<a id="recognition-risk"></a>**Recognition risk records, and switching them off.** Each
+segment in the audit log has an `asr` object that holds only numbers and short codes: segment
+length, how it was cut, the share of voiced frames, words per voiced second, the decoder's
+average log-probability, no-speech probability and compression ratio, and the flags of risk
+rules v1 (`low_conf`, `nan_lp`, `few_words`, `loop`; `outro_only` is recorded and its audio
+clip is saved, but it never gets the badge; `relabel` is only recorded). The thresholds are frozen as version 1 and written to `asr_config`, and
+`session_end.asr_risk` counts the session. A flag means the segment looks like a gross
+recognition failure; no flag doesn't mean recognition was right. Banned-term matching still
+runs first on the raw recognized text and uses none of this. With `"asr_uncertain_chip": true`
+in `settings.json` (off by default; read when a session starts), captions whose segment hit one
+of the first four rules get a "Recognition unclear · check the original" badge on the caption
+card and under the large caption; hover it to see what was observed. The text itself is never
+changed, the translation engine is not told anything, and the badge never appears on alerts, the
+phone page or the Floating Window. To switch off the risk flags, the audio clips and the badge
+together, start the app with `TLT_ASR_SAFEGUARDS=off`; the numbers stay in the audit log. To roll back the code, revert the commits that added `app/asr_risk.py`,
+`app/asr_evidence.py` and the badge; no other code reads the new audit keys, and deleting
+`logs/asr-evidence/` has no effect on the app.
+
 **The interface is not on port 8765.** If 8765 is occupied, the app
 moves to the next free port in 8766–8774 and says so in the terminal. That's
 the control page only; Phone Viewing uses a port of its own and reuses the

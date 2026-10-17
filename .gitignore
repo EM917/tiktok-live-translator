@@ -24,6 +24,9 @@ brands/*.txt
 !brands/*.example.txt
 # 审计日志
 logs/
+# 识别证据音频（app/asr_evidence.py）：直播混音的 WAV 片段和它们的索引，在 logs/ 底下，
+# 上一行已经盖住；单独再写一遍，免得以后有人把证据目录挪出 logs/ 时漏掉——它绝不能进仓库
+logs/asr-evidence/
 # 字幕记录：每场的字幕、译文和观众弹幕（含昵称），以及导出的 .md/.csv/.srt——个人数据，不入库
 transcripts/
 # 用户/程序在目录里留下的杂物——它们不入库，也绝不该挡住一键更新

@@ -619,6 +619,10 @@ def main():
                     return
             asyncio.run(main_async(args))
     except KeyboardInterrupt:
+        # 识别证据在每一场自己的证据线程里写：asyncio.run 收尾只等默认线程池，下面的 os._exit
+        # 谁都不等。还没写完的 wav 和索引行最多再等 2 秒（app/window_close.flush_evidence）
+        from app.window_close import flush_evidence
+        flush_evidence()
         print("\n已退出。")
         # 模型加载跑在默认执行器的非 daemon 线程上（且被 shield 刻意保活），
         # 正常退出要 join 它——首次下载时按 Ctrl-C 会静默卡住好几分钟。
@@ -664,16 +668,21 @@ def run_with_window(args):
     state = {}
 
     def backend():
+        # 两处 os._exit(1) 之前都先 flush_evidence：后台服务半路异常退出时，这一场的证据线程里可能还有
+        # 没写完的（启动失败时一份都没有，立刻返回）。见 app/window_close.flush_evidence
+        from app.window_close import flush_evidence
         try:
             asyncio.run(main_async(args, state))
         except SystemExit as exc:
             print(str(exc))
+            flush_evidence()
             os._exit(1)
         except Exception as exc:
             if isinstance(exc, ImportError):
                 _forget_install_failure()      # 缺模块：下次启动立刻重试安装
             _fail_alert(L("后台服务异常退出：{}", "The background service quit unexpectedly: {}")
                         .format(of(exc)))
+            flush_evidence()
             os._exit(1)
 
     thread = threading.Thread(target=backend, daemon=True)

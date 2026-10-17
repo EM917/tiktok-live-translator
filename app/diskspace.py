@@ -8,10 +8,11 @@
 
 规则：
 - 条目由这里盘点并编 id；删除只按 id 回查，**永远不接受路径**。
-- 每条标明角色：in_use（本场正在用）/ app（本程序会用，删了下次自动重下）/
-  other（不是本程序下载的，可能是别的工具的）。删 other 由用户自己判断。
+- 每条标明角色：in_use（本场正在用）/ app（本程序的：模型删了下次自动重下；审计日志和识别音频
+  片段删了就没了，各自的 note 写着）/ other（不是本程序下载的，可能是别的工具的）。删 other 由用户
+  自己判断。index.html #disk-hint 那句「自动重下」只说模型，就是因为 app 这一类里有删了回不来的。
 - 运行环境 .venv 不列：删了程序就没了。
-- 当前会话的审计文件不列、不删。
+- 当前会话的审计文件不列、不删；当前会话的识别证据音频（logs/asr-evidence/<这一场>/）同样不列、不删。
 """
 import os
 import shutil
@@ -146,7 +147,51 @@ def inventory(hf_dir=None, ollama_models=(), log_dir=None, active_asr=None,
                       "note": L("违禁词证据在里面，删前确认已经不需要",
                                 "Contains banned-term evidence. Make sure you no longer need it "
                                 "first.")})
+    evidence = _evidence_dirs(log_dir, current_log)
+    evidence_size = sum(dir_size(d) for d in evidence)
+    if evidence_size:
+        # 识别证据音频（app/asr_evidence.py）：直播的混音片段，只在本机。默认开着，所以必须让用户
+        # 看得到、删得掉，不能只靠上限自己滚掉。label 和日志两项一样是界面句子（kind=evidence）。
+        # 只有空目录时不列：一行「0 段」没有可删的东西
+        clips = sum(_wav_count(d) for d in evidence)
+        cfg = _evidence_caps()
+        items.append({"id": "evidence:all", "kind": "evidence",
+                      "label": LN(clips, "识别音频片段（{} 段，不含本场）",
+                                  "Recognition audio clips (1 clip, not including this session)",
+                                  "Recognition audio clips ({} clips, not including this session)")
+                      .format(clips),
+                      "size": evidence_size, "role": "app",
+                      "note": L("被标记、命中违禁词、点过重译的段和少量对照段的直播混音，"
+                                "只存在这台电脑上，超过 {} MB 或 {} 天从最旧的删起。删了不影响程序",
+                                "Mixed stream audio from flagged segments, banned-term matches, "
+                                "retranslated captions and a few comparison segments. It stays on "
+                                "this computer, and the oldest clips are removed past {} MB or "
+                                "{} days. Deleting them doesn’t affect the app.")
+                      .format(cfg["max_mb"], cfg["days"])})
     return items
+
+
+def _evidence_dirs(log_dir, current_log):
+    """logs/asr-evidence/ 下一场一个的目录，去掉当前这一场（按审计文件名对上）。"""
+    from .asr_evidence import evidence_dir, session_dirs
+    d = Path(log_dir) if log_dir else ROOT / "logs"
+    cur = Path(current_log).stem if current_log else None
+    return [p for p in session_dirs(evidence_dir(d)) if p.name != cur]
+
+
+def _wav_count(path):
+    try:
+        return sum(1 for f in path.glob("*.wav") if f.is_file())
+    except OSError:
+        return 0
+
+
+def _evidence_caps():
+    from .asr_evidence import DEFAULTS, load_config
+    try:
+        return load_config()
+    except Exception:
+        return dict(DEFAULTS)
 
 
 def _log_files(log_dir, current_log):
@@ -209,6 +254,14 @@ async def delete(item_ids, hf_dir=None, log_dir=None, current_log=None,
                     failed.append(L("{}：Ollama 没有删除成功", "{}: Ollama didn’t delete it")
                                   .format(it["label"]))
                     continue
+            elif it["kind"] == "evidence":
+                from .asr_evidence import evidence_dir
+                base = evidence_dir(Path(log_dir) if log_dir else ROOT / "logs").resolve()
+                for target in _evidence_dirs(log_dir, current_log):
+                    # 双保险：必须仍在证据目录之内、且是 session- 开头的目录（session_dirs 已跳过符号链接）
+                    if target.resolve().parent != base or not target.name.startswith("session-"):
+                        continue
+                    shutil.rmtree(target)
             elif it["kind"] == "logs":
                 files = _log_files(log_dir, current_log)
                 if it["id"] == "logs:old":

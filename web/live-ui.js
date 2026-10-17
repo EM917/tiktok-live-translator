@@ -1,7 +1,7 @@
 // i18n: done
 /* 直播中界面几处「显示什么」的纯逻辑（web/live-ui.js）：顶栏手机同看按钮的文案、
  * 连接中提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签、「回到最新」按钮上的未读条数，以及底部大字幕的
- * 翻译状态角标、「约 N 秒前」、字幕字号的比例。
+ * 翻译状态角标、「语音识别不确定」角标、「约 N 秒前」、字幕字号的比例。
  * 这些判断本身不碰 DOM，放进 app.js 的立即执行函数就没法被 node 测试 require
  * （同 web/settings-rows.js 的起因）。写法和加载方式照 web/switch.js：浏览器里
  * 是全局函数，Node 测试环境走 module.exports。 */
@@ -124,6 +124,34 @@ function liveBarChip(msg) {
   return captionStateChip(msg);
 }
 
+/* ---- 「语音识别不确定」角标：历史卡片的 .meta 行和底部大字幕的 #live-meta 行共用一份 ----
+ * 服务端只在 settings.json 的 asr_uncertain_chip 打开（默认关）、而且这一段命中了识别风险规则 v1 里
+ * 会挂角标的那几条（app/asr_risk.py CHIP_FLAGS）时，才给 caption 消息带 asr_flag（代码列表）。
+ * 这几条只抓得到「像是出了大问题」的段：通顺的错句标不出来，所以没有角标**不等于**识别对了。
+ * 说明（title）只写看到了什么，不写为什么（CLAUDE.md 第八条）：「有声时长」量的是能量，背景音乐也算，
+ * 写「说话时长」就是替人认定了原因。每样观察一句整句，后面接同一句「照原样显示」，不拼半句。
+ * 认不出的代码（以后升了规则版本、这一页还是旧的）照样挂角标，说明用笼统的那一句。
+ * 返回 { text, title }：text 为空串表示没有角标。手机页和浮窗 v1 不显示（手机白名单不放这个键）。 */
+var ASR_FLAG_NOTES = [
+  [["few_words"], function () { return L("识别出的字数和有声时长对不上。", "The word count didn’t match how long there was sound."); }],
+  [["low_conf"], function () { return L("识别置信度偏低。", "Recognition confidence was low."); }],
+  // nan_lp 是解码器没给出有限的置信度（10-14 #355 只解出一个「!」）：没有这个数，不是这个数偏低
+  [["nan_lp"], function () { return L("这一段没有拿到识别置信度。", "No recognition confidence was reported for this segment."); }],
+  [["loop"], function () { return L("识别出的文字有重复。", "The recognized text repeats."); }],
+];
+function captionAsrChip(msg) {
+  var flags = msg && Array.isArray(msg.asr_flag) ? msg.asr_flag : null;
+  if (!flags || !flags.length) return { text: "", title: "" };
+  var notes = [];
+  ASR_FLAG_NOTES.forEach(function (row) {
+    if (row[0].some(function (code) { return flags.indexOf(code) !== -1; })) notes.push(row[1]());
+  });
+  if (!notes.length) notes.push(L("这一段的识别被标记为不确定。", "This segment’s recognition was marked unclear."));
+  notes.push(L("原文和译文都照识别结果显示，没有删改。", "The original and translation are shown as recognized, with nothing removed."));
+  return { text: L("语音识别不确定，建议查看原文", "Recognition unclear · check the original"),
+           title: notes.join(L("", " ")) };
+}
+
 /* ---- 底部大字幕的滞后：大字幕上这一句的声音结束多久了 ----
  * 服务端的 caption 消息带 ts（原文上屏的时刻）和 e2e_ms（这一段音频结束 → 上屏）。
  * ts − e2e_ms = 这一段音频结束的时刻，和违禁词报警延迟（now − audio_end_ts）是同一个起点。
@@ -203,6 +231,7 @@ if (typeof module !== "undefined" && module.exports) {
                      jumpLatestCaptionsText: jumpLatestCaptionsText,
                      jumpLatestCommentsText: jumpLatestCommentsText,
                      captionStateChip: captionStateChip, liveBarChip: liveBarChip,
+                     captionAsrChip: captionAsrChip,
                      captionAudioEndAt: captionAudioEndAt, captionAgeText: captionAgeText,
                      CAPTION_LAG_SHOW_SEC: CAPTION_LAG_SHOW_SEC,
                      captionScale: captionScale, captionSizeVars: captionSizeVars,

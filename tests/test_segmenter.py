@@ -67,3 +67,49 @@ def test_flush_resets_state():
         seg.feed(loud_frame())
     seg.flush()
     assert seg.flush() == []                 # 再 flush 不重复吐段
+
+
+# ---- last_cut：这一刀是怎么切的、有声多久（给识别风险分，见 app/asr_risk.py） ----------------
+
+def test_last_cut_records_a_hard_cut_and_its_voiced_frames():
+    seg = SilenceSegmenter()
+    assert seg.last_cut is None              # 还没切出过
+    out = []
+    for i in range(90):                      # 9 秒：每 3 帧里 1 帧安静
+        out += seg.feed(silent_frame() if i % 3 == 2 else loud_frame())
+    assert len(out) == 1 and len(out[0]) == 90 * FRAME_BYTES   # 返回值和以前一样
+    assert seg.last_cut == {"cut": "max", "frames": 90, "speech_frames": 60}
+
+
+def test_last_cut_records_a_pause_cut():
+    seg = SilenceSegmenter()
+    out = []
+    for _ in range(26):
+        out += seg.feed(loud_frame())
+    for _ in range(7):
+        out += seg.feed(silent_frame())
+    assert len(out) == 1
+    assert seg.last_cut == {"cut": "pause", "frames": 33, "speech_frames": 26}
+
+
+def test_last_cut_records_a_flush_and_counts_restart_after_each_cut():
+    seg = SilenceSegmenter()
+    for _ in range(95):                      # 9 秒硬切一次，剩 0.5 秒
+        seg.feed(loud_frame())
+    assert seg.last_cut["cut"] == "max"
+    out = seg.flush()
+    assert len(out) == 1 and len(out[0]) == 5 * FRAME_BYTES
+    assert seg.last_cut == {"cut": "flush", "frames": 5, "speech_frames": 5}
+
+
+def test_a_discarded_silent_buffer_does_not_touch_last_cut():
+    seg = SilenceSegmenter()
+    for _ in range(26):
+        seg.feed(loud_frame())
+    for _ in range(7):
+        seg.feed(silent_frame())
+    before = dict(seg.last_cut)
+    for _ in range(120):                     # 12 秒静音：整段丢掉，不算切出一段
+        assert seg.feed(silent_frame()) == []
+    assert seg.flush() == []
+    assert seg.last_cut == before

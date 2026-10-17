@@ -20,14 +20,27 @@ class SilenceSegmenter:
         self._buf = bytearray()
         self._trailing_silence = 0.0
         self._has_speech = False
+        # 缓冲里的帧数、其中达到 silence_rms 的帧数：下面本来就在逐帧比 RMS，顺手数一下。
+        # 识别风险分（app/asr_risk.py）要「这一段有声多久」和「是怎么切的」：9 秒硬切里有声很久
+        # 却只识别出几个词，是 10-14 录音里套话顶替整段真话的那类段（8/8）。只记、不改切段
+        self._frames = 0
+        self._speech_frames = 0
+        # 最近一次切出段时的情况 {"cut": "max"|"pause"|"flush", "frames", "speech_frames"}；
+        # 还没切出过是 None。feed / flush 的返回值不变，调用方要用时自己来读
+        self.last_cut = None
+
+    def _cut_info(self, cut):
+        return {"cut": cut, "frames": self._frames, "speech_frames": self._speech_frames}
 
     def feed(self, frame):
         """喂入一帧 PCM，返回 0 个或多个切好的段（bytes 列表）。"""
         arr = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
         rms = float(np.sqrt(np.mean(arr * arr))) if arr.size else 0.0
         self._buf += frame
+        self._frames += 1
         if rms >= self.silence_rms:
             self._has_speech = True
+            self._speech_frames += 1
             self._trailing_silence = 0.0
         else:
             self._trailing_silence += FRAME_SEC
@@ -40,6 +53,8 @@ class SilenceSegmenter:
         if hit_max or hit_pause:
             if self._has_speech:
                 out.append(bytes(self._buf))
+                # 两个条件同一帧成立时记 max：段长已经到了上限，停顿只是碰巧
+                self.last_cut = self._cut_info("max" if hit_max else "pause")
             self._reset()
         return out
 
@@ -54,6 +69,7 @@ class SilenceSegmenter:
         duration = len(self._buf) / 2 / SAMPLE_RATE
         if self._has_speech and duration >= 0.5:   # 太短的残片没有识别价值
             out.append(bytes(self._buf))
+            self.last_cut = self._cut_info("flush")
         self._reset()
         return out
 
@@ -61,3 +77,5 @@ class SilenceSegmenter:
         self._buf = bytearray()
         self._trailing_silence = 0.0
         self._has_speech = False
+        self._frames = 0
+        self._speech_frames = 0
