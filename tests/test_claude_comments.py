@@ -342,6 +342,43 @@ def test_the_comment_prompt_says_the_input_is_always_comments_and_never_to_reply
     assert "<comments>" not in sub._body("Sii todo", "zh-CN")["system"]
 
 
+def test_the_haiku_comment_prompt_adds_slang_and_no_explanations_but_the_redo_prompt_does_not(
+        monkeypatch):
+    """2026-10-16 离线对比测的是这一版（见 SYSTEM_COMMENT_HAIKU 上的注释）：SYSTEM_COMMENT 原有的
+    句子一字不动、顺序不变，加俚语例词，最后一句之前加「不解释、不复述、不加注」。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    haiku = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
+    system = haiku._body("esta vieja", "zh-CN")["system"]
+    plain = ClaudeTranslator.SYSTEM_COMMENT.format(lang="Simplified Chinese")
+    pos = 0
+    for piece in plain.split(". "):
+        found = system.find(piece, pos)
+        assert found >= 0, piece
+        pos = found + len(piece)
+    assert "el bote = jail" in system and "(el Durango, la Chiquis)" in system
+    assert ("Do not explain words or slang, do not repeat or quote the original comment, do not "
+            "add notes, and never answer in Spanish or English: output only the Simplified Chinese "
+            "translation of each comment.") in system
+    assert system.endswith("Output ONLY the translations, without the tags, nothing else.")
+    # 弹幕重译（Sonnet 5.5）没测过这一版，照旧用 SYSTEM_COMMENT
+    strong = comments_mod._comment_claude_strong()
+    assert strong._body("esta vieja", "zh-CN")["system"] == plain
+
+
+@pytest.mark.parametrize("target,avoid,lang", [
+    ("zh-CN", "Spanish or English", "Simplified Chinese"),
+    ("en", "Spanish", "English"),
+    ("es", "English", "Spanish"),
+])
+def test_the_comment_prompt_never_forbids_the_target_language(monkeypatch, target, avoid, lang):
+    """英文界面的新装机目标语言是英语：不能叫它「别用英语作答」。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    haiku = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
+    system = haiku._body("hola", target)["system"]
+    assert "never answer in {}: output only the {} translation".format(avoid, lang) in system
+    assert "{" not in system and "}" not in system
+
+
 @pytest.mark.parametrize("text,out,target,ok", [
     ("Sii todo", META_REPLY, "zh-CN", False),            # 实录：英文回话
     ("Sii todo", "是的，全部", "zh-CN", True),
