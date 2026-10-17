@@ -417,6 +417,11 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
   }
   body.has-float-btn #font-size { width: 72px; }
 }
+/* 1101–1139px：「手机同看」刚露出文字（+63px），只有浮窗图标时按账只剩约 +2px；CI 的 Linux 字体实测
+   状态字已被挤出 0.03px（中文页 G10 live-float-zh-quiet@1101）。这一小段把滑块再收 8px，留出余量 */
+@media (min-width: 1101px) and (max-width: 1139px) {
+  body.has-float-btn #font-size { width: 64px; }
+}
 /* 中文页：「浮窗」两个字（2 × 13px = 26px）比图标好认，顶栏放得下的地方就把字露出来，放不下才退回只有图标。
    窄于 1400px 时不带图标（图标 16px + 间距 4px 放不下）：左右内边距各 10px，按钮 46px，比只有图标的 28px 多 18px。
    按 docs/i18n-style.md §4.2 的账，字号滑块已收到 72px，1000px 时品牌标签还剩约 +26px 余量，1140px 起约 +23px：

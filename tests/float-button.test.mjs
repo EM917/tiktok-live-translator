@@ -273,6 +273,8 @@ test("默认（英文页、没量过的宽度、报警标签亮着）：窄于 1
   assert.ok(!hidden.selectors.some((x) => x.includes("lang")), "默认这条不能带语言前缀：英文页靠它藏字");
   assert.match(list.find((r) => r.selectors.includes("#float-btn")).decl, /padding:\s*0 6px/);
   assert.match(list.find((r) => r.selectors.includes("body.has-float-btn #font-size")).decl, /width:\s*72px/);
+  // 1101–1139px 这一小段再收到 64px（CI 实测 1101px 状态字差 0.03px）
+  assert.ok(/@media \(min-width: 1101px\) and \(max-width: 1139px\)\s*\{\s*body\.has-float-btn #font-size \{ width: 64px; \}/.test(css));
   // 宽屏（≥1400px）的图标加文字没有被中文那一段改动：基础规则在所有 @media 之外
   assert.match(css, /#float-btn \{ gap: 4px; padding: 0 10px 0 7px; \}/);
 });
