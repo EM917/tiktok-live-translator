@@ -242,7 +242,8 @@ function desktopLive() {
     disk: { free: 5e10, items: [
       { id: "hf:x", kind: "hf", label: "mlx-community/whisper", size: 3e9, role: "app", note: "" },
       { id: "ollama:y", kind: "ollama", label: "hy-mt2:7b", size: 5e9, role: "other", note: "" },
-      { id: "logs:old", kind: "logs", label: "早于 30 天的会话审计日志（3 个文件）", size: 1e6, role: "app", note: "" }] },
+      { id: "logs:old", kind: "logs", label: "早于 30 天的会话审计日志（3 个文件）", size: 1e6, role: "app", note: "" },
+      { id: "evidence:all", kind: "evidence", label: "识别音频片段（4 段，不含本场）", size: 2e6, role: "app", note: "" }] },
   } });
   page.push({ type: "caption", id: 1, ts: T, original: "hola a todos", translate_state: "pending" });
   page.push({ type: "alert", alert_id: "a1", ts: T + 1, term: "milagro", tier: "exact", streamer: "maria.ventas",
@@ -367,7 +368,8 @@ test("桌面：磁盘列表按 kind 分——模型名是名字，日志项的�
   const page = desktopLive();
   const names = page.el("disk-list").querySelectorAll(".disk-name").map((n) => [n.textContent, kind(n)]);
   assert.deepEqual(names, [["mlx-community/whisper", "name"], ["hy-mt2:7b", "name"],
-                           ["早于 30 天的会话审计日志（3 个文件）", null]]);
+                           ["早于 30 天的会话审计日志（3 个文件）", null],
+                           ["识别音频片段（4 段，不含本场）", null]]);
 });
 
 // 弹幕留意（web/guard.js）动态画出来的节点：昵称、账号是名字；弹幕原文、译文、模型给的证据片段是正文；
@@ -548,6 +550,7 @@ test("G10 scan.js 扫桌面：名字（translate=\"no\"）和正文（class）�
      ["译文失败（超时）——请看上面的原话", /div\.alert-zh$/],
      ["直播中 ·", /span#status-text/], ["品牌 ·", /#active-brand-tag/], ["不限（默认）", /option$/],
      ["（当前）", /button\.recent-chip > span$/], ["早于 30 天的会话审计日志（3 个文件）", /span\.disk-name$/],
+     ["识别音频片段（4 段，不含本场）", /span\.disk-name$/],
      ["点击开始翻译 @maria.ventas", /button\.recent-chip @title$/],
      ["疑似", /span\.alert-tier$/], ["」 " + hhmmss(T + 2), /div\.alert-head > span$/],
      ["重译", /button\.redo$/], ["翻译失败", /div\.meta > span\.lang-chip$/],

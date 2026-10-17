@@ -263,6 +263,8 @@ Comment Review's rules run on your computer. If you choose the Claude review, co
 
 Transcripts stay on your computer. A transcript holds what the streamer said, its translation, and the viewers' comments with their display names. It is a separate file from the audit log, which never holds comment text. The app never uploads transcripts or deletes them.
 
+Recognition audio clips stay on your computer too. The app keeps a few seconds of stream audio around flagged segments, banned-term matches, captions you retranslate and one segment in 50 for comparison, in `logs/asr-evidence/`, and removes the oldest past 300 MB or 14 days. It is the stream's mixed audio, so other voices on the stream are in it. Settings → Storage shows the clips and deletes them, and `"asr_evidence": false` in `settings.json` turns them off. Details: [docs/faq.md](docs/faq.md#recognition-audio).
+
 Phone Viewing opens a port on your network while sharing is on and closes it when sharing is off. Phones see captions, not settings, file paths, cookies or the stream address. The app's own window, where you start and stop and change settings, opens from this computer only.
 
 <a id="en-how-it-works"></a>
@@ -560,6 +562,8 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 弹幕留意只用规则，在本机完成。如果你选了 Claude 复核，规则拿不准的弹幕会发给 Anthropic，一次最多 8 条，每条带上同一个人 2 分钟内的前一条弹幕。电话、连续 7 位以上的数字、链接、邮箱和 `@账号` 会先打码。
 
 字幕记录只留在你的电脑上。里面有主播说的话、译文，以及观众弹幕和他们的昵称。它和审计日志是两个文件，审计日志里从来没有弹幕内容。程序不会上传字幕记录，也不会删除它。
+
+识别音频片段也只留在你的电脑上。程序会把被标记的段、违禁词命中的段、点过「重译」的字幕，以及每 50 段里抽 1 段对照，前后几秒的直播音频存进 `logs/asr-evidence/`，超过 300 MB 或 14 天从最旧的删起。存的是直播的混音，同场其他人的声音也在里面。「设置 > 磁盘空间」里能看到、也能删掉；在 `settings.json` 里写 `"asr_evidence": false` 就不再存。详见 [docs/faq.zh-CN.md](docs/faq.zh-CN.md#zh-recognition-audio)。
 
 手机同看只在打开期间才在你的网络上开一个端口。手机看到的是字幕，看不到设置、文件路径、Cookie 和流地址。你用来开始、停止和改设置的程序窗口，只能在这台电脑上打开。
 

@@ -2717,9 +2717,9 @@
       box.addEventListener("change", syncDiskButton);
       var name = document.createElement("span");
       name.className = "disk-name";
-      // 模型（hf/ollama）的标签是模型名，按名字标；日志两项（kind=logs）的标签是后端写的界面
-      // 句子，要能换成英文——按 kind 分，不加新字段（spec §6、§17 第 6 条）
-      if (it.kind !== "logs") markName(name);
+      // 模型（hf/ollama）的标签是模型名，按名字标；日志两项（kind=logs）和识别音频片段（kind=evidence）
+      // 的标签是后端写的界面句子，要能换成英文——按 kind 分，不加新字段（spec §6、§17 第 6 条）
+      if (it.kind !== "logs" && it.kind !== "evidence") markName(name);
       name.textContent = it.label;                 // textContent：模型名当数据，不当 HTML
       var tag = document.createElement("span");
       tag.className = "disk-role";

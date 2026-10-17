@@ -153,6 +153,11 @@ def _inventory(tmp):
     logs.mkdir(exist_ok=True)
     for stem in ("session-20260801-100000", "session-20260927-100000"):
         (logs / (stem + ".jsonl")).write_text("{}\n", encoding="utf-8")
+    # 识别音频片段（app/asr_evidence.py）：一场的证据目录，英文页上那一行也要扫到
+    clips = logs / "asr-evidence" / "session-20260927-100000"
+    clips.mkdir(parents=True, exist_ok=True)
+    (clips / "seq-000050.wav").write_bytes(b"\0" * 4096)
+    (clips / "index.jsonl").write_text("{}\n", encoding="utf-8")
     ollama = [{"name": "hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M", "size": 4509715660}]
     return diskspace.inventory(hf_dir=tmp / "hub", ollama_models=ollama, log_dir=logs,
                                active_asr=("mlx", "large-v3-turbo"),

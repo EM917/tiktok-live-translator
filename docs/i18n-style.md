@@ -110,6 +110,7 @@
 | 审计 / 审计日志 | **audit log** | compliance log, record | 和 README 同名。审计文件的内容不翻译 |
 | 磁盘空间 | **Storage** | Disk Space, Disk Usage | macOS 系统设置里同一个功能就叫 Storage，而且更短。自检那一行也用 Storage |
 | 模型与日志 | **models and logs** | data | |
+| 识别音频片段（logs/asr-evidence/，「磁盘空间」里的一行） | **recognition audio clips**；数量写 **{n} clips** | evidence audio, recordings | Recordings 会被读成整场录音，而这里只有零散几秒的片段；evidence 在「违禁词证据」里已经指审计日志，再用会混。按段数（clip）数，不按文件数：一段一个 WAV，索引文件不算 |
 | 字幕记录（设置行；一场一个文件，含字幕、译文和观众弹幕） | **Transcripts**（设置行名）；正文说一场的那份文件时写 **transcript** | Caption History, Recordings, Logs | Recordings 会被读成录音录像；Logs 是审计日志的叫法，而审计日志里没有弹幕内容，字幕记录里有，两者不能混着叫。Caption History 撞「清空字幕」的 tooltip（Clear caption history） |
 | 导出最近一场 | **Export Latest Session** | Export Last, Download | session 同上；Latest 不会被读成「最后一条字幕」 |
 | 打开文件夹 | **Open Folder** | Show in Finder, Reveal | 要跨平台，访达和资源管理器的叫法不通用。与 Open Brands Folder、Open Rules Folder 同一个构词 |
@@ -508,6 +509,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 69 | app.js:1667 | 剩余 {free} · 本机模型与日志 {total} | {free} available · Models and logs {total} | 238 → 约 250 |
 | 70 | app.js:1676、index.html:462 | 正在用 / 本程序 / 非本程序 + 说明 | In use / This app / Not this app · Items marked In use can’t be deleted. Items marked This app download again when needed. Items marked Not this app may be used by other tools, so check before deleting. | 标签和说明里的用词必须逐字一致 |
 | 71 | index.html:463、app.js:1719/1740/1738 | 删除所选 / 删除所选（{n} 项，{size}）/ 删除中… / 确定删除以下内容？删了就没有了。 | Delete Selected / Delete {n} Items ({size}) / Deleting… / Delete these items? This can’t be undone. | |
+| 144 | diskspace.py inventory（kind=evidence） | 识别音频片段（{n} 段，不含本场）/ 被标记、命中违禁词、点过重译的段和少量对照段的直播混音，只存在这台电脑上，超过 {mb} MB 或 {d} 天从最旧的删起。删了不影响程序 | Recognition audio clips ({n} clips, not including this session) / Mixed stream audio from flagged segments, banned-term matches, retranslated captions and a few comparison segments. It stays on this computer, and the oldest clips are removed past {mb} MB or {d} days. Deleting them doesn’t affect the app. | 「磁盘空间」列表里的一行，和两行审计日志一样是界面句子（app.js 按 kind 不给它标 translate="no"）。单数写 1 clip。上限的两个数取当前设置（默认 300 MB、14 天）。只写存了什么、在哪、什么时候删，不写为什么会被标记 |
 
 ### E. 换主播浮层
 

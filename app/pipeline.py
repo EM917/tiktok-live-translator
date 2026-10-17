@@ -271,13 +271,14 @@ from .viewer_share import (  # noqa: E402
 )
 from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
+from .pipeline_evidence import AsrEvidenceMixin  # noqa: E402
 from .pipeline_float import FloatWindowMixin  # noqa: E402
 from .pipeline_guard import GUARD_CONTROL_TYPES, CommentGuardMixin  # noqa: E402
 from .pipeline_transcript import TranscriptMixin  # noqa: E402
 
 
 class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin,
-               TranscriptMixin, FloatWindowMixin):
+               TranscriptMixin, FloatWindowMixin, AsrEvidenceMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -1266,7 +1267,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         finally:
             # 无论怎么结束（下播、预算耗尽、解析失败、模型加载失败、被取消），
             # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字
-            await self._end_session(my_audit, **self._with_asr_summary(sess, end))
+            await self._end_session(my_audit, **self._asr_session_end(sess, end))
 
     async def _begin_session(self, url):
         from .audit import AuditLog
@@ -2004,16 +2005,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
         }
 
-    @staticmethod
-    def _with_asr_summary(sess, end):
-        """session_end 带上这一场的识别风险计数（只有数字）。只读这一场自己的会话状态：
-        晚到的旧任务数不进下一场（CLAUDE.md 第七条）。算不出来就不带，收尾照常。"""
+    def _asr_session_end(self, sess, end):
+        """session_end 带上这一场的识别风险计数和证据音频计数（只有数字），顺手放掉证据的环形缓冲。
+        只读这一场自己的会话状态：晚到的旧任务数不进下一场（CLAUDE.md 第七条）。算不出来就不带，
+        收尾照常。在途的证据写盘不等：它们写完就在目录里，只是这里的计数少算那一两份。"""
         counter = (sess or {}).get("asr_risk")
         if counter is None:
             return end
         end = dict(end)
         try:
-            end.setdefault("asr_risk", counter.summary())
+            summary = counter.summary()
+            evidence = self._evidence_summary(sess)
+            if evidence is not None:
+                summary["evidence"] = evidence
+            end.setdefault("asr_risk", summary)
         except Exception:
             pass
         return end
@@ -2753,6 +2758,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
         segmenter = SilenceSegmenter()
+        # 识别证据音频（app/asr_evidence.py）：这一轮的环形缓冲。关着时是 None，下面每帧只多一次判断
+        evidence = self._evidence_round(sess)
         sess["source"] = source
         meter = sess.get("meter")
         if meter is None:
@@ -2829,10 +2836,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             self.telemetry.translation_queue_depth = trans_queue.qsize()
 
         def _cut_meta(segments):
-            """切段器这一刀是怎么切的（见 SilenceSegmenter.last_cut），给识别风险分用。
-            测试里的假切段器没有这个属性；一次吐出好几段时对不上是哪一段，都当没有。"""
+            """切段器这一刀是怎么切的（见 SilenceSegmenter.last_cut），给识别风险分用；证据开着时
+            再补上这一段在环形缓冲里的位置。测试里的假切段器没有这个属性；一次吐出好几段时对不上
+            是哪一段，都当没有。"""
             meta = getattr(segmenter, "last_cut", None)
-            return dict(meta) if isinstance(meta, dict) and len(segments) == 1 else None
+            meta = dict(meta) if isinstance(meta, dict) and len(segments) == 1 else None
+            return self._evidence_cut_meta(evidence, meta, segments)
 
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
@@ -2848,6 +2857,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         await self.server.status("live", "")
                     audio_secs += FRAME_SEC
                     sess["last_frame_wall"] = now
+                    if evidence is not None:
+                        evidence.feed(frame)       # 先进缓冲：切出来的段包含这一帧
                     segments = segmenter.feed(frame)
                     for segment in segments:
                         _put((segment, time.time(), _cut_meta(segments)))
@@ -3462,12 +3473,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._counter += 1
         seq = self._counter
         # 风险分在扫描之后算，出错就当没有：检测和上屏不能被它拖住
+        sess = self._segment_session(sess)
         risk = self._asr_risk_of(result, segment_ms, asr_meta, sess)
         if self.audit is not None:
             if risk is None:
                 self.audit.segment(seq, result, audio_end_ts, asr_ms, hits)
             else:
                 self.audit.segment(seq, result, audio_end_ts, asr_ms, hits, asr=risk.audit)
+        # 证据音频：被标记的、命中的（含下面警示关闭时被抑制的）、对照段，交给线程池去写
+        self._evidence_after_segment(seq, result, risk, hits, audio_end_ts, asr_meta, sess)
 
         alert_ids = []
         for hit in hits:
@@ -3559,15 +3573,19 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
         return job
 
+    def _segment_session(self, sess):
+        """这一段属于哪一场的会话状态。拉流循环会传自己那一份；直接调用（测试、演示）时没人传，
+        只认属于当前审计的那一份。"""
+        if sess is None:
+            current = getattr(self, "_session_state", None)
+            if isinstance(current, dict) and current.get("audit") is self.audit:
+                sess = current
+        return sess
+
     def _asr_risk_of(self, result, segment_ms, asr_meta, sess):
         """这一段的识别风险（app/asr_risk.Risk），并记进这一场的计数。任何一步出错都返回 None：
         只是这一段没有风险分，违禁词检测、审计的其余字段、字幕和翻译照旧。"""
         meta = asr_meta if isinstance(asr_meta, dict) else {}
-        if sess is None:
-            # 直接调用（测试、演示）时没人传 sess：只认属于当前审计的那一份
-            current = getattr(self, "_session_state", None)
-            if current is not None and current.get("audit") is self.audit:
-                sess = current
         counter = sess.get("asr_risk") if isinstance(sess, dict) else None
         try:
             enabled = counter.enabled if counter is not None else asr_risk.master_switch_on()
@@ -4644,6 +4662,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """
         from .translator import looks_fabricated, looks_like_reply
 
+        if trigger == "manual":
+            # 中控点「重译」是线上唯一能留住「通顺的错句」的人工信号：先把这一段的音频存下来，
+            # 不管下面重译成不成（app/pipeline_evidence.py；手机点的不算）
+            self._evidence_retranslate(seq)
         job = self._recent.get(seq)
         if job is None:
             await self._retranslate_refused(seq, trigger, L(
