@@ -723,6 +723,28 @@ def test_deleting_the_clips_keeps_this_session_and_everything_else(tmp_path):
     assert current.exists()                                           # 审计日志不碰
 
 
+def test_the_list_hint_promises_a_redownload_only_for_models(tmp_path):
+    """识别音频片段和审计日志也标「本程序」，删了就没了：列表下面那句「删了会自动重下」只能说模型，
+    否则和这一行自己的说明（删了不影响程序）打架。"""
+    import re
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    m = re.search(r'<span id="disk-hint"[^>]*data-en="([^"]*)">([^<]*)</span>', html)
+    en, zh = m.group(1), m.group(2)
+    assert "标「本程序」的模型删了会在下次需要时自动重下" in zh
+    assert "Models marked This app download again when needed." in en
+    assert "Items marked This app download again" not in en
+    logs, current = _evidence_tree(tmp_path)
+    notes = {}
+    for lang in (i18n.ZH, i18n.EN):
+        with i18n.use(lang):
+            items = diskspace.inventory(hf_dir=tmp_path / "none", log_dir=logs, current_log=current)
+            notes[lang] = [i18n.render(it["note"], lang) for it in items
+                           if it["kind"] == "evidence"][0]
+        assert not re.search(r"重下|重新下载|download", notes[lang]), notes[lang]
+    assert notes[i18n.ZH].endswith("删了不影响程序")
+    assert notes[i18n.EN].endswith("Deleting them doesn’t affect the app.")
+
+
 def test_no_clips_means_no_row(tmp_path):
     logs = tmp_path / "logs"
     logs.mkdir()

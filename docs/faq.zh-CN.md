@@ -114,16 +114,17 @@ M3 Pro 上实测（macOS 27、mlx 0.32.1、Whisper large-v3、fp16、进程已�
 抽 1 段没被标记的当对照。每段一个 WAV（本段加前 2 秒、后 1 秒），`index.jsonl` 里一行记着当时的
 识别输出。存下来的是直播的混音，同场的人、连麦的人和背景音乐都在里面。这些音频只在这台电脑上：
 程序不上传、不发给任何接口、不放进导出，`logs/` 也不进 git。整个目录超过 300 MB、2000 个文件或
-14 天时，从最旧的一场删起；当前这一场不删。「设置 > 磁盘空间」里能看到它，也能删掉。存音频不在
-识别的路径上，写不进去只在终端打一行警告。要关掉，在 `settings.json` 里写 `"asr_evidence": false`，
-或者设环境变量 `TLT_ASR_EVIDENCE=0`。上限是 `asr_evidence_max_mb`、`asr_evidence_max_files`、
+14 天时，从最旧的一场删起；当前这一场不删。这一步在每场开始时做，所以过了 14 天的片段要到下一场
+开始时才删。「设置 > 磁盘空间」里能看到它，也能删掉。存音频不在识别的路径上，写不进去只在终端打一行
+警告。要关掉，在 `settings.json` 里写 `"asr_evidence": false`，或者设环境变量 `TLT_ASR_EVIDENCE=0`。
+关掉只是不再存新的；已经存下的，要么等某一场开始时按上限删掉，要么在「磁盘空间」里自己删。上限是 `asr_evidence_max_mb`、`asr_evidence_max_files`、
 `asr_evidence_days`、`asr_evidence_ring_sec`（内存里留多少秒最近的音频，默认 600）和
 `asr_evidence_control_every`（默认 50，`0` 表示不存对照段），每场开始时读一次。
 
 <a id="zh-recognition-risk"></a>**识别风险记录，以及怎么关掉。** 审计日志里每一段都有一个 `asr`
 对象，里面只有数字和简短的代码：段长、怎么切的、有声帧的占比、每有声秒的词数、解码器给的平均对数
 概率、无人声概率和压缩比，以及风险规则 v1 的标记（`low_conf`、`nan_lp`、`few_words`、`loop`；
-`outro_only` 和 `relabel` 只记录）。阈值冻结为第 1 版，写在 `asr_config` 里；`session_end.asr_risk`
+`outro_only` 记进审计、也存音频片段，但不挂角标；`relabel` 只记录）。阈值冻结为第 1 版，写在 `asr_config` 里；`session_end.asr_risk`
 是这一场的计数。有标记说明这一段像是识别出了大问题；没有标记不代表识别对了。违禁词匹配仍然最先在
 识别出的原始文字上跑，不用这里的任何东西。在 `settings.json` 里写 `"asr_uncertain_chip": true`
 （默认关，每场开始时读一次）后，命中前四条规则的字幕会在卡片和底部大字幕下面挂一个「语音识别不确定，

@@ -134,7 +134,9 @@ function liveBarChip(msg) {
  * 返回 { text, title }：text 为空串表示没有角标。手机页和浮窗 v1 不显示（手机白名单不放这个键）。 */
 var ASR_FLAG_NOTES = [
   [["few_words"], function () { return L("识别出的字数和有声时长对不上。", "The word count didn’t match how long there was sound."); }],
-  [["low_conf", "nan_lp"], function () { return L("识别置信度偏低。", "Recognition confidence was low."); }],
+  [["low_conf"], function () { return L("识别置信度偏低。", "Recognition confidence was low."); }],
+  // nan_lp 是解码器没给出有限的置信度（10-14 #355 只解出一个「!」）：没有这个数，不是这个数偏低
+  [["nan_lp"], function () { return L("这一段没有拿到识别置信度。", "No recognition confidence was reported for this segment."); }],
   [["loop"], function () { return L("识别出的文字有重复。", "The recognized text repeats."); }],
 ];
 function captionAsrChip(msg) {

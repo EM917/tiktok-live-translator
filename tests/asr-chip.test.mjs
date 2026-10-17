@@ -16,6 +16,7 @@ const TEXT = {
     chip: "语音识别不确定，建议查看原文",
     words: "识别出的字数和有声时长对不上。原文和译文都照识别结果显示，没有删改。",
     conf: "识别置信度偏低。原文和译文都照识别结果显示，没有删改。",
+    nan: "这一段没有拿到识别置信度。原文和译文都照识别结果显示，没有删改。",
     all: "识别出的字数和有声时长对不上。识别置信度偏低。识别出的文字有重复。原文和译文都照识别结果显示，没有删改。",
     unknown: "这一段的识别被标记为不确定。原文和译文都照识别结果显示，没有删改。",
   },
@@ -23,6 +24,7 @@ const TEXT = {
     chip: "Recognition unclear · check the original",
     words: "The word count didn’t match how long there was sound. The original and translation are shown as recognized, with nothing removed.",
     conf: "Recognition confidence was low. The original and translation are shown as recognized, with nothing removed.",
+    nan: "No recognition confidence was reported for this segment. The original and translation are shown as recognized, with nothing removed.",
     all: "The word count didn’t match how long there was sound. Recognition confidence was low. The recognized text repeats. The original and translation are shown as recognized, with nothing removed.",
     unknown: "This segment’s recognition was marked unclear. The original and translation are shown as recognized, with nothing removed.",
   },
@@ -51,7 +53,8 @@ for (const lang of ["zh", "en"]) {
     for (const empty of out.slice(0, 4)) assert.deepEqual(empty, { text: "", title: "" });
     assert.deepEqual(out[4], { text: X.chip, title: X.words });
     assert.deepEqual(out[5], { text: X.chip, title: X.conf });
-    assert.deepEqual(out[6], { text: X.chip, title: X.conf });
+    // nan_lp：解码器没给出置信度，不是置信度偏低——只写看到的（第八条）
+    assert.deepEqual(out[6], { text: X.chip, title: X.nan });
     assert.deepEqual(out[7], { text: X.chip, title: X.all });
     assert.deepEqual(out[8], { text: X.chip, title: X.unknown }, "认不出的代码照样挂角标，字不变");
     for (const r of out.slice(4)) {

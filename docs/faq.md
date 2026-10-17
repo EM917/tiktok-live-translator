@@ -164,9 +164,12 @@ recognition output. It is the stream's mixed audio, so anyone else on the stream
 background music are in it too. The clips stay on this computer: nothing uploads them, sends
 them to an API or puts them in an export, and `logs/` is not in git. Once the folder passes
 300 MB, 2000 files or 14 days, the oldest sessions are removed first; the current session is
-never removed. Settings → Storage shows the folder and can delete it. Saving runs off the
+never removed. This is checked when a session starts, so clips older than 14 days stay until
+the next session. Settings → Storage shows the folder and can delete it. Saving runs off the
 recognition path, and a failed write only prints a warning in the terminal. Turn it off with
 `"asr_evidence": false` in `settings.json` or the environment variable `TLT_ASR_EVIDENCE=0`.
+Turning it off stops new clips; clips already saved stay until the limits remove them at a
+session start, or until you delete them in Storage.
 The limits are `asr_evidence_max_mb`, `asr_evidence_max_files`, `asr_evidence_days`,
 `asr_evidence_ring_sec` (recent audio kept in memory, 600 by default) and
 `asr_evidence_control_every` (50; `0` saves no comparison segments). They are read when a
@@ -176,8 +179,8 @@ session starts.
 segment in the audit log has an `asr` object that holds only numbers and short codes: segment
 length, how it was cut, the share of voiced frames, words per voiced second, the decoder's
 average log-probability, no-speech probability and compression ratio, and the flags of risk
-rules v1 (`low_conf`, `nan_lp`, `few_words`, `loop`; `outro_only` and `relabel` are only
-recorded). The thresholds are frozen as version 1 and written to `asr_config`, and
+rules v1 (`low_conf`, `nan_lp`, `few_words`, `loop`; `outro_only` is recorded and its audio
+clip is saved, but it never gets the badge; `relabel` is only recorded). The thresholds are frozen as version 1 and written to `asr_config`, and
 `session_end.asr_risk` counts the session. A flag means the segment looks like a gross
 recognition failure; no flag doesn't mean recognition was right. Banned-term matching still
 runs first on the raw recognized text and uses none of this. With `"asr_uncertain_chip": true`

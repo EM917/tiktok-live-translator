@@ -263,7 +263,7 @@ Comment Review's rules run on your computer. If you choose the Claude review, co
 
 Transcripts stay on your computer. A transcript holds what the streamer said, its translation, and the viewers' comments with their display names. It is a separate file from the audit log, which never holds comment text. The app never uploads transcripts or deletes them.
 
-Recognition audio clips stay on your computer too. The app keeps a few seconds of stream audio around flagged segments, banned-term matches, captions you retranslate and one segment in 50 for comparison, in `logs/asr-evidence/`, and removes the oldest past 300 MB or 14 days. It is the stream's mixed audio, so other voices on the stream are in it. Settings → Storage shows the clips and deletes them, and `"asr_evidence": false` in `settings.json` turns them off. Details: [docs/faq.md](docs/faq.md#recognition-audio).
+Recognition audio clips stay on your computer too. The app keeps a few seconds of stream audio around flagged segments, banned-term matches, captions you retranslate and one segment in 50 for comparison, in `logs/asr-evidence/`, and removes the oldest past 300 MB or 14 days. It is the stream's mixed audio, so other voices on the stream are in it. Settings → Storage shows the clips and deletes them, and `"asr_evidence": false` in `settings.json` stops saving new ones. Details: [docs/faq.md](docs/faq.md#recognition-audio).
 
 Phone Viewing opens a port on your network while sharing is on and closes it when sharing is off. Phones see captions, not settings, file paths, cookies or the stream address. The app's own window, where you start and stop and change settings, opens from this computer only.
 
