@@ -409,6 +409,86 @@ def test_supported_kwargs_drops_what_an_older_pywebview_does_not_take():
     assert fw.supported_kwargs(lambda **kw: None, {"a": 1}) == {"a": 1}      # **kwargs 全收
 
 
+# ---- 开浮窗别清掉共用的 WebKit 数据 ---------------------------------------------------------
+
+class FrozenKeys(dict):
+    """pywebview 的 _state（util.ImmutableDict）：已有的键能改，新键加不进去。"""
+
+    def __setitem__(self, key, value):
+        if key not in self:
+            raise KeyError(key)
+        super().__setitem__(key, value)
+
+
+def fake_webview(state=None):
+    seen = []
+
+    def create_window(title, url=None, width=800, height=600, on_top=False):
+        """pywebview 的 cocoa 在 BrowserView.__init__ 里读 private_mode：记下建窗那一刻它是什么。"""
+        seen.append(dict(module._state) if hasattr(module, "_state") else None)
+        return ("window", title, url)
+
+    module = SimpleNamespace(create_window=create_window)
+    if state is not None:
+        module._state = state
+    return module, seen
+
+
+def test_on_macos_the_float_is_created_with_private_mode_off_and_it_stays_off():
+    webview, seen = fake_webview(FrozenKeys(private_mode=True, debug=False))
+    create = fw.keep_website_data(webview, platform="darwin", version="6.2.1")
+    assert create is not webview.create_window
+    assert create("浮窗", "http://x/float", width=460) == ("window", "浮窗", "http://x/float")
+    assert seen == [{"private_mode": False, "debug": False}]       # 建窗那一刻已经关了：不会清 store
+    assert webview._state["private_mode"] is False                 # 不改回：下一次开浮窗同样不清
+    create("浮窗", "http://x/float")
+    assert [s["private_mode"] for s in seen] == [False, False]
+
+
+def test_keeping_the_data_does_not_hide_the_real_signature_from_supported_kwargs():
+    webview, _seen = fake_webview(FrozenKeys(private_mode=True))
+    create = fw.keep_website_data(webview, platform="darwin", version="6.2.1")
+    got = fw.supported_kwargs(create, {"width": 1, "screen": object(), "on_top": True})
+    assert got == {"width": 1, "on_top": True}     # 不认 screen= 的版本照样被认出来，不会因为包了一层就全收
+
+
+@pytest.mark.parametrize("platform, version", [("win32", "6.2.1"), ("linux", "6.2.1"),
+                                               ("darwin", "5.4"), ("darwin", "7.0"), ("darwin", "")])
+def test_other_platforms_and_unverified_versions_are_left_alone(platform, version):
+    webview, seen = fake_webview(FrozenKeys(private_mode=True))
+    create = fw.keep_website_data(webview, platform=platform, version=version)
+    assert create is webview.create_window
+    create("浮窗", "http://x/float")
+    assert seen == [{"private_mode": True}]
+
+
+def test_a_pywebview_without_the_state_still_opens_the_float(capsys):
+    webview, seen = fake_webview(None)
+    create = fw.keep_website_data(webview, platform="darwin", version="6.0")
+    assert create("浮窗", "http://x/float")[0] == "window" and seen == [None]
+    assert "[警告] 没能关掉 pywebview 的隐私模式" in capsys.readouterr().out
+    renamed, seen2 = fake_webview(FrozenKeys(incognito=True))      # 键改名了：不往里加新键
+    assert fw.keep_website_data(renamed, platform="darwin", version="6.0")("浮窗")[0] == "window"
+    assert seen2 == [{"incognito": True}]
+
+
+def _main_tree():
+    import ast
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
+    return ast, ast.parse(src)
+
+
+def test_main_hands_the_float_host_the_data_keeping_create_window():
+    """main.py 不能 import（会 execv），读语法树：宿主拿到的建窗函数是 keep_website_data(webview)。"""
+    ast, tree = _main_tree()
+    (call,) = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+               and getattr(n.func, "id", None) == "FloatWindowHost"]
+    first = call.args[0]
+    assert isinstance(first, ast.Call) and getattr(first.func, "id", None) == "keep_website_data"
+    assert [getattr(a, "id", None) for a in first.args] == ["webview"]
+
+
 # ---- 建窗 ---------------------------------------------------------------------------------
 
 def test_open_creates_one_window_with_the_float_url_title_and_flags():

@@ -16,6 +16,7 @@ closed 事件由 pywebview 每次新开一个线程触发，处理函数只改�
 拖动和关闭都靠不住。保留原生标题栏，拖动、缩放、关闭都是系统自带的。透明只开 macOS；别的平台
 webview 背景叠在不透明的 Form 上，并不真透，页面用不透明深色底（?solid=1）。
 """
+import functools
 import inspect
 import math
 import sys
@@ -237,6 +238,49 @@ def screens_from_webview(webview):
         except Exception:
             return []
     return read
+
+
+# ---- 开浮窗别清掉共用的 WebKit 数据（macOS） ------------------------------------------------
+# pywebview 6.2.1 的 cocoa 后端：每建一个窗口，BrowserView.__init__（主线程上）只要 _state['private_mode']
+# 是真（main.py 的 webview.start() 没传它，默认就是真），就对 WKWebsiteDataStore.defaultDataStore() 调
+# removeDataOfTypes(全部类型, 自 1970 年起)。这个 store 按 bundle id 存，整个 .app 共用一份：主页面的
+# localStorage / sessionStorage 在里面，app/webkit_fetch.py（第 2 层流地址解析，同一个 bundle 里的子进程，
+# 刻意 private_mode=False）攒下的 TikTok cookie 也在里面——它的注释写着干净的 store 有的房间 20 秒拿不到、
+# 带 cookie 2 秒就位。启动开主窗口时清一次本来就有；直播中开浮窗会再清一次，之后这次运行里的
+# WebKit 层解析（断流重连、换主播）就从空 store 开始。
+# 所以浮窗建窗之前把 private_mode 改成 False，不改回：start() 之后这个进程只会再建浮窗，cocoa 只在
+# BrowserView.__init__ 里读它一次；_state 是 ImmutableDict，改已有的键是允许的。只在 macOS、只在核对过
+# 源码的 pywebview 大版本上做；别的平台（edgechromium 读它三处，有一处在之后的异步回调里）、别的版本照旧。
+VERIFIED_PYWEBVIEW_MAJOR = "6"
+
+
+def keep_website_data(webview, platform=None, version=None):
+    """给 FloatWindowHost 用的 create_window：macOS + pywebview 6 上，建窗之前关掉 private_mode，
+    这样开浮窗不会清掉主页面和流地址解析共用的 WebKit 数据。别的情况原样返回 webview.create_window。
+    签名照旧（functools.wraps）：supported_kwargs 看的还是 pywebview 自己的参数表。"""
+    create = webview.create_window
+    if (sys.platform if platform is None else platform) != "darwin":
+        return create
+    if version is None:
+        try:
+            from importlib.metadata import version as dist_version
+            version = dist_version("pywebview")
+        except Exception:
+            version = ""
+    if str(version).split(".")[0] != VERIFIED_PYWEBVIEW_MAJOR:
+        return create
+
+    @functools.wraps(create)
+    def create_keeping_data(*args, **kwargs):
+        try:
+            state = webview._state
+            if state["private_mode"]:
+                state["private_mode"] = False
+        except Exception as exc:
+            print("[警告] 没能关掉 pywebview 的隐私模式，打开浮窗会清掉 WebKit 数据：{}".format(exc))
+        return create(*args, **kwargs)
+
+    return create_keeping_data
 
 
 def supported_kwargs(fn, kwargs):

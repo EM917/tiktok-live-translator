@@ -702,9 +702,11 @@ def run_with_window(args):
     # 「浮窗」按钮。要在开主窗口之前挂：页面一加载就会读 hello。任何失败都只是没有这个功能
     float_host = None
     try:
-        from app.float_window import FloatWindowHost, screens_from_webview
+        from app.float_window import FloatWindowHost, keep_website_data, screens_from_webview
         if state.get("pipeline") is not None:
-            float_host = FloatWindowHost(webview.create_window, url,
+            # keep_website_data：macOS 上开浮窗不再清掉共用的 WebKit 数据（主页面的 localStorage、
+            # 流地址解析攒的 cookie），见 app/float_window.py
+            float_host = FloatWindowHost(keep_website_data(webview), url,
                                          screens=screens_from_webview(webview))
             state["pipeline"].attach_float_host(float_host, state.get("loop"))
     except Exception as exc:
