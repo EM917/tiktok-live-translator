@@ -695,9 +695,11 @@ def run_with_window(args):
     url = "http://127.0.0.1:{}".format(state["ready_port"])
     from app.macbrand import brand_mac_app
     from app.window_attention import expose_attention
-    from app.window_close import guard_close, localization_kwargs, stop_after_close
+    from app.window_close import FinishOnce, guard_close, localization_kwargs, stop_after_close
     from app.window_lang import expose_window_lang
     brand_mac_app(ROOT)
+    # 关窗之后的收尾只走一遍：start() 返回后的主线程和浮窗的 10 秒兜底，谁先到谁做（app/window_close.py）
+    finish = FinishOnce(lambda: stop_after_close(state.get("loop"), state.get("pipeline")))
     # 浮窗（只显示，见 app/float_window.py）：宿主挂到管线上，hello 里才会带 float_window，顶栏才画
     # 「浮窗」按钮。要在开主窗口之前挂：页面一加载就会读 hello。任何失败都只是没有这个功能
     float_host = None
@@ -723,13 +725,10 @@ def run_with_window(args):
         guard_close(window, state.get("pipeline"))
         if float_host is not None:
             # 主窗口一关浮窗跟着关：否则 GUI 循环不退出，下面的收尾（停管线）不会执行。
-            # 兜底：浮窗销毁了 10 秒、start() 还没返回，就在这里走同样的收尾后直接退出
+            # 兜底：浮窗销毁了 10 秒、start() 还没返回，就在定时器线程里走同样的收尾后直接退出
+            # （终端留一行警告；主线程已经在收尾就什么都不做）
             from app.float_window import follow_main_window
-
-            def exit_when_stuck():
-                stop_after_close(state.get("loop"), state.get("pipeline"))
-                os._exit(0)
-            follow_main_window(window, float_host, stuck=exit_when_stuck)
+            follow_main_window(window, float_host, stuck=finish.finish_stuck)
             # 多块屏时第一次开浮窗靠它认出主窗口在哪块屏上（在开窗的工作线程里读，不碰事件循环）
             float_host.anchor = lambda: (window.x, window.width)
         # 窗口被盖住时新报警改原生标题：pywebview 的标题不跟页面的 document.title
@@ -745,9 +744,8 @@ def run_with_window(args):
         return
 
     # 窗口被关闭：记下原因、停掉直播管线（终止 ffmpeg 子进程）后退出。
-    # 停得慢时先让审计收尾，session_end 不能等进程退出
-    stop_after_close(state.get("loop"), state.get("pipeline"))
-    os._exit(0)
+    # 停得慢时先让审计收尾，session_end 不能等进程退出。浮窗的兜底已经在收尾的话，在这里等它退出进程
+    finish.finish()
 
 
 if __name__ == "__main__":

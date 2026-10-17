@@ -867,6 +867,77 @@ def test_closing_the_main_window_closes_the_float_and_arms_the_backstop():
     assert len(factory.calls) == 1                # 主窗口已经关了：不再开新的
 
 
+class Exited(BaseException):
+    """替身 os._exit：真的会结束进程，这里抛出来让调用的那条路停下。"""
+
+
+def finish_once():
+    from app.window_close import FinishOnce
+    calls = []
+
+    def finish():
+        calls.append(threading.current_thread().name)
+
+    def exit_fn(code):
+        calls.append(("exit", code))
+        raise Exited()
+
+    return FinishOnce(finish, exit_fn=exit_fn), calls
+
+
+def test_the_backstop_says_so_in_the_terminal_and_finishes_once(capsys):
+    once, calls = finish_once()
+    with pytest.raises(Exited):
+        once.finish_stuck()
+    assert calls == [threading.current_thread().name, ("exit", 0)]
+    out = capsys.readouterr().out
+    assert "[警告] 主窗口已关闭，界面循环迟迟没有退出：走兜底收尾，随后直接退出" in out
+    assert once.finish_stuck() is False and len(calls) == 2       # 再来一次：不收尾第二遍
+
+
+def test_the_normal_path_first_means_the_backstop_does_nothing(capsys):
+    once, calls = finish_once()
+    with pytest.raises(Exited):
+        once.finish()
+    assert once.finish_stuck() is False
+    assert calls == [threading.current_thread().name, ("exit", 0)]
+    assert "兜底" not in capsys.readouterr().out
+
+
+def test_the_backstop_first_means_the_main_thread_waits_instead_of_finishing_again():
+    """start() 在兜底开始收尾之后才返回：主线程不能再跑一遍 close_session（会多一条 window_closed 审计），
+    也不能先 os._exit 把兜底的收尾截断——它等着，进程由兜底那条路退出。"""
+    once, calls = finish_once()
+    with pytest.raises(Exited):
+        once.finish_stuck()
+    main = threading.Thread(target=lambda: pytest.raises(Exited, once.finish), name="main-path", daemon=True)
+    main.start()
+    main.join(0.2)
+    assert main.is_alive()                         # 还在等（真进程里兜底的 os._exit 会把它带走）
+    assert "main-path" not in calls and calls.count(("exit", 0)) == 1
+
+
+def test_main_routes_both_exit_paths_through_one_finish_once():
+    """main.py 不能 import，读语法树：兜底给的是 finish.finish_stuck，start() 之后走 finish.finish()，
+    run_with_window 里不再有自己直接调的 stop_after_close / os._exit。"""
+    ast, tree = _main_tree()
+    func = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_with_window")
+    (follow,) = [n for n in ast.walk(func) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", None) == "follow_main_window"]
+    (stuck,) = [kw.value for kw in follow.keywords if kw.arg == "stuck"]
+    assert isinstance(stuck, ast.Attribute) and stuck.attr == "finish_stuck" and stuck.value.id == "finish"
+    tail = func.body[-1]
+    assert isinstance(tail, ast.Expr) and isinstance(tail.value.func, ast.Attribute)
+    assert (tail.value.func.value.id, tail.value.func.attr) == ("finish", "finish")
+    calls = [n for n in ast.walk(func) if isinstance(n, ast.Call)]
+    stops = [n for n in calls if getattr(n.func, "id", None) == "stop_after_close"]
+    assert len(stops) == 1          # 只剩 FinishOnce 构造时传进去的那个 lambda 里的一次
+    (_lam,) = [n for n in ast.walk(func) if isinstance(n, ast.Lambda) and stops[0] in ast.walk(n)]
+    exits0 = [n for n in calls if isinstance(n.func, ast.Attribute) and n.func.attr == "_exit"
+              and [getattr(a, "value", None) for a in n.args] == [0]]
+    assert exits0 == []             # 正常退出只由 FinishOnce 做（启动失败的 os._exit(1) 不归它管）
+
+
 def test_follow_main_window_without_a_stuck_handler_or_events():
     host, _f, _s, _c = make_host()
     assert fw.follow_main_window(SimpleNamespace(), host) is False

@@ -6,6 +6,8 @@ main.py 的 run_with_window 只负责把这里的几个函数接到 pywebview �
 """
 import asyncio
 import inspect
+import os
+import threading
 
 from . import i18n
 from .i18n import L
@@ -137,3 +139,38 @@ def stop_after_close(loop, pipeline, timeout=STOP_TIMEOUT_SEC, audit_budget=AUDI
         return future.result(timeout=timeout)
     except Exception:
         return False
+
+
+class FinishOnce:
+    """关窗之后的收尾（finish，即 stop_after_close）加退出进程，只走一遍。
+
+    两条路会走到这里：webview.start() 返回之后的主线程（正常路径，finish()），和浮窗的兜底定时器
+    （app/float_window.follow_main_window：主窗口关了 10 秒 GUI 循环还没退出，finish_stuck()）。
+    start() 恰好在兜底触发前几秒才返回时，两边会各跑一遍 close_session；第二遍要是赶在第一遍停掉
+    直播之前开始，审计里会多一条 window_closed。所以先到的那条路收尾并退出进程：主线程后到就
+    等着（先到的那条会退出进程），兜底后到直接返回。"""
+
+    def __init__(self, finish, exit_fn=None):
+        self._lock = threading.Lock()
+        self._finish = finish
+        self._exit = exit_fn or os._exit
+
+    def finish(self):
+        """主线程：start() 返回之后调。兜底已经在收尾了就在这里等它退出进程。"""
+        self._lock.acquire()
+        self._run()
+
+    def finish_stuck(self):
+        """兜底定时器调：主线程已经在收尾了就什么都不做，返回 False。"""
+        if not self._lock.acquire(blocking=False):
+            return False
+        # 终端留一行：事后分得清这次关窗走的是正常路径还是兜底
+        print("[警告] 主窗口已关闭，界面循环迟迟没有退出：走兜底收尾，随后直接退出")
+        self._run()
+        return True
+
+    def _run(self):
+        try:
+            self._finish()
+        finally:
+            self._exit(0)
