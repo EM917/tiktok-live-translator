@@ -10,6 +10,7 @@
   * 报警上下文翻译借用字幕实例时（没有强模型、强模型没给出译文），请求同样带词表；
   * 只带品牌表（brands/）和主播 profile（profiles/）的词条，全局表 glossary.txt 的不带（用户要的是「字幕也
     带上品牌词表提示」；全局表是首启从公开模板复制的，里面的日常短语按语境本不该照着译）。重译照旧三层都带。
+    只加载其中一层（只选了品牌、主播没有 profile；或者只有 profile）时也一样。
 用虚构品牌 acme（brands/README.md 的例子）、虚构主播 luna，不依赖任何真实词表。测试不联网。
 """
 import shutil
@@ -40,8 +41,9 @@ def caption(p, seq=1):
     return [m for m in p.server.of("caption_update") if m["id"] == seq][-1]
 
 
-def layered(monkeypatch, tmp_path, global_text=GLOBAL, profile_text=PROFILE):
-    """三层词表各放一份，照生产 load(streamer, brand) 读进来（目录都指到 tmp_path 下）。"""
+def layered(monkeypatch, tmp_path, global_text=GLOBAL, profile_text=PROFILE, streamer="luna", brand="acme"):
+    """三层词表各放一份，照生产 load(streamer, brand) 读进来（目录都指到 tmp_path 下）。
+    streamer / brand 换成 None 或没有文件的名字，就是只有其中一层的那几种场次。"""
     root = tmp_path / "gl"
     (root / "brands").mkdir(parents=True)
     (root / "profiles").mkdir()
@@ -52,11 +54,12 @@ def layered(monkeypatch, tmp_path, global_text=GLOBAL, profile_text=PROFILE):
     monkeypatch.setattr(G, "GLOSSARY_EXAMPLE", root / "none.example.txt")
     monkeypatch.setattr(G, "BRAND_DIR", root / "brands")
     monkeypatch.setattr(G, "PROFILE_DIR", root / "profiles")
-    return G.load(streamer="luna", brand="acme")
+    return G.load(streamer=streamer, brand=brand)
 
 
-def lines(monkeypatch, tmp_path, wrapped, texts):
-    gl = layered(monkeypatch, tmp_path)
+def lines(monkeypatch, tmp_path, wrapped, texts, gl=None):
+    if gl is None:
+        gl = layered(monkeypatch, tmp_path)
 
     async def scenario():
         p = bare_pipeline(tmp_path, wrapped, engine="claude")
@@ -226,6 +229,28 @@ def test_each_hint_knows_the_layer_it_came_from(monkeypatch, tmp_path):
         (("el gel acme", "ACME 凝胶"), "profile")]
     # 直接用 Glossary(entries) 建的不知道层，整份算全局表
     assert {pr.layer for pr in G.Glossary(parse(BRAND)).translation_pairs("la crema acme")} == {"global"}
+
+
+@pytest.mark.parametrize("streamer,brand,line,layer", [
+    (None, "acme", "la crema acme = ACME 面霜", "brand"),        # 这一场只选了品牌，没传主播
+    ("ghost", "acme", "la crema acme = ACME 面霜", "brand"),     # 主播没有自己的 profile：品牌表主要就是给这种主播用的
+    ("luna", None, "la loción zeta = ZETA 乳液", "profile"),     # 有 profile，这一场没选品牌
+])
+def test_a_single_layer_session_still_tags_its_lines_and_sends_them(
+        monkeypatch, tmp_path, streamer, brand, line, layer):
+    """只加载品牌表或只加载 profile 时，那一层的词条也要记对层、进字幕请求。上面的用例都是两层一起加载的：
+    审查时把 load() 记层改成「读到品牌表才记」或「读到 profile 才记」，那些用例照样全绿，可单独一层的
+    词条会全记成全局表，字幕请求一条都不带，也不报错。"""
+    gl = layered(monkeypatch, tmp_path, streamer=streamer, brand=brand)
+    text = "la crema acme, el combo y la loción zeta"
+    assert [(pr[0], pr.layer) for pr in gl.translation_pairs(text)] == [
+        (line.split(" = ")[0], layer), ("el combo", "global")]
+    wrapped, _inner, session = subtitle_engine(monkeypatch)
+    session.responses = [Resp(200, message(text_block("面霜、套装和乳液")))]
+    lines(monkeypatch, tmp_path, wrapped, [text], gl=gl)
+    (post,) = session.posts
+    assert post["body"]["system"] == SYSTEM_SLANG + BLOCK + line
+    assert not (tmp_path / "gl" / "profiles" / "ghost.txt").exists()   # 没有模板的主播不会凭空建出文件
 
 
 def test_a_global_glossary_phrase_stays_out_of_the_subtitle_request(monkeypatch, tmp_path):
