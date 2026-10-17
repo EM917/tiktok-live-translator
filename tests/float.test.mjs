@@ -483,6 +483,52 @@ test("角标在字幕上面：字幕区从下面裁，状态行永远裁不到�
   assert.ok(!/margin-top/.test(rule(".f-chip")), "角标在最上面，不要再往下推");
 });
 
+test("小字的对比度：窗口透明、盖在白色或黑色的软件上，都在 4.5:1 以上", () => {
+  // macOS 上窗口本身透明、没有模糊，页面的 rgba 底直接按 alpha 叠在下面的东西上。浮窗正是要盖在
+  // 白色的 TikTok 页面、表格上用的，所以最坏的背景是纯白。颜色全从 float.css 里读，改了就重算
+  const css = readFileSync(new URL("../web/float.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const token = (name) => new RegExp(name + ":\\s*([^;]+);").exec(css)[1].trim();
+  const rule = (sel) => {
+    const m = new RegExp("(?:^|\\n)" + sel.replace(/\./g, "\\.") + "\\s*\\{([^}]*)\\}").exec(css);
+    assert.ok(m, "float.css 里找不到 " + sel);
+    return m[1];
+  };
+  const decl = (sel, prop) => new RegExp("(?:^|[;{\\s])" + prop + ":\\s*([^;]+)").exec(rule(sel))[1].trim();
+  const color = (v) => {
+    v = v.startsWith("var(") ? token(/var\((--[\w-]+)\)/.exec(v)[1]) : v;
+    let m = /^#([0-9a-f]{6})$/i.exec(v);
+    if (m) return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)).concat(1);
+    m = /^rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)$/.exec(v);
+    assert.ok(m, "认不出的颜色：" + v);
+    return [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+  };
+  const over = (fg, bg) => [0, 1, 2].map((i) => fg[3] * fg[i] + (1 - fg[3]) * bg[i]).concat(1);
+  const lum = (c) => {
+    const [r, g, b] = c.slice(0, 3).map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  const layers = (behind, ...bgs) => bgs.reduce((acc, bg) => over(color(bg), acc), behind);
+  const bodyBg = decl("body", "background");
+  const pairs = [
+    ["正文的暗字（原文、昵称、约 N 秒前）", decl(".f-small", "color"), [bodyBg]],
+    ["角标", decl(".f-chip", "color"), [bodyBg, decl(".f-chip", "background")]],
+    ["角标·没译成", decl(".f-chip.fail", "color"), [bodyBg, decl(".f-chip.fail", "background")]],
+    ["连接中…", decl(".f-conn", "color"), [bodyBg, decl(".f-chip", "background")]],
+    ["红色类别胶囊", decl(".guard-pill.alert", "color"), [bodyBg, decl(".f-cmt.guard-alert", "background"), decl(".guard-pill.alert", "background")]],
+    ["琥珀胶囊", decl(".guard-pill.amber", "color"), [bodyBg, decl(".f-cmt.guard-amber", "background"), decl(".guard-pill.amber", "background")]],
+    ["红行里的说明", decl(".f-cmt.guard-alert .guard-note", "color"), [bodyBg, decl(".f-cmt.guard-alert", "background")]],
+    ["琥珀行里的说明", decl(".guard-note", "color"), [bodyBg, decl(".f-cmt.guard-amber", "background")]],
+  ];
+  for (const [behindName, behind] of [["白底", [255, 255, 255, 1]], ["黑底", [0, 0, 0, 1]]]) {
+    for (const [name, fg, bgs] of pairs) {
+      const bg = layers(behind, ...bgs);
+      const got = ratio(over(color(fg), bg), bg);
+      assert.ok(got >= 4.5, behindName + "上的「" + name + "」只有 " + got.toFixed(2) + ":1");
+    }
+  }
+});
+
 test("float.js 里没有 send，也没有任何往服务端发东西的写法", () => {
   const src = readFileSync(new URL("../web/float.js", import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
