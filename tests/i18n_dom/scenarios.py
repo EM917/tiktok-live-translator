@@ -54,7 +54,13 @@ PHONE = (390, 844)
 FLOAT = (460, 330)                             # 浮窗的默认大小（app/float_window.py DEFAULT_SIZE）
 LIVE_WIDTHS = (1000, 1100, 1101, 1199, 1200)   # 版面断言的五档（spec §12.3 第 7 条）
 NARROW_WIDTHS = (860, 720)                     # 这两档只断言 .topbar 不溢出
-DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm")
+# 中文页「浮窗」两个字（web/style.css 的 html[lang^="zh"] 那一段，docs/i18n-style.md §4.2）的六档：
+# 1000 / 1100 是露字范围的两头，1101 是「手机同看」露出文字之后仍是只有图标的第一档，1140 是第二段露字的起点，
+# 1399 是它的另一头，1400 起图标加文字
+ZH_FLOAT_WIDTHS = (1000, 1100, 1101, 1140, 1399, 1400)
+ZH_QUIET_BRAND = "Bella All Natural"           # §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限
+DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
+                   "#float-btn", "#float-btn .btn-label", "#float-btn .i")
 GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
                  ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
@@ -577,6 +583,18 @@ def with_float_button(scenario, name):
     return out
 
 
+def zh_quiet(scenario, name):
+    """中文的直播中场景，报警关着（顶栏没有「报警开」标签）、品牌是 ZH_QUIET_BRAND：「浮窗」两个字才露得出来。
+    live-full-zh 是满编（报警开、BRAND_ZH），顶栏已经满了，按钮在那里是只有图标（has-alert-tag）；
+    docs/i18n-style.md §4.2 的余量表按这里的基线算（报警关、品牌标签约 143px）。"""
+    out = copy.deepcopy(scenario)
+    out["name"] = name
+    config = out["messages"][0]["config"]
+    config["alerts_enabled"] = False
+    config["active_brand"] = {"id": BRAND_ID, "name": ZH_QUIET_BRAND}
+    return out
+
+
 def resized(scenario, width, height=None):
     """同一个场景换一个窗口大小：live-full@1100 这样命名。"""
     out = copy.deepcopy(scenario)
@@ -601,4 +619,12 @@ def build(tmp):
         for width in LIVE_WIDTHS + NARROW_WIDTHS:
             sc = resized(out[base], width)
             out[sc["name"]] = sc
+    # 中文页的浮窗按钮：满编（报警开）的 1000px 一档，和报警关着的六档（ZH_FLOAT_WIDTHS）
+    out["live-float-zh"] = with_float_button(out[CONTROL_ZH], "live-float-zh")
+    out["live-float-zh-quiet"] = zh_quiet(out["live-float-zh"], "live-float-zh-quiet")
+    sc = resized(out["live-float-zh"], 1000)
+    out[sc["name"]] = sc
+    for width in ZH_FLOAT_WIDTHS:
+        sc = resized(out["live-float-zh-quiet"], width)
+        out[sc["name"]] = sc
     return out

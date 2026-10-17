@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=43">
+  <link rel="stylesheet" href="/static/style.css?v=44">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -165,7 +165,9 @@
       <!-- 浮窗：把最新一条字幕和最近几条弹幕放进一个始终在最上面的小窗（app/float_window.py），
            开着时按钮变绿。只在桌面应用窗口里、监听中/连接中才露出：config.float_window.available 由 main.py 在窗口模式
            挂上宿主时才有（--browser 模式没有这个键），显示规则同下面的换主播（见 app.js updateFloatBtn）。
-           顶栏放不下文字，窄于 1400px 只留图标（文字视觉隐藏，读屏照念，同 #share-btn）。 -->
+           顶栏放不下图标加文字，窄于 1400px 只留图标（文字视觉隐藏，读屏照念，同 #share-btn）；
+           中文页放得下「浮窗」两个字的宽度（1000–1100px、1140–1399px，且「报警开」标签没亮）露出文字、去掉图标，
+           见 style.css 的 html[lang^="zh"] 那一段。 -->
       <button id="float-btn" class="btn float-btn hidden" type="button" aria-pressed="false"
               title="在始终置顶的小窗里看最新字幕和弹幕"
               data-en-title="Show the latest caption and comments in a window that stays on top">
@@ -774,6 +776,6 @@
   <script src="/static/settings-rows.js?v=3"></script>
   <script src="/static/live-ui.js?v=3"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/app.js?v=73"></script>
+  <script src="/static/app.js?v=74"></script>
 </body>
 </html>

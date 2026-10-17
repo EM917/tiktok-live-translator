@@ -3302,6 +3302,9 @@
     var show = streamActive && alertsEnabled;
     alertModeTag.classList.toggle("hidden", !show);
     if (show) alertModeTag.textContent = L("报警开", "Alerts on");
+    // 标签在 .brand 里，「浮窗」按钮在 .controls 里，样式选不到兄弟的兄弟：标签亮着时由 body 的类告诉样式表，
+    // 顶栏已经没有余量给「浮窗」两个字（style.css 的 has-alert-tag）
+    document.body.classList.toggle("has-alert-tag", !!show);
   }
 
   // 本场品牌标签：config.active_brand（{id, name} 或 null）来自 hello/config

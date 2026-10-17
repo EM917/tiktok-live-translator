@@ -707,6 +707,74 @@ def test_live_top_bar_fits(dom, base, width):
     assert not problems, "\n".join(problems)
 
 
+# 中文页的「浮窗」按钮（web/style.css 的 html[lang^="zh"] 那一段，docs/i18n-style.md §4.2）：
+# 宽度 -> (两个字露出, 图标露出)。1000–1100 和 1140–1399 去图标露字；1101 起「手机同看」露出文字，
+# 按钮带字会超出余量，仍是只有图标；1400 起图标加文字
+def _body_classes(html):
+    """--dump-dom 里 <body> 开标签上的类（顺序不论）。"""
+    tag = re.search(r"<body\b[^>]*>", html)
+    return _classes(tag.group(0)) if tag else []
+
+
+ZH_FLOAT_SHAPE = {1000: (True, False), 1100: (True, False), 1101: (False, True),
+                  1140: (True, False), 1399: (True, False), 1400: (True, True)}
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("width", S.ZH_FLOAT_WIDTHS)
+def test_zh_float_button_shows_its_label_where_it_fits(dom, width):
+    """报警关着的中文直播顶栏（品牌 Bella All Natural，和 §4.2 的余量表同一个基线）：
+    顶栏不溢出、状态字不被截（中文页的品牌标签只比状态胶囊先缩一倍，余量为负时主播名先被截）、品牌标签下限同英文页、
+    「浮窗」两个字和图标露不露出符合表里的宽度范围，只有字的按钮约 46px 宽。"""
+    result = dom.scan("live-float-zh-quiet@{}".format(width))
+    got = result["measure"]
+    label_shown, icon_shown = ZH_FLOAT_SHAPE[width]
+    problems = []
+
+    def need(ok, what):
+        if not ok:
+            problems.append(what)
+
+    need(result["viewport"]["width"] == width, "窗口不是 {}px 宽：{}".format(width, result["viewport"]))
+    bar, status, button = got[".topbar"], got[".status-text"], got["#float-btn"]
+    label, icon = got["#float-btn .btn-label"], got["#float-btn .i"]
+    need(bar and bar["scrollWidth"] <= bar["clientWidth"], ".topbar 溢出 {}".format(bar))
+    need(status and status["scrollWidth"] <= status["clientWidth"] + 1, ".status-text 被截 {}".format(status))
+    need(status and status["textWidth"] <= status["innerWidth"] + 0.01,
+         ".status-text 文字比盒子宽（省略号已出现） {}".format(status))
+    brand = got["#active-brand-tag"]
+    floor = 100 if width == 1000 else 120 if 1101 <= width <= 1199 else 0
+    need(brand and brand["width"] >= floor, "#active-brand-tag 窄于 {}px {}".format(floor, brand))
+    need(button and button["width"] > 0, "浮窗按钮没露出 {}".format(button))
+    # 视觉隐藏的文字是 1px 宽；露出来的两个 13px 汉字是 26px
+    need(label and (label["width"] >= 20) == label_shown,
+         "「浮窗」两个字应{}露出 {}".format("" if label_shown else "不", label))
+    need(icon and (icon["width"] > 0) == icon_shown, "图标应{}露出 {}".format("" if icon_shown else "不", icon))
+    if label_shown and not icon_shown:
+        need(button and 40 <= button["width"] <= 52, "只有字的按钮应约 46px 宽 {}".format(button))
+    body = _body_classes(result["dom"])
+    need("has-float-btn" in body and "has-alert-tag" not in body, "body 的类不对（该有 has-float-btn、没有 has-alert-tag）：{}".format(body))
+    assert not problems, "\n".join(problems)
+
+
+@needs_chrome
+@needs_mac
+def test_zh_float_button_gives_way_to_the_alert_tag(dom):
+    """满编（报警开、长品牌名）的中文 1000px：「报警开」标签亮着，body 带 has-alert-tag，「浮窗」退回只有图标。
+    不断言状态字不被截：这一档在没有浮窗按钮时就只有 −4px，只有图标的按钮再多 −12px（§4.2），这一条不是这次引入的。"""
+    result = dom.scan("live-float-zh@1000")
+    got = result["measure"]
+    body = _body_classes(result["dom"])
+    assert "has-alert-tag" in body and "has-float-btn" in body, "body 的类不对：{}".format(body)
+    bar, label, icon = got[".topbar"], got["#float-btn .btn-label"], got["#float-btn .i"]
+    brand = got["#active-brand-tag"]
+    assert bar and bar["scrollWidth"] <= bar["clientWidth"], ".topbar 溢出 {}".format(bar)
+    assert label and label["width"] < 20, "报警标签亮着，「浮窗」两个字该是视觉隐藏的 {}".format(label)
+    assert icon and icon["width"] > 0, "报警标签亮着，图标该露出 {}".format(icon)
+    assert brand and brand["width"] >= 100, "#active-brand-tag 窄于 100px {}".format(brand)
+
+
 @needs_chrome
 @needs_mac
 @pytest.mark.parametrize("name", S.PHONE_EN)
@@ -867,6 +935,36 @@ def test_the_float_button_scenario_differs_from_live_full_only_by_the_config_key
     for width in S.LIVE_WIDTHS + S.NARROW_WIDTHS:       # 每档宽度两个基础场景都有
         assert built["live-float@{}".format(width)]["size"][0] == width
         assert built["live-full@{}".format(width)]["size"][0] == width
+
+
+def test_the_chinese_float_scenarios_differ_from_the_chinese_control_only_where_they_say(tmp_path):
+    """中文页的浮窗场景（顶栏「浮窗」两个字的 G10）：live-float-zh 是 live-full-zh 加 config.float_window；
+    live-float-zh-quiet 再把报警关掉、品牌换成 §4.1 基线的 Bella All Natural，别的一样。"""
+    built = S.build(tmp_path)
+    control, zh, quiet = built[S.CONTROL_ZH], built["live-float-zh"], built["live-float-zh-quiet"]
+    assert zh["lang"] == quiet["lang"] == "zh" and zh["page"] == quiet["page"] == "desktop"
+    assert control["messages"][0]["config"]["alerts_enabled"] is True        # 满编：报警开着
+    assert zh["messages"][0]["config"]["float_window"] == {"available": True, "open": False}
+    stripped = json.loads(json.dumps(zh))
+    del stripped["messages"][0]["config"]["float_window"]
+    stripped["name"] = control["name"]
+    assert stripped == control
+    assert quiet["messages"][0]["config"]["float_window"] == {"available": True, "open": False}
+    assert quiet["messages"][0]["config"]["alerts_enabled"] is False
+    assert quiet["messages"][0]["config"]["active_brand"] == {"id": S.BRAND_ID, "name": S.ZH_QUIET_BRAND}
+    rest = json.loads(json.dumps(quiet))
+    for key, value in (("alerts_enabled", True), ("active_brand", zh["messages"][0]["config"]["active_brand"])):
+        rest["messages"][0]["config"][key] = value
+    rest["name"] = zh["name"]
+    assert rest == zh
+    assert built["live-float-zh@1000"]["size"][0] == 1000
+    assert built["live-float-zh@1000"]["messages"][0]["config"]["alerts_enabled"] is True
+    for width in S.ZH_FLOAT_WIDTHS:
+        sc = built["live-float-zh-quiet@{}".format(width)]
+        assert sc["size"][0] == width and sc["messages"][0]["config"]["alerts_enabled"] is False
+    assert set(S.ZH_FLOAT_WIDTHS) == set(ZH_FLOAT_SHAPE)       # 每一档宽度都有预期的样子
+    for selector in ("#float-btn", "#float-btn .btn-label", "#float-btn .i", ".topbar", ".status-text"):
+        assert selector in built["live-float-zh@1000"]["measure"]
 
 
 def test_float_scenario_is_what_the_float_connection_really_receives(tmp_path):
