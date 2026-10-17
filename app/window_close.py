@@ -7,6 +7,7 @@ main.py 的 run_with_window 只负责把这里的几个函数接到 pywebview �
 import asyncio
 import inspect
 import os
+import sys
 import threading
 
 from . import i18n
@@ -141,6 +142,22 @@ def stop_after_close(loop, pipeline, timeout=STOP_TIMEOUT_SEC, audit_budget=AUDI
         return False
 
 
+def flush_evidence():
+    """os._exit 之前调（关窗口的 FinishOnce，和 main.py 里另外几处 os._exit）：还没写完的识别证据音频
+    最多再等 2 秒（app/asr_evidence.flush_pending）。证据在每一场自己的证据线程里写，os._exit 不等任何
+    线程，不等就跟着进程没了。返回没等到的份数。
+
+    这个进程没加载过证据模块就没有要等的，也不为了退出去 import 它（会连带 import numpy）。退出路上
+    任何异常——包括等的时候又按了一次 Ctrl-C——都不许拦住退出，一概吞掉。"""
+    module = sys.modules.get("app.asr_evidence")
+    if module is None:
+        return 0
+    try:
+        return module.flush_pending()
+    except BaseException:
+        return 0
+
+
 class FinishOnce:
     """关窗之后的收尾（finish，即 stop_after_close）加退出进程，只走一遍。
 
@@ -173,4 +190,6 @@ class FinishOnce:
         try:
             self._finish()
         finally:
+            # 停止流程收尾时只等了证据写盘 1 秒（Pipeline._evidence_drain）：退出前再给没写完的一点时间
+            flush_evidence()
             self._exit(0)

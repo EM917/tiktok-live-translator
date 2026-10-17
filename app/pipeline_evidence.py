@@ -61,7 +61,7 @@ class AsrEvidenceMixin:
             return meta
 
     def _evidence_after_segment(self, seq, result, risk, hits, audio_end_ts, meta, sess):
-        """识别出一段之后：记住它（手动重译要回头找），该存的交给线程池去写。"""
+        """识别出一段之后：记住它（手动重译要回头找），该存的交给这一场自己的证据线程去写。"""
         recorder = sess.get("evidence") if isinstance(sess, dict) else None
         if recorder is None:
             return

@@ -2,15 +2,19 @@
 
 钉住：默认开、只存四类段（被标记的、命中违禁词的——含警示关闭时被抑制的、桌面上点了重译的、
 每 50 段 1 段对照）；环形缓冲找不回的只计数；写盘和清理在这一场自己的证据线程里（单线程、先交的
-先做）、不挡事件循环，收尾放掉线程但不丢排着的写盘；报警广播在前、证据在后，广播中途被停止也照存；
+先做）、不挡事件循环，收尾放掉线程但不丢排着的写盘，进程退出（os._exit）前没写完的再等最多 2 秒、
+事件循环关了之后才写完也不在终端刷 traceback；报警广播在前、证据在后，广播中途被停止也照存；
 自己结束的场次收尾时被停止，session_end 仍由这一场自己写、记真正的原因；写失败只计数并打一行
 中文警告；300 MB / 2000 个文件 / 14 天的上限从最旧的整场删起、当前这场永远不删；磁盘剩不到 1 GB
 就不存；证据只在 logs/ 底下（不在 web/，.gitignore 盖住）；「存储」那一行看得到、删得掉，界面文字
 成对；中英两种界面下审计和终端逐字节相同（G8）。全程不联网、不起 ffmpeg、不加载模型。
 """
+import ast
 import asyncio
+import concurrent.futures
 import json
 import os
+import sys
 import threading
 import time
 import wave
@@ -20,7 +24,7 @@ import numpy as np
 import pytest
 
 import app.audio
-from app import asr_evidence, diskspace, i18n
+from app import asr_evidence, diskspace, i18n, window_close
 from app.asr_evidence import EvidenceRecorder, FrameRing, load_config, prune
 from app.audio import FRAME_BYTES
 from app.audit import AuditLog
@@ -369,6 +373,36 @@ def test_a_failed_wav_is_not_referenced_and_leaves_no_tmp(monkeypatch, tmp_path,
     assert capsys.readouterr().out.count("[警告] 识别证据音频没存下来") == 1
 
 
+def test_the_first_retranslate_after_a_failed_wav_saves_it_again(monkeypatch, tmp_path):
+    """wav 写失败、失败已经落定之后才点重译：第一次点就从缓冲里重新存一份 wav。写失败那一刻就要把它从
+    「已存」里拿掉——只靠补索引时查文件在不在兜底，这一下只会补一行 wav 为 null 的索引，要再点一次才
+    存得下音频（审查的变异 M10b：删掉失败分支里那一句，别的测试全绿）。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+    real = asr_evidence._write_wav
+
+    def broken(path, pcm):
+        asr_evidence._tmp_of(path).write_bytes(b"RIFF half")
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(asr_evidence, "_write_wav", broken)
+
+    async def go():
+        recorder = await _feed(p, sess, 200, [(result("x", lp=-2.0), 150, 30)])   # 等到写失败
+        failed = recorder.summary()["failed"]
+        monkeypatch.setattr(asr_evidence, "_write_wav", real)                    # 磁盘又能写了
+        await p.retranslate(1, trigger="manual")
+        await recorder.drain()
+        return recorder, failed
+
+    recorder, failed = run(go())
+    assert failed == 1
+    assert [(r["reasons"], r["wav"]) for r in _index(recorder)] == [(["retranslate"],
+                                                                      "seq-000001.wav")]
+    assert sorted(f.name for f in recorder.dir.iterdir()) == ["index.jsonl", "seq-000001.wav"]
+    s = recorder.summary()
+    assert (s["failed"], s["saved"], s["index_only"]) == (1, 1, 0)
+
+
 def test_switched_off_means_no_ring_and_no_files(monkeypatch, tmp_path):
     monkeypatch.setenv("TLT_ASR_EVIDENCE", "0")
     p, _, sess = _session(monkeypatch, tmp_path)
@@ -648,6 +682,162 @@ def test_closing_keeps_queued_writes_and_lets_the_thread_go(monkeypatch, tmp_pat
                                                                    "seq-000002.wav"]
     seen["thread"].join(2)
     assert not seen["thread"].is_alive()
+
+
+# ---- 进程退出 -----------------------------------------------------------------------------------
+
+def _stuck_when_the_loop_closes(monkeypatch, tmp_path):
+    """一场收尾（drain 等不完、取计数、close）时还有一份 wav 卡在证据线程里，然后事件循环关掉
+    （asyncio.run 返回）——浏览器模式按 Ctrl-C、走到 os._exit 之前就是这样。返回 (recorder, gate)，
+    gate.set() 放那份写下去。_inflight 换成这条测试自己的：别的测试留下的活不算进来。"""
+    monkeypatch.setattr(asr_evidence, "_inflight", set())
+    p, _, sess = _session(monkeypatch, tmp_path)
+    gate = threading.Event()
+    real = asr_evidence._write_wav
+
+    def stuck(path, pcm):
+        gate.wait(5)
+        real(path, pcm)
+
+    monkeypatch.setattr(asr_evidence, "_write_wav", stuck)
+
+    async def go():
+        recorder = p._evidence_round(sess)
+        await recorder.drain()                         # 开场清理先做完
+        for i in range(200):
+            recorder.feed(frame(i))
+        await _flagged(p, sess, recorder, (150,))
+        left = await recorder.drain(0.05)              # 收尾的 drain（Pipeline._evidence_drain）等不完
+        return recorder, left, p._evidence_summary(sess)
+
+    recorder, left, summary = run(go())
+    assert left == 1 and summary["pending"] == 1
+    assert not (recorder.dir / "seq-000001.wav").exists()
+    return recorder, gate
+
+
+def test_writes_still_queued_when_the_loop_closes_land_before_the_process_exits(monkeypatch,
+                                                                                 tmp_path):
+    """os._exit 不等任何线程，asyncio.run 收尾也只等默认线程池：收尾的 drain 没等完的那份，退出前由
+    flush_evidence 再等一会儿（main.py 的 Ctrl-C 和后台异常退出、关窗口的 FinishOnce 都调它）。以前
+    Ctrl-C 那条路上排着的 wav 和索引行跟着进程一起没了。"""
+    recorder, gate = _stuck_when_the_loop_closes(monkeypatch, tmp_path)
+    threading.Timer(0.2, gate.set).start()
+    t0 = time.monotonic()
+    assert window_close.flush_evidence() == 0
+    assert time.monotonic() - t0 < asr_evidence.EXIT_FLUSH_SEC
+    assert (recorder.dir / "seq-000001.wav").exists()
+    assert [r["reasons"] for r in _index(recorder)] == [["flagged"]]
+    # 从 _inflight 拿掉是做完之后的回调，在证据线程里、flush 返回之后才跑：等线程退出再看
+    recorder._pool.shutdown(wait=True)
+    assert asr_evidence._inflight == set()
+
+
+def test_the_exit_flush_is_bounded_and_says_how_many_it_left(monkeypatch, tmp_path, capsys):
+    """磁盘一直卡着也只多等 EXIT_FLUSH_SEC：关窗口本来就最多等 5 秒停止流程。没等到的在终端说一句（中文），
+    不悄悄少；调用方给再长的时限也截到上限。"""
+    recorder, gate = _stuck_when_the_loop_closes(monkeypatch, tmp_path)
+    monkeypatch.setattr(asr_evidence, "EXIT_FLUSH_SEC", 0.2)
+    capsys.readouterr()
+    try:
+        t0 = time.monotonic()
+        left = asr_evidence.flush_pending(30)
+        spent = time.monotonic() - t0
+    finally:
+        gate.set()
+    assert left == 1 and 0.15 < spent < 1.5
+    assert capsys.readouterr().out == "[警告] 退出时还有 1 份识别证据音频没写完，不再等\n"
+    recorder._pool.shutdown(wait=True)                 # 不再等不等于取消：放行之后照样写完
+    assert (recorder.dir / "seq-000001.wav").exists() and asr_evidence._inflight == set()
+
+
+def test_a_write_that_finishes_after_the_loop_closed_prints_no_traceback(monkeypatch, tmp_path,
+                                                                         caplog, capfd):
+    """事件循环关了之后才写完：Python 3.9（CI 和最低支持版本）上 run_in_executor 交的活这时会往终端刷
+    一段英文 traceback（exception calling callback … Event loop is closed），新一些的 asyncio 才会先看
+    循环关没关。终端只许有中文行。"""
+    recorder, gate = _stuck_when_the_loop_closes(monkeypatch, tmp_path)
+    capfd.readouterr()
+    caplog.clear()
+    gate.set()
+    assert asr_evidence.flush_pending(5) == 0
+    # 做完之后的回调在证据线程里、flush 返回之后才跑：等线程退出，回调一定跑过了
+    recorder._pool.shutdown(wait=True)
+    assert (recorder.dir / "seq-000001.wav").exists()
+    assert [r.getMessage() for r in caplog.records] == []
+    out, err = capfd.readouterr()
+    assert out == "" and err == ""
+
+
+def test_handing_back_to_a_loop_that_closes_right_then_is_swallowed(monkeypatch):
+    """查的时候循环还开着、交的那一下刚好关掉：call_soon_threadsafe 抛 RuntimeError，接住；已经关了就不交。"""
+    monkeypatch.setattr(asr_evidence, "_inflight", set())
+    calls = []
+
+    class Closing:
+        def is_closed(self):
+            return False
+
+        def call_soon_threadsafe(self, *a):
+            calls.append(a)
+            raise RuntimeError("Event loop is closed")
+
+    job = concurrent.futures.Future()
+    asr_evidence._inflight.add(job)
+    asr_evidence._hand_back(Closing(), None, job)
+    assert len(calls) == 1 and asr_evidence._inflight == set()
+    closed = asyncio.new_event_loop()
+    closed.close()
+    asr_evidence._hand_back(closed, None, job)             # 关了：不交，也不抛
+
+
+def test_closing_the_window_flushes_the_evidence_before_the_process_exits(monkeypatch):
+    """关窗口（正常路径和浮窗的兜底都走 FinishOnce）：停止流程收尾之后、os._exit 之前等一会儿证据。"""
+    calls = []
+    monkeypatch.setattr(window_close, "flush_evidence", lambda: calls.append("flush"))
+    once = window_close.FinishOnce(lambda: calls.append("finish"),
+                                   exit_fn=lambda code: calls.append(("exit", code)))
+    once.finish()
+    assert calls == ["finish", "flush", ("exit", 0)]
+
+
+def test_the_exit_flush_neither_imports_the_evidence_module_nor_blocks_the_exit(monkeypatch):
+    """没加载过证据模块就没有要等的，也不为了退出去 import 它（会连带 numpy）；等的时候出任何事——
+    包括又按了一次 Ctrl-C——都不拦住退出。"""
+    class SecondCtrlC(BaseException):
+        """替身 KeyboardInterrupt（也不是 Exception）：真抛 KeyboardInterrupt，漏出来会把整个 pytest 停掉。"""
+
+    def interrupted(*_a, **_k):
+        raise SecondCtrlC()
+
+    monkeypatch.setattr(asr_evidence, "flush_pending", interrupted)
+    assert window_close.flush_evidence() == 0
+    # 两处都拿掉：from . import 会先拿包上的属性，只删 sys.modules 看不出它 import 了没有
+    monkeypatch.delitem(sys.modules, "app.asr_evidence")
+    monkeypatch.delattr(app, "asr_evidence")
+    assert window_close.flush_evidence() == 0
+    assert "app.asr_evidence" not in sys.modules and not hasattr(app, "asr_evidence")
+
+
+def test_every_os_exit_in_main_flushes_the_evidence_first():
+    """main.py 不能 import（会 execv），读语法树：每一处 os._exit 之前，同一段语句里先调了
+    flush_evidence()。关窗口那条路的 os._exit 在 FinishOnce 里（上上一条测试）。"""
+    def calls(stmt, name):
+        return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                and name in (getattr(stmt.value.func, "attr", None),
+                             getattr(stmt.value.func, "id", None)))
+
+    tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
+    exits = []
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            stmts = getattr(node, field, None)
+            if not isinstance(stmts, list):
+                continue
+            for i, stmt in enumerate(stmts):
+                if calls(stmt, "_exit"):
+                    exits.append(any(calls(prev, "flush_evidence") for prev in stmts[:i]))
+    assert len(exits) >= 3 and all(exits), exits
 
 
 # ---- 报警与证据 ---------------------------------------------------------------------------------

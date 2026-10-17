@@ -18,7 +18,8 @@
   * 内存里只留最近 ring_sec 秒（默认 600 秒，约 19 MB）的降噪后 PCM：线上 212 次手动重译，
     点击时距那段音频结束 ≤ 600 秒的占 99%；
   * 拷 PCM 在事件循环里做（只是切一段 bytes），写文件和清理交给这一场自己的证据线程（单线程、先交的先做，
-    见 EvidenceRecorder._submit），不用识别的线程池，也不用默认线程池；
+    见 EvidenceRecorder._submit），不用识别的线程池，也不用默认线程池；进程退出（os._exit）之前
+    还没写完的最多再等 2 秒（flush_pending）；
   * 出错只计数、终端打一行中文 [警告]（一场只打一次），绝不抛给调用方；
   * 磁盘剩不到 1 GB 就不存，空间留给审计；
   * 保留上限三条（300 MB / 2000 个文件 / 14 天），到了任何一条就从最旧的整场目录删起，
@@ -32,6 +33,8 @@
 app/diskspace.py。
 """
 import asyncio
+import concurrent.futures
+import functools
 import json
 import os
 import shutil
@@ -60,6 +63,13 @@ DISK_LOW_BYTES = 1024 ** 3       # 同 Pipeline.DISK_LOW_BYTES：剩这么多就
 # 换页就是 08-31 那种识别 38–55 秒一段，内存不够则读流的协程直接崩、整场不再收音频
 RING_SEC_MAX = 1800
 THREAD_NAME = "asr-evidence"     # 证据线程的名字前缀（ThreadPoolExecutor 的 thread_name_prefix）
+# 进程退出前最多等还没写完的证据这么久（flush_pending）。平时一份几毫秒就写完，这里只兜磁盘一时卡住的
+# 那几份；关窗口本来就最多等 5 秒停止流程（app/window_close.py），不能再被它拖长太多
+EXIT_FLUSH_SEC = 2.0
+# 所有场次交给证据线程、还没做完的活（concurrent.futures.Future），flush_pending 等的就是它们。
+# 进程退出不会替我们等：os._exit 不等任何线程，asyncio.run 收尾也只等默认线程池
+_inflight = set()
+_inflight_lock = threading.Lock()
 
 DEFAULTS = {"on": True, "max_mb": 300, "max_files": 2000, "days": 14, "ring_sec": 600,
             "control_every": 50}
@@ -274,6 +284,53 @@ def _write_wav(path, pcm):
     os.replace(str(tmp), str(path))
 
 
+def _hand_back(loop, done, job):
+    """证据线程做完一件活之后调（活交出去之前就做完了，在交活的线程里调）：从 _inflight 拿掉，再告诉
+    事件循环（drain 在等 done）。
+
+    事件循环可能已经关了：asyncio.run 返回之后、进程退出之前才写完的那几份。以前用 run_in_executor，
+    Python 3.9（CI 和最低支持版本）这时会往终端刷一段英文 traceback（exception calling callback …
+    Event loop is closed），新一些的 asyncio 才会先看循环关没关——终端只许有中文行。所以自己交回去：
+    循环关了就不交；查完到交之间刚好关掉的 RuntimeError 也接住。写完的文件早已落盘，不交回去什么都不丢。"""
+    with _inflight_lock:
+        _inflight.discard(job)
+    if loop.is_closed():
+        return
+    try:
+        loop.call_soon_threadsafe(_settle, done)
+    except RuntimeError:
+        pass
+
+
+def _settle(done):
+    """事件循环上：标记这件活做完了。活自己的错误 _write / _prune_locked_safe 已经接住、计数、打过警告，
+    done 只表示「做完了」，不带结果也不带异常。"""
+    if not done.done():
+        done.set_result(None)
+
+
+def flush_pending(timeout=EXIT_FLUSH_SEC):
+    """进程马上要 os._exit 了（main.py 的 Ctrl-C、关窗口、后台服务异常退出）：最多等 timeout 秒
+    （不超过 EXIT_FLUSH_SEC），让所有场次还排着、还在写的证据写完。返回没等到的份数，不是 0 就在终端
+    打一行——不悄悄少。不碰事件循环（它多半已经关了，或者在另一个线程里转），不抛异常。
+
+    为什么要有：os._exit 不等任何线程。证据以前在默认线程池里写，浏览器模式按 Ctrl-C 时 asyncio.run
+    收尾会等默认线程池，排着的照样写完；换成这一场自己的证据线程之后没人等，收尾的 drain
+    （Pipeline._evidence_drain，1 秒）没等完的 wav 和索引行就跟着进程没了。"""
+    with _inflight_lock:
+        jobs = list(_inflight)
+    if not jobs:
+        return 0
+    try:
+        wait = max(0.0, min(float(timeout), EXIT_FLUSH_SEC))
+        _done, left = concurrent.futures.wait(jobs, timeout=wait)
+    except Exception:
+        left = jobs
+    if left:
+        print("[警告] 退出时还有 {} 份识别证据音频没写完，不再等".format(len(left)))
+    return len(left)
+
+
 class EvidenceRecorder:
     """一场直播的证据。挂在这一场自己的会话状态上（Pipeline._new_session_state 那一份），
     晚到的旧任务写不进下一场的目录。环形缓冲一轮流一份，重连就是新的一轮。"""
@@ -426,20 +483,29 @@ class EvidenceRecorder:
         默认线程池、靠 _io_lock 排队，可锁不保证先来先得：wav 还在等锁（后来因为磁盘不够跳过了），排在
         它后面交的重译索引先拿到锁，写出一行指向不存在的 wav（审查复现：线程池里有闲着的线程时，200 次
         里几十次）。不用识别的线程池，也不用默认线程池（别的功能也往里排）。线程第一次交活时才起；收尾
-        （close）之后不再收，返回 None。"""
+        （close）之后不再收，返回 None。
+
+        不用 run_in_executor：活还记进模块级的 _inflight，进程退出前 flush_pending 能等到它；做完了怎么
+        交回事件循环见 _hand_back（循环已经关了也不在终端刷 traceback）。"""
         if self._closed:
             return None
         if self._pool is None:
             self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=THREAD_NAME)
-        fut = loop.run_in_executor(self._pool, fn, *args)
-        self._pending.add(fut)
-        fut.add_done_callback(self._pending.discard)
-        return fut
+        job = self._pool.submit(fn, *args)
+        with _inflight_lock:
+            _inflight.add(job)
+        done = loop.create_future()
+        self._pending.add(done)
+        done.add_done_callback(self._pending.discard)
+        # 放在 _inflight.add 之后：活已经做完的话这一句当场就调 _hand_back，拿掉的一定是加进去的那份
+        job.add_done_callback(functools.partial(_hand_back, loop, done))
+        return done
 
     async def drain(self, timeout=None):
         """等在途的写盘和清理结束（收尾和测试用）。给了 timeout 就最多等这么多秒，返回还没完的份数。
-        用 asyncio.wait 不用 wait_for(gather(...))：超时时后者会把线程池里还在排队、没开跑的写盘
-        一起取消，等于丢证据；wait 超时什么都不取消，没完的照样写完，只是这里不再等。"""
+        用 asyncio.wait：超时什么都不取消，没完的照样写完，只是这里不再等。（以前活是 run_in_executor
+        交的，取消它的 future 会把证据线程里还在排队、没开跑的写盘一起取消；现在 _pending 里只是「做完了」
+        的信号，取消也拦不住证据线程里的活。）"""
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else loop.time() + timeout
         while self._pending:
@@ -449,7 +515,7 @@ class EvidenceRecorder:
             await asyncio.wait(list(self._pending), timeout=left)
         return len(self._pending)
 
-    # ---- 线程池里：写盘与清理 --------------------------------------------------------------
+    # ---- 证据线程里：写盘与清理 ------------------------------------------------------------
     def _write(self, record, pcm, entry):
         with self._io_lock:
             tmp = None
@@ -525,7 +591,7 @@ class EvidenceRecorder:
             self._saved.pop(seq, None)
 
     def _prune_io(self):
-        """调用方必须已持有 _io_lock（线程池里）。"""
+        """调用方必须已持有 _io_lock（证据线程里）。"""
         self._since_prune = 0
         removed, _freed, _b, _f = prune(self.base, self.dir.name,
                                         self.cfg["max_mb"] * 1024 * 1024,
@@ -544,12 +610,12 @@ class EvidenceRecorder:
                           .format(str(exc)[:160]))
 
     def _bump(self, key, n=1):
-        """计数加 n。事件循环和线程池两边都调：只拿 _lock，拿着的时候不做 IO。"""
+        """计数加 n。事件循环和证据线程两边都调：只拿 _lock，拿着的时候不做 IO。"""
         with self._lock:
             self.counts[key] += n
 
     def summary(self):
-        """这一场的计数（只有数字）。pending 是此刻线程池里还没写完的份数：收尾时先等过一会儿
+        """这一场的计数（只有数字）。pending 是此刻证据线程里还没写完的份数：收尾时先等过一会儿
         （Pipeline._evidence_drain），还不是 0 就说明计数比目录里少这么几份，不是悄悄少算。"""
         with self._lock:
             out = {"on": True}
@@ -562,7 +628,8 @@ class EvidenceRecorder:
 
     def close(self):
         """收尾：放掉环形缓冲和段表（约 19 MB）。证据线程里已经排上的写盘照常写完，写完线程自己退出
-        （shutdown(wait=False) 不取消排着的活，也不在事件循环上等）；之后不再收新的。"""
+        （shutdown(wait=False) 不取消排着的活，也不在事件循环上等）；之后不再收新的。进程要退出时
+        还没写完的由 flush_pending 再等一会儿。"""
         self._closed = True
         self.ring = None
         self._seg.clear()
