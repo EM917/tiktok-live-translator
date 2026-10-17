@@ -1267,9 +1267,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         finally:
             # 无论怎么结束（下播、预算耗尽、解析失败、模型加载失败、被取消），
             # 都要收掉统计循环和审计文件——否则界面上会继续刷新冻结的统计数字。
-            # 先最多等 1 秒在途的证据写盘，session_end 里的证据计数才和目录对得上
-            await self._evidence_drain(sess)
+            # 先最多等 1 秒在途的证据写盘，session_end 里的证据计数才和目录对得上。等的时候被取消
+            # （自己结束的场次收尾到一半点了停止）：session_end 照样由这一场自己写、记真正的原因，
+            # 写完再把取消抛出去，见 _evidence_drain
+            cancelled = await self._evidence_drain(sess)
             await self._end_session(my_audit, **self._asr_session_end(sess, end))
+            if cancelled:
+                raise asyncio.CancelledError()
 
     async def _begin_session(self, url):
         from .audit import AuditLog
@@ -3487,46 +3491,50 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 self.audit.segment(seq, result, audio_end_ts, asr_ms, hits, asr=risk.audit)
 
         alert_ids = []
-        for hit in hits:
-            # 主播、场次、此刻连着几个界面：换过房间后认得出哪条是上一场的；事后答得出
-            # 「这条报警响的时候有没有页面开着」。audit.alert 原样带上这几列
-            hit.update(self._alert_stamp())
-            if not getattr(self, "alerts_enabled", False):
-                # 警示关闭：证据不能因此丢——命中照样进审计，只是多打一个
-                # suppressed 标记；不广播、不计数、不占强模型、不进系统通知
-                hit["suppressed"] = "alerts_off"
+        try:
+            for hit in hits:
+                # 主播、场次、此刻连着几个界面：换过房间后认得出哪条是上一场的；事后答得出
+                # 「这条报警响的时候有没有页面开着」。audit.alert 原样带上这几列
+                hit.update(self._alert_stamp())
+                if not getattr(self, "alerts_enabled", False):
+                    # 警示关闭：证据不能因此丢——命中照样进审计，只是多打一个
+                    # suppressed 标记；不广播、不计数、不占强模型、不进系统通知
+                    hit["suppressed"] = "alerts_off"
+                    if self.audit is not None:
+                        self.audit.alert(hit)
+                    continue
                 if self.audit is not None:
                     self.audit.alert(hit)
-                continue
-            if self.audit is not None:
-                self.audit.alert(hit)
-            print("[警报] 疑似违禁词「{}」（{}）：{}".format(
-                hit["term"], hit["tier"], hit["context"][-80:]))
-            self._alert_seq += 1
-            hit["alert_id"] = self._alert_seq
-            alert_ids.append(self._alert_seq)
-            await self.server.broadcast({"type": "alert", **hit, **self._count_alert()})
-        if alert_ids:
-            self._notify_alert_burst()
+                print("[警报] 疑似违禁词「{}」（{}）：{}".format(
+                    hit["term"], hit["tier"], hit["context"][-80:]))
+                self._alert_seq += 1
+                hit["alert_id"] = self._alert_seq
+                alert_ids.append(self._alert_seq)
+                await self.server.broadcast({"type": "alert", **hit, **self._count_alert()})
+            if alert_ids:
+                self._notify_alert_burst()
 
-        # 报警的上下文是西语原话。中控读不了西语就无从判断该不该处理，
-        # 而报警恰恰是最需要人工复核的地方——所以补一份中文，用最强模型：
-        # 这句话可能要拿去跟平台交涉，值这 2 秒。
-        #
-        # **一次扫描只翻一遍。** 同一次扫描的多个命中共用同一段 context
-        # （实测一句话同时命中 3 个词是常事），逐个翻是拿同一段文本跑三遍
-        # temperature 0 的模型，输出必然一样。强模型的原则是稀疏、按需、
-        # 短暂占内存，不能因为一次报警就成倍放大调用量——它每跑一次都在和
-        # Whisper 抢内存，而识别就在报警链路上。
-        if alert_ids:
-            self._alert_tasks = [t for t in self._alert_tasks if not t.done()]
-            self._alert_tasks.append(asyncio.ensure_future(
-                self._translate_alert(alert_ids, hits[0].get("context") or "",
-                                      result.language)))
-
-        # 证据音频：被标记的、命中的（含上面警示关闭时被抑制的）、对照段，交给线程池去写。排在报警广播
-        # 之后：切 PCM、建索引行虽然只要一毫秒上下，也不该排在检测延迟的路上
-        self._evidence_after_segment(seq, result, risk, hits, audio_end_ts, asr_meta, sess)
+            # 报警的上下文是西语原话。中控读不了西语就无从判断该不该处理，
+            # 而报警恰恰是最需要人工复核的地方——所以补一份中文，用最强模型：
+            # 这句话可能要拿去跟平台交涉，值这 2 秒。
+            #
+            # **一次扫描只翻一遍。** 同一次扫描的多个命中共用同一段 context
+            # （实测一句话同时命中 3 个词是常事），逐个翻是拿同一段文本跑三遍
+            # temperature 0 的模型，输出必然一样。强模型的原则是稀疏、按需、
+            # 短暂占内存，不能因为一次报警就成倍放大调用量——它每跑一次都在和
+            # Whisper 抢内存，而识别就在报警链路上。
+            if alert_ids:
+                self._alert_tasks = [t for t in self._alert_tasks if not t.done()]
+                self._alert_tasks.append(asyncio.ensure_future(
+                    self._translate_alert(alert_ids, hits[0].get("context") or "",
+                                          result.language)))
+        finally:
+            # 证据音频：被标记的、命中的（含上面警示关闭时被抑制的）、对照段，交给证据线程去写。排在报警
+            # 广播之后：切 PCM、建索引行虽然只要一毫秒上下，也不该排在检测延迟的路上。放在 finally 里：
+            # 广播要等页面收（一个不读的页面最多 2 秒），这时点了停止，取消就落在广播里——以前证据跟着
+            # 一起丢，偏偏丢的是命中违禁词的那一段。这里只切一段 bytes、交给证据线程，中间没有 await，
+            # 取消打断不了它
+            self._evidence_after_segment(seq, result, risk, hits, audio_end_ts, asr_meta, sess)
 
         if not result.text:
             return None

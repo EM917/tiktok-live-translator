@@ -1,7 +1,9 @@
 """识别证据音频（app/asr_evidence.py、app/pipeline_evidence.py，C2）。
 
 钉住：默认开、只存四类段（被标记的、命中违禁词的——含警示关闭时被抑制的、桌面上点了重译的、
-每 50 段 1 段对照）；环形缓冲找不回的只计数；写盘在线程池里、不挡事件循环；写失败只计数并打一行
+每 50 段 1 段对照）；环形缓冲找不回的只计数；写盘和清理在这一场自己的证据线程里（单线程、先交的
+先做）、不挡事件循环，收尾放掉线程但不丢排着的写盘；报警广播在前、证据在后，广播中途被停止也照存；
+自己结束的场次收尾时被停止，session_end 仍由这一场自己写、记真正的原因；写失败只计数并打一行
 中文警告；300 MB / 2000 个文件 / 14 天的上限从最旧的整场删起、当前这场永远不删；磁盘剩不到 1 GB
 就不存；证据只在 logs/ 底下（不在 web/，.gitignore 盖住）；「存储」那一行看得到、删得掉，界面文字
 成对；中英两种界面下审计和终端逐字节相同（G8）。全程不联网、不起 ffmpeg、不加载模型。
@@ -213,9 +215,11 @@ def test_a_manual_retranslate_saves_the_segment_from_the_ring(monkeypatch, tmp_p
         return recorder
 
     recorder = run(go())
-    # 写盘在默认线程池里，几行索引的先后不保证：按 (seq, 原因) 对
-    index = {(r["seq"], r["reasons"][0]): r for r in _index(recorder)}
-    assert sorted(index) == [(1, "retranslate"), (2, "flagged"), (2, "retranslate")]
+    # 证据线程先交的先写：索引行的先后就是交出去的先后
+    lines = _index(recorder)
+    assert [(r["seq"], r["reasons"][0]) for r in lines] == [(2, "flagged"), (1, "retranslate"),
+                                                            (2, "retranslate")]
+    index = {(r["seq"], r["reasons"][0]): r for r in lines}
     again, first = index[(2, "retranslate")], index[(2, "flagged")]
     # 补的那一行和第一行说的是同一份 wav 里的同一刀：离线复听按哪一行切都切对
     for key in ("wav", "seg_offset_ms", "seg_ms", "ctx_before_ms", "ctx_after_ms"):
@@ -341,17 +345,20 @@ def test_a_failed_wav_is_not_referenced_and_leaves_no_tmp(monkeypatch, tmp_path,
         meta = dict(PAUSE_META, round=1, pcm_end=150 * FRAME_BYTES, pcm_len=30 * FRAME_BYTES)
         await p._emit_original(result("x", lp=-2.0), 100.0, 900, segment_ms=3000, asr_meta=meta,
                                sess=sess)
-        # wav 还卡在写盘里（拿着写盘锁）时点了重译：只排上一行索引，排在 wav 后面
+        # wav 还卡在证据线程里时点了重译：只排上一行索引，排在 wav 后面
         assert await loop.run_in_executor(None, entered.wait, 5)
         recorder.save(1, ["retranslate"], loop)
         gate.set()
         await recorder.drain()
+        # 写失败那一刻就要删掉 .tmp：后面那次重新存会写同名的 .tmp 再改名，等到那时才看就看不出来
+        left = sorted(f.name for f in recorder.dir.iterdir())
         monkeypatch.setattr(asr_evidence, "_write_wav", real)        # 磁盘又能写了
         recorder.save(1, ["retranslate"], loop)
         await recorder.drain()
-        return recorder
+        return recorder, left
 
-    recorder = run(go())
+    recorder, left = run(go())
+    assert left == ["index.jsonl"]
     lines = _index(recorder)
     assert [(r["reasons"], r["wav"]) for r in lines] == [(["retranslate"], None),
                                                           (["retranslate"], "seq-000001.wav")]
@@ -448,6 +455,256 @@ def test_low_disk_space_skips_saving(monkeypatch, tmp_path):
     assert recorder.summary()["skipped_disk"] == 1
     # 先查空间再建目录：不存的时候不留一个空的场次目录
     assert not recorder.dir.exists()
+
+
+def test_a_clip_skipped_for_low_disk_is_saved_by_a_later_retranslate(monkeypatch, tmp_path):
+    """磁盘不够跳过的那份 wav 不算「已经存过」：空间回来以后点重译，从缓冲里把它存下来，而不是只补一行
+    没有音频的索引。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+
+    class Usage:
+        free = 500 * 1024 * 1024
+
+    monkeypatch.setattr(asr_evidence.shutil, "disk_usage", lambda path: Usage())
+
+    async def go():
+        recorder = await _feed(p, sess, 200, [(result("x", lp=-2.0), 150, 30)])
+        Usage.free = 50 * 1024 ** 3                    # 空间回来了
+        await p.retranslate(1, trigger="manual")
+        await recorder.drain()
+        return recorder
+
+    recorder = run(go())
+    assert [(r["reasons"], r["wav"]) for r in _index(recorder)] == [(["retranslate"],
+                                                                     "seq-000001.wav")]
+    assert (recorder.dir / "seq-000001.wav").exists()
+    s = recorder.summary()
+    assert (s["skipped_disk"], s["saved"], s["index_only"]) == (1, 1, 0)
+
+
+def test_a_clip_skipped_at_the_cap_is_not_turned_into_an_index_only_line(monkeypatch, tmp_path):
+    """到了这一场上限跳过的 wav 同样不算「已经存过」：之后的重译按上限跳过、只计数，不补一行看着像
+    「wav 存过」的索引。"""
+    p, _, sess = _session(monkeypatch, tmp_path, settings={"asr_evidence_max_files": 2})
+
+    async def go():
+        recorder = await _feed(p, sess, 200, [(result("x1", lp=-2.0), 100, 30),
+                                              (result("x2", lp=-2.0), 150, 30)])
+        await p.retranslate(2, trigger="manual")
+        await recorder.drain()
+        return recorder
+
+    recorder = run(go())
+    assert [(r["seq"], r["reasons"]) for r in _index(recorder)] == [(1, ["flagged"])]
+    s = recorder.summary()
+    assert (s["saved"], s["skipped_cap"], s["index_only"]) == (1, 2, 0)
+
+
+def _trace_evidence_io(monkeypatch):
+    """记下证据的每件活在哪个线程上、按什么顺序做：(线程名, seq, 原因)，清理记成 (线程名, None, "prune")。"""
+    seen = []
+    real_write, real_prune = EvidenceRecorder._write, EvidenceRecorder._prune_locked_safe
+
+    def write(self, record, pcm, entry):
+        seen.append((threading.current_thread().name, record["seq"], record["reasons"][0]))
+        return real_write(self, record, pcm, entry)
+
+    def prune_(self):
+        seen.append((threading.current_thread().name, None, "prune"))
+        return real_prune(self)
+
+    monkeypatch.setattr(EvidenceRecorder, "_write", write)
+    monkeypatch.setattr(EvidenceRecorder, "_prune_locked_safe", prune_)
+    return seen
+
+
+async def _flagged(p, sess, recorder, seq_end_frames):
+    for end in seq_end_frames:
+        meta = dict(PAUSE_META, round=recorder.round, pcm_end=end * FRAME_BYTES,
+                    pcm_len=30 * FRAME_BYTES)
+        await p._emit_original(result("x{}".format(end), lp=-2.0), 100.0, 900, segment_ms=3000,
+                               asr_meta=meta, sess=sess)
+
+
+def test_evidence_io_runs_in_order_on_its_own_single_thread(monkeypatch, tmp_path):
+    """写盘和清理都在这一场自己的证据线程里，按交出去的顺序做：不在默认线程池、不在识别的线程池。
+    以前在默认线程池里靠一把锁排队，锁不保证先来先得：锁被开场清理占着时交的几件活，放开以后谁先
+    拿到锁不一定，排在 wav 后面的重译索引会先写。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+    seen = _trace_evidence_io(monkeypatch)
+
+    async def go():
+        recorder = p._evidence_round(sess)             # 第一件活：开场清理
+        recorder._io_lock.acquire()                    # 让它卡在清理上，后面交的全都排着
+        try:
+            for i in range(200):
+                recorder.feed(frame(i))
+            await _flagged(p, sess, recorder, (100, 150))
+            await p.retranslate(2, trigger="manual")
+            await p.retranslate(1, trigger="manual")
+            await asyncio.sleep(0.05)
+        finally:
+            recorder._io_lock.release()
+        await recorder.drain()
+        return recorder
+
+    recorder = run(go())
+    assert [(seq, why) for _, seq, why in seen] == [(None, "prune"), (1, "flagged"), (2, "flagged"),
+                                                    (2, "retranslate"), (1, "retranslate")]
+    names = {name for name, _, _ in seen}
+    assert len(names) == 1 and names.pop().startswith(asr_evidence.THREAD_NAME + "_")
+    assert [(r["seq"], r["wav"]) for r in _index(recorder)] == [
+        (1, "seq-000001.wav"), (2, "seq-000002.wav"), (2, "seq-000002.wav"), (1, "seq-000001.wav")]
+
+
+@pytest.mark.parametrize("disk_ok", [True, False])
+def test_a_retranslate_queued_behind_its_wav_sees_how_the_wav_ended(monkeypatch, tmp_path,
+                                                                     disk_ok):
+    """证据线程正忙时先交了 wav、又点了重译：那行索引一定在 wav 有了结局之后才写。wav 写成了就指向它
+    （同一刀）；因为磁盘不够跳过了就记 null——不会指向一个不存在的文件，也不会把写成了的说成没有。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+    if not disk_ok:
+        monkeypatch.setattr(asr_evidence, "_free_bytes", lambda path: 0)
+
+    async def go():
+        recorder = p._evidence_round(sess)
+        recorder._io_lock.acquire()                    # 开场清理还没完
+        try:
+            for i in range(200):
+                recorder.feed(frame(i))
+            await _flagged(p, sess, recorder, (150,))
+            await p.retranslate(1, trigger="manual")
+            await asyncio.sleep(0.02)
+        finally:
+            recorder._io_lock.release()
+        await recorder.drain()
+        return recorder
+
+    recorder = run(go())
+    lines = _index(recorder)
+    if disk_ok:
+        assert [(r["reasons"][0], r["wav"]) for r in lines] == [("flagged", "seq-000001.wav"),
+                                                                ("retranslate", "seq-000001.wav")]
+        assert lines[0]["seg_offset_ms"] == lines[1]["seg_offset_ms"] == 2000
+        assert (recorder.dir / "seq-000001.wav").exists()
+    else:
+        assert [(r["reasons"][0], r["wav"], r["seg_offset_ms"]) for r in lines] == [
+            ("retranslate", None, None)]
+        assert not (recorder.dir / "seq-000001.wav").exists()
+        assert recorder.summary()["skipped_disk"] == 1
+
+
+def test_a_clip_deleted_by_hand_is_not_referenced_and_can_be_saved_again(monkeypatch, tmp_path):
+    """wav 存过、后来不在了（有人在访达里删了）：补的索引行不指向它，也忘掉它，再点重译从缓冲里重新存。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+
+    async def go():
+        recorder = await _feed(p, sess, 200, [(result("x", lp=-2.0), 150, 30)])
+        (recorder.dir / "seq-000001.wav").unlink()
+        await p.retranslate(1, trigger="manual")
+        await recorder.drain()
+        await p.retranslate(1, trigger="manual")
+        await recorder.drain()
+        return recorder
+
+    recorder = run(go())
+    assert [(r["reasons"][0], r["wav"]) for r in _index(recorder)] == [
+        ("flagged", "seq-000001.wav"), ("retranslate", None), ("retranslate", "seq-000001.wav")]
+    assert (recorder.dir / "seq-000001.wav").exists()
+
+
+def test_closing_keeps_queued_writes_and_lets_the_thread_go(monkeypatch, tmp_path):
+    """收尾（close）不取消已经排上的写盘、不在事件循环上等；写完证据线程自己退出，之后不再收新活。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+    gate = threading.Event()
+    seen = {}
+    real = asr_evidence._write_wav
+
+    def stuck(path, pcm):
+        seen["thread"] = threading.current_thread()
+        gate.wait(5)
+        real(path, pcm)
+
+    monkeypatch.setattr(asr_evidence, "_write_wav", stuck)
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        recorder = p._evidence_round(sess)
+        await recorder.drain()                         # 开场清理先做完
+        for i in range(200):
+            recorder.feed(frame(i))
+        await _flagged(p, sess, recorder, (100, 150))  # 一份卡在证据线程里写，一份排在它后面
+        t0 = time.monotonic()
+        summary = p._evidence_summary(sess)            # 收尾：取计数、close
+        spent = time.monotonic() - t0
+        late = recorder._submit(loop, time.sleep, 0)
+        gate.set()
+        await recorder.drain()
+        return recorder, summary, spent, late
+
+    recorder, summary, spent, late = run(go())
+    assert spent < 0.1 and summary["pending"] == 2 and late is None
+    assert sorted(f.name for f in recorder.dir.glob("*.wav")) == ["seq-000001.wav",
+                                                                   "seq-000002.wav"]
+    seen["thread"].join(2)
+    assert not seen["thread"].is_alive()
+
+
+# ---- 报警与证据 ---------------------------------------------------------------------------------
+
+def test_the_alert_goes_out_before_the_clip_is_cut(monkeypatch, tmp_path):
+    """报警广播在前、证据在后：切 PCM、建索引行不排在检测延迟的路上。"""
+    p, server, sess = _session(monkeypatch, tmp_path, terms=["cura el cancer"])
+    real = p._evidence_after_segment
+
+    def traced(*a, **k):
+        server.messages.append({"type": "evidence_cut"})
+        return real(*a, **k)
+
+    monkeypatch.setattr(p, "_evidence_after_segment", traced)
+    recorder = run(_feed(p, sess, 100, [(result("este producto cura el cancer"), 90, 30)]))
+    assert [m["type"] for m in server.messages
+            if m["type"] in ("alert", "evidence_cut", "caption")] == ["alert", "evidence_cut",
+                                                                      "caption"]
+    assert _index(recorder)[0]["reasons"] == ["banned_term"]
+
+
+def test_a_stop_during_a_slow_alert_broadcast_still_saves_the_clip(monkeypatch, tmp_path):
+    """报警广播要等页面收（一个不读的页面最多 2 秒）。这时点了停止，取消落在广播里：命中违禁词的这一段
+    照样存下来——以前证据排在广播之后、跟着取消一起丢了。"""
+    p, server, sess = _session(monkeypatch, tmp_path, terms=["cura el cancer"])
+
+    async def go():
+        sending = asyncio.Event()
+        real_broadcast = server.broadcast
+
+        async def stuck_broadcast(msg):
+            if msg.get("type") == "alert":
+                sending.set()
+                await asyncio.Event().wait()           # 页面不读
+            await real_broadcast(msg)
+
+        server.broadcast = stuck_broadcast
+        recorder = p._evidence_round(sess)
+        await recorder.drain()
+        for i in range(200):
+            recorder.feed(frame(i))
+        meta = dict(PAUSE_META, round=recorder.round, pcm_end=150 * FRAME_BYTES,
+                    pcm_len=30 * FRAME_BYTES)
+        task = asyncio.ensure_future(p._emit_original(
+            result("dice que cura el cancer"), 1000.0, 900, segment_ms=3000, asr_meta=meta,
+            sess=sess))
+        await asyncio.wait_for(sending.wait(), 5)
+        task.cancel()                                  # _stop_locked 就是这么停的
+        await asyncio.wait({task})
+        await recorder.drain()
+        return recorder, task
+
+    recorder, task = run(go())
+    assert task.cancelled()
+    assert len(rows(p.audit.path, "alert")) == 1
+    assert [(r["seq"], r["reasons"]) for r in _index(recorder)] == [(1, ["banned_term"])]
+    assert (recorder.dir / "seq-000001.wav").exists()
 
 
 # ---- 上限 -----------------------------------------------------------------------------------
@@ -669,6 +926,119 @@ def test_a_drain_that_times_out_cancels_nothing_and_says_how_many_are_left(monke
     assert end["asr_risk"]["evidence"]["pending"] == 1
     assert end["asr_risk"]["evidence"]["saved"] == 0
     assert (recorder.dir / "seq-000001.wav").exists() and recorder.summary()["saved"] == 1
+
+
+def _stuck_stream(monkeypatch, tmp_path, live):
+    """走真的 _run_stream_inner 和 stop_stream：解析一次成功，「拉流」里出一段被标记的段，它的 wav 卡在
+    证据线程里（gate 放开才写）。live=False：随后房间已结束（下播，这一场自己结束）；live=True：拉流一直
+    挂着，等着被停止。返回 (pipeline, gate, state, 真的 asyncio.sleep)：state["emitted"] 在那一段出完后为真；
+    测试用的管线把 asyncio.sleep 换成了 sleep(0)。"""
+    from app import resolver
+    from app.resolver import ResolveError
+    from tests.test_resilience_stream import make_pipeline as stream_pipeline
+    from tests.test_resilience_stream import scripted_resolve
+    real_sleep = asyncio.sleep
+    p, _ = stream_pipeline(monkeypatch, tmp_path)
+    gate = threading.Event()
+    state = {"emitted": False}
+    real = asr_evidence._write_wav
+
+    def stuck(path, pcm):
+        gate.wait(10)
+        real(path, pcm)
+
+    monkeypatch.setattr(asr_evidence, "_write_wav", stuck)
+
+    async def fake_session(media, *a, **k):
+        sess = p._session_state
+        recorder = p._evidence_round(sess)
+        for i in range(100):
+            recorder.feed(frame(i))
+        meta = dict(PAUSE_META, round=recorder.round, pcm_end=90 * FRAME_BYTES,
+                    pcm_len=30 * FRAME_BYTES)
+        await p._emit_original(result("x", lp=-2.0), time.time(), 900, segment_ms=3000,
+                               asr_meta=meta, sess=sess)
+        state["emitted"] = True
+        if live:
+            await asyncio.Event().wait()
+        return True, 60.0
+
+    async def probe(url):
+        return 4, ""
+
+    scripted_resolve(monkeypatch, ["http://cdn/a.flv", ResolveError("没开播", kind="offline", status=4)])
+    monkeypatch.setattr(resolver, "probe_room_status", probe)
+    monkeypatch.setattr(p, "_stream_session", fake_session)
+    return p, gate, state, real_sleep
+
+
+def test_a_stop_while_a_finished_session_drains_keeps_its_own_session_end(monkeypatch, tmp_path):
+    """这一场已经自己结束（下播），收尾正在等在途的证据写盘，中控这时点了停止（换主播、关窗口同理）：
+    session_end 只有一条、由这一场自己写，原因还是 offline，识别风险和证据计数都在；停止不用等那份
+    卡住的写盘，任务最后照样是「被取消」。以前取消从等待里冒出去，这一场的 _end_session 没跑，
+    _stop_locked 替它写了一条 reason=user_stop、没有 asr_risk 的 session_end（CLAUDE.md 第七条）。"""
+    from tests.test_resilience_stream import audit_rows
+    p, gate, _, _ = _stuck_stream(monkeypatch, tmp_path, live=False)
+    real_drain = p._evidence_drain
+
+    async def go():
+        draining = asyncio.Event()
+
+        async def traced(sess):
+            draining.set()
+            return await real_drain(sess)
+
+        monkeypatch.setattr(p, "_evidence_drain", traced)
+        task = p._stream_task = asyncio.ensure_future(p._run_stream_inner(ROOM))
+        await asyncio.wait_for(draining.wait(), 5)
+        assert not task.done()
+        t0 = time.monotonic()
+        await p.stop_stream()
+        spent = time.monotonic() - t0
+        recorder = p._session_state["evidence"]
+        gate.set()
+        await recorder.drain()
+        return task, spent, recorder
+
+    task, spent, recorder = run(go())
+    ends = [r for r in audit_rows(tmp_path) if r.get("type") == "session_end"]
+    assert len(ends) == 1 and ends[0]["reason"] == "offline"
+    ev = ends[0]["asr_risk"]["evidence"]
+    assert (ev["saved"], ev["pending"]) == (0, 1)
+    assert task.cancelled()
+    assert spent < 1.0, spent
+    assert (recorder.dir / "seq-000001.wav").exists()          # 没被取消：照样写完
+
+
+def test_a_stuck_evidence_write_cannot_hold_the_stop_past_its_grace(monkeypatch, tmp_path):
+    """直播中点停止，偏偏有一份证据写盘卡住了：收尾最多等 EVIDENCE_DRAIN_SEC 就写 session_end，在
+    _stop_locked 的 STOP_GRACE_SEC 之内。等得比它长，_stop_locked 就撒手替这一场写 session_end，识别
+    风险和证据的计数整个没了。用的是真的两个常数（大约要等 1 秒）。"""
+    from tests.test_resilience_stream import audit_rows
+    p, gate, state, real_sleep = _stuck_stream(monkeypatch, tmp_path, live=True)
+    assert p.EVIDENCE_DRAIN_SEC < p.STOP_GRACE_SEC
+
+    async def go():
+        task = p._stream_task = asyncio.ensure_future(p._run_stream_inner(ROOM))
+        for _ in range(500):
+            if state["emitted"]:
+                break
+            await real_sleep(0.01)
+        assert state["emitted"] and not task.done()
+        t0 = time.monotonic()
+        await p.stop_stream()
+        spent = time.monotonic() - t0
+        recorder = p._session_state["evidence"]
+        gate.set()
+        await recorder.drain()
+        return task, spent
+
+    task, spent = run(go())
+    ends = [r for r in audit_rows(tmp_path) if r.get("type") == "session_end"]
+    assert len(ends) == 1 and ends[0]["reason"] == "user_stop"
+    assert ends[0]["asr_risk"]["evidence"]["pending"] == 1
+    assert task.cancelled()
+    assert spent < p.STOP_GRACE_SEC, spent
 
 
 # ---- 「存储」那一行 ---------------------------------------------------------------------------

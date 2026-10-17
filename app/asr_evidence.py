@@ -17,7 +17,8 @@
 怎么存，才不挡识别和检测：
   * 内存里只留最近 ring_sec 秒（默认 600 秒，约 19 MB）的降噪后 PCM：线上 212 次手动重译，
     点击时距那段音频结束 ≤ 600 秒的占 99%；
-  * 拷 PCM 在事件循环里做（只是切一段 bytes），写文件放进默认线程池，不用识别的线程池；
+  * 拷 PCM 在事件循环里做（只是切一段 bytes），写文件和清理交给这一场自己的证据线程（单线程、先交的先做，
+    见 EvidenceRecorder._submit），不用识别的线程池，也不用默认线程池；
   * 出错只计数、终端打一行中文 [警告]（一场只打一次），绝不抛给调用方；
   * 磁盘剩不到 1 GB 就不存，空间留给审计；
   * 保留上限三条（300 MB / 2000 个文件 / 14 天），到了任何一条就从最旧的整场目录删起，
@@ -38,6 +39,7 @@ import threading
 import time
 import wave
 from collections import OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import asr_risk
@@ -57,6 +59,7 @@ DISK_LOW_BYTES = 1024 ** 3       # 同 Pipeline.DISK_LOW_BYTES：剩这么多就
 # 找不回来。不设上限的话，把秒写成毫秒（600000）这种笔误会让缓冲在长直播里涨到十几 GB——
 # 换页就是 08-31 那种识别 38–55 秒一段，内存不够则读流的协程直接崩、整场不再收音频
 RING_SEC_MAX = 1800
+THREAD_NAME = "asr-evidence"     # 证据线程的名字前缀（ThreadPoolExecutor 的 thread_name_prefix）
 
 DEFAULTS = {"on": True, "max_mb": 300, "max_files": 2000, "days": 14, "ring_sec": 600,
             "control_every": 50}
@@ -287,13 +290,16 @@ class EvidenceRecorder:
         # seq -> 已经交出去写的 wav：{"wav": 文件名, "offset": 本段在 wav 里的起点, "after": 本段之后
         # 还有多少字节}（都是字节）。后来再补的索引行照抄这几个数，不写成 0 / null 冒充另一种切法
         self._saved = {}
-        # 两把锁，事件循环上只拿 _lock：
-        #   _io_lock  线程池里串行写盘和清理。清理要 os.walk 每一场、rmtree 整场目录，可能要好几百
+        # 写盘和清理都在这一场自己的证据线程里（_submit：单线程，先交的先做）。两把锁，事件循环上只拿 _lock：
+        #   _io_lock  写盘和清理不交错。先后顺序靠证据线程的队列，不靠这把锁：几个线程抢同一把锁，
+        #             谁先拿到不一定是谁先交的。清理要 os.walk 每一场、rmtree 整场目录，可能要好几百
         #             毫秒，所以事件循环上**永远不拿**它——以前计数和写盘共用一把，开场清理那一下
         #             就能把读流、识别、报警广播一起卡住（实测卡 455 ms）；
         #   _lock     只护 counts / by_reason，拿着的时候不做任何 IO，事件循环上拿也只等几微秒
         self._io_lock = threading.Lock()
         self._lock = threading.Lock()
+        self._pool = None                # 证据线程，第一次交活时才起（_submit），收尾时放掉（close）
+        self._closed = False
         self._pending = set()
         self._own_bytes = 0
         self._own_files = 0
@@ -355,7 +361,7 @@ class EvidenceRecorder:
         return reasons
 
     def save(self, seq, reasons, loop):
-        """存这一段（没有原因就不存）。PCM 在这里切好，写盘交给默认线程池。返回是否交出去了。
+        """存这一段（没有原因就不存）。PCM 在这里切好，写盘交给证据线程（_submit）。返回是否交出去了。
 
         这一段的 wav 已经交出去过（比如先被标记、后来又点了重译）：只补一行索引，用不着环形缓冲里的
         音频，所以重连换了一轮、这一场到了自己的上限也照补。手动重译是「通顺的错句」唯一的人工信号
@@ -403,16 +409,32 @@ class EvidenceRecorder:
             "windows": info["windows"], "hits": info["hits"],
             "backend": info["backend"], "model": info["model"], "audit": self.audit_name,
             "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-        fut = loop.run_in_executor(None, self._write, record, pcm, saved)
-        self._pending.add(fut)
-        fut.add_done_callback(self._pending.discard)
+        if self._submit(loop, self._write, record, pcm, saved) is None:
+            self._drop_saved(seq, saved)
+            self._bump("skipped_old")
+            return False
         return True
 
     def prune_soon(self, loop):
-        """开场清一次上限（在线程池里，不挡开播）。"""
-        fut = loop.run_in_executor(None, self._prune_locked_safe)
+        """开场清一次上限（在证据线程里，不挡开播；排在这一场所有写盘前面）。"""
+        self._submit(loop, self._prune_locked_safe)
+
+    def _submit(self, loop, fn, *args):
+        """交给这一场自己的证据线程，返回 asyncio 的 future（记进 _pending，收尾时等它）。
+
+        单线程、先交的先做：wav 一定先于后来给它补的那行索引落盘，开场清理一定先于第一份写盘。以前交给
+        默认线程池、靠 _io_lock 排队，可锁不保证先来先得：wav 还在等锁（后来因为磁盘不够跳过了），排在
+        它后面交的重译索引先拿到锁，写出一行指向不存在的 wav（审查复现：线程池里有闲着的线程时，200 次
+        里几十次）。不用识别的线程池，也不用默认线程池（别的功能也往里排）。线程第一次交活时才起；收尾
+        （close）之后不再收，返回 None。"""
+        if self._closed:
+            return None
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=THREAD_NAME)
+        fut = loop.run_in_executor(self._pool, fn, *args)
         self._pending.add(fut)
         fut.add_done_callback(self._pending.discard)
+        return fut
 
     async def drain(self, timeout=None):
         """等在途的写盘和清理结束（收尾和测试用）。给了 timeout 就最多等这么多秒，返回还没完的份数。
@@ -456,9 +478,13 @@ class EvidenceRecorder:
                     self._bump("saved")
                     self._bump("bytes", size)
                 else:
-                    if self._saved.get(seq) is not entry:
-                        # 那份 wav 最后没写成（磁盘满、写失败、到了上限）：这一行照记（重译的信号不丢），
-                        # 但不指向一个不存在的文件
+                    if (self._saved.get(seq) is not entry
+                            or not (self.dir / entry["wav"]).exists()):
+                        # 那份 wav 最后没写成（磁盘满、写失败、到了上限），或者后来不在了（被手动删掉）：
+                        # 这一行照记（重译的信号不丢），但不指向一个不存在的文件；也忘掉它，之后再点重译
+                        # 还能从缓冲里重新存。证据线程先交的先做，走到这里时那份 wav 的写盘一定已经有了
+                        # 结局，查文件在不在只是兜底
+                        self._drop_saved(seq, entry)
                         record = dict(record, wav=None, seg_offset_ms=None, ctx_before_ms=None,
                                       ctx_after_ms=None)
                     self._bump("index_only")
@@ -535,6 +561,10 @@ class EvidenceRecorder:
         return out
 
     def close(self):
-        """收尾：放掉环形缓冲和段表（约 19 MB），在途的写盘照常写完。"""
+        """收尾：放掉环形缓冲和段表（约 19 MB）。证据线程里已经排上的写盘照常写完，写完线程自己退出
+        （shutdown(wait=False) 不取消排着的活，也不在事件循环上等）；之后不再收新的。"""
+        self._closed = True
         self.ring = None
         self._seg.clear()
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
