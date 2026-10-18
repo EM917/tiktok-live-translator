@@ -3,6 +3,7 @@
 测试只依赖 pytest + numpy + aiohttp——被测模块的顶层导入都不含
 faster-whisper / yt-dlp 等重型依赖（重型导入全部在函数内延迟进行）。
 """
+import os
 import sys
 from pathlib import Path
 
@@ -67,6 +68,126 @@ def _reset_active_glossary(monkeypatch):
     from app import glossary
 
     monkeypatch.setattr(glossary, "_ACTIVE", None)
+
+
+# ---- 仓库里的真实词表（brands/、profiles/、glossary.txt）测试一律不碰 ---------------------------
+
+# brands/<品牌>.txt、profiles/<主播>.txt、glossary.txt 是开发者本机的私人词表（不入库，见 .gitignore 与
+# brands/README.md），CI 上不存在。很多管线用例拿 tiktok.com/@bellaallnatural 开场：Pipeline() 扫 brands/
+# 并读里面每一份词表，_begin_session 读这个主播的 profile 和全局表，审计头记全局表的指纹——本机读到的是
+# 开发者自己的词表，CI 上读不到，两边跑的不是同一份内容，本机改一行词表还可能改变本机的测试结果；文件
+# 不在时，load() 与 _copy_template_once 的首启复制又会在仓库里凭空建出 glossary.txt、
+# profiles/bellaallnatural.txt。改之前插桩数过：54 个测试文件、两千多次。
+#
+# 下面的审计钩子在整个测试进程里看着这几个位置：读私人词表、往这几处写东西（建文件、建目录、删、改名）
+# 都记下来。入库的 README.md 和 *.example.txt 模板是公开文件、本机和 CI 一样，只读不算
+# （tests/test_readme_one_page.py 要扫 brands/README.md）。
+_REPO = Path(__file__).resolve().parent.parent
+_REPO_GLOSSARY_DIRS = tuple(os.path.normcase(str(_REPO / name)) for name in ("brands", "profiles"))
+# 前缀匹配：也罩住 migrate_legacy_entries 的备份 glossary.txt.bak-<时间>
+_REPO_GLOSSARY_FILE = os.path.normcase(str(_REPO / "glossary.txt"))
+_GLOSSARY_EVENTS = frozenset(("open", "os.mkdir", "os.remove", "os.rmdir", "os.rename"))
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+# (PYTEST_CURRENT_TEST, 事件, 仓库内相对路径)。专测这张网本身的用例用 glossary_net 换成自己的列表
+_GLOSSARY_NET = {"hits": []}
+
+
+def _repo_glossary_path(event, args):
+    """这次审计事件碰的是不是仓库里的真实词表：是就返回仓库内相对路径（正斜杠），不是返回 None。"""
+    if event == "open":                  # io.open 的参数是 (路径, mode 字符串, 0)，os.open 的是 (路径, None, flags)
+        mode, flags = args[1], args[2]
+        writes = any(c in mode for c in "wax+") if isinstance(mode, str) else bool(flags & _WRITE_FLAGS)
+        raws = args[:1]
+    else:                                # 建目录、删、改名（os.replace 也报 os.rename）：都是写
+        writes = True
+        raws = args[:2] if event == "os.rename" else args[:1]
+    for raw in raws:
+        if raw is None or isinstance(raw, int):          # 文件描述符
+            continue
+        path = os.path.normcase(os.path.abspath(os.fsdecode(raw)))
+        hit = path.startswith(_REPO_GLOSSARY_FILE)
+        for folder in _REPO_GLOSSARY_DIRS:
+            if path == folder:
+                hit = hit or writes
+            elif path.startswith(folder + os.sep):
+                name = os.path.basename(path)
+                hit = hit or writes or not (name == os.path.normcase("README.md")
+                                            or name.endswith(".example.txt"))
+        if hit:
+            return Path(os.path.relpath(path, os.path.normcase(str(_REPO)))).as_posix()
+    return None
+
+
+def _glossary_net(event, args):
+    if event not in _GLOSSARY_EVENTS:
+        return
+    try:
+        rel = _repo_glossary_path(event, args)
+    except Exception:
+        # 审计钩子里抛出的异常会落到被观察的那次 open 上：这张网绝不能改变被测代码的行为
+        return
+    if rel is not None:
+        _GLOSSARY_NET["hits"].append((os.environ.get("PYTEST_CURRENT_TEST", ""), event, rel))
+
+
+sys.addaudithook(_glossary_net)
+
+
+@pytest.fixture(autouse=True)
+def _keep_glossaries_out_of_the_repo(tmp_path_factory, monkeypatch):
+    """app/glossary.py 的落点全部指到每个用例自己的一个临时目录；用例结束时，这个用例里那张网记下了什么
+    就让它失败。
+
+    全局表 GLOSSARY_FILE 指到临时目录、模板 GLOSSARY_EXAMPLE 不动：load() 首启照样把入库的公开模板复制一份
+    过来，和 CI 上一样（所以目录要先建好）。PROFILE_DIR、BRAND_DIR 指到还没建的目录：要用主播 profile 或品牌表的
+    用例自己往里放（照 tests/test_streamer_switch.py 的虚构品牌 acme）。目录用 tmp_path_factory 另开，不建在
+    用例的 tmp_path 里：有用例断言 tmp_path 里只有它自己写的文件。autouse：靠每个用例自己记得
+    monkeypatch，已经被几十个测试文件证明会漏。"""
+    from app import glossary
+
+    home = tmp_path_factory.mktemp("glossaries")
+    monkeypatch.setattr(glossary, "GLOSSARY_FILE", home / "glossary.txt")
+    monkeypatch.setattr(glossary, "PROFILE_DIR", home / "profiles")
+    monkeypatch.setattr(glossary, "BRAND_DIR", home / "brands")
+    hits = _GLOSSARY_NET["hits"]
+    start = len(hits)
+    yield
+    touched = hits[start:]
+    if touched:
+        pytest.fail("这个用例碰了仓库里的真实词表 {} 次：\n{}\n测试只能用临时目录里的词表。app.glossary 的 "
+                    "GLOSSARY_FILE / PROFILE_DIR / BRAND_DIR 已经指到临时目录；自己拼了 ROOT / \"brands\" "
+                    "这类路径的代码，改成用的那一刻从 app.glossary 取（照 app/pipeline.py 的 "
+                    "_open_brands_dir）。".format(
+                        len(touched), "\n".join(sorted({"  {} {}".format(e, rel) for _t, e, rel in touched}))),
+                    pytrace=False)
+
+
+@pytest.fixture
+def glossary_net(monkeypatch):
+    """换一张空的记录表，给专测这张网本身的用例（tests/test_glossary_isolation.py）：它们故意去碰仓库里的
+    路径（用不存在的文件名，既读不到内容也不留下东西），记在这里的不算违例。"""
+    hits = []
+    monkeypatch.setitem(_GLOSSARY_NET, "hits", hits)
+    return hits
+
+
+def _glossary_net_summary(tr):
+    """测试结束时把那张网记下的全部列出来：用例里的已经各自失败，不在用例里的（收集、导入阶段）只在这里。"""
+    from collections import Counter
+
+    hits = _GLOSSARY_NET["hits"]
+    if not hits:
+        return
+    tr.write_sep("-", "测试碰了仓库里的真实词表（brands/、profiles/、glossary.txt）")
+    counts = Counter((_net_test_id(test) or "（不在用例里）", event, rel) for test, event, rel in hits)
+    for (test, event, rel), n in sorted(counts.items()):
+        tr.write_line("  {}  {} {}  ×{}".format(test, event, rel, n))
+
+
+def pytest_sessionfinish(session):
+    """碰过真实词表的用例已经各自失败；收集、导入阶段碰的不属于任何用例，也要让这次运行失败。"""
+    if _GLOSSARY_NET["hits"] and session.exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.fixture(autouse=True)
@@ -183,6 +304,7 @@ def pytest_terminal_summary(terminalreporter):
 
     from app import i18n
 
+    _glossary_net_summary(terminalreporter)
     hits = sorted(set(i18n.NET_HITS))           # broadcast 和 fanout 各查同一条消息一次：去重
     counted = [h for h in hits if _net_test_id(h[4]) not in _I18N_FIXTURE_TESTS]
     skipped = len(hits) - len(counted)

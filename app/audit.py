@@ -113,6 +113,7 @@ class AuditLog:
             # extra 是调用方掌握、这里拿不到的运行时事实（引擎、语言等）——
             # 2026-08-26 排查时正因为没记这些，只能靠延迟指纹反推那一场
             # 到底是 DeepL 还是本地 1.8B 在翻。
+            from .glossary import GLOSSARY_FILE
             from .provenance import code_commit, file_hash
             root = Path(__file__).resolve().parent.parent
             # 核心字段放后面：extra 与其撞名时核心字段赢。审计的骨架字段
@@ -121,7 +122,9 @@ class AuditLog:
                              **{"type": "session_start", "room_url": room_url,
                                 "started_at": datetime.now().isoformat(timespec="seconds"),
                                 "code_commit": code_commit(),
-                                "glossary_hash": file_hash(root / "glossary.txt"),
+                                # 全局表路径用的这一刻从 glossary 模块取（就是 root / "glossary.txt"）：
+                                # 测试把它指到临时目录，不让审计头去读开发者本机的真实词表
+                                "glossary_hash": file_hash(GLOSSARY_FILE),
                                 "vocative_hash": file_hash(root / "app" / "vocative.py")}))
         except OSError as exc:
             if self._fh is None:
