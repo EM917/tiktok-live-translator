@@ -43,6 +43,21 @@ def _comment_guard_emergency_switch_is_not_inherited(monkeypatch):
     monkeypatch.delenv("TLT_COMMENT_GUARD", raising=False)
 
 
+@pytest.fixture
+def v1_reconnect(monkeypatch):
+    """用例测的是 V1 的重连规则（每次都重新解析、连续无声几轮就放弃、「第 N/M 次」）：显式钉在 V1 上，
+    不靠 RECONNECT_V2 的默认值（CLAUDE.md 第九条）。V2 的规则在 tests/test_reconnect_v2.py。"""
+    from app import reconnect_policy
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", False)
+
+
+@pytest.fixture(autouse=True)
+def _reconnect_rules_switch_is_not_inherited(monkeypatch):
+    """TLT_RECONNECT_V2=0 是重连新规则的应急开关（app/reconnect_policy.py）：开发机上设过它，不该让
+    依赖默认规则的用例换一套规则跑。要测哪一边的用例自己 monkeypatch reconnect_policy.RECONNECT_V2。"""
+    monkeypatch.delenv("TLT_RECONNECT_V2", raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _no_claude_key_is_inherited(monkeypatch, tmp_path_factory):
     """开发机上设过 ANTHROPIC_API_KEY、或者在界面里存过 Claude 密钥（settings.json 的 api_keys）的话，选了 Claude

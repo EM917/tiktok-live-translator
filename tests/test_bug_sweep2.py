@@ -356,7 +356,9 @@ def test_a_load_that_finished_after_cancel_is_reused(monkeypatch, tmp_path):
 
 # ---- #16 有音频的轮次不算重连失败 --------------------------------------------------------
 
-def test_short_but_audible_reconnects_do_not_exhaust_the_budget(monkeypatch, tmp_path):
+def test_short_but_audible_reconnects_do_not_exhaust_the_budget(monkeypatch, tmp_path, v1_reconnect):
+    """V1 的规则：有声的轮次清零无声计数，连续几轮一帧都没有才放弃。V2 下无声本身不放弃
+    （tests/test_reconnect_v2.py）。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     import app.resolver
     sessions = []

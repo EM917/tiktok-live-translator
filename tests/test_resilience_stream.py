@@ -32,6 +32,14 @@ SILENT = b"\x00" * FRAME_BYTES
 CAUSE_LABELS = ("年龄", "限流", "封禁", "多半", "暂停", "断线", "被挡")
 
 
+@pytest.fixture(autouse=True)
+def _v1_reconnect_rules(monkeypatch):
+    """这个文件测的是 V1 的重连规则（每次都重新解析、连续无声几轮就放弃、「第 N/M 次」）：显式钉在 V1 上，
+    不靠 RECONNECT_V2 的默认值（CLAUDE.md 第九条那次的教训）。V2 的规则在 tests/test_reconnect_v2.py。"""
+    from app import reconnect_policy
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", False)
+
+
 class RecordingServer(CaptionServer):
     """真的 CaptionServer（持续提示要落进 config），外加把每条消息记下来。"""
 

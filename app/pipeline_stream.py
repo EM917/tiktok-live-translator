@@ -14,11 +14,16 @@
 """
 import asyncio
 import contextlib
+import re
 import time
 
 from .audio import FFmpegAudioSource as _Source
 from .i18n import L
 from .stream_watch import StreamWatch
+
+
+# ffmpeg 报 HTTP 4xx 的说法（stderr 原话）：Server returned 403 Forbidden / HTTP error 404 Not Found
+_HTTP_4XX = re.compile(r"(?:Server returned|HTTP error) 4\d\d")
 
 
 class StreamWatchMixin:
@@ -87,14 +92,17 @@ class StreamWatchMixin:
         return (sum(delays) + (len(delays) + 1) * MEDIA_PROBE_SEC
                 + self.STAGE_BACKOFF_SLACK_SEC)
 
-    def _offline_check_budget(self):
+    def _offline_check_budget(self, sess=None):
         """「没在播」之后：时钟跳变复查（等 OFFLINE_RECHECK_SEC 再问一次）+ 等房间恢复（最多
-        HOST_WAIT_MAX_SEC，每 HOST_WAIT_POLL_SEC 问一次，每次一个 HTTP 请求）。"""
+        HOST_WAIT_MAX_SEC，每 HOST_WAIT_POLL_SEC 问一次，每次一个 HTTP 请求）。V2 复查也扣令牌，
+        桶空了要等到下一个令牌：再加两个补充间隔。"""
         from .resolver import HTTP_TIMEOUT_SEC
 
         polls = int(self.HOST_WAIT_MAX_SEC // max(1.0, self.HOST_WAIT_POLL_SEC)) + 3
+        bucket = getattr((sess or {}).get("policy"), "bucket", None)
+        token_wait = 2 * float(getattr(bucket, "refill_sec", 0.0) or 0.0)
         return (2 * self.OFFLINE_RECHECK_SEC + self.HOST_WAIT_MAX_SEC + self.HOST_WAIT_POLL_SEC
-                + polls * HTTP_TIMEOUT_SEC + self.STAGE_WAIT_SLACK_SEC)
+                + polls * HTTP_TIMEOUT_SEC + token_wait + self.STAGE_WAIT_SLACK_SEC)
 
     async def _network_wait_staged(self, sess):
         """_wait_for_network 外面套一个 network_wait 阶段：放弃之前最多等 NETWORK_GIVE_UP_SEC。"""
@@ -125,6 +133,122 @@ class StreamWatchMixin:
         watch = self._watch_of(sess)
         if watch is not None:
             watch.shift(sec)
+        policy = sess.get("policy") if isinstance(sess, dict) else None
+        if policy is not None:
+            policy.shift(sec)          # 令牌桶：程序没在运行的那段不补令牌
+
+    # ---- 重连（app/reconnect_policy.py）：请求计数、令牌、每次重连的安排和文字 ----
+
+    @staticmethod
+    def _requests(sess):
+        """这一场对 TikTok / CDN 发了多少请求（第八条：对同一房间的请求要省，合起来算）。"""
+        if not isinstance(sess, dict):
+            return None
+        req = sess.get("requests")
+        if req is None:
+            req = sess["requests"] = {"lookups": 0, "lookup_layers": {}, "room_rechecks": 0,
+                                      "cdn_connects": 0}
+        return req
+
+    def _count_lookup(self, sess, layers):
+        """一次 resolve_stream_url：按层记走过了哪几层（每层至少一个请求，见 resolver 的文档）。"""
+        req = self._requests(sess)
+        if req is None:
+            return
+        req["lookups"] += 1
+        for rec in layers or ():
+            layer = str(rec.get("layer"))
+            if rec.get("outcome") in ("skipped",):
+                continue
+            req["lookup_layers"][layer] = req["lookup_layers"].get(layer, 0) + 1
+
+    @staticmethod
+    def _lookup_token_left(policy):
+        """4003110 自动重试之前：V2 的桶里还有令牌才值得等那 20 秒；V1 不限。"""
+        bucket = getattr(policy, "bucket", None)
+        return bucket is None or bucket.available() >= 1
+
+    async def _room_token(self, sess):
+        """等房间恢复时复查一次房间状态之前：V2 扣一个令牌，桶空了就等到下一个令牌（返回等了几秒，
+        算进 HOST_WAIT_MAX_SEC 的计时）。V1 立刻返回 0。"""
+        policy = sess.get("policy") if isinstance(sess, dict) else None
+        waited = 0.0
+        wait = policy.room_token_wait() if policy is not None else 0.0
+        while wait > 0:
+            print("[信息] 查询次数到了上限，{:.0f} 秒后再复查房间状态".format(wait))
+            await asyncio.sleep(wait)
+            waited += wait
+            wait = policy.room_token_wait()
+        req = self._requests(sess)
+        if req is not None:
+            req["room_rechecks"] += 1
+        return waited
+
+    def _round_facts(self, rnd, got_audio, source, stderr_tail):
+        """一轮结束时的事实，给 V2 判断「原地址明确拉不动」：ffmpeg 报 HTTP 4xx，或起来没几秒就退出、
+        一帧都没有（收尾吐出的也没有）。"""
+        from .reconnect_policy import V2Policy
+
+        t0 = rnd.get("t0") if isinstance(rnd, dict) else None
+        sec = time.monotonic() - t0 if t0 is not None else None
+        tail = int(getattr(source, "tail_bytes", 0) or 0)
+        quick = (not got_audio and not tail and sec is not None
+                 and sec < V2Policy.DEAD_ROUND_SEC)
+        http4xx = bool(_HTTP_4XX.search(stderr_tail or ""))
+        return {"dead": bool(quick or (http4xx and not got_audio)), "sec": sec}
+
+    def _note_reconnect_plan(self, sess, policy, plan):
+        """每次重连写一条 reconnect_plan；到了上限的那一段第一次另写一条 lookup_capped。"""
+        audit = sess.get("audit")
+        if audit is None:
+            return
+        bucket = getattr(policy, "bucket", None)
+        tokens = bucket.available() if bucket is not None else None
+        audit.reconnect_plan(break_no=sess.get("break_no", 0), delay_sec=plan.delay,
+                             mode=plan.mode, silent_streak=getattr(policy, "silent", None),
+                             lookup_tokens=tokens, policy=policy.name)
+        if plan.first_capped and bucket is not None:
+            audit.lookup_capped(tokens=tokens, refill_sec=bucket.refill_sec,
+                                next_in_sec=plan.next_lookup_sec,
+                                per_hour=bucket.per_hour_max())
+            print("[信息] 查流地址的次数到了上限（每小时最多 {} 次），{:.0f} 秒后再查；先用原来的流地址".format(
+                bucket.per_hour_max(), plan.next_lookup_sec or 0))
+
+    def _reconnect_text(self, sess, policy, plan):
+        """重连时状态行那一句。V1 一字不动（「第 N/M 次」）；V2 换成本场累计第几次中断——新规则下
+        「第 N/M 次」不再对应「还剩几次就放弃」。到了上限时说的是程序自己的规矩，不是 TikTok 那边的事
+        （第八条：不能让人读成「TikTok 限了我们」）。"""
+        if policy.name == "v1":
+            return L("直播流中断，{} 秒后自动重连（第 {}/{} 次）…",
+                     "The stream was interrupted. Reconnecting in {} sec (attempt {} of {})…"
+                     ).format(plan.delay, plan.attempt, plan.attempts)
+        k = sess.get("break_no", 0)
+        if plan.mode == "lookup":
+            if not plan.delay:
+                return L("直播流中断，正在重新查流地址（本场第 {} 次中断）…",
+                         "The stream was interrupted. Looking up the stream URL again "
+                         "(interruption {} this session)…").format(k)
+            return L("直播流中断，{} 秒后自动重连（本场第 {} 次中断）…",
+                     "The stream was interrupted. Reconnecting in {} sec (interruption {} this "
+                     "session)…").format(plan.delay, k)
+        if plan.mode == "reuse":
+            return L("直播流中断，{} 秒后用同一个流地址重连（本场第 {} 次中断）…",
+                     "The stream was interrupted. Reconnecting to the same stream URL in {} sec "
+                     "(interruption {} this session)…").format(plan.delay, k)
+        per_hour = policy.bucket.per_hour_max()
+        wait = self._duration_text(plan.next_lookup_sec or 0)
+        if plan.mode == "reuse_failed_capped":
+            return L("同一个流地址拉不到数据。为少向 TikTok 发请求，程序每小时最多查 {} 次流地址，"
+                     "{}后再查；程序会一直重试。",
+                     "The same stream URL isn’t returning data. To keep requests to TikTok low, "
+                     "the app looks up the stream URL at most {} times an hour. Next lookup in {}. "
+                     "The app keeps retrying.").format(per_hour, wait)
+        return L("直播流中断，{} 秒后用同一个流地址重连（本场第 {} 次中断）。为少向 TikTok 发请求，"
+                 "程序每小时最多查 {} 次流地址，{}后再查。",
+                 "The stream was interrupted. Reconnecting to the same stream URL in {} sec "
+                 "(interruption {} this session). To keep requests to TikTok low, the app looks up "
+                 "the stream URL at most {} times an hour. Next lookup in {}.").format(
+            plan.delay, k, per_hour, wait)
 
     # ---- 统计循环每一跳 ----
 
@@ -265,7 +389,17 @@ class StreamWatchMixin:
         if watch is None:
             return {}
         try:
-            return watch.summary(sess.get("break_no", 0))
+            out = watch.summary(sess.get("break_no", 0))
+            policy = sess.get("policy")
+            if policy is not None:
+                out.update(policy.summary())
+            req = sess.get("requests")
+            if req:
+                out["requests"] = {"lookups": req["lookups"],
+                                   "lookup_layers": dict(req["lookup_layers"]),
+                                   "room_rechecks": req["room_rechecks"],
+                                   "cdn_connects": req["cdn_connects"]}
+            return out
         except Exception:
             return {}
 

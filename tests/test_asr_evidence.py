@@ -1140,6 +1140,10 @@ def _stuck_stream(monkeypatch, tmp_path, live):
     monkeypatch.setattr(asr_evidence, "_write_wav", stuck)
 
     async def fake_session(media, *a, **k):
+        # 第一轮出那一段；之后的轮次一帧都没有（V2 有声之后先用原地址连一轮，没声音再去查，查到「已结束」；
+        # V1 第二次解析就收到）
+        if state["emitted"]:
+            return False, 0.0
         sess = p._session_state
         recorder = p._evidence_round(sess)
         for i in range(100):

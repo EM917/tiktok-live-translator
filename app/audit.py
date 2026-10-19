@@ -689,6 +689,33 @@ class AuditLog:
             rec.setdefault(key, value)
         self._write(rec)
 
+    def reconnect_plan(self, break_no, delay_sec, mode, silent_streak=None, lookup_tokens=None,
+                       policy=None):
+        """每次重连之前一条：本场第几次中断之后、等几秒、怎么连（lookup 重新查流地址 / reuse 用原来的
+        流地址 / reuse_capped、reuse_failed_capped 想查但到了上限）、连续无声几轮、桶里还剩几个令牌。"""
+        self._write({
+            "type": "reconnect_plan",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "break_no": break_no,
+            "delay_sec": delay_sec,
+            "mode": str(mode),
+            "silent_streak": silent_streak,
+            "lookup_tokens": lookup_tokens,
+            "policy": policy,
+        })
+
+    def lookup_capped(self, tokens, refill_sec, next_in_sec, per_hour):
+        """查流地址的次数到了程序自己定的上限（每一段一条）：桶里剩几个、多久补一个、多久后能再查、
+        任意一小时最多几次。这是程序的规矩，不是 TikTok 的回应。"""
+        self._write({
+            "type": "lookup_capped",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "tokens": tokens,
+            "refill_sec": round(float(refill_sec), 1),
+            "next_in_sec": round(float(next_in_sec or 0.0), 1),
+            "per_hour": per_hour,
+        })
+
     def no_audio(self, sec, wall_sec, stage, break_no=0):
         """「已 N 分钟没收到直播音频」这一次跨过了门限（每一段无声一条）。sec 按单调时钟、wall_sec
         按墙钟（电脑睡着的时间只算在后者里），stage 是此刻所在的阶段。"""

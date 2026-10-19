@@ -505,10 +505,11 @@ def test_stop_writes_the_sessions_summary_when_the_old_task_is_slow(monkeypatch,
 
 def test_session_records_carry_the_stop_limits_and_the_summary(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
+    rounds = iter([(True, 60.0)])
 
     async def one_round(media, *a, sess=None, **k):
         sess["break_no"] += 1
-        return True, 60.0
+        return next(rounds, (False, 0.0))     # 播了一分钟，之后一帧都没有：去查，查到已结束
 
     async def fake_resolve(url, cookies=None, cookies_browser="auto", trace=None):
         if not getattr(fake_resolve, "done", False):
@@ -532,7 +533,10 @@ def test_session_records_carry_the_stop_limits_and_the_summary(monkeypatch, tmp_
     for key in ("breaks", "audio_sec", "monitored_sec", "max_deaf_sec", "stage_overruns",
                 "no_audio_notices", "tail_sec_total"):
         assert key in end, key
-    assert end["breaks"] == 1
+    assert end["breaks"] == 2                   # 有声一轮、用原地址又连一轮（V2），然后查到已结束
+    assert start["reconnect_policy"] == "v2" and start["lookup_bucket"] == [6, 180.0]
+    assert end["lookups"] == 2 and end["reused"] == 1
+    assert end["requests"]["lookups"] == 2 and end["requests"]["room_rechecks"] == 0
 
 
 def test_the_lookup_budget_is_the_sum_of_the_layer_timeouts():

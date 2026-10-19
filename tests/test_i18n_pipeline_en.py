@@ -107,6 +107,12 @@ def test_audit_texts_read_as_english():
 
 # ---- 一场从开始到放弃：状态行、提示、弹幕状态 -------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _v1_reconnect_words(v1_reconnect):
+    """这个文件钉的是 V1 那几句重连英文（「attempt N of M」、放弃）：显式钉在 V1 上。V2 的重连英文
+    （本场第几次中断、用同一个流地址、查询次数到上限）在 tests/test_reconnect_v2.py 逐字比对。"""
+
+
 def test_a_session_that_loses_the_network_and_gives_up_is_english(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     p.NETWORK_GIVE_UP_SEC = 60.0
