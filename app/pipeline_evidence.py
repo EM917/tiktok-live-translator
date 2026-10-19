@@ -114,9 +114,10 @@ class AsrEvidenceMixin:
         return False
 
     @staticmethod
-    def _evidence_summary(sess):
+    def _evidence_summary(sess, release=True):
         """session_end.asr_risk.evidence：这一场存了多少、跳过多少（只有数字）。顺手放掉环形缓冲。
-        这一场一轮流都没跑起来时没有这一栏。"""
+        这一场一轮流都没跑起来时没有这一栏。release=False 只读不放：_stop_locked 替还没收尾的旧任务
+        代写 session_end 时用，缓冲留给旧任务自己收尾时放。"""
         if not isinstance(sess, dict) or "evidence" not in sess:
             return None
         recorder = sess["evidence"]
@@ -125,4 +126,5 @@ class AsrEvidenceMixin:
         try:
             return recorder.summary()
         finally:
-            recorder.close()
+            if release:
+                recorder.close()

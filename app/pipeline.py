@@ -154,6 +154,34 @@ def _media_label(url):
         return "?"
 
 
+async def _aclose_quietly(agen):
+    """收掉一个异步生成器（Python 3.9 没有 contextlib.aclosing）。外层的取消照样抛出去；生成器自己的
+    收尾出了别的错只打一行，不盖掉调用方正在处理的结局。"""
+    aclose = getattr(agen, "aclose", None)
+    if aclose is None:
+        return
+    try:
+        await aclose()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print("[警告] 收尾音频源出错：{}".format(type(exc).__name__))
+
+
+def _tail_meta(meta):
+    """收尾时吐出的音频切出来的段：切法照旧，多一个 tail 标记（审计里分得出来，见 _emit_original）。"""
+    return dict(meta or {}, tail=True)
+
+
+def _accepts_urgent(stop):
+    """音频源的 stop() 认不认 urgent（测试里的假音频源不认）。"""
+    import inspect
+    try:
+        return "urgent" in inspect.signature(stop).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def browser_only_message(retries, login=None):
     """解析以 kind=browser_only 收场时给中控的话。
 
@@ -273,12 +301,13 @@ from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
 from .pipeline_evidence import AsrEvidenceMixin  # noqa: E402
 from .pipeline_float import FloatWindowMixin  # noqa: E402
+from .pipeline_stream import StreamWatchMixin  # noqa: E402
 from .pipeline_guard import GUARD_CONTROL_TYPES, CommentGuardMixin  # noqa: E402
 from .pipeline_transcript import TranscriptMixin  # noqa: E402
 
 
 class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin,
-               TranscriptMixin, FloatWindowMixin, AsrEvidenceMixin):
+               TranscriptMixin, FloatWindowMixin, AsrEvidenceMixin, StreamWatchMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -934,7 +963,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self._stop_comment_source()
         closed = self.audit
         if closed is not None:
-            self._close_audit(closed, self._stop_reason)
+            # 旧任务过了宽限期还没走到 _end_session（识别线程停不下来）：session_end 由这里代写。
+            # 这一场的汇总（识别风险、证据计数、拉流汇总）照样从它的会话状态里取，只读不放
+            sess = getattr(self, "_session_state", None)
+            fields = {}
+            if isinstance(sess, dict) and sess.get("audit") is closed:
+                try:
+                    fields = self._session_end_fields(sess, {}, release=False)
+                except Exception:
+                    fields = {}
+            self._close_audit(closed, self._stop_reason, **fields)
             self.audit = None
         # 字幕记录跟审计同生同灭；认本场的审计，见 pipeline_transcript.py
         closed_transcript = self._close_transcript(closed)
@@ -990,6 +1028,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             while True:
                 await asyncio.sleep(interval)
                 await self._check_clock_gap(interval)
+                # 拉流阶段计时、「已 N 分钟没收到直播音频」：不依赖拉流任务，拉流卡死时这里照常跳
+                await self._stream_watch_tick()
                 snap = self.telemetry.snapshot()
                 level = self._health_level(snap["audio_backlog_sec"])
                 snap["health"] = level
@@ -1271,7 +1311,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # （自己结束的场次收尾到一半点了停止）：session_end 照样由这一场自己写、记真正的原因，
             # 写完再把取消抛出去，见 _evidence_drain
             cancelled = await self._evidence_drain(sess)
-            await self._end_session(my_audit, **self._asr_session_end(sess, end))
+            await self._end_session(my_audit, **self._session_end_fields(sess, end))
             if cancelled:
                 raise asyncio.CancelledError()
 
@@ -1377,6 +1417,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             **self._evidence_session_extras(),
             # 解析组件版本、上次连上更新服务器的时间、这一场是不是更新后自动接上的
             **self._update_session_extras(),
+            # 拉流收尾各步的上限（app/audio.py）：事后读日志知道这一场按哪套上限收尾
+            "stop_limits": self._stop_limits(),
         })
         # 守卫记住本场自己的 audit 并开始 observe（my_audit：晚到的旧任务关不掉它）
         await self._bind_comment_guard(self.audit)
@@ -1841,11 +1883,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     NETWORK_RETRY_SEC = 20.0      # 本机连不上 TikTok 时隔这么久再探一次
     NETWORK_GIVE_UP_SEC = 1800.0  # 连不上超过这么久才放弃
 
-    async def _resolve_media(self, url, reconnect=None):
+    async def _resolve_media(self, url, reconnect=None, sess=None):
         """解析直播流地址。TikTok 明确「不给程序」（kind=browser_only）时不立刻放弃：
         隔 BROWSER_ONLY_RETRY_SEC 秒再试，最多 BROWSER_ONLY_RETRIES 次，界面上说清
         在等什么；其它失败（下播、找不到、网络……）原样抛出。
-        reconnect：会话中途第几次重连（首次开播为 None），原样记进审计。
+        reconnect：会话中途第几次重连（首次开播为 None），原样记进审计。sess 给了就标阶段：
+        每次 resolve_stream_url 一个 lookup 阶段（预算是各层超时之和），重试前的等待是 lookup_wait。
         曾经试过在这一步借用户的 Chrome + 插件拿地址，用户嫌麻烦，撤掉了：
         程序只靠自己，拿不到就明白说「稍后再试」。"""
         from .resolver import (ResolveError, _check_media_url, _media_url_works,
@@ -1857,8 +1900,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         override = getattr(self, "_media_override", None)
         if override:
             t0 = time.monotonic()
-            checked = await _check_media_url(override, trusted=True)
-            if await _media_url_works(checked):
+            with self._stage_during(sess, "override_probe", 2 * self.STAGE_BACKOFF_SLACK_SEC):
+                checked = await _check_media_url(override, trusted=True)
+                works = await _media_url_works(checked)
+            if works:
                 print("[信息] 使用用户指定的音频源")
                 self._log_resolve(0, True, t0, [{"layer": "用户直连", "outcome": "url"}],  # i18n: audit
                                   media=checked, reconnect=reconnect)
@@ -1875,10 +1920,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         for attempt in range(1, self.BROWSER_ONLY_RETRIES + 1):
             layers, t0 = [], time.monotonic()
             try:
-                media = await resolve_stream_url(
-                    url, cookies=self.args.cookies,
-                    cookies_browser=getattr(self.args, "cookies_browser", "auto"),
-                    trace=layers)
+                with self._stage_during(sess, "lookup", self._lookup_stage_budget() if sess else None,
+                                        attempt=attempt):
+                    media = await resolve_stream_url(
+                        url, cookies=self.args.cookies,
+                        cookies_browser=getattr(self.args, "cookies_browser", "auto"),
+                        trace=layers)
             except ResolveError as exc:
                 self._log_resolve(attempt, False, t0, layers, kind=exc.kind,
                                   reconnect=reconnect, message=str(exc),  # i18n: audit
@@ -1901,7 +1948,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                       "{:.0f} sec (attempt {} of {})…").format(self.BROWSER_ONLY_RETRY_SEC,
                                                               attempt + 1,
                                                               self.BROWSER_ONLY_RETRIES))
-                await asyncio.sleep(self.BROWSER_ONLY_RETRY_SEC)
+                with self._stage_during(sess, "lookup_wait",
+                                        self.BROWSER_ONLY_RETRY_SEC + self.STAGE_BACKOFF_SLACK_SEC):
+                    await asyncio.sleep(self.BROWSER_ONLY_RETRY_SEC)
         raise ResolveError(browser_only_message(self.BROWSER_ONLY_RETRIES,
                                                 getattr(last, "login", None)),
                            kind="browser_only",
@@ -2009,11 +2058,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "last_frame_wall": None,  # 最近一帧音频到达的墙钟时间
             "deaf_since": None,       # 上一轮收到最后一帧的时间；这一轮收到首帧时清掉
             "reconnect_no": 0,        # 本场第几次重连
+            "break_no": 0,            # 本场已经断了几轮（每轮拉流结束 +1，写进 stream_break）
+            "round": None,            # 正在跑的这一轮：{"no": 第几轮, "source", "reader"}（收尾超时自愈用）
+            "no_audio": None,         # 「已 N 分钟没收到直播音频」挂着
+            "watch": self._new_stream_watch(),   # 阶段计时、无声计时、场末汇总（app/stream_watch.py）
             "meter": None,            # AudioFlowMeter，第一轮拉流时建
             "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
         }
 
-    def _asr_session_end(self, sess, end):
+    def _asr_session_end(self, sess, end, release=True):
         """session_end 带上这一场的识别风险计数和证据音频计数（只有数字），顺手放掉证据的环形缓冲。
         只读这一场自己的会话状态：晚到的旧任务数不进下一场（CLAUDE.md 第七条）。算不出来就不带，
         收尾照常。在途的证据写盘由调用方先等过（_evidence_drain，最多 1 秒）；还没写完的份数记在
@@ -2024,7 +2077,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         end = dict(end)
         try:
             summary = counter.summary()
-            evidence = self._evidence_summary(sess)
+            evidence = self._evidence_summary(sess, release=release)
             if evidence is not None:
                 summary["evidence"] = evidence
             end.setdefault("asr_risk", summary)
@@ -2073,12 +2126,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     # 停止或一场结束时，各条 session: 提示怎么收（下一场开始时 _clear_session_incidents 全部撤掉）：
     #   撤掉：描述「正在进行」、监听停了就不成立的——「网络恢复后自动重连」、音频到达率、
-    #         「程序继续监听」的安静提示（ONGOING_INCIDENTS）
+    #         「程序继续监听」的安静提示、「已 N 分钟没收到直播音频」（ONGOING_INCIDENTS）
     #   改写：承诺「会继续重试」的——审计写不进去（_settle_audit_incident）、远程引擎被拒
     #         （_settle_engine_incident）。停了就不再重试，改成已经发生的事和下一步
     #   留着：已经发生的事，或停了也成立的话——时钟跳变、识别连续出错（CPU 模型照样在后台
     #         加载，或请重开程序）、本地引擎连续出错、审计没能创建、审计文件被移走、磁盘快满
-    ONGOING_INCIDENTS = ("session:network", "session:audio_rate", "session:quiet_audio")
+    ONGOING_INCIDENTS = ("session:network", "session:audio_rate", "session:quiet_audio",
+                         "session:no_audio")
 
     async def _clear_ongoing_incidents(self):
         config = getattr(getattr(self, "server", None), "config", None) or {}
@@ -2182,6 +2236,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if gap < self.CLOCK_GAP_SEC:
                 return
             diverged = wall_sec - mono_sec >= self.CLOCK_GAP_SEC
+            # 单调时钟也多走了的那一段（Windows 睡眠、事件循环被卡住）：按单调时钟计的阶段、无声
+            # 起点往后挪，醒来时不一起误报。macOS / Linux 睡眠时单调时钟没走，这里是 0
+            self._shift_session_clocks(sess, mono_sec - float(interval))
             sess["gap"] = {"from": prev_wall, "to": wall, "sec": gap, "diverged": diverged}
             sess["gap_count"] = sess.get("gap_count", 0) + 1
             audit.clock_gap(prev_wall, wall, gap_sec=gap, wall_sec=wall_sec,
@@ -2239,16 +2296,22 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             self._duration_text(gap.get("sec") or 0))
 
     def _note_stream_resumed(self, sess, now):
-        """这一轮收到第一帧：上一轮最后一帧之后多久没有音频，记一条 stream_resumed。"""
+        """这一轮收到第一帧：上一轮最后一帧之后多久没有音频，记一条 stream_resumed。
+        「已 N 分钟没收到直播音频」挂着的话撤掉，stream_resumed 带 no_audio_notice。"""
         sess["gap"] = None
+        notice = self._no_audio_resumed(sess)
         deaf_since = sess.get("deaf_since")
         if deaf_since is None:
             return
         sess["deaf_since"] = None
+        watch = self._watch_of(sess)
+        if watch is not None:
+            watch.note_deaf(now - deaf_since)
         audit = sess.get("audit")
         if audit is not None:
             audit.stream_resumed(deaf_sec=now - deaf_since,
-                                 reconnect_no=sess.get("reconnect_no"))
+                                 reconnect_no=sess.get("reconnect_no"),
+                                 **({"no_audio_notice": True} if notice else {}))
 
     async def _on_audio_events(self, sess, events):
         """AudioFlowMeter 的事件：写审计、挂或撤持续提示。观察不能拖垮拉流，异常一律吞掉。"""
@@ -2297,8 +2360,25 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if got_audio:
                 sess["deaf_since"] = sess.get("last_frame_wall") or time.time()
             sess["source"] = None
-            if meter is not None and meter.low:
+            sess["round"] = None
+            sess["break_no"] = sess.get("break_no", 0) + 1
+            # 撤掉每轮的「音频偏少」只在还是当前这一场时：以前卡住的旧任务永远不结束，修好之后它晚几秒
+            # 才走到这里，这时撤的就是新一场的提示了
+            if meter is not None and meter.low and sess is getattr(self, "_session_state", None):
                 self._spawn(self._incident("session:audio_rate", "clear"))
+            # 收尾的事实（app/audio.py stop_facts）：走到了哪一步、收尾时 ffmpeg 又吐出多少字节。
+            # 测试里的假音频源没有这个方法
+            facts = {}
+            stop_facts = getattr(source, "stop_facts", None)
+            if callable(stop_facts):
+                try:
+                    facts = stop_facts() or {}
+                except Exception:
+                    facts = {}
+            watch = self._watch_of(sess)
+            if watch is not None:
+                watch.tail_bytes += int(getattr(source, "tail_bytes", 0) or 0)
+                watch.tail_dropped_bytes += int(getattr(source, "tail_dropped_bytes", 0) or 0)
             audit = sess.get("audit")
             if audit is None:
                 return
@@ -2312,7 +2392,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 reason, returncode=getattr(getattr(source, "proc", None), "returncode", None),
                 audio_sec=audio_secs, got_audio=got_audio,
                 reconnect_no=sess.get("reconnect_no", 0), stderr_tail=tail,
-                error=str(error) if error is not None else None)
+                error=str(error) if error is not None else None,
+                break_no=sess["break_no"], **facts)
         except Exception as exc:
             print("[警告] 记录断流出错: {}".format(exc))
 
@@ -2508,7 +2589,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         my_audit = sess["audit"]     # 本场自己的审计，见 _run_stream_inner 与 _new_session_state
         await self.server.status("connecting", L("正在解析直播流地址…", "Getting the stream URL…"))
         try:
-            media = await self._resolve_media(url)
+            media = await self._resolve_media(url, sess=sess)
             self._resolve_fail_streak = 0
         except ResolveError as exc:
             self._note_resolve_failure(exc)
@@ -2544,6 +2625,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                   "beam_size": self.args.beam, "use_context": self.args.context,
                   "temperature": temperature, "hotwords": self.glossary.asr_prompt(),
                   "note": rec["note"]}
+        # 加载模型（含等上一场改用 CPU 的那次加载）：首次要下载几 GB，预算放宽，超了只记一条
+        self._stage(sess, "model_load", self.STAGE_MODEL_LOAD_SEC)
         # 上一场「改用 CPU」的加载被停止打断、还在线程里跑：先等它，别和下面的加载同时驻留两份
         await self._settle_fallback_load(key)
         if self._transcriber is None or self._transcriber_key != key:
@@ -2617,12 +2700,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 await self._asr_loaded_ok(refresh=dropped_fallback)
         transcriber = self._transcriber
         sess["end"] = None
+        self._stage(sess, "other", self.STAGE_OTHER_SEC)
         if my_audit is not None:
             my_audit.asr_config(self._asr_config_record(config, transcriber))
         self._record_asr_memory(sess, transcriber)     # 模型就绪时一条，之后统计循环每 5 分钟一条
         slot = _ASRSlot(transcriber, config=config, key=key, audit=my_audit)
 
-        denoise = await self._ensure_denoise_model()
+        with self._stage_during(sess, "denoise", self.STAGE_DENOISE_SEC):
+            denoise = await self._ensure_denoise_model()
 
         # ---- 断流自动重连 ----
         # TikTok 的流地址会过期、网络会抖动，ffmpeg 一断不等于主播下播了。
@@ -2648,7 +2733,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     # 直连地址问不出「主播还在不在播」，但问得出「这个地址还出不出数据」。
                     # 以前播过 30 秒就一律按「直播流已结束」收尾：Wi-Fi 抖一下、半开连接被
                     # 看门狗掐断，剩下的直播就没人听了。只向 CDN 拉 2KB，不碰房间接口
-                    works, probes = await self._direct_media_works(media, sess)
+                    with self._stage_during(sess, "direct_probe", self._direct_probe_budget()):
+                        works, probes = await self._direct_media_works(media, sess)
                     if not works:
                         await self.server.status(
                             "ended", L("这个直连地址已经拉不到数据，监听已停止。"
@@ -2696,9 +2782,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     L("直播流中断，{} 秒后自动重连（第 {}/{} 次）…",
                       "The stream was interrupted. Reconnecting in {} sec (attempt {} of {})…"
                       ).format(delay, attempt, attempts))
-                await asyncio.sleep(delay)
+                with self._stage_during(sess, "backoff", delay + self.STAGE_BACKOFF_SLACK_SEC):
+                    await asyncio.sleep(delay)
                 # 本机连不上 TikTok 时不去解析，也不算进重连预算（直连地址不走这一步）
-                if not direct and not await self._wait_for_network(sess):
+                if not direct and not await self._network_wait_staged(sess):
                     await self.server.status(
                         "error", L("本机连不上 www.tiktok.com 已超过 {:.0f} 分钟，监听已停止。"
                                    "网络恢复后点「开始翻译」重新开始。",
@@ -2712,12 +2799,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     return
                 sess["reconnect_no"] += 1
                 try:
-                    media = await self._resolve_media(url, reconnect=sess["reconnect_no"])
+                    media = await self._resolve_media(url, reconnect=sess["reconnect_no"],
+                                                      sess=sess)
                     self._resolve_fail_streak = 0
                 except ResolveError as exc:
                     if exc.kind == "offline":
-                        verdict, host_waited = await self._confirm_offline(
-                            url, exc, sess, host_waited)
+                        with self._stage_during(sess, "offline_check",
+                                                self._offline_check_budget()):
+                            verdict, host_waited = await self._confirm_offline(
+                                url, exc, sess, host_waited)
                         if verdict != "live":
                             return        # 界面文字和结束原因 _confirm_offline 已经写好
                         reconnects = 0    # 房间回到在播：马上重新解析，不再长退避
@@ -2770,6 +2860,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 识别证据音频（app/asr_evidence.py）：这一轮的环形缓冲。关着时是 None，下面每帧只多一次判断
         evidence = self._evidence_round(sess)
         sess["source"] = source
+        # 阶段计时（app/pipeline_stream.py）：起 ffmpeg → 第一帧 → 收流 → 收尾 → 等识别做完队列
+        watch = self._watch_of(sess)
+        tail_frames = 0               # 收尾时 ffmpeg 吐出来的帧数（照样送去识别，见 reader）
+        rnd = sess["round"] = {"no": sess.get("break_no", 0) + 1, "source": source, "reader": None}
+        if watch is not None:
+            # 无声计时从本场第一次起 ffmpeg 起算（起进程这一步卡住也算在里面）
+            watch.note_spawn()
+            source.on_stage = self._source_stage_hook(sess, source)
+        self._stage(sess, "spawn", self.STAGE_SPAWN_SEC)
         meter = sess.get("meter")
         if meter is None:
             meter = sess["meter"] = AudioFlowMeter(
@@ -2854,18 +2953,40 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
-            nonlocal got_audio, audio_secs
+            nonlocal got_audio, audio_secs, tail_frames
+            frames = source.frames()
+            last_tail = False
             try:
-                async for frame in source.frames():
+                async for frame in frames:
+                    if getattr(source, "stopping", False):
+                        # 收尾时 ffmpeg 吐出来的音频（10-18 那种：探测阶段攒在手里、收到停止信号才写出来）。
+                        # 照样送去识别、做违禁词检测——CLAUDE.md 第六条，音频绝不静默丢弃。但它不说明
+                        # 直播流还在出数据：不宣布直播中、不写 stream_resumed、不算进这一轮的音频秒数
+                        # （退避和无声计数看的就是它）、不进到达率。这些段在审计里带 tail（_emit_original）
+                        tail_frames += 1
+                        last_tail = True
+                        if evidence is not None:
+                            evidence.feed(frame)
+                        segments = segmenter.feed(frame)
+                        for segment in segments:
+                            _put((segment, time.time(), _tail_meta(_cut_meta(segments))))
+                        events = meter.cut(len(segments))
+                        if events:
+                            await self._on_audio_events(sess, events)
+                        continue
+                    last_tail = False
                     now = time.time()
                     if not got_audio:
                         got_audio = True
                         self._note_stream_resumed(sess, now)
+                        self._stage(sess, "streaming", None)
                         # 空 detail：横幅收起。「已连接，开始识别」是常态不是问题，
                         # 状态胶囊的「直播中」已经说了；横幅只留给真出了问题的时候
                         await self.server.status("live", "")
                     audio_secs += FRAME_SEC
                     sess["last_frame_wall"] = now
+                    if watch is not None:
+                        watch.note_audio(FRAME_SEC, time.monotonic(), now)
                     if evidence is not None:
                         evidence.feed(frame)       # 先进缓冲：切出来的段包含这一帧
                     segments = segmenter.feed(frame)
@@ -2877,12 +2998,19 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         await self._on_audio_events(sess, events)
                 rest = segmenter.flush()
                 for segment in rest:   # 别丢掉最后一段话
-                    _put((segment, time.time(), _cut_meta(rest)))
+                    meta = _cut_meta(rest)
+                    _put((segment, time.time(), _tail_meta(meta) if last_tail else meta))
                 events = meter.cut(len(rest))
                 if events:
                     await self._on_audio_events(sess, events)
             finally:
-                _put(None)
+                try:
+                    # reader 在等广播时被取消，生成器停在 yield 上：显式收掉，它的 finally（读空 stdout、
+                    # 等 ffmpeg 收尾）才会跑，不靠 GC。3.9 没有 contextlib.aclosing
+                    await _aclose_quietly(frames)
+                finally:
+                    _put(None)
+                    self._stage(sess, "drain", self._drain_stage_budget(backlog["sec"]))
 
         async def asr_worker():
             asr_failures = 0
@@ -2978,6 +3106,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         async def run_workers():
             trans_task = asyncio.ensure_future(translation_worker())
             reader_task = asyncio.ensure_future(reader())
+            rnd["reader"] = reader_task       # 收尾超时自愈时只取消它（见 _heal_stopping）
             asr_task = asyncio.ensure_future(asr_worker())
             try:
                 # return_exceptions：一条协程出错时不能把另一条丢成孤儿
@@ -2988,12 +3117,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     if isinstance(r, BaseException) and not isinstance(
                             r, asyncio.CancelledError):
                         raise r
-                # 流自然结束：让翻译把在途那条跑完（最多等 5 秒）
+                # 流自然结束：让翻译把在途那条跑完（最多等 5 秒）。asyncio.wait 到点不抛，翻译任务自己被
+                # 取消也不抛；只有外层被取消（这时点了停止）才抛出去——以前 except 把 TimeoutError 和
+                # CancelledError 一起接住，停止被吞掉，重连循环接着查流地址、把界面改回「直播中」
                 _put_sentinel()
-                try:
-                    await asyncio.wait_for(asyncio.shield(trans_task),
-                                           timeout=self.TRANSLATION_DRAIN_SEC)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
+                done, _ = await asyncio.wait({trans_task}, timeout=self.TRANSLATION_DRAIN_SEC)
+                if not done:
                     trans_task.cancel()
             finally:
                 for task in (reader_task, asr_task, trans_task):
@@ -3016,8 +3145,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         break
                     if pending is not None:
                         _drop_job(pending)
-                # 取空了就归零：这一场收尾后队列不在了，残留的深度会让下一场开头的弹幕白等
-                self.telemetry.translation_queue_depth = trans_queue.qsize()
+                # 取空了就归零：这一场收尾后队列不在了，残留的深度会让下一场开头的弹幕白等。
+                # 队列已经换成下一场的了（旧任务晚收尾）就不碰：那是新一场的深度
+                if getattr(self, "_trans_queue", None) is trans_queue:
+                    self.telemetry.translation_queue_depth = trans_queue.qsize()
 
         reason, error = "eof", None
         try:
@@ -3029,15 +3160,25 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             reason, error = "error", exc
             raise
         finally:
-            # 先切 ffmpeg 再收尾，任何退出路径（含异常）都不留子进程
+            # 先切 ffmpeg 再收尾，任何退出路径（含异常）都不留子进程。被取消（停止、换主播）时走取消路径：
+            # 收尾宽限缩短，整条路径短于 STOP_GRACE_SEC，session_end 由这一场自己写（见 app/audio.py）
             try:
-                await source.stop()
+                if reason == "cancelled" and _accepts_urgent(source.stop):
+                    await source.stop(urgent=True)
+                else:
+                    await source.stop()
             finally:
                 asr_pool.shutdown(wait=False)
-                self._trans_queue = None
+                # 只清自己的那一个：旧任务晚收尾时 self._trans_queue 已经是新一场的
+                if getattr(self, "_trans_queue", None) is trans_queue:
+                    self._trans_queue = None
+                if tail_frames:
+                    print("[信息] 这一轮收尾时 ffmpeg 吐出 {:.1f} 秒音频，已送去识别".format(
+                        tail_frames * FRAME_SEC))
                 # 这一轮怎么断的写进本场审计：打包运行时终端输出没人看得到
                 self._record_stream_break(sess, source, reason, error, got_audio,
                                           audio_secs, meter)
+                self._stage(sess, "other", self.STAGE_OTHER_SEC)
         tail = source.stderr_tail()
         if tail:
             print("[信息] ffmpeg 输出: {}".format(tail))   # 英文技术输出只进终端，不上 UI
@@ -3484,11 +3625,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 风险分在扫描之后算，出错就当没有：检测和上屏不能被它拖住
         sess = self._segment_session(sess)
         risk = self._asr_risk_of(result, segment_ms, asr_meta, sess)
+        # 收尾时 ffmpeg 吐出来的音频切出的段（见 _stream_session 的 reader）：审计里带 tail，事后分得出
+        # 哪些段晚到了（时间戳比实际说话晚约一个看门狗周期）
+        tail = bool(isinstance(asr_meta, dict) and asr_meta.get("tail"))
         if self.audit is not None:
+            extra = {"tail": True} if tail else {}
             if risk is None:
-                self.audit.segment(seq, result, audio_end_ts, asr_ms, hits)
+                self.audit.segment(seq, result, audio_end_ts, asr_ms, hits, **extra)
             else:
-                self.audit.segment(seq, result, audio_end_ts, asr_ms, hits, asr=risk.audit)
+                self.audit.segment(seq, result, audio_end_ts, asr_ms, hits, asr=risk.audit,
+                                   **extra)
 
         alert_ids = []
         try:

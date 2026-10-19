@@ -258,11 +258,12 @@ class AuditLog:
         except (OSError, ValueError):
             return False
 
-    def segment(self, seq, result, audio_end_ts, asr_ms, hits, asr=None):
+    def segment(self, seq, result, audio_end_ts, asr_ms, hits, asr=None, tail=False):
         """一段音频的完整记录：接受的文本、被丢弃的候选及原因、命中的违禁词。
 
         asr 是识别风险的子对象（app/asr_risk.py assess 的 audit：只有数字和 ASCII 代码，不含文字）。
-        不传时这一行和以前逐字节相同；传了才多一个 "asr" 键，放在最后。"""
+        不传时这一行和以前逐字节相同；传了才多一个 "asr" 键，放在最后。tail=True 是收尾时 ffmpeg
+        吐出来的音频切出的段（晚到的段），多一个 "tail": true。"""
         record = {
             "type": "segment",
             "seq": seq,
@@ -282,6 +283,8 @@ class AuditLog:
             record["relabeled_from"] = relabeled_from
         if asr is not None:
             record["asr"] = asr
+        if tail:
+            record["tail"] = True
         self._write(record)
 
     def translation(self, seq, translated, translate_ms, ok, engine=None):
@@ -634,10 +637,13 @@ class AuditLog:
     # 先去掉 query（签名地址两周内拿着就能拉流）。
 
     def stream_break(self, reason, returncode=None, audio_sec=0.0, got_audio=False,
-                     reconnect_no=0, stderr_tail="", error=None):
+                     reconnect_no=0, stderr_tail="", error=None, **extra):
         """一轮拉流结束。reason：eof（读到流尾）/ stall（20 秒没有任何字节，看门狗断开）/
         clock_gap（时钟对账发现电脑休眠过，程序主动断开重连）/ cancelled（停止或换场）/
-        error（这一轮内部出错）。returncode 是 ffmpeg 收尾后的退出码，原样记。"""
+        error（这一轮内部出错）。returncode 是 ffmpeg 收尾后的退出码，原样记。
+
+        extra 是附带的数字和代码，放在骨架字段后面（撞名时骨架字段赢）：break_no（本场第几次）、
+        收尾的事实 stop_path / stop_ms / tail_bytes / tail_sec（app/audio.py stop_facts）等。"""
         rec = {
             "type": "stream_break",
             "at": datetime.now().isoformat(timespec="milliseconds"),
@@ -650,15 +656,49 @@ class AuditLog:
         }
         if error:
             rec["error"] = strip_query(error, 200)
+        for key, value in extra.items():
+            rec.setdefault(key, value)
         self._write(rec)
 
-    def stream_resumed(self, deaf_sec, reconnect_no=None):
-        """断流之后重新收到第一帧音频：中间有多少秒什么都没听到。"""
-        self._write({
+    def stream_resumed(self, deaf_sec, reconnect_no=None, **extra):
+        """断流之后重新收到第一帧音频：中间有多少秒什么都没听到。extra：no_audio_notice（这之前
+        「已 N 分钟没收到直播音频」挂着）。"""
+        rec = {
             "type": "stream_resumed",
             "at": datetime.now().isoformat(timespec="milliseconds"),
             "deaf_sec": round(max(0.0, float(deaf_sec)), 1),
             "reconnect_no": reconnect_no,
+        }
+        for key, value in extra.items():
+            rec.setdefault(key, value)
+        self._write(rec)
+
+    def stage_overrun(self, stage, sec, budget_sec, break_no=0, **facts):
+        """拉流某个阶段超过了预算（每进一次阶段最多一条）。stage：lookup / spawn / first_frame /
+        stopping / drain / backoff / network_wait / offline_check / other ……；facts 只记事实（pid、
+        returncode、stdout_paused、pipes_open、self_heal 做了什么），不写原因。"""
+        rec = {
+            "type": "stage_overrun",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "stage": str(stage),
+            "sec": round(float(sec), 1),
+            "budget_sec": round(float(budget_sec), 1),
+            "break_no": break_no,
+        }
+        for key, value in facts.items():
+            rec.setdefault(key, value)
+        self._write(rec)
+
+    def no_audio(self, sec, wall_sec, stage, break_no=0):
+        """「已 N 分钟没收到直播音频」这一次跨过了门限（每一段无声一条）。sec 按单调时钟、wall_sec
+        按墙钟（电脑睡着的时间只算在后者里），stage 是此刻所在的阶段。"""
+        self._write({
+            "type": "no_audio",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "sec": round(float(sec), 1),
+            "wall_sec": round(float(wall_sec or 0.0), 1),
+            "stage": str(stage),
+            "break_no": break_no,
         })
 
     def audio_heartbeat(self, audio_sec, wall_sec, speech_frames, segments):

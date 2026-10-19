@@ -1,0 +1,279 @@
+# i18n: done
+"""拉流稳定性的 Pipeline 侧接线：阶段计时、「已 N 分钟没收到直播音频」、场末汇总。
+
+计数和时刻在 app/stream_watch.py（一场一份，挂在 sess["watch"] 上）；这里只做三件事：
+  * 在重连循环的各个等待前后标阶段（同步的一次赋值）；
+  * 统计循环每 10 秒调一次 _stream_watch_tick：阶段超了预算写一条 stage_overrun（收尾超时再自愈一次），
+    多久没收到直播音频超过 NO_AUDIO_NOTICE_SEC 就挂持续提示；
+  * session_end / stop 代写 session_end 时带上这一场的汇总。
+
+规矩：
+  * 只认这一场自己的会话状态（sess is self._session_state，且审计是这一场的）：晚到的旧任务碰不到新一场；
+  * 每一项检查各自 try/except——统计循环遇到异常会整个退出，而它是唯一能发现「卡住」的地方；
+  * 文字只写观察和能做的事，不写为什么（CLAUDE.md 第八条、第九条）。终端、审计是中文（G8）。
+"""
+import asyncio
+import contextlib
+import time
+
+from .audio import FFmpegAudioSource as _Source
+from .i18n import L
+from .stream_watch import StreamWatch
+
+
+class StreamWatchMixin:
+    # ---- 阶段预算（秒）。超了只写审计、只报一次；收尾（stopping）超了另外自愈一次 ----
+    STAGE_OTHER_SEC = 60.0          # 兜底阶段：重连循环里没有具名的那些瞬间（发状态、写审计……）
+    STAGE_SPAWN_SEC = 10.0          # 起 ffmpeg：正常几毫秒
+    STAGE_FIRST_FRAME_SLACK_SEC = 10.0   # 起好到第一帧：20 秒看门狗必须先到，+10
+    STAGE_STOP_SLACK_SEC = 3.0      # 收尾：FFmpegAudioSource 各步上限之和 +3
+    STAGE_DRAIN_SLACK_SEC = 10.0    # 流结束到识别把队列做完：识别看门狗 60 秒 + 10 + 断流时的积压 + 等翻译
+    STAGE_BACKOFF_SLACK_SEC = 10.0  # 退避：本次退避 + 10
+    STAGE_WAIT_SLACK_SEC = 60.0     # 等网络、等房间恢复、时钟跳变后的复查：自身上限 + 60
+    STAGE_MODEL_LOAD_SEC = 1800.0   # 加载识别模型：首次要下载几 GB
+    STAGE_DENOISE_SEC = 60.0        # 降噪模型：下载 15 秒 + 两次 ffmpeg 探测各 15 秒
+    # 多久没收到直播音频就在页面顶部说（9-17 以来除 10-18 外，断流后重新有声的间隔最长 80 秒；
+    # 10-18 有 13 次 ≥ 120 秒，外加最后那 91 分钟）
+    NO_AUDIO_NOTICE_SEC = 120.0
+    NO_AUDIO_INCIDENT = "session:no_audio"
+
+    def _new_stream_watch(self):
+        return StreamWatch(self.STAGE_OTHER_SEC)
+
+    @staticmethod
+    def _watch_of(sess):
+        return sess.get("watch") if isinstance(sess, dict) else None
+
+    def _stage(self, sess, name, budget, **extra):
+        """这一场进入阶段 name（同步、一次赋值）。没有观察状态（测试里的半成品）就什么都不做。"""
+        watch = self._watch_of(sess)
+        if watch is not None:
+            watch.stage.enter(name, budget, break_no=sess.get("break_no", 0), **extra)
+
+    def _stage_during(self, sess, name, budget, **extra):
+        watch = self._watch_of(sess)
+        if watch is None:
+            return contextlib.nullcontext()
+        return watch.stage.during(name, budget, break_no=sess.get("break_no", 0), **extra)
+
+    def _lookup_stage_budget(self):
+        """一次解析的预算：各层超时之和（resolver.lookup_worst_case_sec），不是历史最长的那次。"""
+        from .resolver import lookup_browser_count, lookup_worst_case_sec
+
+        browsers = lookup_browser_count(getattr(self.args, "cookies_browser", "auto"))
+        return lookup_worst_case_sec(browsers) + self.STAGE_BACKOFF_SLACK_SEC
+
+    @staticmethod
+    def _stop_limits():
+        """收尾各步上限，记进 session_start：事后读日志知道这一场按哪套上限收尾。"""
+        S = _Source
+        return {"term": S.TERM_GRACE, "kill": S.KILL_GRACE, "close": S.CLOSE_GRACE,
+                "urgent": [S.URGENT_TERM_GRACE, S.URGENT_KILL_GRACE, S.URGENT_CLOSE_GRACE],
+                "stderr": S.STDERR_GRACE, "stream_limit": S.STREAM_LIMIT}
+
+    def _stop_stage_budget(self):
+        S = _Source
+        return (S.TERM_GRACE + S.KILL_GRACE + 2 * S.CLOSE_GRACE + S.STDERR_GRACE
+                + self.STAGE_STOP_SLACK_SEC)
+
+    def _drain_stage_budget(self, backlog_sec):
+        return (self.ASR_STALL_SEC + self.STAGE_DRAIN_SLACK_SEC + max(0.0, float(backlog_sec or 0))
+                + self.TRANSLATION_DRAIN_SEC)
+
+    def _direct_probe_budget(self):
+        from .resolver import MEDIA_PROBE_SEC
+
+        delays = getattr(self, "DIRECT_RECHECK_DELAYS", ())
+        return (sum(delays) + (len(delays) + 1) * MEDIA_PROBE_SEC
+                + self.STAGE_BACKOFF_SLACK_SEC)
+
+    def _offline_check_budget(self):
+        """「没在播」之后：时钟跳变复查（等 OFFLINE_RECHECK_SEC 再问一次）+ 等房间恢复（最多
+        HOST_WAIT_MAX_SEC，每 HOST_WAIT_POLL_SEC 问一次，每次一个 HTTP 请求）。"""
+        from .resolver import HTTP_TIMEOUT_SEC
+
+        polls = int(self.HOST_WAIT_MAX_SEC // max(1.0, self.HOST_WAIT_POLL_SEC)) + 3
+        return (2 * self.OFFLINE_RECHECK_SEC + self.HOST_WAIT_MAX_SEC + self.HOST_WAIT_POLL_SEC
+                + polls * HTTP_TIMEOUT_SEC + self.STAGE_WAIT_SLACK_SEC)
+
+    async def _network_wait_staged(self, sess):
+        """_wait_for_network 外面套一个 network_wait 阶段：放弃之前最多等 NETWORK_GIVE_UP_SEC。"""
+        budget = (self.NETWORK_GIVE_UP_SEC + self.NETWORK_RETRY_SEC
+                  + (self.NETWORK_GIVE_UP_SEC / max(1.0, self.NETWORK_RETRY_SEC) + 2) * 4.0
+                  + self.STAGE_WAIT_SLACK_SEC)
+        with self._stage_during(sess, "network_wait", budget):
+            return await self._wait_for_network(sess)
+
+    def _source_stage_hook(self, sess, source):
+        """交给 FFmpegAudioSource.on_stage：起好进程进 first_frame，开始收尾进 stopping。"""
+        def hook(event):
+            if event == "spawned":
+                watch = self._watch_of(sess)
+                if watch is not None:
+                    watch.note_spawn()
+                self._stage(sess, "first_frame",
+                            getattr(source, "STALL_SEC", 20.0) + self.STAGE_FIRST_FRAME_SLACK_SEC)
+            elif event == "stopping":
+                self._stage(sess, "stopping", self._stop_stage_budget())
+        return hook
+
+    def _shift_session_clocks(self, sess, sec):
+        """时钟对账发现单调时钟多走了 sec 秒（Windows 睡眠、事件循环被卡住）：这一场所有按单调时钟
+        计的起点往后挪，醒来时阶段计时、无声计时不会一起误报。"""
+        if sec <= 0:
+            return
+        watch = self._watch_of(sess)
+        if watch is not None:
+            watch.shift(sec)
+
+    # ---- 统计循环每一跳 ----
+
+    def _watched_session(self):
+        sess = getattr(self, "_session_state", None)
+        audit = getattr(self, "audit", None)
+        if sess is None or audit is None or sess.get("audit") is not audit:
+            return None
+        return sess if self._watch_of(sess) is not None else None
+
+    async def _stream_watch_tick(self, now=None):
+        """now=(单调, 墙钟) 只给测试用。两项检查各自兜住异常，统计循环照常跳。"""
+        sess = self._watched_session()
+        if sess is None:
+            return
+        mono, wall = now if now is not None else (time.monotonic(), time.time())
+        try:
+            await self._check_stage_overrun(sess, mono)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 拉流阶段计时检查出错：{}".format(exc))
+        try:
+            await self._check_no_audio(sess, mono, wall)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 无声提示检查出错：{}".format(exc))
+
+    async def _check_stage_overrun(self, sess, mono):
+        watch = self._watch_of(sess)
+        over = watch.stage.overrun(mono)
+        if over is None:
+            return
+        rnd = sess.get("round") or {}
+        source = rnd.get("source") if rnd.get("no") == over.get("break_no", 0) + 1 else None
+        facts = {}
+        if source is not None and over["stage"] in ("spawn", "first_frame", "stopping"):
+            facts = self._source_facts(source)
+        if over["stage"] == "stopping":
+            facts["self_heal"] = self._heal_stopping(sess, over)
+        audit = sess.get("audit")
+        if audit is not None:
+            audit.stage_overrun(**dict(facts, **over))
+        print("[警告] 拉流阶段 {} 已 {:.0f} 秒（预算 {:.0f} 秒）{}".format(
+            over["stage"], over["sec"], over["budget_sec"],
+            "，已自愈：{}".format(facts["self_heal"]) if facts.get("self_heal") else ""))
+
+    @staticmethod
+    def _source_facts(source):
+        """卡住时音频源的现场：进程号、退出码、stdout 管道还读不读、几根管道还开着。只读，不改。"""
+        out = {}
+        proc = getattr(source, "proc", None)
+        if proc is not None:
+            out["pid"] = getattr(proc, "pid", None)
+            out["returncode"] = getattr(proc, "returncode", None)
+        transport = getattr(source, "_transport", None)
+        if transport is not None:
+            try:
+                pipe = transport.get_pipe_transport(1)
+                if pipe is not None:
+                    out["stdout_paused"] = not pipe.is_reading()
+                out["pipes_open"] = sum(
+                    1 for fd in (1, 2)
+                    if transport.get_pipe_transport(fd) is not None
+                    and not transport.get_pipe_transport(fd).is_closing())
+            except Exception:
+                pass
+        return out
+
+    def _heal_stopping(self, sess, over):
+        """收尾超了预算：关掉 ffmpeg 的 transport（可重复调，和收尾任务自己的 close 不冲突），再只取消
+        这一轮的 reader 任务。不取消整个直播任务——那和用户点停止分不开，还会把识别任务一起取消，
+        队列里的音频就没做违禁词检测。gather 用了 return_exceptions：识别会把队列做完，stream_break 照写。
+        动手前核对：还是当前这一场、还是超时的那一轮。"""
+        rnd = sess.get("round") or {}
+        if sess is not getattr(self, "_session_state", None) \
+                or rnd.get("no") != over.get("break_no", 0) + 1:
+            return {"done": False, "why": "round_changed"}
+        source, reader = rnd.get("source"), rnd.get("reader")
+        closed = bool(source is not None and getattr(source, "force_close", None)
+                      and source.force_close())
+        cancelled = False
+        if reader is not None and not reader.done():
+            reader.cancel()
+            cancelled = True
+        return {"done": True, "transport_closed": closed, "reader_cancelled": cancelled}
+
+    def _no_audio_text(self, wall_sec):
+        return L("已 {}没收到直播音频，这段时间没有经过检测。程序还在自动重试，"
+                 "可以在 TikTok 上看一眼直播是否还在进行。",
+                 "No stream audio for {}. Nothing in that time was checked. The app keeps "
+                 "retrying. You can check on TikTok whether the stream is still live.").format(
+            self._duration_text(wall_sec))
+
+    def _session_incidents(self):
+        return (getattr(self.server, "config", {}) or {}).get("incidents") or {}
+
+    async def _check_no_audio(self, sess, mono, wall):
+        """「已 N 分钟没收到直播音频」：和阶段无关、面向中控的那一句。从本场第一次起 ffmpeg 起算；
+        「本机连不上 TikTok」挂着时不出（那一条已经说了多久没监听）。触发看单调时钟，显示的时长看墙钟。"""
+        watch = self._watch_of(sess)
+        incidents = self._session_incidents()
+        key = self.NO_AUDIO_INCIDENT
+        silent = watch.silent_for(mono)
+        want = (silent is not None and silent >= self.NO_AUDIO_NOTICE_SEC
+                and "session:network" not in incidents)
+        if not want:
+            if key in incidents and "session:network" in incidents:
+                await self._incident(key, "clear")
+            return
+        wall_sec = watch.silent_wall(wall)
+        if not sess.get("no_audio"):
+            sess["no_audio"] = True
+            watch.no_audio_notices += 1
+            audit = sess.get("audit")
+            if audit is not None:
+                audit.no_audio(sec=silent, wall_sec=wall_sec, stage=watch.stage.name,
+                               break_no=sess.get("break_no", 0))
+        text = self._no_audio_text(wall_sec)
+        if (incidents.get(key) or {}).get("text") != text:
+            await self._incident(key, "warn", text)
+
+    def _no_audio_resumed(self, sess):
+        """这一轮收到第一帧直播音频：撤掉无声提示。返回这次恢复之前提示是不是挂着。"""
+        if not sess.get("no_audio"):
+            return False
+        sess["no_audio"] = None
+        if sess is getattr(self, "_session_state", None):
+            self._spawn(self._incident(self.NO_AUDIO_INCIDENT, "clear"))
+        return True
+
+    # ---- 场末汇总 ----
+
+    def _stream_end_fields(self, sess):
+        """session_end 里这一场拉流的汇总（只有数字）。算不出来就不带。"""
+        watch = self._watch_of(sess)
+        if watch is None:
+            return {}
+        try:
+            return watch.summary(sess.get("break_no", 0))
+        except Exception:
+            return {}
+
+    def _session_end_fields(self, sess, end, release=True):
+        """session_end 的附带字段：结束原因的观察 + 识别风险与证据计数 + 拉流汇总。核心字段优先。
+        release=False：只读不放（_stop_locked 替还没收尾的旧任务代写时用，证据缓冲留给旧任务自己放）。"""
+        end = self._asr_session_end(sess, end, release=release)
+        end = dict(end)
+        for key, value in self._stream_end_fields(sess).items():
+            end.setdefault(key, value)
+        return end
