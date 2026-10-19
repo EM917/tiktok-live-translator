@@ -1,4 +1,4 @@
-"""拉流这一侧「卡没卡住、多久没听到」的观察：阶段计时、无声计时、场末汇总的计数。
+"""拉流这一侧「卡没卡住、多久没听到」的观察：阶段计时、无声计时、跨轮覆盖率、场末汇总的计数。
 
 只记时刻和计数，不做决定、不出界面文字、不写审计：Pipeline 的统计循环每 10 秒问一次，自己决定写什么、
 说什么（文字都在 pipeline.py，成对写）。它不依赖拉流任务——10-18 那 91 分钟里拉流任务卡死在
@@ -11,6 +11,7 @@ audio.py 的 wait() 上，统计循环和弹幕一直活着，所以检查放在
   * 给中控看的时长用墙钟：合盖 30 分钟就说 30 分钟，跟 clock_gap 那条提示对得上。
 """
 import time
+from collections import deque
 from contextlib import contextmanager
 
 OTHER = "other"
@@ -80,6 +81,14 @@ class StreamWatch:
         self.tail_dropped_bytes = 0
         self.max_deaf_sec = 0.0
         self.no_audio_notices = 0
+        # 跨轮覆盖率：最近 window 秒里收到多少秒直播音频。按单调时钟的整秒记 [秒, 音频秒]，每帧一次加法；
+        # 不随每轮重建（以前的「音频偏少」每轮从零算、一轮要连满约 135 秒才可能响，10-18 一次都没响）
+        self.cov_start = None         # 从哪一刻起算：本场第一帧直播音频（时钟跳变时跟着往后挪）
+        self._cov = deque()
+        self._breaks = deque()        # 每次断流的单调时刻（数窗口里断了几次）
+        self.cov_ratio = None         # 最近一次算出来的覆盖率
+        self.cov_low = False
+        self.cov_below = 0            # 连续几次低于报警线
 
     def note_spawn(self):
         if self.first_spawn is None:
@@ -88,6 +97,38 @@ class StreamWatch:
     def note_audio(self, sec, mono, wall):
         self.audio_sec += sec
         self.last_audio = (mono, wall)
+        if self.cov_start is None:
+            self.cov_start = mono
+        idx = int(mono)
+        cov = self._cov
+        if cov and cov[-1][0] == idx:
+            cov[-1][1] += sec
+        else:
+            cov.append([idx, sec])
+
+    def note_break(self, mono=None):
+        self._breaks.append(self._mono() if mono is None else mono)
+
+    def coverage(self, mono=None, window=300.0, min_sec=120.0):
+        """最近 min(window, 从第一帧起过了多久) 秒里收到的直播音频占比。分母按回放（analysis/coverage.py）
+        的口径：开场头两分钟分子最多 120 秒，拿 300 秒当分母必然低于四成，一开场就会误报。不够 min_sec
+        返回 None（还不评）。返回 (占比, 窗口秒数, 音频秒数, 窗口里断了几次)。"""
+        now = self._mono() if mono is None else mono
+        if self.cov_start is None:
+            return None
+        span = min(float(window), now - self.cov_start)
+        if span < min_sec:
+            return None
+        lo = now - span
+        cov = self._cov
+        while cov and cov[0][0] < now - window - 1:
+            cov.popleft()
+        while self._breaks and self._breaks[0] < now - window - 1:
+            self._breaks.popleft()
+        audio = sum(a for idx, a in cov if idx >= int(lo))
+        breaks = sum(1 for t in self._breaks if t >= lo)
+        ratio = max(0.0, min(1.0, audio / span))
+        return ratio, span, audio, breaks
 
     def note_deaf(self, sec):
         if sec > self.max_deaf_sec:
@@ -123,6 +164,12 @@ class StreamWatch:
             self.first_spawn = (self.first_spawn[0] + sec, self.first_spawn[1])
         if self.last_audio is not None:
             self.last_audio = (self.last_audio[0] + sec, self.last_audio[1])
+        if self.cov_start is not None:
+            self.cov_start += sec
+        shift = int(round(sec))
+        for item in self._cov:
+            item[0] += shift
+        self._breaks = deque(t + sec for t in self._breaks)
 
     def summary(self, breaks, mono=None):
         """场末汇总（session_end 与每 5 分钟的 stream_summary 用）：只有数字。"""
@@ -135,6 +182,7 @@ class StreamWatch:
             "stage_overruns": self.stage.overruns,
             "no_audio_notices": self.no_audio_notices,
             "tail_sec_total": round(self.tail_bytes / 32000.0, 1),
+            "coverage": None if self.cov_ratio is None else round(self.cov_ratio, 3),
         }
         if self.tail_dropped_bytes:
             out["tail_dropped_sec_total"] = round(self.tail_dropped_bytes / 32000.0, 1)

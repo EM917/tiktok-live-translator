@@ -1034,6 +1034,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 snap = self.telemetry.snapshot()
                 level = self._health_level(snap["audio_backlog_sec"])
                 snap["health"] = level
+                # 跨轮覆盖率的数字（只有数字；角标文字在 web/live-ui.js 里成对写）
+                snap.update(self._coverage_stats())
                 await self.server.broadcast({"type": "stats", **snap})
                 if level != last_level:
                     await self._announce_health(level, snap["audio_backlog_sec"])
@@ -2342,16 +2344,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 elif kind == "summary":
                     if audit is not None:
                         audit.stream_audio(**data)
-                elif kind == "low":
-                    per_min = data["audio_sec"] * 60.0 / max(data["wall_sec"], 1.0)
-                    await self._incident(
-                        "session:audio_rate", "warn",
-                        L("过去 1 分钟只收到 {:.0f} 秒直播音频，缺的部分没有经过检测",
-                          "Only {:.0f} sec of stream audio arrived in the last minute. The "
-                          "missing audio wasn’t checked.")
-                        .format(per_min))
-                elif kind == "recovered":
-                    await self._incident("session:audio_rate", "clear")
+                elif kind in ("low", "recovered"):
+                    # 每轮从零算的「音频偏少」不再上界面：一轮要连满约 135 秒才可能响，断断续续时从来
+                    # 不响。session:audio_rate 改由跨轮覆盖率驱动（app/pipeline_stream.py _check_coverage），
+                    # 同一件事界面上只有一条。每分钟的 audio_heartbeat 照写
+                    pass
                 elif kind == "quiet":
                     await self._incident(
                         "session:quiet_audio", "warn",
@@ -2381,10 +2378,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             rnd = sess.get("round") or {}
             sess["round"] = None
             sess["break_no"] = sess.get("break_no", 0) + 1
-            # 撤掉每轮的「音频偏少」只在还是当前这一场时：以前卡住的旧任务永远不结束，修好之后它晚几秒
-            # 才走到这里，这时撤的就是新一场的提示了
-            if meter is not None and meter.low and sess is getattr(self, "_session_state", None):
-                self._spawn(self._incident("session:audio_rate", "clear"))
+            # 以前这里每轮撤一次「音频偏少」：改成跨轮覆盖率之后，它会在每次断流时把跨轮的提示撤掉，
+            # 删了（覆盖率自己按回差撤，见 app/pipeline_stream.py _check_coverage）
             # 收尾的事实（app/audio.py stop_facts）：走到了哪一步、收尾时 ffmpeg 又吐出多少字节。
             # 测试里的假音频源没有这个方法
             facts = {}
@@ -2398,6 +2393,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if watch is not None:
                 watch.tail_bytes += int(getattr(source, "tail_bytes", 0) or 0)
                 watch.tail_dropped_bytes += int(getattr(source, "tail_dropped_bytes", 0) or 0)
+                watch.note_break()
+                if watch.cov_ratio is not None:
+                    facts["coverage_5m"] = round(watch.cov_ratio, 3)
             try:
                 tail = source.stderr_tail()
             except Exception:

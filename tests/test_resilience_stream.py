@@ -892,11 +892,13 @@ def test_a_network_that_never_returns_gives_up_at_the_ceiling(monkeypatch, tmp_p
     assert of_type(audit_rows(tmp_path), "session_end")[0]["reason"] == "network_down"
 
 
-ONGOING = ("session:network", "session:audio_rate", "session:quiet_audio")
+ONGOING = ("session:network", "session:audio_rate", "session:quiet_audio", "session:no_audio")
 
 
 @pytest.mark.i18n_fixture
 def test_stopping_during_an_outage_takes_down_the_banners_that_promise_more_listening(monkeypatch, tmp_path):
+    """断网时点停止：「网络恢复后自动重连」这类说「正在进行」的提示一起撤掉。剧本靠 V1 每次重连都先探网络
+    （这个文件整个钉在 V1 上）；V2 有声之后先用原地址重连，不探 www.tiktok.com。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     calls = []
 
@@ -911,8 +913,7 @@ def test_stopping_during_an_outage_takes_down_the_banners_that_promise_more_list
             return True, ""
 
         async def fake_session(media, *a, sess=None, **k):
-            await p._on_audio_events(sess, [("low", {"audio_sec": 30.0, "wall_sec": 60.0}),
-                                            ("quiet", {"audio_sec": 121.0})])
+            await p._on_audio_events(sess, [("quiet", {"audio_sec": 121.0})])
             await p._incident("session:clock_gap", "warn", "电脑休眠或挂起了约 23 分钟")
             return True, 60.0
 
@@ -929,7 +930,9 @@ def test_stopping_during_an_outage_takes_down_the_banners_that_promise_more_list
         return before
 
     before = run(scenario())
-    assert set(ONGOING) <= before
+    # 连不上 TikTok 时，跨轮覆盖率和「已 N 分钟没收到直播音频」不出（同一件事只出一条，network 优先）
+    assert {"session:network", "session:quiet_audio"} <= before
+    assert not {"session:audio_rate", "session:no_audio"} & before
     left = server.config.get("incidents") or {}
     assert server.statuses[-1][0] == "idle"
     assert not set(ONGOING) & set(left)
@@ -1289,6 +1292,9 @@ def test_meter_reports_two_minutes_below_the_gate_across_rounds_and_clears_on_a_
 
 
 def test_meter_events_become_audit_rows_and_persistent_notices(monkeypatch, tmp_path):
+    """每分钟的心跳照写审计、「音量一直低于识别门限」照挂。每轮的「音频偏少」（low / recovered）不再上界面：
+    一轮要连满约 135 秒才可能响，断断续续时从来不响；session:audio_rate 改由跨轮覆盖率驱动
+    （tests/test_coverage.py）。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     audit = AuditLog(room_url=ROOM, log_dir=tmp_path / "logs")
     sess = p._new_session_state(audit)
@@ -1298,11 +1304,10 @@ def test_meter_events_become_audit_rows_and_persistent_notices(monkeypatch, tmp_
         ("quiet", {"audio_sec": 121.0}),
     ]))
     incidents = server.config["incidents"]
-    assert incidents["session:audio_rate"]["text"] == "过去 1 分钟只收到 30 秒直播音频，缺的部分没有经过检测"
+    assert "session:audio_rate" not in incidents
     assert incidents["session:quiet_audio"]["text"].startswith("已收到 121 秒直播音频，但音量一直低于识别门限")
     run(p._on_audio_events(sess, [("recovered", {"audio_sec": 58.0, "wall_sec": 60.0}),
                                   ("speech", {})]))
-    assert "session:audio_rate" not in server.config["incidents"]
     assert "session:quiet_audio" not in server.config["incidents"]
     audit.close()
     beat = of_type(rows_of(audit.path), "audio_heartbeat")[0]

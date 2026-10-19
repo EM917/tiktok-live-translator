@@ -152,6 +152,27 @@ function captionAsrChip(msg) {
            title: notes.join(L("", " ")) };
 }
 
+/* ---- 覆盖率角标：近几分钟实际收到了多少直播音频（2026-10-19，改进清单第 4 条）----
+ * 服务端每 10 秒的 stats 带 coverage_pct（最近 5 分钟、开场不足 5 分钟按已过的时间收到的直播音频占比）、
+ * coverage_window_min（这个窗口几分钟）、coverage_low（低于 70% 连续两次才为真、回到 85% 以上才撤）、
+ * breaks（本场断了几次），见 app/pipeline_stream.py _coverage_stats。只在 coverage_low 时出角标：
+ * 正常的时候主阅读区底下不多一个数字。同一件事页面顶部另有一条持续提示（session:audio_rate），说缺的部分
+ * 没有经过检测；角标只给数字，title 说这个数是什么。只写观察，不写为什么（CLAUDE.md 第八条）。
+ * 返回 { text, title }：text 为空串表示没有角标。手机页和浮窗不显示。 */
+function coverageChip(stats) {
+  if (!stats || !stats.coverage_low || typeof stats.coverage_pct !== "number" ||
+      !isFinite(stats.coverage_pct)) return { text: "", title: "" };
+  var p = Math.max(0, Math.min(100, Math.round(stats.coverage_pct)));
+  var m = Math.max(1, Math.round(Number(stats.coverage_window_min) || 5));
+  var n = Math.max(0, Math.floor(Number(stats.breaks) || 0));
+  return {
+    text: L("近 " + m + " 分钟收到 " + p + "%", "Last " + m + " min: " + p + "% received"),
+    title: LN(n, "近 " + m + " 分钟里实际收到的直播音频占比；本场已中断 " + n + " 次",
+              "Share of stream audio received in the last " + m + " min. 1 interruption this session.",
+              "Share of stream audio received in the last " + m + " min. " + n + " interruptions this session.")
+  };
+}
+
 /* ---- 底部大字幕的滞后：大字幕上这一句的声音结束多久了 ----
  * 服务端的 caption 消息带 ts（原文上屏的时刻）和 e2e_ms（这一段音频结束 → 上屏）。
  * ts − e2e_ms = 这一段音频结束的时刻，和违禁词报警延迟（now − audio_end_ts）是同一个起点。
@@ -231,7 +252,7 @@ if (typeof module !== "undefined" && module.exports) {
                      jumpLatestCaptionsText: jumpLatestCaptionsText,
                      jumpLatestCommentsText: jumpLatestCommentsText,
                      captionStateChip: captionStateChip, liveBarChip: liveBarChip,
-                     captionAsrChip: captionAsrChip,
+                     captionAsrChip: captionAsrChip, coverageChip: coverageChip,
                      captionAudioEndAt: captionAudioEndAt, captionAgeText: captionAgeText,
                      CAPTION_LAG_SHOW_SEC: CAPTION_LAG_SHOW_SEC,
                      captionScale: captionScale, captionSizeVars: captionSizeVars,

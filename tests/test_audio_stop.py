@@ -284,3 +284,66 @@ def test_an_overlong_stderr_line_does_not_stop_stderr_reading(fake):
 def test_the_stdout_buffer_limit_is_raised():
     """便宜的第二道防线：暂停线从 128 KiB 变成 8 MiB（探测阶段最多攒 90 秒，折成 PCM 约 2.9 MB）。"""
     assert FFmpegAudioSource.STREAM_LIMIT >= 4 * 1024 * 1024
+
+
+# ---- 整条流水线：照 10-18 排一串轮次 --------------------------------------------------------
+
+@POSIX_ONLY
+def test_a_10_18_like_sequence_writes_every_break_and_keeps_going(monkeypatch, tmp_path):
+    """真的 _run_stream_inner → _run_session → _stream_session → FFmpegAudioSource，起的是假 ffmpeg：
+    有声 6 秒 → 原地址一帧都没有、马上退出 → 查一次、有声 2 秒 → 原地址停在「探测阶段」、收尾吐出
+    140,000 字节 → 查到已结束。改之前最后那一轮在 3.12/3.13 上永久卡住（不写 stream_break、不重连）；
+    现在每一轮都有 stream_break，吐出的音频照样送去识别（段带 tail），这一场以「已结束」收尾。"""
+    from types import SimpleNamespace
+
+    import app.asr
+    from app import reconnect_policy, resolver
+    from app.resolver import ResolveError
+    from tests.test_resilience_stream import ROOM, audit_rows, make_pipeline, of_type
+
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", True)
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(app.asr, "create_transcriber", lambda **kw: SimpleNamespace(
+        transcribe=lambda pcm: SimpleNamespace(text="hola", raw_text="hola", language="es",
+                                               rejected=[])))
+    monkeypatch.setattr(audio, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(FFmpegAudioSource, "STALL_SEC", 1.0)
+    script = [("eof", 192000), ("exit_now", 0), ("eof", 64000), ("probe_flush", 140000)]
+    spawned = []
+
+    def command(self, _ff):
+        mode, n = script[min(len(spawned), len(script) - 1)]
+        spawned.append(mode)
+        return [sys.executable, "-I", str(FAKE), mode, str(n)]
+
+    monkeypatch.setattr(FFmpegAudioSource, "command", command)
+    lookups = []
+
+    async def fake_resolve(url, cookies=None, cookies_browser="auto", trace=None):
+        lookups.append(url)
+        if len(spawned) >= len(script):
+            raise ResolveError("没开播", kind="offline", status=4)
+        return "http://127.0.0.1:9/live/r{}.flv".format(len(lookups))
+
+    async def reachable(*a, **k):
+        return True, ""
+
+    monkeypatch.setattr(resolver, "resolve_stream_url", fake_resolve)
+    monkeypatch.setattr(resolver, "tiktok_reachable", reachable)
+    t0 = time.monotonic()
+    run(p._run_stream_inner(ROOM), timeout=90)
+    assert time.monotonic() - t0 < 4 * BOUND
+    rows = audit_rows(tmp_path)
+    breaks = of_type(rows, "stream_break")
+    assert [b["break_no"] for b in breaks] == [1, 2, 3, 4]
+    assert [b["got_audio"] for b in breaks] == [True, False, True, False]
+    assert [b["media_reused"] for b in breaks] == [False, True, False, True]
+    last = breaks[-1]
+    assert last["reason"] == "stall" and last["tail_bytes"] == 140000
+    assert last["stop_path"] in ("kill", "kill+close")
+    assert any(seg.get("tail") for seg in of_type(rows, "segment"))
+    plans = [r["mode"] for r in of_type(rows, "reconnect_plan")]
+    assert plans[:3] == ["reuse", "lookup", "reuse"]
+    assert of_type(rows, "session_end")[0]["reason"] == "offline"
+    assert spawned == ["eof", "exit_now", "eof", "probe_flush"]
+

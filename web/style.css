@@ -582,7 +582,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; border-radius: 9px;
   text-transform: none; letter-spacing: 0; color: var(--warn-fg); background: var(--warn-bg);
 }
-.asr-chip .i, .live-asr .i { width: 12px; height: 12px; }
+.asr-chip .i, .live-asr .i, .live-cov .i { width: 12px; height: 12px; }
 
 .cap .orig { font-size: calc(13px * var(--cap-scale)); color: var(--text-dim); line-height: 1.5; overflow-wrap: anywhere; }
 .cap .trans { font-size: calc(17px * var(--cap-scale)); line-height: 1.55; margin-top: 2px; overflow-wrap: anywhere; }
@@ -743,6 +743,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 /* 没译成：同卡片上的红色角标，底色取 14% 红（--red-ink 在上面 5:1），不只靠颜色——字本身就写着「未翻译」 */
 .live-state.fail { color: var(--red-ink); background: var(--a-red-14); }
 .live-state.live-asr { display: inline-flex; align-items: center; gap: 3px; color: var(--warn-fg); background: var(--warn-bg); }
+/* 覆盖率角标（web/live-ui.js coverageChip）：只在偏低时出现，和「语音识别不确定」同一种提醒色 */
+.live-state.live-cov { display: inline-flex; align-items: center; gap: 3px; color: var(--warn-fg); background: var(--warn-bg); font-variant-numeric: tabular-nums; }
 .live-lag { font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2); font-variant-numeric: tabular-nums; }
 
 .hidden { display: none !important; }

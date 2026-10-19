@@ -716,6 +716,27 @@ class AuditLog:
             "per_hour": per_hour,
         })
 
+    def coverage(self, state, ratio, window_sec, audio_sec, breaks_in_window):
+        """跨轮覆盖率跨过阈值（低于报警线连续两次 → low，回到撤销线以上 → ok）时一条：窗口多长、
+        里面收到多少秒直播音频、断了几次。"""
+        self._write({
+            "type": "coverage",
+            "at": datetime.now().isoformat(timespec="milliseconds"),
+            "state": str(state),
+            "ratio": round(float(ratio), 3),
+            "window_sec": round(float(window_sec), 1),
+            "audio_sec": round(float(audio_sec), 1),
+            "breaks_in_window": int(breaks_in_window),
+        })
+
+    def stream_summary(self, **fields):
+        """每 5 分钟一条拉流汇总的快照（和 session_end 里的那些字段一样，只有数字）：⌘Q、关窗、Ctrl-C
+        都不写 session_end，场末没写也留得下数。"""
+        rec = {"type": "stream_summary", "at": datetime.now().isoformat(timespec="milliseconds")}
+        for key, value in fields.items():
+            rec.setdefault(key, value)
+        self._write(rec)
+
     def no_audio(self, sec, wall_sec, stage, break_no=0):
         """「已 N 分钟没收到直播音频」这一次跨过了门限（每一段无声一条）。sec 按单调时钟、wall_sec
         按墙钟（电脑睡着的时间只算在后者里），stage 是此刻所在的阶段。"""

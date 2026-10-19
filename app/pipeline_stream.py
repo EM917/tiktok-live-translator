@@ -1,5 +1,5 @@
 # i18n: done
-"""拉流稳定性的 Pipeline 侧接线：阶段计时、「已 N 分钟没收到直播音频」、场末汇总。
+"""拉流稳定性的 Pipeline 侧接线：阶段计时、「已 N 分钟没收到直播音频」、跨轮覆盖率、场末汇总。
 
 计数和时刻在 app/stream_watch.py（一场一份，挂在 sess["watch"] 上）；这里只做三件事：
   * 在重连循环的各个等待前后标阶段（同步的一次赋值）；
@@ -18,7 +18,7 @@ import re
 import time
 
 from .audio import FFmpegAudioSource as _Source
-from .i18n import L
+from .i18n import LN, L
 from .stream_watch import StreamWatch
 
 
@@ -41,6 +41,19 @@ class StreamWatchMixin:
     # 10-18 有 13 次 ≥ 120 秒，外加最后那 91 分钟）
     NO_AUDIO_NOTICE_SEC = 120.0
     NO_AUDIO_INCIDENT = "session:no_audio"
+    # 跨轮覆盖率：最近 5 分钟（开场不足 5 分钟按已过的时间）收到多少直播音频。低于 70% 连续两次（20 秒）
+    # 报，回到 85% 以上撤。analysis/coverage.py 回放：9-17 以来 27 场有断流的场次，除 10-18 外最低 0.88
+    # （一次正常断流约 31 秒，5 分钟里还剩九成），10-18 开播 2 分钟后起全程低于 50%
+    COVERAGE_WINDOW_SEC = 300.0
+    COVERAGE_MIN_SEC = 120.0
+    COVERAGE_WARN = 0.70
+    COVERAGE_CLEAR = 0.85
+    COVERAGE_LOW_CHECKS = 2
+    # 沿用以前每轮「音频偏少」的 id：同一件事界面上只有一条（那条改由这里驱动）
+    COVERAGE_INCIDENT = "session:audio_rate"
+    # 每隔这么久往审计写一条 stream_summary（场末汇总的快照）：⌘Q、关窗、Ctrl-C 都不写 session_end，
+    # 场末没写也留得下数。不挂在 asr_memory 上——那条只有 mlx 后端才写
+    STREAM_SUMMARY_EVERY_SEC = 300.0
 
     def _new_stream_watch(self):
         return StreamWatch(self.STAGE_OTHER_SEC)
@@ -260,7 +273,7 @@ class StreamWatchMixin:
         return sess if self._watch_of(sess) is not None else None
 
     async def _stream_watch_tick(self, now=None):
-        """now=(单调, 墙钟) 只给测试用。两项检查各自兜住异常，统计循环照常跳。"""
+        """now=(单调, 墙钟) 只给测试用。每一项检查各自兜住异常，统计循环照常跳。"""
         sess = self._watched_session()
         if sess is None:
             return
@@ -277,6 +290,16 @@ class StreamWatchMixin:
             raise
         except Exception as exc:
             print("[警告] 无声提示检查出错：{}".format(exc))
+        try:
+            await self._check_coverage(sess, mono)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 覆盖率检查出错：{}".format(exc))
+        try:
+            self._maybe_stream_summary(sess, mono)
+        except Exception as exc:
+            print("[警告] 写拉流汇总出错：{}".format(exc))
 
     async def _check_stage_overrun(self, sess, mono):
         watch = self._watch_of(sess)
@@ -371,6 +394,80 @@ class StreamWatchMixin:
         text = self._no_audio_text(wall_sec)
         if (incidents.get(key) or {}).get("text") != text:
             await self._incident(key, "warn", text)
+
+    def _coverage_text(self, pct, window_sec, breaks):
+        return LN(breaks,
+                  "近 {}只收到 {}% 的直播音频，缺的部分没有经过检测。本场已中断 {} 次。",
+                  "Only {1}% of stream audio arrived in the last {0}. The missing audio wasn’t "
+                  "checked. 1 interruption this session.",
+                  "Only {1}% of stream audio arrived in the last {0}. The missing audio wasn’t "
+                  "checked. {2} interruptions this session.").format(
+            self._duration_text(window_sec), pct, breaks)
+
+    async def _check_coverage(self, sess, mono):
+        """跨轮覆盖率：低于 COVERAGE_WARN 连续 COVERAGE_LOW_CHECKS 次才报，回到 COVERAGE_CLEAR 以上撤，
+        中间留回差免得来回闪。跨阈值时写一条 coverage。同一件事界面上只出一条：「本机连不上 TikTok」或
+        「已 N 分钟没收到直播音频」挂着时不出这一条（那两条已经说了更要紧的事）。"""
+        watch = self._watch_of(sess)
+        cov = watch.coverage(mono, self.COVERAGE_WINDOW_SEC, self.COVERAGE_MIN_SEC)
+        if cov is not None:
+            ratio, span, audio, breaks = cov
+            watch.cov_ratio = ratio
+            watch.cov_below = watch.cov_below + 1 if ratio < self.COVERAGE_WARN else 0
+            changed = None
+            if not watch.cov_low and watch.cov_below >= self.COVERAGE_LOW_CHECKS:
+                watch.cov_low, changed = True, "low"
+            elif watch.cov_low and ratio >= self.COVERAGE_CLEAR:
+                watch.cov_low, changed = False, "ok"
+            audit = sess.get("audit")
+            if changed and audit is not None:
+                audit.coverage(state=changed, ratio=ratio, window_sec=span, audio_sec=audio,
+                               breaks_in_window=breaks)
+        incidents = self._session_incidents()
+        key = self.COVERAGE_INCIDENT
+        louder = "session:network" in incidents or self.NO_AUDIO_INCIDENT in incidents
+        if watch.cov_low and not louder and cov is not None:
+            text = self._coverage_text(int(round(ratio * 100)), span, sess.get("break_no", 0))
+            if (incidents.get(key) or {}).get("text") != text:
+                await self._incident(key, "warn", text)
+        elif key in incidents and (louder or not watch.cov_low):
+            await self._incident(key, "clear")
+
+    def _coverage_stats(self):
+        """随 stats 推给页面的数字（底部大字幕元信息行的角标用；文字在 web/live-ui.js 里成对写）。
+        不是当前这一场、或还没开始评的时候是空的。"""
+        sess = self._watched_session()
+        if sess is None:
+            return {}
+        watch = self._watch_of(sess)
+        if watch.cov_ratio is None:
+            return {"breaks": sess.get("break_no", 0)}
+        span = watch.coverage(None, self.COVERAGE_WINDOW_SEC, self.COVERAGE_MIN_SEC)
+        window = span[1] if span else self.COVERAGE_WINDOW_SEC
+        return {"coverage_pct": int(round(watch.cov_ratio * 100)),
+                "coverage_window_min": max(1, int(round(window / 60.0))),
+                "coverage_low": bool(watch.cov_low),
+                "breaks": sess.get("break_no", 0)}
+
+    def _maybe_stream_summary(self, sess, mono):
+        last = sess.get("summary_at")
+        if last is None:
+            sess["summary_at"] = mono
+            return
+        if mono - last < self.STREAM_SUMMARY_EVERY_SEC:
+            return
+        sess["summary_at"] = mono
+        audit = sess.get("audit")
+        if audit is None:
+            return
+        fields = self._stream_end_fields(sess)
+        comment_source = getattr(self, "comment_source", None)
+        connects = getattr(comment_source, "_connect_times", None)
+        if isinstance(connects, list):
+            # 弹幕那条线最近一小时连了几次（每次一次匿名抓页 + 一次签名握手）：对 TikTok 来说这和查流地址
+            # 都是同一个房间的请求，合起来看（第八条）
+            fields["comment_connects_hour"] = len(connects)
+        audit.stream_summary(**fields)
 
     def _no_audio_resumed(self, sess):
         """这一轮收到第一帧直播音频：撤掉无声提示。返回这次恢复之前提示是不是挂着。"""
