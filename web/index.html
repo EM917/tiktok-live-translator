@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=46">
+  <link rel="stylesheet" href="/static/style.css?v=47">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -737,6 +737,8 @@
     <div id="live-meta" class="live-meta hidden">
       <span id="live-state" class="live-state hidden"></span>
       <span id="live-asr" class="live-state live-asr hidden"></span>
+      <!-- 覆盖率角标（web/live-ui.js coverageChip）：近几分钟收到的直播音频偏低时才出现 -->
+      <span id="live-cov" class="live-state live-cov hidden"></span>
       <span id="live-lag" class="live-lag hidden"></span>
     </div>
   </footer>
@@ -775,8 +777,8 @@
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=3"></script>
-  <script src="/static/live-ui.js?v=4"></script>
+  <script src="/static/live-ui.js?v=5"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/app.js?v=75"></script>
+  <script src="/static/app.js?v=76"></script>
 </body>
 </html>

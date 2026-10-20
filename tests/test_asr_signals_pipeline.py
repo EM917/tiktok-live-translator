@@ -324,7 +324,14 @@ def test_session_end_carries_only_this_sessions_counts(monkeypatch, tmp_path):
     old_sess = p._new_session_state(old_audit)
     meta = {"cut": "max", "frames": 90, "speech_frames": 90, "backend": "mlx", "model": "large-v3"}
 
+    rounds = []
+
     async def fake_session(media, slot, denoise, loop, sess=None):
+        # 第一轮出这三段；之后的轮次一帧都没有（V2 有声之后先用原地址连一轮，没声音再去查，
+        # 查到「已结束」；V1 第二次解析就收到）
+        rounds.append(media)
+        if len(rounds) > 1:
+            return False, 0.0
         await p._emit_original(result("hola"), 100.0, 800, segment_ms=9000, asr_meta=meta,
                                sess=sess)
         await p._emit_original(result("hola a todos como estan hoy les traigo algo muy bonito"),

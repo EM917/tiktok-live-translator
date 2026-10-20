@@ -1172,6 +1172,10 @@
       case "incident":
         renderIncident(msg);
         break;
+      // stats 本身不画（见上面）；只取跨轮覆盖率的数字，偏低时在底部大字幕元信息行挂一个角标
+      case "stats":
+        paintLiveCoverage(msg);
+        break;
       case "health":
         renderHealth(msg);
         break;
@@ -1430,8 +1434,25 @@
 
   function syncLiveMeta() {
     var any = !liveState.classList.contains("hidden") || !liveLag.classList.contains("hidden")
-      || (liveAsr && !liveAsr.classList.contains("hidden"));
+      || (liveAsr && !liveAsr.classList.contains("hidden"))
+      || (liveCov && !liveCov.classList.contains("hidden"));
     liveMeta.classList.toggle("hidden", !any);
+  }
+
+  // 覆盖率角标跟着 stats 走（每 10 秒），不跟着某一句字幕：近几分钟收到的直播音频偏低时才出现
+  var liveCov = document.getElementById("live-cov");
+  function paintLiveCoverage(stats) {
+    if (!liveCov) return;
+    var chip = coverageChip(stats);
+    if (chip.text) {
+      setIconText(liveCov, "warn", chip.text);
+      liveCov.title = chip.title;
+    } else {
+      liveCov.textContent = "";
+      liveCov.removeAttribute("title");
+    }
+    liveCov.classList.toggle("hidden", !chip.text);
+    syncLiveMeta();
   }
 
   // 「语音识别不确定」角标跟着大字幕上的这一句走：换句时重画，caption_update 不动它（那类消息不带 asr_flag）
@@ -1481,6 +1502,11 @@
     }
     liveLag.textContent = "";
     liveLag.classList.add("hidden");
+    if (liveCov) {
+      liveCov.textContent = "";
+      liveCov.removeAttribute("title");
+      liveCov.classList.add("hidden");
+    }
     liveMeta.classList.add("hidden");
   }
 

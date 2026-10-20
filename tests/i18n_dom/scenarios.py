@@ -71,7 +71,7 @@ FLOAT_MEASURE = (".f-root", "#f-caption", "#f-comments")
 GUARD_NAMES = ("home-guard", "live-guard", "live-guard-marked", "live-guard-tripped")
 GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
 DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "live-float", "connecting", "offline",
-              "error-4003110") + GUARD_NAMES
+              "error-4003110", "live-bad", "reconnect-no-audio") + GUARD_NAMES
 PHONE_EN = ("phone-live", "phone-denied", "phone-full", "phone-local-en")
 FLOAT_EN = ("float-live",)           # 浮窗页（web/float.html）：直播中，有红 / 琥珀 / 关注的弹幕，最新一条字幕没译成
 CONTROL_ZH = "live-full-zh"
@@ -399,6 +399,66 @@ def _live_server(lang, tmp):
     return server, live
 
 
+def _bad_session(mono_now, *, audio_until=None):
+    """拉流断断续续的那一场的观察状态（app/stream_watch.py）：开播 5 分钟，只有头一段有声，断了 7 次。"""
+    from app.stream_watch import StreamWatch
+
+    watch = StreamWatch(60.0, mono=lambda: mono_now, wall=lambda: NOW)
+    watch.first_spawn = (mono_now - 300.0, NOW - 300.0)
+    if audio_until is not None:
+        t = mono_now - 300.0
+        while t < audio_until:
+            watch.note_audio(1.0, t, NOW - (mono_now - t))
+            t += 1.0
+        watch.cov_start = mono_now - 300.0
+    return {"watch": watch, "audit": None, "break_no": 7}
+
+
+def _coverage_notice(server):
+    """_check_coverage：近 5 分钟只收到三成，连续两次低于报警线 → session:audio_rate。"""
+    sess = _bad_session(2000.0, audio_until=1790.0)
+
+    async def steps(p):
+        await p._check_coverage(sess, 1995.0)
+        await p._check_coverage(sess, 2000.0)
+    return _produce(server, steps)
+
+
+def _live_bad(tmp):
+    """断断续续的一场：直播中、有字幕，页面顶部是时钟跳变和覆盖率两条持续提示，底部大字幕的元信息行
+    挂着覆盖率角标（stats 里的数字，字在 web/live-ui.js）。"""
+    with i18n.use("en"):
+        server = _server("en", tmp)
+        _feed(server, [{"type": "status", "state": "live", "detail": ""}])
+        _feed(server, _captions())
+        _clock_gap(server)
+        _coverage_notice(server)
+        stats = dict(_stats(), coverage_pct=31, coverage_window_min=5, coverage_low=True, breaks=7)
+        live = [_caption(30, "Les dejo el enlace abajo", ts=NOW - 5), _caption_update(30, None, state="failed"),
+                stats]
+        return _scenario("live-bad", "desktop", "en", _desktop_messages(server, "en", live))
+
+
+def _reconnect_no_audio(tmp):
+    """重连中：V2 查询次数到了上限、改用原来的流地址那一句状态（_reconnect_text），加上
+    「已 N 分钟没收到直播音频」（_check_no_audio）。"""
+    from app.reconnect_policy import Plan, V2Policy
+
+    with i18n.use("en"):
+        server = _server("en", tmp)
+        sess = _bad_session(2000.0)
+        sess["policy"] = V2Policy(False, clock=lambda: 2000.0)
+        holder = {}
+
+        async def steps(p):
+            await p._check_no_audio(sess, 2000.0, NOW)
+            holder["text"] = p._reconnect_text(sess, sess["policy"],
+                                               Plan(8, "reuse_failed_capped", next_lookup_sec=140.0))
+        _produce(server, steps)
+        _feed(server, [{"type": "status", "state": "connecting", "detail": holder["text"]}])
+        return _scenario("reconnect-no-audio", "desktop", "en", _desktop_messages(server, "en"))
+
+
 def _live_full(tmp, lang):
     with i18n.use(lang):
         server, live = _live_server(lang, tmp)
@@ -620,7 +680,8 @@ def build(tmp):
                  _status_only(tmp, "offline", "idle", close={"code": 1006}),
                  _status_only(tmp, "error-4003110", "error", browser_only_message(3, login={
                      "safari": browser_login.BLOCKED, "chrome": browser_login.NOT_LOGGED_IN})),
-                 _live_full(tmp, "zh")] + _guard_scenarios(tmp) + _phone(tmp) + [_float(tmp)]
+                 _live_full(tmp, "zh"), _live_bad(tmp), _reconnect_no_audio(tmp)]
+    scenarios += _guard_scenarios(tmp) + _phone(tmp) + [_float(tmp)]
     out = {sc["name"]: sc for sc in scenarios}
     out["live-float"] = with_float_button(out["live-full"], "live-float")
     for base in ("live-full", "live-float"):

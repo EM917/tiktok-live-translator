@@ -101,3 +101,14 @@ test("字幕字号（英文界面里同一套比例）", () => {
   assert.equal(U.captionSizeFromConfig("40"), 40);
   assert.equal(U.captionSizeFromConfig(61), null);
 });
+
+
+test("Coverage chip: only when low; the count in the title takes one / many", () => {
+  assert.deepEqual(U.coverageChip({ coverage_pct: 40, coverage_low: false }), { text: "", title: "" });
+  const one = U.coverageChip({ coverage_pct: 38.6, coverage_window_min: 5, coverage_low: true, breaks: 1 });
+  assert.equal(english(one.text), "Last 5 min: 39% received");
+  assert.equal(english(one.title), "Share of stream audio received in the last 5 min. 1 interruption this session.");
+  const many = U.coverageChip({ coverage_pct: 12, coverage_window_min: 2, coverage_low: true, breaks: 9 });
+  assert.equal(english(many.text), "Last 2 min: 12% received");
+  assert.equal(english(many.title), "Share of stream audio received in the last 2 min. 9 interruptions this session.");
+});

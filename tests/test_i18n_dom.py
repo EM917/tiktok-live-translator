@@ -925,6 +925,22 @@ def test_scenarios_carry_real_backend_text_and_the_chinese_data(tmp_path):
     assert built["phone-local-en"]["storage"] == {"tlt.viewer.lang": "en"}
 
 
+def test_bad_session_scenarios_carry_the_stream_notices(tmp_path):
+    """不开 Chrome：坏场次的两个场景确实带着生产代码写的提示（覆盖率、无声、时钟跳变）、V2 到了上限那句
+    重连状态，和让底部角标出现的 stats 数字。"""
+    built = S.build(tmp_path)
+    bad = built["live-bad"]["messages"]
+    incidents = bad[0]["config"]["incidents"]
+    assert incidents["session:audio_rate"]["text"].startswith("Only 30% of stream audio arrived in the "
+                                                              "last 5 min.")
+    assert incidents["session:clock_gap"]["text"]
+    stats = [m for m in bad if m["type"] == "stats"]
+    assert stats and stats[-1]["coverage_low"] is True and stats[-1]["coverage_pct"] == 31
+    quiet = built["reconnect-no-audio"]["messages"][0]["config"]
+    assert quiet["incidents"]["session:no_audio"]["text"].startswith("No stream audio for 5 min.")
+    assert quiet["status"]["detail"].startswith("The same stream URL isn’t returning data.")
+
+
 def test_guard_scenarios_carry_the_data_the_page_needs(tmp_path):
     """不开 Chrome：弹幕留意的场景确实带着守卫的状态、事件、名单、带标记的弹幕，和实时的那两条（时刻在页面真实
     时钟之后，顶部条才会弹出）；英文和中文对照页是同一批数据。"""

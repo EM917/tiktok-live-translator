@@ -97,14 +97,41 @@ low-confidence segments are discarded deliberately. If the streamer is clearly
 speaking and nothing appears, try `--denoise off` or a different model size.
 
 **Captions stop after closing the laptop lid or switching networks.** When the
-stream drops, the app re-resolves the stream URL and reconnects by itself,
-waiting longer between attempts each time (2 s, then 4, 8, 16 and at most
-30 s). While the computer cannot reach TikTok it waits without spending
-attempts, for up to 30 minutes. It gives up only after six connection attempts
-in a row bring no audio at all (two for a pasted stream URL); a connection that
-played any audio resets that count, so a patchy connection keeps reconnecting. If the
-window says the stream was interrupted several times and couldn't reconnect,
-click Start again. Details: [Keeping the stream](fault-tolerance.md#keeping-the-stream).
+stream drops, the app reconnects by itself. After a stretch that had audio it
+first reconnects to the same stream URL, which only contacts the video server
+and not the live page or TikTok's API; if that brings no audio (or the URL
+clearly stops working), it looks up the stream URL again. While no audio
+arrives, the waits grow (2 s, then 4, 8, 16 and at most 30 s; 60 s after 30
+minutes without audio). Any audio resets them. To keep requests to TikTok low,
+the app looks up the stream URL at most 26 times in any hour, and checks of
+the stream status while waiting for it to resume count toward the same limit;
+past it, the app keeps reconnecting to the same stream URL and the status line
+says when the next lookup is. After 30 minutes without audio it looks up at
+most once every 15 minutes. While the computer cannot reach TikTok it waits
+without looking anything up, for up to 30 minutes.
+
+A live link is never given up just because no audio arrives. Monitoring stops
+only when TikTok reports the stream as ended (status 4, checked again if the
+computer was asleep), when TikTok's API hasn't reported it as live for about
+10 minutes, when TikTok can't be reached for 30 minutes, or when looking up the
+stream URL fails six times in a row. A pasted stream URL stops after two
+connection attempts in a row with no audio. The status line counts the
+interruptions in this session ("interruption 7 this session").
+
+Two notices say how much was heard. "No stream audio for N min" appears after
+2 minutes without stream audio and goes away with the first audio. "Only N% of
+stream audio arrived in the last 5 min" appears when less than 70% arrived,
+and goes away above 85%; a small "Last 5 min: N% received" badge under the
+large caption shows the same number. Audio that only arrives late, when the
+app closes a stalled connection, is still transcribed and checked for banned
+terms; it doesn't count as received in real time, and the notices say how much
+of it was checked. Details: [Keeping the stream](fault-tolerance.md#keeping-the-stream).
+
+To go back to the previous reconnect rules for one run (look up the stream URL
+on every reconnect, stop after six connection attempts in a row with no audio,
+"attempt N of M" in the status line), start the app with `TLT_RECONNECT_V2=0`.
+The notices above, the limits on how long stopping a stalled stream can take,
+and the audit records stay the same.
 
 **Switching to another streamer during a session.** Click **Switch Streamer**
 in the top bar, paste the new live link or @username, or pick one from Recent
