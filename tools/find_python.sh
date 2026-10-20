@@ -17,8 +17,9 @@
 #      例：.venv/bin/python3 链到不带版本号的 /opt/anaconda3/bin/python3，conda 把它原地从
 #      3.13 升到 3.14、删掉 python3.13；cfg 还写着 3.13。这时 .venv 里装的组件和 pip 都在
 #      lib/python3.13 下，3.14 用不上（10-20 实测：`-m pip` 报 No module named pip）。
-#      main.py 的 ensure_env 看到实际次版本和 cfg 记的不一样，就用这次启动的解释器——
-#      也就是这一个——重建 .venv，cfg 跟着改写，下次启动又落回第 1 步。
+#      main.py 的 ensure_env 看到实际次版本和 cfg 记的不一样、这个版本下组件和 pip 又都
+#      import 不了，就用这次启动的解释器——也就是这一个——重建 .venv，cfg 跟着改写，下次
+#      启动又落回第 1 步。
 #   3. 两样都用不了才落回原来的顺序；.venv 跑不起来时 ensure_env 照旧用它重建。
 # 没有 .venv 的新装机行为不变。
 #

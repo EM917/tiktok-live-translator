@@ -243,11 +243,13 @@ def ensure_env():
         else:
             # 光看路径存在不够：上次安装被中断会留下残缺的 venv，链到的 Python 被卸掉
             # 也一样——必须实际跑一下确认，顺便拿到它现在的版本。能跑、但次版本和
-            # pyvenv.cfg 记的不一样也重建：原地补装找不到 pip（判断见 bootstrap.venv_needs_rebuild）
+            # pyvenv.cfg 记的不一样、在这个版本下组件和 pip 又都 import 不了，也重建：原地补装
+            # 找不到 pip。组件或 pip 还在就不清（判断见 bootstrap.venv_needs_rebuild）
             usable, target_version = (bootstrap.interpreter_version(vpy)
                                       if vpy.exists() else (False, None))
             if bootstrap.venv_needs_rebuild(usable, recorded, target_version,
-                                            own_env=bootstrap.managed_env(ROOT)):
+                                            own_env=bootstrap.managed_env(ROOT),
+                                            python=vpy, ready_import=_ready_import()):
                 _first_run_dialog(bootstrap.install_dialog_text(
                     recorded, here, venv_existed=recorded is not None))
                 print("[初始化] 正在创建虚拟环境（仅需一次，可能几分钟）…")

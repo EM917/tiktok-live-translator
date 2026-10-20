@@ -272,27 +272,55 @@ def interpreter_version(python, timeout=30):
     return True, (out if re.fullmatch(r"\d+\.\d+", out) else None)
 
 
-def venv_needs_rebuild(usable, recorded=None, actual=None, own_env=False):
+def venv_needs_rebuild(usable, recorded=None, actual=None, own_env=False, python=None,
+                       ready_import=None):
     """ensure_env 要不要用这次启动的解释器把 .venv 从头重建（venv.create(clear=True)）。
 
     usable/actual 是 interpreter_version(.venv/bin/python) 的结果，recorded 是 pyvenv.cfg
     记的主次版本，own_env 是当前进程本来就跑在 .venv 或 .app 壳里（managed_env）。
+    python/ready_import 是 .venv/bin/python 和核心组件的 import 语句，只在版本不一致时拿来探测。
 
-    跑不起来要重建：链到的 Python 被卸掉、上次建到一半。能跑、但次版本和 cfg 记的不一样
-    也要重建：.venv/bin/python3 链到一个不带版本号的 python3（比如 conda 的
-    /opt/anaconda3/bin/python3），底下的 Python 原地升了次版本。这时它只找
-    lib/python<新版本>/site-packages，装过的组件和 pip 都在 lib/python<旧版本> 下——原地
-    `python -m pip install` 只会报 No module named pip（2026-10-20 实测），每次启动都卡在
-    同一个安装失败上。重建同时改写 pyvenv.cfg，启动器（tools/find_python.sh）下次启动又能
-    认出建它的那个解释器，「完全磁盘访问权限」跟着固定在它上面。
+    跑不起来要重建：链到的 Python 被卸掉、上次建到一半。能跑、但次版本和 cfg 记的不一样，
+    而且在它实际跑的这个版本下组件和 pip 都 import 不了，也要重建：.venv/bin/python3 链到
+    一个不带版本号的 python3（比如 conda 的 /opt/anaconda3/bin/python3），底下的 Python 原地
+    升了次版本。这时它只找 lib/python<新版本>/site-packages，装过的组件和 pip 都在
+    lib/python<旧版本> 下——原地 `python -m pip install` 只会报 No module named pip
+    （2026-10-20 实测），每次启动都卡在同一个安装失败上。重建同时改写 pyvenv.cfg，启动器
+    （tools/find_python.sh）下次启动又能认出建它的那个解释器，「完全磁盘访问权限」跟着固定在它上面。
 
-    两个版本有一个读不到就不重建，照旧原地补装。当前进程就在 .venv/.app 壳里时不重建：
-    那是从环境里面把自己的环境清空。"""
+    光看版本不一致不够（2026-10-20 复审实测）：在已有的 .venv 上不带 --clear 用另一个次版本
+    再跑一次 `python3 -m venv .venv`（setup.sh 就是这么写的），CPython 改写 pyvenv.cfg，却不
+    替换已经在的 bin/python 链接——cfg 记着 3.14，.venv 照旧跑 3.13，组件和 pip 一样不少。
+    那时清空就是把一个好好的环境删掉、联网重装约 1.4 GB。所以版本不一致时先探测
+    （venv_salvageable）：能 import pip 或能 import 核心组件，就照旧原地补装。
+
+    两个版本有一个读不到、或者没给 python 就不重建，照旧原地补装：没有证据不删东西。当前进程
+    就在 .venv/.app 壳里时不重建：那是从环境里面把自己的环境清空。"""
     if not usable:
         return True
     if own_env:
         return False
-    return bool(recorded and actual and recorded != actual)
+    if not (recorded and actual and recorded != actual) or python is None:
+        return False
+    return not venv_salvageable(python, ready_import)
+
+
+def venv_salvageable(python, ready_import=None, timeout=60):
+    """版本不一致的 .venv 在它实际跑的版本下还用不用得上：能 import pip（原地补装走得通），
+    或者能执行 ready_import（核心组件都在，直接能跑），就算用得上。
+
+    先探 pip：一般几十毫秒，setup.sh 重跑留下的那种环境每次启动都要过这一步。探测本身出错
+    （起不来、超时）也算用得上——没有证据不删东西，后面原地补装失败时照旧弹出说明。"""
+    for code in ("import pip", ready_import):
+        if not code:
+            continue
+        try:
+            r = subprocess.run([str(python), "-c", code], capture_output=True, timeout=timeout)
+        except Exception:
+            return True
+        if r.returncode == 0:
+            return True
+    return False
 
 
 def install_dialog_text(recorded=None, actual=None, venv_existed=False,
