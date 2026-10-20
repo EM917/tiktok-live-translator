@@ -65,16 +65,36 @@ valid for about two weeks, so one capture covers a whole stream. See also
 
 ## Keeping the stream
 
-- A dropped stream reconnects with a freshly resolved URL, telling a network
-  interruption from the end of the stream. Before resolving again the app
-  checks that it can reach TikTok; while it cannot, it waits without spending
-  reconnect attempts, for up to 30 minutes.
-- If TikTok hasn't reported the stream as ended, the app waits up to 10
+- A dropped stream reconnects, telling a network interruption from the end of
+  the stream. After a stretch with audio it first reconnects to the same
+  stream URL (only the video server is contacted); when that brings no audio,
+  or the URL clearly stops working, it looks up the stream URL again. Before
+  looking up, the app checks that it can reach TikTok; while it cannot, it
+  waits without looking anything up, for up to 30 minutes.
+- Waits between attempts grow while no audio arrives (2 s up to 30 s; 60 s
+  after 30 minutes without audio) and reset with any audio.
+- Lookups are capped: at most 26 in any hour, counting checks of the stream
+  status while waiting for it to resume, and one every 15 minutes after 30
+  minutes without audio. At the cap the app keeps reconnecting to the same
+  stream URL and says when the next lookup is.
+- If TikTok hasn't reported the stream as ended, the app waits about 10
   minutes for it to resume.
-- The app gives up once six connection attempts in a row bring no audio at
-  all (two for a pasted stream URL); an attempt that played any audio resets
-  the count. A pasted stream URL that stops serving data after playing for
-  30 s or more ends the session instead of reconnecting.
+- A live link is never given up just because no audio arrives. Monitoring
+  stops when TikTok reports the stream as ended, when it hasn't reported it as
+  live for about 10 minutes, when TikTok can't be reached for 30 minutes, or
+  when looking up the stream URL fails six times in a row. A pasted stream URL
+  stops after two connection attempts in a row with no audio; one that stops
+  serving data after playing for 30 s or more ends the session instead of
+  reconnecting.
+- Every step of stopping a stalled stream has a time limit, and a stall in
+  any step is recorded. "No stream audio for N min" appears after 2 minutes
+  without stream audio, and a notice plus a badge under the large caption
+  appear when less than 70% of the last 5 minutes arrived. Audio that arrives
+  late, when a stalled connection is closed, is still checked for banned
+  terms.
+- `TLT_RECONNECT_V2=0` at startup brings back the previous reconnect rules
+  (look up on every reconnect, stop after six attempts in a row with no
+  audio) for that run.
 - The comment connection can go half-open: the Comments panel shows no
   warning, but no comments arrive. After 15 minutes of silence while
   connected, the app reconnects it and records that in the session audit.

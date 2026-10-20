@@ -24,7 +24,7 @@ flowchart TD
     DET -->|"alert (when on)"| SRV
     SRV --> WS(("WebSocket"))
     WS --> UI["caption surface<br/>app window · Phone Viewing"]
-    FF -.->|"stream drops: re-resolve + reconnect"| RESOLVE
+    FF -.->|"stream drops: reconnect, re-resolve when the same URL brings no audio"| RESOLVE
 ```
 
 </details>
