@@ -33,7 +33,7 @@ class FFmpegAudioSource:
         再等 CLOSE_GRACE。调用方被取消（停止、换主播）时宽限缩到 URGENT_*，整条取消路径要短于
         Pipeline.STOP_GRACE_SEC（3 秒），session_end 才由这一场自己写。
       * stdout 先读到了 EOF（ffmpeg 自己收工）时，先等它退出、最多 EXIT_GRACE，退了就不发信号：
-        事件循环知道「进程已退出」可能比 EOF 晚。Windows 上总是晚（进程先关句柄，句柄关完进程对象才
+        事件循环知道「进程已退出」可能比 EOF 晚。Windows 上通常晚（CI 两次观察都是这样；进程先关句柄，句柄关完进程对象才
         signaled，线程池里的等待再把它投进 IOCP），以前每次自然结束都记成 terminate，还对已退出的
         进程调一次 TerminateProcess；POSIX 上是偶发的先后竞争。
       * 收尾时 ffmpeg 吐出来的音频照样从 frames() 交出去（stopping 为 True 之后的帧），由调用方决定
@@ -324,8 +324,8 @@ class FFmpegAudioSource:
         wait_task = asyncio.ensure_future(proc.wait())
         try:
             if proc.returncode is None and self._eof:
-                # stdout 已经 EOF：进程多半正在自己退出，只是事件循环还没收到退出通知（Windows 上总是
-                # 这样）。先等它，退了就不发信号，stop_path 照实记 exited；到点还在才往下走 SIGTERM
+                # stdout 已经 EOF：进程多半正在自己退出，只是事件循环还没收到退出通知（Windows 上
+                # 通常这样）。先等它，退了就不发信号，stop_path 照实记 exited；到点还在才往下走 SIGTERM
                 await self._await_exit(wait_task, self.EXIT_GRACE, self.URGENT_EXIT_GRACE)
             if proc.returncode is None:
                 try:

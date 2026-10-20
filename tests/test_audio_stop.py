@@ -1,6 +1,6 @@
 """拉流收尾每一步都有上限（app/audio.py FFmpegAudioSource，2026-10-19）。
 
-10-18 那场 91 分钟的静默卡住，在 Python 3.12/3.13 上的机制（asr-bench/live-stability/design.md §1.3）：
+10-18 那场 91 分钟的静默卡住，在 wait() 要等管道断开的解释器上（3.12、3.13.5 这类没带 gh-119710 修复的版本）的机制（asr-bench/live-stability/design.md §1.3）：
 ffmpeg 停在探测阶段、把音频攒在手里；看门狗到点后程序不再读 stdout、发 SIGTERM；ffmpeg 一次写出攒下的
 音频，超过 StreamReader 缓冲上限两倍，asyncio 就暂停读这根管道；kill 之后暂停的管道读不到 EOF，
 Process.wait() 永远不返回。这里用一个几行 Python 的假 ffmpeg（tests/fixtures/fake_ffmpeg.py）造出
@@ -169,8 +169,9 @@ def test_a_tail_under_the_pause_line_still_returns(fake):
 @POSIX_ONLY
 def test_when_nobody_reads_the_paused_pipe_is_closed_and_stop_is_bounded(fake, monkeypatch):
     """消费方停在 yield 上不动（reader 在等一次广播）、外面调 stop()：没人读 stdout，子进程不理 SIGTERM
-    照写不误，管道暂停（这里把缓冲上限调小，暂停线就是 128 KiB，4 秒写满）。kill 之后 3.12/3.13 的
-    wait() 等不到管道断开——收尾最后一步 transport.close() 把它收住。"""
+    照写不误，管道暂停（这里把缓冲上限调小，暂停线就是 128 KiB，4 秒写满）。kill 之后，在 wait() 要等管道断开的解释器上
+    （wait_waits_for_a_paused_pipe 探测为真，如 3.12、3.13.5）等不到——收尾最后一步 transport.close() 把它收住；
+    带了 gh-119710 修复的解释器（如 3.13.16、3.14）kill 之后就返回，停在 kill。"""
     monkeypatch.setattr(FFmpegAudioSource, "STREAM_LIMIT", 64 * 1024)
     src = fake("stream")
 
@@ -431,7 +432,7 @@ def test_the_stdout_buffer_limit_is_raised():
 def test_a_10_18_like_sequence_writes_every_break_and_keeps_going(monkeypatch, tmp_path):
     """真的 _run_stream_inner → _run_session → _stream_session → FFmpegAudioSource，起的是假 ffmpeg：
     有声 6 秒 → 原地址一帧都没有、马上退出 → 查一次、有声 2 秒 → 原地址停在「探测阶段」、收尾吐出
-    140,000 字节 → 查到已结束。改之前最后那一轮在 3.12/3.13 上永久卡住（不写 stream_break、不重连）；
+    140,000 字节 → 查到已结束。改之前最后那一轮在没带 gh-119710 修复的 3.12/3.13 上永久卡住（不写 stream_break、不重连）；
     现在每一轮都有 stream_break，吐出的音频照样送去识别（段带 tail），这一场以「已结束」收尾。"""
     from types import SimpleNamespace
 
