@@ -357,7 +357,10 @@ class EvidenceRecorder:
         self._lock = threading.Lock()
         self._pool = None                # 证据线程，第一次交活时才起（_submit），收尾时放掉（close）
         self._closed = False
-        self._pending = set()
+        self._pending = set()            # 交给证据线程、还没做完的活（写盘和清理）：drain 等的是这些
+        # 其中的写盘，一件是一份证据（一个 wav 加一行索引，或者只补一行索引）：summary 的 pending 只数
+        # 这些。开场清理不是一份证据，算进去的话，很快结束的一场碰上旧证据多、清理慢，就会多报一份没写完
+        self._pending_writes = set()
         self._own_bytes = 0
         self._own_files = 0
         self._since_prune = 0
@@ -466,10 +469,13 @@ class EvidenceRecorder:
             "windows": info["windows"], "hits": info["hits"],
             "backend": info["backend"], "model": info["model"], "audit": self.audit_name,
             "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-        if self._submit(loop, self._write, record, pcm, saved) is None:
+        done = self._submit(loop, self._write, record, pcm, saved)
+        if done is None:
             self._drop_saved(seq, saved)
             self._bump("skipped_old")
             return False
+        self._pending_writes.add(done)
+        done.add_done_callback(self._pending_writes.discard)
         return True
 
     def prune_soon(self, loop):
@@ -502,7 +508,8 @@ class EvidenceRecorder:
         return done
 
     async def drain(self, timeout=None):
-        """等在途的写盘和清理结束（收尾和测试用）。给了 timeout 就最多等这么多秒，返回还没完的份数。
+        """等在途的写盘和清理结束（收尾和测试用）。给了 timeout 就最多等这么多秒，返回还没完的件数（写盘
+        和清理都算；summary 的 pending 只数写盘）。
         用 asyncio.wait：超时什么都不取消，没完的照样写完，只是这里不再等。（以前活是 run_in_executor
         交的，取消它的 future 会把证据线程里还在排队、没开跑的写盘一起取消；现在 _pending 里只是「做完了」
         的信号，取消也拦不住证据线程里的活。）"""
@@ -616,12 +623,13 @@ class EvidenceRecorder:
 
     def summary(self):
         """这一场的计数（只有数字）。pending 是此刻证据线程里还没写完的份数：收尾时先等过一会儿
-        （Pipeline._evidence_drain），还不是 0 就说明计数比目录里少这么几份，不是悄悄少算。"""
+        （Pipeline._evidence_drain），还不是 0 就说明计数比目录里少这么几份，不是悄悄少算。只数写盘：
+        还没做完的开场清理不是一份证据，不算进来（见 _pending_writes）。"""
         with self._lock:
             out = {"on": True}
             out.update(self.counts)
             out["by_reason"] = dict(sorted(self.by_reason.items()))
-        out["pending"] = len(self._pending)
+        out["pending"] = len(self._pending_writes)
         out.update({k: self.cfg[k] for k in ("max_mb", "max_files", "days", "ring_sec",
                                              "control_every")})
         return out

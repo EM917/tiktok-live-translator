@@ -322,7 +322,42 @@ def test_the_loop_never_waits_for_a_prune_in_progress(monkeypatch, tmp_path):
 
     spent, s = run(go())
     assert spent < 0.1, spent
-    assert s["skipped_old"] == 2 and s["pending"] == 1
+    assert s["skipped_old"] == 2 and s["pending"] == 0      # 卡着的是清理，不是一份证据
+
+
+def test_a_prune_in_progress_is_not_a_pending_clip_but_drain_still_waits_for_it(monkeypatch, tmp_path):
+    """summary 的 pending 是还没写完的证据份数：开场清理卡着时不算进去，排在它后面的那份 wav 才算。
+    以前清理也算一份，很快结束的一场碰上旧证据多、清理慢，session_end 就多报一份没写完。收尾的 drain
+    照样等清理做完（session_end 的 pruned_dirs 要算上它）。"""
+    p, _, sess = _session(monkeypatch, tmp_path)
+    started, release = threading.Event(), threading.Event()
+    real = asr_evidence.prune
+
+    def slow_prune(*a, **k):
+        started.set()
+        release.wait(5)
+        return real(*a, **k)
+
+    monkeypatch.setattr(asr_evidence, "prune", slow_prune)
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        recorder = p._evidence_round(sess)             # 开场清理：卡在证据线程里
+        assert await loop.run_in_executor(None, started.wait, 5)
+        only_prune = recorder.summary()["pending"]
+        for i in range(200):
+            recorder.feed(frame(i))
+        await _flagged(p, sess, recorder, (100,))      # 一份 wav 排在清理后面
+        with_clip = recorder.summary()["pending"]
+        left = await recorder.drain(0.05)              # 清理还卡着：drain 等的是这两件
+        release.set()
+        await recorder.drain()
+        return recorder, only_prune, with_clip, left
+
+    recorder, only_prune, with_clip, left = run(go())
+    assert (only_prune, with_clip, left) == (0, 1, 2)
+    s = recorder.summary()
+    assert (s["saved"], s["pending"]) == (1, 0)
 
 
 def test_a_failed_wav_is_not_referenced_and_leaves_no_tmp(monkeypatch, tmp_path, capsys):
