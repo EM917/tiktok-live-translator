@@ -272,6 +272,29 @@ def interpreter_version(python, timeout=30):
     return True, (out if re.fullmatch(r"\d+\.\d+", out) else None)
 
 
+def venv_needs_rebuild(usable, recorded=None, actual=None, own_env=False):
+    """ensure_env 要不要用这次启动的解释器把 .venv 从头重建（venv.create(clear=True)）。
+
+    usable/actual 是 interpreter_version(.venv/bin/python) 的结果，recorded 是 pyvenv.cfg
+    记的主次版本，own_env 是当前进程本来就跑在 .venv 或 .app 壳里（managed_env）。
+
+    跑不起来要重建：链到的 Python 被卸掉、上次建到一半。能跑、但次版本和 cfg 记的不一样
+    也要重建：.venv/bin/python3 链到一个不带版本号的 python3（比如 conda 的
+    /opt/anaconda3/bin/python3），底下的 Python 原地升了次版本。这时它只找
+    lib/python<新版本>/site-packages，装过的组件和 pip 都在 lib/python<旧版本> 下——原地
+    `python -m pip install` 只会报 No module named pip（2026-10-20 实测），每次启动都卡在
+    同一个安装失败上。重建同时改写 pyvenv.cfg，启动器（tools/find_python.sh）下次启动又能
+    认出建它的那个解释器，「完全磁盘访问权限」跟着固定在它上面。
+
+    两个版本有一个读不到就不重建，照旧原地补装。当前进程就在 .venv/.app 壳里时不重建：
+    那是从环境里面把自己的环境清空。"""
+    if not usable:
+        return True
+    if own_env:
+        return False
+    return bool(recorded and actual and recorded != actual)
+
+
 def install_dialog_text(recorded=None, actual=None, venv_existed=False,
                         requirements_only=False):
     """安装开始时给中控看的那句话。只说观察到的事：清单变了、Python 版本变了、

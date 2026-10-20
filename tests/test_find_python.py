@@ -6,10 +6,13 @@
 就读不到了。.venv 本身是 /opt/anaconda3/bin/python3.13 建的，一点没变。
 
 钉住：没有 .venv（新装机）走原来的顺序；pyvenv.cfg 的 executable 优先，再到 home 下的
-python<主.次>、python3；解释器不在了、次版本变了、低于 3.9、cfg 不记版本、相对路径、
-指回项目自己（.venv / .app 里的链接）都落回原来的顺序；路径里有空格、home 是链接都照常；
-/usr/bin 下的垫片不确认装过开发者工具绝不执行；两个启动器都把项目根传进来，并 exec 选中的
-那个解释器。
+python<主.次>、python3；这几个都不能用（解释器不在了、次版本变了、低于 3.9、cfg 不记版本、
+相对路径）时，用 .venv/bin/python 链到的项目外那个——conda 的 python3 原地升了次版本时
+就是它，main.py 的 ensure_env 再用它重建 .venv（app/bootstrap.venv_needs_rebuild）；
+那个也不能用（断链、绕圈、--copies 的真文件、低于 3.9）才落回原来的顺序。指回项目自己
+（.venv / .app 里的链接、项目外的链接指回项目里）的一律不认；路径里有空格、home 是链接都
+照常；/usr/bin 下的垫片（包括链到它的）不确认装过开发者工具绝不执行；两个启动器都把项目根
+传进来，并 exec 选中的那个解释器。
 
 用 /bin/bash 真跑（macOS 上就是系统自带的 3.2）；解释器全是假的 sh 脚本：打印一个版本号，
 并把自己的路径和参数记进日志。find_installed_python 探测的是本机真实的安装位置，这里换成
@@ -69,6 +72,15 @@ class Env:
         (venv / "bin").mkdir(parents=True, exist_ok=True)
         (venv / "pyvenv.cfg").write_bytes(cfg_text.encode("utf-8"))   # 原样写：要测 CRLF
         return venv
+
+    def venv_links_to(self, target, root=None):
+        """像 CPython 的 venv 那样：python → python3 → 目标，python3.13 → python3。"""
+        bin_ = (root or self.root) / ".venv" / "bin"
+        bin_.mkdir(parents=True, exist_ok=True)
+        os.symlink(str(target), str(bin_ / "python3"))
+        os.symlink("python3", str(bin_ / "python"))
+        os.symlink("python3", str(bin_ / "python3.13"))
+        return bin_
 
     def env(self):
         env = {"PATH": "{}:/usr/bin:/bin".format(self.bin), "HOME": str(self.tmp),
@@ -326,6 +338,119 @@ def test_a_neighbour_folder_sharing_the_prefix_is_not_inside(w):
     assert w.find(w.root) == (0, str(exe))
 
 
+def test_an_executable_that_links_back_into_the_project_falls_back(w):
+    """executable 本身在项目外，却是指回 .venv 里的一个链接：跑起来的还是项目里那个。"""
+    venv = w.venv(_cfg())
+    inner = w.python(venv / "bin" / "python3.13", "3.13")
+    alias = w.tmp / "elsewhere" / "python3.13"
+    alias.parent.mkdir()
+    alias.symlink_to(inner)
+    w.venv(_cfg(home=alias.parent, executable=alias))
+    assert w.find(w.root) == (0, FALLBACK)
+    assert w.probed() == []
+
+
+# ---- 建环境的那个用不了：认 .venv/bin/python 链到的那个 -------------------------------------
+
+def _real(path):
+    """输出里的目录是物理路径（临时目录本身可能在一个链接下面）。"""
+    path = Path(path)
+    return str(Path(os.path.realpath(str(path.parent))) / path.name)
+
+
+def test_creator_upgraded_in_place_uses_what_the_venv_links_to(w):
+    """conda 的 python3 原地从 3.13 升到 3.14、python3.13 被删；.venv/bin/python3 链的是不带
+    版本号的 python3，pyvenv.cfg 还写着 3.13（只有重建才会改它）。以前这里落回安装位置的
+    顺序——/opt/homebrew/bin/python3，跟着 Homebrew 变的那个，10-19 的事会再来一次。现在用
+    .venv 实际在跑的那个；ensure_env 看到次版本对不上，用它重建 .venv，cfg 跟着改写。"""
+    conda = w.tmp / "anaconda3" / "bin"
+    py3 = w.python(conda / "python3", "3.14")
+    w.venv(_cfg(home=conda, executable=conda / "python3.13"))
+    w.venv_links_to(py3)
+    assert w.find(w.root) == (0, _real(py3))
+    # home/python3 比版本没过一次，链接那一步再跑一次；兜底一次也没进
+    assert [_real(p) for p in w.probed()] == [_real(py3), _real(py3)]
+
+
+def test_the_venv_link_keeps_an_unversioned_name(w):
+    """不解到 python3.14：重建 .venv 时链回的还是不带版本号的 python3，和原来一样。"""
+    conda = w.tmp / "anaconda3" / "bin"
+    w.python(conda / "python3.14", "3.14")
+    (conda / "python3").symlink_to("python3.14")
+    w.venv(_cfg(home=conda, executable=conda / "python3.13"))
+    w.venv_links_to(conda / "python3")
+    assert w.find(w.root) == (0, _real(conda / "python3"))
+
+
+def test_a_relative_venv_link_leaving_the_project(w):
+    conda = w.tmp / "anaconda3" / "bin"
+    py3 = w.python(conda / "python3", "3.14")
+    w.venv(_cfg(home=conda, executable=conda / "python3.13"))
+    w.venv_links_to(os.path.join("..", "..", "..", "anaconda3", "bin", "python3"))
+    assert w.find(w.root) == (0, _real(py3))
+
+
+def test_the_venv_link_is_used_when_the_cfg_has_no_version(w):
+    """cfg 里的路径不比版本就不认；链接不是 cfg 说的，是 .venv 现在实际在跑的。"""
+    py3 = w.python(w.tmp / "py" / "bin" / "python3", "3.12")
+    w.venv(_cfg(home=py3.parent, executable=py3, version=None))
+    w.venv_links_to(py3)
+    assert w.find(w.root) == (0, _real(py3))
+    assert len(w.probed()) == 1
+
+
+@pytest.mark.parametrize("version, ok", [("3.8", False), ("3.14", False)], ids=["below-3.9", "fails"])
+def test_a_venv_link_that_is_too_old_or_fails_falls_back(w, version, ok):
+    py3 = w.python(w.tmp / "py" / "bin" / "python3", version, ok=ok)
+    w.venv(_cfg(home=w.tmp / "gone", executable=w.tmp / "gone" / "python3.13"))
+    w.venv_links_to(py3)
+    assert w.find(w.root) == (0, FALLBACK)
+
+
+def test_a_dangling_venv_link_falls_back(w):
+    """建环境的 Python 被卸掉：.venv 跑不起来，ensure_env 用兜底的那个重建（原来的行为）。"""
+    gone = w.tmp / "anaconda3" / "bin"
+    w.venv(_cfg(home=gone, executable=gone / "python3.13"))
+    w.venv_links_to(gone / "python3")
+    assert w.find(w.root) == (0, FALLBACK)
+    assert w.probed() == []
+
+
+def test_a_venv_link_loop_falls_back(w):
+    bin_ = w.venv(_cfg(home=w.tmp / "gone")) / "bin"
+    os.symlink("python3", str(bin_ / "python"))
+    os.symlink("python", str(bin_ / "python3"))
+    assert w.find(w.root) == (0, FALLBACK)
+
+
+def test_a_copied_venv_python_is_not_run(w):
+    """--copies 建的 .venv：bin/python 是项目里的真文件，不是建环境的那个。"""
+    w.venv(_cfg(home=w.tmp / "gone", executable=w.tmp / "gone" / "python3.13"))
+    w.python(w.root / ".venv" / "bin" / "python", "3.13")
+    assert w.find(w.root) == (0, FALLBACK)
+    assert w.probed() == []
+
+
+def test_a_venv_link_out_and_back_into_the_project_is_not_run(w):
+    venv = w.venv(_cfg(home=w.tmp / "gone", executable=w.tmp / "gone" / "python3.13"))
+    inner = w.python(venv / "real" / "python3", "3.13")
+    hop = w.tmp / "outside" / "python3"
+    hop.parent.mkdir()
+    hop.symlink_to(inner)
+    w.venv_links_to(hop)
+    assert w.find(w.root) == (0, FALLBACK)
+    assert w.probed() == []
+
+
+def test_spaces_in_every_path_on_the_link_route(tmp_path):
+    w = Env(tmp_path, project="My Projects/tiktok live translator")
+    home = tmp_path / "Application Support" / "conda 3" / "bin"
+    py3 = w.python(home / "python3", "3.14")
+    w.venv(_cfg(home=home, executable=home / "python3.13"))
+    w.venv_links_to(py3)
+    assert w.find(w.root) == (0, _real(py3))
+
+
 # ---- /usr/bin 的垫片 ----------------------------------------------------------------------
 
 @pytest.mark.skipif(not os.path.exists("/usr/bin/python3"), reason="这台机器没有 /usr/bin/python3")
@@ -342,6 +467,29 @@ def test_usr_bin_shim_is_not_run_without_developer_tools(w):
         if real.returncode == 0:
             version = real.stdout.decode().strip() + ".0"
     w.venv(_cfg(home="/usr/bin", version=version, executable="/usr/bin/python3"))
+    assert w.find(w.root) == (0, FALLBACK)
+
+
+@pytest.mark.skipif(not os.path.exists("/usr/bin/python3"), reason="这台机器没有 /usr/bin/python3")
+@pytest.mark.parametrize("route", ["executable", "venv-link"])
+def test_links_to_the_usr_bin_shim_are_not_run_without_developer_tools(w, route):
+    """链到垫片的路径本身不在 /usr/bin：看链接走到底的那个目录。"""
+    w.devdir = w.tmp / "CommandLineTools"
+    w.devdir.mkdir()
+    alias = w.tmp / "py" / "bin" / "python3"
+    alias.parent.mkdir(parents=True)
+    alias.symlink_to("/usr/bin/python3")
+    if route == "executable":
+        version = "3.9.6"
+        if sys.platform != "darwin":
+            real = subprocess.run(["/usr/bin/python3", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+                                  capture_output=True, timeout=60)
+            if real.returncode == 0:
+                version = real.stdout.decode().strip() + ".0"
+        w.venv(_cfg(home=w.tmp / "gone", version=version, executable=alias))
+    else:
+        w.venv(_cfg(home=w.tmp / "gone", executable=w.tmp / "gone" / "python3.13"))
+        w.venv_links_to(alias)
     assert w.find(w.root) == (0, FALLBACK)
 
 
@@ -385,14 +533,16 @@ def _launcher_project(w):
 
 
 def _run(w, script, *args):
-    # PATH 里只有假的 osascript / open 和真的 dirname：万一走到「找不到 Python」也不弹框
+    # PATH 里只有假的 osascript / open 和真的 dirname、readlink：万一走到「找不到 Python」
+    # 也不弹框（Finder 启动时 PATH 是 /usr/bin:/bin:/usr/sbin:/sbin，这两个都在 /usr/bin）
     launch_bin = w.tmp / "launch-bin"
     launch_bin.mkdir()
     for name in ("osascript", "open"):
         fake = launch_bin / name
         fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         fake.chmod(0o755)
-    (launch_bin / "dirname").symlink_to(shutil.which("dirname"))
+    for name in ("dirname", "readlink"):
+        (launch_bin / name).symlink_to(shutil.which(name))
     env = {"PATH": str(launch_bin), "HOME": str(w.tmp), "TLT_PROBE_LOG": str(w.log)}
     proc = subprocess.run([BASH, str(script)] + list(args), env=env, cwd=str(w.tmp),
                           capture_output=True, timeout=60)
@@ -413,6 +563,19 @@ def test_start_command_execs_the_venv_creator_with_its_args(w):
     proc, calls = _run(w, w.root / START_COMMAND.name, "--demo", "two words")
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
     assert calls[-1] == [str(exe), "main.py", "--demo", "two words"]
+
+
+def test_the_app_launcher_follows_the_venv_link_after_an_in_place_upgrade(w):
+    """建环境的 python3.13 没了、链到的 python3 已是 3.14：exec 链到的那个，不碰兜底的顺序
+    （兜底在这里是真的 find_installed_python，会去探本机的 Python——它要是被调用，exec 的就
+    不是假解释器，最后一条断言会红）。"""
+    exe = _launcher_project(w)
+    exe.unlink()
+    py3 = w.python(exe.parent / "python3", "3.14")
+    w.venv_links_to(py3)
+    proc, calls = _run(w, w.root / APP_DIR / "Contents" / "MacOS" / LAUNCHER.name)
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert calls[-1] == [_real(py3), "main.py"]
 
 
 def test_both_launchers_pass_the_project_root():

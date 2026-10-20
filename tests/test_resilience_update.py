@@ -952,6 +952,47 @@ def test_pyvenv_and_interpreter_versions(tmp_path):
     assert bootstrap.interpreter_version(tmp_path / "no-python") == (False, None)
 
 
+def test_venv_rebuild_when_it_cannot_run_or_its_minor_version_moved():
+    """.venv/bin/python3 链到不带版本号的 python3（conda），底下原地升了次版本：它还能跑，
+    但组件和 pip 都在 lib/python<旧版本> 下，原地 pip 只会报 No module named pip。重建，
+    pyvenv.cfg 跟着改写，启动器下次又能认出建它的那个解释器。"""
+    assert bootstrap.venv_needs_rebuild(False, "3.13", None)            # 链到的 Python 没了
+    assert bootstrap.venv_needs_rebuild(False, None, None)              # 上次建到一半
+    assert bootstrap.venv_needs_rebuild(True, "3.13", "3.14")           # 原地换了次版本
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", "3.13")       # 只是缺组件：原地补装
+    assert not bootstrap.venv_needs_rebuild(True, None, "3.14")         # cfg 不记版本：不猜
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", None)         # 读不出实际版本：不猜
+    # 进程本来就跑在 .venv / .app 壳里：不从里面把自己的环境清空
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", "3.14", own_env=True)
+
+
+def test_a_cfg_recording_another_minor_than_the_interpreter_runs_means_rebuild(tmp_path):
+    """把 ensure_env 里的三步串起来：cfg 记的版本、真跑一下拿到的版本、判断。"""
+    here = sys.version_info[:2]
+    (tmp_path / "pyvenv.cfg").write_text("home = /opt/x/bin\nversion = {}.{}.5\n".format(
+        here[0], here[1] - 1), encoding="utf-8")
+    usable, actual = bootstrap.interpreter_version(sys.executable)
+    assert bootstrap.venv_needs_rebuild(usable, bootstrap.pyvenv_version(tmp_path), actual)
+    (tmp_path / "pyvenv.cfg").write_text("version = {}.{}.0\n".format(*here), encoding="utf-8")
+    assert not bootstrap.venv_needs_rebuild(usable, bootstrap.pyvenv_version(tmp_path), actual)
+
+
+def test_main_lets_bootstrap_decide_when_to_rebuild_the_venv():
+    """main.py 测不了（import 就 execv）：重建的判断必须交给 bootstrap.venv_needs_rebuild，
+    并把「进程就在 .venv/.app 壳里」传进去。"""
+    src = (REPO / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    ensure = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "ensure_env")
+    calls = [n for n in ast.walk(ensure) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == "venv_needs_rebuild"]
+    assert len(calls) == 1
+    assert [k.arg for k in calls[0].keywords] == ["own_env"]
+    rebuild_if = next(n for n in ast.walk(ensure) if isinstance(n, ast.If) and n.test is calls[0])
+    assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+               and n.func.attr == "create" for n in ast.walk(rebuild_if))
+    assert "if not usable:" not in src
+
+
 def test_log_files_are_pruned_per_kind(tmp_path):
     logs = tmp_path / "logs"
     logs.mkdir()
