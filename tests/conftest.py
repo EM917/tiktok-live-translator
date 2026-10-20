@@ -70,7 +70,7 @@ def _reset_active_glossary(monkeypatch):
     monkeypatch.setattr(glossary, "_ACTIVE", None)
 
 
-# ---- 仓库里的真实词表（brands/、profiles/、glossary.txt）测试一律不碰 ---------------------------
+# ---- 仓库里的真实词表（brands/、profiles/、glossary.txt、banned_terms.txt）测试一律不碰 ----------
 
 # brands/<品牌>.txt、profiles/<主播>.txt、glossary.txt 是开发者本机的私人词表（不入库，见 .gitignore 与
 # brands/README.md），CI 上不存在。很多管线用例拿 tiktok.com/@bellaallnatural 开场：Pipeline() 扫 brands/
@@ -79,13 +79,19 @@ def _reset_active_glossary(monkeypatch):
 # 不在时，load() 与 _copy_template_once 的首启复制又会在仓库里凭空建出 glossary.txt、
 # profiles/bellaallnatural.txt。改之前插桩数过：54 个测试文件、两千多次。
 #
+# 违禁词表 banned_terms.txt 同理（不入库，决定什么会报警）：Pipeline() 的 load_detector() 读它，不在时从
+# 入库模板复制一份建在仓库根上。改之前插桩数过：4 个测试文件、121 次读、1 次建。
+#
 # 下面的审计钩子在整个测试进程里看着这几个位置：读私人词表、往这几处写东西（建文件、建目录、删、改名）
 # 都记下来。入库的 README.md 和 *.example.txt 模板是公开文件、本机和 CI 一样，只读不算
-# （tests/test_readme_one_page.py 要扫 brands/README.md）。
+# （tests/test_readme_one_page.py 要扫 brands/README.md，tests/test_resilience_asr.py 和
+# tests/test_fuzzy_recall.py 要读 banned_terms.example.txt）。
 _REPO = Path(__file__).resolve().parent.parent
 _REPO_GLOSSARY_DIRS = tuple(os.path.normcase(str(_REPO / name)) for name in ("brands", "profiles"))
-# 前缀匹配：也罩住 migrate_legacy_entries 的备份 glossary.txt.bak-<时间>
-_REPO_GLOSSARY_FILE = os.path.normcase(str(_REPO / "glossary.txt"))
+# 前缀匹配：也罩住 migrate_legacy_entries 的备份 glossary.txt.bak-<时间>，以及 banned_terms.txt 旁边的
+# 备份、临时文件。banned_terms.example.txt 不是 banned_terms.txt 开头，罩不住它
+_REPO_PRIVATE_FILES = tuple(os.path.normcase(str(_REPO / name))
+                            for name in ("glossary.txt", "banned_terms.txt"))
 _GLOSSARY_EVENTS = frozenset(("open", "os.mkdir", "os.remove", "os.rmdir", "os.rename"))
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
 # (PYTEST_CURRENT_TEST, 事件, 仓库内相对路径)。专测这张网本身的用例用 glossary_net 换成自己的列表
@@ -105,7 +111,7 @@ def _repo_glossary_path(event, args):
         if raw is None or isinstance(raw, int):          # 文件描述符
             continue
         path = os.path.normcase(os.path.abspath(os.fsdecode(raw)))
-        hit = path.startswith(_REPO_GLOSSARY_FILE)
+        hit = path.startswith(_REPO_PRIVATE_FILES)
         for folder in _REPO_GLOSSARY_DIRS:
             if path == folder:
                 hit = hit or writes
@@ -155,11 +161,28 @@ def _keep_glossaries_out_of_the_repo(tmp_path_factory, monkeypatch):
     touched = hits[start:]
     if touched:
         pytest.fail("这个用例碰了仓库里的真实词表 {} 次：\n{}\n测试只能用临时目录里的词表。app.glossary 的 "
-                    "GLOSSARY_FILE / PROFILE_DIR / BRAND_DIR 已经指到临时目录；自己拼了 ROOT / \"brands\" "
-                    "这类路径的代码，改成用的那一刻从 app.glossary 取（照 app/pipeline.py 的 "
-                    "_open_brands_dir）。".format(
+                    "GLOSSARY_FILE / PROFILE_DIR / BRAND_DIR、app.pipeline 的 TERMS_FILE 已经指到临时目录；"
+                    "自己拼了 ROOT / \"brands\" 这类路径的代码，改成用的那一刻从 app.glossary 取（照 "
+                    "app/pipeline.py 的 _open_brands_dir）；tools/collision_audit.py、tools/replay_alerts.py "
+                    "不传 --terms 时读仓库里的 banned_terms.txt，测试里要显式传。".format(
                         len(touched), "\n".join(sorted({"  {} {}".format(e, rel) for _t, e, rel in touched}))),
                     pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _keep_banned_terms_out_of_the_repo(tmp_path_factory, monkeypatch):
+    """app.pipeline 的违禁词表 TERMS_FILE 指到每个用例自己的一份临时副本，内容是入库模板 TERMS_EXAMPLE。
+
+    CI 上 banned_terms.txt 不存在：第一次 load_detector() 从模板复制一份，之后的用例读的都是这份副本。这里
+    每个用例开场就按 load_detector 的同一种写法复制好，本机和 CI 读到的就是同一份公开模板，不再是开发者
+    本机的真实违禁词表。要别的内容的用例照旧自己 monkeypatch TERMS_FILE（几十个用例本来就这么做）。
+    目录用 tmp_path_factory 另开，理由同上面的词表。那张网记下的碰仓库 banned_terms.txt 由上面的
+    _keep_glossaries_out_of_the_repo 判失败。"""
+    from app import pipeline
+
+    terms = tmp_path_factory.mktemp("banned-terms") / "banned_terms.txt"
+    terms.write_text(pipeline.TERMS_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(pipeline, "TERMS_FILE", terms)
 
 
 @pytest.fixture
@@ -178,7 +201,7 @@ def _glossary_net_summary(tr):
     hits = _GLOSSARY_NET["hits"]
     if not hits:
         return
-    tr.write_sep("-", "测试碰了仓库里的真实词表（brands/、profiles/、glossary.txt）")
+    tr.write_sep("-", "测试碰了仓库里的真实词表（brands/、profiles/、glossary.txt、banned_terms.txt）")
     counts = Counter((_net_test_id(test) or "（不在用例里）", event, rel) for test, event, rel in hits)
     for (test, event, rel), n in sorted(counts.items()):
         tr.write_line("  {}  {} {}  ×{}".format(test, event, rel, n))
