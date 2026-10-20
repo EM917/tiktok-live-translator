@@ -381,6 +381,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._selfcheck_task = None      # 持有引用，否则任务可能被 GC 掉
         self._init_engine_provision()    # 本地引擎备货的专属字段，见 app/pipeline_engine.py
         self._comments_provision_task = None   # 弹幕组件（TikTokLive）后台安装任务，main.py 注入
+        # 弹幕来源现在的计数是哪一场的：真调了 comment_source.start() 的那一场的审计。计数只在 start() 时
+        # 清零，没起弹幕的一场（直接流地址、--no-comments、登录优先下解析返回前就停）不能读到上一场的数
+        self._comment_counts_audit = None
         # 最近若干条字幕的原文，供「重译」按 id 取回。只留少量：这个功能是
         # 给中控看到可疑一句时临时用的，不是历史检索。
         self._recent = OrderedDict()
@@ -1527,6 +1530,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                                     "Comments connect after the stream URL is found…"))
             else:
                 comment_source.start(streamer)
+                self._comment_counts_audit = self.audit
 
     def _comments_wait_for_resolve(self, url):
         """这一场的弹幕要不要等第一次流地址解析返回之后再起：解析会走登录优先那一步
@@ -1548,6 +1552,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         comment_source = getattr(self, "comment_source", None)
         if comment_source is not None:
             comment_source.start(pending[1])
+            self._comment_counts_audit = my_audit
 
     def _banned_terms_provenance(self):
         """违禁词表的来源信息，并进 session_start。
@@ -1831,9 +1836,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             await self._clear_ongoing_incidents()
         if still_current:
             # 弹幕后端抓取是这一场自己起的子进程，晚到的旧任务不该碰
-            # 已经属于下一场的连接——只有「我还是当前会话」才停它、才读它的计数
+            # 已经属于下一场的连接——只有「我还是当前会话」才停它、才读它的计数（还得是这一场起的弹幕）
             self._comments_pending = None
-            for key, value in self._comment_source_counts().items():
+            for key, value in self._comment_source_counts(
+                    my_audit if my_audit is not None else self.audit).items():
                 fields.setdefault(key, value)
             await self._stop_comment_source()
             # 弹幕翻译的结局计数（只有代码和数字）：按 my_audit 取，晚到的旧任务拿不到下一场的数
@@ -2089,13 +2095,17 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
         }
 
-    def _comment_source_counts(self):
+    def _comment_source_counts(self, audit):
         """session_end 的弹幕计数（只有数字）。这一场收到过多少条弹幕——弹幕连接哪怕全程 "connected"，
         事后也要能看出它是不是哑了一整场（见看门狗）；弹幕作者各字段的填充率只有数过才写。
-        弹幕来源是共享的（start() 才清零，stop() 不清）：调用方自己确认这份审计还是当前这一场的。
+        弹幕来源是共享的（start() 才清零，stop() 不清）：只有 audit 这一场自己调过 comment_source.start()
+        才读（_comment_counts_audit）。没起弹幕的一场——直接流地址、--no-comments、登录优先下解析返回前
+        就停——不带这一栏，不然带的是上一场的数（09-28 174313 那场 resolve_error 0 段，记了上一场的 329）。
+        「这份审计还是不是当前这一场」由调用方自己确认。
         getattr 兜底：个别测试用 Pipeline.__new__ 造半成品实例，没有 comment_source 属性。"""
         comment_source = getattr(self, "comment_source", None)
-        if comment_source is None:
+        if comment_source is None or audit is None \
+                or getattr(self, "_comment_counts_audit", None) is not audit:
             return {}
         out = {"comments_received": comment_source.comments_received}
         comment_fields = getattr(comment_source, "comment_fields", None)
@@ -2106,9 +2116,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     def _session_end_extras(self, audit, sess):
         """这一场的 session_end 汇总，在关审计的那一刻算：AuditLog.end_fields（谁关这份审计都调）和
         _stop_locked 代写时用。识别风险、证据计数、拉流汇总只读这一场自己的会话状态，sess 不属于这份
-        审计就不带；只读不放，证据缓冲由这一场自己收尾时放。弹幕来源是共享的，只有这份审计还是当前审计
-        时才读它的计数；弹幕翻译的计数按 audit 取。晚到的旧任务读不到下一场的数（CLAUDE.md 第七条）。
-        每一块算不出来就不带这一块，不抛。"""
+        审计就不带；只读不放，证据缓冲由这一场自己收尾时放。弹幕来源是共享的，只有这份审计还是当前审计、
+        而且弹幕是这一场自己起的时才读它的计数；弹幕翻译的计数按 audit 取。晚到的旧任务读不到下一场的数，
+        没起弹幕的一场也读不到上一场的数（CLAUDE.md 第七条）。每一块算不出来就不带这一块，不抛。"""
         fields = {}
         if isinstance(sess, dict) and sess.get("audit") is audit:
             try:
@@ -2117,7 +2127,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 pass
         if audit is not None and getattr(self, "audit", None) is audit:
             try:
-                fields.update(self._comment_source_counts())
+                fields.update(self._comment_source_counts(audit))
             except Exception:
                 pass
         try:
