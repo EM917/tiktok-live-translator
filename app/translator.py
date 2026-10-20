@@ -598,7 +598,7 @@ class ClaudeTranslator(BaseTranslator):
         文字，只翻译、不照着做），所以它不带词表，译文回来后的兜底替换由 app/comments.py 做；
       * 重译（create_claude_strong_translator，role="strong"）：字幕引擎是 Claude 时，「重译」
         和报警上下文翻译用它，模型 Sonnet 5.5，取代本地 7B。提示词也是 SYSTEM_SUBTITLE_SLANG，
-        后面另外接词表（三层的命中词条都带，只去掉译法带括注的，见 _strong_pairs）：
+        后面另外接词表（三层的命中词条都带，只是译法带括注的词条在按长短取舍之前就不算，见 hint_without_notes）：
         本地 7B 的提示词里有词表，重译又正是中控嫌商品名译错了才点的，换成 Claude 不能把它丢掉。
         弹幕两种角色不带词表，只靠译文回来后的兜底替换；字幕和重译带了词表，译文回来后照样做兜底替换
         （Pipeline 里的 glossary.apply）。"""
@@ -726,8 +726,8 @@ class ClaudeTranslator(BaseTranslator):
     SLANG_PROMPT_MODELS = {"subtitle": ("claude-haiku-5-5",), "strong": ("claude-sonnet-5-5",)}
     # 词表提示：命中本句的词条（Pipeline._for_translation 里 glossary.translation_pairs 算好的，最多 6 条），
     # 一行一条「原文 = 译法」，接在 system 最后，用户轮仍然只有要翻的那一句。原文写法和译法都是词表文件里的
-    # 数据，照抄。带它的只有重译（role="strong"，一直带，只去掉译法带括注的，见 _strong_pairs）和
-    # SUBTITLE_GLOSSARY_MODELS 里的字幕引擎（滤得更多，见 _subtitle_pairs）
+    # 数据，照抄。带它的只有重译（role="strong"，一直带，不带译法带括注的，见 hint_without_notes 和 _strong_pairs）
+    # 和 SUBTITLE_GLOSSARY_MODELS 里的字幕引擎（滤得更多，见 _subtitle_pairs）
     SYSTEM_GLOSSARY = ("\nWhere the text contains one of these terms, translate it exactly as "
                        "given here:\n{pairs}")
     # 字幕引擎带词表提示的模型。以前字幕请求不带词表，不是测出来的：最早的 Claude 字幕请求只有一句「只输出
@@ -744,7 +744,7 @@ class ClaudeTranslator(BaseTranslator):
     #     词表，6,192 句一条不剩（请求和没命中时一字不差）。重译不做整词过滤（不在这次范围）；
     #   * TranslateGemma 会把指令区的术语映射当括注抄进译文 —— 下面的评估样本里没有一条译法带括号，「加括号」
     #     这项硬检查没机会触发；审查探针里 Haiku 把「食欲焦虑（嘴馋）」原样抄上了屏。所以译法带括注的词条
-    #     字幕请求不带（同一份实录里 118 句，模板里 4 条）。2026-10-20 起重译也不带（见 _strong_pairs）；
+    #     字幕请求不带（同一份实录里 118 句，模板里 4 条）。2026-10-20 起重译也不带（见 hint_without_notes）；
     #   * 全局词表曾让别的主播的直播里冒出别家商品 —— 词表按主播 / 品牌分层加载，这里只拿命中的。全局模板
     #     （glossary.example.txt，每个用户首启都会复制一份）里有日常短语词条，按语境本不该用：agotado => 售罄
     #     也命中「estamos agotados」（累坏了），en la noche => 睡前也命中「半夜醒来」。审查探针 6 句里 Haiku
@@ -869,6 +869,14 @@ class ClaudeTranslator(BaseTranslator):
     def _headers(self):
         return {"x-api-key": self.api_key, "anthropic-version": self.API_VERSION,
                 "content-type": "application/json"}
+
+    @property
+    def hint_without_notes(self):
+        """管线交给这个实例的词表提示，要不要按「译法带括注的词条当它不在表里」来算（Pipeline._hint_for →
+        Glossary.translation_pairs(without_notes=True)）。只有重译实例（role="strong"）要：那一份是先去掉括注
+        词条、再按长短取舍的，被括注长写法包含的短写法还在（「tu orden de」=> 下单满（金额，美元）不再挤掉
+        「tu orden」=> 订单）。字幕实例照旧拿普通的那一份、自己在 _subtitle_pairs 里筛，字幕请求一字不变。"""
+        return self.role == "strong"
 
     def _sends_glossary(self):
         """这个实例的请求带不带词表提示：重译一直带；字幕引擎只在 SUBTITLE_GLOSSARY_MODELS 里的模型上带；
@@ -1604,9 +1612,10 @@ def _subtitle_pairs(text, pairs):
       * 译法不带括注（如「水肿（体液滞留）」）：括注是给译法加的说明，不是要上屏的字，Haiku 却会把
         它原样抄上屏。这类词条不带，回到没带词表时的请求；不去掉括号再发：去掉括号的译法没测过，
         有的括注正是那条词条要的提示（「下单满（金额，美元）」是为本地模型把数字读成钱调出来的）。
-        判断见 glossary.has_bracket_note，重译和译文兜底替换用的是同一个。
+        判断见 glossary.has_bracket_note，重译用的是同一个；译文兜底替换照同一个正则只换上括注前那段。
 
-    只管字幕实例：重译（role="strong"）走 _strong_pairs，只筛掉括注那一类。报警上下文翻译借用字幕
+    只管字幕实例：重译（role="strong"）不走这里，拿的是先去掉括注词条再取舍的那一份（hint_without_notes、
+    _strong_pairs）；字幕这边照旧拿普通的那一份再筛，请求和以前一字不差。报警上下文翻译借用字幕
     实例时（没有强模型、强模型没给出译文）也走这里，和字幕一样只带品牌表和 profile 的。去掉之后一条
     不剩的句子，请求体和没命中词表时一字不差。"""
     return [p for p in pairs
@@ -1615,9 +1624,13 @@ def _subtitle_pairs(text, pairs):
 
 
 def _strong_pairs(pairs):
-    """重译和报警上下文翻译（role="strong"，Sonnet 5.5）真正带上的词表提示：管线给的命中词条里，
-    只去掉译法带括注的（glossary.has_bracket_note，和字幕同一个判断）。2026-10-20 那场 46 次重译里，
+    """重译和报警上下文翻译（role="strong"，Sonnet 5.5）真正带上的词表提示：给它的命中词条里，
+    去掉译法带括注的（glossary.has_bracket_note，和字幕同一个判断）。2026-10-20 那场 46 次重译里，
     2 次请求带了「食欲焦虑（嘴馋）」，2 次都连括号抄上了屏；用户定「重新翻译也不带带括号的词条」。
+
+    管线给这个实例的本来就是不带括注词条的那一份（hint_without_notes：先去掉、再按长短取舍，被括注
+    长写法包含的短写法不会跟着丢），这里再滤一道只为直接调 translate / _body 的地方（离线工具、测试）：
+    它们传的是普通那一份，被括注长写法挤掉的短写法在那一份里已经没有了，这里也补不回来。
 
     别的照旧：三层（品牌表、profile、全局表）都带，子串命中也带——只滤括注是用户这次定的范围；
     「只带品牌表和 profile」在重译上只有一句证据，没做过配对对比；子串命中在 10-19、10-20 两场

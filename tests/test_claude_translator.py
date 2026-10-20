@@ -651,11 +651,29 @@ def test_a_retranslate_whose_only_line_is_bracketed_sends_the_request_without_a_
 
 
 def test_the_subtitle_and_redo_requests_share_the_one_bracket_predicate():
-    """字幕、重译、兜底替换认括注是同一个函数（glossary.has_bracket_note），不各写一份正则。"""
+    """字幕、重译认括注是同一个函数（glossary.has_bracket_note），不各写一份正则；兜底替换用的
+    glossary.screen_rendering 也是同一个正则。"""
     from app import glossary, translator
 
     assert translator.has_bracket_note is glossary.has_bracket_note
     assert not hasattr(translator, "_BRACKET_NOTE")
+
+
+@pytest.mark.parametrize("model,role,wants", [
+    (None, "strong", True),                                    # 重译、报警上下文（Sonnet 5.5）
+    (None, "subtitle", False),                                 # 字幕：照旧拿普通那一份、自己筛
+    ("claude-haiku-5-5", "comment", False),
+    ("claude-sonnet-5-5", "comment_strong", False),
+])
+def test_only_the_redo_instance_asks_for_the_hint_without_bracketed_lines(monkeypatch, model, role, wants):
+    """管线按 hint_without_notes 决定给不给「括注词条在按长短取舍之前就去掉」的那一份（Pipeline._hint_for）。
+    只有重译要；字幕实例要是也要了，被括注长写法挤掉的短写法会回到字幕请求里，字幕请求就变了。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.delenv("CLAUDE_TRANSLATE_MODEL", raising=False)
+    from app.translator import ClaudeTranslator, create_claude_strong_translator
+
+    tr = create_claude_strong_translator() if role == "strong" else ClaudeTranslator(model=model, role=role)
+    assert tr.hint_without_notes is wants
 
 
 # 字幕请求只带品牌表和主播 profile 的词条，全局表（glossary.txt，首启从公开模板复制）的不带：用户要的是

@@ -4349,7 +4349,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             begin_translate_call()
             try:
                 out = await first.translate(text, self.target, source=lang or "auto",
-                                            glossary=hint)
+                                            glossary=self._hint_for(first, text, hint))
                 strong_outcome = translate_call_outcome()
                 if out and (looks_fabricated(context, out)
                             or looks_like_reply(text, out, self.target)):
@@ -4993,6 +4993,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                                      "strong_state": "pending"})
         t0 = time.monotonic()
         text, hint = self._for_translation(job["text"])
+        hint = self._hint_for(strong, text, hint)
         # 失败时要说清楚「看到了什么」：这一次调用的结局（拒答）、引擎自己记下的 HTTP 回应。
         # last_error 在 200 时清空、非 200 时换一个新元组，所以「调用前后是不是同一个对象」
         # 能分出这一次有没有新的 HTTP 回应——连不上时它不变，旧的状态码不能算到这一次头上
@@ -5140,6 +5141,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         hint = (tuple(self.glossary.translation_pairs(cleaned))
                 if self.glossary else ())
         return cleaned, hint or None
+
+    def _hint_for(self, engine, text, hint):
+        """交给 engine 的那一份词表提示。text、hint 是 _for_translation 刚给的（text 已摘过称呼）。
+
+        多数引擎就是 hint 本身。Claude 重译实例（hint_without_notes 为真，role="strong"）要的是译法带括注的
+        词条当它不在表里、再按长短取舍的那一份：重译请求不带括注词条（用户定的），可先取舍再去掉的话，被它
+        包含的短写法已经被挤掉了（模板里「tu orden de」=> 下单满（金额，美元）挤掉「tu orden」=> 订单），这句
+        就一条都不剩。字幕、本地模型、DeepL 拿的还是 hint，一字不变。hint 是空的时这一份也必是空的（去掉
+        词条只会少命中），直接返回。"""
+        inner = getattr(engine, "inner", engine)
+        glossary = getattr(self, "glossary", None)
+        if not hint or glossary is None or getattr(inner, "hint_without_notes", False) is not True:
+            return hint
+        return tuple(glossary.translation_pairs(text, without_notes=True)) or None
 
     async def _translate_and_update(self, job):
         """翻译回来后原地更新那一条字幕（按 id）。失败只影响这一条。
