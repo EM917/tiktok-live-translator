@@ -90,11 +90,12 @@ class StreamWatchMixin:
         S = _Source
         return {"term": S.TERM_GRACE, "kill": S.KILL_GRACE, "close": S.CLOSE_GRACE,
                 "urgent": [S.URGENT_TERM_GRACE, S.URGENT_KILL_GRACE, S.URGENT_CLOSE_GRACE],
+                "exit": S.EXIT_GRACE, "urgent_exit": S.URGENT_EXIT_GRACE,
                 "stderr": S.STDERR_GRACE, "stream_limit": S.STREAM_LIMIT}
 
     def _stop_stage_budget(self):
         S = _Source
-        return (S.TERM_GRACE + S.KILL_GRACE + 2 * S.CLOSE_GRACE + S.STDERR_GRACE
+        return (S.EXIT_GRACE + S.TERM_GRACE + S.KILL_GRACE + 2 * S.CLOSE_GRACE + S.STDERR_GRACE
                 + self.STAGE_STOP_SLACK_SEC)
 
     def _drain_stage_budget(self, backlog_sec):

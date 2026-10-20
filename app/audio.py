@@ -25,12 +25,17 @@ class FFmpegAudioSource:
       * 收尾期间 frames() 接着读，直到 EOF 或截止时刻。以前看门狗到点就不再读 stdout：ffmpeg 停在
         「探测输入流」阶段时把收到的音频攒在自己手里，收到 SIGTERM 才一次写出来；写出的量超过
         StreamReader 缓冲上限的两倍，asyncio 就暂停读这根管道——进程被 kill 之后，暂停的管道永远读不到
-        EOF，而 Python 3.12/3.13 的 Process.wait() 要等所有管道关闭才返回，于是永远不返回：不写断流、
-        不重连，界面一直是「正在连接直播音频流…」。
+        EOF，而 Python 3.12 和 3.13.5（本机 .venv）的 Process.wait() 要等所有管道关闭才返回，于是永远
+        不返回：不写断流、不重连，界面一直是「正在连接直播音频流…」。（3.9、3.14 和后来带上 gh-119710
+        的 3.13.x——CI 上的 3.13.16——进程一退出 wait() 就返回；收尾不靠这一点。）
       * 收尾是一个独立任务（保住引用），每一步都有上限：SIGTERM 后等 TERM_GRACE，SIGKILL 后等
         KILL_GRACE，还没完就 transport.close()（关掉所有管道、唤醒等 wait() 的人，不靠解释器版本），
         再等 CLOSE_GRACE。调用方被取消（停止、换主播）时宽限缩到 URGENT_*，整条取消路径要短于
         Pipeline.STOP_GRACE_SEC（3 秒），session_end 才由这一场自己写。
+      * stdout 先读到了 EOF（ffmpeg 自己收工）时，先等它退出、最多 EXIT_GRACE，退了就不发信号：
+        事件循环知道「进程已退出」可能比 EOF 晚。Windows 上总是晚（进程先关句柄，句柄关完进程对象才
+        signaled，线程池里的等待再把它投进 IOCP），以前每次自然结束都记成 terminate，还对已退出的
+        进程调一次 TerminateProcess；POSIX 上是偶发的先后竞争。
       * 收尾时 ffmpeg 吐出来的音频照样从 frames() 交出去（stopping 为 True 之后的帧），由调用方决定
         怎么用；离开循环之后才读到的（调用方提前收掉了生成器）只能计数后丢弃。记在 stop_info 里：
         CLAUDE.md 第六条「音频绝不静默丢弃」——丢之前至少要记下丢了多少。
@@ -48,11 +53,14 @@ class FFmpegAudioSource:
     # readline 上限也跟着变大（一行很长的报错不会再让读 stderr 的任务提前退出）
     STREAM_LIMIT = 4 * 1024 * 1024
     READ_BYTES = 64 * 1024
-    # 收尾每一步的上限（秒）。复现里攒下的音频 SIGTERM 后 0.09 秒内就吐完；10-18 有 34 次走到 kill
+    # 收尾每一步的上限（秒）。复现里攒下的音频 SIGTERM 后 0.09 秒内就吐完；10-18 有 34 次走到 kill。
+    # EXIT_GRACE 只在 stdout 已经 EOF 时用：等进程自己退出（通常几毫秒），到点还在才走 SIGTERM
+    EXIT_GRACE = 1.0
     TERM_GRACE = 5.0
     KILL_GRACE = 3.0
     CLOSE_GRACE = 2.0
-    # 调用方被取消时（停止、换主播）的上限：合计 1.3 秒，短于 Pipeline.STOP_GRACE_SEC
+    # 调用方被取消时（停止、换主播）的上限：合计 1.5 秒，短于 Pipeline.STOP_GRACE_SEC
+    URGENT_EXIT_GRACE = 0.2
     URGENT_TERM_GRACE = 0.3
     URGENT_KILL_GRACE = 0.7
     URGENT_CLOSE_GRACE = 0.3
@@ -67,6 +75,7 @@ class FFmpegAudioSource:
         self.proc = None
         self.stalled = False                # 本次是因静默停滞被我们主动断开的
         self.stopping = False               # 已经开始收尾：之后 frames() 交出的帧是收尾时吐出的音频
+        self._eof = False                   # 收尾之前 stdout 就读到了 EOF（ffmpeg 自己收工）
         # 收尾的事实，随 stream_break 进审计：path 走到了哪一步（exited / terminate / kill /
         # kill+close / close）、stop_ms、tail_bytes（开始收尾之后 ffmpeg 又吐出的字节数）、
         # tail_dropped_bytes（其中离开循环之后才读到、没能交出去的）。收尾任务做完才有
@@ -160,6 +169,8 @@ class FFmpegAudioSource:
                     self.request_stop()
                     continue
                 if not chunk:
+                    if not self.stopping:
+                        self._eof = True
                     done = True
                     break
                 if self.stopping:
@@ -312,6 +323,10 @@ class FFmpegAudioSource:
         info = {"path": "exited", "urgent": False}
         wait_task = asyncio.ensure_future(proc.wait())
         try:
+            if proc.returncode is None and self._eof:
+                # stdout 已经 EOF：进程多半正在自己退出，只是事件循环还没收到退出通知（Windows 上总是
+                # 这样）。先等它，退了就不发信号，stop_path 照实记 exited；到点还在才往下走 SIGTERM
+                await self._await_exit(wait_task, self.EXIT_GRACE, self.URGENT_EXIT_GRACE)
             if proc.returncode is None:
                 try:
                     proc.terminate()

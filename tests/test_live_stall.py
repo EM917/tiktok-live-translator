@@ -298,10 +298,13 @@ def test_a_frame_heard_after_the_wake_is_not_moved_into_the_future(monkeypatch, 
 
 
 class SlowComments:
-    """弹幕停下要等一会儿（子进程收尾最多十来秒）：_end_session 卡在这里时统计循环还在跳。"""
+    """弹幕停下要等一会儿（子进程收尾最多十来秒）：_end_session 卡在这里时统计循环还在跳。
+    要在事件循环里建：3.9 的 asyncio.Event() 构造时就去取事件循环（前面的用例跑过 asyncio.run 之后，
+    循环外取不到会抛 RuntimeError；取到了也是另一个循环）。生产代码里的这类对象都是协程里才建。"""
     comments_received = 0
 
     def __init__(self):
+        asyncio.get_running_loop()       # 循环外建：每个版本上都当场抛，不只 3.9
         self.gate = asyncio.Event()
 
     async def stop(self):
@@ -315,7 +318,6 @@ def test_a_natural_end_does_not_bring_back_the_notices_it_took_down(monkeypatch,
     session: 前缀，会一直挂到下一场开始，和「监听已停止」摆在一起。"""
     p, server, sess = _session(monkeypatch, tmp_path)
     watch = sess["watch"]
-    p.comment_source = SlowComments()
     if kind == "no_audio":
         key, mono = "session:no_audio", 1125.0
         _armed(sess)
@@ -328,6 +330,7 @@ def test_a_natural_end_does_not_bring_back_the_notices_it_took_down(monkeypatch,
         ticks = [1250.0, mono]
 
     async def go():
+        p.comment_source = SlowComments()
         for t in ticks:
             await p._stream_watch_tick(now=(t, T0 + t - 1000.0))
         before = key in (server.config.get("incidents") or {})

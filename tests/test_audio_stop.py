@@ -6,12 +6,17 @@ ffmpeg 停在探测阶段、把音频攒在手里；看门狗到点后程序不�
 Process.wait() 永远不返回。这里用一个几行 Python 的假 ffmpeg（tests/fixtures/fake_ffmpeg.py）造出
 同样的管道行为，真起子进程、真走 asyncio 的管道，不联网、不要 ffmpeg。
 
-改之前，probe_flush 140000 那条在 3.12/3.13 上会永久卡住（pytest-timeout 兜底变红，不会挂住 CI）；
-3.9 和 3.14 的 wait() 不等管道，本来就不卡——修法不能指望解释器版本，所以这些用例在每个版本上都断言
-同一件事：收尾有上限、收尾时吐出的字节记得清。SIGTERM 的用例 Windows 上跳过（那里 terminate 就是
-直接结束进程，没有「收到信号再吐数据」这回事）。
+改之前，probe_flush 140000 那条在 3.12 和 3.13.5 上会永久卡住（pytest-timeout 兜底变红，不会挂住 CI）；
+3.9、3.14 和带上 gh-119710 的 3.13.x（CI 的 3.13.16）进程一退出 wait() 就返回，本来就不卡——修法不能
+指望解释器版本，所以这些用例在每个版本上都断言同一件事：收尾有上限、收尾时吐出的字节记得清。走到哪一步
+随解释器而定的那条（kill 还是 kill+close），用能力探测（wait_waits_for_a_paused_pipe）而不是版本号来钉。
+SIGTERM 的用例 Windows 上跳过（那里 terminate 就是直接结束进程，没有「收到信号再吐数据」这回事）。
+
+自然结束（stdout 先 EOF）的用例每个平台都跑：Windows 上事件循环收到「进程已退出」总比 EOF 晚，以前
+那里每次自然结束都记成 terminate。delayed_exit_notice 把这个先后在任何平台上造出来。
 """
 import asyncio
+import functools
 import sys
 import time
 from pathlib import Path
@@ -24,8 +29,9 @@ from app.audio import FRAME_BYTES, FFmpegAudioSource
 FAKE = Path(__file__).resolve().parent / "fixtures" / "fake_ffmpeg.py"
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32",
                                 reason="Windows 的 terminate 直接结束进程，没有 SIGTERM 处理")
-# 正常收尾的最坏耗时：TERM 5 + KILL 3 + CLOSE 2，外加起进程、读 stderr 的零头
-BOUND = FFmpegAudioSource.TERM_GRACE + FFmpegAudioSource.KILL_GRACE + 2 * FFmpegAudioSource.CLOSE_GRACE + 3.0
+# 正常收尾的最坏耗时：EXIT 1（只在 stdout 已 EOF 时）+ TERM 5 + KILL 3 + CLOSE 2，外加起进程、读 stderr 的零头
+BOUND = (FFmpegAudioSource.EXIT_GRACE + FFmpegAudioSource.TERM_GRACE + FFmpegAudioSource.KILL_GRACE
+         + 2 * FFmpegAudioSource.CLOSE_GRACE + 3.0)
 
 
 @pytest.fixture
@@ -43,6 +49,67 @@ def fake(monkeypatch):
 
 def run(coro, timeout=60):
     return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
+@functools.lru_cache(maxsize=None)
+def wait_waits_for_a_paused_pipe():
+    """能力探测，不看版本号：先登记 wait()，再让子进程退出，而它的 stdout 管道暂停着读（读不到 EOF、
+    管道一直「连着」）——这个解释器的 Process.wait() 还返回吗？True = 不返回（3.12、3.13.5：要等所有
+    管道断开，正是 10-18 的卡法）；False = 进程一退出就返回（3.9、3.14、带 gh-119710 的 3.13.x）。
+    本机五个解释器各跑 8 次结果一致（asr-bench/live-stability/ci-fix/probe_paused_pipe.py）。"""
+    async def probe():
+        loop = asyncio.get_running_loop()
+        transport, protocol = await loop.subprocess_exec(
+            lambda: asyncio.subprocess.SubprocessStreamProtocol(limit=2 ** 16, loop=loop),
+            sys.executable, "-I", "-c", "import sys; sys.stdin.read()",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL)
+        proc = asyncio.subprocess.Process(transport, protocol, loop)
+        wait_task = asyncio.ensure_future(proc.wait())
+        try:
+            transport.get_pipe_transport(1).pause_reading()
+            await asyncio.sleep(0)               # wait() 先登记上——和收尾时先 wait、后 kill 的先后一样
+            proc.stdin.close()                   # 子进程读到 stdin 的 EOF 才退出
+            deadline = loop.time() + 10.0
+            while proc.returncode is None:       # 事件循环已经收到「进程已退出」
+                assert loop.time() < deadline, "探测用的子进程没有退出"
+                await asyncio.sleep(0.01)
+            done, _ = await asyncio.wait({wait_task}, timeout=0.5)
+            return not done
+        finally:
+            transport.close()
+            await asyncio.wait({wait_task}, timeout=2.0)
+            if not wait_task.done():
+                wait_task.cancel()
+    return run(probe(), timeout=30)
+
+
+def delayed_exit_notice(src, delay):
+    """把事件循环收到「进程已退出」的通知往后推 delay 秒，并记下发出的 terminate / kill。Windows 上这个先后
+    是常态：进程先关句柄（stdout 的 EOF 先到），句柄关完进程对象才 signaled，线程池里的等待再投进 IOCP。
+    三个平台的事件循环都是在通知到的那一刻才去取 transport._process_exited，所以换掉实例上的它就够了。"""
+    sent = []
+    real_spawn = src._spawn
+
+    def recording(name, real):
+        def send():
+            sent.append(name)
+            real()
+        return send
+
+    async def spawn(cmd):
+        proc = await real_spawn(cmd)
+        transport = src._transport
+        if delay:
+            loop = asyncio.get_running_loop()
+            real_exited = transport._process_exited
+            transport._process_exited = lambda rc: loop.call_later(delay, real_exited, rc)
+        for name in ("terminate", "kill"):
+            setattr(proc, name, recording(name, getattr(proc, name)))
+        return proc
+
+    src._spawn = spawn
+    return sent
 
 
 async def consume(src, limit=None):
@@ -119,11 +186,39 @@ def test_when_nobody_reads_the_paused_pipe_is_closed_and_stop_is_bounded(fake, m
     sec = run(go())
     assert sec < BOUND
     path = src.stop_facts()["stop_path"]
-    assert path in ("kill", "kill+close")
-    if sys.version_info[:2] in ((3, 12), (3, 13)):
+    if wait_waits_for_a_paused_pipe():
         assert path == "kill+close"              # 正是 10-18 的那一步：不关管道就永远等下去
+    else:
+        assert path == "kill"                    # 这个解释器 kill 之后 wait() 自己就返回了
     assert src.proc.returncode is not None
     assert pipes_closed(src)
+
+
+@POSIX_ONLY
+def test_the_paused_pipe_probe_sees_the_hang_on_the_interpreters_that_have_it():
+    """探测本身也要可信：它说「会卡」的解释器上，kill 之后的 wait() 确实不返回——直接照 10-18 的形状
+    （先登记 wait、管道暂停、kill）造一次，2 秒内看 wait() 回没回来。"""
+    async def go():
+        loop = asyncio.get_running_loop()
+        transport, protocol = await loop.subprocess_exec(
+            lambda: asyncio.subprocess.SubprocessStreamProtocol(limit=2 ** 16, loop=loop),
+            sys.executable, "-I", "-c", "import time; time.sleep(60)",
+            stdin=None, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        proc = asyncio.subprocess.Process(transport, protocol, loop)
+        wait_task = asyncio.ensure_future(proc.wait())
+        try:
+            transport.get_pipe_transport(1).pause_reading()
+            await asyncio.sleep(0)
+            proc.kill()
+            done, _ = await asyncio.wait({wait_task}, timeout=2.0)
+            return bool(done), proc.returncode
+        finally:
+            transport.close()
+            await asyncio.wait({wait_task}, timeout=2.0)
+
+    returned, rc = run(go())
+    assert rc is not None                        # 两种解释器上进程都确实退了
+    assert returned is (not wait_waits_for_a_paused_pipe())
 
 
 @POSIX_ONLY
@@ -218,11 +313,13 @@ def test_urgent_limits_fit_inside_the_stop_grace():
 
     s = FFmpegAudioSource
     assert s.URGENT_TERM_GRACE <= 0.5
-    assert s.URGENT_TERM_GRACE + s.URGENT_KILL_GRACE + s.URGENT_CLOSE_GRACE < Pipeline.STOP_GRACE_SEC - 1.0
+    assert (s.URGENT_EXIT_GRACE + s.URGENT_TERM_GRACE + s.URGENT_KILL_GRACE + s.URGENT_CLOSE_GRACE
+            < Pipeline.STOP_GRACE_SEC - 1.0)
 
 
 def test_a_process_that_exits_on_its_own_is_just_reaped(fake):
     src = fake("eof", 32000)
+    sent = delayed_exit_notice(src, 0)
 
     async def go():
         n, tail = await consume(src)
@@ -233,13 +330,55 @@ def test_a_process_that_exits_on_its_own_is_just_reaped(fake):
     assert (n, tail) == (10, 0)
     assert src.stop_facts()["stop_path"] == "exited"
     assert src.stop_facts()["tail_bytes"] == 0
+    assert sent == [] and src.proc.returncode == 0
 
 
 def test_a_process_that_dies_at_once_ends_the_round_cleanly(fake):
     src = fake("exit_now")
+    sent = delayed_exit_notice(src, 0)
     assert run(consume(src)) == (0, 0)
     assert src.proc.returncode == 1
     assert src.stop_facts()["stop_path"] == "exited"
+    assert sent == []
+
+
+@pytest.mark.parametrize("mode,args,frames,rc", [("eof", (32000,), 10, 0), ("exit_now", (), 0, 1)])
+def test_an_exit_notice_that_comes_after_the_eof_is_still_a_natural_end(fake, mode, args, frames, rc):
+    """Windows 上的常态（CI windows-latest 3.13 以前两条都记成 terminate）：stdout 的 EOF 到了，事件循环
+    还没收到「进程已退出」。不发信号，等它退出：stop_path 是 exited、退出码是它自己的，一轮照常结束。"""
+    src = fake(mode, *args)
+    sent = delayed_exit_notice(src, 0.3)
+
+    async def go():
+        n, tail = await consume(src)
+        await src.stop()
+        return n, tail
+
+    assert run(go()) == (frames, 0)
+    facts = src.stop_facts()
+    assert facts["stop_path"] == "exited"
+    assert sent == []
+    assert src.proc.returncode == rc
+    assert 250 <= facts["stop_ms"] < FFmpegAudioSource.EXIT_GRACE * 1000
+
+
+def test_a_process_that_closes_stdout_but_stays_is_terminated_after_the_exit_grace(fake):
+    """stdout 关了、进程却不退：等满 EXIT_GRACE 才发 SIGTERM（Windows 上 terminate），收尾照样有上限。"""
+    src = fake("eof_linger", 32000)
+    sent = delayed_exit_notice(src, 0)
+
+    async def go():
+        t0 = time.monotonic()
+        n, _ = await consume(src)
+        await src.stop()
+        return n, time.monotonic() - t0
+
+    n, sec = run(go())
+    assert n == 10 and sec < BOUND
+    facts = src.stop_facts()
+    assert facts["stop_path"] == "terminate" and sent == ["terminate"]
+    assert facts["stop_ms"] >= FFmpegAudioSource.EXIT_GRACE * 1000 - 50
+    assert src.proc.returncode is not None
 
 
 @POSIX_ONLY

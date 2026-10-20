@@ -10,6 +10,7 @@ mode:
   stream         每 0.1 秒往 stdout 写 3200 字节；不理 SIGTERM（要 kill）
   term_exit      每 0.1 秒写 3200 字节；收到 SIGTERM 立刻退出
   eof N          写 N 字节后正常退出（流自然结束）
+  eof_linger N   写 N 字节、关掉 stdout，然后不退（SIGTERM 照默认处理：收到就结束）
   exit_now       什么都不写，立刻以退出码 1 退出
   long_stderr N  先往 stderr 写一行 N 字节、不带换行，然后每 0.01 秒写一行短报错；stdout 不写；
                  不理 SIGTERM（要 kill）
@@ -55,6 +56,11 @@ def main():
     elif mode == "eof":
         _write_all(1, b"\x03" * n)
         sys.exit(0)
+    elif mode == "eof_linger":
+        _write_all(1, b"\x03" * n)
+        os.close(1)
+        while True:
+            time.sleep(3600)
     elif mode == "exit_now":
         sys.exit(1)
     elif mode == "long_stderr":
