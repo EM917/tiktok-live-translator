@@ -211,6 +211,31 @@ def _first_run_dialog(text=None):
                            "meantime."))
 
 
+def _existing_instance_url(base_port):
+    """本程序是否已在运行。是则返回其 UI 地址，否则 None。
+    用于双击两次的场景：复用已有实例，而不是再起一个后端。
+    必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
+    base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
+    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
+    import socket
+    import urllib.request
+
+    from app.instance import PROBE_BYTES, looks_like_us
+    for port in range(base_port, base_port + 10):
+        with socket.socket() as probe:
+            probe.settimeout(0.3)
+            if probe.connect_ex(("127.0.0.1", port)) != 0:
+                continue
+        url = "http://127.0.0.1:{}".format(port)
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as resp:
+                if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
+                    return url
+        except Exception:
+            pass
+    return None
+
+
 def ensure_env():
     """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。
 
@@ -418,31 +443,6 @@ def parse_args():
     p.add_argument("--ui-lang", dest="ui_lang", choices=("zh", "en"), default=None,  # i18n: terminal
                    help="一次性指定界面语言，不改设置")
     return p.parse_args()
-
-
-def _existing_instance_url(base_port):
-    """本程序是否已在运行。是则返回其 UI 地址，否则 None。
-    用于双击两次的场景：复用已有实例，而不是再起一个后端。
-    必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
-    base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
-    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
-    import socket
-    import urllib.request
-
-    from app.instance import PROBE_BYTES, looks_like_us
-    for port in range(base_port, base_port + 10):
-        with socket.socket() as probe:
-            probe.settimeout(0.3)
-            if probe.connect_ex(("127.0.0.1", port)) != 0:
-                continue
-        url = "http://127.0.0.1:{}".format(port)
-        try:
-            with urllib.request.urlopen(url, timeout=1.5) as resp:
-                if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
-                    return url
-        except Exception:
-            pass
-    return None
 
 
 async def main_async(args, state=None):
