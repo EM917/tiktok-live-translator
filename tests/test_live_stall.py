@@ -37,6 +37,15 @@ EN = i18n.EN
 T0 = 1790000000.0
 
 
+@pytest.fixture(autouse=True)
+def _no_hardware_probe(monkeypatch):
+    """走 _run_session 的用例不探本机硬件：真的 recommend() 在 Apple Silicon 上会 import mlx_whisper，把真的
+    mlx.core 留在进程里，排在后面的 tests/test_mlx_cache_limit.py（不许真的 mlx.core）就有 9 条红了。"""
+    import app.hwdetect
+    monkeypatch.setattr(app.hwdetect, "recommend", lambda backend=None, device=None: {
+        "backend": "ct2", "model": "small", "device": "cpu", "compute_type": "int8", "note": ""})
+
+
 def _session(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path / "logs")
@@ -165,13 +174,34 @@ def test_stopping_takes_the_no_audio_notice_down():
     assert "session:no_audio" in Pipeline.ONGOING_INCIDENTS
 
 
-def test_the_no_audio_words_name_no_cause():
-    text = Pipeline._no_audio_text(SimpleNamespace(_duration_text=Pipeline._duration_text), 600)
+@pytest.mark.parametrize("tail", [0.0, 36.0])
+def test_the_no_audio_words_name_no_cause(tail):
+    text = Pipeline._no_audio_text(SimpleNamespace(_duration_text=Pipeline._duration_text), 600, tail)
     zh, en = str(text), i18n.render(text, EN)
     for label in CAUSE_LABELS:
         assert label not in zh
     assert not rules.ZH_LABELS.search(zh) and not rules.ZH_CAUSAL.search(zh)
     assert not rules.EN_LABELS.search(en) and not rules.EN_CAUSAL.search(en)
+
+
+def test_no_audio_does_not_say_nothing_was_checked_when_late_tail_audio_was(monkeypatch, tmp_path):
+    """10-18 那种流：每轮收尾时 ffmpeg 吐出约 6 秒、送去识别和违禁词检测。这段时间不算实时收到直播音频，
+    但不能说「这段时间没有经过检测」；收到一帧实时音频后，晚到的那几秒从头算。"""
+    p, server, sess = _session(monkeypatch, tmp_path)
+    watch = _armed(sess)
+    for k in range(60):                                  # 一轮收尾吐出 6 秒（60 帧）
+        watch.note_tail(0.1, 1030.0 + k * 0.01)
+    run(p._stream_watch_tick(now=(1000.0 + 125, T0 + 125)))
+    text = server.config["incidents"]["session:no_audio"]["text"]
+    assert str(text) == ("已 2 分钟没有实时收到直播音频，期间只有晚到的 6 秒经过了检测。程序还在自动重试，"
+                         "可以在 TikTok 上看一眼直播是否还在进行。")
+    assert i18n.render(text, EN) == ("No stream audio in real time for 2 min. Only 6 sec arrived in "
+                                     "that time, late, and it was checked. The app keeps retrying. You "
+                                     "can check on TikTok whether the stream is still live.")
+    assert "没有经过检测" not in str(text)
+    assert "Nothing in that time was checked" not in i18n.render(text, EN)
+    watch.note_audio(0.1, 1130.0, T0 + 130)
+    assert watch.tail_since_audio == 0.0
 
 
 # ---- 阶段超时 -----------------------------------------------------------------------------
@@ -236,7 +266,7 @@ def test_a_clock_gap_moves_the_stage_and_silence_clocks(monkeypatch, tmp_path):
     p, server, sess = _session(monkeypatch, tmp_path)
     watch = _armed(sess, mono0=500.0)
     p._stage(sess, "backoff", 12.0)
-    entered = watch.stage.entered
+    watch.stage.entered = entered = 505.0          # 和这条用例的单调时钟对齐：跳变之前进的阶段
     sess["clock"] = (T0, 500.0)
     run(p._check_clock_gap(10, now=(T0 + 610.0, 1110.0)))
     assert watch.stage.entered == pytest.approx(entered + 600)
@@ -245,6 +275,75 @@ def test_a_clock_gap_moves_the_stage_and_silence_clocks(monkeypatch, tmp_path):
     sess["clock"] = (T0 + 610.0, 1110.0)
     run(p._check_clock_gap(10, now=(T0 + 2000.0, 1120.0)))
     assert watch.first_spawn[0] == pytest.approx(1100.0)
+
+
+def test_a_frame_heard_after_the_wake_is_not_moved_into_the_future(monkeypatch, tmp_path):
+    """两个钟一起多走了 600 秒（事件循环卡住、Windows 睡眠）。醒来时 reader 比统计循环先跑：几帧缓冲的音频
+    已经按醒来之后的单调时钟记下了。对账往后挪的只该是跳变之前的起点——挪过头的话无声计时是负数，
+    之后真没声音了，「已 N 分钟没收到」要晚一整段跳变才出。"""
+    p, server, sess = _session(monkeypatch, tmp_path)
+    watch = sess["watch"]
+    watch.first_spawn = (900.0, T0 - 100)
+    sess["clock"] = (T0, 1000.0)                         # 上一跳统计循环
+    watch.note_audio(0.1, 1610.0, T0 + 610)              # 醒来那一刻 reader 先收到一帧
+    watch.stage.enter("stopping", 12.0)
+    watch.stage.entered = 1609.0                         # 醒来之后才进的阶段
+    run(p._check_clock_gap(10, now=(T0 + 610, 1610.0)))
+    assert watch.last_audio[0] == pytest.approx(1610.0)
+    assert watch.stage.entered <= 1610.0
+    assert watch.first_spawn[0] == pytest.approx(1500.0)  # 跳变之前的起点照样挪 600 秒
+    assert watch.silent_for(1610.0 + 300) == pytest.approx(300.0)
+    run(p._stream_watch_tick(now=(1610.0 + 300, T0 + 910)))
+    assert "session:no_audio" in server.config["incidents"]
+
+
+class SlowComments:
+    """弹幕停下要等一会儿（子进程收尾最多十来秒）：_end_session 卡在这里时统计循环还在跳。"""
+    comments_received = 0
+
+    def __init__(self):
+        self.gate = asyncio.Event()
+
+    async def stop(self):
+        await self.gate.wait()
+
+
+@pytest.mark.parametrize("kind", ["no_audio", "coverage"])
+def test_a_natural_end_does_not_bring_back_the_notices_it_took_down(monkeypatch, tmp_path, kind):
+    """直播自然结束（状态 4、等房间超时、断网放弃……）：_end_session 先撤持续提示，再等弹幕停下，最后才取消
+    统计循环。中间统计循环跳一下，不能把「已 N 分钟没收到直播音频」或覆盖率那条又挂回去——它们带
+    session: 前缀，会一直挂到下一场开始，和「监听已停止」摆在一起。"""
+    p, server, sess = _session(monkeypatch, tmp_path)
+    watch = sess["watch"]
+    p.comment_source = SlowComments()
+    if kind == "no_audio":
+        key, mono = "session:no_audio", 1125.0
+        _armed(sess)
+        ticks = [mono]
+    else:
+        key, mono = "session:audio_rate", 1260.0
+        watch.first_spawn = (1000.0, T0)
+        watch.note_audio(60.0, 1000.0, T0)
+        watch.note_audio(1.0, 1240.0, T0 + 240)          # 刚有过声音：不出无声那条
+        ticks = [1250.0, mono]
+
+    async def go():
+        for t in ticks:
+            await p._stream_watch_tick(now=(t, T0 + t - 1000.0))
+        before = key in (server.config.get("incidents") or {})
+        end = asyncio.ensure_future(p._end_session(p.audit, reason="offline"))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        cleared = key not in (server.config.get("incidents") or {})
+        await p._stream_watch_tick(now=(mono + 10, T0 + mono - 990.0))   # 等弹幕停下时跳了一下
+        p.comment_source.gate.set()
+        await end
+        return before, cleared
+
+    before, cleared = run(go())
+    assert before and cleared
+    assert key not in (server.config.get("incidents") or {})
+    assert p.audit is None
 
 
 def test_a_failing_check_does_not_stop_the_stats_loop(monkeypatch, tmp_path):
@@ -357,6 +456,7 @@ def test_tail_audio_is_transcribed_but_is_not_live_audio(monkeypatch, tmp_path):
     assert brk["got_audio"] is False and brk["tail_bytes"] == 20 * FRAME_BYTES
     assert sess["watch"].last_audio is None
     assert sess["watch"].tail_bytes == 20 * FRAME_BYTES
+    assert sess["watch"].tail_since_audio == pytest.approx(20 * app.audio.FRAME_SEC)   # 提示里分开说
 
 
 def test_live_frames_stay_unmarked_and_move_the_stages(monkeypatch, tmp_path):

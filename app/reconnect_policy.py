@@ -88,7 +88,10 @@ class V1Policy:
     def room_token_wait(self):
         return 0.0                 # V1 复查房间状态不扣令牌
 
-    def shift(self, sec):
+    def room_token_eta(self):
+        return 0.0
+
+    def shift(self, sec, now=None):
         pass
 
     def summary(self):
@@ -186,18 +189,24 @@ class TokenBucket:
             return True
         return False
 
-    def next_in(self, now=None):
-        """多久之后会有 1 个令牌（秒）；现在就有是 0。"""
+    def next_in(self, now=None, need=1.0):
+        """多久之后桶里会有 need 个令牌（秒）；现在就有是 0。"""
         self._fill(self._clock() if now is None else now)
-        return max(0.0, (1.0 - self.tokens) * self.refill_sec)
+        if self.tokens + 1e-9 >= need:
+            return 0.0
+        return (float(need) - self.tokens) * self.refill_sec
 
     def set_refill(self, refill_sec, now=None):
         self._fill(self._clock() if now is None else now)
         self.refill_sec = float(refill_sec)
 
-    def shift(self, sec):
+    def shift(self, sec, now=None):
+        """程序没在运行的那 sec 秒不补令牌。now 给了就不挪过 now：醒来之后、对账之前已经补过一次的话，
+        _t 已经是醒来之后的时刻，再整段往后挪会让之后 sec 秒都不补。"""
         if sec > 0:
             self._t += sec
+            if now is not None:
+                self._t = min(self._t, now)
 
     def per_hour_max(self):
         """任意 60 分钟里最多查几次（满桶 + 一小时补的），界面上那句「每小时最多查 N 次」用它。"""
@@ -219,7 +228,8 @@ class V2Policy:
          失败超过 LOOKUP_FAIL_BUDGET 次（不是「没在播」的错误）。粘贴的流地址照旧：拉不到 1 次就停。
       4. 查流地址的上限：令牌桶 LOOKUP_BUCKET（容量 6、每 3 分钟补 1 个）。一次 resolve_stream_url
          扣一个（4003110 自动重试每试一次扣一个；开场最多 3 次，容量放得下）；等房间恢复时每次复查
-         房间状态也扣一个，桶空了就等到下一个令牌再查。用户自带的流地址拉 2KB 探活不扣。
+         房间状态也扣一个，但要给回到在播之后的那次查询留 ROOM_RECHECK_RESERVE 个，不够就等到够了再复查。
+         用户自带的流地址拉 2KB 探活不扣。
       5. 到了上限不停止监听：用原来的流地址重连（只连 CDN），界面说清多久后再查。
       6. 连续无声 SILENT_SLOW_AFTER_SEC 之后：退避放到 SILENT_SLOW_DELAY，令牌改成每 SLOW_REFILL_SEC
          补 1 个——开一夜不会查出一两百次。
@@ -235,6 +245,9 @@ class V2Policy:
     SHORT_AUDIO_SEC = 30.0
     SHORT_ROUNDS_BEFORE_LOOKUP = 3
     DEAD_ROUND_SEC = 5.0
+    # 等房间恢复时复查房间状态，桶里要给「房间回到在播之后马上查流地址」留这么多个令牌。不留的话，等得久了
+    # 复查会把桶扣空，看到在播的那一刻反而查不了，只能先用原来的流地址、等下一个令牌（最长一个补充间隔）
+    ROOM_RECHECK_RESERVE = 1
 
     def __init__(self, direct, clock=time.monotonic):
         self.direct = direct
@@ -370,16 +383,27 @@ class V2Policy:
         return Plan(delay or self._delay(), mode, next_lookup_sec=self.bucket.next_in(now),
                     first_capped=first)
 
-    def room_token_wait(self):
-        """等房间恢复时复查一次房间状态之前：有令牌就扣掉、返回 0；没有就返回还要等几秒。"""
-        if self.bucket.take():
-            return 0.0
-        return max(1.0, self.bucket.next_in())
+    def _room_need(self):
+        return min(float(self.bucket.capacity), 1.0 + self.ROOM_RECHECK_RESERVE)
 
-    def shift(self, sec):
-        self.bucket.shift(sec)
+    def room_token_eta(self):
+        """多久之后能复查一次房间状态（秒）：扣掉一个之后桶里还要留 ROOM_RECHECK_RESERVE 个。现在就能是 0。"""
+        return self.bucket.next_in(need=self._room_need())
+
+    def room_token_wait(self):
+        """等房间恢复时复查一次房间状态之前：令牌够（扣掉一个还留得下 ROOM_RECHECK_RESERVE 个）就扣掉、
+        返回 0；不够就返回还要等几秒。"""
+        eta = self.room_token_eta()
+        if eta <= 0 and self.bucket.take():
+            return 0.0
+        return max(1.0, eta)
+
+    def shift(self, sec, now=None):
+        self.bucket.shift(sec, now)
         if self.capped_since is not None and sec > 0:
             self.capped_since += sec
+            if now is not None:
+                self.capped_since = min(self.capped_since, now)
 
     def summary(self):
         now = self._clock()

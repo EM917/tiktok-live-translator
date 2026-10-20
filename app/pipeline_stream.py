@@ -24,6 +24,9 @@ from .stream_watch import StreamWatch
 
 # ffmpeg 报 HTTP 4xx 的说法（stderr 原话）：Server returned 403 Forbidden / HTTP error 404 Not Found
 _HTTP_4XX = re.compile(r"(?:Server returned|HTTP error) 4\d\d")
+# 收尾时 ffmpeg 吐出来的音频（晚到的，见 Pipeline._stream_session 的 reader）送去识别、做了违禁词检测，但不算
+# 实时收到。提示里不到这么多秒时照旧说「没有经过检测」（_duration_text 会写成「0 秒」）
+TAIL_NOTE_MIN_SEC = 1.0
 
 
 class StreamWatchMixin:
@@ -107,13 +110,14 @@ class StreamWatchMixin:
 
     def _offline_check_budget(self, sess=None):
         """「没在播」之后：时钟跳变复查（等 OFFLINE_RECHECK_SEC 再问一次）+ 等房间恢复（最多
-        HOST_WAIT_MAX_SEC，每 HOST_WAIT_POLL_SEC 问一次，每次一个 HTTP 请求）。V2 复查也扣令牌，
-        桶空了要等到下一个令牌：再加两个补充间隔。"""
+        HOST_WAIT_MAX_SEC，每 HOST_WAIT_POLL_SEC 问一次，每次一个 HTTP 请求）。V2 复查也扣令牌，还要给
+        回到在播之后的那次查询留一个：等令牌最多约三个补充间隔（等房间的第一次复查两个，复查之后又是 4
+        时补对时钟再一个）。"""
         from .resolver import HTTP_TIMEOUT_SEC
 
         polls = int(self.HOST_WAIT_MAX_SEC // max(1.0, self.HOST_WAIT_POLL_SEC)) + 3
         bucket = getattr((sess or {}).get("policy"), "bucket", None)
-        token_wait = 2 * float(getattr(bucket, "refill_sec", 0.0) or 0.0)
+        token_wait = 3 * float(getattr(bucket, "refill_sec", 0.0) or 0.0)
         return (2 * self.OFFLINE_RECHECK_SEC + self.HOST_WAIT_MAX_SEC + self.HOST_WAIT_POLL_SEC
                 + polls * HTTP_TIMEOUT_SEC + token_wait + self.STAGE_WAIT_SLACK_SEC)
 
@@ -138,23 +142,28 @@ class StreamWatchMixin:
                 self._stage(sess, "stopping", self._stop_stage_budget())
         return hook
 
-    def _shift_session_clocks(self, sess, sec):
+    def _shift_session_clocks(self, sess, sec, now=None):
         """时钟对账发现单调时钟多走了 sec 秒（Windows 睡眠、事件循环被卡住）：这一场所有按单调时钟
-        计的起点往后挪，醒来时阶段计时、无声计时不会一起误报。"""
+        计的起点往后挪，醒来时阶段计时、无声计时不会一起误报。now 是这次对账的单调时钟读数：醒来之后、
+        统计循环这一跳之前记下的时刻（reader 先跑，收到的帧已经记了醒来之后的时间）挪过去就跑到将来了，
+        都不挪过 now。"""
         if sec <= 0:
             return
         watch = self._watch_of(sess)
         if watch is not None:
-            watch.shift(sec)
+            watch.shift(sec, now)
         policy = sess.get("policy") if isinstance(sess, dict) else None
         if policy is not None:
-            policy.shift(sec)          # 令牌桶：程序没在运行的那段不补令牌
+            policy.shift(sec, now)     # 令牌桶：程序没在运行的那段不补令牌
 
     # ---- 重连（app/reconnect_policy.py）：请求计数、令牌、每次重连的安排和文字 ----
 
     @staticmethod
     def _requests(sess):
-        """这一场对 TikTok / CDN 发了多少请求（第八条：对同一房间的请求要省，合起来算）。"""
+        """这一场对 TikTok / CDN 的请求计数（第八条：对同一房间的请求要省，合起来算）。记的是次数和层数，
+        不是 HTTP 请求数：lookups 是 resolve_stream_url 的次数，lookup_layers 是每层走过几次（一层里可能
+        不止一个请求：WebKit 整页加载、yt-dlp 一次运行都是好几个；拿到地址的层向 CDN 拉 2KB 探活也不另算），
+        room_rechecks 是复查房间状态的次数（每次一个请求），cdn_connects 是起了几次 ffmpeg。"""
         if not isinstance(sess, dict):
             return None
         req = sess.get("requests")
@@ -164,7 +173,7 @@ class StreamWatchMixin:
         return req
 
     def _count_lookup(self, sess, layers):
-        """一次 resolve_stream_url：按层记走过了哪几层（每层至少一个请求，见 resolver 的文档）。"""
+        """一次 resolve_stream_url：按层记走过了哪几层（每层至少一个请求，见 resolver 的文档；记的是层数）。"""
         req = self._requests(sess)
         if req is None:
             return
@@ -174,6 +183,13 @@ class StreamWatchMixin:
             if rec.get("outcome") in ("skipped",):
                 continue
             req["lookup_layers"][layer] = req["lookup_layers"].get(layer, 0) + 1
+
+    @staticmethod
+    def _room_token_eta(sess):
+        """多久之后能复查一次房间状态（V2 要等令牌够；V1、没有规则时是 0）。不扣令牌。"""
+        policy = sess.get("policy") if isinstance(sess, dict) else None
+        eta = getattr(policy, "room_token_eta", None)
+        return float(eta()) if callable(eta) else 0.0
 
     @staticmethod
     def _lookup_token_left(policy):
@@ -272,10 +288,18 @@ class StreamWatchMixin:
             return None
         return sess if self._watch_of(sess) is not None else None
 
+    def _end_stream_watch(self, audit=None):
+        """这一场开始收尾（_end_session 撤持续提示之前）：统计循环不再管它的拉流观察。统计循环要到收尾后段
+        才取消，中间要等弹幕停下（最多十来秒）；这段时间它再跳一下，会把刚撤掉的「已 N 分钟没收到直播
+        音频」、覆盖率提示又挂回去，一直留到下一场开始。只认 audit 这一场自己的会话状态。"""
+        sess = getattr(self, "_session_state", None)
+        if isinstance(sess, dict) and (audit is None or sess.get("audit") is audit):
+            sess["ending"] = True
+
     async def _stream_watch_tick(self, now=None):
         """now=(单调, 墙钟) 只给测试用。每一项检查各自兜住异常，统计循环照常跳。"""
         sess = self._watched_session()
-        if sess is None:
+        if sess is None or sess.get("ending"):
             return
         mono, wall = now if now is not None else (time.monotonic(), time.time())
         try:
@@ -360,7 +384,15 @@ class StreamWatchMixin:
             cancelled = True
         return {"done": True, "transport_closed": closed, "reader_cancelled": cancelled}
 
-    def _no_audio_text(self, wall_sec):
+    def _no_audio_text(self, wall_sec, tail_sec=0.0):
+        if tail_sec >= TAIL_NOTE_MIN_SEC:
+            # 这段时间里收尾时补到过音频：那些已经检测过，不能说「这段时间没有经过检测」
+            return L("已 {}没有实时收到直播音频，期间只有晚到的 {}经过了检测。程序还在自动重试，"
+                     "可以在 TikTok 上看一眼直播是否还在进行。",
+                     "No stream audio in real time for {}. Only {} arrived in that time, late, and "
+                     "it was checked. The app keeps retrying. You can check on TikTok whether the "
+                     "stream is still live.").format(
+                self._duration_text(wall_sec), self._duration_text(tail_sec))
         return L("已 {}没收到直播音频，这段时间没有经过检测。程序还在自动重试，"
                  "可以在 TikTok 上看一眼直播是否还在进行。",
                  "No stream audio for {}. Nothing in that time was checked. The app keeps "
@@ -391,11 +423,23 @@ class StreamWatchMixin:
             if audit is not None:
                 audit.no_audio(sec=silent, wall_sec=wall_sec, stage=watch.stage.name,
                                break_no=sess.get("break_no", 0))
-        text = self._no_audio_text(wall_sec)
+        text = self._no_audio_text(wall_sec, watch.tail_since_audio)
         if (incidents.get(key) or {}).get("text") != text:
             await self._incident(key, "warn", text)
 
-    def _coverage_text(self, pct, window_sec, breaks):
+    def _coverage_text(self, pct, window_sec, breaks, tail_sec=0.0):
+        if tail_sec >= TAIL_NOTE_MIN_SEC:
+            # 窗口里收尾时补到过音频：分子不算它（不是实时收到的），但它检测过，不能说缺的都没检测
+            return LN(breaks,
+                      "近 {0}只实时收到 {1}% 的直播音频，另有晚到的 {3}已检测，其余没有经过检测。"
+                      "本场已中断 {2} 次。",
+                      "Only {1}% of stream audio arrived in real time in the last {0}. Another {3} "
+                      "arrived late and was checked. The rest wasn’t checked. 1 interruption this "
+                      "session.",
+                      "Only {1}% of stream audio arrived in real time in the last {0}. Another {3} "
+                      "arrived late and was checked. The rest wasn’t checked. {2} interruptions "
+                      "this session.").format(
+                self._duration_text(window_sec), pct, breaks, self._duration_text(tail_sec))
         return LN(breaks,
                   "近 {}只收到 {}% 的直播音频，缺的部分没有经过检测。本场已中断 {} 次。",
                   "Only {1}% of stream audio arrived in the last {0}. The missing audio wasn’t "
@@ -427,7 +471,8 @@ class StreamWatchMixin:
         key = self.COVERAGE_INCIDENT
         louder = "session:network" in incidents or self.NO_AUDIO_INCIDENT in incidents
         if watch.cov_low and not louder and cov is not None:
-            text = self._coverage_text(int(round(ratio * 100)), span, sess.get("break_no", 0))
+            text = self._coverage_text(int(round(ratio * 100)), span, sess.get("break_no", 0),
+                                       watch.tail_in_window(mono, self.COVERAGE_WINDOW_SEC, span))
             if (incidents.get(key) or {}).get("text") != text:
                 await self._incident(key, "warn", text)
         elif key in incidents and (louder or not watch.cov_low):
@@ -465,8 +510,13 @@ class StreamWatchMixin:
         connects = getattr(comment_source, "_connect_times", None)
         if isinstance(connects, list):
             # 弹幕那条线最近一小时连了几次（每次一次匿名抓页 + 一次签名握手）：对 TikTok 来说这和查流地址
-            # 都是同一个房间的请求，合起来看（第八条）
-            fields["comment_connects_hour"] = len(connects)
+            # 都是同一个房间的请求，合起来看（第八条）。_connect_times 只在下一次连接之前才清掉一小时前的，
+            # 也不随场次重置：这里按它自己的钟和窗口现数。数的是这台电脑最近一小时的连接，上一场在这一小时
+            # 里连的也算在内
+            window = float(getattr(comment_source, "HOUR_WINDOW_SEC", 3600.0))
+            clock = getattr(comment_source, "_clock", None)
+            now = clock() if callable(clock) else time.time()
+            fields["comment_connects_hour"] = sum(1 for t in connects if now - t < window)
         audit.stream_summary(**fields)
 
     def _no_audio_resumed(self, sess):

@@ -62,8 +62,15 @@ class StageClock:
         return dict(self.extra, stage=self.name, sec=round(sec, 1),
                     budget_sec=round(float(self.budget), 1))
 
-    def shift(self, sec):
-        self.entered += sec
+    def shift(self, sec, now=None):
+        self.entered = _later(self.entered, sec, now)
+
+
+def _later(t, sec, now):
+    """时钟对账往后挪的一个起点：挪 sec 秒，但不挪过对账那一刻（now 为 None 时不限）。醒来之后、统计循环
+    发现跳变之前记下的时刻本来就在跳变之后，整段挪过去会跑到将来（无声计时变成负数，提示要晚一整段才出）。"""
+    t += sec
+    return t if now is None else min(t, now)
 
 
 class StreamWatch:
@@ -79,6 +86,9 @@ class StreamWatch:
         self.audio_sec = 0.0          # 本场收到的直播音频秒数（不含收尾吐出的）
         self.tail_bytes = 0           # 本场各轮收尾时 ffmpeg 吐出的字节合计
         self.tail_dropped_bytes = 0
+        # 收尾时吐出、送去识别的音频（晚到的）：不算实时收到，但检测过。提示里要分开说（_no_audio_text）
+        self.tail_since_audio = 0.0   # 最近一帧直播音频之后（没有就是本场开始以来）晚到的秒数
+        self._tail_cov = deque()      # 同 _cov：按单调时钟的整秒记 [秒, 晚到的音频秒]
         self.max_deaf_sec = 0.0
         self.no_audio_notices = 0
         # 跨轮覆盖率：最近 window 秒里收到多少秒直播音频。按单调时钟的整秒记 [秒, 音频秒]，每帧一次加法；
@@ -97,6 +107,7 @@ class StreamWatch:
     def note_audio(self, sec, mono, wall):
         self.audio_sec += sec
         self.last_audio = (mono, wall)
+        self.tail_since_audio = 0.0
         if self.cov_start is None:
             self.cov_start = mono
         idx = int(mono)
@@ -105,6 +116,25 @@ class StreamWatch:
             cov[-1][1] += sec
         else:
             cov.append([idx, sec])
+
+    def note_tail(self, sec, mono):
+        """收尾时 ffmpeg 吐出来、送去识别的一帧（不动无声计时、不进覆盖率的分子）。"""
+        self.tail_since_audio += sec
+        idx = int(mono)
+        cov = self._tail_cov
+        if cov and cov[-1][0] == idx:
+            cov[-1][1] += sec
+        else:
+            cov.append([idx, sec])
+
+    def tail_in_window(self, mono=None, window=300.0, span=None):
+        """最近 span 秒（不给就是 window）里晚到的音频秒数。"""
+        now = self._mono() if mono is None else mono
+        cov = self._tail_cov
+        while cov and cov[0][0] < now - window - 1:
+            cov.popleft()
+        lo = now - (window if span is None else span)
+        return sum(a for idx, a in cov if idx >= int(lo))
 
     def note_break(self, mono=None):
         self._breaks.append(self._mono() if mono is None else mono)
@@ -154,22 +184,27 @@ class StreamWatch:
             return None
         return max(0.0, (self._wall() if wall is None else wall) - since[1])
 
-    def shift(self, sec):
-        """单调时钟多走了 sec 秒、程序其实没在运行（见文件头）：所有单调时钟的起点往后挪。"""
+    def shift(self, sec, now=None):
+        """单调时钟多走了 sec 秒、程序其实没在运行（见文件头）：所有单调时钟的起点往后挪。now 是对账那一刻
+        的单调时钟读数：挪过去不超过它（见 _later）。"""
         if sec <= 0:
             return
-        self.stage.shift(sec)
-        self.started += sec
+        self.stage.shift(sec, now)
+        self.started = _later(self.started, sec, now)
         if self.first_spawn is not None:
-            self.first_spawn = (self.first_spawn[0] + sec, self.first_spawn[1])
+            self.first_spawn = (_later(self.first_spawn[0], sec, now), self.first_spawn[1])
         if self.last_audio is not None:
-            self.last_audio = (self.last_audio[0] + sec, self.last_audio[1])
+            self.last_audio = (_later(self.last_audio[0], sec, now), self.last_audio[1])
         if self.cov_start is not None:
-            self.cov_start += sec
+            self.cov_start = _later(self.cov_start, sec, now)
         shift = int(round(sec))
-        for item in self._cov:
-            item[0] += shift
-        self._breaks = deque(t + sec for t in self._breaks)
+        top = None if now is None else int(now)
+        for cov in (self._cov, self._tail_cov):
+            for item in cov:
+                item[0] += shift
+                if top is not None and item[0] > top:
+                    item[0] = top
+        self._breaks = deque(_later(t, sec, now) for t in self._breaks)
 
     def summary(self, breaks, mono=None):
         """场末汇总（session_end 与每 5 分钟的 stream_summary 用）：只有数字。"""

@@ -113,6 +113,29 @@ def test_low_twice_raises_the_notice_and_back_above_85_takes_it_down(monkeypatch
     assert rows[0]["window_sec"] == 300.0 and rows[0]["audio_sec"] == pytest.approx(90.0)
 
 
+def test_late_tail_audio_in_the_window_is_said_to_be_checked(monkeypatch, tmp_path):
+    """收尾时吐出来的音频不算进分子（不是实时收到的），但送去识别和违禁词检测了：不能说「缺的部分没有
+    经过检测」。窗口外的晚到音频不算。"""
+    p, server, sess = _session(monkeypatch, tmp_path)
+    watch = sess["watch"]
+    _low(watch)
+    sess["break_no"] = 7
+    watch.note_tail(30.0, 950.0)                   # 窗口之外
+    for t in (1100.0, 1150.0, 1200.0, 1250.0, 1290.0, 1295.0):
+        watch.note_tail(6.0, t)                    # 每轮收尾吐出 6 秒
+    run(p._check_coverage(sess, 1295.0))
+    run(p._check_coverage(sess, 1300.0))
+    text = server.config["incidents"]["session:audio_rate"]["text"]
+    assert str(text) == ("近 5 分钟只实时收到 30% 的直播音频，另有晚到的 36 秒已检测，其余没有经过检测。"
+                         "本场已中断 7 次。")
+    assert i18n.render(text, EN) == ("Only 30% of stream audio arrived in real time in the last 5 min. "
+                                     "Another 36 sec arrived late and was checked. The rest wasn’t "
+                                     "checked. 7 interruptions this session.")
+    assert "缺的部分没有经过检测" not in str(text)
+    one = p._coverage_text(40, 180.0, 1, 6.0)
+    assert i18n.render(one, EN).endswith("The rest wasn’t checked. 1 interruption this session.")
+
+
 def test_one_interruption_reads_as_one(monkeypatch, tmp_path):
     p, server, sess = _session(monkeypatch, tmp_path)
     text = p._coverage_text(40, 180.0, 1)
@@ -156,7 +179,10 @@ def test_a_summary_lands_in_the_audit_every_five_minutes(monkeypatch, tmp_path):
     sess["break_no"] = 3
 
     class Comments:
-        _connect_times = [1.0, 2.0]
+        # 只在下一次连接之前才清掉一小时前的那些：这里按它自己的钟现数，一小时前的不算
+        _connect_times = [-4000.0, 1.0, 2.0]
+        HOUR_WINDOW_SEC = 3600.0
+        _clock = staticmethod(lambda: 100.0)
 
     p.comment_source = Comments()
     p._maybe_stream_summary(sess, 1000.0)
@@ -172,8 +198,8 @@ def test_a_summary_lands_in_the_audit_every_five_minutes(monkeypatch, tmp_path):
 def test_the_coverage_words_name_no_cause():
     from app.pipeline import Pipeline
 
-    for n in (0, 1, 5):
-        text = Pipeline._coverage_text(Pipeline.__new__(Pipeline), 35, 300.0, n)
+    for n, tail in ((0, 0.0), (1, 0.0), (5, 0.0), (1, 6.0), (5, 36.0)):
+        text = Pipeline._coverage_text(Pipeline.__new__(Pipeline), 35, 300.0, n, tail)
         zh, en = str(text), i18n.render(text, EN)
         for label in CAUSE_LABELS:
             assert label not in zh

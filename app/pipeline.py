@@ -1820,6 +1820,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         still_current = my_audit is None or self.audit is my_audit
         if still_current:
             self._release_sleep_guard(owner=asyncio.current_task())
+            # 统计循环要到下面才取消（中间要等弹幕停下）：先让它不再管这一场的拉流观察，免得它在这段时间里
+            # 把下一行刚撤掉的无声、覆盖率提示又挂回去（_stop_locked 是先取消统计循环再撤，没有这个问题）
+            self._end_stream_watch(my_audit)
             await self._clear_ongoing_incidents()
         if still_current:
             # 弹幕后端抓取是这一场自己起的子进程，晚到的旧任务不该碰
@@ -1927,12 +1930,17 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 没有令牌：不再重试，按「TikTok 没给」收场。V1 不限
         policy = sess.get("policy") if isinstance(sess, dict) else None
         take = getattr(policy, "take_lookup", None)
+        tried = 0
         for attempt in range(1, self.BROWSER_ONLY_RETRIES + 1):
             if take is not None and not take():
                 if last is None:
                     from .reconnect_policy import LookupCapped
                     raise LookupCapped()
+                # 停下的是程序自己的上限，不是 TikTok 那边的结果：另说一句，下面那句的次数按实际试过的写
+                print("[信息] 查流地址的次数到了程序自己的上限，4003110 的自动重试试了 {} 次就停下，"
+                      "下一次重连再查".format(tried))
                 break
+            tried = attempt
             layers, t0 = [], time.monotonic()
             try:
                 with self._stage_during(sess, "lookup", self._lookup_stage_budget() if sess else None,
@@ -1968,7 +1976,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 with self._stage_during(sess, "lookup_wait",
                                         self.BROWSER_ONLY_RETRY_SEC + self.STAGE_BACKOFF_SLACK_SEC):
                     await asyncio.sleep(self.BROWSER_ONLY_RETRY_SEC)
-        raise ResolveError(browser_only_message(self.BROWSER_ONLY_RETRIES,
+        raise ResolveError(browser_only_message(tried or self.BROWSER_ONLY_RETRIES,
                                                 getattr(last, "login", None)),
                            kind="browser_only",
                            login=getattr(last, "login", None)) from last
@@ -2258,7 +2266,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             diverged = wall_sec - mono_sec >= self.CLOCK_GAP_SEC
             # 单调时钟也多走了的那一段（Windows 睡眠、事件循环被卡住）：按单调时钟计的阶段、无声
             # 起点往后挪，醒来时不一起误报。macOS / Linux 睡眠时单调时钟没走，这里是 0
-            self._shift_session_clocks(sess, mono_sec - float(interval))
+            self._shift_session_clocks(sess, mono_sec - float(interval), now=mono)
             sess["gap"] = {"from": prev_wall, "to": wall, "sec": gap, "diverged": diverged}
             sess["gap_count"] = sess.get("gap_count", 0) + 1
             audit.clock_gap(prev_wall, wall, gap_sec=gap, wall_sec=wall_sec,
@@ -2511,14 +2519,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if gap is None:
             return status, waited, why
         sess["gap"] = None
+        # V2：复查房间状态也扣令牌（还要给回到在播之后的查询留一个），不够就等到够了再问；状态行照实写等多久
+        delay = max(self.OFFLINE_RECHECK_SEC, self._room_token_eta(sess))
         await self.server.status(
             "connecting",
             L("{}，{}；{:.0f} 秒后再查一次再下结论…",
               "{}. {}. Checking again in {:.0f} sec before deciding…").format(
-                self._gap_lead(gap), self._room_status_text(status), self.OFFLINE_RECHECK_SEC))
-        await asyncio.sleep(self.OFFLINE_RECHECK_SEC)
-        waited += self.OFFLINE_RECHECK_SEC
-        waited += await self._room_token(sess)      # V2：复查房间状态也扣令牌，桶空了等下一个
+                self._gap_lead(gap), self._room_status_text(status), delay))
+        await asyncio.sleep(delay)
+        waited += delay
+        waited += await self._room_token(sess)      # 令牌这时已经够了；不够（钟被拨过）再等
         status, why = await self._probe_room_status(url)
         audit = sess.get("audit")
         if audit is not None:
@@ -2562,18 +2572,31 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         why = None
         if audit is not None:
             audit.host_wait(status, waited, "started")
+        # 这次中断里复查过没有（waited 是这次中断累计等的，大于 0 就是之前已经问过房间接口）
+        polled = waited > 0
         while waited < self.HOST_WAIT_MAX_SEC:
-            await self.server.status(
-                "connecting",
-                L("{}，每 {:.0f} 秒复查一次，最多 {:.0f} 分钟（已等 {:.0f} 分钟）…",
-                  "{}. Checking every {:.0f} sec for up to {:.0f} min ({:.0f} min so far)…"
-                  ).format(
+            # V2：每次复查房间状态扣一个令牌，还要给回到在播之后那次查询留一个；不够时复查间隔拉长到够的
+            # 那一刻，状态行照实说多久后复查。拉长之后落在 HOST_WAIT_MAX_SEC 之外就不再等——但这次中断里
+            # 至少复查一次，不能一次都没问就按「等房间恢复超时」停止监听。V1 不扣令牌，gap 永远是 POLL
+            gap = max(self.HOST_WAIT_POLL_SEC, self._room_token_eta(sess))
+            if gap > self.HOST_WAIT_POLL_SEC:
+                if polled and waited + gap > self.HOST_WAIT_MAX_SEC:
+                    break
+                text = L("{}，为少向 TikTok 发请求，{}后再复查（已等 {:.0f} 分钟）…",
+                         "{}. To keep requests to TikTok low, the app checks again in {} "
+                         "({:.0f} min so far)…").format(
+                    self._room_status_text(status), self._duration_text(gap), waited / 60)
+            else:
+                text = L("{}，每 {:.0f} 秒复查一次，最多 {:.0f} 分钟（已等 {:.0f} 分钟）…",
+                         "{}. Checking every {:.0f} sec for up to {:.0f} min ({:.0f} min so far)…"
+                         ).format(
                     self._room_status_text(status), self.HOST_WAIT_POLL_SEC,
-                    self.HOST_WAIT_MAX_SEC / 60, waited / 60))
-            await asyncio.sleep(self.HOST_WAIT_POLL_SEC)
-            waited += self.HOST_WAIT_POLL_SEC
-            # V2：每次复查房间状态扣一个令牌；桶空了复查间隔拉长到下一个令牌。HOST_WAIT_MAX_SEC 照常计时
-            waited += await self._room_token(sess)
+                    self.HOST_WAIT_MAX_SEC / 60, waited / 60)
+            await self.server.status("connecting", text)
+            await asyncio.sleep(gap)
+            waited += gap
+            polled = True
+            waited += await self._room_token(sess)      # 令牌这时已经够了；不够（钟被拨过）再等
             status, why = await self._probe_room_status(url)
             if status == ENDED_STATUS:      # 等的这一分钟里睡过的话，4 也先复查
                 status, waited, why = await self._recheck_ended_after_gap(
@@ -2989,6 +3012,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         # （退避和无声计数看的就是它）、不进到达率。这些段在审计里带 tail（_emit_original）
                         tail_frames += 1
                         last_tail = True
+                        if watch is not None:
+                            # 不动无声计时、不进覆盖率的分子；提示里分开说「晚到的 N 秒检测过」
+                            watch.note_tail(FRAME_SEC, time.monotonic())
                         if evidence is not None:
                             evidence.feed(frame)
                         segments = segmenter.feed(frame)
@@ -3666,6 +3692,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 # 主播、场次、此刻连着几个界面：换过房间后认得出哪条是上一场的；事后答得出
                 # 「这条报警响的时候有没有页面开着」。audit.alert 原样带上这几列
                 hit.update(self._alert_stamp())
+                if tail:
+                    # 收尾时吐出来的音频命中的：ts 比实际说话晚约一个看门狗周期。复核报警的人看的是
+                    # alert 这一行，不用再拿 ts 去对 segment（手机页的白名单里没有这一列）
+                    hit["tail"] = True
                 if not getattr(self, "alerts_enabled", False):
                     # 警示关闭：证据不能因此丢——命中照样进审计，只是多打一个
                     # suppressed 标记；不广播、不计数、不占强模型、不进系统通知

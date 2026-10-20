@@ -11,6 +11,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from app import pipeline as pipeline_mod
 from app import settings
 from app.pipeline import Pipeline
@@ -214,6 +216,30 @@ def test_hit_with_alerts_on_behaves_as_before(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "[警报]" in out
     assert "警示关闭" not in out
+
+
+@pytest.mark.parametrize("alerts_on", [True, False])
+def test_a_hit_in_late_tail_audio_is_marked_on_the_alert_row(monkeypatch, tmp_path, alerts_on):
+    """收尾时 ffmpeg 吐出来的音频切出的段（asr_meta 带 tail）命中了：ts 比实际说话晚约一个看门狗周期。
+    复核的人看的是 alert 这一行，这一行自己带 tail，不用再拿 ts 去对 segment。实时的命中不带这一列。"""
+    p, server = make_pipeline(monkeypatch, tmp_path, terms=("cura el cancer", "quita las arrugas"))
+    p.alerts_enabled = alerts_on
+
+    async def go():
+        await p._begin_session("https://www.tiktok.com/@bella/live")
+        await p._emit_original(res("esto cura el cancer"), audio_end_ts=100.0, asr_ms=100,
+                               asr_meta={"tail": True})
+        await p._emit_original(res("esto quita las arrugas"), audio_end_ts=200.0, asr_ms=100)
+        path = p.audit.path
+        await p._end_session()
+        return path
+
+    path = run(go())
+    rows = [r for r in records(path) if r["type"] == "alert"]
+    assert [(r["term"], r.get("tail")) for r in rows] == [("cura el cancer", True),
+                                                         ("quita las arrugas", None)]
+    segs = [r for r in records(path) if r["type"] == "segment"]
+    assert [s.get("tail") for s in segs] == [True, None]
 
 
 # ---------------------------------------------------------------------------
