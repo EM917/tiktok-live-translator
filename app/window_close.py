@@ -113,8 +113,9 @@ async def close_session(pipeline, audit_budget=AUDIT_BUDGET_SEC, total=STOP_TIME
     stop = asyncio.ensure_future(pipeline.stop_stream(quiet=True))
     done, _ = await asyncio.wait({stop}, timeout=audit_budget)
     if stop not in done:
-        # 识别线程或弹幕子进程一时退不掉：进程等不到停止流程走完就会退出，先让
-        # session_end 落盘。close 可重入，停止流程稍后再关是空操作
+        # 识别线程、音频源或弹幕子进程一时退不掉：进程等不到停止流程走完就会退出，先让
+        # session_end 落盘。这一场的识别风险、证据和弹幕计数由审计自己的 end_fields 补上
+        # （管线开场时挂的）。close 可重入，停止流程稍后再关是空操作
         audit = getattr(pipeline, "audit", None)
         if audit is not None:
             audit.close(reason="window_closed")

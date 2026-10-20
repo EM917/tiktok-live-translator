@@ -964,13 +964,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self._stop_comment_source()
         closed = self.audit
         if closed is not None:
-            # 旧任务过了宽限期还没走到 _end_session（识别线程停不下来）：session_end 由这里代写。
-            # 这一场的汇总（识别风险、证据计数、拉流汇总）照样从它的会话状态里取，只读不放
+            # 旧任务过了宽限期还没走到 _end_session（识别线程或音频源收尾停不下来）：session_end 由这里代写。
+            # 这一场的汇总（识别风险、证据计数、拉流汇总、弹幕计数）照样从它的会话状态里取，只读不放。
+            # 弹幕留意的计数要 await 守卫，这里不写（规格 I1：守卫只出现在 _end_session 等几处）
             sess = getattr(self, "_session_state", None)
             fields = {}
             if isinstance(sess, dict) and sess.get("audit") is closed:
                 try:
-                    fields = self._session_end_fields(sess, {}, release=False)
+                    fields = self._session_end_extras(closed, sess)
                 except Exception:
                     fields = {}
             self._close_audit(closed, self._stop_reason, **fields)
@@ -1294,6 +1295,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         my_audit = self.audit
         # 这一场自己的观察状态（断流时刻、时钟跳变、结束原因……），同样只属于这一场
         sess = self._session_state = self._new_session_state(my_audit)
+        if my_audit is not None:
+            # 这一场的汇总挂在这一场自己的审计上（AuditLog.end_fields）：谁来关它都带上。10-19 停止时音频源
+            # 收尾比 STOP_GRACE_SEC 慢，session_end 由别的路径写，只剩 reason。闭包只绑这一场的 audit 和 sess
+            my_audit.end_fields = lambda: self._session_end_extras(my_audit, sess)
         end = {}
         try:
             await self._run_session(url)
@@ -1826,20 +1831,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             await self._clear_ongoing_incidents()
         if still_current:
             # 弹幕后端抓取是这一场自己起的子进程，晚到的旧任务不该碰
-            # 已经属于下一场的连接——只有「我还是当前会话」才停它。
-            # getattr 兜底：个别测试用 Pipeline.__new__ 绕过 __init__ 造
-            # 半成品实例，没有 comment_source 属性
+            # 已经属于下一场的连接——只有「我还是当前会话」才停它、才读它的计数
             self._comments_pending = None
-            comment_source = getattr(self, "comment_source", None)
-            if comment_source is not None:
-                # 这一场收到过多少条弹幕一起写进 session_end——弹幕连接哪怕全程
-                # "connected"，事后也要能看出它是不是哑了一整场（见看门狗）。
-                fields.setdefault("comments_received", comment_source.comments_received)
-                # 弹幕作者各字段的填充率：只有数过才写，没弹幕的场次 session_end 照旧
-                comment_fields = getattr(comment_source, "comment_fields", None)
-                if isinstance(comment_fields, dict) and comment_fields.get("n"):
-                    fields.setdefault("comment_fields", {
-                        "n": comment_fields["n"], "has": dict(comment_fields["has"])})
+            for key, value in self._comment_source_counts().items():
+                fields.setdefault(key, value)
             await self._stop_comment_source()
             # 弹幕翻译的结局计数（只有代码和数字）：按 my_audit 取，晚到的旧任务拿不到下一场的数
             comments = getattr(self, "comments", None)
@@ -2093,6 +2088,46 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "meter": None,            # AudioFlowMeter，第一轮拉流时建
             "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
         }
+
+    def _comment_source_counts(self):
+        """session_end 的弹幕计数（只有数字）。这一场收到过多少条弹幕——弹幕连接哪怕全程 "connected"，
+        事后也要能看出它是不是哑了一整场（见看门狗）；弹幕作者各字段的填充率只有数过才写。
+        弹幕来源是共享的（start() 才清零，stop() 不清）：调用方自己确认这份审计还是当前这一场的。
+        getattr 兜底：个别测试用 Pipeline.__new__ 造半成品实例，没有 comment_source 属性。"""
+        comment_source = getattr(self, "comment_source", None)
+        if comment_source is None:
+            return {}
+        out = {"comments_received": comment_source.comments_received}
+        comment_fields = getattr(comment_source, "comment_fields", None)
+        if isinstance(comment_fields, dict) and comment_fields.get("n"):
+            out["comment_fields"] = {"n": comment_fields["n"], "has": dict(comment_fields["has"])}
+        return out
+
+    def _session_end_extras(self, audit, sess):
+        """这一场的 session_end 汇总，在关审计的那一刻算：AuditLog.end_fields（谁关这份审计都调）和
+        _stop_locked 代写时用。识别风险、证据计数、拉流汇总只读这一场自己的会话状态，sess 不属于这份
+        审计就不带；只读不放，证据缓冲由这一场自己收尾时放。弹幕来源是共享的，只有这份审计还是当前审计
+        时才读它的计数；弹幕翻译的计数按 audit 取。晚到的旧任务读不到下一场的数（CLAUDE.md 第七条）。
+        每一块算不出来就不带这一块，不抛。"""
+        fields = {}
+        if isinstance(sess, dict) and sess.get("audit") is audit:
+            try:
+                fields.update(self._session_end_fields(sess, {}, release=False))
+            except Exception:
+                pass
+        if audit is not None and getattr(self, "audit", None) is audit:
+            try:
+                fields.update(self._comment_source_counts())
+            except Exception:
+                pass
+        try:
+            comments = getattr(self, "comments", None)
+            translated = comments.translation_summary(audit) if comments else None
+        except Exception:
+            translated = None
+        if translated is not None:
+            fields["comment_translation"] = translated
+        return fields
 
     def _asr_session_end(self, sess, end, release=True):
         """session_end 带上这一场的识别风险计数和证据音频计数（只有数字），顺手放掉证据的环形缓冲。

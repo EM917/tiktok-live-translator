@@ -909,11 +909,25 @@ class AuditLog:
         收尾要等识别线程和弹幕子进程，进程可能等不到 session_end 就退出。"""
         self._write({"type": "window_closed", "at": _now_ms()})
 
+    # 这一场的汇总：返回 dict 的可调用对象，由开这一场的管线挂上（Pipeline._run_stream_inner），闭包里只绑
+    # 这一场自己的会话状态。close(reason=…) 写 session_end 之前调一次、并进去，所以不管是谁来关这份审计——
+    # 这一场自己收尾、_stop_locked 替过了宽限期的旧任务代写、关窗口的兜底（window_close.close_session）——
+    # session_end 都带着这一场的识别风险、证据和弹幕计数（10-19：代写的那条只有 reason）。
+    # 只用一次、关的时候放掉（闭包里有证据的环形缓冲）；调用方显式传的字段优先；它出错不拦 session_end。
+    end_fields = None
+
     def close(self, reason=None, **fields):
         """写 session_end 并关文件。reason：这一场为什么结束（offline / reconnect_exhausted /
         user_stop / internal_error …），fields 是这个原因附带的观察（如 silent、budget）。
-        骨架字段优先：fields 里撞名的键盖不掉 type/ended_at/reason。"""
+        骨架字段优先：fields 里撞名的键盖不掉 type/ended_at/reason；end_fields 补的盖不掉 fields。"""
+        provider, self.end_fields = self.end_fields, None
         if self._fh is not None:
+            if reason and provider is not None:
+                try:
+                    for key, value in (provider() or {}).items():
+                        fields.setdefault(key, value)
+                except Exception:
+                    pass        # 汇总算不出来，session_end 照样写
             try:
                 rec = {"type": "session_end",
                        "ended_at": datetime.now().isoformat(timespec="seconds")}
