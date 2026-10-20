@@ -98,6 +98,32 @@ def test_apply_returns_empty_translations_untouched():
     assert g.apply("nada que ver", "试试Sol Dorado吧") == "试试Sol Dorado吧"   # 源文没命中
 
 
+BRACKETED = ("ACME 凝胶（小瓶）", "ACME 凝胶 (小瓶)", "ACME 凝胶【小瓶】", "ACME 凝胶[小瓶]")
+
+
+def test_a_bracketed_note_is_any_opening_bracket_in_the_rendering():
+    from app.glossary import has_bracket_note
+
+    assert all(has_bracket_note(r) for r in BRACKETED)
+    assert not has_bracket_note("ACME 凝胶")
+    assert not has_bracket_note("ACME 牌")
+
+
+def test_apply_does_not_swap_in_a_bracketed_rendering():
+    """括注是给译法加的说明，不是要上屏的字（has_bracket_note）。模型把西语留在译文里时，兜底替换不拿
+    带括注的译法去换——2026-10-13 那场 seq 36，模型把西语原句回了出来，兜底替换把 la ansiedad 换成了
+    「食欲焦虑（嘴馋）」。残留就留着，和词表里没有这一条时一样；同句里不带括注的词条照换。
+    虚构品牌 acme（brands/README.md 的例子）。"""
+    from app.glossary import Glossary, parse
+
+    for rendering in BRACKETED:
+        g = Glossary(parse("el gel acme => {}\nla crema acme => ACME 面霜".format(rendering)))
+        source = "mira el gel acme y la crema acme"
+        assert g.apply(source, "看看el gel acme和la crema acme") == "看看el gel acme和ACME 面霜", rendering
+        plain = Glossary(parse("la crema acme => ACME 面霜"))
+        assert g.apply(source, "el gel acme") == plain.apply(source, "el gel acme") == "el gel acme"
+
+
 def test_every_caller_goes_through_the_one_apply():
     """字幕、弹幕、重译、报警上下文各处兜底都是同一个 Glossary.apply——边界只在一个地方，
     改这一处就是改全部。有人另写一份边界逻辑，这条就该红。"""

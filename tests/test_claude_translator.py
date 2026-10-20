@@ -596,7 +596,8 @@ def test_a_subtitle_model_from_the_environment_does_not_send_the_glossary(monkey
 # 词条是子串匹配算的：2026-10-17 审查扫本机一位主播的全部实录 34,109 句，253 句的提示里有只是
 # 更长单词一部分的词条（maca 在 estomacal 里、inflamada 在 desinflamada 里），118 句带着括注译法；
 # 两次探针里各有被带偏的例子（licuadora 译成冲调饮品、「为了食欲焦虑（嘴馋）」括号上了屏）。
-# 重译不在这次改动范围里，照旧拿全部命中词条，下面也钉着
+# 重译（role="strong"）只跟着去掉括注那一类（2026-10-20 用户定「重新翻译也不带带括号的词条」），
+# 子串命中照旧带，下面也钉着
 BLOCK = "\nWhere the text contains one of these terms, translate it exactly as given here:\n"
 
 
@@ -632,12 +633,29 @@ def test_a_rendering_with_a_bracketed_note_stays_out_of_the_subtitle_request(mon
     assert hashlib.sha256(only["system"].encode("utf-8")).hexdigest() == TESTED_SYSTEM_SHA256
 
 
-def test_retranslate_still_gets_every_matched_line(monkeypatch):
-    """这次只改字幕请求：重译拿到的仍是管线给的全部命中词条，子串命中和括注译法都在。"""
+@pytest.mark.parametrize("rendering", ["ACME 面霜（小瓶）", "ACME 面霜 (小瓶)", "ACME 面霜【小瓶】", "ACME 面霜[小瓶]"])
+def test_retranslate_leaves_out_a_bracketed_rendering_and_keeps_the_substring_hit(monkeypatch, rendering):
+    """2026-10-20 那场 46 次重译里，2 次请求带了「食欲焦虑（嘴馋）」，2 次都连括号抄上了屏。重译和字幕用
+    同一个括注判断（glossary.has_bracket_note）；别的照旧：子串命中（acme 在 acmeador 里）还在。"""
     redo = strong(monkeypatch)
-    pairs = (("acme", "ACME 牌"), ("la crema acme", "ACME 面霜（小瓶）"))
+    pairs = (("acme", "ACME 牌"), ("la crema acme", rendering))
     system = redo._body("un acmeador y la crema acme", "zh-CN", pairs)["system"]
-    assert system == SYSTEM_SLANG + BLOCK + "acme = ACME 牌\nla crema acme = ACME 面霜（小瓶）"
+    assert system == SYSTEM_SLANG + BLOCK + "acme = ACME 牌"
+
+
+def test_a_retranslate_whose_only_line_is_bracketed_sends_the_request_without_a_glossary(monkeypatch):
+    redo = strong(monkeypatch)
+    pairs = brand(("la crema acme", "ACME 面霜（小瓶）"))
+    assert redo._body("la crema acme", "zh-CN", pairs) == redo._body("la crema acme", "zh-CN")
+    assert redo._body("la crema acme", "zh-CN", pairs)["system"] == SYSTEM_SLANG
+
+
+def test_the_subtitle_and_redo_requests_share_the_one_bracket_predicate():
+    """字幕、重译、兜底替换认括注是同一个函数（glossary.has_bracket_note），不各写一份正则。"""
+    from app import glossary, translator
+
+    assert translator.has_bracket_note is glossary.has_bracket_note
+    assert not hasattr(translator, "_BRACKET_NOTE")
 
 
 # 字幕请求只带品牌表和主播 profile 的词条，全局表（glossary.txt，首启从公开模板复制）的不带：用户要的是

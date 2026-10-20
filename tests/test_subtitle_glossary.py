@@ -10,7 +10,9 @@
   * 报警上下文翻译借用字幕实例时（没有强模型、强模型没给出译文），请求同样带词表；
   * 只带品牌表（brands/）和主播 profile（profiles/）的词条，全局表 glossary.txt 的不带（用户要的是「字幕也
     带上品牌词表提示」；全局表是首启从公开模板复制的，里面的日常短语按语境本不该照着译）。重译照旧三层都带。
-    只加载其中一层（只选了品牌、主播没有 profile；或者只有 profile）时也一样。
+    只加载其中一层（只选了品牌、主播没有 profile；或者只有 profile）时也一样；
+  * 重译和报警上下文翻译（Sonnet 5.5）也不带译法带括注的词条，兜底替换也不拿它去换（2026-10-20 用户定
+    「重新翻译也不带带括号的词条」）。
 用虚构品牌 acme（brands/README.md 的例子）、虚构主播 luna，不依赖任何真实词表。测试不联网。
 """
 import shutil
@@ -273,8 +275,9 @@ def test_a_profile_term_goes_into_the_subtitle_request_and_a_global_one_on_the_s
     assert post["body"]["system"] == SYSTEM_SLANG + BLOCK + "la loción zeta = ZETA 乳液"
 
 
-def test_retranslate_still_sends_the_lines_of_every_layer(monkeypatch, tmp_path):
-    """重译（Sonnet 5.5）不在这次范围：管线给的命中词条三层都进请求，全局表的也在。"""
+def retranslate(monkeypatch, tmp_path, text, out):
+    """点「重译」：字幕引擎是真的 Claude 实例，强模型是真的 Sonnet 5.5 实例（HTTP 都是假的），三层词表。
+    返回 (管线, Sonnet 收到的那一个请求)。字幕实例一次都不该被问。"""
     from app.pipeline import QUALITY_FAST
     from tests.test_claude_strong import claude_engine, retranslate_pipeline
     from tests.test_claude_translator import RecordingSession, attach
@@ -282,12 +285,12 @@ def test_retranslate_still_sends_the_lines_of_every_layer(monkeypatch, tmp_path)
     gl = layered(monkeypatch, tmp_path)
     wrapped, subtitle = claude_engine(monkeypatch)
     big = translator.create_claude_strong_translator()
-    session = RecordingSession([Resp(200, message(text_block("ACME 面霜、套装和 ZETA 乳液")))])
+    session = RecordingSession([Resp(200, message(text_block(out)))])
     attach(big, session)
     sub_session = subtitle._session = RecordingSession([])
     p = retranslate_pipeline(tmp_path, wrapped, strong=big, quality=QUALITY_FAST)
     p.glossary = gl
-    p._recent[7]["text"] = "la crema acme, el combo y la loción zeta"
+    p._recent[7]["text"] = text
 
     async def scenario():
         await p._strong_translator()          # 同 test_claude_strong：先对一遍引擎种类，已有的实例要保留
@@ -297,14 +300,51 @@ def test_retranslate_still_sends_the_lines_of_every_layer(monkeypatch, tmp_path)
     assert p._strong is big
     (post,) = session.posts
     assert post["body"]["model"] == "claude-sonnet-5-5"
+    assert sub_session.posts == []
+    return p, post
+
+
+def test_retranslate_still_sends_the_lines_of_every_layer(monkeypatch, tmp_path):
+    """重译（Sonnet 5.5）：管线给的命中词条三层都进请求，全局表的也在。"""
+    _p, post = retranslate(monkeypatch, tmp_path, "la crema acme, el combo y la loción zeta",
+                           "ACME 面霜、套装和 ZETA 乳液")
     assert post["body"]["system"].endswith(
         BLOCK + "la loción zeta = ZETA 乳液\nla crema acme = ACME 面霜\nel combo = 套装")
-    assert sub_session.posts == []
+
+
+def test_retranslate_leaves_out_the_bracketed_line_and_sends_the_rest(monkeypatch, tmp_path):
+    """2026-10-20 那场 46 次重译里，2 次请求带了「食欲焦虑（嘴馋）」，2 次都连括号抄上了屏；用户定「重新翻译也
+    不带带括号的词条」。同一句里不带括注的词条照带。Sonnet 把西语品名留在译文里时，兜底替换也不把括注译法
+    换上去（残留留着，和词表里没有这一条时一样）。字幕请求那边本来就不带它（上面那条测试），没变。"""
+    text = "mira el gel acme y la crema acme"
+    p, post = retranslate(monkeypatch, tmp_path, text, "看看el gel acme和 ACME 面霜")
+    assert [(pr[0], pr[1]) for pr in p.glossary.translation_pairs(text)] == [
+        ("la crema acme", "ACME 面霜"), ("el gel acme", "ACME 凝胶（小瓶）")]
+    assert post["body"]["system"] == SYSTEM_SLANG + BLOCK + "la crema acme = ACME 面霜"
+    final = [m for m in p.server.of("caption_update") if m.get("translated")][-1]
+    assert final["translated"] == "看看el gel acme和 ACME 面霜" and final["strong"] is True
+
+
+def test_an_alert_context_on_sonnet_leaves_out_the_bracketed_line(monkeypatch, tmp_path):
+    """报警上下文翻译用的是同一个 Sonnet 实例（role="strong"），同样不带译法带括注的词条；全局表的照带。"""
+    from tests.test_claude_translator import RecordingSession, attach
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    big = translator.create_claude_strong_translator()
+    strong_session = RecordingSession([Resp(200, message(text_block("看看 ACME 凝胶、ACME 面霜和套装")))])
+    attach(big, strong_session)
+    context = "mira el gel acme, la crema acme y el combo"
+    p, _inner, session = alert(monkeypatch, tmp_path, strong=big, context=context)
+    assert session.posts == []                              # 字幕实例没被问
+    (post,) = strong_session.posts
+    assert post["body"]["model"] == "claude-sonnet-5-5"
+    assert post["body"]["system"] == SYSTEM_SLANG + BLOCK + "la crema acme = ACME 面霜\nel combo = 套装"
+    assert p.server.of("alert_update")[-1]["context_zh"] == "看看 ACME 凝胶、ACME 面霜和套装"
 
 
 def test_no_line_of_the_public_template_reaches_the_subtitle_request(monkeypatch, tmp_path):
     """glossary.example.txt 是每个用户首启都会复制成 glossary.txt 的公开模板：它的每一条（读文件，不在这里
-    抄词条）在字幕请求里都不出现，重译里照常出现。"""
+    抄词条）在字幕请求里都不出现；重译里照常出现，只有译法带括注的那几条不出现（「食欲焦虑（嘴馋）」就在里面）。"""
     template = Path(G.ROOT) / "glossary.example.txt"
     root = tmp_path / "tpl"
     root.mkdir()
@@ -319,9 +359,16 @@ def test_no_line_of_the_public_template_reaches_the_subtitle_request(monkeypatch
     wrapped, sub, _session = subtitle_engine(monkeypatch)
     from tests.test_claude_translator import strong as strong_engine
     redo = strong_engine(monkeypatch)
-    for variants, _zh in entries:
+    bracketed = 0
+    for variants, zh in entries:
         text = variants[0]
         hint = tuple(gl.translation_pairs(text))
         assert hint and {pr.layer for pr in hint} == {"global"}, text
         assert sub._body(text, "zh-CN", hint) == sub._body(text, "zh-CN"), text
-        assert redo._body(text, "zh-CN", hint) != redo._body(text, "zh-CN"), text
+        sent = redo._body(text, "zh-CN", hint)
+        if G.has_bracket_note(zh):
+            bracketed += 1
+            assert zh not in sent["system"], text
+        else:
+            assert sent != redo._body(text, "zh-CN"), text
+    assert bracketed > 0

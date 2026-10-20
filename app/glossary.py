@@ -67,6 +67,25 @@ def in_text_as_word(variant, text):
     return _word_in_source(variant).search(text) is not None
 
 
+# 译法里的括注（全角、半角、方头括号），见 has_bracket_note
+_BRACKET_NOTE = re.compile(r"[（(【\[]")
+
+
+def has_bracket_note(rendering):
+    """词表译法里带不带括注，如「水肿（体液滞留）」「食欲焦虑（嘴馋）」（公开模板 glossary.example.txt 里有 4 条）。
+
+    括注是给译法加的说明，不是要上屏的字，可 Claude 会把它原样抄上屏。下面三处都不用带括注的词条：
+      * Claude 字幕请求不带它（app/translator.py 的 _subtitle_pairs）；
+      * Claude 重译和报警上下文翻译（role="strong"，Sonnet 5.5）也不带它：2026-10-20 那场 46 次重译里，
+        2 次请求带了「食欲焦虑（嘴馋）」，2 次都连括号抄上了屏；用户定「重新翻译也不带带括号的词条」；
+      * 译文兜底替换 apply() 不拿它去换残留的西语：换上去就是括号上屏（2026-10-13 那场 seq 36，那时 Claude
+        请求里还没有词表，模型把西语原句回了出来，兜底替换把两处 la ansiedad 换成了「食欲焦虑（嘴馋）」）。
+        西语残留就留在那里，和词表里没有这一条时一样。
+    不是去掉括号再用：去掉括号的译法没测过，有的括注正是那条词条要的提示（「下单满（金额，美元）」是为本地
+    模型把数字读成钱调出来的）。本地模型的提示词和 DeepL 的原生术语表照旧带着它，不在这里管。"""
+    return _BRACKET_NOTE.search(rendering) is not None
+
+
 # 一条词条来自哪一层（见 load()）。分层的理由在 HintPair。
 LAYER_PROFILE, LAYER_BRAND, LAYER_GLOBAL = "profile", "brand", "global"
 
@@ -169,10 +188,13 @@ class Glossary:
 
     def apply(self, source_text, translated):
         """译文兜底：源文里出现过的词条，若译文里没有对应中文，就把该词条的
-        西语原样残留替换成中文。只做保守替换——不确定时宁可不动。"""
+        西语原样残留替换成中文。只做保守替换——不确定时宁可不动。
+        译法带括注的词条不拿来换（见 has_bracket_note）。"""
         if not translated:
             return translated
         for _es, zh, variants in self.matching(source_text):
+            if has_bracket_note(zh):
+                continue          # 换上去就是括号上屏
             # 译文里已经有这个中文就不动，哪怕别处还残留着西语写法：中文译法若把西语
             # 原词包在里面（如「Sol Dorado 牌」），再替换会把它展开两遍。宁可漏换也不改坏
             if zh in translated:
