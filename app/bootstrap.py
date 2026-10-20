@@ -323,6 +323,18 @@ def venv_salvageable(python, ready_import=None, timeout=60):
     return False
 
 
+def rebuild_blocked_text():
+    """ensure_env 要清空重建 .venv，端口上却已经有本程序在跑：这次不清，请中控先退出它。
+    只说观察到的事和能做的事——端口上那个程序是不是正用着这个 .venv，从这边看不出来。"""
+    return L("程序已经在运行。这次打开需要重新安装运行组件，要先清空 .venv 文件夹，"
+             "正在运行的程序可能还在用它，所以这次没有安装。\n"
+             "请先退出正在运行的程序，再重新打开本程序。",
+             "The app is already running. Opening it again needs the app’s components "
+             "reinstalled, which first empties the .venv folder, and the running app may still "
+             "be using it. Nothing was installed this time.\n"
+             "Quit the running app first, then open the app again.")
+
+
 def install_dialog_text(recorded=None, actual=None, venv_existed=False,
                         requirements_only=False):
     """安装开始时给中控看的那句话。只说观察到的事：清单变了、Python 版本变了、

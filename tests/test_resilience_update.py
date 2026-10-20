@@ -1113,6 +1113,54 @@ def test_main_lets_bootstrap_decide_when_to_rebuild_the_venv():
     assert "if not usable:" not in src
 
 
+def _calls(node, name):
+    return [n for n in ast.walk(node) if isinstance(n, ast.Call)
+            and (getattr(n.func, "id", None) == name or getattr(n.func, "attr", None) == name)]
+
+
+def test_main_does_not_clear_the_venv_while_the_app_answers_on_its_port():
+    """复审 2026-10-20：ensure_env 在模块级就跑，比 main() 里「认出已有实例、复用」早。直播中
+    再双击一次，要是走到重建，venv.create(clear=True) 会把正在跑的那个用着的 site-packages
+    一起删掉。重建分支里第一件事是探端口：有本程序在跑就提示、退出，不清。"""
+    tree = ast.parse((REPO / "main.py").read_text(encoding="utf-8"))
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    ensure = funcs["ensure_env"]
+    # ensure_env 在模块级被调用：它用到的探测函数必须定义在调用之前
+    call_at = next(n.lineno for n in tree.body if isinstance(n, ast.If)
+                   and _calls(n, "ensure_env"))
+    assert funcs["_existing_instance_url"].lineno < call_at
+    rebuild_if = next(n for n in ast.walk(ensure) if isinstance(n, ast.If)
+                      and _calls(n.test, "venv_needs_rebuild"))
+    guard_at = next(i for i, s in enumerate(rebuild_if.body)
+                    if isinstance(s, ast.If) and _calls(s.test, "_existing_instance_url"))
+    create_at = next(i for i, s in enumerate(rebuild_if.body) if _calls(s, "create"))
+    dialog_at = next(i for i, s in enumerate(rebuild_if.body) if _calls(s, "_first_run_dialog"))
+    assert guard_at < dialog_at < create_at
+    guard = rebuild_if.body[guard_at]
+    assert "is_dir" in ast.unparse(guard.test) and ".venv" in ast.unparse(guard.test)
+    assert [ast.unparse(s) for s in guard.body] == [
+        "_fail_alert(bootstrap.rebuild_blocked_text())", "sys.exit(1)"]
+    # 探的端口就是 parse_args 的默认端口（双击启动用的那个）
+    probe = _calls(guard.test, "_existing_instance_url")[0]
+    port_arg = next(n for n in _calls(funcs["parse_args"], "add_argument")
+                    if n.args and getattr(n.args[0], "value", None) == "--port")
+    default = next(k.value.value for k in port_arg.keywords if k.arg == "default")
+    assert [a.value for a in probe.args] == [default]
+
+
+def test_rebuild_blocked_text_reads_in_both_languages():
+    from app import i18n
+
+    text = bootstrap.rebuild_blocked_text()
+    assert text == ("程序已经在运行。这次打开需要重新安装运行组件，要先清空 .venv 文件夹，"
+                    "正在运行的程序可能还在用它，所以这次没有安装。\n"
+                    "请先退出正在运行的程序，再重新打开本程序。")
+    english = i18n.text(text, "en")
+    assert not i18n.CJK.search(english)
+    assert english.startswith("The app is already running.")
+    assert english.endswith("Quit the running app first, then open the app again.")
+
+
 def test_log_files_are_pruned_per_kind(tmp_path):
     logs = tmp_path / "logs"
     logs.mkdir()

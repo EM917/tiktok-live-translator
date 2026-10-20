@@ -275,6 +275,14 @@ def ensure_env():
             if bootstrap.venv_needs_rebuild(usable, recorded, target_version,
                                             own_env=bootstrap.managed_env(ROOT),
                                             python=vpy, ready_import=_ready_import()):
+                # 清空之前先看端口上有没有本程序在跑：直播中再双击一次把窗口叫到前台就会走到
+                # 这里——ensure_env 在模块级就跑，比 main() 里认出已有实例早。有就不清：clear=True
+                # 会连它正用着的 site-packages 一起删掉，它之后的延迟导入全部失败，还要在直播时
+                # 联网拉约 1.4 GB。.venv 还不存在就没东西可删。8765 是 parse_args 的默认端口
+                # （这时还没解析参数），双击启动用的就是它
+                if (ROOT / ".venv").is_dir() and _existing_instance_url(8765):
+                    _fail_alert(bootstrap.rebuild_blocked_text())
+                    sys.exit(1)
                 _first_run_dialog(bootstrap.install_dialog_text(
                     recorded, here, venv_existed=recorded is not None))
                 print("[初始化] 正在创建虚拟环境（仅需一次，可能几分钟）…")
