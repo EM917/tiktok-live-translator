@@ -211,6 +211,31 @@ def _first_run_dialog(text=None):
                            "meantime."))
 
 
+def _existing_instance_url(base_port):
+    """本程序是否已在运行。是则返回其 UI 地址，否则 None。
+    用于双击两次的场景：复用已有实例，而不是再起一个后端。
+    必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
+    base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
+    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
+    import socket
+    import urllib.request
+
+    from app.instance import PROBE_BYTES, looks_like_us
+    for port in range(base_port, base_port + 10):
+        with socket.socket() as probe:
+            probe.settimeout(0.3)
+            if probe.connect_ex(("127.0.0.1", port)) != 0:
+                continue
+        url = "http://127.0.0.1:{}".format(port)
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as resp:
+                if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
+                    return url
+        except Exception:
+            pass
+    return None
+
+
 def ensure_env():
     """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。
 
@@ -242,10 +267,22 @@ def ensure_env():
             target_version = here
         else:
             # 光看路径存在不够：上次安装被中断会留下残缺的 venv，链到的 Python 被卸掉
-            # 也一样——必须实际跑一下确认，顺便拿到它现在的版本
+            # 也一样——必须实际跑一下确认，顺便拿到它现在的版本。能跑、但次版本和
+            # pyvenv.cfg 记的不一样、在这个版本下组件和 pip 又都 import 不了，也重建：原地补装
+            # 找不到 pip。组件或 pip 还在就不清（判断见 bootstrap.venv_needs_rebuild）
             usable, target_version = (bootstrap.interpreter_version(vpy)
                                       if vpy.exists() else (False, None))
-            if not usable:
+            if bootstrap.venv_needs_rebuild(usable, recorded, target_version,
+                                            own_env=bootstrap.managed_env(ROOT),
+                                            python=vpy, ready_import=_ready_import()):
+                # 清空之前先看端口上有没有本程序在跑：直播中再双击一次把窗口叫到前台就会走到
+                # 这里——ensure_env 在模块级就跑，比 main() 里认出已有实例早。有就不清：clear=True
+                # 会连它正用着的 site-packages 一起删掉，它之后的延迟导入全部失败，还要在直播时
+                # 联网拉约 1.4 GB。.venv 还不存在就没东西可删。8765 是 parse_args 的默认端口
+                # （这时还没解析参数），双击启动用的就是它
+                if (ROOT / ".venv").is_dir() and _existing_instance_url(8765):
+                    _fail_alert(bootstrap.rebuild_blocked_text())
+                    sys.exit(1)
                 _first_run_dialog(bootstrap.install_dialog_text(
                     recorded, here, venv_existed=recorded is not None))
                 print("[初始化] 正在创建虚拟环境（仅需一次，可能几分钟）…")
@@ -414,31 +451,6 @@ def parse_args():
     p.add_argument("--ui-lang", dest="ui_lang", choices=("zh", "en"), default=None,  # i18n: terminal
                    help="一次性指定界面语言，不改设置")
     return p.parse_args()
-
-
-def _existing_instance_url(base_port):
-    """本程序是否已在运行。是则返回其 UI 地址，否则 None。
-    用于双击两次的场景：复用已有实例，而不是再起一个后端。
-    必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
-    base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
-    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
-    import socket
-    import urllib.request
-
-    from app.instance import PROBE_BYTES, looks_like_us
-    for port in range(base_port, base_port + 10):
-        with socket.socket() as probe:
-            probe.settimeout(0.3)
-            if probe.connect_ex(("127.0.0.1", port)) != 0:
-                continue
-        url = "http://127.0.0.1:{}".format(port)
-        try:
-            with urllib.request.urlopen(url, timeout=1.5) as resp:
-                if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
-                    return url
-        except Exception:
-            pass
-    return None
 
 
 async def main_async(args, state=None):

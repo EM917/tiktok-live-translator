@@ -48,10 +48,14 @@ your machine. Open System Settings → Privacy & Security → Full Disk Access,
 press "+", press ⌘⇧G in the file picker, paste the path, press Return, click
 Open, and switch the new entry on; repeat for each path shown. The list shows
 the entry as `python3.x`, not under the app's name. Add Terminal too if you
-launch with Start.command. Then quit the app completely and reopen it. The path
-changes when Python is upgraded or the environment is rebuilt; the row then
-shows the new one. This only matters for rooms whose stream address TikTok
-serves to signed-in viewers. The check looks only at whether the cookie
+launch with Start.command. Then quit the app completely and reopen it. Both
+launchers start the app with the Python that built its environment (`.venv`)
+while that Python is still there at the same version, so installing or
+upgrading a different Python (for example Homebrew pulling in a newer
+`python@3.x` as a dependency) does not change the path. It changes when that
+Python itself is upgraded, moved or removed, or when the environment is
+rebuilt; the row then shows the new one. This only matters for rooms whose
+stream address TikTok serves to signed-in viewers. The check looks only at whether the cookie
 store can be read and at login cookie names, across every browser profile; it
 never decrypts and never raises a Keychain prompt. Failed resolutions record one
 of these codes in the audit log: `blocked_by_system`, `no_browser_data`,
