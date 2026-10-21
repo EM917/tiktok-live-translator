@@ -210,14 +210,18 @@ class Glossary:
         译法带括注的只换上括注前那段（screen_rendering，见 has_bracket_note），括注不上屏。"""
         if not translated:
             return translated
-        for _es, zh, variants in self.matching(source_text):
-            zh = screen_rendering(zh)
+        for _es, full, variants in self.matching(source_text):
+            zh = screen_rendering(full)
             if not zh:
                 continue          # 整条译法都在括号里：没有能上屏的字
-            # 译文里已经有这个中文就不动，哪怕别处还残留着西语写法：中文译法若把西语
-            # 原词包在里面（如「Sol Dorado 牌」），再替换会把它展开两遍。宁可漏换也不改坏
-            if zh in translated:
-                continue          # 模型已经翻对了
+            # 「模型已经翻对了」按整条译法判断：带括注的词条，模型只写了括注前那段、别处又留着西语时，
+            # 照旧把西语换掉（和改之前一样），只是换上去的不带括注。不带括注的词条 full == zh，规则不变
+            if full in translated:
+                continue
+            # 中文译法若把西语原词包在里面（如「Sol Dorado 牌」），译文里已有它时再替换会把它展开两遍。
+            # 宁可漏换也不改坏
+            if zh in translated and any(_whole_latin_word(v).search(zh) for v in variants):
+                continue
             # 译文里残留了西语原词才替换。逐个变体试——源文里是 "la moringa"，
             # 译文里残留的往往是不带冠词的 "moringa"。长的先试，避免
             # 短变体先命中把长写法切碎。

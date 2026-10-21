@@ -130,8 +130,20 @@ def test_apply_puts_only_the_text_before_the_note_on_screen():
         source = "mira el gel acme y la crema acme"
         assert g.apply(source, "看看el gel acme和la crema acme") == "看看ACME 凝胶和ACME 面霜", rendering
         assert g.apply(source, "el gel acme") == "ACME 凝胶", rendering
-        # 括注前那段已经在译文里：模型翻对了，不动（和不带括注的词条同一条规则）
-        assert g.apply(source, "ACME 凝胶，还有el gel acme") == "ACME 凝胶，还有el gel acme", rendering
+        # 模型只写了括注前那段、别处又留着西语：照旧把西语换掉（判断「翻对了」看整条译法，和改之前一样）
+        assert g.apply(source, "ACME 凝胶，还有el gel acme") == "ACME 凝胶，还有ACME 凝胶", rendering
+        # 整条译法（连括注）已经在译文里：模型照抄了，不动
+        assert g.apply(source, rendering + "，还有el gel acme") == rendering + "，还有el gel acme", rendering
+
+
+def test_apply_does_not_expand_a_bracketed_rendering_that_contains_the_spanish_word():
+    """括注前那段里含着西语原词（「Acme Sol 牌」）、译文里已经有它时，不再替换：否则会把它展开两遍。
+    和不带括注的词条同一条保护。虚构品牌 acme。"""
+    from app.glossary import Glossary, parse
+
+    g = Glossary(parse("acme sol | el acme sol => Acme Sol 牌（凝胶）"))
+    source = "mira el acme sol"
+    assert g.apply(source, "Acme Sol 牌，还有el acme sol") == "Acme Sol 牌，还有el acme sol"
 
 
 def test_apply_leaves_a_note_the_model_wrote_itself_alone():
