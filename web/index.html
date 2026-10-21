@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=47">
+  <link rel="stylesheet" href="/static/style.css?v=48">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -47,26 +47,23 @@
       <span id="active-brand-tag" class="active-brand-tag hidden"></span>
     </div>
     <div class="controls">
-      <label class="ctl" title="目标语言" data-en-title="Translate to">
-        <span class="ctl-text" data-en="Translate to">目标语言</span>
+      <!-- 字幕译成哪种语言。界面语言不在这里，在「设置 > 界面语言」（#ui-lang-select）：用户 2026-10-20
+           把这个下拉当成界面语言切成过 English，所以标签不叫「目标语言」，改叫「字幕译成」，只列四种
+           （简体中文、繁体中文、英语、西语）。设置里存着别的语言、或者 --target 指定了别的语言时，
+           app.js showTargetLang 补一项把它显示出来（live-ui.js targetLangExtra），后端照旧什么语言都收。
+           标签在直播中窄窗口（≤1080px）省掉，首页一直露出来（style.css） -->
+      <label class="ctl" title="字幕译成这种语言。界面语言在「设置 > 界面语言」里改"
+             data-en-title="Captions are translated into this language. To change the app language, go to Settings > App Language.">
+        <span class="ctl-text" data-en="Captions in">字幕译成</span>
         <!-- 固定 aria-label：.ctl-text 在窄宽度（≤1080px）会被隐藏，不依赖它做可访问名称
              （和同一行 #font-size 的 aria-label="字幕字号" 保持同一种更稳的写法）。
              translate="no"：选项是各语言的自称，属于数据，哪种界面语言都不翻；只豁免选项文字，
              select 自己的 aria-label 照常要英文（spec §4.1 R7） -->
-        <select id="target-lang" aria-label="目标语言" data-en-aria-label="Translate to" translate="no">
+        <select id="target-lang" aria-label="字幕译成" data-en-aria-label="Captions in" translate="no">
           <option value="zh-CN">中文（简体）</option>
           <option value="zh-TW">中文（繁體）</option>
           <option value="en">English</option>
-          <option value="ja">日本語</option>
-          <option value="ko">한국어</option>
           <option value="es">Español</option>
-          <option value="fr">Français</option>
-          <option value="de">Deutsch</option>
-          <option value="ru">Русский</option>
-          <option value="pt">Português</option>
-          <option value="vi">Tiếng Việt</option>
-          <option value="th">ไทย</option>
-          <option value="id">Bahasa Indonesia</option>
         </select>
       </label>
       <!-- 字号：小 A —— 滑块 —— 大 A（苹果「图书」的做法），省掉「字号」两个字 -->
@@ -777,8 +774,8 @@
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=3"></script>
-  <script src="/static/live-ui.js?v=5"></script>
+  <script src="/static/live-ui.js?v=6"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/app.js?v=76"></script>
+  <script src="/static/app.js?v=77"></script>
 </body>
 </html>

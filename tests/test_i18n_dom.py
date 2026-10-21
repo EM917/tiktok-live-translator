@@ -667,15 +667,37 @@ def test_guard_chinese_pages_are_chinese(dom, name):
         assert text in html, "{}：页面上没有「{}」".format(name, text)
 
 
+def _caption_menu_problems(dom, base, width, got):
+    """直播中量顶栏的几条共用：「字幕译成」下拉是不是场景要量的那个样子。
+    名字带 S.EXTRA 后缀的场景目标在四种以外：下拉必须真的补了一项、选中它，而且比同一宽度、目标在四种之内的
+    那份场景宽（约 144 对 116px，docs/i18n-style.md §4.1）——否则这份场景量的仍是 116px，那 28px 等于没量。
+    其余场景目标在四种之内，不该有补出来的那一项。"""
+    problems = []
+    extra = got[S.TARGET_EXTRA_SELECTED]
+    if not base.endswith(S.EXTRA):
+        if extra is not None:
+            problems.append("目标在四种之内，下拉不该有补出来的那一项 {}".format(extra))
+        return problems
+    if extra is None:
+        problems.append("当前目标 {} 不在四种里，下拉该补一项并选中它".format(S.EXTRA_TARGET))
+    menu = got["#target-lang"]
+    plain = dom.scan("{}@{}".format(base[:-len(S.EXTRA)], width))["measure"]["#target-lang"]
+    if not (menu and plain and menu["width"] > plain["width"]):
+        problems.append("补了一项的下拉应比只有四种时宽：{} 对 {}".format(menu, plain))
+    return problems
+
+
 @needs_chrome
 @needs_mac
-@pytest.mark.parametrize("base", ("live-full", "live-float"))
+@pytest.mark.parametrize("base", S.LIVE_BASES)
 @pytest.mark.parametrize("width", S.LIVE_WIDTHS + S.NARROW_WIDTHS)
 def test_live_top_bar_fits(dom, base, width):
     """live-full 在各档窗口宽度下：顶栏整行不溢出；状态字、「换主播」确认按钮不被截；
     品牌标签留得出宽度。860/720 两档只看顶栏（spec §12.3 第 7 条）。
     live-float 是同一个场景加上窗口模式才有的「浮窗」按钮（顶栏多 36px，字号滑块收窄 24px 抵消，
-    见 web/style.css）：下限和 live-full 一样，这是窗口模式（所有人的默认模式）真实的顶栏。"""
+    见 web/style.css）：下限和 live-full 一样，这是窗口模式（所有人的默认模式）真实的顶栏。
+    -extra 的两个是同一场景、当前目标换成四种以外的 id：「字幕译成」下拉补了一项，是它最宽的样子（约 144px，
+    只有四种时约 116px）。§4.1/§4.2 的余量按 144 算，存着 id / vi / pt 的中控直播中看到的就是这个顶栏。"""
     result = dom.scan("{}@{}".format(base, width))
     got = result["measure"]
     problems = []
@@ -704,6 +726,39 @@ def test_live_top_bar_fits(dom, base, width):
         floor = 100 if width == 1000 else 120 if 1101 <= width <= 1199 else 0
         need(brand and brand["width"] >= floor,
              "#active-brand-tag 窄于 {}px {}".format(floor, brand))
+    problems.extend(_caption_menu_problems(dom, base, width, got))
+    assert not problems, "\n".join(problems)
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("base", ("home-idle", "home-zh"))
+@pytest.mark.parametrize("width", S.HOME_WIDTHS)
+def test_home_top_bar_says_what_the_caption_menu_is_for(dom, base, width):
+    """待机首页的顶栏（用户 2026-10-20 在默认 1000px 的首页把这个下拉当成了界面语言）：
+    标签「Captions in / 字幕译成」每一档都露出来（直播中 ≤1080px 才省掉，web/style.css），顶栏不溢出，
+    状态字不被截。home-zh 的当前目标是四种以外的 id：浏览器里下拉确实补了一项并选中它（也是它最宽的样子）；
+    home-idle 的目标是 en，在四种之内，没有补的那一项。"""
+    result = dom.scan("{}@{}".format(base, width))
+    got = result["measure"]
+    problems = []
+
+    def need(ok, what):
+        if not ok:
+            problems.append(what)
+
+    need(result["viewport"]["width"] == width, "窗口不是 {}px 宽：{}".format(width, result["viewport"]))
+    bar, status, label = got[".topbar"], got[".status-text"], got[".ctl-text"]
+    need(bar and bar["scrollWidth"] <= bar["clientWidth"], ".topbar 溢出 {}".format(bar))
+    need(status and status["textWidth"] <= status["innerWidth"] + 0.01,
+         ".status-text 文字比盒子宽（省略号已出现） {}".format(status))
+    need(label and label["width"] > 20, "「字幕译成」标签没露出来 {}".format(label))
+    need(label and label["right"] <= result["viewport"]["width"], "「字幕译成」标签出了窗口 {}".format(label))
+    extra = got[S.TARGET_EXTRA_SELECTED]
+    if base == "home-zh":
+        need(extra is not None, "当前目标 {} 不在四种里，下拉该补一项并选中它".format(S.HOME_ZH_TARGET))
+    else:
+        need(extra is None, "目标在四种之内，下拉不该有补出来的那一项 {}".format(extra))
     assert not problems, "\n".join(problems)
 
 
@@ -722,12 +777,15 @@ ZH_FLOAT_SHAPE = {1000: (True, False), 1100: (True, False), 1101: (False, True),
 
 @needs_chrome
 @needs_mac
+@pytest.mark.parametrize("base", S.ZH_QUIET_BASES)
 @pytest.mark.parametrize("width", S.ZH_FLOAT_WIDTHS)
-def test_zh_float_button_shows_its_label_where_it_fits(dom, width):
+def test_zh_float_button_shows_its_label_where_it_fits(dom, base, width):
     """报警关着的中文直播顶栏（品牌 Bella All Natural，和 §4.2 的余量表同一个基线）：
     顶栏不溢出、状态字不被截（中文页的品牌标签只比状态胶囊先缩一倍，余量为负时主播名先被截）、品牌标签下限同英文页、
-    「浮窗」两个字和图标露不露出符合表里的宽度范围，只有字的按钮约 46px 宽。"""
-    result = dom.scan("live-float-zh-quiet@{}".format(width))
+    「浮窗」两个字和图标露不露出符合表里的宽度范围，只有字的按钮约 46px 宽。
+    -extra 是同一场景、当前目标是四种以外的 id，下拉约 144px：§4.2 的余量表按它算，1101px 只有图标时只剩约 +2px
+    （web/style.css 1101–1139px 再收 8px 滑块就是在 144px 的下拉上量出来的）。"""
+    result = dom.scan("{}@{}".format(base, width))
     got = result["measure"]
     label_shown, icon_shown = ZH_FLOAT_SHAPE[width]
     problems = []
@@ -755,15 +813,20 @@ def test_zh_float_button_shows_its_label_where_it_fits(dom, width):
         need(button and 40 <= button["width"] <= 52, "只有字的按钮应约 46px 宽 {}".format(button))
     body = _body_classes(result["dom"])
     need("has-float-btn" in body and "has-alert-tag" not in body, "body 的类不对（该有 has-float-btn、没有 has-alert-tag）：{}".format(body))
+    problems.extend(_caption_menu_problems(dom, base, width, got))
     assert not problems, "\n".join(problems)
 
 
 @needs_chrome
 @needs_mac
-def test_zh_float_button_gives_way_to_the_alert_tag(dom):
+@pytest.mark.parametrize("base", S.ZH_FULL_BASES)
+def test_zh_float_button_gives_way_to_the_alert_tag(dom, base):
     """满编（报警开、长品牌名）的中文 1000px：「报警开」标签亮着，body 带 has-alert-tag，「浮窗」退回只有图标。
-    不断言状态字不被截：这一档在没有浮窗按钮时就只有 −4px，只有图标的按钮再多 −12px（§4.2），这一条不是这次引入的。"""
-    result = dom.scan("live-float-zh@1000")
+    不断言状态字不被截：这一档在没有浮窗按钮时就只有 −4px，只有图标的按钮再多 −12px（§4.2），这一条不是这次引入的。
+    -extra 是同一场景、目标在四种以外，下拉约 144px（§4.2 的账按它算）。"""
+    result = dom.scan("{}@1000".format(base))
+    menu_problems = _caption_menu_problems(dom, base, 1000, result["measure"])
+    assert not menu_problems, "\n".join(menu_problems)
     got = result["measure"]
     body = _body_classes(result["dom"])
     assert "has-alert-tag" in body and "has-float-btn" in body, "body 的类不对：{}".format(body)
@@ -976,6 +1039,57 @@ def test_the_float_button_scenario_differs_from_live_full_only_by_the_config_key
     for width in S.LIVE_WIDTHS + S.NARROW_WIDTHS:       # 每档宽度两个基础场景都有
         assert built["live-float@{}".format(width)]["size"][0] == width
         assert built["live-full@{}".format(width)]["size"][0] == width
+
+
+def test_the_home_scenarios_carry_a_target_inside_and_one_outside_the_four(tmp_path):
+    """不开 Chrome：首页顶栏那条 G10 的两个基础场景。home-idle 是英文页、目标 en（四种之一）；home-zh 是中文页、
+    目标 id（四种以外，web/live-ui.js targetLangExtra 要补的那种）。每档宽度都有，补出来的那一项量得到。"""
+    built = S.build(tmp_path)
+    four = ("zh-CN", "zh-TW", "en", "es")
+    idle, zh = built["home-idle"], built["home-zh"]
+    assert (idle["lang"], zh["lang"]) == ("en", "zh")
+    assert idle["messages"][0]["config"]["target_lang"] in four
+    assert zh["messages"][0]["config"]["target_lang"] == S.HOME_ZH_TARGET
+    assert S.HOME_ZH_TARGET not in four
+    assert zh["messages"][0]["config"]["status"]["state"] == "idle"
+    for base in ("home-idle", "home-zh"):
+        for width in S.HOME_WIDTHS:
+            sc = built["{}@{}".format(base, width)]
+            assert sc["size"][0] == width and S.TARGET_EXTRA_SELECTED in sc["measure"]
+
+
+def test_every_live_top_bar_scenario_has_a_copy_with_the_widest_caption_menu(tmp_path):
+    """不开 Chrome：直播中量顶栏的每个基础场景（live-full、live-float、live-float-zh、live-float-zh-quiet）都有一份
+    名字带 S.EXTRA 后缀的，只差 hello 里的 target_lang——四种以外的 id，页面给下拉补一项 Bahasa Indonesia，
+    是它最宽的样子。2026-10-20 以前 13 种一直都在下拉里，这些场景量的都是这个宽度；只列四种以后，
+    基础场景的目标是 en，少量了约 28px。之后的消息里也没有 config 改目标（不然页面会把补的那项撤掉），
+    每档宽度两份都有，补出来的那一项和下拉都量得到。"""
+    built = S.build(tmp_path)
+    four = ("zh-CN", "zh-TW", "en", "es")
+    assert S.EXTRA_TARGET not in four and S.HOME_ZH_TARGET == S.EXTRA_TARGET
+    groups = ((S.LIVE_BASES, S.LIVE_WIDTHS + S.NARROW_WIDTHS), (S.ZH_FULL_BASES, (1000,)),
+              (S.ZH_QUIET_BASES, S.ZH_FLOAT_WIDTHS))
+    plain_names = []
+    for bases, widths in groups:
+        plain = [b for b in bases if not b.endswith(S.EXTRA)]
+        assert sorted(bases) == sorted(plain + [b + S.EXTRA for b in plain]), bases
+        plain_names += plain
+        for name in bases:
+            for width in widths:
+                sc = built["{}@{}".format(name, width)]
+                assert sc["size"][0] == width
+                assert {S.TARGET_EXTRA_SELECTED, "#target-lang"} <= set(sc["measure"])
+    assert plain_names == ["live-full", "live-float", "live-float-zh", "live-float-zh-quiet"]
+    for name in plain_names:
+        plain, extra = built[name], built[name + S.EXTRA]
+        assert plain["messages"][0]["type"] == extra["messages"][0]["type"] == "hello"
+        assert plain["messages"][0]["config"]["target_lang"] in four
+        assert extra["messages"][0]["config"]["target_lang"] == S.EXTRA_TARGET
+        same = json.loads(json.dumps(extra))
+        same["name"] = plain["name"]
+        same["messages"][0]["config"]["target_lang"] = plain["messages"][0]["config"]["target_lang"]
+        assert same == plain
+        assert not [m for m in extra["messages"][1:] if m.get("type") == "config" and "target_lang" in m]
 
 
 def test_the_chinese_float_scenarios_differ_from_the_chinese_control_only_where_they_say(tmp_path):

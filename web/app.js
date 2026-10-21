@@ -556,6 +556,31 @@
     send({ type: "set_target", value: targetSel.value });
   });
 
+  // 「字幕译成」下拉显示服务端说的当前目标（hello 和 config 广播）。下拉只列四种（index.html）；
+  // 当前目标不在里面时（settings.json 里存着以前选的日语、--target ja 启动）照 targetLangExtra
+  // （live-ui.js）补一项、标 data-extra，选中它——直接写 value 的话，没有这一项的下拉会显示成空白或
+  // 第一项，看着像在出简体中文。换回四种之一以后，补的那项撤掉：下拉里只有四种加「此刻正在用的那一种」
+  function showTargetLang(code) {
+    var value = code == null ? "" : String(code);
+    if (!value) return;
+    var opts = [];
+    for (var i = 0; i < targetSel.options.length; i++) opts.push(targetSel.options[i]);
+    var present = false;
+    opts.forEach(function (opt) {
+      if (opt.value === value) present = true;
+      else if (opt.getAttribute("data-extra") !== null) targetSel.removeChild(opt);
+    });
+    var extra = targetLangExtra(value);
+    if (extra && !present) {
+      var added = document.createElement("option");
+      added.value = extra.value;
+      added.textContent = extra.text;
+      added.setAttribute("data-extra", "1");
+      targetSel.appendChild(added);
+    }
+    targetSel.value = value;
+  }
+
   // 「清空字幕」按钮本身，以及停止后停留在待机首页的「上一场字幕」小标题，
   // 都只在 #history 里确实还有 .cap 时才该出现（pm.md #8、designer.md #6）。
   // 两处判断条件不同（前者不看是不是首页，后者只在首页才显示），抽成一个
@@ -1021,7 +1046,7 @@
           }
           drawIncidents();
           if (msg.config.status) setStatus(msg.config.status);
-          if (msg.config.target_lang) targetSel.value = msg.config.target_lang;
+          if (msg.config.target_lang) showTargetLang(msg.config.target_lang);
           if (msg.config.source_lang && !sourceTouched) selectSourceLang(msg.config.source_lang);
           if (msg.config.glossary_migration) {
             handleMigration({ stage: "available",
@@ -1085,7 +1110,7 @@
       case "config":
         // 另一个窗口调了字幕字号（或本页松手后服务端的回执）：本页没动过滑块就跟上
         if (msg.caption_size != null) adoptCaptionSize(msg.caption_size);
-        if (msg.target_lang) targetSel.value = msg.target_lang;
+        if (msg.target_lang) showTargetLang(msg.target_lang);
         if (msg.source_lang && !sourceTouched) selectSourceLang(msg.source_lang);
         // 同一条 config 广播里 room_url 和 brands 一起到达时，room_url 要先填
         // 进输入框——换了主播的第二个页面靠它才能刷新出正确的默认品牌，

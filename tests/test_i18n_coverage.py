@@ -258,10 +258,10 @@ def test_html_text_and_attributes_need_their_english():
 def test_translate_no_exempts_the_subtree_but_not_its_own_attributes():
     """R7：数据区里的文字和子孙的属性不翻；元素自己的 title/aria-label 照样要英文。"""
     src = '''
-        <select id="target-lang" aria-label="目标语言" translate="no">
+        <select id="target-lang" aria-label="字幕译成" translate="no">
           <option value="zh-CN" title="简体">中文</option>
         </select>
-        <select aria-label="目标语言" data-en-aria-label="Translate to" translate="no">
+        <select aria-label="字幕译成" data-en-aria-label="Captions in" translate="no">
           <option value="ja">日本語</option>
         </select>
     '''

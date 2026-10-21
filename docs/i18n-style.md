@@ -31,7 +31,7 @@
    不写 please、simply、successfully、Oops、Sorry，也不用感叹号。
 3. **同一个概念只用一个词。** 第 1 节术语表说了算，改词要先改表。
 4. **界面文字会英文化，数据不动。** 这些原样保留：@用户名、品牌名、词表和违禁词内容、
-   目标语言下拉（它的选项本来就是各语言的自称）、文件名、HTTP 状态码、模型名、终端输出、审计 JSONL。
+   「字幕译成」下拉（它的选项本来就是各语言的自称）、文件名、HTTP 状态码、模型名、终端输出、审计 JSONL。
 5. **不拼句子。** 每一句都是带命名占位符的完整模板（`{streamer}`、`{n}`），
    计数用 ICU plural（one/other），不要写 `"Clear " + noun` 这种拼接。
 
@@ -120,9 +120,9 @@
 | 正在用 / 本程序 / 非本程序 | **In use / This app / Not this app** | Other | 「非本程序」的意思是「不一定是别人的」，照字面翻最诚实 |
 | 更新 / 一键更新 / 更新说明 | **Update / Update Now / Release Notes** | Upgrade | |
 | 设置 | **Settings** | Preferences | |
-| 目标语言 | **Translate to**（标签），正文写 **target language** | Target Language（标签） | |
+| 字幕译成（顶栏下拉：字幕译成哪种语言；2026-10-20 以前叫「目标语言」） | **Captions in**（标签、aria-label）；tooltip 写 **Captions are translated into this language. To change the app language, go to Settings > App Language.**；正文写 **the language captions are translated into**，参数说明里可以简写 **caption language** | Translate to, Target Language, Language | 用户 2026-10-20 把旧标签「目标语言 / Translate to」当成了界面语言，切成 English 等界面变。标签要一眼读得出管的是字幕：标签连着选项读就是 “Captions in English”「字幕译成 English」。只写 Language 会和界面语言（App Language）分不开。中文 tooltip 是「字幕译成这种语言。界面语言在「设置 > 界面语言」里改」 |
 | 主播语言 | **Spoken language** | Source language, Streamer language | 说的是「识别听哪种语言」，普通用户能懂；source 是翻译行业的行话 |
-| 界面语言（新加的设置） | **App Language** | Language, Display Language | 必须和 Translate to 一眼就能分开 |
+| 界面语言（新加的设置） | **App Language** | Language, Display Language | 必须和顶栏的 Captions in 一眼就能分开 |
 | 跟随系统 | **System ({resolved})**，如 “System (English)” | Auto, Default | |
 | 二维码 | **QR code** | QR | |
 | 局域网地址 | **local network address** | LAN IP, intranet address | |
@@ -141,13 +141,13 @@
 `Ollama`、`Hy-MT2 1.8B/7B`、`TranslateGemma`、`MLX Whisper large-v3-turbo`、`faster-whisper`、
 `ffmpeg`、`yt-dlp`、`TikTokLive 7.0.2`、`Safari`、`banned_terms.txt`、`glossary.txt`、
 `profiles/`、`brands/`、`logs/`、`.flv`、`.m3u8`、`HTTP 429`、`code 4003110`、
-目标语言下拉的 13 个选项、违禁词和词表内容、报警里的 `msg.term`。
+「字幕译成」下拉的选项（四种，加上设置里存着别的语言时补出来的那一项）、违禁词和词表内容、报警里的 `msg.term`。
 
 ### 1.5 设计过程中出现过、现在不用的词
 
 三份实现方案里与本表冲突的写法一律不用：**prohibited term**（用 banned term）、**Phone view**（用 Phone Viewing）、
 **Self-check**（用 Startup Check）、**报警分级**里的 **Possible**（报警分级一律用 Exact / Variant / Similar）、
-**Start translating**（按钮就叫 Start）。
+**Start translating**（按钮就叫 Start）、**Translate to**（顶栏下拉的旧标签，2026-10-20 起叫 Captions in，见 §1）。
 
 **Possible 的两处用法，别混：**
 
@@ -228,7 +228,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 按钮、顶栏按钮、链接式按钮、二段确认的武装态 | Title Case | Start, Stop, Switch Streamer, Copy Link, Click Again to Clear, Update Now, Release Notes |
 | 浮层 / 面板标题、分组标题、设置行名、自检项名 | Title Case | Phone Viewing, Recent Streams, Settings, Startup Check, Noise Reduction |
 | 下拉菜单项 | 项名用 Title Case，括号里的补充说明用小写开头 | Spanish + English (default), Local Hy-MT2 7B (more accurate, uses more memory) |
-| 控件左边的字段标签 | Sentence case | Spoken language, Brand, Translate to |
+| 控件左边的字段标签 | Sentence case | Spoken language, Brand, Captions in |
 | 开关 / 复选框标签 | Sentence case | Show alert on match |
 | 状态文字、胶囊、标签、设置行右侧的摘要 | Sentence case | Live, Stream ended, Alerts on, All passed, Off · 53 terms, In use |
 | 说明、提示条、横幅、错误、对话框正文、通知正文 | Sentence case，完整句子带句号 | The previous session’s captions are below. |
@@ -451,7 +451,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 18 | app.js:878 | 直播中 · @x / 连接中… · @x | Live · @x / Connecting… · @x | 胶囊整体 170 → 159 / 179 → 211 |
 | 19 | app.js:2240 | 报警开 | Alerts on | 52 → 74（含内边距），见 §4 R6 |
 | 20 | app.js:2262 | 品牌 · {name} | Brand · {name} | 143 → 154 |
-| 21 | index.html:47–51 | 目标语言（标签 / title / aria） | Translate to | 这个标签在 ≤1080px 时隐藏；52 → 74 |
+| 21 | index.html:55–62 | 字幕译成（标签 / aria）；title 见 §1 | Captions in | 2026-10-20 由「目标语言 / Translate to」改名。直播中 ≤1080px 时隐藏，首页一直露出；52 → 68（G10 实测，旧的 Translate to 是 74） |
 | 22 | index.html:68–70 | 字幕字号（title / aria） | Caption size | |
 | 23 | index.html:76 | 清空字幕 | **Clear** | 76 → 56。“Clear Captions” 要 114，放不下，见 §4 |
 | 24 | index.html:76 title | 清空历史字幕 | Clear caption history | |
@@ -640,7 +640,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 
 - `.controls` 设了 `flex:none`，不缩也不折行；
 - 左边 `.brand` 可以缩：品牌标签先缩（`flex-shrink:2`，最小 48px），再缩状态胶囊（省略号）；
-- ≤1100px 时「手机同看」只剩图标加人数；≤1080px 时隐藏「目标语言」四个字；≤600px 才允许折行。
+- ≤1100px 时「手机同看」只剩图标加人数；直播中 ≤1080px 时隐藏「字幕译成」四个字（首页一直露出，见 §4.2 最后一条）；≤600px 才允许折行。
 
 | 项 | 中文 px | 英文 px（推荐方案） | 说明 |
 |---|---:|---:|---|
@@ -649,7 +649,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 状态胶囊（点 + 文字 + 内边距） | 170 | 159 | “Live · @bellaallnatural” 比中文还窄 |
 | gap | 8 | 8 | |
 | 品牌标签（上限 160） | 143 | 154 | “Brand · Bella All Natural” |
-| 目标语言下拉 | 144 | 144 | 选项都是各语言的自称，最宽的一项是 “Bahasa Indonesia”，**不受界面语言影响** |
+| 「字幕译成」下拉 | 144 | 144 | 选项都是各语言的自称，**不受界面语言影响**。这一列是 2026-10-20 以前 13 种时量的，最宽的一项是 “Bahasa Indonesia”。现在只列四种，下拉是 116（G10 实测）；设置里存着四种以外的语言时会补一项，最宽的补出来的仍是 Bahasa Indonesia，回到 144。所以本表按 144 算的是上限。直播中的 G10 两种都量：`live-full@宽度`、`live-float@宽度` 等目标是 en（116），同名加 `-extra` 的目标是 id（144，下拉补了一项并选中它） |
 | 字号控件（小 A + 滑块 + 大 A + 左右 margin） | 146 | 146 | 如果英文版隐藏两个 A，这里是 112 |
 | 清空字幕 | 76 | **56**（Clear） | “Clear Captions” 要 114 |
 | 手机同看（图标 + 人数） | 40 | 40 | 没有文字，不受影响 |
@@ -674,7 +674,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 
 ### 4.2 其它宽度区间
 
-- **1081–1100px**：「Translate to」标签露出来（+80）。controls 703，左侧可用 330，**刚好放下**（+9）。
+- **1081–1100px**：标签露出来（当时是 Translate to，+80；现在的 Captions in 窄 6px）。controls 703，左侧可用 330，**刚好放下**（+9）。
 - **1101–1199px（英文专属风险）**：「手机同看」按钮露出文字。
   - 宽度从 40 变成 145（“Phone Viewing · 2”）；打开但没人看时（“Phone Viewing · On”）是 154。
   - 1101px 时 controls 808，左侧只剩 245，品牌标签被压到约 78px。
@@ -683,7 +683,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
     即 ≤1199px 时只留图标。1200px 时 controls 817，可用 335，放得下。
 - **「浮窗」按钮（桌面应用窗口模式的直播中）**：多一颗 28px 的图标按钮，加间距 8px，顶栏多 36px。1000px 时英文版品牌标签只有
   约 25px 余量（G10 的下限 100px），所以按钮露出时 `body.has-float-btn` 把字号滑块从 96px 收到 72px（<1400px），省回 24px；
-  英文版文字窄于 1400px 视觉隐藏（读屏照念）。G10 的 `live-float@宽度` 场景用同一组下限量这个真实的顶栏。
+  英文版文字窄于 1400px 视觉隐藏（读屏照念）。G10 的 `live-float@宽度` 场景用同一组下限量这个真实的顶栏，`live-float-extra@宽度` 再量一遍下拉最宽（144px）的样子。
 - **中文版的「浮窗」两个字（用户 2026-10-16 定：「中文尽量显示字」）**：放得下就露字，放不下才退回只有图标；英文版不动。
   - **做法：窄于 1400px 时去掉图标、只留文字。** 图标加文字是 63px（7 + 16 + 4 + 26 + 10），比只有图标的 28px 多 35px，
     默认窗口上只剩 +9px 的余量（见下表「图标 + 字」）；只留字、左右内边距各 10px 是 46px，只多 18px。
@@ -701,7 +701,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
     |---:|---:|---:|---:|---:|
     | 1000 | +56 | +44 | **+9** | **+26** |
     | 1080 | +136 | +124 | +89 | +106 |
-    | 1081（「目标语言」露出，+80） | +57 | +45 | +10 | +27 |
+    | 1081（「字幕译成」露出，+80） | +57 | +45 | +10 | +27 |
     | 1100 | +76 | +64 | +29 | +46 |
     | 1101（「手机同看」露出文字，+63） | +14 | +2 | −33 | **−16** |
     | 1117 | +30 | +18 | −17 | 0 |
@@ -715,12 +715,18 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
     加字是 −34px。这是这个分支原来就有的情况（浮窗按钮只有图标时，中文 1000px 报警开着是 −16px，主播名最多被截约 6px），
     不是这次引入的；报警目前搁置（默认关），所以这里没有去改版面，只是不让它更糟，**也没有断言它**：
     G10 的 `live-float-zh@1000` 只断言顶栏不溢出、字没露出、品牌标签 ≥100px。
-  - **G10**：`live-float-zh-quiet@宽度`（报警关、品牌 “Bella All Natural”，和上表同一个基线）在 1000、1100、1101、1140、1399、1400px
+  - **G10**：`live-float-zh-quiet@宽度`（报警关、品牌 “Bella All Natural”，和上表同一个基线）和目标在四种以外、下拉 144px 的 `live-float-zh-quiet-extra@宽度`（上表就是按 144 算的）在 1000、1100、1101、1140、1399、1400px
     量：顶栏不溢出、状态字不被截、品牌标签下限同英文（1000px ≥100，1101–1199px ≥120）、「浮窗」两个字和图标露不露出符合上表、
-    只有字的按钮宽度 40–52px。`live-float-zh@1000` 是满编（报警开、长品牌名）的那一档。**这些宽度只在 CI 的 macOS 跑器上量，
+    只有字的按钮宽度 40–52px。1101–1139px 这一段样式不变、越宽余量越多，最紧的是 1101，所以 1117、1139 不另量。
+    `live-float-zh@1000`（和 `live-float-zh-extra@1000`）是满编（报警开、长品牌名）的那一档。**这些宽度只在 CI 的 macOS 跑器上量，
     写这条时没有量过**：1140px（+23）和 1000px（+26）若实测偏窄几个像素，可调的是内边距（10 → 8px，省 4px）和 1140 这个起点。
 - **≤860 / ≤720 / ≤600**：两种语言都靠现有断点逐级收起，英文版不会更糟。
   600px 以下本来就允许折行。
+- **首页的「字幕译成」标签（用户 2026-10-20）**：首页（`body.home`：待机、已结束、出错）在任何宽度都露出这四个字 / Captions in，
+  直播中仍是 ≤1080px 才省掉。起因是用户在默认 1000px 的首页只看到一个写着「中文（简体）」的下拉，把它当成了界面语言。
+  首页顶栏只有状态胶囊、标签、下拉、「手机同看」图标（停止后还有「清空字幕」），没有字号滑块、品牌标签和换主播：
+  G10 实测标签英文 68px、中文 52px，下拉 116px（补了 Bahasa Indonesia 时 144px），1000 / 860 / 720px 三档都不溢出。
+  G10 的 `home-idle@宽度`（英文，目标 en）和 `home-zh@宽度`（中文，目标是四种以外的 id，下拉补了一项并选中它）钉着。
 
 ### 4.3 风险清单（按优先级）
 

@@ -18,7 +18,11 @@ page — is in English or Chinese.
 - `python3 main.py --ui-lang en` (or `zh`) sets the language for one launch
   and saves nothing.
 - On a new install with an English interface, captions are translated into
-  English until you choose another language in the top bar.
+  English until you choose another language in the Captions in menu in the
+  top bar.
+- The Captions in menu sets only the language captions are translated into
+  (Simplified Chinese, Traditional Chinese, English or Spanish). It doesn't
+  change the interface, and App Language doesn't change the captions.
 - Phone Viewing pages follow each phone's own language, with a toggle at the
   bottom of the page.
 - The app name in the Dock, the menu bar and ⌘Tab follows the macOS system
