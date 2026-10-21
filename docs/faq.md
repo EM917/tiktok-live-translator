@@ -205,17 +205,18 @@ WAV of the segment plus 2 s before and 1 s after, with a line in `index.jsonl` t
 recognition output. It is the stream's mixed audio, so anyone else on the stream and the
 background music are in it too. The clips stay on this computer: nothing uploads them, sends
 them to an API or puts them in an export, and `logs/` is not in git. Once the folder passes
-300 MB, 2000 files or 14 days, the oldest sessions are removed first; the current session is
-never removed. This is checked when a session starts, so clips older than 14 days stay until
-the next session. Settings → Storage shows the folder and can delete it. Saving runs off the
+1 GB (1024 MB), 6000 files or 14 days, the oldest sessions are removed first; the current
+session is never removed. This is checked when a session starts, so clips older than 14 days
+stay until the next session. Settings → Storage shows the folder and can delete it. Saving runs off the
 recognition path, and a failed write only prints a warning in the terminal. Turn it off with
 `"asr_evidence": false` in `settings.json` or the environment variable `TLT_ASR_EVIDENCE=0`.
 Turning it off stops new clips; clips already saved stay until the limits remove them at a
 session start, or until you delete them in Storage.
-The limits are `asr_evidence_max_mb`, `asr_evidence_max_files`, `asr_evidence_days`,
-`asr_evidence_ring_sec` (recent audio kept in memory, 600 by default) and
-`asr_evidence_control_every` (50; `0` saves no comparison segments). They are read when a
-session starts.
+The limits are `asr_evidence_max_mb` (1024 by default), `asr_evidence_max_files` (6000),
+`asr_evidence_days` (14), `asr_evidence_ring_sec` (recent audio kept in memory, 600 by default)
+and `asr_evidence_control_every` (50; `0` saves no comparison segments). They are read when a
+session starts. To keep less, write a smaller number in `settings.json`, for example
+`"asr_evidence_max_mb": 300`.
 
 <a id="recognition-risk"></a>**Recognition risk records, and switching them off.** Each
 segment in the audit log has an `asr` object that holds only numbers and short codes: segment
