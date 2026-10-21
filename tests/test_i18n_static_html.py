@@ -124,8 +124,8 @@ def test_leftover_chinese_is_reported_with_where_it_is():
 def test_translate_no_skips_text_but_not_its_own_attributes():
     src = '''
         <html lang="zh-CN"><body>
-        <select aria-label="目标语言" translate="no"><option title="简体">中文</option></select>
-        <select aria-label="目标语言" data-en-aria-label="Translate to" translate="no">
+        <select aria-label="字幕译成" translate="no"><option title="简体">中文</option></select>
+        <select aria-label="字幕译成" data-en-aria-label="Captions in" translate="no">
           <option>日本語</option>
         </select>
         <div translate="no"><span>主播名</span></div>

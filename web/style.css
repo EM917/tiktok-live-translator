@@ -441,12 +441,16 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
 
 input[type="range"] { accent-color: var(--blue); width: 96px; }
 
-/* 窄窗口：顶栏先省掉「目标语言」四个字（下拉本身有 title），再让控件整行换到第二行。
+/* 窄窗口：顶栏先省掉「字幕译成」四个字（下拉本身有 title 和 aria-label），再让控件整行换到第二行。
    1080 这个阈值的依据：直播中顶栏满编（品牌区 + 状态胶囊 + 报警标签 + 控件簇）
    实测约需 1030–1060px（da4d4dc 提交说明，designer.md #3、pm.md #4 的像素量法），
-   留出一点余量，在真正挤到下一行之前先把这四个字省掉（engineer.md #8） */
+   留出一点余量，在真正挤到下一行之前先把这四个字省掉（engineer.md #8）。
+   首页（body.home：待机 / 已结束 / 出错）例外，标签一直露出来：用户 2026-10-20 在默认 1000px 的首页
+   只看到一个写着「中文（简体）」的下拉，当成了界面语言。首页顶栏只有状态胶囊、这个下拉、「手机同看」
+   图标（停止后还有「清空字幕」），放得下；G10 的 home-idle@宽度、home-zh@宽度 两组场景量着 */
 @media (max-width: 1080px) {
   .ctl-text { display: none; }
+  body.home .ctl-text { display: inline; }
 }
 
 /* 更窄的窗口（默认 1000×760 属于这一档）：「手机同看」只留图标，省掉约 114px。

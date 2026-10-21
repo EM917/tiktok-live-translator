@@ -1,7 +1,7 @@
 // i18n: done
 /* 直播中界面几处「显示什么」的纯逻辑（web/live-ui.js）：顶栏手机同看按钮的文案、
  * 连接中提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签、「回到最新」按钮上的未读条数，以及底部大字幕的
- * 翻译状态角标、「语音识别不确定」角标、「约 N 秒前」、字幕字号的比例。
+ * 翻译状态角标、「语音识别不确定」角标、「约 N 秒前」、字幕字号的比例，还有顶栏「字幕译成」下拉要补哪一项。
  * 这些判断本身不碰 DOM，放进 app.js 的立即执行函数就没法被 node 测试 require
  * （同 web/settings-rows.js 的起因）。写法和加载方式照 web/switch.js：浏览器里
  * 是全局函数，Node 测试环境走 module.exports。 */
@@ -237,6 +237,26 @@ function captionSizeFromConfig(value) {
   return n >= CAPTION_SIZE_MIN && n <= CAPTION_SIZE_MAX ? n : null;
 }
 
+/* 顶栏「字幕译成」下拉（#target-lang）。用户 2026-10-20 决定只列四种：简体中文、繁体中文、英语、西语。
+ * 原来列 13 种、标签叫「目标语言」，他把它当成了界面语言，切成 English 等着界面变（界面语言在
+ * 「设置 > 界面语言」，#ui-lang-select）。四种写死在 index.html 的 <option> 里，tests/target-lang.test.mjs
+ * 钉着两边一致。后端照旧什么语言代码都收：settings.json 里存着以前选的日语、或者 --target ja 启动时，
+ * 下拉补一项把它显示出来，不能静默落到第一项——那样中控以为字幕是简体中文，实际出的是日语。
+ * 补的那项只在它是当前目标时存在（app.js showTargetLang）。名字是各语言的自称，是数据，哪种界面
+ * 语言都不翻（同下拉本身的 translate="no"）；没收录的代码原样显示。
+ * 返回要补的 { value, text }；当前目标就在四种里、或是空的，返回 null */
+var TARGET_LANGS = ["zh-CN", "zh-TW", "en", "es"];
+var TARGET_LANG_OTHER_NAMES = {
+  ja: "日本語", ko: "한국어", fr: "Français", de: "Deutsch", ru: "Русский",   // i18n: data（语言自称）
+  pt: "Português", vi: "Tiếng Việt", th: "ไทย", id: "Bahasa Indonesia",
+};
+function targetLangExtra(code) {
+  var value = code == null ? "" : String(code);
+  if (!value || TARGET_LANGS.indexOf(value) >= 0) return null;
+  var known = Object.prototype.hasOwnProperty.call(TARGET_LANG_OTHER_NAMES, value);
+  return { value: value, text: known ? TARGET_LANG_OTHER_NAMES[value] : value };
+}
+
 /* 该写到 <html> 上的 CSS 变量：大字幕的字号和卡片/弹幕的比例 */
 function captionSizeVars(size) {
   var n = Math.round(Number(size));
@@ -256,5 +276,6 @@ if (typeof module !== "undefined" && module.exports) {
                      captionAudioEndAt: captionAudioEndAt, captionAgeText: captionAgeText,
                      CAPTION_LAG_SHOW_SEC: CAPTION_LAG_SHOW_SEC,
                      captionScale: captionScale, captionSizeVars: captionSizeVars,
-                     captionSizeFromConfig: captionSizeFromConfig };
+                     captionSizeFromConfig: captionSizeFromConfig,
+                     TARGET_LANGS: TARGET_LANGS, targetLangExtra: targetLangExtra };
 }

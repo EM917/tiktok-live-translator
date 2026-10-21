@@ -137,6 +137,17 @@ on every reconnect, stop after six connection attempts in a row with no audio,
 The notices above, the limits on how long stopping a stalled stream can take,
 and the audit records stay the same.
 
+<a id="captions-in"></a>**Switching Captions in to English didn't change the interface.** The
+**Captions in** menu in the top bar sets only the language captions are
+translated into: Simplified Chinese, Traditional Chinese, English or Spanish.
+The interface language is a separate setting, **Settings → App Language** on
+the home page ([Interface language](interface-language.md)). If an earlier
+version saved another caption language, or the app starts with `--target` and
+another language code, captions stay in that language and the menu shows it as
+an extra item until you choose one of the four. With Spanish selected,
+segments recognized as Spanish aren't sent for translation and appear as
+said; English segments are translated into Spanish.
+
 **Switching to another streamer during a session.** Click **Switch Streamer**
 in the top bar, paste the new live link or @username, or pick one from Recent
 Streams (the current streamer is marked and can't be picked), and choose the

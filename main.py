@@ -394,7 +394,8 @@ def parse_args():
                    help="直播间地址（可选——不填则启动后在网页里输入），"
                         "例如 https://www.tiktok.com/@user/live；也可以直接给 .flv/.m3u8 流地址")
     p.add_argument("--target", default=None,  # i18n: terminal
-                   help="目标语言代码，默认 zh-CN（简体中文）；界面里改过的话记住上次的选择")
+                   help="字幕译成哪种语言（语言代码），默认 zh-CN（简体中文）；界面里改过的话记住上次的选择。"
+                        "顶栏「字幕译成」菜单只列 zh-CN/zh-TW/en/es，这里给别的代码（如 ja）照样生效，菜单里会多出这一项")
     p.add_argument("--source", default=None,  # i18n: terminal
                    help="主播语言代码，例如 es/en/ja；也可以是逗号分隔的列表如 es,en"
                         "（自动检测但只在列表里选，最多 4 个，第一个是主语言，"

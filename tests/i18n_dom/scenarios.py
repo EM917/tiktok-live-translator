@@ -54,13 +54,22 @@ PHONE = (390, 844)
 FLOAT = (460, 330)                             # 浮窗的默认大小（app/float_window.py DEFAULT_SIZE）
 LIVE_WIDTHS = (1000, 1100, 1101, 1199, 1200)   # 版面断言的五档（spec §12.3 第 7 条）
 NARROW_WIDTHS = (860, 720)                     # 这两档只断言 .topbar 不溢出
+# 首页顶栏的「字幕译成」标签（web/style.css body.home .ctl-text）：直播中 ≤1080px 省掉，首页一直露出来。
+# 量英文首页（home-idle）和中文首页（home-zh，当前目标是四种以外、名字最长的 Bahasa Indonesia，
+# 下拉补了一项、是它最宽的样子）。1000 是默认窗口，720 是直播中量过的最窄一档
+HOME_WIDTHS = (1000, 860, 720)
+HOME_ZH_TARGET = "id"
+# 下拉里补出来的那一项（web/app.js showTargetLang 标 data-extra）而且是选中的：量得到（不是 null）就说明
+# 浏览器里真的补了这一项、显示的就是它，而不是静默落到第一项「中文（简体）」
+TARGET_EXTRA_SELECTED = "#target-lang option[data-extra]:checked"
 # 中文页「浮窗」两个字（web/style.css 的 html[lang^="zh"] 那一段，docs/i18n-style.md §4.2）的六档：
 # 1000 / 1100 是露字范围的两头，1101 是「手机同看」露出文字之后仍是只有图标的第一档，1140 是第二段露字的起点，
 # 1399 是它的另一头，1400 起图标加文字
 ZH_FLOAT_WIDTHS = (1000, 1100, 1101, 1140, 1399, 1400)
 ZH_QUIET_BRAND = "Bella All Natural"           # §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
-                   "#float-btn", "#float-btn .btn-label", "#float-btn .i")
+                   "#float-btn", "#float-btn .btn-label", "#float-btn .i", ".ctl-text", "#target-lang",
+                   TARGET_EXTRA_SELECTED)
 GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
                  ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
@@ -365,6 +374,14 @@ def _home_idle(tmp):
                          replies=_disk_reply(server, "en"),
                          clicks=["#sc-head", "#engine-head", "#watch-head", "#disk-head",
                                  "#lang-head", "#input-help-btn"])
+
+
+def _home_zh(tmp):
+    """中文首页，待机。只为量顶栏（「字幕译成」标签露着、下拉补了一项 Bahasa Indonesia），不扫漏翻。"""
+    with i18n.use("zh"):
+        server = _server("zh", tmp)
+        server.config["target_lang"] = HOME_ZH_TARGET
+        return _scenario("home-zh", "desktop", "zh", _desktop_messages(server, "zh"))
 
 
 def _home_selfcheck_fail(tmp):
@@ -674,7 +691,7 @@ def resized(scenario, width, height=None):
 def build(tmp):
     """全部场景：{名字: 场景}。tmp 是一个空的临时目录（磁盘盘点要在里面造文件）。"""
     tmp = Path(tmp)
-    scenarios = [_home_idle(tmp), _home_selfcheck_fail(tmp), _live_full(tmp, "en"),
+    scenarios = [_home_idle(tmp), _home_zh(tmp), _home_selfcheck_fail(tmp), _live_full(tmp, "en"),
                  _status_only(tmp, "connecting", "connecting"),
                  # 先收到 hello，随即断开：离线横幅。页面每次重连都会再走一遍
                  _status_only(tmp, "offline", "idle", close={"code": 1006}),
@@ -686,6 +703,10 @@ def build(tmp):
     out["live-float"] = with_float_button(out["live-full"], "live-float")
     for base in ("live-full", "live-float"):
         for width in LIVE_WIDTHS + NARROW_WIDTHS:
+            sc = resized(out[base], width)
+            out[sc["name"]] = sc
+    for base in ("home-idle", "home-zh"):
+        for width in HOME_WIDTHS:
             sc = resized(out[base], width)
             out[sc["name"]] = sc
     # 中文页的浮窗按钮：满编（报警开）的 1000px 一档，和报警关着的六档（ZH_FLOAT_WIDTHS）
