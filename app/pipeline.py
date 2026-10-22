@@ -485,6 +485,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             media = str(msg.get("media", "") or "").strip() or None
             # UI 只允许网络地址（本地 CLI 不受此限制）
             if url.startswith("http://") or url.startswith("https://"):
+                start_key = (url, source, media, bool(msg.get("alerts", False)),
+                             str(msg.get("brand", "") or "").strip()[:40])
+                if self._is_repeated_start(start_key, url):
+                    # 页面 8 秒没等到回执就在同一条连接上把同一个 start 再发一次（web/app.js armStartWatchdog）。
+                    # 以前服务端照单全收，同一个房间处理两遍：多一条「连接中」、多一次 config 广播，两次处理之间
+                    # 恰好让出事件循环时还可能多出一场极短的会话（专家审查 F7）。主要的来源（桌面重译在消息循环
+                    # 里同步等强模型）已经去掉，这里兜底：只重发一次当前状态，页面据此清掉在途的 start，然后不理
+                    print("[信息] 页面重发了同一个「开始」，这个房间已经在连接或监听中，只重发一次当前状态")
+                    return self._resend_status()
                 if source and source != "auto":
                     self.args.source = source
                 elif source == "auto":
@@ -517,6 +526,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 if streamer:
                     self.server.config["brands"] = save_streamer_brand(streamer, brand)
                 self._note_operator_stream_action()
+                self._last_start = (start_key, time.monotonic())
                 return self._start_with_ack(url, media=media)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
@@ -594,6 +604,36 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 弹幕留意的开关、关注名单、忽略事件：只有本机页面发得出来（手机入站只认 retranslate）
             return self._handle_guard_control(msg)
         return None
+
+    # 同一个 start（规范化后的 url、语言、直连地址、报警开关、品牌都相同）这么多秒内再来一次，而当前会话就是
+    # 这个房间、正在连接或监听：当成页面看门狗的重发（见 _is_repeated_start）
+    START_DEDUPE_SEC = 20.0
+
+    def _is_repeated_start(self, key, url):
+        """这个 start 是不是页面对上一个已接受的 start 的重发。不加请求 id：界面上本来发不出「同一房间
+        20 秒内重开」的指令——直播中开始面板是隐藏的，换主播面板不接受当前这位。所以内容相同、
+        间隔不到 START_DEDUPE_SEC、当前会话就是这个房间（server.config 的 room_url）、状态是
+        connecting 或 live，只可能是重发。换主播（url 不同）、超过 20 秒、停止之后（状态是 idle）都照常处理。"""
+        last = getattr(self, "_last_start", None)
+        if last is None or last[0] != key:
+            return False
+        if time.monotonic() - last[1] >= self.START_DEDUPE_SEC:
+            return False
+        config = getattr(self.server, "config", None) or {}
+        if config.get("room_url") != url:
+            return False
+        state = (config.get("status") or {}).get("state")
+        return state in ("connecting", "live")
+
+    async def _resend_status(self):
+        """把当前状态原样再发一次（重发的 start 只要这一个回执：页面收到 connecting / live 就清掉在途的 start）。
+        _is_repeated_start 只在这两种状态下放行；state 写成字面量，tests/viewer.test.mjs 据此核对手机认得每一种"""
+        status = (getattr(self.server, "config", None) or {}).get("status") or {}
+        detail, command = status.get("detail", ""), status.get("command")
+        if status.get("state") == "live":
+            await self.server.status("live", detail, command)
+        elif status.get("state") == "connecting":
+            await self.server.status("connecting", detail, command)
 
     def _set_caption_size(self, value):
         """顶栏的字幕字号滑块松手了：存进 settings.json，并广播给其它开着的桌面页面跟上。
