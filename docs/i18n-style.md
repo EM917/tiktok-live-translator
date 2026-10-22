@@ -81,7 +81,7 @@
 | 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Bella All Natural” 和中文差不多宽 |
 | 不限（默认） | **Any (default)** | None, All brands | None 会被读成「没有品牌」，实际意思是「不限定某一个品牌」 |
 | 品牌词表 | **brand glossary** | brand list | |
-| 粉丝 / 送过礼 / 订阅（弹幕作者旁的小标签） | **Follower / Gifter / Subscriber** | Fan, Friend, Donor, Mutual | TikTok 随弹幕发的「和主播的关系」。Fan 太泛（粉丝团另有等级），Friend 不等于互关，Donor 带慈善含义。「互关 / Mutual」2026-10-21 起不显示：中控看到有的标了互关的并不是互关，本机核实不了；带互关标记的只标「粉丝 / Follower」 |
+| 粉丝 / 送过礼 / 订阅（弹幕作者旁的小标签） | **Follower / Gifter / Subscriber** | Fan, Friend, Donor | TikTok 随弹幕发的「和主播的关系」。Fan 太泛（粉丝团另有等级），Friend 不等于互关，Donor 带慈善含义。「互关 / Mutual」2026-10-21 起不显示：中控看到有的标了互关的并不是互关，本机核实不了；带互关标记的只标「粉丝 / Follower」 |
 | 词表 / 领域词表（glossary.txt） | **glossary** | dictionary, term list | 帮助翻译用的 |
 | 违禁词表（banned_terms.txt） | **banned-term list** | blacklist, banned glossary | 必须和 glossary 分开：list 决定报不报警，glossary 决定怎么翻译 |
 | 违禁词 | **banned term** | prohibited word, prohibited term, forbidden word, blacklisted word | README 已经在用。term 也覆盖短语 |
@@ -147,7 +147,7 @@
 
 三份实现方案里与本表冲突的写法一律不用：**prohibited term**（用 banned term）、**Phone view**（用 Phone Viewing）、
 **Self-check**（用 Startup Check）、**报警分级**里的 **Possible**（报警分级一律用 Exact / Variant / Similar）、
-**Start translating**（按钮就叫 Start）、**Translate to**（顶栏下拉的旧标签，2026-10-20 起叫 Captions in，见 §1）。
+**Start translating**（按钮就叫 Start）、**Translate to**（顶栏下拉的旧标签，2026-10-20 起叫 Captions in，见 §1）、**Mutual**（「互关」标签的英文，2026-10-21 起不显示，带互关标记的只标 Follower，见 §1.3）。
 
 **Possible 的两处用法，别混：**
 
