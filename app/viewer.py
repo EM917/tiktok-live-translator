@@ -39,6 +39,15 @@ SEND_TIMEOUT_SEC = 5.0        # 写任务里单条发送的上限（不在关键
 AUTH_TIMEOUT_SEC = 5.0        # 握手后等第一条 auth 的上限
 MAX_VIEWERS = 12              # 中控团队规模，也是 fanout 每条消息的成本上界
 MAX_PENDING = 32              # 在途连接（含未鉴权）总数上限，独立于且大于 MAX_VIEWERS
+# ---- TCP 这一层（S1）：在 aiohttp 看到第一个 HTTP 请求之前 ----
+# 上面几道闸都在 /vws 的 handler 里，而连上了却一个字节都不发的 TCP 连接根本到不了 handler：
+# aiohttp 等第一个请求没有期限。审查实测一台设备挂 150 条空连接，程序的 open/spawn/socket
+# 全部 EMFILE，审计 0 条。所以在协议这一层再加两道（_GuardedProtocol）：
+# 同一个 IP 同时最多几条 TCP 连接，超了立即断开。一台手机：页面 + 三个文件 + /vws，浏览器
+# 对同一主机最多并行 6 条；同一个 NAT 后面 12 台手机各留 1 条 WebSocket 也够
+MAX_CONN_PER_IP = 16
+FIRST_BYTE_TIMEOUT_SEC = 5.0  # 连上后多久还没收到第一个字节就断开
+LISTEN_BACKLOG = 128          # 与 aiohttp TCPSite 的默认一致
 # 入站帧：手机现在能发「重译」，但仍然不该发很多。滑动窗口而不是绝对上限——
 # 允许零星的合法点击，持续的洪泛（坏页面/探测）依然会被断开。junk 帧也计数。
 INBOUND_BURST = 30
@@ -652,14 +661,172 @@ class _Viewer:
         self.action_times = deque()      # 最近 60 秒内被接受的动作时间（ACTIONS_PER_MINUTE）
 
 
-def _peer_ip(request):
+def _transport_ip(transport):
     try:
-        peer = request.transport.get_extra_info("peername")
+        peer = transport.get_extra_info("peername")
     except Exception:
         return ""
     if isinstance(peer, (list, tuple)) and peer:
         return str(peer[0])
     return ""
+
+
+def _peer_ip(request):
+    return _transport_ip(getattr(request, "transport", None))
+
+
+# ---- TCP 这一层的闸（S1）----
+class _ConnGate:
+    """按对端 IP 数 TCP 连接。一个 hub 一个，所有 _GuardedProtocol 共用。
+
+    同步、不碰 I/O：admit/release 都在事件循环的回调里直接调。by_ip 里只有计数大于 0 的 IP，
+    连接断干净了条目就删掉——扫端口的人留不下一张越长越大的表。"""
+
+    def __init__(self, log=None, now=None):
+        self.by_ip = {}           # ip -> 现在开着几条
+        self.live = set()         # 放进来的连接（stop() 兜底 abort 用）
+        self.rejected = 0         # 超过 MAX_CONN_PER_IP 被立即断开的累计条数
+        self.idle_closed = 0      # FIRST_BYTE_TIMEOUT_SEC 内一个字节都没发、被断开的累计条数
+        self.log = log or (lambda *a, **k: None)
+        self._now = now or time.monotonic
+        self._noted = {}          # ip -> 上次为它打终端行的时刻
+
+    @property
+    def total(self):
+        return sum(self.by_ip.values())
+
+    def admit(self, ip):
+        count = self.by_ip.get(ip, 0)
+        if count >= MAX_CONN_PER_IP:
+            self.rejected += 1
+            self._note_rejected(ip)
+            return False
+        self.by_ip[ip] = count + 1
+        return True
+
+    def release(self, ip):
+        count = self.by_ip.get(ip, 0) - 1
+        if count > 0:
+            self.by_ip[ip] = count
+        else:
+            self.by_ip.pop(ip, None)
+
+    def abort_all(self):
+        for proto in list(self.live):
+            proto.abort()
+
+    def _note_rejected(self, ip):
+        """终端里留一行，同一个 IP 每 AUTH_FAIL_AUDIT_WINDOW_SEC 最多一行（被扫的时候别刷屏）。
+        不进审计：这里连 HTTP 请求都还没有，审计格式也不为它加新类型。"""
+        now = self._now()
+        last = self._noted.get(ip)
+        if last is not None and now - last < AUTH_FAIL_AUDIT_WINDOW_SEC:
+            return
+        if last is None and len(self._noted) >= AUTH_FAIL_TRACK_MAX:
+            self._noted.pop(min(self._noted, key=self._noted.get), None)
+        self._noted[ip] = now
+        self.log("[同看] 来自 {} 的连接已有 {} 条，多出来的已断开".format(ip or "?", MAX_CONN_PER_IP))
+
+
+class _GuardedProtocol(asyncio.Protocol):
+    """套在 aiohttp 每条连接外面的代理协议（S1）。
+
+    为什么是代理而不是 transport.set_protocol 交接（审查 Q13）：交接之后 connection_lost
+    就回不到这里，计数只能靠猜什么时候扣。所以全程代理——connection_made、data_received、
+    eof_received、pause_writing、resume_writing、connection_lost 一个不落地转给 aiohttp 的
+    协议，计数在 connection_lost 里扣。WebSocket 升级之后的数据也照样从这里过：aiohttp 的
+    WebSocket 读写走的是同一个 transport 和同一个 data_received，没有换协议。
+
+    内层协议用 runner.server 造（aiohttp 公开的协议工厂，低层服务器文档里就是把它直接交给
+    create_server），不继承 aiohttp 的任何类：requirements 的下限 3.9、.venv 的 3.14、CI 的
+    最新版，私有类各版本都改过，公开的这几个回调没变。超额的连接连内层都不造——aiohttp
+    根本看不到它，也就不会进它的连接表。
+    """
+
+    def __init__(self, factory, gate):
+        self._factory = factory
+        self._gate = gate
+        self._inner = None
+        self._transport = None
+        self._ip = ""
+        self._admitted = False
+        self._idle = None
+
+    def connection_made(self, transport):
+        self._transport = transport
+        self._ip = _transport_ip(transport)
+        if not self._gate.admit(self._ip):
+            transport.abort()
+            return
+        self._admitted = True
+        self._gate.live.add(self)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            # 期限从模块常量现取：测试改 FIRST_BYTE_TIMEOUT_SEC 要能改得动
+            self._idle = loop.call_later(FIRST_BYTE_TIMEOUT_SEC, self._first_byte_timeout)
+        try:
+            self._inner = self._factory()
+            self._inner.connection_made(transport)
+        except Exception as exc:
+            self._gate.log("[警告] 手机同看接受连接出错: {}".format(exc))
+            transport.abort()      # connection_lost 照样会来，计数在那里扣
+
+    def data_received(self, data):
+        self._cancel_idle()
+        if self._inner is not None:
+            self._inner.data_received(data)
+
+    def eof_received(self):
+        # 返回值原样交回：它决定 transport 是半关还是整条关掉
+        if self._inner is not None:
+            return self._inner.eof_received()
+        return None
+
+    def pause_writing(self):
+        if self._inner is not None:
+            self._inner.pause_writing()
+
+    def resume_writing(self):
+        if self._inner is not None:
+            self._inner.resume_writing()
+
+    def connection_lost(self, exc):
+        self._cancel_idle()
+        inner, self._inner = self._inner, None
+        try:
+            if self._admitted:
+                self._admitted = False
+                self._gate.release(self._ip)
+                self._gate.live.discard(self)
+        finally:
+            # 先扣计数再转交：aiohttp 那边就算抛了，名额也已经还回去
+            if inner is not None:
+                inner.connection_lost(exc)
+
+    def abort(self):
+        transport = self._transport
+        if transport is None:
+            return
+        try:
+            if not transport.is_closing():
+                transport.abort()
+        except Exception:
+            pass
+
+    def _cancel_idle(self):
+        handle, self._idle = self._idle, None
+        if handle is not None:
+            handle.cancel()
+
+    def _first_byte_timeout(self):
+        self._idle = None
+        if not self._admitted:
+            return
+        self._gate.idle_closed += 1
+        self.abort()
 
 
 async def _deny(ws, reason, code):
@@ -697,11 +864,13 @@ class ViewerHub:
         self._now = now or time.monotonic
         self._viewers = []
         self._runner = None
-        self._site = None
+        self._listener = None     # 自建的 asyncio 监听（见 _listen），不是 aiohttp 的 site
         self._bound_port = None
         self._running = False
         self._pending = 0
         self._auth_fail = {}
+        # TCP 这一层按 IP 的计数（S1）。一个 hub 一个，stop() 之后迟到的 connection_lost 也扣回这里
+        self._gate = _ConnGate(log=self._log, now=self._now)
         # 踢人之后的兜底 abort 任务。保住引用：事件循环只弱引用任务，
         # 不保引用的会在半路被 GC 收走（同 Pipeline._spawn 那条教训）
         self._guards = set()
@@ -716,6 +885,11 @@ class ViewerHub:
     @property
     def count(self):
         return len(self._viewers)
+
+    @property
+    def open_connections(self):
+        """这个端口上现在开着几条 TCP 连接（含还没发请求的、已经升级成 WebSocket 的）。"""
+        return self._gate.total
 
     @property
     def port(self):
@@ -769,9 +943,8 @@ class ViewerHub:
         for port in self._candidates:
             runner = self._make_runner()
             await runner.setup()
-            site = web.TCPSite(runner, self._bind_host, port)
             try:
-                await site.start()
+                listener = await self._listen(runner, port)
             except OSError as exc:
                 last = exc
                 try:
@@ -780,8 +953,8 @@ class ViewerHub:
                     pass
                 continue
             self._runner = runner
-            self._site = site
-            self._bound_port = self._socket_port(site, port)
+            self._listener = listener
+            self._bound_port = self._socket_port(listener, port)
             self._running = True
             return
         if last is None:
@@ -799,10 +972,21 @@ class ViewerHub:
         except TypeError:
             return web.AppRunner(self.build_app(), access_log=None)
 
+    async def _listen(self, runner, port):
+        """自建监听（S1）。不用 web.TCPSite：它把 aiohttp 的协议工厂原样交给 create_server，
+        中间插不进按 IP 的计数和首字节期限。这里在 runner.server（aiohttp 公开的协议工厂）
+        外面包一层 _GuardedProtocol，其余参数与 TCPSite 的默认一致。端口被占时 create_server
+        抛 OSError，和 TCPSite.start() 一样交给 start() 去试下一个候选。"""
+        factory = runner.server
+        gate = self._gate
+        loop = asyncio.get_running_loop()
+        return await loop.create_server(lambda: _GuardedProtocol(factory, gate),
+                                        self._bind_host, port, backlog=LISTEN_BACKLOG)
+
     @staticmethod
-    def _socket_port(site, fallback):
+    def _socket_port(listener, fallback):
         try:
-            sockets = site._server.sockets
+            sockets = listener.sockets
             if sockets:
                 return int(sockets[0].getsockname()[1])
         except Exception:
@@ -811,8 +995,8 @@ class ViewerHub:
 
     async def stop(self, reason="off"):
         """关监听 + 踢掉所有观众。幂等，且有时间上界。"""
-        site, runner = self._site, self._runner
-        self._site = self._runner = None
+        listener, runner = self._listener, self._runner
+        self._listener = self._runner = None
         self._running = False
         victims = list(self._viewers)
         for viewer in victims:
@@ -829,9 +1013,11 @@ class ViewerHub:
                     pass
             for viewer in victims:
                 self._abort(viewer)
-        if site is not None:
+        if listener is not None:
+            # 只 close 不 wait_closed：3.12 起 wait_closed 要等所有连接断完，一台不读的手机
+            # 就能让「关闭」卡住（同 aiohttp 自己的 site.stop()，它也只 close）
             try:
-                await site.stop()
+                listener.close()
             except Exception as exc:
                 self._log("[警告] 停止手机同看监听出错: {}".format(exc))
         if runner is not None:
@@ -839,6 +1025,8 @@ class ViewerHub:
                 await runner.cleanup()
             except Exception as exc:
                 self._log("[警告] 清理手机同看监听出错: {}".format(exc))
+        # 兜底：aiohttp 的 cleanup 会关它连接表里的每一条；cleanup 出错或超时漏下的，这里断掉
+        self._gate.abort_all()
         self._bound_port = None
 
     def rotate(self, token):
