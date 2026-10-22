@@ -2,6 +2,8 @@
 // 英文的措辞和「不剩中文」的检查在 tests/float.en.test.mjs；这个文件的纯函数部分按默认的中文跑。
 //
 // 钉住的事：
+//   0. 待译停留（专家审查 U1，用户 10-22 定的「等译文到了再一起换」，同中控页底部大字幕）：新的一句还在翻译时
+//      窗口里停在上一句，有了结局再整句换上；等满 4 秒（FLOAT_HOLD_MS）还没结局就照以前的样子先放原文；
 //   1. 最新一条字幕：译文大字 / 原文小字，没译成时原文大字 + 角标，翻译中不画角标（同中控页底部大字幕）；
 //   2. 弹幕：最多 5 条、新的在底部，译文行 / 原文行的规则同弹幕栏，红 / 琥珀 / 关注的标记复用 guard.js，
 //      而且永远没有「加入关注名单」的按钮（浮窗只显示）；
@@ -53,13 +55,65 @@ test("字号：顶栏滑块的值 × 0.62，夹在 16–40px；没设过就按�
   assert.ok(F.floatSizes(60).big > F.floatSizes(20).big, "滑块往大拉，浮窗字也大");
 });
 
-test("字幕：译文到了译文大字、原文小字；译文还在路上只有原文，不画角标", () => {
+// 以前这条钉的是「译文还在路上时先放原文」：每句先闪一下西语再跳成中文（专家审查 U1）。用户 10-22 定了
+// 「等译文到了再一起换」，这里改钉新的样子
+test("字幕：译文还在路上时不换句（第一句之前就没有字幕）；译文到了译文大字、原文小字一起换上", () => {
   const s = F.floatInitialState();
   assert.equal(F.floatCaptionView(s), null);
   F.floatReduce(s, caption(1, "hola a todas"));
-  assert.deepEqual(F.floatCaptionView(s), { id: 1, big: "hola a todas", small: "", chip: "", fail: false });
+  assert.equal(F.floatCaptionView(s), null, "第一句：先不放西语");
   F.floatReduce(s, { type: "caption_update", id: 1, translated: "大家好", translate_state: "ok" });
   assert.deepEqual(F.floatCaptionView(s), { id: 1, big: "大家好", small: "hola a todas", chip: "", fail: false });
+  F.floatReduce(s, caption(2, "y ahora la crema"));
+  assert.deepEqual(F.floatCaptionView(s), { id: 1, big: "大家好", small: "hola a todas", chip: "", fail: false },
+                   "新的一句还在翻译：停在上一句");
+  F.floatReduce(s, { type: "caption_update", id: 2, translated: "现在是面霜", translate_state: "ok" });
+  assert.deepEqual(F.floatCaptionView(s), { id: 2, big: "现在是面霜", small: "y ahora la crema", chip: "", fail: false });
+});
+
+test("待译停留：等满 4 秒还没结局（floatReleaseHeld）照以前的样子先放原文；译文后到就地换成译文", () => {
+  assert.equal(F.FLOAT_HOLD_MS, 4000, "和中控页 web/app.js 的 LIVE_HOLD_MS 一样");
+  const s = F.floatInitialState();
+  F.floatReduce(s, caption(1, "esto tarda mucho"));
+  assert.equal(F.floatReleaseHeld(s, 99), false, "别的 id：不动");
+  assert.equal(F.floatCaptionView(s), null);
+  assert.equal(F.floatReleaseHeld(s, 1), true);
+  assert.deepEqual(F.floatCaptionView(s), { id: 1, big: "esto tarda mucho", small: "", chip: "", fail: false });
+  assert.equal(F.floatReleaseHeld(s, 1), false, "已经放上去了：再到点也不动");
+  F.floatReduce(s, { type: "caption_update", id: 1, translated: "这个要很久", translate_state: "ok" });
+  assert.deepEqual(F.floatCaptionView(s), { id: 1, big: "这个要很久", small: "esto tarda mucho", chip: "", fail: false });
+});
+
+test("待译停留：等待中又来一句改等新的那句，前一句的译文后到不上窗口；进度消息（只带 strong_state）不是结局", () => {
+  const s = F.floatInitialState();
+  F.floatReduce(s, caption(1, "hola"));
+  F.floatReduce(s, { type: "caption_update", id: 1, translated: "你好", translate_state: "ok" });
+  F.floatReduce(s, caption(2, "primera parte"));
+  F.floatReduce(s, caption(3, "segunda parte"));
+  F.floatReduce(s, { type: "caption_update", id: 2, translated: "第一部分", translate_state: "ok" });
+  assert.equal(F.floatCaptionView(s).big, "你好");
+  assert.equal(F.floatReleaseHeld(s, 2), false, "第 2 句排过的计时器到点：已经不在等它");
+  F.floatReduce(s, { type: "caption_update", id: 3, strong_state: "pending" });
+  assert.equal(F.floatCaptionView(s).big, "你好");
+  F.floatReduce(s, { type: "caption_update", id: 3, translated: "第二部分", translate_state: "ok" });
+  assert.deepEqual(F.floatCaptionView(s), { id: 3, big: "第二部分", small: "segunda parte", chip: "", fail: false });
+});
+
+test("待译停留：不用翻译的（skipped）、回放来的直接上；换场、清空字幕、hello 把在等的那句忘掉", () => {
+  const s = F.floatInitialState();
+  F.floatReduce(s, caption(1, "buenas noches", { translate_state: "skipped", target_lang: "es" }));
+  assert.equal(F.floatCaptionView(s).big, "buenas noches");
+  F.floatReduce(s, caption(2, "en espera"));
+  F.floatReduce(s, caption(3, "repetida", { replay: true }));         // 重连回放：断线前窗口里就是它
+  assert.equal(F.floatCaptionView(s).big, "repetida");
+  assert.equal(F.floatReleaseHeld(s, 2), false, "回放的那句已经取代了在等的那句");
+  for (const reset of [{ type: "session_break", ts: T + 9 }, { type: "history_cleared", kind: "captions" },
+                       { type: "hello", config: {} }]) {
+    F.floatReduce(s, caption(4, "pendiente"));
+    F.floatReduce(s, reset);
+    assert.equal(F.floatReleaseHeld(s, 4), false, reset.type);
+    assert.equal(F.floatCaptionView(s), null, reset.type);
+  }
 });
 
 test("字幕：每一种没译成的结局都留着原文，角标和中控页同一句", () => {
@@ -71,9 +125,13 @@ test("字幕：每一种没译成的结局都留着原文，角标和中控页�
   ];
   for (const [update, chip, fail] of endings) {
     const s = F.floatInitialState();
-    F.floatReduce(s, caption(1, "no se oye bien"));
-    F.floatReduce(s, Object.assign({ type: "caption_update", id: 1, translated: null }, update));
-    assert.deepEqual(F.floatCaptionView(s), { id: 1, big: "no se oye bien", small: "", chip, fail }, JSON.stringify(update));
+    F.floatReduce(s, caption(1, "hola"));
+    F.floatReduce(s, { type: "caption_update", id: 1, translated: "你好", translate_state: "ok" });
+    F.floatReduce(s, caption(2, "no se oye bien"));
+    assert.equal(F.floatCaptionView(s).big, "你好", "还在翻译：停在上一句");
+    // 没译成也是结局：一到就整句换上，不等 4 秒
+    F.floatReduce(s, Object.assign({ type: "caption_update", id: 2, translated: null }, update));
+    assert.deepEqual(F.floatCaptionView(s), { id: 2, big: "no se oye bien", small: "", chip, fail }, JSON.stringify(update));
   }
 });
 
@@ -163,6 +221,7 @@ test("重连回放：服务端把最近一次换场放在最前面，页面只�
 test("清空字幕 / 清空弹幕各清各的", () => {
   const s = F.floatInitialState();
   F.floatReduce(s, caption(1, "hola"));
+  F.floatReduce(s, { type: "caption_update", id: 1, translated: "你好", translate_state: "ok" });
   F.floatReduce(s, comment("c1", "ana", "hola"));
   F.floatReduce(s, { type: "history_cleared", kind: "comments" });
   assert.equal(s.comments.length, 0);
@@ -221,6 +280,7 @@ test("过时信号：这一句的声音结束超过 15 秒才写「约 N 秒前�
   assert.equal(F.floatCaptionMeta(s, end + 1000).connecting, "");
   // 不知道 e2e（演示模式、老版本服务端）：不写
   F.floatReduce(s, caption(2, "sin e2e", { e2e_ms: undefined }), end);
+  F.floatReleaseHeld(s, 2);                                   // 等满 4 秒没有译文：先放原文
   assert.equal(F.floatCaptionMeta(s, end + 600000).lag, "");
 });
 
@@ -256,19 +316,39 @@ for (const lang of ["zh", "en"]) {
     hello(page, { status: { state: "connecting", detail: "" } });
     assert.equal(page.el("f-empty").textContent, X.connecting);
     page.push(caption(1, "hola a todas"));
+    assert.ok(hidden(page, "f-caption") && !hidden(page, "f-empty"), "第一句还在翻译：占位留着");
+    page.push({ type: "caption_update", id: 1, translated: "大家好", translate_state: "ok" });
     assert.ok(!hidden(page, "f-caption") && hidden(page, "f-empty"));
   });
 
-  test(L("字幕：译文大字 + 原文小字；译文到了才有小字"), () => {
+  // 以前这条钉的是「译文到了才有小字、之前大字是西语」（每句先闪西语）；改成待译停留之后的样子
+  test(L("字幕：译文大字 + 原文小字一起换上；还在翻译的下一句不换"), () => {
     const page = loadFloat({ lang });
     hello(page);
     page.push(caption(1, "hola a todas"));
-    assert.equal(page.el("f-big").textContent, "hola a todas");
-    assert.ok(hidden(page, "f-small") && hidden(page, "f-chip"));
+    assert.ok(hidden(page, "f-caption"), "第一句还在翻译：窗口里不放西语");
     page.push({ type: "caption_update", id: 1, translated: "大家好", translate_state: "ok" });
     assert.equal(page.el("f-big").textContent, "大家好");
     assert.equal(page.el("f-small").textContent, "hola a todas");
     assert.ok(!hidden(page, "f-small") && hidden(page, "f-chip"));
+    page.push(caption(2, "y ahora la crema"));
+    assert.deepEqual([page.el("f-big").textContent, page.el("f-small").textContent], ["大家好", "hola a todas"]);
+  });
+
+  test(L("待译停留：页面排一个 4 秒的计时器，到点还在等就先放原文；被新的一句顶掉的那个计时器到点不动窗口"), () => {
+    const page = loadFloat({ lang });
+    hello(page);
+    page.push(caption(1, "primera parte"));
+    page.push(caption(2, "segunda parte"));
+    const holds = page.timers.filter((t) => t.ms === F.FLOAT_HOLD_MS);
+    assert.equal(holds.length, 2, "每一句在等的都排一个");
+    holds[0].fn();                                                 // 第 1 句的：它已经被第 2 句顶掉
+    assert.ok(hidden(page, "f-caption"));
+    holds[1].fn();                                                 // 第 2 句的：还在等，先放原文
+    assert.ok(!hidden(page, "f-caption"));
+    assert.deepEqual([page.el("f-big").textContent, hidden(page, "f-small")], ["segunda parte", true]);
+    page.push({ type: "caption_update", id: 2, translated: "第二部分", translate_state: "ok" });
+    assert.deepEqual([page.el("f-big").textContent, page.el("f-small").textContent], ["第二部分", "segunda parte"]);
   });
 
   for (const [name, update, chip, fail] of [
@@ -306,6 +386,7 @@ for (const lang of ["zh", "en"]) {
     const page = loadFloat({ lang });
     hello(page);
     page.push(caption(1, "hola a todas", { ts: Date.now() / 1000 - 30, e2e_ms: 2000 }));
+    page.push({ type: "caption_update", id: 1, translated: "大家好", translate_state: "ok" });
     assert.ok(!hidden(page, "f-meta") && !hidden(page, "f-lag") && hidden(page, "f-conn"));
     assert.match(page.el("f-lag").textContent, X.lagRe);
     page.el("f-lag").textContent = "";
@@ -316,7 +397,7 @@ for (const lang of ["zh", "en"]) {
     page.push({ type: "status", state: "connecting", detail: "" });       // 断流重连 / 等主播开播
     assert.ok(!hidden(page, "f-conn"));
     assert.equal(page.el("f-conn").textContent, X.connecting);
-    assert.equal(page.el("f-big").textContent, "hola a todas");          // 字幕留着，只是标明了
+    assert.equal(page.el("f-big").textContent, "大家好");                // 字幕留着，只是标明了
     page.push({ type: "status", state: "live", detail: "" });
     assert.ok(hidden(page, "f-conn"));
     page.closeSocket();                                            // 浮窗页自己和程序断了线
@@ -327,6 +408,8 @@ for (const lang of ["zh", "en"]) {
     const page = loadFloat({ lang });
     hello(page);
     page.push(caption(1, "hola", { ts: Date.now() / 1000, e2e_ms: 2000 }));
+    page.push({ type: "caption_update", id: 1, translated: "你好", translate_state: "ok" });
+    assert.ok(!hidden(page, "f-caption"));
     assert.ok(hidden(page, "f-meta") && hidden(page, "f-lag") && hidden(page, "f-conn"));
   });
 
@@ -334,14 +417,16 @@ for (const lang of ["zh", "en"]) {
     const page = loadFloat({ lang });
     hello(page);
     const cap = page.el("f-caption");
-    cap.scrollHeight = 420; cap.clientHeight = 190;               // 字号调大后的一段长西语
+    cap.scrollHeight = 420; cap.clientHeight = 190;               // 字号调大后的一段长西语（没译成，原文大字）
     page.push(caption(1, "una frase muy larga ".repeat(12)));
+    page.push({ type: "caption_update", id: 1, translated: null, translate_state: "failed" });
     assert.ok(cap.classList.contains("clipped"));
     cap.clientHeight = 430;                                        // 用户把窗口拉高了
     page.fireWindow("resize");
     assert.ok(!cap.classList.contains("clipped"));
     cap.scrollHeight = 100; cap.clientHeight = 100;                // 刚好装下（差 1px 以内）不算裁
     page.push(caption(2, "hola"));
+    page.push({ type: "caption_update", id: 2, translated: "你好", translate_state: "ok" });
     assert.ok(!cap.classList.contains("clipped"));
   });
 
@@ -427,7 +512,9 @@ for (const lang of ["zh", "en"]) {
     const page = loadFloat({ lang });
     hello(page);
     page.push(caption(1, "hola"));
+    page.push({ type: "caption_update", id: 1, translated: "你好", translate_state: "ok" });
     const before = page.el("f-big").textContent;
+    assert.equal(before, "你好");
     for (const msg of [{ type: "alert", alert_id: 1, term: "cura", tier: "exact", ts: T },
                        { type: "alert_update", alert_id: 1 }, { type: "incident", id: "i", level: "warn", text: "x" },
                        { type: "notice", text: "hi" }, { type: "stats" }]) page.push(msg);

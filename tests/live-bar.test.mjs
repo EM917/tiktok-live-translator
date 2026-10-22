@@ -1,6 +1,8 @@
 // 底部大字幕的翻译状态、「约 N 秒前」，页脚不画统计消息，字幕字号滑块（2026-10-15）。
 //
 // 页面是 node:vm 里真跑的 web/app.js（tests/desktop-page.mjs），中文、英文两种界面各跑一遍：
+//   0. 待译停留（专家审查 U1，用户 10-22 定的「等译文到了再一起换」）：新的一句还在翻译时大字幕停在上一句，
+//      译文到了、或者确定没有译文了再整句换上；等满 4 秒还没结局就照以前的样子先放原文；
 //   1. 大字幕下面的角标：译文没到、没译成的每一种结局都留着原文，并且和历史卡片上是同一句话；
 //   2. 「约 N 秒前」：按这一段音频结束的时刻（ts − e2e_ms）算，超过 15 秒才出现，每秒涨一次，
 //      新的一句重置，缺 e2e_ms 就不写；健康的直播（上屏 2～3 秒、下一句八九秒后来）这一行始终不出现；
@@ -44,23 +46,145 @@ function bar(page) {
   };
 }
 const cardChips = (page) => page.el("history").querySelectorAll(".state-chip").map((c) => c.textContent);
+// 待译停留：还在翻译的一句最多等这么久才上大字幕（web/app.js 的 LIVE_HOLD_MS）。下面「角标」「滞后」那些用例要的是
+// 「这一句已经在大字幕上了」，用 onBar 放上去——走的是等满 4 秒、照以前的样子先放原文的那条路
+const HOLD_MS = 4000;
+const onBar = (page, msg) => { page.push(msg); page.fire(HOLD_MS); };
 const cardTrans = (page) => page.el("history").querySelectorAll(".trans").map((c) => c.textContent)[0];
 
 for (const lang of ["zh", "en"]) {
   const X = TEXT[lang];
   const L = (name) => name + "（" + lang + "）";
 
+  // ---- 0. 待译停留 ----------------------------------------------------------------------------
+  // 用户 10-22 定的「等译文到了再一起换」：新的一句还在翻译时大字幕停在上一句，有了结局再整句换上；
+  // 等满 HOLD_MS 还没结局就照以前的样子先放原文。卡片（字幕记录）不受影响，照常先出原文、「翻译中…」
+
+  // 大字幕上先摆好一句译好了的（上一句）
+  const settled = (page, id, es, zh) => {
+    page.push(caption(id, es));
+    page.push({ type: "caption_update", id, translated: zh, translate_state: "ok", quality: 1 });
+  };
+
+  test(L("待译停留：等满 4 秒还没结局，照以前的样子先放原文（不画角标）；译文后到再就地换成译文"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    settled(page, 1, "hola", "你好");
+    page.push(caption(2, "esto tarda mucho"));
+    page.advance(3999);
+    assert.equal(bar(page).big, "你好", "还没到 4 秒：停在上一句");
+    page.fire(HOLD_MS);
+    assert.deepEqual([bar(page).big, bar(page).small, bar(page).chip], ["esto tarda mucho", null, null]);
+    page.push({ type: "caption_update", id: 2, translated: "这个要很久", translate_state: "ok", quality: 1 });
+    assert.deepEqual([bar(page).big, bar(page).small], ["这个要很久", "esto tarda mucho"]);
+  });
+
+  test(L("待译停留：没译成的结局一到就整句换上——原文大字 + 角标，和卡片上同一句；不等 4 秒"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    settled(page, 1, "hola", "你好");
+    page.push(caption(2, "no se oye bien"));
+    page.push({ type: "caption_update", id: 2, translated: null, translate_state: "failed", refused: true });
+    assert.deepEqual([bar(page).big, bar(page).small, bar(page).chip], ["no se oye bien", null, X.refused]);
+    assert.ok(page.el("live-state").classList.contains("fail"));
+    assert.deepEqual(cardChips(page), ["", X.refused]);
+    page.fire(HOLD_MS);                                                  // 已经换上了：4 秒到点什么都不做
+    assert.deepEqual([bar(page).big, bar(page).chip], ["no se oye bien", X.refused]);
+    page.push(caption(3, "otra"));
+    page.push({ type: "caption_update", id: 3, translated: null, translate_state: "dropped" });
+    assert.deepEqual([bar(page).big, bar(page).chip], ["otra", X.dropped], "积压跳过也是结局");
+  });
+
+  test(L("待译停留：等待中又来一句，改等新的那句；前一句的译文后到不上大字幕（卡片上照常有）"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    settled(page, 1, "hola", "你好");
+    page.push(caption(2, "primera parte"));
+    page.push(caption(3, "segunda parte"));
+    page.push({ type: "caption_update", id: 2, translated: "第一部分", translate_state: "ok", quality: 1 });
+    assert.equal(bar(page).big, "你好", "第 2 句已经被第 3 句顶掉：它的译文不上大字幕");
+    assert.equal(page.el("history").querySelectorAll(".trans").map((c) => c.textContent)[1], "第一部分");
+    page.push({ type: "caption_update", id: 3, translated: "第二部分", translate_state: "ok", quality: 1 });
+    assert.deepEqual([bar(page).big, bar(page).small], ["第二部分", "segunda parte"]);
+    page.fire(HOLD_MS);                                                  // 第 2、3 句排过的计时器：都不再动大字幕
+    assert.equal(bar(page).big, "第二部分");
+  });
+
+  test(L("待译停留：只带 strong_state 的重译进度消息不是结局，接着等；跟上一句有关的消息照常改上一句"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    settled(page, 1, "hola", "你好");
+    page.push(caption(2, "espera"));
+    page.push({ type: "caption_update", id: 2, strong_state: "pending" });
+    assert.equal(bar(page).big, "你好");
+    page.push({ type: "caption_update", id: 1, translated: "您好", translate_state: "ok", quality: 2, strong_state: "ok" });
+    assert.deepEqual([bar(page).big, bar(page).small], ["您好", "hola"], "上一句的重译照常就地换");
+    page.push({ type: "caption_update", id: 2, translated: "等等", translate_state: "ok", quality: 1 });
+    assert.deepEqual([bar(page).big, bar(page).small], ["等等", "espera"]);
+  });
+
+  test(L("待译停留：不用翻译的（skipped）、一到就带着结局的、回放里带 restore 的，都直接上，不等"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    page.push(caption(1, "buenas noches", { translate_state: "skipped", target_lang: "es" }));
+    assert.equal(bar(page).big, "buenas noches");
+    page.push(caption(2, "ya traducida", { translated: "已经译好", translate_state: "ok" }));
+    assert.deepEqual([bar(page).big, bar(page).small], ["已经译好", "ya traducida"]);
+    page.push(caption(3, "en espera"));
+    page.push(caption(4, "ultima", { replay: true, restore: true }));    // 重连回放：断线前屏幕上就是它
+    assert.deepEqual([bar(page).big, bar(page).small], ["ultima", null]);
+    page.fire(HOLD_MS);                                                  // 第 3 句的等待已经被 restore 取代
+    assert.equal(bar(page).big, "ultima");
+  });
+
+  test(L("待译停留：清空字幕、换场、回首页、重连的 hello 都把在等的那句忘掉——4 秒到点也不把大字幕放出来"), () => {
+    const page = loadDesktop({ lang });
+    const reset = [
+      () => page.el("clear-btn").click(),
+      () => page.push({ type: "session_break", ts: T + 1 }),
+      () => page.push({ type: "status", state: "idle", detail: "" }),
+      () => hello(page),
+    ];
+    for (const action of reset) {
+      hello(page);
+      page.push(caption(1, "pendiente"));
+      action();
+      page.fire(HOLD_MS);
+      assert.ok(hiddenOf(page, "live-bar"), String(action));
+      assert.equal(bar(page).big, "", String(action));
+    }
+  });
+
+  test(L("待译停留：「约 N 秒前」按这一句到达页面的时刻算，不按换上大字幕的时刻（消息不带 ts 时）"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    const noTs = caption(1, "atrasada", { e2e_ms: 20000 });
+    delete noTs.ts;
+    page.push(noTs);
+    page.advance(3000);                                                  // 等译文等了 3 秒
+    page.push({ type: "caption_update", id: 1, translated: "晚了", translate_state: "ok", quality: 1 });
+    assert.equal(bar(page).lag, X.sec(23), "到达时已经落后 20 秒，又等了 3 秒");
+  });
+
   // ---- 1. 翻译状态角标 ----------------------------------------------------------------------
 
-  test(L("大字幕：译文还在路上时只有原文、不画角标（每句都要走的几秒，不闪）；译文到了译文上大字、原文退到小字"), () => {
+  // 以前这条钉的是「译文还在路上时大字幕先放原文」：每句先闪一下西语、约 0.9 秒后跳成中文（专家审查 U1）。
+  // 用户 10-22 定了「等译文到了再一起换」，这里改钉新的样子
+  test(L("大字幕：译文还在路上时不换句——停在上一句（第一句之前就空着），卡片上照常是「翻译中…」；译文到了整句一起换上"), () => {
     const page = loadDesktop({ lang });
     hello(page);
     page.push(caption(1, "hola a todas"));
-    assert.deepEqual([bar(page).big, bar(page).small, bar(page).chip], ["hola a todas", null, null]);
+    assert.ok(hiddenOf(page, "live-bar"), "第一句：大字幕先不放西语");
     assert.equal(cardTrans(page), X.pending, "历史卡片上有「翻译中…」");
 
     page.push({ type: "caption_update", id: 1, translated: "大家好", translate_state: "ok", quality: 1 });
     assert.deepEqual([bar(page).big, bar(page).small, bar(page).chip], ["大家好", "hola a todas", null]);
+
+    page.push(caption(2, "y ahora la crema"));
+    assert.deepEqual([bar(page).big, bar(page).small, bar(page).chip], ["大家好", "hola a todas", null],
+                     "新的一句还在翻译：大字幕停在上一句，中文和西语都不动");
+    page.push({ type: "caption_update", id: 2, translated: "现在是面霜", translate_state: "ok", quality: 1 });
+    assert.deepEqual([bar(page).big, bar(page).small, bar(page).chip], ["现在是面霜", "y ahora la crema", null]);
   });
 
   const ENDINGS = [
@@ -119,21 +243,21 @@ for (const lang of ["zh", "en"]) {
   test(L("大字幕：角标跟的是大字幕上的那一句，另一句的消息不改它"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "primera"));
-    page.push(caption(2, "segunda"));
+    onBar(page, caption(1, "primera"));
+    onBar(page, caption(2, "segunda"));
     page.push({ type: "caption_update", id: 1, translated: null, translate_state: "failed" });   // 旧的一句
     assert.deepEqual([bar(page).big, bar(page).chip], ["segunda", null]);
     assert.deepEqual(cardChips(page), [X.failed, ""]);
     page.push({ type: "caption_update", id: 2, translated: null, translate_state: "failed" });
     assert.equal(bar(page).chip, X.failed);
-    page.push(caption(3, "tercera"));                                                           // 新的一句：角标重新来过
+    onBar(page, caption(3, "tercera"));                                                           // 新的一句：角标重新来过
     assert.equal(bar(page).chip, null);
   });
 
   test(L("角标是界面文字：不带 i18n-data（要查漏翻），中文界面不夹英文、英文界面没有汉字"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "x"));
+    onBar(page, caption(1, "x"));
     for (const id of ["live-state", "live-lag", "live-meta"]) {
       assert.ok(!page.el(id).classList.contains("i18n-data"), id);
       assert.equal(page.el(id).getAttribute("translate"), null, id);
@@ -153,21 +277,21 @@ for (const lang of ["zh", "en"]) {
   test(L("滞后：健康的直播里始终不出现——上屏 2.3 秒，下一句 8～10 秒后才来，整个周期都低于 15 秒"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "hola", { ts: T, e2e_ms: 2300 }));
+    onBar(page, caption(1, "hola", { ts: T, e2e_ms: 2300 }));
     assert.deepEqual([bar(page).lag, bar(page).meta], [null, false], "刚上屏：没有数字，也没有空着的一行");
     for (const ms of [2000, 3000, 3000, 2000, 1000, 1000]) {            // 累计 12 秒，音频结束后 14.3 秒
       page.advance(ms);
       page.tick(1000);
       assert.equal(bar(page).lag, null, "已经 " + (page.now() / 1000 - T + 2.3) + " 秒");
     }
-    page.push(caption(2, "adiós", { ts: T + 12, e2e_ms: 2500 }));        // 下一句来了
+    onBar(page, caption(2, "adiós", { ts: T + 12, e2e_ms: 2500 }));        // 下一句来了
     assert.deepEqual([bar(page).lag, bar(page).meta], [null, false]);
   });
 
   test(L("滞后：从这一段音频结束算起，满 15 秒才出现，之后每秒涨一次，一分钟以上改写分钟"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "hola", { ts: T, e2e_ms: 2300 }));              // 音频在 2.3 秒前结束
+    onBar(page, caption(1, "hola", { ts: T, e2e_ms: 2300 }));              // 音频在 2.3 秒前结束
     page.advance(12699);                                                // 14.999 秒
     page.tick(1000);
     assert.equal(bar(page).lag, null, "差 1 毫秒不写");
@@ -188,42 +312,42 @@ for (const lang of ["zh", "en"]) {
   test(L("滞后：积压时一上屏就写——这一句上屏的时候已经比平常老得多"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "atrasado", LATE));
+    onBar(page, caption(1, "atrasado", LATE));
     assert.deepEqual([bar(page).lag, bar(page).meta], [X.sec(20), true]);
-    page.push(caption(2, "al día", { e2e_ms: 2400 }));                  // 追上了：新的一句，数字收起来
+    onBar(page, caption(2, "al día", { e2e_ms: 2400 }));                  // 追上了：新的一句，数字收起来
     assert.deepEqual([bar(page).lag, bar(page).meta], [null, false]);
   });
 
   test(L("滞后：不依赖 segment_ms——老版本、新版本服务端算出来一样（只看 ts 和 e2e_ms）"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "sin segmento", LATE));
+    onBar(page, caption(1, "sin segmento", LATE));
     assert.equal(bar(page).lag, X.sec(20));
-    page.push(caption(2, "con segmento", Object.assign({ segment_ms: 7000 }, LATE)));
+    onBar(page, caption(2, "con segmento", Object.assign({ segment_ms: 7000 }, LATE)));
     assert.equal(bar(page).lag, X.sec(20), "带了也不多算一个片段");
   });
 
   test(L("滞后：译文回来不重置它（它算的是这一句的声音什么时候结束的）；新的一句才重置"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "hola", { ts: T, e2e_ms: 2000 }));
+    onBar(page, caption(1, "hola", { ts: T, e2e_ms: 2000 }));
     page.advance(14000);                                                // 音频结束后 16 秒
     page.push({ type: "caption_update", id: 1, translated: "你好", translate_state: "ok", quality: 1 });
     page.tick(1000);
     assert.equal(bar(page).lag, X.sec(16));
     page.advance(6000);
-    page.push(caption(2, "adiós", { ts: T + 20, e2e_ms: 2400 }));       // 下一句，正常
+    onBar(page, caption(2, "adiós", { ts: T + 20, e2e_ms: 2400 }));       // 下一句，正常
     assert.deepEqual([bar(page).lag, bar(page).meta], [null, false], "新的一句：重新从 2.4 秒数起，低于 15 秒不写");
   });
 
   test(L("滞后：本机时钟拨回（负数）和离谱的大数不写，同样的数据再老 20 秒就写"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "no", { ts: T + 100, e2e_ms: 400 }));         // ts 在「未来」
+    onBar(page, caption(1, "no", { ts: T + 100, e2e_ms: 400 }));         // ts 在「未来」
     assert.deepEqual([bar(page).lag, bar(page).meta], [null, false], "负数不写，整行也收起来");
-    page.push(caption(2, "ok", { ts: T - 8 * 3600, e2e_ms: 400 }));    // 8 小时前
+    onBar(page, caption(2, "ok", { ts: T - 8 * 3600, e2e_ms: 400 }));    // 8 小时前
     assert.equal(bar(page).lag, null);
-    page.push(caption(3, "sí", { ts: T - 20, e2e_ms: 400 }));          // 同样的字段，只是 20 秒前
+    onBar(page, caption(3, "sí", { ts: T - 20, e2e_ms: 400 }));          // 同样的字段，只是 20 秒前
     assert.equal(bar(page).lag, X.sec(20));
   });
 
@@ -234,26 +358,26 @@ for (const lang of ["zh", "en"]) {
     delete demo.e2e_ms;
     page.push(demo);
     assert.deepEqual([bar(page).lag, bar(page).meta], [null, false]);
-    page.push(caption(2, "sin e2e", { ts: T - 60, e2e_ms: undefined }));
+    onBar(page, caption(2, "sin e2e", { ts: T - 60, e2e_ms: undefined }));
     assert.equal(bar(page).lag, null, "再老也不写：没有 e2e 就不知道音频什么时候结束");
-    page.push(caption(3, "nulo", { ts: T - 60, e2e_ms: null }));
+    onBar(page, caption(3, "nulo", { ts: T - 60, e2e_ms: null }));
     assert.equal(bar(page).lag, null, "null 不当 0");
-    page.push(caption(4, "completo", { ts: T - 60, e2e_ms: 2300 }));
+    onBar(page, caption(4, "completo", { ts: T - 60, e2e_ms: 2300 }));
     assert.equal(bar(page).lag, X.min(1), "62 秒前");
   });
 
   test(L("滞后：和角标同在一行；只有一样也行；整行没内容时收起"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    page.push(caption(1, "no se oye", LATE));
+    onBar(page, caption(1, "no se oye", LATE));
     assert.deepEqual(bar(page), { big: "no se oye", small: null, chip: null, lag: X.sec(20), meta: true }, "只有滞后");
     page.push({ type: "caption_update", id: 1, translated: null, translate_state: "failed", refused: true });
     assert.deepEqual(bar(page), { big: "no se oye", small: null, chip: X.refused, lag: X.sec(20), meta: true }, "角标 + 滞后");
     page.push({ type: "caption_update", id: 1, translated: "听不清", translate_state: "ok", quality: 2 });
     assert.deepEqual([bar(page).chip, bar(page).lag, bar(page).meta], [null, X.sec(20), true]);
-    page.push(caption(2, "sin datos"));
+    onBar(page, caption(2, "sin datos"));
     assert.deepEqual([bar(page).chip, bar(page).lag, bar(page).meta], [null, null, false], "什么都没有：整行收起");
-    page.push(caption(3, "falla", { translate_state: "failed" }));
+    onBar(page, caption(3, "falla", { translate_state: "failed" }));
     assert.deepEqual([bar(page).chip, bar(page).lag, bar(page).meta], [X.failed, null, true], "只有角标（这一句不老）");
   });
 
@@ -412,18 +536,19 @@ for (const lang of ["zh", "en"]) {
     const bar = barHeight(page, 165.8);
     assert.deepEqual(bar.writes, [], "还没有字幕、条子收着：不量");
     page.push(caption(1, "hola a todas"));
+    assert.deepEqual(bar.writes, [], "第一句还在翻译：大字幕还没出来，不量");
+    page.push({ type: "caption_update", id: 1, translated: "大家好", translate_state: "ok", quality: 1 });
     assert.deepEqual(bar.writes, ["166px"]);
     assert.equal(page.cssVars["--live-bar-h"], "166px");
-    page.push({ type: "caption_update", id: 1, translated: "大家好", translate_state: "ok", quality: 1 });
     page.push(caption(2, "segunda"));
     page.push({ type: "caption_update", id: 2, translated: "第二句", translate_state: "ok", quality: 1 });
     for (let i = 0; i < 3; i++) page.tick(1000);
     assert.deepEqual(bar.writes, ["166px"], "一到两行的句子条高不变：一次都不多写");
     bar.height = 210.6;                                                 // 一句三行的长句：条子临时变高（不截断）
-    page.push(caption(3, "una frase larguísima"));
+    onBar(page, caption(3, "una frase larguísima"));
     assert.deepEqual(bar.writes, ["166px", "211px"]);
     bar.height = 165.8;                                                 // 下一句回到两行以内
-    page.push(caption(4, "corta"));
+    onBar(page, caption(4, "corta"));
     assert.deepEqual(bar.writes, ["166px", "211px", "166px"]);
   });
 
@@ -431,7 +556,7 @@ for (const lang of ["zh", "en"]) {
     const page = loadDesktop({ lang });
     hello(page);
     const bar = barHeight(page, 165.8);
-    page.push(caption(1, "hola"));
+    onBar(page, caption(1, "hola"));
     bar.height = 0;                                                     // display:none 的元素量出来就是 0
     page.el("clear-btn").click();
     page.push(caption(2, "otra"));
@@ -446,7 +571,7 @@ for (const lang of ["zh", "en"]) {
     const page = loadDesktop({ lang });
     hello(page);
     const bar = barHeight(page, 165.8);
-    page.push(caption(1, "hola"));
+    onBar(page, caption(1, "hola"));
     const hist = page.el("history"), cmts = page.el("comment-list");
     for (const box of [hist, cmts]) Object.assign(box, { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500 });
     bar.height = 219.9;                                                 // 拖到 48

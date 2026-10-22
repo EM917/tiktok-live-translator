@@ -360,6 +360,11 @@
   var updateConfirmTimer = null;
   var recentClearConfirmTimer = null;
   var liveBarId = null;      // 底部大字幕当前显示的是哪一条（译文回来要就地替换）
+  // 底部大字幕的待译停留（专家审查 U1，用户 10-22 定的「等译文到了再一起换」）：新的一句先不上大字幕，
+  // 大字幕停在上一句；译文到了、或者确定不会有译文了，再整句一起换上。以前每句先放西语、约 0.9 秒后跳成中文，
+  // 中控盯着的那一行每小时闪约 475 次。等满 LIVE_HOLD_MS 还没结果就照以前的样子先放原文（Claude 下 p99 约 3.9 秒）
+  var LIVE_HOLD_MS = 4000;
+  var liveHold = null;       // { msg, at, timer }：在等译文的那一句；null 是没有在等
   // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
   var cardsById = {};
   // 布局意义上的「直播中」，供 viewTransition 判断迁移方向；null＝页面刚加载，
@@ -1433,18 +1438,55 @@
     // 底部大字幕：回放历史时不逐条更新（避免闪一串旧字幕），最后一条带
     // restore 标记，用它把大字幕恢复成断线前的样子——但只在当前确实处于
     // 直播中才恢复；待机时回放只用来恢复上面的历史卡片，大字幕留隐藏，
-    // 不然停止后大字幕会跟着回放重新冒出来，压住开始面板下半部
+    // 不然停止后大字幕会跟着回放重新冒出来，压住开始面板下半部。
+    // 实时到达、还在翻译的一句先不上（待译停留，见 holdLiveBar）；回放里带 restore 的那一句照旧直接画——
+    // 那是断线前已经在屏幕上的样子，再等一次反而让大字幕在重连后空着
     if ((!msg.replay || msg.restore) && streamActive) {
-      liveBar.classList.remove("hidden");
-      liveTranslated.textContent = msg.translated || msg.original || "";
-      liveOriginal.textContent = msg.translated ? (msg.original || "") : "";
-      liveOriginal.classList.toggle("hidden", !msg.translated);
-      liveBarId = msg.id;
-      paintLiveState(msg);
-      paintLiveAsr(msg);
-      liveAudioEndAt = captionAudioEndAt(msg, Date.now());
-      paintLiveLag();
+      if (!msg.replay && liveHoldWanted(msg)) holdLiveBar(msg);
+      else showOnLiveBar(msg, Date.now());
     }
+  }
+
+  // ---- 底部大字幕：换上一句 / 待译停留 ----
+  // 一句话上大字幕只走 showOnLiveBar：大字放译文（没有译文时放原文），小字放原文（没有译文时收起）。
+  // receivedAt 是这一句到达页面的时刻：等过译文的那一句按到达时算「约 N 秒前」，不按换上去的时刻
+  function showOnLiveBar(msg, receivedAt) {
+    cancelLiveHold();
+    liveBar.classList.remove("hidden");
+    liveTranslated.textContent = msg.translated || msg.original || "";
+    liveOriginal.textContent = msg.translated ? (msg.original || "") : "";
+    liveOriginal.classList.toggle("hidden", !msg.translated);
+    liveBarId = msg.id;
+    paintLiveState(msg);
+    paintLiveAsr(msg);
+    liveAudioEndAt = captionAudioEndAt(msg, receivedAt);
+    paintLiveLag();
+  }
+
+  // 只有「明确在翻译中、还没有译文」的一句才等。skipped（同语言、不用翻译）、一到就带着结局的、
+  // 老版本服务端不带 translate_state 的，都直接上
+  function liveHoldWanted(msg) {
+    return msg.translate_state === "pending" && !msg.translated;
+  }
+
+  // 新的一句在翻译：大字幕停在上一句（第一句之前就还空着）。等待中又来一句就改等新的那句——
+  // 前一句从头到尾不上大字幕（约 0.7% 的句子，译文比下一句原文还晚到），它在上面的字幕记录里照常有。
+  // 等满 LIVE_HOLD_MS 还没结局：照以前的样子先放原文，译文到了再由 updateCaption 就地换成译文
+  function holdLiveBar(msg) {
+    cancelLiveHold();
+    var hold = { msg: msg, at: Date.now(), timer: null };
+    hold.timer = setTimeout(function () {
+      if (liveHold !== hold) return;
+      liveHold = null;
+      if (streamActive) showOnLiveBar(hold.msg, hold.at);
+    }, LIVE_HOLD_MS);
+    liveHold = hold;
+  }
+
+  function cancelLiveHold() {
+    if (!liveHold) return;
+    clearTimeout(liveHold.timer);
+    liveHold = null;
   }
 
   // ---- 底部大字幕下面的一小行：翻译状态角标 + 「约 N 秒前」 ----
@@ -1515,8 +1557,10 @@
     if (liveBarId != null && !document.hidden) paintLiveLag();
   }, 1000);
 
-  // 收起大字幕：场次分隔、清空字幕、回到首页都走这里，角标和滞后数一起清掉，不留给下一句
+  // 收起大字幕：场次分隔、清空字幕、回到首页都走这里，角标和滞后数一起清掉，不留给下一句。
+  // 在等译文的那一句也一起忘掉：不然计时器到点会把收起的大字幕重新放出来
   function hideLiveBar() {
+    cancelLiveHold();
     liveBar.classList.add("hidden");
     liveBarId = null;
     liveAudioEndAt = null;
@@ -1605,6 +1649,15 @@
   function updateCaption(msg) {
     var card = cardsById[msg.id];
     if (card) applyTranslation(card, msg);
+    if (liveHold && liveHold.msg.id === msg.id) {
+      // 在等的那一句有了结局：译文到了，或者确定不会有译文了（failed / dropped / skipped / same）——
+      // 整句一起换上；没译成的照旧原文大字 + 角标。只带 strong_state 的重译进度消息不是结局，接着等
+      if (msg.translated || (msg.translate_state && msg.translate_state !== "pending")) {
+        showOnLiveBar(Object.assign({}, liveHold.msg, msg), liveHold.at);
+      }
+      trackTranslateHealth(msg);
+      return;
+    }
     if (liveBarId === msg.id && msg.translated) {
       // 小字永远是西语原文（从卡片取）。以前拿当前大字顶上去：第二次译文
       // （重译）到来时大字已经是中文，顶栏就变成两行中文，原文不见了
