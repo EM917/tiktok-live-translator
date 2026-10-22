@@ -5,6 +5,7 @@
 同一时间只跑一个直播间；切换房间时旧任务被取消，识别模型跨房间复用不重复加载。
 """
 import asyncio
+import contextvars
 import os
 import subprocess
 import sys
@@ -117,6 +118,11 @@ DENOISE_MIN_BYTES = 100_000   # 完整模型约 300 KB；明显小于此值 = �
 # 用一把全局锁而不是挂在某个 transcriber 实例上：新场很可能换了一个新的
 # transcriber 对象，但只要底层模型缓存是类级/进程级共享的，锁也必须是同一级别。
 _TRANSCRIBE_LOCK = threading.Lock()
+
+# 桌面点的「重译」排队时（_retranslate_serial 在自己的任务里设，retranslate() 读）：证据音频在入队时已经
+# 存过；按钮的「重译中…」发没发过、终态（ok / failed）发没发过记在这里，被取消时据此决定要不要把按钮撤回来。
+# 用 ContextVar 而不是给 retranslate() 加参数：手机那条路（viewer_share）和测试替身都按原来的签名调它
+_RETRANSLATE_TRACK = contextvars.ContextVar("tlt_retranslate_track", default=None)
 
 
 def _locked_transcribe(transcriber, segment):
@@ -531,7 +537,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         elif mtype == "set_engine":
             return self.set_engine(msg.get("engine"), msg.get("api_key"))
         elif mtype == "retranslate":
-            return self.retranslate(msg.get("id"))
+            # 字幕重译放后台跑（同下面的 retranslate_comment、apply_update）。以前直接把 retranslate() 的协程交回
+            # 去，server 在这个页面的消息循环里等强模型：本地强模型最长 60 秒，这期间点的「停止」「换主播」都排在
+            # 它后面，换主播还会被页面 8 秒的看门狗再发一次 start（专家审查 B6、F7）。交回去的这个协程排上队、或者
+            # 轮到它开始了就返回，不等强模型
+            return self._retranslate_detached(msg.get("id"))
         elif mtype == "retranslate_comment":
             # 弹幕重译（app/comments.py）：Sonnet 要等几秒，放后台跑，不在这个页面的消息循环里
             # 等（同 apply_update）；中控可以接着点别的弹幕，每条自己排队、自己限额。
@@ -979,6 +989,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             sess = getattr(self, "_session_state", None)
             fields = {}
             if isinstance(sess, dict) and sess.get("audit") is closed:
+                # 这一场桌面点的「重译」还没做完：关审计之前先取消（旧任务自己的 _end_session 没走到这一步时）
+                await self._cancel_retranslates(sess)
                 try:
                     fields = self._session_end_extras(closed, sess)
                 except Exception:
@@ -1943,6 +1955,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if self._stats_task is own_stats:
                 self._stats_task = None
         target = my_audit if my_audit is not None else self.audit
+        # 这一场桌面点的「重译」还没做完：关审计之前先取消，cancelled 记进这一场的审计（专家审查 B6）。
+        # 只认这一场自己的 sess；没传就看此刻的会话状态是不是这份审计的
+        if not isinstance(sess, dict):
+            current = getattr(self, "_session_state", None)
+            sess = current if isinstance(current, dict) and target is not None \
+                and current.get("audit") is target else None
+        await self._cancel_retranslates(sess)
         if target is not None:
             self._close_audit(target, reason, **fields)
             if self.audit is target:
@@ -2182,6 +2201,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "meter": None,            # AudioFlowMeter，第一轮拉流时建
             "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
             "stats_task": None,       # 这一场的统计循环（_run_stream_inner 记下）：收尾只取消它，见 _end_session
+            "retranslate_tasks": set(),   # 桌面点「重译」排进来的后台任务：收尾时关审计之前先取消，见 _cancel_retranslates
         }
 
     def _comment_source_counts(self, audit):
@@ -5064,6 +5084,95 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self.server.broadcast(msg)
         return True
 
+    # ---- 桌面点的「重译」：后台排队，逐条串行（专家审查 B6）----
+    # 停止、换主播时取消还没做完的重译，最多等这么久让它们把 cancelled 记进本场审计、放掉强模型连接
+    RETRANSLATE_CANCEL_WAIT_SEC = 1.0
+
+    def _retranslate_semaphore(self):
+        """桌面「重译」一次只跑一条（强模型调用仍然逐条串行）。手机有自己的那把
+        （viewer_share._viewer_action_semaphore），两边互不排队。用到时才建：Pipeline 可能在事件循环
+        起来之前构造，个别测试用 Pipeline.__new__ 造半成品实例。"""
+        if getattr(self, "_retranslate_sem_obj", None) is None:
+            self._retranslate_sem_obj = asyncio.Semaphore(1)
+        return self._retranslate_sem_obj
+
+    def _retranslate_will_run(self, seq):
+        """这一条排上队之后会去调强模型吗（原文还在、还不是强模型译的）。是的话入队时就发 pending：
+        排在后面的那一条按钮也显示「重译中…」，不会被当成没点上。不会的（找不到原文、已经重译过）
+        不发——retranslate() 自己回话，不能先亮「重译中…」再等别人来撤。"""
+        recent = getattr(self, "_recent", None)
+        quality = getattr(self, "_quality", None) or {}
+        return recent is not None and seq in recent and quality.get(seq, 0) < QUALITY_STRONG
+
+    async def _retranslate_detached(self, seq):
+        """handle_control 交给 server 的协程：存下证据音频、把这一次重译排进后台，排上队（前面有别的在跑）
+        或者轮到它开始了就返回——server 的消息循环不等强模型，之后点的「停止」「换主播」马上处理。
+        后台任务登记在这一场（sess["retranslate_tasks"]）：收尾时关审计之前先取消（_cancel_retranslates）。"""
+        # 中控点「重译」是线上唯一能留住「通顺的错句」的人工信号：入队就存，排在前面的重译可能要等
+        # 一分钟（本地强模型），环形缓冲等不了（app/pipeline_evidence.py）
+        self._evidence_retranslate(seq)
+        ready = asyncio.Event()
+        task = self._spawn(self._retranslate_serial(seq, ready))
+        # 任务开跑前就被取消时它的函数体一行都不执行：完成回调兜底，免得这里一直等
+        task.add_done_callback(lambda _t: ready.set())
+        sess = getattr(self, "_session_state", None)
+        audit = getattr(self, "audit", None)
+        if isinstance(sess, dict) and audit is not None and sess.get("audit") is audit:
+            tasks = sess.setdefault("retranslate_tasks", set())
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+        await ready.wait()
+        return None
+
+    async def _retranslate_serial(self, seq, ready=None):
+        """桌面「重译」的后台任务：入队就发 pending，按桌面那把锁排队，轮到了调 retranslate()。
+        被取消（停止、换主播，见 _cancel_retranslates）时，发过 pending 而终态还没发的，补一条
+        strong_state=cancelled 把按钮撤回「重译」：桌面（web/app.js applyTranslation）和手机
+        （web/viewer.js retranslateLabel）都把不认识的取值当成可点的「重译」，不用改前端。
+        服务端留存的那条字幕也跟着补上，重连回放不会停在「重译中…」。"""
+        track = {"pending": False, "settled": False}
+        token = _RETRANSLATE_TRACK.set(track)    # retranslate() 读它；finally 里复原，不漏给调用方
+        try:
+            if self._retranslate_will_run(seq):
+                track["pending"] = True
+                await self.server.broadcast({"type": "caption_update", "id": seq,
+                                             "strong_state": "pending"})
+            sem = self._retranslate_semaphore()
+            if ready is not None and sem.locked():
+                ready.set()                  # 前面有别的在跑：排上队了
+            async with sem:
+                if ready is not None:
+                    ready.set()
+                await self.retranslate(seq)
+        except asyncio.CancelledError:
+            if track["pending"] and not track["settled"]:
+                try:
+                    await self.server.broadcast({"type": "caption_update", "id": seq,
+                                                 "strong_state": "cancelled"})
+                except Exception:
+                    pass
+            raise
+        except Exception as exc:
+            # 以前异常由 server 的消息循环接住打印；现在在后台，这里接住，别让任务带着异常静默结束
+            print("[警告] 重译出错: {}".format(exc))
+        finally:
+            _RETRANSLATE_TRACK.reset(token)
+
+    async def _cancel_retranslates(self, sess):
+        """这一场桌面点的「重译」还在排队或在等强模型：关审计之前先取消，等它们把 cancelled 记进这一场的
+        审计、撤掉按钮的「重译中…」、放掉 _strong_inflight 和强模型连接（最多等 RETRANSLATE_CANCEL_WAIT_SEC）。
+        以前它们在停止之后接着跑，结果写进已经关掉的审计（静默丢掉，专家审查 B6）。只认这一场自己的 sess。"""
+        tasks = sess.get("retranslate_tasks") if isinstance(sess, dict) else None
+        if not tasks:
+            return
+        me = asyncio.current_task()
+        pending = [t for t in list(tasks) if not t.done() and t is not me]
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        await asyncio.wait(pending, timeout=self.RETRANSLATE_CANCEL_WAIT_SEC)
+
     async def retranslate(self, seq, trigger="manual"):
         """用强模型重译某一条字幕。强模型是什么见 _strong_translator：字幕引擎是 Claude
         时是 Claude Sonnet 5.5，否则是本机最强的本地模型。
@@ -5081,9 +5190,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """
         from .translator import looks_fabricated, looks_like_reply
 
-        if trigger == "manual":
+        track = _RETRANSLATE_TRACK.get()    # 桌面排队来的才有，见 _retranslate_serial
+        if trigger == "manual" and track is None:
             # 中控点「重译」是线上唯一能留住「通顺的错句」的人工信号：先把这一段的音频存下来，
-            # 不管下面重译成不成（app/pipeline_evidence.py；手机点的不算）
+            # 不管下面重译成不成（app/pipeline_evidence.py；手机点的不算）。桌面排队来的入队时已经存过
             self._evidence_retranslate(seq)
         job = self._recent.get(seq)
         if job is None:
@@ -5123,69 +5233,96 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 「一次失败不得擦掉已在屏幕上的译文」这条规则，必须同时管住中间态。
         self._strong_inflight.add(seq)
         self._hold_strong(strong)        # 报警翻译清掉 self._strong 时，别关掉这边还在用的连接
+        # 从这里到结束都在 try 里：被取消（停止、换主播时由 _cancel_retranslates 取消；以前页面一断开，server 那边
+        # 等着的这个协程也跟着被取消）也要放掉 _strong_inflight 和强模型连接。以前漏掉：这一条之后再点只会回
+        # 「正在重译中」，强模型的连接也一直不关（专家审查 B6）
         audit = self.audit               # 本场自己的审计：等译文期间可能已经换场
-        had = self._quality.get(seq, 0) > 0
-        await self.server.broadcast({"type": "caption_update", "id": seq,
-                                     "strong_state": "pending"})
         t0 = time.monotonic()
-        text, hint = self._for_translation(job["text"])
-        hint = self._hint_for(strong, text, hint)
-        # 失败时要说清楚「看到了什么」：这一次调用的结局（拒答）、引擎自己记下的 HTTP 回应。
-        # last_error 在 200 时清空、非 200 时换一个新元组，所以「调用前后是不是同一个对象」
-        # 能分出这一次有没有新的 HTTP 回应——连不上时它不变，旧的状态码不能算到这一次头上
-        begin_translate_call()
-        error_before = getattr(strong, "last_error", None)
-        discarded = False
+        released = recorded = False
         try:
-            out = await strong.translate(
-                text, job["target"], source=job["lang"] or "auto",
-                glossary=hint)
-            if out and (looks_fabricated(job["text"], out)
-                        or looks_like_reply(text, out, job["target"])):
-                # 强模型在「长句 + 带疑问」上会改成回话而不是翻译。
-                # 宁可留着快译，也不能把凭空生成的内容写进屏幕和审计记录。
-                print("[警告] 重译结果不像译文（疑似模型在回话），已丢弃")
-                out, discarded = None, True
-            elif out and self.glossary:
-                out = self.glossary.apply(text, out)
-        except Exception as exc:
-            print("[警告] 重译失败: {}".format(exc))
-            out = None
-        ms = (time.monotonic() - t0) * 1000.0
-        outcome = translate_call_outcome()
-        self._strong_inflight.discard(seq)
-        self._release_strong(strong)
-        refusal = outcome if not out and outcome and outcome[0] == "refusal" else None
-        if audit is not None:
-            audit.translation_strong(
-                seq, out, ms, bool(out), getattr(strong, "model", None), trigger,
-                error=None if out else self._strong_failure_record(
-                    strong, error_before, outcome, discarded))
-        if out:
-            await self._publish_translation(seq, out, True, ms, QUALITY_STRONG,
-                                            job["target"],
-                                            {"strong": True, "strong_state": "ok"})
-            return
-        if refusal is not None:
-            await self._note_refusal(strong, seq, refusal[1], retranslate=trigger)
-        if had:
-            # 已有译文时：只报告重译失败，屏幕上那一版原样留着
-            await self.server.broadcast({"type": "caption_update", "id": seq,
-                                         "strong_state": "failed"})
-        else:
-            # 连快译都还没有：这时才是真的「这条没有译文」。被拒答的话带上 refused：快译那条
-            # 路径也是这么标的（_translate_and_update_inner），页面据此保留「未翻译（接口拒答）」
-            # 角标、不把这一条算进「连续多条翻译失败」。少了它，重译一被拒，角标就换成
-            # 「翻译失败」，点几条就顶出那句整体翻译坏了的横幅，而 API 其实正常回了话
-            extra = {"strong_state": "failed"}
+            had = self._quality.get(seq, 0) > 0
+            # 桌面排队时入队那一刻已经发过 pending（_retranslate_serial）：不重复发
+            if track is None or not track["pending"]:
+                await self.server.broadcast({"type": "caption_update", "id": seq,
+                                             "strong_state": "pending"})
+                if track is not None:
+                    track["pending"] = True
+            t0 = time.monotonic()
+            text, hint = self._for_translation(job["text"])
+            hint = self._hint_for(strong, text, hint)
+            # 失败时要说清楚「看到了什么」：这一次调用的结局（拒答）、引擎自己记下的 HTTP 回应。
+            # last_error 在 200 时清空、非 200 时换一个新元组，所以「调用前后是不是同一个对象」
+            # 能分出这一次有没有新的 HTTP 回应——连不上时它不变，旧的状态码不能算到这一次头上
+            begin_translate_call()
+            error_before = getattr(strong, "last_error", None)
+            discarded = False
+            try:
+                out = await strong.translate(
+                    text, job["target"], source=job["lang"] or "auto",
+                    glossary=hint)
+                if out and (looks_fabricated(job["text"], out)
+                            or looks_like_reply(text, out, job["target"])):
+                    # 强模型在「长句 + 带疑问」上会改成回话而不是翻译。
+                    # 宁可留着快译，也不能把凭空生成的内容写进屏幕和审计记录。
+                    print("[警告] 重译结果不像译文（疑似模型在回话），已丢弃")
+                    out, discarded = None, True
+                elif out and self.glossary:
+                    out = self.glossary.apply(text, out)
+            except Exception as exc:
+                print("[警告] 重译失败: {}".format(exc))
+                out = None
+            ms = (time.monotonic() - t0) * 1000.0
+            outcome = translate_call_outcome()
+            self._strong_inflight.discard(seq)
+            self._release_strong(strong)
+            released = True
+            refusal = outcome if not out and outcome and outcome[0] == "refusal" else None
+            if audit is not None:
+                audit.translation_strong(
+                    seq, out, ms, bool(out), getattr(strong, "model", None), trigger,
+                    error=None if out else self._strong_failure_record(
+                        strong, error_before, outcome, discarded))
+            recorded = True
+            if track is not None:
+                track["settled"] = True      # 下面每一条出路都会发终态（ok / failed）
+            if out:
+                await self._publish_translation(seq, out, True, ms, QUALITY_STRONG,
+                                                job["target"],
+                                                {"strong": True, "strong_state": "ok"})
+                return
             if refusal is not None:
-                extra["refused"] = True
-            elif discarded:
-                extra["not_translation"] = True     # 同理：回来的不是译文，接口是通的
-            await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
-                                            job["target"], extra)
-        await self._retranslate_note(seq, trigger, self._retranslate_failure_text(
-            strong, error_before, outcome, discarded, had))
+                await self._note_refusal(strong, seq, refusal[1], retranslate=trigger)
+            if had:
+                # 已有译文时：只报告重译失败，屏幕上那一版原样留着
+                await self.server.broadcast({"type": "caption_update", "id": seq,
+                                             "strong_state": "failed"})
+            else:
+                # 连快译都还没有：这时才是真的「这条没有译文」。被拒答的话带上 refused：快译那条
+                # 路径也是这么标的（_translate_and_update_inner），页面据此保留「未翻译（接口拒答）」
+                # 角标、不把这一条算进「连续多条翻译失败」。少了它，重译一被拒，角标就换成
+                # 「翻译失败」，点几条就顶出那句整体翻译坏了的横幅，而 API 其实正常回了话
+                extra = {"strong_state": "failed"}
+                if refusal is not None:
+                    extra["refused"] = True
+                elif discarded:
+                    extra["not_translation"] = True     # 同理：回来的不是译文，接口是通的
+                await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
+                                                job["target"], extra)
+            await self._retranslate_note(seq, trigger, self._retranslate_failure_text(
+                strong, error_before, outcome, discarded, had))
+        except asyncio.CancelledError:
+            # 停止、换主播时被取消（_cancel_retranslates 在关审计之前取消，等这里写完）：这一次的结局记进本场
+            # 审计，error 记 cancelled（英文代码，同 session_end 的 reason）。以前它在停止后接着跑，结果写进
+            # 已经关掉的审计，静默丢掉
+            if not recorded and audit is not None:
+                audit.translation_strong(
+                    seq, None, (time.monotonic() - t0) * 1000.0, False,
+                    getattr(strong, "model", None), trigger, error="cancelled")
+            raise
+        finally:
+            if not released:
+                self._strong_inflight.discard(seq)
+                self._release_strong(strong)
 
     def _retranslate_failure_text(self, strong, error_before, outcome, discarded, had):
         """这次重译没出译文：把观察到的事说出来，后面接上这一条现在是什么样。"""
@@ -5249,6 +5386,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     async def _retranslate_refused(self, seq, trigger, text):
         """这次点击没有开始重译（找不到原文、没有可用的强模型）：按钮和手机上都标成失败，
         再在字幕旁边说明。"""
+        track = _RETRANSLATE_TRACK.get()
+        if track is not None:
+            track["settled"] = True          # 终态在这里发：被取消时不用再撤按钮
         await self.server.broadcast({"type": "caption_update", "id": seq,
                                      "strong_state": "failed"})
         await self._retranslate_note(seq, trigger, text)
