@@ -142,7 +142,8 @@ const IDS = ["conn-dot", "conn-text", "stream-text", "alert-badge", "alert-count
   "alert-clear-seen", "caption-section", "caption-list", "jump-latest", "comment-toggle",
   "comment-count", "comment-list", "ring-toggle", "lang-toggle", "lang-toggle-text"];
 
-// 在替身挂在全局上时跑整页：drive(page) 里收消息、关连接。now 是可调的假时钟（毫秒）
+// 在替身挂在全局上时跑整页：drive(page) 里收消息、关连接。now 是可调的假时钟（毫秒）；
+// tick() 把页面注册的 setInterval 回调各跑一次（1 秒的连接秒表等），时间不会自己走
 function runPage(drive) {
   const elements = {};
   IDS.forEach((id) => { elements[id] = makeNode("div"); });
@@ -171,8 +172,9 @@ function runPage(drive) {
                       host: "127.0.0.1:0", reload() {} };
   global.WebSocket = FakeWebSocket;
   global.localStorage = { getItem: () => null, setItem() {} };
+  const intervals = [];
   global.setTimeout = () => 1;
-  global.setInterval = () => 0;
+  global.setInterval = (fn) => { intervals.push(fn); return 0; };
   Date.now = () => clock.now;
   try {
     delete require.cache[MOD];
@@ -182,7 +184,7 @@ function runPage(drive) {
     ws.onopen();
     send({ type: "viewer_hello", ok: true, ts: clock.now / 1000, share_since: 0, viewers: 1,
            max_viewers: 12, read_only: true });
-    drive({ ws, send, clock, elements });
+    drive({ ws, send, clock, elements, tick: () => intervals.slice().forEach((fn) => fn()) });
   } finally {
     Object.assign(global, saved);
     Date.now = saved.now;
@@ -296,14 +298,57 @@ test("断线：胶囊按关闭码写短句，直播状态盖成 Status unknown",
   }
 });
 
-test("重连拖过 60 秒：胶囊改成告诉人可以做什么", () => {
+// 这一条原来断言「连着 75 秒后掉线，掉线那一刻就显示 Not connected for 75 sec. Ask the operator…」，
+// 钉住的是错误行为（V7）：秒数从上一次 viewer_hello 算起，把连着的 75 秒也算成了没连上。
+// 现在掉线那一刻是普通的重连倒计时；秒数从掉线那一刻数起，见下一条
+test("连着 75 秒后掉线：掉线那一刻是普通的重连倒计时，不把连着的时间算进去", () => {
   const els = runPage(({ ws, clock }) => {
     clock.now += 75000;
     ws.onclose({ code: 1006 });
   });
-  assert.equal(els["conn-text"].textContent,
-    "Not connected for 75 sec. Ask the operator whether sharing is still on, or scan the QR code again.");
+  assert.match(els["conn-text"].textContent, /^Reconnecting in \d+ sec…$/);
+  assert.equal(els["stale-line"].classList.contains("hidden"), true);
   assertNoChinese(els);
+});
+
+test("断开 61 秒才改口：胶囊只写 Not connected for 61 sec，该做什么写在胶囊下面那一行", () => {
+  const seen = {};
+  const els = runPage(({ ws, send, clock, elements, tick }) => {
+    clock.now += 30 * 60 * 1000;
+    ws.onclose({ code: 1006 });
+    clock.now += 60000;
+    tick();
+    seen.at60 = elements["conn-text"].textContent;
+    seen.lineAt60 = elements["stale-line"].classList.contains("hidden");
+    clock.now += 1000;
+    tick();
+    seen.at61 = elements["conn-text"].textContent;
+    seen.line61 = elements["stale-line"].textContent;
+    seen.lineHidden61 = elements["stale-line"].classList.contains("hidden");
+    send({ type: "viewer_hello", ok: true, ts: clock.now / 1000, share_since: 0, viewers: 1,
+           max_viewers: 12, read_only: true });
+  });
+  assert.match(seen.at60, /^Reconnecting in \d+ sec…$/, "断开正好 60 秒还不算拖久");
+  assert.equal(seen.lineAt60, true);
+  assert.equal(seen.at61, "Not connected for 61 sec");
+  assert.equal(seen.line61, "Ask the operator whether sharing is still on, or scan the QR code again.");
+  assert.equal(seen.lineHidden61, false);
+  // 连上之后：胶囊回到 Connected，那一行收起
+  assert.equal(els["conn-text"].textContent, "Connected");
+  assert.equal(els["stale-line"].classList.contains("hidden"), true);
+  assertNoChinese(els);
+});
+
+test("胶囊长度（V4）：断开再久，英文胶囊也不比已有最长的胶囊文案长", () => {
+  const longest = Math.max(...["connecting", "connected", "denied", "full", "off"].map((s) => V.statusText(s).length),
+                           V.statusText("reconnecting", 15).length);
+  for (const sec of [61, 1800, 86400, 999999]) {
+    const { pill, line } = V.reconnectTexts(sec, 15);
+    assert.ok(pill.length <= longest, pill);
+    english(pill);
+    english(line);
+  }
+  assert.deepEqual(V.reconnectTexts(60, 4), { pill: "Reconnecting in 4 sec…", line: "" });
 });
 
 test("字幕的翻译结局（F4）：failed、dropped 与桌面角标同一句，ok、pending 照旧", () => {

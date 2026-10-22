@@ -26,6 +26,28 @@ test("statusText 未知值有兜底文案", () => {
   assert.equal(V.statusText(undefined), "状态未知");
 });
 
+// ---- reconnectTexts（V4、V7）----
+// V7：秒数是离掉线那一刻的秒数，由调用方算好传进来；还没连上过传 null。
+// V4：胶囊里只放短句，「请找中控确认…」那句放到胶囊下面能换行的 #stale-line
+test("reconnectTexts：断开不到 60 秒是普通的「N 秒后重连」，#stale-line 不显示", () => {
+  assert.deepEqual(V.reconnectTexts(null, 3), { pill: "已断开，3 秒后重连…", line: "" });
+  assert.deepEqual(V.reconnectTexts(0, 1), { pill: "已断开，1 秒后重连…", line: "" });
+  assert.deepEqual(V.reconnectTexts(60, 2), { pill: "已断开，2 秒后重连…", line: "" }, "正好 60 秒还不算拖久");
+});
+test("reconnectTexts：断开超过 60 秒，胶囊只写「未连接 N 秒」，该做什么写在 #stale-line", () => {
+  assert.equal(V.STALE_RECONNECT_SEC, 60);
+  assert.deepEqual(V.reconnectTexts(61, 15), { pill: "未连接 61 秒", line: "请找中控确认同看是否还开着，或重新扫码" });
+  assert.equal(V.statusText("offline", 1800), "未连接 1800 秒");
+});
+test("胶囊长度：断开再久，也不比已有最长的胶囊文案长（R4 量过它在 320 宽放得下）", () => {
+  const longest = Math.max(...["connecting", "connected", "denied", "full", "off"].map((s) => V.statusText(s).length),
+                           V.statusText("reconnecting", 15).length);
+  for (const sec of [61, 1800, 86400, 999999]) {
+    const pill = V.reconnectTexts(sec, 15).pill;
+    assert.ok(pill.length <= longest, pill + " 比已有最长的胶囊文案（" + longest + " 字）长");
+  }
+});
+
 // ---- streamText ----
 test("streamText 覆盖 status.state 全集", () => {
   assert.equal(V.streamText("idle"), "未开始");
@@ -546,15 +568,21 @@ function makeFakeWebSocket() {
   FakeWebSocket.instances = [];
   return FakeWebSocket;
 }
+// clock：可调的假时钟（毫秒），Date.now 读它；tick()：把页面注册的 setInterval 回调各跑一次
+// （1 秒的连接秒表、2 秒的贴底兜底），时间不会自己走，要先改 clock.now
 function withFakeViewerPage(run) {
   const elements = baseElements();
   const FakeWebSocket = makeFakeWebSocket();
   const originals = {
     document: global.document, location: global.location, WebSocket: global.WebSocket,
     localStorage: global.localStorage, setTimeout: global.setTimeout, setInterval: global.setInterval,
+    now: Date.now,
   };
   const modPath = require.resolve("../web/viewer.js");
   const store = new Map();
+  const clock = { now: Date.UTC(2026, 9, 22, 12, 0, 0) };
+  const intervals = [];
+  const tick = () => intervals.slice().forEach((fn) => fn());
 
   global.document = makeFakeDocument(elements);
   global.location = { hash: "#k=fake-token-not-a-real-secret-0000000000", protocol: "http:", host: "127.0.0.1:0" };
@@ -564,7 +592,8 @@ function withFakeViewerPage(run) {
     setItem: (k, v) => { store.set(k, String(v)); },
   };
   global.setTimeout = (fn) => { (global.setTimeout._queue = global.setTimeout._queue || []).push(fn); return 1; };
-  global.setInterval = () => 0;
+  global.setInterval = (fn) => { intervals.push(fn); return 0; };
+  Date.now = () => clock.now;
 
   try {
     delete require.cache[modPath];
@@ -573,7 +602,15 @@ function withFakeViewerPage(run) {
     ws1.onopen();
     ws1.onmessage({ data: JSON.stringify({ type: "viewer_hello", ok: true, ts: Date.now() / 1000, share_since: 0, viewers: 1, max_viewers: 12, read_only: true }) });
     ws1.sent = [];   // 握手时发的 auth 帧不是被测行为，清空后让调用方从干净基线数起
-    run({ elements, ws: ws1, store, FakeWebSocket });
+    // 让排着的重连定时器到点：connect() 建一条新连接并返回它（还没收到 viewer_hello）
+    const fireReconnect = () => {
+      const q = global.setTimeout._queue || [];
+      while (q.length) q.shift()();
+      const next = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+      if (next.onopen) next.onopen();
+      return next;
+    };
+    run({ elements, ws: ws1, store, FakeWebSocket, clock, tick, fireReconnect });
   } finally {
     global.document = originals.document;
     global.location = originals.location;
@@ -581,6 +618,7 @@ function withFakeViewerPage(run) {
     global.localStorage = originals.localStorage;
     global.setTimeout = originals.setTimeout;
     global.setInterval = originals.setInterval;
+    Date.now = originals.now;
     delete require.cache[modPath];
   }
 }
@@ -864,6 +902,77 @@ test("session_break：即便消息里带了 streamer，手机端分隔文案也�
     const sep = elements["caption-list"].children[1];
     assert.equal(sep.textContent.indexOf("leakedname"), -1);
     assert.equal(sep.textContent, "── 新的一场 ──");
+  });
+});
+
+// ---- DOM 回归：断线秒数从掉线那一刻算起（V7），长句在 #stale-line（V4）----
+// 补核（10-22）实测：连接 30 分钟后掉线，掉线那一刻胶囊就写「已经 1800 秒没连上。请找中控确认…」——
+// 秒数从上一次 viewer_hello 算起，把连着的时间也算了进去；这句还塞在不换行的胶囊里，被截掉一半。
+test("连着 30 分钟后掉线：那一刻是普通的「N 秒后重连」；断开 61 秒才改口，长句放在 #stale-line", () => {
+  withFakeViewerPage(({ elements, ws, clock, tick, fireReconnect }) => {
+    const pill = elements["conn-text"];
+    const line = elements["stale-line"];
+    ws.onmessage({ data: JSON.stringify({ type: "status", state: "live" }) });
+    clock.now += 30 * 60 * 1000;
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 1, ts: clock.now / 1000, original: "hola" }) });
+    ws.onclose({ code: 1006 });
+    assert.match(pill.textContent, /^已断开，\d+ 秒后重连…$/, "掉线那一刻不能把连着的 30 分钟算进去");
+    assert.equal(line.classList.contains("hidden"), true);
+
+    clock.now += 60 * 1000;
+    tick();
+    assert.match(pill.textContent, /^已断开，\d+ 秒后重连…$/, "断开正好 60 秒还不算拖久");
+    assert.equal(line.classList.contains("hidden"), true);
+
+    clock.now += 1000;
+    tick();
+    assert.equal(pill.textContent, "未连接 61 秒");
+    assert.equal(line.classList.contains("hidden"), false, "该做什么写在胶囊下面那一行");
+    assert.equal(line.textContent, "请找中控确认同看是否还开着，或重新扫码");
+
+    // 重连上了：那一行立刻收起，不等下一秒的秒表；胶囊回到「已连接」
+    const ws2 = fireReconnect();
+    assert.equal(pill.textContent, "未连接 61 秒", "新连接还没收到 hello：仍算断开");
+    ws2.onmessage({ data: helloMsg(0) });
+    assert.equal(pill.textContent, "已连接");
+    assert.equal(line.classList.contains("hidden"), true);
+    assert.equal(line.textContent, "");
+
+    // 再掉一次：从这一次掉线重新数，不接着上一次的 61 秒
+    clock.now += 5 * 60 * 1000;
+    ws2.onmessage({ data: JSON.stringify({ type: "caption", id: 2, ts: clock.now / 1000, original: "adios" }) });
+    ws2.onclose({ code: 1006 });
+    clock.now += 30 * 1000;
+    tick();
+    assert.match(pill.textContent, /^已断开，\d+ 秒后重连…$/);
+    assert.equal(line.classList.contains("hidden"), true);
+  });
+});
+
+test("掉线后在「重连中 / 已满 / 已关闭」之间转：秒数仍从第一次掉线那一刻数起", () => {
+  withFakeViewerPage(({ elements, ws, clock, tick, fireReconnect }) => {
+    clock.now += 10 * 60 * 1000;
+    ws.onclose({ code: 4429 });                 // 已满：胶囊写自己的字，不显示秒数
+    assert.equal(elements["conn-text"].textContent, "同看人数已满（12 人），稍后再试");
+    assert.equal(elements["stale-line"].classList.contains("hidden"), true);
+    clock.now += 50 * 1000;
+    fireReconnect().onclose({ code: 1006 });   // 下一次重连没有关闭帧就断了：回到普通重连
+    tick();
+    assert.match(elements["conn-text"].textContent, /^已断开，\d+ 秒后重连…$/, "离掉线才 50 秒");
+    clock.now += 20 * 1000;
+    tick();
+    assert.equal(elements["conn-text"].textContent, "未连接 70 秒");
+    assert.equal(elements["stale-line"].textContent, "请找中控确认同看是否还开着，或重新扫码");
+  });
+});
+
+test("已连接时 #stale-line 照旧是「N 秒没有新消息」，和断线那句不同时出现", () => {
+  withFakeViewerPage(({ elements, clock, tick }) => {
+    const line = elements["stale-line"];
+    clock.now += 46 * 1000;
+    tick();
+    assert.equal(line.classList.contains("hidden"), false);
+    assert.equal(line.textContent, "46 秒没有新消息");
   });
 });
 

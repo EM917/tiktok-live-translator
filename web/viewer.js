@@ -66,7 +66,7 @@ function applyStatic(root) {
 
 // ============ 一、纯函数 ============
 
-// 连接状态文案。n 用于 reconnecting 的倒计时秒数 / stale 的静默秒数。
+// 连接状态文案。n 用于 reconnecting 的倒计时秒数 / stale 的静默秒数 / offline 的断开秒数。
 // 英文放在窄屏的状态胶囊里，用短写法（docs/i18n-style.md §3 #122–#125、§4.3 R4）；
 // 「12」照写：被拒的手机收不到 max_viewers（spec §7.2）
 var CONN_TEXT = {
@@ -77,12 +77,32 @@ var CONN_TEXT = {
   full: L("同看人数已满（12 人），稍后再试", "Full (12 max) · Try again later"),
   off: L("中控已关闭手机同看", "Operator stopped sharing"),
   stale: L("{n} 秒没有新消息", "No updates for {n} sec"),
+  // 断开超过 STALE_RECONNECT_SEC 之后胶囊里的字（V4）：只放这一个短句。胶囊不换行，
+  // 以前把「请找中控确认…」整句塞进来，英文在 390 宽下后半句整段看不到，「状态未知」被挤成 0 宽
+  offline: L("未连接 {n} 秒", "Not connected for {n} sec"),
 };
 
 function statusText(state, n) {
   var t = CONN_TEXT[state];
   if (!t) return L("状态未知", "Status unknown");
   return t.replace("{n}", String(n == null ? 0 : n));
+}
+
+// 断线拖得够久（A9），光说「N 秒后重连」已经不够：告诉看的人能做什么。这句放在胶囊下面
+// 整宽、能换行的 #stale-line 里（V4）。#stale-line 原来那句「N 秒没有新消息」只在已连接时出现，
+// 两句不会同时出现
+var STALE_RECONNECT_SEC = 60;
+var RECONNECT_HELP = L("请找中控确认同看是否还开着，或重新扫码",
+                       "Ask the operator whether sharing is still on, or scan the QR code again.");
+
+// 重连中时胶囊和 #stale-line 各写什么。offlineSec 是**离断开那一刻**过了多少秒（V7：以前从
+// 上次连上算起，连着 30 分钟后掉线，掉线那一刻就显示「已经 1800 秒没连上」）；这台手机还没
+// 连上过、或者已经重新连上了，传 null。retrySec 是下一次重连的倒计时。line 为空串表示不显示
+function reconnectTexts(offlineSec, retrySec) {
+  if (offlineSec != null && offlineSec > STALE_RECONNECT_SEC) {
+    return { pill: statusText("offline", offlineSec), line: RECONNECT_HELP };
+  }
+  return { pill: statusText("reconnecting", retrySec), line: "" };
 }
 
 // 直播状态文案：与 main.py、app/*.py 里 server.status() 实际用到的取值一致，
@@ -320,7 +340,7 @@ if (typeof document !== "undefined") {
     var MAX_COMMENTS = 30;    // 手机端默认折叠，只留最近这么多条（负责人定稿：三个待定问题）
     var MAX_CAPTIONS = 200;   // 回放上限 100 条 + 直播中持续追加，留够余量不无限长
     var STALE_MS = 45000;     // 已连接但 45 秒没有新消息：叠加显示，不改变连接状态本身
-    var STALE_RECONNECT_SEC = 60;   // A9：重连超过这么久，文案升级为找中控确认
+    // 断开超过 STALE_RECONNECT_SEC（60 秒，A9）文案升级为找中控确认：常量在上面纯函数段，reconnectTexts 用它
 
     // 图标：描边 1.5、currentColor，跟桌面端设置行同一套画法（见 web/index.html）。
     // 只放这两个——其余（提示音、弹幕、回到最新、报警角标）是静态文案，直接写在
@@ -596,43 +616,45 @@ if (typeof document !== "undefined") {
     var retryCount = 0;
     var reconnectTimer = null;
     var connState = "connecting";
-    var lastConnectedAt = null;   // 上一次收到 viewer_hello 的时间（ms）
+    // 掉线那一刻（ms）：从「已连接」离开时记下，收到 viewer_hello 时清空。断线的秒数从这里数起（V7）。
+    // 以前记的是上一次收到 viewer_hello 的时间，秒数就把连着的那段也算了进去：连了 30 分钟后掉线，
+    // 掉线那一刻就显示「已经 1800 秒没连上」，还叫看的人去找中控。还没连上过的手机这里是 null，
+    // 一直显示普通的「N 秒后重连」，和以前一样
+    var disconnectedAt = null;
     var lastMessageAt = null;     // 上一次收到任意消息的时间（ms），驱动 45 秒静默提示
-    var staleReconnectShown = 0;  // 上一次渲染时用的重连累计秒数，避免每次 tick 都重排 DOM
+
+    // 重连中离掉线那一刻过了多少秒；不在重连中、或者这台手机还没连上过，返回 null
+    function offlineSec() {
+      if (connState !== "reconnecting" || disconnectedAt == null) return null;
+      return Math.round((Date.now() - disconnectedAt) / 1000);
+    }
 
     function renderConnBar() {
       if (!connText || !connDot) return;
       connDot.className = "dot " + connState;
-      var text;
-      if (connState === "reconnecting" && lastConnectedAt) {
-        var elapsedSec = Math.round((Date.now() - lastConnectedAt) / 1000);
-        if (elapsedSec > STALE_RECONNECT_SEC) {
-          // A9：重连拖得够久，普通的「N 秒后重连」已经不够用——告诉人可以做什么
-          text = L("已经 " + elapsedSec + " 秒没连上。请找中控确认同看是否还开着，或重新扫码",
-                   "Not connected for " + elapsedSec + " sec. "
-                   + "Ask the operator whether sharing is still on, or scan the QR code again.");
-          staleReconnectShown = elapsedSec;
-        } else {
-          text = statusText(connState, pendingRetrySec);
-        }
-      } else {
-        text = statusText(connState, pendingRetrySec);
-      }
-      connText.textContent = text;
+      connText.textContent = connState === "reconnecting"
+        ? reconnectTexts(offlineSec(), pendingRetrySec).pill
+        : statusText(connState, pendingRetrySec);
     }
 
     var pendingRetrySec = 0;   // 下一次重连前的倒计时秒数，供 statusText 的 {n} 用
 
-    function tickStaleLine() {
+    // 胶囊下面那一行（整宽、能换行）：已连接时是「N 秒没有新消息」，断开拖久了是「请找中控确认…」
+    // （V4，原来塞在胶囊里），其余时候隐藏。两句的条件互斥：一个要已连接，一个要重连中
+    function renderStaleLine() {
       if (!staleLine) return;
-      if (connState === "connected" && lastMessageAt
-          && Date.now() - lastMessageAt > STALE_MS) {
-        var sec = Math.round((Date.now() - lastMessageAt) / 1000);
-        staleLine.textContent = statusText("stale", sec);
-        staleLine.classList.remove("hidden");
-      } else {
-        staleLine.classList.add("hidden");
+      var text = "";
+      if (connState === "reconnecting") {
+        text = reconnectTexts(offlineSec(), pendingRetrySec).line;
+      } else if (connState === "connected" && lastMessageAt && Date.now() - lastMessageAt > STALE_MS) {
+        text = statusText("stale", Math.round((Date.now() - lastMessageAt) / 1000));
       }
+      staleLine.textContent = text;
+      staleLine.classList.toggle("hidden", !text);
+    }
+
+    function tickStaleLine() {
+      renderStaleLine();
       // 重连状态下的倒计时/累计秒数也要跟着秒表刷新，不能只在状态切换那一刻画一次
       if (connState === "reconnecting") renderConnBar();
     }
@@ -644,8 +666,12 @@ if (typeof document !== "undefined") {
     }
 
     function setConnState(state) {
+      // 从「已连接」离开的那一刻就是掉线的时刻。之后在重连 / 被拒 / 已满之间怎么转都不改它，
+      // 收到 viewer_hello 才清空
+      if (connState === "connected" && state !== "connected") disconnectedAt = Date.now();
       connState = state;
       renderConnBar();
+      renderStaleLine();   // 连上时立刻收起「请找中控确认…」，不等下一秒的秒表
       renderStreamStale();
       refreshAllRetranslateButtons();   // 断线/重连都要跟着刷「重译」按钮的可点状态
     }
@@ -769,7 +795,7 @@ if (typeof document !== "undefined") {
       switch (msg.type) {
         case "viewer_hello":
           retryCount = 0;
-          lastConnectedAt = Date.now();
+          disconnectedAt = null;
           commentReplayStick = true;
           // 取消记录先对齐这一次共享，再收回放的报警：程序重启后 alert_id 从头数，
           // 上一次共享里取消过的 7 号不能藏掉这一次的 7 号
@@ -1222,6 +1248,8 @@ if (typeof module !== "undefined" && module.exports) {
     createDismissedStore: createDismissedStore,
     shouldRenderSessionDivider: shouldRenderSessionDivider,
     sessionDividerText: sessionDividerText,
+    reconnectTexts: reconnectTexts,
+    STALE_RECONNECT_SEC: STALE_RECONNECT_SEC,
     UI_LANG: UI_LANG,
     I18N_ON: I18N_ON,
     L: L,
