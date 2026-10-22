@@ -14,6 +14,8 @@ main.py 在模块级就跑 ensure_env()，测试一 import 它就会被 execv �
   * 失败说明：按 pip 输出里看到的字样分成磁盘满、连不上软件包服务器、没有适用于
     当前 Python 的安装包三类，只写观察到的和能做的事；认不出的给通用说明，都附日志位置。
   * mlx-whisper 放弃记号：JSON（at / pip_exit / note），旧版本写的纯文本也认。
+  * .venv 里没有 pip（首次安装在 ensurepip 那一步被打断，I1）：装之前先在 .venv 里跑 ensurepip
+    原地补；补不回来写重建记号（.venv/.needs-rebuild），下次启动据此重建。
 """
 import hashlib
 import json
@@ -39,6 +41,9 @@ REQ_ATTEMPT = ".requirements-attempt.json"
 REQ_RETRY_SEC = 24 * 3600
 MLX_GIVEUP = ".mlx-unavailable"
 MLX_RETRY_SEC = 24 * 3600
+# .venv 里原地补不回 pip 时写的记号（JSON：at / kind）。放在 .venv 里：重建（venv.create clear=True）
+# 时跟着清掉，不用另删
+NEEDS_REBUILD = ".needs-rebuild"
 KEEP_LOGS = 10
 TAIL_LINES = 40
 
@@ -278,7 +283,8 @@ def venv_needs_rebuild(usable, recorded=None, actual=None, own_env=False, python
 
     usable/actual 是 interpreter_version(.venv/bin/python) 的结果，recorded 是 pyvenv.cfg
     记的主次版本，own_env 是当前进程本来就跑在 .venv 或 .app 壳里（managed_env）。
-    python/ready_import 是 .venv/bin/python 和核心组件的 import 语句，只在版本不一致时拿来探测。
+    python/ready_import 是 .venv/bin/python 和核心组件的 import 语句，两个版本都读得到时拿来探测；
+    重建记号（NEEDS_REBUILD）也按 python 找：它在 python 往上两级的 .venv 里。
 
     跑不起来要重建：链到的 Python 被卸掉、上次建到一半。能跑、但次版本和 cfg 记的不一样，
     而且在它实际跑的这个版本下组件和 pip 都 import 不了，也要重建：.venv/bin/python3 链到
@@ -294,15 +300,75 @@ def venv_needs_rebuild(usable, recorded=None, actual=None, own_env=False, python
     那时清空就是把一个好好的环境删掉、联网重装约 1.4 GB。所以版本不一致时先探测
     （venv_salvageable）：能 import pip 或能 import 核心组件，就照旧原地补装。
 
+    版本一致时也探测（I1，2026-10-21 审查）：venv.create 先写 pyvenv.cfg 和 bin/python，最后才跑
+    ensurepip，首次安装在装 pip 那一步被打断（强制退出、杀进程组，ensurepip 跟着父进程一起死），
+    留下的 .venv 版本对得上、能跑，却既没有 pip 也没有组件。以前这里直接放过，原地补装每次都报
+    No module named pip，对话框还叫人检查网络，重开多少次都一样。pip 和组件都 import 不了，
+    就没有什么可留的，重建。
+
+    install_requirements 原地补 pip 失败时写下的重建记号也认：记号在、pip 还是 import 不了，
+    就重建——那时组件可能都在（venv_salvageable 会说用得上），可清单变了要补装也没有 pip 可用，
+    失败说明里「下次打开程序会自动重建」这句话靠这里兑现。记号在但 pip 已经回来了（有人手动补过），
+    删掉记号照常判断，不白下 1.4 GB。
+
     两个版本有一个读不到、或者没给 python 就不重建，照旧原地补装：没有证据不删东西。当前进程
-    就在 .venv/.app 壳里时不重建：那是从环境里面把自己的环境清空。"""
+    就在 .venv/.app 壳里时不重建：那是从环境里面把自己的环境清空（记号留着，下次从启动器
+    进来时再重建）。"""
     if not usable:
         return True
     if own_env:
         return False
-    if not (recorded and actual and recorded != actual) or python is None:
+    if python is not None and _rebuild_marked(python):
+        return True
+    if not (recorded and actual) or python is None:
         return False
     return not venv_salvageable(python, ready_import)
+
+
+def _marker_for(python):
+    """.venv/bin/python（Windows 是 .venv/Scripts/python.exe）→ .venv/.needs-rebuild。不解开链接：
+    .venv/bin/python 链到的是建环境的那个 Python，解开就出了 .venv。"""
+    return Path(python).parent.parent / NEEDS_REBUILD
+
+
+def _rebuild_marked(python):
+    """有重建记号、而且 pip 还是 import 不了。pip 回来了就删掉记号，返回 False。"""
+    marker = _marker_for(python)
+    if not marker.exists():
+        return False
+    if pip_importable(python) is True:
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def mark_needs_rebuild(root, now=None):
+    """在 <root>/.venv 里写重建记号（JSON：at / kind）。.venv 不在就不写（不凭空建目录）。"""
+    venv = Path(root) / ".venv"
+    if not venv.is_dir():
+        return False
+    data = {"at": datetime.fromtimestamp(time.time() if now is None else now)
+            .isoformat(timespec="seconds"), "kind": "pip_missing"}
+    try:
+        (venv / NEEDS_REBUILD).write_text(json.dumps(data) + "\n", encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def pip_importable(python, timeout=60):
+    """这个解释器能不能 import pip：True / False；探测本身出错（解释器文件不在、起不来、超时）
+    返回 None——不知道，不当成缺 pip。一般几十毫秒。只认给出的那个文件，不按 PATH 去找同名程序。"""
+    if not Path(python).exists():
+        return None
+    try:
+        r = subprocess.run([str(python), "-c", "import pip"], capture_output=True, timeout=timeout)
+    except Exception:
+        return None
+    return r.returncode == 0
 
 
 def venv_salvageable(python, ready_import=None, timeout=60):
@@ -438,6 +504,33 @@ class PipFailed(Exception):
         self.log_path = log_path
 
 
+class PipMissing(Exception):
+    """.venv 里的 python 没有 pip，在 .venv 里跑 ensurepip 也没补回来。抛之前已经写了重建记号
+    （mark_needs_rebuild），下次启动 venv_needs_rebuild 据此重建。带着日志位置给 failure_text。"""
+
+    def __init__(self, log_path=None):
+        super().__init__(L(".venv 里没有 pip，原地补装没有成功",
+                           "pip is missing from .venv and couldn’t be reinstalled in place"))
+        self.log_path = log_path
+
+
+# `python -m pip` 在没有 pip 的解释器上说的那句（"/…/python: No module named pip"）
+_NO_PIP_MARK = "no module named pip"
+
+
+def pip_missing_text(log_path=None):
+    """缺 pip、原地补不回来时给中控的说明。按真实行为写：已经写了重建记号，下次打开会重建。
+    不叫人检查网络——这一步不联网，网络好坏都一样；也不给手动 pip install 的进阶说明，没有 pip
+    那条路走不通。"""
+    head = L("程序的运行环境里缺少安装工具 pip，原地补装没有成功。\n"
+             "下次打开程序会自动重建运行环境（约 1.4 GB，需要联网）。",
+             "The app’s runtime is missing pip, the tool that installs its components, and "
+             "reinstalling pip in place didn’t work.\nThe next time you open the app, it rebuilds "
+             "the runtime automatically (about 1.4 GB, needs an internet connection).")
+    # 日志位置单独一行放在最后，末尾不带换行：对话框底下不留一行空白
+    return head + (L("\n详细记录：{}", "\nLog file: {}").format(log_path) if log_path else "")
+
+
 _DISK_MARKS = ("no space left on device", "errno 28", "not enough space on the disk",
                "winerror 112")
 _NET_MARKS = ("newconnectionerror", "failed to establish a new connection",
@@ -525,7 +618,17 @@ def pip_failure_text(tail, exit_code, log_path=None, python_version=None, root=N
 
 def failure_text(exc, log_path=None, python_version=None, root=None):
     """ensure_env 里任何异常给中控的说明。不是 pip 本身失败的（建环境、起进程出错），
-    把原话和堆栈写进日志，对话框里给日志位置。"""
+    把原话和堆栈写进日志，对话框里给日志位置。
+
+    缺 pip（I1）单独说：以前 PipFailed 的输出里只有 No module named pip，认不出来，落到最后那句
+    「请检查网络连接」，中控查了网络、重开，还是一样。install_requirements 遇到缺 pip 抛的是
+    PipMissing（记号已写）；万一 PipFailed 的输出里出现这句，这里补写记号，「下次会重建」才属实。"""
+    if isinstance(exc, PipMissing):
+        return pip_missing_text(exc.log_path or log_path)
+    if isinstance(exc, PipFailed) and _NO_PIP_MARK in exc.tail.lower():
+        if root is not None:
+            mark_needs_rebuild(root)
+        return pip_missing_text(exc.log_path or log_path)
     if isinstance(exc, PipFailed):
         return pip_failure_text(exc.tail, exc.exit_code, exc.log_path or log_path,
                                 python_version, root)
@@ -547,18 +650,45 @@ def failure_text(exc, log_path=None, python_version=None, root=None):
             + detail + _ADVANCED)
 
 
+def ensure_pip(pip_python, root, log_path=None, run=run_logged, probe=pip_importable, now=None):
+    """跑 pip 之前先看 .venv 里有没有 pip（I1）。没有就在 .venv 里跑 `python -m ensurepip
+    --default-pip`：用的是 Python 自带的 pip 安装包，不联网，几秒钟，输出照样进 bootstrap 日志。
+    补回来了返回 True；补不回来写重建记号、抛 PipMissing。探测本身出错（probe 返回 None）不当成
+    缺 pip，照旧往下装：没有证据不动环境，真装不上时照旧弹失败说明。
+
+    为什么先原地补而不是直接重建（2026-10-21 计划审查 Q3）：组件都在、只是 pip 没了的 .venv，
+    venv_needs_rebuild 不会重建（它能跑），而清单一变要补装就卡在 No module named pip 上；
+    原地补几秒钟，重建要联网下约 1.4 GB。"""
+    if probe(pip_python) is not False:
+        return True
+    print("[初始化] 运行环境里缺少 pip，正在原地补装（不联网）…")
+    try:
+        code, _tail = run([str(pip_python), "-m", "ensurepip", "--default-pip"], log_path)
+    except Exception:
+        code = None
+    if code == 0 and probe(pip_python) is True:
+        print("[初始化] pip 已补回")
+        return True
+    print("[初始化] pip 原地补装没有成功，下次启动会重建运行环境")
+    mark_needs_rebuild(root, now=now)
+    raise PipMissing(log_path)
+
+
 def install_requirements(pip_python, root, core_deps, optional_deps, log_path=None,
-                         run=run_logged, now=None):
+                         run=run_logged, now=None, probe=pip_importable):
     """ensure_env 的安装步骤：整份 requirements；不行就先保核心依赖，再逐个装可选组件。
 
     整份 -r 返回 0 才写清单指纹；没成就记下这次失败。mlx-whisper 单独也装不上时写放弃
     记号（JSON，程序空闲时由 Updater.retry_mlx_install 在后台重试）。核心依赖都装不上
     抛 PipFailed。返回 {"full_ok": bool, "failed_optional": [...]}。
 
+    开始之前先 ensure_pip：.venv 里没有 pip 时原地补，补不回来抛 PipMissing（记号已写）。
+
     有放弃记号时 -r 用去掉 mlx-whisper 那一行的副本：否则记号机器每 24 小时（清单指纹
     一直记不上）就在启动时重下一遍 torch，把开播挡上几分钟。指纹照样按真正的
     requirements.txt 算——装成功了，启动就不再为这份清单补装。"""
     root = Path(root)
+    ensure_pip(pip_python, root, log_path, run=run, probe=probe, now=now)
     base = [str(pip_python), "-m", "pip", "install", "--disable-pip-version-check"]
     digest = requirements_file_digest(root)
     req_file = root / "requirements.txt"
