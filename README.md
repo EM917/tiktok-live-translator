@@ -83,7 +83,7 @@ You need macOS 12.3 or later, or Windows, and about 6 GB of free disk space. The
 
 The first launch takes a few minutes. The app sets up its own Python environment and installs what it needs, including ffmpeg and the noise-reduction model. The speech model (up to 3 GB) downloads the first time you click Start, with the progress shown on the page.
 
-Choose the language to translate into from the menu in the top bar. It offers 13: Simplified and Traditional Chinese, English, Japanese, Korean, Spanish, French, German, Russian, Portuguese, Vietnamese, Thai and Indonesian. It starts on Chinese, or on English for a new install with an English interface.
+Choose the language captions are translated into from the Captions in menu in the top bar: Simplified Chinese, Traditional Chinese, English or Spanish. It starts on Chinese, or on English for a new install with an English interface. This menu changes only the captions, not the interface. If an earlier version saved another language here, or the app starts with `--target` and another language code, captions stay in that language and the menu shows it as an extra item.
 
 The interface is in English or Chinese. A new install follows your system language. An install that was already in use before the English interface existed stays in Chinese after updating. Settings → App Language changes it.
 
@@ -263,7 +263,7 @@ Comment Review's rules run on your computer. If you choose the Claude review, co
 
 Transcripts stay on your computer. A transcript holds what the streamer said, its translation, and the viewers' comments with their display names. It is a separate file from the audit log, which never holds comment text. The app never uploads transcripts or deletes them.
 
-Recognition audio clips stay on your computer too. The app keeps a few seconds of stream audio around flagged segments, banned-term matches, captions you retranslate and one segment in 50 for comparison, in `logs/asr-evidence/`, and removes the oldest past 300 MB or 14 days. It is the stream's mixed audio, so other voices on the stream are in it. Settings → Storage shows the clips and deletes them, and `"asr_evidence": false` in `settings.json` stops saving new ones. Details: [docs/faq.md](docs/faq.md#recognition-audio).
+Recognition audio clips stay on your computer too. The app keeps a few seconds of stream audio around flagged segments, banned-term matches, captions you retranslate and one segment in 50 for comparison, in `logs/asr-evidence/`, and removes the oldest past 1 GB or 14 days. It is the stream's mixed audio, so other voices on the stream are in it. Settings → Storage shows the clips and deletes them, and `"asr_evidence": false` in `settings.json` stops saving new ones. Details: [docs/faq.md](docs/faq.md#recognition-audio).
 
 Phone Viewing opens a port on your network while sharing is on and closes it when sharing is off. Phones see captions, not settings, file paths, cookies or the stream address. The app's own window, where you start and stop and change settings, opens from this computer only.
 
@@ -382,7 +382,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 第一次启动要几分钟：程序会建好自己的 Python 环境，装上需要的组件，包括 ffmpeg 和降噪模型。语音模型最多约 3 GB，在第一次点「开始翻译」时下载，页面上有进度。
 
-字幕译成哪种语言，在顶栏的菜单里选，共 13 种：简体中文、繁体中文、英语、日语、韩语、西班牙语、法语、德语、俄语、葡萄牙语、越南语、泰语、印尼语。默认是中文，新装且界面是英文时默认是英文。
+字幕译成哪种语言，在顶栏的「字幕译成」菜单里选：简体中文、繁体中文、英语、西班牙语。默认是中文，新装且界面是英文时默认是英文。这个菜单只改字幕，不改界面。以前的版本在这里存过别的语言，或者用 `--target` 加别的语言代码启动时，字幕照旧译成那种语言，菜单里多出这一项。
 
 界面有中文和英文两种。新装的程序跟着系统语言走；英文界面出现之前就在用的安装，升级后仍是中文。想改就到「设置 → 界面语言 · Language」。
 
@@ -563,7 +563,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 字幕记录只留在你的电脑上。里面有主播说的话、译文，以及观众弹幕和他们的昵称。它和审计日志是两个文件，审计日志里从来没有弹幕内容。程序不会上传字幕记录，也不会删除它。
 
-识别音频片段也只留在你的电脑上。程序会把被标记的段、违禁词命中的段、点过「重译」的字幕，以及每 50 段里抽 1 段对照，前后几秒的直播音频存进 `logs/asr-evidence/`，超过 300 MB 或 14 天从最旧的删起。存的是直播的混音，同场其他人的声音也在里面。「设置 > 磁盘空间」里能看到、也能删掉；在 `settings.json` 里写 `"asr_evidence": false` 就不再存。详见 [docs/faq.zh-CN.md](docs/faq.zh-CN.md#zh-recognition-audio)。
+识别音频片段也只留在你的电脑上。程序会把被标记的段、违禁词命中的段、点过「重译」的字幕，以及每 50 段里抽 1 段对照，前后几秒的直播音频存进 `logs/asr-evidence/`，超过 1 GB 或 14 天从最旧的删起。存的是直播的混音，同场其他人的声音也在里面。「设置 > 磁盘空间」里能看到、也能删掉；在 `settings.json` 里写 `"asr_evidence": false` 就不再存。详见 [docs/faq.zh-CN.md](docs/faq.zh-CN.md#zh-recognition-audio)。
 
 手机同看只在打开期间才在你的网络上开一个端口。手机看到的是字幕，看不到设置、文件路径、Cookie 和流地址。你用来开始、停止和改设置的程序窗口，只能在这台电脑上打开。
 

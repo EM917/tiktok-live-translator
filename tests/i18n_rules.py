@@ -40,7 +40,7 @@ UI_FILES = (
     "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
     "app/pipeline_engine.py", "app/pipeline_float.py", "app/pipeline_guard.py",
-    "app/pipeline_transcript.py", "app/power.py",
+    "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
     "app/resolver.py", "app/selfcheck.py",
     "app/transcript_export.py",
     "app/translator.py", "app/updater.py", "app/viewer.py", "app/viewer_share.py",
@@ -71,6 +71,8 @@ NON_UI_CHINESE = {
         "把全局 glossary.txt 里的主播词条迁进 profiles/ 下该主播的词表时，写进那个文件的注释行："
         "文件内容，界面不显示": (
             "\n# 从 glossary.txt 迁移（{}）\n",),
+        "认词表译法里括注的正则（全角、半角、方头括号），只用来判断一条词条带不带括注，是数据": (
+            "[（(【\\[]",),
     },
     "app/i18n.py": {
         "CJK 字符范围的正则本身（界面语言的判定工具，数据）": (

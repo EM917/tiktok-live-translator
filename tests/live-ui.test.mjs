@@ -189,3 +189,17 @@ test("字号取值：20–60 之间的整数才认，来路不明的不夹边界
     assert.equal(captionSizeFromConfig(bad), null, String(bad));
   }
 });
+
+
+test("覆盖率角标：只在偏低时出现，写近几分钟收到了百分之多少", () => {
+  const { coverageChip } = require("../web/live-ui.js");
+  assert.deepEqual(coverageChip({ coverage_pct: 40, coverage_window_min: 5, coverage_low: false, breaks: 3 }),
+                   { text: "", title: "" });
+  assert.deepEqual(coverageChip({}), { text: "", title: "" });
+  assert.deepEqual(coverageChip(null), { text: "", title: "" });
+  assert.deepEqual(coverageChip({ coverage_pct: 38.6, coverage_window_min: 5, coverage_low: true, breaks: 7 }),
+                   { text: "近 5 分钟收到 39%", title: "近 5 分钟里实际收到的直播音频占比；本场已中断 7 次" });
+  // 开场不足 5 分钟：按已过的时间写
+  assert.equal(coverageChip({ coverage_pct: 20, coverage_window_min: 3, coverage_low: true, breaks: 1 }).text,
+               "近 3 分钟收到 20%");
+});

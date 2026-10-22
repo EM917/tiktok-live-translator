@@ -371,7 +371,10 @@ def fda_targets(environ=None, executable=None):
         TCCDEvent type=Modify, service=kTCCServiceSystemPolicyAllFiles, identifier_type=Path
     那两条按路径登记的开关打开之后的第一场，日志里才不再有 Operation not permitted。
     两个路径里系统到底认哪一个还没有单独量过，所以两个都列；路径每次现算——
-    Homebrew 升级、重建 .venv 之后它会变。"""
+    建 .venv 的那个 Python 升级、被卸掉，或重建 .venv 之后它会变。启动器有 .venv 时先用
+    建它的那个解释器（tools/find_python.sh），装上、升级别的 Python 不再把启动用的换掉
+    （2026-10-19 Homebrew 顺带装上 python@3.15 之后，启动用的从 3.14 变成了 3.15，而 3.15 不在
+    这项权限的列表里）。"""
     from .macbundle import LAUNCH_PYTHON_ENV
 
     env = os.environ if environ is None else environ

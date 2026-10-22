@@ -107,6 +107,12 @@ def test_audit_texts_read_as_english():
 
 # ---- 一场从开始到放弃：状态行、提示、弹幕状态 -------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _v1_reconnect_words(v1_reconnect):
+    """这个文件钉的是 V1 那几句重连英文（「attempt N of M」、放弃）：显式钉在 V1 上。V2 的重连英文
+    （本场第几次中断、用同一个流地址、查询次数到上限）在 tests/test_reconnect_v2.py 逐字比对。"""
+
+
 def test_a_session_that_loses_the_network_and_gives_up_is_english(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     p.NETWORK_GIVE_UP_SEC = 60.0
@@ -230,8 +236,15 @@ def test_clock_gaps_and_audio_events_are_english(monkeypatch, tmp_path):
     with i18n.use(EN):
         run(p._check_clock_gap(10, now=(T0 + 1390.0, 510.0)))       # 单调时钟停住：休眠
         run(p._check_clock_gap(10, now=(T0 + 1460.0, 570.0)))       # 两个钟一起多走：没运行
-        run(p._on_audio_events(sess, [("low", {"audio_sec": 20.0, "wall_sec": 60.0}),
-                                      ("quiet", {"audio_sec": 45.0})]))
+        run(p._on_audio_events(sess, [("quiet", {"audio_sec": 45.0})]))
+        # 跨轮覆盖率偏低（session:audio_rate 改由它驱动）：开播 4 分钟、只收到 100 秒
+        watch = sess["watch"]
+        watch.cov_start = 1000.0
+        for i in range(100):
+            watch.note_audio(1.0, 1000.0 + i, T0 + i)
+        sess["break_no"] = 6
+        run(p._check_coverage(sess, 1240.0))
+        run(p._check_coverage(sess, 1240.0))
     assert_no_chinese(english_ui(server.messages))
     first, second = incidents_en(server, "session:clock_gap")
     assert first.endswith(" This computer was asleep or suspended for about 23 min. The app "
@@ -241,8 +254,8 @@ def test_clock_gaps_and_audio_events_are_english(monkeypatch, tmp_path):
                            "stream wasn’t monitored. During streams, keep the computer plugged "
                            "in and don’t let it sleep. This has happened 2 times this session.")
     assert incidents_en(server, "session:audio_rate") == [
-        "Only 20 sec of stream audio arrived in the last minute. The missing audio wasn’t "
-        "checked."]
+        "Only 42% of stream audio arrived in the last 4 min. The missing audio wasn’t checked. "
+        "6 interruptions this session."]
     assert incidents_en(server, "session:quiet_audio") == [
         "45 sec of stream audio arrived, but its volume stayed below the speech recognition "
         "threshold, so none of it was transcribed. Monitoring continues."]

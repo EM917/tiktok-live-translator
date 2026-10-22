@@ -48,10 +48,14 @@ your machine. Open System Settings → Privacy & Security → Full Disk Access,
 press "+", press ⌘⇧G in the file picker, paste the path, press Return, click
 Open, and switch the new entry on; repeat for each path shown. The list shows
 the entry as `python3.x`, not under the app's name. Add Terminal too if you
-launch with Start.command. Then quit the app completely and reopen it. The path
-changes when Python is upgraded or the environment is rebuilt; the row then
-shows the new one. This only matters for rooms whose stream address TikTok
-serves to signed-in viewers. The check looks only at whether the cookie
+launch with Start.command. Then quit the app completely and reopen it. Both
+launchers start the app with the Python that built its environment (`.venv`)
+while that Python is still there at the same version, so installing or
+upgrading a different Python (for example Homebrew pulling in a newer
+`python@3.x` as a dependency) does not change the path. It changes when that
+Python itself is upgraded, moved or removed, or when the environment is
+rebuilt; the row then shows the new one. This only matters for rooms whose
+stream address TikTok serves to signed-in viewers. The check looks only at whether the cookie
 store can be read and at login cookie names, across every browser profile; it
 never decrypts and never raises a Keychain prompt. Failed resolutions record one
 of these codes in the audit log: `blocked_by_system`, `no_browser_data`,
@@ -97,14 +101,52 @@ low-confidence segments are discarded deliberately. If the streamer is clearly
 speaking and nothing appears, try `--denoise off` or a different model size.
 
 **Captions stop after closing the laptop lid or switching networks.** When the
-stream drops, the app re-resolves the stream URL and reconnects by itself,
-waiting longer between attempts each time (2 s, then 4, 8, 16 and at most
-30 s). While the computer cannot reach TikTok it waits without spending
-attempts, for up to 30 minutes. It gives up only after six connection attempts
-in a row bring no audio at all (two for a pasted stream URL); a connection that
-played any audio resets that count, so a patchy connection keeps reconnecting. If the
-window says the stream was interrupted several times and couldn't reconnect,
-click Start again. Details: [Keeping the stream](fault-tolerance.md#keeping-the-stream).
+stream drops, the app reconnects by itself. After a stretch that had audio it
+first reconnects to the same stream URL, which only contacts the video server
+and not the live page or TikTok's API; if that brings no audio (or the URL
+clearly stops working), it looks up the stream URL again. While no audio
+arrives, the waits grow (2 s, then 4, 8, 16 and at most 30 s; 60 s after 30
+minutes without audio). Any audio resets them. To keep requests to TikTok low,
+the app looks up the stream URL at most 26 times in any hour, and checks of
+the stream status while waiting for it to resume count toward the same limit;
+past it, the app keeps reconnecting to the same stream URL and the status line
+says when the next lookup is. After 30 minutes without audio it looks up at
+most once every 15 minutes. While the computer cannot reach TikTok it waits
+without looking anything up, for up to 30 minutes.
+
+A live link is never given up just because no audio arrives. Monitoring stops
+only when TikTok reports the stream as ended (status 4, checked again if the
+computer was asleep), when TikTok's API hasn't reported it as live for about
+10 minutes, when TikTok can't be reached for 30 minutes, or when looking up the
+stream URL fails six times in a row. A pasted stream URL stops after two
+connection attempts in a row with no audio. The status line counts the
+interruptions in this session ("interruption 7 this session").
+
+Two notices say how much was heard. "No stream audio for N min" appears after
+2 minutes without stream audio and goes away with the first audio. "Only N% of
+stream audio arrived in the last 5 min" appears when less than 70% arrived,
+and goes away above 85%; a small "Last 5 min: N% received" badge under the
+large caption shows the same number. Audio that only arrives late, when the
+app closes a stalled connection, is still transcribed and checked for banned
+terms; it doesn't count as received in real time, and the notices say how much
+of it was checked. Details: [Keeping the stream](fault-tolerance.md#keeping-the-stream).
+
+To go back to the previous reconnect rules for one run (look up the stream URL
+on every reconnect, stop after six connection attempts in a row with no audio,
+"attempt N of M" in the status line), start the app with `TLT_RECONNECT_V2=0`.
+The notices above, the limits on how long stopping a stalled stream can take,
+and the audit records stay the same.
+
+<a id="captions-in"></a>**Switching Captions in to English didn't change the interface.** The
+**Captions in** menu in the top bar sets only the language captions are
+translated into: Simplified Chinese, Traditional Chinese, English or Spanish.
+The interface language is a separate setting, **Settings → App Language** on
+the home page ([Interface language](interface-language.md)). If an earlier
+version saved another caption language, or the app starts with `--target` and
+another language code, captions stay in that language and the menu shows it as
+an extra item until you choose one of the four. With Spanish selected,
+segments recognized as Spanish aren't sent for translation and appear as
+said; English segments are translated into Spanish.
 
 **Switching to another streamer during a session.** Click **Switch Streamer**
 in the top bar, paste the new live link or @username, or pick one from Recent
@@ -163,17 +205,18 @@ WAV of the segment plus 2 s before and 1 s after, with a line in `index.jsonl` t
 recognition output. It is the stream's mixed audio, so anyone else on the stream and the
 background music are in it too. The clips stay on this computer: nothing uploads them, sends
 them to an API or puts them in an export, and `logs/` is not in git. Once the folder passes
-300 MB, 2000 files or 14 days, the oldest sessions are removed first; the current session is
-never removed. This is checked when a session starts, so clips older than 14 days stay until
-the next session. Settings → Storage shows the folder and can delete it. Saving runs off the
+1 GB (1024 MB), 6000 files or 14 days, the oldest sessions are removed first; the current
+session is never removed. This is checked when a session starts, so clips older than 14 days
+stay until the next session. Settings → Storage shows the folder and can delete it. Saving runs off the
 recognition path, and a failed write only prints a warning in the terminal. Turn it off with
 `"asr_evidence": false` in `settings.json` or the environment variable `TLT_ASR_EVIDENCE=0`.
 Turning it off stops new clips; clips already saved stay until the limits remove them at a
 session start, or until you delete them in Storage.
-The limits are `asr_evidence_max_mb`, `asr_evidence_max_files`, `asr_evidence_days`,
-`asr_evidence_ring_sec` (recent audio kept in memory, 600 by default) and
-`asr_evidence_control_every` (50; `0` saves no comparison segments). They are read when a
-session starts.
+The limits are `asr_evidence_max_mb` (1024 by default), `asr_evidence_max_files` (6000),
+`asr_evidence_days` (14), `asr_evidence_ring_sec` (recent audio kept in memory, 600 by default)
+and `asr_evidence_control_every` (50; `0` saves no comparison segments). They are read when a
+session starts. To keep less, write a smaller number in `settings.json`, for example
+`"asr_evidence_max_mb": 300`.
 
 <a id="recognition-risk"></a>**Recognition risk records, and switching them off.** Each
 segment in the audit log has an `asr` object that holds only numbers and short codes: segment

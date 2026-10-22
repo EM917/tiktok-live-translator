@@ -10,7 +10,8 @@ echo "  关掉它程序就会退出。"
 echo "  字幕会显示在弹出的应用窗口里。"
 echo "=============================================="
 
-# find_python() 和 .app 里的启动脚本共用一份，见 tools/find_python.sh。
+# find_python() 和 .app 里的启动脚本共用一份，见 tools/find_python.sh。传项目根：有 .venv
+# 时先用建它的那个解释器。
 if [ ! -f "tools/find_python.sh" ]; then
   echo ""
   echo "[缺文件] tools/find_python.sh 不见了，项目文件不完整，无法探测 Python。"
@@ -19,7 +20,7 @@ if [ ! -f "tools/find_python.sh" ]; then
 fi
 . "tools/find_python.sh"
 
-PY="$(find_python)" || {
+PY="$(find_python "$PWD")" || {
   echo ""
   echo "[未检测到 Python] 需要先安装 Python 才能运行（免费，约 2 分钟）："
   echo "  1. 已为你打开下载页 https://www.python.org/downloads/"
