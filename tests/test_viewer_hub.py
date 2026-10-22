@@ -1165,3 +1165,106 @@ def test_idle_sockets_cannot_exhaust_file_handles_under_a_256_limit():
                 proc.kill()
                 proc.wait(timeout=10)
 
+
+# ---- 未鉴权的 /vws 占位（专家审查 S6）----
+def test_the_auth_timeout_is_two_seconds():
+    """原来 5 秒：一个 IP 挂 32 个不发 auth 的连接、到期重开，合法手机 20 次只进来 2 次。"""
+    assert viewer_mod.AUTH_TIMEOUT_SEC == 2.0
+    assert make_hub().auth_timeout == 2.0
+    assert viewer_mod.MAX_PENDING_PER_IP == 4
+    # 单 IP 的 TCP 上限（S1）要容得下单 IP 未鉴权上限加一台手机正常的那几条（浏览器最多并行 6 条）
+    assert viewer_mod.MAX_CONN_PER_IP > viewer_mod.MAX_PENDING_PER_IP + 6
+
+
+def test_one_address_squatting_32_unauthenticated_sockets_cannot_lock_out_another_phone():
+    """同一个 IP 开 32 个不发 auth 的连接：前 4 个占着位，其余直接 503、不占全局名额；
+    另一个 IP 带正确口令照样进来。占位的人走了之后计数归零。"""
+    from aiohttp import web
+
+    async def scenario():
+        hub = make_hub()
+        outcomes = []
+
+        async def squat():
+            try:
+                await hub.vws(SimpleNamespace(transport=FakeTransport("10.0.0.66"),
+                                              match_info={}, headers={}))
+                outcomes.append("held")
+            except web.HTTPServiceUnavailable:
+                outcomes.append("503")
+
+        hub._make_ws = lambda: FakeWS(hang=True)
+        tasks = [asyncio.ensure_future(squat()) for _ in range(32)]
+        await asyncio.sleep(0.05)
+        assert outcomes.count("503") == 32 - viewer_mod.MAX_PENDING_PER_IP
+        assert hub._pending == viewer_mod.MAX_PENDING_PER_IP      # 503 的那些没占全局名额
+        assert hub._unauth == {"10.0.0.66": viewer_mod.MAX_PENDING_PER_IP}
+
+        phone = FakeWS(first=auth(), linger=0.05)
+        hub._make_ws = lambda: phone
+        await hub.vws(SimpleNamespace(transport=FakeTransport("10.0.0.20"), match_info={},
+                                      headers={}))
+        assert [f["ip"] for name, f in hub.events if name == "viewer_connected"] \
+            == ["10.0.0.20"]
+        assert phone.sent and phone.sent[0]["type"] == "viewer_hello"
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        assert hub._pending == 0
+        assert hub._unauth == {}
+
+    asyncio.run(scenario())
+
+
+def test_the_per_address_slot_is_given_back_after_auth_and_after_a_refusal():
+    hub = make_hub()
+    run_handshake(hub, FakeWS(first=auth(), linger=0.01))
+    assert hub._unauth == {}
+    run_handshake(hub, FakeWS(first=auth("x" * viewer_mod.TOKEN_LEN)))
+    assert hub._unauth == {}
+    hub = make_hub(auth_timeout=0.01)
+    run_handshake(hub, FakeWS(hang=True))
+    assert hub._unauth == {} and hub._pending == 0
+
+
+def test_an_authenticated_phone_does_not_hold_its_address_s_unauthenticated_slot():
+    """已经在看的手机不占它这个 IP 的未鉴权名额：同一个 NAT 后面的几台手机陆续连进来，
+    在看的人再多也不会把后来的挡在 503 外面。"""
+    async def scenario():
+        hub = make_hub()
+        sockets = [FakeWS(first=auth(), linger=0.5)
+                   for _ in range(viewer_mod.MAX_PENDING_PER_IP + 2)]
+        made = iter(sockets)
+        hub._make_ws = lambda: next(made)
+        tasks = [asyncio.ensure_future(hub.vws(SimpleNamespace(
+            transport=FakeTransport("10.0.0.30"), match_info={}, headers={})))
+            for _ in sockets]
+        await asyncio.sleep(0.1)
+        assert hub.count == len(sockets)
+        assert hub._unauth == {}
+        await asyncio.gather(*tasks)
+
+    asyncio.run(scenario())
+
+
+def test_a_real_socket_that_never_authenticates_is_closed_after_about_two_seconds():
+    async def scenario():
+        hub = make_hub()
+        await hub.start()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(
+                        "http://127.0.0.1:{}/vws".format(hub.port)) as ws:
+                    started = time.monotonic()
+                    while True:
+                        msg = await asyncio.wait_for(ws.receive(), 10.0)
+                        if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
+                            break
+                    elapsed = time.monotonic() - started
+            assert ws.close_code == 4408
+            assert 1.5 <= elapsed < 4.0, elapsed
+        finally:
+            await hub.stop("off")
+
+    asyncio.run(scenario())
+

@@ -36,9 +36,15 @@ PORT_OFFSET = 1
 PORT_TRIES = 5
 QUEUE_MAX = 512               # 每个观众一条有界队列；回放最多 273 条，留足余量
 SEND_TIMEOUT_SEC = 5.0        # 写任务里单条发送的上限（不在关键路径上，可以比控制面宽）
-AUTH_TIMEOUT_SEC = 5.0        # 握手后等第一条 auth 的上限
+# 握手后等第一条 auth 的上限。手机页一连上就发 auth（viewer.js），正常几十毫秒；原来是 5 秒，
+# 专家审查 S6 实测一个 IP 挂 32 个不发 auth 的 /vws、超时就重开，带正确口令的手机 20 次只进来
+# 2 次——占位的成本和这个数成正比，缩到 2 秒。慢 Wi-Fi 上的手机最多多重连一次
+AUTH_TIMEOUT_SEC = 2.0
 MAX_VIEWERS = 12              # 中控团队规模，也是 fanout 每条消息的成本上界
 MAX_PENDING = 32              # 在途连接（含未鉴权）总数上限，独立于且大于 MAX_VIEWERS
+# 同一个 IP 同时在途的未鉴权 /vws 上限（S6）。超了直接 503，**不占** MAX_PENDING 的名额：
+# 全局名额只有 32 个，一台设备就能占满，别人的手机就进不来。一台手机正常只有 1 条在途
+MAX_PENDING_PER_IP = 4
 # ---- TCP 这一层（S1）：在 aiohttp 看到第一个 HTTP 请求之前 ----
 # 上面几道闸都在 /vws 的 handler 里，而连上了却一个字节都不发的 TCP 连接根本到不了 handler：
 # aiohttp 等第一个请求没有期限。审查实测一台设备挂 150 条空连接，程序的 open/spawn/socket
@@ -868,6 +874,7 @@ class ViewerHub:
         self._bound_port = None
         self._running = False
         self._pending = 0
+        self._unauth = {}         # ip -> 在途的未鉴权 /vws 条数（S6，MAX_PENDING_PER_IP）
         self._auth_fail = {}
         # TCP 这一层按 IP 的计数（S1）。一个 hub 一个，stop() 之后迟到的 connection_lost 也扣回这里
         self._gate = _ConnGate(log=self._log, now=self._now)
@@ -1232,12 +1239,18 @@ class ViewerHub:
         return web.WebSocketResponse(heartbeat=WS_HEARTBEAT, max_msg_size=MAX_MSG_SIZE)
 
     async def vws(self, request):
+        ip = _peer_ip(request)
+        # 先按 IP 挡（S6）：同一个 IP 在途的未鉴权连接到了上限就直接 503，不占下面全局的名额。
+        # 只有全局一道闸时，一台设备挂满 32 个不发 auth 的连接，带正确口令的手机就进不来
+        if self._unauth.get(ip, 0) >= MAX_PENDING_PER_IP:
+            raise web.HTTPServiceUnavailable(text="too many connections")
         # 未鉴权连接也要有上限：在 prepare 之前就挡，不升级 WebSocket。没有这道闸，
         # 一串「连上但不发 auth」的连接就能把在途连接堆到没有上界
         if self._pending >= MAX_PENDING:
             raise web.HTTPServiceUnavailable(text="too many connections")
         self._pending += 1
-        ip = _peer_ip(request)
+        self._unauth[ip] = self._unauth.get(ip, 0) + 1
+        unauth = True
         viewer = None
         ws = self._make_ws()
         try:
@@ -1256,6 +1269,9 @@ class ViewerHub:
                 self._auth_failed(ip, why)
                 await _deny(ws, "token", 4401)
                 return ws
+            # 鉴权通过就不再算「在途未鉴权」：已经在看的手机不占它这个 IP 的未鉴权名额
+            self._release_unauth(ip)
+            unauth = False
             if self.count >= MAX_VIEWERS:
                 self._event("viewer_disconnected", ip=ip, count=self.count, reason="cap")
                 await _deny(ws, "full", 4429)
@@ -1273,12 +1289,21 @@ class ViewerHub:
                 self._handle_inbound(viewer, msg)
         finally:
             self._pending -= 1
+            if unauth:
+                self._release_unauth(ip)
             if viewer is not None:
                 if self._unregister(viewer):
                     self._event("viewer_disconnected", ip=viewer.ip,
                                 count=self.count, reason="closed")
                 self._cancel_writer(viewer)
         return ws
+
+    def _release_unauth(self, ip):
+        count = self._unauth.get(ip, 0) - 1
+        if count > 0:
+            self._unauth[ip] = count
+        else:
+            self._unauth.pop(ip, None)
 
     def _check_auth(self, msg):
         if msg.type != WSMsgType.TEXT:
