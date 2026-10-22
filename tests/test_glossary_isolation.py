@@ -22,6 +22,36 @@ def test_every_glossary_location_is_inside_pytests_tmp_dir(tmp_path_factory):
         assert REPO not in path.parents, path
 
 
+def test_each_test_starts_from_a_fresh_empty_glossary_dir_outside_its_tmp_path(tmp_path):
+    """全局表所在的目录已经建好、是空的（load() 首启才把模板复制进来）；profiles/、brands/ 还没建；
+    这个目录不在用例自己的 tmp_path 里——有用例断言 tmp_path 里只有它自己写的文件。"""
+    home = G.GLOSSARY_FILE.parent
+    assert G.GLOSSARY_FILE.name == "glossary.txt"
+    assert home.is_dir() and list(home.iterdir()) == []
+    assert G.PROFILE_DIR == home / "profiles" and not G.PROFILE_DIR.exists()
+    assert G.BRAND_DIR == home / "brands" and not G.BRAND_DIR.exists()
+    assert home != tmp_path and tmp_path not in home.parents
+
+
+_DIRS_SEEN = []
+
+
+@pytest.mark.parametrize("n", range(3))
+def test_no_two_tests_share_a_dir_and_none_pays_a_numbered_mktemp(n, tmp_path_factory):
+    """每个用例的词表目录、设置目录都是它独有的；而且都开在同一个会话级父目录里，不是每个用例各做一次
+    带编号的 tmp_path_factory.mktemp()——那样每次都要把 basetemp 根目录整个扫一遍，六千个用例下来是
+    O(N²)，CI 的 Windows 跑器因此超过 15 分钟被取消过（tests/conftest.py 的 _fresh_dir）。"""
+    from app import settings
+
+    mine = [G.GLOSSARY_FILE.parent, settings.SETTINGS_FILE.parent]
+    assert mine[0] != mine[1]
+    assert not set(mine) & set(_DIRS_SEEN)
+    assert {path.parent for path in _DIRS_SEEN + mine} == {mine[0].parent}
+    # 每个用例各做一次 mktemp 时，这些目录也都挂在同一个父目录下——就是 basetemp 本身；要拦住改回去，得断言父目录不是它
+    assert mine[0].parent != tmp_path_factory.getbasetemp()
+    _DIRS_SEEN.extend(mine)
+
+
 def test_the_global_glossary_starts_from_the_public_template_like_on_ci():
     """全局表首启从入库的公开模板复制：本机和 CI 上用例读到的是同一份内容。"""
     G.load()
