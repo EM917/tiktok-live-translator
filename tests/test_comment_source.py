@@ -218,10 +218,12 @@ def test_field_stats_counts_non_empty_only():
                              mention_users=[RichUser(id=2)]))
     stats.observe(SimpleNamespace(comment="sin usuario"))
     line = stats.take()
-    assert line == {"event": "field_stats", "n": 3, "has": {
+    level_keys = ("level_has", "level_hist", "level_kinds")      # 等级/徽章候选另有测试（test_comment_levels.py）
+    assert {k: v for k, v in line.items() if k not in level_keys} == {"event": "field_stats", "n": 3, "has": {
         "id": 1, "id_str": 1, "sec_uid": 1, "display_id": 1,
         "identity": 1, "identity_any": 1, "mention": 1,
         "follower": 1, "mutual": 0, "gifter": 0, "subscriber": 0, "fans_club": 0}}
+    assert set(line["level_has"].values()) == {0} and line["level_hist"] == line["level_kinds"] == {}
     assert stats.take() is None                          # 吐的是增量，吐完清零
 
 
@@ -1318,6 +1320,7 @@ def test_worker_flushes_field_stats_every_50_and_on_disconnect(monkeypatch):
     assert code == 0
     stats = [e for e in emitted if e.get("event") == "field_stats"]
     assert [e["n"] for e in stats] == [50, 50, 20]
+    assert all(e["level_has"]["badge_list"] == 0 for e in stats)    # 等级/徽章候选跟着同一行吐
     assert sum(e["has"]["id"] for e in stats) == 120
     assert sum(e["has"]["sec_uid"] for e in stats) == 60
     assert sum(len(e["items"]) for e in emitted if e.get("event") == "comments") == 120

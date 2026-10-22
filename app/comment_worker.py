@@ -11,7 +11,8 @@ app/comment_source.py 的 CommentSource._supervise）。
 协议：stdout 逐行 JSON、每行立刻 flush，父进程按行解析：
     {"event": "status", "state": ..., "detail": "...", "room_id": ...}
     {"event": "comments", "items": [{"id", "user", "text", 有值才带的账号字段}, ...]}
-    {"event": "field_stats", "n": 50, "has": {"id": 50, ...}}   每 50 条和断开时一行，增量
+    {"event": "field_stats", "n": 50, "has": {"id": 50, ...},  每 50 条和断开时一行，增量
+     "level_has": {...}, "level_hist": {...}, "level_kinds": {...}}   等级/徽章候选，见 app/comment_levels.py
 stderr 只留 TikTokLive 库自己的日志，父进程会读走它（不读会堵住管道）。
 
 退出码：0 正常断开；3 未开播；4 签名服务限流/报错；5 需要登录态；
@@ -27,6 +28,7 @@ import signal
 import sys
 import threading
 
+from .comment_levels import LevelStats
 from .stdio import utf8_stdio
 
 _PENDING = set()     # 信号处理里起的 disconnect 任务，保引用
@@ -65,6 +67,7 @@ class FieldStats:
                        "is_subscriber_of_anchor")
 
     def __init__(self):
+        self.levels = LevelStats()      # 等级 / 徽章候选（只数不显示，见 app/comment_levels.py）
         self._reset()
 
     def _reset(self):
@@ -99,12 +102,14 @@ class FieldStats:
         for k, hit in hits.items():
             if hit:
                 self.has[k] += 1
+        self.levels.observe(ev)         # 自己兜异常：候选字段读坏了也不影响上面这些计数
 
     def take(self):
         """上次 take() 以来的增量行；一条都没数过返回 None。"""
         if not self.n:
             return None
         line = {"event": "field_stats", "n": self.n, "has": dict(self.has)}
+        line.update(self.levels.take())
         self._reset()
         return line
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from . import asr_risk, i18n
 from .asr import DEFAULT_TEMPERATURE
 from .i18n import LN, L, of
+from .comment_levels import snapshot as level_snapshot
 from .comment_source import CommentSource
 from .comments import CommentTranslator
 from .detector import BannedTermDetector, TermsFile, load_fuzzy_policy, read_terms
@@ -2153,6 +2154,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         comment_fields = getattr(comment_source, "comment_fields", None)
         if isinstance(comment_fields, dict) and comment_fields.get("n"):
             out["comment_fields"] = {"n": comment_fields["n"], "has": dict(comment_fields["has"])}
+            # 等级 / 徽章候选（level_has / level_hist / level_kinds，只有数字和枚举名）：数到过才带。
+            # _end_session 调这里时外面没有 try：附带的候选计数拷不出来，也不能把整条 session_end 带掉
+            try:
+                out["comment_fields"].update(level_snapshot(comment_fields))
+            except Exception:
+                pass
         return out
 
     def _session_end_extras(self, audit, sess):

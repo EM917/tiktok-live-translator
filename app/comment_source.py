@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import comment_levels
 from .i18n import L
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -90,6 +91,34 @@ _FIELD_NAMES = {
     "gifter": "送过礼",  # i18n: terminal
     "subscriber": "订阅",  # i18n: terminal
     "fans_club": "粉丝团等级",  # i18n: terminal
+}
+
+# 终端那行「[弹幕] 等级与徽章：…」里 level_has 各键的中文名（只打非 0 的；键的含义见 app/comment_levels.py）
+_LEVEL_NAMES = {
+    "pay_grade": "送礼等级",  # i18n: terminal
+    "pay_grade_any": "送礼等级结构",  # i18n: terminal
+    "fans_club_any": "粉丝团数据",  # i18n: terminal
+    "fans_club_prefer": "粉丝团备选数据",  # i18n: terminal
+    "fans_club_info": "粉丝团信息等级",  # i18n: terminal
+    "fans_club_info_any": "粉丝团信息",  # i18n: terminal
+    "badge_list": "徽章",  # i18n: terminal
+    "badge_level": "徽章带等级",  # i18n: terminal
+    "subscribe": "订阅标记",  # i18n: terminal
+    "subscribe_badge": "订阅徽章",  # i18n: terminal
+    "top_vip_no": "榜单名次",  # i18n: terminal
+    "pay_score": "消费分",  # i18n: terminal
+    "border": "头像框",  # i18n: terminal
+    "badge_images": "徽章图",  # i18n: terminal
+    "real_time_icons": "实时图标",  # i18n: terminal
+    "combo_badge": "连击徽章",  # i18n: terminal
+    "medal": "勋章",  # i18n: terminal
+    "exp": "经验值",  # i18n: terminal
+    "anchor_level": "主播等级",  # i18n: terminal
+    "user_role": "用户角色",  # i18n: terminal
+    "user_vip_info": "VIP 信息",  # i18n: terminal
+    "user_label": "公屏标签",  # i18n: terminal
+    "consume_in_room": "本场消费",  # i18n: terminal
+    "user_metrics": "用户指标",  # i18n: terminal
 }
 
 
@@ -180,9 +209,13 @@ _REL_FLAGS = (("is_follower_of_anchor", "follower"), ("is_mutual_following_with_
 
 def fans_club_level(user_obj):
     """粉丝团等级（大于 0 才算有）；没有或读不出返回 0。不登录时 TikTok 发不发它还没量过，
-    先只进字段统计（comment_worker.FieldStats 的 fans_club），量过再决定显不显示。"""
-    data = getattr(getattr(user_obj, "fans_club", None), "data", None)
-    level = getattr(data, "level", None)
+    先只进字段统计（comment_worker.FieldStats 的 fans_club），量过再决定显不显示。
+    5 场约 2400 条次次是 0；别的等级 / 徽章候选字段见 app/comment_levels.py（同样只数不显示）。"""
+    try:                # 属性一读就抛的怪对象（getattr 的默认值兜不住）也只当没有，不连累同一条的别的计数
+        data = getattr(getattr(user_obj, "fans_club", None), "data", None)
+        level = getattr(data, "level", None)
+    except Exception:
+        return 0
     return level if isinstance(level, int) and not isinstance(level, bool) and level > 0 else 0
 
 
@@ -356,6 +389,7 @@ class CommentSource:
         self._last_silent_restart_at = None  # 上次静默重连的 _clock() 时间，同一窗口最多一次
         self.comments_received = 0      # 本场（start()~stop()）收到的弹幕条数，写进 session_end
         self.comment_fields = _empty_fields()   # 本场弹幕作者各字段的「非空」次数，写进 session_end
+        self._level_line = None         # 终端上次打的「等级与徽章」那行（不含累计条数），一样就不再打
         # stop() 等监督任务超时放手时，仍要保住它的引用——事件循环只弱引用
         # 任务，不保引用的话任务可能在收尾的路上被 GC 收走，子进程/管道就
         # 成了没人清理的孤儿（同 Pipeline._spawn 的理由）
@@ -389,6 +423,7 @@ class CommentSource:
         self._unique_id = unique_id
         self.comments_received = 0      # 新的一场，从零重新数（跨这一场内的重连都累加）
         self.comment_fields = _empty_fields()
+        self._level_line = None
         self._task = asyncio.ensure_future(self._supervise(unique_id))
 
     async def stop(self, _external=True):
@@ -716,7 +751,9 @@ class CommentSource:
         return returncode, healthy
 
     def _add_field_stats(self, obj):
-        """累加子进程吐的增量计数，终端打一行累计值。只认非负整数，别的整行丢掉。"""
+        """累加子进程吐的增量计数，终端打一行累计值。只认非负整数，别的整行丢掉。
+        等级 / 徽章候选（level_*）另并一份、另打一行，只打非 0 的（app/comment_levels.py）；
+        那一行除了累计条数和上一次一样（比如一直「都没有」）就不再打。"""
         n, has = obj.get("n"), obj.get("has")
         if not _count(n) or not isinstance(has, dict):
             return
@@ -727,6 +764,19 @@ class CommentSource:
                 totals["has"][key] = totals["has"].get(key, 0) + min(value, n)
         print("[弹幕] 字段：累计 {} 条里 {}".format(totals["n"], "、".join(
             "{} {}".format(_FIELD_NAMES.get(k, k), v) for k, v in totals["has"].items())))
+        try:
+            levels = comment_levels.merge(totals, obj, n)
+        except Exception:
+            levels = False                  # 候选计数只是附带的：坏了不挡原有计数
+        if levels:
+            scenes = totals.get("level_kinds", {}).get("badge_scene", {})
+            body = "、".join(  # i18n: terminal（只拼终端那行，和下面的 print 一起；不上界面）
+                ["{} {}".format(_LEVEL_NAMES.get(k, k), v)
+                 for k, v in totals.get("level_has", {}).items() if v]
+                + ["徽章场景 {} {}".format(k, v) for k, v in scenes.items()]) or "都没有"
+            if body != getattr(self, "_level_line", None):
+                self._level_line = body
+                print("[弹幕] 等级与徽章：累计 {} 条里 {}".format(totals["n"], body))
 
     async def _silence_watchdog(self, proc):
         """连着但哑了太久就优雅重连。评论 WebSocket 会「半开」：状态一直是
