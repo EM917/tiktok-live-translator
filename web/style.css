@@ -76,7 +76,7 @@
   /* 抽屉底部渐隐的起点：与 --card 同色、全透明（不写 transparent：Safari 15.4 以前会渐变成灰） */
   --card-clear: rgba(255, 255, 255, 0);
 
-  /* 弹幕栏里观众与主播的关系标签（粉丝 / 互关 / 送过礼 / 订阅）：11px 的小字，浅色模式下要 4.5:1 以上。
+  /* 弹幕栏里观众与主播的关系标签（粉丝 / 送过礼 / 订阅）：11px 的小字，浅色模式下要 4.5:1 以上。
      底色一律不透明，免得落在红 / 琥珀的行底上对比度又掉下去（原来的 #007aff / #bf5af2 在自己的底色上只有 3.5 / 3.1，
      送过礼落在红行上只有 2.6）。实测：蓝 #0062cc 在 #e6f2ff 上 5.1，紫 #8e24c4 在 #f3e6fb 上 5.5，
      灰 #505056 在 #e5e5ea 上 6.4。深色模式的取值与改之前逐项相同（见下面 prefers-color-scheme: dark 里） */
@@ -1320,7 +1320,7 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .cmt-head { font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
 .cmt-rel { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px;
   line-height: 16px; color: var(--rel-gray-ink); background: var(--rel-gray-bg); }
-.cmt-rel-mutual, .cmt-rel-follower { color: var(--rel-blue-ink); background: var(--tint-blue-10); }
+.cmt-rel-follower { color: var(--rel-blue-ink); background: var(--tint-blue-10); }
 .cmt-rel-gifter { color: var(--rel-purple-ink); background: var(--rel-purple-bg); }
 /* 长网址、长串没有空格可断：放大字号后会顶出弹幕栏被裁掉（2026-10-15 演示里一条带网址的弹幕） */
 .cmt-zh { font-size: calc(15px * var(--cap-scale)); line-height: 1.5; margin-top: 1px; overflow-wrap: anywhere; }

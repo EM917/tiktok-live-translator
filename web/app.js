@@ -1927,17 +1927,21 @@
   }
 
   // 弹幕作者和主播的关系：TikTok 随每条弹幕发的标记（app/comment_source.py _REL_FLAGS）。
-  // 互关就不再单独标「粉丝」；只在电脑上显示，手机页收不到这个字段
+  // 「互关」不显示（2026-10-21 用户定）：中控看到有的标了互关的观众其实不是互关，这个标记本机核实不了。
+  // 带 mutual 的只标「粉丝」（互关里观众那一侧一定关注了主播），和 follower 并成一个。
+  // 抓取端照旧收 mutual（字段统计、审计都不动），只是页面不画。只在电脑上显示，手机页收不到这个字段
   var REL_LABELS = {
     follower: [L("粉丝", "Follower"), L("关注了主播", "Follows the streamer")],
-    mutual: [L("互关", "Mutual"), L("和主播互相关注", "Follows the streamer, and the streamer follows back")],
     gifter: [L("送过礼", "Gifter"), L("给主播送过礼物", "Has sent the streamer a gift")],
     subscriber: [L("订阅", "Subscriber"), L("订阅了主播", "Subscribes to the streamer")],
   };
   function relTags(rel) {
     if (!Array.isArray(rel)) return [];
-    var tags = rel.filter(function (t) { return REL_LABELS[t]; });
-    if (tags.indexOf("mutual") >= 0) tags = tags.filter(function (t) { return t !== "follower"; });
+    var tags = [];
+    rel.forEach(function (t) {
+      if (t === "mutual") t = "follower";
+      if (REL_LABELS.hasOwnProperty(t) && tags.indexOf(t) < 0) tags.push(t);
+    });
     return tags.map(function (t) {
       var chip = document.createElement("span");
       chip.className = "cmt-rel cmt-rel-" + t;

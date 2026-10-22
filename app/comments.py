@@ -166,7 +166,8 @@ def _forget(translator, text, target, hint=None):
             pass
 
 
-# 弹幕作者和主播的关系（comment_source._REL_FLAGS），页面上显示成「粉丝 / 互关 / 送过礼 / 订阅」
+# 弹幕作者和主播的关系（comment_source._REL_FLAGS），页面上显示成「粉丝 / 送过礼 / 订阅」
+# （mutual 照传，页面把它标成「粉丝」，不显示「互关」：web/app.js relTags）
 REL_TAGS = ("follower", "mutual", "gifter", "subscriber")
 
 
