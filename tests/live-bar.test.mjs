@@ -5,7 +5,10 @@
 //   2. 「约 N 秒前」：按这一段音频结束的时刻（ts − e2e_ms）算，超过 15 秒才出现，每秒涨一次，
 //      新的一句重置，缺 e2e_ms 就不写；健康的直播（上屏 2～3 秒、下一句八九秒后来）这一行始终不出现；
 //   3. 页脚：延迟统计行 2026-10-15 删了，stats 消息照收不画、也不报错；
-//   4. 滑块：一个值带大字幕、历史卡片、弹幕栏三处；松手存进服务端，localStorage 只是退路。
+//   4. 滑块：一个值带大字幕、历史卡片、弹幕栏三处；松手存进服务端，localStorage 只是退路；
+//   5. 条高（专家审查 U1，2026-10-22）：条子最少「两行大字 + 两行小字」高、贴底排、长句不截断（样式表）；
+//      实测高度写进 --live-bar-h，字幕区和弹幕栏的底部留白按它算，值没变不重复写、条子收起时不写（页面）。
+//      假 DOM 没有版面：getBoundingClientRect 由测试给；真排版的逐句量法在 b1-livebar 的验证记录里。
 // 纯函数（角标取字、年龄文案、字号比例）在 tests/live-ui.test.mjs / live-ui.en.test.mjs。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -389,6 +392,83 @@ for (const lang of ["zh", "en"]) {
     hello(page, { caption_size: 46 });                                    // 补发成功之后不再重复发
     assert.equal(page.sent.filter((m) => m.type === "set_caption_size").length, 1);
   });
+
+  // ---- 5. 条高：实测高度 → --live-bar-h ---------------------------------------------------------
+  // node 里没有 ResizeObserver：页面在改了条子的地方直接量（liveBarChanged）。条子的高度由测试给
+
+  // 记下页面往 <html> 上写 --live-bar-h 的每一次，并让条子报出 height（可以随时改）
+  function barHeight(page, initial) {
+    const box = { height: initial, writes: [] };
+    const set = page.root.style.setProperty;
+    page.root.style.setProperty = (k, v) => { if (k === "--live-bar-h") box.writes.push(v); set(k, v); };
+    page.el("live-bar").getBoundingClientRect = () =>
+      ({ top: 710 - box.height, bottom: 710, left: 0, right: 1000, width: 1000, height: box.height });
+    return box;
+  }
+
+  test(L("条高：大字幕的实测高度写进 --live-bar-h（向上取整到 px）；值没变不重复写，每秒的「约 N 秒前」重画也不写"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    const bar = barHeight(page, 165.8);
+    assert.deepEqual(bar.writes, [], "还没有字幕、条子收着：不量");
+    page.push(caption(1, "hola a todas"));
+    assert.deepEqual(bar.writes, ["166px"]);
+    assert.equal(page.cssVars["--live-bar-h"], "166px");
+    page.push({ type: "caption_update", id: 1, translated: "大家好", translate_state: "ok", quality: 1 });
+    page.push(caption(2, "segunda"));
+    page.push({ type: "caption_update", id: 2, translated: "第二句", translate_state: "ok", quality: 1 });
+    for (let i = 0; i < 3; i++) page.tick(1000);
+    assert.deepEqual(bar.writes, ["166px"], "一到两行的句子条高不变：一次都不多写");
+    bar.height = 210.6;                                                 // 一句三行的长句：条子临时变高（不截断）
+    page.push(caption(3, "una frase larguísima"));
+    assert.deepEqual(bar.writes, ["166px", "211px"]);
+    bar.height = 165.8;                                                 // 下一句回到两行以内
+    page.push(caption(4, "corta"));
+    assert.deepEqual(bar.writes, ["166px", "211px", "166px"]);
+  });
+
+  test(L("条高：条子收起（清空字幕、换场、回首页）时量出来是 0，不写——留着上一次的值，首页的留白不跟着跳"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    const bar = barHeight(page, 165.8);
+    page.push(caption(1, "hola"));
+    bar.height = 0;                                                     // display:none 的元素量出来就是 0
+    page.el("clear-btn").click();
+    page.push(caption(2, "otra"));
+    page.push({ type: "session_break", ts: T + 1 });
+    page.push({ type: "status", state: "idle", detail: "" });
+    assert.ok(hiddenOf(page, "live-bar"));
+    assert.deepEqual(bar.writes, ["166px"], "只有第一次量到的 166");
+    assert.equal(page.cssVars["--live-bar-h"], "166px");
+  });
+
+  test(L("条高：拖字号滑块时重新量（条子跟着字号变高变矮），两栏贴底看的人跟着再贴一次；翻上去看的不动"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    const bar = barHeight(page, 165.8);
+    page.push(caption(1, "hola"));
+    const hist = page.el("history"), cmts = page.el("comment-list");
+    for (const box of [hist, cmts]) Object.assign(box, { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500 });
+    bar.height = 219.9;                                                 // 拖到 48
+    page.el("font-size").value = "48";
+    page.el("font-size").fire("input");
+    assert.deepEqual(bar.writes, ["166px", "220px"]);
+    // 留白长了：贴底的人马上再贴到底，不然条子新长高的那一截正好盖住最新一条
+    for (const box of [hist, cmts]) box.scrollHeight = 2054;
+    bar.height = 230;
+    page.el("font-size").value = "50";
+    page.el("font-size").fire("input");
+    assert.deepEqual([hist.scrollTop, cmts.scrollTop], [2054, 2054]);
+    // 中控翻上去看字幕记录（自己滚的）：之后留白再变，也不把他拽回底部
+    hist.fire("wheel");
+    hist.scrollTop = 300;
+    hist.fire("scroll");
+    bar.height = 165.8;
+    page.el("font-size").value = "34";
+    page.el("font-size").fire("input");
+    assert.equal(hist.scrollTop, 300);
+    assert.deepEqual(bar.writes, ["166px", "220px", "230px", "166px"]);
+  });
 }
 
 // ---- 滑块带动卡片和弹幕：样式表（语言无关） ----------------------------------------------------
@@ -457,4 +537,78 @@ test("样式表：「翻译中…」占位提示不再用 --label-3（约 2:1）
     assert.ok(color, selector);
     assert.ok(["--text-dim", "--label-2"].includes(color[1]), selector + " 用了 " + color[1]);
   }
+});
+
+// ---- 5. 条高稳定（专家审查 U1）：样式表 ----------------------------------------------------------
+
+const decls = (selector) => {
+  const out = {};
+  for (const part of ruleBody(selector).replace(/\/\*[\s\S]*?\*\//g, "").split(";")) {
+    const i = part.indexOf(":");
+    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+  }
+  return out;
+};
+// 把 calc 里的 var(--x) 换成数，算出 px（只认 + 和 *，样式表里就这么写的）
+function calcPx(expr, vars) {
+  const m = /^calc\((.+)\)$/.exec(expr.trim());
+  assert.ok(m, "不是 calc：" + expr);
+  return m[1].split(" + ").reduce((sum, term) => sum + term.split(" * ").reduce((prod, f) => {
+    f = f.trim();
+    const v = /^var\((--[\w-]+)(?:,\s*([\d.]+)px)?\)$/.exec(f);
+    if (v) return prod * (v[1] in vars ? vars[v[1]] : Number(v[2]));
+    const px = /^([\d.]+)(px)?$/.exec(f);
+    assert.ok(px, "认不出的一项：" + f);
+    return prod * Number(px[1]);
+  }, 1), 0);
+}
+
+test("样式表：大字幕条最少有「两行大字 + 两行小字」那么高，内容贴着底边排（一到两行的句子条高不变）", () => {
+  const bar = decls(".live-bar");
+  const big = decls(".live-translated");
+  const small = decls(".live-original");
+  assert.deepEqual([bar.display, bar["flex-direction"], bar["justify-content"]], ["flex", "column", "flex-end"]);
+  assert.equal(bar.padding, "14px 24px 14px");
+  assert.equal(big["line-height"], "1.35");
+  assert.equal(small["line-height"], "1.4", "小字的行高写死，最小高度才算得准");
+  assert.equal(small["font-size"], "calc(var(--sub-size) * 0.42)");
+  assert.equal(small["margin-top"], "4px");
+  for (const size of [26, 32, 34, 48, 60]) {
+    // 上下内边距 28 + 上边框按 1px（Chrome 一倍屏把 0.5px 画成 1px）+ 小字的 margin-top 4 + 余量 1
+    const want = size * 1.35 * 2 + size * 0.42 * 1.4 * 2 + 28 + 1 + 4 + 1;
+    const got = calcPx(bar["min-height"], { "--sub-size": size });
+    assert.ok(Math.abs(got - want) < 0.01, "字号 " + size + "：" + got + " ≠ " + want);
+  }
+});
+
+test("样式表：超长句不截断（D13）——大字幕、大字、小字都不限行数、不藏溢出", () => {
+  for (const selector of [".live-bar", ".live-translated", ".live-original"]) {
+    const body = ruleBody(selector);
+    assert.doesNotMatch(body, /line-clamp|max-height|overflow|text-overflow/, selector);
+  }
+});
+
+test("样式表：字幕区和弹幕栏的底部留白按大字幕的实测高度算，不再写死 204px；没量到之前和以前一样", () => {
+  assert.doesNotMatch(css.replace(/\/\*[\s\S]*?\*\//g, ""), /\b204px\b/, "注释之外不再有写死的 204px");
+  const bottom = (padding) => { const m = /(calc\(.*\))$/.exec(padding); assert.ok(m, padding); return m[1]; };
+  const hist = bottom(decls(".history").padding);
+  const list = bottom(decls(".comment-list").padding);
+  for (const [name, value, before] of [[".history", hist, 204], [".comment-list", list, 204]]) {
+    assert.match(value, /^calc\(var\(--live-bar-h, [\d.]+px\) \+ 30px\)$/, name);
+    assert.equal(calcPx(value, {}), before, name + "：没量到之前（变量还没写）是以前的 " + before + "px");
+    assert.equal(calcPx(value, { "--live-bar-h": 220 }), 250, name + "：条子 + 底部署名 22 + 空隙 8");
+  }
+  // 窄屏（≤640px）那一条同样跟着量出来的高度走，没量到之前是以前的 174px
+  const narrow = /@media \(max-width: 640px\) \{[\s\S]*?\n  \.history \{ padding: 4px 12px (calc\([^;]+\)); \}/.exec(css);
+  assert.ok(narrow, "窄屏的 .history 留白");
+  assert.equal(calcPx(narrow[1], {}), 174);
+  assert.equal(calcPx(narrow[1], { "--live-bar-h": 120 }), 150);
+});
+
+test("app.js：用 ResizeObserver 盯着 #live-bar 写 --live-bar-h（字号、内容、窗口宽度一变就量）", () => {
+  const src = web("app.js");
+  assert.match(src, /new ResizeObserver\(function \(\) \{ syncLiveBarHeight\(\); \}\)/);
+  assert.match(src, /liveBarObserver\.observe\(liveBar\)/);
+  assert.match(src, /setProperty\("--live-bar-h", h \+ "px"\)/);
+  assert.match(src, /if \(!\(h > 0\) \|\| h === liveBarH\) return;/, "值没变、量出来是 0 都不写");
 });

@@ -554,7 +554,10 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 4px 20px 204px;   /* 比大字幕条（含下面多出的一小行）略高，最后一条不被盖住 */
+  /* 底部留白 = 大字幕条的实测高度（web/app.js syncLiveBarHeight 写的 --live-bar-h）+ 底部署名 22px + 8px 空隙，
+     最后一条不被盖住。以前写死 204px，字号调大后条子比这高，会盖住最后几条；没量到之前（刚打开、
+     首页还没出过大字幕）按 174px 算，合起来仍是以前的 204px */
+  padding: 4px 20px calc(var(--live-bar-h, 174px) + 30px);
   scroll-behavior: smooth;
 }
 
@@ -693,7 +696,15 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 
 /* ---------- 底部大字幕 ---------- */
 /* 贴着底部署名（bottom:22px）。以前下边留 36px 给叠在上面的延迟统计行；2026-10-15 统计行删了，
-   下边距和上边距一样 */
+   下边距和上边距一样。
+   条高稳定（专家审查 U1，2026-10-22）：以前条子的高度跟着每一句的行数走，一句高一句矮，字幕区和弹幕栏的
+   可见范围跟着跳。现在条子最少有「两行大字 + 两行小字」那么高（min-height 里的 2.7 = 两行 × 行高 1.35，
+   1.176 = 两行 × 小字 0.42 × 行高 1.4；34px = 上下内边距 28 + 小字的 margin-top 4 + 上边框按 1px 算（Chrome
+   在 1 倍屏上把 0.5px 的边框画成 1px）+ 1px 余量，让两行的句子也落在最小高度以内），内容贴着条子底边排：
+   中文一到两行、西语一到两行的句子条高不变，短的句子上面空着。
+   小字也留两行，是按 11,945 句真实长度量出来的：只留一行时，字号 34 下 12% 的西语原文折成两行（字号 48 下 34%），
+   这些句子照样一句高一句矮；留两行以后，中文两行以内的句子条高 100% 相同（b1-livebar 的验证记录）。
+   超长句不截断（用户定的 D13）：三行以上的少数句子让条子临时变高，完整显示、不丢字。 */
 .live-bar {
   position: fixed;
   left: 0; right: 0; bottom: 22px;
@@ -701,6 +712,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   text-align: center;
   background: var(--bg);
   border-top: 0.5px solid var(--separator);
+  display: flex; flex-direction: column; justify-content: flex-end;
+  min-height: calc(var(--sub-size) * 2.7 + var(--sub-size) * 1.176 + 34px);
 }
 
 /* ---------- 底部署名 ---------- */
@@ -728,13 +741,14 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .live-original {
   margin-top: 4px;
   font-size: calc(var(--sub-size) * 0.42);
+  line-height: 1.4;          /* 写死行高：.live-bar 的 min-height 按它给小字预留两行 */
   color: var(--text-dim);
 }
 
 /* 大字幕下面的一小行：翻译状态角标 + 「约 N 秒前」。两样都是说明，不是字幕，字号固定不跟滑块走
    （跟着变大反而盖住字幕）。行只在有内容时出现：滞后数只在这一句停得比平常久（超过 15 秒）时才有，
-   所以正常的直播里这一行平时是收起的，出现的那一下大字幕条会长高一行（24px）；这是有意的，
-   一个平时不在的东西出现，本身就是信号。 */
+   所以正常的直播里这一行平时是收起的，出现的那一下内容往上挤一行（24px）：条子上面有空着的地方（短句）时先用掉
+   那块空，条高不变；两行中文、两行西语已经占满时条子长高这一行。这是有意的，一个平时不在的东西出现，本身就是信号。 */
 .live-meta {
   display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
   gap: 4px 8px; margin-top: 6px; min-height: 18px;
@@ -755,7 +769,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 
 @media (max-width: 640px) {
   .topbar { padding: 8px 12px; }
-  .history { padding: 4px 12px 174px; }
+  .history { padding: 4px 12px calc(var(--live-bar-h, 144px) + 30px); }   /* 没量到之前合起来仍是以前的 174px */
   :root { --sub-size: 26px; }
 }
 
@@ -1327,8 +1341,9 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 }
 .comment-title > .i { color: var(--label-2); }
 .comment-actions { display: flex; gap: 6px; flex: none; }
-/* 底部留白与 .history 一致：底部通栏大字幕是 fixed 的，不留就会盖住最后几条 */
-.comment-list { flex: 1; overflow-y: auto; padding: 0 16px 204px; }
+/* 底部留白与 .history 一致：底部通栏大字幕是 fixed 的，不留就会盖住最后几条。按条子的实测高度算
+   （--live-bar-h，见 .history）：以前写死 204px，字号 48 时 p90 长度的句子把最新一条弹幕整条盖住 */
+.comment-list { flex: 1; overflow-y: auto; padding: 0 16px calc(var(--live-bar-h, 174px) + 30px); }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
 .cmt-item:last-child { border-bottom: 0; }
 .cmt-head { font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }

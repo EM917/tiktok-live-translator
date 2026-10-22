@@ -932,6 +932,7 @@
     Object.keys(vars).forEach(function (name) {
       document.documentElement.style.setProperty(name, vars[name]);
     });
+    liveBarChanged();       // 字号变了，大字幕条跟着变高变矮：两栏底部的留白要重新量（见 syncLiveBarHeight）
   }
 
   // ---- WebSocket ----
@@ -1462,6 +1463,7 @@
       || (liveAsr && !liveAsr.classList.contains("hidden"))
       || (liveCov && !liveCov.classList.contains("hidden"));
     liveMeta.classList.toggle("hidden", !any);
+    liveBarChanged();       // 大字幕的每一处改动最后都走到这里：条高可能变了
   }
 
   // 覆盖率角标跟着 stats 走（每 10 秒），不跟着某一句字幕：近几分钟收到的直播音频偏低时才出现
@@ -1534,6 +1536,35 @@
     }
     liveMeta.classList.add("hidden");
   }
+
+  // ---- 大字幕条的实测高度 → CSS 变量 --live-bar-h ----
+  // 大字幕条是 fixed 的，盖在字幕区和弹幕栏的下沿上，两栏底部要留出它那么高的空。以前写死 204px：
+  // 字号调到 48、60 或者句子长时条子比这高，弹幕栏最新一条被整条盖住（专家审查 U1）。现在量条子的真实
+  // 高度写进变量，.history / .comment-list 的底部留白按它算（web/style.css）。
+  // 防布局循环：值没变就不写（ResizeObserver 回调里写样式，值不变也写会白白再触发一轮）；变量只影响两栏的
+  // 内边距，不影响条子自己的高度，所以写一次就停。条子收起时量出来是 0，不写：首页的留白保持上一次的值。
+  var liveBarH = 0;
+  function syncLiveBarHeight() {
+    if (liveBar.classList.contains("hidden")) return;
+    var h = Math.ceil(liveBar.getBoundingClientRect().height);
+    if (!(h > 0) || h === liveBarH) return;
+    liveBarH = h;
+    document.documentElement.style.setProperty("--live-bar-h", h + "px");
+    // 留白变了：正贴底看的人要再贴一次，不然条子新长高的那一截正好盖住最新一条
+    if (following) scrollToBottomNow();
+    if (commentFollowing) commentsToBottomNow();
+  }
+  var liveBarObserver = null;
+  if (typeof ResizeObserver === "function") {
+    liveBarObserver = new ResizeObserver(function () { syncLiveBarHeight(); });
+    liveBarObserver.observe(liveBar);
+  }
+  // 条子的内容、字号、窗口宽度变了。有 ResizeObserver 时它自己会报，这里什么都不做；没有它的环境
+  // （老版本 WebKit、node 测试里的假页面）在这些地方直接量一次
+  function liveBarChanged() {
+    if (!liveBarObserver) syncLiveBarHeight();
+  }
+  window.addEventListener("resize", liveBarChanged);
 
   // 点「重译」没有开始或没成功时，服务端发 retranslate_note：显示在被点的那条字幕旁边几秒。
   // 以前这些话走 notice，落在页脚版本号那一行（6 秒、小字），中控点完像是什么都没发生。
