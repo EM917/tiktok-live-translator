@@ -420,7 +420,8 @@ def test_server_keeps_comment_history_with_translation():
 
 
 def test_relationship_tags_reach_the_desktop_message_and_unknown_tags_are_dropped(tmp_path, monkeypatch):
-    """弹幕作者和主播的关系（粉丝 / 互关 / 送过礼 / 订阅）跟着 comment 消息到电脑页；认不出的丢掉。"""
+    """弹幕作者和主播的关系（follower / mutual / gifter / subscriber）跟着 comment 消息到电脑页；认不出的丢掉。
+    mutual 照传：2026-10-21 起页面不显示「互关」、把它标成「粉丝」，那是页面的事（tests/comment-rel.test.mjs）。"""
     ct, messages = make_translator(monkeypatch, tmp_path, FastTranslator())
 
     async def scenario():
@@ -428,12 +429,14 @@ def test_relationship_tags_reach_the_desktop_message_and_unknown_tags_are_droppe
             {"id": "c1", "user": "a", "text": "hola", "rel": ["gifter", "follower", "boss", "follower"]},
             {"id": "c2", "user": "b", "text": "adios", "rel": "follower"},
             {"id": "c3", "user": "c", "text": "que tal"},
+            {"id": "c4", "user": "d", "text": "buenas", "rel": ["mutual", "follower"]},
         ]})
 
     run(scenario())
     first = {m["id"]: m for m in messages if m.get("type") == "comment"}
     assert first["c1"]["rel"] == ["follower", "gifter"]
     assert "rel" not in first["c2"] and "rel" not in first["c3"]
+    assert first["c4"]["rel"] == ["follower", "mutual"]
 
 
 def test_guard_fields_and_relationship_tags_reach_the_desktop_together_and_neither_reaches_the_phone(

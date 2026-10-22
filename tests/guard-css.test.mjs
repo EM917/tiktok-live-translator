@@ -162,9 +162,9 @@ function rootToken(name, dark) {
   return m ? m[1].trim() : null;
 }
 
-test("关系标签（粉丝 / 互关 / 送过礼 / 订阅）：浅色模式字对底 4.5:1 以上，底色不透明", () => {
+test("关系标签（粉丝 / 送过礼 / 订阅）：浅色模式字对底 4.5:1 以上，底色不透明", () => {
   const pairs = [
-    ["粉丝 / 互关", rootToken("rel-blue-ink"), rootToken("tint-blue-10")],
+    ["粉丝", rootToken("rel-blue-ink"), rootToken("tint-blue-10")],
     ["送过礼", rootToken("rel-purple-ink"), rootToken("rel-purple-bg")],
     ["订阅", rootToken("rel-gray-ink"), rootToken("rel-gray-bg")],
   ];
@@ -176,7 +176,8 @@ test("关系标签（粉丝 / 互关 / 送过礼 / 订阅）：浅色模式字�
   }
   // 三种标签的样式确实取这几个令牌
   assert.equal(decls(".cmt-rel-follower").color, "var(--rel-blue-ink)");
-  assert.equal(decls(".cmt-rel-mutual").color, "var(--rel-blue-ink)");
+  // 「互关」不再显示（2026-10-21，web/app.js relTags 把它标成「粉丝」），页面不会再画 .cmt-rel-mutual
+  assert.deepEqual(decls(".cmt-rel-mutual"), {});
   assert.equal(decls(".cmt-rel-gifter").color, "var(--rel-purple-ink)");
   assert.equal(decls(".cmt-rel-gifter").background, "var(--rel-purple-bg)");
   assert.equal(decls(".cmt-rel").color, "var(--rel-gray-ink)");

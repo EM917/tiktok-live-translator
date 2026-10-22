@@ -202,7 +202,8 @@ def _account_fields(ev, user_obj):
     return out
 
 
-# user_identity 里和主播的关系 -> 弹幕条目里的标签（界面再翻成「粉丝 / 互关 / 送过礼 / 订阅」）
+# user_identity 里和主播的关系 -> 弹幕条目里的标签（界面再翻成「粉丝 / 送过礼 / 订阅」；mutual 照收，
+# 但 2026-10-21 起页面不显示「互关」，带它的标成「粉丝」，见 web/app.js relTags）
 _REL_FLAGS = (("is_follower_of_anchor", "follower"), ("is_mutual_following_with_anchor", "mutual"),
               ("is_gift_giver_of_anchor", "gifter"), ("is_subscriber_of_anchor", "subscriber"))
 
