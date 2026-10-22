@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from app.glossary import HintPair
 from app.translator import (CachedTranslator, ClaudeTranslator, begin_translate_call,
                             translate_call_outcome)
 from tests.helpers import run
@@ -200,7 +201,8 @@ def test_the_sonnet_5_5_request_body_is_exactly_this(monkeypatch):
     assert post["body"] == {
         "model": "claude-sonnet-5-5",
         "max_tokens": 512,
-        "system": SYSTEM_PLAIN,
+        # 和字幕引擎同一份俚语版提示词（第二轮留出集对比后给重译也用上，见 SYSTEM_SUBTITLE_SLANG）
+        "system": SYSTEM_SLANG,
         "messages": [{"role": "user", "content": "<subtitle>\npague primero y le enviamos\n</subtitle>"}],
         # Sonnet 5.5 对 {"type": "disabled"} 回 400；between_tools 是它最低的思考档，
         # 只在 effort 为 low/medium/high 时被接受，thinking 里不许有别的字段
@@ -467,11 +469,13 @@ def test_a_401_still_keeps_no_body(monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
-# 词表：只有重译（role="strong"）把命中的词条写进提示词
+# 词表：重译（role="strong"）和字幕引擎的 Haiku 5.5 把命中的词条写进提示词，弹幕两种角色不写
 #
 # 本地 7B 的提示词里有词表；重译又正是中控嫌商品名译错了才点的。换成 Sonnet 之后只剩译后
 # 兜底的话，「Sonnet 把 las gotitas D3 译成『D3 小滴剂』」这种错它救不回来（兜底只替换仍留着
-# 西语的词条）。字幕引擎（Haiku）和弹幕不带词表：那是这次之前就有的行为，没有测过加了更好。
+# 西语的词条）。字幕 Haiku 换上俚语提示词以后同样的事发生在主播自造的品名上：意译成别的说法，
+# 兜底找不到西语原文、品名就上不了屏。2026-10-17 留出集配对对比后，字幕 Haiku 5.5 也带同一段
+# 词表（数字见 ClaudeTranslator.SUBTITLE_GLOSSARY_MODELS 上的注释）；换了模型的字幕和弹幕照旧不带。
 # ---------------------------------------------------------------------------
 
 HINT = (("las gotitas D3", "D3维生素滴剂"), ("Quema Lonja", "燃脂贴"))
@@ -497,7 +501,7 @@ def test_the_sonnet_request_with_a_glossary_is_exactly_this(monkeypatch):
         "model": "claude-sonnet-5-5",
         "max_tokens": 512,
         # 词表在 system 里，用户轮仍然只有要翻的那一句
-        "system": (SYSTEM_PLAIN + "\nWhere the text contains one of these terms, translate it "
+        "system": (SYSTEM_SLANG + "\nWhere the text contains one of these terms, translate it "
                    "exactly as given here:\nlas gotitas D3 = D3维生素滴剂\nQuema Lonja = 燃脂贴"),
         "messages": [{"role": "user", "content": "<subtitle>\ncompren las gotitas D3 ahora\n</subtitle>"}],
         "thinking": {"type": "between_tools"},
@@ -514,15 +518,219 @@ def test_the_compact_string_glossary_form_works_too(monkeypatch):
 @pytest.mark.parametrize("empty", [None, (), [], ""])
 def test_no_glossary_leaves_the_sonnet_request_unchanged(monkeypatch, empty):
     tr = strong(monkeypatch)
-    assert tr._body("hola", "zh-CN", empty)["system"] == SYSTEM_PLAIN
+    assert tr._body("hola", "zh-CN", empty)["system"] == SYSTEM_SLANG
 
 
-def test_the_subtitle_and_comment_instances_do_not_send_the_glossary(monkeypatch):
-    sub = make(monkeypatch)
-    assert sub._body("hola", "zh-CN", HINT) == sub._body("hola", "zh-CN")
-    comment = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
-    assert comment._body("1. hola", "zh-CN", HINT) == comment._body("1. hola", "zh-CN")
-    assert "Quema Lonja" not in json.dumps(sub._body("hola", "zh-CN", HINT), ensure_ascii=False)
+def test_the_comment_instances_do_not_send_the_glossary(monkeypatch):
+    """弹幕是陌生人的文字，不带词表；译文回来后的兜底替换由 app/comments.py 做。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    for role, model in (("comment", ClaudeTranslator.COMMENT_MODEL),
+                        ("comment_strong", ClaudeTranslator.STRONG_MODEL)):
+        tr = ClaudeTranslator(model=model, role=role)
+        assert tr._body("1. hola", "zh-CN", HINT) == tr._body("1. hola", "zh-CN")
+        assert "Quema Lonja" not in json.dumps(tr._body("1. hola", "zh-CN", HINT), ensure_ascii=False)
+
+
+def layer(name, *pairs):
+    """管线给的词条（glossary.translation_pairs）都带着来自哪一层；字幕请求只带 brand 和 profile 的"""
+    return tuple(HintPair(p, name) for p in pairs)
+
+
+def brand(*pairs):
+    return layer("brand", *pairs)
+
+
+# 虚构品牌 acme（brands/README.md 的例子），不用任何真实词表内容
+ACME = brand(("la crema acme", "ACME 面霜"), ("suero acme", "ACME 精华液"))
+
+
+def test_the_haiku_subtitle_request_with_a_glossary_is_exactly_this(monkeypatch):
+    """字幕 Haiku 5.5 带的词表和重译是同一段、同一个位置：测过的俚语提示词一字不动，后面接词表，
+    用户轮仍然只有这一句。其余字段和不带词表时一模一样。"""
+    tr = make(monkeypatch)
+    session = RecordingSession([Resp(200, message(text_block("今天买 ACME 面霜")))])
+    attach(tr, session)
+    assert run(tr.translate("compren la crema acme hoy", "zh-CN", source="es",
+                            glossary=ACME[:1])) == "今天买 ACME 面霜"
+    (post,) = session.posts
+    assert post["body"] == {
+        "model": "claude-haiku-5-5",
+        "max_tokens": ClaudeTranslator.MAX_TOKENS_NO_THINKING,
+        "system": (SYSTEM_SLANG + "\nWhere the text contains one of these terms, translate it "
+                   "exactly as given here:\nla crema acme = ACME 面霜"),
+        "messages": [{"role": "user", "content": "<subtitle>\ncompren la crema acme hoy\n</subtitle>"}],
+        "thinking": {"type": "disabled"},
+        "output_config": {"effort": "low"},
+    }
+
+
+@pytest.mark.parametrize("empty", [None, (), [], ""])
+def test_a_subtitle_line_without_a_glossary_match_sends_the_tested_request_unchanged(monkeypatch, empty):
+    """没命中词表的句子（实录约七成）请求体和加词表之前一字不差。"""
+    import hashlib
+
+    tr = make(monkeypatch)
+    body = tr._body("hola amigos", "zh-CN", empty)
+    assert body == tr._body("hola amigos", "zh-CN")
+    assert hashlib.sha256(body["system"].encode("utf-8")).hexdigest() == TESTED_SYSTEM_SHA256
+
+
+def test_subtitle_and_redo_append_the_same_glossary_block(monkeypatch):
+    sub, redo = make(monkeypatch), strong(monkeypatch)
+    tail = "\nWhere the text contains one of these terms, translate it exactly as given here:\n" \
+           "la crema acme = ACME 面霜\nsuero acme = ACME 精华液"
+    for tr in (sub, redo):
+        system = tr._body("la crema acme y el suero acme", "zh-CN", ACME)["system"]
+        assert system == SYSTEM_SLANG + tail
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-5-5"])
+def test_a_subtitle_model_from_the_environment_does_not_send_the_glossary(monkeypatch, model):
+    """字幕带词表只在 Haiku 5.5 上测过：CLAUDE_TRANSLATE_MODEL 换成别的模型时照旧不带。"""
+    tr = make(monkeypatch, model)
+    assert tr._body("la crema acme", "zh-CN", ACME) == tr._body("la crema acme", "zh-CN")
+    assert ClaudeTranslator.SUBTITLE_GLOSSARY_MODELS == ("claude-haiku-5-5",)
+
+
+# 字幕请求只带「整词出现、译法不带括注」的词条（见 translator._subtitle_pairs）。管线给的命中
+# 词条是子串匹配算的：2026-10-17 审查扫本机一位主播的全部实录 34,109 句，253 句的提示里有只是
+# 更长单词一部分的词条（maca 在 estomacal 里、inflamada 在 desinflamada 里），118 句带着括注译法；
+# 两次探针里各有被带偏的例子（licuadora 译成冲调饮品、「为了食欲焦虑（嘴馋）」括号上了屏）。
+# 重译（role="strong"）只跟着去掉括注那一类（2026-10-20 用户定「重新翻译也不带带括号的词条」），
+# 子串命中照旧带，下面也钉着
+BLOCK = "\nWhere the text contains one of these terms, translate it exactly as given here:\n"
+
+
+@pytest.mark.parametrize("text", ["un acmeador nuevo", "el superacme", "acmes2"])
+def test_a_term_that_is_only_part_of_a_longer_word_stays_out_of_the_subtitle_request(monkeypatch, text):
+    tr = make(monkeypatch)
+    body = tr._body(text, "zh-CN", brand(("acme", "ACME 牌")))
+    assert body == tr._body(text, "zh-CN")
+    assert "ACME" not in body["system"]
+
+
+@pytest.mark.parametrize("text,pair", [
+    ("compren las acmes", ("acme", "ACME 牌")),                       # 复数 -s
+    ("dos cremas acmees", ("cremas acme", "ACME 面霜")),               # 复数 -es
+    ("un poco del suero acme", ("el suero acme", "ACME 精华液")),      # del = de + el
+    ("ACME, la crema", ("acme", "ACME 牌")),                          # 大小写、紧贴标点
+])
+def test_a_whole_word_plural_or_contracted_term_still_goes_into_the_subtitle_request(monkeypatch, text, pair):
+    tr = make(monkeypatch)
+    assert tr._body(text, "zh-CN", brand(pair))["system"] == SYSTEM_SLANG + BLOCK + "{} = {}".format(*pair)
+
+
+@pytest.mark.parametrize("rendering", ["ACME 面霜（小瓶）", "ACME 面霜 (小瓶)", "ACME 面霜【小瓶】", "ACME 面霜[小瓶]"])
+def test_a_rendering_with_a_bracketed_note_stays_out_of_the_subtitle_request(monkeypatch, rendering):
+    """括注是给译法加的说明，不是要上屏的字；字幕请求不带这条，不是去掉括号再带。"""
+    tr = make(monkeypatch)
+    text = "la crema acme y el suero acme"
+    pairs = brand(("la crema acme", rendering), ("suero acme", "ACME 精华液"))
+    assert tr._body(text, "zh-CN", pairs)["system"] == SYSTEM_SLANG + BLOCK + "suero acme = ACME 精华液"
+    only = tr._body("la crema acme", "zh-CN", pairs[:1])
+    assert only == tr._body("la crema acme", "zh-CN")
+    import hashlib
+    assert hashlib.sha256(only["system"].encode("utf-8")).hexdigest() == TESTED_SYSTEM_SHA256
+
+
+@pytest.mark.parametrize("rendering", ["ACME 面霜（小瓶）", "ACME 面霜 (小瓶)", "ACME 面霜【小瓶】", "ACME 面霜[小瓶]"])
+def test_retranslate_leaves_out_a_bracketed_rendering_and_keeps_the_substring_hit(monkeypatch, rendering):
+    """2026-10-20 那场 46 次重译里，2 次请求带了「食欲焦虑（嘴馋）」，2 次都连括号抄上了屏。重译和字幕用
+    同一个括注判断（glossary.has_bracket_note）；别的照旧：子串命中（acme 在 acmeador 里）还在。"""
+    redo = strong(monkeypatch)
+    pairs = (("acme", "ACME 牌"), ("la crema acme", rendering))
+    system = redo._body("un acmeador y la crema acme", "zh-CN", pairs)["system"]
+    assert system == SYSTEM_SLANG + BLOCK + "acme = ACME 牌"
+
+
+def test_a_retranslate_whose_only_line_is_bracketed_sends_the_request_without_a_glossary(monkeypatch):
+    redo = strong(monkeypatch)
+    pairs = brand(("la crema acme", "ACME 面霜（小瓶）"))
+    assert redo._body("la crema acme", "zh-CN", pairs) == redo._body("la crema acme", "zh-CN")
+    assert redo._body("la crema acme", "zh-CN", pairs)["system"] == SYSTEM_SLANG
+
+
+def test_the_subtitle_and_redo_requests_share_the_one_bracket_predicate():
+    """字幕、重译认括注是同一个函数（glossary.has_bracket_note），不各写一份正则；兜底替换用的
+    glossary.screen_rendering 也是同一个正则。"""
+    from app import glossary, translator
+
+    assert translator.has_bracket_note is glossary.has_bracket_note
+    assert not hasattr(translator, "_BRACKET_NOTE")
+
+
+@pytest.mark.parametrize("model,role,wants", [
+    (None, "strong", True),                                    # 重译、报警上下文（Sonnet 5.5）
+    (None, "subtitle", False),                                 # 字幕：照旧拿普通那一份、自己筛
+    ("claude-haiku-5-5", "comment", False),
+    ("claude-sonnet-5-5", "comment_strong", False),
+])
+def test_only_the_redo_instance_asks_for_the_hint_without_bracketed_lines(monkeypatch, model, role, wants):
+    """管线按 hint_without_notes 决定给不给「括注词条在按长短取舍之前就去掉」的那一份（Pipeline._hint_for）。
+    只有重译要；字幕实例要是也要了，被括注长写法挤掉的短写法会回到字幕请求里，字幕请求就变了。"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    monkeypatch.delenv("CLAUDE_TRANSLATE_MODEL", raising=False)
+    from app.translator import ClaudeTranslator, create_claude_strong_translator
+
+    tr = create_claude_strong_translator() if role == "strong" else ClaudeTranslator(model=model, role=role)
+    assert tr.hint_without_notes is wants
+
+
+# 字幕请求只带品牌表和主播 profile 的词条，全局表（glossary.txt，首启从公开模板复制）的不带：用户要的是
+# 「字幕也带上品牌词表提示」，模板里的日常短语按语境本不该照着译（见 translator._subtitle_pairs）。
+# 管线给的词条都是 glossary.HintPair，层记在 .layer 上；没有 .layer 的普通二元组来源不明，也不带
+TEXT3 = "la crema acme, el combo y la loción zeta"
+PROFILE = ("la loción zeta", "ZETA 乳液")
+GLOBAL = ("el combo", "套装")
+
+
+def test_the_subtitle_request_carries_brand_and_profile_lines_but_not_global_ones(monkeypatch):
+    tr = make(monkeypatch)
+    pairs = brand(ACME[0]) + layer("global", GLOBAL) + layer("profile", PROFILE)
+    assert tr._body(TEXT3, "zh-CN", pairs)["system"] == (
+        SYSTEM_SLANG + BLOCK + "la crema acme = ACME 面霜\nla loción zeta = ZETA 乳液")
+
+
+@pytest.mark.parametrize("pairs", [layer("global", GLOBAL), (GLOBAL,), "el combo = 套装"],
+                         ids=["global-layer", "plain-tuple", "compact-string"])
+def test_a_line_that_is_not_from_the_brand_or_profile_layer_stays_out_of_the_subtitle_request(
+        monkeypatch, pairs):
+    tr = make(monkeypatch)
+    body = tr._body("llévate el combo", "zh-CN", pairs)
+    assert body == tr._body("llévate el combo", "zh-CN")
+    assert "套装" not in body["system"]
+
+
+def test_retranslate_still_gets_the_lines_of_every_layer(monkeypatch):
+    redo = strong(monkeypatch)
+    pairs = brand(ACME[0]) + layer("global", GLOBAL) + layer("profile", PROFILE)
+    assert redo._body(TEXT3, "zh-CN", pairs)["system"] == (
+        SYSTEM_SLANG + BLOCK + "la crema acme = ACME 面霜\nel combo = 套装\nla loción zeta = ZETA 乳液")
+
+
+def test_the_repeat_cache_tells_the_same_line_from_different_layers_apart():
+    """同一个词对换场后可能换了层（这一场没选那个品牌）：字幕请求一边带、一边不带，不能共用一条缓存。"""
+    class Inner:
+        name = "claude"
+
+        def __init__(self):
+            self.seen = []
+
+        async def translate(self, text, target, source="auto", glossary=None):
+            self.seen.append([getattr(p, "layer", None) for p in glossary])
+            return "译文{}".format(len(self.seen))
+
+    inner = Inner()
+    cached = CachedTranslator(inner)
+
+    async def scenario():
+        a = await cached.translate("el combo", "zh-CN", glossary=brand(GLOBAL))
+        b = await cached.translate("el combo", "zh-CN", glossary=layer("global", GLOBAL))
+        c = await cached.translate("el combo", "zh-CN", glossary=brand(GLOBAL))
+        return a, b, c
+
+    assert run(scenario()) == ("译文1", "译文2", "译文1")
+    assert inner.seen == [["brand"], ["global"]]
 
 
 def test_the_glossary_sits_in_the_system_prompt_not_in_the_text_to_translate(monkeypatch):
@@ -530,6 +738,103 @@ def test_the_glossary_sits_in_the_system_prompt_not_in_the_text_to_translate(mon
     body = tr._body("compren las gotitas D3 ahora", "zh-CN", HINT)
     assert body["messages"] == [{"role": "user", "content": "<subtitle>\ncompren las gotitas D3 ahora\n</subtitle>"}]
     assert not keys_anywhere(body) & set(FORBIDDEN_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# 俚语版字幕提示词（SYSTEM_SUBTITLE_SLANG）：SYSTEM_SUBTITLE 一字不动，在「Always answer in」前面多一段
+# 墨西哥俚语例词。2026-10-17 两轮离线配对对比测的就是这一份（结果见 SYSTEM_SUBTITLE_SLANG 上的注释）。
+# 用它的只有测过的两处：字幕引擎的 Haiku 5.5、重译的 Sonnet 5.5（后面照旧接词表）。弹幕的两个
+# 提示词、用 CLAUDE_TRANSLATE_MODEL 换了模型的字幕都没测过它，照旧
+# ---------------------------------------------------------------------------
+
+SUBTITLE_SLANG = (
+    "Most streamers speak Mexican Spanish and sell health and weight-loss products. "
+    "Translate slang and colloquial or regional words by what the streamer means, in an equally "
+    "casual register: do not soften them, do not explain them. For example: "
+    "llanta/llantita/lonja = belly fat roll, not a tire; chula/chulas = gorgeous (said to the "
+    "viewers); comadre = girlfriend, sis; mija = honey; neta = really; güey/wey = dude; "
+    "no mames/no manches = no way; chido = cool; pinche = damn, lousy; ahorita = right now; "
+    "nomás = just; a gusto = comfortable; refri = fridge; ocupar = need; pedos = farts. ")
+SYSTEM_SLANG = SYSTEM_PLAIN.replace("Always answer in Simplified Chinese: ",
+                                    SUBTITLE_SLANG + "Always answer in Simplified Chinese: ")
+# 两轮对比时请求里 system 的 sha256：上面两处一起改了、测试照样绿的话，这一行会红
+TESTED_SYSTEM_SHA256 = "c2ca93785cbc97f8cbc9e91217b07936af4ab3b7c8f2a947ac3a7ab1219058da"
+
+
+def test_the_haiku_subtitle_prompt_is_the_tested_one(monkeypatch):
+    """原有的句子一字不动、顺序不变，只多一段。要改这段，先重做配对对比（CLAUDE.md 第四条），
+    别只改测试。"""
+    import hashlib
+
+    _tr, out, post = sent_body(monkeypatch)
+    assert out == "你好"
+    assert SYSTEM_SLANG != SYSTEM_PLAIN and SYSTEM_SLANG.count(SUBTITLE_SLANG) == 1
+    assert post["body"]["system"] == SYSTEM_SLANG
+    assert hashlib.sha256(SYSTEM_SLANG.encode("utf-8")).hexdigest() == TESTED_SYSTEM_SHA256
+    # 只换了 system：模型、思考、effort、max_tokens、用户轮都和以前一样
+    assert post["body"]["model"] == "claude-haiku-5-5"
+    assert post["body"]["thinking"] == {"type": "disabled"}
+    assert post["body"]["output_config"] == {"effort": "low"}
+    assert post["body"]["max_tokens"] == ClaudeTranslator.MAX_TOKENS_NO_THINKING
+    assert post["body"]["messages"] == [{"role": "user", "content": "<subtitle>\nhola amigos\n</subtitle>"}]
+
+
+def test_the_redo_prompt_is_the_tested_one_with_the_glossary_after_it(monkeypatch):
+    """重译（Sonnet 5.5）用同一份俚语版提示词，词表照旧接在最后：第二轮对比测的就是这个顺序。"""
+    tr = strong(monkeypatch)
+    assert tr._body("hola", "zh-CN")["system"] == SYSTEM_SLANG
+    system = tr._body("compren las gotitas D3 ahora", "zh-CN", HINT)["system"]
+    assert system.startswith(SYSTEM_SLANG + "\nWhere the text contains one of these terms")
+    assert system.endswith("Quema Lonja = 燃脂贴")
+
+
+def test_the_subtitle_slang_never_mentions_recognition_or_the_comment_only_examples(monkeypatch):
+    """10-14 教训：提示词一提「识别可能听错」，模型就去校对原文、整句回成西语。弹幕那段的
+    「el bote = jail」「vieja = woman」不能搬过来：主播嘴里的 botes 是罐子，chancleta vieja 是旧拖鞋。"""
+    for tr in (make(monkeypatch), strong(monkeypatch)):
+        system = tr._body("hola", "zh-CN")["system"].lower()
+        for word in ("recogni", "transcri", "mishear", "misheard", "speech-to-text", "typo"):
+            assert word not in system, word
+        assert "bote" not in system and "vieja" not in system and "jail" not in system
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-5-5"])
+def test_a_subtitle_model_from_the_environment_keeps_the_plain_prompt(monkeypatch, model):
+    """字幕引擎上俚语那段只在 Haiku 5.5 上测过（Sonnet 5.5 只作为重译测过）：
+    CLAUDE_TRANSLATE_MODEL 换成别的模型时照旧用 SYSTEM_SUBTITLE。"""
+    assert make(monkeypatch, model)._body("hola", "zh-CN")["system"] == SYSTEM_PLAIN
+
+
+@pytest.mark.parametrize("role,model", [("strong", "claude-haiku-5-5"), ("strong", "claude-haiku-4-5"),
+                                        ("subtitle", "claude-sonnet-5-5")])
+def test_only_the_tested_role_and_model_pairs_get_the_slang(monkeypatch, role, model):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    assert ClaudeTranslator(model=model, role=role)._body("hola", "zh-CN")["system"] == SYSTEM_PLAIN
+    assert ClaudeTranslator.SLANG_PROMPT_MODELS == {"subtitle": ("claude-haiku-5-5",),
+                                                    "strong": ("claude-sonnet-5-5",)}
+
+
+def test_the_comment_prompts_do_not_get_the_subtitle_slang(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    comment = ClaudeTranslator(model=ClaudeTranslator.COMMENT_MODEL, role="comment")
+    assert comment._body("1. hola", "zh-CN")["system"] == ClaudeTranslator.SYSTEM_COMMENT_HAIKU.format(
+        lang="Simplified Chinese", avoid="Spanish or English")
+    redo = ClaudeTranslator(model=ClaudeTranslator.STRONG_MODEL, role="comment_strong")
+    assert redo._body("1. hola", "zh-CN")["system"] == ClaudeTranslator.SYSTEM_COMMENT.format(
+        lang="Simplified Chinese")
+    for tr in (comment, redo):
+        assert "llanta" not in tr._body("1. hola", "zh-CN")["system"]
+
+
+@pytest.mark.parametrize("target,lang", [("zh-CN", "Simplified Chinese"), ("en", "English"),
+                                         ("es", "Spanish"), ("ja", "Japanese")])
+def test_the_slang_prompt_fills_in_every_target_language(monkeypatch, target, lang):
+    for tr in (make(monkeypatch), strong(monkeypatch)):
+        system = tr._body("hola", target)["system"]
+        assert "{" not in system and "}" not in system
+        assert system.startswith("You translate live-stream subtitles into {}. ".format(lang))
+        assert "llanta/llantita/lonja = belly fat roll" in system
+        assert "Always answer in {}: never return the line".format(lang) in system
 
 
 # ---------------------------------------------------------------------------

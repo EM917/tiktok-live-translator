@@ -98,6 +98,108 @@ def test_apply_returns_empty_translations_untouched():
     assert g.apply("nada que ver", "试试Sol Dorado吧") == "试试Sol Dorado吧"   # 源文没命中
 
 
+BRACKETED = ("ACME 凝胶（小瓶）", "ACME 凝胶 (小瓶)", "ACME 凝胶【小瓶】", "ACME 凝胶[小瓶]")
+
+
+def test_a_bracketed_note_is_any_opening_bracket_in_the_rendering():
+    from app.glossary import has_bracket_note
+
+    assert all(has_bracket_note(r) for r in BRACKETED)
+    assert not has_bracket_note("ACME 凝胶")
+    assert not has_bracket_note("ACME 牌")
+
+
+def test_the_screen_part_of_a_rendering_is_the_text_before_its_note():
+    from app.glossary import screen_rendering
+
+    assert {screen_rendering(r) for r in BRACKETED} == {"ACME 凝胶"}
+    assert screen_rendering("ACME 凝胶（小瓶）装") == "ACME 凝胶"   # 括注后面还有字：只要括注前那段
+    assert screen_rendering("ACME 牌") == "ACME 牌"                # 不带括注：原样
+    assert screen_rendering("（小瓶）") == ""                      # 整条都在括号里：没有能上屏的字
+
+
+def test_apply_puts_only_the_text_before_the_note_on_screen():
+    """括注是给译法加的说明，不是要上屏的字（has_bracket_note）。模型把西语留在译文里时，兜底替换换上的是
+    括注前那段：2026-10-13 那场 seq 36，模型把西语原句回了出来，兜底替换把 la ansiedad 换成了整条
+    「食欲焦虑（嘴馋）」，括号上了屏。只换掉括号、不留西语：apply 是所有引擎共用的，西语留着就是每个引擎
+    都把西语摆在屏上。同句里不带括注的词条照换。虚构品牌 acme（brands/README.md 的例子）。"""
+    from app.glossary import Glossary, parse
+
+    for rendering in BRACKETED:
+        g = Glossary(parse("el gel acme => {}\nla crema acme => ACME 面霜".format(rendering)))
+        source = "mira el gel acme y la crema acme"
+        assert g.apply(source, "看看el gel acme和la crema acme") == "看看ACME 凝胶和ACME 面霜", rendering
+        assert g.apply(source, "el gel acme") == "ACME 凝胶", rendering
+        # 模型只写了括注前那段、别处又留着西语：照旧把西语换掉（判断「翻对了」看整条译法，和改之前一样）
+        assert g.apply(source, "ACME 凝胶，还有el gel acme") == "ACME 凝胶，还有ACME 凝胶", rendering
+        # 整条译法（连括注）已经在译文里：模型照抄了，不动
+        assert g.apply(source, rendering + "，还有el gel acme") == rendering + "，还有el gel acme", rendering
+
+
+def test_apply_does_not_expand_a_bracketed_rendering_that_contains_the_spanish_word():
+    """括注前那段里含着西语原词（「Acme Sol 牌」）、译文里已经有它时，不再替换：否则会把它展开两遍。
+    和不带括注的词条同一条保护。虚构品牌 acme。"""
+    from app.glossary import Glossary, parse
+
+    g = Glossary(parse("acme sol | el acme sol => Acme Sol 牌（凝胶）"))
+    source = "mira el acme sol"
+    assert g.apply(source, "Acme Sol 牌，还有el acme sol") == "Acme Sol 牌，还有el acme sol"
+
+
+def test_apply_leaves_a_note_the_model_wrote_itself_alone():
+    """兜底替换只换残留的西语，不改模型自己写的字：本地模型的提示词、DeepL 的术语表里照旧是整条译法，
+    模型照抄了括注，这里不去删（只管「换上去的不带括注」）。"""
+    from app.glossary import Glossary, parse
+
+    g = Glossary(parse("el gel acme => ACME 凝胶（小瓶）"))
+    assert g.apply("mira el gel acme", "看看ACME 凝胶（小瓶）") == "看看ACME 凝胶（小瓶）"
+
+
+def test_apply_skips_a_rendering_that_is_all_note():
+    from app.glossary import Glossary, parse
+
+    g = Glossary(parse("el gel acme => （小瓶）"))
+    assert g.apply("mira el gel acme", "看看el gel acme") == "看看el gel acme"
+
+
+def test_apply_still_lets_the_longer_bracketed_form_win():
+    """兜底替换照旧按长短取舍（matching() 不带 without_notes）：长写法的译法带括注时，换上的是它括注前那段，
+    不是被它包含的短写法——「una orden de 30」该读成下单满 30 美元，不是「订单 30」。"""
+    from app.glossary import Glossary, parse
+
+    g = Glossary(parse("la crema acme de noche => ACME 晚霜（小瓶）\nla crema acme => ACME 面霜"))
+    source = "mira la crema acme de noche"
+    assert g.apply(source, "看看la crema acme de noche") == "看看ACME 晚霜"
+
+
+def test_without_notes_drops_bracketed_lines_before_the_longest_match():
+    """重译请求不带括注词条。先按长短取舍、再去掉括注词条的话，被括注长写法包含的短写法已经被挤掉了，
+    这句一条都不剩（模板里「tu orden de」=> 下单满（金额，美元）挤掉「tu orden」=> 订单）。without_notes
+    在取舍之前就去掉，短写法回来；不传时一切照旧。"""
+    from app.glossary import Glossary, parse
+
+    g = Glossary(parse("la crema acme de noche => ACME 晚霜（小瓶）\nla crema acme => ACME 面霜\n"
+                       "suero acme => ACME 精华液"))
+    text = "mira la crema acme de noche y el suero acme"
+    assert [(es, zh) for es, zh, _ in g.matching(text)] == [
+        ("la crema acme de noche", "ACME 晚霜（小瓶）"), ("suero acme", "ACME 精华液")]
+    assert [(es, zh) for es, zh, _ in g.matching(text, without_notes=True)] == [
+        ("la crema acme", "ACME 面霜"), ("suero acme", "ACME 精华液")]
+    assert [tuple(pr) for pr in g.translation_pairs(text, without_notes=True)] == [
+        ("la crema acme", "ACME 面霜"), ("suero acme", "ACME 精华液")]
+    assert [tuple(pr) for pr in g.translation_pairs(text)] == [
+        ("la crema acme de noche", "ACME 晚霜（小瓶）"), ("suero acme", "ACME 精华液")]
+
+
+def test_without_notes_takes_the_limit_after_dropping_the_bracketed_lines():
+    from app.glossary import Glossary, parse
+
+    g = Glossary(parse("uno acme => 一（注）\ndos acme => 二\ntres acme => 三"))
+    text = "uno acme, dos acme, tres acme"
+    assert [pr[0] for pr in g.translation_pairs(text, limit=2)] == ["uno acme", "dos acme"]
+    assert [pr[0] for pr in g.translation_pairs(text, limit=2, without_notes=True)] == ["dos acme", "tres acme"]
+
+
 def test_every_caller_goes_through_the_one_apply():
     """字幕、弹幕、重译、报警上下文各处兜底都是同一个 Glossary.apply——边界只在一个地方，
     改这一处就是改全部。有人另写一份边界逻辑，这条就该红。"""

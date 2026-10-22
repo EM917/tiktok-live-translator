@@ -476,7 +476,7 @@ async def _fetch_live_page(url, cookie=None):
     raw, charset = None, None
     try:
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=15)
+            timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SEC)
         ) as session:
             current = url
             for _hop in range(6):
@@ -690,6 +690,11 @@ def _stream_withheld(info):
 
 # ---- 第 2 层：系统 WebKit 引擎加载直播页（见 app/webkit_fetch.py 的说明） ----
 
+# 各层的网络超时（秒）。lookup_worst_case_sec 用它们相加出「一次解析最坏要多久」：改了这里，
+# Pipeline 阶段计时里 lookup 的预算跟着变
+HTTP_TIMEOUT_SEC = 15         # 每个发往 TikTok 的 HTTP 请求（aiohttp 的 total）
+MEDIA_PROBE_SEC = 8           # 拿到地址之后向 CDN 拉 2KB 探活
+YTDLP_TIMEOUT_SEC = 45        # yt-dlp 匿名解析一次
 WEBKIT_TIMEOUT_SEC = 30.0
 
 
@@ -787,7 +792,7 @@ async def _resolve_via_api(url, cookies_browser="auto"):
         return None, False
     try:
         async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=15)) as session:
+                timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SEC)) as session:
             room, status = await _room_status(session, user)
             if room is None:
                 return None, False
@@ -832,7 +837,7 @@ async def _resolve_via_api(url, cookies_browser="auto"):
         kind="browser_only")
 
 
-async def _media_url_works(url, timeout=8):
+async def _media_url_works(url, timeout=MEDIA_PROBE_SEC):
     """真的去拉几个字节，确认这个地址能用。
 
     签名地址解析得出来不等于拉得动：拉不动的地址会让 ffmpeg 在开播那一刻才失败——
@@ -906,7 +911,7 @@ async def probe_room_status(url):
     token = _LAYER_NOTE.set(note)
     try:
         async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=15)) as session:
+                timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SEC)) as session:
             _room, status = await _room_status(session, user)
     except Exception as exc:
         return None, type(exc).__name__
@@ -979,6 +984,36 @@ def _classify_ytdlp_error(err_text):
 # cookies.txt 友好得多，也不需要额外注册账号。
 BROWSER_CANDIDATES = ("chrome", "safari", "firefox", "edge", "brave", "chromium")
 BROWSER_ATTEMPT_TIMEOUT = 20      # 单个浏览器的尝试预算（秒）
+
+
+def lookup_worst_case_sec(browsers=None):
+    """一次 resolve_stream_url 最坏要多久（秒）：各层超时按链路顺序相加。Pipeline 阶段计时的 lookup
+    预算用它，层超时改了预算跟着变。browsers 是这次会去借登录的浏览器个数，不给就按支持的全部算。
+
+    逐层（见 _resolve_stream_url 的文档）：登录直播页（等匿名间隔 + 这一步的预算 + 探活）、官方接口
+    （查房间、取流各一个请求，4003110 时每个浏览器读一次 cookie 再请求一次，+ 探活）、登录重抓、
+    WebKit 隐藏页 + 探活、yt-dlp 匿名 + 每个浏览器借一次登录、直播页兜底（每个浏览器读 cookie、
+    等间隔、抓页、探活，再匿名抓一次）。这是上界，实测成功最长 37.6 秒。"""
+    n = len(BROWSER_CANDIDATES) if browsers is None else max(0, int(browsers))
+    login = LOGIN_GAP_MAX_WAIT_SEC + LOGIN_STEP_BUDGET_SEC + MEDIA_PROBE_SEC
+    api = 2 * HTTP_TIMEOUT_SEC + n * (BROWSER_ATTEMPT_TIMEOUT + HTTP_TIMEOUT_SEC) + MEDIA_PROBE_SEC
+    login_retry = (max(LOGIN_RETRY_GAP_SEC, LOGIN_GAP_MAX_WAIT_SEC) + LOGIN_STEP_BUDGET_SEC
+                   + MEDIA_PROBE_SEC)
+    webkit = WEBKIT_TIMEOUT_SEC + MEDIA_PROBE_SEC
+    ytdlp = YTDLP_TIMEOUT_SEC + n * BROWSER_ATTEMPT_TIMEOUT
+    page = ((n + 1) * (HTTP_TIMEOUT_SEC + MEDIA_PROBE_SEC)
+            + n * (BROWSER_ATTEMPT_TIMEOUT + LOGIN_GAP_MAX_WAIT_SEC))
+    return float(login + api + login_retry + webkit + ytdlp + page)
+
+
+def lookup_browser_count(cookies_browser="auto"):
+    """lookup_worst_case_sec 的 browsers：这一次会去借登录的浏览器个数。读不出来按全部算。"""
+    if cookies_browser == "none":
+        return 0
+    try:
+        return len(_browser_order(cookies_browser))
+    except Exception:
+        return len(BROWSER_CANDIDATES)
 
 
 def _installed_browsers():
@@ -1105,7 +1140,7 @@ def _remember_browser(browser):
         save_setting("cookies_browser", browser)
 
 
-async def _run_ytdlp(url, cookies=None, browser=None, timeout=45, profile=None):
+async def _run_ytdlp(url, cookies=None, browser=None, timeout=YTDLP_TIMEOUT_SEC, profile=None):
     """跑一次 yt-dlp 取流地址，返回 (returncode, stdout, stderr)。
 
     profile：浏览器个人资料目录的完整路径（browser_login.login_profile）。不给的话 yt-dlp

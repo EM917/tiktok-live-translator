@@ -16,6 +16,8 @@ import asyncio
 import importlib
 import json
 import os
+import re
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -950,6 +952,213 @@ def test_pyvenv_and_interpreter_versions(tmp_path):
     ok, version = bootstrap.interpreter_version(sys.executable)
     assert ok and version == "{}.{}".format(*sys.version_info[:2])
     assert bootstrap.interpreter_version(tmp_path / "no-python") == (False, None)
+
+
+NO_CORE = "import tlt_core_that_is_not_installed"
+
+
+def _bare_venv(path):
+    """一个真的 venv，不带 pip（不起 ensurepip、不连网）。返回 (python, site-packages)。"""
+    import subprocess
+    import venv
+
+    venv.create(path, with_pip=False, symlinks=(os.name != "nt"))
+    py = path / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    out = subprocess.run([str(py), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return py, Path(out)
+
+
+def _fake_pip(site):
+    (site / "pip").mkdir(parents=True, exist_ok=True)
+    (site / "pip" / "__init__.py").write_text("", encoding="utf-8")
+
+
+def _other_minor(here):
+    return "{}.{}".format(here[0], here[1] - 1)
+
+
+def test_venv_rebuild_when_it_cannot_run_or_its_minor_version_moved(tmp_path):
+    """.venv/bin/python3 链到不带版本号的 python3（conda），底下原地升了次版本：它还能跑，
+    但组件和 pip 都在 lib/python<旧版本> 下，原地 pip 只会报 No module named pip。重建，
+    pyvenv.cfg 跟着改写，启动器下次又能认出建它的那个解释器。"""
+    py, _site = _bare_venv(tmp_path / "venv")      # 这个版本下既没有 pip、也没有组件
+    assert bootstrap.venv_needs_rebuild(False, "3.13", None)            # 链到的 Python 没了
+    assert bootstrap.venv_needs_rebuild(False, None, None)              # 上次建到一半
+    assert bootstrap.venv_needs_rebuild(True, "3.13", "3.14",           # 原地换了次版本
+                                        python=py, ready_import=NO_CORE)
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", "3.13",       # 只是缺组件：原地补装
+                                            python=py, ready_import=NO_CORE)
+    assert not bootstrap.venv_needs_rebuild(True, None, "3.14", python=py)   # cfg 不记版本：不猜
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", None, python=py)   # 读不出实际版本：不猜
+    # 没给要探测的解释器：没有证据，不删
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", "3.14")
+    # 进程本来就跑在 .venv / .app 壳里：不从里面把自己的环境清空
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", "3.14", own_env=True,
+                                            python=py, ready_import=NO_CORE)
+
+
+def test_a_version_mismatch_with_pip_or_the_components_still_there_is_not_rebuilt(tmp_path):
+    """2026-10-20 复审实测：版本不一致不等于用不了。在它实际跑的版本下 pip 还在（原地补装
+    走得通），或者组件都在（直接能跑），就不清空。"""
+    py, site = _bare_venv(tmp_path / "venv")
+    assert not bootstrap.venv_salvageable(py, NO_CORE)
+    _fake_pip(site)
+    assert bootstrap.venv_salvageable(py, NO_CORE)
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", "3.14", python=py, ready_import=NO_CORE)
+    shutil.rmtree(site / "pip")      # 探测时可能已经写下 __pycache__
+    (site / "tlt_core_probe.py").write_text("", encoding="utf-8")
+    assert bootstrap.venv_salvageable(py, "import tlt_core_probe")
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", "3.14", python=py,
+                                            ready_import="import tlt_core_probe")
+    # 探测本身出错（解释器不见了）：没有证据，不删
+    assert bootstrap.venv_salvageable(tmp_path / "no-python", NO_CORE)
+
+
+def test_a_cfg_recording_another_minor_than_the_interpreter_runs_means_rebuild(tmp_path):
+    """把 ensure_env 里的几步串起来：cfg 记的版本、真跑一下拿到的版本、探测、判断。
+    这个版本下没有 pip、没有组件：conda 原地升级之后的样子。"""
+    here = sys.version_info[:2]
+    venv_dir = tmp_path / "venv"
+    py, _site = _bare_venv(venv_dir)
+    cfg = venv_dir / "pyvenv.cfg"
+    cfg.write_text(re.sub(r"(?m)^version\s*=.*$", "version = {}.5".format(_other_minor(here)),
+                          cfg.read_text(encoding="utf-8")), encoding="utf-8")
+    usable, actual = bootstrap.interpreter_version(py)
+    recorded = bootstrap.pyvenv_version(venv_dir)
+    assert usable and recorded != actual
+    assert bootstrap.venv_needs_rebuild(usable, recorded, actual, python=py, ready_import=NO_CORE)
+    cfg.write_text(re.sub(r"(?m)^version\s*=.*$", "version = {}.{}.0".format(*here),
+                          cfg.read_text(encoding="utf-8")), encoding="utf-8")
+    assert not bootstrap.venv_needs_rebuild(usable, bootstrap.pyvenv_version(venv_dir), actual,
+                                            python=py, ready_import=NO_CORE)
+
+
+def test_setup_sh_rerun_without_clear_keeps_a_healthy_venv(tmp_path):
+    """setup.sh 第 3 步是不带 --clear 的 `"$PY" -m venv .venv`。已有 .venv 上换一个次版本的
+    python3 再跑一遍：pyvenv.cfg 改记新版本，bin/python 照旧链着原来的解释器，组件和 pip 都在。
+    以前凭「版本不一致」就清空重装约 1.4 GB——这里钉住不重建。cfg 照 CPython 的改法改写。"""
+    here = sys.version_info[:2]
+    venv_dir = tmp_path / ".venv"
+    py, site = _bare_venv(venv_dir)
+    _fake_pip(site)
+    cfg = venv_dir / "pyvenv.cfg"
+    text = cfg.read_text(encoding="utf-8")
+    text = re.sub(r"(?m)^version\s*=.*$", "version = {}.7".format(_other_minor(here)), text)
+    text = re.sub(r"(?m)^executable\s*=.*$", "executable = /opt/other/bin/python{}".format(
+        _other_minor(here)), text)
+    cfg.write_text(text, encoding="utf-8")
+    usable, actual = bootstrap.interpreter_version(py)
+    recorded = bootstrap.pyvenv_version(venv_dir)
+    assert usable and actual == "{}.{}".format(*here) and recorded == _other_minor(here)
+    assert not bootstrap.venv_needs_rebuild(usable, recorded, actual, python=py,
+                                            ready_import=NO_CORE)
+
+
+def _another_python_minor():
+    """PATH 上另一个次版本的 Python（不碰 macOS 的 /usr/bin 垫片）；没有返回 None。"""
+    for minor in range(9, 30):
+        if minor == sys.version_info[1]:
+            continue
+        found = shutil.which("python3.{}".format(minor))
+        if not found:
+            continue
+        if sys.platform == "darwin" and os.path.realpath(found).startswith("/usr/bin/"):
+            continue
+        return found
+    return None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="setup.sh 只在 macOS / Linux 上跑")
+def test_setup_sh_rerun_with_a_real_second_python_keeps_the_venv(tmp_path):
+    """复审建议的原样复现：先用 A（跑测试的这个解释器）建 venv，再用 PATH 上另一个次版本的
+    B 不带 --clear 跑一遍 `-m venv`。B 不在就跳过。"""
+    import subprocess
+
+    other = _another_python_minor()
+    if other is None:
+        pytest.skip("PATH 上没有另一个次版本的 Python")
+    venv_dir = tmp_path / ".venv"
+    py, site = _bare_venv(venv_dir)
+    _fake_pip(site)
+    r = subprocess.run([other, "-m", "venv", "--without-pip", str(venv_dir)],
+                       capture_output=True, timeout=120)
+    if r.returncode != 0:
+        pytest.skip("{} -m venv 没跑通".format(other))
+    usable, actual = bootstrap.interpreter_version(py)
+    recorded = bootstrap.pyvenv_version(venv_dir)
+    if not usable or recorded == actual:
+        pytest.skip("这一对 Python 复现不出「cfg 改了、bin/python 没换、还能跑」")
+    assert actual == "{}.{}".format(*sys.version_info[:2])
+    assert not bootstrap.venv_needs_rebuild(usable, recorded, actual, python=py,
+                                            ready_import=NO_CORE)
+
+
+def test_main_lets_bootstrap_decide_when_to_rebuild_the_venv():
+    """main.py 测不了（import 就 execv）：重建的判断必须交给 bootstrap.venv_needs_rebuild，
+    并把「进程就在 .venv/.app 壳里」、要探测的 .venv/bin/python 和核心组件的 import 传进去。"""
+    src = (REPO / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    ensure = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "ensure_env")
+    calls = [n for n in ast.walk(ensure) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == "venv_needs_rebuild"]
+    assert len(calls) == 1
+    kw = {k.arg: k.value for k in calls[0].keywords}
+    assert sorted(kw) == ["own_env", "python", "ready_import"]
+    assert getattr(kw["python"], "id", None) == "vpy"
+    assert getattr(getattr(kw["ready_import"], "func", None), "id", None) == "_ready_import"
+    rebuild_if = next(n for n in ast.walk(ensure) if isinstance(n, ast.If) and n.test is calls[0])
+    assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+               and n.func.attr == "create" for n in ast.walk(rebuild_if))
+    assert "if not usable:" not in src
+
+
+def _calls(node, name):
+    return [n for n in ast.walk(node) if isinstance(n, ast.Call)
+            and (getattr(n.func, "id", None) == name or getattr(n.func, "attr", None) == name)]
+
+
+def test_main_does_not_clear_the_venv_while_the_app_answers_on_its_port():
+    """复审 2026-10-20：ensure_env 在模块级就跑，比 main() 里「认出已有实例、复用」早。直播中
+    再双击一次，要是走到重建，venv.create(clear=True) 会把正在跑的那个用着的 site-packages
+    一起删掉。重建分支里第一件事是探端口：有本程序在跑就提示、退出，不清。"""
+    tree = ast.parse((REPO / "main.py").read_text(encoding="utf-8"))
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    ensure = funcs["ensure_env"]
+    # ensure_env 在模块级被调用：它用到的探测函数必须定义在调用之前
+    call_at = next(n.lineno for n in tree.body if isinstance(n, ast.If)
+                   and _calls(n, "ensure_env"))
+    assert funcs["_existing_instance_url"].lineno < call_at
+    rebuild_if = next(n for n in ast.walk(ensure) if isinstance(n, ast.If)
+                      and _calls(n.test, "venv_needs_rebuild"))
+    guard_at = next(i for i, s in enumerate(rebuild_if.body)
+                    if isinstance(s, ast.If) and _calls(s.test, "_existing_instance_url"))
+    create_at = next(i for i, s in enumerate(rebuild_if.body) if _calls(s, "create"))
+    dialog_at = next(i for i, s in enumerate(rebuild_if.body) if _calls(s, "_first_run_dialog"))
+    assert guard_at < dialog_at < create_at
+    guard = rebuild_if.body[guard_at]
+    assert "is_dir" in ast.unparse(guard.test) and ".venv" in ast.unparse(guard.test)
+    assert [ast.unparse(s) for s in guard.body] == [
+        "_fail_alert(bootstrap.rebuild_blocked_text())", "sys.exit(1)"]
+    # 探的端口就是 parse_args 的默认端口（双击启动用的那个）
+    probe = _calls(guard.test, "_existing_instance_url")[0]
+    port_arg = next(n for n in _calls(funcs["parse_args"], "add_argument")
+                    if n.args and getattr(n.args[0], "value", None) == "--port")
+    default = next(k.value.value for k in port_arg.keywords if k.arg == "default")
+    assert [a.value for a in probe.args] == [default]
+
+
+def test_rebuild_blocked_text_reads_in_both_languages():
+    from app import i18n
+
+    text = bootstrap.rebuild_blocked_text()
+    assert text == ("程序已经在运行。这次打开需要重新安装运行组件，要先清空 .venv 文件夹，"
+                    "正在运行的程序可能还在用它，所以这次没有安装。\n"
+                    "请先退出正在运行的程序，再重新打开本程序。")
+    english = i18n.text(text, "en")
+    assert not i18n.CJK.search(english)
+    assert english.startswith("The app is already running.")
+    assert english.endswith("Quit the running app first, then open the app again.")
 
 
 def test_log_files_are_pruned_per_kind(tmp_path):
