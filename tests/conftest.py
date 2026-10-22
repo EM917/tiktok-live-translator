@@ -68,8 +68,8 @@ def _fresh_dir(tmp_path_factory):
     为什么不在每个用例里直接 tmp_path_factory.mktemp()：带编号的 mktemp（_pytest/pathlib.py 的
     make_numbered_dir）每次都把 basetemp 根目录整个扫一遍找最大编号，而每个用例又往根目录里添条目
     （它自己的 tmp_path 也是这么建的），六千个用例下来是 O(N²)。#106 给每个用例多加了一次，CI 的 Windows
-    跑器（扫目录慢）全量测试就从 11 分 17 秒涨过了 15 分钟的上限，连续三次跑到九成多就到点被取消；拿那几次的
-    日志拟合，多出来的时间和用例序号的平方成正比。在一个父目录里 mkdir 什么都不扫，每个用例 O(1)。
+    跑器（扫目录慢）全量测试就从 11 分 17 秒涨过了 15 分钟的上限，连续四次跑到九成多就到点被取消（#106 自己那次
+    PR 的 CI 碰上一台快约三成的跑器，699 秒过了）；拿那几次的日志拟合，多出来的时间和用例序号的平方成正比。在一个父目录里 mkdir 什么都不扫，每个用例 O(1)。
 
     编号来自进程内计数器，同一个会话里不会重复；mkdir 不带 exist_ok，真撞上已有的目录就当场报错，
     不会悄悄发出一个别人用过的目录。父目录在 basetemp 里、不在任何用例的 tmp_path 里。"""
@@ -77,7 +77,7 @@ def _fresh_dir(tmp_path_factory):
     numbers = itertools.count()
 
     def fresh(name):
-        path = root / "{}{}".format(name, next(numbers))
+        path = root / "{}-{}".format(name, next(numbers))
         path.mkdir()
         return path
 

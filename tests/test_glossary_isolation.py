@@ -37,7 +37,7 @@ _DIRS_SEEN = []
 
 
 @pytest.mark.parametrize("n", range(3))
-def test_no_two_tests_share_a_dir_and_none_pays_a_numbered_mktemp(n):
+def test_no_two_tests_share_a_dir_and_none_pays_a_numbered_mktemp(n, tmp_path_factory):
     """每个用例的词表目录、设置目录都是它独有的；而且都开在同一个会话级父目录里，不是每个用例各做一次
     带编号的 tmp_path_factory.mktemp()——那样每次都要把 basetemp 根目录整个扫一遍，六千个用例下来是
     O(N²)，CI 的 Windows 跑器因此超过 15 分钟被取消过（tests/conftest.py 的 _fresh_dir）。"""
@@ -47,6 +47,8 @@ def test_no_two_tests_share_a_dir_and_none_pays_a_numbered_mktemp(n):
     assert mine[0] != mine[1]
     assert not set(mine) & set(_DIRS_SEEN)
     assert {path.parent for path in _DIRS_SEEN + mine} == {mine[0].parent}
+    # 每个用例各做一次 mktemp 时，这些目录也都挂在同一个父目录下——就是 basetemp 本身；要拦住改回去，得断言父目录不是它
+    assert mine[0].parent != tmp_path_factory.getbasetemp()
     _DIRS_SEEN.extend(mine)
 
 
