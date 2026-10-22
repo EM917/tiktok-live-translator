@@ -1033,11 +1033,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """定期把延迟分位数、积压秒数和降级状态推给界面。
 
         中控必须能看出「检测正在落后多少秒」——识别卡住时假装一切正常，
-        比晚几秒报警危险得多。"""
+        比晚几秒报警危险得多。
+
+        每一跳单独兜异常：以前整个循环外面一个 except Exception: pass，任何一跳出一次没预料到的
+        异常，循环就此退出，挂在它上面的看门狗（时钟跳变、无声计时、识别卡住自愈、审计健康检查、
+        stream_summary、弹幕留意节流）整场静默消失（专家审查 B1）。现在出错的那一跳跳过，下一跳
+        照常；见 _stats_tick_failed。取消照样往外抛。"""
         last_level = "ok"
-        try:
-            while True:
-                await asyncio.sleep(interval)
+        while True:
+            await asyncio.sleep(interval)
+            try:
                 await self._check_clock_gap(interval)
                 # 拉流阶段计时、「已 N 分钟没收到直播音频」：不依赖拉流任务，拉流卡死时这里照常跳
                 await self._stream_watch_tick()
@@ -1054,8 +1059,27 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 await self._check_audit_health()
                 self._asr_memory_tick()
                 await self._guard_tick()      # 弹幕留意：发掉被节流压住的消息（自带保护，不抛）
-        except asyncio.CancelledError:
-            raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._stats_tick_failed(exc)
+
+    def _stats_tick_failed(self, exc):
+        """统计循环的一跳出了没预料到的异常：这一场每种异常只记一次（审计 stats_tick_error，只写类型名；
+        终端一行警告），循环接着跳。按这一场自己的审计去重：换场之后同一种异常再记一次。
+        异常原文不写：可能带签名的流地址之类（同 _json_default 的道理）。自己绝不抛。"""
+        try:
+            name = type(exc).__name__
+            audit = getattr(self, "audit", None)
+            seen = getattr(self, "_stats_tick_errors", None)
+            if seen is None or seen[0] is not audit:
+                seen = self._stats_tick_errors = (audit, set())
+            if name in seen[1]:
+                return
+            seen[1].add(name)
+            print("[警告] 统计循环这一跳出错（{}），已跳过，下一跳照常".format(name))
+            if audit is not None:
+                audit.stats_tick_error(name)
         except Exception:
             pass
 
@@ -1334,6 +1358,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         my_audit = self.audit
         # 这一场自己的观察状态（断流时刻、时钟跳变、结束原因……），同样只属于这一场
         sess = self._session_state = self._new_session_state(my_audit)
+        # 这一场的统计循环（_begin_session 刚建好的那一个）记进这一场自己的状态：收尾只取消它（见
+        # _end_session）。以前收尾拿入口处算的「我还是当前会话」去取消 self._stats_task，可中间要等弹幕停下，
+        # 换主播时下一场可能已经开起来、建好了自己的统计循环——被取消的是下一场的，挂在它上面的看门狗
+        # （时钟跳变、无声计时、识别卡住自愈、审计健康检查）整场跟着没了（专家审查 B1）
+        if self.audit is my_audit:
+            sess["stats_task"] = self._stats_task
         if my_audit is not None:
             # 这一场的汇总挂在这一场自己的审计上（AuditLog.end_fields）：谁来关它都带上。10-19 停止时音频源
             # 收尾比 STOP_GRACE_SEC 慢，session_end 由别的路径写，只剩 reason。闭包只绑这一场的 audit 和 sess
@@ -1358,7 +1388,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # （自己结束的场次收尾到一半点了停止）：session_end 照样由这一场自己写、记真正的原因，
             # 写完再把取消抛出去，见 _evidence_drain
             cancelled = await self._evidence_drain(sess)
-            await self._end_session(my_audit, **self._session_end_fields(sess, end))
+            await self._end_session(my_audit, sess=sess, **self._session_end_fields(sess, end))
             if cancelled:
                 raise asyncio.CancelledError()
 
@@ -1856,10 +1886,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self.server.broadcast({
             "type": "comment_source", "backend": state, "detail": detail})
 
-    async def _end_session(self, my_audit=None, reason=None, **fields):
+    async def _end_session(self, my_audit=None, reason=None, sess=None, **fields):
         """收尾。my_audit 是调用方会话自己的 audit——凭它判断「我还是不是
         当前会话」：晚到的旧任务只许关自己的 audit，不许碰 stats 循环等
         共享状态（那些已经属于下一场了）。
+
+        sess 是这一场自己的观察状态（_run_stream_inner 传）：统计循环只取消 sess["stats_task"]
+        这一个。没传（开场出错那一支、测试直接调）就在取消前这一刻再核对一次 self.audit is my_audit。
 
         reason/fields 写进 session_end（这一场为什么结束）。防睡眠断言只在「我还是
         当前会话、而且断言是我这个任务开的」时释放。"""
@@ -1889,14 +1922,26 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             guard_end = await self._end_comment_guard(my_audit)
             if guard_end is not None:
                 fields.setdefault("comment_guard", guard_end)
-        if still_current and self._stats_task is not None \
-                and not self._stats_task.done():
-            try:      # 收尾前推一次终值，别让界面停在半截数据上
-                await self.server.broadcast({"type": "stats", **self.telemetry.snapshot()})
-            except Exception:
-                pass
-            self._stats_task.cancel()
-            self._stats_task = None
+        # 统计循环：入口处算的 still_current 到这里可能已经过期——上面 await 停弹幕的那几秒里，换主播的下一场
+        # 可能已经开起来、建好了自己的统计循环（专家审查 B1）。所以只取消这一场自己的那一个（sess 里记的），
+        # self._stats_task 还指着它时才置空；没传 sess 就此刻重新核对一次「我还是不是当前会话」
+        current_now = my_audit is None or self.audit is my_audit
+        if isinstance(sess, dict):
+            own_stats = sess.get("stats_task")
+        else:
+            own_stats = self._stats_task if current_now else None
+        # 已经过期、而下一场接着用的正是它：理论上碰不到（新一场开场前 _stop_locked 必先取消统计循环），
+        # 碰到了也不替下一场取消
+        adopted = not current_now and own_stats is not None and self._stats_task is own_stats
+        if own_stats is not None and not own_stats.done() and not adopted:
+            if current_now:
+                try:      # 收尾前推一次终值，别让界面停在半截数据上
+                    await self.server.broadcast({"type": "stats", **self.telemetry.snapshot()})
+                except Exception:
+                    pass
+            own_stats.cancel()
+            if self._stats_task is own_stats:
+                self._stats_task = None
         target = my_audit if my_audit is not None else self.audit
         if target is not None:
             self._close_audit(target, reason, **fields)
@@ -2136,6 +2181,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "requests": None,         # 对 TikTok / CDN 发了多少请求（_requests）
             "meter": None,            # AudioFlowMeter，第一轮拉流时建
             "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
+            "stats_task": None,       # 这一场的统计循环（_run_stream_inner 记下）：收尾只取消它，见 _end_session
         }
 
     def _comment_source_counts(self, audit):

@@ -884,6 +884,15 @@ class AuditLog:
             "clocks_diverged": bool(clocks_diverged),
         })
 
+    def stats_tick_error(self, exc_type):
+        """统计循环的某一跳出了没预料到的异常（这一场每种异常一条）。循环接着跳，不因此退出；
+        只记异常的类型名，不记异常原文（可能带签名的流地址之类）。"""
+        self._write({
+            "type": "stats_tick_error",
+            "at": _now_ms(),
+            "exc_type": str(exc_type)[:80],
+        })
+
     def network_down(self, since_ts, why=""):
         """重连前的连通性探测（DNS + TCP 到 www.tiktok.com:443）失败。why 只有异常类名。"""
         self._write({
