@@ -145,7 +145,8 @@ class CaptionServer:
         # 默认 None：这个功能默认关闭，也就默认不存在第二个监听面
         self.viewer = None
 
-    async def start(self):
+    def build_app(self):
+        """本机控制面的 aiohttp 应用（路由 + 响应头中间件）。单独成方法，测试可以不占固定端口直接拿来起。"""
         @web.middleware
         async def no_cache(request, handler):
             resp = await handler(request)
@@ -158,7 +159,10 @@ class CaptionServer:
         app.router.add_get("/ws", self._ws)
         app.router.add_get("/float", self._float_page)
         app.router.add_static("/static", WEB_DIR)
-        self._runner = web.AppRunner(app, access_log=None)
+        return app
+
+    async def start(self):
+        self._runner = web.AppRunner(self.build_app(), access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", self.port)
         await site.start()
