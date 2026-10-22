@@ -100,7 +100,10 @@ valid for about two weeks, so one capture covers a whole stream. See also
   connected, the app reconnects it and records that in the session audit.
 - yt-dlp is kept current in the background.
 - While monitoring, the computer is kept from going to sleep on its own, and a
-  gap where the app did not run at all is recorded and shown on screen.
+  gap where the app did not run at all is recorded and shown on screen. The
+  notice has a close button (×) and also goes away by itself after 10 minutes
+  without another gap; a new gap shows it again, with the count carried on.
+  The session audit keeps every gap either way.
 
 ## Keeping up
 

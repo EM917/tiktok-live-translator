@@ -852,6 +852,20 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   background: var(--tint-blue-10);
   border-bottom-color: var(--a-blue-30);
 }
+/* 带 × 的那条（只有时钟跳变，见 app.js DISMISSABLE_INCIDENTS）：× 贴在右边缘，文字照旧居中；
+   左右各让出同样的宽度，长句折行时也不压到 × 下面。× 跟着条的文字色走（黄条上是 --warn-fg） */
+.incident.dismissible { position: relative; padding-left: 44px; padding-right: 44px; }
+.incident-close {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0;
+  border: none; border-radius: 50%; cursor: pointer;
+  background: transparent; color: inherit;
+}
+.incident-close .i { width: 12px; height: 12px; stroke-width: 2; }   /* 同 .popover-close */
+.incident-close:hover { background: var(--fill-hover); }
+.incident-close:active { background: var(--fill-press); }
+.incident-close:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
 
 /* ---------- 设置分组列表（inset grouped list） ---------- */
 .settings { margin-top: 32px; }
