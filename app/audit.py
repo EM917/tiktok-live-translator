@@ -83,6 +83,85 @@ def _finite_json(value):
     return value
 
 
+def _json_default(obj):
+    """json.dumps 认不出的类型怎么写。以前写入只接 ValueError：np.float32、np.int64、set、bytes、自定义对象
+    都抛 TypeError，从 _write 一路冒到拉流那一轮，一段坏记录就让整场以 internal_error 结束（专家审查 B2）。
+      - numpy 标量（0 维）：.item() 换成 Python 自己的数；非有限的浮点换成 None（同 _finite_json）；
+      - set / frozenset：按 repr 排好序的 list——元素类型混杂时排序也不抛；
+      - bytes / bytearray：只记 <bytes N>，不写内容；
+      - 其余认不出的：只记 <类型名>。不用 str(obj)：异常原文、带签名的流地址会借这条路进审计。
+    json 认得的类型不会走到这里：正常记录的输出和以前逐字节相同。"""
+    if type(obj).__module__ == "numpy" and getattr(obj, "ndim", None) == 0:
+        try:
+            value = obj.item()
+        except Exception:
+            value = obj
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if value is None or isinstance(value, (bool, int, str)):
+            return value
+    if isinstance(obj, (set, frozenset)):
+        return _finite_json(sorted(obj, key=repr))
+    if isinstance(obj, (bytes, bytearray)):
+        return "<bytes {}>".format(len(obj))
+    return "<{}>".format(type(obj).__name__)
+
+
+def _encode(record):
+    """一条记录编成整行（UTF-8，带换行）；怎么都编不出来返回 None。
+    先照原样编：正常记录走这一步，和以前逐字节相同。有 NaN / inf 再换成 null 编一次（见 _finite_json）。
+    两次都带 default=_json_default：NaN 加 set 这种组合在第二次也不再抛 TypeError。"""
+    try:
+        return (json.dumps(record, ensure_ascii=False, allow_nan=False, default=_json_default)
+                + "\n").encode("utf-8")
+    except ValueError:
+        pass
+    except (TypeError, RecursionError):
+        return None
+    try:
+        return (json.dumps(_finite_json(record), ensure_ascii=False, allow_nan=False,
+                           default=_json_default) + "\n").encode("utf-8")
+    except (ValueError, TypeError, RecursionError):
+        return None
+
+
+# 编不出来时不能整条换成占位记录的骨架记录：会话头和会话尾。按会话切审计的工具认它们，
+# 只换掉编不出来的那几个字段（见 _sanitized），记录本身照写
+SKELETON_TYPES = ("session_start", "session_end")
+
+
+def _sanitized(record):
+    """骨架记录编不出来时用：编不出来的顶层字段换成 <类型名>，键不是字符串的整个丢掉。"""
+    out = {}
+    for key, value in record.items():
+        if not isinstance(key, str):
+            continue
+        if _encode(value) is None:
+            value = "<{}>".format(type(value).__name__)
+        out[key] = value
+    return out
+
+
+def _bad_field_types(record):
+    """一条编不出来的记录里，自己就编不出来的那几个顶层值（和键）的类型名。只有类型名，不写值。"""
+    bad = set()
+    if isinstance(record, dict):
+        for key, value in record.items():
+            if not isinstance(key, (str, int, float, bool)) and key is not None:
+                bad.add(type(key).__name__)
+            elif _encode(value) is None:
+                bad.add(type(value).__name__)
+    return sorted(bad)
+
+
+def _placeholder(record):
+    """编不出来的记录在原位置换成这一条：原来是哪种记录、哪几种类型的值写不出来。"""
+    orig = record.get("type") if isinstance(record, dict) else None
+    return {"type": "audit_record_error", "at": _now_ms(),
+            "orig_type": orig[:40] if isinstance(orig, str) else type(orig).__name__,
+            "bad_fields": _bad_field_types(record)}
+
+
 class AuditLog:
     def __init__(self, room_url="", log_dir=None, extra=None):
         self._lock = threading.Lock()
@@ -97,6 +176,10 @@ class AuditLog:
         self.last_error = ""
         self.write_failures = 0          # 本场累计写失败的记录条数
         self.lost_records = 0            # 其中没留在内存里、确定丢了的条数
+        # 编不出 JSON 的记录条数（字段类型的问题，不是磁盘的问题）。单独计、不碰 failing：
+        # 算进写失败的话，下一跳就挂出红色「审计写不进去」、补一条 audit_gap，把一个字段类型
+        # 的问题报成磁盘故障。不为 0 时 session_end 带上它
+        self.serialize_failures = 0
         self.last_gap = None             # 最近一次恢复时写下的 audit_gap
         self._lost_in_outage = 0
         self._retained = deque()         # 等补写的会话头/报警/会话尾（编码好的整行）
@@ -138,23 +221,31 @@ class AuditLog:
           - 会话头、报警、会话尾留在内存里（最多 RETAIN_MAX 条），其余只计数；
           - 之后第一次能写时先补一条 audit_gap（起止时间、丢了几条），再按原顺序补写
             留下的记录，最后才是这一条。
-        每条都是整行直接落盘（无缓冲），崩溃也不丢最后几条。"""
+        每条都是整行直接落盘（无缓冲），崩溃也不丢最后几条。
+
+        编不出 JSON 的记录（见 _encode：认不出的类型已经由 _json_default 换成能写的值，剩下的是
+        键不是字符串、循环引用这一类）不抛、不算写失败：计进 serialize_failures，原位置写一条
+        audit_record_error 占位（原来的类型、写不出来的值的类型名）。会话头、会话尾不换成占位，
+        只把写不出来的字段换成 <类型名>（见 _sanitized）。以前这里只接 ValueError，TypeError
+        冒到调用方，一段坏记录就结束整场（专家审查 B2）。"""
         if self._fh is None:
             return
-        try:
-            data = (json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
-        except ValueError:
-            # 记录里有 NaN / inf：换成 null 再写（见 _finite_json）。正常的记录走上面那一步，
-            # 逐字节和以前相同；换完还写不出来（循环引用之类）才像以前一样放弃这一条
-            try:
-                data = (json.dumps(_finite_json(record), ensure_ascii=False, allow_nan=False)
-                        + "\n").encode("utf-8")
-            except (ValueError, RecursionError):
+        data = _encode(record)
+        unencodable = data is None
+        if unencodable:
+            if isinstance(record, dict) and record.get("type") in SKELETON_TYPES:
+                data = _encode(_sanitized(record))
+            if data is None:
+                record = _placeholder(record)
+                data = _encode(record)
+            if data is None:
                 return
         started = None
         with self._lock:
             if self._fh is None:
                 return
+            if unencodable:
+                self.serialize_failures += 1
             try:
                 if self.failing or self._retained:
                     self._drain_locked()
@@ -931,6 +1022,8 @@ class AuditLog:
                         fields.setdefault(key, value)
                 except Exception:
                     pass        # 汇总算不出来，session_end 照样写
+            # 以前只接 (OSError, ValueError)：session_end 带上编不出 JSON 的字段时 close 抛 TypeError，
+            # 文件不关、session_end 也不写（专家审查 B2）。现在 TypeError 也接住，文件一定在 finally 里关
             try:
                 rec = {"type": "session_end",
                        "ended_at": datetime.now().isoformat(timespec="seconds")}
@@ -938,8 +1031,22 @@ class AuditLog:
                     rec["reason"] = reason
                     for key, value in fields.items():
                         rec.setdefault(key, value)
+                if _encode(rec) is None:
+                    # 先在这里换掉编不出来的字段：下面带的 serialize_failures 要把 session_end 自己算进去
+                    rec = _sanitized(rec)
+                    with self._lock:
+                        self.serialize_failures += 1
+                if self.serialize_failures:
+                    # 只在真的有过编不出来的记录时才多这个键：正常的 session_end 和以前逐字节相同
+                    rec.setdefault("serialize_failures", self.serialize_failures)
                 self._write(rec)
-                self._fh.close()
-            except (OSError, ValueError):
+            except (OSError, ValueError, TypeError):
                 pass
-            self._fh = None
+            finally:
+                with self._lock:
+                    fh, self._fh = self._fh, None
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except (OSError, ValueError):
+                        pass
