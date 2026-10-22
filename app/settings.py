@@ -10,6 +10,10 @@ from datetime import datetime
 from pathlib import Path
 
 SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
+# 设置文件的权限位：只给本账户读写（见 save_setting）。os.open 的 mode 只在新建文件时生效，
+# 还要再被 umask 过一遍——0600 不受常见 umask 影响
+_PRIVATE_MODE = 0o600
+_WINDOWS = os.name == "nt"      # Windows 上不 chmod（见 _make_private）
 
 # 本次运行里发现 settings.json 内容损坏时备份成的文件名，以及界面提示是否已发过
 _corrupt = {"backup": None, "announced": False}
@@ -219,11 +223,32 @@ def save_setting(key, value):
         data[key] = value
         try:
             tmp = SETTINGS_FILE.with_suffix(".json.tmp")
-            with open(str(tmp), "w", encoding="utf-8") as f:
+            # 只给本账户读写（0600）：这里存着 DeepL / Claude 的密钥。以前按默认 umask 建成 0644，
+            # 同一台电脑上别的账户也读得到。新建时就带上权限，不留一个先 0644 再改的空档
+            # O_BINARY（只有 Windows 有）：和 open() 一样让底层 fd 不做换行转换，换行只由
+            # 下面的文本层处理一次，写出的字节和以前相同
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
+                         _PRIVATE_MODE)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(json.dumps(data, ensure_ascii=False, indent=2))
                 f.flush()
                 # 先落盘再替换：写完就断电时，不至于换上一个 0 字节的 settings.json
                 os.fsync(f.fileno())
             os.replace(tmp, SETTINGS_FILE)
+            _make_private(SETTINGS_FILE)
         except OSError:
             pass
+
+
+def _make_private(path):
+    """替换之后再补一次 chmod 0600：上次中断留下的 .json.tmp、升级前就有的 settings.json
+    都是按老办法建的 0644，os.open 的 mode 管不到已经存在的文件。
+
+    Windows 跳过：那边 chmod 只认只读位，0600 什么也不改，权限归 ACL 管。chmod 失败也不抛——
+    权限收紧是加固，不能因为它让设置写不进去。"""
+    if _WINDOWS:
+        return
+    try:
+        os.chmod(str(path), _PRIVATE_MODE)
+    except OSError:
+        pass
