@@ -62,6 +62,8 @@ FLOAT_REPLAY_COMMENTS = 10
 # deque 多留一点余量，回放时再按「最后 HISTORY_MAX 条字幕」切（captions_tail）——换主播换得再勤，
 # 回放的字幕条数也是 HISTORY_MAX，而不是少一条分隔线就少一条字幕
 HISTORY_BREAK_ROOM = 30
+# 控制面所有响应都带的 CSP 片段：谁都不许把这些页面放进 iframe（见 build_app）
+FRAME_ANCESTORS = "frame-ancestors 'none'"
 
 
 def captions_tail(items, limit):
@@ -152,6 +154,16 @@ class CaptionServer:
             resp = await handler(request)
             # 本地小文件，禁掉强缓存，UI 更新后刷新即生效
             resp.headers["Cache-Control"] = "no-cache"
+            # 不许被别的网页用 iframe 嵌进去（点击劫持：恶意网页把控制页透明地叠在诱饵按钮上，
+            # 骗人点到「停止」——它一下就生效）。两个头都发：老 WebView 只认 X-Frame-Options，
+            # 新的以 CSP 为准。本程序自己从不用 iframe：浮窗是独立的原生窗口（app/float_window.py），
+            # 不是嵌在控制页里的框。已有的 CSP 不覆盖，只补上 frame-ancestors
+            resp.headers["X-Frame-Options"] = "DENY"
+            csp = resp.headers.get("Content-Security-Policy")
+            if not csp:
+                resp.headers["Content-Security-Policy"] = FRAME_ANCESTORS
+            elif "frame-ancestors" not in csp:
+                resp.headers["Content-Security-Policy"] = csp + "; " + FRAME_ANCESTORS
             return resp
 
         app = web.Application(middlewares=[no_cache])
