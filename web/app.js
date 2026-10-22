@@ -2650,6 +2650,11 @@
   // 和 health（识别积压，会被「已追上」覆盖）、notice（几秒后消失）不同：这类状况中控必须
   // 看到，刷新页面也还在（服务端放在 hello 的 config.incidents 里）。
   var incidents = Object.create(null);
+  // 带 × 的持续提示：只有时钟跳变那一条（2026-10-21 用户决定：一场合盖几十次，那条黄条一直挂着关不掉）。
+  // 跟服务端 Pipeline.DISMISSABLE_INCIDENTS 是同一份（tests/test_clock_gap_dismiss.py 比对）；别的提示照旧
+  // 只由程序自己撤。点 × 是让服务端撤：所有页面、手机同看一起收起，刷新也不再冒出来；又跳一次服务端会
+  // 重新挂出（「本场第 N 次」接着数），10 分钟没再跳服务端也会自己收起
+  var DISMISSABLE_INCIDENTS = ["session:clock_gap"];
 
   function renderIncident(msg) {
     if (!msg || !msg.id) return;
@@ -2657,8 +2662,19 @@
       delete incidents[msg.id];
     } else {
       incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "",
-                            since: msg.since || msg.ts || 0 };
+                            since: msg.since || msg.ts || 0, ts: msg.ts };
     }
+    drawIncidents();
+  }
+
+  // 带上看到的那一条的 ts：这期间又跳了一次的话服务端不收，新的那次中控还没看到。
+  // 发出去了才先在本页收起（等服务端的 clear 回来也是同样的结果）；连接断着时发不出去，
+  // 就不收——不然这一页看着关掉了，服务端那条还在，重连后又冒出来
+  function dismissIncident(id) {
+    var item = incidents[id];
+    if (!item) return;
+    if (!send({ type: "dismiss_incident", id: id, ts: item.ts })) return;
+    delete incidents[id];
     drawIncidents();
   }
 
@@ -2674,6 +2690,17 @@
       row.className = "incident " + (level === "error" ? "error" : (level === "info" ? "info" : "warn"));
       // 当数据，不当 HTML；开头自带的 🔴⚠️ 换成按级别画的图标
       setIconText(row, barIconFor(level), stripStatusEmoji(incidents[k].text));
+      if (DISMISSABLE_INCIDENTS.indexOf(k) !== -1) {
+        row.classList.add("dismissible");
+        var closeBtn = document.createElement("button");
+        closeBtn.type = "button";
+        closeBtn.className = "incident-close";
+        closeBtn.title = L("关闭", "Close");
+        closeBtn.setAttribute("aria-label", L("关闭", "Close"));
+        closeBtn.appendChild(iconEl("xmark"));
+        closeBtn.addEventListener("click", function () { dismissIncident(k); });
+        row.appendChild(closeBtn);
+      }
       incidentBar.appendChild(row);
     });
     incidentBar.classList.toggle("hidden", keys.length === 0);

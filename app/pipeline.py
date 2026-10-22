@@ -378,6 +378,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self.glossary = load_glossary(getattr(args, "glossary", None))
         self.audit = None                # 每条直播一个审计日志文件
         self._stats_task = None
+        self._clock_gap_timer = None     # 时钟跳变提示到点收起的计时器（_arm_clock_gap_clear）
         self._selfcheck_task = None      # 持有引用，否则任务可能被 GC 掉
         self._init_engine_provision()    # 本地引擎备货的专属字段，见 app/pipeline_engine.py
         self._comments_provision_task = None   # 弹幕组件（TikTokLive）后台安装任务，main.py 注入
@@ -574,6 +575,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return self._export_transcript()   # 设置里「字幕记录」：导出最近一场，见 pipeline_transcript.py
         elif mtype == "open_transcripts_dir":
             return self._open_transcripts_dir()
+        elif mtype == "dismiss_incident":
+            # 提示条上的 ×：只有 DISMISSABLE_INCIDENTS 里的那几条有。只有本机页面发得出来
+            # （手机入站只认 retranslate，浮窗页只读）
+            return self._dismiss_incident(msg.get("id"), msg.get("ts"))
         elif mtype in GUARD_CONTROL_TYPES:
             # 弹幕留意的开关、关注名单、忽略事件：只有本机页面发得出来（手机入站只认 retranslate）
             return self._handle_guard_control(msg)
@@ -1122,6 +1127,36 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
         for key in [k for k in list(incidents) if str(k).startswith("session:")]:
             await self._incident(key, "clear")
+
+    def _incident_shown(self, key):
+        """界面上此刻挂着的那条持续提示（服务端 config 里存的 {id, level, text, since, ts}），没有就是 None。"""
+        incidents = (getattr(getattr(self, "server", None), "config", None) or {}).get("incidents") or {}
+        item = incidents.get(key)
+        return item if isinstance(item, dict) else None
+
+    async def _dismiss_incident(self, key, ts=None):
+        """中控点了提示条上的 ×。只认 DISMISSABLE_INCIDENTS 里的（目前只有时钟跳变那一条）；
+        别的提示照旧只由程序自己撤，发来了也不理。
+
+        在服务端撤：所有本机页面和手机同看一起收起，刷新页面、重连也不会再冒出来（持续提示以服务端
+        为准，见 _incident）。又跳一次照样重新挂出，「本场第 N 次」接着数。
+        ts 是页面看到的那一条的 ts：这期间又跳了一次（ts 变了）就不收——新的那次中控还没看到。
+        审计不写：clock_gap 记录一条不少，关掉的只是界面上的提示。不抛异常。"""
+        try:
+            key = str(key or "")
+            if key not in self.DISMISSABLE_INCIDENTS:
+                return False
+            shown = self._incident_shown(key)
+            if shown is None or (ts is not None and shown.get("ts") != ts):
+                return False
+            if key == self.CLOCK_GAP_INCIDENT:
+                self._drop_clock_gap_timer()
+            print("[提示] 中控关掉了提示：{}".format(key))
+            await self._incident(key, "clear")
+            return True
+        except Exception as exc:
+            print("[警告] 关掉提示出错: {}".format(exc))
+            return False
 
     async def _announce_health(self, level, backlog_sec, text=None, reason="backlog"):
         """推一条检测健康状态。text 不给时按积压等级生成。
@@ -1884,6 +1919,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     BROWSER_ONLY_RETRY_SEC = 20.0
     # ---- 断流之后：时钟对账、网络探测、等房间恢复在播（见 _run_session 的重连循环）----
     CLOCK_GAP_SEC = 15.0          # 一跳统计比预期晚这么多秒（墙钟），记一条 clock_gap
+    # 时钟跳变的那条持续提示：中控可以点 × 关掉；这么久没有再跳也自己收起（2026-10-21 用户决定：
+    # 一场合盖 35 次，那条黄条一直挂着关不掉）。再跳一次重新挂出、重新计时。见 _arm_clock_gap_clear
+    CLOCK_GAP_INCIDENT = "session:clock_gap"
+    CLOCK_GAP_CLEAR_SEC = 600.0
+    # 提示条上带 × 的持续提示。只有时钟跳变这一条：别的（审计写不进去、识别出错、磁盘快满、网络断了……）
+    # 照旧只由程序自己撤。web/app.js 的 DISMISSABLE_INCIDENTS 是同一份，tests/test_clock_gap_dismiss.py 比对
+    DISMISSABLE_INCIDENTS = (CLOCK_GAP_INCIDENT,)
     OFFLINE_RECHECK_SEC = 30.0    # 时钟跳变之后的「已结束」判定：醒着再等这么久复查一次
     DIRECT_RECHECK_DELAYS = (2.0, 4.0, 8.0, 16.0)   # 时钟跳变之后直连地址拉不到数据：共 30 秒里再试
     STATS_TICK_SEC = 10.0         # _stats_loop 默认每跳间隔；统计循环还没跳过时补对时钟用它
@@ -2203,7 +2245,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     #   改写：承诺「会继续重试」的——审计写不进去（_settle_audit_incident）、远程引擎被拒
     #         （_settle_engine_incident）。停了就不再重试，改成已经发生的事和下一步
     #   留着：已经发生的事，或停了也成立的话——时钟跳变、识别连续出错（CPU 模型照样在后台
-    #         加载，或请重开程序）、本地引擎连续出错、审计没能创建、审计文件被移走、磁盘快满
+    #         加载，或请重开程序）、本地引擎连续出错、审计没能创建、审计文件被移走、磁盘快满。
+    #         时钟跳变那一条另有两条出路（2026-10-21）：中控点 × 关掉（_dismiss_incident），
+    #         或 CLOCK_GAP_CLEAR_SEC 秒没再跳自己收起（_arm_clock_gap_clear），停止之后也照样计时
     ONGOING_INCIDENTS = ("session:network", "session:audio_rate", "session:quiet_audio",
                          "session:no_audio")
 
@@ -2336,7 +2380,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                          "{1} This has happened {0} times this session.").format(
                     sess["gap_count"], text)
             print("[时钟] 墙钟走了 {:.0f} 秒、单调时钟走了 {:.0f} 秒".format(wall_sec, mono_sec))
-            await self._incident("session:clock_gap", "warn", text)
+            await self._incident(self.CLOCK_GAP_INCIDENT, "warn", text)
+            self._arm_clock_gap_clear()       # 重新计时：这一次之后 CLOCK_GAP_CLEAR_SEC 秒没再跳就收起
             # 睡着之前的连接多半已经失效：醒来 5 秒内没有新音频就直接断开这一轮、马上重连，
             # 不再干等 20 秒看门狗。只在两个钟对不上时这么做——事件循环卡住时数据还在管道里
             # 排着，断开反而丢
@@ -2347,6 +2392,44 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 self._spawn(source.stop())
         except Exception as exc:
             print("[警告] 时钟对账出错: {}".format(exc))
+
+    def _arm_clock_gap_clear(self):
+        """时钟跳变提示刚挂出（或又跳了一次、刚刷新）时调：CLOCK_GAP_CLEAR_SEC 秒后收起它，旧的计时作废。
+
+        计时挂在事件循环的 call_later 上，不挂在统计循环上：统计循环随一场结束而停，这条提示却在
+        停止之后也留着（见 ONGOING_INCIDENTS 上面的说明）——挂在统计循环上，停止之后它又成了关不掉的。
+        call_later 按单调时钟走：本机时钟被往前或往后拨都不影响它（往前拨 15 秒以上在监听中本来就算一次
+        跳变、重新计时）；macOS 休眠时单调时钟停住，睡着的时间不算进去（监听中又睡一次照样重新挂出、
+        重新计时）。到点只收挂计时器时的那一条（按 ts 认，见 _expire_clock_gap）。不抛异常。"""
+        try:
+            self._drop_clock_gap_timer()
+            shown = self._incident_shown(self.CLOCK_GAP_INCIDENT)
+            if shown is None:
+                return
+            ts = shown.get("ts")
+            self._clock_gap_timer = asyncio.get_running_loop().call_later(
+                self.CLOCK_GAP_CLEAR_SEC, lambda: self._spawn(self._expire_clock_gap(ts)))
+        except Exception as exc:
+            print("[警告] 时钟跳变提示的计时出错: {}".format(exc))
+
+    def _drop_clock_gap_timer(self):
+        timer, self._clock_gap_timer = getattr(self, "_clock_gap_timer", None), None
+        if timer is not None:
+            timer.cancel()
+
+    async def _expire_clock_gap(self, ts):
+        """CLOCK_GAP_CLEAR_SEC 秒里没有再跳：收起时钟跳变提示。只收 ts 对得上的那一条——这期间又跳过
+        （那次自己重新计时）、中控已经关掉、或下一场开始时已经撤掉的，都不碰。审计里的 clock_gap 不动。"""
+        try:
+            shown = self._incident_shown(self.CLOCK_GAP_INCIDENT)
+            if shown is None or shown.get("ts") != ts:
+                return False
+            print("[时钟] {:.0f} 分钟没有再发生，收起时钟跳变提示".format(self.CLOCK_GAP_CLEAR_SEC / 60))
+            await self._incident(self.CLOCK_GAP_INCIDENT, "clear")
+            return True
+        except Exception as exc:
+            print("[警告] 收起时钟跳变提示出错: {}".format(exc))
+            return False
 
     async def _recheck_clock(self, sess):
         """重连循环要下「结束」结论之前，补对一次时钟。
