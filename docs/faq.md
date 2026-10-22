@@ -300,6 +300,9 @@ for caption translation first, so a pause on that connection never delays
 captions. Comment translation is for display
 only and never part of the alert path. The connection is signed through a
 third-party service; see [Privacy](../README.md#privacy).
+In the audit log, `session_end.comment_fields` counts, in numbers only, how many comments carried each
+account field, and for now also candidate account-level and badge fields (`level_has`, `level_hist`,
+`level_kinds`); the app shows none of these.
 
 **Exporting captions.** Every session is saved as it happens in the
 `transcripts` folder inside the app folder: each caption with its translation
