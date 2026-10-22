@@ -912,3 +912,141 @@ test("字幕的翻译结局经 caption_update 到达（pipeline 的实际路径�
     assert.equal(captionTrans(elements, 2).textContent, "译文失败（超时）——请看上面的原话");
   });
 });
+
+// ---- DOM 回归：弹幕面板贴底跟随（F6）----
+// 补核（10-22）真 ViewerHub 加真手机页实测：展开后 scrollTop=0、最新一条不在视野里；重连后显示的是
+// 回放 30 条里最旧的 5 条。下面给假列表装上和浏览器一样的几何：收起（display:none）时量出来全是 0，
+// 展开时面板 280px 高、每条 60px；scrollTop 读的时候夹在 [0, scrollHeight − clientHeight] 里；
+// 不做滚动锚定（viewer.css 给 .comment-list 关掉了）
+const CMT_H = 60;
+const PANEL_H = 280;
+function comment(n, extra) {
+  return JSON.stringify(Object.assign({ type: "comment", id: "c" + n, user: "viewer_" + n, ts: n,
+                                        text: "comentario " + n, translated: "弹幕 " + n, state: "ok" }, extra || {}));
+}
+function commentGeometry(list) {
+  const shown = () => !list.classList.contains("hidden");
+  const append = list.appendChild.bind(list);
+  list.appendChild = (child) => { child.offsetHeight = CMT_H; return append(child); };
+  Object.defineProperty(list, "clientHeight", { configurable: true, get: () => (shown() ? PANEL_H : 0) });
+  Object.defineProperty(list, "scrollHeight", { configurable: true,
+    get: () => (shown() ? list.children.length * CMT_H + 8 : 0) });
+  let top = 0;
+  const max = () => Math.max(0, list.scrollHeight - list.clientHeight);
+  Object.defineProperty(list, "scrollTop", { configurable: true,
+    get: () => Math.max(0, Math.min(top, max())), set: (v) => { top = Math.max(0, Math.min(v, max())); } });
+  return {
+    below: () => Math.max(0, list.scrollHeight - list.clientHeight) - list.scrollTop,   // 底下还藏着多少像素，0 = 在底部
+    firstVisible: () => list.children[Math.floor(list.scrollTop / CMT_H)].dataset.id,
+  };
+}
+function userScrollsTo(list, top) {   // 用户自己滚：先有一次真实的触摸，随后的 scroll 才算用户滚的
+  list.dispatch("touchstart");
+  list.scrollTop = top;
+  list.dispatch("scroll");
+}
+
+test("弹幕面板：收起时来的弹幕，展开那一刻就在底部（以前停在最旧的几条）", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    assert.equal(list.classList.contains("hidden"), true, "默认收起");
+    for (let n = 1; n <= 12; n++) ws.onmessage({ data: comment(n) });
+    assert.equal(list.scrollTop, 0, "收起时滚不动");
+    elements["comment-toggle"].click();
+    assert.equal(list.classList.contains("hidden"), false);
+    assert.equal(geo.below(), 0, "展开就该看到最新一条");
+
+    // 翻上去、收起、再展开：展开仍回到底部，并恢复跟随
+    userScrollsTo(list, 0);
+    elements["comment-toggle"].click();
+    elements["comment-toggle"].click();
+    assert.equal(geo.below(), 0);
+    ws.onmessage({ data: comment(13) });
+    assert.equal(geo.below(), 0, "展开之后照常跟随");
+  });
+});
+
+test("弹幕面板：贴底时新弹幕（含裁到 30 条、译文后补）都跟到底", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 40; n++) {
+      ws.onmessage({ data: comment(n, { state: "pending", translated: null }) });
+      assert.equal(geo.below(), 0, "第 " + n + " 条之后应在底部");
+      ws.onmessage({ data: JSON.stringify({ type: "comment_update", id: "c" + n, translated: "弹幕 " + n, state: "ok" }) });
+      assert.equal(geo.below(), 0, "第 " + n + " 条译文补上之后仍在底部");
+    }
+    assert.equal(list.children.length, 30, "只留最近 30 条");
+    assert.equal(list.children[29].dataset.id, "c40");
+  });
+});
+
+test("弹幕面板：翻上去后新弹幕不拉动；顶上裁掉一条时看着的那几条不动；滚回底部恢复跟随", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 30; n++) ws.onmessage({ data: comment(n) });
+    userScrollsTo(list, 600);
+    assert.equal(geo.firstVisible(), "c11");
+
+    ws.onmessage({ data: comment(31) });             // 到了上限：顶上的 c1 被裁掉
+    assert.equal(list.children.length, 30);
+    assert.equal(list.children[0].dataset.id, "c2");
+    assert.equal(list.scrollTop, 600 - CMT_H, "scrollTop 减回一条的高度");
+    assert.equal(geo.firstVisible(), "c11", "视野里还是刚才那几条");
+    ws.onmessage({ data: JSON.stringify({ type: "comment_update", id: "c31", translated: "弹幕 31 改" }) });
+    assert.equal(geo.firstVisible(), "c11", "译文后补也不拉动");
+
+    userScrollsTo(list, list.scrollHeight);          // 自己滚回底部：恢复跟随
+    ws.onmessage({ data: comment(32) });
+    assert.equal(geo.below(), 0, "滚回底部之后又跟着最新的走");
+  });
+});
+
+test("弹幕面板：重连回放之后在底部；回放期间跟随意图被 scroll 事件改掉，回放结束时也拉回来", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 30; n++) ws.onmessage({ data: comment(n) });
+    userScrollsTo(list, 100);                         // 掉线前刚翻过（还在 USER_INPUT_WINDOW_MS 之内）
+
+    ws.onclose({ code: 1006 });
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send({ type: "viewer_hello", ok: true, ts: 1, share_since: 0, viewers: 1, max_viewers: 12, read_only: true });
+    assert.equal(list.children.length, 0, "hello 清空重建");
+    // replay_snapshot 的顺序：先是不带 replay 标记的几条（不算回放结束），然后是带标记的回放
+    send({ type: "status", state: "live" });
+    send({ type: "comment_source", backend: "live" });
+    send({ type: "alert_mode", on: true });
+    send({ type: "incident", id: "disk", level: "warn", text: "磁盘快满了" });
+    for (let n = 11; n <= 40; n++) ws.onmessage({ data: comment(n, { replay: true }) });
+    assert.equal(geo.below(), 0, "回放逐条追加时就该贴底");
+
+    // 回放重建列表期间浏览器补发了一个 scroll 事件（位置在中间），掉线前那次触摸还在窗口里：跟随意图被改掉
+    list.scrollTop = 300;
+    list.dispatch("scroll");
+    ws.onmessage({ data: comment(41) });             // 回放之后的第一条实时消息
+    assert.equal(geo.below(), 0, "回放结束时强制滚到底");
+    ws.onmessage({ data: comment(42) });
+    assert.equal(geo.below(), 0, "之后照常跟随");
+    assert.equal(list.children[29].dataset.id, "c42");
+  });
+});
+
+test("弹幕面板：回放结束前用户已经自己翻了，回放结束时不替他滚", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 30; n++) ws.onmessage({ data: comment(n, { replay: true }) });
+    userScrollsTo(list, 200);
+    assert.equal(geo.firstVisible(), "c4");
+    ws.onmessage({ data: comment(31) });
+    assert.ok(geo.below() > 0, "用户在看旧的，不拉到底");
+    assert.equal(geo.firstVisible(), "c4");
+  });
+});

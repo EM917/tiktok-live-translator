@@ -251,7 +251,10 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
   background: none; border: none; color: var(--label); font-family: inherit; cursor: pointer;
 }
 .cmt-source-label { font-size: var(--fs-caption); color: var(--label-2); }
-.comment-list { max-height: 34vh; overflow-y: auto; padding: 0 14px 8px; -webkit-overflow-scrolling: touch; }
+/* overflow-anchor:none（F6）：贴底跟随和「翻上去时从顶上裁掉一条、把 scrollTop 减回去」都由 viewer.js
+   自己做。浏览器自带的滚动锚定（Chromium 有；10-22 在 macOS 的 WKWebView 里看，WebKit 也有）再调一遍
+   就会减两次。关掉之后只剩脚本这一处在调，不随浏览器变 */
+.comment-list { max-height: 34vh; overflow-y: auto; overflow-anchor: none; padding: 0 14px 8px; -webkit-overflow-scrolling: touch; }
 .cmt-item { padding: 6px 0; border-top: 0.5px solid var(--separator); }
 .cmt-item:first-child { border-top: none; }
 .cmt-head { font-size: var(--fs-caption); color: var(--label-2); }

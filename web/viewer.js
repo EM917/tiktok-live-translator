@@ -517,6 +517,62 @@ if (typeof document !== "undefined") {
       });
     }
 
+    // ---- 弹幕区贴底跟随（F6）：规则同上面的字幕区 ----
+    // 弹幕列表自己滚（viewer.css 的 .comment-list：max-height + overflow-y:auto），新的接在底部、
+    // 超过 MAX_COMMENTS 从顶上裁。以前这里没有任何滚动代码：每次展开、每次重连之后都停在保留的
+    // 30 条里最旧的几条，手动滚到底也只看得到一眼，下一条进来就落到视野外（10-19 平均每分钟 31 条）。
+    // 和字幕区一样，「跟随」是用户意图：只有用户自己往上翻才停，滚回底部恢复。另有两处强制回到
+    // 底部：展开面板时（收起前翻到哪儿都不管），重连回放结束时（见 handle 里的 commentReplayStick）。
+    // 列表比字幕区矮得多（34vh），离底部的宽容度取 48px：一条弹幕约 60px，往上翻一条就算翻上去了；
+    // 小数像素和后补的一行译文不算
+    var COMMENT_FOLLOW_SLACK = 48;
+    var commentsFollowing = true;
+    var lastCommentInput = 0;
+    var commentReplayStick = false;   // viewer_hello 之后为 true：回放结束时强制滚到底一次
+    function commentsMeasurable() { return !!(commentList && commentList.clientHeight); }
+    function commentsAtBottom() {
+      return commentList.scrollHeight - commentList.scrollTop - commentList.clientHeight < COMMENT_FOLLOW_SLACK;
+    }
+    function stickCommentsNow() {
+      if (commentList) commentList.scrollTop = commentList.scrollHeight;
+    }
+    function followCommentsNow() {   // 强制：恢复跟随并滚到底
+      commentsFollowing = true;
+      stickCommentsNow();
+    }
+    if (commentList) {
+      ["wheel", "touchstart", "touchmove", "keydown", "mousedown"].forEach(function (name) {
+        commentList.addEventListener(name, function () {
+          lastCommentInput = Date.now();
+          commentReplayStick = false;   // 回放结束前用户已经自己在翻：回放结束时不再替他滚
+        }, { passive: true });
+      });
+      commentList.addEventListener("scroll", function () {
+        // 收起着、量不出来：沿用原意图，同字幕区
+        if (!commentsMeasurable()) return;
+        if (commentsAtBottom()) commentsFollowing = true;
+        else if (Date.now() - lastCommentInput < USER_INPUT_WINDOW_MS) commentsFollowing = false;
+      }, { passive: true });
+    }
+    // 重新可见 / 获得焦点 / 窗口变化时补一次，另有 2 秒一次的兜底：同字幕区，后台期间的滚动请求会落空
+    function resyncComments() {
+      if (document.hidden || !commentsFollowing) return;
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(stickCommentsNow);
+      else stickCommentsNow();
+    }
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", resyncComments);
+    }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      ["focus", "pageshow", "resize", "orientationchange"].forEach(function (name) {
+        window.addEventListener(name, resyncComments);
+      });
+    }
+    setInterval(function () {
+      if (document.hidden || !commentsFollowing || !commentsMeasurable()) return;
+      if (!commentsAtBottom()) stickCommentsNow();
+    }, 2000);
+
     // ---- 弹幕区：默认折叠，展开/收起记忆在 localStorage ----
     var commentsOpen = lsGet("viewerCommentsOpen") === "1";
     function syncCommentPanel() {
@@ -529,6 +585,8 @@ if (typeof document !== "undefined") {
         commentsOpen = !commentsOpen;
         lsSet("viewerCommentsOpen", commentsOpen ? "1" : "0");
         syncCommentPanel();
+        // F6：展开就看最新的。收起时列表是 display:none，期间的滚动请求都不生效
+        if (commentsOpen) followCommentsNow();
       });
     }
 
@@ -672,6 +730,7 @@ if (typeof document !== "undefined") {
 
     function resetForNewSession() {
       following = true;   // 回放会重建整个列表：从最新处开始看
+      commentsFollowing = true;   // 弹幕同理（F6）
       alertsById = Object.create(null);
       captionsById = Object.create(null);
       commentsById = Object.create(null);
@@ -693,12 +752,25 @@ if (typeof document !== "undefined") {
       if (demoBanner) demoBanner.classList.toggle("hidden", !demoMode);
     }
 
+    // 重连回放里不带 replay 标记的几种：app/viewer.py replay_snapshot 先发 status、comment_source、
+    // alert_mode、incident，字幕历史里夹着的 session_break 过白名单时 replay 键被丢掉（ALLOW 只给 ts）。
+    // 它们到了不算回放结束；其余消息不带 replay 的，就是回放之后的第一条实时消息
+    var UNMARKED_IN_REPLAY = { status: true, comment_source: true, alert_mode: true, incident: true,
+                               session_break: true };
+
     function handle(msg) {
       if (!msg || typeof msg !== "object") return;
+      // F6：重连回放结束时把弹幕滚到底一次。回放是一口气压进来的，逐条追加时的跟随本来就会贴底，
+      // 这一下是兜底：回放期间列表被清空、重建，scroll 事件可能把跟随意图改掉
+      if (commentReplayStick && msg.type !== "viewer_hello" && !msg.replay && !UNMARKED_IN_REPLAY[msg.type]) {
+        commentReplayStick = false;
+        followCommentsNow();
+      }
       switch (msg.type) {
         case "viewer_hello":
           retryCount = 0;
           lastConnectedAt = Date.now();
+          commentReplayStick = true;
           // 取消记录先对齐这一次共享，再收回放的报警：程序重启后 alert_id 从头数，
           // 上一次共享里取消过的 7 号不能藏掉这一次的 7 号
           dismissedAlerts.bind(msg.share_since);
@@ -1084,10 +1156,16 @@ if (typeof document !== "undefined") {
       commentsById[msg.id] = { msg: msg, el: item, zhEl: zh };
       while (commentList.children.length > MAX_COMMENTS) {
         var oldest = commentList.firstChild;
+        // 用户翻上去在看的时候，从顶上裁掉一条，下面的内容整体上移一条的高度：把 scrollTop 减回去，
+        // 看着的那几条不动。viewer.css 给 .comment-list 关了浏览器自带的滚动锚定（overflow-anchor:none），
+        // 由这里来做：Chromium 和 WebKit 行为一致，也不会和锚定各减一遍。跟随时最后会滚到底，不用减
+        var shift = commentsFollowing ? 0 : (oldest.offsetHeight || 0);
         delete commentsById[oldest.dataset.id];
         commentList.removeChild(oldest);
+        if (shift) commentList.scrollTop = Math.max(0, commentList.scrollTop - shift);
       }
       if (commentCountEl) commentCountEl.textContent = String(commentList.children.length);
+      if (commentsFollowing) stickCommentsNow();   // F6：追加、裁剪之后，跟随中就滚到底
     }
     function updateComment(msg) {
       var entry = commentsById[msg.id];
@@ -1101,6 +1179,8 @@ if (typeof document !== "undefined") {
         entry.zhEl.textContent = entry.msg.translated || entry.msg.text || "";
         entry.zhEl.classList.remove("pending");
       }
+      // 译文是后补的，这一条会长高：跟随中再贴一次底（同字幕区的 updateCaption）
+      if (commentsFollowing) stickCommentsNow();
     }
 
     // 这行小字紧挨着「弹幕 / Comments」标题：英文不再重复 Comments（同桌面，docs/i18n-style.md §3 #96）
