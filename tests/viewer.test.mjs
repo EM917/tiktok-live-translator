@@ -866,3 +866,49 @@ test("session_break：即便消息里带了 streamer，手机端分隔文案也�
     assert.equal(sep.textContent, "── 新的一场 ──");
   });
 });
+
+// ---- DOM 回归：翻译失败 / 因积压跳过的字幕要有字（F4）----
+// 服务端发的是 translate_state（failed / dropped），不带 failed/why：以前译文行写成空串，只剩一行空白
+function captionTrans(elements, i) {
+  const card = elements["caption-list"].children[i];
+  return card.children[2];
+}
+test("字幕的翻译结局：failed、dropped、ok、pending 各显示对应的字，不再留空行", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send({ type: "caption", id: 1, ts: 1, original: "uno", translated: null, translate_state: "failed" });
+    send({ type: "caption", id: 2, ts: 2, original: "dos", translated: null, translate_state: "dropped" });
+    send({ type: "caption", id: 3, ts: 3, original: "tres", translated: "三", translate_state: "ok" });
+    send({ type: "caption", id: 4, ts: 4, original: "cuatro", translate_state: "pending" });
+    const t = [0, 1, 2, 3].map((i) => captionTrans(elements, i));
+    assert.equal(t[0].textContent, "翻译失败");
+    assert.equal(t[1].textContent, "翻译已跳过（积压）");
+    assert.equal(t[2].textContent, "三");
+    assert.equal(t[3].textContent, "翻译中…");
+    assert.equal(t[0].classList.contains("failed"), true, "套用已有的 .failed 样式");
+    assert.equal(t[1].classList.contains("failed"), true);
+    assert.equal(t[2].classList.contains("failed") || t[2].classList.contains("pending"), false);
+    assert.equal(t[3].classList.contains("pending"), true);
+    // 失败、跳过的字是界面提示，不是数据（英文界面的检查不豁免它们）
+    assert.equal(t[0].classList.contains("i18n-data"), false);
+    assert.equal(t[1].classList.contains("i18n-data"), false);
+    assert.equal(t[2].classList.contains("i18n-data"), true);
+  });
+});
+test("字幕的翻译结局经 caption_update 到达（pipeline 的实际路径），重译成功后换成译文", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send({ type: "caption", id: 1, ts: 1, original: "uno", translated: null, translate_state: "pending" });
+    send({ type: "caption", id: 2, ts: 2, original: "dos", translated: null, translate_state: "pending" });
+    send({ type: "caption_update", id: 1, translated: null, translate_state: "failed" });
+    send({ type: "caption_update", id: 2, translated: null, translate_state: "dropped" });
+    assert.equal(captionTrans(elements, 0).textContent, "翻译失败");
+    assert.equal(captionTrans(elements, 1).textContent, "翻译已跳过（积压）");
+    send({ type: "caption_update", id: 1, strong: true, strong_state: "ok", translated: "一", translate_state: "ok" });
+    assert.equal(captionTrans(elements, 0).textContent, "一");
+    assert.equal(captionTrans(elements, 0).classList.contains("failed"), false);
+    // 老的 failed/why 写法照旧：带原因的那句更具体，优先
+    send({ type: "caption", id: 3, ts: 3, original: "tres", failed: true, why: "超时", translate_state: "failed" });
+    assert.equal(captionTrans(elements, 2).textContent, "译文失败（超时）——请看上面的原话");
+  });
+});

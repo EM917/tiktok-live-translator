@@ -999,6 +999,16 @@ if (typeof document !== "undefined") {
                                   ? "Couldn’t translate (" + pick(msg, "why") + "). See the original above."
                                   : "Couldn’t translate. See the original above.");
         transEl.classList.add("failed");
+      } else if (msg.translate_state === "failed" || msg.translate_state === "dropped") {
+        // F4：服务端说「这条不会有译文了」用的是 translate_state（pipeline 的 _publish_translation
+        // 发 failed，翻译积压丢掉旧任务时发 dropped），不带 failed/why。以前这里只认 failed/why，
+        // 这两种一律写成空串，译文行只剩一行空白，看的人分不出是「还没译」还是「不会有了」。
+        // 字与桌面卡片的角标同一句（web/live-ui.js captionStateChip）。拒答、结果不像译文这两种
+        // 细分不在手机白名单里，只能写笼统的「翻译失败」；原文和「重译」按钮还在，可以自己重试
+        transEl.textContent = msg.translate_state === "failed"
+          ? L("翻译失败", "Translation failed")
+          : L("翻译已跳过（积压）", "Skipped (backlog)");
+        transEl.classList.add("failed");
       } else if (msg.translate_state === "pending") {
         transEl.textContent = L("翻译中…", "Translating…");
         transEl.classList.add("pending");

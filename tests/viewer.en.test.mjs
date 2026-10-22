@@ -305,3 +305,19 @@ test("重连拖过 60 秒：胶囊改成告诉人可以做什么", () => {
     "Not connected for 75 sec. Ask the operator whether sharing is still on, or scan the QR code again.");
   assertNoChinese(els);
 });
+
+test("字幕的翻译结局（F4）：failed、dropped 与桌面角标同一句，ok、pending 照旧", () => {
+  const els = runPage(({ send }) => {
+    send({ type: "caption", id: 1, ts: TS, original: "uno", translate_state: "pending" });
+    send({ type: "caption", id: 2, ts: TS, original: "dos", translate_state: "pending" });
+    send({ type: "caption", id: 3, ts: TS, original: "tres", translated: "three", translate_state: "ok" });
+    send({ type: "caption", id: 4, ts: TS, original: "cuatro", translate_state: "pending" });
+    send({ type: "caption_update", id: 1, translated: null, translate_state: "failed" });
+    send({ type: "caption_update", id: 2, translated: null, translate_state: "dropped" });
+  });
+  const trans = els["caption-list"].children.map((c) => c.children[2]);
+  assert.deepEqual(trans.map((t) => t.textContent), ["Translation failed", "Skipped (backlog)", "three", "Translating…"]);
+  assert.deepEqual(trans.map((t) => t.classList.contains("failed")), [true, true, false, false]);
+  assert.equal(trans[3].classList.contains("pending"), true);
+  assertNoChinese(els);
+});
