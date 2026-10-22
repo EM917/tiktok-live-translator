@@ -48,7 +48,12 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
 .f-empty { flex: none; padding: 14px; color: var(--f-dim); font-size: var(--f-cmt); line-height: 1.4; }
 /* 字幕区最多占窗口六成，装不下的从下面裁：先裁原文小字，再裁译文的结尾。状态行（角标）在最上面，裁不到。
    float.js 量出装不下时加 .clipped：底部渐隐，看得出下面还有字，不是一句话到此为止 */
-.f-caption { flex: none; max-height: 62%; overflow: hidden; padding: 12px 14px 8px; }
+.f-caption { flex: none; max-height: 62%; overflow: hidden; padding: 12px 14px 8px;
+  /* 条高稳定（专家审查 U1，同中控页 .live-bar）：最少占「两行译文 + 两行原文」那么高（2.7 = 两行 × 行高 1.35，
+     2.8 = 两行 × 原文行高 1.4；25px = 上下内边距 20 + 原文的 margin-top 4 + 1px 余量）。译文、原文都在两行以内的
+     句子换句时，下面的弹幕不跟着上下跳；更长的照旧往下长（不截断，用户定的 D13），到 62% 再从下面裁。
+     窗口拉得很矮时让给 62%。原文也留两行：浮窗窄，默认大小（字号 34）下 53% 的西语原文要折成两行以上 */
+  min-height: min(62%, calc(var(--f-big) * 2.7 + var(--f-small) * 2.8 + 25px)); }
 .f-caption.clipped {
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);

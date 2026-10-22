@@ -6,7 +6,9 @@
 //   2. 弹幕：最多 5 条、新的在底部，译文行 / 原文行的规则同弹幕栏，红 / 琥珀 / 关注的标记复用 guard.js，
 //      而且永远没有「加入关注名单」的按钮（浮窗只显示）；
 //   3. 换主播清空，重连回放里比换主播更早的弹幕不要；
-//   4. 不显示报警、不发任何消息、字号跟着 config.caption_size、非 macOS 的窗口加 solid。
+//   4. 不显示报警、不发任何消息、字号跟着 config.caption_size、非 macOS 的窗口加 solid；
+//   5. 字幕区的高度（专家审查 U1，同中控页底部大字幕）：最少「两行译文 + 两行原文」高，换句时下面的弹幕不跟着跳；
+//      长句不截断，到窗口六成再从下面裁（样式表，假 DOM 没有版面；真排版的量法在 b1-livebar 的验证记录里）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -481,6 +483,39 @@ test("角标在字幕上面：字幕区从下面裁，状态行永远裁不到�
   assert.match(rule(".f-caption"), /overflow:\s*hidden/);
   assert.match(rule(".f-caption.clipped"), /-webkit-mask-image:\s*linear-gradient/);
   assert.ok(!/margin-top/.test(rule(".f-chip")), "角标在最上面，不要再往下推");
+});
+
+test("字幕区最少有「两行译文 + 两行原文」那么高（换句时弹幕不跟着上下跳），窗口太矮时让给 62%；长句不截断", () => {
+  const css = readFileSync(new URL("../web/float.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const decls = (sel) => {
+    const m = new RegExp("(?:^|\\n)" + sel.replace(/\./g, "\\.") + "\\s*\\{([^}]*)\\}").exec(css);
+    assert.ok(m, "float.css 里找不到 " + sel);
+    const out = {};
+    for (const part of m[1].split(";")) {
+      const i = part.indexOf(":");
+      if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+    }
+    return out;
+  };
+  const cap = decls(".f-caption"), big = decls(".f-big"), small = decls(".f-small");
+  assert.equal(cap.padding, "12px 14px 8px");
+  assert.equal(cap["max-height"], "62%");
+  assert.equal(big["line-height"], "1.35");
+  assert.equal(small["line-height"], "1.4");
+  assert.equal(small["margin-top"], "4px");
+  const m = /^min\(62%, calc\(var\(--f-big\) \* ([\d.]+) \+ var\(--f-small\) \* ([\d.]+) \+ ([\d.]+)px\)\)$/.exec(cap["min-height"]);
+  assert.ok(m, "min-height：" + cap["min-height"]);
+  for (const size of [20, 32, 34, 48, 60]) {
+    const s = F.floatSizes(size);
+    const got = s.big * Number(m[1]) + s.small * Number(m[2]) + Number(m[3]);
+    // 两行译文 + 两行原文 + 上下内边距 20 + 原文的 margin-top 4 + 1px 余量
+    const want = s.big * 1.35 * 2 + s.small * 1.4 * 2 + 20 + 4 + 1;
+    assert.ok(Math.abs(got - want) < 0.01, "字号 " + size + "：" + got + " ≠ " + want);
+  }
+  for (const sel of [".f-big", ".f-small"]) {
+    const body = Object.keys(decls(sel)).join(" ");
+    assert.doesNotMatch(body, /line-clamp|max-height|text-overflow/, sel + "：长句不截断（D13）");
+  }
 });
 
 test("弹幕列表最上面被挤出去的那一行渐隐到分隔线底下，不会被线拦腰切开", () => {
