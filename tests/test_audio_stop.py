@@ -14,6 +14,10 @@ SIGTERM 的用例 Windows 上跳过（那里 terminate 就是直接结束进程�
 
 自然结束（stdout 先 EOF）的用例每个平台都跑：Windows 上事件循环收到「进程已退出」总比 EOF 晚，以前
 那里每次自然结束都记成 terminate。delayed_exit_notice 把这个先后在任何平台上造出来。
+
+2026-10-22（专家审查 M2、M8）：POSIX 上第一个 SIGTERM 之后 TERM2_DELAY 秒还没退就补发一个（stop_path 记
+terminate2），到 kill 的时刻不变；stderr 里「Will reconnect」的次数随 stop_facts 进 stream_break。文件末尾两条
+用本机真 ffmpeg 对只监听 127.0.0.1 的假 CDN（tests/fake_flv_cdn.py），没有 ffmpeg 就跳过。
 """
 import asyncio
 import functools
@@ -39,6 +43,8 @@ def fake(monkeypatch):
     """造一个音频源，命令换成假 ffmpeg；看门狗调到 1 秒。"""
     monkeypatch.setattr(audio, "find_ffmpeg", lambda: "ffmpeg")
     monkeypatch.setattr(FFmpegAudioSource, "STALL_SEC", 1.0)
+    # 命令换成了假 ffmpeg：别为它去探测 PATH 上的真 ffmpeg（M8 的探测，见 tests/test_ffmpeg_command.py）
+    monkeypatch.setattr(audio, "_probed", {"ffmpeg": {"tagged": False, "version": None}})
 
     def make(mode, *args):
         src = FFmpegAudioSource("file:///dev/null")
@@ -274,7 +280,9 @@ def test_two_concurrent_stops_share_one_set_of_signals(fake):
         return src._closer
 
     closer = run(go())
-    assert calls == ["term"]
+    # 一个收尾任务、一组信号：假进程不理 SIGTERM，所以 0.5 秒后补发了第二个（M2，2026-10-22；以前这里是
+    # ["term"]，只发一个）。两个调用方各起一组的话会是四个
+    assert calls == ["term", "term"]
     assert closer.done() and src.proc.returncode is not None
     assert src.stop_facts()["stop_path"] in ("kill", "kill+close")
 
@@ -316,6 +324,8 @@ def test_urgent_limits_fit_inside_the_stop_grace():
     assert s.URGENT_TERM_GRACE <= 0.5
     assert (s.URGENT_EXIT_GRACE + s.URGENT_TERM_GRACE + s.URGENT_KILL_GRACE + s.URGENT_CLOSE_GRACE
             < Pipeline.STOP_GRACE_SEC - 1.0)
+    # 第二个 SIGTERM 落在 TERM 那一步里面：到 kill 的时刻和以前一样，整条收尾的上限不变（M2）
+    assert 0 < s.TERM2_DELAY < s.TERM_GRACE and 0 < s.URGENT_TERM2_DELAY < s.URGENT_TERM_GRACE
 
 
 def test_a_process_that_exits_on_its_own_is_just_reaped(fake):
@@ -447,6 +457,7 @@ def test_a_10_18_like_sequence_writes_every_break_and_keeps_going(monkeypatch, t
         transcribe=lambda pcm: SimpleNamespace(text="hola", raw_text="hola", language="es",
                                                rejected=[])))
     monkeypatch.setattr(audio, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(audio, "_probed", {"ffmpeg": {"tagged": False, "version": None}})
     monkeypatch.setattr(FFmpegAudioSource, "STALL_SEC", 1.0)
     script = [("eof", 192000), ("exit_now", 0), ("eof", 64000), ("probe_flush", 140000)]
     spawned = []
@@ -487,3 +498,291 @@ def test_a_10_18_like_sequence_writes_every_break_and_keeps_going(monkeypatch, t
     assert of_type(rows, "session_end")[0]["reason"] == "offline"
     assert spawned == ["eof", "exit_now", "eof", "probe_flush"]
 
+
+
+# ---- M2：收尾补发第二个 SIGTERM（2026-10-22）----------------------------------------------------------
+# ffmpeg 开始转码之后，要收到第二个信号才会打断阻塞中的读；单个 SIGTERM 不理，以前每次异常停流都固定多等
+# 5 秒才被强杀（现网 28 次非用户停流全部走到 kill）。下面的假进程照这个样子写：第一个 SIGTERM 吐出攒着的
+# N1 字节、接着卡住；第二个 SIGTERM 再吐 N2 字节后退出（退出码 255，和真 ffmpeg 一样）。
+
+TWO_SIGNAL_FAKE = r"""
+import os, signal, sys, time
+n1, n2 = int(sys.argv[1]), int(sys.argv[2])
+terms = []
+def write_all(data):
+    view = memoryview(data)
+    while view:
+        k = os.write(1, view[:65536])
+        view = view[k:]
+def on_term(_sig, _frame):
+    terms.append(1)
+    if len(terms) == 1:
+        write_all(b"\x02" * n1)
+    else:
+        write_all(b"\x04" * n2)
+        os._exit(255)
+signal.signal(signal.SIGTERM, on_term)
+for _ in range(5):
+    write_all(b"\x01" * 3200)
+    time.sleep(0.1)
+while True:
+    time.sleep(3600)
+"""
+N1, N2 = 20 * FRAME_BYTES, 10 * FRAME_BYTES
+
+
+def two_signal_source(fake):
+    src = fake("stream")
+    src.command = lambda _ff: [sys.executable, "-I", "-c", TWO_SIGNAL_FAKE, str(N1), str(N2)]
+    return src
+
+
+def record_signals(src):
+    """记下发出的 terminate / kill 和时刻（monotonic）。"""
+    sent = []
+    real_spawn = src._spawn
+
+    async def spawn(cmd):
+        proc = await real_spawn(cmd)
+        for name in ("terminate", "kill"):
+            real = getattr(proc, name)
+
+            def send(name=name, real=real):
+                sent.append((name, time.monotonic()))
+                real()
+            setattr(proc, name, send)
+        return proc
+
+    src._spawn = spawn
+    return sent
+
+
+@POSIX_ONLY
+def test_a_second_sigterm_half_a_second_later_stops_it_and_keeps_the_tail(fake):
+    """看门狗到点后发 SIGTERM，0.5 秒还没退就补一个；补发之后 frames() 接着读，两次吐出的音频全部交出去
+    （CLAUDE.md 第六条），收尾不到 1 秒（以前要等满 TERM_GRACE 5 秒再 kill，第二次吐的那截也拿不到）。"""
+    src = two_signal_source(fake)
+    sent = record_signals(src)
+
+    async def go():
+        n, tail = await consume(src)
+        await src.stop()
+        return n, tail
+
+    n, tail = run(go())
+    assert [name for name, _t in sent] == ["terminate", "terminate"]
+    gap = sent[1][1] - sent[0][1]
+    assert FFmpegAudioSource.TERM2_DELAY - 0.05 <= gap < FFmpegAudioSource.TERM2_DELAY + 0.4
+    facts = src.stop_facts()
+    assert facts["stop_path"] == "terminate2" and facts["stop_ms"] < 1000
+    assert facts["tail_bytes"] == N1 + N2 and "tail_dropped_bytes" not in facts
+    assert tail == (N1 + N2) // FRAME_BYTES and n == 5 + tail
+    assert src.proc.returncode == 255
+
+
+@POSIX_ONLY
+def test_without_the_second_signal_it_waits_for_kill_as_before(fake, monkeypatch):
+    """Windows 上不补发（terminate 就是 TerminateProcess）。用 SECOND_SIGTERM=False 在 POSIX 上走这条：只有
+    一个 SIGTERM，到 TERM_GRACE 才 kill，第二截音频没有——也就是改动前的样子。"""
+    monkeypatch.setattr(audio, "SECOND_SIGTERM", False)
+    monkeypatch.setattr(FFmpegAudioSource, "TERM_GRACE", 1.0)
+    src = two_signal_source(fake)
+    sent = record_signals(src)
+
+    async def go():
+        await consume(src)
+        await src.stop()
+
+    run(go())
+    assert [name for name, _t in sent] == ["terminate", "kill"]
+    assert sent[1][1] - sent[0][1] >= 1.0 - 0.05
+    facts = src.stop_facts()
+    assert facts["stop_path"] == "kill" and facts["tail_bytes"] == N1
+
+
+@POSIX_ONLY
+def test_the_urgent_path_sends_the_second_signal_sooner(fake):
+    """停止 / 换主播（reader 被取消）：第二个 SIGTERM 在 URGENT_TERM2_DELAY 发，整条路径仍在 STOP_GRACE 之内；
+    取消路径上读到的音频交不出去，照样计数（tail_dropped_bytes），不静默丢。"""
+    from app.pipeline import Pipeline
+
+    src = two_signal_source(fake)
+    sent = record_signals(src)
+
+    async def go():
+        got = []
+
+        async def reader():
+            async for _ in src.frames():
+                got.append(1)
+        task = asyncio.ensure_future(reader())
+        while len(got) < 2:
+            await asyncio.sleep(0.02)
+        t0 = time.monotonic()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await src.stop(urgent=True)
+        return time.monotonic() - t0
+
+    sec = run(go())
+    assert sec < Pipeline.STOP_GRACE_SEC - 0.5
+    assert [name for name, _t in sent] == ["terminate", "terminate"]
+    assert sent[1][1] - sent[0][1] < FFmpegAudioSource.URGENT_TERM_GRACE
+    facts = src.stop_facts()
+    assert facts["stop_path"] == "terminate2" and facts["stop_urgent"] is True
+    # 取消之后读到的都算收尾吐出的：两次信号吐的 N1 + N2，加上取消时还在路上的几块
+    assert facts["tail_dropped_bytes"] == facts["tail_bytes"] >= N1 + N2
+
+
+@POSIX_ONLY
+def test_a_process_that_already_exited_gets_no_second_signal(fake, monkeypatch):
+    """进程已经退了、只是 wait() 还没返回（暂停的管道没关）：不补发，stop_path 不记 terminate2，往下照旧。"""
+    for name, sec in (("TERM_GRACE", 1.0), ("KILL_GRACE", 0.3), ("CLOSE_GRACE", 0.3)):
+        monkeypatch.setattr(FFmpegAudioSource, name, sec)
+    src = fake("term_exit")                      # 收到 SIGTERM 立刻退出
+    sent = record_signals(src)
+    recording_spawn = src._spawn
+
+    async def spawn(cmd):
+        proc = await recording_spawn(cmd)
+        # 进程退了也不返回的 wait()：3.12、3.13.5 上管道没关时就是这样（见文件头）
+        proc.wait = lambda: asyncio.get_running_loop().create_future()
+        return proc
+
+    src._spawn = spawn
+
+    async def go():
+        await consume(src, limit=5)
+        await src.stop()
+
+    run(go())
+    assert src.proc.returncode is not None
+    assert [name for name, _t in sent] == ["terminate", "kill"]
+    assert "terminate2" not in src.stop_facts()["stop_path"]
+
+
+# ---- M8：stderr 里的「Will reconnect」计数，尾巴只收 error 级 -------------------------------------------
+
+STDERR_FAKE = r"""
+import os, sys
+for line in sys.argv[1:]:
+    os.write(2, (line + "\n").encode())
+os.write(1, b"\x03" * 32000)
+"""
+
+
+def stderr_source(fake, lines):
+    src = fake("eof")
+    src.command = lambda _ff: [sys.executable, "-I", "-c", STDERR_FAKE] + list(lines)
+    return src
+
+
+def old_stop_facts(src):
+    """9fa26b6 的 stop_facts() 原样：没有内部重连时新的输出必须和它逐字节相同。"""
+    info = src.stop_info
+    out = {"stop_path": info.get("path"), "stop_ms": info.get("stop_ms"),
+           "tail_bytes": src.tail_bytes,
+           "tail_sec": round(src.tail_bytes / float(audio.BYTES_PER_SEC), 2)}
+    if src.tail_dropped_bytes:
+        out["tail_dropped_bytes"] = src.tail_dropped_bytes
+    if info.get("urgent"):
+        out["stop_urgent"] = True
+    return out
+
+
+def test_stop_facts_carry_ffmpeg_reconnects_only_when_there_were_some(fake):
+    import json
+
+    tagged = ["[http @ 0x1] [error] Stream ends prematurely at 5, should be 18446744073709551615",
+              "[http @ 0x1] [warning] Will reconnect at 5 in 0 second(s), error=End of file.",
+              "    Last message repeated 1 times",
+              "[aac @ 0x2] [warning] Queue input is backward in time",
+              "[in#0/hls @ 0x3] [error] Error during demuxing: Input/output error"]
+    src = stderr_source(fake, tagged)
+
+    async def go(s):
+        await consume(s)
+        await s.stop()
+
+    run(go(src))
+    facts = src.stop_facts()
+    assert facts["ffmpeg_reconnects"] == 2
+    assert list(facts)[-1] == "ffmpeg_reconnects"             # 新键追加在最后，前面不动
+    assert src.stderr_tail() == ("[http @ 0x1] Stream ends prematurely at 5, should be "
+                                 "18446744073709551615 | [in#0/hls @ 0x3] Error during demuxing: "
+                                 "Input/output error")
+    quiet = stderr_source(fake, [x.replace(" [error]", "") for x in tagged if "[warning]" not in x
+                                 and "repeated" not in x])
+    run(go(quiet))
+    assert quiet.ffmpeg_reconnects == 0
+    assert json.dumps(quiet.stop_facts()) == json.dumps(old_stop_facts(quiet))
+    assert quiet.stderr_tail() == src.stderr_tail()
+
+
+# ---- 真 ffmpeg 对假 CDN（只监听 127.0.0.1，tests/fake_flv_cdn.py）：读卡住时收尾不到 1 秒 ----------------
+
+FFMPEG = audio.find_ffmpeg()
+NEEDS_FFMPEG = pytest.mark.skipif(FFMPEG is None or sys.platform == "win32",
+                                  reason="要本机的 ffmpeg 和 POSIX 信号")
+
+
+@pytest.fixture(scope="module")
+def cdn(tmp_path_factory):
+    if FFMPEG is None or sys.platform == "win32":
+        pytest.skip("要本机的 ffmpeg 和 POSIX 信号")
+    from tests import fake_flv_cdn
+
+    d = tmp_path_factory.mktemp("flv")
+    av = fake_flv_cdn.make_flv(FFMPEG, d / "av.flv", 12, video=True).read_bytes()
+    aonly = fake_flv_cdn.make_flv(FFMPEG, d / "aonly_claims.flv", 12, video=False,
+                                  claims_video=True).read_bytes()
+    with fake_flv_cdn.FakeCDN({"live/av.flv": av, "live/aonly_claims.flv": aonly}) as server:
+        yield server
+
+
+@pytest.fixture
+def real(monkeypatch):
+    """真 ffmpeg：看门狗调到 1.5 秒；不继承开发机上的 TLT_FFMPEG_LEGACY。"""
+    monkeypatch.delenv("TLT_FFMPEG_LEGACY", raising=False)
+    monkeypatch.setattr(audio, "FFMPEG_LEGACY", False)
+    monkeypatch.setattr(audio, "_probed", {})
+    monkeypatch.setattr(FFmpegAudioSource, "STALL_SEC", 1.5)
+
+
+async def consume_and_stop(src):
+    n, tail = await consume(src)
+    await src.stop()
+    return n, tail
+
+
+@NEEDS_FFMPEG
+def test_a_stalled_cdn_read_stops_in_under_a_second(cdn, real):
+    """M2：ffmpeg 已经在转码、CDN 不再发数据但连接开着（半开）。看门狗到点后收尾，补发的第二个 SIGTERM
+    打断阻塞的读：stop_ms 不到 1 秒（改动前这里固定走到 kill，约 5 秒）。"""
+    src = FFmpegAudioSource(cdn.url("live/av.flv", burst=2, stall=3))
+    n, _tail = run(consume_and_stop(src))
+    facts = src.stop_facts()
+    assert src.stalled is True and n >= 25                  # 收到了 3 秒左右的音频才卡住
+    assert facts["stop_path"] == "terminate2"
+    assert facts["stop_ms"] < 1000
+
+
+@NEEDS_FFMPEG
+def test_audio_held_in_the_probe_stage_comes_out_with_either_signal_count(cdn, real, monkeypatch):
+    """M2 + 第六条：流头说有视频、其实只有音频，CDN 发了 2 秒（不到 -analyzeduration 的 3 秒）就卡住。
+    ffmpeg 还在探测、一帧没出；SIGTERM 让它把攒着的约 2 秒吐出来。补发第二个之后吐出的不比只发一个少，
+    收尾却不用等到 kill。"""
+    def round_(second):
+        monkeypatch.setattr(audio, "SECOND_SIGTERM", second)
+        monkeypatch.setattr(FFmpegAudioSource, "TERM_GRACE", 5.0 if second else 1.5)
+        src = FFmpegAudioSource(cdn.url("live/aonly_claims.flv", burst=2, stall=2))
+        n, tail = run(consume_and_stop(src))
+        return src, n, tail
+
+    two, n2, tail2 = round_(True)
+    one, n1, tail1 = round_(False)
+    assert n2 == tail2 and n1 == tail1                      # 收尾之前一帧都没有：全是收尾时吐出的
+    assert two.stop_facts()["tail_sec"] >= 1.5
+    assert two.tail_bytes >= one.tail_bytes
+    assert two.stop_facts()["stop_ms"] < 1000
+    assert one.stop_facts()["stop_path"] == "kill"
