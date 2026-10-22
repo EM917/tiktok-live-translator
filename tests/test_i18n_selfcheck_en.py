@@ -142,6 +142,13 @@ def _asr(mp, tmp_path):
             rows.append(run(selfcheck.check_asr(args)))
     note["text"] = NOTE                             # 装 GPU 组件放弃过：给手动安装的命令
     rows.append(run(selfcheck.check_asr(args)))
+    # I10：Apple 芯片上跑着 Intel 版 Python（Rosetta）：apple_silicon 为假，单独一句加换 Python 的步骤
+    mp.setattr(hwdetect, "detect", lambda: {"apple_silicon": False, "rosetta": True})
+    for darwin in (True, False):
+        with mp.context() as other_os:              # 只换 python_switch_steps 看到的平台
+            other_os.setattr(selfcheck, "python_switch_steps",
+                             lambda darwin=darwin, real=selfcheck.python_switch_steps: real(darwin))
+            rows.append(run(selfcheck.check_asr(args)))
     return rows
 
 
@@ -423,6 +430,58 @@ def test_comments_install_and_update_commands(monkeypatch, tmp_path):
     assert i18n.text(outdated["detail"], i18n.EN) == (
         "The comments component, TikTokLive 7.0.0, is older than 7.0.1. It can’t connect when "
         "the comment service uses its backup route.")
+
+
+# I10：换 Python 的照做步骤。macOS 上多一句「完全磁盘访问权限」要给新的 Python 重新授权
+SWITCH_ZH = ("从 python.org 下载安装 Python 3.10 或更新版本；装好之后完全退出程序，删掉程序文件夹里的 "
+             ".venv 文件夹，再重新打开程序，它会用新的 Python 重新安装运行组件（约 1.4 GB，需要联网）")
+SWITCH_EN = ("Install Python 3.10 or later from python.org. Then quit the app completely, delete the "
+             ".venv folder in the app folder, and open the app again. It reinstalls its components "
+             "with the new Python (about 1.4 GB, needs an internet connection).")
+FDA_ZH = ("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次，路径和步骤见「浏览器登录态」"
+          "那一行；不加的话，TikTok 要求登录才给流地址的直播间拿不到流")
+FDA_EN = (" After switching, add the new Python to Full Disk Access once more. The Browser Login row "
+          "shows the path and steps. Without it, the app can’t get the stream for live streams where "
+          "TikTok provides the stream URL only to signed-in viewers.")
+
+
+@pytest.mark.parametrize("darwin", [True, False], ids=["macos", "windows"])
+def test_python_switch_steps_read_in_both_languages(darwin):
+    steps = selfcheck.python_switch_steps(darwin)
+    assert steps == SWITCH_ZH + (FDA_ZH if darwin else "")
+    assert i18n.text(steps, i18n.EN) == SWITCH_EN + (FDA_EN if darwin else "")
+
+
+def test_the_python_39_comments_row_says_how_to_switch(monkeypatch, tmp_path):
+    """I10：3.9 上弹幕那一行以前只说「不可用」。现在给照做的步骤：装新版、完全退出、删 .venv、重开，
+    约 1.4 GB；macOS 上再提醒给新的 Python 重新授「完全磁盘访问权限」。"""
+    rows = _rows("comments", monkeypatch, tmp_path)
+    row = next(r for r in rows if "3.9" in r["detail"])
+    steps = selfcheck.python_switch_steps()
+    assert row["fix"] == "字幕和违禁词报警不受影响。想用观众弹幕：" + steps
+    assert i18n.text(row["fix"], i18n.EN) == (
+        "Captions and banned-term alerts aren’t affected. To get comments: "
+        + i18n.text(steps, i18n.EN))
+    assert row["level"] == selfcheck.WARN
+
+
+def test_a_rosetta_python_gets_its_own_asr_row(monkeypatch, tmp_path):
+    """I10：Apple 芯片上跑着 Intel 版 Python 时，以前「语音识别」一行照样是绿的。"""
+    rows = [r for r in _rows("asr", monkeypatch, tmp_path) if "Rosetta" in r["detail"]]
+    assert len(rows) == 2
+    for row, darwin in zip(rows, (True, False)):
+        assert row["level"] == selfcheck.WARN
+        assert row["detail"] == ("这台 Mac 是 Apple 芯片，但程序在用 Intel 版的 Python（经 Rosetta 转译运行），"
+                                 "识别只能用 CPU 跑较小的模型（ct2 + large-v3-turbo（首次开播需先下载模型））"
+                                 "——慢，长时间监听容易积压")
+        assert i18n.text(row["detail"], i18n.EN) == (
+            "This Mac has Apple silicon, but the app is running on an Intel version of Python "
+            "(translated by Rosetta), so recognition can only use a smaller model on the CPU: ct2 + "
+            "large-v3-turbo (model downloads when you first click Start). It’s slow, and long "
+            "sessions tend to build a backlog.")
+        assert row["fix"] == "换成 Apple 芯片原生的 Python：" + SWITCH_ZH + (FDA_ZH if darwin else "")
+        assert i18n.text(row["fix"], i18n.EN) == (
+            "Switch to a Python built for Apple silicon. " + SWITCH_EN + (FDA_EN if darwin else ""))
 
 
 def test_the_released_model_error_from_asr_reads_as_english():

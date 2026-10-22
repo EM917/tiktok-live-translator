@@ -10,6 +10,7 @@
 import os
 import platform
 import shutil
+import subprocess
 import sys
 
 # 识别出错时唯一允许改用的 CPU 配置（见 pipeline 的识别出错处理）：上面实测锚点里
@@ -64,6 +65,23 @@ def _cuda_usable():
         return False
 
 
+def rosetta():
+    """这个 Python 进程是不是经 Rosetta 转译、跑在 Apple 芯片上（也就是 Intel 版的 Python）。
+
+    这时 platform.machine() 报 x86_64，下面的 detect() 会把这台 Mac 当成 Intel 机器：apple_silicon
+    为假、不装也用不上 mlx-whisper，识别落到 CPU 上跑较小的模型——以前屏幕上一句不提，自检照样
+    报绿（I10）。读 sysctl -n sysctl.proc_translated：1 是转译中，0 是原生；Intel Mac 上没有这个键，
+    sysctl 返回非 0，算不是。非 macOS、sysctl 跑不起来，也算不是：没有证据就不报。"""
+    if sys.platform != "darwin":
+        return False
+    try:
+        out = subprocess.run(["sysctl", "-n", "sysctl.proc_translated"],
+                             capture_output=True, text=True, timeout=5)
+    except Exception:
+        return False
+    return out.returncode == 0 and out.stdout.strip() == "1"
+
+
 def detect():
     """探测当前机器，返回一个 dict。"""
     machine = platform.machine().lower()
@@ -82,6 +100,8 @@ def detect():
         "os": {"darwin": "macOS", "win32": "Windows"}.get(sys.platform, sys.platform),
         "machine": machine,
         "apple_silicon": apple_silicon,
+        # Apple 芯片上跑着 Intel 版 Python 时为真（这时 apple_silicon 为假），自检据此给换 Python 的步骤
+        "rosetta": rosetta(),
         "has_mlx": has_mlx,
         "has_cuda": _cuda_usable(),
         "cores": os.cpu_count() or 4,
@@ -142,6 +162,8 @@ def doctor():
     print("CPU 核数 Cores  : {}".format(info["cores"]))
     print("内存 RAM        : {:.1f} GB".format(info["ram_gb"]))
     print("Apple Silicon   : {}".format("✅" if info["apple_silicon"] else "—"))
+    if info["rosetta"]:
+        print("Rosetta 转译    : ⚠️ 正在用 Intel 版 Python，识别只能用 CPU（换 Python 的步骤见启动自检「语音识别」一行）")
     print("MLX GPU 后端    : {}".format("✅ 已安装" if info["has_mlx"] else
                                         ("⚠️ 未安装（建议 pip install mlx-whisper）"
                                          if info["apple_silicon"] else "—")))

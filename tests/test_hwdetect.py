@@ -1,6 +1,14 @@
 """hwdetect.recommend：硬件→配置矩阵。核心不变量（见 recommend 的 docstring）：
 backend/model/device/compute 是联动整体，用户锁定其中一个时其余必须围绕它
-重新推导——绝不能拼出「CPU 跑 large-v3」这类会丢字幕的组合。"""
+重新推导——绝不能拼出「CPU 跑 large-v3」这类会丢字幕的组合。
+
+I10：rosetta() 读 sysctl.proc_translated（sysctl 打桩，不依赖跑测试的这台机器）。"""
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+
+from app import hwdetect
 from app.hwdetect import recommend
 
 
@@ -51,3 +59,51 @@ def test_auto_backend_without_mlx_falls_to_ct2():
     rec = recommend(_info(apple_silicon=True, has_mlx=False), backend="auto")
     assert rec["backend"] == "ct2"
     assert rec["model"] == "large-v3-turbo"   # Apple Silicon CPU 的临界实时档
+
+
+# ---- I10：Apple 芯片上跑着 Intel 版 Python（Rosetta 转译） ---------------------------------------
+
+@pytest.mark.parametrize("returncode, stdout, expected", [
+    (0, "1\n", True),          # 转译中
+    (0, "0\n", False),         # 原生
+    (1, "", False),            # Intel Mac：没有这个键，sysctl 报错
+], ids=["translated", "native", "intel-mac"])
+def test_rosetta_reads_sysctl_proc_translated(monkeypatch, returncode, stdout, expected):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(hwdetect.sys, "platform", "darwin")
+    monkeypatch.setattr(hwdetect.subprocess, "run", fake_run)
+    assert hwdetect.rosetta() is expected
+    assert calls == [["sysctl", "-n", "sysctl.proc_translated"]]
+
+
+def test_rosetta_is_false_without_evidence(monkeypatch):
+    """sysctl 跑不起来、或者根本不是 macOS：不报（没有证据就不说这台机器有问题）。"""
+    def boom(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 5)
+
+    monkeypatch.setattr(hwdetect.subprocess, "run", boom)
+    monkeypatch.setattr(hwdetect.sys, "platform", "darwin")
+    assert hwdetect.rosetta() is False
+    called = []
+    monkeypatch.setattr(hwdetect.subprocess, "run", lambda cmd, **kw: called.append(cmd))
+    for other in ("win32", "linux"):
+        monkeypatch.setattr(hwdetect.sys, "platform", other)
+        assert hwdetect.rosetta() is False
+    assert called == []
+
+
+def test_detect_reports_rosetta_so_the_startup_check_can_say_so(monkeypatch):
+    """转译中 platform.machine() 报 x86_64，apple_silicon 为假；rosetta 这一项单独给出来，
+    自检「语音识别」一行据此给换 Python 的步骤（selfcheck.check_asr）。"""
+    monkeypatch.setattr(hwdetect, "rosetta", lambda: True)
+    monkeypatch.setattr(hwdetect, "_cuda_usable", lambda: False)
+    info = hwdetect.detect()
+    assert info["rosetta"] is True
+    # 推荐配置照旧按探测到的硬件推（Intel 路径的 CPU 小模型），不因为这一项改变
+    rec = recommend(dict(info, apple_silicon=False, has_mlx=False, cores=8, ram_gb=16.0))
+    assert (rec["backend"], rec["device"]) == ("ct2", "cpu") and rec["model"] in ("small", "base")
