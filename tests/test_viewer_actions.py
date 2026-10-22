@@ -16,6 +16,7 @@ import pytest
 
 from app import pipeline as pipeline_mod
 from app import settings as settings_mod
+from app import viewer_share as viewer_share_mod
 from app.pipeline import Pipeline
 from tests.helpers import run
 
@@ -212,3 +213,138 @@ def test_the_audit_event_is_still_attempted_when_retranslate_itself_blows_up(pl)
         run(coro)
     assert ("viewer_action", "retranslate", 3, "9.9.9.9") in audit.records
     assert pl._viewer_action_pending == 0          # 计数仍然要还回去
+
+
+# ---- 识别健康不是 ok 时，手机点的重译不开始（专家审查 S7）----
+# 重译要动用强模型；本地引擎时它和识别抢同一块显存与算力。识别已经落后时再让手机点出强模型调用，
+# 落后只会更多，报警跟着更晚（CLAUDE.md 第六条）。手机上要看得到「重译失败」，不能没回音。
+def _refusals(pl, seq):
+    return [m for m in pl.server.messages
+            if m.get("type") == "caption_update" and m.get("id") == seq
+            and m.get("strong_state") == "failed"]
+
+
+@pytest.mark.parametrize("level", ["lagging", "degraded"])
+def test_a_viewer_retranslate_is_refused_while_recognition_is_behind(pl, level):
+    pl._recent[4] = {"text": "hola"}
+    audit = FakeAudit()
+    pl.audit = audit
+    pl._health_shown = (audit, level, "识别开始落后")
+    calls = []
+
+    async def fake_retranslate(seq, trigger="manual"):
+        calls.append(seq)
+
+    pl.retranslate = fake_retranslate
+    result = pl._on_viewer_action("retranslate", {"id": 4}, "192.168.1.50")
+    assert asyncio.iscoroutine(result)             # 有回音：hub 会调度它
+    run(result)
+    assert calls == []                             # 强模型一次都没碰
+    assert len(_refusals(pl, 4)) == 1              # 手机按钮标成「重译失败」
+    # trigger 是 viewer：桌面上没人点过，不冒字幕旁的提示
+    assert not any(m.get("type") == "retranslate_note" for m in pl.server.messages)
+    assert pl._viewer_action_pending == 0          # 没进排队计数
+
+
+def test_a_viewer_retranslate_goes_ahead_when_recognition_is_ok(pl):
+    pl._recent[4] = {"text": "hola"}
+    audit = FakeAudit()
+    pl.audit = audit
+    pl._health_shown = (audit, "ok", "识别已追上")
+    calls = []
+
+    async def fake_retranslate(seq, trigger="manual"):
+        calls.append((seq, trigger))
+
+    pl.retranslate = fake_retranslate
+    run(pl._on_viewer_action("retranslate", {"id": 4}, "192.168.1.50"))
+    assert calls == [(4, "viewer")]
+    assert _refusals(pl, 4) == []
+
+
+def test_a_lagging_state_left_over_from_an_earlier_session_does_not_block(pl):
+    """只认属于当前审计的那一条：上一场最后报的 lagging 不该拦住这一场。"""
+    pl._recent[4] = {"text": "hola"}
+    pl.audit = FakeAudit()
+    pl._health_shown = (FakeAudit(), "lagging", "识别开始落后")
+    calls = []
+
+    async def fake_retranslate(seq, trigger="manual"):
+        calls.append(seq)
+
+    pl.retranslate = fake_retranslate
+    run(pl._on_viewer_action("retranslate", {"id": 4}, "192.168.1.50"))
+    assert calls == [4]
+
+
+def test_no_session_means_nothing_to_protect(pl):
+    """没在监听（audit 是 None）时没有识别在跑，停播后对着留下的字幕点重译照常。"""
+    pl._recent[4] = {"text": "hola"}
+    pl.audit = None
+    pl._health_shown = (None, "lagging", "识别开始落后")
+    calls = []
+
+    async def fake_retranslate(seq, trigger="manual"):
+        calls.append(seq)
+
+    pl.retranslate = fake_retranslate
+    run(pl._on_viewer_action("retranslate", {"id": 4}, "192.168.1.50"))
+    assert calls == [4]
+
+
+def test_the_refusal_is_visible_even_when_the_queue_is_full(pl):
+    """落后时排队多半也满了：这时候也要有回音，不能被「排满了」安静吞掉。"""
+    pl._recent[4] = {"text": "hola"}
+    audit = FakeAudit()
+    pl.audit = audit
+    pl._health_shown = (audit, "degraded", "检测已降级")
+    pl._viewer_action_pending = pipeline_mod.VIEWER_RETRANSLATE_QUEUE_MAX
+    result = pl._on_viewer_action("retranslate", {"id": 4}, "192.168.1.50")
+    assert result is not None
+    run(result)
+    assert len(_refusals(pl, 4)) == 1
+    assert pl._viewer_action_pending == pipeline_mod.VIEWER_RETRANSLATE_QUEUE_MAX
+
+
+def test_a_queued_click_is_refused_at_its_turn_if_recognition_fell_behind_meanwhile(pl):
+    """排队等信号量的那几秒里识别开始落后：轮到它时再看一次，不开始重译。"""
+    for i in (1, 2):
+        pl._recent[i] = {"text": "x"}
+    audit = FakeAudit()
+    pl.audit = audit
+    pl._health_shown = (audit, "ok", "识别已追上")
+    gate = None
+    calls = []
+
+    async def fake_retranslate(seq, trigger="manual"):
+        calls.append(seq)
+        await gate.wait()
+
+    pl.retranslate = fake_retranslate
+
+    async def scenario():
+        nonlocal gate
+        gate = asyncio.Event()
+        first = asyncio.ensure_future(pl._on_viewer_action("retranslate", {"id": 1}, "1.2.3.4"))
+        await asyncio.sleep(0)
+        second = asyncio.ensure_future(pl._on_viewer_action("retranslate", {"id": 2}, "1.2.3.4"))
+        await asyncio.sleep(0.01)
+        pl._health_shown = (audit, "lagging", "识别开始落后")     # 第一条跑着的时候落后了
+        gate.set()
+        await asyncio.gather(first, second)
+
+    run(scenario())
+    assert calls == [1]                               # 已经在跑的那条不打断
+    assert len(_refusals(pl, 2)) == 1
+    assert pl._viewer_action_pending == 0
+    # 两次点击都留了痕：事后要答得出「手机点没点过」
+    assert [r[2] for r in audit.records] == [1, 2]
+
+
+def test_the_refusal_text_is_paired_and_only_states_what_happened():
+    """规则九：成对写；规则八：只写观察和能做的事，不写「可能 / 似乎 / might」。"""
+    text = viewer_share_mod.VIEWER_RETRANSLATE_PAUSED
+    assert str(text) == "识别落后时，手机上点的重译先不执行"
+    assert text.en.startswith("Retranslating from a phone is paused")
+    for word in ("可能", "似乎", "might", "maybe", "probably"):
+        assert word not in str(text) and word not in text.en

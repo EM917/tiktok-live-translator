@@ -60,6 +60,10 @@ INBOUND_BURST = 30
 INBOUND_BURST_WINDOW_SEC = 10.0
 ACTION_GAP_SEC = 3.0          # 同一观众两次「重译」之间的最短间隔
 ACTIONS_PER_MINUTE = 10       # 同一观众每分钟最多几次动作；超了静默忽略，不断开
+# 所有观众共用的「重译」令牌桶（S7）。上面两条挂在每条连接上，重连就清零：几台手机轮流重连，
+# 合计次数没有上界。这个桶挂在 hub 上，不随连接重置；超了一样静默忽略
+ACTION_BUCKET_PER_MINUTE = 20
+ACTION_BUCKET_BURST = 5
 MAX_MSG_SIZE = 4096           # 入站帧上限，超过由 aiohttp 自己断开
 WS_HEARTBEAT = 30             # 与控制面一致
 AUTH_FAIL_AUDIT_WINDOW_SEC = 10.0   # 同一 IP 的鉴权失败最多每 10 秒记一条
@@ -878,6 +882,9 @@ class ViewerHub:
         self._auth_fail = {}
         # TCP 这一层按 IP 的计数（S1）。一个 hub 一个，stop() 之后迟到的 connection_lost 也扣回这里
         self._gate = _ConnGate(log=self._log, now=self._now)
+        # 所有观众共用的「重译」令牌桶（S7）：开同看时是满的，不随连接重置
+        self._bucket = float(ACTION_BUCKET_BURST)
+        self._bucket_at = None
         # 踢人之后的兜底 abort 任务。保住引用：事件循环只弱引用任务，
         # 不保引用的会在半路被 GC 收走（同 Pipeline._spawn 那条教训）
         self._guards = set()
@@ -1355,8 +1362,12 @@ class ViewerHub:
 
     def _allow_action(self, viewer):
         """每个观众自己的节流：两次动作之间至少 ACTION_GAP_SEC，每分钟至多
-        ACTIONS_PER_MINUTE 次。超限不算错误、不记审计、不断连接——只是这次
-        点击什么都不发生，手机端按钮上的本地冷却会先一步挡住大多数这种情况。"""
+        ACTIONS_PER_MINUTE 次；再过一道所有观众共用的令牌桶（_take_shared_token）。
+        超限不算错误、不记审计、不断连接——只是这次点击什么都不发生，手机端按钮上的
+        本地冷却会先一步挡住大多数这种情况。
+
+        先看这台手机自己的两条、再取共用桶的令牌、最后才记这台手机的账：被自己的冷却
+        挡掉的点击不该白白耗掉别人的令牌，被桶挡掉的点击也不该占这台手机的冷却。"""
         now = self._now()
         if viewer.last_action is not None and (now - viewer.last_action) < ACTION_GAP_SEC:
             return False
@@ -1365,8 +1376,24 @@ class ViewerHub:
             window.popleft()
         if len(window) >= ACTIONS_PER_MINUTE:
             return False
+        if not self._take_shared_token(now):
+            return False
         viewer.last_action = now
         window.append(now)
+        return True
+
+    def _take_shared_token(self, now):
+        """所有观众共用的令牌桶（S7）：容量 ACTION_BUCKET_BURST，每分钟补
+        ACTION_BUCKET_PER_MINUTE 个。挂在 hub 上，连接断了重连不会把它补满——
+        每台手机自己的限额重连就清零，几台手机轮流重连，合计次数原来没有上界。"""
+        if self._bucket_at is not None:
+            elapsed = max(0.0, now - self._bucket_at)
+            self._bucket = min(float(ACTION_BUCKET_BURST),
+                               self._bucket + elapsed * ACTION_BUCKET_PER_MINUTE / 60.0)
+        self._bucket_at = now
+        if self._bucket < 1.0 - 1e-9:      # 浮点累加差一点点到 1 时也算 1 个
+            return False
+        self._bucket = max(0.0, self._bucket - 1.0)
         return True
 
     def _dispatch_action(self, action, payload, ip):

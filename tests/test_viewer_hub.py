@@ -1268,3 +1268,56 @@ def test_a_real_socket_that_never_authenticates_is_closed_after_about_two_second
 
     asyncio.run(scenario())
 
+
+# ---- 所有观众共用的「重译」令牌桶（专家审查 S7）----
+def test_phones_taking_turns_to_reconnect_share_one_bucket():
+    """每台手机自己的限额挂在连接上、重连就清零；共用的桶挂在 hub 上：8 台手机（或 1 台
+    重连 8 次）同一时刻各点一次，只放进 ACTION_BUCKET_BURST 次；之后每 3 秒补 1 次。"""
+    clock = {"t": 0.0}
+    calls = []
+    hub = make_hub(now=lambda: clock["t"], on_action=lambda a, p, ip: calls.append(p["id"]))
+    for i in range(8):
+        run_handshake(hub, FakeWS(first=auth(), incoming=[text({"type": "retranslate", "id": i})]))
+    assert calls == list(range(viewer_mod.ACTION_BUCKET_BURST))
+    clock["t"] += 60.0 / viewer_mod.ACTION_BUCKET_PER_MINUTE      # 3 秒：补 1 个
+    for i in range(10, 13):
+        run_handshake(hub, FakeWS(first=auth(), incoming=[text({"type": "retranslate", "id": i})]))
+    assert calls == list(range(viewer_mod.ACTION_BUCKET_BURST)) + [10]
+    clock["t"] += 3600.0                                            # 歇很久也只攒满 BURST 个
+    for i in range(20, 30):
+        run_handshake(hub, FakeWS(first=auth(), incoming=[text({"type": "retranslate", "id": i})]))
+    assert calls[-viewer_mod.ACTION_BUCKET_BURST:] == list(range(20, 20 + viewer_mod.ACTION_BUCKET_BURST))
+    assert len(calls) == 2 * viewer_mod.ACTION_BUCKET_BURST + 1
+
+
+def test_the_shared_bucket_caps_a_sustained_rate_at_twenty_a_minute(loop):
+    """持续点：每台手机各自守着 3 秒间隔、每分钟 10 次，三台手机合起来一分钟也只放进 20 次左右
+    （开头突发的 5 次 + 每 3 秒 1 次）。"""
+    clock = {"t": 0.0}
+    calls = []
+    hub = make_hub(now=lambda: clock["t"], on_action=lambda a, p, ip: calls.append(clock["t"]))
+    phones = [hub.new_viewer(FakeWS(), FakeTransport(), "10.0.0.{}".format(i)) for i in range(3)]
+    for step in range(60):                    # 60 秒，每秒一台手机点一次
+        clock["t"] = float(step)
+        hub._handle_inbound(phones[step % 3], text({"type": "retranslate", "id": step}))
+    assert len(calls) <= viewer_mod.ACTION_BUCKET_BURST + viewer_mod.ACTION_BUCKET_PER_MINUTE
+    assert len(calls) >= viewer_mod.ACTION_BUCKET_PER_MINUTE
+
+
+def test_a_click_swallowed_by_a_phones_own_cooldown_does_not_spend_a_shared_token(loop):
+    clock = {"t": 0.0}
+    calls = []
+    hub = make_hub(now=lambda: clock["t"], on_action=lambda a, p, ip: calls.append(p["id"]))
+    fast = hub.new_viewer(FakeWS(), FakeTransport(), "10.0.0.1")
+    for i in range(6):                       # 同一台手机 0 秒内连点 6 下：只有第一下算
+        hub._handle_inbound(fast, text({"type": "retranslate", "id": i}))
+    others = [hub.new_viewer(FakeWS(), FakeTransport(), "10.0.0.{}".format(i + 2))
+              for i in range(viewer_mod.ACTION_BUCKET_BURST)]
+    for i, phone in enumerate(others):
+        hub._handle_inbound(phone, text({"type": "retranslate", "id": 100 + i}))
+    # 桶里 5 个：快手机用掉 1 个，另外 4 台各 1 个，第 5 台被桶挡住
+    assert calls == [0, 100, 101, 102, 103]
+    # 被桶挡住的那台不该因此进冷却：3 秒后桶补了 1 个，它能点
+    clock["t"] += viewer_mod.ACTION_GAP_SEC
+    hub._handle_inbound(others[-1], text({"type": "retranslate", "id": 200}))
+    assert calls[-1] == 200

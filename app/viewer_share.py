@@ -10,7 +10,7 @@ self.audit / self._recent 六个稳定通道打交道——边界很干净，天
 import asyncio
 from collections import deque
 
-from .i18n import bimap, of
+from .i18n import L, bimap, of
 from .redact import strip_query
 from .settings import load_settings
 
@@ -22,6 +22,11 @@ VIEWER_STOP_TIMEOUT_SEC = 2.0    # 退出收尾时关同看的预算：不得拖
 # 用这个数上限，多出来的安静丢掉——不然一台手机连点十几下能把请求堆成一长队，
 # 而这条队伍会一直占着强模型，跟违禁词报警抢显存
 VIEWER_RETRANSLATE_QUEUE_MAX = 4
+# 识别落后时，手机点的「重译」不开始（S7）。这句话只交给 _retranslate_refused：trigger 是 viewer，
+# 桌面上不冒提示，手机靠按钮上的「重译失败」；写成对是因为它走的是界面那条路
+VIEWER_RETRANSLATE_PAUSED = L("识别落后时，手机上点的重译先不执行",
+                              "Retranslating from a phone is paused while speech recognition is "
+                              "falling behind.")
 
 
 class ViewerShareMixin:
@@ -156,15 +161,37 @@ class ViewerShareMixin:
             return None
         if seq not in self._recent:
             return None           # 程序自己都不认得这条字幕，不必往下传
+        if self._recognition_behind():
+            # 排在排队上限之前：落后时这次点击要有回音（按钮标成失败），不能被「排满了」安静吞掉
+            print("[同看] 识别落后，手机点的重译（第 {} 条）没有执行".format(seq))
+            return self._retranslate_refused(seq, "viewer", VIEWER_RETRANSLATE_PAUSED)
         if self._viewer_action_pending >= VIEWER_RETRANSLATE_QUEUE_MAX:
             return None           # 排队已经够多了，安静丢掉这次点击
         self._viewer_action_pending += 1
         return self._run_viewer_action(seq, ip)
 
+    def _recognition_behind(self):
+        """识别健康现在不是 ok（专家审查 S7）：本场审计下最后一次显示的健康等级是 lagging /
+        degraded。重译要动用强模型——本地引擎时它和识别抢同一块显存与算力，识别本来就落后，
+        再让手机点出强模型调用，落后只会更多，报警跟着更晚（CLAUDE.md 第六条）。
+
+        只认属于当前审计的那一条：上一场留下的 lagging 不算数；没在监听（audit 是 None）时
+        没有识别在跑，也不拦。中控桌面上的「重译」不走这里——那是中控自己的判断。"""
+        audit = getattr(self, "audit", None)
+        shown = getattr(self, "_health_shown", None)
+        if audit is None or not isinstance(shown, tuple) or len(shown) < 2:
+            return False
+        return shown[0] is audit and shown[1] != "ok"
+
     async def _run_viewer_action(self, seq, ip):
         try:
             self._viewer_audit("viewer_action", action="retranslate", seq=seq, ip=ip)
             async with self._viewer_action_semaphore():
+                # 排队等信号量的这几秒里识别可能开始落后：轮到时再看一次
+                if self._recognition_behind():
+                    print("[同看] 识别落后，手机点的重译（第 {} 条）没有执行".format(seq))
+                    await self._retranslate_refused(seq, "viewer", VIEWER_RETRANSLATE_PAUSED)
+                    return
                 await self.retranslate(seq, trigger="viewer")
         finally:
             self._viewer_action_pending -= 1
