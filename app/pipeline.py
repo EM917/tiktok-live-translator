@@ -4366,6 +4366,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         save_setting("translator", engine)
         # 换了引擎（重填密钥也是新建一个对象）：旧引擎的报错横幅和冷却提示不再适用
         await self._clear_engine_marks()
+        await self._settle_google_fallback(switched=True)    # 「改发 Google」那条也是
         await self._publish_engine()
         await self.run_selfcheck()
 
@@ -4459,6 +4460,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                          for env in self.ENGINE_KEY_ENV.values()}}
         self.server.config["engine"] = info
         await self.server.broadcast({"type": "engine", **info})
+        # 引擎每次换都会走到这里：翻译器已经不是 Google 了，「改发 Google」那条持续提示跟着撤
+        await self._settle_google_fallback()
 
     async def _translate_alert(self, alert_ids, context, lang=None):
         """把报警上下文翻成中文，回来后补进这一批报警（它们共用同一段上下文）。
@@ -4767,8 +4770,28 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         print("[警告] " + note)
         self.args.translator_note = note
         await self.server.broadcast({"type": "notice", "text": note})
+        if name == "google":
+            # 字幕从这一刻起发给 Google：数据去向变了，不能只在页脚闪 6 秒（专家审查 U2）。再挂一条持续提示，
+            # 文字就是上面那句；不带 session: 前缀，跨场保留（下一场还在用 Google），换了引擎才撤（见
+            # _settle_google_fallback）。改用本地引擎那一支数据没出这台电脑，照旧只发 notice。手机跟着显示
+            await self._incident(self.GOOGLE_FALLBACK_INCIDENT, "warn", note)
         await self._publish_engine()
         return new
+
+    # DeepL 额度用完、本机又没有本地模型，改发 Google 时挂的持续提示（_quota_fallback）
+    GOOGLE_FALLBACK_INCIDENT = "engine:google-fallback"
+
+    async def _settle_google_fallback(self, switched=False):
+        """撤掉「改发 Google」那条持续提示：中控在界面上成功换了引擎（switched=True，选的就是 Google
+        也撤——那是他自己选的），或者翻译器已经不是 Google。没挂着就什么都不做。"""
+        if self._incident_shown(self.GOOGLE_FALLBACK_INCIDENT) is None:
+            return
+        if not switched and getattr(getattr(self, "translator", None), "name", None) == "google":
+            return
+        try:
+            await self._incident(self.GOOGLE_FALLBACK_INCIDENT, "clear")
+        except Exception:
+            pass
 
     ENGINE_INCIDENT = "session:translation-engine"
     # 本地 Ollama 连续几次非 200 才说：单独一次 500 可能只是一时载入失败
