@@ -46,9 +46,17 @@ def _no_hardware_probe(monkeypatch):
         "backend": "ct2", "model": "small", "device": "cpu", "compute_type": "int8", "note": ""})
 
 
-def _session(monkeypatch, tmp_path):
+def _session(monkeypatch, tmp_path, clock=None):
+    """clock：用例按合成时间线喂（单调 1000 秒起、墙钟 T0 起）时传进来，这一场的观察状态就读这只钟——
+    阶段起点、场末汇总这些按「现在」算的地方和喂进去的时刻在同一条时间线上。不传就是真钟（跑真的一轮
+    拉流的用例：reader 给每帧盖的是真的 time.monotonic()）。真钟配合成时刻，算出来的数取决于机器开机
+    多久（单调时钟从开机算起）：刚开机的机器上每一跳都会多写一条兜底阶段的 stage_overrun，开机久的不写。
+    见 tests/test_coverage.py 的 _session。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path / "logs")
+    if clock is not None:
+        monkeypatch.setattr(p, "_new_stream_watch", lambda: StreamWatch(
+            p.STAGE_OTHER_SEC, mono=clock, wall=lambda: T0 + clock.t - 1000.0))
     sess = p._session_state = p._new_session_state(p.audit)
     return p, server, sess
 
@@ -117,19 +125,26 @@ def _armed(sess, mono0=1000.0):
     return watch
 
 
+def _tick(p, clock, mono, wall):
+    """统计循环在（单调 mono、墙钟 wall）这一刻跳一下：这一场的钟也走到 mono。"""
+    clock.t = mono
+    return p._stream_watch_tick(now=(mono, wall))
+
+
 def test_no_audio_appears_after_two_minutes_with_the_exact_words_and_one_audit_row(monkeypatch, tmp_path):
-    p, server, sess = _session(monkeypatch, tmp_path)
+    clock = Clock(1000.0)
+    p, server, sess = _session(monkeypatch, tmp_path, clock)
     _armed(sess)
-    run(p._stream_watch_tick(now=(1000.0 + 119, T0 + 119)))
+    run(_tick(p, clock, 1000.0 + 119, T0 + 119))
     assert "session:no_audio" not in (server.config.get("incidents") or {})
-    run(p._stream_watch_tick(now=(1000.0 + 125, T0 + 125)))
+    run(_tick(p, clock, 1000.0 + 125, T0 + 125))
     text = server.config["incidents"]["session:no_audio"]["text"]
     assert str(text) == ("已 2 分钟没收到直播音频，这段时间没有经过检测。程序还在自动重试，"
                          "可以在 TikTok 上看一眼直播是否还在进行。")
     assert i18n.render(text, EN) == ("No stream audio for 2 min. Nothing in that time was checked. "
                                      "The app keeps retrying. You can check on TikTok whether the "
                                      "stream is still live.")
-    run(p._stream_watch_tick(now=(1000.0 + 190, T0 + 190)))
+    run(_tick(p, clock, 1000.0 + 190, T0 + 190))
     assert "3 分钟" in str(server.config["incidents"]["session:no_audio"]["text"])
     rows = of_type(rows_of(p.audit.path), "no_audio")
     assert len(rows) == 1 and rows[0]["sec"] == 125.0 and rows[0]["stage"] == OTHER
@@ -138,26 +153,29 @@ def test_no_audio_appears_after_two_minutes_with_the_exact_words_and_one_audit_r
 
 def test_no_audio_shows_wall_clock_minutes_after_the_lid_was_closed(monkeypatch, tmp_path):
     """macOS 合盖 30 分钟：单调时钟只走了 2 分钟多，界面要说 30 分钟，和时钟跳变那条对得上。"""
-    p, server, sess = _session(monkeypatch, tmp_path)
+    clock = Clock(1000.0)
+    p, server, sess = _session(monkeypatch, tmp_path, clock)
     _armed(sess)
-    run(p._stream_watch_tick(now=(1000.0 + 125, T0 + 1800)))
+    run(_tick(p, clock, 1000.0 + 125, T0 + 1800))
     assert str(server.config["incidents"]["session:no_audio"]["text"]).startswith("已 30 分钟没收到")
 
 
 def test_no_audio_stays_away_while_the_network_notice_says_it_already(monkeypatch, tmp_path):
-    p, server, sess = _session(monkeypatch, tmp_path)
+    clock = Clock(1000.0)
+    p, server, sess = _session(monkeypatch, tmp_path, clock)
     _armed(sess)
     run(p._incident("session:network", "error", "x"))
-    run(p._stream_watch_tick(now=(1000.0 + 300, T0 + 300)))
+    run(_tick(p, clock, 1000.0 + 300, T0 + 300))
     assert "session:no_audio" not in server.config["incidents"]
 
 
 def test_the_first_frame_takes_the_notice_down_and_the_resume_row_says_so(monkeypatch, tmp_path):
-    p, server, sess = _session(monkeypatch, tmp_path)
+    clock = Clock(1000.0)
+    p, server, sess = _session(monkeypatch, tmp_path, clock)
     _armed(sess)
 
     async def scenario():
-        await p._stream_watch_tick(now=(1000.0 + 130, T0 + 130))
+        await _tick(p, clock, 1000.0 + 130, T0 + 130)
         sess["deaf_since"] = time.time() - 130
         p._note_stream_resumed(sess, time.time())
         await asyncio.sleep(0)
@@ -187,11 +205,12 @@ def test_the_no_audio_words_name_no_cause(tail):
 def test_no_audio_does_not_say_nothing_was_checked_when_late_tail_audio_was(monkeypatch, tmp_path):
     """10-18 那种流：每轮收尾时 ffmpeg 吐出约 6 秒、送去识别和违禁词检测。这段时间不算实时收到直播音频，
     但不能说「这段时间没有经过检测」；收到一帧实时音频后，晚到的那几秒从头算。"""
-    p, server, sess = _session(monkeypatch, tmp_path)
+    clock = Clock(1000.0)
+    p, server, sess = _session(monkeypatch, tmp_path, clock)
     watch = _armed(sess)
     for k in range(60):                                  # 一轮收尾吐出 6 秒（60 帧）
         watch.note_tail(0.1, 1030.0 + k * 0.01)
-    run(p._stream_watch_tick(now=(1000.0 + 125, T0 + 125)))
+    run(_tick(p, clock, 1000.0 + 125, T0 + 125))
     text = server.config["incidents"]["session:no_audio"]["text"]
     assert str(text) == ("已 2 分钟没有实时收到直播音频，期间只有晚到的 6 秒经过了检测。程序还在自动重试，"
                          "可以在 TikTok 上看一眼直播是否还在进行。")
@@ -316,7 +335,8 @@ def test_a_natural_end_does_not_bring_back_the_notices_it_took_down(monkeypatch,
     """直播自然结束（状态 4、等房间超时、断网放弃……）：_end_session 先撤持续提示，再等弹幕停下，最后才取消
     统计循环。中间统计循环跳一下，不能把「已 N 分钟没收到直播音频」或覆盖率那条又挂回去——它们带
     session: 前缀，会一直挂到下一场开始，和「监听已停止」摆在一起。"""
-    p, server, sess = _session(monkeypatch, tmp_path)
+    clock = Clock(1000.0)
+    p, server, sess = _session(monkeypatch, tmp_path, clock)
     watch = sess["watch"]
     if kind == "no_audio":
         key, mono = "session:no_audio", 1125.0
@@ -332,13 +352,13 @@ def test_a_natural_end_does_not_bring_back_the_notices_it_took_down(monkeypatch,
     async def go():
         p.comment_source = SlowComments()
         for t in ticks:
-            await p._stream_watch_tick(now=(t, T0 + t - 1000.0))
+            await _tick(p, clock, t, T0 + t - 1000.0)
         before = key in (server.config.get("incidents") or {})
         end = asyncio.ensure_future(p._end_session(p.audit, reason="offline"))
         for _ in range(20):
             await asyncio.sleep(0)
         cleared = key not in (server.config.get("incidents") or {})
-        await p._stream_watch_tick(now=(mono + 10, T0 + mono - 990.0))   # 等弹幕停下时跳了一下
+        await _tick(p, clock, mono + 10, T0 + mono - 990.0)   # 等弹幕停下时跳了一下
         p.comment_source.gate.set()
         await end
         return before, cleared

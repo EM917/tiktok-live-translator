@@ -74,10 +74,23 @@ def test_time_the_app_was_not_running_is_not_counted_as_missing():
 # ---- 提示、审计、角标的数字 ---------------------------------------------------------------
 
 def _session(monkeypatch, tmp_path):
+    """这一场的观察状态挂在合成的单调时钟上（返回的 clock，从 1000 秒起）。用例喂的帧、检查的时刻都是
+    这条合成时间线；_coverage_stats、场末汇总这些不带时刻、按「现在」算的地方也得读同一只钟。用真钟的话，
+    算出来的窗口取决于机器开机多久：单调时钟从开机算起，读数落在 1120–1270 秒（开机才二十来分钟的 CI
+    机器）时角标的窗口算成 2–4 分钟（PR #124 的 windows-latest 上是 4）。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path / "logs")
+    clock = Clock()
+    monkeypatch.setattr(p, "_new_stream_watch", lambda: StreamWatch(
+        p.STAGE_OTHER_SEC, mono=clock, wall=lambda: T0 + clock.t))
     sess = p._session_state = p._new_session_state(p.audit)
-    return p, server, sess
+    return p, server, sess, clock
+
+
+def _check(p, sess, clock, mono):
+    """统计循环在单调时刻 mono 跳一下：这一场的钟也走到 mono。"""
+    clock.t = mono
+    run(p._check_coverage(sess, mono))
 
 
 def _low(watch):
@@ -87,13 +100,13 @@ def _low(watch):
 
 
 def test_low_twice_raises_the_notice_and_back_above_85_takes_it_down(monkeypatch, tmp_path):
-    p, server, sess = _session(monkeypatch, tmp_path)
+    p, server, sess, clock = _session(monkeypatch, tmp_path)
     watch = sess["watch"]
     _low(watch)
     sess["break_no"] = 7
-    run(p._check_coverage(sess, 1295.0))
+    _check(p, sess, clock, 1295.0)
     assert "session:audio_rate" not in (server.config.get("incidents") or {})   # 一次不算
-    run(p._check_coverage(sess, 1300.0))
+    _check(p, sess, clock, 1300.0)
     text = server.config["incidents"]["session:audio_rate"]["text"]
     assert str(text) == "近 5 分钟只收到 30% 的直播音频，缺的部分没有经过检测。本场已中断 7 次。"
     assert i18n.render(text, EN) == ("Only 30% of stream audio arrived in the last 5 min. The missing "
@@ -102,29 +115,40 @@ def test_low_twice_raises_the_notice_and_back_above_85_takes_it_down(monkeypatch
     assert stats == {"coverage_pct": 30, "coverage_window_min": 5, "coverage_low": True, "breaks": 7}
     # 回升到 75%：还在回差里，不撤（数字跟着更新）
     feed(watch, 1300.0, 225)
-    run(p._check_coverage(sess, 1525.0))
+    _check(p, sess, clock, 1525.0)
     assert str(server.config["incidents"]["session:audio_rate"]["text"]).startswith(
         "近 5 分钟只收到 75% 的直播音频")
     feed(watch, 1525.0, 35)
-    run(p._check_coverage(sess, 1560.0))
+    _check(p, sess, clock, 1560.0)
     assert "session:audio_rate" not in server.config["incidents"]
     rows = of_type(rows_of(p.audit.path), "coverage")
     assert [r["state"] for r in rows] == ["low", "ok"]
     assert rows[0]["window_sec"] == 300.0 and rows[0]["audio_sec"] == pytest.approx(90.0)
 
 
+def test_the_badge_window_is_counted_on_the_session_clock(monkeypatch, tmp_path):
+    """角标的「近 N 分钟」由 _coverage_stats 不带时刻、按这一场的单调时钟现算：开播 4 分钟时是 4，过了
+    5 分钟是 5。数字只跟这一场走了多久有关，跟这台机器开机多久无关。"""
+    p, server, sess, clock = _session(monkeypatch, tmp_path)
+    feed(sess["watch"], 1000.0, 60)
+    _check(p, sess, clock, 1240.0)
+    assert p._coverage_stats()["coverage_window_min"] == 4
+    clock.t = 1400.0
+    assert p._coverage_stats()["coverage_window_min"] == 5
+
+
 def test_late_tail_audio_in_the_window_is_said_to_be_checked(monkeypatch, tmp_path):
     """收尾时吐出来的音频不算进分子（不是实时收到的），但送去识别和违禁词检测了：不能说「缺的部分没有
     经过检测」。窗口外的晚到音频不算。"""
-    p, server, sess = _session(monkeypatch, tmp_path)
+    p, server, sess, clock = _session(monkeypatch, tmp_path)
     watch = sess["watch"]
     _low(watch)
     sess["break_no"] = 7
     watch.note_tail(30.0, 950.0)                   # 窗口之外
     for t in (1100.0, 1150.0, 1200.0, 1250.0, 1290.0, 1295.0):
         watch.note_tail(6.0, t)                    # 每轮收尾吐出 6 秒
-    run(p._check_coverage(sess, 1295.0))
-    run(p._check_coverage(sess, 1300.0))
+    _check(p, sess, clock, 1295.0)
+    _check(p, sess, clock, 1300.0)
     text = server.config["incidents"]["session:audio_rate"]["text"]
     assert str(text) == ("近 5 分钟只实时收到 30% 的直播音频，另有晚到的 36 秒已检测，其余没有经过检测。"
                          "本场已中断 7 次。")
@@ -137,7 +161,7 @@ def test_late_tail_audio_in_the_window_is_said_to_be_checked(monkeypatch, tmp_pa
 
 
 def test_one_interruption_reads_as_one(monkeypatch, tmp_path):
-    p, server, sess = _session(monkeypatch, tmp_path)
+    p, server, sess, clock = _session(monkeypatch, tmp_path)
     text = p._coverage_text(40, 180.0, 1)
     assert str(text) == "近 3 分钟只收到 40% 的直播音频，缺的部分没有经过检测。本场已中断 1 次。"
     assert i18n.render(text, EN) == ("Only 40% of stream audio arrived in the last 3 min. The missing "
@@ -147,13 +171,13 @@ def test_one_interruption_reads_as_one(monkeypatch, tmp_path):
 @pytest.mark.parametrize("louder", ["session:network", "session:no_audio"])
 def test_a_louder_notice_wins_and_the_coverage_line_stays_away(monkeypatch, tmp_path, louder):
     """同一件事只出一条：本机连不上 TikTok、已 N 分钟没收到直播音频，都比覆盖率要紧。"""
-    p, server, sess = _session(monkeypatch, tmp_path)
+    p, server, sess, clock = _session(monkeypatch, tmp_path)
     _low(sess["watch"])
-    run(p._check_coverage(sess, 1295.0))
-    run(p._check_coverage(sess, 1300.0))
+    _check(p, sess, clock, 1295.0)
+    _check(p, sess, clock, 1300.0)
     assert "session:audio_rate" in server.config["incidents"]
     run(p._incident(louder, "warn", "x"))
-    run(p._check_coverage(sess, 1305.0))
+    _check(p, sess, clock, 1305.0)
     assert "session:audio_rate" not in server.config["incidents"]
     assert p._coverage_stats()["coverage_low"] is True          # 角标的数字照给
 
@@ -163,10 +187,10 @@ def test_a_break_no_longer_takes_the_coverage_line_down(monkeypatch, tmp_path):
     import app.audio
     from tests.test_live_stall import Silence, _round, scripted_source
 
-    p, server, sess = _session(monkeypatch, tmp_path)
+    p, server, sess, clock = _session(monkeypatch, tmp_path)
     _low(sess["watch"])
-    run(p._check_coverage(sess, 1295.0))
-    run(p._check_coverage(sess, 1300.0))
+    _check(p, sess, clock, 1295.0)
+    _check(p, sess, clock, 1300.0)
     monkeypatch.setattr(app.audio, "FFmpegAudioSource", scripted_source(live=5))
     _round(p, sess, Silence())
     assert "session:audio_rate" in server.config["incidents"]
@@ -175,7 +199,7 @@ def test_a_break_no_longer_takes_the_coverage_line_down(monkeypatch, tmp_path):
 
 
 def test_a_summary_lands_in_the_audit_every_five_minutes(monkeypatch, tmp_path):
-    p, server, sess = _session(monkeypatch, tmp_path)
+    p, server, sess, clock = _session(monkeypatch, tmp_path)
     sess["break_no"] = 3
 
     class Comments:
@@ -185,14 +209,13 @@ def test_a_summary_lands_in_the_audit_every_five_minutes(monkeypatch, tmp_path):
         _clock = staticmethod(lambda: 100.0)
 
     p.comment_source = Comments()
-    p._maybe_stream_summary(sess, 1000.0)
-    p._maybe_stream_summary(sess, 1299.0)
-    p._maybe_stream_summary(sess, 1300.0)
-    p._maybe_stream_summary(sess, 1400.0)
+    for mono in (1000.0, 1299.0, 1300.0, 1400.0):
+        clock.t = mono
+        p._maybe_stream_summary(sess, mono)
     rows = of_type(rows_of(p.audit.path), "stream_summary")
     assert len(rows) == 1
     assert rows[0]["breaks"] == 3 and rows[0]["comment_connects_hour"] == 2
-    assert "monitored_sec" in rows[0] and "coverage" in rows[0]
+    assert rows[0]["monitored_sec"] == 300.0 and "coverage" in rows[0]
 
 
 def test_the_coverage_words_name_no_cause():
