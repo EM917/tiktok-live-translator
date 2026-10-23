@@ -12,6 +12,7 @@
  *   3. 页面里的胶水（IIFE，文件末尾）：连 WebSocket、把消息交给归并函数、再渲染。node 里没有
  *      document，直接跳过。
  * 字幕的角标（翻译中不画，失败 / 拒答 / 不像译文 / 积压跳过才画）用 live-ui.js 的 liveBarChip，
+ * 新的一句等译文到了再整句换上（待译停留，同中控页底部大字幕，见 floatReduce），
  * 「约 N 秒前」用它的 captionAudioEndAt / captionAgeText，
  * 弹幕的红 / 琥珀标记用 guard.js 的 guardDecorateComment——和中控页是同一份判断，不抄第二遍。
  *
@@ -35,11 +36,12 @@ if (typeof guardDecorateComment === "undefined") {
 }
 
 var FLOAT_COMMENTS_MAX = 5;          // 窗口里最多留几条弹幕（新的在底部）
+var FLOAT_HOLD_MS = 4000;            // 新的一句最多等译文多久（同中控页 web/app.js 的 LIVE_HOLD_MS）
 
 // ---- 状态归并 -----------------------------------------------------------------------------
 
 function floatInitialState() {
-  return { caption: null, comments: [], breakTs: 0, status: "", captionSize: null,
+  return { caption: null, held: null, comments: [], breakTs: 0, status: "", captionSize: null,
            guardState: null, marked: Object.create(null), markIdx: Object.create(null) };
 }
 
@@ -68,7 +70,14 @@ function floatFindComment(state, id) {
  * 换主播（session_break）清掉字幕和弹幕，并记下那一刻：缓存里的弹幕不会随换场清空，重连回放时
  * 比这一刻老的弹幕是上一个主播的，不要。
  * nowMs：收到这条消息的时刻（毫秒，缺省是此刻）。字幕记下「这一句的声音结束于何时」（live-ui.js 的
- * captionAudioEndAt，同中控页底部大字幕）：消息带 ts 时不看 nowMs，所以回放来的那几条也算得对。 */
+ * captionAudioEndAt，同中控页底部大字幕）：消息带 ts 时不看 nowMs，所以回放来的那几条也算得对。
+ *
+ * 待译停留（专家审查 U1，用户 10-22 定的「等译文到了再一起换」，同中控页底部大字幕）：实时来的一句还在翻译
+ * （translate_state 是 pending、没有译文）时先放进 state.held，窗口里停在上一句；它的 caption_update
+ * 带来译文、或者确定不会有译文了（failed / dropped / skipped），再整句换上。以前每句先放西语、
+ * 约 0.9 秒后跳成中文。等待中又来一句就改等新的那句；从这一轮开始等算起满 FLOAT_HOLD_MS 还没结局（改等新句
+ * 不重新数），页面里的计时器调 floatReleaseHeld 照以前的样子先放原文。回放来的照旧直接显示：那是断线前已经在
+ * 屏幕上的样子。 */
 function floatReduce(state, msg, nowMs) {
   if (!msg || typeof msg !== "object") return state;
   switch (msg.type) {
@@ -84,29 +93,44 @@ function floatReduce(state, msg, nowMs) {
     case "status":
       state.status = msg.state || "";
       break;
-    case "caption":
-      state.caption = { id: msg.id, original: msg.original || "", translated: msg.translated || null,
-                        translate_state: msg.translate_state, refused: !!msg.refused,
-                        not_translation: !!msg.not_translation,
-                        audioEndAt: captionAudioEndAt(msg, typeof nowMs === "number" ? nowMs : Date.now()) };
+    case "caption": {
+      var next = { id: msg.id, original: msg.original || "", translated: msg.translated || null,
+                   translate_state: msg.translate_state, refused: !!msg.refused,
+                   not_translation: !!msg.not_translation,
+                   audioEndAt: captionAudioEndAt(msg, typeof nowMs === "number" ? nowMs : Date.now()) };
+      if (!msg.replay && next.translate_state === "pending" && !next.translated) {
+        state.held = next;
+      } else {
+        state.caption = next;
+        state.held = null;
+      }
       break;
-    case "caption_update":
+    }
+    case "caption_update": {
       // 只覆盖消息里带的键：重译的「进行中」通知不带 translated，整段照抄会把已有的译文抹掉
-      if (state.caption && state.caption.id === msg.id) {
-        var cap = state.caption;
+      var waiting = state.held && state.held.id === msg.id;
+      var cap = waiting ? state.held : (state.caption && state.caption.id === msg.id ? state.caption : null);
+      if (cap) {
         if ("translated" in msg) cap.translated = msg.translated || null;
         if ("translate_state" in msg) cap.translate_state = msg.translate_state;
         if ("refused" in msg) cap.refused = !!msg.refused;
         if ("not_translation" in msg) cap.not_translation = !!msg.not_translation;
       }
+      // 在等的那一句有了结局：整句换上。只带 strong_state 的重译进度消息不是结局，接着等
+      if (waiting && (msg.translated || (msg.translate_state && msg.translate_state !== "pending"))) {
+        state.caption = cap;
+        state.held = null;
+      }
       break;
+    }
     case "session_break":
       state.caption = null;
+      state.held = null;
       state.comments = [];
       state.breakTs = typeof msg.ts === "number" ? msg.ts : 0;
       break;
     case "history_cleared":
-      if (msg.kind === "captions") state.caption = null;
+      if (msg.kind === "captions") { state.caption = null; state.held = null; }
       else if (msg.kind === "comments") state.comments = [];
       break;
     case "comment": {
@@ -146,6 +170,16 @@ function floatReduce(state, msg, nowMs) {
     }
   }
   return state;
+}
+
+/* 等满 FLOAT_HOLD_MS 译文还没来：把在等的那一句照以前的样子放上去（原文大字，译文到了再由 caption_update
+ * 就地换成译文）。id 已经不是在等的那一句（换上了、又来了新的一句改等新的、换了场）就什么都不做，
+ * 所以页面的计时器取消不了也没关系。返回有没有换。 */
+function floatReleaseHeld(state, id) {
+  if (!state || !state.held || state.held.id !== id) return false;
+  state.caption = state.held;
+  state.held = null;
+  return true;
 }
 
 // ---- 取字 ---------------------------------------------------------------------------------
@@ -310,9 +344,27 @@ function floatRender(doc, els, state, nowMs) {
     root.style.setProperty("--f-cmt-small", s.cmtSmall + "px");
   }
 
+  // 待译停留的计时器：一轮等待（从没有在等的一句，到有一句在等）只排一个，到点时还在等的是哪一句就先放哪一句的
+  // 原文（floatReleaseHeld）。等待中又来一句改等新的那句，但截止时刻不往后推（同中控页 holdLiveBar）：句子一直
+  // 比译文来得快时（识别积压后一串句子集中到达），每来一句重数 4 秒的话，窗口会一直停在旧句。
+  // 这一轮结束了（换上了、换场、清空、hello）holdRound 就清掉，旧的计时器到点什么都不做
+  var holdRound = null;
+  function armHold(wasHeld) {
+    if (!state.held) { holdRound = null; return; }
+    if (wasHeld && holdRound) return;
+    var round = holdRound = {};
+    setTimeout(function () {
+      if (holdRound !== round || !state.held) return;
+      holdRound = null;
+      if (floatReleaseHeld(state, state.held.id)) floatRender(document, els, state);
+    }, FLOAT_HOLD_MS);
+  }
+
   function handle(msg) {
+    var wasHeld = !!state.held;
     floatReduce(state, msg);
     if (msg && (msg.type === "hello" || msg.type === "config")) applySizes();
+    armHold(wasHeld);
     floatRender(document, els, state);
   }
 
@@ -351,8 +403,9 @@ function floatRender(doc, els, state, nowMs) {
 
 /* Node 测试环境导出；浏览器里作为全局函数被上面的胶水使用 */
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { FLOAT_COMMENTS_MAX: FLOAT_COMMENTS_MAX, floatInitialState: floatInitialState,
-                     floatReduce: floatReduce, floatCaptionView: floatCaptionView,
+  module.exports = { FLOAT_COMMENTS_MAX: FLOAT_COMMENTS_MAX, FLOAT_HOLD_MS: FLOAT_HOLD_MS,
+                     floatInitialState: floatInitialState,
+                     floatReduce: floatReduce, floatReleaseHeld: floatReleaseHeld, floatCaptionView: floatCaptionView,
                      floatPlaceholder: floatPlaceholder, floatCommentView: floatCommentView,
                      floatSizes: floatSizes, floatBuildComment: floatBuildComment,
                      floatGuardCtx: floatGuardCtx, floatRender: floatRender, floatMarkClipped: floatMarkClipped,
