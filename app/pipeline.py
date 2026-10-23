@@ -4697,6 +4697,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """忘掉已经报过的引擎问题；横幅挂着的话撤掉。"""
         self._cooldown_mark = None
         self._engine_error_mark = None
+        self._failure_marks = None
         if getattr(self, "_engine_incident_up", False):
             self._engine_incident_up = False
             self._engine_rejection = None
@@ -5083,12 +5084,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             原话）+ 引用原话的横幅。不冷却、不换引擎：400 可能只是哪一句的事，402 是账务，
             换不换引擎要中控自己定；
           * 本地 Ollama 连续 ENGINE_ERROR_STREAK 次非 200：translation_engine_error +
-            引用 Ollama 原话的横幅，并重跑备模型（模型不在了会安排停止后重新下载）。
+            引用 Ollama 原话的横幅，并重跑备模型（模型不在了会安排停止后重新下载）；
+          * Claude 请求超时、连不上、回 5xx（含 529）或别的异常（引擎的 last_failure，专家审查 B7）：
+            translation_engine_error 带 kind（timeout / connect / http / other）+ 一行终端。不挂横幅：页面上
+            「连续 4 条失败」的通用横幅兜底。同一个引擎、同一场、同一种 kind 只记一次，见 _note_failure_kind。
         返回本场改用的本地引擎，没有就是 None。文字只写回应本身和能做的事，不猜原因。"""
         from .translator import BaseTranslator, engine_label
 
         if tr is not self.translator:
             return None                 # 这条翻译期间引擎已经换了：旧引擎的事不再报
+        failure = getattr(tr, "last_failure", None)
+        if isinstance(failure, dict) and failure.get("kind"):
+            # 这一次没拿到能归进上面几种规则的回应（超时、连不上、5xx）：以前 last_error 为空直接返回，5xx 又不在
+            # 任何一条规则里，审计里只有 ok=false。last_error 可能还留着更早那次的状态码，所以先看这一次的类别
+            self._note_failure_kind(tr, failure)
+            return None
         err = getattr(tr, "last_error", None)
         if not err or err[0] is None:
             return None
@@ -5182,6 +5192,39 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if hasattr(self, "_bg_tasks") and (task is None or task.done()):
                 self._provision_task = self._spawn(self._provision_then_check())
         return None
+
+    def _note_failure_kind(self, tr, failure):
+        """Claude 请求这一次失败的类别（translator 的 last_failure）：translation_engine_error 带 kind 记一条、终端
+        打一行。同一个引擎、同一场、同一种 kind 只记一次，中间成功过一次（_note_engine_ok）才会再记——和这个
+        记录类型原来的规则一致。只记类别和状态码，不猜原因（超时不等于网络慢，5xx 不说是谁的问题）。"""
+        from .translator import engine_label
+
+        kind = str(failure.get("kind"))
+        audit = getattr(self, "audit", None)
+        mark = (tr, audit)
+        marks = getattr(self, "_failure_marks", None)
+        if marks is None:
+            marks = self._failure_marks = {}
+        if marks.get(kind) == mark:
+            return
+        marks[kind] = mark
+        name = getattr(tr, "name", None)
+        status = failure.get("status")
+        model = self._model_of(tr)
+        if audit is not None:
+            audit.translation_engine_error(name, status, error=failure.get("error"), model=model,
+                                           kind=kind)
+        what = failure.get("error") or "-"
+        if kind == "timeout":
+            seen = "请求 {:g} 秒内没有完成".format(getattr(tr, "TIMEOUT", 0) or 0)  # i18n: terminal
+        elif kind == "connect":
+            seen = "请求的连接出错（{}）".format(what)  # i18n: terminal
+        elif kind == "http":
+            seen = "返回 HTTP {}".format(status)  # i18n: terminal
+        else:
+            seen = "请求出错（{}）".format(what)  # i18n: terminal
+        print("[警告] {} {}（模型 {}），这一句显示原文；同一种情况这一场不再打印".format(
+            engine_label(name), seen, model))
 
     def _note_reply(self, tr, seq, reply):
         """引擎回来的不是译文（translator.looks_like_reply）：记审计、打一行终端，这一句显示原文。
@@ -5347,6 +5390,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return
         self._cooldown_mark = None
         self._engine_error_mark = None
+        if not getattr(tr, "last_failure", None):
+            # 超时、连不上不计进 fail_streak：缓存命中时它也是 0。引擎自己还记着这一类失败（没真拿到过 200）就不算
+            # 成功过，同一种 kind 不重记（B7）
+            self._failure_marks = None
         if getattr(self, "_engine_incident_up", False):
             self._engine_incident_up = False
             self._engine_rejection = None

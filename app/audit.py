@@ -468,22 +468,29 @@ class AuditLog:
             row["queued"] = True
         self._write(row)
 
-    def translation_engine_error(self, engine, status, error=None, model=None):
+    def translation_engine_error(self, engine, status, error=None, model=None, kind=None):
         """翻译引擎的 HTTP 回应说明它这会儿用不了：本地 Ollama 连续几次非 200（没有
         这个模型、载入失败……），或远程引擎拒绝了密钥/模型（401/403/404）。translation
         记录里只有 ok=false，没有这一条就答不出「这一场的译文为什么整段是空的」。
 
         error 是 Ollama 的原话；远程引擎一般不记原话（它们的错误说明里可能带打码后的
         密钥片段），只有 Claude 的 400/402 记（说的是请求体或账务，不带密钥）。同一个引擎
-        在同一场里只记一次，中间成功过才会再记。"""
-        self._write({
+        在同一场里只记一次，中间成功过才会再记。
+
+        kind 是 Claude 请求失败的类别（专家审查 B7，见 Pipeline._note_failure_kind）：timeout / connect /
+        http（5xx，含 529）/ other。这几种没有能归进上面规则的回应：status 是 5xx 的状态码或 null，error 是
+        异常的类型名（不记异常原文）。不是 None 才写这个键：已有的几种记录逐字节不变。"""
+        row = {
             "type": "translation_engine_error",
             "at": datetime.now().isoformat(timespec="milliseconds"),
             "engine": engine,
             "model": model,
             "status": status,
             "error": (error or "")[:200] or None,
-        })
+        }
+        if kind is not None:
+            row["kind"] = str(kind)[:20]
+        self._write(row)
 
     def translation_refusal(self, seq, engine, model, category, trigger=None):
         """引擎拒绝翻译这一句（Claude：HTTP 200，stop_reason 为 refusal），按 seq 对应。
