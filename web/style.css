@@ -710,7 +710,16 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
    中文一到两行、西语一到两行的句子条高不变，短的句子上面空着。
    小字也留两行，是按 11,945 句真实长度量出来的：只留一行时，字号 34 下 12% 的西语原文折成两行（字号 48 下 34%），
    这些句子照样一句高一句矮；留两行以后，中文两行以内的句子条高 100% 相同（b1-livebar 的验证记录）。
-   超长句不截断（用户定的 D13）：三行以上的少数句子让条子临时变高，完整显示、不丢字。 */
+   超长句不截断（用户定的 D13）：三行以上的少数句子让条子临时变高，完整显示、不丢字。
+   高度封顶（#125 审查，2026-10-23）：以前条子没有上限，超长句（字号 34 时三百来字）把条顶推出窗口上沿，
+   开头几行压在顶栏底下、跑到屏幕外，读不到也滚不到（无头 Chrome 实测：1000×732、字号 34 时条顶在 −14px，
+   字号 60 时在 −1493px；顶栏 z-index 20 盖在条子上面，「停止」按钮本身还点得到）。现在条子最高到顶栏下面
+   8px：上限 = 窗口高 − 底部署名 22 − 顶栏 − 8。顶栏 600px 以上是一行 52px，600px 及以下折成两行 75px
+   （直播中满编、中英文都量过，见 --topbar-room）。超出时在条内滚动，不截断（D13 照旧）。
+   贴底：flex-direction 用 column-reverse，滚动的原点在底边——超出时一打开就停在最底下（句子的结尾、
+   西语原文、角标都看得见），往上滚看开头；换句后没往上滚过的照样停在底下，不用脚本。反向排列后用 order
+   把三块排回原来的上下顺序（大字、小字、角标），读屏仍按文档顺序念。没超出时内容照旧贴着底边排，和以前
+   逐像素一样。--live-bar-h（web/app.js syncLiveBarHeight）量到的是封顶后的高度，两栏底部的留白跟着封顶。 */
 .live-bar {
   position: fixed;
   left: 0; right: 0; bottom: 22px;
@@ -718,8 +727,15 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   text-align: center;
   background: var(--bg);
   border-top: 0.5px solid var(--separator);
-  display: flex; flex-direction: column; justify-content: flex-end;
+  display: flex; flex-direction: column-reverse; justify-content: flex-start;
   min-height: calc(var(--sub-size) * 2.7 + var(--sub-size) * 1.176 + 34px);
+  --topbar-room: 52px;
+  max-height: calc(100vh - 22px - var(--topbar-room) - 8px);
+  overflow-y: auto;
+}
+/* 顶栏在 600px 及以下折成两行（见 .topbar 那一档），给它留两行的高度 */
+@media (max-width: 600px) {
+  .live-bar { --topbar-room: 75px; }
 }
 
 /* ---------- 底部署名 ---------- */
@@ -742,6 +758,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-size: var(--sub-size);
   font-weight: 600;
   line-height: 1.35;
+  order: 3;                  /* .live-bar 是 column-reverse，从底边往上排：order 小的在下面（大字、小字、角标） */
 }
 
 .live-original {
@@ -749,6 +766,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-size: calc(var(--sub-size) * 0.42);
   line-height: 1.4;          /* 写死行高：.live-bar 的 min-height 按它给小字预留两行 */
   color: var(--text-dim);
+  order: 2;                  /* 见 .live-translated */
 }
 
 /* 大字幕下面的一小行：翻译状态角标 + 「约 N 秒前」。两样都是说明，不是字幕，字号固定不跟滑块走
@@ -758,6 +776,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .live-meta {
   display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
   gap: 4px 8px; margin-top: 6px; min-height: 18px;
+  order: 1;                  /* 见 .live-translated：最下面 */
 }
 .live-state {
   display: inline-block; padding: 0 8px; border-radius: 9px;
