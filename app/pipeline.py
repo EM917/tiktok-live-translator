@@ -5638,11 +5638,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     extra["refused"] = True
                 elif discarded:
                     extra["not_translation"] = True     # 同理：回来的不是译文，接口是通的
-                if not await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
-                                                       job["target"], extra):
-                    # 兜底：发布被拒（已有可用译文）时 strong_state 没发出去，按钮也要回到可点
-                    await self.server.broadcast({"type": "caption_update", "id": seq,
-                                                 "strong_state": "failed"})
+                # had 为假时 _publish_translation 不会因「已有可用译文」拒发（上面 had 和它的判断之间没有
+                # await），strong_state 一定跟着发出去
+                await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
+                                                job["target"], extra)
             await self._retranslate_note(seq, trigger, self._retranslate_failure_text(
                 strong, error_before, outcome, discarded, had))
         except asyncio.CancelledError:
