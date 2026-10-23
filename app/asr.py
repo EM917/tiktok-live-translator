@@ -12,9 +12,11 @@
     那个 38.9 秒是复读死循环：一个 4.5 秒的片段解码了 39 秒，生产中足以让
     音频队列溢出、丢段漏词。需要它的场景可用 --context 打开;
   * 质量过滤：压缩比过高（复读机式垃圾）或平均置信度过低（多为背景音乐
-    误识别）的段直接丢弃，宁缺毋滥。
+    误识别）的段直接丢弃，宁缺毋滥；
+  * 两处省解码的改动（生成上限、语言屏蔽）带开关、默认关，见 DECODE_TOKEN_CAP 前的说明。
 """
 import gc
+import importlib
 import math
 import os
 import re
@@ -152,7 +154,9 @@ class ASRResult:
                 「听出来了但被过滤」——这是两个完全不同的问题）；
     relabeled_from —— 主播语言设了允许列表（如 "es,en"）时，检测到的语言不在
                 列表里、整段用主语言重转过：这里留一笔被推翻的检测语言（如
-                "ko"），供审计追溯；没发生过重转时是空字符串。
+                "ko"），供审计追溯；没发生过重转时是空字符串。打开语言屏蔽
+                （MASK_LANGS_ENV）后，检测阶段就被屏蔽掉的语言也记在这里，含义
+                不变；两者靠 signals 的 calls 区分：屏蔽是 1，重转是 2。
     """
 
     text: str = ""
@@ -483,13 +487,97 @@ def _parse_language_spec(language):
     return None, tuple(codes), codes[0]
 
 
+# ---- 识别长尾里两块可以省的解码（专家审查 M6）：两个开关，默认都关 ----
+# 两项改的都是解码行为（项目规则四），所以各带一个开关、默认关：等离线配对评测做完、结果给用户看过、
+# 用户点头才打开（D17）。评测要跑模型，归规则三管，另外排期；这里只有代码和离线单测。开关只认
+# 环境变量（on / 1 / true / yes，不分大小写；没设或别的值都是关），识别器建好时读一次。
+#
+# 一、生成上限（TLT_ASR_TOKEN_CAP）。复读死循环会一直解码到上限才停：mlx-whisper 的上限叫 sample_len，
+#   不传是 n_text_ctx // 2 = 224 个 token；faster-whisper（ct2）的叫 max_new_tokens，不传时一直到 448 减去
+#   提示长度。两个参数名不一样，传错了 faster-whisper 直接报 TypeError（单测钉着）。
+#   本机审计（132 份会话日志里记过 tok 的 4,800 段，只读日志、没跑模型，2026-10-23）：tok 到 112 及以上的
+#   112 段全部因复读被丢，没有一段上屏、没有一段命中违禁词，其中 95 段停在 224；它们的识别 p50 是 6.7 秒，
+#   全部段是 2.3 秒。上屏的段 tok 最多 94，命中违禁词的最多 66。
+#   上限取 112：faster-whisper 最长的提示（热词最多 223 个 token，加 1 个 sot_prev 和 3 个起始 token）
+#   再加 112 仍在 448 以内，不会撞上它「提示加上限超过 max_length」的报错（单测钉着）。
+#   评测要看两件事：截短以后复读段的压缩比可能降到 2.4 以下，从「被丢」变成「上屏」；真话超过上限的段
+#   会被截掉尾巴，违禁词检测用的 raw_text 也跟着少。
+#
+# 二、语言屏蔽（TLT_ASR_MASK_LANGS）。主播语言设了允许列表时，现在的做法是先自动检测，检测结果不在
+#   列表里就用主语言整段重转一遍。这类段占全部段的 4%，却占识别超时的 47%（专家审查 M6）。打开后改成：
+#   先单独做一次语言检测，在允许列表里挑概率最高的语言，只解码一遍。
+#   - 代价（按 mlx-whisper 0.4.3、faster-whisper 1.2.1 的源码推的，没量过）：language=None 时两个后端
+#     本来就先为检测单独编码一次、再为解码编码一次；把检测挪到外面、把选好的语言传进去，后端就跳过
+#     自己那次检测，编码次数不变。多出来的是梅尔谱再算一遍，ct2 还要多跑一次 VAD（Silero，每段约
+#     20–90 ms，见 _YOUTUBE_OUTROS 前的实测）。所以打开之前照样要量 p50 和超时率，mlx 和 ct2/CPU 分开过闸。
+#   - 被屏蔽掉的语言照样填进 relabeled_from：asr_risk 的 relabel 标记、证据索引和审计 segment 的
+#     relabeled_from 含义都不变，不新增字段。和重转靠 signals 的 calls 区分：屏蔽是 1，重转是 2。
+#   - 和重转还有一处不同：重转一律用主语言，屏蔽用允许列表里概率最高的那个（并列时取列表里靠前的）。
+#   - 检测这一步出任何错（比如 faster-whisper 1.1 之前没有公开的 detect_language）：提示一次，这一段
+#     照旧走「先自动检测、不在列表里再重转」，识别不因此停，音频一段不少。
+DECODE_TOKEN_CAP = 112
+# faster-whisper 的 max_length 是 448；提示最长 1（sot_prev）+ 223（热词，max_length // 2 - 1）+ 3（起始）。
+# 上限再大就可能撞它的报错；mlx 不传时是 224，比这还大也没有意义
+WHISPER_MAX_LENGTH = 448
+LONGEST_PROMPT_TOKENS = 1 + (WHISPER_MAX_LENGTH // 2 - 1) + 3
+TOKEN_CAP_MAX = WHISPER_MAX_LENGTH - LONGEST_PROMPT_TOKENS
+TOKEN_CAP_ENV = "TLT_ASR_TOKEN_CAP"
+MASK_LANGS_ENV = "TLT_ASR_MASK_LANGS"
+_ON_WORDS = ("on", "1", "true", "yes")
+
+
+def _switch_on(name, environ=None):
+    """开关开着吗。只认 on / 1 / true / yes（不分大小写）；没设或别的值都是关——默认关，写错也是关。"""
+    value = (environ if environ is not None else os.environ).get(name, "")
+    return str(value).strip().lower() in _ON_WORDS
+
+
+def decode_switches(token_cap=None, mask_langs=None, environ=None):
+    """识别器要用的 (生成上限, 是否屏蔽语言)。参数是 None 的看环境变量开关；评测脚本可以直接传值：
+    token_cap 给 1..TOKEN_CAP_MAX 的整数就用这个数，给 0 是关；mask_langs 给 True / False。
+    生成上限关着时是 None。直接传的值不对就报错（只有评测代码会传，界面和设置里没有这个口子）。"""
+    if token_cap is None:
+        token_cap = DECODE_TOKEN_CAP if _switch_on(TOKEN_CAP_ENV, environ) else None
+    elif (isinstance(token_cap, bool) or not isinstance(token_cap, int)
+          or not 0 <= token_cap <= TOKEN_CAP_MAX):
+        raise ValueError("token_cap 要是 0 到 {} 的整数：{!r}".format(TOKEN_CAP_MAX, token_cap))  # i18n: terminal
+    else:
+        token_cap = token_cap or None
+    mask_langs = _switch_on(MASK_LANGS_ENV, environ) if mask_langs is None else bool(mask_langs)
+    if token_cap:
+        _say_once("[信息] 识别生成上限：每段最多解码 {} 个 token".format(token_cap))
+    if mask_langs:
+        _say_once("[信息] 识别语言屏蔽已打开：主播语言列表外的语言在检测阶段就屏蔽，不再整段重转")
+    return token_cap, mask_langs
+
+
+def _mask_to_allowed(top, probs, allowed):
+    """检测结果 top（各语言概率 probs）框进允许列表：返回 (解码用的语言, 被屏蔽掉的语言)。
+    top 本来就在列表里时原样用它，第二项是空字符串——这时解码和让后端自己检测是同一个语言。
+    不在列表里时取列表里概率最高的；并列（含都没有概率）时取列表里靠前的，主语言在第一位。"""
+    if not top:
+        raise ValueError("语言检测没有给出结果")  # i18n: terminal
+    if top in allowed:
+        return top, ""
+
+    def score(code):
+        value = probs.get(code) if isinstance(probs, dict) else None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return float("-inf")
+        return float(value)
+
+    best = max(allowed, key=score)    # max 遇到并列返回最先的那个
+    return best, top
+
+
 def create_transcriber(backend, model_size, device="auto", compute_type="auto",
                        language=None, beam_size=5, use_context=False,
-                       temperature=DEFAULT_TEMPERATURE, hotwords=None):
+                       temperature=DEFAULT_TEMPERATURE, hotwords=None,
+                       token_cap=None, mask_langs=None):
     """backend: ct2（faster-whisper，CPU/CUDA）或 mlx（Apple GPU）。auto 优先 mlx。
 
     language 支持逗号列表形式（如 "es,en"，见 _parse_language_spec）；单一语种码
-    和 "auto"/None 的行为不变。"""
+    和 "auto"/None 的行为不变。token_cap / mask_langs 见 decode_switches（默认看开关，开关默认关）。"""
     if backend == "auto":
         try:
             import mlx_whisper  # noqa: F401
@@ -498,10 +586,12 @@ def create_transcriber(backend, model_size, device="auto", compute_type="auto",
             backend = "ct2"
     if backend == "mlx":
         return MLXTranscriber(model_size, language=language, use_context=use_context,
-                              temperature=temperature, hotwords=hotwords)
+                              temperature=temperature, hotwords=hotwords,
+                              token_cap=token_cap, mask_langs=mask_langs)
     return Transcriber(model_size, device=device, compute_type=compute_type,
                        language=language, beam_size=beam_size, use_context=use_context,
-                       temperature=temperature, hotwords=hotwords)
+                       temperature=temperature, hotwords=hotwords,
+                       token_cap=token_cap, mask_langs=mask_langs)
 
 
 def _num(value):
@@ -578,6 +668,24 @@ class _FilterMixin:
                 result.windows[0]["first_call"] = first_call
         except Exception:
             result.signals, result.windows = {}, []
+
+    def _masked_language(self, audio):
+        """语言屏蔽（见 DECODE_TOKEN_CAP 前的说明）：返回 (解码用的语言, 被屏蔽掉的语言)，被屏蔽的
+        是空字符串表示检测结果本来就在允许列表里。没打开、没设允许列表时是 None，照旧让后端自己检测。
+        检测出错也是 None：提示一次，这一段走原来的「先自动检测、不在列表里再重转」，识别不停。"""
+        if not (self.mask_langs and self.allowed_langs):
+            return None
+        try:
+            top, probs = self._language_probs(audio)
+            return _mask_to_allowed(top, probs, self.allowed_langs)
+        except Exception as exc:
+            # 同一类错一个进程只说一次（出错的话多半每段都出）；消息里可能带每段不同的数，不拿它去重
+            key = "mask_langs:" + type(exc).__name__
+            if key not in _mlx_said:
+                _mlx_said.add(key)
+                print("[警告] 识别前单独做的语言检测出错（{}: {}），改回先自动检测、不在主播语言里再"
+                      "整段重转".format(type(exc).__name__, str(exc)[:120]))
+            return None
 
     def _script_outlier(self, text):
         """这段的文字系统在最近接受的字幕里一次都没出现过，且不是连着第二段同种文字。"""
@@ -665,10 +773,13 @@ class Transcriber(_FilterMixin):
 
     def __init__(self, model_size="large-v3-turbo", device="auto", compute_type="auto",
                  language=None, beam_size=5, use_context=False,
-                 temperature=DEFAULT_TEMPERATURE, hotwords=None):
+                 temperature=DEFAULT_TEMPERATURE, hotwords=None,
+                 token_cap=None, mask_langs=None):
         from faster_whisper import WhisperModel
 
         self.language, self.allowed_langs, self.primary_lang = _parse_language_spec(language)
+        # M6 的两个开关（默认关），见 DECODE_TOKEN_CAP 前的说明
+        self.token_cap, self.mask_langs = decode_switches(token_cap, mask_langs)
         self.beam_size = beam_size
         self.use_context = use_context
         self.temperature = temperature
@@ -698,6 +809,16 @@ class Transcriber(_FilterMixin):
         self.model = None
         gc.collect()      # 引用环里的模型对象要等 GC 才真正释放，换模型之前就要放干净
 
+    def _language_probs(self, audio):
+        """语言屏蔽用的检测：(检测结果, {语言: 概率})。用 faster-whisper 1.1 起公开的
+        WhisperModel.detect_language，参数和 transcribe 在 language=None 时自己检测的那一步一致：
+        同样先过默认参数的 VAD（transcribe 这里传了 vad_filter=True）、取前 30 秒、同一个阈值规则，
+        所以检测结果和让 transcribe 自己检测时是同一个。纯英文模型不检测，和 transcribe 一样当英语。"""
+        if getattr(getattr(self.model, "model", None), "is_multilingual", True) is False:
+            return "en", {"en": 1.0}
+        language, _probability, ranked = self.model.detect_language(audio=audio, vad_filter=True)
+        return language, dict(ranked or ())
+
     def transcribe(self, pcm):
         """输入 16 kHz mono s16le PCM，返回 (文本, 识别到的语言代码)。"""
         if self.model is None:
@@ -708,9 +829,17 @@ class Transcriber(_FilterMixin):
             kwargs["initial_prompt"] = self.hotwords
         elif self.use_context and self._context:
             kwargs["initial_prompt"] = self._context[-200:]
+        if self.token_cap:
+            # 生成上限（M6 开关，默认关）：ct2 的参数叫 max_new_tokens，不是 mlx 的 sample_len
+            kwargs["max_new_tokens"] = self.token_cap
+        language, relabeled_from = self.language, None
+        masked = self._masked_language(audio)
+        if masked is not None:
+            # 语言屏蔽（M6 开关，默认关）：直接用框进允许列表的语言解码，后面的重转就不会触发
+            language, relabeled_from = masked[0], masked[1] or None
         segments, info = self.model.transcribe(
             audio,
-            language=self.language,
+            language=language,
             vad_filter=True,
             beam_size=self.beam_size,
             temperature=self.temperature,
@@ -718,14 +847,14 @@ class Transcriber(_FilterMixin):
             **kwargs
         )
         segments = list(segments)
-        detected_lang, relabeled_from = info.language, None
+        detected_lang, calls = info.language, 1
         first_call = None
         # 主播语言设了允许列表（如 "es,en"）时：检测到的语言不在列表里，整段
         # 用主语言强制重转一遍——比如把误判成韩语的一段纠正回西语。这一步很少
         # 触发（只在检测跑偏时才会走到），比放一段错误语言标签的字幕流入
         # 后面的展示/翻译/脚本离群判定划算。
         if self.allowed_langs and detected_lang not in self.allowed_langs:
-            relabeled_from = detected_lang
+            relabeled_from, calls = detected_lang, 2
             first_call = {"language": detected_lang,
                           "text": " ".join(str(getattr(s, "text", "")).strip() for s in segments)}
             segments, info = self.model.transcribe(
@@ -745,7 +874,7 @@ class Transcriber(_FilterMixin):
         )
         if relabeled_from:
             result.relabeled_from = relabeled_from
-        self._attach_signals(result, segments, 2 if relabeled_from else 1, first_call)
+        self._attach_signals(result, segments, calls, first_call)
         return result
 
 
@@ -753,12 +882,15 @@ class MLXTranscriber(_FilterMixin):
     """mlx-whisper 后端：跑在 Apple Silicon GPU 上，large-v3 也能数倍实时。"""
 
     def __init__(self, model_size="large-v3", language=None, use_context=False,
-                 temperature=DEFAULT_TEMPERATURE, hotwords=None):
+                 temperature=DEFAULT_TEMPERATURE, hotwords=None,
+                 token_cap=None, mask_langs=None):
         import mlx_whisper  # 提前失败好过跑到一半失败
 
         self._mlx = mlx_whisper
         self.repo = _MLX_REPOS.get(model_size, model_size)  # 允许直接给 HF 仓库名
         self.language, self.allowed_langs, self.primary_lang = _parse_language_spec(language)
+        # M6 的两个开关（默认关），见 DECODE_TOKEN_CAP 前的说明
+        self.token_cap, self.mask_langs = decode_switches(token_cap, mask_langs)
         self.use_context = use_context
         self.temperature = temperature
         # 静态热词（商品名等）。与滚动上下文不同：它不随时间漂移，
@@ -786,6 +918,24 @@ class MLXTranscriber(_FilterMixin):
         线程之外随时调。"""
         return mlx_memory_stats()
 
+    def _language_probs(self, audio):
+        """语言屏蔽用的检测：(检测结果, {语言: 概率})。mlx-whisper 没有公开的检测入口，这里把
+        transcribe 在 language=None 时自己做的那一步按 0.4.3 的源码原样搬出来：同一个缓存的模型
+        （ModelHolder，fp16 和下面 transcribe 的调用一致）、同样的梅尔谱（补 30 秒静音、取前 30 秒）、
+        同一个 model.detect_language、同样取概率最大的。所以检测结果和让 transcribe 自己检测时是同一个。
+        用 import_module 取子模块：包里的 transcribe 这个名字是函数，不是子模块。"""
+        mx = importlib.import_module("mlx.core")
+        audio_mod = importlib.import_module("mlx_whisper.audio")
+        holder = importlib.import_module("mlx_whisper.transcribe").ModelHolder
+        model = holder.get_model(self.repo, mx.float16)
+        if not model.is_multilingual:
+            return "en", {"en": 1.0}       # 和 transcribe 一样：纯英文模型不检测
+        mel = audio_mod.log_mel_spectrogram(audio, n_mels=model.dims.n_mels,
+                                            padding=audio_mod.N_SAMPLES)
+        segment = audio_mod.pad_or_trim(mel, audio_mod.N_FRAMES, axis=-2).astype(mx.float16)
+        _, probs = model.detect_language(segment)
+        return max(probs, key=probs.get), probs
+
     def transcribe(self, pcm):
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         kwargs = {}
@@ -793,21 +943,29 @@ class MLXTranscriber(_FilterMixin):
             kwargs["initial_prompt"] = self.hotwords
         elif self.use_context and self._context:
             kwargs["initial_prompt"] = self._context[-200:]
+        if self.token_cap:
+            # 生成上限（M6 开关，默认关）：mlx 的参数叫 sample_len，经 decode_options 进 DecodingOptions
+            kwargs["sample_len"] = self.token_cap
+        language, relabeled_from = self.language, None
+        masked = self._masked_language(audio)
+        if masked is not None:
+            # 语言屏蔽（M6 开关，默认关）：直接用框进允许列表的语言解码，后面的重转就不会触发
+            language, relabeled_from = masked[0], masked[1] or None
         out = self._mlx.transcribe(
             audio,
             path_or_hf_repo=self.repo,
-            language=self.language,
+            language=language,
             temperature=self.temperature,
             condition_on_previous_text=False,
             fp16=True,
             **kwargs
         )
-        detected_lang, relabeled_from = out.get("language"), None
+        detected_lang, calls = out.get("language"), 1
         first_call = None
         # 见 Transcriber.transcribe 里的同一段说明：允许列表框住了主播语言、
         # 检测结果又不在列表里时，整段用主语言强制重转一遍再用
         if self.allowed_langs and detected_lang not in self.allowed_langs:
-            relabeled_from = detected_lang
+            relabeled_from, calls = detected_lang, 2
             first_call = {"language": detected_lang, "text": str(out.get("text") or "").strip()}
             out = self._mlx.transcribe(
                 audio,
@@ -826,6 +984,5 @@ class MLXTranscriber(_FilterMixin):
         )
         if relabeled_from:
             result.relabeled_from = relabeled_from
-        self._attach_signals(result, out.get("segments", []), 2 if relabeled_from else 1,
-                             first_call)
+        self._attach_signals(result, out.get("segments", []), calls, first_call)
         return result
