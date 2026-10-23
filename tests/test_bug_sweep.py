@@ -72,6 +72,9 @@ def _run_frames(monkeypatch, url, model=None):
         return captured["proc"]
 
     monkeypatch.setattr(audio, "find_ffmpeg", lambda: "ffmpeg")
+    # 第一次起某份 ffmpeg 之前，frames() 会先探测它一次、结果记进模块级缓存 audio._probed（2026-10-22，M8）。
+    # 换成一份这个用例自己的缓存、预先填好：不去真跑 PATH 上的 ffmpeg -version，结果也不漏到后面的用例
+    monkeypatch.setattr(audio, "_probed", {"ffmpeg": {"tagged": False, "version": None}})
     monkeypatch.setattr(audio.FFmpegAudioSource, "_spawn", fake_spawn)
     monkeypatch.setattr(audio.FFmpegAudioSource, "STALL_SEC", 0.05)
     src = audio.FFmpegAudioSource(url, denoise_model=model)

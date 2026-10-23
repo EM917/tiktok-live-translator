@@ -11,6 +11,7 @@ from collections import deque
 
 import numpy as np
 
+from . import reconnect_policy
 from .ffmpeg_bin import filter_path, find_ffmpeg
 from .i18n import L
 
@@ -22,19 +23,25 @@ BYTES_PER_SEC = SAMPLE_RATE * 2
 # ---- 拉流 ffmpeg 的参数（2026-10-22，专家审查 M1、M3、M8）----
 # 应急退回改动前的参数不改代码：启动时设 TLT_FFMPEG_LEGACY=1，这一次运行的拉流命令逐字节回到原样
 # （FLV 也开 -reconnect_streamed 1、不设 -analyzeduration、-loglevel error，也不探测），和
-# TLT_RECONNECT_V2=0 一个路数。测试要测哪一边就显式 monkeypatch 这一项或环境变量
+# TLT_RECONNECT_V2=0 一个路数。另外 TLT_RECONNECT_V2=0（重连退回 V1）时 FLV 也回到 ffmpeg 自己重连，
+# 只这一处，见 flv_exits_on_drop()。测试要测哪一边就显式 monkeypatch 这一项或环境变量
 FFMPEG_LEGACY = False
-# 只有音频的流头却声称有视频时，ffmpeg 对 FLV 默认最多分析 90 秒流时间才开始出音频（显式设了就不走这个
-# 特例）。3 秒：实测这种假流首帧 1.2 秒，正常音视频流加不加都是约 0.95 秒（asr-bench media-asr e7）
+# 不设 -analyzeduration 时用 ffmpeg 默认值：总体 5 秒，FLV 单路最多 90 秒。只有音频的流头却声称有视频时，
+# 最多要分析 90 秒流时间才开始出音频（显式设了就不走 FLV 这个特例）。3 秒：审查报告（asr-bench media-asr e7）
+# 里这种假流原参数 22 秒内 0 PCM，加了之后首帧 1.20 秒。本批在本机假 CDN 上实测（brew 9.0.1 / imageio 7.1）：
+# 这种假流首帧 1.13 / 1.14 秒；正常音视频流（flv1 10 fps）改前 2.07 秒、改后 1.06 / 1.05 秒
 ANALYZE_US = "3000000"
 # 带级别标签的日志：warning 级也打出来（才看得到「Will reconnect」），每行带 [error] / [warning]。
 # 前面的「+」不能省：不带「+」是绝对写法，会把 ffmpeg 默认开着的「重复行折叠」一起关掉（实测 brew 9.0.1、
 # imageio 7.1：level+warning 下同一行重复 42 次就打 42 行，+level+warning 照旧是一行加
-# 「Last message repeated 41 times」），stderr 尾巴就和 -loglevel error 时对不上了
+# 「Last message repeated 41 times」）。尾巴由 StderrLines 自己折回去，两种写法分拣出来一样；差在 stderr 的
+# 行数（tests/test_ffmpeg_command.py 那段坏 AAC：9.0.1 上 64 行对 180 行，7.1 上 47 行对 165 行）
 LOGLEVEL_TAGGED = "+level+warning"
 LOGLEVEL_PLAIN = "error"
 # 探测 ffmpeg 认不认 LOGLEVEL_TAGGED：-version 正常几十毫秒；放在拉流「起 ffmpeg」阶段的 10 秒预算之内
 PROBE_TIMEOUT_SEC = 5.0
+PROBE_TIMED_OUT = "timeout"         # _run_version 没有正常返回时的两种结果（不是退出码）
+PROBE_NOT_STARTED = "not_started"
 # 收尾时补发第二个 SIGTERM（M2）。Windows 的 terminate 是 TerminateProcess，直接结束进程，不用补
 SECOND_SIGTERM = sys.platform != "win32"
 
@@ -52,6 +59,17 @@ def ffmpeg_legacy(env=None):
     return bool(FFMPEG_LEGACY)
 
 
+def flv_exits_on_drop(env=None):
+    """FLV（http 渐进流）断开时让 ffmpeg 直接退出、交给程序自己重连（M1，-reconnect_streamed 0），还是像以前
+    那样在进程里自己重连。两个应急开关任一个开着都退回进程内重连：
+      * TLT_FFMPEG_LEGACY=1：M1、M3、M8 三处参数一起退回原样；
+      * TLT_RECONNECT_V2=0：只退这一处。M1 之后每断一次就是一轮结束，查流地址的次数靠 V2 的令牌桶封顶（计划
+        审查 Q5）；V1 每次重连都查、没有上限（V1Policy.take_lookup 恒为 True），退避只在一轮收满 30 秒音频时
+        清零。ffmpeg 每断一次就退出的话，FLV 每断一次就查一次，第 5 次起每次先等 30 秒
+        （tests/test_m1_lookup_budget.py 钉着 V1 的这个形状）。"""
+    return not ffmpeg_legacy(env) and reconnect_policy.v2_enabled(env)
+
+
 def is_hls(url):
     """地址的 path 以 .m3u8 结尾（HLS）。不看 query：签名参数里也可能出现这几个字。"""
     try:
@@ -62,7 +80,8 @@ def is_hls(url):
 
 
 def _run_version(ffmpeg, loglevel=None):
-    """跑一次 ffmpeg -version，返回 (退出码, 第一行)；起不来或超时是 (None, None)。"""
+    """跑一次 ffmpeg -version，返回 (结果, 第一行)。结果是退出码；没有正常返回时是 PROBE_TIMED_OUT
+    （PROBE_TIMEOUT_SEC 内没退）或 PROBE_NOT_STARTED（起不来）。第一行只在退出码 0 时有。"""
     cmd = [ffmpeg, "-hide_banner"]
     if loglevel:
         cmd += ["-loglevel", loglevel]
@@ -70,8 +89,10 @@ def _run_version(ffmpeg, loglevel=None):
     try:
         r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
                            timeout=PROBE_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        return PROBE_TIMED_OUT, None
     except (OSError, subprocess.SubprocessError, ValueError):
-        return None, None
+        return PROBE_NOT_STARTED, None
     lines = r.stdout.decode(errors="replace").splitlines() if r.returncode == 0 else []
     return r.returncode, (lines[0].strip()[:200] or None) if lines else None
 
@@ -79,16 +100,26 @@ def _run_version(ffmpeg, loglevel=None):
 def probe_ffmpeg(ffmpeg):
     """探测这份 ffmpeg（按路径缓存，一次运行只跑一次）：认不认 -loglevel +level+warning，以及
     -version 的第一行。程序优先用系统自带的 ffmpeg，版本不受控：老版本不认级别标志，带上它就整场拉不到流，
-    所以先探测、认才用。同步、会起子进程，在事件循环里要放进线程（FFmpegAudioSource.frames 就这么做）。"""
+    所以先探测、认才用。同步、会起子进程，在事件循环里要放进线程（FFmpegAudioSource.frames 就这么做）。
+
+    带级别那次没有正常返回（超时、起不来）就不再跑第二次：最坏只占 PROBE_TIMEOUT_SEC，不会把「起 ffmpeg」
+    阶段的 10 秒预算（STAGE_SPAWN_SEC）用光。退出码非零时程序本身起得来，再不带级别跑一次拿版本号。
+    终端只写看到了什么（退出码几、几秒没返回、没能启动），不下「这份 ffmpeg 不认」的结论（CLAUDE.md 第八条）。"""
     got = _probed.get(ffmpeg)
     if got is not None:
         return got
     rc, version = _run_version(ffmpeg, LOGLEVEL_TAGGED)
     tagged = rc == 0
     if not tagged:
-        _, version = _run_version(ffmpeg)
-        print("[信息] 这份 ffmpeg 不认 -loglevel {}，拉流日志照旧只记 error 级".format(
-            LOGLEVEL_TAGGED))
+        if rc == PROBE_TIMED_OUT:
+            seen = "{:g} 秒内没有返回".format(PROBE_TIMEOUT_SEC)  # i18n: terminal
+        elif rc == PROBE_NOT_STARTED:
+            seen = "没能启动"  # i18n: terminal
+        else:
+            seen = "退出码 {}".format(rc)  # i18n: terminal
+            _, version = _run_version(ffmpeg)
+        print("[信息] ffmpeg -version 带 -loglevel {} 时{}，拉流日志改用 -loglevel {}".format(
+            LOGLEVEL_TAGGED, seen, LOGLEVEL_PLAIN))
     got = {"tagged": tagged, "version": version}
     _probed[ffmpeg] = got
     return got
@@ -232,6 +263,7 @@ class FFmpegAudioSource:
     URGENT_KILL_GRACE = 0.7
     URGENT_CLOSE_GRACE = 0.3
     STDERR_GRACE = 2.0
+    STDERR_CANCEL_GRACE = 0.2
     # 收尾期间每次读最多等这么久：收尾任务做完、管道里又读不出东西，就不再等（真 ffmpeg 这时已经
     # 给了 EOF；这条是给不会给 EOF 的情形兜底，比如测试里的假进程）
     TAIL_POLL_SEC = 0.5
@@ -267,7 +299,8 @@ class FFmpegAudioSource:
         return self._stderr_lines.reconnects
 
     def command(self, ffmpeg):
-        """拉流命令。TLT_FFMPEG_LEGACY=1 时和 2026-10-22 之前逐字节相同。
+        """拉流命令。TLT_FFMPEG_LEGACY=1 时和 2026-10-22 之前逐字节相同。TLT_RECONNECT_V2=0 时只有 FLV 的
+        -reconnect_streamed 回到 1（见 flv_exits_on_drop），-analyzeduration 和日志级别照新的。
 
         * FLV（以及别的 http 渐进流，地址不一定以 .flv 结尾）关掉 ffmpeg 的内部重连（-reconnect_streamed 0，
           M1）：直播 CDN 断开后，内部重连用同一个地址连上，拿到的是从新的 FLV 头开始的一段流，ffmpeg 把它当成
@@ -286,7 +319,8 @@ class FFmpegAudioSource:
             if progressive:
                 # 输入选项，放在 -reconnect 那一组前面：-rw_timeout 的值仍然紧挨着 -i（tests/test_bug_sweep.py 钉着）
                 cmd += ["-analyzeduration", ANALYZE_US]
-            cmd += ["-reconnect", "1", "-reconnect_streamed", "0" if progressive else "1",
+            exits_on_drop = progressive and flv_exits_on_drop()
+            cmd += ["-reconnect", "1", "-reconnect_streamed", "0" if exits_on_drop else "1",
                     "-reconnect_delay_max", "10", "-rw_timeout", self.RW_TIMEOUT_US]
         cmd += ["-i", self.media_url, "-vn", "-ac", "1"]
         if self.denoise_model:
@@ -486,6 +520,9 @@ class FFmpegAudioSource:
         done, _ = await asyncio.wait({task}, timeout=self.STDERR_GRACE)
         if not done:
             task.cancel()
+            # 等它真的收住（带短上限）：_drain_stderr 的 finally 把还没写出的「Last message repeated」补进尾巴，
+            # 调用方紧接着读 stderr_tail（Pipeline._record_stream_break）就不会少这一行
+            await asyncio.wait({task}, timeout=self.STDERR_CANCEL_GRACE)
 
     def force_close(self):
         """关掉 ffmpeg 的 transport（所有管道 + 进程还在就 kill）。可重复调；收尾任务最后一步也是它。

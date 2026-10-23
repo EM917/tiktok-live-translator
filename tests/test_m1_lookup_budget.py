@@ -4,7 +4,8 @@ FLV 关掉 ffmpeg 的内部重连之后，CDN 每断一次，ffmpeg 就退出、
 「连续 3 轮都不到 30 秒就去查一次」（SHORT_ROUNDS_BEFORE_LOOKUP）因此会更常触发。计数规则不改：它防的正是
 「连上时 CDN 先灌一段缓存就断」（10-18 每轮 5.7–21.5 秒），和 M1 之后的断流形状一样；查询次数由令牌桶
 封顶（容量 6、每 3 分钟补 1 个）。这里照 Pipeline._run_session 重连循环的调用顺序，在假时钟上驱动真的
-V2Policy，把上限钉住；再钉住粘贴的直连地址短断一次不会被判成拉不到。不联网、不起 ffmpeg。
+V2Policy，把上限钉住；再钉住粘贴的直连地址短断一次不会被判成拉不到。V1（TLT_RECONNECT_V2=0）没有这个上限，
+所以 V1 时 FLV 退回 ffmpeg 自己重连，这里也钉住 V1 的形状。不联网、不起 ffmpeg。
 """
 import time
 
@@ -68,6 +69,35 @@ def test_an_hour_of_drops_never_exceeds_the_hourly_cap():
     # 桶空了之后的稳态：每 3 分钟最多一次（「每小时最多约 20 次」）
     late = [t for t in lookups if t >= lookups[0] + 1800.0]
     assert len(late) <= 1800.0 / V2Policy.LOOKUP_BUCKET[1] + 1
+
+
+def drive_v1(policy, round_sec, total_sec):
+    """V1 版的 drive()：每轮收 round_sec 秒音频后断开，round_ended → plan →（等 delay）→ 查流地址。
+    返回 (查了几次, 每次的退避秒数)。"""
+    t, lookups, delays = 0.0, 0, []
+    while t < total_sec:
+        t += round_sec
+        policy.round_ended(True, round_sec)
+        plan = policy.plan()
+        assert plan is not None and not plan.reuse           # V1 每次重连都查
+        delays.append(plan.delay)
+        t += plan.delay
+        assert policy.take_lookup()                          # 没有上限
+        lookups += 1
+    return lookups, delays
+
+
+def test_v1_looks_up_on_every_drop_which_is_why_it_keeps_ffmpegs_own_flv_reconnect():
+    """TLT_RECONNECT_V2=0（V1）时 FLV 退回 ffmpeg 在进程里自己重连（app/audio.py flv_exits_on_drop）的理由：
+    V1 每次重连都查流地址、没有令牌桶；退避只在一轮收满 30 秒音频时清零。ffmpeg 每断一次就退出的话，同样
+    每 18 秒断一次，每断一次就查一次（V2 在同样的断法下封顶，见上面两条），第 5 次起每次先等 30 秒，比进程内
+    重连的 15–27 秒没有音频还长。"""
+    lookups, delays = drive_v1(V1Policy(direct=False), round_sec=18.0, total_sec=600.0)
+    capacity, refill = V2Policy.LOOKUP_BUCKET
+    assert lookups > capacity + 600.0 / refill               # 超过 V2 十分钟的上限（9 次）
+    assert delays[:5] == [2, 4, 8, 16, 30] and set(delays[4:]) == {30}
+    hour, _ = drive_v1(V1Policy(direct=False), round_sec=18.0, total_sec=3600.0)
+    assert hour > V2Policy(direct=False, clock=Clock()).bucket.per_hour_max()   # 26
 
 
 @pytest.mark.parametrize("cls", [V2Policy, V1Policy])

@@ -529,6 +529,10 @@ while True:
     time.sleep(3600)
 """
 N1, N2 = 20 * FRAME_BYTES, 10 * FRAME_BYTES
+# 计时断言的余量（CI 高负载下也要稳）：补发前的等待只会被负载拉长、不会变短，所以下限照旧；上限都留 3 倍以上。
+# 补发两个 SIGTERM 时收尾实测约 0.5 秒（下面的假进程 502–508 ms，真 ffmpeg 532 / 540 ms），上限放到 TERM_GRACE
+# 的一半（2.5 秒）；只发一个 SIGTERM 时要等满 TERM_GRACE（5 秒）才 kill，照样超过它
+WELL_BEFORE_KILL_MS = FFmpegAudioSource.TERM_GRACE * 1000 / 2
 
 
 def two_signal_source(fake):
@@ -572,9 +576,9 @@ def test_a_second_sigterm_half_a_second_later_stops_it_and_keeps_the_tail(fake):
     n, tail = run(go())
     assert [name for name, _t in sent] == ["terminate", "terminate"]
     gap = sent[1][1] - sent[0][1]
-    assert FFmpegAudioSource.TERM2_DELAY - 0.05 <= gap < FFmpegAudioSource.TERM2_DELAY + 0.4
+    assert FFmpegAudioSource.TERM2_DELAY - 0.05 <= gap < 3 * FFmpegAudioSource.TERM2_DELAY
     facts = src.stop_facts()
-    assert facts["stop_path"] == "terminate2" and facts["stop_ms"] < 1000
+    assert facts["stop_path"] == "terminate2" and facts["stop_ms"] < WELL_BEFORE_KILL_MS
     assert facts["tail_bytes"] == N1 + N2 and "tail_dropped_bytes" not in facts
     assert tail == (N1 + N2) // FRAME_BYTES and n == 5 + tail
     assert src.proc.returncode == 255
@@ -601,11 +605,17 @@ def test_without_the_second_signal_it_waits_for_kill_as_before(fake, monkeypatch
 
 
 @POSIX_ONLY
-def test_the_urgent_path_sends_the_second_signal_sooner(fake):
-    """停止 / 换主播（reader 被取消）：第二个 SIGTERM 在 URGENT_TERM2_DELAY 发，整条路径仍在 STOP_GRACE 之内；
-    取消路径上读到的音频交不出去，照样计数（tail_dropped_bytes），不静默丢。"""
+def test_the_urgent_path_sends_the_second_signal_sooner(fake, monkeypatch):
+    """停止 / 换主播（reader 被取消）：第二个 SIGTERM 在 URGENT_TERM2_DELAY（0.15 秒）发，比正常路径的
+    TERM2_DELAY（0.5 秒）早，整条路径仍在 STOP_GRACE 之内；取消路径上读到的音频交不出去，照样计数
+    （tail_dropped_bytes），不静默丢。
+
+    URGENT_TERM_GRACE 在这里放宽到 1.5 秒：真值 0.3 秒时，补发之后只剩 0.15 秒等假进程退出，CI 高负载下 kill 会
+    抢在它前面。到 kill 的时刻是 URGENT_TERM_GRACE、和补发无关（两个上限的关系见
+    test_urgent_limits_fit_inside_the_stop_grace）；只发一个 SIGTERM 时这里仍是 terminate、kill，照样红。"""
     from app.pipeline import Pipeline
 
+    monkeypatch.setattr(FFmpegAudioSource, "URGENT_TERM_GRACE", 1.5)
     src = two_signal_source(fake)
     sent = record_signals(src)
 
@@ -627,7 +637,9 @@ def test_the_urgent_path_sends_the_second_signal_sooner(fake):
     sec = run(go())
     assert sec < Pipeline.STOP_GRACE_SEC - 0.5
     assert [name for name, _t in sent] == ["terminate", "terminate"]
-    assert sent[1][1] - sent[0][1] < FFmpegAudioSource.URGENT_TERM_GRACE
+    gap = sent[1][1] - sent[0][1]
+    # 下限不受负载影响；上限是正常路径的补发时刻，约为 URGENT_TERM2_DELAY 的 3.3 倍
+    assert FFmpegAudioSource.URGENT_TERM2_DELAY - 0.05 <= gap < FFmpegAudioSource.TERM2_DELAY
     facts = src.stop_facts()
     assert facts["stop_path"] == "terminate2" and facts["stop_urgent"] is True
     # 取消之后读到的都算收尾吐出的：两次信号吐的 N1 + N2，加上取消时还在路上的几块
@@ -719,7 +731,38 @@ def test_stop_facts_carry_ffmpeg_reconnects_only_when_there_were_some(fake):
     assert quiet.stderr_tail() == src.stderr_tail()
 
 
-# ---- 真 ffmpeg 对假 CDN（只监听 127.0.0.1，tests/fake_flv_cdn.py）：读卡住时收尾不到 1 秒 ----------------
+def test_a_stderr_reader_cut_off_after_its_grace_still_writes_the_pending_repeat(monkeypatch):
+    """stderr 过了 STDERR_GRACE 还没读完（比如管道被别的进程拿着）：取消读 stderr 的任务之后，等它收住再返回，
+    还没写出的「Last message repeated」照样进尾巴——调用方紧接着读 stderr_tail（Pipeline._record_stream_break）
+    不会少这一行。以前只 cancel 不等，这时尾巴里还没有这一行。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(FFmpegAudioSource, "STDERR_GRACE", 0.1)
+    lines = [b"[http @ 0x1] [error] Stream ends prematurely at 5\n",
+             b"[http @ 0x1] [warning] Will reconnect at 5 in 0 second(s)\n",
+             b"[http @ 0x1] [error] Stream ends prematurely at 5\n"]
+
+    class Stderr:
+        async def readline(self):
+            if lines:
+                return lines.pop(0)
+            await asyncio.sleep(3600)             # 一直不给 EOF
+
+    src = FFmpegAudioSource("file:///dev/null")
+    src.proc = SimpleNamespace(stderr=Stderr())
+
+    async def go():
+        src._stderr_task = asyncio.ensure_future(src._drain_stderr())
+        await src._finish_stderr()
+        return src.stderr_tail(), src._stderr_task.cancelled()
+
+    tail, cancelled = run(go())
+    assert cancelled is True
+    assert tail == "[http @ 0x1] Stream ends prematurely at 5 | Last message repeated 1 times"
+    assert src.ffmpeg_reconnects == 1
+
+
+# ---- 真 ffmpeg 对假 CDN（只监听 127.0.0.1，tests/fake_flv_cdn.py）：读卡住时收尾远早于 kill ----------------
 
 FFMPEG = audio.find_ffmpeg()
 NEEDS_FFMPEG = pytest.mark.skipif(FFMPEG is None or sys.platform == "win32",
@@ -742,9 +785,13 @@ def cdn(tmp_path_factory):
 
 @pytest.fixture
 def real(monkeypatch):
-    """真 ffmpeg：看门狗调到 1.5 秒；不继承开发机上的 TLT_FFMPEG_LEGACY。"""
+    """真 ffmpeg：看门狗调到 1.5 秒；不继承开发机上的 TLT_FFMPEG_LEGACY；重连显式用 V2（V1 时 FLV 回到
+    ffmpeg 自己重连，见 audio.flv_exits_on_drop）。"""
+    from app import reconnect_policy
+
     monkeypatch.delenv("TLT_FFMPEG_LEGACY", raising=False)
     monkeypatch.setattr(audio, "FFMPEG_LEGACY", False)
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", True)
     monkeypatch.setattr(audio, "_probed", {})
     monkeypatch.setattr(FFmpegAudioSource, "STALL_SEC", 1.5)
 
@@ -756,15 +803,16 @@ async def consume_and_stop(src):
 
 
 @NEEDS_FFMPEG
-def test_a_stalled_cdn_read_stops_in_under_a_second(cdn, real):
+def test_a_stalled_cdn_read_stops_well_before_the_kill(cdn, real):
     """M2：ffmpeg 已经在转码、CDN 不再发数据但连接开着（半开）。看门狗到点后收尾，补发的第二个 SIGTERM
-    打断阻塞的读：stop_ms 不到 1 秒（改动前这里固定走到 kill，约 5 秒）。"""
+    打断阻塞的读。本批实测 stop_ms 532 / 540 ms（brew 9.0.1 / imageio 7.1）；改动前这里固定走到 kill，
+    5003 / 5090 ms。上限 WELL_BEFORE_KILL_MS（2.5 秒）。"""
     src = FFmpegAudioSource(cdn.url("live/av.flv", burst=2, stall=3))
     n, _tail = run(consume_and_stop(src))
     facts = src.stop_facts()
     assert src.stalled is True and n >= 25                  # 收到了 3 秒左右的音频才卡住
     assert facts["stop_path"] == "terminate2"
-    assert facts["stop_ms"] < 1000
+    assert facts["stop_ms"] < WELL_BEFORE_KILL_MS
 
 
 @NEEDS_FFMPEG
@@ -784,5 +832,5 @@ def test_audio_held_in_the_probe_stage_comes_out_with_either_signal_count(cdn, r
     assert n2 == tail2 and n1 == tail1                      # 收尾之前一帧都没有：全是收尾时吐出的
     assert two.stop_facts()["tail_sec"] >= 1.5
     assert two.tail_bytes >= one.tail_bytes
-    assert two.stop_facts()["stop_ms"] < 1000
+    assert two.stop_facts()["stop_ms"] < WELL_BEFORE_KILL_MS   # 实测 512 / 517 ms；只发一个是 5002 / 5004
     assert one.stop_facts()["stop_path"] == "kill"

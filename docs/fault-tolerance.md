@@ -103,13 +103,20 @@ valid for about two weeks, so one capture covers a whole stream. See also
   still checked for banned terms.
 - `TLT_RECONNECT_V2=0` at startup brings back the previous reconnect rules
   (look up on every reconnect, stop after six attempts in a row with no
-  audio) for that run.
-- `TLT_FFMPEG_LEGACY=1` at startup brings back the previous ffmpeg options
-  (ffmpeg's own reconnect for FLV, no limit on stream analysis, errors-only
-  ffmpeg log) for that run. Otherwise, when the installed ffmpeg supports
-  tagged log levels, its warnings are read as well, and the number of times it
-  reconnected on its own is recorded with each stream interruption in the
-  session audit.
+  audio) for that run. FLV streams then go back to ffmpeg's own reconnect as
+  well: the previous rules look up the stream URL on every reconnect with no
+  limit, so if ffmpeg exited on every drop, every drop would mean one more
+  lookup.
+- `TLT_FFMPEG_LEGACY=1` at startup brings back the previous ffmpeg options for
+  that run: ffmpeg's own reconnect for FLV, ffmpeg's default limits for stream
+  analysis (5 s overall, up to 90 s per stream for FLV), and an errors-only
+  ffmpeg log. Otherwise, when the installed ffmpeg supports tagged log levels,
+  its warnings are read as well, and the number of times it reconnected on its
+  own is recorded with each stream interruption in the session audit.
+- How the two switches combine: `TLT_RECONNECT_V2=0` changes only how FLV
+  reconnects among the ffmpeg options and keeps the other two new options.
+  `TLT_FFMPEG_LEGACY=1` brings back all three, whichever reconnect rules are
+  in use, and does not change the reconnect rules.
 - The comment connection can go half-open: the Comments panel shows no
   warning, but no comments arrive. After 15 minutes of silence while
   connected, the app reconnects it and records that in the session audit.

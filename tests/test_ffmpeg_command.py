@@ -5,7 +5,8 @@
   M3  FLV 设 -analyzeduration 3000000：流头声称有视频、实际只有音频时，以前最多攒 90 秒流时间才出声。
   M8  先探测 ffmpeg 认不认 -loglevel +level+warning，认才用；stderr 尾巴只收 error 级、和以前逐字节相同，
       「Will reconnect」只计数。
-  TLT_FFMPEG_LEGACY=1 时三处一起回到改动前，逐字节相同。
+  TLT_FFMPEG_LEGACY=1 时三处一起回到改动前，逐字节相同。TLT_RECONNECT_V2=0（重连退回 V1）时只有 M1 退回：
+  V1 每次重连都查流地址、没有上限，FLV 每断一次就退出的话每断一次就查一次（tests/test_m1_lookup_budget.py）。
 
 前半部分是纯参数和纯文本，不起进程；后半部分用本机真 ffmpeg 对只监听 127.0.0.1 的假 CDN（tests/fake_flv_cdn.py），
 没有 ffmpeg 就跳过。不联网、不碰 TikTok。
@@ -20,7 +21,7 @@ from collections import deque
 
 import pytest
 
-from app import audio
+from app import audio, reconnect_policy
 from app.audio import BYTES_PER_SEC, FRAME_BYTES, FFmpegAudioSource, StderrLines
 from app.ffmpeg_bin import find_ffmpeg
 from tests import fake_flv_cdn
@@ -47,9 +48,12 @@ def old_command(ffmpeg, url, denoise=None):
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    """每个用例从「没探测过、没开应急开关」开始：开发机上设过 TLT_FFMPEG_LEGACY 也不影响。"""
+    """每个用例从「没探测过、没开应急开关、重连用 V2」开始：开发机上设过 TLT_FFMPEG_LEGACY、TLT_RECONNECT_V2
+    也不影响；V2 显式打开，不靠 RECONNECT_V2 的默认值（CLAUDE.md 第九条）。"""
     monkeypatch.delenv("TLT_FFMPEG_LEGACY", raising=False)
+    monkeypatch.delenv("TLT_RECONNECT_V2", raising=False)
     monkeypatch.setattr(audio, "FFMPEG_LEGACY", False)
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", True)
     monkeypatch.setattr(audio, "_probed", {})
 
 
@@ -82,10 +86,51 @@ def test_hls_keeps_the_old_reconnect_flags():
 
 @pytest.mark.parametrize("url", [FLV, FLV_NO_SUFFIX, HLS, "file:///tmp/x.flv"])
 @pytest.mark.parametrize("denoise", [None, MODEL])
-def test_legacy_switch_restores_the_old_argv_byte_for_byte(monkeypatch, url, denoise):
+@pytest.mark.parametrize("v2", [True, False])
+def test_legacy_switch_restores_the_old_argv_byte_for_byte(monkeypatch, url, denoise, v2):
+    """TLT_FFMPEG_LEGACY=1：不管重连用哪套规则，命令都和改动前逐字节相同。"""
     audio._probed["ffmpeg"] = {"tagged": True, "version": "ffmpeg version 7.1"}
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", v2)
     monkeypatch.setenv("TLT_FFMPEG_LEGACY", "1")
     assert argv(url, denoise=denoise) == old_command("ffmpeg", url, denoise)
+
+
+@pytest.mark.parametrize("how", ["env", "module"])
+@pytest.mark.parametrize("url", [FLV, FLV_NO_SUFFIX])
+def test_v1_reconnect_rules_keep_ffmpegs_own_reconnect_for_flv(monkeypatch, how, url):
+    """TLT_RECONNECT_V2=0（V1）：FLV 回到 ffmpeg 在进程里自己重连（-reconnect_streamed 1），只这一处；
+    -analyzeduration 和带级别的日志照新的。V1 每次重连都查流地址、没有上限，ffmpeg 每断一次就退出的话，FLV 每断
+    一次就查一次，第 5 次起每次先等 30 秒（tests/test_m1_lookup_budget.py 的 V1 用例）。"""
+    audio._probed["ffmpeg"] = {"tagged": True, "version": "ffmpeg version 7.1"}
+    v2 = argv(url)
+    if how == "env":
+        monkeypatch.setenv("TLT_RECONNECT_V2", "0")
+    else:
+        monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", False)
+    cmd = argv(url)
+    assert value(cmd, "-reconnect_streamed") == "1"
+    assert value(cmd, "-reconnect") == "1" and value(cmd, "-rw_timeout") == "15000000"
+    assert value(cmd, "-analyzeduration") == audio.ANALYZE_US
+    assert value(cmd, "-loglevel") == audio.LOGLEVEL_TAGGED
+    # 和 V2 下的命令只差 -reconnect_streamed 的值
+    assert len(cmd) == len(v2)
+    assert [i for i, (a, b) in enumerate(zip(cmd, v2)) if a != b] == [cmd.index("-reconnect_streamed") + 1]
+
+
+def test_v1_reconnect_rules_leave_hls_and_local_files_alone(monkeypatch):
+    monkeypatch.setenv("TLT_RECONNECT_V2", "0")
+    assert argv(HLS) == old_command("ffmpeg", HLS)
+    assert "-reconnect" not in argv("file:///tmp/x.flv")
+
+
+@pytest.mark.parametrize("env,expected", [
+    ({}, True),
+    ({"TLT_RECONNECT_V2": "0"}, False),
+    ({"TLT_FFMPEG_LEGACY": "1"}, False),
+    ({"TLT_RECONNECT_V2": "0", "TLT_FFMPEG_LEGACY": "1"}, False),
+    ({"TLT_RECONNECT_V2": "1", "TLT_FFMPEG_LEGACY": "0"}, True)])
+def test_either_switch_turns_ffmpegs_own_flv_reconnect_back_on(env, expected):
+    assert audio.flv_exits_on_drop(env) is expected
 
 
 def test_a_local_file_gets_no_network_flags():
@@ -128,18 +173,20 @@ def test_the_log_level_follows_the_probe(probed, level):
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="假 ffmpeg 是 sh 脚本")
 
 
-def fake_ffmpeg(tmp_path, refuse_levels):
-    """一个 sh 脚本冒充老 ffmpeg：refuse_levels 时不认 -loglevel 里的级别标志（照真 ffmpeg 退出码非零）。
-    每次被调用都往 calls 文件追加一行参数。"""
+def fake_ffmpeg(tmp_path, refuse_levels=False, hang_levels=False):
+    """一个 sh 脚本冒充 ffmpeg：refuse_levels 时带级别标志就退出码 1（像不认它的老版本）；hang_levels 时带级别
+    标志就一直不返回（exec sleep，超时由探测收掉）。每次被调用都往 calls 文件追加一行参数。"""
     calls = tmp_path / "calls"
     script = tmp_path / "ffmpeg"
     script.write_text(
         "#!/bin/sh\n"
         'echo "$*" >> "{calls}"\n'
-        'case "$*" in *level+*) if [ "{refuse}" = 1 ]; then '
-        'echo "Invalid loglevel" >&2; exit 1; fi;; esac\n'
+        'case "$*" in *level+*) '
+        'if [ "{refuse}" = 1 ]; then echo "Invalid loglevel" >&2; exit 1; fi; '
+        'if [ "{hang}" = 1 ]; then exec sleep 30; fi;; esac\n'
         'echo "ffmpeg version 4.0-fake Copyright (c) 2000-2018"\n'
-        'echo "built with a fake"\n'.format(calls=calls, refuse=1 if refuse_levels else 0))
+        'echo "built with a fake"\n'.format(calls=calls, refuse=1 if refuse_levels else 0,
+                                           hang=1 if hang_levels else 0))
     script.chmod(0o755)
     return str(script), calls
 
@@ -150,7 +197,9 @@ def test_an_old_ffmpeg_falls_back_to_plain_error_logging(tmp_path, capsys):
     got = audio.probe_ffmpeg(ff)
     assert got == {"tagged": False, "version": "ffmpeg version 4.0-fake Copyright (c) 2000-2018"}
     assert value(argv(FLV, ffmpeg=ff), "-loglevel") == "error"
-    assert "+level+warning" in capsys.readouterr().out     # 终端说一句（中文）
+    out = capsys.readouterr().out                          # 终端说一句（中文），只写看到了什么
+    assert "-loglevel +level+warning 时退出码 1" in out and "改用 -loglevel error" in out
+    assert "不认" not in out                                # 不下结论（CLAUDE.md 第八条）
     assert audio.probe_ffmpeg(ff) is got                   # 缓存：不再起进程
     assert audio.ffmpeg_version(ff) == got["version"]
     assert calls.read_text().splitlines() == [
@@ -165,9 +214,33 @@ def test_a_current_ffmpeg_gets_tagged_logging_and_one_probe(tmp_path):
     assert len(calls.read_text().splitlines()) == 1
 
 
-def test_a_missing_binary_probes_as_plain(tmp_path):
-    ff = str(tmp_path / "no-such-ffmpeg")
+@POSIX_ONLY
+def test_a_probe_that_times_out_is_not_run_a_second_time(tmp_path, monkeypatch, capsys):
+    """带级别那次超时：不再跑不带级别的那次（以前最坏 2 × 5 秒，超过「起 ffmpeg」阶段的 10 秒预算）。
+    终端只写「几秒内没有返回」，不说这份 ffmpeg 不认什么。"""
+    monkeypatch.setattr(audio, "PROBE_TIMEOUT_SEC", 0.5)
+    ff, calls = fake_ffmpeg(tmp_path, hang_levels=True)
     assert audio.probe_ffmpeg(ff) == {"tagged": False, "version": None}
+    assert calls.read_text().splitlines() == ["-hide_banner -loglevel +level+warning -version"]
+    out = capsys.readouterr().out
+    assert "0.5 秒内没有返回" in out and "改用 -loglevel error" in out and "不认" not in out
+    assert value(argv(FLV, ffmpeg=ff), "-loglevel") == "error"
+
+
+def test_a_missing_binary_probes_as_plain_and_only_once(tmp_path, monkeypatch, capsys):
+    """起不来（文件不存在）：一次就停，不再跑第二次；终端写「没能启动」。"""
+    ff = str(tmp_path / "no-such-ffmpeg")
+    runs = []
+    real_run = subprocess.run
+
+    def counting_run(cmd, **kw):
+        runs.append(cmd)
+        return real_run(cmd, **kw)
+    monkeypatch.setattr(audio.subprocess, "run", counting_run)
+    assert audio.probe_ffmpeg(ff) == {"tagged": False, "version": None}
+    assert len(runs) == 1
+    out = capsys.readouterr().out
+    assert "没能启动" in out and "改用 -loglevel error" in out and "不认" not in out
     assert audio.ffmpeg_version(ff) is None
     assert value(argv(FLV, ffmpeg=ff), "-loglevel") == "error"
 
@@ -314,7 +387,11 @@ def test_real_ffmpeg_accepts_the_tagged_level_and_reports_its_version():
 @NEEDS_FFMPEG
 def test_real_ffmpeg_tagged_and_plain_tails_match(tmp_path):
     """同一段坏音频解码、再编码：解码报错（error）和编码告警（warning）交错。两种 -loglevel 下各跑一遍，
-    分拣出来的整条尾巴（不只最后 8 行）去掉指针之后逐字节相同。"""
+    分拣出来的整条尾巴（不只最后 8 行）去掉指针之后逐字节相同。
+
+    另外钉住 LOGLEVEL_TAGGED 前面的「+」：它让 ffmpeg 自己的重复行折叠照旧开着，原始 stderr 里有
+    「Last message repeated」。不带「+」的绝对写法会关掉折叠——尾巴靠 StderrLines 折回去仍然一样，差在原始
+    stderr 的行数（这段输入实测 brew 9.0.1：64 行对 180 行；imageio 7.1：47 行对 165 行）。"""
     good = tmp_path / "s.aac"
     subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "lavfi",
                     "-i", "sine=d=4", "-c:a", "aac", "-b:a", "64k", "-f", "adts", str(good)],
@@ -326,10 +403,12 @@ def test_real_ffmpeg_tagged_and_plain_tails_match(tmp_path):
     bad = tmp_path / "bad.aac"
     bad.write_bytes(bytes(data))
     args = ["-i", str(bad), "-af", "asetpts=0", "-c:a", "aac", "-f", "null", "-"]
-    plain, _ = tail_of([x for x in run_ffmpeg_log(args, "error") if x.strip()])
-    tagged, _ = tail_of([x for x in run_ffmpeg_log(args, "+level+warning") if x.strip()])
+    plain, _ = tail_of([x for x in run_ffmpeg_log(args, audio.LOGLEVEL_PLAIN) if x.strip()])
+    raw_tagged = [x for x in run_ffmpeg_log(args, audio.LOGLEVEL_TAGGED) if x.strip()]
+    tagged, _ = tail_of(raw_tagged)
     assert plain                                           # 确实有报错可比
     assert [normalize(x) for x in tagged] == [normalize(x) for x in plain]
+    assert any("Last message repeated" in x for x in raw_tagged)   # ffmpeg 自己的折叠还开着
 
 
 @pytest.fixture(scope="module")
@@ -373,16 +452,24 @@ def test_a_cdn_drop_ends_ffmpeg_within_3s_and_keeps_every_second_before_it(media
     assert "ffmpeg_reconnects" not in src.stop_facts()
 
 
+# 首帧的上限：实测值的 3 倍以上，CI 高负载下也稳；又远小于改回旧参数时的样子（见下面的 docstring）
+FIRST_FRAME_MAX_SEC = 5.0
+
+
 @NEEDS_FFMPEG
-def test_an_audio_only_stream_that_claims_video_starts_within_2s(media):
-    """M3：流头说有视频、其实只有音频。改动前 ffmpeg 按 FLV 的默认最多分析 90 秒流时间（实测 25 秒内 0 PCM）；
-    设了 -analyzeduration 3000000 之后首帧约 1.2 秒。正常音视频流不受影响（约 0.95 秒）。"""
+def test_an_audio_only_stream_that_claims_video_starts_promptly(media):
+    """M3：流头说有视频、其实只有音频。改动前用 ffmpeg 默认的分析上限（总体 5 秒，FLV 单路最多 90 秒）：审查报告
+    里这种假流 22 秒内 0 PCM，加了 -analyzeduration 3000000 之后首帧 1.20 秒。本批在本机假 CDN 上实测
+    （brew 9.0.1 / imageio 7.1）：首帧 1.13 / 1.14 秒；改前 20.0 秒（文件发完才出）/ 25 秒内没有。
+    这里的假流 12 秒（开头 2 秒一次发、之后实时发），改回旧参数时首帧要等文件发完或者根本不出（本批去掉
+    -analyzeduration 还原验证，brew 9.0.1 上 10.07 秒），远超 FIRST_FRAME_MAX_SEC。正常音视频流（flv1 10 fps）
+    改前 2.07 秒、改后 1.06 / 1.05 秒：只防明显变慢。"""
     src = FFmpegAudioSource(media.url("live/aonly_claims.flv", burst=2))
     got = asyncio.run(asyncio.wait_for(pull(src, limit=1), 30))
-    assert got["first"] is not None and got["first"] < 2.0
+    assert got["first"] is not None and got["first"] < FIRST_FRAME_MAX_SEC
     src = FFmpegAudioSource(media.url("live/av.flv", burst=2))
     got = asyncio.run(asyncio.wait_for(pull(src, limit=1), 30))
-    assert got["first"] < 1.5
+    assert got["first"] is not None and got["first"] < FIRST_FRAME_MAX_SEC
 
 
 @NEEDS_FFMPEG
