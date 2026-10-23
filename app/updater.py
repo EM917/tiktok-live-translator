@@ -309,6 +309,41 @@ def _log_label(path):
         return str(path)
 
 
+# ---- 手动更新命令（I11） --------------------------------------------------------------------
+#
+# 一键更新失败时给中控一条能原样粘贴的命令。以前 Windows 上也给 `cd "…" && git pull`：Windows
+# PowerShell 5.1（Windows 10/11 自带的那个）不认 &&（7 才有），粘进去直接报语法错误。Windows 上
+# 改成 PowerShell 的写法，文案也写明粘进 PowerShell：Start.bat 开的黑窗口是命令提示符（cmd），
+# PowerShell 的写法在那里跑不了。
+
+def _on_windows():
+    """按 os.name 判断，和 selfcheck._pip_command 一致。测试换替身用。"""
+    return os.name == "nt"
+
+
+def _ps_quote(text):
+    """放进 PowerShell 双引号字符串：反引号和 $ 在那里有特殊含义（转义、变量），前面各加一个反引号。"""
+    return str(text).replace("`", "``").replace("$", "`$")
+
+
+def powershell_command(path, discard=False, pip=False, python=None):
+    """Windows 上的手动更新命令。每一步写成 `if ($?) { … }`：上一步成功才跑，和 && 一样遇错即停，
+    Windows PowerShell 5.1 和 PowerShell 7 都认。cd 是 PowerShell 里 Set-Location 的内置别名；
+    以带引号的路径开头的一句会被当成字符串表达式，跑程序前面要加 &（同 selfcheck._pip_command）。"""
+    steps = ["git checkout -- ."] if discard else []
+    steps.append("git pull --ff-only")
+    if pip:
+        steps.append('& "{}" -m pip install -r requirements.txt'.format(
+            _ps_quote(python or sys.executable)))
+    return 'cd "{}"; '.format(_ps_quote(path)) + "; ".join(  # i18n: data（PowerShell 命令）
+        "if ($?) {{ {} }}".format(step) for step in steps)
+
+
+def _in_shell(posix, windows):
+    """配着手动命令的那句话：macOS 上说粘进「终端」，Windows 上说粘进 PowerShell。"""
+    return windows if _on_windows() else posix
+
+
 REPO = "EM917/tiktok-live-translator"
 API_LATEST = "https://api.github.com/repos/{}/releases/latest".format(REPO)
 RELEASES_URL = "https://github.com/{}/releases/latest".format(REPO)
@@ -930,8 +965,12 @@ class Updater:
 
         不写成「请自行 git pull」——那句话假设用户知道项目在哪、知道要先 cd。
         真实案例里，一台机器就因为这句话卡在旧版本上，而它需要的正是能修好
-        这个判断的那次更新。"""
+        这个判断的那次更新。
+
+        Windows 上按 PowerShell 写（I11，见 powershell_command）。"""
         path = str(ROOT)
+        if _on_windows():
+            return powershell_command(path, discard=discard, pip=pip, python=sys.executable)
         if discard:
             return 'cd "{}" && git checkout -- . && git pull --ff-only'.format(path)
         if pip:
@@ -966,10 +1005,16 @@ class Updater:
         code, out, _ = await self._git("status", "--porcelain", "--untracked-files=no")
         if code != 0:
             await self._refuse(
-                L("这台电脑上找不到 git，程序没法自己更新。"
-                  "可以到 GitHub 下载新版压缩包，或者装好 git 后执行：",
-                  "git isn’t available on this computer, so the app can’t update itself. "
-                  "Download the new version’s ZIP file from GitHub, or install git and run:"),
+                _in_shell(L("这台电脑上找不到 git，程序没法自己更新。"
+                            "可以到 GitHub 下载新版压缩包，或者装好 git 后执行：",
+                            "git isn’t available on this computer, so the app can’t update "
+                            "itself. Download the new version’s ZIP file from GitHub, or install "
+                            "git and run:"),
+                          L("这台电脑上找不到 git，程序没法自己更新。"
+                            "可以到 GitHub 下载新版压缩包，或者装好 git 后在 PowerShell 里执行：",
+                            "git isn’t available on this computer, so the app can’t update "
+                            "itself. Download the new version’s ZIP file from GitHub, or install "
+                            "git and run this in PowerShell:")),
                 self._manual_command(), live,
                 L("这台电脑上找不到 git，程序没法自己更新",
                   "git isn’t available on this computer, so the app can’t update itself"))
@@ -981,12 +1026,20 @@ class Updater:
             files = [ln[3:].rstrip() for ln in out.splitlines()[:4] if len(ln) > 3]
             names = L("、", ", ").join(files) or L("（若干文件）", "(several files)")
             await self._refuse(
-                L("本次没有自动更新：这几个程序文件被改过，直接更新会覆盖掉它们——{}。"
-                  "如果不是你有意改的，复制下面这行到「终端」里执行，"
-                  "就能放弃这些改动并完成更新：",
-                  "The update didn’t start. These app files were changed, and updating would "
-                  "overwrite them: {}. If you didn’t change them on purpose, run the line below "
-                  "in Terminal to discard the changes and finish the update:").format(names),
+                _in_shell(L("本次没有自动更新：这几个程序文件被改过，直接更新会覆盖掉它们——{}。"
+                            "如果不是你有意改的，复制下面这行到「终端」里执行，"
+                            "就能放弃这些改动并完成更新：",
+                            "The update didn’t start. These app files were changed, and updating "
+                            "would overwrite them: {}. If you didn’t change them on purpose, run "
+                            "the line below in Terminal to discard the changes and finish the "
+                            "update:"),
+                          L("本次没有自动更新：这几个程序文件被改过，直接更新会覆盖掉它们——{}。"
+                            "如果不是你有意改的，复制下面这行到 PowerShell 里执行，"
+                            "就能放弃这些改动并完成更新：",
+                            "The update didn’t start. These app files were changed, and updating "
+                            "would overwrite them: {}. If you didn’t change them on purpose, run "
+                            "the line below in PowerShell to discard the changes and finish the "
+                            "update:")).format(names),
                 self._manual_command(discard=True), live,
                 L("本次没有自动更新：这几个程序文件被改过——{}",
                   "The update didn’t start. These app files were changed: {}").format(names))
@@ -1024,9 +1077,12 @@ class Updater:
                 text, (self.latest or {}).get("url") or RELEASES_URL))
             return
         await self.server.status(
-            "idle", L("更新没能完成（{}）。复制下面这行到「终端」里执行通常就能解决：",
-                      "The update didn’t finish ({}). Running the line below in Terminal "
-                      "usually fixes this:").format(text),
+            "idle", _in_shell(L("更新没能完成（{}）。复制下面这行到「终端」里执行通常就能解决：",
+                                "The update didn’t finish ({}). Running the line below in "
+                                "Terminal usually fixes this:"),
+                              L("更新没能完成（{}）。复制下面这行到 PowerShell 里执行通常就能解决：",
+                                "The update didn’t finish ({}). Running the line below in "
+                                "PowerShell usually fixes this:")).format(text),
             command=self._manual_command())
 
     async def _update_failed(self, text, token, resume, command, live=False):
@@ -1042,8 +1098,10 @@ class Updater:
             await self._notice(text + L("。监听没有中断", ". Monitoring continues."))
             return
         await self.server.status(
-            "idle", text + L("。复制下面这行到「终端」里执行可以手动更新：",
-                             ". To update manually, run the line below in Terminal:"),
+            "idle", text + _in_shell(L("。复制下面这行到「终端」里执行可以手动更新：",
+                                       ". To update manually, run the line below in Terminal:"),
+                                     L("。复制下面这行到 PowerShell 里执行可以手动更新：",
+                                       ". To update manually, run the line below in PowerShell:")),
             command=command)
 
     def _requirements_to_install(self, requirements):
