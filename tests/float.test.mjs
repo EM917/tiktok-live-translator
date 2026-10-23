@@ -11,7 +11,10 @@
 //   3. 换主播清空，重连回放里比换主播更早的弹幕不要；
 //   4. 不显示报警、不发任何消息、字号跟着 config.caption_size、非 macOS 的窗口加 solid；
 //   5. 字幕区的高度（专家审查 U1，同中控页底部大字幕）：最少「两行译文 + 两行原文」高，换句时下面的弹幕不跟着跳；
-//      长句不截断，到窗口六成再从下面裁（样式表，假 DOM 没有版面；真排版的量法在 b1-livebar 的验证记录里）。
+//      长句不截断，到窗口六成再从下面裁（样式表，假 DOM 没有版面；真排版的量法在 b1-livebar 的验证记录里）；
+//   6. 结束卡片（专家审查 U3）：ended / error 时字幕和弹幕收起、露出卡片，标题只写状态、说明只指去主窗口；
+//      idle（中控点停止，后端照旧关窗）不画卡片；connecting / live 回来就收起。「回到主窗口」只走 JS 桥，
+//      没有 JS 桥不画。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -27,6 +30,7 @@ const TEXT = {
     failed: "翻译失败", refused: "未翻译（接口拒答）", notTranslation: "未翻译（结果不像译文）",
     dropped: "翻译已跳过（积压）", callPill: "疑似号召举报或不买", noQuestionMark: "句子很短，没有问号",
     lagRe: /^约 3\d 秒前$/,
+    endedTitle: "直播已结束", errorTitle: "监听已停止", endNote: "详情见主窗口。", goMain: "回到主窗口",
   },
   en: {
     waiting: "Waiting for the first caption…", connecting: "Connecting…", translating: "Translating…",
@@ -34,6 +38,8 @@ const TEXT = {
     notTranslation: "Not translated (the result didn’t look like a translation)",
     dropped: "Skipped (backlog)", callPill: "Possible call to report or not buy",
     noQuestionMark: "Short, with no question mark", lagRe: /^About 3\d sec ago$/,
+    endedTitle: "Stream ended", errorTitle: "Monitoring stopped", endNote: "See the main window for details.",
+    goMain: "Show Main Window",
   },
 };
 
@@ -285,6 +291,62 @@ test("过时信号：这一句的声音结束超过 15 秒才写「约 N 秒前�
   assert.equal(F.floatCaptionMeta(s, end + 600000).lag, "");
 });
 
+test("结束卡片：只有 ended / error 才有；标题只写状态，说明只指去主窗口", () => {
+  const s = F.floatInitialState();
+  assert.deepEqual(F.FLOAT_END_STATES, ["ended", "error"]);
+  for (const st of ["", "idle", "connecting", "live", "offline", "something_new"]) {
+    F.floatReduce(s, { type: "status", state: st });
+    assert.equal(F.floatEndView(s), null, st);
+  }
+  F.floatReduce(s, { type: "status", state: "ended", detail: "上一场字幕在下方。" });
+  assert.deepEqual(F.floatEndView(s), { state: "ended", title: "直播已结束", note: "详情见主窗口。" });
+  F.floatReduce(s, { type: "status", state: "error", detail: "内部错误，已停止：boom" });
+  assert.deepEqual(F.floatEndView(s), { state: "error", title: "监听已停止", note: "详情见主窗口。" });
+  // detail 不转述（主窗口的横幅里才有）：卡片上的字不随它变
+  F.floatReduce(s, { type: "status", state: "error", detail: "别的原文" });
+  assert.equal(F.floatEndView(s).note, "详情见主窗口。");
+  // 重连的 hello 带着结束状态：卡片照样有
+  F.floatReduce(s, { type: "hello", config: { status: { state: "ended", detail: "" } } });
+  assert.equal(F.floatEndView(s).title, "直播已结束");
+  assert.equal(F.floatEndView(null), null);
+});
+
+test("「回到主窗口」只调 JS 桥：有 pywebview.api.focus_main 才算有，调到了返回 true", () => {
+  const calls = [];
+  const api = { focus_main() { calls.push(this); return Promise.resolve(true); } };
+  const win = { pywebview: { api } };
+  assert.equal(F.floatMainBridge(win), api.focus_main);
+  assert.equal(F.floatGoMain(win), true);
+  assert.deepEqual(calls, [api], "this 是 api 本身（pywebview 的函数挂在它上面）");
+  for (const bad of [null, undefined, {}, { pywebview: {} }, { pywebview: { api: {} } },
+                     { pywebview: { api: { focus_main: "x" } } }]) {
+    assert.equal(F.floatMainBridge(bad), null);
+    assert.equal(F.floatGoMain(bad), false);
+  }
+  // 桥那边抛了、或者 Promise 被拒：页面不抛
+  assert.equal(F.floatGoMain({ pywebview: { api: { focus_main() { throw new Error("gone"); } } } }), false);
+  const rejected = Promise.reject(new Error("gone"));
+  assert.equal(F.floatGoMain({ pywebview: { api: { focus_main: () => rejected } } }), true);
+});
+
+test("结束卡片的按钮：有结束状态且有 JS 桥才露出来", () => {
+  const el = () => ({ textContent: "", cls: new Set(["hidden"]),
+                      get classList() { const c = this.cls; return { toggle: (n, on) => (on ? c.add(n) : c.delete(n)), contains: (n) => c.has(n) }; } });
+  const els = { end: el(), endTitle: el(), endNote: el(), endBack: el() };
+  const s = F.floatInitialState();
+  F.floatReduce(s, { type: "status", state: "ended" });
+  F.floatPaintEnd(els, F.floatEndView(s), false);
+  assert.ok(!els.end.classList.contains("hidden") && els.endBack.classList.contains("hidden"));
+  assert.equal(els.endTitle.textContent, "直播已结束");
+  F.floatPaintEnd(els, F.floatEndView(s), true);
+  assert.ok(!els.endBack.classList.contains("hidden"));
+  assert.equal(els.endBack.textContent, "回到主窗口");
+  F.floatPaintEnd(els, null, true);
+  assert.ok(els.end.classList.contains("hidden") && els.endBack.classList.contains("hidden"));
+  assert.equal(els.endTitle.textContent, "");
+  F.floatPaintEnd({}, F.floatEndView(s), true);                 // 没有卡片节点（老页面）：什么都不做
+});
+
 test("乱七八糟的输入不抛、不改状态", () => {
   const s = F.floatInitialState();
   for (const bad of [null, undefined, 3, "x", [], {}, { type: "alert", alert_id: 1 }, { type: "stats" }]) {
@@ -308,6 +370,70 @@ for (const lang of ["zh", "en"]) {
     page.push(caption(1, "hola"));
     page.push(comment("c1", "ana", "hola"));
     // FakeWebSocket.send 一调就抛；走到这里没抛，说明没有发过
+  });
+
+  test(L("监听自己停了（ended / error）：字幕和弹幕收起，露出结束卡片；没有 JS 桥就不画按钮"), () => {
+    for (const [state, title] of [["ended", X.endedTitle], ["error", X.errorTitle]]) {
+      const page = loadFloat({ lang });
+      hello(page);
+      assert.ok(hidden(page, "f-end"), "直播中没有卡片");
+      page.push(caption(1, "hola a todas"));
+      page.push({ type: "caption_update", id: 1, translated: "大家好", translate_state: "ok" });
+      page.push(comment("c1", "ana", "hola"));
+      page.push({ type: "status", state, detail: "whatever the main window says" });
+      assert.ok(!hidden(page, "f-end"), state);
+      assert.equal(page.el("f-end-title").textContent, title);
+      assert.equal(page.el("f-end-note").textContent, X.endNote);
+      assert.ok(hidden(page, "f-caption") && hidden(page, "f-empty") && hidden(page, "f-comments"), state);
+      assert.ok(hidden(page, "f-end-back"), "假页面里没有 pywebview：按钮不画");
+      assert.equal(page.el("f-end-back").textContent, X.goMain);
+      page.fireWindow("pywebviewready");                              // JS 桥注入完：重画一次，还是没有桥就还不画
+      assert.ok(hidden(page, "f-end-back"));
+      page.el("f-end-back").click();                                  // 点了也只走 JS 桥：不发 WebSocket（发了会抛）
+      assert.equal(page.el("f-end").getAttribute("role"), "status");  // 读屏会念出来
+    }
+  });
+
+  test(L("中控点停止：两条 idle 都不画结束卡片（后端照旧关窗）"), () => {
+    const page = loadFloat({ lang });
+    hello(page);
+    page.push(caption(1, "hola"));
+    page.push({ type: "caption_update", id: 1, translated: "你好", translate_state: "ok" });
+    page.push({ type: "status", state: "idle", detail: lang === "en" ? "Stopping…" : "正在停止…" });
+    assert.ok(hidden(page, "f-end"));
+    page.push({ type: "status", state: "idle", detail: "" });
+    assert.ok(hidden(page, "f-end"));
+    assert.ok(!hidden(page, "f-caption"), "窗口马上就关了，字幕原样留到最后");
+  });
+
+  test(L("结束卡片之后又开始监听（connecting / live）：卡片收起，回到字幕和弹幕"), () => {
+    const page = loadFloat({ lang });
+    hello(page);
+    page.push(comment("c1", "ana", "hola"));
+    page.push({ type: "status", state: "ended", detail: "" });
+    assert.ok(!hidden(page, "f-end"));
+    page.push({ type: "status", state: "connecting", detail: "" });   // 中控在主窗口里点了开始
+    assert.ok(hidden(page, "f-end") && !hidden(page, "f-comments") && !hidden(page, "f-empty"));
+    page.push({ type: "session_break", ts: T + 99 });
+    page.push({ type: "status", state: "live", detail: "" });
+    assert.ok(hidden(page, "f-end"));
+    assert.equal(page.el("f-empty").textContent, X.waiting);
+  });
+
+  test(L("结束卡片露着时和程序断了线：卡片留着，不改成连接中；重连的 hello 带着结束状态照样画卡片"), () => {
+    const page = loadFloat({ lang });
+    hello(page);
+    page.push({ type: "status", state: "error", detail: "" });
+    page.closeSocket();
+    assert.ok(!hidden(page, "f-end"));
+    assert.equal(page.el("f-end-title").textContent, X.errorTitle);
+    page.runTimers();                                                 // 重连
+    page.reopen();
+    hello(page, { status: { state: "ended", detail: "" } });
+    assert.ok(!hidden(page, "f-end"));
+    assert.equal(page.el("f-end-title").textContent, X.endedTitle);
+    hello(page);                                                      // 程序重启后已经在下一场
+    assert.ok(hidden(page, "f-end"));
   });
 
   test(L("刚打开：没有字幕，写一句占位；连接中写连接中"), () => {
@@ -567,7 +693,16 @@ test("float.html 只载入四个脚本，顺序对，每个都带 ?v=；样式�
   assert.deepEqual(scripts, ["i18n.js", "live-ui.js", "guard.js", "float.js"]);
   assert.match(html, /<link rel="stylesheet" href="\/static\/float\.css\?v=\d+">/);
   assert.ok(!html.includes('name="tlt-app"'), "实例指纹只属于主界面");
-  assert.ok(!/<button|<input|<select|<textarea|<a\s/.test(html), "浮窗没有任何可点的东西");
+  // 以前这里钉的是「浮窗没有任何可点的东西」。结束卡片（专家审查 U3）加了唯一一个按钮「回到主窗口」，
+  // 它只走 pywebview 的 JS 桥、不发 WebSocket 消息（下面「float.js 里没有 send」那条照旧钉着）；别的照旧不许有
+  const bare = html.replace(/<!--[\s\S]*?-->/g, "");
+  const buttons = [...bare.matchAll(/<button\b[^>]*>/g)].map((m) => m[0]);
+  assert.equal(buttons.length, 1, "只有结束卡片上的一个按钮");
+  assert.match(buttons[0], /id="f-end-back"/);
+  assert.match(buttons[0], /type="button"/);
+  assert.match(buttons[0], /data-en="Show Main Window"/);
+  assert.ok(/<section id="f-end"[\s\S]*?<button id="f-end-back"[\s\S]*?<\/section>/.test(bare), "按钮在结束卡片里");
+  assert.ok(!/<input|<select|<textarea|<a\s/.test(bare), "除了那个按钮，浮窗没有别的可点的东西");
 });
 
 test("角标在字幕上面：字幕区从下面裁，状态行永远裁不到；裁了有渐隐", () => {
@@ -682,6 +817,9 @@ test("小字的对比度：窗口透明、盖在白色或黑色的软件上，�
     ["琥珀胶囊", decl(".guard-pill.amber", "color"), [bodyBg, decl(".f-cmt.guard-amber", "background"), decl(".guard-pill.amber", "background")]],
     ["红行里的说明", decl(".f-cmt.guard-alert .guard-note", "color"), [bodyBg, decl(".f-cmt.guard-alert", "background")]],
     ["琥珀行里的说明", decl(".guard-note", "color"), [bodyBg, decl(".f-cmt.guard-amber", "background")]],
+    ["结束卡片的说明", decl(".f-end-note", "color"), [bodyBg]],
+    ["「回到主窗口」按钮", decl(".f-end-back", "color"), [bodyBg, decl(".f-end-back", "background")]],
+    ["「回到主窗口」按钮·按下", decl(".f-end-back", "color"), [bodyBg, decl(".f-end-back:active", "background")]],
   ];
   for (const [behindName, behind] of [["白底", [255, 255, 255, 1]], ["黑底", [0, 0, 0, 1]]]) {
     for (const [name, fg, bgs] of pairs) {
