@@ -5,7 +5,8 @@
 // - 抽屉高度固定、不超过窗口约三分之一，两个页签一样高，列表在固定的区域里自己滚，有可见的滚动提示；
 // - 头一行折行时，折到下一行的胶囊不带左边距缩进；
 // - 浅色模式下关系标签的字 4.5:1 以上，深色模式的取值和改之前一样；
-// - 条右侧的「查看 / 收起」箭头在抽屉开着时转向上。
+// - 条右侧的「查看 / 收起」箭头在抽屉开着时转向上；
+// - 弹幕栏开着时大字幕让出弹幕栏、在字幕栏里居中，浮窗里标没标记的弹幕文字从同一处起（专家审查 V6）。
 // 不起浏览器、不 import main.py。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -199,4 +200,119 @@ test("顶部条右侧的箭头：抽屉收着朝右，开着（aria-expanded=tru
   assert.equal(decls(".guard-bar-view::after").content, '"\\203A"');
   assert.equal(decls('.guard-bar-main[aria-expanded="true"] .guard-bar-view::after').transform, "rotate(-90deg)");
   assert.match(HTML, /<span id="guard-bar-view" class="guard-bar-view" data-en="View">查看<\/span>/);
+});
+
+// ---- 对齐（专家审查 V6） --------------------------------------------------------------------------
+
+const PANEL_OPEN = "body:has(#comment-panel:not(.hidden):not(.collapsed))";
+
+test("大字幕：弹幕栏开着时让出弹幕栏，在字幕栏里居中（以前横跨整个窗口，文字中心偏右 170px）", () => {
+  // 让出的宽度和弹幕栏的宽是同一个式子：弹幕栏 width 340px、max-width 42vw，条子右边缩进 min(340px, 42vw)
+  const panel = decls(".comment-panel");
+  assert.equal(panel.width, "340px");
+  assert.equal(panel["max-width"], "42vw");
+  assert.equal(panel.flex, "none", "弹幕栏不伸缩，宽度就是这个式子");
+  const offset = decls(PANEL_OPEN + " .live-bar");
+  assert.equal(offset.right, "min(" + panel.width + ", " + panel["max-width"] + ")");
+  // 写在最外层：任何宽度都生效（弹幕栏没有叠放的窄屏布局，一直是并排的）
+  assert.ok(!RULES.some((r) => r.at && r.sel.split(",").map((s) => s.trim()).includes(PANEL_OPEN + " .live-bar")),
+    "这条不能只在某个 @media 里");
+  // 收起或不在直播（弹幕栏 .hidden / .collapsed）时不命中，条子照旧整宽
+  assert.equal(decls(".live-bar").left, "0");
+  assert.equal(decls(".live-bar").right, "0");
+  assert.match(PANEL_OPEN, /:not\(\.hidden\):not\(\.collapsed\)/);
+  // 按这个式子算：大字幕条的中心 = 字幕栏的中心（字幕栏 = 窗口 − 弹幕栏）。1000/1200/1440 是审查量的三档，
+  // 700 和 420 时 42vw 比 340px 窄，弹幕栏跟着变窄，条子也跟着少让
+  const px = (v, w) => (v.endsWith("vw") ? (w * parseFloat(v)) / 100 : parseFloat(v));
+  for (const w of [420, 700, 1000, 1200, 1440]) {
+    const panelW = Math.min(px(panel.width, w), px(panel["max-width"], w));
+    const m = /^min\(([\d.]+px), ([\d.]+vw)\)$/.exec(offset.right);
+    const barRight = Math.min(px(m[1], w), px(m[2], w));
+    const historyCenter = (w - panelW) / 2;
+    const barCenter = (0 + (w - barRight)) / 2;
+    assert.equal(barCenter, historyCenter, w + "px：条子中心 " + barCenter + "，字幕栏中心 " + historyCenter);
+  }
+});
+
+test("大字幕：让出弹幕栏后条子窄了，最小高度多留一行大字（三行），条高稳定（U1）不因此变差；不超过高度上限", () => {
+  const base = decls(".live-bar");
+  const offset = decls(PANEL_OPEN + " .live-bar");
+  // 平常（整宽）：两行大字 + 两行小字 + 34px（tests/live-bar.test.mjs 算着）；让出弹幕栏后：大字多一行
+  const two = /^calc\(var\(--sub-size\) \* 2\.7 \+ var\(--sub-size\) \* 1\.176 \+ 34px\)$/;
+  assert.match(base["min-height"], two);
+  const m = /^min\((calc\(var\(--sub-size\) \* ([\d.]+) \+ var\(--sub-size\) \* 1\.176 \+ 34px\)), (calc\(.+\))\)$/.exec(offset["min-height"] || "");
+  assert.ok(m, "min-height：" + offset["min-height"]);
+  assert.ok(Math.abs(Number(m[2]) - 3 * 1.35) < 1e-9, "三行大字 × 行高 1.35：" + m[2]);
+  // 让给高度上限：第二项就是 .live-bar 的 max-height，窗口很矮、字号很大时条子也不压到顶栏
+  assert.equal(m[3], base["max-height"]);
+  // 多出来的正好一行大字：字号 34 时 45.9px
+  for (const size of [26, 34, 48, 60]) {
+    const lines = (k) => size * k + size * 1.176 + 34;
+    assert.ok(Math.abs(lines(Number(m[2])) - lines(2.7) - size * 1.35) < 1e-9, "字号 " + size);
+  }
+});
+
+test("弹幕列表：条子不再盖着弹幕栏时，底部只让出底部署名（22px + 8px），不再按条高空出一大段", () => {
+  assert.equal(decls(PANEL_OPEN + " .comment-list")["padding-bottom"], "30px");
+  assert.equal(parseInt(decls(".copyright").height, 10) + 8, 30, "底部署名 22px + 8px 空隙");
+  // 不支持 :has 时两条一起被丢掉：条子整宽，弹幕列表照旧按条高留白（退路还在）
+  assert.match(decls(".comment-list").padding, /calc\(var\(--live-bar-h, [\d.]+px\) \+ 30px\)$/);
+});
+
+// 浮窗（web/float.css）：同一列弹幕，没标记的行和标了的行（左边带色条、抻到窗口边缘）文字从同一处起，
+// 也和上面字幕的文字对齐。以前没标记的行带着 3px 透明左边框，文字在 17px，标了的在 14px
+const FLOAT_RULES = parseRules(read("float.css"));
+function floatDecls(selector) {
+  const merged = {};
+  for (const r of FLOAT_RULES) {
+    if (r.at !== "" || !r.sel.split(",").map((s) => s.trim()).includes(selector)) continue;
+    for (const d of r.body.split(";")) {
+      const k = d.indexOf(":");
+      if (k > 0) merged[d.slice(0, k).trim()] = d.slice(k + 1).trim();
+    }
+  }
+  return merged;
+}
+/* padding / margin 简写的左边那一项（1–4 个值） */
+function leftOf(shorthand) {
+  const v = shorthand.trim().split(/\s+/);
+  return v.length === 4 ? v[3] : v.length >= 2 ? v[1] : v[0];
+}
+const pxOf = (v) => (v === "0" ? 0 : Number(/^(-?[\d.]+)px$/.exec(v)[1]));
+/* 一行弹幕（.f-cmt 加上这些类）的文字左边缘，相对浮窗左边：列表左内边距 + 行的左外边距 + 左边框 + 左内边距。
+   按样式表的先后合并 .f-cmt 和 .f-cmt.<类> 的规则，简写和单项谁后写听谁的 */
+function floatRowTextLeft(classes) {
+  const own = new Set([".f-cmt"].concat(classes.map((c) => ".f-cmt." + c)));
+  let margin = 0, border = 0, padding = 0;
+  for (const r of FLOAT_RULES) {
+    if (r.at !== "" || !r.sel.split(",").map((s) => s.trim()).some((s) => own.has(s))) continue;
+    for (const d of r.body.split(";")) {
+      const k = d.indexOf(":");
+      if (k <= 0) continue;
+      const prop = d.slice(0, k).trim(), value = d.slice(k + 1).trim();
+      if (prop === "margin") margin = pxOf(leftOf(value));
+      else if (prop === "margin-left") margin = pxOf(value);
+      else if (prop === "padding") padding = pxOf(leftOf(value));
+      else if (prop === "padding-left") padding = pxOf(value);
+      else if (prop === "border-left" || prop === "border") border = pxOf(value.split(/\s+/)[0]);
+      else if (prop === "border-left-width") border = pxOf(value);
+    }
+  }
+  const list = pxOf(leftOf(floatDecls(".f-comments").padding));
+  return list + margin + border + padding;
+}
+
+test("浮窗：没标记的弹幕行和标了的行（红 / 琥珀 / 关注 / 弱信号）文字左边缘一致，也和字幕对齐", () => {
+  assert.equal(leftOf("var(--f-fade) 14px 10px"), "14px");
+  const plain = floatRowTextLeft([]);
+  for (const cls of ["guard-alert", "guard-amber", "guard-marked", "guard-weak", "guard-alert guard-marked"]) {
+    assert.equal(floatRowTextLeft(cls.split(" ")), plain, cls + " 的文字和没标记的行差 " + (floatRowTextLeft(cls.split(" ")) - plain) + "px");
+  }
+  // 上面的字幕（.f-caption）和空态说明（.f-empty）的文字也从这里起
+  assert.equal(pxOf(leftOf(floatDecls(".f-caption").padding)), plain);
+  assert.equal(pxOf(leftOf(floatDecls(".f-empty").padding)), plain);
+  // 标了的行左边条是 3px、贴着窗口边（外边距抵掉列表的内边距）
+  const marked = floatDecls(".f-cmt.guard-marked");
+  assert.match(marked["border-left"] || "", /^3px solid/);
+  assert.equal(pxOf(leftOf(marked.margin)), -pxOf(leftOf(floatDecls(".f-comments").padding)));
 });

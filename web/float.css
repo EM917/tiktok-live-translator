@@ -86,7 +86,7 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
   -webkit-mask-image: linear-gradient(to bottom, #000 1px, transparent 1px, #000 calc(var(--f-fade) + 1px));
   mask-image: linear-gradient(to bottom, #000 1px, transparent 1px, #000 calc(var(--f-fade) + 1px));
 }
-.f-cmt { position: relative; flex: none; padding: 5px 0; border-left: 3px solid transparent; }
+.f-cmt { position: relative; flex: none; padding: 5px 0; }
 .f-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 5px; font-size: var(--f-cmt-small); color: var(--f-dim); }
 .f-user { font-weight: 600; max-width: 100%; overflow-wrap: anywhere; }
 .f-zh { margin-top: 1px; font-size: var(--f-cmt); line-height: 1.4; overflow-wrap: anywhere; }
@@ -96,9 +96,12 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
 
 /* ---- 弹幕留意的标记（web/guard.js 的 guardDecorateComment 加的类和节点），颜色含义同中控页：
    红＝规则明确命中，琥珀＝拿不准，靛蓝＝关注的人，弱信号只是一圈浅描边。形状跟着变（类别胶囊的字、★），
-   不只靠颜色。标了的整行抻到窗口边缘，左边条贴着边（列表自己有 14px 内边距：3 + 11 = 14，文字不挪位）。 */
+   不只靠颜色。标了的整行抻到窗口边缘，左边条贴着边（列表自己有 14px 内边距：边条 3 + 内边距 11 = 14，文字不挪位）。
+   3px 的边条只给标了的行（专家审查 V6）：以前每一行都带着 3px 透明左边框，上面的算式漏了它，没标记的行
+   文字在 14 + 3 = 17px，标了的在 14px，同一列弹幕左边差 3px，也比上面的字幕（.f-caption 左内边距 14）靠右。
+   现在没标记的行没有边框，三者都从 14px 起。guard-weak 没有边条颜色，照样是透明的 3px */
 .f-cmt.guard-alert, .f-cmt.guard-amber, .f-cmt.guard-marked, .f-cmt.guard-weak {
-  margin: 0 -14px; padding-left: 11px; padding-right: 14px;
+  margin: 0 -14px; padding-left: 11px; padding-right: 14px; border-left: 3px solid transparent;
 }
 .f-cmt.guard-marked { border-left-color: var(--f-indigo); }
 .f-cmt.guard-alert { border-left-color: var(--f-red); background: rgba(255, 69, 58, 0.14); }      /* 写在 marked 之后：红 / 橙盖过靛蓝 */
