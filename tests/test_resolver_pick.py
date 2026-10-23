@@ -6,7 +6,11 @@ TLT_LOW_BITRATE_STREAM），默认关（计划 D17：低档音轨可能是转码
 
   * 关着：挑法和改动前逐字节相同。下面拿改动前的函数原文（_pick_stream_before_m5）对拍，键的各种排列都试；
   * 开着：有纯音频档照旧取纯音频档；没有就按画质从低到高挑，stream_data 和 flv_pull_url 都这样排；
-  * 开着但拉流 ffmpeg 退回了进程内重连（TLT_FFMPEG_LEGACY=1 或 TLT_RECONNECT_V2=0）：照原来的挑法。
+  * 开着时格式坏的档（值不是 dict、main 不是 dict）跳过，接着往上挑：排序会先碰到原来排在后面的档；
+  * 开着但拉流 ffmpeg 退回了进程内重连（TLT_FFMPEG_LEGACY=1 或 TLT_RECONNECT_V2=0）、或拉流模块没能载入：
+    照原来的挑法，终端只说看到的是哪一种；
+  * 每个调用方都跟着开关走，包括 4003110 之后借登录态重问的那一次；
+  * 官方接口那层的终端提示只说取到了流地址，不说「纯音频」（现网看到的全是原画或 _hd）。
 
 夹具是结构固定的假房间：虚构的房间号和 CDN 主机名，不连网、不开浏览器。
 """
@@ -14,11 +18,13 @@ import ast
 import importlib.util
 import itertools
 import json
+import sys
 
 import pytest
 
 from app import audio, reconnect_policy, resolver
 from tests.helpers import run
+from tests.i18n_rules import ZH_CAUSAL, ZH_LABELS
 
 CDN = "https://pull-flv-demo.example.test/stage/stream-7400000000000000001"
 ENVS = (resolver.LOW_BITRATE_ENV, "TLT_FFMPEG_LEGACY", "TLT_RECONNECT_V2")
@@ -241,8 +247,43 @@ def test_switch_on_survives_garbage(monkeypatch):
     _switch_on(monkeypatch)
     for bad in (None, {}, {"stream_url": None},
                 {"stream_url": {"flv_pull_url": {"HD1": "", "SD1": None}}},
-                {"stream_url": {"live_core_sdk_data": {"pull_data": {"stream_data": "не json"}}}}):
+                {"stream_url": {"live_core_sdk_data": {"pull_data": {"stream_data": "не json"}}}},
+                {"stream_url": {"live_core_sdk_data": {"pull_data": {
+                    "stream_data": json.dumps({"data": {"origin": "x"}})}}}}):
         assert resolver._pick_stream(bad) is None
+
+
+# 格式坏的一档：值不是 dict，或者 main 不是 dict。改动前碰到就抛 AttributeError
+BAD_TIERS = [("string", "x"), ("number", 7), ("list", ["ld"]),
+             ("main_string", {"main": "u"}), ("main_list", {"main": ["flv"]})]
+
+
+@pytest.mark.parametrize("bad", [b for _, b in BAD_TIERS], ids=[n for n, _ in BAD_TIERS])
+def test_switch_on_skips_malformed_tiers_and_still_takes_the_lowest_good_one(monkeypatch, bad):
+    """开着时从低档往上挑，会先碰到原来排在后面、碰不到的档。坏的那档跳过，接着往上挑好的最低一档；
+    关着不跳（照样在同一处抛同一种异常），和改动前逐字节相同。"""
+    for order in itertools.permutations(("origin", "hd", "sd")):
+        room = _room(order, FULL_PULL, overrides={"ld": bad})          # 最低档 ld 是坏的、排在最后
+        assert resolver._pick_stream(room, low_first=False) == _pick_stream_before_m5(room) \
+            == _url(order[0])
+        assert resolver._pick_stream(room, low_first=True) == _url("sd"), order
+    room = _room(("origin", "uhd"), overrides={"ld": bad, "sd": bad, "hd": bad})
+    assert resolver._pick_stream(room, low_first=True) == _url("uhd")
+    room = _room(pull=FULL_PULL, overrides={t: bad for t in FULL_LADDER})
+    assert resolver._pick_stream(room, low_first=True) == _pull("SD1")   # 全是坏档：退到 flv_pull_url
+    with pytest.raises(AttributeError):
+        _pick_stream_before_m5(room)
+    with pytest.raises(AttributeError):
+        resolver._pick_stream(room, low_first=False)
+    _switch_on(monkeypatch)                                              # 走开关（不传 low_first）也一样
+    assert resolver._pick_stream(_room(("hd", "origin"), overrides={"ld": bad})) == _url("hd")
+
+
+def test_tier_shape_check():
+    for ok in (None, "", {}, {"main": None}, {"main": {}}, {"main": {"flv": "u"}}, {"other": 1}):
+        assert resolver._tier_shaped(ok) is True, ok
+    for _, bad in BAD_TIERS:
+        assert resolver._tier_shaped(bad) is False, bad
 
 
 # ---- 开关怎么读 ----
@@ -294,6 +335,39 @@ def test_in_process_reconnect_keeps_the_old_pick(monkeypatch, capsys, env, value
     out = capsys.readouterr().out
     assert out.count("[信息]") == 1
     assert resolver.LOW_BITRATE_ENV in out and "进程内重连" in out
+    assert "没能载入" not in out
+
+
+def test_stream_module_failing_to_load_keeps_the_old_pick_and_says_only_that(monkeypatch, capsys):
+    """开着、但 `from .audio import flv_exits_on_drop` 载入失败：照原来的挑法。终端只写看到的事（拉流模块
+    没能载入），不说成是进程内重连那两个应急开关（第八条：只写观察）。"""
+    _switch_on(monkeypatch)
+    monkeypatch.setitem(sys.modules, "app.audio", None)          # 下一次 import app.audio 抛 ImportError
+    room = _room(FULL_LADDER, FULL_PULL)
+    assert resolver.low_bitrate_pick() is False
+    assert resolver._pick_stream(room) == _pick_stream_before_m5(room) == _url("origin")
+    out = capsys.readouterr().out
+    assert out.count("[信息]") == 1
+    assert resolver.LOW_BITRATE_ENV in out and "拉流模块没能载入" in out
+    for word in ("进程内重连", "TLT_FFMPEG_LEGACY", "TLT_RECONNECT_V2"):
+        assert word not in out
+    assert not ZH_LABELS.search(out) and not ZH_CAUSAL.search(out)
+
+
+def test_asking_the_stream_module_failing_keeps_the_old_pick_and_says_only_that(monkeypatch, capsys):
+    _switch_on(monkeypatch)
+
+    def broken(env=None):
+        raise RuntimeError("demo")
+
+    monkeypatch.setattr(audio, "flv_exits_on_drop", broken)
+    room = _room(FULL_LADDER, FULL_PULL)
+    assert resolver._pick_stream(room) == _url("origin")
+    out = capsys.readouterr().out
+    assert out.count("[信息]") == 1 and "没能读出" in out
+    for word in ("进程内重连", "没能载入", "TLT_FFMPEG_LEGACY", "TLT_RECONNECT_V2"):
+        assert word not in out
+    assert not ZH_LABELS.search(out) and not ZH_CAUSAL.search(out)
 
 
 def test_in_process_reconnect_by_module_default_also_keeps_the_old_pick(monkeypatch):
@@ -327,6 +401,68 @@ def test_api_layer_uses_the_switch(monkeypatch):
     _switch_on(monkeypatch)
     url, offline = run(resolver._resolve_via_api("https://www.tiktok.com/@demo_room_one/live"))
     assert (url, offline) == (_url("ld"), False)
+
+
+def _withheld_then_signed_in(monkeypatch, room):
+    """房间接口：匿名请求回 4003110（data 里只有 prompts），借浏览器登录态重问的那一次回 room。浏览器和
+    登录都是假的（只「借」一个虚构的 Cookie），不读真的浏览器、不连网。返回每次请求带的 Cookie。"""
+    from app.browser_login import LoginRead
+
+    sent = []
+
+    async def fake_status(_session, _user):
+        return "7400000000000000002", 2
+
+    async def fake_json(_session, _url, limit=None, headers=None):
+        cookie = (headers or {}).get("Cookie")
+        sent.append(cookie)
+        if cookie:
+            return {"status_code": 0, "data": room}
+        return {"status_code": resolver.STREAM_WITHHELD_CODE, "data": {"prompts": ""}}
+
+    monkeypatch.setattr(resolver, "_room_status", fake_status)
+    monkeypatch.setattr(resolver, "_get_json", fake_json)
+    monkeypatch.setattr(resolver, "_browser_order", lambda pref: ("chrome",))
+    monkeypatch.setattr(resolver, "_read_login", lambda browser: LoginRead("sessionid=demo", "ok"))
+    monkeypatch.setattr(resolver, "_remember_browser", lambda browser: None)
+    return sent
+
+
+def test_signed_in_retry_after_4003110_uses_the_switch(monkeypatch):
+    """4003110 之后借登录态重问房间接口，拿到的那份 data 也按开关挑档（app/resolver.py 里
+    _pick_stream((again or {}).get("data") or {}) 那一处）。"""
+    link = "https://www.tiktok.com/@demo_room_two/live"
+    sent = _withheld_then_signed_in(monkeypatch, _room(FULL_LADDER, FULL_PULL))
+    assert run(resolver._resolve_via_api(link)) == (_url("origin"), False)
+    assert sent == [None, "sessionid=demo"]          # 先匿名被拒，再带登录重问拿到的
+    _switch_on(monkeypatch)
+    assert run(resolver._resolve_via_api(link)) == (_url("ld"), False)
+    assert sent == [None, "sessionid=demo"] * 2
+    monkeypatch.setenv(resolver.LOW_BITRATE_ENV, "0")
+    assert run(resolver._resolve_via_api(link)) == (_url("origin"), False)
+
+
+def test_layer_one_line_says_it_got_a_stream_url_not_an_audio_only_one(monkeypatch, capsys):
+    """官方接口那层拿到地址时，终端那句只说取到了流地址。现网 119 次成功解析选中的全是原画或 _hd，以前那句
+    「取到纯音频流」和看到的事对不上（专家审查 M5）。这里接口层给的就是原画。"""
+    async def api(_link, cookies_browser="auto"):
+        return _url("origin"), False
+
+    async def same(url, trusted=False):
+        return url
+
+    async def works(url):
+        return True
+
+    monkeypatch.setattr(resolver, "_resolve_via_api", api)
+    monkeypatch.setattr(resolver, "_check_media_url", same)
+    monkeypatch.setattr(resolver, "_media_url_works", works)
+    got = run(resolver.resolve_stream_url("https://www.tiktok.com/@demo_room_one/live",
+                                          cookies_browser="none"))
+    assert got == _url("origin")
+    out = capsys.readouterr().out
+    assert "[信息] 已通过 TikTok 直播接口取到流地址" in out
+    assert "纯音频" not in out
 
 
 def _page(tiers):
