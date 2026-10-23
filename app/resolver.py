@@ -648,11 +648,82 @@ async def _room_status(session, user):
     return (str(room) if room else None), status
 
 
-def _pick_stream(data):
-    """从 webcast 房间信息里挑一个地址，优先纯音频。
+# ---- 没有纯音频档时挑哪一档（2026-10-23，专家审查 M5）----
+# 专家审查报告 M5：现网历史 119 次成功解析，选中的全是原画（origin）或 _hd，没有一次是纯音频档或低档。房间
+# 不给纯音频档时，_pick_stream 取的是 stream_data 里排在第一个的那一档，现网就是这两档高码率的视频档。
+# 打开 LOW_BITRATE_PICK 后，没有纯音频档就按画质从低到高挑（stream_data 和 flv_pull_url 都这样排）；
+# 有纯音频档时照旧取纯音频档。关着时挑法和改动前逐字节相同（tests/test_resolver_pick.py 拿改动前的函数对拍）。
+#
+# 默认关（计划 D17）：低档的音轨可能是转码的、可能比原画晚几秒，晚了直接拖慢检测延迟。打开之前要先在同一分钟
+# 对同一个在播房间解析 1 次、各 ffprobe 一次低档和原画（只走接口层，绝不开浏览器，CLAUDE.md 第八条），比对音轨
+# 的 codec、采样率、声道、码率和同一时刻的延迟；一致且不更晚，结果给用户看、用户点头才改这里的默认值。
+# 试用不改代码：启动时设 TLT_LOW_BITRATE_STREAM=1 打开，=0 强制关（和 TLT_FFMPEG_LEGACY 一个路数）。
+# 测试要测哪一边就显式 monkeypatch 这一项或环境变量（CLAUDE.md 第九条那次的教训：别靠默认值变绿）
+LOW_BITRATE_PICK = False
+LOW_BITRATE_ENV = "TLT_LOW_BITRATE_STREAM"
 
-    我们只要声音。纯音频档（only_audio=1）省掉整条视频码流——对一个要连着
-    盯几小时的工具，这不是微优化。"""
+# 画质从低到高（键一律按小写比）。键名和高低照 yt-dlp 2026.8.19 TikTok 直播提取器（extractor/tiktok.py 里
+# 的 get_quality）：stream_data 的 data 里是 ld < sd < hd < uhd < origin；flv_pull_url 的键是
+# SD1 < SD2 < HD1 < FULL_HD1 < ORIGION（ORIGION 是 TikTok 原样的拼法）。本机没有留存过完整的接口返回，
+# 现网只见过 origin 和 hd 两档被选中
+SDK_LOW_TO_HIGH = ("ld", "sd", "hd", "uhd", "origin")
+PULL_LOW_TO_HIGH = ("sd1", "sd2", "hd1", "full_hd1", "origion")
+
+_low_bitrate_skip_told = False      # 「开了但这次不生效」那句终端提示一个进程只打一次
+
+
+def low_bitrate_pick(env=None):
+    """这次解析没有纯音频档时，要不要按画质从低到高挑（见 LOW_BITRATE_PICK 上面的说明）。
+
+    开着也有一种情况不生效：拉流 ffmpeg 退回了进程内重连（TLT_FFMPEG_LEGACY=1 或 TLT_RECONNECT_V2=0，
+    见 audio.flv_exits_on_drop）。M1 之前 FLV 断开时 ffmpeg 在进程里自己重连、跳读那 5 MB，低码率下跳读
+    要更久，一定会撞上看门狗（审查 M5 的「注意顺序」）；退回进程内重连就回到了 M1 之前的样子，这时仍按原来
+    的挑法，终端提示一次。"""
+    global _low_bitrate_skip_told
+    env = os.environ if env is None else env
+    flag = str(env.get(LOW_BITRATE_ENV, "")).strip().lower()
+    if flag in ("1", "on", "true", "yes"):
+        on = True
+    elif flag in ("0", "off", "false", "no"):
+        on = False
+    else:
+        on = bool(LOW_BITRATE_PICK)
+    if not on:
+        return False
+    try:
+        from .audio import flv_exits_on_drop
+        exits = flv_exits_on_drop(env)
+    except Exception:           # 拉流模块都导入不了，谈不上拉流；照原来的挑法
+        exits = False
+    if exits:
+        return True
+    if not _low_bitrate_skip_told:
+        _low_bitrate_skip_told = True
+        print("[信息] {} 已打开，但拉流 ffmpeg 退回了进程内重连（TLT_FFMPEG_LEGACY=1 或 "
+              "TLT_RECONNECT_V2=0），这次运行仍按原来的挑法选流".format(LOW_BITRATE_ENV))
+    return False
+
+
+def _low_first(keys, ladder):
+    """把档位的键按画质从低到高排。不认得的键排在最高一档（原画）前面、其余认得的后面，彼此保持原来的
+    顺序：原画是主播推上来的源流，转出来的档不会比它高；不认得的档有多高不知道，不抢在认得的低档前面。"""
+    top = len(ladder) - 1
+
+    def rank(key):
+        k = str(key).lower()
+        return ladder.index(k) if k in ladder else top - 0.5
+
+    return sorted(keys, key=rank)            # sorted 是稳定排序：同一档内保持原来的顺序
+
+
+def _pick_stream(data, low_first=None):
+    """从 webcast 房间信息里挑一个地址，优先纯音频（ao 档，only_audio=1）。
+
+    我们只要声音，纯音频档省掉整条视频码流。房间不给纯音频档时：默认取 stream_data 里排在第一个的那一档
+    （现网见到的全是原画或 hd，见 LOW_BITRATE_PICK 上面的说明），再退到 flv_pull_url 的第一个、rtmp、hls；
+    开关打开时这两处改成按画质从低到高挑。low_first 为 None 时按 low_bitrate_pick() 定。"""
+    if low_first is None:
+        low_first = low_bitrate_pick()
     su = (data or {}).get("stream_url") or {}
     sdk = ((su.get("live_core_sdk_data") or {}).get("pull_data") or {})
     raw = sdk.get("stream_data")
@@ -666,15 +737,16 @@ def _pick_stream(data):
         flv = ((opts.get(quality) or {}).get("main") or {}).get("flv")
         if flv:
             return flv
-    for val in opts.values():                    # 其次任意档的 flv
-        flv = ((val or {}).get("main") or {}).get("flv")
+    keys = _low_first(list(opts), SDK_LOW_TO_HIGH) if low_first else list(opts)
+    for key in keys:                             # 其次：开关关着取任意档（排第一个的），开着从低档挑
+        flv = ((opts[key] or {}).get("main") or {}).get("flv")
         if flv:
             return flv
     flvs = su.get("flv_pull_url") or {}
     if isinstance(flvs, dict):
-        for v in flvs.values():
-            if v:
-                return v
+        for key in (_low_first(list(flvs), PULL_LOW_TO_HIGH) if low_first else list(flvs)):
+            if flvs[key]:
+                return flvs[key]
     return su.get("rtmp_pull_url") or su.get("hls_pull_url") or None
 
 
