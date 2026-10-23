@@ -596,7 +596,8 @@ def _warn_mask_error(exc):
                             _VARYING_NUMBER.sub("#", text)[:120])
     if key in _mlx_said:
         return
-    kinds = sum(1 for said in _mlx_said if said.startswith(_MASK_ERROR_PREFIX))
+    # 先拷一份再数：_say_once 可能正在别的线程里（run_in_executor 建识别器）往同一个集合里加句子
+    kinds = sum(1 for said in tuple(_mlx_said) if said.startswith(_MASK_ERROR_PREFIX))
     if kinds >= MASK_ERROR_KINDS:
         _say_once("[警告] 识别前单独做的语言检测已经出过 {} 种错，再有别的错不逐条提示；出错的段照旧"
                   "先自动检测、不在主播语言里再整段重转".format(MASK_ERROR_KINDS))
