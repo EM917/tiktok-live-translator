@@ -528,8 +528,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 if streamer:
                     self.server.config["brands"] = save_streamer_brand(streamer, brand)
                 self._note_operator_stream_action()
-                self._last_start = (start_key, time.monotonic())
-                return self._start_with_ack(url, media=media)
+                return self._accepted_start(start_key, url, media)
             # 不合规的地址以前是被静默丢弃的——用户点了「开始」却毫无反应
             return self.server.status(
                 "error", L("地址无效：请填写 http:// 或 https:// 开头的直播间地址",
@@ -626,6 +625,19 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return False
         state = (config.get("status") or {}).get("state")
         return state in ("connecting", "live")
+
+    async def _accepted_start(self, key, url, media=None):
+        """被接受的 start：真正开始处理时才记下（key, 单调时钟），供 _is_repeated_start 判重；处理途中抛了
+        异常（或被取消）就把这条记录撤掉。以前在 handle_control 里、处理之前就记：start_stream 在停旧场时
+        抛了异常，状态停在 connecting、room_url 恰好还是这个房间（上一场就是它），20 秒内中控再点同一个
+        房间会被当成重发吞掉（专家审查 F7 复核）。"""
+        stamp = self._last_start = (key, time.monotonic())
+        try:
+            await self._start_with_ack(url, media=media)
+        except BaseException:
+            if getattr(self, "_last_start", None) is stamp:
+                self._last_start = None
+            raise
 
     async def _resend_status(self):
         """把当前状态原样再发一次（重发的 start 只要这一个回执：页面收到 connecting / live 就清掉在途的 start）。

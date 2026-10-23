@@ -176,3 +176,98 @@ def test_the_window_is_measured_from_the_accepted_start(pl):
     t0 = asyncio.run(scenario())
     key, at = pl._last_start
     assert key[0] == ROOM and at >= t0
+
+
+# ---- 只在真正开始处理之后才记；处理途中出错就撤掉（专家审查 F7 复核）----
+
+def test_nothing_is_remembered_until_the_start_actually_runs(pl):
+    """handle_control 交回协程那一刻还没记：server 真去 await 了才算被接受。"""
+    result = pl.handle_control(payload())
+    assert getattr(pl, "_last_start", None) is None
+    asyncio.run(result)
+    assert pl._last_start[0][0] == ROOM
+
+
+def test_a_start_that_raises_does_not_swallow_the_retry(pl):
+    """start_stream 在停旧场时抛了异常：状态停在 connecting，room_url 还是这个房间（上一场就是它）。
+    马上再点同一个房间要照常处理，不能被当成重发吞掉。"""
+    attempts = []
+    real = pl.start_stream
+
+    async def flaky_start(url, media=None):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise OSError("停旧场时出错")
+        await real(url, media=media)
+
+    pl.start_stream = flaky_start
+    pl.server.config["room_url"] = ROOM              # 上一场就是这个房间
+
+    async def scenario():
+        with pytest.raises(OSError):
+            await handle(pl, payload())
+        state = pl.server.config["status"]["state"]
+        remembered = getattr(pl, "_last_start", None)
+        await handle(pl, payload())                  # 中控马上再点一次
+        return state, remembered
+
+    state, remembered = asyncio.run(scenario())
+    assert state == "connecting"                     # 正是会被误判成重发的那种状态
+    assert remembered is None                        # 出错的那一次撤掉了
+    assert attempts == [ROOM, ROOM] and pl.started == [ROOM]   # 第二次照常处理
+    assert pl._last_start[0][0] == ROOM              # 这次成功的记下了：之后的重发照样去重
+
+
+def test_a_cancelled_start_is_forgotten_too(pl):
+    """处理途中被取消（页面断开，server 那边等着的协程被取消）：同样撤掉，重开不会被吞。"""
+    gate = asyncio.Event()
+
+    async def stuck_start(url, media=None):
+        pl.server.config["room_url"] = url
+        await gate.wait()
+
+    pl.start_stream = stuck_start
+
+    async def scenario():
+        task = asyncio.ensure_future(handle(pl, payload()))
+        for _ in range(100):
+            if getattr(pl, "_last_start", None) is not None:
+                break
+            await asyncio.sleep(0.01)
+        during = pl._last_start
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return during
+
+    during = asyncio.run(scenario())
+    assert during is not None and during[0][0] == ROOM
+    assert pl._last_start is None
+
+
+def test_a_failure_does_not_clear_a_newer_accepted_start(pl):
+    """只撤自己那一条：处理途中别的页面的 start 已经被接受、记成更新的那条时，不碰它。"""
+    gate = asyncio.Event()
+    calls = []
+
+    async def first_slow_then_fail(url, media=None):
+        calls.append(url)
+        if len(calls) == 1:
+            await gate.wait()
+            raise OSError("出错")
+        pl.server.config["room_url"] = url
+
+    pl.start_stream = first_slow_then_fail
+
+    async def scenario():
+        first = asyncio.ensure_future(handle(pl, payload()))
+        await asyncio.sleep(0.01)
+        await handle(pl, payload(OTHER))             # 另一个页面换了主播，被接受
+        newer = pl._last_start
+        gate.set()
+        with pytest.raises(OSError):
+            await first
+        return newer
+
+    newer = asyncio.run(scenario())
+    assert pl._last_start is newer and newer[0][0] == OTHER
