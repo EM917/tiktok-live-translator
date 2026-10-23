@@ -100,7 +100,8 @@
 | 密钥 | **API key** | token, secret | |
 | 字幕 | **captions** | subtitles | 苹果 Live Captions、Zoom、Meet 在直播场景都叫 captions；subtitles 偏影视。README 宣传语可以继续说 subtitles，界面统一用 captions |
 | 字幕字号 | **Caption size** | Font size | |
-| 清空字幕 | **Clear**（顶栏按钮），tooltip 写 **Clear caption history** | Clear Captions（放不下，见 §4） | |
+| 清空字幕 | **Clear**（顶栏按钮），tooltip 写 **Clear caption history** | Clear Captions（放不下，见 §4） | 2026-10-23 专家审查 V3 想把按钮上的字改成 Clear Captions，G10 重量了一次：默认 1000px 窗口里品牌标签被挤到 95px（live-full）、83px（带浮窗按钮）、67 / 55px（下拉补了第五种语言），都低于 100px 的下限，1101px 也有三档低于 120px。所以按钮上仍写 Clear，是字幕交给 tooltip 说。§4 R1 原来建议的 aria-label “Clear captions” 没有加：中文 aria-label 只能是按钮上的「清空字幕」，同一句中文对应两种英文过不了 G3 |
+| 清空弹幕 | **Clear Comments**（弹幕栏按钮），tooltip 写 **Clear comment history** | Clear（和顶栏清空字幕同名） | 2026-10-23 以前英文也只写 Clear、没有 tooltip，和顶栏那颗分不开（专家审查 V3）。弹幕栏里不挤，写全 |
 | 重译 | **Retranslate** | Redo, Translate Again | |
 | 弹幕 / 观众弹幕 / 评论流 | **comments / Comments**；实在需要时才说 **comment stream** | danmaku, bullet comments, chat | TikTok 英文界面就叫 comments。「弹幕」是中文平台的概念 |
 | 开始翻译 | **Start** | Start Translating, Start translating, Go | 和 Stop 成对。十几条后端提示要引用这个按钮，“click Start” 最短（38px，中文是 56px；“Start Translating” 要 123px） |
@@ -556,7 +557,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 95 | index.html:501 | 观众弹幕 | Comments | 52 → 70（13px/600）。不用 “Viewer Comments”（119）。2026-10-15 起标题后面不再有条数（列表封顶 100 条，数字一直停在 100） |
 | 96 | app.js:1336–1358 | 评论流已连接 / 正在连接评论流… / 评论流断开，重连中… / 未连接 | Connected / Connecting… / Disconnected. Reconnecting… / Not connected | 放在 Comments 标题旁边，上下文已经够了。2026-10-15 起「评论流已连接 / Connected」不再画在标题旁边：`#comment-source` 整个收起，这句话写进 Comments 标题的 title；其余状态照旧 |
 | 97 | app.js:1338/1358 | 已连接，等待观众发评论… / 开播后自动连接评论流 | Connected. Waiting for comments… / Comments connect when the stream starts. | 空状态文字 |
-| 98 | index.html:504/505 | 收起 / 清空弹幕 | Hide / Clear | title 写 “Hide comments to widen captions” |
+| 98 | index.html:504/505 | 收起 / 清空弹幕（title：清空历史弹幕） | Hide / Clear Comments（title：Clear comment history） | 收起的 title 写 “Hide comments to widen captions”。清空弹幕 2026-10-23 前英文只写 Clear、没有 title（专家审查 V3），见 §1.3 |
 | 99 | index.html:514 | 弹幕（悬浮入口）/ 展开观众弹幕 | Comments / Show comments | 2026-10-15 起入口上不带条数；未读红点（`#comment-fab-guard`）照旧 |
 | 100 | index.html:521 | 回到最新 | Jump to Latest | |
 | 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用更强的模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the stronger model | 悬停时才出现的按钮，68+16px |
@@ -735,7 +736,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 **P1：影响默认窗口或 README 截图**
 
 - **R1 直播顶栏只有 8px 余量。**
-  - 清空字幕用 “Clear”（tooltip 写 “Clear caption history”，aria-label 写 “Clear captions”），
+  - 清空字幕用 “Clear”（tooltip 写 “Clear caption history”；aria-label 不另写，原因见 §1.3），
     换主播用 “Switch Streamer”，不要加省略号。
   - 英文版在 ≤1100px 隐藏字号控件的两个 A，余量能到 42px。
   - 不要用 “Clear Captions”、“Viewer Comments”、“Start Translating” 这类长写法。

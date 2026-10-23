@@ -8,7 +8,8 @@
 //   3. 「清空字幕」「清空弹幕」除了删节点，还发 clear_history 给服务端（缓存才会清，刷新后不会又回来）；
 //      hello 重建前的内部清场和别的页面清空后的回声（history_cleared）不能再发一遍，不然两个页面互相清；
 //      连接断着时服务端收不到：只清了本页，页脚说一声；
-//   4. 英文页上，这些新写进页面的字一个汉字都不剩。
+//   4. 英文页上，这些新写进页面的字一个汉字都不剩；
+//   5. 两颗清空按钮在静态页里各有中英 title，英文名分得开（专家审查 V3）。
 // 数字之外的句子形状（单复数、零条时只写按钮名）在 tests/live-ui.test.mjs / live-ui.en.test.mjs。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -299,6 +300,28 @@ test("英文页查漏本身不瞎：按钮上写了一句中文就会被报出�
   assert.deepEqual(leftoverChinese(page), []);
   page.el("jump-latest").appendChild(page.document.createTextNode("回到最新"));
   assert.equal(leftoverChinese(page).length, 1);
+});
+
+// 专家审查 V3：英文界面上两颗清空按钮以前都只叫 Clear，清空弹幕那颗连 title 都没有。
+// 顶栏那颗按钮上仍只写 Clear（Clear Captions 在 1000px 窗口把品牌标签挤到 100px 以下，G10 实测，
+// docs/i18n-style.md §1.3、§4 R1），是字幕交给 title 说；弹幕栏那颗写全 Clear Comments
+test("两颗清空按钮都有中英 title，英文名和 title 都分得开；弹幕那颗英文写全", async () => {
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const tag = (id) => {
+    const m = html.match(new RegExp('<button id="' + id + '"((?:[^>"]|"[^"]*")*)>([^<]*)</button>'));
+    assert.ok(m, "index.html 里找不到 #" + id);
+    const attrs = Object.fromEntries([...m[1].matchAll(/([\w-]+)="([^"]*)"/g)].map((a) => [a[1], a[2]]));
+    return { attrs, text: m[2] };
+  };
+  const cap = tag("clear-btn");
+  assert.deepEqual([cap.text, cap.attrs["data-en"]], ["清空字幕", "Clear"]);
+  assert.deepEqual([cap.attrs.title, cap.attrs["data-en-title"]], ["清空历史字幕", "Clear caption history"]);
+  const cmt = tag("clear-comments");
+  assert.deepEqual([cmt.text, cmt.attrs["data-en"]], ["清空弹幕", "Clear Comments"]);
+  assert.deepEqual([cmt.attrs.title, cmt.attrs["data-en-title"]], ["清空历史弹幕", "Clear comment history"]);
+  assert.notEqual(cap.attrs["data-en"], cmt.attrs["data-en"], "英文按钮名不能再一样");
+  assert.notEqual(cap.attrs["data-en-title"], cmt.attrs["data-en-title"]);
 });
 
 test("两颗「回到最新」在静态页里是同一个样子（样式类、英文名、图标）", async () => {
