@@ -381,6 +381,11 @@ def _calls(node, name):
             and (getattr(n.func, "id", None) == name or getattr(n.func, "attr", None) == name)]
 
 
+def _src(node):
+    """ast.unparse，抹掉版本差异：3.9 把无参 lambda 写成 "lambda :"，3.10 起是 "lambda:"。"""
+    return ast.unparse(node).replace("lambda :", "lambda:")
+
+
 def _line(node, name):
     found = _calls(node, name)
     assert found, name
@@ -449,7 +454,7 @@ def test_the_first_hop_skips_the_import_check_only_on_a_matching_fingerprint():
 def test_the_install_is_deferred_before_pip_runs_and_the_flag_rides_into_the_venv():
     ensure = _func(_tree(), "ensure_env")
     (defer,) = _calls(ensure, "defer_install")
-    assert ast.unparse(defer) == (
+    assert _src(defer) == (
         "bootstrap.defer_install(plan, ROOT, lambda: _existing_instance_url(8765), "
         "imports_ok=imports_ok, venv_created=venv_created)")
     assert _line(ensure, "plan_install") < defer.lineno < _line(ensure, "install_requirements")
