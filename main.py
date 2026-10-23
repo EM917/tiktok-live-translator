@@ -160,7 +160,8 @@ def _forget_ready():
 
 
 def _install_deferred():
-    """上一跳因为端口上已有本程序在跑，把安装推迟了（I7，见 bootstrap.install_deferred）。"""
+    """上一跳因为端口上已有本程序在跑，把安装推迟了（I7，见 bootstrap.install_deferred）。
+    只有 POSIX 认得出来；Windows 上的最终进程认不出，在 ensure_env 里自己再判一次、照样不装。"""
     try:
         from app import bootstrap
         return bootstrap.install_deferred(ROOT)
@@ -290,8 +291,9 @@ def ensure_env():
     判断、文案和安装步骤在 app/bootstrap.py——这里没法测试（import main 就会跑到这儿）。
 
     就绪指纹（I9）：组件齐了的进程记下 .venv 的样子；第一跳看它没变就跳过子进程检查，直接换进
-    最终进程（macOS 开窗口时直接进 .app 壳）。推迟安装（I7）：要装、而本程序已经在跑时这次不装，
-    换进去的那个进程也不装（_install_deferred）。"""
+    最终进程（macOS 开窗口时直接进 .app 壳）。推迟安装（I7）：现有 .venv 能跑、只是清单变了、而本程序
+    已经在跑时这次不装，换进去的那个进程也不装（POSIX 凭 _install_deferred 认出来；Windows 认不出，
+    最终进程自己再走一遍检查和 defer_install，照样不装）。"""
     if _install_deferred():
         return
     if _deps_ok():
@@ -305,6 +307,7 @@ def ensure_env():
     lock = None
     ready = False         # 第一跳确认指纹没变：不再检查、不装，直接换进 .venv（I9）
     deferred = False      # 要装，但本程序已经在跑：这次不装（I7）
+    venv_created = False  # 这一轮刚 venv.create 过：空环境，不装就起不来，不能推迟（I7）
     if not in_project_venv:
         state, lock = _acquire_bootstrap_lock()
         if state == "busy":
@@ -354,23 +357,31 @@ def ensure_env():
 
                     venv.create(ROOT / ".venv", with_pip=True, clear=True)
                     target_version = here
+                    venv_created = True
         pip_python = sys.executable if in_project_venv else str(vpy)
         plan = None
+        imports_ok = False
         if not ready:
             check = subprocess.run(
                 [pip_python, "-c",
                  _ready_import()],
                 capture_output=True,
             )
+            imports_ok = check.returncode == 0
             # 核心模块都在、只是 requirements.txt 和上次装成功的那份不一样（更新带来了
             # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
             # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
-            plan = bootstrap.plan_install(check.returncode == 0, ROOT, recorded, target_version)
-        # I7：要装，而端口上已经有本程序在跑（直播中从 Start.command、Start.bat 或命令行又开了一次），
-        # 它正用着这个 .venv：pip 换掉它脚下的包，它之后的延迟导入可能拿到装了一半的东西。这次
-        # 不装，照常换进 .venv——最终进程会认出已有实例、把窗口叫到前台；换进去的那个进程凭环境
-        # 变量知道这次推迟了，也不装。等下次没有实例在跑时再装。端口探测只在真要装时才做
-        if bootstrap.defer_install(plan, ROOT, lambda: _existing_instance_url(8765)):
+            plan = bootstrap.plan_install(imports_ok, ROOT, recorded, target_version)
+        # I7：现有的 .venv 能跑、只是清单变了要补装，而端口上已经有本程序在跑（直播中从 Start.command、
+        # Start.bat 或命令行又开了一次），它可能正用着这个 .venv：pip 换掉它脚下的包，它之后的延迟导入
+        # 可能拿到装了一半的东西。这次不装，照常换进 .venv——最终进程会认出已有实例、把窗口叫到前台；
+        # 换进去的那个进程也不装（POSIX 凭环境变量认出来；Windows 上认不出，那个进程跑在 .venv 里，
+        # 走到这里自己再判一次）。等下次没有实例在跑时再装。这一轮刚建的 .venv、核心组件 import 不齐的
+        # 不推迟：不装就起不来（新解压的一份第一次打开、旧的那份还在直播，就是这种）。
+        # 这一句不能挪进 `if not in_project_venv` 或 `if not ready`：Windows 的推迟全靠它在最终进程里再跑一次。
+        # 端口探测只在真要装、而且能推迟时才做
+        if bootstrap.defer_install(plan, ROOT, lambda: _existing_instance_url(8765),
+                                   imports_ok=imports_ok, venv_created=venv_created):
             print("[初始化] 运行组件需要补装，但本程序已经在运行、正用着这些组件，这次先不装；"
                   "退出正在运行的程序后再打开，会自动补装")
             plan = None

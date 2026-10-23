@@ -19,8 +19,9 @@ main.py 在模块级就跑 ensure_env()，测试一 import 它就会被 execv �
     失败说明改给删 .venv 的步骤，不承诺下次会重建。
   * 就绪指纹（I9）：最终进程确认组件齐了，就把 .venv 此刻的样子记进 .venv/.ready-fingerprint。
     下次启动的第一跳看指纹没变，就不再起子进程跑一遍约 2 秒的 import 检查和 pip 探测。
-  * 推迟安装（I7）：要跑 pip，而端口上已经有本程序在跑（它正用着这个 .venv），这次不装，
-    经环境变量告诉换进去的下一个进程别再装，等没有程序在跑时再装。
+  * 推迟安装（I7）：现有的 .venv 能跑、只是清单变了要跑 pip，而端口上已经有本程序在跑（它可能
+    正用着这个 .venv），这次不装，等没有程序在跑时再装。这一轮刚建的 .venv、核心组件 import 不齐的
+    .venv 不推迟：不装就起不来。
 """
 import hashlib
 import json
@@ -53,8 +54,9 @@ NEEDS_REBUILD = ".needs-rebuild"
 READY_FINGERPRINT = ".ready-fingerprint"
 READY_FINGERPRINT_VERSION = 1
 # 上一跳因为端口上已有本程序在跑、把安装推迟了（I7）：值是推迟的那个进程的 PID。只在本项目
-# .venv/.app 壳里、而且 PID 对得上的进程认它（见 install_deferred）；最终进程在 main() 里把它从环境里
-# 拿掉，不让它跟着一键更新的重启和子进程传下去
+# .venv/.app 壳里、而且 PID 等于自己的进程认它（POSIX 上 exec 不换 PID；Windows 上永远对不上，
+# 靠最终进程自己再判一次，见 install_deferred）；最终进程在 main() 里把它从环境里拿掉，不让它跟着
+# 一键更新的重启和子进程传下去
 DEFER_ENV = "TLT_INSTALL_DEFERRED"
 KEEP_LOGS = 10
 TAIL_LINES = 40
@@ -377,14 +379,24 @@ def ready_fast_path(root, ready_import, python=None, now=None):
 #
 # 以前只有「清空重建」那一支先探端口；清单变了要补装（pip -r）的那一支不探，于是直播中从
 # Start.command、Start.bat 或命令行再开一次，pip 会在直播实例正用着的 .venv 里升级、替换包，
-# 它之后的延迟导入可能拿到装了一半的东西。现在要跑 pip、.venv 已经在、端口上有本程序在跑时，
-# 这次不装，直接换进 .venv（最终进程会认出已有实例、把窗口叫到前台），等下次没有实例时再装。
+# 它之后的延迟导入可能拿到装了一半的东西。现在现有的 .venv 能跑、只是清单变了、端口上有本程序
+# 在跑时，这次不装，直接换进 .venv（最终进程会认出已有实例、把窗口叫到前台），等下次没有实例时再装。
+#
+# 只推迟「不装也能跑」的那种。这一轮刚建的 .venv（比如新解压的一份第一次打开，而旧的那份还在
+# 8765 上直播）不可能有人在用，推迟了最终进程缺组件起不来，旧实例退出之前这份一直装不上；核心组件
+# import 不齐的 .venv 不装同样起不来。这两种照旧装。
 
-def defer_install(plan, root, instance_running):
-    """要不要把这次安装推迟。plan 是 plan_install 的结果；instance_running 是探端口的函数
-    （只在真要装、.venv 也在的时候才调：平时启动不多探一次）。探测本身出错按「没探到」处理，
-    照旧安装——和以前一样。"""
-    if plan is None or not (Path(root) / ".venv").is_dir():
+def defer_install(plan, root, instance_running, *, imports_ok, venv_created):
+    """要不要把这次安装推迟。plan 是 plan_install 的结果；imports_ok 是 .venv 里的 python 能不能
+    import 核心组件（和 plan_install 用的同一个结果）；venv_created 是这一轮启动是不是刚
+    venv.create 过 .venv。instance_running 是探端口的函数（只在真要装、而且能推迟的时候才调：
+    平时启动不多探一次）。探测本身出错按「没探到」处理，照旧安装——和以前一样。
+
+    两个关键字参数都没有默认值：调用方必须说清这一轮的 .venv 能不能跑，不能让「刚建的空环境」
+    默认落进推迟。"""
+    if plan is None or not imports_ok or venv_created:
+        return False
+    if not (Path(root) / ".venv").is_dir():
         return False
     try:
         return bool(instance_running())
@@ -398,26 +410,25 @@ def mark_install_deferred(environ=None, pid=None):
     env[DEFER_ENV] = str(os.getpid() if pid is None else pid)
 
 
-def _parent_pid():
-    try:
-        return os.getppid()
-    except (AttributeError, OSError):
-        return None
-
-
-def install_deferred(root, environ=None, pid=None, ppid=None, prefix=None):
+def install_deferred(root, environ=None, pid=None, prefix=None):
     """这个进程是不是上一跳推迟了安装之后换进来的：是的话 ensure_env 什么都不做。
 
-    要同时满足：跑在本项目的 .venv/.app 壳里；环境变量里记的 PID 是本进程（POSIX 上 exec 不换
-    PID）或父进程（Windows 上第一跳起子进程、自己等着，见 app/relaunch.replace_process）。
-    认 PID 是为了别让一个残留的环境变量（从终端里继承来的）让以后每次启动都不装。"""
+    要同时满足：跑在本项目的 .venv/.app 壳里；环境变量里记的 PID 就是本进程。认 PID 是为了
+    别让一个残留的环境变量（从终端里继承来的）让以后每次启动都不装。
+
+    只有 POSIX 认得出来：exec 换进 .venv/bin/python 或 .app 壳都不换 PID。Windows 上认不出来，
+    也不去猜：第一跳起子进程等着（app/relaunch.replace_process），子进程是 .venv\\Scripts\\python.exe——
+    标准库 venv 在 Windows 上默认把 venvlauncher.exe 复制成它（Lib/venv/__init__.py 的 copy_sources），
+    这个重定向器再起一个基础 python.exe 跑 main.py（multiprocessing/popen_spawn_win32.py 里 bpo-35797
+    的注释说的就是它）。真正跑 main.py 的进程，父进程是重定向器，第一跳是祖父进程，PID 和父 PID
+    都对不上。Windows 靠兜底：最终进程跑在 .venv 里，_deps_ok 因为清单待装照样不过，ensure_env 自己
+    再走一遍子进程 import 检查和 defer_install，照样不跑 pip——代价是多一次约 2 秒的检查，
+    推迟那行字打两遍（tests/test_bootstrap_plan.py 钉着这条兜底在 main.py 里的位置）。"""
     env = os.environ if environ is None else environ
     value = str(env.get(DEFER_ENV) or "").strip()
     if not value or not managed_env(root, prefix):
         return False
-    me = str(os.getpid() if pid is None else pid)
-    parent = _parent_pid() if ppid is None else ppid
-    return value == me or (parent is not None and value == str(parent))
+    return value == str(os.getpid() if pid is None else pid)
 
 
 def clear_install_deferred(environ=None):
