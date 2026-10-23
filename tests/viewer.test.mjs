@@ -1184,6 +1184,35 @@ test("弹幕面板：回放结束前用户已经自己翻了，回放结束时�
   });
 });
 
+test("弹幕面板：翻上去时视野上方一条的译文后补、长高了：视野跟着下移一点，但不被拉回底部、也不恢复跟随", () => {
+  // #120 留下的缺口：.comment-list 关了滚动锚定（overflow-anchor:none），视野上方的条目长高时浏览器不补偿
+  // scrollTop，视野里的内容整体往下挪了这么多；这是接受的结果（脚本只在跟随中贴底，updateComment 的那一下）。
+  // 不能接受的是：被强制拉回底部，或者跟随被悄悄打开、下一条新弹幕把视野拉走
+  assert.match(readFileSync(new URL("../web/viewer.css", import.meta.url), "utf8"),
+               /\.comment-list \{[^}]*overflow-anchor: none/, "这条用例的几何前提：弹幕列表不做滚动锚定");
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 30; n++) {
+      ws.onmessage({ data: comment(n, n === 5 ? { state: "pending", translated: null } : undefined) });
+    }
+    userScrollsTo(list, 4 * CMT_H + CMT_PENDING_H + 5 * CMT_H);   // c5 还在「翻译中…」，视野顶上正好是 c11
+    const top = list.scrollTop;
+    assert.equal(geo.firstVisible(), "c11");
+    const below = geo.below();
+
+    ws.onmessage({ data: JSON.stringify({ type: "comment_update", id: "c5", translated: "弹幕 5", state: "ok" }) });
+    assert.equal(list.scrollTop, top, "没人动 scrollTop：不补偿，也不拉到底");
+    assert.equal(geo.firstVisible(), "c10", "c5 长高了 " + (CMT_H - CMT_PENDING_H) + "px，视野里的内容往下挪，顶上露出 c10 的下半截");
+    assert.equal(geo.below(), below + (CMT_H - CMT_PENDING_H), "离底部更远了，没有被拉回去");
+
+    ws.onmessage({ data: comment(31) });                          // 跟随没被打开：新弹幕不拉动（顶上裁掉 c1）
+    assert.ok(geo.below() > 0, "仍停在翻上去的位置");
+    assert.equal(geo.firstVisible(), "c10");
+  });
+});
+
 // ---- 重连之后的持续提示和识别落后提示（专家审查 F3）----
 // 补核用真 ViewerHub 加真手机页复现：断线期间持续提示已清、识别已追上，手机重连后两条旧提示都还在——viewer_hello
 // 不清它们，replay_snapshot 也不回放 health。现在 viewer_hello 先清掉，紧随其后的回放把此刻还在的重建
