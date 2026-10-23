@@ -73,6 +73,11 @@ class SilenceSegmenter:
         self._reset()
         return out
 
+    def buffered_sec(self):
+        """缓冲里还没切出来的音频有几秒（不管有没有语音）。一轮出错收尾、没走到 flush 时，
+        Pipeline 把它算进 stream_break 的 discarded_sec（专家审查 B4）。只读，不动缓冲。"""
+        return len(self._buf) / 2 / SAMPLE_RATE
+
     def _reset(self):
         self._buf = bytearray()
         self._trailing_silence = 0.0

@@ -86,6 +86,15 @@ valid for about two weeks, so one capture covers a whole stream. See also
   stops after two connection attempts in a row with no audio; one that stops
   serving data after playing for 30 s or more ends the session instead of
   reconnecting.
+- As soon as the stream drops, the status line says "The stream was
+  interrupted. Reconnecting…" instead of showing Live until the queued audio
+  has been transcribed. Audio that had already arrived is still transcribed
+  and its captions keep appearing; translations still in progress get up to
+  5 s more in the background and no longer hold up the reconnect. Measured
+  with a test audio source: with 8 segments queued at 1 s of recognition each,
+  the reconnect status appears within 0.1 s of the drop, and with a
+  translation stuck in progress, reconnecting starts 8.1 s after the drop
+  instead of 13.1 s (the rest is the wait for the queued audio).
 - When the video server closes an FLV stream, ffmpeg exits and the app
   reconnects by itself. Measured against a local test server: about 2 s
   without audio per drop, where ffmpeg's own reconnect left 15–27 s without
@@ -133,6 +142,14 @@ valid for about two weeks, so one capture covers a whole stream. See also
   it is 10 s behind, detection is marked degraded at 30 s, and only audio more
   than 60 s behind is dropped, with the count shown on screen and written to
   the audit log.
+- Stopping, switching streamers or pausing for an update leaves audio that had
+  arrived but wasn't transcribed yet: the queued segments, the one being
+  transcribed and the part not yet cut into a segment. Each interruption's
+  `stream_break` records how many segments and seconds that was
+  (`discarded_segments`, `discarded_sec`), and `session_end` records the
+  session total; without any, neither key appears. When the app closes a
+  stalled connection by itself, the part not yet cut into a segment is still
+  transcribed.
 - Translation never slows recognition. Its queue holds four lines and drops
   the oldest when full; a line whose translation was skipped keeps its
   original text.
