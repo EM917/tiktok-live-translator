@@ -337,7 +337,10 @@ def ensure_env():
                                       if vpy.exists() else (False, None))
             # I9：解释器照旧实际跑一下（几十毫秒；跑不起来要重建，指纹看不出这个），其余的看就绪指纹：
             # 和最终进程上次记下的一样，就不再起子进程 import 一遍核心组件（约 2 秒）、不再探 pip
-            ready = usable and bootstrap.ready_fast_path(ROOT, _ready_import(), python=vpy)
+            # 实际跑出来的主次版本也要和 pyvenv.cfg 记的一样（ready_fast_path 里比）：指纹的链接终点
+            # 比的是启发式，次版本漂移不能走捷径
+            ready = usable and bootstrap.ready_fast_path(ROOT, _ready_import(),
+                                                         actual_version=target_version, python=vpy)
             if not ready:
                 if bootstrap.venv_needs_rebuild(usable, recorded, target_version,
                                                 own_env=bootstrap.managed_env(ROOT),
@@ -434,6 +437,9 @@ def ensure_env():
                 from app.relaunch import replace_process
                 replace_process(argv)
             from app.relaunch import exec_args
+            # 进壳没成功时 relaunch_inside_bundle 刚打了一行「[信息] 未能以应用身份重新启动」：
+            # 在上面那次冲缓冲之后，exec 前再冲一次，stdout 是管道时它才不会丢
+            flush_std()
             os.execv(str(vpy), exec_args(argv))
     except Exception as exc:
         # 按 pip 输出里真实出现的字样说明（磁盘满 / 连不上软件包服务器 / 没有适用于

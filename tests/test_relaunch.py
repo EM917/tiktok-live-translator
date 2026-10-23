@@ -237,8 +237,12 @@ def test_ensure_env_tries_the_bundle_then_waits_on_windows_then_execs_on_posix()
     # 进壳之前先放锁、收提示框（exec 不会执行 finally）、冲掉输出缓冲，推迟安装的记号也先记下
     assert _stmt_index(body, "lock.unlink()") < bundle
     assert _stmt_index(body, "_close_info_dialog()") < bundle
-    assert _stmt_index(body, "flush_std()") < bundle
     assert _stmt_index(body, "mark_install_deferred()") < bundle
+    flushes = [i for i, s in enumerate(body) if ast.unparse(s) == "flush_std()"]
+    assert len(flushes) == 2 and flushes[0] < bundle
+    # 进壳没成功时 relaunch_inside_bundle 打的那行「未能以应用身份重新启动」在第一次冲缓冲之后：
+    # execv 紧前面再冲一次，stdout 是管道时它才不会丢（Windows 那支 replace_process 自己冲）
+    assert flushes[1] == posix - 1
 
 
 def test_the_update_restart_still_execs_in_place():

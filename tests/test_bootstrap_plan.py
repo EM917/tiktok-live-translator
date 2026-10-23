@@ -4,7 +4,8 @@ I9 每次启动三次解释器跳转、约 4 秒的重型 import 白做：最终
 .venv/.ready-fingerprint，下次启动的第一跳只读文件比一比，没变就跳过子进程 import 检查和 pip 探测。
 钉住：指纹由哪些东西组成、只在本项目的 .venv/.app 壳里记和删、哪些变化让它失效——清单、
 上次装成功的那份、pyvenv.cfg、.venv/bin/python 链接终点的真实路径/大小/修改时间（计划审查 Q8：
-conda 原地升级次版本时 cfg 一个字不变）、要 import 的模块、重建记号、24 小时的重试。
+conda 原地升级次版本时 cfg 一个字不变）、要 import 的模块、重建记号、24 小时的重试；另外实际跑出来的
+主次版本必须和 pyvenv.cfg 记的一样（纵深防御）。
 
 I7 清单变了之后再启动一次，会在直播实例正用着的 .venv 里跑 pip -r：现有 .venv 能跑、只是清单变了、
 端口上有本程序在跑时这次不装（defer_install）；这一轮刚建的、核心组件 import 不齐的照旧装。换进去的
@@ -51,6 +52,11 @@ def _note(root, imports=IMPORTS, python=None):
     return bootstrap.note_ready(root, imports, prefix=root / ".venv", python=python)
 
 
+def _fast(root, imports=IMPORTS, version="3.13", **kw):
+    """第一跳的判断；version 是 interpreter_version 实际跑出来的主次版本（夹具的 pyvenv.cfg 记 3.13）。"""
+    return bootstrap.ready_fast_path(root, imports, actual_version=version, **kw)
+
+
 # ---- I9 指纹的组成 -----------------------------------------------------------------------------
 
 def test_the_fingerprint_is_made_of_files_only(project):
@@ -77,12 +83,12 @@ def test_no_fingerprint_without_an_interpreter_or_pyvenv_cfg(project):
 
 
 def test_the_final_process_records_it_and_the_first_hop_matches_it(project):
-    assert bootstrap.ready_fast_path(project, IMPORTS) is False                                     # 还没记过：照旧检查
+    assert _fast(project) is False                                     # 还没记过：照旧检查
     assert _note(project) is True
     path = project / ".venv" / bootstrap.READY_FINGERPRINT
     assert json.loads(path.read_text(encoding="utf-8")) == bootstrap.ready_fingerprint(
         project, IMPORTS)
-    assert bootstrap.ready_fast_path(project, IMPORTS) is True
+    assert _fast(project) is True
     assert [p.name for p in (project / ".venv").iterdir() if p.name.endswith(".tmp")] == []
 
 
@@ -102,20 +108,20 @@ def test_only_the_projects_own_environment_records_or_forgets(project, tmp_path)
     assert not (project / ".venv" / bootstrap.READY_FINGERPRINT).exists()
     assert _note(project)
     assert bootstrap.forget_ready(project, prefix=other) is False
-    assert bootstrap.ready_fast_path(project, IMPORTS) is True
+    assert _fast(project) is True
     # .app 壳里的进程（sys.prefix 是 Contents）也算本项目的环境
     contents = project / bootstrap.APP_DIR_NAME / "Contents"
     contents.mkdir(parents=True)
     assert bootstrap.forget_ready(project, prefix=contents) is True
-    assert bootstrap.ready_fast_path(project, IMPORTS) is False
+    assert _fast(project) is False
     assert bootstrap.forget_ready(project, prefix=project / ".venv") is True   # 没有也算删成
 
 
 def test_a_corrupt_fingerprint_is_not_a_match(project):
     (project / ".venv" / bootstrap.READY_FINGERPRINT).write_text("{not json", encoding="utf-8")
-    assert bootstrap.ready_fast_path(project, IMPORTS) is False
+    assert _fast(project) is False
     assert _note(project) is True                                     # 下一个就绪的进程改写它
-    assert bootstrap.ready_fast_path(project, IMPORTS) is True
+    assert _fast(project) is True
 
 
 # ---- I9 哪些变化让指纹失效 ---------------------------------------------------------------------
@@ -124,7 +130,7 @@ def test_a_changed_requirements_list_invalidates_it(project):
     assert _note(project)
     with open(project / "requirements.txt", "a", encoding="utf-8") as fh:
         fh.write("yt-dlp\n")
-    assert bootstrap.ready_fast_path(project, IMPORTS) is False
+    assert _fast(project) is False
 
 
 def test_a_new_install_stamp_invalidates_it(project):
@@ -133,7 +139,7 @@ def test_a_new_install_stamp_invalidates_it(project):
     (project / ".venv" / bootstrap.REQ_STAMP).write_text("0" * 64 + "\n", encoding="utf-8")
     fp_before = json.loads((project / ".venv" / bootstrap.READY_FINGERPRINT).read_text("utf-8"))
     assert bootstrap.ready_fingerprint(project, IMPORTS) != fp_before
-    assert bootstrap.ready_fast_path(project, IMPORTS) is False
+    assert _fast(project) is False
 
 
 def test_a_rewritten_pyvenv_cfg_invalidates_it(project):
@@ -141,7 +147,7 @@ def test_a_rewritten_pyvenv_cfg_invalidates_it(project):
     assert _note(project)
     (project / ".venv" / "pyvenv.cfg").write_text("home = /opt/x/bin\nversion = 3.14.0\n",
                                                   encoding="utf-8")
-    assert bootstrap.ready_fast_path(project, IMPORTS) is False
+    assert _fast(project) is False
 
 
 def test_a_replaced_interpreter_file_invalidates_it_even_with_the_same_size(project):
@@ -151,7 +157,7 @@ def test_a_replaced_interpreter_file_invalidates_it_even_with_the_same_size(proj
     st = py.stat()
     os.utime(py, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
     assert py.stat().st_size == st.st_size
-    assert bootstrap.ready_fast_path(project, IMPORTS) is False
+    assert _fast(project) is False
 
 
 def test_a_resized_interpreter_invalidates_it(project):
@@ -160,19 +166,49 @@ def test_a_resized_interpreter_invalidates_it(project):
     st = py.stat()
     py.write_bytes(py.read_bytes() + b"x")
     os.utime(py, ns=(st.st_atime_ns, st.st_mtime_ns))                 # 修改时间改回去
-    assert bootstrap.ready_fast_path(project, IMPORTS) is False
+    assert _fast(project) is False
 
 
 def test_different_modules_to_import_invalidate_it(project):
     """Apple 芯片上删掉 mlx-whisper 放弃记号：要 import 的多了 mlx_whisper，要重新检查。"""
     assert _note(project)
-    assert bootstrap.ready_fast_path(project, IMPORTS + ", mlx_whisper") is False
+    assert _fast(project, IMPORTS + ", mlx_whisper") is False
+
+
+def test_a_different_minor_version_never_takes_the_fast_path(project):
+    """纵深防御：链接终点「真实路径、大小、修改时间都没变」是启发式（有的包管理器换文件时保留修改
+    时间）。指纹一字不差，只要解释器实际跑出来的主次版本和 pyvenv.cfg 记的不一样，也不走捷径。"""
+    assert _note(project)
+    assert _fast(project, version="3.13") is True
+    assert _fast(project, version="3.14") is False
+    assert _fast(project, version="3.1") is False
+    assert _fast(project, version=None) is False          # 解释器没报出版本：不能确认，照旧检查
+    # pyvenv.cfg 读不出版本（被改坏）：同样照旧检查。cfg 改了指纹本来就对不上，这里只看版本这一条
+    (project / ".venv" / "pyvenv.cfg").write_text("home = /opt/x/bin\n", encoding="utf-8")
+    assert _note(project)
+    assert bootstrap.ready_fingerprint(project, IMPORTS) == bootstrap.read_ready_fingerprint(project)
+    assert _fast(project, version="3.13") is False
+
+
+def test_virtualenv_style_pyvenv_cfg_still_matches(project):
+    """virtualenv 写 version_info = 3.13.5.final.0：pyvenv_version 认得，捷径照走。"""
+    (project / ".venv" / "pyvenv.cfg").write_text(
+        "home = /opt/x/bin\nversion_info = 3.13.5.final.0\n", encoding="utf-8")
+    assert _note(project)
+    assert _fast(project, version="3.13") is True
+
+
+def test_the_actual_version_must_be_passed_in(project):
+    """actual_version 没有默认值：调用方漏传就报错，不会悄悄跳过版本比较。"""
+    assert _note(project)
+    with pytest.raises(TypeError):
+        bootstrap.ready_fast_path(project, IMPORTS)                  # 故意漏传
 
 
 def test_a_rebuild_marker_always_sends_the_first_hop_through_the_checks(project):
     assert _note(project)
     (project / ".venv" / bootstrap.NEEDS_REBUILD).write_text("{}", encoding="utf-8")
-    assert bootstrap.ready_fast_path(project, IMPORTS) is False
+    assert _fast(project) is False
 
 
 def test_a_failed_list_is_retried_after_24_hours_even_with_a_fingerprint(project):
@@ -184,8 +220,8 @@ def test_a_failed_list_is_retried_after_24_hours_even_with_a_fingerprint(project
     bootstrap.record_requirements_failure(project, bootstrap.requirements_file_digest(project), 1,
                                           now=now)
     assert _note(project)
-    assert bootstrap.ready_fast_path(project, IMPORTS, now=now + 3600) is True
-    assert bootstrap.ready_fast_path(project, IMPORTS, now=now + bootstrap.REQ_RETRY_SEC + 1) is False
+    assert _fast(project, now=now + 3600) is True
+    assert _fast(project, now=now + bootstrap.REQ_RETRY_SEC + 1) is False
 
 
 @posix_only
@@ -207,19 +243,20 @@ def test_conda_upgrading_python_in_place_invalidates_it(tmp_path):
     assert _note(root)
     assert bootstrap.ready_fingerprint(root, IMPORTS)["python"]["path"] == str(
         (base / "python3.13").resolve())
-    assert bootstrap.ready_fast_path(root, IMPORTS) is True
+    assert _fast(root) is True
     cfg = (root / ".venv" / "pyvenv.cfg").read_bytes()
 
     (base / "python3.14").write_bytes(b"python 3.14")               # conda update python
     (base / "python3").unlink()
     (base / "python3").symlink_to("python3.14")
     assert (root / ".venv" / "pyvenv.cfg").read_bytes() == cfg
-    assert bootstrap.ready_fast_path(root, IMPORTS) is False
+    assert _fast(root) is False
+    assert _fast(root, version="3.14") is False                      # 第一跳实际跑出来的是 3.14
 
     (base / "python3").unlink()                                       # Python 被卸掉：链接断了
     (base / "python3.14").unlink()
     assert bootstrap.ready_fingerprint(root, IMPORTS) is None
-    assert bootstrap.ready_fast_path(root, IMPORTS) is False
+    assert _fast(root) is False
 
 
 # ---- I7 推迟安装 -------------------------------------------------------------------------------
@@ -391,7 +428,12 @@ def test_the_first_hop_skips_the_import_check_only_on_a_matching_fingerprint():
     assigned = next(n for n in ast.walk(ensure) if isinstance(n, ast.Assign) and n.value
                     and fast in ast.walk(n.value))
     assert ast.unparse(assigned) == (
-        "ready = usable and bootstrap.ready_fast_path(ROOT, _ready_import(), python=vpy)")
+        "ready = usable and bootstrap.ready_fast_path(ROOT, _ready_import(), "
+        "actual_version=target_version, python=vpy)")
+    # actual_version 是同一个 interpreter_version 跑出来的那个版本
+    (version,) = [n for n in ast.walk(ensure) if isinstance(n, ast.Assign)
+                  and _calls(n.value, "interpreter_version")]
+    assert "target_version" in ast.unparse(version.targets[0])
     # 解释器照旧实际跑一下（interpreter_version 在指纹之前）
     assert _line(ensure, "interpreter_version") < fast.lineno
     # venv_needs_rebuild（含 pip 探测）、子进程 import 检查和 plan_install 都在 `if not ready:` 里

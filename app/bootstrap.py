@@ -359,14 +359,22 @@ def forget_ready(root, prefix=None):
         return False
 
 
-def ready_fast_path(root, ready_import, python=None, now=None):
+def ready_fast_path(root, ready_import, *, actual_version, python=None, now=None):
     """第一跳能不能跳过检查（子进程 import 和 pip 探测），直接换进 .venv。全都满足才行：
+      * actual_version（interpreter_version 实际跑出来的主次版本）和 pyvenv.cfg 记的一样。纵深防御：
+        链接终点「真实路径、大小、修改时间都没变」是启发式，有的包管理器换文件时保留修改时间；
+        次版本一漂移，这一条照样把第一跳送去全检查（venv_needs_rebuild 在那里探 pip、决定重建）。
+        代价：cfg 记的和实际跑的长期不一致（setup.sh 用别的次版本不带 --clear 重跑过，见
+        venv_needs_rebuild）时每次都全检查，和没有指纹以前一样慢，不会更糟；
       * 没有重建记号——有的话要让 venv_needs_rebuild 去探 pip、决定重建；
       * 清单不用补装（requirements_pending，和 plan_install 用的同一个判断：24 小时内为同一份
         清单装失败过的不算要装，过了 24 小时照旧重试）；
       * 指纹算得出来，而且和最终进程上次记下的一样。
-    解释器能不能跑不在这里看：调用方先跑 interpreter_version（几十毫秒），跑不起来照旧重建。"""
+    解释器能不能跑不在这里看：调用方先跑 interpreter_version（几十毫秒），跑不起来照旧重建。
+    actual_version 没有默认值：调用方必须把实际版本交进来，不能漏掉这一条。"""
     venv = Path(root) / ".venv"
+    if actual_version is None or actual_version != pyvenv_version(venv):
+        return False
     if (venv / NEEDS_REBUILD).exists():
         return False
     if requirements_pending(root, now=now):
