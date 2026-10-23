@@ -335,7 +335,7 @@ def test_an_upgrade_after_a_blocked_connection_in_english(monkeypatch):
     ([], 5, "TikTok asked for a sign-in to read comments. Sign in to TikTok in your browser, "
             "then start again."),
     ([jline({"event": "status", "state": "error", "detail": "RuntimeError: boom"})], 1,
-     "Comments connection error (RuntimeError: boom). Retrying shortly."),
+     "Comments connection error. Retrying shortly."),      # 原文只进审计（专家审查 U5）
 ])
 def test_other_comment_states_in_english(monkeypatch, lines, returncode, expect):
     cs, state_log, _raw, _calls = make_source(monkeypatch, [FakeProc(lines, returncode=returncode)])

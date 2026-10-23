@@ -821,10 +821,14 @@ def test_blocked_also_asks_for_an_update(monkeypatch):
 
 
 def test_generic_error_gets_a_chinese_lead(monkeypatch):
+    """面板只说程序在做什么，英文原文只进审计 raw（专家审查 U5）。以前这条断言钉的是中文说明后面括号里
+    带着原文——中文界面的弹幕栏标题因此一直挂着半句英文。"""
     err = jline({"event": "status", "state": "error", "detail": "RuntimeError: boom"})
     cs, state_log, raw_log, calls = make_source(monkeypatch, [FakeProc([err], returncode=1)])
     assert _run_until(cs, lambda: any(d.startswith("评论连接出错") for _, d in state_log)) is True
-    assert any("RuntimeError: boom" in d for _, d in state_log if d.startswith("评论连接出错"))
+    assert "评论连接出错，稍后自动重试" in [d for _, d in state_log]
+    assert not any("RuntimeError" in d or "RuntimeError" in getattr(d, "en", "") for _, d in state_log)
+    assert any("RuntimeError: boom" in raw for _, _, raw in raw_log)
 
 
 def test_two_argument_state_callbacks_still_work(monkeypatch):

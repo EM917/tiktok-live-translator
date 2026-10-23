@@ -1276,6 +1276,108 @@ def test_end_session_records_comment_fields_only_when_counted(monkeypatch, tmp_p
     assert "comment_fields" not in session_end({"n": 0, "has": {}})
 
 
+def test_a_connection_error_shows_one_sentence_and_keeps_the_raw_text_in_the_audit(monkeypatch, tmp_path):
+    """专家审查 U5：子进程报 ConnectionClosedError 时，面板（广播）上只有「评论连接出错，稍后自动重试」，
+    没有英文异常名，也没有那条只存在 0 毫秒的纯英文状态；英文原文只在审计的 raw 里。
+    走真的 Pipeline._publish_comment_source 和真的审计文件。"""
+    from app import resolver
+    monkeypatch.setattr(resolver, "_login_first_enabled", lambda: False)
+    monkeypatch.setattr(CommentSource, "start", lambda self, unique_id: None)
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    raw = "ConnectionClosedError: received 1006 (connection closed abnormally); then sent 1006"
+    err = jline({"event": "status", "state": "error", "detail": raw})
+    proc = FakeProc(stdout_lines=[jline({"event": "status", "state": "connecting"}), err], returncode=1)
+
+    async def scenario():
+        await p._begin_session("https://www.tiktok.com/@abc/live")
+        cs, _items, _states, _calls = make_source(monkeypatch, [proc])
+        cs._on_state = p._publish_comment_source
+        cs._on_state_takes_raw = True
+        cs._launch("abc")                  # start 已被换成空操作（不让开场自己起弹幕），直接起监督协程
+        ok = await wait_until(lambda: any(m.get("backend") == "error"
+                                          for m in server.of_type("comment_source")))
+        await cs.stop()
+        return ok, p.audit
+
+    ok, audit = run(scenario())
+    assert ok
+    from app import i18n
+    shown = [m["detail"] for m in server.of_type("comment_source") if m.get("backend") == "error"]
+    assert shown and set(shown) == {"评论连接出错，稍后自动重试"}
+    assert {i18n.render(d, "en") for d in shown} == {"Comments connection error. Retrying shortly."}
+    # 两种界面都没有原文：中文臂、英文臂都查（广播里的 detail 是 Bi，英文在 .en 上）
+    for m in server.of_type("comment_source"):
+        for lang in ("zh", "en"):
+            assert "ConnectionClosedError" not in str(i18n.render(m.get("detail") or "", lang))
+            assert "1006" not in str(i18n.render(m.get("detail") or "", lang))
+    records = [json.loads(line) for line in audit.path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    errors = [r for r in records if r["type"] == "comment_source" and r["state"] == "error"]
+    # 只有一条 error 记录：以前是两条（先是纯英文原文，同一毫秒再是带括号原文的中文说明）
+    assert len(errors) == 1
+    assert errors[0]["detail"] == "评论连接出错，稍后自动重试"
+    assert errors[0]["raw"] == raw
+
+
+def test_a_connection_error_reads_the_same_in_english(monkeypatch):
+    from app import i18n
+
+    err = jline({"event": "status", "state": "error", "detail": "ReadTimeout: timed out"})
+    cs, _items, state_log, _calls = make_source(monkeypatch, [FakeProc([err], returncode=1)])
+
+    async def scenario():
+        cs.start("abc")
+        await wait_until(lambda: any(s == "error" for s, _ in state_log))
+        await cs.stop()
+
+    run(scenario())
+    details = [d for s, d in state_log if s == "error"]
+    assert [i18n.render(d, "en") for d in details] == ["Comments connection error. Retrying shortly."]
+
+
+def test_a_signing_error_still_ends_on_the_signing_sentence_without_the_raw_text(monkeypatch):
+    """4 号退出（签名服务报错）的子进程也先报一条 state=error：面板上先是同一句「评论连接出错」，
+    退出后 _supervise 换成签名服务那句——最后停在签名那句，任何一条都不带英文原文；原文只走 raw。"""
+    states = []
+    raws = []
+
+    async def on_state(state, detail="", raw=""):
+        states.append((state, detail))
+        if raw:
+            raws.append(raw)
+
+    err = jline({"event": "status", "state": "error", "detail": "SignAPIError: sign server busy"})
+    cs, _items, _state_log, _calls = make_source(monkeypatch, [FakeProc([err], returncode=4)])
+    cs._on_state = on_state
+    cs._on_state_takes_raw = True
+
+    async def scenario():
+        cs.start("abc")
+        ok = await wait_until(lambda: any("签名" in d for _, d in states))
+        await cs.stop()
+        return ok
+
+    assert run(scenario()) is True
+    errors = [d for s, d in states if s == "error"]
+    assert errors == ["评论连接出错，稍后自动重试", "评论签名服务返回了错误，稍后重试"]
+    assert not any("SignAPIError" in d or "SignAPIError" in getattr(d, "en", "") for _, d in states)
+    assert raws == ["SignAPIError: sign server busy"]
+
+
+def test_an_error_without_detail_still_says_what_the_program_is_doing(monkeypatch):
+    """子进程报 error 却没带 detail：以前面板上是一条空的 error，现在同样是那句「稍后自动重试」，raw 为空。"""
+    err = jline({"event": "status", "state": "error", "detail": ""})
+    cs, _items, state_log, _calls = make_source(monkeypatch, [FakeProc([err], returncode=1)])
+
+    async def scenario():
+        cs.start("abc")
+        ok = await wait_until(lambda: any(s == "error" for s, _ in state_log))
+        await cs.stop()
+        return ok
+
+    assert run(scenario()) is True
+    assert [d for s, d in state_log if s == "error"] == ["评论连接出错，稍后自动重试"]
+
+
 # ---------------------------------------------------------------------------
 # 5. server.py：comment_source 广播落盘
 # ---------------------------------------------------------------------------

@@ -79,6 +79,11 @@ _FRESHEN_NOTES = {
 }
 
 
+# 子进程报 error 时面板上的那句话。原文是英文异常（"ConnectionClosedError: …"），中控看不懂、也不需要
+# 动手：两种界面都只说程序在做什么，原文经 raw 只进审计。不猜原因（第八条）
+_CONNECT_ERROR = L("评论连接出错，稍后自动重试", "Comments connection error. Retrying shortly.")
+
+
 # 终端那行「[弹幕] 字段：…」里各计数键的中文名（终端永远是中文，见 CLAUDE.md 第九条）
 _FIELD_NAMES = {
     "id": "id", "id_str": "id_str", "sec_uid": "sec_uid",
@@ -375,7 +380,7 @@ class CommentSource:
         self._restart_task = None       # 换主播时在途的 _restart 任务（保引用）
         self._proc = None
         self._last_state = None         # 子进程最后一条 status 的 state，退出码不可信时的依据
-        self._last_detail = ""          # 同一条 status 的 detail（原始报错），换成中文说明时用
+        self._last_detail = ""          # 同一条 status 的 detail（原始报错）：只经 raw 进审计，不上面板
         self._last_http = None          # 同一条 status 带的握手 HTTP 状态码（被拒时才有）
         self._last_handshake = None     # 同一条 status 带的服务端 Handshake-Msg 原话
         self._connect_times = []        # 最近一小时内的连接尝试时间戳，额度限流用
@@ -551,13 +556,8 @@ class CommentSource:
                     raw=raw)
                 await asyncio.sleep(wait)
             else:
+                # 子进程报的 error 已经在 _run_once 里换成 _CONNECT_ERROR 发出去了（原文进审计），这里只退避
                 backoff = min(backoff * 2, self.BACKOFF_MAX_SEC)
-                if self._last_state == "error" and self._last_detail:
-                    # 原始报错是英文异常，中控看不懂；先说程序在做什么，原文留在括号里备查
-                    await self._set_state(
-                        "error", L("评论连接出错，稍后自动重试（{}）",
-                                   "Comments connection error ({}). Retrying shortly.")
-                        .format(self._last_detail[:120]))
                 await asyncio.sleep(backoff)
 
     async def _try_freshen(self, prefix, raw=""):
@@ -706,6 +706,12 @@ class CommentSource:
                     if state in ("rejected", "blocked"):
                         # 原始英文报错不直接上面板：子进程退出后 _supervise 换成
                         # 中文说明，并先去找组件更新
+                        continue
+                    if state == "error":
+                        # 同理：英文原文只进审计（raw），面板上是 _CONNECT_ERROR。以前这里先把原文发上
+                        # 面板，同一毫秒再被 _supervise 换成「中文说明（原文前 120 字）」——中文界面的
+                        # 弹幕栏标题括号里一直挂着半句英文（专家审查 U5）
+                        await self._set_state("error", _CONNECT_ERROR, raw=self._last_detail)
                         continue
                     await self._set_state(state, obj.get("detail") or "")
                 elif kind == "comments":
