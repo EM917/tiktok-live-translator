@@ -380,7 +380,10 @@ class CommentSource:
         self._restart_task = None       # 换主播时在途的 _restart 任务（保引用）
         self._proc = None
         self._last_state = None         # 子进程最后一条 status 的 state，退出码不可信时的依据
-        self._last_detail = ""          # 同一条 status 的 detail（原始报错）：只经 raw 进审计，不上面板
+        # 同一条 status 的 detail（原始报错）。error、rejected、blocked 的只经 raw 进审计、不上面板；
+        # login_required、not_found 的仍由 _run_once 末行原样发上面板，子进程退出后随即被 _supervise
+        # 的中文说明盖掉（审计里留一条原文在 detail 的记录）
+        self._last_detail = ""
         self._last_http = None          # 同一条 status 带的握手 HTTP 状态码（被拒时才有）
         self._last_handshake = None     # 同一条 status 带的服务端 Handshake-Msg 原话
         self._connect_times = []        # 最近一小时内的连接尝试时间戳，额度限流用
@@ -556,7 +559,10 @@ class CommentSource:
                     raw=raw)
                 await asyncio.sleep(wait)
             else:
-                # 子进程报的 error 已经在 _run_once 里换成 _CONNECT_ERROR 发出去了（原文进审计），这里只退避
+                # 只退避，不发状态。子进程先报了 error 再退出的，_run_once 已经发过 _CONNECT_ERROR
+                # （原文经 raw 进审计）。其余落到这里的——退出码 -1（起不来、读输出出错），以及最后
+                # 一条 status 是 connecting、connected 或者根本没发 status 就以 1、2 或负数退出的（参数
+                # 出错、被信号打死……）——面板停在上一个状态（比如「已连接」）：原来就是这样，不在 U5 范围内
                 backoff = min(backoff * 2, self.BACKOFF_MAX_SEC)
                 await asyncio.sleep(backoff)
 

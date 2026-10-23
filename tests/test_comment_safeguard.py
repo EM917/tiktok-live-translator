@@ -548,7 +548,7 @@ def test_worker_run_reports_the_handshake_msg_when_rejected(monkeypatch, capsys)
         return None
 
     monkeypatch.setattr(comment_worker, "_watch_parent", no_watch)
-    code = run(comment_worker._run(SimpleNamespace(unique_id="bella", session_id=None,
+    code = run(comment_worker._run(SimpleNamespace(unique_id="abc", session_id=None,
                                                    tt_target_idc=None)))
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
     rejected = [x for x in lines if x.get("state") == "rejected"]
@@ -721,7 +721,7 @@ def _no_banned_labels(state_log):
 
 def _run_until(cs, cond, limit=300, settle=0.0):
     async def scenario():
-        cs.start("bella")
+        cs.start("abc")
         ok = await wait_until(cond, limit=limit)
         if settle:
             await asyncio.sleep(settle)
