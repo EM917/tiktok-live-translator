@@ -86,15 +86,37 @@ valid for about two weeks, so one capture covers a whole stream. See also
   stops after two connection attempts in a row with no audio; one that stops
   serving data after playing for 30 s or more ends the session instead of
   reconnecting.
+- When the video server closes an FLV stream, ffmpeg exits and the app
+  reconnects by itself. Measured against a local test server: about 2 s
+  without audio per drop, where ffmpeg's own reconnect left 15–27 s without
+  audio. HLS streams keep ffmpeg's own reconnect.
+- A stream whose header announces video but which carries only audio starts
+  producing audio within about 2 s (measured 1.2 s); before, ffmpeg could wait
+  for up to 90 s of stream before producing any.
 - Every step of stopping a stalled stream has a time limit, and a stall in
-  any step is recorded. "No stream audio for N min" appears after 2 minutes
-  without stream audio, and a notice plus a badge under the large caption
-  appear when less than 70% of the last 5 minutes arrived. Audio that arrives
-  late, when a stalled connection is closed, is still checked for banned
-  terms.
+  any step is recorded. On macOS and Linux a second stop signal follows 0.5 s
+  after the first: measured stops of a stalled ffmpeg take under 1 s instead
+  of 5 s, and the audio ffmpeg still had is kept. "No stream audio for N min"
+  appears after 2 minutes without stream audio, and a notice plus a badge
+  under the large caption appear when less than 70% of the last 5 minutes
+  arrived. Audio that arrives late, when a stalled connection is closed, is
+  still checked for banned terms.
 - `TLT_RECONNECT_V2=0` at startup brings back the previous reconnect rules
   (look up on every reconnect, stop after six attempts in a row with no
-  audio) for that run.
+  audio) for that run. FLV streams then go back to ffmpeg's own reconnect as
+  well: the previous rules look up the stream URL on every reconnect with no
+  limit, so if ffmpeg exited on every drop, every drop would mean one more
+  lookup.
+- `TLT_FFMPEG_LEGACY=1` at startup brings back the previous ffmpeg options for
+  that run: ffmpeg's own reconnect for FLV, ffmpeg's default limits for stream
+  analysis (5 s overall, up to 90 s per stream for FLV), and an errors-only
+  ffmpeg log. Otherwise, when the installed ffmpeg supports tagged log levels,
+  its warnings are read as well, and the number of times it reconnected on its
+  own is recorded with each stream interruption in the session audit.
+- How the two switches combine: `TLT_RECONNECT_V2=0` changes only how FLV
+  reconnects among the ffmpeg options and keeps the other two new options.
+  `TLT_FFMPEG_LEGACY=1` brings back all three, whichever reconnect rules are
+  in use, and does not change the reconnect rules.
 - The comment connection can go half-open: the Comments panel shows no
   warning, but no comments arrive. After 15 minutes of silence while
   connected, the app reconnects it and records that in the session audit.
