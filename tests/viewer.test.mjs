@@ -1025,28 +1025,45 @@ test("字幕的翻译结局经 caption_update 到达（pipeline 的实际路径�
 // ---- DOM 回归：弹幕面板贴底跟随（F6）----
 // 补核（10-22）真 ViewerHub 加真手机页实测：展开后 scrollTop=0、最新一条不在视野里；重连后显示的是
 // 回放 30 条里最旧的 5 条。下面给假列表装上和浏览器一样的几何：收起（display:none）时量出来全是 0，
-// 展开时面板 280px 高、每条 60px；scrollTop 读的时候夹在 [0, scrollHeight − clientHeight] 里；
+// 展开时面板 280px 高、每条 60px；还在「翻译中…」的那条矮 20px，译文补上之后长到 60px（后补的译文
+// 比「翻译中…」长时会折行，这一条就长高）——这时贴底靠的是 updateComment 里的那一下，假几何里条目
+// 不长高的话，删掉它测试也看不出来；scrollTop 读的时候夹在 [0, scrollHeight − clientHeight] 里；
 // 不做滚动锚定（viewer.css 给 .comment-list 关掉了）
 const CMT_H = 60;
+const CMT_PENDING_H = 40;
 const PANEL_H = 280;
 function comment(n, extra) {
   return JSON.stringify(Object.assign({ type: "comment", id: "c" + n, user: "viewer_" + n, ts: n,
                                         text: "comentario " + n, translated: "弹幕 " + n, state: "ok" }, extra || {}));
 }
+function cmtHeight(item) {   // 看这一条的译文行现在是不是「翻译中…」（renderComment/updateComment 用 .pending 标）
+  const zh = item.children.find((c) => c.className === "cmt-zh");
+  return zh && zh.classList.contains("pending") ? CMT_PENDING_H : CMT_H;
+}
 function commentGeometry(list) {
   const shown = () => !list.classList.contains("hidden");
   const append = list.appendChild.bind(list);
-  list.appendChild = (child) => { child.offsetHeight = CMT_H; return append(child); };
+  list.appendChild = (child) => {
+    Object.defineProperty(child, "offsetHeight", { configurable: true, get: () => cmtHeight(child) });
+    return append(child);
+  };
   Object.defineProperty(list, "clientHeight", { configurable: true, get: () => (shown() ? PANEL_H : 0) });
   Object.defineProperty(list, "scrollHeight", { configurable: true,
-    get: () => (shown() ? list.children.length * CMT_H + 8 : 0) });
+    get: () => (shown() ? list.children.reduce((sum, c) => sum + cmtHeight(c), 0) + 8 : 0) });
   let top = 0;
   const max = () => Math.max(0, list.scrollHeight - list.clientHeight);
   Object.defineProperty(list, "scrollTop", { configurable: true,
     get: () => Math.max(0, Math.min(top, max())), set: (v) => { top = Math.max(0, Math.min(v, max())); } });
   return {
     below: () => Math.max(0, list.scrollHeight - list.clientHeight) - list.scrollTop,   // 底下还藏着多少像素，0 = 在底部
-    firstVisible: () => list.children[Math.floor(list.scrollTop / CMT_H)].dataset.id,
+    firstVisible: () => {   // 视野顶上那一条：按每条自己的高度往下累加
+      let y = 0;
+      for (const c of list.children) {
+        y += cmtHeight(c);
+        if (y > list.scrollTop) return c.dataset.id;
+      }
+      return null;
+    },
   };
 }
 function userScrollsTo(list, top) {   // 用户自己滚：先有一次真实的触摸，随后的 scroll 才算用户滚的
@@ -1084,7 +1101,9 @@ test("弹幕面板：贴底时新弹幕（含裁到 30 条、译文后补）都�
     for (let n = 1; n <= 40; n++) {
       ws.onmessage({ data: comment(n, { state: "pending", translated: null }) });
       assert.equal(geo.below(), 0, "第 " + n + " 条之后应在底部");
+      const before = list.scrollHeight;
       ws.onmessage({ data: JSON.stringify({ type: "comment_update", id: "c" + n, translated: "弹幕 " + n, state: "ok" }) });
+      assert.equal(list.scrollHeight - before, CMT_H - CMT_PENDING_H, "译文补上之后这一条长高");
       assert.equal(geo.below(), 0, "第 " + n + " 条译文补上之后仍在底部");
     }
     assert.equal(list.children.length, 30, "只留最近 30 条");
@@ -1132,6 +1151,11 @@ test("弹幕面板：重连回放之后在底部；回放期间跟随意图被 s
     send({ type: "comment_source", backend: "live" });
     send({ type: "alert_mode", on: true });
     send({ type: "incident", id: "disk", level: "warn", text: "磁盘快满了" });
+    // 接着是字幕历史，弹幕回放在它后面（app/viewer.py replay_snapshot）。字幕历史里夹着的场次分隔线
+    // 本来带 replay，过白名单时被丢掉（ALLOW 的 session_break 只给 ts）：它也不算回放结束
+    send({ type: "caption", id: 1, ts: 1, original: "uno", translated: "一", replay: true });
+    send({ type: "session_break", ts: 2 });
+    send({ type: "caption", id: 2, ts: 3, original: "dos", translated: "二", replay: true, restore: true });
     for (let n = 11; n <= 40; n++) ws.onmessage({ data: comment(n, { replay: true }) });
     assert.equal(geo.below(), 0, "回放逐条追加时就该贴底");
 
