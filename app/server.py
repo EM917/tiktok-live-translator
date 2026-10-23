@@ -49,6 +49,9 @@ def replay_payloads(history):
 HISTORY_MAX = 300
 COMMENTS_MAX = 100
 ALERTS_MAX = 50
+# config["incidents"]（持续提示）最多留几条，超出时丢最久没更新的那条（见 broadcast）。
+# 手机回放的上限 app/viewer.py 的 REPLAY_MAX 按这个数和 ALERTS_MAX 算，改这里不用再去那边改
+INCIDENTS_MAX = 20
 # 这几种 status 说明这一场已经结束：停止（idle）、下播（ended）、出错（error）。
 # 之后不会再有这一场的识别落后提示，config["health"] 在这时删掉、也不再存（见 broadcast）
 SESSION_OVER_STATES = ("idle", "ended", "error")
@@ -524,7 +527,7 @@ class CaptionServer:
                     marked.pop(key, None)
         elif msg.get("type") == "incident":
             # 持续提示：按 id 覆盖，level=clear 去掉；落进 config，刷新或重连的页面照样看得到。
-            # 最多留 20 条，超出时丢最久没更新的那条
+            # 最多留 INCIDENTS_MAX 条，超出时丢最久没更新的那条
             key = str(msg.get("id") or "")
             if key:
                 incidents = self.config.setdefault("incidents", {})
@@ -536,7 +539,7 @@ class CaptionServer:
                     incidents[key] = {"id": key, "level": msg.get("level") or "warn",
                                       "text": msg.get("text") or "",
                                       "since": prev["since"] if prev else now, "ts": now}
-                    while len(incidents) > 20:
+                    while len(incidents) > INCIDENTS_MAX:
                         oldest = min(incidents.values(), key=lambda x: x["ts"])
                         incidents.pop(oldest["id"], None)
         elif msg.get("type") == "status":

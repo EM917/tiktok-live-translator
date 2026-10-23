@@ -25,7 +25,7 @@ from aiohttp import WSMsgType, web
 
 from . import i18n
 from .i18n import L
-from .server import replay_payloads
+from .server import ALERTS_MAX, INCIDENTS_MAX, replay_payloads
 
 # ---- 常量（全部模块级：测试直接引用，不要散在函数里）----
 TOKEN_BYTES = 32              # secrets.token_urlsafe(32) -> 43 个 URL 安全字符
@@ -34,7 +34,7 @@ TOKEN_LEN = 43
 # 入口，而观众端口一漂移，已经发出去、贴在墙上的二维码就静默失效。见 pick_ports
 PORT_OFFSET = 1
 PORT_TRIES = 5
-QUEUE_MAX = 512               # 每个观众一条有界队列；回放最多 273 条，留足余量
+QUEUE_MAX = 512               # 每个观众一条有界队列；回放最多 REPLAY_MAX（275）条，留足余量
 SEND_TIMEOUT_SEC = 5.0        # 写任务里单条发送的上限（不在关键路径上，可以比控制面宽）
 # 握手后等第一条 auth 的上限。手机页一连上就发 auth（viewer.js），正常几十毫秒；原来是 5 秒，
 # 专家审查 S6 实测一个 IP 挂 32 个不发 auth 的 /vws、超时就重开，带正确口令的手机 20 次只进来
@@ -85,10 +85,15 @@ WHY_LIMIT, WHY_LIMIT_EN = 160, 400
 # 判定为落后。数值与中控页没有开放回看之前的 deque 上限相同——手机看到的东西没有变
 PHONE_HISTORY_MAX = 100       # 字幕，含场次分隔标记（数的是 history 里的条目）
 PHONE_COMMENTS_MAX = 100
-REPLAY_MAX = 273              # 1+1+1+20+50 + PHONE_HISTORY_MAX + PHONE_COMMENTS_MAX，见 replay_snapshot
-# 这个和里没数 alert_mode 和 health（F3 加的）各一条：持续提示 20 条、报警 50 条、字幕和弹幕各 100 条
-# 同时到顶时，末尾最新的一两条弹幕会被最后那一刀切掉。数值由 tests/test_server_clear.py 钉着，
-# 抬高它要连那边一起改（不在 F3 这一批的文件里），先记在这里
+# 手机回放（replay_snapshot）最多几条：每一类各自的上限加起来，所有类别同时到顶时一条不切。
+# 以前写死 273，漏数了 alert_mode 和 health 各一条：持续提示、报警、字幕、弹幕同时到顶时，
+# 末尾最新的一两条弹幕被 replay_snapshot 最后那一刀切掉。tests/test_server_clear.py 钉着这个和
+REPLAY_MAX = (1                     # viewer_hello
+              + 1 + 1 + 1           # status、comment_source、alert_mode
+              + INCIDENTS_MAX       # 持续提示（server.broadcast 最多留这么多）
+              + 1                   # health（识别落后提示）
+              + ALERTS_MAX          # 报警（server.alerts 的 deque 上限）
+              + PHONE_HISTORY_MAX + PHONE_COMMENTS_MAX)
 
 VIEWER_FILES = ("viewer.html", "viewer.js", "viewer.css", "icon.png")
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -633,8 +638,9 @@ def replay_snapshot(server, viewers=0, share_since=None):
             payload = filter_payload(dict(comment, replay=True))
             if payload is not None:
                 out.append(payload)
-    # 按手机的上限（上面几行的切片），回放序列本就不会超过 REPLAY_MAX；这里切一刀是保险，
-    # 不是当前会触发的路径——警报、持续提示的上限以后涨了，也不该让回放悄悄超过 QUEUE_MAX。
+    # REPLAY_MAX 就是上面每一类上限的和，回放序列本就不会超过它；这里切一刀是保险，不是当前会触发的
+    # 路径——哪天某一类的上限涨了却没算进 REPLAY_MAX，回放也不该悄悄超过 QUEUE_MAX（那时切掉的是末尾
+    # 最新的弹幕，tests/test_server_clear.py 那条「全部到顶」的用例会先红）
     return out[:REPLAY_MAX]
 
 

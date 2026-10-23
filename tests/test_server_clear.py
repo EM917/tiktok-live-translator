@@ -17,9 +17,11 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from app import viewer
 from app.server import (
+    ALERTS_MAX,
     COMMENTS_MAX,
     HISTORY_BREAK_ROOM,
     HISTORY_MAX,
+    INCIDENTS_MAX,
     CaptionServer,
     captions_tail,
 )
@@ -159,8 +161,40 @@ def test_phone_replay_counts_session_breaks_in_its_100_as_before():
     assert [m["type"] for m in shown].count("session_break") == 2
 
 
-def test_replay_max_is_still_the_sum_of_the_old_parts():
-    assert viewer.REPLAY_MAX == 1 + 1 + 1 + 20 + 50 + viewer.PHONE_HISTORY_MAX + viewer.PHONE_COMMENTS_MAX == 273
+def test_replay_max_is_the_sum_of_every_part_of_the_phone_replay():
+    """replay_snapshot 的每一类各自的上限：viewer_hello、status、comment_source、alert_mode 各一条，持续提示
+    INCIDENTS_MAX 条，health 一条，报警 ALERTS_MAX 条，字幕、弹幕各 100 条。以前写死 273，漏了 alert_mode 和
+    health（b2 审查）。"""
+    assert INCIDENTS_MAX == 20 and ALERTS_MAX == 50
+    assert viewer.REPLAY_MAX == (1 + 1 + 1 + 1 + INCIDENTS_MAX + 1 + ALERTS_MAX
+                                 + viewer.PHONE_HISTORY_MAX + viewer.PHONE_COMMENTS_MAX) == 275
+    assert viewer.REPLAY_MAX < viewer.QUEUE_MAX
+
+
+def test_phone_replay_keeps_the_newest_comment_when_every_part_is_at_its_cap():
+    """持续提示、报警、字幕、弹幕同时到顶，再加上 alert_mode 和 health：以前回放比 273 多出两条，最后那一刀
+    把最新的两条弹幕切掉了。现在一条不切。全走真 CaptionServer.broadcast 的上限。"""
+    server = CaptionServer(port=0)
+
+    async def go():
+        await server.status("live", "")
+        await server.broadcast({"type": "comment_source", "backend": "connected"})
+        for i in range(INCIDENTS_MAX + 5):                  # 多出来的被 broadcast 丢掉
+            await server.broadcast({"type": "incident", "id": "i%d" % i, "level": "warn",
+                                    "text": "x", "ts": 1000.0 + i})
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 23.0, "text": "x"})
+    asyncio.run(go())
+    server.config["alerts_enabled"] = True                  # Pipeline 开场时写的那个键（见 replay_snapshot）
+    _fill(server, captions=150, comments=150, alerts=ALERTS_MAX + 10)
+    snapshot = viewer.replay_snapshot(server, viewers=1)
+    assert len(snapshot) == viewer.REPLAY_MAX
+    counts = {}
+    for m in snapshot:
+        counts[m["type"]] = counts.get(m["type"], 0) + 1
+    assert counts == {"viewer_hello": 1, "status": 1, "comment_source": 1, "alert_mode": 1,
+                      "incident": INCIDENTS_MAX, "health": 1, "alert": ALERTS_MAX,
+                      "caption": viewer.PHONE_HISTORY_MAX, "comment": viewer.PHONE_COMMENTS_MAX}
+    assert snapshot[-1]["type"] == "comment" and snapshot[-1]["id"] == "c149"     # 最新的那条还在
 
 
 # ---- 清空：服务端缓存也要清 ----

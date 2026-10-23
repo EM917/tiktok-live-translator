@@ -246,8 +246,9 @@ def test_register_does_not_blow_up_when_the_replay_exceeds_the_queue(loop, monke
 
 
 def test_replay_snapshot_stays_under_the_queue_limit():
-    """回放上限 273 条要一直小于 QUEUE_MAX，否则每个新观众一进来就被判定落后。"""
-    server = StubServer(status={"state": "live"}, comment_backend="idle",
+    """回放上限（每一类都到顶时 275 条）要一直小于 QUEUE_MAX，否则每个新观众一进来就被判定落后。"""
+    server = StubServer(status={"state": "live"}, comment_backend="idle", alerts_enabled=True,
+                        health={"level": "degraded", "backlog_sec": 61.0, "text": "x"},
                         incidents={str(i): {"id": str(i), "level": "warn",
                                             "text": "x", "ts": float(i)}
                                    for i in range(20)})
@@ -255,7 +256,8 @@ def test_replay_snapshot_stays_under_the_queue_limit():
     server.history = [{"type": "caption", "id": i} for i in range(100)]
     server.comments = [{"type": "comment", "id": i} for i in range(100)]
     snapshot = viewer_mod.replay_snapshot(server, viewers=1, share_since=1.0)
-    assert len(snapshot) == viewer_mod.REPLAY_MAX
+    assert len(snapshot) == viewer_mod.REPLAY_MAX == 275
+    assert snapshot[-1] == {"type": "comment", "id": 99, "replay": True}   # 最新的弹幕没被切掉
     assert viewer_mod.REPLAY_MAX < viewer_mod.QUEUE_MAX
 
 
