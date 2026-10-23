@@ -394,6 +394,35 @@ def test_the_same_lagging_state_blocks_while_the_backlog_is_really_behind(pl):
     assert len(_refusals(pl, 4)) == 1
 
 
+@pytest.mark.parametrize("live", ["lagging", "degraded", "asr_failing", "asr_stalled"])
+def test_a_shown_ok_state_goes_ahead_even_when_the_live_state_is_behind(pl, live):
+    """两头都不是 ok 才拦，这条钉的是另一半：显示的是 ok，此刻的积压已经过了「开始落后」
+    （AUDIO_BACKLOG_WARN_SEC）甚至「降级」，或者此刻挂着本场的出错、卡住记号，都照常开始。
+    拦不拦以显示出来的为准，此刻的状态只用来放过过时的落后显示。"""
+    pl._recent[4] = {"text": "hola"}
+    audit = FakeAudit()
+    pl.audit = audit
+    if live in BACKLOG:
+        _shown(pl, audit, "ok", backlog=BACKLOG[live])
+        assert pl._health_level(pl.telemetry.audio_backlog_sec) == live   # 此刻的确实落后
+    else:
+        _shown(pl, audit, "ok", backlog=0.0)
+        if live == "asr_failing":
+            pl._asr_failing = audit
+        else:
+            pl._asr_watch = {"audit": audit, "stalled": True, "dropped": 0}
+    calls = []
+
+    async def fake_retranslate(seq, trigger="manual"):
+        calls.append((seq, trigger))
+
+    pl.retranslate = fake_retranslate
+    run(pl._on_viewer_action("retranslate", {"id": 4}, IP))
+    assert calls == [(4, "viewer")]
+    assert _refusals(pl, 4) == []
+    assert _viewer_actions(audit) == [("viewer_action", "retranslate", 4, IP)]
+
+
 @pytest.mark.parametrize("why", ["asr_failing", "asr_stalled"])
 def test_failing_or_stalled_recognition_blocks_even_with_an_empty_backlog(pl, why):
     """识别连续出错时出错的调用返回得快、积压归零；一段识别卡住时没人说话积压也涨不上去。
