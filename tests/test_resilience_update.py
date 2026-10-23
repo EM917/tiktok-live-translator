@@ -987,8 +987,10 @@ def test_venv_rebuild_when_it_cannot_run_or_its_minor_version_moved(tmp_path):
     assert bootstrap.venv_needs_rebuild(False, None, None)              # 上次建到一半
     assert bootstrap.venv_needs_rebuild(True, "3.13", "3.14",           # 原地换了次版本
                                         python=py, ready_import=NO_CORE)
-    assert not bootstrap.venv_needs_rebuild(True, "3.13", "3.13",       # 只是缺组件：原地补装
-                                            python=py, ready_import=NO_CORE)
+    # 版本一致、既没有 pip 也没有组件：首次安装在装 pip 那一步被打断留下的样子（I1）。这里以前
+    # 断言「只是缺组件：原地补装」——钉的是错误行为：原地补装每次都报 No module named pip，
+    # 对话框还叫人检查网络。现在重建；pip 或组件还在时照旧原地补装，见 tests/test_bootstrap_pip.py
+    assert bootstrap.venv_needs_rebuild(True, "3.13", "3.13", python=py, ready_import=NO_CORE)
     assert not bootstrap.venv_needs_rebuild(True, None, "3.14", python=py)   # cfg 不记版本：不猜
     assert not bootstrap.venv_needs_rebuild(True, "3.13", None, python=py)   # 读不出实际版本：不猜
     # 没给要探测的解释器：没有证据，不删
@@ -1020,7 +1022,7 @@ def test_a_cfg_recording_another_minor_than_the_interpreter_runs_means_rebuild(t
     这个版本下没有 pip、没有组件：conda 原地升级之后的样子。"""
     here = sys.version_info[:2]
     venv_dir = tmp_path / "venv"
-    py, _site = _bare_venv(venv_dir)
+    py, site = _bare_venv(venv_dir)
     cfg = venv_dir / "pyvenv.cfg"
     cfg.write_text(re.sub(r"(?m)^version\s*=.*$", "version = {}.5".format(_other_minor(here)),
                           cfg.read_text(encoding="utf-8")), encoding="utf-8")
@@ -1030,6 +1032,11 @@ def test_a_cfg_recording_another_minor_than_the_interpreter_runs_means_rebuild(t
     assert bootstrap.venv_needs_rebuild(usable, recorded, actual, python=py, ready_import=NO_CORE)
     cfg.write_text(re.sub(r"(?m)^version\s*=.*$", "version = {}.{}.0".format(*here),
                           cfg.read_text(encoding="utf-8")), encoding="utf-8")
+    # cfg 改回实际版本之后，这个空环境照样重建（I1：版本一致、pip 和组件都没有，原地补装走不通）。
+    # 这里以前断言不重建，钉的是缺 pip 时每次启动都失败的那个行为；有 pip 就不重建
+    assert bootstrap.venv_needs_rebuild(usable, bootstrap.pyvenv_version(venv_dir), actual,
+                                        python=py, ready_import=NO_CORE)
+    _fake_pip(site)
     assert not bootstrap.venv_needs_rebuild(usable, bootstrap.pyvenv_version(venv_dir), actual,
                                             python=py, ready_import=NO_CORE)
 

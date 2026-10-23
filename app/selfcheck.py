@@ -212,6 +212,20 @@ async def check_asr(args, state=None):
                         "This Mac supports GPU acceleration, but recognition is running on the "
                         "CPU: {}. That’s more than twice as slow, and long sessions tend to build "
                         "a backlog.").format(detail), fix)
+    if info.get("rosetta"):
+        # I10：Apple 芯片上跑着 Intel 版 Python（经 Rosetta 转译）。这时 platform.machine() 报
+        # x86_64，上面那句「有 GPU 加速能力」认不出来，以前这一行照样报绿，识别却一直在 CPU 上跑。
+        # 重开程序补装没用（mlx-whisper 没有 Intel 版），能做的只有换一个原生的 Python。
+        # 不说「较小的模型」：自动选时是 Intel 路径的 CPU 小模型，但 --model 显式指定时不一定小，
+        # 用的是哪个模型 detail 里写着（审查小问题）
+        return _check(NAMES["asr"], WARN,
+                      L("这台 Mac 是 Apple 芯片，但程序在用 Intel 版的 Python（经 Rosetta 转译运行），"
+                        "识别只能用 CPU（{}）——慢，长时间监听容易积压",
+                        "This Mac has Apple silicon, but the app is running on an Intel version of "
+                        "Python (translated by Rosetta), so recognition can only run on the CPU: "
+                        "{}. It’s slow, and long sessions tend to build a backlog.").format(detail),
+                      L("换成 Apple 芯片原生的 Python：", "Switch to a Python built for Apple silicon. ")
+                      + python_switch_steps())
     return _check(NAMES["asr"], OK if cached else WARN, detail)
 
 
@@ -684,6 +698,33 @@ def _browser_login_row(observed):
     return _check(name, WARN, detail + scope, bl.steps_text(observed))
 
 
+def python_switch_steps(darwin=None):
+    """换一个 Python 的照做步骤（I10）：Python 3.9 上没有观众弹幕、Rosetta 转译的 Python 只能用 CPU
+    识别，两处都给这一段。
+
+    为什么要删 .venv：启动器（tools/find_python.sh）有 .venv 时只认建它的那个解释器，新装的
+    Python 不删 .venv 永远轮不到；没有 .venv 时按安装位置挑，python.org 装的排在最前面，所以写明
+    从 python.org 装。重装组件约 1.4 GB（INSTALL_NEED_GB 里「运行环境」那一份）。
+    macOS 的「完全磁盘访问权限」按解释器文件登记（browser_login.fda_targets）：换了 Python，新的
+    那个不在列表里，TikTok 要求登录才给流地址的直播间就拿不到流——要提醒重新授权一次（审查小问题）。"""
+    import sys
+    darwin = sys.platform == "darwin" if darwin is None else darwin
+    steps = L("从 python.org 下载安装 Python 3.10 或更新版本；装好之后完全退出程序，删掉程序文件夹里的 "
+              ".venv 文件夹，再重新打开程序，它会用新的 Python 重新安装运行组件（约 1.4 GB，需要联网）",
+              "Install Python 3.10 or later from python.org. Then quit the app completely, delete "
+              "the .venv folder in the app folder, and open the app again. It reinstalls its "
+              "components with the new Python (about 1.4 GB, needs an internet connection).")
+    if darwin:
+        # 英文的上一句已经带句号，这里以空格开头；中文上一句不带句号，这里以「。」开头
+        steps += L("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次，路径和步骤见"
+                   "「浏览器登录态」那一行；不加的话，TikTok 要求登录才给流地址的直播间拿不到流",
+                   " After switching, add the new Python to Full Disk Access once more. The Browser "
+                   "Login row shows the path and steps. Without it, the app can’t get the stream "
+                   "for live streams where TikTok provides the stream URL only to signed-in "
+                   "viewers.")
+    return steps
+
+
 def _pip_command(spec, upgrade=True):
     """给中控复制的手动安装命令。Windows 默认终端是 PowerShell：以带引号的路径开头的一行
     会被当成表达式报错，前面必须加 &。"""
@@ -712,13 +753,16 @@ async def check_comments(args):
     if getattr(args, "comments", True) is False:
         return _check(name, OK, L("已按 --no-comments 关闭", "Turned off with --no-comments"))
     if sys.version_info < (3, 10):
+        # I10：启动器会接受 3.9（比如 macOS 自带的那个）并一直固定在它上面，以前这一行只说「不可用」，
+        # 不说怎么换——照做的步骤见 python_switch_steps
         return _check(name, WARN,
                       L("弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用",
                         "The comments component needs Python 3.10 or later (current: {}.{}). "
                         "Comments aren’t available.")
                       .format(sys.version_info[0], sys.version_info[1]),
-                      L("字幕和违禁词报警不受影响",
-                        "Captions and banned-term alerts aren’t affected."))
+                      L("字幕和违禁词报警不受影响。想用观众弹幕：",
+                        "Captions and banned-term alerts aren’t affected. To get comments: ")
+                      + python_switch_steps())
     from .updater import TIKTOKLIVE_SPEC
     version = await _to_thread(tiktoklive_version)
     if version is None:
