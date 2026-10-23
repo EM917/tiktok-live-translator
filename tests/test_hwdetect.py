@@ -63,6 +63,14 @@ def test_auto_backend_without_mlx_falls_to_ct2():
 
 # ---- I10：Apple 芯片上跑着 Intel 版 Python（Rosetta 转译） ---------------------------------------
 
+@pytest.fixture(autouse=True)
+def _fresh_sysctl_probe():
+    """sysctl 的结果在进程里缓存着（_proc_translated）：每条测试前后都清掉，打桩的结果不漏到别的测试。"""
+    hwdetect._proc_translated.cache_clear()
+    yield
+    hwdetect._proc_translated.cache_clear()
+
+
 @pytest.mark.parametrize("returncode, stdout, expected", [
     (0, "1\n", True),          # 转译中
     (0, "0\n", False),         # 原生
@@ -95,6 +103,26 @@ def test_rosetta_is_false_without_evidence(monkeypatch):
         monkeypatch.setattr(hwdetect.sys, "platform", other)
         assert hwdetect.rosetta() is False
     assert called == []
+
+
+def test_the_sysctl_probe_runs_once_per_process(monkeypatch):
+    """进程转不转译启动后就定了：rosetta() 调多少次（detect() 每次都调它，点「开始」和自检都同步
+    调用 detect()），sysctl 只跑一次。
+    跑不起来那次不记：下次还会再探，不把一次超时记成整个进程的答案。"""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd, 5)
+        return SimpleNamespace(returncode=0, stdout="1\n", stderr="")
+
+    monkeypatch.setattr(hwdetect.sys, "platform", "darwin")
+    monkeypatch.setattr(hwdetect.subprocess, "run", fake_run)
+    assert hwdetect.rosetta() is False            # 第一次超时：不报，也不记
+    for _ in range(3):
+        assert hwdetect.rosetta() is True
+    assert len(calls) == 2
 
 
 def test_detect_reports_rosetta_so_the_startup_check_can_say_so(monkeypatch):

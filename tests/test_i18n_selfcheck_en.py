@@ -142,13 +142,14 @@ def _asr(mp, tmp_path):
             rows.append(run(selfcheck.check_asr(args)))
     note["text"] = NOTE                             # 装 GPU 组件放弃过：给手动安装的命令
     rows.append(run(selfcheck.check_asr(args)))
-    # I10：Apple 芯片上跑着 Intel 版 Python（Rosetta）：apple_silicon 为假，单独一句加换 Python 的步骤
+    # I10：Apple 芯片上跑着 Intel 版 Python（Rosetta）：apple_silicon 为假，单独一句加换 Python 的步骤。
+    # Rosetta 只出现在 macOS 上：步骤固定按 macOS 拼（带「完全磁盘访问权限」那句），跑测试的是
+    # Linux/Windows 跑器也一样；不拼「Windows 上的 Rosetta」这种现实里没有的组合（审查小问题）
     mp.setattr(hwdetect, "detect", lambda: {"apple_silicon": False, "rosetta": True})
-    for darwin in (True, False):
-        with mp.context() as other_os:              # 只换 python_switch_steps 看到的平台
-            other_os.setattr(selfcheck, "python_switch_steps",
-                             lambda darwin=darwin, real=selfcheck.python_switch_steps: real(darwin))
-            rows.append(run(selfcheck.check_asr(args)))
+    with mp.context() as on_macos:
+        on_macos.setattr(selfcheck, "python_switch_steps",
+                         lambda real=selfcheck.python_switch_steps: real(True))
+        rows.append(run(selfcheck.check_asr(args)))
     return rows
 
 
@@ -466,22 +467,28 @@ def test_the_python_39_comments_row_says_how_to_switch(monkeypatch, tmp_path):
 
 
 def test_a_rosetta_python_gets_its_own_asr_row(monkeypatch, tmp_path):
-    """I10：Apple 芯片上跑着 Intel 版 Python 时，以前「语音识别」一行照样是绿的。"""
+    """I10：Apple 芯片上跑着 Intel 版 Python 时，以前「语音识别」一行照样是绿的。
+
+    不说「较小的模型」（审查小问题）：--model 显式指定时模型不一定小，用的是哪个，括号里的
+    detail 写着。夹具里的模型是 large-v3-turbo，以前拼出来就是「较小的模型（ct2 + large-v3-turbo…）」。"""
     rows = [r for r in _rows("asr", monkeypatch, tmp_path) if "Rosetta" in r["detail"]]
-    assert len(rows) == 2
-    for row, darwin in zip(rows, (True, False)):
-        assert row["level"] == selfcheck.WARN
-        assert row["detail"] == ("这台 Mac 是 Apple 芯片，但程序在用 Intel 版的 Python（经 Rosetta 转译运行），"
-                                 "识别只能用 CPU 跑较小的模型（ct2 + large-v3-turbo（首次开播需先下载模型））"
-                                 "——慢，长时间监听容易积压")
-        assert i18n.text(row["detail"], i18n.EN) == (
-            "This Mac has Apple silicon, but the app is running on an Intel version of Python "
-            "(translated by Rosetta), so recognition can only use a smaller model on the CPU: ct2 + "
-            "large-v3-turbo (model downloads when you first click Start). It’s slow, and long "
-            "sessions tend to build a backlog.")
-        assert row["fix"] == "换成 Apple 芯片原生的 Python：" + SWITCH_ZH + (FDA_ZH if darwin else "")
-        assert i18n.text(row["fix"], i18n.EN) == (
-            "Switch to a Python built for Apple silicon. " + SWITCH_EN + (FDA_EN if darwin else ""))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["level"] == selfcheck.WARN
+    assert row["detail"] == ("这台 Mac 是 Apple 芯片，但程序在用 Intel 版的 Python（经 Rosetta 转译运行），"
+                             "识别只能用 CPU（ct2 + large-v3-turbo（首次开播需先下载模型））"
+                             "——慢，长时间监听容易积压")
+    english = i18n.text(row["detail"], i18n.EN)
+    assert english == (
+        "This Mac has Apple silicon, but the app is running on an Intel version of Python "
+        "(translated by Rosetta), so recognition can only run on the CPU: ct2 + large-v3-turbo "
+        "(model downloads when you first click Start). It’s slow, and long sessions tend to build "
+        "a backlog.")
+    assert "较小" not in row["detail"] and "smaller" not in english
+    # Rosetta 只在 macOS 上：步骤带「完全磁盘访问权限」那一句
+    assert row["fix"] == "换成 Apple 芯片原生的 Python：" + SWITCH_ZH + FDA_ZH
+    assert i18n.text(row["fix"], i18n.EN) == (
+        "Switch to a Python built for Apple silicon. " + SWITCH_EN + FDA_EN)
 
 
 def test_the_released_model_error_from_asr_reads_as_english():

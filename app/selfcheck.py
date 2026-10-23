@@ -214,15 +214,16 @@ async def check_asr(args, state=None):
                         "a backlog.").format(detail), fix)
     if info.get("rosetta"):
         # I10：Apple 芯片上跑着 Intel 版 Python（经 Rosetta 转译）。这时 platform.machine() 报
-        # x86_64，上面那句「有 GPU 加速能力」认不出来，以前这一行照样报绿，识别却一直在 CPU 上跑
-        # 较小的模型。重开程序补装没用（mlx-whisper 没有 Intel 版），能做的只有换一个原生的 Python
+        # x86_64，上面那句「有 GPU 加速能力」认不出来，以前这一行照样报绿，识别却一直在 CPU 上跑。
+        # 重开程序补装没用（mlx-whisper 没有 Intel 版），能做的只有换一个原生的 Python。
+        # 不说「较小的模型」：自动选时是 Intel 路径的 CPU 小模型，但 --model 显式指定时不一定小，
+        # 用的是哪个模型 detail 里写着（审查小问题）
         return _check(NAMES["asr"], WARN,
                       L("这台 Mac 是 Apple 芯片，但程序在用 Intel 版的 Python（经 Rosetta 转译运行），"
-                        "识别只能用 CPU 跑较小的模型（{}）——慢，长时间监听容易积压",
+                        "识别只能用 CPU（{}）——慢，长时间监听容易积压",
                         "This Mac has Apple silicon, but the app is running on an Intel version of "
-                        "Python (translated by Rosetta), so recognition can only use a smaller "
-                        "model on the CPU: {}. It’s slow, and long sessions tend to build a "
-                        "backlog.").format(detail),
+                        "Python (translated by Rosetta), so recognition can only run on the CPU: "
+                        "{}. It’s slow, and long sessions tend to build a backlog.").format(detail),
                       L("换成 Apple 芯片原生的 Python：", "Switch to a Python built for Apple silicon. ")
                       + python_switch_steps())
     return _check(NAMES["asr"], OK if cached else WARN, detail)
