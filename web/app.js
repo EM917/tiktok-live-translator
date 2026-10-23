@@ -1664,7 +1664,7 @@
     var card = cardsById[msg.id];
     if (card) applyTranslation(card, msg);
     if (liveHold && liveHold.msg.id === msg.id) {
-      // 在等的那一句有了结局：译文到了，或者确定不会有译文了（failed / dropped / skipped / same）——
+      // 在等的那一句有了结局：译文到了，或者确定不会有译文了（failed / dropped / skipped）——
       // 整句一起换上；没译成的照旧原文大字 + 角标。只带 strong_state 的重译进度消息不是结局，接着等
       if (msg.translated || (msg.translate_state && msg.translate_state !== "pending")) {
         showOnLiveBar(Object.assign({}, liveHold.msg, msg), liveHold.at);

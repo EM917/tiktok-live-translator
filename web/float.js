@@ -74,7 +74,7 @@ function floatFindComment(state, id) {
  *
  * 待译停留（专家审查 U1，用户 10-22 定的「等译文到了再一起换」，同中控页底部大字幕）：实时来的一句还在翻译
  * （translate_state 是 pending、没有译文）时先放进 state.held，窗口里停在上一句；它的 caption_update
- * 带来译文、或者确定不会有译文了（failed / dropped / skipped / same），再整句换上。以前每句先放西语、
+ * 带来译文、或者确定不会有译文了（failed / dropped / skipped），再整句换上。以前每句先放西语、
  * 约 0.9 秒后跳成中文。等待中又来一句就改等新的那句；从这一轮开始等算起满 FLOAT_HOLD_MS 还没结局（改等新句
  * 不重新数），页面里的计时器调 floatReleaseHeld 照以前的样子先放原文。回放来的照旧直接显示：那是断线前已经在
  * 屏幕上的样子。 */
