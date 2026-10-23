@@ -417,8 +417,28 @@ def test_stop_limits_keep_their_bytes_and_add_the_two_term2_delays_at_the_end(mo
     assert ('"stop_limits": ' + limits) in line
 
 
+# 改动前（基点 6a7b428）的 session_start 里，从 stop_limits 到 room_url 之前的那一段（逐字节）。是用改动前的代码、
+# 和 _session_start 同样的替身实跑抄下来的，不是从这次的输出里删出来的（第 1 轮审查）
+OLD_START_AROUND_THE_NEW_KEYS = ('"stop_limits": ' + OLD_STOP_LIMITS + '}, "reconnect_policy": "v2", '
+                                 '"lookup_bucket": [6, 180.0], "type": "session_start", "room_url": ')
+# 这次加的两个键（逐字节），接在 lookup_bucket 后面
+NEW_FFMPEG_KEYS = (', "ffmpeg_version": "ffmpeg version 7.1-test", "ffmpeg_args": {"legacy": false, '
+                   '"flv_exits_on_drop": true, "reconnect_v2": true, "loglevel": "+level+warning"}')
+
+
+def test_the_bytes_around_the_new_keys_match_the_record_from_before_the_change(monkeypatch, tmp_path):
+    _start, line, _calls = _session_start(monkeypatch, tmp_path)
+    assert line.count(NEW_FFMPEG_KEYS) == 1
+    assert ('"lookup_bucket": [6, 180.0]' + NEW_FFMPEG_KEYS + ', "type": "session_start"') in line
+    trimmed = line.replace(NEW_FFMPEG_KEYS, "")
+    for seg in (', "term2": 0.5, "urgent_term2": 0.15', ', "term2": null, "urgent_term2": null'):
+        trimmed = trimmed.replace(seg, "")
+    assert OLD_START_AROUND_THE_NEW_KEYS in trimmed
+
+
 def test_the_new_session_start_keys_only_add_to_the_old_record(monkeypatch, tmp_path):
-    """已有的键一个不少、顺序不变；新键只有 ffmpeg_version、ffmpeg_args（接在重连规则那几个键后面）。"""
+    """已有的键一个不少、顺序不变；新键只有 ffmpeg_version、ffmpeg_args（接在重连规则那几个键后面）。
+    这一条拿这次的输出删掉新键、和它自己重建的比；和改动前的输出逐字节比的是上一条和 stop_limits 那一条。"""
     start, line, _calls = _session_start(monkeypatch, tmp_path)
     keys = list(start)
     new = ["ffmpeg_version", "ffmpeg_args"]
