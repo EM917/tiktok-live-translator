@@ -4,15 +4,15 @@
 对话记录。现在父进程起子进程后往 stdin 写一行 JSON：登录时 {"session_id", "tt_target_idc"}，
 匿名时 {}；写完不关 stdin，子进程靠它的 EOF 判断父进程还在不在（_watch_parent）。
 
-这里钉的是子进程那一半（app/comment_worker.py）：
+这里主要钉子进程那一半（app/comment_worker.py）：
 - 首行按字节读、一个字节都不多读，后面的留给看门狗；
 - 5 秒读不到首行按匿名连，不卡住；
 - 首行没写完父进程就没了（真读到 EOF）：子进程自己退出，不去连 TikTok；
 - 读 stdin 出错不算父进程没了：按匿名连，父进程在不在交给看门狗；
 - 首行的内容（登录凭据）一个字都不打出来。
+最后一组走真父进程到真子进程的交接（CommentSource._run_once → _spawn → comment_worker）。
 
-全程不 import 真的 TikTokLive、不联网。唯一真起子进程的那条用一个假的 TikTokLive 包挡在前面：
-万一首行处理出错往下走了，也只会在 import 时失败，碰不到网络。"""
+全程不 import 真的 TikTokLive、不联网。真起子进程的几条都用一个假的 TikTokLive 包挡在前面。"""
 import asyncio
 import json
 import os
@@ -274,3 +274,101 @@ def test_a_real_worker_exits_when_the_parent_closes_stdin_halfway(tmp_path):
     assert out == b""                       # 一条 status 都没写：根本没开始连
     assert SID.encode() not in err
 
+
+# ---- 真父进程 + 真子进程：登录、匿名各起一次 ---------------------------------------------------
+# 走真的 CommentSource._run_once → 真的 _spawn → 真的 app.comment_worker，只把 TikTokLive 换成一个
+# 不联网的假包：它把子进程真实的 sys.argv 和 set_session 的参数记进一个文件。钉住三件事：
+# 命令行里只有主播名、登录态经 stdin 首行到了 set_session、匿名请求只在匿名那次记（登录 0 次，匿名 2 次）。
+# 不用 ps：Windows CI 上也要能跑到真管道上的首行交接。
+
+_STUB_INIT = '''
+import json, os, sys
+
+_REPORT = os.environ["TLT_TEST_STUB_REPORT"]
+_LIVE = os.environ.get("TLT_TEST_STUB_OUTCOME") == "connected"
+
+
+def _report(**kw):
+    with open(_REPORT, "a", encoding="utf-8") as f:
+        f.write(json.dumps(kw) + "\\n")
+
+
+class _Web:
+    def set_session(self, session_id, tt_target_idc):
+        _report(set_session=[session_id, tt_target_idc])
+
+
+class TikTokLiveClient:
+    def __init__(self, unique_id):
+        _report(argv=sys.argv[1:], unique_id=unique_id)
+        self.web = _Web()
+        self.room_id = 1
+        self._handlers = {}
+
+    def on(self, event):
+        def register(fn):
+            self._handlers[event] = fn
+            return fn
+        return register
+
+    async def is_live(self):
+        return _LIVE
+
+    async def connect(self):
+        from TikTokLive.events import ConnectEvent
+        await self._handlers[ConnectEvent](ConnectEvent())
+
+    async def disconnect(self):
+        pass
+'''
+_STUB_EVENTS = "class CommentEvent: pass\nclass ConnectEvent: pass\nclass DisconnectEvent: pass\n"
+
+
+@pytest.mark.parametrize("outcome,returncode", [("offline", 3), ("connected", 0)])
+@pytest.mark.parametrize("mode", ["login", "anonymous"])
+def test_a_real_parent_hands_the_session_to_a_real_worker_over_stdin(
+        tmp_path, monkeypatch, capsys, mode, outcome, returncode):
+    from app import resolver
+    from app.comment_source import CommentSource
+
+    pkg = tmp_path / "stub" / "TikTokLive"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(_STUB_INIT, encoding="utf-8")
+    (pkg / "events.py").write_text(_STUB_EVENTS, encoding="utf-8")
+    report = tmp_path / "report.jsonl"
+    monkeypatch.setenv("PYTHONPATH", str(pkg.parent))      # 子进程继承：先找到假包，绝不联网
+    monkeypatch.setenv("TLT_TEST_STUB_REPORT", str(report))
+    monkeypatch.setenv("TLT_TEST_STUB_OUTCOME", outcome)
+    notes = []
+    monkeypatch.setattr(resolver, "note_anonymous_request", lambda: notes.append(True))
+
+    class Recording(CommentSource):
+        spawned = []
+
+        async def _spawn(self, args):
+            self.spawned.append(list(args))
+            return await super()._spawn(args)           # 真的 _spawn：真起子进程、真管道
+
+    async def on_items(items):
+        pass
+
+    async def on_state(state, detail=""):
+        pass
+
+    cs = Recording(on_items=on_items, on_state=on_state, cookies_browser="none", root=ROOT)
+    session = {"session_id": SID, "tt_target_idc": "useast5"} if mode == "login" else None
+    rc, _healthy = asyncio.run(asyncio.wait_for(cs._run_once("fictional_streamer", session), 60))
+
+    assert rc == returncode
+    assert cs.spawned == [["fictional_streamer"]]                 # 父进程这边：只给了主播名
+    lines = [json.loads(ln) for ln in report.read_text(encoding="utf-8").splitlines()]
+    assert lines[0] == {"argv": ["fictional_streamer"], "unique_id": "@fictional_streamer"}
+    if mode == "login":
+        assert lines[1:] == [{"set_session": [SID, "useast5"]}]   # 登录态经 stdin 首行送到了
+        assert notes == []                                         # 登录模式不记匿名请求
+    else:
+        assert lines[1:] == []
+        assert len(notes) == 2      # 启动时一次；连上时、或没连上就退出时再一次
+    terminal = capsys.readouterr().out
+    assert SID not in terminal
+    assert "首行" not in terminal       # 没走超时、读错误、格式不对这几条退路：首行是当场送到的
