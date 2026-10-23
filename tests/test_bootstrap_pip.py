@@ -9,8 +9,8 @@ venv_needs_rebuild 在版本一致时直接放过，原地补装每次都报 No 
 - 版本一致、pip 和组件都 import 不了：重建；pip 或组件还在：不重建，照旧原地补装；
 - 装之前先探 pip，缺了在 .venv 里跑 ensurepip 原地补（不联网），补回来照常装；
 - 补不回来写重建记号、抛 PipMissing，下次 venv_needs_rebuild 据此重建（组件都在也重建）；
-  记号在但 pip 已经回来了：删记号、不重建；
-- 失败说明认出缺 pip，不提网络，说下次打开会重建；英文同样。
+  记号在但 pip 已经回来了：删记号、不重建；记号在、pip 探测本身出错：不重建、不删记号；
+- 失败说明认出缺 pip，不提网络；记号写成了说下次打开会重建，没写成给删 .venv 的步骤；英文同样。
 
 venv 都建在 tmp_path 里（不带 pip、不起 ensurepip、不连网），绝不碰项目自己的 .venv。
 """
@@ -144,7 +144,7 @@ def test_pip_present_or_unknown_goes_straight_to_pip(project):
 @pytest.mark.parametrize("ensurepip_code, after", [(1, False), (0, False)],
                          ids=["ensurepip-failed", "ensurepip-ok-but-still-no-pip"])
 def test_unrecoverable_pip_writes_the_marker_and_the_next_launch_rebuilds(project, ensurepip_code,
-                                                                         after):
+                                                                         after, capsys):
     root, py, site, here = project
     ready = _fake_core(site)             # 组件都在：没有记号时不会重建
     assert not bootstrap.venv_needs_rebuild(True, here, here, python=py, ready_import=ready)
@@ -157,13 +157,40 @@ def test_unrecoverable_pip_writes_the_marker_and_the_next_launch_rebuilds(projec
     marker = root / ".venv" / bootstrap.NEEDS_REBUILD
     data = json.loads(marker.read_text(encoding="utf-8"))
     assert set(data) == {"at", "kind"} and data["kind"] == "pip_missing"
-    assert info.value.log_path == log
+    assert info.value.log_path == log and info.value.marked is True
+    assert "[初始化] pip 原地补装没有成功，下次启动会重建运行环境" in capsys.readouterr().out
     # 下次启动：记号在、pip 还是没有——重建，「下次打开会自动重建」这句话属实
     assert bootstrap.venv_needs_rebuild(True, here, here, python=py, ready_import=ready)
     # 版本读不到也认记号；进程跑在环境里面时不清（下次从启动器进来再重建）
     assert bootstrap.venv_needs_rebuild(True, None, None, python=py, ready_import=ready)
     assert not bootstrap.venv_needs_rebuild(True, here, here, own_env=True, python=py,
                                             ready_import=ready)
+    assert marker.exists()
+
+
+def test_a_marker_with_an_inconclusive_pip_probe_deletes_nothing(project, monkeypatch):
+    """记号在，但这次 `import pip` 的探测本身出错（这里让它超时）：不知道 pip 在不在，就不按记号
+    重建、也不删记号——和 pip_importable / venv_salvageable「没有证据不删东西」的约定一样
+    （审查小问题：以前只要探测不是 True 就判重建）。探测恢复正常、pip 确实没有，照旧重建。"""
+    root, py, site, here = project
+    ready = _fake_core(site)
+    assert bootstrap.mark_needs_rebuild(root)
+    marker = root / ".venv" / bootstrap.NEEDS_REBUILD
+    real_run = subprocess.run
+
+    def pip_probe_times_out(cmd, *args, **kwargs):
+        if list(cmd)[-2:] == ["-c", "import pip"]:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        return real_run(cmd, *args, **kwargs)
+
+    with monkeypatch.context() as stuck:
+        stuck.setattr(bootstrap.subprocess, "run", pip_probe_times_out)
+        assert bootstrap.pip_importable(py) is None
+        assert not bootstrap.venv_needs_rebuild(True, here, here, python=py, ready_import=ready)
+        # 版本读不到时也一样：只有记号、没有确认缺 pip，不删
+        assert not bootstrap.venv_needs_rebuild(True, None, None, python=py, ready_import=ready)
+        assert marker.exists()
+    assert bootstrap.venv_needs_rebuild(True, here, here, python=py, ready_import=ready)
     assert marker.exists()
 
 
@@ -199,20 +226,82 @@ PIP_MISSING_EN = ("The app’s runtime is missing pip, the tool that installs it
                   "reinstalling pip in place didn’t work.\nThe next time you open the app, it "
                   "rebuilds the runtime automatically (about 1.4 GB, needs an internet "
                   "connection).")
+# 重建记号没写成：下次启动不会自动重建，不承诺，给照做的步骤
+PIP_UNMARKED_ZH = ("程序的运行环境里缺少安装工具 pip，原地补装没有成功。\n"
+                   "请删掉程序文件夹里的 .venv 文件夹，再重新打开程序，它会重新安装运行组件"
+                   "（约 1.4 GB，需要联网）。")
+PIP_UNMARKED_EN = ("The app’s runtime is missing pip, the tool that installs its components, and "
+                   "reinstalling pip in place didn’t work.\nDelete the .venv folder in the app "
+                   "folder, then open the app again. It reinstalls its components (about 1.4 GB, "
+                   "needs an internet connection).")
+
+
+def _refuse_marker_writes(monkeypatch):
+    """写重建记号时报 PermissionError（.venv 只读那种）；别的文件照常写。"""
+    real_write = Path.write_text
+
+    def refuse(self, *args, **kwargs):
+        if self.name == bootstrap.NEEDS_REBUILD:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", refuse)
 
 
 def test_the_dialog_for_missing_pip_says_what_happens_next_not_check_the_network(tmp_path):
     log = tmp_path / "logs" / "bootstrap-x.log"
-    text = bootstrap.failure_text(bootstrap.PipMissing(log), python_version="3.13", root=tmp_path)
+    text = bootstrap.failure_text(bootstrap.PipMissing(log, marked=True), python_version="3.13",
+                                  root=tmp_path)
     assert text == PIP_MISSING_ZH + "\n详细记录：{}".format(log)
     english = i18n.text(text, i18n.EN)
     assert english == PIP_MISSING_EN + "\nLog file: {}".format(log)
     assert not i18n.CJK.search(english)
     for t in (text, english):
         assert "网络" not in t and "network" not in t.lower() and "pip install" not in t
-    assert bootstrap.failure_text(bootstrap.PipMissing()) == PIP_MISSING_ZH
+    assert bootstrap.failure_text(bootstrap.PipMissing(marked=True)) == PIP_MISSING_ZH
+    # 没说记号写没写成：按没写成算，不承诺下次会重建
+    assert bootstrap.failure_text(bootstrap.PipMissing()) == PIP_UNMARKED_ZH
     assert i18n.text(i18n.of(bootstrap.PipMissing()), i18n.EN) == \
         "pip is missing from .venv and couldn’t be reinstalled in place"
+
+
+def test_a_marker_that_could_not_be_written_is_not_promised(project, monkeypatch, capsys):
+    """审查小问题：记号写不上（.venv 只读、写文件报错）时，下次启动不会自动重建，以前终端和对话框
+    照样说「下次会重建」。现在终端和对话框都改给删 .venv 再打开的步骤。"""
+    root, py, site, here = project
+    ready = _fake_core(site)
+    _refuse_marker_writes(monkeypatch)
+    run = Recorder(ensurepip=1)
+    log = root / "logs" / "bootstrap-x.log"
+    with pytest.raises(bootstrap.PipMissing) as info:
+        bootstrap.install_requirements(py, root, ["aiohttp"], [], log_path=log, run=run,
+                                       probe=_probe(False))
+    assert info.value.marked is False
+    assert not (root / ".venv" / bootstrap.NEEDS_REBUILD).exists()
+    out = capsys.readouterr().out
+    assert ("[初始化] pip 原地补装没有成功，重建记号也没写上：请删掉程序文件夹里的 .venv 文件夹，"
+            "再重新打开程序") in out
+    assert "下次启动会重建" not in out
+    text = bootstrap.failure_text(info.value, python_version=here, root=root)
+    assert text == PIP_UNMARKED_ZH + "\n详细记录：{}".format(log)
+    english = i18n.text(text, i18n.EN)
+    assert english == PIP_UNMARKED_EN + "\nLog file: {}".format(log)
+    assert not i18n.CJK.search(english)
+    for t in (text, english):
+        assert "网络" not in t and "network" not in t.lower() and "pip install" not in t
+    # 对得上：没有记号，下次启动确实不会因为缺 pip 重建（组件都在）
+    assert not bootstrap.venv_needs_rebuild(True, here, here, python=py, ready_import=ready)
+
+
+def test_a_no_module_named_pip_failure_without_a_marker_gives_the_steps(project, monkeypatch):
+    """PipFailed 的输出里是 No module named pip、补写记号又没写成（或者不知道项目根）：同样不承诺。"""
+    root, py, _site, here = project
+    tail = "{}: No module named pip".format(py)
+    failed = bootstrap.PipFailed(1, tail)
+    assert bootstrap.failure_text(failed, python_version=here) == PIP_UNMARKED_ZH
+    _refuse_marker_writes(monkeypatch)
+    assert bootstrap.failure_text(failed, python_version=here, root=root) == PIP_UNMARKED_ZH
+    assert not (root / ".venv" / bootstrap.NEEDS_REBUILD).exists()
 
 
 def test_a_pip_failure_saying_no_module_named_pip_is_explained_the_same_way(project):
