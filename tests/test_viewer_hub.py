@@ -1104,13 +1104,45 @@ def test_stop_cuts_what_runner_cleanup_left_behind():
 # 子进程：把软上限压到 256（本机从 Finder 启动的 .app 拿到的就是这个数），起真 hub（只绑 127.0.0.1），
 # 按 stdin 的指令报告「现在还能不能开文件、开 socket、起子进程」。攻击方是另一个进程（它自己的上限
 # 抬高，不让它成为瓶颈），挂的空连接比 256 还多——修之前服务端会先把自己的名额耗光。
+#
+# 另外报几个数给断言记账（#122 之后在 macOS 重负载下 13 次里红过 1 次：rejected 232，期望 284）。
+# 少掉的那些连接根本没进闸：asyncio 的 accept 循环一轮接一批（aiohttp 的 backlog 是 128），被拒的
+# socket 要过一两轮循环才真正关掉，几批叠在一起句柄就会短暂碰到 256，accept() 报 EMFILE，asyncio 停 1 秒
+# 再接。macOS 的内核在报 EMFILE 之前已经把那条连接从排队里取出来了，接着把它关掉（xnu accept_nocancel：
+# 「Don't put this back on the socket … Drop the socket」）；停接的这 1 秒里排队满了，内核还会再丢掉
+# 一些（exp/emfile_accounting.py 在软上限 36–48 下实测：没进闸的条数 ≥ EMFILE 次数，有时多十几条到
+# 九十几条）。这两种丢法服务端都看不到，攻击方看到的只是被断开。Linux 先占句柄再出队，排队满了也只是让
+# 握手晚一点完成，连接最后都会进闸。所以「被拒 == 超出数」只在 Linux 上是个等式；在 macOS 上能钉的是：
+# - reached / admitted：进了闸的条数、其中放进来的条数。进闸的要么放进来、要么被拒（reached ==
+#   rejected + admitted），放进来的一个字节没发、到期全被断开（admitted == idle_closed）
+# - peak：闸同时放进来的最多条数。上面的账能平不代表闸起了作用（闸全放行时 rejected 是 0，账照样平），
+#   「超出上限的连接没被拒」靠它拦：必须正好到上限、不能超过
+# - accept_failed：asyncio 报 accept() 失败的次数，macOS 上每次都丢掉一条，所以 reached + accept_failed
+#   不会超过攻击方手里的条数
 _SERVER = r'''
-import asyncio, json, resource, socket, subprocess, sys, tempfile
+import asyncio, errno, json, resource, socket, subprocess, sys, tempfile
 soft, idle, token = int(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
 hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
 resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 from app import viewer
 viewer.FIRST_BYTE_TIMEOUT_SEC = idle
+
+stats = {"accept_failed": 0, "peak": 0, "reached": 0, "admitted": 0}
+_admit = viewer._ConnGate.admit
+def admit(self, ip):
+    ok = _admit(self, ip)
+    stats["reached"] += 1
+    stats["admitted"] += 1 if ok else 0
+    stats["peak"] = max(stats["peak"], self.total)
+    return ok
+viewer._ConnGate.admit = admit
+
+def on_loop_error(loop, context):
+    exc = context.get("exception")
+    if isinstance(exc, OSError) and exc.errno in (errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM):
+        stats["accept_failed"] += 1      # asyncio 的 accept 循环每失败一次 accept() 报一次
+        return
+    loop.default_exception_handler(context)
 
 class FS:
     config = {"status": {"state": "live"}}; alerts = []; history = []; comments = []
@@ -1132,6 +1164,7 @@ def probe():
     return out
 
 async def main():
+    asyncio.get_running_loop().set_exception_handler(on_loop_error)
     hub = viewer.ViewerHub(FS(), ports=[0], token=token, bind_host="127.0.0.1",
                            log=lambda *a: None)
     await hub.start()
@@ -1142,7 +1175,8 @@ async def main():
         if line != "state":
             break
         print(json.dumps(dict(probe(), conns=hub.open_connections, rejected=hub._gate.rejected,
-                              idle_closed=hub._gate.idle_closed, viewers=hub.count)), flush=True)
+                              idle_closed=hub._gate.idle_closed, viewers=hub.count, **stats)),
+              flush=True)
     await hub.stop("off")
 
 asyncio.run(main())
@@ -1201,20 +1235,41 @@ def test_idle_sockets_cannot_exhaust_file_handles_under_a_256_limit():
         state = ask()
         assert state["conns"] <= viewer_mod.MAX_CONN_PER_IP
         assert (state["open"], state["socket"], state["spawn"]) == ("ok", "ok", "ok"), state
+
+        darwin = sys.platform == "darwin"
+
+        def settled(state):
+            if state["conns"] or state["idle_closed"] != state["admitted"]:
+                return False
+            # Linux：全部进了闸才算完。macOS：丢掉的数不出来，看排队清空——EMFILE 之后 asyncio 停 1 秒再接，
+            # 进闸的条数和失败次数 2.5 秒没再变，排队里就没有了
+            return darwin or state["reached"] == holding
+
         # 到期之后轮询，不固定睡 idle+1 秒：服务端是另一个进程，慢跑器上它的计时器可能晚一点才轮到
         time.sleep(idle)
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + 15.0
+        last, since = None, time.monotonic()
         while True:
             state = ask()
-            if (state["conns"] == 0
-                    and state["idle_closed"] == viewer_mod.MAX_CONN_PER_IP
-                    and state["rejected"] == holding - viewer_mod.MAX_CONN_PER_IP) \
-                    or time.monotonic() > deadline:
+            now = time.monotonic()
+            key = (state["reached"], state["accept_failed"], state["idle_closed"])
+            if key != last:
+                last, since = key, now
+            if (settled(state) and (state["reached"] == holding or now - since >= 2.5)) or now > deadline:
                 break
             time.sleep(0.2)
-        assert state["conns"] == 0
-        assert state["idle_closed"] == viewer_mod.MAX_CONN_PER_IP
-        assert state["rejected"] == holding - viewer_mod.MAX_CONN_PER_IP
+        assert state["conns"] == 0, state
+        # 闸从头到尾没放进来超过上限的连接，而且确实到过上限（不然这一场根本没考到闸）
+        assert state["peak"] == viewer_mod.MAX_CONN_PER_IP, state
+        # 进了闸的每一条都有下落：超出上限的当场被拒，放进来的一个字节没发、到期断开（接得慢时前一批到期
+        # 腾出名额，后来的会再放进来几条，所以 admitted 可能比上限多，不写死）
+        assert state["reached"] == state["rejected"] + state["admitted"], state
+        assert state["idle_closed"] == state["admitted"] >= viewer_mod.MAX_CONN_PER_IP, state
+        if darwin:
+            # 没进闸的是内核丢的（见 _SERVER 上面的说明）：至少有报 EMFILE 的那些条
+            assert state["reached"] + state["accept_failed"] <= holding, state
+        else:
+            assert state["reached"] == holding, state       # Linux 不丢：超出的全被闸拒掉
         assert (state["open"], state["socket"], state["spawn"]) == ("ok", "ok", "ok"), state
         attacker.stdin.write("report\n")
         attacker.stdin.flush()
