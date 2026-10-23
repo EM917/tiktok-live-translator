@@ -1043,7 +1043,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             sess = getattr(self, "_session_state", None)
             fields = {}
             if isinstance(sess, dict) and sess.get("audit") is closed:
-                # 这一场桌面点的「重译」还没做完：关审计之前先取消（旧任务自己的 _end_session 没走到这一步时）
+                # 这一场桌面点的「重译」和后台的翻译排空还没做完：关审计之前先取消（旧任务自己的 _end_session
+                # 没走到这一步时）
+                await self._finish_translation_drains(sess, wait=False)
                 await self._cancel_retranslates(sess)
                 try:
                     fields = self._session_end_extras(closed, sess)
@@ -1466,10 +1468,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 收尾比 STOP_GRACE_SEC 慢，session_end 由别的路径写，只剩 reason。闭包只绑这一场的 audit 和 sess
             my_audit.end_fields = lambda: self._session_end_extras(my_audit, sess)
         end = {}
+        stopping = False
         try:
             await self._run_session(url)
             end = sess.get("end") or {}
         except asyncio.CancelledError:
+            stopping = True
             end = {"reason": getattr(self, "_stop_reason", None) or "cancelled"}
             raise
         except Exception as exc:
@@ -1485,6 +1489,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # （自己结束的场次收尾到一半点了停止）：session_end 照样由这一场自己写、记真正的原因，
             # 写完再把取消抛出去，见 _evidence_drain
             cancelled = await self._evidence_drain(sess)
+            # 后台还没跑完的翻译排空（专家审查 B3a）：自然结束（下播、预算用尽……）时等它们跑完，最后几条字幕
+            # 照样有译文；停止、换主播、更新暂停时直接取消，停止要立刻生效。都在写 session_end 之前：译文和
+            # 「已跳过」的计数落在这一场
+            if await self._finish_translation_drains(sess, wait=not (stopping or cancelled)):
+                cancelled = True
             await self._end_session(my_audit, sess=sess, **self._session_end_fields(sess, end))
             if cancelled:
                 raise asyncio.CancelledError()
@@ -2046,6 +2055,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             current = getattr(self, "_session_state", None)
             sess = current if isinstance(current, dict) and target is not None \
                 and current.get("audit") is target else None
+        # 后台的翻译排空（B3a）一般已由 _run_stream_inner 收完；没走那里的收尾在这里兜底，同重译
+        await self._finish_translation_drains(sess, wait=False)
         await self._cancel_retranslates(sess)
         if target is not None:
             self._close_audit(target, reason, **fields)
@@ -2287,6 +2298,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             "end": None,              # 结束原因 {"reason": ..., 附带观察}，写进 session_end
             "stats_task": None,       # 这一场的统计循环（_run_stream_inner 记下）：收尾只取消它，见 _end_session
             "retranslate_tasks": set(),   # 桌面点「重译」排进来的后台任务：收尾时关审计之前先取消，见 _cancel_retranslates
+            "translation_drains": set(),  # 断流后在后台等翻译跑完的任务（B3a）：收尾时等完或取消，见 _finish_translation_drains
+            "discarded": None,        # 各轮到达了却没识别的音频合计 {"segments", "sec"}（B4），写进 session_end
         }
 
     def _comment_source_counts(self, audit):
@@ -2325,6 +2338,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 fields.update(self._session_end_fields(sess, {}, release=False))
             except Exception:
                 pass
+            # 这一场各轮 stream_break 里 discarded 的合计（专家审查 B4）。没丢过就不带，session_end 逐字节不变
+            lost = sess.get("discarded")
+            if lost:
+                fields["discarded_segments"] = lost["segments"]
+                fields["discarded_sec"] = round(lost["sec"], 1)
         if audit is not None and getattr(self, "audit", None) is audit:
             try:
                 fields.update(self._comment_source_counts(audit))
@@ -2657,8 +2675,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             print("[警告] 音频计数事件处理出错: {}".format(exc))
 
     def _record_stream_break(self, sess, source, reason, error, got_audio, audio_secs,
-                             meter):
-        """一轮拉流结束时写 stream_audio + stream_break，写进 sess 里本场自己的审计。"""
+                             meter, discarded=None):
+        """一轮拉流结束时写 stream_audio + stream_break，写进 sess 里本场自己的审计。
+
+        discarded=(段数, 秒数)：这一轮已经到达、却没有识别的音频（_stream_session 收尾时算，专家审查 B4）。
+        有丢的时候 stream_break 多 discarded_segments、discarded_sec 两个键，并累计进 sess["discarded"]
+        （session_end 汇总）；没丢的时候 stream_break 和以前逐字节相同。"""
         try:
             if reason == "eof" and getattr(source, "stalled", False):
                 reason = "stall"
@@ -2697,6 +2719,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 这一轮是不是「原地址明确拉不动」（V2 据此马上去查）：HTTP 4xx，或起来没几秒就退出、一帧都没有
             sess["last_round"] = self._round_facts(rnd, got_audio, source, tail)
             facts["media_reused"] = sess.get("round_mode") in REUSE_MODES
+            segs, sec = discarded or (0, 0.0)
+            if segs or round(sec, 1) > 0:
+                facts["discarded_segments"] = int(segs)
+                facts["discarded_sec"] = round(float(sec), 1)
+                total = sess.get("discarded") or {"segments": 0, "sec": 0.0}
+                sess["discarded"] = {"segments": total["segments"] + int(segs),
+                                     "sec": total["sec"] + float(sec)}
             audit = sess.get("audit")
             if audit is None:
                 return
@@ -3154,12 +3183,23 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
         音频时长按真实收到的帧数累计，不用墙钟——网络劣化时 ffmpeg 可能连着
         30 秒只吐 2 秒音频，用墙钟会把这种「假连接」当成播得好好的，
-        重连预算被错误重置后放弃分支永远走不到。"""
+        重连预算被错误重置后放弃分支永远走不到。
+
+        流自然断开时（专家审查 B3a）：reader 一结束就把状态改成「直播流中断，正在重连…」，不等识别把
+        积压做完；识别排空仍在这一轮里做完（stream_break、last_round 在下一轮解析之前写好，线程池在
+        最后一段识别完之后才关）。翻译排空交给后台任务、不挡重连——只有调用方传了 sess（重连循环）时
+        才这样：后台任务登记在 sess["translation_drains"]，这一场收尾时由 _end_session 等完或取消；
+        没传 sess 的单独一轮没人替它收尾，照旧在这里等完。
+
+        这一轮已经到达、却没识别（或识别结果被丢掉）的音频，在 stream_break 里写明段数和秒数
+        （discarded_segments / discarded_sec，专家审查 B4）。"""
         from .asr import forget_exception_locals
         from .audio import FRAME_SEC, SAMPLE_RATE, AudioFlowMeter, FFmpegAudioSource
         from .audit import strip_url_queries
         from .segmenter import SilenceSegmenter
 
+        # 传了 sess 才是重连循环里的一轮：只有它有人在收尾时替后台的翻译排空收场（见上）
+        drain_in_background = sess is not None
         if sess is None:
             sess = self._new_session_state(self.audit)
 
@@ -3179,9 +3219,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 直接变成漏词。积压时丢的是**旧的翻译任务**，音频一段都不丢。
         trans_queue = asyncio.Queue(maxsize=4)
         self._trans_queue = trans_queue      # 字幕翻译看排队深度决定要不要重试（_retry_reply_skipped）
+        # 深度从这一轮起算：上一轮的翻译排空可能还在后台跑（B3a），它留下的深度不属于这一轮
+        self.telemetry.translation_queue_depth = trans_queue.qsize()
         # 已经出队、正在翻译的那一条。它不在队列里，收尾时的排空看不见它；翻译被取消
         # （停止/换房间/断流收尾超时）时若不给它一个结局，那张卡片就永远停在「翻译中…」
         inflight = {"job": None}
+        # 正在识别线程里跑的那一段有几秒：识别返回（成功或出错）就清掉。取消落在识别线程跑到一半时
+        # 它还在——那段的结果没人要了，算进 discarded（专家审查 B4、审查 Q11）
+        asr_now = {"sec": None}
+        # 翻译排空交给了后台任务（B3a）：这一轮收尾时不再取消翻译 worker、不再清 self._trans_queue
+        handed = {"drain": None}
         asr_pool = ThreadPoolExecutor(max_workers=1)   # 本轮会话专用，停止时随之丢弃
         self._asr_pool = asr_pool
         source = FFmpegAudioSource(media, denoise_model=denoise)
@@ -3245,6 +3292,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 "translate_state": "dropped",
             }))
 
+        def _note_trans_depth():
+            # 只写自己这一轮的深度：翻译排空在后台跑时下一轮可能已经开始（B3a），那时深度是新一轮的
+            if getattr(self, "_trans_queue", None) is trans_queue:
+                self.telemetry.translation_queue_depth = trans_queue.qsize()
+
         def _put_translation(job):
             """翻译积压时丢最旧的任务：中控不需要 30 秒前那句话的中文，
             西语原文早就显示了、违禁词也早就扫过了。"""
@@ -3259,7 +3311,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     return
                 _drop_job(stale)
             trans_queue.put_nowait(job)
-            self.telemetry.translation_queue_depth = trans_queue.qsize()
+            _note_trans_depth()
 
         def _put_sentinel():
             """收尾哨兵绝不能抛 QueueFull：翻译卡住时队列正好是满的（4 条），
@@ -3274,7 +3326,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 if stale is not None:
                     _drop_job(stale)
             trans_queue.put_nowait(None)
-            self.telemetry.translation_queue_depth = trans_queue.qsize()
+            _note_trans_depth()
 
         def _cut_meta(segments):
             """切段器这一刀是怎么切的（见 SilenceSegmenter.last_cut），给识别风险分用；证据开着时
@@ -3283,6 +3335,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             meta = getattr(segmenter, "last_cut", None)
             meta = dict(meta) if isinstance(meta, dict) and len(segments) == 1 else None
             return self._evidence_cut_meta(evidence, meta, segments)
+
+        def _flush_rest(last_tail):
+            """切段器里剩下的那一截切出来送去识别（别丢掉最后一段话），返回音频计数的事件。"""
+            rest = segmenter.flush()
+            for segment in rest:
+                meta = _cut_meta(rest)
+                _put((segment, time.time(), _tail_meta(meta) if last_tail else meta))
+            return meter.cut(len(rest))
+
+        async def _late_audio_events(events):
+            # reader 收尾时交给后台的计数事件（flush 切出了段，只会是「切出语音」：撤 quiet_audio 提示）。轮到它跑时
+            # 当前审计已经不是这一场的（停止之后紧接着开了下一场），就不处理：撤掉的会是下一场的同名提示。
+            # 停止那一边自己会撤这一场的持续提示（_clear_ongoing_incidents）
+            if getattr(self, "audit", None) is sess.get("audit"):
+                await self._on_audio_events(sess, events)
 
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
@@ -3332,13 +3399,27 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     events = meter.feed(frame, segments=len(segments))
                     if events:
                         await self._on_audio_events(sess, events)
-                rest = segmenter.flush()
-                for segment in rest:   # 别丢掉最后一段话
-                    meta = _cut_meta(rest)
-                    _put((segment, time.time(), _tail_meta(meta) if last_tail else meta))
-                events = meter.cut(len(rest))
+                events = _flush_rest(last_tail)
                 if events:
                     await self._on_audio_events(sess, events)
+            except (asyncio.CancelledError, Exception):
+                # 没走到正常结尾（被取消、音频源出错）时，切段器里攒着的那一截（最多 9 秒）以前直接扔掉。现在照样
+                # 切出来放进识别队列，结局由识别那边决定：
+                #   - 音频源出错：识别 worker 不受影响，照常把队列做完（run_workers 的 gather 等两边都结束），
+                #     这一截照常识别；
+                #   - 只取消 reader 的是收尾超时自愈（_heal_stopping）：识别还在跑，这一截照常识别（第六条）；
+                #   - 停止、换主播、更新暂停：识别也一起被取消，它留在队列里，收尾时算进 stream_break 的
+                #     discarded（专家审查 B4）。
+                # 分不出是哪一种取消（3.9 没有 Task.cancelling），也不用分。计数事件不在这条路上等，交给后台
+                # （_late_audio_events）。这里出了错只打一行：不能让它盖掉原来的取消或错误，把一次停止记成内部错误；
+                # 切段器里那一截这时还在，收尾时按一段算进 discarded（_discarded）
+                try:
+                    events = _flush_rest(last_tail)
+                    if events:
+                        self._spawn(_late_audio_events(events))
+                except Exception as exc:
+                    print("[警告] 收尾时切出最后一段音频出错：{}".format(type(exc).__name__))
+                raise
             finally:
                 try:
                     # reader 在等广播时被取消，生成器停在 yield 上：显式收掉，它的 finally（读空 stdout、
@@ -3347,6 +3428,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 finally:
                     _put(None)
                     self._stage(sess, "drain", self._drain_stage_budget(backlog["sec"]))
+            # 流自然断开（读到流尾、看门狗断开、时钟对账后主动断开）：马上告诉中控在重连（专家审查 B3a）。
+            # 以前要等识别把积压做完、翻译再等最多 5 秒才改口，这段时间界面一直显示「直播中」。识别排空
+            # 期间出来的字幕照常上屏。这一轮没宣布过直播中（一帧都没拉到）时界面本来就是「正在连接」，不改口
+            if got_audio:
+                await self.server.status("connecting", L("直播流中断，正在重连…",
+                                                         "The stream was interrupted. Reconnecting…"))
 
         async def asr_worker():
             asr_failures = 0
@@ -3365,6 +3452,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 inflight = [t0]
                 self._asr_inflight = inflight
                 failure = None
+                asr_now["sec"] = len(segment) / 2.0 / SAMPLE_RATE
                 try:
                     result = await loop.run_in_executor(
                         asr_pool, _locked_transcribe, slot.transcriber, segment
@@ -3379,6 +3467,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     if getattr(self, "_asr_inflight", None) is inflight:
                         self._asr_inflight = None
                 if failure is not None:
+                    # 这一段有了结局（下面同步记一条 asr_failed）：不再算「识别线程里那一段」
+                    asr_now["sec"] = None
                     # 这段音频没进检测器也没进审计——漏报的第五种成因，而且以前
                     # 只有一行 print（打包运行时 stdout 指向 /dev/null，等于没有）。
                     # 计数、写审计、连续失败就告诉界面并设法恢复，别让识别已死的会话
@@ -3417,6 +3507,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 asr_meta = dict(cut_meta or {},
                                 backend=getattr(slot.transcriber, "backend", None),
                                 model=getattr(slot.transcriber, "model_size", None))
+                # 到这里这一段才算有了结局：_emit_original 一进去就同步扫违禁词、写 segment。在这之前被取消
+                # （识别线程里、或者上面等撤出错提示的时候），结果没人要了，留在 asr_now 里算进 discarded
+                asr_now["sec"] = None
                 job = await self._emit_original(result, audio_end_ts, asr_ms,
                                                 segment_ms=segment_ms, asr_meta=asr_meta,
                                                 sess=sess)
@@ -3430,7 +3523,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 # 才变——_subtitle_translation_busy 因此几乎永远为真，弹幕每批都白等满
                 # 3 秒（约 1.2 条/秒封顶）。取走到下面 _subtitle_busy 记上之间没有 await，
                 # 「排队」与「在途」交接时不会出现两个都为零的空档
-                self.telemetry.translation_queue_depth = trans_queue.qsize()
+                _note_trans_depth()
                 if job is None:
                     break
                 inflight["job"] = job
@@ -3438,6 +3531,80 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     await self._translate_and_update(job)
                 finally:
                     inflight["job"] = None
+
+        async def _drain_translations(trans_task):
+            # 流自然结束：让翻译把在途那条跑完（最多等 5 秒）。asyncio.wait 到点不抛，翻译任务自己被
+            # 取消也不抛；只有外层被取消（这时点了停止）才抛出去——以前 except 把 TimeoutError 和
+            # CancelledError 一起接住，停止被吞掉，重连循环接着查流地址、把界面改回「直播中」
+            _put_sentinel()
+            await _wait_translations(trans_task)
+
+        async def _wait_translations(trans_task):
+            done, _ = await asyncio.wait({trans_task}, timeout=self.TRANSLATION_DRAIN_SEC)
+            if not done:
+                trans_task.cancel()
+
+        async def _drain_translations_later(trans_task):
+            """后台的翻译排空（专家审查 B3a）：哨兵已经放进队列，这里最多等 TRANSLATION_DRAIN_SEC。到点、或者
+            这一场收尾时被取消（_finish_translation_drains），在途和排队的照旧收成「已跳过」——和以前在这一轮
+            里等的结局一样，只是不再挡着重连。只碰这一轮自己的 trans_queue、inflight 和 _drop_job；最后放掉
+            self._trans_queue（还是自己的话：下一轮已经开始时那是新一轮的）。"""
+            try:
+                await _wait_translations(trans_task)
+            finally:
+                if not trans_task.done():
+                    trans_task.cancel()
+                _settle_translations()
+                if getattr(self, "_trans_queue", None) is trans_queue:
+                    self._trans_queue = None
+
+        def _discarded():
+            """这一轮已经到达、却没有识别（或识别结果被丢掉）的音频：(段数, 秒数)，专家审查 B4。
+            识别队列里没处理的段，加上取消那一刻正在识别线程里跑的那一段（审查 Q11），再加上切段器里没切出来
+            的那一截。最后这一项通常是 0：reader 不管怎么结束（流尾、取消、出错）都已经把它切进了队列；只有切的
+            时候出了错它才还在，按 flush 的标准算一段（静音和不到 0.5 秒的残片 flush 也不要，不算）。正常断流、
+            音频源出错收尾时识别把队列做完，三项都是 0。收尾时调一次，每轮只算一次。"""
+            segs, sec = 0, 0.0
+            while True:
+                try:
+                    item = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if item is not None:
+                    segs += 1
+                    sec += len(item[0]) / 2.0 / SAMPLE_RATE
+            if asr_now["sec"] is not None:
+                segs += 1
+                sec += asr_now["sec"]
+            buffered = getattr(segmenter, "buffered_sec", None)   # 测试里的假切段器没有
+            left = buffered() if callable(buffered) else 0.0
+            if left > 0:
+                segs += 1
+                sec += left
+            return segs, sec
+
+        def _settle_translations():
+            # 在途那一条：取消在它翻译到一半时落下，它既没发出译文也不在队列里。
+            # 和下面排空的是同一个结局（界面显示「已跳过」），在这里同步收掉——
+            # 此时仍在这一场的收尾里，计数和广播都落在这一场。译文已经开始发布的
+            # （publishing）不动：再补一条「已跳过」会把刚上屏的译文盖掉
+            stuck = inflight["job"]
+            if stuck is not None and not stuck.get("publishing"):
+                inflight["job"] = None
+                _drop_job(stuck)
+            # 被取消（用户点停止/换房间）时不 drain 队列：等积压的翻译跑完
+            # 最多要 5 秒，而停止应当立刻生效——剩下的直接告知界面已跳过
+            while True:
+                try:
+                    pending = trans_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if pending is not None:
+                    _drop_job(pending)
+            # 取空了就归零：这一场收尾后队列不在了，残留的深度会让下一场开头的弹幕白等。
+            # 队列已经换成下一场的了（旧任务晚收尾）就不碰：那是新一场的深度
+            if getattr(self, "_trans_queue", None) is trans_queue:
+                self.telemetry.translation_queue_depth = trans_queue.qsize()
 
         async def run_workers():
             trans_task = asyncio.ensure_future(translation_worker())
@@ -3453,38 +3620,25 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     if isinstance(r, BaseException) and not isinstance(
                             r, asyncio.CancelledError):
                         raise r
-                # 流自然结束：让翻译把在途那条跑完（最多等 5 秒）。asyncio.wait 到点不抛，翻译任务自己被
-                # 取消也不抛；只有外层被取消（这时点了停止）才抛出去——以前 except 把 TimeoutError 和
-                # CancelledError 一起接住，停止被吞掉，重连循环接着查流地址、把界面改回「直播中」
-                _put_sentinel()
-                done, _ = await asyncio.wait({trans_task}, timeout=self.TRANSLATION_DRAIN_SEC)
-                if not done:
-                    trans_task.cancel()
+                if drain_in_background:
+                    # 翻译排空不再挡着重连（专家审查 B3a）：以前流断开后要在这里再等最多 5 秒。哨兵现在就放
+                    # （队列和深度此刻还是这一轮的），等它跑完的事交给后台任务，登记在这一场；这一场收尾时
+                    # _finish_translation_drains 等完或取消它
+                    _put_sentinel()
+                    drain = handed["drain"] = self._spawn(_drain_translations_later(trans_task))
+                    drains = sess.setdefault("translation_drains", set())
+                    drains.add(drain)
+                    drain.add_done_callback(drains.discard)
+                else:
+                    await _drain_translations(trans_task)
             finally:
                 for task in (reader_task, asr_task, trans_task):
+                    if task is trans_task and handed["drain"] is not None:
+                        continue          # 交给后台排空了：由它等、由它收
                     if not task.done():
                         task.cancel()
-                # 在途那一条：取消在它翻译到一半时落下，它既没发出译文也不在队列里。
-                # 和下面排空的是同一个结局（界面显示「已跳过」），在这里同步收掉——
-                # 此时仍在这一场的收尾里，计数和广播都落在这一场。译文已经开始发布的
-                # （publishing）不动：再补一条「已跳过」会把刚上屏的译文盖掉
-                stuck = inflight["job"]
-                if stuck is not None and not stuck.get("publishing"):
-                    inflight["job"] = None
-                    _drop_job(stuck)
-                # 被取消（用户点停止/换房间）时不 drain 队列：等积压的翻译跑完
-                # 最多要 5 秒，而停止应当立刻生效——剩下的直接告知界面已跳过
-                while True:
-                    try:
-                        pending = trans_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    if pending is not None:
-                        _drop_job(pending)
-                # 取空了就归零：这一场收尾后队列不在了，残留的深度会让下一场开头的弹幕白等。
-                # 队列已经换成下一场的了（旧任务晚收尾）就不碰：那是新一场的深度
-                if getattr(self, "_trans_queue", None) is trans_queue:
-                    self.telemetry.translation_queue_depth = trans_queue.qsize()
+                if handed["drain"] is None:
+                    _settle_translations()
 
         reason, error = "eof", None
         try:
@@ -3504,16 +3658,23 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 else:
                     await source.stop()
             finally:
+                # 识别 worker 已经结束（正常断流时它把队列做完了才结束）：线程池在最后一段识别完之后才关
                 asr_pool.shutdown(wait=False)
-                # 只清自己的那一个：旧任务晚收尾时 self._trans_queue 已经是新一场的
-                if getattr(self, "_trans_queue", None) is trans_queue:
+                # 只清自己的那一个：旧任务晚收尾时 self._trans_queue 已经是新一场的。翻译排空交给了后台时
+                # 由它来清——排空期间重试和弹幕让路看的还是这一轮的队列
+                if (handed["drain"] is None
+                        and getattr(self, "_trans_queue", None) is trans_queue):
                     self._trans_queue = None
                 if tail_frames:
                     print("[信息] 这一轮收尾时 ffmpeg 吐出 {:.1f} 秒音频，已送去识别".format(
                         tail_frames * FRAME_SEC))
+                discarded = _discarded()
+                if discarded[0] or round(discarded[1], 1) > 0:
+                    print("[信息] 这一轮收尾时有 {} 段、{:.1f} 秒已到达的音频没有识别，已记进审计".format(
+                        discarded[0], discarded[1]))
                 # 这一轮怎么断的写进本场审计：打包运行时终端输出没人看得到
                 self._record_stream_break(sess, source, reason, error, got_audio,
-                                          audio_secs, meter)
+                                          audio_secs, meter, discarded=discarded)
                 self._stage(sess, "other", self.STAGE_OTHER_SEC)
         tail = source.stderr_tail()
         if tail:
@@ -5289,6 +5450,40 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         finally:
             _RETRANSLATE_TRACK.reset(token)
 
+    async def _finish_translation_drains(self, sess, wait):
+        """这一场后台还在跑的翻译排空（_stream_session，专家审查 B3a），关审计之前收掉。
+
+        wait=True（自然结束：下播、预算用尽、出错）先等它们跑完：每个排空自己最多等 TRANSLATION_DRAIN_SEC，
+        和以前在那一轮里等的一样长，最后几条字幕照样有译文。wait=False（停止、换主播、更新暂停）不等，直接
+        取消：没翻完的标「已跳过」，计数落在这一场（最多再等 RETRANSLATE_CANCEL_WAIT_SEC 让取消落地）。
+
+        wait=True 时等的途中这个任务被取消（自然结束的收尾途中点了停止）：接住、改成取消，返回 True，由调用方
+        先写完 session_end 再把取消抛出去（同 _evidence_drain）。wait=False 时取消照常抛出（同 _cancel_retranslates）。"""
+        drains = sess.get("translation_drains") if isinstance(sess, dict) else None
+        if not drains:
+            return False
+        me = asyncio.current_task()
+        pending = [t for t in list(drains) if not t.done() and t is not me]
+        if not pending:
+            return False
+        cancelled = False
+        if wait:
+            try:
+                await asyncio.wait(pending, timeout=self.TRANSLATION_DRAIN_SEC)
+            except asyncio.CancelledError:
+                cancelled = True
+            pending = [t for t in pending if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            try:
+                await asyncio.wait(pending, timeout=self.RETRANSLATE_CANCEL_WAIT_SEC)
+            except asyncio.CancelledError:
+                if not wait:
+                    raise
+                cancelled = True
+        return cancelled
+
     async def _cancel_retranslates(self, sess):
         """这一场桌面点的「重译」还在排队或在等强模型：关审计之前先取消，等它们把 cancelled 记进这一场的
         审计、撤掉按钮的「重译中…」、放掉 _strong_inflight 和强模型连接（最多等 RETRANSLATE_CANCEL_WAIT_SEC）。
@@ -5373,7 +5568,6 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if track is not None:
             track["owned"] = True        # 从这里起被取消由下面自己记 cancelled，_retranslate_serial 不再替它记
         try:
-            had = self._quality.get(seq, 0) > 0
             # 桌面排队时入队那一刻已经发过 pending（_retranslate_serial）：不重复发
             if track is None or not track["pending"]:
                 await self.server.broadcast({"type": "caption_update", "id": seq,
@@ -5425,6 +5619,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 return
             if refusal is not None:
                 await self._note_refusal(strong, seq, refusal[1], retranslate=trigger)
+            # 「这一条有没有译文」到这里才看。以前在开头看一次：等强模型的这段时间里快译刚好上了屏、强模型
+            # 又没出译文时，走的是下面「连快译都还没有」那一支，_publish_translation 因为已有可用译文直接返回、
+            # 不发 strong_state，按钮一直停在「重译中…」，提示还说「这一条仍然没有译文」。从这里到发出终态
+            # 之间没有 await，看到的就是发出去那一刻的样子
+            had = self._quality.get(seq, 0) > 0
             if had:
                 # 已有译文时：只报告重译失败，屏幕上那一版原样留着
                 await self.server.broadcast({"type": "caption_update", "id": seq,
@@ -5439,6 +5638,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     extra["refused"] = True
                 elif discarded:
                     extra["not_translation"] = True     # 同理：回来的不是译文，接口是通的
+                # had 为假时 _publish_translation 不会因「已有可用译文」拒发（上面 had 和它的判断之间没有
+                # await），strong_state 一定跟着发出去
                 await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
                                                 job["target"], extra)
             await self._retranslate_note(seq, trigger, self._retranslate_failure_text(

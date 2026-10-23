@@ -389,3 +389,100 @@ def test_a_click_that_finishes_normally_gets_no_extra_failed(pl):
 
     asyncio.run(scenario())
     assert pl.server.strong_states(1) == ["pending", "ok"]
+
+
+# ---- 等强模型的时候快译到了、强模型又没出译文：按钮不能停在「重译中…」（#123 补改核对发现）----
+
+class GatedEmpty:
+    """假的强模型：等测试放行，然后什么都没译出来（返回空）。只在协程里构造（见 SlowStrong）。"""
+    model = "fake-strong"
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def translate(self, text, target, source="auto", glossary=None):
+        self.started.set()
+        await self.release.wait()
+        return ""
+
+
+def _notes(p, seq):
+    return [str(m["text"]) for m in p.server.messages
+            if m.get("type") == "retranslate_note" and m.get("id") == seq]
+
+
+def test_a_fast_translation_that_lands_during_the_wait_does_not_strand_the_button(pl):
+    """点「重译」时这一条连快译都还没有；等强模型的这段时间里快译上了屏，强模型又没出译文。以前「有没有译文」
+    在开头看一次（没有），于是走「连快译都还没有」那一支：_publish_translation 因为已有可用译文直接返回、
+    不发 strong_state，桌面按钮和服务端留存的那条字幕一直停在「重译中…」，提示还说「这一条仍然没有译文」。"""
+    pl._recent[3] = {"id": 3, "text": "Hola a todos", "lang": "es", "target": "zh-CN"}
+
+    async def scenario():
+        strong = _with_strong(pl, GatedEmpty())
+        await pl.server.broadcast({"type": "caption", "id": 3, "text": "Hola a todos",
+                                   "translated": None})
+        await _server_loop(pl, {"type": "retranslate", "id": 3})
+        await asyncio.wait_for(strong.started.wait(), 1.0)
+        assert pl._quality.get(3, 0) == 0                 # 点的那一刻还没有译文
+        await pl._publish_translation(3, "大家好", True, 10.0, QUALITY_FAST, "zh-CN")
+        strong.release.set()
+        for _ in range(100):
+            if pl.server.strong_states(3)[-1:] == ["failed"]:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+    assert pl.server.strong_states(3) == ["pending", "failed"]
+    kept = next(m for m in pl.server.history if m.get("id") == 3)
+    assert kept.get("strong_state") == "failed"           # 重连回放也不会显示「重译中…」
+    assert kept["translated"] == "大家好"                  # 快译原样留着，没被失败擦掉
+    assert pl._strong_inflight == set()
+    notes = _notes(pl, 3)
+    assert len(notes) == 1 and notes[0].endswith("原译文保持不变")
+
+
+def test_a_direct_retranslate_call_also_reports_failed_when_the_fast_one_landed(pl):
+    """不经桌面队列直接调 retranslate()（手机、报警自动触发走这里）：同样发 failed，不留在 pending。"""
+    pl._recent[3] = {"id": 3, "text": "Hola a todos", "lang": "es", "target": "zh-CN"}
+
+    async def scenario():
+        strong = _with_strong(pl, GatedEmpty())
+        await pl.server.broadcast({"type": "caption", "id": 3, "text": "Hola a todos",
+                                   "translated": None})
+        task = asyncio.ensure_future(pl.retranslate(3, trigger="viewer"))
+        await asyncio.wait_for(strong.started.wait(), 1.0)
+        await pl._publish_translation(3, "大家好", True, 10.0, QUALITY_FAST, "zh-CN")
+        strong.release.set()
+        await asyncio.wait_for(task, 1.0)
+
+    asyncio.run(scenario())
+    assert pl.server.strong_states(3) == ["pending", "failed"]
+    assert pl._quality[3] == QUALITY_FAST
+
+
+def test_without_a_fast_translation_the_failure_still_marks_the_caption_untranslated(pl):
+    """对照：强模型回来时仍然没有任何译文，照旧走「这一条没有译文」那一支（translated=None、failed）。"""
+    pl._recent[3] = {"id": 3, "text": "Hola a todos", "lang": "es", "target": "zh-CN"}
+
+    async def scenario():
+        strong = _with_strong(pl, GatedEmpty())
+        await pl.server.broadcast({"type": "caption", "id": 3, "text": "Hola a todos",
+                                   "translated": None})
+        await _server_loop(pl, {"type": "retranslate", "id": 3})
+        await asyncio.wait_for(strong.started.wait(), 1.0)
+        strong.release.set()
+        for _ in range(100):
+            if pl.server.strong_states(3)[-1:] == ["failed"]:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+    assert pl.server.strong_states(3) == ["pending", "failed"]
+    updates = [m for m in pl.server.messages
+               if m.get("type") == "caption_update" and m.get("id") == 3
+               and m.get("strong_state") == "failed"]
+    assert len(updates) == 1 and updates[0]["translated"] is None
+    assert _notes(pl, 3)[0].endswith("这一条仍然没有译文")
