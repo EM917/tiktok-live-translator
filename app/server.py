@@ -49,6 +49,9 @@ def replay_payloads(history):
 HISTORY_MAX = 300
 COMMENTS_MAX = 100
 ALERTS_MAX = 50
+# 这几种 status 说明这一场已经结束：停止（idle）、下播（ended）、出错（error）。
+# 之后不会再有这一场的识别落后提示，config["health"] 在这时删掉、也不再存（见 broadcast）
+SESSION_OVER_STATES = ("idle", "ended", "error")
 # 浮窗页（web/float.html，app/float_window.py）：它连 /ws?role=float，只读。收什么、回放多深，都在这里定死：
 #   FLOAT_TYPES        广播里只转发这几种消息（报警、审计提示、incident、health 一概不发；
 #                      tests/test_float_server.py 拿正则从 web/float.js 读出它处理的类型来比对）
@@ -442,8 +445,14 @@ class CaptionServer:
             # 页面，一直挂着旧的「识别开始落后」到这一场停止。level=ok 就是没有提示。
             # stats 里也带着按积压算的等级，但不拿它清：识别连续出错时 pipeline 有意让「检测已降级」
             # 挂着（出错的调用返回得快、积压归零，每跳 stats 都是 ok，见 Pipeline._announce_health），
-            # 拿 stats 清会在 10 秒内把它收掉
-            if msg.get("level") == "ok":
+            # 拿 stats 清会在 10 秒内把它收掉。
+            # 这一场已经停了（status 是 idle/ended/error）之后晚到的一条不存，顺手把残留的也删掉：它说的是
+            # 已经结束的那一场（比如下播之后、统计循环被取消之前的那一跳）。存下来的话，之后每次重连，
+            # 手机都会在待机页上重建这条过时的落后提示。实时广播照发，页面自己挡：桌面的 renderHealth
+            # 只在连接中/直播中显示，手机在 idle/ended/error 时不显示（web/viewer.js）
+            status = self.config.get("status")
+            state = status.get("state") if isinstance(status, dict) else None
+            if msg.get("level") == "ok" or state in SESSION_OVER_STATES:
                 self.config.pop("health", None)
             else:
                 self.config["health"] = {k: msg[k] for k in ("level", "backlog_sec", "text") if k in msg}
@@ -538,7 +547,7 @@ class CaptionServer:
                                      "command": msg.get("command")}
             # 停止、下播、出错：这一场的识别落后提示跟着作废（pipeline 停止时不补发 level=ok）。
             # 下播发的是 ended，不是 idle，漏了它，之后每次重连都会再显示上一场的落后（专家审查 F3）
-            if msg.get("state") in ("idle", "ended", "error"):
+            if msg.get("state") in SESSION_OVER_STATES:
                 self.config.pop("health", None)
             hook = getattr(self, "on_status", None)
             if hook is not None:

@@ -68,3 +68,16 @@ test("stats 带 health=ok 不收提示：识别连续出错时「检测已降级
   page.push({ type: "health", level: "ok", backlog_sec: 0.0, text: "✅ 识别已追上，检测恢复正常" });
   assert.equal(bar(page).shown, false);
 });
+
+test("停止、下播、出错之后晚到的 health 不揭开（服务端也不再存它，重连的 hello 里没有）", () => {
+  for (const state of ["idle", "ended", "error"]) {
+    const page = loadDesktop({ lang: "zh" });
+    hello(page);
+    page.push(Object.assign({ type: "health" }, LAGGING));
+    assert.equal(bar(page).shown, true);
+    page.push({ type: "status", state, detail: "" });
+    assert.equal(bar(page).shown, false, state);
+    page.push(Object.assign({ type: "health" }, LAGGING));     // 比如下播之后、统计循环被取消之前的那一跳
+    assert.equal(bar(page).shown, false, state + "：这一场已经结束");
+  }
+});

@@ -786,6 +786,7 @@ if (typeof document !== "undefined") {
     // viewer_hello 之后、回放之后的第一条实时消息之前为 true（判断同上）。回放里的 session_break 不带 replay，
     // 只能靠它分辨「历史上的换场」和「此刻的换场」
     var replaying = false;
+    var streamState = null;  // 最近一条 status 的 state：renderHealth 据此不在停止、下播、出错后揭开落后提示
 
     function handle(msg) {
       if (!msg || typeof msg !== "object") return;
@@ -803,6 +804,7 @@ if (typeof document !== "undefined") {
           disconnectedAt = null;
           commentReplayStick = true;
           replaying = true;
+          streamState = null;                // 紧随其后的 status 回放把它补上
           // 取消记录先对齐这一次共享，再收回放的报警：程序重启后 alert_id 从头数，
           // 上一次共享里取消过的 7 号不能藏掉这一次的 7 号
           dismissedAlerts.bind(msg.share_since);
@@ -819,6 +821,7 @@ if (typeof document !== "undefined") {
           // 只是不让它落进 default 分支被当成未知消息忽略。
           break;
         case "status":
+          streamState = msg.state;
           if (streamTextEl) streamTextEl.textContent = streamText(msg.state);
           if (msg.state === "live" || msg.state === "connecting") {
             demoMode = false;
@@ -907,10 +910,15 @@ if (typeof document !== "undefined") {
       lagging: L("识别开始落后，报警会有延迟", "Recognition is falling behind. Alerts will be delayed."),
       degraded: L("检测已降级，识别明显落后", "Detection degraded: recognition is far behind."),
     };
+    // 这一场已经结束的几种状态（同 app/server.py 的 SESSION_OVER_STATES）：落后提示只说正在进行的那一场。
+    // 停止、下播、出错之后晚到的一条（比如下播之后、统计循环被取消之前的那一跳）不揭开，同桌面的 renderHealth
+    function sessionOver(state) {
+      return state === "idle" || state === "ended" || state === "error";
+    }
     function renderHealth(msg) {
       if (!healthLine) return;
       var text = msg && HEALTH_TEXT[msg.level];
-      if (!text) { healthLine.classList.add("hidden"); return; }
+      if (!text || sessionOver(streamState)) { healthLine.classList.add("hidden"); return; }
       healthLine.innerHTML = "";
       var icon = document.createElement("span");
       icon.className = "icon";

@@ -1278,6 +1278,7 @@ test("连着的手机：停止、下播、出错时收掉落后提示；此刻�
   withFakeViewerPage(({ elements, ws }) => {
     const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
     for (const state of ["idle", "ended", "error"]) {
+      send({ type: "status", state: "live" });
       send({ type: "health", level: "lagging" });
       send({ type: "status", state: "live" });
       assert.equal(healthShown(elements), "识别开始落后，报警会有延迟", "直播中的 status 不收");
@@ -1287,8 +1288,9 @@ test("连着的手机：停止、下播、出错时收掉落后提示；此刻�
 
     // 换主播：quiet 停止不发 idle，新一场也不补发「已追上」——只有 session_break 说「换场了」
     send({ type: "caption", id: 1, ts: 1, original: "uno", translated: "一" });      // 回放早就结束了
-    send({ type: "health", level: "lagging" });
     send({ type: "status", state: "connecting" });
+    send({ type: "health", level: "lagging" });
+    assert.equal(healthShown(elements), "识别开始落后，报警会有延迟");
     send({ type: "session_break", ts: 2 });
     assert.equal(healthShown(elements), null, "新的一场开始：上一场的落后提示作废");
 
@@ -1304,5 +1306,32 @@ test("连着的手机：停止、下播、出错时收掉落后提示；此刻�
     send({ type: "caption", id: 3, ts: 4, original: "tres", translated: "三" });      // 回放之后的第一条实时消息
     send({ type: "session_break", ts: 5 });
     assert.equal(healthShown(elements), null, "回放结束之后的换场照常收掉");
+  });
+});
+
+// ---- b2 审查补改：停止之后晚到的落后提示；回放在哪儿结束 ----
+const HELLO = { type: "viewer_hello", ok: true, ts: 1, share_since: 0, viewers: 1, max_viewers: 12, read_only: true };
+
+test("停止、下播、出错之后晚到的落后提示不揭开（同桌面）；下一场开始后照常显示", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    for (const state of ["idle", "ended", "error"]) {
+      send({ type: "status", state: "live" });
+      send({ type: "health", level: "lagging" });
+      assert.equal(healthShown(elements), "识别开始落后，报警会有延迟");
+      send({ type: "status", state: state });
+      // 比如下播之后、统计循环被取消之前的那一跳：实时广播照样到手机
+      send({ type: "health", level: "degraded" });
+      assert.equal(healthShown(elements), null, state + "：这一场已经结束，晚到的不揭开");
+    }
+    // 重连的回放里就算还带着一条（老服务端在停止后存下的），停止的状态下也不揭开
+    send(Object.assign({}, HELLO, { replay_len: 2 }));
+    send({ type: "status", state: "ended" });
+    send({ type: "health", level: "lagging" });
+    assert.equal(healthShown(elements), null, "待机页上不重建过时的落后提示");
+    // 下一场
+    send({ type: "status", state: "connecting" });
+    send({ type: "health", level: "lagging" });
+    assert.equal(healthShown(elements), "识别开始落后，报警会有延迟");
   });
 });

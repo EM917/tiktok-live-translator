@@ -317,6 +317,26 @@ def test_a_phone_reconnecting_after_the_backlog_caught_up_gets_no_stale_health()
     assert caught_up == []
 
 
+@pytest.mark.parametrize("state", ["idle", "ended", "error"])
+def test_a_phone_reconnecting_after_the_session_ended_gets_no_late_health(state):
+    """b2 审查：停止（下播、出错）之后晚到一条 lagging，以前存进 config，重连的手机在待机页上重建它。
+    真 CaptionServer 的缓存规则 + 真 replay_snapshot：重连回放里没有它。"""
+    from app.server import CaptionServer
+
+    async def scenario():
+        server = CaptionServer(port=0)
+        await server.status("live", "")
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 23.0, "text": "x"})
+        await server.status(state, "")
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 24.0, "text": "x"})
+        return viewer_mod.replay_snapshot(server)
+
+    snapshot = asyncio.run(scenario())
+    assert [m["type"] for m in snapshot[:2]] == ["viewer_hello", "status"]
+    assert snapshot[1]["state"] == state
+    assert not [m for m in snapshot if m["type"] == "health"]
+
+
 # ---- 握手 ----
 def run_handshake(hub, ws, ip="192.168.1.99"):
     request = SimpleNamespace(transport=FakeTransport(), match_info={},

@@ -247,7 +247,15 @@ def test_hello_replay_carries_guard_and_a_removed_viewer_is_gone_after_refresh()
 # 补核用真服务端加真页面复现：「识别开始落后（积压 23 秒）」显示着时页面断线，断线期间服务端发了「已追上」，
 # 重连后旧提示还挂着、一直到这一场停止——服务端不存也不重放 health，pipeline 等级不变又不再广播。
 # 清除时机要全（计划审查 Q1）：level=ok、status 变成 idle/ended/error、实时的 session_break（换主播走
-# quiet 停止，不发 idle）。漏一个，下一场每次重连都会显示上一场的落后
+# quiet 停止，不发 idle）。漏一个，下一场每次重连都会显示上一场的落后。
+# 只在这一场还在（status 不是 idle/ended/error）时存：停止之后晚到的一条不存（b2 审查），所以下面的用例
+# 先把 status 推到 live（CaptionServer 起来时是 idle）
+
+def _live_server():
+    server, send = _guard_server()
+    send({"type": "status", "state": "live", "detail": ""})
+    return server, send
+
 
 def _health(level="lagging", backlog=23.0):
     from app.i18n import L
@@ -258,7 +266,7 @@ def _health(level="lagging", backlog=23.0):
 
 
 def test_health_is_kept_in_config_and_dropped_when_it_reads_ok():
-    server, send = _guard_server()
+    server, send = _live_server()
     assert "health" not in server.config
     send(_health())
     assert server.config["health"] == {"level": "lagging", "backlog_sec": 23.0,
@@ -272,7 +280,7 @@ def test_health_is_kept_in_config_and_dropped_when_it_reads_ok():
 @pytest.mark.parametrize("state", ["idle", "ended", "error"])
 def test_the_session_ending_drops_the_health(state):
     import asyncio
-    server, send = _guard_server()
+    server, send = _live_server()
     send(_health())
     asyncio.run(server.status(state, ""))
     assert "health" not in server.config
@@ -282,14 +290,14 @@ def test_the_session_ending_drops_the_health(state):
 def test_the_session_going_on_keeps_the_health(state):
     """断流重连时 pipeline 发 connecting，这一场还在、积压也还在：不清。"""
     import asyncio
-    server, send = _guard_server()
+    server, send = _live_server()
     send(_health())
     asyncio.run(server.status(state, ""))
     assert server.config["health"]["level"] == "lagging"
 
 
 def test_a_live_session_break_drops_the_health_but_a_replayed_one_does_not():
-    server, send = _guard_server()
+    server, send = _live_server()
     send(_health())
     send({"type": "session_break", "ts": 100.0, "streamer": "luna_demo", "replay": True})
     assert server.config["health"]["level"] == "lagging"   # 回放的分隔线是历史，不是新的一场
@@ -300,7 +308,7 @@ def test_a_live_session_break_drops_the_health_but_a_replayed_one_does_not():
 def test_stats_saying_ok_does_not_drop_the_health():
     """识别连续出错时 pipeline 有意让「检测已降级」挂着：出错的调用返回得快、积压归零，每跳 stats 都是 ok
     （Pipeline._announce_health 不让按积压算的 ok 盖掉它）。拿 stats 清会在 10 秒内把它收掉。"""
-    server, send = _guard_server()
+    server, send = _live_server()
     send(dict(_health("degraded", 0.0), text="🔴 识别连续出错"))
     for _ in range(3):
         send({"type": "stats", "health": "ok", "audio_backlog_sec": 0.0})
@@ -346,6 +354,63 @@ def test_hello_carries_the_current_health_in_the_page_language():
     assert en["config"]["health"]["text"] == \
         "⚠️ Speech recognition is falling behind (23 sec backlog). Alerts will be delayed."
     assert "health" not in caught_up["config"]
+
+
+@pytest.mark.parametrize("state", ["idle", "ended", "error"])
+def test_a_health_arriving_after_the_session_is_over_is_not_kept_for_reconnects(state):
+    """b2 审查：停止、下播、出错之后晚到一条 lagging（比如下播之后、统计循环被取消之前的那一跳），以前照样
+    存进 config["health"]，之后每次重连，手机都在待机页上重建这条过时的落后提示。现在不存：重连的 hello 和
+    手机回放都不带它。下一场开始（connecting）之后的照常存。"""
+    import asyncio
+    from app import viewer
+    from app.server import CaptionServer
+
+    async def scenario():
+        server = CaptionServer(port=0)
+        await server.status("live", "")
+        await server.broadcast(_health())
+        assert server.config["health"]["level"] == "lagging"
+        await server.status(state, "")
+        assert "health" not in server.config
+        await server.broadcast(_health("degraded", 61.0))          # 晚到的一条
+        stale = (await _hello_of(server), viewer.replay_snapshot(server), dict(server.config))
+        await server.status("connecting", "")                      # 下一场
+        await server.broadcast(_health())
+        fresh = (await _hello_of(server), viewer.replay_snapshot(server))
+        return stale, fresh
+
+    (hello, replay, config), (hello2, replay2) = asyncio.run(scenario())
+    assert "health" not in config
+    assert "health" not in hello["config"]
+    assert not [m for m in replay if m["type"] == "health"]
+    assert hello2["config"]["health"]["level"] == "lagging"
+    assert [m for m in replay2 if m["type"] == "health"] == [{"type": "health", "level": "lagging"}]
+
+
+def test_a_health_before_any_session_started_is_not_kept():
+    """程序刚起来、还没开始监听（status 是 idle）时不会有落后提示；真来了一条也不存。"""
+    server, send = _guard_server()
+    assert server.config["status"]["state"] == "idle"
+    send(_health())
+    assert "health" not in server.config
+
+
+async def _hello_of(server):
+    """真 CaptionServer._ws 发给一个新连上的页面的第一条（hello）。"""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    app = web.Application()
+    app.router.add_get("/ws", server._ws)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/ws")
+        hello = await ws.receive_json(timeout=5)
+        await ws.close()
+        return hello
+    finally:
+        await client.close()
 
 
 def test_health_text_is_registered_as_ui_text_in_config():
