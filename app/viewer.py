@@ -86,6 +86,9 @@ WHY_LIMIT, WHY_LIMIT_EN = 160, 400
 PHONE_HISTORY_MAX = 100       # 字幕，含场次分隔标记（数的是 history 里的条目）
 PHONE_COMMENTS_MAX = 100
 REPLAY_MAX = 273              # 1+1+1+20+50 + PHONE_HISTORY_MAX + PHONE_COMMENTS_MAX，见 replay_snapshot
+# 这个和里没数 alert_mode 和 health（F3 加的）各一条：持续提示 20 条、报警 50 条、字幕和弹幕各 100 条
+# 同时到顶时，末尾最新的一两条弹幕会被最后那一刀切掉。数值由 tests/test_server_clear.py 钉着，
+# 抬高它要连那边一起改（不在 F3 这一批的文件里），先记在这里
 
 VIEWER_FILES = ("viewer.html", "viewer.js", "viewer.css", "icon.png")
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -605,6 +608,14 @@ def replay_snapshot(server, viewers=0, share_since=None):
             payload = filter_payload(dict(item, type="incident"))
             if payload is not None:
                 out.append(payload)
+    # 识别落后提示（专家审查 F3）：server.broadcast 存在 config["health"]，「已追上」、停止、下播、换场时删掉。
+    # 以前不回放，断线期间提示已撤的手机，重连后还挂着旧的「识别开始落后」；手机收到 viewer_hello
+    # 先清掉自己的，由这一条重建。过白名单后只剩 level，文案手机按 level 自己查表
+    health = config.get("health")
+    if isinstance(health, dict):
+        payload = filter_payload(dict(health, type="health"))
+        if payload is not None:
+            out.append(payload)
     for alert in list(getattr(server, "alerts", None) or []):
         if isinstance(alert, dict):
             payload = filter_payload(dict(alert, replay=True))

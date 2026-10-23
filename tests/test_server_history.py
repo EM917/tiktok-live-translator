@@ -5,6 +5,8 @@
 浮出上一场的最后一句；插件已撤，字段语义保留）。
 两个用途各用各的字段——replay 表示「这是历史」，restore 表示「用它恢复大字幕」。
 """
+import pytest
+
 from app.server import replay_payloads
 
 
@@ -239,3 +241,115 @@ def test_hello_replay_carries_guard_and_a_removed_viewer_is_gone_after_refresh()
     assert hello1["config"]["guard_events"]["g1"]["n"] == 1
     assert hello2["config"]["guard_marked"] == {} and "marked" not in replay2                  # 移出后刷新：不再高亮
     assert replay2["guard"] == guard
+
+
+# ---- 识别落后提示（health）：存进 config，随 hello 重放（专家审查 F3）------------------------------------------
+# 补核用真服务端加真页面复现：「识别开始落后（积压 23 秒）」显示着时页面断线，断线期间服务端发了「已追上」，
+# 重连后旧提示还挂着、一直到这一场停止——服务端不存也不重放 health，pipeline 等级不变又不再广播。
+# 清除时机要全（计划审查 Q1）：level=ok、status 变成 idle/ended/error、实时的 session_break（换主播走
+# quiet 停止，不发 idle）。漏一个，下一场每次重连都会显示上一场的落后
+
+def _health(level="lagging", backlog=23.0):
+    from app.i18n import L
+    return {"type": "health", "level": level, "backlog_sec": backlog,
+            "text": L("⚠️ 识别开始落后（积压 {:.0f} 秒），报警会相应延迟",
+                      "⚠️ Speech recognition is falling behind ({:.0f} sec backlog). "
+                      "Alerts will be delayed.").format(backlog)}
+
+
+def test_health_is_kept_in_config_and_dropped_when_it_reads_ok():
+    server, send = _guard_server()
+    assert "health" not in server.config
+    send(_health())
+    assert server.config["health"] == {"level": "lagging", "backlog_sec": 23.0,
+                                       "text": "⚠️ 识别开始落后（积压 23 秒），报警会相应延迟"}
+    send(_health("degraded", 61.0))                       # 后一条覆盖前一条
+    assert server.config["health"]["level"] == "degraded"
+    send({"type": "health", "level": "ok", "backlog_sec": 0.0, "text": "✅ 识别已追上，检测恢复正常"})
+    assert "health" not in server.config
+
+
+@pytest.mark.parametrize("state", ["idle", "ended", "error"])
+def test_the_session_ending_drops_the_health(state):
+    import asyncio
+    server, send = _guard_server()
+    send(_health())
+    asyncio.run(server.status(state, ""))
+    assert "health" not in server.config
+
+
+@pytest.mark.parametrize("state", ["connecting", "live"])
+def test_the_session_going_on_keeps_the_health(state):
+    """断流重连时 pipeline 发 connecting，这一场还在、积压也还在：不清。"""
+    import asyncio
+    server, send = _guard_server()
+    send(_health())
+    asyncio.run(server.status(state, ""))
+    assert server.config["health"]["level"] == "lagging"
+
+
+def test_a_live_session_break_drops_the_health_but_a_replayed_one_does_not():
+    server, send = _guard_server()
+    send(_health())
+    send({"type": "session_break", "ts": 100.0, "streamer": "luna_demo", "replay": True})
+    assert server.config["health"]["level"] == "lagging"   # 回放的分隔线是历史，不是新的一场
+    send({"type": "session_break", "ts": 200.0, "streamer": "sol_demo"})
+    assert "health" not in server.config                   # 换主播：上一场的落后作废
+
+
+def test_stats_saying_ok_does_not_drop_the_health():
+    """识别连续出错时 pipeline 有意让「检测已降级」挂着：出错的调用返回得快、积压归零，每跳 stats 都是 ok
+    （Pipeline._announce_health 不让按积压算的 ok 盖掉它）。拿 stats 清会在 10 秒内把它收掉。"""
+    server, send = _guard_server()
+    send(dict(_health("degraded", 0.0), text="🔴 识别连续出错"))
+    for _ in range(3):
+        send({"type": "stats", "health": "ok", "audio_backlog_sec": 0.0})
+    assert server.config["health"]["level"] == "degraded"
+
+
+def test_hello_carries_the_current_health_in_the_page_language():
+    """刷新或重连的页面从 hello 的 config 拿到此刻的提示；界面文字按连上那一刻的语言渲染。
+    断线期间已经追上的，hello 里就没有了。"""
+    import asyncio
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from app import i18n
+    from app.server import CaptionServer
+
+    async def hello_of(server):
+        app = web.Application()
+        app.router.add_get("/ws", server._ws)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            ws = await client.ws_connect("/ws")
+            hello = await ws.receive_json(timeout=5)
+            await ws.close()
+            return hello
+        finally:
+            await client.close()
+
+    async def scenario():
+        server = CaptionServer(port=0)
+        await server.status("live", "")
+        await server.broadcast(_health())
+        zh = await hello_of(server)
+        with i18n.use("en"):
+            en = await hello_of(server)
+        await server.broadcast({"type": "health", "level": "ok", "backlog_sec": 0.0, "text": "ok"})
+        caught_up = await hello_of(server)
+        return zh, en, caught_up
+
+    zh, en, caught_up = asyncio.run(scenario())
+    assert zh["config"]["health"] == {"level": "lagging", "backlog_sec": 23.0,
+                                      "text": "⚠️ 识别开始落后（积压 23 秒），报警会相应延迟"}
+    assert en["config"]["health"]["text"] == \
+        "⚠️ Speech recognition is falling behind (23 sec backlog). Alerts will be delayed."
+    assert "health" not in caught_up["config"]
+
+
+def test_health_text_is_registered_as_ui_text_in_config():
+    """G9 运行时网按 UI_FIELDS 查界面文字：config 里的 health.text 也要查得到（漏写 L() 时报出来）。"""
+    from app import i18n
+    msg = {"type": "config", "health": {"level": "lagging", "text": "识别开始落后"}}
+    assert ("health.text", "识别开始落后") in list(i18n.ui_values(msg))

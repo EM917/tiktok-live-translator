@@ -779,16 +779,21 @@ if (typeof document !== "undefined") {
     }
 
     // 重连回放里不带 replay 标记的几种：app/viewer.py replay_snapshot 先发 status、comment_source、
-    // alert_mode、incident，字幕历史里夹着的 session_break 过白名单时 replay 键被丢掉（ALLOW 只给 ts）。
+    // alert_mode、incident、health，字幕历史里夹着的 session_break 过白名单时 replay 键被丢掉（ALLOW 只给 ts）。
     // 它们到了不算回放结束；其余消息不带 replay 的，就是回放之后的第一条实时消息
     var UNMARKED_IN_REPLAY = { status: true, comment_source: true, alert_mode: true, incident: true,
-                               session_break: true };
+                               health: true, session_break: true };
+    // viewer_hello 之后、回放之后的第一条实时消息之前为 true（判断同上）。回放里的 session_break 不带 replay，
+    // 只能靠它分辨「历史上的换场」和「此刻的换场」
+    var replaying = false;
 
     function handle(msg) {
       if (!msg || typeof msg !== "object") return;
       // F6：重连回放结束时把弹幕滚到底一次。回放是一口气压进来的，逐条追加时的跟随本来就会贴底，
       // 这一下是兜底：回放期间列表被清空、重建，scroll 事件可能把跟随意图改掉
-      if (commentReplayStick && msg.type !== "viewer_hello" && !msg.replay && !UNMARKED_IN_REPLAY[msg.type]) {
+      var firstLive = msg.type !== "viewer_hello" && !msg.replay && !UNMARKED_IN_REPLAY[msg.type];
+      if (firstLive) replaying = false;
+      if (commentReplayStick && firstLive) {
         commentReplayStick = false;
         followCommentsNow();
       }
@@ -797,10 +802,16 @@ if (typeof document !== "undefined") {
           retryCount = 0;
           disconnectedAt = null;
           commentReplayStick = true;
+          replaying = true;
           // 取消记录先对齐这一次共享，再收回放的报警：程序重启后 alert_id 从头数，
           // 上一次共享里取消过的 7 号不能藏掉这一次的 7 号
           dismissedAlerts.bind(msg.share_since);
           resetForNewSession();
+          // 持续提示和识别落后提示以回放为准（专家审查 F3）：先清掉，紧随其后的回放把此刻还在的重建。
+          // 以前不清，断线期间已经撤掉的提示（「已追上」、clear）没收到，重连后一直挂着
+          incidents = Object.create(null);
+          drawIncidents();
+          renderHealth(null);
           setConnState("connected");
           break;
         case "viewer_denied":
@@ -813,6 +824,9 @@ if (typeof document !== "undefined") {
             demoMode = false;
             updateDemoBanner();
           }
+          // 停止、下播、出错：这一场的识别落后提示作废（pipeline 停止时不补发「已追上」）。和服务端删
+          // config["health"] 的时机一致（专家审查 F3），连着的手机不必等到重连才收掉它
+          if (msg.state === "idle" || msg.state === "ended" || msg.state === "error") renderHealth(null);
           break;
         case "alert_mode":
           renderAlertMode(msg);
@@ -836,6 +850,9 @@ if (typeof document !== "undefined") {
           updateCaption(msg);
           break;
         case "session_break":
+          // 此刻的换场（不是回放里的历史）：上一场的落后提示作废。换主播走 quiet 停止、不发 idle，新一场
+          // 又不会补发「已追上」，不在这里收掉，它会一直挂着（专家审查 F3，同桌面）
+          if (!replaying) renderHealth(null);
           renderSessionBreak(msg);
           break;
         case "comment":

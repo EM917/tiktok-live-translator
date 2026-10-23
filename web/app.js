@@ -1052,6 +1052,11 @@
           }
           drawIncidents();
           if (msg.config.status) setStatus(msg.config.status);
+          // 识别落后提示同样以服务端为准（专家审查 F3）：先收起，再按 config.health 画。以前 hello 不碰它，
+          // 断线期间那条「已追上」没收到的页面，一直挂着旧的「识别开始落后」到这一场停止。放在 setStatus
+          // 之后：renderHealth 只在这一场还在进行时才揭开它
+          healthBar.classList.add("hidden");
+          if (msg.config.health) renderHealth(msg.config.health);
           if (msg.config.target_lang) showTargetLang(msg.config.target_lang);
           if (msg.config.source_lang && !sourceTouched) selectSourceLang(msg.config.source_lang);
           if (msg.config.glossary_migration) {
@@ -1155,6 +1160,10 @@
         updateCaption(msg);
         break;
       case "session_break":
+        // 新的一场开始：上一场的识别落后提示作废（专家审查 F3）。换主播走 quiet 停止、不发 idle，新一场的
+        // 统计循环又从 ok 数起、等级不变就不广播，不在这里收起，它会一直挂到下一次等级变化。
+        // 回放里的分隔线是历史，不碰：此刻的状态由 hello 的 config.health 定
+        if (!msg.replay) healthBar.classList.add("hidden");
         renderSessionBreak(msg);
         break;
       // 服务端清掉了一类缓存（这一页或别的本机页面点了「清空」）：这一页也跟着清。

@@ -279,6 +279,44 @@ def test_replay_snapshot_omits_the_alert_mode_when_config_lacks_the_key():
     assert not any(m["type"] == "alert_mode" for m in snapshot)
 
 
+def test_replay_snapshot_carries_the_current_health_after_the_incidents():
+    """专家审查 F3：手机重连后，识别落后提示按此刻的状态重建。server.broadcast 存在 config["health"]；
+    回放放在持续提示之后、报警之前，过白名单只剩 level（文案手机按 level 自己查表）。"""
+    server = StubServer(status={"state": "live"},
+                        incidents={"disk": {"id": "disk", "level": "warn", "text": "x", "ts": 1.0}},
+                        health={"level": "lagging", "backlog_sec": 23.0, "text": "识别开始落后"})
+    server.alerts = [{"type": "alert", "alert_id": 1, "term": "x"}]
+    types = [m["type"] for m in viewer_mod.replay_snapshot(server)]
+    assert types[:5] == ["viewer_hello", "status", "incident", "health", "alert"]
+    health = [m for m in viewer_mod.replay_snapshot(server) if m["type"] == "health"]
+    assert health == [{"type": "health", "level": "lagging"}]
+
+
+def test_replay_snapshot_has_no_health_once_it_is_over():
+    """「已追上」、停止、换场之后 config 里没有 health：回放里也没有，手机在 viewer_hello 时清掉的不会再回来。"""
+    assert not any(m["type"] == "health" for m in viewer_mod.replay_snapshot(StubServer()))
+    assert not any(m["type"] == "health"
+                   for m in viewer_mod.replay_snapshot(StubServer(health="不是 dict")))
+
+
+def test_a_phone_reconnecting_after_the_backlog_caught_up_gets_no_stale_health():
+    """真 CaptionServer 的缓存规则 + 真 replay_snapshot：断线期间发了「已追上」，重连的回放里就没有落后。"""
+    from app.server import CaptionServer
+
+    async def scenario():
+        server = CaptionServer(port=0)
+        await server.status("live", "")
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 23.0, "text": "x"})
+        lagging = [m for m in viewer_mod.replay_snapshot(server) if m["type"] == "health"]
+        await server.broadcast({"type": "health", "level": "ok", "backlog_sec": 0.0, "text": "y"})
+        caught_up = [m for m in viewer_mod.replay_snapshot(server) if m["type"] == "health"]
+        return lagging, caught_up
+
+    lagging, caught_up = asyncio.run(scenario())
+    assert lagging == [{"type": "health", "level": "lagging"}]
+    assert caught_up == []
+
+
 # ---- 握手 ----
 def run_handshake(hub, ws, ip="192.168.1.99"):
     request = SimpleNamespace(transport=FakeTransport(), match_info={},

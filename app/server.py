@@ -432,6 +432,21 @@ class CaptionServer:
             # 落在它该在的两条字幕之间，不用另开一路时间线去对齐
             self.history.append(msg)
             self._last_break = msg
+            # 新的一场开始（_begin_session 第一步就发它，早于这一场的任何 health）：上一场的落后提示作废。
+            # 换主播走 quiet 停止、不发 idle，新一场的统计循环又从 ok 数起、等级不变就不广播——只能靠
+            # 这一条清（专家审查 F3）。回放的分隔线是历史，不碰（上面的 not replay）
+            self.config.pop("health", None)
+        elif msg.get("type") == "health":
+            # 识别落后提示落进 config：刷新或重连的页面从 hello 里拿到此刻的状态，手机从 replay_snapshot
+            # 里拿（专家审查 F3）。以前不存：等级不变 pipeline 就不再广播，断线期间那条「已追上」没收到的
+            # 页面，一直挂着旧的「识别开始落后」到这一场停止。level=ok 就是没有提示。
+            # stats 里也带着按积压算的等级，但不拿它清：识别连续出错时 pipeline 有意让「检测已降级」
+            # 挂着（出错的调用返回得快、积压归零，每跳 stats 都是 ok，见 Pipeline._announce_health），
+            # 拿 stats 清会在 10 秒内把它收掉
+            if msg.get("level") == "ok":
+                self.config.pop("health", None)
+            else:
+                self.config["health"] = {k: msg[k] for k in ("level", "backlog_sec", "text") if k in msg}
         elif msg.get("type") == "caption_update":
             # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文
             # 只覆盖消息里带的键：重译的「pending/failed」通知不带 translated，
@@ -521,6 +536,10 @@ class CaptionServer:
             self.config["status"] = {"state": msg.get("state"),
                                      "detail": msg.get("detail", ""),
                                      "command": msg.get("command")}
+            # 停止、下播、出错：这一场的识别落后提示跟着作废（pipeline 停止时不补发 level=ok）。
+            # 下播发的是 ended，不是 idle，漏了它，之后每次重连都会再显示上一场的落后（专家审查 F3）
+            if msg.get("state") in ("idle", "ended", "error"):
+                self.config.pop("health", None)
             hook = getattr(self, "on_status", None)
             if hook is not None:
                 try:

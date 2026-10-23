@@ -1183,3 +1183,97 @@ test("弹幕面板：回放结束前用户已经自己翻了，回放结束时�
     assert.equal(geo.firstVisible(), "c4");
   });
 });
+
+// ---- 重连之后的持续提示和识别落后提示（专家审查 F3）----
+// 补核用真 ViewerHub 加真手机页复现：断线期间持续提示已清、识别已追上，手机重连后两条旧提示都还在——viewer_hello
+// 不清它们，replay_snapshot 也不回放 health。现在 viewer_hello 先清掉，紧随其后的回放把此刻还在的重建
+function incidentTexts(elements) {
+  return elements["incident-list"].children.map((r) => r.textContent);
+}
+function healthShown(elements) {
+  const line = elements["health-line"];
+  return line.classList.contains("hidden") ? null : line.children[1].textContent;
+}
+
+test("重连：断线期间撤掉的持续提示和落后提示，重连后不再显示；回放里还在的照样重建", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send({ type: "incident", id: "session:audio_rate", level: "warn", text: "近 5 分钟只收到 60% 的直播音频" });
+    send({ type: "incident", id: "disk", level: "warn", text: "磁盘快满了" });
+    send({ type: "health", level: "lagging" });
+    assert.deepEqual(incidentTexts(elements), ["近 5 分钟只收到 60% 的直播音频", "磁盘快满了"]);
+    assert.equal(healthShown(elements), "识别开始落后，报警会有延迟");
+
+    ws.onclose({ code: 1006 });
+    // 断线期间：音频那条 clear、识别追上（level=ok）。重连的回放（replay_snapshot 的顺序）只剩磁盘那条
+    send({ type: "viewer_hello", ok: true, ts: 1, share_since: 0, viewers: 1, max_viewers: 12, read_only: true });
+    assert.deepEqual(incidentTexts(elements), [], "viewer_hello 先清掉");
+    assert.equal(healthShown(elements), null);
+    send({ type: "status", state: "live" });
+    send({ type: "incident", id: "disk", level: "warn", text: "磁盘快满了" });
+    assert.deepEqual(incidentTexts(elements), ["磁盘快满了"]);
+    assert.equal(healthShown(elements), null, "回放里没有 health：落后提示不再挂着");
+
+    // 再断一次：这回识别正落后，回放带着 health
+    ws.onclose({ code: 1006 });
+    send({ type: "viewer_hello", ok: true, ts: 2, share_since: 0, viewers: 1, max_viewers: 12, read_only: true });
+    send({ type: "status", state: "live" });
+    send({ type: "health", level: "degraded" });
+    assert.equal(healthShown(elements), "检测已降级，识别明显落后");
+  });
+});
+
+test("重连：回放里的 health 不带 replay 标记，也不算回放结束（弹幕回放后照样强制贴底一次）", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 30; n++) ws.onmessage({ data: comment(n) });
+    userScrollsTo(list, 100);
+    ws.onclose({ code: 1006 });
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send({ type: "viewer_hello", ok: true, ts: 1, share_since: 0, viewers: 1, max_viewers: 12, read_only: true });
+    send({ type: "status", state: "live" });
+    send({ type: "incident", id: "disk", level: "warn", text: "磁盘快满了" });
+    send({ type: "health", level: "lagging" });                     // replay_snapshot：incident 之后、报警之前
+    for (let n = 11; n <= 40; n++) ws.onmessage({ data: comment(n, { replay: true }) });
+    list.scrollTop = 300;                                             // 回放期间补发的 scroll 事件改掉了跟随意图
+    list.dispatch("scroll");
+    ws.onmessage({ data: comment(41) });                              // 回放之后的第一条实时消息
+    assert.equal(geo.below(), 0, "health 要是算成回放结束，这一下贴底就在它那里提前用掉了");
+    assert.equal(healthShown(elements), "识别开始落后，报警会有延迟");
+  });
+});
+
+test("连着的手机：停止、下播、出错时收掉落后提示；此刻的换场收掉，回放里夹着的换场不碰此刻的提示", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    for (const state of ["idle", "ended", "error"]) {
+      send({ type: "health", level: "lagging" });
+      send({ type: "status", state: "live" });
+      assert.equal(healthShown(elements), "识别开始落后，报警会有延迟", "直播中的 status 不收");
+      send({ type: "status", state: state });
+      assert.equal(healthShown(elements), null, state + "：这一场的落后作废（服务端同时删掉 config 里的）");
+    }
+
+    // 换主播：quiet 停止不发 idle，新一场也不补发「已追上」——只有 session_break 说「换场了」
+    send({ type: "caption", id: 1, ts: 1, original: "uno", translated: "一" });      // 回放早就结束了
+    send({ type: "health", level: "lagging" });
+    send({ type: "status", state: "connecting" });
+    send({ type: "session_break", ts: 2 });
+    assert.equal(healthShown(elements), null, "新的一场开始：上一场的落后提示作废");
+
+    // 重连回放：此刻正落后（回放带着 health），字幕历史里夹着一条历史分隔线（过白名单后不带 replay）
+    ws.onclose({ code: 1006 });
+    send({ type: "viewer_hello", ok: true, ts: 3, share_since: 0, viewers: 1, max_viewers: 12, read_only: true });
+    send({ type: "status", state: "live" });
+    send({ type: "health", level: "lagging" });
+    send({ type: "caption", id: 1, ts: 1, original: "uno", translated: "一", replay: true });
+    send({ type: "session_break", ts: 2 });
+    send({ type: "caption", id: 2, ts: 3, original: "dos", translated: "二", replay: true, restore: true });
+    assert.equal(healthShown(elements), "识别开始落后，报警会有延迟", "回放里的换场是历史");
+    send({ type: "caption", id: 3, ts: 4, original: "tres", translated: "三" });      // 回放之后的第一条实时消息
+    send({ type: "session_break", ts: 5 });
+    assert.equal(healthShown(elements), null, "回放结束之后的换场照常收掉");
+  });
+});
