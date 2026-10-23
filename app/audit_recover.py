@@ -1,6 +1,6 @@
 """启动时给上一次没写结尾的审计补一条 session_end（专家审查 B5，2026-10-21）。
 
-为什么：本机 132 场审计里有 38 场既没有 session_end、也没有 window_closed（packaging-verify/v6），其中
+为什么：本机 132 场审计里有 38 场既没有 session_end、也没有 window_closed（2026-10-21 零请求清点本机日志），其中
 29 场的最后一条停在 translation 上。退出路径各有各的漏法：关掉 Start.command 的终端窗口（SIGHUP）、
 kill（SIGTERM）、窗口模式下按 Ctrl-C、⌘Q（2026-10-23 用真 pywebview 6.2.1 实测：NSApp terminate: 在
 applicationShouldTerminate 同意之后直接 exit()，webview.start() 不返回，收尾一步都没走）。信号和 ⌘Q 现在

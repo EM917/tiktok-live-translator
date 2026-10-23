@@ -322,7 +322,7 @@ def test_a_plain_callable_dispatch_is_still_called_directly():
 
 @pytest.mark.skipif(not POSIX, reason="SIGUSR1 只在 POSIX 上有")
 def test_a_second_signal_ends_the_process_before_the_first_shutdown_finishes():
-    """和审查的实验（exp/review-r1/second_signal.py）同一个场景，在子进程里走到 os._exit：主线程停在 sleep 里
+    """和第 1 轮审查的实验同一个场景，在子进程里走到 os._exit：主线程停在 sleep 里
     （近似原生界面循环），第一次的收尾要 3 秒，0.5 秒后再来一个信号 → 以 on_repeat 的退出码 1 结束，不等那 3 秒。"""
     code = """
 import os, signal, sys, threading, time

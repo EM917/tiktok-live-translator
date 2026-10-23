@@ -194,7 +194,7 @@ class WakeupBridge:
     第一次的回调（收尾：停管线最多 5 秒、等证据写盘最多 2 秒）放进一个新的 daemon 线程跑，读线程不等它、
     接着读：收尾途中再来的信号照样读得到、交给 on_repeat（main.py：不再等收尾，直接退出）。以前读线程自己
     同步跑收尾，收尾那几秒里第二个信号的字节没人读，Python 层的处理函数又看读线程活着、什么都不做——
-    第二次 Ctrl-C 不起作用（第 1 轮审查用 exp/review-r1/second_signal.py 实测）。之后的回调还在读线程上跑：
+    第二次 Ctrl-C 不起作用（第 1 轮审查实测：第一次的收尾放慢到 3 秒，0.5 秒后再发一次信号，on_repeat 一次都没调到）。之后的回调还在读线程上跑：
     on_repeat 本身就是退出。"""
 
     def __init__(self, dispatch, signals=None, signal_mod=signal, socketpair=socket.socketpair):

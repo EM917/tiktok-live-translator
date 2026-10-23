@@ -443,7 +443,7 @@ def test_a_health_notice_that_fails_is_retried_on_the_next_tick(monkeypatch, tmp
     p2.audit.close(reason="user_stop")
 
 
-# ---- 自然收尾途中点「开始」（专家审查 B5，reverify/backend/b1/out-natural.txt）----
+# ---- 自然收尾途中点「开始」（专家审查 B5，复核时用真代码复现过）----
 #
 # 下播之后这一场自己进 _end_session 收尾；收尾途中中控点了下一个房间。以前 _stop_locked 照样取消它，取消落在
 # 收尾的某个 await 上（等弹幕停下最常见），session_end 改由 _stop_locked 代写：原因成了 new_session，status 和

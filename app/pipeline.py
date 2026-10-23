@@ -2141,7 +2141,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         一进来就记下「这一场正在自己收尾、原因是什么」（按审计各记一份，见 _note_ending、_ending_of）。以前自然结束
         （下播、预算用尽……）的收尾途中点「开始」：_stop_locked 取消这个任务，取消落在下面某个 await 上，
         session_end 改由 _stop_locked 代写，原因成了 new_session，status 和弹幕计数也丢了（专家审查 B5，
-        reverify/backend/b1/out-natural.txt：下播后 0.02、0.10 秒点开始都中）。现在 _stop_locked 看到
+        复核时用真代码复现：下播后 0.02、0.10 秒点开始都中）。现在 _stop_locked 看到
         这一场已经在自己收尾就不取消、等它写完；等不到才代写，原因和附带的观察照这里记下的。
         fields 存的是同一个 dict：下面 setdefault 进来的弹幕计数，代写时也带得上。"""
         ending = self._note_ending(my_audit if my_audit is not None else self.audit, reason, fields)
