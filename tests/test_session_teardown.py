@@ -257,7 +257,7 @@ def test_current_session_with_sess_cancels_its_stats_and_clears_the_slot():
     assert cancelled and slot is None and audit is None
 
 
-# ---- 统计循环的一跳出错：跳过这一跳，循环接着跑（专家审查 B1 途径二）----
+# ---- 统计循环的某一步出错：只跳过这一步，同一跳的其余各步和下一跳照常（专家审查 B1 途径二）----
 
 def _stats_pipeline(monkeypatch, tmp_path):
     p, server = _real_pipeline(monkeypatch, tmp_path)
@@ -303,24 +303,140 @@ def test_a_tick_that_raises_is_skipped_and_the_loop_keeps_running(monkeypatch, t
     assert any(m.get("type") == "stats" for m in server.messages)   # 之后的跳照常推统计
     p.audit.close(reason="user_stop")
     errors = [r for r in _audit_rows(p.audit) if r["type"] == "stats_tick_error"]
-    assert [r["exc_type"] for r in errors] == ["RuntimeError"]      # 同一种这一场只记一次
-    assert "NO-LEAK" not in p.audit.path.read_text(encoding="utf-8")   # 只写类型名
+    assert [(r["step"], r["exc_type"]) for r in errors] == [("clock_gap", "RuntimeError")]  # 这一场只记一次
+    assert "NO-LEAK" not in p.audit.path.read_text(encoding="utf-8")   # 只写步骤代码和类型名
     out = capsys.readouterr().out
-    assert out.count("统计循环这一跳出错（RuntimeError）") == 1
+    assert out.count("统计循环的 clock_gap 这一步出错（RuntimeError）") == 1
     assert "NO-LEAK" not in out
 
 
 def test_each_kind_of_tick_error_is_recorded_once_per_session(monkeypatch, tmp_path):
     p, _server = _stats_pipeline(monkeypatch, tmp_path)
-    p._stats_tick_failed(RuntimeError("a"))
-    p._stats_tick_failed(RuntimeError("b"))
-    p._stats_tick_failed(KeyError("c"))
+    p._stats_tick_failed(RuntimeError("a"), "clock_gap")
+    p._stats_tick_failed(RuntimeError("b"), "clock_gap")
+    p._stats_tick_failed(KeyError("c"), "clock_gap")
+    p._stats_tick_failed(RuntimeError("e"), "audit_health")      # 另一步的同一种异常：单独一条
     first = p.audit
     first.close(reason="new_session")
     p.audit = AuditLog(room_url=ROOM_B, log_dir=tmp_path / "logs2")   # 下一场：同一种再记一次
-    p._stats_tick_failed(RuntimeError("d"))
+    p._stats_tick_failed(RuntimeError("d"), "clock_gap")
     p.audit.close(reason="user_stop")
-    kinds = lambda audit: [r["exc_type"] for r in _audit_rows(audit)    # noqa: E731
+    kinds = lambda audit: [(r["step"], r["exc_type"]) for r in _audit_rows(audit)    # noqa: E731
                            if r["type"] == "stats_tick_error"]
-    assert kinds(first) == ["RuntimeError", "KeyError"]
-    assert kinds(p.audit) == ["RuntimeError"]
+    assert kinds(first) == [("clock_gap", "RuntimeError"), ("clock_gap", "KeyError"),
+                            ("audit_health", "RuntimeError")]
+    assert kinds(p.audit) == [("clock_gap", "RuntimeError")]
+
+
+# ---- 某一步每跳都抛：其余各步照样每跳运行（专家审查 B1 复核：以前按「一跳」兜，排在后面的整场跑不到）----
+
+import pytest  # noqa: E402
+
+# 统计循环每一跳依次调的方法（步骤代码 → 方法名）；health 只在等级变了时才调，单独测
+STEPS = {
+    "clock_gap": "_check_clock_gap",
+    "stream_watch": "_stream_watch_tick",
+    "snapshot": "_stats_snapshot",
+    "coverage": "_coverage_stats",
+    "broadcast": "_stats_broadcast",
+    "detection": "_watch_detection",
+    "audit_health": "_check_audit_health",
+    "asr_memory": "_asr_memory_tick",
+    "guard": "_guard_tick",
+}
+NEEDS_SNAPSHOT = {"coverage", "broadcast", "detection"}
+TICKS = 5
+
+
+def _counted_steps(p, failing, health="ok"):
+    """把每一步换成只计次数的替身；failing 那一步每跳都抛 RuntimeError。最后一步（guard）在第 TICKS
+    次被调时抛 CancelledError 让循环停下：每一步被调的次数正好就是它跑了几跳。"""
+    calls = {name: 0 for name in STEPS}
+    calls["health"] = 0
+    real_snapshot = p._stats_snapshot
+
+    def make(name):
+        def stand_in(*args):
+            calls[name] += 1
+            if name == "guard" and calls[name] == TICKS:
+                raise asyncio.CancelledError
+            if name == failing:
+                raise RuntimeError("坏了 https://pull-flv.example.invalid/s.flv?sign=NO-LEAK")
+            if name == "snapshot":
+                snap = real_snapshot()
+                snap["health"] = health
+                return snap
+            if name == "coverage":
+                return {}
+            return None
+        return stand_in
+
+    for name, attr in STEPS.items():
+        setattr(p, attr, make(name))
+    p._announce_health = make("health")
+    return calls
+
+
+def _run_loop(p):
+    async def scenario():
+        await p._stats_loop(interval=0)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failing", sorted(set(STEPS) - {"snapshot"}))
+def test_a_step_that_raises_every_tick_does_not_hold_up_the_others(monkeypatch, tmp_path, capsys,
+                                                                   failing):
+    p, _server = _stats_pipeline(monkeypatch, tmp_path)
+    calls = _counted_steps(p, failing)
+    _run_loop(p)
+    assert {name: n for name, n in calls.items() if name != "health"} == {name: TICKS for name in STEPS}
+    assert calls["health"] == 0                     # 等级一直是 ok，不发提示
+    p.audit.close(reason="user_stop")
+    errors = [(r["step"], r["exc_type"]) for r in _audit_rows(p.audit) if r["type"] == "stats_tick_error"]
+    assert errors == [(failing, "RuntimeError")]    # 每跳都抛，这一场只记一条
+    assert "NO-LEAK" not in p.audit.path.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert out.count("统计循环的 {} 这一步出错（RuntimeError）".format(failing)) == 1
+    assert "NO-LEAK" not in out
+
+
+def test_the_audit_health_check_runs_every_tick_while_the_clock_check_keeps_failing(monkeypatch, tmp_path):
+    """复核里点名的那一种：时钟检查每跳都抛，审计健康检查照样每跳都跑（它排在后面）。"""
+    p, _server = _stats_pipeline(monkeypatch, tmp_path)
+    calls = _counted_steps(p, "clock_gap")
+    _run_loop(p)
+    assert calls["clock_gap"] == calls["audit_health"] == calls["asr_memory"] == calls["guard"] == TICKS
+    p.audit.close(reason="user_stop")
+
+
+def test_without_a_snapshot_only_the_steps_that_need_it_are_skipped(monkeypatch, tmp_path):
+    """统计快照本身出错：要用它的几步（覆盖率、广播、识别卡住检查）跟着跳过，其余各步照样每跳运行。"""
+    p, _server = _stats_pipeline(monkeypatch, tmp_path)
+    calls = _counted_steps(p, "snapshot")
+    _run_loop(p)
+    for name in STEPS:
+        assert calls[name] == (0 if name in NEEDS_SNAPSHOT else TICKS), name
+    p.audit.close(reason="user_stop")
+    errors = [(r["step"], r["exc_type"]) for r in _audit_rows(p.audit) if r["type"] == "stats_tick_error"]
+    assert errors == [("snapshot", "RuntimeError")]
+
+
+def test_a_health_notice_that_fails_is_retried_on_the_next_tick(monkeypatch, tmp_path):
+    """健康提示没发出去就不算换过档：每跳重发，其余各步照常；发出去了就只发一次。"""
+    p, _server = _stats_pipeline(monkeypatch, tmp_path)
+    calls = _counted_steps(p, "health", health="warn")
+    _run_loop(p)
+    assert calls["health"] == TICKS
+    assert all(calls[name] == TICKS for name in STEPS)
+    p.audit.close(reason="user_stop")
+    errors = [(r["step"], r["exc_type"]) for r in _audit_rows(p.audit) if r["type"] == "stats_tick_error"]
+    assert errors == [("health", "RuntimeError")]
+
+    (tmp_path / "ok").mkdir()
+    p2, _server2 = _stats_pipeline(monkeypatch, tmp_path / "ok")
+    calls2 = _counted_steps(p2, None, health="warn")
+    _run_loop(p2)
+    assert calls2["health"] == 1
+    p2.audit.close(reason="user_stop")

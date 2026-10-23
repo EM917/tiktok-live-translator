@@ -884,12 +884,15 @@ class AuditLog:
             "clocks_diverged": bool(clocks_diverged),
         })
 
-    def stats_tick_error(self, exc_type):
-        """统计循环的某一跳出了没预料到的异常（这一场每种异常一条）。循环接着跳，不因此退出；
-        只记异常的类型名，不记异常原文（可能带签名的流地址之类）。"""
+    def stats_tick_error(self, exc_type, step):
+        """统计循环的某一步出了没预料到的异常（这一场每一步的每种异常一条）。那一步跳过，同一跳的
+        其余各步和下一跳照常，循环不因此退出。step 是出错那一步的英文代码（clock_gap、stream_watch、
+        snapshot、coverage、broadcast、health、detection、audit_health、asr_memory、guard，见
+        Pipeline._stats_loop）；只记异常的类型名，不记异常原文（可能带签名的流地址之类）。"""
         self._write({
             "type": "stats_tick_error",
             "at": _now_ms(),
+            "step": str(step)[:40],
             "exc_type": str(exc_type)[:80],
         })
 

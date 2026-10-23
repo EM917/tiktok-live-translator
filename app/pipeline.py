@@ -14,6 +14,7 @@ import time
 import traceback
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from inspect import isawaitable
 from pathlib import Path
 
 from . import asr_risk, i18n
@@ -1087,51 +1088,81 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         中控必须能看出「检测正在落后多少秒」——识别卡住时假装一切正常，
         比晚几秒报警危险得多。
 
-        每一跳单独兜异常：以前整个循环外面一个 except Exception: pass，任何一跳出一次没预料到的
-        异常，循环就此退出，挂在它上面的看门狗（时钟跳变、无声计时、识别卡住自愈、审计健康检查、
-        stream_summary、弹幕留意节流）整场静默消失（专家审查 B1）。现在出错的那一跳跳过，下一跳
-        照常；见 _stats_tick_failed。取消照样往外抛。"""
+        每一步单独兜异常（_stats_step）：以前整个循环外面一个 except Exception: pass，任何一处出一次
+        没预料到的异常，循环就此退出，挂在它上面的看门狗（时钟跳变、无声计时、识别卡住自愈、审计健康检查、
+        stream_summary、弹幕留意节流）整场静默消失（专家审查 B1）。按「一跳」兜也不够：某一步每跳都抛
+        （比如时钟检查），排在它后面的审计健康检查、识别内存记录、弹幕留意整场都跑不到。现在出错的只是
+        那一步，同一跳的其余各步和下一跳照常；只有要用到统计快照的几步（覆盖率、广播、健康提示、识别卡住检查）
+        在快照本身出错时跟着跳过。取消照样往外抛。"""
+        failed = self._STATS_STEP_FAILED
+        step = self._stats_step
         last_level = "ok"
         while True:
             await asyncio.sleep(interval)
-            try:
-                await self._check_clock_gap(interval)
-                # 拉流阶段计时、「已 N 分钟没收到直播音频」：不依赖拉流任务，拉流卡死时这里照常跳
-                await self._stream_watch_tick()
-                snap = self.telemetry.snapshot()
-                level = self._health_level(snap["audio_backlog_sec"])
-                snap["health"] = level
+            await step("clock_gap", self._check_clock_gap, interval)
+            # 拉流阶段计时、「已 N 分钟没收到直播音频」：不依赖拉流任务，拉流卡死时这里照常跳
+            await step("stream_watch", self._stream_watch_tick)
+            snap = await step("snapshot", self._stats_snapshot)
+            if snap is not failed:
                 # 跨轮覆盖率的数字（只有数字；角标文字在 web/live-ui.js 里成对写）
-                snap.update(self._coverage_stats())
-                await self.server.broadcast({"type": "stats", **snap})
+                coverage = await step("coverage", self._coverage_stats)
+                if coverage is not failed:
+                    snap.update(coverage)
+                await step("broadcast", self._stats_broadcast, snap)
+                level = snap["health"]
                 if level != last_level:
-                    await self._announce_health(level, snap["audio_backlog_sec"])
-                    last_level = level
-                await self._watch_detection(snap)
-                await self._check_audit_health()
-                self._asr_memory_tick()
-                await self._guard_tick()      # 弹幕留意：发掉被节流压住的消息（自带保护，不抛）
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._stats_tick_failed(exc)
+                    # 提示没发出去就不算换过档：下一跳再发
+                    if await step("health", self._announce_health, level,
+                                  snap["audio_backlog_sec"]) is not failed:
+                        last_level = level
+                await step("detection", self._watch_detection, snap)
+            await step("audit_health", self._check_audit_health)
+            await step("asr_memory", self._asr_memory_tick)
+            await step("guard", self._guard_tick)      # 弹幕留意：发掉被节流压住的消息（自带保护，不抛）
 
-    def _stats_tick_failed(self, exc):
-        """统计循环的一跳出了没预料到的异常：这一场每种异常只记一次（审计 stats_tick_error，只写类型名；
-        终端一行警告），循环接着跳。按这一场自己的审计去重：换场之后同一种异常再记一次。
-        异常原文不写：可能带签名的流地址之类（同 _json_default 的道理）。自己绝不抛。"""
+    # _stats_step 里那一步出错时的返回值：和任何正常的返回值都不相等
+    _STATS_STEP_FAILED = object()
+
+    async def _stats_step(self, step, fn, *args):
+        """统计循环里的一步：fn(*args)，返回协程的就等它。出了没预料到的异常交给 _stats_tick_failed
+        记下，返回 _STATS_STEP_FAILED，调用方接着跑下一步。取消照样往外抛。"""
+        try:
+            result = fn(*args)
+            if isawaitable(result):
+                result = await result
+            return result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._stats_tick_failed(exc, step)
+            return self._STATS_STEP_FAILED
+
+    def _stats_snapshot(self):
+        """统计条这一跳的数字：延迟分位数、积压秒数，加上按积压算出的健康等级。"""
+        snap = self.telemetry.snapshot()
+        snap["health"] = self._health_level(snap["audio_backlog_sec"])
+        return snap
+
+    async def _stats_broadcast(self, snap):
+        await self.server.broadcast({"type": "stats", **snap})
+
+    def _stats_tick_failed(self, exc, step):
+        """统计循环的某一步出了没预料到的异常：这一场每一步的每种异常只记一次（审计 stats_tick_error，
+        只写步骤代码和类型名；终端一行警告），循环接着跑。按这一场自己的审计去重：换场之后同一种异常
+        再记一次。异常原文不写：可能带签名的流地址之类（同 _json_default 的道理）。自己绝不抛。"""
         try:
             name = type(exc).__name__
             audit = getattr(self, "audit", None)
             seen = getattr(self, "_stats_tick_errors", None)
             if seen is None or seen[0] is not audit:
                 seen = self._stats_tick_errors = (audit, set())
-            if name in seen[1]:
+            if (step, name) in seen[1]:
                 return
-            seen[1].add(name)
-            print("[警告] 统计循环这一跳出错（{}），已跳过，下一跳照常".format(name))
+            seen[1].add((step, name))
+            print("[警告] 统计循环的 {} 这一步出错（{}），已跳过，其余各步和下一跳照常".format(
+                step, name))
             if audit is not None:
-                audit.stats_tick_error(name)
+                audit.stats_tick_error(name, step)
         except Exception:
             pass
 
@@ -1296,7 +1327,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     async def _watch_detection(self, snap, now=None):
         """_stats_loop 每轮调一次的检测侧检查：识别调用卡住、直播中违禁词表被改。
-        任何一项出错都只打一行日志——_stats_loop 遇到异常会整个退出，统计条就停了。"""
+        任何一项出错都只打一行日志（以前 _stats_loop 遇到异常会整个退出，统计条就停了；现在统计循环
+        每一步自己也兜着，见 _stats_step，这里照旧先兜住，日志写得更具体）。"""
         try:
             await self._check_asr_stall(snap, now=now)
         except asyncio.CancelledError:
