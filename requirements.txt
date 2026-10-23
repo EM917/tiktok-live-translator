@@ -1,9 +1,11 @@
 # 本程序要求 Python 3.10 或更新的版本（用户 10-22 决定 D14；版本检查在 main.py，下限见
-# app/bootstrap.MIN_PYTHON）。
+# app/bootstrap.MIN_PYTHON）。这里只写下限；测试过的那一套具体版本在 constraints.txt，
+# 安装时一起给：pip install -r requirements.txt -c constraints.txt
 aiohttp>=3.9
 numpy>=1.24
 faster-whisper>=1.0
 # 带上 curl-cffi 扩展：pip 按 yt-dlp 自己声明的 curl_cffi 版本范围装配这一对。
+# yt-dlp 和 curl_cffi 不在 constraints.txt 里锁：要追 TikTok 的变化（程序会在后台升级 yt-dlp）。
 # yt-dlp 只加载特定区间的 curl_cffi（yt_dlp/networking/_curlcffi.py 的版本检查），
 # 区间外它就没有可用的 TikTok 伪装。
 yt-dlp[curl-cffi]
@@ -22,4 +24,6 @@ mlx-whisper; platform_machine == 'arm64' and sys_platform == 'darwin'
 # 降级为「不可用」，不影响直播翻译主链路。它要求的 Python 3.10 现在就是本程序的最低版本；
 # python_version 标记照旧留着：3.9 上的旧安装点「一键更新」时，是旧版本的程序拿这份清单去装，
 # 有标记它才不会因为这一行整份装不上（装完重启，新版本再告诉中控要升级 Python）。
+# 和 yt-dlp 一样不在 constraints.txt 里锁：评论服务拒绝连接时程序会在 7.x 之内升级它
+# （app/updater.py freshen_tiktoklive）。
 TikTokLive>=7.0.1,<8; python_version >= "3.10"

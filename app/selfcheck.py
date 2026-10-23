@@ -727,17 +727,25 @@ def python_switch_steps(darwin=None):
 
 def _pip_command(spec, upgrade=True):
     """给中控复制的手动安装命令。Windows 默认终端是 PowerShell：以带引号的路径开头的一行
-    会被当成表达式报错，前面必须加 &。"""
+    会被当成表达式报错，前面必须加 &。
+
+    项目根有 constraints.txt 时末尾带 -c 和它的绝对路径（I4）：手动装的也是测试过的那一套版本，
+    和程序自己装的一样（命令在哪个目录里粘贴都能跑）。"""
     import sys
+
+    from .bootstrap import CONSTRAINTS
     flag = " -U" if upgrade else ""
+    pinned = ROOT / CONSTRAINTS
+    pin = ' -c "{}"'.format(pinned) if pinned.is_file() else ""  # i18n: data（命令行参数）
     # 这句只接在「也可以……后」的后面（英文是 "…, you can also " / "…quit the app and "），
     # 所以英文小写开头
     if os.name == "nt":
-        return L("在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"",
-                 "run this in PowerShell: & \"{}\" -m pip install{} \"{}\"").format(
-                     sys.executable, flag, spec)
-    return L("在终端里执行：\"{}\" -m pip install{} \"{}\"",
-             "run this in Terminal: \"{}\" -m pip install{} \"{}\"").format(sys.executable, flag, spec)
+        return L("在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"{}",
+                 "run this in PowerShell: & \"{}\" -m pip install{} \"{}\"{}").format(
+                     sys.executable, flag, spec, pin)
+    return L("在终端里执行：\"{}\" -m pip install{} \"{}\"{}",
+             "run this in Terminal: \"{}\" -m pip install{} \"{}\"{}").format(
+                 sys.executable, flag, spec, pin)
 
 
 async def check_comments(args):

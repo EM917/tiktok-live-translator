@@ -79,6 +79,9 @@ def make_updater(monkeypatch, server, events, git_overrides=None, pip_code=0):
         "rev-parse:HEAD": (0, "b" * 40 + "\n", ""),
         "show:VERSION": (0, "9.9.9\n", ""),
         "show:requirements.txt": (0, REQS, ""),
+        # 默认新版本里没有 constraints.txt（I4 之前的版本）：装法和指纹都和以前一样。
+        # 带锁文件的情形在 tests/test_bootstrap_constraints.py
+        "show:constraints.txt": (128, "", "fatal: path 'constraints.txt' does not exist"),
         "merge-base": (0, "", ""),
         "merge": (0, "", ""),
     }

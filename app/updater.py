@@ -333,7 +333,7 @@ def powershell_command(path, discard=False, pip=False, python=None):
     steps = ["git checkout -- ."] if discard else []
     steps.append("git pull --ff-only")
     if pip:
-        steps.append('& "{}" -m pip install -r requirements.txt'.format(
+        steps.append('& "{}" -m pip install -r requirements.txt -c constraints.txt'.format(
             _ps_quote(python or sys.executable)))
     return 'cd "{}"; '.format(_ps_quote(path)) + "; ".join(  # i18n: data（PowerShell 命令）
         "if ($?) {{ {} }}".format(step) for step in steps)
@@ -974,8 +974,10 @@ class Updater:
         if discard:
             return 'cd "{}" && git checkout -- . && git pull --ff-only'.format(path)
         if pip:
-            return 'cd "{}" && git pull --ff-only && "{}" -m pip install -r requirements.txt'.format(
-                path, sys.executable)
+            # -c constraints.txt（I4）：装的是测试过的那一套版本。git pull 之后工作区就是新版本，
+            # 它的 constraints.txt 已经在那里
+            return ('cd "{}" && git pull --ff-only && "{}" -m pip install -r requirements.txt '
+                    '-c constraints.txt').format(path, sys.executable)
         return 'cd "{}" && git pull --ff-only'.format(path)
 
     async def precheck(self, live=False):
@@ -1104,45 +1106,59 @@ class Updater:
                                        ". To update manually, run the line below in PowerShell:")),
             command=command)
 
-    def _requirements_to_install(self, requirements):
+    def _requirements_to_install(self, requirements, constraints=None):
         """一键更新要不要按新版本的清单跑 pip：要的话返回交给 pip -r 的清单内容，不用返回 None。
 
         不用装：清单是空的；或者本项目 .venv 里上次装成功的正是这一份（指纹对得上）。大多数
         更新不改清单，这时暂停监听只为合并和重启，不必再等 pip 去问软件包服务器。
-        要装时去掉这台机器留了放弃记号的组件（mlx-whisper，见 bootstrap.skipped_for_this_machine）。"""
+        要装时去掉这台机器留了放弃记号的组件（mlx-whisper，见 bootstrap.skipped_for_this_machine）。
+        constraints 是新版本的 constraints.txt（I4，没有为 None）：指纹连它一起比，锁的版本变了也要装。"""
         if not requirements.strip():
             return None
         if managed_env(ROOT) and \
-                recorded_requirements_digest(ROOT) == requirements_digest(requirements):
+                recorded_requirements_digest(ROOT) == requirements_digest(requirements, constraints):
             return None
         return filter_requirements(requirements, skipped_for_this_machine(ROOT))
 
-    async def _pip_requirements(self, content, log_path, timeout, label):
-        """把清单内容写成临时文件交给 `pip install -r`，返回退出码（超时或写不了文件返回 None）。"""
-        fd, tmp = tempfile.mkstemp(prefix="tlt-requirements-", suffix=".txt")
+    async def _pip_requirements(self, content, log_path, timeout, label, constraints=None):
+        """把清单内容写成临时文件交给 `pip install -r`，返回退出码（超时或写不了文件返回 None）。
+
+        constraints 是新版本的 constraints.txt 内容（I4）：同样写成临时文件、带 -c 交给 pip——要装的是
+        新版本测试过的那一套，工作区里那份还是旧版本的。None（新版本里没有这个文件）就不带。"""
+        tmps = []
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(content)
-            return await self._pip_install(["-r", tmp], label, timeout=timeout, log_path=log_path)
+            args = []
+            for flag, text, prefix in (("-r", content, "tlt-requirements-"),
+                                       ("-c", constraints, "tlt-constraints-")):
+                if text is None:
+                    continue
+                fd, tmp = tempfile.mkstemp(prefix=prefix, suffix=".txt")
+                tmps.append(tmp)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                args += [flag, tmp]
+            return await self._pip_install(args, label, timeout=timeout, log_path=log_path)
         except OSError as exc:
             print("[警告] 写临时组件清单失败: {}".format(exc))
             return None
         finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+            for tmp in tmps:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
-    async def _install_new_requirements(self, wanted, log_path):
+    async def _install_new_requirements(self, wanted, log_path, constraints=None):
         """合并之前按新版本的清单装依赖（清单来自 `git show`）。返回 (退出码, 整份清单那次的
         退出码)；第二项只在「整份没装上、只装必需组件成功或失败」时不是 None。
 
         整份清单装不上（pip 返回非 0，不是超时）时再只装去掉可选组件（OPTIONAL_DISTS）的那部分：
         mlx-whisper、TikTokLive、pywebview 装不上程序照样能跑，不能因为它们让每次更新都
-        白暂停一场监听、最后还不更新（2026-09-15 审查）。两次共用 UPDATE_PIP_TIMEOUT_SEC。"""
+        白暂停一场监听、最后还不更新（2026-09-15 审查）。两次共用 UPDATE_PIP_TIMEOUT_SEC。
+        两次都带新版本的 constraints.txt（I4）。"""
         deadline = time.monotonic() + UPDATE_PIP_TIMEOUT_SEC
         code = await self._pip_requirements(wanted, log_path, UPDATE_PIP_TIMEOUT_SEC,
-                                            "新版本依赖安装")          # i18n: terminal
+                                            "新版本依赖安装", constraints)          # i18n: terminal
         if code in (0, None):
             return code, None
         core = filter_requirements(wanted, OPTIONAL_DISTS)
@@ -1152,16 +1168,18 @@ class Updater:
         if remaining <= 0:
             return None, code
         print("[信息] 新版本的完整组件清单没装上（pip 返回 {}），改为只装必需的组件…".format(code))
-        core_code = await self._pip_requirements(core, log_path, remaining, "新版本必需组件安装")   # i18n: terminal
+        core_code = await self._pip_requirements(core, log_path, remaining, "新版本必需组件安装",   # i18n: terminal
+                                                 constraints)
         return core_code, code
 
     @staticmethod
-    def _record_installed_requirements(requirements, wanted, full_code):
+    def _record_installed_requirements(requirements, wanted, full_code, constraints=None):
         """合并成功后记下新清单装到了哪一步，启动时据此决定要不要再跑 pip -r
-        （bootstrap.requirements_pending）。只记本项目自己的 .venv。"""
+        （bootstrap.requirements_pending）。只记本项目自己的 .venv。指纹连新版本的 constraints.txt
+        一起算（I4），和合并之后工作区里 requirements_file_digest 算出来的是同一个。"""
         if wanted is None or not managed_env(ROOT):
             return
-        digest = requirements_digest(requirements)
+        digest = requirements_digest(requirements, constraints)
         if full_code is None:
             write_requirements_stamp(ROOT, digest)
         else:
@@ -1241,6 +1259,11 @@ class Updater:
                                       "couldn’t read the new version’s component list ({})").format(
                 _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)), is_live())
             return
+        # 新版本的版本锁（I4）。读不到（新版本里没有这个文件，或者 git 出错）就照以前那样只按清单装：
+        # 合并之后工作区里有了它，指纹对不上，下次启动会带着它补装一次
+        code, constraints, _ = await self._git("show", "{}:constraints.txt".format(target))
+        if code != 0:
+            constraints = None
         code, _, err = await self._git("merge-base", "--is-ancestor", "HEAD", target)
         if code != 0:
             await self._not_updated(L("本地代码没法直接快进到新版本（{}）",
@@ -1257,7 +1280,7 @@ class Updater:
             return
 
         # 2. 确认能更新了，才停监听。要不要先装组件现在就定下来：暂停时告诉中控要等多久
-        wanted = self._requirements_to_install(requirements)
+        wanted = self._requirements_to_install(requirements, constraints)
         pip_minutes = int(math.ceil(UPDATE_PIP_TIMEOUT_SEC / 60.0)) if wanted is not None else None
         token = await pause(from_version, to_version, pip_minutes) if pause is not None else None
         if token is None and wanted is not None and not is_live():
@@ -1269,7 +1292,7 @@ class Updater:
         full_code = None
         if wanted is not None:
             log_path = new_log_path(ROOT, "update")
-            code, full_code = await self._install_new_requirements(wanted, log_path)
+            code, full_code = await self._install_new_requirements(wanted, log_path, constraints)
             if code != 0:
                 text = L("新版本需要的组件没装上（pip 返回 {}{}），继续使用当前版本 v{}",
                          "Couldn’t install the components the new version needs (pip result: {}{}). "
@@ -1294,7 +1317,7 @@ class Updater:
         async with self._get_pip_lock():
             code, _, err = await self._git("merge", "--ff-only", target)
             if code == 0:
-                self._record_installed_requirements(requirements, wanted, full_code)
+                self._record_installed_requirements(requirements, wanted, full_code, constraints)
                 resuming = bool(token is not None and before_restart is not None
                                 and before_restart(token, to_version))
                 await self.server.status(

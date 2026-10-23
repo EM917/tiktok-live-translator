@@ -25,7 +25,8 @@ if ($ff) {
 Write-Host "==> [3/5] 创建虚拟环境并安装依赖 ..."
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --quiet --disable-pip-version-check -U pip
-.\.venv\Scripts\python.exe -m pip install --quiet --disable-pip-version-check -r requirements.txt
+# -c constraints.txt：测试过的那一套版本（I4，写法和理由见那个文件的开头）
+.\.venv\Scripts\python.exe -m pip install --quiet --disable-pip-version-check -r requirements.txt -c constraints.txt
 Write-Host "    ✅ 依赖安装完成"
 
 Write-Host "==> [4/5] 下载 RNNoise 人声降噪模型 ..."

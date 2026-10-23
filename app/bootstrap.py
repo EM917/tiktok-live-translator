@@ -11,6 +11,9 @@ main.py 在模块级就跑 ensure_env()，测试一 import 它就会被 execv �
   * requirements 指纹：`pip install -r` 返回 0 之后记下清单的 sha256。清单变了
     （一键更新、手动 git pull）而 pip 没装上时，下次启动据此补装——以前启动只查
     固定的几个模块，新加的依赖永远没人补，「重新打开会自动继续安装」的承诺落空。
+  * 版本锁（I4，用户决定 D8）：每一次 pip install 都带 -c constraints.txt（测试过的那一套版本，
+    写法和理由见那个文件的开头）；指纹把 constraints.txt 一起算进去，锁的版本一变，已有安装下次
+    启动补装一次，不重建。
   * 最低 Python（D14）：3.10。3.9 上 main.py 不往下跑，弹出「需要升级」和照做的步骤；.venv 是 3.9
     建的，换了新 Python 启动时重建它。
   * pip 输出落盘：logs/bootstrap-*.log，同时照样打到终端。双击 .app 启动时 stdout
@@ -46,6 +49,7 @@ from .i18n import L, of
 APP_DIR_NAME = "TikTok Live Translator.app"      # 与 app/macbundle.py 一致
 
 REQ_STAMP = ".requirements.sha256"               # 放在 .venv 里：环境重建，指纹跟着没
+CONSTRAINTS = "constraints.txt"                   # 测试过的那一套版本（I4），在项目根，和 requirements.txt 并列
 # 本程序要求的最低 Python（D14）。main.py 的版本检查、venv_needs_rebuild、ready_fast_path 都看它；
 # 再提时同步改 tools/find_python.sh、Start.bat、setup.sh、setup.ps1、README 和 CI 矩阵
 MIN_PYTHON = (3, 10)
@@ -120,19 +124,53 @@ def managed_env(root, prefix=None):
         return False
 
 
-def requirements_digest(content):
-    """清单指纹。换行统一成 LF：Windows 上工作区文件可能被检出成 CRLF，而一键更新
-    用 `git show` 拿到的是仓库里的 LF 版本——同一份清单不能算出两个指纹。"""
+def _lf_bytes(content):
     if isinstance(content, str):
         content = content.encode("utf-8")
-    return hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest()
+    return content.replace(b"\r\n", b"\n")
+
+
+# 两份内容之间的分隔：两个文件里都不会出现 NUL，挪动分界（把清单的最后几行算到锁文件里）
+# 算不出同一个指纹
+_CONSTRAINTS_SEP = b"\0" + CONSTRAINTS.encode("ascii") + b"\0"
+
+
+def requirements_digest(content, constraints=None):
+    """清单指纹。换行统一成 LF：Windows 上工作区文件可能被检出成 CRLF，而一键更新
+    用 `git show` 拿到的是仓库里的 LF 版本——同一份清单不能算出两个指纹。
+
+    constraints 是 constraints.txt 的内容（I4）：一起算进去，锁的版本一变，指纹就跟着变，已有的
+    安装下次启动补装一次（plan_install 的「清单变了」那一种，不重建）。None 表示没有这个文件
+    （老版本、新版本里没带）：这时和加锁以前逐字节同一个指纹，已有安装不会白补装一次。"""
+    data = _lf_bytes(content)
+    if constraints is not None:
+        data += _CONSTRAINTS_SEP + _lf_bytes(constraints)
+    return hashlib.sha256(data).hexdigest()
 
 
 def requirements_file_digest(root):
+    """工作区里 requirements.txt 加 constraints.txt 的指纹。constraints.txt 不在就只算清单；
+    在却读不了（权限、坏盘）返回 None——pip -c 一样读不了它，不知道该装成什么样，和清单读不了时一样
+    不给指纹（requirements_pending 据此不触发补装）。"""
+    root = Path(root)
     try:
-        return requirements_digest((Path(root) / "requirements.txt").read_bytes())
+        content = (root / "requirements.txt").read_bytes()
     except OSError:
         return None
+    try:
+        constraints = (root / CONSTRAINTS).read_bytes()
+    except FileNotFoundError:
+        constraints = None
+    except OSError:
+        return None
+    return requirements_digest(content, constraints)
+
+
+def constraints_args(root):
+    """交给 pip install 的 -c 参数（I4）：项目根有 constraints.txt 就是 ["-c", 它的路径]，没有就是空。
+    用绝对路径：pip 的工作目录不一定是项目根。"""
+    path = Path(root) / CONSTRAINTS
+    return ["-c", str(path)] if path.is_file() else []
 
 
 def recorded_requirements_digest(root):
@@ -1023,10 +1061,15 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
 
     有放弃记号时 -r 用去掉 mlx-whisper 那一行的副本：否则记号机器每 24 小时（清单指纹
     一直记不上）就在启动时重下一遍 torch，把开播挡上几分钟。指纹照样按真正的
-    requirements.txt 算——装成功了，启动就不再为这份清单补装。"""
+    requirements.txt 算——装成功了，启动就不再为这份清单补装。
+
+    每一次 pip 都带 -c constraints.txt（I4）：整份、只装核心、逐个装可选组件都带。以前只给下限，
+    新装机拿到的是 PyPI 当天最新、从没一起跑过的组合；逐个装那几步不带的话，回退路径装出来的
+    又是没测过的版本。项目根没有 constraints.txt 时照旧不带。"""
     root = Path(root)
     ensure_pip(pip_python, root, log_path, run=run, probe=probe, now=now)
     base = [str(pip_python), "-m", "pip", "install", "--disable-pip-version-check"]
+    pinned = constraints_args(root)
     digest = requirements_file_digest(root)
     req_file = root / "requirements.txt"
     filtered = None
@@ -1040,7 +1083,7 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
         except (OSError, ValueError):
             filtered = None          # 写不了副本就用原文件：最多像以前一样多装一次
     try:
-        code, _tail = run(base + ["-r", str(req_file)], log_path)
+        code, _tail = run(base + ["-r", str(req_file)] + pinned, log_path)
     finally:
         if filtered is not None:
             try:
@@ -1055,12 +1098,12 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
     # 真实后果：一台 M4 Mac 因为某个可选包编译失败，mlx-whisper 跟着没装上，整机掉到
     # CPU 路径跑 large-v3-turbo（hwdetect 实测 RTF 0.99），而屏幕上什么也没说。
     print("[初始化] 完整安装失败，改为逐个安装…")
-    code, tail = run(base + list(core_deps), log_path)
+    code, tail = run(base + list(core_deps) + pinned, log_path)
     if code != 0:
         raise PipFailed(code, tail, log_path)
     failed = []
     for optional in optional_deps:
-        c, _t = run(base + [optional], log_path)
+        c, _t = run(base + [optional] + pinned, log_path)
         if c != 0:
             print("[初始化] 可选组件 {} 没装上，其余功能不受影响".format(optional))
             failed.append(optional)

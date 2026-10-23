@@ -25,7 +25,8 @@ fi
 echo "==> [3/5] 创建虚拟环境并安装依赖（Apple Silicon 会自动包含 MLX GPU 后端）..."
 "$PY" -m venv .venv
 .venv/bin/pip install --quiet --disable-pip-version-check -U pip
-.venv/bin/pip install --quiet --disable-pip-version-check -r requirements.txt
+# -c constraints.txt：测试过的那一套版本（I4，写法和理由见那个文件的开头）
+.venv/bin/pip install --quiet --disable-pip-version-check -r requirements.txt -c constraints.txt
 echo "    ✅ 依赖安装完成"
 
 echo "==> [4/5] 下载 RNNoise 人声降噪模型 ..."

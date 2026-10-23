@@ -397,8 +397,10 @@ def _pip(monkeypatch, spec, upgrade):
 
 def test_pip_command_reads_as_the_end_of_a_sentence(monkeypatch, tmp_path):
     fixes = [i18n.text(r["fix"], i18n.EN) for r in _rows("comments", monkeypatch, tmp_path)]
-    assert 'run this in Terminal: "/opt/py/bin/python3" -m pip install "TikTokLive"' in fixes
-    assert ('run this in PowerShell: & "/opt/py/bin/python3" -m pip install -U "TikTokLive"'
+    # I4（b3-deps）：末尾带 -c 和 constraints.txt 的绝对路径，手动装的也是测试过的那一套版本
+    pin = ' -c "{}"'.format(selfcheck.ROOT / "constraints.txt")
+    assert 'run this in Terminal: "/opt/py/bin/python3" -m pip install "TikTokLive"' + pin in fixes
+    assert ('run this in PowerShell: & "/opt/py/bin/python3" -m pip install -U "TikTokLive"' + pin
             in fixes)
 
 
