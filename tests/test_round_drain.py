@@ -351,7 +351,8 @@ def test_the_translation_drain_no_longer_holds_the_round(monkeypatch, tmp_path):
     等满 TRANSLATION_DRAIN_SEC 再把卡片收成「已跳过」，然后放掉这一轮的翻译队列。"""
     p = make_pipeline(monkeypatch, tmp_path)
     sess = with_session(p, tmp_path)
-    p.TRANSLATION_DRAIN_SEC = 0.6
+    # 排空时限远大于断言的上限：慢的 CI 跑器上这一轮多花零点几秒也不会误判，钉的行为不变
+    p.TRANSLATION_DRAIN_SEC = 3.0
     install(monkeypatch, eof_source(2 * SEG_FRAMES, {}))
 
     async def scenario():
@@ -363,12 +364,12 @@ def test_the_translation_drain_no_longer_holds_the_round(monkeypatch, tmp_path):
         drains = list(sess["translation_drains"])
         pending_then = dict(p.server.states())
         queue_then = p._trans_queue
-        await asyncio.wait_for(asyncio.gather(*drains), 2.0)
+        await asyncio.wait_for(asyncio.gather(*drains), 10.0)
         await asyncio.sleep(0.05)                       # _drop_job 的广播是 _spawn 出去的
         return took, drains, pending_then, queue_then
 
     took, drains, pending_then, queue_then = run(scenario())
-    assert took < 0.4                                   # 没有再等 0.6 秒
+    assert took < 1.0                                   # 没有再等 3 秒
     assert len(drains) == 1
     assert "pending" in pending_then.values()           # 返回的那一刻翻译还在跑
     assert queue_then is not None                       # 排空期间重试、弹幕让路看的还是这一轮的队列
