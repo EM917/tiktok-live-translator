@@ -749,20 +749,29 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 /* 弹幕栏开着时，大字幕在字幕栏里居中（专家审查 V6）：以前条子横跨整个窗口，文字的中心比字幕栏的中心
    偏右半个弹幕栏宽（340px 宽时 170px，1000/1200/1440 宽都一样），读字幕要往右边斜着看；条子的右半截还
    盖在弹幕栏下沿上。现在条子让出弹幕栏：右边缩进的宽度和 .comment-panel 的宽同一个式子（width 340px、
-   max-width 42vw）。弹幕栏在任何宽度下都是并排的（没有叠放的窄屏布局），所以不分宽度。
+   max-width 42vw）。
    :has 要 Safari 15.4（macOS 12.3）以上，README 已经要求 12.3；不支持时整条规则被丢掉，退回以前的整宽，
    下面 .comment-list 的那条也一起被丢掉，两边一致。收起弹幕栏（.collapsed）或不在直播（.hidden）时不命中。
    条子窄了（默认 1000px 宽时从 1000 窄到 660），一行放的字少三分之一，最小高度跟着多留一行大字（2.7 → 4.05，
    三行 × 行高 1.35），条高稳定（U1）才保得住：按 11,945 句真实长度在无头 Chrome 里量，1000px、字号 34 时，
    只让出弹幕栏不加行，比最小高度高的句子从 6.0% 涨到 35.8%，前后两句条高不同从 11.2% 涨到 44.2%；多留一行后
    是 8.0% 和 14.4%（1200px 时 1.7% 和 3.3%）。代价是字幕栏底下多被盖住一行大字的高度（字号 34 时 46px），
-   弹幕栏则整列露出来（以前被条子盖住的那一截）。最小高度不超过上面的高度上限（窗口很矮、字号很大时让给上限） */
-body:has(#comment-panel:not(.hidden):not(.collapsed)) .live-bar {
-  right: min(340px, 42vw);
-  min-height: min(calc(var(--sub-size) * 4.05 + var(--sub-size) * 1.176 + 34px), calc(100vh - 22px - var(--topbar-room) - 8px));
+   弹幕栏则整列露出来（以前被条子盖住的那一截）。最小高度不超过上面的高度上限（窗口很矮、字号很大时让给上限）。
+   只在窗口 1000px 及以上让（b2-contrast 第 2 轮审查，2026-10-23）：弹幕栏在窄窗口下仍是并排的，但字幕栏只剩
+   窗口的六成不到（800 宽 464px、600 宽 348px、420 宽 244px），条子窄到这个程度一句话折成好几行，字幕栏的可见区
+   被条子吃掉一大半。无头 Chrome 实测（弹幕栏开着、中文 45 字一句，字幕栏里条子上面还看得见的高度，整宽 → 让出）：
+   420×452 字号 34 是 53 → 8px（条子顶到上限、在条内滚），字号 26 是 151 → 31px；600×600 字号 48 是 113 → 31px；
+   800×700 字号 48 是 277 → 120px。1000px 是默认窗口宽，也是上面顶栏已有的一档。1000px 以下照旧整宽、
+   照旧盖着弹幕栏下沿，弹幕列表按条高留白（.comment-list 的退路），和改之前一样（只有超长句照样被上面的高度上限封顶） */
+@media (min-width: 1000px) {
+  body:has(#comment-panel:not(.hidden):not(.collapsed)) .live-bar {
+    right: min(340px, 42vw);
+    min-height: min(calc(var(--sub-size) * 4.05 + var(--sub-size) * 1.176 + 34px), calc(100vh - 22px - var(--topbar-room) - 8px));
+  }
+  /* 条子不再盖着弹幕栏，弹幕列表底部只需要让出底部署名 22px + 8px 空隙；没有 :has、或窗口窄于 1000px 时
+     仍按条高留（见 .comment-list） */
+  body:has(#comment-panel:not(.hidden):not(.collapsed)) .comment-list { padding-bottom: 30px; }
 }
-/* 条子不再盖着弹幕栏，弹幕列表底部只需要让出底部署名 22px + 8px 空隙；没有 :has 时仍按条高留（见 .comment-list） */
-body:has(#comment-panel:not(.hidden):not(.collapsed)) .comment-list { padding-bottom: 30px; }
 
 /* ---------- 底部署名 ---------- */
 .copyright {
@@ -1397,7 +1406,8 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .comment-actions { display: flex; gap: 6px; flex: none; }
 /* 底部留白与 .history 一致：底部通栏大字幕是 fixed 的，不留就会盖住最后几条。按条子的实测高度算
    （--live-bar-h，见 .history）：以前写死 204px，字号 48 时 p90 长度的句子把最新一条弹幕整条盖住。
-   支持 :has 时条子让出了弹幕栏（V6，见 .live-bar 后面那两条），这里的留白被盖成 30px；这一条是不支持时的退路 */
+   窗口 1000px 及以上、支持 :has 时条子让出了弹幕栏（V6，见 .live-bar 后面那两条），这里的留白被盖成 30px；
+   这一条是更窄的窗口和不支持 :has 时的退路 */
 .comment-list { flex: 1; overflow-y: auto; padding: 0 16px calc(var(--live-bar-h, 174px) + 30px); }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
 .cmt-item:last-child { border-bottom: 0; }
