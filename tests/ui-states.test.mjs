@@ -198,6 +198,24 @@ for (const lang of ["en", "zh"]) {
     assert.equal(hint(page).shown, false);
   });
 
+  test(lang + "：U8 页面重连：「这一场出没出过字幕」只按回放算，不沿用断线前的（和刷新后的页面一样）", () => {
+    // 回放里没有这一场的分隔线、也没有字幕：服务端的字幕缓存清空过（clear_history 连分隔线一起清）。
+    // 比如断线期间换了主播、新的一场还没出字幕时有人在另一个本机页面点了清空字幕
+    const page = runDesktop(lang);
+    hello(page, { state: "live", detail: "" });
+    caption(page, 1);
+    assert.equal(hint(page).shown, false, "断线前这一场出过字幕");
+    hello(page, { state: "live", detail: "" });
+    assert.deepEqual(hint(page), { shown: true, inline: false, text: W.waiting });
+    const fresh = runDesktop(lang);
+    hello(fresh, { state: "live", detail: "" });
+    assert.deepEqual(hint(fresh), hint(page), "和刚打开的页面收到同一个 hello 一样");
+    // 回放里有字幕时照旧收起
+    hello(page, { state: "live", detail: "" });
+    caption(page, 2, { replay: true, restore: true });
+    assert.equal(hint(page).shown, false);
+  });
+
   // ---- U8：第二场起弹幕栏的空态 ----------------------------------------------------------------------
 
   test(lang + "：U8 第一场：已连接、没人发弹幕，空态那句在（对照）", () => {
@@ -220,6 +238,8 @@ for (const lang of ["en", "zh"]) {
       status(page, "idle");
       status(page, "connecting", RESOLVING[lang]);
       page.push({ type: "session_break", ts: T + 60, streamer: "luna_demo" });
+      // 分隔线一插，空态那句就出来：不靠后面那条 status 顺带刷新弹幕栏
+      assert.equal(isShown(page.el("comment-empty")), true, "session_break 之后、下一条 status 之前");
       status(page, "live");
       page.push({ type: "comment_source", backend: "connected" });
       const list = page.el("comment-list");

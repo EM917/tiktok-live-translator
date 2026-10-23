@@ -1030,7 +1030,10 @@
         failStreak = 0;
         transBannerOn = false;
         clearCaptionsView();
-        // 这一场出没出过字幕，交给接下来的回放重算（场次分隔线归零、字幕置真，见 sessionCaptionSeen 的说明）
+        // 这一场出没出过字幕，交给接下来的回放重算（场次分隔线归零、字幕置真，见 sessionCaptionSeen 的说明）。
+        // 回放里带着这一场的分隔线时，这一行和分隔线那次归零是重复的保险；只有回放里没有分隔线时它说了算：
+        // 服务端的字幕缓存被清空过（app/server.py clear_history 连分隔线一起清）。这时重连后的页面和刷新后的
+        // 一样，只按回放判断，不沿用断线前的（tests/ui-states.test.mjs 钉着）
         sessionCaptionSeen = false;
         if (msg.config) {
           syncCaptionSize(msg.config);

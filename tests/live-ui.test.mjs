@@ -66,6 +66,21 @@ test("下载进度缺 pct（大小未知）或不是数：只写「正在下载�
                  "正在下载识别模型…", String(pct));
   }
 });
+test("大小未知、后端只给了已下载的 mb：写「正在下载识别模型… 已下载 580 MB」", () => {
+  // 后端（app/pipeline.py _model_download_progress）大小未知时发 {kind, pct: null, mb}
+  assert.deepEqual(connectHint("connecting", "luna_demo", false, { kind: "model_download", pct: null, mb: 580 }),
+    { show: true, inline: false, text: "正在下载识别模型… 已下载 580 MB" });
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", mb: 20.6 }).text,
+               "正在下载识别模型… 已下载 21 MB");
+  // 有百分比时只写百分比（横幅里有 MB）
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: 37, mb: 600 }).text,
+               "正在下载识别模型… 37%");
+  // mb 也不是数、或是负数：只写前半句
+  for (const mb of [undefined, null, "580", NaN, Infinity, -1]) {
+    assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: null, mb }).text,
+                 "正在下载识别模型…", String(mb));
+  }
+});
 test("没有 progress、只有 detail、kind 认不出：照旧「正在连接 @…」（不把横幅那句搬进来）", () => {
   // connectHint 根本不收 detail：横幅里的「正在解析直播流地址…」之类不会在中间再写一遍
   for (const progress of [undefined, null, {}, "model_download", { kind: "other", pct: 50 }, { pct: 50 }]) {

@@ -100,7 +100,7 @@
 | 密钥 | **API key** | token, secret | |
 | 字幕 | **captions** | subtitles | 苹果 Live Captions、Zoom、Meet 在直播场景都叫 captions；subtitles 偏影视。README 宣传语可以继续说 subtitles，界面统一用 captions |
 | 字幕字号 | **Caption size** | Font size | |
-| 清空字幕 | **Clear**（顶栏按钮），tooltip 写 **Clear caption history** | Clear Captions（放不下，见 §4） | 2026-10-23 专家审查 V3 想把按钮上的字改成 Clear Captions，G10 重量了一次：默认 1000px 窗口里品牌标签被挤到 95px（live-full）、83px（带浮窗按钮）、67 / 55px（下拉补了第五种语言），都低于 100px 的下限，1101px 也有三档低于 120px。所以按钮上仍写 Clear，是字幕交给 tooltip 说。§4 R1 原来建议的 aria-label “Clear captions” 没有加：中文 aria-label 只能是按钮上的「清空字幕」，同一句中文对应两种英文过不了 G3 |
+| 清空字幕 | **Clear**（顶栏按钮），tooltip 写 **Clear caption history** | Clear Captions（放不下，见 §4） | 2026-10-23 专家审查 V3 想把按钮上的字改成 Clear Captions，G10 重量了一次：默认 1000px 窗口里品牌标签被挤到 95px（live-full）、83px（带浮窗按钮）、67 / 55px（下拉补了第五种语言），都低于 100px 的下限，1101px 也有三档低于 120px。所以按钮上仍写 Clear，「字幕」两个字交给 tooltip 说。§4 R1 原来建议的 aria-label “Clear captions” 也没有加：它对应的中文是按钮上的「清空字幕」，这句中文的英文已经是 Clear，同一句中文对应两种英文过不了 G3。换成沿用 title 那一对（清空历史字幕 / Clear caption history）不违反 G3，但和 title 是同一句话，没有多给信息，所以也不加 |
 | 清空弹幕 | **Clear Comments**（弹幕栏按钮），tooltip 写 **Clear comment history** | Clear（和顶栏清空字幕同名） | 2026-10-23 以前英文也只写 Clear、没有 tooltip，和顶栏那颗分不开（专家审查 V3）。弹幕栏里不挤，写全 |
 | 重译 | **Retranslate** | Redo, Translate Again | |
 | 弹幕 / 观众弹幕 / 评论流 | **comments / Comments**；实在需要时才说 **comment stream** | danmaku, bullet comments, chat | TikTok 英文界面就叫 comments。「弹幕」是中文平台的概念 |
@@ -552,7 +552,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
 | 94 | live-ui.js:30 †index.html:489 | 正在连接 @x… / 正在连接… | Connecting to @x… / Connecting… | 161 → 194 |
-| 94a | live-ui.js connectHint / modelDownloadText（字幕区中间的卡片） | 正在下载识别模型… {n}% / 正在下载识别模型… | Downloading speech model… {n}% / Downloading speech model… | 2026-10-23（专家审查 U7）：首次下载识别模型时，status 带结构化的 progress（kind 为 model_download）才写这一句，不带时照旧是 #94；不看 status 的 detail，所以卡片不重复顶部横幅那整句（横幅里还有模型名、MB 和「仅首次需要」）。没有百分比（模型大小未知）时只写前半句。百分号紧贴数字（§2.3） |
+| 94a | live-ui.js connectHint / modelDownloadText（字幕区中间的卡片） | 正在下载识别模型… {n}% / 正在下载识别模型… 已下载 {n} MB / 正在下载识别模型… | Downloading speech model… {n}% / Downloading speech model… {n} MB so far / Downloading speech model… | 2026-10-23（专家审查 U7）：首次下载识别模型时，status 带结构化的 progress（kind 为 model_download）才写这一句，不带时照旧是 #94；不看 status 的 detail，所以卡片不重复顶部横幅那整句（横幅里还有模型名、MB 和「仅首次需要」）。没有百分比（模型大小未知，后端只给已下载的 MB）时写「正在下载识别模型… 已下载 {n} MB / Downloading speech model… {n} MB so far」，和横幅那句大小未知时的说法一致；MB 也没有时只写前半句。百分号紧贴数字，数字和 MB 之间留空格（§2.3） |
 | 94b | live-ui.js connectHint（字幕区中间的卡片） | 等待第一句字幕… | Waiting for the first caption… | 2026-10-23（专家审查 U8）：直播中、这一场还没出过字幕时写，第一句一到就收起；和浮窗的占位（#137）同一对中英文。直播中点过清空字幕不算「还没出过」 |
 | 95 | index.html:501 | 观众弹幕 | Comments | 52 → 70（13px/600）。不用 “Viewer Comments”（119）。2026-10-15 起标题后面不再有条数（列表封顶 100 条，数字一直停在 100） |
 | 96 | app.js:1336–1358 | 评论流已连接 / 正在连接评论流… / 评论流断开，重连中… / 未连接 | Connected / Connecting… / Disconnected. Reconnecting… / Not connected | 放在 Comments 标题旁边，上下文已经够了。2026-10-15 起「评论流已连接 / Connected」不再画在标题旁边：`#comment-source` 整个收起，这句话写进 Comments 标题的 title；其余状态照旧 |

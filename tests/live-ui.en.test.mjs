@@ -46,6 +46,11 @@ test("中间卡片：下载识别模型的进度（U7）——有 progress、只
   assert.equal(U.connectHint("connecting", "luna_demo", false).text, "Connecting to @luna_demo…");
   assert.deepEqual(U.connectHint("live", "luna_demo", false, dl), { show: false, inline: false, text: "" });
   assert.equal(english(U.modelDownloadText({ kind: "model_download", pct: 5 })), "Downloading speech model… 5%");
+  // 大小未知：后端 pct 是 null、只给已下载的 mb
+  assert.equal(english(U.modelDownloadText({ kind: "model_download", pct: null, mb: 580 })),
+               "Downloading speech model… 580 MB so far");
+  assert.equal(english(U.modelDownloadText({ kind: "model_download", pct: null, mb: -1 })),
+               "Downloading speech model…");
   assert.equal(U.modelDownloadText(null), "");
 });
 

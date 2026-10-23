@@ -37,7 +37,7 @@ function floatButtonState(available, active, open, pending) {
  *    改写「正在下载识别模型… 37%」（专家审查 U7）。以前这几分钟里中间一直写「正在连接 @x…」，真正的进度只在
  *    顶部一行横幅里。只认这个结构化字段，不看 status 的 detail：connecting 的 detail 几乎从不为空
  *    （pipeline.py 里十来处在发），看到 detail 就搬进卡片，中间和顶部横幅就会重复同一句话（计划审查 Q2）。
- *    没有这个字段（老版本服务端、或下载以外的连接中）就照第 1 条。pct 不是数时只写「正在下载识别模型…」。
+ *    没有这个字段（老版本服务端、或下载以外的连接中）就照第 1 条。没有百分比时写已下载的 MB（见 modelDownloadText）。
  * 3. 直播中、这一场还没出过字幕（awaitingFirst）：「等待第一句字幕…」，和浮窗没字幕时的占位同一句（U8）。
  *    以前状态已是直播中、第一句还没出来时字幕区一片空白，看不出程序是在等还是停了。
  * 已有字幕时 inline：改成字幕末尾的一行，不把旧字幕盖住。
@@ -61,13 +61,22 @@ function connectHint(state, streamer, hasCaptions, progress, awaitingFirst) {
 
 /* status.progress（app/server.py 留存在 config.status 里、hello 时重放）→ 卡片上的下载进度。
  * 只认 kind 为 model_download 的；别的 kind（以后加的）、不是对象、缺 kind 都返回空串，调用方照旧写「正在连接」。
- * pct 夹在 0–100、取整；后端在下载完之前最多发 99。百分号紧贴数字（docs/i18n-style.md §2.3） */
+ * pct 夹在 0–100、取整；后端在下载完之前最多发 99。百分号紧贴数字（docs/i18n-style.md §2.3）。
+ * 模型大小未知时后端的 pct 是 null、只有 mb（已经下了多少 MB）：写「已下载 580 MB」，和横幅那句的说法一致，
+ * 卡片上也看得出数字在走。pct、mb 都不是数时只写「正在下载识别模型…」 */
 function modelDownloadText(progress) {
   if (!progress || typeof progress !== "object" || progress.kind !== "model_download") return "";
   var pct = progress.pct;
-  if (typeof pct !== "number" || !isFinite(pct)) return L("正在下载识别模型…", "Downloading speech model…");
-  var p = Math.max(0, Math.min(100, Math.floor(pct)));
-  return L("正在下载识别模型… " + p + "%", "Downloading speech model… " + p + "%");
+  if (typeof pct === "number" && isFinite(pct)) {
+    var p = Math.max(0, Math.min(100, Math.floor(pct)));
+    return L("正在下载识别模型… " + p + "%", "Downloading speech model… " + p + "%");
+  }
+  var mb = progress.mb;
+  if (typeof mb === "number" && isFinite(mb) && mb >= 0) {
+    var m = Math.round(mb);
+    return L("正在下载识别模型… 已下载 " + m + " MB", "Downloading speech model… " + m + " MB so far");
+  }
+  return L("正在下载识别模型…", "Downloading speech model…");
 }
 
 /* 后端提示条（health / incident）的文字开头自带状态 emoji（app/pipeline.py 的
