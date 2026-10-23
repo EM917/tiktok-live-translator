@@ -9,7 +9,7 @@
 //   3. 页脚：延迟统计行 2026-10-15 删了，stats 消息照收不画、也不报错；
 //   4. 滑块：一个值带大字幕、历史卡片、弹幕栏三处；松手存进服务端，localStorage 只是退路；
 //   5. 条高（专家审查 U1，2026-10-22）：条子最少「两行大字 + 两行小字」高、贴底排、长句不截断（样式表）；
-//      实测高度写进 --live-bar-h，字幕区和弹幕栏的底部留白按它算，值没变不重复写、条子收起时不写（页面）。
+//      实测高度写进 --live-bar-h，字幕区和弹幕栏的底部留白按它算，值没变不重复写、条子收起时清掉（页面）。
 //      假 DOM 没有版面：getBoundingClientRect 由测试给；真排版的逐句量法在 b1-livebar 的验证记录里。
 // 纯函数（角标取字、年龄文案、字号比例）在 tests/live-ui.test.mjs / live-ui.en.test.mjs。
 import { test } from "node:test";
@@ -108,6 +108,35 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual([bar(page).big, bar(page).small], ["第二部分", "segunda parte"]);
     page.fire(HOLD_MS);                                                  // 第 2、3 句排过的计时器：都不再动大字幕
     assert.equal(bar(page).big, "第二部分");
+  });
+
+  // 审查意见（b1-livebar 第 1 轮）：以前每来一句就重数 4 秒，句子间隔一直短于 4 秒、译文又都慢于间隔时
+  // （识别积压后一串句子集中到达），大字幕会一直停在旧句（假页面里推 10 句、间隔 3 秒，30 秒后还是第一句）
+  test(L("待译停留：改等新句时截止时刻沿用这一轮最早那次，不重新数 4 秒——句子一直比译文快时大字幕至少每 4 秒换一次"), () => {
+    const page = loadDesktop({ lang });
+    hello(page);
+    settled(page, 1, "hola", "你好");
+    page.push(caption(2, "uno"));
+    page.advance(3000);
+    page.push(caption(3, "dos"));                                        // 3 秒后又来一句，译文都还没到
+    page.fire(HOLD_MS);
+    assert.equal(bar(page).big, "你好", "没有为第 3 句重新排一个 4 秒的计时器");
+    page.advance(1000);
+    page.fire(1000);                                                     // 第 2 句到达后满 4 秒
+    assert.deepEqual([bar(page).big, bar(page).small], ["dos", null], "到点放的是还在等的那一句（最新的）");
+    page.advance(2000);
+    page.push(caption(4, "tres"));                                       // 新的一轮：从第 4 句重新数
+    page.push({ type: "caption_update", id: 3, translated: "二", translate_state: "ok", quality: 1 });
+    assert.deepEqual([bar(page).big, bar(page).small], ["二", "dos"], "大字幕上的那一句译文后到，照常就地换");
+    page.advance(3000);
+    page.push(caption(5, "cuatro"));
+    page.fire(HOLD_MS);
+    assert.equal(bar(page).big, "二");
+    page.advance(1000);
+    page.fire(1000);
+    assert.deepEqual([bar(page).big, bar(page).small], ["cuatro", null]);
+    page.push({ type: "caption_update", id: 4, translated: "三", translate_state: "ok", quality: 1 });
+    assert.equal(bar(page).big, "cuatro", "被顶掉的第 4 句：译文后到也不上大字幕");
   });
 
   test(L("待译停留：只带 strong_state 的重译进度消息不是结局，接着等；跟上一句有关的消息照常改上一句"), () => {
@@ -552,19 +581,35 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual(bar.writes, ["166px", "211px", "166px"]);
   });
 
-  test(L("条高：条子收起（清空字幕、换场、回首页）时量出来是 0，不写——留着上一次的值，首页的留白不跟着跳"), () => {
+  // 以前（本批第 1 版）条子收起时留着上一次的值。审查意见：上一场最后一句是超长句（字号 60 时条子可达 625px）的话，
+  // 回到首页后两栏底下多出一大段能滚的空白，要等下一场第一句才纠正。改成收起时清掉，回到没量过时的留白
+  test(L("条高：条子收起（清空字幕、换场、回首页）时把 --live-bar-h 清掉，留白回到没量过时的样子；量出来的 0 不写；下一句出来重新写"), () => {
     const page = loadDesktop({ lang });
     hello(page);
-    const bar = barHeight(page, 165.8);
+    const bar = barHeight(page, 624.6);                                 // 字号 60 下的超长句
     onBar(page, caption(1, "hola"));
+    assert.deepEqual(bar.writes, ["625px"]);
     bar.height = 0;                                                     // display:none 的元素量出来就是 0
     page.el("clear-btn").click();
+    assert.deepEqual(bar.writes, ["625px", ""], "清空字幕：变量清掉（空值＝去掉这条声明）");
     page.push(caption(2, "otra"));
     page.push({ type: "session_break", ts: T + 1 });
     page.push({ type: "status", state: "idle", detail: "" });
     assert.ok(hiddenOf(page, "live-bar"));
-    assert.deepEqual(bar.writes, ["166px"], "只有第一次量到的 166");
-    assert.equal(page.cssVars["--live-bar-h"], "166px");
+    assert.deepEqual(bar.writes, ["625px", ""], "已经清过了：换场、回首页不再重复写，量出来的 0 也不写");
+    assert.equal(page.cssVars["--live-bar-h"], "");
+    hello(page);
+    bar.height = 624.6;                                                 // 下一场第一句和上一场最后一句一样高：照样重新写
+    onBar(page, caption(3, "otra vez"));
+    assert.deepEqual(bar.writes, ["625px", "", "625px"]);
+    for (const reset of [() => page.push({ type: "session_break", ts: T + 2 }),
+                         () => page.push({ type: "status", state: "idle", detail: "" })]) {
+      hello(page);
+      onBar(page, caption(4, "y otra"));
+      assert.equal(page.cssVars["--live-bar-h"], "625px");
+      reset();
+      assert.equal(page.cssVars["--live-bar-h"], "", String(reset));
+    }
   });
 
   test(L("条高：拖字号滑块时重新量（条子跟着字号变高变矮），两栏贴底看的人跟着再贴一次；翻上去看的不动"), () => {

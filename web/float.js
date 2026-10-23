@@ -75,8 +75,9 @@ function floatFindComment(state, id) {
  * 待译停留（专家审查 U1，用户 10-22 定的「等译文到了再一起换」，同中控页底部大字幕）：实时来的一句还在翻译
  * （translate_state 是 pending、没有译文）时先放进 state.held，窗口里停在上一句；它的 caption_update
  * 带来译文、或者确定不会有译文了（failed / dropped / skipped / same），再整句换上。以前每句先放西语、
- * 约 0.9 秒后跳成中文。等待中又来一句就改等新的那句；等满 FLOAT_HOLD_MS 还没结局，页面里的计时器调
- * floatReleaseHeld 照以前的样子先放原文。回放来的照旧直接显示：那是断线前已经在屏幕上的样子。 */
+ * 约 0.9 秒后跳成中文。等待中又来一句就改等新的那句；从这一轮开始等算起满 FLOAT_HOLD_MS 还没结局（改等新句
+ * 不重新数），页面里的计时器调 floatReleaseHeld 照以前的样子先放原文。回放来的照旧直接显示：那是断线前已经在
+ * 屏幕上的样子。 */
 function floatReduce(state, msg, nowMs) {
   if (!msg || typeof msg !== "object") return state;
   switch (msg.type) {
@@ -343,22 +344,27 @@ function floatRender(doc, els, state, nowMs) {
     root.style.setProperty("--f-cmt-small", s.cmtSmall + "px");
   }
 
-  // 待译停留的计时器：每有一句新的在等，就为它排一个；到点时它还在等，就先放原文（floatReleaseHeld）
-  var armedHeld = null;
-  function armHold() {
-    var held = state.held;
-    if (!held || held === armedHeld) return;
-    armedHeld = held;
+  // 待译停留的计时器：一轮等待（从没有在等的一句，到有一句在等）只排一个，到点时还在等的是哪一句就先放哪一句的
+  // 原文（floatReleaseHeld）。等待中又来一句改等新的那句，但截止时刻不往后推（同中控页 holdLiveBar）：句子一直
+  // 比译文来得快时（识别积压后一串句子集中到达），每来一句重数 4 秒的话，窗口会一直停在旧句。
+  // 这一轮结束了（换上了、换场、清空、hello）holdRound 就清掉，旧的计时器到点什么都不做
+  var holdRound = null;
+  function armHold(wasHeld) {
+    if (!state.held) { holdRound = null; return; }
+    if (wasHeld && holdRound) return;
+    var round = holdRound = {};
     setTimeout(function () {
-      if (state.held !== held || !floatReleaseHeld(state, held.id)) return;
-      floatRender(document, els, state);
+      if (holdRound !== round || !state.held) return;
+      holdRound = null;
+      if (floatReleaseHeld(state, state.held.id)) floatRender(document, els, state);
     }, FLOAT_HOLD_MS);
   }
 
   function handle(msg) {
+    var wasHeld = !!state.held;
     floatReduce(state, msg);
     if (msg && (msg.type === "hello" || msg.type === "config")) applySizes();
-    armHold();
+    armHold(wasHeld);
     floatRender(document, els, state);
   }
 

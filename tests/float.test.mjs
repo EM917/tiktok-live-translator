@@ -3,7 +3,8 @@
 //
 // 钉住的事：
 //   0. 待译停留（专家审查 U1，用户 10-22 定的「等译文到了再一起换」，同中控页底部大字幕）：新的一句还在翻译时
-//      窗口里停在上一句，有了结局再整句换上；等满 4 秒（FLOAT_HOLD_MS）还没结局就照以前的样子先放原文；
+//      窗口里停在上一句，有了结局再整句换上；等满 4 秒（FLOAT_HOLD_MS）还没结局就照以前的样子先放原文，
+//      改等新句时不重新数 4 秒；
 //   1. 最新一条字幕：译文大字 / 原文小字，没译成时原文大字 + 角标，翻译中不画角标（同中控页底部大字幕）；
 //   2. 弹幕：最多 5 条、新的在底部，译文行 / 原文行的规则同弹幕栏，红 / 琥珀 / 关注的标记复用 guard.js，
 //      而且永远没有「加入关注名单」的按钮（浮窗只显示）；
@@ -335,20 +336,36 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual([page.el("f-big").textContent, page.el("f-small").textContent], ["大家好", "hola a todas"]);
   });
 
-  test(L("待译停留：页面排一个 4 秒的计时器，到点还在等就先放原文；被新的一句顶掉的那个计时器到点不动窗口"), () => {
+  // 本批第 1 版每有一句新的在等就重排一个 4 秒计时器：句子间隔一直短于 4 秒、译文又都慢于间隔时（识别积压后
+  // 一串句子集中到达），窗口会一直停在旧句。审查意见后改成一轮等待只排一个，改等新句不往后推（同中控页）
+  test(L("待译停留：一轮等待只排一个 4 秒计时器，改等新句不重排；到点放还在等的那一句的原文；这一轮结束后旧计时器到点不动窗口"), () => {
     const page = loadFloat({ lang });
     hello(page);
+    const holds = () => page.timers.filter((t) => t.ms === F.FLOAT_HOLD_MS);
     page.push(caption(1, "primera parte"));
     page.push(caption(2, "segunda parte"));
-    const holds = page.timers.filter((t) => t.ms === F.FLOAT_HOLD_MS);
-    assert.equal(holds.length, 2, "每一句在等的都排一个");
-    holds[0].fn();                                                 // 第 1 句的：它已经被第 2 句顶掉
-    assert.ok(hidden(page, "f-caption"));
-    holds[1].fn();                                                 // 第 2 句的：还在等，先放原文
+    page.push(comment("c1", "ana", "hola"));                        // 不相干的消息不打断这一轮
+    assert.equal(holds().length, 1, "第 2 句顶掉第 1 句：截止时刻还是第 1 句开始等时排的那个");
+    holds()[0].fn();                                               // 到点：放还在等的第 2 句
     assert.ok(!hidden(page, "f-caption"));
     assert.deepEqual([page.el("f-big").textContent, hidden(page, "f-small")], ["segunda parte", true]);
     page.push({ type: "caption_update", id: 2, translated: "第二部分", translate_state: "ok" });
     assert.deepEqual([page.el("f-big").textContent, page.el("f-small").textContent], ["第二部分", "segunda parte"]);
+    // 新的一轮重新排；这一轮译文先到（结束了），它的计时器到点什么都不做
+    page.push(caption(3, "tercera"));
+    assert.equal(holds().length, 2);
+    page.push({ type: "caption_update", id: 3, translated: "第三", translate_state: "ok" });
+    page.push(caption(4, "cuarta"));
+    assert.equal(holds().length, 3, "第 3 句那一轮已经结束：第 4 句另起一轮");
+    holds()[1].fn();
+    assert.equal(page.el("f-big").textContent, "第三", "上一轮的计时器到点：不动窗口");
+    holds()[2].fn();
+    assert.deepEqual([page.el("f-big").textContent, hidden(page, "f-small")], ["cuarta", true]);
+    // 换场把这一轮清掉：它的计时器到点也不把字幕放出来
+    page.push(caption(5, "quinta"));
+    page.push({ type: "session_break", ts: T + 9 });
+    holds()[3].fn();
+    assert.ok(hidden(page, "f-caption"));
   });
 
   for (const [name, update, chip, fail] of [

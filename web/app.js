@@ -364,7 +364,7 @@
   // 大字幕停在上一句；译文到了、或者确定不会有译文了，再整句一起换上。以前每句先放西语、约 0.9 秒后跳成中文，
   // 中控盯着的那一行每小时闪约 475 次。等满 LIVE_HOLD_MS 还没结果就照以前的样子先放原文（Claude 下 p99 约 3.9 秒）
   var LIVE_HOLD_MS = 4000;
-  var liveHold = null;       // { msg, at, timer }：在等译文的那一句；null 是没有在等
+  var liveHold = null;       // { msg, at, until, timer }：在等译文的那一句；null 是没有在等
   // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
   var cardsById = {};
   // 布局意义上的「直播中」，供 viewTransition 判断迁移方向；null＝页面刚加载，
@@ -1471,15 +1471,20 @@
 
   // 新的一句在翻译：大字幕停在上一句（第一句之前就还空着）。等待中又来一句就改等新的那句——
   // 前一句从头到尾不上大字幕（约 0.7% 的句子，译文比下一句原文还晚到），它在上面的字幕记录里照常有。
-  // 等满 LIVE_HOLD_MS 还没结局：照以前的样子先放原文，译文到了再由 updateCaption 就地换成译文
+  // 等满 LIVE_HOLD_MS 还没结局：照以前的样子先放原文，译文到了再由 updateCaption 就地换成译文。
+  // 改等新句时截止时刻沿用这一轮最早那次（until），不重新数 4 秒：句子一直比译文来得快时（识别积压后
+  // 一串句子集中到达，间隔不到 4 秒、译文又都慢于间隔），每来一句就重数的话大字幕会一直停在旧句。
+  // 这样大字幕停在旧句最多 LIVE_HOLD_MS，到点时放的是还在等的那一句（最新的）
   function holdLiveBar(msg) {
+    var now = Date.now();
+    var until = liveHold ? liveHold.until : now + LIVE_HOLD_MS;
     cancelLiveHold();
-    var hold = { msg: msg, at: Date.now(), timer: null };
+    var hold = { msg: msg, at: now, until: until, timer: null };
     hold.timer = setTimeout(function () {
       if (liveHold !== hold) return;
       liveHold = null;
       if (streamActive) showOnLiveBar(hold.msg, hold.at);
-    }, LIVE_HOLD_MS);
+    }, Math.min(LIVE_HOLD_MS, Math.max(0, until - now)));
     liveHold = hold;
   }
 
@@ -1579,6 +1584,7 @@
       liveCov.classList.add("hidden");
     }
     liveMeta.classList.add("hidden");
+    forgetLiveBarHeight();
   }
 
   // ---- 大字幕条的实测高度 → CSS 变量 --live-bar-h ----
@@ -1586,7 +1592,7 @@
   // 字号调到 48、60 或者句子长时条子比这高，弹幕栏最新一条被整条盖住（专家审查 U1）。现在量条子的真实
   // 高度写进变量，.history / .comment-list 的底部留白按它算（web/style.css）。
   // 防布局循环：值没变就不写（ResizeObserver 回调里写样式，值不变也写会白白再触发一轮）；变量只影响两栏的
-  // 内边距，不影响条子自己的高度，所以写一次就停。条子收起时量出来是 0，不写：首页的留白保持上一次的值。
+  // 内边距，不影响条子自己的高度，所以写一次就停。条子收起时量出来是 0，不写（见 forgetLiveBarHeight）。
   var liveBarH = 0;
   function syncLiveBarHeight() {
     if (liveBar.classList.contains("hidden")) return;
@@ -1597,6 +1603,14 @@
     // 留白变了：正贴底看的人要再贴一次，不然条子新长高的那一截正好盖住最新一条
     if (following) scrollToBottomNow();
     if (commentFollowing) commentsToBottomNow();
+  }
+  // 条子收起（清空字幕、换场、回首页）：变量清掉，两栏的留白回到没量过时的样子（合起来 204px，同改之前）。
+  // 不留上一次的值：上一场最后一句若是超长句（字号 60 时条子可达 625px），回到首页后两栏底下会多出一大段
+  // 能滚的空白，要等下一场第一句出来才纠正。liveBarH 归零，条子下次出来时一定重新写
+  function forgetLiveBarHeight() {
+    if (!liveBarH) return;
+    liveBarH = 0;
+    document.documentElement.style.setProperty("--live-bar-h", "");   // 空值＝去掉这条声明（CSSOM 规定）
   }
   var liveBarObserver = null;
   if (typeof ResizeObserver === "function") {
