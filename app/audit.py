@@ -182,6 +182,13 @@ class AuditLog:
         self.serialize_failures = 0
         self.last_gap = None             # 最近一次恢复时写下的 audit_gap
         self._lost_in_outage = 0
+        # 文件关掉之后才到的记录（专家审查 B5；计划审查 P8）：旧任务过了停止的宽限期才写的译文、重译结果……
+        # 以前 _write 见文件已关直接 return，记录静默消失，write_failures 也还是 0。现在计数、终端打一行
+        # （每场最多一行），开下一场的管线把它记进那一场的 session_start（late_records_prev）。不追加进已经写了
+        # session_end 的旧文件：那样最后一条就不是 session_end 了，下次启动 app/audit_recover 会补一条假的 unclean_exit
+        self._closed = False             # close() 关过了（和「文件根本没建起来」分开）
+        self.late_records = 0            # 关了之后才到、没写进去的条数（见 _note_late）
+        self.late_reported = 0           # 其中已经记进后面某一场 session_start 的条数（管线维护）
         self._retained = deque()         # 等补写的会话头/报警/会话尾（编码好的整行）
         # 每次「开始写不进去」调一次，不是每条都调。可能在事件循环之外的线程里被调用，
         # 调用方自己切回循环（call_soon_threadsafe）
@@ -229,6 +236,7 @@ class AuditLog:
         只把写不出来的字段换成 <类型名>（见 _sanitized）。以前这里只接 ValueError，TypeError
         冒到调用方，一段坏记录就结束整场（专家审查 B2）。"""
         if self._fh is None:
+            self._note_late(record)
             return
         data = _encode(record)
         unencodable = data is None
@@ -241,21 +249,43 @@ class AuditLog:
             if data is None:
                 return
         started = None
+        late = False
         with self._lock:
             if self._fh is None:
-                return
-            if unencodable:
-                self.serialize_failures += 1
-            try:
-                if self.failing or self._retained:
-                    self._drain_locked()
-                self._append_locked(data)
-            except (OSError, ValueError) as exc:
-                started = self._note_failure_locked(record, data, exc)
+                late = True
+            else:
+                if unencodable:
+                    self.serialize_failures += 1
+                try:
+                    if self.failing or self._retained:
+                        self._drain_locked()
+                    self._append_locked(data)
+                except (OSError, ValueError) as exc:
+                    started = self._note_failure_locked(record, data, exc)
+        if late:                  # 等锁的工夫里文件被关了
+            self._note_late(record)
+            return
         callback = self.on_write_error
         if started is not None and callback is not None:
             try:
                 callback(started)
+            except Exception:
+                pass
+
+    def _note_late(self, record):
+        """文件已经被 close() 关了之后又来了一条：计数，终端打一行（这一场最多一行），不写进文件。
+        文件根本没建起来（open_error）的不算——那是另一回事，审计健康检查另有提示。"""
+        if not getattr(self, "_closed", False):
+            return
+        with self._lock:
+            self.late_records = getattr(self, "late_records", 0) + 1
+            first = self.late_records == 1
+        if first:
+            kind = record.get("type") if isinstance(record, dict) else None
+            try:          # 终端可能已经没了（关了终端窗口）：这一行打不出来也不许抛给写审计的调用方
+                print("[警告] 这一场的审计文件已经关闭，之后才到的记录没有写进去（第一条是 {}）；条数记在"
+                      "下一场的 session_start（late_records_prev），这一场不再打印".format(
+                          str(kind)[:40] if kind else "?"))
             except Exception:
                 pass
 
@@ -831,8 +861,10 @@ class AuditLog:
         })
 
     def stream_summary(self, **fields):
-        """每 5 分钟一条拉流汇总的快照（和 session_end 里的那些字段一样，只有数字）：⌘Q、关窗、Ctrl-C
-        都不写 session_end，场末没写也留得下数。"""
+        """每 5 分钟一条拉流汇总的快照（和 session_end 里的那些字段一样，只有数字）：进程被强杀、崩溃、断电时
+        一条 session_end 都写不了，下次启动补的那一条（app/audit_recover.py，reason=unclean_exit）也不带这些数，
+        场末没写也留得下数。关窗口、⌘Q 写 session_end（window_closed），关终端窗口、kill、Ctrl-C 写
+        session_end（signal）——专家审查 B5 之前，⌘Q、窗口模式下的 Ctrl-C 和这两种信号都不写。"""
         rec = {"type": "stream_summary", "at": datetime.now().isoformat(timespec="milliseconds")}
         for key, value in fields.items():
             rec.setdefault(key, value)
@@ -1064,6 +1096,7 @@ class AuditLog:
             finally:
                 with self._lock:
                     fh, self._fh = self._fh, None
+                    self._closed = True
                 if fh is not None:
                     try:
                         fh.close()

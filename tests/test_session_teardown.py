@@ -441,3 +441,224 @@ def test_a_health_notice_that_fails_is_retried_on_the_next_tick(monkeypatch, tmp
     _run_loop(p2)
     assert calls2["health"] == 1
     p2.audit.close(reason="user_stop")
+
+
+# ---- 自然收尾途中点「开始」（专家审查 B5，reverify/backend/b1/out-natural.txt）----
+#
+# 下播之后这一场自己进 _end_session 收尾；收尾途中中控点了下一个房间。以前 _stop_locked 照样取消它，取消落在
+# 收尾的某个 await 上（等弹幕停下最常见），session_end 改由 _stop_locked 代写：原因成了 new_session，status 和
+# 弹幕计数也没了。下播后 0.02、0.10 秒点开始都中，0.40 秒点就对（那时收尾已经写完）。
+
+def _natural_end_pipeline(monkeypatch, tmp_path, comment_stop_sec):
+    p, server = _real_pipeline(monkeypatch, tmp_path)
+    marks = []
+    armed = {"on": False}
+
+    async def comment_stop():
+        # 下播之后的第一次（这一场自己的 _end_session）：弹幕子进程收到 SIGTERM 后退出要这么久。之后的
+        # （_stop_locked 兜底、下一场停止）立刻返回——CommentSource.stop() 第一行就把 _task 置空了
+        if armed["on"]:
+            marks.append("comment_stop")
+            if marks.count("comment_stop") == 1:
+                await asyncio.sleep(comment_stop_sec)
+
+    p.comment_source.stop = comment_stop
+
+    async def round_that_ends(url):
+        if "ficticia_uno" in url:
+            p._comment_counts_audit = p.audit           # 这一场起过弹幕，收到 7 条
+            p.comment_source.comments_received = 7
+            await asyncio.sleep(0.05)
+            p._session_state["end"] = {"reason": "offline", "status": 4}
+            armed["on"] = True
+            marks.append("returned")
+            return                                      # 主播下播：这一轮自己结束
+        await asyncio.Event().wait()
+
+    p._run_session = round_that_ends
+    return p, server, marks
+
+
+async def _until_session_of(p, room):
+    """等下一场开好审计（_begin_session 写完 session_start）再往下走：太早停掉，那一场连审计文件都没有。"""
+    for _ in range(400):
+        if p.audit is not None and p.server.config.get("room_url") == room \
+                and isinstance(p._session_state, dict) and p._session_state.get("audit") is p.audit:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("下一场没有开起来")
+
+
+def _session_ends(tmp_path):
+    out = []
+    for f in sorted((tmp_path / "logs").rglob("session-*.jsonl")):
+        rows = [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines()]
+        start = rows[0]
+        out.append((start.get("room_url"), [r for r in rows if r["type"] == "session_end"]))
+    return out
+
+
+@pytest.mark.parametrize("click_after", [0.02, 0.10])
+def test_a_start_clicked_while_the_last_session_ends_by_itself_keeps_offline(monkeypatch, tmp_path,
+                                                                             click_after):
+    p, server, marks = _natural_end_pipeline(monkeypatch, tmp_path, comment_stop_sec=0.25)
+
+    async def scenario():
+        await p.start_stream(ROOM_A)
+        for _ in range(300):
+            if "returned" in marks:
+                break
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(click_after)
+        await p.start_stream(ROOM_B)
+        await _until_session_of(p, ROOM_B)
+        await p.stop_stream(quiet=True)
+
+    asyncio.run(scenario())
+    ends = dict((room, rows) for room, rows in _session_ends(tmp_path))
+    (end_a,) = ends[ROOM_A]
+    assert end_a["reason"] == "offline"                 # 以前是 new_session
+    assert end_a["status"] == 4                         # 下播时房间接口给的状态
+    assert end_a["comments_received"] == 7              # 弹幕计数也在
+    assert "recovered" not in end_a
+    (end_b,) = ends[ROOM_B]
+    assert end_b["reason"] == "stopped"
+
+
+def test_a_session_that_ends_by_itself_too_slowly_is_closed_with_its_own_reason(monkeypatch, tmp_path,
+                                                                                capsys):
+    """收尾比 STOP_GRACE_SEC 还慢（弹幕子进程还在连接阶段，要等 SIGKILL）：_stop_locked 代写，原因和附带的
+    观察照这一场自己记下的。"""
+    p, server, marks = _natural_end_pipeline(monkeypatch, tmp_path, comment_stop_sec=2.0)
+    monkeypatch.setattr(Pipeline, "STOP_GRACE_SEC", 0.3)
+
+    async def scenario():
+        await p.start_stream(ROOM_A)
+        for _ in range(300):
+            if "comment_stop" in marks:
+                break
+            await asyncio.sleep(0.005)
+        await p.start_stream(ROOM_B)
+        await _until_session_of(p, ROOM_B)
+        await p.stop_stream(quiet=True)
+
+    asyncio.run(scenario())
+    ends = dict((room, rows) for room, rows in _session_ends(tmp_path))
+    (end_a,) = ends[ROOM_A]
+    assert end_a["reason"] == "offline" and end_a["status"] == 4
+    assert end_a["comments_received"] == 7
+    assert "上一场正在自己收尾" in capsys.readouterr().out
+    assert p._ending is None
+
+
+def test_a_user_stop_during_a_natural_ending_also_keeps_offline(monkeypatch, tmp_path):
+    p, server, marks = _natural_end_pipeline(monkeypatch, tmp_path, comment_stop_sec=0.25)
+
+    async def scenario():
+        await p.start_stream(ROOM_A)
+        for _ in range(300):
+            if "comment_stop" in marks:
+                break
+            await asyncio.sleep(0.005)
+        await p.stop_stream()                           # 中控点「停止」
+
+    asyncio.run(scenario())
+    (end_a,) = dict(_session_ends(tmp_path))[ROOM_A]
+    assert end_a["reason"] == "offline"
+
+
+def test_a_live_session_is_still_cancelled_and_records_the_stop_reason(monkeypatch, tmp_path):
+    """没在自己收尾的一场照旧：取消、记停止的原因（_ending 只认正在收尾的那一场）。"""
+    p, server = _real_pipeline(monkeypatch, tmp_path)
+
+    async def live(url):
+        await asyncio.Event().wait()
+
+    p._run_session = live
+
+    async def scenario():
+        await p.start_stream(ROOM_A)
+        await _until_session_of(p, ROOM_A)
+        await p.stop_stream()
+
+    asyncio.run(scenario())
+    (end_a,) = dict(_session_ends(tmp_path))[ROOM_A]
+    assert end_a["reason"] == "user_stop"
+
+
+# ---- 收到退出信号：reason=signal，带信号名（app/exit_signals.py → window_close.close_session）----
+
+def test_a_signal_stop_records_reason_signal_and_the_signal_name(monkeypatch, tmp_path):
+    from app import window_close
+
+    p, server = _real_pipeline(monkeypatch, tmp_path)
+
+    async def live(url):
+        await asyncio.Event().wait()
+
+    p._run_session = live
+
+    async def scenario():
+        await p.start_stream(ROOM_A)
+        await _until_session_of(p, ROOM_A)
+        return await window_close.close_session(p, reason="signal", fields={"signal": "SIGTERM"})
+
+    assert asyncio.run(scenario())
+    rows = [json.loads(line) for f in (tmp_path / "logs").rglob("session-*.jsonl")
+            for line in f.read_text(encoding="utf-8").splitlines()]
+    assert not [r for r in rows if r["type"] == "window_closed"]     # 窗口没有人关
+    (end,) = [r for r in rows if r["type"] == "session_end"]
+    assert end["reason"] == "signal" and end["signal"] == "SIGTERM"
+    assert list(end)[:4] == ["type", "ended_at", "reason", "signal"]
+    assert p._stop_reason is None and p._stop_fields is None
+
+
+def test_the_window_close_fallback_writes_signal_too_when_the_stop_is_slow(monkeypatch, tmp_path):
+    from app import window_close
+
+    p, server = _real_pipeline(monkeypatch, tmp_path)
+
+    async def live(url):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(1.0)                # 音频源收尾慢
+            raise
+
+    p._run_session = live
+    monkeypatch.setattr(Pipeline, "STOP_GRACE_SEC", 3.0)
+
+    async def scenario():
+        await p.start_stream(ROOM_A)
+        await _until_session_of(p, ROOM_A)
+        audit = p.audit
+        await window_close.close_session(p, audit_budget=0.2, total=4.0, reason="signal",
+                                         fields={"signal": "SIGHUP"})
+        return audit
+
+    audit = asyncio.run(scenario())
+    rows = [json.loads(line) for line in audit.path.read_text(encoding="utf-8").splitlines()]
+    (end,) = [r for r in rows if r["type"] == "session_end"]
+    assert end["reason"] == "signal" and end["signal"] == "SIGHUP"
+
+
+def test_the_window_close_fallback_keeps_a_natural_ending_reason(monkeypatch, tmp_path):
+    """关窗口时这一场已经在自己收尾（下播）、又收得慢：兜底那一条照这一场自己的原因写，不写 window_closed。"""
+    from app import window_close
+
+    p, server, marks = _natural_end_pipeline(monkeypatch, tmp_path, comment_stop_sec=1.5)
+
+    async def scenario():
+        await p.start_stream(ROOM_A)
+        for _ in range(300):
+            if "comment_stop" in marks:
+                break
+            await asyncio.sleep(0.005)
+        audit = p.audit
+        await window_close.close_session(p, audit_budget=0.2, total=4.0)
+        return audit
+
+    audit = asyncio.run(scenario())
+    rows = [json.loads(line) for line in audit.path.read_text(encoding="utf-8").splitlines()]
+    (end,) = [r for r in rows if r["type"] == "session_end"]
+    assert end["reason"] == "offline" and end["status"] == 4

@@ -1004,8 +1004,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """调用方必须已持有 _stream_lock。
 
         停止原因（写进 session_end 的 reason）由发起停止的一方在调用前放进
-        self._stop_reason（user_stop / window_closed / update / new_session）；没放就按
-        quiet 记成 stopped 或 user_stop。被取消的任务收尾时读它，这里用完清掉。"""
+        self._stop_reason（user_stop / window_closed / signal / update / new_session）；没放就按
+        quiet 记成 stopped 或 user_stop。self._stop_fields 是这个原因附带的观察（signal 的信号名），
+        并进 session_end。被取消的任务收尾时读它们，这里用完清掉。"""
         if not getattr(self, "_stop_reason", None):
             self._stop_reason = "stopped" if quiet else "user_stop"
         task = self._stream_task
@@ -1015,7 +1016,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 点了没反应，人只会以为程序死了，然后反复点。
             if not quiet:
                 await self.server.status("idle", L("正在停止…", "Stopping…"))
-            task.cancel()
+            # 这一场已经在自己收尾（下播、预算用尽之后进了 _end_session）：不取消它，让它把 session_end 写完——
+            # 取消会落在收尾中途的某个 await 上，原因被改写成这次停止的原因、status 和弹幕计数丢掉（专家审查 B5）。
+            # 同样最多等 STOP_GRACE_SEC；到点还没写完，下面代写，原因照它自己记下的
+            ending = self._ending_of(self.audit)
+            if ending is None:
+                task.cancel()
             # 等待要有上限。`run_in_executor` 里的识别调用**取消不掉**——线程一旦
             # 开跑就只能等它自己结束，实测遇到复读跑飞时单次要十几秒。
             # 以前这里是无限期 await，于是积压严重时点停止会像卡死一样。
@@ -1024,7 +1030,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             try:
                 await asyncio.wait_for(asyncio.shield(task), self.STOP_GRACE_SEC)
             except asyncio.TimeoutError:
-                print("[信息] 识别调用一时停不下来，已放手让它自行收尾")
+                if ending is None:
+                    print("[信息] 识别调用一时停不下来，已放手让它自行收尾")
+                else:
+                    print("[信息] 上一场正在自己收尾，{:g} 秒内没写完结尾记录：改由这里代写，"
+                          "结束原因照它自己的（{}）".format(self.STOP_GRACE_SEC, ending[0]))
+                    task.cancel()      # 之后的收尾这里都做；别让它接着走进下一场的状态
             except asyncio.CancelledError:
                 pass
         if self._stats_task is not None and not self._stats_task.done():
@@ -1041,21 +1052,30 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 这一场的汇总（识别风险、证据计数、拉流汇总、弹幕计数）照样从它的会话状态里取，只读不放。
             # 弹幕留意的计数要 await 守卫，这里不写（规格 I1：守卫只出现在 _end_session 等几处）
             sess = getattr(self, "_session_state", None)
-            fields = {}
+            # 附带的观察：这次停止自己带的（收到退出信号时的 signal，见 window_close.close_session）；这一场已经在
+            # 自己收尾的话，换成它记下的原因和观察（_ending_of，专家审查 B5）
+            reason, fields = self._stop_reason, dict(getattr(self, "_stop_fields", None) or {})
+            ending = self._ending_of(closed)
+            if ending is not None:
+                reason, fields = ending[0] or reason, dict(ending[1])
+                self._ending = None
             if isinstance(sess, dict) and sess.get("audit") is closed:
                 # 这一场桌面点的「重译」和后台的翻译排空还没做完：关审计之前先取消（旧任务自己的 _end_session
                 # 没走到这一步时）
                 await self._finish_translation_drains(sess, wait=False)
                 await self._cancel_retranslates(sess)
                 try:
-                    fields = self._session_end_extras(closed, sess)
+                    extras = self._session_end_extras(closed, sess)
                 except Exception:
-                    fields = {}
-            self._close_audit(closed, self._stop_reason, **fields)
+                    extras = {}
+                for key, value in extras.items():
+                    fields.setdefault(key, value)
+            self._close_audit(closed, reason, **fields)
             self.audit = None
         # 字幕记录跟审计同生同灭；认本场的审计，见 pipeline_transcript.py
         closed_transcript = self._close_transcript(closed)
         self._stop_reason = None
+        self._stop_fields = None
         self._release_sleep_guard()
         if closed is not None:
             await self._settle_audit_incident(closed)
@@ -1475,6 +1495,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         except asyncio.CancelledError:
             stopping = True
             end = {"reason": getattr(self, "_stop_reason", None) or "cancelled"}
+            # 停止原因附带的观察（收到退出信号时的 signal 名，见 window_close.close_session），没有就是空的
+            end.update(getattr(self, "_stop_fields", None) or {})
             raise
         except Exception as exc:
             # 打包运行时 stdout 指向 /dev/null，外层 _run_stream 打的堆栈没人看得到；
@@ -1598,6 +1620,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             **self._sleep_guard_extra(),
             **self._banned_terms_provenance(),
             **self._evidence_session_extras(),
+            # 前几场关了审计之后才到、没写进去的记录条数（专家审查 B5，见 _late_records_extra）；没有就没有这个键
+            **self._late_records_extra(),
             # 解析组件版本、上次连上更新服务器的时间、这一场是不是更新后自动接上的
             **self._update_session_extras(),
             # 拉流收尾各步的上限（app/audio.py）：事后读日志知道这一场按哪套上限收尾
@@ -1605,6 +1629,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 重连按哪套规则（v1 / v2）、查流地址的令牌桶（app/reconnect_policy.py）
             **reconnect_session_fields(),
         })
+        self._remember_audit(self.audit)
         # 守卫记住本场自己的 audit 并开始 observe（my_audit：晚到的旧任务关不掉它）
         await self._bind_comment_guard(self.audit)
         # 字幕记录：这一场的字幕和弹幕边听边存成一个本地文件（不进审计，见 app/transcript.py）。
@@ -2001,7 +2026,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         这一个。没传（开场出错那一支、测试直接调）就在取消前这一刻再核对一次 self.audit is my_audit。
 
         reason/fields 写进 session_end（这一场为什么结束）。防睡眠断言只在「我还是
-        当前会话、而且断言是我这个任务开的」时释放。"""
+        当前会话、而且断言是我这个任务开的」时释放。
+
+        一进来就记下「这一场正在自己收尾、原因是什么」（self._ending，见 _ending_of）。以前自然结束
+        （下播、预算用尽……）的收尾途中点「开始」：_stop_locked 取消这个任务，取消落在下面某个 await 上，
+        session_end 改由 _stop_locked 代写，原因成了 new_session，status 和弹幕计数也丢了（专家审查 B5，
+        reverify/backend/b1/out-natural.txt：下播后 0.02、0.10 秒点开始都中）。现在 _stop_locked 看到
+        这一场已经在自己收尾就不取消、等它写完；等不到才代写，原因和附带的观察照这里记下的。
+        fields 存的是同一个 dict：下面 setdefault 进来的弹幕计数，代写时也带得上。"""
+        ending = self._ending = (my_audit if my_audit is not None else self.audit, reason, fields)
         still_current = my_audit is None or self.audit is my_audit
         if still_current:
             self._release_sleep_guard(owner=asyncio.current_task())
@@ -2066,10 +2099,45 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             await self._settle_audit_incident(target)
             if closed_transcript:
                 await self._publish_transcripts()   # 设置行的「存了几场」：这一场此刻才算数
+        if getattr(self, "_ending", None) is ending:
+            self._ending = None      # 写完了。中途抛出（被取消）就留着：_stop_locked 代写时还要用
         if still_current:
             await self._settle_engine_incident()
         if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks"):
             self._spawn(self._pull_after_session(asyncio.current_task()))  # 直播中推迟的模型下载
+
+    PAST_AUDITS_KEPT = 8
+
+    def _remember_audit(self, audit):
+        """记下这个管线开过的审计（最近 PAST_AUDITS_KEPT 份）：旧任务过了停止的宽限期才往它们里写的记录被
+        数在审计自己身上（AuditLog.late_records），下一场开场时由 _late_records_extra 汇总。"""
+        past = getattr(self, "_past_audits", None)
+        if past is None:
+            from collections import deque
+            past = self._past_audits = deque(maxlen=self.PAST_AUDITS_KEPT)
+        if audit is not None:
+            past.append(audit)
+
+    def _late_records_extra(self):
+        """{"late_records_prev": N}：这个管线前几场的审计关了之后又到、没写进去的记录，上一次汇总之后新增的
+        条数（每条只报一次）。0 条时是空 dict：session_start 不多这个键，和以前逐字节相同。按管线算，不按模块
+        的全局计数：生产里一个进程就一个管线；测试里一个进程有上百个，全局计数会串到别的用例里。"""
+        total = 0
+        for audit in getattr(self, "_past_audits", None) or ():
+            late = getattr(audit, "late_records", 0) or 0
+            new = late - (getattr(audit, "late_reported", 0) or 0)
+            if new > 0:
+                total += new
+                audit.late_reported = late
+        return {"late_records_prev": total} if total else {}
+
+    def _ending_of(self, audit):
+        """这份审计的那一场是不是已经在自己收尾（_end_session 进去了、还没写完）：是就返回它记下的
+        (结束原因, 附带的观察)，否则 None。按审计对象认：晚到的旧任务记下的认不到下一场头上。"""
+        ending = getattr(self, "_ending", None)
+        if audit is None or not isinstance(ending, tuple) or ending[0] is not audit:
+            return None
+        return ending[1], ending[2]
 
     # TikTok 不给流地址（接口回 4003110、后面各层也没拿到）时的自动重试。
     # 曾以为是同一 IP 短时间内请求过多被限流——2026-09-05 实测推翻：同一分钟
