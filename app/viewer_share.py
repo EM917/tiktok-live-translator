@@ -189,12 +189,18 @@ class ViewerShareMixin:
              （_asr_watch 记着本场 stalled），或者积压按统计循环的同一套阈值（_health_level）算出来
              不是 ok。
 
-        只看第 1 条不够：_health_shown 不一定回得到 ok。GPU 识别连续出错、改用 CPU 之后，
-        _on_asr_failures 播一条 lagging（reason=asr_fallback），而统计循环只在它自己上一跳算出的
-        积压等级（_stats_loop 的局部变量 last_level）变了时才播。改用 CPU 那一刻积压是 ok 的话，
-        之后积压一直正常就一直不播，_health_shown 整场停在 lagging——只看它，这一场手机点的重译全部
-        被拒，而识别并没有落后。_health_shown 在 pipeline.py 里写，这里不去改它，只是不让一条过时的
-        显示状态单独决定拒绝。"""
+        只看第 1 条的话，显示的落后过时了也会拦。_health_shown 要等有人播报才变，有两段时间它比
+        此刻旧：
+          - 统计循环每 10 秒才按积压算一次，积压已经回落、下一跳还没到时，显示的仍是 lagging。
+          - GPU 识别连续出错、改用 CPU 之后，_on_asr_failures 播一条 lagging（reason=asr_fallback）。
+            CPU 模型第一次识别成功时，asr_worker 调 _asr_calls_recovered 按积压重报，积压正常就回到
+            ok（tests/test_resilience_asr.py 的 test_repeated_mlx_failures_switch_to_the_cached_cpu_turbo
+            钉着 degraded→lagging→ok）。在那之前——比如一直没人说话——没有别的播报：统计循环只在它
+            自己算出的积压等级（_stats_loop 的局部变量 last_level）变了时才播，而它一直是 ok。
+        这两段时间里此刻的积压是 ok，手机点的照常开始。
+
+        显示的是 ok 时不拦，此刻的积压过了「开始落后」也不拦：拦不拦以显示出来的为准，此刻的状态只用来
+        放过过时的落后显示，不另外加拦。_health_shown 在 pipeline.py 里写，这里不改它。"""
         audit = getattr(self, "audit", None)
         shown = getattr(self, "_health_shown", None)
         if audit is None or not isinstance(shown, tuple) or len(shown) < 2:

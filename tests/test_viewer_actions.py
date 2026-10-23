@@ -329,11 +329,14 @@ def test_no_session_means_nothing_to_protect(pl):
     assert calls == [4]
 
 
-def test_a_lagging_state_the_stats_loop_never_takes_back_does_not_block(pl):
+def test_the_fallback_lagging_state_does_not_block_before_cpu_recognizes_a_segment(pl):
     """GPU 识别连续出错、改用 CPU 之后，_on_asr_failures 播一条 lagging（reason=asr_fallback）。
-    统计循环只在它自己上一跳算出的积压等级变了时才播；那一刻积压是 ok 的话，之后积压一直正常就
-    一直不播，_health_shown 整场停在 lagging。只看它，这一场手机点的重译全部被拒，而识别并没有
-    落后。这里真跑三跳统计循环（积压一直是 0），然后手机点重译：要照常开始。"""
+    CPU 模型第一次识别成功时 _asr_calls_recovered 会按积压重报、积压正常就回到 ok（这一半由
+    tests/test_resilience_asr.py 的 test_repeated_mlx_failures_switch_to_the_cached_cpu_turbo 钉着）；
+    在那之前，比如一直没人说话，统计循环不会把它收回——它只在自己算出的积压等级（局部 last_level）
+    变了时才播，而那个等级一直是 ok。这段时间 _health_shown 是 lagging，识别并没有落后。
+    这里不经过 asr_worker，只播那条 lagging、再真跑三跳统计循环（积压一直是 0），然后手机点重译：
+    要照常开始。"""
     pl._recent[4] = {"text": "hola"}
     audit = HealthAudit()
     pl.audit = audit
