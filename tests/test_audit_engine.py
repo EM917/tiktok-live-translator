@@ -299,3 +299,136 @@ def test_existing_rejection_records_are_byte_for_byte_unchanged(monkeypatch, tmp
 
 async def _no_fallback(self, old, what, status):
     return None
+
+
+# ---- session_start 记 ffmpeg 版本和这一场的拉流参数组（专家审查 M8；#124 审查补的 stop_limits）----
+
+# 改动前 session_start 里 stop_limits 的样子（逐字节）：新的两个键只能接在它后面
+OLD_STOP_LIMITS = ('{"term": 5.0, "kill": 3.0, "close": 2.0, "urgent": [0.3, 0.7, 0.3], "exit": 1.0, '
+                   '"urgent_exit": 0.2, "stderr": 2.0, "stream_limit": 4194304')
+
+
+def _real_pipeline(monkeypatch, tmp_path):
+    from app import pipeline as pipeline_mod
+    from app import settings
+    from app.pipeline import Pipeline
+    from app.server import CaptionServer
+
+    monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
+    terms = tmp_path / "banned_terms.txt"
+    terms.write_text("", encoding="utf-8")
+    monkeypatch.setattr(pipeline_mod, "TERMS_FILE", terms)
+    monkeypatch.setattr("app.audit.LOG_DIR", tmp_path / "logs")
+    args = SimpleNamespace(
+        cookies=None, target="zh-CN", translator="none", source="es", source_requested="es",
+        beam=5, context=False, asr_temperature=None, glossary=None, backend="auto", model=None,
+        device="auto", compute_type="auto", denoise="off", banned_terms=None, comments=False,
+        cookies_browser="none")
+    p = Pipeline(args, CaptionServer(port=0))
+
+    async def noop(*a, **k):
+        return None
+
+    p._login_source = noop
+    return p
+
+
+def _session_start(monkeypatch, tmp_path, legacy=False, v2=True, version="ffmpeg version 7.1-test",
+                   tagged=True, ffmpeg="/opt/ficticio/ffmpeg"):
+    from app import audio, reconnect_policy
+
+    monkeypatch.setattr(audio, "FFMPEG_LEGACY", legacy)
+    monkeypatch.delenv("TLT_FFMPEG_LEGACY", raising=False)
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", v2)
+    monkeypatch.delenv("TLT_RECONNECT_V2", raising=False)
+    monkeypatch.setattr("app.ffmpeg_bin.find_ffmpeg", lambda: ffmpeg)
+    calls = []
+    monkeypatch.setattr(audio, "probe_ffmpeg",
+                        lambda path: calls.append(("probe", path)) or {"tagged": tagged, "version": version})
+    monkeypatch.setattr(audio, "_run_version",
+                        lambda path, loglevel=None: calls.append(("plain", path, loglevel)) or (0, version))
+    p = _real_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        await p._begin_session(ROOM)
+        p.audit.close(reason="user_stop")
+        for task in (p._stats_task,):
+            if task is not None:
+                task.cancel()
+
+    asyncio.run(scenario())
+    (path,) = list((tmp_path / "logs").glob("session-*.jsonl"))
+    line = path.read_text(encoding="utf-8").splitlines()[0]
+    return _json.loads(line), line, calls
+
+
+def test_session_start_records_the_ffmpeg_version_and_argument_set(monkeypatch, tmp_path):
+    start, _line, calls = _session_start(monkeypatch, tmp_path)
+    assert start["ffmpeg_version"] == "ffmpeg version 7.1-test"
+    assert start["ffmpeg_args"] == {"legacy": False, "flv_exits_on_drop": True, "reconnect_v2": True,
+                                    "loglevel": "+level+warning"}
+    assert calls == [("probe", "/opt/ficticio/ffmpeg")]    # 和拉流前的探测是同一个（带缓存的）入口
+
+
+def test_the_legacy_switch_and_v1_reconnects_are_visible(monkeypatch, tmp_path):
+    start, _line, calls = _session_start(monkeypatch, tmp_path, legacy=True)
+    assert start["ffmpeg_args"] == {"legacy": True, "flv_exits_on_drop": False, "reconnect_v2": True,
+                                    "loglevel": "error"}
+    assert calls == [("plain", "/opt/ficticio/ffmpeg", None)]    # 应急开关开着：不带级别标志去探测
+    (tmp_path / "v1").mkdir()
+    start, _line, _calls = _session_start(monkeypatch, tmp_path / "v1", v2=False)
+    assert start["ffmpeg_args"]["flv_exits_on_drop"] is False
+    assert start["ffmpeg_args"]["reconnect_v2"] is False and start["reconnect_policy"] == "v1"
+
+
+def test_without_ffmpeg_the_facts_are_null(monkeypatch, tmp_path):
+    start, _line, calls = _session_start(monkeypatch, tmp_path, ffmpeg=None)
+    assert start["ffmpeg_version"] is None and start["ffmpeg_args"]["loglevel"] == "error"
+    assert calls == []
+
+
+def test_a_slow_probe_does_not_hold_up_the_session(monkeypatch, tmp_path):
+    from app import pipeline as pipeline_mod
+    from app.pipeline import Pipeline
+
+    monkeypatch.setattr(Pipeline, "FFMPEG_FACTS_WAIT_SEC", 0.05)
+    monkeypatch.setattr(pipeline_mod, "_ffmpeg_facts_now", lambda: time.sleep(0.5) or {"ffmpeg_version": "x"})
+    p = _real_pipeline(monkeypatch, tmp_path)
+
+    async def scenario():
+        t0 = time.monotonic()
+        got = await p._ffmpeg_session_facts()
+        return got, time.monotonic() - t0
+
+    got, took = asyncio.run(scenario())      # asyncio.run 退出时还要等那个线程跑完：只量协程里的
+    assert took < 0.45
+    assert got == {"ffmpeg_version": None, "ffmpeg_args": None}
+
+
+def test_stop_limits_keep_their_bytes_and_add_the_two_term2_delays_at_the_end(monkeypatch, tmp_path):
+    from app import audio
+
+    start, line, _calls = _session_start(monkeypatch, tmp_path)
+    limits = _json.dumps(start["stop_limits"], ensure_ascii=False)
+    if audio.SECOND_SIGTERM:
+        assert limits == OLD_STOP_LIMITS + ', "term2": 0.5, "urgent_term2": 0.15}'
+    else:
+        assert limits == OLD_STOP_LIMITS + ', "term2": null, "urgent_term2": null}'
+    assert ('"stop_limits": ' + limits) in line
+
+
+def test_the_new_session_start_keys_only_add_to_the_old_record(monkeypatch, tmp_path):
+    """已有的键一个不少、顺序不变；新键只有 ffmpeg_version、ffmpeg_args（接在重连规则那几个键后面）。"""
+    start, line, _calls = _session_start(monkeypatch, tmp_path)
+    keys = list(start)
+    new = ["ffmpeg_version", "ffmpeg_args"]
+    assert keys[keys.index("reconnect_policy"):keys.index("type")] == \
+        ["reconnect_policy", "lookup_bucket"] + new
+    old = {k: v for k, v in start.items() if k not in new}
+    old["stop_limits"] = {k: v for k, v in old["stop_limits"].items() if k not in ("term2", "urgent_term2")}
+    rebuilt = _json.dumps(old, ensure_ascii=False, allow_nan=False)
+    trimmed = line.replace(', "term2": 0.5, "urgent_term2": 0.15', "").replace(
+        ', "term2": null, "urgent_term2": null', "")
+    for key in new:
+        trimmed = trimmed.replace(', "{}": {}'.format(key, _json.dumps(start[key], ensure_ascii=False)), "")
+    assert trimmed == rebuilt

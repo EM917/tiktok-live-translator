@@ -232,6 +232,71 @@ def _describe_asr(cfg):
     return "/".join(str(v) for v in parts if v and v != "auto")  # i18n: data
 
 
+def _term2_limits():
+    """收尾时补发第二个 SIGTERM 的两个延迟（M2，app/audio.py 的 TERM2_DELAY / URGENT_TERM2_DELAY），接在
+    session_start 的 stop_limits 末尾。b1-ffmpeg 加了这两步，stop_limits 当时没跟上（#124 审查）：没有它们，
+    对账时分不清这一场的收尾走没走两个信号。这个平台不补发（Windows，SECOND_SIGTERM 为假）时两个都是 null。
+    读的是 stop_limits 其余各项读的同一个类（pipeline_stream 导入时拿到的 _Source）：测试把 app.audio 里的
+    FFmpegAudioSource 换成替身时，这里也不跟着去读替身上没有的属性、把开场带崩。"""
+    from .audio import SECOND_SIGTERM
+    from .pipeline_stream import _Source
+
+    if not SECOND_SIGTERM:
+        return {"term2": None, "urgent_term2": None}
+    return {"term2": _Source.TERM2_DELAY, "urgent_term2": _Source.URGENT_TERM2_DELAY}
+
+
+def _in_daemon_thread(fn):
+    """在一个新的 daemon 线程里跑 fn，返回当前事件循环上的 future。结果没人等了（超时）也照样取走异常，
+    事件循环已经关了就丢掉结果。"""
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+
+    def settle(result, exc):
+        if fut.done():
+            return
+        if exc is not None:
+            fut.set_exception(exc)
+        else:
+            fut.set_result(result)
+
+    def run():
+        try:
+            result, exc = fn(), None
+        except Exception as error:
+            result, exc = None, error
+        try:
+            loop.call_soon_threadsafe(settle, result, exc)
+        except RuntimeError:
+            pass
+
+    threading.Thread(target=run, name="ffmpeg-facts", daemon=True).start()
+    return fut
+
+
+def _ffmpeg_facts_now():
+    """_ffmpeg_session_facts 在线程里跑的那一半（会起子进程）。"""
+    from . import audio, reconnect_policy
+    from .ffmpeg_bin import find_ffmpeg
+
+    legacy = audio.ffmpeg_legacy()
+    ffmpeg = find_ffmpeg()
+    version, tagged = None, False
+    if ffmpeg is not None:
+        if legacy:
+            # 应急开关开着时拉流前不探测（app/audio.py 的 frames），这里也不带级别标志，只跑一次普通的 -version
+            _rc, version = audio._run_version(ffmpeg)
+        else:
+            got = audio.probe_ffmpeg(ffmpeg)       # 和拉流前的探测共用缓存：一次运行只跑一次
+            version, tagged = got.get("version"), got.get("tagged") is True
+    return {"ffmpeg_version": version,
+            "ffmpeg_args": {"legacy": legacy,
+                            "flv_exits_on_drop": audio.flv_exits_on_drop(),
+                            "reconnect_v2": reconnect_policy.v2_enabled(),
+                            "loglevel": audio.LOGLEVEL_TAGGED if tagged else audio.LOGLEVEL_PLAIN}}
+
+
 class _ASRSlot:
     """一场会话正在用的识别器，外加「连续出错后换一个」需要的上下文。
 
@@ -1520,6 +1585,25 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if cancelled:
                 raise asyncio.CancelledError()
 
+    FFMPEG_FACTS_WAIT_SEC = 2.0
+
+    async def _ffmpeg_session_facts(self):
+        """session_start 里记的 ffmpeg 事实（专家审查 M8，和 #124 审查补的那一条）：
+          * ffmpeg_version：-version 的第一行（app/audio.ffmpeg_version 的同一份缓存），找不到 ffmpeg 是 null；
+          * ffmpeg_args：legacy（TLT_FFMPEG_LEGACY=1：M1、M3、M8 的参数一起退回原样）、flv_exits_on_drop（FLV
+            断开就让 ffmpeg 退出、交给程序重连；两个应急开关任一个开着都是 false）、reconnect_v2（TLT_RECONNECT_V2
+            有没有关掉）、loglevel（这一场拉流实际用的 -loglevel）。合并后对账时据此分清跑的是哪组 ffmpeg 参数。
+        要起子进程（几十毫秒），放进自己的 daemon 线程（不占默认线程池：识别模型的加载在那里排着，退出时
+        asyncio.run 还要等池里的线程）；最多等 FFMPEG_FACTS_WAIT_SEC，等不到就整组记 null，不拖开场——探测在后台
+        跑完照样进缓存，拉流前不再跑第二次。出任何错也是 null：这一栏不能挡住开播。"""
+        try:
+            fut = _in_daemon_thread(_ffmpeg_facts_now)
+            return await asyncio.wait_for(asyncio.shield(fut), self.FFMPEG_FACTS_WAIT_SEC)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return {"ffmpeg_version": None, "ffmpeg_args": None}
+
     async def _begin_session(self, url):
         from .audit import AuditLog
         from .glossary import (brand_path, fingerprint, load as load_global_glossary,
@@ -1583,6 +1667,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 弹幕留意：词表、阈值、可信名单、这个主播的关注名单在这里载入（关着时什么都不读）。
         # 要在建审计之前：session_start 里记 rules_hash 等，事后答得出「当时为什么标红」
         guard_start = await self._begin_comment_guard(streamer)
+        # 这一场用哪份 ffmpeg、按哪组参数拉流（专家审查 M8）：起子进程，放进线程、有上限，见 _ffmpeg_session_facts
+        ffmpeg_facts = await self._ffmpeg_session_facts()
         # requested 是用户的选择，active 是实际生效的对象——这两列并排记，
         # 是因为 2026-08-26 它们恰恰不一致：requested=deepl 被启动逻辑静默
         # 重置，实际整场跑的是 1.8B，事后只能靠延迟指纹反推。有了这两列，
@@ -1624,10 +1710,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             **self._late_records_extra(),
             # 解析组件版本、上次连上更新服务器的时间、这一场是不是更新后自动接上的
             **self._update_session_extras(),
-            # 拉流收尾各步的上限（app/audio.py）：事后读日志知道这一场按哪套上限收尾
-            "stop_limits": self._stop_limits(),
+            # 拉流收尾各步的上限（app/audio.py）：事后读日志知道这一场按哪套上限收尾。补发第二个 SIGTERM 的
+            # 两个延迟接在最后（见 _term2_limits），原有的键和顺序不变
+            "stop_limits": dict(self._stop_limits(), **_term2_limits()),
             # 重连按哪套规则（v1 / v2）、查流地址的令牌桶（app/reconnect_policy.py）
             **reconnect_session_fields(),
+            # ffmpeg 的版本和这一场的拉流参数组（M8；TLT_FFMPEG_LEGACY / TLT_RECONNECT_V2 两个应急开关的状态）
+            **ffmpeg_facts,
         })
         self._remember_audit(self.audit)
         # 守卫记住本场自己的 audit 并开始 observe（my_audit：晚到的旧任务关不掉它）
