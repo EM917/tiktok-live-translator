@@ -7,10 +7,11 @@
 这里钉的是子进程那一半（app/comment_worker.py）：
 - 首行按字节读、一个字节都不多读，后面的留给看门狗；
 - 5 秒读不到首行按匿名连，不卡住；
-- 首行没写完父进程就没了：子进程自己退出，不去连 TikTok；
+- 首行没写完父进程就没了（真读到 EOF）：子进程自己退出，不去连 TikTok；
+- 读 stdin 出错不算父进程没了：按匿名连，父进程在不在交给看门狗；
 - 首行的内容（登录凭据）一个字都不打出来。
 
-全程不 import TikTokLive、不联网。唯一真起子进程的那条用一个假的 TikTokLive 包挡在前面：
+全程不 import 真的 TikTokLive、不联网。唯一真起子进程的那条用一个假的 TikTokLive 包挡在前面：
 万一首行处理出错往下走了，也只会在 import 时失败，碰不到网络。"""
 import asyncio
 import json
@@ -124,11 +125,29 @@ def test_a_terminal_stdin_is_not_read(monkeypatch):
     assert reads == []
 
 
-def test_a_read_error_counts_as_the_parent_being_gone():
+def test_a_read_error_means_anonymous_not_that_the_parent_is_gone(capsys):
+    """stdin 读不了不等于父进程没了：按匿名连，父进程在不在交给看门狗（stdin 读不了就看 ppid）。
+    要是当成父进程没了直接退出，父进程活着时每次都只收到「退出码 0、没有输出」，一直重起。"""
     def broken(fd, n):
-        raise OSError("bad fd")
+        raise OSError("bad fd " + SID)
 
-    assert cw._read_handshake(fd=99999, timeout=5, read=broken) is cw._PARENT_GONE
+    assert cw._read_handshake(fd=99999, timeout=5, read=broken) == {}
+    err = capsys.readouterr().err
+    assert "出错" in err and "OSError" in err and "匿名" in err
+    assert SID not in err                        # 只打异常类型，不打异常内容
+
+
+def test_a_read_error_halfway_through_the_line_still_means_anonymous(capsys):
+    chunks = iter([b'{', b'"'])
+
+    def flaky(fd, n):
+        try:
+            return next(chunks)
+        except StopIteration:
+            raise OSError("gone mid-line") from None
+
+    assert cw._read_handshake(fd=99999, timeout=5, read=flaky) == {}
+    assert "OSError" in capsys.readouterr().err
 
 
 # ---- main()：首行先于一切 ----------------------------------------------------------------
@@ -161,6 +180,22 @@ def test_main_exits_quietly_before_connecting_when_the_parent_is_gone(monkeypatc
     with pytest.raises(_Exit) as exc:
         cw.main(["someone"])
     assert exc.value.code == 0 and ran == []        # 没走到 _run：不会去连 TikTok
+
+
+def test_main_connects_anonymously_when_stdin_cannot_be_read(monkeypatch, capsys):
+    """真的 _read_handshake 遇到读错误：main 照常往下连（匿名），不在连之前 os._exit(0)。"""
+    real = cw._read_handshake
+
+    def broken(fd, n):
+        raise OSError("bad fd")
+
+    ran = _patch_main(monkeypatch, None)
+    monkeypatch.setattr(cw, "_read_handshake", lambda: real(fd=99999, timeout=5, read=broken))
+    with pytest.raises(_Exit) as exc:
+        cw.main(["someone"])
+    assert exc.value.code == 0                      # fake_run 的返回值，说明走到了 _run
+    assert len(ran) == 1 and ran[0].session_id is None
+    assert "按匿名连接" in capsys.readouterr().err
 
 
 def test_main_hands_the_session_from_stdin_to_the_client(monkeypatch):
@@ -238,3 +273,4 @@ def test_a_real_worker_exits_when_the_parent_closes_stdin_halfway(tmp_path):
     assert proc.returncode == 0
     assert out == b""                       # 一条 status 都没写：根本没开始连
     assert SID.encode() not in err
+

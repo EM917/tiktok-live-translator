@@ -141,7 +141,10 @@ def _read_handshake(fd=None, timeout=HANDSHAKE_TIMEOUT_SEC, read=os.read):
     - timeout 秒还没读完整行就按匿名连（返回 {}）：父进程总会立刻写这一行，等不到说明哪里不对，
       但不能因此卡住不连。读线程是 daemon，留在后台不挡退出。
     - 整行没读完就到 EOF（父进程写到一半就退出、或者根本没写就退出）：没人会读我们的输出了，
-      返回 _PARENT_GONE，调用方自己退出。
+      返回 _PARENT_GONE，调用方自己退出。只有真读到 EOF 才算。
+    - 读 stdin 出错（os.read 抛异常）：按匿名连，不当成父进程没了。父进程在不在照旧交给
+      _watch_parent——它的约定是「stdin 读不了就看 ppid」；这里要是直接退出，父进程活着时
+      每次都只收到「退出码 0、没有任何输出」，按退避一直重起，弹幕停在连接中、没有任何提示。
     - 不是 JSON 对象、超长：按匿名连。
     - stdin 是终端（人手动跑）或者根本没有 stdin：不读，返回 {}，用命令行参数。
 
@@ -172,8 +175,9 @@ def _read_handshake(fd=None, timeout=HANDSHAKE_TIMEOUT_SEC, read=os.read):
                     result["line"] = bytes(buf)
                     break
                 buf += byte
-        except Exception:
-            result["eof"] = True              # stdin 读不了：和读到 EOF 一样，父进程那头已经断了
+        except Exception as exc:
+            # stdin 读不了不等于父进程没了：记下异常类型，按匿名连，父进程在不在交给看门狗
+            result["error"] = type(exc).__name__
         done.set()
 
     threading.Thread(target=_reader, name="parent-handshake", daemon=True).start()
@@ -183,6 +187,10 @@ def _read_handshake(fd=None, timeout=HANDSHAKE_TIMEOUT_SEC, read=os.read):
     if "line" not in result:
         if result.get("eof"):
             return _PARENT_GONE
+        if "error" in result:
+            # 只打异常类型：首行里是登录凭据，带内容的报错一律不打
+            _note("读父进程的首行出错（{}），按匿名连接".format(result["error"]))  # i18n: terminal
+            return {}
         _note("父进程的首行太长，按匿名连接")  # i18n: terminal
         return {}
     try:
