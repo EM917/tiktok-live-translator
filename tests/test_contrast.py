@@ -1,9 +1,11 @@
-"""文字对比度（专家审查 V1）：直接读 web/style.css 和 web/viewer.css 的令牌，按 WCAG 2.x 的相对亮度公式算。
+"""文字对比度（专家审查 V1、V2）：直接读 web/style.css 和 web/viewer.css 的令牌，按 WCAG 2.x 的相对亮度公式算。
 
 - V1：出错的持续提示条、检测降级条是白字红底。深色模式下以前直接用 --fail #ff6961（那是给红字用的亮红），
   白字只有 2.82:1；改成专门的 --fail-bar（深色 #b3000f，7.18:1），浅色仍是 #d70015，外观不变。
+- V2：手机页的正文（断线时的「状态未知」、隐藏报警的说明、时间戳、「翻译中…」、弹幕原文、只看模式、提示音说明）
+  以前用 --label-3（只给占位符/装饰的那一档，浅色约 2:1、深色约 3:1），改成 --label-2。
 
-半透明的字色先按 alpha 叠到它实际所在的底色上再算（底色也从样式表里读）。
+半透明的字色先按 alpha 叠到它实际所在的底色上再算（底色也从样式表里读：顶栏、底栏、报警卡片各有各的底）。
 不起浏览器、不 import main.py。真页面上的计算色在 PR 的无头 Chrome 对照里量过。
 """
 import re
@@ -196,3 +198,51 @@ def test_no_white_text_sits_on_the_red_text_token(sheet):
         if body.get("color") in ("#fff", "#ffffff", "white"):
             bg = body.get("background") or body.get("background-color") or ""
             assert "var(--fail)" not in bg, "{} {} 白字配 --fail（深色下 2.82:1）".format(sheet, ", ".join(sels))
+
+
+# ---- V2：手机页的正文不用 --label-3 ---------------------------------------------------------------
+
+# (承载正文的选择器, 它所在的那一块的选择器——背景从那里读)
+V2_TEXT = [
+    (".stream-text.stale", ".top-bar"),        # 断线时的「状态未知」
+    (".alert-local-note", "body"),             # 「只在这台手机上隐藏……」
+    (".alert-zh.pending", ".alert-item"),      # 报警卡片里的「翻译中…」
+    (".cap-meta", ".caption-section"),         # 字幕的时间和语言码
+    (".cap-trans.pending", ".caption-section"),
+    (".cmt-zh.pending", "body"),
+    (".cmt-orig", "body"),                     # 弹幕西语原文
+    (".ro-note", ".bottom-bar"),               # 「只看模式 · 不能操作」
+    (".ring-note", "body"),                    # 提示音说明
+]
+# --label-3 还能用的地方：装饰（分隔点）、图标按钮（×）、禁用态
+LABEL3_ALLOWED = {".sep", ".alert-dismiss", ".cap-retranslate:disabled"}
+
+
+@pytest.mark.parametrize("selector,_", V2_TEXT)
+def test_phone_body_text_uses_label_2(selector, _):
+    assert decls("viewer.css", selector).get("color") == "var(--label-2)", selector
+
+
+def test_phone_label_3_is_left_only_for_decoration_icons_and_disabled():
+    used = {sel for sels, body, at in RULES["viewer.css"] for sel in sels
+            if not sel.startswith(":root") and any("var(--label-3)" in v for v in body.values())}
+    assert used <= LABEL3_ALLOWED, "这些选择器还在用 --label-3：{}".format(sorted(used - LABEL3_ALLOWED))
+
+
+@pytest.mark.parametrize("selector,block", V2_TEXT)
+@pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
+def test_phone_body_text_reaches_4_5_to_1_on_its_own_background(selector, block, dark):
+    toks = tokens("viewer.css", dark)
+    bg = background("viewer.css", block, toks)
+    fg = color(decls("viewer.css", selector)["color"], toks, behind=bg)
+    got = ratio(fg, bg)
+    assert got >= 4.5, "{}（{}，底色 {}）只有 {:.2f}:1".format(selector, "深色" if dark else "浅色", block, got)
+
+
+def test_phone_label_2_on_the_page_background_matches_the_review_numbers():
+    """审查报告给的数：页面底色上浅色 5.16:1、深色 6.59:1（以前 --label-3 是 1.96:1 / 3.00:1）。"""
+    for dark, want, before in ((False, 5.16, 1.96), (True, 6.59, 3.00)):
+        toks = tokens("viewer.css", dark)
+        bg = color(decls("viewer.css", "body")["background"], toks)
+        assert round(ratio(color("var(--label-2)", toks, behind=bg), bg), 2) >= want
+        assert round(ratio(color("var(--label-3)", toks, behind=bg), bg), 2) == before
