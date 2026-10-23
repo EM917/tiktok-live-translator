@@ -551,6 +551,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
 | 94 | live-ui.js:30 †index.html:489 | 正在连接 @x… / 正在连接… | Connecting to @x… / Connecting… | 161 → 194 |
+| 94a | live-ui.js connectHint / modelDownloadText（字幕区中间的卡片） | 正在下载识别模型… {n}% / 正在下载识别模型… | Downloading speech model… {n}% / Downloading speech model… | 2026-10-23（专家审查 U7）：首次下载识别模型时，status 带结构化的 progress（kind 为 model_download）才写这一句，不带时照旧是 #94；不看 status 的 detail，所以卡片不重复顶部横幅那整句（横幅里还有模型名、MB 和「仅首次需要」）。没有百分比（模型大小未知）时只写前半句。百分号紧贴数字（§2.3） |
+| 94b | live-ui.js connectHint（字幕区中间的卡片） | 等待第一句字幕… | Waiting for the first caption… | 2026-10-23（专家审查 U8）：直播中、这一场还没出过字幕时写，第一句一到就收起；和浮窗的占位（#137）同一对中英文。直播中点过清空字幕不算「还没出过」 |
 | 95 | index.html:501 | 观众弹幕 | Comments | 52 → 70（13px/600）。不用 “Viewer Comments”（119）。2026-10-15 起标题后面不再有条数（列表封顶 100 条，数字一直停在 100） |
 | 96 | app.js:1336–1358 | 评论流已连接 / 正在连接评论流… / 评论流断开，重连中… / 未连接 | Connected / Connecting… / Disconnected. Reconnecting… / Not connected | 放在 Comments 标题旁边，上下文已经够了。2026-10-15 起「评论流已连接 / Connected」不再画在标题旁边：`#comment-source` 整个收起，这句话写进 Comments 标题的 title；其余状态照旧 |
 | 97 | app.js:1338/1358 | 已连接，等待观众发评论… / 开播后自动连接评论流 | Connected. Waiting for comments… / Comments connect when the stream starts. | 空状态文字 |
@@ -621,7 +623,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 备注 |
 |---|---|---|---|---|
 | 136 | float_window.py FLOAT_TITLE | 浮窗 | Floating Window | 原生窗口标题（页面 `<title>` 是 “Floating Window · TikTok Live Translator”）。窗口窄，标题栏放得下的只有前半 |
-| 137 | float.html #f-empty、float.js floatPlaceholder | 等待第一句字幕… / 连接中… | Waiting for the first caption… / Connecting… | 窗口里还没有字幕时的占位，只写观察到的状态 |
+| 137 | float.html #f-empty、float.js floatPlaceholder | 等待第一句字幕… / 连接中… | Waiting for the first caption… / Connecting… | 窗口里还没有字幕时的占位，只写观察到的状态。中控页字幕区中间的卡片用同一句（#94b） |
 | 138 | float.html #f-comments | 弹幕 | Comments | aria-label；窗口里没有可见的标题 |
 | 139 | float.js floatCommentView | 翻译中… | Translating… | 同 #102 |
 | 140 | float_window.py OPEN_FAILED | 无法打开浮窗。 | Couldn’t open the Floating Window. | 一次性提示（notice）。不写原因。正文里提到界面元素用它的 Title Case 名字（§2.1） |

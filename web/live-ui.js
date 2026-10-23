@@ -1,6 +1,6 @@
 // i18n: done
 /* 直播中界面几处「显示什么」的纯逻辑（web/live-ui.js）：顶栏手机同看按钮的文案、
- * 连接中提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签、「回到最新」按钮上的未读条数，以及底部大字幕的
+ * 字幕区中间的连接中 / 下载模型 / 等待第一句提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签、「回到最新」按钮上的未读条数，以及底部大字幕的
  * 翻译状态角标、「语音识别不确定」角标、「约 N 秒前」、字幕字号的比例，还有顶栏「字幕译成」下拉要补哪一项。
  * 这些判断本身不碰 DOM，放进 app.js 的立即执行函数就没法被 node 测试 require
  * （同 web/settings-rows.js 的起因）。写法和加载方式照 web/switch.js：浏览器里
@@ -30,20 +30,44 @@ function floatButtonState(available, active, open, pending) {
   return { hidden: !show, on: show && !!open, pressed: show && !!open, disabled: show && !!pending };
 }
 
-/* 连接中提示：只在 connecting 时显示。有主播名就带上——点错了要等连上才看得出来，
- * 而失败的连接要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索
- * （pm.md #5）。已有字幕时 inline：改成字幕末尾的一行，不把旧字幕盖住。
+/* 字幕区中间那张卡片（#connect-hint）写什么。三种情况：
+ * 1. 连接中：「正在连接 @主播…」。有主播名就带上——点错了要等连上才看得出来，
+ *    而失败的连接要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）。
+ * 2. 连接中、而且 status 带着结构化的下载进度（progress.kind 为 model_download，后端在首次下载识别模型时发）：
+ *    改写「正在下载识别模型… 37%」（专家审查 U7）。以前这几分钟里中间一直写「正在连接 @x…」，真正的进度只在
+ *    顶部一行横幅里。只认这个结构化字段，不看 status 的 detail：connecting 的 detail 几乎从不为空
+ *    （pipeline.py 里十来处在发），看到 detail 就搬进卡片，中间和顶部横幅就会重复同一句话（计划审查 Q2）。
+ *    没有这个字段（老版本服务端、或下载以外的连接中）就照第 1 条。pct 不是数时只写「正在下载识别模型…」。
+ * 3. 直播中、这一场还没出过字幕（awaitingFirst）：「等待第一句字幕…」，和浮窗没字幕时的占位同一句（U8）。
+ *    以前状态已是直播中、第一句还没出来时字幕区一片空白，看不出程序是在等还是停了。
+ * 已有字幕时 inline：改成字幕末尾的一行，不把旧字幕盖住。
  * offline（本地连接断线重连）返回 null：跟 viewTransition 一样，不代表直播
  * 本身变了，调用方维持原样不动 */
-function connectHint(state, streamer, hasCaptions) {
+function connectHint(state, streamer, hasCaptions, progress, awaitingFirst) {
   if (state === "offline") return null;
+  if (state === "live" && awaitingFirst) {
+    return { show: true, inline: !!hasCaptions, text: L("等待第一句字幕…", "Waiting for the first caption…") };
+  }
   if (state !== "connecting") return { show: false, inline: false, text: "" };
+  var download = modelDownloadText(progress);
+  if (download) return { show: true, inline: !!hasCaptions, text: download };
   return {
     show: true,
     inline: !!hasCaptions,
     text: streamer ? L("正在连接 @" + streamer + "…", "Connecting to @" + streamer + "…")
                    : L("正在连接…", "Connecting…"),
   };
+}
+
+/* status.progress（app/server.py 留存在 config.status 里、hello 时重放）→ 卡片上的下载进度。
+ * 只认 kind 为 model_download 的；别的 kind（以后加的）、不是对象、缺 kind 都返回空串，调用方照旧写「正在连接」。
+ * pct 夹在 0–100、取整；后端在下载完之前最多发 99。百分号紧贴数字（docs/i18n-style.md §2.3） */
+function modelDownloadText(progress) {
+  if (!progress || typeof progress !== "object" || progress.kind !== "model_download") return "";
+  var pct = progress.pct;
+  if (typeof pct !== "number" || !isFinite(pct)) return L("正在下载识别模型…", "Downloading speech model…");
+  var p = Math.max(0, Math.min(100, Math.floor(pct)));
+  return L("正在下载识别模型… " + p + "%", "Downloading speech model… " + p + "%");
 }
 
 /* 后端提示条（health / incident）的文字开头自带状态 emoji（app/pipeline.py 的
@@ -266,7 +290,7 @@ function captionSizeVars(size) {
 /* Node 测试环境导出；浏览器里作为全局函数被 app.js 使用 */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { shareButtonText: shareButtonText, floatButtonState: floatButtonState,
-                     connectHint: connectHint,
+                     connectHint: connectHint, modelDownloadText: modelDownloadText,
                      stripStatusEmoji: stripStatusEmoji, barIconFor: barIconFor,
                      popoverRight: popoverRight, alertTierText: alertTierText,
                      jumpLatestCaptionsText: jumpLatestCaptionsText,

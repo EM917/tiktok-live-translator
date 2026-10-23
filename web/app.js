@@ -372,6 +372,14 @@
   // 误判成「没有变化」，进首页该做的动作（大字幕/弹幕面板归位）就漏了
   var homeActive = null;
   var statusState = "";      // 最近一条 status 的 state（setStatus 记下）：换主播时 config 先到，胶囊据此重画（F5）
+  // 最近一条 status 带的结构化进度（专家审查 U7）：首次下载识别模型时后端带 {kind:"model_download", pct}，
+  // 字幕区中间的卡片据此写下载进度（web/live-ui.js connectHint）。不带就是 null，卡片照旧写「正在连接」
+  var statusProgress = null;
+  // 这一场有没有出过字幕（专家审查 U8）：直播中还没出过时，字幕区中间写「等待第一句字幕…」。
+  // 新的一场（session_break，实时和回放都算）、重连的 hello（回放会按顺序重新走一遍）时归零，来一条字幕置真。
+  // 不按「#history 里有没有本场的 .cap」现算：直播中点了「清空字幕」之后页面上一条也没有，
+  // 那时写「等待第一句」不对——这一场早就出过字幕了，只是被清掉了
+  var sessionCaptionSeen = false;
   // 回放里的场次分隔线在弹幕栏里的位置（专家审查 F1）。服务端先回放字幕（分隔线夹在字幕中间），最后才回放
   // 弹幕；分隔线要是在字幕阶段就插进弹幕栏，就跑到所有回放弹幕的最前面，上一位主播的弹幕被标成「以下为
   // @新主播」。所以回放的分隔线先记在这里，回放弹幕时插到第一条 ts 不早于它的弹幕前面（弹幕的 ts 是本机
@@ -1022,6 +1030,8 @@
         failStreak = 0;
         transBannerOn = false;
         clearCaptionsView();
+        // 这一场出没出过字幕，交给接下来的回放重算（场次分隔线归零、字幕置真，见 sessionCaptionSeen 的说明）
+        sessionCaptionSeen = false;
         if (msg.config) {
           syncCaptionSize(msg.config);
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
@@ -1291,6 +1301,8 @@
   function setStatus(msg) {
     var state = msg.state || "idle";
     statusState = state;
+    // 只记最近一条的：下载完、开始识别后的那条 status 不带它，卡片就回到「正在连接」/ 收起
+    statusProgress = msg.progress && typeof msg.progress === "object" ? msg.progress : null;
     statusDot.className = "dot " + state;
     if (statusPill) statusPill.dataset.state = state;
     paintStatusText(state);
@@ -1347,13 +1359,13 @@
     }
   }
 
-  // 连接中：字幕区中央的转圈 + 「正在连接 @xxx…」（显示规则见 web/live-ui.js
-  // connectHint）。已有字幕时挪到 #history 末尾当一行，并跟到底部——停止后再开、
-  // 换主播时历史还在，中央那一版会盖在旧字幕上
+  // 连接中：字幕区中央的转圈 + 「正在连接 @xxx…」；首次下载识别模型时写下载进度；直播中这一场还没出过
+  // 字幕时写「等待第一句字幕…」（显示规则见 web/live-ui.js connectHint）。已有字幕时挪到 #history 末尾
+  // 当一行，并跟到底部——停止后再开、换主播时历史还在，中央那一版会盖在旧字幕上
   function syncConnectHint(state) {
     if (!connectHintEl) return;
     var hint = connectHint(state, streamerFromInput(roomInput.value),
-                           !!historyEl.querySelector(".cap"));
+                           !!historyEl.querySelector(".cap"), statusProgress, !sessionCaptionSeen);
     if (!hint) return;
     connectHintEl.classList.toggle("hidden", !hint.show);
     connectHintEl.classList.toggle("inline", hint.inline);
@@ -1472,6 +1484,12 @@
     // 翻上去看的时候，新字幕不会把视野拉走，但按钮上要数出下面攒了多少没看的（回放的不算）。
     // 在 stickToBottom 之前数：贴底跟随时它会把计数归零
     if (!msg.replay && streamActive && !following) captionsBelow++;
+    // 这一场出过字幕了：「等待第一句字幕…」收起（专家审查 U8）。中间那张卡片还露着的时候（连接中）
+    // 重新摆一次：卡片是追加在 #history 里的，新字幕又追加在它后面——页面重连时 hello 的 status 先到、
+    // 回放的字幕后到，「正在连接」被顶到回放字幕的上面、滚出视野。重摆会把它挪回末尾、改成一行并跟到底部。
+    // 卡片收着时不用管：它下次露出来时 syncConnectHint 自己会挪到末尾
+    sessionCaptionSeen = true;
+    if (connectHintEl && !connectHintEl.classList.contains("hidden")) syncConnectHint(statusState);
     // force 只在「重连时回放、且当前确实处于直播中」才为 true：那是唯一
     // 该无视用户滚动状态、强制跳到最新的场景。待机时收到的回放（刚停止/刚
     // 打开就是上一场留下的历史）不该跟着强制滚到底——否则 enterHomeLayout
@@ -1737,6 +1755,9 @@
   // hello 处理会先用 clearCaptionsView() 清场（只清本页，不告诉服务端），之后回放按原始顺序重新触发
   // caption/session_break，历史上的场次边界就这样被原样重建一遍。
   function renderSessionBreak(msg) {
+    // 新的一场还没出过字幕（专家审查 U8）。放在下面「没有字幕就不画线」的提前返回之前：
+    // 程序启动后的第一场也要从「没出过」算起
+    sessionCaptionSeen = false;
     var caps = historyEl.querySelectorAll(".cap");
     // 要不要画、画什么字是纯逻辑，抽到 web/session-divider.js 里单独测
     // （见该文件顶部注释）：app.js 这个大 IIFE 顶层就摸 DOM，整份没法被
@@ -1750,8 +1771,13 @@
     // 弹幕栏：实时的分隔线就插在末尾（这一刻之前的弹幕都是上一场的）。回放的先记下，等弹幕回放按 ts
     // 插到对的位置（见 pendingCommentBreaks 的说明，专家审查 F1）
     if (msg.replay) pendingCommentBreaks.push(msg);
-    else insertSessionDivider(commentList, msg);
-    syncConnectHint(statusPill ? statusPill.dataset.state : "");
+    else {
+      insertSessionDivider(commentList, msg);
+      refreshCommentPanel();    // 分隔线之后这一场还没有弹幕：空态那句露出来（U8）
+    }
+    // 状态取 setStatus 记下的 statusState（和胶囊的 data-state 是同一个值，config 那一支也用它），
+    // 不依赖胶囊元素在不在
+    syncConnectHint(statusState);
     stickToBottom(false);
   }
 
@@ -1776,6 +1802,8 @@
     }
     // 回放结束补在末尾的那条：跟随中就让它露出来（回放的弹幕已经贴过底，这一条是后加的）
     if (all && added && commentFollowing) commentsToBottomNow();
+    // 补在末尾的分隔线之后没有弹幕：这一场还是空的，空态那句要露出来（U8）
+    if (added) refreshCommentPanel();
   }
 
   function applyTranslation(card, msg) {
@@ -2024,13 +2052,26 @@
     commentPanel.classList.add("collapsed");
   }
 
+  // 弹幕栏里这一场有没有弹幕（专家审查 U8）：从末尾往前看，到最近一条场次分隔线为止。
+  // 以前用列表的 children.length 判断空不空：第二场起列表里留着上一场的弹幕、或者只剩那条分隔线，
+  // 空态那句（「已连接，等待观众发评论…」「评论流断开，重连中…」）就再也不出现，要刷新页面才看得到。
+  // 分隔线和上一场的弹幕都不算这一场的
+  function sessionHasComments() {
+    var kids = commentList.children;
+    for (var i = kids.length - 1; i >= 0; i--) {
+      if (kids[i].classList.contains("session-sep")) return false;
+      if (kids[i].classList.contains("cmt-item")) return true;
+    }
+    return false;
+  }
+
   // 面板什么时候露面、空着的时候说什么。直播中面板必须在——否则中控分不清
   // 「今天没人发弹幕」和「评论流压根没连上」，而后者是要去处理的。
   // show 只看 streamActive，不再是「有内容也算」：待机页面（含刚停止那一刻）
   // 不该显示上一场的弹幕面板/小入口，但列表内容本身不清空，下一场开始时
   // streamActive 一变回 true，原样恢复显示。
   function refreshCommentPanel() {
-    var has = commentList.children.length > 0;
+    var has = sessionHasComments();
     var show = streamActive;
     var collapsed = commentPanel.classList.contains("collapsed");
     commentPanel.classList.toggle("hidden", !show);

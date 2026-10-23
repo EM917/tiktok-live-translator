@@ -49,6 +49,55 @@ test("其余状态隐藏；offline 返回 null（维持原样）", () => {
   assert.equal(connectHint("offline", "bella", false), null);
 });
 
+// 专家审查 U7：首次下载识别模型时中间卡片写下载进度。只认 status 的结构化 progress，不看 detail
+test("连接中带下载进度：卡片写「正在下载识别模型… 37%」，主播名不再写", () => {
+  const dl = { kind: "model_download", pct: 37 };
+  assert.deepEqual(connectHint("connecting", "luna_demo", false, dl),
+    { show: true, inline: false, text: "正在下载识别模型… 37%" });
+  assert.equal(connectHint("connecting", "luna_demo", true, dl).inline, true, "已有字幕时照旧改成末尾一行");
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: 0 }).text, "正在下载识别模型… 0%");
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: 99.7 }).text, "正在下载识别模型… 99%");
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: 150 }).text, "正在下载识别模型… 100%");
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: -3 }).text, "正在下载识别模型… 0%");
+});
+test("下载进度缺 pct（大小未知）或不是数：只写「正在下载识别模型…」", () => {
+  for (const pct of [undefined, null, "37", NaN, Infinity]) {
+    assert.equal(connectHint("connecting", "luna_demo", false, { kind: "model_download", pct }).text,
+                 "正在下载识别模型…", String(pct));
+  }
+});
+test("没有 progress、只有 detail、kind 认不出：照旧「正在连接 @…」（不把横幅那句搬进来）", () => {
+  // connectHint 根本不收 detail：横幅里的「正在解析直播流地址…」之类不会在中间再写一遍
+  for (const progress of [undefined, null, {}, "model_download", { kind: "other", pct: 50 }, { pct: 50 }]) {
+    assert.deepEqual(connectHint("connecting", "luna_demo", false, progress),
+      { show: true, inline: false, text: "正在连接 @luna_demo…" }, JSON.stringify(progress));
+  }
+});
+test("下载进度只在连接中显示：直播中、待机、出错时带着也不写", () => {
+  const dl = { kind: "model_download", pct: 37 };
+  for (const s of ["idle", "live", "ended", "error"]) {
+    assert.deepEqual(connectHint(s, "luna_demo", false, dl), { show: false, inline: false, text: "" }, s);
+  }
+  assert.equal(connectHint("offline", "luna_demo", false, dl), null);
+});
+
+// 专家审查 U8：直播中这一场还没出过字幕时，中间卡片写「等待第一句字幕…」（和浮窗同一句）
+test("直播中、这一场还没出过字幕：写「等待第一句字幕…」；有上一场字幕时改成末尾一行", () => {
+  assert.deepEqual(connectHint("live", "luna_demo", false, null, true),
+    { show: true, inline: false, text: "等待第一句字幕…" });
+  assert.deepEqual(connectHint("live", "luna_demo", true, null, true),
+    { show: true, inline: true, text: "等待第一句字幕…" });
+  assert.deepEqual(connectHint("live", "luna_demo", true, null, false), { show: false, inline: false, text: "" },
+                   "出过字幕就收起");
+});
+test("「等待第一句」只在直播中：连接中照旧写连接，其余状态不写", () => {
+  assert.equal(connectHint("connecting", "luna_demo", false, null, true).text, "正在连接 @luna_demo…");
+  for (const s of ["idle", "ended", "error"]) {
+    assert.deepEqual(connectHint(s, "luna_demo", false, null, true), { show: false, inline: false, text: "" }, s);
+  }
+  assert.equal(connectHint("offline", "luna_demo", false, null, true), null);
+});
+
 test("去掉提示条开头的状态 emoji（含 FE0F 与空格）", () => {
   assert.equal(stripStatusEmoji("🔴 检测已降级：识别落后 30 秒"), "检测已降级：识别落后 30 秒");
   assert.equal(stripStatusEmoji("⚠️ 识别开始落后"), "识别开始落后");
