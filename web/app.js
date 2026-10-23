@@ -371,6 +371,7 @@
   // 还没收到过任何状态——不能当成「已经在待机」，否则首次到达就是 idle 时会被
   // 误判成「没有变化」，进首页该做的动作（大字幕/弹幕面板归位）就漏了
   var homeActive = null;
+  var statusState = "";      // 最近一条 status 的 state（setStatus 记下）：换主播时 config 先到，胶囊据此重画（F5）
   // 回放里的场次分隔线在弹幕栏里的位置（专家审查 F1）。服务端先回放字幕（分隔线夹在字幕中间），最后才回放
   // 弹幕；分隔线要是在字幕阶段就插进弹幕栏，就跑到所有回放弹幕的最前面，上一位主播的弹幕被标成「以下为
   // @新主播」。所以回放的分隔线先记在这里，回放弹幕时插到第一条 ts 不早于它的弹幕前面（弹幕的 ts 是本机
@@ -1039,6 +1040,12 @@
             roomInput.value = msg.config.room_url;
             // 同 fillRoomInput：程序自己回填的，不清 touched，只记主播名
             brandState = brandStateSyncStreamer(brandState, streamerFromInput(msg.config.room_url));
+          } else if (msg.config.room_url && msg.config.status && isListening(msg.config.status.state)
+                     && streamerFromInput(roomInput.value) !== streamerFromInput(msg.config.room_url)) {
+            // 断线期间换了主播（在别的窗口换的，或这一页没收到那条 config）：输入框里还是上一位，下面的
+            // setStatus 会把胶囊画成「直播中 · @上一位」（F5 的重连那一半）。连接中 / 直播中开始面板是
+            // 收着的，输入框里不会有中控正在敲的字，按服务端的回填
+            fillRoomInput(msg.config.room_url);
           }
           // brand_options 要先于 brands 处理：下拉框的选项得先建好，
           // applyDefaultBrand() 才有值可选
@@ -1136,7 +1143,17 @@
         // 顺序反了就会用上一个主播的房间算出错的默认值（踩过的坑，同 hello 分支）。
         // brand_options 同理要先于 brands：refresh_brands 的回执也走这条分支，
         // 选项要先建好，applyDefaultBrand() 才有值可选
-        if (msg.room_url) fillRoomInput(msg.room_url);
+        if (msg.room_url) {
+          fillRoomInput(msg.room_url);
+          // 换主播（专家审查 F5）：这条 config 是停完上一位之后才到的，新一场的第一条 status 还要再等开场
+          // 那几步。胶囊和「正在连接 @…」的主播名都取自输入框，以前要等那条 status 才改过来，这几秒里
+          // 胶囊写着「连接中… · @上一位」，横幅却已经是「正在切换到 @新的」。现在输入框一换就按最近
+          // 一条 status 的状态重画这两处；横幅的字是服务端写的，不动
+          if (isListening(statusState)) {
+            paintStatusText(statusState);
+            syncConnectHint(statusState);
+          }
+        }
         if (msg.brand_options) renderBrandOptions(msg.brand_options);
         if (msg.brands) { brandsMap = msg.brands; applyDefaultBrand(); }
         // start_stream 开播时、真正停止后都会广播这个字段（后者是显式 null）；
@@ -1253,20 +1270,30 @@
   }
 
   // ---- 渲染 ----
-  function setStatus(msg) {
-    var state = msg.state || "idle";
-    statusDot.className = "dot " + state;
-    if (statusPill) statusPill.dataset.state = state;
-    // 连接中/直播中额外带上正在听谁：「连接中… · @A」「直播中 · @A」。主播名和
-    // 顶栏「换主播」面板认的是同一个来源（config.room_url，经 streamerFromInput
-    // 提取），取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就
-    // 不带这半句。连接中也要带：点错了要等连上才看得出来，而失败的连接中位
-    // 要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）
+  // 连接中 / 直播中：有一位「正在听的主播」
+  function isListening(state) {
+    return state === "connecting" || state === "live";
+  }
+
+  // 连接中/直播中额外带上正在听谁：「连接中… · @A」「直播中 · @A」。主播名和
+  // 顶栏「换主播」面板认的是同一个来源（config.room_url，经 streamerFromInput
+  // 提取），取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就
+  // 不带这半句。连接中也要带：点错了要等连上才看得出来，而失败的连接中位
+  // 要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）。
+  // 单独成函数：换主播时 config 先于新一场的 status 到，只重画这几个字（F5）
+  function paintStatusText(state) {
     var label = STATUS_TEXT[state] || state;
-    var liveStreamer = (state === "live" || state === "connecting")
-      ? streamerFromInput(roomInput.value) : "";
+    var liveStreamer = isListening(state) ? streamerFromInput(roomInput.value) : "";
     statusText.textContent = liveStreamer ? label + " · " : label;
     if (liveStreamer) statusText.appendChild(nameSpan("@" + liveStreamer));   // 主播名
+  }
+
+  function setStatus(msg) {
+    var state = msg.state || "idle";
+    statusState = state;
+    statusDot.className = "dot " + state;
+    if (statusPill) statusPill.dataset.state = state;
+    paintStatusText(state);
 
     // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
     if (state === "error" || state === "idle") resetUpdateBtn();
