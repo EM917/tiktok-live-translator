@@ -5554,7 +5554,6 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if track is not None:
             track["owned"] = True        # 从这里起被取消由下面自己记 cancelled，_retranslate_serial 不再替它记
         try:
-            had = self._quality.get(seq, 0) > 0
             # 桌面排队时入队那一刻已经发过 pending（_retranslate_serial）：不重复发
             if track is None or not track["pending"]:
                 await self.server.broadcast({"type": "caption_update", "id": seq,
@@ -5606,6 +5605,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 return
             if refusal is not None:
                 await self._note_refusal(strong, seq, refusal[1], retranslate=trigger)
+            # 「这一条有没有译文」到这里才看。以前在开头看一次：等强模型的这段时间里快译刚好上了屏、强模型
+            # 又没出译文时，走的是下面「连快译都还没有」那一支，_publish_translation 因为已有可用译文直接返回、
+            # 不发 strong_state，按钮一直停在「重译中…」，提示还说「这一条仍然没有译文」。从这里到发出终态
+            # 之间没有 await，看到的就是发出去那一刻的样子
+            had = self._quality.get(seq, 0) > 0
             if had:
                 # 已有译文时：只报告重译失败，屏幕上那一版原样留着
                 await self.server.broadcast({"type": "caption_update", "id": seq,
@@ -5620,8 +5624,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     extra["refused"] = True
                 elif discarded:
                     extra["not_translation"] = True     # 同理：回来的不是译文，接口是通的
-                await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
-                                                job["target"], extra)
+                if not await self._publish_translation(seq, None, False, ms, QUALITY_STRONG,
+                                                       job["target"], extra):
+                    # 兜底：发布被拒（已有可用译文）时 strong_state 没发出去，按钮也要回到可点
+                    await self.server.broadcast({"type": "caption_update", "id": seq,
+                                                 "strong_state": "failed"})
             await self._retranslate_note(seq, trigger, self._retranslate_failure_text(
                 strong, error_before, outcome, discarded, had))
         except asyncio.CancelledError:
