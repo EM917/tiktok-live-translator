@@ -226,6 +226,25 @@ def browser_only_message(retries, login=None):
                 "weeks."))
 
 
+def _fda_paths(exc):
+    """解析失败的话里带着「完全磁盘访问权限」那一步时，那一步要加的路径（browser_login.fda_targets，和文字里
+    列的是同一份）；不带就是空列表。带不带照 browser_login.browser_only_advice 的判断：kind=browser_only、借登录
+    时有浏览器被系统拒绝读取（BLOCKED）、又没有哪个浏览器借到了登录（借到了，那段话说的是「借了也不给」）。
+    别的 kind 的话里没有这一步，带了路径页面上就是几行没头没尾的复制框。"""
+    from .browser_login import BLOCKED, NOT_READ, OK, fda_targets
+
+    login = getattr(exc, "login", None)
+    if getattr(exc, "kind", None) != "browser_only" or not isinstance(login, dict):
+        return []
+    codes = [c for c in login.values() if c != NOT_READ]
+    if BLOCKED not in codes or OK in codes:
+        return []
+    try:
+        return list(fda_targets())
+    except Exception:
+        return []
+
+
 def _describe_asr(cfg):
     """给人看的识别配置：「ct2/large-v3-turbo/cpu/int8」（auto 的部分省略）。"""
     parts = [cfg.get("backend"), cfg.get("model"), cfg.get("device"), cfg.get("compute_type")]
@@ -3117,7 +3136,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             self._resolve_fail_streak = 0
         except ResolveError as exc:
             self._note_resolve_failure(exc)
-            await self.server.status("error", of(exc))
+            # 借浏览器登录时系统拒绝读取：「完全磁盘访问权限」里要加的路径单独放进 status.paths（专家审查 I8），
+            # 页面每条路径渲染成一行可复制的代码行。不从文字里认路径：conda、用户目录下的路径可能带空格。
+            # 不复用 command：command 是可以原样照做的命令，路径不是。没有这个观察就不带这个键
+            paths = _fda_paths(exc)
+            if paths:
+                await self.server.status("error", of(exc), paths=paths)
+            else:
+                await self.server.status("error", of(exc))
             print("[错误] {}".format(exc))
             sess["end"] = {"reason": "resolve_error", "kind": exc.kind}
             return

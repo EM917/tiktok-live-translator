@@ -549,7 +549,7 @@ class CaptionServer:
                                      "detail": msg.get("detail", ""),
                                      "command": msg.get("command")}
             # 结构化字段同理（见 status()）：带着才留，下一条不带的状态把它们一起换掉——下载完了、
-            # 换了状态，旧的进度不会留在 hello 里。没带时 config["status"] 和以前逐字节相同
+            # 换了状态，旧的进度和路径不会留在 hello 里。没带时 config["status"] 和以前逐字节相同
             for key in self.STATUS_EXTRAS:
                 if msg.get(key):
                     self.config["status"][key] = msg[key]
@@ -678,7 +678,7 @@ class CaptionServer:
             except Exception as exc:
                 print("[警告] 记录界面断开失败: {}".format(exc))
 
-    async def status(self, state, detail="", command=None, progress=None):
+    async def status(self, state, detail="", command=None, progress=None, paths=None):
         """command：给用户一条可以原样照做的命令（界面会渲染成可复制的一行）。
 
         存在的理由是一次真实的死局：更新器因为几个未跟踪文件拒绝更新，
@@ -686,16 +686,21 @@ class CaptionServer:
         送达。更新器把自己锁死了。所以任何一条「更新没能完成」的出口，都必须
         带上一条用户能照做的完整命令，哪怕程序本身已经帮不上忙。
 
-        可选的结构化字段（只在给了时才进消息，没给的消息和以前逐字节相同），随 config["status"] 留存，
+        两个可选的结构化字段（只在给了时才进消息，没给的消息和以前逐字节相同），随 config["status"] 留存，
         hello 时重放：
           * progress：进度，如 {"kind": "model_download", "pct": 37, "mb": 580}（专家审查 U7）。页面中间那张
-            「正在连接」卡片只认它，不去解析 detail 的文字。手机同看只转发 state 和 ts（app/viewer.py 的白名单）。"""
+            「正在连接」卡片只认它，不去解析 detail 的文字；
+          * paths：要原样复制的文件路径列表（专家审查 I8，「完全磁盘访问权限」那一步要加的解释器路径）。
+            不复用 command：command 是可以原样照做的命令，路径不是命令。手机同看只转发 state 和 ts
+            （app/viewer.py 的白名单），本机路径不出这台电脑。"""
         msg = {"type": "status", "state": state, "detail": detail, "ts": time.time()}
         if command:
             msg["command"] = command
         if progress:
             msg["progress"] = dict(progress)
+        if paths:
+            msg["paths"] = [str(p) for p in paths]
         await self.broadcast(msg)
 
     # status 消息里可选的结构化字段（见 status()）：config["status"] 留存它们，Pipeline._resend_status 原样再发
-    STATUS_EXTRAS = ("progress",)
+    STATUS_EXTRAS = ("progress", "paths")

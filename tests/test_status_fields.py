@@ -175,3 +175,85 @@ def test_a_resent_status_keeps_its_progress(monkeypatch, tmp_path):
 
     asyncio.run(scenario())
     assert [m.get("progress") for m in statuses(server)] == [progress, progress]
+
+
+# ==== paths（专家审查 I8）====
+
+import pytest  # noqa: E402
+
+from app import browser_login as bl  # noqa: E402
+from app import resolver  # noqa: E402
+
+
+def test_paths_ride_along_and_stay_in_config():
+    server = RecordingServer()
+    progress = {"kind": "model_download", "pct": 37, "mb": 580}
+    asyncio.run(server.status("connecting", "downloading", progress=progress))
+    assert statuses(server)[-1]["progress"] == progress
+    assert server.config["status"]["progress"] == progress
+    asyncio.run(server.status("error", "blocked", paths=["/opt/conda envs/bin/python3.13"]))
+    assert statuses(server)[-1]["paths"] == ["/opt/conda envs/bin/python3.13"]
+    assert server.config["status"] == {"state": "error", "detail": "blocked", "command": None,
+                                       "paths": ["/opt/conda envs/bin/python3.13"]}   # 进度跟着换掉了
+
+
+def test_the_phone_never_gets_the_paths():
+    """手机同看的白名单只转发 status 的 state 和 ts：本机路径不出这台电脑。"""
+    from app.viewer import filter_payload
+
+    out = filter_payload({"type": "status", "state": "error", "detail": "x", "ts": 1.0,
+                          "paths": ["/Users/someone/python"], "progress": {"kind": "model_download"}})
+    assert "paths" not in out and "progress" not in out
+
+
+def test_a_resent_status_keeps_its_paths(monkeypatch, tmp_path):
+    server = RecordingServer()
+    p = _pipeline(monkeypatch, tmp_path, server)
+    paths = ["/opt/conda envs/bin/python3.13"]
+
+    async def scenario():
+        await server.status("connecting", "x", paths=paths)
+        await p._resend_status()
+
+    asyncio.run(scenario())
+    assert [m.get("paths") for m in statuses(server)] == [paths, paths]
+
+
+# ---- pipeline：系统拒绝读取时带上 paths ----
+
+def _resolve_fails(monkeypatch, login, kind="browser_only"):
+    async def fail(url, cookies=None, cookies_browser="auto", trace=None):
+        raise resolver.ResolveError("4003110", kind=kind, login=login)
+    monkeypatch.setattr(resolver, "resolve_stream_url", fail)
+
+
+@pytest.mark.parametrize("login, kind, wants", [
+    ({"chrome": bl.BLOCKED, "safari": bl.BLOCKED}, "browser_only", True),
+    ({"safari": bl.BLOCKED, "chrome": bl.NOT_READ}, "browser_only", True),
+    ({"safari": bl.OK, "chrome": bl.BLOCKED}, "browser_only", False),     # 借到了：话里没有那一步
+    ({"safari": bl.NOT_LOGGED_IN}, "browser_only", False),
+    ({"safari": bl.BLOCKED}, "unknown", False),                          # 别的 kind 的话里没有那一步
+    (None, "browser_only", False),
+])
+def test_the_error_status_carries_the_fda_paths_only_with_that_step(monkeypatch, tmp_path, login, kind,
+                                                                    wants):
+    server = RecordingServer()
+    p = _pipeline(monkeypatch, tmp_path, server)
+    p.BROWSER_ONLY_RETRY_SEC = 0.0
+    targets = ["/opt/conda envs/bin/python3.13", "/Users/someone/.venv/bin/python"]
+    monkeypatch.setattr(bl, "fda_targets", lambda environ=None, executable=None: list(targets))
+    _resolve_fails(monkeypatch, login, kind)
+    sess = p._new_session_state(None)
+    p._session_state = sess
+
+    async def scenario():
+        await p._run_session(ROOM)
+
+    asyncio.run(scenario())
+    (err,) = [m for m in statuses(server) if m["state"] == "error"]
+    if wants:
+        assert err["paths"] == targets                   # 带空格的路径整条一项，不靠文字切
+        assert server.config["status"]["paths"] == targets
+        assert all(t in err["detail"] for t in targets)  # 和文字里列的是同一份
+    else:
+        assert "paths" not in err and "paths" not in server.config["status"]
