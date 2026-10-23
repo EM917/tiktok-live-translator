@@ -33,7 +33,8 @@ SID = "fake-session-0123456789abcdef"          # 测试用的假 sessionid
 
 class Pipe:
     """一根真管道。每一端只关一次：关过的 fd 号会被别处复用，二次 close 会关掉别人的文件。
-    先关写端再关读端：后台还卡在 read 上的读线程先收到 EOF、自己退出。"""
+    先关写端再关读端：后台还卡在 read 上的读线程先收到 EOF、自己退出。
+    后台还卡在 write 上的写线程正相反，要先关读端，见 BackgroundWrite.finish。"""
 
     def __init__(self):
         self.r, self.w = os.pipe()
@@ -57,6 +58,52 @@ def pipe():
     p = Pipe()
     yield p
     p.close_all()
+
+
+class BackgroundWrite:
+    """在后台线程里往管道写，和读端同时进行——真父进程就是这样：写首行的同时子进程在读。
+
+    比管道缓冲还长的内容不能先在测试线程里整块写完再去读：读端还没开始读，os.write 就一直
+    等着有人腾出缓冲。Windows 上 os.pipe() 的缓冲只有几 KB（CreatePipe 不指定大小、用系统
+    默认值），HANDSHAKE_MAX_BYTES + 10 就已经装不下：PR #121 的 Windows CI 卡在那一行
+    os.write 上 120 秒，pytest-timeout 把整个测试进程掐掉。macOS / Linux 的管道有 64 KB，
+    同样的写法在那里看不出来。"""
+
+    def __init__(self, pipe, data):
+        self.pipe = pipe
+        self.error = None
+        self._thread = threading.Thread(target=self._run, args=(data,), name="test-pipe-writer",
+                                        daemon=True)
+        self._thread.start()
+
+    def _run(self, data):
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(self.pipe.w, view):]
+        except OSError as exc:
+            self.error = exc
+
+    def finish(self, timeout=30):
+        """等写完。写不完（读端停得太早）就先关读端，让卡住的 write 出错返回，再算失败。
+        不能先关写端：Windows 的 C 运行库给每个 fd 一把锁，卡在 write 里的线程握着写端那把，
+        close(写端) 会跟着一起卡住，测试就又变成挂到超时。"""
+        self._thread.join(timeout)
+        stuck = self._thread.is_alive()
+        if stuck:
+            self.pipe.close(self.pipe.r)
+            self._thread.join(timeout)
+        assert not stuck, "写端一直卡着：读端没把该读的读走"
+        assert self.error is None, "写端出错：{!r}".format(self.error)
+
+
+def _read_to_eof(fd):
+    out = bytearray()
+    while True:
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            return bytes(out)
+        out += chunk
 
 
 def test_reads_the_login_line_and_leaves_the_rest_for_the_watchdog(pipe):
@@ -110,11 +157,23 @@ def test_a_malformed_line_means_anonymous_and_is_never_echoed(pipe, capsys, line
     assert "不是 JSON 对象" in err and SID not in err
 
 
-def test_an_overlong_line_stops_reading_and_means_anonymous(pipe, capsys):
-    r, w = pipe.r, pipe.w
-    os.write(w, b"x" * (cw.HANDSHAKE_MAX_BYTES + 10))     # 没有换行、比上限还长
-    assert cw._read_handshake(fd=r, timeout=5) == {}
+# 第二档的上限比常见的默认管道缓冲（Windows 几 KB、macOS / Linux 64 KB）都大：mac、Linux 上也走一遍
+# 「父进程写的比管道缓冲还多」，测试的写法要是退回「先整块写完再读」，在本机就会卡住，不用等 Windows CI
+@pytest.mark.parametrize("limit", [None, 128 * 1024], ids=["real-limit", "beyond-pipe-buffer"])
+def test_an_overlong_line_stops_reading_and_means_anonymous(pipe, capsys, monkeypatch, limit):
+    if limit is not None:
+        monkeypatch.setattr(cw, "HANDSHAKE_MAX_BYTES", limit)
+    extra = 10
+    writer = BackgroundWrite(pipe, b"x" * (cw.HANDSHAKE_MAX_BYTES + 1 + extra))   # 没有换行、比上限还长
+    try:
+        got = cw._read_handshake(fd=pipe.r, timeout=30)
+    finally:
+        writer.finish()          # 断言之前先了结写线程：夹具收尾要先关写端，写线程卡着就会跟着卡住
+    assert got == {}
     assert "太长" in capsys.readouterr().err
+    pipe.close(pipe.w)
+    # 读到上限多一个字节就停：后面的一个字节都没碰，还在管道里
+    assert _read_to_eof(pipe.r) == b"x" * extra
 
 
 def test_a_terminal_stdin_is_not_read(monkeypatch):
