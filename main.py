@@ -16,6 +16,7 @@ import webbrowser
 from pathlib import Path
 
 from app import i18n, native_dialog
+from app.fdlimit import raise_nofile_limit
 from app.i18n import APP_NAME, L, of
 from app.macbundle import remember_launch_python
 from app.stdio import harden_stdio
@@ -26,6 +27,16 @@ from app.stdio import harden_stdio
 # （2026-09-15 中文 Windows 11 实测，见 app/stdio.py）。首次安装后 execv 进 .venv、
 # 一键更新后重启，都会重新从这里跑一遍；窗口模式的后台线程与本进程共用这两个流。
 harden_stdio()
+
+# 文件句柄上限（专家审查 S1）：从 Finder 启动的 .app 继承 launchd 的软上限 256，局域网里
+# 一台设备对手机同看端口挂上百条空连接，之后新开的文件、ffmpeg、网络连接就全部 EMFILE。
+# 放在这么前面：要赶在任何东西开始占句柄之前；setrlimit 跨 execv 保留，进 .venv 后再跑一遍
+# 也只是读到「已经够高」。失败不拦启动，只打一行——见 app/fdlimit.py
+_NOFILE = raise_nofile_limit()
+if _NOFILE.status == "failed":
+    print("[警告] 没能把同时打开文件数的上限从 {} 提高到 {}，系统返回：{}".format(
+        _NOFILE.soft_before if _NOFILE.soft_before is not None else "?",
+        _NOFILE.target, _NOFILE.error))
 
 # 启动用的解释器路径：要在任何 exec（ensure_env 进 .venv、main() 进 .app）之前记下，
 # 「完全磁盘访问权限」的步骤里要把它原样告诉中控（见 app/macbundle.py、browser_login.fda_targets）
