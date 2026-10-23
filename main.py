@@ -338,8 +338,18 @@ def ensure_env():
                     pass
                 lock = None
             _close_info_dialog()      # 马上换进新环境开窗口，安装提示框可以收了
+            # exec 不替 Python 冲输出缓冲：stdout 不是终端（`| tee`、重定向到文件）时，上面打的
+            # [初始化] 几行会跟着丢掉
+            from app.relaunch import flush_std
+            flush_std()
+            argv = [str(vpy), str(ROOT / "main.py")] + sys.argv[1:]
+            if os.name == "nt":
+                # I11：Windows 上 CRT 的 execv 是「起新进程、自己立刻以 0 退出」，Start.bat 等的进程
+                # 马上结束，「出错就 pause」永远轮不到。改成起子进程、等它、带着它的退出码退出（不会返回）
+                from app.relaunch import replace_process
+                replace_process(argv)
             from app.relaunch import exec_args
-            os.execv(str(vpy), exec_args([str(vpy), str(ROOT / "main.py")] + sys.argv[1:]))
+            os.execv(str(vpy), exec_args(argv))
     except Exception as exc:
         # 按 pip 输出里真实出现的字样说明（磁盘满 / 连不上软件包服务器 / 没有适用于
         # 这个 Python 的安装包），附日志位置——不再把 CalledProcessError 原文给中控
