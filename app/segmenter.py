@@ -11,6 +11,9 @@ from .audio import FRAME_SEC, SAMPLE_RATE
 
 
 class SilenceSegmenter:
+    # flush 只吐不短于这个时长、而且有语音的余量：太短的残片没有识别价值
+    MIN_FLUSH_SEC = 0.5
+
     def __init__(self, silence_rms=300.0, min_seg_sec=2.5, max_seg_sec=9.0,
                  trailing_silence_sec=0.7):
         self.silence_rms = silence_rms
@@ -67,16 +70,18 @@ class SilenceSegmenter:
         """
         out = []
         duration = len(self._buf) / 2 / SAMPLE_RATE
-        if self._has_speech and duration >= 0.5:   # 太短的残片没有识别价值
+        if self._has_speech and duration >= self.MIN_FLUSH_SEC:
             out.append(bytes(self._buf))
             self.last_cut = self._cut_info("flush")
         self._reset()
         return out
 
     def buffered_sec(self):
-        """缓冲里还没切出来的音频有几秒（不管有没有语音）。一轮出错收尾、没走到 flush 时，
-        Pipeline 把它算进 stream_break 的 discarded_sec（专家审查 B4）。只读，不动缓冲。"""
-        return len(self._buf) / 2 / SAMPLE_RATE
+        """缓冲里还没切出来、此刻 flush 会切成一段的那一截有几秒。和 flush 同一个标准：没有语音、或者
+        不到 MIN_FLUSH_SEC 的残片 flush 也扔掉，这里是 0。一轮收尾时 reader 没能把余量切出来（切的时候出了错），
+        Pipeline 把它当一段算进 stream_break 的 discarded（专家审查 B4）。只读，不动缓冲。"""
+        duration = len(self._buf) / 2 / SAMPLE_RATE
+        return duration if self._has_speech and duration >= self.MIN_FLUSH_SEC else 0.0
 
     def _reset(self):
         self._buf = bytearray()

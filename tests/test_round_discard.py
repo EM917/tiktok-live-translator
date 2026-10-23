@@ -6,7 +6,8 @@
 
   * 取消时：识别队列里没处理的段、取消那一刻正在识别线程里跑的那一段（审查 Q11）、切段器里攒着的那一截，
     写进 stream_break 的 discarded_segments / discarded_sec，每轮只算一次；session_end 汇总本场；
-  * 自愈（只取消 reader）：切段器余量照样切出来送去识别，discarded 为 0，段数比以前多一段；
+  * 自愈（只取消 reader）、音频源出错：切段器余量照样切出来送去识别，discarded 为 0，段数比以前多一段；
+  * 切段器那一截和 flush 同一个标准：静音、不到 0.5 秒的残片不成段，也不算丢弃（不会出现「0 段、1.5 秒」）；
   * 没丢的时候 stream_break / session_end 和以前逐字节相同（新键只在有丢时出现）。
 
 全部用桩件：不联网、不起 ffmpeg、不加载模型。主播名是虚构的。
@@ -33,6 +34,7 @@ from tests.helpers import run
 ROOM = "https://www.tiktok.com/@ficticia_corte/live"
 LOUD = (np.full(int(SAMPLE_RATE * FRAME_SEC), 3000, dtype=np.int16)).tobytes()   # 远高于门限 300
 assert len(LOUD) == FRAME_BYTES
+QUIET = b"\x00" * FRAME_BYTES
 
 
 def make_pipeline(monkeypatch, tmp_path):
@@ -120,6 +122,20 @@ def test_the_segmenter_reports_what_it_has_not_cut_yet():
     for _ in range(95):                                 # 9 秒硬切一刀，剩 0.5 秒
         seg.feed(LOUD)
     assert seg.buffered_sec() == pytest.approx(0.5)
+
+
+def test_the_segmenter_counts_only_what_flush_would_cut():
+    """和 flush 同一个标准：静音和不到 0.5 秒的残片 flush 也扔掉，buffered_sec 是 0，不算进 discarded。"""
+    seg = SilenceSegmenter()
+    for _ in range(15):                                 # 1.5 秒静音
+        seg.feed(QUIET)
+    assert seg.buffered_sec() == 0.0 and seg.flush() == []
+    for _ in range(3):                                  # 0.3 秒语音：太短
+        seg.feed(LOUD)
+    assert seg.buffered_sec() == 0.0 and seg.flush() == []
+    for _ in range(5):                                  # 正好 0.5 秒
+        seg.feed(LOUD)
+    assert seg.buffered_sec() == pytest.approx(0.5) and len(seg.flush()) == 1
 
 
 def test_a_stop_after_24_seconds_records_the_backlog_the_buffer_and_the_segment_in_asr(
@@ -217,17 +233,15 @@ def test_the_heal_path_sends_the_buffer_to_asr_instead_of_dropping_it(monkeypatc
     assert sess["discarded"] is None
 
 
-def test_an_error_mid_stream_counts_the_unflushed_buffer(monkeypatch, tmp_path):
-    """reader 出错（不是取消）时走不到 flush：切段器里那一截按秒数算进 discarded（不成段）。"""
-    p, sess = make_pipeline(monkeypatch, tmp_path)
-
+def broken_source(frame, n):
+    """吐 n 帧 frame 之后音频源抛错（不是取消）。"""
     class Broken:
         def __init__(self, media, denoise_model=None):
             self.stopping = False
 
         async def frames(self):
-            for _ in range(15):
-                yield LOUD
+            for _ in range(n):
+                yield frame
             raise RuntimeError("管道坏了")
 
         def stderr_tail(self):
@@ -236,18 +250,120 @@ def test_an_error_mid_stream_counts_the_unflushed_buffer(monkeypatch, tmp_path):
         async def stop(self, urgent=False):
             pass
 
-    monkeypatch.setattr(app.audio, "FFmpegAudioSource", Broken)
+    return Broken
+
+
+@pytest.mark.parametrize("frame,n,recognized", [
+    (LOUD, 15, [1.5]),            # 1.5 秒语音：切出来照样识别
+    (QUIET, 15, []),              # 1.5 秒静音：flush 也不要
+    (LOUD, 3, []),                # 0.3 秒残片：flush 也不要
+], ids=["speech", "silence", "too_short"])
+def test_an_error_mid_stream_still_sends_the_buffer_to_asr(monkeypatch, tmp_path, frame, n, recognized):
+    """音频源出错（不是取消）：切段器余量和流尾时一样切出来，识别 worker 照常把它识别完（run_workers 的 gather
+    等两边都结束）。不算丢弃，stream_break 不多键，切出的段数和识别的段数对得上。静音和太短的残片和 flush 同一个
+    标准，既不识别也不算丢弃——以前这里记成「0 段、1.5 秒」，和停止那条路径的口径不一致（第 1 轮审查）。"""
+    p, sess = make_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(app.audio, "FFmpegAudioSource", broken_source(frame, n))
+    asr = BlockedASR(block_first=False)
 
     async def scenario():
         loop = asyncio.get_running_loop()
         with pytest.raises(RuntimeError):
-            await p._stream_session("http://cdn/s.flv", BlockedASR(block_first=False), None,
-                                    loop, sess=sess)
+            await p._stream_session("http://cdn/s.flv", asr, None, loop, sess=sess)
 
     run(scenario())
-    brk = of_type(rows(p.audit.path), "stream_break")[0]
+    records = rows(p.audit.path)
+    assert asr.seconds == [pytest.approx(s) for s in recognized]
+    assert len(of_type(records, "segment")) == len(recognized)
+    brk = of_type(records, "stream_break")[0]
     assert brk["reason"] == "error"
-    assert brk["discarded_segments"] == 0 and brk["discarded_sec"] == pytest.approx(1.5)
+    assert "discarded_segments" not in brk and "discarded_sec" not in brk
+    audio = [r for r in of_type(records, "stream_audio") if r["final"]][0]
+    assert audio["segments_cut"] == len(recognized)
+    assert sess["discarded"] is None
+
+
+def test_a_failed_exit_flush_still_counts_the_buffer_as_one_segment(monkeypatch, tmp_path, capsys):
+    """收尾时切余量出了错：只打一行，不盖掉取消（stream_break 记 cancelled，不记 error）；那一截还在切段器里，
+    按 flush 的标准算一段进 discarded。"""
+    p, sess = make_pipeline(monkeypatch, tmp_path)
+    fed = {"frames": 0}
+
+    class FlushBreaks(SilenceSegmenter):
+        def flush(self):
+            raise RuntimeError("切不动")
+
+    monkeypatch.setattr(app.segmenter, "SilenceSegmenter", FlushBreaks)
+    monkeypatch.setattr(app.audio, "FFmpegAudioSource", live_source(15, fed))
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        task = asyncio.ensure_future(
+            p._stream_session("http://cdn/s.flv", BlockedASR(block_first=False), None, loop, sess=sess))
+        while fed["frames"] < 15:
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    run(scenario())
+    assert "收尾时切出最后一段音频出错：RuntimeError" in capsys.readouterr().out
+    brk = of_type(rows(p.audit.path), "stream_break")[0]
+    assert brk["reason"] == "cancelled"
+    assert (brk["discarded_segments"], brk["discarded_sec"]) == (1, 1.5)
+
+
+@pytest.mark.parametrize("next_session", [False, True], ids=["same_session", "next_session_started"])
+def test_late_audio_events_leave_the_next_sessions_hint_alone(monkeypatch, tmp_path, next_session):
+    """取消路径上 flush 切出了段：「切出语音」这个计数事件交给后台，轮到它跑时只处理这一场自己的——
+    还是这一场时照样撤 quiet_audio 提示；停止之后紧接着开了下一场（当前审计换了），不去撤下一场的同名提示。"""
+    p, sess = make_pipeline(monkeypatch, tmp_path)
+    meter = sess["meter"] = app.audio.AudioFlowMeter()
+    meter.quiet = True                                  # 之前已经报过「音量一直低于门限」
+    fed = {"frames": 0}
+    monkeypatch.setattr(app.audio, "FFmpegAudioSource", live_source(15, fed))
+    late = []
+    real_spawn = p._spawn
+
+    def spawn(coro):
+        # 只截下 reader 收尾交给后台的那一个，等测试换完审计再跑
+        if getattr(getattr(coro, "cr_code", None), "co_name", "") == "_late_audio_events":
+            late.append(coro)
+            return None
+        return real_spawn(coro)
+
+    p._spawn = spawn
+    cleared = []
+    real_incident = p._incident
+
+    async def incident(key, level, text=""):
+        if key == "session:quiet_audio" and level == "clear":
+            cleared.append(key)
+        return await real_incident(key, level, text)
+
+    p._incident = incident
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        task = asyncio.ensure_future(
+            p._stream_session("http://cdn/s.flv", BlockedASR(block_first=False), None, loop, sess=sess))
+        while fed["frames"] < 15:
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        if next_session:
+            p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path / "logs2")
+        for coro in late:
+            await coro
+
+    run(scenario())
+    assert len(late) == 1
+    assert cleared == ([] if next_session else ["session:quiet_audio"])
+    brk = of_type(rows(sess["audit"].path), "stream_break")[0]
+    assert (brk["discarded_segments"], brk["discarded_sec"]) == (1, 1.5)
 
 
 def test_a_natural_end_discards_nothing_and_adds_no_keys(monkeypatch, tmp_path):

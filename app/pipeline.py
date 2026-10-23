@@ -3344,6 +3344,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 _put((segment, time.time(), _tail_meta(meta) if last_tail else meta))
             return meter.cut(len(rest))
 
+        async def _late_audio_events(events):
+            # reader 收尾时交给后台的计数事件（flush 切出了段，只会是「切出语音」：撤 quiet_audio 提示）。轮到它跑时
+            # 当前审计已经不是这一场的（停止之后紧接着开了下一场），就不处理：撤掉的会是下一场的同名提示。
+            # 停止那一边自己会撤这一场的持续提示（_clear_ongoing_incidents）
+            if getattr(self, "audit", None) is sess.get("audit"):
+                await self._on_audio_events(sess, events)
+
         async def reader():
             # 「直播中」要等真的收到音频才宣布——ffmpeg 连流失败时不能先报喜再改口
             nonlocal got_audio, audio_secs, tail_frames
@@ -3395,17 +3402,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 events = _flush_rest(last_tail)
                 if events:
                     await self._on_audio_events(sess, events)
-            except asyncio.CancelledError:
-                # 被取消时切段器里攒着的那一截（最多 9 秒）以前直接扔掉。现在照样切出来放进识别队列：
-                # 只取消 reader 的是收尾超时自愈（_heal_stopping），识别还在跑，这一截照常识别（第六条）；
-                # 停止、换主播、更新暂停时识别也一起被取消，它留在队列里，收尾时算进 stream_break 的
-                # discarded（专家审查 B4）。这里分不出是哪一种（3.9 没有 Task.cancelling），也不用分：
-                # 结局由识别那边决定。计数事件不在取消路径上等，交给后台。这里出了错只打一行：
-                # 不能让它盖掉取消，把一次停止记成内部错误
+            except (asyncio.CancelledError, Exception):
+                # 没走到正常结尾（被取消、音频源出错）时，切段器里攒着的那一截（最多 9 秒）以前直接扔掉。现在照样
+                # 切出来放进识别队列，结局由识别那边决定：
+                #   - 音频源出错：识别 worker 不受影响，照常把队列做完（run_workers 的 gather 等两边都结束），
+                #     这一截照常识别；
+                #   - 只取消 reader 的是收尾超时自愈（_heal_stopping）：识别还在跑，这一截照常识别（第六条）；
+                #   - 停止、换主播、更新暂停：识别也一起被取消，它留在队列里，收尾时算进 stream_break 的
+                #     discarded（专家审查 B4）。
+                # 分不出是哪一种取消（3.9 没有 Task.cancelling），也不用分。计数事件不在这条路上等，交给后台
+                # （_late_audio_events）。这里出了错只打一行：不能让它盖掉原来的取消或错误，把一次停止记成内部错误；
+                # 切段器里那一截这时还在，收尾时按一段算进 discarded（_discarded）
                 try:
                     events = _flush_rest(last_tail)
                     if events:
-                        self._spawn(self._on_audio_events(sess, events))
+                        self._spawn(_late_audio_events(events))
                 except Exception as exc:
                     print("[警告] 收尾时切出最后一段音频出错：{}".format(type(exc).__name__))
                 raise
@@ -3550,8 +3561,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         def _discarded():
             """这一轮已经到达、却没有识别（或识别结果被丢掉）的音频：(段数, 秒数)，专家审查 B4。
             识别队列里没处理的段，加上取消那一刻正在识别线程里跑的那一段（审查 Q11），再加上切段器里没切出来
-            的那一截（被取消时 reader 已经把它切进了队列；只有出错收尾没走到那一步时这里还有）。正常断流时
-            识别把队列做完、切段器 flush 过，三项都是 0。收尾时调一次，每轮只算一次。"""
+            的那一截。最后这一项通常是 0：reader 不管怎么结束（流尾、取消、出错）都已经把它切进了队列；只有切的
+            时候出了错它才还在，按 flush 的标准算一段（静音和不到 0.5 秒的残片 flush 也不要，不算）。正常断流、
+            音频源出错收尾时识别把队列做完，三项都是 0。收尾时调一次，每轮只算一次。"""
             segs, sec = 0, 0.0
             while True:
                 try:
@@ -3565,8 +3577,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 segs += 1
                 sec += asr_now["sec"]
             buffered = getattr(segmenter, "buffered_sec", None)   # 测试里的假切段器没有
-            if callable(buffered):
-                sec += buffered()
+            left = buffered() if callable(buffered) else 0.0
+            if left > 0:
+                segs += 1
+                sec += left
             return segs, sec
 
         def _settle_translations():

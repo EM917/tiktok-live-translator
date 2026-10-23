@@ -148,8 +148,8 @@ valid for about two weeks, so one capture covers a whole stream. See also
   `stream_break` records how many segments and seconds that was
   (`discarded_segments`, `discarded_sec`), and `session_end` records the
   session total; without any, neither key appears. When the app closes a
-  stalled connection by itself, the part not yet cut into a segment is still
-  transcribed.
+  stalled connection by itself, or the audio connection ends with an error,
+  the part not yet cut into a segment is still transcribed.
 - Translation never slows recognition. Its queue holds four lines and drops
   the oldest when full; a line whose translation was skipped keeps its
   original text.

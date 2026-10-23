@@ -331,11 +331,18 @@ class Stuck:
             raise
 
 
-class Fast:
+class FirstWaits:
+    """第一条翻译等测试放行，之后的马上回来。只在协程里构造（同 Stuck）。"""
     name = "hymt2"
 
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.calls = 0
+
     async def translate(self, text, target, source="auto", glossary=None):
-        await asyncio.sleep(0.05)
+        self.calls += 1
+        if self.calls == 1:
+            await self.release.wait()
         return "大家好，今天有优惠"
 
 
@@ -392,26 +399,36 @@ def test_a_round_without_a_session_still_drains_inline(monkeypatch, tmp_path):
 
 
 def test_an_old_drain_leaves_the_next_rounds_queue_depth_alone(monkeypatch, tmp_path):
-    """后台排空期间下一轮已经开始：旧的那一条翻译出队、收尾都不改新一轮的队列深度和 self._trans_queue。"""
+    """后台排空期间下一轮已经开始：旧的翻译 worker 接着出队（第一条翻完，再取第二条和哨兵）、排空收尾，都不改
+    新一轮的队列深度和 self._trans_queue。第一条翻译在换队列之后才放行：旧 worker 出队时写深度的那一处
+    （_note_trans_depth）在换队列之后真的走到，钉的是它的守卫，不只是收尾 _settle_translations 那一处。"""
     p = make_pipeline(monkeypatch, tmp_path)
     sess = with_session(p, tmp_path)
-    p.TRANSLATION_DRAIN_SEC = 0.5
+    p.TRANSLATION_DRAIN_SEC = 5.0
     install(monkeypatch, eof_source(2 * SEG_FRAMES, {}))
 
     async def scenario():
-        p.translator = Stuck()
+        p.translator = FirstWaits()
         loop = asyncio.get_running_loop()
         await p._stream_session("http://cdn/s.flv", GatedASR(), None, loop, sess=sess)
         drains = list(sess["translation_drains"])
+        old = p._trans_queue
+        left_then = old.qsize()                         # 换队列这一刻旧队列里还有几样（第二条、哨兵）
         nxt = asyncio.Queue(maxsize=4)                  # 下一轮开始了
         p._trans_queue = nxt
         p.telemetry.translation_queue_depth = 3
+        p.translator.release.set()                      # 旧 worker 翻完第一条，接着出队
         await asyncio.wait_for(asyncio.gather(*drains), 2.0)
-        return nxt
+        await asyncio.sleep(0.05)                       # 译文的广播
+        return nxt, drains, left_then, old.qsize()
 
-    nxt = run(scenario())
+    nxt, drains, left_then, left_after = run(scenario())
+    assert left_then >= 1 and left_after == 0           # 换队列之后旧 worker 确实又出过队
+    assert p.translator.calls == 2
+    assert not drains[0].cancelled()                    # 自己跑完的，不是到点被取消
     assert p._trans_queue is nxt
     assert p.telemetry.translation_queue_depth == 3
+    assert set(p.server.states().values()) == {"ok"}    # 两条都翻完了，没有一条被收成「已跳过」
 
 
 def test_a_new_round_starts_its_queue_depth_from_zero(monkeypatch, tmp_path):
@@ -576,18 +593,92 @@ def test_a_natural_end_lets_the_last_translations_finish(monkeypatch, tmp_path):
     assert "discarded_sec" not in end[0]
 
 
+def _hanging_drain_round(monkeypatch, p, sess):
+    """跑一轮：两段字幕，翻译卡住，TRANSLATION_DRAIN_SEC 远长于测试——这一轮的后台排空自己不会到点，只能被
+    这一场的收尾取消。返回这个排空任务（在协程里调）。"""
+    p.TRANSLATION_DRAIN_SEC = 60.0
+    install(monkeypatch, eof_source(2 * SEG_FRAMES, {}))
+
+    async def go():
+        p.translator = Stuck()
+        loop = asyncio.get_running_loop()
+        await p._stream_session("http://cdn/s.flv", GatedASR(), None, loop, sess=sess)
+        drains = list(sess["translation_drains"])
+        assert len(drains) == 1 and not drains[0].done()
+        return drains[0]
+
+    return go
+
+
+def _watch_skips(p, audit):
+    """每记一次「已跳过」（_drop_job → telemetry.drop_translation，同步），记下那一刻 session_end 写了没有。"""
+    seen = []
+    real = p.telemetry.drop_translation
+
+    def drop():
+        seen.append(bool(of_type(rows(audit), "session_end")))
+        real()
+
+    p.telemetry.drop_translation = drop
+    return seen
+
+
 def test_session_end_cancels_a_drain_that_outlives_it(monkeypatch, tmp_path):
-    """_end_session 兜底：没走 _run_stream_inner 收尾的，关审计之前也把这一场的后台排空取消掉。"""
+    """_end_session 兜底：没走 _run_stream_inner 收尾的，关审计之前也把这一场的后台排空取消掉，两条「已跳过」
+    记在 session_end 之前。在协程里、_end_session 一返回就取结果：asyncio.run 退出时会把没结束的任务全部取消，
+    放到 run() 外面断言 cancelled() 什么都钉不住（第 1 轮审查：删掉兜底那一行，旧写法照样绿）。"""
     p = make_pipeline(monkeypatch, tmp_path)
     sess = with_session(p, tmp_path)
     audit = p.audit
+    hanging = _hanging_drain_round(monkeypatch, p, sess)
+    skips = _watch_skips(p, audit)
 
     async def scenario():
-        blocker = asyncio.ensure_future(asyncio.sleep(3600))
-        sess["translation_drains"].add(blocker)
+        drain = await hanging()
         await p._end_session(audit, sess=sess, reason="user_stop")
-        return blocker
+        return {"cancelled": drain.cancelled(), "skips": list(skips),
+                "left": set(sess["translation_drains"]),
+                "ends": [r["reason"] for r in of_type(rows(audit), "session_end")]}
 
-    blocker = run(scenario())
-    assert blocker.cancelled()
-    assert of_type(rows(audit), "session_end")[0]["reason"] == "user_stop"
+    got = run(scenario())
+    assert got == {"cancelled": True, "skips": [False, False], "left": set(), "ends": ["user_stop"]}
+
+
+def test_a_stop_past_the_grace_cancels_the_drain_before_writing_session_end(monkeypatch, tmp_path):
+    """_stop_locked 兜底：旧任务被取消后卡在收尾里（识别线程或音频源停不下来），等满 STOP_GRACE_SEC 撒手，
+    session_end 由 _stop_locked 代写。这时这一场的后台排空也要在关审计之前取消：stop_stream 返回的那一刻
+    排空已经取消、两条「已跳过」都记在 session_end 之前、session_end 已经写好，而旧任务还没结束。"""
+    p = make_pipeline(monkeypatch, tmp_path)
+    sess = with_session(p, tmp_path)
+    audit = p.audit
+    p.STOP_GRACE_SEC = 0.2
+    hanging = _hanging_drain_round(monkeypatch, p, sess)
+    skips = _watch_skips(p, audit)
+
+    async def scenario():
+        drain = await hanging()
+        release = asyncio.Event()
+
+        async def stuck_teardown():
+            # 旧的直播任务：被取消后一直卡在收尾里，走不到自己的 _end_session
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await release.wait()
+
+        old = p._stream_task = asyncio.ensure_future(stuck_teardown())
+        await asyncio.sleep(0)
+        t0 = time.monotonic()
+        await p.stop_stream()
+        got = {"took": time.monotonic() - t0, "old_done": old.done(),
+               "cancelled": drain.cancelled(), "skips": list(skips),
+               "left": set(sess["translation_drains"]),
+               "ends": [r["reason"] for r in of_type(rows(audit), "session_end")]}
+        release.set()
+        await old
+        return got
+
+    got = run(scenario())
+    assert got.pop("took") >= 0.15                      # 确实等过了宽限、走的是代写那一支
+    assert got == {"old_done": False, "cancelled": True, "skips": [False, False], "left": set(),
+                   "ends": ["user_stop"]}
