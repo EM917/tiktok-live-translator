@@ -1144,7 +1144,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             ending = self._ending_of(closed)
             if ending is not None:
                 reason, fields = ending[0] or reason, dict(ending[1])
-                self._ending = None
+                self._forget_ending(closed)
             if isinstance(sess, dict) and sess.get("audit") is closed:
                 # 这一场桌面点的「重译」和后台的翻译排空还没做完：关审计之前先取消（旧任务自己的 _end_session
                 # 没走到这一步时）
@@ -2138,13 +2138,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         reason/fields 写进 session_end（这一场为什么结束）。防睡眠断言只在「我还是
         当前会话、而且断言是我这个任务开的」时释放。
 
-        一进来就记下「这一场正在自己收尾、原因是什么」（self._ending，见 _ending_of）。以前自然结束
+        一进来就记下「这一场正在自己收尾、原因是什么」（按审计各记一份，见 _note_ending、_ending_of）。以前自然结束
         （下播、预算用尽……）的收尾途中点「开始」：_stop_locked 取消这个任务，取消落在下面某个 await 上，
         session_end 改由 _stop_locked 代写，原因成了 new_session，status 和弹幕计数也丢了（专家审查 B5，
         reverify/backend/b1/out-natural.txt：下播后 0.02、0.10 秒点开始都中）。现在 _stop_locked 看到
         这一场已经在自己收尾就不取消、等它写完；等不到才代写，原因和附带的观察照这里记下的。
         fields 存的是同一个 dict：下面 setdefault 进来的弹幕计数，代写时也带得上。"""
-        ending = self._ending = (my_audit if my_audit is not None else self.audit, reason, fields)
+        ending = self._note_ending(my_audit if my_audit is not None else self.audit, reason, fields)
         still_current = my_audit is None or self.audit is my_audit
         if still_current:
             self._release_sleep_guard(owner=asyncio.current_task())
@@ -2209,8 +2209,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             await self._settle_audit_incident(target)
             if closed_transcript:
                 await self._publish_transcripts()   # 设置行的「存了几场」：这一场此刻才算数
-        if getattr(self, "_ending", None) is ending:
-            self._ending = None      # 写完了。中途抛出（被取消）就留着：_stop_locked 代写时还要用
+        if ending is not None:
+            self._forget_ending(ending[0], ending)   # 写完了。中途抛出（被取消）就留着：_stop_locked 代写时还要用
         if still_current:
             await self._settle_engine_incident()
         if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks"):
@@ -2241,13 +2241,41 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 audit.late_reported = late
         return {"late_records_prev": total} if total else {}
 
+    def _note_ending(self, audit, reason, fields):
+        """记下「这份审计的那一场正在自己收尾」，返回记下的那一项 (审计, 原因, 观察)；没有审计返回 None。
+        按审计各记一份（第 1 轮审查）：以前只有一个槽——A 过了宽限期被撒手、B 已经在自己收尾时，A 的旧任务才走到
+        _end_session，会把槽盖成 A 的、写完再清空，B 就认不出自己在收尾，又回到被取消、记成 new_session 的老路。
+        键是 id(审计)，值里留着审计本身：项还在，id 就不会被别的对象复用。已经关掉的审计不会再有人代写，顺手清掉
+        （被取消在收尾中途、又没人代写的旧项不会越攒越多）。"""
+        if audit is None:
+            return None
+        endings = getattr(self, "_endings", None)
+        if endings is None:
+            endings = self._endings = {}
+        for key, item in list(endings.items()):
+            if getattr(item[0], "_closed", False):
+                del endings[key]
+        item = endings[id(audit)] = (audit, reason, fields)
+        return item
+
+    def _forget_ending(self, audit, item=None):
+        """这份审计的结尾写完了（或者由 _stop_locked 代写了）：去掉它那一项。给了 item 就只在还是这一项时才去掉。"""
+        endings = getattr(self, "_endings", None)
+        if not endings or audit is None:
+            return
+        current = endings.get(id(audit))
+        if current is not None and current[0] is audit and (item is None or current is item):
+            del endings[id(audit)]
+
     def _ending_of(self, audit):
         """这份审计的那一场是不是已经在自己收尾（_end_session 进去了、还没写完）：是就返回它记下的
         (结束原因, 附带的观察)，否则 None。按审计对象认：晚到的旧任务记下的认不到下一场头上。"""
-        ending = getattr(self, "_ending", None)
-        if audit is None or not isinstance(ending, tuple) or ending[0] is not audit:
+        if audit is None:
             return None
-        return ending[1], ending[2]
+        item = (getattr(self, "_endings", None) or {}).get(id(audit))
+        if item is None or item[0] is not audit:
+            return None
+        return item[1], item[2]
 
     # TikTok 不给流地址（接口回 4003110、后面各层也没拿到）时的自动重试。
     # 曾以为是同一 IP 短时间内请求过多被限流——2026-09-05 实测推翻：同一分钟

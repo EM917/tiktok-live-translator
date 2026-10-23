@@ -505,6 +505,7 @@ def test_a_start_clicked_while_the_last_session_ends_by_itself_keeps_offline(mon
 
     async def scenario():
         await p.start_stream(ROOM_A)
+        task_a = p._stream_task
         for _ in range(300):
             if "returned" in marks:
                 break
@@ -513,14 +514,19 @@ def test_a_start_clicked_while_the_last_session_ends_by_itself_keeps_offline(mon
         await p.start_stream(ROOM_B)
         await _until_session_of(p, ROOM_B)
         await p.stop_stream(quiet=True)
+        return task_a
 
-    asyncio.run(scenario())
+    task_a = asyncio.run(scenario())
     ends = dict((room, rows) for room, rows in _session_ends(tmp_path))
     (end_a,) = ends[ROOM_A]
     assert end_a["reason"] == "offline"                 # 以前是 new_session
     assert end_a["status"] == 4                         # 下播时房间接口给的状态
     assert end_a["comments_received"] == 7              # 弹幕计数也在
     assert "recovered" not in end_a
+    # 是这一场自己写完的结尾，不是 _stop_locked 照它记下的原因代写的（第 1 轮审查：只看原因、状态和弹幕计数，
+    # 代写也写得出来）：弹幕留意的计数只有 _end_session 自己写；它的任务也没有被取消
+    assert "comment_guard" in end_a
+    assert task_a.done() and not task_a.cancelled()
     (end_b,) = ends[ROOM_B]
     assert end_b["reason"] == "stopped"
 
@@ -548,7 +554,7 @@ def test_a_session_that_ends_by_itself_too_slowly_is_closed_with_its_own_reason(
     assert end_a["reason"] == "offline" and end_a["status"] == 4
     assert end_a["comments_received"] == 7
     assert "上一场正在自己收尾" in capsys.readouterr().out
-    assert p._ending is None
+    assert not p._endings                          # 代写之后这一项去掉了
 
 
 def test_a_user_stop_during_a_natural_ending_also_keeps_offline(monkeypatch, tmp_path):
@@ -556,19 +562,86 @@ def test_a_user_stop_during_a_natural_ending_also_keeps_offline(monkeypatch, tmp
 
     async def scenario():
         await p.start_stream(ROOM_A)
+        task_a = p._stream_task
         for _ in range(300):
             if "comment_stop" in marks:
                 break
             await asyncio.sleep(0.005)
         await p.stop_stream()                           # 中控点「停止」
+        return task_a
 
-    asyncio.run(scenario())
+    task_a = asyncio.run(scenario())
     (end_a,) = dict(_session_ends(tmp_path))[ROOM_A]
     assert end_a["reason"] == "offline"
+    assert "comment_guard" in end_a                     # 自己写完的（见上一条）
+    assert task_a.done() and not task_a.cancelled()
+
+
+ROOM_C = "https://www.tiktok.com/@ficticia_tres/live"
+
+
+def test_an_abandoned_old_task_ending_late_does_not_hide_the_next_sessions_own_ending(monkeypatch, tmp_path):
+    """第 1 轮审查：「正在自己收尾」以前只有一个槽。A 过了宽限期被撒手；B 开场、自己下播、进了收尾；这时 A 的旧
+    任务才走到 _end_session，把槽盖成 A 的、写完又清空——再点开始，B 认不出自己在收尾，又被取消、记成
+    new_session。现在按审计各记各的。"""
+    p, server = _real_pipeline(monkeypatch, tmp_path)
+    monkeypatch.setattr(Pipeline, "STOP_GRACE_SEC", 0.3)
+    marks = []
+    armed = {"on": False}
+
+    async def comment_stop():
+        if armed["on"]:
+            marks.append("comment_stop")
+            if marks.count("comment_stop") == 1:
+                await asyncio.sleep(1.0)            # B 自己收尾：弹幕子进程退得慢
+
+    p.comment_source.stop = comment_stop
+
+    async def rounds(url):
+        if "ficticia_uno" in url:                   # A：在播；被取消后一时停不下来（识别线程取消不掉）
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.6)
+                marks.append("a_late")
+                raise
+        if "ficticia_dos" in url:                   # B：开场不久主播下播
+            p._comment_counts_audit = p.audit
+            p.comment_source.comments_received = 3
+            await asyncio.sleep(0.05)
+            p._session_state["end"] = {"reason": "offline", "status": 4}
+            armed["on"] = True
+            return
+        await asyncio.Event().wait()                # C：在播
+
+    p._run_session = rounds
+
+    async def scenario():
+        await p.start_stream(ROOM_A)
+        await _until_session_of(p, ROOM_A)
+        await p.start_stream(ROOM_B)                # A 过了宽限期被撒手
+        await _until_session_of(p, ROOM_B)
+        for _ in range(400):
+            if "a_late" in marks and "comment_stop" in marks:
+                break
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.1)                    # A 的旧任务走完 _end_session；B 还在等弹幕停下
+        assert marks[:2] == ["comment_stop", "a_late"] or marks[:2] == ["a_late", "comment_stop"]
+        await p.start_stream(ROOM_C)
+        await _until_session_of(p, ROOM_C)
+        await p.stop_stream(quiet=True)
+
+    asyncio.run(scenario())
+    ends = dict(_session_ends(tmp_path))
+    (end_b,) = ends[ROOM_B]
+    assert end_b["reason"] == "offline" and end_b["status"] == 4      # 以前是 new_session
+    assert end_b["comments_received"] == 3
+    (end_a,) = ends[ROOM_A]
+    assert end_a["reason"] == "new_session"
 
 
 def test_a_live_session_is_still_cancelled_and_records_the_stop_reason(monkeypatch, tmp_path):
-    """没在自己收尾的一场照旧：取消、记停止的原因（_ending 只认正在收尾的那一场）。"""
+    """没在自己收尾的一场照旧：取消、记停止的原因（_ending_of 只认正在收尾的那一场）。"""
     p, server = _real_pipeline(monkeypatch, tmp_path)
 
     async def live(url):
