@@ -30,6 +30,7 @@
   --green: #34c759;   --green-ink: #1e7b34;   /* 绿底上的文字用 -ink，4.7:1 */
   --orange: #ff9500;  --orange-ink: #c93400;
   --red: #ff3b30;     --fail: #d70015;  --fail-ink: #c8000f;   /* 红底上的文字用 -ink，5.0:1 */
+  --fail-bar: #d70015;                  /* 白字红底的整条提示（出错的持续提示、检测降级）的底：浅色就是 --fail，外观不变 */
   --gray: #8e8e93;
   --warn-bg: #fff6e0;
   --warn-fg: #7a5200;
@@ -67,6 +68,9 @@
     --green: #30d158;   --green-ink: #30d158;
     --orange: #ff9f0a;  --orange-ink: #ff9f0a;
     --red: #ff453a;     --fail: #ff6961;  --fail-ink: #ff6961;
+    /* 以前红条用深色的 --fail #ff6961，白字只有 2.82:1（12px 要 4.5:1）；#b3000f 配白字 7.18:1，
+       同桌面 style.css 的 --fail-bar（专家审查 V1） */
+    --fail-bar: #b3000f;
     --gray: #8e8e93;
     --warn-bg: #3a2f14;
     --warn-fg: #f0c674;
@@ -168,7 +172,7 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
   padding: 7px 14px; font-size: var(--fs-footnote); line-height: 1.6;
 }
 .incident.warn, .health-line.lagging { color: var(--warn-fg); background: var(--warn-bg); }
-.incident.error, .health-line.degraded { color: #fff; background: var(--fail); }
+.incident.error, .health-line.degraded { color: #fff; background: var(--fail-bar); }   /* 不用 --fail：深色下配白字不到 3:1（V1） */
 .incident.info { color: var(--info-fg); background: var(--info-bg); }
 
 /* ---------- 违禁词报警 ---------- */

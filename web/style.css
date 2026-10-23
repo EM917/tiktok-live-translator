@@ -44,6 +44,9 @@
   /* 红色计数徽标的底：深色模式下 --fail #ff6961 配白字只有 2.8:1，
      #d70015 配白字 5.4:1，深浅色共用同一个实色 */
   --red-fill: #d70015;
+  /* 白字红底的整条提示（.incident.error、.health-bar.degraded）的底。浅色就是 --fail，外观不变（白字 5.4:1）；
+     深色另取一个更深的红（见下面 prefers-color-scheme: dark），理由同 --red-fill（专家审查 V1） */
+  --fail-bar: #d70015;
   /* 直播中右侧弹幕列：中性侧栏（macOS 侧栏的浅灰），不再是 8% 蓝底——蓝色只留给
      主要动作，视野边缘一整列饱和色最容易累眼（designer.md #4） */
   --sidebar-bg: #f5f5f7;
@@ -153,6 +156,9 @@
     --warn-bg: #3a2f14;
     --warn-fg: #f0c674;
     --red-fill: #d70015;
+    /* 以前红条直接用深色的 --fail #ff6961，白字只有 2.82:1（13px 粗体要 4.5:1），网络断开、识别持续失败、
+       审计写不进这几种出错提示在傍晚以后（系统外观自动切到深色）就读不清。#b3000f 配白字 7.18:1（V1） */
+    --fail-bar: #b3000f;
     --sidebar-bg: #232325;
     --float-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 2px 8px rgba(0, 0, 0, 0.45);
     --popover-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 0 0 0.5px rgba(255, 255, 255, 0.12);
@@ -847,7 +853,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   background: var(--warn-bg);
   border-bottom: 0.5px solid var(--a-orange-40);
 }
-.health-bar.degraded { color: #fff; background: var(--fail); border-bottom-color: var(--fail); }
+/* 白字红底用 --fail-bar 不用 --fail：深色下 --fail 是给红字用的亮红，配白字不到 3:1（V1，tests/test_contrast.py 算着） */
+.health-bar.degraded { color: #fff; background: var(--fail-bar); border-bottom-color: var(--fail-bar); }
 
 /* ---------- 持续提示：直到后端清除才消失 ---------- */
 .incident-bar { display: flex; flex-direction: column; }
@@ -860,7 +867,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   background: var(--warn-bg);
   border-bottom: 0.5px solid var(--a-orange-40);
 }
-.incident.error { color: #fff; background: var(--fail); border-bottom-color: var(--fail); }
+.incident.error { color: #fff; background: var(--fail-bar); border-bottom-color: var(--fail-bar); }   /* 同 .health-bar.degraded */
 .incident.info {
   color: var(--label);
   background: var(--tint-blue-10);
