@@ -778,25 +778,41 @@ if (typeof document !== "undefined") {
       if (demoBanner) demoBanner.classList.toggle("hidden", !demoMode);
     }
 
-    // 重连回放里不带 replay 标记的几种：app/viewer.py replay_snapshot 先发 status、comment_source、
-    // alert_mode、incident、health，字幕历史里夹着的 session_break 过白名单时 replay 键被丢掉（ALLOW 只给 ts）。
-    // 它们到了不算回放结束；其余消息不带 replay 的，就是回放之后的第一条实时消息
+    // 回放窗口：viewer_hello 之后、回放结束之前为 true。回放里的 session_break 过白名单时 replay 键被丢掉
+    // （ALLOW 只给 ts），只能靠它分辨「历史上的换场」和「此刻的换场」。
+    // 回放在哪儿结束：viewer_hello 带着回放条数（replay_len，app/viewer.py 的 replay_snapshot 数好的），
+    // 数够这么多条就结束（replayLeft）。以前只能等「回放之后的第一条实时字幕/弹幕/报警」：安静的直播间里
+    // 那一条可能很久才来，期间紧接着换了主播，这条实时的 session_break 被当成历史，上一场的落后提示就挂过
+    // 整场新直播。hello 没带条数时（老的服务端）退回老办法，靠下面这几种「回放里不带 replay 标记」的类型判断：
+    // replay_snapshot 先发 status、comment_source、alert_mode、incident、health，再加上字幕历史里的
+    // session_break，它们到了不算回放结束；其余消息不带 replay 的，就是回放之后的第一条实时消息
     var UNMARKED_IN_REPLAY = { status: true, comment_source: true, alert_mode: true, incident: true,
                                health: true, session_break: true };
-    // viewer_hello 之后、回放之后的第一条实时消息之前为 true（判断同上）。回放里的 session_break 不带 replay，
-    // 只能靠它分辨「历史上的换场」和「此刻的换场」
     var replaying = false;
+    var replayLeft = null;   // 回放还剩几条没到；null = 不知道（hello 没带条数），按上面的老办法
     var streamState = null;  // 最近一条 status 的 state：renderHealth 据此不在停止、下播、出错后揭开落后提示
+    // F6：重连回放结束时把弹幕滚到底一次。回放是一口气压进来的，逐条追加时的跟随本来就会贴底，
+    // 这一下是兜底：回放期间列表被清空、重建，scroll 事件可能把跟随意图改掉
+    function endReplay() {
+      replaying = false;
+      replayLeft = null;
+      if (commentReplayStick) {
+        commentReplayStick = false;
+        followCommentsNow();
+      }
+    }
 
     function handle(msg) {
       if (!msg || typeof msg !== "object") return;
-      // F6：重连回放结束时把弹幕滚到底一次。回放是一口气压进来的，逐条追加时的跟随本来就会贴底，
-      // 这一下是兜底：回放期间列表被清空、重建，scroll 事件可能把跟随意图改掉
-      var firstLive = msg.type !== "viewer_hello" && !msg.replay && !UNMARKED_IN_REPLAY[msg.type];
-      if (firstLive) replaying = false;
-      if (commentReplayStick && firstLive) {
-        commentReplayStick = false;
-        followCommentsNow();
+      var lastOfReplay = false;   // 这一条是回放的最后一条：照回放处理完再结束回放
+      if (msg.type !== "viewer_hello" && replaying) {
+        if (replayLeft === null) {
+          // 老办法：这一条已经是实时的了，先结束回放再按实时处理
+          if (!msg.replay && !UNMARKED_IN_REPLAY[msg.type]) endReplay();
+        } else {
+          replayLeft -= 1;
+          lastOfReplay = replayLeft <= 0;
+        }
       }
       switch (msg.type) {
         case "viewer_hello":
@@ -804,6 +820,8 @@ if (typeof document !== "undefined") {
           disconnectedAt = null;
           commentReplayStick = true;
           replaying = true;
+          replayLeft = typeof msg.replay_len === "number" && msg.replay_len >= 0 ? msg.replay_len : null;
+          lastOfReplay = replayLeft === 0;   // 没有可回放的：hello 本身就是回放的结尾
           streamState = null;                // 紧随其后的 status 回放把它补上
           // 取消记录先对齐这一次共享，再收回放的报警：程序重启后 alert_id 从头数，
           // 上一次共享里取消过的 7 号不能藏掉这一次的 7 号
@@ -870,6 +888,7 @@ if (typeof document !== "undefined") {
         default:
           break;   // 白名单以外的类型服务端本就不会发；未知类型安静忽略
       }
+      if (lastOfReplay) endReplay();
     }
 
     // ---- 违禁词警示开关：中控这场没打开时，常驻一行灰字提醒——命中仍记入

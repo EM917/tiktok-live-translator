@@ -641,7 +641,13 @@ def replay_snapshot(server, viewers=0, share_since=None):
     # REPLAY_MAX 就是上面每一类上限的和，回放序列本就不会超过它；这里切一刀是保险，不是当前会触发的
     # 路径——哪天某一类的上限涨了却没算进 REPLAY_MAX，回放也不该悄悄超过 QUEUE_MAX（那时切掉的是末尾
     # 最新的弹幕，tests/test_server_clear.py 那条「全部到顶」的用例会先红）
-    return out[:REPLAY_MAX]
+    out = out[:REPLAY_MAX]
+    # 回放条数写进 viewer_hello：手机数够这么多条就知道回放结束了（web/viewer.js 的 replayLeft）。
+    # 以前手机只能等「回放之后的第一条实时字幕/弹幕/报警」，安静的直播间里那一条可能很久才来，期间
+    # 实时的换场被当成回放里的历史，上一场的落后提示就挂过整场新直播。条数放进 hello、不另发一条
+    # 「回放结束」：消息序列不变，按顺序逐条收消息的地方（tests/test_viewer_e2e.py 等）不用跟着改
+    out[0]["replay_len"] = len(out) - 1
+    return out
 
 
 def _coerce_action_id(value):
@@ -1125,12 +1131,20 @@ class ViewerHub:
         全程没有一个 await，所以「回放快照 / 实时注册」不存在竞态——之后来的
         实时消息只能排在回放后面。
         """
-        for payload in replay_snapshot(self._server, viewers=self.count + 1,
-                                       share_since=self.share_since):
+        snapshot = replay_snapshot(self._server, viewers=self.count + 1,
+                                   share_since=self.share_since)
+        queued = 0
+        for payload in snapshot:
             try:
                 viewer.queue.put_nowait(payload)
             except asyncio.QueueFull:
                 break            # 回放放不下不该拦住入册：实时消息比历史重要
+            queued += 1
+        if 0 < queued < len(snapshot):
+            # 只放进去一部分：hello 里的回放条数改成真放进去的。hello 还在队列里没发出去（这里全程同步、
+            # 写任务还没轮到），它又是这一次 replay_snapshot 新建的、不和别人共享，可以就地改。
+            # 不改的话，手机会把紧接着的几条实时消息也当成回放
+            snapshot[0]["replay_len"] = queued - 1
         viewer.registered = True
         self._viewers.append(viewer)
         self._event("viewer_connected", ip=viewer.ip, count=self.count)

@@ -1335,3 +1335,61 @@ test("停止、下播、出错之后晚到的落后提示不揭开（同桌面�
     assert.equal(healthShown(elements), "识别开始落后，报警会有延迟");
   });
 });
+
+test("回放按 viewer_hello 带的条数结束：安静时紧接着换主播，实时的 session_break 收掉上一场的落后提示", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    // replay_snapshot 的顺序：status、health、字幕历史（中间夹着一条历史分隔线）、弹幕
+    send(Object.assign({}, HELLO, { replay_len: 6 }));
+    send({ type: "status", state: "live" });
+    send({ type: "health", level: "lagging" });
+    send({ type: "caption", id: 1, ts: 1, original: "uno", translated: "一", replay: true });
+    send({ type: "session_break", ts: 2 });                                         // 回放里的：历史
+    send({ type: "caption", id: 2, ts: 3, original: "dos", translated: "二", replay: true, restore: true });
+    assert.equal(healthShown(elements), "识别开始落后，报警会有延迟", "回放里的换场是历史");
+    send({ type: "comment", id: "c1", user: "ana", ts: 3, text: "hola", replay: true });   // 回放的最后一条
+    // 直播间很安静：回放之后一条实时字幕、弹幕、报警都没有，就换了主播
+    send({ type: "status", state: "connecting" });
+    send({ type: "session_break", ts: 9 });
+    assert.equal(healthShown(elements), null,
+                 "实时的换场：上一场的落后提示作废（以前被当成回放里的历史，挂过整场新直播）");
+  });
+});
+
+test("回放按条数结束时，弹幕在回放的最后一条之后就强制贴底一次，不用等第一条实时消息", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 30; n++) ws.onmessage({ data: comment(n) });
+    userScrollsTo(list, 100);
+    ws.onclose({ code: 1006 });
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send(Object.assign({}, HELLO, { replay_len: 31 }));
+    send({ type: "status", state: "live" });
+    for (let n = 11; n <= 40; n++) {
+      ws.onmessage({ data: comment(n, { replay: true }) });
+      if (n === 39) {
+        list.scrollTop = 300;                        // 回放期间补发的 scroll 事件改掉了跟随意图
+        list.dispatch("scroll");
+        assert.ok(geo.below() > 0, "回放还没完：还没贴底");
+      }
+    }
+    assert.equal(geo.below(), 0, "回放的最后一条到了就贴底");
+    ws.onmessage({ data: comment(41) });             // 之后的实时弹幕照常跟随
+    assert.equal(geo.below(), 0);
+  });
+});
+
+test("viewer_hello 说回放 0 条：hello 之后来的第一条就是实时的", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send({ type: "status", state: "live" });
+    send({ type: "health", level: "lagging" });
+    send(Object.assign({}, HELLO, { replay_len: 0 }));
+    send({ type: "status", state: "live" });
+    send({ type: "health", level: "lagging" });
+    send({ type: "session_break", ts: 9 });
+    assert.equal(healthShown(elements), null, "回放已经结束：这条换场是实时的");
+  });
+});

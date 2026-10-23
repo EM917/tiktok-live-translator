@@ -173,7 +173,7 @@ def test_replay_max_is_the_sum_of_every_part_of_the_phone_replay():
 
 def test_phone_replay_keeps_the_newest_comment_when_every_part_is_at_its_cap():
     """持续提示、报警、字幕、弹幕同时到顶，再加上 alert_mode 和 health：以前回放比 273 多出两条，最后那一刀
-    把最新的两条弹幕切掉了。现在一条不切。全走真 CaptionServer.broadcast 的上限。"""
+    把最新的两条弹幕切掉了。现在一条不切，hello 里的回放条数也对得上。全走真 CaptionServer.broadcast 的上限。"""
     server = CaptionServer(port=0)
 
     async def go():
@@ -195,6 +195,7 @@ def test_phone_replay_keeps_the_newest_comment_when_every_part_is_at_its_cap():
                       "incident": INCIDENTS_MAX, "health": 1, "alert": ALERTS_MAX,
                       "caption": viewer.PHONE_HISTORY_MAX, "comment": viewer.PHONE_COMMENTS_MAX}
     assert snapshot[-1]["type"] == "comment" and snapshot[-1]["id"] == "c149"     # 最新的那条还在
+    assert snapshot[0]["replay_len"] == viewer.REPLAY_MAX - 1
 
 
 # ---- 清空：服务端缓存也要清 ----

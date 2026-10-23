@@ -224,6 +224,7 @@ def test_register_pushes_the_whole_replay_in_one_synchronous_block(loop):
         "caption", "caption", "comment", "caption"]
     assert got[0]["read_only"] is True
     assert got[0]["max_viewers"] == viewer_mod.MAX_VIEWERS
+    assert got[0]["replay_len"] == 7              # hello 之后 7 条是回放，第 8 条起是实时的
     assert "detail" not in got[1]                 # status 的自由文本没跟过来
     assert got[2]["backend"] == "live"
     assert got[4]["replay"] is True
@@ -243,6 +244,33 @@ def test_register_does_not_blow_up_when_the_replay_exceeds_the_queue(loop, monke
     v = add(hub)
     assert hub.count == 1
     assert v.queue.qsize() == 3
+    # hello 里的回放条数是真放进去的那些（hello 之后 2 条），不是快照的 50 条：
+    # 不然手机会把接下来的 48 条实时消息也当成回放
+    assert v.queue.get_nowait()["replay_len"] == 2
+
+
+def test_viewer_hello_says_how_many_replay_messages_follow(loop):
+    """b2 审查：手机以前只能等「回放之后的第一条实时字幕/弹幕/报警」才知道回放结束，安静的直播间里
+    紧接着换主播，实时的 session_break 被当成历史。现在 hello 带着回放条数，手机数够就结束。
+    条数和入册时压进队列的回放一条不差，紧跟着的就是实时消息。"""
+    server = StubServer(status={"state": "live"}, comment_backend="connected", alerts_enabled=True,
+                        health={"level": "lagging", "backlog_sec": 23.0, "text": "x"})
+    server.history = [{"type": "caption", "id": 1, "original": "uno"},
+                      {"type": "session_break", "ts": 5.0},
+                      {"type": "caption", "id": 2, "original": "dos"}]
+    server.comments = [{"type": "comment", "id": "c1", "user": "ana", "text": "hola"}]
+    hub = make_hub(server)
+    v = add(hub)
+    hub.fanout({"type": "session_break", "ts": 9.0})          # 回放之后紧接着换主播
+    got = []
+    while not v.queue.empty():
+        got.append(v.queue.get_nowait())
+    n = got[0]["replay_len"]
+    assert n == len(got) - 2 == 8
+    assert got[n]["type"] == "comment"                         # 回放的最后一条
+    assert got[n + 1] == {"type": "session_break", "ts": 9.0}  # 实时的那条不算在里面
+    # 没有可回放的：条数是 0（hello 本身就是回放的结尾）
+    assert viewer_mod.replay_snapshot(StubServer())[0]["replay_len"] == 0
 
 
 def test_replay_snapshot_stays_under_the_queue_limit():
