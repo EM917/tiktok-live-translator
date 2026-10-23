@@ -1163,8 +1163,17 @@ def test_idle_sockets_cannot_exhaust_file_handles_under_a_256_limit():
         state = ask()
         assert state["conns"] <= viewer_mod.MAX_CONN_PER_IP
         assert (state["open"], state["socket"], state["spawn"]) == ("ok", "ok", "ok"), state
-        time.sleep(idle + 1.0)
-        state = ask()
+        # 到期之后轮询，不固定睡 idle+1 秒：服务端是另一个进程，慢跑器上它的计时器可能晚一点才轮到
+        time.sleep(idle)
+        deadline = time.monotonic() + 10.0
+        while True:
+            state = ask()
+            if (state["conns"] == 0
+                    and state["idle_closed"] == viewer_mod.MAX_CONN_PER_IP
+                    and state["rejected"] == holding - viewer_mod.MAX_CONN_PER_IP) \
+                    or time.monotonic() > deadline:
+                break
+            time.sleep(0.2)
         assert state["conns"] == 0
         assert state["idle_closed"] == viewer_mod.MAX_CONN_PER_IP
         assert state["rejected"] == holding - viewer_mod.MAX_CONN_PER_IP
@@ -1221,7 +1230,7 @@ def test_one_address_squatting_32_unauthenticated_sockets_cannot_lock_out_anothe
 
         hub._make_ws = lambda: FakeWS(hang=True)
         tasks = [asyncio.ensure_future(squat()) for _ in range(32)]
-        await asyncio.sleep(0.05)
+        await _until(lambda: len(outcomes) >= 32 - viewer_mod.MAX_PENDING_PER_IP, timeout=2.0)
         assert outcomes.count("503") == 32 - viewer_mod.MAX_PENDING_PER_IP
         assert hub._pending == viewer_mod.MAX_PENDING_PER_IP      # 503 的那些没占全局名额
         assert hub._unauth == {"10.0.0.66": viewer_mod.MAX_PENDING_PER_IP}
@@ -1255,20 +1264,36 @@ def test_the_per_address_slot_is_given_back_after_auth_and_after_a_refusal():
 
 def test_an_authenticated_phone_does_not_hold_its_address_s_unauthenticated_slot():
     """已经在看的手机不占它这个 IP 的未鉴权名额：同一个 NAT 后面的几台手机陆续连进来，
-    在看的人再多也不会把后来的挡在 503 外面。"""
+    在看的人再多也不会把后来的挡在 503 外面。
+
+    「陆续」要在测试里做出来：上一台鉴权入册了才连下一台。同一时刻还没发 auth 的超过
+    MAX_PENDING_PER_IP 条，本来就该 503（上面占位那条钉着）。原来一次起 6 条、固定等 0.1 秒，
+    3.12 起能过只是因为 wait_for 里的 receive 不挂起就不让出，6 条碰巧排成了先后；3.9 的
+    wait_for 总要让出一次，6 条同时处在未鉴权，后 2 条 503（PR #122 的 CI）。"""
     async def scenario():
         hub = make_hub()
-        sockets = [FakeWS(first=auth(), linger=0.5)
-                   for _ in range(viewer_mod.MAX_PENDING_PER_IP + 2)]
+        release = asyncio.Event()
+
+        class WatchingWS(FakeWS):
+            async def __anext__(self):
+                await release.wait()           # 一直在看，测试放手才走
+                raise StopAsyncIteration
+
+        sockets = [WatchingWS(first=auth()) for _ in range(viewer_mod.MAX_PENDING_PER_IP + 2)]
         made = iter(sockets)
         hub._make_ws = lambda: next(made)
-        tasks = [asyncio.ensure_future(hub.vws(SimpleNamespace(
-            transport=FakeTransport("10.0.0.30"), match_info={}, headers={})))
-            for _ in sockets]
-        await asyncio.sleep(0.1)
-        assert hub.count == len(sockets)
-        assert hub._unauth == {}
+        tasks = []
+        for watching in range(1, len(sockets) + 1):
+            task = asyncio.ensure_future(hub.vws(SimpleNamespace(
+                transport=FakeTransport("10.0.0.30"), match_info={}, headers={})))
+            tasks.append(task)
+            await _until(lambda n=watching, t=task: hub.count == n or t.done(), timeout=2.0)
+            assert not task.done(), task.exception()       # 被 503 挡掉的话 task 已经结束
+            assert hub.count == watching
+            assert hub._unauth == {}
+        release.set()
         await asyncio.gather(*tasks)
+        assert hub.count == 0 and hub._unauth == {} and hub._pending == 0
 
     asyncio.run(scenario())
 
