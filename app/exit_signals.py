@@ -17,7 +17,8 @@
   * Windows 只接 Ctrl-C（SIGINT）：那边没有 SIGHUP，SIGTERM 也不是这样送到进程的。
 
 同一个进程只收尾一次：Dispatch 认第一次收到的信号；收尾途中再收到（比如又按了一次 Ctrl-C）交给 on_repeat，
-调用方据此不再等、直接退出。
+调用方据此不再等、直接退出。窗口模式下，读线程把第一次的收尾交给新线程、自己接着读（WakeupBridge），
+收尾途中的第二个信号才读得到。
 
 这个模块不含中文字面量、自己不打印：要打印的中文交给调用方（main.py）。测试不 import main（CLAUDE.md 的
 「测试里别 import main」），逻辑都在这里测。
@@ -60,6 +61,12 @@ class Dispatch:
         self.errors = []
 
     def __call__(self, signum):
+        self.claim(signum)[1]()
+
+    def claim(self, signum):
+        """只认账、不调回调：在锁里数一次、定下这是不是第一次，返回 (是不是第一次, run)。run() 才调回调。
+        给 WakeupBridge 用：第一次的 run 交给新线程跑，读线程接着读下一个信号——先后在这里就定了，
+        不会因为新线程晚起一步，让第二个信号抢成「第一次」。"""
         name = signal_name(signum)
         with self._lock:
             self.count += 1
@@ -67,6 +74,9 @@ class Dispatch:
             if first:
                 self.first = name
         callback = self.on_first if first else self.on_repeat
+        return first, (lambda: self._run(callback, name))
+
+    def _run(self, callback, name):
         if callback is None:
             return
         try:
@@ -105,8 +115,14 @@ class WakeupBridge:
     """窗口模式：把信号从 C 层直接送到一个后台线程，不等主线程回到 Python 代码（见模块说明）。
 
     install() 必须在主线程调（signal.signal、set_wakeup_fd 只许主线程用）。读线程是 daemon 线程，
-    读到一个字节就调一次 dispatch(编号)。Python 层的处理函数只在读线程不在了的时候才自己调 dispatch——
-    两条路都送的话，同一个信号会被算成两次（第二次就成了「又收到一次」）。"""
+    读到一个字节就交一次 dispatch。Python 层的处理函数只在读线程不在了的时候才自己调 dispatch——
+    两条路都送的话，同一个信号会被算成两次（第二次就成了「又收到一次」）。
+
+    第一次的回调（收尾：停管线最多 5 秒、等证据写盘最多 2 秒）放进一个新的 daemon 线程跑，读线程不等它、
+    接着读：收尾途中再来的信号照样读得到、交给 on_repeat（main.py：不再等收尾，直接退出）。以前读线程自己
+    同步跑收尾，收尾那几秒里第二个信号的字节没人读，Python 层的处理函数又看读线程活着、什么都不做——
+    第二次 Ctrl-C 不起作用（第 1 轮审查用 exp/review-r1/second_signal.py 实测）。之后的回调还在读线程上跑：
+    on_repeat 本身就是退出。"""
 
     def __init__(self, dispatch, signals=None, signal_mod=signal, socketpair=socket.socketpair):
         self.dispatch = dispatch
@@ -157,7 +173,23 @@ class WakeupBridge:
             if not data:
                 return
             for signum in data:
-                self.dispatch(signum)
+                self._deliver(signum)
+
+    def _deliver(self, signum):
+        """交一个信号：第一次的回调放进新线程（见类说明），之后的在读线程上直接跑。dispatch 不是 Dispatch
+        （没有 claim）就照旧直接调。新线程起不来（线程数到顶）也照旧在这里跑：收尾总要有人做。"""
+        claim = getattr(self.dispatch, "claim", None)
+        if claim is None:
+            self.dispatch(signum)
+            return
+        first, run = claim(signum)
+        if first:
+            try:
+                threading.Thread(target=run, name="exit-signals-first", daemon=True).start()
+                return
+            except RuntimeError:
+                pass
+        run()
 
     def reader_alive(self):
         return self._reader is not None and self._reader.is_alive()

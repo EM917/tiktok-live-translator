@@ -611,7 +611,8 @@ def _note_exit_signal(name):
 
 def _exit_again(name):
     """收尾途中又收到退出信号（比如又按了一次 Ctrl-C）：不再等停管线，只等一下在途的证据写盘（最多 2 秒，
-    同 main.py 里别的 os._exit），然后退出。审计没写完的那一场，下次启动补一条结尾（app/audit_recover.py）。"""
+    同 main.py 里别的 os._exit），然后退出。审计没写完的那一场，下次启动补一条结尾（app/audit_recover.py）。
+    窗口模式下由 WakeupBridge 的读线程调：第一次的收尾在另一个线程里跑，读线程收尾途中照样读得到这一个。"""
     from app.window_close import flush_evidence
     _say("[警告] 又收到 {}：不再等收尾，直接退出".format(name))
     flush_evidence()
@@ -862,10 +863,12 @@ def _install_window_signals(finish):
         _note_exit_signal(name)
         finish.finish_signal(name)
 
-    exit_signals.keep_sigint_from_cocoa()
     bridge = exit_signals.WakeupBridge(exit_signals.Dispatch(on_first, _exit_again))
     if bridge.install():
         _SIGNAL_BRIDGE.append(bridge)
+        # 桥装上了才把 PyObjC 的 mach 中断换掉：装不上时换掉它，Ctrl-C 在 Cocoa 主循环里就彻底没反应了
+        # （Python 层的处理函数在那里不执行），不换至少还能经 NSApp terminate: 退出（第 1 轮审查）
+        exit_signals.keep_sigint_from_cocoa()
     else:
         print("[警告] 没能接住退出信号：关终端窗口、kill 时这一场的审计不会写结尾（下次启动补一条）")
 

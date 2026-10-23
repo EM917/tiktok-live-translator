@@ -164,6 +164,104 @@ def test_the_bridge_delivers_a_real_signal_exactly_once_and_uninstalls_cleanly()
     assert not bridge.reader_alive()
 
 
+@pytest.mark.skipif(not POSIX, reason="SIGUSR1 只在 POSIX 上有")
+def test_a_second_real_signal_reaches_on_repeat_while_the_first_shutdown_is_still_running():
+    """第 1 轮审查：读线程以前同步跑第一次的收尾（最多 5 + 2 秒），这期间第二个信号的字节没人读——窗口模式下
+    第二次 Ctrl-C 不起作用。现在第一次的收尾在自己的线程里，第二个信号照样交到 on_repeat。"""
+    release = threading.Event()
+    first_running = threading.Event()
+    seen = []
+
+    def on_first(name):
+        seen.append(("first", name))
+        first_running.set()
+        release.wait(5.0)                    # 模拟 stop_after_close 在等管线停下
+        seen.append(("first-done", name))
+
+    def on_repeat(name):
+        seen.append(("again", name))
+
+    bridge = es.WakeupBridge(es.Dispatch(on_first, on_repeat), signals=[signal.SIGUSR1, signal.SIGUSR2])
+    old_fd = signal.set_wakeup_fd(-1)
+    signal.set_wakeup_fd(old_fd)
+    assert bridge.install()
+    try:
+        os.kill(os.getpid(), signal.SIGUSR1)
+        assert first_running.wait(2.0)
+        os.kill(os.getpid(), signal.SIGUSR2)
+        deadline = time.monotonic() + 2.0
+        while ("again", "SIGUSR2") not in seen and time.monotonic() < deadline:
+            time.sleep(0.01)
+        during = list(seen)
+    finally:
+        release.set()
+        bridge.uninstall()
+    assert during == [("first", "SIGUSR1"), ("again", "SIGUSR2")]     # 第一次的收尾还没走完
+    assert bridge.dispatch.first == "SIGUSR1" and bridge.dispatch.count == 2
+
+
+def test_two_signals_read_together_keep_their_order():
+    """两个字节一次 recv 读到：第一次在读线程上就认了账，新线程晚起一步也不会让第二个抢成「第一次」。"""
+    release = threading.Event()
+    seen = []
+
+    def on_first(name):
+        release.wait(2.0)
+        seen.append(("first", name))
+
+    d = es.Dispatch(on_first, lambda n: seen.append(("again", n)))
+    bridge = es.WakeupBridge(d, signals=[], signal_mod=FakeSignal())
+    bridge._deliver(signal.SIGTERM)
+    bridge._deliver(signal.SIGINT)           # 读线程不等第一次的收尾
+    assert seen == [("again", "SIGINT")]
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while len(seen) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert seen == [("again", "SIGINT"), ("first", "SIGTERM")] and d.first == "SIGTERM"
+
+
+def test_a_plain_callable_dispatch_is_still_called_directly():
+    got = []
+    bridge = es.WakeupBridge(got.append, signals=[], signal_mod=FakeSignal())
+    bridge._deliver(signal.SIGTERM)
+    assert got == [signal.SIGTERM]
+
+
+@pytest.mark.skipif(not POSIX, reason="SIGUSR1 只在 POSIX 上有")
+def test_a_second_signal_ends_the_process_before_the_first_shutdown_finishes():
+    """和审查的实验（exp/review-r1/second_signal.py）同一个场景，在子进程里走到 os._exit：主线程停在 sleep 里
+    （近似原生界面循环），第一次的收尾要 3 秒，0.5 秒后再来一个信号 → 以 on_repeat 的退出码 1 结束，不等那 3 秒。"""
+    code = """
+import os, signal, sys, threading, time
+sys.path.insert(0, {root!r})
+from app import exit_signals as es
+
+def on_first(name):
+    time.sleep(3.0)
+    os._exit(0)
+
+def on_repeat(name):
+    os._exit(1)
+
+bridge = es.WakeupBridge(es.Dispatch(on_first, on_repeat), signals=[signal.SIGUSR1])
+assert bridge.install()
+
+def sender():
+    time.sleep(0.2); os.kill(os.getpid(), signal.SIGUSR1)
+    time.sleep(0.5); os.kill(os.getpid(), signal.SIGUSR1)
+
+threading.Thread(target=sender, daemon=True).start()
+time.sleep(10)
+os._exit(2)
+""".format(root=str(ROOT))
+    started = time.monotonic()
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
+    elapsed = time.monotonic() - started
+    assert out.returncode == 1, out.stderr
+    assert elapsed < 3.0
+
+
 def test_the_bridge_puts_back_what_it_changed_when_a_step_fails():
     class Refuses(FakeSignal):
         def set_wakeup_fd(self, fd, warn_on_full_buffer=True):
@@ -304,9 +402,13 @@ def test_window_mode_installs_the_signal_bridge_before_the_backend_and_hooks_cmd
 
 def test_the_window_bridge_hands_signals_to_finish_signal_and_keeps_sigint_from_cocoa():
     ast, func = _main_func("_install_window_signals")
-    assert _calls(ast, func, "keep_sigint_from_cocoa")
     assert _calls(ast, func, "finish_signal")
     assert _calls(ast, func, "WakeupBridge")
+    # mach 中断只在桥装上之后才换（第 1 轮审查）：装不上时换掉它，Ctrl-C 在 Cocoa 主循环里就彻底没反应
+    (keep,) = _calls(ast, func, "keep_sigint_from_cocoa")
+    (gate,) = [n for n in ast.walk(func) if isinstance(n, ast.If) and isinstance(n.test, ast.Call)
+               and getattr(n.test.func, "attr", None) == "install"]
+    assert any(keep is n for stmt in gate.body for n in ast.walk(stmt))
 
 
 def test_cli_and_browser_mode_install_loop_handlers_and_shut_down_through_close_session():
