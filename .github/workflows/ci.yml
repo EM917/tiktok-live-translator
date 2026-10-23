@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # 每周一次：install-latest 不带 constraints 装一遍 PyPI 当天最新的（I4），提前看到上游的大版本；
+  # 其余任务在 main 上照常跑一遍。workflow_dispatch 可以在 Actions 页面手动触发
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
 
 jobs:
   test:
@@ -44,6 +49,112 @@ jobs:
       - name: JS unit tests
         shell: bash
         run: node --test tests/*.test.mjs
+
+  # I4（用户决定 D8）：在干净的 venv 里真的按 requirements.txt + constraints.txt 装一遍，import 核心
+  # 组件、编译源码。上面的 test 任务只装 pytest、numpy、aiohttp，从不碰真实依赖：锁的版本装不上，
+  # 以前只有新装机的用户才会发现。3.13 走锁死的那一套，3.10 只受 constraints 里的上界约束。
+  # 只报告、不卡合并：不在 ruleset 22144351 的必需检查里（以后改这里的任务名不用同步 ruleset）。
+  # Windows 那两格先允许失败（continue-on-error），结果看日志。每格都是一次完整的首次装机（约 1.4 GB）
+  install-smoke:
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]      # macos-latest 是 Apple 芯片（arm64）
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install into a fresh venv
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/tlt-venv"
+          VPY="$RUNNER_TEMP/tlt-venv/bin/python"
+          [ -x "$VPY" ] || VPY="$RUNNER_TEMP/tlt-venv/Scripts/python.exe"
+          echo "VPY=$VPY" >> "$GITHUB_ENV"
+          "$VPY" -m pip install --disable-pip-version-check -r requirements.txt -c constraints.txt
+      - name: Installed versions
+        shell: bash
+        run: |
+          "$VPY" -m pip freeze --all
+          "$VPY" -m pip check || echo "::warning::pip check reported problems (see above)"
+      - name: Import the core components
+        shell: bash
+        run: |
+          "$VPY" - <<'EOF'
+          import importlib
+          import importlib.util
+          import platform
+          import sys
+
+          for name in ("aiohttp", "numpy", "faster_whisper", "ctranslate2", "onnxruntime", "av",
+                       "yt_dlp", "curl_cffi", "imageio_ffmpeg", "webview", "TikTokLive"):
+              mod = importlib.import_module(name)
+              print(name, getattr(mod, "__version__", ""))
+          # mlx-whisper 只看装没装上：GitHub 的 macOS 跑器是虚拟机，import mlx 要碰 Metal
+          if sys.platform == "darwin" and platform.machine() == "arm64":
+              assert importlib.util.find_spec("mlx_whisper"), "mlx-whisper is not installed"
+              print("mlx_whisper installed")
+          EOF
+      - name: Byte-compile all sources
+        shell: bash
+        run: '"$VPY" -m compileall -q main.py app'
+
+  # 每周一次、不带 constraints：装 PyPI 当天最新的那一套，提前看到上游出了大版本之后新装机还起不起得来
+  # （锁的版本该不该升，看这里）。全部允许失败、只报告，不在必需检查里
+  install-latest:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]      # macos-latest 是 Apple 芯片（arm64）
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install into a fresh venv
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/tlt-venv"
+          VPY="$RUNNER_TEMP/tlt-venv/bin/python"
+          [ -x "$VPY" ] || VPY="$RUNNER_TEMP/tlt-venv/Scripts/python.exe"
+          echo "VPY=$VPY" >> "$GITHUB_ENV"
+          "$VPY" -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Installed versions
+        shell: bash
+        run: |
+          "$VPY" -m pip freeze --all
+          "$VPY" -m pip check || echo "::warning::pip check reported problems (see above)"
+      - name: Import the core components
+        shell: bash
+        run: |
+          "$VPY" - <<'EOF'
+          import importlib
+          import importlib.util
+          import platform
+          import sys
+
+          for name in ("aiohttp", "numpy", "faster_whisper", "ctranslate2", "onnxruntime", "av",
+                       "yt_dlp", "curl_cffi", "imageio_ffmpeg", "webview", "TikTokLive"):
+              mod = importlib.import_module(name)
+              print(name, getattr(mod, "__version__", ""))
+          # mlx-whisper 只看装没装上：GitHub 的 macOS 跑器是虚拟机，import mlx 要碰 Metal
+          if sys.platform == "darwin" and platform.machine() == "arm64":
+              assert importlib.util.find_spec("mlx_whisper"), "mlx-whisper is not installed"
+              print("mlx_whisper installed")
+          EOF
+      - name: Byte-compile all sources
+        shell: bash
+        run: '"$VPY" -m compileall -q main.py app'
 
   # G10（spec §12.3）：无头 Chrome 打开注入了假数据的英文页面，扫 DOM 里剩下的中文，量顶栏版面。
   # 只在 macOS 跑器上跑：它自带 Google Chrome 和 PingFang / SF Pro，版面余量才可信（ubuntu 上
