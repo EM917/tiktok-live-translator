@@ -1037,6 +1037,32 @@ def test_stop_cuts_connections_that_never_sent_anything(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_stop_cuts_what_runner_cleanup_left_behind():
+    """stop() 末尾的兜底（_gate.abort_all）：aiohttp 的 runner.cleanup() 自己会关它连接表里的每一条，
+    这里让它什么都不做，模拟它出错或漏下的情况。空连接照样要在关同看时断掉，不等 5 秒的首字节期限。"""
+    async def scenario():
+        hub = make_hub()
+        await hub.start()
+        runner = hub._runner           # AppRunner 有 __slots__，方法换不掉：换掉 hub 手里的这一个
+
+        async def leaves_everything():
+            return None
+
+        hub._runner = SimpleNamespace(cleanup=leaves_everything)
+        reader, writer = await asyncio.open_connection("127.0.0.1", hub.port)
+        try:
+            await _until(lambda: hub.open_connections == 1)
+            await hub.stop("off")
+            assert viewer_mod.FIRST_BYTE_TIMEOUT_SEC > 2.0     # 下面 2 秒内断开的不是首字节期限
+            assert await _eof_within(reader, 2.0)
+            await _until(lambda: hub.open_connections == 0)
+        finally:
+            writer.close()
+            await runner.cleanup()
+
+    asyncio.run(scenario())
+
+
 # 子进程：把软上限压到 256（本机从 Finder 启动的 .app 拿到的就是这个数），起真 hub（只绑 127.0.0.1），
 # 按 stdin 的指令报告「现在还能不能开文件、开 socket、起子进程」。攻击方是另一个进程（它自己的上限
 # 抬高，不让它成为瓶颈），挂的空连接比 256 还多——修之前服务端会先把自己的名额耗光。
