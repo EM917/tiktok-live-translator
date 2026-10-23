@@ -709,10 +709,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         _is_repeated_start 只在这两种状态下放行；state 写成字面量，tests/viewer.test.mjs 据此核对手机认得每一种"""
         status = (getattr(self.server, "config", None) or {}).get("status") or {}
         detail, command = status.get("detail", ""), status.get("command")
+        # 结构化字段（CaptionServer.STATUS_EXTRAS）跟着原样再发：只在原来带着时才传，没有就和以前一样
+        extra = {k: status[k] for k in getattr(self.server, "STATUS_EXTRAS", ()) if status.get(k)}
         if status.get("state") == "live":
-            await self.server.status("live", detail, command)
+            await self.server.status("live", detail, command, **extra)
         elif status.get("state") == "connecting":
-            await self.server.status("connecting", detail, command)
+            await self.server.status("connecting", detail, command, **extra)
 
     def _set_caption_size(self, value):
         """顶栏的字幕字号滑块松手了：存进 settings.json，并广播给其它开着的桌面页面跟上。
@@ -4164,9 +4166,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if self._resolve_fail_streak >= 2 and getattr(self, "updater", None) is not None:
             self._spawn(self.updater.freshen_ytdlp(reason="resolve-failures"))
 
+    MODEL_DOWNLOAD_POLL_SEC = 3.0
+
     async def _model_download_progress(self, model):
         """模型加载期间轮询 HuggingFace 缓存目录的增量，把下载进度推到 UI。
-        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。"""
+        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。每 MODEL_DOWNLOAD_POLL_SEC 秒看一次。"""
         try:
             hf_home = os.environ.get("HF_HOME")
             cache = (Path(hf_home) / "hub" if hf_home
@@ -4188,10 +4192,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             baseline = await loop.run_in_executor(None, _du)
             expected = MODEL_SIZES_MB.get(model)
             while True:
-                await asyncio.sleep(3)
+                await asyncio.sleep(self.MODEL_DOWNLOAD_POLL_SEC)
                 done_mb = (await loop.run_in_executor(None, _du) - baseline) / 1e6
                 if done_mb < 20:      # 没在下载（或刚开始），别闪一条 0% 出来
                     continue
+                pct = None
                 if expected:
                     done_mb = min(done_mb, expected)   # Windows 无软链权限时是真副本，仍可能翻倍
                     pct = min(99, int(done_mb * 100 / expected))
@@ -4205,7 +4210,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                               "请保持窗口打开）…",
                               "Downloading speech model {}… {:.0f} MB so far (first time "
                               "only). Keep this window open.").format(model, done_mb))
-                await self.server.status("connecting", text)
+                # 结构化的进度（专家审查 U7）：页面中间那张「正在连接」卡片只认它，不去解析 detail 的文字——
+                # connecting 状态下 detail 几乎从不为空（本文件里有十来处在发），看到 detail 就显示会和顶部
+                # 横幅重复同一句话。只有这里带：其余 connecting 都不带这个键。pct 在模型大小未知时是 null
+                await self.server.status("connecting", text, progress={
+                    "kind": "model_download", "pct": pct, "mb": int(round(done_mb))})
         except asyncio.CancelledError:
             raise
         except Exception:
