@@ -302,12 +302,16 @@ class FakeMLX:
     """假的 mlx-whisper 全家：mlx_whisper（transcribe）、mlx_whisper.audio、mlx_whisper.transcribe
     （ModelHolder）、mlx.core（只有 float16）。steps 记下语言检测那一步依次调了什么；calls 记每次真识别
     的 language 参数（预热那次不带 temperature，不算）。language=None 时，假 transcribe 像真的一样
-    自己检测：取概率最大的。"""
+    自己检测：取概率最大的。multilingual=False 是纯英文模型；detect_error 是检测那一步要抛的错；
+    holder=False 是 mlx_whisper.transcribe 里没有 ModelHolder（升级后内部实现变了的样子）。"""
 
     N_SAMPLES, N_FRAMES, N_MELS = 480000, 3000, 128
 
-    def __init__(self, probs):
+    def __init__(self, probs, multilingual=True, detect_error=None, holder=True):
         self.probs = dict(probs)
+        self.multilingual = multilingual
+        self.detect_error = detect_error
+        self.holder = holder
         self.steps = []
         self.calls = []
 
@@ -336,11 +340,13 @@ class FakeMLX:
         audio_mod.log_mel_spectrogram, audio_mod.pad_or_trim = log_mel_spectrogram, pad_or_trim
 
         class Model:
-            is_multilingual = True
+            is_multilingual = self.multilingual
             dims = SimpleNamespace(n_mels=self.N_MELS)
 
             def detect_language(self, mel):
                 fake.steps.append(("detect_language", mel))
+                if fake.detect_error is not None:
+                    raise fake.detect_error
                 return None, dict(fake.probs)
 
         class ModelHolder:
@@ -350,7 +356,8 @@ class FakeMLX:
                 return Model()
 
         transcribe_mod = ModuleType("mlx_whisper.transcribe")
-        transcribe_mod.ModelHolder = ModelHolder
+        if self.holder:
+            transcribe_mod.ModelHolder = ModelHolder
 
         def transcribe(audio, **kw):
             if "temperature" not in kw:
@@ -561,3 +568,203 @@ def test_masked_segment_keeps_the_relabel_signals_downstream(isolated, tmp_path)
     seg = [r for r in rows if r["type"] == "segment"][0]
     assert seg["relabeled_from"] == "ko" and seg["language"] == "en"
     assert seg["asr"]["calls"] == 1
+
+
+# ---- 语言屏蔽：终端提示、纯英文模型、检测出错（M6 第二轮审查）----------------------------------------
+
+MASK_ACTIVE = "[信息] 识别语言屏蔽已打开：主播语言列表外的语言在检测阶段就屏蔽，不再整段重转"
+MASK_INACTIVE = "[信息] 识别语言屏蔽开关开着，但这次识别没有主播语言列表（比如 es,en），不生效"
+MASK_ERROR = "[警告] 识别前单独做的语言检测出错（"
+MASK_ERROR_MORE = "[警告] 识别前单独做的语言检测已经出过 5 种错"
+
+
+def test_mask_notice_says_active_only_when_there_is_an_allowed_list(isolated, capsys):
+    """有允许列表：说「已打开」，只说一次（两个后端各建一个也是一次）。"""
+    isolated.setenv(asr.MASK_LANGS_ENV, "on")
+    FakeMLX(KO_FIRST).install(isolated)
+    install_ct2(isolated, FakeCT2Model(KO_FIRST))
+    asr.MLXTranscriber("large-v3", language="es,en")
+    ct2(language="es,pt")
+    out = capsys.readouterr().out
+    assert out.count(MASK_ACTIVE) == 1
+    assert MASK_INACTIVE not in out
+
+
+@pytest.mark.parametrize("language", ["es", None, "auto", "es,xx"])
+def test_mask_notice_says_inactive_without_an_allowed_list(isolated, capsys, language):
+    """单一语种、自动检测、列表校验完只剩一个码（"es,xx"）：开关开着也不屏蔽，终端照实说不生效，
+    不说「已打开」。开关的状态照旧是开（mask_langs 为真），_masked_language 那里不做检测。"""
+    isolated.setenv(asr.MASK_LANGS_ENV, "on")
+    fake = FakeMLX(KO_FIRST).install(isolated)
+    install_ct2(isolated, FakeCT2Model(KO_FIRST))
+    m = asr.MLXTranscriber("large-v3", language=language)
+    c = ct2(language=language)
+    assert m.mask_langs is True and c.mask_langs is True
+    assert m.allowed_langs is None and c.allowed_langs is None
+    m.transcribe(PCM)
+    assert fake.steps == []
+    out = capsys.readouterr().out
+    assert out.count(MASK_INACTIVE) == 1
+    assert MASK_ACTIVE not in out
+
+
+def test_mask_notice_follows_the_explicit_argument_too(isolated, capsys):
+    """评测脚本直接传 mask_langs=True（不看环境变量）时同样按有没有列表说哪一句。"""
+    FakeMLX(KO_FIRST).install(isolated)
+    asr.create_transcriber("mlx", "large-v3", language="es", mask_langs=True)
+    assert capsys.readouterr().out.count(MASK_INACTIVE) == 1
+    asr.create_transcriber("mlx", "large-v3", language="es,en", mask_langs=True)
+    assert capsys.readouterr().out.count(MASK_ACTIVE) == 1
+
+
+def test_mask_off_says_nothing_with_or_without_a_list(isolated, capsys):
+    FakeMLX(KO_FIRST).install(isolated)
+    asr.MLXTranscriber("large-v3", language="es,en")
+    asr.MLXTranscriber("large-v3", language="es")
+    out = capsys.readouterr().out
+    assert MASK_ACTIVE not in out and MASK_INACTIVE not in out
+
+
+@pytest.mark.parametrize("value", ["112", "enable", "开", "onn"])
+def test_an_unknown_mask_switch_value_is_off_with_one_warning(isolated, capsys, value):
+    """写错的值（TLT_MLX_CACHE_MB 的做法）：按关处理，终端说一次，免得评测时以为开关开了。"""
+    isolated.setenv(asr.MASK_LANGS_ENV, value)
+    fake = FakeMLX(KO_FIRST).install(isolated)
+    first = asr.MLXTranscriber("large-v3", language="es,en")
+    second = asr.MLXTranscriber("large-v3", language="es,en")
+    assert first.mask_langs is False and second.mask_langs is False
+    first.transcribe(PCM)
+    assert fake.steps == [] and fake.calls == [None, "es"]       # 照旧走重转，没做单独的检测
+    out = capsys.readouterr().out
+    warning = "[警告] 环境变量 TLT_ASR_MASK_LANGS 的值 {!r} 不是 on/1/true/yes，也不是 off/0/false/no，按关处理"
+    assert out.count(warning.format(value)) == 1
+    assert MASK_ACTIVE not in out and MASK_INACTIVE not in out
+
+
+@pytest.mark.parametrize("value", ["", "off", "OFF", " 0 ", "false", "no"])
+def test_a_known_off_mask_switch_value_is_silent(isolated, capsys, value):
+    """（用 ct2：mlx 的识别器建好时还会说 MLX 缓冲缓存上限那一行，和开关无关。）"""
+    isolated.setenv(asr.MASK_LANGS_ENV, value)
+    install_ct2(isolated, FakeCT2Model(KO_FIRST))
+    assert ct2(language="es,en").mask_langs is False
+    assert capsys.readouterr().out == ""
+
+
+def test_ct2_english_only_model_is_english_without_detecting(isolated):
+    """纯英文模型（ctranslate2 的 is_multilingual 为 False）：和 faster-whisper 的 transcribe 一样直接当
+    英语，不调 detect_language。英语在列表里就用英语、不记屏蔽；不在列表里就框进列表、记下 en。"""
+    isolated.setenv(asr.MASK_LANGS_ENV, "on")
+    model = FakeCT2Model(KO_FIRST)                 # 真去检测的话会是韩语
+    model.model = SimpleNamespace(is_multilingual=False)
+    install_ct2(isolated, model)
+    kept = ct2(language="es,en")
+    assert kept._language_probs(np.zeros(1600, dtype=np.float32)) == ("en", {"en": 1.0})
+    result = kept.transcribe(PCM)
+    assert model.detects == []
+    assert model.calls == ["en"]
+    assert result.language == "en" and not result.relabeled_from
+    assert result.signals["calls"] == 1
+    masked = ct2(language="es,pt").transcribe(PCM)
+    assert model.detects == []
+    assert model.calls[-1] == "es"
+    assert masked.language == "es" and masked.relabeled_from == "en"
+    assert masked.signals["calls"] == 1
+
+
+def test_mlx_english_only_model_is_english_without_detecting(isolated):
+    """mlx 的纯英文模型：取到缓存的模型就返回英语，不算梅尔谱、不调 detect_language（和 mlx-whisper
+    0.4.3 的 transcribe 一样）。"""
+    isolated.setenv(asr.MASK_LANGS_ENV, "on")
+    fake = FakeMLX(KO_FIRST, multilingual=False).install(isolated)
+    t = asr.MLXTranscriber("large-v3", language="es,en")
+    assert t._language_probs(np.zeros(1600, dtype=np.float32)) == ("en", {"en": 1.0})
+    fake.steps.clear()
+    result = t.transcribe(PCM)
+    assert fake.steps == [("get_model", "mlx-community/whisper-large-v3-mlx", "float16")]
+    assert fake.calls == ["en"]
+    assert result.language == "en" and not result.relabeled_from
+    assert result.signals["calls"] == 1
+    masked = asr.MLXTranscriber("large-v3", language="es,pt").transcribe(PCM)
+    assert fake.calls[-1] == "es"
+    assert masked.relabeled_from == "en" and masked.signals["calls"] == 1
+
+
+@pytest.mark.parametrize("fault", ["detect_raises", "no_model_holder"])
+def test_mlx_detection_failure_falls_back_to_the_rerun(isolated, capsys, fault):
+    """屏蔽开着、mlx 那一步检测出错（检测本身抛错；或者升级以后 mlx_whisper.transcribe 里没了 ModelHolder）：
+    这一段照旧「先自动检测、不在列表里用主语言整段重转」，结果和开关关着时一样；终端提示一次。"""
+    isolated.setenv(asr.MASK_LANGS_ENV, "on")
+    if fault == "detect_raises":
+        fake = FakeMLX(KO_FIRST, detect_error=RuntimeError("[metal] command buffer failed")).install(isolated)
+        kind = "RuntimeError: [metal] command buffer failed"
+    else:
+        fake = FakeMLX(KO_FIRST, holder=False).install(isolated)
+        kind = "AttributeError: "
+    t = asr.MLXTranscriber("large-v3", language="es,en")
+    first, second = t.transcribe(PCM), t.transcribe(PCM)
+    assert fake.calls == [None, "es", None, "es"]
+    for r in (first, second):
+        assert r.language == "es" and r.relabeled_from == "ko"
+        assert r.text == "hola"
+        assert r.signals["calls"] == 2
+        assert r.windows[0]["first_call"]["language"] == "ko"
+    out = capsys.readouterr().out
+    assert out.count(MASK_ERROR) == 1
+    assert MASK_ERROR + kind in out
+
+
+class FakeCT2ModelFailing(FakeCT2Model):
+    """detect_language 依次抛 errors 里的错。"""
+
+    def __init__(self, probs, errors):
+        super().__init__(probs)
+        self.errors = list(errors)
+
+    def detect_language(self, audio=None, features=None, vad_filter=False, vad_parameters=None,
+                        language_detection_segments=1, language_detection_threshold=0.5):
+        self.detects.append({"audio": audio, "features": features, "vad_filter": vad_filter})
+        raise self.errors.pop(0)
+
+
+def test_detection_errors_are_told_once_per_cause_not_once_per_type(isolated, capsys):
+    """同一类型、原因不同的错各说一次（只按类型去重会把后来的原因吞掉）；同一原因只是数字不同（形状、
+    地址）算一种，不每段刷一行。每一段都照旧走重转，一段不少。"""
+    isolated.setenv(asr.MASK_LANGS_ENV, "on")
+    errors = [RuntimeError("encoder input shape (1, 128, 3000)"),
+              RuntimeError("encoder input shape (1, 128, 2999)"),
+              RuntimeError("VAD model failed to load at 0x7f3a2c"),
+              ValueError("empty audio"),
+              RuntimeError("encoder input shape (1, 128, 3001)"),
+              RuntimeError("VAD model failed to load at 0x7f9b10"),
+              RuntimeError("out of memory")]
+    model = install_ct2(isolated, FakeCT2ModelFailing(KO_FIRST, errors))
+    t = ct2()
+    results = [t.transcribe(PCM) for _ in range(7)]
+    assert model.calls == [None, "es"] * 7
+    assert all(r.relabeled_from == "ko" and r.signals["calls"] == 2 for r in results)
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.startswith(MASK_ERROR)]
+    assert lines == [
+        MASK_ERROR + "RuntimeError: encoder input shape (1, 128, 3000)），改回先自动检测、不在主播语言里再整段重转",
+        MASK_ERROR + "RuntimeError: VAD model failed to load at 0x7f3a2c），改回先自动检测、不在主播语言里再整段重转",
+        MASK_ERROR + "ValueError: empty audio），改回先自动检测、不在主播语言里再整段重转",
+        MASK_ERROR + "RuntimeError: out of memory），改回先自动检测、不在主播语言里再整段重转",
+    ]
+    assert MASK_ERROR_MORE not in out
+
+
+def test_detection_error_kinds_are_capped_with_one_closing_line(isolated, capsys):
+    """原因各不相同、又不止数字不同时，最多说 5 种，第 6 种起只补一句「不逐条提示」（也只说一次）；
+    之后再出已经说过的原因也不重复。识别一段不停。"""
+    isolated.setenv(asr.MASK_LANGS_ENV, "on")
+    reasons = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "alpha"]
+    model = install_ct2(isolated, FakeCT2ModelFailing(KO_FIRST, [RuntimeError(r) for r in reasons]))
+    t = ct2()
+    for _ in reasons:
+        t.transcribe(PCM)
+    assert model.calls == [None, "es"] * len(reasons)
+    out = capsys.readouterr().out
+    told = [line for line in out.splitlines() if line.startswith(MASK_ERROR)]
+    assert [line.split("RuntimeError: ")[1].split("）")[0] for line in told] == reasons[:5]
+    assert out.count(MASK_ERROR_MORE) == 1
+    assert asr.MASK_ERROR_KINDS == 5

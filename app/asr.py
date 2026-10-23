@@ -490,7 +490,8 @@ def _parse_language_spec(language):
 # ---- 识别长尾里两块可以省的解码（专家审查 M6）：两个开关，默认都关 ----
 # 两项改的都是解码行为（项目规则四），所以各带一个开关、默认关：等离线配对评测做完、结果给用户看过、
 # 用户点头才打开（D17）。评测要跑模型，归规则三管，另外排期；这里只有代码和离线单测。开关只认
-# 环境变量（on / 1 / true / yes，不分大小写；没设或别的值都是关），识别器建好时读一次。
+# 环境变量（on / 1 / true / yes，不分大小写；没设或别的值都是关，写了 on、off 两组词以外的值
+# 会在终端提示一次），识别器建好时读一次。
 #
 # 一、生成上限（TLT_ASR_TOKEN_CAP）。复读死循环会一直解码到上限才停：mlx-whisper 的上限叫 sample_len，
 #   不传是 n_text_ctx // 2 = 224 个 token；faster-whisper（ct2）的叫 max_new_tokens，不传时一直到 448 减去
@@ -513,8 +514,8 @@ def _parse_language_spec(language):
 #   - 被屏蔽掉的语言照样填进 relabeled_from：asr_risk 的 relabel 标记、证据索引和审计 segment 的
 #     relabeled_from 含义都不变，不新增字段。和重转靠 signals 的 calls 区分：屏蔽是 1，重转是 2。
 #   - 和重转还有一处不同：重转一律用主语言，屏蔽用允许列表里概率最高的那个（并列时取列表里靠前的）。
-#   - 检测这一步出任何错（比如 faster-whisper 1.1 之前没有公开的 detect_language）：提示一次，这一段
-#     照旧走「先自动检测、不在列表里再重转」，识别不因此停，音频一段不少。
+#   - 检测这一步出任何错（比如 faster-whisper 1.1 之前没有公开的 detect_language）：同一原因提示
+#     一次，这一段照旧走「先自动检测、不在列表里再重转」，识别不因此停，音频一段不少。
 DECODE_TOKEN_CAP = 112
 # faster-whisper 的 max_length 是 448；提示最长 1（sot_prev）+ 223（热词，max_length // 2 - 1）+ 3（起始）。
 # 上限再大就可能撞它的报错；mlx 不传时是 224，比这还大也没有意义
@@ -524,18 +525,32 @@ TOKEN_CAP_MAX = WHISPER_MAX_LENGTH - LONGEST_PROMPT_TOKENS
 TOKEN_CAP_ENV = "TLT_ASR_TOKEN_CAP"
 MASK_LANGS_ENV = "TLT_ASR_MASK_LANGS"
 _ON_WORDS = ("on", "1", "true", "yes")
+_SWITCH_OFF_WORDS = ("off", "0", "false", "no")
+# 语言检测出错：不同原因各提示一次，最多提示这么多种（消息里每段不同的东西万一不止数字，也不至于每段一行）
+MASK_ERROR_KINDS = 5
+_MASK_ERROR_PREFIX = "mask_langs:"
+_VARYING_NUMBER = re.compile(r"0x[0-9a-fA-F]+|\d+")
 
 
 def _switch_on(name, environ=None):
-    """开关开着吗。只认 on / 1 / true / yes（不分大小写）；没设或别的值都是关——默认关，写错也是关。"""
+    """开关开着吗。只认 on / 1 / true / yes（不分大小写）；没设或别的值都是关——默认关，写错也是关。
+    写了 on/off 两组词以外的值（比如 TLT_ASR_TOKEN_CAP=112）：按关处理，终端提示一次，免得以为开了。"""
     value = (environ if environ is not None else os.environ).get(name, "")
-    return str(value).strip().lower() in _ON_WORDS
+    word = str(value).strip().lower()
+    if word in _ON_WORDS:
+        return True
+    if word and word not in _SWITCH_OFF_WORDS:
+        _say_once("[警告] 环境变量 {} 的值 {!r} 不是 on/1/true/yes，也不是 off/0/false/no，按关处理"
+                  .format(name, value))
+    return False
 
 
-def decode_switches(token_cap=None, mask_langs=None, environ=None):
+def decode_switches(token_cap=None, mask_langs=None, environ=None, allowed_langs=None):
     """识别器要用的 (生成上限, 是否屏蔽语言)。参数是 None 的看环境变量开关；评测脚本可以直接传值：
     token_cap 给 1..TOKEN_CAP_MAX 的整数就用这个数，给 0 是关；mask_langs 给 True / False。
-    生成上限关着时是 None。直接传的值不对就报错（只有评测代码会传，界面和设置里没有这个口子）。"""
+    生成上限关着时是 None。直接传的值不对就报错（只有评测代码会传，界面和设置里没有这个口子）。
+    allowed_langs 是识别器的主播语言允许列表（_parse_language_spec 的第二项）：只决定终端说哪一句——
+    屏蔽只在设了列表时生效，没设列表时开关开着也照旧，终端就照实说这次不生效。"""
     if token_cap is None:
         token_cap = DECODE_TOKEN_CAP if _switch_on(TOKEN_CAP_ENV, environ) else None
     elif (isinstance(token_cap, bool) or not isinstance(token_cap, int)
@@ -546,8 +561,10 @@ def decode_switches(token_cap=None, mask_langs=None, environ=None):
     mask_langs = _switch_on(MASK_LANGS_ENV, environ) if mask_langs is None else bool(mask_langs)
     if token_cap:
         _say_once("[信息] 识别生成上限：每段最多解码 {} 个 token".format(token_cap))
-    if mask_langs:
+    if mask_langs and allowed_langs:
         _say_once("[信息] 识别语言屏蔽已打开：主播语言列表外的语言在检测阶段就屏蔽，不再整段重转")
+    elif mask_langs:
+        _say_once("[信息] 识别语言屏蔽开关开着，但这次识别没有主播语言列表（比如 es,en），不生效")
     return token_cap, mask_langs
 
 
@@ -568,6 +585,25 @@ def _mask_to_allowed(top, probs, allowed):
 
     best = max(allowed, key=score)    # max 遇到并列返回最先的那个
     return best, top
+
+
+def _warn_mask_error(exc):
+    """语言屏蔽的检测出错时在终端说一声（这一段照旧走自动检测 + 重转）。出错的话多半每段都出，所以
+    同一个原因一个进程只说一次：原因按「错误类型 + 消息」认，消息里的数字（形状、地址这类每段可能
+    不同的）抹掉再比，换了原因的错照样能看到一次。最多说 MASK_ERROR_KINDS 种，再有新的只补一句。"""
+    text = str(exc)
+    key = "{}{}: {}".format(_MASK_ERROR_PREFIX, type(exc).__name__,
+                            _VARYING_NUMBER.sub("#", text)[:120])
+    if key in _mlx_said:
+        return
+    kinds = sum(1 for said in _mlx_said if said.startswith(_MASK_ERROR_PREFIX))
+    if kinds >= MASK_ERROR_KINDS:
+        _say_once("[警告] 识别前单独做的语言检测已经出过 {} 种错，再有别的错不逐条提示；出错的段照旧"
+                  "先自动检测、不在主播语言里再整段重转".format(MASK_ERROR_KINDS))
+        return
+    _mlx_said.add(key)
+    print("[警告] 识别前单独做的语言检测出错（{}: {}），改回先自动检测、不在主播语言里再"
+          "整段重转".format(type(exc).__name__, text[:120]))
 
 
 def create_transcriber(backend, model_size, device="auto", compute_type="auto",
@@ -672,19 +708,15 @@ class _FilterMixin:
     def _masked_language(self, audio):
         """语言屏蔽（见 DECODE_TOKEN_CAP 前的说明）：返回 (解码用的语言, 被屏蔽掉的语言)，被屏蔽的
         是空字符串表示检测结果本来就在允许列表里。没打开、没设允许列表时是 None，照旧让后端自己检测。
-        检测出错也是 None：提示一次，这一段走原来的「先自动检测、不在列表里再重转」，识别不停。"""
+        检测出错也是 None：同一原因提示一次（_warn_mask_error），这一段走原来的「先自动检测、不在列表里
+        再重转」，识别不停。"""
         if not (self.mask_langs and self.allowed_langs):
             return None
         try:
             top, probs = self._language_probs(audio)
             return _mask_to_allowed(top, probs, self.allowed_langs)
         except Exception as exc:
-            # 同一类错一个进程只说一次（出错的话多半每段都出）；消息里可能带每段不同的数，不拿它去重
-            key = "mask_langs:" + type(exc).__name__
-            if key not in _mlx_said:
-                _mlx_said.add(key)
-                print("[警告] 识别前单独做的语言检测出错（{}: {}），改回先自动检测、不在主播语言里再"
-                      "整段重转".format(type(exc).__name__, str(exc)[:120]))
+            _warn_mask_error(exc)
             return None
 
     def _script_outlier(self, text):
@@ -779,7 +811,8 @@ class Transcriber(_FilterMixin):
 
         self.language, self.allowed_langs, self.primary_lang = _parse_language_spec(language)
         # M6 的两个开关（默认关），见 DECODE_TOKEN_CAP 前的说明
-        self.token_cap, self.mask_langs = decode_switches(token_cap, mask_langs)
+        self.token_cap, self.mask_langs = decode_switches(token_cap, mask_langs,
+                                                          allowed_langs=self.allowed_langs)
         self.beam_size = beam_size
         self.use_context = use_context
         self.temperature = temperature
@@ -890,7 +923,8 @@ class MLXTranscriber(_FilterMixin):
         self.repo = _MLX_REPOS.get(model_size, model_size)  # 允许直接给 HF 仓库名
         self.language, self.allowed_langs, self.primary_lang = _parse_language_spec(language)
         # M6 的两个开关（默认关），见 DECODE_TOKEN_CAP 前的说明
-        self.token_cap, self.mask_langs = decode_switches(token_cap, mask_langs)
+        self.token_cap, self.mask_langs = decode_switches(token_cap, mask_langs,
+                                                          allowed_langs=self.allowed_langs)
         self.use_context = use_context
         self.temperature = temperature
         # 静态热词（商品名等）。与滚动上下文不同：它不随时间漂移，

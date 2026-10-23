@@ -178,18 +178,58 @@ def test_cap_also_bounds_the_relabel_rerun(whisper, monkeypatch):
     assert rm.relabeled_from == rc.relabeled_from == "ko"
 
 
+@pytest.fixture
+def said(monkeypatch):
+    """「只说一次」的记录清空，用例之间互不影响。"""
+    monkeypatch.setattr(asr, "_mlx_said", set())
+
+
+CAP_JUNK_WARNING = ("[警告] 环境变量 TLT_ASR_TOKEN_CAP 的值 {!r} 不是 on/1/true/yes，也不是 off/0/false/no，"
+                    "按关处理")
+
+
 @pytest.mark.parametrize("value", ["on", "ON", " 1 ", "true", "Yes"])
-def test_cap_switch_on_words(value):
+def test_cap_switch_on_words(said, value):
     assert asr.decode_switches(environ={asr.TOKEN_CAP_ENV: value})[0] == 112
 
 
-@pytest.mark.parametrize("value", ["", "off", "0", "no", "false", "112", "enable", "开"])
-def test_cap_switch_anything_else_is_off(value):
-    """默认关，写错也是关；开关只认开或关，不认数字（上限的数写在代码里，评测改要走 token_cap 参数）。"""
+@pytest.mark.parametrize("value", ["", "off", "OFF", " 0 ", "no", "false"])
+def test_cap_switch_off_words_are_off_and_silent(said, capsys, value):
     assert asr.decode_switches(environ={asr.TOKEN_CAP_ENV: value})[0] is None
+    assert capsys.readouterr().out == ""
 
 
-def test_explicit_cap_overrides_the_switch_and_is_checked():
+@pytest.mark.parametrize("value", ["112", "64", "enable", "开", "onn"])
+def test_cap_switch_anything_else_is_off_with_one_warning(said, capsys, value):
+    """写错也是关；开关只认开或关，不认数字（上限的数写在代码里，评测改要走 token_cap 参数）。
+    但不认识的值要在终端说一次（照 TLT_MLX_CACHE_MB 的做法），免得评测时以为开关开了。"""
+    for _ in range(2):
+        assert asr.decode_switches(environ={asr.TOKEN_CAP_ENV: value})[0] is None
+    out = capsys.readouterr().out
+    assert out.count(CAP_JUNK_WARNING.format(value)) == 1
+    assert "识别生成上限" not in out
+
+
+def test_a_numeric_cap_value_leaves_both_backends_uncapped_and_says_so(whisper, monkeypatch, capsys):
+    """TLT_ASR_TOKEN_CAP=112 不是开：两个后端传的参数和开关关着时一样，终端说一次按关处理。"""
+    monkeypatch.setenv(asr.TOKEN_CAP_ENV, "112")
+    m, c = mlx(), ct2()
+    assert m.token_cap is None and c.token_cap is None
+    m.transcribe(PCM)
+    c.transcribe(PCM)
+    assert set(whisper.mlx[-1]) == MLX_KEYS_BEFORE
+    assert set(whisper.ct2.calls[-1]) == CT2_KEYS_BEFORE
+    out = capsys.readouterr().out
+    assert out.count(CAP_JUNK_WARNING.format("112")) == 1
+
+
+def test_an_explicit_cap_does_not_read_or_judge_the_switch(said, capsys):
+    """评测脚本直接传 token_cap 时不看环境变量，环境变量写了什么都不提示。"""
+    assert asr.decode_switches(token_cap=0, environ={asr.TOKEN_CAP_ENV: "112"})[0] is None
+    assert capsys.readouterr().out == ""
+
+
+def test_explicit_cap_overrides_the_switch_and_is_checked(said):
     on = {asr.TOKEN_CAP_ENV: "on"}
     assert asr.decode_switches(token_cap=0, environ=on)[0] is None
     assert asr.decode_switches(token_cap=64, environ={})[0] == 64
