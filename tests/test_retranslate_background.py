@@ -41,7 +41,11 @@ class RecordingServer(CaptionServer):
 
 
 class SlowStrong:
-    """假的强模型：每次调用睡 delay 秒；记下同时在跑的最多几条。"""
+    """假的强模型：每次调用睡 delay 秒；记下同时在跑的最多几条。
+
+    只在协程里（asyncio.run 的 scenario 里）构造：Python 3.9 的 asyncio.Event() 构造时就绑当前事件循环，
+    在循环外建的，之前跑过 asyncio.run 就报 no current event loop，没跑过就绑到另一个循环上，
+    wait() 时报 attached to a different loop（CI 的 3.9 任务，PR #123）。"""
     model = "fake-strong"
 
     RESULTS = {"Hola a todos": "大家好", "Gracias por estar aquí": "谢谢大家来这里"}
@@ -354,14 +358,13 @@ def test_a_strong_model_that_fails_to_start_gives_the_button_back(pl, capsys):
 
 def test_an_error_after_the_strong_model_was_taken_also_gives_the_button_back(pl):
     """已经占上强模型之后才抛（拼提示的时候）：同样补 failed，_strong_inflight 和强模型连接照样放掉。"""
-    _with_strong(pl, SlowStrong(delay=0.0))
-
     def broken(text):
         raise Broken("bad text")
 
     pl._for_translation = broken
 
     async def scenario():
+        _with_strong(pl, SlowStrong(delay=0.0))
         await _server_loop(pl, {"type": "retranslate", "id": 1})
         for _ in range(100):
             if pl.server.strong_states(1)[-1:] == ["failed"]:

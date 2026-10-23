@@ -220,15 +220,15 @@ def test_a_start_that_raises_does_not_swallow_the_retry(pl):
 
 def test_a_cancelled_start_is_forgotten_too(pl):
     """处理途中被取消（页面断开，server 那边等着的协程被取消）：同样撤掉，重开不会被吞。"""
-    gate = asyncio.Event()
-
-    async def stuck_start(url, media=None):
-        pl.server.config["room_url"] = url
-        await gate.wait()
-
-    pl.start_stream = stuck_start
-
     async def scenario():
+        # 闸在协程里建：Python 3.9 的 asyncio.Event() 构造时就绑当前事件循环（CI 的 3.9 任务，PR #123）
+        gate = asyncio.Event()
+
+        async def stuck_start(url, media=None):
+            pl.server.config["room_url"] = url
+            await gate.wait()
+
+        pl.start_stream = stuck_start
         task = asyncio.ensure_future(handle(pl, payload()))
         for _ in range(100):
             if getattr(pl, "_last_start", None) is not None:
@@ -247,19 +247,19 @@ def test_a_cancelled_start_is_forgotten_too(pl):
 
 def test_a_failure_does_not_clear_a_newer_accepted_start(pl):
     """只撤自己那一条：处理途中别的页面的 start 已经被接受、记成更新的那条时，不碰它。"""
-    gate = asyncio.Event()
     calls = []
 
-    async def first_slow_then_fail(url, media=None):
-        calls.append(url)
-        if len(calls) == 1:
-            await gate.wait()
-            raise OSError("出错")
-        pl.server.config["room_url"] = url
-
-    pl.start_stream = first_slow_then_fail
-
     async def scenario():
+        gate = asyncio.Event()                       # 同上：在协程里建
+
+        async def first_slow_then_fail(url, media=None):
+            calls.append(url)
+            if len(calls) == 1:
+                await gate.wait()
+                raise OSError("出错")
+            pl.server.config["room_url"] = url
+
+        pl.start_stream = first_slow_then_fail
         first = asyncio.ensure_future(handle(pl, payload()))
         await asyncio.sleep(0.01)
         await handle(pl, payload(OTHER))             # 另一个页面换了主播，被接受
