@@ -40,7 +40,8 @@ QUIET_SEC = 900.0
 PATTERN = "session-*.jsonl"
 CLOSING_TYPES = ("session_end", "window_closed")
 REASON = "unclean_exit"
-TAIL_BYTES = 256 * 1024
+TAIL_FIRST = 8 * 1024         # 先读末尾这么多：平常的一条记录远小于它
+TAIL_BYTES = 256 * 1024       # 放大到这么多还没有一条完整记录，就整份读
 
 
 class Report:
@@ -88,17 +89,21 @@ def recover_since(load, save, now):
 
 def _last_record(path, size):
     """最后一条完整记录（dict）和文件末尾是不是换行。一条完整记录都没有时第一项是 None。
-    先读末尾 TAIL_BYTES；里面一条能解析的都没有、文件又比它大时，整份从头读一遍。"""
+    先读末尾 TAIL_FIRST；里面一条能解析的都没有就放大 8 倍再读，到 TAIL_BYTES 还没有、文件又比它大时，整份
+    从头读一遍。以前每份都直接读末尾 TAIL_BYTES（第 1 轮审查）：since 之后的每一份每次启动都要读，本机两个月
+    132 份，一年下来启动时要同步读一两百 MB；现在平常一份只读几 KB。"""
+    want = min(TAIL_FIRST, TAIL_BYTES)
     with open(path, "rb") as fh:
-        start = max(0, size - TAIL_BYTES)
-        fh.seek(start)
-        data = fh.read()
-        if start and _parse_last(data, partial_head=True) is None:
-            fh.seek(0)
+        while True:
+            start = max(0, size - want)
+            fh.seek(start)
             data = fh.read()
-            start = 0
+            rec = _parse_last(data, partial_head=bool(start))
+            if rec is not None or start == 0:
+                break
+            want = size if want >= TAIL_BYTES else min(want * 8, TAIL_BYTES)
     ends_newline = data.endswith(b"\n") if data else True
-    return _parse_last(data, partial_head=bool(start)), ends_newline
+    return rec, ends_newline
 
 
 def _parse_last(data, partial_head=False):

@@ -174,6 +174,65 @@ def test_a_long_tail_is_read_back_to_the_last_complete_record(tmp_path, monkeypa
     assert recover(tmp_path).recovered == [g.name]
 
 
+class _CountingReads:
+    """包住真文件，只数 read 读了多少字节（其余照原样转给真文件）。"""
+
+    def __init__(self, fh, reads):
+        self._fh, self._reads = fh, reads
+
+    def read(self, *args):
+        data = self._fh.read(*args)
+        self._reads.append(len(data))
+        return data
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return self._fh.__exit__(*exc)
+
+
+def _count_reads(monkeypatch):
+    reads = []
+    real_open = open
+
+    def counting_open(path, mode="r", *args, **kwargs):
+        fh = real_open(path, mode, *args, **kwargs)
+        return _CountingReads(fh, reads) if "r" in mode else fh
+
+    monkeypatch.setattr(ar, "open", counting_open, raising=False)
+    return reads
+
+
+def test_an_ordinary_file_is_judged_from_its_last_few_kilobytes(tmp_path, monkeypatch):
+    """第 1 轮审查：以前每份都读末尾 256KB，一年攒下的审计每次启动要同步读一两百 MB。先读 TAIL_FIRST。"""
+    f = tmp_path / "session-20260101-120000.jsonl"
+    before = write(f, [START] + [dict(SEG, seq=i, pad="z" * 200) for i in range(4000)] + [TRANS])
+    assert len(before) > 2 * ar.TAIL_BYTES
+    reads = _count_reads(monkeypatch)
+    assert recover(tmp_path).recovered == [f.name]
+    assert len(reads) == 2 and max(reads) <= ar.TAIL_FIRST           # 判断一次、拿到锁后重读一次
+    assert f.read_bytes().startswith(before)
+    g = tmp_path / "session-20260101-120001.jsonl"
+    write(g, [START] + [dict(SEG, seq=i, pad="z" * 200) for i in range(4000)] + [dict(TRANS, type="session_end")])
+    reads.clear()
+    assert recover(tmp_path).recovered == []
+    assert max(reads) <= ar.TAIL_FIRST
+
+
+def test_a_last_record_longer_than_the_first_read_is_found_in_a_wider_one(tmp_path, monkeypatch):
+    f = tmp_path / "session-20260101-120000.jsonl"
+    long_end = {"type": "session_end", "reason": "offline", "pad": "x" * (3 * ar.TAIL_FIRST)}
+    before = write(f, [START] + [dict(SEG, seq=i, pad="z" * 200) for i in range(4000)] + [long_end])
+    reads = _count_reads(monkeypatch)
+    assert recover(tmp_path).recovered == []
+    assert f.read_bytes() == before
+    assert reads[0] <= ar.TAIL_FIRST < reads[1] <= ar.TAIL_FIRST * 8 and len(reads) == 2
+
+
 @pytest.mark.skipif(ar.fcntl is None, reason="没有 flock 的平台（Windows）")
 def test_a_file_another_process_holds_the_lock_on_is_skipped(tmp_path):
     f = tmp_path / "session-20260101-120000.jsonl"
