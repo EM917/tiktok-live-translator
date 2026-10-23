@@ -7,11 +7,12 @@ cd "$(dirname "$0")"
 echo "==> [1/5] 检查 Python ..."
 PY=$(command -v python3 || true)
 if [ -z "$PY" ]; then
-  echo "❌ 未找到 python3，请先安装 Python 3.9+（macOS: brew install python / Linux: 发行版包管理器）"
+  echo "❌ 未找到 python3，请先安装 Python 3.10+（macOS: brew install python / Linux: 发行版包管理器）"
   exit 1
 fi
-"$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' || {
-  echo "❌ Python 版本过低（需要 3.9+），当前: $("$PY" --version)"; exit 1; }
+# 下限 3.10（用户 10-22 决定 D14，与 app/bootstrap.MIN_PYTHON 一致）
+"$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || {
+  echo "❌ Python 版本过低（需要 3.10+），当前: $("$PY" --version)"; exit 1; }
 echo "    ✅ $("$PY" --version)"
 
 echo "==> [2/5] 检查 ffmpeg ..."

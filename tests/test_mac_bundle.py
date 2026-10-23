@@ -245,11 +245,13 @@ TRANSLOCATED = (
     "drag the folder that contains the app into the Terminal window, and press Return. Then "
     "double-click the app again.")
 UNQUARANTINE = "xattr -dr com.apple.quarantine"
+# D14（b3-deps）：最低版本提到 3.10，启动器不再认 3.9——只装着 3.9 的 Mac 也会走到这一句，所以写明版本
 NO_PYTHON = (
-    "需要先安装 Python 才能运行本工具（免费，约 2 分钟）。\\n\\n已为你打开下载页面 "
+    "需要先安装 Python 3.10 或更新的版本才能运行本工具（免费，约 2 分钟）。\\n\\n已为你打开下载页面 "
     "python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。",
-    "Python is needed to run this app (free, about 2 minutes).\\n\\nThe python.org/downloads "
-    "page is now open. Download and install the macOS installer, then double-click the app again.")
+    "Python 3.10 or later is needed to run this app (free, about 2 minutes).\\n\\nThe "
+    "python.org/downloads page is now open. Download and install the macOS installer, then "
+    "double-click the app again.")
 PYTHON_PAGE = "https://www.python.org/downloads/"
 
 
@@ -359,8 +361,9 @@ def test_start_command_dialog_is_bilingual_but_the_terminal_stays_chinese(tmp_pa
     assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
     assert calls == [["open", PYTHON_PAGE], _dialog(NO_PYTHON, "note")]
     out = proc.stdout.decode("utf-8")
-    assert "[未检测到 Python] 需要先安装 Python 才能运行（免费，约 2 分钟）：" in out
-    assert "Python is needed" not in out
+    assert ("[未检测到 Python 3.10 或更新的版本] 需要先安装 Python 3.10 或更新的版本才能运行"
+            "（免费，约 2 分钟）：") in out
+    assert "is needed to run" not in out
 
 
 def test_the_launchers_keep_lf_line_endings_in_every_checkout():

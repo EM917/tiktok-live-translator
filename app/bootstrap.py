@@ -3,12 +3,16 @@
 
 main.py 在模块级就跑 ensure_env()，测试一 import 它就会被 execv 成 .venv 里的程序
 （见 tests/test_bug_sweep2.py 里的说明），所以逻辑放在这里，main.py 只做调用。
-这个模块在依赖还没装齐时就要能导入：只用标准库，兼容 Python 3.9。
+这个模块在依赖还没装齐时就要能导入：只用标准库。还要兼容 Python 3.9——本程序最低要 3.10
+（用户 10-22 决定 D14），3.9 上 main.py 的版本检查正是用这里的 refuse_old_python 告诉中控要升级、
+怎么升级；tests/test_bootstrap_constraints.py 按 3.9 的语法解析这个文件和 main.py。
 
 这里管的几件事：
   * requirements 指纹：`pip install -r` 返回 0 之后记下清单的 sha256。清单变了
     （一键更新、手动 git pull）而 pip 没装上时，下次启动据此补装——以前启动只查
     固定的几个模块，新加的依赖永远没人补，「重新打开会自动继续安装」的承诺落空。
+  * 最低 Python（D14）：3.10。3.9 上 main.py 不往下跑，弹出「需要升级」和照做的步骤；.venv 是 3.9
+    建的，换了新 Python 启动时重建它。
   * pip 输出落盘：logs/bootstrap-*.log，同时照样打到终端。双击 .app 启动时 stdout
     是 /dev/null，以前装失败了什么都不留。
   * 失败说明：按 pip 输出里看到的字样分成磁盘满、连不上软件包服务器、没有适用于
@@ -42,6 +46,9 @@ from .i18n import L, of
 APP_DIR_NAME = "TikTok Live Translator.app"      # 与 app/macbundle.py 一致
 
 REQ_STAMP = ".requirements.sha256"               # 放在 .venv 里：环境重建，指纹跟着没
+# 本程序要求的最低 Python（D14）。main.py 的版本检查、venv_needs_rebuild、ready_fast_path 都看它；
+# 再提时同步改 tools/find_python.sh、Start.bat、setup.sh、setup.ps1、README 和 CI 矩阵
+MIN_PYTHON = (3, 10)
 REQ_ATTEMPT = ".requirements-attempt.json"
 # 同一份清单装失败后多久内不再为它重跑 pip -r（真缺核心依赖时不受这个限制）
 REQ_RETRY_SEC = 24 * 3600
@@ -369,11 +376,16 @@ def ready_fast_path(root, ready_import, *, actual_version, python=None, now=None
       * 没有重建记号——有的话要让 venv_needs_rebuild 去探 pip、决定重建；
       * 清单不用补装（requirements_pending，和 plan_install 用的同一个判断：24 小时内为同一份
         清单装失败过的不算要装，过了 24 小时照旧重试）；
-      * 指纹算得出来，而且和最终进程上次记下的一样。
+      * 指纹算得出来，而且和最终进程上次记下的一样；
+      * 实际版本不低于本程序要求的最低版本（MIN_PYTHON，D14）。3.9 建的 .venv 指纹照样对得上，
+        走捷径就会直接换进 3.9、在 main.py 的版本检查上退出，永远起不来——要交给全检查，
+        venv_needs_rebuild 在那里决定用这次启动的新 Python 重建。
     解释器能不能跑不在这里看：调用方先跑 interpreter_version（几十毫秒），跑不起来照旧重建。
     actual_version 没有默认值：调用方必须把实际版本交进来，不能漏掉这一条。"""
     venv = Path(root) / ".venv"
     if actual_version is None or actual_version != pyvenv_version(venv):
+        return False
+    if version_below_minimum(actual_version):
         return False
     if (venv / NEEDS_REBUILD).exists():
         return False
@@ -447,6 +459,19 @@ def clear_install_deferred(environ=None):
 
 # ---- Python 版本漂移 ----------------------------------------------------------------------
 
+def _major_minor(text):
+    """"3.9" / "3.13" → (3, 9) / (3, 13)；认不出返回 None。"""
+    m = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", str(text or ""))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def version_below_minimum(text):
+    """主次版本字符串（interpreter_version / pyvenv_version 给的那种）低于 MIN_PYTHON 吗。
+    认不出的不算低：没有证据不删东西。"""
+    mm = _major_minor(text)
+    return mm is not None and mm < MIN_PYTHON
+
+
 def pyvenv_version(venv_dir):
     """pyvenv.cfg 里记的建环境时的 Python 主次版本（"3.13"），读不到返回 None。
     标准库 venv 写 `version = 3.13.5`，virtualenv 写 `version_info = 3.13.5.final.0`。"""
@@ -515,11 +540,18 @@ def venv_needs_rebuild(usable, recorded=None, actual=None, own_env=False, python
     而且探测确认 pip 还是 import 不了时除外（上一段），那时版本读不读得到都重建。记号在、但 pip 探测
     本身出错（超时、起不来）时不按记号重建：不知道就不删，记号留着下次再看，这次照常走下面的判断。
     当前进程就在 .venv/.app 壳里时不重建：那是从环境里面把自己的环境清空（记号留着，下次从启动器
-    进来时再重建）。"""
+    进来时再重建）。
+
+    .venv 实际跑的 Python 低于本程序要求的最低版本（MIN_PYTHON，用户 10-22 决定 D14）也重建，不管
+    组件和 pip 在不在：最低版本提到 3.10 以后，3.9 建的 .venv 一个字没变、照样能 import，以前这里
+    原地补装完就换进去，在 main.py 的版本检查上退出——中控按提示装了新 Python 再打开，还是一样。
+    走到这里的进程自己过了版本检查，用它重建正好；启动器（tools/find_python.sh）也不再挑 3.9。"""
     if not usable:
         return True
     if own_env:
         return False
+    if version_below_minimum(actual):
+        return True
     if python is not None and _rebuild_marked(python):
         return True
     if not (recorded and actual) or python is None:
@@ -627,6 +659,89 @@ def install_dialog_text(recorded=None, actual=None, venv_existed=False,
     return L("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n",
              "First launch: installing the app’s components (about 2–5 minutes, depending on "
              "your connection).\n") + _WAIT
+
+
+# ---- 最低 Python（D14） ---------------------------------------------------------------------
+#
+# 用户 10-22 决定：最低版本从 3.9 提到 3.10（观众弹幕本来就要 3.10）。3.9 上 main.py 在版本检查那里
+# 停下，调 refuse_old_python：终端打印、没有终端时弹系统对话框（双击 .app 启动、或一键更新后重启时
+# stdout 是 /dev/null，只 print 的话程序就无声消失了）。这一段只用标准库和 i18n / native_dialog，
+# 3.9 上要能 import（文件头）。
+
+def python_too_old(version_info=None):
+    """这个解释器低于本程序要求的最低版本吗。"""
+    v = sys.version_info if version_info is None else version_info
+    return tuple(v[:2]) < MIN_PYTHON
+
+
+def python_too_old_text(current, darwin=None):
+    """「需要升级」和照做的步骤。只写看到的（现在用的是哪个版本）和能做的事。
+
+    装好新 Python 之后重新打开就行，不用手动删 .venv：启动器（tools/find_python.sh、Start.bat）
+    不再挑低于 3.10 的解释器，换成新的那个启动后，venv_needs_rebuild 认出 .venv 是旧版本建的、
+    用新的重建。在终端里直接跑 main.py 的人要自己换解释器，所以单写一句。
+    macOS 的「完全磁盘访问权限」按解释器文件登记（browser_login.fda_targets）：换了 Python，新的
+    那个不在列表里，要登录才给流地址的直播间就拿不到流——和 selfcheck.python_switch_steps 同一个提醒。"""
+    darwin = sys.platform == "darwin" if darwin is None else darwin
+    need = "{}.{}".format(*MIN_PYTHON)  # i18n: data（版本号）
+    text = L("这个版本的程序需要 Python {} 或更新的版本，现在用的是 Python {}，需要升级。\n"
+             "请从 python.org 下载安装 Python {} 或更新的版本，装好后重新打开程序：它会用新的 Python "
+             "重新安装运行组件（约 1.4 GB，需要联网）。在终端里运行的，改用新装的 Python 运行 main.py"
+             "（例如 python3.13 main.py）。",
+             "This version of the app needs Python {} or later. It’s running on Python {}, "
+             "which needs an upgrade.\n"
+             "Install Python {} or later from python.org, then open the app again. It reinstalls "
+             "its components with the new Python (about 1.4 GB, needs an internet connection). If "
+             "you run the app from a terminal, run main.py with the new Python (for example, "
+             "python3.13 main.py).").format(need, current, need)
+    if darwin:
+        text += L("\n换了 Python 之后，要把新的 Python 加进「完全磁盘访问权限」一次，路径和步骤见程序"
+                  "「启动自检」里「浏览器登录态」那一行；不加的话，TikTok 要求登录才给流地址的直播间"
+                  "拿不到流。",
+                  "\nAfter switching, add the new Python to Full Disk Access once. The Browser "
+                  "Login row in the app’s Startup Check shows the path and steps. Without it, the "
+                  "app can’t get the stream for live streams where TikTok provides the stream URL "
+                  "only to signed-in viewers.")
+    return text
+
+
+def _stdio_is_terminal():
+    """stdout 或 stderr 连着终端（和 main._has_console 同一个判断）。"""
+    try:
+        return any(s is not None and s.isatty() for s in (sys.stdout, sys.stderr))
+    except Exception:
+        return False
+
+
+def _windows_messagebox(text, title):
+    import ctypes
+    ctypes.windll.user32.MessageBoxW(None, text, title, 0x30)
+
+
+def refuse_old_python(version_info=None, *, has_console=None, sys_platform=None,
+                      run=subprocess.run, messagebox=None):
+    """main.py 的版本检查不过时调用：终端打印「需要升级」（终端永远是中文），没有终端时再弹系统
+    对话框，返回给 sys.exit 的退出码 1。CI 里只打印、不弹（同 main._fail_alert）。弹框失败不挡退出。"""
+    v = sys.version_info if version_info is None else version_info
+    sys_platform = sys.platform if sys_platform is None else sys_platform
+    text = python_too_old_text("{}.{}".format(v[0], v[1]), darwin=sys_platform == "darwin")
+    try:
+        print("⚠️ " + text, flush=True)
+    except Exception:
+        pass
+    has_console = _stdio_is_terminal() if has_console is None else has_console
+    if os.environ.get("CI") or has_console:
+        return 1
+    try:
+        from . import native_dialog
+        if sys_platform == "darwin":
+            run(native_dialog.osascript_argv(text, button=native_dialog.FAIL_BUTTON, icon="caution"),
+                capture_output=True, timeout=600)
+        elif sys_platform == "win32":
+            (messagebox or _windows_messagebox)(*native_dialog.messagebox_args(text))
+    except Exception:
+        pass
+    return 1
 
 
 # ---- pip 输出落盘与失败说明 -----------------------------------------------------------------

@@ -699,8 +699,8 @@ def _browser_login_row(observed):
 
 
 def python_switch_steps(darwin=None):
-    """换一个 Python 的照做步骤（I10）：Python 3.9 上没有观众弹幕、Rosetta 转译的 Python 只能用 CPU
-    识别，两处都给这一段。
+    """换一个 Python 的照做步骤（I10）：Python 低于 3.10（本程序最低版本，D14）、Rosetta 转译的
+    Python 只能用 CPU 识别，两处都给这一段。
 
     为什么要删 .venv：启动器（tools/find_python.sh）有 .venv 时只认建它的那个解释器，新装的
     Python 不删 .venv 永远轮不到；没有 .venv 时按安装位置挑，python.org 装的排在最前面，所以写明
@@ -753,16 +753,15 @@ async def check_comments(args):
     if getattr(args, "comments", True) is False:
         return _check(name, OK, L("已按 --no-comments 关闭", "Turned off with --no-comments"))
     if sys.version_info < (3, 10):
-        # I10：启动器会接受 3.9（比如 macOS 自带的那个）并一直固定在它上面，以前这一行只说「不可用」，
-        # 不说怎么换——照做的步骤见 python_switch_steps
+        # I10 + D14：本程序最低版本提到了 3.10（用户 10-22 决定），3.9 上 main.py 在版本检查那里就停下、
+        # 弹出「需要升级」（bootstrap.refuse_old_python），正常走不到这里。这一行留着兜底，说法和那边
+        # 一致：不再是「弹幕不可用」，而是整个程序需要升级 Python，照做的步骤见 python_switch_steps
         return _check(name, WARN,
-                      L("弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用",
-                        "The comments component needs Python 3.10 or later (current: {}.{}). "
-                        "Comments aren’t available.")
+                      L("这个版本的程序需要 Python 3.10 或更新的版本（当前 {}.{}），需要升级",
+                        "This version of the app needs Python 3.10 or later (current: {}.{}). "
+                        "Python needs an upgrade.")
                       .format(sys.version_info[0], sys.version_info[1]),
-                      L("字幕和违禁词报警不受影响。想用观众弹幕：",
-                        "Captions and banned-term alerts aren’t affected. To get comments: ")
-                      + python_switch_steps())
+                      python_switch_steps())
     from .updater import TIKTOKLIVE_SPEC
     version = await _to_thread(tiktoklive_version)
     if version is None:

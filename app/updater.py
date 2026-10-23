@@ -700,8 +700,8 @@ class Updater:
         HTTP 400，而修好它的 7.0.1 四天前就已发布。升级失败不改变返回值：旧版本
         仍然装着，签名服务给的是 TikTok 真实地址时它照样能连。
 
-        Python < 3.10 直接放弃——TikTokLive 7.x 要求 3.10+，这是本项目唯一
-        允许高于 3.9 的可选组件，装不上不影响主链路（弹幕来源据此转成
+        Python < 3.10 直接放弃——TikTokLive 7.x 要求 3.10+。本程序最低版本已经是 3.10
+        （D14，main.py 在 3.9 上不往下跑），这一句只是兜底；装不上不影响主链路（弹幕来源据此转成
         `unavailable` 状态，见 comment_source.py 的 _supervise）。
         """
         if sys.version_info < (3, 10):

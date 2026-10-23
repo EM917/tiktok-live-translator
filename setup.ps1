@@ -6,11 +6,12 @@ Set-Location $PSScriptRoot
 Write-Host "==> [1/5] 检查 Python ..."
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) {
-  Write-Host "❌ 未找到 python，请先安装 Python 3.9+ ： https://www.python.org/downloads/ （安装时勾选 Add to PATH）"
+  Write-Host "❌ 未找到 python，请先安装 Python 3.10+ ： https://www.python.org/downloads/ （安装时勾选 Add to PATH）"
   exit 1
 }
-python -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"
-if ($LASTEXITCODE -ne 0) { Write-Host "❌ Python 版本过低（需要 3.9+）"; exit 1 }
+# 下限 3.10（用户 10-22 决定 D14，与 app/bootstrap.MIN_PYTHON 一致）
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+if ($LASTEXITCODE -ne 0) { Write-Host "❌ Python 版本过低（需要 3.10+）"; exit 1 }
 Write-Host "    ✅ $(python --version)"
 
 Write-Host "==> [2/5] 检查 ffmpeg ..."

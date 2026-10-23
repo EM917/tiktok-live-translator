@@ -1,3 +1,5 @@
+# 本程序要求 Python 3.10 或更新的版本（用户 10-22 决定 D14；版本检查在 main.py，下限见
+# app/bootstrap.MIN_PYTHON）。
 aiohttp>=3.9
 numpy>=1.24
 faster-whisper>=1.0
@@ -16,7 +18,8 @@ pywebview>=5
 # Apple Silicon 专属：GPU 识别后端（其他平台自动跳过，用 faster-whisper CPU/CUDA）
 mlx-whisper; platform_machine == 'arm64' and sys_platform == 'darwin'
 # 弹幕后端抓取（可选）：从 TikTok 直播间评论流拿观众弹幕，WebSocket 签名经
-# 第三方 Euler Stream 服务。要求 Python 3.10+，本项目主体承诺 3.9+，所以只在
-# 子进程（app/comment_worker.py）里用；3.9 环境装不上时弹幕来源自动降级为
-# 「不可用」，不影响直播翻译主链路。
+# 第三方 Euler Stream 服务。只在子进程（app/comment_worker.py）里用；装不上时弹幕来源
+# 降级为「不可用」，不影响直播翻译主链路。它要求的 Python 3.10 现在就是本程序的最低版本；
+# python_version 标记照旧留着：3.9 上的旧安装点「一键更新」时，是旧版本的程序拿这份清单去装，
+# 有标记它才不会因为这一行整份装不上（装完重启，新版本再告诉中控要升级 Python）。
 TikTokLive>=7.0.1,<8; python_version >= "3.10"
