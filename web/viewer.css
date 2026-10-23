@@ -142,6 +142,11 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 .conn-text { font-size: var(--fs-footnote); font-weight: 600; white-space: nowrap; color: inherit; overflow: hidden; text-overflow: ellipsis; }
 .sep { color: var(--label-3); }
 .stream-text { font-size: var(--fs-footnote); color: var(--label-2); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 重连中给「状态未知」留出 4em（V4）：以前断开拖久时胶囊里塞着整句，「状态未知」在 390/375/320 宽下都被挤成 0 宽。
+   4em 正好放下四个汉字，英文放不下时照样有省略号。只在重连中留：被拒、已满、已关闭时胶囊里的字就是该做的事
+   （「链接已失效，请向中控要新的二维码」），窄屏上让它先放全，320 宽、顶栏还有报警角标时留了 4em 它会被截掉
+   三十多像素（10-22 无头 Chrome 量的）。:has 不支持时退回 0，和以前一样 */
+.status-pill:has(.dot.reconnecting) ~ .stream-text { min-width: 4em; }
 .stream-text.stale { color: var(--label-3); }   /* 断线提示：绝不能停在最后一次「直播中」不动，见 viewer.js renderStreamStale */
 
 .alert-badge { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-footnote); font-weight: 700; color: var(--fail); flex: none; }
@@ -175,6 +180,9 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
   border: none; border-radius: var(--r-pill); background: var(--fill); color: var(--label-2);
 }
 .alert-local-note { font-size: var(--fs-caption); color: var(--label-3); margin: -2px 0 6px; }
+/* 报警多了在自己的框里滚（V4）：以前没有高度上限，15 条报警时下面的字幕区只剩 12px 高。
+   弹幕面板（34vh）同时展开时两块加起来仍超过一屏，字幕区还是会被挤得很矮（10-22 在 390x844 下量过） */
+.alert-list { max-height: 40vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .alert-item {
   position: relative;
   border-radius: 10px; padding: 9px 12px; margin-bottom: 8px;
@@ -251,7 +259,10 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
   background: none; border: none; color: var(--label); font-family: inherit; cursor: pointer;
 }
 .cmt-source-label { font-size: var(--fs-caption); color: var(--label-2); }
-.comment-list { max-height: 34vh; overflow-y: auto; padding: 0 14px 8px; -webkit-overflow-scrolling: touch; }
+/* overflow-anchor:none（F6）：贴底跟随和「翻上去时从顶上裁掉一条、把 scrollTop 减回去」都由 viewer.js
+   自己做。浏览器自带的滚动锚定（Chromium 有；10-22 在 macOS 的 WKWebView 里看，WebKit 也有）再调一遍
+   就会减两次。关掉之后只剩脚本这一处在调，不随浏览器变 */
+.comment-list { max-height: 34vh; overflow-y: auto; overflow-anchor: none; padding: 0 14px 8px; -webkit-overflow-scrolling: touch; }
 .cmt-item { padding: 6px 0; border-top: 0.5px solid var(--separator); }
 .cmt-item:first-child { border-top: none; }
 .cmt-head { font-size: var(--fs-caption); color: var(--label-2); }

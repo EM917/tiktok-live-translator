@@ -66,7 +66,7 @@ function applyStatic(root) {
 
 // ============ 一、纯函数 ============
 
-// 连接状态文案。n 用于 reconnecting 的倒计时秒数 / stale 的静默秒数。
+// 连接状态文案。n 用于 reconnecting 的倒计时秒数 / stale 的静默秒数 / offline 的断开秒数。
 // 英文放在窄屏的状态胶囊里，用短写法（docs/i18n-style.md §3 #122–#125、§4.3 R4）；
 // 「12」照写：被拒的手机收不到 max_viewers（spec §7.2）
 var CONN_TEXT = {
@@ -77,12 +77,32 @@ var CONN_TEXT = {
   full: L("同看人数已满（12 人），稍后再试", "Full (12 max) · Try again later"),
   off: L("中控已关闭手机同看", "Operator stopped sharing"),
   stale: L("{n} 秒没有新消息", "No updates for {n} sec"),
+  // 断开超过 STALE_RECONNECT_SEC 之后胶囊里的字（V4）：只放这一个短句。胶囊不换行，
+  // 以前把「请找中控确认…」整句塞进来，英文在 390 宽下后半句整段看不到，「状态未知」被挤成 0 宽
+  offline: L("未连接 {n} 秒", "Not connected for {n} sec"),
 };
 
 function statusText(state, n) {
   var t = CONN_TEXT[state];
   if (!t) return L("状态未知", "Status unknown");
   return t.replace("{n}", String(n == null ? 0 : n));
+}
+
+// 断线拖得够久（A9），光说「N 秒后重连」已经不够：告诉看的人能做什么。这句放在胶囊下面
+// 整宽、能换行的 #stale-line 里（V4）。#stale-line 原来那句「N 秒没有新消息」只在已连接时出现，
+// 两句不会同时出现
+var STALE_RECONNECT_SEC = 60;
+var RECONNECT_HELP = L("请找中控确认同看是否还开着，或重新扫码",
+                       "Ask the operator whether sharing is still on, or scan the QR code again.");
+
+// 重连中时胶囊和 #stale-line 各写什么。offlineSec 是**离断开那一刻**过了多少秒（V7：以前从
+// 上次连上算起，连着 30 分钟后掉线，掉线那一刻就显示「已经 1800 秒没连上」）；这台手机还没
+// 连上过、或者已经重新连上了，传 null。retrySec 是下一次重连的倒计时。line 为空串表示不显示
+function reconnectTexts(offlineSec, retrySec) {
+  if (offlineSec != null && offlineSec > STALE_RECONNECT_SEC) {
+    return { pill: statusText("offline", offlineSec), line: RECONNECT_HELP };
+  }
+  return { pill: statusText("reconnecting", retrySec), line: "" };
 }
 
 // 直播状态文案：与 main.py、app/*.py 里 server.status() 实际用到的取值一致，
@@ -320,7 +340,7 @@ if (typeof document !== "undefined") {
     var MAX_COMMENTS = 30;    // 手机端默认折叠，只留最近这么多条（负责人定稿：三个待定问题）
     var MAX_CAPTIONS = 200;   // 回放上限 100 条 + 直播中持续追加，留够余量不无限长
     var STALE_MS = 45000;     // 已连接但 45 秒没有新消息：叠加显示，不改变连接状态本身
-    var STALE_RECONNECT_SEC = 60;   // A9：重连超过这么久，文案升级为找中控确认
+    // 断开超过 STALE_RECONNECT_SEC（60 秒，A9）文案升级为找中控确认：常量在上面纯函数段，reconnectTexts 用它
 
     // 图标：描边 1.5、currentColor，跟桌面端设置行同一套画法（见 web/index.html）。
     // 只放这两个——其余（提示音、弹幕、回到最新、报警角标）是静态文案，直接写在
@@ -517,6 +537,62 @@ if (typeof document !== "undefined") {
       });
     }
 
+    // ---- 弹幕区贴底跟随（F6）：规则同上面的字幕区 ----
+    // 弹幕列表自己滚（viewer.css 的 .comment-list：max-height + overflow-y:auto），新的接在底部、
+    // 超过 MAX_COMMENTS 从顶上裁。以前这里没有任何滚动代码：每次展开、每次重连之后都停在保留的
+    // 30 条里最旧的几条，手动滚到底也只看得到一眼，下一条进来就落到视野外（10-19 平均每分钟 31 条）。
+    // 和字幕区一样，「跟随」是用户意图：只有用户自己往上翻才停，滚回底部恢复。另有两处强制回到
+    // 底部：展开面板时（收起前翻到哪儿都不管），重连回放结束时（见 handle 里的 commentReplayStick）。
+    // 列表比字幕区矮得多（34vh），离底部的宽容度取 48px：一条弹幕约 60px，往上翻一条就算翻上去了；
+    // 小数像素和后补的一行译文不算
+    var COMMENT_FOLLOW_SLACK = 48;
+    var commentsFollowing = true;
+    var lastCommentInput = 0;
+    var commentReplayStick = false;   // viewer_hello 之后为 true：回放结束时强制滚到底一次
+    function commentsMeasurable() { return !!(commentList && commentList.clientHeight); }
+    function commentsAtBottom() {
+      return commentList.scrollHeight - commentList.scrollTop - commentList.clientHeight < COMMENT_FOLLOW_SLACK;
+    }
+    function stickCommentsNow() {
+      if (commentList) commentList.scrollTop = commentList.scrollHeight;
+    }
+    function followCommentsNow() {   // 强制：恢复跟随并滚到底
+      commentsFollowing = true;
+      stickCommentsNow();
+    }
+    if (commentList) {
+      ["wheel", "touchstart", "touchmove", "keydown", "mousedown"].forEach(function (name) {
+        commentList.addEventListener(name, function () {
+          lastCommentInput = Date.now();
+          commentReplayStick = false;   // 回放结束前用户已经自己在翻：回放结束时不再替他滚
+        }, { passive: true });
+      });
+      commentList.addEventListener("scroll", function () {
+        // 收起着、量不出来：沿用原意图，同字幕区
+        if (!commentsMeasurable()) return;
+        if (commentsAtBottom()) commentsFollowing = true;
+        else if (Date.now() - lastCommentInput < USER_INPUT_WINDOW_MS) commentsFollowing = false;
+      }, { passive: true });
+    }
+    // 重新可见 / 获得焦点 / 窗口变化时补一次，另有 2 秒一次的兜底：同字幕区，后台期间的滚动请求会落空
+    function resyncComments() {
+      if (document.hidden || !commentsFollowing) return;
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(stickCommentsNow);
+      else stickCommentsNow();
+    }
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", resyncComments);
+    }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      ["focus", "pageshow", "resize", "orientationchange"].forEach(function (name) {
+        window.addEventListener(name, resyncComments);
+      });
+    }
+    setInterval(function () {
+      if (document.hidden || !commentsFollowing || !commentsMeasurable()) return;
+      if (!commentsAtBottom()) stickCommentsNow();
+    }, 2000);
+
     // ---- 弹幕区：默认折叠，展开/收起记忆在 localStorage ----
     var commentsOpen = lsGet("viewerCommentsOpen") === "1";
     function syncCommentPanel() {
@@ -529,6 +605,8 @@ if (typeof document !== "undefined") {
         commentsOpen = !commentsOpen;
         lsSet("viewerCommentsOpen", commentsOpen ? "1" : "0");
         syncCommentPanel();
+        // F6：展开就看最新的。收起时列表是 display:none，期间的滚动请求都不生效
+        if (commentsOpen) followCommentsNow();
       });
     }
 
@@ -538,43 +616,45 @@ if (typeof document !== "undefined") {
     var retryCount = 0;
     var reconnectTimer = null;
     var connState = "connecting";
-    var lastConnectedAt = null;   // 上一次收到 viewer_hello 的时间（ms）
+    // 掉线那一刻（ms）：从「已连接」离开时记下，收到 viewer_hello 时清空。断线的秒数从这里数起（V7）。
+    // 以前记的是上一次收到 viewer_hello 的时间，秒数就把连着的那段也算了进去：连了 30 分钟后掉线，
+    // 掉线那一刻就显示「已经 1800 秒没连上」，还叫看的人去找中控。还没连上过的手机这里是 null，
+    // 一直显示普通的「N 秒后重连」，和以前一样
+    var disconnectedAt = null;
     var lastMessageAt = null;     // 上一次收到任意消息的时间（ms），驱动 45 秒静默提示
-    var staleReconnectShown = 0;  // 上一次渲染时用的重连累计秒数，避免每次 tick 都重排 DOM
+
+    // 重连中离掉线那一刻过了多少秒；不在重连中、或者这台手机还没连上过，返回 null
+    function offlineSec() {
+      if (connState !== "reconnecting" || disconnectedAt == null) return null;
+      return Math.round((Date.now() - disconnectedAt) / 1000);
+    }
 
     function renderConnBar() {
       if (!connText || !connDot) return;
       connDot.className = "dot " + connState;
-      var text;
-      if (connState === "reconnecting" && lastConnectedAt) {
-        var elapsedSec = Math.round((Date.now() - lastConnectedAt) / 1000);
-        if (elapsedSec > STALE_RECONNECT_SEC) {
-          // A9：重连拖得够久，普通的「N 秒后重连」已经不够用——告诉人可以做什么
-          text = L("已经 " + elapsedSec + " 秒没连上。请找中控确认同看是否还开着，或重新扫码",
-                   "Not connected for " + elapsedSec + " sec. "
-                   + "Ask the operator whether sharing is still on, or scan the QR code again.");
-          staleReconnectShown = elapsedSec;
-        } else {
-          text = statusText(connState, pendingRetrySec);
-        }
-      } else {
-        text = statusText(connState, pendingRetrySec);
-      }
-      connText.textContent = text;
+      connText.textContent = connState === "reconnecting"
+        ? reconnectTexts(offlineSec(), pendingRetrySec).pill
+        : statusText(connState, pendingRetrySec);
     }
 
     var pendingRetrySec = 0;   // 下一次重连前的倒计时秒数，供 statusText 的 {n} 用
 
-    function tickStaleLine() {
+    // 胶囊下面那一行（整宽、能换行）：已连接时是「N 秒没有新消息」，断开拖久了是「请找中控确认…」
+    // （V4，原来塞在胶囊里），其余时候隐藏。两句的条件互斥：一个要已连接，一个要重连中
+    function renderStaleLine() {
       if (!staleLine) return;
-      if (connState === "connected" && lastMessageAt
-          && Date.now() - lastMessageAt > STALE_MS) {
-        var sec = Math.round((Date.now() - lastMessageAt) / 1000);
-        staleLine.textContent = statusText("stale", sec);
-        staleLine.classList.remove("hidden");
-      } else {
-        staleLine.classList.add("hidden");
+      var text = "";
+      if (connState === "reconnecting") {
+        text = reconnectTexts(offlineSec(), pendingRetrySec).line;
+      } else if (connState === "connected" && lastMessageAt && Date.now() - lastMessageAt > STALE_MS) {
+        text = statusText("stale", Math.round((Date.now() - lastMessageAt) / 1000));
       }
+      staleLine.textContent = text;
+      staleLine.classList.toggle("hidden", !text);
+    }
+
+    function tickStaleLine() {
+      renderStaleLine();
       // 重连状态下的倒计时/累计秒数也要跟着秒表刷新，不能只在状态切换那一刻画一次
       if (connState === "reconnecting") renderConnBar();
     }
@@ -586,8 +666,12 @@ if (typeof document !== "undefined") {
     }
 
     function setConnState(state) {
+      // 从「已连接」离开的那一刻就是掉线的时刻。之后在重连 / 被拒 / 已满之间怎么转都不改它，
+      // 收到 viewer_hello 才清空
+      if (connState === "connected" && state !== "connected") disconnectedAt = Date.now();
       connState = state;
       renderConnBar();
+      renderStaleLine();   // 连上时立刻收起「请找中控确认…」，不等下一秒的秒表
       renderStreamStale();
       refreshAllRetranslateButtons();   // 断线/重连都要跟着刷「重译」按钮的可点状态
     }
@@ -672,6 +756,7 @@ if (typeof document !== "undefined") {
 
     function resetForNewSession() {
       following = true;   // 回放会重建整个列表：从最新处开始看
+      commentsFollowing = true;   // 弹幕同理（F6）
       alertsById = Object.create(null);
       captionsById = Object.create(null);
       commentsById = Object.create(null);
@@ -693,12 +778,25 @@ if (typeof document !== "undefined") {
       if (demoBanner) demoBanner.classList.toggle("hidden", !demoMode);
     }
 
+    // 重连回放里不带 replay 标记的几种：app/viewer.py replay_snapshot 先发 status、comment_source、
+    // alert_mode、incident，字幕历史里夹着的 session_break 过白名单时 replay 键被丢掉（ALLOW 只给 ts）。
+    // 它们到了不算回放结束；其余消息不带 replay 的，就是回放之后的第一条实时消息
+    var UNMARKED_IN_REPLAY = { status: true, comment_source: true, alert_mode: true, incident: true,
+                               session_break: true };
+
     function handle(msg) {
       if (!msg || typeof msg !== "object") return;
+      // F6：重连回放结束时把弹幕滚到底一次。回放是一口气压进来的，逐条追加时的跟随本来就会贴底，
+      // 这一下是兜底：回放期间列表被清空、重建，scroll 事件可能把跟随意图改掉
+      if (commentReplayStick && msg.type !== "viewer_hello" && !msg.replay && !UNMARKED_IN_REPLAY[msg.type]) {
+        commentReplayStick = false;
+        followCommentsNow();
+      }
       switch (msg.type) {
         case "viewer_hello":
           retryCount = 0;
-          lastConnectedAt = Date.now();
+          disconnectedAt = null;
+          commentReplayStick = true;
           // 取消记录先对齐这一次共享，再收回放的报警：程序重启后 alert_id 从头数，
           // 上一次共享里取消过的 7 号不能藏掉这一次的 7 号
           dismissedAlerts.bind(msg.share_since);
@@ -999,6 +1097,16 @@ if (typeof document !== "undefined") {
                                   ? "Couldn’t translate (" + pick(msg, "why") + "). See the original above."
                                   : "Couldn’t translate. See the original above.");
         transEl.classList.add("failed");
+      } else if (msg.translate_state === "failed" || msg.translate_state === "dropped") {
+        // F4：服务端说「这条不会有译文了」用的是 translate_state（pipeline 的 _publish_translation
+        // 发 failed，翻译积压丢掉旧任务时发 dropped），不带 failed/why。以前这里只认 failed/why，
+        // 这两种一律写成空串，译文行只剩一行空白，看的人分不出是「还没译」还是「不会有了」。
+        // 字与桌面卡片的角标同一句（web/live-ui.js captionStateChip）。拒答、结果不像译文这两种
+        // 细分不在手机白名单里，只能写笼统的「翻译失败」；原文和「重译」按钮还在，可以自己重试
+        transEl.textContent = msg.translate_state === "failed"
+          ? L("翻译失败", "Translation failed")
+          : L("翻译已跳过（积压）", "Skipped (backlog)");
+        transEl.classList.add("failed");
       } else if (msg.translate_state === "pending") {
         transEl.textContent = L("翻译中…", "Translating…");
         transEl.classList.add("pending");
@@ -1074,10 +1182,16 @@ if (typeof document !== "undefined") {
       commentsById[msg.id] = { msg: msg, el: item, zhEl: zh };
       while (commentList.children.length > MAX_COMMENTS) {
         var oldest = commentList.firstChild;
+        // 用户翻上去在看的时候，从顶上裁掉一条，下面的内容整体上移一条的高度：把 scrollTop 减回去，
+        // 看着的那几条不动。viewer.css 给 .comment-list 关了浏览器自带的滚动锚定（overflow-anchor:none），
+        // 由这里来做：Chromium 和 WebKit 行为一致，也不会和锚定各减一遍。跟随时最后会滚到底，不用减
+        var shift = commentsFollowing ? 0 : (oldest.offsetHeight || 0);
         delete commentsById[oldest.dataset.id];
         commentList.removeChild(oldest);
+        if (shift) commentList.scrollTop = Math.max(0, commentList.scrollTop - shift);
       }
       if (commentCountEl) commentCountEl.textContent = String(commentList.children.length);
+      if (commentsFollowing) stickCommentsNow();   // F6：追加、裁剪之后，跟随中就滚到底
     }
     function updateComment(msg) {
       var entry = commentsById[msg.id];
@@ -1091,6 +1205,8 @@ if (typeof document !== "undefined") {
         entry.zhEl.textContent = entry.msg.translated || entry.msg.text || "";
         entry.zhEl.classList.remove("pending");
       }
+      // 译文是后补的，这一条会长高：跟随中再贴一次底（同字幕区的 updateCaption）
+      if (commentsFollowing) stickCommentsNow();
     }
 
     // 这行小字紧挨着「弹幕 / Comments」标题：英文不再重复 Comments（同桌面，docs/i18n-style.md §3 #96）
@@ -1132,6 +1248,8 @@ if (typeof module !== "undefined" && module.exports) {
     createDismissedStore: createDismissedStore,
     shouldRenderSessionDivider: shouldRenderSessionDivider,
     sessionDividerText: sessionDividerText,
+    reconnectTexts: reconnectTexts,
+    STALE_RECONNECT_SEC: STALE_RECONNECT_SEC,
     UI_LANG: UI_LANG,
     I18N_ON: I18N_ON,
     L: L,

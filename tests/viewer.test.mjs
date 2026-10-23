@@ -26,6 +26,28 @@ test("statusText 未知值有兜底文案", () => {
   assert.equal(V.statusText(undefined), "状态未知");
 });
 
+// ---- reconnectTexts（V4、V7）----
+// V7：秒数是离掉线那一刻的秒数，由调用方算好传进来；还没连上过传 null。
+// V4：胶囊里只放短句，「请找中控确认…」那句放到胶囊下面能换行的 #stale-line
+test("reconnectTexts：断开不到 60 秒是普通的「N 秒后重连」，#stale-line 不显示", () => {
+  assert.deepEqual(V.reconnectTexts(null, 3), { pill: "已断开，3 秒后重连…", line: "" });
+  assert.deepEqual(V.reconnectTexts(0, 1), { pill: "已断开，1 秒后重连…", line: "" });
+  assert.deepEqual(V.reconnectTexts(60, 2), { pill: "已断开，2 秒后重连…", line: "" }, "正好 60 秒还不算拖久");
+});
+test("reconnectTexts：断开超过 60 秒，胶囊只写「未连接 N 秒」，该做什么写在 #stale-line", () => {
+  assert.equal(V.STALE_RECONNECT_SEC, 60);
+  assert.deepEqual(V.reconnectTexts(61, 15), { pill: "未连接 61 秒", line: "请找中控确认同看是否还开着，或重新扫码" });
+  assert.equal(V.statusText("offline", 1800), "未连接 1800 秒");
+});
+test("胶囊长度：断开再久，也不比已有最长的胶囊文案长（R4 量过它在 320 宽放得下）", () => {
+  const longest = Math.max(...["connecting", "connected", "denied", "full", "off"].map((s) => V.statusText(s).length),
+                           V.statusText("reconnecting", 15).length);
+  for (const sec of [61, 1800, 86400, 999999]) {
+    const pill = V.reconnectTexts(sec, 15).pill;
+    assert.ok(pill.length <= longest, pill + " 比已有最长的胶囊文案（" + longest + " 字）长");
+  }
+});
+
 // ---- streamText ----
 test("streamText 覆盖 status.state 全集", () => {
   assert.equal(V.streamText("idle"), "未开始");
@@ -546,15 +568,21 @@ function makeFakeWebSocket() {
   FakeWebSocket.instances = [];
   return FakeWebSocket;
 }
+// clock：可调的假时钟（毫秒），Date.now 读它；tick()：把页面注册的 setInterval 回调各跑一次
+// （1 秒的连接秒表、2 秒的贴底兜底），时间不会自己走，要先改 clock.now
 function withFakeViewerPage(run) {
   const elements = baseElements();
   const FakeWebSocket = makeFakeWebSocket();
   const originals = {
     document: global.document, location: global.location, WebSocket: global.WebSocket,
     localStorage: global.localStorage, setTimeout: global.setTimeout, setInterval: global.setInterval,
+    now: Date.now,
   };
   const modPath = require.resolve("../web/viewer.js");
   const store = new Map();
+  const clock = { now: Date.UTC(2026, 9, 22, 12, 0, 0) };
+  const intervals = [];
+  const tick = () => intervals.slice().forEach((fn) => fn());
 
   global.document = makeFakeDocument(elements);
   global.location = { hash: "#k=fake-token-not-a-real-secret-0000000000", protocol: "http:", host: "127.0.0.1:0" };
@@ -564,7 +592,8 @@ function withFakeViewerPage(run) {
     setItem: (k, v) => { store.set(k, String(v)); },
   };
   global.setTimeout = (fn) => { (global.setTimeout._queue = global.setTimeout._queue || []).push(fn); return 1; };
-  global.setInterval = () => 0;
+  global.setInterval = (fn) => { intervals.push(fn); return 0; };
+  Date.now = () => clock.now;
 
   try {
     delete require.cache[modPath];
@@ -573,7 +602,15 @@ function withFakeViewerPage(run) {
     ws1.onopen();
     ws1.onmessage({ data: JSON.stringify({ type: "viewer_hello", ok: true, ts: Date.now() / 1000, share_since: 0, viewers: 1, max_viewers: 12, read_only: true }) });
     ws1.sent = [];   // 握手时发的 auth 帧不是被测行为，清空后让调用方从干净基线数起
-    run({ elements, ws: ws1, store, FakeWebSocket });
+    // 让排着的重连定时器到点：connect() 建一条新连接并返回它（还没收到 viewer_hello）
+    const fireReconnect = () => {
+      const q = global.setTimeout._queue || [];
+      while (q.length) q.shift()();
+      const next = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+      if (next.onopen) next.onopen();
+      return next;
+    };
+    run({ elements, ws: ws1, store, FakeWebSocket, clock, tick, fireReconnect });
   } finally {
     global.document = originals.document;
     global.location = originals.location;
@@ -581,6 +618,7 @@ function withFakeViewerPage(run) {
     global.localStorage = originals.localStorage;
     global.setTimeout = originals.setTimeout;
     global.setInterval = originals.setInterval;
+    Date.now = originals.now;
     delete require.cache[modPath];
   }
 }
@@ -864,5 +902,284 @@ test("session_break：即便消息里带了 streamer，手机端分隔文案也�
     const sep = elements["caption-list"].children[1];
     assert.equal(sep.textContent.indexOf("leakedname"), -1);
     assert.equal(sep.textContent, "── 新的一场 ──");
+  });
+});
+
+// ---- DOM 回归：断线秒数从掉线那一刻算起（V7），长句在 #stale-line（V4）----
+// 补核（10-22）实测：连接 30 分钟后掉线，掉线那一刻胶囊就写「已经 1800 秒没连上。请找中控确认…」——
+// 秒数从上一次 viewer_hello 算起，把连着的时间也算了进去；这句还塞在不换行的胶囊里，被截掉一半。
+test("连着 30 分钟后掉线：那一刻是普通的「N 秒后重连」；断开 61 秒才改口，长句放在 #stale-line", () => {
+  withFakeViewerPage(({ elements, ws, clock, tick, fireReconnect }) => {
+    const pill = elements["conn-text"];
+    const line = elements["stale-line"];
+    ws.onmessage({ data: JSON.stringify({ type: "status", state: "live" }) });
+    clock.now += 30 * 60 * 1000;
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 1, ts: clock.now / 1000, original: "hola" }) });
+    ws.onclose({ code: 1006 });
+    assert.match(pill.textContent, /^已断开，\d+ 秒后重连…$/, "掉线那一刻不能把连着的 30 分钟算进去");
+    assert.equal(line.classList.contains("hidden"), true);
+
+    clock.now += 60 * 1000;
+    tick();
+    assert.match(pill.textContent, /^已断开，\d+ 秒后重连…$/, "断开正好 60 秒还不算拖久");
+    assert.equal(line.classList.contains("hidden"), true);
+
+    clock.now += 1000;
+    tick();
+    assert.equal(pill.textContent, "未连接 61 秒");
+    assert.equal(line.classList.contains("hidden"), false, "该做什么写在胶囊下面那一行");
+    assert.equal(line.textContent, "请找中控确认同看是否还开着，或重新扫码");
+
+    // 重连上了：那一行立刻收起，不等下一秒的秒表；胶囊回到「已连接」
+    const ws2 = fireReconnect();
+    assert.equal(pill.textContent, "未连接 61 秒", "新连接还没收到 hello：仍算断开");
+    ws2.onmessage({ data: helloMsg(0) });
+    assert.equal(pill.textContent, "已连接");
+    assert.equal(line.classList.contains("hidden"), true);
+    assert.equal(line.textContent, "");
+
+    // 再掉一次：从这一次掉线重新数，不接着上一次的 61 秒
+    clock.now += 5 * 60 * 1000;
+    ws2.onmessage({ data: JSON.stringify({ type: "caption", id: 2, ts: clock.now / 1000, original: "adios" }) });
+    ws2.onclose({ code: 1006 });
+    clock.now += 30 * 1000;
+    tick();
+    assert.match(pill.textContent, /^已断开，\d+ 秒后重连…$/);
+    assert.equal(line.classList.contains("hidden"), true);
+  });
+});
+
+test("掉线后在「重连中 / 已满 / 已关闭」之间转：秒数仍从第一次掉线那一刻数起", () => {
+  withFakeViewerPage(({ elements, ws, clock, tick, fireReconnect }) => {
+    clock.now += 10 * 60 * 1000;
+    ws.onclose({ code: 4429 });                 // 已满：胶囊写自己的字，不显示秒数
+    assert.equal(elements["conn-text"].textContent, "同看人数已满（12 人），稍后再试");
+    assert.equal(elements["stale-line"].classList.contains("hidden"), true);
+    clock.now += 50 * 1000;
+    fireReconnect().onclose({ code: 1006 });   // 下一次重连没有关闭帧就断了：回到普通重连
+    tick();
+    assert.match(elements["conn-text"].textContent, /^已断开，\d+ 秒后重连…$/, "离掉线才 50 秒");
+    clock.now += 20 * 1000;
+    tick();
+    assert.equal(elements["conn-text"].textContent, "未连接 70 秒");
+    assert.equal(elements["stale-line"].textContent, "请找中控确认同看是否还开着，或重新扫码");
+  });
+});
+
+test("已连接时 #stale-line 照旧是「N 秒没有新消息」，和断线那句不同时出现", () => {
+  withFakeViewerPage(({ elements, clock, tick }) => {
+    const line = elements["stale-line"];
+    clock.now += 46 * 1000;
+    tick();
+    assert.equal(line.classList.contains("hidden"), false);
+    assert.equal(line.textContent, "46 秒没有新消息");
+  });
+});
+
+// ---- DOM 回归：翻译失败 / 因积压跳过的字幕要有字（F4）----
+// 服务端发的是 translate_state（failed / dropped），不带 failed/why：以前译文行写成空串，只剩一行空白
+function captionTrans(elements, i) {
+  const card = elements["caption-list"].children[i];
+  return card.children[2];
+}
+test("字幕的翻译结局：failed、dropped、ok、pending 各显示对应的字，不再留空行", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send({ type: "caption", id: 1, ts: 1, original: "uno", translated: null, translate_state: "failed" });
+    send({ type: "caption", id: 2, ts: 2, original: "dos", translated: null, translate_state: "dropped" });
+    send({ type: "caption", id: 3, ts: 3, original: "tres", translated: "三", translate_state: "ok" });
+    send({ type: "caption", id: 4, ts: 4, original: "cuatro", translate_state: "pending" });
+    const t = [0, 1, 2, 3].map((i) => captionTrans(elements, i));
+    assert.equal(t[0].textContent, "翻译失败");
+    assert.equal(t[1].textContent, "翻译已跳过（积压）");
+    assert.equal(t[2].textContent, "三");
+    assert.equal(t[3].textContent, "翻译中…");
+    assert.equal(t[0].classList.contains("failed"), true, "套用已有的 .failed 样式");
+    assert.equal(t[1].classList.contains("failed"), true);
+    assert.equal(t[2].classList.contains("failed") || t[2].classList.contains("pending"), false);
+    assert.equal(t[3].classList.contains("pending"), true);
+    // 失败、跳过的字是界面提示，不是数据（英文界面的检查不豁免它们）
+    assert.equal(t[0].classList.contains("i18n-data"), false);
+    assert.equal(t[1].classList.contains("i18n-data"), false);
+    assert.equal(t[2].classList.contains("i18n-data"), true);
+  });
+});
+test("字幕的翻译结局经 caption_update 到达（pipeline 的实际路径），重译成功后换成译文", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send({ type: "caption", id: 1, ts: 1, original: "uno", translated: null, translate_state: "pending" });
+    send({ type: "caption", id: 2, ts: 2, original: "dos", translated: null, translate_state: "pending" });
+    send({ type: "caption_update", id: 1, translated: null, translate_state: "failed" });
+    send({ type: "caption_update", id: 2, translated: null, translate_state: "dropped" });
+    assert.equal(captionTrans(elements, 0).textContent, "翻译失败");
+    assert.equal(captionTrans(elements, 1).textContent, "翻译已跳过（积压）");
+    send({ type: "caption_update", id: 1, strong: true, strong_state: "ok", translated: "一", translate_state: "ok" });
+    assert.equal(captionTrans(elements, 0).textContent, "一");
+    assert.equal(captionTrans(elements, 0).classList.contains("failed"), false);
+    // 老的 failed/why 写法照旧：带原因的那句更具体，优先
+    send({ type: "caption", id: 3, ts: 3, original: "tres", failed: true, why: "超时", translate_state: "failed" });
+    assert.equal(captionTrans(elements, 2).textContent, "译文失败（超时）——请看上面的原话");
+  });
+});
+
+// ---- DOM 回归：弹幕面板贴底跟随（F6）----
+// 补核（10-22）真 ViewerHub 加真手机页实测：展开后 scrollTop=0、最新一条不在视野里；重连后显示的是
+// 回放 30 条里最旧的 5 条。下面给假列表装上和浏览器一样的几何：收起（display:none）时量出来全是 0，
+// 展开时面板 280px 高、每条 60px；还在「翻译中…」的那条矮 20px，译文补上之后长到 60px（后补的译文
+// 比「翻译中…」长时会折行，这一条就长高）——这时贴底靠的是 updateComment 里的那一下，假几何里条目
+// 不长高的话，删掉它测试也看不出来；scrollTop 读的时候夹在 [0, scrollHeight − clientHeight] 里；
+// 不做滚动锚定（viewer.css 给 .comment-list 关掉了）
+const CMT_H = 60;
+const CMT_PENDING_H = 40;
+const PANEL_H = 280;
+function comment(n, extra) {
+  return JSON.stringify(Object.assign({ type: "comment", id: "c" + n, user: "viewer_" + n, ts: n,
+                                        text: "comentario " + n, translated: "弹幕 " + n, state: "ok" }, extra || {}));
+}
+function cmtHeight(item) {   // 看这一条的译文行现在是不是「翻译中…」（renderComment/updateComment 用 .pending 标）
+  const zh = item.children.find((c) => c.className === "cmt-zh");
+  return zh && zh.classList.contains("pending") ? CMT_PENDING_H : CMT_H;
+}
+function commentGeometry(list) {
+  const shown = () => !list.classList.contains("hidden");
+  const append = list.appendChild.bind(list);
+  list.appendChild = (child) => {
+    Object.defineProperty(child, "offsetHeight", { configurable: true, get: () => cmtHeight(child) });
+    return append(child);
+  };
+  Object.defineProperty(list, "clientHeight", { configurable: true, get: () => (shown() ? PANEL_H : 0) });
+  Object.defineProperty(list, "scrollHeight", { configurable: true,
+    get: () => (shown() ? list.children.reduce((sum, c) => sum + cmtHeight(c), 0) + 8 : 0) });
+  let top = 0;
+  const max = () => Math.max(0, list.scrollHeight - list.clientHeight);
+  Object.defineProperty(list, "scrollTop", { configurable: true,
+    get: () => Math.max(0, Math.min(top, max())), set: (v) => { top = Math.max(0, Math.min(v, max())); } });
+  return {
+    below: () => Math.max(0, list.scrollHeight - list.clientHeight) - list.scrollTop,   // 底下还藏着多少像素，0 = 在底部
+    firstVisible: () => {   // 视野顶上那一条：按每条自己的高度往下累加
+      let y = 0;
+      for (const c of list.children) {
+        y += cmtHeight(c);
+        if (y > list.scrollTop) return c.dataset.id;
+      }
+      return null;
+    },
+  };
+}
+function userScrollsTo(list, top) {   // 用户自己滚：先有一次真实的触摸，随后的 scroll 才算用户滚的
+  list.dispatch("touchstart");
+  list.scrollTop = top;
+  list.dispatch("scroll");
+}
+
+test("弹幕面板：收起时来的弹幕，展开那一刻就在底部（以前停在最旧的几条）", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    assert.equal(list.classList.contains("hidden"), true, "默认收起");
+    for (let n = 1; n <= 12; n++) ws.onmessage({ data: comment(n) });
+    assert.equal(list.scrollTop, 0, "收起时滚不动");
+    elements["comment-toggle"].click();
+    assert.equal(list.classList.contains("hidden"), false);
+    assert.equal(geo.below(), 0, "展开就该看到最新一条");
+
+    // 翻上去、收起、再展开：展开仍回到底部，并恢复跟随
+    userScrollsTo(list, 0);
+    elements["comment-toggle"].click();
+    elements["comment-toggle"].click();
+    assert.equal(geo.below(), 0);
+    ws.onmessage({ data: comment(13) });
+    assert.equal(geo.below(), 0, "展开之后照常跟随");
+  });
+});
+
+test("弹幕面板：贴底时新弹幕（含裁到 30 条、译文后补）都跟到底", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 40; n++) {
+      ws.onmessage({ data: comment(n, { state: "pending", translated: null }) });
+      assert.equal(geo.below(), 0, "第 " + n + " 条之后应在底部");
+      const before = list.scrollHeight;
+      ws.onmessage({ data: JSON.stringify({ type: "comment_update", id: "c" + n, translated: "弹幕 " + n, state: "ok" }) });
+      assert.equal(list.scrollHeight - before, CMT_H - CMT_PENDING_H, "译文补上之后这一条长高");
+      assert.equal(geo.below(), 0, "第 " + n + " 条译文补上之后仍在底部");
+    }
+    assert.equal(list.children.length, 30, "只留最近 30 条");
+    assert.equal(list.children[29].dataset.id, "c40");
+  });
+});
+
+test("弹幕面板：翻上去后新弹幕不拉动；顶上裁掉一条时看着的那几条不动；滚回底部恢复跟随", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 30; n++) ws.onmessage({ data: comment(n) });
+    userScrollsTo(list, 600);
+    assert.equal(geo.firstVisible(), "c11");
+
+    ws.onmessage({ data: comment(31) });             // 到了上限：顶上的 c1 被裁掉
+    assert.equal(list.children.length, 30);
+    assert.equal(list.children[0].dataset.id, "c2");
+    assert.equal(list.scrollTop, 600 - CMT_H, "scrollTop 减回一条的高度");
+    assert.equal(geo.firstVisible(), "c11", "视野里还是刚才那几条");
+    ws.onmessage({ data: JSON.stringify({ type: "comment_update", id: "c31", translated: "弹幕 31 改" }) });
+    assert.equal(geo.firstVisible(), "c11", "译文后补也不拉动");
+
+    userScrollsTo(list, list.scrollHeight);          // 自己滚回底部：恢复跟随
+    ws.onmessage({ data: comment(32) });
+    assert.equal(geo.below(), 0, "滚回底部之后又跟着最新的走");
+  });
+});
+
+test("弹幕面板：重连回放之后在底部；回放期间跟随意图被 scroll 事件改掉，回放结束时也拉回来", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 30; n++) ws.onmessage({ data: comment(n) });
+    userScrollsTo(list, 100);                         // 掉线前刚翻过（还在 USER_INPUT_WINDOW_MS 之内）
+
+    ws.onclose({ code: 1006 });
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send({ type: "viewer_hello", ok: true, ts: 1, share_since: 0, viewers: 1, max_viewers: 12, read_only: true });
+    assert.equal(list.children.length, 0, "hello 清空重建");
+    // replay_snapshot 的顺序：先是不带 replay 标记的几条（不算回放结束），然后是带标记的回放
+    send({ type: "status", state: "live" });
+    send({ type: "comment_source", backend: "live" });
+    send({ type: "alert_mode", on: true });
+    send({ type: "incident", id: "disk", level: "warn", text: "磁盘快满了" });
+    // 接着是字幕历史，弹幕回放在它后面（app/viewer.py replay_snapshot）。字幕历史里夹着的场次分隔线
+    // 本来带 replay，过白名单时被丢掉（ALLOW 的 session_break 只给 ts）：它也不算回放结束
+    send({ type: "caption", id: 1, ts: 1, original: "uno", translated: "一", replay: true });
+    send({ type: "session_break", ts: 2 });
+    send({ type: "caption", id: 2, ts: 3, original: "dos", translated: "二", replay: true, restore: true });
+    for (let n = 11; n <= 40; n++) ws.onmessage({ data: comment(n, { replay: true }) });
+    assert.equal(geo.below(), 0, "回放逐条追加时就该贴底");
+
+    // 回放重建列表期间浏览器补发了一个 scroll 事件（位置在中间），掉线前那次触摸还在窗口里：跟随意图被改掉
+    list.scrollTop = 300;
+    list.dispatch("scroll");
+    ws.onmessage({ data: comment(41) });             // 回放之后的第一条实时消息
+    assert.equal(geo.below(), 0, "回放结束时强制滚到底");
+    ws.onmessage({ data: comment(42) });
+    assert.equal(geo.below(), 0, "之后照常跟随");
+    assert.equal(list.children[29].dataset.id, "c42");
+  });
+});
+
+test("弹幕面板：回放结束前用户已经自己翻了，回放结束时不替他滚", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const list = elements["comment-list"];
+    const geo = commentGeometry(list);
+    elements["comment-toggle"].click();
+    for (let n = 1; n <= 30; n++) ws.onmessage({ data: comment(n, { replay: true }) });
+    userScrollsTo(list, 200);
+    assert.equal(geo.firstVisible(), "c4");
+    ws.onmessage({ data: comment(31) });
+    assert.ok(geo.below() > 0, "用户在看旧的，不拉到底");
+    assert.equal(geo.firstVisible(), "c4");
   });
 });
