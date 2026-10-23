@@ -294,12 +294,22 @@ def _in_daemon_thread(fn):
     return fut
 
 
-def _ffmpeg_facts_now():
-    """_ffmpeg_session_facts 在线程里跑的那一半（会起子进程）。"""
+def _ffmpeg_switches():
+    """session_start 的 ffmpeg_args 里只看环境变量（和模块里的默认值）的三项：legacy、flv_exits_on_drop、
+    reconnect_v2。不起子进程，在事件循环里直接算：探测慢（Windows 上第一次执行被扫描）、超时、出错时，这三项
+    照样记得下（第 2 轮审查：以前整组跟着记 null，合并后对账就分不清这一场开没开 TLT_FFMPEG_LEGACY）。"""
     from . import audio, reconnect_policy
+
+    return {"legacy": audio.ffmpeg_legacy(),
+            "flv_exits_on_drop": audio.flv_exits_on_drop(),
+            "reconnect_v2": reconnect_policy.v2_enabled()}
+
+
+def _ffmpeg_facts_now(legacy):
+    """_ffmpeg_session_facts 在线程里跑的那一半（会起子进程）：返回 (ffmpeg_version, loglevel)。"""
+    from . import audio
     from .ffmpeg_bin import find_ffmpeg
 
-    legacy = audio.ffmpeg_legacy()
     ffmpeg = find_ffmpeg()
     version, tagged = None, False
     if ffmpeg is not None:
@@ -309,11 +319,7 @@ def _ffmpeg_facts_now():
         else:
             got = audio.probe_ffmpeg(ffmpeg)       # 和拉流前的探测共用缓存：一次运行只跑一次
             version, tagged = got.get("version"), got.get("tagged") is True
-    return {"ffmpeg_version": version,
-            "ffmpeg_args": {"legacy": legacy,
-                            "flv_exits_on_drop": audio.flv_exits_on_drop(),
-                            "reconnect_v2": reconnect_policy.v2_enabled(),
-                            "loglevel": audio.LOGLEVEL_TAGGED if tagged else audio.LOGLEVEL_PLAIN}}
+    return version, (audio.LOGLEVEL_TAGGED if tagged else audio.LOGLEVEL_PLAIN)
 
 
 class _ASRSlot:
@@ -1614,16 +1620,25 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
           * ffmpeg_args：legacy（TLT_FFMPEG_LEGACY=1：M1、M3、M8 的参数一起退回原样）、flv_exits_on_drop（FLV
             断开就让 ffmpeg 退出、交给程序重连；两个应急开关任一个开着都是 false）、reconnect_v2（TLT_RECONNECT_V2
             有没有关掉）、loglevel（这一场拉流实际用的 -loglevel）。合并后对账时据此分清跑的是哪组 ffmpeg 参数。
-        要起子进程（几十毫秒），放进自己的 daemon 线程（不占默认线程池：识别模型的加载在那里排着，退出时
-        asyncio.run 还要等池里的线程）；最多等 FFMPEG_FACTS_WAIT_SEC，等不到就整组记 null，不拖开场——探测在后台
-        跑完照样进缓存，拉流前不再跑第二次。出任何错也是 null：这一栏不能挡住开播。"""
+        前三项只看环境变量，在这里直接算（_ffmpeg_switches）。version 和 loglevel 要起子进程（几十毫秒），放进自己的
+        daemon 线程（不占默认线程池：识别模型的加载在那里排着，退出时 asyncio.run 还要等池里的线程）；最多等
+        FFMPEG_FACTS_WAIT_SEC，等不到或出错就只有这两项记 null（legacy 开着时 loglevel 一定是 error，照记），不拖
+        开场——探测在后台跑完照样进缓存，拉流前不再跑第二次。前三项也算不出来时整组 null：这一栏不能挡住开播。"""
+        from . import audio
+
         try:
-            fut = _in_daemon_thread(_ffmpeg_facts_now)
-            return await asyncio.wait_for(asyncio.shield(fut), self.FFMPEG_FACTS_WAIT_SEC)
+            switches = _ffmpeg_switches()
+        except Exception:
+            return {"ffmpeg_version": None, "ffmpeg_args": None}
+        legacy = switches["legacy"]
+        try:
+            fut = _in_daemon_thread(lambda: _ffmpeg_facts_now(legacy))
+            version, loglevel = await asyncio.wait_for(asyncio.shield(fut), self.FFMPEG_FACTS_WAIT_SEC)
         except asyncio.CancelledError:
             raise
         except Exception:
-            return {"ffmpeg_version": None, "ffmpeg_args": None}
+            version, loglevel = None, (audio.LOGLEVEL_PLAIN if legacy else None)
+        return {"ffmpeg_version": version, "ffmpeg_args": dict(switches, loglevel=loglevel)}
 
     async def _begin_session(self, url):
         from .audit import AuditLog
@@ -5368,7 +5383,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                                            kind=kind)
         what = failure.get("error") or "-"
         if kind == "timeout":
-            seen = "请求 {:g} 秒内没有完成".format(getattr(tr, "TIMEOUT", 0) or 0)  # i18n: terminal
+            # 时限在内层引擎上：管线拿到的是 CachedTranslator（没有 TIMEOUT，也不转发属性），以前这里总是 0，
+            # 打出「0 秒内没有完成」（第 2 轮审查）。拿不到就不写秒数，不写一个不是观察到的数
+            limit = getattr(getattr(tr, "inner", tr), "TIMEOUT", None)
+            if isinstance(limit, (int, float)) and not isinstance(limit, bool) and limit > 0:
+                seen = "请求 {:g} 秒内没有完成".format(limit)  # i18n: terminal
+            else:
+                seen = "请求在时限内没有完成"  # i18n: terminal
         elif kind == "connect":
             seen = "请求的连接出错（{}）".format(what)  # i18n: terminal
         elif kind == "http":

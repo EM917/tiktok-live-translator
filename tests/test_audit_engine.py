@@ -228,6 +228,22 @@ def test_each_failure_kind_leaves_one_record(monkeypatch, tmp_path, capsys, outc
     out = capsys.readouterr().out
     assert out.count("这一句显示原文；同一种情况这一场不再打印") == 1
     assert "odd" not in out and "Connection refused" not in out    # 只有类型名，不带异常原文
+    if kind == "timeout":
+        # 时限在内层引擎上（管线拿到的是 CachedTranslator）：以前这里打的是「0 秒内没有完成」（第 2 轮审查）
+        assert "Claude 请求 10 秒内没有完成（模型 claude-haiku-5-5）" in out
+        assert "0 秒内没有完成" not in out.replace("10 秒内没有完成", "")
+
+
+def test_a_timeout_line_without_a_known_limit_names_no_number(capsys):
+    from app.pipeline import Pipeline
+
+    p = Pipeline.__new__(Pipeline)
+    p.audit = None
+    tr = SimpleNamespace(name="claude", model="claude-haiku-5-5")          # 没有 TIMEOUT，也没有 inner
+    p._note_failure_kind(tr, {"kind": "timeout", "status": None, "error": "TimeoutError"})
+    out = capsys.readouterr().out
+    assert "请求在时限内没有完成（模型 claude-haiku-5-5）" in out
+    assert "秒内没有完成" not in out
 
 
 def test_different_kinds_each_get_a_record(monkeypatch, tmp_path):
@@ -387,12 +403,17 @@ def test_without_ffmpeg_the_facts_are_null(monkeypatch, tmp_path):
     assert calls == []
 
 
-def test_a_slow_probe_does_not_hold_up_the_session(monkeypatch, tmp_path):
+def _facts_with(monkeypatch, tmp_path, facts_now, legacy=False, v2=True):
+    from app import audio, reconnect_policy
     from app import pipeline as pipeline_mod
     from app.pipeline import Pipeline
 
+    monkeypatch.setattr(audio, "FFMPEG_LEGACY", legacy)
+    monkeypatch.delenv("TLT_FFMPEG_LEGACY", raising=False)
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", v2)
+    monkeypatch.delenv("TLT_RECONNECT_V2", raising=False)
     monkeypatch.setattr(Pipeline, "FFMPEG_FACTS_WAIT_SEC", 0.05)
-    monkeypatch.setattr(pipeline_mod, "_ffmpeg_facts_now", lambda: time.sleep(0.5) or {"ffmpeg_version": "x"})
+    monkeypatch.setattr(pipeline_mod, "_ffmpeg_facts_now", facts_now)
     p = _real_pipeline(monkeypatch, tmp_path)
 
     async def scenario():
@@ -400,9 +421,36 @@ def test_a_slow_probe_does_not_hold_up_the_session(monkeypatch, tmp_path):
         got = await p._ffmpeg_session_facts()
         return got, time.monotonic() - t0
 
-    got, took = asyncio.run(scenario())      # asyncio.run 退出时还要等那个线程跑完：只量协程里的
+    return asyncio.run(scenario())      # asyncio.run 退出时还要等那个线程跑完：只量协程里的
+
+
+def test_a_slow_probe_does_not_hold_up_the_session(monkeypatch, tmp_path):
+    """探测等不到：只有 version 和 loglevel 记 null。legacy、flv_exits_on_drop、reconnect_v2 只看环境变量，照样记下
+    （第 2 轮审查：以前整组 ffmpeg_args 跟着记 null，对账分不清这一场开没开 TLT_FFMPEG_LEGACY）。"""
+    got, took = _facts_with(monkeypatch, tmp_path, lambda legacy: time.sleep(0.5) or ("x", "error"))
     assert took < 0.45
-    assert got == {"ffmpeg_version": None, "ffmpeg_args": None}
+    assert got == {"ffmpeg_version": None, "ffmpeg_args": {"legacy": False, "flv_exits_on_drop": True,
+                                                           "reconnect_v2": True, "loglevel": None}}
+
+
+def test_a_slow_probe_still_records_the_emergency_switches(monkeypatch, tmp_path):
+    """应急开关开着：拉流的 -loglevel 一定是 error（app/audio.py 的 command），等不到探测也照记。"""
+    got, _took = _facts_with(monkeypatch, tmp_path, lambda legacy: time.sleep(0.5), legacy=True)
+    assert got == {"ffmpeg_version": None, "ffmpeg_args": {"legacy": True, "flv_exits_on_drop": False,
+                                                           "reconnect_v2": True, "loglevel": "error"}}
+    (tmp_path / "v1").mkdir()
+    got, _took = _facts_with(monkeypatch, tmp_path / "v1", lambda legacy: time.sleep(0.5), v2=False)
+    assert got["ffmpeg_args"] == {"legacy": False, "flv_exits_on_drop": False, "reconnect_v2": False,
+                                  "loglevel": None}
+
+
+def test_a_probe_that_raises_keeps_the_switches_too(monkeypatch, tmp_path):
+    def boom(legacy):
+        raise OSError("ffmpeg no arranca")
+
+    got, _took = _facts_with(monkeypatch, tmp_path, boom)
+    assert got == {"ffmpeg_version": None, "ffmpeg_args": {"legacy": False, "flv_exits_on_drop": True,
+                                                           "reconnect_v2": True, "loglevel": None}}
 
 
 def test_stop_limits_keep_their_bytes_and_add_the_two_term2_delays_at_the_end(monkeypatch, tmp_path):
