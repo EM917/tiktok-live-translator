@@ -2489,7 +2489,8 @@
     decorateComment(msg.id);
   }
 
-  // hello / config：整份换掉本地的。hello 里带来的事件是回放，不算新事件：把「已看」推到此刻
+  // hello / config：整份换掉本地的。回放不算已看：哪些看过由 guardSeenTs 定（存在 localStorage 里，刷新也在），
+  // 只有中控点了「已看」才往前推（例外见下面 hello 那几行）
   function applyGuardConfig(cfg, hello) {
     if (!cfg) return;
     var stateChanged = false;
@@ -2511,9 +2512,15 @@
       Object.keys(mk).forEach(function (k) { if (mk[k] && typeof mk[k] === "object") guardMarked[k] = mk[k]; });
       guardMarkIdx = guardMarkIndex(guardMarked);
     }
+    // 以前每次 hello 都在这里 markGuardSeen()（专家审查 F2）：页面任何一次重连——瞬断、手动刷新、切换界面
+    // 语言的重载——都把未读全标成已看，顶部条和浮钮红点一起消失；断线期间新到的红色事件只随回放到达，
+    // 从头到尾一次都没亮过。现在只剩一种情况会标：这台浏览器从没记过「已看」（guardSeenTs 是 0：第一次打开
+    // 页面）。刚打开页面不为这一场早先的事件弹顶部条，这条约定 tests/app.en.test.mjs 钉着；标过一次之后
+    // 时刻就存下了，之后的重连、刷新都不再标。localStorage 用不了的话每次刷新都是「第一次」，断线期间的
+    // 事件仍可能被这样标掉——只剩这一种
     if (hello) {
-      markedSpoke = [];
-      markGuardSeen();
+      markedSpoke = [];      // 回放的弹幕不重新计「关注的人本场发言」
+      if (!guardSeenTs) markGuardSeen();
     }
     if (stateChanged || "guard_marked" in cfg) decorateAllComments();
     drawGuardAll();
