@@ -717,9 +717,17 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
    8px：上限 = 窗口高 − 底部署名 22 − 顶栏 − 8。顶栏 600px 以上是一行 52px，600px 及以下折成两行 75px
    （直播中满编、中英文都量过，见 --topbar-room）。超出时在条内滚动，不截断（D13 照旧）。
    贴底：flex-direction 用 column-reverse，滚动的原点在底边——超出时一打开就停在最底下（句子的结尾、
-   西语原文、角标都看得见），往上滚看开头；换句后没往上滚过的照样停在底下，不用脚本。反向排列后用 order
-   把三块排回原来的上下顺序（大字、小字、角标），读屏仍按文档顺序念。没超出时内容照旧贴着底边排，和以前
-   逐像素一样。--live-bar-h（web/app.js syncLiveBarHeight）量到的是封顶后的高度，两栏底部的留白跟着封顶。 */
+   西语原文、角标都看得见），往上滚看开头。反向排列后用 order 把三块排回原来的上下顺序（大字、小字、角标），
+   读屏仍按文档顺序念。没超出时内容照旧贴着底边排，和以前逐像素一样。
+   overflow-anchor: none（b2-contrast 审查，2026-10-23）：条子里不做滚动锚定，内容一变（换句、译文到达、
+   重译变长）都按「离底边的距离」保持位置，没往上滚过的一直停在最底下，不用脚本。不关时 macOS 的系统 WebKit
+   （真 app 用的 WKWebView）条高带小数时常停在离底 1px（scrollTop −1），这时内容一变就按离顶边的距离保持：
+   WKWebView 实测 scrollTop 跳到 −322（1000×732、字号 34，同一句变长）、−628（字号 48，译文到达）、−779
+   （1200×800、字号 48、弹幕栏开着），句子结尾和角标被推到条子下沿外面，22 组里 8 组这样；关掉后 22 组全部
+   停在 0 或 −1、角标看得见。无头 Chrome 关不关都一直停在 0，只在 Chrome 里量不出来。
+   往上滚过、没滚回的：内容变了也保持离底边同样的距离，不跳到最新（WKWebView、Chrome 都一样）；等一句短到
+   滚不了那么远的句子换上来、或自己滚回最底下才复位。换句时自动回到底部要改 web/app.js，不在这里。
+   --live-bar-h（web/app.js syncLiveBarHeight）量到的是封顶后的高度，两栏底部的留白跟着封顶。 */
 .live-bar {
   position: fixed;
   left: 0; right: 0; bottom: 22px;
@@ -732,6 +740,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   --topbar-room: 52px;
   max-height: calc(100vh - 22px - var(--topbar-room) - 8px);
   overflow-y: auto;
+  overflow-anchor: none;
 }
 /* 顶栏在 600px 及以下折成两行（见 .topbar 那一档），给它留两行的高度 */
 @media (max-width: 600px) {
@@ -776,6 +785,7 @@ body:has(#comment-panel:not(.hidden):not(.collapsed)) .comment-list { padding-bo
   font-weight: 600;
   line-height: 1.35;
   order: 3;                  /* .live-bar 是 column-reverse，从底边往上排：order 小的在下面（大字、小字、角标） */
+  overflow-wrap: anywhere;   /* 一长串断不开的字符（网址之类）在条内折行，不在封了顶的条子里横向滚动 */
 }
 
 .live-original {
@@ -784,6 +794,7 @@ body:has(#comment-panel:not(.hidden):not(.collapsed)) .comment-list { padding-bo
   line-height: 1.4;          /* 写死行高：.live-bar 的 min-height 按它给小字预留两行 */
   color: var(--text-dim);
   order: 2;                  /* 见 .live-translated */
+  overflow-wrap: anywhere;   /* 见 .live-translated */
 }
 
 /* 大字幕下面的一小行：翻译状态角标 + 「约 N 秒前」。两样都是说明，不是字幕，字号固定不跟滑块走

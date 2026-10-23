@@ -757,8 +757,13 @@ test("样式表：大字幕条最少有「两行大字 + 两行小字」那么�
 
 test("样式表：超长句不截断（D13）——大字幕、大字、小字都不限行数、不藏溢出", () => {
   for (const selector of [".live-translated", ".live-original"]) {
-    const body = ruleBody(selector);
-    assert.doesNotMatch(body, /line-clamp|max-height|overflow|text-overflow/, selector);
+    const body = ruleBody(selector).replace(/\/\*[\s\S]*?\*\//g, "");
+    // overflow-wrap 管的是在哪儿折行，不藏东西；别的 overflow 一律不许
+    assert.doesNotMatch(body, /line-clamp|max-height|overflow(-[xy])?\s*:|text-overflow/, selector);
+    // 条子是封了顶的滚动容器（overflow-x 的计算值也跟着成了 auto）：一长串断不开的字符（网址之类）要在条内
+    // 折行，否则会在条子里横向滚动、后半截看不见（b2-contrast 审查；WKWebView 和无头 Chrome 实测横向溢出
+    // 1441–5086px → 0，普通句子的条顶、条高逐像素不变）
+    assert.equal(decls(selector)["overflow-wrap"], "anywhere", selector);
   }
   // 条子本身封了顶（#125 审查，见下一条），但超出的部分是滚出来看，不是藏起来：只许 overflow-y: auto
   const bar = decls(".live-bar");
@@ -800,6 +805,11 @@ test("样式表：条子封顶（#125 审查）——最高到顶栏下面 8px�
   // 和 index.html 里的文档顺序一致（读屏照文档顺序念，看到的也是这个顺序）
   assert.equal(bar["overflow-y"], "auto");
   assert.equal(bar["flex-direction"], "column-reverse");
+  // 关掉滚动锚定（b2-contrast 审查）：不关时 macOS 的系统 WebKit（真 app 用的 WKWebView）在条子停在离底 1px
+  // （scrollTop −1，条高带小数时常见）时按离顶边的距离保持位置，同一句变长、译文到达、下一句长句换上来后
+  // scrollTop 跳到 −322 ～ −779，句子结尾和角标被推到条子下沿外面；关掉后按离底边的距离保持，一直贴底。
+  // 无头 Chrome 关不关都贴底，所以这条只能靠样式表钉住
+  assert.equal(bar["overflow-anchor"], "none", "条子里不做滚动锚定，换句、变长后仍停在最底下");
   const order = (sel) => Number(decls(sel).order);
   assert.ok(order(".live-translated") > order(".live-original") && order(".live-original") > order(".live-meta"),
     "column-reverse 从底边往上排：order 小的在下面");
