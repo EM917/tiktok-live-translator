@@ -167,12 +167,13 @@ def _first_hop(monkeypatch, tmp_path):
 def test_the_first_hop_lands_in_the_bundle_with_the_same_identity(monkeypatch, tmp_path):
     """计划审查 Q8 第 2 条：跳转链改了之后，「完全磁盘访问权限」的步骤列出的文件不能变——启动解释器
     （第一跳在任何 exec 之前记下）和最终进程的解释器（壳里的 python，链回 .venv/bin/python 链到的
-    那个文件）。第一跳直接进壳，exec 的目标、参数、环境要和以前第二跳在 main() 里进壳时一样。
-    零请求，真的建壳，假的 execve。"""
+    那个文件）。第一跳直接进壳，exec 的目标、参数、环境要和以前第二跳在 main() 里进壳时一样；推迟安装
+    的记号（I7）也要跟着进去。零请求，真的建壳，假的 execve。"""
     root, base_python = _first_hop(monkeypatch, tmp_path)
     # 第一跳顶上 remember_launch_python 记下的样子（直接改 os.environ 会漏到别的测试里，经 monkeypatch 设）
     launch = macbundle.remember_launch_python({}, str(base_python))
     monkeypatch.setenv(macbundle.LAUNCH_PYTHON_ENV, launch)
+    monkeypatch.setenv("TLT_INSTALL_DEFERRED", "4242")
     seen = []
     ok = macbundle.relaunch_inside_bundle(root, ["main.py", "--port", "8799"],
                                           execve=lambda path, argv, env: seen.append((path, argv, env)))
@@ -182,6 +183,7 @@ def test_the_first_hop_lands_in_the_bundle_with_the_same_identity(monkeypatch, t
     assert argv == [path, str(root / "main.py"), "--port", "8799"]
     assert env[macbundle.ENV_GUARD] == "1"
     assert env[macbundle.LAUNCH_PYTHON_ENV] == launch == os.path.realpath(str(base_python))
+    assert env["TLT_INSTALL_DEFERRED"] == "4242"
     assert macbundle.inside_bundle(path)
     assert browser_login.fda_targets(env, executable=path) == [os.path.realpath(str(base_python))]
 
@@ -224,10 +226,11 @@ def test_ensure_env_tries_the_bundle_then_waits_on_windows_then_execs_on_posix()
     assert ast.unparse(body[windows].test) == "os.name == 'nt'"
     posix = _stmt_index(body, "os.execv(str(vpy), exec_args(argv))")
     assert bundle < argv < windows < posix == len(body) - 1
-    # 进壳之前先放锁、收提示框（exec 不会执行 finally）、冲掉输出缓冲
+    # 进壳之前先放锁、收提示框（exec 不会执行 finally）、冲掉输出缓冲，推迟安装的记号也先记下
     assert _stmt_index(body, "lock.unlink()") < bundle
     assert _stmt_index(body, "_close_info_dialog()") < bundle
     assert _stmt_index(body, "flush_std()") < bundle
+    assert _stmt_index(body, "mark_install_deferred()") < bundle
 
 
 def test_the_update_restart_still_execs_in_place():

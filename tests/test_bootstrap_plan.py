@@ -1,10 +1,13 @@
-"""启动自举的就绪指纹（2026-10-21 专家审查 I9），在 app/bootstrap.py。
+"""启动自举的两处判断（2026-10-21 专家审查 I9、I7），都在 app/bootstrap.py。
 
 I9 每次启动三次解释器跳转、约 4 秒的重型 import 白做：最终进程把 .venv 此刻的样子记进
 .venv/.ready-fingerprint，下次启动的第一跳只读文件比一比，没变就跳过子进程 import 检查和 pip 探测。
 钉住：指纹由哪些东西组成、只在本项目的 .venv/.app 壳里记和删、哪些变化让它失效——清单、
 上次装成功的那份、pyvenv.cfg、.venv/bin/python 链接终点的真实路径/大小/修改时间（计划审查 Q8：
 conda 原地升级次版本时 cfg 一个字不变）、要 import 的模块、重建记号、24 小时的重试。
+
+I7 清单变了之后再启动一次，会在直播实例正用着的 .venv 里跑 pip -r：要装、.venv 在、端口上有本程序
+在跑时这次不装（defer_install），换进去的那个进程凭环境变量里的 PID 认出来、也不装。
 
 main.py 不能 import（模块级就跑 ensure_env、会 execv），它的接线读语法树。全部在 tmp_path 里，
 不碰项目自己的 .venv，不起子进程，不连网。
@@ -218,6 +221,71 @@ def test_conda_upgrading_python_in_place_invalidates_it(tmp_path):
     assert bootstrap.ready_fast_path(root, IMPORTS) is False
 
 
+# ---- I7 推迟安装 -------------------------------------------------------------------------------
+
+PLAN = {"text": "x", "delay": 5.0}
+
+
+def test_nothing_to_install_never_probes_the_port(project):
+    probes = []
+    assert bootstrap.defer_install(None, project, lambda: probes.append(1) or True) is False
+    assert probes == []
+
+
+def test_no_venv_yet_never_probes_the_port(tmp_path):
+    probes = []
+    assert bootstrap.defer_install(PLAN, tmp_path, lambda: probes.append(1) or True) is False
+    assert probes == []
+
+
+@pytest.mark.parametrize("running,expect", [(True, True), ("http://127.0.0.1:8766", True),
+                                            (None, False), (False, False)])
+def test_an_install_waits_while_the_app_answers_on_its_port(project, running, expect):
+    assert bootstrap.defer_install(PLAN, project, lambda: running) is expect
+
+
+def test_a_failing_probe_installs_as_before(project):
+    def boom():
+        raise OSError("probe failed")
+    assert bootstrap.defer_install(PLAN, project, boom) is False
+
+
+def test_the_next_process_recognises_the_deferral_by_pid(project):
+    env = {}
+    bootstrap.mark_install_deferred(env, pid=4242)
+    assert env == {bootstrap.DEFER_ENV: "4242"}
+    venv = project / ".venv"
+    # POSIX：exec 不换 PID，换进去的就是同一个进程
+    assert bootstrap.install_deferred(project, env, pid=4242, ppid=1, prefix=venv) is True
+    # Windows：第一跳起子进程、自己等着（app/relaunch.replace_process），记的是父进程
+    assert bootstrap.install_deferred(project, env, pid=5000, ppid=4242, prefix=venv) is True
+    # .app 壳里的进程同样认
+    contents = project / bootstrap.APP_DIR_NAME / "Contents"
+    assert bootstrap.install_deferred(project, env, pid=4242, ppid=1, prefix=contents) is True
+
+
+def test_a_leftover_or_foreign_deferral_is_ignored(project, tmp_path):
+    venv = project / ".venv"
+    stale = {bootstrap.DEFER_ENV: "4242"}
+    # 终端里残留的环境变量：PID 对不上，照常检查、照常装
+    assert bootstrap.install_deferred(project, stale, pid=7, ppid=8, prefix=venv) is False
+    # 不在本项目的环境里（第一跳）不认
+    assert bootstrap.install_deferred(project, stale, pid=4242, ppid=1,
+                                      prefix=tmp_path / "other") is False
+    for value in ("", "  "):
+        assert bootstrap.install_deferred(project, {bootstrap.DEFER_ENV: value}, pid=4242,
+                                          ppid=4242, prefix=venv) is False
+    assert bootstrap.install_deferred(project, {}, pid=4242, ppid=4242, prefix=venv) is False
+
+
+def test_the_final_process_clears_the_deferral(project):
+    env = {bootstrap.DEFER_ENV: "4242", "OTHER": "1"}
+    bootstrap.clear_install_deferred(env)
+    assert env == {"OTHER": "1"}
+    bootstrap.clear_install_deferred(env)                             # 没有也不报错
+    assert env == {"OTHER": "1"}
+
+
 # ---- main.py 的接线（读语法树，不 import） ----------------------------------------------------
 
 def _tree():
@@ -239,13 +307,16 @@ def _line(node, name):
     return min(c.lineno for c in found)
 
 
-def test_ensure_env_records_readiness_after_deps_ok():
+def test_ensure_env_checks_the_deferral_first_and_records_readiness_after_deps_ok():
     ensure = _func(_tree(), "ensure_env")
     first = ensure.body[1]                     # body[0] 是文档字符串
-    assert isinstance(first, ast.If) and _calls(first.test, "_deps_ok")
-    assert [ast.unparse(s) for s in first.body] == ["_note_ready()", "return"]
+    assert isinstance(first, ast.If) and _calls(first.test, "_install_deferred")
+    assert [type(s) for s in first.body] == [ast.Return]
+    second = ensure.body[2]
+    assert isinstance(second, ast.If) and _calls(second.test, "_deps_ok")
+    assert [ast.unparse(s) for s in second.body] == ["_note_ready()", "return"]
     # 本项目环境里 import 不齐：指纹作废（第一跳上 _forget_ready 什么都不做）
-    assert ast.unparse(ensure.body[2]) == "_forget_ready()"
+    assert ast.unparse(ensure.body[3]) == "_forget_ready()"
 
 
 def test_the_first_hop_skips_the_import_check_only_on_a_matching_fingerprint():
@@ -266,6 +337,27 @@ def test_the_first_hop_skips_the_import_check_only_on_a_matching_fingerprint():
         assert all(c in inside for c in _calls(ensure, name)), name
     runs = [c for c in _calls(ensure, "run") if ast.unparse(c.func) == "subprocess.run"]
     assert runs and all(c in inside for c in runs)
+
+
+def test_the_install_is_deferred_before_pip_runs_and_the_flag_rides_into_the_venv():
+    ensure = _func(_tree(), "ensure_env")
+    (defer,) = _calls(ensure, "defer_install")
+    assert ast.unparse(defer) == (
+        "bootstrap.defer_install(plan, ROOT, lambda: _existing_instance_url(8765))")
+    assert _line(ensure, "plan_install") < defer.lineno < _line(ensure, "install_requirements")
+    defer_if = next(n for n in ast.walk(ensure) if isinstance(n, ast.If) and n.test is defer)
+    body = [ast.unparse(s) for s in defer_if.body]
+    assert body[-2:] == ["plan = None", "deferred = True"]
+    assert "[初始化]" in body[0] and "print(" in body[0]
+    # 推迟了就记下 PID，再换进 .venv
+    (mark,) = _calls(ensure, "mark_install_deferred")
+    assert mark.lineno < _line(ensure, "relaunch_inside_bundle") < _line(ensure, "execv")
+
+
+def test_main_clears_the_deferral_in_the_final_process():
+    main = _func(_tree(), "main")
+    assert (_line(main, "relaunch_inside_bundle") < _line(main, "clear_install_deferred")
+            < _line(main, "settle"))
 
 
 def test_an_import_failure_in_the_final_process_also_forgets_the_fingerprint():

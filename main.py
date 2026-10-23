@@ -159,6 +159,15 @@ def _forget_ready():
         pass
 
 
+def _install_deferred():
+    """上一跳因为端口上已有本程序在跑，把安装推迟了（I7，见 bootstrap.install_deferred）。"""
+    try:
+        from app import bootstrap
+        return bootstrap.install_deferred(ROOT)
+    except Exception:
+        return False
+
+
 def _has_console():
     """stdout 或 stderr 任一连着终端就算有终端——`| tee log` 这类重定向下
     不该弹系统对话框。"""
@@ -281,7 +290,10 @@ def ensure_env():
     判断、文案和安装步骤在 app/bootstrap.py——这里没法测试（import main 就会跑到这儿）。
 
     就绪指纹（I9）：组件齐了的进程记下 .venv 的样子；第一跳看它没变就跳过子进程检查，直接换进
-    最终进程（macOS 开窗口时直接进 .app 壳）。"""
+    最终进程（macOS 开窗口时直接进 .app 壳）。推迟安装（I7）：要装、而本程序已经在跑时这次不装，
+    换进去的那个进程也不装（_install_deferred）。"""
+    if _install_deferred():
+        return
     if _deps_ok():
         _note_ready()
         return
@@ -292,6 +304,7 @@ def ensure_env():
     in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
     lock = None
     ready = False         # 第一跳确认指纹没变：不再检查、不装，直接换进 .venv（I9）
+    deferred = False      # 要装，但本程序已经在跑：这次不装（I7）
     if not in_project_venv:
         state, lock = _acquire_bootstrap_lock()
         if state == "busy":
@@ -353,6 +366,15 @@ def ensure_env():
             # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
             # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
             plan = bootstrap.plan_install(check.returncode == 0, ROOT, recorded, target_version)
+        # I7：要装，而端口上已经有本程序在跑（直播中从 Start.command、Start.bat 或命令行又开了一次），
+        # 它正用着这个 .venv：pip 换掉它脚下的包，它之后的延迟导入可能拿到装了一半的东西。这次
+        # 不装，照常换进 .venv——最终进程会认出已有实例、把窗口叫到前台；换进去的那个进程凭环境
+        # 变量知道这次推迟了，也不装。等下次没有实例在跑时再装。端口探测只在真要装时才做
+        if bootstrap.defer_install(plan, ROOT, lambda: _existing_instance_url(8765)):
+            print("[初始化] 运行组件需要补装，但本程序已经在运行、正用着这些组件，这次先不装；"
+                  "退出正在运行的程序后再打开，会自动补装")
+            plan = None
+            deferred = True
         if plan is not None:
             timer = None
             if plan["delay"] > 0:
@@ -384,6 +406,8 @@ def ensure_env():
             # [初始化] 几行会跟着丢掉
             from app.relaunch import flush_std
             flush_std()
+            if deferred:
+                bootstrap.mark_install_deferred()
             # I9：macOS 开窗口时直接进 .app 壳里的 python——和 main() 开头是同一个函数，只是提前到
             # 这里：以前先 execv 进 .venv/bin/python，那个进程再 import 一遍组件（约 2 秒）才在 main()
             # 里进壳。壳里的 python 链回 .venv/bin/python，sys.prefix 是 Contents、site-packages 落回
@@ -636,6 +660,9 @@ def main():
     if sys.platform == "darwin":
         from app.macbundle import relaunch_inside_bundle
         relaunch_inside_bundle(ROOT)
+    # 推迟安装的记号（I7）到最终进程为止：不传给一键更新的重启和以后起的子进程
+    from app.bootstrap import clear_install_deferred
+    clear_install_deferred()
     # 到这里一定是最终进程了：本进程第一次读设置（损坏就在这里备份，界面提示和审计都拿得到），
     # 闸开着、设置里还没有 ui_lang 时迁移写一次，然后定下界面语言
     i18n.settle(ROOT)
