@@ -44,6 +44,9 @@
   /* 红色计数徽标的底：深色模式下 --fail #ff6961 配白字只有 2.8:1，
      #d70015 配白字 5.4:1，深浅色共用同一个实色 */
   --red-fill: #d70015;
+  /* 白字红底的整条提示（.incident.error、.health-bar.degraded）的底。浅色就是 --fail，外观不变（白字 5.4:1）；
+     深色另取一个更深的红（见下面 prefers-color-scheme: dark），理由同 --red-fill（专家审查 V1） */
+  --fail-bar: #d70015;
   /* 直播中右侧弹幕列：中性侧栏（macOS 侧栏的浅灰），不再是 8% 蓝底——蓝色只留给
      主要动作，视野边缘一整列饱和色最容易累眼（designer.md #4） */
   --sidebar-bg: #f5f5f7;
@@ -153,6 +156,9 @@
     --warn-bg: #3a2f14;
     --warn-fg: #f0c674;
     --red-fill: #d70015;
+    /* 以前红条直接用深色的 --fail #ff6961，白字只有 2.82:1（13px 粗体要 4.5:1），网络断开、识别持续失败、
+       审计写不进这几种出错提示在傍晚以后（系统外观自动切到深色）就读不清。#b3000f 配白字 7.18:1（V1） */
+    --fail-bar: #b3000f;
     --sidebar-bg: #232325;
     --float-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 2px 8px rgba(0, 0, 0, 0.45);
     --popover-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 0 0 0.5px rgba(255, 255, 255, 0.12);
@@ -704,7 +710,17 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
    中文一到两行、西语一到两行的句子条高不变，短的句子上面空着。
    小字也留两行，是按 11,945 句真实长度量出来的：只留一行时，字号 34 下 12% 的西语原文折成两行（字号 48 下 34%），
    这些句子照样一句高一句矮；留两行以后，中文两行以内的句子条高 100% 相同（b1-livebar 的验证记录）。
-   超长句不截断（用户定的 D13）：三行以上的少数句子让条子临时变高，完整显示、不丢字。 */
+   超长句不截断（用户定的 D13）：三行以上的少数句子让条子临时变高，完整显示、不丢字。
+   高度上限：条子最高到顶栏下面 8px，上限 = 窗口高 − 底部署名 22 − 顶栏 − 8（顶栏 600px 以上一行 52px，
+   600px 及以下折成两行 75px，见 --topbar-room）。超出时在条内滚动，不截断（D13 照旧）。没有上限时，超长句会把
+   开头几行推到顶栏底下和窗口外面，读不到也滚不到。
+   贴底：column-reverse 让滚动的原点在底边，超出时一打开就是句子的结尾、西语原文和角标，往上滚看开头；order 把
+   三块排回原来的上下顺序（大字、小字、角标，也是文档顺序）。没超出时和以前逐像素一样。
+   overflow-anchor: none 不能删：有了它，内容一变（换句、译文到达、变长）都按离底边的距离保持，没往上滚过的一直
+   停在最底下。开着滚动锚定时，macOS 的 WKWebView（真 app 用的）会把句子结尾和角标推到条子下沿外面；无头 Chrome
+   里看不出来，靠 tests/live-bar.test.mjs 钉着。
+   往上滚过、没滚回的：换句后仍保持离底边同样的距离，不跳到最新；换句时自动回底要改 web/app.js。
+   --live-bar-h（web/app.js syncLiveBarHeight）量到的是封顶后的高度，两栏底部的留白跟着封顶。 */
 .live-bar {
   position: fixed;
   left: 0; right: 0; bottom: 22px;
@@ -712,8 +728,33 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   text-align: center;
   background: var(--bg);
   border-top: 0.5px solid var(--separator);
-  display: flex; flex-direction: column; justify-content: flex-end;
+  display: flex; flex-direction: column-reverse; justify-content: flex-start;
   min-height: calc(var(--sub-size) * 2.7 + var(--sub-size) * 1.176 + 34px);
+  --topbar-room: 52px;
+  max-height: calc(100vh - 22px - var(--topbar-room) - 8px);
+  overflow-y: auto;
+  overflow-anchor: none;
+}
+/* 顶栏在 600px 及以下折成两行（见 .topbar 那一档），给它留两行的高度 */
+@media (max-width: 600px) {
+  .live-bar { --topbar-room: 75px; }
+}
+/* 弹幕栏开着、窗口 1000px 及以上时，条子让出弹幕栏，大字幕在字幕栏里居中（专家审查 V6）。整宽时文字中心偏右
+   半个弹幕栏宽，条子还盖着弹幕栏下沿。右边缩进和 .comment-panel 的宽同一个式子（width 340px、max-width 42vw）。
+   条子窄了，一行放的字少三分之一，最小高度跟着多留一行大字（2.7 → 4.05，三行 × 行高 1.35），条高稳定（U1）才保得住；
+   代价是字幕栏底下多被盖住一行大字的高度。最小高度不超过上面的高度上限。
+   1000px 以下不让：字幕栏只剩窗口的六成不到，条子再让一截，一句话折成好几行，字幕栏的可见区被吃掉一大半。那里
+   照旧整宽、盖着弹幕栏下沿，弹幕列表按条高留白（.comment-list 的退路）。1000px 是默认窗口宽，也是顶栏已有的一档。
+   :has 要 Safari 15.4（macOS 12.3）以上，README 已经要求 12.3；不支持时下面两条一起被丢掉，退回整宽。
+   收起弹幕栏（.collapsed）或不在直播（.hidden）时不命中。 */
+@media (min-width: 1000px) {
+  body:has(#comment-panel:not(.hidden):not(.collapsed)) .live-bar {
+    right: min(340px, 42vw);
+    min-height: min(calc(var(--sub-size) * 4.05 + var(--sub-size) * 1.176 + 34px), calc(100vh - 22px - var(--topbar-room) - 8px));
+  }
+  /* 条子不再盖着弹幕栏，弹幕列表底部只需要让出底部署名 22px + 8px 空隙；没有 :has、或窗口窄于 1000px 时
+     仍按条高留（见 .comment-list） */
+  body:has(#comment-panel:not(.hidden):not(.collapsed)) .comment-list { padding-bottom: 30px; }
 }
 
 /* ---------- 底部署名 ---------- */
@@ -736,6 +777,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-size: var(--sub-size);
   font-weight: 600;
   line-height: 1.35;
+  order: 3;                  /* .live-bar 是 column-reverse，从底边往上排：order 小的在下面（大字、小字、角标） */
+  overflow-wrap: anywhere;   /* 一长串断不开的字符（网址之类）在条内折行，不在封了顶的条子里横向滚动 */
 }
 
 .live-original {
@@ -743,6 +786,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   font-size: calc(var(--sub-size) * 0.42);
   line-height: 1.4;          /* 写死行高：.live-bar 的 min-height 按它给小字预留两行 */
   color: var(--text-dim);
+  order: 2;                  /* 见 .live-translated */
+  overflow-wrap: anywhere;   /* 见 .live-translated */
 }
 
 /* 大字幕下面的一小行：翻译状态角标 + 「约 N 秒前」。两样都是说明，不是字幕，字号固定不跟滑块走
@@ -752,6 +797,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .live-meta {
   display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
   gap: 4px 8px; margin-top: 6px; min-height: 18px;
+  order: 1;                  /* 见 .live-translated：最下面 */
 }
 .live-state {
   display: inline-block; padding: 0 8px; border-radius: 9px;
@@ -847,7 +893,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   background: var(--warn-bg);
   border-bottom: 0.5px solid var(--a-orange-40);
 }
-.health-bar.degraded { color: #fff; background: var(--fail); border-bottom-color: var(--fail); }
+/* 白字红底用 --fail-bar 不用 --fail：深色下 --fail 是给红字用的亮红，配白字不到 3:1（V1，tests/test_contrast.py 算着） */
+.health-bar.degraded { color: #fff; background: var(--fail-bar); border-bottom-color: var(--fail-bar); }
 
 /* ---------- 持续提示：直到后端清除才消失 ---------- */
 .incident-bar { display: flex; flex-direction: column; }
@@ -860,7 +907,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   background: var(--warn-bg);
   border-bottom: 0.5px solid var(--a-orange-40);
 }
-.incident.error { color: #fff; background: var(--fail); border-bottom-color: var(--fail); }
+.incident.error { color: #fff; background: var(--fail-bar); border-bottom-color: var(--fail-bar); }   /* 同 .health-bar.degraded */
 .incident.info {
   color: var(--label);
   background: var(--tint-blue-10);
@@ -1342,7 +1389,9 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .comment-title > .i { color: var(--label-2); }
 .comment-actions { display: flex; gap: 6px; flex: none; }
 /* 底部留白与 .history 一致：底部通栏大字幕是 fixed 的，不留就会盖住最后几条。按条子的实测高度算
-   （--live-bar-h，见 .history）：以前写死 204px，字号 48 时 p90 长度的句子把最新一条弹幕整条盖住 */
+   （--live-bar-h，见 .history）：以前写死 204px，字号 48 时 p90 长度的句子把最新一条弹幕整条盖住。
+   窗口 1000px 及以上、支持 :has 时条子让出了弹幕栏（V6，见 .live-bar 后面那两条），这里的留白被盖成 30px；
+   这一条是更窄的窗口和不支持 :has 时的退路 */
 .comment-list { flex: 1; overflow-y: auto; padding: 0 16px calc(var(--live-bar-h, 174px) + 30px); }
 .cmt-item { padding: 8px 0; border-bottom: 0.5px solid var(--separator); }
 .cmt-item:last-child { border-bottom: 0; }

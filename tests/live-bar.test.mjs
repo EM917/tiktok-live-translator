@@ -9,7 +9,8 @@
 //   3. 页脚：延迟统计行 2026-10-15 删了，stats 消息照收不画、也不报错；
 //   4. 滑块：一个值带大字幕、历史卡片、弹幕栏三处；松手存进服务端，localStorage 只是退路；
 //   5. 条高（专家审查 U1，2026-10-22）：条子最少「两行大字 + 两行小字」高、贴底排、长句不截断（样式表）；
-//      实测高度写进 --live-bar-h，字幕区和弹幕栏的底部留白按它算，值没变不重复写、条子收起时清掉（页面）。
+//      实测高度写进 --live-bar-h，字幕区和弹幕栏的底部留白按它算，值没变不重复写、条子收起时清掉（页面）；
+//      条子最高到顶栏下面，超出时在条内滚动、停在最底下（#125 审查，样式表）。
 //      假 DOM 没有版面：getBoundingClientRect 由测试给；真排版的逐句量法在 b1-livebar 的验证记录里。
 // 纯函数（角标取字、年龄文案、字号比例）在 tests/live-ui.test.mjs / live-ui.en.test.mjs。
 import { test } from "node:test";
@@ -737,7 +738,10 @@ test("样式表：大字幕条最少有「两行大字 + 两行小字」那么�
   const bar = decls(".live-bar");
   const big = decls(".live-translated");
   const small = decls(".live-original");
-  assert.deepEqual([bar.display, bar["flex-direction"], bar["justify-content"]], ["flex", "column", "flex-end"]);
+  // 贴着底边排：以前写 column + flex-end；封顶以后（见下面「条子封顶」）改成 column-reverse + flex-start——
+  // 没超出时排出来一样（从底边往上排），超出时滚动的原点在底边，停在最底下，开头那几行还滚得到
+  // （column + flex-end 超出的部分落在上沿外面，滚不到）
+  assert.deepEqual([bar.display, bar["flex-direction"], bar["justify-content"]], ["flex", "column-reverse", "flex-start"]);
   assert.equal(bar.padding, "14px 24px 14px");
   assert.equal(big["line-height"], "1.35");
   assert.equal(small["line-height"], "1.4", "小字的行高写死，最小高度才算得准");
@@ -752,10 +756,68 @@ test("样式表：大字幕条最少有「两行大字 + 两行小字」那么�
 });
 
 test("样式表：超长句不截断（D13）——大字幕、大字、小字都不限行数、不藏溢出", () => {
-  for (const selector of [".live-bar", ".live-translated", ".live-original"]) {
-    const body = ruleBody(selector);
-    assert.doesNotMatch(body, /line-clamp|max-height|overflow|text-overflow/, selector);
+  for (const selector of [".live-translated", ".live-original"]) {
+    const body = ruleBody(selector).replace(/\/\*[\s\S]*?\*\//g, "");
+    // overflow-wrap 管的是在哪儿折行，不藏东西；别的 overflow 一律不许
+    assert.doesNotMatch(body, /line-clamp|max-height|overflow(-[xy])?\s*:|text-overflow/, selector);
+    // 条子是封了顶的滚动容器（overflow-x 的计算值也跟着成了 auto）：一长串断不开的字符（网址之类）要在条内
+    // 折行，否则会在条子里横向滚动、后半截看不见（b2-contrast 审查；WKWebView 和无头 Chrome 实测横向溢出
+    // 1441–5086px → 0，普通句子的条顶、条高逐像素不变）
+    assert.equal(decls(selector)["overflow-wrap"], "anywhere", selector);
   }
+  // 条子本身封了顶（#125 审查，见下一条），但超出的部分是滚出来看，不是藏起来：只许 overflow-y: auto
+  const bar = decls(".live-bar");
+  assert.doesNotMatch(ruleBody(".live-bar").replace(/\/\*[\s\S]*?\*\//g, ""), /line-clamp|text-overflow|overflow:\s*(hidden|clip)/);
+  assert.equal(bar["overflow-y"], "auto");
+  assert.ok(!("overflow" in bar) && !("overflow-x" in bar), "只开竖向滚动");
+});
+
+test("样式表：条子封顶（#125 审查）——最高到顶栏下面 8px，超出时条内滚动并停在最底下；字号 26–60 都成立", () => {
+  const bar = decls(".live-bar");
+  // 上限 = 窗口高 − 底部署名 − 顶栏 − 8px 空隙
+  const m = /^calc\(100vh - ([\d.]+)px - var\(--topbar-room\) - ([\d.]+)px\)$/.exec(bar["max-height"] || "");
+  assert.ok(m, "max-height：" + bar["max-height"]);
+  const copyright = Number(m[1]), gap = Number(m[2]);
+  assert.equal(bar.bottom, copyright + "px", "条子贴着底部署名");
+  assert.equal(decls(".copyright").height, copyright + "px");
+  assert.ok(gap >= 4, "和顶栏之间留点空");
+  // 顶栏：600px 以上一行（min-height 52px，满编也是 52，b2-contrast 无头 Chrome 量的），600px 及以下折成两行 75px
+  assert.equal(bar["--topbar-room"], decls(".topbar")["min-height"]);
+  const narrow = /@media \(max-width: 600px\) \{\s*\.live-bar \{ --topbar-room: ([\d.]+)px; \}\s*\}/.exec(css);
+  assert.ok(narrow, "≤600px 时给折成两行的顶栏留地方");
+  assert.ok(/@media \(max-width: 600px\) \{\s*\.topbar \{ flex-wrap: wrap; \}/.test(css), "顶栏正是在 600px 及以下折行");
+  const rooms = { wide: parseFloat(bar["--topbar-room"]), narrow: Number(narrow[1]) };
+  assert.ok(rooms.narrow >= 75, "两行的顶栏量出来 75px");
+  // 窗口最小 420×480（main.py），去掉标题栏视口约 452px；再矮一点也算上。各种字号下：
+  // ① 封顶后条顶在顶栏下面；② 最小高度（两行大字 + 两行小字）不超过上限，封顶总是生效
+  for (const vh of [440, 452, 600, 732, 900]) {
+    for (const [name, room] of Object.entries(rooms)) {
+      const maxH = vh - copyright - room - gap;
+      const barTop = vh - copyright - maxH;
+      assert.ok(barTop >= room + 4, vh + "px " + name + "：条顶 " + barTop + " 压到顶栏（" + room + "）");
+      for (const size of [26, 34, 48, 60]) {
+        const minH = calcPx(bar["min-height"], { "--sub-size": size });
+        assert.ok(minH <= maxH, vh + "px " + name + " 字号 " + size + "：最小高度 " + minH + " 超过上限 " + maxH);
+      }
+    }
+  }
+  // 停在最底下：column-reverse 的滚动原点在底边。三块用 order 排回原来的上下顺序（大字、小字、角标），
+  // 和 index.html 里的文档顺序一致（读屏照文档顺序念，看到的也是这个顺序）
+  assert.equal(bar["overflow-y"], "auto");
+  assert.equal(bar["flex-direction"], "column-reverse");
+  // 关掉滚动锚定（b2-contrast 审查）：不关时 macOS 的系统 WebKit（真 app 用的 WKWebView）在条子停在离底 1px
+  // （scrollTop −1，条高带小数时常见）时按离顶边的距离保持位置，同一句变长、译文到达、下一句长句换上来后
+  // scrollTop 跳到 −322 ～ −779，句子结尾和角标被推到条子下沿外面；关掉后按离底边的距离保持，一直贴底。
+  // 无头 Chrome 关不关都贴底，所以这条只能靠样式表钉住
+  assert.equal(bar["overflow-anchor"], "none", "条子里不做滚动锚定，换句、变长后仍停在最底下");
+  const order = (sel) => Number(decls(sel).order);
+  assert.ok(order(".live-translated") > order(".live-original") && order(".live-original") > order(".live-meta"),
+    "column-reverse 从底边往上排：order 小的在下面");
+  const html = web("index.html").replace(/<!--[\s\S]*?-->/g, "");
+  const footer = /<footer id="live-bar"[\s\S]*?<\/footer>/.exec(html)[0];
+  const at = (id) => footer.indexOf('id="' + id + '"');
+  assert.ok(at("live-translated") < at("live-original") && at("live-original") < at("live-meta"), "文档顺序：大字、小字、角标");
+  assert.equal((footer.match(/<div id=/g) || []).length, 3, "条子里只有这三块（多了要给它也排 order）");
 });
 
 test("样式表：字幕区和弹幕栏的底部留白按大字幕的实测高度算，不再写死 204px；没量到之前和以前一样", () => {
