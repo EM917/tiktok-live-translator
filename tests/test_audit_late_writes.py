@@ -1,8 +1,9 @@
 """审计文件关掉之后才到的记录：不再静默消失（专家审查 B5；计划审查 P8）。
 
 以前 AuditLog._write 见文件已关直接 return：旧任务过了停止的宽限期才写的译文、重译结果就这么没了，
-write_failures 还是 0（asyncio/exp_audit_after_close.py）。现在计数、终端打一行（每场最多一行），本进程
-下一场的 session_start 带上 late_records_prev；不追加进已经写了 session_end 的旧文件。
+write_failures 还是 0（实测：一场停止之后过了宽限期才回来的译文，写进已关的审计，文件里没有、计数也没变）。
+现在计数、终端打一行（每场最多一行），本进程下一场的 session_start 带上 late_records_prev；不追加进已经写了
+session_end 的旧文件。
 
 后半是审计格式的字节对比（计划 cross_cutting 7）：已有类型的记录输出逐字节不变，只在新情况下多出新键。
 """

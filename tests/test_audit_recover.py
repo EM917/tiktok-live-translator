@@ -244,6 +244,27 @@ def test_a_file_another_process_holds_the_lock_on_is_skipped(tmp_path):
     assert f.read_bytes() == before
 
 
+@pytest.mark.skipif(ar.fcntl is None, reason="没有 flock 的平台（Windows）")
+def test_an_audit_that_is_still_open_is_skipped_even_when_it_looks_old(tmp_path):
+    """第 2 轮审查的缺口：那个实例换了端口（端口探测探不到）、又合盖超过 15 分钟（mtime 也旧了）。AuditLog 建文件
+    时就拿着共享锁，补写拿不到排他锁，跳过；关掉之后锁放了，最后一条是 session_end，也不补。"""
+    from app.audit import AuditLog
+
+    log = AuditLog(room_url=START["room_url"], log_dir=tmp_path)
+    try:
+        os.utime(log.path, (OLD, OLD))
+        before = log.path.read_bytes()
+        report = recover(tmp_path)
+        assert report.recovered == [] and report.skipped_locked == 1
+        assert log.path.read_bytes() == before
+    finally:
+        log.close(reason="user_stop")
+    os.utime(log.path, (OLD, OLD))
+    report = recover(tmp_path)
+    assert report.recovered == [] and report.skipped_locked == 0
+    assert json.loads(log.path.read_bytes().splitlines()[-1])["reason"] == "user_stop"
+
+
 # ---- D16 的范围起点：第一次跑到时记进 settings ----
 
 class FakeSettings:

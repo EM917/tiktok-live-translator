@@ -19,6 +19,11 @@ from pathlib import Path
 from .i18n import L, bimap, of
 from .redact import strip_query
 
+try:
+    import fcntl
+except ImportError:          # Windows：没有 flock（见 _hold_shared_lock）
+    fcntl = None
+
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 # 写不进去时先留在内存里、能写了再补写的记录类型：会话头、报警、会话尾。
@@ -39,10 +44,27 @@ def _open_new(directory, stamp):
         name = "session-{}{}.jsonl".format(stamp, "" if n == 1 else "-{}".format(n))
         path = directory / name
         try:
-            return path, path.open("xb", buffering=0)
+            fh = path.open("xb", buffering=0)
         except FileExistsError:
             continue
+        _hold_shared_lock(fh)
+        return path, fh
     raise OSError(L("同一秒内已有 99 个审计文件", "99 audit files already exist for this second"))
+
+
+def _hold_shared_lock(fh):
+    """在这份审计上拿一把共享的 flock，一直拿到文件关掉（进程没了也随之放掉）。启动补写（app/audit_recover）
+    先要同一份文件的排他锁、拿不到就跳过：有了这把锁，活着的那一场一定被当成「有人在写」，不靠 mtime 和端口
+    探测去猜。那两道保险有一个缺口（第 2 轮审查）：这个实例因为端口被占换到了别的端口、又合盖超过 15 分钟，
+    这时用 --no-open / --url 起的第二个实例探测不到它，15 分钟也过了，unclean_exit 就会追加进还活着的文件。
+    拿不到（Windows 没有 flock、文件系统不支持）就算了：照旧只靠那两道保险，审计照写。"""
+    if fcntl is None:
+        return False
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _iso_from_epoch(ts):

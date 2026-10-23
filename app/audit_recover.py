@@ -19,7 +19,10 @@ applicationShouldTerminate 同意之后直接 exit()，webview.start() 不返回
     「上线时刻」是这台电脑第一次跑到这一步的时刻，记在 settings.json 的 SINCE_KEY 里（recover_since）；
     mtime 不晚于它的文件不碰。记不下来（settings.json 写不进去）就这一次整个不补；
   * 两个进程同时补同一份：POSIX 上先 flock 排他锁，拿不到就跳过；拿到之后重读末尾再判断一次。
-    补过的文件最后一条就是 session_end，再启动不会重复补。
+    补过的文件最后一条就是 session_end，再启动不会重复补；
+  * 正在写的那一场：AuditLog 建文件时就拿一把共享的 flock、拿到关文件为止（app/audit._hold_shared_lock），
+    上面的排他锁拿不到，照样跳过（skipped_locked）。端口探测和 15 分钟有缺口时（那个实例换了端口、又合盖超过
+    15 分钟）靠这一道（第 2 轮审查）。
 
 这个模块不含中文字面量、自己不打印：结果（Report）交给调用方（main.py），由它用中文写终端
 （CLAUDE.md 第九条：终端永远是中文）。
@@ -32,7 +35,7 @@ from pathlib import Path
 
 try:
     import fcntl
-except ImportError:          # Windows：没有 flock，靠 15 分钟和端口探测两道保险
+except ImportError:          # Windows：没有 flock（写的那边也没有共享锁），靠 15 分钟和端口探测两道保险
     fcntl = None
 
 SINCE_KEY = "audit_recover_since"
