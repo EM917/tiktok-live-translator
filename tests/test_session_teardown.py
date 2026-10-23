@@ -349,17 +349,18 @@ TICKS = 5
 
 
 def _counted_steps(p, failing, health="ok"):
-    """把每一步换成只计次数的替身；failing 那一步每跳都抛 RuntimeError。最后一步（guard）在第 TICKS
-    次被调时抛 CancelledError 让循环停下：每一步被调的次数正好就是它跑了几跳。"""
+    """把每一步换成只计次数的替身；failing 那一步每跳都抛 RuntimeError。第一步（clock_gap）在第 TICKS+1
+    跳开头抛 CancelledError 让循环停下：前 TICKS 跳每一步被调的次数正好就是它跑了几跳。停在第一步而不是
+    最后一步：哪一步被挡住都能停下来、断言马上红，不会一直转到超时。"""
     calls = {name: 0 for name in STEPS}
     calls["health"] = 0
     real_snapshot = p._stats_snapshot
 
     def make(name):
         def stand_in(*args):
-            calls[name] += 1
-            if name == "guard" and calls[name] == TICKS:
+            if name == "clock_gap" and calls[name] == TICKS:
                 raise asyncio.CancelledError
+            calls[name] += 1
             if name == failing:
                 raise RuntimeError("坏了 https://pull-flv.example.invalid/s.flv?sign=NO-LEAK")
             if name == "snapshot":
