@@ -619,6 +619,17 @@ def _exit_again(name):
     os._exit(1)
 
 
+def _exit_stuck():
+    """浏览器和命令行模式：收到退出信号 LOOP_DEADLINE_SEC 秒了进程还在（收尾没走完，或者根本没开始）——看门狗
+    线程调（app/exit_signals.Watchdog）。只等一下在途的证据写盘，然后退出；这一场没写完的审计结尾下次启动补。"""
+    from app.exit_signals import LOOP_DEADLINE_SEC
+    from app.window_close import flush_evidence
+    _say("[警告] 收到退出信号 {:g} 秒了还没退出：不再等收尾，直接退出（没写完的审计结尾，下次启动补）".format(
+        LOOP_DEADLINE_SEC))
+    flush_evidence()
+    os._exit(1)
+
+
 async def _shutdown_on_signal(pipeline, name):
     """浏览器和命令行模式收到退出信号：停管线、写 session_end（reason=signal，带信号名）、等证据写盘，
     然后退出。和关窗口同一套（window_close.close_session，有时限）；不回到 asyncio.run 的收尾——它要等
@@ -742,8 +753,11 @@ async def main_async(args, state=None):
             got_signal["name"] = name
             main_task.cancel()
 
+        # 看门狗：事件循环被卡住、取消主任务这一步跑不到时，收到信号 LOOP_DEADLINE_SEC 秒后照样退出（第 1 轮审查）
+        watchdog = exit_signals.Watchdog(exit_signals.LOOP_DEADLINE_SEC, _exit_stuck)
+        watchdog.start()
         exit_signals.install_loop_handlers(asyncio.get_running_loop(),
-                                           exit_signals.Dispatch(on_signal, _exit_again))
+                                           exit_signals.Dispatch(on_signal, _exit_again), watchdog=watchdog)
     # 直播结束后保留 UI（可以继续翻看历史字幕 / 换房间），Ctrl-C 退出
     try:
         await asyncio.Event().wait()

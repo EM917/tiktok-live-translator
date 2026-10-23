@@ -2,8 +2,9 @@
 
 以前 main.py 只接 KeyboardInterrupt：关掉 Start.command 的终端窗口（SIGHUP）、kill（SIGTERM）直接按
 默认动作结束进程，窗口模式下的 Ctrl-C 也绕过收尾——这一场的审计没有 session_end。现在：
-  * 浏览器和命令行模式（asyncio 跑在主线程）：install_loop_handlers 用 loop.add_signal_handler 接住，
-    调用方取消主任务，在主任务里停管线（session_end 的 reason=signal），然后退出；
+  * 浏览器和命令行模式（asyncio 跑在主线程）：install_loop_handlers 装 Python 层的处理函数，交回事件循环；
+    调用方取消主任务，在主任务里停管线（session_end 的 reason=signal），然后退出。事件循环被卡住、这一步
+    跑不到时，Watchdog 在 LOOP_DEADLINE_SEC 秒后直接退出；
   * 窗口模式（主线程跑 pywebview 的 Cocoa 主循环、asyncio 在后台线程）：Python 层的信号处理函数要等主线程
     回到 Python 代码才执行，Cocoa 主循环里可能一直不执行——2026-10-23 用真 pywebview 6.2.1 实测，
     SIGTERM、SIGHUP 发过去，Python 层的处理函数一次都没跑。所以用 WakeupBridge：主线程装一个空的 Python
@@ -28,6 +29,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 
 POSIX_SIGNALS = ("SIGHUP", "SIGTERM", "SIGINT")
 WINDOWS_SIGNALS = ("SIGINT",)
@@ -85,30 +87,101 @@ class Dispatch:
             self.errors.append(type(exc).__name__)
 
 
-def install_loop_handlers(loop, dispatch, signals=None, signal_mod=signal):
-    """浏览器和命令行模式（事件循环在主线程）：每个信号用 loop.add_signal_handler 交给 dispatch(编号)。
-    add_signal_handler 不可用（Windows 的事件循环没有它）就退回 signal.signal，处理函数里用
-    call_soon_threadsafe 回到事件循环。返回装上的信号编号。"""
+LOOP_DEADLINE_SEC = 10.0   # 浏览器和命令行模式：收到第一个信号这么久还没退出，看门狗直接退出（见 Watchdog）
+
+
+def install_loop_handlers(loop, dispatch, signals=None, signal_mod=signal, watchdog=None):
+    """浏览器和命令行模式（事件循环在主线程）：每个信号装一个 Python 层的处理函数，先给看门狗上弦
+    （watchdog.arm，见 Watchdog），再用 call_soon_threadsafe 把信号交回事件循环里的 dispatch(编号)。
+    返回装上的信号编号。
+
+    以前用 loop.add_signal_handler：回调只在事件循环转起来时才跑，事件循环被同步代码卡住时一直不跑——
+    SIGTERM、SIGHUP 以前按默认动作直接结束进程，接住之后反倒只剩 kill -9（第 1 轮审查）。Python 层的处理函数
+    在主线程两条字节码之间就执行（卡在 sleep、锁、select 里也会被信号打断后先执行它），看门狗当场开始计时，
+    不靠事件循环。主线程卡在一段不回 Python 的 C 代码里时，处理函数也要等它回来（这一点不如默认动作）。"""
+    handler = _threadsafe(loop, dispatch, watchdog)
     installed = []
     for sig in (handled_signals(signal_mod=signal_mod) if signals is None else signals):
         try:
-            loop.add_signal_handler(sig, dispatch, sig)
-        except (NotImplementedError, RuntimeError, ValueError, OSError):
-            try:
-                signal_mod.signal(sig, _threadsafe(loop, dispatch))
-            except (ValueError, OSError, RuntimeError):
-                continue
+            signal_mod.signal(sig, handler)
+        except (ValueError, OSError, RuntimeError):
+            continue
         installed.append(sig)
     return installed
 
 
-def _threadsafe(loop, dispatch):
+def _threadsafe(loop, dispatch, watchdog=None):
     def handler(signum, frame):
+        if watchdog is not None:
+            watchdog.arm()
         try:
             loop.call_soon_threadsafe(dispatch, signum)
         except RuntimeError:              # 循环已经关了：直接交给 dispatch
             dispatch(signum)
     return handler
+
+
+class Watchdog:
+    """浏览器和命令行模式的兜底：收到第一个退出信号起计时，seconds 秒后进程还在，就在自己的线程里调
+    on_expire（main.py：等证据写盘、os._exit）。收尾本身有上限（停管线最多约 5.3 秒、证据最多 2 秒），走得完
+    就轮不到它；它管的是事件循环被卡住、取消主任务这一步根本跑不到的时候。没写完结尾的那一场，下次启动补一条
+    （app/audit_recover.py）。
+
+    start() 在主线程、装处理函数之前调：起一个阻塞读 socketpair 的 daemon 线程。arm() 在信号处理函数里调，
+    只往 socketpair 写一个字节——不拿锁、不起线程：处理函数可能正好打断了拿着某把锁（比如起线程用的那把）的
+    主线程，在里面再去拿就是死锁。"""
+
+    def __init__(self, seconds, on_expire, socketpair=socket.socketpair, sleep=time.sleep):
+        self.seconds = seconds
+        self.on_expire = on_expire
+        self._socketpair = socketpair
+        self._sleep = sleep
+        self._wsock = None
+        self.fired = False
+
+    def start(self):
+        """起看门狗线程；起不来返回 False（只是少了这道保险，信号照样接）。"""
+        try:
+            rsock, wsock = self._socketpair()
+            wsock.setblocking(False)
+        except (OSError, ValueError):
+            return False
+        try:
+            threading.Thread(target=self._wait, args=(rsock,), name="exit-signals-watchdog",
+                             daemon=True).start()
+        except RuntimeError:
+            for s in (rsock, wsock):
+                s.close()
+            return False
+        self._wsock = wsock
+        return True
+
+    def arm(self):
+        wsock = self._wsock
+        if wsock is None:
+            return
+        try:
+            wsock.send(b"\0")
+        except OSError:                   # 缓冲满了（已经上过弦）或者已经关了
+            pass
+
+    def _wait(self, rsock):
+        while True:
+            try:
+                data = rsock.recv(1)
+            except InterruptedError:
+                continue
+            except OSError:
+                return
+            if not data:
+                return
+            break
+        self._sleep(self.seconds)
+        self.fired = True
+        try:
+            self.on_expire()
+        except BaseException:             # 包括 SystemExit：退出由调用方用 os._exit 做
+            pass
 
 
 class WakeupBridge:

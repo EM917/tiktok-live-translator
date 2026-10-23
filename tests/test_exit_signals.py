@@ -104,18 +104,29 @@ class FakeSignal:
         return old
 
 
-def test_loop_handlers_use_add_signal_handler():
-    loop, d = FakeLoop(), es.Dispatch(lambda n: None)
-    assert es.install_loop_handlers(loop, d, signals=[15, 1]) == [15, 1]
-    assert loop.added == [(15, d, (15,)), (1, d, (1,))]
-
-
-def test_without_add_signal_handler_sigint_goes_through_call_soon_threadsafe():
-    """Windows 的事件循环没有 add_signal_handler：退回 signal.signal，处理函数把信号交回事件循环。"""
-    loop, sig, d = FakeLoop(supported=False), FakeSignal(), es.Dispatch(lambda n: None)
-    assert es.install_loop_handlers(loop, d, signals=[2], signal_mod=sig) == [2]
+def test_loop_handlers_are_python_level_handlers_that_hand_the_signal_back_to_the_loop():
+    """不再用 add_signal_handler（事件循环被卡住时回调不跑，第 1 轮审查）：Python 层的处理函数先给看门狗上弦，
+    再经 call_soon_threadsafe 把信号交回事件循环。"""
+    loop, sig, d = FakeLoop(), FakeSignal(), es.Dispatch(lambda n: None)
+    armed = []
+    dog = SimpleNamespace(arm=lambda: armed.append(1))
+    assert es.install_loop_handlers(loop, d, signals=[15, 1], signal_mod=sig, watchdog=dog) == [15, 1]
+    assert loop.added == []
+    sig.handlers[15](15, None)
+    assert armed == [1] and loop.soon == [(d, (15,))]
+    assert es.install_loop_handlers(FakeLoop(), d, signals=[2], signal_mod=sig) == [2]     # 没有看门狗也照装
     sig.handlers[2](2, None)
-    assert loop.soon == [(d, (2,))]
+
+
+def test_a_signal_after_the_loop_closed_goes_straight_to_the_dispatch():
+    class Closed(FakeLoop):
+        def call_soon_threadsafe(self, callback, *args):
+            raise RuntimeError("Event loop is closed")
+
+    got, sig = [], FakeSignal()
+    es.install_loop_handlers(Closed(), es.Dispatch(got.append), signals=[15], signal_mod=sig)
+    sig.handlers[15](15, None)
+    assert got == ["SIGTERM"]
 
 
 @pytest.mark.skipif(not POSIX, reason="SIGUSR1 只在 POSIX 上有")
@@ -125,6 +136,7 @@ def test_a_real_signal_reaches_the_dispatch_through_the_loop():
     async def scenario():
         loop = asyncio.get_running_loop()
         d = es.Dispatch(got.append)
+        old = signal.getsignal(signal.SIGUSR1)
         es.install_loop_handlers(loop, d, signals=[signal.SIGUSR1])
         try:
             os.kill(os.getpid(), signal.SIGUSR1)
@@ -133,10 +145,90 @@ def test_a_real_signal_reaches_the_dispatch_through_the_loop():
                     break
                 await asyncio.sleep(0.01)
         finally:
-            loop.remove_signal_handler(signal.SIGUSR1)
+            signal.signal(signal.SIGUSR1, old)
 
     asyncio.run(scenario())
     assert got == ["SIGUSR1"]
+
+
+@pytest.mark.skipif(not POSIX, reason="SIGUSR1 只在 POSIX 上有")
+def test_the_watchdog_fires_while_the_loop_is_stuck_in_synchronous_code():
+    """事件循环被同步代码卡住：dispatch 要等它转起来才跑，看门狗不等——收到信号起 seconds 秒就调 on_expire。"""
+    got, expired = [], threading.Event()
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        dog = es.Watchdog(0.2, expired.set)
+        assert dog.start()
+        old = signal.getsignal(signal.SIGUSR1)
+        es.install_loop_handlers(loop, es.Dispatch(got.append), signals=[signal.SIGUSR1], watchdog=dog)
+        try:
+            os.kill(os.getpid(), signal.SIGUSR1)
+            stuck_until = time.monotonic() + 1.0
+            while time.monotonic() < stuck_until and not expired.is_set():
+                time.sleep(0.01)                     # 卡住事件循环：不 await
+            during = (expired.is_set(), list(got))
+            await asyncio.sleep(0.05)                # 事件循环转起来，dispatch 才跑
+        finally:
+            signal.signal(signal.SIGUSR1, old)
+        return during, dog
+
+    (fired, got_while_stuck), dog = asyncio.run(scenario())
+    assert fired and got_while_stuck == []
+    assert got == ["SIGUSR1"] and dog.fired
+
+
+@pytest.mark.skipif(not POSIX, reason="子进程收 SIGTERM 只在 POSIX 上这么测")
+def test_sigterm_still_ends_a_process_whose_loop_is_stuck():
+    """审查点名的退步：接住 SIGTERM 之后，事件循环被卡住时进程不退。子进程里事件循环卡在同步的 sleep 上，
+    测试进程给它（不是给自己）发 SIGTERM：看门狗到点退出，退出码是 on_expire 给的 1。"""
+    code = """
+import asyncio, os, signal, sys, time
+sys.path.insert(0, {root!r})
+from app import exit_signals as es
+
+async def main():
+    dog = es.Watchdog(0.3, lambda: os._exit(1))
+    dog.start()
+    es.install_loop_handlers(asyncio.get_running_loop(), es.Dispatch(lambda n: os._exit(0)), watchdog=dog)
+    print("ready", flush=True)
+    time.sleep(20)                                   # 事件循环卡住：dispatch 跑不到
+    os._exit(2)
+
+asyncio.run(main())
+""".format(root=str(ROOT))
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        started = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=10) == 1
+        assert time.monotonic() - started < 5.0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def test_the_watchdog_only_runs_once_and_never_without_a_signal():
+    calls = []
+    dog = es.Watchdog(0.05, lambda: calls.append("expire"))
+    assert dog.start()
+    time.sleep(0.15)
+    assert calls == []                               # 没收到信号：不计时
+    dog.arm()
+    dog.arm()                                        # 第二个信号：不重新计时、不再调一次
+    deadline = time.monotonic() + 2.0
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.15)
+    assert calls == ["expire"]
+
+
+def test_an_unstarted_watchdog_ignores_arm():
+    dog = es.Watchdog(0.01, lambda: None)
+    dog.arm()                                        # 没起来（start 失败）：上弦什么都不做、不抛
+    assert dog.fired is False
 
 
 # ---- 窗口模式：C 层 → socketpair → 读线程 ----
@@ -413,7 +505,15 @@ def test_the_window_bridge_hands_signals_to_finish_signal_and_keeps_sigint_from_
 
 def test_cli_and_browser_mode_install_loop_handlers_and_shut_down_through_close_session():
     ast, func = _main_func("main_async")
-    assert _calls(ast, func, "install_loop_handlers")
+    (install,) = _calls(ast, func, "install_loop_handlers")
+    assert "watchdog" in {kw.arg for kw in install.keywords}          # 事件循环卡住时的兜底（第 1 轮审查）
+    (dog,) = _calls(ast, func, "Watchdog")
+    assert getattr(dog.args[1], "id", None) == "_exit_stuck"
+    (start,) = [n for n in _calls(ast, func, "start") if getattr(n.func.value, "id", None) == "watchdog"]
+    assert start.lineno < install.lineno                               # 线程在装处理函数之前起好
+    ast, stuck = _main_func("_exit_stuck")
+    assert _calls(ast, stuck, "flush_evidence") and _calls(ast, stuck, "_exit")
+    ast, func = _main_func("main_async")
     assert _calls(ast, func, "_shutdown_on_signal")
     assert _calls(ast, func, "_recover_unclosed_audits")
     ast, shut = _main_func("_shutdown_on_signal")
