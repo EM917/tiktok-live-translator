@@ -62,6 +62,8 @@ FLOAT_REPLAY_COMMENTS = 10
 # deque 多留一点余量，回放时再按「最后 HISTORY_MAX 条字幕」切（captions_tail）——换主播换得再勤，
 # 回放的字幕条数也是 HISTORY_MAX，而不是少一条分隔线就少一条字幕
 HISTORY_BREAK_ROOM = 30
+# 控制面所有响应都带的 CSP 片段：谁都不许把这些页面放进 iframe（见 build_app）
+FRAME_ANCESTORS = "frame-ancestors 'none'"
 
 
 def captions_tail(items, limit):
@@ -88,6 +90,48 @@ def _is_number(value):
 def _ts_of(msg):
     ts = msg.get("ts")
     return ts if _is_number(ts) else 0.0
+
+
+def _redact_share_state(state):
+    """手机同看的状态载荷（ViewerHub.state() 那份，或 type="viewer" 的广播）去掉口令后的副本。
+
+    口令只在链接的片段里（app/viewer.viewer_url：http://地址:端口/#k=口令）：链接截到「#」之前，
+    说明文字里出现的同一个片段一并去掉；二维码不发——它编码的就是带口令的那条链接。
+    没有链接（同看关着、没读到地址）时原样返回。不改传进来的对象：中文时 i18n.render
+    原样返回 server.config 本身。"""
+    url = state.get("url")
+    if not isinstance(url, str) or "#" not in url:
+        return state
+    fragment = url[url.index("#"):]
+    out = {}
+    for key, value in state.items():
+        if isinstance(value, i18n.Bi):          # 还没渲染的双语句子（中文时）：两臂都去掉
+            value = i18n.Bi(str(value).replace(fragment, ""), value.en.replace(fragment, ""))
+        elif isinstance(value, str):
+            value = value.replace(fragment, "")
+        out[key] = value
+    out["qr_rows"] = None
+    return out
+
+
+def without_share_key(msg):
+    """发给无 Origin 连接的那一份：凡是带手机同看链接的地方都去掉口令（见 _redact_share_state）。
+    hello 里的 config、config 广播、type="viewer" 的广播都认；别的消息原样返回（同一个对象）。
+
+    为什么只对无 Origin 的连接这样：浏览器和应用窗口发起 WebSocket 一定带 Origin，中控页要在
+    卡片上显示完整链接和二维码；没有 Origin 的是 curl、本地脚本一类，它们照旧有控制权
+    （tests/test_server_origin.py 的 test_no_origin_is_control），但不需要这把钥匙——以前 hello
+    把带口令的同看链接整个发给任何一个连上 127.0.0.1 的本地进程。"""
+    if not isinstance(msg, dict):
+        return msg
+    if msg.get("type") == "viewer":
+        return _redact_share_state(msg)
+    state = msg.get("viewer")
+    if isinstance(state, dict):
+        redacted = _redact_share_state(state)
+        if redacted is not state:
+            return dict(msg, viewer=redacted)
+    return msg
 
 
 def _write_buffer_size(transport):
@@ -121,6 +165,8 @@ class CaptionServer:
         # 浮窗页的连接（也在 clients 里，共用同一条发送路径和卡死保护）：不算「显示报警的界面页面」
         # （ui_client_count），入站一律丢弃，只收 FLOAT_TYPES
         self._float_ws = set()
+        # 没带 Origin 头的连接（也在 clients 里）：发给它们的消息去掉手机同看链接里的口令（见 _ws）
+        self._keyless_ws = set()
         self.history = deque(maxlen=HISTORY_MAX + HISTORY_BREAK_ROOM)
         # 违禁词警报必须跨刷新/重连留存：中控没看到就等于漏报，
         # 不能因为页面重载而消失
@@ -145,12 +191,23 @@ class CaptionServer:
         # 默认 None：这个功能默认关闭，也就默认不存在第二个监听面
         self.viewer = None
 
-    async def start(self):
+    def build_app(self):
+        """本机控制面的 aiohttp 应用（路由 + 响应头中间件）。单独成方法，测试可以不占固定端口直接拿来起。"""
         @web.middleware
         async def no_cache(request, handler):
             resp = await handler(request)
             # 本地小文件，禁掉强缓存，UI 更新后刷新即生效
             resp.headers["Cache-Control"] = "no-cache"
+            # 不许被别的网页用 iframe 嵌进去（点击劫持：恶意网页把控制页透明地叠在诱饵按钮上，
+            # 骗人点到「停止」——它一下就生效）。两个头都发：老 WebView 只认 X-Frame-Options，
+            # 新的以 CSP 为准。本程序自己从不用 iframe：浮窗是独立的原生窗口（app/float_window.py），
+            # 不是嵌在控制页里的框。已有的 CSP 不覆盖，只补上 frame-ancestors
+            resp.headers["X-Frame-Options"] = "DENY"
+            csp = resp.headers.get("Content-Security-Policy")
+            if not csp:
+                resp.headers["Content-Security-Policy"] = FRAME_ANCESTORS
+            elif "frame-ancestors" not in csp:
+                resp.headers["Content-Security-Policy"] = csp + "; " + FRAME_ANCESTORS
             return resp
 
         app = web.Application(middlewares=[no_cache])
@@ -158,7 +215,10 @@ class CaptionServer:
         app.router.add_get("/ws", self._ws)
         app.router.add_get("/float", self._float_page)
         app.router.add_static("/static", WEB_DIR)
-        self._runner = web.AppRunner(app, access_log=None)
+        return app
+
+    async def start(self):
+        self._runner = web.AppRunner(self.build_app(), access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", self.port)
         await site.start()
@@ -187,7 +247,8 @@ class CaptionServer:
         策略限制），必须挡掉。只有两种结果：
 
           "control" —— 本机页面/应用窗口，或非浏览器客户端（无 Origin 头）：
-                       可收字幕，也可下发 start/stop/更新等控制指令；
+                       可收字幕，也可下发 start/stop/更新等控制指令。无 Origin 的
+                       连接拿不到手机同看链接里的口令（见 _ws 和 without_share_key）；
           None      —— 其余一律拒绝，包括本机其它端口上的网页和 tiktok.com。
 
         曾有第三级 "view"（Chrome 插件以 TikTok 页面身份连接，只收字幕、只发
@@ -202,6 +263,8 @@ class CaptionServer:
 
         parsed = urlparse(origin)
         host = (parsed.hostname or "").lower()
+        # "::1" 这一支实际走不到：start() 只绑 127.0.0.1，本程序的页面不可能从 http://[::1]:端口
+        # 打开，也就不会带这个 Origin。留着只为和 localhost 的写法对称，别当成「IPv6 也在用」
         if host in ("127.0.0.1", "localhost", "::1"):
             # 精确到本服务端口：本机上跑的其他网页（别人的开发服务器、
             # 某个本地应用的内置页面）不该能驱动本程序
@@ -220,6 +283,11 @@ class CaptionServer:
         is_float = request.query.get("role") == "float"
         if is_float:
             self._float_ws.add(ws)
+        # 没带 Origin 的（curl、本地脚本）照旧是 control，但同看链接里的口令不给它：hello 和之后的
+        # 广播都换成去掉口令的那份（without_share_key）。浏览器和应用窗口一定带 Origin，不受影响
+        keyless = not request.headers.get("Origin")
+        if keyless:
+            self._keyless_ws.add(ws)
         try:
             # 「快照」和「开始替这个页面攒广播」必须在同一个同步步骤里（和 app/viewer.py 的
             # ViewerHub.register 同一个道理）：下面每发一条都要 await，回放期间别处的广播照常
@@ -230,6 +298,8 @@ class CaptionServer:
             # 切换语言后重连的页面拿到的是新语言，不会残留旧的。中文时 render 原样返回
             hello = {"type": "hello", "config": i18n.render(self._float_config(self.config)
                                                             if is_float else self.config)}
+            if keyless:
+                hello["config"] = without_share_key(hello["config"])
             replay = self.replay_messages("float" if is_float else "control")
             backlog = self._replaying[ws] = []
             self._transports[ws] = request.transport
@@ -279,6 +349,7 @@ class CaptionServer:
         finally:
             self.clients.discard(ws)
             self._float_ws.discard(ws)
+            self._keyless_ws.discard(ws)
             self._transports.pop(ws, None)
             self._replaying.pop(ws, None)
         return ws
@@ -480,6 +551,15 @@ class CaptionServer:
         # 要么在它的 backlog 里，不会两头落空。getattr：个别测试用 __new__ 造的服务端没有这个字段
         float_ws = getattr(self, "_float_ws", None) or ()
         float_out = self._float_payload(msg, out) if float_ws else None
+        # 没带 Origin 的连接拿去掉同看口令的那份；消息里没有同看链接时就是 out 本身
+        keyless_ws = getattr(self, "_keyless_ws", None) or ()
+        keyless_out = without_share_key(out) if keyless_ws else out
+
+        def payload_for(ws):
+            if ws in float_ws:
+                return float_out
+            return keyless_out if ws in keyless_ws else out
+
         replaying = getattr(self, "_replaying", None)
         if replaying:
             for ws, backlog in list(replaying.items()):
@@ -490,7 +570,7 @@ class CaptionServer:
                     self._drop_client(ws, (getattr(self, "_transports", None) or {}).get(ws),
                                       "replay_backlog", None)
                 else:
-                    backlog.append(float_out if ws in float_ws else out)
+                    backlog.append(payload_for(ws))
         # 逐个页面发，每个都有上限。以前是不限时的 await：一个不读消息的页面（浏览器
         # 冻结的后台标签、DevTools 断点、弹着 confirm 的 WebView2）把发送缓冲塞满后，
         # send_json 永远不返回——识别循环在等报警广播，于是识别整个停下、音频积压
@@ -508,8 +588,7 @@ class CaptionServer:
                 self._drop_client(ws, transport, "buffer_full", buffered)
                 continue
             try:
-                await asyncio.wait_for(ws.send_json(float_out if is_float else out),
-                                       self.SEND_TIMEOUT_SEC)
+                await asyncio.wait_for(ws.send_json(payload_for(ws)), self.SEND_TIMEOUT_SEC)
             except asyncio.TimeoutError:
                 self._drop_client(ws, transport, "send_timeout",
                                   _write_buffer_size(transport))
@@ -537,6 +616,9 @@ class CaptionServer:
         self.clients.discard(ws)
         if is_float:
             self._float_ws.discard(ws)
+        keyless = getattr(self, "_keyless_ws", None)
+        if keyless is not None:
+            keyless.discard(ws)
         replaying = getattr(self, "_replaying", None)
         if replaying is not None:
             replaying.pop(ws, None)

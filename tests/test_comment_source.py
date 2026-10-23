@@ -315,9 +315,11 @@ class FakeProc:
     （见 FakeStream），这样看门狗真的 terminate() 之后主循环能读到 EOF、
     走完 _run_once 的正常收尾，不是永远卡在 readline() 上。"""
 
-    def __init__(self, stdout_lines=(), stderr_lines=(), returncode=0, hang_after=False):
+    def __init__(self, stdout_lines=(), stderr_lines=(), returncode=0, hang_after=False, stdin=None):
         self.stdout = FakeStream(stdout_lines, hang_after=hang_after)
         self.stderr = FakeStream(stderr_lines)
+        # 默认没有 stdin：大多数用例不关心首行，_send_handshake 见到 None 就跳过
+        self.stdin = stdin
         self.returncode = returncode
         self.terminate_called = False
         self.kill_called = False
@@ -332,6 +334,31 @@ class FakeProc:
     def kill(self):
         self.kill_called = True
         self.stdout.terminated = True
+
+
+class FakeStdin:
+    """记下父进程写进子进程 stdin 的字节（登录态那一行，见 CommentSource._send_handshake）。"""
+
+    def __init__(self, fail=None):
+        self.data = bytearray()
+        self.closed = False
+        self._fail = fail
+
+    def write(self, data):
+        if self._fail is not None:
+            raise self._fail
+        self.data += data
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+    def first_line(self):
+        line, sep, _rest = bytes(self.data).partition(b"\n")
+        assert sep, "首行没有换行"
+        return json.loads(line)
 
 
 def jline(d):
@@ -467,7 +494,7 @@ def test_worker_without_session_id_is_noted_as_anonymous_requests(monkeypatch):
         jline({"event": "status", "state": "connected", "room_id": 1}),
     ], returncode=0)
     cs, _items, _states, _calls = make_source(monkeypatch, [proc])
-    assert run(cs._run_once("abc", []))[0] == 0
+    assert run(cs._run_once("abc"))[0] == 0
     assert len(notes) == 2             # 连上之后才退出：退出那一刻没有新的匿名请求，不再记
 
 
@@ -478,17 +505,22 @@ def test_worker_that_exits_before_connecting_is_noted_at_exit(monkeypatch):
         jline({"event": "status", "state": "offline"}),
     ], returncode=3)
     cs, _items, _states, _calls = make_source(monkeypatch, [proc])
-    assert run(cs._run_once("abc", []))[0] == 3
+    assert run(cs._run_once("abc"))[0] == 3
     assert len(notes) == 2             # 启动 + 退出：它的匿名请求最晚发到退出那一刻
 
 
 def test_worker_with_session_id_is_not_noted_as_anonymous(monkeypatch):
+    """登录态改走 stdin 之后命令行里永远没有 --session-id：匿名与否看这次有没有拿到 sessionid。
+    以前按参数判断，改走 stdin 后登录模式会被记成匿名请求，resolver「隔开 8 秒」的规则就会让登录门
+    房间每次查流地址白等 8–24 秒（计划审查 P2）。"""
     notes = _anon_notes(monkeypatch)
+    stdin = FakeStdin()
     proc = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
-                    returncode=0)
+                    returncode=0, stdin=stdin)
     cs, _items, _states, calls = make_source(monkeypatch, [proc])
-    run(cs._run_once("abc", ["--session-id", "sid-value"]))
-    assert calls == [["abc", "--session-id", "sid-value"]] and notes == []
+    run(cs._run_once("abc", {"session_id": "sid-value", "tt_target_idc": None}))
+    assert calls == [["abc"]] and notes == []
+    assert stdin.first_line() == {"session_id": "sid-value", "tt_target_idc": None}
 
 
 def test_anonymous_worker_start_moves_the_resolver_stamp(monkeypatch):
@@ -499,8 +531,58 @@ def test_anonymous_worker_start_moves_the_resolver_stamp(monkeypatch):
     proc = FakeProc(stdout_lines=[jline({"event": "status", "state": "offline"})],
                     returncode=3)
     cs, _items, _states, _calls = make_source(monkeypatch, [proc])
-    run(cs._run_once("abc", []))
+    run(cs._run_once("abc"))
     assert resolver._ANON["last"] == 4242.0
+
+
+def test_anonymous_worker_gets_an_empty_first_line(monkeypatch):
+    """匿名也写一行 {}：子进程总是先等首行（comment_worker._read_handshake），不写它要干等 5 秒。"""
+    notes = _anon_notes(monkeypatch)
+    stdin = FakeStdin()
+    proc = FakeProc(stdout_lines=[jline({"event": "status", "state": "offline"})],
+                    returncode=3, stdin=stdin)
+    cs, _items, _states, calls = make_source(monkeypatch, [proc])
+    assert run(cs._run_once("abc"))[0] == 3
+    assert calls == [["abc"]] and stdin.first_line() == {} and not stdin.closed
+    assert len(notes) == 2              # 匿名照旧记：启动一次、没连上就退出再一次
+
+
+def test_a_first_line_that_cannot_be_written_is_reported_without_the_secret(monkeypatch, capsys):
+    """子进程已经退出、管道断了：只在终端说一句（只打异常类型），照常读完它的输出和退出码。"""
+    stdin = FakeStdin(fail=BrokenPipeError("broken pipe while writing sid-secret"))
+    proc = FakeProc(stdout_lines=[jline({"event": "status", "state": "offline"})],
+                    returncode=3, stdin=stdin)
+    cs, _items, state_log, _calls = make_source(monkeypatch, [proc])
+    assert run(cs._run_once("abc", {"session_id": "sid-secret", "tt_target_idc": None}))[0] == 3
+    out = capsys.readouterr().out
+    assert "[警告] 弹幕子进程的首行没写进去: BrokenPipeError" in out
+    assert "sid-secret" not in out
+    assert ("offline", "") in state_log
+
+
+def test_the_real_spawn_keeps_the_session_off_the_command_line(monkeypatch):
+    """真的 _spawn：命令行只有主播名，stdin 接管道（首行要写进去）。"""
+    seen = {}
+
+    async def fake_exec(*argv, **kwargs):
+        seen["argv"], seen["kwargs"] = argv, kwargs
+        return FakeProc(stdout_lines=[jline({"event": "status", "state": "offline"})],
+                        returncode=3, stdin=FakeStdin())
+
+    monkeypatch.setattr(cs_mod.asyncio, "create_subprocess_exec", fake_exec)
+    cs = CommentSource(on_items=None, on_state=None, cookies_browser="none")
+
+    async def go():
+        return await cs._run_once("abc", {"session_id": "sid-secret", "tt_target_idc": "idc"})
+
+    async def quiet_state(state, detail=""):
+        pass
+
+    cs._on_state = quiet_state
+    assert run(go())[0] == 3
+    assert seen["argv"][1:] == ("-m", "app.comment_worker", "abc")
+    assert seen["kwargs"]["stdin"] is asyncio.subprocess.PIPE
+    assert not any("sid-secret" in str(a) or "idc" == a for a in seen["argv"])
 
 
 def test_supervise_respawns_after_clean_exit(monkeypatch):
@@ -537,9 +619,14 @@ def test_supervise_user_not_found_stops_without_retry(monkeypatch):
 
 
 def test_supervise_login_required_retries_with_session_cookies(monkeypatch):
-    proc1 = FakeProc(stdout_lines=[], returncode=5)
+    """需要登录态时带着浏览器的 sessionid 立刻重起。sessionid 不进命令行（`ps aux` 谁都看得见），
+    写进新子进程 stdin 的第一行；匿名那次也写一行 {}，子进程不用干等超时。
+    （以前这条断言钉的是 calls[1] 里有 --session-id 和它的值，那正是专家审查 S8 要去掉的泄漏。）"""
+    notes = _anon_notes(monkeypatch)
+    stdin1, stdin2 = FakeStdin(), FakeStdin()
+    proc1 = FakeProc(stdout_lines=[], returncode=5, stdin=stdin1)
     proc2 = FakeProc(stdout_lines=[jline({"event": "status", "state": "connected"})],
-                      returncode=0, hang_after=True)
+                      returncode=0, hang_after=True, stdin=stdin2)
     cs, items_log, state_log, calls = make_source(monkeypatch, [proc1, proc2])
     monkeypatch.setattr(cs_mod, "session_cookies", lambda cookies_browser: ("sid", "idc"))
 
@@ -550,9 +637,12 @@ def test_supervise_login_required_retries_with_session_cookies(monkeypatch):
         await cs.stop()
 
     run(scenario())
-    assert calls[0] == ["abc"]
-    assert "--session-id" in calls[1] and "sid" in calls[1]
-    assert "--tt-target-idc" in calls[1] and "idc" in calls[1]
+    assert calls[0] == ["abc"] and calls[1] == ["abc"]
+    assert not any("sid" in arg or "idc" in arg for args in calls for arg in args[1:])
+    assert stdin1.first_line() == {}
+    assert stdin2.first_line() == {"session_id": "sid", "tt_target_idc": "idc"}
+    assert not stdin1.closed and not stdin2.closed      # 写完不关：子进程靠它的 EOF 认父进程还在不在
+    assert len(notes) == 2              # 只有匿名那一次记了（启动 + 没连上就退出），登录那次一次都没记
 
 
 def test_supervise_login_required_without_cookies_gives_up(monkeypatch):

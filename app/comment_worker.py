@@ -8,6 +8,11 @@ app/comment_source.py 的 CommentSource._supervise）。
 用法：
     python -m app.comment_worker <unique_id> [--session-id X] [--tt-target-idc Y]
 
+登录态不走命令行：父进程起子进程后往 stdin 写一行 JSON（登录时
+{"session_id": ..., "tt_target_idc": ...}，匿名时 {}），见 _read_handshake。命令行参数
+在 `ps` 里谁都看得见，sessionid 等于登录凭据。--session-id / --tt-target-idc 只留给人手动
+调试（终端里跑时 stdin 是终端，不读首行）。
+
 协议：stdout 逐行 JSON、每行立刻 flush，父进程按行解析：
     {"event": "status", "state": ..., "detail": "...", "room_id": ...}
     {"event": "comments", "items": [{"id", "user", "text", 有值才带的账号字段}, ...]}
@@ -117,9 +122,103 @@ class FieldStats:
 def _parse_args(argv):
     p = argparse.ArgumentParser(prog="python -m app.comment_worker")
     p.add_argument("unique_id")
+    # 只给手动调试用：父进程从不传它们，登录态走 stdin 首行（见 _read_handshake）
     p.add_argument("--session-id", default=None)
     p.add_argument("--tt-target-idc", default=None)
     return p.parse_args(argv)
+
+
+HANDSHAKE_TIMEOUT_SEC = 5.0
+HANDSHAKE_MAX_BYTES = 4096      # 正常一行不到 200 字节；超长就不再读，按匿名处理
+_PARENT_GONE = object()
+
+
+def _read_handshake(fd=None, timeout=HANDSHAKE_TIMEOUT_SEC, read=os.read):
+    """读父进程写进 stdin 的第一行（登录态），返回 dict；父进程已经没了返回 _PARENT_GONE。
+
+    - 按字节读到第一个 \\n 为止，一个字节都不多读：后面的内容留给 _watch_parent，它靠 stdin
+      的 EOF 判断父进程还在不在。所以必须在起看门狗之前调用（main 里就是这个顺序）。
+    - timeout 秒还没读完整行就按匿名连（返回 {}）：父进程总会立刻写这一行，等不到说明哪里不对，
+      但不能因此卡住不连。读线程是 daemon，留在后台不挡退出。
+    - 整行没读完就到 EOF（父进程写到一半就退出、或者根本没写就退出）：没人会读我们的输出了，
+      返回 _PARENT_GONE，调用方自己退出。只有真读到 EOF 才算。
+    - 读 stdin 出错（os.read 抛异常）：按匿名连，不当成父进程没了。父进程在不在照旧交给
+      _watch_parent——它的约定是「stdin 读不了就看 ppid」；这里要是直接退出，父进程活着时
+      每次都只收到「退出码 0、没有任何输出」，按退避一直重起，弹幕停在连接中、没有任何提示。
+    - 不是 JSON 对象、超长：按匿名连。
+    - stdin 是终端（人手动跑）或者根本没有 stdin：不读，返回 {}，用命令行参数。
+
+    出错的几种情况往 stderr 写一行中文（父进程把 stderr 打进终端）；首行的内容一个字都不打出来：
+    里面是登录凭据。"""
+    if fd is None:
+        try:
+            fd = sys.stdin.fileno()
+        except (AttributeError, OSError, ValueError):
+            return {}
+    try:
+        if os.isatty(fd):
+            return {}
+    except OSError:
+        return {}
+    result = {}
+    done = threading.Event()
+
+    def _reader():
+        buf = bytearray()
+        try:
+            while len(buf) <= HANDSHAKE_MAX_BYTES:
+                byte = read(fd, 1)
+                if not byte:
+                    result["eof"] = True
+                    break
+                if byte == b"\n":
+                    result["line"] = bytes(buf)
+                    break
+                buf += byte
+        except Exception as exc:
+            # stdin 读不了不等于父进程没了：记下异常类型，按匿名连，父进程在不在交给看门狗
+            result["error"] = type(exc).__name__
+        done.set()
+
+    threading.Thread(target=_reader, name="parent-handshake", daemon=True).start()
+    if not done.wait(timeout):
+        _note("{} 秒内没收到父进程的首行，按匿名连接".format(int(timeout)))  # i18n: terminal
+        return {}
+    if "line" not in result:
+        if result.get("eof"):
+            return _PARENT_GONE
+        if "error" in result:
+            # 只打异常类型：首行里是登录凭据，带内容的报错一律不打
+            _note("读父进程的首行出错（{}），按匿名连接".format(result["error"]))  # i18n: terminal
+            return {}
+        _note("父进程的首行太长，按匿名连接")  # i18n: terminal
+        return {}
+    try:
+        obj = json.loads(result["line"].decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        obj = None
+    if not isinstance(obj, dict):
+        _note("父进程的首行不是 JSON 对象，按匿名连接")  # i18n: terminal
+        return {}
+    return obj
+
+
+def _note(text):
+    """往 stderr 写一行给终端看的说明（父进程读 stderr、加「[弹幕]」前缀打出来）。"""
+    try:
+        print(text, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
+def _apply_handshake(args, handshake):
+    """首行里带了 sessionid 就用它（覆盖命令行上手动给的）；没带就保留命令行参数。"""
+    session_id = handshake.get("session_id")
+    if isinstance(session_id, str) and session_id:
+        args.session_id = session_id
+        idc = handshake.get("tt_target_idc")
+        args.tt_target_idc = idc if isinstance(idc, str) and idc else None
+    return args
 
 
 def _classify_exc(exc):
@@ -232,9 +331,10 @@ async def _watch_parent(on_gone, read=None, getppid=os.getppid, grace=5.0, exit_
     任务管理器结束）时，这个子进程会带着 WebSocket 一直挂着：实录一次测试
     结束后 `comment_worker itskainb` 独自活了好几分钟。
 
-    两个信号取先到的：① stdin 到 EOF——父进程用管道接着我们的 stdin、从不
-    写入，它一死操作系统就关管道，各平台都可靠；② ppid 变了（Unix 上孤儿
-    会被过继给 1 号进程）——stdin 不可读的环境靠它兜底。
+    两个信号取先到的：① stdin 到 EOF——父进程用管道接着我们的 stdin，写完
+    首行（登录态，main 已经用 _read_handshake 读走）就不再写入，它一死操作
+    系统就关管道，各平台都可靠；② ppid 变了（Unix 上孤儿会被过继给 1 号
+    进程）——stdin 不可读的环境靠它兜底。
     on_gone 负责优雅断开（起 disconnect 任务）；grace 秒后不管断没断都硬退，
     别让一个「优雅」的收尾变成又一种挂着不走。
     """
@@ -386,6 +486,13 @@ def _utf8_stdio():
 def main(argv=None):
     _utf8_stdio()
     args = _parse_args(sys.argv[1:] if argv is None else argv)
+    # 先读 stdin 首行（登录态），再起任何东西：看门狗（_watch_parent）也读 stdin，起早了会把
+    # 这一行当成普通输入读掉。最多等 HANDSHAKE_TIMEOUT_SEC 秒
+    handshake = _read_handshake()
+    if handshake is _PARENT_GONE:
+        # 父进程在写完首行之前就没了：没有人会读我们的输出，也不该再去连 TikTok
+        os._exit(0)
+    _apply_handshake(args, handshake)
     try:
         code = asyncio.run(_run(args))
     except Exception as exc:

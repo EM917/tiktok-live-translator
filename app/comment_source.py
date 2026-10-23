@@ -471,11 +471,10 @@ class CommentSource:
                 await self._await_provisioned()
                 continue
             await self._enforce_hourly_limit()
-            extra = []
-            if session_id:
-                extra += ["--session-id", session_id]
-            if tt_target_idc:
-                extra += ["--tt-target-idc", tt_target_idc]
+            # 登录态不进命令行（`ps aux` 谁都看得见，sessionid 就是登录凭据）：交给 _run_once
+            # 写进子进程 stdin 的第一行
+            session = {"session_id": session_id, "tt_target_idc": tt_target_idc} \
+                if session_id else None
             self._connect_times.append(self._clock())
             self._last_state = None
             self._last_detail = ""
@@ -484,7 +483,7 @@ class CommentSource:
             # 记下这次子进程用的组件版本：被拒时若已经换了新版本（启动时的升级刚落地、
             # 上一次被取消的 pip 刚跑完），立刻重连，不去白查一次、更不白等几分钟
             spawned_version = _installed_tiktoklive()
-            returncode, healthy = await self._run_once(unique_id, extra)
+            returncode, healthy = await self._run_once(unique_id, session)
             if returncode not in (0, 3, 4, 5, 6, 7, 8):
                 # 退出码不在约定表里（被信号打死、解释器收尾出错……）：子进程
                 # 退出前写的最后一条 status 才是它真正想说的话——「主播不存在」
@@ -655,12 +654,13 @@ class CommentSource:
             return (None, None)
 
     # ---- 单次子进程生命周期：起 -> 读 stdout/stderr -> 等退出 ----
-    async def _run_once(self, unique_id, extra_args):
+    async def _run_once(self, unique_id, session=None):
+        """session：{"session_id", "tt_target_idc"}（带登录态）或 None（匿名）。"""
         # _spawn 本身也可能抛异常（fd 耗尽等）——放在 try 外面的话异常会直接
         # 冒到 _supervise 的 while True 循环，把整条监督协程带死（该协程是
         # fire-and-forget 起的，没人会看到这个异常，弹幕来源从此静默失联）。
         try:
-            proc = await self._spawn([unique_id] + list(extra_args))
+            proc = await self._spawn([unique_id])
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -676,10 +676,14 @@ class CommentSource:
         # https://www.tiktok.com/@主播/live，再问是否在播），连上评论 WebSocket 之后才不再发。
         # 解析流地址那边「带登录抓直播页之前和上一次匿名请求隔开 8 秒」的规则要看得见这些
         # 请求（resolver.note_anonymous_request）：启动时记一次，连上或没连上就退出时再记一次。
-        anonymous = "--session-id" not in extra_args
+        # 匿名与否看这次有没有拿到 sessionid，不看命令行：登录态改走 stdin 之后命令行里永远没有
+        # --session-id，按参数判断会把登录模式也记成匿名请求，解析流地址那边「隔开 8 秒」的规则
+        # 就会让登录门房间每次查流地址都白等 8–24 秒
+        anonymous = not (session and session.get("session_id"))
         if anonymous:
             _note_anonymous_request()
         try:
+            await self._send_handshake(proc, session)
             while True:
                 line = await proc.stdout.readline()
                 if not line:
@@ -817,11 +821,36 @@ class CommentSource:
         except Exception as exc:
             print("[警告] 弹幕静默看门狗异常: {}".format(exc))
 
+    HANDSHAKE_WRITE_SEC = 5.0       # 写 stdin 首行的上限（一行不到 200 字节，正常是瞬间写完）
+
+    async def _send_handshake(self, proc, session):
+        """往子进程 stdin 写第一行：带登录态时 {"session_id", "tt_target_idc"}，匿名时 {}。
+
+        匿名也要写：子进程总是先等这一行（comment_worker._read_handshake），不写的话它要干等
+        5 秒超时才开始连。写完不关 stdin——子进程靠它的 EOF 判断父进程还在不在。
+        写不进去（子进程已经退出、管道断了）只打一行终端，照常往下读它的输出和退出码；
+        假子进程没有 stdin 时什么都不做。"""
+        stdin = getattr(proc, "stdin", None)
+        if stdin is None:
+            return
+        payload = {}
+        if session and session.get("session_id"):
+            payload = {"session_id": session["session_id"],
+                       "tt_target_idc": session.get("tt_target_idc")}
+        try:
+            stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
+            await asyncio.wait_for(stdin.drain(), self.HANDSHAKE_WRITE_SEC)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 只打异常类型：首行里是登录凭据，任何带内容的报错都不往终端打
+            print("[警告] 弹幕子进程的首行没写进去: {}".format(type(exc).__name__))
+
     async def _spawn(self, args):
         """单独成方法，方便测试 monkeypatch 掉、返回一个假子进程。"""
-        # stdin 也接管道，但从不写：父进程一死操作系统就关掉它，子进程读到
-        # EOF 就自行退出（见 comment_worker._watch_parent）。没有这根管道，
-        # 父进程被强杀时子进程会带着 WebSocket 一直挂着。
+        # stdin 也接管道：第一行写登录态（_send_handshake），之后再不写。父进程一死
+        # 操作系统就关掉它，子进程读到 EOF 就自行退出（见 comment_worker._watch_parent）。
+        # 没有这根管道，父进程被强杀时子进程会带着 WebSocket 一直挂着。
         return await asyncio.create_subprocess_exec(
             sys.executable, "-m", "app.comment_worker", *args,
             cwd=str(self._root),
