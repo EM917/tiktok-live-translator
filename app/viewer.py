@@ -25,7 +25,7 @@ from aiohttp import WSMsgType, web
 
 from . import i18n
 from .i18n import L
-from .server import replay_payloads
+from .server import ALERTS_MAX, INCIDENTS_MAX, replay_payloads
 
 # ---- 常量（全部模块级：测试直接引用，不要散在函数里）----
 TOKEN_BYTES = 32              # secrets.token_urlsafe(32) -> 43 个 URL 安全字符
@@ -34,7 +34,7 @@ TOKEN_LEN = 43
 # 入口，而观众端口一漂移，已经发出去、贴在墙上的二维码就静默失效。见 pick_ports
 PORT_OFFSET = 1
 PORT_TRIES = 5
-QUEUE_MAX = 512               # 每个观众一条有界队列；回放最多 273 条，留足余量
+QUEUE_MAX = 512               # 每个观众一条有界队列；回放最多 REPLAY_MAX（275）条，留足余量
 SEND_TIMEOUT_SEC = 5.0        # 写任务里单条发送的上限（不在关键路径上，可以比控制面宽）
 # 握手后等第一条 auth 的上限。手机页一连上就发 auth（viewer.js），正常几十毫秒；原来是 5 秒，
 # 专家审查 S6 实测一个 IP 挂 32 个不发 auth 的 /vws、超时就重开，带正确口令的手机 20 次只进来
@@ -85,7 +85,15 @@ WHY_LIMIT, WHY_LIMIT_EN = 160, 400
 # 判定为落后。数值与中控页没有开放回看之前的 deque 上限相同——手机看到的东西没有变
 PHONE_HISTORY_MAX = 100       # 字幕，含场次分隔标记（数的是 history 里的条目）
 PHONE_COMMENTS_MAX = 100
-REPLAY_MAX = 273              # 1+1+1+20+50 + PHONE_HISTORY_MAX + PHONE_COMMENTS_MAX，见 replay_snapshot
+# 手机回放（replay_snapshot）最多几条：每一类各自的上限加起来，所有类别同时到顶时一条不切。
+# 以前写死 273，漏数了 alert_mode 和 health 各一条：持续提示、报警、字幕、弹幕同时到顶时，
+# 末尾最新的一两条弹幕被 replay_snapshot 最后那一刀切掉。tests/test_server_clear.py 钉着这个和
+REPLAY_MAX = (1                     # viewer_hello
+              + 1 + 1 + 1           # status、comment_source、alert_mode
+              + INCIDENTS_MAX       # 持续提示（server.broadcast 最多留这么多）
+              + 1                   # health（识别落后提示）
+              + ALERTS_MAX          # 报警（server.alerts 的 deque 上限）
+              + PHONE_HISTORY_MAX + PHONE_COMMENTS_MAX)
 
 VIEWER_FILES = ("viewer.html", "viewer.js", "viewer.css", "icon.png")
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -605,6 +613,14 @@ def replay_snapshot(server, viewers=0, share_since=None):
             payload = filter_payload(dict(item, type="incident"))
             if payload is not None:
                 out.append(payload)
+    # 识别落后提示（专家审查 F3）：server.broadcast 存在 config["health"]，「已追上」、停止、下播、换场时删掉。
+    # 以前不回放，断线期间提示已撤的手机，重连后还挂着旧的「识别开始落后」；手机收到 viewer_hello
+    # 先清掉自己的，由这一条重建。过白名单后只剩 level，文案手机按 level 自己查表
+    health = config.get("health")
+    if isinstance(health, dict):
+        payload = filter_payload(dict(health, type="health"))
+        if payload is not None:
+            out.append(payload)
     for alert in list(getattr(server, "alerts", None) or []):
         if isinstance(alert, dict):
             payload = filter_payload(dict(alert, replay=True))
@@ -622,9 +638,16 @@ def replay_snapshot(server, viewers=0, share_since=None):
             payload = filter_payload(dict(comment, replay=True))
             if payload is not None:
                 out.append(payload)
-    # 按手机的上限（上面几行的切片），回放序列本就不会超过 REPLAY_MAX；这里切一刀是保险，
-    # 不是当前会触发的路径——警报、持续提示的上限以后涨了，也不该让回放悄悄超过 QUEUE_MAX。
-    return out[:REPLAY_MAX]
+    # REPLAY_MAX 就是上面每一类上限的和，回放序列本就不会超过它；这里切一刀是保险，不是当前会触发的
+    # 路径——哪天某一类的上限涨了却没算进 REPLAY_MAX，回放也不该悄悄超过 QUEUE_MAX（那时切掉的是末尾
+    # 最新的弹幕，tests/test_server_clear.py 那条「全部到顶」的用例会先红）
+    out = out[:REPLAY_MAX]
+    # 回放条数写进 viewer_hello：手机数够这么多条就知道回放结束了（web/viewer.js 的 replayLeft）。
+    # 以前手机只能等「回放之后的第一条实时字幕/弹幕/报警」，安静的直播间里那一条可能很久才来，期间
+    # 实时的换场被当成回放里的历史，上一场的落后提示就挂过整场新直播。条数放进 hello、不另发一条
+    # 「回放结束」：消息序列不变，按顺序逐条收消息的地方（tests/test_viewer_e2e.py 等）不用跟着改
+    out[0]["replay_len"] = len(out) - 1
+    return out
 
 
 def _coerce_action_id(value):
@@ -1108,12 +1131,20 @@ class ViewerHub:
         全程没有一个 await，所以「回放快照 / 实时注册」不存在竞态——之后来的
         实时消息只能排在回放后面。
         """
-        for payload in replay_snapshot(self._server, viewers=self.count + 1,
-                                       share_since=self.share_since):
+        snapshot = replay_snapshot(self._server, viewers=self.count + 1,
+                                   share_since=self.share_since)
+        queued = 0
+        for payload in snapshot:
             try:
                 viewer.queue.put_nowait(payload)
             except asyncio.QueueFull:
                 break            # 回放放不下不该拦住入册：实时消息比历史重要
+            queued += 1
+        if 0 < queued < len(snapshot):
+            # 只放进去一部分：hello 里的回放条数改成真放进去的。hello 还在队列里没发出去（这里全程同步、
+            # 写任务还没轮到），它又是这一次 replay_snapshot 新建的、不和别人共享，可以就地改。
+            # 不改的话，手机会把紧接着的几条实时消息也当成回放
+            snapshot[0]["replay_len"] = queued - 1
         viewer.registered = True
         self._viewers.append(viewer)
         self._event("viewer_connected", ip=viewer.ip, count=self.count)

@@ -8,6 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { loadDesktop, hello, caption, T } from "./desktop-page.mjs";
 
 const require = createRequire(import.meta.url);
 const { shouldRenderSessionDivider, sessionDividerText } =
@@ -45,4 +46,84 @@ test("主播名取不到（空串）：通用文案，不编造身份", () => {
 test("msg 缺失/streamer 缺失字段：不抛异常，落到通用文案", () => {
   assert.match(sessionDividerText({}), /^── \d\d:\d\d:\d\d 以下为新的一场 ──$/);
   assert.match(sessionDividerText(undefined), /^── \d\d:\d\d:\d\d 以下为新的一场 ──$/);
+});
+
+// ---- 弹幕栏里的分隔线：重连回放之后还在原来的位置（专家审查 F1）----
+// 补核实测：实时顺序是「c1 c2 c3 线 c4 c5」，重连后变成「线 c1…c5」，上一位主播的弹幕被标成「以下为 @新主播」。
+// 服务端的回放顺序是先字幕（分隔线夹在中间）、最后弹幕（app/server.py replay_messages）；页面在 node:vm 里
+// 真跑（tests/desktop-page.mjs），按这个顺序推消息。弹幕的 ts 是本机收到的时间，和分隔线同一个钟
+
+const BREAK_TS = T + 40;
+const cmt = (n, ts, extra) => Object.assign({ type: "comment", id: "c" + n, user: "viewer_" + n,
+  text: "hola " + n, ts: ts, translated: "你好 " + n, state: "ok" }, extra || {});
+const cap = (id, extra) => caption(id, "frase " + id, Object.assign({ translated: "句子 " + id, translate_state: "ok" },
+                                                                    extra || {}));
+function commentOrder(page) {
+  return page.el("comment-list").children.map((c) => (c.cls.includes("session-sep") ? "线" : c.dataset.cmtId)).join(" ");
+}
+function historySeps(page) {
+  return page.el("history").children.filter((c) => c.cls.includes("session-sep")).length;
+}
+
+test("弹幕栏：重连回放后分隔线按 ts 插回原处（c1 c2 c3 线 c4 c5），不再跑到所有弹幕最前面", () => {
+  const page = loadDesktop({ lang: "zh" });
+  hello(page);
+  // 实时：上一位主播的字幕和弹幕，换主播，新主播的字幕和弹幕
+  page.push(cap(1));
+  [1, 2, 3].forEach((n) => page.push(cmt(n, T + n)));
+  page.push({ type: "session_break", ts: BREAK_TS, streamer: "sol_demo" });
+  page.push(cap(2));
+  [4, 5].forEach((n) => page.push(cmt(n, BREAK_TS + n)));
+  assert.equal(commentOrder(page), "c1 c2 c3 线 c4 c5");
+
+  // 重连：hello，字幕回放（分隔线夹在中间），最后才是弹幕回放
+  hello(page);
+  page.push(cap(1, { replay: true }));
+  page.push({ type: "session_break", ts: BREAK_TS, streamer: "sol_demo", replay: true });
+  page.push(cap(2, { replay: true, restore: true }));
+  [1, 2, 3].forEach((n) => page.push(cmt(n, T + n, { replay: true })));
+  [4, 5].forEach((n) => page.push(cmt(n, BREAK_TS + n, { replay: true })));
+  assert.equal(commentOrder(page), "c1 c2 c3 线 c4 c5");
+  assert.equal(historySeps(page), 1, "字幕栏的分隔线照旧画在两条字幕之间");
+
+  // 回放之后的实时消息：不会再多补一条
+  page.push(cmt(6, BREAK_TS + 6));
+  assert.equal(commentOrder(page), "c1 c2 c3 线 c4 c5 c6");
+});
+
+test("弹幕栏：换场之后还没有新弹幕，分隔线在回放之后的第一条实时消息到达时补在末尾", () => {
+  const page = loadDesktop({ lang: "zh" });
+  hello(page);
+  page.push(cap(1, { replay: true }));
+  page.push({ type: "session_break", ts: BREAK_TS, streamer: "sol_demo", replay: true });
+  [1, 2, 3].forEach((n) => page.push(cmt(n, T + n, { replay: true })));
+  assert.equal(commentOrder(page), "c1 c2 c3", "回放期间还不知道后面有没有更晚的弹幕：先不插");
+  page.push({ type: "stats", health: "ok", audio_backlog_sec: 0 });   // 回放之后的第一条实时消息
+  assert.equal(commentOrder(page), "c1 c2 c3 线");
+  page.push({ type: "stats", health: "ok", audio_backlog_sec: 0 });
+  assert.equal(commentOrder(page), "c1 c2 c3 线", "只补一次");
+});
+
+test("弹幕栏：程序启动后的第一场（分隔线之前没有字幕卡片）回放时两栏都不画线", () => {
+  const page = loadDesktop({ lang: "zh" });
+  hello(page);
+  page.push({ type: "session_break", ts: T, streamer: "luna_demo", replay: true });
+  page.push(cap(1, { replay: true, restore: true }));
+  [1, 2].forEach((n) => page.push(cmt(n, T + n, { replay: true })));
+  page.push({ type: "stats", health: "ok", audio_backlog_sec: 0 });
+  assert.equal(commentOrder(page), "c1 c2");
+  assert.equal(historySeps(page), 0);
+});
+
+test("弹幕栏：hello 清场时还没插的分隔线一并作废，不会带到下一次回放里", () => {
+  const page = loadDesktop({ lang: "zh" });
+  hello(page);
+  page.push(cap(1, { replay: true }));
+  page.push({ type: "session_break", ts: BREAK_TS, streamer: "sol_demo", replay: true });
+  // 弹幕回放还没到又断了：新的 hello 清场重来，这一次缓存里没有分隔线了（比如中控清空过字幕）
+  hello(page);
+  page.push(cap(2, { replay: true, restore: true }));
+  page.push(cmt(1, T + 1, { replay: true }));
+  page.push({ type: "stats", health: "ok", audio_backlog_sec: 0 });
+  assert.equal(commentOrder(page), "c1");
 });

@@ -224,6 +224,7 @@ def test_register_pushes_the_whole_replay_in_one_synchronous_block(loop):
         "caption", "caption", "comment", "caption"]
     assert got[0]["read_only"] is True
     assert got[0]["max_viewers"] == viewer_mod.MAX_VIEWERS
+    assert got[0]["replay_len"] == 7              # hello 之后 7 条是回放，第 8 条起是实时的
     assert "detail" not in got[1]                 # status 的自由文本没跟过来
     assert got[2]["backend"] == "live"
     assert got[4]["replay"] is True
@@ -243,11 +244,39 @@ def test_register_does_not_blow_up_when_the_replay_exceeds_the_queue(loop, monke
     v = add(hub)
     assert hub.count == 1
     assert v.queue.qsize() == 3
+    # hello 里的回放条数是真放进去的那些（hello 之后 2 条），不是快照的 50 条：
+    # 不然手机会把接下来的 48 条实时消息也当成回放
+    assert v.queue.get_nowait()["replay_len"] == 2
+
+
+def test_viewer_hello_says_how_many_replay_messages_follow(loop):
+    """b2 审查：手机以前只能等「回放之后的第一条实时字幕/弹幕/报警」才知道回放结束，安静的直播间里
+    紧接着换主播，实时的 session_break 被当成历史。现在 hello 带着回放条数，手机数够就结束。
+    条数和入册时压进队列的回放一条不差，紧跟着的就是实时消息。"""
+    server = StubServer(status={"state": "live"}, comment_backend="connected", alerts_enabled=True,
+                        health={"level": "lagging", "backlog_sec": 23.0, "text": "x"})
+    server.history = [{"type": "caption", "id": 1, "original": "uno"},
+                      {"type": "session_break", "ts": 5.0},
+                      {"type": "caption", "id": 2, "original": "dos"}]
+    server.comments = [{"type": "comment", "id": "c1", "user": "ana", "text": "hola"}]
+    hub = make_hub(server)
+    v = add(hub)
+    hub.fanout({"type": "session_break", "ts": 9.0})          # 回放之后紧接着换主播
+    got = []
+    while not v.queue.empty():
+        got.append(v.queue.get_nowait())
+    n = got[0]["replay_len"]
+    assert n == len(got) - 2 == 8
+    assert got[n]["type"] == "comment"                         # 回放的最后一条
+    assert got[n + 1] == {"type": "session_break", "ts": 9.0}  # 实时的那条不算在里面
+    # 没有可回放的：条数是 0（hello 本身就是回放的结尾）
+    assert viewer_mod.replay_snapshot(StubServer())[0]["replay_len"] == 0
 
 
 def test_replay_snapshot_stays_under_the_queue_limit():
-    """回放上限 273 条要一直小于 QUEUE_MAX，否则每个新观众一进来就被判定落后。"""
-    server = StubServer(status={"state": "live"}, comment_backend="idle",
+    """回放上限（每一类都到顶时 275 条）要一直小于 QUEUE_MAX，否则每个新观众一进来就被判定落后。"""
+    server = StubServer(status={"state": "live"}, comment_backend="idle", alerts_enabled=True,
+                        health={"level": "degraded", "backlog_sec": 61.0, "text": "x"},
                         incidents={str(i): {"id": str(i), "level": "warn",
                                             "text": "x", "ts": float(i)}
                                    for i in range(20)})
@@ -255,7 +284,8 @@ def test_replay_snapshot_stays_under_the_queue_limit():
     server.history = [{"type": "caption", "id": i} for i in range(100)]
     server.comments = [{"type": "comment", "id": i} for i in range(100)]
     snapshot = viewer_mod.replay_snapshot(server, viewers=1, share_since=1.0)
-    assert len(snapshot) == viewer_mod.REPLAY_MAX
+    assert len(snapshot) == viewer_mod.REPLAY_MAX == 275
+    assert snapshot[-1] == {"type": "comment", "id": 99, "replay": True}   # 最新的弹幕没被切掉
     assert viewer_mod.REPLAY_MAX < viewer_mod.QUEUE_MAX
 
 
@@ -277,6 +307,64 @@ def test_replay_snapshot_omits_the_alert_mode_when_config_lacks_the_key():
     server = StubServer()
     snapshot = viewer_mod.replay_snapshot(server)
     assert not any(m["type"] == "alert_mode" for m in snapshot)
+
+
+def test_replay_snapshot_carries_the_current_health_after_the_incidents():
+    """专家审查 F3：手机重连后，识别落后提示按此刻的状态重建。server.broadcast 存在 config["health"]；
+    回放放在持续提示之后、报警之前，过白名单只剩 level（文案手机按 level 自己查表）。"""
+    server = StubServer(status={"state": "live"},
+                        incidents={"disk": {"id": "disk", "level": "warn", "text": "x", "ts": 1.0}},
+                        health={"level": "lagging", "backlog_sec": 23.0, "text": "识别开始落后"})
+    server.alerts = [{"type": "alert", "alert_id": 1, "term": "x"}]
+    types = [m["type"] for m in viewer_mod.replay_snapshot(server)]
+    assert types[:5] == ["viewer_hello", "status", "incident", "health", "alert"]
+    health = [m for m in viewer_mod.replay_snapshot(server) if m["type"] == "health"]
+    assert health == [{"type": "health", "level": "lagging"}]
+
+
+def test_replay_snapshot_has_no_health_once_it_is_over():
+    """「已追上」、停止、换场之后 config 里没有 health：回放里也没有，手机在 viewer_hello 时清掉的不会再回来。"""
+    assert not any(m["type"] == "health" for m in viewer_mod.replay_snapshot(StubServer()))
+    assert not any(m["type"] == "health"
+                   for m in viewer_mod.replay_snapshot(StubServer(health="不是 dict")))
+
+
+def test_a_phone_reconnecting_after_the_backlog_caught_up_gets_no_stale_health():
+    """真 CaptionServer 的缓存规则 + 真 replay_snapshot：断线期间发了「已追上」，重连的回放里就没有落后。"""
+    from app.server import CaptionServer
+
+    async def scenario():
+        server = CaptionServer(port=0)
+        await server.status("live", "")
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 23.0, "text": "x"})
+        lagging = [m for m in viewer_mod.replay_snapshot(server) if m["type"] == "health"]
+        await server.broadcast({"type": "health", "level": "ok", "backlog_sec": 0.0, "text": "y"})
+        caught_up = [m for m in viewer_mod.replay_snapshot(server) if m["type"] == "health"]
+        return lagging, caught_up
+
+    lagging, caught_up = asyncio.run(scenario())
+    assert lagging == [{"type": "health", "level": "lagging"}]
+    assert caught_up == []
+
+
+@pytest.mark.parametrize("state", ["idle", "ended", "error"])
+def test_a_phone_reconnecting_after_the_session_ended_gets_no_late_health(state):
+    """b2 审查：停止（下播、出错）之后晚到一条 lagging，以前存进 config，重连的手机在待机页上重建它。
+    真 CaptionServer 的缓存规则 + 真 replay_snapshot：重连回放里没有它。"""
+    from app.server import CaptionServer
+
+    async def scenario():
+        server = CaptionServer(port=0)
+        await server.status("live", "")
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 23.0, "text": "x"})
+        await server.status(state, "")
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 24.0, "text": "x"})
+        return viewer_mod.replay_snapshot(server)
+
+    snapshot = asyncio.run(scenario())
+    assert [m["type"] for m in snapshot[:2]] == ["viewer_hello", "status"]
+    assert snapshot[1]["state"] == state
+    assert not [m for m in snapshot if m["type"] == "health"]
 
 
 # ---- 握手 ----
@@ -1066,13 +1154,45 @@ def test_stop_cuts_what_runner_cleanup_left_behind():
 # 子进程：把软上限压到 256（本机从 Finder 启动的 .app 拿到的就是这个数），起真 hub（只绑 127.0.0.1），
 # 按 stdin 的指令报告「现在还能不能开文件、开 socket、起子进程」。攻击方是另一个进程（它自己的上限
 # 抬高，不让它成为瓶颈），挂的空连接比 256 还多——修之前服务端会先把自己的名额耗光。
+#
+# 另外报几个数给断言记账（#122 之后在 macOS 重负载下 13 次里红过 1 次：rejected 232，期望 284）。
+# 少掉的那些连接根本没进闸：asyncio 的 accept 循环一轮接一批（aiohttp 的 backlog 是 128），被拒的
+# socket 要过一两轮循环才真正关掉，几批叠在一起句柄就会短暂碰到 256，accept() 报 EMFILE，asyncio 停 1 秒
+# 再接。macOS 的内核在报 EMFILE 之前已经把那条连接从排队里取出来了，接着把它关掉（xnu accept_nocancel：
+# 「Don't put this back on the socket … Drop the socket」）；停接的这 1 秒里排队满了，内核还会再丢掉
+# 一些（exp/emfile_accounting.py 在软上限 36–48 下实测：没进闸的条数 ≥ EMFILE 次数，有时多十几条到
+# 九十几条）。这两种丢法服务端都看不到，攻击方看到的只是被断开。Linux 先占句柄再出队，排队满了也只是让
+# 握手晚一点完成，连接最后都会进闸。所以「被拒 == 超出数」只在 Linux 上是个等式；在 macOS 上能钉的是：
+# - reached / admitted：进了闸的条数、其中放进来的条数。进闸的要么放进来、要么被拒（reached ==
+#   rejected + admitted），放进来的一个字节没发、到期全被断开（admitted == idle_closed）
+# - peak：闸同时放进来的最多条数。上面的账能平不代表闸起了作用（闸全放行时 rejected 是 0，账照样平），
+#   「超出上限的连接没被拒」靠它拦：必须正好到上限、不能超过
+# - accept_failed：asyncio 报 accept() 失败的次数，macOS 上每次都丢掉一条，所以 reached + accept_failed
+#   不会超过攻击方手里的条数
 _SERVER = r'''
-import asyncio, json, resource, socket, subprocess, sys, tempfile
+import asyncio, errno, json, resource, socket, subprocess, sys, tempfile
 soft, idle, token = int(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
 hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
 resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 from app import viewer
 viewer.FIRST_BYTE_TIMEOUT_SEC = idle
+
+stats = {"accept_failed": 0, "peak": 0, "reached": 0, "admitted": 0}
+_admit = viewer._ConnGate.admit
+def admit(self, ip):
+    ok = _admit(self, ip)
+    stats["reached"] += 1
+    stats["admitted"] += 1 if ok else 0
+    stats["peak"] = max(stats["peak"], self.total)
+    return ok
+viewer._ConnGate.admit = admit
+
+def on_loop_error(loop, context):
+    exc = context.get("exception")
+    if isinstance(exc, OSError) and exc.errno in (errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM):
+        stats["accept_failed"] += 1      # asyncio 的 accept 循环每失败一次 accept() 报一次
+        return
+    loop.default_exception_handler(context)
 
 class FS:
     config = {"status": {"state": "live"}}; alerts = []; history = []; comments = []
@@ -1094,6 +1214,7 @@ def probe():
     return out
 
 async def main():
+    asyncio.get_running_loop().set_exception_handler(on_loop_error)
     hub = viewer.ViewerHub(FS(), ports=[0], token=token, bind_host="127.0.0.1",
                            log=lambda *a: None)
     await hub.start()
@@ -1104,7 +1225,8 @@ async def main():
         if line != "state":
             break
         print(json.dumps(dict(probe(), conns=hub.open_connections, rejected=hub._gate.rejected,
-                              idle_closed=hub._gate.idle_closed, viewers=hub.count)), flush=True)
+                              idle_closed=hub._gate.idle_closed, viewers=hub.count, **stats)),
+              flush=True)
     await hub.stop("off")
 
 asyncio.run(main())
@@ -1163,20 +1285,41 @@ def test_idle_sockets_cannot_exhaust_file_handles_under_a_256_limit():
         state = ask()
         assert state["conns"] <= viewer_mod.MAX_CONN_PER_IP
         assert (state["open"], state["socket"], state["spawn"]) == ("ok", "ok", "ok"), state
+
+        darwin = sys.platform == "darwin"
+
+        def settled(state):
+            if state["conns"] or state["idle_closed"] != state["admitted"]:
+                return False
+            # Linux：全部进了闸才算完。macOS：丢掉的数不出来，看排队清空——EMFILE 之后 asyncio 停 1 秒再接，
+            # 进闸的条数和失败次数 2.5 秒没再变，排队里就没有了
+            return darwin or state["reached"] == holding
+
         # 到期之后轮询，不固定睡 idle+1 秒：服务端是另一个进程，慢跑器上它的计时器可能晚一点才轮到
         time.sleep(idle)
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + 15.0
+        last, since = None, time.monotonic()
         while True:
             state = ask()
-            if (state["conns"] == 0
-                    and state["idle_closed"] == viewer_mod.MAX_CONN_PER_IP
-                    and state["rejected"] == holding - viewer_mod.MAX_CONN_PER_IP) \
-                    or time.monotonic() > deadline:
+            now = time.monotonic()
+            key = (state["reached"], state["accept_failed"], state["idle_closed"])
+            if key != last:
+                last, since = key, now
+            if (settled(state) and (state["reached"] == holding or now - since >= 2.5)) or now > deadline:
                 break
             time.sleep(0.2)
-        assert state["conns"] == 0
-        assert state["idle_closed"] == viewer_mod.MAX_CONN_PER_IP
-        assert state["rejected"] == holding - viewer_mod.MAX_CONN_PER_IP
+        assert state["conns"] == 0, state
+        # 闸从头到尾没放进来超过上限的连接，而且确实到过上限（不然这一场根本没考到闸）
+        assert state["peak"] == viewer_mod.MAX_CONN_PER_IP, state
+        # 进了闸的每一条都有下落：超出上限的当场被拒，放进来的一个字节没发、到期断开（接得慢时前一批到期
+        # 腾出名额，后来的会再放进来几条，所以 admitted 可能比上限多，不写死）
+        assert state["reached"] == state["rejected"] + state["admitted"], state
+        assert state["idle_closed"] == state["admitted"] >= viewer_mod.MAX_CONN_PER_IP, state
+        if darwin:
+            # 没进闸的是内核丢的（见 _SERVER 上面的说明）：至少有报 EMFILE 的那些条
+            assert state["reached"] + state["accept_failed"] <= holding, state
+        else:
+            assert state["reached"] == holding, state       # Linux 不丢：超出的全被闸拒掉
         assert (state["open"], state["socket"], state["spawn"]) == ("ok", "ok", "ok"), state
         attacker.stdin.write("report\n")
         attacker.stdin.flush()

@@ -371,6 +371,12 @@
   // 还没收到过任何状态——不能当成「已经在待机」，否则首次到达就是 idle 时会被
   // 误判成「没有变化」，进首页该做的动作（大字幕/弹幕面板归位）就漏了
   var homeActive = null;
+  var statusState = "";      // 最近一条 status 的 state（setStatus 记下）：换主播时 config 先到，胶囊据此重画（F5）
+  // 回放里的场次分隔线在弹幕栏里的位置（专家审查 F1）。服务端先回放字幕（分隔线夹在字幕中间），最后才回放
+  // 弹幕；分隔线要是在字幕阶段就插进弹幕栏，就跑到所有回放弹幕的最前面，上一位主播的弹幕被标成「以下为
+  // @新主播」。所以回放的分隔线先记在这里，回放弹幕时插到第一条 ts 不早于它的弹幕前面（弹幕的 ts 是本机
+  // 收到的时间，和分隔线同一个钟）；回放之后的第一条实时消息到了，剩下的（换场之后还没有弹幕）补在末尾
+  var pendingCommentBreaks = [];
 
   // ---- 设置 ----
   // 字幕字号。服务端（settings.json）是正本：localStorage 按「协议+主机+端口」隔离，端口一漂移
@@ -987,6 +993,8 @@
   }
 
   function handle(msg) {
+    // 回放结束（这是回放之后的第一条实时消息）：还没插进弹幕栏的分隔线补在末尾（F1）
+    if (pendingCommentBreaks.length && msg.type !== "hello" && !msg.replay) flushCommentBreaks();
     switch (msg.type) {
       case "hello":
         // 重连成功：上一条连接上可能丢了「开始」指令，在这条新连接上补发
@@ -1005,6 +1013,7 @@
         commentList.innerHTML = "";
         commentById = Object.create(null);
         commentMeta = Object.create(null);
+        pendingCommentBreaks = [];
         resetCommentRedo();         // 断线期间那次重译的结果收不到了：「重译中…」不能一直挂着
         commentFollowing = true;   // 回放重建整个列表：从最新处开始看
         commentsBelow = 0;
@@ -1031,6 +1040,12 @@
             roomInput.value = msg.config.room_url;
             // 同 fillRoomInput：程序自己回填的，不清 touched，只记主播名
             brandState = brandStateSyncStreamer(brandState, streamerFromInput(msg.config.room_url));
+          } else if (msg.config.room_url && msg.config.status && isListening(msg.config.status.state)
+                     && streamerFromInput(roomInput.value) !== streamerFromInput(msg.config.room_url)) {
+            // 断线期间换了主播（在别的窗口换的，或这一页没收到那条 config）：输入框里还是上一位，下面的
+            // setStatus 会把胶囊画成「直播中 · @上一位」（F5 的重连那一半）。连接中 / 直播中开始面板是
+            // 收着的，输入框里不会有中控正在敲的字，按服务端的回填
+            fillRoomInput(msg.config.room_url);
           }
           // brand_options 要先于 brands 处理：下拉框的选项得先建好，
           // applyDefaultBrand() 才有值可选
@@ -1052,6 +1067,11 @@
           }
           drawIncidents();
           if (msg.config.status) setStatus(msg.config.status);
+          // 识别落后提示同样以服务端为准（专家审查 F3）：先收起，再按 config.health 画。以前 hello 不碰它，
+          // 断线期间那条「已追上」没收到的页面，一直挂着旧的「识别开始落后」到这一场停止。放在 setStatus
+          // 之后：renderHealth 只在这一场还在进行时才揭开它
+          healthBar.classList.add("hidden");
+          if (msg.config.health) renderHealth(msg.config.health);
           if (msg.config.target_lang) showTargetLang(msg.config.target_lang);
           if (msg.config.source_lang && !sourceTouched) selectSourceLang(msg.config.source_lang);
           if (msg.config.glossary_migration) {
@@ -1123,7 +1143,17 @@
         // 顺序反了就会用上一个主播的房间算出错的默认值（踩过的坑，同 hello 分支）。
         // brand_options 同理要先于 brands：refresh_brands 的回执也走这条分支，
         // 选项要先建好，applyDefaultBrand() 才有值可选
-        if (msg.room_url) fillRoomInput(msg.room_url);
+        if (msg.room_url) {
+          fillRoomInput(msg.room_url);
+          // 换主播（专家审查 F5）：这条 config 是停完上一位之后才到的，新一场的第一条 status 还要再等开场
+          // 那几步。胶囊和「正在连接 @…」的主播名都取自输入框，以前要等那条 status 才改过来，这几秒里
+          // 胶囊写着「连接中… · @上一位」，横幅却已经是「正在切换到 @新的」。现在输入框一换就按最近
+          // 一条 status 的状态重画这两处；横幅的字是服务端写的，不动
+          if (isListening(statusState)) {
+            paintStatusText(statusState);
+            syncConnectHint(statusState);
+          }
+        }
         if (msg.brand_options) renderBrandOptions(msg.brand_options);
         if (msg.brands) { brandsMap = msg.brands; applyDefaultBrand(); }
         // start_stream 开播时、真正停止后都会广播这个字段（后者是显式 null）；
@@ -1155,6 +1185,10 @@
         updateCaption(msg);
         break;
       case "session_break":
+        // 新的一场开始：上一场的识别落后提示作废（专家审查 F3）。换主播走 quiet 停止、不发 idle，新一场的
+        // 统计循环又从 ok 数起、等级不变就不广播，不在这里收起，它会一直挂到下一次等级变化。
+        // 回放里的分隔线是历史，不碰：此刻的状态由 hello 的 config.health 定
+        if (!msg.replay) healthBar.classList.add("hidden");
         renderSessionBreak(msg);
         break;
       // 服务端清掉了一类缓存（这一页或别的本机页面点了「清空」）：这一页也跟着清。
@@ -1236,20 +1270,30 @@
   }
 
   // ---- 渲染 ----
-  function setStatus(msg) {
-    var state = msg.state || "idle";
-    statusDot.className = "dot " + state;
-    if (statusPill) statusPill.dataset.state = state;
-    // 连接中/直播中额外带上正在听谁：「连接中… · @A」「直播中 · @A」。主播名和
-    // 顶栏「换主播」面板认的是同一个来源（config.room_url，经 streamerFromInput
-    // 提取），取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就
-    // 不带这半句。连接中也要带：点错了要等连上才看得出来，而失败的连接中位
-    // 要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）
+  // 连接中 / 直播中：有一位「正在听的主播」
+  function isListening(state) {
+    return state === "connecting" || state === "live";
+  }
+
+  // 连接中/直播中额外带上正在听谁：「连接中… · @A」「直播中 · @A」。主播名和
+  // 顶栏「换主播」面板认的是同一个来源（config.room_url，经 streamerFromInput
+  // 提取），取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就
+  // 不带这半句。连接中也要带：点错了要等连上才看得出来，而失败的连接中位
+  // 要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）。
+  // 单独成函数：换主播时 config 先于新一场的 status 到，只重画这几个字（F5）
+  function paintStatusText(state) {
     var label = STATUS_TEXT[state] || state;
-    var liveStreamer = (state === "live" || state === "connecting")
-      ? streamerFromInput(roomInput.value) : "";
+    var liveStreamer = isListening(state) ? streamerFromInput(roomInput.value) : "";
     statusText.textContent = liveStreamer ? label + " · " : label;
     if (liveStreamer) statusText.appendChild(nameSpan("@" + liveStreamer));   // 主播名
+  }
+
+  function setStatus(msg) {
+    var state = msg.state || "idle";
+    statusState = state;
+    statusDot.className = "dot " + state;
+    if (statusPill) statusPill.dataset.state = state;
+    paintStatusText(state);
 
     // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
     if (state === "error" || state === "idle") resetUpdateBtn();
@@ -1703,7 +1747,10 @@
     // 底部大字幕清空，等新一场第一条字幕自己把它揭开（同 enterHomeLayout
     // 的道理：不主动显示，交给下一条真实字幕）
     hideLiveBar();
-    insertSessionDivider(commentList, msg);
+    // 弹幕栏：实时的分隔线就插在末尾（这一刻之前的弹幕都是上一场的）。回放的先记下，等弹幕回放按 ts
+    // 插到对的位置（见 pendingCommentBreaks 的说明，专家审查 F1）
+    if (msg.replay) pendingCommentBreaks.push(msg);
+    else insertSessionDivider(commentList, msg);
     syncConnectHint(statusPill ? statusPill.dataset.state : "");
     stickToBottom(false);
   }
@@ -1713,6 +1760,22 @@
     sep.className = "session-sep";
     sep.textContent = sessionDividerText(msg);
     container.appendChild(sep);
+  }
+
+  // 把记下的回放分隔线插进弹幕栏末尾。beforeTs 给了就只插 ts 不晚于它的（下一条弹幕要追加在它们后面）；
+  // 没给就全插（回放结束）。分隔线按发生顺序记的，遇到第一条还不到时候的就停：ts 不是数的那条也停在
+  // 那里，等回放结束补在末尾——不知道它在哪就不猜
+  function flushCommentBreaks(beforeTs) {
+    var all = beforeTs === undefined;
+    var added = false;
+    while (pendingCommentBreaks.length) {
+      var ts = pendingCommentBreaks[0].ts;
+      if (!all && !(typeof ts === "number" && ts <= beforeTs)) break;
+      insertSessionDivider(commentList, pendingCommentBreaks.shift());
+      added = true;
+    }
+    // 回放结束补在末尾的那条：跟随中就让它露出来（回放的弹幕已经贴过底，这一条是后加的）
+    if (all && added && commentFollowing) commentsToBottomNow();
   }
 
   function applyTranslation(card, msg) {
@@ -2083,7 +2146,9 @@
     if (msg.state === "same" || msg.state === "skipped") orig.classList.add("hidden");
     item.appendChild(orig);
 
-    // 正序：新的追加在底部，和字幕列表同一个方向，从上往下读就是时间顺序
+    // 正序：新的追加在底部，和字幕列表同一个方向，从上往下读就是时间顺序。回放时先把发生在这条之前的
+    // 换场分隔线插进去（F1）
+    if (pendingCommentBreaks.length && typeof msg.ts === "number") flushCommentBreaks(msg.ts);
     commentList.appendChild(item);
     commentById[msg.id] = item;
     noteCommentTr(msg.id, msg.state, msg.translated);
@@ -2364,6 +2429,7 @@
   // 只清这一页的弹幕：点「清空」、别的页面点了清空后的同步，都走这里
   function clearCommentsView() {
     commentList.innerHTML = "";
+    pendingCommentBreaks = [];   // 弹幕清空了，还没插进去的分隔线也不再有位置
     commentById = Object.create(null);
     commentMeta = Object.create(null);
     commentFollowing = true;
@@ -2450,7 +2516,8 @@
     decorateComment(msg.id);
   }
 
-  // hello / config：整份换掉本地的。hello 里带来的事件是回放，不算新事件：把「已看」推到此刻
+  // hello / config：整份换掉本地的。回放不算已看：哪些看过由 guardSeenTs 定（存在 localStorage 里，刷新也在），
+  // 只有中控点了「已看」才往前推（例外见下面 hello 那几行）
   function applyGuardConfig(cfg, hello) {
     if (!cfg) return;
     var stateChanged = false;
@@ -2472,9 +2539,15 @@
       Object.keys(mk).forEach(function (k) { if (mk[k] && typeof mk[k] === "object") guardMarked[k] = mk[k]; });
       guardMarkIdx = guardMarkIndex(guardMarked);
     }
+    // 以前每次 hello 都在这里 markGuardSeen()（专家审查 F2）：页面任何一次重连——瞬断、手动刷新、切换界面
+    // 语言的重载——都把未读全标成已看，顶部条和浮钮红点一起消失；断线期间新到的红色事件只随回放到达，
+    // 从头到尾一次都没亮过。现在只剩一种情况会标：这台浏览器从没记过「已看」（guardSeenTs 是 0：第一次打开
+    // 页面）。刚打开页面不为这一场早先的事件弹顶部条，这条约定 tests/app.en.test.mjs 钉着；标过一次之后
+    // 时刻就存下了，之后的重连、刷新都不再标。localStorage 用不了的话每次刷新都是「第一次」，断线期间的
+    // 事件仍可能被这样标掉——只剩这一种
     if (hello) {
-      markedSpoke = [];
-      markGuardSeen();
+      markedSpoke = [];      // 回放的弹幕不重新计「关注的人本场发言」
+      if (!guardSeenTs) markGuardSeen();
     }
     if (stateChanged || "guard_marked" in cfg) decorateAllComments();
     drawGuardAll();

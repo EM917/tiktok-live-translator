@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { loadDesktop, hello, ROOM } from "./desktop-page.mjs";
 
 const require = createRequire(import.meta.url);
 const { SWITCH_ARM_MS, SWITCH_DEBOUNCE_MS, initialSwitchState, armSwitch,
@@ -148,4 +149,55 @@ test("switchClickAction：超时复位过或已过期只重新武装，不发送
 test("switchClickAction：没有目标或目标就是当前主播，什么都不做", () => {
   assert.equal(switchClickAction(initialSwitchState(), 5000, "alice"), "none");
   assert.equal(switchClickAction({ target: "alice", armed: false, armedAt: null }, 5000, "Alice"), "none");
+});
+
+// ---- 接线：换主播时胶囊和「正在连接 @…」跟着 config 里的新主播走（专家审查 F5）----
+// 补核走真的换主播面板复现：停 A 期间胶囊写「连接中… · @A」，横幅已经是「正在切换到 @B」；config(room_url=B)
+// 到了胶囊还是 A，要等新一场的第一条 status 才变成 B。胶囊的主播名取自输入框，以前收到 config 只填输入框、
+// 不重画。桌面页在 node:vm 里真跑（tests/desktop-page.mjs），消息按 Pipeline 换主播的顺序推
+const ROOM_B = "https://www.tiktok.com/@sol_demo/live";
+const SWITCHING = "正在切换到 @sol_demo：先停止 @luna_demo 的监听，再连接新的直播间…";
+const pill = (page) => page.el("status-text").textContent;
+const banner = (page) => page.el("status-banner").textContent;
+
+test("接线：换主播的 config 一到，胶囊和连接提示就是新主播；横幅仍是服务端那句", () => {
+  const page = loadDesktop({ lang: "zh" });
+  hello(page);
+  assert.equal(pill(page), "直播中 · @luna_demo");
+  page.push({ type: "status", state: "connecting", detail: SWITCHING });      // _start_with_ack
+  assert.equal(pill(page), "连接中… · @luna_demo", "停 A 期间：输入框还是 A，config 还没到");
+  // start_stream：quiet 停完 A 之后广播 config（这时还没有新一场的 status）
+  page.push({ type: "config", room_url: ROOM_B, source_lang: "auto", brands: {}, active_brand: null });
+  assert.equal(pill(page), "连接中… · @sol_demo");
+  assert.equal(page.el("connect-hint-text").textContent, "正在连接 @sol_demo…");
+  assert.equal(banner(page), SWITCHING, "横幅的字由服务端决定，不在这里改");
+  // 新一场的第一条 status：照旧
+  page.push({ type: "status", state: "connecting", detail: "正在解析直播流地址…" });
+  assert.equal(pill(page), "连接中… · @sol_demo");
+});
+
+test("接线：待机时收到带 room_url 的 config 只回填输入框，胶囊不冒出主播名", () => {
+  const page = loadDesktop({ lang: "zh" });
+  hello(page, { status: { state: "idle", detail: "" } });
+  const idle = pill(page);
+  page.push({ type: "config", room_url: ROOM_B });
+  assert.equal(pill(page), idle);
+  assert.doesNotMatch(pill(page), /@/);
+});
+
+test("接线：断线期间换了主播，重连的 hello 带新 room_url：胶囊是新主播（以前输入框非空就不回填，一直写旧的）", () => {
+  const page = loadDesktop({ lang: "zh" });
+  hello(page);
+  assert.equal(page.el("room-input").value, ROOM);
+  hello(page, { room_url: ROOM_B });
+  assert.equal(pill(page), "直播中 · @sol_demo");
+  assert.equal(page.el("room-input").value, ROOM_B);
+});
+
+test("接线：待机时重连，输入框里已有的地址不被 hello 盖掉（开始面板开着，可能是中控刚敲的）", () => {
+  const page = loadDesktop({ lang: "zh" });
+  hello(page, { status: { state: "idle", detail: "" } });
+  page.el("room-input").value = ROOM_B;                                      // 中控在开始面板里敲了新的
+  hello(page, { status: { state: "idle", detail: "" }, room_url: ROOM });
+  assert.equal(page.el("room-input").value, ROOM_B);
 });

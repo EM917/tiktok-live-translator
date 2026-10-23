@@ -49,6 +49,12 @@ def replay_payloads(history):
 HISTORY_MAX = 300
 COMMENTS_MAX = 100
 ALERTS_MAX = 50
+# config["incidents"]（持续提示）最多留几条，超出时丢最久没更新的那条（见 broadcast）。
+# 手机回放的上限 app/viewer.py 的 REPLAY_MAX 按这个数和 ALERTS_MAX 算，改这里不用再去那边改
+INCIDENTS_MAX = 20
+# 这几种 status 说明这一场已经结束：停止（idle）、下播（ended）、出错（error）。
+# 之后不会再有这一场的识别落后提示，config["health"] 在这时删掉、也不再存（见 broadcast）
+SESSION_OVER_STATES = ("idle", "ended", "error")
 # 浮窗页（web/float.html，app/float_window.py）：它连 /ws?role=float，只读。收什么、回放多深，都在这里定死：
 #   FLOAT_TYPES        广播里只转发这几种消息（报警、审计提示、incident、health 一概不发；
 #                      tests/test_float_server.py 拿正则从 web/float.js 读出它处理的类型来比对）
@@ -432,6 +438,27 @@ class CaptionServer:
             # 落在它该在的两条字幕之间，不用另开一路时间线去对齐
             self.history.append(msg)
             self._last_break = msg
+            # 新的一场开始（_begin_session 第一步就发它，早于这一场的任何 health）：上一场的落后提示作废。
+            # 换主播走 quiet 停止、不发 idle，新一场的统计循环又从 ok 数起、等级不变就不广播——只能靠
+            # 这一条清（专家审查 F3）。回放的分隔线是历史，不碰（上面的 not replay）
+            self.config.pop("health", None)
+        elif msg.get("type") == "health":
+            # 识别落后提示落进 config：刷新或重连的页面从 hello 里拿到此刻的状态，手机从 replay_snapshot
+            # 里拿（专家审查 F3）。以前不存：等级不变 pipeline 就不再广播，断线期间那条「已追上」没收到的
+            # 页面，一直挂着旧的「识别开始落后」到这一场停止。level=ok 就是没有提示。
+            # stats 里也带着按积压算的等级，但不拿它清：识别连续出错时 pipeline 有意让「检测已降级」
+            # 挂着（出错的调用返回得快、积压归零，每跳 stats 都是 ok，见 Pipeline._announce_health），
+            # 拿 stats 清会在 10 秒内把它收掉。
+            # 这一场已经停了（status 是 idle/ended/error）之后晚到的一条不存，顺手把残留的也删掉：它说的是
+            # 已经结束的那一场（比如下播之后、统计循环被取消之前的那一跳）。存下来的话，之后每次重连，
+            # 手机都会在待机页上重建这条过时的落后提示。实时广播照发，页面自己挡：桌面的 renderHealth
+            # 只在连接中/直播中显示，手机在 idle/ended/error 时不显示（web/viewer.js）
+            status = self.config.get("status")
+            state = status.get("state") if isinstance(status, dict) else None
+            if msg.get("level") == "ok" or state in SESSION_OVER_STATES:
+                self.config.pop("health", None)
+            else:
+                self.config["health"] = {k: msg[k] for k in ("level", "backlog_sec", "text") if k in msg}
         elif msg.get("type") == "caption_update":
             # 译文是后补的：历史里那条也要补上，否则重连回放会只剩原文
             # 只覆盖消息里带的键：重译的「pending/failed」通知不带 translated，
@@ -500,7 +527,7 @@ class CaptionServer:
                     marked.pop(key, None)
         elif msg.get("type") == "incident":
             # 持续提示：按 id 覆盖，level=clear 去掉；落进 config，刷新或重连的页面照样看得到。
-            # 最多留 20 条，超出时丢最久没更新的那条
+            # 最多留 INCIDENTS_MAX 条，超出时丢最久没更新的那条
             key = str(msg.get("id") or "")
             if key:
                 incidents = self.config.setdefault("incidents", {})
@@ -512,7 +539,7 @@ class CaptionServer:
                     incidents[key] = {"id": key, "level": msg.get("level") or "warn",
                                       "text": msg.get("text") or "",
                                       "since": prev["since"] if prev else now, "ts": now}
-                    while len(incidents) > 20:
+                    while len(incidents) > INCIDENTS_MAX:
                         oldest = min(incidents.values(), key=lambda x: x["ts"])
                         incidents.pop(oldest["id"], None)
         elif msg.get("type") == "status":
@@ -521,6 +548,10 @@ class CaptionServer:
             self.config["status"] = {"state": msg.get("state"),
                                      "detail": msg.get("detail", ""),
                                      "command": msg.get("command")}
+            # 停止、下播、出错：这一场的识别落后提示跟着作废（pipeline 停止时不补发 level=ok）。
+            # 下播发的是 ended，不是 idle，漏了它，之后每次重连都会再显示上一场的落后（专家审查 F3）
+            if msg.get("state") in SESSION_OVER_STATES:
+                self.config.pop("health", None)
             hook = getattr(self, "on_status", None)
             if hook is not None:
                 try:
