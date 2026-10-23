@@ -121,7 +121,8 @@ DENOISE_MIN_BYTES = 100_000   # 完整模型约 300 KB；明显小于此值 = �
 _TRANSCRIBE_LOCK = threading.Lock()
 
 # 桌面点的「重译」排队时（_retranslate_serial 在自己的任务里设，retranslate() 读）：证据音频在入队时已经
-# 存过；按钮的「重译中…」发没发过、终态（ok / failed）发没发过记在这里，被取消时据此决定要不要把按钮撤回来。
+# 存过；按钮的「重译中…」发没发过、终态（ok / failed）发没发过、retranslate() 有没有接手记审计（owned）记在
+# 这里，被取消或出错时据此决定要不要把按钮撤回来、要不要替它记一条 cancelled。
 # 用 ContextVar 而不是给 retranslate() 加参数：手机那条路（viewer_share）和测试替身都按原来的签名调它
 _RETRANSLATE_TRACK = contextvars.ContextVar("tlt_retranslate_track", default=None)
 
@@ -5207,25 +5208,33 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 一分钟（本地强模型），环形缓冲等不了（app/pipeline_evidence.py）
         self._evidence_retranslate(seq)
         ready = asyncio.Event()
-        task = self._spawn(self._retranslate_serial(seq, ready))
-        # 任务开跑前就被取消时它的函数体一行都不执行：完成回调兜底，免得这里一直等
-        task.add_done_callback(lambda _t: ready.set())
         sess = getattr(self, "_session_state", None)
         audit = getattr(self, "audit", None)
-        if isinstance(sess, dict) and audit is not None and sess.get("audit") is audit:
+        # 登记到本场的（收尾时由 _cancel_retranslates 在关审计之前取消）才把「排在队里就被取消」记进本场审计
+        own = audit if (isinstance(sess, dict) and audit is not None
+                        and sess.get("audit") is audit) else None
+        task = self._spawn(self._retranslate_serial(seq, ready, audit=own))
+        # 任务开跑前就被取消时它的函数体一行都不执行：完成回调兜底，免得这里一直等
+        task.add_done_callback(lambda _t: ready.set())
+        if own is not None:
             tasks = sess.setdefault("retranslate_tasks", set())
             tasks.add(task)
             task.add_done_callback(tasks.discard)
         await ready.wait()
         return None
 
-    async def _retranslate_serial(self, seq, ready=None):
+    async def _retranslate_serial(self, seq, ready=None, audit=None):
         """桌面「重译」的后台任务：入队就发 pending，按桌面那把锁排队，轮到了调 retranslate()。
         被取消（停止、换主播，见 _cancel_retranslates）时，发过 pending 而终态还没发的，补一条
         strong_state=cancelled 把按钮撤回「重译」：桌面（web/app.js applyTranslation）和手机
         （web/viewer.js retranslateLabel）都把不认识的取值当成可点的「重译」，不用改前端。
-        服务端留存的那条字幕也跟着补上，重连回放不会停在「重译中…」。"""
-        track = {"pending": False, "settled": False}
+        服务端留存的那条字幕也跟着补上，重连回放不会停在「重译中…」。
+        还没开始调强模型就被取消的（排在队里，或者强模型连接还没准备好；retranslate() 还没接手记审计），
+        这里替它往本场审计（audit：入队时登记到的那一场）记一条 translation_strong(error=cancelled,
+        queued=true)——中控点过「重译」这件事在审计里有痕迹，和已经在等强模型时被取消的那条分得开。
+        出了别的异常（准备强模型、拼提示、发译文时抛的）：发过 pending 而终态还没发的，补一条
+        strong_state=failed，按钮恢复成可点；不补的话按钮和服务端留存的那条字幕一直停在「重译中…」。"""
+        track = {"pending": False, "settled": False, "owned": False}
         token = _RETRANSLATE_TRACK.set(track)    # retranslate() 读它；finally 里复原，不漏给调用方
         try:
             if self._retranslate_will_run(seq):
@@ -5240,6 +5249,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     ready.set()
                 await self.retranslate(seq)
         except asyncio.CancelledError:
+            # 先记审计（同步、不让出事件循环）再发按钮状态：_cancel_retranslates 只等 1 秒，页面慢的时候
+            # 广播可能拖过这 1 秒，那时审计已经关了
+            if (track["pending"] and not track["owned"] and not track["settled"]
+                    and audit is not None):
+                try:
+                    audit.translation_strong(seq, None, 0.0, False, None, "manual",
+                                             error="cancelled", queued=True)
+                except Exception:
+                    pass
             if track["pending"] and not track["settled"]:
                 try:
                     await self.server.broadcast({"type": "caption_update", "id": seq,
@@ -5250,6 +5268,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         except Exception as exc:
             # 以前异常由 server 的消息循环接住打印；现在在后台，这里接住，别让任务带着异常静默结束
             print("[警告] 重译出错: {}".format(exc))
+            if track["pending"] and not track["settled"]:
+                try:
+                    await self.server.broadcast({"type": "caption_update", "id": seq,
+                                                 "strong_state": "failed"})
+                except Exception:
+                    pass
         finally:
             _RETRANSLATE_TRACK.reset(token)
 
@@ -5334,6 +5358,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         audit = self.audit               # 本场自己的审计：等译文期间可能已经换场
         t0 = time.monotonic()
         released = recorded = False
+        if track is not None:
+            track["owned"] = True        # 从这里起被取消由下面自己记 cancelled，_retranslate_serial 不再替它记
         try:
             had = self._quality.get(seq, 0) > 0
             # 桌面排队时入队那一刻已经发过 pending（_retranslate_serial）：不重复发

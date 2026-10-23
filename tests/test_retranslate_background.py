@@ -199,6 +199,7 @@ def test_stop_cancels_a_running_retranslate_and_records_it(pl, tmp_path):
     assert cancelled["error"] == "cancelled" and cancelled["ok"] is False
     assert cancelled["translated"] is None and cancelled["trigger"] == "manual"
     assert cancelled["model"] == "fake-strong"
+    assert "queued" not in cancelled                # 已经在等强模型：不带 queued，形状和以前一样
     types = [r["type"] for r in rows]
     assert types.index("translation_strong") < types.index("session_end")   # 关审计之前记下
     assert pl.server.strong_states(1) == ["pending", "cancelled"]   # 按钮撤回「重译」
@@ -206,7 +207,8 @@ def test_stop_cancels_a_running_retranslate_and_records_it(pl, tmp_path):
 
 
 def test_a_queued_click_cancelled_by_stop_gets_its_button_back(pl, tmp_path):
-    """排在后面、还没轮到的那一条：没调强模型，不记 translation_strong，但「重译中…」要撤回来。"""
+    """排在后面、还没轮到的那一条：没调强模型，「重译中…」要撤回来；审计里也记一条 cancelled，带
+    queued=true，和已经在等强模型时被取消的那条分得开（中控点过「重译」这件事要有痕迹）。"""
     audit = _session(pl, tmp_path)
 
     async def scenario():
@@ -221,8 +223,15 @@ def test_a_queued_click_cancelled_by_stop_gets_its_button_back(pl, tmp_path):
     strong = asyncio.run(scenario())
     assert len(strong.calls) == 1
     assert pl.server.strong_states(2) == ["pending", "cancelled"]
-    strong_rows = [r for r in _rows(audit) if r["type"] == "translation_strong"]
-    assert [(r["seq"], r["error"]) for r in strong_rows] == [(1, "cancelled")]
+    rows = _rows(audit)
+    strong_rows = sorted((r for r in rows if r["type"] == "translation_strong"), key=lambda r: r["seq"])
+    assert [(r["seq"], r["error"], r.get("queued")) for r in strong_rows] == [
+        (1, "cancelled", None), (2, "cancelled", True)]
+    queued = strong_rows[1]
+    assert queued["ok"] is False and queued["translated"] is None and queued["trigger"] == "manual"
+    assert queued["model"] is None and queued["translate_ms"] == 0.0     # 强模型一次也没调
+    types = [r["type"] for r in rows]
+    assert max(i for i, kind in enumerate(types) if kind == "translation_strong") < types.index("session_end")
     # 服务端留存的字幕没有停在 pending：重连回放不会显示「重译中…」
     kept = {m["id"]: m.get("strong_state") for m in pl.server.history if m.get("id") in (1, 2)}
     assert kept == {1: "cancelled", 2: "cancelled"}
@@ -311,3 +320,69 @@ def test_the_handler_returns_before_the_strong_model_answers(pl):
         return took
 
     assert asyncio.run(scenario()) < 0.5
+
+
+# ---- 后台任务里出了普通异常：按钮不能停在「重译中…」（专家审查 B6 复核）----
+
+class Broken(Exception):
+    pass
+
+
+def test_a_strong_model_that_fails_to_start_gives_the_button_back(pl, capsys):
+    """入队时就发了 pending；之后准备强模型时抛了普通异常（这里是 OSError）。以前只打一行警告、不发终态，
+    桌面按钮和服务端留存的那条字幕一直停在「重译中…」。现在补一条 failed。"""
+    async def boom():
+        raise OSError("socket 坏了")
+
+    pl._strong_translator = boom
+
+    async def scenario():
+        await pl.server.broadcast({"type": "caption", "id": 1, "text": "x", "translated": "y"})
+        await _server_loop(pl, {"type": "retranslate", "id": 1})
+        for _ in range(100):
+            if pl.server.strong_states(1)[-1:] == ["failed"]:
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert pl.server.strong_states(1) == ["pending", "failed"]
+    kept = {m["id"]: m.get("strong_state") for m in pl.server.history if m.get("id") == 1}
+    assert kept == {1: "failed"}                     # 重连回放也不会显示「重译中…」
+    assert pl._strong_inflight == set()
+    assert "[警告] 重译出错" in capsys.readouterr().out
+
+
+def test_an_error_after_the_strong_model_was_taken_also_gives_the_button_back(pl):
+    """已经占上强模型之后才抛（拼提示的时候）：同样补 failed，_strong_inflight 和强模型连接照样放掉。"""
+    _with_strong(pl, SlowStrong(delay=0.0))
+
+    def broken(text):
+        raise Broken("bad text")
+
+    pl._for_translation = broken
+
+    async def scenario():
+        await _server_loop(pl, {"type": "retranslate", "id": 1})
+        for _ in range(100):
+            if pl.server.strong_states(1)[-1:] == ["failed"]:
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert pl.server.strong_states(1) == ["pending", "failed"]
+    assert pl._strong_inflight == set() and pl._strong_users() == {}
+
+
+def test_a_click_that_finishes_normally_gets_no_extra_failed(pl):
+    """正常走完的那一条只有 pending、ok：补 failed 只在终态还没发的时候。"""
+    async def scenario():
+        _with_strong(pl, SlowStrong(delay=0.0))
+        await _server_loop(pl, {"type": "retranslate", "id": 1})
+        for _ in range(100):
+            if pl.server.strong_states(1)[-1:] == ["ok"]:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+    assert pl.server.strong_states(1) == ["pending", "ok"]

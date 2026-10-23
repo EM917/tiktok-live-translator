@@ -184,3 +184,21 @@ def test_normal_records_are_byte_identical_to_the_old_encoder(tmp_path):
     expected = b"".join(old_encode(r) for r in written)
     assert a.path.read_bytes() == expected
     assert a.serialize_failures == 0
+
+
+def test_translation_strong_rows_keep_their_shape_and_only_queued_cancels_gain_a_key(tmp_path):
+    """B6 复核：排在队里就被取消的那一条多一个 queued 键；其余 translation_strong 记录的键和顺序都和
+    以前一样（编码器本身逐字节不变见上一条），老的读取方不受影响。"""
+    a = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    a.translation_strong(1, "大家好", 812.0, True, "fake-7b", "manual")
+    a.translation_strong(2, None, 2300.0, False, "fake-7b", "manual", error="refusal")
+    a.translation_strong(3, None, 40.0, False, "fake-7b", "manual", error="cancelled")
+    a.translation_strong(4, None, 0.0, False, None, "manual", error="cancelled", queued=True)
+    a.close(reason="user_stop")
+    got = of_type(a, "translation_strong")
+    base = ["type", "seq", "at", "translated", "translate_ms", "ok", "model", "trigger"]
+    assert [list(r) for r in got] == [base, base + ["error"], base + ["error"],
+                                      base + ["error", "queued"]]
+    assert got[3]["queued"] is True and got[3]["model"] is None and got[3]["translate_ms"] == 0.0
+    assert '"queued"' not in "".join(line for line in a.path.read_text(encoding="utf-8").splitlines()
+                                     if '"seq": 4' not in line)

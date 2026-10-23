@@ -403,7 +403,7 @@ class AuditLog:
         })
 
     def translation_strong(self, seq, translated, translate_ms, ok, model,
-                           trigger, error=None):
+                           trigger, error=None, queued=False):
         """用最强模型重译的结果，**单独一种记录类型**。
 
         不复用上面的 translation：同一个 seq 会同时存在快译和强译两条，若类型
@@ -414,9 +414,14 @@ class AuditLog:
         或 manual（中控点了「重译」）。
 
         error 是这一次没出译文时看到了什么：refusal 或 refusal:<接口给的类别>（Claude 拒答）、
-        HTTP <状态码>（再接 400/402 的接口原话）、译文不像译文被丢弃。强模型是 Claude 时
-        才有可能写：本地模型不会拒答，失败只剩 ok=false 也分得清。没有要说的就不写这个键，
-        老记录和成功的记录形状不变。"""
+        HTTP <状态码>（再接 400/402 的接口原话）、译文不像译文被丢弃——这几种强模型是 Claude 时
+        才有可能写：本地模型不会拒答，失败只剩 ok=false 也分得清。还有 cancelled：桌面点的
+        「重译」还没做完就被停止、换主播取消了（哪种强模型都可能，英文代码，同 session_end 的
+        reason）。没有要说的就不写这个键，老记录和成功的记录形状不变。
+
+        queued=True 只跟 cancelled 一起出现：还没开始调强模型就被取消（排在队里，或者强模型连接还没
+        准备好），这时 model 是 null、translate_ms 是 0。已经在等强模型时被取消的那条不带这个键。
+        不是 True 就不写这个键：其余记录逐字节不变。"""
         row = {
             "type": "translation_strong",
             "seq": seq,
@@ -429,6 +434,8 @@ class AuditLog:
         }
         if error:
             row["error"] = str(error)[:200]
+        if queued:
+            row["queued"] = True
         self._write(row)
 
     def translation_engine_error(self, engine, status, error=None, model=None):
