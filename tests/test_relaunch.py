@@ -10,7 +10,9 @@ macbundle.relaunch_inside_bundle，和 main() 开头是同一个函数），省�
 壳没备好或起不来就照旧进 .venv/bin/python。「完全磁盘访问权限」认的两个文件不变：启动解释器
 （TLT_LAUNCH_PYTHON，第一跳就记下了）和最终进程的解释器（壳里的 python）。
 
-测试里绝不真的 exec、不真的起子进程。
+测试里绝不真的 exec、不真的起子进程。Ctrl-C 那条要让替身抛真的 KeyboardInterrupt（replace_process 接的
+就是它），所以 _windows_run 把它就地接住、改报这一条失败：回归时只红这一条，不会让整场 pytest 以退出码 2
+中断、后面的测试全不跑。
 """
 import ast
 import os
@@ -49,11 +51,17 @@ def _windows_run(monkeypatch, codes, argv=None, env=None):
 
     with monkeypatch.context() as m:
         m.setattr(relaunch.os, "name", "nt")
-        relaunch.replace_process(
-            argv or [r"C:\Users\Zhang San\app\.venv\Scripts\python.exe",
-                     r"C:\Users\Zhang San\app\main.py", "--port", "8799"],
-            env=env, popen=popen, exit_=calls["exit"].append,
-            execv=lambda *a: calls["execv"].append(a))
+        try:
+            relaunch.replace_process(
+                argv or [r"C:\Users\Zhang San\app\.venv\Scripts\python.exe",
+                         r"C:\Users\Zhang San\app\main.py", "--port", "8799"],
+                env=env, popen=popen, exit_=calls["exit"].append,
+                execv=lambda *a: calls["execv"].append(a))
+        except KeyboardInterrupt:
+            # 替身抛的 Ctrl-C 漏出了 replace_process：只让这一条红。不接住的话 pytest 把它当成
+            # 用户按了 Ctrl-C，整场以退出码 2 中断
+            pytest.fail("replace_process 把 Ctrl-C 抛了出来，没有接着等子进程（等了 {} 次）"
+                        .format(proc.waits), pytrace=False)
     return calls, proc
 
 
