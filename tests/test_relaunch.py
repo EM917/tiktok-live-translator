@@ -1,20 +1,28 @@
-"""换进 .venv 的那一跳（2026-10-21 专家审查 I11），在 app/relaunch.py。
+"""换进 .venv 的那一跳（2026-10-21 专家审查 I11、I9），在 app/relaunch.py。
 
 I11 Windows：CRT 的 execv 是「起新进程、自己立刻以 0 退出」，Start.bat 的「出错就 pause」永远
 轮不到。replace_process 在 Windows 上起子进程、等它、带着它的退出码退出；POSIX 上照旧 exec。
 钉住：os.name 是 nt 时走子进程并传递返回码（含 32 位无符号的退出码、拿不到退出码）、Ctrl-C
 不杀子进程；POSIX 上不起子进程。一键更新的重启仍然是 execv（要放开端口）。
 
+I9 macOS：第一跳开窗口时直接换进 .app 壳里的 python（main.py 在 ensure_env 末尾调
+macbundle.relaunch_inside_bundle，和 main() 开头是同一个函数），省掉 .venv/bin/python 那一跳；不该进壳、
+壳没备好或起不来就照旧进 .venv/bin/python。「完全磁盘访问权限」认的两个文件不变：启动解释器
+（TLT_LAUNCH_PYTHON，第一跳就记下了）和最终进程的解释器（壳里的 python）。
+
 测试里绝不真的 exec、不真的起子进程。
 """
 import ast
+import os
+import sys
 from pathlib import Path
 
 import pytest
 
-from app import relaunch
+from app import browser_login, macbundle, relaunch
 
 REPO = Path(__file__).resolve().parent.parent
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="壳靠符号链接；功能仅 macOS 生效")
 
 
 class FakeProc:
@@ -135,6 +143,59 @@ def test_posix_execs_in_place_and_never_spawns(monkeypatch):
                      {"TLT_IN_BUNDLE": "1"})]
 
 
+# ---- I9 第一跳直接进 .app 壳 -------------------------------------------------------------------
+
+def _first_hop(monkeypatch, tmp_path):
+    """一个真的项目形状：.venv/bin/python 链到「发行版的 python3.13」；当前进程装成第一跳
+    （启动器选的那个解释器，不在壳里、没有防循环变量、不在 pytest 里）。"""
+    base = tmp_path / "anaconda3" / "bin"
+    base.mkdir(parents=True)
+    (base / "python3.13").write_bytes(b"python")
+    root = tmp_path / "project"
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / ".venv" / "bin" / "python").symlink_to(base / "python3.13")
+    (root / ".venv" / "pyvenv.cfg").write_text("home = {}\nversion = 3.13.5\n".format(base),
+                                               encoding="utf-8")
+    monkeypatch.delenv(macbundle.ENV_GUARD, raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(macbundle.sys, "platform", "darwin")
+    monkeypatch.setattr(macbundle.sys, "executable", str(base / "python3.13"))
+    return root, base / "python3.13"
+
+
+@posix_only
+def test_the_first_hop_lands_in_the_bundle_with_the_same_identity(monkeypatch, tmp_path):
+    """计划审查 Q8 第 2 条：跳转链改了之后，「完全磁盘访问权限」的步骤列出的文件不能变——启动解释器
+    （第一跳在任何 exec 之前记下）和最终进程的解释器（壳里的 python，链回 .venv/bin/python 链到的
+    那个文件）。第一跳直接进壳，exec 的目标、参数、环境要和以前第二跳在 main() 里进壳时一样。
+    零请求，真的建壳，假的 execve。"""
+    root, base_python = _first_hop(monkeypatch, tmp_path)
+    # 第一跳顶上 remember_launch_python 记下的样子（直接改 os.environ 会漏到别的测试里，经 monkeypatch 设）
+    launch = macbundle.remember_launch_python({}, str(base_python))
+    monkeypatch.setenv(macbundle.LAUNCH_PYTHON_ENV, launch)
+    seen = []
+    ok = macbundle.relaunch_inside_bundle(root, ["main.py", "--port", "8799"],
+                                          execve=lambda path, argv, env: seen.append((path, argv, env)))
+    assert ok and len(seen) == 1
+    path, argv, env = seen[0]
+    assert path == str(root / macbundle.APP_DIR_NAME / "Contents" / "MacOS" / "python")
+    assert argv == [path, str(root / "main.py"), "--port", "8799"]
+    assert env[macbundle.ENV_GUARD] == "1"
+    assert env[macbundle.LAUNCH_PYTHON_ENV] == launch == os.path.realpath(str(base_python))
+    assert macbundle.inside_bundle(path)
+    assert browser_login.fda_targets(env, executable=path) == [os.path.realpath(str(base_python))]
+
+
+@posix_only
+def test_without_a_window_the_first_hop_enters_the_venv_python_as_before(monkeypatch, tmp_path):
+    root, _base = _first_hop(monkeypatch, tmp_path)
+    seen = []
+    for flag in ("--browser", "--no-open"):
+        assert macbundle.relaunch_inside_bundle(
+            root, ["main.py", flag], execve=lambda *a: seen.append(a)) is False
+    assert seen == []
+
+
 # ---- 接线：main.py 怎么换进 .venv；一键更新重启仍是 execv ------------------------------------
 
 def _ensure_env():
@@ -148,23 +209,25 @@ def _stmt_index(body, text):
     return hits[0]
 
 
-def test_ensure_env_waits_on_windows_then_execs_on_posix():
-    """第一跳最后一步：Windows 起子进程等它（I11，不会回来）；POSIX 照旧 execv 进 .venv/bin/python
-    跑 main.py。"""
+def test_ensure_env_tries_the_bundle_then_waits_on_windows_then_execs_on_posix():
+    """第一跳最后一步的顺序：macOS 先试直接进壳（I9，进去了就不会回来）；Windows 起子进程等它（I11，
+    不会回来）；剩下的 POSIX 照旧 execv 进 .venv/bin/python 跑 main.py。"""
     ensure = _ensure_env()
     block = next(n for n in ast.walk(ensure) if isinstance(n, ast.If)
                  and ast.unparse(n.test) == "not in_project_venv"
                  and "exec_args" in ast.unparse(n))
     body = block.body
+    bundle = _stmt_index(body, "relaunch_inside_bundle(ROOT)")
+    assert ast.unparse(body[bundle].test) == "sys.platform == 'darwin'"
     argv = _stmt_index(body, "argv = [str(vpy), str(ROOT / 'main.py')] + sys.argv[1:]")
     windows = _stmt_index(body, "replace_process(argv)")
     assert ast.unparse(body[windows].test) == "os.name == 'nt'"
     posix = _stmt_index(body, "os.execv(str(vpy), exec_args(argv))")
-    assert argv < windows < posix == len(body) - 1
-    # 换进程之前先放锁、收提示框（exec 不会执行 finally）、冲掉输出缓冲
-    assert _stmt_index(body, "lock.unlink()") < argv
-    assert _stmt_index(body, "_close_info_dialog()") < argv
-    assert _stmt_index(body, "flush_std()") < argv
+    assert bundle < argv < windows < posix == len(body) - 1
+    # 进壳之前先放锁、收提示框（exec 不会执行 finally）、冲掉输出缓冲
+    assert _stmt_index(body, "lock.unlink()") < bundle
+    assert _stmt_index(body, "_close_info_dialog()") < bundle
+    assert _stmt_index(body, "flush_std()") < bundle
 
 
 def test_the_update_restart_still_execs_in_place():

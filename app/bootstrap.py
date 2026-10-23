@@ -17,6 +17,8 @@ main.py 在模块级就跑 ensure_env()，测试一 import 它就会被 execv �
   * .venv 里没有 pip（首次安装在 ensurepip 那一步被打断，I1）：装之前先在 .venv 里跑 ensurepip
     原地补；补不回来写重建记号（.venv/.needs-rebuild），下次启动据此重建；记号写不上时
     失败说明改给删 .venv 的步骤，不承诺下次会重建。
+  * 就绪指纹（I9）：最终进程确认组件齐了，就把 .venv 此刻的样子记进 .venv/.ready-fingerprint。
+    下次启动的第一跳看指纹没变，就不再起子进程跑一遍约 2 秒的 import 检查和 pip 探测。
 """
 import hashlib
 import json
@@ -45,6 +47,9 @@ MLX_RETRY_SEC = 24 * 3600
 # .venv 里原地补不回 pip 时写的记号（JSON：at / kind）。放在 .venv 里：重建（venv.create clear=True）
 # 时跟着清掉，不用另删
 NEEDS_REBUILD = ".needs-rebuild"
+# 就绪指纹（I9，JSON）。放在 .venv 里：重建时跟着清掉
+READY_FINGERPRINT = ".ready-fingerprint"
+READY_FINGERPRINT_VERSION = 1
 KEEP_LOGS = 10
 TAIL_LINES = 40
 
@@ -244,6 +249,123 @@ def plan_install(imports_ok, root, recorded=None, actual=None, now=None):
     text = install_dialog_text(recorded, actual, venv_existed=recorded is not None,
                                requirements_only=bool(imports_ok))
     return {"text": text, "delay": REQUIREMENTS_DIALOG_DELAY_SEC if imports_ok else 0.0}
+
+
+# ---- 就绪指纹（I9） -------------------------------------------------------------------------
+#
+# 以前每次启动都经过三次解释器：启动器选的 Python → .venv/bin/python → .app 壳里的 python。第一跳
+# 每次都起一个子进程跑一遍核心组件的 import（实测 1.9–2.4 秒）、版本一致时还要探一次 pip，第二跳
+# 进程自己再 import 一遍（_deps_ok）才发现该进 .app 壳——约 4 秒白做，屏幕上什么都没有。
+#
+# 现在最终进程（组件都 import 成功、清单也装好了）把 .venv 此刻的样子写进 .ready-fingerprint；
+# 下次启动的第一跳只读几个文件比一比，没变就不再检查，直接换进最终进程。比的是：
+#   * requirements.txt 的指纹、.requirements.sha256 记的上次装成功的那份：清单一变就重新检查；
+#   * pyvenv.cfg 的内容：重建过、setup.sh 用别的 Python 重跑过都会改它；
+#   * .venv/bin/python 链接终点的真实路径、大小、修改时间。只看 pyvenv.cfg 不够（计划审查 Q8）：
+#     2026-10-20 那次 conda 原地把 python3 换成了新的次版本，cfg 一个字没变，.venv 却跑在新版本上、
+#     组件和 pip 全都找不到。链接终点换了文件，这三样至少有一样会变。读这三样不用起子进程；
+#   * 要 import 的那几个模块（main._ready_import）：Apple 芯片上 mlx-whisper 放弃记号删掉之后
+#     要求变了，也要重新检查。
+# 指纹对得上但组件其实坏了（有人手动删了包）：最终进程 import 失败时删掉指纹（forget_ready），
+# 当场照旧补装，下次启动也重新检查——见 main.py 的 ensure_env 和 _forget_install_failure。
+
+def venv_python(root):
+    """本项目 .venv 里的解释器（与 main._venv_python 一致）。"""
+    sub = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    return Path(root) / ".venv" / sub
+
+
+def _file_sha256(path):
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return None
+
+
+def ready_fingerprint(root, ready_import, python=None):
+    """.venv 此刻的样子（dict，可以原样写成 JSON）。只读文件、不起子进程。
+
+    python 默认是 .venv 里的解释器。它的链接终点读不到（链到的 Python 被卸掉）、或者 pyvenv.cfg
+    读不到，返回 None：没有指纹可比，照旧检查。"""
+    root = Path(root)
+    py = Path(python) if python is not None else venv_python(root)
+    try:
+        real = os.path.realpath(str(py))
+        st = os.stat(real)
+    except (OSError, ValueError):
+        return None
+    cfg = _file_sha256(root / ".venv" / "pyvenv.cfg")
+    if cfg is None:
+        return None
+    return {"v": READY_FINGERPRINT_VERSION,
+            "requirements": requirements_file_digest(root),
+            "stamp": recorded_requirements_digest(root),
+            "pyvenv_cfg": cfg,
+            "python": {"path": real, "size": st.st_size, "mtime_ns": st.st_mtime_ns},
+            "imports": str(ready_import or "")}
+
+
+def read_ready_fingerprint(root):
+    return _read_json(Path(root) / ".venv" / READY_FINGERPRINT)
+
+
+def note_ready(root, ready_import, prefix=None, python=None):
+    """最终进程确认组件都 import 成功、清单也装好了之后调用：记下就绪指纹。返回写没写成（内容
+    没变也算成）。
+
+    只在本项目自己的 .venv/.app 壳里记（managed_env）：用户自己装齐依赖的 Python 跑起来，
+    说明不了 .venv 的事。先写临时文件再换名：两个实例同时启动时不会读到写了一半的 JSON。"""
+    if not managed_env(root, prefix):
+        return False
+    fp = ready_fingerprint(root, ready_import, python)
+    if fp is None:
+        return False
+    path = Path(root) / ".venv" / READY_FINGERPRINT
+    if _read_json(path) == fp:
+        return True
+    tmp = path.with_name("{}.{}.tmp".format(path.name, os.getpid()))
+    try:
+        tmp.write_text(json.dumps(fp, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(str(tmp), str(path))
+        return True
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+
+
+def forget_ready(root, prefix=None):
+    """在本项目的 .venv/.app 壳里发现组件不齐（import 失败、要补装）：删掉就绪指纹，下次启动的
+    第一跳照旧检查。不在本项目环境里（第一跳还在启动器选的 Python 上）什么都不做——那里 import
+    不了是常态，不说明 .venv 坏了。"""
+    if not managed_env(root, prefix):
+        return False
+    try:
+        (Path(root) / ".venv" / READY_FINGERPRINT).unlink()
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def ready_fast_path(root, ready_import, python=None, now=None):
+    """第一跳能不能跳过检查（子进程 import 和 pip 探测），直接换进 .venv。全都满足才行：
+      * 没有重建记号——有的话要让 venv_needs_rebuild 去探 pip、决定重建；
+      * 清单不用补装（requirements_pending，和 plan_install 用的同一个判断：24 小时内为同一份
+        清单装失败过的不算要装，过了 24 小时照旧重试）；
+      * 指纹算得出来，而且和最终进程上次记下的一样。
+    解释器能不能跑不在这里看：调用方先跑 interpreter_version（几十毫秒），跑不起来照旧重建。"""
+    venv = Path(root) / ".venv"
+    if (venv / NEEDS_REBUILD).exists():
+        return False
+    if requirements_pending(root, now=now):
+        return False
+    fp = ready_fingerprint(root, ready_import, python)
+    return fp is not None and read_ready_fingerprint(root) == fp
+
 
 
 # ---- Python 版本漂移 ----------------------------------------------------------------------
