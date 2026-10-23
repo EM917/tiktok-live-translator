@@ -3439,6 +3439,38 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 finally:
                     inflight["job"] = None
 
+        async def _drain_translations(trans_task):
+            # 流自然结束：让翻译把在途那条跑完（最多等 5 秒）。asyncio.wait 到点不抛，翻译任务自己被
+            # 取消也不抛；只有外层被取消（这时点了停止）才抛出去——以前 except 把 TimeoutError 和
+            # CancelledError 一起接住，停止被吞掉，重连循环接着查流地址、把界面改回「直播中」
+            _put_sentinel()
+            done, _ = await asyncio.wait({trans_task}, timeout=self.TRANSLATION_DRAIN_SEC)
+            if not done:
+                trans_task.cancel()
+
+        def _settle_translations():
+            # 在途那一条：取消在它翻译到一半时落下，它既没发出译文也不在队列里。
+            # 和下面排空的是同一个结局（界面显示「已跳过」），在这里同步收掉——
+            # 此时仍在这一场的收尾里，计数和广播都落在这一场。译文已经开始发布的
+            # （publishing）不动：再补一条「已跳过」会把刚上屏的译文盖掉
+            stuck = inflight["job"]
+            if stuck is not None and not stuck.get("publishing"):
+                inflight["job"] = None
+                _drop_job(stuck)
+            # 被取消（用户点停止/换房间）时不 drain 队列：等积压的翻译跑完
+            # 最多要 5 秒，而停止应当立刻生效——剩下的直接告知界面已跳过
+            while True:
+                try:
+                    pending = trans_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if pending is not None:
+                    _drop_job(pending)
+            # 取空了就归零：这一场收尾后队列不在了，残留的深度会让下一场开头的弹幕白等。
+            # 队列已经换成下一场的了（旧任务晚收尾）就不碰：那是新一场的深度
+            if getattr(self, "_trans_queue", None) is trans_queue:
+                self.telemetry.translation_queue_depth = trans_queue.qsize()
+
         async def run_workers():
             trans_task = asyncio.ensure_future(translation_worker())
             reader_task = asyncio.ensure_future(reader())
@@ -3453,38 +3485,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     if isinstance(r, BaseException) and not isinstance(
                             r, asyncio.CancelledError):
                         raise r
-                # 流自然结束：让翻译把在途那条跑完（最多等 5 秒）。asyncio.wait 到点不抛，翻译任务自己被
-                # 取消也不抛；只有外层被取消（这时点了停止）才抛出去——以前 except 把 TimeoutError 和
-                # CancelledError 一起接住，停止被吞掉，重连循环接着查流地址、把界面改回「直播中」
-                _put_sentinel()
-                done, _ = await asyncio.wait({trans_task}, timeout=self.TRANSLATION_DRAIN_SEC)
-                if not done:
-                    trans_task.cancel()
+                await _drain_translations(trans_task)
             finally:
                 for task in (reader_task, asr_task, trans_task):
                     if not task.done():
                         task.cancel()
-                # 在途那一条：取消在它翻译到一半时落下，它既没发出译文也不在队列里。
-                # 和下面排空的是同一个结局（界面显示「已跳过」），在这里同步收掉——
-                # 此时仍在这一场的收尾里，计数和广播都落在这一场。译文已经开始发布的
-                # （publishing）不动：再补一条「已跳过」会把刚上屏的译文盖掉
-                stuck = inflight["job"]
-                if stuck is not None and not stuck.get("publishing"):
-                    inflight["job"] = None
-                    _drop_job(stuck)
-                # 被取消（用户点停止/换房间）时不 drain 队列：等积压的翻译跑完
-                # 最多要 5 秒，而停止应当立刻生效——剩下的直接告知界面已跳过
-                while True:
-                    try:
-                        pending = trans_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    if pending is not None:
-                        _drop_job(pending)
-                # 取空了就归零：这一场收尾后队列不在了，残留的深度会让下一场开头的弹幕白等。
-                # 队列已经换成下一场的了（旧任务晚收尾）就不碰：那是新一场的深度
-                if getattr(self, "_trans_queue", None) is trans_queue:
-                    self.telemetry.translation_queue_depth = trans_queue.qsize()
+                _settle_translations()
 
         reason, error = "eof", None
         try:
