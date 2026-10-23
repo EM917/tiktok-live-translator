@@ -612,11 +612,22 @@ def _note_exit_signal(name):
 def _exit_again(name):
     """收尾途中又收到退出信号（比如又按了一次 Ctrl-C）：不再等停管线，只等一下在途的证据写盘（最多 2 秒，
     同 main.py 里别的 os._exit），然后退出。审计没写完的那一场，下次启动补一条结尾（app/audit_recover.py）。
-    窗口模式下由 WakeupBridge 的读线程调：第一次的收尾在另一个线程里跑，读线程收尾途中照样读得到这一个。"""
+    窗口模式下由 WakeupBridge 的读线程调：第一次的收尾在另一个线程里跑，读线程收尾途中照样读得到这一个。
+    同一次退出的回声（关终端窗口时 zsh 下的第二个 SIGHUP、同名信号 0.3 秒内又来一个）不走这里，走
+    _echo_exit_signal（app/exit_signals.Dispatch，第 2 轮审查）。"""
     from app.window_close import flush_evidence
     _say("[警告] 又收到 {}：不再等收尾，直接退出".format(name))
     flush_evidence()
     os._exit(1)
+
+
+def _echo_exit_signal(name):
+    """同一次退出的回声（app/exit_signals.Dispatch）：第一次的收尾照常走，不打印。是 SIGHUP 就把标准流换成
+    /dev/null：第一次是别的信号（比如先按了 Ctrl-C）、收尾途中又关了终端窗口时，之后往那个终端写就是 EIO，
+    和 _note_exit_signal 同一个道理。"""
+    if name == "SIGHUP":
+        from app import exit_signals
+        exit_signals.silence_stdio()
 
 
 def _exit_stuck():
@@ -757,7 +768,8 @@ async def main_async(args, state=None):
         watchdog = exit_signals.Watchdog(exit_signals.LOOP_DEADLINE_SEC, _exit_stuck)
         watchdog.start()
         exit_signals.install_loop_handlers(asyncio.get_running_loop(),
-                                           exit_signals.Dispatch(on_signal, _exit_again), watchdog=watchdog)
+                                           exit_signals.Dispatch(on_signal, _exit_again, on_echo=_echo_exit_signal),
+                                           watchdog=watchdog)
     # 直播结束后保留 UI（可以继续翻看历史字幕 / 换房间），Ctrl-C 退出
     try:
         await asyncio.Event().wait()
@@ -877,7 +889,7 @@ def _install_window_signals(finish):
         _note_exit_signal(name)
         finish.finish_signal(name)
 
-    bridge = exit_signals.WakeupBridge(exit_signals.Dispatch(on_first, _exit_again))
+    bridge = exit_signals.WakeupBridge(exit_signals.Dispatch(on_first, _exit_again, on_echo=_echo_exit_signal))
     if bridge.install():
         _SIGNAL_BRIDGE.append(bridge)
         # 桥装上了才把 PyObjC 的 mach 中断换掉：装不上时换掉它，Ctrl-C 在 Cocoa 主循环里就彻底没反应了

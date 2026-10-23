@@ -69,6 +69,221 @@ def test_dispatch_is_first_only_once_across_threads():
     assert firsts == ["SIGTERM"] and d.count == 20
 
 
+# ---- 同一次退出的回声不算「又收到」（第 2 轮审查）----
+
+def _recording_dispatch(**kw):
+    seen = []
+    d = es.Dispatch(lambda n: seen.append(("first", n)), lambda n: seen.append(("again", n)),
+                    on_echo=lambda n: seen.append(("echo", n)), **kw)
+    return d, seen
+
+
+def test_two_hangups_a_millisecond_apart_are_one_exit():
+    """关 Start.command 的终端窗口、登录 shell 是 zsh：进程收到两个 SIGHUP，相隔 0.1～12 毫秒。第二个以前走
+    on_repeat（os._exit(1)），第一次的收尾还没开始写。终端都关了，之后的 SIGHUP 再晚也不算又收到。"""
+    d, seen = _recording_dispatch()
+    d(signal.SIGHUP, at=100.0)
+    d(signal.SIGHUP, at=100.001)
+    d(signal.SIGHUP, at=105.0)
+    assert seen == [("first", "SIGHUP"), ("echo", "SIGHUP"), ("echo", "SIGHUP")]
+    assert d.first == "SIGHUP" and d.count == 3 and d.echoes == ["SIGHUP", "SIGHUP"]
+    d(signal.SIGTERM, at=105.1)                         # 别的信号照旧是「又收到」
+    assert seen[-1] == ("again", "SIGTERM")
+
+
+def test_a_hangup_after_another_first_signal_is_an_echo_too():
+    """先按了 Ctrl-C，收尾途中又关了终端窗口：SIGHUP 不打断收尾（main.py 的 on_echo 把标准流换成 /dev/null）。"""
+    d, seen = _recording_dispatch()
+    d(signal.SIGINT, at=10.0)
+    d(signal.SIGHUP, at=11.0)
+    assert seen == [("first", "SIGINT"), ("echo", "SIGHUP")]
+
+
+def test_the_same_signal_within_the_gap_is_an_echo_but_half_a_second_later_it_ends_the_process():
+    """同名、相隔不到 REPEAT_GAP_SEC（0.3 秒）：同一个来源一下发了两个。0.5 秒后再来一次（第 1 轮审查钉的「收尾途中
+    再按一次 Ctrl-C」）仍然是又收到。不同名的，隔得再近也是又收到。"""
+    assert 0.0 < es.REPEAT_GAP_SEC < 0.5
+    d, seen = _recording_dispatch()
+    d(signal.SIGINT, at=0.0)
+    d(signal.SIGINT, at=0.1)
+    d(signal.SIGINT, at=0.5)
+    assert seen == [("first", "SIGINT"), ("echo", "SIGINT"), ("again", "SIGINT")]
+    d, seen = _recording_dispatch()
+    d(signal.SIGTERM, at=0.0)
+    d(signal.SIGINT, at=0.001)
+    assert seen == [("first", "SIGTERM"), ("again", "SIGINT")]
+
+
+def test_without_an_explicit_time_the_dispatch_reads_its_clock():
+    now = [50.0]
+    d, seen = _recording_dispatch(clock=lambda: now[0])
+    d(signal.SIGTERM)
+    now[0] = 50.2
+    d(signal.SIGTERM)
+    now[0] = 50.6
+    d(signal.SIGTERM)
+    assert seen == [("first", "SIGTERM"), ("echo", "SIGTERM"), ("again", "SIGTERM")]
+    assert d.first_at == 50.0
+
+
+def test_two_hangups_through_the_bridge_let_the_first_shutdown_finish():
+    """窗口模式的读线程：第一个 SIGHUP 的收尾在自己的线程里跑（这里慢到 0.2 秒），第二个 1 毫秒后读到——
+    on_repeat 一次都不调，第一次的收尾走完。"""
+    done = threading.Event()
+    seen = []
+
+    def on_first(name):
+        seen.append(("first", name))
+        time.sleep(0.2)
+        seen.append(("first-done", name))
+        done.set()
+
+    d = es.Dispatch(on_first, lambda n: seen.append(("again", n)), on_echo=lambda n: seen.append(("echo", n)))
+    bridge = es.WakeupBridge(d, signals=[], signal_mod=FakeSignal())
+    bridge._deliver(signal.SIGHUP)
+    time.sleep(0.001)
+    bridge._deliver(signal.SIGHUP)
+    assert done.wait(2.0)
+    assert ("again", "SIGHUP") not in seen
+    assert sorted(seen) == [("echo", "SIGHUP"), ("first", "SIGHUP"), ("first-done", "SIGHUP")]
+
+
+_HANGUP_CHILD = """
+import asyncio, os, signal, sys, time
+sys.path.insert(0, {root!r})
+from app import exit_signals as es
+
+MODE, OUT = sys.argv[1], sys.argv[2]
+
+
+def report(text, code):
+    with open(OUT + ".tmp", "w") as fh:
+        fh.write(text)
+    os.replace(OUT + ".tmp", OUT)
+    os._exit(code)
+
+
+def on_repeat(name):
+    report("repeat " + name, 1)
+
+
+if MODE == "window":
+    def on_first(name):
+        time.sleep(0.3)                              # 收尾要一点时间：回声在这期间到
+        report("first-done " + name, 0)
+
+    bridge = es.WakeupBridge(es.Dispatch(on_first, on_repeat, on_echo=lambda n: None))
+    assert bridge.install()
+    with open(OUT + ".ready", "w") as fh:
+        fh.write("ready")
+    print("ready", flush=True)
+    time.sleep(10)                                   # 主线程停在这里（近似原生界面循环）
+    report("timeout", 2)
+else:
+    async def main():
+        loop = asyncio.get_running_loop()
+
+        def on_first(name):
+            loop.call_later(0.3, report, "first-done " + name, 0)
+
+        es.install_loop_handlers(loop, es.Dispatch(on_first, on_repeat, on_echo=lambda n: None))
+        with open(OUT + ".ready", "w") as fh:
+            fh.write("ready")
+        print("ready", flush=True)
+        await asyncio.sleep(10)
+        report("timeout", 2)
+
+    asyncio.run(main())
+"""
+
+
+@pytest.mark.skipif(not POSIX, reason="SIGHUP 只在 POSIX 上有")
+@pytest.mark.parametrize("mode", ["window", "cli"])
+def test_a_child_sent_two_hangups_a_millisecond_apart_finishes_its_shutdown(tmp_path, mode):
+    """子进程里走真的信号：测试进程给它（不是给自己）连发两个 SIGHUP，相隔 1 毫秒。第一次的收尾走完、退出码 0；
+    以前第二个走 on_repeat，退出码 1。"""
+    child = tmp_path / "child.py"
+    child.write_text(_HANGUP_CHILD.format(root=str(ROOT)), encoding="utf-8")
+    out = tmp_path / "out.txt"
+    proc = subprocess.Popen([sys.executable, str(child), mode, str(out)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        proc.send_signal(signal.SIGHUP)
+        time.sleep(0.001)
+        proc.send_signal(signal.SIGHUP)
+        assert proc.wait(timeout=10) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert out.read_text() == "first-done SIGHUP"
+
+
+_ZSH_DRIVER = """
+import os, pty, select, shlex, signal, sys, time
+
+zsh, launcher, child, mode, out = sys.argv[1:6]
+pid, master = pty.fork()
+if pid == 0:
+    os.execv(zsh, ["-zsh", "-f", "-i"])              # 登录 shell（Terminal 开 .command 文件就是这样）
+
+
+def drain(seconds):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        ready, _, _ = select.select([master], [], [], 0.05)
+        if ready:
+            try:
+                if not os.read(master, 4096):
+                    return
+            except OSError:
+                return
+
+
+drain(0.8)
+# 和 Terminal 打开 Start.command 一样：在登录 shell 里敲「脚本路径 ; exit;」，脚本再 exec 成 python
+line = " ".join(shlex.quote(a) for a in (launcher, sys.executable, child, mode, out)) + " ; exit;\\n"
+os.write(master, line.encode())
+deadline = time.monotonic() + 20
+while not os.path.exists(out + ".ready") and time.monotonic() < deadline:
+    drain(0.05)
+drain(0.5)
+os.close(master)                                     # 关终端窗口
+deadline = time.monotonic() + 20
+while not os.path.exists(out) and time.monotonic() < deadline:
+    time.sleep(0.05)
+try:
+    os.kill(pid, signal.SIGKILL)
+except OSError:
+    pass
+try:
+    os.waitpid(pid, 0)
+except OSError:
+    pass
+"""
+
+
+@pytest.mark.skipif(not POSIX or not os.path.exists("/bin/zsh"), reason="要 POSIX 和 /bin/zsh")
+@pytest.mark.parametrize("mode", ["window", "cli"])
+def test_closing_a_zsh_terminal_lets_the_first_shutdown_finish(tmp_path, mode):
+    """第 2 轮审查的实测场景：pty 里起登录 zsh，跑一个 exec python 的 bash 脚本（同 Start.command），再关掉 pty
+    主端。python 这时是 zsh 的前台任务，不是会话首进程：zsh 转发一个 SIGHUP，zsh 退出时内核再发一个。
+    第一次的收尾要走完（以前第二个 SIGHUP 走 on_repeat，6 次里 6 次没走完）。驱动跑在自己的子进程里：
+    pytest 进程有别的线程，不在这里 fork。"""
+    child = tmp_path / "child.py"
+    child.write_text(_HANGUP_CHILD.format(root=str(ROOT)), encoding="utf-8")
+    launcher = tmp_path / "start.sh"
+    launcher.write_text('#!/bin/bash\nexec "$@"\n', encoding="utf-8")
+    launcher.chmod(0o755)
+    driver = tmp_path / "driver.py"
+    driver.write_text(_ZSH_DRIVER, encoding="utf-8")
+    out = tmp_path / "out.txt"
+    subprocess.run([sys.executable, str(driver), "/bin/zsh", str(launcher), str(child), mode, str(out)],
+                   capture_output=True, timeout=60)
+    assert (tmp_path / "out.txt.ready").exists(), "zsh 没跑起子进程"
+    assert out.read_text() == "first-done SIGHUP"
+
+
 # ---- 浏览器和命令行模式：事件循环在主线程 ----
 
 class FakeLoop:
@@ -112,10 +327,21 @@ def test_loop_handlers_are_python_level_handlers_that_hand_the_signal_back_to_th
     dog = SimpleNamespace(arm=lambda: armed.append(1))
     assert es.install_loop_handlers(loop, d, signals=[15, 1], signal_mod=sig, watchdog=dog) == [15, 1]
     assert loop.added == []
+    before = time.monotonic()
     sig.handlers[15](15, None)
-    assert armed == [1] and loop.soon == [(d, (15,))]
+    # 第 2 轮审查起，信号到达的时刻跟着一起交过去（分回声和「又收到」，见 Dispatch）：以前这里是 (d, (15,))
+    ((callback, (signum, at)),) = loop.soon
+    assert armed == [1] and callback is d and signum == 15
+    assert before <= at <= time.monotonic()
     assert es.install_loop_handlers(FakeLoop(), d, signals=[2], signal_mod=sig) == [2]     # 没有看门狗也照装
     sig.handlers[2](2, None)
+
+
+def test_a_plain_callable_handed_to_the_loop_gets_only_the_signal_number():
+    loop, sig, got = FakeLoop(), FakeSignal(), []
+    es.install_loop_handlers(loop, got.append, signals=[15], signal_mod=sig)
+    sig.handlers[15](15, None)
+    assert loop.soon == [(got.append, (15,))]
 
 
 def test_a_signal_after_the_loop_closed_goes_straight_to_the_dispatch():
@@ -490,6 +716,24 @@ def test_window_mode_installs_the_signal_bridge_before_the_backend_and_hooks_cmd
     assert hook.lineno < main_start.lineno
     assert isinstance(hook.args[0], ast.Attribute) and (hook.args[0].value.id, hook.args[0].attr) == \
         ("finish", "finish")
+
+
+def _passes_the_echo_handler(dispatch):
+    return {kw.arg: getattr(kw.value, "id", None) for kw in dispatch.keywords}.get("on_echo") == \
+        "_echo_exit_signal"
+
+
+def test_both_modes_hand_echoes_to_their_own_handler_that_only_silences_stdio_after_a_hangup():
+    """第 2 轮审查：同一次退出的回声（zsh 下关终端窗口的第二个 SIGHUP）不走 _exit_again。"""
+    ast, window = _main_func("_install_window_signals")
+    ast, cli = _main_func("main_async")
+    for func in (window, cli):
+        (dispatch,) = _calls(ast, func, "Dispatch")
+        assert getattr(dispatch.args[1], "id", None) == "_exit_again"
+        assert _passes_the_echo_handler(dispatch)
+    ast, echo = _main_func("_echo_exit_signal")
+    assert _calls(ast, echo, "silence_stdio") and not _calls(ast, echo, "_exit")
+    assert not _calls(ast, echo, "print") and not _calls(ast, echo, "_say")
 
 
 def test_the_window_bridge_hands_signals_to_finish_signal_and_keeps_sigint_from_cocoa():

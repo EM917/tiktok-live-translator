@@ -19,7 +19,8 @@
 
 同一个进程只收尾一次：Dispatch 认第一次收到的信号；收尾途中再收到（比如又按了一次 Ctrl-C）交给 on_repeat，
 调用方据此不再等、直接退出。窗口模式下，读线程把第一次的收尾交给新线程、自己接着读（WakeupBridge），
-收尾途中的第二个信号才读得到。
+收尾途中的第二个信号才读得到。同一次退出的回声不算「又收到」（见 Dispatch）：关 Start.command 的终端窗口时，
+登录 shell 是 zsh 的话进程会收到两个 SIGHUP，以前第二个直接把进程结束掉，第一次的收尾还没开始写。
 
 这个模块不含中文字面量、自己不打印：要打印的中文交给调用方（main.py）。测试不 import main（CLAUDE.md 的
 「测试里别 import main」），逻辑都在这里测。
@@ -50,33 +51,61 @@ def signal_name(signum):
         return "SIG{}".format(signum)
 
 
-class Dispatch:
-    """把收到的信号交给调用方：第一次调 on_first(名字)，之后每一次调 on_repeat(名字)。线程安全。
-    回调里抛的异常吞掉（收尾的路上不许再出新的岔子），记在 errors 里给测试看。"""
+REPEAT_GAP_SEC = 0.3   # 和第一次同名的信号相隔不到这么久：同一次的回声，不算「又收到」（见 Dispatch）
 
-    def __init__(self, on_first, on_repeat=None):
+
+class Dispatch:
+    """把收到的信号交给调用方：第一次调 on_first(名字)；之后再来的，是「又收到一次」就调 on_repeat(名字)，是同一次
+    退出的回声就调 on_echo(名字)（可以不给），收尾照常走。线程安全。回调里抛的异常吞掉（收尾的路上不许再出
+    新的岔子），记在 errors 里给测试看。
+
+    回声（第 2 轮审查实测）有两种：
+      * 第一次之后的 SIGHUP：终端都关了，人不可能再按一次。Start.command 用 exec 起程序，进程层级是
+        Terminal → 登录 shell → python。登录 shell 是 zsh 时，关窗口那一下 python 收到两个 SIGHUP，相隔 0.1～12
+        毫秒：一个是 zsh 转发给前台任务的，一个是会话首进程退出时内核发给前台进程组的（bash 做登录 shell 时只有
+        一个）。以前第二个被当成「又收到」，os._exit(1)，第一次的收尾还没开始写；
+      * 别的信号和第一次同名、相隔不到 REPEAT_GAP_SEC 秒：同一个来源一下发了两个。0.3 秒保住「收尾途中 0.5 秒后
+        再按一次 Ctrl-C 就直接退出」（第 1 轮审查钉的）。和第一次不同名的照旧算「又收到」。
+    相隔多久按信号到达的时刻算：at 由收到信号的那一刻传进来（install_loop_handlers 的处理函数），不给就取 clock()。"""
+
+    def __init__(self, on_first, on_repeat=None, on_echo=None, clock=time.monotonic):
         self._lock = threading.Lock()
         self.on_first = on_first
         self.on_repeat = on_repeat
+        self.on_echo = on_echo
+        self._clock = clock
         self.first = None
+        self.first_at = None
         self.count = 0
+        self.echoes = []
         self.errors = []
 
-    def __call__(self, signum):
-        self.claim(signum)[1]()
+    def __call__(self, signum, at=None):
+        self.claim(signum, at)[1]()
 
-    def claim(self, signum):
-        """只认账、不调回调：在锁里数一次、定下这是不是第一次，返回 (是不是第一次, run)。run() 才调回调。
+    def claim(self, signum, at=None):
+        """只认账、不调回调：在锁里数一次、定下这是第一次、又收到还是回声，返回 (是不是第一次, run)。run() 才调回调。
         给 WakeupBridge 用：第一次的 run 交给新线程跑，读线程接着读下一个信号——先后在这里就定了，
         不会因为新线程晚起一步，让第二个信号抢成「第一次」。"""
         name = signal_name(signum)
+        now = self._clock() if at is None else at
         with self._lock:
             self.count += 1
             first = self.first is None
             if first:
-                self.first = name
-        callback = self.on_first if first else self.on_repeat
+                self.first, self.first_at = name, now
+                callback = self.on_first
+            elif self._is_echo(name, now):
+                self.echoes.append(name)
+                callback = self.on_echo
+            else:
+                callback = self.on_repeat
         return first, (lambda: self._run(callback, name))
+
+    def _is_echo(self, name, now):
+        if name == "SIGHUP":
+            return True
+        return name == self.first and abs(now - self.first_at) < REPEAT_GAP_SEC
 
     def _run(self, callback, name):
         if callback is None:
@@ -111,13 +140,18 @@ def install_loop_handlers(loop, dispatch, signals=None, signal_mod=signal, watch
 
 
 def _threadsafe(loop, dispatch, watchdog=None):
+    # Dispatch 要知道信号是哪一刻到的（分回声和「又收到」，见 Dispatch）：事件循环跑到 dispatch 时可能已经晚了
+    # 很久（卡住之后两个信号挤在一起跑），所以在处理函数里取时刻，跟着信号一起交过去。取时刻不拿锁
+    timed = hasattr(dispatch, "claim")
+
     def handler(signum, frame):
+        args = (signum, time.monotonic()) if timed else (signum,)
         if watchdog is not None:
             watchdog.arm()
         try:
-            loop.call_soon_threadsafe(dispatch, signum)
+            loop.call_soon_threadsafe(dispatch, *args)
         except RuntimeError:              # 循环已经关了：直接交给 dispatch
-            dispatch(signum)
+            dispatch(*args)
     return handler
 
 
@@ -195,7 +229,7 @@ class WakeupBridge:
     接着读：收尾途中再来的信号照样读得到、交给 on_repeat（main.py：不再等收尾，直接退出）。以前读线程自己
     同步跑收尾，收尾那几秒里第二个信号的字节没人读，Python 层的处理函数又看读线程活着、什么都不做——
     第二次 Ctrl-C 不起作用（第 1 轮审查实测：第一次的收尾放慢到 3 秒，0.5 秒后再发一次信号，on_repeat 一次都没调到）。之后的回调还在读线程上跑：
-    on_repeat 本身就是退出。"""
+    on_repeat 本身就是退出；回声（关终端窗口时 zsh 下的第二个 SIGHUP）交给 on_echo，不打断第一次的收尾。"""
 
     def __init__(self, dispatch, signals=None, signal_mod=signal, socketpair=socket.socketpair):
         self.dispatch = dispatch
@@ -249,8 +283,9 @@ class WakeupBridge:
                 self._deliver(signum)
 
     def _deliver(self, signum):
-        """交一个信号：第一次的回调放进新线程（见类说明），之后的在读线程上直接跑。dispatch 不是 Dispatch
-        （没有 claim）就照旧直接调。新线程起不来（线程数到顶）也照旧在这里跑：收尾总要有人做。"""
+        """交一个信号：第一次的回调放进新线程（见类说明），之后的（又收到、回声）在读线程上直接跑。dispatch 不是
+        Dispatch（没有 claim）就照旧直接调。新线程起不来（线程数到顶）也照旧在这里跑：收尾总要有人做。
+        读线程在信号到的那一刻（1 毫秒内）就读到，claim 取的时刻就是到达的时刻。"""
         claim = getattr(self.dispatch, "claim", None)
         if claim is None:
             self.dispatch(signum)
