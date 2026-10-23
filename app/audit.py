@@ -1049,12 +1049,18 @@ class AuditLog:
         self._write({"type": "viewer_auth_failed", "at": _now_ms(), "ip": ip,
                      "why": why, "suppressed": suppressed})
 
-    def viewer_action(self, action, seq, ip):
+    def viewer_action(self, action, seq, ip, refused=None):
         """手机端发起的动作（目前只有 retranslate）。translation_strong 的
         trigger="viewer" 说得出「是手机按的」，答不出「是哪一台」；这一条单独
-        记 ip，事后要能答「那次重译是谁点的」。"""
-        self._write({"type": "viewer_action", "at": _now_ms(), "action": action,
-                     "id": seq, "ip": ip})
+        记 ip，事后要能答「那次重译是谁点的」。
+
+        refused：这次点击当场没有执行时的英文代码（识别落后时先不执行，专家审查 S7）。以前签名里没有它，
+        调用方多传一个关键字就是 TypeError，整条记录都不写。不是真值就不写这个键：已有的记录逐字节不变。"""
+        row = {"type": "viewer_action", "at": _now_ms(), "action": action,
+               "id": seq, "ip": ip}
+        if refused:
+            row["refused"] = str(refused)[:40]
+        self._write(row)
 
     def window_closed(self):
         """中控关掉了程序窗口（正在监听时要先确认），监听随之停止。先于停止流程写下：

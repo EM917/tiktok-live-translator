@@ -148,3 +148,25 @@ def test_a_session_start_without_late_records_is_byte_for_byte_the_old_one(tmp_p
     assert line == old_encode(rows(a.path)[0])
     assert list(rows(a.path)[0]) == ["app_version", "type", "room_url", "started_at", "code_commit",
                                      "glossary_hash", "vocative_hash"]
+
+
+# ---- viewer_action 的 refused（顺延事项：S7 第 3 条的另一半）----
+
+def test_viewer_action_without_refused_is_byte_for_byte_the_old_record(tmp_path):
+    a = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    a.viewer_action("retranslate", 12, "192.168.1.20")
+    a.close()
+    raw = a.path.read_bytes().split(b"\n")
+    (row,) = [r for r in rows(a.path) if r["type"] == "viewer_action"]
+    old = old_encode({"type": "viewer_action", "at": row["at"], "action": "retranslate", "id": 12,
+                      "ip": "192.168.1.20"})
+    assert old in [line + b"\n" for line in raw]
+
+
+def test_viewer_action_can_carry_why_it_was_refused(tmp_path):
+    a = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    a.viewer_action("retranslate", 12, "192.168.1.20", refused="lagging")
+    a.close()
+    (row,) = [r for r in rows(a.path) if r["type"] == "viewer_action"]
+    assert list(row) == ["type", "at", "action", "id", "ip", "refused"]
+    assert row["refused"] == "lagging"
