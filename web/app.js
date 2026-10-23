@@ -371,6 +371,11 @@
   // 还没收到过任何状态——不能当成「已经在待机」，否则首次到达就是 idle 时会被
   // 误判成「没有变化」，进首页该做的动作（大字幕/弹幕面板归位）就漏了
   var homeActive = null;
+  // 回放里的场次分隔线在弹幕栏里的位置（专家审查 F1）。服务端先回放字幕（分隔线夹在字幕中间），最后才回放
+  // 弹幕；分隔线要是在字幕阶段就插进弹幕栏，就跑到所有回放弹幕的最前面，上一位主播的弹幕被标成「以下为
+  // @新主播」。所以回放的分隔线先记在这里，回放弹幕时插到第一条 ts 不早于它的弹幕前面（弹幕的 ts 是本机
+  // 收到的时间，和分隔线同一个钟）；回放之后的第一条实时消息到了，剩下的（换场之后还没有弹幕）补在末尾
+  var pendingCommentBreaks = [];
 
   // ---- 设置 ----
   // 字幕字号。服务端（settings.json）是正本：localStorage 按「协议+主机+端口」隔离，端口一漂移
@@ -987,6 +992,8 @@
   }
 
   function handle(msg) {
+    // 回放结束（这是回放之后的第一条实时消息）：还没插进弹幕栏的分隔线补在末尾（F1）
+    if (pendingCommentBreaks.length && msg.type !== "hello" && !msg.replay) flushCommentBreaks();
     switch (msg.type) {
       case "hello":
         // 重连成功：上一条连接上可能丢了「开始」指令，在这条新连接上补发
@@ -1005,6 +1012,7 @@
         commentList.innerHTML = "";
         commentById = Object.create(null);
         commentMeta = Object.create(null);
+        pendingCommentBreaks = [];
         resetCommentRedo();         // 断线期间那次重译的结果收不到了：「重译中…」不能一直挂着
         commentFollowing = true;   // 回放重建整个列表：从最新处开始看
         commentsBelow = 0;
@@ -1712,7 +1720,10 @@
     // 底部大字幕清空，等新一场第一条字幕自己把它揭开（同 enterHomeLayout
     // 的道理：不主动显示，交给下一条真实字幕）
     hideLiveBar();
-    insertSessionDivider(commentList, msg);
+    // 弹幕栏：实时的分隔线就插在末尾（这一刻之前的弹幕都是上一场的）。回放的先记下，等弹幕回放按 ts
+    // 插到对的位置（见 pendingCommentBreaks 的说明，专家审查 F1）
+    if (msg.replay) pendingCommentBreaks.push(msg);
+    else insertSessionDivider(commentList, msg);
     syncConnectHint(statusPill ? statusPill.dataset.state : "");
     stickToBottom(false);
   }
@@ -1722,6 +1733,22 @@
     sep.className = "session-sep";
     sep.textContent = sessionDividerText(msg);
     container.appendChild(sep);
+  }
+
+  // 把记下的回放分隔线插进弹幕栏末尾。beforeTs 给了就只插 ts 不晚于它的（下一条弹幕要追加在它们后面）；
+  // 没给就全插（回放结束）。分隔线按发生顺序记的，遇到第一条还不到时候的就停：ts 不是数的那条也停在
+  // 那里，等回放结束补在末尾——不知道它在哪就不猜
+  function flushCommentBreaks(beforeTs) {
+    var all = beforeTs === undefined;
+    var added = false;
+    while (pendingCommentBreaks.length) {
+      var ts = pendingCommentBreaks[0].ts;
+      if (!all && !(typeof ts === "number" && ts <= beforeTs)) break;
+      insertSessionDivider(commentList, pendingCommentBreaks.shift());
+      added = true;
+    }
+    // 回放结束补在末尾的那条：跟随中就让它露出来（回放的弹幕已经贴过底，这一条是后加的）
+    if (all && added && commentFollowing) commentsToBottomNow();
   }
 
   function applyTranslation(card, msg) {
@@ -2092,7 +2119,9 @@
     if (msg.state === "same" || msg.state === "skipped") orig.classList.add("hidden");
     item.appendChild(orig);
 
-    // 正序：新的追加在底部，和字幕列表同一个方向，从上往下读就是时间顺序
+    // 正序：新的追加在底部，和字幕列表同一个方向，从上往下读就是时间顺序。回放时先把发生在这条之前的
+    // 换场分隔线插进去（F1）
+    if (pendingCommentBreaks.length && typeof msg.ts === "number") flushCommentBreaks(msg.ts);
     commentList.appendChild(item);
     commentById[msg.id] = item;
     noteCommentTr(msg.id, msg.state, msg.translated);
@@ -2373,6 +2402,7 @@
   // 只清这一页的弹幕：点「清空」、别的页面点了清空后的同步，都走这里
   function clearCommentsView() {
     commentList.innerHTML = "";
+    pendingCommentBreaks = [];   // 弹幕清空了，还没插进去的分隔线也不再有位置
     commentById = Object.create(null);
     commentMeta = Object.create(null);
     commentFollowing = true;
