@@ -1759,7 +1759,8 @@
   // caption/session_break，历史上的场次边界就这样被原样重建一遍。
   function renderSessionBreak(msg) {
     // 新的一场还没出过字幕（专家审查 U8）。放在下面「没有字幕就不画线」的提前返回之前：
-    // 程序启动后的第一场也要从「没出过」算起
+    // 直播中点了「清空字幕」再开下一场（停止再开、换主播），页面上一条 .cap 也没有、这里提前返回，
+    // 而上一场留下的「出过」还是真；不在这里归零，新一场就不写「等待第一句字幕…」（tests/ui-states.test.mjs 钉着）
     sessionCaptionSeen = false;
     var caps = historyEl.querySelectorAll(".cap");
     // 要不要画、画什么字是纯逻辑，抽到 web/session-divider.js 里单独测

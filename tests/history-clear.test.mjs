@@ -304,7 +304,7 @@ test("英文页查漏本身不瞎：按钮上写了一句中文就会被报出�
 
 // 专家审查 V3：英文界面上两颗清空按钮以前都只叫 Clear，清空弹幕那颗连 title 都没有。
 // 顶栏那颗按钮上仍只写 Clear（Clear Captions 在 1000px 窗口把品牌标签挤到 100px 以下，G10 实测，
-// docs/i18n-style.md §1.3、§4 R1），是字幕交给 title 说；弹幕栏那颗写全 Clear Comments
+// docs/i18n-style.md §1.3、§4 R1），「字幕」两个字交给 title 说；弹幕栏那颗写全 Clear Comments
 test("两颗清空按钮都有中英 title，英文名和 title 都分得开；弹幕那颗英文写全", async () => {
   const { readFileSync } = await import("node:fs");
   const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");

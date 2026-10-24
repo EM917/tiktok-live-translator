@@ -4,7 +4,8 @@
 //   U7 首次下载识别模型：status 带结构化的 progress（kind 为 model_download）时，中间卡片写下载进度；
 //      顶部横幅照旧是服务端那整句。没有 progress 的连接中（detail 再长）卡片照旧写「正在连接 @…」，
 //      不把横幅那句搬进来；
-//   U8 直播中这一场还没出过字幕：中间卡片写「等待第一句字幕…」，第一句一到就收起；
+//   U8 直播中这一场还没出过字幕：中间卡片写「等待第一句字幕…」，第一句一到就收起（直播中清空过字幕、
+//      再开下一场也一样）；
 //      第二场起弹幕栏只数这一场的弹幕，上一场的弹幕和分隔线不算，空态那句照样出来；
 //      页面重连时 hello 的 status 先到、回放字幕后到，「正在连接」挪回末尾、改成一行并跟到底部。
 // 卡片上的字本身（中英两套、各种参数）在 tests/live-ui.test.mjs / live-ui.en.test.mjs。
@@ -165,6 +166,29 @@ for (const lang of ["en", "zh"]) {
     assert.equal(page.el("history").querySelectorAll(".cap").length, 0, "这条用例要真的清掉才有意义");
     assert.equal(hint(page).shown, false);
   });
+
+  // 清空字幕后页面上一条 .cap 也没有，下一场的 session_break 会在「没有字幕就不画线」那里提前返回：
+  // 「这一场出没出过字幕」要在返回之前归零，不然新一场沿用上一场的「出过」，中间什么都不写
+  for (const viaIdle of [false, true]) {
+    test(lang + "：U8 直播中清空字幕后开下一场（" + (viaIdle ? "停止再开" : "直接换主播") +
+         "）：中间卡片写「等待第一句字幕…」", () => {
+      const page = runDesktop(lang);
+      hello(page, { state: "live", detail: "" });
+      caption(page, 1);
+      page.el("clear-btn").click();
+      assert.equal(page.el("history").querySelectorAll(".cap").length, 0, "这条用例要真的清掉才有意义");
+      if (viaIdle) status(page, "idle");
+      status(page, "connecting", RESOLVING[lang]);
+      page.push({ type: "session_break", ts: T + 60, streamer: "luna_demo" });
+      assert.equal(page.el("history").querySelectorAll(".session-sep").length, 0, "没有字幕：不画分隔线（提前返回的那条路）");
+      assert.deepEqual(hint(page), { shown: true, inline: false, text: W.connecting });
+      status(page, "live");
+      assert.deepEqual(hint(page), { shown: true, inline: false, text: W.waiting });
+      caption(page, 2);
+      assert.equal(hint(page).shown, false);
+      if (lang === "en") assert.deepEqual(leftoverChinese(page), []);
+    });
+  }
 
   test(lang + "：U8 连接中又回到直播中（流断了重连上）：这一场出过字幕，不写「等待第一句」", () => {
     const page = runDesktop(lang);
