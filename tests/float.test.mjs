@@ -394,6 +394,24 @@ for (const lang of ["zh", "en"]) {
     }
   });
 
+  test(L("JS 桥在页面加载之后才注入：pywebviewready 一来就重画，结束卡片上的按钮露出来，点了只调 focus_main"), () => {
+    const page = loadFloat({ lang });
+    hello(page);
+    page.push({ type: "status", state: "ended", detail: "" });
+    assert.ok(!hidden(page, "f-end") && hidden(page, "f-end-back"), "还没有 JS 桥：卡片在、按钮不画");
+    // 假 window 就是页面脚本的全局对象。从页面自己的函数（按钮的 click 处理函数）拿到页面那边的 Function，
+    // 取到这个全局对象，在加载之后挂上 pywebview.api（真 pywebview 也是页面加载完才注入）
+    const pageWindow = new (page.el("f-end-back").listeners.click[0].constructor)("return this")();
+    const calls = [];
+    pageWindow.pywebview = { api: { focus_main() { calls.push(1); return Promise.resolve(true); } } };
+    assert.ok(hidden(page, "f-end-back"), "注入了、还没发 pywebviewready：页面还没重画");
+    page.fireWindow("pywebviewready");
+    assert.ok(!hidden(page, "f-end-back"), "pywebviewready 之后重画：按钮露出来");
+    assert.equal(page.el("f-end-back").textContent, X.goMain);
+    page.el("f-end-back").click();                                  // 只走 JS 桥：不发 WebSocket（发了会抛）
+    assert.equal(calls.length, 1);
+  });
+
   test(L("中控点停止：两条 idle 都不画结束卡片（后端照旧关窗）"), () => {
     const page = loadFloat({ lang });
     hello(page);
