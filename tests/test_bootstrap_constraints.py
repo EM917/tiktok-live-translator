@@ -1,0 +1,889 @@
+"""依赖版本锁与最低 Python（2026-10-21 专家审查 I4；用户决定 D8「按 Python 版本分开锁」、
+D14「最低提到 3.10」）。
+
+I4：requirements.txt 只写下限，新装机拿到的是 PyPI 当天最新、从没一起跑过的组合。现在 constraints.txt
+记着主人那台机器上实际跑着的那一套，所有 `pip install -r` 都带 `-c constraints.txt`。钉住：
+- constraints.txt 本身：每一条锁死（==）的都带 python_version 标记，而且起点不早于 3.11（3.10 只设
+  上界）；每个锁死的包都有一条不带标记的上界；yt-dlp、curl_cffi、TikTokLive 不锁；标记在几种机器上
+  求值不出错（Linux 的内核版本号不是合法版本号，不能拿 platform_release 比大小）；Windows 只锁
+  platform_machine 是 AMD64 的（安装包只对着 win_amd64 查过）；
+- 交给 pip -r / -c 的文件（requirements.txt、constraints.txt）要么纯 ASCII，要么前两行带 pip 认的编码
+  声明：旧版 pip 在 Windows 上按本地编码（cp1252、GBK……）读它们，中文注释会让安装直接失败；
+- 指纹把 constraints.txt 也算进去：锁的版本一变，已有安装下次启动补装一次（plan_install 给的是
+  「清单变了」那一种，不重建）；没有 constraints.txt 时指纹和以前逐字节相同，Windows 检出成 CRLF 也一样；
+- bootstrap.install_requirements 的每一次 pip（整份、只装核心、逐个装可选组件）都先带 -c；回退的那几步
+  带 -c 装不上时不带 -c 再装一次（没联网时已有安装照样能启动，和加锁以前一样），整份那一次不这样；
+- 自检和一键更新给的手动命令带 -c。
+
+D14：main.py 在 3.9 上不再往下跑，弹出「需要升级」和照做的步骤（app/bootstrap.refuse_old_python）；
+.venv 是 3.9 建的时，换了新 Python 启动会重建它，不会再换进 3.9 里退出。main.py 在 3.9 上要能
+走到版本检查：它和检查之前 import 的模块都不能用 3.10 才有的语法。
+
+全部在 tmp_path 里，不碰项目自己的 .venv，不连网，不起 pip。
+"""
+import ast
+import codecs
+import hashlib
+import locale
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from app import bootstrap, i18n
+
+REPO = Path(__file__).resolve().parent.parent
+CONSTRAINTS = REPO / "constraints.txt"
+REQUIREMENTS = REPO / "requirements.txt"
+CHASED = ("yt-dlp", "curl-cffi", "tiktoklive")
+
+
+def _canon(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _entries():
+    """constraints.txt 的每一条：(包名, 版本说明, 标记或 None)。"""
+    out = []
+    for raw in CONSTRAINTS.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip() if not raw.lstrip().startswith("#") else ""
+        if not line:
+            continue
+        spec, _, marker = line.partition(";")
+        m = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)\s*(.*)", spec.strip())
+        out.append((_canon(m.group(1)), m.group(2).strip(), marker.strip() or None))
+    return out
+
+
+# ---- constraints.txt 本身 -------------------------------------------------------------------
+
+def test_every_pinned_version_carries_a_python_version_marker_starting_at_311_or_later():
+    pinned = [e for e in _entries() if e[1].startswith("==")]
+    assert len(pinned) >= 20
+    for name, spec, marker in pinned:
+        assert marker and "python_version" in marker, (name, spec)
+        floors = re.findall(r'python_version >= "3\.(\d+)"', marker)
+        assert floors and all(int(f) >= 11 for f in floors), (name, marker)
+        assert 'python_version < "3.' in marker, (name, marker)     # 不管还没出安装包的新 Python
+
+
+def test_every_pinned_package_also_has_an_unconditional_upper_bound_except_calendar_versions():
+    entries = _entries()
+    pinned = {n for n, s, _ in entries if s.startswith("==")}
+    bounded = {n for n, s, m in entries if s.startswith("<") and m is None}
+    calendar = {"packaging", "flatbuffers", "fsspec", "regex"}
+    assert pinned - bounded == calendar & pinned
+
+
+def test_the_upper_bound_is_the_next_major_of_the_pinned_version():
+    entries = _entries()
+    pins = {n: s[2:] for n, s, _ in entries if s.startswith("==")}
+    for name, spec, _ in entries:
+        if spec.startswith("<"):
+            assert spec == "<{}".format(int(pins[name].split(".")[0]) + 1), (name, spec)
+
+
+def test_the_chased_components_are_not_constrained():
+    names = {n for n, _, _ in _entries()}
+    for name in CHASED:
+        assert name not in names, name
+
+
+def test_every_requirement_is_covered_or_deliberately_left_free():
+    """requirements.txt 里的每个直接依赖要么锁着，要么就是上面三个追新的。"""
+    pinned = {n for n, s, _ in _entries() if s.startswith("==")}
+    for line in REQUIREMENTS.read_text(encoding="utf-8").splitlines():
+        name = bootstrap.requirement_name(line)
+        if name:
+            assert name in pinned or name in CHASED, name
+
+
+def test_each_package_appears_at_most_once_per_kind():
+    seen = set()
+    for name, spec, _ in _entries():
+        key = (name, spec[:2] if spec.startswith("==") else spec[:1])
+        assert key not in seen, key
+        seen.add(key)
+
+
+ENVS = {
+    "apple-silicon-macos-27": dict(sys_platform="darwin", platform_machine="arm64",
+                                   python_version="3.13", python_full_version="3.13.5",
+                                   platform_version="Darwin Kernel Version 26.0.0: x",
+                                   platform_release="26.0.0"),
+    "apple-silicon-macos-13": dict(sys_platform="darwin", platform_machine="arm64",
+                                   python_version="3.13", python_full_version="3.13.5",
+                                   platform_version="Darwin Kernel Version 22.6.0: x",
+                                   platform_release="22.6.0"),
+    "intel-mac": dict(sys_platform="darwin", platform_machine="x86_64", python_version="3.13",
+                      python_full_version="3.13.1", platform_version="Darwin Kernel Version 24.0.0: x",
+                      platform_release="24.0.0"),
+    "windows-311": dict(sys_platform="win32", platform_machine="AMD64", python_version="3.11",
+                        python_full_version="3.11.9", platform_version="10.0.26100",
+                        platform_release="11"),
+    "windows-310": dict(sys_platform="win32", platform_machine="AMD64", python_version="3.10",
+                        python_full_version="3.10.11", platform_version="10.0.19045",
+                        platform_release="10"),
+    "windows-313": dict(sys_platform="win32", platform_machine="AMD64", python_version="3.13",
+                        python_full_version="3.13.5", platform_version="10.0.26100",
+                        platform_release="11"),
+    # ARM64 的 Windows：原生 ARM64 的 Python 报 ARM64。按 CPython 源码，3.12 起 Windows 上的
+    # platform.machine() 取 WMI 报的 CPU 架构，x64 的 Python 在 ARM64 机器上转译运行时也会是 ARM64
+    # （没在 ARM64 机器上跑过）；报 AMD64 时拿到的是 win_amd64 的锁，转译下照样能装
+    "windows-arm64": dict(sys_platform="win32", platform_machine="ARM64", python_version="3.13",
+                          python_full_version="3.13.5", platform_version="10.0.26100",
+                          platform_release="11"),
+    "linux": dict(sys_platform="linux", platform_machine="x86_64", python_version="3.13",
+                  python_full_version="3.13.0", platform_version="#45-Ubuntu SMP PREEMPT_DYNAMIC",
+                  platform_release="6.8.0-45-generic"),
+    "python-315": dict(sys_platform="darwin", platform_machine="arm64", python_version="3.15",
+                       python_full_version="3.15.0", platform_version="Darwin Kernel Version 26.0.0: x",
+                       platform_release="26.0.0"),
+}
+
+
+def _pinned_in(env_name):
+    pytest.importorskip("pip")
+    from pip._vendor.packaging.markers import Marker     # pip 求值用的就是它自带的这份
+
+    env = dict(os_name="posix", platform_system="", platform_python_implementation="CPython",
+               implementation_name="cpython", implementation_version="3.13.0", extra="",
+               **ENVS[env_name])
+    return {n for n, s, m in _entries() if s.startswith("==") and Marker(m).evaluate(env)}
+
+
+@pytest.mark.parametrize("env_name", sorted(ENVS))
+def test_markers_evaluate_on_every_kind_of_machine(env_name):
+    """pip 对每一条标记求值都不能出错——Linux 的内核版本号 6.8.0-45-generic 不是合法版本号，拿
+    platform_release 比大小会让 pip 当场报错，整份安装都装不上。"""
+    _pinned_in(env_name)
+
+
+def test_the_pins_apply_where_the_tested_set_has_installers_and_nowhere_else():
+    assert {"numpy", "torch", "onnxruntime", "faster-whisper"} <= _pinned_in("apple-silicon-macos-27")
+    assert {"onnxruntime", "faster-whisper", "ctranslate2"} <= _pinned_in("windows-311")
+    # numpy 2.5 要 Python 3.12：3.11 上只设上界
+    assert "numpy" not in _pinned_in("windows-311")
+    assert {"numpy", "onnxruntime", "ctranslate2"} <= _pinned_in("windows-313")
+    # macOS 13 及更早的 Apple 芯片：只在 macOS 14 起才有安装包的那几个不锁，其余照锁
+    old_mac = _pinned_in("apple-silicon-macos-13")
+    assert not old_mac & {"onnxruntime", "torch", "av", "mlx", "mlx-metal"}
+    assert "faster-whisper" in old_mac
+    for env_name in ("intel-mac", "windows-310", "windows-arm64", "linux", "python-315"):
+        assert _pinned_in(env_name) == set(), env_name
+
+
+@pytest.mark.parametrize("machine", ["ARM64", "x86", "arm64", ""])
+def test_on_windows_only_the_amd64_machines_whose_wheels_were_checked_are_pinned(machine):
+    """锁死的版本只对着 PyPI 的 win_amd64 安装包查过：Windows 上 platform_machine 不是 AMD64 的
+    （ARM64，或认不出的）一条也不锁，只受上界约束。ARM64 改动前也装不上（ctranslate2 没有 win_arm64
+    的安装包），这里不让「查过」的说法管到没查过的机器上。"""
+    pytest.importorskip("pip")
+    from pip._vendor.packaging.markers import Marker
+
+    def pinned(platform_machine):
+        env = dict(ENVS["windows-313"], platform_machine=platform_machine, os_name="nt",
+                   platform_system="Windows", platform_python_implementation="CPython",
+                   implementation_name="cpython", implementation_version="3.13.5", extra="")
+        return {n for n, s, m in _entries() if s.startswith("==") and Marker(m).evaluate(env)}
+    assert pinned(machine) == set()
+    assert len(pinned("AMD64")) >= 20
+
+
+# ---- 交给 pip 的文件：编码 -------------------------------------------------------------------
+#
+# 旧版 pip 读 -r / -c 的文件：有 BOM 按 BOM，前两行里有 PEP 263 那种编码声明按声明，都没有就按系统的
+# 本地编码——Windows 上是 cp1252、GBK 这类。文件里有中文注释又没声明，pip 直接 UnicodeDecodeError、
+# 什么都不装：PR #136 的 install-smoke (windows-latest, 3.10) 就是这样红的，那里 .venv 里的 pip 是
+# Python 3.10.11 自带的 23.0。25.1 起的 pip 先试 UTF-8，在新 pip 上看不出来，所以下面照旧 pip 的办法模拟，
+# 不靠跑测试的这台机器装着哪个 pip。
+
+# pip 认编码声明的写法：24.2 及更早在 pip/_internal/utils/encoding.py（ENCODING_RE），25.1 起在
+# pip/_internal/req/req_file.py（PEP263_ENCODING_RE），两处一样；test_the_emulated_pattern_is_pips_own 对着装着的 pip 查
+_PIP_CODING_RE = re.compile(rb"coding[:=]\s*([-\w.]+)")
+_PIP_BOMS = [(codecs.BOM_UTF8, "utf-8"), (codecs.BOM_UTF32, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32-be"),
+             (codecs.BOM_UTF32_LE, "utf-32-le"), (codecs.BOM_UTF16, "utf-16"),
+             (codecs.BOM_UTF16_BE, "utf-16-be"), (codecs.BOM_UTF16_LE, "utf-16-le")]
+# 几种常见的 Windows 本地编码：西欧、简中、繁中、日文、韩文、西里尔
+_WINDOWS_CODE_PAGES = ("cp1252", "cp936", "cp950", "cp932", "cp949", "cp1251")
+
+
+def _declared_encoding(data):
+    """pip 认的编码声明：前两行（按 \\n 切）里以 # 开头、带 coding: 或 coding= 的那一行写的编码。"""
+    for line in data.split(b"\n")[:2]:
+        if line[0:1] == b"#":
+            m = _PIP_CODING_RE.search(line)
+            if m:
+                return m.group(1).decode("ascii")
+    return None
+
+
+def _old_pip_decode(data, local_encoding):
+    """24.2 的 pip/_internal/utils/encoding.auto_decode 的做法，本地编码由参数给。"""
+    for bom, encoding in _PIP_BOMS:
+        if data.startswith(bom):
+            return data[len(bom):].decode(encoding)
+    return data.decode(_declared_encoding(data) or local_encoding)
+
+
+def _pip_files():
+    """仓库里交给 pip -r / -c 的文件：从安装脚本、CI、程序代码和文档里的命令找出来，以后新加的一份自动算进来。"""
+    sources = [REPO / "setup.sh", REPO / "setup.ps1", REPO / "Start.bat", REPO / "main.py", REPO / "README.md",
+               *sorted((REPO / ".github" / "workflows").glob("*.yml")),
+               *sorted((REPO / "app").glob("*.py")), *sorted((REPO / "docs").glob("*.md"))]
+    names = set()
+    for src in sources:
+        names.update(re.findall(r'-[rc]\s+"?([A-Za-z0-9_.-]+\.txt)\b', src.read_text(encoding="utf-8")))
+    return sorted(names)
+
+
+def test_the_files_handed_to_pip_are_found_and_exist():
+    names = _pip_files()
+    assert {"requirements.txt", "constraints.txt"} <= set(names)
+    for name in names:
+        assert (REPO / name).is_file(), name
+
+
+@pytest.mark.parametrize("name", _pip_files())
+def test_a_file_handed_to_pip_is_ascii_or_declares_utf8_in_its_first_two_lines(name):
+    data = (REPO / name).read_bytes()
+    if data.isascii():
+        return
+    declared = _declared_encoding(data)
+    assert declared and codecs.lookup(declared).name == "utf-8", \
+        "{} 里有非 ASCII 字符，第一行要是 # -*- coding: utf-8 -*-".format(name)
+    data.decode("utf-8")
+
+
+@pytest.mark.parametrize("code_page", _WINDOWS_CODE_PAGES)
+@pytest.mark.parametrize("name", _pip_files())
+def test_old_pip_on_a_windows_code_page_reads_the_file_and_its_copies_as_utf8(name, code_page):
+    """不光是文件本身，还有交给 pip 的几种副本：Windows 上 git 检出成 CRLF 的工作区；启动补装时去掉
+    mlx-whisper 的那份（bootstrap.filter_requirements，注释原样留着）；一键更新用 git show 拿到、
+    以文本方式写成临时文件的那份（Windows 上换行是 CRLF），整份和只装必需组件的两种。"""
+    text = (REPO / name).read_bytes().decode("utf-8").replace("\r\n", "\n")
+    copies = [text, text.replace("\n", "\r\n"),
+              bootstrap.filter_requirements(text, ("mlx-whisper",)),
+              bootstrap.filter_requirements(text, bootstrap.OPTIONAL_DISTS).replace("\n", "\r\n")]
+    for copy in copies:
+        assert _old_pip_decode(copy.encode("utf-8"), code_page) == copy
+
+
+def test_the_old_pip_emulation_really_falls_back_to_the_local_code_page():
+    """对照：没有声明的中文注释，模拟的旧 pip 按 cp1252 读就报错（「依」的最后一个字节 0x9d，和 CI 上
+    一样）；第一行加上声明就读得出来；声明挪到第三行就不算了。"""
+    body = "# 依赖\naiohttp>=3.9\n".encode("utf-8")
+    with pytest.raises(UnicodeDecodeError):
+        _old_pip_decode(body, "cp1252")
+    assert _old_pip_decode(b"# -*- coding: utf-8 -*-\n" + body, "cp1252").endswith("# 依赖\naiohttp>=3.9\n")
+    with pytest.raises(UnicodeDecodeError):
+        _old_pip_decode(b"#\n#\n# -*- coding: utf-8 -*-\n" + body, "cp1252")
+
+
+def _installed_pip_req_file():
+    try:
+        from pip._internal.req import req_file
+    except Exception:           # 没有 pip，或者 pip 的内部结构变了：用到它的两条跳过
+        return None
+    return req_file
+
+
+def test_the_emulated_pattern_is_pips_own():
+    req_file = _installed_pip_req_file()
+    if req_file is None:
+        pytest.skip("这个解释器里没有 pip")
+    pattern = getattr(req_file, "PEP263_ENCODING_RE", None)
+    if pattern is None:
+        from pip._internal.utils import encoding
+        pattern = encoding.ENCODING_RE
+    assert pattern.pattern == _PIP_CODING_RE.pattern
+
+
+def test_the_installed_pip_reads_the_files_as_utf8_when_the_locale_is_cp1252(monkeypatch):
+    """用装着的这个 pip 自己的解码函数读，本地编码换成 cp1252（PYTHONUTF8 之类在这里改不了 Windows 的 ANSI
+    代码页，就直接换掉 pip 问的那个 locale.getpreferredencoding）。"""
+    req_file = _installed_pip_req_file()
+    if req_file is None:
+        pytest.skip("这个解释器里没有 pip")
+    if hasattr(req_file, "_decode_req_file"):                       # 25.1 起
+        def decode(data):
+            return req_file._decode_req_file(data, "requirements.txt")
+    else:                                                           # 24.2 及更早
+        from pip._internal.utils.encoding import auto_decode as decode
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "cp1252")
+    for name in _pip_files():
+        data = (REPO / name).read_bytes()
+        assert decode(data) == data.decode("utf-8"), name
+
+
+# ---- 指纹 ------------------------------------------------------------------------------------
+
+REQS_LF = b"aiohttp>=3.9\nnumpy>=1.24\n"
+# 加锁以前的程序对 REQS_LF 算出的指纹：拿 origin/main 上的 requirements_file_digest 原样跑出来、写死在这里
+DIGEST_BEFORE_THE_LOCK = "93473900db75ffdb186336a0c180d745fe943665d6d211fb2faf0a6e73b65b19"
+
+
+def _digest_before_the_lock(root):
+    """加锁以前的 requirements_file_digest（从 00ede39 有指纹起就是这样），原样抄来比对：
+    换行统一成 LF 再算 sha256，不是文件原始字节的 sha256。"""
+    try:
+        content = (Path(root) / "requirements.txt").read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _project(tmp_path, constraints="numpy==2.5.2; python_version >= \"3.12\"\n", newline="\n"):
+    """按字节写夹具：write_text 在 Windows 上把 \\n 写成 \\r\\n，同一个用例在各平台上的文件就不一样了
+    （PR #136 的 test (windows-latest, 3.13) 因此红过）。newline="\\r\\n" 模拟 Windows 检出成 CRLF 的工作区。"""
+    root = tmp_path / "project"
+    (root / ".venv").mkdir(parents=True)
+    (root / "requirements.txt").write_bytes(REQS_LF.replace(b"\n", newline.encode("ascii")))
+    if constraints is not None:
+        (root / "constraints.txt").write_bytes(constraints.replace("\n", newline).encode("utf-8"))
+    return root
+
+
+def test_without_constraints_the_digest_is_the_old_one(tmp_path):
+    """没有 constraints.txt（老版本、ZIP 里没带）：指纹和加锁以前逐字节相同，已有安装不白补装一次。"""
+    root = _project(tmp_path, constraints=None)
+    assert bootstrap.requirements_file_digest(root) == _digest_before_the_lock(root) == DIGEST_BEFORE_THE_LOCK
+    assert bootstrap.requirements_digest(REQS_LF) == DIGEST_BEFORE_THE_LOCK
+    assert bootstrap.requirements_digest(REQS_LF.decode("ascii")) == DIGEST_BEFORE_THE_LOCK
+
+
+@pytest.mark.parametrize("raw", [REQS_LF.replace(b"\n", b"\r\n"), b"aiohttp>=3.9\r\nnumpy>=1.24\n"],
+                         ids=["crlf", "mixed"])
+def test_without_constraints_a_crlf_checkout_keeps_the_old_digest(tmp_path, raw):
+    """Windows 上 git 的 core.autocrlf 会把 requirements.txt 检出成 CRLF。在哪个平台上都按字节造出这种文件：
+    指纹和加锁以前、和一键更新用 git show 拿到的 LF 版本都是同一个，升级之后不会因为换行白装一次。"""
+    root = _project(tmp_path, constraints=None)
+    (root / "requirements.txt").write_bytes(raw)
+    assert hashlib.sha256(raw).hexdigest() != DIGEST_BEFORE_THE_LOCK        # 原始字节确实和 LF 的不一样
+    assert bootstrap.requirements_file_digest(root) == _digest_before_the_lock(root) == DIGEST_BEFORE_THE_LOCK
+
+
+def test_with_constraints_a_crlf_checkout_matches_what_the_update_stamps(tmp_path):
+    """两份文件都检出成 CRLF：指纹和一键更新拿 git show 的 LF 内容记下的是同一个（不会合并完再补装一次）。"""
+    crlf = _project(tmp_path / "crlf", newline="\r\n")
+    assert b"\r\n" in (crlf / "constraints.txt").read_bytes()
+    lf = bootstrap.requirements_file_digest(_project(tmp_path / "lf"))
+    assert bootstrap.requirements_file_digest(crlf) == lf == bootstrap.requirements_digest(
+        REQS_LF.decode("ascii"), 'numpy==2.5.2; python_version >= "3.12"\n')
+
+
+def test_constraints_change_the_digest_and_crlf_does_not(tmp_path):
+    root = _project(tmp_path)
+    req = (root / "requirements.txt").read_text(encoding="utf-8")
+    con = (root / "constraints.txt").read_text(encoding="utf-8")
+    with_c = bootstrap.requirements_file_digest(root)
+    assert with_c == bootstrap.requirements_digest(req, con)
+    assert with_c != bootstrap.requirements_digest(req)
+    assert with_c != bootstrap.requirements_digest(req, con.replace("2.5.2", "2.5.3"))
+    # Windows 检出成 CRLF 的工作区和 git show 拿到的 LF 版本是同一份
+    assert bootstrap.requirements_digest(req.replace("\n", "\r\n"), con.replace("\n", "\r\n")) == with_c
+    # 两份内容不能挪来挪去还算同一个指纹
+    assert bootstrap.requirements_digest(req + con, "") != with_c
+
+
+def test_an_unreadable_constraints_file_gives_no_digest(tmp_path, monkeypatch):
+    """constraints.txt 在、却读不了：pip -c 一样读不了，不知道该装成什么样——不给指纹（不触发补装），
+    和 requirements.txt 读不了时一样。"""
+    root = _project(tmp_path)
+    real = Path.read_bytes
+
+    def flaky(self):
+        if self.name == "constraints.txt":
+            raise PermissionError("denied")
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    assert bootstrap.requirements_file_digest(root) is None
+    assert bootstrap.requirements_pending(root) is False
+
+
+def test_a_changed_lock_reinstalls_once_in_place_without_rebuilding(tmp_path):
+    """已有安装（清单装成功过、组件都在）拿到新的 constraints.txt：下次启动补装一次（「清单变了」那句，
+    5 秒后才弹），不重建；装成功写下新指纹之后，再启动就不装了。"""
+    root = _project(tmp_path, constraints=None)
+    bootstrap.write_requirements_stamp(root, bootstrap.requirements_file_digest(root))
+    assert bootstrap.plan_install(True, root, "3.13", "3.13") is None
+    (root / "constraints.txt").write_text('numpy==2.5.2; python_version >= "3.12"\n', encoding="utf-8")
+    plan = bootstrap.plan_install(True, root, "3.13", "3.13")
+    assert plan is not None and plan["delay"] == bootstrap.REQUIREMENTS_DIALOG_DELAY_SEC
+    assert plan["text"].startswith("组件清单和上次安装时不一样了")
+    assert not bootstrap.venv_needs_rebuild(True, "3.13", "3.13", python=None)
+    bootstrap.write_requirements_stamp(root, bootstrap.requirements_file_digest(root))
+    assert bootstrap.plan_install(True, root, "3.13", "3.13") is None
+
+
+# ---- pip 命令都带 -c ---------------------------------------------------------------------------
+
+class Run:
+    """install_requirements 的 run 替身：记下每条命令，按 codes 依次返回退出码。"""
+
+    def __init__(self, *codes):
+        self.codes = list(codes)
+        self.calls = []
+
+    def __call__(self, cmd, log_path=None):
+        self.calls.append([str(c) for c in cmd])
+        return (self.codes.pop(0) if self.codes else 0), ""
+
+
+def _install(root, run):
+    return bootstrap.install_requirements("/venv/bin/python", root, ["aiohttp>=3.9"],
+                                          ["curl_cffi>=0.7", "pywebview>=5"],
+                                          run=run, probe=lambda py: True)
+
+
+def test_the_full_install_passes_the_constraints(tmp_path):
+    root = _project(tmp_path)
+    run = Run(0)
+    assert _install(root, run)["full_ok"]
+    cmd = run.calls[0]
+    assert cmd[cmd.index("-r") + 1] == str(root / "requirements.txt")
+    assert cmd[cmd.index("-c") + 1] == str(root / "constraints.txt")
+    assert (root / ".venv" / bootstrap.REQ_STAMP).read_text(encoding="utf-8").strip() == \
+        bootstrap.requirements_file_digest(root)
+
+
+def _pinned_cmd(cmd, root):
+    return "-c" in cmd and cmd[cmd.index("-c") + 1] == str(root / "constraints.txt")
+
+
+def test_the_fallback_installs_pass_the_constraints_too(tmp_path):
+    """整份装不上时改为先装核心、再逐个装可选组件：每一次都先带 -c，不然逐个装的那几个又是 PyPI 最新的。
+    带着装不上的那一步再不带 -c 装一次（第 2 轮），两次都不行才算没装上。"""
+    root = _project(tmp_path)
+    run = Run(1, 0, 0, 1, 1)
+    result = _install(root, run)
+    assert result == {"full_ok": False, "failed_optional": ["pywebview>=5"]}
+    assert len(run.calls) == 5
+    for cmd in run.calls[:4]:
+        assert _pinned_cmd(cmd, root), cmd
+    assert run.calls[4] == run.calls[3][:-2]                      # 同一步，只是去掉 -c 和锁文件
+
+
+class Offline:
+    """没联网、装着的版本又和锁的不一样：带 -c 的 pip 都要联网换版本，装不上；不带 -c 的全是
+    「已经装好」，不用联网就返回 0（pip 对已满足的要求不访问软件包服务器）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, cmd, log_path=None):
+        self.calls.append([str(c) for c in cmd])
+        return (1 if "-c" in cmd else 0), "ERROR: Could not find a version that satisfies"
+
+
+def _stamp_before_the_lock(root):
+    """加锁以前的版本装成功过：指纹只算了 requirements.txt。"""
+    con = root / "constraints.txt"
+    saved = con.read_bytes()
+    con.unlink()
+    bootstrap.write_requirements_stamp(root, bootstrap.requirements_file_digest(root))
+    con.write_bytes(saved)
+
+
+def test_offline_after_the_lock_appears_the_install_falls_back_to_no_lock_and_the_app_starts(
+        tmp_path, capsys):
+    """第 2 轮（审查）：从加锁以前的版本升级上来，第一次启动要按锁补装一次。正好没联网时，以前
+    （加锁以前）指纹没变、根本不装，照常启动；加锁后带 -c 的每一步都装不上，核心组件那一步抛 PipFailed、
+    起不来。现在回退的每一步带 -c 装不上就不带 -c 再装一次——和加锁以前一样「已经装好」，程序照常启动；
+    指纹不改成「按锁装好了」，24 小时内不再补装，过了 24 小时再按锁装。"""
+    root = _project(tmp_path)
+    _stamp_before_the_lock(root)
+    old_stamp = bootstrap.recorded_requirements_digest(root)
+    assert bootstrap.plan_install(True, root, "3.13", "3.13") is not None      # 要补装一次
+    run = Offline()
+    result = bootstrap.install_requirements(
+        "/venv/bin/python", root, ["aiohttp>=3.9"], ["mlx-whisper>=0.4", "pywebview>=5"],
+        run=run, probe=lambda py: True, now=1000.0)
+    assert result == {"full_ok": False, "failed_optional": []}
+    # 整份带 -c、核心带 -c、核心不带；核心不带才装上，后面两个可选组件直接不带
+    assert [_pinned_cmd(c, root) for c in run.calls] == [True, True, False, False, False]
+    assert run.calls[2][-1] == "aiohttp>=3.9"
+    assert not (root / ".venv" / bootstrap.MLX_GIVEUP).exists()     # 没把 mlx-whisper 记成装不上
+    assert "不锁版本再装一次" in capsys.readouterr().out             # 终端写明这一步怎么装的
+    # 指纹没改成「按锁装好了」：24 小时内启动不补装（最终进程照常起来），过了 24 小时再按锁补装
+    assert bootstrap.recorded_requirements_digest(root) == old_stamp
+    assert bootstrap.requirements_pending(root, now=1000.0 + 60) is False
+    assert bootstrap.requirements_pending(root, now=1000.0 + bootstrap.REQ_RETRY_SEC + 1) is True
+
+
+def test_the_full_install_is_not_retried_without_the_lock(tmp_path):
+    """整份 -r 不带 -c 重试：它成功了会写指纹，不带锁装成的也记成「按锁装好了」，以后不再按锁补装。"""
+    root = _project(tmp_path)
+    run = Offline()
+    _install(root, run)
+    full = [c for c in run.calls if "-r" in c]
+    assert len(full) == 1 and _pinned_cmd(full[0], root)
+    assert bootstrap.recorded_requirements_digest(root) is None
+
+
+def test_core_failing_with_and_without_the_lock_still_raises(tmp_path):
+    root = _project(tmp_path)
+    run = Run(1, 1, 1)
+    with pytest.raises(bootstrap.PipFailed):
+        _install(root, run)
+    assert [_pinned_cmd(c, root) for c in run.calls] == [True, True, False]
+
+
+def test_an_optional_failing_both_ways_keeps_the_lock_for_the_next_step(tmp_path):
+    """两次都没装上（不是锁的事）：后面的步骤照旧先带 -c。"""
+    root = _project(tmp_path)
+    run = Run(1, 0, 1, 1, 0)
+    assert _install(root, run)["failed_optional"] == ["curl_cffi>=0.7"]
+    assert [_pinned_cmd(c, root) for c in run.calls] == [True, True, True, False, True]
+
+
+def test_without_a_constraints_file_the_fallback_runs_each_step_once(tmp_path):
+    root = _project(tmp_path, constraints=None)
+    run = Run(1, 1)
+    with pytest.raises(bootstrap.PipFailed):
+        _install(root, run)
+    assert len(run.calls) == 2 and not any("-c" in c for c in run.calls)
+
+
+def test_the_mlx_giveup_copy_still_uses_the_real_constraints(tmp_path):
+    root = _project(tmp_path)
+    (root / ".venv" / bootstrap.MLX_GIVEUP).write_text("{}", encoding="utf-8")
+    run = Run(0)
+    _install(root, run)
+    cmd = run.calls[0]
+    assert cmd[cmd.index("-r") + 1] != str(root / "requirements.txt")      # 去掉 mlx-whisper 的副本
+    assert cmd[cmd.index("-c") + 1] == str(root / "constraints.txt")
+
+
+def test_without_a_constraints_file_no_c_flag_is_passed(tmp_path):
+    root = _project(tmp_path, constraints=None)
+    run = Run(0)
+    _install(root, run)
+    assert "-c" not in run.calls[0]
+
+
+def test_the_repo_ships_a_constraints_file_next_to_requirements():
+    assert bootstrap.constraints_args(REPO) == ["-c", str(REPO / "constraints.txt")]
+
+
+# ---- 手动命令 ----------------------------------------------------------------------------------
+
+def test_selfcheck_manual_commands_carry_the_constraints(monkeypatch):
+    from app import selfcheck
+    monkeypatch.setattr(sys, "executable", "/opt/py/bin/python3")
+    for os_name, prefix in (("posix", '"/opt/py/bin/python3"'), ("nt", '& "/opt/py/bin/python3"')):
+        monkeypatch.setattr(selfcheck.os, "name", os_name)
+        cmd = str(selfcheck._pip_command("mlx-whisper", upgrade=False))
+        assert prefix + ' -m pip install "mlx-whisper" -c "{}"'.format(REPO / "constraints.txt") in cmd
+
+
+def test_selfcheck_manual_command_without_a_constraints_file(monkeypatch, tmp_path):
+    from app import selfcheck
+    monkeypatch.setattr(selfcheck, "ROOT", tmp_path)
+    monkeypatch.setattr(selfcheck.os, "name", "posix")
+    assert " -c " not in str(selfcheck._pip_command("mlx-whisper", upgrade=False))
+
+
+# ---- D14：最低 Python 3.10 --------------------------------------------------------------------
+
+def test_the_minimum_is_310():
+    assert bootstrap.MIN_PYTHON == (3, 10)
+    assert bootstrap.python_too_old((3, 9, 18))
+    assert not bootstrap.python_too_old((3, 10, 0))
+    assert not bootstrap.python_too_old((3, 13, 5))
+
+
+def _main_tree():
+    return ast.parse((REPO / "main.py").read_text(encoding="utf-8"))
+
+
+def test_main_checks_the_version_with_the_bootstrap_minimum_and_refuses_through_bootstrap():
+    """main.py 的版本检查用的就是 bootstrap.MIN_PYTHON 那个数，不过就交给 refuse_old_python。"""
+    for node in _main_tree().body:
+        if isinstance(node, ast.If) and "sys.version_info" in ast.unparse(node.test):
+            assert ast.unparse(node.test) == "sys.version_info < {}".format(bootstrap.MIN_PYTHON)
+            assert "refuse_old_python" in ast.unparse(node)
+            return
+    raise AssertionError("main.py 里没有版本检查")
+
+
+def _modules_before_the_version_check():
+    """main.py 在版本检查之前 import 的本项目模块，连同它们模块级 import 的本项目模块。"""
+    tree = _main_tree()
+    found = []
+    for node in tree.body:
+        if isinstance(node, ast.If) and "sys.version_info" in ast.unparse(node.test):
+            found += [n for n in ast.walk(node) if isinstance(n, ast.ImportFrom)]
+            break
+        found += [n for n in ast.walk(node) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    todo = []
+    for node in found:
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "app":
+            if node.module == "app":
+                todo += ["app/{}.py".format(a.name) for a in node.names]
+            else:
+                todo.append(node.module.replace(".", "/") + ".py")
+    seen = set()
+    while todo:
+        rel = todo.pop()
+        if rel in seen or not (REPO / rel).exists():
+            continue
+        seen.add(rel)
+        for node in ast.parse((REPO / rel).read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.ImportFrom) and node.level == 1:
+                if node.module:
+                    todo.append("app/{}.py".format(node.module))
+                else:
+                    todo += ["app/{}.py".format(a.name) for a in node.names]
+    return sorted(seen)
+
+
+def test_the_files_that_run_before_the_version_check_still_parse_as_python_39():
+    """3.9 上要能走到版本检查、弹出「需要升级」：main.py 和检查之前 import 的模块（含
+    refuse_old_python 所在的 bootstrap）都不能用 3.10 才有的语法（match 这类；ast 的 feature_version
+    是尽力而为，括号里的多个 with 它查不出），也不能在签名或注解里写 X | Y（3.9 上定义函数时就报错，
+    feature_version 也不管它，所以另外查）。CI 不再有 3.9 的跑器，这里是唯一看门的。"""
+    files = ["main.py"] + _modules_before_the_version_check()
+    assert {"app/i18n.py", "app/native_dialog.py", "app/bootstrap.py"} <= set(files)
+    for rel in files:
+        source = (REPO / rel).read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=rel, feature_version=(3, 9))
+        future = any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
+                     and any(a.name == "annotations" for a in n.names) for n in tree.body)
+        if future:
+            continue
+        for node in ast.walk(tree):
+            notes = []
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = node.args
+                notes = [a.annotation for a in args.posonlyargs + args.args + args.kwonlyargs]
+                notes += [node.returns]
+            elif isinstance(node, ast.AnnAssign):
+                notes = [node.annotation]
+            for note in notes:
+                if note is not None:
+                    assert not any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr)
+                                   for n in ast.walk(note)), (rel, node.lineno)
+
+
+PLATFORMS = {"macos": (True, False), "windows": (False, True), "linux": (False, False)}
+
+
+@pytest.mark.parametrize("platform", sorted(PLATFORMS))
+def test_the_upgrade_text_says_what_was_seen_and_what_to_do(platform):
+    darwin, windows = PLATFORMS[platform]
+    text = bootstrap.python_too_old_text("3.9", darwin=darwin, windows=windows)
+    assert "3.9" in text and "3.10" in text and "需要升级" in text and "python.org" in text
+    en = i18n.text(text, i18n.EN)
+    assert not i18n.CJK.search(en) and "3.9" in en and "3.10" in en and "python.org" in en
+    assert ("完全磁盘访问权限" in text) is darwin
+    assert ("Full Disk Access" in en) is darwin
+    for word in ("可能", "似乎", "might", "maybe", "probably"):
+        assert word not in text and word not in en
+
+
+@pytest.mark.parametrize("platform", sorted(PLATFORMS))
+def test_the_terminal_example_matches_the_platform(platform):
+    """第 2 轮（审查）：Windows 上 python.org 的安装程序装的是 py 启动器，没有 python3.13 这个命令。"""
+    darwin, windows = PLATFORMS[platform]
+    text = bootstrap.python_too_old_text("3.9", darwin=darwin, windows=windows)
+    example = "py -3.13 main.py" if windows else "python3.13 main.py"
+    for t in (str(text), i18n.text(text, i18n.EN)):
+        assert "（例如 {}）".format(example) in t or "(for example, {})".format(example) in t
+        assert ("python3.13" in t) is not windows
+
+
+@pytest.mark.parametrize("platform", sorted(PLATFORMS))
+def test_the_upgrade_steps_never_ask_to_delete_the_venv(platform):
+    """升级提示和自检里 3.9 那一行给同一段步骤：启动器不再认 3.9 建的 .venv、ensure_env 会重建，
+    所以不叫人删 .venv（selfcheck.python_switch_steps 那一段才要删，给 Rosetta 用）。自检那一格
+    不保留换行，inline 版把提醒接在同一段里，别的一字不差。"""
+    darwin, windows = PLATFORMS[platform]
+    for inline in (False, True):
+        steps = bootstrap.python_upgrade_steps(darwin, windows, inline=inline)
+        for t in (str(steps), i18n.text(steps, i18n.EN)):
+            assert ".venv" not in t and "删" not in t and "delete" not in t.lower()
+    block = bootstrap.python_upgrade_steps(darwin, windows)
+    inline = bootstrap.python_upgrade_steps(darwin, windows, inline=True)
+    assert "\n" not in str(inline) and "\n" not in i18n.text(inline, i18n.EN)
+    assert str(inline) == str(block).replace("\n", "")
+    assert i18n.text(inline, i18n.EN) == i18n.text(block, i18n.EN).replace("\n", " ")
+    assert str(bootstrap.python_too_old_text("3.9", darwin, windows)).endswith(str(block))
+
+
+class Dialogs:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, argv, **kw):
+        self.calls.append(("osascript", argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    def box(self, text, title):
+        self.calls.append(("messagebox", text, title))
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32", "linux"])
+def test_refusing_prints_chinese_and_shows_a_dialog_without_a_console(platform, capsys, monkeypatch):
+    monkeypatch.delenv("CI", raising=False)
+    d = Dialogs()
+    code = bootstrap.refuse_old_python((3, 9, 18), has_console=False, sys_platform=platform,
+                                       run=d.run, messagebox=d.box)
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "需要升级" in out and "3.9" in out                 # 终端永远是中文
+    expected = bootstrap.python_too_old_text("3.9", darwin=platform == "darwin",
+                                             windows=platform == "win32")
+    if platform == "darwin":
+        assert d.calls and d.calls[0][0] == "osascript"
+        from app import native_dialog
+        assert d.calls[0][1] == native_dialog.osascript_argv(
+            expected, button=native_dialog.FAIL_BUTTON, icon="caution")
+    elif platform == "win32":
+        from app import native_dialog
+        assert d.calls == [("messagebox",) + native_dialog.messagebox_args(expected)]
+    else:
+        assert d.calls == []
+
+
+def test_refusing_in_a_terminal_or_in_ci_only_prints(capsys, monkeypatch):
+    d = Dialogs()
+    monkeypatch.delenv("CI", raising=False)
+    assert bootstrap.refuse_old_python((3, 9, 18), has_console=True, sys_platform="darwin",
+                                       run=d.run, messagebox=d.box) == 1
+    monkeypatch.setenv("CI", "1")
+    assert bootstrap.refuse_old_python((3, 9, 18), has_console=False, sys_platform="darwin",
+                                       run=d.run, messagebox=d.box) == 1
+    assert d.calls == []
+    assert capsys.readouterr().out.count("需要升级") == 2
+
+
+def test_a_failing_dialog_does_not_hide_the_exit(capsys, monkeypatch):
+    monkeypatch.delenv("CI", raising=False)
+
+    def broken(*a, **k):
+        raise OSError("no osascript")
+    assert bootstrap.refuse_old_python((3, 9, 18), has_console=False, sys_platform="darwin",
+                                       run=broken, messagebox=broken) == 1
+
+
+def test_a_venv_built_by_39_is_rebuilt_by_a_newer_launch(tmp_path):
+    """升级前的 .venv 是 3.9 建的：启动器跳过它、用新装的 Python 启动 main.py 时，ensure_env 要重建
+    .venv——以前组件和 pip 都在就原地补装，然后换进 3.9 的 .venv，在版本检查上退出，永远起不来。"""
+    assert bootstrap.venv_needs_rebuild(True, "3.9", "3.9", python=tmp_path / "py")
+    assert bootstrap.venv_needs_rebuild(True, None, "3.9", python=tmp_path / "py")
+    # 进程本来就在 .venv 里：照旧不从里面清空自己（那样的进程过不了 main.py 的版本检查）
+    assert not bootstrap.venv_needs_rebuild(True, "3.9", "3.9", own_env=True, python=tmp_path / "py")
+    # 3.10 起照旧按原来的判断（没有证据不重建）
+    assert not bootstrap.venv_needs_rebuild(True, "3.10", "3.10", python=None)
+
+
+def test_the_ready_fast_path_never_skips_into_a_39_venv(tmp_path):
+    """就绪指纹（I9）对得上也不行：实际跑出来是 3.9，就交给全检查（那里会重建）。"""
+    root = tmp_path / "project"
+    venv = root / ".venv"
+    py = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    py.parent.mkdir(parents=True)
+    py.write_bytes(b"not python")
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\nversion = 3.9.6\n", encoding="utf-8")
+    (root / "requirements.txt").write_text("aiohttp>=3.9\n", encoding="utf-8")
+    bootstrap.write_requirements_stamp(root, bootstrap.requirements_file_digest(root))
+    imports = "import aiohttp"
+    assert bootstrap.note_ready(root, imports, prefix=venv)
+    assert not bootstrap.ready_fast_path(root, imports, actual_version="3.9")
+
+
+# ---- 一键更新：按新版本的 constraints.txt 装、记指纹 ----------------------------------------------
+
+@pytest.fixture
+def isolated(monkeypatch, tmp_path):
+    """同 tests/test_resilience_update.py 的 isolated：设置文件和项目目录都在临时目录里。"""
+    from app import settings as settings_mod
+    from app import updater
+    monkeypatch.setattr(settings_mod, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(updater, "ROOT", tmp_path)
+    return tmp_path
+
+
+CONS = 'aiohttp==3.14.3; python_version >= "3.11"\naiohttp<4\n'
+
+
+def _update(monkeypatch, isolated, overrides=None, pip_code=0, managed=False):
+    """跑一次一键更新（假 git、假 pip）。managed：当成本项目自己的 .venv（读写清单指纹）。"""
+    from app import updater
+    from tests.helpers import run
+    from tests.test_resilience_update import RecordingServer, make_updater
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events, git_overrides=overrides,
+                                       pip_code=pip_code)
+    if managed:
+        (isolated / ".venv").mkdir(exist_ok=True)
+        monkeypatch.setattr(updater, "managed_env", lambda root: True)
+    seen = []
+    real = u._pip_install
+
+    async def capture(args, label, **kw):
+        if "-c" in args:
+            seen.append(Path(args[args.index("-c") + 1]).read_text(encoding="utf-8"))
+        else:
+            seen.append(None)
+        return await real(args, label, **kw)
+    u._pip_install = capture
+    run(u.apply())
+    return server, pip_calls, execs, seen
+
+
+def test_the_update_installs_with_the_new_versions_constraints(monkeypatch, isolated):
+    """合并之前按新版本的清单装依赖：锁文件也从新版本里拿（git show），不是工作区里旧的那份。"""
+    from tests.test_resilience_update import REQS
+    (isolated / "constraints.txt").write_text("old==1\n", encoding="utf-8")
+    _server, pip_calls, execs, seen = _update(
+        monkeypatch, isolated, {"show:constraints.txt": (0, CONS, "")}, managed=True)
+    assert seen == [CONS] and len(execs) == 1
+    assert pip_calls[0]["args"][0] == "-r" and pip_calls[0]["requirements"] == REQS
+    stamp = (isolated / ".venv" / bootstrap.REQ_STAMP).read_text(encoding="utf-8").strip()
+    assert stamp == bootstrap.requirements_digest(REQS, CONS)
+
+
+def test_the_core_only_retry_keeps_the_constraints(monkeypatch, isolated):
+    from tests.test_resilience_update import OPTIONAL_REQS
+    _server, pip_calls, _execs, seen = _update(
+        monkeypatch, isolated, {"show:requirements.txt": (0, OPTIONAL_REQS, ""),
+                                "show:constraints.txt": (0, CONS, "")}, pip_code=[1, 0])
+    assert len(pip_calls) == 2 and seen == [CONS, CONS]
+
+
+def test_a_target_without_constraints_installs_like_before(monkeypatch, isolated):
+    """新版本里没有 constraints.txt（git show 失败）：照以前那样只带 -r，指纹也是以前那种。"""
+    from tests.test_resilience_update import REQS
+    _server, pip_calls, _execs, seen = _update(monkeypatch, isolated, managed=True)
+    assert seen == [None] and pip_calls[0]["args"] == ["-r", pip_calls[0]["args"][1]]
+    stamp = (isolated / ".venv" / bootstrap.REQ_STAMP).read_text(encoding="utf-8").strip()
+    assert stamp == bootstrap.requirements_digest(REQS)
+
+
+def test_an_unchanged_requirements_and_lock_skip_pip(monkeypatch, isolated):
+    """清单和锁都和上次装成功的一样：不跑 pip。只有锁变了：要跑。"""
+    from tests.test_resilience_update import REQS
+    (isolated / ".venv").mkdir()
+    bootstrap.write_requirements_stamp(isolated, bootstrap.requirements_digest(REQS, CONS))
+    _s, pip_calls, execs, _seen = _update(monkeypatch, isolated,
+                                          {"show:constraints.txt": (0, CONS, "")}, managed=True)
+    assert pip_calls == [] and len(execs) == 1
+    bootstrap.write_requirements_stamp(isolated, bootstrap.requirements_digest(REQS, CONS))
+    _s, pip_calls, _e, seen = _update(monkeypatch, isolated,
+                                      {"show:constraints.txt": (0, CONS.replace("3.14.3", "3.14.4"), "")},
+                                      managed=True)
+    assert len(pip_calls) == 1 and "3.14.4" in seen[0]
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["terminal", "powershell"])
+def test_the_manual_update_command_carries_the_constraints(monkeypatch, isolated, windows):
+    from app import updater
+    monkeypatch.setattr(updater, "_on_windows", lambda: windows)
+    cmd = updater.Updater.__new__(updater.Updater)._manual_command(pip=True)
+    assert "-m pip install -r requirements.txt -c constraints.txt" in cmd
+    assert "-c constraints.txt" not in updater.Updater.__new__(updater.Updater)._manual_command()

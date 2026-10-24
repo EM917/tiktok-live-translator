@@ -273,8 +273,10 @@ def test_the_powershell_command_chains_steps_without_double_ampersands():
     discard = updater_mod.powershell_command(r"C:\x", discard=True)
     assert discard == r'cd "C:\x"; if ($?) { git checkout -- . }; if ($?) { git pull --ff-only }'
     pip = updater_mod.powershell_command(r"C:\x", pip=True, python=r"C:\x\.venv\Scripts\python.exe")
+    # -c constraints.txt：I4（b3-deps）起手动补装也按测试过的那一套版本装
     assert pip == (r'cd "C:\x"; if ($?) { git pull --ff-only }; if ($?) { & '
-                   r'"C:\x\.venv\Scripts\python.exe" -m pip install -r requirements.txt }')
+                   r'"C:\x\.venv\Scripts\python.exe" -m pip install -r requirements.txt '
+                   r'-c constraints.txt }')
     assert all("&&" not in c for c in (cmd, discard, pip))
 
 

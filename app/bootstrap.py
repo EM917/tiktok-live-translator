@@ -3,12 +3,19 @@
 
 main.py 在模块级就跑 ensure_env()，测试一 import 它就会被 execv 成 .venv 里的程序
 （见 tests/test_bug_sweep2.py 里的说明），所以逻辑放在这里，main.py 只做调用。
-这个模块在依赖还没装齐时就要能导入：只用标准库，兼容 Python 3.9。
+这个模块在依赖还没装齐时就要能导入：只用标准库。还要兼容 Python 3.9——本程序最低要 3.10
+（用户 10-22 决定 D14），3.9 上 main.py 的版本检查正是用这里的 refuse_old_python 告诉中控要升级、
+怎么升级；tests/test_bootstrap_constraints.py 按 3.9 的语法解析这个文件和 main.py。
 
 这里管的几件事：
   * requirements 指纹：`pip install -r` 返回 0 之后记下清单的 sha256。清单变了
     （一键更新、手动 git pull）而 pip 没装上时，下次启动据此补装——以前启动只查
     固定的几个模块，新加的依赖永远没人补，「重新打开会自动继续安装」的承诺落空。
+  * 版本锁（I4，用户决定 D8）：每一次 pip install 都带 -c constraints.txt（测试过的那一套版本，
+    写法和理由见那个文件的开头）；指纹把 constraints.txt 一起算进去，锁的版本一变，已有安装下次
+    启动补装一次，不重建。
+  * 最低 Python（D14）：3.10。3.9 上 main.py 不往下跑，弹出「需要升级」和照做的步骤；.venv 是 3.9
+    建的，换了新 Python 启动时重建它。
   * pip 输出落盘：logs/bootstrap-*.log，同时照样打到终端。双击 .app 启动时 stdout
     是 /dev/null，以前装失败了什么都不留。
   * 失败说明：按 pip 输出里看到的字样分成磁盘满、连不上软件包服务器、没有适用于
@@ -42,6 +49,10 @@ from .i18n import L, of
 APP_DIR_NAME = "TikTok Live Translator.app"      # 与 app/macbundle.py 一致
 
 REQ_STAMP = ".requirements.sha256"               # 放在 .venv 里：环境重建，指纹跟着没
+CONSTRAINTS = "constraints.txt"                   # 测试过的那一套版本（I4），在项目根，和 requirements.txt 并列
+# 本程序要求的最低 Python（D14）。main.py 的版本检查、venv_needs_rebuild、ready_fast_path 都看它；
+# 再提时同步改 tools/find_python.sh、Start.bat、setup.sh、setup.ps1、README 和 CI 矩阵
+MIN_PYTHON = (3, 10)
 REQ_ATTEMPT = ".requirements-attempt.json"
 # 同一份清单装失败后多久内不再为它重跑 pip -r（真缺核心依赖时不受这个限制）
 REQ_RETRY_SEC = 24 * 3600
@@ -113,19 +124,53 @@ def managed_env(root, prefix=None):
         return False
 
 
-def requirements_digest(content):
-    """清单指纹。换行统一成 LF：Windows 上工作区文件可能被检出成 CRLF，而一键更新
-    用 `git show` 拿到的是仓库里的 LF 版本——同一份清单不能算出两个指纹。"""
+def _lf_bytes(content):
     if isinstance(content, str):
         content = content.encode("utf-8")
-    return hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest()
+    return content.replace(b"\r\n", b"\n")
+
+
+# 两份内容之间的分隔：两个文件里都不会出现 NUL，挪动分界（把清单的最后几行算到锁文件里）
+# 算不出同一个指纹
+_CONSTRAINTS_SEP = b"\0" + CONSTRAINTS.encode("ascii") + b"\0"
+
+
+def requirements_digest(content, constraints=None):
+    """清单指纹。换行统一成 LF：Windows 上工作区文件可能被检出成 CRLF，而一键更新
+    用 `git show` 拿到的是仓库里的 LF 版本——同一份清单不能算出两个指纹。
+
+    constraints 是 constraints.txt 的内容（I4）：一起算进去，锁的版本一变，指纹就跟着变，已有的
+    安装下次启动补装一次（plan_install 的「清单变了」那一种，不重建）。None 表示没有这个文件
+    （老版本、新版本里没带）：这时和加锁以前逐字节同一个指纹，已有安装不会白补装一次。"""
+    data = _lf_bytes(content)
+    if constraints is not None:
+        data += _CONSTRAINTS_SEP + _lf_bytes(constraints)
+    return hashlib.sha256(data).hexdigest()
 
 
 def requirements_file_digest(root):
+    """工作区里 requirements.txt 加 constraints.txt 的指纹。constraints.txt 不在就只算清单；
+    在却读不了（权限、坏盘）返回 None——pip -c 一样读不了它，不知道该装成什么样，和清单读不了时一样
+    不给指纹（requirements_pending 据此不触发补装）。"""
+    root = Path(root)
     try:
-        return requirements_digest((Path(root) / "requirements.txt").read_bytes())
+        content = (root / "requirements.txt").read_bytes()
     except OSError:
         return None
+    try:
+        constraints = (root / CONSTRAINTS).read_bytes()
+    except FileNotFoundError:
+        constraints = None
+    except OSError:
+        return None
+    return requirements_digest(content, constraints)
+
+
+def constraints_args(root):
+    """交给 pip install 的 -c 参数（I4）：项目根有 constraints.txt 就是 ["-c", 它的路径]，没有就是空。
+    用绝对路径：pip 的工作目录不一定是项目根。"""
+    path = Path(root) / CONSTRAINTS
+    return ["-c", str(path)] if path.is_file() else []
 
 
 def recorded_requirements_digest(root):
@@ -369,11 +414,16 @@ def ready_fast_path(root, ready_import, *, actual_version, python=None, now=None
       * 没有重建记号——有的话要让 venv_needs_rebuild 去探 pip、决定重建；
       * 清单不用补装（requirements_pending，和 plan_install 用的同一个判断：24 小时内为同一份
         清单装失败过的不算要装，过了 24 小时照旧重试）；
-      * 指纹算得出来，而且和最终进程上次记下的一样。
+      * 指纹算得出来，而且和最终进程上次记下的一样；
+      * 实际版本不低于本程序要求的最低版本（MIN_PYTHON，D14）。3.9 建的 .venv 指纹照样对得上，
+        走捷径就会直接换进 3.9、在 main.py 的版本检查上退出，永远起不来——要交给全检查，
+        venv_needs_rebuild 在那里决定用这次启动的新 Python 重建。
     解释器能不能跑不在这里看：调用方先跑 interpreter_version（几十毫秒），跑不起来照旧重建。
     actual_version 没有默认值：调用方必须把实际版本交进来，不能漏掉这一条。"""
     venv = Path(root) / ".venv"
     if actual_version is None or actual_version != pyvenv_version(venv):
+        return False
+    if version_below_minimum(actual_version):
         return False
     if (venv / NEEDS_REBUILD).exists():
         return False
@@ -447,6 +497,19 @@ def clear_install_deferred(environ=None):
 
 # ---- Python 版本漂移 ----------------------------------------------------------------------
 
+def _major_minor(text):
+    """"3.9" / "3.13" → (3, 9) / (3, 13)；认不出返回 None。"""
+    m = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", str(text or ""))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def version_below_minimum(text):
+    """主次版本字符串（interpreter_version / pyvenv_version 给的那种）低于 MIN_PYTHON 吗。
+    认不出的不算低：没有证据不删东西。"""
+    mm = _major_minor(text)
+    return mm is not None and mm < MIN_PYTHON
+
+
 def pyvenv_version(venv_dir):
     """pyvenv.cfg 里记的建环境时的 Python 主次版本（"3.13"），读不到返回 None。
     标准库 venv 写 `version = 3.13.5`，virtualenv 写 `version_info = 3.13.5.final.0`。"""
@@ -515,11 +578,18 @@ def venv_needs_rebuild(usable, recorded=None, actual=None, own_env=False, python
     而且探测确认 pip 还是 import 不了时除外（上一段），那时版本读不读得到都重建。记号在、但 pip 探测
     本身出错（超时、起不来）时不按记号重建：不知道就不删，记号留着下次再看，这次照常走下面的判断。
     当前进程就在 .venv/.app 壳里时不重建：那是从环境里面把自己的环境清空（记号留着，下次从启动器
-    进来时再重建）。"""
+    进来时再重建）。
+
+    .venv 实际跑的 Python 低于本程序要求的最低版本（MIN_PYTHON，用户 10-22 决定 D14）也重建，不管
+    组件和 pip 在不在：最低版本提到 3.10 以后，3.9 建的 .venv 一个字没变、照样能 import，以前这里
+    原地补装完就换进去，在 main.py 的版本检查上退出——中控按提示装了新 Python 再打开，还是一样。
+    走到这里的进程自己过了版本检查，用它重建正好；启动器（tools/find_python.sh）也不再挑 3.9。"""
     if not usable:
         return True
     if own_env:
         return False
+    if version_below_minimum(actual):
+        return True
     if python is not None and _rebuild_marked(python):
         return True
     if not (recorded and actual) or python is None:
@@ -627,6 +697,105 @@ def install_dialog_text(recorded=None, actual=None, venv_existed=False,
     return L("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n",
              "First launch: installing the app’s components (about 2–5 minutes, depending on "
              "your connection).\n") + _WAIT
+
+
+# ---- 最低 Python（D14） ---------------------------------------------------------------------
+#
+# 用户 10-22 决定：最低版本从 3.9 提到 3.10（观众弹幕本来就要 3.10）。3.9 上 main.py 在版本检查那里
+# 停下，调 refuse_old_python：终端打印、没有终端时弹系统对话框（双击 .app 启动、或一键更新后重启时
+# stdout 是 /dev/null，只 print 的话程序就无声消失了）。这一段只用标准库和 i18n / native_dialog，
+# 3.9 上要能 import（文件头）。
+
+def python_too_old(version_info=None):
+    """这个解释器低于本程序要求的最低版本吗。"""
+    v = sys.version_info if version_info is None else version_info
+    return tuple(v[:2]) < MIN_PYTHON
+
+
+def python_upgrade_steps(darwin=None, windows=None, inline=False):
+    """升级 Python 的照做步骤（D14）：python_too_old_text 的后半段，自检里 3.9 那一行
+    （selfcheck.check_comments）也给这一段。只写能做的事。
+
+    装好新 Python 之后重新打开就行，不用手动删 .venv：启动器（tools/find_python.sh、Start.bat）
+    不再挑低于 3.10 的解释器，换成新的那个启动后，venv_needs_rebuild 认出 .venv 是旧版本建的、
+    用新的重建（所以这里不能用 selfcheck.python_switch_steps：那一段要人删 .venv，是给 Rosetta
+    那种版本够、启动器照样认 .venv 的情况的）。在终端里直接跑 main.py 的人要自己换解释器，所以单写
+    一句，例子按平台写：Windows 上 python.org 的安装程序装的是 py 启动器，没有 python3.13 这个命令。
+    macOS 的「完全磁盘访问权限」按解释器文件登记（browser_login.fda_targets）：换了 Python，新的
+    那个不在列表里，要登录才给流地址的直播间就拿不到流——和 selfcheck.python_switch_steps 同一个提醒。
+    inline：自检那一格不保留换行，那句提醒接在同一段里；对话框里另起一行。"""
+    darwin = sys.platform == "darwin" if darwin is None else darwin
+    windows = sys.platform == "win32" if windows is None else windows
+    need = "{}.{}".format(*MIN_PYTHON)  # i18n: data（版本号）
+    example = "py -3.13 main.py" if windows else "python3.13 main.py"  # i18n: data（命令行）
+    steps = L("请从 python.org 下载安装 Python {} 或更新的版本，装好后重新打开程序：它会用新的 Python "
+              "重新安装运行组件（约 1.4 GB，需要联网）。在终端里运行的，改用新装的 Python 运行 main.py"
+              "（例如 {}）。",
+              "Install Python {} or later from python.org, then open the app again. It reinstalls "
+              "its components with the new Python (about 1.4 GB, needs an internet connection). If "
+              "you run the app from a terminal, run main.py with the new Python (for example, "
+              "{}).").format(need, example)
+    if not darwin:
+        return steps
+    fda = L("换了 Python 之后，要把新的 Python 加进「完全磁盘访问权限」一次，路径和步骤见程序"
+            "「启动自检」里「浏览器登录态」那一行；不加的话，TikTok 要求登录才给流地址的直播间"
+            "拿不到流。",
+            "After switching, add the new Python to Full Disk Access once. The Browser "
+            "Login row in the app’s Startup Check shows the path and steps. Without it, the "
+            "app can’t get the stream for live streams where TikTok provides the stream URL "
+            "only to signed-in viewers.")
+    if inline:
+        return L("{}{}", "{} {}").format(steps, fda)
+    return steps + "\n" + fda
+
+
+def python_too_old_text(current, darwin=None, windows=None):
+    """「需要升级」和照做的步骤（python_upgrade_steps）。只写看到的（现在用的是哪个版本）和能做的事。"""
+    need = "{}.{}".format(*MIN_PYTHON)  # i18n: data（版本号）
+    head = L("这个版本的程序需要 Python {} 或更新的版本，现在用的是 Python {}，需要升级。\n",
+             "This version of the app needs Python {} or later. It’s running on Python {}, "
+             "which needs an upgrade.\n").format(need, current)
+    return head + python_upgrade_steps(darwin, windows)
+
+
+def _stdio_is_terminal():
+    """stdout 或 stderr 连着终端（和 main._has_console 同一个判断）。"""
+    try:
+        return any(s is not None and s.isatty() for s in (sys.stdout, sys.stderr))
+    except Exception:
+        return False
+
+
+def _windows_messagebox(text, title):
+    import ctypes
+    ctypes.windll.user32.MessageBoxW(None, text, title, 0x30)
+
+
+def refuse_old_python(version_info=None, *, has_console=None, sys_platform=None,
+                      run=subprocess.run, messagebox=None):
+    """main.py 的版本检查不过时调用：终端打印「需要升级」（终端永远是中文），没有终端时再弹系统
+    对话框，返回给 sys.exit 的退出码 1。CI 里只打印、不弹（同 main._fail_alert）。弹框失败不挡退出。"""
+    v = sys.version_info if version_info is None else version_info
+    sys_platform = sys.platform if sys_platform is None else sys_platform
+    text = python_too_old_text("{}.{}".format(v[0], v[1]), darwin=sys_platform == "darwin",
+                               windows=sys_platform == "win32")
+    try:
+        print("⚠️ " + text, flush=True)
+    except Exception:
+        pass
+    has_console = _stdio_is_terminal() if has_console is None else has_console
+    if os.environ.get("CI") or has_console:
+        return 1
+    try:
+        from . import native_dialog
+        if sys_platform == "darwin":
+            run(native_dialog.osascript_argv(text, button=native_dialog.FAIL_BUTTON, icon="caution"),
+                capture_output=True, timeout=600)
+        elif sys_platform == "win32":
+            (messagebox or _windows_messagebox)(*native_dialog.messagebox_args(text))
+    except Exception:
+        pass
+    return 1
 
 
 # ---- pip 输出落盘与失败说明 -----------------------------------------------------------------
@@ -896,6 +1065,20 @@ def ensure_pip(pip_python, root, log_path=None, run=run_logged, probe=pip_import
     raise PipMissing(log_path, marked=marked)
 
 
+def _fallback_step(run, cmd, pinned, log_path):
+    """install_requirements 回退路径上的一步：先带 -c（pinned）装；带着装不上，就不带 -c 再装一次这一步，
+    和加锁以前一样（理由见 install_requirements）。返回 (退出码, 输出末尾, 这一轮后面几步的 -c)：
+    不带 -c 才装上的，后面几步也直接不带，省得每一步都先等一次带 -c 的失败（没联网时 pip 每次都要
+    重试几轮才报错）；两次都没装上的，后面照旧先带 -c。pinned 是空的（没有 constraints.txt）时
+    只装一次，和以前一样。"""
+    code, tail = run(cmd + pinned, log_path)
+    if code == 0 or not pinned:
+        return code, tail, pinned
+    print("[初始化] 按 constraints.txt 锁定的版本没装上，这一步改为不锁版本再装一次（和加锁以前一样）…")
+    code, tail = run(cmd, log_path)
+    return code, tail, ([] if code == 0 else pinned)
+
+
 def install_requirements(pip_python, root, core_deps, optional_deps, log_path=None,
                          run=run_logged, now=None, probe=pip_importable):
     """ensure_env 的安装步骤：整份 requirements；不行就先保核心依赖，再逐个装可选组件。
@@ -908,10 +1091,22 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
 
     有放弃记号时 -r 用去掉 mlx-whisper 那一行的副本：否则记号机器每 24 小时（清单指纹
     一直记不上）就在启动时重下一遍 torch，把开播挡上几分钟。指纹照样按真正的
-    requirements.txt 算——装成功了，启动就不再为这份清单补装。"""
+    requirements.txt 算——装成功了，启动就不再为这份清单补装。
+
+    每一次 pip 都先带 -c constraints.txt（I4）：整份、只装核心、逐个装可选组件都带。以前只给下限，
+    新装机拿到的是 PyPI 当天最新、从没一起跑过的组合；逐个装那几步不带的话，回退路径装出来的
+    又是没测过的版本。项目根没有 constraints.txt 时照旧不带。
+
+    回退路径上带 -c 的一步装不上时，这一步不带 -c 再装一次（_fallback_step）：已有的安装第一次
+    碰到锁（从加锁以前的版本升级上来，或者锁的版本改了）时要补装，装着的版本和锁的不一样就得联网
+    换版本；这时没联网，带 -c 的每一步都装不上，以前（加锁以前）核心组件照样「已经装好」、程序照常
+    启动，加了锁却会抛 PipFailed、起不来。不带 -c 的那次和加锁以前一模一样，所以不比以前差。
+    整份 -r 不这样重试：它成功了就写指纹，不带锁装成的也会记成「按锁装好了」，以后再也不按锁补装。
+    这一轮整份没成，失败已经记下：24 小时内启动不再补装，过了 24 小时再按锁整份装一次。"""
     root = Path(root)
     ensure_pip(pip_python, root, log_path, run=run, probe=probe, now=now)
     base = [str(pip_python), "-m", "pip", "install", "--disable-pip-version-check"]
+    pinned = constraints_args(root)
     digest = requirements_file_digest(root)
     req_file = root / "requirements.txt"
     filtered = None
@@ -925,7 +1120,7 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
         except (OSError, ValueError):
             filtered = None          # 写不了副本就用原文件：最多像以前一样多装一次
     try:
-        code, _tail = run(base + ["-r", str(req_file)], log_path)
+        code, _tail = run(base + ["-r", str(req_file)] + pinned, log_path)
     finally:
         if filtered is not None:
             try:
@@ -940,12 +1135,12 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
     # 真实后果：一台 M4 Mac 因为某个可选包编译失败，mlx-whisper 跟着没装上，整机掉到
     # CPU 路径跑 large-v3-turbo（hwdetect 实测 RTF 0.99），而屏幕上什么也没说。
     print("[初始化] 完整安装失败，改为逐个安装…")
-    code, tail = run(base + list(core_deps), log_path)
+    code, tail, pinned = _fallback_step(run, base + list(core_deps), pinned, log_path)
     if code != 0:
         raise PipFailed(code, tail, log_path)
     failed = []
     for optional in optional_deps:
-        c, _t = run(base + [optional], log_path)
+        c, _t, pinned = _fallback_step(run, base + [optional], pinned, log_path)
         if c != 0:
             print("[初始化] 可选组件 {} 没装上，其余功能不受影响".format(optional))
             failed.append(optional)
