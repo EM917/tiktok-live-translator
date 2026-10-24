@@ -7,7 +7,9 @@
 //   U8 直播中这一场还没出过字幕：中间卡片写「等待第一句字幕…」，第一句一到就收起（直播中清空过字幕、
 //      再开下一场也一样）；
 //      第二场起弹幕栏只数这一场的弹幕，上一场的弹幕和分隔线不算，空态那句照样出来；
-//      页面重连时 hello 的 status 先到、回放字幕后到，「正在连接」挪回末尾、改成一行并跟到底部。
+//      页面重连时 hello 的 status 先到、回放字幕后到，「正在连接」挪回末尾、改成一行并跟到底部；
+//   U9 房间地址输错：说明写在输入框下面、输入框标 aria-invalid，状态胶囊和顶部横幅都不动；再输入、
+//      或者下一次认得出的开始，提示就清掉。
 // 卡片上的字本身（中英两套、各种参数）在 tests/live-ui.test.mjs / live-ui.en.test.mjs。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -24,6 +26,8 @@ const TEXT = {
     waiting: "Waiting for the first caption…",
     cmtConnected: "Connected. Waiting for comments…",
     cmtDisconnected: "Disconnected. Reconnecting…",
+    badInput: /^This isn’t a live link or username\. .*Display names won’t work\.$/,
+    ready: "Ready",
   },
   zh: {
     connecting: "正在连接 @luna_demo…",
@@ -31,6 +35,8 @@ const TEXT = {
     waiting: "等待第一句字幕…",
     cmtConnected: "已连接，等待观众发评论…",
     cmtDisconnected: "评论流断开，重连中…",
+    badInput: /^认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名.*中文昵称不行）。$/,
+    ready: "待机",
   },
 };
 // 服务端发的下载进度那句（app/pipeline.py _model_download_progress 的样子，虚构的数）：只进横幅
@@ -292,5 +298,65 @@ for (const lang of ["en", "zh"]) {
     assert.equal(page.el("comment-list").lastElementChild.classList.contains("session-sep"), true);
     assert.equal(isShown(page.el("comment-empty")), true);
     assert.equal(page.el("comment-empty").textContent, W.cmtConnected);
+  });
+
+  // ---- U9：输错地址 ---------------------------------------------------------------------------------
+
+  test(lang + "：U9 输了中文昵称点开始：输入框下面说一句，胶囊不变红、没有横幅、不发 start", () => {
+    const page = runDesktop(lang);
+    hello(page, { state: "idle", detail: "" });
+    const pillBefore = page.el("status-text").textContent;
+    assert.equal(pillBefore, W.ready);
+    page.el("room-input").value = "某个中文昵称";
+    page.el("start-btn").click();
+    const err = page.el("room-input-error");
+    assert.equal(isShown(err), true);
+    assert.match(err.textContent, W.badInput);
+    assert.equal(page.el("room-input").getAttribute("aria-invalid"), "true");
+    assert.equal(page.el("room-input").getAttribute("aria-describedby"), "room-input-error");
+    assert.equal(page.el("status-text").textContent, pillBefore, "胶囊还是待机");
+    assert.equal(page.el("status-dot").className, "dot idle");
+    assert.equal(isShown(page.el("status-banner")), false, "没有红横幅");
+    assert.deepEqual(page.sent.filter((m) => m.type === "start"), []);
+    if (lang === "en") assert.deepEqual(leftoverChinese(page), []);
+  });
+
+  test(lang + "：U9 再输入就清掉提示和 aria-invalid；下一次认得出的开始不残留", () => {
+    const page = runDesktop(lang);
+    hello(page, { state: "idle", detail: "" });
+    const input = page.el("room-input");
+    const err = page.el("room-input-error");
+    input.value = "某个中文昵称";
+    page.el("start-btn").click();
+    assert.equal(isShown(err), true);
+    input.value = "@luna_dem";
+    input.fire("input");
+    assert.equal(isShown(err), false);
+    assert.equal(err.textContent, "");
+    assert.equal(input.hasAttribute("aria-invalid"), false);
+    assert.equal(input.hasAttribute("aria-describedby"), false);
+    // 又输错一次，然后（不经过 input 事件，比如最近直播间的 chip 在背后填好地址）开始一个认得出的
+    input.value = "otro nombre";
+    page.el("start-btn").click();
+    assert.equal(isShown(err), true);
+    input.value = ROOM;
+    page.el("start-btn").click();
+    assert.equal(isShown(err), false, "认得出的开始：提示不残留");
+    assert.equal(input.hasAttribute("aria-invalid"), false);
+    assert.equal(page.sent.filter((m) => m.type === "start").length, 1);
+    status(page, "connecting", RESOLVING[lang]);
+    assert.equal(isShown(err), false);
+  });
+
+  test(lang + "：U9 输错之后别的页面开了一场：提示跟着收掉，回到首页不留旧提示", () => {
+    const page = runDesktop(lang);
+    hello(page, { state: "idle", detail: "" });
+    page.el("room-input").value = "某个中文昵称";
+    page.el("start-btn").click();
+    assert.equal(isShown(page.el("room-input-error")), true);
+    status(page, "connecting", RESOLVING[lang]);           // 另一个窗口点了开始
+    status(page, "idle");
+    assert.equal(isShown(page.el("room-input-error")), false);
+    assert.equal(page.el("room-input").hasAttribute("aria-invalid"), false);
   });
 }

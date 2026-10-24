@@ -61,6 +61,7 @@
   var brandsDirBtn = document.getElementById("brands-dir-btn");
   var brandEmptyHint = document.getElementById("brand-empty-hint");
   var startBtn = document.getElementById("start-btn");
+  var roomInputError = document.getElementById("room-input-error");
   var recentRooms = document.getElementById("recent-rooms");
   var recentList = document.getElementById("recent-list");
   var recentClear = document.getElementById("recent-clear");
@@ -484,6 +485,7 @@
     selectBrand(brandSel, defaultBrandFor(streamerFromInput(roomInput.value), brandsMap));
   }
   function onRoomInputChanged() {
+    clearRoomInputError();     // 中控在改了：上一次「认不出」的提示不再说的是现在这一串
     brandState = brandStateAfterRoomInput(brandState, streamerFromInput(roomInput.value));
     applyDefaultBrand();
   }
@@ -704,6 +706,24 @@
     armStartWatchdog();
   }
 
+  // 输错地址的就地提示（专家审查 U9）：一次输入错误不是程序出错，不动全局状态。以前走
+  // setStatus({state:"error"})：状态胶囊变红「出错了」、顶部挂红横幅，开始面板还摆着，看着像整个程序坏了。
+  // 现在只在输入框下面说一句、给输入框标 aria-invalid；再输入、或者下一次认得出的开始，就清掉
+  function showRoomInputError(text) {
+    if (!roomInputError) return;
+    roomInputError.textContent = text;
+    roomInputError.classList.remove("hidden");
+    roomInput.setAttribute("aria-invalid", "true");
+    roomInput.setAttribute("aria-describedby", "room-input-error");
+  }
+  function clearRoomInputError() {
+    if (!roomInputError) return;
+    roomInputError.textContent = "";
+    roomInputError.classList.add("hidden");
+    roomInput.removeAttribute("aria-invalid");
+    roomInput.removeAttribute("aria-describedby");
+  }
+
   function startStream() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setStatus({ state: "offline", detail: L("与本地服务断开，正在重连——稍候再点「开始翻译」",
@@ -713,9 +733,12 @@
     var parsed = parseRoomInput(roomInput.value);
     if (parsed.error === "empty") { roomInput.focus(); return; }
     if (parsed.error) {
-      setStatus({ state: "error", detail: UNRECOGNIZED_INPUT_MSG });
+      showRoomInputError(UNRECOGNIZED_INPUT_MSG);
+      roomInput.focus();
       return;
     }
+    // 最近直播间的 chip 是在背后填好地址再开始的，不经过 input 事件：认得出的这一次也要清掉上一次的提示
+    clearRoomInputError();
     roomInput.value = parsed.media ? parsed.url + " " + parsed.media : parsed.url;
     lsSet("roomUrl", parsed.url);
     lsSet("sourceLang", sourceSel.value);
@@ -3889,6 +3912,7 @@
   // 它等第一条真正的字幕到达时由 renderCaption 自己揭开；这里只需要让接下来到达的新字幕照常跟到底部。
   function exitHomeLayout() {
     following = true;
+    clearRoomInputError();  // 开始面板要收起了；回到首页时输入框里多半已是服务端回填的地址，旧提示不再对得上
     syncNoticeBars();       // 开播：「有新版本」「迁移旧词表」两条先收起（更新进行中的除外）
   }
 

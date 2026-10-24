@@ -526,7 +526,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 76 | app.js:2100/2103 | @x（当前）/ 填入并武装改听 @x（还要再点一次确认才会真的换） | @x (current) / Select @x. You’ll still need to confirm. | |
 | 77 | index.html:190 | 沿用：主播语言 {x} | Keeps spoken language: {x} | |
 | 78 | app.js:2035 †index.html:193 | 切换期间两个主播都没有字幕，直到 @B / 新主播出现第一句。 | No captions from either streamer until @B starts speaking. / …until the new streamer starts speaking. | |
-| 79 | app.js:424/2168 | 认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名（到主播主页复制 @ 后面的部分，中文昵称不行）。 | This isn’t a live link or username. Paste the live link, or enter the streamer’s username, which is the part after @ on their profile. Display names won’t work. | |
+| 79 | app.js:424/2168 | 认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名（到主播主页复制 @ 后面的部分，中文昵称不行）。 | This isn’t a live link or username. Paste the live link, or enter the streamer’s username, which is the part after @ on their profile. Display names won’t work. | 开始面板里写在输入框下面（#room-input-error，输入框标 aria-invalid）。2026-10-23 以前走状态横幅、胶囊同时变红「Error」，专家审查 U9 改成就地提示。换主播浮层里写在 .switch-error |
 | 80 | app.js:2172 | 与本地服务断开，正在重连——稍候再试。 | Lost connection to the local service. Reconnecting… Try again in a moment. | |
 
 ### F. 手机同看浮层

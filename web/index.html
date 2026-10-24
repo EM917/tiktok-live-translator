@@ -327,6 +327,10 @@
                data-en-placeholder="https://www.tiktok.com/@username/live">
         <button id="start-btn" class="btn primary large" data-en="Start">开始翻译</button>
       </div>
+      <!-- 输错地址的就地提示（专家审查 U9）：以前一次输入错误走 setStatus({state:"error"})，整个状态胶囊变红
+           「出错了」、顶部还挂一条红横幅。现在只在输入框下面说一句，胶囊和横幅都不动；再输入就清掉。
+           文字由 app.js 写（UNRECOGNIZED_INPUT_MSG），这里留空 -->
+      <p id="room-input-error" class="field-error hidden" role="alert"></p>
 
       <!-- 原来的两段灰字，收进「?」：只有少数场景用得上，不该常驻首屏 -->
       <div id="input-help" class="sp-help hidden">
