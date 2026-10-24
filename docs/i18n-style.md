@@ -100,7 +100,8 @@
 | 密钥 | **API key** | token, secret | |
 | 字幕 | **captions** | subtitles | 苹果 Live Captions、Zoom、Meet 在直播场景都叫 captions；subtitles 偏影视。README 宣传语可以继续说 subtitles，界面统一用 captions |
 | 字幕字号 | **Caption size** | Font size | |
-| 清空字幕 | **Clear**（顶栏按钮），tooltip 写 **Clear caption history** | Clear Captions（放不下，见 §4） | |
+| 清空字幕 | **Clear**（顶栏按钮），tooltip 写 **Clear caption history** | Clear Captions（放不下，见 §4） | 2026-10-23 专家审查 V3 想把按钮上的字改成 Clear Captions，G10 重量了一次：默认 1000px 窗口里品牌标签被挤到 95px（live-full）、83px（带浮窗按钮）、67 / 55px（下拉补了第五种语言），都低于 100px 的下限，1101px 也有三档低于 120px。所以按钮上仍写 Clear，「字幕」两个字交给 tooltip 说。§4 R1 原来建议的 aria-label “Clear captions” 也没有加：它对应的中文是按钮上的「清空字幕」，这句中文的英文已经是 Clear，同一句中文对应两种英文过不了 G3。换成沿用 title 那一对（清空历史字幕 / Clear caption history）不违反 G3，但和 title 是同一句话，没有多给信息，所以也不加。点第一下之后（两段式确认的武装态）写「再点确认 / Clear?」，见 §3 第 24a 行 |
+| 清空弹幕 | **Clear Comments**（弹幕栏按钮），tooltip 写 **Clear comment history** | Clear（和顶栏清空字幕同名） | 2026-10-23 以前英文也只写 Clear、没有 tooltip，和顶栏那颗分不开（专家审查 V3）。弹幕栏里不挤，写全。点第一下之后和顶栏那颗同一句「再点确认 / Clear?」（同一句中文只许一种英文） |
 | 重译 | **Retranslate** | Redo, Translate Again | |
 | 弹幕 / 观众弹幕 / 评论流 | **comments / Comments**；实在需要时才说 **comment stream** | danmaku, bullet comments, chat | TikTok 英文界面就叫 comments。「弹幕」是中文平台的概念 |
 | 开始翻译 | **Start** | Start Translating, Start translating, Go | 和 Stop 成对。十几条后端提示要引用这个按钮，“click Start” 最短（38px，中文是 56px；“Start Translating” 要 123px） |
@@ -455,6 +456,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 22 | index.html:68–70 | 字幕字号（title / aria） | Caption size | |
 | 23 | index.html:76 | 清空字幕 | **Clear** | 76 → 56。“Clear Captions” 要 114，放不下，见 §4 |
 | 24 | index.html:76 title | 清空历史字幕 | Clear caption history | |
+| 24a | app.js confirmTwice（#clear-btn、#clear-comments） | 再点确认 | **Clear?** | 两段式确认的武装态，6 秒内再点才清，到点复原（专家审查 V3，做法和时长同 #49 的「再点一次清除」、#120 的一键更新）。按钮复原后的字是「清空字幕 / Clear」「清空弹幕 / Clear Comments」。**英文为什么不照 #49 写 Click Again to Clear**：顶栏只给这颗按钮留了 Clear（57px）的宽度。2026-10-23 在 G10 的直播场景里把按钮换成各候选再量品牌标签（无头 Chrome，场景照 G10 原样）：Click Again to Clear 145px，1000px 的 live-full / live-float / 两个 -extra 剩 65 / 53 / 48 / 48px，1101px 四个也全低于 120；Confirm 74px，live-float-extra@1000 剩 96.5px，低于 100 的下限；**Clear? 64px，最窄的 live-float-extra@1000 还有 106.5px**（平时 Clear 是 113.5），1101、1199px 两档都不低于 120。Clear? 以动词开头，问号就是「再点一下」的意思，弹幕栏那颗也用同一句（同一句中文只许一种英文）。**中文写「再点确认」**（用户 2026-10-23 定，替换起初的「再点一次清空」）：四个字 76px，和平时的「清空字幕」一样宽，武装时顶栏不动。起初那句 102px，武装那 6 秒在三个场景里截状态胶囊：live-float-zh-quiet-extra@1101 约 4.5px（平时不截，G10 断言的是平时），满编的 live-float-zh@1000 和它的 -extra 从平时的约 2.5 / 13px 加到约 12.7 / 22px。换成「再点确认」后真点一下两颗按钮再量（无头 Chrome，G10 的直播场景原样、浮层照场景点开）：中文各档品牌标签和平时一样宽（报警关着的 142px，满编 160 / 143px），G10 断言状态胶囊的那些场景武装时都不截；满编两档武装时仍截约 2.5 / 13px，和平时一样多（§4.2 记的 −4px 那一档，G10 不断言）。英文不跟着改成 Confirm：74px 过不了 live-float-extra@1000 的下限（见上）；真点下去 Clear? 在那一档剩 106.5px。G10 没有武装态的场景，这些数是另量的 |
 | 25 | live-ui.js:13 †index.html:85 | 手机同看 | Phone Viewing | 宽窗口才露出文字（见 §4 R2） |
 | 26 | live-ui.js:15 | 手机同看 · 已打开 | Phone Viewing · On | |
 | 27 | live-ui.js:16 | 手机同看 · {n} 人 | Phone Viewing · {n} | aria-label 写 “Phone Viewing, {n} watching” |
@@ -525,7 +527,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 76 | app.js:2100/2103 | @x（当前）/ 填入并武装改听 @x（还要再点一次确认才会真的换） | @x (current) / Select @x. You’ll still need to confirm. | |
 | 77 | index.html:190 | 沿用：主播语言 {x} | Keeps spoken language: {x} | |
 | 78 | app.js:2035 †index.html:193 | 切换期间两个主播都没有字幕，直到 @B / 新主播出现第一句。 | No captions from either streamer until @B starts speaking. / …until the new streamer starts speaking. | |
-| 79 | app.js:424/2168 | 认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名（到主播主页复制 @ 后面的部分，中文昵称不行）。 | This isn’t a live link or username. Paste the live link, or enter the streamer’s username, which is the part after @ on their profile. Display names won’t work. | |
+| 79 | app.js:424/2168 | 认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名（到主播主页复制 @ 后面的部分，中文昵称不行）。 | This isn’t a live link or username. Paste the live link, or enter the streamer’s username, which is the part after @ on their profile. Display names won’t work. | 开始面板里写在输入框下面（#room-input-error，输入框标 aria-invalid）。2026-10-23 以前走状态横幅、胶囊同时变红「Error」，专家审查 U9 改成就地提示。换主播浮层里写在 .switch-error |
 | 80 | app.js:2172 | 与本地服务断开，正在重连——稍候再试。 | Lost connection to the local service. Reconnecting… Try again in a moment. | |
 
 ### F. 手机同看浮层
@@ -551,10 +553,12 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
 | 94 | live-ui.js:30 †index.html:489 | 正在连接 @x… / 正在连接… | Connecting to @x… / Connecting… | 161 → 194 |
+| 94a | live-ui.js connectHint / modelDownloadText（字幕区中间的卡片） | 正在下载识别模型… {n}% / 正在下载识别模型… 已下载 {n} MB / 正在下载识别模型… | Downloading speech model… {n}% / Downloading speech model… {n} MB so far / Downloading speech model… | 2026-10-23（专家审查 U7）：首次下载识别模型时，status 带结构化的 progress（kind 为 model_download）才写这一句，不带时照旧是 #94；不看 status 的 detail，所以卡片不重复顶部横幅那整句（横幅里还有模型名、MB 和「仅首次需要」）。没有百分比（模型大小未知，后端只给已下载的 MB）时写「正在下载识别模型… 已下载 {n} MB / Downloading speech model… {n} MB so far」，和横幅那句大小未知时的说法一致；MB 也没有时只写前半句。百分号紧贴数字，数字和 MB 之间留空格（§2.3） |
+| 94b | live-ui.js connectHint（字幕区中间的卡片） | 等待第一句字幕… | Waiting for the first caption… | 2026-10-23（专家审查 U8）：直播中、这一场还没出过字幕时写，第一句一到就收起；和浮窗的占位（#137）同一对中英文。直播中点过清空字幕不算「还没出过」 |
 | 95 | index.html:501 | 观众弹幕 | Comments | 52 → 70（13px/600）。不用 “Viewer Comments”（119）。2026-10-15 起标题后面不再有条数（列表封顶 100 条，数字一直停在 100） |
 | 96 | app.js:1336–1358 | 评论流已连接 / 正在连接评论流… / 评论流断开，重连中… / 未连接 | Connected / Connecting… / Disconnected. Reconnecting… / Not connected | 放在 Comments 标题旁边，上下文已经够了。2026-10-15 起「评论流已连接 / Connected」不再画在标题旁边：`#comment-source` 整个收起，这句话写进 Comments 标题的 title；其余状态照旧 |
 | 97 | app.js:1338/1358 | 已连接，等待观众发评论… / 开播后自动连接评论流 | Connected. Waiting for comments… / Comments connect when the stream starts. | 空状态文字 |
-| 98 | index.html:504/505 | 收起 / 清空弹幕 | Hide / Clear | title 写 “Hide comments to widen captions” |
+| 98 | index.html:504/505 | 收起 / 清空弹幕（title：清空历史弹幕） | Hide / Clear Comments（title：Clear comment history） | 收起的 title 写 “Hide comments to widen captions”。清空弹幕 2026-10-23 前英文只写 Clear、没有 title（专家审查 V3），见 §1.3 |
 | 99 | index.html:514 | 弹幕（悬浮入口）/ 展开观众弹幕 | Comments / Show comments | 2026-10-15 起入口上不带条数；未读红点（`#comment-fab-guard`）照旧 |
 | 100 | index.html:521 | 回到最新 | Jump to Latest | |
 | 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用更强的模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the stronger model | 悬停时才出现的按钮，68+16px |
@@ -621,7 +625,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 备注 |
 |---|---|---|---|---|
 | 136 | float_window.py FLOAT_TITLE | 浮窗 | Floating Window | 原生窗口标题（页面 `<title>` 是 “Floating Window · TikTok Live Translator”）。窗口窄，标题栏放得下的只有前半 |
-| 137 | float.html #f-empty、float.js floatPlaceholder | 等待第一句字幕… / 连接中… | Waiting for the first caption… / Connecting… | 窗口里还没有字幕时的占位，只写观察到的状态 |
+| 137 | float.html #f-empty、float.js floatPlaceholder | 等待第一句字幕… / 连接中… | Waiting for the first caption… / Connecting… | 窗口里还没有字幕时的占位，只写观察到的状态。中控页字幕区中间的卡片用同一句（#94b） |
 | 138 | float.html #f-comments | 弹幕 | Comments | aria-label；窗口里没有可见的标题 |
 | 139 | float.js floatCommentView | 翻译中… | Translating… | 同 #102 |
 | 140 | float_window.py OPEN_FAILED | 无法打开浮窗。 | Couldn’t open the Floating Window. | 一次性提示（notice）。不写原因。正文里提到界面元素用它的 Title Case 名字（§2.1） |
@@ -733,7 +737,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 **P1：影响默认窗口或 README 截图**
 
 - **R1 直播顶栏只有 8px 余量。**
-  - 清空字幕用 “Clear”（tooltip 写 “Clear caption history”，aria-label 写 “Clear captions”），
+  - 清空字幕用 “Clear”（tooltip 写 “Clear caption history”；aria-label 不另写，原因见 §1.3），
     换主播用 “Switch Streamer”，不要加省略号。
   - 英文版在 ≤1100px 隐藏字号控件的两个 A，余量能到 42px。
   - 不要用 “Clear Captions”、“Viewer Comments”、“Start Translating” 这类长写法。

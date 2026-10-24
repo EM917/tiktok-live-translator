@@ -282,10 +282,11 @@ test("英文页：状态胶囊、顶栏标签、横幅都是英文", () => {
     page.push({ type: "status", state, detail: "" });
     assert.equal(page.el("status-text").textContent, text, state);
   }
-  // 认不出的输入、连接断开时点开始
+  // 认不出的输入：说明写在输入框下面（专家审查 U9），不再走状态横幅；连接断开时点开始
   page.el("room-input").value = "hola mundo";
   page.el("start-btn").click();
-  assert.match(page.el("status-banner").textContent, /^This isn’t a live link or username\. .*Display names won’t work\.$/);
+  assert.match(page.el("room-input-error").textContent, /^This isn’t a live link or username\. .*Display names won’t work\.$/);
+  assert.doesNotMatch(page.el("status-banner").textContent, /live link or username/);
   page.offline();
   page.el("start-btn").click();
   assert.equal(page.el("status-banner").textContent,
