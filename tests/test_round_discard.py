@@ -425,7 +425,8 @@ class PinnedClock:
 def _pin_watch_clock(monkeypatch):
     """session_end 的拉流汇总里有 monitored_sec：这一场从建会话状态到关审计，单调时钟走了多久（round 到
     0.1 秒）。两条管线各量各的，慢的跑器上一条过了 50 毫秒、另一条没过，两行就差在这一个数上（PR #136 的
-    Windows CI：clean 0.1、lossy 0.0）。FrozenDatetime 只钉墙钟时刻，这里把 StreamWatch 的两个钟也钉住；
+    Windows CI：clean 那条是 0.1，lossy 那条的值被 pytest 截掉了，只知道前缀不同；本机让 clean 多停 55 毫秒
+    就复现）。FrozenDatetime 只钉墙钟时刻，这里把 StreamWatch 的两个钟也钉住；
     走的还是 _new_stream_watch 那条建法。返回单调时钟，测试自己拨。"""
     import app.pipeline_stream as stream_mod
     mono = PinnedClock(1000.0)
