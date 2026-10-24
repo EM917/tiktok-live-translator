@@ -9,7 +9,8 @@ I4：requirements.txt 只写下限，新装机拿到的是 PyPI 当天最新、�
   platform_machine 是 AMD64 的（安装包只对着 win_amd64 查过）；
 - 指纹把 constraints.txt 也算进去：锁的版本一变，已有安装下次启动补装一次（plan_install 给的是
   「清单变了」那一种，不重建）；没有 constraints.txt 时指纹和以前逐字节相同；
-- bootstrap.install_requirements 的每一次 pip（整份、只装核心、逐个装可选组件）都带 -c；
+- bootstrap.install_requirements 的每一次 pip（整份、只装核心、逐个装可选组件）都先带 -c；回退的那几步
+  带 -c 装不上时不带 -c 再装一次（没联网时已有安装照样能启动，和加锁以前一样），整份那一次不这样；
 - 自检和一键更新给的手动命令带 -c。
 
 D14：main.py 在 3.9 上不再往下跑，弹出「需要升级」和照做的步骤（app/bootstrap.refuse_old_python）；
@@ -281,15 +282,102 @@ def test_the_full_install_passes_the_constraints(tmp_path):
         bootstrap.requirements_file_digest(root)
 
 
+def _pinned_cmd(cmd, root):
+    return "-c" in cmd and cmd[cmd.index("-c") + 1] == str(root / "constraints.txt")
+
+
 def test_the_fallback_installs_pass_the_constraints_too(tmp_path):
-    """整份装不上时改为先装核心、再逐个装可选组件：每一次都带 -c，不然逐个装的那几个又是 PyPI 最新的。"""
+    """整份装不上时改为先装核心、再逐个装可选组件：每一次都先带 -c，不然逐个装的那几个又是 PyPI 最新的。
+    带着装不上的那一步再不带 -c 装一次（第 2 轮），两次都不行才算没装上。"""
     root = _project(tmp_path)
-    run = Run(1, 0, 0, 1)
+    run = Run(1, 0, 0, 1, 1)
     result = _install(root, run)
     assert result == {"full_ok": False, "failed_optional": ["pywebview>=5"]}
-    assert len(run.calls) == 4
-    for cmd in run.calls:
-        assert cmd[cmd.index("-c") + 1] == str(root / "constraints.txt"), cmd
+    assert len(run.calls) == 5
+    for cmd in run.calls[:4]:
+        assert _pinned_cmd(cmd, root), cmd
+    assert run.calls[4] == run.calls[3][:-2]                      # 同一步，只是去掉 -c 和锁文件
+
+
+class Offline:
+    """没联网、装着的版本又和锁的不一样：带 -c 的 pip 都要联网换版本，装不上；不带 -c 的全是
+    「已经装好」，不用联网就返回 0（pip 对已满足的要求不访问软件包服务器）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, cmd, log_path=None):
+        self.calls.append([str(c) for c in cmd])
+        return (1 if "-c" in cmd else 0), "ERROR: Could not find a version that satisfies"
+
+
+def _stamp_before_the_lock(root):
+    """加锁以前的版本装成功过：指纹只算了 requirements.txt。"""
+    con = root / "constraints.txt"
+    saved = con.read_bytes()
+    con.unlink()
+    bootstrap.write_requirements_stamp(root, bootstrap.requirements_file_digest(root))
+    con.write_bytes(saved)
+
+
+def test_offline_after_the_lock_appears_the_install_falls_back_to_no_lock_and_the_app_starts(
+        tmp_path, capsys):
+    """第 2 轮（审查）：从加锁以前的版本升级上来，第一次启动要按锁补装一次。正好没联网时，以前
+    （加锁以前）指纹没变、根本不装，照常启动；加锁后带 -c 的每一步都装不上，核心组件那一步抛 PipFailed、
+    起不来。现在回退的每一步带 -c 装不上就不带 -c 再装一次——和加锁以前一样「已经装好」，程序照常启动；
+    指纹不改成「按锁装好了」，24 小时内不再补装，过了 24 小时再按锁装。"""
+    root = _project(tmp_path)
+    _stamp_before_the_lock(root)
+    old_stamp = bootstrap.recorded_requirements_digest(root)
+    assert bootstrap.plan_install(True, root, "3.13", "3.13") is not None      # 要补装一次
+    run = Offline()
+    result = bootstrap.install_requirements(
+        "/venv/bin/python", root, ["aiohttp>=3.9"], ["mlx-whisper>=0.4", "pywebview>=5"],
+        run=run, probe=lambda py: True, now=1000.0)
+    assert result == {"full_ok": False, "failed_optional": []}
+    # 整份带 -c、核心带 -c、核心不带；核心不带才装上，后面两个可选组件直接不带
+    assert [_pinned_cmd(c, root) for c in run.calls] == [True, True, False, False, False]
+    assert run.calls[2][-1] == "aiohttp>=3.9"
+    assert not (root / ".venv" / bootstrap.MLX_GIVEUP).exists()     # 没把 mlx-whisper 记成装不上
+    assert "不锁版本再装一次" in capsys.readouterr().out             # 终端写明这一步怎么装的
+    # 指纹没改成「按锁装好了」：24 小时内启动不补装（最终进程照常起来），过了 24 小时再按锁补装
+    assert bootstrap.recorded_requirements_digest(root) == old_stamp
+    assert bootstrap.requirements_pending(root, now=1000.0 + 60) is False
+    assert bootstrap.requirements_pending(root, now=1000.0 + bootstrap.REQ_RETRY_SEC + 1) is True
+
+
+def test_the_full_install_is_not_retried_without_the_lock(tmp_path):
+    """整份 -r 不带 -c 重试：它成功了会写指纹，不带锁装成的也记成「按锁装好了」，以后不再按锁补装。"""
+    root = _project(tmp_path)
+    run = Offline()
+    _install(root, run)
+    full = [c for c in run.calls if "-r" in c]
+    assert len(full) == 1 and _pinned_cmd(full[0], root)
+    assert bootstrap.recorded_requirements_digest(root) is None
+
+
+def test_core_failing_with_and_without_the_lock_still_raises(tmp_path):
+    root = _project(tmp_path)
+    run = Run(1, 1, 1)
+    with pytest.raises(bootstrap.PipFailed):
+        _install(root, run)
+    assert [_pinned_cmd(c, root) for c in run.calls] == [True, True, False]
+
+
+def test_an_optional_failing_both_ways_keeps_the_lock_for_the_next_step(tmp_path):
+    """两次都没装上（不是锁的事）：后面的步骤照旧先带 -c。"""
+    root = _project(tmp_path)
+    run = Run(1, 0, 1, 1, 0)
+    assert _install(root, run)["failed_optional"] == ["curl_cffi>=0.7"]
+    assert [_pinned_cmd(c, root) for c in run.calls] == [True, True, True, False, True]
+
+
+def test_without_a_constraints_file_the_fallback_runs_each_step_once(tmp_path):
+    root = _project(tmp_path, constraints=None)
+    run = Run(1, 1)
+    with pytest.raises(bootstrap.PipFailed):
+        _install(root, run)
+    assert len(run.calls) == 2 and not any("-c" in c for c in run.calls)
 
 
 def test_the_mlx_giveup_copy_still_uses_the_real_constraints(tmp_path):

@@ -1049,6 +1049,20 @@ def ensure_pip(pip_python, root, log_path=None, run=run_logged, probe=pip_import
     raise PipMissing(log_path, marked=marked)
 
 
+def _fallback_step(run, cmd, pinned, log_path):
+    """install_requirements 回退路径上的一步：先带 -c（pinned）装；带着装不上，就不带 -c 再装一次这一步，
+    和加锁以前一样（理由见 install_requirements）。返回 (退出码, 输出末尾, 这一轮后面几步的 -c)：
+    不带 -c 才装上的，后面几步也直接不带，省得每一步都先等一次带 -c 的失败（没联网时 pip 每次都要
+    重试几轮才报错）；两次都没装上的，后面照旧先带 -c。pinned 是空的（没有 constraints.txt）时
+    只装一次，和以前一样。"""
+    code, tail = run(cmd + pinned, log_path)
+    if code == 0 or not pinned:
+        return code, tail, pinned
+    print("[初始化] 按 constraints.txt 锁定的版本没装上，这一步改为不锁版本再装一次（和加锁以前一样）…")
+    code, tail = run(cmd, log_path)
+    return code, tail, ([] if code == 0 else pinned)
+
+
 def install_requirements(pip_python, root, core_deps, optional_deps, log_path=None,
                          run=run_logged, now=None, probe=pip_importable):
     """ensure_env 的安装步骤：整份 requirements；不行就先保核心依赖，再逐个装可选组件。
@@ -1063,9 +1077,16 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
     一直记不上）就在启动时重下一遍 torch，把开播挡上几分钟。指纹照样按真正的
     requirements.txt 算——装成功了，启动就不再为这份清单补装。
 
-    每一次 pip 都带 -c constraints.txt（I4）：整份、只装核心、逐个装可选组件都带。以前只给下限，
+    每一次 pip 都先带 -c constraints.txt（I4）：整份、只装核心、逐个装可选组件都带。以前只给下限，
     新装机拿到的是 PyPI 当天最新、从没一起跑过的组合；逐个装那几步不带的话，回退路径装出来的
-    又是没测过的版本。项目根没有 constraints.txt 时照旧不带。"""
+    又是没测过的版本。项目根没有 constraints.txt 时照旧不带。
+
+    回退路径上带 -c 的一步装不上时，这一步不带 -c 再装一次（_fallback_step）：已有的安装第一次
+    碰到锁（从加锁以前的版本升级上来，或者锁的版本改了）时要补装，装着的版本和锁的不一样就得联网
+    换版本；这时没联网，带 -c 的每一步都装不上，以前（加锁以前）核心组件照样「已经装好」、程序照常
+    启动，加了锁却会抛 PipFailed、起不来。不带 -c 的那次和加锁以前一模一样，所以不比以前差。
+    整份 -r 不这样重试：它成功了就写指纹，不带锁装成的也会记成「按锁装好了」，以后再也不按锁补装。
+    这一轮整份没成，失败已经记下：24 小时内启动不再补装，过了 24 小时再按锁整份装一次。"""
     root = Path(root)
     ensure_pip(pip_python, root, log_path, run=run, probe=probe, now=now)
     base = [str(pip_python), "-m", "pip", "install", "--disable-pip-version-check"]
@@ -1098,12 +1119,12 @@ def install_requirements(pip_python, root, core_deps, optional_deps, log_path=No
     # 真实后果：一台 M4 Mac 因为某个可选包编译失败，mlx-whisper 跟着没装上，整机掉到
     # CPU 路径跑 large-v3-turbo（hwdetect 实测 RTF 0.99），而屏幕上什么也没说。
     print("[初始化] 完整安装失败，改为逐个安装…")
-    code, tail = run(base + list(core_deps) + pinned, log_path)
+    code, tail, pinned = _fallback_step(run, base + list(core_deps), pinned, log_path)
     if code != 0:
         raise PipFailed(code, tail, log_path)
     failed = []
     for optional in optional_deps:
-        c, _t = run(base + [optional] + pinned, log_path)
+        c, _t, pinned = _fallback_step(run, base + [optional], pinned, log_path)
         if c != 0:
             print("[初始化] 可选组件 {} 没装上，其余功能不受影响".format(optional))
             failed.append(optional)
