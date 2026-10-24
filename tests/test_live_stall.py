@@ -557,8 +557,8 @@ def test_the_stop_during_the_translation_wait_is_not_swallowed(monkeypatch, tmp_
     p._login_source = noop
     monkeypatch.setattr(app.asr, "create_transcriber", lambda **kw: Words())
     monkeypatch.setattr(app.segmenter, "SilenceSegmenter", EveryTenFrames)
-    # 点过停止、看完之后：桩件再被调到就抛错。停止被吞掉时直播任务会一直连下去，asyncio.run 收尾时取消它也会
-    # 被吞，测试就卡到 pytest-timeout；这样它以出错结束，测试在下面的断言上红，不卡死
+    # scenario 一结束（包括没等到等待点、提前失败）：桩件再被调到就抛错。停止被吞掉时直播任务会一直连下去，
+    # asyncio.run 收尾时取消它也会被吞，测试就卡到 pytest-timeout；这样它以出错结束，测试在断言上红，不卡死
     stopped = []
 
     class Source(scripted_source(live=20)):
@@ -617,23 +617,25 @@ def test_the_stop_during_the_translation_wait_is_not_swallowed(monkeypatch, tmp_
             len(translating), len(pending_drains()), seen[-12:])
 
     async def scenario():
-        await p.start_stream(ROOM)
-        task = p._stream_task
-        # 第一轮读到流尾、识别做完，这一轮已经返回：翻译还在后台排空里跑，重连循环在退避里等
-        await poll_until(at_the_wait, 10.0, where)
-        await asyncio.sleep(0.2)
-        assert at_the_wait(), where()                     # 还在这个等待点里（退避 2 秒、翻译 3 秒）
-        drains = pending_drains()
-        before = (len(resolves), len(server.statuses))
-        t0 = time.monotonic()
-        await p.stop_stream()
-        took = time.monotonic() - t0
-        # 在协程里、stop_stream 一返回就看：asyncio.run 退出时会把没结束的任务全部取消，
-        # 放到 run() 外面看什么都钉不住
-        done, drains_left = task.done(), [t for t in drains if not t.done()]
-        await asyncio.sleep(0.5)
-        stopped.append(True)
-        return done, took, before, len(drains), drains_left
+        try:
+            await p.start_stream(ROOM)
+            task = p._stream_task
+            # 第一轮读到流尾、识别做完，这一轮已经返回：翻译还在后台排空里跑，重连循环在退避里等
+            await poll_until(at_the_wait, 10.0, where)
+            await asyncio.sleep(0.2)
+            assert at_the_wait(), where()                 # 还在这个等待点里（退避 2 秒、翻译 3 秒）
+            drains = pending_drains()
+            before = (len(resolves), len(server.statuses))
+            t0 = time.monotonic()
+            await p.stop_stream()
+            took = time.monotonic() - t0
+            # 在协程里、stop_stream 一返回就看：asyncio.run 退出时会把没结束的任务全部取消，
+            # 放到 run() 外面看什么都钉不住
+            done, drains_left = task.done(), [t for t in drains if not t.done()]
+            await asyncio.sleep(0.5)
+            return done, took, before, len(drains), drains_left
+        finally:
+            stopped.append(True)
 
     done, took, before, n_drains, drains_left = run(scenario())
     assert done and took < 1.0

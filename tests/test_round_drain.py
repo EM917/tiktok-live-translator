@@ -459,14 +459,18 @@ def test_a_new_round_starts_its_queue_depth_from_zero(monkeypatch, tmp_path):
 
 def _loop_fakes(monkeypatch, p, rounds, translate_sec, resolve_hook=None, offline_after=None):
     """走 start_stream 的整场桩件。rounds：每一轮吐几帧（之后读到流尾）；最后一轮之后一直挂着（直播还在）。
-    translate_sec：每条字幕翻译要多久。offline_after：第几次解析起回「不在播」（None 表示一直在播）。"""
+    translate_sec：每条字幕翻译要多久。offline_after：第几次解析起回「不在播」（None 表示一直在播）。
+
+    log["stopped"] 设成 True 之后，桩件再被调到（拉流、查流地址）就抛错。停止被吞掉时直播任务会一直连下去，
+    asyncio.run 收尾时取消它也会被吞，测试就卡到 pytest-timeout（CI 上连同后面的用例一起结束）；这样它以出错
+    结束，测试在断言上红，不卡死。点停止的用例在 scenario 的 finally 里设：等不到、提前失败时也要设。"""
     monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", False)
     monkeypatch.setattr(reconnect_policy.V1Policy, "plan", lambda self, silent_sec=None:
                         reconnect_policy.Plan(0, "lookup", attempt=1, attempts=5))
     monkeypatch.setattr(app.asr, "create_transcriber", lambda **kw: GatedASR())
     monkeypatch.setattr(app.segmenter, "SilenceSegmenter", EveryTenFrames)
     plan = iter(rounds)
-    log = {"eof": [], "resolves": [], "translations": [], "cancelled": 0}
+    log = {"eof": [], "resolves": [], "translations": [], "cancelled": 0, "stopped": False}
 
     class Source:
         def __init__(self, media, denoise_model=None):
@@ -474,6 +478,8 @@ def _loop_fakes(monkeypatch, p, rounds, translate_sec, resolve_hook=None, offlin
             self.n = next(plan, None)
 
         async def frames(self):
+            if log["stopped"]:
+                raise RuntimeError("点了停止之后还在拉流")
             for _ in range(self.n or 0):
                 yield b"\x01" * FRAME_BYTES
                 await asyncio.sleep(0)
@@ -491,6 +497,8 @@ def _loop_fakes(monkeypatch, p, rounds, translate_sec, resolve_hook=None, offlin
 
     async def fake_resolve(url, cookies=None, cookies_browser="auto", trace=None):
         log["resolves"].append(time.monotonic())
+        if log["stopped"]:
+            raise RuntimeError("点了停止之后还在查流地址")
         if resolve_hook is not None:
             resolve_hook(len(log["resolves"]))
         if offline_after is not None and len(log["resolves"]) >= offline_after:
@@ -538,24 +546,29 @@ def test_the_next_lookup_does_not_wait_for_the_translation_drain(monkeypatch, tm
     log = _loop_fakes(monkeypatch, p, [2 * SEG_FRAMES], translate_sec=2.0, resolve_hook=hook)
 
     async def scenario():
-        await p.start_stream(ROOM)
-        task = p._stream_task
-        await poll_until(lambda: len(log["resolves"]) >= 2, 10.0,
-                         lambda: "第二次解析（已解析 {} 次）".format(len(log["resolves"])))
-        t0 = time.monotonic()
-        await p.stop_stream()
-        took = time.monotonic() - t0
-        await asyncio.sleep(0.05)
-        return task, took
+        try:
+            await p.start_stream(ROOM)
+            task = p._stream_task
+            await poll_until(lambda: len(log["resolves"]) >= 2, 10.0,
+                             lambda: "第二次解析（已解析 {} 次）".format(len(log["resolves"])))
+            t0 = time.monotonic()
+            await p.stop_stream()
+            took = time.monotonic() - t0
+            # 在协程里看：asyncio.run 退出时会把没结束的任务全部取消，排空的翻译到那时也会被取消
+            done = task.done()
+            await asyncio.sleep(0.05)
+            return done, took, log["cancelled"]
+        finally:
+            log["stopped"] = True
 
-    task, took = run(scenario())
-    assert task.done() and took < 1.0
+    done, took, cancelled = run(scenario())
+    assert done and took < 1.0
     eof_at, second_lookup = log["eof"][0], log["resolves"][1]
     assert second_lookup - eof_at < 1.0                 # 不等那 2 秒的翻译
     ends = [t for kind, _i, t in log["translations"] if kind == "end"]
     assert all(t > second_lookup for t in ends)         # 解析的时候上一轮的翻译还在跑
     assert at_resolve == {"breaks": 1, "round": None, "drains": 1}
-    assert log["cancelled"] >= 1                        # 停止把后台的排空一起取消了
+    assert cancelled >= 1                               # 停止把后台的排空一起取消了
     session_end = of_type(_all_rows(tmp_path), "session_end")
     assert len(session_end) == 1 and session_end[0]["reason"] == "user_stop"
 
@@ -619,27 +632,31 @@ def test_a_stop_while_a_natural_end_waits_for_the_last_translations(monkeypatch,
         return ended and bool(pending_drains()) and not task.done()
 
     async def scenario():
-        await p.start_stream(ROOM)
-        task = p._stream_task
-        await poll_until(lambda: at_the_wait(task), 10.0, lambda: "自然结束、收尾在等翻译（解析 {} 次、"
-                         "后台排空 {} 个）".format(len(log["resolves"]), len(pending_drains())))
-        await asyncio.sleep(0.2)
-        assert at_the_wait(task)                          # 还在等（翻译要 3 秒）
-        drains = pending_drains()
-        before = (len(log["resolves"]), len(p.server.statuses()))
-        t0 = time.monotonic()
-        await p.stop_stream()
-        took = time.monotonic() - t0
-        # 在协程里、stop_stream 一返回就看（asyncio.run 退出时会把没结束的任务全部取消）
-        got = {"done": task.done(), "cancelled": task.cancelled(),
-               "drains_left": [t for t in drains if not t.done()]}
-        await asyncio.sleep(0.5)
-        return took, before, got
+        try:
+            await p.start_stream(ROOM)
+            task = p._stream_task
+            await poll_until(lambda: at_the_wait(task), 10.0, lambda: "自然结束、收尾在等翻译（解析 {} 次、"
+                             "后台排空 {} 个）".format(len(log["resolves"]), len(pending_drains())))
+            await asyncio.sleep(0.2)
+            assert at_the_wait(task)                      # 还在等（翻译要 3 秒）
+            drains = pending_drains()
+            before = (len(log["resolves"]), len(p.server.statuses()))
+            t0 = time.monotonic()
+            await p.stop_stream()
+            took = time.monotonic() - t0
+            # 在协程里、stop_stream 一返回就看（asyncio.run 退出时会把没结束的任务全部取消）
+            got = {"done": task.done(), "cancelled": task.cancelled(),
+                   "drains_left": [t for t in drains if not t.done()]}
+            await asyncio.sleep(0.5)
+            got["translations_cancelled"] = log["cancelled"]
+            return took, before, got
+        finally:
+            log["stopped"] = True
 
     took, before, got = run(scenario())
     assert took < 1.0
-    assert got == {"done": True, "cancelled": True, "drains_left": []}
-    assert log["cancelled"] == 1                          # 在途那条被取消了，没有等它翻完
+    assert got == {"done": True, "cancelled": True, "drains_left": [],
+                   "translations_cancelled": 1}           # 在途那条被取消了，没有等它翻完
     assert len(log["resolves"]) == before[0]
     after = [s for _t, s, _d in p.server.statuses()[before[1]:]]
     assert "live" not in after and after[-1] == "idle"
