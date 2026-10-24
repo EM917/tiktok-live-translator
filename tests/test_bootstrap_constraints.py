@@ -5,7 +5,8 @@ I4：requirements.txt 只写下限，新装机拿到的是 PyPI 当天最新、�
 记着主人那台机器上实际跑着的那一套，所有 `pip install -r` 都带 `-c constraints.txt`。钉住：
 - constraints.txt 本身：每一条锁死（==）的都带 python_version 标记，而且起点不早于 3.11（3.10 只设
   上界）；每个锁死的包都有一条不带标记的上界；yt-dlp、curl_cffi、TikTokLive 不锁；标记在几种机器上
-  求值不出错（Linux 的内核版本号不是合法版本号，不能拿 platform_release 比大小）；
+  求值不出错（Linux 的内核版本号不是合法版本号，不能拿 platform_release 比大小）；Windows 只锁
+  platform_machine 是 AMD64 的（安装包只对着 win_amd64 查过）；
 - 指纹把 constraints.txt 也算进去：锁的版本一变，已有安装下次启动补装一次（plan_install 给的是
   「清单变了」那一种，不重建）；没有 constraints.txt 时指纹和以前逐字节相同；
 - bootstrap.install_requirements 的每一次 pip（整份、只装核心、逐个装可选组件）都带 -c；
@@ -120,6 +121,14 @@ ENVS = {
     "windows-310": dict(sys_platform="win32", platform_machine="AMD64", python_version="3.10",
                         python_full_version="3.10.11", platform_version="10.0.19045",
                         platform_release="10"),
+    "windows-313": dict(sys_platform="win32", platform_machine="AMD64", python_version="3.13",
+                        python_full_version="3.13.5", platform_version="10.0.26100",
+                        platform_release="11"),
+    # ARM64 的 Windows：原生 ARM64 的 Python 报 ARM64；3.12 起 x64 的 Python 在 ARM64 机器上转译运行时，
+    # platform.machine() 按 WMI 读到的也是本机的 ARM64
+    "windows-arm64": dict(sys_platform="win32", platform_machine="ARM64", python_version="3.13",
+                          python_full_version="3.13.5", platform_version="10.0.26100",
+                          platform_release="11"),
     "linux": dict(sys_platform="linux", platform_machine="x86_64", python_version="3.13",
                   python_full_version="3.13.0", platform_version="#45-Ubuntu SMP PREEMPT_DYNAMIC",
                   platform_release="6.8.0-45-generic"),
@@ -151,12 +160,30 @@ def test_the_pins_apply_where_the_tested_set_has_installers_and_nowhere_else():
     assert {"onnxruntime", "faster-whisper", "ctranslate2"} <= _pinned_in("windows-311")
     # numpy 2.5 要 Python 3.12：3.11 上只设上界
     assert "numpy" not in _pinned_in("windows-311")
+    assert {"numpy", "onnxruntime", "ctranslate2"} <= _pinned_in("windows-313")
     # macOS 13 及更早的 Apple 芯片：只在 macOS 14 起才有安装包的那几个不锁，其余照锁
     old_mac = _pinned_in("apple-silicon-macos-13")
     assert not old_mac & {"onnxruntime", "torch", "av", "mlx", "mlx-metal"}
     assert "faster-whisper" in old_mac
-    for env_name in ("intel-mac", "windows-310", "linux", "python-315"):
+    for env_name in ("intel-mac", "windows-310", "windows-arm64", "linux", "python-315"):
         assert _pinned_in(env_name) == set(), env_name
+
+
+@pytest.mark.parametrize("machine", ["ARM64", "x86", "arm64", ""])
+def test_on_windows_only_the_amd64_machines_whose_wheels_were_checked_are_pinned(machine):
+    """锁死的版本只对着 PyPI 的 win_amd64 安装包查过：Windows 上 platform_machine 不是 AMD64 的
+    （ARM64，或认不出的）一条也不锁，只受上界约束。ARM64 改动前也装不上（ctranslate2 没有 win_arm64
+    的安装包），这里不让「查过」的说法管到没查过的机器上。"""
+    pytest.importorskip("pip")
+    from pip._vendor.packaging.markers import Marker
+
+    def pinned(platform_machine):
+        env = dict(ENVS["windows-313"], platform_machine=platform_machine, os_name="nt",
+                   platform_system="Windows", platform_python_implementation="CPython",
+                   implementation_name="cpython", implementation_version="3.13.5", extra="")
+        return {n for n, s, m in _entries() if s.startswith("==") and Marker(m).evaluate(env)}
+    assert pinned(machine) == set()
+    assert len(pinned("AMD64")) >= 20
 
 
 # ---- 指纹 ------------------------------------------------------------------------------------
