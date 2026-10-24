@@ -19,6 +19,11 @@ from pathlib import Path
 from .i18n import L, bimap, of
 from .redact import strip_query
 
+try:
+    import fcntl
+except ImportError:          # Windows：没有 flock（见 _hold_shared_lock）
+    fcntl = None
+
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 # 写不进去时先留在内存里、能写了再补写的记录类型：会话头、报警、会话尾。
@@ -39,10 +44,27 @@ def _open_new(directory, stamp):
         name = "session-{}{}.jsonl".format(stamp, "" if n == 1 else "-{}".format(n))
         path = directory / name
         try:
-            return path, path.open("xb", buffering=0)
+            fh = path.open("xb", buffering=0)
         except FileExistsError:
             continue
+        _hold_shared_lock(fh)
+        return path, fh
     raise OSError(L("同一秒内已有 99 个审计文件", "99 audit files already exist for this second"))
+
+
+def _hold_shared_lock(fh):
+    """在这份审计上拿一把共享的 flock，一直拿到文件关掉（进程没了也随之放掉）。启动补写（app/audit_recover）
+    先要同一份文件的排他锁、拿不到就跳过：有了这把锁，活着的那一场一定被当成「有人在写」，不靠 mtime 和端口
+    探测去猜。那两道保险有一个缺口（第 2 轮审查）：这个实例因为端口被占换到了别的端口、又合盖超过 15 分钟，
+    这时用 --no-open / --url 起的第二个实例探测不到它，15 分钟也过了，unclean_exit 就会追加进还活着的文件。
+    拿不到（Windows 没有 flock、文件系统不支持）就算了：照旧只靠那两道保险，审计照写。"""
+    if fcntl is None:
+        return False
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _iso_from_epoch(ts):
@@ -182,6 +204,13 @@ class AuditLog:
         self.serialize_failures = 0
         self.last_gap = None             # 最近一次恢复时写下的 audit_gap
         self._lost_in_outage = 0
+        # 文件关掉之后才到的记录（专家审查 B5；计划审查 P8）：旧任务过了停止的宽限期才写的译文、重译结果……
+        # 以前 _write 见文件已关直接 return，记录静默消失，write_failures 也还是 0。现在计数、终端打一行
+        # （每场最多一行），开下一场的管线把它记进那一场的 session_start（late_records_prev）。不追加进已经写了
+        # session_end 的旧文件：那样最后一条就不是 session_end 了，下次启动 app/audit_recover 会补一条假的 unclean_exit
+        self._closed = False             # close() 关过了（和「文件根本没建起来」分开）
+        self.late_records = 0            # 关了之后才到、没写进去的条数（见 _note_late）
+        self.late_reported = 0           # 其中已经记进后面某一场 session_start 的条数（管线维护）
         self._retained = deque()         # 等补写的会话头/报警/会话尾（编码好的整行）
         # 每次「开始写不进去」调一次，不是每条都调。可能在事件循环之外的线程里被调用，
         # 调用方自己切回循环（call_soon_threadsafe）
@@ -229,6 +258,7 @@ class AuditLog:
         只把写不出来的字段换成 <类型名>（见 _sanitized）。以前这里只接 ValueError，TypeError
         冒到调用方，一段坏记录就结束整场（专家审查 B2）。"""
         if self._fh is None:
+            self._note_late(record)
             return
         data = _encode(record)
         unencodable = data is None
@@ -241,21 +271,43 @@ class AuditLog:
             if data is None:
                 return
         started = None
+        late = False
         with self._lock:
             if self._fh is None:
-                return
-            if unencodable:
-                self.serialize_failures += 1
-            try:
-                if self.failing or self._retained:
-                    self._drain_locked()
-                self._append_locked(data)
-            except (OSError, ValueError) as exc:
-                started = self._note_failure_locked(record, data, exc)
+                late = True
+            else:
+                if unencodable:
+                    self.serialize_failures += 1
+                try:
+                    if self.failing or self._retained:
+                        self._drain_locked()
+                    self._append_locked(data)
+                except (OSError, ValueError) as exc:
+                    started = self._note_failure_locked(record, data, exc)
+        if late:                  # 等锁的工夫里文件被关了
+            self._note_late(record)
+            return
         callback = self.on_write_error
         if started is not None and callback is not None:
             try:
                 callback(started)
+            except Exception:
+                pass
+
+    def _note_late(self, record):
+        """文件已经被 close() 关了之后又来了一条：计数，终端打一行（这一场最多一行），不写进文件。
+        文件根本没建起来（open_error）的不算——那是另一回事，审计健康检查另有提示。"""
+        if not getattr(self, "_closed", False):
+            return
+        with self._lock:
+            self.late_records = getattr(self, "late_records", 0) + 1
+            first = self.late_records == 1
+        if first:
+            kind = record.get("type") if isinstance(record, dict) else None
+            try:          # 终端可能已经没了（关了终端窗口）：这一行打不出来也不许抛给写审计的调用方
+                print("[警告] 这一场的审计文件已经关闭，之后才到的记录没有写进去（第一条是 {}）；条数记在"
+                      "下一场的 session_start（late_records_prev），这一场不再打印".format(
+                          str(kind)[:40] if kind else "?"))
             except Exception:
                 pass
 
@@ -438,22 +490,29 @@ class AuditLog:
             row["queued"] = True
         self._write(row)
 
-    def translation_engine_error(self, engine, status, error=None, model=None):
+    def translation_engine_error(self, engine, status, error=None, model=None, kind=None):
         """翻译引擎的 HTTP 回应说明它这会儿用不了：本地 Ollama 连续几次非 200（没有
         这个模型、载入失败……），或远程引擎拒绝了密钥/模型（401/403/404）。translation
         记录里只有 ok=false，没有这一条就答不出「这一场的译文为什么整段是空的」。
 
         error 是 Ollama 的原话；远程引擎一般不记原话（它们的错误说明里可能带打码后的
         密钥片段），只有 Claude 的 400/402 记（说的是请求体或账务，不带密钥）。同一个引擎
-        在同一场里只记一次，中间成功过才会再记。"""
-        self._write({
+        在同一场里只记一次，中间成功过才会再记。
+
+        kind 是 Claude 请求失败的类别（专家审查 B7，见 Pipeline._note_failure_kind）：timeout / connect /
+        http（5xx，含 529）/ other。这几种没有能归进上面规则的回应：status 是 5xx 的状态码或 null，error 是
+        异常的类型名（不记异常原文）。不是 None 才写这个键：已有的几种记录逐字节不变。"""
+        row = {
             "type": "translation_engine_error",
             "at": datetime.now().isoformat(timespec="milliseconds"),
             "engine": engine,
             "model": model,
             "status": status,
             "error": (error or "")[:200] or None,
-        })
+        }
+        if kind is not None:
+            row["kind"] = str(kind)[:20]
+        self._write(row)
 
     def translation_refusal(self, seq, engine, model, category, trigger=None):
         """引擎拒绝翻译这一句（Claude：HTTP 200，stop_reason 为 refusal），按 seq 对应。
@@ -831,8 +890,10 @@ class AuditLog:
         })
 
     def stream_summary(self, **fields):
-        """每 5 分钟一条拉流汇总的快照（和 session_end 里的那些字段一样，只有数字）：⌘Q、关窗、Ctrl-C
-        都不写 session_end，场末没写也留得下数。"""
+        """每 5 分钟一条拉流汇总的快照（和 session_end 里的那些字段一样，只有数字）：进程被强杀、崩溃、断电时
+        一条 session_end 都写不了，下次启动补的那一条（app/audit_recover.py，reason=unclean_exit）也不带这些数，
+        场末没写也留得下数。关窗口、⌘Q 写 session_end（window_closed），关终端窗口、kill、Ctrl-C 写
+        session_end（signal）——专家审查 B5 之前，⌘Q、窗口模式下的 Ctrl-C 和这两种信号都不写。"""
         rec = {"type": "stream_summary", "at": datetime.now().isoformat(timespec="milliseconds")}
         for key, value in fields.items():
             rec.setdefault(key, value)
@@ -1010,12 +1071,18 @@ class AuditLog:
         self._write({"type": "viewer_auth_failed", "at": _now_ms(), "ip": ip,
                      "why": why, "suppressed": suppressed})
 
-    def viewer_action(self, action, seq, ip):
+    def viewer_action(self, action, seq, ip, refused=None):
         """手机端发起的动作（目前只有 retranslate）。translation_strong 的
         trigger="viewer" 说得出「是手机按的」，答不出「是哪一台」；这一条单独
-        记 ip，事后要能答「那次重译是谁点的」。"""
-        self._write({"type": "viewer_action", "at": _now_ms(), "action": action,
-                     "id": seq, "ip": ip})
+        记 ip，事后要能答「那次重译是谁点的」。
+
+        refused：这次点击当场没有执行时的英文代码（识别落后时先不执行，专家审查 S7）。以前签名里没有它，
+        调用方多传一个关键字就是 TypeError，整条记录都不写。不是真值就不写这个键：已有的记录逐字节不变。"""
+        row = {"type": "viewer_action", "at": _now_ms(), "action": action,
+               "id": seq, "ip": ip}
+        if refused:
+            row["refused"] = str(refused)[:40]
+        self._write(row)
 
     def window_closed(self):
         """中控关掉了程序窗口（正在监听时要先确认），监听随之停止。先于停止流程写下：
@@ -1064,6 +1131,7 @@ class AuditLog:
             finally:
                 with self._lock:
                     fh, self._fh = self._fh, None
+                    self._closed = True
                 if fh is not None:
                     try:
                         fh.close()
