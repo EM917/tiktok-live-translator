@@ -80,11 +80,15 @@ def _optional_deps():
     return out + ["curl_cffi>=0.7", "pywebview>=5"]
 
 
-def _ready_import():
-    mods = "aiohttp, numpy, faster_whisper, yt_dlp, imageio_ffmpeg"
+def _ready_modules():
+    mods = ["aiohttp", "numpy", "faster_whisper", "yt_dlp", "imageio_ffmpeg"]
     if _wants_mlx():
-        mods += ", mlx_whisper"
-    return "import " + mods
+        mods.append("mlx_whisper")
+    return mods
+
+
+def _ready_import():
+    return "import " + ", ".join(_ready_modules())  # i18n: data（交给 python -c 的语句）
 
 
 def _deps_ok():
@@ -129,6 +133,40 @@ def _requirements_current():
 def _venv_python():
     sub = "Scripts/python.exe" if os.name == "nt" else "bin/python"
     return ROOT / ".venv" / sub
+
+
+def _note_ready():
+    """_deps_ok() 刚通过：在本项目的 .venv/.app 壳里时记下就绪指纹（I9，见 bootstrap.note_ready），
+    下次启动的第一跳就不用再起子进程查一遍。只在第一跳要 import 的模块这里也都 import 成功了才记：
+    _deps_ok 对 imageio_ffmpeg 网开一面（系统里有 ffmpeg 就行），第一跳的检查不会，那种时候记了
+    指纹，第一跳就再也不补装它了。出错不挡启动。"""
+    try:
+        if not all(m in sys.modules for m in _ready_modules()):
+            return
+        from app import bootstrap
+        bootstrap.note_ready(ROOT, _ready_import())
+    except Exception:
+        pass
+
+
+def _forget_ready():
+    """在本项目的 .venv/.app 壳里发现组件不齐：删掉就绪指纹，下次启动重新检查（I9）。
+    第一跳（启动器选的 Python）上什么都不做，见 bootstrap.forget_ready。"""
+    try:
+        from app import bootstrap
+        bootstrap.forget_ready(ROOT)
+    except Exception:
+        pass
+
+
+def _install_deferred():
+    """上一跳因为端口上已有本程序在跑，把安装推迟了（I7，见 bootstrap.install_deferred）。
+    只有 POSIX 认得出来；Windows 上的最终进程认不出，在 ensure_env 里自己再判一次、照样不装。"""
+    try:
+        from app import bootstrap
+        return bootstrap.install_deferred(ROOT)
+    except Exception:
+        return False
 
 
 def _has_console():
@@ -250,12 +288,26 @@ def _existing_instance_url(base_port):
 def ensure_env():
     """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。
 
-    判断、文案和安装步骤在 app/bootstrap.py——这里没法测试（import main 就会跑到这儿）。"""
-    if _deps_ok():
+    判断、文案和安装步骤在 app/bootstrap.py——这里没法测试（import main 就会跑到这儿）。
+
+    就绪指纹（I9）：组件齐了的进程记下 .venv 的样子；第一跳看它没变就跳过子进程检查，直接换进
+    最终进程（macOS 开窗口时直接进 .app 壳）。推迟安装（I7）：现有 .venv 能跑、只是清单变了、而本程序
+    已经在跑时这次不装，换进去的那个进程也不装（POSIX 凭 _install_deferred 认出来；Windows 认不出，
+    最终进程自己再走一遍检查和 defer_install，照样不装）。"""
+    if _install_deferred():
         return
+    if _deps_ok():
+        _note_ready()
+        return
+    # 本项目的环境里 import 不齐（或清单要补装）：指纹作废，下次启动的第一跳照旧检查。第一跳
+    # 在启动器选的 Python 上 import 不了是常态，那里不删（_forget_ready 只在 .venv/.app 壳里删）
+    _forget_ready()
     vpy = _venv_python()
     in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
     lock = None
+    ready = False         # 第一跳确认指纹没变：不再检查、不装，直接换进 .venv（I9）
+    deferred = False      # 要装，但本程序已经在跑：这次不装（I7）
+    venv_created = False  # 这一轮刚 venv.create 过：空环境，不装就起不来，不能推迟（I7）
     if not in_project_venv:
         state, lock = _acquire_bootstrap_lock()
         if state == "busy":
@@ -283,34 +335,60 @@ def ensure_env():
             # 找不到 pip。组件或 pip 还在就不清（判断见 bootstrap.venv_needs_rebuild）
             usable, target_version = (bootstrap.interpreter_version(vpy)
                                       if vpy.exists() else (False, None))
-            if bootstrap.venv_needs_rebuild(usable, recorded, target_version,
-                                            own_env=bootstrap.managed_env(ROOT),
-                                            python=vpy, ready_import=_ready_import()):
-                # 清空之前先看端口上有没有本程序在跑：直播中再双击一次把窗口叫到前台就会走到
-                # 这里——ensure_env 在模块级就跑，比 main() 里认出已有实例早。有就不清：clear=True
-                # 会连它正用着的 site-packages 一起删掉，它之后的延迟导入全部失败，还要在直播时
-                # 联网拉约 1.4 GB。.venv 还不存在就没东西可删。8765 是 parse_args 的默认端口
-                # （这时还没解析参数），双击启动用的就是它
-                if (ROOT / ".venv").is_dir() and _existing_instance_url(8765):
-                    _fail_alert(bootstrap.rebuild_blocked_text())
-                    sys.exit(1)
-                _first_run_dialog(bootstrap.install_dialog_text(
-                    recorded, here, venv_existed=recorded is not None))
-                print("[初始化] 正在创建虚拟环境（仅需一次，可能几分钟）…")
-                import venv
+            # I9：解释器照旧实际跑一下（几十毫秒；跑不起来要重建，指纹看不出这个），其余的看就绪指纹：
+            # 和最终进程上次记下的一样，就不再起子进程 import 一遍核心组件（约 2 秒）、不再探 pip
+            # 实际跑出来的主次版本也要和 pyvenv.cfg 记的一样（ready_fast_path 里比）：指纹的链接终点
+            # 比的是启发式，次版本漂移不能走捷径
+            ready = usable and bootstrap.ready_fast_path(ROOT, _ready_import(),
+                                                         actual_version=target_version, python=vpy)
+            if not ready:
+                if bootstrap.venv_needs_rebuild(usable, recorded, target_version,
+                                                own_env=bootstrap.managed_env(ROOT),
+                                                python=vpy, ready_import=_ready_import()):
+                    # 清空之前先看端口上有没有本程序在跑：直播中再双击一次把窗口叫到前台就会走到
+                    # 这里——ensure_env 在模块级就跑，比 main() 里认出已有实例早。有就不清：clear=True
+                    # 会连它正用着的 site-packages 一起删掉，它之后的延迟导入全部失败，还要在直播时
+                    # 联网拉约 1.4 GB。.venv 还不存在就没东西可删。8765 是 parse_args 的默认端口
+                    # （这时还没解析参数），双击启动用的就是它
+                    if (ROOT / ".venv").is_dir() and _existing_instance_url(8765):
+                        _fail_alert(bootstrap.rebuild_blocked_text())
+                        sys.exit(1)
+                    _first_run_dialog(bootstrap.install_dialog_text(
+                        recorded, here, venv_existed=recorded is not None))
+                    print("[初始化] 正在创建虚拟环境（仅需一次，可能几分钟）…")
+                    import venv
 
-                venv.create(ROOT / ".venv", with_pip=True, clear=True)
-                target_version = here
+                    venv.create(ROOT / ".venv", with_pip=True, clear=True)
+                    target_version = here
+                    venv_created = True
         pip_python = sys.executable if in_project_venv else str(vpy)
-        check = subprocess.run(
-            [pip_python, "-c",
-             _ready_import()],
-            capture_output=True,
-        )
-        # 核心模块都在、只是 requirements.txt 和上次装成功的那份不一样（更新带来了
-        # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
-        # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
-        plan = bootstrap.plan_install(check.returncode == 0, ROOT, recorded, target_version)
+        plan = None
+        imports_ok = False
+        if not ready:
+            check = subprocess.run(
+                [pip_python, "-c",
+                 _ready_import()],
+                capture_output=True,
+            )
+            imports_ok = check.returncode == 0
+            # 核心模块都在、只是 requirements.txt 和上次装成功的那份不一样（更新带来了
+            # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
+            # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
+            plan = bootstrap.plan_install(imports_ok, ROOT, recorded, target_version)
+        # I7：现有的 .venv 能跑、只是清单变了要补装，而端口上已经有本程序在跑（直播中从 Start.command、
+        # Start.bat 或命令行又开了一次），它可能正用着这个 .venv：pip 换掉它脚下的包，它之后的延迟导入
+        # 可能拿到装了一半的东西。这次不装，照常换进 .venv——最终进程会认出已有实例、把窗口叫到前台；
+        # 换进去的那个进程也不装（POSIX 凭环境变量认出来；Windows 上认不出，那个进程跑在 .venv 里，
+        # 走到这里自己再判一次）。等下次没有实例在跑时再装。这一轮刚建的 .venv、核心组件 import 不齐的
+        # 不推迟：不装就起不来（新解压的一份第一次打开、旧的那份还在直播，就是这种）。
+        # 这一句不能挪进 `if not in_project_venv` 或 `if not ready`：Windows 的推迟全靠它在最终进程里再跑一次。
+        # 端口探测只在真要装、而且能推迟时才做
+        if bootstrap.defer_install(plan, ROOT, lambda: _existing_instance_url(8765),
+                                   imports_ok=imports_ok, venv_created=venv_created):
+            print("[初始化] 运行组件需要补装，但本程序已经在运行、正用着这些组件，这次先不装；"
+                  "退出正在运行的程序后再打开，会自动补装")
+            plan = None
+            deferred = True
         if plan is not None:
             timer = None
             if plan["delay"] > 0:
@@ -338,8 +416,31 @@ def ensure_env():
                     pass
                 lock = None
             _close_info_dialog()      # 马上换进新环境开窗口，安装提示框可以收了
+            # exec 不替 Python 冲输出缓冲：stdout 不是终端（`| tee`、重定向到文件）时，上面打的
+            # [初始化] 几行会跟着丢掉
+            from app.relaunch import flush_std
+            flush_std()
+            if deferred:
+                bootstrap.mark_install_deferred()
+            # I9：macOS 开窗口时直接进 .app 壳里的 python——和 main() 开头是同一个函数，只是提前到
+            # 这里：以前先 execv 进 .venv/bin/python，那个进程再 import 一遍组件（约 2 秒）才在 main()
+            # 里进壳。壳里的 python 链回 .venv/bin/python，sys.prefix 是 Contents、site-packages 落回
+            # .venv；「完全磁盘访问权限」认的启动解释器在顶上 exec 之前已经记下了。不该进壳（--browser
+            # 一类参数、不是 macOS）、壳没备好或起不来时它会返回，照旧进 .venv/bin/python
+            if sys.platform == "darwin":
+                from app.macbundle import relaunch_inside_bundle
+                relaunch_inside_bundle(ROOT)
+            argv = [str(vpy), str(ROOT / "main.py")] + sys.argv[1:]
+            if os.name == "nt":
+                # I11：Windows 上 CRT 的 execv 是「起新进程、自己立刻以 0 退出」，Start.bat 等的进程
+                # 马上结束，「出错就 pause」永远轮不到。改成起子进程、等它、带着它的退出码退出（不会返回）
+                from app.relaunch import replace_process
+                replace_process(argv)
             from app.relaunch import exec_args
-            os.execv(str(vpy), exec_args([str(vpy), str(ROOT / "main.py")] + sys.argv[1:]))
+            # 进壳没成功时 relaunch_inside_bundle 刚打了一行「[信息] 未能以应用身份重新启动」：
+            # 在上面那次冲缓冲之后，exec 前再冲一次，stdout 是管道时它才不会丢
+            flush_std()
+            os.execv(str(vpy), exec_args(argv))
     except Exception as exc:
         # 按 pip 输出里真实出现的字样说明（磁盘满 / 连不上软件包服务器 / 没有适用于
         # 这个 Python 的安装包），附日志位置——不再把 CalledProcessError 原文给中控
@@ -370,12 +471,14 @@ if "--doctor" not in sys.argv:
     ensure_env()
 
 def _forget_install_failure():
-    """程序因为缺模块起不来：让下次启动立刻重试安装（见 bootstrap.forget_requirements_failure）。"""
+    """程序因为缺模块起不来：让下次启动立刻重试安装（见 bootstrap.forget_requirements_failure），
+    并删掉就绪指纹（I9）——否则下次启动的第一跳看指纹没变，不检查就直接进来，又撞上同一个缺模块。"""
     try:
         from app.bootstrap import forget_requirements_failure
         forget_requirements_failure(ROOT)
     except Exception:
         pass
+    _forget_ready()
 
 
 try:
@@ -574,6 +677,9 @@ def main():
     if sys.platform == "darwin":
         from app.macbundle import relaunch_inside_bundle
         relaunch_inside_bundle(ROOT)
+    # 推迟安装的记号（I7）到最终进程为止：不传给一键更新的重启和以后起的子进程
+    from app.bootstrap import clear_install_deferred
+    clear_install_deferred()
     # 到这里一定是最终进程了：本进程第一次读设置（损坏就在这里备份，界面提示和审计都拿得到），
     # 闸开着、设置里还没有 ui_lang 时迁移写一次，然后定下界面语言
     i18n.settle(ROOT)

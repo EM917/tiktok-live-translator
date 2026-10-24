@@ -4,6 +4,10 @@
 出口走一遍，看交给界面的状态行和一次性提示在英文下是不是干净的英文：没有中文、没有贴标签的词、
 两句之间有空格，按钮名写成 Update Now / Start、终端写成 Terminal。中文那一路由原有测试钉着
 （它们一条没改），这里另外钉住终端输出与界面语言无关。
+
+I11（2026-10-21 专家审查）：Windows 上手动更新命令按 PowerShell 写（Windows PowerShell 5.1 不认 &&），
+配着它的那句话说粘进 PowerShell（Start.bat 开的是命令提示符）。上面这些 Terminal 的断言是 macOS
+那一路：fixture 把平台钉成非 Windows，Windows 跑器上也照样成立；Windows 那一路在文件末尾。
 """
 import functools
 import re
@@ -28,6 +32,8 @@ def isolated(monkeypatch, tmp_path):
     """同 tests/test_resilience_update.py 的 isolated：设置文件和项目目录都在临时目录里。"""
     monkeypatch.setattr(settings_mod, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(updater_mod, "ROOT", tmp_path)
+    # 下面的 Terminal 断言是 macOS 那一路（I11）：Windows 跑器上也按这一路测，Windows 的在文件末尾
+    monkeypatch.setattr(updater_mod, "_on_windows", lambda: False)
     return tmp_path
 
 
@@ -256,3 +262,68 @@ def test_the_terminal_says_the_same_in_both_languages(monkeypatch, isolated, cap
     assert got[i18n.ZH][1] == got[i18n.EN][1]                 # 缓存里存的都是同一个 Bi
     assert CJK.search(i18n.render(got[i18n.ZH][1], "zh"))
     assert not CJK.search(i18n.render(got[i18n.EN][1], "en"))
+
+
+# ---- I11：Windows 上的手动命令按 PowerShell 写 --------------------------------------------------
+
+def test_the_powershell_command_chains_steps_without_double_ampersands():
+    """Windows PowerShell 5.1 不认 &&：每一步写成 if ($?) { … }，上一步成功才跑。"""
+    cmd = updater_mod.powershell_command(r"C:\Users\Zhang San\tlt")
+    assert cmd == r'cd "C:\Users\Zhang San\tlt"; if ($?) { git pull --ff-only }'
+    discard = updater_mod.powershell_command(r"C:\x", discard=True)
+    assert discard == r'cd "C:\x"; if ($?) { git checkout -- . }; if ($?) { git pull --ff-only }'
+    pip = updater_mod.powershell_command(r"C:\x", pip=True, python=r"C:\x\.venv\Scripts\python.exe")
+    assert pip == (r'cd "C:\x"; if ($?) { git pull --ff-only }; if ($?) { & '
+                   r'"C:\x\.venv\Scripts\python.exe" -m pip install -r requirements.txt }')
+    assert all("&&" not in c for c in (cmd, discard, pip))
+
+
+def test_powershell_specials_in_paths_are_escaped():
+    """双引号字符串里 $ 会被当成变量、反引号是转义符：路径里有它们时前面各加一个反引号。"""
+    cmd = updater_mod.powershell_command(r"C:\Users\a$b`c\tlt", pip=True, python=r"C:\p$\python.exe")
+    assert cmd.startswith(r'cd "C:\Users\a`$b``c\tlt"; ')
+    assert r'& "C:\p`$\python.exe" -m pip' in cmd
+
+
+def test_the_manual_command_follows_the_platform(monkeypatch, isolated):
+    u = Updater(RecordingServer())
+    assert u._manual_command() == 'cd "{}" && git pull --ff-only'.format(isolated)   # macOS 照旧
+    monkeypatch.setattr(updater_mod, "_on_windows", lambda: True)
+    for kwargs in ({}, {"discard": True}, {"pip": True}):
+        command = u._manual_command(**kwargs)
+        assert "&&" not in command and command.startswith('cd "{}"; if ($?) {{'.format(isolated))
+    assert "git checkout -- ." in u._manual_command(discard=True)
+    assert "-m pip install -r requirements.txt" in u._manual_command(pip=True)
+
+
+@pytest.mark.parametrize("overrides,pip_code,zh_says", [
+    ({"fetch": (None, "", "timeout")}, 0, "复制下面这行到 PowerShell 里执行通常就能解决："),
+    ({"merge": (1, "", "fatal: x")}, 0, "。复制下面这行到 PowerShell 里执行可以手动更新："),
+    ({}, None, "。复制下面这行到 PowerShell 里执行可以手动更新："),
+    ({"status": (127, "", "not found")}, 0, "或者装好 git 后在 PowerShell 里执行："),
+    ({"status": (0, " M app/pipeline.py\n", "")}, 0, "复制下面这行到 PowerShell 里执行，"),
+])
+def test_windows_failures_say_to_paste_into_powershell(monkeypatch, isolated, overrides, pip_code,
+                                                      zh_says):
+    monkeypatch.setattr(updater_mod, "_on_windows", lambda: True)
+    server, events = RecordingServer(), []
+    u, _pip, _execs = make_updater(monkeypatch, server, events, git_overrides=overrides,
+                                   pip_code=pip_code)
+    run(u.apply())
+    state, detail, command = server.statuses()[-1]
+    assert state == "idle" and command and "&&" not in command and "if ($?)" in command
+    english = last_english(server, "status")
+    assert "PowerShell" in english and "Terminal" not in english
+    chinese = i18n.render(detail, "zh")
+    assert zh_says in chinese and "「终端」" not in chinese
+
+
+def test_macos_failures_still_say_terminal_in_chinese(isolated, monkeypatch):
+    """macOS 那一路的中文一字不动（第九条）。"""
+    server, events = RecordingServer(), []
+    u, _pip, _execs = make_updater(monkeypatch, server, events,
+                                   git_overrides={"fetch": (None, "", "timeout")})
+    run(u.apply())
+    state, detail, command = server.statuses()[-1]
+    assert "&&" in command
+    assert i18n.render(detail, "zh").endswith("。复制下面这行到「终端」里执行通常就能解决：")
