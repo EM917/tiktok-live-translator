@@ -72,6 +72,32 @@ test("占位、弹幕占位、角标：英文措辞照术语表，且过三道�
   }
 });
 
+test("结束卡片（专家审查 U3）：英文只写状态和去哪儿看，过三道筛；术语同中控页的状态胶囊", () => {
+  const s = F.floatInitialState();
+  F.floatReduce(s, { type: "status", state: "ended", detail: "The previous session’s captions are below." });
+  const ended = F.floatEndView(s);
+  assert.equal(english(ended.title), "Stream ended");              // 同 web/app.js STATUS_TEXT.ended（docs/i18n-style.md §1.2）
+  assert.equal(english(ended.note), "See the main window for details.");
+  F.floatReduce(s, { type: "status", state: "error", detail: "" });
+  assert.equal(english(F.floatEndView(s).title), "Monitoring stopped");
+  // 第八条：不猜为什么停（不写 might / may / seems，也不写 the streamer ended it 这类推断）
+  for (const text of [ended.title, ended.note, F.floatEndView(s).title]) {
+    assert.ok(!/\b(might|may|seems?|streamer)\b/i.test(text), text);
+  }
+});
+
+test("英文页的结束卡片：标题、说明、按钮都没有汉字", () => {
+  const page = loadFloat({ lang: "en" });
+  hello(page);
+  page.push(comment("c1", "小明", "hola"));
+  page.push({ type: "status", state: "ended", detail: "上一场字幕在下方。" });   // detail 是什么都不转述
+  for (const id of ["f-end", "f-end-title", "f-end-note", "f-end-back"]) {
+    assert.deepEqual(leftovers(page.el(id)), [], id);
+  }
+  assert.equal(page.el("f-end-back").textContent, "Show Main Window");
+  assert.equal(english(page.el("f-end-back").textContent), "Show Main Window");
+});
+
 test("扫描自己得先报得出来：一个写了中文界面文字的节点、一个中文的 title 都要被抓到", () => {
   const bad = new FakeEl("div");
   bad.textContent = "漏翻的界面文字";
@@ -132,4 +158,5 @@ test("float.html 的静态文字都挂着英文（G5 在 Python 里按同一套�
   assert.match(html, /<title data-en="Floating Window · TikTok Live Translator">浮窗 · TikTok 直播同传<\/title>/);
   assert.match(html, /id="f-empty"[^>]*data-en="Waiting for the first caption…"/);
   assert.match(html, /aria-label="弹幕" data-en-aria-label="Comments"/);
+  assert.match(html, /<button id="f-end-back"[^>]*data-en="Show Main Window">回到主窗口<\/button>/);
 });
