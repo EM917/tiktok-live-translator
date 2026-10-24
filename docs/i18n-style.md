@@ -456,6 +456,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 22 | index.html:68–70 | 字幕字号（title / aria） | Caption size | |
 | 23 | index.html:76 | 清空字幕 | **Clear** | 76 → 56。“Clear Captions” 要 114，放不下，见 §4 |
 | 24 | index.html:76 title | 清空历史字幕 | Clear caption history | |
+| 24a | app.js confirmTwice（#clear-btn、#clear-comments） | 再点一次清空 | **Clear?** | 两段式确认的武装态，6 秒内再点才清，到点复原（专家审查 V3，做法和时长同 #49 的「再点一次清除」、#120 的一键更新）。按钮复原后的字是「清空字幕 / Clear」「清空弹幕 / Clear Comments」。**英文为什么不照 #49 写 Click Again to Clear**：顶栏只给这颗按钮留了 Clear（57px）的宽度。2026-10-23 在 G10 的直播场景里把按钮换成各候选再量品牌标签（无头 Chrome，场景照 G10 原样）：Click Again to Clear 145px，1000px 的 live-full / live-float / 两个 -extra 剩 65 / 53 / 48 / 48px，1101px 四个也全低于 120；Confirm 74px，live-float-extra@1000 剩 96.5px，低于 100 的下限；**Clear? 64px，最窄的 live-float-extra@1000 还有 106.5px**（平时 Clear 是 113.5），1101、1199px 两档都不低于 120。Clear? 以动词开头，问号就是「再点一下」的意思，弹幕栏那颗也用同一句（同一句中文只许一种英文）。**中文** 102px（平时 76px）：品牌标签都不低于下限；状态胶囊在 live-float-zh-quiet-extra@1101 这 6 秒里被截约 4.5px，满编的 live-float-zh@1000 平时就截约 2.5px（§4.2 记的 −4px 那一档，G10 不断言），武装时截约 12.7px。只在武装那 6 秒、只在这两档，先不改中文。G10 没有武装态的场景，这些数是另量的 |
 | 25 | live-ui.js:13 †index.html:85 | 手机同看 | Phone Viewing | 宽窗口才露出文字（见 §4 R2） |
 | 26 | live-ui.js:15 | 手机同看 · 已打开 | Phone Viewing · On | |
 | 27 | live-ui.js:16 | 手机同看 · {n} 人 | Phone Viewing · {n} | aria-label 写 “Phone Viewing, {n} watching” |

@@ -638,7 +638,35 @@
       8000);
   }
 
-  clearBtn.addEventListener("click", function () {
+  // 「清空字幕」「清空弹幕」两段式确认（专家审查 V3），做法同首页「清除记录」（resetRecentClear 那一对）：
+  // 第一次点只把按钮改成「再点一次清空」，CLEAR_CONFIRM_MS 内再点才真的清，到点自动复原。
+  // 以前一点就清：清的不只是这一页，服务端缓存一起清（forgetOnServer），浮窗跟着清，刷新、重连后也拿不回，
+  // 没有撤销；而这两颗按钮直播中一直摆在中控手边。不用 window.confirm——应用窗口（pywebview）里它可能弹不出来。
+  // 窗口 6 秒，和「清除记录」「一键更新」的确认一样长。
+  // 英文武装态写 Clear?，不写「清除记录」那句 Click Again to Clear：顶栏只给这颗按钮留了 Clear 的宽度，
+  // 145px 的那句在 1000px 窗口里把品牌标签挤到 48px（docs/i18n-style.md §3 第 24a 行）
+  var CLEAR_CONFIRM_MS = 6000;
+  function confirmTwice(btn, idleText, run) {
+    var timer = null;
+    function reset() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      delete btn.dataset.confirm;
+      btn.textContent = idleText;
+    }
+    btn.addEventListener("click", function () {
+      if (btn.dataset.confirm !== "1") {
+        btn.dataset.confirm = "1";
+        btn.textContent = L("再点一次清空", "Clear?");
+        timer = setTimeout(reset, CLEAR_CONFIRM_MS);
+        return;
+      }
+      reset();
+      run();
+    });
+  }
+
+  confirmTwice(clearBtn, L("清空字幕", "Clear"), function () {
     clearCaptionsView();
     // 直播中点的：和弹幕栏一样，清空之后从最新处接着跟（首页状态不碰，见 following 的说明）
     if (streamActive) following = true;
@@ -2506,7 +2534,8 @@
     updateCommentJump();
   }
 
-  clearCommentsBtn.addEventListener("click", function () {
+  // 两段式确认同「清空字幕」（confirmTwice，专家审查 V3）
+  confirmTwice(clearCommentsBtn, L("清空弹幕", "Clear Comments"), function () {
     clearCommentsView();
     forgetOnServer("comments");   // 服务端缓存也清，刷新后不会又回来
   });

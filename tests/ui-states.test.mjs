@@ -169,6 +169,7 @@ for (const lang of ["en", "zh"]) {
     hello(page, { state: "live", detail: "" });
     caption(page, 1);
     page.el("clear-btn").click();
+    page.el("clear-btn").click();                          // 两段式确认（V3）：第二次才清
     assert.equal(page.el("history").querySelectorAll(".cap").length, 0, "这条用例要真的清掉才有意义");
     assert.equal(hint(page).shown, false);
   });
@@ -182,6 +183,7 @@ for (const lang of ["en", "zh"]) {
       hello(page, { state: "live", detail: "" });
       caption(page, 1);
       page.el("clear-btn").click();
+      page.el("clear-btn").click();                        // 两段式确认（V3）：第二次才清
       assert.equal(page.el("history").querySelectorAll(".cap").length, 0, "这条用例要真的清掉才有意义");
       if (viaIdle) status(page, "idle");
       status(page, "connecting", RESOLVING[lang]);

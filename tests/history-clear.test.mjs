@@ -5,7 +5,9 @@
 //      英文 “Jump to Latest · 12 new captions”（1 条时 “1 new caption”）；回放的不算；点按钮、
 //      自己滚回底部、清空，都归零；
 //   2. 弹幕栏自己滚，也有自己的「回到最新」，数的是弹幕，和字幕那颗互不相干；
-//   3. 「清空字幕」「清空弹幕」除了删节点，还发 clear_history 给服务端（缓存才会清，刷新后不会又回来）；
+//   3. 「清空字幕」「清空弹幕」要点两次（专家审查 V3）：第一次按钮变成「再点一次清空」（英文 Clear?），
+//      6 秒内再点才清（和「清除记录」「一键更新」的确认一样长），到点复原；
+//      清的时候除了删节点，还发 clear_history 给服务端（缓存才会清，刷新后不会又回来）；
 //      hello 重建前的内部清场和别的页面清空后的回声（history_cleared）不能再发一遍，不然两个页面互相清；
 //      连接断着时服务端收不到：只清了本页，页脚说一声；
 //   4. 英文页上，这些新写进页面的字一个汉字都不剩；
@@ -28,6 +30,7 @@ const TEXT = {
       "and the captions come back once it reconnects.",
     offlineComments: "Lost connection to the local service. Only this page was cleared, " +
       "and the comments come back once it reconnects.",
+    armed: "Clear?", clearCaptions: "Clear", clearComments: "Clear Comments",
   },
   zh: {
     jump: "回到最新",
@@ -35,6 +38,7 @@ const TEXT = {
     comments: (n) => "回到最新 · " + n + " 条新弹幕",
     offlineCaptions: "与本地服务断开，只清空了本页——重新连上后这些字幕会回来。",
     offlineComments: "与本地服务断开，只清空了本页——重新连上后这些弹幕会回来。",
+    armed: "再点一次清空", clearCaptions: "清空字幕", clearComments: "清空弹幕",
   },
 };
 
@@ -75,6 +79,10 @@ const caption = (page, id) =>
 const comment = (page, id) =>
   page.push({ type: "comment", id: "c" + id, user: "ana", text: "hola " + id, ts: T + id, state: "same" });
 const isShown = (el) => !el.classList.contains("hidden");
+// 两段式确认（V3）：第一次只是武装，紧接着第二次才真的清
+const clearTwice = (btn) => { btn.click(); btn.click(); };
+// 武装窗口 6 秒，和首页「清除记录」、顶栏「一键更新」的确认一样长（web/app.js 那两处都是 6000）
+const CLEAR_CONFIRM_MS = 6000;
 const clearsSent = (page) => page.sent.filter((m) => m.type === "clear_history");
 
 for (const lang of ["en", "zh"]) {
@@ -171,7 +179,7 @@ for (const lang of ["en", "zh"]) {
     scrollAway(page.el("history"));
     caption(page, 4);
     assert.equal(page.el("jump-latest").textContent, W.captions(1));
-    page.el("clear-btn").click();
+    clearTwice(page.el("clear-btn"));
     assert.deepEqual(clearsSent(page), [{ type: "clear_history", kind: "captions" }]);
     assert.equal(page.el("history").querySelectorAll(".cap").length, 0);
     assert.equal(page.el("jump-latest").textContent, W.jump);
@@ -194,7 +202,7 @@ for (const lang of ["en", "zh"]) {
     comment(page, 8);
     assert.equal(isShown(page.el("comment-jump")), true);
     assert.equal(page.el("comment-jump").textContent, W.comments(2));
-    page.el("clear-comments").click();
+    clearTwice(page.el("clear-comments"));
     assert.deepEqual(clearsSent(page), [{ type: "clear_history", kind: "comments" }]);
     assert.equal(page.el("comment-list").querySelectorAll(".cmt-item").length, 0);
     assert.equal(page.el("comment-jump").textContent, W.jump);
@@ -202,6 +210,55 @@ for (const lang of ["en", "zh"]) {
     assert.equal(page.el("history").querySelectorAll(".cap").length, 3);
     assert.equal(page.el("alert-list").children.length, alertsBefore, "清空弹幕不碰警报");
     assert.equal(alertsBefore > 0, true, "这条用例要有警报才有意义");
+  });
+
+  for (const [id, kind, idleKey] of [["clear-btn", "captions", "clearCaptions"], ["clear-comments", "comments", "clearComments"]]) {
+    test(lang + "：V3 " + id + " 点一次只武装、不清；6 秒内再点才清；按钮复原", () => {
+      const page = liveWithCaptions(lang);
+      comment(page, 1);
+      const btn = page.el(id);
+      btn.click();
+      assert.equal(btn.textContent, W.armed);
+      assert.deepEqual(clearsSent(page), [], "点一次不发 clear_history");
+      assert.equal(page.el("history").querySelectorAll(".cap").length, 3, "点一次不清字幕");
+      assert.equal(page.el("comment-list").querySelectorAll(".cmt-item").length, 1, "点一次不清弹幕");
+      btn.click();
+      assert.deepEqual(clearsSent(page), [{ type: "clear_history", kind }]);
+      assert.equal(btn.textContent, W[idleKey], "清完按钮回到原来的字");
+      // 清完再点一次：又是重新武装，不会直接再清一遍
+      btn.click();
+      assert.equal(btn.textContent, W.armed);
+      assert.equal(clearsSent(page).length, 1);
+    });
+
+    test(lang + "：V3 " + id + " 武装之后 6 秒没再点：自动复原，之后再点一次也只是重新武装", () => {
+      const page = liveWithCaptions(lang);
+      comment(page, 1);
+      const btn = page.el(id);
+      btn.click();
+      assert.equal(btn.textContent, W.armed);
+      page.fire(3000);                                     // 计划原稿写的 3 秒：这时还在等第二下
+      assert.equal(btn.textContent, W.armed, "3 秒时还没复原");
+      page.fire(CLEAR_CONFIRM_MS);
+      assert.equal(btn.textContent, W[idleKey]);
+      btn.click();
+      assert.equal(btn.textContent, W.armed, "超时之后这一下只是武装");
+      assert.deepEqual(clearsSent(page), []);
+      assert.equal(page.el("history").querySelectorAll(".cap").length, 3);
+      assert.equal(page.el("comment-list").querySelectorAll(".cmt-item").length, 1);
+    });
+  }
+
+  test(lang + "：V3 两颗按钮各自武装：点了清空字幕，再点清空弹幕不会把字幕清掉", () => {
+    const page = liveWithCaptions(lang);
+    comment(page, 1);
+    page.el("clear-btn").click();
+    page.el("clear-comments").click();
+    assert.deepEqual(clearsSent(page), []);
+    page.el("clear-comments").click();
+    assert.deepEqual(clearsSent(page), [{ type: "clear_history", kind: "comments" }]);
+    assert.equal(page.el("history").querySelectorAll(".cap").length, 3);
+    assert.equal(page.el("clear-btn").textContent, W.armed, "字幕那颗还在等第二下");
   });
 
   test(lang + "：「清空警报」只清页面，不向服务端发清空（警报缓存要跨刷新留着）", () => {
@@ -248,14 +305,14 @@ for (const lang of ["en", "zh"]) {
     const page = liveWithCaptions(lang);
     comment(page, 1);
     page.offline();
-    page.el("clear-btn").click();
+    clearTwice(page.el("clear-btn"));
     assert.deepEqual(clearsSent(page), []);
     assert.equal(page.el("history").querySelectorAll(".cap").length, 0);
     assert.equal(page.el("app-version").textContent, " · " + W.offlineCaptions);
-    page.el("clear-comments").click();
+    clearTwice(page.el("clear-comments"));
     assert.equal(page.el("app-version").textContent, " · " + W.offlineComments);
     page.online();
-    page.el("clear-btn").click();                              // 连上之后再点：这回发得出去
+    clearTwice(page.el("clear-btn"));                          // 连上之后再点：这回发得出去
     assert.deepEqual(clearsSent(page), [{ type: "clear_history", kind: "captions" }]);
   });
 }
@@ -269,8 +326,14 @@ test("英文页：新写进页面的字（两颗按钮、断线说明）一个�
   assert.equal(page.el("jump-latest").textContent, "Jump to Latest · 5 new captions");
   assert.equal(page.el("comment-jump").textContent, "Jump to Latest · 5 new comments");
   page.offline();
+  page.el("clear-btn").click();                             // 武装态的字也要是英文
+  page.el("clear-comments").click();
+  assert.equal(page.el("clear-btn").textContent, "Clear?");
+  assert.equal(page.el("clear-comments").textContent, "Clear?");
+  assert.deepEqual(leftoverChinese(page), []);
   page.el("clear-btn").click();
   page.el("clear-comments").click();
+  assert.equal(page.el("clear-btn").textContent, "Clear");
   page.online();
   assert.deepEqual(leftoverChinese(page), []);
 });

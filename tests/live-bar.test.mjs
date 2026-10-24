@@ -170,7 +170,7 @@ for (const lang of ["zh", "en"]) {
   test(L("待译停留：清空字幕、换场、回首页、重连的 hello 都把在等的那句忘掉——4 秒到点也不把大字幕放出来"), () => {
     const page = loadDesktop({ lang });
     const reset = [
-      () => page.el("clear-btn").click(),
+      () => { page.el("clear-btn").click(); page.el("clear-btn").click(); },   // 两段式确认（V3）：第二次才清
       () => page.push({ type: "session_break", ts: T + 1 }),
       () => page.push({ type: "status", state: "idle", detail: "" }),
       () => hello(page),
@@ -433,6 +433,7 @@ for (const lang of ["zh", "en"]) {
     };
     fresh();
     page.el("clear-btn").click();
+    page.el("clear-btn").click();                                      // 两段式确认（V3）：第二次才清
     assert.deepEqual([bar(page).chip, bar(page).lag, bar(page).meta], [null, null, false]);
     assert.ok(hiddenOf(page, "live-bar"));
     page.tick(1000);                                                    // 大字幕没了，计时器不能把它写回来
@@ -592,6 +593,7 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual(bar.writes, ["625px"]);
     bar.height = 0;                                                     // display:none 的元素量出来就是 0
     page.el("clear-btn").click();
+    page.el("clear-btn").click();                                      // 两段式确认（V3）：第二次才清
     assert.deepEqual(bar.writes, ["625px", ""], "清空字幕：变量清掉（空值＝去掉这条声明）");
     page.push(caption(2, "otra"));
     page.push({ type: "session_break", ts: T + 1 });
