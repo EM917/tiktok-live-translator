@@ -5,7 +5,7 @@
 //      英文 “Jump to Latest · 12 new captions”（1 条时 “1 new caption”）；回放的不算；点按钮、
 //      自己滚回底部、清空，都归零；
 //   2. 弹幕栏自己滚，也有自己的「回到最新」，数的是弹幕，和字幕那颗互不相干；
-//   3. 「清空字幕」「清空弹幕」要点两次（专家审查 V3）：第一次按钮变成「再点一次清空」（英文 Clear?），
+//   3. 「清空字幕」「清空弹幕」要点两次（专家审查 V3）：第一次按钮变成「再点确认」（英文 Clear?），
 //      6 秒内再点才清（和「清除记录」「一键更新」的确认一样长），到点复原；
 //      清的时候除了删节点，还发 clear_history 给服务端（缓存才会清，刷新后不会又回来）；
 //      hello 重建前的内部清场和别的页面清空后的回声（history_cleared）不能再发一遍，不然两个页面互相清；
@@ -38,7 +38,7 @@ const TEXT = {
     comments: (n) => "回到最新 · " + n + " 条新弹幕",
     offlineCaptions: "与本地服务断开，只清空了本页——重新连上后这些字幕会回来。",
     offlineComments: "与本地服务断开，只清空了本页——重新连上后这些弹幕会回来。",
-    armed: "再点一次清空", clearCaptions: "清空字幕", clearComments: "清空弹幕",
+    armed: "再点确认", clearCaptions: "清空字幕", clearComments: "清空弹幕",
   },
 };
 
@@ -84,6 +84,31 @@ const clearTwice = (btn) => { btn.click(); btn.click(); };
 // 武装窗口 6 秒，和首页「清除记录」、顶栏「一键更新」的确认一样长（web/app.js 那两处都是 6000）
 const CLEAR_CONFIRM_MS = 6000;
 const clearsSent = (page) => page.sent.filter((m) => m.type === "clear_history");
+// 按时间走的武装定时器：只接管时长是 CLEAR_CONFIRM_MS 的 setTimeout，记下到期时刻；tick(ms) 往前走，
+// 到点的按到期先后跑，取消了的（clearTimeout）不跑。别的时长照旧交给脚手架（page.fire）
+function confirmClock(page) {
+  const sb = page.sandbox, set = sb.setTimeout, clear = sb.clearTimeout;
+  const due = new Map();
+  let t = 0;
+  sb.setTimeout = (fn, ms) => {
+    const id = set(fn, ms);
+    if (ms === CLEAR_CONFIRM_MS) due.set(id, { at: t + ms, fn });
+    return id;
+  };
+  sb.clearTimeout = (id) => { due.delete(id); clear(id); };
+  return {
+    tick(ms) {
+      t += ms;
+      const ready = [...due].filter(([, x]) => x.at <= t).sort((a, b) => a[1].at - b[1].at);
+      for (const [id, x] of ready) {
+        if (!due.has(id)) continue;                      // 前一个回调里取消了
+        due.delete(id);
+        clear(id);                                       // 脚手架那份也作废，page.fire 不会再跑一次
+        x.fn();
+      }
+    },
+  };
+}
 
 for (const lang of ["en", "zh"]) {
   const W = TEXT[lang];
@@ -246,6 +271,30 @@ for (const lang of ["en", "zh"]) {
       assert.deepEqual(clearsSent(page), []);
       assert.equal(page.el("history").querySelectorAll(".cap").length, 3);
       assert.equal(page.el("comment-list").querySelectorAll(".cmt-item").length, 1);
+    });
+
+    // 点两下清掉之后，第一下排的那个复原定时器要取消：不然清完马上再武装，它会按第一下的时刻到点，
+    // 把新的武装提前复原（中控以为还有 6 秒，第二下其实又只是武装）。page.fire(ms) 只按时长触发、
+    // 分不出是哪一下排的，这里给 CLEAR_CONFIRM_MS 的定时器记上到期时刻，按时间往前走
+    test(lang + "：V3 " + id + " 清完马上再武装：要等这一下自己的 6 秒，前一下的定时器不会提前复原", () => {
+      const page = liveWithCaptions(lang);
+      comment(page, 1);
+      const clock = confirmClock(page);
+      const btn = page.el(id);
+      btn.click();                                         // t=0 武装
+      clock.tick(2000);
+      btn.click();                                         // t=2s 清
+      assert.deepEqual(clearsSent(page), [{ type: "clear_history", kind }]);
+      clock.tick(2000);
+      btn.click();                                         // t=4s 再武装，该到 t=10s 才复原
+      assert.equal(btn.textContent, W.armed);
+      clock.tick(2000);                                    // t=6s：第一下排的那个定时器的到点时刻
+      assert.equal(btn.textContent, W.armed, "前一下的定时器把新的武装提前复原了");
+      clock.tick(CLEAR_CONFIRM_MS - 2000 - 1);             // 新武装 6 秒差 1 毫秒
+      assert.equal(btn.textContent, W.armed);
+      clock.tick(1);
+      assert.equal(btn.textContent, W[idleKey], "这一下自己的 6 秒到了才复原");
+      assert.equal(clearsSent(page).length, 1, "复原不会再清一遍");
     });
   }
 

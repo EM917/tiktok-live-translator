@@ -639,12 +639,14 @@
   }
 
   // 「清空字幕」「清空弹幕」两段式确认（专家审查 V3），做法同首页「清除记录」（resetRecentClear 那一对）：
-  // 第一次点只把按钮改成「再点一次清空」，CLEAR_CONFIRM_MS 内再点才真的清，到点自动复原。
+  // 第一次点只把按钮改成「再点确认」，CLEAR_CONFIRM_MS 内再点才真的清，到点自动复原。
   // 以前一点就清：清的不只是这一页，服务端缓存一起清（forgetOnServer），浮窗跟着清，刷新、重连后也拿不回，
   // 没有撤销；而这两颗按钮直播中一直摆在中控手边。不用 window.confirm——应用窗口（pywebview）里它可能弹不出来。
   // 窗口 6 秒，和「清除记录」「一键更新」的确认一样长。
   // 英文武装态写 Clear?，不写「清除记录」那句 Click Again to Clear：顶栏只给这颗按钮留了 Clear 的宽度，
-  // 145px 的那句在 1000px 窗口里把品牌标签挤到 48px（docs/i18n-style.md §3 第 24a 行）
+  // 145px 的那句在 1000px 窗口里把品牌标签挤到 48px（docs/i18n-style.md §3 第 24a 行）。
+  // 中文武装态写「再点确认」（用户 10-23 定）：四个字和「清空字幕」一样宽，武装时顶栏不变；
+  // 以前的「再点一次清空」多 26px，中文直播顶栏武装那 6 秒会截状态胶囊
   var CLEAR_CONFIRM_MS = 6000;
   function confirmTwice(btn, idleText, run) {
     var timer = null;
@@ -657,7 +659,7 @@
     btn.addEventListener("click", function () {
       if (btn.dataset.confirm !== "1") {
         btn.dataset.confirm = "1";
-        btn.textContent = L("再点一次清空", "Clear?");
+        btn.textContent = L("再点确认", "Clear?");
         timer = setTimeout(reset, CLEAR_CONFIRM_MS);
         return;
       }
