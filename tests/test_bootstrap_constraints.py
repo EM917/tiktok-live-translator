@@ -7,8 +7,10 @@ I4：requirements.txt 只写下限，新装机拿到的是 PyPI 当天最新、�
   上界）；每个锁死的包都有一条不带标记的上界；yt-dlp、curl_cffi、TikTokLive 不锁；标记在几种机器上
   求值不出错（Linux 的内核版本号不是合法版本号，不能拿 platform_release 比大小）；Windows 只锁
   platform_machine 是 AMD64 的（安装包只对着 win_amd64 查过）；
+- 交给 pip -r / -c 的文件（requirements.txt、constraints.txt）要么纯 ASCII，要么前两行带 pip 认的编码
+  声明：旧版 pip 在 Windows 上按本地编码（cp1252、GBK……）读它们，中文注释会让安装直接失败；
 - 指纹把 constraints.txt 也算进去：锁的版本一变，已有安装下次启动补装一次（plan_install 给的是
-  「清单变了」那一种，不重建）；没有 constraints.txt 时指纹和以前逐字节相同；
+  「清单变了」那一种，不重建）；没有 constraints.txt 时指纹和以前逐字节相同，Windows 检出成 CRLF 也一样；
 - bootstrap.install_requirements 的每一次 pip（整份、只装核心、逐个装可选组件）都先带 -c；回退的那几步
   带 -c 装不上时不带 -c 再装一次（没联网时已有安装照样能启动，和加锁以前一样），整份那一次不这样；
 - 自检和一键更新给的手动命令带 -c。
@@ -20,6 +22,9 @@ D14：main.py 在 3.9 上不再往下跑，弹出「需要升级」和照做的�
 全部在 tmp_path 里，不碰项目自己的 .venv，不连网，不起 pip。
 """
 import ast
+import codecs
+import hashlib
+import locale
 import os
 import re
 import subprocess
@@ -188,24 +193,186 @@ def test_on_windows_only_the_amd64_machines_whose_wheels_were_checked_are_pinned
     assert len(pinned("AMD64")) >= 20
 
 
+# ---- 交给 pip 的文件：编码 -------------------------------------------------------------------
+#
+# 旧版 pip 读 -r / -c 的文件：有 BOM 按 BOM，前两行里有 PEP 263 那种编码声明按声明，都没有就按系统的
+# 本地编码——Windows 上是 cp1252、GBK 这类。文件里有中文注释又没声明，pip 直接 UnicodeDecodeError、
+# 什么都不装：PR #136 的 install-smoke (windows-latest, 3.10) 就是这样红的，那里 .venv 里的 pip 是
+# Python 3.10.11 自带的 23.0。25.1 起的 pip 先试 UTF-8，在新 pip 上看不出来，所以下面照旧 pip 的办法模拟，
+# 不靠跑测试的这台机器装着哪个 pip。
+
+# pip 认编码声明的写法：24.2 及更早在 pip/_internal/utils/encoding.py（ENCODING_RE），25.1 起在
+# pip/_internal/req/req_file.py（PEP263_ENCODING_RE），两处一样；test_the_emulated_pattern_is_pips_own 对着装着的 pip 查
+_PIP_CODING_RE = re.compile(rb"coding[:=]\s*([-\w.]+)")
+_PIP_BOMS = [(codecs.BOM_UTF8, "utf-8"), (codecs.BOM_UTF32, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32-be"),
+             (codecs.BOM_UTF32_LE, "utf-32-le"), (codecs.BOM_UTF16, "utf-16"),
+             (codecs.BOM_UTF16_BE, "utf-16-be"), (codecs.BOM_UTF16_LE, "utf-16-le")]
+# 几种常见的 Windows 本地编码：西欧、简中、繁中、日文、韩文、西里尔
+_WINDOWS_CODE_PAGES = ("cp1252", "cp936", "cp950", "cp932", "cp949", "cp1251")
+
+
+def _declared_encoding(data):
+    """pip 认的编码声明：前两行（按 \\n 切）里以 # 开头、带 coding: 或 coding= 的那一行写的编码。"""
+    for line in data.split(b"\n")[:2]:
+        if line[0:1] == b"#":
+            m = _PIP_CODING_RE.search(line)
+            if m:
+                return m.group(1).decode("ascii")
+    return None
+
+
+def _old_pip_decode(data, local_encoding):
+    """24.2 的 pip/_internal/utils/encoding.auto_decode 的做法，本地编码由参数给。"""
+    for bom, encoding in _PIP_BOMS:
+        if data.startswith(bom):
+            return data[len(bom):].decode(encoding)
+    return data.decode(_declared_encoding(data) or local_encoding)
+
+
+def _pip_files():
+    """仓库里交给 pip -r / -c 的文件：从安装脚本、CI、程序代码和文档里的命令找出来，以后新加的一份自动算进来。"""
+    sources = [REPO / "setup.sh", REPO / "setup.ps1", REPO / "Start.bat", REPO / "main.py", REPO / "README.md",
+               *sorted((REPO / ".github" / "workflows").glob("*.yml")),
+               *sorted((REPO / "app").glob("*.py")), *sorted((REPO / "docs").glob("*.md"))]
+    names = set()
+    for src in sources:
+        names.update(re.findall(r'-[rc]\s+"?([A-Za-z0-9_.-]+\.txt)\b', src.read_text(encoding="utf-8")))
+    return sorted(names)
+
+
+def test_the_files_handed_to_pip_are_found_and_exist():
+    names = _pip_files()
+    assert {"requirements.txt", "constraints.txt"} <= set(names)
+    for name in names:
+        assert (REPO / name).is_file(), name
+
+
+@pytest.mark.parametrize("name", _pip_files())
+def test_a_file_handed_to_pip_is_ascii_or_declares_utf8_in_its_first_two_lines(name):
+    data = (REPO / name).read_bytes()
+    if data.isascii():
+        return
+    declared = _declared_encoding(data)
+    assert declared and codecs.lookup(declared).name == "utf-8", \
+        "{} 里有非 ASCII 字符，第一行要是 # -*- coding: utf-8 -*-".format(name)
+    data.decode("utf-8")
+
+
+@pytest.mark.parametrize("code_page", _WINDOWS_CODE_PAGES)
+@pytest.mark.parametrize("name", _pip_files())
+def test_old_pip_on_a_windows_code_page_reads_the_file_and_its_copies_as_utf8(name, code_page):
+    """不光是文件本身，还有交给 pip 的几种副本：Windows 上 git 检出成 CRLF 的工作区；启动补装时去掉
+    mlx-whisper 的那份（bootstrap.filter_requirements，注释原样留着）；一键更新用 git show 拿到、
+    以文本方式写成临时文件的那份（Windows 上换行是 CRLF），整份和只装必需组件的两种。"""
+    text = (REPO / name).read_bytes().decode("utf-8").replace("\r\n", "\n")
+    copies = [text, text.replace("\n", "\r\n"),
+              bootstrap.filter_requirements(text, ("mlx-whisper",)),
+              bootstrap.filter_requirements(text, bootstrap.OPTIONAL_DISTS).replace("\n", "\r\n")]
+    for copy in copies:
+        assert _old_pip_decode(copy.encode("utf-8"), code_page) == copy
+
+
+def test_the_old_pip_emulation_really_falls_back_to_the_local_code_page():
+    """对照：没有声明的中文注释，模拟的旧 pip 按 cp1252 读就报错（「依」的最后一个字节 0x9d，和 CI 上
+    一样）；第一行加上声明就读得出来；声明挪到第三行就不算了。"""
+    body = "# 依赖\naiohttp>=3.9\n".encode("utf-8")
+    with pytest.raises(UnicodeDecodeError):
+        _old_pip_decode(body, "cp1252")
+    assert _old_pip_decode(b"# -*- coding: utf-8 -*-\n" + body, "cp1252").endswith("# 依赖\naiohttp>=3.9\n")
+    with pytest.raises(UnicodeDecodeError):
+        _old_pip_decode(b"#\n#\n# -*- coding: utf-8 -*-\n" + body, "cp1252")
+
+
+def _installed_pip_req_file():
+    try:
+        from pip._internal.req import req_file
+    except Exception:           # 没有 pip，或者 pip 的内部结构变了：用到它的两条跳过
+        return None
+    return req_file
+
+
+def test_the_emulated_pattern_is_pips_own():
+    req_file = _installed_pip_req_file()
+    if req_file is None:
+        pytest.skip("这个解释器里没有 pip")
+    pattern = getattr(req_file, "PEP263_ENCODING_RE", None)
+    if pattern is None:
+        from pip._internal.utils import encoding
+        pattern = encoding.ENCODING_RE
+    assert pattern.pattern == _PIP_CODING_RE.pattern
+
+
+def test_the_installed_pip_reads_the_files_as_utf8_when_the_locale_is_cp1252(monkeypatch):
+    """用装着的这个 pip 自己的解码函数读，本地编码换成 cp1252（PYTHONUTF8 之类在这里改不了 Windows 的 ANSI
+    代码页，就直接换掉 pip 问的那个 locale.getpreferredencoding）。"""
+    req_file = _installed_pip_req_file()
+    if req_file is None:
+        pytest.skip("这个解释器里没有 pip")
+    if hasattr(req_file, "_decode_req_file"):                       # 25.1 起
+        def decode(data):
+            return req_file._decode_req_file(data, "requirements.txt")
+    else:                                                           # 24.2 及更早
+        from pip._internal.utils.encoding import auto_decode as decode
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "cp1252")
+    for name in _pip_files():
+        data = (REPO / name).read_bytes()
+        assert decode(data) == data.decode("utf-8"), name
+
+
 # ---- 指纹 ------------------------------------------------------------------------------------
 
-def _project(tmp_path, constraints="numpy==2.5.2; python_version >= \"3.12\"\n"):
+REQS_LF = b"aiohttp>=3.9\nnumpy>=1.24\n"
+# 加锁以前的程序对 REQS_LF 算出的指纹：拿 origin/main 上的 requirements_file_digest 原样跑出来、写死在这里
+DIGEST_BEFORE_THE_LOCK = "93473900db75ffdb186336a0c180d745fe943665d6d211fb2faf0a6e73b65b19"
+
+
+def _digest_before_the_lock(root):
+    """加锁以前的 requirements_file_digest（从 00ede39 有指纹起就是这样），原样抄来比对：
+    换行统一成 LF 再算 sha256，不是文件原始字节的 sha256。"""
+    try:
+        content = (Path(root) / "requirements.txt").read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _project(tmp_path, constraints="numpy==2.5.2; python_version >= \"3.12\"\n", newline="\n"):
+    """按字节写夹具：write_text 在 Windows 上把 \\n 写成 \\r\\n，同一个用例在各平台上的文件就不一样了
+    （PR #136 的 test (windows-latest, 3.13) 因此红过）。newline="\\r\\n" 模拟 Windows 检出成 CRLF 的工作区。"""
     root = tmp_path / "project"
     (root / ".venv").mkdir(parents=True)
-    (root / "requirements.txt").write_text("aiohttp>=3.9\nnumpy>=1.24\n", encoding="utf-8")
+    (root / "requirements.txt").write_bytes(REQS_LF.replace(b"\n", newline.encode("ascii")))
     if constraints is not None:
-        (root / "constraints.txt").write_text(constraints, encoding="utf-8")
+        (root / "constraints.txt").write_bytes(constraints.replace("\n", newline).encode("utf-8"))
     return root
 
 
 def test_without_constraints_the_digest_is_the_old_one(tmp_path):
-    """没有 constraints.txt（老版本、ZIP 里没带）：指纹和以前逐字节相同，已有安装不白补装一次。"""
+    """没有 constraints.txt（老版本、ZIP 里没带）：指纹和加锁以前逐字节相同，已有安装不白补装一次。"""
     root = _project(tmp_path, constraints=None)
-    req = (root / "requirements.txt").read_bytes()
-    import hashlib
-    assert bootstrap.requirements_file_digest(root) == hashlib.sha256(req).hexdigest()
-    assert bootstrap.requirements_digest(req) == hashlib.sha256(req).hexdigest()
+    assert bootstrap.requirements_file_digest(root) == _digest_before_the_lock(root) == DIGEST_BEFORE_THE_LOCK
+    assert bootstrap.requirements_digest(REQS_LF) == DIGEST_BEFORE_THE_LOCK
+    assert bootstrap.requirements_digest(REQS_LF.decode("ascii")) == DIGEST_BEFORE_THE_LOCK
+
+
+@pytest.mark.parametrize("raw", [REQS_LF.replace(b"\n", b"\r\n"), b"aiohttp>=3.9\r\nnumpy>=1.24\n"],
+                         ids=["crlf", "mixed"])
+def test_without_constraints_a_crlf_checkout_keeps_the_old_digest(tmp_path, raw):
+    """Windows 上 git 的 core.autocrlf 会把 requirements.txt 检出成 CRLF。在哪个平台上都按字节造出这种文件：
+    指纹和加锁以前、和一键更新用 git show 拿到的 LF 版本都是同一个，升级之后不会因为换行白装一次。"""
+    root = _project(tmp_path, constraints=None)
+    (root / "requirements.txt").write_bytes(raw)
+    assert hashlib.sha256(raw).hexdigest() != DIGEST_BEFORE_THE_LOCK        # 原始字节确实和 LF 的不一样
+    assert bootstrap.requirements_file_digest(root) == _digest_before_the_lock(root) == DIGEST_BEFORE_THE_LOCK
+
+
+def test_with_constraints_a_crlf_checkout_matches_what_the_update_stamps(tmp_path):
+    """两份文件都检出成 CRLF：指纹和一键更新拿 git show 的 LF 内容记下的是同一个（不会合并完再补装一次）。"""
+    crlf = _project(tmp_path / "crlf", newline="\r\n")
+    assert b"\r\n" in (crlf / "constraints.txt").read_bytes()
+    lf = bootstrap.requirements_file_digest(_project(tmp_path / "lf"))
+    assert bootstrap.requirements_file_digest(crlf) == lf == bootstrap.requirements_digest(
+        REQS_LF.decode("ascii"), 'numpy==2.5.2; python_version >= "3.12"\n')
 
 
 def test_constraints_change_the_digest_and_crlf_does_not(tmp_path):

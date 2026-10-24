@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# 上一行给 pip 看，必须留在前两行（tests/test_bootstrap_constraints.py 钉着）。没有它，旧版 pip
+# （核对过 21.2、23.0、24.2；25.1 起先试 UTF-8）按系统的本地编码读这个文件，Windows 上是 cp1252、
+# GBK 这类，下面的中文注释会让 pip 直接报 UnicodeDecodeError、什么都不装。Python 3.10.11 建的
+# .venv 里就是 23.0（PR #136 的 CI 上 Windows 那一格就是这样失败的）。
 # 本程序要求 Python 3.10 或更新的版本（用户 10-22 决定 D14；版本检查在 main.py，下限见
 # app/bootstrap.MIN_PYTHON）。这里只写下限；测试过的那一套具体版本在 constraints.txt，
 # 安装时一起给：pip install -r requirements.txt -c constraints.txt
