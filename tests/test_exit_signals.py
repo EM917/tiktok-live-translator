@@ -78,6 +78,7 @@ def _recording_dispatch(**kw):
     return d, seen
 
 
+@pytest.mark.skipif(not POSIX, reason="SIGHUP 只在 POSIX 上有")
 def test_two_hangups_a_millisecond_apart_are_one_exit():
     """关 Start.command 的终端窗口、登录 shell 是 zsh：进程收到两个 SIGHUP，相隔 0.1～12 毫秒。第二个以前走
     on_repeat（os._exit(1)），第一次的收尾还没开始写。终端都关了，之后的 SIGHUP 再晚也不算又收到。"""
@@ -91,6 +92,7 @@ def test_two_hangups_a_millisecond_apart_are_one_exit():
     assert seen[-1] == ("again", "SIGTERM")
 
 
+@pytest.mark.skipif(not POSIX, reason="SIGHUP 只在 POSIX 上有")
 def test_a_hangup_after_another_first_signal_is_an_echo_too():
     """先按了 Ctrl-C，收尾途中又关了终端窗口：SIGHUP 不打断收尾（main.py 的 on_echo 把标准流换成 /dev/null）。"""
     d, seen = _recording_dispatch()
@@ -126,6 +128,7 @@ def test_without_an_explicit_time_the_dispatch_reads_its_clock():
     assert d.first_at == 50.0
 
 
+@pytest.mark.skipif(not POSIX, reason="SIGHUP 只在 POSIX 上有")
 def test_two_hangups_through_the_bridge_let_the_first_shutdown_finish():
     """窗口模式的读线程：第一个 SIGHUP 的收尾在自己的线程里跑（这里慢到 0.2 秒），第二个 1 毫秒后读到——
     on_repeat 一次都不调，第一次的收尾走完。"""
