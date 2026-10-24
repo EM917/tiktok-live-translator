@@ -457,17 +457,22 @@ def test_python_switch_steps_read_in_both_languages(darwin):
 
 
 def test_the_python_39_comments_row_says_how_to_switch(monkeypatch, tmp_path):
-    """I10：3.9 上弹幕那一行以前只说「不可用」。现在给照做的步骤：装新版、完全退出、删 .venv、重开，
+    """I10：3.9 上弹幕那一行以前只说「不可用」。现在给照做的步骤：从 python.org 装新版、重开，
     约 1.4 GB；macOS 上再提醒给新的 Python 重新授「完全磁盘访问权限」。
 
     D14（b3-deps）：最低版本提到 3.10 之后改成「需要升级」——3.9 上整个程序都不往下跑，不再说
-    「字幕和违禁词报警不受影响」。"""
+    「字幕和违禁词报警不受影响」。步骤和升级提示是同一段（bootstrap.python_upgrade_steps）：
+    不叫人删 .venv（第 2 轮审查：以前给的是 python_switch_steps，要删 .venv，和升级提示对不上），
+    这一格不保留换行，所以用 inline 版。"""
+    from app import bootstrap
     rows = _rows("comments", monkeypatch, tmp_path)
     row = next(r for r in rows if "3.9" in r["detail"])
-    steps = selfcheck.python_switch_steps()
+    steps = bootstrap.python_upgrade_steps(inline=True)
     assert row["detail"] == "这个版本的程序需要 Python 3.10 或更新的版本（当前 3.9），需要升级"
     assert row["fix"] == steps
     assert i18n.text(row["fix"], i18n.EN) == i18n.text(steps, i18n.EN)
+    assert ".venv" not in row["fix"] and ".venv" not in i18n.text(row["fix"], i18n.EN)
+    assert "\n" not in row["fix"]
     assert row["level"] == selfcheck.WARN
 
 

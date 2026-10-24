@@ -501,9 +501,13 @@ def test_the_files_that_run_before_the_version_check_still_parse_as_python_39():
                                    for n in ast.walk(note)), (rel, node.lineno)
 
 
-@pytest.mark.parametrize("darwin", [True, False], ids=["macos", "windows"])
-def test_the_upgrade_text_says_what_was_seen_and_what_to_do(darwin):
-    text = bootstrap.python_too_old_text("3.9", darwin=darwin)
+PLATFORMS = {"macos": (True, False), "windows": (False, True), "linux": (False, False)}
+
+
+@pytest.mark.parametrize("platform", sorted(PLATFORMS))
+def test_the_upgrade_text_says_what_was_seen_and_what_to_do(platform):
+    darwin, windows = PLATFORMS[platform]
+    text = bootstrap.python_too_old_text("3.9", darwin=darwin, windows=windows)
     assert "3.9" in text and "3.10" in text and "需要升级" in text and "python.org" in text
     en = i18n.text(text, i18n.EN)
     assert not i18n.CJK.search(en) and "3.9" in en and "3.10" in en and "python.org" in en
@@ -511,6 +515,35 @@ def test_the_upgrade_text_says_what_was_seen_and_what_to_do(darwin):
     assert ("Full Disk Access" in en) is darwin
     for word in ("可能", "似乎", "might", "maybe", "probably"):
         assert word not in text and word not in en
+
+
+@pytest.mark.parametrize("platform", sorted(PLATFORMS))
+def test_the_terminal_example_matches_the_platform(platform):
+    """第 2 轮（审查）：Windows 上 python.org 的安装程序装的是 py 启动器，没有 python3.13 这个命令。"""
+    darwin, windows = PLATFORMS[platform]
+    text = bootstrap.python_too_old_text("3.9", darwin=darwin, windows=windows)
+    example = "py -3.13 main.py" if windows else "python3.13 main.py"
+    for t in (str(text), i18n.text(text, i18n.EN)):
+        assert "（例如 {}）".format(example) in t or "(for example, {})".format(example) in t
+        assert ("python3.13" in t) is not windows
+
+
+@pytest.mark.parametrize("platform", sorted(PLATFORMS))
+def test_the_upgrade_steps_never_ask_to_delete_the_venv(platform):
+    """升级提示和自检里 3.9 那一行给同一段步骤：启动器不再认 3.9 建的 .venv、ensure_env 会重建，
+    所以不叫人删 .venv（selfcheck.python_switch_steps 那一段才要删，给 Rosetta 用）。自检那一格
+    不保留换行，inline 版把提醒接在同一段里，别的一字不差。"""
+    darwin, windows = PLATFORMS[platform]
+    for inline in (False, True):
+        steps = bootstrap.python_upgrade_steps(darwin, windows, inline=inline)
+        for t in (str(steps), i18n.text(steps, i18n.EN)):
+            assert ".venv" not in t and "删" not in t and "delete" not in t.lower()
+    block = bootstrap.python_upgrade_steps(darwin, windows)
+    inline = bootstrap.python_upgrade_steps(darwin, windows, inline=True)
+    assert "\n" not in str(inline) and "\n" not in i18n.text(inline, i18n.EN)
+    assert str(inline) == str(block).replace("\n", "")
+    assert i18n.text(inline, i18n.EN) == i18n.text(block, i18n.EN).replace("\n", " ")
+    assert str(bootstrap.python_too_old_text("3.9", darwin, windows)).endswith(str(block))
 
 
 class Dialogs:
@@ -534,7 +567,8 @@ def test_refusing_prints_chinese_and_shows_a_dialog_without_a_console(platform, 
     assert code == 1
     out = capsys.readouterr().out
     assert "需要升级" in out and "3.9" in out                 # 终端永远是中文
-    expected = bootstrap.python_too_old_text("3.9", darwin=platform == "darwin")
+    expected = bootstrap.python_too_old_text("3.9", darwin=platform == "darwin",
+                                             windows=platform == "win32")
     if platform == "darwin":
         assert d.calls and d.calls[0][0] == "osascript"
         from app import native_dialog

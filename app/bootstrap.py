@@ -712,35 +712,50 @@ def python_too_old(version_info=None):
     return tuple(v[:2]) < MIN_PYTHON
 
 
-def python_too_old_text(current, darwin=None):
-    """「需要升级」和照做的步骤。只写看到的（现在用的是哪个版本）和能做的事。
+def python_upgrade_steps(darwin=None, windows=None, inline=False):
+    """升级 Python 的照做步骤（D14）：python_too_old_text 的后半段，自检里 3.9 那一行
+    （selfcheck.check_comments）也给这一段。只写能做的事。
 
     装好新 Python 之后重新打开就行，不用手动删 .venv：启动器（tools/find_python.sh、Start.bat）
     不再挑低于 3.10 的解释器，换成新的那个启动后，venv_needs_rebuild 认出 .venv 是旧版本建的、
-    用新的重建。在终端里直接跑 main.py 的人要自己换解释器，所以单写一句。
+    用新的重建（所以这里不能用 selfcheck.python_switch_steps：那一段要人删 .venv，是给 Rosetta
+    那种版本够、启动器照样认 .venv 的情况的）。在终端里直接跑 main.py 的人要自己换解释器，所以单写
+    一句，例子按平台写：Windows 上 python.org 的安装程序装的是 py 启动器，没有 python3.13 这个命令。
     macOS 的「完全磁盘访问权限」按解释器文件登记（browser_login.fda_targets）：换了 Python，新的
-    那个不在列表里，要登录才给流地址的直播间就拿不到流——和 selfcheck.python_switch_steps 同一个提醒。"""
+    那个不在列表里，要登录才给流地址的直播间就拿不到流——和 selfcheck.python_switch_steps 同一个提醒。
+    inline：自检那一格不保留换行，那句提醒接在同一段里；对话框里另起一行。"""
     darwin = sys.platform == "darwin" if darwin is None else darwin
+    windows = sys.platform == "win32" if windows is None else windows
     need = "{}.{}".format(*MIN_PYTHON)  # i18n: data（版本号）
-    text = L("这个版本的程序需要 Python {} 或更新的版本，现在用的是 Python {}，需要升级。\n"
-             "请从 python.org 下载安装 Python {} 或更新的版本，装好后重新打开程序：它会用新的 Python "
-             "重新安装运行组件（约 1.4 GB，需要联网）。在终端里运行的，改用新装的 Python 运行 main.py"
-             "（例如 python3.13 main.py）。",
+    example = "py -3.13 main.py" if windows else "python3.13 main.py"  # i18n: data（命令行）
+    steps = L("请从 python.org 下载安装 Python {} 或更新的版本，装好后重新打开程序：它会用新的 Python "
+              "重新安装运行组件（约 1.4 GB，需要联网）。在终端里运行的，改用新装的 Python 运行 main.py"
+              "（例如 {}）。",
+              "Install Python {} or later from python.org, then open the app again. It reinstalls "
+              "its components with the new Python (about 1.4 GB, needs an internet connection). If "
+              "you run the app from a terminal, run main.py with the new Python (for example, "
+              "{}).").format(need, example)
+    if not darwin:
+        return steps
+    fda = L("换了 Python 之后，要把新的 Python 加进「完全磁盘访问权限」一次，路径和步骤见程序"
+            "「启动自检」里「浏览器登录态」那一行；不加的话，TikTok 要求登录才给流地址的直播间"
+            "拿不到流。",
+            "After switching, add the new Python to Full Disk Access once. The Browser "
+            "Login row in the app’s Startup Check shows the path and steps. Without it, the "
+            "app can’t get the stream for live streams where TikTok provides the stream URL "
+            "only to signed-in viewers.")
+    if inline:
+        return L("{}{}", "{} {}").format(steps, fda)
+    return steps + "\n" + fda
+
+
+def python_too_old_text(current, darwin=None, windows=None):
+    """「需要升级」和照做的步骤（python_upgrade_steps）。只写看到的（现在用的是哪个版本）和能做的事。"""
+    need = "{}.{}".format(*MIN_PYTHON)  # i18n: data（版本号）
+    head = L("这个版本的程序需要 Python {} 或更新的版本，现在用的是 Python {}，需要升级。\n",
              "This version of the app needs Python {} or later. It’s running on Python {}, "
-             "which needs an upgrade.\n"
-             "Install Python {} or later from python.org, then open the app again. It reinstalls "
-             "its components with the new Python (about 1.4 GB, needs an internet connection). If "
-             "you run the app from a terminal, run main.py with the new Python (for example, "
-             "python3.13 main.py).").format(need, current, need)
-    if darwin:
-        text += L("\n换了 Python 之后，要把新的 Python 加进「完全磁盘访问权限」一次，路径和步骤见程序"
-                  "「启动自检」里「浏览器登录态」那一行；不加的话，TikTok 要求登录才给流地址的直播间"
-                  "拿不到流。",
-                  "\nAfter switching, add the new Python to Full Disk Access once. The Browser "
-                  "Login row in the app’s Startup Check shows the path and steps. Without it, the "
-                  "app can’t get the stream for live streams where TikTok provides the stream URL "
-                  "only to signed-in viewers.")
-    return text
+             "which needs an upgrade.\n").format(need, current)
+    return head + python_upgrade_steps(darwin, windows)
 
 
 def _stdio_is_terminal():
@@ -762,7 +777,8 @@ def refuse_old_python(version_info=None, *, has_console=None, sys_platform=None,
     对话框，返回给 sys.exit 的退出码 1。CI 里只打印、不弹（同 main._fail_alert）。弹框失败不挡退出。"""
     v = sys.version_info if version_info is None else version_info
     sys_platform = sys.platform if sys_platform is None else sys_platform
-    text = python_too_old_text("{}.{}".format(v[0], v[1]), darwin=sys_platform == "darwin")
+    text = python_too_old_text("{}.{}".format(v[0], v[1]), darwin=sys_platform == "darwin",
+                               windows=sys_platform == "win32")
     try:
         print("⚠️ " + text, flush=True)
     except Exception:
