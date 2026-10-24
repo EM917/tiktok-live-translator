@@ -41,7 +41,8 @@ if (typeof guardDecorateComment === "undefined") {
 var FLOAT_COMMENTS_MAX = 5;          // 窗口里最多留几条弹幕（新的在底部）
 var FLOAT_HOLD_MS = 4000;            // 新的一句最多等译文多久（同中控页 web/app.js 的 LIVE_HOLD_MS）
 // 监听自己停下来的两种状态（同 app/pipeline_float.py 的 END_STATES）：浮窗留着，换成结束卡片。
-// idle 只来自停止，后端照旧关窗，这里不为它画卡片（中控点停止时不会先闪一下卡片再关）
+// idle 不画卡片：卡片没露着时来的 idle 是中控点停止（或更新暂停后没能恢复），后端照旧关窗，中控点停止时
+// 不会先闪一下卡片再关。卡片露着时来的 idle 不收卡片（floatNextStatus）
 var FLOAT_END_STATES = ["ended", "error"];
 
 // ---- 状态归并 -----------------------------------------------------------------------------
@@ -62,9 +63,18 @@ function floatSetMarked(state, marked) {
 function floatApplyConfig(state, cfg) {
   if (!cfg || typeof cfg !== "object") return;
   if ("caption_size" in cfg) state.captionSize = captionSizeFromConfig(cfg.caption_size);
-  if (cfg.status && typeof cfg.status === "object") state.status = cfg.status.state || "";
+  if (cfg.status && typeof cfg.status === "object") state.status = floatNextStatus(state.status, cfg.status.state);
   if ("guard_state" in cfg) state.guardState = cfg.guard_state && typeof cfg.guard_state === "object" ? cfg.guard_state : null;
   if ("guard_marked" in cfg) floatSetMarked(state, cfg.guard_marked);
+}
+
+/* 收到一条状态（实时的 status 或 hello / config 里带的）之后页面记哪个状态。结束卡片露着时来的 idle 不改：
+ * 停止按钮只在连接中 / 直播中才有，这时的 idle 是别的事顺带把状态写回了待机（这场结束后才开始的本地翻译模型
+ * 下载报进度、yt-dlp 自动更新完、在主窗口里点的一键更新没成），后端这时也不关窗（app/pipeline_float.py
+ * _float_on_status），卡片照旧说「详情见主窗口」。只有下一场的 connecting / live 把卡片收起 */
+function floatNextStatus(prev, next) {
+  next = next || "";
+  return next === "idle" && FLOAT_END_STATES.indexOf(prev) >= 0 ? prev : next;
 }
 
 function floatFindComment(state, id) {
@@ -88,16 +98,19 @@ function floatReduce(state, msg, nowMs) {
   if (!msg || typeof msg !== "object") return state;
   switch (msg.type) {
     case "hello": {
+      var before = state.status;
       var fresh = floatInitialState();
       Object.keys(fresh).forEach(function (k) { state[k] = fresh[k]; });
       floatApplyConfig(state, msg.config);
+      // 整份换掉，结束卡片除外：卡片露着时断线、重连回来的 hello 带的是 idle，卡片照旧（同 floatNextStatus）
+      if (state.status === "idle") state.status = floatNextStatus(before, "idle");
       break;
     }
     case "config":
       floatApplyConfig(state, msg);
       break;
     case "status":
-      state.status = msg.state || "";
+      state.status = floatNextStatus(state.status, msg.state);
       break;
     case "caption": {
       var next = { id: msg.id, original: msg.original || "", translated: msg.translated || null,
@@ -469,7 +482,7 @@ function floatRender(doc, els, state, nowMs, opts) {
 /* Node 测试环境导出；浏览器里作为全局函数被上面的胶水使用 */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { FLOAT_COMMENTS_MAX: FLOAT_COMMENTS_MAX, FLOAT_HOLD_MS: FLOAT_HOLD_MS,
-                     FLOAT_END_STATES: FLOAT_END_STATES, floatEndView: floatEndView,
+                     FLOAT_END_STATES: FLOAT_END_STATES, floatEndView: floatEndView, floatNextStatus: floatNextStatus,
                      floatMainBridge: floatMainBridge, floatGoMain: floatGoMain, floatPaintEnd: floatPaintEnd,
                      floatInitialState: floatInitialState,
                      floatReduce: floatReduce, floatReleaseHeld: floatReleaseHeld, floatCaptionView: floatCaptionView,

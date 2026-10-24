@@ -121,7 +121,7 @@ def test_a_malformed_message_means_off():
 # ---- 停止就关；自己停了留下结束卡片（专家审查 U3） -------------------------------------------
 # 以前这一节钉的是「不是 live / connecting 就关」：ended、error 也关，浮窗没有任何说明就消失了，主窗口以外
 # 没有提醒（U3）。现在只看 state：idle 关窗；ended / error 留着窗口（页面换成结束卡片，见 tests/float.test.mjs），
-# 从监听中停下来的那一下 Dock 跳一次；live / connecting 不动。
+# 从监听中停下来的那一下 Dock 跳一次；卡片露着时来的 idle 不关（那不是点停止）；live / connecting 不动、卡片收起。
 
 def test_idle_closes_the_float_but_ended_and_error_keep_it_for_the_end_card(attention):
     host = FakeHost(open_=True)
@@ -243,6 +243,64 @@ def test_a_user_stop_sends_two_idles_and_the_float_only_closes(attention):
     assert getattr(p, "_stop_reason", None) is None           # 第二条 idle 发出时它已经清空了
     assert host.calls == ["close", "close"]                   # 两条都只是关窗（真宿主第二次什么都不做）
     assert attention == []
+
+
+def test_an_idle_while_the_end_card_is_up_keeps_the_window_and_the_card(attention):
+    """结束卡片露着时来的 idle 不是中控点停止（停止按钮只在连接中 / 直播中才有，web/follow.js viewTransition），
+    是别的事顺带把状态写回了待机：这场结束后才开始的本地翻译模型下载每 5% 报一次进度、yt-dlp 自动更新完、
+    在主窗口里点的一键更新没成。以前这几条会把卡片和窗口一起关掉，又回到 U3 那样「浮窗没说明就没了」。
+    现在窗口留着，下一场开始时卡片才收起；下一场里点停止照旧关窗。"""
+    for end in ("ended", "error"):
+        attention.clear()
+        host = FakeHost(open_=True)
+        p = bare_pipeline(host=host)
+        p._float_on_status({"state": "live"})
+        p._float_on_status({"state": end})
+        for detail in ("正在下载本地翻译模型：5%…", "正在下载本地翻译模型：10%…", "本地翻译已就绪，可以开始了。"):
+            p._float_on_status({"state": "idle", "detail": detail})
+        assert host.calls == [], end                          # 几条 idle 都不关
+        assert len(attention) == 1, end                       # Dock 只在停下来的那一下跳过一次
+        p._float_on_status({"state": "connecting"})           # 中控点了开始：下一场
+        p._float_on_status({"state": "live"})
+        p._float_on_status({"state": "idle", "detail": "正在停止…"})
+        p._float_on_status({"state": "idle", "detail": ""})
+        assert host.calls == ["close", "close"], end          # 这一场里点停止：照旧关窗
+        assert len(attention) == 1, end
+
+
+def test_a_state_the_hook_does_not_know_takes_the_end_card_down_too(attention):
+    host = FakeHost(open_=True)
+    p = bare_pipeline(host=host)
+    p._float_on_status({"state": "live"})
+    p._float_on_status({"state": "ended"})
+    p._float_on_status({"state": "something_new"})
+    assert host.calls == ["close"]                            # 认不出的照旧关，卡片也不留
+    p._float_on_status({"state": "idle"})
+    assert host.calls == ["close", "close"]                   # 卡片已经不在了：idle 照旧关
+
+
+def test_the_real_model_download_progress_after_an_end_keeps_the_end_card(attention):
+    """走真的 _provision_note（app/pipeline.py）：没在监听时它发的是 status=idle，主窗口回到待机、显示进度。
+    直播中推迟的模型下载在这场结束后才开始（_pull_after_session），所以紧跟在 ended 后面。"""
+    host = FakeHost(open_=True)
+    p = bare_pipeline(active=False, host=host)
+    sent = []
+    real_broadcast = p.server.broadcast
+
+    async def capture(msg):
+        sent.append(dict(msg))
+        await real_broadcast(msg)
+    p.server.broadcast = capture
+
+    async def go():
+        await p.server.status("live", "")
+        await p.server.status("ended", "")
+        await p._provision_note("正在准备本地翻译模型（约 1.1 GB，只需这一次）…")
+        await p._provision_note("正在下载本地翻译模型：40%（440 / 1100 MB，只需这一次）…")
+    asyncio.run(go())
+    assert [m["state"] for m in sent if m.get("type") == "status"] == ["live", "ended", "idle", "idle"]
+    assert p.server.config["status"]["state"] == "idle"
+    assert host.calls == [] and len(attention) == 1
 
 
 # ---- 状态回到页面 -------------------------------------------------------------------------
@@ -413,7 +471,6 @@ class FakeMainWindow:
 def float_host(platform="darwin", create=None, call_after=None):
     """call_after 是「交给主线程」的替身（真的是 AppHelper.callAfter）；不传就当场执行。"""
     made = []
-
 
     def create_window(title, url, **kwargs):
         window = SimpleNamespace(title=title, url=url, kwargs=kwargs,

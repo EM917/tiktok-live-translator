@@ -13,8 +13,9 @@
 //   5. 字幕区的高度（专家审查 U1，同中控页底部大字幕）：最少「两行译文 + 两行原文」高，换句时下面的弹幕不跟着跳；
 //      长句不截断，到窗口六成再从下面裁（样式表，假 DOM 没有版面；真排版的量法在 b1-livebar 的验证记录里）；
 //   6. 结束卡片（专家审查 U3）：ended / error 时字幕和弹幕收起、露出卡片，标题只写状态、说明只指去主窗口；
-//      idle（中控点停止，后端照旧关窗）不画卡片；connecting / live 回来就收起。「回到主窗口」只走 JS 桥，
-//      没有 JS 桥不画。
+//      卡片没露着时的 idle（中控点停止，后端照旧关窗）不画卡片；卡片露着时的 idle（结束后才开始的模型下载报进度
+//      之类，后端也不关窗）不收卡片；connecting / live 回来才收起。「回到主窗口」只走 JS 桥，没有 JS 桥不画，
+//      JS 桥在页面加载之后注入、发 pywebviewready 时重画。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -311,6 +312,29 @@ test("结束卡片：只有 ended / error 才有；标题只写状态，说明�
   assert.equal(F.floatEndView(null), null);
 });
 
+test("结束卡片露着时来的 idle 不收卡片（floatNextStatus）：那不是点停止；没露着时 idle 照旧是 idle", () => {
+  for (const end of ["ended", "error"]) {
+    assert.equal(F.floatNextStatus(end, "idle"), end);
+    assert.equal(F.floatNextStatus(end, "connecting"), "connecting");     // 下一场：收起
+    assert.equal(F.floatNextStatus(end, "live"), "live");
+    assert.equal(F.floatNextStatus(end, "something_new"), "something_new");
+  }
+  assert.equal(F.floatNextStatus("error", "ended"), "ended");
+  for (const prev of ["", "idle", "connecting", "live"]) assert.equal(F.floatNextStatus(prev, "idle"), "idle", prev);
+  assert.equal(F.floatNextStatus("ended", undefined), "");
+  const s = F.floatInitialState();
+  F.floatReduce(s, { type: "hello", config: { status: { state: "idle", detail: "" } } });
+  assert.equal(F.floatEndView(s), null, "刚打开的页面：hello 里的 idle 不画卡片");
+  F.floatReduce(s, { type: "status", state: "live" });
+  F.floatReduce(s, { type: "status", state: "ended" });
+  F.floatReduce(s, { type: "status", state: "idle", detail: "正在下载本地翻译模型：40%…" });
+  assert.equal(F.floatEndView(s).title, "直播已结束");
+  F.floatReduce(s, { type: "hello", config: { status: { state: "idle", detail: "" } } });    // 断线重连回来
+  assert.equal(F.floatEndView(s).title, "直播已结束");
+  F.floatReduce(s, { type: "hello", config: { status: { state: "connecting", detail: "" } } });
+  assert.equal(F.floatEndView(s), null);
+});
+
 test("「回到主窗口」只调 JS 桥：有 pywebview.api.focus_main 才算有，调到了返回 true", () => {
   const calls = [];
   const api = { focus_main() { calls.push(this); return Promise.resolve(true); } };
@@ -410,6 +434,31 @@ for (const lang of ["zh", "en"]) {
     assert.equal(page.el("f-end-back").textContent, X.goMain);
     page.el("f-end-back").click();                                  // 只走 JS 桥：不发 WebSocket（发了会抛）
     assert.equal(calls.length, 1);
+  });
+
+  test(L("结束卡片露着时来的 idle（结束后才开始的模型下载报进度之类）：卡片留着，重连回来的 hello 带着 idle 也留着；下一场才收起"), () => {
+    for (const [state, title] of [["ended", X.endedTitle], ["error", X.errorTitle]]) {
+      const page = loadFloat({ lang });
+      hello(page);
+      page.push(caption(1, "hola"));
+      page.push({ type: "caption_update", id: 1, translated: "你好", translate_state: "ok" });
+      page.push(comment("c1", "ana", "hola"));
+      page.push({ type: "status", state, detail: "" });
+      for (const pct of [5, 10, 15]) page.push({ type: "status", state: "idle", detail: pct + "%" });
+      assert.ok(!hidden(page, "f-end"), state);
+      assert.equal(page.el("f-end-title").textContent, title);
+      assert.ok(hidden(page, "f-caption") && hidden(page, "f-empty") && hidden(page, "f-comments"), state);
+      page.closeSocket();                                           // 断线：卡片留着
+      page.runTimers();
+      page.reopen();
+      hello(page, { status: { state: "idle", detail: "20%" } });
+      assert.ok(!hidden(page, "f-end"), state + "：重连回来");
+      assert.equal(page.el("f-end-title").textContent, title);
+      page.push({ type: "status", state: "connecting", detail: "" }); // 中控点了开始：下一场
+      assert.ok(hidden(page, "f-end"), state);
+      page.push({ type: "status", state: "idle", detail: lang === "en" ? "Stopping…" : "正在停止…" });
+      assert.ok(hidden(page, "f-end"), state + "：这一场里点停止，不画卡片");
+    }
   });
 
   test(L("中控点停止：两条 idle 都不画结束卡片（后端照旧关窗）"), () => {
