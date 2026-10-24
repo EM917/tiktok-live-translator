@@ -593,6 +593,59 @@ def test_a_natural_end_lets_the_last_translations_finish(monkeypatch, tmp_path):
     assert "discarded_sec" not in end[0]
 
 
+def test_a_stop_while_a_natural_end_waits_for_the_last_translations(monkeypatch, tmp_path):
+    """这一场自然结束（查到不在播）后，_run_stream_inner 收尾时最多等 TRANSLATION_DRAIN_SEC 让最后几条翻译跑完
+    （_finish_translation_drains wait=True）——这是 #131 新加的一个等待点。这时点停止：1 秒内生效，排空跟着取消
+    （在途那条被取消、排队的记「已跳过」），任务以取消结束，不再查流地址，界面停在待机、不改回「直播中」，
+    session_end 只写一条。session_end 记哪个原因（自然结束的原因还是 user_stop）这里不钉：#131 的已知限制。"""
+    p = make_pipeline(monkeypatch, tmp_path)
+    log = _loop_fakes(monkeypatch, p, [2 * SEG_FRAMES], translate_sec=3.0, offline_after=2)
+
+    async def confirm(url, exc, sess, waited):
+        sess["end"] = {"reason": "offline"}
+        return "offline", waited
+
+    monkeypatch.setattr(p, "_confirm_offline", confirm)
+
+    def pending_drains():
+        sess = getattr(p, "_session_state", None)
+        if not isinstance(sess, dict):
+            return []
+        return [t for t in sess.get("translation_drains", ()) if not t.done()]
+
+    def at_the_wait(task):
+        sess = getattr(p, "_session_state", None)
+        ended = isinstance(sess, dict) and (sess.get("end") or {}).get("reason") == "offline"
+        return ended and bool(pending_drains()) and not task.done()
+
+    async def scenario():
+        await p.start_stream(ROOM)
+        task = p._stream_task
+        await poll_until(lambda: at_the_wait(task), 10.0, lambda: "自然结束、收尾在等翻译（解析 {} 次、"
+                         "后台排空 {} 个）".format(len(log["resolves"]), len(pending_drains())))
+        await asyncio.sleep(0.2)
+        assert at_the_wait(task)                          # 还在等（翻译要 3 秒）
+        drains = pending_drains()
+        before = (len(log["resolves"]), len(p.server.statuses()))
+        t0 = time.monotonic()
+        await p.stop_stream()
+        took = time.monotonic() - t0
+        # 在协程里、stop_stream 一返回就看（asyncio.run 退出时会把没结束的任务全部取消）
+        got = {"done": task.done(), "cancelled": task.cancelled(),
+               "drains_left": [t for t in drains if not t.done()]}
+        await asyncio.sleep(0.5)
+        return took, before, got
+
+    took, before, got = run(scenario())
+    assert took < 1.0
+    assert got == {"done": True, "cancelled": True, "drains_left": []}
+    assert log["cancelled"] == 1                          # 在途那条被取消了，没有等它翻完
+    assert len(log["resolves"]) == before[0]
+    after = [s for _t, s, _d in p.server.statuses()[before[1]:]]
+    assert "live" not in after and after[-1] == "idle"
+    assert len(of_type(_all_rows(tmp_path), "session_end")) == 1
+
+
 def _hanging_drain_round(monkeypatch, p, sess):
     """跑一轮：两段字幕，翻译卡住，TRANSLATION_DRAIN_SEC 远长于测试——这一轮的后台排空自己不会到点，只能被
     这一场的收尾取消。返回这个排空任务（在协程里调）。"""
