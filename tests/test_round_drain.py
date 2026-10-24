@@ -32,7 +32,7 @@ from app.audit import AuditLog
 from app.pipeline import Pipeline
 from app.server import CaptionServer
 from tests import i18n_rules as rules
-from tests.helpers import run
+from tests.helpers import poll_until, run
 
 ROOM = "https://www.tiktok.com/@ficticia_drain/live"
 SEG_FRAMES = 10                  # 一段 = 10 帧 = 1 秒音频
@@ -191,8 +191,7 @@ def test_connecting_shows_within_half_a_second_of_eof_while_the_backlog_is_recog
         loop = asyncio.get_running_loop()
         task = asyncio.ensure_future(
             p._stream_session("http://cdn/s.flv", asr, None, loop, sess=sess))
-        while "t" not in eof:
-            await asyncio.sleep(0.005)
+        await poll_until(lambda: "t" in eof, 10.0, "这一轮读到流尾", interval=0.005)
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline and not any(
                 s == "connecting" for _t, s, _d in p.server.statuses()):
@@ -269,8 +268,8 @@ def test_a_cancelled_round_does_not_announce_a_reconnect(monkeypatch, tmp_path):
         loop = asyncio.get_running_loop()
         task = asyncio.ensure_future(
             p._stream_session("http://cdn/s.flv", GatedASR(), None, loop, sess=sess))
-        while not any(s == "live" for _t, s, _d in p.server.statuses()):
-            await asyncio.sleep(0.005)
+        await poll_until(lambda: any(s == "live" for _t, s, _d in p.server.statuses()), 10.0,
+                         "这一轮宣布直播中", interval=0.005)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -541,8 +540,8 @@ def test_the_next_lookup_does_not_wait_for_the_translation_drain(monkeypatch, tm
     async def scenario():
         await p.start_stream(ROOM)
         task = p._stream_task
-        while len(log["resolves"]) < 2:
-            await asyncio.sleep(0.01)
+        await poll_until(lambda: len(log["resolves"]) >= 2, 10.0,
+                         lambda: "第二次解析（已解析 {} 次）".format(len(log["resolves"])))
         t0 = time.monotonic()
         await p.stop_stream()
         took = time.monotonic() - t0
