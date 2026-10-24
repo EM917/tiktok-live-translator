@@ -410,8 +410,10 @@ class FakeMainWindow:
         self.calls.append("show")
 
 
-def float_host(platform="darwin", create=None):
+def float_host(platform="darwin", create=None, call_after=None):
+    """call_after 是「交给主线程」的替身（真的是 AppHelper.callAfter）；不传就当场执行。"""
     made = []
+
 
     def create_window(title, url, **kwargs):
         window = SimpleNamespace(title=title, url=url, kwargs=kwargs,
@@ -422,7 +424,8 @@ def float_host(platform="darwin", create=None):
         return window
     host = fw.FloatWindowHost(create or create_window, "http://127.0.0.1:8765/", platform=platform,
                               screens=lambda: [(0, 0, 1440, 900)], load=lambda: {}, save=lambda k, v: None,
-                              spawn=lambda fn: fn(), mac_tweaks=None, frame_reader=None)
+                              spawn=lambda fn: fn(), mac_tweaks=None, frame_reader=None,
+                              call_after=call_after or (lambda fn: fn()))
     return host, made
 
 
@@ -471,8 +474,46 @@ def test_focus_main_restores_a_minimized_window_on_macos_only():
     assert host.main_window.calls == ["show"]                 # winforms 的 restore 会把最大化的窗口改回普通大小
 
 
+def test_focus_main_reads_appkit_only_on_the_main_thread():
+    """JS 桥的工作线程上不碰 AppKit：isMiniaturized、restore、show 一起交给主线程（AppHelper.callAfter）。"""
+    queued = []
+    host, _made = float_host(platform="darwin", call_after=queued.append)
+    reads = []
+    main = FakeMainWindow()
+    main.native = SimpleNamespace(isMiniaturized=lambda: reads.append(threading.current_thread()) or True)
+    host.main_window = main
+    bridge = threading.Thread(target=lambda: reads.append(("returned", host.focus_main())))
+    bridge.start()                                            # pywebview 每次 JS 调用新开一个线程
+    bridge.join()
+    assert reads == [("returned", True)]                      # 桥线程上只是排进主线程的队列
+    assert main.calls == [] and len(queued) == 1
+    queued.pop()()                                            # 主线程（这里是跑测试的线程）执行
+    assert reads[1:] == [threading.current_thread()]
+    assert main.calls == ["restore", "show"]
+
+
+def test_focus_main_off_macos_does_not_queue_anything():
+    def no_queue(fn):
+        raise AssertionError("别的平台不该交给 AppKit 的主线程")
+    host, _made = float_host(platform="win32", call_after=no_queue)
+    host.main_window = FakeMainWindow(miniaturized=True)
+    assert host.focus_main() is True
+    assert host.main_window.calls == ["show"]
+
+
 def test_focus_main_never_raises_into_the_js_bridge(capsys):
+    # macOS：出错发生在主线程上那一步——不往 AppKit 的事件循环里抛，只打一行警告；桥上返回的是「交出去了」
     host, _made = float_host()
+    host.main_window = FakeMainWindow(fail=True)
+    assert host.focus_main() is True
+    assert "[警告] 没能把主窗口提到前面：window is gone" in capsys.readouterr().out
+    # 交不出去（拿不到 AppHelper 之类）：桥上返回 False
+    host, _made = float_host(call_after=lambda fn: (_ for _ in ()).throw(RuntimeError("no AppHelper")))
+    host.main_window = FakeMainWindow()
+    assert host.focus_main() is False
+    assert "[警告] 没能把主窗口提到前面：no AppHelper" in capsys.readouterr().out
+    # 别的平台：show 直接在桥线程上调（pywebview 自己切到界面线程），出错返回 False
+    host, _made = float_host(platform="win32")
     host.main_window = FakeMainWindow(fail=True)
     assert host.focus_main() is False
     assert "[警告] 没能把主窗口提到前面：window is gone" in capsys.readouterr().out

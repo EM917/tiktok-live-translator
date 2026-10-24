@@ -356,24 +356,48 @@ def mac_float_tweaks(window, wait=5.0, call_after=None, dark_appearance=None):
 
 # ---- 回到主窗口（结束卡片的按钮） ----------------------------------------------------------
 
-def bring_to_front(window, mac=None):
+def bring_to_front(window, mac=None, call_after=None):
     """把一扇 pywebview 窗口提到最前、让程序到前台（pywebview 的 show：cocoa 上是 makeKeyAndOrderFront
     加 activateIgnoringOtherApps，winforms 上是 Show + Activate；两边都自己切到界面线程）。
 
     macOS 上窗口缩进了 Dock 的先还原。只在真的缩进去了时才调 restore：winforms 的 restore 会把最大化的
-    窗口改回普通大小，所以别的平台只调 show。任何一步不行都只打一行警告，返回是否做成。"""
+    窗口改回普通大小，所以别的平台只调 show。
+
+    调用方是 pywebview JS 桥的工作线程（FloatApi.focus_main），不是主线程。macOS 上「缩进去没有」要问 AppKit
+    （native.isMiniaturized()），所以整件事——读它、restore、show——交给主线程做（AppHelper.callAfter，
+    call_after 是测试替身用的）；restore / show 在主线程上照样由 pywebview 自己再排一次 callAfter，先后不变。
+    别的平台、或者窗口还没有 native 时，这里不碰原生对象，直接调 show。
+
+    返回是否做成：macOS 上是有没有交给主线程，主线程上那一步出错只打一行警告（见 _front_on_main）；
+    任何一步不行都只打一行警告，不抛。"""
     if window is None:
         return False
     mac = (sys.platform == "darwin") if mac is None else mac
     try:
-        native = getattr(window, "native", None)
-        if mac and native is not None and native.isMiniaturized():
-            window.restore()
-        window.show()
+        native = getattr(window, "native", None) if mac else None
+        if native is None:
+            window.show()
+            return True
+        if call_after is None:
+            from PyObjCTools import AppHelper
+            call_after = AppHelper.callAfter
+        call_after(functools.partial(_front_on_main, window, native))
         return True
     except Exception as exc:
         print("[警告] 没能把主窗口提到前面：{}".format(exc))
         return False
+
+
+def _front_on_main(window, native):
+    """bring_to_front 交给主线程的那一步（macOS）：缩进 Dock 的先还原，再 show。异常不往 AppKit 的
+    事件循环里抛，只打一行警告。pywebview 的 restore / show 要先等窗口的 shown 事件：主窗口早就显示过、
+    这个事件不会再清掉，所以在主线程上调不会干等。"""
+    try:
+        if native.isMiniaturized():
+            window.restore()
+        window.show()
+    except Exception as exc:
+        print("[警告] 没能把主窗口提到前面：{}".format(exc))
 
 
 class FloatApi:
@@ -412,7 +436,7 @@ class FloatWindowHost:
 
     def __init__(self, create_window, base_url, platform=None, screens=None, load=None, save=None,
                  spawn=None, timer_factory=None, mac_tweaks=_DEFAULT_TWEAKS, on_change=None,
-                 shown_wait=SHOWN_WAIT_SEC, frame_reader=_DEFAULT_FRAME):
+                 shown_wait=SHOWN_WAIT_SEC, frame_reader=_DEFAULT_FRAME, call_after=None):
         self._create = create_window
         self._shown_wait = shown_wait
         self._base_url = str(base_url).rstrip("/")
@@ -439,6 +463,7 @@ class FloatWindowHost:
         # 主窗口本身：focus_main 要把它提到前面。follow_main_window 挂主窗口的 closed 时顺手存在这里，
         # 不用改 main.py；主窗口关了就清掉
         self.main_window = None
+        self._call_after = call_after           # 交给主线程的函数（AppHelper.callAfter）；None 是用时再取，测试传替身
         self._api = FloatApi(self)
         self._lock = threading.Lock()           # 串行化建窗 / 销毁
         self._state = threading.Lock()          # 保护下面几个字段，持有时间极短
@@ -470,9 +495,10 @@ class FloatWindowHost:
         self._spawn(self._reconcile)
 
     def focus_main(self):
-        """结束卡片的「回到主窗口」（经 FloatApi 从 JS 桥的线程里调）：把主窗口提到最前。浮窗本身不动——
-        中控接着开下一场时它还在原处。没有主窗口（还没挂上、已经关了）返回 False。"""
-        return bring_to_front(self.main_window, mac=self._mac)
+        """结束卡片的「回到主窗口」（经 FloatApi 从 JS 桥的线程里调）：把主窗口提到最前（macOS 上交给主线程做，
+        见 bring_to_front）。浮窗本身不动——中控接着开下一场时它还在原处。没有主窗口（还没挂上、已经关了）
+        返回 False。"""
+        return bring_to_front(self.main_window, mac=self._mac, call_after=self._call_after)
 
     def shutdown(self):
         """同步收掉浮窗，之后不再接受 request_open。主窗口 closed 的处理函数里调。"""
