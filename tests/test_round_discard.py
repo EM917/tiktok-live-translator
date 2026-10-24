@@ -13,6 +13,7 @@
 全部用桩件：不联网、不起 ffmpeg、不加载模型。主播名是虚构的。
 """
 import asyncio
+import functools
 import json
 import threading
 import time
@@ -412,7 +413,31 @@ class FrozenDatetime:
         return datetime(2026, 10, 23, 12, 0, 0, 123000)
 
 
+class PinnedClock:
+    """拉流汇总读的钟，停在测试给的读数上。"""
+    def __init__(self, now):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def _pin_watch_clock(monkeypatch):
+    """session_end 的拉流汇总里有 monitored_sec：这一场从建会话状态到关审计，单调时钟走了多久（round 到
+    0.1 秒）。两条管线各量各的，慢的跑器上一条过了 50 毫秒、另一条没过，两行就差在这一个数上（PR #136 的
+    Windows CI：clean 那条是 0.1，lossy 那条的值被 pytest 截掉了，只知道前缀不同；本机让 clean 多停 55 毫秒
+    就复现）。FrozenDatetime 只钉墙钟时刻，这里把 StreamWatch 的两个钟也钉住；
+    走的还是 _new_stream_watch 那条建法。返回单调时钟，测试自己拨。"""
+    import app.pipeline_stream as stream_mod
+    mono = PinnedClock(1000.0)
+    monkeypatch.setattr(stream_mod, "StreamWatch",
+                        functools.partial(stream_mod.StreamWatch, mono=mono,
+                                          wall=PinnedClock(1_793_000_000.0)))
+    return mono
+
+
 def _break_line(monkeypatch, tmp_path, name, discarded):
+    # stream_break 里没有量时长的字段（coverage_5m 要统计循环算过覆盖率才带，这里没跑），钉墙钟时刻就够
     import app.audit as audit_mod
     monkeypatch.setattr(audit_mod, "datetime", FrozenDatetime)
     p, sess = make_pipeline(monkeypatch, tmp_path / name)
@@ -444,8 +469,10 @@ def test_a_stream_break_with_discards_only_appends_the_two_keys(monkeypatch, tmp
 def test_session_end_sums_the_rounds_and_stays_unchanged_without_discards(monkeypatch, tmp_path):
     import app.audit as audit_mod
     monkeypatch.setattr(audit_mod, "datetime", FrozenDatetime)
+    mono = _pin_watch_clock(monkeypatch)
     lines = {}
     for name, per_round in (("clean", [None, None]), ("lossy", [(1, 9.0), (2, 4.25)])):
+        mono.now = 1000.0
         p, sess = make_pipeline(monkeypatch, tmp_path / name)
         audit = p.audit
         source = SimpleNamespace(proc=SimpleNamespace(returncode=0), stalled=False,
@@ -456,10 +483,14 @@ def test_session_end_sums_the_rounds_and_stays_unchanged_without_discards(monkey
             p._record_stream_break(sess, source, "cancelled", None, True, 5.0, None,
                                    discarded=discarded)
         path = audit.path
+        mono.now = 1012.34          # 两场都「监听了」12.3 秒
         audit.close(reason="user_stop")
         lines[name] = [line for line in path.read_text(encoding="utf-8").splitlines()
                        if '"type": "session_end"' in line][0]
     clean, lossy = json.loads(lines["clean"]), json.loads(lines["lossy"])
+    # 钟确实钉住了：真走的时间到不了 12.3 秒。哪天 StreamWatch 换了建法、钉不住，这里每台机器都红，
+    # 而不是又只在慢的跑器上偶发
+    assert clean["monitored_sec"] == lossy["monitored_sec"] == 12.3
     assert "discarded_sec" not in clean and "discarded_segments" not in clean
     assert lossy["discarded_segments"] == 3 and lossy["discarded_sec"] == 13.2
     assert lines["lossy"].startswith(lines["clean"][:-1] + ", ")
