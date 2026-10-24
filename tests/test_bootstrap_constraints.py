@@ -125,8 +125,9 @@ ENVS = {
     "windows-313": dict(sys_platform="win32", platform_machine="AMD64", python_version="3.13",
                         python_full_version="3.13.5", platform_version="10.0.26100",
                         platform_release="11"),
-    # ARM64 的 Windows：原生 ARM64 的 Python 报 ARM64；3.12 起 x64 的 Python 在 ARM64 机器上转译运行时，
-    # platform.machine() 按 WMI 读到的也是本机的 ARM64
+    # ARM64 的 Windows：原生 ARM64 的 Python 报 ARM64。按 CPython 源码，3.12 起 Windows 上的
+    # platform.machine() 取 WMI 报的 CPU 架构，x64 的 Python 在 ARM64 机器上转译运行时也会是 ARM64
+    # （没在 ARM64 机器上跑过）；报 AMD64 时拿到的是 win_amd64 的锁，转译下照样能装
     "windows-arm64": dict(sys_platform="win32", platform_machine="ARM64", python_version="3.13",
                           python_full_version="3.13.5", platform_version="10.0.26100",
                           platform_release="11"),
