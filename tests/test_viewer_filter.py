@@ -344,19 +344,22 @@ def test_a_comment_with_guard_fields_reaches_the_phone_with_only_the_original_ke
 def test_the_phones_replay_snapshot_has_no_guard_data_even_when_the_cache_holds_it():
     from types import SimpleNamespace
 
+    UID = "7234567890123456789"
+
     server = SimpleNamespace(
         config={"status": {"state": "live"}, "comment_backend": "connected",
                 "guard_state": {"enabled": True}, "guard_events": {"g1": {"id": "g1"}},
-                "guard_marked": {"100": {"keys": ["100"]}}},
+                "guard_marked": {UID: {"keys": [UID]}}},
         alerts=[], history=[],
         comments=[{"type": "comment", "id": "c1", "user": "Ana", "text": "hola", "ts": 1.0,
-                   "translated": None, "state": "pending", "uid": "100", "uid_ok": True,
+                   "translated": None, "state": "pending", "uid": UID, "uid_ok": True,
                    "guard": {"lvl": "alert"}}])
     out = viewer.replay_snapshot(server)
     comments = [m for m in out if m["type"] == "comment"]
     assert len(comments) == 1 and set(comments[0]) == COMMENT_KEYS_ON_PHONE
     blob = json.dumps(out)
-    for needle in ("guard", "uid", "marked", "7234"):
+    # 账号 id 用一整串 19 位数来查：只查其中几位会撞上回放里的时间戳（852813.1677234 里就有 7234）
+    for needle in ("guard", "uid", "marked", UID):
         assert needle not in blob, needle
 
 
