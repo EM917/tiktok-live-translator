@@ -29,6 +29,7 @@ import pytest
 
 from app import audio
 from app.audio import FRAME_BYTES, FFmpegAudioSource
+from tests.helpers import poll_until
 
 FAKE = Path(__file__).resolve().parent / "fixtures" / "fake_ffmpeg.py"
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32",
@@ -262,8 +263,8 @@ def test_two_concurrent_stops_share_one_set_of_signals(fake):
             async for _ in src.frames():
                 got.append(1)
         task = asyncio.ensure_future(reader())
-        while len(got) < 3:
-            await asyncio.sleep(0.02)
+        await poll_until(lambda: len(got) >= 3, 10.0,
+                         lambda: "收到 3 帧（已收到 {} 帧）".format(len(got)), interval=0.02)
         real_terminate = src.proc.terminate
 
         def terminate():
@@ -303,8 +304,8 @@ def test_a_cancelled_reader_takes_the_short_path(fake):
                 got.append(1)
                 await asyncio.sleep(0.2)           # 像在等一次广播
         task = asyncio.ensure_future(reader())
-        while len(got) < 2:
-            await asyncio.sleep(0.02)
+        await poll_until(lambda: len(got) >= 2, 10.0,
+                         lambda: "收到 2 帧（已收到 {} 帧）".format(len(got)), interval=0.02)
         t0 = time.monotonic()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -626,8 +627,8 @@ def test_the_urgent_path_sends_the_second_signal_sooner(fake, monkeypatch):
             async for _ in src.frames():
                 got.append(1)
         task = asyncio.ensure_future(reader())
-        while len(got) < 2:
-            await asyncio.sleep(0.02)
+        await poll_until(lambda: len(got) >= 2, 10.0,
+                         lambda: "收到 2 帧（已收到 {} 帧）".format(len(got)), interval=0.02)
         t0 = time.monotonic()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
