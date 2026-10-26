@@ -6,6 +6,7 @@
 """
 import asyncio
 import contextvars
+import hashlib
 import os
 import subprocess
 import sys
@@ -359,8 +360,14 @@ def _arnndn_probe(model_path):
         return r.returncode == 0
     except Exception:
         return False
-RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/"
-               "beguiling-drafter-2018-08-30/bd.rnnn")
+# 降噪模型固定到上游仓库的一个提交，下载后核对 sha256（专家审查 I5、计划审查 Q9）。以前跟着 master
+# 走：上游的文件一变（或者被人换掉），新装机拿到的就是另一份，没人知道。6c2c130 是上游唯一动过这个
+# 文件的提交（2018-08-31）；它的 blob（0173a18…）和本机 2026-08 起一直在用的那份逐字节相同，
+# 2026-10-26 不在直播时从下面的地址实际下载核对过：299,693 字节，sha256 与 RNNOISE_SHA256 一致
+RNNOISE_COMMIT = "6c2c1301c30a6be5ddf93704a693f4956ce2aa55"
+RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/{}/"
+               "beguiling-drafter-2018-08-30/bd.rnnn").format(RNNOISE_COMMIT)
+RNNOISE_SHA256 = "ae3f7411e1e6a884f839a4a145c394408398f09854dbc1216ee02faafc98a17b"
 
 # 演示模式的内置台词（英文原文 + 中文译文），用于在没有直播时验证 UI。
 # 台词是字幕数据，不随界面语言变（spec §1：DEMO_SCRIPT 不在英文化范围内）
@@ -471,6 +478,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._asr_failing = None         # 识别连续出错、提示还挂着的那一场的 audit
         self._fallback_load = None       # 在途的「改用 CPU」加载：被停止打断时下一场接着用
         self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
+        self._ytdlp_freshen_waiter = None   # 等这一场结束再升 yt-dlp 的那个任务，见 _note_resolve_failure
         self._bg_tasks = set()           # fire-and-forget 任务的引用，见 _spawn
         self.telemetry = Telemetry()
         self.detector = load_detector(getattr(args, "banned_terms", None))
@@ -886,17 +894,24 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self.server.config["active_brand"] = self._active_brand_info()
         await self.start_stream(url, media=token.get("media"))
 
-    def _save_update_resume(self, token, to_version):
+    def _save_update_resume(self, token, to_version, commits=None):
         """execv 之前留记号：新进程启动时据此接着监听（见 resume_after_update）。
-        返回是否留了记号。更新期间中控点过开始/停止的不留：重启后照他最后的操作来。"""
+        返回是否留了记号。更新期间中控点过开始/停止的不留：重启后照他最后的操作来。
+
+        commits 是更新前后的提交号 {from, to}（专家审查 I6）：记进记号里，事后看得出这次重启是从哪个
+        提交换到哪个；新版本起不来、退回旧版本时（app/update_guard.py），旧版本照样读得懂这个记号
+        （多出来的键不认识就不用）。"""
         if not token or not token.get("url"):
             return False
         if token.get("operator_acted"):
             print("[信息] 更新期间中控点过开始/停止，重启后不自动接着监听")
             return False
-        save_setting("resume_after_update", {"url": token["url"], "media": token.get("media"),
-                                             "brand": token.get("brand"),
-                                             "at": time.time(), "to_version": to_version})
+        marker = {"url": token["url"], "media": token.get("media"), "brand": token.get("brand"),
+                  "at": time.time(), "to_version": to_version}
+        if commits:
+            marker["from"] = commits.get("from")
+            marker["to"] = commits.get("to")
+        save_setting("resume_after_update", marker)
         return True
 
     async def resume_after_update(self, now=None):
@@ -924,16 +939,25 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         from .provenance import app_version, streamer_of
         media = marker.get("media")
         streamer = streamer_of(url)
-        self._resume_reason = "update"
+        # 新版本起不来、退回到这个版本之后接着听（app/update_guard.py 在记号里写了 rolled_back_from）：
+        # 状态行和审计都照实说是退回来的，不说「已更新到」
+        rolled_back_from = marker.get("rolled_back_from")
+        self._resume_reason = "update_rolled_back" if rolled_back_from else "update"
         # 品牌词表跟着记号恢复；老记号没有这个字段（升级前留下的）按不限处理，
         # 和缺 media/其它字段的宽容原则一致——brand_path 会在 _begin_session
         # 里重新校验一遍，这里不必重复校验
         brand = marker.get("brand")
         self.brand = brand if isinstance(brand, str) and brand else None
         self.server.config["active_brand"] = self._active_brand_info()
-        await self.server.status("connecting", L("已更新到 v{}，正在自动恢复监听{}…",
-                                                 "Updated to v{}. Resuming monitoring{}…").format(
-            app_version(), " @" + streamer if streamer else ""))
+        if rolled_back_from:
+            text = L("一键更新到 v{} 之后字幕界面一直没有连上，已退回 v{}，正在自动恢复监听{}…",
+                     "After the update to v{}, the caption window never connected. The app went back "
+                     "to v{}. Resuming monitoring{}…").format(
+                str(rolled_back_from).lstrip("vV"), app_version(), " @" + streamer if streamer else "")
+        else:
+            text = L("已更新到 v{}，正在自动恢复监听{}…", "Updated to v{}. Resuming monitoring{}…").format(
+                app_version(), " @" + streamer if streamer else "")
+        await self.server.status("connecting", text)
         await self.start_stream(url, media=media if isinstance(media, str) and media else None)
         return True
 
@@ -945,7 +969,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     def _update_session_extras(self):
         """session_start 里与组件和更新有关的几项。resumed_after 只用一次：update 表示
-        一键更新重启后自动接上的这一场，update_failed 表示更新没成、在旧版本上恢复的。"""
+        一键更新重启后自动接上的这一场，update_failed 表示更新没成、在旧版本上恢复的，
+        update_rolled_back 表示新版本起不来、自动退回旧版本之后接上的（专家审查 I6）。"""
         from .updater import component_version, update_check_ok_iso
         reason = getattr(self, "_resume_reason", None)
         self._resume_reason = None
@@ -1961,9 +1986,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         asr_state = self._asr_check_state()
         try:
             guard = getattr(self, "guard", None)       # 弹幕留意那一行要用；没有守卫的半成品实例不传
+            extra = {"guard": guard} if guard is not None else {}
+            denoise_state = self._denoise_check_state()
+            if denoise_state:                           # 降噪模型下载的校验值对不上过（I5）才传
+                extra["denoise_state"] = denoise_state
             checks = await run_all(self.args, self.detector, self.glossary,
-                                   self.translator, asr_state=asr_state,
-                                   **({"guard": guard} if guard is not None else {}))
+                                   self.translator, asr_state=asr_state, **extra)
         except Exception as exc:
             print("[警告] 自检执行失败: {}".format(exc))
             return
@@ -4224,7 +4252,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     def _note_resolve_failure(self, exc):
         """连续两次「不是主播下播」的解析失败，多半是 yt-dlp 的 TikTok 提取器
-        坏了——触发后台自动升级 yt-dlp（见 updater.freshen_ytdlp）。"""
+        坏了——触发后台自动升级 yt-dlp（见 updater.freshen_ytdlp）。
+
+        升级等这一场的拉流任务结束再查（_freshen_ytdlp_after_stream）：解析失败是在拉流任务里发现的，
+        这时直接调 freshen_ytdlp 必然撞上它的忙碌闸（监听中不升，专家审查 I5），这条路就成了死代码。
+        已经有一个在等的就不再排。"""
         kind = getattr(exc, "kind", "unknown")
         if kind in ("offline", "login"):
             self._resolve_fail_streak = 0
@@ -4233,7 +4265,29 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return   # 断网与提取器无关：不计数也不清零，更不能拉起注定失败的 pip
         self._resolve_fail_streak += 1
         if self._resolve_fail_streak >= 2 and getattr(self, "updater", None) is not None:
-            self._spawn(self.updater.freshen_ytdlp(reason="resolve-failures"))
+            waiter = getattr(self, "_ytdlp_freshen_waiter", None)
+            if waiter is None or waiter.done():
+                self._ytdlp_freshen_waiter = self._spawn(self._freshen_ytdlp_after_stream())
+
+    async def _freshen_ytdlp_after_stream(self):
+        """解析连续失败之后的 yt-dlp 升级：等这一场的拉流任务结束再调 freshen_ytdlp。
+
+        首次解析就失败时 _run_session 马上 return，任务随即结束，很快就查；重连循环里的失败要等这一场
+        放弃重连、或中控点停止。pip 改的是解析每次都要起的那个 yt-dlp：重连循环还在解析时不能改它。
+
+        拉流任务结束之后还要再排一次 _stream_lock（拿到就放）。换主播（start_stream）和停止（stop_stream）
+        都在这把锁里先停旧任务、再做别的：_stop_locked 把 _stream_task 置空、取消旧任务之后，还要等停弹幕
+        来源（最长约 10 秒）、关审计、发字幕记录，换主播最后才建新任务。旧任务一结束这里就醒，那时
+        _stream_task 是 None；不排这把锁的话，PyPI 那一步只要比剩下的停止流程先回来，freshen_ytdlp 的两道
+        忙碌检查都看到「不在监听」，pip 就和新的一场的开场、重连解析叠在一起（第 2 轮审查实测）。
+        asyncio.Lock 按先来后到放行：换主播时这里排在 start_stream 后面，轮到时新任务已经建好，结果是
+        busy（新的一场再连续失败，会再排一次）；中控点停止时排在 stop_stream 后面，轮到时已经停干净，照常查。"""
+        task = getattr(self, "_stream_task", None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            await asyncio.wait({task})
+        async with self._lock():
+            pass
+        return await self.updater.freshen_ytdlp(reason="resolve-failures")
 
     MODEL_DOWNLOAD_POLL_SEC = 3.0
 
@@ -4319,23 +4373,65 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         # 残缺数据，长度校验必然失败，于是降噪一直是关着的，
                         # 而日志只说「下载失败或校验未过」，看不出是自己读少了。
                         data = await read_all(resp, 8 * 1024 * 1024) or b""
-                        # 只验文件头不够：截断的下载同样带正确 magic，
-                        # 长度下限 + 落盘后实测初始化才算数
+                        # 先核对固定版本的 sha256（专家审查 I5）：对不上就不落盘，自检里显示成看得见的
+                        # 一行。截断的下载、被换掉的文件都在这里拦下
+                        got = hashlib.sha256(data).hexdigest()
+                        if got != RNNOISE_SHA256:
+                            await self._denoise_checksum_mismatch(got, len(data))
+                            return None
+                        # 之前那次对不上留下了自检的红行（和顶部提示）：这次对上了，下面有了结果就重查
+                        # 那一行，不等别的事件再跑自检——不然界面一直说「背景音乐不会被抑制」，降噪其实在用
+                        was_red = self._denoise_check_state() is not None
+                        self._denoise_download = None
+                        ok = False
+                        # 校验值对上了也照旧验文件头、长度，落盘后实测初始化才算数
                         if (data.startswith(b"rnnoise")
                                 and len(data) >= DENOISE_MIN_BYTES):
                             # 先写临时文件再原子改名：中途断网不会留下半个模型文件
                             tmp = DENOISE_MODEL.with_suffix(".rnnn.part")
                             tmp.write_bytes(data)
                             tmp.replace(DENOISE_MODEL)
-                            if await loop.run_in_executor(
-                                    None, _arnndn_probe, str(DENOISE_MODEL)):
-                                print("[信息] 已自动下载人声降噪模型")
-                                return str(DENOISE_MODEL)
-                            DENOISE_MODEL.unlink()   # 实测失败：删掉别留隐患
+                            ok = await loop.run_in_executor(
+                                None, _arnndn_probe, str(DENOISE_MODEL))
+                            if not ok:
+                                DENOISE_MODEL.unlink()   # 实测失败：删掉别留隐患
+                        if was_red:
+                            await self._refresh_denoise_check()
+                        if ok:
+                            print("[信息] 已自动下载人声降噪模型")
+                            return str(DENOISE_MODEL)
         except Exception:
             pass
         print("[警告] 降噪模型不可用（下载失败或校验未过），本次不降噪")
         return None
+
+    async def _denoise_checksum_mismatch(self, got, size):
+        """下载下来的降噪模型和固定版本的 sha256 对不上（专家审查 I5）：不落盘、打中文警告，自检「人声降噪」
+        一行刷成 FAIL——不只在终端打印（selfcheck.py 模块说明：静默降级必须变成可见状态）。"""
+        print("[警告] 降噪模型下载下来的文件和固定版本的校验值对不上（{} 字节，sha256 {}…，应为 {}…），"
+              "没有保存，本次不降噪".format(size, got[:12], RNNOISE_SHA256[:12]))
+        self._denoise_download = {"checksum_mismatch": True, "sha256": got, "size": size}
+        await self._refresh_denoise_check()
+
+    def _denoise_check_state(self):
+        """交给自检「人声降噪」那一行的下载结果（校验值对不上时有内容），没有就是 None。"""
+        return getattr(self, "_denoise_download", None)
+
+    async def _refresh_denoise_check(self):
+        """只重查「人声降噪」一行（同 _refresh_asr_check）：下载在开播时才发生，启动自检那一轮早就跑完了。
+        还没跑过自检就不管——之后那一轮会带上最新状态。"""
+        from .selfcheck import check_denoise
+        current = self._published_checks()
+        if not current:
+            return
+        try:
+            row = await check_denoise(self.args, self._denoise_check_state())
+        except Exception as exc:
+            print("[警告] 人声降噪自检刷新失败：{}".format(exc))
+            return
+        current = self._published_checks() or current
+        await self._publish_selfcheck(
+            [row if c.get("name") == row["name"] else c for c in current])
 
     async def _emit_original(self, result, audio_end_ts, asr_ms, segment_ms=None,
                              asr_meta=None, sess=None):

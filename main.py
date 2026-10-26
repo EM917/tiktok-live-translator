@@ -457,12 +457,12 @@ def ensure_env():
             message = (L("自动安装未完成（{}）。\n"
                          "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
                          "（进阶：也可手动运行 setup.sh / setup.ps1，"
-                         "或 pip install -r requirements.txt）",
+                         "或 pip install -r requirements.txt -c constraints.txt）",
                          "Installation didn’t finish ({}).\n"
                          "Check your network connection, then open the app again. Installation "
                          "picks up where it left off.\n"
                          "(Advanced: you can also run setup.sh / setup.ps1, or pip install -r "
-                         "requirements.txt)").format(of(exc)))
+                         "requirements.txt -c constraints.txt)").format(of(exc)))
         _fail_alert(message)
     finally:
         if lock is not None:
@@ -605,6 +605,52 @@ def _recover_unclosed_audits(port):
             len(report.errors), "、".join("{}（{}）".format(n, e) for n, e in report.errors)))
 
 
+def _check_update_guard(others_running=None):
+    """一键更新之后的存活确认（专家审查 I6，规则见 app/update_guard.py）：新版本启动了两次、字幕界面都没
+    连上，第三次打开就退回更新前的版本，弹窗说明（Mac、Windows 都弹），然后重新 exec。
+
+    只在确认没有别的实例在跑之后调（计划审查 P5：在单实例检查之前计数，双击两次就会把一个好好的新版本
+    退回去）：窗口模式在 run_with_window 的检查之后，浏览器模式在 main() 的检查之后；--no-open、--url
+    不做单实例检查，由 others_running 探一次端口。任何出错都不拦启动。"""
+    try:
+        from app import update_guard
+        outcome = update_guard.on_boot(ROOT, others_running=others_running)
+    except Exception as exc:
+        print("[警告] 一键更新后的启动检查出错（{}），这次跳过".format(type(exc).__name__))
+        return
+    if not outcome.rolled_back:
+        return
+    # 对话框不等人点：旧版本马上起来，暂停中的监听才赶得上「重启后接着监听」的时限。程序文件已经退回了：
+    # 弹窗这一步出错（比如终端断了、print 抛 OSError）也不能挡住下面的重新 exec。
+    # _info_dialog 先打印、Mac 上没终端时弹框（不变）；Windows 另外用系统自带的消息框弹（用户 2026-10-26 定），
+    # 弹不出来就只剩那一行打印。两步各自兜底：打印抛了错，Windows 的消息框照样弹
+    try:
+        if outcome.message:
+            _info_dialog(outcome.message)
+    except Exception:
+        pass
+    try:
+        if outcome.message:
+            update_guard.windows_notice(outcome.message)
+    except Exception:
+        pass
+    update_guard.release_lock()
+    from app.relaunch import exec_args, flush_std, replace_process
+    argv = [sys.executable, str(ROOT / "main.py")] + sys.argv[1:]
+    flush_std()
+    try:
+        if os.name == "nt":
+            replace_process(argv)          # 同 ensure_env：Windows 上起子进程、等它（I11）
+        os.execv(sys.executable, exec_args(argv))
+    except Exception as exc:
+        # 程序文件已经退回了，内存里却还是新版本的代码：不能接着往下跑。说清楚、退出；再开一次就是旧版本
+        print("[错误] 已退回更新前的版本，但重新启动没成功（{}）".format(type(exc).__name__))
+        _fail_alert(L("已退回更新前的版本，但程序没能自己重新打开（{}）。请再打开一次本程序。",
+                      "The app went back to the version before the update but couldn’t reopen itself "
+                      "({}). Open the app again.").format(type(exc).__name__))
+        raise SystemExit(1) from None
+
+
 def _note_exit_signal(name):
     """第一次收到退出信号：SIGHUP（终端窗口关了）先把标准流换成 /dev/null——之后再往那个终端写就是
     EIO，收尾路上任何一行 print 都会抛（app/exit_signals.silence_stdio）。"""
@@ -688,6 +734,11 @@ async def main_async(args, state=None):
             print("[信息] 端口 {} 被占用，已自动改用 {}".format(args.port, port))
         args.port = port
         break
+    if server is not None and args.no_open:
+        # --no-open 不开页面，可能一直没有页面来连：一键更新后的启动检查（app/update_guard.py）在这种
+        # 模式下以「控制服务起来了」为准，否则这样启动两次之后，第三次打开会把一个好好的新版本退回去
+        from app import update_guard
+        update_guard.mark_ready()
     if server is None:
         if state is not None:
             state["failed"] = True   # 告诉窗口线程别开窗口了
@@ -834,17 +885,19 @@ def main():
         from app.ffmpeg_bin import find_ffmpeg
         if find_ffmpeg() is None:
             missing.append(L("组件 ffmpeg 缺失：请关闭程序后重新打开，会自动补装。"
-                             "（进阶：pip install -r requirements.txt）",
+                             "（进阶：pip install -r requirements.txt -c constraints.txt）",
                              "Audio (ffmpeg) is missing. Quit and reopen the app to install it "
-                             "automatically. (Advanced: pip install -r requirements.txt)"))
+                             "automatically. (Advanced: pip install -r requirements.txt -c "
+                             "constraints.txt)"))
         try:
             import faster_whisper  # noqa: F401
         except ImportError:
             missing.append(L("组件 faster-whisper 缺失：请关闭程序后重新打开，会自动补装。"
-                             "（进阶：pip install -r requirements.txt 或运行 setup 脚本）",
+                             "（进阶：pip install -r requirements.txt -c constraints.txt "
+                             "或运行 setup 脚本）",
                              "faster-whisper is missing. Quit and reopen the app to install it "
-                             "automatically. (Advanced: pip install -r requirements.txt, or run "
-                             "the setup script.)"))
+                             "automatically. (Advanced: pip install -r requirements.txt -c "
+                             "constraints.txt, or run the setup script.)"))
         if missing:
             if args.url:
                 _fail_alert(L("\n", "\n").join(missing))
@@ -868,6 +921,10 @@ def main():
                     print("[信息] 检测到程序已在运行，直接打开现有界面 " + existing)
                     webbrowser.open(existing)
                     return
+                _check_update_guard()
+            else:
+                # --no-open、--url 不做单实例检查：一键更新后的启动检查自己探一次端口
+                _check_update_guard(lambda: _existing_instance_url(args.port) is not None)
             asyncio.run(main_async(args))
     except KeyboardInterrupt:
         # 识别证据在每一场自己的证据线程里写：asyncio.run 收尾只等默认线程池，下面的 os._exit
@@ -938,6 +995,8 @@ def run_with_window(args):
         webview.start()
         return
 
+    # 确认没有别的实例在跑了：一键更新后的启动检查（两次启动页面都没连上，第三次就退回，见 _check_update_guard）
+    _check_update_guard()
     state = {}
     from app.window_close import (FinishOnce, guard_close, hook_app_terminate, localization_kwargs,
                                   stop_after_close)

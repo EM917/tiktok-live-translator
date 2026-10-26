@@ -4,9 +4,13 @@
 安全边界：只做 fast-forward，且要求工作区干净——绝不覆盖用户的本地改动；
 ZIP 下载（无 .git）的安装只提示去下载页，不尝试自动更新。
 
-一键更新的顺序（见 Updater._apply_inner）：先 `git fetch` 取新版本（只动网络，监听
+一键更新的顺序（见 Updater._apply_inner）：先 `git fetch --tags --force` 取新版本（只动网络，监听
 照常），确认能快进了才暂停监听；先按新版本的清单装依赖，装好了才合并代码并重启。
 任何一步失败，工作区还是旧代码，监听在当前版本上恢复。
+
+更新到的是提示里那个 release 的标签（专家审查 S3），不是跟踪分支的末端：以前提示来自
+releases/latest，合并的却是 @{u}，落后的安装会把 main 上还没发版的提交一并装上。标签必须在
+跟踪的分支上（主线）、并且能快进，否则不更新。代价：经一键更新拿不到还没发版的提交。
 """
 import asyncio
 import importlib.machinery
@@ -19,7 +23,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .bootstrap import (MLX_GIVEUP, OPTIONAL_DISTS, clear_mlx_giveup, filter_requirements,
@@ -228,6 +232,68 @@ def _keep_mlx_out_of_this_process():
 
 # 带 curl-cffi 扩展：让 pip 按 yt-dlp 自己声明的范围装配 curl_cffi（与 requirements.txt 一致）
 YTDLP_SPEC = "yt-dlp[curl-cffi]"
+# 后台自动升级只装 PyPI 上发布满这么久的版本（专家审查 I5；用户 2026-10-22 定 D9「只装发布满 7 天的
+# 版本」）：刚发布就出问题的版本一般几天内会被撤回或修掉。代价：TikTok 那边变了、要靠新版本修的时候，
+# 最多晚一周拿到
+COMPONENT_MIN_AGE_SEC = 7 * 86400
+# 定期检查 yt-dlp 的间隔。以前是「距上次升级满 7 天就 pip -U 装当天最新的」；现在只装发布满 7 天的
+# 版本，要是还隔 7 天才查一次，一个新版本最晚要 14 天才装上。查一次只是读一份 JSON，所以改成每天查
+YTDLP_CHECK_INTERVAL_SEC = 86400
+PYPI_JSON_URL = "https://pypi.org/pypi/{}/json"
+PYPI_TIMEOUT_SEC = 20
+
+
+def _parse_upload_time(value):
+    """PyPI 的 upload_time_iso_8601（"2026-10-21T21:54:50.808170Z"）→ 时间戳；认不出返回 None。"""
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        stamp = datetime.fromisoformat(text)
+        if stamp.tzinfo is None:          # 老字段 upload_time 不带时区，PyPI 用的是 UTC
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def eligible_release(releases, installed, now, min_age=COMPONENT_MIN_AGE_SEC, accept=None):
+    """PyPI JSON 的 releases（版本号 → 文件列表）里，可以自动装的最新版本；没有返回 None。
+
+    可以装：正式版（不是预发布、开发版）、有没被撤回的文件、最早的那个文件上传满 min_age 秒、比 installed
+    新。accept(版本号) 可选，再按版本号筛（比如只要 7.x）。installed 为 None 时不比新旧。"""
+    Version = _packaging_version()
+    best = None
+    for version, files in (releases or {}).items():
+        if not isinstance(files, list):
+            continue
+        live = [f for f in files if isinstance(f, dict) and not f.get("yanked")]
+        if not live:
+            continue
+        times = [t for t in (_parse_upload_time(f.get("upload_time_iso_8601") or f.get("upload_time"))
+                             for f in live) if t is not None]
+        if not times or now - min(times) < min_age:
+            continue
+        if Version is not None:
+            try:
+                key = Version(version)
+            except Exception:
+                continue
+            if key.is_prerelease or key.is_devrelease:
+                continue
+        else:
+            if not re.fullmatch(r"\d+(\.\d+)*(\.post\d+)?", str(version)):
+                continue
+            key = _version_tuple(version) or ()
+        if accept is not None and not accept(version):
+            continue
+        if installed and _not_newer(version, installed):
+            continue
+        if best is None or key > best[0]:
+            best = (key, version)
+    return best[1] if best else None
+
+
 # 连续这么多天没能连上更新服务器，就在页脚版本号旁边提一句（不进自检、不进横幅）
 UPDATE_CHECK_STALE_DAYS = 14
 
@@ -326,12 +392,23 @@ def _ps_quote(text):
     return str(text).replace("`", "``").replace("$", "`$")
 
 
-def powershell_command(path, discard=False, pip=False, python=None):
+def _git_steps(tag):
+    """取新版本的那几步：知道 release 标签就取标签、快进到它（S3，和一键更新同一个目标）；不知道才
+    退回 git pull。标签只含 [A-Za-z0-9._-]（_release_tag 验过），放进 shell 和 PowerShell 都不用转义。
+
+    fetch 带 --force（同 FETCH_ARGS）：上游挪过一个标签（同名标签打到了别的提交）时，不带它的
+    `git fetch --tags` 会以「would clobber existing tag」整个失败，而且不会自己好。"""
+    if tag:
+        return ["git fetch --tags --force", "git merge --ff-only {}".format(tag)]   # 和 FETCH_ARGS 一致
+    return ["git pull --ff-only"]
+
+
+def powershell_command(path, discard=False, pip=False, python=None, tag=None):
     """Windows 上的手动更新命令。每一步写成 `if ($?) { … }`：上一步成功才跑，和 && 一样遇错即停，
     Windows PowerShell 5.1 和 PowerShell 7 都认。cd 是 PowerShell 里 Set-Location 的内置别名；
     以带引号的路径开头的一句会被当成字符串表达式，跑程序前面要加 &（同 selfcheck._pip_command）。"""
     steps = ["git checkout -- ."] if discard else []
-    steps.append("git pull --ff-only")
+    steps += _git_steps(tag)
     if pip:
         steps.append('& "{}" -m pip install -r requirements.txt -c constraints.txt'.format(
             _ps_quote(python or sys.executable)))
@@ -347,6 +424,21 @@ def _in_shell(posix, windows):
 REPO = "EM917/tiktok-live-translator"
 API_LATEST = "https://api.github.com/repos/{}/releases/latest".format(REPO)
 RELEASES_URL = "https://github.com/{}/releases/latest".format(REPO)
+# release 的 tag_name 要拼进 git 的引用名和给中控粘贴的命令：只认这些字符（S3）
+_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# 一键更新和手动命令取新版本用的同一条 git fetch（S3）。--force：上游挪过任何一个标签（重新发版、把同名
+# 标签打到别的提交）时，本地已有旧标签的安装跑不带它的 `git fetch --tags` 会返回 1（! [rejected] …
+# would clobber existing tag），一键更新卡在「没能从 GitHub 取到新版本」，手动命令也一样，而且不会自己好
+# （第 1 轮审查用 git 2.54 实测）。跟踪分支的默认取法本来就带 +，--force 多出来的只是标签可以被改写
+FETCH_ARGS = ("fetch", "--tags", "--force")
+
+
+def release_tag(version):
+    """GitHub 给的 tag_name 能不能直接当 git 标签名用：能就原样返回，不能返回 None。"""
+    tag = str(version or "")
+    if not _TAG_RE.fullmatch(tag) or ".." in tag or tag.endswith(".lock"):
+        return None
+    return tag
 
 
 def local_version():
@@ -371,6 +463,7 @@ class Updater:
     def __init__(self, server):
         self.server = server
         self.latest = None
+        self._contained_tag = None           # 一键更新时确认过当前代码已经包含的标签（_already_current）
         self._applying = False
         self._freshening = False
         self._freshen_attempted_at = 0.0     # 失败也要冷却，别反复拉起注定失败的 pip
@@ -418,39 +511,72 @@ class Updater:
         页面打回「待机」、停止按钮消失，而管线其实还在跑。"""
         await self.server.broadcast({"type": "notice", "text": text})
 
-    async def freshen_ytdlp(self, reason="periodic"):
+    async def freshen_ytdlp(self, reason="periodic", now=None):
         """后台升级 yt-dlp。它的 TikTok 提取器是全项目最易腐坏的一环，而常规
         更新通道（跟随本项目发版的 pip install -r）不会主动升它——老安装会
         在某天集体拉流失败。两个触发源：
 
-          periodic          —— 启动/每 6 小时检查时，距上次升级超过 7 天就升；
-          resolve-failures  —— 连续解析失败（非「没开播」类）时，6 小时冷却。
+          periodic          —— 启动/每 6 小时检查时，距上次查过满 YTDLP_CHECK_INTERVAL_SEC 就查；
+          resolve-failures  —— 连续解析失败（非「没开播」类）时，6 小时冷却。失败是在拉流任务里发现的，
+                               管线等那个任务结束、再排一次开始/停止共用的那把锁才调这里
+                               （Pipeline._freshen_ytdlp_after_stream）：直接调必然是 busy，这条路就成了
+                               死代码（第 1 轮审查实测）；不排那把锁，换主播时会赶在新的一场建好之前
+                               看到「不在监听」（第 2 轮审查实测）。
+
+        两条规矩（专家审查 I5；用户 2026-10-22 定 D6、D9）：
+          * 在监听、或一键更新进行中，不升（_busy_for_background_pip）。以前不看：直播中照样拉 pip 改
+            正在用的环境，跑 pip 的还是拿着完全磁盘访问权限的那个解释器。重连循环里也算在监听：它还在
+            一次次起 yt-dlp 解析。跳过的这次不记时间，下一次检查（每 6 小时）再看；
+          * 只装 PyPI 上发布满 COMPONENT_MIN_AGE_SEC、比已装的新的那一版，用 ==版本号 装（以前是
+            pip install -U，装当天最新的）。查不到 PyPI 上的版本列表就这次不装。
 
         yt-dlp 是每次解析都新起的子进程（resolver.py 用 -m yt_dlp），升级完
-        下一次点「开始翻译」就生效，无需重启本程序。"""
+        下一次点「开始翻译」就生效，无需重启本程序。返回这次的结果（测试用）：running / busy / recent /
+        attempted / index-failed / no-update / pip-failed / unchanged / installed。"""
         if self._freshening:
-            return
-        min_age = 6 * 3600 if reason == "resolve-failures" else 7 * 86400
+            return "running"
+        # 先看「刚查过」、再看忙不忙：长时间监听时每 6 小时一次的定期检查，一天之内查过的就安静地跳过，
+        # 不在终端每 6 小时打一行「正在监听…跳过」（#145 审查）。满一天没查、又一直在监听时照旧打这一行：
+        # 那时它说的是「该查了、但一直在忙」
+        min_age = 6 * 3600 if reason == "resolve-failures" else YTDLP_CHECK_INTERVAL_SEC
         last = load_settings().get("ytdlp_updated_at") or 0
         try:
             last = float(last)
         except (TypeError, ValueError):
             last = 0
-        now = time.time()
+        now = time.time() if now is None else now
         if now - last < min_age:
-            return
+            return "recent"
+        if self._busy_for_background_pip():
+            print("[信息] 正在监听或一键更新，yt-dlp 自动更新这次跳过（{}）".format(reason))
+            return "busy"
         if now - self._freshen_attempted_at < 600:   # 上次尝试（含失败）10 分钟内不重试
-            return
+            return "attempted"
         self._freshening = True
         self._freshen_attempted_at = now
         try:
+            installed = component_version("yt-dlp")
+            releases, why = await self._pypi_releases("yt-dlp")
+            if releases is None:
+                print("[警告] yt-dlp 自动更新：没拿到 PyPI 上的版本列表（{}），这次不装".format(why))
+                return "index-failed"
+            pick = eligible_release(releases, installed, now)
+            if pick is None:
+                save_setting("ytdlp_updated_at", time.time())
+                print("[信息] yt-dlp {} 已是发布满 {} 天的版本里最新的（{}）".format(
+                    installed, COMPONENT_MIN_AGE_SEC // 86400, reason))
+                return "no-update"
             async with self._get_pip_lock():
-                # 拿到锁之后再读「升级前」的版本：等锁期间别的 pip（一键更新）可能已经改过
+                # 等锁的这段时间里开始了监听或一键更新：不装。拿到锁之后再读「升级前」的版本：等锁期间
+                # 别的 pip（一键更新）可能已经改过
+                if self._busy_for_background_pip():
+                    print("[信息] 正在监听或一键更新，yt-dlp 自动更新这次跳过（{}）".format(reason))
+                    return "busy"
                 before = {name: component_version(name) for name in ("yt-dlp", "curl_cffi")}
                 proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "pip", "install", "-U",
-                    "--disable-pip-version-check", YTDLP_SPEC,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    sys.executable, "-m", "pip", "install",
+                    "--disable-pip-version-check", "{}=={}".format(YTDLP_SPEC, pick),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                     # 我们按 UTF-8 解它的输出，就得让它按 UTF-8 写（与 bootstrap.run_logged
                     # 一致）：Windows 默认 ANSI 代码页，非 ASCII 路径会解成 U+FFFD
                     env=dict(os.environ, PYTHONIOENCODING="utf-8"),
@@ -458,32 +584,71 @@ class Updater:
                 try:
                     out, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
                 except asyncio.TimeoutError:
-                    proc.kill()          # pip 卡死不能拖垮 watch 循环
+                    await _reap(proc)    # pip 卡死不能拖垮 watch 循环；kill 之后 reap，不留僵尸
                     print("[警告] yt-dlp 自动更新超时，已放弃本次尝试")
-                    return
+                    return "pip-failed"
+            _refresh_import_caches()
             if proc.returncode != 0:
-                print("[警告] yt-dlp 自动更新失败（pip 返回 {}）".format(proc.returncode))
-                return
+                # pip 的最后一行原话（数据），不替它下结论
+                lines = [ln.strip() for ln in (out or b"").decode("utf-8", errors="replace").splitlines()
+                         if ln.strip()]
+                print("[警告] yt-dlp 自动更新失败（pip 返回 {}）{}".format(
+                    proc.returncode, "：" + lines[-1][:160] if lines else ""))
+                return "pip-failed"
             save_setting("ytdlp_updated_at", time.time())
             for name, was in before.items():
                 self._note_component_update(name, was, component_version(name), reason)
-            text = out.decode(errors="replace")
-            m = re.search(r"Successfully installed .*?yt.dlp-(\S+)", text)
-            if m:
-                print("[信息] 已自动更新 yt-dlp 到 {}（{}）".format(m.group(1), reason))
-                # 只有在没有活跃直播时才广播提示——绝不能把 live/connecting
-                # 状态顶掉，误导用户去重启一条正常工作的管线
-                current = (self.server.config.get("status") or {}).get("state")
-                if reason == "resolve-failures" and current in (None, "idle", "error"):
-                    await self.server.status(
-                        "idle", L("已自动更新直播解析组件（yt-dlp {}）——"
-                                  "请重新点「开始翻译」试试。",
-                                  "Updated the stream lookup component (yt-dlp {}). Click Start "
-                                  "to try again.").format(m.group(1)))
+            after = component_version("yt-dlp")
+            if after == before["yt-dlp"]:
+                return "unchanged"
+            print("[信息] 已自动更新 yt-dlp 到 {}（{}）".format(after, reason))
+            # 只有在没有活跃直播时才广播提示——绝不能把 live/connecting
+            # 状态顶掉，误导用户去重启一条正常工作的管线
+            current = (self.server.config.get("status") or {}).get("state")
+            if reason == "resolve-failures" and current in (None, "idle", "error"):
+                await self.server.status(
+                    "idle", L("已自动更新直播解析组件（yt-dlp {}）——"
+                              "请重新点「开始翻译」试试。",
+                              "Updated the stream lookup component (yt-dlp {}). Click Start "
+                              "to try again.").format(after))
+            return "installed"
         except Exception as exc:
             print("[警告] yt-dlp 自动更新异常: {}".format(exc))
+            return "pip-failed"
         finally:
             self._freshening = False
+
+    async def _pypi_releases(self, dist):
+        """问 PyPI 的 JSON 接口要这个组件的全部版本（含每个文件的上传时间、有没有被撤回）。
+        返回 (releases, None)；没拿到返回 (None, 看到的情况)——只记看到的（HTTP 状态码、超时、异常类名），
+        不替它下结论。"""
+        try:
+            import aiohttp
+
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=PYPI_TIMEOUT_SEC)) as session:
+                async with session.get(PYPI_JSON_URL.format(dist),
+                                       headers={"Accept": "application/json"}) as resp:
+                    if resp.status != 200:
+                        return None, "HTTP {}".format(resp.status)
+                    data = await resp.json(content_type=None)
+        except asyncio.TimeoutError:
+            return None, "{} 秒内没有返回".format(PYPI_TIMEOUT_SEC)   # i18n: terminal
+        except Exception as exc:
+            return None, type(exc).__name__
+        if not isinstance(data, dict):
+            return None, "返回的内容里没有版本列表"                      # i18n: terminal
+        releases = data.get("releases")
+        if isinstance(releases, dict):
+            return releases, None
+        # PyPI 的文档已经把 releases 标成弃用（第 2 轮审查）。哪天真去掉了，退一步用 info.version + urls（只有
+        # 最新那一版的文件，同样带上传时间和撤回标记）：最新版发布满 7 天照常装，没满就这次不装——少了「装次新的
+        # 那一版」这一档，不会因此装上没满 7 天的版本
+        info, urls = data.get("info"), data.get("urls")
+        version = info.get("version") if isinstance(info, dict) else None
+        if isinstance(version, str) and version and isinstance(urls, list):
+            return {version: urls}, None
+        return None, "返回的内容里没有版本列表"                          # i18n: terminal
 
     async def _pip_install(self, args, label, timeout=600, log_path=None, abort_if=None):
         """跑一次 `pip install <args>`，返回退出码；超时或异常返回 None；abort_if 叫停时
@@ -853,10 +1018,14 @@ class Updater:
             return
         await self._record_check(None)
         tag = str(data.get("tag_name") or "")
-        if not tag or _parse(tag) <= _parse(local_version()):
+        # 一键更新时已经确认当前代码包含这个标签（_already_current）：按「已是最新」答。标签那个提交里的 VERSION
+        # 比标签名旧时，光按版本号比会一直以为有新版本，每 6 小时把同一个提示再弹一次，点了又说「已是最新」
+        # （第 2 轮审查）。只记在这个进程里：重启之后最多再走一遍
+        contained = bool(tag) and tag == getattr(self, "_contained_tag", None)
+        if not tag or contained or _parse(tag) <= _parse(local_version()):
             if manual:
                 await self._notice(L("已是最新版本 v{}", "v{} is the latest version.")
-                                   .format(local_version()))
+                                   .format(tag.lstrip("vV") if contained else local_version()))
             return
         self.latest = {
             "version": tag,
@@ -950,7 +1119,9 @@ class Updater:
           await pause(from_v, to_v)    新版本取下来、确认能快进之后才调：停监听，返回
                                        恢复监听要用的信息（没在监听返回 None）；
           await resume(token, text)    停了监听之后更新没成：在当前版本上恢复监听并说明；
-          before_restart(token, to_v)  重启前留下「重启后接着监听」的记号。"""
+          before_restart(token, to_v, commits={"from": 更新前的提交, "to": 更新到的提交})
+                                       重启前留下「重启后接着监听」的记号；commits 一并记进记号（I6：
+                                       事后看得出这次重启是从哪个提交换到哪个）。返回是否留了。"""
         if self.latest is None or self._applying:
             return   # 重复点击「一键更新」不能并发跑两次 git/pip
         self._applying = True
@@ -967,18 +1138,27 @@ class Updater:
         真实案例里，一台机器就因为这句话卡在旧版本上，而它需要的正是能修好
         这个判断的那次更新。
 
-        Windows 上按 PowerShell 写（I11，见 powershell_command）。"""
+        Windows 上按 PowerShell 写（I11，见 powershell_command）。
+
+        取新版本的那一步和一键更新同一个目标（S3）：提示里那个 release 的标签，
+        `git fetch --tags --force && git merge --ff-only vX.Y.Z`；不写 git pull——那会把跟踪分支上还没发版
+        的提交一起拉下来。还不知道是哪个版本（没检查到新版本）时才退回 git pull。"""
         path = str(ROOT)
+        tag = self._release_tag()
         if _on_windows():
-            return powershell_command(path, discard=discard, pip=pip, python=sys.executable)
-        if discard:
-            return 'cd "{}" && git checkout -- . && git pull --ff-only'.format(path)
-        if pip:
-            # -c constraints.txt（I4）：装的是测试过的那一套版本。git pull 之后工作区就是新版本，
+            return powershell_command(path, discard=discard, pip=pip, python=sys.executable, tag=tag)
+        steps = ["git checkout -- ."] if discard else []
+        steps += _git_steps(tag)
+        if pip and not discard:
+            # -c constraints.txt（I4）：装的是测试过的那一套版本。取到新版本之后工作区就是新版本，
             # 它的 constraints.txt 已经在那里
-            return ('cd "{}" && git pull --ff-only && "{}" -m pip install -r requirements.txt '
-                    '-c constraints.txt').format(path, sys.executable)
-        return 'cd "{}" && git pull --ff-only'.format(path)
+            steps.append('"{}" -m pip install -r requirements.txt -c constraints.txt'.format(
+                sys.executable))
+        return 'cd "{}" && '.format(path) + " && ".join(steps)   # i18n: data（shell 命令）
+
+    def _release_tag(self):
+        """提示里那个 release 的标签（self.latest["version"]），认不出返回 None。"""
+        return release_tag((getattr(self, "latest", None) or {}).get("version"))
 
     async def precheck(self, live=False):
         """「能不能更」与「更」分开：调用方先问这个，通过了才停直播管线。
@@ -1063,8 +1243,12 @@ class Updater:
     async def _not_updated(self, text, live, command=True):
         """还没停监听时的失败出口。直播中只发一次性提示——监听照常，不能把界面状态打回
         待机；没在监听时照旧给状态和一条能照做的命令（更新器不能把自己锁死）。
-        command=False：手动 git pull 也不会有变化的情形（远端没有新提交），给下载页。"""
-        print("[警告] 一键更新没完成：{}（手动更新：{}）".format(text, self._manual_command()))
+        command=False：手动命令也不会有变化（远端没有新提交），或者照做反而有害（标签不在主线上）的情形，
+        给下载页。"""
+        if command:
+            print("[警告] 一键更新没完成：{}（手动更新：{}）".format(text, self._manual_command()))
+        else:          # 给下载页的情形，终端里也不给那条命令（标签不在主线上时照做有害）
+            print("[警告] 一键更新没完成：{}".format(text))
         await self.server.broadcast({"type": "update_aborted"})
         if live:
             await self._notice(L("更新没完成：{}。监听没有中断{}",
@@ -1086,6 +1270,18 @@ class Updater:
                                 "The update didn’t finish ({}). Running the line below in "
                                 "PowerShell usually fixes this:")).format(text),
             command=self._manual_command())
+
+    async def _already_current(self, tag):
+        """当前代码已经包含提示里那个 release（S3）：按「已是最新」处理——不暂停监听、不重启，这次的
+        更新提示收起来（刷新页面不再出现；之后的定时检查照常，只是不再为这同一个标签弹提示）。"""
+        print("[信息] 当前代码已经包含 {}，这次不更新".format(tag))
+        self._contained_tag = tag      # 之后的定时检查不再为这个标签弹提示（check_and_notify）
+        self.latest = None
+        config = getattr(self.server, "config", None)
+        if isinstance(config, dict):
+            config.pop("update", None)
+        await self.server.broadcast({"type": "update_aborted"})
+        await self._notice(L("已是最新版本 v{}", "v{} is the latest version.").format(tag.lstrip("vV")))
 
     async def _update_failed(self, text, token, resume, command, live=False):
         """装依赖或合并失败的出口。工作区还是旧代码：停了的监听交给管线在当前版本上恢复
@@ -1186,6 +1382,19 @@ class Updater:
             # 只装上了必需的组件：记成「这份清单装失败过」，启动时 24 小时内不为它重跑 pip
             record_requirements_failure(ROOT, digest, full_code)
 
+    @staticmethod
+    def _arm_update_guard(head, target, from_version, to_version):
+        """execv 之前留下启动检查的记号（专家审查 I6，规则见 app/update_guard.py）：新版本启动了两次、
+        两次字幕界面都没连上，第三次打开就退回 head。读不到更新前的提交号、记号写不进去：照常重启，只是没有这层保险。"""
+        if not head:
+            print("[警告] 读不到更新前的提交号：这次更新之后新版本起不来时，不会自动退回")
+            return
+        try:
+            from . import update_guard
+            update_guard.arm(head, target, from_version, to_version)
+        except Exception as exc:
+            print("[警告] 没能留下一键更新的启动检查记号（{}）：新版本起不来时，不会自动退回".format(exc))
+
     async def _wait_for_pip_lock(self):
         """pip 锁被占着时等一会儿（UPDATE_LOCK_WAIT_SEC）：后台的 mlx-whisper 安装看到
         _applying 就自己撤。等到了返回 True（锁马上还回去，后面装依赖时再拿）。"""
@@ -1212,8 +1421,9 @@ class Updater:
         await self.server.broadcast({"type": "updating"})
         from_version = local_version()
 
-        # 1. 取新版本：只动网络和 .git，工作区不变，监听照常
-        code, _, err = await self._git("fetch", timeout=FETCH_TIMEOUT_SEC)
+        # 1. 取新版本：只动网络和 .git，工作区不变，监听照常。--tags：要合并的是 release 的标签（S3），
+        # 默认的 fetch 只带回跟踪分支能到达的标签。--force：见 FETCH_ARGS
+        code, _, err = await self._git(*FETCH_ARGS, timeout=FETCH_TIMEOUT_SEC)
         if code != 0:
             why = (L("{} 秒内没下载完", "didn’t finish downloading in {} sec").format(FETCH_TIMEOUT_SEC)
                    if err == "timeout" else _git_tail(err) or L("git 返回 {}", "git returned {}").format(code))
@@ -1221,23 +1431,59 @@ class Updater:
                                       "couldn’t get the new version from GitHub ({})").format(why),
                                     is_live())
             return
-        # 与 `git pull` 同一个目标：当前分支跟踪的远端分支。解析成提交号，后面几步都认
+        # 目标是提示里那个 release 的标签（专家审查 S3）。以前合并的是跟踪分支的末端（@{u}）：落后的
+        # 安装会把 main 上还没发版的提交一起装上，而提示说的是那个 release。解析成提交号，后面几步都认
         # 这一个提交（本地实测：分离 HEAD 时 FETCH_HEAD 全是 not-for-merge，靠不住）
-        code, target, err = await self._git("rev-parse", "--verify", "@{u}")
+        tag = self._release_tag()
+        if tag is None:
+            await self._not_updated(L("认不出新版本的标签（{}）",
+                                      "couldn’t recognize the new version’s tag ({})").format(
+                (self.latest or {}).get("version") or "?"), is_live(), command=False)
+            return
+        code, target, err = await self._git("rev-parse", "--verify",
+                                            "refs/tags/{}^{{commit}}".format(tag))
         target = target.strip()
         if code != 0 or not target:
+            await self._not_updated(L("取下来的版本里没有标签 {}（{}）",
+                                      "the downloaded versions don’t include the tag {} ({})").format(
+                tag, _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)), is_live())
+            return
+        # 标签要在这份安装跟踪的远端分支（主线）上，才更新到它
+        code, upstream, err = await self._git("rev-parse", "--verify", "@{u}")
+        upstream = upstream.strip()
+        if code != 0 or not upstream:
             await self._not_updated(L("找不到这份安装跟踪的远端分支（{}）",
                                       "couldn’t find the remote branch this copy tracks ({})").format(
                 _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)), is_live())
             return
-        # 跟踪的分支上没有新东西（发版标签不在这个分支上、跟踪着一个旧分支）：合并什么也不会
-        # 变，不能为此暂停监听、重启一遍——重启后检查更新又会提示同一个版本
+        # 跟踪的分支上没有新东西：合并什么也不会变，不能为此暂停监听、重启一遍——重启后检查更新
+        # 又会提示同一个版本
         code, head, _ = await self._git("rev-parse", "HEAD")
-        if code == 0 and head.strip() == target:
+        head = head.strip() if code == 0 else ""
+        if head and head == upstream:
             await self._not_updated(L("这份安装跟踪的远端分支上没有比当前更新的提交",
                                       "the remote branch this copy tracks has nothing newer"),
                                     is_live(), command=False)
             return
+        # 当前代码已经包含这个标签（比如跟踪分支上发版之后的提交已经在本地）：已是最新，不重启（S3）
+        code, _, _ = await self._git("merge-base", "--is-ancestor", target, "HEAD")
+        if code == 0:
+            await self._already_current(tag)
+            return
+        # 标签不在主线上（打在别的分支上）：不更新到它。不给 merge 命令、给下载页（command=False）：照着
+        # `git merge --ff-only 标签` 做，这份安装就离开了主线，以后的一键更新、手动命令都没法再快进（第 1 轮
+        # 审查）。查不了（git 出错）时手动命令照旧是正路
+        code, _, err = await self._git("merge-base", "--is-ancestor", target, upstream)
+        if code != 0:
+            await self._not_updated(
+                L("版本 {} 不在这份安装跟踪的远端分支上", "version {} isn’t on the remote branch this "
+                  "copy tracks").format(tag) if code == 1 else
+                L("查不了版本 {} 在不在这份安装跟踪的远端分支上（{}）",
+                  "couldn’t check whether version {} is on the remote branch this copy tracks "
+                  "({})").format(tag, _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)),
+                is_live(), command=code != 1)
+            return
+        # 下面读版本号、清单用的都是标签那个提交：上面刚确认过它在跟踪的远端分支上
         code, version_text, err = await self._git("show", "{}:VERSION".format(target))
         to_version = version_text.strip()
         if code != 0 or not to_version:
@@ -1318,13 +1564,16 @@ class Updater:
             code, _, err = await self._git("merge", "--ff-only", target)
             if code == 0:
                 self._record_installed_requirements(requirements, wanted, full_code, constraints)
+                # 「重启后接着监听」的记号带上更新前后的提交号（I6）：先留它，下面的启动检查记号要抄一份
                 resuming = bool(token is not None and before_restart is not None
-                                and before_restart(token, to_version))
+                                and before_restart(token, to_version,
+                                                   commits={"from": head or None, "to": target}))
                 await self.server.status(
                     "connecting" if resuming else "idle",
                     L("更新完成，正在自动重启…", "Update complete. Restarting…")
                     + (L("重启后自动恢复监听", " Monitoring resumes after the restart.")
                        if resuming else ""))
+                self._arm_update_guard(head, target, from_version, to_version)
                 print("[信息] 已更新到最新版本，重启进程…")
                 await asyncio.sleep(0.6)
                 try:
