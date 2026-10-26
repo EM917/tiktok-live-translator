@@ -108,6 +108,21 @@ Flags need a terminal: the `.app` does not take them, while `Start.command` and 
 
 The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen. Click the version number at the bottom of the window to check by hand. During a stream, the answer appears next to the version number.
 
+<a id="en-updating-zip"></a>
+
+### Updating a zip install
+
+Your settings and records are kept inside the app folder, so do not replace the old folder with the new one. Unzip the new version next to it, and before you start it, copy these from the old folder into the new one:
+
+- `settings.json`: your settings and API keys
+- `banned_terms.txt` and `glossary.txt`
+- `logs/`: the audit log of every session, which records what was recognized and matched
+- `transcripts/`: saved captions and comments
+- your own `.txt` files in `profiles/` and `brands/`
+- `comment_guard/local/` and `comment_guard/marked/`: your Comment Review rules and watch lists
+
+Then start the new version, and delete the old folder once everything is there.
+
 <a id="en-translation-engines"></a>
 
 ## Translation engines
@@ -405,6 +420,21 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 ### 更新
 
 程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示。也可以随时点窗口底部的版本号手动检查，直播中检查的结果写在版本号旁边。
+
+<a id="zh-updating-zip"></a>
+
+### 更新（ZIP 安装）
+
+设置和各种记录都放在程序文件夹里，所以不要拿新文件夹直接替换旧文件夹。把新版本解压在旁边，第一次启动它之前，先把这几样从旧文件夹复制到新文件夹：
+
+- `settings.json`：设置和 API 密钥
+- `banned_terms.txt` 和 `glossary.txt`
+- `logs/`：每一场的审计日志，记着识别出的话和违禁词命中
+- `transcripts/`：保存下来的字幕和弹幕
+- `profiles/`、`brands/` 里你自己的 `.txt` 文件
+- `comment_guard/local/` 和 `comment_guard/marked/`：弹幕留意的规则和关注名单
+
+然后启动新版本，确认都在了再删掉旧文件夹。
 
 <a id="zh-translation-engines"></a>
 

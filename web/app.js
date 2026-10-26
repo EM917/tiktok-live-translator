@@ -356,7 +356,6 @@
   var currentVersion = "";
   var startWatchdog = null;
   var pendingStart = null;   // 已发出但服务器还没回执的「开始」指令（重连后补发）
-  var versionNoticeTimer = null;
   var updateCheckNote = "";  // 很久没连上更新服务器时版本号后面那句话（文字由服务端给）
   var updateConfirmTimer = null;
   var recentClearConfirmTimer = null;
@@ -860,6 +859,41 @@
     if (migrateBar) migrateBar.classList.toggle("hidden", !migrateOffered || streamActive);
   }
 
+  // ZIP 安装的更新条上多一行：要复制到新文件夹的那几样（专家审查 I2；用户 10-22 选「先补说明，挪数据另外排期」）。
+  // 设置、词表、审计日志（logs/，合规证据）、字幕记录都放在程序文件夹里，直接拿新解压的文件夹替换旧的，这些就
+  // 一起没了。comment_guard 只列 local/ 和 marked/：它的 defaults/ 是随程序发的，整个文件夹盖过去会把新版本的
+  // 默认规则换回旧的。README「更新（ZIP 安装）」一节写的是同一份清单（tests/banner.test.mjs 两边比对）
+  var README_URL = "https://github.com/EM917/tiktok-live-translator";
+  var zipKeepNote = null;
+
+  function showZipKeepNote(on) {
+    if (!on) {
+      if (zipKeepNote) zipKeepNote.classList.add("hidden");
+      return;
+    }
+    if (!zipKeepNote) {
+      zipKeepNote = document.createElement("p");
+      zipKeepNote.className = "update-zip-note";
+      var text = document.createElement("span");
+      text.textContent = L("更新时不要直接替换旧文件夹：先把旧文件夹里的 settings.json、banned_terms.txt、" +
+                           "glossary.txt，以及 logs/、transcripts/、profiles/、brands/、comment_guard/local/、" +
+                           "comment_guard/marked/ 复制到新文件夹。",
+                           "Don’t replace the old folder when you update. First copy settings.json, " +
+                           "banned_terms.txt, glossary.txt, logs/, transcripts/, profiles/, brands/, " +
+                           "comment_guard/local/ and comment_guard/marked/ from the old folder into the new one.");
+      var link = document.createElement("a");
+      link.href = README_URL + "#" + (UI_LANG === "en" ? "en" : "zh") + "-updating-zip";
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = L("怎么更新", "How to Update");
+      zipKeepNote.appendChild(text);
+      zipKeepNote.appendChild(document.createTextNode(" "));
+      zipKeepNote.appendChild(link);
+      updateBar.appendChild(zipKeepNote);
+    }
+    zipKeepNote.classList.remove("hidden");
+  }
+
   function showUpdate(info) {
     if (!info || !info.version) return;
     setIconText(updateText, "arrow-clockwise", L("发现新版本 " + info.version,
@@ -874,6 +908,7 @@
       updateLink.textContent = L("前往下载新版本", "Download New Version");
       updateLink.className = "btn primary";
     }
+    showZipKeepNote(!info.can_auto);
     updateLink.href = info.url || "#";
     updateOffered = true;
     syncNoticeBars();       // 直播中先不摆，回到首页时再露出来（见 syncNoticeBars）
@@ -898,8 +933,9 @@
     }
     manualCheckAt = Date.now();
     // 「检查中…」的恢复定时器要能被随后到达的结果提示接管，
-    // 否则结果刚显示就被这个定时器抹回版本号
-    showVersionNote(L("检查更新中…", "Checking for updates…"), 8000);
+    // 否则结果刚显示就被这个定时器抹回版本号。它是占位：结果（不管是页面自己写的还是服务端的 notice）
+    // 一到就直接换掉它，不排在它后面等 8 秒
+    showVersionNote(L("检查更新中…", "Checking for updates…"), 8000, { placeholder: true });
   });
 
   // 「迁移旧词表」：扫描 → 展示 → 用户确认 → 服务端备份并迁移。
@@ -978,15 +1014,81 @@
     });
   }
 
-  function showVersionNote(text, ms) {
-    if (versionNoticeTimer) clearTimeout(versionNoticeTimer);
-    versionEl.textContent = " · " + text;
-    versionNoticeTimer = setTimeout(restoreVersion, ms);
+  // ---- 页脚版本号旁的一句话（专家审查 U2；用户 10-22 选「先做小改动」） ----
+  // 以前每条都是 showVersionNote(text, 6000)：后一条直接顶掉前一条，6 秒就没，11px 的 --label-3 淡灰，
+  // 页脚又固定一行高，DeepL 改发 Google 那句约 100 字，1000 宽时折出的第二行落在窗口外。现在分两种来路：
+  //   * 页面对一次点击的回应（showVersionNote：「检查更新中…」「未连接到本地服务」「这条弹幕已经不在列表里」
+  //     这类）：点了就要马上看到，照旧立刻显示，停多久由调用方给。顶掉的若是一条服务端提示，那条放回队首，
+  //     之后完整再显示一遍，不丢；
+  //   * 服务端发来的提示（queueNotice：notice 消息，以及找不到那条字幕 / 弹幕时退回页脚的重译说明）：排队，
+  //     一条显示完再显示下一条，不再互相顶掉；每条按字数停 10–12 秒（noticeMs）。
+  // 「检查更新中…」这种占位（placeholder）谁来都直接换掉、不放回队列：结果一到就该看到结果。
+  // 显示提示时页脚可以长高、长句换行（style.css .copyright.noting），字用 --label-2；版权那行字本身不动
+  // （10-15 用户选过不动），提示只写在版本号这个 span 里。顶部已经挂着同一句持续提示时（改发 Google 那条，
+  // 后端 notice 和持续提示各发一次）页脚不再重复这一句，见 incidentSaying。
+  var NOTICE_MIN_MS = 10000;
+  var NOTICE_MAX_MS = 12000;
+  var NOTICE_QUEUE_MAX = 5;      // 排着的超过这么多条，最旧的那条已经过时：丢掉
+  var footerNote = null;         // 正在显示的那条：{ text, ms, server, placeholder }
+  var footerQueue = [];          // 排着的服务端提示
+  var footerTimer = null;
+  var copyrightEl = versionEl ? versionEl.parentNode : null;
+
+  // 停多久：10 秒起，每 50 个字多 1 秒，最多 12 秒，只取整秒。汉字和全角标点按两个字算：同样的意思，中文的字数
+  // 约是英文字母数的一半，不加权的话改发 Google 那句中文（约 100 字）比英文（约 240 个字母）少停一秒
+  function noticeMs(text) {
+    var s = String(text);
+    var wide = (s.match(/[\u3000-\u9fff\uff00-\uffef]/g) || []).length;
+    return Math.min(NOTICE_MAX_MS, NOTICE_MIN_MS + 1000 * Math.floor((s.length + wide) / 50));
+  }
+
+  function showVersionNote(text, ms, opts) {
+    var preempted = footerNote && footerNote.server ? footerNote : null;
+    putFooterNote({ text: String(text), ms: ms, server: false, placeholder: !!(opts && opts.placeholder) });
+    if (preempted) footerQueue.unshift(preempted);
+  }
+
+  function queueNotice(text) {
+    text = String(text == null ? "" : text);
+    if (!text || incidentSaying(text)) return;
+    if (footerNote && footerNote.server && footerNote.text === text) return;
+    for (var i = 0; i < footerQueue.length; i++) if (footerQueue[i].text === text) return;
+    var note = { text: text, ms: noticeMs(text), server: true, placeholder: false };
+    if (!footerNote || footerNote.placeholder) {
+      putFooterNote(note);
+      return;
+    }
+    footerQueue.push(note);
+    if (footerQueue.length > NOTICE_QUEUE_MAX) footerQueue.shift();
+  }
+
+  function putFooterNote(note) {
+    if (footerTimer) clearTimeout(footerTimer);
+    footerNote = note;
+    versionEl.textContent = " · " + note.text;
+    versionEl.classList.add("noting");
+    if (copyrightEl && copyrightEl.classList) copyrightEl.classList.add("noting");
+    footerTimer = setTimeout(endFooterNote, note.ms);
+  }
+
+  // 到点（或被顶部的同一句持续提示接过去）：换下一条，没有了就回到版本号
+  function endFooterNote() {
+    if (footerTimer) clearTimeout(footerTimer);
+    footerTimer = null;
+    footerNote = null;
+    while (footerQueue.length) {
+      var next = footerQueue.shift();
+      if (!incidentSaying(next.text)) {
+        putFooterNote(next);
+        return;
+      }
+    }
+    restoreVersion();
   }
 
   function restoreVersion() {
-    if (versionNoticeTimer) clearTimeout(versionNoticeTimer);
-    versionNoticeTimer = null;
+    versionEl.classList.remove("noting");
+    if (copyrightEl && copyrightEl.classList) copyrightEl.classList.remove("noting");
     if (currentVersion) {
       versionEl.textContent = " · v" + currentVersion + (updateCheckNote ? " · " + updateCheckNote : "");
     }
@@ -995,7 +1097,7 @@
   // 连续很多天没连上更新服务器：只在页脚版本号旁边安静地提一句，不进自检、不进横幅
   function renderUpdateCheck(info) {
     updateCheckNote = info && info.note ? String(info.note) : "";
-    if (!versionNoticeTimer) restoreVersion();   // 正在显示的一次性提示到点后会带上它
+    if (!footerNote) restoreVersion();   // 正在显示的提示到点后会带上它
   }
 
   // 滑块一个值带三处：底部大字幕的字号（--sub-size），历史卡片和弹幕栏的比例（--cap-scale）
@@ -1148,7 +1250,7 @@
             ? String(msg.config.update_check.note) : "";
           if (msg.config.version) {
             currentVersion = msg.config.version;
-            restoreVersion();
+            if (!footerNote) restoreVersion();   // 正在显示的提示不因重连被抹掉，到点后带上版本号
           }
           // 重连/刷新时回放的提示从来不是「新」提示：不许再改标题打扰直播中的中控
           if (msg.config.update) showUpdate(Object.assign({}, msg.config.update, { quiet: true }));
@@ -1191,7 +1293,7 @@
       // 一次性提示（如手动检查更新的结果）：只改版本号处的文案，
       // 不碰状态机——直播中收到它不该影响「停止」按钮等 UI
       case "notice":
-        if (msg.text) showVersionNote(msg.text, 6000);
+        if (msg.text) queueNotice(msg.text);      // 排队、按字数停 10–12 秒（专家审查 U2，见 queueNotice）
         // 字幕记录行的按钮（导出、打开文件夹）：同一句话也写在按钮下面，页脚常常不在视野里
         if (msg.text && msg.where === "transcripts") showTranscriptStatus(msg.text);
         break;
@@ -1405,14 +1507,139 @@
       }
     }
 
-    var detail = msg.detail || "";
+    var detail = String(msg.detail || "");
+    statusDetail = detail;
+    // detail 为空只收起横幅，不改写里面的字（tests/notice-trim.test.mjs 钉着）
     if (detail) {
-      statusBanner.textContent = detail;
-      statusBanner.classList.remove("hidden");
+      renderStatusBanner(detail, msg.paths);
       statusBanner.classList.toggle("info", state !== "error");
-    } else {
-      statusBanner.classList.add("hidden");
     }
+    bannerCoveredBy = detail ? incidentSaying(detail) : null;
+    statusBanner.classList.toggle("hidden", !detail || !!bannerCoveredBy);
+  }
+
+  // ---- 状态横幅（专家审查 U10、I8、U6） ----
+  // detail 按 \n 分成几行画，每行一个块：
+  //   * status 带 paths（「完全磁盘访问权限」那一步要加的解释器路径，app/pipeline.py _fda_paths）时，每条路径
+  //     画成一行可复制的代码行，样式和复制的做法同 #fix-command。哪些是路径只看 paths 这个结构化字段，不从文字里
+  //     认（「以 / 开头、不含空格」认不准：conda、用户目录下的路径可能带空格）。文字里正好是某条路径的那一行
+  //     （pathOfLine）换成代码行，同一个路径不出现两遍；文字里没有的路径接在最后。没有 paths 就全是文字；
+  //   * 超过 BANNER_FOLD_LINES 行时默认只留第一行，行尾跟一个「显示全部步骤」按钮，可以展开、收起。以前整块写进
+  //     横幅，「Safari 被拒 + Chrome 未登录」那种中文 5 行、英文 7 行红字。第一行一定露着：解析失败时那句
+  //     「接口不给流地址」的说明（第八条）就是第一行——app/browser_login.py browser_only_advice 带多行步骤时
+  //     另起一行接在它后面——1000 宽下中英文都在两行以内。只有一两行的变体（没登录、借到登录仍不给）不折叠。
+  // 和某条正在显示的持续提示一字不差时（断网时 app/pipeline.py _wait_for_network 把同一句既挂持续提示、又发
+  // status），横幅收起、状态胶囊照常；那条持续提示撤掉后横幅再露出来（U6）。
+  var BANNER_FOLD_LINES = 3;
+  var statusDetail = "";         // 当前这条 status 的 detail（空串 = 横幅收着）
+  var bannerDrawnKey = null;     // 横幅上画着的那一句（连同 paths）：同一句重发时保留展开与否
+  var bannerExpanded = false;
+  var bannerCoveredBy = null;    // 和横幅说同一句话的那条持续提示的 id
+
+  function renderStatusBanner(detail, paths) {
+    var pathList = (Array.isArray(paths) ? paths : []).map(String).filter(function (p) { return p; });
+    var key = detail + "\u0000" + pathList.join("\u0000");
+    if (key !== bannerDrawnKey) bannerExpanded = false;
+    bannerDrawnKey = key;
+    var lines = detail.split("\n").map(function (s) { return s.trim(); })
+                      .filter(function (s) { return s; });
+    var drawn = {};
+    var head = null;
+    statusBanner.textContent = "";
+    lines.forEach(function (line, i) {
+      var el;
+      var path = pathOfLine(line, pathList);
+      if (path !== null && !drawn[path]) {
+        drawn[path] = true;
+        el = bannerPathRow(path);
+      } else {
+        el = document.createElement("div");
+        el.className = "banner-line";
+        el.textContent = line;
+      }
+      if (i > 0) el.classList.add("banner-rest");
+      else if (el.className === "banner-line") head = el;
+      statusBanner.appendChild(el);
+    });
+    pathList.forEach(function (path) {
+      if (drawn[path]) return;
+      drawn[path] = true;
+      var row = bannerPathRow(path);
+      row.classList.add("banner-rest");
+      statusBanner.appendChild(row);
+    });
+    if (lines.length > BANNER_FOLD_LINES) {
+      // 按钮接在第一行的字后面（行内），折着时第一行加按钮在 1000 宽下中英文都是两行；展开后按钮不挪位置
+      var more = document.createElement("button");
+      more.type = "button";
+      more.className = "banner-more";
+      more.addEventListener("click", function () {
+        bannerExpanded = !bannerExpanded;
+        paintBannerFold(more);
+      });
+      (head || statusBanner).appendChild(more);
+      paintBannerFold(more);
+    } else {
+      statusBanner.classList.remove("folded");
+    }
+  }
+
+  // 这一行是不是 paths 里的某条路径：整行就是它，或者是用「」/“”括起来的它（app/browser_login.py fda_steps
+  // 的写法，自检那一行里手动选中时有个边界）。只拿结构化的 paths 来比，比不上就是普通文字
+  function pathOfLine(line, pathList) {
+    for (var i = 0; i < pathList.length; i++) {
+      var p = pathList[i];
+      if (line === p || line === "「" + p + "」" || line === "“" + p + "”") return p;   // i18n: data（只用来比对，不上界面）
+    }
+    return null;
+  }
+
+  function paintBannerFold(btn) {
+    statusBanner.classList.toggle("folded", !bannerExpanded);
+    btn.textContent = bannerExpanded ? L("收起", "Hide") : L("显示全部步骤", "Show All Steps");
+    btn.setAttribute("aria-expanded", bannerExpanded ? "true" : "false");
+  }
+
+  // 一条路径一行：路径本身（整条可选中）+「复制」，复制做法同 #fix-command（copyCode）
+  function bannerPathRow(path) {
+    var row = document.createElement("div");
+    row.className = "fix-command banner-path";
+    var code = document.createElement("code");
+    code.setAttribute("translate", "no");
+    code.textContent = path;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn small";
+    btn.textContent = L("复制", "Copy");
+    btn.addEventListener("click", function () { copyCode(code, btn); });
+    row.appendChild(code);
+    row.appendChild(btn);
+    return row;
+  }
+
+  // 持续提示里有没有一条和这句话一字不差（去掉开头的状态 emoji 和首尾空白再比）：有就返回它的 id
+  function noteKey(text) {
+    return stripStatusEmoji(text).trim();
+  }
+
+  function incidentSaying(text) {
+    var key = noteKey(text);
+    if (!key || !incidents) return null;
+    for (var id in incidents) {
+      if (noteKey(incidents[id].text) === key) return id;
+    }
+    return null;
+  }
+
+  // 持续提示变了之后：横幅那句话还有没有哪条持续提示在说（U6）。原来那条还在（只是文字随时长变了，断网那条
+  // 每次重试都更新「已 N 分钟没有监听」，紧跟着的 status 又是同一句新话）就继续收着，等下一条 status 再比；
+  // 它撤掉了才重新比一遍，没有一样的就把横幅放出来。「连续多条翻译失败」那句占着横幅时不动它
+  function syncBannerCover() {
+    if (!bannerCoveredBy || !incidents[bannerCoveredBy]) {
+      bannerCoveredBy = statusDetail ? incidentSaying(statusDetail) : null;
+    }
+    if (transBannerOn) return;
+    statusBanner.classList.toggle("hidden", !statusDetail || !!bannerCoveredBy);
   }
 
   // 连接中：字幕区中央的转圈 + 「正在连接 @xxx…」；首次下载识别模型时写下载进度；直播中这一场还没出过
@@ -1763,7 +1990,7 @@
     if (!text) return;
     var card = cardsById[id];
     if (!card) {
-      showVersionNote(text, 6000);
+      queueNotice(text);          // 服务端说的话：和 notice 一样排队，不顶掉别的提示
       return;
     }
     clearRedoNote(card);
@@ -2434,7 +2661,7 @@
     // 那条弹幕已经不在页面上了（清空了、被挤出 100 条）：话退回页脚那一行，不能丢——
     // 抽屉里正显示着这一行的话就不用了，说明已经在那里
     if (!item) {
-      if (!guardDrawerShows(msg.id)) showVersionNote(msg.text, 6000);
+      if (!guardDrawerShows(msg.id)) queueNotice(msg.text);
       return;
     }
     clearCommentRedoNote(item, msg.id);
@@ -2978,6 +3205,10 @@
       incidentBar.appendChild(row);
     });
     incidentBar.classList.toggle("hidden", keys.length === 0);
+    // 同一句话只说一遍：状态横幅（U6）和页脚正在显示的服务端提示（改发 Google 时后端 notice 和持续提示各发
+    // 一次，U2）跟顶部这几条一字不差时让给顶部
+    syncBannerCover();
+    if (footerNote && footerNote.server && incidentSaying(footerNote.text)) endFooterNote();
   }
 
   function renderHealth(msg) {
@@ -3822,30 +4053,34 @@
   }
 
   if (fixCmdCopy) {
-    fixCmdCopy.addEventListener("click", function () {
-      var text = fixCmdText.textContent;
-      var done = function () {
-        fixCmdCopy.textContent = L("已复制", "Copied");
-        setTimeout(function () { fixCmdCopy.textContent = L("复制", "Copy"); }, 2000);
-      };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done, function () {
-          selectCommand();   // 剪贴板被拒（非 https 等）：至少帮用户选中
-        });
-      } else {
-        selectCommand();
-      }
-    });
+    fixCmdCopy.addEventListener("click", function () { copyCode(fixCmdText, fixCmdCopy); });
   }
 
-  function selectCommand() {
+  // 「复制」：整段代码（命令、路径）原样放进剪贴板；剪贴板被拒（非 https 等）时至少帮用户选中。
+  // #fix-command 和状态横幅里的路径行（bannerPathRow）共用
+  function copyCode(codeEl, btn) {
+    var text = codeEl.textContent;
+    var done = function () {
+      btn.textContent = L("已复制", "Copied");
+      setTimeout(function () { btn.textContent = L("复制", "Copy"); }, 2000);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () {
+        selectCode(codeEl, btn);
+      });
+    } else {
+      selectCode(codeEl, btn);
+    }
+  }
+
+  function selectCode(codeEl, btn) {
     var range = document.createRange();
-    range.selectNodeContents(fixCmdText);
+    range.selectNodeContents(codeEl);
     var sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    fixCmdCopy.textContent = L("已选中，按 ⌘C", "Selected. Press ⌘C");
-    setTimeout(function () { fixCmdCopy.textContent = L("复制", "Copy"); }, 3000);
+    btn.textContent = L("已选中，按 ⌘C", "Selected. Press ⌘C");
+    setTimeout(function () { btn.textContent = L("复制", "Copy"); }, 3000);
   }
 
   // ---- 字幕跟随 ----
