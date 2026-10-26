@@ -73,6 +73,22 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
 /* 「约 N 秒前」：不带底色的小字，数字等宽，每秒跳一次不晃 */
 .f-lag { font-size: 12px; line-height: 18px; color: var(--f-dim); font-variant-numeric: tabular-nums; }
 
+/* ---- 结束卡片（专家审查 U3）：监听自己停了时占满窗口，字幕和弹幕收起（web/float.js floatRender）。
+   标题用译文的字号、说明用弹幕的字号，跟着顶栏滑块变；按钮是半透明白底的小圆角按钮，和深色窗口连成一体。
+   说明字用 --f-dim：和字幕原文同一档，白底黑底上都过 4.5:1（tests/float.test.mjs 重算） ---- */
+.f-end { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column;
+  justify-content: center; align-items: flex-start; gap: 6px; padding: 14px; }
+.f-end-title { font-size: var(--f-big); font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.f-end-note { font-size: var(--f-cmt); line-height: 1.4; color: var(--f-dim); overflow-wrap: anywhere; }
+.f-end-back {
+  margin-top: 6px; padding: 4px 12px; border: 0; border-radius: 6px;
+  font: inherit; font-size: 13px; line-height: 18px; font-weight: 500;
+  color: var(--f-fg); background: rgba(255, 255, 255, 0.18); cursor: default;
+}
+.f-end-back:hover { background: rgba(255, 255, 255, 0.26); }
+.f-end-back:active { background: rgba(255, 255, 255, 0.32); }
+.f-end-back:focus-visible { outline: 2px solid var(--f-indigo); outline-offset: 2px; }
+
 /* ---- 最近的弹幕：新的在底部，放不下时挤掉最旧的（上面被裁，最新那条永远在） ----
    被挤出去的那一行不能被分隔线拦腰切开（以前就是这样，看着像坏了）。列表顶上留 --f-fade 高的一段空：
    装得下的时候字到不了这一段；装不下时多出来的那一行滑进这一段，越往上越淡，到分隔线底下就看不见了。

@@ -61,6 +61,7 @@
   var brandsDirBtn = document.getElementById("brands-dir-btn");
   var brandEmptyHint = document.getElementById("brand-empty-hint");
   var startBtn = document.getElementById("start-btn");
+  var roomInputError = document.getElementById("room-input-error");
   var recentRooms = document.getElementById("recent-rooms");
   var recentList = document.getElementById("recent-list");
   var recentClear = document.getElementById("recent-clear");
@@ -372,6 +373,14 @@
   // 误判成「没有变化」，进首页该做的动作（大字幕/弹幕面板归位）就漏了
   var homeActive = null;
   var statusState = "";      // 最近一条 status 的 state（setStatus 记下）：换主播时 config 先到，胶囊据此重画（F5）
+  // 最近一条 status 带的结构化进度（专家审查 U7）：首次下载识别模型时后端带 {kind:"model_download", pct}，
+  // 字幕区中间的卡片据此写下载进度（web/live-ui.js connectHint）。不带就是 null，卡片照旧写「正在连接」
+  var statusProgress = null;
+  // 这一场有没有出过字幕（专家审查 U8）：直播中还没出过时，字幕区中间写「等待第一句字幕…」。
+  // 新的一场（session_break，实时和回放都算）、重连的 hello（回放会按顺序重新走一遍）时归零，来一条字幕置真。
+  // 不按「#history 里有没有本场的 .cap」现算：直播中点了「清空字幕」之后页面上一条也没有，
+  // 那时写「等待第一句」不对——这一场早就出过字幕了，只是被清掉了
+  var sessionCaptionSeen = false;
   // 回放里的场次分隔线在弹幕栏里的位置（专家审查 F1）。服务端先回放字幕（分隔线夹在字幕中间），最后才回放
   // 弹幕；分隔线要是在字幕阶段就插进弹幕栏，就跑到所有回放弹幕的最前面，上一位主播的弹幕被标成「以下为
   // @新主播」。所以回放的分隔线先记在这里，回放弹幕时插到第一条 ts 不早于它的弹幕前面（弹幕的 ts 是本机
@@ -476,6 +485,7 @@
     selectBrand(brandSel, defaultBrandFor(streamerFromInput(roomInput.value), brandsMap));
   }
   function onRoomInputChanged() {
+    clearRoomInputError();     // 中控在改了：上一次「认不出」的提示不再说的是现在这一串
     brandState = brandStateAfterRoomInput(brandState, streamerFromInput(roomInput.value));
     applyDefaultBrand();
   }
@@ -628,7 +638,37 @@
       8000);
   }
 
-  clearBtn.addEventListener("click", function () {
+  // 「清空字幕」「清空弹幕」两段式确认（专家审查 V3），做法同首页「清除记录」（resetRecentClear 那一对）：
+  // 第一次点只把按钮改成「再点确认」，CLEAR_CONFIRM_MS 内再点才真的清，到点自动复原。
+  // 以前一点就清：清的不只是这一页，服务端缓存一起清（forgetOnServer），浮窗跟着清，刷新、重连后也拿不回，
+  // 没有撤销；而这两颗按钮直播中一直摆在中控手边。不用 window.confirm——应用窗口（pywebview）里它可能弹不出来。
+  // 窗口 6 秒，和「清除记录」「一键更新」的确认一样长。
+  // 英文武装态写 Clear?，不写「清除记录」那句 Click Again to Clear：顶栏只给这颗按钮留了 Clear 的宽度，
+  // 145px 的那句在 1000px 窗口里把品牌标签挤到 48px（docs/i18n-style.md §3 第 24a 行）。
+  // 中文武装态写「再点确认」（用户 10-23 定）：四个字和「清空字幕」一样宽，武装时顶栏不变；
+  // 以前的「再点一次清空」多 26px，中文直播顶栏武装那 6 秒会截状态胶囊
+  var CLEAR_CONFIRM_MS = 6000;
+  function confirmTwice(btn, idleText, run) {
+    var timer = null;
+    function reset() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      delete btn.dataset.confirm;
+      btn.textContent = idleText;
+    }
+    btn.addEventListener("click", function () {
+      if (btn.dataset.confirm !== "1") {
+        btn.dataset.confirm = "1";
+        btn.textContent = L("再点确认", "Clear?");
+        timer = setTimeout(reset, CLEAR_CONFIRM_MS);
+        return;
+      }
+      reset();
+      run();
+    });
+  }
+
+  confirmTwice(clearBtn, L("清空字幕", "Clear"), function () {
     clearCaptionsView();
     // 直播中点的：和弹幕栏一样，清空之后从最新处接着跟（首页状态不碰，见 following 的说明）
     if (streamActive) following = true;
@@ -696,6 +736,24 @@
     armStartWatchdog();
   }
 
+  // 输错地址的就地提示（专家审查 U9）：一次输入错误不是程序出错，不动全局状态。以前走
+  // setStatus({state:"error"})：状态胶囊变红「出错了」、顶部挂红横幅，开始面板还摆着，看着像整个程序坏了。
+  // 现在只在输入框下面说一句、给输入框标 aria-invalid；再输入、或者下一次认得出的开始，就清掉
+  function showRoomInputError(text) {
+    if (!roomInputError) return;
+    roomInputError.textContent = text;
+    roomInputError.classList.remove("hidden");
+    roomInput.setAttribute("aria-invalid", "true");
+    roomInput.setAttribute("aria-describedby", "room-input-error");
+  }
+  function clearRoomInputError() {
+    if (!roomInputError) return;
+    roomInputError.textContent = "";
+    roomInputError.classList.add("hidden");
+    roomInput.removeAttribute("aria-invalid");
+    roomInput.removeAttribute("aria-describedby");
+  }
+
   function startStream() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setStatus({ state: "offline", detail: L("与本地服务断开，正在重连——稍候再点「开始翻译」",
@@ -705,9 +763,12 @@
     var parsed = parseRoomInput(roomInput.value);
     if (parsed.error === "empty") { roomInput.focus(); return; }
     if (parsed.error) {
-      setStatus({ state: "error", detail: UNRECOGNIZED_INPUT_MSG });
+      showRoomInputError(UNRECOGNIZED_INPUT_MSG);
+      roomInput.focus();
       return;
     }
+    // 最近直播间的 chip 是在背后填好地址再开始的，不经过 input 事件：认得出的这一次也要清掉上一次的提示
+    clearRoomInputError();
     roomInput.value = parsed.media ? parsed.url + " " + parsed.media : parsed.url;
     lsSet("roomUrl", parsed.url);
     lsSet("sourceLang", sourceSel.value);
@@ -1022,6 +1083,11 @@
         failStreak = 0;
         transBannerOn = false;
         clearCaptionsView();
+        // 这一场出没出过字幕，交给接下来的回放重算（场次分隔线归零、字幕置真，见 sessionCaptionSeen 的说明）。
+        // 回放里带着这一场的分隔线时，这一行和分隔线那次归零是重复的保险；只有回放里没有分隔线时它说了算：
+        // 服务端的字幕缓存被清空过（app/server.py clear_history 连分隔线一起清）。这时重连后的页面和刷新后的
+        // 一样，只按回放判断，不沿用断线前的（tests/ui-states.test.mjs 钉着）
+        sessionCaptionSeen = false;
         if (msg.config) {
           syncCaptionSize(msg.config);
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
@@ -1291,6 +1357,8 @@
   function setStatus(msg) {
     var state = msg.state || "idle";
     statusState = state;
+    // 只记最近一条的：下载完、开始识别后的那条 status 不带它，卡片就回到「正在连接」/ 收起
+    statusProgress = msg.progress && typeof msg.progress === "object" ? msg.progress : null;
     statusDot.className = "dot " + state;
     if (statusPill) statusPill.dataset.state = state;
     paintStatusText(state);
@@ -1347,13 +1415,13 @@
     }
   }
 
-  // 连接中：字幕区中央的转圈 + 「正在连接 @xxx…」（显示规则见 web/live-ui.js
-  // connectHint）。已有字幕时挪到 #history 末尾当一行，并跟到底部——停止后再开、
-  // 换主播时历史还在，中央那一版会盖在旧字幕上
+  // 连接中：字幕区中央的转圈 + 「正在连接 @xxx…」；首次下载识别模型时写下载进度；直播中这一场还没出过
+  // 字幕时写「等待第一句字幕…」（显示规则见 web/live-ui.js connectHint）。已有字幕时挪到 #history 末尾
+  // 当一行，并跟到底部——停止后再开、换主播时历史还在，中央那一版会盖在旧字幕上
   function syncConnectHint(state) {
     if (!connectHintEl) return;
     var hint = connectHint(state, streamerFromInput(roomInput.value),
-                           !!historyEl.querySelector(".cap"));
+                           !!historyEl.querySelector(".cap"), statusProgress, !sessionCaptionSeen);
     if (!hint) return;
     connectHintEl.classList.toggle("hidden", !hint.show);
     connectHintEl.classList.toggle("inline", hint.inline);
@@ -1472,6 +1540,12 @@
     // 翻上去看的时候，新字幕不会把视野拉走，但按钮上要数出下面攒了多少没看的（回放的不算）。
     // 在 stickToBottom 之前数：贴底跟随时它会把计数归零
     if (!msg.replay && streamActive && !following) captionsBelow++;
+    // 这一场出过字幕了：「等待第一句字幕…」收起（专家审查 U8）。中间那张卡片还露着的时候（连接中）
+    // 重新摆一次：卡片是追加在 #history 里的，新字幕又追加在它后面——页面重连时 hello 的 status 先到、
+    // 回放的字幕后到，「正在连接」被顶到回放字幕的上面、滚出视野。重摆会把它挪回末尾、改成一行并跟到底部。
+    // 卡片收着时不用管：它下次露出来时 syncConnectHint 自己会挪到末尾
+    sessionCaptionSeen = true;
+    if (connectHintEl && !connectHintEl.classList.contains("hidden")) syncConnectHint(statusState);
     // force 只在「重连时回放、且当前确实处于直播中」才为 true：那是唯一
     // 该无视用户滚动状态、强制跳到最新的场景。待机时收到的回放（刚停止/刚
     // 打开就是上一场留下的历史）不该跟着强制滚到底——否则 enterHomeLayout
@@ -1737,6 +1811,10 @@
   // hello 处理会先用 clearCaptionsView() 清场（只清本页，不告诉服务端），之后回放按原始顺序重新触发
   // caption/session_break，历史上的场次边界就这样被原样重建一遍。
   function renderSessionBreak(msg) {
+    // 新的一场还没出过字幕（专家审查 U8）。放在下面「没有字幕就不画线」的提前返回之前：
+    // 直播中点了「清空字幕」再开下一场（停止再开、换主播），页面上一条 .cap 也没有、这里提前返回，
+    // 而上一场留下的「出过」还是真；不在这里归零，新一场就不写「等待第一句字幕…」（tests/ui-states.test.mjs 钉着）
+    sessionCaptionSeen = false;
     var caps = historyEl.querySelectorAll(".cap");
     // 要不要画、画什么字是纯逻辑，抽到 web/session-divider.js 里单独测
     // （见该文件顶部注释）：app.js 这个大 IIFE 顶层就摸 DOM，整份没法被
@@ -1750,8 +1828,13 @@
     // 弹幕栏：实时的分隔线就插在末尾（这一刻之前的弹幕都是上一场的）。回放的先记下，等弹幕回放按 ts
     // 插到对的位置（见 pendingCommentBreaks 的说明，专家审查 F1）
     if (msg.replay) pendingCommentBreaks.push(msg);
-    else insertSessionDivider(commentList, msg);
-    syncConnectHint(statusPill ? statusPill.dataset.state : "");
+    else {
+      insertSessionDivider(commentList, msg);
+      refreshCommentPanel();    // 分隔线之后这一场还没有弹幕：空态那句露出来（U8）
+    }
+    // 状态取 setStatus 记下的 statusState（和胶囊的 data-state 是同一个值，config 那一支也用它），
+    // 不依赖胶囊元素在不在
+    syncConnectHint(statusState);
     stickToBottom(false);
   }
 
@@ -1776,6 +1859,8 @@
     }
     // 回放结束补在末尾的那条：跟随中就让它露出来（回放的弹幕已经贴过底，这一条是后加的）
     if (all && added && commentFollowing) commentsToBottomNow();
+    // 补在末尾的分隔线之后没有弹幕：这一场还是空的，空态那句要露出来（U8）
+    if (added) refreshCommentPanel();
   }
 
   function applyTranslation(card, msg) {
@@ -2024,13 +2109,26 @@
     commentPanel.classList.add("collapsed");
   }
 
+  // 弹幕栏里这一场有没有弹幕（专家审查 U8）：从末尾往前看，到最近一条场次分隔线为止。
+  // 以前用列表的 children.length 判断空不空：第二场起列表里留着上一场的弹幕、或者只剩那条分隔线，
+  // 空态那句（「已连接，等待观众发评论…」「评论流断开，重连中…」）就再也不出现，要刷新页面才看得到。
+  // 分隔线和上一场的弹幕都不算这一场的
+  function sessionHasComments() {
+    var kids = commentList.children;
+    for (var i = kids.length - 1; i >= 0; i--) {
+      if (kids[i].classList.contains("session-sep")) return false;
+      if (kids[i].classList.contains("cmt-item")) return true;
+    }
+    return false;
+  }
+
   // 面板什么时候露面、空着的时候说什么。直播中面板必须在——否则中控分不清
   // 「今天没人发弹幕」和「评论流压根没连上」，而后者是要去处理的。
   // show 只看 streamActive，不再是「有内容也算」：待机页面（含刚停止那一刻）
   // 不该显示上一场的弹幕面板/小入口，但列表内容本身不清空，下一场开始时
   // streamActive 一变回 true，原样恢复显示。
   function refreshCommentPanel() {
-    var has = commentList.children.length > 0;
+    var has = sessionHasComments();
     var show = streamActive;
     var collapsed = commentPanel.classList.contains("collapsed");
     commentPanel.classList.toggle("hidden", !show);
@@ -2438,7 +2536,8 @@
     updateCommentJump();
   }
 
-  clearCommentsBtn.addEventListener("click", function () {
+  // 两段式确认同「清空字幕」（confirmTwice，专家审查 V3）
+  confirmTwice(clearCommentsBtn, L("清空弹幕", "Clear Comments"), function () {
     clearCommentsView();
     forgetOnServer("comments");   // 服务端缓存也清，刷新后不会又回来
   });
@@ -3844,6 +3943,7 @@
   // 它等第一条真正的字幕到达时由 renderCaption 自己揭开；这里只需要让接下来到达的新字幕照常跟到底部。
   function exitHomeLayout() {
     following = true;
+    clearRoomInputError();  // 开始面板要收起了；回到首页时输入框里多半已是服务端回填的地址，旧提示不再对得上
     syncNoticeBars();       // 开播：「有新版本」「迁移旧词表」两条先收起（更新进行中的除外）
   }
 

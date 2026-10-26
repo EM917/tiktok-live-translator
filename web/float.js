@@ -2,8 +2,11 @@
 /* 浮窗页（web/float.html，app/float_window.py 开的那个小窗）：最新一条字幕 + 最近几条弹幕。
  *
  * 只显示，不发任何消息：连的是 /ws?role=float，服务端对这种连接只转发 FLOAT_TYPES 里的类型
- * （app/server.py），入站一律丢弃。这里没有 send()，也没有按钮。不显示报警（报警留在中控页，
- * CLAUDE.md 第六条）。
+ * （app/server.py），入站一律丢弃。这里没有 send()。不显示报警（报警留在中控页，CLAUDE.md 第六条）。
+ * 唯一的按钮是结束卡片上的「回到主窗口」（专家审查 U3）：监听自己停了（下播 ended、出错 error）时浮窗
+ * 不再直接消失，换成一张卡片；按钮走 pywebview 的 JS 桥（window.pywebview.api.focus_main，
+ * app/float_window.py 的 FloatApi），只在本机把主窗口提到前面，不经过 WebSocket、不发给服务端。
+ * 没有 JS 桥（老版本 pywebview、在浏览器里直接打开 /float）就不画这个按钮。
  *
  * 分三层，跟 web/guard.js、web/live-ui.js 一样：
  *   1. 纯函数（状态归并、取字、字号）：node 测试直接 require，tests/float.test.mjs / float.en.test.mjs；
@@ -37,6 +40,10 @@ if (typeof guardDecorateComment === "undefined") {
 
 var FLOAT_COMMENTS_MAX = 5;          // 窗口里最多留几条弹幕（新的在底部）
 var FLOAT_HOLD_MS = 4000;            // 新的一句最多等译文多久（同中控页 web/app.js 的 LIVE_HOLD_MS）
+// 监听自己停下来的两种状态（同 app/pipeline_float.py 的 END_STATES）：浮窗留着，换成结束卡片。
+// idle 不画卡片：卡片没露着时来的 idle 是中控点停止（或更新暂停后没能恢复），后端照旧关窗，中控点停止时
+// 不会先闪一下卡片再关。卡片露着时来的 idle 不收卡片（floatNextStatus）
+var FLOAT_END_STATES = ["ended", "error"];
 
 // ---- 状态归并 -----------------------------------------------------------------------------
 
@@ -56,9 +63,18 @@ function floatSetMarked(state, marked) {
 function floatApplyConfig(state, cfg) {
   if (!cfg || typeof cfg !== "object") return;
   if ("caption_size" in cfg) state.captionSize = captionSizeFromConfig(cfg.caption_size);
-  if (cfg.status && typeof cfg.status === "object") state.status = cfg.status.state || "";
+  if (cfg.status && typeof cfg.status === "object") state.status = floatNextStatus(state.status, cfg.status.state);
   if ("guard_state" in cfg) state.guardState = cfg.guard_state && typeof cfg.guard_state === "object" ? cfg.guard_state : null;
   if ("guard_marked" in cfg) floatSetMarked(state, cfg.guard_marked);
+}
+
+/* 收到一条状态（实时的 status 或 hello / config 里带的）之后页面记哪个状态。结束卡片露着时来的 idle 不改：
+ * 停止按钮只在连接中 / 直播中才有，这时的 idle 是别的事顺带把状态写回了待机（这场结束后才开始的本地翻译模型
+ * 下载报进度、yt-dlp 自动更新完、在主窗口里点的一键更新没成），后端这时也不关窗（app/pipeline_float.py
+ * _float_on_status），卡片照旧说「详情见主窗口」。只有下一场的 connecting / live 把卡片收起 */
+function floatNextStatus(prev, next) {
+  next = next || "";
+  return next === "idle" && FLOAT_END_STATES.indexOf(prev) >= 0 ? prev : next;
 }
 
 function floatFindComment(state, id) {
@@ -82,16 +98,19 @@ function floatReduce(state, msg, nowMs) {
   if (!msg || typeof msg !== "object") return state;
   switch (msg.type) {
     case "hello": {
+      var before = state.status;
       var fresh = floatInitialState();
       Object.keys(fresh).forEach(function (k) { state[k] = fresh[k]; });
       floatApplyConfig(state, msg.config);
+      // 整份换掉，结束卡片除外：卡片露着时断线、重连回来的 hello 带的是 idle，卡片照旧（同 floatNextStatus）
+      if (state.status === "idle") state.status = floatNextStatus(before, "idle");
       break;
     }
     case "config":
       floatApplyConfig(state, msg);
       break;
     case "status":
-      state.status = msg.state || "";
+      state.status = floatNextStatus(state.status, msg.state);
       break;
     case "caption": {
       var next = { id: msg.id, original: msg.original || "", translated: msg.translated || null,
@@ -213,6 +232,36 @@ function floatPlaceholder(state) {
                                                 : L("等待第一句字幕…", "Waiting for the first caption…");
 }
 
+/* 结束卡片（专家审查 U3）：状态是 ended / error 时返回 { state, title, note }，否则 null。
+ * 只写观察到的和能做的（CLAUDE.md 第八条）：标题是中控页状态胶囊对这个状态的说法（ended 是「直播已结束」，
+ * 同 web/app.js 的 STATUS_TEXT；error 写「监听已停止」——胶囊的「出错了」单独放在卡片上读不出监听停了），
+ * 具体发生了什么只在主窗口的横幅里，卡片不转述、不猜。 */
+function floatEndView(state) {
+  var st = state && state.status;
+  if (FLOAT_END_STATES.indexOf(st) < 0) return null;
+  return { state: st,
+           title: st === "ended" ? L("直播已结束", "Stream ended") : L("监听已停止", "Monitoring stopped"),
+           note: L("详情见主窗口。", "See the main window for details.") };
+}
+
+/* 「回到主窗口」要用的 JS 桥函数（pywebview 在页面加载后注入 window.pywebview.api，注入完发
+ * pywebviewready 事件）；没有就是 null，按钮不画。win 是页面的 window（测试里传替身） */
+function floatMainBridge(win) {
+  var api = win && win.pywebview && win.pywebview.api;
+  return api && typeof api.focus_main === "function" ? api.focus_main : null;
+}
+
+/* 点「回到主窗口」：调 JS 桥（它返回 Promise，失败只在终端留一行，页面不管）。返回有没有调到 */
+function floatGoMain(win) {
+  var fn = floatMainBridge(win);
+  if (!fn) return false;
+  try {
+    var done = fn.call(win.pywebview.api);
+    if (done && typeof done.catch === "function") done.catch(function () { /* 后端自己打警告 */ });
+  } catch (e) { return false; }
+  return true;
+}
+
 /* 一条弹幕怎么显示：昵称、译文行、原文行。照中控页弹幕栏的规则（app.js renderComment / updateComment）：
  * 翻译中占位；同语言 / 没翻译的（same、skipped）译文行就是原文本身、不再重复一遍；
  * 译不出来的（failed、dropped）显示原文本身，不写「失败」字样——原文就是内容，中控照样看得懂。 */
@@ -301,12 +350,27 @@ function floatPaintMeta(els, state, nowMs) {
   els.meta.classList.toggle("hidden", !(meta.connecting || chip || meta.lag));
 }
 
-/* 把状态画出来。els：{ empty, caption, meta, conn, chip, lag, big, small, comments }。
+/* 结束卡片：end 是 floatEndView 的结果（null 就收起）；canGoMain：有没有 JS 桥，没有就不画按钮。
+ * 卡片露出来时字幕、占位、弹幕都收起——这一场已经停了，窗口里只说这一件事 */
+function floatPaintEnd(els, end, canGoMain) {
+  if (!els.end) return;
+  els.end.classList.toggle("hidden", !end);
+  els.endTitle.textContent = end ? end.title : "";
+  els.endNote.textContent = end ? end.note : "";
+  els.endBack.textContent = L("回到主窗口", "Show Main Window");
+  els.endBack.classList.toggle("hidden", !(end && canGoMain));
+}
+
+/* 把状态画出来。els：{ empty, caption, meta, conn, chip, lag, big, small, comments }，可选
+ * { end, endTitle, endNote, endBack }（结束卡片）。opts.canGoMain：有没有「回到主窗口」的 JS 桥。
  * 整个重画：最多 5 条，不值得做差量。nowMs 缺省是此刻 */
-function floatRender(doc, els, state, nowMs) {
-  var cv = floatCaptionView(state);
+function floatRender(doc, els, state, nowMs, opts) {
+  var end = floatEndView(state);
+  floatPaintEnd(els, end, !!(opts && opts.canGoMain));
+  var cv = end ? null : floatCaptionView(state);
+  els.comments.classList.toggle("hidden", !!end);
   els.caption.classList.toggle("hidden", !cv);
-  els.empty.classList.toggle("hidden", !!cv);
+  els.empty.classList.toggle("hidden", !!cv || !!end);
   if (cv) {
     els.big.textContent = cv.big;
     els.small.textContent = cv.small;
@@ -332,9 +396,16 @@ function floatRender(doc, els, state, nowMs) {
               meta: document.getElementById("f-meta"), conn: document.getElementById("f-conn"),
               chip: document.getElementById("f-chip"), lag: document.getElementById("f-lag"),
               big: document.getElementById("f-big"), small: document.getElementById("f-small"),
-              comments: document.getElementById("f-comments") };
+              comments: document.getElementById("f-comments"),
+              end: document.getElementById("f-end"), endTitle: document.getElementById("f-end-title"),
+              endNote: document.getElementById("f-end-note"), endBack: document.getElementById("f-end-back") };
   var state = floatInitialState();
   var retries = 0;
+  var win = typeof window !== "undefined" ? window : null;
+
+  function render() {
+    floatRender(document, els, state, undefined, { canGoMain: !!floatMainBridge(win) });
+  }
 
   function applySizes() {
     var s = floatSizes(state.captionSize);
@@ -356,7 +427,7 @@ function floatRender(doc, els, state, nowMs) {
     setTimeout(function () {
       if (holdRound !== round || !state.held) return;
       holdRound = null;
-      if (floatReleaseHeld(state, state.held.id)) floatRender(document, els, state);
+      if (floatReleaseHeld(state, state.held.id)) render();
     }, FLOAT_HOLD_MS);
   }
 
@@ -365,15 +436,16 @@ function floatRender(doc, els, state, nowMs) {
     floatReduce(state, msg);
     if (msg && (msg.type === "hello" || msg.type === "config")) applySizes();
     armHold(wasHeld);
-    floatRender(document, els, state);
+    render();
   }
 
   function connect() {
     var ws = new WebSocket("ws://" + location.host + "/ws?role=float");
     ws.onopen = function () { retries = 0; };
     ws.onclose = function () {
-      // 和程序断了线：大字幕上那一句不会再更新了，状态行写「连接中…」，重连后的 hello 会整份换掉
-      handle({ type: "status", state: "connecting" });
+      // 和程序断了线：大字幕上那一句不会再更新了，状态行写「连接中…」，重连后的 hello 会整份换掉。
+      // 结束卡片露着时不换：监听已经停了，断线不改变这一点（程序重启后 hello 会带来新的状态）
+      if (!floatEndView(state)) handle({ type: "status", state: "connecting" });
       setTimeout(connect, Math.min(5000, 700 * Math.pow(2, retries++)));
     };
     ws.onerror = function () { try { ws.close(); } catch (e) { /* noop */ } };
@@ -385,11 +457,17 @@ function floatRender(doc, els, state, nowMs) {
   }
 
   applySizes();
-  floatRender(document, els, state);
+  render();
   connect();
-  // 拉大缩小窗口会改变装不装得下：重新量一次
+  // 「回到主窗口」：只调 JS 桥，不发 WebSocket 消息
+  if (els.endBack && typeof els.endBack.addEventListener === "function") {
+    els.endBack.addEventListener("click", function () { floatGoMain(win); });
+  }
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    // 拉大缩小窗口会改变装不装得下：重新量一次
     window.addEventListener("resize", function () { floatMarkClipped(els); });
+    // pywebview 在页面加载之后才注入 JS 桥，注入完发这个事件：按钮这时才画得出来
+    window.addEventListener("pywebviewready", render);
   }
   // 「约 N 秒前」每秒涨一次（同中控页底部大字幕）；状态行出现、消失会改变装不装得下，顺手再量
   if (typeof setInterval === "function") {
@@ -404,6 +482,8 @@ function floatRender(doc, els, state, nowMs) {
 /* Node 测试环境导出；浏览器里作为全局函数被上面的胶水使用 */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { FLOAT_COMMENTS_MAX: FLOAT_COMMENTS_MAX, FLOAT_HOLD_MS: FLOAT_HOLD_MS,
+                     FLOAT_END_STATES: FLOAT_END_STATES, floatEndView: floatEndView, floatNextStatus: floatNextStatus,
+                     floatMainBridge: floatMainBridge, floatGoMain: floatGoMain, floatPaintEnd: floatPaintEnd,
                      floatInitialState: floatInitialState,
                      floatReduce: floatReduce, floatReleaseHeld: floatReleaseHeld, floatCaptionView: floatCaptionView,
                      floatPlaceholder: floatPlaceholder, floatCommentView: floatCommentView,

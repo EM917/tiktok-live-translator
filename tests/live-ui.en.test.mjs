@@ -35,6 +35,34 @@ test("连接中提示：带主播名 / 不带；主播名原样放", () => {
   assert.equal(U.connectHint("offline", "x", true), null);
 });
 
+test("中间卡片：下载识别模型的进度（U7）——有 progress、只有 detail（不收）、都没有", () => {
+  const dl = { kind: "model_download", pct: 37 };
+  assert.deepEqual(U.connectHint("connecting", "luna_demo", false, dl),
+    { show: true, inline: false, text: "Downloading speech model… 37%" });
+  assert.equal(english(U.connectHint("connecting", "", true, { kind: "model_download" }).text),
+               "Downloading speech model…");
+  assert.equal(U.connectHint("connecting", "luna_demo", false, { kind: "other", pct: 37 }).text,
+               "Connecting to @luna_demo…");
+  assert.equal(U.connectHint("connecting", "luna_demo", false).text, "Connecting to @luna_demo…");
+  assert.deepEqual(U.connectHint("live", "luna_demo", false, dl), { show: false, inline: false, text: "" });
+  assert.equal(english(U.modelDownloadText({ kind: "model_download", pct: 5 })), "Downloading speech model… 5%");
+  // 大小未知：后端 pct 是 null、只给已下载的 mb
+  assert.equal(english(U.modelDownloadText({ kind: "model_download", pct: null, mb: 580 })),
+               "Downloading speech model… 580 MB so far");
+  assert.equal(english(U.modelDownloadText({ kind: "model_download", pct: null, mb: -1 })),
+               "Downloading speech model…");
+  assert.equal(U.modelDownloadText(null), "");
+});
+
+test("中间卡片：直播中还没有本场字幕时写 Waiting for the first caption…（U8，和浮窗同一句）", () => {
+  assert.deepEqual(U.connectHint("live", "luna_demo", false, null, true),
+    { show: true, inline: false, text: "Waiting for the first caption…" });
+  assert.equal(U.connectHint("live", "luna_demo", true, null, true).inline, true);
+  assert.deepEqual(U.connectHint("live", "luna_demo", true, null, false), { show: false, inline: false, text: "" });
+  // 和浮窗没字幕时的占位是同一对中英文（tests/float.en.test.mjs 钉着浮窗那一边）
+  assert.equal(require("../web/float.js").floatPlaceholder({ status: "live" }), "Waiting for the first caption…");
+});
+
 test("报警分级：Exact / Variant / Similar，认不出的分级按 Exact（同中文按「命中」）", () => {
   assert.equal(U.alertTierText("exact"), "Exact");
   assert.equal(U.alertTierText("variant"), "Variant");

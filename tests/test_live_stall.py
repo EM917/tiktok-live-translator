@@ -6,7 +6,7 @@
     TikTok 的提示挂着时不出，第一帧到了就撤；
   * 时钟跳变时按单调时钟计的起点往后挪，醒来不一起误报；
   * 统计循环里新加的检查抛错，循环照常跳；
-  * 一轮自然结束后等翻译时点停止，停止不被吞；
+  * 一轮自然结束后、后台还在等翻译时点停止，以及这一轮还在做完识别积压时点停止，停止都不被吞；
   * 收尾时 ffmpeg 吐出的音频照样送去识别，但不算「收到了直播音频」；
   * 以前卡死、现在晚几秒才结束的旧任务，碰不到新一场的翻译队列和提示；
   * _stop_locked 替旧任务代写 session_end 时也带上这一场的汇总。
@@ -14,6 +14,7 @@
 全部用桩件：不联网、不起 ffmpeg、不加载模型。
 """
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 
@@ -29,7 +30,7 @@ from app.audit import AuditLog
 from app.pipeline import Pipeline
 from app.stream_watch import OTHER, StageClock, StreamWatch
 from tests import i18n_rules as rules
-from tests.helpers import run
+from tests.helpers import poll_until, run
 from tests.test_resilience_stream import (CAUSE_LABELS, ROOM, RecordingServer, audit_rows,
                                           make_pipeline, of_type, rows_of)
 
@@ -522,11 +523,16 @@ def test_an_old_round_finishing_late_leaves_the_new_sessions_queue_alone(monkeyp
     assert p.telemetry.translation_queue_depth == 3
 
 
-def test_the_stop_during_the_translation_wait_is_not_swallowed(monkeypatch, tmp_path):
-    """一轮自然结束后，run_workers 最多等 5 秒让在途翻译跑完。以前那 5 秒里点「停止」，取消被
-    except (TimeoutError, CancelledError) 接住，重连循环又去查流地址、把界面改回「直播中」。"""
-    from app import settings
+def _live_session(monkeypatch, tmp_path, transcriber, v2):
+    """走 start_stream 的整场桩件：每轮 20 帧直播音频（两段字幕）后读到流尾，流地址一直查得到，每条翻译要 3 秒。
+    返回 SimpleNamespace(p, server, resolves, translating, stopped)。
 
+    stopped 里放进东西之后，桩件再被调到（拉流、查流地址）就抛错。停止被吞掉时直播任务会一直连下去，asyncio.run
+    收尾时取消它也会被吞，测试就卡到 pytest-timeout（CI 上连同后面的用例一起结束）；这样它以出错结束，测试在
+    断言上红，不卡死。用例在 scenario 的 finally 里放：等不到等待点、提前失败时也要放。"""
+    from app import reconnect_policy, settings
+
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", v2)
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setenv("HF_HOME", str(tmp_path))
     terms = tmp_path / "banned_terms.txt"
@@ -545,13 +551,24 @@ def test_the_stop_during_the_translation_wait_is_not_swallowed(monkeypatch, tmp_
     p.run_selfcheck = noop
     p.ensure_local_translator = noop
     p._login_source = noop
-    monkeypatch.setattr(app.asr, "create_transcriber", lambda **kw: Words())
+    monkeypatch.setattr(app.asr, "create_transcriber", lambda **kw: transcriber)
     monkeypatch.setattr(app.segmenter, "SilenceSegmenter", EveryTenFrames)
-    monkeypatch.setattr(app.audio, "FFmpegAudioSource", scripted_source(live=20))
+    stopped = []
+
+    class Source(scripted_source(live=20)):
+        async def frames(self):
+            if stopped:
+                raise RuntimeError("点了停止之后还在拉流")
+            async for frame in super().frames():
+                yield frame
+
+    monkeypatch.setattr(app.audio, "FFmpegAudioSource", Source)
     resolves = []
 
     async def fake_resolve(url, cookies=None, cookies_browser="auto", trace=None):
         resolves.append(url)
+        if stopped:
+            raise RuntimeError("点了停止之后还在查流地址")
         return "http://cdn/s.flv"
 
     async def reachable(*a, **k):
@@ -572,28 +589,139 @@ def test_the_stop_during_the_translation_wait_is_not_swallowed(monkeypatch, tmp_
 
     p._emit_original = emit
     p._translate_and_update = slow_translate
+    return SimpleNamespace(p=p, server=server, resolves=resolves, translating=translating,
+                           stopped=stopped)
+
+
+def _stage_seen(p, seen):
+    """此刻这一场的阶段名；顺手记进 seen（去掉连续重复），等不到时写进失败信息。"""
+    sess = getattr(p, "_session_state", None)
+    watch = sess.get("watch") if isinstance(sess, dict) else None
+    stage = watch.stage.name if watch is not None else None
+    if not seen or seen[-1] != stage:
+        seen.append(stage)
+    return stage
+
+
+def _pending_drains(p):
+    sess = getattr(p, "_session_state", None)
+    if not isinstance(sess, dict):
+        return []
+    return [t for t in sess.get("translation_drains", ()) if not t.done()]
+
+
+async def _stop_and_look(live, task, drains=()):
+    """点停止。stop_stream 一返回就在协程里看任务和后台排空（asyncio.run 退出时会把没结束的任务全部取消，放到
+    run() 外面看什么都钉不住），再等 0.5 秒，看停止之后还查没查流地址、界面改没改回「直播中」。"""
+    before = (len(live.resolves), len(live.server.statuses))
+    t0 = time.monotonic()
+    await live.p.stop_stream()
+    took = time.monotonic() - t0
+    got = {"took": took, "done": task.done(), "drains": len(drains),
+           "drains_left": [t for t in drains if not t.done()]}
+    await asyncio.sleep(0.5)
+    got["resolves_after"] = len(live.resolves) - before[0]
+    got["statuses_after"] = [state for state, _ in live.server.statuses[before[1]:]]
+    return got
+
+
+def _assert_the_stop_took(got, tmp_path):
+    assert got["done"] and got["took"] < 1.0
+    assert got["drains_left"] == []                         # 后台排空跟着停止取消了，没有等它跑完
+    assert got["resolves_after"] == 0                       # 停止之后不再查流地址
+    after = got["statuses_after"]
+    assert "live" not in after and after[-1] == "idle"      # 也不再把界面改回「直播中」
+    ends = of_type(audit_rows(tmp_path), "session_end")
+    assert [e["reason"] for e in ends] == ["user_stop"]
+
+
+def test_the_stop_during_the_translation_wait_is_not_swallowed(monkeypatch, tmp_path):
+    """一轮自然结束后，在途翻译还要再跑一会儿。以前 run_workers 在这一轮里最多等 5 秒让它跑完，那 5 秒里点
+    「停止」，取消被 except (TimeoutError, CancelledError) 接住，重连循环又去查流地址、把界面改回「直播中」。
+
+    #131（专家审查 B3a）之后这一轮不再等翻译：识别排空做完就返回，等翻译的事交给后台任务（登记在
+    sess["translation_drains"]），重连循环接着退避、再用原来的流地址连下一轮。drain 阶段只剩识别排空那
+    几毫秒（本机实测每轮中位数约 2 毫秒），以前「等到 drain 阶段再停」的写法要靠 10 毫秒一次的轮询碰巧
+    落进去，CI 上碰不上就一直转到 pytest-timeout。现在等的是新的等待点：后台排空还在等在途翻译、重连
+    循环在退避里（V2：有声一轮之后先退避 2 秒，所以钉在 V2 上）。这时点停止：1 秒内生效、后台排空跟着
+    取消、不再查流地址、不把界面改回「直播中」、session_end 记 user_stop。等不到这个等待点就直接失败，
+    不卡死。drain 阶段里点停止见下一条。"""
+    live = _live_session(monkeypatch, tmp_path, Words(), v2=True)
+    p, seen = live.p, []
+
+    def at_the_wait():
+        stage = _stage_seen(p, seen)
+        return bool(live.translating) and stage == "backoff" and bool(_pending_drains(p))
+
+    def where():
+        return "翻译已开始 {} 条、后台排空 {} 个、看到的阶段 {}".format(
+            len(live.translating), len(_pending_drains(p)), seen[-12:])
 
     async def scenario():
-        await p.start_stream(ROOM)
-        task = p._stream_task
-        # 流读完了（reader 收尾进 drain），翻译正在跑：此刻在 run_workers 等在途翻译的那 5 秒里
-        while not (translating and p._session_state is not None
-                   and p._session_state["watch"].stage.name == "drain"):
-            await asyncio.sleep(0.01)
-        await asyncio.sleep(0.3)
-        before = (len(resolves), len(server.statuses))
-        t0 = time.monotonic()
-        await p.stop_stream()
-        took = time.monotonic() - t0
-        await asyncio.sleep(0.5)
-        return task, took, before
+        try:
+            await p.start_stream(ROOM)
+            task = p._stream_task
+            # 第一轮读到流尾、识别做完，这一轮已经返回：翻译还在后台排空里跑，重连循环在退避里等
+            await poll_until(at_the_wait, 10.0, where)
+            await asyncio.sleep(0.2)
+            assert at_the_wait(), where()                 # 还在这个等待点里（退避 2 秒、翻译 3 秒）
+            return await _stop_and_look(live, task, _pending_drains(p))
+        finally:
+            live.stopped.append(True)
 
-    task, took, before = run(scenario())
-    assert task.done() and took < 1.0
-    assert len(resolves) == before[0]                       # 停止之后不再查流地址
-    after = server.statuses[before[1]:]
-    assert "live" not in [state for state, _ in after]     # 也不再把界面改回「直播中」
-    assert of_type(audit_rows(tmp_path), "session_end")[0]["reason"] == "user_stop"
+    got = run(scenario())
+    assert got["drains"] >= 1
+    _assert_the_stop_took(got, tmp_path)
+
+
+@pytest.mark.parametrize("v2", [True, False], ids=["v2", "v1"])
+def test_a_stop_while_the_round_drains_its_recognition_is_not_swallowed(monkeypatch, tmp_path, v2):
+    """流读完了、这一轮还在把识别积压做完（drain 阶段）时点停止。识别积压时这一步能持续好几秒，前一段的翻译
+    这时也在跑。#131 之后 drain 阶段平常只有几毫秒，上一条改成在退避里点停止；这一条让第二段识别在线程里卡住，
+    drain 阶段一直持续到点停止，不靠轮询碰巧落进去。停止：1 秒内生效（线程里那次识别取消不掉，不等它，也不等
+    那条要 3 秒的翻译）、不再查流地址、界面不改回「直播中」、session_end 记 user_stop。停止被吞掉时 V1 接着
+    去查流地址、V2 先退避再用原来的流地址连，两套都钉。"""
+    hold, held, threads = threading.Event(), threading.Event(), []
+    calls = []
+
+    class SecondWaits(Words):
+        def transcribe(self, pcm):              # 在这一轮的识别线程池里跑
+            calls.append(len(pcm))
+            if len(calls) == 2:
+                threads.append(threading.current_thread())
+                held.set()
+                hold.wait(10)
+            return super().transcribe(pcm)
+
+    live = _live_session(monkeypatch, tmp_path, SecondWaits(), v2=v2)
+    p, seen = live.p, []
+
+    def at_the_wait():
+        stage = _stage_seen(p, seen)
+        return held.is_set() and bool(live.translating) and stage == "drain"
+
+    def where():
+        return "第二段识别卡住 {}、翻译已开始 {} 条、看到的阶段 {}".format(
+            held.is_set(), len(live.translating), seen[-12:])
+
+    async def scenario():
+        try:
+            await p.start_stream(ROOM)
+            task = p._stream_task
+            # 第一轮读到流尾，识别还卡在第二段上：这一轮停在 drain，第一段的翻译正在跑
+            await poll_until(at_the_wait, 10.0, where)
+            await asyncio.sleep(0.2)
+            assert at_the_wait(), where()
+            return await _stop_and_look(live, task)
+        finally:
+            live.stopped.append(True)
+            hold.set()      # 放开线程里那次识别：它拿着进程级的识别锁（_TRANSCRIBE_LOCK），别留给后面的用例
+
+    got = run(scenario())
+    _assert_the_stop_took(got, tmp_path)
+    for t in threads:
+        t.join(5)
+    assert not any(t.is_alive() for t in threads)           # 识别线程放开之后自己退出了
 
 
 def test_stop_writes_the_sessions_summary_when_the_old_task_is_slow(monkeypatch, tmp_path):
