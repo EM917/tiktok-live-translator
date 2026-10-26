@@ -1515,3 +1515,88 @@ def test_a_click_swallowed_by_a_phones_own_cooldown_does_not_spend_a_shared_toke
     clock["t"] += viewer_mod.ACTION_GAP_SEC
     hub._handle_inbound(others[-1], text({"type": "retranslate", "id": 200}))
     assert calls[-1] == 200
+
+
+# ---- 安静时的 viewer_ping（专家审查 F8）----
+# 协议层的 heartbeat ping 帧浏览器里的脚本看不见：网络静默断掉时手机页拿不到 onclose，以前一直挂着
+# 「N 秒没有新消息」不重连。现在手机 50 秒什么都收不到就自己断开重连（web/viewer.js VIEWER_SILENT_SEC），
+# hub 在写队列安静满 VIEWER_PING_SEC 秒时发一条 viewer_ping，连得好好的手机就不会被误断。
+
+def test_a_quiet_writer_sends_a_viewer_ping_after_the_whole_replay(monkeypatch):
+    monkeypatch.setattr(viewer_mod, "VIEWER_PING_SEC", 0.05)
+    server = StubServer(status={"state": "live"})
+    server.history.append({"type": "caption", "id": 1, "original": "uno"})
+
+    async def scenario():
+        hub = make_hub(server)
+        ws = FakeWS()
+        v = add(hub, ws)
+        replay_len = v.queue.qsize()
+        v.writer = asyncio.ensure_future(hub._writer(v))
+        await _until(lambda: len(ws.sent) >= replay_len + 2, timeout=5.0)
+        v.writer.cancel()
+        return ws.sent, replay_len
+
+    sent, replay_len = asyncio.run(scenario())
+    types = [m["type"] for m in sent]
+    assert types[0] == "viewer_hello"
+    assert "viewer_ping" not in types[:replay_len], "ping 不能插进回放中间：手机按条数数回放"
+    assert types[replay_len:replay_len + 2] == ["viewer_ping", "viewer_ping"], "安静着就一直隔一会儿发一条"
+    assert sent[replay_len] == {"type": "viewer_ping"}
+
+
+def test_the_ping_does_not_take_a_queue_slot_or_delay_queued_messages(monkeypatch):
+    """队列里有东西就先发它：ping 只在队列空着、等满时限时才发，不进队列、不占 QUEUE_MAX 的名额。"""
+    monkeypatch.setattr(viewer_mod, "VIEWER_PING_SEC", 30.0)
+
+    async def scenario():
+        hub = make_hub()
+        ws = FakeWS()
+        v = add(hub, ws)
+        v.writer = asyncio.ensure_future(hub._writer(v))
+        hub.fanout({"type": "caption", "id": 7, "original": "siete"})
+        await _until(lambda: any(m.get("id") == 7 for m in ws.sent))
+        v.writer.cancel()
+        return ws.sent, v.queue.qsize()
+
+    sent, left = asyncio.run(scenario())
+    assert [m["type"] for m in sent if m["type"] == "viewer_ping"] == []
+    assert left == 0
+
+
+def test_the_ping_is_not_something_the_control_side_can_push_to_phones(loop):
+    """viewer_ping 只由写任务自己发：server.broadcast 送来的同名消息照旧被白名单挡掉（ALLOW 里没有它）。"""
+    hub = make_hub()
+    v = add(hub)
+    before = v.queue.qsize()
+    hub.fanout({"type": "viewer_ping", "note": "x"})
+    assert v.queue.qsize() == before
+    assert "viewer_ping" not in viewer_mod.ALLOW
+
+
+def test_a_real_phone_socket_gets_a_viewer_ping_while_nothing_else_happens(monkeypatch):
+    """真 socket：鉴权、收完回放之后什么都不发生，手机照样隔一会儿收到一条 viewer_ping。"""
+    monkeypatch.setattr(viewer_mod, "VIEWER_PING_SEC", 0.2)
+
+    async def scenario():
+        hub = make_hub(StubServer(status={"state": "idle"}))
+        await hub.start()
+        base = "http://127.0.0.1:{}".format(hub.port)
+        got = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(base + "/vws") as ws:
+                    await ws.send_json({"type": "auth", "k": TOKEN})
+                    started = time.monotonic()
+                    while True:
+                        msg = await asyncio.wait_for(ws.receive_json(), 5.0)
+                        got.append(msg["type"])
+                        if msg["type"] == "viewer_ping":
+                            return got, time.monotonic() - started
+        finally:
+            await hub.stop("off")
+
+    got, waited = asyncio.run(scenario())
+    assert got[0] == "viewer_hello" and got[-1] == "viewer_ping"
+    assert got.count("viewer_ping") == 1
+    assert waited >= 0.2

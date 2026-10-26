@@ -1393,3 +1393,78 @@ test("viewer_hello 说回放 0 条：hello 之后来的第一条就是实时的"
     assert.equal(healthShown(elements), null, "回放已经结束：这条换场是实时的");
   });
 });
+
+// ---- 静默断开（专家审查 F8）----
+// 补核实测（10-22，Chromium）：47 秒没消息，连接对象不变，页面没有发起重连——网络在中间静默断掉时浏览器拿不到
+// onclose，手机只会一直写「N 秒没有新消息」。现在服务端安静满 20 秒发一条 viewer_ping（app/viewer.py），
+// 已连接时 50 秒一帧都没收到就主动断开、走正常的重连
+test("silentTooLong：只在已连接时、离上一帧超过 50 秒才算", () => {
+  assert.equal(V.VIEWER_SILENT_SEC, 50);
+  assert.equal(V.silentTooLong("connected", 0, 50000), false, "正好 50 秒还不算");
+  assert.equal(V.silentTooLong("connected", 0, 50001), true);
+  assert.equal(V.silentTooLong("reconnecting", 0, 999999), false, "已经在重连：不重复断");
+  assert.equal(V.silentTooLong("connecting", 0, 999999), false, "还没收到 hello：交给鉴权超时");
+  assert.equal(V.silentTooLong("connected", null, 999999), false);
+});
+
+test("已连接 50 秒一帧都没收到（连 viewer_ping 也没有）：主动断开、走正常重连；撒手的旧连接迟来的事件不再处理", () => {
+  withFakeViewerPage(({ elements, ws, clock, tick, fireReconnect, FakeWebSocket }) => {
+    let closed = 0;
+    ws.close = () => { closed += 1; };
+    clock.now += 50 * 1000;
+    tick();
+    assert.equal(closed, 0, "正好 50 秒还不断");
+    assert.equal(elements["conn-text"].textContent, "已连接");
+    clock.now += 1000;
+    tick();
+    assert.equal(closed, 1, "超过 50 秒：主动关掉这条连接");
+    assert.match(elements["conn-text"].textContent, /^已断开，\d+ 秒后重连…$/, "同没有关闭帧的断开：走正常的重连退避");
+    assert.equal(elements["stream-text"].textContent, "状态未知", "断开期间不再说「直播中」");
+    // 不等旧连接的 onclose（网络断了，它可能很久才来）：重连定时器已经排上
+    const ws2 = fireReconnect();
+    assert.equal(FakeWebSocket.instances.length, 2);
+    assert.deepEqual(JSON.parse(ws2.sent[0]), { type: "auth", k: "fake-token-not-a-real-secret-0000000000" });
+    // 旧连接后来才到的关闭和消息：一概不管
+    ws.onclose({ code: 1006 });
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 5, ts: 1, original: "tarde" }) });
+    assert.equal(elements["caption-list"].children.length, 0, "撒手的旧连接送来的字幕不画");
+    assert.match(elements["conn-text"].textContent, /^已断开，\d+ 秒后重连…$/, "旧连接的 onclose 不改新连接的状态");
+    ws2.onmessage({ data: helloMsg(0) });
+    assert.equal(elements["conn-text"].textContent, "已连接");
+    tick();
+    assert.equal(FakeWebSocket.instances.length, 2, "新连接刚连上：不会马上又被当成静默");
+  });
+});
+
+test("viewer_ping 让安静的连接不被误断；但它不算新消息：「N 秒没有新消息」照旧按内容数", () => {
+  withFakeViewerPage(({ elements, ws, clock, tick, FakeWebSocket }) => {
+    let closed = 0;
+    ws.close = () => { closed += 1; };
+    for (let i = 0; i < 6; i++) {               // 两分钟，每 20 秒一条 ping
+      clock.now += 20 * 1000;
+      ws.onmessage({ data: JSON.stringify({ type: "viewer_ping" }) });
+      tick();
+    }
+    assert.equal(closed, 0, "一直收得到 ping：连接好好的，不断");
+    assert.equal(FakeWebSocket.instances.length, 1);
+    assert.equal(elements["conn-text"].textContent, "已连接");
+    assert.equal(elements["stale-line"].textContent, "120 秒没有新消息", "ping 不是新内容：安静的直播间照样这么写");
+    clock.now += 51 * 1000;                     // ping 也不来了
+    tick();
+    assert.equal(closed, 1);
+  });
+});
+
+test("viewer_ping 不算回放里的一条：回放照旧按 hello 给的条数结束", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send(Object.assign({}, HELLO, { replay_len: 3 }));
+    send({ type: "status", state: "live" });          // 回放第 1 条
+    send({ type: "health", level: "lagging" });       // 第 2 条
+    send({ type: "viewer_ping" });                     // 不算
+    send({ type: "session_break", ts: 9 });            // 第 3 条：回放里的历史换场，不收此刻的落后提示
+    assert.equal(healthShown(elements), "识别开始落后，报警会有延迟");
+    send({ type: "session_break", ts: 10 });           // 回放已经结束：这一条是此刻的换场
+    assert.equal(healthShown(elements), null);
+  });
+});

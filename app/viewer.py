@@ -66,6 +66,13 @@ ACTION_BUCKET_PER_MINUTE = 20
 ACTION_BUCKET_BURST = 5
 MAX_MSG_SIZE = 4096           # 入站帧上限，超过由 aiohttp 自己断开
 WS_HEARTBEAT = 30             # 与控制面一致
+# 写队列安静满这么久就给手机发一条 viewer_ping（专家审查 F8）。上面的 WS_HEARTBEAT 是协议层的 ping 帧，
+# 浏览器里的脚本看不见它：网络静默断掉（Wi-Fi 换了、路由器丢了这条连接）时，手机页拿不到 onclose，
+# 以前就一直挂着「N 秒没有新消息」不重连。现在手机收不到任何东西超过 VIEWER_SILENT_SEC（web/viewer.js，
+# 50 秒）就自己断开重连；这条 ping 让直播间安静时连得好好的手机不被误断。老的手机页不认识这个类型，
+# 走 default 分支安静忽略
+VIEWER_PING_SEC = 20.0
+VIEWER_PING = {"type": "viewer_ping"}     # 所有连接共用这一份，发出去之后谁都不改它
 AUTH_FAIL_AUDIT_WINDOW_SEC = 10.0   # 同一 IP 的鉴权失败最多每 10 秒记一条
 AUTH_FAIL_TRACK_MAX = 256     # 限流表的条数上限，别让扫端口的人把内存撑起来
 IP_REFRESH_SEC = 60.0         # 同看开着时多久重取一次本机地址（地址会变）
@@ -1455,9 +1462,17 @@ class ViewerHub:
         task.add_done_callback(self._action_tasks.discard)
 
     async def _writer(self, viewer):
-        """每条连接一个写任务，只认这条连接自己的队列。识别循环从不 await 这里。"""
+        """每条连接一个写任务，只认这条连接自己的队列。识别循环从不 await 这里。
+
+        队列安静满 VIEWER_PING_SEC 秒就发一条 viewer_ping（F8，见常量处的说明）。只在安静时发：直播中字幕
+        一直在来，不多占带宽；它不进队列，也就不会插进回放中间（回放是入册时一口气压进队列的，ping 只可能
+        排在回放发完之后），手机按回放条数数到哪一条结束的逻辑不受影响。时限每一轮现读模块常量（测试要改它，
+        理由同 _abort_later）"""
         while True:
-            item = await viewer.queue.get()
+            try:
+                item = await asyncio.wait_for(viewer.queue.get(), VIEWER_PING_SEC)
+            except asyncio.TimeoutError:
+                item = VIEWER_PING
             if isinstance(item, _Close):
                 try:
                     await asyncio.wait_for(

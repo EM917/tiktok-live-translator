@@ -140,6 +140,17 @@ function backoffDelay(n, rand) {
   return Math.max(BACKOFF_MIN, Math.min(BACKOFF_MAX, v));
 }
 
+// ---- 静默断开（专家审查 F8）----
+// 网络在中间静默断掉时浏览器拿不到 onclose，以前只会一直显示「N 秒没有新消息」，不会自己重连。
+// 服务端安静满 20 秒就发一条 viewer_ping（app/viewer.py VIEWER_PING_SEC），所以连得好好的手机
+// 不会超过 20 来秒什么都收不到；已连接状态下 VIEWER_SILENT_SEC 秒一条都没收到（ping 也算），就当这条
+// 连接已经断了，主动断开、走正常的重连。50 秒 = 两次 ping 再留 10 秒余量
+var VIEWER_SILENT_SEC = 50;
+function silentTooLong(connState, lastFrameAt, now) {
+  if (connState !== "connected" || lastFrameAt == null) return false;
+  return now - lastFrameAt > VIEWER_SILENT_SEC * 1000;
+}
+
 // 违禁词警示模式的手机端提示文案：中控这场没打开警示时，命中仍会记进审计，
 // 但手机上也看不到报警——不能让手机这边毫无提示，否则同看的人会误以为
 // 「这场很干净」。关闭时给一行常驻灰字；打开时不显示（返回空串，调用方据此隐藏）。
@@ -621,7 +632,10 @@ if (typeof document !== "undefined") {
     // 掉线那一刻就显示「已经 1800 秒没连上」，还叫看的人去找中控。还没连上过的手机这里是 null，
     // 一直显示普通的「N 秒后重连」，和以前一样
     var disconnectedAt = null;
-    var lastMessageAt = null;     // 上一次收到任意消息的时间（ms），驱动 45 秒静默提示
+    var lastMessageAt = null;     // 上一次收到消息的时间（ms，viewer_ping 不算），驱动 45 秒的「N 秒没有新消息」
+    // 上一次收到任何一帧的时间（ms，viewer_ping 也算）：已连接时超过 VIEWER_SILENT_SEC 没变就主动断开重连（F8）。
+    // 两个时间分开记：#stale-line 照旧说的是「没有新内容」（安静的直播间里照样显示），断不断开只看连接本身
+    var lastFrameAt = null;
 
     // 重连中离掉线那一刻过了多少秒；不在重连中、或者这台手机还没连上过，返回 null
     function offlineSec() {
@@ -653,7 +667,20 @@ if (typeof document !== "undefined") {
       staleLine.classList.toggle("hidden", !text);
     }
 
+    // 静默断开（F8）：先撒手再关——网络已经断了的连接，close() 之后 onclose 可能很久才来，来了也不再管它
+    // （onclose 里 ws !== socket 就返回），它万一又送来消息也不处理（onmessage 认 abandonedSocket）。
+    // 然后同没有关闭帧的断开一样走正常的重连退避
+    var abandonedSocket = null;
+    function dropSilentSocket() {
+      var socket = ws;
+      ws = null;
+      abandonedSocket = socket;
+      if (socket) { try { socket.close(); } catch (e) { /* 忽略 */ } }
+      onSocketDown(null);
+    }
+
     function tickStaleLine() {
+      if (silentTooLong(connState, lastFrameAt, Date.now())) dropSilentSocket();
       renderStaleLine();
       // 重连状态下的倒计时/累计秒数也要跟着秒表刷新，不能只在状态切换那一刻画一次
       if (connState === "reconnecting") renderConnBar();
@@ -722,10 +749,15 @@ if (typeof document !== "undefined") {
         catch (e) { try { socket.close(); } catch (e2) { /* 忽略 */ } }
       };
       socket.onmessage = function (evt) {
-        lastMessageAt = Date.now();
-        var msg;
-        try { msg = JSON.parse(evt.data); } catch (e) { return; }
-        handle(msg);
+        // 静默断开时主动撒手的那条旧连接，万一后来又送来消息，不再处理：新连接的回放会把一切补齐
+        if (socket === abandonedSocket) return;
+        lastFrameAt = Date.now();
+        var msg = null;
+        try { msg = JSON.parse(evt.data); } catch (e) { msg = null; }
+        // viewer_ping 只说明连接还活着：不算新消息、不进 handle（不能被数成回放里的一条）
+        if (msg && msg.type === "viewer_ping") return;
+        lastMessageAt = lastFrameAt;
+        if (msg) handle(msg);
       };
       socket.onclose = function (evt) {
         if (ws !== socket) return;   // 旧连接的收尾事件，已经换了新连接
@@ -837,6 +869,9 @@ if (typeof document !== "undefined") {
         case "viewer_denied":
           // 关闭码本身已经决定了最终文案（onSocketDown），这里不用再动状态；
           // 只是不让它落进 default 分支被当成未知消息忽略。
+          break;
+        case "viewer_ping":
+          // 走不到这里：onmessage 先把它拦下了（只更新 lastFrameAt，见上）。列在这里，白名单里看得到这一种
           break;
         case "status":
           streamState = msg.state;
@@ -1280,6 +1315,8 @@ if (typeof module !== "undefined" && module.exports) {
     streamText: streamText,
     alertModeText: alertModeText,
     backoffDelay: backoffDelay,
+    silentTooLong: silentTooLong,
+    VIEWER_SILENT_SEC: VIEWER_SILENT_SEC,
     alertKey: alertKey,
     applyUpdate: applyUpdate,
     shouldRing: shouldRing,
