@@ -2633,8 +2633,11 @@
     if (old) old.remove();
   }
 
+  // 重译成了，服务端也说一句（app/comment_redo.py note_done，2026-10-26 用户要的）：「已重译」或「重译结果
+  // 和原来一样」（带 same）。和没成的说明走同一套：画在那条弹幕下面、抽屉那一行也有，COMMENT_REDO_NOTE_MS 后收起
   function receiveCommentRedo(msg) {
     var item = commentById[msg.id];
+    var done = msg.redo_state === "ok";
     if (msg.redo_state) {
       var pending = msg.redo_state === "pending";
       var failed = msg.redo_state === "failed";
@@ -2673,14 +2676,24 @@
     guardCommentChanged(msg.id);
     if (!msg.text) return;
     // 那条弹幕已经不在页面上了（清空了、被挤出 100 条）：话退回页脚那一行，不能丢——
-    // 抽屉里正显示着这一行的话就不用了，说明已经在那里
+    // 抽屉里正显示着这一行的话就不用了，说明已经在那里。成了的那句不退回页脚：新译文已经换进留存和
+    // 抽屉，页脚上一句不知道指哪条弹幕的「已重译」没有用，还要在页脚排队、把别的提示往后挤
     if (!item) {
-      if (!guardDrawerShows(msg.id)) queueNotice(msg.text);
+      if (!done && !guardDrawerShows(msg.id)) queueNotice(msg.text);
       return;
     }
     clearCommentRedoNote(item, msg.id);
     var note = document.createElement("div");
-    note.className = "redo-note";
+    note.className = done ? "redo-note done" : "redo-note";
+    if (done) {
+      // .redo-note 是提醒的底色（style.css，给没重译成的说明用）；成了不是提醒，照抽屉里的 .gev-redo-note：
+      // 次要文字的颜色、没有底色和内边距，和弹幕的字对齐。style.css 不在这一批的改动清单里，先写在这里；
+      // 以后改 style.css 时挪成 .redo-note.done 一条规则
+      note.style.color = "var(--label-2)";
+      note.style.background = "none";
+      note.style.padding = "0";
+      note.style.marginTop = "2px";
+    }
     note.setAttribute("role", "status");
     note.textContent = msg.text;
     item.appendChild(note);

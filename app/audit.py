@@ -786,6 +786,33 @@ class AuditLog:
             row["rescued_reasons"] = dict(rescued_reasons or {})
         self._write(row)
 
+    def comment_redo(self, why=None, had=None, translate_ms=None, model=None, same=None):
+        """中控在一条弹幕上点了一次「重译」（app/comments.py CommentTranslator._retranslate），不管有没有
+        译出来，每一次点击一条。2026-10-26 用户要的：以前弹幕重译不写审计，中控说「点了没反应」「译得
+        不对」时，查不到那一下是被拒了、正在重译、接口出错还是译出来了。
+
+        why：没换出新译文时的原因代码（英文代码，不是给人看的句子），译出来了是 null、ok 为 true。
+          没发请求就拒了的：bad_id（消息里没有弹幕 id）、demo（演示弹幕）、gone（原文已不在账本里）、
+          needs_claude（字幕引擎不是 Claude）、no_key（建不起 Claude 实例）、busy（这条正在重译）、
+          full（这一分钟的次数用满了）；发了请求没译出来的：reply_*（结果不像译文，丢弃，代码同
+          comment_translation_failed）、cooldown、refusal、http_<状态码>、no_output、exception；
+          cancelled（重译到一半任务被取消：目前只有程序退出时会这样；停止、换主播还取消不到它，那时
+          这一条到得晚、只计进 late_records，见 comments.py _retranslate）。
+        same：译出来了时，新译文和屏幕上原来那版是否一样（只记比的结果，不记译文）；没译出来是 null。
+        had：点的时候这条弹幕有没有译文（false 就是在补译没译出来的那条）；还没查到账本就拒了的
+          （bad_id、demo、gone）是 null。
+        translate_ms：问模型用了多久（含译文检查）；model：问的是哪个模型。没发请求的两个都是 null。
+
+        弹幕原文、译文、观众名、弹幕 id 都不记，和上面几种弹幕记录同一口径（弹幕与审计隔离）；字段值
+        只有代码、数字和布尔，中英两种界面下逐字节相同。新类型，键固定：已有的记录一个字节都不变。"""
+        ok = why is None
+        self._write({"type": "comment_redo", "at": _now_ms(), "ok": ok,
+                     "why": None if ok else str(why)[:40],
+                     "same": bool(same) if ok and same is not None else None,
+                     "had": None if had is None else bool(had),
+                     "translate_ms": None if translate_ms is None else round(translate_ms, 1),
+                     "model": model})
+
     def comment_guard_gate(self, backend, state, reason=None, backlog_sec=None):
         """复核的闸门或状态转折（PR-5 起写）。state：paused / resumed / tripped / reenabled / locked。"""
         self._write({"type": "comment_guard_gate", "at": _now_ms(), "backend": backend,

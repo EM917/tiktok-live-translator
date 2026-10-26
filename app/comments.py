@@ -17,7 +17,8 @@ app/comment_source.py），与字幕（主播语音）是完全独立的两条�
 
 弹幕重译（2026-10-14）：中控在某条弹幕上点「重译」时，字幕引擎是 Claude 才翻，用**另建的**
 Sonnet 5.5 实例（第三个，和字幕、弹幕的 Haiku 各管各的冷却）；其它引擎一律不翻，仍然不碰
-`create_strong_translator()`。账本、限额和给中控看的话在 app/comment_redo.py。
+`create_strong_translator()`。账本、限额和给中控看的话在 app/comment_redo.py。每次点击往本场
+审计写一条 comment_redo（2026-10-26 起），只有代码和数字，弹幕内容照旧不进审计。
 """
 import asyncio
 import re
@@ -506,6 +507,9 @@ class CommentTranslator:
             why = "timeout" if isinstance(exc, asyncio.TimeoutError) else "exception"
             self._note_outcome(audit, self._translator(), len(batch), 0, {why: len(batch)}, t0)
             for item in batch:
+                # 整批改标失败，已经上屏的译文也退回原文：账本跟着忘掉它，之后点「重译」时说明的结尾
+                # （仍显示原文）和「和原来一样」的比较才对得上屏幕
+                self._ledger.forget_translation(item["id"])
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": "failed"})
 
@@ -556,7 +560,7 @@ class CommentTranslator:
                 continue
             if out:
                 ok += 1
-                self._ledger.mark_translated(item["id"])
+                self._ledger.mark_translated(item["id"], out)
             else:
                 failed[why or "no_output"] = failed.get(why or "no_output", 0) + 1
             if out:
@@ -574,7 +578,7 @@ class CommentTranslator:
             if out:
                 ok, rescued = ok + 1, rescued + 1
                 rescued_by[why] = rescued_by.get(why, 0) + 1
-                self._ledger.mark_translated(item["id"])
+                self._ledger.mark_translated(item["id"], out)
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": out, "state": "ok"})
             else:
@@ -745,79 +749,123 @@ class CommentTranslator:
     async def retranslate(self, cid):
         """中控在某条弹幕上点了「重译」（web/app.js 发 retranslate_comment）。永不抛异常。
 
-        每一条不重译的出路都用 comment_redo 消息回话，页面把话显示在那条弹幕下面（文字见
-        comment_redo.py）；译文出来了就用 comment_update 换掉那条弹幕的译文——服务端的留存
-        和手机页都跟着换。手机发不出这个动作（app/viewer.py 的入站只认 retranslate）。"""
+        每一条出路都用 comment_redo 消息回话，页面把话显示在那条弹幕下面（文字见 comment_redo.py）：
+        没重译的说为什么没有；译出来了说「已重译」或「重译结果和原来一样」（带 same），同时用
+        comment_update 换掉那条弹幕的译文——服务端的留存和手机页都跟着换。每条出路也都往本场审计
+        写一条 comment_redo（见 _redo_audit）。手机发不出这个动作（app/viewer.py 的入站只认 retranslate）。"""
         try:
             await self._retranslate(cid)
         except Exception as exc:
             print("[警告] 弹幕重译出错: {}".format(exc))
 
     async def _retranslate(self, cid):
+        # 审计用点击这一刻的那一场（同 _process_one_batch 取批开头的）：Sonnet 要等几秒，这期间换了一场，
+        # 这一下也不会记到下一场去。已知缺口：这个任务是 Pipeline._spawn 起的，没登记进本场
+        # sess["retranslate_tasks"]，停止、换主播时取消不到它；Sonnet 回来时文件已经关了，这一条就只计进
+        # late_records、终端打一行警告（AuditLog._note_late），不进文件。要改 app/pipeline.py，顺延
+        audit = self._session()
         if not isinstance(cid, str) or not cid:
+            self._redo_audit(audit, "bad_id")
             return                  # 不是弹幕 id：没有哪条弹幕可以回话
         cid = cid[: self.MAX_ID]
         if cid.startswith(redo.DEMO_ID_PREFIX):
             # --demo 的虚构弹幕：从来没进过账本，不能当成「挤出了最近 200 条」来答
+            self._redo_audit(audit, "demo")
             await self._redo_refused(cid, redo.note_demo())
             return
         text = self._ledger.original(cid)
         if text is None:
+            self._redo_audit(audit, "gone")
             await self._redo_refused(cid, redo.note_gone())
             return
+        had = self._ledger.has_translation(cid)
         translator = self._translator()
         # 铁律：只有 Claude 能翻弹幕重译。别的引擎（尤其是本地 7B）到这里就停，不去叫强模型
         if not engine_is_claude(translator):
+            self._redo_audit(audit, "needs_claude", had)
             await self._redo_refused(cid, redo.note_needs_claude(translator))
             return
         engine = self._redo_engine_for(translator)
         if engine is None:
+            self._redo_audit(audit, "no_key", had)
             await self._redo_refused(cid, redo.note_no_key())
             return
         refused = self._ledger.begin(cid)
         if refused is not None:
             kind, wait = refused
+            self._redo_audit(audit, kind, had)                       # busy / full
             if kind == "busy":
                 await self._redo_say(cid, redo.note_busy())          # 按钮已经是「重译中…」
             else:
                 await self._redo_refused(cid, redo.note_full(wait))
             return
-        had = self._ledger.has_translation(cid)
+        model = getattr(engine, "model", None)
+        t0 = time.monotonic()
         try:
             await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "pending"})
-            out, why = await self._redo_translate(engine, text, had)
+            out, why, code = await self._redo_translate(engine, text, had)
+        except asyncio.CancelledError:
+            # 任务被取消（程序退出）：这一下也要有记录，再照样往外抛
+            self._redo_audit(audit, "cancelled", had, (time.monotonic() - t0) * 1000.0, model)
+            raise
         except Exception as exc:
             print("[警告] 弹幕重译出错: {}".format(exc))
-            out, why = None, redo.note_unknown(had)
+            out, why, code = None, redo.note_unknown(had), "exception"
         finally:
             self._ledger.finish(cid)
+        ms = (time.monotonic() - t0) * 1000.0
         if out:
-            self._ledger.mark_translated(cid)
+            # 成了也要说一句（2026-10-26 用户要的）：以前只换译文、不说话，新译文和原来一样时屏幕上
+            # 什么都不变，点的人分不清成没成。比的是账本里那版（屏幕上现在显示的），比完再记新的
+            # 旧译文在等完 Sonnet 之后才读：等的这段时间里整批超时会把屏幕上的译文退回原文
+            # （forget_translation），账本只在事件循环里改，这一刻读到的就是屏幕上那版
+            old = self._ledger.translation(cid)
+            same = redo.same_translation(old, out)
+            self._ledger.mark_translated(cid, out)
+            self._redo_audit(audit, None, had, ms, model, same)
             await self._safe_broadcast({"type": "comment_update", "id": cid,
                                         "translated": out, "state": "ok"})
-            await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "ok"})
+            await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "ok",
+                                        "same": same, "text": redo.note_done(same)})
         else:
+            self._redo_audit(audit, code, had, ms, model)
             await self._redo_refused(cid, why)
 
-    async def _redo_translate(self, engine, text, had=True):
-        """用重译实例译一次。返回 (译文, None) 或 (None, 给中控的说明)。
+    def _redo_audit(self, audit, why, had=None, ms=None, model=None, same=None):
+        """一次弹幕重译的结局写进本场审计（AuditLog.comment_redo）：只有代码、数字和布尔。先记再回话：
+        回话要 await，这期间被取消也不丢这一条。没有场次（停止之后点的）就没有文件可写；写审计出错
+        不能连累重译本身（同 _note_outcome）。"""
+        if audit is None:
+            return
+        try:
+            audit.comment_redo(why, had=had, translate_ms=ms, model=model, same=same)
+        except Exception as exc:
+            print("[警告] 弹幕重译审计记录失败: {}".format(exc))
 
-        译文过的关和批量翻译一样：词表兜底替换，再过 plausible_translation（弹幕是陌生人的话，
-        模型可能把它当成对自己说的，回一整句话）——不像译文就当没译出来，原译文留着。
+    async def _redo_translate(self, engine, text, had=True):
+        """用重译实例译一次。返回 (译文, None, None) 或 (None, 给中控的说明, 原因代码)。
+
+        译文过的关和批量翻译一样：词表兜底替换，再过 implausible_reason（plausible_translation 的判据；
+        弹幕是陌生人的话，模型可能把它当成对自己说的，回一整句话）——不像译文就当没译出来，原译文留着。
         直接 await translate：拒答的结局记在本任务的上下文里（translator.translate_call_outcome），
-        套 wait_for 会让它丢掉；实例自己的 HTTP 超时（BaseTranslator.TIMEOUT）兜住不返回的情况。"""
+        套 wait_for 会让它丢掉；实例自己的 HTTP 超时（BaseTranslator.TIMEOUT）兜住不返回的情况。
+        原因代码（写审计）和批量翻译的同一套：_call 给的 cooldown / refusal / http_<状态码> /
+        no_output / exception，不像译文的是 implausible_reason 的 reply_*。"""
         target = self._target()
         begin_translate_call()
         error_before = getattr(engine, "last_error", None)
-        out = await self._translate_one(engine, text, target, self._glossary())
+        out, code = await self._translate_one_why(engine, text, target, self._glossary())
         discarded = False
-        if out and not plausible_translation(text, out, target):
-            print("[警告] 弹幕重译的译文不像是在翻译这条弹幕（{} 字 → {} 字），已丢弃".format(
-                len(text), len(out)))
-            out, discarded = None, True
         if out:
-            return out, None
-        return None, redo.failure_text(engine, error_before, translate_call_outcome(), discarded, had)
+            code = implausible_reason(text, out, target)
+            if code:
+                print("[警告] 弹幕重译的译文不像是在翻译这条弹幕（{} 字 → {} 字），已丢弃".format(
+                    len(text), len(out)))
+                out, discarded = None, True
+        if out:
+            return out, None, None
+        return (None, redo.failure_text(engine, error_before, translate_call_outcome(), discarded, had),
+                code or "no_output")
 
     async def _redo_say(self, cid, text):
         """只说一句话，不动按钮的状态。"""
@@ -846,9 +894,6 @@ class CommentTranslator:
                    for t in texts]
         return [(self._apply_glossary(glossary, texts[i], parsed[i]), None)
                for i in range(len(texts))]
-
-    async def _translate_one(self, translator, text, target, glossary):
-        return (await self._translate_one_why(translator, text, target, glossary))[0]
 
     async def _translate_one_why(self, translator, text, target, glossary):
         """一条：(译文或 None, 没译出来的原因代码或 None)。"""
