@@ -15,6 +15,7 @@ import time
 import traceback
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from inspect import isawaitable
 from pathlib import Path
 
@@ -2677,7 +2678,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     # 停止或一场结束时，各条 session: 提示怎么收（下一场开始时 _clear_session_incidents 全部撤掉）：
     #   撤掉：描述「正在进行」、监听停了就不成立的——「网络恢复后自动重连」、音频到达率、
-    #         「程序继续监听」的安静提示、「已 N 分钟没收到直播音频」（ONGOING_INCIDENTS）
+    #         「程序继续监听」的安静提示和「只有一部分过了识别门限」、「已 N 分钟没收到直播音频」
+    #         （ONGOING_INCIDENTS）
     #   改写：承诺「会继续重试」的——审计写不进去（_settle_audit_incident）、远程引擎被拒
     #         （_settle_engine_incident）。停了就不再重试，改成已经发生的事和下一步
     #   留着：已经发生的事，或停了也成立的话——时钟跳变、识别连续出错（CPU 模型照样在后台
@@ -2685,7 +2687,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     #         时钟跳变那一条另有两条出路（2026-10-21）：中控点 × 关掉（_dismiss_incident），
     #         或 CLOCK_GAP_CLEAR_SEC 秒没再跳自己收起（_arm_clock_gap_clear），停止之后也照样计时
     ONGOING_INCIDENTS = ("session:network", "session:audio_rate", "session:quiet_audio",
-                         "session:no_audio")
+                         "session:no_audio", "session:gated_audio")
 
     async def _clear_ongoing_incidents(self):
         config = getattr(getattr(self, "server", None), "config", None) or {}
@@ -2929,10 +2931,67 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                           "{:.0f} sec of stream audio arrived, but its volume stayed below the "
                           "speech recognition threshold, so none of it was transcribed. "
                           "Monitoring continues.").format(data["audio_sec"]))
+                    # 「一段都没送去识别」比「只有一部分送去了」要紧，同一件事界面上只留这一条。部分送识别那条
+                    # 在切出语音之后、下一个窗口还没回升时重新挂出来（AudioFlowMeter 每个窗口都报 gated_more）
+                    await self._incident(self.GATED_INCIDENT, "clear")
                 elif kind == "speech":
                     await self._incident("session:quiet_audio", "clear")
+                elif kind in ("gated", "gated_more", "gated_ok"):
+                    await self._on_gate_event(sess, kind, data)
         except Exception as exc:
             print("[警告] 音频计数事件处理出错: {}".format(exc))
+
+    GATED_INCIDENT = "session:gated_audio"
+
+    @classmethod
+    def _gated_text(cls, data):
+        """「只有一部分送去了识别」的那一句（专家审查 M4）：只写数字和看到的事，不说音量为什么低（第八条）。
+        没送去识别的那些整段每一帧都低于识别门限（切段器只扔这种），所以「其余的」照实这么说。"""
+        audio = float(data.get("audio_sec") or 0.0)
+        sent = min(float(data.get("sent_sec") or 0.0), audio)
+        return L("近 {}收到 {:.0f} 秒直播音频，只有 {:.0f} 秒送去了识别，其余的音量一直低于识别门限；"
+                 "程序继续监听",
+                 "In the last {}, {:.0f} sec of stream audio arrived, but only {:.0f} sec was sent to "
+                 "speech recognition. The rest stayed below the speech recognition threshold. "
+                 "Monitoring continues.").format(
+            cls._duration_text(data.get("wall_sec") or 0.0), audio, sent)
+
+    @staticmethod
+    def _write_gated_audit(audit, state, data):
+        """跨过门限时一条 gated_audio（进入 low、回到 ok，和 coverage 一样只记跨阈值的那一下）。字段值是英文代码
+        和数字（cross_cutting 7）；已有类型的记录一个字节都不变。app/audit.py 不在这一批的文件清单里，记录直接由
+        AuditLog._write 落盘（照样走写失败计数、补写、关闭后计 late_records 那一套），以后改 audit.py 的批次可以
+        挪成 AuditLog.gated_audio()。"""
+        if audit is None:
+            return
+        try:
+            audit._write({
+                "type": "gated_audio",
+                "at": datetime.now().isoformat(timespec="milliseconds"),
+                "state": state,
+                "audio_sec": round(float(data.get("audio_sec") or 0.0), 1),
+                "sent_sec": round(float(data.get("sent_sec") or 0.0), 1),
+                "wall_sec": round(float(data.get("wall_sec") or 0.0), 1),
+                "ratio": round(float(data.get("ratio") or 0.0), 3),
+            })
+        except Exception as exc:
+            print("[警告] 记录识别门限比例出错: {}".format(exc))
+
+    async def _on_gate_event(self, sess, kind, data):
+        """AudioFlowMeter 的 gated / gated_more / gated_ok：写审计（只在跨阈值时），挂、更新或撤
+        session:gated_audio。「一段都没送去识别」（session:quiet_audio）挂着时不挂这一条：那一条说得更要紧。"""
+        if kind == "gated_ok":
+            self._write_gated_audit(sess.get("audit"), "ok", data)
+            await self._incident(self.GATED_INCIDENT, "clear")
+            return
+        if kind == "gated":
+            self._write_gated_audit(sess.get("audit"), "low", data)
+        if self._incident_shown("session:quiet_audio") is not None:
+            return
+        text = self._gated_text(data)
+        shown = self._incident_shown(self.GATED_INCIDENT) or {}
+        if shown.get("text") != text:
+            await self._incident(self.GATED_INCIDENT, "warn", text)
 
     def _record_stream_break(self, sess, source, reason, error, got_audio, audio_secs,
                              meter, discarded=None):
@@ -3609,13 +3668,17 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             meta = dict(meta) if isinstance(meta, dict) and len(segments) == 1 else None
             return self._evidence_cut_meta(evidence, meta, segments)
 
+        def _sent_sec(segments):
+            """切出来、送去识别的这几段一共几秒（音频计数的「送识别 ÷ 收到」用，专家审查 M4）。"""
+            return sum(len(segment) for segment in segments) / 2.0 / SAMPLE_RATE
+
         def _flush_rest(last_tail):
             """切段器里剩下的那一截切出来送去识别（别丢掉最后一段话），返回音频计数的事件。"""
             rest = segmenter.flush()
             for segment in rest:
                 meta = _cut_meta(rest)
                 _put((segment, time.time(), _tail_meta(meta) if last_tail else meta))
-            return meter.cut(len(rest))
+            return meter.cut(len(rest), _sent_sec(rest))
 
         async def _late_audio_events(events):
             # reader 收尾时交给后台的计数事件（flush 切出了段，只会是「切出语音」：撤 quiet_audio 提示）。轮到它跑时
@@ -3646,7 +3709,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         segments = segmenter.feed(frame)
                         for segment in segments:
                             _put((segment, time.time(), _tail_meta(_cut_meta(segments))))
-                        events = meter.cut(len(segments))
+                        events = meter.cut(len(segments), _sent_sec(segments))
                         if events:
                             await self._on_audio_events(sess, events)
                         continue
@@ -3668,8 +3731,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     segments = segmenter.feed(frame)
                     for segment in segments:
                         _put((segment, time.time(), _cut_meta(segments)))
-                    # 实际收到多少音频、有没有切出语音段：每帧只计数，有事件才 await
-                    events = meter.feed(frame, segments=len(segments))
+                    # 实际收到多少音频、有没有切出语音段、切出的有几秒：每帧只计数，有事件才 await
+                    events = meter.feed(frame, segments=len(segments), sent_sec=_sent_sec(segments))
                     if events:
                         await self._on_audio_events(sess, events)
                 events = _flush_rest(last_tail)
