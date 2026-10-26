@@ -252,6 +252,17 @@ def _describe_asr(cfg):
     return "/".join(str(v) for v in parts if v and v != "auto")  # i18n: data
 
 
+def _set_hotwords(transcriber, hotwords):
+    """这一场的热词提示直接赋到识别器上（专家审查 M7）。两个后端（app/asr.py 的 Transcriber、MLXTranscriber）
+    都在 transcribe 时现读 self.hotwords，赋值之后的下一段就用新的；在识别线程里跑到一半的那一段已经读过了，
+    不受影响。识别器换主播时不再重建：热词不进识别器的 key，换主播只换这一个属性。
+    测试里的替身（object() 之类）不收属性：不赋，照旧。"""
+    try:
+        transcriber.hotwords = hotwords
+    except AttributeError:
+        pass
+
+
 def _term2_limits():
     """收尾时补发第二个 SIGTERM 的两个延迟（M2，app/audio.py 的 TERM2_DELAY / URGENT_TERM2_DELAY），接在
     session_start 的 stop_limits 末尾。b1-ffmpeg 加了这两步，stop_limits 当时没跟上（#124 审查）：没有它们，
@@ -3238,13 +3249,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         temperature = (self.args.asr_temperature
                        if self.args.asr_temperature is not None
                        else DEFAULT_TEMPERATURE)
+        # 热词提示（主播 / 品牌词表）不进 key（专家审查 M7）：以前进了，换一位主播热词一变就新建识别器——ct2 后端
+        # 加载新模型时旧的还在内存里，两份同时驻留（规则三那类事故）；mlx 的权重是类级缓存，只是白白重新预热。
+        # 现在每场拿到识别器之后直接赋 hotwords（_set_hotwords），换主播不重新加载
+        hotwords = self.glossary.asr_prompt()
         key = (backend, model, device, compute, self.args.source,
-               self.args.beam, self.args.context, temperature,
-               self.glossary.asr_prompt())
+               self.args.beam, self.args.context, temperature)
         config = {"backend": backend, "model": model, "device": device,
                   "compute_type": compute, "language": self.args.source,
                   "beam_size": self.args.beam, "use_context": self.args.context,
-                  "temperature": temperature, "hotwords": self.glossary.asr_prompt(),
+                  "temperature": temperature, "hotwords": hotwords,
                   "note": rec["note"]}
         # 加载模型（含等上一场改用 CPU 的那次加载）：首次要下载几 GB，预算放宽，超了只记一条
         self._stage(sess, "model_load", self.STAGE_MODEL_LOAD_SEC)
@@ -3290,7 +3304,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         beam_size=self.args.beam,
                         use_context=self.args.context,
                         temperature=temperature,
-                        hotwords=self.glossary.asr_prompt(),
+                        hotwords=hotwords,
                     ),
                 )
             watcher = asyncio.ensure_future(self._model_download_progress(model))
@@ -3320,6 +3334,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if as_configured:
                 await self._asr_loaded_ok(refresh=dropped_fallback)
         transcriber = self._transcriber
+        # 拿到的可能是上一场（别的主播）留下的、上一场在途的加载、或者上一场改用的 CPU 模型（同一个 key）：
+        # 热词一律换成这一场的，asr_config 记的指纹也就是这一场的
+        _set_hotwords(transcriber, hotwords)
         sess["end"] = None
         self._stage(sess, "other", self.STAGE_OTHER_SEC)
         if my_audit is not None:

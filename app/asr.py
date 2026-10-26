@@ -818,7 +818,8 @@ class Transcriber(_FilterMixin):
         self.use_context = use_context
         self.temperature = temperature
         # 静态热词（商品名等）。与滚动上下文不同：它不随时间漂移，
-        # 不会把上一段的幻觉传染给下一段
+        # 不会把上一段的幻觉传染给下一段。transcribe 每段现读这个属性：管线每场开始时直接改它
+        # （app/pipeline.py _set_hotwords，专家审查 M7），换主播不重建识别器，别在构造时把它烘焙进别处
         self.hotwords = hotwords
         self._context = ""
         # 实际生效的配置（CUDA 退回 CPU 后与请求的不同），审计记的是这一份
@@ -929,7 +930,8 @@ class MLXTranscriber(_FilterMixin):
         self.use_context = use_context
         self.temperature = temperature
         # 静态热词（商品名等）。与滚动上下文不同：它不随时间漂移，
-        # 不会把上一段的幻觉传染给下一段
+        # 不会把上一段的幻觉传染给下一段。transcribe 每段现读这个属性：管线每场开始时直接改它
+        # （app/pipeline.py _set_hotwords，专家审查 M7），换主播不重建识别器，别在构造时把它烘焙进别处
         self.hotwords = hotwords
         self._context = ""
         self.backend = "mlx"
