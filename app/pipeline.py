@@ -478,6 +478,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._asr_failing = None         # 识别连续出错、提示还挂着的那一场的 audit
         self._fallback_load = None       # 在途的「改用 CPU」加载：被停止打断时下一场接着用
         self._resolve_fail_streak = 0    # 连续解析失败计数（触发 yt-dlp 自动保鲜）
+        self._ytdlp_freshen_waiter = None   # 等这一场结束再升 yt-dlp 的那个任务，见 _note_resolve_failure
         self._bg_tasks = set()           # fire-and-forget 任务的引用，见 _spawn
         self.telemetry = Telemetry()
         self.detector = load_detector(getattr(args, "banned_terms", None))
@@ -4251,7 +4252,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     def _note_resolve_failure(self, exc):
         """连续两次「不是主播下播」的解析失败，多半是 yt-dlp 的 TikTok 提取器
-        坏了——触发后台自动升级 yt-dlp（见 updater.freshen_ytdlp）。"""
+        坏了——触发后台自动升级 yt-dlp（见 updater.freshen_ytdlp）。
+
+        升级等这一场的拉流任务结束再查（_freshen_ytdlp_after_stream）：解析失败是在拉流任务里发现的，
+        这时直接调 freshen_ytdlp 必然撞上它的忙碌闸（监听中不升，专家审查 I5），这条路就成了死代码。
+        已经有一个在等的就不再排。"""
         kind = getattr(exc, "kind", "unknown")
         if kind in ("offline", "login"):
             self._resolve_fail_streak = 0
@@ -4260,7 +4265,20 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return   # 断网与提取器无关：不计数也不清零，更不能拉起注定失败的 pip
         self._resolve_fail_streak += 1
         if self._resolve_fail_streak >= 2 and getattr(self, "updater", None) is not None:
-            self._spawn(self.updater.freshen_ytdlp(reason="resolve-failures"))
+            waiter = getattr(self, "_ytdlp_freshen_waiter", None)
+            if waiter is None or waiter.done():
+                self._ytdlp_freshen_waiter = self._spawn(self._freshen_ytdlp_after_stream())
+
+    async def _freshen_ytdlp_after_stream(self):
+        """解析连续失败之后的 yt-dlp 升级：等这一场的拉流任务结束再调 freshen_ytdlp。
+
+        首次解析就失败时 _run_session 马上 return，任务随即结束，很快就查；重连循环里的失败要等这一场
+        放弃重连、或中控点停止。pip 改的是解析每次都要起的那个 yt-dlp：重连循环还在解析时不能改它。
+        等完的时候中控已经开了新的一场：freshen_ytdlp 照样按「在监听」跳过；新的一场再连续失败，会再排一次。"""
+        task = getattr(self, "_stream_task", None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            await asyncio.wait({task})
+        return await self.updater.freshen_ytdlp(reason="resolve-failures")
 
     MODEL_DOWNLOAD_POLL_SEC = 3.0
 
@@ -4352,7 +4370,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         if got != RNNOISE_SHA256:
                             await self._denoise_checksum_mismatch(got, len(data))
                             return None
+                        # 之前那次对不上留下了自检的红行（和顶部提示）：这次对上了，下面有了结果就重查
+                        # 那一行，不等别的事件再跑自检——不然界面一直说「背景音乐不会被抑制」，降噪其实在用
+                        was_red = self._denoise_check_state() is not None
                         self._denoise_download = None
+                        ok = False
                         # 校验值对上了也照旧验文件头、长度，落盘后实测初始化才算数
                         if (data.startswith(b"rnnoise")
                                 and len(data) >= DENOISE_MIN_BYTES):
@@ -4360,11 +4382,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                             tmp = DENOISE_MODEL.with_suffix(".rnnn.part")
                             tmp.write_bytes(data)
                             tmp.replace(DENOISE_MODEL)
-                            if await loop.run_in_executor(
-                                    None, _arnndn_probe, str(DENOISE_MODEL)):
-                                print("[信息] 已自动下载人声降噪模型")
-                                return str(DENOISE_MODEL)
-                            DENOISE_MODEL.unlink()   # 实测失败：删掉别留隐患
+                            ok = await loop.run_in_executor(
+                                None, _arnndn_probe, str(DENOISE_MODEL))
+                            if not ok:
+                                DENOISE_MODEL.unlink()   # 实测失败：删掉别留隐患
+                        if was_red:
+                            await self._refresh_denoise_check()
+                        if ok:
+                            print("[信息] 已自动下载人声降噪模型")
+                            return str(DENOISE_MODEL)
         except Exception:
             pass
         print("[警告] 降噪模型不可用（下载失败或校验未过），本次不降噪")

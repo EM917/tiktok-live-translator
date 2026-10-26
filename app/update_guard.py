@@ -29,6 +29,7 @@
 import errno
 import hashlib
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -40,10 +41,15 @@ from .settings import load_settings, save_setting
 ROOT = Path(__file__).resolve().parent.parent
 KEY = "update_guard"
 RESUME_KEY = "resume_after_update"   # app/pipeline.py 的「重启后接着监听」记号
-# 新版本连续这么多次启动、页面都没连上，就退回（D10）。第 1 次是一键更新自己的 execv，第 2 次是
-# 中控再打开程序：这一次不再跑新代码
+# 启动计数到这个数、记号还在（新版本上一次启动之后页面一直没连上），就退回（D10）。第 1 次是一键更新
+# 自己的 execv——新版本真正跑的只有这一次；第 2 次是中控再打开程序：这一次不再跑新代码，直接退回。
+# 和 D10 字面「连续两次启动页面都没连上」的差别：新版本只跑过一次（计划写的就是 boots ≥ 2）。所以新版本
+# 在页面连上之前被强退一次，下一次启动也会退回——「强退不算」只管页面连上之后
 ROLLBACK_AT_BOOTS = 2
 GIT_TIMEOUT_SEC = 30
+# 记号里的 from/to 是完整的提交号（SHA-1 40 位，SHA-256 仓库 64 位）。from 会原样交给 git reset --keep：
+# 不认得的（比如以 - 开头，会被 git 当成选项）整个记号作废，不碰 git
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 # 本进程的状态：on_boot 计过数（这个进程就是被看着的那个新版本）才算 armed；锁文件的句柄一直拿着
 _state = {"armed": None, "lock": None}
@@ -82,11 +88,15 @@ def disarm():
 
 
 def _read():
+    """读记号：没有返回 None；内容不对（不是字典、from/to 不是完整的提交号）返回 False。"""
     guard = load_settings().get(KEY)
     if guard is None:
         return None
-    if not isinstance(guard, dict) or not guard.get("from") or not guard.get("to"):
+    if not isinstance(guard, dict):
         return False
+    for key in ("from", "to"):
+        if not isinstance(guard.get(key), str) or not _COMMIT_RE.fullmatch(guard[key]):
+            return False
     return guard
 
 

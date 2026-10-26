@@ -173,12 +173,42 @@ def test_run_selfcheck_passes_the_state_only_after_a_mismatch(monkeypatch, world
 
 
 def test_a_later_good_download_clears_the_red_row(monkeypatch, world):
+    """对不上一次（红行、顶部提示）之后，下一次下载对上了：那一行马上重查成 OK、顶部提示撤掉，不等别的事件
+    再跑自检（第 1 轮审查：以前只清内部状态，界面一直说「背景音乐不会被抑制」）。"""
     p = world.p
-    p._denoise_download = {"checksum_mismatch": True}
+    p.server.config["selfcheck"] = {"checks": [
+        selfcheck._check(selfcheck.NAMES["denoise"], "warn", "not downloaded"),
+        selfcheck._check(selfcheck.NAMES["asr"], "ok", "fine")], "summary": {}}
     monkeypatch.setattr(pipeline_mod, "RNNOISE_SHA256", hashlib.sha256(GOOD).hexdigest())
+    fake_aiohttp(monkeypatch, GOOD[:-1] + b"1", [])
+    assert run(p._ensure_denoise_model()) is None
+
+    def denoise_row():
+        return {c["name"]: c for c in p.server.config["selfcheck"]["checks"]}[selfcheck.NAMES["denoise"]]
+
+    assert denoise_row()["level"] == "fail"
+    assert p.server.config["incidents"]["selfcheck"]["level"] == "error"
+
     fake_aiohttp(monkeypatch, GOOD, [])
     assert run(p._ensure_denoise_model()) == str(world.model)
     assert p._denoise_check_state() is None
+    assert denoise_row()["level"] == "ok" and "实测可用" in denoise_row()["detail"]
+    assert "selfcheck" not in (p.server.config.get("incidents") or {})
+
+
+def test_a_good_first_download_does_not_rerun_the_row(monkeypatch, world):
+    """没出过事时下载成功：不多跑一次自检那一行（那一行开播前已经跑过，之后的自检照常带上新状态）。"""
+    p = world.p
+    refreshed = []
+
+    async def refresh():
+        refreshed.append(True)
+
+    p._refresh_denoise_check = refresh
+    monkeypatch.setattr(pipeline_mod, "RNNOISE_SHA256", hashlib.sha256(GOOD).hexdigest())
+    fake_aiohttp(monkeypatch, GOOD, [])
+    assert run(p._ensure_denoise_model()) == str(world.model)
+    assert refreshed == []
 
 
 def test_run_all_still_works_with_the_old_call(monkeypatch):

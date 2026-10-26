@@ -4,7 +4,7 @@
 安全边界：只做 fast-forward，且要求工作区干净——绝不覆盖用户的本地改动；
 ZIP 下载（无 .git）的安装只提示去下载页，不尝试自动更新。
 
-一键更新的顺序（见 Updater._apply_inner）：先 `git fetch --tags` 取新版本（只动网络，监听
+一键更新的顺序（见 Updater._apply_inner）：先 `git fetch --tags --force` 取新版本（只动网络，监听
 照常），确认能快进了才暂停监听；先按新版本的清单装依赖，装好了才合并代码并重启。
 任何一步失败，工作区还是旧代码，监听在当前版本上恢复。
 
@@ -394,9 +394,12 @@ def _ps_quote(text):
 
 def _git_steps(tag):
     """取新版本的那几步：知道 release 标签就取标签、快进到它（S3，和一键更新同一个目标）；不知道才
-    退回 git pull。标签只含 [A-Za-z0-9._-]（_release_tag 验过），放进 shell 和 PowerShell 都不用转义。"""
+    退回 git pull。标签只含 [A-Za-z0-9._-]（_release_tag 验过），放进 shell 和 PowerShell 都不用转义。
+
+    fetch 带 --force（同 FETCH_ARGS）：上游挪过一个标签（同名标签打到了别的提交）时，不带它的
+    `git fetch --tags` 会以「would clobber existing tag」整个失败，而且不会自己好。"""
     if tag:
-        return ["git fetch --tags", "git merge --ff-only {}".format(tag)]
+        return ["git fetch --tags --force", "git merge --ff-only {}".format(tag)]   # 和 FETCH_ARGS 一致
     return ["git pull --ff-only"]
 
 
@@ -423,6 +426,11 @@ API_LATEST = "https://api.github.com/repos/{}/releases/latest".format(REPO)
 RELEASES_URL = "https://github.com/{}/releases/latest".format(REPO)
 # release 的 tag_name 要拼进 git 的引用名和给中控粘贴的命令：只认这些字符（S3）
 _TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# 一键更新和手动命令取新版本用的同一条 git fetch（S3）。--force：上游挪过任何一个标签（重新发版、把同名
+# 标签打到别的提交）时，本地已有旧标签的安装跑不带它的 `git fetch --tags` 会返回 1（! [rejected] …
+# would clobber existing tag），一键更新卡在「没能从 GitHub 取到新版本」，手动命令也一样，而且不会自己好
+# （第 1 轮审查用 git 2.54 实测）。跟踪分支的默认取法本来就带 +，--force 多出来的只是标签可以被改写
+FETCH_ARGS = ("fetch", "--tags", "--force")
 
 
 def release_tag(version):
@@ -508,12 +516,14 @@ class Updater:
         在某天集体拉流失败。两个触发源：
 
           periodic          —— 启动/每 6 小时检查时，距上次查过满 YTDLP_CHECK_INTERVAL_SEC 就查；
-          resolve-failures  —— 连续解析失败（非「没开播」类）时，6 小时冷却。
+          resolve-failures  —— 连续解析失败（非「没开播」类）时，6 小时冷却。失败是在拉流任务里发现的，
+                               管线等那个任务结束才调这里（Pipeline._freshen_ytdlp_after_stream）：
+                               直接调必然是 busy，这条路就成了死代码（第 1 轮审查实测）。
 
         两条规矩（专家审查 I5；用户 2026-10-22 定 D6、D9）：
           * 在监听、或一键更新进行中，不升（_busy_for_background_pip）。以前不看：直播中照样拉 pip 改
-            正在用的环境，跑 pip 的还是拿着完全磁盘访问权限的那个解释器。跳过的这次不记时间，下一次
-            检查（每 6 小时）再看；
+            正在用的环境，跑 pip 的还是拿着完全磁盘访问权限的那个解释器。重连循环里也算在监听：它还在
+            一次次起 yt-dlp 解析。跳过的这次不记时间，下一次检查（每 6 小时）再看；
           * 只装 PyPI 上发布满 COMPONENT_MIN_AGE_SEC、比已装的新的那一版，用 ==版本号 装（以前是
             pip install -U，装当天最新的）。查不到 PyPI 上的版本列表就这次不装。
 
@@ -1110,7 +1120,7 @@ class Updater:
         Windows 上按 PowerShell 写（I11，见 powershell_command）。
 
         取新版本的那一步和一键更新同一个目标（S3）：提示里那个 release 的标签，
-        `git fetch --tags && git merge --ff-only vX.Y.Z`；不写 git pull——那会把跟踪分支上还没发版
+        `git fetch --tags --force && git merge --ff-only vX.Y.Z`；不写 git pull——那会把跟踪分支上还没发版
         的提交一起拉下来。还不知道是哪个版本（没检查到新版本）时才退回 git pull。"""
         path = str(ROOT)
         tag = self._release_tag()
@@ -1212,8 +1222,12 @@ class Updater:
     async def _not_updated(self, text, live, command=True):
         """还没停监听时的失败出口。直播中只发一次性提示——监听照常，不能把界面状态打回
         待机；没在监听时照旧给状态和一条能照做的命令（更新器不能把自己锁死）。
-        command=False：手动 git pull 也不会有变化的情形（远端没有新提交），给下载页。"""
-        print("[警告] 一键更新没完成：{}（手动更新：{}）".format(text, self._manual_command()))
+        command=False：手动命令也不会有变化（远端没有新提交），或者照做反而有害（标签不在主线上）的情形，
+        给下载页。"""
+        if command:
+            print("[警告] 一键更新没完成：{}（手动更新：{}）".format(text, self._manual_command()))
+        else:          # 给下载页的情形，终端里也不给那条命令（标签不在主线上时照做有害）
+            print("[警告] 一键更新没完成：{}".format(text))
         await self.server.broadcast({"type": "update_aborted"})
         if live:
             await self._notice(L("更新没完成：{}。监听没有中断{}",
@@ -1348,8 +1362,8 @@ class Updater:
 
     @staticmethod
     def _arm_update_guard(head, target, from_version, to_version):
-        """execv 之前留下启动检查的记号（专家审查 I6，规则见 app/update_guard.py）：新版本连续两次启动、
-        字幕界面都没连上，就退回 head。读不到更新前的提交号、记号写不进去：照常重启，只是没有这层保险。"""
+        """execv 之前留下启动检查的记号（专家审查 I6，规则见 app/update_guard.py）：新版本启动之后字幕界面
+        一直没连上，下一次启动就退回 head。读不到更新前的提交号、记号写不进去：照常重启，只是没有这层保险。"""
         if not head:
             print("[警告] 读不到更新前的提交号：这次更新之后新版本起不来时，不会自动退回")
             return
@@ -1386,8 +1400,8 @@ class Updater:
         from_version = local_version()
 
         # 1. 取新版本：只动网络和 .git，工作区不变，监听照常。--tags：要合并的是 release 的标签（S3），
-        # 默认的 fetch 只带回跟踪分支能到达的标签
-        code, _, err = await self._git("fetch", "--tags", timeout=FETCH_TIMEOUT_SEC)
+        # 默认的 fetch 只带回跟踪分支能到达的标签。--force：见 FETCH_ARGS
+        code, _, err = await self._git(*FETCH_ARGS, timeout=FETCH_TIMEOUT_SEC)
         if code != 0:
             why = (L("{} 秒内没下载完", "didn’t finish downloading in {} sec").format(FETCH_TIMEOUT_SEC)
                    if err == "timeout" else _git_tail(err) or L("git 返回 {}", "git returned {}").format(code))
@@ -1434,7 +1448,9 @@ class Updater:
         if code == 0:
             await self._already_current(tag)
             return
-        # 标签不在主线上（打在别的分支上）：不更新到它，给手动命令，由中控自己决定
+        # 标签不在主线上（打在别的分支上）：不更新到它。不给 merge 命令、给下载页（command=False）：照着
+        # `git merge --ff-only 标签` 做，这份安装就离开了主线，以后的一键更新、手动命令都没法再快进（第 1 轮
+        # 审查）。查不了（git 出错）时手动命令照旧是正路
         code, _, err = await self._git("merge-base", "--is-ancestor", target, upstream)
         if code != 0:
             await self._not_updated(
@@ -1443,7 +1459,7 @@ class Updater:
                 L("查不了版本 {} 在不在这份安装跟踪的远端分支上（{}）",
                   "couldn’t check whether version {} is on the remote branch this copy tracks "
                   "({})").format(tag, _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)),
-                is_live())
+                is_live(), command=code != 1)
             return
         # 下面读版本号、清单用的都是标签那个提交：上面刚确认过它在跟踪的远端分支上
         code, version_text, err = await self._git("show", "{}:VERSION".format(target))

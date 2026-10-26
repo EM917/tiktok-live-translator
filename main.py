@@ -626,9 +626,17 @@ def _check_update_guard(others_running=None):
     from app.relaunch import exec_args, flush_std, replace_process
     argv = [sys.executable, str(ROOT / "main.py")] + sys.argv[1:]
     flush_std()
-    if os.name == "nt":
-        replace_process(argv)          # 同 ensure_env：Windows 上起子进程、等它（I11）
-    os.execv(sys.executable, exec_args(argv))
+    try:
+        if os.name == "nt":
+            replace_process(argv)          # 同 ensure_env：Windows 上起子进程、等它（I11）
+        os.execv(sys.executable, exec_args(argv))
+    except Exception as exc:
+        # 程序文件已经退回了，内存里却还是新版本的代码：不能接着往下跑。说清楚、退出；再开一次就是旧版本
+        print("[错误] 已退回更新前的版本，但重新启动没成功（{}）".format(type(exc).__name__))
+        _fail_alert(L("已退回更新前的版本，但程序没能自己重新打开（{}）。请再打开一次本程序。",
+                      "The app went back to the version before the update but couldn’t reopen itself "
+                      "({}). Open the app again.").format(type(exc).__name__))
+        raise SystemExit(1) from None
 
 
 def _note_exit_signal(name):

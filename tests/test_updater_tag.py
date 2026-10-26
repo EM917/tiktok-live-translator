@@ -2,7 +2,7 @@
 
 钉住的问题：提示来自 GitHub 的 releases/latest，合并的却是跟踪分支的末端（@{u}）。v0.18.0 之后 main
 上已经多了 50 个没发版的提交，两边 VERSION 都是 0.18.0：落后于最新 release 的安装点一键更新，会把这些
-提交一并装上。现在 fetch --tags，目标是那个标签：标签要在跟踪的远端分支上、能快进，才更新到它；
+提交一并装上。现在 fetch --tags --force，目标是那个标签：标签要在跟踪的远端分支上、能快进，才更新到它；
 当前代码已经包含它时按「已是最新」处理，不暂停、不重启。
 
 这里用真的 git：临时目录里一个当「GitHub」的裸仓库、一份发版用的克隆、一份当用户安装的克隆。不连网，
@@ -107,11 +107,13 @@ def test_unreleased_commits_on_main_are_not_installed(world):
     assert server.statuses()[-1][1] == "更新完成，正在自动重启…"
 
 
-def test_a_tag_that_is_not_on_the_tracked_branch_is_refused(world):
-    """标签打在别的分支上（不在主线）：不更新到它，给一条手动命令，由中控自己决定。"""
+def test_a_tag_that_is_not_on_the_tracked_branch_is_refused(world, capsys):
+    """标签打在别的分支上（不在主线）：不更新到它，给下载页、不给 merge 命令——照着
+    `git merge --ff-only 标签` 做，这份安装就离开了主线，下一个发在主线上的版本一键更新、手动命令都没法
+    快进（第 1 轮审查；下面实测）。"""
     dev, install, c = world["dev"], world["install"], world["commits"]
     _git(dev, "checkout", "-q", "-b", "side", c["v1.0.0"])
-    side = _commit(dev, "side.txt", "1.2.0")
+    _commit(dev, "side.txt", "1.2.0")
     _git(dev, "tag", "v1.2.0")
     _git(dev, "push", "-q", "origin", "side", "--tags")
     u, server, pips = _updater("v1.2.0")
@@ -121,14 +123,45 @@ def test_a_tag_that_is_not_on_the_tracked_branch_is_refused(world):
     assert _git(install, "rev-parse", "HEAD") == c["v1.0.0"]      # 没动
     assert world["execs"] == [] and pips == []
     state, detail, command = server.statuses()[-1]
-    assert state == "idle" and "版本 v1.2.0 不在这份安装跟踪的远端分支上" in detail
-    assert command == 'cd "{}" && git fetch --tags && git merge --ff-only v1.2.0'.format(install)
-    # 手动命令的两步在这份安装里真的跑得通（逐条跑，不经 shell）：中控照做之后就在那个标签上
+    assert state == "idle" and command is None
+    assert detail == ("本次没有更新（版本 v1.2.0 不在这份安装跟踪的远端分支上）。新版本可以到 GitHub 下载："
+                      "http://x/releases/latest")
+    assert "git merge" not in capsys.readouterr().out                # 终端里也不给那条命令
+    # 为什么不给 merge 命令：照做之后，主线上的下一个版本没法快进
+    detour = world["tmp"] / "detour"
+    shutil.copytree(str(install), str(detour))
     for step in updater_mod._git_steps("v1.2.0"):
-        argv = shlex.split(step)
-        assert argv[0] == "git"
-        _git(install, *argv[1:])
-    assert _git(install, "rev-parse", "HEAD") == side
+        _git(detour, *shlex.split(step)[1:])
+    r = subprocess.run(["git", "merge-base", "--is-ancestor", "HEAD", c["v1.1.0"]], cwd=str(detour),
+                       capture_output=True)
+    assert r.returncode == 1
+
+
+def test_an_upstream_tag_that_moved_does_not_block_the_update(world):
+    """上游挪过一个旧标签（同名标签打到了别的提交）：不带 --force 的 `git fetch --tags` 会以
+    「would clobber existing tag」整个失败，一键更新卡在「没能从 GitHub 取到新版本」、手动命令也一样，而且
+    不会自己好（第 1 轮审查实测）。带 --force：一键更新和手动命令都照常到新标签，本地那个旧标签跟着上游。"""
+    dev, install, c = world["dev"], world["install"], world["commits"]
+    _git(dev, "tag", "-f", "v1.0.0", c["unreleased"])
+    _git(dev, "push", "-q", "--force", "origin", "refs/tags/v1.0.0")
+    plain, manual = world["tmp"] / "plain", world["tmp"] / "manual"
+    shutil.copytree(str(install), str(plain))
+    shutil.copytree(str(install), str(manual))
+    # 这台 git 上，不带 --force 确实会失败（这个用例造的正是那种情形）
+    r = subprocess.run(["git", "fetch", "--tags"], cwd=str(plain), capture_output=True, text=True)
+    assert r.returncode != 0 and "clobber" in r.stderr, (r.returncode, r.stderr)
+    u, server, _pips = _updater("v1.1.0")
+
+    run(u.apply())
+
+    assert _git(install, "rev-parse", "HEAD") == c["v1.1.0"]
+    assert world["execs"] and server.statuses()[-1][1] == "更新完成，正在自动重启…"
+    assert _git(install, "rev-parse", "v1.0.0^{commit}") == c["unreleased"]
+    # 手动命令（逐条跑，不经 shell）同样走得通；取新版本那一步和一键更新是同一条
+    assert shlex.split(updater_mod._git_steps("v1.1.0")[0])[1:] == list(updater_mod.FETCH_ARGS)
+    for step in updater_mod._git_steps("v1.1.0"):
+        _git(manual, *shlex.split(step)[1:])
+    assert _git(manual, "rev-parse", "HEAD") == c["v1.1.0"]
 
 
 def test_head_that_already_contains_the_tag_is_up_to_date_and_does_not_restart(world):
@@ -162,7 +195,7 @@ def test_a_tag_that_cannot_be_fast_forwarded_to_is_refused(world):
     assert world["execs"] == [] and pips == []
     state, detail, command = server.statuses()[-1]
     assert "本地代码没法直接快进到新版本" in detail
-    assert command.endswith("git fetch --tags && git merge --ff-only v1.1.0")
+    assert command.endswith("git fetch --tags --force && git merge --ff-only v1.1.0")
     assert _git(install, "rev-parse", "HEAD") != c["v1.1.0"]
 
 
@@ -188,16 +221,16 @@ def test_the_manual_command_goes_to_the_tag_on_both_shells(monkeypatch, tmp_path
     monkeypatch.setattr(updater_mod, "ROOT", tmp_path)
     u = Updater(RecordingServer())
     u.latest = {"version": "v0.19.0"}
-    assert u._manual_command() == 'cd "{}" && git fetch --tags && git merge --ff-only v0.19.0'.format(
+    assert u._manual_command() == 'cd "{}" && git fetch --tags --force && git merge --ff-only v0.19.0'.format(
         tmp_path)
     assert u._manual_command(discard=True) == (
-        'cd "{}" && git checkout -- . && git fetch --tags && git merge --ff-only v0.19.0'.format(tmp_path))
+        'cd "{}" && git checkout -- . && git fetch --tags --force && git merge --ff-only v0.19.0'.format(tmp_path))
     assert u._manual_command(pip=True).endswith(
         'git merge --ff-only v0.19.0 && "{}" -m pip install -r requirements.txt -c constraints.txt'
         .format(updater_mod.sys.executable))
     monkeypatch.setattr(updater_mod, "_on_windows", lambda: True)
     ps = u._manual_command()
-    assert ps == ('cd "{}"; if ($?) {{ git fetch --tags }}; if ($?) {{ git merge --ff-only v0.19.0 }}'
+    assert ps == ('cd "{}"; if ($?) {{ git fetch --tags --force }}; if ($?) {{ git merge --ff-only v0.19.0 }}'
                   .format(tmp_path))
     assert "&&" not in ps
     # 还不知道是哪个版本（没检查到新版本）：照旧 git pull

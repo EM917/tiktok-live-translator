@@ -254,7 +254,8 @@ def test_live_update_fetches_first_then_pauses_installs_merges_and_leaves_a_resu
     merge = next(e for e in events if e[0] == "merge")
     assert merge[1] == ("merge", "--ff-only", TARGET)           # 合并的就是取下来的那个提交
     # S3：取标签、合并的是提示里那个 release 的标签解析出来的提交，不是跟踪分支的末端
-    assert next(e for e in events if e[0] == "fetch")[1] == ("fetch", "--tags")
+    # --force：上游挪过某个标签时，不带它的 fetch --tags 整个失败（第 1 轮审查）
+    assert next(e for e in events if e[0] == "fetch")[1] == ("fetch", "--tags", "--force")
     assert next(e for e in events if e[0] == "rev-parse:tag")[1] == (
         "rev-parse", "--verify", "refs/tags/v9.9.9^{commit}")
     assert pip_calls[0]["args"][0] == "-r" and pip_calls[0]["requirements"] == REQS
@@ -859,9 +860,9 @@ DAY = 86400
 NOW = 1_800_000_000.0
 
 
-def _release(age_days, yanked=False):
+def _release(age_days, yanked=False, now=NOW):
     """PyPI JSON 里一个版本的文件列表（一个 wheel、一个 sdist，上传时间差 2 秒）。"""
-    when = datetime.fromtimestamp(NOW - age_days * DAY, tz=timezone.utc)
+    when = datetime.fromtimestamp(now - age_days * DAY, tz=timezone.utc)
     return [{"packagetype": "bdist_wheel", "yanked": yanked,
              "upload_time_iso_8601": when.strftime("%Y-%m-%dT%H:%M:%S.%fZ")},
             {"packagetype": "sdist", "yanked": yanked,
@@ -1002,6 +1003,173 @@ def test_ytdlp_freshen_pip_failure_is_retried_later_and_success_after_failures_s
     assert u.server.statuses()[-1][:2] == (
         "idle", "已自动更新直播解析组件（yt-dlp 2026.9.1）——请重新点「开始翻译」试试。")
     p.audit.close()
+
+
+class _ResolveFlow:
+    """真管线（tests/test_pipeline_reconnect.make_pipeline 那一套桩件）+ 真 Updater：解析连续失败时，yt-dlp
+    的升级能不能真的走到 pip（第 1 轮审查：拉流任务还在时 freshen 必然是 busy，这条路曾经是死代码）。
+    PyPI 的版本列表按真实时钟造（freshen 用 time.time()），pip 子进程是替身，记下装的版本和那一刻
+    拉流任务还在不在。"""
+
+    def __init__(self, monkeypatch, tmp_path, resolves):
+        from app import reconnect_policy
+        from app.resolver import ResolveError
+        from tests.test_pipeline_reconnect import make_pipeline
+
+        # 重连按 V1 的规则（连续无声几轮就放弃），这一场有限步内结束；同 tests/test_pipeline_reconnect.py
+        monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", False)
+        p, server = make_pipeline(monkeypatch, tmp_path)
+        real_status = server.status
+
+        async def status(state, detail="", **_kw):
+            server.config["status"] = {"state": state, "detail": detail}
+            await real_status(state, detail)
+
+        server.status = status
+        now = time.time()
+        env = {"yt-dlp": "2026.8.19", "curl_cffi": "0.16.1"}
+        monkeypatch.setattr(updater_mod, "component_version", lambda name: env.get(name))
+        self.pip = []
+
+        class Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", None
+
+        async def fake_exec(*args, **kw):
+            if not str(args[-1]).startswith(updater_mod.YTDLP_SPEC + "=="):
+                raise OSError("这个测试不起别的子进程")
+            self.pip.append((args[-1], p._stream_active()))
+            env["yt-dlp"] = args[-1].split("==", 1)[1]
+            return Proc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        u = Updater(server)
+        u.attach_pipeline(p)
+        p.updater = u
+
+        async def no_comment_component(reason="startup"):
+            return False                     # 弹幕组件不在这里测：开场备弹幕时不去装 TikTokLive
+
+        u.ensure_tiktoklive = no_comment_component
+        self.outcomes = []
+        real_freshen = u.freshen_ytdlp
+
+        async def spy(reason="periodic", now=None):
+            result = await real_freshen(reason=reason, now=now)
+            self.outcomes.append((reason, result))
+            return result
+
+        u.freshen_ytdlp = spy
+        releases = {"2026.8.19": _release(70, now=now), "2026.9.1": _release(20, now=now),
+                    "2026.10.21": _release(5, now=now)}
+
+        async def fake_pypi(dist):
+            return releases, None
+
+        u._pypi_releases = fake_pypi
+        script = iter(resolves)
+        self.resolves = 0
+
+        async def fake_resolve(url, cookies=None, cookies_browser="auto", trace=None):
+            self.resolves += 1
+            item = next(script, "http://cdn/s.flv")
+            if item == "fail":
+                raise ResolveError("HTTP Error 500", kind="unknown")
+            return item
+
+        async def silent_round(media, *a, **k):
+            return False, 0.0
+
+        import app.resolver
+        monkeypatch.setattr(app.resolver, "resolve_stream_url", fake_resolve)
+        monkeypatch.setattr(p, "_stream_session", silent_round)
+        self.p, self.server = p, server
+
+    async def one_session(self):
+        """像 start_stream 那样把这一场挂在 _stream_task 上跑完，再让后台任务跑完。"""
+        p = self.p
+        p._stream_task = asyncio.create_task(p._run_stream("https://www.tiktok.com/@fakehost/live"))
+        await p._stream_task
+        for _ in range(50):
+            await asyncio.sleep(0)
+            pending = [t for t in p._bg_tasks if not t.done()]
+            if not pending:
+                break
+            await asyncio.wait(pending, timeout=1)
+
+
+def test_resolve_failures_upgrade_ytdlp_once_the_failed_session_has_ended(monkeypatch, isolated):
+    """开场解析就失败、连着两场：第二场失败时排一次升级，等这一场的拉流任务结束才查（监听中不升，I5），
+    装的是发布满 7 天的那一版，状态行告诉中控重新点开始。"""
+    flow = _ResolveFlow(monkeypatch, isolated, ["fail", "fail"])
+
+    async def scenario():
+        await flow.one_session()
+        assert flow.pip == [] and flow.outcomes == []              # 第一次失败：不升
+        await flow.one_session()
+
+    run(scenario())
+    assert flow.outcomes == [("resolve-failures", "installed")]
+    assert flow.pip == [("yt-dlp[curl-cffi]==2026.9.1", False)]    # 装的时候拉流任务已经结束
+    assert flow.server.statuses[-1] == (
+        "idle", "已自动更新直播解析组件（yt-dlp 2026.9.1）——请重新点「开始翻译」试试。")
+
+
+def test_resolve_failures_in_the_reconnect_loop_wait_until_the_session_gives_up(monkeypatch, isolated):
+    """重连循环里连续解析失败：这一场还在一次次起 yt-dlp 解析，不在这时改它；这一场放弃重连之后才装，
+    只装一次。"""
+    flow = _ResolveFlow(monkeypatch, isolated, ["http://cdn/s.flv", "fail", "fail", "fail"])
+    seen_during = []
+    real_note = flow.p._note_resolve_failure
+
+    def note(exc):
+        real_note(exc)
+        seen_during.append((flow.p._resolve_fail_streak, list(flow.pip), list(flow.outcomes)))
+
+    flow.p._note_resolve_failure = note
+    run(flow.one_session())
+
+    assert [s for s, _pip, _out in seen_during] == [1, 2, 3]
+    assert all(pip == [] and out == [] for _s, pip, out in seen_during)   # 这一场还在：没查、没装
+    assert flow.resolves > 4                                             # 后面又解析成功、接着重连过
+    assert flow.outcomes == [("resolve-failures", "installed")]          # 排队的只有一个
+    assert flow.pip == [("yt-dlp[curl-cffi]==2026.9.1", False)]
+    assert flow.server.statuses[-2][0] == "error"                         # 放弃重连的那一句之后
+    assert flow.server.statuses[-1][1].startswith("已自动更新直播解析组件")
+
+
+def test_a_new_session_started_before_the_wait_ends_still_blocks_the_upgrade(monkeypatch, isolated):
+    """等到上一场结束时，中控已经开了新的一场：照样按「在监听」跳过，不装、不记时间。"""
+    flow = _ResolveFlow(monkeypatch, isolated, [])
+    p = flow.p
+
+    async def scenario():
+        gate = asyncio.Event()
+
+        async def held():
+            await gate.wait()
+
+        p._resolve_fail_streak = 1
+        first = p._stream_task = asyncio.create_task(held())
+        await asyncio.sleep(0)
+        from app.resolver import ResolveError
+        p._note_resolve_failure(ResolveError("HTTP Error 500", kind="unknown"))
+        waiter = p._ytdlp_freshen_waiter
+        p._note_resolve_failure(ResolveError("HTTP Error 500", kind="unknown"))
+        assert p._ytdlp_freshen_waiter is waiter                         # 已经有一个在等，不再排
+        second = asyncio.create_task(held())
+        await asyncio.sleep(0)
+        first.cancel()
+        p._stream_task = second                                          # 新的一场
+        await waiter
+        gate.set()
+        await second
+
+    run(scenario())
+    assert flow.outcomes == [("resolve-failures", "busy")] and flow.pip == []
+    assert "ytdlp_updated_at" not in settings_mod.load_settings()
 
 
 def test_eligible_release_rules():

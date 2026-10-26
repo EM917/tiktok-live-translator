@@ -1,8 +1,8 @@
 """一键更新之后的存活确认与自动退回（专家审查 I6；用户 2026-10-22 定 D10「自动退回更新前的版本」）。
 
 钉住的问题：一键更新合并完新代码就直接 execv，新版本要是一启动就崩，暂停中的直播不会恢复，也回不到
-旧版。现在 execv 之前留记号；新版本连续两次启动、本机页面都没连上，第二次启动就 git reset --keep 回到
-更新前的提交、弹窗说明、重新 exec。计划审查 P5 的两种误触发也钉在这里：同时启动两个进程不退回；没在
+旧版。现在 execv 之前留记号；新版本启动一次、本机页面没连上，下一次启动就 git reset --keep 回到更新前的
+提交、弹窗说明、重新 exec（计划的 boots ≥ 2：新版本只跑过一次）。计划审查 P5 的两种误触发也钉在这里：同时启动两个进程不退回；没在
 监听时正常启动一次、页面一连上就清掉记号。
 
 不 import main（它在模块级跑 ensure_env，会把 pytest 进程 execv 掉）：main.py 里只剩调用的位置，用语法树
@@ -160,6 +160,26 @@ def test_a_broken_marker_is_dropped(isolated):
     settings_mod.save_setting(update_guard.KEY, {"from": FROM})
     assert update_guard.on_boot(isolated, git=fake_git()).kind == "invalid"
     assert guard() is None
+
+
+@pytest.mark.parametrize("field, value", [
+    ("from", "--hard"), ("from", "-" + "f" * 39), ("from", "f" * 39), ("from", "F" * 40),
+    ("from", "HEAD~1"), ("from", 123), ("to", "e" * 41), ("to", "e" * 40 + "\n")])
+def test_a_marker_whose_commits_are_not_full_hashes_never_reaches_git(isolated, field, value):
+    """from 会原样交给 git reset --keep：不是完整提交号的（比如以 - 开头，git 会当成选项）整个记号作废，
+    一条 git 都不跑（第 1 轮审查）。"""
+    record = {"from": FROM, "to": TO, "from_version": "1.0.0", "to_version": "1.1.0", "at": 1.0,
+              "boots": 1, "resume": None}
+    record[field] = value
+    settings_mod.save_setting(update_guard.KEY, record)
+    git = fake_git()
+    assert update_guard.on_boot(isolated, git=git).kind == "invalid"
+    assert git.calls == [] and guard() is None
+
+
+def test_a_sha256_repository_hash_is_accepted(isolated):
+    update_guard.arm("f" * 64, "e" * 64, "1.0.0", "1.1.0")
+    assert update_guard.on_boot(isolated, git=fake_git(head="e" * 64)).kind == "counted"
 
 
 def test_mark_ready_only_clears_the_marker_this_process_counted(isolated):
@@ -482,6 +502,23 @@ def test_main_reexecs_main_py_after_a_rollback_and_shows_the_message():
     assert "_info_dialog(outcome.message)" in src                  # 不阻塞的系统提示框
     assert "main.py" in src and _calls(func, "execv") and _calls(func, "replace_process")
     assert src.index("_info_dialog") < src.index("release_lock") < src.index("execv")
+
+
+def test_a_failed_reexec_after_a_rollback_says_so_and_exits():
+    """git reset 已经成功、重新 exec 却抛了异常：不能带着 traceback 从 main() 崩出去，更不能让内存里的新代码
+    接着跑在旧文件上——打一行中文、弹窗说再开一次、退出（第 1 轮审查）。"""
+    func = _main_funcs()["_check_update_guard"]
+    tries = [n for n in ast.walk(func) if isinstance(n, ast.Try)
+             and any(_calls(s, "execv") for s in n.body)]
+    assert len(tries) == 1
+    body = tries[0].body
+    assert any(_calls(s, "replace_process") for s in body)            # Windows 那条也在里面
+    handler = tries[0].handlers[0]
+    assert ast.unparse(handler.type) == "Exception"
+    src = ast.unparse(handler)
+    assert "print(" in src and "[错误]" in src
+    assert _calls(handler, "_fail_alert") and "L(" in src
+    assert isinstance(handler.body[-1], ast.Raise) and "SystemExit(1)" in ast.unparse(handler.body[-1])
 
 
 def test_no_open_mode_counts_as_ready_once_the_service_is_up():
