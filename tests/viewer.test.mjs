@@ -1468,3 +1468,36 @@ test("viewer_ping 不算回放里的一条：回放照旧按 hello 给的条数�
     assert.equal(healthShown(elements), null);
   });
 });
+
+// ---- viewer.css：不再用带 var() 的 color-mix（F8）----
+// Safari 15.4–16.1 认 :has 却不认带 var() 的 color-mix：整条声明在计算期失效、不回退，状态胶囊的底色和
+// 报警卡片的浅红底都变透明（桌面 d3386e7 已经换过）。现在按主题预先算好，这里核对算得对
+const VIEWER_CSS = readFileSync(new URL("../web/viewer.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const CSS_NO_COMMENTS = VIEWER_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+function rootTokens(dark) {
+  const parse = (body) => Object.fromEntries([...body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  const light = parse(/:root\s*\{([^}]*)\}/.exec(CSS_NO_COMMENTS)[1]);
+  if (!dark) return light;
+  return Object.assign(light, parse(/@media\s*\(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/.exec(CSS_NO_COMMENTS)[1]));
+}
+const rgbOf = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+
+test("viewer.css 里没有带 var() 的 color-mix 了", () => {
+  assert.doesNotMatch(CSS_NO_COMMENTS, /color-mix\([^;]*var\(/);
+});
+
+test("预先算好的半透明色和报警卡片底色：深浅两套都等于原来 color-mix 算出的颜色", () => {
+  for (const dark of [false, true]) {
+    const t = rootTokens(dark);
+    const rgba = (name, a) => "rgba(" + rgbOf(t[name]).join(", ") + ", " + a + ")";
+    assert.equal(t["--a-green-16"], rgba("--green", "0.16"), dark ? "深色" : "浅色");
+    assert.equal(t["--a-orange-16"], rgba("--orange", "0.16"));
+    assert.equal(t["--a-red-14"], rgba("--red", "0.14"));
+    assert.equal(t["--a-fail-15"], rgba("--fail", "0.15"));
+    const bg = rgbOf(t["--bg"]);
+    const mixed = rgbOf(t["--fail"]).map((v, i) => Math.round(v * 0.08 + bg[i] * 0.92));
+    assert.equal(t["--tint-fail-8"], "#" + mixed.map((v) => v.toString(16).padStart(2, "0")).join(""));
+  }
+  assert.match(CSS_NO_COMMENTS, /\.status-pill:has\(\.dot\.connected\)\s*\{[^}]*background:\s*var\(--a-green-16\)/);
+  assert.match(CSS_NO_COMMENTS, /\.alert-item\s*\{[^}]*background:\s*var\(--tint-fail-8\)/);
+});
