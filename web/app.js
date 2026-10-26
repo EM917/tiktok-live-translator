@@ -4475,13 +4475,11 @@
     if (langSummaryEl) langSummaryEl.textContent = langSummary(langSetting, cfg.ui_lang, cfg.ui_lang_system);
   }
 
-  // 服务端的界面语言和本页不同（刚在设置里换过，或重连到一个换过语言的程序）：整页重载一次。
-  // 重载后服务端按新语言注入 <html lang>，hello 回放也按新语言渲染，页面上没有残留。
-  // sessionStorage 记不下就不重载：宁可停在原来的语言，也不能在对不上时无限刷新
   // 页面文件的版本（F8）：服务端启动时按 web/ 的内容算出 config.build（app/server.py web_build）。这一页第一次
   // 连上时记下它；之后哪一次 hello 里的不一样，说明服务端已经换了一套页面文件——浏览器模式下一键更新重启后，
-  // 旧标签页重连上新进程，以前接着跑旧 JS，和程序新开的标签页同时连着。新载入的页面重新记第一次的值，
-  // 不会一直刷新。没有 build（老的服务端、测试里直接起的服务）不比对
+  // 旧标签页重连上新进程，以前接着跑旧 JS。现在它自己重新载入；程序照旧另开一个新标签页（重启不带 --no-open，
+  // 见 tests/test_updater_relaunch.py），两页跑的都是新 JS。新载入的页面重新记第一次的值，不会一直刷新。
+  // 没有 build（老的服务端、测试里直接起的服务）不比对
   var pageBuild = null;
   function reloadForBuild(cfg) {
     var build = cfg && typeof cfg.build === "string" ? cfg.build : "";
@@ -4494,6 +4492,9 @@
     return true;
   }
 
+  // 服务端的界面语言和本页不同（刚在设置里换过，或重连到一个换过语言的程序）：整页重载一次。
+  // 重载后服务端按新语言注入 <html lang>，hello 回放也按新语言渲染，页面上没有残留。
+  // sessionStorage 记不下就不重载：宁可停在原来的语言，也不能在对不上时无限刷新
   function reloadForLang(cfg) {
     if (!cfg || typeof cfg.ui_lang !== "string") return false;
     var stored = null;

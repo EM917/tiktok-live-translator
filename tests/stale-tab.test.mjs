@@ -3,8 +3,8 @@
 // 浏览器模式下一键更新重启，以前新进程每次再开一个新标签页，点更新的那个旧标签页也重连上来：新旧两个控制页
 // 同时连着，旧的那页跑的还是旧 JS——hello 里的 version 只用来改页脚文字，没人比对。现在服务端启动时按 web/
 // 的内容算出 config.build（app/server.py web_build），页面记下第一次连上时的值，之后哪一次 hello 里的不一样
-// 就重新载入；重启的新进程在浏览器模式下带 --no-open，不再另开标签页（app/updater.py relaunch_argv，
-// tests/test_updater_relaunch.py）。页面在 node:vm 里真跑一遍（脚手架见 tests/desktop-dom.mjs）。
+// 就重新载入。重启参数照原样、不带 --no-open（会削弱一键更新后的启动检查 D10，见 tests/test_updater_relaunch.py），
+// 新进程照旧另开一个标签页，两页跑的都是新 JS。页面在 node:vm 里真跑一遍（脚手架见 tests/desktop-dom.mjs）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
