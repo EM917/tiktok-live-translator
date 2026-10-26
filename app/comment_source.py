@@ -76,6 +76,8 @@ _FRESHEN_NOTES = {
                   "Already checked for a comments component update in the last few hours"),
     "recently-failed": L("弹幕组件更新检查刚失败过",
                          "A comments component update check failed recently"),
+    # 专家审查 I5：监听中、一键更新中不升级组件（用户 D6），被拒时只说明这次没更新
+    "busy": L("监听中不更新弹幕组件", "The comments component isn’t updated during monitoring"),
 }
 
 

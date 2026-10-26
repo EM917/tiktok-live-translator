@@ -319,7 +319,9 @@ def test_python_children_we_decode_as_utf8_are_told_to_write_utf8():
                 continue                          # 我们自己的 worker，出口自带 UTF-8 护栏
             assert "PYTHONIOENCODING" in texts, (path.name, func.name, func.lineno)
             checked.append((path.name, func.name))
-    assert len(checked) >= 3, "至少要盖住 yt-dlp 解析和两处 pip：" + repr(checked)
+    # 以前还有 pip index 那一处（updater._pip_capture）：TikTokLive 的更新检查改问 PyPI 的 JSON（专家审查 I5，
+    # 要看发布时间）之后删了，剩 yt-dlp 解析和 yt-dlp 的后台升级
+    assert len(checked) >= 2, "至少要盖住 yt-dlp 解析和 yt-dlp 的后台升级：" + repr(checked)
 
 
 def test_ytdlp_child_is_spawned_with_utf8_output(monkeypatch):
