@@ -1980,12 +1980,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     async def _provision_note(self, text):
         """后台备模型的进度：待机时走 status（首页大字），直播中只发 notice。
         这个下载要几分钟，而用户完全可以在它跑着的时候点开始——那时再广播
-        status=idle 会把界面从「直播中」拽回待机、停止按钮消失，每 5% 刷一次。"""
-        if self._stream_active() or self._update_in_progress():
+        status=idle 会把界面从「直播中」拽回待机、停止按钮消失，每 5% 刷一次。
+
+        上一场自己结束了（状态是 ended「直播已结束」或 error「出错了」）时也只发 notice：直播中推迟的下载正是在
+        这时候开始的（_pull_after_session），以前每 5% 一条 status=idle，把主窗口的结束 / 出错状态和那句说明换成
+        待机加下载进度——中控回来看不到这一场是怎么结束的，浮窗结束卡片上「详情见主窗口」也落空（#135 核对、
+        b3-float-end 第 2 轮记下）。只有中控点了停止（状态本来就是 idle）才走 status。"""
+        state = ((getattr(self.server, "config", None) or {}).get("status") or {}).get("state")
+        if self._stream_active() or self._update_in_progress() or state in self.KEEP_END_STATES:
             # 更新期间状态行是「正在更新，监听已暂停」那句，也不能被下载进度盖掉
             await self.server.broadcast({"type": "notice", "text": text})
         else:
             await self.server.status("idle", text)
+
+    # 后台的事（模型下载进度）不能盖掉的结束状态：这一场自己结束了，主窗口要一直说清是怎么结束的
+    KEEP_END_STATES = ("ended", "error")
 
     async def run_selfcheck(self):
         """启动自检：确认每项能力真的在工作，结果推到界面上。
