@@ -20,7 +20,7 @@ import re
 import shutil
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -855,41 +855,227 @@ def test_requirements_pin_the_ytdlp_curl_cffi_pair_through_the_extra():
     assert updater_mod.YTDLP_SPEC == "yt-dlp[curl-cffi]"
 
 
-def test_ytdlp_freshen_during_a_session_is_written_into_its_audit(monkeypatch, isolated):
-    versions = {"yt-dlp": ["2026.8.19", "2026.9.1"], "curl_cffi": ["0.16.1", "0.16.1"]}
+DAY = 86400
+NOW = 1_800_000_000.0
 
-    def fake_version(name):
-        seq = versions[name]
-        return seq.pop(0) if len(seq) > 1 else seq[0]
 
-    monkeypatch.setattr(updater_mod, "component_version", fake_version)
-    seen = {}
+def _release(age_days, yanked=False):
+    """PyPI JSON 里一个版本的文件列表（一个 wheel、一个 sdist，上传时间差 2 秒）。"""
+    when = datetime.fromtimestamp(NOW - age_days * DAY, tz=timezone.utc)
+    return [{"packagetype": "bdist_wheel", "yanked": yanked,
+             "upload_time_iso_8601": when.strftime("%Y-%m-%dT%H:%M:%S.%fZ")},
+            {"packagetype": "sdist", "yanked": yanked,
+             "upload_time_iso_8601": when.replace(second=(when.second + 2) % 60)
+             .strftime("%Y-%m-%dT%H:%M:%S.%fZ")}]
+
+
+YTDLP_RELEASES = {
+    "2026.8.19": _release(70),
+    "2026.9.1": _release(20),
+    "2026.9.20": _release(9, yanked=True),          # 撤回了：不装
+    "2026.10.2.dev0": _release(10),                 # 开发版：不装
+    "2026.10.21": _release(5),                      # 发布还不满 7 天：不装（D9）
+}
+
+
+def make_ytdlp_updater(monkeypatch, isolated, releases=YTDLP_RELEASES, live=False, installed="2026.8.19",
+                       pip_code=0):
+    """接好管线钩子的 Updater：PyPI 的版本列表、pip 子进程、已装版本都是替身。pip 成功时把
+    yt-dlp 换成它装的那个版本（curl_cffi 不变）。"""
+    env = {"yt-dlp": installed, "curl_cffi": "0.16.1"}
+    monkeypatch.setattr(updater_mod, "component_version", lambda name: env.get(name))
+    seen = {"pip": [], "pypi": []}
 
     class Proc:
-        returncode = 0
+        returncode = pip_code
 
         async def communicate(self):
-            return b"Successfully installed yt-dlp-2026.9.1\n", b""
+            return None, None
 
     async def fake_exec(*args, **kw):
-        seen["args"] = args
+        seen["pip"].append(args)
+        if pip_code == 0:
+            env["yt-dlp"] = args[-1].split("==", 1)[1]
         return Proc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     p = Pipeline.__new__(Pipeline)
     p.audit = AuditLog(room_url=URL, log_dir=isolated / "logs")
+    state = {"live": live}
+    p._stream_active = lambda: state["live"]
     u = Updater(RecordingServer())
     u.attach_pipeline(p)
 
-    run(u.freshen_ytdlp(reason="periodic"))
+    async def fake_pypi(dist):
+        seen["pypi"].append(dist)
+        return (releases, None) if releases is not None else (None, "HTTP 503")
 
-    assert "yt-dlp[curl-cffi]" in seen["args"]
+    u._pypi_releases = fake_pypi
+    return u, p, seen, state
+
+
+def test_ytdlp_freshen_installs_the_newest_release_at_least_a_week_old(monkeypatch, isolated):
+    """D9：只装 PyPI 上发布满 7 天、比已装的新的那一版，用 ==版本号 装；组件升级写进这一场的审计。"""
+    u, p, seen, _state = make_ytdlp_updater(monkeypatch, isolated)
+
+    assert run(u.freshen_ytdlp(reason="periodic", now=NOW)) == "installed"
+
+    assert seen["pypi"] == ["yt-dlp"]
+    assert len(seen["pip"]) == 1 and seen["pip"][0][-1] == "yt-dlp[curl-cffi]==2026.9.1"
+    assert "-U" not in seen["pip"][0]
+    assert settings_mod.load_settings()["ytdlp_updated_at"] > 0
     p.audit.close()
     recs = [r for r in audit_records(p.audit.path) if r["type"] == "component_updated"]
     assert len(recs) == 1                                        # curl_cffi 没变，不记
     assert {k: recs[0][k] for k in ("name", "from", "to", "reason")} == {
         "name": "yt-dlp", "from": "2026.8.19", "to": "2026.9.1", "reason": "periodic"}
     assert recs[0]["at"]
+
+
+def test_ytdlp_freshen_skips_while_monitoring_or_updating(monkeypatch, isolated):
+    """I5：在监听、或一键更新进行中，连 PyPI 都不问、不拉 pip、不记时间——下一次检查再看。"""
+    u, p, seen, state = make_ytdlp_updater(monkeypatch, isolated, live=True)
+    for reason in ("periodic", "resolve-failures"):
+        assert run(u.freshen_ytdlp(reason=reason, now=NOW)) == "busy"
+    state["live"] = False
+    u._applying = True
+    assert run(u.freshen_ytdlp(reason="periodic", now=NOW)) == "busy"
+    assert seen == {"pip": [], "pypi": []}
+    assert "ytdlp_updated_at" not in settings_mod.load_settings()
+    u._applying = False
+    assert run(u.freshen_ytdlp(reason="periodic", now=NOW)) == "installed"   # 空下来就照常
+    p.audit.close()
+
+
+def test_ytdlp_freshen_does_not_start_pip_if_monitoring_began_while_it_waited(monkeypatch, isolated):
+    """查完 PyPI、等 pip 锁的时候中控点了开始：拿到锁之后再看一次，不装。"""
+    u, p, seen, state = make_ytdlp_updater(monkeypatch, isolated)
+
+    async def scenario():
+        lock = u._get_pip_lock()
+        await lock.acquire()
+        task = asyncio.ensure_future(u.freshen_ytdlp(reason="periodic", now=NOW))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        state["live"] = True
+        lock.release()
+        return await task
+
+    assert run(scenario()) == "busy"
+    assert seen["pypi"] == ["yt-dlp"] and seen["pip"] == []
+    p.audit.close()
+
+
+def test_ytdlp_freshen_without_an_eligible_release_does_not_run_pip(monkeypatch, isolated):
+    """已装的就是满 7 天的版本里最新的：不拉 pip，记一次「查过了」，一天之内不再查。"""
+    u, p, seen, _ = make_ytdlp_updater(monkeypatch, isolated, installed="2026.9.1")
+    assert run(u.freshen_ytdlp(reason="periodic", now=NOW)) == "no-update"
+    assert seen["pip"] == []
+    checked = settings_mod.load_settings()["ytdlp_updated_at"]
+    assert checked > 0
+    u._freshen_attempted_at = 0
+    assert run(u.freshen_ytdlp(reason="periodic", now=checked + updater_mod.YTDLP_CHECK_INTERVAL_SEC - 1)) \
+        == "recent"
+    p.audit.close()
+
+
+def test_ytdlp_freshen_when_pypi_cannot_be_read_installs_nothing(monkeypatch, isolated, capsys):
+    """问不到 PyPI 的版本列表：不退回去 pip -U 装当天最新的；不记「查过了」，下一轮再试。"""
+    u, p, seen, _ = make_ytdlp_updater(monkeypatch, isolated, releases=None)
+    assert run(u.freshen_ytdlp(reason="periodic", now=NOW)) == "index-failed"
+    assert seen["pip"] == [] and "ytdlp_updated_at" not in settings_mod.load_settings()
+    assert "没拿到 PyPI 上的版本列表（HTTP 503）" in capsys.readouterr().out
+    p.audit.close()
+
+
+def test_ytdlp_freshen_pip_failure_is_retried_later_and_success_after_failures_says_so(
+        monkeypatch, isolated):
+    """pip 失败不记「查过了」；解析连续失败触发、空闲时装上了，状态行告诉中控重新点开始。"""
+    u, p, seen, _ = make_ytdlp_updater(monkeypatch, isolated, pip_code=1)
+    assert run(u.freshen_ytdlp(reason="resolve-failures", now=NOW)) == "pip-failed"
+    assert "ytdlp_updated_at" not in settings_mod.load_settings()
+    p.audit.close()
+
+    u, p, seen, _ = make_ytdlp_updater(monkeypatch, isolated)
+    u.server.config["status"] = {"state": "error", "detail": "x"}
+    assert run(u.freshen_ytdlp(reason="resolve-failures", now=NOW)) == "installed"
+    assert u.server.statuses()[-1][:2] == (
+        "idle", "已自动更新直播解析组件（yt-dlp 2026.9.1）——请重新点「开始翻译」试试。")
+    p.audit.close()
+
+
+def test_eligible_release_rules():
+    pick = updater_mod.eligible_release
+    assert pick(YTDLP_RELEASES, "2026.8.19", NOW) == "2026.9.1"
+    assert pick(YTDLP_RELEASES, "2026.9.1", NOW) is None
+    assert pick(YTDLP_RELEASES, None, NOW) == "2026.9.1"
+    # 满 7 天的边界：差一秒不装
+    edge = {"1.0": _release(7)}
+    assert pick(edge, None, NOW) == "1.0"
+    assert pick(edge, None, NOW - 1) is None
+    # 没有文件、文件全撤回、时间认不出的版本都不算
+    assert pick({"2.0": [], "3.0": _release(30, yanked=True),
+                 "4.0": [{"upload_time_iso_8601": "not a time"}]}, None, NOW) is None
+    # 一个文件撤回、另一个还在：按还在的那个算
+    mixed = _release(30)
+    mixed[0]["yanked"] = True
+    assert pick({"5.0": mixed}, None, NOW) == "5.0"
+    # 只要 7.x（TikTokLive 以后用得上）；老字段 upload_time 不带时区，按 UTC
+    assert pick({"7.0.2": _release(30), "8.0.0": _release(30)}, "7.0.1", NOW,
+                accept=lambda v: v.startswith("7.")) == "7.0.2"
+    old_field = [{"upload_time": datetime.fromtimestamp(NOW - 30 * DAY, tz=timezone.utc)
+                  .strftime("%Y-%m-%dT%H:%M:%S")}]
+    assert pick({"9.0": old_field}, None, NOW) == "9.0"
+
+
+def test_pypi_releases_reports_what_it_saw(monkeypatch):
+    """PyPI 那一步只记看到的：HTTP 状态码、超时、格式不对；正常时交出 releases。"""
+    import aiohttp
+
+    replies = {}
+
+    class Resp:
+        def __init__(self):
+            self.status = replies["status"]
+
+        async def json(self, content_type=None):
+            return replies["json"]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def get(self, url, **k):
+            replies["url"] = url
+            if replies.get("raise"):
+                raise replies["raise"]
+            return Resp()
+
+    monkeypatch.setattr(aiohttp, "ClientSession", Session)
+    u = Updater(RecordingServer())
+    replies.update(status=200, json={"releases": {"1.0": []}})
+    assert run(u._pypi_releases("yt-dlp")) == ({"1.0": []}, None)
+    assert replies["url"] == "https://pypi.org/pypi/yt-dlp/json"
+    replies.update(status=404)
+    assert run(u._pypi_releases("yt-dlp")) == (None, "HTTP 404")
+    replies.update(status=200, json={"info": {}})
+    assert run(u._pypi_releases("yt-dlp"))[0] is None
+    replies.update(status=200, json=["not", "a", "dict"])
+    assert run(u._pypi_releases("yt-dlp"))[0] is None
+    replies.update({"raise": asyncio.TimeoutError()})
+    assert run(u._pypi_releases("yt-dlp")) == (None, "20 秒内没有返回")
 
 
 def test_component_update_without_an_open_session_is_harmless(monkeypatch, isolated):

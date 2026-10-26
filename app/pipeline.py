@@ -6,6 +6,7 @@
 """
 import asyncio
 import contextvars
+import hashlib
 import os
 import subprocess
 import sys
@@ -359,8 +360,14 @@ def _arnndn_probe(model_path):
         return r.returncode == 0
     except Exception:
         return False
-RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/"
-               "beguiling-drafter-2018-08-30/bd.rnnn")
+# 降噪模型固定到上游仓库的一个提交，下载后核对 sha256（专家审查 I5、计划审查 Q9）。以前跟着 master
+# 走：上游的文件一变（或者被人换掉），新装机拿到的就是另一份，没人知道。6c2c130 是上游唯一动过这个
+# 文件的提交（2018-08-31）；它的 blob（0173a18…）和本机 2026-08 起一直在用的那份逐字节相同，
+# 2026-10-26 不在直播时从下面的地址实际下载核对过：299,693 字节，sha256 与 RNNOISE_SHA256 一致
+RNNOISE_COMMIT = "6c2c1301c30a6be5ddf93704a693f4956ce2aa55"
+RNNOISE_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/{}/"
+               "beguiling-drafter-2018-08-30/bd.rnnn").format(RNNOISE_COMMIT)
+RNNOISE_SHA256 = "ae3f7411e1e6a884f839a4a145c394408398f09854dbc1216ee02faafc98a17b"
 
 # 演示模式的内置台词（英文原文 + 中文译文），用于在没有直播时验证 UI。
 # 台词是字幕数据，不随界面语言变（spec §1：DEMO_SCRIPT 不在英文化范围内）
@@ -1961,9 +1968,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         asr_state = self._asr_check_state()
         try:
             guard = getattr(self, "guard", None)       # 弹幕留意那一行要用；没有守卫的半成品实例不传
+            extra = {"guard": guard} if guard is not None else {}
+            denoise_state = self._denoise_check_state()
+            if denoise_state:                           # 降噪模型下载的校验值对不上过（I5）才传
+                extra["denoise_state"] = denoise_state
             checks = await run_all(self.args, self.detector, self.glossary,
-                                   self.translator, asr_state=asr_state,
-                                   **({"guard": guard} if guard is not None else {}))
+                                   self.translator, asr_state=asr_state, **extra)
         except Exception as exc:
             print("[警告] 自检执行失败: {}".format(exc))
             return
@@ -4319,8 +4329,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         # 残缺数据，长度校验必然失败，于是降噪一直是关着的，
                         # 而日志只说「下载失败或校验未过」，看不出是自己读少了。
                         data = await read_all(resp, 8 * 1024 * 1024) or b""
-                        # 只验文件头不够：截断的下载同样带正确 magic，
-                        # 长度下限 + 落盘后实测初始化才算数
+                        # 先核对固定版本的 sha256（专家审查 I5）：对不上就不落盘，自检里显示成看得见的
+                        # 一行。截断的下载、被换掉的文件都在这里拦下
+                        got = hashlib.sha256(data).hexdigest()
+                        if got != RNNOISE_SHA256:
+                            await self._denoise_checksum_mismatch(got, len(data))
+                            return None
+                        self._denoise_download = None
+                        # 校验值对上了也照旧验文件头、长度，落盘后实测初始化才算数
                         if (data.startswith(b"rnnoise")
                                 and len(data) >= DENOISE_MIN_BYTES):
                             # 先写临时文件再原子改名：中途断网不会留下半个模型文件
@@ -4336,6 +4352,34 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             pass
         print("[警告] 降噪模型不可用（下载失败或校验未过），本次不降噪")
         return None
+
+    async def _denoise_checksum_mismatch(self, got, size):
+        """下载下来的降噪模型和固定版本的 sha256 对不上（专家审查 I5）：不落盘、打中文警告，自检「人声降噪」
+        一行刷成 FAIL——不只在终端打印（selfcheck.py 模块说明：静默降级必须变成可见状态）。"""
+        print("[警告] 降噪模型下载下来的文件和固定版本的校验值对不上（{} 字节，sha256 {}…，应为 {}…），"
+              "没有保存，本次不降噪".format(size, got[:12], RNNOISE_SHA256[:12]))
+        self._denoise_download = {"checksum_mismatch": True, "sha256": got, "size": size}
+        await self._refresh_denoise_check()
+
+    def _denoise_check_state(self):
+        """交给自检「人声降噪」那一行的下载结果（校验值对不上时有内容），没有就是 None。"""
+        return getattr(self, "_denoise_download", None)
+
+    async def _refresh_denoise_check(self):
+        """只重查「人声降噪」一行（同 _refresh_asr_check）：下载在开播时才发生，启动自检那一轮早就跑完了。
+        还没跑过自检就不管——之后那一轮会带上最新状态。"""
+        from .selfcheck import check_denoise
+        current = self._published_checks()
+        if not current:
+            return
+        try:
+            row = await check_denoise(self.args, self._denoise_check_state())
+        except Exception as exc:
+            print("[警告] 人声降噪自检刷新失败：{}".format(exc))
+            return
+        current = self._published_checks() or current
+        await self._publish_selfcheck(
+            [row if c.get("name") == row["name"] else c for c in current])
 
     async def _emit_original(self, result, audio_end_ts, asr_ms, segment_ms=None,
                              asr_meta=None, sess=None):

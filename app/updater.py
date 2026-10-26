@@ -23,7 +23,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .bootstrap import (MLX_GIVEUP, OPTIONAL_DISTS, clear_mlx_giveup, filter_requirements,
@@ -232,6 +232,68 @@ def _keep_mlx_out_of_this_process():
 
 # 带 curl-cffi 扩展：让 pip 按 yt-dlp 自己声明的范围装配 curl_cffi（与 requirements.txt 一致）
 YTDLP_SPEC = "yt-dlp[curl-cffi]"
+# 后台自动升级只装 PyPI 上发布满这么久的版本（专家审查 I5；用户 2026-10-22 定 D9「只装发布满 7 天的
+# 版本」）：刚发布就出问题的版本一般几天内会被撤回或修掉。代价：TikTok 那边变了、要靠新版本修的时候，
+# 最多晚一周拿到
+COMPONENT_MIN_AGE_SEC = 7 * 86400
+# 定期检查 yt-dlp 的间隔。以前是「距上次升级满 7 天就 pip -U 装当天最新的」；现在只装发布满 7 天的
+# 版本，要是还隔 7 天才查一次，一个新版本最晚要 14 天才装上。查一次只是读一份 JSON，所以改成每天查
+YTDLP_CHECK_INTERVAL_SEC = 86400
+PYPI_JSON_URL = "https://pypi.org/pypi/{}/json"
+PYPI_TIMEOUT_SEC = 20
+
+
+def _parse_upload_time(value):
+    """PyPI 的 upload_time_iso_8601（"2026-10-21T21:54:50.808170Z"）→ 时间戳；认不出返回 None。"""
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        stamp = datetime.fromisoformat(text)
+        if stamp.tzinfo is None:          # 老字段 upload_time 不带时区，PyPI 用的是 UTC
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def eligible_release(releases, installed, now, min_age=COMPONENT_MIN_AGE_SEC, accept=None):
+    """PyPI JSON 的 releases（版本号 → 文件列表）里，可以自动装的最新版本；没有返回 None。
+
+    可以装：正式版（不是预发布、开发版）、有没被撤回的文件、最早的那个文件上传满 min_age 秒、比 installed
+    新。accept(版本号) 可选，再按版本号筛（比如只要 7.x）。installed 为 None 时不比新旧。"""
+    Version = _packaging_version()
+    best = None
+    for version, files in (releases or {}).items():
+        if not isinstance(files, list):
+            continue
+        live = [f for f in files if isinstance(f, dict) and not f.get("yanked")]
+        if not live:
+            continue
+        times = [t for t in (_parse_upload_time(f.get("upload_time_iso_8601") or f.get("upload_time"))
+                             for f in live) if t is not None]
+        if not times or now - min(times) < min_age:
+            continue
+        if Version is not None:
+            try:
+                key = Version(version)
+            except Exception:
+                continue
+            if key.is_prerelease or key.is_devrelease:
+                continue
+        else:
+            if not re.fullmatch(r"\d+(\.\d+)*(\.post\d+)?", str(version)):
+                continue
+            key = _version_tuple(version) or ()
+        if accept is not None and not accept(version):
+            continue
+        if installed and _not_newer(version, installed):
+            continue
+        if best is None or key > best[0]:
+            best = (key, version)
+    return best[1] if best else None
+
+
 # 连续这么多天没能连上更新服务器，就在页脚版本号旁边提一句（不进自检、不进横幅）
 UPDATE_CHECK_STALE_DAYS = 14
 
@@ -440,39 +502,65 @@ class Updater:
         页面打回「待机」、停止按钮消失，而管线其实还在跑。"""
         await self.server.broadcast({"type": "notice", "text": text})
 
-    async def freshen_ytdlp(self, reason="periodic"):
+    async def freshen_ytdlp(self, reason="periodic", now=None):
         """后台升级 yt-dlp。它的 TikTok 提取器是全项目最易腐坏的一环，而常规
         更新通道（跟随本项目发版的 pip install -r）不会主动升它——老安装会
         在某天集体拉流失败。两个触发源：
 
-          periodic          —— 启动/每 6 小时检查时，距上次升级超过 7 天就升；
+          periodic          —— 启动/每 6 小时检查时，距上次查过满 YTDLP_CHECK_INTERVAL_SEC 就查；
           resolve-failures  —— 连续解析失败（非「没开播」类）时，6 小时冷却。
 
+        两条规矩（专家审查 I5；用户 2026-10-22 定 D6、D9）：
+          * 在监听、或一键更新进行中，不升（_busy_for_background_pip）。以前不看：直播中照样拉 pip 改
+            正在用的环境，跑 pip 的还是拿着完全磁盘访问权限的那个解释器。跳过的这次不记时间，下一次
+            检查（每 6 小时）再看；
+          * 只装 PyPI 上发布满 COMPONENT_MIN_AGE_SEC、比已装的新的那一版，用 ==版本号 装（以前是
+            pip install -U，装当天最新的）。查不到 PyPI 上的版本列表就这次不装。
+
         yt-dlp 是每次解析都新起的子进程（resolver.py 用 -m yt_dlp），升级完
-        下一次点「开始翻译」就生效，无需重启本程序。"""
+        下一次点「开始翻译」就生效，无需重启本程序。返回这次的结果（测试用）：running / busy / recent /
+        attempted / index-failed / no-update / pip-failed / unchanged / installed。"""
         if self._freshening:
-            return
-        min_age = 6 * 3600 if reason == "resolve-failures" else 7 * 86400
+            return "running"
+        if self._busy_for_background_pip():
+            print("[信息] 正在监听或一键更新，yt-dlp 自动更新这次跳过（{}）".format(reason))
+            return "busy"
+        min_age = 6 * 3600 if reason == "resolve-failures" else YTDLP_CHECK_INTERVAL_SEC
         last = load_settings().get("ytdlp_updated_at") or 0
         try:
             last = float(last)
         except (TypeError, ValueError):
             last = 0
-        now = time.time()
+        now = time.time() if now is None else now
         if now - last < min_age:
-            return
+            return "recent"
         if now - self._freshen_attempted_at < 600:   # 上次尝试（含失败）10 分钟内不重试
-            return
+            return "attempted"
         self._freshening = True
         self._freshen_attempted_at = now
         try:
+            installed = component_version("yt-dlp")
+            releases, why = await self._pypi_releases("yt-dlp")
+            if releases is None:
+                print("[警告] yt-dlp 自动更新：没拿到 PyPI 上的版本列表（{}），这次不装".format(why))
+                return "index-failed"
+            pick = eligible_release(releases, installed, now)
+            if pick is None:
+                save_setting("ytdlp_updated_at", time.time())
+                print("[信息] yt-dlp {} 已是发布满 {} 天的版本里最新的（{}）".format(
+                    installed, COMPONENT_MIN_AGE_SEC // 86400, reason))
+                return "no-update"
             async with self._get_pip_lock():
-                # 拿到锁之后再读「升级前」的版本：等锁期间别的 pip（一键更新）可能已经改过
+                # 等锁的这段时间里开始了监听或一键更新：不装。拿到锁之后再读「升级前」的版本：等锁期间
+                # 别的 pip（一键更新）可能已经改过
+                if self._busy_for_background_pip():
+                    print("[信息] 正在监听或一键更新，yt-dlp 自动更新这次跳过（{}）".format(reason))
+                    return "busy"
                 before = {name: component_version(name) for name in ("yt-dlp", "curl_cffi")}
                 proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "pip", "install", "-U",
-                    "--disable-pip-version-check", YTDLP_SPEC,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    sys.executable, "-m", "pip", "install",
+                    "--disable-pip-version-check", "{}=={}".format(YTDLP_SPEC, pick),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                     # 我们按 UTF-8 解它的输出，就得让它按 UTF-8 写（与 bootstrap.run_logged
                     # 一致）：Windows 默认 ANSI 代码页，非 ASCII 路径会解成 U+FFFD
                     env=dict(os.environ, PYTHONIOENCODING="utf-8"),
@@ -480,32 +568,62 @@ class Updater:
                 try:
                     out, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
                 except asyncio.TimeoutError:
-                    proc.kill()          # pip 卡死不能拖垮 watch 循环
+                    await _reap(proc)    # pip 卡死不能拖垮 watch 循环；kill 之后 reap，不留僵尸
                     print("[警告] yt-dlp 自动更新超时，已放弃本次尝试")
-                    return
+                    return "pip-failed"
+            _refresh_import_caches()
             if proc.returncode != 0:
-                print("[警告] yt-dlp 自动更新失败（pip 返回 {}）".format(proc.returncode))
-                return
+                # pip 的最后一行原话（数据），不替它下结论
+                lines = [ln.strip() for ln in (out or b"").decode("utf-8", errors="replace").splitlines()
+                         if ln.strip()]
+                print("[警告] yt-dlp 自动更新失败（pip 返回 {}）{}".format(
+                    proc.returncode, "：" + lines[-1][:160] if lines else ""))
+                return "pip-failed"
             save_setting("ytdlp_updated_at", time.time())
             for name, was in before.items():
                 self._note_component_update(name, was, component_version(name), reason)
-            text = out.decode(errors="replace")
-            m = re.search(r"Successfully installed .*?yt.dlp-(\S+)", text)
-            if m:
-                print("[信息] 已自动更新 yt-dlp 到 {}（{}）".format(m.group(1), reason))
-                # 只有在没有活跃直播时才广播提示——绝不能把 live/connecting
-                # 状态顶掉，误导用户去重启一条正常工作的管线
-                current = (self.server.config.get("status") or {}).get("state")
-                if reason == "resolve-failures" and current in (None, "idle", "error"):
-                    await self.server.status(
-                        "idle", L("已自动更新直播解析组件（yt-dlp {}）——"
-                                  "请重新点「开始翻译」试试。",
-                                  "Updated the stream lookup component (yt-dlp {}). Click Start "
-                                  "to try again.").format(m.group(1)))
+            after = component_version("yt-dlp")
+            if after == before["yt-dlp"]:
+                return "unchanged"
+            print("[信息] 已自动更新 yt-dlp 到 {}（{}）".format(after, reason))
+            # 只有在没有活跃直播时才广播提示——绝不能把 live/connecting
+            # 状态顶掉，误导用户去重启一条正常工作的管线
+            current = (self.server.config.get("status") or {}).get("state")
+            if reason == "resolve-failures" and current in (None, "idle", "error"):
+                await self.server.status(
+                    "idle", L("已自动更新直播解析组件（yt-dlp {}）——"
+                              "请重新点「开始翻译」试试。",
+                              "Updated the stream lookup component (yt-dlp {}). Click Start "
+                              "to try again.").format(after))
+            return "installed"
         except Exception as exc:
             print("[警告] yt-dlp 自动更新异常: {}".format(exc))
+            return "pip-failed"
         finally:
             self._freshening = False
+
+    async def _pypi_releases(self, dist):
+        """问 PyPI 的 JSON 接口要这个组件的全部版本（含每个文件的上传时间、有没有被撤回）。
+        返回 (releases, None)；没拿到返回 (None, 看到的情况)——只记看到的（HTTP 状态码、超时、异常类名），
+        不替它下结论。"""
+        try:
+            import aiohttp
+
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=PYPI_TIMEOUT_SEC)) as session:
+                async with session.get(PYPI_JSON_URL.format(dist),
+                                       headers={"Accept": "application/json"}) as resp:
+                    if resp.status != 200:
+                        return None, "HTTP {}".format(resp.status)
+                    data = await resp.json(content_type=None)
+        except asyncio.TimeoutError:
+            return None, "{} 秒内没有返回".format(PYPI_TIMEOUT_SEC)   # i18n: terminal
+        except Exception as exc:
+            return None, type(exc).__name__
+        releases = data.get("releases") if isinstance(data, dict) else None
+        if not isinstance(releases, dict):
+            return None, "返回的内容里没有版本列表"                      # i18n: terminal
+        return releases, None
 
     async def _pip_install(self, args, label, timeout=600, log_path=None, abort_if=None):
         """跑一次 `pip install <args>`，返回退出码；超时或异常返回 None；abort_if 叫停时
