@@ -397,8 +397,10 @@ def _pip(monkeypatch, spec, upgrade):
 
 def test_pip_command_reads_as_the_end_of_a_sentence(monkeypatch, tmp_path):
     fixes = [i18n.text(r["fix"], i18n.EN) for r in _rows("comments", monkeypatch, tmp_path)]
-    assert 'run this in Terminal: "/opt/py/bin/python3" -m pip install "TikTokLive"' in fixes
-    assert ('run this in PowerShell: & "/opt/py/bin/python3" -m pip install -U "TikTokLive"'
+    # I4（b3-deps）：末尾带 -c 和 constraints.txt 的绝对路径，手动装的也是测试过的那一套版本
+    pin = ' -c "{}"'.format(selfcheck.ROOT / "constraints.txt")
+    assert 'run this in Terminal: "/opt/py/bin/python3" -m pip install "TikTokLive"' + pin in fixes
+    assert ('run this in PowerShell: & "/opt/py/bin/python3" -m pip install -U "TikTokLive"' + pin
             in fixes)
 
 
@@ -425,8 +427,9 @@ def test_comments_install_and_update_commands(monkeypatch, tmp_path):
     assert ("The app tries to update it at each launch, at most once an hour. You can also quit "
             "the app and " + i18n.text(_pip(monkeypatch, TIKTOKLIVE_SPEC, upgrade=True), i18n.EN)
             ) in fixes
-    assert "The comments component needs Python 3.10 or later (current: 3.9). Comments aren’t " \
-           "available." in [i18n.text(r["detail"], i18n.EN) for r in rows]
+    # D14（b3-deps）：最低版本提到 3.10 之后，3.9 那一行说的是整个程序需要升级，不再只是弹幕不可用
+    assert "This version of the app needs Python 3.10 or later (current: 3.9). Python needs an " \
+           "upgrade." in [i18n.text(r["detail"], i18n.EN) for r in rows]
     outdated = next(r for r in rows if "7.0.0" in r["detail"])
     assert i18n.text(outdated["detail"], i18n.EN) == (
         "The comments component, TikTokLive 7.0.0, is older than 7.0.1. It can’t connect when "
@@ -454,15 +457,22 @@ def test_python_switch_steps_read_in_both_languages(darwin):
 
 
 def test_the_python_39_comments_row_says_how_to_switch(monkeypatch, tmp_path):
-    """I10：3.9 上弹幕那一行以前只说「不可用」。现在给照做的步骤：装新版、完全退出、删 .venv、重开，
-    约 1.4 GB；macOS 上再提醒给新的 Python 重新授「完全磁盘访问权限」。"""
+    """I10：3.9 上弹幕那一行以前只说「不可用」。现在给照做的步骤：从 python.org 装新版、重开，
+    约 1.4 GB；macOS 上再提醒给新的 Python 重新授「完全磁盘访问权限」。
+
+    D14（b3-deps）：最低版本提到 3.10 之后改成「需要升级」——3.9 上整个程序都不往下跑，不再说
+    「字幕和违禁词报警不受影响」。步骤和升级提示是同一段（bootstrap.python_upgrade_steps）：
+    不叫人删 .venv（第 2 轮审查：以前给的是 python_switch_steps，要删 .venv，和升级提示对不上），
+    这一格不保留换行，所以用 inline 版。"""
+    from app import bootstrap
     rows = _rows("comments", monkeypatch, tmp_path)
     row = next(r for r in rows if "3.9" in r["detail"])
-    steps = selfcheck.python_switch_steps()
-    assert row["fix"] == "字幕和违禁词报警不受影响。想用观众弹幕：" + steps
-    assert i18n.text(row["fix"], i18n.EN) == (
-        "Captions and banned-term alerts aren’t affected. To get comments: "
-        + i18n.text(steps, i18n.EN))
+    steps = bootstrap.python_upgrade_steps(inline=True)
+    assert row["detail"] == "这个版本的程序需要 Python 3.10 或更新的版本（当前 3.9），需要升级"
+    assert row["fix"] == steps
+    assert i18n.text(row["fix"], i18n.EN) == i18n.text(steps, i18n.EN)
+    assert ".venv" not in row["fix"] and ".venv" not in i18n.text(row["fix"], i18n.EN)
+    assert "\n" not in row["fix"]
     assert row["level"] == selfcheck.WARN
 
 

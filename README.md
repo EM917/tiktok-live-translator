@@ -68,7 +68,7 @@ You need macOS 12.3 or later, or Windows, and about 6 GB of free disk space. The
 
 1. Download `TikTok-Live-Translator-vX.Y.Z.zip` from the [latest release](https://github.com/EM917/tiktok-live-translator/releases/latest) and unzip it anywhere.
 
-2. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/) with the default options. Python 3.9 also runs the app, but without viewer comments. If Python is missing, the launcher opens the download page.
+2. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/) with the default options. Python 3.9 no longer runs the app. If the launcher finds no Python 3.10 or newer, it opens the download page.
 
 3. Install [Ollama](https://ollama.com/download), a free app that runs models on your computer, and open it once. On Windows the installer is about 1.5 GB and needs administrator rights. When the app starts, it downloads the Hy-MT2 1.8B translation model (about 1 GB). Without Ollama, the app translates through Google's free endpoint, which sends caption text to Google.
 
@@ -217,7 +217,6 @@ If you start with `Start.command`, add Terminal as well. If the audit log shows 
 **The Comments panel is empty or shows the original text without a translation.** Check these:
 
 - Comments are translated by Hy-MT2 1.8B, TranslateGemma or Claude, and by no other engine.
-- Comments need Python 3.10 or newer.
 - A stream URL pasted on its own has no comments. Use the live link or `@username`.
 
 **A phone cannot open the Phone Viewing link.** Check in this order:
@@ -241,7 +240,7 @@ For a stuck download, a busy port and other problems, see [docs/faq.md](docs/faq
 - TikTok's interfaces are unofficial and may change. For some live streams TikTok does not provide a stream URL, and the app cannot get one.
 - Translations can be wrong, most often on product names and slang.
 - On a computer without Apple Silicon or an NVIDIA GPU, recognition can fall behind. Audio more than 60 seconds behind is dropped, oldest first, and the window shows how much.
-- Viewer comments need Python 3.10 or newer. Hy-MT2 1.8B, TranslateGemma and Claude translate them; the other engines show the original.
+- Hy-MT2 1.8B, TranslateGemma and Claude translate viewer comments; the other engines show the original.
 - Phone Viewing needs the phone to be on the same network. It uses plain http, so phones get no system notifications, and sound may stop when a phone locks.
 - Select and copy text from the window, or export a whole session from Settings → Transcripts. The window keeps the last 300 captions and 100 comments, and a reload shows the same ones again. Clear removes them from the app too, so they do not come back after a reload; the session's transcript file still has them. A phone that connects later sees the last 100 of each. The app never deletes transcripts, so clear the `transcripts` folder yourself when you no longer need them.
 - The terminal, the logs and the audit log are always in Chinese, whatever the interface language.
@@ -367,7 +366,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 1. 到[最新 Release](https://github.com/EM917/tiktok-live-translator/releases/latest) 下载 `TikTok-Live-Translator-vX.Y.Z.zip`，解压到任意位置。
 
-2. 从 [python.org](https://www.python.org/downloads/) 装 Python 3.10 或更新的版本，安装选项保持默认。Python 3.9 也能运行程序，但没有观众弹幕。没装 Python 的话，启动程序时会自动打开下载页。
+2. 从 [python.org](https://www.python.org/downloads/) 装 Python 3.10 或更新的版本，安装选项保持默认。Python 3.9 已经不能运行程序。找不到 Python 3.10 或更新的版本时，启动程序会自动打开下载页。
 
 3. 装 [Ollama](https://ollama.com/download)（免费的，在你电脑上运行模型的软件），装完打开一次。Windows 上安装包约 1.5 GB，需要管理员权限。程序启动后会下载翻译模型 Hy-MT2 1.8B（约 1 GB）。不装 Ollama 也能用，翻译会改走 Google 的免费接口，字幕文本会发给 Google。
 
@@ -516,7 +515,6 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 **「观众弹幕」面板是空的，或者只有原文。** 按这几条查：
 
 - 只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时，弹幕才会翻译。
-- 弹幕要 Python 3.10 或更新的版本。
 - 只粘贴流地址的话没有弹幕，要粘贴直播间地址或 `@用户名`。
 
 **手机打不开「手机同看」的链接。** 按顺序查：
@@ -541,7 +539,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 - 译文可能出错，商品名和俚语最容易错。
 - 没有 Apple 芯片或 NVIDIA 显卡的电脑，识别可能跟不上。
 - 音频积压超过 60 秒，才会开始丢最旧的，窗口会显示丢了多少。
-- 观众弹幕要 Python 3.10 或更新的版本，而且只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时才翻译。
+- 观众弹幕只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时才翻译。
 - 手机同看只能在同一个局域网里用。它走的是普通 http，所以手机收不到系统通知，锁屏后声音可能会断。
 - 可以在窗口里选中文字复制，也可以在「设置 → 字幕记录」导出整场。窗口保留最近 300 条字幕和 100 条弹幕，刷新后原样放回来；点「清空字幕」「清空弹幕」会连程序里存着的一起清掉，刷新后不会再回来，但这一场的字幕记录文件里还有。之后才连上的手机，每类只看到最近 100 条。程序不会删除字幕记录，不再需要时请自己清理 `transcripts` 文件夹。
 - 终端、日志和审计日志一直是中文，不随界面语言变。

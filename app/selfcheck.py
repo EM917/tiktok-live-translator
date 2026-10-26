@@ -699,8 +699,9 @@ def _browser_login_row(observed):
 
 
 def python_switch_steps(darwin=None):
-    """换一个 Python 的照做步骤（I10）：Python 3.9 上没有观众弹幕、Rosetta 转译的 Python 只能用 CPU
-    识别，两处都给这一段。
+    """换一个 Python 的照做步骤（I10）：Rosetta 转译的 Python 只能用 CPU 识别时给这一段。
+    Python 低于 3.10（本程序最低版本，D14）那一行不用它，用 bootstrap.python_upgrade_steps：
+    那时启动器已经不认旧版本建的 .venv，不用删（见那边的说明）。
 
     为什么要删 .venv：启动器（tools/find_python.sh）有 .venv 时只认建它的那个解释器，新装的
     Python 不删 .venv 永远轮不到；没有 .venv 时按安装位置挑，python.org 装的排在最前面，所以写明
@@ -727,17 +728,25 @@ def python_switch_steps(darwin=None):
 
 def _pip_command(spec, upgrade=True):
     """给中控复制的手动安装命令。Windows 默认终端是 PowerShell：以带引号的路径开头的一行
-    会被当成表达式报错，前面必须加 &。"""
+    会被当成表达式报错，前面必须加 &。
+
+    项目根有 constraints.txt 时末尾带 -c 和它的绝对路径（I4）：手动装的也是测试过的那一套版本，
+    和程序自己装的一样（命令在哪个目录里粘贴都能跑）。"""
     import sys
+
+    from .bootstrap import CONSTRAINTS
     flag = " -U" if upgrade else ""
+    pinned = ROOT / CONSTRAINTS
+    pin = ' -c "{}"'.format(pinned) if pinned.is_file() else ""  # i18n: data（命令行参数）
     # 这句只接在「也可以……后」的后面（英文是 "…, you can also " / "…quit the app and "），
     # 所以英文小写开头
     if os.name == "nt":
-        return L("在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"",
-                 "run this in PowerShell: & \"{}\" -m pip install{} \"{}\"").format(
-                     sys.executable, flag, spec)
-    return L("在终端里执行：\"{}\" -m pip install{} \"{}\"",
-             "run this in Terminal: \"{}\" -m pip install{} \"{}\"").format(sys.executable, flag, spec)
+        return L("在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"{}",
+                 "run this in PowerShell: & \"{}\" -m pip install{} \"{}\"{}").format(
+                     sys.executable, flag, spec, pin)
+    return L("在终端里执行：\"{}\" -m pip install{} \"{}\"{}",
+             "run this in Terminal: \"{}\" -m pip install{} \"{}\"{}").format(
+                 sys.executable, flag, spec, pin)
 
 
 async def check_comments(args):
@@ -753,16 +762,17 @@ async def check_comments(args):
     if getattr(args, "comments", True) is False:
         return _check(name, OK, L("已按 --no-comments 关闭", "Turned off with --no-comments"))
     if sys.version_info < (3, 10):
-        # I10：启动器会接受 3.9（比如 macOS 自带的那个）并一直固定在它上面，以前这一行只说「不可用」，
-        # 不说怎么换——照做的步骤见 python_switch_steps
+        # I10 + D14：本程序最低版本提到了 3.10（用户 10-22 决定），3.9 上 main.py 在版本检查那里就停下、
+        # 弹出「需要升级」（bootstrap.refuse_old_python），正常走不到这里。这一行留着兜底，说法和那边
+        # 一致：不再是「弹幕不可用」，而是整个程序需要升级 Python；照做的步骤也用那边的同一段
+        # （bootstrap.python_upgrade_steps，不用删 .venv），不用 python_switch_steps（要人删 .venv）
+        from .bootstrap import python_upgrade_steps
         return _check(name, WARN,
-                      L("弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用",
-                        "The comments component needs Python 3.10 or later (current: {}.{}). "
-                        "Comments aren’t available.")
+                      L("这个版本的程序需要 Python 3.10 或更新的版本（当前 {}.{}），需要升级",
+                        "This version of the app needs Python 3.10 or later (current: {}.{}). "
+                        "Python needs an upgrade.")
                       .format(sys.version_info[0], sys.version_info[1]),
-                      L("字幕和违禁词报警不受影响。想用观众弹幕：",
-                        "Captions and banned-term alerts aren’t affected. To get comments: ")
-                      + python_switch_steps())
+                      python_upgrade_steps(inline=True))
     from .updater import TIKTOKLIVE_SPEC
     version = await _to_thread(tiktoklive_version)
     if version is None:

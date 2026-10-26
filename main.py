@@ -49,8 +49,13 @@ ROOT = Path(__file__).resolve().parent
 # 要留给最终进程去备份（main() 里的 settle），否则备份提示会随 exec 丢掉
 i18n.boot(ROOT)
 
-if sys.version_info < (3, 9):
-    sys.exit("需要 Python 3.9 或更高版本（当前 {}.{}）".format(*sys.version_info[:2]))  # i18n: terminal
+# 最低 Python 3.10（用户 10-22 决定 D14，数字与 app/bootstrap.MIN_PYTHON 一致）。以前低于最低版本时
+# 只往终端写一句再退出：双击 .app、一键更新后重启时 stdout 是 /dev/null，程序就无声消失了。现在
+# 打印之外没有终端时弹系统对话框，写明需要升级和照做的步骤（bootstrap.refuse_old_python）。这个
+# 文件和上面 import 的模块都要能被 3.9 解析，否则走不到这里（tests/test_bootstrap_constraints.py）
+if sys.version_info < (3, 10):
+    from app.bootstrap import refuse_old_python
+    sys.exit(refuse_old_python())
 
 
 _CORE_DEPS = ["aiohttp>=3.9", "numpy>=1.24", "faster-whisper>=1.0",

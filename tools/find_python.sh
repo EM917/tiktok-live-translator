@@ -4,7 +4,12 @@
 # find_python <项目根目录>。
 #
 # 先找 .venv 的解释器（find_venv_python），找不到再按常见安装位置找
-# Python 3.9+（find_installed_python）。
+# Python 3.10+（find_installed_python）。
+#
+# 下限 3.10（用户 10-22 决定 D14，与 app/bootstrap.MIN_PYTHON 一致）：以前是 3.9，macOS 自带的那个
+# 3.9 会被选中并一直固定在上面。现在低于 3.10 的一律不认，.venv 是 3.9 建的也一样——跳过它、按安装
+# 位置找新的；main.py 的 ensure_env 再用新的那个重建 .venv（bootstrap.venv_needs_rebuild）。一个都
+# 找不到时启动器弹「需要先安装 Python 3.10 或更新的版本」。
 #
 # 为什么先认 .venv：系统的「完全磁盘访问权限」按**启动用的解释器文件路径**登记
 # （见 app/browser_login.py 的 fda_targets）。2026-10-19 Homebrew 升级 yt-dlp 时顺带
@@ -122,7 +127,7 @@ _tlt_clt_python_ok() {
   [ -n "$devdir" ] && [ -x "$devdir/usr/bin/python3" ]
 }
 
-# $1 能不能当 .venv 的解释器用。$2=要求的主次版本（空=不比版本，只要 ≥3.9）$3=项目根
+# $1 能不能当 .venv 的解释器用。$2=要求的主次版本（空=不比版本，只要 ≥3.10）$3=项目根
 _tlt_venv_candidate_ok() {
   local out dir real root nl='
 '
@@ -139,15 +144,15 @@ _tlt_venv_candidate_ok() {
   if [ "$dir" = /usr/bin ] || [ "$real" = /usr/bin ]; then
     _tlt_clt_python_ok || return 1
   fi
-  out="$("$1" -c 'import sys; print("%d.%d" % sys.version_info[:2]); raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null)" || return 1
+  out="$("$1" -c 'import sys; print("%d.%d" % sys.version_info[:2]); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null)" || return 1
   out="${out##*"$nl"}"     # 只看最后一行：站点钩子往 stdout 多打一行也不误判
   [ -z "$2" ] || [ "$out" = "$2" ]
 }
 
 # <项目根>/.venv 的解释器。先认建它的那个：pyvenv.cfg 的 executable，没有或用不了再试
-# home 下的 python<主.次> 和 python3——必须还在、能跑、≥3.9、主次版本和 cfg 记的一样
+# home 下的 python<主.次> 和 python3——必须还在、能跑、≥3.10、主次版本和 cfg 记的一样
 # （同一路径上的 python3 可能已经被升级成别的版本，这正是 10-19 的事）；cfg 不记版本就
-# 不认这些路径。都不行再认 .venv/bin/python 链到的项目外那个：能跑、≥3.9 就行，不比
+# 不认这些路径。都不行再认 .venv/bin/python 链到的项目外那个：能跑、≥3.10 就行，不比
 # 版本——它就是 .venv 现在实际在跑的解释器（文件头第 2 步）。
 find_venv_python() {
   local root="${1:-$PWD}" cfg v want home p proot
@@ -180,11 +185,11 @@ find_venv_python() {
   return 1
 }
 
-# 按常见安装位置寻找 Python 3.9+。顺序很重要：python.org / Homebrew 的真实
+# 按常见安装位置寻找 Python 3.10+。顺序很重要：python.org / Homebrew 的真实
 # 安装优先；/usr/bin/python3 垫片必须先确认装过开发者工具才能碰。
 find_installed_python() {
   local candidates=() p v
-  # python.org 官方框架：全部版本按新到旧依次候选（老版本过不了 ≥3.9 检查时
+  # python.org 官方框架：全部版本按新到旧依次候选（老版本过不了 ≥3.10 检查时
   # 还能落到下一个，不能只挑一个）
   for v in $(ls /Library/Frameworks/Python.framework/Versions 2>/dev/null \
              | grep -E '^3\.[0-9]+$' | sort -t. -k2,2nr); do
@@ -195,7 +200,7 @@ find_installed_python() {
     candidates+=(/usr/bin/python3)
   fi
   for p in "${candidates[@]}"; do
-    if [ -x "$p" ] && "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+    if [ -x "$p" ] && "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
       echo "$p"
       return 0
     fi
@@ -203,7 +208,7 @@ find_installed_python() {
   # 终端登录 shell 里 PATH 是全的，pyenv/conda 等安装也一并尝试
   p="$(command -v python3 2>/dev/null)"
   if [ -n "$p" ] && [ "$p" != "/usr/bin/python3" ] && \
-     "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+     "$p" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
     echo "$p"
     return 0
   fi
