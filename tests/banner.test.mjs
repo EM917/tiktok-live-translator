@@ -19,6 +19,7 @@ const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").re
 const style = readFileSync(new URL("../web/style.css", import.meta.url), "utf8");
 
 const ROOM = "https://www.tiktok.com/@luna_demo/live";
+const T = 1700000000;
 const PATHS = ["/opt/homebrew/bin/python3.14", "/Users/demo user/miniconda3/bin/python3.13"];
 
 const TEXT = {
@@ -31,12 +32,21 @@ const TEXT = {
       "系统不允许本程序读取浏览器数据。到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开（每个路径各做一遍）：\n" +
       "「/opt/homebrew/bin/python3.14」\n「/Users/demo user/miniconda3/bin/python3.13」\n" +
       "列表里显示的名字是 python3.14、python3.13，不是本程序的名字。如果列表里已经有这一项、开关也开着，先选中它点「−」删掉，再按上面的步骤加一次。用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。\n" +
-      "这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。在 Chrome（或 Safari）里登录 TikTok 后再试。想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来（中间空格隔开），一次约两周有效。",
+      "这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。\n" +
+      // 权限范围之后的事各自另起一行（审查第 1 轮）
+      "在 Chrome（或 Safari）里登录 TikTok 后再试。\n想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来（中间空格隔开），一次约两周有效。",
     lead: "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 2 次，原因 TikTok 不说明；有时过一会儿再点「开始翻译」就好，有时整场都不给。",
     // 没登录的那种：一段话，页面上 2 行
     short: "TikTok 不把这个直播间的流地址给程序（代码 4003110），已自动重试 2 次，原因 TikTok 不说明；有时过一会儿再点「开始翻译」就好，有时整场都不给。借用浏览器里的 TikTok 登录时观察到——Chrome：能读取，没有 TikTok 登录 cookie（sessionid 等）。在 Chrome（或 Safari）里登录 TikTok 后再试。想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来（中间空格隔开），一次约两周有效。",
     more: "显示全部步骤", less: "收起", copy: "复制", copied: "已复制", selected: "已选中，按 ⌘C",
     zipAnchor: "zh-updating-zip", howTo: "怎么更新",
+    // app/pipeline.py 流自然断开时的 status；识别排空期间字幕照常上屏，翻译失败横幅可能在这时顶出来
+    reconnect: "直播流中断，正在重连…",
+    transFail: "连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。",
+    clockGap: "电脑时钟跳了一下",
+    // app/browser_login.py no_login_notice：Safari 被系统拒绝读取（带完全磁盘访问权限那几步，分行）
+    loginNotice: "程序没有读到浏览器里的 TikTok 登录——Safari：系统拒绝读取。有的直播间 TikTok 只把流地址给已登录的观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会因此停下。请在 Safari 里登录 TikTok。\n系统不允许本程序读取浏览器数据。到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开（每个路径各做一遍）：\n「/opt/homebrew/bin/python3.14」\n「/Users/demo user/miniconda3/bin/python3.13」\n列表里显示的名字是 python3.14、python3.13，不是本程序的名字。如果列表里已经有这一项、开关也开着，先选中它点「−」删掉，再按上面的步骤加一次。用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。\n这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。\n（这些步骤在自检「浏览器登录态」一行里也有。）读到登录后这条提示自动消失。",
+    loginShort: "程序没有读到浏览器里的 TikTok 登录——Safari：能读取，没有 TikTok 登录 cookie（sessionid 等）。有的直播间 TikTok 只把流地址给已登录的观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会因此停下。请在 Safari 里登录 TikTok。读到登录后这条提示自动消失。",
   },
   en: {
     network: (m) => "This computer can’t reach www.tiktok.com. Nothing has been monitored for " + m +
@@ -47,11 +57,19 @@ const TEXT = {
       "macOS didn’t allow the app to read browser data. Go to System Settings > Privacy & Security > Full Disk Access and click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on its switch (do this for each path):\n" +
       "“/opt/homebrew/bin/python3.14”\n“/Users/demo user/miniconda3/bin/python3.13”\n" +
       "The list shows python3.14, python3.13, not the app’s name. If it’s already in the list with its switch on, select it, click −, and add it again with the steps above. If you start the app with Start.command, add Terminal too. Then quit the app completely and open it again.\n" +
-      "This permission goes to the Python interpreter, not just this app, so any script it runs can read protected data on this computer. When you no longer need the TikTok sign-in from your browser, you can turn its switch off in the same list. Sign in to TikTok in Chrome (or Safari), then try again. To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks.",
+      "This permission goes to the Python interpreter, not just this app, so any script it runs can read protected data on this computer. When you no longer need the TikTok sign-in from your browser, you can turn its switch off in the same list.\n" +
+      // 最后一段的英文开头带一个空格（app/pipeline.py browser_only_message），横幅按行画时去掉
+      "Sign in to TikTok in Chrome (or Safari), then try again.\n To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks.",
     lead: "TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried 2 times. TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream.",
     short: "TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried 2 times. TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream. Looked for a TikTok sign-in in your browsers. Chrome: readable, but no TikTok sign-in cookie (sessionid or similar). Sign in to TikTok in Chrome (or Safari), then try again. To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks.",
     more: "Show All Steps", less: "Hide", copy: "Copy", copied: "Copied", selected: "Selected. Press ⌘C",
     zipAnchor: "en-updating-zip", howTo: "How to Update",
+    reconnect: "The stream was interrupted. Reconnecting…",
+    transFail: "The last several captions couldn’t be translated, so captions show the original text. " +
+      "Speech recognition isn’t affected. If this continues, choose another engine in Settings > Translation Engine.",
+    clockGap: "The computer clock jumped",
+    loginNotice: "The app didn’t find a TikTok sign-in in your browsers. Safari: macOS didn’t allow access. For some live streams, TikTok provides the stream URL only to signed-in viewers, so those live streams may not get a stream URL until a sign-in is found. Other live streams are monitored as usual. Sign in to TikTok in Safari.\nmacOS didn’t allow the app to read browser data. Go to System Settings > Privacy & Security > Full Disk Access and click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on its switch (do this for each path):\n“/opt/homebrew/bin/python3.14”\n“/Users/demo user/miniconda3/bin/python3.13”\nThe list shows python3.14, python3.13, not the app’s name. If it’s already in the list with its switch on, select it, click −, and add it again with the steps above. If you start the app with Start.command, add Terminal too. Then quit the app completely and open it again.\nThis permission goes to the Python interpreter, not just this app, so any script it runs can read protected data on this computer. When you no longer need the TikTok sign-in from your browser, you can turn its switch off in the same list.\n(These steps are also in the Browser Login row of Settings > Startup Check.) This notice disappears once a sign-in is found.",
+    loginShort: "The app didn’t find a TikTok sign-in in your browsers. Safari: readable, but no TikTok sign-in cookie (sessionid or similar). For some live streams, TikTok provides the stream URL only to signed-in viewers, so those live streams may not get a stream URL until a sign-in is found. Other live streams are monitored as usual. Sign in to TikTok in Safari. This notice disappears once a sign-in is found.",
   },
 };
 
@@ -133,6 +151,60 @@ for (const lang of ["zh", "en"]) {
     assert.equal(page.el("incident-bar").textContent, W.network(4));
   });
 
+  // 横幅是共用的：「连续多条字幕翻译失败」那句（trackTranslateHealth）会整段换掉横幅里的字。翻译恢复、那句收起之后，
+  // 持续提示再怎么变也不能把那句过时的话放出来（审查第 1 轮：重连中识别排空还在出字幕时，status 带着 detail）
+  test(lang + "：翻译失败那句收起后，持续提示变了也不把它重新露出来；下一条 status 照常显示（U6）", () => {
+    const page = runDesktop(lang);
+    hello(page, { status: { state: "live", detail: "" } });
+    const banner = page.el("status-banner");
+    status(page, "connecting", W.reconnect);
+    assert.equal(shown(banner), true);
+    assert.equal(banner.textContent, W.reconnect);
+    for (let id = 1; id <= 4; id++) page.push({ type: "caption", id, ts: T, original: "x", translate_state: "failed" });
+    assert.equal(shown(banner), true);
+    assert.equal(banner.textContent, W.transFail);
+    page.push({ type: "caption", id: 5, ts: T, original: "y", translated: "z", translate_state: "ok" });
+    assert.equal(shown(banner), false, "翻译恢复：那句收起");
+    // 一条和横幅无关的持续提示挂上、撤掉，再撤一条根本不存在的 id：都不把翻译失败那句放出来
+    incident(page, "session:clock_gap", "warn", W.clockGap);
+    assert.equal(shown(banner), false, "持续提示挂上：翻译失败那句不能露出来");
+    incident(page, "session:clock_gap", "clear");
+    assert.equal(shown(banner), false);
+    incident(page, "session:nothing_here", "clear");
+    assert.equal(shown(banner), false);
+    // 下一条带 detail 的 status 重画横幅：照常显示，持续提示的规则（U6）照常管它
+    status(page, "connecting", W.reconnect);
+    assert.equal(shown(banner), true);
+    assert.equal(banner.textContent, W.reconnect);
+    incident(page, "session:network", "error", W.reconnect);
+    assert.equal(shown(banner), false, "和持续提示同一句：照旧只出现一次");
+    incident(page, "session:network", "clear");
+    assert.equal(shown(banner), true);
+    assert.equal(banner.textContent, W.reconnect);
+    if (lang === "en") assert.deepEqual(leftoverChinese(page), []);
+  });
+
+  test(lang + "：翻译失败期间来了一条带 detail 的 status，翻译恢复时横幅照 status 的规则显示，不忽隐忽现（U6）", () => {
+    const page = runDesktop(lang);
+    hello(page, { status: { state: "live", detail: "" } });
+    const banner = page.el("status-banner");
+    for (let id = 1; id <= 4; id++) page.push({ type: "caption", id, ts: T, original: "x", translate_state: "failed" });
+    assert.equal(banner.textContent, W.transFail);
+    status(page, "connecting", W.reconnect);                  // 横幅里换成了这句 status
+    assert.equal(banner.textContent, W.reconnect);
+    page.push({ type: "caption", id: 5, ts: T, original: "y", translated: "z", translate_state: "ok" });
+    assert.equal(shown(banner), true, "那句 status 还是当下的：不跟着翻译恢复收起");
+    assert.equal(banner.textContent, W.reconnect);
+    incident(page, "session:clock_gap", "warn", W.clockGap);
+    assert.equal(shown(banner), true);
+    assert.equal(banner.textContent, W.reconnect);
+    // detail 清空：收起，持续提示再变也不出来
+    status(page, "live", "");
+    assert.equal(shown(banner), false);
+    incident(page, "session:clock_gap", "clear");
+    assert.equal(shown(banner), false);
+  });
+
   // ---- U10 ---------------------------------------------------------------------------------------------
   test(lang + "：「接口不给流地址」超过 3 行的那种默认只露第一行和「显示全部步骤」，能展开、收起（U10）", () => {
     const page = runDesktop(lang);
@@ -154,7 +226,7 @@ for (const lang of ["zh", "en"]) {
     assert.equal(more.textContent, W.less);
     assert.equal(more.getAttribute("aria-expanded"), "true");
     const all = visible(page);
-    const lines = W.blocked.split("\n");
+    const lines = W.blocked.split("\n").map((l) => l.trim());     // 每行去掉首尾空白再画
     assert.equal(all.length, lines.length, "每行一块");
     assert.ok(all[0].el.children.includes(more), "展开后按钮不挪位置");
     assert.deepEqual(all.filter((b) => b.kind === "line").map((b) => b.text),
@@ -188,6 +260,59 @@ for (const lang of ["zh", "en"]) {
     status(page, "error", W.short);
     assert.equal(banner.cls.includes("folded"), false);
     assert.equal(moreBtn(page), null);
+  });
+
+  // 「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时，读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
+  // 八九行（审查第 1 轮）：超过 3 行的持续提示和状态横幅一样，默认只露第一行和「显示全部步骤」
+  test(lang + "：超过 3 行的持续提示默认只露第一行和「显示全部步骤」，能展开、收起，重画时保留（U10）", () => {
+    const page = runDesktop(lang);
+    hello(page, { status: { state: "live", detail: "" } });
+    incident(page, "login-unreadable", "warn", W.loginNotice);
+    const row = () => page.el("incident-bar").children[0];
+    const span = () => row().lastChild;
+    const more = () => span().children.find((el) => el.cls.includes("banner-more"));
+    const rest = () => span().children.find((el) => el.cls.includes("incident-rest"));
+    const lines = W.loginNotice.split("\n");
+    const head = () => span().childNodes.filter((n) => n.nodeType === 3).map((n) => n.textContent).join("");
+    assert.equal(head(), lines[0], "第一行：看到了什么、影响哪类直播间、在 Safari 里登录");
+    assert.equal(more().textContent, W.more);
+    assert.equal(more().getAttribute("aria-expanded"), "false");
+    assert.equal(shown(rest()), false, "其余几行折着");
+    assert.equal(rest().textContent, "\n" + lines.slice(1).join("\n"), "折着的是其余每一行，一个字不少");
+    for (const p of PATHS) assert.ok(rest().textContent.includes(p), p);
+    // 展开：按钮就地切换，不重画整排
+    const btn = more();
+    btn.click();
+    assert.equal(more(), btn);
+    assert.equal(shown(rest()), true);
+    assert.equal(btn.textContent, W.less);
+    assert.equal(btn.getAttribute("aria-expanded"), "true");
+    // 别的持续提示挂上、撤掉（整排重画）：展开的还展开着
+    incident(page, "session:clock_gap", "warn", W.clockGap);
+    assert.equal(page.el("incident-bar").children.length, 2);
+    assert.equal(shown(rest()), true, "重画后保留展开");
+    assert.equal(more().textContent, W.less);
+    incident(page, "session:clock_gap", "clear");
+    assert.equal(shown(rest()), true);
+    // 收起
+    more().click();
+    assert.equal(shown(rest()), false);
+    assert.equal(more().textContent, W.more);
+    // 文字变了（比如路径变了）：重新折起来
+    more().click();
+    incident(page, "login-unreadable", "warn", W.loginNotice.replace("python3.14", "python3.15"));
+    assert.equal(shown(rest()), false, "换了一段话就重新折起来");
+    // 撤掉再挂上同一段：折着
+    more().click();
+    incident(page, "login-unreadable", "clear");
+    incident(page, "login-unreadable", "warn", W.loginNotice);
+    assert.equal(shown(rest()), false);
+    // 一段话的那种（没有完全磁盘访问权限那几步）不折、没有按钮，和改之前一样
+    incident(page, "login-unreadable", "warn", W.loginShort);
+    assert.equal(more(), undefined);
+    assert.equal(rest(), undefined);
+    assert.equal(page.el("incident-bar").textContent, W.loginShort);
+    if (lang === "en") assert.deepEqual(leftoverChinese(page), []);
   });
 
   // ---- I8 ----------------------------------------------------------------------------------------------
@@ -248,6 +373,9 @@ for (const lang of ["zh", "en"]) {
     assert.equal(shown(note), true);
     for (const name of KEEP) assert.ok(note.textContent.includes(name), name);
     assert.ok(note.textContent.includes(lang === "zh" ? "不要直接替换旧文件夹" : "Don’t replace the old folder"));
+    // profiles/、brands/ 只拷自己的 .txt（整个文件夹拷过去会把新版本自带的 *.example.txt 换成旧的），和 README 同一说法
+    const ownTxt = lang === "zh" ? "profiles/、brands/ 里你自己的 .txt" : "your own .txt files in profiles/ and brands/";
+    assert.ok(note.textContent.includes(ownTxt), note.textContent);
     const link = note.children.find((el) => el.tagName === "A");
     assert.equal(link.textContent, W.howTo);
     assert.equal(link.href, "https://github.com/EM917/tiktok-live-translator#" + W.zipAnchor);
@@ -273,4 +401,6 @@ test("样式：折叠时只藏 .banner-rest；路径行在横幅里有上下空�
   // 「完全磁盘访问权限」那几步分了行：自检那一行和「没有读到登录」那条持续提示都照着换行显示
   assert.match(style, /\.sc-item \.sc-fix \{[^}]*white-space: pre-line/);
   assert.match(style, /\.incident > span \{ white-space: pre-line; \}/);
+  // 持续提示里的「显示全部步骤」用这一条的字色（橙底、红底上的蓝字对比不够）
+  assert.match(style, /\.incident \.banner-more \{ color: inherit; text-decoration: underline; \}/);
 });

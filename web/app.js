@@ -875,12 +875,15 @@
       zipKeepNote = document.createElement("p");
       zipKeepNote.className = "update-zip-note";
       var text = document.createElement("span");
+      // profiles/、brands/ 只拷自己的 .txt：整个文件夹拷过去会把新版本自带的 *.example.txt 和 README 换成旧的
+      // （和 comment_guard 只列 local/、marked/、不碰 defaults/ 同一个道理；README「更新（ZIP 安装）」一节同样写法）
       text.textContent = L("更新时不要直接替换旧文件夹：先把旧文件夹里的 settings.json、banned_terms.txt、" +
-                           "glossary.txt，以及 logs/、transcripts/、profiles/、brands/、comment_guard/local/、" +
-                           "comment_guard/marked/ 复制到新文件夹。",
+                           "glossary.txt，logs/、transcripts/、comment_guard/local/、comment_guard/marked/，" +
+                           "以及 profiles/、brands/ 里你自己的 .txt 文件复制到新文件夹。",
                            "Don’t replace the old folder when you update. First copy settings.json, " +
-                           "banned_terms.txt, glossary.txt, logs/, transcripts/, profiles/, brands/, " +
-                           "comment_guard/local/ and comment_guard/marked/ from the old folder into the new one.");
+                           "banned_terms.txt, glossary.txt, logs/, transcripts/, comment_guard/local/, " +
+                           "comment_guard/marked/ and your own .txt files in profiles/ and brands/ from the old " +
+                           "folder into the new one.");
       var link = document.createElement("a");
       link.href = README_URL + "#" + (UI_LANG === "en" ? "en" : "zh") + "-updating-zip";
       link.target = "_blank";
@@ -1535,8 +1538,13 @@
   var bannerDrawnKey = null;     // 横幅上画着的那一句（连同 paths）：同一句重发时保留展开与否
   var bannerExpanded = false;
   var bannerCoveredBy = null;    // 和横幅说同一句话的那条持续提示的 id
+  // 横幅里现在画着的是不是 status 的字。横幅是共用的：「连续多条字幕翻译失败」那句（trackTranslateHealth）
+  // 整段换掉里面的字，翻译恢复后横幅收起、字却留着。syncBannerCover 只在这里为真时才放出横幅，否则持续提示
+  // 一变（哪怕撤的是一条不存在的 id），就会把那句已经过时的翻译失败重新露出来
+  var bannerHoldsStatus = false;
 
   function renderStatusBanner(detail, paths) {
+    bannerHoldsStatus = true;
     var pathList = (Array.isArray(paths) ? paths : []).map(String).filter(function (p) { return p; });
     var key = detail + "\u0000" + pathList.join("\u0000");
     if (key !== bannerDrawnKey) bannerExpanded = false;
@@ -1633,12 +1641,13 @@
 
   // 持续提示变了之后：横幅那句话还有没有哪条持续提示在说（U6）。原来那条还在（只是文字随时长变了，断网那条
   // 每次重试都更新「已 N 分钟没有监听」，紧跟着的 status 又是同一句新话）就继续收着，等下一条 status 再比；
-  // 它撤掉了才重新比一遍，没有一样的就把横幅放出来。「连续多条翻译失败」那句占着横幅时不动它
+  // 它撤掉了才重新比一遍，没有一样的就把横幅放出来。「连续多条翻译失败」那句占着横幅时不动它；那句已经收起、
+  // 横幅里留着的还是它（下一条 status 还没来重画）时也不动它：放出来就是一句过时的话（bannerHoldsStatus）
   function syncBannerCover() {
     if (!bannerCoveredBy || !incidents[bannerCoveredBy]) {
       bannerCoveredBy = statusDetail ? incidentSaying(statusDetail) : null;
     }
-    if (transBannerOn) return;
+    if (transBannerOn || !bannerHoldsStatus) return;
     statusBanner.classList.toggle("hidden", !statusDetail || !!bannerCoveredBy);
   }
 
@@ -1674,6 +1683,8 @@
       // 只要翻译还在持续失败，警告就要顶回来
       if (failStreak >= 4) {
         transBannerOn = true;
+        bannerHoldsStatus = false;           // 横幅里不再是 status 的字，见 bannerHoldsStatus
+        statusBanner.classList.remove("folded");
         setIconText(statusBanner, "warn",
           L("连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。",
             "The last several captions couldn’t be translated, so captions show the original text. " +
@@ -1686,7 +1697,10 @@
       failStreak = 0;
       if (transBannerOn) {
         transBannerOn = false;
-        statusBanner.classList.add("hidden");
+        // 横幅里还是翻译失败那句：收起。中途来过一条带 detail 的 status、横幅里已经换成它的字（那句 status 还是
+        // 当下的）：照 status 的规则显示，不跟着翻译恢复一起收掉——否则之后持续提示一变又把它放出来，忽隐忽现
+        if (bannerHoldsStatus) syncBannerCover();
+        else statusBanner.classList.add("hidden");
       }
     }
   }
@@ -3179,8 +3193,47 @@
     drawIncidents();
   }
 
+  // 超过 3 行的持续提示默认只露第一行，行尾跟「显示全部步骤」，和状态横幅同一个做法（U10，BANNER_FOLD_LINES）。
+  // 眼下只有「没有读到 TikTok 登录」带完全磁盘访问权限那几步的那种（app/browser_login.py no_login_notice，第一行是
+  // 看到了什么、影响哪类直播间、在 Safari 里登录）：它读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
+  // 八九行（审查第 1 轮）。持续提示每变一条整排重画：展开与否按 id 记、连同那段文字，重画时保留，文字变了重新
+  // 折起来。按钮就地切换，不重画（键盘焦点留在按钮上）
+  var incidentOpen = Object.create(null);   // id → 展开时的那段文字
+
+  function foldIncident(span, id, text) {
+    var lines = String(text).split("\n").map(function (s) { return s.trim(); })
+                            .filter(function (s) { return s; });
+    if (!span || lines.length <= BANNER_FOLD_LINES) {
+      delete incidentOpen[id];
+      return;
+    }
+    if (incidentOpen[id] !== undefined && incidentOpen[id] !== text) delete incidentOpen[id];
+    span.textContent = lines[0];
+    var rest = document.createElement("span");
+    rest.className = "incident-rest";
+    rest.textContent = "\n" + lines.slice(1).join("\n");      // .incident > span 是 pre-line：照着换行
+    var more = document.createElement("button");
+    more.type = "button";
+    more.className = "banner-more";
+    function paint() {
+      var open = incidentOpen[id] === text;
+      rest.classList.toggle("hidden", !open);
+      more.textContent = open ? L("收起", "Hide") : L("显示全部步骤", "Show All Steps");
+      more.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    more.addEventListener("click", function () {
+      if (incidentOpen[id] === text) delete incidentOpen[id];
+      else incidentOpen[id] = text;
+      paint();
+    });
+    span.appendChild(more);
+    span.appendChild(rest);
+    paint();
+  }
+
   function drawIncidents() {
     if (!incidentBar) return;
+    for (var gone in incidentOpen) if (!incidents[gone]) delete incidentOpen[gone];
     incidentBar.innerHTML = "";
     var keys = Object.keys(incidents).sort(function (a, b) {
       return (incidents[a].since || 0) - (incidents[b].since || 0);
@@ -3190,7 +3243,9 @@
       var level = incidents[k].level;
       row.className = "incident " + (level === "error" ? "error" : (level === "info" ? "info" : "warn"));
       // 当数据，不当 HTML；开头自带的 🔴⚠️ 换成按级别画的图标
-      setIconText(row, barIconFor(level), stripStatusEmoji(incidents[k].text));
+      var text = stripStatusEmoji(incidents[k].text);
+      setIconText(row, barIconFor(level), text);
+      foldIncident(row.lastChild, k, text);
       if (DISMISSABLE_INCIDENTS.indexOf(k) !== -1) {
         row.classList.add("dismissible");
         var closeBtn = document.createElement("button");

@@ -400,7 +400,8 @@ def fda_steps(targets=None):
         系统按文件指纹认它」没有实测过；
       * 讲清这项权限管到哪里（D6，用户 10-22 按推荐「维持授权，把范围讲清楚」）：给的是 Python 解释器，
         用它运行的任何脚本都能读这台电脑上受保护的数据；不再需要借浏览器里的 TikTok 登录时，可以在同一个
-        列表里关掉。"""
+        列表里关掉。这一句单独占最后一行，后面接的别的步骤都另起一行（steps_text、no_login_notice），免得读起来
+        像是在接着讲权限范围（审查第 1 轮）。"""
     targets = fda_targets() if targets is None else list(targets)
     return L("到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 "
              "⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开{}：\n{}\n"
@@ -473,8 +474,13 @@ def observed_text(login):
                              for b, c in (login or {}).items())
 
 
-def steps_text(login):
-    """和这些观察对应的、能照做的步骤（可能不止一步）。"""
+def steps_text(login, lines=False):
+    """和这些观察对应的、能照做的步骤（可能不止一步）。
+
+    lines=True（解析失败那段话，browser_only_advice）：带「完全磁盘访问权限」那几步（分了行，最后一行是权限
+    范围）时每一步另起一行——「在 Chrome 里登录」「钥匙串」接在权限范围那句后面，读起来像是在接着讲权限（审查
+    第 1 轮）。自检那一行（app/selfcheck.py）照旧接在后面：它的英文由 tests/test_i18n_backend_en.py 钉着
+    （本批文件清单外），改成分行记在顺延事项里。"""
     login = login or {}
     codes = set(login.values())
     steps = []
@@ -488,6 +494,8 @@ def steps_text(login):
         steps.append(KEYCHAIN_STEPS)
     if not steps and any(str(c).startswith("error:") for c in codes):
         steps.append(L("可以把这条信息反馈给开发者。", "You can report this message to the developer."))
+    if lines and any("\n" in step for step in steps):
+        return L("\n", "\n").join(steps)
     return L("", " ").join(steps)            # 中文句子直接相连，英文句子之间要空格
 
 
@@ -495,11 +503,8 @@ def _after_lead(text):
     """接在 pipeline.browser_only_message 第一句（「接口不给流地址」那句，第八条的说明）后面的那一段。
 
     这一段分了行（带「完全磁盘访问权限」那几步）时，前面另起一行，让第一句单独成为第一行：横幅超过 3 行时页面
-    只露第一行和「显示全部步骤」（web/app.js renderStatusBanner，专家审查 U10），那句说明不能被折进去。
-    只有一行的照旧接在后面（中文直接相连，英文前面一个空格，见 _space_before）。"""
-    if "\n" in text:
-        return L("\n", "\n") + text
-    return _space_before(text)
+    只露第一行和「显示全部步骤」（web/app.js renderStatusBanner，专家审查 U10），那句说明不能被折进去。"""
+    return L("\n", "\n") + text
 
 
 def _space_before(text):
@@ -509,10 +514,9 @@ def _space_before(text):
 
 
 SAFARI_LOGIN_STEPS = L("请在 Safari 里登录 TikTok。", "Sign in to TikTok in Safari.")
-# 英文开头留空格：它直接拼在上一句（fda_steps() 的句号）后面
+# 「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时，最后一行的开头（no_login_notice）
 SELFCHECK_POINTER = L("（这些步骤在自检「浏览器登录态」一行里也有。）",
-                      " (These steps are also in the Browser Login row of Settings > Startup "
-                      "Check.)")
+                      "(These steps are also in the Browser Login row of Settings > Startup Check.)")
 
 
 def no_login_notice(login):
@@ -523,20 +527,33 @@ def no_login_notice(login):
     macOS 上程序先读 Safari（见 resolver._installed_browsers），所以步骤说的是 Safari。"""
     login = {b: c for b, c in (login or {}).items() if c != NOT_READ}
     codes = set(login.values())
-    steps = [SAFARI_LOGIN_STEPS]
+    head = _NO_LOGIN_HEAD.format(observed_text(login) or L("没有找到可读取的浏览器", "No readable browser found"))
     if BLOCKED in codes:
-        steps.append(FDA_OBSERVED + fda_steps() + SELFCHECK_POINTER)
+        # 带「完全磁盘访问权限」那几步时分行写（审查第 1 轮）：第一行是看到了什么、影响哪类直播间、在 Safari 里
+        # 登录——页面上超过 3 行的持续提示默认只露这一行和「显示全部步骤」（web/app.js foldIncident），它读到登录
+        # 之前一直挂在顶部、直播中也在，全展开 1000 宽下八九行。完全磁盘访问权限那几步（fda_steps，最后一行是
+        # 权限范围）、钥匙串各自另起一行；自检指引和「自动消失」放在最后单独一行，不接在权限范围那句后面
+        # （接在后面，「这些步骤」容易被读成是在说权限范围那句）
+        lines = [head + _space_before(SAFARI_LOGIN_STEPS), FDA_OBSERVED + fda_steps()]
+        if KEYCHAIN_WAIT in codes:
+            lines.append(KEYCHAIN_STEPS)
+        lines.append(SELFCHECK_POINTER + _space_before(_NO_LOGIN_TAIL))
+        return L("\n", "\n").join(lines)
+    steps = [SAFARI_LOGIN_STEPS]
     if KEYCHAIN_WAIT in codes:
         steps.append(KEYCHAIN_STEPS)
-    return L("程序没有读到浏览器里的 TikTok 登录——{}。有的直播间 TikTok 只把流地址给已登录的"
-             "观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会"
-             "因此停下。{}读到登录后这条提示自动消失。",
-             "The app didn’t find a TikTok sign-in in your browsers. {}. For some live streams, "
-             "TikTok provides the stream URL only to signed-in viewers, so those live streams "
-             "may not get a stream URL until a sign-in is found. Other live streams are "
-             "monitored as usual. {} This notice disappears once a sign-in is found.").format(
-                observed_text(login) or L("没有找到可读取的浏览器", "No readable browser found"),
-                L("", " ").join(steps))
+    # 只有一行：中文句子直接相连，英文句子之间一个空格
+    return head + _space_before(L("", " ").join(steps)) + _space_before(_NO_LOGIN_TAIL)
+
+
+_NO_LOGIN_HEAD = L("程序没有读到浏览器里的 TikTok 登录——{}。有的直播间 TikTok 只把流地址给已登录的"
+                   "观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会"
+                   "因此停下。",
+                   "The app didn’t find a TikTok sign-in in your browsers. {}. For some live streams, "
+                   "TikTok provides the stream URL only to signed-in viewers, so those live streams "
+                   "may not get a stream URL until a sign-in is found. Other live streams are "
+                   "monitored as usual.")
+_NO_LOGIN_TAIL = L("读到登录后这条提示自动消失。", "This notice disappears once a sign-in is found.")
 
 
 def browser_only_advice(login):
@@ -552,9 +569,15 @@ def browser_only_advice(login):
                  " Tried again with the TikTok sign-in from {}. TikTok still didn’t provide a "
                  "stream URL.").format(L("、", ", ").join(label(b) for b in borrowed))
     # 英文只说「找过」：观察里可能一个登录都没读到。步骤为空（比如只有 READABLE）时英文不留尾部空格。
-    # 步骤分了行（带「完全磁盘访问权限」那几步）时，观察那句和步骤之间也另起一行
-    steps = steps_text(login)
-    joined = (L("\n", "\n") + steps) if "\n" in steps else _space_before(steps)
-    return _after_lead(L("借用浏览器里的 TikTok 登录时观察到——{}。{}",
-                         "Looked for a TikTok sign-in in your browsers. {}.{}").format(
-        observed_text(login), joined))
+    # 步骤分了行（带「完全磁盘访问权限」那几步）时，观察那句和步骤之间也另起一行，最后也换行：pipeline 接在
+    # 后面的「想现在就看：粘 .flv」是另一件事，接在权限范围或「在 Chrome 里登录」后面读起来像是同一件事（审查
+    # 第 1 轮）。那一段的英文开头带一个空格（见 browser_only_message），横幅按行画时每行去掉首尾空白
+    # （web/app.js renderStatusBanner）；终端和审计只写中文
+    steps = steps_text(login, lines=True)
+    if "\n" not in steps:
+        return _space_before(L("借用浏览器里的 TikTok 登录时观察到——{}。{}",
+                               "Looked for a TikTok sign-in in your browsers. {}.{}").format(
+            observed_text(login), _space_before(steps)))
+    return _after_lead(L("借用浏览器里的 TikTok 登录时观察到——{}。\n{}\n",
+                         "Looked for a TikTok sign-in in your browsers. {}.\n{}\n").format(
+        observed_text(login), steps))

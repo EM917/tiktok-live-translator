@@ -108,9 +108,9 @@ Flags need a terminal: the `.app` does not take them, while `Start.command` and 
 
 The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen. Click the version number at the bottom of the window to check by hand. During a stream, the answer appears next to the version number.
 
-Update Now installs the release named in the banner, not changes made after it that are not released yet. If the updated app then starts twice in a row without its window connecting, it goes back to the version you had before and a message says so. Opening the app twice at once or force-quitting it does not count, and the app does not go back if files in its folder were changed by hand.
+Update Now installs the release named in the banner, not changes made after it that are not released yet. If the updated app then starts twice in a row without its window connecting, it goes back to the version you had before and a message says so. Opening the app twice at once does not count, and neither does force-quitting it after its window has connected. The app does not go back if files in its folder were changed by hand.
 
-The app also updates yt-dlp, which finds the stream URL, and TikTokLive, which fetches comments, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now.
+The app also updates yt-dlp, which finds the stream URL, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now.
 
 <a id="en-updating-zip"></a>
 
@@ -176,7 +176,7 @@ The link contains a key, so treat it like a password. New Link disconnects every
 
 <sub>[中文](#zh-floating-window)</sub>
 
-While a stream is running, click the Floating Window button in the top bar (only an icon while the app window is narrower than 1,400 px) to open a small dark window that stays on top of other apps. It shows the latest caption, with the original under it, and the most recent comments with their translations (up to five; make the window taller to see all five). Drag it or resize it, and the app remembers where you left it. It only shows things, and banned-term alerts stay in the main window. Click Stop and it closes. If the stream ends or monitoring stops with an error, it stays open and says Stream ended or Monitoring stopped, with a Show Main Window button, and on a Mac the app's Dock icon bounces once. The button is there only when the app runs in its own window, not with `--browser`.
+While a stream is running, click the Floating Window button in the top bar (only an icon while the app window is narrower than 1,400 px) to open a small dark window that stays on top of other apps. It shows the latest caption, with the original under it, and the most recent comments with their translations (up to five; make the window taller to see all five). Drag it or resize it, and the app remembers where you left it. It only shows things, and banned-term alerts stay in the main window. Click Stop and it closes. If the stream ends or monitoring stops with an error, it stays open and says Stream ended or Monitoring stopped, with a Show Main Window button. On a Mac, if the app is not the active app, its Dock icon bounces once. The Floating Window button is there only when the app runs in its own window, not with `--browser`.
 
 <a id="en-comment-review"></a>
 
@@ -425,9 +425,9 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示。也可以随时点窗口底部的版本号手动检查，直播中检查的结果写在版本号旁边。
 
-「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。更新后的程序如果连续两次启动、窗口都没连上，会自动退回更新前的版本，并弹窗说明。同时双击打开两次、强行退出都不算；程序文件夹里的文件被手动改过的话，不会退回。
+「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。更新后的程序如果连续两次启动、窗口都没连上，会自动退回更新前的版本，并弹窗说明。同时双击打开两次不算，窗口连上之后再强行退出也不算；程序文件夹里的文件被手动改过的话，不会退回。
 
-程序还会自己更新 yt-dlp（查找直播流地址用）和 TikTokLive（获取弹幕用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。
+程序还会自己更新 yt-dlp（查找直播流地址用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。
 
 <a id="zh-updating-zip"></a>
 
@@ -493,7 +493,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 <sub>[English](#en-floating-window)</sub>
 
-监听期间，点顶栏的「浮窗」按钮（应用窗口窄于 1400 像素时去掉图标、只显示「浮窗」两个字；顶栏放不下这两个字的时候，比如「报警开」标签亮着，或者窗口很窄，只显示图标），会打开一个深色的小窗，始终在别的软件上面。里面是最新一条字幕（原文在译文下面）和最近几条弹幕与它们的译文（最多五条，窗口拉高才看得全）。可以拖动、拉大缩小，下次打开还在你放的位置。它只显示，违禁词报警仍然只在主窗口里。点「停止」它就关掉；直播结束或监听出错停下时，它留着，写「直播已结束」或「监听已停止」，下面有「回到主窗口」按钮，Mac 上程序的 Dock 图标会跳一下。只有程序在自己的窗口里运行时才有这个按钮，加了 `--browser` 就没有。
+监听期间，点顶栏的「浮窗」按钮（应用窗口窄于 1400 像素时去掉图标、只显示「浮窗」两个字；顶栏放不下这两个字的时候，比如「报警开」标签亮着，或者窗口很窄，只显示图标），会打开一个深色的小窗，始终在别的软件上面。里面是最新一条字幕（原文在译文下面）和最近几条弹幕与它们的译文（最多五条，窗口拉高才看得全）。可以拖动、拉大缩小，下次打开还在你放的位置。它只显示，违禁词报警仍然只在主窗口里。点「停止」它就关掉；直播结束或监听出错停下时，它留着，写「直播已结束」或「监听已停止」，下面有「回到主窗口」按钮；Mac 上程序不在前台时，Dock 图标会跳一下。只有程序在自己的窗口里运行时才有「浮窗」按钮，加了 `--browser` 就没有。
 
 <a id="zh-comment-review"></a>
 

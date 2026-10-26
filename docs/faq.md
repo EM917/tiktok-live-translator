@@ -54,10 +54,10 @@ while that Python is still there at the same version, so installing or
 upgrading a different Python (for example Homebrew pulling in a newer
 `python@3.x` as a dependency) does not change the path. It changes when that
 Python itself is upgraded, moved or removed, or when the environment is
-rebuilt; the row then shows the new one. The path can also stay the same while
-the entry stops working: if the entry is already in the list with its switch on
-and the row still says macOS didn't allow access, select the entry, click −, and
-add it again with the steps above. The permission belongs to the Python
+rebuilt; the row then shows the new one. With an unchanged path, the entry can
+also be in the list with its switch on while the row still says macOS didn't
+allow access. In that case select the entry, click −, and add it again with the
+steps above. The permission belongs to the Python
 interpreter, not just this app: any script run with that Python can read
 protected data on this computer, such as Mail, Messages and Safari data. When
 you no longer need the TikTok sign-in from your browser, switch the entry off in
@@ -299,7 +299,7 @@ its close button, when you click **Stop**, or when you close the main window.
 When the stream ends or monitoring stops with an error, it stays open and says
 **Stream ended** or **Monitoring stopped** (see the main window for details),
 with one button, **Show Main Window**, which brings the main window to the
-front; on a Mac the app's Dock icon also bounces once. The button exists only when the app runs in its own window, so it is not there
+front; on a Mac, if the app is not the active app, its Dock icon also bounces once. The **Floating Window** button exists only when the app runs in its own window, so it is not there
 with `--browser`. (A browser tab opened on the address of a running app window does show
 it, and clicking it opens the window in the app.)
 

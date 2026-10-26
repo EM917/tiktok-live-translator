@@ -934,6 +934,9 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 }
 /* 文字里的换行照着断（「没有读到 TikTok 登录」那条的完全磁盘访问权限步骤，路径单独一行，I8） */
 .incident > span { white-space: pre-line; }
+/* 超过 3 行的持续提示折着时只露第一行和「显示全部步骤」（web/app.js foldIncident）。按钮用这一条的字色加下划线：
+   橙底、红底上的蓝字对比不够 */
+.incident .banner-more { color: inherit; text-decoration: underline; }
 .incident.error { color: #fff; background: var(--fail-bar); border-bottom-color: var(--fail-bar); }   /* 同 .health-bar.degraded */
 .incident.info {
   color: var(--label);

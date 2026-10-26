@@ -426,7 +426,8 @@ def _assert_plain_english(text, where):
      ["Chrome: readable, but no TikTok sign-in cookie", "Sign in to TikTok in Chrome (or Safari)"]),
     ({"chrome": "no_tiktok_cookie"}, ["Chrome: readable, but no tiktok.com cookies"]),
     ({"chrome": "blocked_by_system", "safari": "not_logged_in"},
-     ["Full Disk Access", "in the same list. Sign in to TikTok in Chrome (or Safari)"]),
+     # 权限范围那句之后另起一行（审查第 1 轮）：接在它后面读起来像是在接着讲权限
+     ["Full Disk Access", "in the same list.\nSign in to TikTok in Chrome (or Safari), then try again.\n"]),
     ({"chrome": "ok", "safari": "blocked_by_system"},
      ["Tried again with the TikTok sign-in from Chrome. TikTok still didn’t provide a stream URL."]),
     ({"chrome": "keychain_wait"},
@@ -444,17 +445,19 @@ def _assert_plain_english(text, where):
 ])
 def test_browser_only_advice_in_english(monkeypatch, login, must_have):
     """browser_login 这一段自己的英文：没有中文、没有贴标签和猜原因的词、句子之间有空格。
-    只有一行时开头带一个空格：它接在 browser_only_message 前一句的句号后面。带「完全磁盘访问权限」那几步
-    （分了行）时改成另起一行，开头是换行、不带空格（专家审查 U10：4003110 那句要单独成为横幅的第一行，
-    横幅折叠时只露它）——以前这里钉的是「一律以一个空格开头」，那是改之前的拼法。"""
+    只有一行时开头带一个空格：它接在 browser_only_message 前一句的句号后面，结尾是句号。带「完全磁盘访问权限」
+    那几步（分了行）时前后都换行、不带空格：4003110 那句要单独成为横幅的第一行，横幅折叠时只露它（专家审查
+    U10）；后面接的「想现在就看」是另一件事，也单独一行（审查第 1 轮）——以前这里钉的是「一律以一个空格开头、
+    以句号结尾」，那是改之前的拼法。"""
     monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_FDA_PATHS))
     advice = i18n.render(bl.browser_only_advice(login), "en")
     if "\n" in advice:
         assert advice.startswith("\n") and advice[1] not in " \n", advice
+        assert advice.endswith(".\n") and not advice.endswith("\n\n"), advice
         assert " \n" not in advice and "\n " not in advice, advice
     else:
         assert advice.startswith(" ") and not advice.startswith("  "), advice
-    assert advice.endswith(".") and not advice.endswith(" "), advice
+        assert advice.endswith(".") and not advice.endswith(" "), advice
     _assert_plain_english(advice.strip(), login)
     for text in must_have:
         assert text in advice, (text, advice)
@@ -1019,6 +1022,86 @@ def test_the_paths_on_their_own_lines_are_the_paths_the_status_carries(monkeypat
     for lang in ("zh", "en"):
         lines = i18n.render(browser_only_message(3, login), lang).split("\n")
         assert [path_line(line, paths) for line in lines if path_line(line, paths)] == paths
+
+
+# ---- 审查第 1 轮：权限范围那句后面不再接别的事 -------------------------------------------------------------
+
+_LOGIN = {"zh": "在 Chrome（或 Safari）里登录 TikTok 后再试。", "en": "Sign in to TikTok in Chrome (or Safari), then try again."}
+_FLV = {"zh": "想现在就看：", "en": "To watch now,"}
+
+
+@pytest.mark.parametrize("login,after_scope", [
+    ({"safari": "blocked_by_system", "chrome": "not_logged_in"}, "login"),   # 专家量的那种
+    ({"chrome": "blocked_by_system", "safari": "blocked_by_system"}, "flv"),
+    ({"chrome": "blocked_by_system", "safari": "keychain_wait"}, "keychain"),
+])
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_each_step_after_the_permission_scope_starts_a_line(monkeypatch, login, after_scope, lang):
+    """展开后的 4003110 横幅：权限范围那句单独一行；「在 Chrome 里登录」「钥匙串」和 pipeline 接在最后的「想现在就看」
+    各自另起一行，不接在权限范围后面（接在后面读起来像是在接着讲权限范围）。自检那一行（steps_text 默认）照旧，
+    见 steps_text 的说明。"""
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_SPACED))
+    scope = _ZH_SCOPE if lang == "zh" else _EN_SCOPE
+    lines = [line.strip() for line in i18n.render(browser_only_message(3, login), lang).split("\n")]
+    at = lines.index(scope)
+    nxt = {"login": _LOGIN[lang], "keychain": i18n.render(bl.KEYCHAIN_STEPS, lang)}.get(after_scope)
+    if nxt is None:
+        assert lines[at + 1].startswith(_FLV[lang]), lines[at:]
+    else:
+        assert lines[at + 1] == nxt, lines[at:]
+        assert lines[at + 2].startswith(_FLV[lang]) and at + 3 == len(lines), lines[at:]
+    steps = i18n.render(bl.steps_text(login, lines=True), lang).split("\n")
+    assert scope in steps
+    assert steps[-1] == (nxt or scope), steps
+    assert i18n.render(bl.steps_text(login), lang).endswith(scope + (("" if lang == "zh" else " ") + nxt if nxt else ""))
+
+
+@pytest.mark.parametrize("login", [
+    {"safari": "blocked_by_system"},
+    {"safari": "blocked_by_system", "chrome": "keychain_wait"},
+])
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_no_login_notice_with_the_fda_steps_is_split_into_lines(monkeypatch, login, lang):
+    """「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时：第一行是看到了什么、影响哪类直播间、在 Safari 里
+    登录（页面折叠时只露这一行，web/app.js foldIncident）；那几步原样连在一起、权限范围单独一行；自检指引和「自动消失」
+    在最后单独一行，不接在权限范围后面（「这些步骤」会被读成是在说权限范围）。"""
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_SPACED))
+    text = bl.no_login_notice(login)
+    rendered = i18n.render(text, lang)
+    lines = rendered.split("\n")
+    assert lines[0].startswith("程序没有读到浏览器里的 TikTok 登录" if lang == "zh"
+                               else "The app didn’t find a TikTok sign-in in your browsers. ")
+    assert lines[0].endswith(i18n.render(bl.SAFARI_LOGIN_STEPS, lang)), lines[0]
+    assert i18n.render(bl.fda_steps(), lang) in rendered
+    scope = _ZH_SCOPE if lang == "zh" else _EN_SCOPE
+    assert scope in lines, lines
+    pointer = i18n.render(bl.SELFCHECK_POINTER, lang)
+    assert lines[-1].startswith(pointer) and lines[-1].endswith(
+        "读到登录后这条提示自动消失。" if lang == "zh" else " This notice disappears once a sign-in is found."), lines[-1]
+    assert sum(pointer in line for line in lines) == 1
+    if "keychain_wait" in login.values():
+        assert lines[-2] == i18n.render(bl.KEYCHAIN_STEPS, lang)
+    else:
+        assert lines[-2] == scope
+    assert all(line == line.strip() and line for line in lines), lines
+    if lang == "en":
+        _assert_plain_english(rendered, login)
+    else:
+        assert not ZH_CAUSAL.search(str(text)) or "可能解析不出" in str(text)
+
+
+@pytest.mark.parametrize("login", [
+    {"safari": "not_logged_in"}, {"chrome": "keychain_wait"}, {"chrome": "no_tiktok_cookie", "safari": "keychain_wait"},
+])
+def test_no_login_notice_without_the_fda_steps_stays_one_paragraph(login):
+    """没有完全磁盘访问权限那几步的那几种照旧一段话、拼法不变（页面上不折叠）。"""
+    text = bl.no_login_notice(login)
+    for lang in ("zh", "en"):
+        rendered = i18n.render(text, lang)
+        assert "\n" not in rendered
+    assert str(text).endswith(bl.SAFARI_LOGIN_STEPS + ("" if "keychain_wait" not in login.values()
+                                                      else bl.KEYCHAIN_STEPS) + "读到登录后这条提示自动消失。")
+    assert i18n.render(text, "en").endswith(" This notice disappears once a sign-in is found.")
 
 
 def test_launch_python_is_remembered_once_and_survives_the_execs():
