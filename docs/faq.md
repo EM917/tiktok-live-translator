@@ -54,7 +54,14 @@ while that Python is still there at the same version, so installing or
 upgrading a different Python (for example Homebrew pulling in a newer
 `python@3.x` as a dependency) does not change the path. It changes when that
 Python itself is upgraded, moved or removed, or when the environment is
-rebuilt; the row then shows the new one. This only matters for rooms whose
+rebuilt; the row then shows the new one. The path can also stay the same while
+the entry stops working: if the entry is already in the list with its switch on
+and the row still says macOS didn't allow access, select the entry, click −, and
+add it again with the steps above. The permission belongs to the Python
+interpreter, not just this app: any script run with that Python can read
+protected data on this computer, such as Mail, Messages and Safari data. When
+you no longer need the TikTok sign-in from your browser, switch the entry off in
+the same list. This only matters for rooms whose
 stream address TikTok serves to signed-in viewers. The check looks only at whether the cookie
 store can be read and at login cookie names, across every browser profile; it
 never decrypts and never raises a Keychain prompt. Failed resolutions record one

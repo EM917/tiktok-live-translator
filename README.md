@@ -206,7 +206,7 @@ Matching runs on the recognized Spanish text, so an alert does not wait for the 
 2. In the file window press ⌘⇧G, paste the path, press Return, click Open, and turn the entry on. It is listed as `python3.x`, not under the app's name.
 3. Repeat for each path shown, then quit the app completely and reopen it.
 
-If you start with `Start.command`, add Terminal as well. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
+If the entry is already in the list with its switch on and the row still says macOS did not allow access, select it, click −, and add it again. The permission goes to the Python interpreter, not just this app, so any script run with that Python can read protected data on this computer. When you no longer need it, turn the switch off in the same list. If you start with `Start.command`, add Terminal as well. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
 
 **Update Now does not start or finish.** The message says what went wrong and shows a command with a Copy button. Run it in Terminal. If the message lists app files you changed, the command discards those changes, so skip it if the changes were on purpose.
 
@@ -504,7 +504,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 2. 在选文件的窗口里按 ⌘⇧G，粘贴路径，按回车，点「打开」，再打开这一项的开关。列表里它叫 `python3.x`。
 3. 每个路径都这样加一遍，然后完全退出程序，重新打开。
 
-用 `Start.command` 启动的话，也要把「终端」加进去。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
+如果列表里已经有这一项、开关也开着，这一行却仍然说 macOS 没有放行，先选中它点「−」删掉，再按上面的步骤加一次。这项权限给的是 Python 解释器，不只是本程序：用这个 Python 运行的任何脚本都能读取这台电脑上受保护的数据。不再需要时，在同一个列表里把开关关掉。用 `Start.command` 启动的话，也要把「终端」加进去。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
 
 **「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，下面有一条带「复制」按钮的命令，复制后在终端里运行。如果提示列出了你改过的程序文件，这条命令会丢掉这些改动，改动是有意的就别运行。
 

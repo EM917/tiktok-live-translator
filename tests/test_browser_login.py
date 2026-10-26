@@ -28,7 +28,7 @@ from app import resolver, selfcheck
 from app.i18n import CJK
 from app.pipeline import Pipeline, browser_only_message
 from tests.helpers import run
-from tests.i18n_rules import EN_CAUSAL, EN_LABELS
+from tests.i18n_rules import EN_CAUSAL, EN_LABELS, ZH_CAUSAL
 from tests.readme_parts import readme_part
 
 SENTINEL = "S3NTINEL-c00kie-VALUE-9f2e"
@@ -420,12 +420,13 @@ def _assert_plain_english(text, where):
       "Safari: macOS didn’t allow access",
       "macOS didn’t allow the app to read browser data. Go to System Settings > "
       "Privacy & Security > Full Disk Access",
-      "(do this for each path): “/opt/homebrew/bin/python3.14”, “/opt/anaconda3/bin/python3.13”"]),
+      # 每个路径单独一行（专家审查 I8）；以前是「…(do this for each path): “…”, “…”. The list…」夹在句子里
+      "(do this for each path):\n“/opt/homebrew/bin/python3.14”\n“/opt/anaconda3/bin/python3.13”\n"]),
     ({"chrome": "not_logged_in"},
      ["Chrome: readable, but no TikTok sign-in cookie", "Sign in to TikTok in Chrome (or Safari)"]),
     ({"chrome": "no_tiktok_cookie"}, ["Chrome: readable, but no tiktok.com cookies"]),
     ({"chrome": "blocked_by_system", "safari": "not_logged_in"},
-     ["Full Disk Access", "open it again. Sign in to TikTok in Chrome (or Safari)"]),
+     ["Full Disk Access", "in the same list. Sign in to TikTok in Chrome (or Safari)"]),
     ({"chrome": "ok", "safari": "blocked_by_system"},
      ["Tried again with the TikTok sign-in from Chrome. TikTok still didn’t provide a stream URL."]),
     ({"chrome": "keychain_wait"},
@@ -443,10 +444,16 @@ def _assert_plain_english(text, where):
 ])
 def test_browser_only_advice_in_english(monkeypatch, login, must_have):
     """browser_login 这一段自己的英文：没有中文、没有贴标签和猜原因的词、句子之间有空格。
-    开头带一个空格：它接在 browser_only_message 前一句的句号后面。"""
+    只有一行时开头带一个空格：它接在 browser_only_message 前一句的句号后面。带「完全磁盘访问权限」那几步
+    （分了行）时改成另起一行，开头是换行、不带空格（专家审查 U10：4003110 那句要单独成为横幅的第一行，
+    横幅折叠时只露它）——以前这里钉的是「一律以一个空格开头」，那是改之前的拼法。"""
     monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_FDA_PATHS))
     advice = i18n.render(bl.browser_only_advice(login), "en")
-    assert advice.startswith(" ") and not advice.startswith("  "), advice
+    if "\n" in advice:
+        assert advice.startswith("\n") and advice[1] not in " \n", advice
+        assert " \n" not in advice and "\n " not in advice, advice
+    else:
+        assert advice.startswith(" ") and not advice.startswith("  "), advice
     assert advice.endswith(".") and not advice.endswith(" "), advice
     _assert_plain_english(advice.strip(), login)
     for text in must_have:
@@ -598,12 +605,16 @@ def test_selfcheck_row_when_the_system_refuses(monkeypatch, tmp_path):
     row = run(selfcheck.check_browser_login())
     assert row["level"] == "warn"
     assert "Chrome：系统拒绝读取；Safari：系统拒绝读取" in row["detail"]
+    # 路径各占一行、多了「删掉再加」和权限范围两句（专家审查 I8、S2）；自检那一行按换行显示（.sc-fix pre-line）
     assert row["fix"] == (
         "系统不允许本程序读取浏览器数据。到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，"
         "点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开"
-        "（每个路径各做一遍）：「/opt/homebrew/Cellar/python@3.14/3.14.7/bin/python3.14」、"
-        "「/opt/anaconda3/bin/python3.13」。列表里显示的名字是 python3.14、python3.13，"
-        "不是本程序的名字。用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。")
+        "（每个路径各做一遍）：\n「/opt/homebrew/Cellar/python@3.14/3.14.7/bin/python3.14」\n"
+        "「/opt/anaconda3/bin/python3.13」\n列表里显示的名字是 python3.14、python3.13，"
+        "不是本程序的名字。如果列表里已经有这一项、开关也开着，先选中它点「−」删掉，再按上面的步骤加一次。"
+        "用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。\n"
+        "这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。"
+        "不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。")
     _assert_plain(row, calls)
 
 
@@ -911,6 +922,103 @@ def test_blocked_message_and_selfcheck_row_use_the_runtime_paths(monkeypatch, tm
     assert "「/opt/x/bin/python3.12」" in message and "TikTok Live Translator" not in message
     row = selfcheck._browser_login_row({"chrome": "blocked_by_system"})
     assert "「/opt/x/bin/python3.12」" in row["fix"] and "TikTok Live Translator" not in row["fix"]
+
+
+# ---- 专家审查 I8、S2、U10：步骤分行、路径单独一行、删掉再加、权限范围、4003110 那句单独在第一行 ----
+
+_SPACED = ["/opt/homebrew/bin/python3.14", "/Users/demo user/miniconda3/bin/python3.13"]
+_ZH_REMOVE = "如果列表里已经有这一项、开关也开着，先选中它点「−」删掉，再按上面的步骤加一次。"
+_EN_REMOVE = "If it’s already in the list with its switch on, select it, click −, and add it again with the steps above."
+_ZH_SCOPE = ("这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。"
+             "不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。")
+_EN_SCOPE = ("This permission goes to the Python interpreter, not just this app, so any script it runs can "
+             "read protected data on this computer. When you no longer need the TikTok sign-in from your "
+             "browser, you can turn its switch off in the same list.")
+
+
+@pytest.mark.parametrize("lang,quote", [("zh", "「{}」"), ("en", "“{}”")])
+def test_fda_steps_put_each_path_on_a_line_of_its_own(lang, quote):
+    """「粘贴下面的路径」：路径真的在下面，一行一个，整行就是它（带空格的也是一整行），不再夹在句末。
+    页面按 status.paths 把这几行换成可复制的代码行，认的就是「整行是这条路径（或带引号的它）」。"""
+    lines = i18n.render(bl.fda_steps(_SPACED), lang).split("\n")
+    for path in _SPACED:
+        assert quote.format(path) in lines, (path, lines)
+    first = next(i for i, line in enumerate(lines) if path_line(line, _SPACED))
+    assert lines[first - 1].endswith("：" if lang == "zh" else ":"), lines[first - 1]
+    assert [path_line(line, _SPACED) for line in lines[first:first + 2]] == _SPACED
+    assert not any(path in line and not path_line(line, _SPACED) for line in lines for path in _SPACED)
+
+
+def path_line(line, paths):
+    """这一行是哪条路径（整行就是它、或者用「」“”括起来的它）；不是就返回 None。和 web/app.js pathOfLine 同一条规则。"""
+    for path in paths:
+        if line in (path, "「{}」".format(path), "“{}”".format(path)):
+            return path
+    return None
+
+
+def test_fda_steps_say_to_remove_and_add_again_and_what_the_permission_covers():
+    """I8：列表里已经有、开着，系统仍然拒绝读取——删掉再加一次。S2（D6「维持授权，把范围讲清楚」）：权限给的是
+    Python 解释器，用它跑的任何脚本都能读受保护的数据；不需要时在同一个列表里关掉。只写看得到的和能做的：
+    不写「解释器被换了文件」这类没实测过的原因，也不贴原因标签（CLAUDE.md 第八条）。"""
+    text = bl.fda_steps(_SPACED)
+    zh, en = str(text), i18n.render(text, "en")
+    assert _ZH_REMOVE in zh and _ZH_SCOPE in zh
+    assert _EN_REMOVE in en and _EN_SCOPE in en
+    assert zh.endswith(_ZH_SCOPE) and en.endswith(_EN_SCOPE), "权限范围那句单独成最后一行"
+    assert ("\n" + _ZH_SCOPE) in zh and ("\n" + _EN_SCOPE) in en
+    assert not any(word in zh for word in GUESSED_LABELS)
+    assert not ZH_CAUSAL.search(zh), ZH_CAUSAL.search(zh)
+    _assert_plain_english(en, "fda_steps")
+    words = [line for line in (zh + "\n" + en).split("\n") if not path_line(line, _SPACED)]
+    for word in ("conda", "cdhash", "指纹", "fingerprint", "失效"):     # 没实测过的「为什么」一句不写
+        assert not any(word in line for line in words), word
+
+
+@pytest.mark.parametrize("login", [
+    {"chrome": "blocked_by_system", "safari": "blocked_by_system"},
+    {"safari": "blocked_by_system", "chrome": "not_logged_in"},      # 专家量的那种：中文 5 行、英文 7 行
+    {"chrome": "blocked_by_system", "safari": "keychain_wait"},
+])
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_blocked_message_keeps_the_4003110_sentence_alone_on_the_first_line(monkeypatch, login, lang):
+    """U10：横幅超过 3 行时页面只露第一行（web/app.js renderStatusBanner）。第一行必须正好是「接口不给流地址」
+    那句第八条的说明，一个字都不能被折进去；后面是观察、几步和路径。"""
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_SPACED))
+    lines = i18n.render(browser_only_message(3, login), lang).split("\n")
+    lead = i18n.render(browser_only_message(3, None), lang)
+    tail = "想现在就看" if lang == "zh" else " To watch now"
+    assert lead.startswith(lines[0]) and tail in lead[len(lines[0]):], (lines[0], lead)
+    assert "4003110" in lines[0]
+    assert len(lines) > 3, lines
+    assert all(line == line.strip() for line in lines[:-1]), lines
+    for path in _SPACED:
+        assert sum(1 for line in lines if path_line(line, [path])) == 1, (path, lines)
+
+
+@pytest.mark.parametrize("login", [
+    None, {"chrome": "not_read"}, {"chrome": "not_logged_in"}, {"chrome": "no_tiktok_cookie"},
+    {"chrome": "ok", "safari": "blocked_by_system"}, {"chrome": "keychain_wait"}, {"chrome": "readable"},
+    {"chrome": "cannot_decrypt"}, {"chrome": "error:RuntimeError"},
+])
+def test_messages_without_the_full_disk_access_steps_stay_one_line(login):
+    """没有「完全磁盘访问权限」那几步的变体（没登录、借到登录仍不给、钥匙串……）照旧是一段话：页面上 2–3 行，
+    不折叠，拼法也和改之前一样。"""
+    message = browser_only_message(3, login)
+    assert "\n" not in str(message) and "\n" not in i18n.render(message, "en")
+
+
+def test_the_paths_on_their_own_lines_are_the_paths_the_status_carries(monkeypatch):
+    """status.paths（pipeline._fda_paths）和文字里单独成行的路径是同一份：页面靠一字不差地比对，把那几行
+    换成可复制的代码行，不会一条画两遍、也不会漏一条。"""
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_SPACED))
+    login = {"safari": "blocked_by_system", "chrome": "not_logged_in"}
+    exc = resolver.ResolveError(browser_only_message(3, login), kind="browser_only", login=login)
+    paths = pipeline_mod._fda_paths(exc)
+    assert paths == _SPACED
+    for lang in ("zh", "en"):
+        lines = i18n.render(browser_only_message(3, login), lang).split("\n")
+        assert [path_line(line, paths) for line in lines if path_line(line, paths)] == paths
 
 
 def test_launch_python_is_remembered_once_and_survives_the_execs():

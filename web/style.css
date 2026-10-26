@@ -912,6 +912,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   background: var(--warn-bg);
   border-bottom: 0.5px solid var(--a-orange-40);
 }
+/* 文字里的换行照着断（「没有读到 TikTok 登录」那条的完全磁盘访问权限步骤，路径单独一行，I8） */
+.incident > span { white-space: pre-line; }
 .incident.error { color: #fff; background: var(--fail-bar); border-bottom-color: var(--fail-bar); }   /* 同 .health-bar.degraded */
 .incident.info {
   color: var(--label);
@@ -1213,7 +1215,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
    右边的说明才对得齐（spec §11 第 4 条） */
 html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .sc-item .sc-detail { flex: 1; color: var(--label); }
-.sc-item .sc-fix { display: block; color: var(--label); margin-top: 2px; }
+.sc-item .sc-fix { display: block; color: var(--label); margin-top: 2px; white-space: pre-line; }   /* 「完全磁盘访问权限」那几步分行写，路径单独一行（I8） */
 .sc-item.fail .sc-detail { color: var(--fail); font-weight: 600; }
 
 /* 视觉隐藏但读屏可读：自检提醒/失败项在文字里补一句级别说明（app.js
