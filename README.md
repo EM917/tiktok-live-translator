@@ -108,6 +108,25 @@ Flags need a terminal: the `.app` does not take them, while `Start.command` and 
 
 The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen. Click the version number at the bottom of the window to check by hand. During a stream, the answer appears next to the version number.
 
+Update Now installs the release named in the banner, not changes made after it that are not released yet. If the updated app then starts twice in a row without its window connecting, it goes back to the version you had before and a message says so. Opening the app twice at once does not count, and neither does force-quitting it after its window has connected. The app does not go back if files in its folder were changed by hand.
+
+The app also updates yt-dlp, which finds the stream URL, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now.
+
+<a id="en-updating-zip"></a>
+
+### Updating a zip install
+
+Your settings and records are kept inside the app folder, so do not replace the old folder with the new one. Unzip the new version next to it, and before you start it, copy these from the old folder into the new one:
+
+- `settings.json`: your settings and API keys
+- `banned_terms.txt` and `glossary.txt`
+- `logs/`: the audit log of every session, which records what was recognized and matched
+- `transcripts/`: saved captions and comments
+- your own `.txt` files in `profiles/` and `brands/`
+- `comment_guard/local/` and `comment_guard/marked/`: your Comment Review rules and watch lists
+
+Then start the new version, and delete the old folder once everything is there.
+
 <a id="en-translation-engines"></a>
 
 ## Translation engines
@@ -157,7 +176,7 @@ The link contains a key, so treat it like a password. New Link disconnects every
 
 <sub>[中文](#zh-floating-window)</sub>
 
-While a stream is running, click the Floating Window button in the top bar (only an icon while the app window is narrower than 1,400 px) to open a small dark window that stays on top of other apps. It shows the latest caption, with the original under it, and the most recent comments with their translations (up to five; make the window taller to see all five). Drag it or resize it, and the app remembers where you left it. It only shows things: it has no buttons, and banned-term alerts stay in the main window. It closes by itself when monitoring stops. The button is there only when the app runs in its own window, not with `--browser`.
+While a stream is running, click the Floating Window button in the top bar (only an icon while the app window is narrower than 1,400 px) to open a small dark window that stays on top of other apps. It shows the latest caption, with the original under it, and the most recent comments with their translations (up to five; make the window taller to see all five). Drag it or resize it, and the app remembers where you left it. It only shows things, and banned-term alerts stay in the main window. Click Stop and it closes. If the stream ends or monitoring stops with an error, it stays open and says Stream ended or Monitoring stopped, with a Show Main Window button. On a Mac, if the app is not the active app, its Dock icon bounces once. The Floating Window button is there only when the app runs in its own window, not with `--browser`.
 
 <a id="en-comment-review"></a>
 
@@ -206,7 +225,7 @@ Matching runs on the recognized Spanish text, so an alert does not wait for the 
 2. In the file window press ⌘⇧G, paste the path, press Return, click Open, and turn the entry on. It is listed as `python3.x`, not under the app's name.
 3. Repeat for each path shown, then quit the app completely and reopen it.
 
-If you start with `Start.command`, add Terminal as well. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
+If the entry is already in the list with its switch on and the row still says macOS did not allow access, select it, click −, and add it again. The permission goes to the Python interpreter, not just this app, so any script run with that Python can read protected data on this computer. When you no longer need it, turn the switch off in the same list. If you start with `Start.command`, add Terminal as well. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
 
 **Update Now does not start or finish.** The message says what went wrong and shows a command with a Copy button. Run it in Terminal. If the message lists app files you changed, the command discards those changes, so skip it if the changes were on purpose.
 
@@ -242,7 +261,7 @@ For a stuck download, a busy port and other problems, see [docs/faq.md](docs/faq
 - On a computer without Apple Silicon or an NVIDIA GPU, recognition can fall behind. Audio more than 60 seconds behind is dropped, oldest first, and the window shows how much.
 - Hy-MT2 1.8B, TranslateGemma and Claude translate viewer comments; the other engines show the original.
 - Phone Viewing needs the phone to be on the same network. It uses plain http, so phones get no system notifications, and sound may stop when a phone locks.
-- Select and copy text from the window, or export a whole session from Settings → Transcripts. The window keeps the last 300 captions and 100 comments, and a reload shows the same ones again. Clear removes them from the app too, so they do not come back after a reload; the session's transcript file still has them. A phone that connects later sees the last 100 of each. The app never deletes transcripts, so clear the `transcripts` folder yourself when you no longer need them.
+- Select and copy text from the window, or export a whole session from Settings → Transcripts. The window keeps the last 300 captions and 100 comments, and a reload shows the same ones again. Clear in the top bar (captions) and Clear Comments in the comment column remove them from the app too, so they do not come back after a reload; the session's transcript file still has them. Each takes two clicks: the first turns the button into Clear?, and a second click within 6 seconds clears. A phone that connects later sees the last 100 of each. The app never deletes transcripts, so clear the `transcripts` folder yourself when you no longer need them.
 - The terminal, the logs and the audit log are always in Chinese, whatever the interface language.
 - Follow TikTok's Terms of Service and local laws. Do not rebroadcast or redistribute other people's content.
 
@@ -254,7 +273,7 @@ For a stuck download, a busy port and other problems, see [docs/faq.md](docs/faq
 
 Speech recognition always runs on your computer. So do Hy-MT2 and TranslateGemma, and Don't Translate sends nothing out. Automatic stays on your computer when a local model is installed. With none installed it sends caption text to Google.
 
-With DeepL, Google or Claude, caption text goes to that provider. With an OpenAI-compatible API it goes to the server you set up, which can be your own. If your DeepL quota runs out, the app switches to a local model, or to Google when there is none, and the Translation Engine row says so. With Claude, viewer comments and Retranslate requests go to Anthropic too.
+With DeepL, Google or Claude, caption text goes to that provider. With an OpenAI-compatible API it goes to the server you set up, which can be your own. If your DeepL quota runs out, the app switches to a local model, or to Google when there is none, and the Translation Engine row says so. A switch to Google also puts a notice at the top of the window, and it stays there until you choose an engine again. With Claude, viewer comments and Retranslate requests go to Anthropic too.
 
 Viewer comments come from TikTok through TikTokLive, which signs its connection through the third-party Euler Stream service. The app also contacts TikTok for the stream and GitHub to check for updates. It downloads software and models from PyPI, Hugging Face, ollama.com and GitHub.
 
@@ -406,6 +425,25 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示。也可以随时点窗口底部的版本号手动检查，直播中检查的结果写在版本号旁边。
 
+「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。更新后的程序如果连续两次启动、窗口都没连上，会自动退回更新前的版本，并弹窗说明。同时双击打开两次不算，窗口连上之后再强行退出也不算；程序文件夹里的文件被手动改过的话，不会退回。
+
+程序还会自己更新 yt-dlp（查找直播流地址用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。
+
+<a id="zh-updating-zip"></a>
+
+### 更新（ZIP 安装）
+
+设置和各种记录都放在程序文件夹里，所以不要拿新文件夹直接替换旧文件夹。把新版本解压在旁边，第一次启动它之前，先把这几样从旧文件夹复制到新文件夹：
+
+- `settings.json`：设置和 API 密钥
+- `banned_terms.txt` 和 `glossary.txt`
+- `logs/`：每一场的审计日志，记着识别出的话和违禁词命中
+- `transcripts/`：保存下来的字幕和弹幕
+- `profiles/`、`brands/` 里你自己的 `.txt` 文件
+- `comment_guard/local/` 和 `comment_guard/marked/`：弹幕留意的规则和关注名单
+
+然后启动新版本，确认都在了再删掉旧文件夹。
+
 <a id="zh-translation-engines"></a>
 
 ## 翻译引擎
@@ -455,7 +493,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 <sub>[English](#en-floating-window)</sub>
 
-监听期间，点顶栏的「浮窗」按钮（应用窗口窄于 1400 像素时去掉图标、只显示「浮窗」两个字；顶栏放不下这两个字的时候，比如「报警开」标签亮着，或者窗口很窄，只显示图标），会打开一个深色的小窗，始终在别的软件上面。里面是最新一条字幕（原文在译文下面）和最近几条弹幕与它们的译文（最多五条，窗口拉高才看得全）。可以拖动、拉大缩小，下次打开还在你放的位置。它只显示，没有按钮，违禁词报警仍然只在主窗口里。监听一停它就自己关掉。只有程序在自己的窗口里运行时才有这个按钮，加了 `--browser` 就没有。
+监听期间，点顶栏的「浮窗」按钮（应用窗口窄于 1400 像素时去掉图标、只显示「浮窗」两个字；顶栏放不下这两个字的时候，比如「报警开」标签亮着，或者窗口很窄，只显示图标），会打开一个深色的小窗，始终在别的软件上面。里面是最新一条字幕（原文在译文下面）和最近几条弹幕与它们的译文（最多五条，窗口拉高才看得全）。可以拖动、拉大缩小，下次打开还在你放的位置。它只显示，违禁词报警仍然只在主窗口里。点「停止」它就关掉；直播结束或监听出错停下时，它留着，写「直播已结束」或「监听已停止」，下面有「回到主窗口」按钮；Mac 上程序不在前台时，Dock 图标会跳一下。只有程序在自己的窗口里运行时才有「浮窗」按钮，加了 `--browser` 就没有。
 
 <a id="zh-comment-review"></a>
 
@@ -504,7 +542,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 2. 在选文件的窗口里按 ⌘⇧G，粘贴路径，按回车，点「打开」，再打开这一项的开关。列表里它叫 `python3.x`。
 3. 每个路径都这样加一遍，然后完全退出程序，重新打开。
 
-用 `Start.command` 启动的话，也要把「终端」加进去。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
+如果列表里已经有这一项、开关也开着，这一行却仍然说 macOS 没有放行，先选中它点「−」删掉，再按上面的步骤加一次。这项权限给的是 Python 解释器，不只是本程序：用这个 Python 运行的任何脚本都能读取这台电脑上受保护的数据。不再需要时，在同一个列表里把开关关掉。用 `Start.command` 启动的话，也要把「终端」加进去。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
 
 **「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，下面有一条带「复制」按钮的命令，复制后在终端里运行。如果提示列出了你改过的程序文件，这条命令会丢掉这些改动，改动是有意的就别运行。
 
@@ -541,7 +579,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 - 音频积压超过 60 秒，才会开始丢最旧的，窗口会显示丢了多少。
 - 观众弹幕只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时才翻译。
 - 手机同看只能在同一个局域网里用。它走的是普通 http，所以手机收不到系统通知，锁屏后声音可能会断。
-- 可以在窗口里选中文字复制，也可以在「设置 → 字幕记录」导出整场。窗口保留最近 300 条字幕和 100 条弹幕，刷新后原样放回来；点「清空字幕」「清空弹幕」会连程序里存着的一起清掉，刷新后不会再回来，但这一场的字幕记录文件里还有。之后才连上的手机，每类只看到最近 100 条。程序不会删除字幕记录，不再需要时请自己清理 `transcripts` 文件夹。
+- 可以在窗口里选中文字复制，也可以在「设置 → 字幕记录」导出整场。窗口保留最近 300 条字幕和 100 条弹幕，刷新后原样放回来；点「清空字幕」「清空弹幕」会连程序里存着的一起清掉，刷新后不会再回来，但这一场的字幕记录文件里还有。两颗按钮都要点两次：第一次点下去按钮变成「再点确认」，6 秒内再点一次才清空。之后才连上的手机，每类只看到最近 100 条。程序不会删除字幕记录，不再需要时请自己清理 `transcripts` 文件夹。
 - 终端、日志和审计日志一直是中文，不随界面语言变。
 - 请遵守 TikTok 的服务条款和当地法律，不要转播或分发别人的内容。
 
@@ -553,7 +591,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 语音识别一直在你的电脑上跑。Hy-MT2 和 TranslateGemma 也在本机，和「不翻译」一样，不会往外发任何东西。「自动」在装了本地模型时同样留在本机，一个本地模型都没装就会把字幕文本发给 Google。
 
-用 DeepL、Google 或 Claude 时，字幕文本会发给对应的服务商。用 OpenAI 兼容 API 时，发给你设置的那个服务器，可以是你自己的。DeepL 的额度用完后，程序会改用本地模型，没有本地模型就改用 Google，「翻译引擎」那一行会写明。用 Claude 时，观众弹幕和「重译」请求也会发给 Anthropic。
+用 DeepL、Google 或 Claude 时，字幕文本会发给对应的服务商。用 OpenAI 兼容 API 时，发给你设置的那个服务器，可以是你自己的。DeepL 的额度用完后，程序会改用本地模型，没有本地模型就改用 Google，「翻译引擎」那一行会写明；改用 Google 时，窗口顶部还会挂着一条提示，直到你重新选一次引擎。用 Claude 时，观众弹幕和「重译」请求也会发给 Anthropic。
 
 观众弹幕通过 TikTokLive 从 TikTok 获取，它的连接签名要经过第三方的 Euler Stream 服务。另外，程序会联系 TikTok 取直播流，联系 GitHub 查更新。组件和模型从 PyPI、Hugging Face、ollama.com 和 GitHub 下载。
 

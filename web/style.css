@@ -535,6 +535,11 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
 }
 /* ZIP 安装时「前往下载新版本」链接升级为主按钮 */
 .update-bar a.btn.primary { color: #ffffff; text-decoration: none; }
+/* ZIP 安装的更新条：另起一行写要复制到新文件夹的那几样（专家审查 I2，web/app.js showZipKeepNote） */
+.update-zip-note {
+  flex-basis: 100%; margin: 0;
+  text-align: center; font-size: var(--fs-footnote); line-height: 1.5; color: var(--label-2);
+}
 
 /* ---------- 状态横幅 ---------- */
 .status-banner {
@@ -546,6 +551,17 @@ input[type="range"] { accent-color: var(--blue); width: 96px; }
   white-space: pre-wrap;
 }
 .status-banner:not(.info) { color: var(--fail); }
+/* 横幅按行画（web/app.js renderStatusBanner）：每行一块，照旧居中。路径行就是 .fix-command（下面那条可复制
+   命令的样子），在横幅里上下各留一点空。超过 3 行的横幅默认只露第一行，「显示全部步骤」接在那一行的字后面（专家审查 U10） */
+.status-banner .banner-path { margin: 6px auto; text-align: left; white-space: normal; }
+.status-banner.folded .banner-rest { display: none; }
+.banner-more {
+  margin-left: 4px; padding: 0 6px;
+  font: inherit; font-size: var(--fs-footnote);
+  color: var(--accent); background: none; border: none; border-radius: 4px; cursor: pointer;
+}
+.banner-more:hover { text-decoration: underline; }
+.banner-more:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
 
 /* ---------- 历史字幕 ---------- */
 /* 字幕历史 + 右侧弹幕列的并排容器。min-height:0 让两列各自在内部滚动，
@@ -777,6 +793,10 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .copyright a:hover { color: var(--label-2); text-decoration: underline; }
 #app-version { cursor: pointer; }
 #app-version:hover { color: var(--label-2); text-decoration: underline; }
+/* 版本号旁正在显示一句提示（web/app.js putFooterNote，专家审查 U2）：字用 --label-2，长句换行、页脚跟着
+   往上长高，不再固定一行把第二行挤到窗口外。一行时仍是 22px 高（3 + 16 + 3）；版权那行字本身不动 */
+.copyright.noting { height: auto; min-height: 22px; line-height: 16px; padding: 3px 16px; }
+#app-version.noting { color: var(--label-2); }
 
 .live-translated {
   font-size: var(--sub-size);
@@ -912,6 +932,11 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   background: var(--warn-bg);
   border-bottom: 0.5px solid var(--a-orange-40);
 }
+/* 文字里的换行照着断（「没有读到 TikTok 登录」那条的完全磁盘访问权限步骤，路径单独一行，I8） */
+.incident > span { white-space: pre-line; }
+/* 超过 3 行的持续提示折着时只露第一行和「显示全部步骤」（web/app.js foldIncident）。按钮用这一条的字色加下划线：
+   橙底、红底上的蓝字对比不够 */
+.incident .banner-more { color: inherit; text-decoration: underline; }
 .incident.error { color: #fff; background: var(--fail-bar); border-bottom-color: var(--fail-bar); }   /* 同 .health-bar.degraded */
 .incident.info {
   color: var(--label);
@@ -1213,7 +1238,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
    右边的说明才对得齐（spec §11 第 4 条） */
 html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .sc-item .sc-detail { flex: 1; color: var(--label); }
-.sc-item .sc-fix { display: block; color: var(--label); margin-top: 2px; }
+.sc-item .sc-fix { display: block; color: var(--label); margin-top: 2px; white-space: pre-line; }   /* 「完全磁盘访问权限」那几步分行写，路径单独一行（I8） */
 .sc-item.fail .sc-detail { color: var(--fail); font-weight: 600; }
 
 /* 视觉隐藏但读屏可读：自检提醒/失败项在文字里补一句级别说明（app.js
