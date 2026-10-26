@@ -253,7 +253,13 @@ def test_a_tag_that_cannot_be_fast_forwarded_to_is_refused(world):
     assert world["execs"] == [] and pips == []
     state, detail, command = server.statuses()[-1]
     assert "本地代码没法直接快进到新版本" in detail
-    assert command.endswith("git fetch --tags --force && git merge --ff-only v1.1.0")
+    if updater_mod._on_windows():
+        # Windows 上给的是 PowerShell 写法（I11）：5.1 不认 &&，每一步写成 if ($?) { … }，先取标签再快进
+        assert command.endswith(
+            "; if ($?) { git fetch --tags --force }; if ($?) { git merge --ff-only v1.1.0 }"), command
+        assert "&&" not in command
+    else:
+        assert command.endswith("git fetch --tags --force && git merge --ff-only v1.1.0"), command
     assert _git(install, "rev-parse", "HEAD") != c["v1.1.0"]
 
 
@@ -276,7 +282,9 @@ def test_release_tag_accepts_only_plain_tag_names():
 
 
 def test_the_manual_command_goes_to_the_tag_on_both_shells(monkeypatch, tmp_path):
+    """两种写法都在每个平台上测：先显式按 macOS 走，再显式按 Windows 走（不跟着跑测试的机器变）。"""
     monkeypatch.setattr(updater_mod, "ROOT", tmp_path)
+    monkeypatch.setattr(updater_mod, "_on_windows", lambda: False)
     u = Updater(RecordingServer())
     u.latest = {"version": "v0.19.0"}
     assert u._manual_command() == 'cd "{}" && git fetch --tags --force && git merge --ff-only v0.19.0'.format(
@@ -294,6 +302,32 @@ def test_the_manual_command_goes_to_the_tag_on_both_shells(monkeypatch, tmp_path
     # 还不知道是哪个版本（没检查到新版本）：照旧 git pull
     u.latest = None
     assert "git pull --ff-only" in u._manual_command()
+
+
+def _pwsh(command, cwd):
+    return subprocess.run([shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", command],
+                          cwd=str(cwd), capture_output=True, text=True, errors="replace", timeout=120)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="需要 PowerShell 7（pwsh）")
+def test_the_windows_manual_command_really_runs_in_powershell(monkeypatch, world):
+    """I11 的那条命令以前只比对字符串：这里把 Windows 分支给的命令原样交给真的 PowerShell 跑。
+    跑的是 pwsh（PowerShell 7，GitHub 的跑器都带）；Windows 10/11 自带的 5.1 没有在这里跑过。"""
+    install, c = world["install"], world["commits"]
+    monkeypatch.setattr(updater_mod, "_on_windows", lambda: True)
+    u = Updater(RecordingServer())
+    u.latest = {"version": "v1.1.0"}
+    command = u._manual_command()
+    assert "if ($?)" in command and "&&" not in command
+
+    r = _pwsh(command, cwd=world["tmp"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _git(install, "rev-parse", "HEAD") == c["v1.1.0"]           # 到标签，不到 main 的末端
+
+    # 上一步失败，后面的就不跑：cd 进不去时，git 一步都不会在 PowerShell 当前所在的仓库里跑
+    _git(install, "reset", "-q", "--hard", c["v1.0.0"])
+    r = _pwsh(updater_mod.powershell_command(str(world["tmp"] / "no-such-dir"), tag="v1.1.0"), cwd=install)
+    assert _git(install, "rev-parse", "HEAD") == c["v1.0.0"], r.stdout + r.stderr
 
 
 def test_an_unusable_tag_name_is_refused_before_touching_git(world):

@@ -347,10 +347,16 @@ def test_a_port_probe_that_sees_another_instance_does_not_count(isolated):
 
 # ---- 两个进程同时启动：靠进程锁，第二个不计数（计划审查 P5） ------------------------------------
 
+# 子进程按 main.py 的顺序来：import 之后第一句先 harden_stdio()（tests/test_stdio_encoding.py 钉着 main.py
+# 的这个顺序），生产上 on_boot 的中文终端行都是加固之后才写的。#145 第一次上 windows-latest 时子进程少了
+# 这一句，标准流是管道 → cp1252 + strict，第一行「[信息]」就 UnicodeEncodeError、子进程提前退出。子进程的
+# 标准流在所有平台上都固定成 cp1252（PYTHONIOENCODING 只写编码：编不了的字符照样抛），Mac 上也能复现。
 HOLDER = r"""
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
+from app.stdio import harden_stdio
+harden_stdio()
 from app import settings, update_guard
 settings.SETTINGS_FILE = Path(sys.argv[2])
 update_guard._lock_path = lambda root: Path(sys.argv[3])
@@ -359,15 +365,27 @@ if sys.stdin.readline().strip() == "ready":
     print("RESULT", update_guard.mark_ready(), flush=True)
 sys.stdin.readline()
 """
+HOLDER_ENCODING = "cp1252"
 
 
-def _result(proc):
-    """子进程的下一行 RESULT（中间那些是它打的终端行）。"""
+def _start_holder(isolated):
+    env = dict(os.environ, PYTHONIOENCODING=HOLDER_ENCODING, PYTHONUTF8="0")
+    return subprocess.Popen(
+        [sys.executable, "-c", HOLDER, str(REPO), str(isolated / "settings.json"),
+         str(isolated / "guard.lock")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding=HOLDER_ENCODING, errors="replace",
+        env=env)
+
+
+def _result(proc, lines=None):
+    """子进程的下一行 RESULT；中间那些是它打的终端行，给了 lines 就收进去。"""
     for _ in range(20):
         line = proc.stdout.readline()
         if line.startswith("RESULT "):
             return line.split(" ", 1)[1].strip()
         assert line, "子进程提前退出了"
+        if lines is not None:
+            lines.append(line)
     raise AssertionError("没等到 RESULT")
 
 
@@ -375,12 +393,11 @@ def test_two_processes_started_together_do_not_roll_back(isolated):
     """一键更新重启之后（第 1 次启动，还没等页面连上）又双击了一次：单实例检查看不见还没起服务的
     第一个进程，第二个进程拿不到锁，就不计数——不会把一个好好的新版本退回去。"""
     update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
-    holder = subprocess.Popen(
-        [sys.executable, "-c", HOLDER, str(REPO), str(isolated / "settings.json"),
-         str(isolated / "guard.lock")],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    holder = _start_holder(isolated)
     try:
-        assert _result(holder) == "counted"                        # 第一个进程：第 1 次启动
+        lines = []
+        assert _result(holder, lines) == "counted"                 # 第一个进程：第 1 次启动
+        assert any(line.startswith("[??] ") for line in lines), lines  # 中文编不了，换成 ? 照样写出来
         assert guard()["boots"] == 1
         git = fake_git()
         outcome = update_guard.on_boot(isolated, git=git)          # 第二个进程同时起来
@@ -400,12 +417,13 @@ def test_a_double_launch_during_the_second_run_does_not_count_either(isolated):
     第 2 次那个进程随后页面没连上就没了，下一次真正的启动才是第 3 次、才退回。"""
     update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
     runs_without_the_page(isolated, times=1)
-    holder = subprocess.Popen(
-        [sys.executable, "-c", HOLDER, str(REPO), str(isolated / "settings.json"),
-         str(isolated / "guard.lock")],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    holder = _start_holder(isolated)
     try:
-        assert _result(holder) == "counted"                        # 第 2 次启动
+        lines = []
+        assert _result(holder, lines) == "counted"                 # 第 2 次启动
+        # 「这一次还连不上的话，下次打开会自动退回」那一行（ROLLBACK_AT_BOOTS - 1）：在 cp1252 上也整行写完了
+        assert any(line.startswith("[??] ") and "v1.1.0" in line and line.rstrip().endswith("v1.0.0")
+                   for line in lines), lines
         assert guard()["boots"] == 2
         git = fake_git()
         assert update_guard.on_boot(isolated, git=git).kind == "other-instance"
