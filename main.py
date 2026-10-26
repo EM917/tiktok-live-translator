@@ -605,6 +605,32 @@ def _recover_unclosed_audits(port):
             len(report.errors), "、".join("{}（{}）".format(n, e) for n, e in report.errors)))
 
 
+def _check_update_guard(others_running=None):
+    """一键更新之后的存活确认（专家审查 I6，规则见 app/update_guard.py）：新版本上一次启动之后字幕界面
+    一直没连上，这一次就退回更新前的版本，弹窗说明，然后重新 exec。
+
+    只在确认没有别的实例在跑之后调（计划审查 P5：在单实例检查之前计数，双击两次就会把一个好好的新版本
+    退回去）：窗口模式在 run_with_window 的检查之后，浏览器模式在 main() 的检查之后；--no-open、--url
+    不做单实例检查，由 others_running 探一次端口。任何出错都不拦启动。"""
+    try:
+        from app import update_guard
+        outcome = update_guard.on_boot(ROOT, others_running=others_running)
+    except Exception as exc:
+        print("[警告] 一键更新后的启动检查出错（{}），这次跳过".format(type(exc).__name__))
+        return
+    if not outcome.rolled_back:
+        return
+    # 对话框不等人点：旧版本马上起来，暂停中的监听才赶得上「重启后接着监听」的时限
+    _info_dialog(outcome.message)
+    update_guard.release_lock()
+    from app.relaunch import exec_args, flush_std, replace_process
+    argv = [sys.executable, str(ROOT / "main.py")] + sys.argv[1:]
+    flush_std()
+    if os.name == "nt":
+        replace_process(argv)          # 同 ensure_env：Windows 上起子进程、等它（I11）
+    os.execv(sys.executable, exec_args(argv))
+
+
 def _note_exit_signal(name):
     """第一次收到退出信号：SIGHUP（终端窗口关了）先把标准流换成 /dev/null——之后再往那个终端写就是
     EIO，收尾路上任何一行 print 都会抛（app/exit_signals.silence_stdio）。"""
@@ -688,6 +714,11 @@ async def main_async(args, state=None):
             print("[信息] 端口 {} 被占用，已自动改用 {}".format(args.port, port))
         args.port = port
         break
+    if server is not None and args.no_open:
+        # --no-open 不开页面，可能一直没有页面来连：一键更新后的启动检查（app/update_guard.py）在这种
+        # 模式下以「控制服务起来了」为准，否则下次启动会把一个好好的新版本退回去
+        from app import update_guard
+        update_guard.mark_ready()
     if server is None:
         if state is not None:
             state["failed"] = True   # 告诉窗口线程别开窗口了
@@ -870,6 +901,10 @@ def main():
                     print("[信息] 检测到程序已在运行，直接打开现有界面 " + existing)
                     webbrowser.open(existing)
                     return
+                _check_update_guard()
+            else:
+                # --no-open、--url 不做单实例检查：一键更新后的启动检查自己探一次端口
+                _check_update_guard(lambda: _existing_instance_url(args.port) is not None)
             asyncio.run(main_async(args))
     except KeyboardInterrupt:
         # 识别证据在每一场自己的证据线程里写：asyncio.run 收尾只等默认线程池，下面的 os._exit
@@ -940,6 +975,8 @@ def run_with_window(args):
         webview.start()
         return
 
+    # 确认没有别的实例在跑了：一键更新后的启动检查（新版本起不来就退回，见 _check_update_guard）
+    _check_update_guard()
     state = {}
     from app.window_close import (FinishOnce, guard_close, hook_app_terminate, localization_kwargs,
                                   stop_after_close)

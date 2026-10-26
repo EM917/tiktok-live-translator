@@ -1346,6 +1346,19 @@ class Updater:
             # 只装上了必需的组件：记成「这份清单装失败过」，启动时 24 小时内不为它重跑 pip
             record_requirements_failure(ROOT, digest, full_code)
 
+    @staticmethod
+    def _arm_update_guard(head, target, from_version, to_version):
+        """execv 之前留下启动检查的记号（专家审查 I6，规则见 app/update_guard.py）：新版本连续两次启动、
+        字幕界面都没连上，就退回 head。读不到更新前的提交号、记号写不进去：照常重启，只是没有这层保险。"""
+        if not head:
+            print("[警告] 读不到更新前的提交号：这次更新之后新版本起不来时，不会自动退回")
+            return
+        try:
+            from . import update_guard
+            update_guard.arm(head, target, from_version, to_version)
+        except Exception as exc:
+            print("[警告] 没能留下一键更新的启动检查记号（{}）：新版本起不来时，不会自动退回".format(exc))
+
     async def _wait_for_pip_lock(self):
         """pip 锁被占着时等一会儿（UPDATE_LOCK_WAIT_SEC）：后台的 mlx-whisper 安装看到
         _applying 就自己撤。等到了返回 True（锁马上还回去，后面装依赖时再拿）。"""
@@ -1513,13 +1526,16 @@ class Updater:
             code, _, err = await self._git("merge", "--ff-only", target)
             if code == 0:
                 self._record_installed_requirements(requirements, wanted, full_code, constraints)
+                # 「重启后接着监听」的记号带上更新前后的提交号（I6）：先留它，下面的启动检查记号要抄一份
                 resuming = bool(token is not None and before_restart is not None
-                                and before_restart(token, to_version))
+                                and before_restart(token, to_version,
+                                                   commits={"from": head or None, "to": target}))
                 await self.server.status(
                     "connecting" if resuming else "idle",
                     L("更新完成，正在自动重启…", "Update complete. Restarting…")
                     + (L("重启后自动恢复监听", " Monitoring resumes after the restart.")
                        if resuming else ""))
+                self._arm_update_guard(head, target, from_version, to_version)
                 print("[信息] 已更新到最新版本，重启进程…")
                 await asyncio.sleep(0.6)
                 try:

@@ -893,17 +893,24 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self.server.config["active_brand"] = self._active_brand_info()
         await self.start_stream(url, media=token.get("media"))
 
-    def _save_update_resume(self, token, to_version):
+    def _save_update_resume(self, token, to_version, commits=None):
         """execv 之前留记号：新进程启动时据此接着监听（见 resume_after_update）。
-        返回是否留了记号。更新期间中控点过开始/停止的不留：重启后照他最后的操作来。"""
+        返回是否留了记号。更新期间中控点过开始/停止的不留：重启后照他最后的操作来。
+
+        commits 是更新前后的提交号 {from, to}（专家审查 I6）：记进记号里，事后看得出这次重启是从哪个
+        提交换到哪个；新版本起不来、退回旧版本时（app/update_guard.py），旧版本照样读得懂这个记号
+        （多出来的键不认识就不用）。"""
         if not token or not token.get("url"):
             return False
         if token.get("operator_acted"):
             print("[信息] 更新期间中控点过开始/停止，重启后不自动接着监听")
             return False
-        save_setting("resume_after_update", {"url": token["url"], "media": token.get("media"),
-                                             "brand": token.get("brand"),
-                                             "at": time.time(), "to_version": to_version})
+        marker = {"url": token["url"], "media": token.get("media"), "brand": token.get("brand"),
+                  "at": time.time(), "to_version": to_version}
+        if commits:
+            marker["from"] = commits.get("from")
+            marker["to"] = commits.get("to")
+        save_setting("resume_after_update", marker)
         return True
 
     async def resume_after_update(self, now=None):
@@ -931,16 +938,25 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         from .provenance import app_version, streamer_of
         media = marker.get("media")
         streamer = streamer_of(url)
-        self._resume_reason = "update"
+        # 新版本起不来、退回到这个版本之后接着听（app/update_guard.py 在记号里写了 rolled_back_from）：
+        # 状态行和审计都照实说是退回来的，不说「已更新到」
+        rolled_back_from = marker.get("rolled_back_from")
+        self._resume_reason = "update_rolled_back" if rolled_back_from else "update"
         # 品牌词表跟着记号恢复；老记号没有这个字段（升级前留下的）按不限处理，
         # 和缺 media/其它字段的宽容原则一致——brand_path 会在 _begin_session
         # 里重新校验一遍，这里不必重复校验
         brand = marker.get("brand")
         self.brand = brand if isinstance(brand, str) and brand else None
         self.server.config["active_brand"] = self._active_brand_info()
-        await self.server.status("connecting", L("已更新到 v{}，正在自动恢复监听{}…",
-                                                 "Updated to v{}. Resuming monitoring{}…").format(
-            app_version(), " @" + streamer if streamer else ""))
+        if rolled_back_from:
+            text = L("一键更新到 v{} 之后字幕界面一直没有连上，已退回 v{}，正在自动恢复监听{}…",
+                     "After the update to v{}, the caption window never connected. The app went back "
+                     "to v{}. Resuming monitoring{}…").format(
+                str(rolled_back_from).lstrip("vV"), app_version(), " @" + streamer if streamer else "")
+        else:
+            text = L("已更新到 v{}，正在自动恢复监听{}…", "Updated to v{}. Resuming monitoring{}…").format(
+                app_version(), " @" + streamer if streamer else "")
+        await self.server.status("connecting", text)
         await self.start_stream(url, media=media if isinstance(media, str) and media else None)
         return True
 
@@ -952,7 +968,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     def _update_session_extras(self):
         """session_start 里与组件和更新有关的几项。resumed_after 只用一次：update 表示
-        一键更新重启后自动接上的这一场，update_failed 表示更新没成、在旧版本上恢复的。"""
+        一键更新重启后自动接上的这一场，update_failed 表示更新没成、在旧版本上恢复的，
+        update_rolled_back 表示新版本起不来、自动退回旧版本之后接上的（专家审查 I6）。"""
         from .updater import component_version, update_check_ok_iso
         reason = getattr(self, "_resume_reason", None)
         self._resume_reason = None
