@@ -9,7 +9,9 @@ key 就变，于是新建一个识别器。ct2 后端（Windows、Intel、CPU �
     就是这一场的热词；
   * 识别连续出错改用的 CPU 备用识别器也带这一场的热词；上一场改用的 CPU 模型被下一场（别的主播）接着用时，
     热词换成下一场的；
-  * asr_config 审计照常记热词的指纹（prompt_sha16），记的是这一场的。
+  * asr_config 审计照常记热词的指纹（prompt_sha16），记的是这一场的；
+  * 热词变了，上一位主播攒下的滚动上下文（--context）和文字系统历史跟着清掉——以前新建识别器时它们本来
+    就是空的（b5-recog-input 第 1 轮审查）；热词没变（同一位主播再开一场）照旧留着。
 
 全部用桩件：假的 faster_whisper 模块，不加载模型、不联网、不开浏览器。主播名都是虚构的。
 """
@@ -149,6 +151,51 @@ def test_a_streamer_without_a_glossary_clears_the_previous_hotwords(monkeypatch,
     one_session(monkeypatch, p, "https://www.tiktok.com/@ficticia_tres/live", seen)
     assert len(ct2["built"]) == 1
     assert ct2["prompts"] == [one, None] and seen[1].hotwords is None
+
+
+def test_with_context_on_the_next_streamer_does_not_start_from_the_previous_streamers_words(
+        monkeypatch, tmp_path, ct2):
+    """--context 打开（可选项，默认关）、下一位主播没有词表：以前换主播热词一变就新建识别器，上下文是空的；
+    换主播不重建之后，不清的话上一位主播的最后 200 字会成为下一位头几段的 initial_prompt。现在热词一变就清掉
+    （app/asr.py _FilterMixin.set_hotwords），模型照旧只载一次。同一位主播再开一场，热词没变，上下文照旧留着
+    （和以前复用识别器时一样）。"""
+    one, _two = profiles()
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    p.args.context = True
+    seen = []
+    said = "y el serum dorado hoy cuesta veinte"
+    one_session(monkeypatch, p, UNO, seen)
+    seen[0]._context = said                                  # 第一位主播说过的话（滚动上下文）
+    one_session(monkeypatch, p, UNO, seen)                   # 同一位主播再开一场：热词没变，留着
+    assert seen[1]._context == said
+    one_session(monkeypatch, p, "https://www.tiktok.com/@ficticia_tres/live", seen)
+    assert len(ct2["built"]) == 1 and seen[2] is seen[0]
+    assert ct2["prompts"] == [one, one, None]                # 不清的话第三段是 said
+    assert seen[2]._context == ""
+
+
+@pytest.mark.parametrize("cls", [asr.Transcriber, asr.MLXTranscriber], ids=["ct2", "mlx"])
+def test_new_hotwords_start_the_script_history_afresh_and_the_same_hotwords_keep_it(cls):
+    """文字系统历史（_script_outlier 拿它判离群）也是跟着上一位主播攒的：热词变了清掉，下一位主播头一段换了
+    文字系统不会被当成离群丢掉（以前新建识别器时历史是空的，不判）。热词没变照旧留着、照旧判。"""
+    def fresh():
+        t = cls.__new__(cls)
+        t.hotwords, t._context = "Productos: uno.", "hola a todos"
+        for _ in range(asr.SCRIPT_MIN_HISTORY):
+            t._remember_script("hola amigos")
+        return t
+
+    same = fresh()
+    pipeline_mod._set_hotwords(same, "Productos: uno.")
+    assert same._context == "hola a todos"
+    assert same._script_outlier("你好朋友们") is True           # 历史还在：照旧判离群
+    other = fresh()
+    pipeline_mod._set_hotwords(other, "Productos: dos.")
+    assert (other.hotwords, other._context) == ("Productos: dos.", "")
+    assert other._script_outlier("你好朋友们") is False         # 历史清空了：不判
+    gone = fresh()
+    pipeline_mod._set_hotwords(gone, None)
+    assert (gone.hotwords, gone._context, gone._script_history) == (None, "", [])
 
 
 def test_the_mlx_backend_reads_the_hotwords_at_transcribe_time(monkeypatch):

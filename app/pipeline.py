@@ -257,7 +257,13 @@ def _set_hotwords(transcriber, hotwords):
     """这一场的热词提示直接赋到识别器上（专家审查 M7）。两个后端（app/asr.py 的 Transcriber、MLXTranscriber）
     都在 transcribe 时现读 self.hotwords，赋值之后的下一段就用新的；在识别线程里跑到一半的那一段已经读过了，
     不受影响。识别器换主播时不再重建：热词不进识别器的 key，换主播只换这一个属性。
-    测试里的替身（object() 之类）不收属性：不赋，照旧。"""
+    两个后端走 set_hotwords：热词变了顺带清掉上一位主播的滚动上下文和文字系统历史（以前新建识别器时它们
+    本来就是空的，见 app/asr.py _FilterMixin.set_hotwords）。
+    测试里的替身没有 set_hotwords 就直接赋属性；object() 之类不收属性：不赋，照旧。"""
+    setter = getattr(transcriber, "set_hotwords", None)
+    if callable(setter):
+        setter(hotwords)
+        return
     try:
         transcriber.hotwords = hotwords
     except AttributeError:

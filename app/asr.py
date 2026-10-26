@@ -694,6 +694,22 @@ def _decode_signals(segments, calls):
 class _FilterMixin:
     """两个后端共用的质量过滤 + 滚动上下文。"""
 
+    def set_hotwords(self, hotwords):
+        """换成这一场的热词（app/pipeline.py _set_hotwords，专家审查 M7）。transcribe 每段现读 self.hotwords，
+        赋值之后的下一段就用新的。
+
+        热词变了（换了一位词表不同的主播，或者下一位没有词表）就把跟着上一位攒下的状态清掉：滚动上下文
+        （--context 打开、这一场又没有热词时，它的最后 200 字会成为下一段的 initial_prompt）和文字系统历史
+        （_script_outlier 拿它判离群）。以前热词进识别器的 key，热词一变就新建识别器，这两样自然是空的；
+        换主播不再重建之后，不清的话上一位主播的话会带进下一位的头几段（b5-recog-input 第 1 轮审查）。
+        热词没变（同一位主播停了再开、两位都没有词表）照旧留着，和以前复用识别器时一样。
+        上一场在识别线程里还没跑完的那一段可能在清掉之后再往上下文里添一句，只影响下一段的提示。"""
+        if hotwords != getattr(self, "hotwords", None):
+            self._context = ""
+            self._script_history = []
+            self._script_pending = None
+        self.hotwords = hotwords
+
     @staticmethod
     def _attach_signals(result, segments, calls, first_call=None):
         """把识别器报的数挂到结果上（见 ASRResult.signals）。出任何错都只是没有这些数：
