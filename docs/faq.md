@@ -273,7 +273,11 @@ operator's computer to redo that one line with the strongest model (Claude
 Sonnet 5.5 when the engine is Claude, otherwise the strongest local model); it's
 rate-limited per phone (at least 3 seconds between taps, at most 10 a minute)
 so one phone tapping repeatedly can't queue up work or slow down the
-operator's computer. Each alert has a ✕ to hide it, plus a **Clear Seen**
+operator's computer. All phones together also share a limit of 20 a minute (up
+to 5 in a burst) that reconnecting doesn't reset; taps beyond it do nothing.
+While speech recognition is falling behind, retranslations asked for from a
+phone aren't run, and the phone's button shows **Couldn't Retranslate · Try
+Again**. Each alert has a ✕ to hide it, plus a **Clear Seen**
 button to hide everything currently shown — both act only on that one phone:
 the operator's alert panel and the audit log are unaffected, and nothing is
 sent to the server.
@@ -287,12 +291,15 @@ labels as the main window ("About N sec ago" once the line is more than 15 secon
 old, "Connecting…" while it reconnects), and the most recent comments with their
 translations (up to five; make the window taller to see all five). Comments
 that Comment Review marks red or amber keep their marks there. It only displays:
-no buttons, no alerts, and it sends nothing to the app. Drag it or resize it; the
+no alerts, and it sends nothing to the app. Drag it or resize it; the
 position and size are saved in `settings.json` (`float_window`) and used the
 next time, unless that spot is no longer on a screen. The first time, a Mac puts it
 near the bottom-right corner of the screen your main window is on; other systems place it themselves. It closes when you click
-its close button, when monitoring stops or ends, or when you close the main
-window. The button exists only when the app runs in its own window, so it is not there
+its close button, when you click **Stop**, or when you close the main window.
+When the stream ends or monitoring stops with an error, it stays open and says
+**Stream ended** or **Monitoring stopped** (see the main window for details),
+with one button, **Show Main Window**, which brings the main window to the
+front; on a Mac the app's Dock icon also bounces once. The button exists only when the app runs in its own window, so it is not there
 with `--browser`. (A browser tab opened on the address of a running app window does show
 it, and clicking it opens the window in the app.)
 
@@ -319,9 +326,12 @@ at most the line being written. It is separate from the audit log, which never
 holds comment text, and the app never uploads or deletes it.
 
 The page keeps the most recent 300 captions and 100 comments, and the app
-replays the same ones after a reload or reconnection. **Clear** removes them
-from the app as well, so a cleared caption or comment does not come back after
-a reload; the transcript and the audit log are not touched. A phone that
+replays the same ones after a reload or reconnection. **Clear** in the top bar
+(captions) and **Clear Comments** in the comment column remove them from the
+app as well, so a cleared caption or comment does not come back after a reload;
+the transcript and the audit log are not touched. Each takes two clicks: the
+first turns the button into **Clear?**, and a second click within 6 seconds
+clears. A phone that
 connects later gets the last 100 captions and 100 comments. While you are
 scrolled up, the **Jump to Latest** button shows how many new captions have
 arrived since (in the comment column, how many new comments).
