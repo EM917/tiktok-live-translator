@@ -1192,6 +1192,25 @@ def test_main_defines_the_first_run_flag_it_reads():
     assert "_FIRST_RUN_SHOWN" in names
 
 
+def _l_pairs(path):
+    """文件里每一处 L("中文", "English") 的两臂（只认两臂都是字面量的）。"""
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    return [(n.args[0].value, n.args[1].value) for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "L" and len(n.args) == 2
+            and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in n.args)]
+
+
+def test_main_advanced_pip_hints_carry_the_constraints():
+    """专家审查 I4 的尾巴：main.py 里「进阶：pip install -r requirements.txt」那几句提示也带上
+    -c constraints.txt，和自检、一键更新失败时给的手动命令一样，装的是测试过的那一套版本。
+    中英两臂都要带（不 import main，读语法树）。"""
+    hints = [(zh, en) for zh, en in _l_pairs(REPO / "main.py") if "pip install -r" in zh]
+    assert len(hints) == 3
+    for zh, en in hints:
+        assert "pip install -r requirements.txt -c constraints.txt" in zh, zh
+        assert "pip install -r requirements.txt -c constraints.txt" in en, en
+
+
 # ---- 检查更新失败不再无声 ---------------------------------------------------------------------
 
 def fake_github(monkeypatch, status=200, exc=None):

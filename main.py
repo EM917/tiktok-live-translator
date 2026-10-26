@@ -457,12 +457,12 @@ def ensure_env():
             message = (L("自动安装未完成（{}）。\n"
                          "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
                          "（进阶：也可手动运行 setup.sh / setup.ps1，"
-                         "或 pip install -r requirements.txt）",
+                         "或 pip install -r requirements.txt -c constraints.txt）",
                          "Installation didn’t finish ({}).\n"
                          "Check your network connection, then open the app again. Installation "
                          "picks up where it left off.\n"
                          "(Advanced: you can also run setup.sh / setup.ps1, or pip install -r "
-                         "requirements.txt)").format(of(exc)))
+                         "requirements.txt -c constraints.txt)").format(of(exc)))
         _fail_alert(message)
     finally:
         if lock is not None:
@@ -834,17 +834,19 @@ def main():
         from app.ffmpeg_bin import find_ffmpeg
         if find_ffmpeg() is None:
             missing.append(L("组件 ffmpeg 缺失：请关闭程序后重新打开，会自动补装。"
-                             "（进阶：pip install -r requirements.txt）",
+                             "（进阶：pip install -r requirements.txt -c constraints.txt）",
                              "Audio (ffmpeg) is missing. Quit and reopen the app to install it "
-                             "automatically. (Advanced: pip install -r requirements.txt)"))
+                             "automatically. (Advanced: pip install -r requirements.txt -c "
+                             "constraints.txt)"))
         try:
             import faster_whisper  # noqa: F401
         except ImportError:
             missing.append(L("组件 faster-whisper 缺失：请关闭程序后重新打开，会自动补装。"
-                             "（进阶：pip install -r requirements.txt 或运行 setup 脚本）",
+                             "（进阶：pip install -r requirements.txt -c constraints.txt "
+                             "或运行 setup 脚本）",
                              "faster-whisper is missing. Quit and reopen the app to install it "
-                             "automatically. (Advanced: pip install -r requirements.txt, or run "
-                             "the setup script.)"))
+                             "automatically. (Advanced: pip install -r requirements.txt -c "
+                             "constraints.txt, or run the setup script.)"))
         if missing:
             if args.url:
                 _fail_alert(L("\n", "\n").join(missing))
