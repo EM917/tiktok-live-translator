@@ -12,7 +12,11 @@
   6. 译文过 plausible_translation，像回话的丢掉、原译文留着；
   7. 每一条不重译的出路都有说明，中英两句都过第八条（只写观察，不猜原因）；
   8. 审计里没有弹幕原文、观众名、译文，也没有新增的记录；
-  9. 手机收不到 comment_redo，也发不出 retranslate_comment。
+  9. 手机收不到 comment_redo，也发不出 retranslate_comment；
+ 10. 译出来了也说一句（2026-10-26 起）：「已重译」或「重译结果和原来一样」，消息带 same。
+
+2026-10-26 改了的断言：成功的那条 comment_redo 以前不带说明（shape 里是 ("redo", "ok", False)），
+现在带 text 和 same（("redo", "ok", True)）。这是用户要的新行为（重译完提示几秒）。
 
 测试一律用假 HTTP 层和替身，不联网、不载入模型、不开浏览器。
 """
@@ -136,7 +140,8 @@ def redos(sent):
 
 
 def shape(sent):
-    """发给页面的消息，压成 (类型, 关键字段)，方便整串比对。"""
+    """发给页面的消息，压成 (类型, 关键字段)，方便整串比对。comment_redo 压成 (redo, 状态, 有没有说明)：
+    成了的那条也有说明（「已重译」或「重译结果和原来一样」）。"""
     out = []
     for m in sent:
         if m["type"] == "comment_redo":
@@ -218,7 +223,7 @@ def test_a_click_retranslates_one_comment_with_sonnet_and_replaces_its_translati
 
     run(scenario())
     assert shape(p.server.sent[1:]) == [("update", "ok", "旧译文"), ("redo", "pending", False),
-                                        ("update", "ok", "这个多少钱"), ("redo", "ok", False)]
+                                        ("update", "ok", "这个多少钱"), ("redo", "ok", True)]
     new = [m for m in p.server.of("comment_update")][-1]
     assert new == {"type": "comment_update", "id": "c0", "translated": "这个多少钱", "state": "ok"}
     (post,) = strong.posts
@@ -252,7 +257,7 @@ def test_a_comment_haiku_did_not_translate_can_be_retranslated_with_sonnet(monke
 
     run(scenario())
     assert shape(p.server.sent[1:]) == [("update", "failed", None), ("redo", "pending", False),
-                                        ("update", "ok", "这个多少钱"), ("redo", "ok", False)]
+                                        ("update", "ok", "这个多少钱"), ("redo", "ok", True)]
     assert len(strong.posts) == 1
 
 
@@ -341,7 +346,7 @@ def test_the_glossary_fixup_is_applied_to_the_new_translation(monkeypatch):
     seed(ct, ("c0", "compro quema lonja"))
     run(ct.retranslate("c0"))
     assert shape(sent) == [("redo", "pending", False), ("update", "ok", "买 燃脂带 吗"),
-                           ("redo", "ok", False)]
+                           ("redo", "ok", True)]
     assert "燃脂带" not in strong.posts[0]["body"]["system"]       # 词表不进弹幕重译的提示词
 
 
@@ -444,12 +449,12 @@ def test_a_second_click_while_the_first_is_running_gets_a_note_and_one_request(m
         await first
 
     run(scenario())
-    (note,) = [m for m in redos(sent) if "text" in m]
+    (note,) = [m for m in redos(sent) if "redo_state" not in m]
     assert note == {"type": "comment_redo", "id": "c0", "text": redo.note_busy()}     # 没有 redo_state：按钮不动
     assert en(note["text"]) == "This comment is already being retranslated."
     check_rule8(note["text"])
     assert shape(sent) == [("redo", "pending", False), ("redo", None, True),
-                           ("update", "ok", "新译文"), ("redo", "ok", False)]
+                           ("update", "ok", "新译文"), ("redo", "ok", True)]
 
 
 def test_two_different_comments_can_be_retranslated_at_the_same_time(monkeypatch):
@@ -592,7 +597,9 @@ def test_an_overlong_id_is_cut_the_same_way_accept_cuts_it(monkeypatch):
         await ct.retranslate(long_id)
 
     run(scenario())
-    assert redos(sent)[-1] == {"type": "comment_redo", "id": "x" * 64, "redo_state": "ok"}
+    # Sibling([]) 没有回应，这条最初没译出来：重译成了就是「已重译」，不是「和原来一样」
+    assert redos(sent)[-1] == {"type": "comment_redo", "id": "x" * 64, "redo_state": "ok",
+                               "same": False, "text": redo.note_done(False)}
 
 
 @pytest.mark.parametrize("name", ["claude", "hymt2-7b", "none"])
@@ -963,3 +970,131 @@ def test_the_retranslation_instance_is_not_wrapped_in_the_repeat_cache(monkeypat
     assert not isinstance(strong.made[0], CachedTranslator)
     assert len(strong.posts) == 2                          # 同一句点两次，就问两次
     assert [m["translated"] for m in sent if m["type"] == "comment_update"] == ["甲", "乙"]
+
+
+# ---------------------------------------------------------------------------
+# 10. 成了也说一句：「已重译」或「重译结果和原来一样」（R1，2026-10-26 用户要的）
+# ---------------------------------------------------------------------------
+
+def oks(sent):
+    return [m for m in redos(sent) if m.get("redo_state") == "ok"]
+
+
+def test_a_successful_retranslation_says_so_and_whether_the_translation_changed(monkeypatch):
+    """以前成了只换译文、不说话：新译文和原来一样时屏幕上什么都不变，点的人分不清成没成。现在 ok 那条
+    带 same 和一句说明。比的是屏幕上现在那版（上一次重译的结果也算），末尾多个换行算一样。"""
+    holder, _inner, _s = claude_holder(monkeypatch)
+    strong = StrongFactory([sonnet_reply("这个多少钱"), sonnet_reply("这个多少钱"),
+                            sonnet_reply("这个多少钱\n"), sonnet_reply("这个卖多少")])
+    ct, sent = make(holder, strong)
+    ct._ledger.remember("c0", SOURCE)
+    ct._ledger.mark_translated("c0", "多少钱")              # Haiku 当初的译文
+
+    async def scenario():
+        for _ in range(4):
+            await ct.retranslate("c0")
+
+    run(scenario())
+    got = [(m["same"], m["text"]) for m in oks(sent)]
+    assert got == [(False, "已重译"), (True, "重译结果和原来一样"), (True, "重译结果和原来一样"),
+                   (False, "已重译")]
+    assert [en(text) for _same, text in got] == [
+        "Retranslated", "The retranslation is the same as before.",
+        "The retranslation is the same as before.", "Retranslated"]
+    for _same, text in got:
+        check_rule8(text)
+    # 和原来一样也照发 comment_update（留存、手机、字幕记录照旧），说明跟在它后面
+    assert shape(sent)[:3] == [("redo", "pending", False), ("update", "ok", "这个多少钱"), ("redo", "ok", True)]
+    assert ct._ledger.translation("c0") == "这个卖多少"
+    assert all(set(m) == {"type", "id", "redo_state", "same", "text"} for m in oks(sent))
+
+
+def test_a_comment_that_never_had_a_translation_is_never_called_the_same(monkeypatch):
+    """原来显示的是原文（Haiku 没译出来）：译出来了就是「已重译」，哪怕译文碰巧和原文一样。"""
+    holder, _inner, _s = claude_holder(monkeypatch)
+    ct, sent = make(holder, StrongFactory([sonnet_reply("hola amigos")]))
+    seed(ct, ("f0", "hola amigos"), translated=False)
+    run(ct.retranslate("f0"))
+    (ok,) = oks(sent)
+    assert (ok["same"], ok["text"]) == (False, redo.note_done(False))
+
+
+def test_the_comparison_uses_what_the_batch_translation_put_on_screen(monkeypatch, tmp_path):
+    """整条路走一遍（Pipeline + 控制消息）：Haiku 当初译的那版进了账本，Sonnet 给出同一句就是「和原来一样」。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    p.comments._claude_factory = Sibling([reply("这个多少钱")])
+    p.comments._claude_strong_factory = StrongFactory([sonnet_reply("这个多少钱")])
+    p.comments.BATCH_WINDOW_SEC = 0.01
+
+    async def scenario():
+        await p.comments.accept({"items": [{"id": "c0", "user": USER, "text": SOURCE}]})
+        assert await wait_for(lambda: p.server.of("comment_update"))
+        with i18n.use(EN):
+            p.handle_control({"type": "retranslate_comment", "id": "c0"})
+            await drain(p)
+
+    run(scenario())
+    (ok,) = oks(p.server.sent)
+    assert ok["same"] is True and en(ok["text"]) == "The retranslation is the same as before."
+
+
+def test_a_batch_that_timed_out_takes_its_translations_back_from_the_ledger(monkeypatch):
+    """整批超时会把已经上屏的译文也改标成失败（页面退回原文）：账本跟着忘掉，之后重译没成时说
+    「仍显示原文」，成了就是「已重译」，不会拿已经不在屏幕上的那版去比。"""
+    holder = {"tr": Fast("hymt2")}
+    ct, sent = make(holder, StrongFactory([Resp(500, {}), sonnet_reply("旧译文")]),
+                    TRANSLATE_TIMEOUT_SEC=0.05)
+
+    async def slow(batch, audit=None, t0=None):
+        for item in batch:
+            ct._ledger.mark_translated(item["id"], "旧译文")      # 先上屏了
+        await asyncio.sleep(5)
+
+    ct._translate_batch = slow
+
+    async def scenario():
+        await ct.accept({"items": [{"id": "c0", "user": USER, "text": SOURCE}]})
+        assert await wait_for(lambda: any(m["type"] == "comment_update" for m in sent))
+        assert not ct._ledger.has_translation("c0") and ct._ledger.translation("c0") is None
+        holder["tr"], _i, _s = subtitle_engine(monkeypatch)
+        await ct.retranslate("c0")
+        await ct.retranslate("c0")
+        ct._worker_task.cancel()
+
+    run(scenario())
+    assert [m["state"] for m in sent if m["type"] == "comment_update"][0] == "failed"
+    failed = [m for m in redos(sent) if m.get("redo_state") == "failed"]
+    assert failed[0]["text"].endswith("这条弹幕仍显示原文")
+    (ok,) = oks(sent)
+    assert (ok["same"], ok["text"]) == (False, "已重译")
+
+
+def test_the_ledger_keeps_the_translation_on_screen_and_drops_it_with_the_original():
+    ledger = redo.RedoLedger()
+    ledger.remember("a", "hola")
+    assert not ledger.has_translation("a") and ledger.translation("a") is None
+    ledger.mark_translated("a", "你好")
+    assert ledger.has_translation("a") and ledger.translation("a") == "你好"
+    ledger.mark_translated("nunca", "x")                     # 账本里没有原文的：不记
+    assert not ledger.has_translation("nunca")
+    ledger.forget_translation("a")
+    assert not ledger.has_translation("a") and ledger.original("a") == "hola"
+    ledger.mark_translated("a", "你好")
+    for i in range(redo.ORIGINAL_KEEP):
+        ledger.remember("c%d" % i, "texto")
+    assert ledger.original("a") is None and not ledger.has_translation("a")
+    assert ledger._translations == {}                        # 跟着原文一起挤出去，不会越攒越多
+
+
+@pytest.mark.parametrize("old,new,same", [
+    ("这个多少钱", "这个多少钱", True),
+    ("这个多少钱", " 这个多少钱\n", True),
+    ("how  much is it", "how much is it", True),
+    ("这个多少钱", "这个卖多少", False),
+    ("这个 多少钱", "这个多少钱", False),          # 原来没有空白的地方多了一个，屏幕上看得出来
+    (None, "这个多少钱", False),                  # 原来显示的是原文
+    ("", "这个多少钱", False),
+])
+def test_same_translation_compares_the_way_the_page_collapses_whitespace(old, new, same):
+    assert redo.same_translation(old, new) is same

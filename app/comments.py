@@ -506,6 +506,9 @@ class CommentTranslator:
             why = "timeout" if isinstance(exc, asyncio.TimeoutError) else "exception"
             self._note_outcome(audit, self._translator(), len(batch), 0, {why: len(batch)}, t0)
             for item in batch:
+                # 整批改标失败，已经上屏的译文也退回原文：账本跟着忘掉它，之后点「重译」时说明的结尾
+                # （仍显示原文）和「和原来一样」的比较才对得上屏幕
+                self._ledger.forget_translation(item["id"])
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": None, "state": "failed"})
 
@@ -556,7 +559,7 @@ class CommentTranslator:
                 continue
             if out:
                 ok += 1
-                self._ledger.mark_translated(item["id"])
+                self._ledger.mark_translated(item["id"], out)
             else:
                 failed[why or "no_output"] = failed.get(why or "no_output", 0) + 1
             if out:
@@ -574,7 +577,7 @@ class CommentTranslator:
             if out:
                 ok, rescued = ok + 1, rescued + 1
                 rescued_by[why] = rescued_by.get(why, 0) + 1
-                self._ledger.mark_translated(item["id"])
+                self._ledger.mark_translated(item["id"], out)
                 await self._safe_broadcast({"type": "comment_update", "id": item["id"],
                                             "translated": out, "state": "ok"})
             else:
@@ -745,9 +748,10 @@ class CommentTranslator:
     async def retranslate(self, cid):
         """中控在某条弹幕上点了「重译」（web/app.js 发 retranslate_comment）。永不抛异常。
 
-        每一条不重译的出路都用 comment_redo 消息回话，页面把话显示在那条弹幕下面（文字见
-        comment_redo.py）；译文出来了就用 comment_update 换掉那条弹幕的译文——服务端的留存
-        和手机页都跟着换。手机发不出这个动作（app/viewer.py 的入站只认 retranslate）。"""
+        每一条出路都用 comment_redo 消息回话，页面把话显示在那条弹幕下面（文字见 comment_redo.py）：
+        没重译的说为什么没有；译出来了说「已重译」或「重译结果和原来一样」（带 same），同时用
+        comment_update 换掉那条弹幕的译文——服务端的留存和手机页都跟着换。手机发不出这个动作
+        （app/viewer.py 的入站只认 retranslate）。"""
         try:
             await self._retranslate(cid)
         except Exception as exc:
@@ -783,6 +787,7 @@ class CommentTranslator:
                 await self._redo_refused(cid, redo.note_full(wait))
             return
         had = self._ledger.has_translation(cid)
+        old = self._ledger.translation(cid)
         try:
             await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "pending"})
             out, why = await self._redo_translate(engine, text, had)
@@ -792,10 +797,14 @@ class CommentTranslator:
         finally:
             self._ledger.finish(cid)
         if out:
-            self._ledger.mark_translated(cid)
+            # 成了也要说一句（2026-10-26 用户要的）：以前只换译文、不说话，新译文和原来一样时屏幕上
+            # 什么都不变，点的人分不清成没成。比的是账本里那版（屏幕上现在显示的），比完再记新的
+            same = redo.same_translation(old, out)
+            self._ledger.mark_translated(cid, out)
             await self._safe_broadcast({"type": "comment_update", "id": cid,
                                         "translated": out, "state": "ok"})
-            await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "ok"})
+            await self._safe_broadcast({"type": "comment_redo", "id": cid, "redo_state": "ok",
+                                        "same": same, "text": redo.note_done(same)})
         else:
             await self._redo_refused(cid, why)
 
