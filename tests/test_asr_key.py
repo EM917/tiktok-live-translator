@@ -100,7 +100,6 @@ def one_session(monkeypatch, p, url, seen, audits=None):
         return True, 60.0
 
     monkeypatch.setattr(p, "_stream_session", session)
-
     run(p._run_stream_inner(url))
 
 

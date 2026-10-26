@@ -29,9 +29,10 @@ from app.pipeline import Pipeline
 from app.segmenter import SilenceSegmenter
 from tests import i18n_rules as rules
 from tests.helpers import run
-from tests.test_resilience_stream import CAUSE_LABELS, ROOM, make_pipeline, of_type, rows_of
+from tests.test_resilience_stream import CAUSE_LABELS, make_pipeline, of_type, rows_of
 
 EN = i18n.EN
+ROOM = "https://www.tiktok.com/@ficticia_gate/live"
 FRAME_SAMPLES = FRAME_BYTES // 2
 GATED = "session:gated_audio"
 

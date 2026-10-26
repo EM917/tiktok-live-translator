@@ -12,9 +12,10 @@ import pytest
 from app import i18n, resolver
 from app.resolver import ResolveError
 from tests.helpers import run
-from tests.test_resilience_stream import ROOM, make_pipeline, scripted_resolve
+from tests.test_resilience_stream import make_pipeline, scripted_resolve
 
 EN = i18n.EN
+ROOM = "https://www.tiktok.com/@ficticia_red/live"
 RESOLVING = "正在解析直播流地址…"
 
 pytestmark = pytest.mark.usefixtures("v1_reconnect")
