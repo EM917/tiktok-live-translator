@@ -197,15 +197,44 @@ def _norm_backend(value):
 
 
 # ---- 自由文本清洗 ----
-# 顺序有讲究：带协议的 URL 先走，否则后面的裸域名规则会把它切碎。
+# 路径里可以有空格（/Users/某 某/…、C:\Users\Zhang San\…、…/TikTok Live Translator.app/…）。以前三条路径规则
+# 都只认到第一个空格为止：「没有读到 TikTok 登录」那条持续提示里完全磁盘访问权限要加的解释器路径
+# （app/browser_login.py fda_steps）在用户名带空格时只换掉前半截，「… 某/miniconda3/bin/python3.13」
+# 照样发到手机（b4-banners 看到，main 上原有）。现在分两层：
+#   * 「」『』“”"" 括起来、以路径开头的整段一起换掉，括号留着（程序自己写的路径都这样括着）；
+#   * 没括起来的，中间的一段可以带空格（最多三个、单个空格隔开），但后面必须紧跟「/」和一个 ASCII 路径字符
+#     ——「/Users/Jane Doe/miniconda3」整段算路径，「/tmp/x 磁盘 识别/翻译」里的「识别/翻译」不算。
+#     最后一段带空格、又没括起来的（句子中间的「/Users/Jane Doe」），最后一个空格后面那个词仍会留下：
+#     路径在哪儿结束从文字上分不出来
+_SCRUB_STOP = "「」『』“”\"'，。；：！？、"   # i18n: data（引号和标点：路径在这里断开）
+_SCRUB_SEG = r"[^\s/{}]+".format(_SCRUB_STOP)              # 一段 POSIX 路径（不含空格、斜杠、引号、中文标点）
+_SCRUB_SEG_WIN = r"[^\s\\/{}]+".format(_SCRUB_STOP)        # 一段盘符路径（斜杠两种都算分隔）
+_SCRUB_SPACED = r"{seg}(?: {seg}){{1,3}}{sep}(?=[A-Za-z0-9_.\-])"   # 带空格的中间一段
+_SCRUB_QUOTES = (("「", "」"), ("『", "』"), ("“", "”"), ('"', '"'))   # i18n: data（括路径的引号）
+_SCRUB_PATH_HEAD = r"(?:/[A-Za-z0-9_.\-]|~[\\/]|[A-Za-z]:[\\/])"
+
+# (正则, 换成什么)。顺序有讲究：带协议的 URL 先走，否则后面的裸域名规则会把它切碎；括起来的整段在三条
+# 路径规则之前；POSIX 路径在裸域名之前（不然「…/TikTok Live Translator.app/Contents」里的「Translator.app/…」
+# 先被当成域名，路径规则只剩前半截可换）。POSIX 规则的后顾已经挡住「example.com/x」这种斜杠前面紧挨字母的
 _SCRUB_PATTERNS = (
-    re.compile(r"\b(?:https?|wss?|ftp)://\S+", re.IGNORECASE),
-    re.compile(r"[A-Za-z]:[\\/][^\s]*"),                      # C:\Users\x、D:/logs
-    re.compile(r"~[\\/][^\s]*"),                              # ~/logs
-    re.compile(r"[A-Za-z0-9][A-Za-z0-9.\-]*\.[A-Za-z]{2,}/\S*"),   # 裸域名 + 路径
-    # POSIX 绝对路径：至少要有一整段加斜杠，才不会把中文里的「识别/翻译」当路径。
-    # 字符类刻意只用 ASCII——\w 在 str 模式下把中文也一起匹配了
-    re.compile(r"(?<![A-Za-z0-9])/(?:[A-Za-z0-9_.\-]+/)+[A-Za-z0-9_.\-]*"),
+    (re.compile(r"\b(?:https?|wss?|ftp)://\S+", re.IGNORECASE), "…"),
+) + tuple(
+    # 括号里最多看 1000 个字：路径不会更长，也免得一长串没配对的「把它拖成平方级
+    (re.compile(re.escape(o) + r"\s*" + _SCRUB_PATH_HEAD + "[^" + re.escape(c) + r"\n]{0,1000}" + re.escape(c)),
+     o + "…" + c)
+    for o, c in _SCRUB_QUOTES
+) + (
+    # C:\Users\x、D:/logs；末尾照旧一直换到空白为止
+    (re.compile(r"[A-Za-z]:[\\/](?:{sp}|{seg}[\\/])*[^\s]*".format(
+        sp=_SCRUB_SPACED.format(seg=_SCRUB_SEG_WIN, sep=r"[\\/]"), seg=_SCRUB_SEG_WIN)), "…"),
+    # ~/logs
+    (re.compile(r"~[\\/](?:{sp}|{seg}[\\/])*[^\s]*".format(
+        sp=_SCRUB_SPACED.format(seg=_SCRUB_SEG_WIN, sep=r"[\\/]"), seg=_SCRUB_SEG_WIN)), "…"),
+    # POSIX 绝对路径：第一段要是 ASCII、后面紧跟斜杠，才不会把中文里的「识别/翻译」当路径（\w 在 str 模式下
+    # 把中文也算进去，所以第一段和最后一段的字符类刻意只用 ASCII）。中间各段可以是中文、可以带空格（见上）
+    (re.compile(r"(?<![A-Za-z0-9])/[A-Za-z0-9_.\-]+/(?:{sp}|{seg}/)*[A-Za-z0-9_.\-]*".format(
+        sp=_SCRUB_SPACED.format(seg=_SCRUB_SEG, sep="/"), seg=_SCRUB_SEG)), "…"),
+    (re.compile(r"[A-Za-z0-9][A-Za-z0-9.\-]*\.[A-Za-z]{2,}/\S*"), "…"),   # 裸域名 + 路径
 )
 
 
@@ -219,8 +248,8 @@ def scrub_text(text, limit=SCRUB_LIMIT):
         if text is None:
             return ""
         text = str(text)
-    for pattern in _SCRUB_PATTERNS:
-        text = pattern.sub("…", text)
+    for pattern, replacement in _SCRUB_PATTERNS:
+        text = pattern.sub(replacement, text)
     try:
         limit = int(limit)
     except (TypeError, ValueError):

@@ -1600,3 +1600,63 @@ def test_a_real_phone_socket_gets_a_viewer_ping_while_nothing_else_happens(monke
     assert got[0] == "viewer_hello" and got[-1] == "viewer_ping"
     assert got.count("viewer_ping") == 1
     assert waited >= 0.2
+
+
+# ---- 路径里有空格（顺延事项：scrub_text 只换到第一个空格为止，后半段漏到手机上）----
+# 虚构的用户名，带空格。「没有读到 TikTok 登录」那条持续提示把完全磁盘访问权限要加的解释器路径单独放一行、
+# 用「」/“”括着（app/browser_login.py fda_steps）；以前只换掉「/Users/Jane」，「Doe/miniconda3/…」发到了手机
+SPACED_PATH = "/Users/Jane Doe/miniconda3/bin/python3.13"
+LEAKS = ("Doe", "miniconda3", "Zhang", "San\\", "AppData", "Support", "whisper", "Contents", "python3")
+
+
+@pytest.mark.parametrize("raw,kept", [
+    ("粘贴下面的路径：\n「" + SPACED_PATH + "」\n然后完全退出程序再打开。", "「…」"),
+    ("Paste the path below:\n“" + SPACED_PATH + "”\nThen quit the app.", "“…”"),
+    ("审计写不进 /Users/Jane Doe/logs/session.jsonl 了", "审计写不进 … 了"),
+    ("写不进 /Users/某 某/miniconda3/bin/python3.13 了", "写不进 … 了"),
+    ("装在 C:\\Users\\Zhang San\\AppData\\Local\\models 下", "装在 … 下"),
+    ("「C:\\Users\\Zhang San\\models」", "「…」"),
+    ("模型在 ~/Library/Application Support/whisper/x 里", "模型在 … 里"),
+    ("/Applications/Some App.app/Contents/MacOS/python3", "…"),
+])
+def test_scrub_text_takes_the_whole_path_even_when_it_has_spaces(raw, kept):
+    out = viewer_mod.scrub_text(raw, 1000)
+    for piece in LEAKS + ("某",):
+        assert piece not in out, (piece, out)
+    assert kept in out
+
+
+@pytest.mark.parametrize("plain", [
+    "磁盘空间不足，识别/翻译还在跑，剩余 1.2 GB",
+    "比例 1/2/3 与 a/b",
+    "「/」是除号",
+    "“Click Start again.” Then wait.",
+])
+def test_scrub_text_still_leaves_slashes_in_ordinary_text_alone(plain):
+    assert viewer_mod.scrub_text(plain, 1000) == plain
+
+
+def test_a_spaced_path_after_a_path_stops_where_the_words_stop():
+    """没括起来的路径后面跟着普通的话：只有紧跟「/」和路径字符的一段算进路径，「识别/翻译」留着。"""
+    assert viewer_mod.scrub_text("写不进 /tmp/x 磁盘 识别/翻译 停了", 1000) == "写不进 … 磁盘 识别/翻译 停了"
+
+
+def test_a_phone_never_sees_a_spaced_path_in_a_notice(loop, monkeypatch):
+    """走真的白名单：回放里的和实时的持续提示，中文和派生的英文都不带路径的任何一截。"""
+    from app import i18n
+    from app.browser_login import fda_steps
+
+    text = fda_steps([SPACED_PATH])
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    server = StubServer(incidents={"fda": {"id": "fda", "level": "warn", "text": text, "ts": 1.0}})
+    hub = make_hub(server)
+    v = add(hub)
+    hub.fanout({"type": "incident", "id": "fda2", "level": "warn", "text": text, "ts": 2.0})
+    got = [v.queue.get_nowait() for _ in range(v.queue.qsize())]
+    notices = [m for m in got if m["type"] == "incident"]
+    assert [m["id"] for m in notices] == ["fda", "fda2"]        # 回放一条、实时一条
+    for m in notices:
+        for field in ("text", "text_en"):
+            for piece in ("Jane", "Doe", "miniconda3"):
+                assert piece not in m[field], (field, m[field])
+        assert "「…」" in m["text"] and "“…”" in m["text_en"]
