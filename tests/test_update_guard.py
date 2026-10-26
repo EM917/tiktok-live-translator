@@ -1,15 +1,17 @@
 """一键更新之后的存活确认与自动退回（专家审查 I6；用户 2026-10-22 定 D10「自动退回更新前的版本」）。
 
 钉住的问题：一键更新合并完新代码就直接 execv，新版本要是一启动就崩，暂停中的直播不会恢复，也回不到
-旧版。现在 execv 之前留记号；新版本启动一次、本机页面没连上，下一次启动就 git reset --keep 回到更新前的
-提交、弹窗说明、重新 exec（计划的 boots ≥ 2：新版本只跑过一次）。计划审查 P5 的两种误触发也钉在这里：同时启动两个进程不退回；没在
-监听时正常启动一次、页面一连上就清掉记号。
+旧版。现在 execv 之前留记号；新版本真的跑了两次、两次本机页面都没连上，第三次打开就 git reset --keep 回到
+更新前的提交、弹窗说明、重新 exec（用户 2026-10-26 按 D10 原话定；#145 第 1、2 轮是「跑一次没连上、第二次
+就退回」）。页面连上之前强退一次、崩一次都不会被误退。计划审查 P5 的两种误触发也钉在这里：同时启动两个
+进程不退回；没在监听时正常启动一次、页面一连上就清掉记号。
 
 不 import main（它在模块级跑 ensure_env，会把 pytest 进程 execv 掉）：main.py 里只剩调用的位置，用语法树
 核对；逻辑在 app/update_guard.py。git 有替身（状态机）也有真的（临时仓库里真的退回一次）。
 """
 import ast
 import asyncio
+import os
 import shutil
 import subprocess
 import sys
@@ -67,6 +69,13 @@ def guard():
     return settings_mod.load_settings().get(update_guard.KEY)
 
 
+def runs_without_the_page(isolated, times=2):
+    """新版本跑了 times 次、每次页面都没连上就没了（崩了、被强退）。"""
+    for _ in range(times):
+        assert update_guard.on_boot(isolated, git=fake_git()).kind == "counted"
+        new_process()
+
+
 # ---- 状态机 ----------------------------------------------------------------------------------
 
 def test_a_normal_restart_counts_once_and_the_page_clears_the_marker(isolated):
@@ -85,7 +94,46 @@ def test_a_normal_restart_counts_once_and_the_page_clears_the_marker(isolated):
     assert update_guard.mark_ready() is False                     # 只清一次
 
 
-def test_first_crash_then_second_launch_rolls_back(isolated, capsys):
+def test_one_run_without_the_page_does_not_roll_back(isolated, capsys):
+    """D10 原话（用户 2026-10-26）：新版本只跑了一次、页面连上之前崩了或被强退——下一次照常跑新版本，
+    不碰 git；那一次页面连上了就清记号，以后再也不退。"""
+    update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
+    runs_without_the_page(isolated, times=1)
+    assert guard()["boots"] == 1
+
+    git = fake_git()
+    outcome = update_guard.on_boot(isolated, git=git)               # 第 2 次：照常跑新版本
+    assert outcome.kind == "counted" and not outcome.rolled_back and git.calls == []
+    assert guard()["boots"] == 2
+    out = capsys.readouterr().out
+    assert "第 2 次启动" in out and "下次打开会自动退回 v1.0.0" in out   # 终端说清楚下一次会怎样
+
+    assert update_guard.mark_ready() is True and guard() is None   # 这一次页面连上了
+    for _ in range(3):
+        new_process()
+        assert update_guard.on_boot(isolated, git=git).kind == "none"
+    assert git.calls == []
+
+
+@pytest.mark.parametrize("ready_on", [1, 2])
+def test_a_page_in_either_run_clears_the_marker(isolated, ready_on):
+    """两次里任何一次页面连上了，记号就清掉：之后不管强退、崩几次都不退回。"""
+    update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
+    git = fake_git()
+    for run_no in (1, 2):
+        assert update_guard.on_boot(isolated, git=git).kind == "counted"
+        if run_no == ready_on:
+            assert update_guard.mark_ready() is True
+            break
+        new_process()
+    assert guard() is None
+    for _ in range(3):
+        new_process()
+        assert update_guard.on_boot(isolated, git=git).kind == "none"
+    assert git.calls == []
+
+
+def test_two_runs_without_the_page_then_the_third_launch_rolls_back(isolated, capsys):
     settings_mod.save_setting("resume_after_update", {"url": "https://x.test/@fake_host/live",
                                                       "at": 100.0, "to_version": "1.1.0"})
     update_guard.arm(FROM, TO, "1.0.0", "1.1.0", now=100.0)
@@ -93,9 +141,13 @@ def test_first_crash_then_second_launch_rolls_back(isolated, capsys):
     # 新版本启动时读掉了「重启后接着监听」的记号（读到即删），然后在页面连上之前崩了
     settings_mod.save_setting("resume_after_update", None)
     new_process()
+    assert update_guard.on_boot(isolated, git=fake_git()).kind == "counted"   # 第 2 次：照常跑新版本
+    settings_mod.save_setting("resume_after_update", None)                    # 又读掉了、又崩了
+    new_process()
+    capsys.readouterr()
 
     git = fake_git()
-    outcome = update_guard.on_boot(isolated, git=git)
+    outcome = update_guard.on_boot(isolated, git=git)                         # 第 3 次：退回
 
     assert outcome.rolled_back
     assert git.calls == [("rev-parse", "HEAD"), ("status", "--porcelain", "--untracked-files=no"),
@@ -104,20 +156,54 @@ def test_first_crash_then_second_launch_rolls_back(isolated, capsys):
     # 暂停中的监听要接得上：记号还回去，过没过期由旧版本按原来的 at 判断
     assert settings_mod.load_settings()["resume_after_update"]["url"] == "https://x.test/@fake_host/live"
     assert settings_mod.load_settings()["resume_after_update"]["at"] == 100.0
-    assert outcome.message == ("一键更新到 v1.1.0 之后，新版本上次启动时字幕界面一直没有连上。这次启动已"
+    assert outcome.message == ("一键更新到 v1.1.0 之后，新版本启动了两次，字幕界面都没有连上。这次启动已"
                                "自动退回更新前的 v1.0.0，程序会重新打开。")
     english = i18n.text(outcome.message, "en")
-    assert english.startswith("After the update to v1.1.0, the caption window never connected")
+    assert english.startswith("After the update to v1.1.0, the new version started twice and the caption "
+                              "window didn’t connect either time.")
     assert "went back to v1.0.0" in english and not i18n.CJK.search(english)
-    assert "已退回更新前的 v1.0.0" in capsys.readouterr().out    # 终端是中文
+    out = capsys.readouterr().out
+    assert "已退回更新前的 v1.0.0" in out                                       # 终端是中文
+    assert out.index("正在退回更新前的 v1.0.0") < out.index("已退回更新前的 v1.0.0")  # reset 之前先说一声
+
+
+def test_the_second_run_gets_back_a_resume_marker_the_first_run_used_up(isolated, capsys):
+    """第 1 次启动读掉了「重启后接着监听」的记号（读到即删）、页面没连上就没了：第 2 次照常跑新版本，记号要
+    还回去，暂停中的监听这一次就接得上（不然要等第 3 次退回才还，那时往往过了 5 分钟）。还回去的是原样，
+    不带 rolled_back_from，at 不变（过没过期照旧由 pipeline 判断）。"""
+    marker = {"url": "https://x.test/@fake_host/live", "at": 100.0, "to_version": "1.1.0",
+              "from": FROM, "to": TO}
+    settings_mod.save_setting("resume_after_update", marker)
+    update_guard.arm(FROM, TO, "1.0.0", "1.1.0", now=100.0)
+    assert update_guard.on_boot(isolated, git=fake_git()).kind == "counted"
+    settings_mod.save_setting("resume_after_update", None)
+    new_process()
+    capsys.readouterr()
+
+    assert update_guard.on_boot(isolated, git=fake_git()).kind == "counted"
+    assert settings_mod.load_settings()["resume_after_update"] == marker
+    assert "已把记号还回去" in capsys.readouterr().out
+
+
+def test_the_first_run_never_hands_out_the_resume_copy(isolated):
+    """第 1 次启动（一键更新自己的 execv）不碰「重启后接着监听」的记号：没有就是没有（更新期间中控点过开始/
+    停止，pipeline 就不留记号），不能从副本里变出来。"""
+    update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
+    record = dict(guard(), resume={"url": "https://x.test/@fake_host/live", "at": 100.0})
+    settings_mod.save_setting(update_guard.KEY, record)
+    assert update_guard.on_boot(isolated, git=fake_git()).kind == "counted"
+    assert settings_mod.load_settings().get("resume_after_update") is None
 
 
 def test_a_resume_marker_still_present_is_left_as_it_is(isolated):
-    """新版本在读记号之前就崩了：记号还在，原样留给旧版本（不拿副本覆盖）。"""
+    """新版本两次都在读记号之前就崩了：记号还在，第 2 次和退回时都原样留着，不拿副本覆盖（副本的 at 故意
+    和记号不同，看得出是哪一份）。"""
+    settings_mod.save_setting("resume_after_update", {"url": "https://x.test/@fake_host/live", "at": 100.0})
     update_guard.arm(FROM, TO, "1.0.0", "1.1.0", now=100.0)
+    assert guard()["resume"]["at"] == 100.0
     settings_mod.save_setting("resume_after_update", {"url": "https://x.test/@fake_host/live", "at": 200.0})
-    update_guard.on_boot(isolated, git=fake_git())
-    new_process()
+    runs_without_the_page(isolated)
+    assert settings_mod.load_settings()["resume_after_update"]["at"] == 200.0
     assert update_guard.on_boot(isolated, git=fake_git()).rolled_back
     assert settings_mod.load_settings()["resume_after_update"]["at"] == 200.0
 
@@ -128,8 +214,7 @@ def test_once_git_has_rolled_back_a_later_error_still_reports_the_rollback(isola
     出错）都照样交回「已退回」：异常漏出去会被 main.py 的兜底吃掉，内存里的新代码接着跑在已经退回的旧文件上
     （第 2 轮审查）。"""
     update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
-    update_guard.on_boot(isolated, git=fake_git())
-    new_process()
+    runs_without_the_page(isolated)
 
     def boom(*_a, **_k):
         raise OSError("broken")
@@ -151,12 +236,25 @@ def test_once_git_has_rolled_back_a_later_error_still_reports_the_rollback(isola
 
 
 def test_main_reexecs_even_when_the_rollback_dialog_fails():
-    """弹窗那一步（先 print）出错也不能挡住重新 exec；没有对话框文字就不弹。"""
+    """弹窗那一步（先 print）出错也不能挡住重新 exec；没有对话框文字就不弹。Windows 的系统消息框（用户
+    2026-10-26 定 Windows 也弹窗）跟在 _info_dialog 后面、自己一个 try：打印抛了错（终端没了），消息框照样弹。"""
     func = _main_funcs()["_check_update_guard"]
-    guarded = [n for n in ast.walk(func) if isinstance(n, ast.Try)
-               and any(_calls(s, "_info_dialog") for s in n.body)]
-    assert len(guarded) == 1 and ast.unparse(guarded[0].handlers[0].type) == "Exception"
-    assert "if outcome.message" in ast.unparse(guarded[0])
+    tries = [n for n in func.body if isinstance(n, ast.Try)]
+
+    def guarded(name):
+        found = [i for i, n in enumerate(tries) if any(_calls(s, name) for s in n.body)]
+        assert len(found) == 1, name
+        node = tries[found[0]]
+        assert ast.unparse(node.handlers[0].type) == "Exception"
+        assert "if outcome.message" in ast.unparse(node)
+        return found[0], node
+
+    dialog_at, dialog = guarded("_info_dialog")
+    notice_at, notice = guarded("windows_notice")
+    assert dialog_at < notice_at and not _calls(dialog, "windows_notice")
+    assert "update_guard.windows_notice(outcome.message)" in ast.unparse(notice)
+    src = ast.unparse(func)
+    assert src.index("windows_notice") < src.index("release_lock") < src.index("execv")
 
 
 def test_only_a_lock_held_elsewhere_skips_the_count():
@@ -182,8 +280,7 @@ def test_only_a_lock_held_elsewhere_skips_the_count():
 ])
 def test_no_rollback_when_the_folder_is_not_what_the_update_left(isolated, git, kind):
     update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
-    update_guard.on_boot(isolated, git=fake_git())
-    new_process()
+    runs_without_the_page(isolated)
     outcome = update_guard.on_boot(isolated, git=git)
     assert outcome.kind == kind and not outcome.rolled_back
     assert ("reset", "--keep", FROM) not in git.calls or kind == "reset-failed"
@@ -298,6 +395,30 @@ def test_two_processes_started_together_do_not_roll_back(isolated):
         holder.wait(timeout=30)
 
 
+def test_a_double_launch_during_the_second_run_does_not_count_either(isolated):
+    """第 2 次启动（新版本第一次没连上、中控再打开）时又双击了一次：第二个进程照样不计数，boots 停在 2。
+    第 2 次那个进程随后页面没连上就没了，下一次真正的启动才是第 3 次、才退回。"""
+    update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
+    runs_without_the_page(isolated, times=1)
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLDER, str(REPO), str(isolated / "settings.json"),
+         str(isolated / "guard.lock")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert _result(holder) == "counted"                        # 第 2 次启动
+        assert guard()["boots"] == 2
+        git = fake_git()
+        assert update_guard.on_boot(isolated, git=git).kind == "other-instance"
+        assert git.calls == [] and guard()["boots"] == 2
+        holder.stdin.write("quit\n")                              # 页面没连上，进程没了
+        holder.stdin.flush()
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=30)
+    new_process()
+    assert update_guard.on_boot(isolated, git=fake_git()).rolled_back
+
+
 # ---- 「就绪」= 本机页面第一次连上（app/server.py） ----------------------------------------------
 
 def _page_scenario(isolated, connect):
@@ -396,8 +517,10 @@ def test_rollback_with_real_git_restores_the_previous_commit(isolated, monkeypat
     (repo / "settings.json.bak").write_text("{}", encoding="utf-8")   # 未跟踪的杂物不算「改过」
 
     update_guard.arm(old, new, "1.0.0", "1.1.0")
-    assert update_guard.on_boot(repo).kind == "counted"
-    new_process()
+    for _ in range(2):                                             # 新版本跑了两次，页面都没连上
+        assert update_guard.on_boot(repo).kind == "counted"
+        new_process()
+    assert _git(repo, "rev-parse", "HEAD") == new
     outcome = update_guard.on_boot(repo)
 
     assert outcome.rolled_back
@@ -430,11 +553,161 @@ def test_real_git_with_a_modified_file_is_left_alone(isolated, monkeypatch):
     (repo / "main.py").write_text("hand edit\n", encoding="utf-8")
 
     update_guard.arm(old, new, "1.0.0", "1.1.0")
-    update_guard.on_boot(repo)
-    new_process()
+    for _ in range(2):
+        assert update_guard.on_boot(repo).kind == "counted"
+        new_process()
     assert update_guard.on_boot(repo).kind == "dirty"
     assert _git(repo, "rev-parse", "HEAD") == new
     assert (repo / "main.py").read_text(encoding="utf-8") == "hand edit\n"
+
+
+# ---- git reset --keep 不设时限（#145 审查：超时被杀在半路，会留下半退回的工作区和 index.lock） ----------
+
+def test_only_the_read_only_git_calls_have_a_time_limit(isolated, monkeypatch):
+    seen = []
+
+    def fake_run(argv, **kw):
+        seen.append((argv[1], kw.get("timeout")))
+        out = {"rev-parse": TO + "\n", "status": ""}.get(argv[1], "")
+        return subprocess.CompletedProcess(argv, 0, out.encode(), b"")
+
+    monkeypatch.setattr(update_guard.subprocess, "run", fake_run)
+    update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
+    runs_without_the_page(isolated)
+    assert update_guard.on_boot(isolated).rolled_back                # 用模块自己的 _git
+    assert seen == [("rev-parse", update_guard.GIT_TIMEOUT_SEC), ("status", update_guard.GIT_TIMEOUT_SEC),
+                    ("reset", None)]
+
+
+@pytest.mark.skipif(shutil.which("git") is None or sys.platform == "win32",
+                    reason="需要 git 和 /bin/sh（替身 git 是 sh 脚本）")
+def test_a_slow_reset_is_waited_for_not_killed(isolated, monkeypatch):
+    """真的 git，但 reset 比只读命令的时限慢：照样等它做完——退回成功、HEAD 回到更新前、不留 index.lock。
+    以前同样受 30 秒时限管，时限一到 subprocess 就杀进程（这里把时限缩到 1 秒、reset 慢 2 秒来模拟）。"""
+    empty = isolated / "gitconfig"
+    empty.write_text("", encoding="utf-8")
+    for key, value in {"GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1",
+                       "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                       "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}.items():
+        monkeypatch.setenv(key, value)
+    repo = isolated / "app-folder"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "main.py").write_text("old\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "old")
+    old = _git(repo, "rev-parse", "HEAD")
+    (repo / "main.py").write_text("new\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "new")
+    new = _git(repo, "rev-parse", "HEAD")
+
+    shim = isolated / "bin"
+    shim.mkdir()
+    (shim / "git").write_text('#!/bin/sh\nif [ "$1" = reset ]; then sleep 2; fi\nexec "{}" "$@"\n'.format(
+        shutil.which("git")), encoding="utf-8")
+    (shim / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", "{}{}{}".format(shim, os.pathsep, os.environ["PATH"]))
+    monkeypatch.setattr(update_guard, "GIT_TIMEOUT_SEC", 1)
+
+    update_guard.arm(old, new, "1.0.0", "1.1.0")
+    for _ in range(2):
+        assert update_guard.on_boot(repo).kind == "counted"
+        new_process()
+    outcome = update_guard.on_boot(repo)
+
+    assert outcome.rolled_back
+    assert _git(repo, "rev-parse", "HEAD") == old
+    assert (repo / "main.py").read_text(encoding="utf-8") == "old\n"
+    assert not (repo / ".git" / "index.lock").exists()
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+# ---- Windows 也弹窗（用户 2026-10-26 定）：系统自带的消息框，替身 ctypes，不真弹 ---------------------
+
+class FakeUser32:
+    def __init__(self, fail=False, gate=None):
+        self.calls, self.fail, self.gate = [], fail, gate
+
+    def MessageBoxW(self, hwnd, text, title, flags):
+        self.calls.append((hwnd, text, title, flags))
+        if self.gate is not None:
+            self.gate.wait(5)                     # 真的 MessageBoxW 要等人点「确定」才返回
+        if self.fail:
+            raise OSError("no desktop")
+        return 1
+
+
+def fake_windll(**kw):
+    from types import SimpleNamespace
+    return SimpleNamespace(user32=FakeUser32(**kw))
+
+
+def _now(fn):
+    fn()
+
+
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_windows_shows_the_rollback_in_a_system_message_box(lang):
+    msg = update_guard.rollback_message("1.0.0", "1.1.0")
+    windll = fake_windll()
+    with i18n.use(lang):
+        assert update_guard.windows_notice(msg, os_name="nt", environ={}, windll=windll, start=_now) is True
+    [(hwnd, text, title, flags)] = windll.user32.calls
+    assert hwnd is None and type(text) is str and type(title) is str     # 交给 ctypes 的是普通 str
+    assert text == i18n.text(msg, lang) and title == i18n.text(i18n.APP_NAME, lang)
+    assert ("went back to v1.0.0" in text) if lang == "en" else ("已自动退回更新前的 v1.0.0" in text)
+    assert flags == update_guard.MB_ICONINFORMATION | update_guard.MB_SETFOREGROUND | update_guard.MB_TOPMOST
+
+
+def test_the_windows_message_box_does_not_hold_up_the_relaunch():
+    """MessageBoxW 等人点才返回：放在守护线程里弹，windows_notice 马上返回，旧版本照常马上起来。"""
+    import threading
+    gate = threading.Event()
+    windll = fake_windll(gate=gate)
+    try:
+        assert update_guard.windows_notice("已退回", os_name="nt", environ={}, windll=windll) is True
+        for _ in range(200):
+            if windll.user32.calls:
+                break
+            gate.wait(0.01)
+        assert len(windll.user32.calls) == 1                       # 已经弹出来、还没人点
+        box = next(t for t in threading.enumerate() if t.name == "update-rollback-notice")
+        assert box.daemon and box.is_alive()
+    finally:
+        gate.set()
+
+
+def test_the_windows_message_box_uses_ctypes_windll_by_default(monkeypatch):
+    from types import SimpleNamespace
+    windll = fake_windll()
+    monkeypatch.setitem(sys.modules, "ctypes", SimpleNamespace(windll=windll))
+    assert update_guard.windows_notice("已退回", os_name="nt", environ={}, start=_now) is True
+    assert [c[1] for c in windll.user32.calls] == ["已退回"]
+
+
+@pytest.mark.parametrize("case", ["not-windows", "ci", "empty", "no-windll", "box-fails", "no-thread"])
+def test_no_windows_message_box_is_quietly_left_to_the_printed_line(monkeypatch, case):
+    """Mac / Linux 不走这里（Mac 照旧由 _info_dialog 弹）；CI 不弹；没有 windll、MessageBoxW 出错、起不了线程
+    都不抛——main.py 已经打印过那句话。"""
+    from types import SimpleNamespace
+    windll = fake_windll(fail=case == "box-fails")
+    kw = {"os_name": "nt", "environ": {}, "windll": windll, "start": _now}
+    if case == "not-windows":
+        kw["os_name"] = "posix"
+    elif case == "ci":
+        kw["environ"] = {"CI": "1"}
+    elif case == "no-windll":
+        kw["windll"] = None
+        monkeypatch.setitem(sys.modules, "ctypes", SimpleNamespace())     # 没有 windll（非 Windows 的 ctypes）
+    elif case == "no-thread":
+        def no_thread(_fn):
+            raise RuntimeError("can't start new thread")
+        kw["start"] = no_thread
+    message = "" if case == "empty" else "已退回"
+    shown = update_guard.windows_notice(message, **kw)
+    assert shown is (case == "box-fails")                          # 交给了系统、系统那边出错：吞掉
+    if case != "box-fails":
+        assert windll.user32.calls == []
 
 
 # ---- 一键更新留记号（app/updater.py）、恢复记号带上提交号（app/pipeline.py） -----------------------
@@ -480,8 +753,7 @@ def test_after_a_rollback_the_resume_says_so_and_the_audit_reason_differs(isolat
     settings_mod.save_setting("resume_after_update", {"url": "https://www.tiktok.com/@fake_host/live",
                                                       "at": 1000.0, "to_version": "1.1.0"})
     update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
-    update_guard.on_boot(isolated, git=fake_git())
-    new_process()
+    runs_without_the_page(isolated)
     assert update_guard.on_boot(isolated, git=fake_git()).rolled_back
     marker = settings_mod.load_settings()["resume_after_update"]
     assert marker["rolled_back_from"] == "1.1.0" and marker["at"] == 1000.0
@@ -599,6 +871,6 @@ def test_a_held_lock_in_this_process_is_kept(isolated):
 
 def test_rollback_message_takes_versions_with_or_without_the_v():
     msg = update_guard.rollback_message("v0.18.0", "0.19.0")
-    assert msg == ("一键更新到 v0.19.0 之后，新版本上次启动时字幕界面一直没有连上。这次启动已自动退回"
+    assert msg == ("一键更新到 v0.19.0 之后，新版本启动了两次，字幕界面都没有连上。这次启动已自动退回"
                    "更新前的 v0.18.0，程序会重新打开。")
     assert "v0.19.0" in i18n.text(msg, "en") and "vv" not in i18n.text(msg, "en")

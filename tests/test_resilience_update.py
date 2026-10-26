@@ -948,6 +948,23 @@ def test_ytdlp_freshen_skips_while_monitoring_or_updating(monkeypatch, isolated)
     p.audit.close()
 
 
+def test_ytdlp_freshen_checked_within_a_day_stays_quiet_while_monitoring(monkeypatch, isolated, capsys):
+    """长时间监听时每 6 小时一次的定期检查：一天之内查过的先按 recent 跳过，不在终端每 6 小时打一行
+    「正在监听…跳过」（#145 审查）。满一天没查、又在监听，才是 busy、打那一行；解析失败那条路按它自己的
+    6 小时冷却，同一个顺序。"""
+    u, p, seen, _state = make_ytdlp_updater(monkeypatch, isolated, live=True)
+    settings_mod.save_setting("ytdlp_updated_at", NOW - 3600)
+    for reason in ("periodic", "resolve-failures"):
+        assert run(u.freshen_ytdlp(reason=reason, now=NOW)) == "recent"
+    assert "跳过" not in capsys.readouterr().out
+    assert run(u.freshen_ytdlp(reason="periodic", now=NOW + updater_mod.YTDLP_CHECK_INTERVAL_SEC)) == "busy"
+    assert "正在监听或一键更新，yt-dlp 自动更新这次跳过（periodic）" in capsys.readouterr().out
+    assert run(u.freshen_ytdlp(reason="resolve-failures", now=NOW + 6 * 3600)) == "busy"
+    assert seen == {"pip": [], "pypi": []}
+    assert settings_mod.load_settings()["ytdlp_updated_at"] == NOW - 3600     # 跳过的不记时间
+    p.audit.close()
+
+
 def test_ytdlp_freshen_does_not_start_pip_if_monitoring_began_while_it_waited(monkeypatch, isolated):
     """查完 PyPI、等 pip 锁的时候中控点了开始：拿到锁之后再看一次，不装。"""
     u, p, seen, state = make_ytdlp_updater(monkeypatch, isolated)

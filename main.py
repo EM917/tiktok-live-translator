@@ -606,8 +606,8 @@ def _recover_unclosed_audits(port):
 
 
 def _check_update_guard(others_running=None):
-    """一键更新之后的存活确认（专家审查 I6，规则见 app/update_guard.py）：新版本上一次启动之后字幕界面
-    一直没连上，这一次就退回更新前的版本，弹窗说明，然后重新 exec。
+    """一键更新之后的存活确认（专家审查 I6，规则见 app/update_guard.py）：新版本启动了两次、字幕界面都没
+    连上，第三次打开就退回更新前的版本，弹窗说明（Mac、Windows 都弹），然后重新 exec。
 
     只在确认没有别的实例在跑之后调（计划审查 P5：在单实例检查之前计数，双击两次就会把一个好好的新版本
     退回去）：窗口模式在 run_with_window 的检查之后，浏览器模式在 main() 的检查之后；--no-open、--url
@@ -621,10 +621,17 @@ def _check_update_guard(others_running=None):
     if not outcome.rolled_back:
         return
     # 对话框不等人点：旧版本马上起来，暂停中的监听才赶得上「重启后接着监听」的时限。程序文件已经退回了：
-    # 弹窗这一步出错（比如终端断了、print 抛 OSError）也不能挡住下面的重新 exec
+    # 弹窗这一步出错（比如终端断了、print 抛 OSError）也不能挡住下面的重新 exec。
+    # _info_dialog 先打印、Mac 上没终端时弹框（不变）；Windows 另外用系统自带的消息框弹（用户 2026-10-26 定），
+    # 弹不出来就只剩那一行打印。两步各自兜底：打印抛了错，Windows 的消息框照样弹
     try:
         if outcome.message:
             _info_dialog(outcome.message)
+    except Exception:
+        pass
+    try:
+        if outcome.message:
+            update_guard.windows_notice(outcome.message)
     except Exception:
         pass
     update_guard.release_lock()

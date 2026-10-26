@@ -8,13 +8,16 @@
   arm()        一键更新合并成功、execv 之前（app/updater.py）：在 settings.json 里留一个记号
                update_guard = {from, to, from_version, to_version, at, boots: 0, resume}。from/to 是
                更新前后的提交号；resume 是那一刻「重启后接着监听」记号的副本（见 on_boot）；
-  on_boot()    新版本每次真正启动时（main.py，确认没有别的实例在跑之后）：boots 加 1。boots 到 2
-               还没被清掉，说明新版本上一次启动之后本机页面一直没连上——这一次就不再跑新代码：
-               git reset --keep 回到 from，清掉记号，交回一句对话框文字，由 main.py 弹窗并重新 exec；
+  on_boot()    新版本每次真正启动时（main.py，确认没有别的实例在跑之后）：boots 加 1。boots 到
+               ROLLBACK_AT_BOOTS（3）还没被清掉，说明新版本真的跑了两次、两次本机页面都没连上——这一次
+               就不再跑新代码：git reset --keep 回到 from，清掉记号，交回一句对话框文字，由 main.py 弹窗
+               （Mac、Windows 都弹，见 windows_notice）并重新 exec；
   mark_ready() 本机页面第一次连上控制服务时（app/server.py）：清掉记号，新版本算是能用了。不挂在
                「重启后接着监听」之后：没在监听时根本走不到那一步，记号就永远清不掉了。
 
 不退回的几种情形（D10：「双击两次、强行退出不算；程序文件夹被手动改过就不退」，计划审查 P5）：
+- 新版本只跑过一次就没了（页面连上之前崩了一次、被强退一次）：下一次照常跑新版本，那一次页面连上了
+  就清记号（用户 2026-10-26 按 D10 原话定）；
 - 别的实例在跑。main.py 只在单实例检查之后调 on_boot；同时启动的两个进程，单实例检查都看不见
   对方，这里再加一把进程锁：拿到锁的那个进程一直拿着，直到退出（崩溃时系统自动放锁）。拿不到锁
   就什么都不做，不计数；
@@ -23,8 +26,9 @@
 - 工作区有改动（--untracked-files=no，和一键更新的预检同一个口径）：不碰，记号作废；
 - git 不可用、reset 失败：记号作废，照常启动新版本。
 
-只依赖标准库。git 调用都有时限。对话框文字在这里（L()），弹不弹、怎么弹由 main.py 决定；终端行永远
-是中文。
+只依赖标准库。git 调用除了 reset 都有时限（reset 为什么不设，见 GIT_TIMEOUT_SEC）。对话框文字在这里
+（L()）；Mac 上弹不弹由 main.py 的 _info_dialog 决定，Windows 的系统消息框也在这里（windows_notice）。
+终端行永远是中文。
 """
 import errno
 import hashlib
@@ -32,6 +36,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -41,12 +46,20 @@ from .settings import load_settings, save_setting
 ROOT = Path(__file__).resolve().parent.parent
 KEY = "update_guard"
 RESUME_KEY = "resume_after_update"   # app/pipeline.py 的「重启后接着监听」记号
-# 启动计数到这个数、记号还在（新版本上一次启动之后页面一直没连上），就退回（D10）。第 1 次是一键更新
-# 自己的 execv——新版本真正跑的只有这一次；第 2 次是中控再打开程序：这一次不再跑新代码，直接退回。
-# 和 D10 字面「连续两次启动页面都没连上」的差别：新版本只跑过一次（计划写的就是 boots ≥ 2）。所以新版本
-# 在页面连上之前被强退一次，下一次启动也会退回——「强退不算」只管页面连上之后
-ROLLBACK_AT_BOOTS = 2
+# 启动计数到这个数、记号还在，就退回（D10；用户 2026-10-26 按原话定：「新版本要真的跑两次、页面都没连上，
+# 第三次打开才退回」）。第 1 次是一键更新自己的 execv，第 2 次是中控再打开一次——这两次跑的都是新代码；
+# 第 3 次不再跑新代码，直接退回。两次之间页面连上过一次，记号就清了，不会走到第 3 次。所以页面连上之前
+# 偶尔强退一次、崩一次，下一次照常跑新版本，不会被误退。
+# （#145 第 1、2 轮是 2：新版本只跑一次，第二次打开就退回，强退一次就会退回去。）
+ROLLBACK_AT_BOOTS = 3
+# 只读的 git（rev-parse、status）的时限：超时被杀不留任何东西
 GIT_TIMEOUT_SEC = 30
+# 不设时限的 git 子命令。git reset --keep 改的是工作区和 index：subprocess 的时限一到就杀进程，杀在半路会
+# 留下一半旧一半新的程序文件，外加 .git/index.lock——之后每一条改仓库的 git（下一次一键更新、手动命令）
+# 都会因为这把锁失败，得有人手动删（#145 审查）。它只在本机读写，不联网、不等凭据；index.lock 已经在的话
+# 它马上报错退出，不会等。真卡住（比如程序文件夹在出了问题的网络盘上）时，终端最后一行是「正在退回…」，
+# 中控能看到卡在哪一步；强退的后果和被我们杀掉一样，但不会是程序自己在它干到一半时动手
+_GIT_NO_TIMEOUT = frozenset({"reset"})
 # 记号里的 from/to 是完整的提交号（SHA-1 40 位，SHA-256 仓库 64 位）。from 会原样交给 git reset --keep：
 # 不认得的（比如以 - 开头，会被 git 当成选项）整个记号作废，不碰 git
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -152,11 +165,13 @@ def release_lock():
 
 
 def _git(root, *args):
-    """跑一条 git，返回 (退出码, stdout)；起不来、超时返回 (None, "")。不等凭据。"""
+    """跑一条 git，返回 (退出码, stdout)；起不来、超时返回 (None, "")。不等凭据。
+    reset 不设时限（见 _GIT_NO_TIMEOUT），其余 GIT_TIMEOUT_SEC。"""
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    timeout = None if args and args[0] in _GIT_NO_TIMEOUT else GIT_TIMEOUT_SEC
     try:
         r = subprocess.run(["git", *args], cwd=str(root), env=env, capture_output=True,
-                           timeout=GIT_TIMEOUT_SEC)
+                           timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None, ""
     return r.returncode, r.stdout.decode("utf-8", errors="replace")
@@ -167,13 +182,61 @@ def _short(commit):
 
 
 def rollback_message(from_version, to_version):
-    """退回之后弹的那句话。只写看到的（页面没连上）和程序做了什么（退回、重新打开），不猜为什么。"""
-    return L("一键更新到 v{} 之后，新版本上次启动时字幕界面一直没有连上。这次启动已自动退回更新前的 "
+    """退回之后弹的那句话。只写看到的（两次启动页面都没连上）和程序做了什么（退回、重新打开），不猜为什么。"""
+    return L("一键更新到 v{} 之后，新版本启动了两次，字幕界面都没有连上。这次启动已自动退回更新前的 "
              "v{}，程序会重新打开。",
-             "After the update to v{}, the caption window never connected the last time the new "
-             "version started. On this launch, the app went back to v{}, the version before the "
-             "update, and is opening again.").format(
+             "After the update to v{}, the new version started twice and the caption window "
+             "didn’t connect either time. On this launch, the app went back to v{}, the version "
+             "before the update, and is opening again.").format(
         str(to_version or "?").lstrip("vV"), str(from_version or "?").lstrip("vV"))
+
+
+# Windows 消息框的样式：信息图标、拉到前台、置顶（旧版本的窗口随后起来，不能把它盖住）
+MB_ICONINFORMATION = 0x40
+MB_SETFOREGROUND = 0x10000
+MB_TOPMOST = 0x40000
+
+
+def _start_daemon(fn):
+    threading.Thread(target=fn, name="update-rollback-notice", daemon=True).start()
+
+
+def windows_notice(message, os_name=None, environ=None, windll=None, start=None):
+    """Windows 上退回之后用系统自带的消息框（user32.MessageBoxW）说明已退回哪个版本（用户 2026-10-26 定：
+    Windows 也弹窗）。Mac 不走这里，照旧由 main.py 的 _info_dialog 弹。
+
+    MessageBoxW 要等人点「确定」才返回，所以另起一个守护线程弹，这里马上返回：旧版本要马上起来，暂停中的
+    监听才赶得上「重启后接着监听」的时限（和 Mac 的对话框一样不等人点）。Windows 上重新打开是起子进程、
+    本进程一直等它（app/relaunch.replace_process），消息框就一直留到点掉、或程序退出。
+
+    不看有没有终端：Windows 上从 Start.bat 打开，黑窗口总是在的，按终端判断就永远不会弹。CI 里不弹。
+    弹不出来（没有 ctypes.windll、调用出错）就算了：那句话 main.py 已经打印过（终端是中文）。
+    返回是否交给了系统。os_name / environ / windll / start 只给测试换替身用。"""
+    if (os_name or os.name) != "nt" or not message:
+        return False
+    if (os.environ if environ is None else environ).get("CI"):
+        return False
+    try:
+        if windll is None:
+            import ctypes
+            windll = ctypes.windll
+        box = windll.user32.MessageBoxW
+        from .native_dialog import messagebox_args
+        text, title = messagebox_args(message)
+    except Exception:
+        return False
+
+    def show():
+        try:
+            box(None, text, title, MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST)
+        except Exception:
+            pass
+
+    try:
+        (start or _start_daemon)(show)
+    except Exception:
+        return False
+    return True
 
 
 def on_boot(root=None, others_running=None, git=None):
@@ -218,10 +281,13 @@ def _count_or_roll_back(root, guard, git):
     if boots < ROLLBACK_AT_BOOTS:
         save_setting(KEY, dict(guard, boots=boots))
         _state["armed"] = (guard.get("to"), guard.get("at"))
-        print("[信息] 一键更新到 v{} 之后第 {} 次启动：字幕界面连上之后就算更新成功".format(
-            to_version, boots))
+        if boots > 1:
+            _give_back_resume(guard)
+        print("[信息] 一键更新到 v{} 之后第 {} 次启动：字幕界面连上之后就算更新成功{}".format(
+            to_version, boots, "；这一次还连不上的话，下次打开会自动退回 v{}".format(from_version)
+            if boots == ROLLBACK_AT_BOOTS - 1 else ""))
         return BootOutcome("counted")
-    # 新版本上一次启动之后页面一直没连上：先确认工作区还是一键更新留下的样子，才退回
+    # 新版本两次启动页面都没连上：先确认工作区还是一键更新留下的样子，才退回
     code, head = git(root, "rev-parse", "HEAD")
     if code is None or code != 0:
         disarm()
@@ -244,6 +310,13 @@ def _count_or_roll_back(root, guard, git):
         print("[警告] 一键更新到 v{} 之后页面一直没连上，但程序文件夹里有改动过的文件，没有自动退回".format(
             to_version))
         return BootOutcome("dirty")
+    # git reset --keep 不设时限（见 _GIT_NO_TIMEOUT）：真卡住时终端最后一行是这一句。终端没了（print 抛
+    # OSError）也照样退回：这一行打不出来不能挡住退回
+    try:
+        print("[信息] 一键更新到 v{} 之后新版本两次启动字幕界面都没连上：正在退回更新前的 v{}（{}）…".format(
+            to_version, from_version, _short(guard["from"])))
+    except Exception:
+        pass
     code, _ = git(root, "reset", "--keep", guard["from"])
     if code != 0:
         disarm()
@@ -267,8 +340,20 @@ def _count_or_roll_back(root, guard, git):
     return BootOutcome("rolled-back", message)
 
 
+def _give_back_resume(guard):
+    """新版本第 2 次启动（还算数、不退回）：上一次启动可能已经读掉了「重启后接着监听」记号（读到即删）、
+    页面没连上就没了。把副本还回去，这一次照样能接着听——不然暂停中的监听要等到第 3 次退回时才还回去，
+    那时往往已经过了 5 分钟。过没过期照旧按原来的 at 判断；记号还在（上一次没读到它）就原样不动。"""
+    try:
+        if load_settings().get(RESUME_KEY) is None and isinstance(guard.get("resume"), dict):
+            save_setting(RESUME_KEY, dict(guard["resume"]))
+            print("[信息] 上一次启动读掉了「重启后接着监听」的记号、页面没连上就退出了：已把记号还回去")
+    except Exception as exc:
+        print("[警告] 还回「重启后接着监听」的记号时出错（{}），这次不接着监听".format(type(exc).__name__))
+
+
 def _settle_after_reset(guard, to_version, from_version):
-    """git reset --keep 已经成功之后的收尾。第一次启动可能已经读掉了「重启后接着监听」记号（读到即删）、
+    """git reset --keep 已经成功之后的收尾。新版本启动时可能已经读掉了「重启后接着监听」记号（读到即删）、
     然后才出事：还回去，旧版本照原来的时间判断过没过期。记号里注明是退回来的（rolled_back_from）：旧版本
     恢复监听时状态行不能说「已更新到」。"""
     resume = load_settings().get(RESUME_KEY)
@@ -277,7 +362,7 @@ def _settle_after_reset(guard, to_version, from_version):
     if isinstance(resume, dict):
         save_setting(RESUME_KEY, dict(resume, rolled_back_from=str(guard.get("to_version") or "")))
     disarm()
-    print("[警告] 一键更新到 v{} 之后，新版本上次启动时字幕界面一直没有连上：已退回更新前的 v{}"
+    print("[警告] 一键更新到 v{} 之后，新版本启动了两次，字幕界面都没有连上：已退回更新前的 v{}"
           "（git reset --keep {}），重新启动…".format(to_version, from_version, _short(guard["from"])))
 
 

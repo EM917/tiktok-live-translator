@@ -535,9 +535,9 @@ class Updater:
         attempted / index-failed / no-update / pip-failed / unchanged / installed。"""
         if self._freshening:
             return "running"
-        if self._busy_for_background_pip():
-            print("[信息] 正在监听或一键更新，yt-dlp 自动更新这次跳过（{}）".format(reason))
-            return "busy"
+        # 先看「刚查过」、再看忙不忙：长时间监听时每 6 小时一次的定期检查，一天之内查过的就安静地跳过，
+        # 不在终端每 6 小时打一行「正在监听…跳过」（#145 审查）。满一天没查、又一直在监听时照旧打这一行：
+        # 那时它说的是「该查了、但一直在忙」
         min_age = 6 * 3600 if reason == "resolve-failures" else YTDLP_CHECK_INTERVAL_SEC
         last = load_settings().get("ytdlp_updated_at") or 0
         try:
@@ -547,6 +547,9 @@ class Updater:
         now = time.time() if now is None else now
         if now - last < min_age:
             return "recent"
+        if self._busy_for_background_pip():
+            print("[信息] 正在监听或一键更新，yt-dlp 自动更新这次跳过（{}）".format(reason))
+            return "busy"
         if now - self._freshen_attempted_at < 600:   # 上次尝试（含失败）10 分钟内不重试
             return "attempted"
         self._freshening = True
