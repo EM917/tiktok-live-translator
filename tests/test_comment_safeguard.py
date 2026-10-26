@@ -22,7 +22,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import MethodType, ModuleType, SimpleNamespace
 
 import pytest
 
@@ -91,7 +91,9 @@ def _updater(monkeypatch, settings=None, versions=("7.0.0",), pip_code=0, instal
     up = updater_mod.Updater(server=None)
     up._stream_active = lambda: busy
 
-    async def fake_pip(args, label, timeout=600):
+    async def fake_pip(args, label, timeout=600, skip_if=None):
+        if skip_if is not None and skip_if():     # 同真的 _pip_install：拿到锁之后、开始之前问一次
+            return updater_mod.PIP_SKIPPED
         pip_calls.append(list(args))
         if pip_gate is not None:
             await pip_gate()
@@ -348,6 +350,99 @@ def test_monitoring_that_starts_while_pypi_answers_is_not_upgraded(monkeypatch, 
     assert pip_calls == [["--upgrade-strategy", "only-if-needed", "TikTokLive==7.0.2"]]
 
 
+class _FakePip:
+    """顶替 asyncio.create_subprocess_exec：记下起过的 pip，wait 可以等一个闸门，kill 只记一笔。"""
+
+    def __init__(self):
+        self.spawned, self.killed, self.gate = [], [], None
+        fake = self
+
+        class Proc:
+            returncode = 0
+
+            async def wait(self):
+                if fake.gate is not None:
+                    await fake.gate.wait()
+                return 0
+
+            def kill(self):
+                fake.killed.append(1)
+
+        self.Proc = Proc
+
+    async def __call__(self, *args, **kwargs):
+        self.spawned.append(args)
+        return self.Proc()
+
+
+def test_monitoring_that_starts_while_waiting_for_the_pip_lock_is_not_upgraded(monkeypatch, capsys):
+    """第二道忙碌闸在拿到 pip 锁之后才看（#147 审查；和 freshen_ytdlp 一样）。以前问完 PyPI、在锁外面就看了：
+    锁被别的 pip 占着（一键更新、后台装 GPU 组件）、排队的这段时间里点了开始，拿到锁照样装。
+    这里用真的 _pip_install，只把起子进程那一步换成假的。"""
+    state = {"busy": False}
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1", "7.0.2"),
+                                    index=(True, "7.0.2"))
+    up._stream_active = lambda: state["busy"]
+    monkeypatch.setattr(up, "_pip_install", MethodType(updater_mod.Updater._pip_install, up))
+    pip = _FakePip()
+    monkeypatch.setattr(updater_mod.asyncio, "create_subprocess_exec", pip)
+
+    async def scenario():
+        lock = up._get_pip_lock()
+        await lock.acquire()                                  # 别的 pip 正占着锁
+        check = asyncio.ensure_future(up.freshen_tiktoklive("comment-rejected"))
+        assert await wait_until(lambda: up._pip_tasks, limit=100)   # 问完 PyPI 了，在排队等锁
+        state["busy"] = True                                  # 这时中控点了开始
+        lock.release()
+        return await check
+
+    assert run(scenario()) == {"outcome": "busy", "before": "7.0.1"}
+    assert pip.spawned == [] and "tiktoklive_freshen_at" not in store
+    assert not up._get_pip_lock().locked()
+    assert "这次不装" in capsys.readouterr().out
+    # 没记失败：空闲下来马上能再查，照常装（锁是上一个事件循环里建的，换一把新的）
+    state["busy"] = False
+    up._pip_lock = None
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "upgraded"
+    assert len(pip.spawned) == 1 and "TikTokLive==7.0.2" in pip.spawned[0]
+
+
+def test_skip_if_is_asked_once_after_the_lock_and_never_stops_a_running_pip(monkeypatch):
+    """skip_if 只在拿到 pip 锁之后问一次：等锁时不问（问早了就等于在锁外面看）；pip 跑起来以后不再问，
+    不会因为它 kill 掉正在写环境的 pip（要中途叫停的是 abort_if）。"""
+    pip = _FakePip()
+    monkeypatch.setattr(updater_mod.asyncio, "create_subprocess_exec", pip)
+    up = updater_mod.Updater(server=None)
+    asked = []
+    answer = {"skip": False}
+
+    def skip_if():
+        asked.append(answer["skip"])
+        return answer["skip"]
+
+    async def scenario():
+        pip.gate = asyncio.Event()
+        lock = up._get_pip_lock()
+        await lock.acquire()
+        call = asyncio.ensure_future(up._pip_install(["TikTokLive==7.0.2"], "测试", skip_if=skip_if))
+        await asyncio.sleep(0.05)
+        asked_while_waiting = list(asked)
+        lock.release()
+        assert await wait_until(lambda: pip.spawned, limit=100)
+        answer["skip"] = True                     # pip 已经在跑：这时开始监听，也不停它
+        await asyncio.sleep(0.05)
+        pip.gate.set()
+        code = await call
+        skipped = await up._pip_install(["TikTokLive==7.0.2"], "测试", skip_if=skip_if)
+        return asked_while_waiting, code, skipped
+
+    waiting, code, skipped = run(scenario())
+    assert waiting == [] and code == 0 and pip.killed == []
+    assert asked == [False, True]
+    assert skipped == updater_mod.PIP_SKIPPED and len(pip.spawned) == 1
+    assert not up._get_pip_lock().locked()
+
+
 def test_newer_post_release_is_installed_not_skipped(monkeypatch):
     """第三轮核对确认：7(.N){1,2} 的正则会跳过 7.0.1.post1 这种补丁后续版。"""
     up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1.post1"),
@@ -396,9 +491,9 @@ def test_announce_runs_before_the_check(monkeypatch):
     up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"), index=(True, "7.0.2"))
     real_pip = up._pip_install
 
-    async def pip_after_announce(args, label, timeout=600):
+    async def pip_after_announce(args, label, **kw):
         order.append("pip")
-        return await real_pip(args, label, timeout)
+        return await real_pip(args, label, **kw)
 
     monkeypatch.setattr(up, "_pip_install", pip_after_announce)
     run(up.freshen_tiktoklive("comment-rejected", announce=announce))

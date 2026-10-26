@@ -176,6 +176,7 @@ UPDATE_PIP_TIMEOUT_SEC = 600
 MLX_RETRY_TIMEOUT_SEC = 1800
 PIP_ABORT_POLL_SEC = 2.0
 PIP_ABORTED = "aborted"
+PIP_SKIPPED = "skipped"
 # 点「一键更新」时 pip 锁被占着，先等这么久：后台的 mlx-whisper 安装每 PIP_ABORT_POLL_SEC
 # 秒看一次有没有在更新，看到就自己撤。等不到的（yt-dlp 保鲜这类不会撤的）这次就不更新
 UPDATE_LOCK_WAIT_SEC = 2 * PIP_ABORT_POLL_SEC + 1
@@ -629,25 +630,29 @@ class Updater:
             return {version: urls}, None
         return None, "返回的内容里没有版本列表"                          # i18n: terminal
 
-    async def _pip_install(self, args, label, timeout=600, log_path=None, abort_if=None):
+    async def _pip_install(self, args, label, timeout=600, log_path=None, abort_if=None, skip_if=None):
         """跑一次 `pip install <args>`，返回退出码；超时或异常返回 None；abort_if 叫停时
         返回 PIP_ABORTED。log_path 给了就把 pip 的输出写进去（默认丢弃）；abort_if 每
         PIP_ABORT_POLL_SEC 秒问一次，返回真就 kill 掉 pip（后台装大组件时一开始监听就撤）。
+        skip_if 只在拿到 pip 锁之后、pip 开始之前问一次，返回真就不开始、返回 PIP_SKIPPED；pip 跑起来
+        以后不再问，也就不会因为它 kill 掉 pip（freshen_tiktoklive 用它做第二道忙碌闸）。
 
         pip 跑在独立任务里，从拿锁到 pip 退出都持有 pip 锁；调用方被取消（中控点停止、
         换房间、一键更新会先停直播）只结束「等」，不结束 pip，也不放锁。以前锁随调用方
         的取消一起释放，pip 却还在写环境：一键更新的 pip 紧接着拿到锁并发写同一个 venv，
         随后 execv 重启（2026-09-15 审查实测复现）。"""
         task = asyncio.ensure_future(
-            self._pip_install_locked(args, label, timeout, log_path, abort_if))
+            self._pip_install_locked(args, label, timeout, log_path, abort_if, skip_if))
         self._pip_tasks.add(task)
         task.add_done_callback(self._pip_tasks.discard)
         return await asyncio.shield(task)
 
-    async def _pip_install_locked(self, args, label, timeout, log_path=None, abort_if=None):
+    async def _pip_install_locked(self, args, label, timeout, log_path=None, abort_if=None, skip_if=None):
         """与 freshen_ytdlp、一键更新共用 pip 锁（pip 不能并发写环境）。超时 kill 之后
         必须再 wait 一次去 reap，否则残留僵尸进程。"""
         async with self._get_pip_lock():
+            if skip_if is not None and skip_if():
+                return PIP_SKIPPED       # 等锁的这段时间里情况变了：不开始，也不算失败
             if abort_if is not None and abort_if():
                 return PIP_ABORTED       # 等锁的这段时间里情况变了：不开始
             log = _open_pip_log(log_path, args)
@@ -865,7 +870,8 @@ class Updater:
         调用方也会被通知，它的面板同样说「正在检查」。
 
         只装 PyPI 上发布满 7 天、比已装的新的 7.x，用 ==版本号 装（D9，判据在 eligible_release）；在监听或
-        一键更新进行中不查、不装（D6，_busy_for_background_pip：开头看一次，问完 PyPI、装之前再看一次）。
+        一键更新进行中不查、不装（D6，_busy_for_background_pip：开头看一次；拿到 pip 锁之后、pip 开始之前
+        再看一次，和 freshen_ytdlp 一样）。
 
         返回 {"outcome": ..., "before": ..., "after": ...}，outcome 取值：
           upgraded / no-update / pip-failed / cooldown / recently-failed / busy /
@@ -919,13 +925,15 @@ class Updater:
                 print("[信息] 弹幕组件 TikTokLive {} 已是可用的最新版本（发布满 {} 天的 7.x 里最新：{}，{}）"
                       .format(before, COMPONENT_MIN_AGE_SEC // 86400, latest or "无", reason))
                 return {"outcome": "no-update", "before": before, "after": before}
-            # 问 PyPI 的这几秒里开始了监听或一键更新：不装。不记冷却、不算失败，下次再看
-            if self._busy_for_background_pip():
-                print("[信息] 正在监听或一键更新，弹幕组件 TikTokLive {} 这次不装（{}）".format(latest, reason))
-                return {"outcome": "busy", "before": before}
+            # 第二道忙碌闸在拿到 pip 锁之后再看（和 freshen_ytdlp 一样）：问 PyPI、排队等锁的这段时间里开始了
+            # 监听或一键更新，就不装。在锁外面看的话，看完到 pip 开始之间还隔着等锁。不记冷却、不算失败，下次再看
             code = await self._pip_install(
                 ["--upgrade-strategy", "only-if-needed", "TikTokLive=={}".format(latest)],
-                "弹幕组件 TikTokLive 更新检查（{}）".format(reason))   # i18n: terminal
+                "弹幕组件 TikTokLive 更新检查（{}）".format(reason),   # i18n: terminal
+                skip_if=self._busy_for_background_pip)
+            if code == PIP_SKIPPED:
+                print("[信息] 正在监听或一键更新，弹幕组件 TikTokLive {} 这次不装（{}）".format(latest, reason))
+                return {"outcome": "busy", "before": before}
             after = tiktoklive_version()
             if code != 0:
                 self._tiktoklive_freshen_failed_at = time.time()
