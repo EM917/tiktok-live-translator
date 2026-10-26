@@ -666,8 +666,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         elif mtype == "retranslate_comment":
             # 弹幕重译（app/comments.py）：Sonnet 要等几秒，放后台跑，不在这个页面的消息循环里
             # 等（同 apply_update）；中控可以接着点别的弹幕，每条自己排队、自己限额。
-            # 只有本机页面发得出来：手机入站只认 retranslate（app/viewer.py _handle_inbound）
-            self._spawn(self.comments.retranslate(msg.get("id")))
+            # 只有本机页面发得出来：手机入站只认 retranslate（app/viewer.py _handle_inbound）。
+            # 登记进本场（同字幕重译）：停止、换主播时关审计之前取消，cancelled 记进点它的那一场
+            self._own_retranslate(self._spawn(self.comments.retranslate(msg.get("id"))))
             return None
         elif mtype == "migrate_glossary":
             return self._migrate_glossary(bool(msg.get("confirm")))
@@ -5854,11 +5855,28 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 任务开跑前就被取消时它的函数体一行都不执行：完成回调兜底，免得这里一直等
         task.add_done_callback(lambda _t: ready.set())
         if own is not None:
-            tasks = sess.setdefault("retranslate_tasks", set())
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
+            self._own_retranslate(task, sess)
         await ready.wait()
         return None
+
+    def _own_retranslate(self, task, sess=None):
+        """把一次重译的后台任务登记进这一场（sess["retranslate_tasks"]）：收尾时 _cancel_retranslates 在关审计之前
+        取消它，被取消的那一下记进这一场的审计。字幕重译（_retranslate_detached）和弹幕重译（handle_control 的
+        retranslate_comment）都走这里。只认这一场自己的：没有开着的场次（停止之后点的）、或者此刻的会话状态不是
+        这份审计的，不登记——照旧跑完（弹幕重译那边没有场次就不写审计）。
+
+        以前弹幕重译没登记：在等 Sonnet 时点停止或换主播，Sonnet 回来时这一场的审计已经关了，这一下的
+        comment_redo 只计进 late_records（下一场 session_start 的 late_records_prev），不进点它的那一场的文件；
+        停止之后它还广播 comment_update，换掉页面和手机上的译文（#146 审查）。"""
+        if sess is None:
+            sess = getattr(self, "_session_state", None)
+            audit = getattr(self, "audit", None)
+            if not isinstance(sess, dict) or audit is None or sess.get("audit") is not audit:
+                return task
+        tasks = sess.setdefault("retranslate_tasks", set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
 
     async def _retranslate_serial(self, seq, ready=None, audit=None):
         """桌面「重译」的后台任务：入队就发 pending，按桌面那把锁排队，轮到了调 retranslate()。
@@ -5949,9 +5967,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         return cancelled
 
     async def _cancel_retranslates(self, sess):
-        """这一场桌面点的「重译」还在排队或在等强模型：关审计之前先取消，等它们把 cancelled 记进这一场的
-        审计、撤掉按钮的「重译中…」、放掉 _strong_inflight 和强模型连接（最多等 RETRANSLATE_CANCEL_WAIT_SEC）。
-        以前它们在停止之后接着跑，结果写进已经关掉的审计（静默丢掉，专家审查 B6）。只认这一场自己的 sess。"""
+        """这一场桌面点的「重译」（字幕和弹幕）还在排队或在等强模型：关审计之前先取消，等它们把 cancelled 记进
+        这一场的审计、撤掉按钮的「重译中…」、放掉 _strong_inflight 和强模型连接（最多等 RETRANSLATE_CANCEL_WAIT_SEC）。
+        以前它们在停止之后接着跑，结果写进已经关掉的审计（静默丢掉，专家审查 B6）。只认这一场自己的 sess。
+        弹幕重译被取消时 app/comments.py _retranslate 先记一条 comment_redo(why=cancelled) 再往外抛，名额还回去，
+        不再广播新译文。"""
         tasks = sess.get("retranslate_tasks") if isinstance(sess, dict) else None
         if not tasks:
             return
