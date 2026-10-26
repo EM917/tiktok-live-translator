@@ -39,6 +39,7 @@ REPO = Path(__file__).resolve().parent.parent
 URL = "https://www.tiktok.com/@someone/live"
 MEDIA = "https://pull.example.com/stage/stream.flv?expire=1&sign=secret-token"
 TARGET = "a" * 40
+TAG_VERSION = "9.9.9"        # make_updater 里 release 的版本号：标签是 v9.9.9
 REQS = "aiohttp>=3.9\nyt-dlp[curl-cffi]\nbrand-new-dep>=1\n"
 
 
@@ -75,6 +76,9 @@ def make_updater(monkeypatch, server, events, git_overrides=None, pip_code=0):
     results = {
         "status": (0, "", ""),
         "fetch": (0, "", ""),
+        # 提示里那个 release 的标签解析出来的提交（S3：合并的是它，不是跟踪分支的末端）
+        "rev-parse:tag": (0, TARGET + "\n", ""),
+        # 跟踪的远端分支（@{u}）
         "rev-parse": (0, TARGET + "\n", ""),
         "rev-parse:HEAD": (0, "b" * 40 + "\n", ""),
         "show:VERSION": (0, "9.9.9\n", ""),
@@ -82,6 +86,10 @@ def make_updater(monkeypatch, server, events, git_overrides=None, pip_code=0):
         # 默认新版本里没有 constraints.txt（I4 之前的版本）：装法和指纹都和以前一样。
         # 带锁文件的情形在 tests/test_bootstrap_constraints.py
         "show:constraints.txt": (128, "", "fatal: path 'constraints.txt' does not exist"),
+        # merge-base --is-ancestor 的三种问法：标签已经在 HEAD 里（默认不在）、标签在跟踪的远端
+        # 分支上（默认在）、HEAD 能快进到标签（键沿用 "merge-base"，默认能）
+        "merge-base:contains": (1, "", ""),
+        "merge-base:mainline": (0, "", ""),
         "merge-base": (0, "", ""),
         "merge": (0, "", ""),
     }
@@ -93,11 +101,17 @@ def make_updater(monkeypatch, server, events, git_overrides=None, pip_code=0):
             key = "show:" + args[1].split(":", 1)[1]
         elif key == "rev-parse" and "HEAD" in args:
             key = "rev-parse:HEAD"
+        elif key == "rev-parse" and any(str(a).startswith("refs/tags/") for a in args):
+            key = "rev-parse:tag"
+        elif key == "merge-base" and args[-1] == "HEAD":
+            key = "merge-base:contains"
+        elif key == "merge-base" and args[-2] != "HEAD":
+            key = "merge-base:mainline"
         events.append((key, args, kw))
         return results[key]
 
     u = Updater(server)
-    u.latest = {"can_auto": True, "url": "http://x"}
+    u.latest = {"can_auto": True, "url": "http://x", "version": "v" + TAG_VERSION}
     u._git = fake_git
     pip_calls = []
     codes = list(pip_code) if isinstance(pip_code, list) else None
@@ -239,6 +253,10 @@ def test_live_update_fetches_first_then_pauses_installs_merges_and_leaves_a_resu
         < order.index("merge") < order.index("execv")
     merge = next(e for e in events if e[0] == "merge")
     assert merge[1] == ("merge", "--ff-only", TARGET)           # 合并的就是取下来的那个提交
+    # S3：取标签、合并的是提示里那个 release 的标签解析出来的提交，不是跟踪分支的末端
+    assert next(e for e in events if e[0] == "fetch")[1] == ("fetch", "--tags")
+    assert next(e for e in events if e[0] == "rev-parse:tag")[1] == (
+        "rev-parse", "--verify", "refs/tags/v9.9.9^{commit}")
     assert pip_calls[0]["args"][0] == "-r" and pip_calls[0]["requirements"] == REQS
     assert not Path(pip_calls[0]["args"][1]).exists()           # 临时清单用完即删
     assert pip_calls[0]["timeout"] == updater_mod.UPDATE_PIP_TIMEOUT_SEC
@@ -1440,6 +1458,36 @@ def test_update_with_nothing_newer_on_the_tracked_branch_does_not_pause(monkeypa
     state2, detail, command = idle_server.statuses()[-1]
     assert state2 == "idle" and "不比当前的 v1.0.0 新" in detail and "http://x" in detail
     assert command is None and pip_calls2 == [] and execs2 == []   # git pull 也不会有变化，不给命令
+
+
+def test_live_update_when_the_code_already_contains_the_release_does_not_pause(monkeypatch, isolated):
+    """S3：当前代码已经包含提示里那个 release 的标签——已是最新，不暂停、不装、不重启。"""
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events,
+                                       git_overrides={"merge-base:contains": (0, "", "")})
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+    server.config["update"] = dict(u.latest)
+    run(p._apply_update())
+    assert state["stops"] == [] and pip_calls == [] and execs == []
+    assert "merge" not in [e[0] for e in events]
+    assert server.of_type("notice")[-1]["text"] == "已是最新版本 v9.9.9"
+    assert server.of_type("update_aborted") and "update" not in server.config
+
+
+def test_live_update_to_a_tag_off_the_tracked_branch_keeps_monitoring(monkeypatch, isolated):
+    """S3：标签不在跟踪的远端分支上——不更新，监听照常；停播后再点会给手动命令。"""
+    server, events = RecordingServer(), []
+    u, pip_calls, execs = make_updater(monkeypatch, server, events,
+                                       git_overrides={"merge-base:mainline": (1, "", "")})
+    p, state = make_live_pipeline(server, events, isolated)
+    p.updater = u
+    run(p._apply_update())
+    assert state["stops"] == [] and pip_calls == [] and execs == []
+    notice = server.of_type("notice")[-1]["text"]
+    assert "版本 v9.9.9 不在这份安装跟踪的远端分支上" in notice and "监听没有中断" in notice
+    mainline = next(e for e in events if e[0] == "merge-base:mainline")
+    assert mainline[1] == ("merge-base", "--is-ancestor", TARGET, TARGET)   # 标签的提交、@{u}
 
 
 def test_live_update_that_cannot_fast_forward_keeps_monitoring(monkeypatch, isolated):

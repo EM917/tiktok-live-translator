@@ -4,9 +4,13 @@
 安全边界：只做 fast-forward，且要求工作区干净——绝不覆盖用户的本地改动；
 ZIP 下载（无 .git）的安装只提示去下载页，不尝试自动更新。
 
-一键更新的顺序（见 Updater._apply_inner）：先 `git fetch` 取新版本（只动网络，监听
+一键更新的顺序（见 Updater._apply_inner）：先 `git fetch --tags` 取新版本（只动网络，监听
 照常），确认能快进了才暂停监听；先按新版本的清单装依赖，装好了才合并代码并重启。
 任何一步失败，工作区还是旧代码，监听在当前版本上恢复。
+
+更新到的是提示里那个 release 的标签（专家审查 S3），不是跟踪分支的末端：以前提示来自
+releases/latest，合并的却是 @{u}，落后的安装会把 main 上还没发版的提交一并装上。标签必须在
+跟踪的分支上（主线）、并且能快进，否则不更新。代价：经一键更新拿不到还没发版的提交。
 """
 import asyncio
 import importlib.machinery
@@ -326,12 +330,20 @@ def _ps_quote(text):
     return str(text).replace("`", "``").replace("$", "`$")
 
 
-def powershell_command(path, discard=False, pip=False, python=None):
+def _git_steps(tag):
+    """取新版本的那几步：知道 release 标签就取标签、快进到它（S3，和一键更新同一个目标）；不知道才
+    退回 git pull。标签只含 [A-Za-z0-9._-]（_release_tag 验过），放进 shell 和 PowerShell 都不用转义。"""
+    if tag:
+        return ["git fetch --tags", "git merge --ff-only {}".format(tag)]
+    return ["git pull --ff-only"]
+
+
+def powershell_command(path, discard=False, pip=False, python=None, tag=None):
     """Windows 上的手动更新命令。每一步写成 `if ($?) { … }`：上一步成功才跑，和 && 一样遇错即停，
     Windows PowerShell 5.1 和 PowerShell 7 都认。cd 是 PowerShell 里 Set-Location 的内置别名；
     以带引号的路径开头的一句会被当成字符串表达式，跑程序前面要加 &（同 selfcheck._pip_command）。"""
     steps = ["git checkout -- ."] if discard else []
-    steps.append("git pull --ff-only")
+    steps += _git_steps(tag)
     if pip:
         steps.append('& "{}" -m pip install -r requirements.txt -c constraints.txt'.format(
             _ps_quote(python or sys.executable)))
@@ -347,6 +359,16 @@ def _in_shell(posix, windows):
 REPO = "EM917/tiktok-live-translator"
 API_LATEST = "https://api.github.com/repos/{}/releases/latest".format(REPO)
 RELEASES_URL = "https://github.com/{}/releases/latest".format(REPO)
+# release 的 tag_name 要拼进 git 的引用名和给中控粘贴的命令：只认这些字符（S3）
+_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def release_tag(version):
+    """GitHub 给的 tag_name 能不能直接当 git 标签名用：能就原样返回，不能返回 None。"""
+    tag = str(version or "")
+    if not _TAG_RE.fullmatch(tag) or ".." in tag or tag.endswith(".lock"):
+        return None
+    return tag
 
 
 def local_version():
@@ -967,18 +989,27 @@ class Updater:
         真实案例里，一台机器就因为这句话卡在旧版本上，而它需要的正是能修好
         这个判断的那次更新。
 
-        Windows 上按 PowerShell 写（I11，见 powershell_command）。"""
+        Windows 上按 PowerShell 写（I11，见 powershell_command）。
+
+        取新版本的那一步和一键更新同一个目标（S3）：提示里那个 release 的标签，
+        `git fetch --tags && git merge --ff-only vX.Y.Z`；不写 git pull——那会把跟踪分支上还没发版
+        的提交一起拉下来。还不知道是哪个版本（没检查到新版本）时才退回 git pull。"""
         path = str(ROOT)
+        tag = self._release_tag()
         if _on_windows():
-            return powershell_command(path, discard=discard, pip=pip, python=sys.executable)
-        if discard:
-            return 'cd "{}" && git checkout -- . && git pull --ff-only'.format(path)
-        if pip:
-            # -c constraints.txt（I4）：装的是测试过的那一套版本。git pull 之后工作区就是新版本，
+            return powershell_command(path, discard=discard, pip=pip, python=sys.executable, tag=tag)
+        steps = ["git checkout -- ."] if discard else []
+        steps += _git_steps(tag)
+        if pip and not discard:
+            # -c constraints.txt（I4）：装的是测试过的那一套版本。取到新版本之后工作区就是新版本，
             # 它的 constraints.txt 已经在那里
-            return ('cd "{}" && git pull --ff-only && "{}" -m pip install -r requirements.txt '
-                    '-c constraints.txt').format(path, sys.executable)
-        return 'cd "{}" && git pull --ff-only'.format(path)
+            steps.append('"{}" -m pip install -r requirements.txt -c constraints.txt'.format(
+                sys.executable))
+        return 'cd "{}" && '.format(path) + " && ".join(steps)   # i18n: data（shell 命令）
+
+    def _release_tag(self):
+        """提示里那个 release 的标签（self.latest["version"]），认不出返回 None。"""
+        return release_tag((getattr(self, "latest", None) or {}).get("version"))
 
     async def precheck(self, live=False):
         """「能不能更」与「更」分开：调用方先问这个，通过了才停直播管线。
@@ -1086,6 +1117,17 @@ class Updater:
                                 "The update didn’t finish ({}). Running the line below in "
                                 "PowerShell usually fixes this:")).format(text),
             command=self._manual_command())
+
+    async def _already_current(self, tag):
+        """当前代码已经包含提示里那个 release（S3）：按「已是最新」处理——不暂停监听、不重启，这次的
+        更新提示收起来（刷新页面不再出现；之后的定时检查照常）。"""
+        print("[信息] 当前代码已经包含 {}，这次不更新".format(tag))
+        self.latest = None
+        config = getattr(self.server, "config", None)
+        if isinstance(config, dict):
+            config.pop("update", None)
+        await self.server.broadcast({"type": "update_aborted"})
+        await self._notice(L("已是最新版本 v{}", "v{} is the latest version.").format(tag.lstrip("vV")))
 
     async def _update_failed(self, text, token, resume, command, live=False):
         """装依赖或合并失败的出口。工作区还是旧代码：停了的监听交给管线在当前版本上恢复
@@ -1212,8 +1254,9 @@ class Updater:
         await self.server.broadcast({"type": "updating"})
         from_version = local_version()
 
-        # 1. 取新版本：只动网络和 .git，工作区不变，监听照常
-        code, _, err = await self._git("fetch", timeout=FETCH_TIMEOUT_SEC)
+        # 1. 取新版本：只动网络和 .git，工作区不变，监听照常。--tags：要合并的是 release 的标签（S3），
+        # 默认的 fetch 只带回跟踪分支能到达的标签
+        code, _, err = await self._git("fetch", "--tags", timeout=FETCH_TIMEOUT_SEC)
         if code != 0:
             why = (L("{} 秒内没下载完", "didn’t finish downloading in {} sec").format(FETCH_TIMEOUT_SEC)
                    if err == "timeout" else _git_tail(err) or L("git 返回 {}", "git returned {}").format(code))
@@ -1221,23 +1264,57 @@ class Updater:
                                       "couldn’t get the new version from GitHub ({})").format(why),
                                     is_live())
             return
-        # 与 `git pull` 同一个目标：当前分支跟踪的远端分支。解析成提交号，后面几步都认
+        # 目标是提示里那个 release 的标签（专家审查 S3）。以前合并的是跟踪分支的末端（@{u}）：落后的
+        # 安装会把 main 上还没发版的提交一起装上，而提示说的是那个 release。解析成提交号，后面几步都认
         # 这一个提交（本地实测：分离 HEAD 时 FETCH_HEAD 全是 not-for-merge，靠不住）
-        code, target, err = await self._git("rev-parse", "--verify", "@{u}")
+        tag = self._release_tag()
+        if tag is None:
+            await self._not_updated(L("认不出新版本的标签（{}）",
+                                      "couldn’t recognize the new version’s tag ({})").format(
+                (self.latest or {}).get("version") or "?"), is_live(), command=False)
+            return
+        code, target, err = await self._git("rev-parse", "--verify",
+                                            "refs/tags/{}^{{commit}}".format(tag))
         target = target.strip()
         if code != 0 or not target:
+            await self._not_updated(L("取下来的版本里没有标签 {}（{}）",
+                                      "the downloaded versions don’t include the tag {} ({})").format(
+                tag, _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)), is_live())
+            return
+        # 标签要在这份安装跟踪的远端分支（主线）上，才更新到它
+        code, upstream, err = await self._git("rev-parse", "--verify", "@{u}")
+        upstream = upstream.strip()
+        if code != 0 or not upstream:
             await self._not_updated(L("找不到这份安装跟踪的远端分支（{}）",
                                       "couldn’t find the remote branch this copy tracks ({})").format(
                 _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)), is_live())
             return
-        # 跟踪的分支上没有新东西（发版标签不在这个分支上、跟踪着一个旧分支）：合并什么也不会
-        # 变，不能为此暂停监听、重启一遍——重启后检查更新又会提示同一个版本
+        # 跟踪的分支上没有新东西：合并什么也不会变，不能为此暂停监听、重启一遍——重启后检查更新
+        # 又会提示同一个版本
         code, head, _ = await self._git("rev-parse", "HEAD")
-        if code == 0 and head.strip() == target:
+        head = head.strip() if code == 0 else ""
+        if head and head == upstream:
             await self._not_updated(L("这份安装跟踪的远端分支上没有比当前更新的提交",
                                       "the remote branch this copy tracks has nothing newer"),
                                     is_live(), command=False)
             return
+        # 当前代码已经包含这个标签（比如跟踪分支上发版之后的提交已经在本地）：已是最新，不重启（S3）
+        code, _, _ = await self._git("merge-base", "--is-ancestor", target, "HEAD")
+        if code == 0:
+            await self._already_current(tag)
+            return
+        # 标签不在主线上（打在别的分支上）：不更新到它，给手动命令，由中控自己决定
+        code, _, err = await self._git("merge-base", "--is-ancestor", target, upstream)
+        if code != 0:
+            await self._not_updated(
+                L("版本 {} 不在这份安装跟踪的远端分支上", "version {} isn’t on the remote branch this "
+                  "copy tracks").format(tag) if code == 1 else
+                L("查不了版本 {} 在不在这份安装跟踪的远端分支上（{}）",
+                  "couldn’t check whether version {} is on the remote branch this copy tracks "
+                  "({})").format(tag, _git_tail(err) or L("git 返回 {}", "git returned {}").format(code)),
+                is_live())
+            return
+        # 下面读版本号、清单用的都是标签那个提交：上面刚确认过它在跟踪的远端分支上
         code, version_text, err = await self._git("show", "{}:VERSION".format(target))
         to_version = version_text.strip()
         if code != 0 or not to_version:
