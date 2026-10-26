@@ -799,7 +799,6 @@ class CommentTranslator:
             else:
                 await self._redo_refused(cid, redo.note_full(wait))
             return
-        old = self._ledger.translation(cid)
         model = getattr(engine, "model", None)
         t0 = time.monotonic()
         try:
@@ -818,6 +817,9 @@ class CommentTranslator:
         if out:
             # 成了也要说一句（2026-10-26 用户要的）：以前只换译文、不说话，新译文和原来一样时屏幕上
             # 什么都不变，点的人分不清成没成。比的是账本里那版（屏幕上现在显示的），比完再记新的
+            # 旧译文在等完 Sonnet 之后才读：等的这段时间里整批超时会把屏幕上的译文退回原文
+            # （forget_translation），账本只在事件循环里改，这一刻读到的就是屏幕上那版
+            old = self._ledger.translation(cid)
             same = redo.same_translation(old, out)
             self._ledger.mark_translated(cid, out)
             self._redo_audit(audit, None, had, ms, model, same)

@@ -1211,6 +1211,27 @@ def test_a_successful_retranslation_says_so_and_whether_the_translation_changed(
     assert all(set(m) == {"type", "id", "redo_state", "same", "text"} for m in oks(sent))
 
 
+def test_the_screen_version_is_read_after_the_wait_so_a_reverted_batch_is_not_called_the_same(monkeypatch):
+    """等 Sonnet 的这段时间里，这条弹幕所在的那一批整批超时，屏幕退回原文（forget_translation）。
+    Sonnet 给的又正好和 Haiku 当初那版一样：屏幕其实从原文换成了译文，所以要说「已重译」，
+    不能拿等之前读到的那版去比、说成「和原来一样」。"""
+    holder, _inner, _s = claude_holder(monkeypatch)
+    gated = Gated()                                          # 放行后给「新译文」
+    ct, sent = make(holder, lambda: gated)
+    ct._ledger.remember("c0", SOURCE)
+    ct._ledger.mark_translated("c0", "新译文")               # Haiku 当初那版，和 Sonnet 要给的一样
+
+    async def scenario():
+        task = asyncio.ensure_future(ct.retranslate("c0"))
+        assert await wait_for(lambda: gated.calls == 1)
+        ct._ledger.forget_translation("c0")                 # 整批超时：屏幕退回原文
+        gated.gate.set()
+        await task
+
+    run(scenario())
+    assert [(m["same"], m["text"]) for m in oks(sent)] == [(False, "已重译")]
+
+
 def test_a_comment_that_never_had_a_translation_is_never_called_the_same(monkeypatch):
     """原来显示的是原文（Haiku 没译出来）：译出来了就是「已重译」，哪怕译文碰巧和原文一样。"""
     holder, _inner, _s = claude_holder(monkeypatch)
