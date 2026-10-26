@@ -9,10 +9,12 @@ session_end 也不写。
 audit_record_error 占位——不碰 failing，不补 audit_gap。正常记录的输出必须和以前逐字节相同。
 """
 import json
+from datetime import datetime
 from types import SimpleNamespace
 
 import numpy as np
 
+from app import audit as audit_mod
 from app.audit import AuditLog, _finite_json
 from app.i18n import L
 
@@ -202,3 +204,64 @@ def test_translation_strong_rows_keep_their_shape_and_only_queued_cancels_gain_a
     assert got[3]["queued"] is True and got[3]["model"] is None and got[3]["translate_ms"] == 0.0
     assert '"queued"' not in "".join(line for line in a.path.read_text(encoding="utf-8").splitlines()
                                      if '"seq": 4' not in line)
+
+
+# ---- comment_redo（2026-10-26，弹幕重译写审计）：新类型，别的记录一个字节都不变 ----------------------------
+
+class _Frozen(datetime):
+    """把审计里的时刻钉住：两份审计除了多出来的 comment_redo 行，要能逐字节比。"""
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 10, 26, 12, 0, 0, 123000)
+
+
+def _one_session(folder, with_redo):
+    a = AuditLog(room_url=ROOM, log_dir=folder, extra={"streamer": "ficticia_audit"})
+    a.translation(1, "大家好", 120.0, True, engine="hymt2")
+    if with_redo:
+        a.comment_redo(None, had=True, translate_ms=1234.56, model="claude-sonnet-5-5", same=False)
+    a.translation_strong(1, "大家好", 812.0, True, "fake-7b", "manual")
+    a.comment_translation_failed("claude", "claude-haiku-5-5", 3, {"reply_meta": 1}, 900)
+    if with_redo:
+        a.comment_redo("http_500", had=False, translate_ms=88.0, model="claude-sonnet-5-5")
+    a.comment_guard_review("claude", "claude-haiku-5-5", 2, 640, "ok")
+    a.comment_source("connected", "", "")
+    if with_redo:
+        a.comment_redo("gone")
+        a.comment_redo(None, had=True, translate_ms=10.0, model="claude-sonnet-5-5", same=True)
+    a.close(reason="user_stop")
+    return a.path.read_bytes()
+
+
+def test_comment_redo_is_a_new_type_and_every_other_line_is_byte_identical(tmp_path, monkeypatch):
+    """R2：弹幕重译写进审计，只多一种新记录。同样的一场，多写几条 comment_redo 之后，其余每一行（会话头、
+    译文、强译、弹幕翻译失败、复核、弹幕连接、会话尾）和不写时逐字节相同；comment_redo 自己的键固定、
+    只有代码、数字和布尔。"""
+    monkeypatch.setattr(audit_mod, "datetime", _Frozen)
+    plain = _one_session(tmp_path / "plain", False)
+    mixed = _one_session(tmp_path / "mixed", True)
+    lines = mixed.splitlines(keepends=True)
+    assert b"".join(line for line in lines if b'"type": "comment_redo"' not in line) == plain
+    redo = [line for line in lines if b'"type": "comment_redo"' in line]
+    assert redo == [
+        b'{"type": "comment_redo", "at": "2026-10-26T12:00:00.123", "ok": true, "why": null, '
+        b'"same": false, "had": true, "translate_ms": 1234.6, "model": "claude-sonnet-5-5"}\n',
+        b'{"type": "comment_redo", "at": "2026-10-26T12:00:00.123", "ok": false, "why": "http_500", '
+        b'"same": null, "had": false, "translate_ms": 88.0, "model": "claude-sonnet-5-5"}\n',
+        b'{"type": "comment_redo", "at": "2026-10-26T12:00:00.123", "ok": false, "why": "gone", '
+        b'"same": null, "had": null, "translate_ms": null, "model": null}\n',
+        b'{"type": "comment_redo", "at": "2026-10-26T12:00:00.123", "ok": true, "why": null, '
+        b'"same": true, "had": true, "translate_ms": 10.0, "model": "claude-sonnet-5-5"}\n',
+    ]
+
+
+def test_comment_redo_never_carries_same_on_a_failure_and_cuts_a_long_code(tmp_path):
+    """same 只在译出来了时有意义：没译出来时调用方多传了也写 null；原因代码最长 40 个字符。"""
+    a = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    a.comment_redo("http_500", had=True, same=True)
+    a.comment_redo("x" * 100)
+    a.close(reason="user_stop")
+    first, second = of_type(a, "comment_redo")
+    assert (first["ok"], first["same"]) == (False, None)
+    assert second["why"] == "x" * 40

@@ -11,12 +11,14 @@
   5. 非 Claude 引擎：一次都不翻、不碰 create_strong_translator / Pipeline._strong_translator；
   6. 译文过 plausible_translation，像回话的丢掉、原译文留着；
   7. 每一条不重译的出路都有说明，中英两句都过第八条（只写观察，不猜原因）；
-  8. 审计里没有弹幕原文、观众名、译文，也没有新增的记录；
+  8. 每次点击往本场审计写一条 comment_redo（2026-10-26 起）：只有代码、数字和布尔，没有弹幕原文、
+     观众名、译文和弹幕 id；
   9. 手机收不到 comment_redo，也发不出 retranslate_comment；
  10. 译出来了也说一句（2026-10-26 起）：「已重译」或「重译结果和原来一样」，消息带 same。
 
 2026-10-26 改了的断言：成功的那条 comment_redo 以前不带说明（shape 里是 ("redo", "ok", False)），
-现在带 text 和 same（("redo", "ok", True)）。这是用户要的新行为（重译完提示几秒）。
+现在带 text 和 same（("redo", "ok", True)）；第 8 节以前钉「审计一条都没多」，现在钉每次点击一条
+comment_redo、里面没有弹幕内容。两处都是用户要的新行为（重译完提示几秒、重译写进审计）。
 
 测试一律用假 HTTP 层和替身，不联网、不载入模型、不开浏览器。
 """
@@ -886,34 +888,196 @@ def test_every_note_passes_rule_eight_in_both_languages():
 
 
 # ---------------------------------------------------------------------------
-# 8. 审计里没有弹幕
+# 8. 审计：每次点击一条 comment_redo，里面没有弹幕（R2，2026-10-26 用户要的）
 # ---------------------------------------------------------------------------
 
-def test_the_audit_log_never_sees_the_comment_its_name_or_either_translation(monkeypatch, tmp_path):
+REDO_KEYS = ["type", "at", "ok", "why", "same", "had", "translate_ms", "model"]
+ROOM = "https://www.tiktok.com/@ficticia_redo/live"
+
+
+def redo_rows(audit):
+    return rows(audit, "comment_redo")
+
+
+def facts(row):
+    """一条 comment_redo 里不随时钟变的部分。"""
+    return (row["ok"], row["why"], row["same"], row["had"], row["model"])
+
+
+def test_every_click_writes_one_comment_redo_row_and_none_carries_the_comment(monkeypatch, tmp_path):
+    """以前这一节钉的是「审计一条都没多」：弹幕重译不写审计，出了问题无从查起（R2）。现在每次点击一条
+    comment_redo——换了译文、和原来一样、HTTP 错、像回话被丢弃、原文已不在——只有代码、数字和布尔：
+    弹幕原文、观众名、新旧译文、弹幕 id 一个字都不进审计（弹幕与审计隔离照旧），也不借用 translation_strong。"""
     wrapped, _inner, _s = subtitle_engine(monkeypatch)
     p = full_pipeline(monkeypatch, tmp_path, wrapped)
-    p.audit = AuditLog(room_url="https://www.tiktok.com/@x/live", log_dir=tmp_path)
+    p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    chatty = "Could you please provide more context?"
     p.comments._claude_factory = Sibling([reply("旧的译文")])
     p.comments._claude_strong_factory = StrongFactory(
-        [sonnet_reply("新的译文"), Resp(500, {}), sonnet_reply("Could you please provide more context?")])
+        [sonnet_reply("新的译文"), sonnet_reply("新的译文"), Resp(500, {}), sonnet_reply(chatty)])
     p.comments.BATCH_WINDOW_SEC = 0.01
     before = rows(p.audit)
 
     async def scenario():
         await p.comments.accept({"items": [{"id": "c0", "user": USER, "text": SOURCE}]})
         assert await wait_for(lambda: p.server.of("comment_update"))
-        for _ in range(3):                                  # 成了一次、HTTP 错一次、像回话一次
+        for _ in range(4):                                  # 换了译文、和原来一样、HTTP 500、像回话
             p.handle_control({"type": "retranslate_comment", "id": "c0"})
             await drain(p)
         p.handle_control({"type": "retranslate_comment", "id": "nunca"})
         await drain(p)
 
     run(scenario())
-    assert rows(p.audit) == before                          # 一条记录都没多
+    after = rows(p.audit)
+    assert after[:len(before)] == before                    # 已有的行一条没动
+    added = after[len(before):]
+    assert [r["type"] for r in added] == ["comment_redo"] * 5     # Haiku 自己译成了：不写记录
+    assert [list(r) for r in added] == [REDO_KEYS] * 5
+    reply_code = comments_mod.implausible_reason(SOURCE, chatty, "zh-CN")
+    assert reply_code and reply_code.startswith("reply_")
+    sonnet = "claude-sonnet-5-5"
+    assert [facts(r) for r in added] == [
+        (True, None, False, True, sonnet), (True, None, True, True, sonnet),
+        (False, "http_500", None, True, sonnet), (False, reply_code, None, True, sonnet),
+        (False, "gone", None, None, None)]
+    assert all(isinstance(r["translate_ms"], float) and r["translate_ms"] >= 0 for r in added[:4])
+    assert added[4]["translate_ms"] is None                 # 没发请求
     raw = open(p.audit.path, encoding="utf-8").read()
-    for secret in (SOURCE, USER, "旧的译文", "新的译文", "context"):
+    for secret in (SOURCE, USER, "旧的译文", "新的译文", "context", '"c0"', "nunca"):
         assert secret not in raw
     assert "translation_strong" not in raw
+
+
+def test_each_refusal_and_each_kind_of_ending_writes_its_own_code(monkeypatch, tmp_path):
+    """每一条出路一条记录，原因只写代码：消息里没有 id、演示弹幕、原文不在了、这条正在重译、这一分钟用满了、
+    字幕引擎不是 Claude、建不起 Claude 实例、重译里出了意外。拒掉的那几下一个请求都没发。"""
+    audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    holder, _inner, _s = claude_holder(monkeypatch)
+    gated = Gated()
+    clock = {"t": 100.0}
+    ct, sent = make(holder, lambda: gated, _ledger=redo.RedoLedger(clock=lambda: clock["t"]))
+    ct._session = lambda: audit
+    seed(ct, ("c0", SOURCE), ("c1", "buenas noches amigos"), ("c2", "hola amigos"))
+    seed(ct, ("f0", "que bonito color"), translated=False)          # 这条 Haiku 没译出来过
+
+    async def scenario():
+        await ct.retranslate(None)
+        await ct.retranslate(redo.DEMO_ID_PREFIX + "c1")
+        await ct.retranslate("nunca")
+        first = asyncio.ensure_future(ct.retranslate("c0"))
+        assert await wait_for(lambda: gated.calls == 1)
+        await ct.retranslate("c0")                                  # 正在重译
+        ct._ledger._stamps.extend([clock["t"]] * redo.PER_MINUTE)  # 这一分钟用满了
+        await ct.retranslate("c1")
+        ct._ledger._stamps.clear()
+        gated.gate.set()
+        await first
+        await ct.retranslate("f0")                                  # 补译没译出来的那条
+        holder["tr"] = Fast("hymt2")
+        await ct.retranslate("c2")                                  # 字幕引擎不是 Claude
+
+    run(scenario())
+    assert gated.calls == 2                                        # 只有 c0、f0 真的问了
+    got = [facts(r) for r in redo_rows(audit)]
+    assert got == [(False, "bad_id", None, None, None), (False, "demo", None, None, None),
+                   (False, "gone", None, None, None), (False, "busy", None, True, None),
+                   (False, "full", None, True, None), (True, None, False, True, "claude-sonnet-5-5"),
+                   (True, None, False, False, "claude-sonnet-5-5"),
+                   (False, "needs_claude", None, True, None)]
+    assert len(redos(sent)) == 9            # 演示、不在、正在、用满、两次成了（各 pending + ok）、不是 Claude
+
+    def no_key():
+        raise RuntimeError("还没有填 Claude 密钥")
+
+    class Broken(_Same):
+        async def translate(self, *a, **k):
+            raise RuntimeError("意外")
+
+    holder["tr"], _i, _s2 = subtitle_engine(monkeypatch)
+    for factory in (no_key, lambda: Broken("x")):
+        ct2, _sent2 = make(holder, factory)
+        ct2._session = lambda: audit
+        seed(ct2, ("c0", SOURCE))
+        run(ct2.retranslate("c0"))
+    tail = [facts(r) for r in redo_rows(audit)][-2:]
+    assert tail == [(False, "no_key", None, True, None), (False, "exception", None, True, "claude-sonnet-5-5")]
+    raw = audit.path.read_text(encoding="utf-8")
+    for secret in (SOURCE, "buenas noches", "que bonito", "新译文", '"c0"', '"f0"', "nunca"):
+        assert secret not in raw
+
+
+def test_a_cancelled_retranslation_still_leaves_its_row_and_gives_the_slot_back(monkeypatch, tmp_path):
+    """重译到一半任务被取消（程序退出）：照样记一条 cancelled，再把取消往外抛；名额还回去。"""
+    audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    holder, _inner, _s = claude_holder(monkeypatch)
+    gated = Gated()
+    ct, _sent = make(holder, lambda: gated)
+    ct._session = lambda: audit
+    seed(ct, ("c0", SOURCE))
+
+    async def scenario():
+        task = asyncio.ensure_future(ct.retranslate("c0"))
+        assert await wait_for(lambda: gated.calls == 1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return task
+
+    task = run(scenario())
+    assert task.cancelled()
+    (row,) = redo_rows(audit)
+    assert facts(row) == (False, "cancelled", None, True, "claude-sonnet-5-5")
+    assert ct._ledger.begin("c0") is None
+
+
+def test_after_stop_there_is_no_session_to_write_to_and_a_broken_audit_breaks_nothing(monkeypatch, capsys):
+    """停止之后点的（没有这一场）：照常重译、照常回话，不写；写审计出错只打一行警告，重译照样完成。"""
+    holder, _inner, _s = claude_holder(monkeypatch)
+    ct, sent = make(holder, StrongFactory([sonnet_reply("甲"), sonnet_reply("乙")]))
+    seed(ct, ("c0", SOURCE))
+    run(ct.retranslate("c0"))                               # _session 默认返回 None
+    assert shape(sent)[-1] == ("redo", "ok", True)
+
+    class Broken:
+        def comment_redo(self, *a, **k):
+            raise OSError("磁盘满了")
+
+    ct._session = lambda: Broken()
+    run(ct.retranslate("c0"))
+    assert shape(sent)[-2:] == [("update", "ok", "乙"), ("redo", "ok", True)]
+    assert "弹幕重译审计记录失败" in capsys.readouterr().out
+
+
+def test_the_rows_are_the_same_under_either_interface_language(monkeypatch, tmp_path):
+    """审计永远是中文界面下那一份（CLAUDE.md 第九条，G8）：comment_redo 只有代码、数字和布尔，英文界面下
+    逐字段相同（时刻和用时除外），一个汉字都没有。"""
+    def one_session(lang, folder):
+        audit = AuditLog(room_url=ROOM, log_dir=tmp_path / folder)
+        holder, _inner, _s = claude_holder(monkeypatch)
+        ct, _sent = make(holder, StrongFactory([sonnet_reply("这个多少钱"), Resp(500, {})]))
+        ct._session = lambda: audit
+        seed(ct, ("c0", SOURCE))
+
+        async def scenario():
+            with i18n.use(lang):
+                await ct.retranslate("c0")
+                await ct.retranslate("c0")
+                await ct.retranslate("nunca")
+                holder["tr"] = Fast("gemma")
+                await ct.retranslate("c0")
+
+        run(scenario())
+        got = redo_rows(audit)
+        assert not i18n.CJK.search(json_lines(audit))
+        return [{k: v for k, v in r.items() if k not in ("at", "translate_ms")} for r in got]
+
+    zh = one_session(i18n.ZH, "zh")
+    assert zh == one_session(EN, "en")
+    assert [r["why"] for r in zh] == [None, "http_500", "gone", "needs_claude"]
+
+
+def json_lines(audit):
+    return "".join(line for line in audit.path.read_text(encoding="utf-8").splitlines(keepends=True)
+                   if '"comment_redo"' in line)
 
 
 # ---------------------------------------------------------------------------
