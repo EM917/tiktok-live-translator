@@ -1627,3 +1627,15 @@ test("地址栏和存储里都没有（换了地址或端口、主屏幕图标�
     assert.equal(elements["conn-text"].textContent, "链接已失效，请向中控要新的二维码");
   });
 });
+
+// ---- 持续提示里的换行（顺延事项：手机上换行被折成空格）----
+// 「没有读到 TikTok 登录」那条带完全磁盘访问权限那几步时分了行（路径单独一行，app/browser_login.py）。
+// 桌面照着断行（style.css .incident），手机以前没有 white-space: pre-line，整条挤成一段话
+test("手机的持续提示照文字里的换行断行：样式是 pre-line，文字原样放进去（不拼成一行）", () => {
+  assert.match(CSS_NO_COMMENTS, /\.incident-list \.incident\s*\{[^}]*white-space:\s*pre-line/);
+  withFakeViewerPage(({ elements, ws }) => {
+    const text = "程序没有读到浏览器里的 TikTok 登录。\n「…」\n然后完全退出程序再打开。";
+    ws.onmessage({ data: JSON.stringify({ type: "incident", id: "login", level: "warn", text: text, ts: 1 }) });
+    assert.equal(elements["incident-list"].children[0].textContent, text);
+  });
+});

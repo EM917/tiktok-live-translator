@@ -193,6 +193,9 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 .incident.warn, .health-line.lagging { color: var(--warn-fg); background: var(--warn-bg); }
 .incident.error, .health-line.degraded { color: #fff; background: var(--fail-bar); }   /* 不用 --fail：深色下配白字不到 3:1（V1） */
 .incident.info { color: var(--info-fg); background: var(--info-bg); }
+/* 持续提示里的换行照着断（同桌面 style.css 的 .incident）：「没有读到 TikTok 登录」那条带完全磁盘访问权限那几步时
+   分了行（app/browser_login.py no_login_notice，路径单独一行），以前手机上换行被折成空格，又挤成一段话 */
+.incident-list .incident { white-space: pre-line; }
 
 /* ---------- 违禁词报警 ---------- */
 .alert-section { padding: 10px 14px 4px; }
