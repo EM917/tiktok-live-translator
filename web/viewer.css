@@ -208,7 +208,7 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 /* 这几处是要读的说明和正文（隐藏报警只在本机、字幕时间、弹幕原文、只看模式、提示音），以前用 --label-3
    （只给占位符/装饰用的那一档，浅色约 2:1、深色约 3:1），提到 --label-2：页面底色上浅色 5.16:1、深色 6.59:1，
    深色顶栏/底栏的灰底上 5.78:1（专家审查 V2，tests/test_contrast.py 按各自的底色算着）。
-   --label-3 只留给装饰（.sep）、图标按钮（.alert-dismiss）和禁用态 */
+   --label-3 只留给装饰（.sep）和禁用态 */
 .alert-local-note { font-size: var(--fs-caption); color: var(--label-2); margin: -2px 0 6px; }
 /* 报警多了在自己的框里滚（V4）：以前没有高度上限，15 条报警时下面的字幕区只剩 12px 高。
    弹幕面板（34vh）同时展开时两块加起来仍超过一屏，字幕区还是会被挤得很矮（10-22 在 390x844 下量过） */
@@ -226,11 +226,13 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 .alert-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .alert-head-label { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-caption); font-weight: 700; color: var(--fail-ink); }
 .alert-tier-icon { display: inline-flex; color: inherit; }
+/* 报警卡片右上角的 ×：以前用 --label-3，浅色卡片底上约 2:1，不到 WCAG 1.4.11 对图形控件要求的 3:1
+   （b2-contrast 第 2 轮审查记下的）。改成 --label-2，浅色、深色都在 4.5:1 以上（tests/test_contrast.py 按卡片底色算着） */
 .alert-dismiss {
   position: relative; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; padding: 0; font-family: inherit; cursor: pointer;
-  border: none; border-radius: 999px; background: transparent; color: var(--label-3);
+  border: none; border-radius: 999px; background: transparent; color: var(--label-2);
 }
 /* 可点区域撑到 44px，但不放大视觉尺寸（22 + 11*2 = 44） */
 .alert-dismiss::before { content: ""; position: absolute; inset: -11px; }
