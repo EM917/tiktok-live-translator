@@ -759,8 +759,10 @@ class CommentTranslator:
             print("[警告] 弹幕重译出错: {}".format(exc))
 
     async def _retranslate(self, cid):
-        # 审计用点击这一刻的那一场（同 _process_one_batch 取批开头的）：Sonnet 要等几秒，这期间停了，
-        # 这一下仍然记在点它的那一场（文件已关就计进 late_records，见 AuditLog._note_late）
+        # 审计用点击这一刻的那一场（同 _process_one_batch 取批开头的）：Sonnet 要等几秒，这期间换了一场，
+        # 这一下也不会记到下一场去。已知缺口：这个任务是 Pipeline._spawn 起的，没登记进本场
+        # sess["retranslate_tasks"]，停止、换主播时取消不到它；Sonnet 回来时文件已经关了，这一条就只计进
+        # late_records、终端打一行警告（AuditLog._note_late），不进文件。要改 app/pipeline.py，顺延
         audit = self._session()
         if not isinstance(cid, str) or not cid:
             self._redo_audit(audit, "bad_id")

@@ -22,6 +22,7 @@
     审计（comment_translation_failed、comment_guard_*）同一口径。
 """
 import math
+import re
 import time
 from collections import OrderedDict, deque
 
@@ -135,15 +136,26 @@ def note_done(same):
     return L("已重译", "Retranslated")
 
 
+# 弹幕栏按 CSS 的空白规则显示译文（.cmt-zh 没有设 white-space，textContent 原样放进去）：会折叠、首尾会去掉的
+# 只有空格、制表符、换行、回车这四种。全角空格（U+3000）、不换行空格（U+00A0）照原样占位，换页符这类控制字符
+# 也不折叠。str.split() 会把它们都当空白（以前就这么比；第 1 轮审查指出，中间隔一个全角空格和隔一个普通空格的
+# 两句屏幕上并不一样，却被判成「和原来一样」）
+_CSS_COLLAPSIBLE = re.compile(r"[ \t\n\r]+")
+
+
+def _as_shown(text):
+    return _CSS_COLLAPSIBLE.sub(" ", text).strip(" ")
+
+
 def same_translation(old, new):
-    """新译文和屏幕上原来那版是不是一样。首尾的空白、换行、连着的几个空白都按一个空格比：弹幕栏按 HTML
-    的空白规则显示（.cmt-zh 没有设 white-space），这几种差别屏幕上看不出来；原来没有空白的地方多了一个，
-    看得出来，算不一样。
+    """新译文和屏幕上原来那版是不是一样。首尾的空格、换行、连着的几个空格都按一个空格比（只认 CSS 会折叠的
+    那四种，见 _CSS_COLLAPSIBLE）：这几种差别屏幕上看不出来；原来没有空白的地方多了一个，看得出来，
+    算不一样；全角空格、不换行空格和普通空格屏幕上也不一样宽，同样算不一样。
     原来没有译文（显示的是原文）的，屏幕上确实换成了这一版；不知道原来是哪一版的，不能说「和原来
     一样」：这两种都算不一样。"""
     if not old or not new:
         return False
-    return " ".join(old.split()) == " ".join(new.split())     # i18n: data（比的是译文，不是界面文字）
+    return _as_shown(old) == _as_shown(new)
 
 
 def note_full(wait):

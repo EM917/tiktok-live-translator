@@ -796,7 +796,8 @@ class AuditLog:
           needs_claude（字幕引擎不是 Claude）、no_key（建不起 Claude 实例）、busy（这条正在重译）、
           full（这一分钟的次数用满了）；发了请求没译出来的：reply_*（结果不像译文，丢弃，代码同
           comment_translation_failed）、cooldown、refusal、http_<状态码>、no_output、exception；
-          cancelled（重译到一半任务被取消）。
+          cancelled（重译到一半任务被取消：目前只有程序退出时会这样；停止、换主播还取消不到它，那时
+          这一条到得晚、只计进 late_records，见 comments.py _retranslate）。
         same：译出来了时，新译文和屏幕上原来那版是否一样（只记比的结果，不记译文）；没译出来是 null。
         had：点的时候这条弹幕有没有译文（false 就是在补译没译出来的那条）；还没查到账本就拒了的
           （bad_id、demo、gone）是 null。

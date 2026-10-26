@@ -12,7 +12,7 @@
   6. 译文过 plausible_translation，像回话的丢掉、原译文留着；
   7. 每一条不重译的出路都有说明，中英两句都过第八条（只写观察，不猜原因）；
   8. 每次点击往本场审计写一条 comment_redo（2026-10-26 起）：只有代码、数字和布尔，没有弹幕原文、
-     观众名、译文和弹幕 id；
+     观众名、译文和弹幕 id；重译在途时停止的那一条目前只计进 late_records（已知缺口，钉住现状）；
   9. 手机收不到 comment_redo，也发不出 retranslate_comment；
  10. 译出来了也说一句（2026-10-26 起）：「已重译」或「重译结果和原来一样」，消息带 same。
 
@@ -1029,6 +1029,44 @@ def test_a_cancelled_retranslation_still_leaves_its_row_and_gives_the_slot_back(
     assert ct._ledger.begin("c0") is None
 
 
+def test_stop_while_sonnet_is_still_answering_counts_the_row_as_late_not_in_the_file(
+        monkeypatch, tmp_path, capsys):
+    """已知缺口，钉住现状（第 1 轮审查）：重译在等 Sonnet 时点了停止（换主播同理），Pipeline 关掉这一场的
+    审计；弹幕重译是 Pipeline._spawn 起的，没有登记进本场 sess["retranslate_tasks"]，_cancel_retranslates
+    取消不到它（字幕重译的同类问题专家审查 B6 已经修过）。Sonnet 回来之后，这一下的 comment_redo 写不进
+    已经关掉的文件：AuditLog._note_late 计进 late_records（开下一场时进 session_start 的
+    late_records_prev），终端打一行警告。重译本身照常做完、照常回话，不抛异常，名额还回去。
+    app/pipeline.py 不在这一批的文件清单里，顺延给下一个改它的批次：把弹幕重译任务登记进本场、关审计
+    之前取消，cancelled 记进点它的那一场。到那时这条改成「本场文件里有一条 cancelled、late_records 为 0」。"""
+    audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    holder, _inner, _s = claude_holder(monkeypatch)
+    gated = Gated()
+    ct, sent = make(holder, lambda: gated)
+    current = {"audit": audit}
+    ct._session = lambda: current["audit"]
+    seed(ct, ("c0", SOURCE))
+
+    async def scenario():
+        task = asyncio.ensure_future(ct.retranslate("c0"))
+        assert await wait_for(lambda: gated.calls == 1)
+        audit.close(reason="user_stop")         # 停止：这一场的审计关了，场次也没了
+        current["audit"] = None
+        capsys.readouterr()
+        gated.gate.set()
+        await task
+        return task
+
+    task = run(scenario())
+    assert not task.cancelled() and task.exception() is None
+    assert redo_rows(audit) == []                          # 文件里没有这一行（缺口）
+    assert rows(audit)[-1]["type"] == "session_end"        # 也没有追加在 session_end 后面
+    assert audit.late_records == 1
+    out = capsys.readouterr().out
+    assert "审计文件已经关闭" in out and "comment_redo" in out
+    assert shape(sent)[-2:] == [("update", "ok", "新译文"), ("redo", "ok", True)]
+    assert ct._ledger.begin("c0") is None
+
+
 def test_after_stop_there_is_no_session_to_write_to_and_a_broken_audit_breaks_nothing(monkeypatch, capsys):
     """停止之后点的（没有这一场）：照常重译、照常回话，不写；写审计出错只打一行警告，重译照样完成。"""
     holder, _inner, _s = claude_holder(monkeypatch)
@@ -1257,6 +1295,12 @@ def test_the_ledger_keeps_the_translation_on_screen_and_drops_it_with_the_origin
     ("how  much is it", "how much is it", True),
     ("这个多少钱", "这个卖多少", False),
     ("这个 多少钱", "这个多少钱", False),          # 原来没有空白的地方多了一个，屏幕上看得出来
+    ("how\tmuch\r\nis it", "how much is it", True),   # 制表、回车换行：CSS 照样折成一个空格
+    ("这个　多少钱", "这个 多少钱", False),    # 全角空格不折叠，比普通空格宽（第 1 轮审查）
+    ("how much", "how much", False),         # 不换行空格也不折叠
+    ("这个　多少钱", "这个　　多少钱", False),
+    ("　这个多少钱", "这个多少钱", False),     # 首尾的全角空格屏幕上也占位，不去掉
+    ("how\x0cmuch", "how much", False),           # 换页符不是 CSS 会折叠的空白
     (None, "这个多少钱", False),                  # 原来显示的是原文
     ("", "这个多少钱", False),
 ])
