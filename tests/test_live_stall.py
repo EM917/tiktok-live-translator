@@ -6,7 +6,8 @@
     TikTok 的提示挂着时不出，第一帧到了就撤；
   * 时钟跳变时按单调时钟计的起点往后挪，醒来不一起误报；
   * 统计循环里新加的检查抛错，循环照常跳；
-  * 一轮自然结束后、后台还在等翻译时点停止，以及这一轮还在做完识别积压时点停止，停止都不被吞；
+  * 一轮自然结束后、后台还在等翻译时点停止，以及这一轮还在做完识别积压时点停止，停止都不被吞；后一种在途的
+    翻译跟着取消，不跑完；
   * 收尾时 ffmpeg 吐出的音频照样送去识别，但不算「收到了直播音频」；
   * 以前卡死、现在晚几秒才结束的旧任务，碰不到新一场的翻译队列和提示；
   * _stop_locked 替旧任务代写 session_end 时也带上这一场的汇总。
@@ -680,7 +681,11 @@ def test_a_stop_while_the_round_drains_its_recognition_is_not_swallowed(monkeypa
     这时也在跑。#131 之后 drain 阶段平常只有几毫秒，上一条改成在退避里点停止；这一条让第二段识别在线程里卡住，
     drain 阶段一直持续到点停止，不靠轮询碰巧落进去。停止：1 秒内生效（线程里那次识别取消不掉，不等它，也不等
     那条要 3 秒的翻译）、不再查流地址、界面不改回「直播中」、session_end 记 user_stop。停止被吞掉时 V1 接着
-    去查流地址、V2 先退避再用原来的流地址连，两套都钉。"""
+    去查流地址、V2 先退避再用原来的流地址连，两套都钉。
+
+    在途的那条翻译要被取消、不能跑完（#141 审查补的探针，2026-10-26 收进来）：这一轮被取消、翻译还没交给后台
+    排空时，收尾要连翻译 worker 一起取消。不取消的话它挂在丢弃的队列上接着跑——Claude 引擎下照样计费，停止之后
+    还往页面写译文。以前没有测试钉这一条：上面几项在不取消翻译 worker 时照样全绿。"""
     hold, held, threads = threading.Event(), threading.Event(), []
     calls = []
 
@@ -695,6 +700,18 @@ def test_a_stop_while_the_round_drains_its_recognition_is_not_swallowed(monkeypa
 
     live = _live_session(monkeypatch, tmp_path, SecondWaits(), v2=v2)
     p, seen = live.p, []
+    slow = p._translate_and_update               # _live_session 换上的那个：每条翻译要 3 秒
+    translation = {"cancelled": 0, "finished": 0}
+
+    async def counted(job):
+        try:
+            await slow(job)
+        except asyncio.CancelledError:
+            translation["cancelled"] += 1
+            raise
+        translation["finished"] += 1
+
+    p._translate_and_update = counted
 
     def at_the_wait():
         stage = _stage_seen(p, seen)
@@ -712,13 +729,17 @@ def test_a_stop_while_the_round_drains_its_recognition_is_not_swallowed(monkeypa
             await poll_until(at_the_wait, 10.0, where)
             await asyncio.sleep(0.2)
             assert at_the_wait(), where()
-            return await _stop_and_look(live, task)
+            got = await _stop_and_look(live, task)
+            # 停止之后又等了 0.5 秒（_stop_and_look）：要 3 秒的那条翻译没跑完，是被取消的
+            got["translation"] = dict(translation)
+            return got
         finally:
             live.stopped.append(True)
             hold.set()      # 放开线程里那次识别：它拿着进程级的识别锁（_TRANSCRIBE_LOCK），别留给后面的用例
 
     got = run(scenario())
     _assert_the_stop_took(got, tmp_path)
+    assert got["translation"] == {"cancelled": 1, "finished": 0}, got
     for t in threads:
         t.join(5)
     assert not any(t.is_alive() for t in threads)           # 识别线程放开之后自己退出了
