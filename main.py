@@ -568,11 +568,105 @@ def parse_args():
     return p.parse_args()
 
 
+def _say(text):
+    """收尾路上的终端行：终端可能已经没了（关了终端窗口），打不出来也不许抛。"""
+    try:
+        print(text, flush=True)
+    except Exception:
+        pass
+
+
+def _recover_unclosed_audits(port):
+    """上一次没写结尾的审计（崩溃、强杀、断电时留下的）在末尾补一条 session_end（专家审查 B5，规则见
+    app/audit_recover.py）。在起服务、开第一场之前做；端口上有本程序在跑（--no-open、--url 不做单实例检查）
+    就整个不补。只补这个功能上线之后产生的文件（D16），任何错误都不拦启动。"""
+    import time
+
+    try:
+        from app import audit_recover
+        from app.audit import LOG_DIR
+        from app.settings import load_settings, save_setting
+        report = audit_recover.recover_at_startup(
+            LOG_DIR, load_settings, save_setting, time.time(),
+            others_running=lambda: _existing_instance_url(port) is not None)
+    except Exception as exc:
+        print("[警告] 检查上次没写结尾的审计时出错（{}），这次不补".format(type(exc).__name__))
+        return
+    if report.recovered:
+        print("[信息] {} 份审计上次没写结尾，已在末尾补一条 session_end（reason=unclean_exit）：{}".format(
+            len(report.recovered), "、".join(report.recovered)))
+    if report.errors:
+        print("[警告] {} 份审计没能补写结尾：{}".format(
+            len(report.errors), "、".join("{}（{}）".format(n, e) for n, e in report.errors)))
+
+
+def _note_exit_signal(name):
+    """第一次收到退出信号：SIGHUP（终端窗口关了）先把标准流换成 /dev/null——之后再往那个终端写就是
+    EIO，收尾路上任何一行 print 都会抛（app/exit_signals.silence_stdio）。"""
+    from app import exit_signals
+    if name == "SIGHUP":
+        exit_signals.silence_stdio()
+    _say("[信息] 收到 {}：先停止监听、写好这一场的审计结尾，然后退出".format(name))
+
+
+def _exit_again(name):
+    """收尾途中又收到退出信号（比如又按了一次 Ctrl-C）：不再等停管线，只等一下在途的证据写盘（最多 2 秒，
+    同 main.py 里别的 os._exit），然后退出。审计没写完的那一场，下次启动补一条结尾（app/audit_recover.py）。
+    窗口模式下由 WakeupBridge 的读线程调：第一次的收尾在另一个线程里跑，读线程收尾途中照样读得到这一个。
+    同一次退出的回声（关终端窗口时 zsh 下的第二个 SIGHUP、同名信号 0.3 秒内又来一个）不走这里，走
+    _echo_exit_signal（app/exit_signals.Dispatch，第 2 轮审查）。"""
+    from app.window_close import flush_evidence
+    _say("[警告] 又收到 {}：不再等收尾，直接退出".format(name))
+    flush_evidence()
+    os._exit(1)
+
+
+def _echo_exit_signal(name):
+    """同一次退出的回声（app/exit_signals.Dispatch）：第一次的收尾照常走，不打印。是 SIGHUP 就把标准流换成
+    /dev/null：第一次是别的信号（比如先按了 Ctrl-C）、收尾途中又关了终端窗口时，之后往那个终端写就是 EIO，
+    和 _note_exit_signal 同一个道理。"""
+    if name == "SIGHUP":
+        from app import exit_signals
+        exit_signals.silence_stdio()
+
+
+def _exit_stuck():
+    """浏览器和命令行模式：收到退出信号 LOOP_DEADLINE_SEC 秒了进程还在（收尾没走完，或者根本没开始）——看门狗
+    线程调（app/exit_signals.Watchdog）。只等一下在途的证据写盘，然后退出；这一场没写完的审计结尾下次启动补。"""
+    from app.exit_signals import LOOP_DEADLINE_SEC
+    from app.window_close import flush_evidence
+    _say("[警告] 收到退出信号 {:g} 秒了还没退出：不再等收尾，直接退出（没写完的审计结尾，下次启动补）".format(
+        LOOP_DEADLINE_SEC))
+    flush_evidence()
+    os._exit(1)
+
+
+async def _shutdown_on_signal(pipeline, name):
+    """浏览器和命令行模式收到退出信号：停管线、写 session_end（reason=signal，带信号名）、等证据写盘，
+    然后退出。和关窗口同一套（window_close.close_session，有时限）；不回到 asyncio.run 的收尾——它要等
+    默认线程池里的模型加载线程（首次下载时要好几分钟）。"""
+    from app.window_close import close_session, flush_evidence
+    _note_exit_signal(name)
+    try:
+        await close_session(pipeline, reason="signal", fields={"signal": name})
+    except Exception as exc:
+        _say("[警告] 收尾时出错: {}".format(type(exc).__name__))
+    flush_evidence()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os._exit(0)
+
+
 async def main_async(args, state=None):
     from app.pipeline import Pipeline
     from app.server import CaptionServer
     from app.updater import Updater, local_version
 
+    # 上一次没写结尾的审计补一条（确认没有别的实例在跑之后、开第一场之前）
+    _recover_unclosed_audits(args.port)
     # 端口被占用（常见于别的软件恰好占了 8765）时自动向后找空闲端口，
     # 不让用户接触 --port 这种命令行概念
     server = None
@@ -658,9 +752,31 @@ async def main_async(args, state=None):
         await server.status("idle", L("在页面里输入直播间地址开始翻译", "Enter a live link to start."))
         print("未指定直播间地址——在打开的网页里输入地址点「开始翻译」即可。")
 
+    # 浏览器和命令行模式：关终端窗口（SIGHUP）、kill（SIGTERM）、Ctrl-C 先把这一场的审计收尾再退出
+    # （专家审查 B5，app/exit_signals.py）：信号到了取消这个任务，下面接住后走 _shutdown_on_signal。
+    # 窗口模式在 run_with_window 里接（主线程是 pywebview 的界面循环，这个事件循环在后台线程）
+    got_signal = {}
+    if state is None:
+        from app import exit_signals
+        main_task = asyncio.current_task()
+
+        def on_signal(name):
+            got_signal["name"] = name
+            main_task.cancel()
+
+        # 看门狗：事件循环被卡住、取消主任务这一步跑不到时，收到信号 LOOP_DEADLINE_SEC 秒后照样退出（第 1 轮审查）
+        watchdog = exit_signals.Watchdog(exit_signals.LOOP_DEADLINE_SEC, _exit_stuck)
+        watchdog.start()
+        exit_signals.install_loop_handlers(asyncio.get_running_loop(),
+                                           exit_signals.Dispatch(on_signal, _exit_again, on_echo=_echo_exit_signal),
+                                           watchdog=watchdog)
     # 直播结束后保留 UI（可以继续翻看历史字幕 / 换房间），Ctrl-C 退出
     try:
         await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        if not got_signal:
+            raise
+        await _shutdown_on_signal(pipeline, got_signal["name"])     # 不返回：os._exit
     finally:
         # 退出时把手机同看的监听面收掉：0.0.0.0 上的端口不该比进程活得久。
         # 窗口模式走 app/window_close.close_session，这里管 CLI / --browser。
@@ -761,6 +877,28 @@ def main():
         os._exit(0)
 
 
+_SIGNAL_BRIDGE = []
+
+
+def _install_window_signals(finish):
+    """窗口模式的退出信号（app/exit_signals.py）：Ctrl-C 不让 pywebview 交给 PyObjC 的 mach 中断（那条路直接
+    exit()），三个信号都经 WakeupBridge 送到后台线程，由 finish.finish_signal 收尾、退出。主线程上调。"""
+    from app import exit_signals
+
+    def on_first(name):
+        _note_exit_signal(name)
+        finish.finish_signal(name)
+
+    bridge = exit_signals.WakeupBridge(exit_signals.Dispatch(on_first, _exit_again, on_echo=_echo_exit_signal))
+    if bridge.install():
+        _SIGNAL_BRIDGE.append(bridge)
+        # 桥装上了才把 PyObjC 的 mach 中断换掉：装不上时换掉它，Ctrl-C 在 Cocoa 主循环里就彻底没反应了
+        # （Python 层的处理函数在那里不执行），不换至少还能经 NSApp terminate: 退出（第 1 轮审查）
+        exit_signals.keep_sigint_from_cocoa()
+    else:
+        print("[警告] 没能接住退出信号：关终端窗口、kill 时这一场的审计不会写结尾（下次启动补一条）")
+
+
 def run_with_window(args):
     """桌面应用模式：后台线程跑服务，主线程开原生窗口（pywebview 要求主线程）。"""
     import threading
@@ -796,6 +934,15 @@ def run_with_window(args):
         return
 
     state = {}
+    from app.window_close import (FinishOnce, guard_close, hook_app_terminate, localization_kwargs,
+                                  stop_after_close)
+    # 关窗之后的收尾只走一遍：start() 返回之后的主线程、浮窗的 10 秒兜底、⌘Q、退出信号，谁先到谁做
+    # （app/window_close.py）。退出信号那条路给 finish 传 reason="signal" 和信号名
+    finish = FinishOnce(lambda **kw: stop_after_close(state.get("loop"), state.get("pipeline"), **kw))
+    # 关终端窗口（SIGHUP）、kill（SIGTERM）、Ctrl-C：主线程马上要进 pywebview 的界面循环，Python 层的信号处理
+    # 在那里不执行（2026-10-23 真 pywebview 实测），所以经 set_wakeup_fd 交给一个后台线程收尾（专家审查 B5）。
+    # 要赶在起后台服务之前装：启动途中收到的也走收尾（那时还没有管线，直接退出）
+    _install_window_signals(finish)
 
     def backend():
         # 两处 os._exit(1) 之前都先 flush_evidence：后台服务半路异常退出时，这一场的证据线程里可能还有
@@ -834,11 +981,8 @@ def run_with_window(args):
     url = "http://127.0.0.1:{}".format(state["ready_port"])
     from app.macbrand import brand_mac_app
     from app.window_attention import expose_attention
-    from app.window_close import FinishOnce, guard_close, localization_kwargs, stop_after_close
     from app.window_lang import expose_window_lang
     brand_mac_app(ROOT)
-    # 关窗之后的收尾只走一遍：start() 返回后的主线程和浮窗的 10 秒兜底，谁先到谁做（app/window_close.py）
-    finish = FinishOnce(lambda: stop_after_close(state.get("loop"), state.get("pipeline")))
     # 浮窗（只显示，见 app/float_window.py）：宿主挂到管线上，hello 里才会带 float_window，顶栏才画
     # 「浮窗」按钮。要在开主窗口之前挂：页面一加载就会读 hello。任何失败都只是没有这个功能
     float_host = None
@@ -872,6 +1016,9 @@ def run_with_window(args):
             float_host.anchor = lambda: (window.x, window.width)
         # 窗口被盖住时新报警改原生标题：pywebview 的标题不跟页面的 document.title
         expose_window_lang(window, expose_attention(window))
+        # ⌘Q、程序坞里的「退出」：NSApp terminate: 直接 exit()，start() 不返回（2026-10-23 真 pywebview 6.2.1
+        # 实测），下面那句 finish.finish() 走不到。在 willTerminate 通知里（主线程、exit 之前）同步收尾
+        hook_app_terminate(finish.finish)
         webview.start(**({} if loc else localization_kwargs(webview.start, lang)))
     except Exception as exc:
         # 本机没有可用的 webview 后端（如部分 Linux 桌面）——退回浏览器

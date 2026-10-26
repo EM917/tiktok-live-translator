@@ -226,10 +226,100 @@ def browser_only_message(retries, login=None):
                 "weeks."))
 
 
+def _fda_paths(exc):
+    """解析失败的话里带着「完全磁盘访问权限」那一步时，那一步要加的路径（browser_login.fda_targets，和文字里
+    列的是同一份）；不带就是空列表。带不带照 browser_login.browser_only_advice 的判断：kind=browser_only、借登录
+    时有浏览器被系统拒绝读取（BLOCKED）、又没有哪个浏览器借到了登录（借到了，那段话说的是「借了也不给」）。
+    别的 kind 的话里没有这一步，带了路径页面上就是几行没头没尾的复制框。"""
+    from .browser_login import BLOCKED, NOT_READ, OK, fda_targets
+
+    login = getattr(exc, "login", None)
+    if getattr(exc, "kind", None) != "browser_only" or not isinstance(login, dict):
+        return []
+    codes = [c for c in login.values() if c != NOT_READ]
+    if BLOCKED not in codes or OK in codes:
+        return []
+    try:
+        return list(fda_targets())
+    except Exception:
+        return []
+
+
 def _describe_asr(cfg):
     """给人看的识别配置：「ct2/large-v3-turbo/cpu/int8」（auto 的部分省略）。"""
     parts = [cfg.get("backend"), cfg.get("model"), cfg.get("device"), cfg.get("compute_type")]
     return "/".join(str(v) for v in parts if v and v != "auto")  # i18n: data
+
+
+def _term2_limits():
+    """收尾时补发第二个 SIGTERM 的两个延迟（M2，app/audio.py 的 TERM2_DELAY / URGENT_TERM2_DELAY），接在
+    session_start 的 stop_limits 末尾。b1-ffmpeg 加了这两步，stop_limits 当时没跟上（#124 审查）：没有它们，
+    对账时分不清这一场的收尾走没走两个信号。这个平台不补发（Windows，SECOND_SIGTERM 为假）时两个都是 null。
+    读的是 stop_limits 其余各项读的同一个类（pipeline_stream 导入时拿到的 _Source）：测试把 app.audio 里的
+    FFmpegAudioSource 换成替身时，这里也不跟着去读替身上没有的属性、把开场带崩。"""
+    from .audio import SECOND_SIGTERM
+    from .pipeline_stream import _Source
+
+    if not SECOND_SIGTERM:
+        return {"term2": None, "urgent_term2": None}
+    return {"term2": _Source.TERM2_DELAY, "urgent_term2": _Source.URGENT_TERM2_DELAY}
+
+
+def _in_daemon_thread(fn):
+    """在一个新的 daemon 线程里跑 fn，返回当前事件循环上的 future。结果没人等了（超时）也照样取走异常，
+    事件循环已经关了就丢掉结果。"""
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+
+    def settle(result, exc):
+        if fut.done():
+            return
+        if exc is not None:
+            fut.set_exception(exc)
+        else:
+            fut.set_result(result)
+
+    def run():
+        try:
+            result, exc = fn(), None
+        except Exception as error:
+            result, exc = None, error
+        try:
+            loop.call_soon_threadsafe(settle, result, exc)
+        except RuntimeError:
+            pass
+
+    threading.Thread(target=run, name="ffmpeg-facts", daemon=True).start()
+    return fut
+
+
+def _ffmpeg_switches():
+    """session_start 的 ffmpeg_args 里只看环境变量（和模块里的默认值）的三项：legacy、flv_exits_on_drop、
+    reconnect_v2。不起子进程，在事件循环里直接算：探测慢（Windows 上第一次执行被扫描）、超时、出错时，这三项
+    照样记得下（第 2 轮审查：以前整组跟着记 null，合并后对账就分不清这一场开没开 TLT_FFMPEG_LEGACY）。"""
+    from . import audio, reconnect_policy
+
+    return {"legacy": audio.ffmpeg_legacy(),
+            "flv_exits_on_drop": audio.flv_exits_on_drop(),
+            "reconnect_v2": reconnect_policy.v2_enabled()}
+
+
+def _ffmpeg_facts_now(legacy):
+    """_ffmpeg_session_facts 在线程里跑的那一半（会起子进程）：返回 (ffmpeg_version, loglevel)。"""
+    from . import audio
+    from .ffmpeg_bin import find_ffmpeg
+
+    ffmpeg = find_ffmpeg()
+    version, tagged = None, False
+    if ffmpeg is not None:
+        if legacy:
+            # 应急开关开着时拉流前不探测（app/audio.py 的 frames），这里也不带级别标志，只跑一次普通的 -version
+            _rc, version = audio._run_version(ffmpeg)
+        else:
+            got = audio.probe_ffmpeg(ffmpeg)       # 和拉流前的探测共用缓存：一次运行只跑一次
+            version, tagged = got.get("version"), got.get("tagged") is True
+    return version, (audio.LOGLEVEL_TAGGED if tagged else audio.LOGLEVEL_PLAIN)
 
 
 class _ASRSlot:
@@ -644,10 +734,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         _is_repeated_start 只在这两种状态下放行；state 写成字面量，tests/viewer.test.mjs 据此核对手机认得每一种"""
         status = (getattr(self.server, "config", None) or {}).get("status") or {}
         detail, command = status.get("detail", ""), status.get("command")
+        # 结构化字段（CaptionServer.STATUS_EXTRAS）跟着原样再发：只在原来带着时才传，没有就和以前一样
+        extra = {k: status[k] for k in getattr(self.server, "STATUS_EXTRAS", ()) if status.get(k)}
         if status.get("state") == "live":
-            await self.server.status("live", detail, command)
+            await self.server.status("live", detail, command, **extra)
         elif status.get("state") == "connecting":
-            await self.server.status("connecting", detail, command)
+            await self.server.status("connecting", detail, command, **extra)
 
     def _set_caption_size(self, value):
         """顶栏的字幕字号滑块松手了：存进 settings.json，并广播给其它开着的桌面页面跟上。
@@ -1004,8 +1096,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """调用方必须已持有 _stream_lock。
 
         停止原因（写进 session_end 的 reason）由发起停止的一方在调用前放进
-        self._stop_reason（user_stop / window_closed / update / new_session）；没放就按
-        quiet 记成 stopped 或 user_stop。被取消的任务收尾时读它，这里用完清掉。"""
+        self._stop_reason（user_stop / window_closed / signal / update / new_session）；没放就按
+        quiet 记成 stopped 或 user_stop。self._stop_fields 是这个原因附带的观察（signal 的信号名），
+        并进 session_end。被取消的任务收尾时读它们，这里用完清掉。"""
         if not getattr(self, "_stop_reason", None):
             self._stop_reason = "stopped" if quiet else "user_stop"
         task = self._stream_task
@@ -1015,7 +1108,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 点了没反应，人只会以为程序死了，然后反复点。
             if not quiet:
                 await self.server.status("idle", L("正在停止…", "Stopping…"))
-            task.cancel()
+            # 这一场已经在自己收尾（下播、预算用尽之后进了 _end_session）：不取消它，让它把 session_end 写完——
+            # 取消会落在收尾中途的某个 await 上，原因被改写成这次停止的原因、status 和弹幕计数丢掉（专家审查 B5）。
+            # 同样最多等 STOP_GRACE_SEC；到点还没写完，下面代写，原因照它自己记下的
+            ending = self._ending_of(self.audit)
+            if ending is None:
+                task.cancel()
             # 等待要有上限。`run_in_executor` 里的识别调用**取消不掉**——线程一旦
             # 开跑就只能等它自己结束，实测遇到复读跑飞时单次要十几秒。
             # 以前这里是无限期 await，于是积压严重时点停止会像卡死一样。
@@ -1024,7 +1122,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             try:
                 await asyncio.wait_for(asyncio.shield(task), self.STOP_GRACE_SEC)
             except asyncio.TimeoutError:
-                print("[信息] 识别调用一时停不下来，已放手让它自行收尾")
+                if ending is None:
+                    print("[信息] 识别调用一时停不下来，已放手让它自行收尾")
+                else:
+                    print("[信息] 上一场正在自己收尾，{:g} 秒内没写完结尾记录：改由这里代写，"
+                          "结束原因照它自己的（{}）".format(self.STOP_GRACE_SEC, ending[0]))
+                    task.cancel()      # 之后的收尾这里都做；别让它接着走进下一场的状态
             except asyncio.CancelledError:
                 pass
         if self._stats_task is not None and not self._stats_task.done():
@@ -1041,21 +1144,30 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 这一场的汇总（识别风险、证据计数、拉流汇总、弹幕计数）照样从它的会话状态里取，只读不放。
             # 弹幕留意的计数要 await 守卫，这里不写（规格 I1：守卫只出现在 _end_session 等几处）
             sess = getattr(self, "_session_state", None)
-            fields = {}
+            # 附带的观察：这次停止自己带的（收到退出信号时的 signal，见 window_close.close_session）；这一场已经在
+            # 自己收尾的话，换成它记下的原因和观察（_ending_of，专家审查 B5）
+            reason, fields = self._stop_reason, dict(getattr(self, "_stop_fields", None) or {})
+            ending = self._ending_of(closed)
+            if ending is not None:
+                reason, fields = ending[0] or reason, dict(ending[1])
+                self._forget_ending(closed)
             if isinstance(sess, dict) and sess.get("audit") is closed:
                 # 这一场桌面点的「重译」和后台的翻译排空还没做完：关审计之前先取消（旧任务自己的 _end_session
                 # 没走到这一步时）
                 await self._finish_translation_drains(sess, wait=False)
                 await self._cancel_retranslates(sess)
                 try:
-                    fields = self._session_end_extras(closed, sess)
+                    extras = self._session_end_extras(closed, sess)
                 except Exception:
-                    fields = {}
-            self._close_audit(closed, self._stop_reason, **fields)
+                    extras = {}
+                for key, value in extras.items():
+                    fields.setdefault(key, value)
+            self._close_audit(closed, reason, **fields)
             self.audit = None
         # 字幕记录跟审计同生同灭；认本场的审计，见 pipeline_transcript.py
         closed_transcript = self._close_transcript(closed)
         self._stop_reason = None
+        self._stop_fields = None
         self._release_sleep_guard()
         if closed is not None:
             await self._settle_audit_incident(closed)
@@ -1475,6 +1587,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         except asyncio.CancelledError:
             stopping = True
             end = {"reason": getattr(self, "_stop_reason", None) or "cancelled"}
+            # 停止原因附带的观察（收到退出信号时的 signal 名，见 window_close.close_session），没有就是空的
+            end.update(getattr(self, "_stop_fields", None) or {})
             raise
         except Exception as exc:
             # 打包运行时 stdout 指向 /dev/null，外层 _run_stream 打的堆栈没人看得到；
@@ -1497,6 +1611,34 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             await self._end_session(my_audit, sess=sess, **self._session_end_fields(sess, end))
             if cancelled:
                 raise asyncio.CancelledError()
+
+    FFMPEG_FACTS_WAIT_SEC = 2.0
+
+    async def _ffmpeg_session_facts(self):
+        """session_start 里记的 ffmpeg 事实（专家审查 M8，和 #124 审查补的那一条）：
+          * ffmpeg_version：-version 的第一行（app/audio.ffmpeg_version 的同一份缓存），找不到 ffmpeg 是 null；
+          * ffmpeg_args：legacy（TLT_FFMPEG_LEGACY=1：M1、M3、M8 的参数一起退回原样）、flv_exits_on_drop（FLV
+            断开就让 ffmpeg 退出、交给程序重连；两个应急开关任一个开着都是 false）、reconnect_v2（TLT_RECONNECT_V2
+            有没有关掉）、loglevel（这一场拉流实际用的 -loglevel）。合并后对账时据此分清跑的是哪组 ffmpeg 参数。
+        前三项只看环境变量，在这里直接算（_ffmpeg_switches）。version 和 loglevel 要起子进程（几十毫秒），放进自己的
+        daemon 线程（不占默认线程池：识别模型的加载在那里排着，退出时 asyncio.run 还要等池里的线程）；最多等
+        FFMPEG_FACTS_WAIT_SEC，等不到或出错就只有这两项记 null（legacy 开着时 loglevel 一定是 error，照记），不拖
+        开场——探测在后台跑完照样进缓存，拉流前不再跑第二次。前三项也算不出来时整组 null：这一栏不能挡住开播。"""
+        from . import audio
+
+        try:
+            switches = _ffmpeg_switches()
+        except Exception:
+            return {"ffmpeg_version": None, "ffmpeg_args": None}
+        legacy = switches["legacy"]
+        try:
+            fut = _in_daemon_thread(lambda: _ffmpeg_facts_now(legacy))
+            version, loglevel = await asyncio.wait_for(asyncio.shield(fut), self.FFMPEG_FACTS_WAIT_SEC)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            version, loglevel = None, (audio.LOGLEVEL_PLAIN if legacy else None)
+        return {"ffmpeg_version": version, "ffmpeg_args": dict(switches, loglevel=loglevel)}
 
     async def _begin_session(self, url):
         from .audit import AuditLog
@@ -1561,6 +1703,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 弹幕留意：词表、阈值、可信名单、这个主播的关注名单在这里载入（关着时什么都不读）。
         # 要在建审计之前：session_start 里记 rules_hash 等，事后答得出「当时为什么标红」
         guard_start = await self._begin_comment_guard(streamer)
+        # 这一场用哪份 ffmpeg、按哪组参数拉流（专家审查 M8）：起子进程，放进线程、有上限，见 _ffmpeg_session_facts
+        ffmpeg_facts = await self._ffmpeg_session_facts()
         # requested 是用户的选择，active 是实际生效的对象——这两列并排记，
         # 是因为 2026-08-26 它们恰恰不一致：requested=deepl 被启动逻辑静默
         # 重置，实际整场跑的是 1.8B，事后只能靠延迟指纹反推。有了这两列，
@@ -1598,13 +1742,19 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             **self._sleep_guard_extra(),
             **self._banned_terms_provenance(),
             **self._evidence_session_extras(),
+            # 前几场关了审计之后才到、没写进去的记录条数（专家审查 B5，见 _late_records_extra）；没有就没有这个键
+            **self._late_records_extra(),
             # 解析组件版本、上次连上更新服务器的时间、这一场是不是更新后自动接上的
             **self._update_session_extras(),
-            # 拉流收尾各步的上限（app/audio.py）：事后读日志知道这一场按哪套上限收尾
-            "stop_limits": self._stop_limits(),
+            # 拉流收尾各步的上限（app/audio.py）：事后读日志知道这一场按哪套上限收尾。补发第二个 SIGTERM 的
+            # 两个延迟接在最后（见 _term2_limits），原有的键和顺序不变
+            "stop_limits": dict(self._stop_limits(), **_term2_limits()),
             # 重连按哪套规则（v1 / v2）、查流地址的令牌桶（app/reconnect_policy.py）
             **reconnect_session_fields(),
+            # ffmpeg 的版本和这一场的拉流参数组（M8；TLT_FFMPEG_LEGACY / TLT_RECONNECT_V2 两个应急开关的状态）
+            **ffmpeg_facts,
         })
+        self._remember_audit(self.audit)
         # 守卫记住本场自己的 audit 并开始 observe（my_audit：晚到的旧任务关不掉它）
         await self._bind_comment_guard(self.audit)
         # 字幕记录：这一场的字幕和弹幕边听边存成一个本地文件（不进审计，见 app/transcript.py）。
@@ -2001,7 +2151,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         这一个。没传（开场出错那一支、测试直接调）就在取消前这一刻再核对一次 self.audit is my_audit。
 
         reason/fields 写进 session_end（这一场为什么结束）。防睡眠断言只在「我还是
-        当前会话、而且断言是我这个任务开的」时释放。"""
+        当前会话、而且断言是我这个任务开的」时释放。
+
+        一进来就记下「这一场正在自己收尾、原因是什么」（按审计各记一份，见 _note_ending、_ending_of）。以前自然结束
+        （下播、预算用尽……）的收尾途中点「开始」：_stop_locked 取消这个任务，取消落在下面某个 await 上，
+        session_end 改由 _stop_locked 代写，原因成了 new_session，status 和弹幕计数也丢了（专家审查 B5，
+        复核时用真代码复现：下播后 0.02、0.10 秒点开始都中）。现在 _stop_locked 看到
+        这一场已经在自己收尾就不取消、等它写完；等不到才代写，原因和附带的观察照这里记下的。
+        fields 存的是同一个 dict：下面 setdefault 进来的弹幕计数，代写时也带得上。"""
+        ending = self._note_ending(my_audit if my_audit is not None else self.audit, reason, fields)
         still_current = my_audit is None or self.audit is my_audit
         if still_current:
             self._release_sleep_guard(owner=asyncio.current_task())
@@ -2066,10 +2224,73 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             await self._settle_audit_incident(target)
             if closed_transcript:
                 await self._publish_transcripts()   # 设置行的「存了几场」：这一场此刻才算数
+        if ending is not None:
+            self._forget_ending(ending[0], ending)   # 写完了。中途抛出（被取消）就留着：_stop_locked 代写时还要用
         if still_current:
             await self._settle_engine_incident()
         if getattr(self, "_pull_deferred", None) and hasattr(self, "_bg_tasks"):
             self._spawn(self._pull_after_session(asyncio.current_task()))  # 直播中推迟的模型下载
+
+    PAST_AUDITS_KEPT = 8
+
+    def _remember_audit(self, audit):
+        """记下这个管线开过的审计（最近 PAST_AUDITS_KEPT 份）：旧任务过了停止的宽限期才往它们里写的记录被
+        数在审计自己身上（AuditLog.late_records），下一场开场时由 _late_records_extra 汇总。"""
+        past = getattr(self, "_past_audits", None)
+        if past is None:
+            from collections import deque
+            past = self._past_audits = deque(maxlen=self.PAST_AUDITS_KEPT)
+        if audit is not None:
+            past.append(audit)
+
+    def _late_records_extra(self):
+        """{"late_records_prev": N}：这个管线前几场的审计关了之后又到、没写进去的记录，上一次汇总之后新增的
+        条数（每条只报一次）。0 条时是空 dict：session_start 不多这个键，和以前逐字节相同。按管线算，不按模块
+        的全局计数：生产里一个进程就一个管线；测试里一个进程有上百个，全局计数会串到别的用例里。"""
+        total = 0
+        for audit in getattr(self, "_past_audits", None) or ():
+            late = getattr(audit, "late_records", 0) or 0
+            new = late - (getattr(audit, "late_reported", 0) or 0)
+            if new > 0:
+                total += new
+                audit.late_reported = late
+        return {"late_records_prev": total} if total else {}
+
+    def _note_ending(self, audit, reason, fields):
+        """记下「这份审计的那一场正在自己收尾」，返回记下的那一项 (审计, 原因, 观察)；没有审计返回 None。
+        按审计各记一份（第 1 轮审查）：以前只有一个槽——A 过了宽限期被撒手、B 已经在自己收尾时，A 的旧任务才走到
+        _end_session，会把槽盖成 A 的、写完再清空，B 就认不出自己在收尾，又回到被取消、记成 new_session 的老路。
+        键是 id(审计)，值里留着审计本身：项还在，id 就不会被别的对象复用。已经关掉的审计不会再有人代写，顺手清掉
+        （被取消在收尾中途、又没人代写的旧项不会越攒越多）。"""
+        if audit is None:
+            return None
+        endings = getattr(self, "_endings", None)
+        if endings is None:
+            endings = self._endings = {}
+        for key, item in list(endings.items()):
+            if getattr(item[0], "_closed", False):
+                del endings[key]
+        item = endings[id(audit)] = (audit, reason, fields)
+        return item
+
+    def _forget_ending(self, audit, item=None):
+        """这份审计的结尾写完了（或者由 _stop_locked 代写了）：去掉它那一项。给了 item 就只在还是这一项时才去掉。"""
+        endings = getattr(self, "_endings", None)
+        if not endings or audit is None:
+            return
+        current = endings.get(id(audit))
+        if current is not None and current[0] is audit and (item is None or current is item):
+            del endings[id(audit)]
+
+    def _ending_of(self, audit):
+        """这份审计的那一场是不是已经在自己收尾（_end_session 进去了、还没写完）：是就返回它记下的
+        (结束原因, 附带的观察)，否则 None。按审计对象认：晚到的旧任务记下的认不到下一场头上。"""
+        if audit is None:
+            return None
+        item = (getattr(self, "_endings", None) or {}).get(id(audit))
+        if item is None or item[0] is not audit:
+            return None
+        return item[1], item[2]
 
     # TikTok 不给流地址（接口回 4003110、后面各层也没拿到）时的自动重试。
     # 曾以为是同一 IP 短时间内请求过多被限流——2026-09-05 实测推翻：同一分钟
@@ -2958,7 +3179,14 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             self._resolve_fail_streak = 0
         except ResolveError as exc:
             self._note_resolve_failure(exc)
-            await self.server.status("error", of(exc))
+            # 借浏览器登录时系统拒绝读取：「完全磁盘访问权限」里要加的路径单独放进 status.paths（专家审查 I8），
+            # 页面每条路径渲染成一行可复制的代码行。不从文字里认路径：conda、用户目录下的路径可能带空格。
+            # 不复用 command：command 是可以原样照做的命令，路径不是。没有这个观察就不带这个键
+            paths = _fda_paths(exc)
+            if paths:
+                await self.server.status("error", of(exc), paths=paths)
+            else:
+                await self.server.status("error", of(exc))
             print("[错误] {}".format(exc))
             sess["end"] = {"reason": "resolve_error", "kind": exc.kind}
             return
@@ -4007,9 +4235,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if self._resolve_fail_streak >= 2 and getattr(self, "updater", None) is not None:
             self._spawn(self.updater.freshen_ytdlp(reason="resolve-failures"))
 
+    MODEL_DOWNLOAD_POLL_SEC = 3.0
+
     async def _model_download_progress(self, model):
         """模型加载期间轮询 HuggingFace 缓存目录的增量，把下载进度推到 UI。
-        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。"""
+        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。每 MODEL_DOWNLOAD_POLL_SEC 秒看一次。"""
         try:
             hf_home = os.environ.get("HF_HOME")
             cache = (Path(hf_home) / "hub" if hf_home
@@ -4031,10 +4261,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             baseline = await loop.run_in_executor(None, _du)
             expected = MODEL_SIZES_MB.get(model)
             while True:
-                await asyncio.sleep(3)
+                await asyncio.sleep(self.MODEL_DOWNLOAD_POLL_SEC)
                 done_mb = (await loop.run_in_executor(None, _du) - baseline) / 1e6
                 if done_mb < 20:      # 没在下载（或刚开始），别闪一条 0% 出来
                     continue
+                pct = None
                 if expected:
                     done_mb = min(done_mb, expected)   # Windows 无软链权限时是真副本，仍可能翻倍
                     pct = min(99, int(done_mb * 100 / expected))
@@ -4048,7 +4279,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                               "请保持窗口打开）…",
                               "Downloading speech model {}… {:.0f} MB so far (first time "
                               "only). Keep this window open.").format(model, done_mb))
-                await self.server.status("connecting", text)
+                # 结构化的进度（专家审查 U7）：页面中间那张「正在连接」卡片只认它，不去解析 detail 的文字——
+                # connecting 状态下 detail 几乎从不为空（本文件里有十来处在发），看到 detail 就显示会和顶部
+                # 横幅重复同一句话。只有这里带：其余 connecting 都不带这个键。pct 在模型大小未知时是 null
+                await self.server.status("connecting", text, progress={
+                    "kind": "model_download", "pct": pct, "mb": int(round(done_mb))})
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -4629,6 +4864,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """忘掉已经报过的引擎问题；横幅挂着的话撤掉。"""
         self._cooldown_mark = None
         self._engine_error_mark = None
+        self._failure_marks = None
         if getattr(self, "_engine_incident_up", False):
             self._engine_incident_up = False
             self._engine_rejection = None
@@ -5015,12 +5251,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             原话）+ 引用原话的横幅。不冷却、不换引擎：400 可能只是哪一句的事，402 是账务，
             换不换引擎要中控自己定；
           * 本地 Ollama 连续 ENGINE_ERROR_STREAK 次非 200：translation_engine_error +
-            引用 Ollama 原话的横幅，并重跑备模型（模型不在了会安排停止后重新下载）。
+            引用 Ollama 原话的横幅，并重跑备模型（模型不在了会安排停止后重新下载）；
+          * Claude 请求超时、连不上、回 5xx（含 529）或别的异常（引擎的 last_failure，专家审查 B7）：
+            translation_engine_error 带 kind（timeout / connect / http / other）+ 一行终端。不挂横幅：页面上
+            「连续 4 条失败」的通用横幅兜底。同一个引擎、同一场、同一种 kind 只记一次，见 _note_failure_kind。
         返回本场改用的本地引擎，没有就是 None。文字只写回应本身和能做的事，不猜原因。"""
         from .translator import BaseTranslator, engine_label
 
         if tr is not self.translator:
             return None                 # 这条翻译期间引擎已经换了：旧引擎的事不再报
+        failure = getattr(tr, "last_failure", None)
+        if isinstance(failure, dict) and failure.get("kind"):
+            # 这一次没拿到能归进上面几种规则的回应（超时、连不上、5xx）：以前 last_error 为空直接返回，5xx 又不在
+            # 任何一条规则里，审计里只有 ok=false。last_error 可能还留着更早那次的状态码，所以先看这一次的类别
+            self._note_failure_kind(tr, failure)
+            return None
         err = getattr(tr, "last_error", None)
         if not err or err[0] is None:
             return None
@@ -5114,6 +5359,45 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if hasattr(self, "_bg_tasks") and (task is None or task.done()):
                 self._provision_task = self._spawn(self._provision_then_check())
         return None
+
+    def _note_failure_kind(self, tr, failure):
+        """Claude 请求这一次失败的类别（translator 的 last_failure）：translation_engine_error 带 kind 记一条、终端
+        打一行。同一个引擎、同一场、同一种 kind 只记一次，中间成功过一次（_note_engine_ok）才会再记——和这个
+        记录类型原来的规则一致。只记类别和状态码，不猜原因（超时不等于网络慢，5xx 不说是谁的问题）。"""
+        from .translator import engine_label
+
+        kind = str(failure.get("kind"))
+        audit = getattr(self, "audit", None)
+        mark = (tr, audit)
+        marks = getattr(self, "_failure_marks", None)
+        if marks is None:
+            marks = self._failure_marks = {}
+        if marks.get(kind) == mark:
+            return
+        marks[kind] = mark
+        name = getattr(tr, "name", None)
+        status = failure.get("status")
+        model = self._model_of(tr)
+        if audit is not None:
+            audit.translation_engine_error(name, status, error=failure.get("error"), model=model,
+                                           kind=kind)
+        what = failure.get("error") or "-"
+        if kind == "timeout":
+            # 时限在内层引擎上：管线拿到的是 CachedTranslator（没有 TIMEOUT，也不转发属性），以前这里总是 0，
+            # 打出「0 秒内没有完成」（第 2 轮审查）。拿不到就不写秒数，不写一个不是观察到的数
+            limit = getattr(getattr(tr, "inner", tr), "TIMEOUT", None)
+            if isinstance(limit, (int, float)) and not isinstance(limit, bool) and limit > 0:
+                seen = "请求 {:g} 秒内没有完成".format(limit)  # i18n: terminal
+            else:
+                seen = "请求在时限内没有完成"  # i18n: terminal
+        elif kind == "connect":
+            seen = "请求的连接出错（{}）".format(what)  # i18n: terminal
+        elif kind == "http":
+            seen = "返回 HTTP {}".format(status)  # i18n: terminal
+        else:
+            seen = "请求出错（{}）".format(what)  # i18n: terminal
+        print("[警告] {} {}（模型 {}），这一句显示原文；同一种情况这一场不再打印".format(
+            engine_label(name), seen, model))
 
     def _note_reply(self, tr, seq, reply):
         """引擎回来的不是译文（translator.looks_like_reply）：记审计、打一行终端，这一句显示原文。
@@ -5279,6 +5563,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return
         self._cooldown_mark = None
         self._engine_error_mark = None
+        if not getattr(tr, "last_failure", None):
+            # 超时、连不上不计进 fail_streak：缓存命中时它也是 0。引擎自己还记着这一类失败（没真拿到过 200）就不算
+            # 成功过，同一种 kind 不重记（B7）
+            self._failure_marks = None
         if getattr(self, "_engine_incident_up", False):
             self._engine_incident_up = False
             self._engine_rejection = None
