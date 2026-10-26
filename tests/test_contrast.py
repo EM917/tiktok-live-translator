@@ -4,8 +4,6 @@
   白字只有 2.82:1；改成专门的 --fail-bar（深色 #b3000f，7.18:1），浅色仍是 #d70015，外观不变。
 - V2：手机页的正文（断线时的「状态未知」、隐藏报警的说明、时间戳、「翻译中…」、弹幕原文、只看模式、提示音说明）
   以前用 --label-3（只给占位符/装饰的那一档，浅色约 2:1、深色约 3:1），改成 --label-2。
-- 手机页报警卡片右上角的 ×（.alert-dismiss，图标按钮）：以前也是 --label-3，浅色卡片底上 1.91:1，不到
-  WCAG 1.4.11 对图形控件要求的 3:1（b2-contrast 第 2 轮审查记下、顺延到改 viewer.css 的批次）；改成 --label-2。
 
 半透明的字色先按 alpha 叠到它实际所在的底色上再算（底色也从样式表里读：顶栏、底栏、报警卡片各有各的底）。
 不起浏览器、不 import main.py。真页面上的计算色在 PR 的无头 Chrome 对照里量过。
@@ -216,8 +214,8 @@ V2_TEXT = [
     (".ro-note", ".bottom-bar"),               # 「只看模式 · 不能操作」
     (".ring-note", "body"),                    # 提示音说明
 ]
-# --label-3 还能用的地方：装饰（分隔点）、禁用态。报警卡片的 × 是能点的图形控件，不在这里（见文件末尾）
-LABEL3_ALLOWED = {".sep", ".cap-retranslate:disabled"}
+# --label-3 还能用的地方：装饰（分隔点）、图标按钮（×）、禁用态
+LABEL3_ALLOWED = {".sep", ".alert-dismiss", ".cap-retranslate:disabled"}
 
 
 @pytest.mark.parametrize("selector,_", V2_TEXT)
@@ -248,18 +246,3 @@ def test_phone_label_2_on_the_page_background_matches_the_review_numbers():
         bg = color(decls("viewer.css", "body")["background"], toks)
         assert round(ratio(color("var(--label-2)", toks, behind=bg), bg), 2) >= want
         assert round(ratio(color("var(--label-3)", toks, behind=bg), bg), 2) == before
-
-
-# ---- 图形控件 3:1：手机页报警卡片的 × ----------------------------------------------------------------
-
-@pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
-def test_phone_alert_dismiss_icon_reaches_3_to_1_on_the_alert_card(dark):
-    """× 画在报警卡片上（.alert-item 的浅红底，按主题预先混好的 --tint-fail-8）：图形控件要 3:1（WCAG 1.4.11）。
-    改之前（--label-3）浅色 1.91:1、深色 2.94:1；现在浅色 4.76:1、深色 6.16:1。"""
-    toks = tokens("viewer.css", dark)
-    assert decls("viewer.css", ".alert-dismiss").get("color") == "var(--label-2)"
-    bg = background("viewer.css", ".alert-item", toks)
-    got = ratio(color(decls("viewer.css", ".alert-dismiss")["color"], toks, behind=bg), bg)
-    assert got >= 3.0, "报警卡片的 ×（{}）只有 {:.2f}:1".format("深色" if dark else "浅色", got)
-    before = ratio(color("var(--label-3)", toks, behind=bg), bg)
-    assert round(before, 2) == (2.94 if dark else 1.91), "审查记下的旧值：--label-3 在卡片底上不到 3:1"

@@ -227,7 +227,7 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 .alert-head-label { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-caption); font-weight: 700; color: var(--fail-ink); }
 .alert-tier-icon { display: inline-flex; color: inherit; }
 /* 报警卡片右上角的 ×：以前用 --label-3，浅色卡片底上约 2:1，不到 WCAG 1.4.11 对图形控件要求的 3:1
-   （b2-contrast 第 2 轮审查记下的）。改成 --label-2，浅色、深色都在 4.5:1 以上（tests/test_contrast.py 按卡片底色算着） */
+   （b2-contrast 第 2 轮审查记下的）。改成 --label-2，浅色、深色都在 4.5:1 以上（tests/viewer.test.mjs 按卡片底色算着） */
 .alert-dismiss {
   position: relative; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
