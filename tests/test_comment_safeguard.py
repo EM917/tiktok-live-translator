@@ -409,7 +409,11 @@ def test_monitoring_that_starts_while_waiting_for_the_pip_lock_is_not_upgraded(m
 
 def test_skip_if_is_asked_once_after_the_lock_and_never_stops_a_running_pip(monkeypatch):
     """skip_if 只在拿到 pip 锁之后问一次：等锁时不问（问早了就等于在锁外面看）；pip 跑起来以后不再问，
-    不会因为它 kill 掉正在写环境的 pip（要中途叫停的是 abort_if）。"""
+    不会因为它 kill 掉正在写环境的 pip（要中途叫停的是 abort_if）。
+
+    轮询间隔调到 0.01 秒：默认 2 秒一问，假 pip 只跑 0.05 秒，pip 跑着时就算一直在问 skip_if 也问不到，
+    这条测试钉不住「不再问、不 kill」（审查时把 skip_if 接到 abort_if 上还原过，默认间隔下照样全绿）。"""
+    monkeypatch.setattr(updater_mod, "PIP_ABORT_POLL_SEC", 0.01)
     pip = _FakePip()
     monkeypatch.setattr(updater_mod.asyncio, "create_subprocess_exec", pip)
     up = updater_mod.Updater(server=None)

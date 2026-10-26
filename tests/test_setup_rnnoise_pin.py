@@ -25,9 +25,6 @@ PINNED_COMMIT = "6c2c1301c30a6be5ddf93704a693f4956ce2aa55"
 PINNED_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/{}/"
               "beguiling-drafter-2018-08-30/bd.rnnn").format(PINNED_COMMIT)
 PINNED_SHA256 = "ae3f7411e1e6a884f839a4a145c394408398f09854dbc1216ee02faafc98a17b"
-# app/pipeline.py 还没固定时的地址：只在程序那一侧还没改过来时允许（见 test_the_app_downloads_the_same_pair）
-UNPINNED_APP_URL = ("https://raw.githubusercontent.com/GregorR/rnnoise-models/master/"
-                    "beguiling-drafter-2018-08-30/bd.rnnn")
 
 
 def _read(name):
@@ -65,15 +62,10 @@ def test_setup_scripts_pin_the_commit_and_the_sha256():
 
 
 def test_the_app_downloads_the_same_pair():
-    """程序自己下载时用的地址和校验值（app/pipeline.py）与两个安装脚本是同一对。
+    """程序自己下载时用的地址和校验值（app/pipeline.py 的 RNNOISE_URL、RNNOISE_SHA256）与两个安装脚本是同一对。
 
-    程序那一侧的固定（RNNOISE_SHA256）和这两个脚本不在同一个 PR 里：那一侧合进来之前，app/pipeline.py 只能
-    还是原来那条 master 地址；改了地址却没有校验值、或者两边对不上，都不行。"""
-    app_sha = getattr(pipeline_mod, "RNNOISE_SHA256", None)
-    if app_sha is None:
-        assert pipeline_mod.RNNOISE_URL == UNPINNED_APP_URL
-        return
-    assert (pipeline_mod.RNNOISE_URL, app_sha) == (PINNED_URL, PINNED_SHA256)
+    程序那一侧怎么核对、对不上怎么办，由 tests/test_rnnoise_pin.py 钉着；这里只管两边不能各走各的。"""
+    assert (pipeline_mod.RNNOISE_URL, pipeline_mod.RNNOISE_SHA256) == (PINNED_URL, PINNED_SHA256)
 
 
 # ---- 下载那一段原样跑一遍（假的下载命令，不连网） ----
