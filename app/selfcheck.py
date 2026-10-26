@@ -93,13 +93,25 @@ async def check_ffmpeg():
     return _check(NAMES["ffmpeg"], OK, L("实测可用（{}）", "Working ({})").format(ffmpeg_source()))
 
 
-async def check_denoise(args):
-    """降噪是对抗背景音乐的第一道防线，必须实测能初始化。"""
+async def check_denoise(args, state=None):
+    """降噪是对抗背景音乐的第一道防线，必须实测能初始化。
+
+    state 是管线这一次下载模型的结果（Pipeline._denoise_check_state）：下载下来的文件和固定版本的
+    sha256 对不上时（专家审查 I5），文件没有保存，这一行是 FAIL——不能还说「尚未下载、开播时自动下载」，
+    那会让人以为开播时就好了。"""
     from .pipeline import DENOISE_MODEL, _arnndn_probe
     if getattr(args, "denoise", "auto") == "off":
         return _check(NAMES["denoise"], OK,
                       L("已按 --denoise off 主动关闭", "Turned off with --denoise off"))
     if not DENOISE_MODEL.exists():
+        if (state or {}).get("checksum_mismatch"):
+            return _check(NAMES["denoise"], FAIL,
+                          L("降噪模型下载下来的文件和程序里记的校验值对不上，没有保存——背景音乐不会被抑制",
+                            "The downloaded noise reduction model didn’t match the checksum the app "
+                            "expects, so it wasn’t saved. Background music won’t be reduced."),
+                          L("下次点「开始」会再下载一次；还是对不上，把这条信息反馈给开发者",
+                            "The app downloads it again the next time you click Start. If it still "
+                            "doesn’t match, send this message to the developer."))
         return _check(NAMES["denoise"], WARN,
                       L("降噪模型尚未下载（首次开播时自动下载）",
                         "Model not downloaded yet (it downloads when you first click Start)"))
@@ -897,7 +909,8 @@ async def check_disk():
     return _check(NAMES["disk"], OK, L("剩余 {:.0f} GB", "{:.0f} GB available").format(free))
 
 
-async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None, guard=None):
+async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None, guard=None,
+                  denoise_state=None):
     """跑完所有自检。任一项抛异常都不影响其余项——自检自己绝不能拖垮启动。
 
     探测崩了算 **FAIL，不是 WARN**：崩了意味着这项能力压根没被验证过，和
@@ -906,7 +919,7 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
     没事」。名字也必须带上，否则只剩一个「自检项」，用户不知道是哪块没验。"""
     probes = [
         (NAMES["ffmpeg"], check_ffmpeg()),
-        (NAMES["denoise"], check_denoise(args)),
+        (NAMES["denoise"], check_denoise(args, denoise_state) if denoise_state else check_denoise(args)),
         (NAMES["asr"], check_asr(args, asr_state)),
         (NAMES["translator"], check_translator(args, translator)),
         (NAMES["watchlist"], check_watchlist(detector)),

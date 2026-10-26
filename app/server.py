@@ -173,6 +173,8 @@ class CaptionServer:
         self._float_ws = set()
         # 没带 Origin 头的连接（也在 clients 里）：发给它们的消息去掉手机同看链接里的口令（见 _ws）
         self._keyless_ws = set()
+        # 本机页面连上过没有（只用来在第一次时通知一键更新的启动检查，见 _first_page_connected）
+        self._page_seen = False
         self.history = deque(maxlen=HISTORY_MAX + HISTORY_BREAK_ROOM)
         # 违禁词警报必须跨刷新/重连留存：中控没看到就等于漏报，
         # 不能因为页面重载而消失
@@ -328,6 +330,8 @@ class CaptionServer:
             # 以下到 async for 之前一个 await 都不能有：回放完了才加入广播集合，避免新字幕插进回放序列中间
             del self._replaying[ws]
             self.clients.add(ws)
+            if not is_float and not keyless and not getattr(self, "_page_seen", False):
+                self._first_page_connected()
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     continue
@@ -359,6 +363,19 @@ class CaptionServer:
             self._transports.pop(ws, None)
             self._replaying.pop(ws, None)
         return ws
+
+    def _first_page_connected(self):
+        """本机页面第一次连上、拿完 hello 和回放（专家审查 I6）：一键更新之后的新版本算是起来了，清掉
+        app/update_guard.py 的记号——不清的话，新版本两次启动页面都没连上，第三次打开就会退回旧版本。
+        只认带 Origin 的本机页面（应用窗口、浏览器）：浮窗页不算（它只在主窗口之后才开），没带 Origin
+        的本地脚本不是页面。
+        同步、不 await（调用处在「入册」和读消息之间）；出什么错都不影响这个连接。"""
+        self._page_seen = True
+        try:
+            from . import update_guard
+            update_guard.mark_ready()
+        except Exception as exc:
+            print("[警告] 记录「页面已连上」失败: {}".format(exc))
 
     def ui_client_count(self):
         """显示报警的界面页面有几个：不数浮窗页。审计里每条报警记着发出时的页面数
