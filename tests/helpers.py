@@ -1,4 +1,4 @@
-"""事件循环入口，给同步的测试函数跑一个协程。
+"""事件循环入口，给同步的测试函数跑一个协程；外加一个带期限的轮询（poll_until）。
 
 以前这一个函数在将近 34 个测试文件里各自复制了一份，还分裂成两种写法：多数
 文件用 ``asyncio.run``，少数文件手写 ``new_event_loop().run_until_complete``
@@ -16,3 +16,19 @@ import asyncio
 
 def run(coro):
     return asyncio.run(coro)
+
+
+async def poll_until(predicate, timeout, what, interval=0.01):
+    """每 interval 秒看一次 predicate()，成立就返回；timeout 秒内等不到就失败，说清在等什么。
+
+    用例在协程里等管线走到某一步时用它，别写不带期限的 ``while not ...: await asyncio.sleep(...)``：
+    等的那一步要是不再出现（2026-10-23：#131 把翻译排空挪出这一轮之后，drain 阶段只剩一两毫秒，10 毫秒
+    一看的轮询在 CI 上一直看不到），循环就一直转，直到 pytest-timeout 把整个测试进程连同后面的用例一起
+    结束。what 是字符串，或返回字符串的函数（失败时才调，可以带上此刻的状态）。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() >= deadline:
+            detail = what() if callable(what) else what
+            raise AssertionError("{:.1f} 秒内没等到：{}".format(timeout, detail))
+        await asyncio.sleep(interval)

@@ -1079,9 +1079,18 @@ def test_the_backstop_first_means_the_main_thread_waits_instead_of_finishing_aga
         once.finish_stuck()
     main = threading.Thread(target=lambda: pytest.raises(Exited, once.finish), name="main-path", daemon=True)
     main.start()
-    main.join(0.2)
-    assert main.is_alive()                         # 还在等（真进程里兜底的 os._exit 会把它带走）
-    assert "main-path" not in calls and calls.count(("exit", 0)) == 1
+    try:
+        main.join(0.2)
+        alive, finished = main.is_alive(), list(calls)
+    finally:
+        # 真进程里兜底的 os._exit 会把等着的主线程带走；测试进程不退出，这里替它放开锁，让这条线程走完。
+        # 以前不放：它卡在 acquire() 上一直活到整个 pytest 进程结束，之后每一次超时的栈里都有它（2026-10-23
+        # CI 卡在 test_live_stall 时栈里那条 main-path 就是它），看着像是那个用例自己漏了线程
+        once._lock.release()
+        main.join(5)
+    assert alive                                   # 还在等（真进程里兜底的 os._exit 会把它带走）
+    assert "main-path" not in finished and finished.count(("exit", 0)) == 1
+    assert not main.is_alive()
 
 
 def test_main_routes_both_exit_paths_through_one_finish_once():
