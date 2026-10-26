@@ -30,7 +30,7 @@ from app.audit import AuditLog
 from app.pipeline import Pipeline
 from app.segmenter import SilenceSegmenter
 from app.server import CaptionServer
-from tests.helpers import run
+from tests.helpers import poll_until, run
 
 ROOM = "https://www.tiktok.com/@ficticia_corte/live"
 LOUD = (np.full(int(SAMPLE_RATE * FRAME_SEC), 3000, dtype=np.int16)).tobytes()   # 远高于门限 300
@@ -152,8 +152,9 @@ def test_a_stop_after_24_seconds_records_the_backlog_the_buffer_and_the_segment_
         loop = asyncio.get_running_loop()
         task = asyncio.ensure_future(
             p._stream_session("http://cdn/s.flv", asr, None, loop, sess=sess))
-        while fed["frames"] < 240 or not asr.entered.is_set():
-            await asyncio.sleep(0.005)
+        await poll_until(lambda: fed["frames"] >= 240 and asr.entered.is_set(), 10.0,
+                         lambda: "240 帧到达、第一段进了识别线程（已到 {} 帧）".format(fed["frames"]),
+                         interval=0.005)
         await asyncio.sleep(0.05)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -190,8 +191,7 @@ def test_the_segment_in_the_asr_thread_counts_even_when_the_queue_is_empty(monke
         loop = asyncio.get_running_loop()
         task = asyncio.ensure_future(
             p._stream_session("http://cdn/s.flv", asr, None, loop, sess=sess))
-        while not asr.entered.is_set():
-            await asyncio.sleep(0.005)
+        await poll_until(asr.entered.is_set, 10.0, "第一段进了识别线程", interval=0.005)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -216,8 +216,9 @@ def test_the_heal_path_sends_the_buffer_to_asr_instead_of_dropping_it(monkeypatc
         loop = asyncio.get_running_loop()
         task = asyncio.ensure_future(
             p._stream_session("http://cdn/s.flv", asr, None, loop, sess=sess))
-        while fed["frames"] < 192 or len(asr.seconds) < 2:
-            await asyncio.sleep(0.005)
+        await poll_until(lambda: fed["frames"] >= 192 and len(asr.seconds) >= 2, 10.0,
+                         lambda: "192 帧到达、识别完两段（已到 {} 帧、识别 {} 段）".format(
+                             fed["frames"], len(asr.seconds)), interval=0.005)
         rnd = sess["round"]
         heal = p._heal_stopping(sess, {"break_no": rnd["no"] - 1})
         got = await asyncio.wait_for(task, 5)
@@ -301,8 +302,8 @@ def test_a_failed_exit_flush_still_counts_the_buffer_as_one_segment(monkeypatch,
         loop = asyncio.get_running_loop()
         task = asyncio.ensure_future(
             p._stream_session("http://cdn/s.flv", BlockedASR(block_first=False), None, loop, sess=sess))
-        while fed["frames"] < 15:
-            await asyncio.sleep(0.005)
+        await poll_until(lambda: fed["frames"] >= 15, 10.0,
+                         lambda: "15 帧到达（已到 {} 帧）".format(fed["frames"]), interval=0.005)
         await asyncio.sleep(0.05)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -349,8 +350,8 @@ def test_late_audio_events_leave_the_next_sessions_hint_alone(monkeypatch, tmp_p
         loop = asyncio.get_running_loop()
         task = asyncio.ensure_future(
             p._stream_session("http://cdn/s.flv", BlockedASR(block_first=False), None, loop, sess=sess))
-        while fed["frames"] < 15:
-            await asyncio.sleep(0.005)
+        await poll_until(lambda: fed["frames"] >= 15, 10.0,
+                         lambda: "15 帧到达（已到 {} 帧）".format(fed["frames"]), interval=0.005)
         await asyncio.sleep(0.05)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
