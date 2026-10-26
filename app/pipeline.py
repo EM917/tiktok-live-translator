@@ -3093,6 +3093,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 if audit is not None:
                     audit.network_up(time.time() - since)
                 await self._incident("session:network", "clear")
+                # 状态行上还是上面那句「本机连不上 www.tiktok.com…」：调用方接着去解析，解析要走好几层、可能要
+                # 几十秒，这期间横幅一直说连不上（#143 审查 U6）。撤掉持续提示时一起换成正在做的事
+                await self.server.status("connecting", L("正在解析直播流地址…",
+                                                         "Getting the stream URL…"))
                 print("[网络] 已恢复，继续重连")
                 return True
         await self._incident("session:network", "clear")
