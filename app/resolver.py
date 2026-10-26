@@ -1823,14 +1823,18 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         # 而没有任何一条**确认**过房间结束，所以不能替它下这个断言。
         if kind == "offline":
             # 只说做了什么、看到什么、能做什么。不说「多半是被挡了」——我们不知道。
+            # 先让人核对用户名：10-26 一场里用户名少打了一个字母，各层都只说「没找到 / 没在播」。
+            # 这只是一个能做的检查，不是在说原因。
             kind, message = "unknown", L(
                 "试过全部方式都没能拿到这个直播间的音频流，也没有任何一种"
-                "确认直播已结束。可以过一会儿再点「开始翻译」；如果你在浏览器里"
+                "确认直播已结束。先核对一下输入的用户名和浏览器地址栏里的是否一字不差；"
+                "没问题的话，可以过一会儿再点「开始翻译」；如果你在浏览器里"
                 "看得到这个直播，也可以把直播间链接和浏览器里的 .flv 地址一起"
                 "粘进来（中间空格隔开）。",
                 "The app tried every method but couldn’t get the audio stream for this live "
-                "stream, and none of them confirmed that the stream ended. Click Start again in "
-                "a little while. If you can see this live stream in your browser, you can also "
+                "stream, and none of them confirmed that the stream ended. First check that the "
+                "username you entered matches the one in your browser’s address bar letter for "
+                "letter. If it does, click Start again in a little while. If you can see this live stream in your browser, you can also "
                 "paste the live link and the .flv URL from your browser together, separated by "
                 "a space.")
         if browser_only is not None:
