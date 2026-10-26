@@ -667,8 +667,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 弹幕重译（app/comments.py）：Sonnet 要等几秒，放后台跑，不在这个页面的消息循环里
             # 等（同 apply_update）；中控可以接着点别的弹幕，每条自己排队、自己限额。
             # 只有本机页面发得出来：手机入站只认 retranslate（app/viewer.py _handle_inbound）。
-            # 登记进本场（同字幕重译）：停止、换主播时关审计之前取消，cancelled 记进点它的那一场
-            self._own_retranslate(self._spawn(self.comments.retranslate(msg.get("id"))))
+            # 登记进本场（同字幕重译）：停止、换主播时关审计之前取消，cancelled 记进点它的那一场；
+            # 被取消时补发终态，把按钮撤回「重译」（_retranslate_comment）
+            self._own_retranslate(self._spawn(self._retranslate_comment(msg.get("id"))))
             return None
         elif mtype == "migrate_glossary":
             return self._migrate_glossary(bool(msg.get("confirm")))
@@ -5891,6 +5892,28 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         task.add_done_callback(tasks.discard)
         return task
 
+    async def _retranslate_comment(self, cid):
+        """弹幕重译的后台任务（handle_control 的 retranslate_comment）：交给 app/comments.py 的 retranslate。
+
+        被取消（停止、换主播、下播收尾，都走 _cancel_retranslates）时补发一条
+        comment_redo(redo_state=cancelled) 再往外抛。comments 那边被取消时只记一条 cancelled 审计就抛出来，
+        不发终态；不补的话，页面上那条弹幕的按钮一直灰着停在「重译中…」，点不了第二次，要等页面重连或刷新
+        才恢复——换主播之后旧弹幕还留在屏幕上，看得见（b5-recog-input 第 1 轮审查）。web/app.js
+        receiveCommentRedo 把 pending、failed 以外的取值都当成复位，按钮回到「重译」，不用改前端（同字幕
+        重译的 strong_state=cancelled）。审计在 comments 那边先记好（同步），这里的广播慢也不影响它。
+        id 照 comments 的规矩裁到 MAX_ID；不是字符串的 id 没有哪条弹幕可撤（comments 那边也不回话）。"""
+        try:
+            await self.comments.retranslate(cid)
+        except asyncio.CancelledError:
+            if isinstance(cid, str) and cid:
+                cid = cid[: getattr(self.comments, "MAX_ID", None) or len(cid)]   # 弹幕 id，不是界面文字
+                try:
+                    await self.server.broadcast({"type": "comment_redo", "id": cid,
+                                                 "redo_state": "cancelled"})
+                except Exception:
+                    pass
+            raise
+
     async def _retranslate_serial(self, seq, ready=None, audit=None):
         """桌面「重译」的后台任务：入队就发 pending，按桌面那把锁排队，轮到了调 retranslate()。
         被取消（停止、换主播，见 _cancel_retranslates）时，发过 pending 而终态还没发的，补一条
@@ -5983,8 +6006,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         """这一场桌面点的「重译」（字幕和弹幕）还在排队或在等强模型：关审计之前先取消，等它们把 cancelled 记进
         这一场的审计、撤掉按钮的「重译中…」、放掉 _strong_inflight 和强模型连接（最多等 RETRANSLATE_CANCEL_WAIT_SEC）。
         以前它们在停止之后接着跑，结果写进已经关掉的审计（静默丢掉，专家审查 B6）。只认这一场自己的 sess。
-        弹幕重译被取消时 app/comments.py _retranslate 先记一条 comment_redo(why=cancelled) 再往外抛，名额还回去，
-        不再广播新译文。"""
+        撤按钮：字幕重译由 _retranslate_serial 补发 strong_state=cancelled；弹幕重译被取消时 app/comments.py
+        _retranslate 先记一条 comment_redo(why=cancelled) 再往外抛（名额还回去，不再广播新译文），外面那层
+        _retranslate_comment 接住，补发 comment_redo(redo_state=cancelled) 再抛。"""
         tasks = sess.get("retranslate_tasks") if isinstance(sess, dict) else None
         if not tasks:
             return

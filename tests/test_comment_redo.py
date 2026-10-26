@@ -1065,6 +1065,10 @@ def test_stop_while_sonnet_is_still_answering_leaves_a_cancelled_row_in_this_ses
 
     task, stopped_at = run(scenario())
     assert task.cancelled()
+    # 取消之后这条弹幕最后一个按钮状态不是 pending：补发了 cancelled，页面把按钮撤回「重译」（_retranslate_comment）
+    before = [m.get("redo_state") for m in p.server.sent[:stopped_at]
+              if m.get("type") == "comment_redo" and m.get("id") == "c0" and m.get("redo_state")]
+    assert before[-1] != "pending" and before == ["pending", "cancelled"]
     assert [facts(r) for r in redo_rows(audit)] == [(False, "cancelled", None, True, "claude-sonnet-5-5")]
     assert rows(audit)[-1]["type"] == "session_end"        # cancelled 在 session_end 之前
     assert audit.late_records == 0
@@ -1075,6 +1079,69 @@ def test_stop_while_sonnet_is_still_answering_leaves_a_cancelled_row_in_this_ses
     assert after.count(("update", "ok", "新译文")) == 1
     assert len(redo_rows(audit)) == 1                       # 停止之后点的那一下没有文件可写
     assert sess["retranslate_tasks"] == set() and p.comments._ledger.begin("c0") is None
+
+
+@pytest.mark.parametrize("how", ["stop", "switch", "ended"])
+def test_a_retranslation_cancelled_by_the_session_ending_puts_the_button_back(monkeypatch, tmp_path, how):
+    """在途的弹幕重译被收尾取消（停止、换主播、下播自然结束——三条都走 _cancel_retranslates）：收尾返回之前
+    这条弹幕收到一条 comment_redo(redo_state=cancelled)，不带说明（不新造文字）。以前 comments 那边只记审计
+    就往外抛，最后一个状态停在 pending：web/app.js 的按钮一直灰着停在「重译中…」，点不了第二次，要等页面
+    重连或刷新（b5-recog-input 第 1 轮审查的探针：HEAD 上是 ['pending']，基点上是 ['pending', 'ok']）。
+    页面怎么接这条由 tests/comment-redo-cancelled.test.mjs 钉着。审计照旧是一条 cancelled，在 session_end 之前。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    audit = p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    sess = p._session_state = p._new_session_state(audit)
+    gated = Gated()
+    p.comments._claude_strong_factory = lambda: gated
+    seed(p.comments, ("c0", SOURCE))
+
+    async def scenario():
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
+        assert await wait_for(lambda: gated.calls == 1)
+        if how == "ended":
+            await p._end_session(audit, reason="offline", sess=sess)
+        else:
+            await p.stop_stream(quiet=how == "switch")
+        ended_at = len(p.server.sent)
+        gated.gate.set()
+        await drain(p)
+        return ended_at
+
+    ended_at = run(scenario())
+    redos_c0 = [m for m in p.server.sent if m.get("type") == "comment_redo" and m.get("id") == "c0"]
+    assert [m.get("redo_state") for m in redos_c0] == ["pending", "cancelled"]
+    assert redos_c0[-1] == {"type": "comment_redo", "id": "c0", "redo_state": "cancelled"}
+    assert redos_c0[-1] in p.server.sent[:ended_at]          # 收尾返回之前就发了
+    assert not [m for m in p.server.sent if m.get("type") == "comment_update" and m.get("id") == "c0"]
+    assert [facts(r) for r in redo_rows(audit)] == [(False, "cancelled", None, True, "claude-sonnet-5-5")]
+    assert rows(audit)[-1]["type"] == "session_end"
+    assert p.comments._ledger.begin("c0") is None
+
+
+def test_a_cancelled_overlong_id_is_put_back_under_the_id_the_page_knows(monkeypatch, tmp_path):
+    """id 超长时 comments 那边裁到 MAX_ID 再回话（pending 用的是裁过的）：补发的 cancelled 用同一个裁过的 id，
+    页面才找得到那条弹幕。不是字符串的 id 没有哪条弹幕可撤，不补发。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    audit = p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    p._session_state = p._new_session_state(audit)
+    gated = Gated()
+    p.comments._claude_strong_factory = lambda: gated
+    long_id = "x" * 200
+    seed(p.comments, (long_id[: CommentTranslator.MAX_ID], SOURCE))
+
+    async def scenario():
+        p.handle_control({"type": "retranslate_comment", "id": long_id})
+        p.handle_control({"type": "retranslate_comment", "id": 7})
+        assert await wait_for(lambda: gated.calls == 1)
+        await p.stop_stream()
+        gated.gate.set()
+        await drain(p)
+
+    run(scenario())
+    states = [(m["id"], m.get("redo_state")) for m in p.server.sent if m.get("type") == "comment_redo"]
+    assert states == [("x" * 64, "pending"), ("x" * 64, "cancelled")]
 
 
 def test_after_stop_there_is_no_session_to_write_to_and_a_broken_audit_breaks_nothing(monkeypatch, capsys):
