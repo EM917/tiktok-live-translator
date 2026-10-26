@@ -439,6 +439,21 @@ def _parse(version):
     return tuple(parts)
 
 
+def relaunch_argv(argv):
+    """一键更新重启时传给新进程的参数（argv 不含解释器和 main.py，即 sys.argv[1:]）。
+
+    浏览器模式（带 --browser）下追加 --no-open（专家审查 F8）：以前每次重启都再开一个新标签页
+    （main.py 起服务后 webbrowser.open），点「一键更新」的那个旧标签页也重连上来，新旧两个控制页同时连着，
+    旧的那页跑的还是旧 JS。现在新进程不开页面，旧标签页重连后发现 config.build 变了，自己重新载入
+    （web/app.js reloadForBuild）。--no-open 时 main.py 以「控制服务起来了」为准通过一键更新后的启动检查。
+    窗口模式不追加（计划审查 Q10）：那里 --no-open 的意思是「不开窗口、不进 .app」（app/macbundle.py 的
+    NO_WINDOW_FLAGS），追加了用户更新完就看不到窗口。已经有 --no-open 的不重复加"""
+    argv = list(argv)
+    if "--browser" in argv and "--no-open" not in argv:
+        argv.append("--no-open")
+    return argv
+
+
 class Updater:
     def __init__(self, server):
         self.server = server
@@ -1541,7 +1556,7 @@ class Updater:
                 try:
                     from .relaunch import exec_args
                     os.execv(sys.executable, exec_args(
-                        [sys.executable, str(ROOT / "main.py")] + sys.argv[1:]))
+                        [sys.executable, str(ROOT / "main.py")] + relaunch_argv(sys.argv[1:])))
                 except Exception as exc:
                     exec_error = exc
         if code != 0:

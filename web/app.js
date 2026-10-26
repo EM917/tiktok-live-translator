@@ -1169,6 +1169,9 @@
           send(pendingStart.payload);
           armStartWatchdog();
         }
+        // 服务端换了一套页面文件（一键更新重启之后旧标签页重连上来，F8）：重新载入，跑新的 JS。这一条 hello
+        // 不再往下画——页面马上就换掉了
+        if (reloadForBuild(msg.config)) break;
         // 重连时服务器会重发历史（含警报），先清掉本地已有的，避免重复
         alertList.innerHTML = "";
         alertCount.textContent = "0";
@@ -4475,6 +4478,22 @@
   // 服务端的界面语言和本页不同（刚在设置里换过，或重连到一个换过语言的程序）：整页重载一次。
   // 重载后服务端按新语言注入 <html lang>，hello 回放也按新语言渲染，页面上没有残留。
   // sessionStorage 记不下就不重载：宁可停在原来的语言，也不能在对不上时无限刷新
+  // 页面文件的版本（F8）：服务端启动时按 web/ 的内容算出 config.build（app/server.py web_build）。这一页第一次
+  // 连上时记下它；之后哪一次 hello 里的不一样，说明服务端已经换了一套页面文件——浏览器模式下一键更新重启后，
+  // 旧标签页重连上新进程，以前接着跑旧 JS，和程序新开的标签页同时连着。新载入的页面重新记第一次的值，
+  // 不会一直刷新。没有 build（老的服务端、测试里直接起的服务）不比对
+  var pageBuild = null;
+  function reloadForBuild(cfg) {
+    var build = cfg && typeof cfg.build === "string" ? cfg.build : "";
+    if (!build) return false;
+    if (pageBuild === null || pageBuild === build) {
+      pageBuild = build;
+      return false;
+    }
+    location.reload();
+    return true;
+  }
+
   function reloadForLang(cfg) {
     if (!cfg || typeof cfg.ui_lang !== "string") return false;
     var stored = null;
