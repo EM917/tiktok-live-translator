@@ -1501,3 +1501,129 @@ test("预先算好的半透明色和报警卡片底色：深浅两套都等于�
   assert.match(CSS_NO_COMMENTS, /\.status-pill:has\(\.dot\.connected\)\s*\{[^}]*background:\s*var\(--a-green-16\)/);
   assert.match(CSS_NO_COMMENTS, /\.alert-item\s*\{[^}]*background:\s*var\(--tint-fail-8\)/);
 });
+
+// ---- 口令记在这台手机上（专家审查 S4，用户决定 D5）----
+// 地址、端口、口令都是虚构的。replaceState 的替身顺手把 location.hash 清掉，和真浏览器一样
+function withPhone(opts, run) {
+  const { hash = "", host = "192.168.1.23:8766", stored = {}, storage = "map", history = true } = opts || {};
+  const elements = baseElements();
+  const FakeWebSocket = makeFakeWebSocket();
+  const had = Object.prototype.hasOwnProperty.call(global, "history");
+  const originals = {
+    document: global.document, location: global.location, WebSocket: global.WebSocket,
+    localStorage: global.localStorage, setTimeout: global.setTimeout, setInterval: global.setInterval,
+    history: global.history,
+  };
+  const modPath = require.resolve("../web/viewer.js");
+  const store = new Map(Object.entries(stored));
+  const replaced = [];
+  const timeouts = [];
+  global.document = makeFakeDocument(elements);
+  global.location = { hash, protocol: "http:", host, pathname: "/", search: "" };
+  if (history) {
+    global.history = { state: null,
+                       replaceState: (state, title, url) => { replaced.push(url); global.location.hash = ""; } };
+  } else {
+    delete global.history;
+  }
+  global.WebSocket = FakeWebSocket;
+  const boom = () => { throw new Error("SecurityError"); };
+  global.localStorage = storage === "throw" ? { getItem: boom, setItem: boom, removeItem: boom }
+    : storage === "drop" ? { getItem: () => null, setItem() {}, removeItem() {} }     // 写了等于没写
+    : { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); },
+        removeItem: (k) => { store.delete(k); } };
+  global.setTimeout = (fn) => { timeouts.push(fn); return timeouts.length; };
+  global.setInterval = () => 0;
+  try {
+    delete require.cache[modPath];
+    require("../web/viewer.js");
+    run({ elements, store, replaced, sockets: FakeWebSocket.instances, timeouts });
+  } finally {
+    global.document = originals.document;
+    global.location = originals.location;
+    global.WebSocket = originals.WebSocket;
+    global.localStorage = originals.localStorage;
+    global.setTimeout = originals.setTimeout;
+    global.setInterval = originals.setInterval;
+    if (had) global.history = originals.history; else delete global.history;
+    delete require.cache[modPath];
+  }
+}
+const KEY = "tlt.viewer.k:8766";
+function authOf(socket) {
+  socket.onopen();
+  return JSON.parse(socket.sent[0]);
+}
+
+test("tokenStorageKey / pickToken：键带端口；存储里的东西当不可信；没有存储也不抛", () => {
+  assert.equal(V.tokenStorageKey("192.168.1.23:8766"), KEY);
+  assert.equal(V.tokenStorageKey("example.invalid"), "tlt.viewer.k:");
+  assert.deepEqual(V.pickToken("#k=abc", null, KEY), { token: "abc", fromHash: true, saved: false });
+  assert.deepEqual(V.pickToken("", null, KEY), { token: null, fromHash: false, saved: false });
+  const bad = { getItem: () => "a&b", setItem() {} };
+  assert.equal(V.pickToken("", bad, KEY).token, null, "形状不对的不认");
+  V.forgetToken(null, KEY);                     // 没有存储：什么都不做，不抛
+});
+
+test("扫码进来：口令存进这台手机，存成了就把 #k= 从地址栏去掉，拿它鉴权", () => {
+  withPhone({ hash: "#k=tok-scanned" }, ({ store, replaced, sockets }) => {
+    assert.equal(store.get(KEY), "tok-scanned");
+    assert.deepEqual(replaced, ["/"], "地址栏只留页面本身");
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+  });
+});
+
+test("刷新（地址栏里已经没有口令）：从这台手机的存储里取，照常连上", () => {
+  withPhone({ hash: "", stored: { [KEY]: "tok-scanned" } }, ({ elements, replaced, sockets }) => {
+    assert.deepEqual(replaced, [], "没有可去掉的");
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+    sockets[0].onmessage({ data: helloMsg(0) });
+    assert.equal(elements["conn-text"].textContent, "已连接");
+  });
+});
+
+test("再扫一次新的二维码：地址栏里的口令盖掉存着的旧口令", () => {
+  withPhone({ hash: "#k=tok-new", stored: { [KEY]: "tok-old" } }, ({ store, sockets }) => {
+    assert.equal(store.get(KEY), "tok-new");
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-new" });
+  });
+});
+
+test("被拒（4401）：清掉存着的口令，显示链接已失效，不再重连", () => {
+  withPhone({ hash: "", stored: { [KEY]: "tok-rotated-away" } }, ({ elements, store, sockets, timeouts }) => {
+    authOf(sockets[0]);
+    sockets[0].onclose({ code: 4401 });
+    assert.equal(store.has(KEY), false, "作废的口令不留在手机上");
+    assert.equal(elements["conn-text"].textContent, "链接已失效，请向中控要新的二维码");
+    assert.equal(timeouts.length, 0, "不排重连");
+  });
+});
+
+test("存储用不了（抛错）：退回只用地址栏里的口令，地址栏不清——清了刷新就连不上", () => {
+  withPhone({ hash: "#k=tok-scanned", storage: "throw" }, ({ replaced, sockets }) => {
+    assert.deepEqual(replaced, []);
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+    sockets[0].onclose({ code: 4401 });         // 清存储也抛错：不影响走到「链接已失效」
+  });
+});
+
+test("存储写了读不回来（被静默丢掉）：地址栏同样不清", () => {
+  withPhone({ hash: "#k=tok-scanned", storage: "drop" }, ({ replaced, sockets }) => {
+    assert.deepEqual(replaced, []);
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+  });
+});
+
+test("没有 history 接口：口令照旧留在地址栏，照常连上", () => {
+  withPhone({ hash: "#k=tok-scanned", history: false }, ({ store, sockets }) => {
+    assert.equal(store.get(KEY), "tok-scanned");
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+  });
+});
+
+test("地址栏和存储里都没有（换了地址或端口、主屏幕图标的独立存储）：不发起连接，直接说链接已失效", () => {
+  withPhone({ hash: "", stored: { "tlt.viewer.k:8767": "tok-other-port" } }, ({ elements, sockets }) => {
+    assert.equal(sockets.length, 0);
+    assert.equal(elements["conn-text"].textContent, "链接已失效，请向中控要新的二维码");
+  });
+});

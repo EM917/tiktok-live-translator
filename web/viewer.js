@@ -194,6 +194,45 @@ function tokenFromHash(hash) {
   return m ? m[1] : null;
 }
 
+// ---- 口令记在这台手机上（专家审查 S4，用户决定 D5：扫码后从地址栏去掉，记在那台手机里）----
+// 以前口令一直留在地址栏的 #k= 里，进浏览记录、跟着「分享此页」「添加到主屏幕」走。现在扫码进来读出
+// 口令，先存进这台手机浏览器的 localStorage，存成了再把 #k= 从地址栏去掉；之后刷新、从浏览记录打开都从
+// 存储里取。墙上的二维码一直有效（再扫一次就再存一遍）。两种情况要重扫：电脑的局域网地址变了（存储按
+// 地址隔开，新地址下读不到）；从 iPhone 主屏幕图标打开（它有自己的一份存储）。键里带端口：同一台电脑上
+// 换了观众端口也不会拿到另一份口令（地址加端口本来就隔开存储，这里写明，不靠浏览器的这条规矩）。
+// storage 可注入（真 localStorage 或测试里的假存储），读写一律 try/catch：隐私模式下存不进去时
+// 退回只用地址栏里的口令，地址栏也就不清——清了刷新就连不上了
+var TOKEN_KEY_PREFIX = "tlt.viewer.k:";
+function tokenStorageKey(host) {
+  var m = /:(\d+)$/.exec(String(host || ""));
+  return TOKEN_KEY_PREFIX + (m ? m[1] : "");
+}
+
+// 返回 { token, fromHash, saved }：token 为 null 表示地址栏和存储里都没有。saved 只在口令来自地址栏、
+// 而且写进存储又读得回来时为 true——调用方据此决定能不能把地址栏里的口令去掉
+function pickToken(hash, storage, key) {
+  var fromHash = tokenFromHash(hash);
+  if (fromHash) {
+    var saved = false;
+    try {
+      storage.setItem(key, fromHash);
+      saved = storage.getItem(key) === fromHash;
+    } catch (e) { saved = false; }
+    return { token: fromHash, fromHash: true, saved: saved };
+  }
+  var stored = null;
+  try { stored = storage.getItem(key); } catch (e) { stored = null; }
+  // 存储里的东西当不可信：只认和地址栏里一样形状的（非空、不含 &）
+  var ok = typeof stored === "string" && /^[^&]+$/.test(stored);
+  return { token: ok ? stored : null, fromHash: false, saved: false };
+}
+
+// 被拒（4401：服务端不认这把口令）时清掉存着的口令：下次打开直接说「链接已失效」，
+// 不再拿同一把口令去连。存储抛错不影响调用方
+function forgetToken(storage, key) {
+  try { storage.removeItem(key); } catch (e) { /* 存储用不了：本来也没存进去 */ }
+}
+
 // 重译按钮文案。state 是这条字幕当前的 strong_state（服务端 caption/caption_update
 // 带来的；从没发起过重译是 null/undefined），strong 是这条字幕是否已经是大模型译文。
 // 规则：从没发起过重译、且已经是大模型译文（比如桌面端按过，或回放带来的）——
@@ -621,8 +660,24 @@ if (typeof document !== "undefined") {
       });
     }
 
+    // ---- 口令（S4）：地址栏里有就存进这台手机，存成了就从地址栏去掉；没有就从存储里取（见上面 pickToken）----
+    // 拿 localStorage 本身也可能抛错（Safari 关掉网站数据时），拿不到就当没有存储：只用地址栏里的口令
+    var tokenStore = null;
+    try { tokenStore = typeof localStorage !== "undefined" ? localStorage : null; } catch (e) { tokenStore = null; }
+    var TOKEN_KEY = tokenStorageKey(location.host);
+    var picked = pickToken(location.hash, tokenStore, TOKEN_KEY);
+    var TOKEN = picked.token;
+    // 地址栏只留页面本身（http://地址:端口/）。改不了（没有 history 接口、浏览器拒绝）就算了：
+    // 口令照旧留在 #k= 里，连接不受影响
+    if (picked.fromHash && picked.saved) {
+      try {
+        if (typeof history !== "undefined" && history && typeof history.replaceState === "function") {
+          history.replaceState(history.state, "", (location.pathname || "/") + (location.search || ""));
+        }
+      } catch (e) { /* 忽略 */ }
+    }
+
     // ---- 连接状态机 ----
-    var TOKEN = tokenFromHash(location.hash);
     var ws = null;
     var retryCount = 0;
     var reconnectTimer = null;
@@ -770,7 +825,11 @@ if (typeof document !== "undefined") {
     }
 
     function onSocketDown(code) {
-      if (code === 4401) { setConnState("denied"); return; }         // 不再重连
+      if (code === 4401) {                                            // 不再重连
+        forgetToken(tokenStore, TOKEN_KEY);   // S4：服务端不认这把口令，存着的清掉，下次打开直接说链接已失效
+        setConnState("denied");
+        return;
+      }
       if (code === 4429) { setConnState("full"); scheduleReconnect(true); return; }
       if (code === 4403) { setConnState("off"); scheduleReconnect(true); return; }
       // 4408（鉴权超时）或没有关闭帧（queue_full / send_timeout / inbound_flood 的 abort）：
@@ -1321,6 +1380,9 @@ if (typeof module !== "undefined" && module.exports) {
     applyUpdate: applyUpdate,
     shouldRing: shouldRing,
     tokenFromHash: tokenFromHash,
+    tokenStorageKey: tokenStorageKey,
+    pickToken: pickToken,
+    forgetToken: forgetToken,
     retranslateLabel: retranslateLabel,
     canRetranslate: canRetranslate,
     loadDismissedAlerts: loadDismissedAlerts,
