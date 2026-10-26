@@ -181,6 +181,9 @@ def test_the_end_of_the_lookup_chain_names_the_layers_in_english(monkeypatch):
     text = en(i18n.of(exc.value))
     assert_clean_english(text, "chain end")
     assert text.startswith("The app tried every method but couldn’t get the audio stream")
+    # 先让人核对用户名（10-26 一场用户名少打了一个字母），中英两边都要有
+    assert "First check that the username you entered matches the one in your browser’s address bar" in text
+    assert "先核对一下输入的用户名和浏览器地址栏里的是否一字不差" in zh
     assert ("(Other stream URLs were found but failed the safety check: live page fallback: "
             "Refused a stream URL on this computer or the local network (safety check))") in text
     assert ("(Some lookup methods hit an internal error and were skipped: official API. "
