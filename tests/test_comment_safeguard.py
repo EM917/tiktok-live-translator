@@ -71,8 +71,10 @@ def test_requirements_pin_matches_the_minimum():
 
 
 def _updater(monkeypatch, settings=None, versions=("7.0.0",), pip_code=0, installed=True,
-             pip_gate=None, index=(True, None), index_gate=None):
-    """造一个 Updater：设置存内存、版本号按序列返回、pip 只记参数（可选地等一个闸门）。"""
+             pip_gate=None, index=(True, None), index_gate=None, busy=False):
+    """造一个 Updater：设置存内存、版本号按序列返回、pip 只记参数（可选地等一个闸门）。
+    index 是 _tiktoklive_index_versions 的结果：(问到没有, 发布满 7 天的 7.x 里最新的版本)。
+    接上一个「此刻有没有在监听」的钩子（busy）：没接管线的 Updater 一律按「在忙」算，什么都不查。"""
     store = dict(settings or {})
     seq = list(versions)
     pip_calls = []
@@ -87,6 +89,7 @@ def _updater(monkeypatch, settings=None, versions=("7.0.0",), pip_code=0, instal
 
     monkeypatch.setattr(updater_mod, "tiktoklive_version", version)
     up = updater_mod.Updater(server=None)
+    up._stream_active = lambda: busy
 
     async def fake_pip(args, label, timeout=600):
         pip_calls.append(list(args))
@@ -142,17 +145,39 @@ def test_fresh_install_uses_the_pinned_spec(monkeypatch):
 
 
 def test_freshen_upgrade_returns_the_change_and_starts_the_cooldown(monkeypatch):
-    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"))
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"), index=(True, "7.0.2"))
     result = run(up.freshen_tiktoklive("comment-rejected"))
     assert result == {"outcome": "upgraded", "before": "7.0.1", "after": "7.0.2"}
-    assert pip_calls and "-U" in pip_calls[0] and updater_mod.TIKTOKLIVE_SPEC in pip_calls[0]
+    # 专家审查 I5（D9）：装的是挑出来的那一版（==），不再 -U 到当天最新
+    assert pip_calls == [["--upgrade-strategy", "only-if-needed", "TikTokLive==7.0.2"]]
     assert "tiktoklive_freshen_at" in store
 
 
-def test_freshen_without_a_newer_release_says_no_update(monkeypatch):
-    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"))
+def test_freshen_without_an_eligible_release_says_no_update(monkeypatch):
+    """发布满 7 天的 7.x 里一个都没有（或者都不比已装的新）：不跑 pip，照常进六小时冷却。"""
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"), index=(True, None))
     assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "no-update"
-    assert len(pip_calls) == 1 and "tiktoklive_freshen_at" in store
+    assert pip_calls == [] and "tiktoklive_freshen_at" in store
+
+
+def test_freshen_is_skipped_while_monitoring_or_updating(monkeypatch):
+    """专家审查 I5（D6）：在监听或一键更新进行中不查、不装，也不记冷却。"""
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1", "7.0.1", "7.0.2"),
+                                    index=(True, "7.0.2"), busy=True)
+    asked = []
+
+    async def index():
+        asked.append(1)
+        return True, "7.0.2"
+
+    up._tiktoklive_index_versions = index
+    assert run(up.freshen_tiktoklive("comment-rejected")) == {"outcome": "busy", "before": "7.0.1"}
+    up._stream_active = lambda: False
+    up._applying = True
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "busy"
+    assert asked == [] and pip_calls == [] and "tiktoklive_freshen_at" not in store
+    up._applying = False
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "upgraded"
 
 
 def test_index_says_installed_is_latest_so_pip_install_is_skipped(monkeypatch):
@@ -165,42 +190,162 @@ def test_unreachable_index_is_a_failed_check_not_no_update(monkeypatch, capsys):
     """复查确认：索引连不上时 pip install -U 退回已装版本并返回 0，以前被记成「已是最新」、
     还进了六小时冷却。现在先问索引，连不上就是检查失败。"""
     up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1",), index=(False, None))
+    up._index_query_detail = "PyPI 的版本列表没拿到（HTTP 503）"
     result = run(up.freshen_tiktoklive("comment-rejected"))
     assert result["outcome"] == "pip-failed" and result["code"] == "index-query-failed"
     assert pip_calls == [] and "tiktoklive_freshen_at" not in store
     out = capsys.readouterr().out
-    assert "pip index" in out and "连不上" not in out      # 只记看到的，不下结论
+    assert "HTTP 503" in out and "连不上" not in out      # 只记看到的，不下结论
     assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "recently-failed"
 
 
-def test_pip_without_index_command_falls_back_to_install(monkeypatch):
-    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"), index=(None, None))
-    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "upgraded"
-    assert len(pip_calls) == 1
+def test_index_versions_pick_the_newest_7x_released_a_week_ago(monkeypatch):
+    """PyPI 的 JSON：只挑发布满 7 天的 7.x 正式版（含 .postN），不看 8.x、预发布、撤回的、刚发布的。
+    以前问 pip index，只有版本号、没有发布时间；「pip 太旧不认 index」那条退路也跟着没了。"""
+    from datetime import datetime, timezone
 
+    now = 1_800_000_000.0
 
-def test_index_versions_parsing(monkeypatch):
+    def rel(days, yanked=False):
+        when = datetime.fromtimestamp(now - days * 86400, tz=timezone.utc)
+        return [{"yanked": yanked, "upload_time_iso_8601": when.strftime("%Y-%m-%dT%H:%M:%S.%fZ")}]
+
     up = updater_mod.Updater(server=None)
     replies = {}
 
-    async def fake_capture(args, timeout=120):
+    async def fake_pypi(dist):
+        replies["dist"] = dist
         return replies["r"]
 
-    monkeypatch.setattr(up, "_pip_capture", fake_capture)
-    replies["r"] = (0, "TikTokLive (8.0.0)\nAvailable versions: 8.0.0, 7.1.0b1, 7.0.2, 7.0.1, 7.0.0\n", "")
-    assert run(up._tiktoklive_index_versions()) == (True, "7.0.2")
-    replies["r"] = (0, "TikTokLive (7.0.1.post1)\nAvailable versions: 7.0.1.post1, 7.0.1, 7.0.0\n", "")
-    assert run(up._tiktoklive_index_versions()) == (True, "7.0.1.post1")
-    replies["r"] = (0, "TikTokLive (8.0.0)\nAvailable versions: 8.0.0\n", "")
-    assert run(up._tiktoklive_index_versions()) == (True, None)
-    replies["r"] = (1, "", "WARNING: Retrying...\nERROR: No matching distribution found for TikTokLive")
-    assert run(up._tiktoklive_index_versions()) == (False, None)
-    assert up._index_query_detail == "pip index 返回 1：ERROR: No matching distribution found for TikTokLive"
-    replies["r"] = (1, "", "ERROR: unknown command \"index\"")
-    assert run(up._tiktoklive_index_versions()) == (None, None)
-    replies["r"] = (None, "", "timeout")
-    assert run(up._tiktoklive_index_versions()) == (False, None)
-    assert "没有返回" in up._index_query_detail
+    monkeypatch.setattr(up, "_pypi_releases", fake_pypi)
+    replies["r"] = ({"8.0.0": rel(30), "7.1.0b1": rel(30), "7.0.2": rel(30), "7.0.1": rel(60),
+                     "7.0.3": rel(2), "7.0.4": rel(30, yanked=True)}, None)
+    assert run(up._tiktoklive_index_versions(now=now)) == (True, "7.0.2")
+    assert replies["dist"] == "TikTokLive"
+    replies["r"] = ({"7.0.1.post1": rel(10), "7.0.1": rel(60)}, None)
+    assert run(up._tiktoklive_index_versions(now=now)) == (True, "7.0.1.post1")
+    replies["r"] = ({"8.0.0": rel(30), "7.0.5": rel(1)}, None)
+    assert run(up._tiktoklive_index_versions(now=now)) == (True, None)
+    replies["r"] = (None, "HTTP 503")
+    assert run(up._tiktoklive_index_versions(now=now)) == (False, None)
+    assert up._index_query_detail == "PyPI 的版本列表没拿到（HTTP 503）"
+
+
+def test_week_old_means_a_full_seven_days(monkeypatch):
+    """D9 的「发布满 7 天」按最早那个文件的上传时间算，差一秒都不算满。"""
+    now = 1_800_000_000.0
+    up = updater_mod.Updater(server=None)
+    reply = {}
+
+    async def fake_pypi(dist):
+        return reply["r"], None
+
+    def files(*ages):
+        return [{"upload_time_iso_8601": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - age))}
+                for age in ages]
+
+    monkeypatch.setattr(up, "_pypi_releases", fake_pypi)
+    week = updater_mod.COMPONENT_MIN_AGE_SEC
+    assert week == 7 * 86400
+    reply["r"] = {"7.0.2": files(week), "7.0.3": files(week - 1)}
+    assert run(up._tiktoklive_index_versions(now=now)) == (True, "7.0.2")
+    # 同一版本后来补传的文件不让它变「新」：看最早的那个
+    reply["r"] = {"7.0.3": files(week - 1, week + 86400)}
+    assert run(up._tiktoklive_index_versions(now=now)) == (True, "7.0.3")
+    reply["r"] = {"7.0.3": files(week - 1, week - 60)}
+    assert run(up._tiktoklive_index_versions(now=now)) == (True, None)
+
+
+def test_index_versions_read_the_pypi_json(monkeypatch):
+    """接上真的 _pypi_releases（只把 aiohttp 换成假的）：问的是 TikTokLive 的 JSON 接口；只记看到的
+    （HTTP 状态码、超时），不替它下结论；老字段 upload_time 不带时区按 UTC 算。"""
+    import aiohttp
+
+    now = 1_800_000_000.0
+    replies = {}
+
+    class Resp:
+        def __init__(self):
+            self.status = replies["status"]
+
+        async def json(self, content_type=None):
+            return replies["json"]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def get(self, url, **k):
+            replies["url"] = url
+            if replies.get("raise"):
+                raise replies["raise"]
+            return Resp()
+
+    def iso(days):
+        return time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime(now - days * 86400))
+
+    monkeypatch.setattr(aiohttp, "ClientSession", Session)
+    up = updater_mod.Updater(server=None)
+    old_field = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now - 9 * 86400))
+    replies.update(status=200, json={"releases": {
+        "7.0.1": [{"upload_time_iso_8601": iso(40), "yanked": False}],
+        "7.0.2": [{"upload_time": old_field}],                               # 只有老字段
+        "7.0.3": [{"upload_time_iso_8601": iso(3), "yanked": False}],        # 没满 7 天
+        "7.1.0rc1": [{"upload_time_iso_8601": iso(20), "yanked": False}],    # 预发布
+        "8.0.0": [{"upload_time_iso_8601": iso(20), "yanked": False}]}})     # 不是 7.x
+    assert run(up._tiktoklive_index_versions(now=now)) == (True, "7.0.2")
+    assert replies["url"] == "https://pypi.org/pypi/TikTokLive/json"
+    # releases 被去掉时退一步用最新那一版（info.version + urls），照样按满 7 天挑
+    replies.update(json={"info": {"version": "7.0.3"},
+                         "urls": [{"upload_time_iso_8601": iso(3), "yanked": False}]})
+    assert run(up._tiktoklive_index_versions(now=now)) == (True, None)
+    replies.update(json={"info": {"version": "7.0.3"},
+                         "urls": [{"upload_time_iso_8601": iso(8), "yanked": False}]})
+    assert run(up._tiktoklive_index_versions(now=now)) == (True, "7.0.3")
+    replies.update(status=503)
+    assert run(up._tiktoklive_index_versions(now=now)) == (False, None)
+    assert up._index_query_detail == "PyPI 的版本列表没拿到（HTTP 503）"
+    replies.update(status=200, json=["not", "a", "dict"])
+    assert run(up._tiktoklive_index_versions(now=now)) == (False, None)
+    replies.update({"raise": asyncio.TimeoutError()})
+    assert run(up._tiktoklive_index_versions(now=now)) == (False, None)
+    assert up._index_query_detail == "PyPI 的版本列表没拿到（20 秒内没有返回）"
+
+
+def test_monitoring_that_starts_while_pypi_answers_is_not_upgraded(monkeypatch, capsys):
+    """问 PyPI 的那几秒里点了开始（或一键更新）：不装、不记冷却，下次再看。"""
+    state = {"busy": False}
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1", "7.0.2"))
+    up._stream_active = lambda: state["busy"]
+
+    async def index():
+        state["busy"] = True                      # 这时中控点了开始
+        return True, "7.0.2"
+
+    up._tiktoklive_index_versions = index
+    assert run(up.freshen_tiktoklive("comment-rejected")) == {"outcome": "busy", "before": "7.0.1"}
+    assert pip_calls == [] and "tiktoklive_freshen_at" not in store
+    assert "这次不装" in capsys.readouterr().out
+    state["busy"] = False
+
+    async def idle_index():
+        return True, "7.0.2"
+
+    up._tiktoklive_index_versions = idle_index
+    assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "upgraded"   # 没记失败，马上能再查
+    assert pip_calls == [["--upgrade-strategy", "only-if-needed", "TikTokLive==7.0.2"]]
 
 
 def test_newer_post_release_is_installed_not_skipped(monkeypatch):
@@ -211,49 +356,11 @@ def test_newer_post_release_is_installed_not_skipped(monkeypatch):
     assert len(pip_calls) == 1
 
 
-def test_pip_capture_kills_the_child_on_timeout_and_on_cancel(monkeypatch):
-    """第三轮核对确认：以前只在超时时收掉子进程，被取消时 pip index 会留着没人等。"""
-    killed, waited = [], []
-
-    class Proc:
-        returncode = None
-
-        async def communicate(self):
-            await asyncio.sleep(3600)
-
-        def kill(self):
-            killed.append(1)
-
-        async def wait(self):
-            waited.append(1)
-            return -9
-
-    async def fake_exec(*args, **kwargs):
-        return Proc()
-
-    monkeypatch.setattr(updater_mod.asyncio, "create_subprocess_exec", fake_exec)
-    up = updater_mod.Updater(server=None)
-    assert run(up._pip_capture(["index"], timeout=0.2)) == (None, "", "timeout")
-    assert killed == [1] and waited == [1]
-
-    async def scenario():
-        task = asyncio.ensure_future(up._pip_capture(["index"], timeout=60))
-        await asyncio.sleep(0.2)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            return True
-        return False
-
-    assert run(scenario()) is True
-    assert killed == [1, 1] and waited == [1, 1]
-
-
 def test_failed_check_is_logged_and_does_not_start_the_six_hour_cooldown(monkeypatch, capsys):
     """审查确认：以前 pip 失败也先记了六小时冷却，还一句不说——网络一分钟后恢复，
     修复版本也要再等六小时。现在失败只进十分钟的内存重试间隔。"""
-    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"), pip_code=1)
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"), pip_code=1,
+                                    index=(True, "7.0.2"))
     assert run(up.freshen_tiktoklive("comment-rejected"))["outcome"] == "pip-failed"
     assert "tiktoklive_freshen_at" not in store
     assert "没成功" in capsys.readouterr().out
@@ -286,7 +393,7 @@ def test_announce_runs_before_the_check(monkeypatch):
     async def announce():
         order.append("announce")
 
-    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"))
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.1"), index=(True, "7.0.2"))
     real_pip = up._pip_install
 
     async def pip_after_announce(args, label, timeout=600):
@@ -306,7 +413,8 @@ def test_joiner_is_announced_when_it_joins_a_running_check(monkeypatch):
     async def pip_gate():
         await gate["event"].wait()
 
-    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"), pip_gate=pip_gate)
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"), pip_gate=pip_gate,
+                                    index=(True, "7.0.2"))
 
     def announcer(tag):
         async def announce():
@@ -383,7 +491,8 @@ def test_concurrent_freshen_calls_share_one_check(monkeypatch):
     async def pip_gate():
         await gate["event"].wait()
 
-    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"), pip_gate=pip_gate)
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.1", "7.0.2"), pip_gate=pip_gate,
+                                    index=(True, "7.0.2"))
 
     async def scenario():
         gate["event"] = asyncio.Event()
@@ -774,6 +883,18 @@ def test_rejection_without_an_updater_still_records_the_raw_reason(monkeypatch):
         monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=None)
     assert _run_until(cs, lambda: any("分钟后自动重试" in d for _, d in state_log)) is True
     assert any("分钟后自动重试" in d and "http_status=400" in raw for _, d, raw in raw_log)
+
+
+def test_rejected_while_monitoring_says_the_component_is_not_updated(monkeypatch):
+    """专家审查 I5（D6）：监听中不更新弹幕组件——面板照实说这次没更新，不写「正在检查」。"""
+    stale, asked = make_stale("busy", announce_first=False)
+    cs, state_log, raw_log, calls = make_source(
+        monkeypatch, [FakeProc([REJECTED_400], returncode=8)], on_stale=stale)
+    assert _run_until(cs, lambda: any("分钟后自动重试" in d for _, d in state_log)) is True
+    assert not any("正在检查" in d for _, d in state_log)
+    final = [d for _, d in state_log if "分钟后自动重试" in d][-1]
+    assert "监听中不更新弹幕组件" in final
+    _no_banned_labels(state_log)
 
 
 def test_failed_update_check_is_reported_on_the_panel(monkeypatch):

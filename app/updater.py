@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .bootstrap import (MLX_GIVEUP, OPTIONAL_DISTS, clear_mlx_giveup, filter_requirements,
@@ -100,27 +100,6 @@ def _packaging_version():
             return Version
         except Exception:
             return None
-
-
-def _newest_7x(versions):
-    """索引列出的版本里 7.x 最新的正式版：含 .postN 这样的补丁后续版，不含预发布。"""
-    Version = _packaging_version()
-    if Version is None:
-        for v in versions:                      # pip 按新到旧列出
-            if re.fullmatch(r"7(\.\d+){1,2}(\.post\d+)?", v):
-                return v
-        return None
-    best = None
-    for v in versions:
-        try:
-            pv = Version(v)
-        except Exception:
-            continue
-        if pv.major != 7 or pv.is_prerelease or pv.is_devrelease:
-            continue
-        if best is None or pv > best[0]:
-            best = (pv, v)
-    return best[1] if best else None
 
 
 def _not_newer(candidate, installed):
@@ -228,6 +207,65 @@ def _keep_mlx_out_of_this_process():
 
 # 带 curl-cffi 扩展：让 pip 按 yt-dlp 自己声明的范围装配 curl_cffi（与 requirements.txt 一致）
 YTDLP_SPEC = "yt-dlp[curl-cffi]"
+# 后台自动升级只装 PyPI 上发布满这么久的版本（专家审查 I5；用户 2026-10-22 定 D9「只装发布满 7 天的
+# 版本」）：刚发布就出问题的版本一般几天内会被撤回或修掉。代价：TikTok 那边变了、要靠新版本修的时候，
+# 最多晚一周拿到
+COMPONENT_MIN_AGE_SEC = 7 * 86400
+PYPI_JSON_URL = "https://pypi.org/pypi/{}/json"
+PYPI_TIMEOUT_SEC = 20
+
+
+def _parse_upload_time(value):
+    """PyPI 的 upload_time_iso_8601（"2026-10-21T21:54:50.808170Z"）→ 时间戳；认不出返回 None。"""
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        stamp = datetime.fromisoformat(text)
+        if stamp.tzinfo is None:          # 老字段 upload_time 不带时区，PyPI 用的是 UTC
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def eligible_release(releases, installed, now, min_age=COMPONENT_MIN_AGE_SEC, accept=None):
+    """PyPI JSON 的 releases（版本号 → 文件列表）里，可以自动装的最新版本；没有返回 None。
+
+    可以装：正式版（不是预发布、开发版）、有没被撤回的文件、最早的那个文件上传满 min_age 秒、比 installed
+    新。accept(版本号) 可选，再按版本号筛（比如只要 7.x）。installed 为 None 时不比新旧。"""
+    Version = _packaging_version()
+    best = None
+    for version, files in (releases or {}).items():
+        if not isinstance(files, list):
+            continue
+        live = [f for f in files if isinstance(f, dict) and not f.get("yanked")]
+        if not live:
+            continue
+        times = [t for t in (_parse_upload_time(f.get("upload_time_iso_8601") or f.get("upload_time"))
+                             for f in live) if t is not None]
+        if not times or now - min(times) < min_age:
+            continue
+        if Version is not None:
+            try:
+                key = Version(version)
+            except Exception:
+                continue
+            if key.is_prerelease or key.is_devrelease:
+                continue
+        else:
+            if not re.fullmatch(r"\d+(\.\d+)*(\.post\d+)?", str(version)):
+                continue
+            key = _version_tuple(version) or ()
+        if accept is not None and not accept(version):
+            continue
+        if installed and _not_newer(version, installed):
+            continue
+        if best is None or key > best[0]:
+            best = (key, version)
+    return best[1] if best else None
+
+
 # 连续这么多天没能连上更新服务器，就在页脚版本号旁边提一句（不进自检、不进横幅）
 UPDATE_CHECK_STALE_DAYS = 14
 
@@ -485,6 +523,38 @@ class Updater:
         finally:
             self._freshening = False
 
+    async def _pypi_releases(self, dist):
+        """问 PyPI 的 JSON 接口要这个组件的全部版本（含每个文件的上传时间、有没有被撤回）。
+        返回 (releases, None)；没拿到返回 (None, 看到的情况)——只记看到的（HTTP 状态码、超时、异常类名），
+        不替它下结论。"""
+        try:
+            import aiohttp
+
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=PYPI_TIMEOUT_SEC)) as session:
+                async with session.get(PYPI_JSON_URL.format(dist),
+                                       headers={"Accept": "application/json"}) as resp:
+                    if resp.status != 200:
+                        return None, "HTTP {}".format(resp.status)
+                    data = await resp.json(content_type=None)
+        except asyncio.TimeoutError:
+            return None, "{} 秒内没有返回".format(PYPI_TIMEOUT_SEC)   # i18n: terminal
+        except Exception as exc:
+            return None, type(exc).__name__
+        if not isinstance(data, dict):
+            return None, "返回的内容里没有版本列表"                      # i18n: terminal
+        releases = data.get("releases")
+        if isinstance(releases, dict):
+            return releases, None
+        # PyPI 的文档已经把 releases 标成弃用（第 2 轮审查）。哪天真去掉了，退一步用 info.version + urls（只有
+        # 最新那一版的文件，同样带上传时间和撤回标记）：最新版发布满 7 天照常装，没满就这次不装——少了「装次新的
+        # 那一版」这一档，不会因此装上没满 7 天的版本
+        info, urls = data.get("info"), data.get("urls")
+        version = info.get("version") if isinstance(info, dict) else None
+        if isinstance(version, str) and version and isinstance(urls, list):
+            return {version: urls}, None
+        return None, "返回的内容里没有版本列表"                          # i18n: terminal
+
     async def _pip_install(self, args, label, timeout=600, log_path=None, abort_if=None):
         """跑一次 `pip install <args>`，返回退出码；超时或异常返回 None；abort_if 叫停时
         返回 PIP_ABORTED。log_path 给了就把 pip 的输出写进去（默认丢弃）；abort_if 每
@@ -631,60 +701,24 @@ class Updater:
               "24 小时后空闲时再试".format(code))
         return "failed"
 
-    async def _pip_capture(self, args, timeout=120):
-        """跑一次不改环境的 pip 命令（不拿 pip 锁），返回 (退出码, stdout, stderr)；
-        超时或起不来返回 (None, "", 原因)。"""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pip", *args,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                # 同上：stderr 的最后一行会被原话打印出来，别让它先烂成 U+FFFD
-                env=dict(os.environ, PYTHONIOENCODING="utf-8"))
-        except Exception as exc:
-            return None, "", str(exc)                    # i18n: data（系统报错原话）
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except BaseException as exc:
-            # 超时或被取消（例如程序退出时）：子进程一起收掉，别留一个没人等的 pip
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            try:
-                await proc.wait()
-            except BaseException:
-                pass
-            if isinstance(exc, asyncio.TimeoutError):
-                return None, "", "timeout"
-            raise
-        return (proc.returncode, out.decode("utf-8", errors="replace"),
-                err.decode("utf-8", errors="replace"))
+    async def _tiktoklive_index_versions(self, now=None):
+        """问包索引（PyPI 的 JSON 接口）：可以自动装的 7.x 里最新的那个 TikTokLive。返回 (queried, latest)。
 
-    async def _tiktoklive_index_versions(self):
-        """问包索引：7.x 里最新的正式版 TikTokLive 是哪个。返回 (queried, latest)。
+        latest 只从发布满 COMPONENT_MIN_AGE_SEC 的正式版里挑（专家审查 I5；用户 2026-10-22 定 D9「只装发布满
+        7 天的版本」），没有就是 None；比不比已装的新由调用方判断。以前问的是 pip index，只有版本号、没有
+        发布时间，挑出来的是当天最新的。
 
-        必须先问索引再决定：索引连不上时 `pip install -U` 会退回已装的版本并返回 0，
-        看起来和「已是最新」一模一样（2026-09-15 复查实测：重试 5 次后退出码 0）。
-        queried=False 表示这次没问到（pip index 非零退出或超时；原因不猜，原话记在
-        self._index_query_detail 里）；pip 太旧不认识 index 子命令时返回 (None, None)，
-        调用方退回直接 install。"""
-        code, out, err = await self._pip_capture(
-            ["index", "versions", "TikTokLive", "--disable-pip-version-check"])
-        lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
-        if code is None:
-            self._index_query_detail = "pip index 没有返回（{}）".format((err or "")[:80])   # i18n: terminal
-            return False, None
-        if code != 0:
-            self._index_query_detail = "pip index 返回 {}：{}".format(   # i18n: terminal
-                code, (lines[-1] if lines else "")[:160])
-            low = (err or "").lower()
-            if "unknown command" in low or "no such command" in low:
-                return None, None
+        必须先问索引再决定：索引连不上时 `pip install -U` 会退回已装的版本并返回 0，看起来和「已是最新」
+        一模一样（2026-09-15 复查实测：重试 5 次后退出码 0）。queried=False 表示这次没问到（原因不猜，看到的
+        原话记在 self._index_query_detail 里）。"""
+        releases, why = await self._pypi_releases("TikTokLive")
+        if releases is None:
+            self._index_query_detail = "PyPI 的版本列表没拿到（{}）".format(why)   # i18n: terminal
             return False, None
         self._index_query_detail = ""
-        m = re.search(r"Available versions:\s*(.+)", out)
-        versions = [v.strip() for v in m.group(1).split(",")] if m else []
-        return True, _newest_7x(versions)
+        return True, eligible_release(
+            releases, None, time.time() if now is None else now,
+            accept=lambda v: (_version_tuple(v) or (0,))[0] == TIKTOKLIVE_MIN[0])
 
     async def ensure_tiktoklive(self, reason="startup"):
         """按需安装弹幕组件 TikTokLive（可选依赖，仅 comment_worker.py 子进程用）。
@@ -756,8 +790,11 @@ class Updater:
         「没有更新」）。announce 是可选的协程函数：只有真的去查时才调用；跟着等的
         调用方也会被通知，它的面板同样说「正在检查」。
 
+        只装 PyPI 上发布满 7 天、比已装的新的 7.x，用 ==版本号 装（D9，判据在 eligible_release）；在监听或
+        一键更新进行中不查、不装（D6，_busy_for_background_pip：开头看一次，问完 PyPI、装之前再看一次）。
+
         返回 {"outcome": ..., "before": ..., "after": ...}，outcome 取值：
-          upgraded / no-update / pip-failed / cooldown / recently-failed /
+          upgraded / no-update / pip-failed / cooldown / recently-failed / busy /
           not-installed / unsupported。"""
         task = self._tiktoklive_freshen_task
         if task is None or task.done():
@@ -784,28 +821,36 @@ class Updater:
             return {"outcome": "cooldown", "before": before}
         if now - self._tiktoklive_freshen_failed_at < TIKTOKLIVE_FRESHEN_RETRY_SEC:
             return {"outcome": "recently-failed", "before": before}
+        # 在监听或一键更新进行中不升（专家审查 I5；用户 D6）。评论被拒多半就发生在直播中：这次只说明、不查，
+        # 不记冷却
+        if self._busy_for_background_pip():
+            print("[信息] 正在监听或一键更新，弹幕组件 TikTokLive 的更新检查这次跳过（{}）".format(reason))
+            return {"outcome": "busy", "before": before}
         try:
             self._tiktoklive_checking = True
             for a in list(self._tiktoklive_announces):
                 await _call_announce(a)
             reachable, latest = await self._tiktoklive_index_versions()
-            if reachable is False:
+            if not reachable:
                 self._tiktoklive_freshen_failed_at = time.time()
-                # 只记看到的：pip index 的退出码和 stderr 最后一行，不替它下「连不上」的结论
+                # 只记看到的（HTTP 状态码、超时、异常类名），不替它下「连不上」的结论
                 print("[警告] 弹幕组件 TikTokLive 更新检查没成功：{}（当前 {}），{} 分钟后可再试（{}）"
-                      .format(getattr(self, "_index_query_detail", "") or "pip index 没有返回结果",
+                      .format(getattr(self, "_index_query_detail", "") or "PyPI 的版本列表没拿到",
                               before, TIKTOKLIVE_FRESHEN_RETRY_SEC // 60, reason))
                 return {"outcome": "pip-failed", "before": before, "after": before,
                         "code": "index-query-failed"}
-            # 只有索引明确给出了 7.x 最新版、且不比已装的新，才跳过 install；
-            # 索引通了但读不出版本（格式变了）就交给 pip 自己判断
-            if reachable and latest is not None and _not_newer(latest, before):
+            # 发布满 7 天的 7.x 里没有比已装的新的：不跑 pip
+            if latest is None or _not_newer(latest, before):
                 save_setting("tiktoklive_freshen_at", time.time())
-                print("[信息] 弹幕组件 TikTokLive {} 已是可用的最新版本（索引最新 7.x：{}，{}）"
-                      .format(before, latest, reason))
+                print("[信息] 弹幕组件 TikTokLive {} 已是可用的最新版本（发布满 {} 天的 7.x 里最新：{}，{}）"
+                      .format(before, COMPONENT_MIN_AGE_SEC // 86400, latest or "无", reason))
                 return {"outcome": "no-update", "before": before, "after": before}
+            # 问 PyPI 的这几秒里开始了监听或一键更新：不装。不记冷却、不算失败，下次再看
+            if self._busy_for_background_pip():
+                print("[信息] 正在监听或一键更新，弹幕组件 TikTokLive {} 这次不装（{}）".format(latest, reason))
+                return {"outcome": "busy", "before": before}
             code = await self._pip_install(
-                ["-U", "--upgrade-strategy", "only-if-needed", TIKTOKLIVE_SPEC],
+                ["--upgrade-strategy", "only-if-needed", "TikTokLive=={}".format(latest)],
                 "弹幕组件 TikTokLive 更新检查（{}）".format(reason))   # i18n: terminal
             after = tiktoklive_version()
             if code != 0:
