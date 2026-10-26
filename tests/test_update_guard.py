@@ -583,7 +583,8 @@ def test_only_the_read_only_git_calls_have_a_time_limit(isolated, monkeypatch):
                     reason="需要 git 和 /bin/sh（替身 git 是 sh 脚本）")
 def test_a_slow_reset_is_waited_for_not_killed(isolated, monkeypatch):
     """真的 git，但 reset 比只读命令的时限慢：照样等它做完——退回成功、HEAD 回到更新前、不留 index.lock。
-    以前同样受 30 秒时限管，时限一到 subprocess 就杀进程（这里把时限缩到 1 秒、reset 慢 2 秒来模拟）。"""
+    以前同样受 30 秒时限管，时限一到 subprocess 就杀进程（这里把时限缩到 3 秒、reset 慢 4 秒来模拟；
+    rev-parse、status 也经过 sh 替身、受这 3 秒管，留足余量，机器很忙时也不会误超时）。"""
     empty = isolated / "gitconfig"
     empty.write_text("", encoding="utf-8")
     for key, value in {"GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1",
@@ -603,11 +604,11 @@ def test_a_slow_reset_is_waited_for_not_killed(isolated, monkeypatch):
 
     shim = isolated / "bin"
     shim.mkdir()
-    (shim / "git").write_text('#!/bin/sh\nif [ "$1" = reset ]; then sleep 2; fi\nexec "{}" "$@"\n'.format(
+    (shim / "git").write_text('#!/bin/sh\nif [ "$1" = reset ]; then sleep 4; fi\nexec "{}" "$@"\n'.format(
         shutil.which("git")), encoding="utf-8")
     (shim / "git").chmod(0o755)
     monkeypatch.setenv("PATH", "{}{}{}".format(shim, os.pathsep, os.environ["PATH"]))
-    monkeypatch.setattr(update_guard, "GIT_TIMEOUT_SEC", 1)
+    monkeypatch.setattr(update_guard, "GIT_TIMEOUT_SEC", 3)
 
     update_guard.arm(old, new, "1.0.0", "1.1.0")
     for _ in range(2):

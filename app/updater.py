@@ -1384,8 +1384,8 @@ class Updater:
 
     @staticmethod
     def _arm_update_guard(head, target, from_version, to_version):
-        """execv 之前留下启动检查的记号（专家审查 I6，规则见 app/update_guard.py）：新版本启动之后字幕界面
-        一直没连上，下一次启动就退回 head。读不到更新前的提交号、记号写不进去：照常重启，只是没有这层保险。"""
+        """execv 之前留下启动检查的记号（专家审查 I6，规则见 app/update_guard.py）：新版本启动了两次、
+        两次字幕界面都没连上，第三次打开就退回 head。读不到更新前的提交号、记号写不进去：照常重启，只是没有这层保险。"""
         if not head:
             print("[警告] 读不到更新前的提交号：这次更新之后新版本起不来时，不会自动退回")
             return

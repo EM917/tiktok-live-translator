@@ -736,7 +736,7 @@ async def main_async(args, state=None):
         break
     if server is not None and args.no_open:
         # --no-open 不开页面，可能一直没有页面来连：一键更新后的启动检查（app/update_guard.py）在这种
-        # 模式下以「控制服务起来了」为准，否则下次启动会把一个好好的新版本退回去
+        # 模式下以「控制服务起来了」为准，否则这样启动两次之后，第三次打开会把一个好好的新版本退回去
         from app import update_guard
         update_guard.mark_ready()
     if server is None:
@@ -995,7 +995,7 @@ def run_with_window(args):
         webview.start()
         return
 
-    # 确认没有别的实例在跑了：一键更新后的启动检查（新版本起不来就退回，见 _check_update_guard）
+    # 确认没有别的实例在跑了：一键更新后的启动检查（两次启动页面都没连上，第三次就退回，见 _check_update_guard）
     _check_update_guard()
     state = {}
     from app.window_close import (FinishOnce, guard_close, hook_app_terminate, localization_kwargs,

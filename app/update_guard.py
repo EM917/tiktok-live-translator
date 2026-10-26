@@ -26,7 +26,7 @@
 - 工作区有改动（--untracked-files=no，和一键更新的预检同一个口径）：不碰，记号作废；
 - git 不可用、reset 失败：记号作废，照常启动新版本。
 
-只依赖标准库。git 调用除了 reset 都有时限（reset 为什么不设，见 GIT_TIMEOUT_SEC）。对话框文字在这里
+只依赖标准库。git 调用除了 reset 都有时限（reset 为什么不设，见 _GIT_NO_TIMEOUT）。对话框文字在这里
 （L()）；Mac 上弹不弹由 main.py 的 _info_dialog 决定，Windows 的系统消息框也在这里（windows_notice）。
 终端行永远是中文。
 """

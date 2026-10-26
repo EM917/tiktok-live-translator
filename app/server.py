@@ -366,8 +366,9 @@ class CaptionServer:
 
     def _first_page_connected(self):
         """本机页面第一次连上、拿完 hello 和回放（专家审查 I6）：一键更新之后的新版本算是起来了，清掉
-        app/update_guard.py 的记号——否则下一次启动会把它当成起不来、退回旧版本。只认带 Origin 的本机页面
-        （应用窗口、浏览器）：浮窗页不算（它只在主窗口之后才开），没带 Origin 的本地脚本不是页面。
+        app/update_guard.py 的记号——不清的话，新版本两次启动页面都没连上，第三次打开就会退回旧版本。
+        只认带 Origin 的本机页面（应用窗口、浏览器）：浮窗页不算（它只在主窗口之后才开），没带 Origin
+        的本地脚本不是页面。
         同步、不 await（调用处在「入册」和读消息之间）；出什么错都不影响这个连接。"""
         self._page_seen = True
         try:
