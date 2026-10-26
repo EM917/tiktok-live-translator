@@ -980,6 +980,32 @@ def test_ytdlp_freshen_without_an_eligible_release_does_not_run_pip(monkeypatch,
     p.audit.close()
 
 
+def test_ytdlp_freshen_whose_pip_changes_nothing_still_starts_the_cooldown(monkeypatch, isolated):
+    """pip 返回 0、装完读到的版本却没变（unchanged）：同样记一次「查过了」，6 小时内不再问 PyPI、不再跑 pip
+    （第 2 轮审查问到这一条：记时间在判 unchanged 之前）。"""
+    u, p, seen, _ = make_ytdlp_updater(monkeypatch, isolated)
+
+    class Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return None, None
+
+    async def pip_without_effect(*args, **kw):
+        seen["pip"].append(args)
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", pip_without_effect)
+    assert run(u.freshen_ytdlp(reason="periodic", now=NOW)) == "unchanged"
+    checked = settings_mod.load_settings()["ytdlp_updated_at"]
+    assert checked > 0 and len(seen["pip"]) == 1
+    u._freshen_attempted_at = 0
+    assert run(u.freshen_ytdlp(reason="periodic", now=checked + updater_mod.YTDLP_CHECK_INTERVAL_SEC - 1)) \
+        == "recent"
+    assert len(seen["pip"]) == 1 and seen["pypi"] == ["yt-dlp"]
+    p.audit.close()
+
+
 def test_ytdlp_freshen_when_pypi_cannot_be_read_installs_nothing(monkeypatch, isolated, capsys):
     """问不到 PyPI 的版本列表：不退回去 pip -U 装当天最新的；不记「查过了」，下一轮再试。"""
     u, p, seen, _ = make_ytdlp_updater(monkeypatch, isolated, releases=None)
@@ -1172,6 +1198,105 @@ def test_a_new_session_started_before_the_wait_ends_still_blocks_the_upgrade(mon
     assert "ytdlp_updated_at" not in settings_mod.load_settings()
 
 
+async def _real_delay(sec):
+    """真等 sec 秒。make_pipeline 把 asyncio.sleep 换成了立即返回（整个 asyncio 模块都受影响），
+    这里按真实先后顺序排停弹幕来源、问 PyPI 这几步，只能用 call_later。"""
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    loop.call_later(sec, fut.set_result, None)
+    await fut
+
+
+def _slow_stop_and_pypi(flow):
+    """按真实的先后：停弹幕来源（TikTokLive 子进程）比问 PyPI 慢。等待任务在旧任务结束那一刻就醒，
+    不排 _stream_lock 的话，PyPI 先回来、停止流程还没走完，两道忙碌检查都看到「不在监听」（第 2 轮审查）。
+    pip 替身多记一样：那一刻 _stream_lock 有没有人拿着（停止/换主播还没走完）。"""
+    p, u = flow.p, flow.p.updater
+    real_pypi = u._pypi_releases
+
+    async def slow_pypi(dist):
+        await _real_delay(0.05)
+        return await real_pypi(dist)
+
+    async def slow_comment_stop():
+        await _real_delay(0.3)
+
+    u._pypi_releases = slow_pypi
+    p._stop_comment_source = slow_comment_stop
+    flow.lock_held_at_pip = []
+    pip_exec = asyncio.create_subprocess_exec
+
+    async def exec_spy(*args, **kw):
+        flow.lock_held_at_pip.append(p._lock().locked())
+        return await pip_exec(*args, **kw)
+
+    return exec_spy
+
+
+def test_switching_streamer_while_the_upgrade_waits_skips_it_as_busy(monkeypatch, isolated):
+    """重连循环里连续解析失败、升级已经排上，中控换主播：真的 start_stream 在同一把锁里停旧场（停弹幕来源
+    要一会儿）、再开新场。等待任务在旧任务结束时醒来，那时 _stream_task 是 None；它要排在 start_stream
+    后面，轮到时新的一场已经开了，结果是 busy，pip 不跑，不记时间（D9：不在直播时升级）。"""
+    flow = _ResolveFlow(monkeypatch, isolated, [])
+    p = flow.p
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _slow_stop_and_pypi(flow))
+
+    async def scenario():
+        gate = asyncio.Event()
+
+        async def reconnect_loop():              # 旧的一场：还在重连循环里
+            await gate.wait()
+
+        p._resolve_fail_streak = 1
+        p._stream_task = asyncio.create_task(reconnect_loop())
+        await asyncio.sleep(0)
+        from app.resolver import ResolveError
+        p._note_resolve_failure(ResolveError("HTTP Error 500", kind="unknown"))
+        waiter = p._ytdlp_freshen_waiter
+        assert waiter is not None and not waiter.done()
+        await p.start_stream("https://www.tiktok.com/@otherfakehost/live")   # 换主播
+        new_session = p._stream_task
+        await waiter
+        assert new_session is not None
+        await p.stop_stream(quiet=True)
+
+    run(scenario())
+    assert flow.outcomes == [("resolve-failures", "busy")]
+    assert flow.pip == [] and flow.lock_held_at_pip == []
+    assert "ytdlp_updated_at" not in settings_mod.load_settings()
+
+
+def test_stopping_while_the_upgrade_waits_installs_after_the_stop_has_finished(monkeypatch, isolated):
+    """同样排上了升级，中控点停止：真的 stop_stream 停完（停弹幕来源要一会儿）之后才问 PyPI、跑 pip，
+    跑 pip 的那一刻锁已经放了、拉流任务也没了；装的是发布满 7 天的那一版。"""
+    flow = _ResolveFlow(monkeypatch, isolated, [])
+    p = flow.p
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _slow_stop_and_pypi(flow))
+
+    async def scenario():
+        gate = asyncio.Event()
+
+        async def reconnect_loop():
+            await gate.wait()
+
+        p._resolve_fail_streak = 1
+        p._stream_task = asyncio.create_task(reconnect_loop())
+        await asyncio.sleep(0)
+        from app.resolver import ResolveError
+        p._note_resolve_failure(ResolveError("HTTP Error 500", kind="unknown"))
+        waiter = p._ytdlp_freshen_waiter
+        await p.stop_stream()                                               # 中控点停止
+        assert flow.pip == []                                               # 停止走完之前没装
+        await waiter
+
+    run(scenario())
+    assert flow.outcomes == [("resolve-failures", "installed")]
+    assert flow.pip == [("yt-dlp[curl-cffi]==2026.9.1", False)]
+    assert flow.lock_held_at_pip == [False]
+    assert flow.server.statuses[-1] == (
+        "idle", "已自动更新直播解析组件（yt-dlp 2026.9.1）——请重新点「开始翻译」试试。")
+
+
 def test_eligible_release_rules():
     pick = updater_mod.eligible_release
     assert pick(YTDLP_RELEASES, "2026.8.19", NOW) == "2026.9.1"
@@ -1241,6 +1366,17 @@ def test_pypi_releases_reports_what_it_saw(monkeypatch):
     replies.update(status=200, json={"info": {}})
     assert run(u._pypi_releases("yt-dlp"))[0] is None
     replies.update(status=200, json=["not", "a", "dict"])
+    assert run(u._pypi_releases("yt-dlp"))[0] is None
+    # PyPI 已经把 releases 标成弃用：没有它时退一步用最新那一版（info.version + urls），照样按满 7 天挑
+    latest = _release(3, now=NOW)
+    replies.update(status=200, json={"info": {"version": "2026.10.21"}, "urls": latest})
+    assert run(u._pypi_releases("yt-dlp")) == ({"2026.10.21": latest}, None)
+    assert updater_mod.eligible_release({"2026.10.21": latest}, "2026.8.19", NOW) is None   # 没满 7 天：不装
+    aged = _release(9, now=NOW)
+    replies.update(status=200, json={"info": {"version": "2026.10.13"}, "urls": aged})
+    pick = updater_mod.eligible_release(run(u._pypi_releases("yt-dlp"))[0], "2026.8.19", NOW)
+    assert pick == "2026.10.13"
+    replies.update(status=200, json={"info": {"version": ""}, "urls": aged})
     assert run(u._pypi_releases("yt-dlp"))[0] is None
     replies.update({"raise": asyncio.TimeoutError()})
     assert run(u._pypi_releases("yt-dlp")) == (None, "20 秒内没有返回")
@@ -1830,7 +1966,8 @@ def test_live_update_when_the_code_already_contains_the_release_does_not_pause(m
 
 
 def test_live_update_to_a_tag_off_the_tracked_branch_keeps_monitoring(monkeypatch, isolated):
-    """S3：标签不在跟踪的远端分支上——不更新，监听照常；停播后再点会给手动命令。"""
+    """S3：标签不在跟踪的远端分支上——不更新，监听照常。这种情形不给 merge 命令（照做这份安装就离开了主线），
+    停播时给的是下载页（command=False），所以直播中的提示也不叫人「停播后再点」。"""
     server, events = RecordingServer(), []
     u, pip_calls, execs = make_updater(monkeypatch, server, events,
                                        git_overrides={"merge-base:mainline": (1, "", "")})
@@ -1840,6 +1977,7 @@ def test_live_update_to_a_tag_off_the_tracked_branch_keeps_monitoring(monkeypatc
     assert state["stops"] == [] and pip_calls == [] and execs == []
     notice = server.of_type("notice")[-1]["text"]
     assert "版本 v9.9.9 不在这份安装跟踪的远端分支上" in notice and "监听没有中断" in notice
+    assert "停播后" not in notice
     mainline = next(e for e in events if e[0] == "merge-base:mainline")
     assert mainline[1] == ("merge-base", "--is-ancestor", TARGET, TARGET)   # 标签的提交、@{u}
 

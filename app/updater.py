@@ -463,6 +463,7 @@ class Updater:
     def __init__(self, server):
         self.server = server
         self.latest = None
+        self._contained_tag = None           # 一键更新时确认过当前代码已经包含的标签（_already_current）
         self._applying = False
         self._freshening = False
         self._freshen_attempted_at = 0.0     # 失败也要冷却，别反复拉起注定失败的 pip
@@ -517,8 +518,10 @@ class Updater:
 
           periodic          —— 启动/每 6 小时检查时，距上次查过满 YTDLP_CHECK_INTERVAL_SEC 就查；
           resolve-failures  —— 连续解析失败（非「没开播」类）时，6 小时冷却。失败是在拉流任务里发现的，
-                               管线等那个任务结束才调这里（Pipeline._freshen_ytdlp_after_stream）：
-                               直接调必然是 busy，这条路就成了死代码（第 1 轮审查实测）。
+                               管线等那个任务结束、再排一次开始/停止共用的那把锁才调这里
+                               （Pipeline._freshen_ytdlp_after_stream）：直接调必然是 busy，这条路就成了
+                               死代码（第 1 轮审查实测）；不排那把锁，换主播时会赶在新的一场建好之前
+                               看到「不在监听」（第 2 轮审查实测）。
 
         两条规矩（专家审查 I5；用户 2026-10-22 定 D6、D9）：
           * 在监听、或一键更新进行中，不升（_busy_for_background_pip）。以前不看：直播中照样拉 pip 改
@@ -630,10 +633,19 @@ class Updater:
             return None, "{} 秒内没有返回".format(PYPI_TIMEOUT_SEC)   # i18n: terminal
         except Exception as exc:
             return None, type(exc).__name__
-        releases = data.get("releases") if isinstance(data, dict) else None
-        if not isinstance(releases, dict):
+        if not isinstance(data, dict):
             return None, "返回的内容里没有版本列表"                      # i18n: terminal
-        return releases, None
+        releases = data.get("releases")
+        if isinstance(releases, dict):
+            return releases, None
+        # PyPI 的文档已经把 releases 标成弃用（第 2 轮审查）。哪天真去掉了，退一步用 info.version + urls（只有
+        # 最新那一版的文件，同样带上传时间和撤回标记）：最新版发布满 7 天照常装，没满就这次不装——少了「装次新的
+        # 那一版」这一档，不会因此装上没满 7 天的版本
+        info, urls = data.get("info"), data.get("urls")
+        version = info.get("version") if isinstance(info, dict) else None
+        if isinstance(version, str) and version and isinstance(urls, list):
+            return {version: urls}, None
+        return None, "返回的内容里没有版本列表"                          # i18n: terminal
 
     async def _pip_install(self, args, label, timeout=600, log_path=None, abort_if=None):
         """跑一次 `pip install <args>`，返回退出码；超时或异常返回 None；abort_if 叫停时
@@ -1003,10 +1015,14 @@ class Updater:
             return
         await self._record_check(None)
         tag = str(data.get("tag_name") or "")
-        if not tag or _parse(tag) <= _parse(local_version()):
+        # 一键更新时已经确认当前代码包含这个标签（_already_current）：按「已是最新」答。标签那个提交里的 VERSION
+        # 比标签名旧时，光按版本号比会一直以为有新版本，每 6 小时把同一个提示再弹一次，点了又说「已是最新」
+        # （第 2 轮审查）。只记在这个进程里：重启之后最多再走一遍
+        contained = bool(tag) and tag == getattr(self, "_contained_tag", None)
+        if not tag or contained or _parse(tag) <= _parse(local_version()):
             if manual:
                 await self._notice(L("已是最新版本 v{}", "v{} is the latest version.")
-                                   .format(local_version()))
+                                   .format(tag.lstrip("vV") if contained else local_version()))
             return
         self.latest = {
             "version": tag,
@@ -1100,7 +1116,9 @@ class Updater:
           await pause(from_v, to_v)    新版本取下来、确认能快进之后才调：停监听，返回
                                        恢复监听要用的信息（没在监听返回 None）；
           await resume(token, text)    停了监听之后更新没成：在当前版本上恢复监听并说明；
-          before_restart(token, to_v)  重启前留下「重启后接着监听」的记号。"""
+          before_restart(token, to_v, commits={"from": 更新前的提交, "to": 更新到的提交})
+                                       重启前留下「重启后接着监听」的记号；commits 一并记进记号（I6：
+                                       事后看得出这次重启是从哪个提交换到哪个）。返回是否留了。"""
         if self.latest is None or self._applying:
             return   # 重复点击「一键更新」不能并发跑两次 git/pip
         self._applying = True
@@ -1252,8 +1270,9 @@ class Updater:
 
     async def _already_current(self, tag):
         """当前代码已经包含提示里那个 release（S3）：按「已是最新」处理——不暂停监听、不重启，这次的
-        更新提示收起来（刷新页面不再出现；之后的定时检查照常）。"""
+        更新提示收起来（刷新页面不再出现；之后的定时检查照常，只是不再为这同一个标签弹提示）。"""
         print("[信息] 当前代码已经包含 {}，这次不更新".format(tag))
+        self._contained_tag = tag      # 之后的定时检查不再为这个标签弹提示（check_and_notify）
         self.latest = None
         config = getattr(self.server, "config", None)
         if isinstance(config, dict):

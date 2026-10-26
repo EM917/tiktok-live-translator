@@ -184,6 +184,64 @@ def test_head_that_already_contains_the_tag_is_up_to_date_and_does_not_restart(w
     assert "update" not in server.config and u.latest is None
 
 
+def _github_says(monkeypatch, tag):
+    """GitHub 的 releases/latest 替身：返回这个标签。"""
+    import aiohttp
+
+    class Resp:
+        status = 200
+
+        async def json(self):
+            return {"tag_name": tag, "body": "", "html_url": "http://x/releases/latest"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Session:
+        def get(self, *a, **k):
+            return Resp()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: Session())
+
+
+def test_a_tag_whose_version_file_lags_is_not_offered_again_after_it_was_found_current(world, monkeypatch):
+    """标签那个提交里的 VERSION 比标签名旧（发版时漏改了）：一键更新发现当前代码已经包含它、按「已是最新」
+    收起提示之后，之后的定时检查不能每 6 小时把同一个提示再弹出来；手动检查答「已是最新」（第 2 轮审查）。"""
+    dev, install = world["dev"], world["install"]
+    lagging = _commit(dev, "hotfix.txt")                          # VERSION 还是 1.1.0
+    _git(dev, "tag", "v1.2.0")
+    _commit(dev, "later.txt")                                     # main 又往前走了一个提交
+    _git(dev, "push", "-q", "origin", "main", "--tags")
+    _git(install, "fetch", "-q", "origin")
+    _git(install, "reset", "-q", "--hard", lagging)              # 这份安装已经在标签那个提交上
+    u, server, pips = _updater("v1.2.0")
+
+    run(u.apply())
+    assert server.of_type("notice")[-1]["text"] == "已是最新版本 v1.2.0" and u.latest is None
+    assert world["execs"] == [] and pips == []
+
+    _github_says(monkeypatch, "v1.2.0")
+    before = len(server.of_type("update_available"))
+    run(u.check_and_notify(delay=0))                              # 定时检查
+    assert len(server.of_type("update_available")) == before and u.latest is None
+    assert "update" not in server.config
+    run(u.check_and_notify(delay=0, manual=True))                 # 手动检查
+    assert server.of_type("notice")[-1]["text"] == "已是最新版本 v1.2.0"
+
+    _github_says(monkeypatch, "v1.3.0")                           # 真的有更新的版本：照常提示
+    run(u.check_and_notify(delay=0))
+    assert server.of_type("update_available")[-1]["version"] == "v1.3.0"
+
+
 def test_a_tag_that_cannot_be_fast_forwarded_to_is_refused(world):
     """本地有自己的提交（和标签分叉）：没法快进，不动。"""
     install, c = world["install"], world["commits"]

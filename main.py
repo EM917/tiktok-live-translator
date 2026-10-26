@@ -620,8 +620,13 @@ def _check_update_guard(others_running=None):
         return
     if not outcome.rolled_back:
         return
-    # 对话框不等人点：旧版本马上起来，暂停中的监听才赶得上「重启后接着监听」的时限
-    _info_dialog(outcome.message)
+    # 对话框不等人点：旧版本马上起来，暂停中的监听才赶得上「重启后接着监听」的时限。程序文件已经退回了：
+    # 弹窗这一步出错（比如终端断了、print 抛 OSError）也不能挡住下面的重新 exec
+    try:
+        if outcome.message:
+            _info_dialog(outcome.message)
+    except Exception:
+        pass
     update_guard.release_lock()
     from app.relaunch import exec_args, flush_std, replace_process
     argv = [sys.executable, str(ROOT / "main.py")] + sys.argv[1:]

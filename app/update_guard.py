@@ -57,7 +57,8 @@ _state = {"armed": None, "lock": None}
 
 class BootOutcome:
     """on_boot 的结果。kind：none / invalid / other-instance / counted / moved / dirty / git-failed /
-    reset-failed / rolled-back。rolled_back 时 message 是给对话框的那句话（L()）。"""
+    reset-failed / rolled-back。rolled_back 时 message 是给对话框的那句话（L()）；拼这句话本身出了错时
+    是 None（文件已经退回，照样要重新 exec）。"""
 
     def __init__(self, kind, message=None):
         self.kind = kind
@@ -126,11 +127,17 @@ def _take_lock(root):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         os.close(fd)
-        # 被别的进程拿着：POSIX 是 EWOULDBLOCK/EAGAIN，Windows 的 msvcrt 报 EACCES 或 EDEADLK。
-        # 别的错（文件系统不支持锁）当作没有锁这道保险，照常往下走
-        return os.name != "nt" and exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES)
+        return not _held_elsewhere(exc.errno, os.name == "nt")
     _state["lock"] = fd
     return True
+
+
+def _held_elsewhere(code, windows):
+    """拿锁失败的 errno 是不是「被别的进程拿着」：POSIX 是 EWOULDBLOCK/EAGAIN（个别系统 EACCES），Windows 的
+    msvcrt 报 EACCES 或 EDEADLK。别的错（文件系统不支持锁）不算：当作没有锁这道保险，照常往下走——两种系统
+    同一个口径（以前 Windows 上任何错都当成别的实例，这次启动不计数，也就永远不会退回）。"""
+    held = (errno.EACCES, errno.EDEADLK) if windows else (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES)
+    return code in held
 
 
 def release_lock():
@@ -243,8 +250,27 @@ def _count_or_roll_back(root, guard, git):
         print("[警告] 一键更新到 v{} 之后页面一直没连上，退回 v{}（{}）没成功（git 返回 {}），照常启动".format(
             to_version, from_version, _short(guard["from"]), code))
         return BootOutcome("reset-failed")
-    # 第一次启动可能已经读掉了「重启后接着监听」记号（读到即删）、然后才出事：还回去，旧版本照原来的
-    # 时间判断过没过期。记号里注明是退回来的（rolled_back_from）：旧版本恢复监听时状态行不能说「已更新到」
+    # 从这里起程序文件已经是更新前的版本：后面几步（还记号、清记号、打一行、拼对话框文字）不管哪一步出错，
+    # 都照样按「已退回」交回去，main.py 据此重新 exec。异常要是从这里漏出去，会被 main.py 的兜底吃掉、
+    # 接着往下跑——内存里的新代码跑在已经退回的旧文件上（第 2 轮审查）
+    try:
+        _settle_after_reset(guard, to_version, from_version)
+    except Exception as exc:
+        try:
+            print("[警告] 已退回更新前的 v{}，收尾时出错（{}）".format(from_version, type(exc).__name__))
+        except Exception:
+            pass
+    try:
+        message = rollback_message(from_version, to_version)
+    except Exception:
+        message = None
+    return BootOutcome("rolled-back", message)
+
+
+def _settle_after_reset(guard, to_version, from_version):
+    """git reset --keep 已经成功之后的收尾。第一次启动可能已经读掉了「重启后接着监听」记号（读到即删）、
+    然后才出事：还回去，旧版本照原来的时间判断过没过期。记号里注明是退回来的（rolled_back_from）：旧版本
+    恢复监听时状态行不能说「已更新到」。"""
     resume = load_settings().get(RESUME_KEY)
     if not isinstance(resume, dict):
         resume = guard.get("resume")
@@ -253,7 +279,6 @@ def _count_or_roll_back(root, guard, git):
     disarm()
     print("[警告] 一键更新到 v{} 之后，新版本上次启动时字幕界面一直没有连上：已退回更新前的 v{}"
           "（git reset --keep {}），重新启动…".format(to_version, from_version, _short(guard["from"])))
-    return BootOutcome("rolled-back", rollback_message(from_version, to_version))
 
 
 def mark_ready():

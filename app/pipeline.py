@@ -4274,10 +4274,19 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
         首次解析就失败时 _run_session 马上 return，任务随即结束，很快就查；重连循环里的失败要等这一场
         放弃重连、或中控点停止。pip 改的是解析每次都要起的那个 yt-dlp：重连循环还在解析时不能改它。
-        等完的时候中控已经开了新的一场：freshen_ytdlp 照样按「在监听」跳过；新的一场再连续失败，会再排一次。"""
+
+        拉流任务结束之后还要再排一次 _stream_lock（拿到就放）。换主播（start_stream）和停止（stop_stream）
+        都在这把锁里先停旧任务、再做别的：_stop_locked 把 _stream_task 置空、取消旧任务之后，还要等停弹幕
+        来源（最长约 10 秒）、关审计、发字幕记录，换主播最后才建新任务。旧任务一结束这里就醒，那时
+        _stream_task 是 None；不排这把锁的话，PyPI 那一步只要比剩下的停止流程先回来，freshen_ytdlp 的两道
+        忙碌检查都看到「不在监听」，pip 就和新的一场的开场、重连解析叠在一起（第 2 轮审查实测）。
+        asyncio.Lock 按先来后到放行：换主播时这里排在 start_stream 后面，轮到时新任务已经建好，结果是
+        busy（新的一场再连续失败，会再排一次）；中控点停止时排在 stop_stream 后面，轮到时已经停干净，照常查。"""
         task = getattr(self, "_stream_task", None)
         if task is not None and not task.done() and task is not asyncio.current_task():
             await asyncio.wait({task})
+        async with self._lock():
+            pass
         return await self.updater.freshen_ytdlp(reason="resolve-failures")
 
     MODEL_DOWNLOAD_POLL_SEC = 3.0

@@ -122,6 +122,57 @@ def test_a_resume_marker_still_present_is_left_as_it_is(isolated):
     assert settings_mod.load_settings()["resume_after_update"]["at"] == 200.0
 
 
+@pytest.mark.parametrize("broken", ["disarm", "print", "message"])
+def test_once_git_has_rolled_back_a_later_error_still_reports_the_rollback(isolated, monkeypatch, broken):
+    """git reset --keep 成功之后，收尾的哪一步出错（清记号写不了设置、终端断了 print 抛 OSError、拼对话框文字
+    出错）都照样交回「已退回」：异常漏出去会被 main.py 的兜底吃掉，内存里的新代码接着跑在已经退回的旧文件上
+    （第 2 轮审查）。"""
+    update_guard.arm(FROM, TO, "1.0.0", "1.1.0")
+    update_guard.on_boot(isolated, git=fake_git())
+    new_process()
+
+    def boom(*_a, **_k):
+        raise OSError("broken")
+
+    if broken == "disarm":
+        monkeypatch.setattr(update_guard, "disarm", boom)
+    elif broken == "print":
+        monkeypatch.setattr(update_guard, "print", boom, raising=False)
+    else:
+        monkeypatch.setattr(update_guard, "rollback_message", boom)
+    git = fake_git()
+    outcome = update_guard.on_boot(isolated, git=git)
+    assert outcome.rolled_back and ("reset", "--keep", FROM) in git.calls
+    if broken == "message":
+        assert outcome.message is None
+    else:
+        assert outcome.message.startswith("一键更新到 v1.1.0 之后")
+    assert update_guard._state["lock"] is not None                  # 退回了：锁留给 main.py 重新 exec 前放
+
+
+def test_main_reexecs_even_when_the_rollback_dialog_fails():
+    """弹窗那一步（先 print）出错也不能挡住重新 exec；没有对话框文字就不弹。"""
+    func = _main_funcs()["_check_update_guard"]
+    guarded = [n for n in ast.walk(func) if isinstance(n, ast.Try)
+               and any(_calls(s, "_info_dialog") for s in n.body)]
+    assert len(guarded) == 1 and ast.unparse(guarded[0].handlers[0].type) == "Exception"
+    assert "if outcome.message" in ast.unparse(guarded[0])
+
+
+def test_only_a_lock_held_elsewhere_skips_the_count():
+    """拿锁失败时，只有「被别的进程拿着」才算别的实例（这次启动不计数）；文件系统不支持锁之类的错当作没有
+    这道保险、照常计数。以前 Windows 上任何错都算别的实例，就永远不会退回（第 2 轮审查）。"""
+    import errno
+    held = update_guard._held_elsewhere
+    for code in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+        assert held(code, windows=False)
+    for code in (errno.EACCES, errno.EDEADLK):
+        assert held(code, windows=True)
+    for windows in (False, True):
+        assert not held(errno.ENOLCK, windows) and not held(errno.EIO, windows)
+        assert not held(None, windows)
+
+
 @pytest.mark.parametrize("git,kind", [
     (fake_git(dirty=" M app/server.py\n"), "dirty"),            # 程序文件夹被手动改过：不退
     (fake_git(head="c" * 40), "moved"),                         # 已经不是更新到的那个提交：不退
