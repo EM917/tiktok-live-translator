@@ -1515,3 +1515,148 @@ def test_a_click_swallowed_by_a_phones_own_cooldown_does_not_spend_a_shared_toke
     clock["t"] += viewer_mod.ACTION_GAP_SEC
     hub._handle_inbound(others[-1], text({"type": "retranslate", "id": 200}))
     assert calls[-1] == 200
+
+
+# ---- 安静时的 viewer_ping（专家审查 F8）----
+# 协议层的 heartbeat ping 帧浏览器里的脚本看不见：网络静默断掉时手机页拿不到 onclose，以前一直挂着
+# 「N 秒没有新消息」不重连。现在手机 50 秒什么都收不到就自己断开重连（web/viewer.js VIEWER_SILENT_SEC），
+# hub 在写队列安静满 VIEWER_PING_SEC 秒时发一条 viewer_ping，连得好好的手机就不会被误断。
+
+def test_a_quiet_writer_sends_a_viewer_ping_after_the_whole_replay(monkeypatch):
+    monkeypatch.setattr(viewer_mod, "VIEWER_PING_SEC", 0.05)
+    server = StubServer(status={"state": "live"})
+    server.history.append({"type": "caption", "id": 1, "original": "uno"})
+
+    async def scenario():
+        hub = make_hub(server)
+        ws = FakeWS()
+        v = add(hub, ws)
+        replay_len = v.queue.qsize()
+        v.writer = asyncio.ensure_future(hub._writer(v))
+        await _until(lambda: len(ws.sent) >= replay_len + 2, timeout=5.0)
+        v.writer.cancel()
+        return ws.sent, replay_len
+
+    sent, replay_len = asyncio.run(scenario())
+    types = [m["type"] for m in sent]
+    assert types[0] == "viewer_hello"
+    assert "viewer_ping" not in types[:replay_len], "ping 不能插进回放中间：手机按条数数回放"
+    assert types[replay_len:replay_len + 2] == ["viewer_ping", "viewer_ping"], "安静着就一直隔一会儿发一条"
+    assert sent[replay_len] == {"type": "viewer_ping"}
+
+
+def test_the_ping_does_not_take_a_queue_slot_or_delay_queued_messages(monkeypatch):
+    """队列里有东西就先发它：ping 只在队列空着、等满时限时才发，不进队列、不占 QUEUE_MAX 的名额。"""
+    monkeypatch.setattr(viewer_mod, "VIEWER_PING_SEC", 30.0)
+
+    async def scenario():
+        hub = make_hub()
+        ws = FakeWS()
+        v = add(hub, ws)
+        v.writer = asyncio.ensure_future(hub._writer(v))
+        hub.fanout({"type": "caption", "id": 7, "original": "siete"})
+        await _until(lambda: any(m.get("id") == 7 for m in ws.sent))
+        v.writer.cancel()
+        return ws.sent, v.queue.qsize()
+
+    sent, left = asyncio.run(scenario())
+    assert [m["type"] for m in sent if m["type"] == "viewer_ping"] == []
+    assert left == 0
+
+
+def test_the_ping_is_not_something_the_control_side_can_push_to_phones(loop):
+    """viewer_ping 只由写任务自己发：server.broadcast 送来的同名消息照旧被白名单挡掉（ALLOW 里没有它）。"""
+    hub = make_hub()
+    v = add(hub)
+    before = v.queue.qsize()
+    hub.fanout({"type": "viewer_ping", "note": "x"})
+    assert v.queue.qsize() == before
+    assert "viewer_ping" not in viewer_mod.ALLOW
+
+
+def test_a_real_phone_socket_gets_a_viewer_ping_while_nothing_else_happens(monkeypatch):
+    """真 socket：鉴权、收完回放之后什么都不发生，手机照样隔一会儿收到一条 viewer_ping。"""
+    monkeypatch.setattr(viewer_mod, "VIEWER_PING_SEC", 0.2)
+
+    async def scenario():
+        hub = make_hub(StubServer(status={"state": "idle"}))
+        await hub.start()
+        base = "http://127.0.0.1:{}".format(hub.port)
+        got = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(base + "/vws") as ws:
+                    await ws.send_json({"type": "auth", "k": TOKEN})
+                    started = time.monotonic()
+                    while True:
+                        msg = await asyncio.wait_for(ws.receive_json(), 5.0)
+                        got.append(msg["type"])
+                        if msg["type"] == "viewer_ping":
+                            return got, time.monotonic() - started
+        finally:
+            await hub.stop("off")
+
+    got, waited = asyncio.run(scenario())
+    assert got[0] == "viewer_hello" and got[-1] == "viewer_ping"
+    assert got.count("viewer_ping") == 1
+    assert waited >= 0.2
+
+
+# ---- 路径里有空格（顺延事项：scrub_text 只换到第一个空格为止，后半段漏到手机上）----
+# 虚构的用户名，带空格。「没有读到 TikTok 登录」那条持续提示把完全磁盘访问权限要加的解释器路径单独放一行、
+# 用「」/“”括着（app/browser_login.py fda_steps）；以前只换掉「/Users/Jane」，「Doe/miniconda3/…」发到了手机
+SPACED_PATH = "/Users/Jane Doe/miniconda3/bin/python3.13"
+LEAKS = ("Doe", "miniconda3", "Zhang", "San\\", "AppData", "Support", "whisper", "Contents", "python3")
+
+
+@pytest.mark.parametrize("raw,kept", [
+    ("粘贴下面的路径：\n「" + SPACED_PATH + "」\n然后完全退出程序再打开。", "「…」"),
+    ("Paste the path below:\n“" + SPACED_PATH + "”\nThen quit the app.", "“…”"),
+    ("审计写不进 /Users/Jane Doe/logs/session.jsonl 了", "审计写不进 … 了"),
+    ("写不进 /Users/某 某/miniconda3/bin/python3.13 了", "写不进 … 了"),
+    ("装在 C:\\Users\\Zhang San\\AppData\\Local\\models 下", "装在 … 下"),
+    ("「C:\\Users\\Zhang San\\models」", "「…」"),
+    ("模型在 ~/Library/Application Support/whisper/x 里", "模型在 … 里"),
+    ("/Applications/Some App.app/Contents/MacOS/python3", "…"),
+])
+def test_scrub_text_takes_the_whole_path_even_when_it_has_spaces(raw, kept):
+    out = viewer_mod.scrub_text(raw, 1000)
+    for piece in LEAKS + ("某",):
+        assert piece not in out, (piece, out)
+    assert kept in out
+
+
+@pytest.mark.parametrize("plain", [
+    "磁盘空间不足，识别/翻译还在跑，剩余 1.2 GB",
+    "比例 1/2/3 与 a/b",
+    "「/」是除号",
+    "“Click Start again.” Then wait.",
+])
+def test_scrub_text_still_leaves_slashes_in_ordinary_text_alone(plain):
+    assert viewer_mod.scrub_text(plain, 1000) == plain
+
+
+def test_a_spaced_path_after_a_path_stops_where_the_words_stop():
+    """没括起来的路径后面跟着普通的话：只有紧跟「/」和路径字符的一段算进路径，「识别/翻译」留着。"""
+    assert viewer_mod.scrub_text("写不进 /tmp/x 磁盘 识别/翻译 停了", 1000) == "写不进 … 磁盘 识别/翻译 停了"
+
+
+def test_a_phone_never_sees_a_spaced_path_in_a_notice(loop, monkeypatch):
+    """走真的白名单：回放里的和实时的持续提示，中文和派生的英文都不带路径的任何一截。"""
+    from app import i18n
+    from app.browser_login import fda_steps
+
+    text = fda_steps([SPACED_PATH])
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    server = StubServer(incidents={"fda": {"id": "fda", "level": "warn", "text": text, "ts": 1.0}})
+    hub = make_hub(server)
+    v = add(hub)
+    hub.fanout({"type": "incident", "id": "fda2", "level": "warn", "text": text, "ts": 2.0})
+    got = [v.queue.get_nowait() for _ in range(v.queue.qsize())]
+    notices = [m for m in got if m["type"] == "incident"]
+    assert [m["id"] for m in notices] == ["fda", "fda2"]        # 回放一条、实时一条
+    for m in notices:
+        for field in ("text", "text_en"):
+            for piece in ("Jane", "Doe", "miniconda3"):
+                assert piece not in m[field], (field, m[field])
+        assert "「…」" in m["text"] and "“…”" in m["text_en"]

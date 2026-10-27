@@ -1,5 +1,6 @@
 """本地 Web 服务：托管字幕 UI 页面，并通过 WebSocket 向所有客户端广播字幕。"""
 import asyncio
+import hashlib
 import json
 import time
 from collections import deque
@@ -70,6 +71,30 @@ FLOAT_REPLAY_COMMENTS = 10
 HISTORY_BREAK_ROOM = 30
 # 控制面所有响应都带的 CSP 片段：谁都不许把这些页面放进 iframe（见 build_app）
 FRAME_ANCESTORS = "frame-ancestors 'none'"
+
+
+def web_build(web_dir=None):
+    """web/ 下所有页面文件内容的短哈希（12 位十六进制），启动时算一次放进 config["build"]（专家审查 F8）。
+
+    浏览器模式下一键更新重启后，旧标签页重连上新进程，跑的却还是旧 JS：hello 里的 version 只用来改页脚
+    文字，没人比对。现在页面记下第一次连上时的 build，之后哪一次 hello 里的不一样，就是服务端换了一套页面
+    文件，重新载入（web/app.js reloadForBuild）。按内容算、不按版本号：没改 web/ 的更新不必打断页面，
+    开发时改了页面再重启服务也会刷新。点开头的文件（.DS_Store 之类）不算；读不了的文件按「读不了」记进去，
+    不让整个哈希失败。web/ 都读不了时返回空串，页面见到空串不比对"""
+    root = Path(web_dir) if web_dir is not None else WEB_DIR
+    try:
+        files = sorted(p for p in root.rglob("*")
+                       if p.is_file() and not any(part.startswith(".") for part in p.relative_to(root).parts))
+    except OSError:
+        return ""
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
+        try:
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+        except OSError:
+            digest.update(b"unreadable")
+    return digest.hexdigest()[:12] if files else ""
 
 
 def captions_tail(items, limit):
@@ -226,6 +251,8 @@ class CaptionServer:
         return app
 
     async def start(self):
+        # 这一次进程端出去的页面文件是哪一版（F8，见 web_build）：先于任何页面连上就定好，hello 里一直是它
+        self.config["build"] = web_build()
         self._runner = web.AppRunner(self.build_app(), access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", self.port)

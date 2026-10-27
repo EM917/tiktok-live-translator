@@ -140,6 +140,17 @@ function backoffDelay(n, rand) {
   return Math.max(BACKOFF_MIN, Math.min(BACKOFF_MAX, v));
 }
 
+// ---- 静默断开（专家审查 F8）----
+// 网络在中间静默断掉时浏览器拿不到 onclose，以前只会一直显示「N 秒没有新消息」，不会自己重连。
+// 服务端安静满 20 秒就发一条 viewer_ping（app/viewer.py VIEWER_PING_SEC），所以连得好好的手机
+// 不会超过 20 来秒什么都收不到；已连接状态下 VIEWER_SILENT_SEC 秒一条都没收到（ping 也算），就当这条
+// 连接已经断了，主动断开、走正常的重连。50 秒 = 两次 ping 再留 10 秒余量
+var VIEWER_SILENT_SEC = 50;
+function silentTooLong(connState, lastFrameAt, now) {
+  if (connState !== "connected" || lastFrameAt == null) return false;
+  return now - lastFrameAt > VIEWER_SILENT_SEC * 1000;
+}
+
 // 违禁词警示模式的手机端提示文案：中控这场没打开警示时，命中仍会记进审计，
 // 但手机上也看不到报警——不能让手机这边毫无提示，否则同看的人会误以为
 // 「这场很干净」。关闭时给一行常驻灰字；打开时不显示（返回空串，调用方据此隐藏）。
@@ -181,6 +192,48 @@ function tokenFromHash(hash) {
   var h = String(hash || "");
   var m = h.match(/^#k=([^&]+)$/);
   return m ? m[1] : null;
+}
+
+// ---- 口令记在这台手机上（专家审查 S4，用户决定 D5：扫码后从地址栏去掉，记在那台手机里）----
+// 以前口令一直留在地址栏的 #k= 里，进浏览记录、跟着「分享此页」「添加到主屏幕」走。现在扫码进来读出
+// 口令，先存进这台手机浏览器的 localStorage，存成了再把 #k= 从地址栏去掉；之后刷新、从浏览记录打开都从
+// 存储里取。墙上的二维码一直有效（再扫一次就再存一遍）。电脑的局域网地址变了要重扫（存储按地址隔开，
+// 新地址下读不到）。从 iPhone 主屏幕图标打开时可能读不到口令：图标是在 #k= 去掉之后加的，地址里没有口令；
+// 它按书签（和 Safari 共用存储）还是按网页 App（自己一份存储）打开，要看 iOS 版本，这里没有 manifest，也
+// 没在 iPhone 上试过。按网页 App 打开时重扫也补不上——扫码只会在 Safari 里打开、存进 Safari 那一份，这时
+// 请在 Safari 里重新扫码、在 Safari 里看。键里带端口：同一台电脑上换了观众端口也不会拿到另一份口令
+// （地址加端口本来就隔开存储，这里写明，不靠浏览器的这条规矩）。
+// storage 可注入（真 localStorage 或测试里的假存储），读写一律 try/catch：隐私模式下存不进去时
+// 退回只用地址栏里的口令，地址栏也就不清——清了刷新就连不上了
+var TOKEN_KEY_PREFIX = "tlt.viewer.k:";
+function tokenStorageKey(host) {
+  var m = /:(\d+)$/.exec(String(host || ""));
+  return TOKEN_KEY_PREFIX + (m ? m[1] : "");
+}
+
+// 返回 { token, fromHash, saved }：token 为 null 表示地址栏和存储里都没有。saved 只在口令来自地址栏、
+// 而且写进存储又读得回来时为 true——调用方据此决定能不能把地址栏里的口令去掉
+function pickToken(hash, storage, key) {
+  var fromHash = tokenFromHash(hash);
+  if (fromHash) {
+    var saved = false;
+    try {
+      storage.setItem(key, fromHash);
+      saved = storage.getItem(key) === fromHash;
+    } catch (e) { saved = false; }
+    return { token: fromHash, fromHash: true, saved: saved };
+  }
+  var stored = null;
+  try { stored = storage.getItem(key); } catch (e) { stored = null; }
+  // 存储里的东西当不可信：只认和地址栏里一样形状的（非空、不含 &）
+  var ok = typeof stored === "string" && /^[^&]+$/.test(stored);
+  return { token: ok ? stored : null, fromHash: false, saved: false };
+}
+
+// 被拒（4401：服务端不认这把口令）时清掉存着的口令：下次打开直接说「链接已失效」，
+// 不再拿同一把口令去连。存储抛错不影响调用方
+function forgetToken(storage, key) {
+  try { storage.removeItem(key); } catch (e) { /* 存储用不了：本来也没存进去 */ }
 }
 
 // 重译按钮文案。state 是这条字幕当前的 strong_state（服务端 caption/caption_update
@@ -610,8 +663,24 @@ if (typeof document !== "undefined") {
       });
     }
 
+    // ---- 口令（S4）：地址栏里有就存进这台手机，存成了就从地址栏去掉；没有就从存储里取（见上面 pickToken）----
+    // 拿 localStorage 本身也可能抛错（Safari 关掉网站数据时），拿不到就当没有存储：只用地址栏里的口令
+    var tokenStore = null;
+    try { tokenStore = typeof localStorage !== "undefined" ? localStorage : null; } catch (e) { tokenStore = null; }
+    var TOKEN_KEY = tokenStorageKey(location.host);
+    var picked = pickToken(location.hash, tokenStore, TOKEN_KEY);
+    var TOKEN = picked.token;
+    // 地址栏只留页面本身（http://地址:端口/）。改不了（没有 history 接口、浏览器拒绝）就算了：
+    // 口令照旧留在 #k= 里，连接不受影响
+    if (picked.fromHash && picked.saved) {
+      try {
+        if (typeof history !== "undefined" && history && typeof history.replaceState === "function") {
+          history.replaceState(history.state, "", (location.pathname || "/") + (location.search || ""));
+        }
+      } catch (e) { /* 忽略 */ }
+    }
+
     // ---- 连接状态机 ----
-    var TOKEN = tokenFromHash(location.hash);
     var ws = null;
     var retryCount = 0;
     var reconnectTimer = null;
@@ -621,7 +690,10 @@ if (typeof document !== "undefined") {
     // 掉线那一刻就显示「已经 1800 秒没连上」，还叫看的人去找中控。还没连上过的手机这里是 null，
     // 一直显示普通的「N 秒后重连」，和以前一样
     var disconnectedAt = null;
-    var lastMessageAt = null;     // 上一次收到任意消息的时间（ms），驱动 45 秒静默提示
+    var lastMessageAt = null;     // 上一次收到消息的时间（ms，viewer_ping 不算），驱动 45 秒的「N 秒没有新消息」
+    // 上一次收到任何一帧的时间（ms，viewer_ping 也算）：已连接时超过 VIEWER_SILENT_SEC 没变就主动断开重连（F8）。
+    // 两个时间分开记：#stale-line 照旧说的是「没有新内容」（安静的直播间里照样显示），断不断开只看连接本身
+    var lastFrameAt = null;
 
     // 重连中离掉线那一刻过了多少秒；不在重连中、或者这台手机还没连上过，返回 null
     function offlineSec() {
@@ -653,7 +725,20 @@ if (typeof document !== "undefined") {
       staleLine.classList.toggle("hidden", !text);
     }
 
+    // 静默断开（F8）：先撒手再关——网络已经断了的连接，close() 之后 onclose 可能很久才来，来了也不再管它
+    // （onclose 里 ws !== socket 就返回），它万一又送来消息也不处理（onmessage 认 abandonedSocket）。
+    // 然后同没有关闭帧的断开一样走正常的重连退避
+    var abandonedSocket = null;
+    function dropSilentSocket() {
+      var socket = ws;
+      ws = null;
+      abandonedSocket = socket;
+      if (socket) { try { socket.close(); } catch (e) { /* 忽略 */ } }
+      onSocketDown(null);
+    }
+
     function tickStaleLine() {
+      if (silentTooLong(connState, lastFrameAt, Date.now())) dropSilentSocket();
       renderStaleLine();
       // 重连状态下的倒计时/累计秒数也要跟着秒表刷新，不能只在状态切换那一刻画一次
       if (connState === "reconnecting") renderConnBar();
@@ -722,10 +807,15 @@ if (typeof document !== "undefined") {
         catch (e) { try { socket.close(); } catch (e2) { /* 忽略 */ } }
       };
       socket.onmessage = function (evt) {
-        lastMessageAt = Date.now();
-        var msg;
-        try { msg = JSON.parse(evt.data); } catch (e) { return; }
-        handle(msg);
+        // 静默断开时主动撒手的那条旧连接，万一后来又送来消息，不再处理：新连接的回放会把一切补齐
+        if (socket === abandonedSocket) return;
+        lastFrameAt = Date.now();
+        var msg = null;
+        try { msg = JSON.parse(evt.data); } catch (e) { msg = null; }
+        // viewer_ping 只说明连接还活着：不算新消息、不进 handle（不能被数成回放里的一条）
+        if (msg && msg.type === "viewer_ping") return;
+        lastMessageAt = lastFrameAt;
+        if (msg) handle(msg);
       };
       socket.onclose = function (evt) {
         if (ws !== socket) return;   // 旧连接的收尾事件，已经换了新连接
@@ -738,7 +828,11 @@ if (typeof document !== "undefined") {
     }
 
     function onSocketDown(code) {
-      if (code === 4401) { setConnState("denied"); return; }         // 不再重连
+      if (code === 4401) {                                            // 不再重连
+        forgetToken(tokenStore, TOKEN_KEY);   // S4：服务端不认这把口令，存着的清掉，下次打开直接说链接已失效
+        setConnState("denied");
+        return;
+      }
       if (code === 4429) { setConnState("full"); scheduleReconnect(true); return; }
       if (code === 4403) { setConnState("off"); scheduleReconnect(true); return; }
       // 4408（鉴权超时）或没有关闭帧（queue_full / send_timeout / inbound_flood 的 abort）：
@@ -837,6 +931,9 @@ if (typeof document !== "undefined") {
         case "viewer_denied":
           // 关闭码本身已经决定了最终文案（onSocketDown），这里不用再动状态；
           // 只是不让它落进 default 分支被当成未知消息忽略。
+          break;
+        case "viewer_ping":
+          // 走不到这里：onmessage 先把它拦下了（只更新 lastFrameAt，见上）。列在这里，白名单里看得到这一种
           break;
         case "status":
           streamState = msg.state;
@@ -1280,10 +1377,15 @@ if (typeof module !== "undefined" && module.exports) {
     streamText: streamText,
     alertModeText: alertModeText,
     backoffDelay: backoffDelay,
+    silentTooLong: silentTooLong,
+    VIEWER_SILENT_SEC: VIEWER_SILENT_SEC,
     alertKey: alertKey,
     applyUpdate: applyUpdate,
     shouldRing: shouldRing,
     tokenFromHash: tokenFromHash,
+    tokenStorageKey: tokenStorageKey,
+    pickToken: pickToken,
+    forgetToken: forgetToken,
     retranslateLabel: retranslateLabel,
     canRetranslate: canRetranslate,
     loadDismissedAlerts: loadDismissedAlerts,

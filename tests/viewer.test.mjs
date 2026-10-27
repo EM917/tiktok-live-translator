@@ -1393,3 +1393,289 @@ test("viewer_hello 说回放 0 条：hello 之后来的第一条就是实时的"
     assert.equal(healthShown(elements), null, "回放已经结束：这条换场是实时的");
   });
 });
+
+// ---- 静默断开（专家审查 F8）----
+// 补核实测（10-22，Chromium）：47 秒没消息，连接对象不变，页面没有发起重连——网络在中间静默断掉时浏览器拿不到
+// onclose，手机只会一直写「N 秒没有新消息」。现在服务端安静满 20 秒发一条 viewer_ping（app/viewer.py），
+// 已连接时 50 秒一帧都没收到就主动断开、走正常的重连
+test("silentTooLong：只在已连接时、离上一帧超过 50 秒才算", () => {
+  assert.equal(V.VIEWER_SILENT_SEC, 50);
+  assert.equal(V.silentTooLong("connected", 0, 50000), false, "正好 50 秒还不算");
+  assert.equal(V.silentTooLong("connected", 0, 50001), true);
+  assert.equal(V.silentTooLong("reconnecting", 0, 999999), false, "已经在重连：不重复断");
+  assert.equal(V.silentTooLong("connecting", 0, 999999), false, "还没收到 hello：交给鉴权超时");
+  assert.equal(V.silentTooLong("connected", null, 999999), false);
+});
+
+test("已连接 50 秒一帧都没收到（连 viewer_ping 也没有）：主动断开、走正常重连；撒手的旧连接迟来的事件不再处理", () => {
+  withFakeViewerPage(({ elements, ws, clock, tick, fireReconnect, FakeWebSocket }) => {
+    let closed = 0;
+    ws.close = () => { closed += 1; };
+    clock.now += 50 * 1000;
+    tick();
+    assert.equal(closed, 0, "正好 50 秒还不断");
+    assert.equal(elements["conn-text"].textContent, "已连接");
+    clock.now += 1000;
+    tick();
+    assert.equal(closed, 1, "超过 50 秒：主动关掉这条连接");
+    assert.match(elements["conn-text"].textContent, /^已断开，\d+ 秒后重连…$/, "同没有关闭帧的断开：走正常的重连退避");
+    assert.equal(elements["stream-text"].textContent, "状态未知", "断开期间不再说「直播中」");
+    // 不等旧连接的 onclose（网络断了，它可能很久才来）：重连定时器已经排上
+    const ws2 = fireReconnect();
+    assert.equal(FakeWebSocket.instances.length, 2);
+    assert.deepEqual(JSON.parse(ws2.sent[0]), { type: "auth", k: "fake-token-not-a-real-secret-0000000000" });
+    // 旧连接后来才到的关闭和消息：一概不管
+    ws.onclose({ code: 1006 });
+    ws.onmessage({ data: JSON.stringify({ type: "caption", id: 5, ts: 1, original: "tarde" }) });
+    assert.equal(elements["caption-list"].children.length, 0, "撒手的旧连接送来的字幕不画");
+    assert.match(elements["conn-text"].textContent, /^已断开，\d+ 秒后重连…$/, "旧连接的 onclose 不改新连接的状态");
+    ws2.onmessage({ data: helloMsg(0) });
+    assert.equal(elements["conn-text"].textContent, "已连接");
+    tick();
+    assert.equal(FakeWebSocket.instances.length, 2, "新连接刚连上：不会马上又被当成静默");
+  });
+});
+
+test("viewer_ping 让安静的连接不被误断；但它不算新消息：「N 秒没有新消息」照旧按内容数", () => {
+  withFakeViewerPage(({ elements, ws, clock, tick, FakeWebSocket }) => {
+    let closed = 0;
+    ws.close = () => { closed += 1; };
+    for (let i = 0; i < 6; i++) {               // 两分钟，每 20 秒一条 ping
+      clock.now += 20 * 1000;
+      ws.onmessage({ data: JSON.stringify({ type: "viewer_ping" }) });
+      tick();
+    }
+    assert.equal(closed, 0, "一直收得到 ping：连接好好的，不断");
+    assert.equal(FakeWebSocket.instances.length, 1);
+    assert.equal(elements["conn-text"].textContent, "已连接");
+    assert.equal(elements["stale-line"].textContent, "120 秒没有新消息", "ping 不是新内容：安静的直播间照样这么写");
+    clock.now += 51 * 1000;                     // ping 也不来了
+    tick();
+    assert.equal(closed, 1);
+  });
+});
+
+test("viewer_ping 不算回放里的一条：回放照旧按 hello 给的条数结束", () => {
+  withFakeViewerPage(({ elements, ws }) => {
+    const send = (m) => ws.onmessage({ data: JSON.stringify(m) });
+    send(Object.assign({}, HELLO, { replay_len: 3 }));
+    send({ type: "status", state: "live" });          // 回放第 1 条
+    send({ type: "health", level: "lagging" });       // 第 2 条
+    send({ type: "viewer_ping" });                     // 不算
+    send({ type: "session_break", ts: 9 });            // 第 3 条：回放里的历史换场，不收此刻的落后提示
+    assert.equal(healthShown(elements), "识别开始落后，报警会有延迟");
+    send({ type: "session_break", ts: 10 });           // 回放已经结束：这一条是此刻的换场
+    assert.equal(healthShown(elements), null);
+  });
+});
+
+// ---- viewer.css：不再用带 var() 的 color-mix（F8）----
+// Safari 15.4–16.1 认 :has 却不认带 var() 的 color-mix：整条声明在计算期失效、不回退，状态胶囊的底色和
+// 报警卡片的浅红底都变透明（桌面 d3386e7 已经换过）。现在按主题预先算好，这里核对算得对
+const VIEWER_CSS = readFileSync(new URL("../web/viewer.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const CSS_NO_COMMENTS = VIEWER_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+function rootTokens(dark) {
+  const parse = (body) => Object.fromEntries([...body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  const light = parse(/:root\s*\{([^}]*)\}/.exec(CSS_NO_COMMENTS)[1]);
+  if (!dark) return light;
+  return Object.assign(light, parse(/@media\s*\(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/.exec(CSS_NO_COMMENTS)[1]));
+}
+const rgbOf = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+
+test("viewer.css 里没有带 var() 的 color-mix 了", () => {
+  assert.doesNotMatch(CSS_NO_COMMENTS, /color-mix\([^;]*var\(/);
+});
+
+test("预先算好的半透明色和报警卡片底色：深浅两套都等于原来 color-mix 算出的颜色", () => {
+  for (const dark of [false, true]) {
+    const t = rootTokens(dark);
+    const rgba = (name, a) => "rgba(" + rgbOf(t[name]).join(", ") + ", " + a + ")";
+    assert.equal(t["--a-green-16"], rgba("--green", "0.16"), dark ? "深色" : "浅色");
+    assert.equal(t["--a-orange-16"], rgba("--orange", "0.16"));
+    assert.equal(t["--a-red-14"], rgba("--red", "0.14"));
+    assert.equal(t["--a-fail-15"], rgba("--fail", "0.15"));
+    const bg = rgbOf(t["--bg"]);
+    const mixed = rgbOf(t["--fail"]).map((v, i) => Math.round(v * 0.08 + bg[i] * 0.92));
+    assert.equal(t["--tint-fail-8"], "#" + mixed.map((v) => v.toString(16).padStart(2, "0")).join(""));
+  }
+  assert.match(CSS_NO_COMMENTS, /\.status-pill:has\(\.dot\.connected\)\s*\{[^}]*background:\s*var\(--a-green-16\)/);
+  assert.match(CSS_NO_COMMENTS, /\.alert-item\s*\{[^}]*background:\s*var\(--tint-fail-8\)/);
+});
+
+// ---- 报警卡片右上角的 ×（顺延事项：图形控件 3:1）----
+// .alert-dismiss 以前用 --label-3：浅色卡片底上 1.91:1、深色 2.94:1，不到 WCAG 1.4.11 对图形控件要求的 3:1
+// （b2-contrast 第 2 轮审查记下）。现在 --label-2：浅色 4.76:1、深色 6.16:1。半透明的字色先按 alpha 叠到卡片底
+// （按主题预先混好的 --tint-fail-8）上再算，算法同 tests/test_contrast.py（那个文件不在本批清单里，这条钉在这里）
+function cssRule(selector) {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp("(?:^|\\n|\\})\\s*" + esc + "\\s*\\{([^}]*)\\}").exec(CSS_NO_COMMENTS);
+  assert.ok(m, "viewer.css 里找不到 " + selector);
+  return Object.fromEntries([...m[1].matchAll(/([\w-]+)\s*:\s*([^;]+);?/g)].map((d) => [d[1], d[2].trim()]));
+}
+function rgbOver(value, bg) {
+  const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(value);
+  if (!m) return rgbOf(value);
+  const a = m[4] === undefined ? 1 : Number(m[4]);
+  return [1, 2, 3].map((k, i) => Number(m[k]) * a + bg[i] * (1 - a));
+}
+function contrast(fg, bg) {
+  const lum = (rgb) => {
+    const [r, g, b] = rgb.map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [hi, lo] = [lum(fg), lum(bg)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+test("报警卡片的 × 是能点的图形控件：深浅两套在卡片底上都到 3:1（以前 --label-3 不到）", () => {
+  assert.equal(Math.round(contrast([0, 0, 0], [255, 255, 255]) * 100) / 100, 21);   // 公式本身
+  assert.equal(cssRule(".alert-dismiss").color, "var(--label-2)");
+  assert.equal(cssRule(".alert-item").background, "var(--tint-fail-8)");
+  for (const [dark, want, before] of [[false, 4.76, 1.91], [true, 6.16, 2.94]]) {
+    const t = rootTokens(dark);
+    const bg = rgbOf(t["--tint-fail-8"]);
+    const got = contrast(rgbOver(t["--label-2"], bg), bg);
+    assert.ok(got >= 3, (dark ? "深色" : "浅色") + " × 只有 " + got.toFixed(2) + ":1");
+    assert.equal(Math.round(got * 100) / 100, want, dark ? "深色" : "浅色");
+    assert.equal(Math.round(contrast(rgbOver(t["--label-3"], bg), bg) * 100) / 100, before,
+      "审查记下的旧值：--label-3 在卡片底上不到 3:1");
+  }
+});
+
+// ---- 口令记在这台手机上（专家审查 S4，用户决定 D5）----
+// 地址、端口、口令都是虚构的。replaceState 的替身顺手把 location.hash 清掉，和真浏览器一样
+function withPhone(opts, run) {
+  const { hash = "", host = "192.168.1.23:8766", stored = {}, storage = "map", history = true } = opts || {};
+  const elements = baseElements();
+  const FakeWebSocket = makeFakeWebSocket();
+  const had = Object.prototype.hasOwnProperty.call(global, "history");
+  const originals = {
+    document: global.document, location: global.location, WebSocket: global.WebSocket,
+    localStorage: global.localStorage, setTimeout: global.setTimeout, setInterval: global.setInterval,
+    history: global.history,
+  };
+  const modPath = require.resolve("../web/viewer.js");
+  const store = new Map(Object.entries(stored));
+  const replaced = [];
+  const timeouts = [];
+  global.document = makeFakeDocument(elements);
+  global.location = { hash, protocol: "http:", host, pathname: "/", search: "" };
+  if (history) {
+    global.history = { state: null,
+                       replaceState: (state, title, url) => { replaced.push(url); global.location.hash = ""; } };
+  } else {
+    delete global.history;
+  }
+  global.WebSocket = FakeWebSocket;
+  const boom = () => { throw new Error("SecurityError"); };
+  global.localStorage = storage === "throw" ? { getItem: boom, setItem: boom, removeItem: boom }
+    : storage === "drop" ? { getItem: () => null, setItem() {}, removeItem() {} }     // 写了等于没写
+    : { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); },
+        removeItem: (k) => { store.delete(k); } };
+  global.setTimeout = (fn) => { timeouts.push(fn); return timeouts.length; };
+  global.setInterval = () => 0;
+  try {
+    delete require.cache[modPath];
+    require("../web/viewer.js");
+    run({ elements, store, replaced, sockets: FakeWebSocket.instances, timeouts });
+  } finally {
+    global.document = originals.document;
+    global.location = originals.location;
+    global.WebSocket = originals.WebSocket;
+    global.localStorage = originals.localStorage;
+    global.setTimeout = originals.setTimeout;
+    global.setInterval = originals.setInterval;
+    if (had) global.history = originals.history; else delete global.history;
+    delete require.cache[modPath];
+  }
+}
+const KEY = "tlt.viewer.k:8766";
+function authOf(socket) {
+  socket.onopen();
+  return JSON.parse(socket.sent[0]);
+}
+
+test("tokenStorageKey / pickToken：键带端口；存储里的东西当不可信；没有存储也不抛", () => {
+  assert.equal(V.tokenStorageKey("192.168.1.23:8766"), KEY);
+  assert.equal(V.tokenStorageKey("example.invalid"), "tlt.viewer.k:");
+  assert.deepEqual(V.pickToken("#k=abc", null, KEY), { token: "abc", fromHash: true, saved: false });
+  assert.deepEqual(V.pickToken("", null, KEY), { token: null, fromHash: false, saved: false });
+  const bad = { getItem: () => "a&b", setItem() {} };
+  assert.equal(V.pickToken("", bad, KEY).token, null, "形状不对的不认");
+  V.forgetToken(null, KEY);                     // 没有存储：什么都不做，不抛
+});
+
+test("扫码进来：口令存进这台手机，存成了就把 #k= 从地址栏去掉，拿它鉴权", () => {
+  withPhone({ hash: "#k=tok-scanned" }, ({ store, replaced, sockets }) => {
+    assert.equal(store.get(KEY), "tok-scanned");
+    assert.deepEqual(replaced, ["/"], "地址栏只留页面本身");
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+  });
+});
+
+test("刷新（地址栏里已经没有口令）：从这台手机的存储里取，照常连上", () => {
+  withPhone({ hash: "", stored: { [KEY]: "tok-scanned" } }, ({ elements, replaced, sockets }) => {
+    assert.deepEqual(replaced, [], "没有可去掉的");
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+    sockets[0].onmessage({ data: helloMsg(0) });
+    assert.equal(elements["conn-text"].textContent, "已连接");
+  });
+});
+
+test("再扫一次新的二维码：地址栏里的口令盖掉存着的旧口令", () => {
+  withPhone({ hash: "#k=tok-new", stored: { [KEY]: "tok-old" } }, ({ store, sockets }) => {
+    assert.equal(store.get(KEY), "tok-new");
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-new" });
+  });
+});
+
+test("被拒（4401）：清掉存着的口令，显示链接已失效，不再重连", () => {
+  withPhone({ hash: "", stored: { [KEY]: "tok-rotated-away" } }, ({ elements, store, sockets, timeouts }) => {
+    authOf(sockets[0]);
+    sockets[0].onclose({ code: 4401 });
+    assert.equal(store.has(KEY), false, "作废的口令不留在手机上");
+    assert.equal(elements["conn-text"].textContent, "链接已失效，请向中控要新的二维码");
+    assert.equal(timeouts.length, 0, "不排重连");
+  });
+});
+
+test("存储用不了（抛错）：退回只用地址栏里的口令，地址栏不清——清了刷新就连不上", () => {
+  withPhone({ hash: "#k=tok-scanned", storage: "throw" }, ({ replaced, sockets }) => {
+    assert.deepEqual(replaced, []);
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+    sockets[0].onclose({ code: 4401 });         // 清存储也抛错：不影响走到「链接已失效」
+  });
+});
+
+test("存储写了读不回来（被静默丢掉）：地址栏同样不清", () => {
+  withPhone({ hash: "#k=tok-scanned", storage: "drop" }, ({ replaced, sockets }) => {
+    assert.deepEqual(replaced, []);
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+  });
+});
+
+test("没有 history 接口：口令照旧留在地址栏，照常连上", () => {
+  withPhone({ hash: "#k=tok-scanned", history: false }, ({ store, sockets }) => {
+    assert.equal(store.get(KEY), "tok-scanned");
+    assert.deepEqual(authOf(sockets[0]), { type: "auth", k: "tok-scanned" });
+  });
+});
+
+test("地址栏和存储里都没有（换了地址或端口，或主屏幕图标读不到 Safari 存的那份）：不发起连接，直接说链接已失效", () => {
+  withPhone({ hash: "", stored: { "tlt.viewer.k:8767": "tok-other-port" } }, ({ elements, sockets }) => {
+    assert.equal(sockets.length, 0);
+    assert.equal(elements["conn-text"].textContent, "链接已失效，请向中控要新的二维码");
+  });
+});
+
+// ---- 持续提示里的换行（顺延事项：手机上换行被折成空格）----
+// 「没有读到 TikTok 登录」那条带完全磁盘访问权限那几步时分了行（路径单独一行，app/browser_login.py）。
+// 桌面照着断行（style.css .incident），手机以前没有 white-space: pre-line，整条挤成一段话
+test("手机的持续提示照文字里的换行断行：样式是 pre-line，文字原样放进去（不拼成一行）", () => {
+  assert.match(CSS_NO_COMMENTS, /\.incident-list \.incident\s*\{[^}]*white-space:\s*pre-line/);
+  withFakeViewerPage(({ elements, ws }) => {
+    const text = "程序没有读到浏览器里的 TikTok 登录。\n「…」\n然后完全退出程序再打开。";
+    ws.onmessage({ data: JSON.stringify({ type: "incident", id: "login", level: "warn", text: text, ts: 1 }) });
+    assert.equal(elements["incident-list"].children[0].textContent, text);
+  });
+});
