@@ -670,7 +670,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 
 | # | 位置 | 中文 | English | 备注 |
 |---|---|---|---|---|
-| 150 | index.html #flash-btn `.btn-label` | 闪购 | Flash Sale | 窄于 1400px 只留图标（英文）；中文放得下时露字，见 §4.2 |
+| 150 | index.html #flash-btn `.btn-label` | 闪购 | Flash Sale | 英文窄于 1600px 只留图标；中文 1000–1399px 只露字（「报警开」亮着时只留图标），1400px 起图标加字，见 §4.2 |
 | 151 | index.html #flash-btn title、#flash-panel aria-label 和标题；flash.js flashButtonState | 闪购助手 · {胶囊} | Flash Sale Helper · {chip} | 按钮的 title 同时写进 aria-label：颜色之外读屏也念得到要不要处理 |
 | 152 | flash.js flashChip | 运行中 / 要处理 / 未开始 / 没在运行 / 正在查看… | Running / Needs attention / Not started / Not running / Checking… | 浮层标题旁的胶囊。「未开始」同手机页 #120（Not started） |
 | 153 | flash.js flashLines（连不上） | 闪购助手没在运行。 / 127.0.0.1:9334 连不上，每 15 秒再查一次。 | Flash Sale Helper isn’t running. / 127.0.0.1:9334 isn’t answering. Checking again every 15 sec. | 契约：闪购助手关了接口就连不上。连不上不变色 |
@@ -779,6 +779,44 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
     只有字的按钮宽度 40–52px。1101–1139px 这一段样式不变、越宽余量越多，最紧的是 1101，所以 1117、1139 不另量。
     `live-float-zh@1000`（和 `live-float-zh-extra@1000`）是满编（报警开、长品牌名）的那一档。**这些宽度只在 CI 的 macOS 跑器上量，
     写这条时没有量过**：1140px（+23）和 1000px（+26）若实测偏窄几个像素，可调的是内边距（10 → 8px，省 4px）和 1140 这个起点。
+- **「闪购」按钮和「Aa」（2026-10-27，装了闪购助手才有，首页和直播中都在）**：多一颗 28px 的图标按钮，加间距 8px，顶栏多 36px。
+  按原来的余量（英文 `live-float-extra@1000` 只剩约 13px、中文 `live-float-zh-quiet-extra@1101` 约 +2px）放不下，所以同一个改动里把宽度补回来：
+  - **做法（用户定的方案甲）**：有闪购按钮（`body.has-flash-btn`）、窗口窄于 1400px 时，字号控件收成一颗 28px 的「Aa」（`#font-btn`），
+    点开的小浮层就是原来的字号控件（`label#font-ctl` 原地改成浮层样式，两个 A 都露出来，滑条 160px）。英文 ≤1199px 字号控件是 72 + 16 = 88px，
+    中文是约 107 + 16 = 123px，换成 28px：英文净省约 24px、中文约 59px。首页和 ≤720px 不显示（同原来的字号控件）。宽窗口、没装闪购助手时一切照旧。
+  - **按钮上的字**：中文 1000–1399px 只露「闪购」两个字、不带图标（46px，照「浮窗」的做法；「报警开」标签亮着时不露字），1400px 起图标加字（63px）。
+    英文窄于 1600px 只有图标：1400px 起「Aa」退场、字号控件（130px）回到顶栏，Flash Sale 再露出来（按钮约 100px）的话，
+    `live-flash@1400` 的品牌标签只剩 82px、`live-flash-extra@1400` 54px；只有图标时是 154 / 126px。
+  - **余量**（G10 装置在本机 macOS 实测，无头 Chrome，场景照 G10 原样；正数 = `.brand` 和 `.controls` 之间还空着多少像素，
+    负数 = 品牌标签、状态字一共被挤掉多少。`live-float*` 是同一个场景没有闪购按钮的样子，作对照）：
+
+    | 窗口宽 | live-float | live-flash | live-float-extra | live-flash-extra | 说明 |
+    |---:|---:|---:|---:|---:|---|
+    | 1000 | −18.5（品牌 141.5） | **+5.4**（160） | −46.5（113.5） | −22.6（**137.4**） | G10 下限 100 |
+    | 1100 | +7.5 | +31.3 | −20.5（139.5） | +3.3 | |
+    | 1101 | +16.5 | +32.3 | −11.5（148.5） | +4.3 | G10 下限 120 |
+    | 1199 | +106.5 | +130.3 | +78.5 | +102.3 | |
+    | 1200 | −34.5（125.5） | +23.9 | −62.5（97.5） | −4.1（155.9） | |
+    | 1400 | — | −6.2（153.8） | — | −34.2（125.8） | 「Aa」退场；英文只有图标。新加的下限 120 |
+    | 1600 | — | +122 | — | +94 | 英文露出 Flash Sale |
+
+    | 窗口宽 | live-float-zh-quiet | live-flash-zh-quiet | live-float-zh-quiet-extra | live-flash-zh-quiet-extra |
+    |---:|---:|---:|---:|---:|
+    | 1000 | +57.4 | +97.7 | +29.4 | +69.7 |
+    | 1100 | +99.4 | +139.7 | +71.4 | +111.7 |
+    | 1101 | +41.9 | +74.2 | +13.9 | **+46.2** |
+    | 1140 | +54.9 | +95.2 | +26.9 | +67.2 |
+    | 1399 | +313.9 | +354.2 | +285.9 | +326.2 |
+    | 1400 | +273.9 | +202.9 | +245.9 | +174.9 |
+
+    中文满编（报警开、长品牌名）1000px：`live-float-zh` −2.5（状态字被截 2.5px，§4.2「浮窗」那条记的 −4px 那一档）、`live-flash-zh` **+55.8**；
+    `-extra` −30.5 对 **+27.8**。首页 `home-flash@1000/860/720` 比 `home-idle` 少 36px，`home-flash-zh@1000` 露字少 54px，最窄的 720px 还空着约 361px。
+    中文露字的这一列已经计入「闪购」两个字（比只有图标多 18px）。各档都比没有闪购按钮时宽松，所以「浮窗」两个字的露法（`ZH_FLOAT_SHAPE`）一点没动。
+  - **G10**：`live-flash@宽度`、`live-flash-extra@宽度`（进 `LIVE_BASES`，下限一条没放宽，另加 1400、1600 两档，1400、1600 品牌标签 ≥120）、
+    `live-flash-zh@1000`、`live-flash-zh-extra@1000`（进 `ZH_FULL_BASES`）、`live-flash-zh-quiet@宽度` 和 `-extra`（进 `ZH_QUIET_BASES`，六档，
+    「浮窗」露法同不带闪购的）、`home-flash@宽度`、`home-flash-zh@宽度`（`HOME_WIDTHS`）。另查：闪购按钮露出、「Aa」窄于 1400px 时约 28px、
+    字号控件收起，1400px 起反过来；按钮上的字和图标露不露符合上面的规则；闪购助手写的中文记录落在 `i18n-data` 里、标题在 `translate="no"` 里。
+    `live-flash`、`home-flash` 进 `DESKTOP_EN`，扫漏翻。上表是写这条时在本机量的（2026-10-27），CI 的 dom-scan 跑同一组断言。
 - **≤860 / ≤720 / ≤600**：两种语言都靠现有断点逐级收起，英文版不会更糟。
   600px 以下本来就允许折行。
 - **首页的「字幕译成」标签（用户 2026-10-20）**：首页（`body.home`：待机、已结束、出错）在任何宽度都露出这四个字 / Captions in，
