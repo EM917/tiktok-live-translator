@@ -1241,6 +1241,9 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .flash-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .flash-summary { margin-top: 10px; font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
 .flash-products { list-style: none; margin-top: 6px; }
+/* 点开「还有 N 个」时焦点落在这张表上（app.js；按钮自己藏起来了）：键盘过来的才画焦点环 */
+.flash-products:focus { outline: none; }
+.flash-products:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); border-radius: 6px; }
 .flash-row { padding: 7px 0; border-top: 0.5px solid var(--separator); }
 .flash-row:first-child { border-top: 0; }
 .flash-row-top { display: flex; align-items: center; gap: 8px; min-width: 0; }

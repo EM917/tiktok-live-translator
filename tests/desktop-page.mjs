@@ -69,7 +69,8 @@ export class FakeEl {
   removeEventListener() {}
   fire(type) { (this.listeners[type] || []).slice().forEach((cb) => cb({ target: this, key: "", preventDefault() {} })); }
   click() { if (!this.disabled) this.fire("click"); }
-  focus() {}
+  // 焦点：属于哪一页（ownerDocument，loadDesktop 给它的元素都挂上）就记进那一页的 document.activeElement
+  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
   getBoundingClientRect() { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 }; }
   contains(n) { for (let x = n; x; x = x.parentNode) if (x === this) return true; return false; }
   descendants() { return this.children.flatMap((c) => [c, ...c.descendants()]); }
@@ -113,6 +114,7 @@ export const ROOM = "https://www.tiktok.com/@luna_demo/live";
  *   store               localStorage 的当前内容（Map）
  *   disconnect()/connect()  切断 / 恢复发送
  *   dispatch(type, event)   触发 document 上登记的监听（Esc、点外面关这类）
+ *   active()            document.activeElement（el.focus() 改它，起始是 body）
  */
 export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000, brokenStorage = false } = {}) {
   const html = web("index.html");
@@ -137,16 +139,20 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000, brok
     setProperty: (k, v) => { cssVars[k] = v; },
     getPropertyValue: (k) => cssVars[k] || "",
   };
+  const own = (el) => Object.assign(el, { ownerDocument: document });
   const document = {
     documentElement: root, body: new FakeEl("body"), title: "TikTok Live Translator", hidden: false,
     getElementById: (id) => byId.get(id) || null,
-    createElement: (tag) => new FakeEl(tag),
-    createElementNS: (_, tag) => new FakeEl(tag),
+    createElement: (tag) => own(new FakeEl(tag)),
+    createElementNS: (_, tag) => own(new FakeEl(tag)),
     createTextNode: (v) => new FakeText(v),
     createRange: () => ({ selectNodeContents() {} }),
     addEventListener: (type, cb) => { (docListeners[type] = docListeners[type] || []).push(cb); },
     querySelector: () => null, querySelectorAll: () => [], hasFocus: () => true,
   };
+  // 什么都没聚焦时 activeElement 是 body（同真浏览器）；el.focus() 才改它
+  document.activeElement = document.body;
+  [root, document.body, ...byId.values()].forEach(own);
   const sockets = [];
   const sent = [];
   function FakeWebSocket(url) { this.url = url; this.readyState = 1; sockets.push(this); }
@@ -189,6 +195,7 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000, brok
     sent, cssVars, store, root, body: document.body,
     // document 上的监听（捕获阶段的 pointerdown、Esc 的 keydown……）：照登记顺序逐个调，event 原样传进去
     dispatch: (type, event) => { (docListeners[type] || []).slice().forEach((cb) => cb(event)); },
+    active: () => document.activeElement,
     advance: (ms) => { now += ms; },
     now: () => now,
     tick: (ms) => { intervals.filter((t) => t.ms === ms).forEach((t) => t.fn()); },

@@ -75,6 +75,34 @@ for (const lang of ["zh", "en"]) {
     assert.ok(!attn(page));
   });
 
+  test(name("打开浮层：让按钮变色的那条问题记录比最后 5 条早，照样列着、加粗，主句照样写；关上再开才收起"), () => {
+    // SAMPLE.alerts 共 6 条，❌ 是最早的那条（alerts[0]）：只看最后 5 条的话它不在列表里
+    assert.ok(SAMPLE.alerts.length === 6 && SAMPLE.alerts[0].text.startsWith("❌"));
+    const page = loadDesktop({ lang });
+    hello(page, { flash_sale: calm({ alerts: SAMPLE.alerts }) });
+    const rows = () => page.el("flash-alerts").children;
+    const xRow = () => rows().find((li) => li.textContent.includes("❌"));
+    const newLine = T("最近记录里有 1 条新的问题。", "1 new problem in Recent Activity.");
+    const said = () => [page.el("flash-headline"), ...page.el("flash-detail").children].map((el) => el.textContent);
+    assert.ok(attn(page));
+    btn(page).click();
+    assert.ok(open(page) && !attn(page), "打开即算看过：按钮恢复原色");
+    assert.ok(xRow(), "让按钮变色的那一条还在浮层里");
+    assert.ok(xRow().classList.contains("new"), "照样加粗");
+    assert.equal(rows().length, 6);
+    assert.ok(said().includes(newLine), "主句照样写：" + said().join(" | "));
+    assert.equal(page.el("flash-state").textContent, T("要处理", "Needs attention"));
+    // 开着时状态又推来一份（同样的记录）：照样列着
+    page.push(Object.assign({ type: "flash_sale" }, calm({ alerts: SAMPLE.alerts })));
+    assert.ok(xRow() && xRow().classList.contains("new"));
+    btn(page).click();                                            // 关上
+    btn(page).click();                                            // 再打开：已经看过了
+    assert.equal(xRow(), undefined, "看过的、比最后 5 条早的不再列");
+    assert.equal(rows().filter((li) => li.classList.contains("new")).length, 0);
+    assert.ok(!said().includes(newLine));
+    assert.equal(page.el("flash-state").textContent, T("运行中", "Running"));
+  });
+
   test(name("看过的记录跨页面记着；localStorage 读写都抛时照常跑，只在这一页记着"), () => {
     const seen = JSON.stringify({ at: SAMPLE.alerts[0].at_ms, texts: [SAMPLE.alerts[0].text] });
     const again = loadDesktop({ lang, stored: { flashSeen: seen } });
@@ -203,6 +231,31 @@ for (const lang of ["zh", "en"]) {
     assert.ok(hidden(page, "flash-more"));
     btn(page).click();
     assert.equal(rows(), 40);
+  });
+
+  test(name("「还有 N 个」点开后自己藏起来：焦点在它身上的话挪到商品列表（不滚动），不掉回页面开头"), () => {
+    const page = loadDesktop({ lang });
+    hello(page, { flash_sale: calm({ products: Array.from({ length: 45 }, (_, i) => product("live", { id: "p" + i })) }) });
+    btn(page).click();
+    const list = page.el("flash-products");
+    assert.equal(list.getAttribute("tabindex"), "-1", "列表本身能接焦点，重画时它不换");
+    const how = [];
+    const realFocus = list.focus;
+    list.focus = function (opts) { how.push(opts); return realFocus.call(this, opts); };
+    page.el("flash-more").focus();                                // 键盘 Tab 到按钮上、按 Enter
+    page.el("flash-more").click();
+    assert.ok(hidden(page, "flash-more"));
+    assert.equal(page.active(), list);
+    assert.equal(JSON.stringify(how), JSON.stringify([{ preventScroll: true }]));     // 对象是页面那边建的，跨 realm 不能 deepEqual
+    page.push(Object.assign({ type: "flash_sale" }, calm({ products: Array.from({ length: 46 }, (_, i) => product("live", { id: "p" + i })) })));
+    assert.equal(page.active(), list, "状态又推来、整张表重画：焦点还在列表上");
+    // 鼠标点（焦点不在按钮上，Safari 点按钮就不给它焦点）：不去动焦点
+    btn(page).click();
+    btn(page).click();
+    page.el("history").focus();
+    page.el("flash-more").click();
+    assert.equal(page.active(), page.el("history"));
+    assert.equal(how.length, 1);
   });
 
   test(name("「Aa」：点开合 #font-ctl（.open）、aria-expanded 跟着；和闪购浮层互斥；回首页、没了闪购按钮时关掉"), () => {

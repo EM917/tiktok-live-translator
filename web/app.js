@@ -4046,6 +4046,10 @@
   };
   var flashState = null;          // 最近一份状态；null = hello 里没有这个键（没装闪购助手），按钮整颗不出现
   var flashExpanded = false;      // 「还有 N 个」点开了；浮层关上时收回
+  // 浮层开着时 = 打开那一刻之前的「已看过」（可能是 null：什么都没看过）；关着时是 undefined。
+  // 打开即算看过（用户 10-27 定，按钮马上恢复原色），但浮层里还得照打开前的算：让按钮变色的那条问题记录可能比
+  // 最后 5 条早，按打开后的「已看过」算它就既不加粗、也不在列表里了，主句「有 n 条新的问题」也跟着没了
+  var flashSeenAtOpen;
   var flashCountdowns = [];       // 最近一次画出来的倒计时 span，flashTick 每秒只改它们的字
   // 看过的问题记录：打开浮层时记下，存 localStorage。存不了（隐私模式等）就只在这一页记着——lsGet / lsSet 自己包了 try/catch
   var FLASH_SEEN_KEY = "flashSeen";
@@ -4066,10 +4070,12 @@
       closeFontPopover();       // 没有「Aa」了：字号控件回到顶栏里，它的小浮层不能还开着
       return;
     }
-    // 收到就画，不等打开（G10 的扫描也扫隐藏的元素）
+    // 收到就画，不等打开（G10 的扫描也扫隐藏的元素）。开着时「新的」按打开前的已看过算：打开那一刻没看过的、
+    // 和开着时新来的，都照样列出来、加粗（按打开后的算，只会比它少，见 flashSeenAtOpen）
     if (flashPanel) {
+      var shown = flashSeenAtOpen !== undefined ? flashUnread(flashState.alerts, flashSeenAtOpen) : unread;
       flashCountdowns = renderFlashPanel(document, flashEls, flashState,
-                                         { now: Date.now(), expanded: flashExpanded, unread: unread });
+                                         { now: Date.now(), expanded: flashExpanded, unread: shown });
     }
   }
 
@@ -4098,9 +4104,11 @@
   }
 
   // 不挪焦点（同手机同看）：浮层紧跟着按钮，键盘用户按 Tab 就进去了。
-  // 打开即算看过了眼下的问题记录（用户 10-27 定）；开着时新来的照样算没看过，下次打开才记
+  // 打开即算看过了眼下的问题记录（用户 10-27 定）：按钮恢复原色，浮层里那几条照样加粗列着，直到关上；
+  // 开着时新来的照样算没看过（按钮再变色），下次打开才记
   function openFlashPanel() {
     if (!flashPanel || !flashState) return;
+    flashSeenAtOpen = flashSeen;
     markFlashSeen();
     paintFlash();
     showPopover(flashPanel, flashBtn);
@@ -4111,10 +4119,9 @@
     hidePopover(flashPanel, flashBtn);
     if (!wasOpen) return;
     clearFlashNote();
-    if (flashExpanded) {
-      flashExpanded = false;
-      paintFlash();
-    }
+    flashExpanded = false;
+    flashSeenAtOpen = undefined;
+    paintFlash();
   }
 
   if (flashBtn && flashPanel) {
@@ -4125,8 +4132,13 @@
   if (flashCloseBtn) flashCloseBtn.addEventListener("click", closeFlashPanel);
   if (flashMore) {
     flashMore.addEventListener("click", function () {
+      // 点开以后「还有 N 个」自己藏起来（flash.js renderFlashPanel）：焦点要是在它身上，挪到商品列表上
+      // （#flash-products 带 tabindex="-1"，重画时它本身不换、只换里面的行），键盘和读屏的人不会掉回页面开头。
+      // 不滚动：新列出来的第 41 行就在按钮原来的位置
+      var hadFocus = document.activeElement === flashMore;
       flashExpanded = true;
       paintFlash();
+      if (hadFocus && flashEls.products) flashEls.products.focus({ preventScroll: true });
     });
   }
   if (flashOpenBtn) {
