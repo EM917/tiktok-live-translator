@@ -313,7 +313,9 @@ def test_python_children_we_decode_as_utf8_are_told_to_write_utf8():
                      if isinstance(n, ast.Constant) and isinstance(n.value, str)}
             texts |= {n.arg for n in ast.walk(func)          # dict(os.environ, PYTHONIOENCODING=…)
                       if isinstance(n, ast.keyword) and n.arg}
-            if "PIPE" not in attrs or "executable" not in attrs:
+            # Python 子进程：sys.executable，或跑 pip 用的 macbundle.pip_python（.app 壳里换成 .venv 的 python）
+            python_child = "executable" in attrs or "pip_python" in _calls(func)
+            if "PIPE" not in attrs or not python_child:
                 continue                          # 输出没进管道，或不是 Python 子进程（git/ffmpeg）
             if any(mod in texts for mod in _CHILD_FIXES_ITS_OWN_STDIO):
                 continue                          # 我们自己的 worker，出口自带 UTF-8 护栏

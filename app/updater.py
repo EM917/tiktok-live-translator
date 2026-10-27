@@ -32,6 +32,7 @@ from .bootstrap import (MLX_GIVEUP, OPTIONAL_DISTS, clear_mlx_giveup, filter_req
                         recorded_requirements_digest, requirements_digest,
                         skipped_for_this_machine, write_mlx_giveup, write_requirements_stamp)
 from .i18n import L
+from .macbundle import pip_python
 from .settings import load_settings, save_setting
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -553,8 +554,10 @@ class Updater:
                     print("[信息] 正在监听或一键更新，yt-dlp 自动更新这次跳过（{}）".format(reason))
                     return "busy"
                 before = {name: component_version(name) for name in ("yt-dlp", "curl_cffi")}
+                # 不用 sys.executable：在 .app 壳里时那是 Contents/MacOS/python，脚本会写进 .app、
+                # 旧版不卸（macbundle.pip_python）
                 proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "pip", "install",
+                    pip_python(ROOT), "-m", "pip", "install",
                     "--disable-pip-version-check", "{}=={}".format(YTDLP_SPEC, pick),
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                     # 我们按 UTF-8 解它的输出，就得让它按 UTF-8 写（与 bootstrap.run_logged
@@ -659,7 +662,7 @@ class Updater:
             outcome = "异常"                        # i18n: terminal（写进 pip 日志文件）
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "pip", "install",
+                    pip_python(ROOT), "-m", "pip", "install",    # 同 freshen_ytdlp：不用壳里的 python
                     "--disable-pip-version-check", *args,
                     stdout=log if log is not None else asyncio.subprocess.DEVNULL,
                     stderr=(asyncio.subprocess.STDOUT if log is not None
@@ -1108,14 +1111,14 @@ class Updater:
         path = str(ROOT)
         tag = self._release_tag()
         if _on_windows():
-            return powershell_command(path, discard=discard, pip=pip, python=sys.executable, tag=tag)
+            return powershell_command(path, discard=discard, pip=pip, python=pip_python(ROOT), tag=tag)
         steps = ["git checkout -- ."] if discard else []
         steps += _git_steps(tag)
         if pip and not discard:
             # -c constraints.txt（I4）：装的是测试过的那一套版本。取到新版本之后工作区就是新版本，
-            # 它的 constraints.txt 已经在那里
+            # 它的 constraints.txt 已经在那里。解释器和程序自己跑 pip 用的同一个（macbundle.pip_python）
             steps.append('"{}" -m pip install -r requirements.txt -c constraints.txt'.format(
-                sys.executable))
+                pip_python(ROOT)))
         return 'cd "{}" && '.format(path) + " && ".join(steps)   # i18n: data（shell 命令）
 
     def _release_tag(self):
