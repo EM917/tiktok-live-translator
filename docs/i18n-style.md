@@ -616,7 +616,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 中文 | English | 备注 |
 |---|---|---|---|
 | 122 | 连接中… / 已连接 / 已断开，{n} 秒后重连… | Connecting… / Connected / Reconnecting in {n} sec… | 状态胶囊（见 §4 R4） |
-| 123 | 链接已失效，请向中控要新的二维码 | Link expired · Ask for a new QR code | 305 → 222px |
+| 123 | 链接已失效，请向中控要新的二维码 | Link expired · Ask for a new QR code | 305 → 222px。只用于服务端不认这把口令（关闭码 4401） |
+| 123a | 手机上没有同看钥匙，请重新扫码 | No access key · Scan the QR code | 2026-10-26 加（#148 / D5 之后）：地址栏和这台手机的存储里都没有口令时（从主屏幕图标打开读不到 Safari 存的那份、电脑换了地址或端口、Safari 清掉了网站数据）。这时链接并没有失效、墙上的二维码照样能用，以前却和 #123 共用「链接已失效」。只写看到的（这台手机上没有）和能做的（重新扫码），不说为什么没有（第八条）。「钥匙 / access key」同 #90。胶囊里放得下：中英都不比 #123 长（R4） |
 | 124 | 同看人数已满（12 人），稍后再试 | Full (12 max) · Try again later | |
 | 125 | 中控已关闭手机同看 / {n} 秒没有新消息 / 状态未知 | Operator stopped sharing / No updates for {n} sec / Status unknown | |
 | 126 | 未开始 / 连接中 / 直播中 / 已停止 | Not started / Connecting / Live / Stopped | |

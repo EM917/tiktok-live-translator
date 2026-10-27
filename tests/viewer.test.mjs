@@ -12,11 +12,12 @@ const require = createRequire(import.meta.url);
 const V = require("../web/viewer.js");
 
 // ---- statusText ----
-test("statusText 覆盖 7 个状态", () => {
+test("statusText 覆盖 8 个状态", () => {
   assert.equal(V.statusText("connecting"), "连接中…");
   assert.equal(V.statusText("connected"), "已连接");
   assert.equal(V.statusText("reconnecting", 3), "已断开，3 秒后重连…");
   assert.equal(V.statusText("denied"), "链接已失效，请向中控要新的二维码");
+  assert.equal(V.statusText("nokey"), "手机上没有同看钥匙，请重新扫码");
   assert.equal(V.statusText("full"), "同看人数已满（12 人），稍后再试");
   assert.equal(V.statusText("off"), "中控已关闭手机同看");
   assert.equal(V.statusText("stale", 50), "50 秒没有新消息");
@@ -1631,11 +1632,37 @@ test("没有 history 接口：口令照旧留在地址栏，照常连上", () =>
   });
 });
 
-test("地址栏和存储里都没有（换了地址或端口，或主屏幕图标读不到 Safari 存的那份）：不发起连接，直接说链接已失效", () => {
-  withPhone({ hash: "", stored: { "tlt.viewer.k:8767": "tok-other-port" } }, ({ elements, sockets }) => {
+// 顺延事项（#148 / D5 的后果）：这时链接并没有失效、墙上的二维码照样能用，以前却和 4401 共用「链接已失效」。
+// 现在单独一个状态 nokey，只说这台手机上没有、请重新扫码（第八条：不说为什么没有）；4401 照旧是 denied
+test("地址栏和存储里都没有（换了地址或端口，或主屏幕图标读不到 Safari 存的那份）：不发起连接，说手机上没有、请重新扫码，不说链接已失效", () => {
+  withPhone({ hash: "", stored: { "tlt.viewer.k:8767": "tok-other-port" } }, ({ elements, sockets, timeouts }) => {
     assert.equal(sockets.length, 0);
-    assert.equal(elements["conn-text"].textContent, "链接已失效，请向中控要新的二维码");
+    assert.equal(elements["conn-text"].textContent, "手机上没有同看钥匙，请重新扫码");
+    assert.doesNotMatch(elements["conn-text"].textContent, /失效/);
+    assert.equal(elements["conn-dot"].className, "dot nokey", "胶囊和 denied 一样是红的（viewer.css）");
+    assert.equal(timeouts.length, 0, "不排重连：没有口令，连了也白连");
   });
+});
+
+test("4401 被拒之后再打开：存储里已经清掉了，这次说手机上没有、请重新扫码", () => {
+  let left = null;
+  withPhone({ hash: "", stored: { [KEY]: "tok-rotated-away" } }, ({ elements, store, sockets }) => {
+    authOf(sockets[0]);
+    sockets[0].onclose({ code: 4401 });
+    assert.equal(elements["conn-text"].textContent, "链接已失效，请向中控要新的二维码", "被拒的这一次照旧说失效");
+    left = Object.fromEntries(store);
+  });
+  assert.deepEqual(left, {});
+  withPhone({ hash: "", stored: left }, ({ elements, sockets }) => {
+    assert.equal(sockets.length, 0);
+    assert.equal(elements["conn-text"].textContent, "手机上没有同看钥匙，请重新扫码");
+  });
+});
+
+test("nokey 的胶囊和红色样式同 denied；胶囊不比 denied 长（R4 量过 denied 在 320 宽放得下）", () => {
+  assert.ok(V.statusText("nokey").length <= V.statusText("denied").length);
+  assert.match(CSS_NO_COMMENTS, /\.status-pill:has\(\.dot\.denied\), \.status-pill:has\(\.dot\.nokey\)/);
+  assert.match(CSS_NO_COMMENTS, /\.dot\.denied, \.dot\.nokey,[^{]*\{ background: var\(--red\); \}/);
 });
 
 // ---- 持续提示里的换行（顺延事项：手机上换行被折成空格）----

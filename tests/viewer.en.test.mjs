@@ -33,6 +33,9 @@ test("连接状态胶囊：短写法，{n} 填上秒数", () => {
   assert.equal(V.statusText("reconnecting", 4), "Reconnecting in 4 sec…");
   assert.equal(V.statusText("reconnecting"), "Reconnecting in 0 sec…");
   assert.equal(V.statusText("denied"), "Link expired · Ask for a new QR code");
+  // 地址栏和这台手机上都没有口令：链接并没有失效，不和 4401 共用 denied（顺延事项，#148 / D5 的后果）
+  assert.equal(V.statusText("nokey"), "No access key · Scan the QR code");
+  assert.ok(V.statusText("nokey").length <= V.statusText("denied").length, "胶囊放得下（R4）");
   assert.equal(V.statusText("full"), "Full (12 max) · Try again later");
   assert.equal(V.statusText("off"), "Operator stopped sharing");
   assert.equal(V.statusText("stale", 50), "No updates for 50 sec");

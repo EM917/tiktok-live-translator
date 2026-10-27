@@ -74,6 +74,11 @@ var CONN_TEXT = {
   connected: L("已连接", "Connected"),
   reconnecting: L("已断开，{n} 秒后重连…", "Reconnecting in {n} sec…"),
   denied: L("链接已失效，请向中控要新的二维码", "Link expired · Ask for a new QR code"),
+  // 地址栏和这台手机的存储里都没有口令（顺延事项，#148 / D5 的后果）：从主屏幕图标打开读不到 Safari 存的那份、
+  // 电脑换了地址或端口、Safari 清掉了网站数据。这时链接并没有失效，墙上的二维码照样能用，以前却和 4401（服务端
+  // 不认这把口令）共用「链接已失效」。按第八条只写看到的（这台手机上没有）和能做的（重新扫码），不说为什么没有。
+  // 英文和 denied 一样放在胶囊里，不比它长（R4）
+  nokey: L("手机上没有同看钥匙，请重新扫码", "No access key · Scan the QR code"),
   full: L("同看人数已满（12 人），稍后再试", "Full (12 max) · Try again later"),
   off: L("中控已关闭手机同看", "Operator stopped sharing"),
   stale: L("{n} 秒没有新消息", "No updates for {n} sec"),
@@ -231,8 +236,8 @@ function pickToken(hash, storage, key) {
   return { token: ok ? stored : null, fromHash: false, saved: false };
 }
 
-// 被拒（4401：服务端不认这把口令）时清掉存着的口令：下次打开直接说「链接已失效」，
-// 不再拿同一把口令去连。存储抛错不影响调用方
+// 被拒（4401：服务端不认这把口令）时清掉存着的口令：这一次说「链接已失效」，下次打开存储里没有了，
+// 说「手机上没有同看钥匙，请重新扫码」（nokey），不再拿同一把口令去连。存储抛错不影响调用方
 function forgetToken(storage, key) {
   try { storage.removeItem(key); } catch (e) { /* 存储用不了：本来也没存进去 */ }
 }
@@ -762,7 +767,7 @@ if (typeof document !== "undefined") {
       refreshAllRetranslateButtons();   // 断线/重连都要跟着刷「重译」按钮的可点状态
     }
 
-    // 断线（reconnecting/denied/full/off）时不能让 stream-text 停在最后一次
+    // 断线（reconnecting/denied/nokey/full/off）时不能让 stream-text 停在最后一次
     // 收到的「直播中」不动——那正是 app/server.py:221-225 那条教训的手机版
     // （spec §12：「绝不在断线时继续显示『直播中』」）。之前只有 setConnState
     // 更新 conn-text/conn-dot，stream-text 只由 "status" 消息写，断线期间没人
@@ -792,7 +797,7 @@ if (typeof document !== "undefined") {
     }
 
     function connect() {
-      if (!TOKEN) { setConnState("denied"); return; }   // 拿不到 token：连文案都不发起连接
+      if (!TOKEN) { setConnState("nokey"); return; }   // 拿不到 token：连都不发起连接，说这台手机上没有（不说链接失效）
       setConnState(connState === "reconnecting" || connState === "full" || connState === "off"
         ? connState : "connecting");
       var socket;
@@ -830,7 +835,7 @@ if (typeof document !== "undefined") {
 
     function onSocketDown(code) {
       if (code === 4401) {                                            // 不再重连
-        forgetToken(tokenStore, TOKEN_KEY);   // S4：服务端不认这把口令，存着的清掉，下次打开直接说链接已失效
+        forgetToken(tokenStore, TOKEN_KEY);   // S4：服务端不认这把口令，存着的清掉；下次打开说这台手机上没有（nokey）
         setConnState("denied");
         return;
       }

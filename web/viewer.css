@@ -152,12 +152,12 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 }
 .status-pill:has(.dot.connected) { padding: 0 10px 0 8px; background: var(--a-green-16); color: var(--green-ink); }
 .status-pill:has(.dot.connecting), .status-pill:has(.dot.reconnecting) { padding: 0 10px 0 8px; background: var(--a-orange-16); color: var(--orange-ink); }
-.status-pill:has(.dot.denied), .status-pill:has(.dot.off), .status-pill:has(.dot.full) { padding: 0 10px 0 8px; background: var(--a-red-14); color: var(--fail-ink); }
+.status-pill:has(.dot.denied), .status-pill:has(.dot.nokey), .status-pill:has(.dot.off), .status-pill:has(.dot.full) { padding: 0 10px 0 8px; background: var(--a-red-14); color: var(--fail-ink); }
 
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gray); flex: none; }
 .dot.connected { background: var(--green); }
 .dot.connecting, .dot.reconnecting { background: var(--orange); }
-.dot.denied, .dot.off, .dot.full { background: var(--red); }
+.dot.denied, .dot.nokey, .dot.off, .dot.full { background: var(--red); }
 
 .conn-text { font-size: var(--fs-footnote); font-weight: 600; white-space: nowrap; color: inherit; overflow: hidden; text-overflow: ellipsis; }
 .sep { color: var(--label-3); }
