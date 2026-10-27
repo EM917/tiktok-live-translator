@@ -175,7 +175,7 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 .alert-badge { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-footnote); font-weight: 700; color: var(--fail); flex: none; }
 .stale-line { padding: 4px 14px; font-size: var(--fs-caption); color: var(--label-2); }
 
-/* 违禁词警示关闭时的常驻提示：灰底灰字，不抢红色报警的注意力，但也不会被忽略 */
+/* 违禁词报警关闭时的常驻提示：灰底灰字，不抢红色报警的注意力，但也不会被忽略 */
 .alert-mode-line {
   padding: 6px 14px; font-size: var(--fs-footnote); text-align: center; line-height: 1.5;
   color: var(--label-2); background: var(--fill);

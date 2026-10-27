@@ -94,7 +94,7 @@
 | 自检 / 启动自检 | **Startup Check** | Self-Test, Self-check, Diagnostics, Health Check | health 已经被「识别落后」那条 health 提示占了。README 写的是 “Startup self-check”，界面用更短的写法 |
 | 自检项 | **check** | test, item | |
 | 通过 / 提醒 / 未生效 | **passed / warning / isn’t working** | failed（只在读屏的级别说明里用） | 「未生效」强调的是功能没起作用，不是测试没过。isn’t working 是苹果的常用说法 |
-| 翻译引擎 | **Translation Engine**；短写 **engine** | translator, provider | 提示里指这一行在哪，一律写「在「设置 > 翻译引擎」里」/ **in Settings > Translation Engine**（英文本来就是这一种）。2026-10-26（专家审查 V5）以前中文有五种：「在「翻译引擎」里」「在「设置 > 翻译引擎」里」「在页面上的「翻译引擎」里」「在页面的「翻译引擎」里」「在「翻译引擎」面板」。设置分组在直播中整块收起，所以**直播中**出现、叫人去换引擎或填密钥的提示，前面加「停止后」/ **after you click Stop**（专家审查 U4）。启动自检里那一项（自检的「翻译引擎」一行）是另一个东西，照写「自检的「翻译引擎」一项」 |
+| 翻译引擎 | **Translation Engine**；短写 **engine** | translator, provider | 提示里指这一行在哪，一律写「在「设置 > 翻译引擎」里」/ **in Settings > Translation Engine**（英文本来就是这一种）。2026-10-26（专家审查 V5）以前中文有五种：「在「翻译引擎」里」「在「设置 > 翻译引擎」里」「在页面上的「翻译引擎」里」「在页面的「翻译引擎」里」「在「翻译引擎」面板」。设置分组在直播中整块收起，所以**直播中**出现、叫人去换引擎、换模型或填密钥的提示，前面加「点「停止」后」/ **after you click Stop**（英文也可以放进句中：To switch back, click Stop, …；专家审查 U4）。启动自检里那一项（自检的「翻译引擎」一行）是另一个东西，照写「自检的「翻译引擎」一项」。**文档**（README、docs/*.md）里写界面路径照旧用 →（「设置 → 翻译引擎」/ Settings → Translation Engine），不跟着界面改成 >：文档里同一种路径还有 macOS 系统设置的多级路径（System Settings → Privacy & Security → Full Disk Access），一直是 →，读者照着点不会走错。界面文字（成对的 L() 和 data-en）一律用 >（2026-10-26 定，b6-wording 第 1 轮审查） |
 | 回退（引擎） | **fallback**；正文写 **switched to {engine}** | downgrade | |
 | 本地模型 | **local model** | offline model | |
 | 免费额度 | **free quota** | free tier | |
@@ -593,7 +593,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 113 | pipeline.py:154–158 | 4003110 整段 | TikTok didn’t provide a stream URL for this live stream (code 4003110). Retried {n} times. TikTok doesn’t say why. Sometimes it works if you click Start again a little later. Sometimes it doesn’t work for the whole stream. {browser advice} To watch now, paste the live link and the .flv URL from your browser together, separated by a space. A .flv URL usually works for about two weeks. |
 | 114 | pipeline.py:1683 | TikTok 暂时没有把这个直播间的流地址给程序，{s} 秒后自动重试（第 {i}/{n} 次）… | TikTok didn’t provide a stream URL for this live stream. Retrying in {s} sec (attempt {i} of {n})… |
 | 115 | pipeline.py:2400 | 直播流多次中断且自动重连失败——可能直播已结束，或网络不稳。… | The stream was interrupted several times and couldn’t reconnect. Check that the stream is still live and your network is working, then click Start. |
-| 116 | app.js:449/653 | 与本地服务断开，正在重连——稍候再点「开始翻译」 / 超过 20 秒没有连上本地服务。如果程序已经关闭，请重新打开：macOS 双击「TikTok Live Translator.app」，Windows 双击「Start.bat」。 | Lost connection to the local service. Reconnecting… Click Start again in a moment. / No connection to the app’s local service for over 20 seconds. If the app has quit, reopen it. On Mac, double-click TikTok Live Translator.app. On Windows, double-click Start.bat. |
+| 116 | app.js startStream / connect（ws.onclose，断开超过 20 秒） | 与本地服务断开，正在重连——稍候再点「开始翻译」 / 超过 20 秒没有连上本地服务。如果程序已经关闭，请重新打开：macOS 双击「TikTok Live Translator.app」，Windows 双击「Start.bat」。 | Lost connection to the local service. Reconnecting… Click Start again in a moment. / No connection to the app’s local service for over 20 seconds. If the app has quit, reopen it. On Mac, double-click TikTok Live Translator.app. On Windows, double-click Start.bat. |
 | 117 | app.js trackTranslateHealth | 连续多条字幕没有译出来，字幕先显示原文（语音识别不受影响）。一直这样的话，点「停止」后可以在「设置 > 翻译引擎」里换一个引擎。 | The last several captions couldn’t be translated, so captions show the original text. Speech recognition isn’t affected. If this continues, you can choose another engine in Settings > Translation Engine after you click Stop. |
 | 118 | pipeline.py:3826 | {engine} 返回 HTTP 429，程序暂停请求 {s} 秒后自动重试… | {engine} returned HTTP 429. Requests are paused for {s} sec, then retried automatically. Captions show the original text meanwhile. Banned-term alerts aren’t affected. |
 | 119 | pipeline.py:1946 | {t} 电脑休眠或挂起了约 {d}… | {t} This computer was asleep for about {d}. The app wasn’t running, so that part of the stream wasn’t monitored. During streams, keep the computer plugged in with the lid open. |
@@ -616,8 +616,11 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 英文却只说观察，两边意思不一样；#117 的英文还叫人去「设置 > 翻译引擎」，而设置分组在直播中整块收起。现在中英都只写
 看到的事（连续几条没译出来、20 秒没连上）和能做的事，#117 写明要先点「停止」。用户 10-22 定 D3「只管翻译失败这一条」：
 这两句由 `tests/translate-fail-banner.test.mjs` 单独钉住两臂都不含「可能 / 似乎 / might / may」这类词，自动检查
-（`RULE8_FAMILY`）的范围不扩大到整个桌面页。直播中出现、叫人去换引擎或填密钥的后端提示（#118 一族，
-`pipeline.py` `_note_engine_failure`、`_rejection_fallback`）同样加了「停止后」/ after you click Stop，见 §1.3「翻译引擎」。
+（`RULE8_FAMILY`）的范围不扩大到整个桌面页。直播中出现、叫人去换引擎、换模型或填密钥的后端提示
+（`pipeline.py` `_note_engine_failure` 里 401/403/404、Claude 连续 400/402、本地引擎连续出错的持续提示，以及
+`_rejection_fallback` 本场改用本地模型后那句怎么换回来）同样加了「点「停止」后」/ click Stop，见 §1.3「翻译引擎」；
+停止后改写的那条只统一了位置的说法。#118 的 429 暂停不叫人换引擎，不在其列。
+`tests/test_i18n_pipeline_en.py` 的 `test_every_engine_hint_shown_while_monitoring_says_click_stop_first` 把这几句的中英两臂都过一遍。
 
 ### I. 手机同看页（viewer.html / viewer.js）
 

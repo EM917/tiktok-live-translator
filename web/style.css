@@ -2,7 +2,7 @@
    苹果系统色思路：label / secondaryLabel / tertiaryLabel、systemBlue、
    分组背景 systemGroupedBackground + 卡片 secondarySystemGroupedBackground。
    旧变量名（--bg/--text/--text-dim/--text-faint/--border/--accent/--fail）
-   保留为别名：直播中的字幕、警报、弹幕、同看、换主播这些没重做的部分
+   保留为别名：直播中的字幕、报警、弹幕、同看、换主播这些没重做的部分
    不用逐条改就跟着换成同一套颜色。 */
 :root {
   color-scheme: light dark;             /* 原生下拉列表、复选框、滚动条跟着深浅色走 */
@@ -279,8 +279,8 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
    inline-block：纯 inline 元素不接受 max-width/overflow，省略号不会生效 */
 .status-text { display: inline-block; vertical-align: bottom; font-size: var(--fs-footnote); color: inherit; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 违禁词警示开关的状态标签：只在「连接中/直播中且报警开着」时露出（app.js
-   updateAlertModeTag），关闭是默认值，常驻显示一个「警示关」不但占顶栏空间，
+/* 违禁词报警开关的状态标签：只在「连接中/直播中且报警开着」时露出（app.js
+   updateAlertModeTag），关闭是默认值，常驻显示一个「报警关」不但占顶栏空间，
    对新人也是看不懂的术语——关闭就直接不显示这个标签（pm.md #4）。
    因此这里只需要「开」一种视觉，不再需要 .off 的样式 */
 .alert-mode-tag {
@@ -850,7 +850,7 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   :root { --sub-size: 26px; }
 }
 
-/* ---------- 违禁词警报 ---------- */
+/* ---------- 违禁词报警 ---------- */
 /* 报警功能已搁置但保留：配色换成新令牌（半透明红底 + 发丝线），不再是写死的
    粉底 + 2px 红粗线；分级从每条左侧的彩色竖条改成条目开头的文字胶囊
    （命中/变体/疑似），颜色之外还有字可认 */
