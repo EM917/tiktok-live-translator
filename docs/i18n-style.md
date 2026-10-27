@@ -77,6 +77,7 @@
 |---|---|---|---|
 | 手机同看 | **Phone Viewing** | Phone Viewer, Phone view, Mirror to Phone, Screen Share | README 写的是 “Phone viewer”，但界面里 viewer(s) 还要用来指人；用作功能名会和人数打架。Viewing 跟 Screen Mirroring 的构词一样。建议 README 顺手改成 “Phone viewing” |
 | 浮窗 | **Floating Window** | Float, Mini Player, Pop-out, Overlay, Picture in Picture | 顶栏按钮、窗口标题、页面标题都叫这个。开着的是一个始终在最上面的小窗，放最新一条字幕和最近几条弹幕。Overlay 会被读成盖在直播画面上；Picture in Picture 是苹果的视频画中画；Float 单独做名词不成立 |
+| 主窗口 | **main window**；浮窗结束卡片上的按钮写 **Show Main Window** | main app, control window | 2026-10-26 补进术语表（b3-float-end）：浮窗以外那个大窗口。按钮名 Title Case，动词用 Show（把已经开着的窗口提到最前，不是新开一个） |
 | 开始同看 / 停止同看 | **Start Sharing / Stop Sharing** | Turn On / Turn Off | 动词加对象，两个按钮成对 |
 | 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Bella All Natural” 和中文差不多宽 |
 | 不限（默认） | **Any (default)** | None, All brands | None 会被读成「没有品牌」，实际意思是「不限定某一个品牌」 |
@@ -107,6 +108,7 @@
 | 开始翻译 | **Start** | Start Translating, Start translating, Go | 和 Stop 成对。十几条后端提示要引用这个按钮，“click Start” 最短（38px，中文是 56px；“Start Translating” 要 123px） |
 | 停止 | **Stop** | End, Disconnect | |
 | 语音识别 / 识别 | **speech recognition / recognition** | ASR, transcription | 界面上一律不写 ASR（以前只有底部延迟统计行这种技术读数用过，那一行 2026-10-15 删了） |
+| 识别门限（切段器判「有没有声音」的音量门槛） | **speech recognition threshold** | silence threshold, gate, VAD | 2026-10-26 补进术语表（#149 之前「已收到 N 秒直播音频，但音量一直低于识别门限」就在用）。gate、VAD 是代码里的词；说 silence 会替人认定低于门限的就是没人说话（背景音乐也可能），只说音量低于门限（第八条） |
 | 识别落后 / 积压 | **falling behind / backlog** | lagging, queue | |
 | 语音识别不确定（字幕角标） | **Recognition unclear** | Uncertain recognition, Low confidence, Possible error | 「不确定」照「拿不准」译 unclear（§1.6），不用 uncertain；不写 error、wrong——角标只说这一段像是出了大问题，没说识别错了。low confidence 是其中一条规则的读数，不是角标的意思 |
 | 检测已降级 | **Detection degraded** | Detection impaired | |
@@ -226,7 +228,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 元素 | 规则 | 例 |
 |---|---|---|
 | 窗口标题、产品名 | Title Case | TikTok Live Translator |
-| 按钮、顶栏按钮、链接式按钮、二段确认的武装态 | Title Case | Start, Stop, Switch Streamer, Copy Link, Click Again to Clear, Update Now, Release Notes |
+| 按钮、顶栏按钮、链接式按钮、二段确认的武装态 | Title Case | Start, Stop, Switch Streamer, Copy Link, Click Again to Clear, Clear?, Show All Steps, How to Update, Show Main Window, Update Now, Release Notes |
 | 浮层 / 面板标题、分组标题、设置行名、自检项名 | Title Case | Phone Viewing, Recent Streams, Settings, Startup Check, Noise Reduction |
 | 下拉菜单项 | 项名用 Title Case，括号里的补充说明用小写开头 | Spanish + English (default), Local Hy-MT2 7B (more accurate, uses more memory) |
 | 控件左边的字段标签 | Sentence case | Spoken language, Brand, Captions in |
@@ -261,6 +263,8 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 引号 | 引用用户内容（比如报警里的违禁词）用弯双引号 “term”。撇号用弯的 `’`（U+2019），代码和文件名里除外 |
 | 括号 | ASCII 括号，前面加空格：`Spanish + English (default)` |
 | 感叹号 | 不用 |
+| 问号 | 不向用户提问（确认框里的 Continue? 一类除外）。唯一一处当按钮字用的是两段式确认的武装态 **Clear?**（§3 #24a）：问号就是「再点一下」的意思，前面的动词照 Title Case |
+| 短状态语和整句同在一处 | 各按各的规矩，不为了整齐硬改：短状态语（胶囊、按钮态的那种，如 **Retranslated**）不加句号，整句加。例：弹幕重译完那条弹幕下面的说明，成了写「已重译 / Retranslated」，结果和原来一样写「重译结果和原来一样 / The retranslation is the same as before.」。前者复用手机重译按钮的同一句（G3：同一句中文只许一种英文，不能为加句号另起一句英文），后者是完整句子（§3 #101a） |
 | `&` | 只在照抄苹果系统原名时用（Privacy & Security），其余写 and |
 | `/` | 不写 and/or；数量比写成 `2 of 5` |
 | 缩略形式 | 用：can’t、isn’t、don’t、won’t。苹果的语气就是这样，而且省宽度 |
@@ -563,6 +567,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 99 | index.html:514 | 弹幕（悬浮入口）/ 展开观众弹幕 | Comments / Show comments | 2026-10-15 起入口上不带条数；未读红点（`#comment-fab-guard`）照旧 |
 | 100 | index.html:521 | 回到最新 | Jump to Latest | |
 | 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用更强的模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the stronger model | 悬停时才出现的按钮，68+16px |
+| 101a | app.js receiveCommentRedo（那条弹幕下面的 .redo-note.done，「弹幕留意」抽屉里那一行也有）；comment_redo.py note_done | 已重译 / 重译结果和原来一样 | Retranslated / The retranslation is the same as before. | 2026-10-26（用户要的）：弹幕重译成了，在那条弹幕下面停几秒。「已重译」和手机重译按钮同一句（G3）；标点见 §2.2「短状态语和整句同在一处」。成了不是提醒，样子是次要文字、没有提醒底色（style.css .redo-note.done）；没重译成的照旧用提醒底色 |
 | 102 | app.js:1138/1146 | 翻译中… / 翻译失败 / 翻译已跳过（积压） | Translating… / Translation failed / Skipped (backlog) | |
 | 103 | session-divider.js:27 | ── 14:01:29 以下为 @x ── / 以下为新的一场 | ── 14:01:29 Now monitoring @x ── / New session | |
 | 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空报警 / 上一场 / 精确·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | 2026-10-26 以前按钮写「清空警报」、exact 档写「命中」（专家审查 V5，见 §1.3） |
@@ -594,12 +599,15 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 119 | pipeline.py:1946 | {t} 电脑休眠或挂起了约 {d}… | {t} This computer was asleep for about {d}. The app wasn’t running, so that part of the stream wasn’t monitored. During streams, keep the computer plugged in with the lid open. |
 | 120 | app.js:530–538、516/524 | 发现新版本 / 一键更新 / 更新说明 / 前往下载新版本 / 再点一次确认更新：更新期间监听暂停，更新完自动恢复 / 更新中… | A new version is available / Update Now / Release Notes / Download New Version / Click Again to Update. Monitoring pauses and resumes afterward. / Updating… |
 | 120a | app.js showUpdate | 有新版本 {v}，停止监听后在首页查看 | Version {v} is available. Check the home screen after you stop monitoring. | 2026-10-15 起直播中「有新版本」条不摆；中控在直播中点页脚版本号手动检查、找到新版本时，页脚写这一句作答（其余检查结果「已是最新版本」「检查更新失败」本来就在页脚）。自动检查到的不写，静默提示不写。{v} 沿用 #120 的写法，带 v 前缀；英文不重复 “Update”，因为直播中没有更新入口 |
+| 120b | app.js showZipKeepNote（ZIP 安装的更新条，多出来的一行） | 更新时不要直接替换旧文件夹：先把旧文件夹里的 settings.json、banned_terms.txt、glossary.txt，logs/、transcripts/、comment_guard/local/、comment_guard/marked/，以及 profiles/、brands/ 里你自己的 .txt 文件复制到新文件夹。 + 链接「怎么更新」 | Don’t replace the old folder when you update. First copy settings.json, banned_terms.txt, glossary.txt, logs/, transcripts/, comment_guard/local/, comment_guard/marked/ and your own .txt files in profiles/ and brands/ from the old folder into the new one. + link **How to Update** | 2026-10-26 补进术语表（b4-banners，专家审查 I2）。文件名、文件夹名照抄不翻（§1.4）；清单和 README「更新（ZIP 安装）」一节是同一份。链接名 Title Case，指向 README 里那一节 |
 | 121 | （已删）底部延迟统计行 | — | — | 2026-10-15 用户觉得是噪音，整行删掉。积压期间的落后和丢段走 health 提示，识别连续出错走 incident；单次识别出错、识别超时次数、积压追上之后的丢段总数只进审计和终端 |
 | 121a | pipeline_stream.py `_no_audio_text` | 已 {d}没收到直播音频，这段时间没有经过检测。程序还在自动重试，可以在 TikTok 上看一眼直播是否还在进行。 / 这段时间里有收尾时晚到的音频：已 {d}没有实时收到直播音频，期间只有晚到的 {t}经过了检测。程序还在自动重试，可以在 TikTok 上看一眼直播是否还在进行。 | No stream audio for {d}. Nothing in that time was checked. The app keeps retrying. You can check on TikTok whether the stream is still live. / No stream audio in real time for {d}. Only {t} arrived in that time, late, and it was checked. The app keeps retrying. You can check on TikTok whether the stream is still live. | 2026-10-19：持续提示（incident `session:no_audio`），从本场第一次起 ffmpeg 起算、2 分钟出现、第一帧到了就撤；「本机连不上 www.tiktok.com」那条挂着时不出。{d} 用 `_duration_text`，按墙钟算（合盖多久就说多久）。不写为什么没有音频（第八条）；「重试」不写「重连」，等房间恢复在播时也成立。收尾时 ffmpeg 吐出来的音频（晚到的，送去识别、做了违禁词检测，但不算实时收到）在这段时间里有 1 秒以上时换第二句：不能说「这段时间没有经过检测」；{t} 也用 `_duration_text`。「实时」写 in real time，「晚到」写 late |
 | 121b | pipeline_stream.py `_reconnect_text`（V2） | 直播流中断，{d} 秒后自动重连（本场第 {k} 次中断）… / 直播流中断，{d} 秒后用同一个流地址重连（本场第 {k} 次中断）… / 直播流中断，正在重新查流地址（本场第 {k} 次中断）… | The stream was interrupted. Reconnecting in {d} sec (interruption {k} this session)… / The stream was interrupted. Reconnecting to the same stream URL in {d} sec (interruption {k} this session)… / The stream was interrupted. Looking up the stream URL again (interruption {k} this session)… | 2026-10-19 重连规则 V2（`RECONNECT_V2`）的状态行，替换 #115 之前那句「（第 N/M 次）」——新规则下 N/M 不再对应「还剩几次就放弃」。V1（`TLT_RECONNECT_V2=0`）照旧是「直播流中断，{d} 秒后自动重连（第 {n}/{m} 次）…」 |
 | 121c | pipeline_stream.py `_reconnect_text`（V2，到了上限） | 直播流中断，{d} 秒后用同一个流地址重连（本场第 {k} 次中断）。为少向 TikTok 发请求，程序每小时最多查 {n} 次流地址，{t}后再查。 / 同一个流地址拉不到数据。为少向 TikTok 发请求，程序每小时最多查 {n} 次流地址，{t}后再查；程序会一直重试。 | The stream was interrupted. Reconnecting to the same stream URL in {d} sec (interruption {k} this session). To keep requests to TikTok low, the app looks up the stream URL at most {n} times an hour. Next lookup in {t}. / The same stream URL isn’t returning data. To keep requests to TikTok low, the app looks up the stream URL at most {n} times an hour. Next lookup in {t}. The app keeps retrying. | 说的是程序自己的规矩（令牌桶，容量 + 每小时补的个数），不是 TikTok 的回应；不写为什么拉不到。{t} 用 `_duration_text`（不会出现「0 分钟」） |
 | 121d | pipeline_stream.py `_coverage_text` | 近 {w}只收到 {p}% 的直播音频，缺的部分没有经过检测。本场已中断 {n} 次。 / 窗口里有晚到的音频：近 {w}只实时收到 {p}% 的直播音频，另有晚到的 {t}已检测，其余没有经过检测。本场已中断 {n} 次。 | one: Only {p}% of stream audio arrived in the last {w}. The missing audio wasn’t checked. 1 interruption this session. / other: … {n} interruptions this session. / with late audio: Only {p}% of stream audio arrived in real time in the last {w}. Another {t} arrived late and was checked. The rest wasn’t checked. 1 interruption / {n} interruptions this session. | 2026-10-19：持续提示，沿用 `session:audio_rate` 这个 id（以前每轮从零算的「过去 1 分钟只收到 {s} 秒直播音频…」删了，同一件事界面上只有一条）。跨轮滚动覆盖率低于 70% 连续两次才出现、回到 85% 以上才撤；{w} 是窗口（5 分钟，开场不足 5 分钟按已过的时间），用 `_duration_text`。「本机连不上 www.tiktok.com」或 #121a 挂着时不出。计数用 `LN`。窗口里有 1 秒以上收尾时晚到的音频时换第二句（同 #121a）：{p} 只算实时收到的，晚到的检测过，不能说缺的都没检测 |
 | 121e | pipeline.py `_host_wait`（V2，等房间恢复时令牌不够复查） | {status}，为少向 TikTok 发请求，{t}后再复查（已等 {m} 分钟）… | {status}. To keep requests to TikTok low, the app checks again in {t} ({m} min so far)… | 2026-10-19：复查房间状态和查流地址共用一个令牌桶，复查还要给回到在播之后的那次查询留一个；不够时复查间隔拉长，不能再说「每 60 秒复查一次，最多 10 分钟」。说的是程序自己的规矩（同 #121c 的 To keep requests to TikTok low），不写 limit / rate limit。{t} 用 `_duration_text`。V1、令牌够时照旧是「{status}，每 60 秒复查一次，最多 10 分钟（已等 {m} 分钟）…」 |
+| 121f | app.js renderStatusBanner / foldIncident（状态横幅、持续提示行尾的按钮） | 显示全部步骤 / 收起 | Show All Steps / Hide | 2026-10-26 补进术语表（b4-banners，专家审查 U10）：超过 3 行（`BANNER_FOLD_LINES`，3 行不折、4 行才折）时默认只露第一行，这颗按钮接在第一行的字后面，展开后写「收起 / Hide」。按钮名 Title Case；「收起 / Hide」和 §1.6 弹幕留意顶部条的同一个词 |
+| 121g | pipeline.py `_gated_text`（#149，专家审查 M4；持续提示 `session:gated_audio`） | 近 {d}收到 {n} 秒直播音频，只有 {m} 秒送去了识别，其余的音量一直低于识别门限；程序继续监听 | In the last {d}, {n} sec of stream audio arrived, but only {m} sec was sent to speech recognition. The rest stayed below the speech recognition threshold. Monitoring continues. | 只写数字和看到的事，不说音量为什么低（第八条）。「识别门限」见 §1.3；「程序继续监听」和 quiet 那句（已收到 N 秒直播音频，但音量一直低于识别门限，没有送去识别）同一个结尾。中文的分号在英文里拆句（§2.2） |
 
 #107–#109 的英文保留与中文相同的行首 emoji（⚠️ 🔴 ✅）：桌面提示条由 `live-ui.js` 的 `stripStatusEmoji`
 统一去掉，两臂保持一样，G2 按 emoji 的多重集比。
@@ -641,6 +649,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 141 | float.js（经 live-ui.js liveBarChip） | 翻译失败 / 未翻译（接口拒答） / 未翻译（结果不像译文） / 翻译已跳过（积压） | 同 #105a | 浮窗里最新一条字幕的角标，和中控页底部大字幕是同一个函数；翻译中不画 |
 | 142 | index.html #float-btn | 浮窗（悬停：在始终置顶的小窗里看最新字幕和弹幕） | Floating Window（悬停：Show the latest caption and comments in a window that stays on top） | 英文默认只留图标，宽于 1400px 才露文字（英文文字约 110px，放不进 1000px 的顶栏）；图标按钮 28px + 间距 8px。中文在放得下的宽度（1000–1100px、1140–1399px，且「报警开」标签没亮）露出「浮窗」两个字、不带图标，其余窄宽度同英文，见 §4.2 |
 | 143 | float.js floatCaptionMeta（#f-conn、#f-lag） | 连接中… / 约 N 秒前、约 N 分钟前 | Connecting… / About N sec ago, About N min ago | 已经有字幕时字幕上面状态行里的过时信号：同 #137 的「连接中…」（状态是连接中、或浮窗页和程序断了线），和中控页底部大字幕的「约 N 秒前」（live-ui.js captionAgeText，超过 15 秒才有）。只写观察 |
+| 147 | float.js（结束卡片的标题、说明）、float.html #f-end-back | 直播已结束 / 监听已停止 · 详情见主窗口。 · 回到主窗口 | Stream ended / Monitoring stopped · See the main window for details. · **Show Main Window** | 2026-10-26 补进术语表（b3-float-end，专家审查 U3）：下播或出错时浮窗不再自己关，留一张结束卡片。标题是状态文字（sentence case、不加句号；「直播已结束」同 #15），说明是整句，按钮 Title Case（主窗口见 §1.3）。只写看到的结局，不写为什么停（第八条） |
 
 ---
 
