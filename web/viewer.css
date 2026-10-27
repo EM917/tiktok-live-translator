@@ -251,6 +251,9 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 .cap-trans { font-size: var(--fs-body); margin-top: 2px; color: var(--blue-ink); word-break: break-word; min-height: 1.5em; }
 .cap-trans.pending { color: var(--label-2); font-style: italic; }
 .cap-trans.failed { color: var(--warn-fg); font-style: normal; }
+/* 翻译因积压被跳过（dropped）：和桌面的灰角标一样不当成提醒（viewer.js applyCaptionState），用次要文字的颜色；
+   不斜体，斜体留给还在等的「翻译中…」 */
+.cap-trans.skipped { color: var(--label-2); font-style: normal; }
 .cap-retranslate {
   position: relative;
   display: inline-flex; align-items: center; justify-content: center;

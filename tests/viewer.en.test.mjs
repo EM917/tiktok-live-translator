@@ -362,7 +362,9 @@ test("字幕的翻译结局（F4）：failed、dropped 与桌面角标同一句�
   });
   const trans = els["caption-list"].children.map((c) => c.children[2]);
   assert.deepEqual(trans.map((t) => t.textContent), ["Translation failed", "Skipped (backlog)", "three", "Translating…"]);
-  assert.deepEqual(trans.map((t) => t.classList.contains("failed")), [true, true, false, false]);
+  // 只有 failed 用提醒色；积压跳过（dropped）和桌面的灰角标一样不标成失败，用 .skipped（顺延事项 F4，b6 统一）
+  assert.deepEqual(trans.map((t) => t.classList.contains("failed")), [true, false, false, false]);
+  assert.deepEqual(trans.map((t) => t.classList.contains("skipped")), [false, true, false, false]);
   assert.equal(trans[3].classList.contains("pending"), true);
   assertNoChinese(els);
 });

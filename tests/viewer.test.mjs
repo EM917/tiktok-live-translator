@@ -995,7 +995,9 @@ test("字幕的翻译结局：failed、dropped、ok、pending 各显示对应的
     assert.equal(t[2].textContent, "三");
     assert.equal(t[3].textContent, "翻译中…");
     assert.equal(t[0].classList.contains("failed"), true, "套用已有的 .failed 样式");
-    assert.equal(t[1].classList.contains("failed"), true);
+    // 积压跳过不是失败：和桌面的灰角标一样不用提醒色（.failed），用 .skipped（顺延事项 F4，b6 统一）
+    assert.equal(t[1].classList.contains("failed"), false);
+    assert.equal(t[1].classList.contains("skipped"), true);
     assert.equal(t[2].classList.contains("failed") || t[2].classList.contains("pending"), false);
     assert.equal(t[3].classList.contains("pending"), true);
     // 失败、跳过的字是界面提示，不是数据（英文界面的检查不豁免它们）
@@ -1013,6 +1015,11 @@ test("字幕的翻译结局经 caption_update 到达（pipeline 的实际路径�
     send({ type: "caption_update", id: 2, translated: null, translate_state: "dropped" });
     assert.equal(captionTrans(elements, 0).textContent, "翻译失败");
     assert.equal(captionTrans(elements, 1).textContent, "翻译已跳过（积压）");
+    assert.equal(captionTrans(elements, 1).classList.contains("skipped"), true);
+    // 跳过的那条后来重译成了：换成译文，.skipped 一起去掉
+    send({ type: "caption_update", id: 2, strong: true, strong_state: "ok", translated: "二", translate_state: "ok" });
+    assert.equal(captionTrans(elements, 1).textContent, "二");
+    assert.equal(captionTrans(elements, 1).classList.contains("skipped"), false);
     send({ type: "caption_update", id: 1, strong: true, strong_state: "ok", translated: "一", translate_state: "ok" });
     assert.equal(captionTrans(elements, 0).textContent, "一");
     assert.equal(captionTrans(elements, 0).classList.contains("failed"), false);

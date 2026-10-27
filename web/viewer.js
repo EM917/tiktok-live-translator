@@ -1229,7 +1229,7 @@ if (typeof document !== "undefined") {
       stickCaptions();
     }
     function applyCaptionState(msg, transEl) {
-      transEl.classList.remove("pending", "failed");
+      transEl.classList.remove("pending", "failed", "skipped");
       markBody(transEl, !!msg.translated);   // 译文是正文；失败说明、「翻译中…」是界面提示
       if (msg.translated) {
         transEl.textContent = msg.translated;
@@ -1244,11 +1244,15 @@ if (typeof document !== "undefined") {
         // 发 failed，翻译积压丢掉旧任务时发 dropped），不带 failed/why。以前这里只认 failed/why，
         // 这两种一律写成空串，译文行只剩一行空白，看的人分不出是「还没译」还是「不会有了」。
         // 字与桌面卡片的角标同一句（web/live-ui.js captionStateChip）。拒答、结果不像译文这两种
-        // 细分不在手机白名单里，只能写笼统的「翻译失败」；原文和「重译」按钮还在，可以自己重试
-        transEl.textContent = msg.translate_state === "failed"
+        // 细分不在手机白名单里，只能写笼统的「翻译失败」；原文和「重译」按钮还在，可以自己重试。
+        // 颜色也照桌面角标（captionStateChip 的 fail）：只有 failed 是提醒色（.failed）；dropped 是程序为了跟上
+        // 直播主动跳过的，桌面画成普通的灰角标、不标红，手机以前却和 failed 一样用提醒色，同一件事两边说法不同。
+        // 现在 dropped 用 .skipped（次要文字的颜色，不斜体：斜体留给还在等的「翻译中…」）
+        var failedNow = msg.translate_state === "failed";
+        transEl.textContent = failedNow
           ? L("翻译失败", "Translation failed")
           : L("翻译已跳过（积压）", "Skipped (backlog)");
-        transEl.classList.add("failed");
+        transEl.classList.add(failedNow ? "failed" : "skipped");
       } else if (msg.translate_state === "pending") {
         transEl.textContent = L("翻译中…", "Translating…");
         transEl.classList.add("pending");

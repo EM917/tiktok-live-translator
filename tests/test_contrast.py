@@ -209,6 +209,7 @@ V2_TEXT = [
     (".alert-zh.pending", ".alert-item"),      # 报警卡片里的「翻译中…」
     (".cap-meta", ".caption-section"),         # 字幕的时间和语言码
     (".cap-trans.pending", ".caption-section"),
+    (".cap-trans.skipped", ".caption-section"),  # 翻译因积压被跳过（F4，同桌面的灰角标，不用提醒色）
     (".cmt-zh.pending", "body"),
     (".cmt-orig", "body"),                     # 弹幕西语原文
     (".ro-note", ".bottom-bar"),               # 「只看模式 · 不能操作」
