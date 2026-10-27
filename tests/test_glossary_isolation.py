@@ -131,10 +131,13 @@ def test_loading_the_default_banned_list_touches_no_repo_file(glossary_net):
 
 
 def test_the_net_sees_a_file_being_moved_onto_the_banned_list(glossary_net):
-    """原子写（先写临时文件再 os.replace 过去）落到 banned_terms.txt 上，也是写。源文件不存在，什么都挪不动。"""
+    """原子写（先写临时文件再 os.replace 过去）落到 banned_terms.txt 上，也是写。源文件不存在，什么都挪不动。
+    目标故意不是真词表本身：网按前缀认，banned_terms.txt.net-probe 照样算；万一源文件碰巧存在，
+    挪过去的也只是一个探针文件，不会盖掉开发者的 banned_terms.txt（CLAUDE.md 第五条）"""
     with pytest.raises(FileNotFoundError):
-        os.replace(REPO / "no-such-file.net-probe", REPO / "banned_terms.txt")
-    assert [(event, path) for _test, event, path in glossary_net] == [("os.rename", "banned_terms.txt")]
+        os.replace(REPO / "no-such-file.net-probe", REPO / "banned_terms.txt.net-probe")
+    assert [(event, path) for _test, event, path in glossary_net] == [
+        ("os.rename", "banned_terms.txt.net-probe")]
 
 
 def test_reading_the_tracked_banned_terms_template_is_not_a_hit(glossary_net):
