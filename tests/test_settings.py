@@ -151,18 +151,18 @@ def test_recent_rooms_empty_when_missing(monkeypatch, tmp_path):
 
 def test_save_streamer_brand_roundtrips_and_lowercases_the_key(monkeypatch, tmp_path):
     _use_tmp(monkeypatch, tmp_path)
-    settings.save_streamer_brand("DaisyCabral_", "acme")
-    assert settings.streamer_brands() == {"daisycabral_": "acme"}
+    settings.save_streamer_brand("DaliaFlores_", "acme")
+    assert settings.streamer_brands() == {"daliaflores_": "acme"}
 
 
 def test_save_streamer_brand_with_empty_string_deletes_the_key(monkeypatch, tmp_path):
     _use_tmp(monkeypatch, tmp_path)
     settings.save_streamer_brand("bella", "acme")
-    settings.save_streamer_brand("itzesantana11", "acme")
+    settings.save_streamer_brand("irenemartin11", "acme")
     settings.save_streamer_brand("bella", "")       # 改选「不限」
     got = settings.streamer_brands()
     assert "bella" not in got                       # 不留一条「不限」的记录
-    assert got == {"itzesantana11": "acme"}
+    assert got == {"irenemartin11": "acme"}
 
 
 def test_save_streamer_brand_preserves_other_settings_keys(monkeypatch, tmp_path):

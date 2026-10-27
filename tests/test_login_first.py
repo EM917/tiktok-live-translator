@@ -1,6 +1,6 @@
 """登录优先：读得到浏览器里的 TikTok 登录，就一律先带着登录抓直播页。
 
-2026-09-17 实测（macOS 27，房间 @daisycabral_ 在播，中控在 Safari 和 Chrome 里都登录着）：
+2026-09-17 实测（macOS 27，用户日常监听的一个真实房间在播，中控在 Safari 和 Chrome 里都登录着）：
   * 只带 Safari 的登录抓直播页：5 次里 5 次拿到 .flv 地址，0.4–0.8 秒；
   * 同一个请求放在一次匿名抓页之后 0.5 秒 / 3 秒：3 次里 3 次拿不到；隔 8 秒 / 20 秒：拿到；
   * 旧的「直播页兜底」层固定 匿名 → Chrome → Safari 背靠背，借登录的那一次永远落在匿名请求
@@ -1211,7 +1211,7 @@ def test_get_json_never_sends_a_cookie_to_another_host(monkeypatch):
 
 
 # ---- 登录直播页重试：慢的那几层之前再抓一次 ----------------------------------
-# 2026-09-17 一次 @daisycabral_ 的重连实录（logs/session-20260917-185551.jsonl，同一房间当天
+# 2026-09-17 同一个真实房间的一次重连实录（logs/session-20260917-185551.jsonl，同一房间当天
 # 更早的每一次解析都是第一层 0.6–1.4 秒就拿到地址）：
 #   层1 登录直播页 none 533ms（browser=safari login={'safari': 'ok'}：带登录抓到了页面，
 #   页面里没有流地址）→ 层2 官方接口 browser_only 1376ms → 层3 WebKit 隐藏页 none 25530ms

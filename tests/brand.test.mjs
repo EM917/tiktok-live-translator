@@ -13,12 +13,12 @@ const { streamerFromInput, defaultBrandFor,
 // ---- streamerFromInput：与 normalizeRoomInput 认的输入一致 ----
 
 const streamerCases = [
-  ["https://www.tiktok.com/@bellaallnatural/live", "bellaallnatural"],
-  ["https://www.tiktok.com/@bellaallnatural/live?enter=share", "bellaallnatural"],
-  ["@daisycabral_", "daisycabral_"],
-  ["daisycabral_", "daisycabral_"],
+  ["https://www.tiktok.com/@brisadelosandes/live", "brisadelosandes"],
+  ["https://www.tiktok.com/@brisadelosandes/live?enter=share", "brisadelosandes"],
+  ["@daliaflores_", "daliaflores_"],
+  ["daliaflores_", "daliaflores_"],
   ["  @Spaced  ", "spaced"],           // 归一成小写，好和 settings 里的键对上
-  ["ItzeSantana11", "itzesantana11"],
+  ["IreneMartin11", "irenemartin11"],
   ["某个中文昵称", ""],
   ["", ""],
   ["www.tiktok.com/@abc/live", "abc"], // 无协议地址一样能挖出 @ 后面的名字
@@ -36,7 +36,7 @@ for (const [input, expected] of streamerCases) {
 // 会让人误以为这里钉的是某个品牌的行为，而不是通用规则。
 
 test("记过的主播返回记住的品牌", () => {
-  assert.equal(defaultBrandFor("bellaallnatural", { bellaallnatural: "acme" }), "acme");
+  assert.equal(defaultBrandFor("brisadelosandes", { brisadelosandes: "acme" }), "acme");
 });
 
 test("按小写键查找，与 streamerFromInput 的归一化对齐", () => {
@@ -110,19 +110,19 @@ test("optionList 不是数组时按不限处理", () => {
 const { brandStateAfterRoomInput } = require("../web/brand.js");
 
 test("同一个主播的地址改写（补贴 .flv 直连地址、加参数）不清掉手动选择", () => {
-  const touched = { streamer: "daisycabral_", touched: true };
+  const touched = { streamer: "daliaflores_", touched: true };
   const s = streamerFromInput(
-    "https://www.tiktok.com/@daisycabral_/live https://pull.example.com/x.flv");
+    "https://www.tiktok.com/@daliaflores_/live https://pull.example.com/x.flv");
   assert.deepEqual(brandStateAfterRoomInput(touched, s),
-                   { streamer: "daisycabral_", touched: true });
-  assert.deepEqual(brandStateAfterRoomInput(touched, "daisycabral_"),
-                   { streamer: "daisycabral_", touched: true });
+                   { streamer: "daliaflores_", touched: true });
+  assert.deepEqual(brandStateAfterRoomInput(touched, "daliaflores_"),
+                   { streamer: "daliaflores_", touched: true });
 });
 
 test("换了主播就清掉手动选择，改按记住的品牌刷新", () => {
-  const touched = { streamer: "daisycabral_", touched: true };
-  assert.deepEqual(brandStateAfterRoomInput(touched, "jessyjewelry1"),
-                   { streamer: "jessyjewelry1", touched: false });
+  const touched = { streamer: "daliaflores_", touched: true };
+  assert.deepEqual(brandStateAfterRoomInput(touched, "juliajoyeria1"),
+                   { streamer: "juliajoyeria1", touched: false });
   assert.deepEqual(brandStateAfterRoomInput(touched, ""),
                    { streamer: "", touched: false });
 });
@@ -139,9 +139,9 @@ test("初始/脏 state 按「没改过」处理，不改入参", () => {
 // 不清 touched（和上面 brandStateAfterRoomInput 的唯一区别） ----
 
 test("回填换了主播也不清 touched（不是中控操作，不能套用换主播清空那条规则）", () => {
-  const touched = { streamer: "daisycabral_", touched: true };
-  assert.deepEqual(brandStateSyncStreamer(touched, "jessyjewelry1"),
-                   { streamer: "jessyjewelry1", touched: true });
+  const touched = { streamer: "daliaflores_", touched: true };
+  assert.deepEqual(brandStateSyncStreamer(touched, "juliajoyeria1"),
+                   { streamer: "juliajoyeria1", touched: true });
 });
 
 test("回填时本来没改过下拉：touched 保持 false", () => {
@@ -188,15 +188,15 @@ test("加载后先改下拉，再点同一个主播的 chip：发手选值", () 
 
 test("改下拉后点另一个主播的 chip：仍发手选值，不按新主播刷新", () => {
   const edited = { streamer: "bella", touched: true };
-  const result = brandForChipClick(edited, "daisycabral_", "acme", { daisycabral_: "zeta" });
-  assert.deepEqual(result, { brand: "acme", state: { streamer: "daisycabral_", touched: true } });
+  const result = brandForChipClick(edited, "daliaflores_", "acme", { daliaflores_: "zeta" });
+  assert.deepEqual(result, { brand: "acme", state: { streamer: "daliaflores_", touched: true } });
 });
 
 test("没改过下拉点 chip：发这个主播记住的品牌", () => {
   const untouched = { streamer: "", touched: false };
-  const result = brandForChipClick(untouched, "daisycabral_", "无关紧要的当前值",
-    { daisycabral_: "zeta" });
-  assert.deepEqual(result, { brand: "zeta", state: { streamer: "daisycabral_", touched: false } });
+  const result = brandForChipClick(untouched, "daliaflores_", "无关紧要的当前值",
+    { daliaflores_: "zeta" });
+  assert.deepEqual(result, { brand: "zeta", state: { streamer: "daliaflores_", touched: false } });
 });
 
 test("没改过下拉、这个主播没记住品牌：发不限", () => {

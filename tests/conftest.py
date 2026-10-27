@@ -113,11 +113,13 @@ def _reset_active_glossary(monkeypatch):
 # ---- 仓库里的真实词表（brands/、profiles/、glossary.txt）测试一律不碰 ---------------------------
 
 # brands/<品牌>.txt、profiles/<主播>.txt、glossary.txt 是开发者本机的私人词表（不入库，见 .gitignore 与
-# brands/README.md），CI 上不存在。很多管线用例拿 tiktok.com/@bellaallnatural 开场：Pipeline() 扫 brands/
+# brands/README.md），CI 上不存在。很多管线用例曾拿开发者日常监听的那个直播间开场：Pipeline() 扫 brands/
 # 并读里面每一份词表，_begin_session 读这个主播的 profile 和全局表，审计头记全局表的指纹——本机读到的是
 # 开发者自己的词表，CI 上读不到，两边跑的不是同一份内容，本机改一行词表还可能改变本机的测试结果；文件
 # 不在时，load() 与 _copy_template_once 的首启复制又会在仓库里凭空建出 glossary.txt、
-# profiles/bellaallnatural.txt。改之前插桩数过：54 个测试文件、两千多次。
+# profiles/<那个主播>.txt（它在 profiles/ 下有入库的 .example.txt 模板）。改之前插桩数过：54 个测试文件、两千多次。
+# 现在测试里的主播名一律是虚构的（真实主播名属于本机数据，不进仓库）；只有 tests/test_glossary_isolation.py
+# 有意从入库模板的文件名里取那个主播，名字不写进测试。
 #
 # 下面的审计钩子在整个测试进程里看着这几个位置：读私人词表、往这几处写东西（建文件、建目录、删、改名）
 # 都记下来。入库的 README.md 和 *.example.txt 模板是公开文件、本机和 CI 一样，只读不算

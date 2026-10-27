@@ -670,7 +670,7 @@ def test_update_pause_and_resume_are_english(monkeypatch, tmp_path):
                         "install (up to about 10 min). Then the app restarts and resumes "
                         "monitoring.")
     assert "Updating. Monitoring is paused and resumes in about 1 minute." in texts
-    assert texts[-1] == "Updated to v{}. Resuming monitoring @bellaallnatural…".format(
+    assert texts[-1] == "Updated to v{}. Resuming monitoring @brisadelosandes…".format(
         app_version())
     assert incidents_en(server, "update") == [
         "The update didn’t finish: The app hit an error during the update (RuntimeError)."]

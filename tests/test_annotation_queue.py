@@ -37,12 +37,17 @@ def test_streamer_cap_holds_through_quota_fill():
 def test_holdout_manifest_is_frozen_and_loadable():
     """清单必须能读出，dev_eval 层的冻结项都在（今晚的评级场按
     『评级前冻结』规则已提前加入）。"""
-    from app.provenance import eval_holdout
+    import json
+
+    from app.provenance import HOLDOUT_FILE, eval_holdout
 
     h = eval_holdout()
     assert "session-20260826-133138.jsonl" in h["sessions"]   # 260 对考卷
     assert "session-20260827-192219.jsonl" in h["sessions"]   # 评级前冻结
-    assert "elisa._martinez" in h["streamers"]                # 泛化参考
+    # 泛化参考：清单里那个主播是真实主播，名字不抄进测试，按清单自己写的用途认出来
+    ref = [s for s, why in json.loads(HOLDOUT_FILE.read_text(encoding="utf-8"))["dev_eval"]["streamers"].items()
+           if "泛化参考" in why]
+    assert len(ref) == 1 and ref[0] in h["streamers"]
 
 
 def test_training_side_holdout_is_fail_closed(tmp_path):

@@ -17,9 +17,9 @@ from app.pipeline import Pipeline
 from app.telemetry import Telemetry
 from app.translator import CachedTranslator, DeepLTranslator
 
-BELLA = "https://www.tiktok.com/@bellaallnatural/live"
-ELISA = "https://www.tiktok.com/@elisa._martinez/live"
-DAISY = "https://www.tiktok.com/@daisycabral_/live"
+BELLA = "https://www.tiktok.com/@brisadelosandes/live"
+ELISA = "https://www.tiktok.com/@elena._sandoval/live"
+DAISY = "https://www.tiktok.com/@daliaflores_/live"
 
 
 class FakeServer:
@@ -69,7 +69,7 @@ def world(monkeypatch, tmp_path):
     (tmp_path / "glossary.txt").write_text("el carrito => 小黄车\n",
                                            encoding="utf-8")
     (tmp_path / "profiles").mkdir()
-    (tmp_path / "profiles" / "bellaallnatural.example.txt").write_text(
+    (tmp_path / "profiles" / "brisadelosandes.example.txt").write_text(
         "la limpieza => 排毒粉\nD3 K2 => D3 K2 维生素滴剂\n", encoding="utf-8")
     (tmp_path / "brands").mkdir()
     # 虚构品牌：这份词表只给 test_daisy_with_brand_then_without 用，内容和 id
@@ -127,8 +127,8 @@ def test_bella_elisa_bella_round_trip(world):
         assert p.glossary.matching("todo en el carrito")[0][1] == "小黄车"
         gid_bella = gid()
         name_bella = deepl._glossary_ids[("es", "zh")][0]
-        assert h1["streamer"] == "bellaallnatural"
-        assert h1["profile"] == "bellaallnatural"
+        assert h1["streamer"] == "brisadelosandes"
+        assert h1["profile"] == "brisadelosandes"
         assert h1["profile_hash"] and h1["profile_hash"] != "?"
         assert h1["merged_glossary_hash"]
         assert h1["translator_active"] == "deepl"
@@ -154,7 +154,7 @@ def test_bella_elisa_bella_round_trip(world):
         assert name_back == name_bella                # 同内容 → 同指纹
         assert gid_back != gid_elisa                  # 但表是新建的（单槽位）
         assert h3["merged_glossary_hash"] == h1["merged_glossary_hash"]
-        assert h3["profile"] == "bellaallnatural"
+        assert h3["profile"] == "brisadelosandes"
     finally:
         for task in asyncio.all_tasks(loop):
             task.cancel()
@@ -163,7 +163,7 @@ def test_bella_elisa_bella_round_trip(world):
 
 
 def test_daisy_with_brand_then_without(world):
-    """daisycabral_ 没有自己的 profile，是品牌词表要覆盖的那类主播：带 brand
+    """daliaflores_ 没有自己的 profile，是品牌词表要覆盖的那类主播：带 brand
     时品牌条目生效、profile 仍是 None、brand/brand_hash 落审计；下一场不带
     brand，品牌条目静默消失（回到只有全局表）。"""
     p, deepl, api = world
@@ -183,7 +183,7 @@ def test_daisy_with_brand_then_without(world):
         assert p.glossary.matching("la crema acme")[0][1] == "ACME 面霜"
         assert p.glossary.matching("suero acme")[0][1] == "ACME 精华液"
         assert p.glossary.matching("todo en el carrito")[0][1] == "小黄车"   # 全局表仍在
-        assert h1["streamer"] == "daisycabral_"
+        assert h1["streamer"] == "daliaflores_"
         assert h1["profile"] is None and h1["profile_hash"] is None
         assert h1["brand"] == "acme"
         assert h1["brand_hash"] and h1["brand_hash"] != "?"
