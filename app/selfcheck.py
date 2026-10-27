@@ -93,13 +93,25 @@ async def check_ffmpeg():
     return _check(NAMES["ffmpeg"], OK, L("实测可用（{}）", "Working ({})").format(ffmpeg_source()))
 
 
-async def check_denoise(args):
-    """降噪是对抗背景音乐的第一道防线，必须实测能初始化。"""
+async def check_denoise(args, state=None):
+    """降噪是对抗背景音乐的第一道防线，必须实测能初始化。
+
+    state 是管线这一次下载模型的结果（Pipeline._denoise_check_state）：下载下来的文件和固定版本的
+    sha256 对不上时（专家审查 I5），文件没有保存，这一行是 FAIL——不能还说「尚未下载、开播时自动下载」，
+    那会让人以为开播时就好了。"""
     from .pipeline import DENOISE_MODEL, _arnndn_probe
     if getattr(args, "denoise", "auto") == "off":
         return _check(NAMES["denoise"], OK,
                       L("已按 --denoise off 主动关闭", "Turned off with --denoise off"))
     if not DENOISE_MODEL.exists():
+        if (state or {}).get("checksum_mismatch"):
+            return _check(NAMES["denoise"], FAIL,
+                          L("降噪模型下载下来的文件和程序里记的校验值对不上，没有保存——背景音乐不会被抑制",
+                            "The downloaded noise reduction model didn’t match the checksum the app "
+                            "expects, so it wasn’t saved. Background music won’t be reduced."),
+                          L("下次点「开始」会再下载一次；还是对不上，把这条信息反馈给开发者",
+                            "The app downloads it again the next time you click Start. If it still "
+                            "doesn’t match, send this message to the developer."))
         return _check(NAMES["denoise"], WARN,
                       L("降噪模型尚未下载（首次开播时自动下载）",
                         "Model not downloaded yet (it downloads when you first click Start)"))
@@ -212,6 +224,20 @@ async def check_asr(args, state=None):
                         "This Mac supports GPU acceleration, but recognition is running on the "
                         "CPU: {}. That’s more than twice as slow, and long sessions tend to build "
                         "a backlog.").format(detail), fix)
+    if info.get("rosetta"):
+        # I10：Apple 芯片上跑着 Intel 版 Python（经 Rosetta 转译）。这时 platform.machine() 报
+        # x86_64，上面那句「有 GPU 加速能力」认不出来，以前这一行照样报绿，识别却一直在 CPU 上跑。
+        # 重开程序补装没用（mlx-whisper 没有 Intel 版），能做的只有换一个原生的 Python。
+        # 不说「较小的模型」：自动选时是 Intel 路径的 CPU 小模型，但 --model 显式指定时不一定小，
+        # 用的是哪个模型 detail 里写着（审查小问题）
+        return _check(NAMES["asr"], WARN,
+                      L("这台 Mac 是 Apple 芯片，但程序在用 Intel 版的 Python（经 Rosetta 转译运行），"
+                        "识别只能用 CPU（{}）——慢，长时间监听容易积压",
+                        "This Mac has Apple silicon, but the app is running on an Intel version of "
+                        "Python (translated by Rosetta), so recognition can only run on the CPU: "
+                        "{}. It’s slow, and long sessions tend to build a backlog.").format(detail),
+                      L("换成 Apple 芯片原生的 Python：", "Switch to a Python built for Apple silicon. ")
+                      + python_switch_steps())
     return _check(NAMES["asr"], OK if cached else WARN, detail)
 
 
@@ -282,7 +308,7 @@ async def _ollama_down_hint():
     from . import localmodel
     if await _to_thread(localmodel.is_installed):
         return L("程序会自动把它启动起来，这一行随后会刷新；一直这样的话，"
-                 "请手动启动 Ollama，再在「翻译引擎」面板点一次「保存」",
+                 "请手动启动 Ollama，再在「设置 > 翻译引擎」里点一次「保存」",
                  "The app starts it automatically, and this row updates shortly. If it stays "
                  "like this, open Ollama yourself, then click Save in Settings > Translation Engine.")
     hint, _url = localmodel.install_hint()
@@ -376,7 +402,7 @@ def _model_missing(label, model):
                     "model {}. Captions will show only the original text. Banned-term alerts "
                     "aren’t affected.").format(label, model),
                   L("不在直播时程序会自动下载它（进度显示在首页），直播中会等停止后再下载；"
-                    "也可以在「翻译引擎」里换一个引擎",
+                    "也可以在「设置 > 翻译引擎」里换一个引擎",
                     "When you’re not monitoring, the app downloads it automatically (progress "
                     "appears on the home screen). During a session, it waits until you click "
                     "Stop. You can also choose another engine in Settings > Translation Engine."))
@@ -397,7 +423,7 @@ async def _check_paid_api(engine, key, translator):
     if not api_key(key):
         return _check(NAMES["translator"], FAIL,
                       L("{} 还没有密钥", "No API key for {} yet.").format(label),
-                      L("在「翻译引擎」里填写密钥；没有密钥的话，把引擎留在默认的「自动」即可",
+                      L("在「设置 > 翻译引擎」里填写密钥；没有密钥的话，把引擎留在默认的「自动」即可",
                         "Enter a key in Settings > Translation Engine. If you don’t have one, "
                         "leave the engine on the default, Automatic."))
     inner = getattr(translator, "inner", translator)
@@ -418,14 +444,14 @@ async def _check_paid_api(engine, key, translator):
         return _check(NAMES["translator"], FAIL,
                       L("{} 拒绝了当前密钥（HTTP {}）",
                         "{} rejected the current API key (HTTP {}).").format(label, status),
-                      L("在「翻译引擎」里重新填写密钥",
+                      L("在「设置 > 翻译引擎」里重新填写密钥",
                         "Enter the key again in Settings > Translation Engine."))
     if status == 404 and getattr(inner, "PROBE_CHECKS_MODEL", False):
         model = getattr(inner, "model", None) or getattr(inner, "MODEL", "?")
         return _check(NAMES["translator"], FAIL,
                       L("{} 接口里找不到模型 {}（HTTP 404）",
                         "The {} API doesn’t have the model {} (HTTP 404).").format(label, model),
-                      L("在「翻译引擎」里换一个引擎",
+                      L("在「设置 > 翻译引擎」里换一个引擎",
                         "Choose another engine in Settings > Translation Engine."))
     if status != 200:
         return _check(NAMES["translator"], WARN,
@@ -464,7 +490,7 @@ async def _check_deepl(args, translator):
         return _check(NAMES["translator"], FAIL,
                       L("DeepL 拒绝了当前密钥（HTTP {}）",
                         "DeepL rejected the current API key (HTTP {}).").format(status),
-                      L("在「翻译引擎」里重新填写密钥",
+                      L("在「设置 > 翻译引擎」里重新填写密钥",
                         "Enter the key again in Settings > Translation Engine."))
     if target not in inner._GLOSSARY_TARGET:
         return _check(NAMES["translator"], WARN,
@@ -684,19 +710,55 @@ def _browser_login_row(observed):
     return _check(name, WARN, detail + scope, bl.steps_text(observed))
 
 
+def python_switch_steps(darwin=None):
+    """换一个 Python 的照做步骤（I10）：Rosetta 转译的 Python 只能用 CPU 识别时给这一段。
+    Python 低于 3.10（本程序最低版本，D14）那一行不用它，用 bootstrap.python_upgrade_steps：
+    那时启动器已经不认旧版本建的 .venv，不用删（见那边的说明）。
+
+    为什么要删 .venv：启动器（tools/find_python.sh）有 .venv 时只认建它的那个解释器，新装的
+    Python 不删 .venv 永远轮不到；没有 .venv 时按安装位置挑，python.org 装的排在最前面，所以写明
+    从 python.org 装。重装组件约 1.4 GB（INSTALL_NEED_GB 里「运行环境」那一份）。
+    macOS 的「完全磁盘访问权限」按解释器文件登记（browser_login.fda_targets）：换了 Python，新的
+    那个不在列表里，TikTok 要求登录才给流地址的直播间就拿不到流——要提醒重新授权一次（审查小问题）。"""
+    import sys
+    darwin = sys.platform == "darwin" if darwin is None else darwin
+    steps = L("从 python.org 下载安装 Python 3.10 或更新版本；装好之后完全退出程序，删掉程序文件夹里的 "
+              ".venv 文件夹，再重新打开程序，它会用新的 Python 重新安装运行组件（约 1.4 GB，需要联网）",
+              "Install Python 3.10 or later from python.org. Then quit the app completely, delete "
+              "the .venv folder in the app folder, and open the app again. It reinstalls its "
+              "components with the new Python (about 1.4 GB, needs an internet connection).")
+    if darwin:
+        # 英文的上一句已经带句号，这里以空格开头；中文上一句不带句号，这里以「。」开头
+        steps += L("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次，路径和步骤见"
+                   "「浏览器登录态」那一行；不加的话，TikTok 要求登录才给流地址的直播间拿不到流",
+                   " After switching, add the new Python to Full Disk Access once more. The Browser "
+                   "Login row shows the path and steps. Without it, the app can’t get the stream "
+                   "for live streams where TikTok provides the stream URL only to signed-in "
+                   "viewers.")
+    return steps
+
+
 def _pip_command(spec, upgrade=True):
     """给中控复制的手动安装命令。Windows 默认终端是 PowerShell：以带引号的路径开头的一行
-    会被当成表达式报错，前面必须加 &。"""
+    会被当成表达式报错，前面必须加 &。
+
+    项目根有 constraints.txt 时末尾带 -c 和它的绝对路径（I4）：手动装的也是测试过的那一套版本，
+    和程序自己装的一样（命令在哪个目录里粘贴都能跑）。"""
     import sys
+
+    from .bootstrap import CONSTRAINTS
     flag = " -U" if upgrade else ""
+    pinned = ROOT / CONSTRAINTS
+    pin = ' -c "{}"'.format(pinned) if pinned.is_file() else ""  # i18n: data（命令行参数）
     # 这句只接在「也可以……后」的后面（英文是 "…, you can also " / "…quit the app and "），
     # 所以英文小写开头
     if os.name == "nt":
-        return L("在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"",
-                 "run this in PowerShell: & \"{}\" -m pip install{} \"{}\"").format(
-                     sys.executable, flag, spec)
-    return L("在终端里执行：\"{}\" -m pip install{} \"{}\"",
-             "run this in Terminal: \"{}\" -m pip install{} \"{}\"").format(sys.executable, flag, spec)
+        return L("在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"{}",
+                 "run this in PowerShell: & \"{}\" -m pip install{} \"{}\"{}").format(
+                     sys.executable, flag, spec, pin)
+    return L("在终端里执行：\"{}\" -m pip install{} \"{}\"{}",
+             "run this in Terminal: \"{}\" -m pip install{} \"{}\"{}").format(
+                 sys.executable, flag, spec, pin)
 
 
 async def check_comments(args):
@@ -712,13 +774,17 @@ async def check_comments(args):
     if getattr(args, "comments", True) is False:
         return _check(name, OK, L("已按 --no-comments 关闭", "Turned off with --no-comments"))
     if sys.version_info < (3, 10):
+        # I10 + D14：本程序最低版本提到了 3.10（用户 10-22 决定），3.9 上 main.py 在版本检查那里就停下、
+        # 弹出「需要升级」（bootstrap.refuse_old_python），正常走不到这里。这一行留着兜底，说法和那边
+        # 一致：不再是「弹幕不可用」，而是整个程序需要升级 Python；照做的步骤也用那边的同一段
+        # （bootstrap.python_upgrade_steps，不用删 .venv），不用 python_switch_steps（要人删 .venv）
+        from .bootstrap import python_upgrade_steps
         return _check(name, WARN,
-                      L("弹幕组件需要 Python 3.10 以上（当前 {}.{}），观众弹幕不可用",
-                        "The comments component needs Python 3.10 or later (current: {}.{}). "
-                        "Comments aren’t available.")
+                      L("这个版本的程序需要 Python 3.10 或更新的版本（当前 {}.{}），需要升级",
+                        "This version of the app needs Python 3.10 or later (current: {}.{}). "
+                        "Python needs an upgrade.")
                       .format(sys.version_info[0], sys.version_info[1]),
-                      L("字幕和违禁词报警不受影响",
-                        "Captions and banned-term alerts aren’t affected."))
+                      python_upgrade_steps(inline=True))
     from .updater import TIKTOKLIVE_SPEC
     version = await _to_thread(tiktoklive_version)
     if version is None:
@@ -843,7 +909,8 @@ async def check_disk():
     return _check(NAMES["disk"], OK, L("剩余 {:.0f} GB", "{:.0f} GB available").format(free))
 
 
-async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None, guard=None):
+async def run_all(args, detector=None, glossary=None, translator=None, asr_state=None, guard=None,
+                  denoise_state=None):
     """跑完所有自检。任一项抛异常都不影响其余项——自检自己绝不能拖垮启动。
 
     探测崩了算 **FAIL，不是 WARN**：崩了意味着这项能力压根没被验证过，和
@@ -852,7 +919,7 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
     没事」。名字也必须带上，否则只剩一个「自检项」，用户不知道是哪块没验。"""
     probes = [
         (NAMES["ffmpeg"], check_ffmpeg()),
-        (NAMES["denoise"], check_denoise(args)),
+        (NAMES["denoise"], check_denoise(args, denoise_state) if denoise_state else check_denoise(args)),
         (NAMES["asr"], check_asr(args, asr_state)),
         (NAMES["translator"], check_translator(args, translator)),
         (NAMES["watchlist"], check_watchlist(detector)),

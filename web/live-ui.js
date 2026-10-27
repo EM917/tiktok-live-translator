@@ -1,7 +1,7 @@
 // i18n: done
 /* 直播中界面几处「显示什么」的纯逻辑（web/live-ui.js）：顶栏手机同看按钮的文案、
- * 连接中提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签、「回到最新」按钮上的未读条数，以及底部大字幕的
- * 翻译状态角标、「语音识别不确定」角标、「约 N 秒前」、字幕字号的比例。
+ * 字幕区中间的连接中 / 下载模型 / 等待第一句提示、提示条的图标与文字、顶栏浮层的水平位置、报警分级标签、「回到最新」按钮上的未读条数，以及底部大字幕的
+ * 翻译状态角标、「语音识别不确定」角标、「约 N 秒前」、字幕字号的比例，还有顶栏「字幕译成」下拉要补哪一项。
  * 这些判断本身不碰 DOM，放进 app.js 的立即执行函数就没法被 node 测试 require
  * （同 web/settings-rows.js 的起因）。写法和加载方式照 web/switch.js：浏览器里
  * 是全局函数，Node 测试环境走 module.exports。 */
@@ -30,20 +30,53 @@ function floatButtonState(available, active, open, pending) {
   return { hidden: !show, on: show && !!open, pressed: show && !!open, disabled: show && !!pending };
 }
 
-/* 连接中提示：只在 connecting 时显示。有主播名就带上——点错了要等连上才看得出来，
- * 而失败的连接要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索
- * （pm.md #5）。已有字幕时 inline：改成字幕末尾的一行，不把旧字幕盖住。
+/* 字幕区中间那张卡片（#connect-hint）写什么。三种情况：
+ * 1. 连接中：「正在连接 @主播…」。有主播名就带上——点错了要等连上才看得出来，
+ *    而失败的连接要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）。
+ * 2. 连接中、而且 status 带着结构化的下载进度（progress.kind 为 model_download，后端在首次下载识别模型时发）：
+ *    改写「正在下载识别模型… 37%」（专家审查 U7）。以前这几分钟里中间一直写「正在连接 @x…」，真正的进度只在
+ *    顶部一行横幅里。只认这个结构化字段，不看 status 的 detail：connecting 的 detail 几乎从不为空
+ *    （pipeline.py 里十来处在发），看到 detail 就搬进卡片，中间和顶部横幅就会重复同一句话（计划审查 Q2）。
+ *    没有这个字段（老版本服务端、或下载以外的连接中）就照第 1 条。没有百分比时写已下载的 MB（见 modelDownloadText）。
+ * 3. 直播中、这一场还没出过字幕（awaitingFirst）：「等待第一句字幕…」，和浮窗没字幕时的占位同一句（U8）。
+ *    以前状态已是直播中、第一句还没出来时字幕区一片空白，看不出程序是在等还是停了。
+ * 已有字幕时 inline：改成字幕末尾的一行，不把旧字幕盖住。
  * offline（本地连接断线重连）返回 null：跟 viewTransition 一样，不代表直播
  * 本身变了，调用方维持原样不动 */
-function connectHint(state, streamer, hasCaptions) {
+function connectHint(state, streamer, hasCaptions, progress, awaitingFirst) {
   if (state === "offline") return null;
+  if (state === "live" && awaitingFirst) {
+    return { show: true, inline: !!hasCaptions, text: L("等待第一句字幕…", "Waiting for the first caption…") };
+  }
   if (state !== "connecting") return { show: false, inline: false, text: "" };
+  var download = modelDownloadText(progress);
+  if (download) return { show: true, inline: !!hasCaptions, text: download };
   return {
     show: true,
     inline: !!hasCaptions,
     text: streamer ? L("正在连接 @" + streamer + "…", "Connecting to @" + streamer + "…")
                    : L("正在连接…", "Connecting…"),
   };
+}
+
+/* status.progress（app/server.py 留存在 config.status 里、hello 时重放）→ 卡片上的下载进度。
+ * 只认 kind 为 model_download 的；别的 kind（以后加的）、不是对象、缺 kind 都返回空串，调用方照旧写「正在连接」。
+ * pct 夹在 0–100、取整；后端在下载完之前最多发 99。百分号紧贴数字（docs/i18n-style.md §2.3）。
+ * 模型大小未知时后端的 pct 是 null、只有 mb（已经下了多少 MB）：写「已下载 580 MB」，和横幅那句的说法一致，
+ * 卡片上也看得出数字在走。pct、mb 都不是数时只写「正在下载识别模型…」 */
+function modelDownloadText(progress) {
+  if (!progress || typeof progress !== "object" || progress.kind !== "model_download") return "";
+  var pct = progress.pct;
+  if (typeof pct === "number" && isFinite(pct)) {
+    var p = Math.max(0, Math.min(100, Math.floor(pct)));
+    return L("正在下载识别模型… " + p + "%", "Downloading speech model… " + p + "%");
+  }
+  var mb = progress.mb;
+  if (typeof mb === "number" && isFinite(mb) && mb >= 0) {
+    var m = Math.round(mb);
+    return L("正在下载识别模型… 已下载 " + m + " MB", "Downloading speech model… " + m + " MB so far");
+  }
+  return L("正在下载识别模型…", "Downloading speech model…");
 }
 
 /* 后端提示条（health / incident）的文字开头自带状态 emoji（app/pipeline.py 的
@@ -73,10 +106,12 @@ function popoverRight(anchorRight, viewportWidth, panelWidth, margin) {
 }
 
 /* 报警分级胶囊上的字。以前是「🔴 命中」这类 emoji 前缀，颜色现在交给 CSS
- * （.alert-item.tier-*），这里只给字；认不出的分级按「命中」处理（同旧逻辑） */
-var ALERT_TIER_TEXT = { exact: L("命中", "Exact"), variant: L("变体", "Variant"), fuzzy: L("疑似", "Similar") };
+ * （.alert-item.tier-*），这里只给字；认不出的分级按 exact 那一档处理（同旧逻辑）。
+ * exact 档中文写「精确」，和手机一样（专家审查 V5）：以前桌面写「命中」，而术语表里「命中」是 match
+ * （「命中时弹出报警」），拿它当分级名会混（docs/i18n-style.md §1.3） */
+var ALERT_TIER_TEXT = { exact: L("精确", "Exact"), variant: L("变体", "Variant"), fuzzy: L("疑似", "Similar") };
 function alertTierText(tier) {
-  return Object.prototype.hasOwnProperty.call(ALERT_TIER_TEXT, tier) ? ALERT_TIER_TEXT[tier] : L("命中", "Exact");
+  return Object.prototype.hasOwnProperty.call(ALERT_TIER_TEXT, tier) ? ALERT_TIER_TEXT[tier] : L("精确", "Exact");
 }
 
 /* 「回到最新」按钮上的字。翻上去看的时候，新来的行不会把视野拉走，但得让人知道下面攒了多少没看的：
@@ -152,6 +187,27 @@ function captionAsrChip(msg) {
            title: notes.join(L("", " ")) };
 }
 
+/* ---- 覆盖率角标：近几分钟实际收到了多少直播音频（2026-10-19，改进清单第 4 条）----
+ * 服务端每 10 秒的 stats 带 coverage_pct（最近 5 分钟、开场不足 5 分钟按已过的时间收到的直播音频占比）、
+ * coverage_window_min（这个窗口几分钟）、coverage_low（低于 70% 连续两次才为真、回到 85% 以上才撤）、
+ * breaks（本场断了几次），见 app/pipeline_stream.py _coverage_stats。只在 coverage_low 时出角标：
+ * 正常的时候主阅读区底下不多一个数字。同一件事页面顶部另有一条持续提示（session:audio_rate），说缺的部分
+ * 没有经过检测；角标只给数字，title 说这个数是什么。只写观察，不写为什么（CLAUDE.md 第八条）。
+ * 返回 { text, title }：text 为空串表示没有角标。手机页和浮窗不显示。 */
+function coverageChip(stats) {
+  if (!stats || !stats.coverage_low || typeof stats.coverage_pct !== "number" ||
+      !isFinite(stats.coverage_pct)) return { text: "", title: "" };
+  var p = Math.max(0, Math.min(100, Math.round(stats.coverage_pct)));
+  var m = Math.max(1, Math.round(Number(stats.coverage_window_min) || 5));
+  var n = Math.max(0, Math.floor(Number(stats.breaks) || 0));
+  return {
+    text: L("近 " + m + " 分钟收到 " + p + "%", "Last " + m + " min: " + p + "% received"),
+    title: LN(n, "近 " + m + " 分钟里实际收到的直播音频占比；本场已中断 " + n + " 次",
+              "Share of stream audio received in the last " + m + " min. 1 interruption this session.",
+              "Share of stream audio received in the last " + m + " min. " + n + " interruptions this session.")
+  };
+}
+
 /* ---- 底部大字幕的滞后：大字幕上这一句的声音结束多久了 ----
  * 服务端的 caption 消息带 ts（原文上屏的时刻）和 e2e_ms（这一段音频结束 → 上屏）。
  * ts − e2e_ms = 这一段音频结束的时刻，和违禁词报警延迟（now − audio_end_ts）是同一个起点。
@@ -216,6 +272,26 @@ function captionSizeFromConfig(value) {
   return n >= CAPTION_SIZE_MIN && n <= CAPTION_SIZE_MAX ? n : null;
 }
 
+/* 顶栏「字幕译成」下拉（#target-lang）。用户 2026-10-20 决定只列四种：简体中文、繁体中文、英语、西语。
+ * 原来列 13 种、标签叫「目标语言」，他把它当成了界面语言，切成 English 等着界面变（界面语言在
+ * 「设置 > 界面语言」，#ui-lang-select）。四种写死在 index.html 的 <option> 里，tests/target-lang.test.mjs
+ * 钉着两边一致。后端照旧什么语言代码都收：settings.json 里存着以前选的日语、或者 --target ja 启动时，
+ * 下拉补一项把它显示出来，不能静默落到第一项——那样中控以为字幕是简体中文，实际出的是日语。
+ * 补的那项只在它是当前目标时存在（app.js showTargetLang）。名字是各语言的自称，是数据，哪种界面
+ * 语言都不翻（同下拉本身的 translate="no"）；没收录的代码原样显示。
+ * 返回要补的 { value, text }；当前目标就在四种里、或是空的，返回 null */
+var TARGET_LANGS = ["zh-CN", "zh-TW", "en", "es"];
+var TARGET_LANG_OTHER_NAMES = {
+  ja: "日本語", ko: "한국어", fr: "Français", de: "Deutsch", ru: "Русский",   // i18n: data（语言自称）
+  pt: "Português", vi: "Tiếng Việt", th: "ไทย", id: "Bahasa Indonesia",
+};
+function targetLangExtra(code) {
+  var value = code == null ? "" : String(code);
+  if (!value || TARGET_LANGS.indexOf(value) >= 0) return null;
+  var known = Object.prototype.hasOwnProperty.call(TARGET_LANG_OTHER_NAMES, value);
+  return { value: value, text: known ? TARGET_LANG_OTHER_NAMES[value] : value };
+}
+
 /* 该写到 <html> 上的 CSS 变量：大字幕的字号和卡片/弹幕的比例 */
 function captionSizeVars(size) {
   var n = Math.round(Number(size));
@@ -225,15 +301,16 @@ function captionSizeVars(size) {
 /* Node 测试环境导出；浏览器里作为全局函数被 app.js 使用 */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { shareButtonText: shareButtonText, floatButtonState: floatButtonState,
-                     connectHint: connectHint,
+                     connectHint: connectHint, modelDownloadText: modelDownloadText,
                      stripStatusEmoji: stripStatusEmoji, barIconFor: barIconFor,
                      popoverRight: popoverRight, alertTierText: alertTierText,
                      jumpLatestCaptionsText: jumpLatestCaptionsText,
                      jumpLatestCommentsText: jumpLatestCommentsText,
                      captionStateChip: captionStateChip, liveBarChip: liveBarChip,
-                     captionAsrChip: captionAsrChip,
+                     captionAsrChip: captionAsrChip, coverageChip: coverageChip,
                      captionAudioEndAt: captionAudioEndAt, captionAgeText: captionAgeText,
                      CAPTION_LAG_SHOW_SEC: CAPTION_LAG_SHOW_SEC,
                      captionScale: captionScale, captionSizeVars: captionSizeVars,
-                     captionSizeFromConfig: captionSizeFromConfig };
+                     captionSizeFromConfig: captionSizeFromConfig,
+                     TARGET_LANGS: TARGET_LANGS, targetLangExtra: targetLangExtra };
 }

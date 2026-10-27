@@ -138,7 +138,9 @@ def test_a_dead_pasted_stream_url_says_so_in_english(monkeypatch, tmp_path):
 
 # ---- _confirm_offline / _host_wait：房间状态不是在播时的等待与超时 --------------------------------
 
-def test_waiting_for_the_room_and_the_timeout_in_english(monkeypatch, tmp_path):
+def test_waiting_for_the_room_and_the_timeout_in_english(monkeypatch, tmp_path, v1_reconnect):
+    """等房间恢复的文字两套重连规则一样；这里钉在 V1 上跑剧本（每次都重新解析，第二次就进等待）。
+    V2 下复查也扣令牌、桶空了要等到下一个令牌，见 tests/test_reconnect_v2.py。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
 
     async def fake_session(media, *a, **k):

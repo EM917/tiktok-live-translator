@@ -1,4 +1,4 @@
-"""跨场状态：Bella → Elisa → Bella 同进程三段切换。
+"""跨场状态：Brisa → Elena → Brisa 同进程三段切换。
 
 这批改动最大的风险不是单场行为，而是**跨场状态**——引擎实例、词表全局态、
 DeepL 术语表缓存都跨场存活。三段切换验证三件事：profile 是双向真切换而不是
@@ -17,9 +17,9 @@ from app.pipeline import Pipeline
 from app.telemetry import Telemetry
 from app.translator import CachedTranslator, DeepLTranslator
 
-BELLA = "https://www.tiktok.com/@bellaallnatural/live"
-ELISA = "https://www.tiktok.com/@elisa._martinez/live"
-DAISY = "https://www.tiktok.com/@daisycabral_/live"
+BRISA = "https://www.tiktok.com/@brisafakeperson/live"
+ELENA = "https://www.tiktok.com/@elena._demouser/live"
+DALIA = "https://www.tiktok.com/@daliasample_/live"
 
 
 class FakeServer:
@@ -69,10 +69,10 @@ def world(monkeypatch, tmp_path):
     (tmp_path / "glossary.txt").write_text("el carrito => 小黄车\n",
                                            encoding="utf-8")
     (tmp_path / "profiles").mkdir()
-    (tmp_path / "profiles" / "bellaallnatural.example.txt").write_text(
+    (tmp_path / "profiles" / "brisafakeperson.example.txt").write_text(
         "la limpieza => 排毒粉\nD3 K2 => D3 K2 维生素滴剂\n", encoding="utf-8")
     (tmp_path / "brands").mkdir()
-    # 虚构品牌：这份词表只给 test_daisy_with_brand_then_without 用，内容和 id
+    # 虚构品牌：这份词表只给 test_dalia_with_brand_then_without 用，内容和 id
     # 都不对应任何真实品牌——个人使用的品牌词表不进仓库，见 brands/README.md
     (tmp_path / "brands" / "acme.example.txt").write_text(
         "la crema acme => ACME 面霜\nsuero acme => ACME 精华液\n", encoding="utf-8")
@@ -106,7 +106,7 @@ def world(monkeypatch, tmp_path):
     return p, inner, api
 
 
-def test_bella_elisa_bella_round_trip(world):
+def test_brisa_elena_brisa_round_trip(world):
     p, deepl, api = world
     loop = asyncio.new_event_loop()
 
@@ -121,40 +121,40 @@ def test_bella_elisa_bella_round_trip(world):
         return loop.run_until_complete(deepl._ensure_glossary("es", "zh-CN"))
 
     try:
-        # ---- 第一场：Bella ----
-        h1 = begin(BELLA)
+        # ---- 第一场：Brisa ----
+        h1 = begin(BRISA)
         assert p.glossary.matching("ya pagó la limpieza")[0][1] == "排毒粉"
         assert p.glossary.matching("todo en el carrito")[0][1] == "小黄车"
-        gid_bella = gid()
-        name_bella = deepl._glossary_ids[("es", "zh")][0]
-        assert h1["streamer"] == "bellaallnatural"
-        assert h1["profile"] == "bellaallnatural"
+        gid_brisa = gid()
+        name_brisa = deepl._glossary_ids[("es", "zh")][0]
+        assert h1["streamer"] == "brisafakeperson"
+        assert h1["profile"] == "brisafakeperson"
         assert h1["profile_hash"] and h1["profile_hash"] != "?"
         assert h1["merged_glossary_hash"]
         assert h1["translator_active"] == "deepl"
 
-        # ---- 第二场：Elisa（无 profile）----
-        h2 = begin(ELISA)
+        # ---- 第二场：Elena（无 profile）----
+        h2 = begin(ELENA)
         assert p.glossary.matching("ya pagó la limpieza") == []   # 不再排毒粉
         assert p.glossary.matching("todo en el carrito")[0][1] == "小黄车"
-        gid_elisa = gid()
-        name_elisa = deepl._glossary_ids[("es", "zh")][0]
-        assert gid_elisa != gid_bella                 # 术语表真的换了
-        assert name_elisa != name_bella               # 指纹变了
-        assert any(g["glossary_id"] == gid_bella      # 槽位够就不删旧表：只有
+        gid_elena = gid()
+        name_elena = deepl._glossary_ids[("es", "zh")][0]
+        assert gid_elena != gid_brisa                 # 术语表真的换了
+        assert name_elena != name_brisa               # 指纹变了
+        assert any(g["glossary_id"] == gid_brisa      # 槽位够就不删旧表：只有
                    for g in api.glossaries)           # DeepL 回 456 才腾位（免费档）
         assert h2["profile"] is None and h2["profile_hash"] is None
         assert h2["merged_glossary_hash"] != h1["merged_glossary_hash"]
 
-        # ---- 第三场：切回 Bella ----
-        h3 = begin(BELLA)
+        # ---- 第三场：切回 Brisa ----
+        h3 = begin(BRISA)
         assert p.glossary.matching("ya pagó la limpieza")[0][1] == "排毒粉"
         gid_back = gid()
         name_back = deepl._glossary_ids[("es", "zh")][0]
-        assert name_back == name_bella                # 同内容 → 同指纹
-        assert gid_back != gid_elisa                  # 但表是新建的（单槽位）
+        assert name_back == name_brisa                # 同内容 → 同指纹
+        assert gid_back != gid_elena                  # 但表是新建的（单槽位）
         assert h3["merged_glossary_hash"] == h1["merged_glossary_hash"]
-        assert h3["profile"] == "bellaallnatural"
+        assert h3["profile"] == "brisafakeperson"
     finally:
         for task in asyncio.all_tasks(loop):
             task.cancel()
@@ -162,8 +162,8 @@ def test_bella_elisa_bella_round_trip(world):
         loop.close()
 
 
-def test_daisy_with_brand_then_without(world):
-    """daisycabral_ 没有自己的 profile，是品牌词表要覆盖的那类主播：带 brand
+def test_dalia_with_brand_then_without(world):
+    """daliasample_ 没有自己的 profile，是品牌词表要覆盖的那类主播：带 brand
     时品牌条目生效、profile 仍是 None、brand/brand_hash 落审计；下一场不带
     brand，品牌条目静默消失（回到只有全局表）。"""
     p, deepl, api = world
@@ -179,17 +179,17 @@ def test_daisy_with_brand_then_without(world):
 
     try:
         # ---- 带品牌 ----
-        h1 = begin(DAISY, brand="acme")
+        h1 = begin(DALIA, brand="acme")
         assert p.glossary.matching("la crema acme")[0][1] == "ACME 面霜"
         assert p.glossary.matching("suero acme")[0][1] == "ACME 精华液"
         assert p.glossary.matching("todo en el carrito")[0][1] == "小黄车"   # 全局表仍在
-        assert h1["streamer"] == "daisycabral_"
+        assert h1["streamer"] == "daliasample_"
         assert h1["profile"] is None and h1["profile_hash"] is None
         assert h1["brand"] == "acme"
         assert h1["brand_hash"] and h1["brand_hash"] != "?"
 
         # ---- 不带品牌：条目消失，回到只有全局表 ----
-        h2 = begin(DAISY)
+        h2 = begin(DALIA)
         assert p.glossary.matching("la crema acme") == []
         assert p.glossary.matching("suero acme") == []
         assert p.glossary.matching("todo en el carrito")[0][1] == "小黄车"

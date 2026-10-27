@@ -107,6 +107,12 @@ def test_audit_texts_read_as_english():
 
 # ---- 一场从开始到放弃：状态行、提示、弹幕状态 -------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _v1_reconnect_words(v1_reconnect):
+    """这个文件钉的是 V1 那几句重连英文（「attempt N of M」、放弃）：显式钉在 V1 上。V2 的重连英文
+    （本场第几次中断、用同一个流地址、查询次数到上限）在 tests/test_reconnect_v2.py 逐字比对。"""
+
+
 def test_a_session_that_loses_the_network_and_gives_up_is_english(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     p.NETWORK_GIVE_UP_SEC = 60.0
@@ -230,8 +236,15 @@ def test_clock_gaps_and_audio_events_are_english(monkeypatch, tmp_path):
     with i18n.use(EN):
         run(p._check_clock_gap(10, now=(T0 + 1390.0, 510.0)))       # 单调时钟停住：休眠
         run(p._check_clock_gap(10, now=(T0 + 1460.0, 570.0)))       # 两个钟一起多走：没运行
-        run(p._on_audio_events(sess, [("low", {"audio_sec": 20.0, "wall_sec": 60.0}),
-                                      ("quiet", {"audio_sec": 45.0})]))
+        run(p._on_audio_events(sess, [("quiet", {"audio_sec": 45.0})]))
+        # 跨轮覆盖率偏低（session:audio_rate 改由它驱动）：开播 4 分钟、只收到 100 秒
+        watch = sess["watch"]
+        watch.cov_start = 1000.0
+        for i in range(100):
+            watch.note_audio(1.0, 1000.0 + i, T0 + i)
+        sess["break_no"] = 6
+        run(p._check_coverage(sess, 1240.0))
+        run(p._check_coverage(sess, 1240.0))
     assert_no_chinese(english_ui(server.messages))
     first, second = incidents_en(server, "session:clock_gap")
     assert first.endswith(" This computer was asleep or suspended for about 23 min. The app "
@@ -241,8 +254,8 @@ def test_clock_gaps_and_audio_events_are_english(monkeypatch, tmp_path):
                            "stream wasn’t monitored. During streams, keep the computer plugged "
                            "in and don’t let it sleep. This has happened 2 times this session.")
     assert incidents_en(server, "session:audio_rate") == [
-        "Only 20 sec of stream audio arrived in the last minute. The missing audio wasn’t "
-        "checked."]
+        "Only 42% of stream audio arrived in the last 4 min. The missing audio wasn’t checked. "
+        "6 interruptions this session."]
     assert incidents_en(server, "session:quiet_audio") == [
         "45 sec of stream audio arrived, but its volume stayed below the speech recognition "
         "threshold, so none of it was transcribed. Monitoring continues."]
@@ -520,18 +533,26 @@ def test_engine_trouble_is_explained_in_english(monkeypatch, tmp_path, ascii_eng
         "Meanwhile, captions show the original text. Banned-term alerts aren’t affected."]
     assert incidents_en(server, Pipeline.ENGINE_INCIDENT) == [
         "Claude returned HTTP 401. Captions show the original text (banned-term alerts aren’t "
-        "affected). The app tries again every 120 sec. In Settings > Translation Engine, you "
-        "can re-enter the API key or choose another engine.",
+        "affected). The app tries again every 120 sec. After you click Stop, you can re-enter "
+        "the API key or choose another engine in Settings > Translation Engine.",
         "Claude returned HTTP 401. Captions after that showed only the original text "
         "(banned-term alerts weren’t affected). The app tries again when the next session "
         "starts. In Settings > Translation Engine, you can re-enter the API key or choose "
         "another engine.",
         "OpenAI returned HTTP 404 (model gpt-x). Captions show the original text (banned-term "
-        "alerts aren’t affected). The app tries again every 120 sec. In Settings > Translation "
-        "Engine, you can choose another engine.",
+        "alerts aren’t affected). The app tries again every 120 sec. After you click Stop, you "
+        "can choose another engine in Settings > Translation Engine.",
         "Local Hy-MT2 1.8B returned no translation 3 times in a row. Ollama returned HTTP 500: "
         "model not found. Captions show the original text (banned-term alerts aren’t "
-        "affected). You can choose another engine in Settings > Translation Engine."]
+        "affected). After you click Stop, you can choose another engine in Settings > "
+        "Translation Engine."]
+    # 直播中挂着的那几条先说「停止」（设置分组直播中收起，专家审查 U4）；停止后改写的那条（第二条）不用说。
+    # 中文臂同样，位置一律写「设置 > 翻译引擎」（V5）
+    zh = [i18n.render(m["text"], i18n.ZH) for m in server.incidents(Pipeline.ENGINE_INCIDENT)
+          if m["level"] != "clear"]
+    assert len(zh) == 4
+    assert all("在「设置 > 翻译引擎」里" in t for t in zh), zh
+    assert ["点「停止」后" in t for t in zh] == [True, False, True, True], zh
 
 
 def test_engine_fallbacks_are_explained_in_english(monkeypatch, tmp_path, ascii_engine_labels):
@@ -557,14 +578,67 @@ def test_engine_fallbacks_are_explained_in_english(monkeypatch, tmp_path, ascii_
     assert_no_chinese(english_ui(server.messages))
     assert notices_en(server) == [
         "Claude returned HTTP 403. This session switched to Local Hy-MT2 1.8B to keep "
-        "translating. To switch back, re-enter the API key in Settings > Translation Engine, "
-        "then choose Claude again.",
+        "translating. To switch back, click Stop, re-enter the API key in Settings > "
+        "Translation Engine, then choose Claude again.",
         "The DeepL free quota is used up, and no local model is available on this computer, so "
         "the app switched to Google (free) to keep translating. Captions are now sent to "
         "Google. After you upgrade or renew DeepL, choose DeepL again to switch back.",
         "The DeepL free quota is used up, so this session switched to a local engine (hymt2) to "
         "keep translating. After you upgrade or renew DeepL, choose DeepL again to switch back."]
     assert i18n.render(p.args.translator_note, EN) == notices_en(server)[-1]
+
+
+def test_every_engine_hint_shown_while_monitoring_says_click_stop_first(
+        monkeypatch, tmp_path, ascii_engine_labels):
+    """直播中出现的引擎提示，叫人去换引擎、换模型、填密钥之前都先说「停止」：设置分组直播中整块收起
+    （专家审查 U4）。位置一律写「设置 > 翻译引擎」（V5）。上面两条只钉了其中几句；这里把直播中会出现的
+    每一句都过一遍，中英两臂都查：401、404 的持续提示，Claude 连续 400、402 的持续提示，本地引擎连续
+    出错的持续提示，以及本场改用本地模型后 403 和 404 两种「怎么换回来」。"""
+    p, server = make_pipeline(monkeypatch, tmp_path)
+    local = {"on": False}
+    monkeypatch.setattr(pipeline_mod, "create_translator",
+                        lambda name: FakeEngine("hymt2") if local["on"] else None)
+    streak = Pipeline.ENGINE_ERROR_STREAK
+
+    async def scenario():
+        for engine in (FakeEngine("claude", status=401),
+                       FakeEngine("openai", status=404, model="gpt-x"),
+                       FakeEngine("claude", status=400, model="claude-x", streak=streak,
+                                  said="invalid_request_error: bad request."),
+                       FakeEngine("claude", status=402, model="claude-x", streak=streak,
+                                  said="billing_error: credit balance"),
+                       FakeEngine("hymt2", status=500, said="model not found", streak=streak)):
+            p.translator = engine
+            await p._note_engine_failure(engine)
+        local["on"] = True                                   # 本机有本地模型：本场改用它
+        for engine in (FakeEngine("claude", status=403),
+                       FakeEngine("openai", status=404, model="gpt-x")):
+            p.translator = engine
+            await p._note_engine_failure(engine)
+
+    with i18n.use(EN):
+        run(scenario())
+    assert_no_chinese(english_ui(server.messages))
+    shown = ([m["text"] for m in server.incidents(Pipeline.ENGINE_INCIDENT) if m["level"] != "clear"]
+             + [m["text"] for m in server.messages if m.get("type") == "notice"])
+    assert len(shown) == 7, shown
+    zh = [i18n.render(t, i18n.ZH) for t in shown]
+    en = [i18n.render(t, EN) for t in shown]
+    assert all("点「停止」后" in t and "「设置 > 翻译引擎」里" in t for t in zh), zh
+    assert all("click Stop" in t and "Settings > Translation Engine" in t for t in en), en
+    # 审查时没有断言钉住的两句，写出全文：Claude 连续 400 的持续提示、改用本地模型后 404 的换回办法
+    assert zh[2] == ("Claude 返回 HTTP 400（模型 claude-x）：invalid_request_error: bad request。"
+                     "字幕先显示原文（违禁词报警不受影响）；点「停止」后可以在「设置 > 翻译引擎」里"
+                     "换一个引擎")
+    assert en[2] == ("Claude returned HTTP 400 (model claude-x): invalid_request_error: bad "
+                     "request. Captions show the original text (banned-term alerts aren’t "
+                     "affected). After you click Stop, you can choose another engine in Settings > "
+                     "Translation Engine.")
+    assert "点「停止」后可以在「设置 > 翻译引擎」里换一个引擎" in zh[3]
+    assert zh[6].endswith("点「停止」后在「设置 > 翻译引擎」里换好模型、重选 OpenAI 即可回来。"), zh[6]
+    assert en[6] == ("OpenAI returned HTTP 404 (model gpt-x). This session switched to Local "
+                     "Hy-MT2 1.8B to keep translating. To switch back, click Stop, change the "
+                     "model in Settings > Translation Engine, then choose OpenAI again.")
 
 
 def test_choosing_an_engine_that_is_not_ready_is_english(monkeypatch, tmp_path,
@@ -657,7 +731,7 @@ def test_update_pause_and_resume_are_english(monkeypatch, tmp_path):
                         "install (up to about 10 min). Then the app restarts and resumes "
                         "monitoring.")
     assert "Updating. Monitoring is paused and resumes in about 1 minute." in texts
-    assert texts[-1] == "Updated to v{}. Resuming monitoring @bellaallnatural…".format(
+    assert texts[-1] == "Updated to v{}. Resuming monitoring @brisafakeperson…".format(
         app_version())
     assert incidents_en(server, "update") == [
         "The update didn’t finish: The app hit an error during the update (RuntimeError)."]

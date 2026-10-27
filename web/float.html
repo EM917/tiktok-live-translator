@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title data-en="Floating Window · TikTok Live Translator">浮窗 · TikTok 直播同传</title>
-<link rel="stylesheet" href="/static/float.css?v=4">
+<link rel="stylesheet" href="/static/float.css?v=5">
 <!-- i18n: done -->
 </head>
 <body>
@@ -12,6 +12,14 @@
        （连的是 /ws?role=float，服务端对它只转发需要的几种消息）。样子和规则见 web/float.js。
        字幕和弹幕正文带 class i18n-data（留给浏览器翻译，英文界面的检查也豁免）；昵称由 float.js 标 translate="no" -->
   <main id="f-root" class="f-root">
+    <!-- 结束卡片（专家审查 U3）：监听自己停了（下播、出错）时浮窗不再直接消失，字幕和弹幕收起、露出这一张。
+         标题和说明由 float.js 按状态写（floatEndView）；按钮走 pywebview 的 JS 桥把主窗口提到前面，不发 WebSocket
+         消息，没有 JS 桥时不画 -->
+    <section id="f-end" class="f-end hidden" role="status">
+      <div id="f-end-title" class="f-end-title"></div>
+      <div id="f-end-note" class="f-end-note"></div>
+      <button id="f-end-back" class="f-end-back hidden" type="button" data-en="Show Main Window">回到主窗口</button>
+    </section>
     <div id="f-empty" class="f-empty" role="status" data-en="Waiting for the first caption…">等待第一句字幕…</div>
     <section id="f-caption" class="f-caption hidden">
       <!-- 状态行：「连接中…」（断线、重连、等开播时，大字幕上那一句是旧的）、翻译状态角标（没译成、
@@ -29,8 +37,8 @@
     <section id="f-comments" class="f-comments" aria-label="弹幕" data-en-aria-label="Comments"></section>
   </main>
   <script src="/static/i18n.js?v=1"></script>
-  <script src="/static/live-ui.js?v=4"></script>
+  <script src="/static/live-ui.js?v=7"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/float.js?v=3"></script>
+  <script src="/static/float.js?v=4"></script>
 </body>
 </html>

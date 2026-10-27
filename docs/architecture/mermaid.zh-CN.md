@@ -24,7 +24,7 @@ flowchart TD
     DET -->|"报警（开关打开时）"| SRV
     SRV --> WS(("WebSocket"))
     WS --> UI["字幕界面<br/>应用窗口 · 手机同看"]
-    FF -.->|"断流：重新解析地址重连"| RESOLVE
+    FF -.->|"断流：重连，原地址没有音频再重新解析"| RESOLVE
 ```
 
 </details>

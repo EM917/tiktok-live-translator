@@ -25,7 +25,7 @@ def test_the_real_cases_are_detected(source, translated, runs):
 
 def test_ordinary_translations_are_clean():
     # 拉丁写法的品牌名、数字、表情、全角标点都不算
-    for out in ("今天是 35 美元，Healthy-Life 牌。", "第32条中我们有All Natural。", "非常感谢 🥳💕", "D3 K2 维生素滴剂"):
+    for out in ("今天是 35 美元，Healthy-Life 牌。", "第32条中我们有Pure Organic。", "非常感谢 🥳💕", "D3 K2 维生素滴剂"):
         assert foreign_script_runs("Son 35 dólares hoy", out, "zh-CN") == []
 
 

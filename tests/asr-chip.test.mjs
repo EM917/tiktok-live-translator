@@ -93,7 +93,10 @@ for (const lang of ["zh", "en"]) {
     assert.equal(shown(page, "live-asr"), false);
     assert.equal(shown(page, "live-meta"), false, "没有角标、没有滞后：这一行平时是收起的");
 
+    // 待译停留（web/app.js LIVE_HOLD_MS）：还在翻译的一句先不上大字幕，等满 4 秒才照以前的样子放原文。
+    // 这条用例要的是「这一句在大字幕上」，每句之后拨一下那个 4 秒的计时器
     page.push(caption(2, "y ya", { asr_flag: ["low_conf"] }));
+    page.fire(4000);
     assert.equal(shown(page, "live-asr"), true);
     assert.equal(page.el("live-asr").textContent, X.chip);
     assert.equal(page.el("live-asr").title, X.conf);
@@ -103,11 +106,13 @@ for (const lang of ["zh", "en"]) {
     assert.equal(shown(page, "live-asr"), true, "译文到了，角标还在");
 
     page.push(caption(3, "bueno chicas"));
+    page.fire(4000);
     assert.equal(shown(page, "live-asr"), false);
     assert.equal(page.el("live-asr").textContent, "");
     assert.equal(shown(page, "live-meta"), false);
 
     page.push(caption(4, "otra", { asr_flag: ["loop"] }));
+    page.fire(4000);
     assert.equal(shown(page, "live-asr"), true);
     page.push({ type: "session_break", ts: 1 });
     assert.equal(shown(page, "live-asr"), false);

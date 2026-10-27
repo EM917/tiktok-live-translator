@@ -1,7 +1,16 @@
+# -*- coding: utf-8 -*-
+# 上一行给 pip 看，必须留在前两行（tests/test_bootstrap_constraints.py 钉着）。没有它，旧版 pip
+# （核对过 21.2、23.0、24.2；25.1 起先试 UTF-8）按系统的本地编码读这个文件，Windows 上是 cp1252、
+# GBK 这类，下面的中文注释会让 pip 直接报 UnicodeDecodeError、什么都不装。Python 3.10.11 建的
+# .venv 里就是 23.0（PR #136 的 CI 上 Windows 那一格就是这样失败的）。
+# 本程序要求 Python 3.10 或更新的版本（用户 10-22 决定 D14；版本检查在 main.py，下限见
+# app/bootstrap.MIN_PYTHON）。这里只写下限；测试过的那一套具体版本在 constraints.txt，
+# 安装时一起给：pip install -r requirements.txt -c constraints.txt
 aiohttp>=3.9
 numpy>=1.24
 faster-whisper>=1.0
 # 带上 curl-cffi 扩展：pip 按 yt-dlp 自己声明的 curl_cffi 版本范围装配这一对。
+# yt-dlp 和 curl_cffi 不在 constraints.txt 里锁：要追 TikTok 的变化（程序会在后台升级 yt-dlp）。
 # yt-dlp 只加载特定区间的 curl_cffi（yt_dlp/networking/_curlcffi.py 的版本检查），
 # 区间外它就没有可用的 TikTok 伪装。
 yt-dlp[curl-cffi]
@@ -16,7 +25,10 @@ pywebview>=5
 # Apple Silicon 专属：GPU 识别后端（其他平台自动跳过，用 faster-whisper CPU/CUDA）
 mlx-whisper; platform_machine == 'arm64' and sys_platform == 'darwin'
 # 弹幕后端抓取（可选）：从 TikTok 直播间评论流拿观众弹幕，WebSocket 签名经
-# 第三方 Euler Stream 服务。要求 Python 3.10+，本项目主体承诺 3.9+，所以只在
-# 子进程（app/comment_worker.py）里用；3.9 环境装不上时弹幕来源自动降级为
-# 「不可用」，不影响直播翻译主链路。
+# 第三方 Euler Stream 服务。只在子进程（app/comment_worker.py）里用；装不上时弹幕来源
+# 降级为「不可用」，不影响直播翻译主链路。它要求的 Python 3.10 现在就是本程序的最低版本；
+# python_version 标记照旧留着：3.9 上的旧安装点「一键更新」时，是旧版本的程序拿这份清单去装，
+# 有标记它才不会因为这一行整份装不上（装完重启，新版本再告诉中控要升级 Python）。
+# 和 yt-dlp 一样不在 constraints.txt 里锁：评论服务拒绝连接时程序会在 7.x 之内升级它
+# （app/updater.py freshen_tiktoklive）。
 TikTokLive>=7.0.1,<8; python_version >= "3.10"

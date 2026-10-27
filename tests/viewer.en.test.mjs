@@ -33,6 +33,9 @@ test("连接状态胶囊：短写法，{n} 填上秒数", () => {
   assert.equal(V.statusText("reconnecting", 4), "Reconnecting in 4 sec…");
   assert.equal(V.statusText("reconnecting"), "Reconnecting in 0 sec…");
   assert.equal(V.statusText("denied"), "Link expired · Ask for a new QR code");
+  // 地址栏和这台手机上都没有口令：链接并没有失效，不和 4401 共用 denied（顺延事项，#148 / D5 的后果）
+  assert.equal(V.statusText("nokey"), "No access key · Scan the QR code");
+  assert.ok(V.statusText("nokey").length <= V.statusText("denied").length, "胶囊放得下（R4）");
   assert.equal(V.statusText("full"), "Full (12 max) · Try again later");
   assert.equal(V.statusText("off"), "Operator stopped sharing");
   assert.equal(V.statusText("stale", 50), "No updates for 50 sec");
@@ -64,7 +67,7 @@ test("重译按钮：各状态的字，可点与否与中文相同", () => {
 });
 
 test("场次分隔线：不带主播名、不带时间", () => {
-  assert.equal(V.sessionDividerText({ streamer: "bella", ts: 1 }), "── New session ──");
+  assert.equal(V.sessionDividerText({ streamer: "brisa", ts: 1 }), "── New session ──");
 });
 
 test("取消记录跟着这一次共享走：英文页同样，重启后重新数到的同一个 id 不被藏", () => {
@@ -142,7 +145,8 @@ const IDS = ["conn-dot", "conn-text", "stream-text", "alert-badge", "alert-count
   "alert-clear-seen", "caption-section", "caption-list", "jump-latest", "comment-toggle",
   "comment-count", "comment-list", "ring-toggle", "lang-toggle", "lang-toggle-text"];
 
-// 在替身挂在全局上时跑整页：drive(page) 里收消息、关连接。now 是可调的假时钟（毫秒）
+// 在替身挂在全局上时跑整页：drive(page) 里收消息、关连接。now 是可调的假时钟（毫秒）；
+// tick() 把页面注册的 setInterval 回调各跑一次（1 秒的连接秒表等），时间不会自己走
 function runPage(drive) {
   const elements = {};
   IDS.forEach((id) => { elements[id] = makeNode("div"); });
@@ -171,8 +175,9 @@ function runPage(drive) {
                       host: "127.0.0.1:0", reload() {} };
   global.WebSocket = FakeWebSocket;
   global.localStorage = { getItem: () => null, setItem() {} };
+  const intervals = [];
   global.setTimeout = () => 1;
-  global.setInterval = () => 0;
+  global.setInterval = (fn) => { intervals.push(fn); return 0; };
   Date.now = () => clock.now;
   try {
     delete require.cache[MOD];
@@ -182,7 +187,7 @@ function runPage(drive) {
     ws.onopen();
     send({ type: "viewer_hello", ok: true, ts: clock.now / 1000, share_since: 0, viewers: 1,
            max_viewers: 12, read_only: true });
-    drive({ ws, send, clock, elements });
+    drive({ ws, send, clock, elements, tick: () => intervals.slice().forEach((fn) => fn()) });
   } finally {
     Object.assign(global, saved);
     Date.now = saved.now;
@@ -296,12 +301,73 @@ test("断线：胶囊按关闭码写短句，直播状态盖成 Status unknown",
   }
 });
 
-test("重连拖过 60 秒：胶囊改成告诉人可以做什么", () => {
+// 这一条原来断言「连着 75 秒后掉线，掉线那一刻就显示 Not connected for 75 sec. Ask the operator…」，
+// 钉住的是错误行为（V7）：秒数从上一次 viewer_hello 算起，把连着的 75 秒也算成了没连上。
+// 现在掉线那一刻是普通的重连倒计时；秒数从掉线那一刻数起，见下一条
+test("连着 75 秒后掉线：掉线那一刻是普通的重连倒计时，不把连着的时间算进去", () => {
   const els = runPage(({ ws, clock }) => {
     clock.now += 75000;
     ws.onclose({ code: 1006 });
   });
-  assert.equal(els["conn-text"].textContent,
-    "Not connected for 75 sec. Ask the operator whether sharing is still on, or scan the QR code again.");
+  assert.match(els["conn-text"].textContent, /^Reconnecting in \d+ sec…$/);
+  assert.equal(els["stale-line"].classList.contains("hidden"), true);
+  assertNoChinese(els);
+});
+
+test("断开 61 秒才改口：胶囊只写 Not connected for 61 sec，该做什么写在胶囊下面那一行", () => {
+  const seen = {};
+  const els = runPage(({ ws, send, clock, elements, tick }) => {
+    clock.now += 30 * 60 * 1000;
+    ws.onclose({ code: 1006 });
+    clock.now += 60000;
+    tick();
+    seen.at60 = elements["conn-text"].textContent;
+    seen.lineAt60 = elements["stale-line"].classList.contains("hidden");
+    clock.now += 1000;
+    tick();
+    seen.at61 = elements["conn-text"].textContent;
+    seen.line61 = elements["stale-line"].textContent;
+    seen.lineHidden61 = elements["stale-line"].classList.contains("hidden");
+    send({ type: "viewer_hello", ok: true, ts: clock.now / 1000, share_since: 0, viewers: 1,
+           max_viewers: 12, read_only: true });
+  });
+  assert.match(seen.at60, /^Reconnecting in \d+ sec…$/, "断开正好 60 秒还不算拖久");
+  assert.equal(seen.lineAt60, true);
+  assert.equal(seen.at61, "Not connected for 61 sec");
+  assert.equal(seen.line61, "Ask the operator whether sharing is still on, or scan the QR code again.");
+  assert.equal(seen.lineHidden61, false);
+  // 连上之后：胶囊回到 Connected，那一行收起
+  assert.equal(els["conn-text"].textContent, "Connected");
+  assert.equal(els["stale-line"].classList.contains("hidden"), true);
+  assertNoChinese(els);
+});
+
+test("胶囊长度（V4）：断开再久，英文胶囊也不比已有最长的胶囊文案长", () => {
+  const longest = Math.max(...["connecting", "connected", "denied", "full", "off"].map((s) => V.statusText(s).length),
+                           V.statusText("reconnecting", 15).length);
+  for (const sec of [61, 1800, 86400, 999999]) {
+    const { pill, line } = V.reconnectTexts(sec, 15);
+    assert.ok(pill.length <= longest, pill);
+    english(pill);
+    english(line);
+  }
+  assert.deepEqual(V.reconnectTexts(60, 4), { pill: "Reconnecting in 4 sec…", line: "" });
+});
+
+test("字幕的翻译结局（F4）：failed、dropped 与桌面角标同一句，ok、pending 照旧", () => {
+  const els = runPage(({ send }) => {
+    send({ type: "caption", id: 1, ts: TS, original: "uno", translate_state: "pending" });
+    send({ type: "caption", id: 2, ts: TS, original: "dos", translate_state: "pending" });
+    send({ type: "caption", id: 3, ts: TS, original: "tres", translated: "three", translate_state: "ok" });
+    send({ type: "caption", id: 4, ts: TS, original: "cuatro", translate_state: "pending" });
+    send({ type: "caption_update", id: 1, translated: null, translate_state: "failed" });
+    send({ type: "caption_update", id: 2, translated: null, translate_state: "dropped" });
+  });
+  const trans = els["caption-list"].children.map((c) => c.children[2]);
+  assert.deepEqual(trans.map((t) => t.textContent), ["Translation failed", "Skipped (backlog)", "three", "Translating…"]);
+  // 只有 failed 用提醒色；积压跳过（dropped）和桌面的灰角标一样不标成失败，用 .skipped（顺延事项 F4，b6 统一）
+  assert.deepEqual(trans.map((t) => t.classList.contains("failed")), [true, false, false, false]);
+  assert.deepEqual(trans.map((t) => t.classList.contains("skipped")), [false, true, false, false]);
+  assert.equal(trans[3].classList.contains("pending"), true);
   assertNoChinese(els);
 });

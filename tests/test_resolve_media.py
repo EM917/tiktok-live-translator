@@ -117,12 +117,12 @@ def test_media_override_is_used_and_room_link_keeps_streamer(monkeypatch, tmp_pa
 
     monkeypatch.setattr(resolver_mod, "_check_media_url", ok)
     monkeypatch.setattr(resolver_mod, "_media_url_works", works)
-    got = run(p._resolve_media("https://www.tiktok.com/@bella2/live"))
+    got = run(p._resolve_media("https://www.tiktok.com/@brisa2/live"))
     assert got == "https://pull-flv-x.tiktokcdn-us.com/a.flv?sign=1"
     assert called == []                       # 自带地址可用时不必再去解析
     # 房间链接照旧决定主播身份（弹幕/词表/审计都用它）
     from app.provenance import streamer_of
-    assert streamer_of("https://www.tiktok.com/@bella2/live") == "bella2"
+    assert streamer_of("https://www.tiktok.com/@brisa2/live") == "brisa2"
 
 
 def test_expired_media_override_falls_back_to_normal_resolution(monkeypatch, tmp_path):
@@ -143,7 +143,7 @@ def test_expired_media_override_falls_back_to_normal_resolution(monkeypatch, tmp
     monkeypatch.setattr(resolver_mod, "resolve_stream_url", resolved)
     monkeypatch.setattr(resolver_mod, "_check_media_url", ok)
     monkeypatch.setattr(resolver_mod, "_media_url_works", broken)
-    got = run(p._resolve_media("https://www.tiktok.com/@bella2/live"))
+    got = run(p._resolve_media("https://www.tiktok.com/@brisa2/live"))
     assert got == "https://pull-flv-x.tiktokcdn-us.com/new.flv"
     assert p._media_override is None          # 失效的地址不再留着拖累重连
     details = [m.get("detail") or "" for m in server.messages]
@@ -162,9 +162,9 @@ def test_start_control_message_passes_media_through(monkeypatch, tmp_path):
 
     p.start_stream = fake_start
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@bella2/live",
+                          "url": "https://www.tiktok.com/@brisa2/live",
                           "media": "https://pull-flv-x.tiktokcdn-us.com/a.flv"}))
-    assert seen == {"url": "https://www.tiktok.com/@bella2/live",
+    assert seen == {"url": "https://www.tiktok.com/@brisa2/live",
                     "media": "https://pull-flv-x.tiktokcdn-us.com/a.flv"}
 
 
@@ -241,7 +241,7 @@ def test_media_override_is_logged_as_attempt_zero_without_signature(monkeypatch,
 
     monkeypatch.setattr(resolver_mod, "_check_media_url", ok)
     monkeypatch.setattr(resolver_mod, "_media_url_works", works)
-    run(p._resolve_media("https://www.tiktok.com/@bella2/live"))
+    run(p._resolve_media("https://www.tiktok.com/@brisa2/live"))
     rec = p.audit.records[0]
     assert rec["attempt"] == 0 and rec["ok"] is True
     assert rec["layers"] == [{"layer": "用户直连", "outcome": "url"}]
@@ -267,7 +267,7 @@ def test_expired_override_then_normal_resolution_are_both_logged(monkeypatch, tm
     monkeypatch.setattr(resolver_mod, "resolve_stream_url", resolved)
     monkeypatch.setattr(resolver_mod, "_check_media_url", ok)
     monkeypatch.setattr(resolver_mod, "_media_url_works", broken)
-    run(p._resolve_media("https://www.tiktok.com/@bella2/live"))
+    run(p._resolve_media("https://www.tiktok.com/@brisa2/live"))
     assert [(r["attempt"], r["ok"], r.get("kind")) for r in p.audit.records] == [
         (0, False, "dead_override"), (1, True, None)]
 
@@ -297,17 +297,17 @@ def test_audit_log_writes_resolve_records_with_a_timestamp(tmp_path):
 
 def test_begin_session_records_recent_room(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
-    run(p._publish_recent_rooms("bella", "https://www.tiktok.com/@bella/live"))
+    run(p._publish_recent_rooms("brisa", "https://www.tiktok.com/@brisa/live"))
     from app import settings
-    assert [x["streamer"] for x in settings.recent_rooms()] == ["bella"]
+    assert [x["streamer"] for x in settings.recent_rooms()] == ["brisa"]
     # 广播出去，且写进 config 供 hello 回填
-    assert server.config["recent_rooms"][0]["streamer"] == "bella"
+    assert server.config["recent_rooms"][0]["streamer"] == "brisa"
     assert any(m.get("type") == "recent_rooms" for m in server.messages)
 
 
 def test_clear_recent_rooms_empties_and_broadcasts(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
-    run(p._publish_recent_rooms("bella", "https://www.tiktok.com/@bella/live"))
+    run(p._publish_recent_rooms("brisa", "https://www.tiktok.com/@brisa/live"))
     server.messages.clear()
     run(p._clear_recent_rooms())
     from app import settings
@@ -318,7 +318,7 @@ def test_clear_recent_rooms_empties_and_broadcasts(monkeypatch, tmp_path):
 
 def test_clear_recent_rooms_via_control_message(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
-    run(p._publish_recent_rooms("bella", "https://www.tiktok.com/@bella/live"))
+    run(p._publish_recent_rooms("brisa", "https://www.tiktok.com/@brisa/live"))
     run(p.handle_control({"type": "clear_recent_rooms"}))
     from app import settings
     assert settings.recent_rooms() == []

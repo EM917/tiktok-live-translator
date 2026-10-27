@@ -37,8 +37,10 @@ from app.translator import engine_label, mask_key, restore_engine
 from app.updater import RELEASES_URL, update_check_note
 
 FAKE_TOKEN = "fake-token-not-a-real-secret-0000000000"   # viewer.js 只认片段里的 #k=
-STREAMER = "bellaallnatural"
-RECENT = ("bellaallnatural", "lamejorcrema", "tiendadeana", "glowbymaria")
+# 主播名是虚构的，但和 docs/i18n-style.md §4、web/style.css 里量版面用的那个 15 个字母的真实主播名同宽：
+# 同一组字形重新排列，SF 字体 11–20px、400–700 字重、中英两种页面下逐 1/64 像素量过，顶栏的余量数字不变
+STREAMER = "beltranlulaalal"
+RECENT = (STREAMER, "lamejorcrema", "tiendadeana", "glowbymaria")
 BRAND_ID = "acme"
 BRAND_ZH = "艾可美天然护肤旗舰店"              # 中文品牌名（数据，虚构）
 CAPTION_ZH = "这款面霜一周就能淡化色斑"        # target_lang=zh-CN 的一条译文（数据）
@@ -54,13 +56,36 @@ PHONE = (390, 844)
 FLOAT = (460, 330)                             # 浮窗的默认大小（app/float_window.py DEFAULT_SIZE）
 LIVE_WIDTHS = (1000, 1100, 1101, 1199, 1200)   # 版面断言的五档（spec §12.3 第 7 条）
 NARROW_WIDTHS = (860, 720)                     # 这两档只断言 .topbar 不溢出
+# 「字幕译成」下拉最宽的样子：当前目标是四种以外、名字最长的 Bahasa Indonesia，下拉补了一项并选中它（约 144px；
+# 只有四种时约 116px）。2026-10-20 以前 13 种一直都在下拉里，直播中的 G10 量的都是 144px，
+# docs/i18n-style.md §4.1/§4.2 的余量也按 144 算；只列四种以后 live-* 场景的目标是 en，量到的只有 116px。
+# settings.json 里存着 id / vi / pt、或者 --target id 启动的中控，直播中看到的是 144px 的那个顶栏：
+# 直播中量顶栏的场景都另有一份名字带 EXTRA 后缀的（with_extra_target），把这 28px 量回来
+EXTRA_TARGET = "id"
+EXTRA = "-extra"
+# 首页顶栏的「字幕译成」标签（web/style.css body.home .ctl-text）：直播中 ≤1080px 省掉，首页一直露出来。
+# 量英文首页（home-idle）和中文首页（home-zh，当前目标是 EXTRA_TARGET，下拉补了一项、是它最宽的样子）。
+# 1000 是默认窗口，720 是直播中量过的最窄一档
+HOME_WIDTHS = (1000, 860, 720)
+HOME_ZH_TARGET = EXTRA_TARGET
+# 下拉里补出来的那一项（web/app.js showTargetLang 标 data-extra）而且是选中的：量得到（不是 null）就说明
+# 浏览器里真的补了这一项、显示的就是它，而不是静默落到第一项「中文（简体）」
+TARGET_EXTRA_SELECTED = "#target-lang option[data-extra]:checked"
 # 中文页「浮窗」两个字（web/style.css 的 html[lang^="zh"] 那一段，docs/i18n-style.md §4.2）的六档：
 # 1000 / 1100 是露字范围的两头，1101 是「手机同看」露出文字之后仍是只有图标的第一档，1140 是第二段露字的起点，
-# 1399 是它的另一头，1400 起图标加文字
+# 1399 是它的另一头，1400 起图标加文字。1101–1139 这一段样式不变（同一组媒体查询），窗口越宽余量越多，
+# 最紧的是 1101，所以 1117、1139 不另量。英文页「手机同看」到 1200 才露字，1101–1199 宽松（§4.4：品牌标签约 148–160px）
 ZH_FLOAT_WIDTHS = (1000, 1100, 1101, 1140, 1399, 1400)
-ZH_QUIET_BRAND = "Bella All Natural"           # §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限
+# 直播中量顶栏的基础场景（各自再按宽度出「名字@宽度」）：目标在四种之内的，和同一个场景目标换成 EXTRA_TARGET 的
+LIVE_BASES = ("live-full", "live-float", "live-full" + EXTRA, "live-float" + EXTRA)   # LIVE_WIDTHS + NARROW_WIDTHS
+ZH_FULL_BASES = ("live-float-zh", "live-float-zh" + EXTRA)                             # 只量 1000
+ZH_QUIET_BASES = ("live-float-zh-quiet", "live-float-zh-quiet" + EXTRA)                # ZH_FLOAT_WIDTHS
+# §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，和文档里那个真实的基线品牌同宽
+# （同 STREAMER 的做法：同一组字形重新排列，逐 1/64 像素量过）
+ZH_QUIET_BRAND = "Allura Belt Nalla"
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
-                   "#float-btn", "#float-btn .btn-label", "#float-btn .i")
+                   "#float-btn", "#float-btn .btn-label", "#float-btn .i", ".ctl-text", "#target-lang",
+                   TARGET_EXTRA_SELECTED)
 GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
                  ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
@@ -71,7 +96,7 @@ FLOAT_MEASURE = (".f-root", "#f-caption", "#f-comments")
 GUARD_NAMES = ("home-guard", "live-guard", "live-guard-marked", "live-guard-tripped")
 GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
 DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "live-float", "connecting", "offline",
-              "error-4003110") + GUARD_NAMES
+              "error-4003110", "live-bad", "reconnect-no-audio") + GUARD_NAMES
 PHONE_EN = ("phone-live", "phone-denied", "phone-full", "phone-local-en")
 FLOAT_EN = ("float-live",)           # 浮窗页（web/float.html）：直播中，有红 / 琥珀 / 关注的弹幕，最新一条字幕没译成
 CONTROL_ZH = "live-full-zh"
@@ -367,6 +392,14 @@ def _home_idle(tmp):
                                  "#lang-head", "#input-help-btn"])
 
 
+def _home_zh(tmp):
+    """中文首页，待机。只为量顶栏（「字幕译成」标签露着、下拉补了一项 Bahasa Indonesia），不扫漏翻。"""
+    with i18n.use("zh"):
+        server = _server("zh", tmp)
+        server.config["target_lang"] = HOME_ZH_TARGET
+        return _scenario("home-zh", "desktop", "zh", _desktop_messages(server, "zh"))
+
+
 def _home_selfcheck_fail(tmp):
     """fail + warn（自检失败时整块自动展开，不再点）+ 自检提示条 + 引擎回退 + 有更新 +
     连不上更新服务器 + 磁盘展开、勾选日志项、点删除（确认框被替身记下）。"""
@@ -397,6 +430,66 @@ def _live_server(lang, tmp):
     _clock_gap(server)
     live = whys + _health(server, dropped=3) + [_stats()]
     return server, live
+
+
+def _bad_session(mono_now, *, audio_until=None):
+    """拉流断断续续的那一场的观察状态（app/stream_watch.py）：开播 5 分钟，只有头一段有声，断了 7 次。"""
+    from app.stream_watch import StreamWatch
+
+    watch = StreamWatch(60.0, mono=lambda: mono_now, wall=lambda: NOW)
+    watch.first_spawn = (mono_now - 300.0, NOW - 300.0)
+    if audio_until is not None:
+        t = mono_now - 300.0
+        while t < audio_until:
+            watch.note_audio(1.0, t, NOW - (mono_now - t))
+            t += 1.0
+        watch.cov_start = mono_now - 300.0
+    return {"watch": watch, "audit": None, "break_no": 7}
+
+
+def _coverage_notice(server):
+    """_check_coverage：近 5 分钟只收到三成，连续两次低于报警线 → session:audio_rate。"""
+    sess = _bad_session(2000.0, audio_until=1790.0)
+
+    async def steps(p):
+        await p._check_coverage(sess, 1995.0)
+        await p._check_coverage(sess, 2000.0)
+    return _produce(server, steps)
+
+
+def _live_bad(tmp):
+    """断断续续的一场：直播中、有字幕，页面顶部是时钟跳变和覆盖率两条持续提示，底部大字幕的元信息行
+    挂着覆盖率角标（stats 里的数字，字在 web/live-ui.js）。"""
+    with i18n.use("en"):
+        server = _server("en", tmp)
+        _feed(server, [{"type": "status", "state": "live", "detail": ""}])
+        _feed(server, _captions())
+        _clock_gap(server)
+        _coverage_notice(server)
+        stats = dict(_stats(), coverage_pct=31, coverage_window_min=5, coverage_low=True, breaks=7)
+        live = [_caption(30, "Les dejo el enlace abajo", ts=NOW - 5), _caption_update(30, None, state="failed"),
+                stats]
+        return _scenario("live-bad", "desktop", "en", _desktop_messages(server, "en", live))
+
+
+def _reconnect_no_audio(tmp):
+    """重连中：V2 查询次数到了上限、改用原来的流地址那一句状态（_reconnect_text），加上
+    「已 N 分钟没收到直播音频」（_check_no_audio）。"""
+    from app.reconnect_policy import Plan, V2Policy
+
+    with i18n.use("en"):
+        server = _server("en", tmp)
+        sess = _bad_session(2000.0)
+        sess["policy"] = V2Policy(False, clock=lambda: 2000.0)
+        holder = {}
+
+        async def steps(p):
+            await p._check_no_audio(sess, 2000.0, NOW)
+            holder["text"] = p._reconnect_text(sess, sess["policy"],
+                                               Plan(8, "reuse_failed_capped", next_lookup_sec=140.0))
+        _produce(server, steps)
+        _feed(server, [{"type": "status", "state": "connecting", "detail": holder["text"]}])
+        return _scenario("reconnect-no-audio", "desktop", "en", _desktop_messages(server, "en"))
 
 
 def _live_full(tmp, lang):
@@ -603,6 +696,16 @@ def zh_quiet(scenario, name):
     return out
 
 
+def with_extra_target(scenario):
+    """同一个场景，hello 里的当前目标换成四种以外的 EXTRA_TARGET，名字加 EXTRA 后缀：页面照 web/app.js
+    showTargetLang 给下拉补一项 Bahasa Indonesia 并选中它，下拉是它最宽的样子。别的一个字节不动——
+    字幕回放里的 target_lang 仍是 en，页面不看它（直播中途从 en 换过去的中控就是这样）。"""
+    out = copy.deepcopy(scenario)
+    out["name"] = scenario["name"] + EXTRA
+    out["messages"][0]["config"]["target_lang"] = EXTRA_TARGET
+    return out
+
+
 def resized(scenario, width, height=None):
     """同一个场景换一个窗口大小：live-full@1100 这样命名。"""
     out = copy.deepcopy(scenario)
@@ -614,25 +717,36 @@ def resized(scenario, width, height=None):
 def build(tmp):
     """全部场景：{名字: 场景}。tmp 是一个空的临时目录（磁盘盘点要在里面造文件）。"""
     tmp = Path(tmp)
-    scenarios = [_home_idle(tmp), _home_selfcheck_fail(tmp), _live_full(tmp, "en"),
+    scenarios = [_home_idle(tmp), _home_zh(tmp), _home_selfcheck_fail(tmp), _live_full(tmp, "en"),
                  _status_only(tmp, "connecting", "connecting"),
                  # 先收到 hello，随即断开：离线横幅。页面每次重连都会再走一遍
                  _status_only(tmp, "offline", "idle", close={"code": 1006}),
                  _status_only(tmp, "error-4003110", "error", browser_only_message(3, login={
                      "safari": browser_login.BLOCKED, "chrome": browser_login.NOT_LOGGED_IN})),
-                 _live_full(tmp, "zh")] + _guard_scenarios(tmp) + _phone(tmp) + [_float(tmp)]
+                 _live_full(tmp, "zh"), _live_bad(tmp), _reconnect_no_audio(tmp)]
+    scenarios += _guard_scenarios(tmp) + _phone(tmp) + [_float(tmp)]
     out = {sc["name"]: sc for sc in scenarios}
     out["live-float"] = with_float_button(out["live-full"], "live-float")
     for base in ("live-full", "live-float"):
+        out[base + EXTRA] = with_extra_target(out[base])
+    for base in LIVE_BASES:
         for width in LIVE_WIDTHS + NARROW_WIDTHS:
             sc = resized(out[base], width)
             out[sc["name"]] = sc
-    # 中文页的浮窗按钮：满编（报警开）的 1000px 一档，和报警关着的六档（ZH_FLOAT_WIDTHS）
+    for base in ("home-idle", "home-zh"):
+        for width in HOME_WIDTHS:
+            sc = resized(out[base], width)
+            out[sc["name"]] = sc
+    # 中文页的浮窗按钮：满编（报警开）的 1000px 一档，和报警关着的六档（ZH_FLOAT_WIDTHS）；各有一份目标在四种以外的
     out["live-float-zh"] = with_float_button(out[CONTROL_ZH], "live-float-zh")
     out["live-float-zh-quiet"] = zh_quiet(out["live-float-zh"], "live-float-zh-quiet")
-    sc = resized(out["live-float-zh"], 1000)
-    out[sc["name"]] = sc
-    for width in ZH_FLOAT_WIDTHS:
-        sc = resized(out["live-float-zh-quiet"], width)
+    for base in ("live-float-zh", "live-float-zh-quiet"):
+        out[base + EXTRA] = with_extra_target(out[base])
+    for base in ZH_FULL_BASES:
+        sc = resized(out[base], 1000)
         out[sc["name"]] = sc
+    for base in ZH_QUIET_BASES:
+        for width in ZH_FLOAT_WIDTHS:
+            sc = resized(out[base], width)
+            out[sc["name"]] = sc
     return out

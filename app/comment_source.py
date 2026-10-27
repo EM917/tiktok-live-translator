@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import comment_levels
 from .i18n import L
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,7 +76,14 @@ _FRESHEN_NOTES = {
                   "Already checked for a comments component update in the last few hours"),
     "recently-failed": L("弹幕组件更新检查刚失败过",
                          "A comments component update check failed recently"),
+    # 专家审查 I5：监听中、一键更新中不升级组件（用户 D6），被拒时只说明这次没更新
+    "busy": L("监听中不更新弹幕组件", "The comments component isn’t updated during monitoring"),
 }
+
+
+# 子进程报 error 时面板上的那句话。原文是英文异常（"ConnectionClosedError: …"），中控看不懂、也不需要
+# 动手：两种界面都只说程序在做什么，原文经 raw 只进审计。不猜原因（第八条）
+_CONNECT_ERROR = L("评论连接出错，稍后自动重试", "Comments connection error. Retrying shortly.")
 
 
 # 终端那行「[弹幕] 字段：…」里各计数键的中文名（终端永远是中文，见 CLAUDE.md 第九条）
@@ -90,6 +98,34 @@ _FIELD_NAMES = {
     "gifter": "送过礼",  # i18n: terminal
     "subscriber": "订阅",  # i18n: terminal
     "fans_club": "粉丝团等级",  # i18n: terminal
+}
+
+# 终端那行「[弹幕] 等级与徽章：…」里 level_has 各键的中文名（只打非 0 的；键的含义见 app/comment_levels.py）
+_LEVEL_NAMES = {
+    "pay_grade": "送礼等级",  # i18n: terminal
+    "pay_grade_any": "送礼等级结构",  # i18n: terminal
+    "fans_club_any": "粉丝团数据",  # i18n: terminal
+    "fans_club_prefer": "粉丝团备选数据",  # i18n: terminal
+    "fans_club_info": "粉丝团信息等级",  # i18n: terminal
+    "fans_club_info_any": "粉丝团信息",  # i18n: terminal
+    "badge_list": "徽章",  # i18n: terminal
+    "badge_level": "徽章带等级",  # i18n: terminal
+    "subscribe": "订阅标记",  # i18n: terminal
+    "subscribe_badge": "订阅徽章",  # i18n: terminal
+    "top_vip_no": "榜单名次",  # i18n: terminal
+    "pay_score": "消费分",  # i18n: terminal
+    "border": "头像框",  # i18n: terminal
+    "badge_images": "徽章图",  # i18n: terminal
+    "real_time_icons": "实时图标",  # i18n: terminal
+    "combo_badge": "连击徽章",  # i18n: terminal
+    "medal": "勋章",  # i18n: terminal
+    "exp": "经验值",  # i18n: terminal
+    "anchor_level": "主播等级",  # i18n: terminal
+    "user_role": "用户角色",  # i18n: terminal
+    "user_vip_info": "VIP 信息",  # i18n: terminal
+    "user_label": "公屏标签",  # i18n: terminal
+    "consume_in_room": "本场消费",  # i18n: terminal
+    "user_metrics": "用户指标",  # i18n: terminal
 }
 
 
@@ -173,16 +209,21 @@ def _account_fields(ev, user_obj):
     return out
 
 
-# user_identity 里和主播的关系 -> 弹幕条目里的标签（界面再翻成「粉丝 / 互关 / 送过礼 / 订阅」）
+# user_identity 里和主播的关系 -> 弹幕条目里的标签（界面再翻成「粉丝 / 送过礼 / 订阅」；mutual 照收，
+# 但 2026-10-21 起页面不显示「互关」，带它的标成「粉丝」，见 web/app.js relTags）
 _REL_FLAGS = (("is_follower_of_anchor", "follower"), ("is_mutual_following_with_anchor", "mutual"),
               ("is_gift_giver_of_anchor", "gifter"), ("is_subscriber_of_anchor", "subscriber"))
 
 
 def fans_club_level(user_obj):
     """粉丝团等级（大于 0 才算有）；没有或读不出返回 0。不登录时 TikTok 发不发它还没量过，
-    先只进字段统计（comment_worker.FieldStats 的 fans_club），量过再决定显不显示。"""
-    data = getattr(getattr(user_obj, "fans_club", None), "data", None)
-    level = getattr(data, "level", None)
+    先只进字段统计（comment_worker.FieldStats 的 fans_club），量过再决定显不显示。
+    5 场约 2400 条次次是 0；别的等级 / 徽章候选字段见 app/comment_levels.py（同样只数不显示）。"""
+    try:                # 属性一读就抛的怪对象（getattr 的默认值兜不住）也只当没有，不连累同一条的别的计数
+        data = getattr(getattr(user_obj, "fans_club", None), "data", None)
+        level = getattr(data, "level", None)
+    except Exception:
+        return 0
     return level if isinstance(level, int) and not isinstance(level, bool) and level > 0 else 0
 
 
@@ -341,7 +382,10 @@ class CommentSource:
         self._restart_task = None       # 换主播时在途的 _restart 任务（保引用）
         self._proc = None
         self._last_state = None         # 子进程最后一条 status 的 state，退出码不可信时的依据
-        self._last_detail = ""          # 同一条 status 的 detail（原始报错），换成中文说明时用
+        # 同一条 status 的 detail（原始报错）。error、rejected、blocked 的只经 raw 进审计、不上面板；
+        # login_required、not_found 的仍由 _run_once 末行原样发上面板，子进程退出后随即被 _supervise
+        # 的中文说明盖掉（审计里留一条原文在 detail 的记录）
+        self._last_detail = ""
         self._last_http = None          # 同一条 status 带的握手 HTTP 状态码（被拒时才有）
         self._last_handshake = None     # 同一条 status 带的服务端 Handshake-Msg 原话
         self._connect_times = []        # 最近一小时内的连接尝试时间戳，额度限流用
@@ -356,6 +400,7 @@ class CommentSource:
         self._last_silent_restart_at = None  # 上次静默重连的 _clock() 时间，同一窗口最多一次
         self.comments_received = 0      # 本场（start()~stop()）收到的弹幕条数，写进 session_end
         self.comment_fields = _empty_fields()   # 本场弹幕作者各字段的「非空」次数，写进 session_end
+        self._level_line = None         # 终端上次打的「等级与徽章」那行（不含累计条数），一样就不再打
         # stop() 等监督任务超时放手时，仍要保住它的引用——事件循环只弱引用
         # 任务，不保引用的话任务可能在收尾的路上被 GC 收走，子进程/管道就
         # 成了没人清理的孤儿（同 Pipeline._spawn 的理由）
@@ -389,6 +434,7 @@ class CommentSource:
         self._unique_id = unique_id
         self.comments_received = 0      # 新的一场，从零重新数（跨这一场内的重连都累加）
         self.comment_fields = _empty_fields()
+        self._level_line = None
         self._task = asyncio.ensure_future(self._supervise(unique_id))
 
     async def stop(self, _external=True):
@@ -435,11 +481,10 @@ class CommentSource:
                 await self._await_provisioned()
                 continue
             await self._enforce_hourly_limit()
-            extra = []
-            if session_id:
-                extra += ["--session-id", session_id]
-            if tt_target_idc:
-                extra += ["--tt-target-idc", tt_target_idc]
+            # 登录态不进命令行（`ps aux` 谁都看得见，sessionid 就是登录凭据）：交给 _run_once
+            # 写进子进程 stdin 的第一行
+            session = {"session_id": session_id, "tt_target_idc": tt_target_idc} \
+                if session_id else None
             self._connect_times.append(self._clock())
             self._last_state = None
             self._last_detail = ""
@@ -448,7 +493,7 @@ class CommentSource:
             # 记下这次子进程用的组件版本：被拒时若已经换了新版本（启动时的升级刚落地、
             # 上一次被取消的 pip 刚跑完），立刻重连，不去白查一次、更不白等几分钟
             spawned_version = _installed_tiktoklive()
-            returncode, healthy = await self._run_once(unique_id, extra)
+            returncode, healthy = await self._run_once(unique_id, session)
             if returncode not in (0, 3, 4, 5, 6, 7, 8):
                 # 退出码不在约定表里（被信号打死、解释器收尾出错……）：子进程
                 # 退出前写的最后一条 status 才是它真正想说的话——「主播不存在」
@@ -516,13 +561,11 @@ class CommentSource:
                     raw=raw)
                 await asyncio.sleep(wait)
             else:
+                # 只退避，不发状态。子进程先报了 error 再退出的，_run_once 已经发过 _CONNECT_ERROR
+                # （原文经 raw 进审计）。其余落到这里的——退出码 -1（起不来、读输出出错），以及最后
+                # 一条 status 是 connecting、connected 或者根本没发 status 就以 1、2 或负数退出的（参数
+                # 出错、被信号打死……）——面板停在上一个状态（比如「已连接」）：原来就是这样，不在 U5 范围内
                 backoff = min(backoff * 2, self.BACKOFF_MAX_SEC)
-                if self._last_state == "error" and self._last_detail:
-                    # 原始报错是英文异常，中控看不懂；先说程序在做什么，原文留在括号里备查
-                    await self._set_state(
-                        "error", L("评论连接出错，稍后自动重试（{}）",
-                                   "Comments connection error ({}). Retrying shortly.")
-                        .format(self._last_detail[:120]))
                 await asyncio.sleep(backoff)
 
     async def _try_freshen(self, prefix, raw=""):
@@ -619,12 +662,13 @@ class CommentSource:
             return (None, None)
 
     # ---- 单次子进程生命周期：起 -> 读 stdout/stderr -> 等退出 ----
-    async def _run_once(self, unique_id, extra_args):
+    async def _run_once(self, unique_id, session=None):
+        """session：{"session_id", "tt_target_idc"}（带登录态）或 None（匿名）。"""
         # _spawn 本身也可能抛异常（fd 耗尽等）——放在 try 外面的话异常会直接
         # 冒到 _supervise 的 while True 循环，把整条监督协程带死（该协程是
         # fire-and-forget 起的，没人会看到这个异常，弹幕来源从此静默失联）。
         try:
-            proc = await self._spawn([unique_id] + list(extra_args))
+            proc = await self._spawn([unique_id])
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -640,10 +684,14 @@ class CommentSource:
         # https://www.tiktok.com/@主播/live，再问是否在播），连上评论 WebSocket 之后才不再发。
         # 解析流地址那边「带登录抓直播页之前和上一次匿名请求隔开 8 秒」的规则要看得见这些
         # 请求（resolver.note_anonymous_request）：启动时记一次，连上或没连上就退出时再记一次。
-        anonymous = "--session-id" not in extra_args
+        # 匿名与否看这次有没有拿到 sessionid，不看命令行：登录态改走 stdin 之后命令行里永远没有
+        # --session-id，按参数判断会把登录模式也记成匿名请求，解析流地址那边「隔开 8 秒」的规则
+        # 就会让登录门房间每次查流地址都白等 8–24 秒
+        anonymous = not (session and session.get("session_id"))
         if anonymous:
             _note_anonymous_request()
         try:
+            await self._send_handshake(proc, session)
             while True:
                 line = await proc.stdout.readline()
                 if not line:
@@ -666,6 +714,12 @@ class CommentSource:
                     if state in ("rejected", "blocked"):
                         # 原始英文报错不直接上面板：子进程退出后 _supervise 换成
                         # 中文说明，并先去找组件更新
+                        continue
+                    if state == "error":
+                        # 同理：英文原文只进审计（raw），面板上是 _CONNECT_ERROR。以前这里先把原文发上
+                        # 面板，同一毫秒再被 _supervise 换成「中文说明（原文前 120 字）」——中文界面的
+                        # 弹幕栏标题括号里一直挂着半句英文（专家审查 U5）
+                        await self._set_state("error", _CONNECT_ERROR, raw=self._last_detail)
                         continue
                     await self._set_state(state, obj.get("detail") or "")
                 elif kind == "comments":
@@ -716,7 +770,9 @@ class CommentSource:
         return returncode, healthy
 
     def _add_field_stats(self, obj):
-        """累加子进程吐的增量计数，终端打一行累计值。只认非负整数，别的整行丢掉。"""
+        """累加子进程吐的增量计数，终端打一行累计值。只认非负整数，别的整行丢掉。
+        等级 / 徽章候选（level_*）另并一份、另打一行，只打非 0 的（app/comment_levels.py）；
+        那一行除了累计条数和上一次一样（比如一直「都没有」）就不再打。"""
         n, has = obj.get("n"), obj.get("has")
         if not _count(n) or not isinstance(has, dict):
             return
@@ -727,6 +783,19 @@ class CommentSource:
                 totals["has"][key] = totals["has"].get(key, 0) + min(value, n)
         print("[弹幕] 字段：累计 {} 条里 {}".format(totals["n"], "、".join(
             "{} {}".format(_FIELD_NAMES.get(k, k), v) for k, v in totals["has"].items())))
+        try:
+            levels = comment_levels.merge(totals, obj, n)
+        except Exception:
+            levels = False                  # 候选计数只是附带的：坏了不挡原有计数
+        if levels:
+            scenes = totals.get("level_kinds", {}).get("badge_scene", {})
+            body = "、".join(  # i18n: terminal（只拼终端那行，和下面的 print 一起；不上界面）
+                ["{} {}".format(_LEVEL_NAMES.get(k, k), v)
+                 for k, v in totals.get("level_has", {}).items() if v]
+                + ["徽章场景 {} {}".format(k, v) for k, v in scenes.items()]) or "都没有"
+            if body != getattr(self, "_level_line", None):
+                self._level_line = body
+                print("[弹幕] 等级与徽章：累计 {} 条里 {}".format(totals["n"], body))
 
     async def _silence_watchdog(self, proc):
         """连着但哑了太久就优雅重连。评论 WebSocket 会「半开」：状态一直是
@@ -766,11 +835,36 @@ class CommentSource:
         except Exception as exc:
             print("[警告] 弹幕静默看门狗异常: {}".format(exc))
 
+    HANDSHAKE_WRITE_SEC = 5.0       # 写 stdin 首行的上限（一行不到 200 字节，正常是瞬间写完）
+
+    async def _send_handshake(self, proc, session):
+        """往子进程 stdin 写第一行：带登录态时 {"session_id", "tt_target_idc"}，匿名时 {}。
+
+        匿名也要写：子进程总是先等这一行（comment_worker._read_handshake），不写的话它要干等
+        5 秒超时才开始连。写完不关 stdin——子进程靠它的 EOF 判断父进程还在不在。
+        写不进去（子进程已经退出、管道断了）只打一行终端，照常往下读它的输出和退出码；
+        假子进程没有 stdin 时什么都不做。"""
+        stdin = getattr(proc, "stdin", None)
+        if stdin is None:
+            return
+        payload = {}
+        if session and session.get("session_id"):
+            payload = {"session_id": session["session_id"],
+                       "tt_target_idc": session.get("tt_target_idc")}
+        try:
+            stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
+            await asyncio.wait_for(stdin.drain(), self.HANDSHAKE_WRITE_SEC)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 只打异常类型：首行里是登录凭据，任何带内容的报错都不往终端打
+            print("[警告] 弹幕子进程的首行没写进去: {}".format(type(exc).__name__))
+
     async def _spawn(self, args):
         """单独成方法，方便测试 monkeypatch 掉、返回一个假子进程。"""
-        # stdin 也接管道，但从不写：父进程一死操作系统就关掉它，子进程读到
-        # EOF 就自行退出（见 comment_worker._watch_parent）。没有这根管道，
-        # 父进程被强杀时子进程会带着 WebSocket 一直挂着。
+        # stdin 也接管道：第一行写登录态（_send_handshake），之后再不写。父进程一死
+        # 操作系统就关掉它，子进程读到 EOF 就自行退出（见 comment_worker._watch_parent）。
+        # 没有这根管道，父进程被强杀时子进程会带着 WebSocket 一直挂着。
         return await asyncio.create_subprocess_exec(
             sys.executable, "-m", "app.comment_worker", *args,
             cwd=str(self._root),

@@ -21,29 +21,29 @@ test("语言确实是英文（不然下面全是空转）", () => {
 });
 
 test("还没输入：禁用，写 Switch Streamer（与顶栏按钮同名）", () => {
-  assert.deepEqual(S.switchButtonLabel(S.initialSwitchState(), "bellaallnatural"),
+  assert.deepEqual(S.switchButtonLabel(S.initialSwitchState(), "brisafakeperson"),
     { text: "Switch Streamer", disabled: true });
   assert.deepEqual(S.switchButtonLabel(null, ""), { text: "Switch Streamer", disabled: true });
 });
 
 test("目标就是当前主播：禁用，说清已经在听这个人（大小写不敏感，写当前的原样）", () => {
-  const st = S.armSwitch("BellaAllNatural", "bellaallnatural", 1000);
-  assert.deepEqual(S.switchButtonLabel(st, "BellaAllNatural"),
-    { text: "Already Monitoring @BellaAllNatural", disabled: true });
+  const st = S.armSwitch("BrisaFakePerson", "brisafakeperson", 1000);
+  assert.deepEqual(S.switchButtonLabel(st, "BrisaFakePerson"),
+    { text: "Already Monitoring @BrisaFakePerson", disabled: true });
 });
 
 test("武装：英文只写改听谁（@A 已在副标题里，docs/i18n-style.md #75），有没有当前主播都一样", () => {
-  const armed = S.armSwitch("lamejorcrema", "bellaallnatural", 1000);
-  assert.deepEqual(S.switchButtonLabel(armed, "bellaallnatural"),
+  const armed = S.armSwitch("lamejorcrema", "brisafakeperson", 1000);
+  assert.deepEqual(S.switchButtonLabel(armed, "brisafakeperson"),
     { text: "Click Again to Switch to @lamejorcrema", disabled: false });
   assert.deepEqual(S.switchButtonLabel(armed, ""),
     { text: "Click Again to Switch to @lamejorcrema", disabled: false });
 });
 
 test("超时复位后：目标保留，可点，写 Switch to @B", () => {
-  const armed = S.armSwitch("lamejorcrema", "bellaallnatural", 1000);
+  const armed = S.armSwitch("lamejorcrema", "brisafakeperson", 1000);
   const expired = S.expireSwitchState(armed, 1000 + S.SWITCH_ARM_MS + 1);
-  assert.deepEqual(S.switchButtonLabel(expired, "bellaallnatural"),
+  assert.deepEqual(S.switchButtonLabel(expired, "brisafakeperson"),
     { text: "Switch to @lamejorcrema", disabled: false });
-  english(S.switchButtonLabel(expired, "bellaallnatural").text);
+  english(S.switchButtonLabel(expired, "brisafakeperson").text);
 });

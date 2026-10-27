@@ -1,6 +1,6 @@
 # Fault tolerance
 
-*Moved from the README (Fault Tolerance). The text is unchanged except for relative links and heading levels.*
+*Moved from the README (Fault Tolerance) and kept up to date here since.*
 
 A live session can fail quietly in three places:
 finding the stream URL, keeping the stream, and keeping up with it. Each is
@@ -48,7 +48,8 @@ How the sign-in is used:
   sent in clear text.
 - The comment connection starts only after the first resolution returns:
   it opens with an anonymous request for the same page.
-- Reading Safari's cookies needs Full Disk Access for the app (see the
+- Reading Safari's cookies needs Full Disk Access for the Python interpreter
+  the app runs with, not for the app itself (see the
   [Browser Login FAQ](faq.md#browser-login)). Without a readable sign-in, monitoring
   still starts, resolution stays anonymous, and a persistent notice says what
   to do.
@@ -65,22 +66,97 @@ valid for about two weeks, so one capture covers a whole stream. See also
 
 ## Keeping the stream
 
-- A dropped stream reconnects with a freshly resolved URL, telling a network
-  interruption from the end of the stream. Before resolving again the app
-  checks that it can reach TikTok; while it cannot, it waits without spending
-  reconnect attempts, for up to 30 minutes.
-- If TikTok hasn't reported the stream as ended, the app waits up to 10
+- A dropped stream reconnects, telling a network interruption from the end of
+  the stream. After a stretch with audio it first reconnects to the same
+  stream URL (only the video server is contacted); when that brings no audio,
+  or the URL clearly stops working, it looks up the stream URL again. Before
+  looking up, the app checks that it can reach TikTok; while it cannot, it
+  waits without looking anything up, for up to 30 minutes.
+- Waits between attempts grow while no audio arrives (2 s up to 30 s; 60 s
+  after 30 minutes without audio) and reset with any audio.
+- Lookups are capped: at most 26 in any hour, counting checks of the stream
+  status while waiting for it to resume, and one every 15 minutes after 30
+  minutes without audio. At the cap the app keeps reconnecting to the same
+  stream URL and says when the next lookup is.
+- If TikTok hasn't reported the stream as ended, the app waits about 10
   minutes for it to resume.
-- The app gives up once six connection attempts in a row bring no audio at
-  all (two for a pasted stream URL); an attempt that played any audio resets
-  the count. A pasted stream URL that stops serving data after playing for
-  30 s or more ends the session instead of reconnecting.
+- A live link is never given up just because no audio arrives. Monitoring
+  stops when TikTok reports the stream as ended, when it hasn't reported it as
+  live for about 10 minutes, when TikTok can't be reached for 30 minutes, or
+  when looking up the stream URL fails six times in a row. A pasted stream URL
+  stops after two connection attempts in a row with no audio; one that stops
+  serving data after playing for 30 s or more ends the session instead of
+  reconnecting.
+- As soon as the stream drops, the status line says "The stream was
+  interrupted. Reconnecting…" instead of showing Live until the queued audio
+  has been transcribed. Audio that had already arrived is still transcribed
+  and its captions keep appearing; translations still in progress get up to
+  5 s more in the background and no longer hold up the reconnect. Measured
+  with a test audio source: with 8 segments queued at 1 s of recognition each,
+  the reconnect status appears within 0.1 s of the drop, and with a
+  translation stuck in progress, reconnecting starts 8.1 s after the drop
+  instead of 13.1 s (the rest is the wait for the queued audio).
+- When the video server closes an FLV stream, ffmpeg exits and the app
+  reconnects by itself. Measured against a local test server: about 2 s
+  without audio per drop, where ffmpeg's own reconnect left 15–27 s without
+  audio. HLS streams keep ffmpeg's own reconnect.
+- A stream whose header announces video but which carries only audio starts
+  producing audio within about 2 s (measured 1.2 s); before, ffmpeg could wait
+  for up to 90 s of stream before producing any.
+- Every step of stopping a stalled stream has a time limit, and a stall in
+  any step is recorded. On macOS and Linux a second stop signal follows 0.5 s
+  after the first: measured stops of a stalled ffmpeg take under 1 s instead
+  of 5 s, and the audio ffmpeg still had is kept. "No stream audio for N min"
+  appears after 2 minutes without stream audio, and a notice plus a badge
+  under the large caption appear when less than 70% of the last 5 minutes
+  arrived. Audio that arrives late, when a stalled connection is closed, is
+  still checked for banned terms.
+- `TLT_RECONNECT_V2=0` at startup brings back the previous reconnect rules
+  (look up on every reconnect, stop after six attempts in a row with no
+  audio) for that run. FLV streams then go back to ffmpeg's own reconnect as
+  well: the previous rules look up the stream URL on every reconnect with no
+  limit, so if ffmpeg exited on every drop, every drop would mean one more
+  lookup.
+- `TLT_FFMPEG_LEGACY=1` at startup brings back the previous ffmpeg options for
+  that run: ffmpeg's own reconnect for FLV, ffmpeg's default limits for stream
+  analysis (5 s overall, up to 90 s per stream for FLV), and an errors-only
+  ffmpeg log. Otherwise, when the installed ffmpeg supports tagged log levels,
+  its warnings are read as well, and the number of times it reconnected on its
+  own is recorded with each stream interruption in the session audit.
+- How the two switches combine: `TLT_RECONNECT_V2=0` changes only how FLV
+  reconnects among the ffmpeg options and keeps the other two new options.
+  `TLT_FFMPEG_LEGACY=1` brings back all three, whichever reconnect rules are
+  in use, and does not change the reconnect rules. While either one is set,
+  `TLT_LOW_BITRATE_STREAM=1` ([below](#switches-that-stay-off-by-default))
+  has no effect.
 - The comment connection can go half-open: the Comments panel shows no
   warning, but no comments arrive. After 15 minutes of silence while
   connected, the app reconnects it and records that in the session audit.
-- yt-dlp is kept current in the background.
+- yt-dlp is updated in the background: once a check has finished, the app
+  does not check again for a day. It also checks when looking up the stream
+  URL has failed twice in a row, once that session's stream has stopped,
+  unless a check finished in the last 6 hours. A failure that says the
+  stream is not live, or where yt-dlp reports that it needs a sign-in,
+  starts the count over, and a connection error is not counted. It installs
+  only a version released at least 7 days earlier, and never while
+  monitoring or during Update Now. The next Start uses it, with no restart.
+- TikTokLive, which fetches viewer comments, is installed and updated along
+  several paths. If it is missing, the app installs it at startup, or when
+  a stream needs comments, trying at most once an hour. At startup the app
+  also upgrades a TikTokLive older than 7.0.1, again at most once an hour.
+  Both take the newest 7.x version whatever its release date, and neither
+  waits for monitoring to stop. When TikTok refuses the comment connection,
+  the app also looks for a newer TikTokLive, this time under the yt-dlp
+  rules (a 7.x version at least 7 days old, not while monitoring or during
+  Update Now). Refusals come while monitoring, so in practice this check
+  installs nothing, and the Comments panel says the component isn't updated
+  during monitoring. Update Now also installs a newer TikTokLive when the
+  new release requires one.
 - While monitoring, the computer is kept from going to sleep on its own, and a
-  gap where the app did not run at all is recorded and shown on screen.
+  gap where the app did not run at all is recorded and shown on screen. The
+  notice has a close button (×) and also goes away by itself after 10 minutes
+  without another gap; a new gap shows it again, with the count carried on.
+  The session audit keeps every gap either way.
 
 ## Keeping up
 
@@ -88,6 +164,59 @@ valid for about two weeks, so one capture covers a whole stream. See also
   it is 10 s behind, detection is marked degraded at 30 s, and only audio more
   than 60 s behind is dropped, with the count shown on screen and written to
   the audit log.
+- Audio is cut into segments of up to 9 s, and a segment in which no frame
+  reaches the speech recognition threshold is not sent to recognition. Two
+  notices say when that covers much of the stream; the threshold itself does
+  not change. After 120 s of stream audio in a row with no segment sent to
+  recognition, a notice says that the audio arrived but none of it was
+  transcribed; it goes away with the next segment. Every 5 minutes the app
+  also compares the seconds sent to recognition with the seconds that
+  arrived: below 60%, a notice gives both numbers, it is updated every 5
+  minutes while the share stays below 75%, and it goes away at 75% or more.
+  A 5-minute window with less than 60 s of audio is not judged, and while
+  the first notice is up the second one is not shown. When the share drops
+  below 60% and when it is back at 75% or more, a `gated_audio` record with
+  codes and numbers only (its `state` is `low` or `ok`) goes into the session
+  audit. Both notices go away when
+  monitoring stops.
+- Stopping, switching streamers or pausing for an update leaves audio that had
+  arrived but wasn't transcribed yet: the queued segments, the one being
+  transcribed and the part not yet cut into a segment. Each interruption's
+  `stream_break` records how many segments and seconds that was
+  (`discarded_segments`, `discarded_sec`), and `session_end` records the
+  session total; without any, neither key appears. When the app closes a
+  stalled connection by itself, or the audio connection ends with an error,
+  the part not yet cut into a segment is still transcribed.
 - Translation never slows recognition. Its queue holds four lines and drops
   the oldest when full; a line whose translation was skipped keeps its
   original text.
+
+## Switches that stay off by default
+
+Three changes are in the code but stay off unless the app is started with an
+environment variable. Each can change what is recognized, or how soon, so each
+needs an evaluation before it is turned on. Read that evaluation first; none
+has been run yet, so leave them off for now. The session audit does not record
+yet whether they are on. Only `on`, `1`, `true` or `yes` turns one on; anything
+else leaves it off.
+
+- `TLT_ASR_TOKEN_CAP=on` stops decoding a segment after 112 tokens. A segment
+  that repeats itself otherwise decodes up to the model's limit (224 tokens
+  with mlx-whisper). In 4,800 segments from earlier sessions, all 112 that
+  reached 112 tokens or more had been dropped as repeats. The evaluation has to show
+  that real speech is not cut short, since banned-term matching reads the same
+  text, and that a shortened repeat does not start showing up as a caption.
+- `TLT_ASR_MASK_LANGS=on` changes what happens to a segment detected in a
+  language outside the Spoken language list. Today it is decoded a second time
+  in the first language of the list. With the switch on, the most likely
+  language from the list is picked during language detection and the segment
+  is decoded once. It applies only when the list has more than one language.
+  The evaluation has to measure the extra detection time and compare the text.
+- `TLT_LOW_BITRATE_STREAM=1` changes which stream is taken when TikTok offers
+  no audio-only track: the lowest quality instead of the first one listed,
+  which so far has always been the original or the HD quality. The WebKit
+  layer still picks as before, and so does a live page whose stream data
+  cannot be read, when addresses are taken from the page text. It has no
+  effect while `TLT_FFMPEG_LEGACY=1` or `TLT_RECONNECT_V2=0` is set. The audio of the lower
+  quality has not been compared with the original yet (format, sample rate,
+  channels and delay, measured in the same minute on a stream that is live).

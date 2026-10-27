@@ -3,6 +3,7 @@
 测试只依赖 pytest + numpy + aiohttp——被测模块的顶层导入都不含
 faster-whisper / yt-dlp 等重型依赖（重型导入全部在函数内延迟进行）。
 """
+import itertools
 import os
 import sys
 from pathlib import Path
@@ -44,8 +45,47 @@ def _comment_guard_emergency_switch_is_not_inherited(monkeypatch):
     monkeypatch.delenv("TLT_COMMENT_GUARD", raising=False)
 
 
+@pytest.fixture
+def v1_reconnect(monkeypatch):
+    """用例测的是 V1 的重连规则（每次都重新解析、连续无声几轮就放弃、「第 N/M 次」）：显式钉在 V1 上，
+    不靠 RECONNECT_V2 的默认值（CLAUDE.md 第九条）。V2 的规则在 tests/test_reconnect_v2.py。"""
+    from app import reconnect_policy
+    monkeypatch.setattr(reconnect_policy, "RECONNECT_V2", False)
+
+
 @pytest.fixture(autouse=True)
-def _no_claude_key_is_inherited(monkeypatch, tmp_path_factory):
+def _reconnect_rules_switch_is_not_inherited(monkeypatch):
+    """TLT_RECONNECT_V2=0 是重连新规则的应急开关（app/reconnect_policy.py）：开发机上设过它，不该让
+    依赖默认规则的用例换一套规则跑。要测哪一边的用例自己 monkeypatch reconnect_policy.RECONNECT_V2。"""
+    monkeypatch.delenv("TLT_RECONNECT_V2", raising=False)
+
+
+@pytest.fixture(scope="session")
+def _fresh_dir(tmp_path_factory):
+    """给下面两个 autouse fixture 发目录：每次调用返回一个全新、空、只给这一个用例的目录。会话开始时用
+    tmp_path_factory 建一个父目录，之后每次在里面按自增编号 mkdir 一个子目录。
+
+    为什么不在每个用例里直接 tmp_path_factory.mktemp()：带编号的 mktemp（_pytest/pathlib.py 的
+    make_numbered_dir）每次都把 basetemp 根目录整个扫一遍找最大编号，而每个用例又往根目录里添条目
+    （它自己的 tmp_path 也是这么建的），六千个用例下来是 O(N²)。#106 给每个用例多加了一次，CI 的 Windows
+    跑器（扫目录慢）全量测试就从 11 分 17 秒涨过了 15 分钟的上限，连续四次跑到九成多就到点被取消（#106 自己那次
+    PR 的 CI 碰上一台快约三成的跑器，699 秒过了）；拿那几次的日志拟合，多出来的时间和用例序号的平方成正比。在一个父目录里 mkdir 什么都不扫，每个用例 O(1)。
+
+    编号来自进程内计数器，同一个会话里不会重复；mkdir 不带 exist_ok，真撞上已有的目录就当场报错，
+    不会悄悄发出一个别人用过的目录。父目录在 basetemp 里、不在任何用例的 tmp_path 里。"""
+    root = tmp_path_factory.mktemp("per-test")
+    numbers = itertools.count()
+
+    def fresh(name):
+        path = root / "{}-{}".format(name, next(numbers))
+        path.mkdir()
+        return path
+
+    return fresh
+
+
+@pytest.fixture(autouse=True)
+def _no_claude_key_is_inherited(monkeypatch, _fresh_dir):
     """开发机上设过 ANTHROPIC_API_KEY、或者在界面里存过 Claude 密钥（settings.json 的 api_keys）的话，选了 Claude
     的用例会造出真的复核后端，探针还会带着真密钥去联网。api_key() 先看环境变量、再看 settings.json，所以两处都要
     隔开：环境变量删掉，SETTINGS_FILE 指到一个空的临时目录。要密钥的用例自己 setenv，并换掉发请求的那一层
@@ -55,7 +95,7 @@ def _no_claude_key_is_inherited(monkeypatch, tmp_path_factory):
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("TLT_GUARD_CLAUDE_MODEL", raising=False)
-    monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path_factory.mktemp("no-saved-keys") / "settings.json")
+    monkeypatch.setattr(settings, "SETTINGS_FILE", _fresh_dir("no-saved-keys") / "settings.json")
 
 
 @pytest.fixture(autouse=True)
@@ -73,11 +113,13 @@ def _reset_active_glossary(monkeypatch):
 # ---- 仓库里的真实词表（brands/、profiles/、glossary.txt、banned_terms.txt）测试一律不碰 ----------
 
 # brands/<品牌>.txt、profiles/<主播>.txt、glossary.txt 是开发者本机的私人词表（不入库，见 .gitignore 与
-# brands/README.md），CI 上不存在。很多管线用例拿 tiktok.com/@bellaallnatural 开场：Pipeline() 扫 brands/
+# brands/README.md），CI 上不存在。很多管线用例曾拿开发者日常监听的那个直播间开场：Pipeline() 扫 brands/
 # 并读里面每一份词表，_begin_session 读这个主播的 profile 和全局表，审计头记全局表的指纹——本机读到的是
 # 开发者自己的词表，CI 上读不到，两边跑的不是同一份内容，本机改一行词表还可能改变本机的测试结果；文件
 # 不在时，load() 与 _copy_template_once 的首启复制又会在仓库里凭空建出 glossary.txt、
-# profiles/bellaallnatural.txt。改之前插桩数过：54 个测试文件、两千多次。
+# profiles/<那个主播>.txt（它在 profiles/ 下有入库的 .example.txt 模板）。改之前插桩数过：54 个测试文件、两千多次。
+# 现在测试里的主播名一律是虚构的（真实主播名属于本机数据，不进仓库）；只有 tests/test_glossary_isolation.py
+# 有意从入库模板的文件名里取那个主播，名字不写进测试。
 #
 # 违禁词表 banned_terms.txt 同理（不入库，决定什么会报警）：Pipeline() 的 load_detector() 读它，不在时从
 # 入库模板复制一份建在仓库根上。改之前插桩数过：4 个测试文件、121 次读、1 次建。
@@ -140,18 +182,18 @@ sys.addaudithook(_glossary_net)
 
 
 @pytest.fixture(autouse=True)
-def _keep_glossaries_out_of_the_repo(tmp_path_factory, monkeypatch):
+def _keep_glossaries_out_of_the_repo(_fresh_dir, monkeypatch):
     """app/glossary.py 的落点全部指到每个用例自己的一个临时目录；用例结束时，这个用例里那张网记下了什么
     就让它失败。
 
     全局表 GLOSSARY_FILE 指到临时目录、模板 GLOSSARY_EXAMPLE 不动：load() 首启照样把入库的公开模板复制一份
     过来，和 CI 上一样（所以目录要先建好）。PROFILE_DIR、BRAND_DIR 指到还没建的目录：要用主播 profile 或品牌表的
-    用例自己往里放（照 tests/test_streamer_switch.py 的虚构品牌 acme）。目录用 tmp_path_factory 另开，不建在
+    用例自己往里放（照 tests/test_streamer_switch.py 的虚构品牌 acme）。目录由 _fresh_dir 另开，不建在
     用例的 tmp_path 里：有用例断言 tmp_path 里只有它自己写的文件。autouse：靠每个用例自己记得
     monkeypatch，已经被几十个测试文件证明会漏。"""
     from app import glossary
 
-    home = tmp_path_factory.mktemp("glossaries")
+    home = _fresh_dir("glossaries")
     monkeypatch.setattr(glossary, "GLOSSARY_FILE", home / "glossary.txt")
     monkeypatch.setattr(glossary, "PROFILE_DIR", home / "profiles")
     monkeypatch.setattr(glossary, "BRAND_DIR", home / "brands")

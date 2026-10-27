@@ -37,12 +37,17 @@ def test_streamer_cap_holds_through_quota_fill():
 def test_holdout_manifest_is_frozen_and_loadable():
     """清单必须能读出，dev_eval 层的冻结项都在（今晚的评级场按
     『评级前冻结』规则已提前加入）。"""
+    import hashlib
+
     from app.provenance import eval_holdout
 
     h = eval_holdout()
     assert "session-20260826-133138.jsonl" in h["sessions"]   # 260 对考卷
     assert "session-20260827-192219.jsonl" in h["sessions"]   # 评级前冻结
-    assert "elisa._martinez" in h["streamers"]                # 泛化参考
+    # 泛化参考：那个主播是真实主播，名字不进仓库，用名字 UTF-8 编码的 sha256 前 16 位钉住是谁。
+    # 断言的还是「这一个主播在排除集里」：换掉、写错或删掉这一项都会失败
+    digests = {hashlib.sha256(s.encode("utf-8")).hexdigest()[:16] for s in h["streamers"]}
+    assert "8c80b6e0ec0aa59d" in digests                      # 泛化参考
 
 
 def test_training_side_holdout_is_fail_closed(tmp_path):

@@ -16,6 +16,7 @@ import webbrowser
 from pathlib import Path
 
 from app import i18n, native_dialog
+from app.fdlimit import raise_nofile_limit
 from app.i18n import APP_NAME, L, of
 from app.macbundle import remember_launch_python
 from app.stdio import harden_stdio
@@ -26,6 +27,16 @@ from app.stdio import harden_stdio
 # （2026-09-15 中文 Windows 11 实测，见 app/stdio.py）。首次安装后 execv 进 .venv、
 # 一键更新后重启，都会重新从这里跑一遍；窗口模式的后台线程与本进程共用这两个流。
 harden_stdio()
+
+# 文件句柄上限（专家审查 S1）：从 Finder 启动的 .app 继承 launchd 的软上限 256，局域网里
+# 一台设备对手机同看端口挂上百条空连接，之后新开的文件、ffmpeg、网络连接就全部 EMFILE。
+# 放在这么前面：要赶在任何东西开始占句柄之前；setrlimit 跨 execv 保留，进 .venv 后再跑一遍
+# 也只是读到「已经够高」。失败不拦启动，只打一行——见 app/fdlimit.py
+_NOFILE = raise_nofile_limit()
+if _NOFILE.status == "failed":
+    print("[警告] 没能把同时打开文件数的上限从 {} 提高到 {}，系统返回：{}".format(
+        _NOFILE.soft_before if _NOFILE.soft_before is not None else "?",
+        _NOFILE.target, _NOFILE.error))
 
 # 启动用的解释器路径：要在任何 exec（ensure_env 进 .venv、main() 进 .app）之前记下，
 # 「完全磁盘访问权限」的步骤里要把它原样告诉中控（见 app/macbundle.py、browser_login.fda_targets）
@@ -38,8 +49,13 @@ ROOT = Path(__file__).resolve().parent
 # 要留给最终进程去备份（main() 里的 settle），否则备份提示会随 exec 丢掉
 i18n.boot(ROOT)
 
-if sys.version_info < (3, 9):
-    sys.exit("需要 Python 3.9 或更高版本（当前 {}.{}）".format(*sys.version_info[:2]))  # i18n: terminal
+# 最低 Python 3.10（用户 10-22 决定 D14，数字与 app/bootstrap.MIN_PYTHON 一致）。以前低于最低版本时
+# 只往终端写一句再退出：双击 .app、一键更新后重启时 stdout 是 /dev/null，程序就无声消失了。现在
+# 打印之外没有终端时弹系统对话框，写明需要升级和照做的步骤（bootstrap.refuse_old_python）。这个
+# 文件和上面 import 的模块都要能被 3.9 解析，否则走不到这里（tests/test_bootstrap_constraints.py）
+if sys.version_info < (3, 10):
+    from app.bootstrap import refuse_old_python
+    sys.exit(refuse_old_python())
 
 
 _CORE_DEPS = ["aiohttp>=3.9", "numpy>=1.24", "faster-whisper>=1.0",
@@ -69,11 +85,15 @@ def _optional_deps():
     return out + ["curl_cffi>=0.7", "pywebview>=5"]
 
 
-def _ready_import():
-    mods = "aiohttp, numpy, faster_whisper, yt_dlp, imageio_ffmpeg"
+def _ready_modules():
+    mods = ["aiohttp", "numpy", "faster_whisper", "yt_dlp", "imageio_ffmpeg"]
     if _wants_mlx():
-        mods += ", mlx_whisper"
-    return "import " + mods
+        mods.append("mlx_whisper")
+    return mods
+
+
+def _ready_import():
+    return "import " + ", ".join(_ready_modules())  # i18n: data（交给 python -c 的语句）
 
 
 def _deps_ok():
@@ -118,6 +138,40 @@ def _requirements_current():
 def _venv_python():
     sub = "Scripts/python.exe" if os.name == "nt" else "bin/python"
     return ROOT / ".venv" / sub
+
+
+def _note_ready():
+    """_deps_ok() 刚通过：在本项目的 .venv/.app 壳里时记下就绪指纹（I9，见 bootstrap.note_ready），
+    下次启动的第一跳就不用再起子进程查一遍。只在第一跳要 import 的模块这里也都 import 成功了才记：
+    _deps_ok 对 imageio_ffmpeg 网开一面（系统里有 ffmpeg 就行），第一跳的检查不会，那种时候记了
+    指纹，第一跳就再也不补装它了。出错不挡启动。"""
+    try:
+        if not all(m in sys.modules for m in _ready_modules()):
+            return
+        from app import bootstrap
+        bootstrap.note_ready(ROOT, _ready_import())
+    except Exception:
+        pass
+
+
+def _forget_ready():
+    """在本项目的 .venv/.app 壳里发现组件不齐：删掉就绪指纹，下次启动重新检查（I9）。
+    第一跳（启动器选的 Python）上什么都不做，见 bootstrap.forget_ready。"""
+    try:
+        from app import bootstrap
+        bootstrap.forget_ready(ROOT)
+    except Exception:
+        pass
+
+
+def _install_deferred():
+    """上一跳因为端口上已有本程序在跑，把安装推迟了（I7，见 bootstrap.install_deferred）。
+    只有 POSIX 认得出来；Windows 上的最终进程认不出，在 ensure_env 里自己再判一次、照样不装。"""
+    try:
+        from app import bootstrap
+        return bootstrap.install_deferred(ROOT)
+    except Exception:
+        return False
 
 
 def _has_console():
@@ -211,15 +265,54 @@ def _first_run_dialog(text=None):
                            "meantime."))
 
 
+def _existing_instance_url(base_port):
+    """本程序是否已在运行。是则返回其 UI 地址，否则 None。
+    用于双击两次的场景：复用已有实例，而不是再起一个后端。
+    必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
+    base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
+    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
+    import socket
+    import urllib.request
+
+    from app.instance import PROBE_BYTES, looks_like_us
+    for port in range(base_port, base_port + 10):
+        with socket.socket() as probe:
+            probe.settimeout(0.3)
+            if probe.connect_ex(("127.0.0.1", port)) != 0:
+                continue
+        url = "http://127.0.0.1:{}".format(port)
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as resp:
+                if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
+                    return url
+        except Exception:
+            pass
+    return None
+
+
 def ensure_env():
     """零手动安装：缺依赖时自动创建虚拟环境、装齐 requirements，然后换进新环境继续跑。
 
-    判断、文案和安装步骤在 app/bootstrap.py——这里没法测试（import main 就会跑到这儿）。"""
-    if _deps_ok():
+    判断、文案和安装步骤在 app/bootstrap.py——这里没法测试（import main 就会跑到这儿）。
+
+    就绪指纹（I9）：组件齐了的进程记下 .venv 的样子；第一跳看它没变就跳过子进程检查，直接换进
+    最终进程（macOS 开窗口时直接进 .app 壳）。推迟安装（I7）：现有 .venv 能跑、只是清单变了、而本程序
+    已经在跑时这次不装，换进去的那个进程也不装（POSIX 凭 _install_deferred 认出来；Windows 认不出，
+    最终进程自己再走一遍检查和 defer_install，照样不装）。"""
+    if _install_deferred():
         return
+    if _deps_ok():
+        _note_ready()
+        return
+    # 本项目的环境里 import 不齐（或清单要补装）：指纹作废，下次启动的第一跳照旧检查。第一跳
+    # 在启动器选的 Python 上 import 不了是常态，那里不删（_forget_ready 只在 .venv/.app 壳里删）
+    _forget_ready()
     vpy = _venv_python()
     in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
     lock = None
+    ready = False         # 第一跳确认指纹没变：不再检查、不装，直接换进 .venv（I9）
+    deferred = False      # 要装，但本程序已经在跑：这次不装（I7）
+    venv_created = False  # 这一轮刚 venv.create 过：空环境，不装就起不来，不能推迟（I7）
     if not in_project_venv:
         state, lock = _acquire_bootstrap_lock()
         if state == "busy":
@@ -242,27 +335,65 @@ def ensure_env():
             target_version = here
         else:
             # 光看路径存在不够：上次安装被中断会留下残缺的 venv，链到的 Python 被卸掉
-            # 也一样——必须实际跑一下确认，顺便拿到它现在的版本
+            # 也一样——必须实际跑一下确认，顺便拿到它现在的版本。能跑、但次版本和
+            # pyvenv.cfg 记的不一样、在这个版本下组件和 pip 又都 import 不了，也重建：原地补装
+            # 找不到 pip。组件或 pip 还在就不清（判断见 bootstrap.venv_needs_rebuild）
             usable, target_version = (bootstrap.interpreter_version(vpy)
                                       if vpy.exists() else (False, None))
-            if not usable:
-                _first_run_dialog(bootstrap.install_dialog_text(
-                    recorded, here, venv_existed=recorded is not None))
-                print("[初始化] 正在创建虚拟环境（仅需一次，可能几分钟）…")
-                import venv
+            # I9：解释器照旧实际跑一下（几十毫秒；跑不起来要重建，指纹看不出这个），其余的看就绪指纹：
+            # 和最终进程上次记下的一样，就不再起子进程 import 一遍核心组件（约 2 秒）、不再探 pip
+            # 实际跑出来的主次版本也要和 pyvenv.cfg 记的一样（ready_fast_path 里比）：指纹的链接终点
+            # 比的是启发式，次版本漂移不能走捷径
+            ready = usable and bootstrap.ready_fast_path(ROOT, _ready_import(),
+                                                         actual_version=target_version, python=vpy)
+            if not ready:
+                if bootstrap.venv_needs_rebuild(usable, recorded, target_version,
+                                                own_env=bootstrap.managed_env(ROOT),
+                                                python=vpy, ready_import=_ready_import()):
+                    # 清空之前先看端口上有没有本程序在跑：直播中再双击一次把窗口叫到前台就会走到
+                    # 这里——ensure_env 在模块级就跑，比 main() 里认出已有实例早。有就不清：clear=True
+                    # 会连它正用着的 site-packages 一起删掉，它之后的延迟导入全部失败，还要在直播时
+                    # 联网拉约 1.4 GB。.venv 还不存在就没东西可删。8765 是 parse_args 的默认端口
+                    # （这时还没解析参数），双击启动用的就是它
+                    if (ROOT / ".venv").is_dir() and _existing_instance_url(8765):
+                        _fail_alert(bootstrap.rebuild_blocked_text())
+                        sys.exit(1)
+                    _first_run_dialog(bootstrap.install_dialog_text(
+                        recorded, here, venv_existed=recorded is not None))
+                    print("[初始化] 正在创建虚拟环境（仅需一次，可能几分钟）…")
+                    import venv
 
-                venv.create(ROOT / ".venv", with_pip=True, clear=True)
-                target_version = here
+                    venv.create(ROOT / ".venv", with_pip=True, clear=True)
+                    target_version = here
+                    venv_created = True
         pip_python = sys.executable if in_project_venv else str(vpy)
-        check = subprocess.run(
-            [pip_python, "-c",
-             _ready_import()],
-            capture_output=True,
-        )
-        # 核心模块都在、只是 requirements.txt 和上次装成功的那份不一样（更新带来了
-        # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
-        # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
-        plan = bootstrap.plan_install(check.returncode == 0, ROOT, recorded, target_version)
+        plan = None
+        imports_ok = False
+        if not ready:
+            check = subprocess.run(
+                [pip_python, "-c",
+                 _ready_import()],
+                capture_output=True,
+            )
+            imports_ok = check.returncode == 0
+            # 核心模块都在、只是 requirements.txt 和上次装成功的那份不一样（更新带来了
+            # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
+            # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
+            plan = bootstrap.plan_install(imports_ok, ROOT, recorded, target_version)
+        # I7：现有的 .venv 能跑、只是清单变了要补装，而端口上已经有本程序在跑（直播中从 Start.command、
+        # Start.bat 或命令行又开了一次），它可能正用着这个 .venv：pip 换掉它脚下的包，它之后的延迟导入
+        # 可能拿到装了一半的东西。这次不装，照常换进 .venv——最终进程会认出已有实例、把窗口叫到前台；
+        # 换进去的那个进程也不装（POSIX 凭环境变量认出来；Windows 上认不出，那个进程跑在 .venv 里，
+        # 走到这里自己再判一次）。等下次没有实例在跑时再装。这一轮刚建的 .venv、核心组件 import 不齐的
+        # 不推迟：不装就起不来（新解压的一份第一次打开、旧的那份还在直播，就是这种）。
+        # 这一句不能挪进 `if not in_project_venv` 或 `if not ready`：Windows 的推迟全靠它在最终进程里再跑一次。
+        # 端口探测只在真要装、而且能推迟时才做
+        if bootstrap.defer_install(plan, ROOT, lambda: _existing_instance_url(8765),
+                                   imports_ok=imports_ok, venv_created=venv_created):
+            print("[初始化] 运行组件需要补装，但本程序已经在运行、正用着这些组件，这次先不装；"
+                  "退出正在运行的程序后再打开，会自动补装")
+            plan = None
+            deferred = True
         if plan is not None:
             timer = None
             if plan["delay"] > 0:
@@ -290,8 +421,31 @@ def ensure_env():
                     pass
                 lock = None
             _close_info_dialog()      # 马上换进新环境开窗口，安装提示框可以收了
+            # exec 不替 Python 冲输出缓冲：stdout 不是终端（`| tee`、重定向到文件）时，上面打的
+            # [初始化] 几行会跟着丢掉
+            from app.relaunch import flush_std
+            flush_std()
+            if deferred:
+                bootstrap.mark_install_deferred()
+            # I9：macOS 开窗口时直接进 .app 壳里的 python——和 main() 开头是同一个函数，只是提前到
+            # 这里：以前先 execv 进 .venv/bin/python，那个进程再 import 一遍组件（约 2 秒）才在 main()
+            # 里进壳。壳里的 python 链回 .venv/bin/python，sys.prefix 是 Contents、site-packages 落回
+            # .venv；「完全磁盘访问权限」认的启动解释器在顶上 exec 之前已经记下了。不该进壳（--browser
+            # 一类参数、不是 macOS）、壳没备好或起不来时它会返回，照旧进 .venv/bin/python
+            if sys.platform == "darwin":
+                from app.macbundle import relaunch_inside_bundle
+                relaunch_inside_bundle(ROOT)
+            argv = [str(vpy), str(ROOT / "main.py")] + sys.argv[1:]
+            if os.name == "nt":
+                # I11：Windows 上 CRT 的 execv 是「起新进程、自己立刻以 0 退出」，Start.bat 等的进程
+                # 马上结束，「出错就 pause」永远轮不到。改成起子进程、等它、带着它的退出码退出（不会返回）
+                from app.relaunch import replace_process
+                replace_process(argv)
             from app.relaunch import exec_args
-            os.execv(str(vpy), exec_args([str(vpy), str(ROOT / "main.py")] + sys.argv[1:]))
+            # 进壳没成功时 relaunch_inside_bundle 刚打了一行「[信息] 未能以应用身份重新启动」：
+            # 在上面那次冲缓冲之后，exec 前再冲一次，stdout 是管道时它才不会丢
+            flush_std()
+            os.execv(str(vpy), exec_args(argv))
     except Exception as exc:
         # 按 pip 输出里真实出现的字样说明（磁盘满 / 连不上软件包服务器 / 没有适用于
         # 这个 Python 的安装包），附日志位置——不再把 CalledProcessError 原文给中控
@@ -303,12 +457,12 @@ def ensure_env():
             message = (L("自动安装未完成（{}）。\n"
                          "请检查网络连接，然后重新打开本程序——会自动从中断处继续安装。\n"
                          "（进阶：也可手动运行 setup.sh / setup.ps1，"
-                         "或 pip install -r requirements.txt）",
+                         "或 pip install -r requirements.txt -c constraints.txt）",
                          "Installation didn’t finish ({}).\n"
                          "Check your network connection, then open the app again. Installation "
                          "picks up where it left off.\n"
                          "(Advanced: you can also run setup.sh / setup.ps1, or pip install -r "
-                         "requirements.txt)").format(of(exc)))
+                         "requirements.txt -c constraints.txt)").format(of(exc)))
         _fail_alert(message)
     finally:
         if lock is not None:
@@ -322,12 +476,14 @@ if "--doctor" not in sys.argv:
     ensure_env()
 
 def _forget_install_failure():
-    """程序因为缺模块起不来：让下次启动立刻重试安装（见 bootstrap.forget_requirements_failure）。"""
+    """程序因为缺模块起不来：让下次启动立刻重试安装（见 bootstrap.forget_requirements_failure），
+    并删掉就绪指纹（I9）——否则下次启动的第一跳看指纹没变，不检查就直接进来，又撞上同一个缺模块。"""
     try:
         from app.bootstrap import forget_requirements_failure
         forget_requirements_failure(ROOT)
     except Exception:
         pass
+    _forget_ready()
 
 
 try:
@@ -357,7 +513,8 @@ def parse_args():
                    help="直播间地址（可选——不填则启动后在网页里输入），"
                         "例如 https://www.tiktok.com/@user/live；也可以直接给 .flv/.m3u8 流地址")
     p.add_argument("--target", default=None,  # i18n: terminal
-                   help="目标语言代码，默认 zh-CN（简体中文）；界面里改过的话记住上次的选择")
+                   help="字幕译成哪种语言（语言代码），默认 zh-CN（简体中文）；界面里改过的话记住上次的选择。"
+                        "顶栏「字幕译成」菜单只列 zh-CN/zh-TW/en/es，这里给别的代码（如 ja）照样生效，菜单里会多出这一项")
     p.add_argument("--source", default=None,  # i18n: terminal
                    help="主播语言代码，例如 es/en/ja；也可以是逗号分隔的列表如 es,en"
                         "（自动检测但只在列表里选，最多 4 个，第一个是主语言，"
@@ -416,29 +573,142 @@ def parse_args():
     return p.parse_args()
 
 
-def _existing_instance_url(base_port):
-    """本程序是否已在运行。是则返回其 UI 地址，否则 None。
-    用于双击两次的场景：复用已有实例，而不是再起一个后端。
-    必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
-    base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
-    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
-    import socket
-    import urllib.request
+def _say(text):
+    """收尾路上的终端行：终端可能已经没了（关了终端窗口），打不出来也不许抛。"""
+    try:
+        print(text, flush=True)
+    except Exception:
+        pass
 
-    from app.instance import PROBE_BYTES, looks_like_us
-    for port in range(base_port, base_port + 10):
-        with socket.socket() as probe:
-            probe.settimeout(0.3)
-            if probe.connect_ex(("127.0.0.1", port)) != 0:
-                continue
-        url = "http://127.0.0.1:{}".format(port)
+
+def _recover_unclosed_audits(port):
+    """上一次没写结尾的审计（崩溃、强杀、断电时留下的）在末尾补一条 session_end（专家审查 B5，规则见
+    app/audit_recover.py）。在起服务、开第一场之前做；端口上有本程序在跑（--no-open、--url 不做单实例检查）
+    就整个不补。只补这个功能上线之后产生的文件（D16），任何错误都不拦启动。"""
+    import time
+
+    try:
+        from app import audit_recover
+        from app.audit import LOG_DIR
+        from app.settings import load_settings, save_setting
+        report = audit_recover.recover_at_startup(
+            LOG_DIR, load_settings, save_setting, time.time(),
+            others_running=lambda: _existing_instance_url(port) is not None)
+    except Exception as exc:
+        print("[警告] 检查上次没写结尾的审计时出错（{}），这次不补".format(type(exc).__name__))
+        return
+    if report.recovered:
+        print("[信息] {} 份审计上次没写结尾，已在末尾补一条 session_end（reason=unclean_exit）：{}".format(
+            len(report.recovered), "、".join(report.recovered)))
+    if report.errors:
+        print("[警告] {} 份审计没能补写结尾：{}".format(
+            len(report.errors), "、".join("{}（{}）".format(n, e) for n, e in report.errors)))
+
+
+def _check_update_guard(others_running=None):
+    """一键更新之后的存活确认（专家审查 I6，规则见 app/update_guard.py）：新版本启动了两次、字幕界面都没
+    连上，第三次打开就退回更新前的版本，弹窗说明（Mac、Windows 都弹），然后重新 exec。
+
+    只在确认没有别的实例在跑之后调（计划审查 P5：在单实例检查之前计数，双击两次就会把一个好好的新版本
+    退回去）：窗口模式在 run_with_window 的检查之后，浏览器模式在 main() 的检查之后；--no-open、--url
+    不做单实例检查，由 others_running 探一次端口。任何出错都不拦启动。"""
+    try:
+        from app import update_guard
+        outcome = update_guard.on_boot(ROOT, others_running=others_running)
+    except Exception as exc:
+        print("[警告] 一键更新后的启动检查出错（{}），这次跳过".format(type(exc).__name__))
+        return
+    if not outcome.rolled_back:
+        return
+    # 对话框不等人点：旧版本马上起来，暂停中的监听才赶得上「重启后接着监听」的时限。程序文件已经退回了：
+    # 弹窗这一步出错（比如终端断了、print 抛 OSError）也不能挡住下面的重新 exec。
+    # _info_dialog 先打印、Mac 上没终端时弹框（不变）；Windows 另外用系统自带的消息框弹（用户 2026-10-26 定），
+    # 弹不出来就只剩那一行打印。两步各自兜底：打印抛了错，Windows 的消息框照样弹
+    try:
+        if outcome.message:
+            _info_dialog(outcome.message)
+    except Exception:
+        pass
+    try:
+        if outcome.message:
+            update_guard.windows_notice(outcome.message)
+    except Exception:
+        pass
+    update_guard.release_lock()
+    from app.relaunch import exec_args, flush_std, replace_process
+    argv = [sys.executable, str(ROOT / "main.py")] + sys.argv[1:]
+    flush_std()
+    try:
+        if os.name == "nt":
+            replace_process(argv)          # 同 ensure_env：Windows 上起子进程、等它（I11）
+        os.execv(sys.executable, exec_args(argv))
+    except Exception as exc:
+        # 程序文件已经退回了，内存里却还是新版本的代码：不能接着往下跑。说清楚、退出；再开一次就是旧版本
+        print("[错误] 已退回更新前的版本，但重新启动没成功（{}）".format(type(exc).__name__))
+        _fail_alert(L("已退回更新前的版本，但程序没能自己重新打开（{}）。请再打开一次本程序。",
+                      "The app went back to the version before the update but couldn’t reopen itself "
+                      "({}). Open the app again.").format(type(exc).__name__))
+        raise SystemExit(1) from None
+
+
+def _note_exit_signal(name):
+    """第一次收到退出信号：SIGHUP（终端窗口关了）先把标准流换成 /dev/null——之后再往那个终端写就是
+    EIO，收尾路上任何一行 print 都会抛（app/exit_signals.silence_stdio）。"""
+    from app import exit_signals
+    if name == "SIGHUP":
+        exit_signals.silence_stdio()
+    _say("[信息] 收到 {}：先停止监听、写好这一场的审计结尾，然后退出".format(name))
+
+
+def _exit_again(name):
+    """收尾途中又收到退出信号（比如又按了一次 Ctrl-C）：不再等停管线，只等一下在途的证据写盘（最多 2 秒，
+    同 main.py 里别的 os._exit），然后退出。审计没写完的那一场，下次启动补一条结尾（app/audit_recover.py）。
+    窗口模式下由 WakeupBridge 的读线程调：第一次的收尾在另一个线程里跑，读线程收尾途中照样读得到这一个。
+    同一次退出的回声（关终端窗口时 zsh 下的第二个 SIGHUP、同名信号 0.3 秒内又来一个）不走这里，走
+    _echo_exit_signal（app/exit_signals.Dispatch，第 2 轮审查）。"""
+    from app.window_close import flush_evidence
+    _say("[警告] 又收到 {}：不再等收尾，直接退出".format(name))
+    flush_evidence()
+    os._exit(1)
+
+
+def _echo_exit_signal(name):
+    """同一次退出的回声（app/exit_signals.Dispatch）：第一次的收尾照常走，不打印。是 SIGHUP 就把标准流换成
+    /dev/null：第一次是别的信号（比如先按了 Ctrl-C）、收尾途中又关了终端窗口时，之后往那个终端写就是 EIO，
+    和 _note_exit_signal 同一个道理。"""
+    if name == "SIGHUP":
+        from app import exit_signals
+        exit_signals.silence_stdio()
+
+
+def _exit_stuck():
+    """浏览器和命令行模式：收到退出信号 LOOP_DEADLINE_SEC 秒了进程还在（收尾没走完，或者根本没开始）——看门狗
+    线程调（app/exit_signals.Watchdog）。只等一下在途的证据写盘，然后退出；这一场没写完的审计结尾下次启动补。"""
+    from app.exit_signals import LOOP_DEADLINE_SEC
+    from app.window_close import flush_evidence
+    _say("[警告] 收到退出信号 {:g} 秒了还没退出：不再等收尾，直接退出（没写完的审计结尾，下次启动补）".format(
+        LOOP_DEADLINE_SEC))
+    flush_evidence()
+    os._exit(1)
+
+
+async def _shutdown_on_signal(pipeline, name):
+    """浏览器和命令行模式收到退出信号：停管线、写 session_end（reason=signal，带信号名）、等证据写盘，
+    然后退出。和关窗口同一套（window_close.close_session，有时限）；不回到 asyncio.run 的收尾——它要等
+    默认线程池里的模型加载线程（首次下载时要好几分钟）。"""
+    from app.window_close import close_session, flush_evidence
+    _note_exit_signal(name)
+    try:
+        await close_session(pipeline, reason="signal", fields={"signal": name})
+    except Exception as exc:
+        _say("[警告] 收尾时出错: {}".format(type(exc).__name__))
+    flush_evidence()
+    for stream in (sys.stdout, sys.stderr):
         try:
-            with urllib.request.urlopen(url, timeout=1.5) as resp:
-                if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
-                    return url
+            stream.flush()
         except Exception:
             pass
-    return None
+    os._exit(0)
 
 
 async def main_async(args, state=None):
@@ -446,6 +716,8 @@ async def main_async(args, state=None):
     from app.server import CaptionServer
     from app.updater import Updater, local_version
 
+    # 上一次没写结尾的审计补一条（确认没有别的实例在跑之后、开第一场之前）
+    _recover_unclosed_audits(args.port)
     # 端口被占用（常见于别的软件恰好占了 8765）时自动向后找空闲端口，
     # 不让用户接触 --port 这种命令行概念
     server = None
@@ -462,6 +734,11 @@ async def main_async(args, state=None):
             print("[信息] 端口 {} 被占用，已自动改用 {}".format(args.port, port))
         args.port = port
         break
+    if server is not None and args.no_open:
+        # --no-open 不开页面，可能一直没有页面来连：一键更新后的启动检查（app/update_guard.py）在这种
+        # 模式下以「控制服务起来了」为准，否则这样启动两次之后，第三次打开会把一个好好的新版本退回去
+        from app import update_guard
+        update_guard.mark_ready()
     if server is None:
         if state is not None:
             state["failed"] = True   # 告诉窗口线程别开窗口了
@@ -531,9 +808,31 @@ async def main_async(args, state=None):
         await server.status("idle", L("在页面里输入直播间地址开始翻译", "Enter a live link to start."))
         print("未指定直播间地址——在打开的网页里输入地址点「开始翻译」即可。")
 
+    # 浏览器和命令行模式：关终端窗口（SIGHUP）、kill（SIGTERM）、Ctrl-C 先把这一场的审计收尾再退出
+    # （专家审查 B5，app/exit_signals.py）：信号到了取消这个任务，下面接住后走 _shutdown_on_signal。
+    # 窗口模式在 run_with_window 里接（主线程是 pywebview 的界面循环，这个事件循环在后台线程）
+    got_signal = {}
+    if state is None:
+        from app import exit_signals
+        main_task = asyncio.current_task()
+
+        def on_signal(name):
+            got_signal["name"] = name
+            main_task.cancel()
+
+        # 看门狗：事件循环被卡住、取消主任务这一步跑不到时，收到信号 LOOP_DEADLINE_SEC 秒后照样退出（第 1 轮审查）
+        watchdog = exit_signals.Watchdog(exit_signals.LOOP_DEADLINE_SEC, _exit_stuck)
+        watchdog.start()
+        exit_signals.install_loop_handlers(asyncio.get_running_loop(),
+                                           exit_signals.Dispatch(on_signal, _exit_again, on_echo=_echo_exit_signal),
+                                           watchdog=watchdog)
     # 直播结束后保留 UI（可以继续翻看历史字幕 / 换房间），Ctrl-C 退出
     try:
         await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        if not got_signal:
+            raise
+        await _shutdown_on_signal(pipeline, got_signal["name"])     # 不返回：os._exit
     finally:
         # 退出时把手机同看的监听面收掉：0.0.0.0 上的端口不该比进程活得久。
         # 窗口模式走 app/window_close.close_session，这里管 CLI / --browser。
@@ -550,6 +849,9 @@ def main():
     if sys.platform == "darwin":
         from app.macbundle import relaunch_inside_bundle
         relaunch_inside_bundle(ROOT)
+    # 推迟安装的记号（I7）到最终进程为止：不传给一键更新的重启和以后起的子进程
+    from app.bootstrap import clear_install_deferred
+    clear_install_deferred()
     # 到这里一定是最终进程了：本进程第一次读设置（损坏就在这里备份，界面提示和审计都拿得到），
     # 闸开着、设置里还没有 ui_lang 时迁移写一次，然后定下界面语言
     i18n.settle(ROOT)
@@ -583,17 +885,19 @@ def main():
         from app.ffmpeg_bin import find_ffmpeg
         if find_ffmpeg() is None:
             missing.append(L("组件 ffmpeg 缺失：请关闭程序后重新打开，会自动补装。"
-                             "（进阶：pip install -r requirements.txt）",
+                             "（进阶：pip install -r requirements.txt -c constraints.txt）",
                              "Audio (ffmpeg) is missing. Quit and reopen the app to install it "
-                             "automatically. (Advanced: pip install -r requirements.txt)"))
+                             "automatically. (Advanced: pip install -r requirements.txt -c "
+                             "constraints.txt)"))
         try:
             import faster_whisper  # noqa: F401
         except ImportError:
             missing.append(L("组件 faster-whisper 缺失：请关闭程序后重新打开，会自动补装。"
-                             "（进阶：pip install -r requirements.txt 或运行 setup 脚本）",
+                             "（进阶：pip install -r requirements.txt -c constraints.txt "
+                             "或运行 setup 脚本）",
                              "faster-whisper is missing. Quit and reopen the app to install it "
-                             "automatically. (Advanced: pip install -r requirements.txt, or run "
-                             "the setup script.)"))
+                             "automatically. (Advanced: pip install -r requirements.txt -c "
+                             "constraints.txt, or run the setup script.)"))
         if missing:
             if args.url:
                 _fail_alert(L("\n", "\n").join(missing))
@@ -617,6 +921,10 @@ def main():
                     print("[信息] 检测到程序已在运行，直接打开现有界面 " + existing)
                     webbrowser.open(existing)
                     return
+                _check_update_guard()
+            else:
+                # --no-open、--url 不做单实例检查：一键更新后的启动检查自己探一次端口
+                _check_update_guard(lambda: _existing_instance_url(args.port) is not None)
             asyncio.run(main_async(args))
     except KeyboardInterrupt:
         # 识别证据在每一场自己的证据线程里写：asyncio.run 收尾只等默认线程池，下面的 os._exit
@@ -629,6 +937,28 @@ def main():
         # 与窗口模式（run_with_window 末尾）一致，直接硬退。
         sys.stdout.flush()
         os._exit(0)
+
+
+_SIGNAL_BRIDGE = []
+
+
+def _install_window_signals(finish):
+    """窗口模式的退出信号（app/exit_signals.py）：Ctrl-C 不让 pywebview 交给 PyObjC 的 mach 中断（那条路直接
+    exit()），三个信号都经 WakeupBridge 送到后台线程，由 finish.finish_signal 收尾、退出。主线程上调。"""
+    from app import exit_signals
+
+    def on_first(name):
+        _note_exit_signal(name)
+        finish.finish_signal(name)
+
+    bridge = exit_signals.WakeupBridge(exit_signals.Dispatch(on_first, _exit_again, on_echo=_echo_exit_signal))
+    if bridge.install():
+        _SIGNAL_BRIDGE.append(bridge)
+        # 桥装上了才把 PyObjC 的 mach 中断换掉：装不上时换掉它，Ctrl-C 在 Cocoa 主循环里就彻底没反应了
+        # （Python 层的处理函数在那里不执行），不换至少还能经 NSApp terminate: 退出（第 1 轮审查）
+        exit_signals.keep_sigint_from_cocoa()
+    else:
+        print("[警告] 没能接住退出信号：关终端窗口、kill 时这一场的审计不会写结尾（下次启动补一条）")
 
 
 def run_with_window(args):
@@ -665,7 +995,18 @@ def run_with_window(args):
         webview.start()
         return
 
+    # 确认没有别的实例在跑了：一键更新后的启动检查（两次启动页面都没连上，第三次就退回，见 _check_update_guard）
+    _check_update_guard()
     state = {}
+    from app.window_close import (FinishOnce, guard_close, hook_app_terminate, localization_kwargs,
+                                  stop_after_close)
+    # 关窗之后的收尾只走一遍：start() 返回之后的主线程、浮窗的 10 秒兜底、⌘Q、退出信号，谁先到谁做
+    # （app/window_close.py）。退出信号那条路给 finish 传 reason="signal" 和信号名
+    finish = FinishOnce(lambda **kw: stop_after_close(state.get("loop"), state.get("pipeline"), **kw))
+    # 关终端窗口（SIGHUP）、kill（SIGTERM）、Ctrl-C：主线程马上要进 pywebview 的界面循环，Python 层的信号处理
+    # 在那里不执行（2026-10-23 真 pywebview 实测），所以经 set_wakeup_fd 交给一个后台线程收尾（专家审查 B5）。
+    # 要赶在起后台服务之前装：启动途中收到的也走收尾（那时还没有管线，直接退出）
+    _install_window_signals(finish)
 
     def backend():
         # 两处 os._exit(1) 之前都先 flush_evidence：后台服务半路异常退出时，这一场的证据线程里可能还有
@@ -704,11 +1045,8 @@ def run_with_window(args):
     url = "http://127.0.0.1:{}".format(state["ready_port"])
     from app.macbrand import brand_mac_app
     from app.window_attention import expose_attention
-    from app.window_close import FinishOnce, guard_close, localization_kwargs, stop_after_close
     from app.window_lang import expose_window_lang
     brand_mac_app(ROOT)
-    # 关窗之后的收尾只走一遍：start() 返回后的主线程和浮窗的 10 秒兜底，谁先到谁做（app/window_close.py）
-    finish = FinishOnce(lambda: stop_after_close(state.get("loop"), state.get("pipeline")))
     # 浮窗（只显示，见 app/float_window.py）：宿主挂到管线上，hello 里才会带 float_window，顶栏才画
     # 「浮窗」按钮。要在开主窗口之前挂：页面一加载就会读 hello。任何失败都只是没有这个功能
     float_host = None
@@ -742,6 +1080,9 @@ def run_with_window(args):
             float_host.anchor = lambda: (window.x, window.width)
         # 窗口被盖住时新报警改原生标题：pywebview 的标题不跟页面的 document.title
         expose_window_lang(window, expose_attention(window))
+        # ⌘Q、程序坞里的「退出」：NSApp terminate: 直接 exit()，start() 不返回（2026-10-23 真 pywebview 6.2.1
+        # 实测），下面那句 finish.finish() 走不到。在 willTerminate 通知里（主线程、exit 之前）同步收尾
+        hook_app_terminate(finish.finish)
         webview.start(**({} if loc else localization_kwargs(webview.start, lang)))
     except Exception as exc:
         # 本机没有可用的 webview 后端（如部分 Linux 桌面）——退回浏览器
