@@ -135,7 +135,8 @@ for (const lang of ["en", "zh"]) {
     assert.ok(page.el("comment-fab-guard"), "红点还在");
     assert.ok(!/\d/.test(page.el("comment-title-text").textContent));
     page.push({ type: "config", guard_state: { enabled: true, status: "rules", backend: "none", rules: { count: 1, warnings: 0 } } });
-    page.el("clear-comments").click();            // 清空也不碰已删的数字元素
+    page.el("clear-comments").click();
+    page.el("clear-comments").click();            // 清空也不碰已删的数字元素（两段式确认，V3：第二次才清）
     assert.equal(page.el("comment-list").children.length, 0);
     if (lang === "en") assert.deepEqual(leftoverChinese(page), []);
   });

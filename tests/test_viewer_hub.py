@@ -7,8 +7,13 @@
 """
 import asyncio
 import json
+import subprocess
+import sys
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
+import aiohttp
 import pytest
 from aiohttp import WSMsgType
 
@@ -78,9 +83,10 @@ class FakeWS:
 
 
 class FakeTransport:
-    def __init__(self):
+    def __init__(self, peer="192.168.1.99"):
         self.aborts = 0
         self.closes = 0
+        self.peer = peer
 
     def abort(self):
         self.aborts += 1
@@ -88,9 +94,12 @@ class FakeTransport:
     def close(self):
         self.closes += 1
 
+    def is_closing(self):
+        return bool(self.aborts or self.closes)
+
     def get_extra_info(self, name, default=None):
         if name == "peername":
-            return ("192.168.1.99", 51515)
+            return (self.peer, 51515)
         return default
 
 
@@ -215,6 +224,7 @@ def test_register_pushes_the_whole_replay_in_one_synchronous_block(loop):
         "caption", "caption", "comment", "caption"]
     assert got[0]["read_only"] is True
     assert got[0]["max_viewers"] == viewer_mod.MAX_VIEWERS
+    assert got[0]["replay_len"] == 7              # hello 之后 7 条是回放，第 8 条起是实时的
     assert "detail" not in got[1]                 # status 的自由文本没跟过来
     assert got[2]["backend"] == "live"
     assert got[4]["replay"] is True
@@ -234,11 +244,39 @@ def test_register_does_not_blow_up_when_the_replay_exceeds_the_queue(loop, monke
     v = add(hub)
     assert hub.count == 1
     assert v.queue.qsize() == 3
+    # hello 里的回放条数是真放进去的那些（hello 之后 2 条），不是快照的 50 条：
+    # 不然手机会把接下来的 48 条实时消息也当成回放
+    assert v.queue.get_nowait()["replay_len"] == 2
+
+
+def test_viewer_hello_says_how_many_replay_messages_follow(loop):
+    """b2 审查：手机以前只能等「回放之后的第一条实时字幕/弹幕/报警」才知道回放结束，安静的直播间里
+    紧接着换主播，实时的 session_break 被当成历史。现在 hello 带着回放条数，手机数够就结束。
+    条数和入册时压进队列的回放一条不差，紧跟着的就是实时消息。"""
+    server = StubServer(status={"state": "live"}, comment_backend="connected", alerts_enabled=True,
+                        health={"level": "lagging", "backlog_sec": 23.0, "text": "x"})
+    server.history = [{"type": "caption", "id": 1, "original": "uno"},
+                      {"type": "session_break", "ts": 5.0},
+                      {"type": "caption", "id": 2, "original": "dos"}]
+    server.comments = [{"type": "comment", "id": "c1", "user": "ana", "text": "hola"}]
+    hub = make_hub(server)
+    v = add(hub)
+    hub.fanout({"type": "session_break", "ts": 9.0})          # 回放之后紧接着换主播
+    got = []
+    while not v.queue.empty():
+        got.append(v.queue.get_nowait())
+    n = got[0]["replay_len"]
+    assert n == len(got) - 2 == 8
+    assert got[n]["type"] == "comment"                         # 回放的最后一条
+    assert got[n + 1] == {"type": "session_break", "ts": 9.0}  # 实时的那条不算在里面
+    # 没有可回放的：条数是 0（hello 本身就是回放的结尾）
+    assert viewer_mod.replay_snapshot(StubServer())[0]["replay_len"] == 0
 
 
 def test_replay_snapshot_stays_under_the_queue_limit():
-    """回放上限 273 条要一直小于 QUEUE_MAX，否则每个新观众一进来就被判定落后。"""
-    server = StubServer(status={"state": "live"}, comment_backend="idle",
+    """回放上限（每一类都到顶时 275 条）要一直小于 QUEUE_MAX，否则每个新观众一进来就被判定落后。"""
+    server = StubServer(status={"state": "live"}, comment_backend="idle", alerts_enabled=True,
+                        health={"level": "degraded", "backlog_sec": 61.0, "text": "x"},
                         incidents={str(i): {"id": str(i), "level": "warn",
                                             "text": "x", "ts": float(i)}
                                    for i in range(20)})
@@ -246,7 +284,8 @@ def test_replay_snapshot_stays_under_the_queue_limit():
     server.history = [{"type": "caption", "id": i} for i in range(100)]
     server.comments = [{"type": "comment", "id": i} for i in range(100)]
     snapshot = viewer_mod.replay_snapshot(server, viewers=1, share_since=1.0)
-    assert len(snapshot) == viewer_mod.REPLAY_MAX
+    assert len(snapshot) == viewer_mod.REPLAY_MAX == 275
+    assert snapshot[-1] == {"type": "comment", "id": 99, "replay": True}   # 最新的弹幕没被切掉
     assert viewer_mod.REPLAY_MAX < viewer_mod.QUEUE_MAX
 
 
@@ -268,6 +307,64 @@ def test_replay_snapshot_omits_the_alert_mode_when_config_lacks_the_key():
     server = StubServer()
     snapshot = viewer_mod.replay_snapshot(server)
     assert not any(m["type"] == "alert_mode" for m in snapshot)
+
+
+def test_replay_snapshot_carries_the_current_health_after_the_incidents():
+    """专家审查 F3：手机重连后，识别落后提示按此刻的状态重建。server.broadcast 存在 config["health"]；
+    回放放在持续提示之后、报警之前，过白名单只剩 level（文案手机按 level 自己查表）。"""
+    server = StubServer(status={"state": "live"},
+                        incidents={"disk": {"id": "disk", "level": "warn", "text": "x", "ts": 1.0}},
+                        health={"level": "lagging", "backlog_sec": 23.0, "text": "识别开始落后"})
+    server.alerts = [{"type": "alert", "alert_id": 1, "term": "x"}]
+    types = [m["type"] for m in viewer_mod.replay_snapshot(server)]
+    assert types[:5] == ["viewer_hello", "status", "incident", "health", "alert"]
+    health = [m for m in viewer_mod.replay_snapshot(server) if m["type"] == "health"]
+    assert health == [{"type": "health", "level": "lagging"}]
+
+
+def test_replay_snapshot_has_no_health_once_it_is_over():
+    """「已追上」、停止、换场之后 config 里没有 health：回放里也没有，手机在 viewer_hello 时清掉的不会再回来。"""
+    assert not any(m["type"] == "health" for m in viewer_mod.replay_snapshot(StubServer()))
+    assert not any(m["type"] == "health"
+                   for m in viewer_mod.replay_snapshot(StubServer(health="不是 dict")))
+
+
+def test_a_phone_reconnecting_after_the_backlog_caught_up_gets_no_stale_health():
+    """真 CaptionServer 的缓存规则 + 真 replay_snapshot：断线期间发了「已追上」，重连的回放里就没有落后。"""
+    from app.server import CaptionServer
+
+    async def scenario():
+        server = CaptionServer(port=0)
+        await server.status("live", "")
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 23.0, "text": "x"})
+        lagging = [m for m in viewer_mod.replay_snapshot(server) if m["type"] == "health"]
+        await server.broadcast({"type": "health", "level": "ok", "backlog_sec": 0.0, "text": "y"})
+        caught_up = [m for m in viewer_mod.replay_snapshot(server) if m["type"] == "health"]
+        return lagging, caught_up
+
+    lagging, caught_up = asyncio.run(scenario())
+    assert lagging == [{"type": "health", "level": "lagging"}]
+    assert caught_up == []
+
+
+@pytest.mark.parametrize("state", ["idle", "ended", "error"])
+def test_a_phone_reconnecting_after_the_session_ended_gets_no_late_health(state):
+    """b2 审查：停止（下播、出错）之后晚到一条 lagging，以前存进 config，重连的手机在待机页上重建它。
+    真 CaptionServer 的缓存规则 + 真 replay_snapshot：重连回放里没有它。"""
+    from app.server import CaptionServer
+
+    async def scenario():
+        server = CaptionServer(port=0)
+        await server.status("live", "")
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 23.0, "text": "x"})
+        await server.status(state, "")
+        await server.broadcast({"type": "health", "level": "lagging", "backlog_sec": 24.0, "text": "x"})
+        return viewer_mod.replay_snapshot(server)
+
+    snapshot = asyncio.run(scenario())
+    assert [m["type"] for m in snapshot[:2]] == ["viewer_hello", "status"]
+    assert snapshot[1]["state"] == state
+    assert not [m for m in snapshot if m["type"] == "health"]
 
 
 # ---- 握手 ----
@@ -381,6 +478,8 @@ def test_inbound_messages_never_reach_on_control():
         # 字幕记录（含观众弹幕和昵称）：导出和打开文件夹只有中控本机能点
         text({"type": "export_transcript"}),
         text({"type": "open_transcripts_dir"}),
+        # 提示条上的 ×（2026-10-21）：关掉时钟跳变那条只有中控本机能点，手机上没有 ×，发来也进不来
+        text({"type": "dismiss_incident", "id": "session:clock_gap", "ts": 1790000000.0}),
     ])
     run_handshake(hub, ws)
     assert calls == []
@@ -429,6 +528,7 @@ def test_a_lone_retranslate_frame_does_not_trip_the_flood_cap():
     {"type": "retranslate_comment", "id": 7},
     {"type": "export_transcript"},                  # 字幕记录：只有本机控制面能导出、能打开文件夹
     {"type": "open_transcripts_dir"},
+    {"type": "dismiss_incident", "id": "session:clock_gap", "ts": 1790000000.0},   # 提示条的 ×：只有本机
 ])
 def test_malformed_or_irrelevant_inbound_is_silently_ignored(bad):
     """既不解析出动作，也不回消息、不断连接——坏页面和探测本就不该有回音。"""
@@ -727,3 +827,836 @@ def test_a_viewer_message_never_reaches_a_phone_through_the_real_broadcast():
     while not v.queue.empty():
         items.append(v.queue.get_nowait())
     assert not any("SECRET" in json.dumps(m, ensure_ascii=False) for m in items)
+
+
+# ---- TCP 这一层的闸（专家审查 S1）----
+# 审查实测：一台设备对同看端口挂 150 条连上却一个字节都不发的 TCP 连接，aiohttp 等第一个请求
+# 没有期限，程序的 open/spawn/socket 全部 EMFILE、审计 0 条。修法是 _GuardedProtocol：同一个 IP
+# 最多 MAX_CONN_PER_IP 条，连上 FIRST_BYTE_TIMEOUT_SEC 秒还没有首字节就断开。计数在 connection_lost
+# 里扣（全程代理，审查 Q13）——下面先用替身钉住代理本身，再用真 socket 走一遍。
+REPO = Path(__file__).resolve().parent.parent
+
+
+class GuardTransport(FakeTransport):
+    def __init__(self, peer="10.0.0.7"):
+        super().__init__(peer)
+        self.proto = None
+
+    def abort(self):
+        first = not self.is_closing()
+        super().abort()
+        if first and self.proto is not None:
+            self.proto.connection_lost(None)      # 真 transport 会在下一轮循环里调
+
+
+class RecordingInner:
+    """aiohttp RequestHandler 的替身：只记下收到了哪些回调。"""
+
+    def __init__(self, log, eof_result=None, lost_raises=False):
+        self.log = log
+        self.eof_result = eof_result
+        self.lost_raises = lost_raises
+
+    def connection_made(self, transport):
+        self.log.append(("made", transport))
+
+    def data_received(self, data):
+        self.log.append(("data", data))
+
+    def eof_received(self):
+        self.log.append(("eof",))
+        return self.eof_result
+
+    def pause_writing(self):
+        self.log.append(("pause",))
+
+    def resume_writing(self):
+        self.log.append(("resume",))
+
+    def connection_lost(self, exc):
+        self.log.append(("lost", exc))
+        if self.lost_raises:
+            raise RuntimeError("aiohttp blew up")
+
+
+def guarded(gate, factory, peer="10.0.0.7"):
+    transport = GuardTransport(peer)
+    proto = viewer_mod._GuardedProtocol(factory, gate)
+    transport.proto = proto
+    proto.connection_made(transport)
+    return proto, transport
+
+
+def test_the_guard_forwards_every_callback_and_releases_the_count_in_connection_lost():
+    """六个回调一个不落地转给 aiohttp 的协议，eof_received 的返回值原样交回（它决定半关还是
+    整条关）。计数在 connection_lost 里扣——不是在数据开始流动、也不是在升级 WebSocket 时。"""
+    gate = viewer_mod._ConnGate()
+    log = []
+
+    async def scenario():
+        proto, transport = guarded(gate, lambda: RecordingInner(log, eof_result=True))
+        assert gate.by_ip == {"10.0.0.7": 1} and gate.total == 1
+        proto.data_received(b"GET / HTTP/1.1\r\n")
+        proto.pause_writing()
+        proto.resume_writing()
+        proto.data_received(b"\x81\x05hello")         # 升级之后的帧走的是同一个回调
+        assert proto.eof_received() is True
+        assert gate.total == 1                          # 数据流动不扣
+        exc = ConnectionResetError("peer went away")
+        proto.connection_lost(exc)
+        assert gate.by_ip == {} and gate.total == 0 and not gate.live
+        return transport
+
+    transport = asyncio.run(scenario())
+    assert log == [("made", transport), ("data", b"GET / HTTP/1.1\r\n"), ("pause",), ("resume",),
+                   ("data", b"\x81\x05hello"), ("eof",), ("lost", log[-1][1])]
+    assert isinstance(log[-1][1], ConnectionResetError)
+    assert transport.aborts == 0
+
+
+def test_connections_beyond_the_per_ip_cap_are_cut_before_aiohttp_sees_them():
+    """第 17 条：立即断开，内层协议根本不造（aiohttp 的连接表里不会多一条）。别的 IP 不受影响；
+    断掉一条之后同一个 IP 又能进来一条。"""
+    gate = viewer_mod._ConnGate()
+    made = []
+
+    def factory():
+        made.append(1)
+        return RecordingInner([])
+
+    async def scenario():
+        kept = [guarded(gate, factory) for _ in range(viewer_mod.MAX_CONN_PER_IP)]
+        _, extra = guarded(gate, factory)
+        assert extra.aborts == 1
+        assert len(made) == viewer_mod.MAX_CONN_PER_IP
+        assert gate.by_ip == {"10.0.0.7": viewer_mod.MAX_CONN_PER_IP}
+        assert gate.rejected == 1
+        _, other = guarded(gate, factory, peer="10.0.0.8")
+        assert other.aborts == 0 and gate.by_ip["10.0.0.8"] == 1
+        kept[0][0].connection_lost(None)
+        _, again = guarded(gate, factory)
+        assert again.aborts == 0
+        assert gate.by_ip["10.0.0.7"] == viewer_mod.MAX_CONN_PER_IP
+        for proto, _ in kept[1:]:
+            proto.connection_lost(None)
+
+    asyncio.run(scenario())
+
+
+def test_the_count_is_released_even_when_aiohttps_connection_lost_raises():
+    gate = viewer_mod._ConnGate()
+
+    async def scenario():
+        proto, _ = guarded(gate, lambda: RecordingInner([], lost_raises=True))
+        with pytest.raises(RuntimeError):
+            proto.connection_lost(None)
+        assert gate.total == 0 and not gate.live
+
+    asyncio.run(scenario())
+
+
+def test_a_connection_that_never_sends_a_byte_is_cut_after_the_first_byte_timeout(monkeypatch):
+    monkeypatch.setattr(viewer_mod, "FIRST_BYTE_TIMEOUT_SEC", 0.05)
+    gate = viewer_mod._ConnGate()
+
+    async def scenario():
+        silent, silent_tr = guarded(gate, lambda: RecordingInner([]))
+        talker, talker_tr = guarded(gate, lambda: RecordingInner([]), peer="10.0.0.9")
+        talker.data_received(b"G")                    # 一个字节就够：期限只管「一声不吭」
+        await asyncio.sleep(0.2)
+        assert silent_tr.aborts == 1
+        assert talker_tr.aborts == 0
+        assert gate.idle_closed == 1
+        assert gate.by_ip == {"10.0.0.9": 1}
+        talker.connection_lost(None)
+
+    asyncio.run(scenario())
+
+
+def test_the_defaults_match_the_plan():
+    assert viewer_mod.MAX_CONN_PER_IP == 16
+    assert viewer_mod.FIRST_BYTE_TIMEOUT_SEC == 5.0
+
+
+def test_a_flood_of_rejections_leaves_one_terminal_line_per_window():
+    clock = {"t": 0.0}
+    lines = []
+    gate = viewer_mod._ConnGate(log=lines.append, now=lambda: clock["t"])
+    for _ in range(viewer_mod.MAX_CONN_PER_IP + 50):
+        gate.admit("10.0.0.5")
+    assert gate.rejected == 50
+    assert len(lines) == 1 and lines[0].startswith("[同看]") and "10.0.0.5" in lines[0]
+    clock["t"] += viewer_mod.AUTH_FAIL_AUDIT_WINDOW_SEC + 1
+    gate.admit("10.0.0.5")
+    assert len(lines) == 2
+
+
+async def _until(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("条件在 {} 秒内没有成立".format(timeout))
+        await asyncio.sleep(0.02)
+
+
+async def _eof_within(reader, timeout):
+    """对端关了（读到 EOF 或被重置）返回 True；期限内还开着返回 False。"""
+    try:
+        data = await asyncio.wait_for(reader.read(1), timeout)
+    except asyncio.TimeoutError:
+        return False
+    except (ConnectionError, OSError):
+        return True
+    return data == b""
+
+
+def test_real_idle_sockets_beyond_the_cap_are_cut_at_once_and_the_rest_after_the_timeout(
+        monkeypatch):
+    """真 socket、真 hub（只绑 127.0.0.1）：超过上限的立即断开，剩下的到期一起断开，计数归零。"""
+    monkeypatch.setattr(viewer_mod, "FIRST_BYTE_TIMEOUT_SEC", 2.0)
+    extra = 8
+
+    async def scenario():
+        hub = make_hub()
+        await hub.start()
+        pairs = []
+        try:
+            pairs = await asyncio.gather(*[asyncio.open_connection("127.0.0.1", hub.port)
+                                           for _ in range(viewer_mod.MAX_CONN_PER_IP + extra)])
+            await _until(lambda: hub._gate.rejected == extra)
+            assert hub.open_connections == viewer_mod.MAX_CONN_PER_IP
+            closed = await asyncio.gather(*[_eof_within(r, 0.3) for r, _ in pairs])
+            assert sum(closed) == extra                 # 多出来的那几条已经被断开
+            await _until(lambda: hub.open_connections == 0)
+            assert hub._gate.idle_closed == viewer_mod.MAX_CONN_PER_IP
+            assert hub._gate.by_ip == {}
+            closed = await asyncio.gather(*[_eof_within(r, 1.0) for r, _ in pairs])
+            assert all(closed)
+        finally:
+            for _, writer in pairs:
+                writer.close()
+            await hub.stop("off")
+
+    asyncio.run(scenario())
+
+
+def test_a_keep_alive_connection_that_already_sent_a_request_outlives_the_first_byte_timeout(
+        monkeypatch):
+    """首字节期限只管「一声不吭」的连接。手机浏览器发完请求会把连接留着复用（keep-alive），
+    这种连接过了期限也不该被断。"""
+    monkeypatch.setattr(viewer_mod, "FIRST_BYTE_TIMEOUT_SEC", 0.3)
+
+    async def scenario():
+        hub = make_hub()
+        await hub.start()
+        writer = None
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", hub.port)
+            writer.write(b"GET /v/viewer.css HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            await writer.drain()
+            status = await asyncio.wait_for(reader.readline(), 5.0)
+            assert status.startswith(b"HTTP/1.1 200")
+            await asyncio.sleep(viewer_mod.FIRST_BYTE_TIMEOUT_SEC + 0.5)
+            assert hub.open_connections == 1
+            assert hub._gate.idle_closed == 0
+        finally:
+            if writer is not None:
+                writer.close()
+            await hub.stop("off")
+        await _until(lambda: hub.open_connections == 0)
+
+    asyncio.run(scenario())
+
+
+def test_a_real_phone_flows_through_the_guard_and_the_count_returns_to_zero():
+    """WebSocket 升级之后的数据路径（审查 Q13）：手机页、鉴权、回放、实时字幕、手机发「重译」、
+    断开——全程经过代理协议，断开后按 IP 的计数归零。aiohttp 换版本时这一条最先红。"""
+    actions = []
+
+    async def scenario():
+        server = StubServer(status={"state": "live"})
+        hub = make_hub(server, on_action=lambda a, p, ip: actions.append((p["id"], ip)))
+        await hub.start()
+        base = "http://127.0.0.1:{}".format(hub.port)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(base + "/v/viewer.css") as resp:
+                    assert resp.status == 200
+                    await resp.read()
+                async with session.ws_connect(base + "/vws") as ws:
+                    await ws.send_json({"type": "auth", "k": TOKEN})
+                    hello = await asyncio.wait_for(ws.receive_json(), 5.0)
+                    assert hello["type"] == "viewer_hello"
+                    await _until(lambda: hub.count == 1)
+                    hub.fanout({"type": "caption", "id": 9, "original": "hola"})
+                    while True:
+                        msg = await asyncio.wait_for(ws.receive_json(), 5.0)
+                        if msg.get("type") == "caption" and msg.get("id") == 9:
+                            break
+                    await ws.send_json({"type": "retranslate", "id": 9})
+                    await _until(lambda: actions == [(9, "127.0.0.1")])
+                    assert 1 <= hub.open_connections <= 2     # /vws + 也许还留着的 keep-alive
+                await _until(lambda: hub.count == 0)
+            await _until(lambda: hub.open_connections == 0)
+            assert hub._gate.by_ip == {}
+        finally:
+            await hub.stop("off")
+
+    asyncio.run(scenario())
+    assert actions == [(9, "127.0.0.1")]
+
+
+def test_stop_cuts_connections_that_never_sent_anything(monkeypatch):
+    """关同看时，一声不吭的连接不能留在端口上等期限。"""
+    async def scenario():
+        hub = make_hub()
+        await hub.start()
+        reader, writer = await asyncio.open_connection("127.0.0.1", hub.port)
+        try:
+            await _until(lambda: hub.open_connections == 1)
+            started = time.monotonic()
+            await hub.stop("off")
+            assert time.monotonic() - started < 3.0
+            assert await _eof_within(reader, 2.0)
+            await _until(lambda: hub.open_connections == 0)
+        finally:
+            writer.close()
+
+    asyncio.run(scenario())
+
+
+def test_stop_cuts_what_runner_cleanup_left_behind():
+    """stop() 末尾的兜底（_gate.abort_all）：aiohttp 的 runner.cleanup() 自己会关它连接表里的每一条，
+    这里让它什么都不做，模拟它出错或漏下的情况。空连接照样要在关同看时断掉，不等 5 秒的首字节期限。"""
+    async def scenario():
+        hub = make_hub()
+        await hub.start()
+        runner = hub._runner           # AppRunner 有 __slots__，方法换不掉：换掉 hub 手里的这一个
+
+        async def leaves_everything():
+            return None
+
+        hub._runner = SimpleNamespace(cleanup=leaves_everything)
+        reader, writer = await asyncio.open_connection("127.0.0.1", hub.port)
+        try:
+            await _until(lambda: hub.open_connections == 1)
+            await hub.stop("off")
+            assert viewer_mod.FIRST_BYTE_TIMEOUT_SEC > 2.0     # 下面 2 秒内断开的不是首字节期限
+            assert await _eof_within(reader, 2.0)
+            await _until(lambda: hub.open_connections == 0)
+        finally:
+            writer.close()
+            await runner.cleanup()
+
+    asyncio.run(scenario())
+
+
+# 子进程：把软上限压到 256（本机从 Finder 启动的 .app 拿到的就是这个数），起真 hub（只绑 127.0.0.1），
+# 按 stdin 的指令报告「现在还能不能开文件、开 socket、起子进程」。攻击方是另一个进程（它自己的上限
+# 抬高，不让它成为瓶颈），挂的空连接比 256 还多——修之前服务端会先把自己的名额耗光。
+#
+# 另外报几个数给断言记账（#122 之后在 macOS 重负载下 13 次里红过 1 次：rejected 232，期望 284）。
+# 少掉的那些连接根本没进闸：asyncio 的 accept 循环一轮接一批（aiohttp 的 backlog 是 128），被拒的
+# socket 要过一两轮循环才真正关掉，几批叠在一起句柄就会短暂碰到 256，accept() 报 EMFILE，asyncio 停 1 秒
+# 再接。macOS 的内核在报 EMFILE 之前已经把那条连接从排队里取出来了，接着把它关掉（xnu accept_nocancel：
+# 「Don't put this back on the socket … Drop the socket」）；停接的这 1 秒里排队满了，内核还会再丢掉
+# 一些（exp/emfile_accounting.py 在软上限 36–48 下实测：没进闸的条数 ≥ EMFILE 次数，有时多十几条到
+# 九十几条）。这两种丢法服务端都看不到，攻击方看到的只是被断开。Linux 先占句柄再出队，排队满了也只是让
+# 握手晚一点完成，连接最后都会进闸。所以「被拒 == 超出数」只在 Linux 上是个等式；在 macOS 上能钉的是：
+# - reached / admitted：进了闸的条数、其中放进来的条数。进闸的要么放进来、要么被拒（reached ==
+#   rejected + admitted），放进来的一个字节没发、到期全被断开（admitted == idle_closed）
+# - peak：闸同时放进来的最多条数。上面的账能平不代表闸起了作用（闸全放行时 rejected 是 0，账照样平），
+#   「超出上限的连接没被拒」靠它拦：必须正好到上限、不能超过
+# - accept_failed：asyncio 报 accept() 失败的次数，macOS 上每次都丢掉一条，所以 reached + accept_failed
+#   不会超过攻击方手里的条数
+_SERVER = r'''
+import asyncio, errno, json, resource, socket, subprocess, sys, tempfile
+soft, idle, token = int(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+from app import viewer
+viewer.FIRST_BYTE_TIMEOUT_SEC = idle
+
+stats = {"accept_failed": 0, "peak": 0, "reached": 0, "admitted": 0}
+_admit = viewer._ConnGate.admit
+def admit(self, ip):
+    ok = _admit(self, ip)
+    stats["reached"] += 1
+    stats["admitted"] += 1 if ok else 0
+    stats["peak"] = max(stats["peak"], self.total)
+    return ok
+viewer._ConnGate.admit = admit
+
+def on_loop_error(loop, context):
+    exc = context.get("exception")
+    if isinstance(exc, OSError) and exc.errno in (errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM):
+        stats["accept_failed"] += 1      # asyncio 的 accept 循环每失败一次 accept() 报一次
+        return
+    loop.default_exception_handler(context)
+
+class FS:
+    config = {"status": {"state": "live"}}; alerts = []; history = []; comments = []
+
+def probe():
+    out = {}
+    try:
+        tempfile.TemporaryFile().close(); out["open"] = "ok"
+    except OSError as e:
+        out["open"] = "ERR%d" % e.errno
+    try:
+        socket.socket().close(); out["socket"] = "ok"
+    except OSError as e:
+        out["socket"] = "ERR%d" % e.errno
+    try:
+        subprocess.run([sys.executable, "-c", "pass"], check=True, timeout=30); out["spawn"] = "ok"
+    except OSError as e:
+        out["spawn"] = "ERR%d" % e.errno
+    return out
+
+async def main():
+    asyncio.get_running_loop().set_exception_handler(on_loop_error)
+    hub = viewer.ViewerHub(FS(), ports=[0], token=token, bind_host="127.0.0.1",
+                           log=lambda *a: None)
+    await hub.start()
+    print(json.dumps({"port": hub.port}), flush=True)
+    loop = asyncio.get_running_loop()
+    while True:
+        line = (await loop.run_in_executor(None, sys.stdin.readline)).strip()
+        if line != "state":
+            break
+        print(json.dumps(dict(probe(), conns=hub.open_connections, rejected=hub._gate.rejected,
+                              idle_closed=hub._gate.idle_closed, viewers=hub.count, **stats)),
+              flush=True)
+    await hub.stop("off")
+
+asyncio.run(main())
+'''
+
+_ATTACKER = r'''
+import resource, socket, sys
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+want = 4096 if hard == resource.RLIM_INFINITY or hard < 0 else min(4096, hard)
+if soft != resource.RLIM_INFINITY and soft < want:
+    resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+port, n = int(sys.argv[1]), int(sys.argv[2])
+socks = []
+for _ in range(n):
+    try:
+        socks.append(socket.create_connection(("127.0.0.1", port), timeout=3))
+    except OSError:
+        break
+print(len(socks), flush=True)
+sys.stdin.readline()
+closed = 0
+for s in socks:
+    s.setblocking(False)
+    try:
+        if s.recv(1) == b"":
+            closed += 1
+    except BlockingIOError:
+        pass
+    except OSError:
+        closed += 1
+print(closed, flush=True)
+'''
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows 没有 RLIMIT_NOFILE")
+def test_idle_sockets_cannot_exhaust_file_handles_under_a_256_limit():
+    soft, idle, attack = 256, 2.0, 300
+    server = subprocess.Popen([sys.executable, "-c", _SERVER, str(soft), str(idle), TOKEN],
+                              cwd=str(REPO), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              text=True)
+    attacker = None
+
+    def ask():
+        server.stdin.write("state\n")
+        server.stdin.flush()
+        return json.loads(server.stdout.readline())
+
+    try:
+        port = json.loads(server.stdout.readline())["port"]
+        attacker = subprocess.Popen([sys.executable, "-c", _ATTACKER, str(port), str(attack)],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        holding = int(attacker.stdout.readline())
+        if holding <= soft:
+            pytest.skip("攻击方只开出了 {} 条连接，没超过服务端的上限 {}，这台机器上测不出来".format(
+                holding, soft))
+        state = ask()
+        assert state["conns"] <= viewer_mod.MAX_CONN_PER_IP
+        assert (state["open"], state["socket"], state["spawn"]) == ("ok", "ok", "ok"), state
+
+        darwin = sys.platform == "darwin"
+
+        def settled(state):
+            if state["conns"] or state["idle_closed"] != state["admitted"]:
+                return False
+            # Linux：全部进了闸才算完。macOS：丢掉的数不出来，看排队清空——EMFILE 之后 asyncio 停 1 秒再接，
+            # 进闸的条数和失败次数 2.5 秒没再变，排队里就没有了
+            return darwin or state["reached"] == holding
+
+        # 到期之后轮询，不固定睡 idle+1 秒：服务端是另一个进程，慢跑器上它的计时器可能晚一点才轮到
+        time.sleep(idle)
+        deadline = time.monotonic() + 15.0
+        last, since = None, time.monotonic()
+        while True:
+            state = ask()
+            now = time.monotonic()
+            key = (state["reached"], state["accept_failed"], state["idle_closed"])
+            if key != last:
+                last, since = key, now
+            if (settled(state) and (state["reached"] == holding or now - since >= 2.5)) or now > deadline:
+                break
+            time.sleep(0.2)
+        assert state["conns"] == 0, state
+        # 闸从头到尾没放进来超过上限的连接，而且确实到过上限（不然这一场根本没考到闸）
+        assert state["peak"] == viewer_mod.MAX_CONN_PER_IP, state
+        # 进了闸的每一条都有下落：超出上限的当场被拒，放进来的一个字节没发、到期断开（接得慢时前一批到期
+        # 腾出名额，后来的会再放进来几条，所以 admitted 可能比上限多，不写死）
+        assert state["reached"] == state["rejected"] + state["admitted"], state
+        assert state["idle_closed"] == state["admitted"] >= viewer_mod.MAX_CONN_PER_IP, state
+        if darwin:
+            # 没进闸的是内核丢的（见 _SERVER 上面的说明）：至少有报 EMFILE 的那些条
+            assert state["reached"] + state["accept_failed"] <= holding, state
+        else:
+            assert state["reached"] == holding, state       # Linux 不丢：超出的全被闸拒掉
+        assert (state["open"], state["socket"], state["spawn"]) == ("ok", "ok", "ok"), state
+        attacker.stdin.write("report\n")
+        attacker.stdin.flush()
+        assert int(attacker.stdout.readline()) == holding     # 一条不剩，全被断开了
+
+        async def phone():
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect("http://127.0.0.1:{}/vws".format(port)) as ws:
+                    await ws.send_json({"type": "auth", "k": TOKEN})
+                    return await asyncio.wait_for(ws.receive_json(), 5.0)
+
+        assert asyncio.run(phone())["type"] == "viewer_hello"   # 合法手机照样连得上
+    finally:
+        for proc in (attacker, server):
+            if proc is None:
+                continue
+            try:
+                proc.stdin.close()
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+                proc.wait(timeout=10)
+
+
+# ---- 未鉴权的 /vws 占位（专家审查 S6）----
+def test_the_auth_timeout_is_two_seconds():
+    """原来 5 秒：一个 IP 挂 32 个不发 auth 的连接、到期重开，合法手机 20 次只进来 2 次。"""
+    assert viewer_mod.AUTH_TIMEOUT_SEC == 2.0
+    assert make_hub().auth_timeout == 2.0
+    assert viewer_mod.MAX_PENDING_PER_IP == 4
+    # 单 IP 的 TCP 上限（S1）要容得下单 IP 未鉴权上限加一台手机正常的那几条（浏览器最多并行 6 条）
+    assert viewer_mod.MAX_CONN_PER_IP > viewer_mod.MAX_PENDING_PER_IP + 6
+
+
+def test_one_address_squatting_32_unauthenticated_sockets_cannot_lock_out_another_phone():
+    """同一个 IP 开 32 个不发 auth 的连接：前 4 个占着位，其余直接 503、不占全局名额；
+    另一个 IP 带正确口令照样进来。占位的人走了之后计数归零。"""
+    from aiohttp import web
+
+    async def scenario():
+        hub = make_hub()
+        outcomes = []
+
+        async def squat():
+            try:
+                await hub.vws(SimpleNamespace(transport=FakeTransport("10.0.0.66"),
+                                              match_info={}, headers={}))
+                outcomes.append("held")
+            except web.HTTPServiceUnavailable:
+                outcomes.append("503")
+
+        hub._make_ws = lambda: FakeWS(hang=True)
+        tasks = [asyncio.ensure_future(squat()) for _ in range(32)]
+        await _until(lambda: len(outcomes) >= 32 - viewer_mod.MAX_PENDING_PER_IP, timeout=2.0)
+        assert outcomes.count("503") == 32 - viewer_mod.MAX_PENDING_PER_IP
+        assert hub._pending == viewer_mod.MAX_PENDING_PER_IP      # 503 的那些没占全局名额
+        assert hub._unauth == {"10.0.0.66": viewer_mod.MAX_PENDING_PER_IP}
+
+        phone = FakeWS(first=auth(), linger=0.05)
+        hub._make_ws = lambda: phone
+        await hub.vws(SimpleNamespace(transport=FakeTransport("10.0.0.20"), match_info={},
+                                      headers={}))
+        assert [f["ip"] for name, f in hub.events if name == "viewer_connected"] \
+            == ["10.0.0.20"]
+        assert phone.sent and phone.sent[0]["type"] == "viewer_hello"
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        assert hub._pending == 0
+        assert hub._unauth == {}
+
+    asyncio.run(scenario())
+
+
+def test_the_per_address_slot_is_given_back_after_auth_and_after_a_refusal():
+    hub = make_hub()
+    run_handshake(hub, FakeWS(first=auth(), linger=0.01))
+    assert hub._unauth == {}
+    run_handshake(hub, FakeWS(first=auth("x" * viewer_mod.TOKEN_LEN)))
+    assert hub._unauth == {}
+    hub = make_hub(auth_timeout=0.01)
+    run_handshake(hub, FakeWS(hang=True))
+    assert hub._unauth == {} and hub._pending == 0
+
+
+def test_an_authenticated_phone_does_not_hold_its_address_s_unauthenticated_slot():
+    """已经在看的手机不占它这个 IP 的未鉴权名额：同一个 NAT 后面的几台手机陆续连进来，
+    在看的人再多也不会把后来的挡在 503 外面。
+
+    「陆续」要在测试里做出来：上一台鉴权入册了才连下一台。同一时刻还没发 auth 的超过
+    MAX_PENDING_PER_IP 条，本来就该 503（上面占位那条钉着）。原来一次起 6 条、固定等 0.1 秒，
+    3.12 起能过只是因为 wait_for 里的 receive 不挂起就不让出，6 条碰巧排成了先后；3.9 的
+    wait_for 总要让出一次，6 条同时处在未鉴权，后 2 条 503（PR #122 的 CI）。"""
+    async def scenario():
+        hub = make_hub()
+        release = asyncio.Event()
+
+        class WatchingWS(FakeWS):
+            async def __anext__(self):
+                await release.wait()           # 一直在看，测试放手才走
+                raise StopAsyncIteration
+
+        sockets = [WatchingWS(first=auth()) for _ in range(viewer_mod.MAX_PENDING_PER_IP + 2)]
+        made = iter(sockets)
+        hub._make_ws = lambda: next(made)
+        tasks = []
+        for watching in range(1, len(sockets) + 1):
+            task = asyncio.ensure_future(hub.vws(SimpleNamespace(
+                transport=FakeTransport("10.0.0.30"), match_info={}, headers={})))
+            tasks.append(task)
+            await _until(lambda n=watching, t=task: hub.count == n or t.done(), timeout=2.0)
+            assert not task.done(), task.exception()       # 被 503 挡掉的话 task 已经结束
+            assert hub.count == watching
+            assert hub._unauth == {}
+        release.set()
+        await asyncio.gather(*tasks)
+        assert hub.count == 0 and hub._unauth == {} and hub._pending == 0
+
+    asyncio.run(scenario())
+
+
+def test_a_real_socket_that_never_authenticates_is_closed_after_about_two_seconds():
+    async def scenario():
+        hub = make_hub()
+        await hub.start()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(
+                        "http://127.0.0.1:{}/vws".format(hub.port)) as ws:
+                    started = time.monotonic()
+                    while True:
+                        msg = await asyncio.wait_for(ws.receive(), 10.0)
+                        if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
+                            break
+                    elapsed = time.monotonic() - started
+            assert ws.close_code == 4408
+            assert 1.5 <= elapsed < 4.0, elapsed
+        finally:
+            await hub.stop("off")
+
+    asyncio.run(scenario())
+
+
+# ---- 所有观众共用的「重译」令牌桶（专家审查 S7）----
+def test_phones_taking_turns_to_reconnect_share_one_bucket():
+    """每台手机自己的限额挂在连接上、重连就清零；共用的桶挂在 hub 上：8 台手机（或 1 台
+    重连 8 次）同一时刻各点一次，只放进 ACTION_BUCKET_BURST 次；之后每 3 秒补 1 次。"""
+    clock = {"t": 0.0}
+    calls = []
+    hub = make_hub(now=lambda: clock["t"], on_action=lambda a, p, ip: calls.append(p["id"]))
+    for i in range(8):
+        run_handshake(hub, FakeWS(first=auth(), incoming=[text({"type": "retranslate", "id": i})]))
+    assert calls == list(range(viewer_mod.ACTION_BUCKET_BURST))
+    clock["t"] += 60.0 / viewer_mod.ACTION_BUCKET_PER_MINUTE      # 3 秒：补 1 个
+    for i in range(10, 13):
+        run_handshake(hub, FakeWS(first=auth(), incoming=[text({"type": "retranslate", "id": i})]))
+    assert calls == list(range(viewer_mod.ACTION_BUCKET_BURST)) + [10]
+    clock["t"] += 3600.0                                            # 歇很久也只攒满 BURST 个
+    for i in range(20, 30):
+        run_handshake(hub, FakeWS(first=auth(), incoming=[text({"type": "retranslate", "id": i})]))
+    assert calls[-viewer_mod.ACTION_BUCKET_BURST:] == list(range(20, 20 + viewer_mod.ACTION_BUCKET_BURST))
+    assert len(calls) == 2 * viewer_mod.ACTION_BUCKET_BURST + 1
+
+
+def test_the_shared_bucket_caps_a_sustained_rate_at_twenty_a_minute(loop):
+    """持续点：每台手机各自守着 3 秒间隔、每分钟 10 次，三台手机合起来一分钟也只放进 20 次左右
+    （开头突发的 5 次 + 每 3 秒 1 次）。"""
+    clock = {"t": 0.0}
+    calls = []
+    hub = make_hub(now=lambda: clock["t"], on_action=lambda a, p, ip: calls.append(clock["t"]))
+    phones = [hub.new_viewer(FakeWS(), FakeTransport(), "10.0.0.{}".format(i)) for i in range(3)]
+    for step in range(60):                    # 60 秒，每秒一台手机点一次
+        clock["t"] = float(step)
+        hub._handle_inbound(phones[step % 3], text({"type": "retranslate", "id": step}))
+    assert len(calls) <= viewer_mod.ACTION_BUCKET_BURST + viewer_mod.ACTION_BUCKET_PER_MINUTE
+    assert len(calls) >= viewer_mod.ACTION_BUCKET_PER_MINUTE
+
+
+def test_a_click_swallowed_by_a_phones_own_cooldown_does_not_spend_a_shared_token(loop):
+    clock = {"t": 0.0}
+    calls = []
+    hub = make_hub(now=lambda: clock["t"], on_action=lambda a, p, ip: calls.append(p["id"]))
+    fast = hub.new_viewer(FakeWS(), FakeTransport(), "10.0.0.1")
+    for i in range(6):                       # 同一台手机 0 秒内连点 6 下：只有第一下算
+        hub._handle_inbound(fast, text({"type": "retranslate", "id": i}))
+    others = [hub.new_viewer(FakeWS(), FakeTransport(), "10.0.0.{}".format(i + 2))
+              for i in range(viewer_mod.ACTION_BUCKET_BURST)]
+    for i, phone in enumerate(others):
+        hub._handle_inbound(phone, text({"type": "retranslate", "id": 100 + i}))
+    # 桶里 5 个：快手机用掉 1 个，另外 4 台各 1 个，第 5 台被桶挡住
+    assert calls == [0, 100, 101, 102, 103]
+    # 被桶挡住的那台不该因此进冷却：3 秒后桶补了 1 个，它能点
+    clock["t"] += viewer_mod.ACTION_GAP_SEC
+    hub._handle_inbound(others[-1], text({"type": "retranslate", "id": 200}))
+    assert calls[-1] == 200
+
+
+# ---- 安静时的 viewer_ping（专家审查 F8）----
+# 协议层的 heartbeat ping 帧浏览器里的脚本看不见：网络静默断掉时手机页拿不到 onclose，以前一直挂着
+# 「N 秒没有新消息」不重连。现在手机 50 秒什么都收不到就自己断开重连（web/viewer.js VIEWER_SILENT_SEC），
+# hub 在写队列安静满 VIEWER_PING_SEC 秒时发一条 viewer_ping，连得好好的手机就不会被误断。
+
+def test_a_quiet_writer_sends_a_viewer_ping_after_the_whole_replay(monkeypatch):
+    monkeypatch.setattr(viewer_mod, "VIEWER_PING_SEC", 0.05)
+    server = StubServer(status={"state": "live"})
+    server.history.append({"type": "caption", "id": 1, "original": "uno"})
+
+    async def scenario():
+        hub = make_hub(server)
+        ws = FakeWS()
+        v = add(hub, ws)
+        replay_len = v.queue.qsize()
+        v.writer = asyncio.ensure_future(hub._writer(v))
+        await _until(lambda: len(ws.sent) >= replay_len + 2, timeout=5.0)
+        v.writer.cancel()
+        return ws.sent, replay_len
+
+    sent, replay_len = asyncio.run(scenario())
+    types = [m["type"] for m in sent]
+    assert types[0] == "viewer_hello"
+    assert "viewer_ping" not in types[:replay_len], "ping 不能插进回放中间：手机按条数数回放"
+    assert types[replay_len:replay_len + 2] == ["viewer_ping", "viewer_ping"], "安静着就一直隔一会儿发一条"
+    assert sent[replay_len] == {"type": "viewer_ping"}
+
+
+def test_the_ping_does_not_take_a_queue_slot_or_delay_queued_messages(monkeypatch):
+    """队列里有东西就先发它：ping 只在队列空着、等满时限时才发，不进队列、不占 QUEUE_MAX 的名额。"""
+    monkeypatch.setattr(viewer_mod, "VIEWER_PING_SEC", 30.0)
+
+    async def scenario():
+        hub = make_hub()
+        ws = FakeWS()
+        v = add(hub, ws)
+        v.writer = asyncio.ensure_future(hub._writer(v))
+        hub.fanout({"type": "caption", "id": 7, "original": "siete"})
+        await _until(lambda: any(m.get("id") == 7 for m in ws.sent))
+        v.writer.cancel()
+        return ws.sent, v.queue.qsize()
+
+    sent, left = asyncio.run(scenario())
+    assert [m["type"] for m in sent if m["type"] == "viewer_ping"] == []
+    assert left == 0
+
+
+def test_the_ping_is_not_something_the_control_side_can_push_to_phones(loop):
+    """viewer_ping 只由写任务自己发：server.broadcast 送来的同名消息照旧被白名单挡掉（ALLOW 里没有它）。"""
+    hub = make_hub()
+    v = add(hub)
+    before = v.queue.qsize()
+    hub.fanout({"type": "viewer_ping", "note": "x"})
+    assert v.queue.qsize() == before
+    assert "viewer_ping" not in viewer_mod.ALLOW
+
+
+def test_a_real_phone_socket_gets_a_viewer_ping_while_nothing_else_happens(monkeypatch):
+    """真 socket：鉴权、收完回放之后什么都不发生，手机照样隔一会儿收到一条 viewer_ping。"""
+    monkeypatch.setattr(viewer_mod, "VIEWER_PING_SEC", 0.2)
+
+    async def scenario():
+        hub = make_hub(StubServer(status={"state": "idle"}))
+        await hub.start()
+        base = "http://127.0.0.1:{}".format(hub.port)
+        got = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(base + "/vws") as ws:
+                    await ws.send_json({"type": "auth", "k": TOKEN})
+                    started = time.monotonic()
+                    while True:
+                        msg = await asyncio.wait_for(ws.receive_json(), 5.0)
+                        got.append(msg["type"])
+                        if msg["type"] == "viewer_ping":
+                            return got, time.monotonic() - started
+        finally:
+            await hub.stop("off")
+
+    got, waited = asyncio.run(scenario())
+    assert got[0] == "viewer_hello" and got[-1] == "viewer_ping"
+    assert got.count("viewer_ping") == 1
+    assert waited >= 0.2
+
+
+# ---- 路径里有空格（顺延事项：scrub_text 只换到第一个空格为止，后半段漏到手机上）----
+# 虚构的用户名，带空格。「没有读到 TikTok 登录」那条持续提示把完全磁盘访问权限要加的解释器路径单独放一行、
+# 用「」/“”括着（app/browser_login.py fda_steps）；以前只换掉「/Users/Jane」，「Doe/miniconda3/…」发到了手机
+SPACED_PATH = "/Users/Jane Doe/miniconda3/bin/python3.13"
+LEAKS = ("Doe", "miniconda3", "Zhang", "San\\", "AppData", "Support", "whisper", "Contents", "python3")
+
+
+@pytest.mark.parametrize("raw,kept", [
+    ("粘贴下面的路径：\n「" + SPACED_PATH + "」\n然后完全退出程序再打开。", "「…」"),
+    ("Paste the path below:\n“" + SPACED_PATH + "”\nThen quit the app.", "“…”"),
+    ("审计写不进 /Users/Jane Doe/logs/session.jsonl 了", "审计写不进 … 了"),
+    ("写不进 /Users/某 某/miniconda3/bin/python3.13 了", "写不进 … 了"),
+    ("装在 C:\\Users\\Zhang San\\AppData\\Local\\models 下", "装在 … 下"),
+    ("「C:\\Users\\Zhang San\\models」", "「…」"),
+    ("模型在 ~/Library/Application Support/whisper/x 里", "模型在 … 里"),
+    ("/Applications/Some App.app/Contents/MacOS/python3", "…"),
+])
+def test_scrub_text_takes_the_whole_path_even_when_it_has_spaces(raw, kept):
+    out = viewer_mod.scrub_text(raw, 1000)
+    for piece in LEAKS + ("某",):
+        assert piece not in out, (piece, out)
+    assert kept in out
+
+
+@pytest.mark.parametrize("plain", [
+    "磁盘空间不足，识别/翻译还在跑，剩余 1.2 GB",
+    "比例 1/2/3 与 a/b",
+    "「/」是除号",
+    "“Click Start again.” Then wait.",
+])
+def test_scrub_text_still_leaves_slashes_in_ordinary_text_alone(plain):
+    assert viewer_mod.scrub_text(plain, 1000) == plain
+
+
+def test_a_spaced_path_after_a_path_stops_where_the_words_stop():
+    """没括起来的路径后面跟着普通的话：只有紧跟「/」和路径字符的一段算进路径，「识别/翻译」留着。"""
+    assert viewer_mod.scrub_text("写不进 /tmp/x 磁盘 识别/翻译 停了", 1000) == "写不进 … 磁盘 识别/翻译 停了"
+
+
+def test_a_phone_never_sees_a_spaced_path_in_a_notice(loop, monkeypatch):
+    """走真的白名单：回放里的和实时的持续提示，中文和派生的英文都不带路径的任何一截。"""
+    from app import i18n
+    from app.browser_login import fda_steps
+
+    text = fda_steps([SPACED_PATH])
+    monkeypatch.setattr(i18n, "I18N_ENABLED", True)
+    server = StubServer(incidents={"fda": {"id": "fda", "level": "warn", "text": text, "ts": 1.0}})
+    hub = make_hub(server)
+    v = add(hub)
+    hub.fanout({"type": "incident", "id": "fda2", "level": "warn", "text": text, "ts": 2.0})
+    got = [v.queue.get_nowait() for _ in range(v.queue.qsize())]
+    notices = [m for m in got if m["type"] == "incident"]
+    assert [m["id"] for m in notices] == ["fda", "fda2"]        # 回放一条、实时一条
+    for m in notices:
+        for field in ("text", "text_en"):
+            for piece in ("Jane", "Doe", "miniconda3"):
+                assert piece not in m[field], (field, m[field])
+        assert "「…」" in m["text"] and "“…”" in m["text_en"]

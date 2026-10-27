@@ -288,7 +288,7 @@ def test_a_dropped_page_is_audited_and_printed(tmp_path, capsys):
     p = Pipeline.__new__(Pipeline)
     p.server = CaptionServer(port=8765)
     p.server.clients = {HealthyWS()}
-    p.audit = AuditLog(room_url="https://www.tiktok.com/@bella/live", log_dir=tmp_path)
+    p.audit = AuditLog(room_url="https://www.tiktok.com/@brisa/live", log_dir=tmp_path)
     p.on_ui_client_dropped("send_timeout", 70000)
     p.audit.close()
     rec = [r for r in records(p.audit.path) if r["type"] == "ui_client_dropped"][0]
@@ -324,7 +324,7 @@ class FlakyFile:
 
 
 def _flaky_log(tmp_path):
-    log = AuditLog(room_url="https://www.tiktok.com/@bella/live", log_dir=tmp_path)
+    log = AuditLog(room_url="https://www.tiktok.com/@brisa/live", log_dir=tmp_path)
     flaky = FlakyFile(log._fh)
     log._fh = flaky
     return log, flaky
@@ -447,8 +447,8 @@ def test_a_write_failure_on_another_thread_raises_one_banner_and_recovery_replac
     p, _ = _watched_pipeline(tmp_path, monkeypatch)
 
     async def go():
-        p.audit = AuditLog(room_url="https://www.tiktok.com/@bella/live", log_dir=tmp_path)
-        await p._watch_audit("bella")
+        p.audit = AuditLog(room_url="https://www.tiktok.com/@brisa/live", log_dir=tmp_path)
+        await p._watch_audit("brisa")
         hooked = p.audit.on_write_error is not None
         flaky = FlakyFile(p.audit._fh)
         p.audit._fh = flaky
@@ -493,7 +493,7 @@ def test_a_late_callback_from_an_old_session_does_not_touch_this_sessions_banner
 
     async def go():
         p.audit = AuditLog(room_url="u", log_dir=tmp_path / "b")
-        await p._watch_audit("bella")
+        await p._watch_audit("brisa")
         p._audit_write_failed(old)
         await asyncio.sleep(0.05)
 
@@ -508,7 +508,7 @@ def test_low_disk_warns_once_and_clears_with_margin(tmp_path, monkeypatch):
 
     async def go():
         p.audit = AuditLog(room_url="u", log_dir=tmp_path)
-        await p._watch_audit("bella")
+        await p._watch_audit("brisa")
         await p._check_audit_health()
         await p._check_audit_health()               # 仍然偏低：不重复
         box["free"] = int(1.2 * 1024 ** 3)          # 过了 1 GB 但没到撤销线：不闪
@@ -529,7 +529,7 @@ def test_the_health_check_never_breaks_the_stats_loop(tmp_path, monkeypatch, cap
 
     async def go():
         p.audit = AuditLog(room_url="u", log_dir=tmp_path)
-        await p._watch_audit("bella")
+        await p._watch_audit("brisa")
 
         def boom():
             raise RuntimeError("stat 挂了")
@@ -593,7 +593,7 @@ def test_a_session_without_an_audit_file_shows_a_red_banner(monkeypatch, tmp_pat
     monkeypatch.setattr(audit_mod, "LOG_DIR", blocker / "logs")
 
     async def go():
-        await p._begin_session("https://www.tiktok.com/@bella/live")
+        await p._begin_session("https://www.tiktok.com/@brisa/live")
         assert p.audit.path is None
         await p._end_session()
         banner = dict(server.config["incidents"]["session:audit-open"])
@@ -614,12 +614,12 @@ def test_alerts_carry_streamer_session_page_count_and_session_total(monkeypatch,
     p, server = make_pipeline(monkeypatch, tmp_path)
 
     async def go():
-        await p._begin_session("https://www.tiktok.com/@bella/live")
+        await p._begin_session("https://www.tiktok.com/@brisa/live")
         first_session = server.config["alerts_session"]["session"]
         first_path = p.audit.path
         await p._emit_original(res("esto cura el cancer"), audio_end_ts=100.0, asr_ms=100)
         await p._end_session()
-        await p._begin_session("https://www.tiktok.com/@jessy/live")
+        await p._begin_session("https://www.tiktok.com/@julia/live")
         server.clients = {HealthyWS(), HealthyWS()}   # 两个页面开着
         await p._emit_original(res("esto cura el cancer"), audio_end_ts=200.0, asr_ms=100)
         second_path = p.audit.path
@@ -628,20 +628,20 @@ def test_alerts_carry_streamer_session_page_count_and_session_total(monkeypatch,
 
     first_session, first_path, second_path = run(go())
     alerts = server.of_type("alert")
-    assert [a["streamer"] for a in alerts] == ["bella", "jessy"]
+    assert [a["streamer"] for a in alerts] == ["brisa", "julia"]
     assert alerts[0]["session"] == first_session == first_path.stem
     assert alerts[1]["session"] == second_path.stem != first_session
     assert [a["session_total"] for a in alerts] == [1, 1]
     assert [a["ui_clients"] for a in alerts] == [0, 2]
     # 上一场的报警留在服务端（刷新后回放），不因换场被删
-    assert [a["streamer"] for a in server.alerts] == ["bella", "jessy"]
+    assert [a["streamer"] for a in server.alerts] == ["brisa", "julia"]
     assert server.config["alerts_session"] == {"session": second_path.stem,
-                                               "streamer": "jessy", "total": 1}
+                                               "streamer": "julia", "total": 1}
     configs = [m for m in server.of_type("config") if "alerts_session" in m]
-    assert [c["alerts_session"]["streamer"] for c in configs] == ["bella", "jessy"]
+    assert [c["alerts_session"]["streamer"] for c in configs] == ["brisa", "julia"]
     # 审计里的报警记录带同样的几列（但不带只给页面用的 session_total）
     rec = [r for r in records(second_path) if r["type"] == "alert"][0]
-    assert rec["ui_clients"] == 2 and rec["streamer"] == "jessy"
+    assert rec["ui_clients"] == 2 and rec["streamer"] == "julia"
     assert rec["session"] == second_path.stem and "session_total" not in rec
     assert p._alert_notifier.alerts == 2
 
@@ -864,7 +864,7 @@ def test_session_start_records_the_settings_backup(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)     # 构造时读设置 → 备份
 
     async def go():
-        await p._begin_session("https://www.tiktok.com/@bella/live")
+        await p._begin_session("https://www.tiktok.com/@brisa/live")
         path = p.audit.path
         await p._end_session()
         return path

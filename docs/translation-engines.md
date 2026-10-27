@@ -1,6 +1,6 @@
 # Translation engines
 
-*Moved from the README (Translation Engines). The text is unchanged except for relative links and heading levels.*
+*Moved from the README (Translation Engines) and kept up to date here since.*
 
 Installing [Ollama](https://ollama.com/download) completes the setup. On the
 next launch the app starts it if required, downloads the 1.1 GB Hy-MT2
@@ -192,7 +192,16 @@ already being retranslated is not sent again, at most 20 retranslations per
 minute are accepted, and the app keeps the original text of only the latest 200
 comments; a click it cannot serve gets a short note under that comment, and the
 existing translation (or the original text, for a comment that had none) stays.
-Comment text and viewer names are not written to the audit log.
+When a retranslation comes back, a note under the comment (and on its row in the
+drawer) says **Retranslated**, or **The retranslation is the same as before.**
+when it matches the translation already shown, for a few seconds. While
+monitoring, each click writes one `comment_redo` record to the session's audit
+log with codes and numbers only: whether a new translation came back and, if
+not, a reason code; whether the comment had a translation when it was clicked;
+how long the model took; which model; and whether the result matched the one
+shown before. Once monitoring has stopped, a click writes no record: no session
+is open then. Comment text, translations, viewer names and comment ids are not
+written to the audit log.
 
 Measured on the same 259 captions, re-translation with 7B reads more easily
 than 1.8B — that difference survived the correction — but it was not shown to

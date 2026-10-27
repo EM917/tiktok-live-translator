@@ -19,7 +19,8 @@ import pytest
 
 from app import comment_guard as cg
 from tests.comment_guard_confirmed import RED_SECTIONS, assert_flagged_by_shipped, check_defaults_state
-from tests.guard_perf import budget_ms
+from tests import guard_perf
+from tests.guard_perf import budget_ms, fastest_ms
 
 HERE = Path(__file__).resolve().parent
 FIX = HERE / "fixtures" / "comment_guard"
@@ -785,27 +786,115 @@ ADVERSARIAL = {
 }
 
 
+@pytest.fixture(scope="module")
+def fixture_lexicon_timings():
+    return _fixture_lexicon_timings()
+
+
 @pytest.mark.parametrize("name", sorted(ADVERSARIAL))
-def test_1000_char_adversarial_strings_stay_under_20_ms(name):
+def test_1000_char_adversarial_strings_stay_under_20_ms(name, fixture_lexicon_timings):
     """I3：规则判定同步完成，不让事件循环久占。用户的 Mac 上按 20 ms，慢机器（CI 跑器）按
-    tests/guard_perf.py 量出来的倍数放宽；取 5 次里最快的一次，免得一次调度抖动判失败。"""
-    g = guard()
-    text = ADVERSARIAL[name][:1000]
-    best = min(_timed(g, text, i) for i in range(5))
-    assert best < budget_ms(guard), "%s: %.1f ms (上限 %.1f ms)" % (name, best, budget_ms(guard))
+    tests/guard_perf.py 量出来的倍数放宽；和最快的一次比，机器忙的时候多量几次（fastest_ms）。"""
+    best, tries = fixture_lexicon_timings[name]
+    budget = budget_ms(guard)
+    assert best < budget, "%s: 最快 %.1f ms（量了 %d 次，上限 %.1f ms）" % (name, best, tries, budget)
 
 
 def test_1000_char_adversarial_strings_stay_under_20_ms_with_the_shipped_lexicon():
-    """出厂词表（红条档全是 :pending 段）是线上跑的那份，I3 的 20 ms 对它同样要成立。"""
+    """出厂词表（红条档全是 :pending 段）是线上跑的那份，I3 的 20 ms 对它同样要成立。每次一个新守卫。"""
     rules = cg.load_rules(DEFAULTS, NO_LOCAL)
-    worst = max(min(_timed(guard(rules), text[:1000], i) for i in range(5)) for text in ADVERSARIAL.values())
-    assert worst < budget_ms(guard), "%.1f ms (上限 %.1f ms)" % (worst, budget_ms(guard))
+    budget = budget_ms(guard)
+    slow = {name: (round(best, 1), tries) for name, (best, tries) in _timings(lambda name: guard(rules)).items()
+            if best >= budget}
+    assert not slow, "最快的一次仍超上限 %.1f ms（毫秒，量了几次）：%s" % (budget, slow)
+
+
+def _fixture_lexicon_timings():
+    """夹具词表：每条对抗输入一个守卫，量的几次都判在同一个守卫上。"""
+    guards = {name: guard() for name in ADVERSARIAL}
+    return _timings(lambda name: guards[name])
+
+
+def _timings(guard_for):
+    """所有对抗输入整批一起量（tests/guard_perf.py 的 fastest_ms）：{输入名: (最快毫秒数, 量了几次)}。
+    guard_for(输入名) 给这一次判定用的守卫。"""
+    runs = {name: (lambda i, name=name: _timed(guard_for(name), ADVERSARIAL[name][:1000], i))
+            for name in sorted(ADVERSARIAL)}
+    return fastest_ms(runs, budget_ms(guard))
 
 
 def _timed(g, text, i):
     t0 = time.perf_counter()
-    g.judge(text, user="adv%d" % i, ts=1000.0 + i * 1000, cid="adv-%s-%d" % (text[:5], i))
-    return (time.perf_counter() - t0) * 1000.0
+    r = g.judge(text, user="adv%d" % i, ts=1000.0 + i * 1000, cid="adv-%s-%d" % (text[:5], i))
+    ms = (time.perf_counter() - t0) * 1000.0
+    # 量的必须是完整的一次判定：弹幕 id 重了会走去重的快路径，多量几次反而量出个假快
+    assert not {"dup_id", "trusted"} & set(r["tags"]), r
+    return ms
+
+
+def test_fastest_ms_stops_each_input_at_its_first_run_under_budget():
+    calls = []
+    script = {"a": [31.0, 26.0, 15.0, 9.0], "b": [12.0, 1.0]}
+
+    def run(name):
+        def one(i):
+            calls.append((name, i))
+            return script[name][i]
+        return one
+
+    assert fastest_ms({name: run(name) for name in script}, 20.0) == {"a": (15.0, 3), "b": (12.0, 1)}
+    # 轮流量：第一轮 a、b 各一次，之后只剩 a；同一条输入的序号 0、1、2 各不相同（弹幕 id 靠它不重复）
+    assert calls == [("a", 0), ("b", 0), ("a", 1), ("a", 2)]
+
+
+def test_fastest_ms_keeps_measuring_until_the_patience_runs_out_when_every_run_is_over_budget():
+    now = [0.0]
+
+    def run(i):
+        now[0] += 1.0                                  # 每次判定花假时钟 1 秒
+        return [30.0, 26.0, 28.0, 27.0, 25.0][i]
+
+    assert fastest_ms({"a": run}, 20.0, patience_s=3.0, clock=lambda: now[0]) == {"a": (26.0, 3)}
+
+    def one_long_run(i):
+        now[0] += 9.0                                  # 一次就超过时限
+        return 40.0
+
+    now[0] = 0.0
+    assert fastest_ms({"a": one_long_run}, 20.0, patience_s=3.0, clock=lambda: now[0]) == {"a": (40.0, 1)}  # 至少一轮
+
+
+def test_fastest_ms_shares_one_patience_across_the_batch():
+    """时限是整批共用的：两条都一直超，第 3 秒那轮量完就停，不是每条各量 3 秒。"""
+    now = [0.0]
+
+    def run(i):
+        now[0] += 0.5
+        return 30.0
+
+    assert fastest_ms({"a": run, "b": run}, 20.0, patience_s=3.0, clock=lambda: now[0]) == {"a": (30.0, 3), "b": (30.0, 3)}
+
+
+def test_a_rules_layer_that_is_slower_than_the_budget_on_every_run_still_fails(monkeypatch):
+    """反证：多量几次救不了真变慢的代码。每次判定都多睡（上限 + 5 ms），上面两条计时测试都要红，而且是
+    量了好几次之后。为了快，只留两条输入、时限压到 0.5 秒（量满时限这件事上面几条已经钉住了）。
+    上限先在打补丁之前算好（CI 上 budget_ms 要拿真的规则层量参考值）。"""
+    budget = budget_ms(guard)
+    real = cg.CommentGuard.judge
+
+    def slow(self, *a, **kw):
+        time.sleep((budget + 5.0) / 1000.0)
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(cg.CommentGuard, "judge", slow)
+    monkeypatch.setattr(guard_perf, "PATIENCE_S", 0.5)
+    monkeypatch.setitem(globals(), "ADVERSARIAL", {k: ADVERSARIAL[k] for k in ("blank glyphs", "words")})
+    timings = _fixture_lexicon_timings()
+    assert all(best >= budget + 5.0 and tries > 1 for best, tries in timings.values()), timings
+    with pytest.raises(AssertionError, match="blank glyphs: 最快"):
+        test_1000_char_adversarial_strings_stay_under_20_ms("blank glyphs", timings)
+    with pytest.raises(AssertionError, match="最快的一次仍超上限.*blank glyphs.*words"):
+        test_1000_char_adversarial_strings_stay_under_20_ms_with_the_shipped_lexicon()
 
 
 # ------------------------------------------------------------------------------------------

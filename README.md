@@ -19,7 +19,7 @@
 
 Live captions for Spanish TikTok streams, with the translation under each line. Viewer comments are translated too. Paste a live link and click Start.
 
-It is for teams who follow Spanish live selling without speaking Spanish. One person runs the app on a computer, and colleagues watch on their phones. The Spanish appears as soon as it is recognized and the translation fills in a moment later, so a slow translation never holds a caption back. Speech recognition runs on your computer, and translation can too once Ollama is installed. You need no account and no API key, and nothing to pay.
+It is for teams who follow Spanish live selling without speaking Spanish. One person runs the app on a computer, and colleagues watch on their phones. In the caption list, the Spanish appears as soon as it is recognized and the translation fills in a moment later, so a slow translation never holds a line back. The large caption at the bottom changes the whole line at once as soon as the translation arrives, waiting at most 4 seconds for it. If none has come by then, or none will come for that line, it shows the Spanish first. Speech recognition runs on your computer, and translation can too once Ollama is installed. You need no account and no API key, and nothing to pay.
 
 It does not work for every stream. For some, TikTok gives the app no stream URL, and then there is nothing to caption. See [Limits](#en-limits).
 
@@ -68,7 +68,7 @@ You need macOS 12.3 or later, or Windows, and about 6 GB of free disk space. The
 
 1. Download `TikTok-Live-Translator-vX.Y.Z.zip` from the [latest release](https://github.com/EM917/tiktok-live-translator/releases/latest) and unzip it anywhere.
 
-2. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/) with the default options. Python 3.9 also runs the app, but without viewer comments. If Python is missing, the launcher opens the download page.
+2. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/) with the default options. Python 3.9 no longer runs the app. If the launcher finds no Python 3.10 or newer, it opens the download page.
 
 3. Install [Ollama](https://ollama.com/download), a free app that runs models on your computer, and open it once. On Windows the installer is about 1.5 GB and needs administrator rights. When the app starts, it downloads the Hy-MT2 1.8B translation model (about 1 GB). Without Ollama, the app translates through Google's free endpoint, which sends caption text to Google.
 
@@ -107,6 +107,25 @@ Flags need a terminal: the `.app` does not take them, while `Start.command` and 
 ### Updating
 
 The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen. Click the version number at the bottom of the window to check by hand. During a stream, the answer appears next to the version number.
+
+Update Now installs the release named in the banner, not changes made after it that are not released yet. If the new version then starts twice and its window does not connect either time, the third launch goes back to the version you had before and opens it again. A dialog says which version it went back to, on macOS and on Windows. On a Mac started from a Terminal window, for example with `Start.command`, that window shows the line instead. A single crash or force-quit before the window connects does not by itself bring the old version back: the next launch runs the new version again. Opening the app twice at once does not count either, and neither does force-quitting it after its window has connected. The app does not go back if files in its folder were changed by hand.
+
+The app also updates yt-dlp, which finds the stream URL, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now. When TikTok refuses the comment connection, the app looks for a newer TikTokLive, which fetches viewer comments, under the same rules: only a 7.x version released at least 7 days earlier, and not while monitoring or during Update Now. Refusals come while monitoring, so in practice this check installs nothing, and the Comments panel says the component isn't updated during monitoring. TikTokLive is also installed in these other ways. When it is missing, the app installs it at startup or when a stream needs comments, and at startup it upgrades a TikTokLive older than 7.0.1. Both take the newest 7.x version whatever its release date, do not wait for monitoring to stop, and are tried at most once an hour. Update Now also installs a newer TikTokLive when the new release requires one. [Details](docs/fault-tolerance.md#keeping-the-stream).
+
+<a id="en-updating-zip"></a>
+
+### Updating a zip install
+
+Your settings and records are kept inside the app folder, so do not replace the old folder with the new one. Unzip the new version next to it, and before you start it, copy these from the old folder into the new one:
+
+- `settings.json`: your settings and API keys
+- `banned_terms.txt` and `glossary.txt`
+- `logs/`: the audit log of every session, which records what was recognized and matched
+- `transcripts/`: saved captions and comments
+- your own `.txt` files in `profiles/` and `brands/`
+- `comment_guard/local/` and `comment_guard/marked/`: your Comment Review rules and watch lists
+
+Then start the new version, and delete the old folder once everything is there.
 
 <a id="en-translation-engines"></a>
 
@@ -149,7 +168,7 @@ Colleagues can follow the captions on their phones. Click the phone icon in the 
 
 A phone shows captions and alerts. It can ask for one line to be retranslated, and it cannot start, stop or change anything. Each page uses the phone's own language, and up to 12 phones can watch at once.
 
-The link contains a key, so treat it like a password. New Link disconnects every phone. Sharing is off until you turn it on, and the phone must be on the same network.
+The link contains an access key, so treat it like a password. Once a phone opens the link, the key leaves the address bar and is kept in that phone's browser, so the phone can reopen the page without scanning again. The QR code keeps working until you click New Link, which disconnects every phone; they then scan the new code. If the computer's local network address changes, the panel shows a new QR code: scan that one, since a code printed earlier points to the old address. For an iPhone Home Screen icon, see [the FAQ](docs/faq.md#phone-viewing). Sharing is off until you turn it on, and the phone must be on the same network.
 
 <a id="en-floating-window"></a>
 
@@ -157,7 +176,7 @@ The link contains a key, so treat it like a password. New Link disconnects every
 
 <sub>[中文](#zh-floating-window)</sub>
 
-While a stream is running, click the Floating Window button in the top bar (only an icon while the app window is narrower than 1,400 px) to open a small dark window that stays on top of other apps. It shows the latest caption, with the original under it, and the most recent comments with their translations (up to five; make the window taller to see all five). Drag it or resize it, and the app remembers where you left it. It only shows things: it has no buttons, and banned-term alerts stay in the main window. It closes by itself when monitoring stops. The button is there only when the app runs in its own window, not with `--browser`.
+While a stream is running, click the Floating Window button in the top bar (only an icon while the app window is narrower than 1,400 px) to open a small dark window that stays on top of other apps. It shows the latest caption, with the original under it, and the most recent comments with their translations (up to five; make the window taller to see all five). Drag it or resize it, and the app remembers where you left it. It only shows things, and banned-term alerts stay in the main window. Click Stop and it closes. If the stream ends or monitoring stops with an error, it stays open and says Stream ended or Monitoring stopped, with a Show Main Window button. On a Mac, if the app is not the active app, its Dock icon bounces once. The Floating Window button is there only when the app runs in its own window, not with `--browser`.
 
 <a id="en-comment-review"></a>
 
@@ -206,18 +225,17 @@ Matching runs on the recognized Spanish text, so an alert does not wait for the 
 2. In the file window press ⌘⇧G, paste the path, press Return, click Open, and turn the entry on. It is listed as `python3.x`, not under the app's name.
 3. Repeat for each path shown, then quit the app completely and reopen it.
 
-If you start with `Start.command`, add Terminal as well. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
+If the entry is already in the list with its switch on and the row still says macOS did not allow access, select it, click −, and add it again. The permission goes to the Python interpreter, not just this app, so any script run with that Python can read protected data on this computer. When you no longer need it, turn the switch off in the same list. If you start with `Start.command`, add Terminal as well. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
 
-**Update Now does not start or finish.** The message says what went wrong and shows a command with a Copy button. Run it in Terminal. If the message lists app files you changed, the command discards those changes, so skip it if the changes were on purpose.
+**Update Now does not start or finish.** The message says what went wrong. In most cases it also shows a command with a Copy button. Run it in Terminal, or in PowerShell on Windows. If the message lists app files you changed, the command discards those changes, so skip it if the changes were on purpose. In three cases the message gives the download page and no command: the app cannot recognize the new version's tag, the release is not on the branch your copy follows, or that branch has nothing newer than the version you have. If you were monitoring, the message comes as a notice with no command, and the app stays on the current version.
 
 **Captions fall behind and the window warns about a backlog.** In a terminal, run `ollama ps`. If more than one model is loaded, unload the extra one with `ollama stop <model>`. If that does not help, use a smaller speech model, which is a flag, so start the app from a terminal: `python3 main.py --model small`. On a Mac with 8 GB of RAM, `--model large-v3-turbo` or `--model small` fits better than the default.
 
-**The status says Live but no captions appear.** The app skips silent or low-confidence audio on purpose, for example while the streamer plays music or is not speaking. If someone is clearly speaking and nothing appears, start from a terminal with `python3 main.py --denoise off`, or try a different `--model` size.
+**The status says Live but no captions appear.** The app skips silent or low-confidence audio on purpose, for example while the streamer plays music or is not speaking. When much of the audio stays below the speech recognition threshold, a notice at the top of the window says how much arrived and how much was sent to recognition. If someone is clearly speaking and nothing appears, start from a terminal with `python3 main.py --denoise off`, or try a different `--model` size.
 
 **The Comments panel is empty or shows the original text without a translation.** Check these:
 
 - Comments are translated by Hy-MT2 1.8B, TranslateGemma or Claude, and by no other engine.
-- Comments need Python 3.10 or newer.
 - A stream URL pasted on its own has no comments. Use the live link or `@username`.
 
 **A phone cannot open the Phone Viewing link.** Check in this order:
@@ -241,9 +259,9 @@ For a stuck download, a busy port and other problems, see [docs/faq.md](docs/faq
 - TikTok's interfaces are unofficial and may change. For some live streams TikTok does not provide a stream URL, and the app cannot get one.
 - Translations can be wrong, most often on product names and slang.
 - On a computer without Apple Silicon or an NVIDIA GPU, recognition can fall behind. Audio more than 60 seconds behind is dropped, oldest first, and the window shows how much.
-- Viewer comments need Python 3.10 or newer. Hy-MT2 1.8B, TranslateGemma and Claude translate them; the other engines show the original.
+- Hy-MT2 1.8B, TranslateGemma and Claude translate viewer comments; the other engines show the original.
 - Phone Viewing needs the phone to be on the same network. It uses plain http, so phones get no system notifications, and sound may stop when a phone locks.
-- Select and copy text from the window, or export a whole session from Settings → Transcripts. The window keeps the last 300 captions and 100 comments, and a reload shows the same ones again. Clear removes them from the app too, so they do not come back after a reload; the session's transcript file still has them. A phone that connects later sees the last 100 of each. The app never deletes transcripts, so clear the `transcripts` folder yourself when you no longer need them.
+- Select and copy text from the window, or export a whole session from Settings → Transcripts. The window keeps the last 300 captions and 100 comments, and a reload shows the same ones again. Clear in the top bar (captions) and Clear Comments in the comment column remove them from the app too, so they do not come back after a reload; the session's transcript file still has them. Each takes two clicks: the first turns the button into Clear?, and a second click within 6 seconds clears. A phone that connects later sees the last 100 of each. The app never deletes transcripts, so clear the `transcripts` folder yourself when you no longer need them.
 - The terminal, the logs and the audit log are always in Chinese, whatever the interface language.
 - Follow TikTok's Terms of Service and local laws. Do not rebroadcast or redistribute other people's content.
 
@@ -255,7 +273,7 @@ For a stuck download, a busy port and other problems, see [docs/faq.md](docs/faq
 
 Speech recognition always runs on your computer. So do Hy-MT2 and TranslateGemma, and Don't Translate sends nothing out. Automatic stays on your computer when a local model is installed. With none installed it sends caption text to Google.
 
-With DeepL, Google or Claude, caption text goes to that provider. With an OpenAI-compatible API it goes to the server you set up, which can be your own. If your DeepL quota runs out, the app switches to a local model, or to Google when there is none, and the Translation Engine row says so. With Claude, viewer comments and Retranslate requests go to Anthropic too.
+With DeepL, Google or Claude, caption text goes to that provider. With an OpenAI-compatible API it goes to the server you set up, which can be your own. If your DeepL quota runs out, the app switches to a local model, or to Google when there is none, and the Translation Engine row says so. A switch to Google also puts a notice at the top of the window, and it stays there until you choose an engine again. With Claude, viewer comments and Retranslate requests go to Anthropic too.
 
 Viewer comments come from TikTok through TikTokLive, which signs its connection through the third-party Euler Stream service. The app also contacts TikTok for the stream and GitHub to check for updates. It downloads software and models from PyPI, Hugging Face, ollama.com and GitHub.
 
@@ -263,7 +281,7 @@ Comment Review's rules run on your computer. If you choose the Claude review, co
 
 Transcripts stay on your computer. A transcript holds what the streamer said, its translation, and the viewers' comments with their display names. It is a separate file from the audit log, which never holds comment text. The app never uploads transcripts or deletes them.
 
-Recognition audio clips stay on your computer too. The app keeps a few seconds of stream audio around flagged segments, banned-term matches, captions you retranslate and one segment in 50 for comparison, in `logs/asr-evidence/`, and removes the oldest past 300 MB or 14 days. It is the stream's mixed audio, so other voices on the stream are in it. Settings → Storage shows the clips and deletes them, and `"asr_evidence": false` in `settings.json` stops saving new ones. Details: [docs/faq.md](docs/faq.md#recognition-audio).
+Recognition audio clips stay on your computer too. The app keeps a few seconds of stream audio around flagged segments, banned-term matches, captions you retranslate and one segment in 50 for comparison, in `logs/asr-evidence/`, and removes the oldest past 1 GB or 14 days. It is the stream's mixed audio, so other voices on the stream are in it. Settings → Storage shows the clips and deletes them, and `"asr_evidence": false` in `settings.json` stops saving new ones. Details: [docs/faq.md](docs/faq.md#recognition-audio).
 
 Phone Viewing opens a port on your network while sharing is on and closes it when sharing is off. Phones see captions, not settings, file paths, cookies or the stream address. The app's own window, where you start and stop and change settings, opens from this computer only.
 
@@ -318,7 +336,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 给 TikTok 西语直播加实时字幕，每句话下面是译文，观众弹幕也一起翻。粘贴直播间地址，点「开始翻译」就行。
 
-给不懂西语、又要看西语带货直播的团队用：中控在电脑上开程序，同事用手机跟着看。字幕不等译文，识别出来先上屏，译文过一会儿补上。语音识别在你的电脑上跑，装了 Ollama 之后翻译也在本机，不用注册，不用 API Key，也不用花钱。
+给不懂西语、又要看西语带货直播的团队用：中控在电脑上开程序，同事用手机跟着看。字幕列表不等译文，识别出来先上屏，译文过一会儿补上；底部的大字幕最多等译文 4 秒，到了整句一起换；4 秒还没到、或者这一句不会有译文，就先显示西语。语音识别在你的电脑上跑，装了 Ollama 之后翻译也在本机，不用注册，不用 API Key，也不用花钱。
 
 不是每个直播间都能用：有些直播间 TikTok 不把流地址给程序，程序拿不到声音，就出不了字幕。见[已知限制](#zh-limits)。
 
@@ -367,7 +385,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 1. 到[最新 Release](https://github.com/EM917/tiktok-live-translator/releases/latest) 下载 `TikTok-Live-Translator-vX.Y.Z.zip`，解压到任意位置。
 
-2. 从 [python.org](https://www.python.org/downloads/) 装 Python 3.10 或更新的版本，安装选项保持默认。Python 3.9 也能运行程序，但没有观众弹幕。没装 Python 的话，启动程序时会自动打开下载页。
+2. 从 [python.org](https://www.python.org/downloads/) 装 Python 3.10 或更新的版本，安装选项保持默认。Python 3.9 已经不能运行程序。找不到 Python 3.10 或更新的版本时，启动程序会自动打开下载页。
 
 3. 装 [Ollama](https://ollama.com/download)（免费的，在你电脑上运行模型的软件），装完打开一次。Windows 上安装包约 1.5 GB，需要管理员权限。程序启动后会下载翻译模型 Hy-MT2 1.8B（约 1 GB）。不装 Ollama 也能用，翻译会改走 Google 的免费接口，字幕文本会发给 Google。
 
@@ -406,6 +424,25 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 ### 更新
 
 程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示。也可以随时点窗口底部的版本号手动检查，直播中检查的结果写在版本号旁边。
+
+「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。新版本如果启动了两次、窗口两次都没连上，第三次打开时会自动退回更新前的版本，再重新打开。退回后会弹窗说明退回到了哪个版本，Mac 和 Windows 都弹；Mac 上从「终端」启动的话（比如用 `Start.command`），这句话写在「终端」窗口里，不弹窗。窗口连上之前只崩了一次、或者只被强行退出一次，不会因此退回，下一次打开照常用新版本。同时双击打开两次不算，窗口连上之后再强行退出也不算；程序文件夹里的文件被手动改过的话，不会退回。
+
+程序还会自己更新 yt-dlp（查找直播流地址用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。TikTok 拒绝弹幕连接时，程序会按同样的规矩找新的 TikTokLive（获取观众弹幕用）：只装发布满 7 天的 7.x 版本，监听中和「一键更新」进行中都不装。拒绝都发生在监听中，所以实际上这一步什么也不装，「观众弹幕」面板会写「监听中不更新弹幕组件」。TikTokLive 另外还有这些安装途径：没装的话，启动时、或者一场直播要用弹幕时会装；启动时版本低于 7.0.1 的会升级。这两种装的都是 7.x 里最新的一版，不看发布满不满 7 天，也不等监听停下，一小时最多各试一次。新版本要求更新的 TikTokLive 时，「一键更新」也会装上。[详细说明](docs/fault-tolerance.zh-CN.md#保住直播流)。
+
+<a id="zh-updating-zip"></a>
+
+### 更新（ZIP 安装）
+
+设置和各种记录都放在程序文件夹里，所以不要拿新文件夹直接替换旧文件夹。把新版本解压在旁边，第一次启动它之前，先把这几样从旧文件夹复制到新文件夹：
+
+- `settings.json`：设置和 API 密钥
+- `banned_terms.txt` 和 `glossary.txt`
+- `logs/`：每一场的审计日志，记着识别出的话和违禁词命中
+- `transcripts/`：保存下来的字幕和弹幕
+- `profiles/`、`brands/` 里你自己的 `.txt` 文件
+- `comment_guard/local/` 和 `comment_guard/marked/`：弹幕留意的规则和关注名单
+
+然后启动新版本，确认都在了再删掉旧文件夹。
 
 <a id="zh-translation-engines"></a>
 
@@ -448,7 +485,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 手机上能看字幕和报警，也能请求重译某一句，不能开始、停止或改设置。每台手机按自己的语言显示，最多 12 台一起看。
 
-链接里带着密钥，要像密码一样保管。点「换一个链接」，所有手机都会断开。同看默认关闭，只能在同一个局域网里用。
+链接里带着同看钥匙，要像密码一样保管。手机打开链接以后，钥匙会从地址栏去掉，记在那台手机的浏览器里，之后再打开这个页面不用重新扫码。二维码一直有效，直到你点「换一个链接」：所有手机都会断开，要扫新的二维码。电脑的局域网地址变了，面板上会换成新的二维码，要扫这个新的：之前贴出去的二维码指向原来的地址。从 iPhone 主屏幕图标打开的情况，见[常见问题](docs/faq.zh-CN.md#zh-phone-viewing)。同看默认关闭，只能在同一个局域网里用。
 
 <a id="zh-floating-window"></a>
 
@@ -456,7 +493,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 <sub>[English](#en-floating-window)</sub>
 
-监听期间，点顶栏的「浮窗」按钮（应用窗口窄于 1400 像素时去掉图标、只显示「浮窗」两个字；顶栏放不下这两个字的时候，比如「报警开」标签亮着，或者窗口很窄，只显示图标），会打开一个深色的小窗，始终在别的软件上面。里面是最新一条字幕（原文在译文下面）和最近几条弹幕与它们的译文（最多五条，窗口拉高才看得全）。可以拖动、拉大缩小，下次打开还在你放的位置。它只显示，没有按钮，违禁词报警仍然只在主窗口里。监听一停它就自己关掉。只有程序在自己的窗口里运行时才有这个按钮，加了 `--browser` 就没有。
+监听期间，点顶栏的「浮窗」按钮（应用窗口窄于 1400 像素时去掉图标、只显示「浮窗」两个字；顶栏放不下这两个字的时候，比如「报警开」标签亮着，或者窗口很窄，只显示图标），会打开一个深色的小窗，始终在别的软件上面。里面是最新一条字幕（原文在译文下面）和最近几条弹幕与它们的译文（最多五条，窗口拉高才看得全）。可以拖动、拉大缩小，下次打开还在你放的位置。它只显示，违禁词报警仍然只在主窗口里。点「停止」它就关掉；直播结束或监听出错停下时，它留着，写「直播已结束」或「监听已停止」，下面有「回到主窗口」按钮；Mac 上程序不在前台时，Dock 图标会跳一下。只有程序在自己的窗口里运行时才有「浮窗」按钮，加了 `--browser` 就没有。
 
 <a id="zh-comment-review"></a>
 
@@ -505,18 +542,17 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 2. 在选文件的窗口里按 ⌘⇧G，粘贴路径，按回车，点「打开」，再打开这一项的开关。列表里它叫 `python3.x`。
 3. 每个路径都这样加一遍，然后完全退出程序，重新打开。
 
-用 `Start.command` 启动的话，也要把「终端」加进去。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
+如果列表里已经有这一项、开关也开着，这一行却仍然说 macOS 没有放行，先选中它点「−」删掉，再按上面的步骤加一次。这项权限给的是 Python 解释器，不只是本程序：用这个 Python 运行的任何脚本都能读取这台电脑上受保护的数据。不再需要时，在同一个列表里把开关关掉。用 `Start.command` 启动的话，也要把「终端」加进去。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
 
-**「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，下面有一条带「复制」按钮的命令，复制后在终端里运行。如果提示列出了你改过的程序文件，这条命令会丢掉这些改动，改动是有意的就别运行。
+**「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，多数时候下面有一条带「复制」按钮的命令，复制后在「终端」里运行，Windows 上在 PowerShell 里运行。如果提示列出了你改过的程序文件，这条命令会丢掉这些改动，改动是有意的就别运行。有三种情况提示里给的是下载页，没有命令：认不出新版本的标签，那个发布版本不在这份安装跟踪的分支上，或者那个分支上没有比你现在的版本更新的。正在监听时，这句话写在提示里，不给命令，程序继续用当前版本。
 
 **字幕越来越落后，窗口提示有积压。** 在终端里运行 `ollama ps`。如果载入了不止一个模型，用 `ollama stop <模型名>` 卸掉多余的那个。还不行就换小一点的语音模型，这要加启动参数，所以得从终端启动：`python3 main.py --model small`。8 GB 内存的 Mac 上，用 `--model large-v3-turbo` 或 `--model small` 比默认的更合适。
 
-**状态是「直播中」，却没有字幕。** 没声音、或者识别没把握的片段，程序会故意略过，比如主播在放音乐或没说话的时候。明明有人在说话却一直没字幕，试试从终端运行 `python3 main.py --denoise off`，或者用 `--model` 换一个尺寸的语音模型。
+**状态是「直播中」，却没有字幕。** 没声音、或者识别没把握的片段，程序会故意略过，比如主播在放音乐或没说话的时候。很大一部分音频的音量一直低于识别门限时，窗口顶部会有提示，写出收到了多少音频、送去识别的有多少。明明有人在说话却一直没字幕，试试从终端运行 `python3 main.py --denoise off`，或者用 `--model` 换一个尺寸的语音模型。
 
 **「观众弹幕」面板是空的，或者只有原文。** 按这几条查：
 
 - 只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时，弹幕才会翻译。
-- 弹幕要 Python 3.10 或更新的版本。
 - 只粘贴流地址的话没有弹幕，要粘贴直播间地址或 `@用户名`。
 
 **手机打不开「手机同看」的链接。** 按顺序查：
@@ -541,9 +577,9 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 - 译文可能出错，商品名和俚语最容易错。
 - 没有 Apple 芯片或 NVIDIA 显卡的电脑，识别可能跟不上。
 - 音频积压超过 60 秒，才会开始丢最旧的，窗口会显示丢了多少。
-- 观众弹幕要 Python 3.10 或更新的版本，而且只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时才翻译。
+- 观众弹幕只有用 Hy-MT2 1.8B、TranslateGemma 或 Claude 时才翻译。
 - 手机同看只能在同一个局域网里用。它走的是普通 http，所以手机收不到系统通知，锁屏后声音可能会断。
-- 可以在窗口里选中文字复制，也可以在「设置 → 字幕记录」导出整场。窗口保留最近 300 条字幕和 100 条弹幕，刷新后原样放回来；点「清空字幕」「清空弹幕」会连程序里存着的一起清掉，刷新后不会再回来，但这一场的字幕记录文件里还有。之后才连上的手机，每类只看到最近 100 条。程序不会删除字幕记录，不再需要时请自己清理 `transcripts` 文件夹。
+- 可以在窗口里选中文字复制，也可以在「设置 → 字幕记录」导出整场。窗口保留最近 300 条字幕和 100 条弹幕，刷新后原样放回来；点「清空字幕」「清空弹幕」会连程序里存着的一起清掉，刷新后不会再回来，但这一场的字幕记录文件里还有。两颗按钮都要点两次：第一次点下去按钮变成「再点确认」，6 秒内再点一次才清空。之后才连上的手机，每类只看到最近 100 条。程序不会删除字幕记录，不再需要时请自己清理 `transcripts` 文件夹。
 - 终端、日志和审计日志一直是中文，不随界面语言变。
 - 请遵守 TikTok 的服务条款和当地法律，不要转播或分发别人的内容。
 
@@ -555,7 +591,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 语音识别一直在你的电脑上跑。Hy-MT2 和 TranslateGemma 也在本机，和「不翻译」一样，不会往外发任何东西。「自动」在装了本地模型时同样留在本机，一个本地模型都没装就会把字幕文本发给 Google。
 
-用 DeepL、Google 或 Claude 时，字幕文本会发给对应的服务商。用 OpenAI 兼容 API 时，发给你设置的那个服务器，可以是你自己的。DeepL 的额度用完后，程序会改用本地模型，没有本地模型就改用 Google，「翻译引擎」那一行会写明。用 Claude 时，观众弹幕和「重译」请求也会发给 Anthropic。
+用 DeepL、Google 或 Claude 时，字幕文本会发给对应的服务商。用 OpenAI 兼容 API 时，发给你设置的那个服务器，可以是你自己的。DeepL 的额度用完后，程序会改用本地模型，没有本地模型就改用 Google，「翻译引擎」那一行会写明；改用 Google 时，窗口顶部还会挂着一条提示，直到你重新选一次引擎。用 Claude 时，观众弹幕和「重译」请求也会发给 Anthropic。
 
 观众弹幕通过 TikTokLive 从 TikTok 获取，它的连接签名要经过第三方的 Euler Stream 服务。另外，程序会联系 TikTok 取直播流，联系 GitHub 查更新。组件和模型从 PyPI、Hugging Face、ollama.com 和 GitHub 下载。
 
@@ -563,7 +599,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 字幕记录只留在你的电脑上。里面有主播说的话、译文，以及观众弹幕和他们的昵称。它和审计日志是两个文件，审计日志里从来没有弹幕内容。程序不会上传字幕记录，也不会删除它。
 
-识别音频片段也只留在你的电脑上。程序会把被标记的段、违禁词命中的段、点过「重译」的字幕，以及每 50 段里抽 1 段对照，前后几秒的直播音频存进 `logs/asr-evidence/`，超过 300 MB 或 14 天从最旧的删起。存的是直播的混音，同场其他人的声音也在里面。「设置 > 磁盘空间」里能看到、也能删掉；在 `settings.json` 里写 `"asr_evidence": false` 就不再存。详见 [docs/faq.zh-CN.md](docs/faq.zh-CN.md#zh-recognition-audio)。
+识别音频片段也只留在你的电脑上。程序会把被标记的段、违禁词命中的段、点过「重译」的字幕，以及每 50 段里抽 1 段对照，前后几秒的直播音频存进 `logs/asr-evidence/`，超过 1 GB 或 14 天从最旧的删起。存的是直播的混音，同场其他人的声音也在里面。「设置 > 磁盘空间」里能看到、也能删掉；在 `settings.json` 里写 `"asr_evidence": false` 就不再存。详见 [docs/faq.zh-CN.md](docs/faq.zh-CN.md#zh-recognition-audio)。
 
 手机同看只在打开期间才在你的网络上开一个端口。手机看到的是字幕，看不到设置、文件路径、Cookie 和流地址。你用来开始、停止和改设置的程序窗口，只能在这台电脑上打开。
 

@@ -7,7 +7,7 @@ from tools.annotate import (build_relabel_batch, compare_relabel,
                             save_results_atomic)
 
 ROW = {"id": 7, "cluster_id": "c1", "session": "s.jsonl", "seq": 42,
-       "streamer": "bella", "bucket": "price_promo", "src": "cuesta 55",
+       "streamer": "brisa", "bucket": "price_promo", "src": "cuesta 55",
        "fast": "价格是55", "fast_engine": "hymt2",
        "strong": "售价55美元", "strong_engine": "hf.co/tencent/Hy-MT2-7B",
        "fast_withheld": None, "strong_withheld": None}

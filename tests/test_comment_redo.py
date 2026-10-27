@@ -11,8 +11,15 @@
   5. 非 Claude 引擎：一次都不翻、不碰 create_strong_translator / Pipeline._strong_translator；
   6. 译文过 plausible_translation，像回话的丢掉、原译文留着；
   7. 每一条不重译的出路都有说明，中英两句都过第八条（只写观察，不猜原因）；
-  8. 审计里没有弹幕原文、观众名、译文，也没有新增的记录；
-  9. 手机收不到 comment_redo，也发不出 retranslate_comment。
+  8. 每次点击往本场审计写一条 comment_redo（2026-10-26 起）：只有代码、数字和布尔，没有弹幕原文、
+     观众名、译文和弹幕 id；重译在途时停止或换主播，这一下记成 cancelled、进点它的那一场的文件
+     （弹幕重译任务登记在本场，收尾时关审计之前取消；不再只计进 late_records）；
+  9. 手机收不到 comment_redo，也发不出 retranslate_comment；
+ 10. 译出来了也说一句（2026-10-26 起）：「已重译」或「重译结果和原来一样」，消息带 same。
+
+2026-10-26 改了的断言：成功的那条 comment_redo 以前不带说明（shape 里是 ("redo", "ok", False)），
+现在带 text 和 same（("redo", "ok", True)）；第 8 节以前钉「审计一条都没多」，现在钉每次点击一条
+comment_redo、里面没有弹幕内容。两处都是用户要的新行为（重译完提示几秒、重译写进审计）。
 
 测试一律用假 HTTP 层和替身，不联网、不载入模型、不开浏览器。
 """
@@ -136,7 +143,8 @@ def redos(sent):
 
 
 def shape(sent):
-    """发给页面的消息，压成 (类型, 关键字段)，方便整串比对。"""
+    """发给页面的消息，压成 (类型, 关键字段)，方便整串比对。comment_redo 压成 (redo, 状态, 有没有说明)：
+    成了的那条也有说明（「已重译」或「重译结果和原来一样」）。"""
     out = []
     for m in sent:
         if m["type"] == "comment_redo":
@@ -218,7 +226,7 @@ def test_a_click_retranslates_one_comment_with_sonnet_and_replaces_its_translati
 
     run(scenario())
     assert shape(p.server.sent[1:]) == [("update", "ok", "旧译文"), ("redo", "pending", False),
-                                        ("update", "ok", "这个多少钱"), ("redo", "ok", False)]
+                                        ("update", "ok", "这个多少钱"), ("redo", "ok", True)]
     new = [m for m in p.server.of("comment_update")][-1]
     assert new == {"type": "comment_update", "id": "c0", "translated": "这个多少钱", "state": "ok"}
     (post,) = strong.posts
@@ -252,7 +260,7 @@ def test_a_comment_haiku_did_not_translate_can_be_retranslated_with_sonnet(monke
 
     run(scenario())
     assert shape(p.server.sent[1:]) == [("update", "failed", None), ("redo", "pending", False),
-                                        ("update", "ok", "这个多少钱"), ("redo", "ok", False)]
+                                        ("update", "ok", "这个多少钱"), ("redo", "ok", True)]
     assert len(strong.posts) == 1
 
 
@@ -341,7 +349,7 @@ def test_the_glossary_fixup_is_applied_to_the_new_translation(monkeypatch):
     seed(ct, ("c0", "compro quema lonja"))
     run(ct.retranslate("c0"))
     assert shape(sent) == [("redo", "pending", False), ("update", "ok", "买 燃脂带 吗"),
-                           ("redo", "ok", False)]
+                           ("redo", "ok", True)]
     assert "燃脂带" not in strong.posts[0]["body"]["system"]       # 词表不进弹幕重译的提示词
 
 
@@ -444,12 +452,12 @@ def test_a_second_click_while_the_first_is_running_gets_a_note_and_one_request(m
         await first
 
     run(scenario())
-    (note,) = [m for m in redos(sent) if "text" in m]
+    (note,) = [m for m in redos(sent) if "redo_state" not in m]
     assert note == {"type": "comment_redo", "id": "c0", "text": redo.note_busy()}     # 没有 redo_state：按钮不动
     assert en(note["text"]) == "This comment is already being retranslated."
     check_rule8(note["text"])
     assert shape(sent) == [("redo", "pending", False), ("redo", None, True),
-                           ("update", "ok", "新译文"), ("redo", "ok", False)]
+                           ("update", "ok", "新译文"), ("redo", "ok", True)]
 
 
 def test_two_different_comments_can_be_retranslated_at_the_same_time(monkeypatch):
@@ -592,7 +600,9 @@ def test_an_overlong_id_is_cut_the_same_way_accept_cuts_it(monkeypatch):
         await ct.retranslate(long_id)
 
     run(scenario())
-    assert redos(sent)[-1] == {"type": "comment_redo", "id": "x" * 64, "redo_state": "ok"}
+    # Sibling([]) 没有回应，这条最初没译出来：重译成了就是「已重译」，不是「和原来一样」
+    assert redos(sent)[-1] == {"type": "comment_redo", "id": "x" * 64, "redo_state": "ok",
+                               "same": False, "text": redo.note_done(False)}
 
 
 @pytest.mark.parametrize("name", ["claude", "hymt2-7b", "none"])
@@ -879,34 +889,310 @@ def test_every_note_passes_rule_eight_in_both_languages():
 
 
 # ---------------------------------------------------------------------------
-# 8. 审计里没有弹幕
+# 8. 审计：每次点击一条 comment_redo，里面没有弹幕（R2，2026-10-26 用户要的）
 # ---------------------------------------------------------------------------
 
-def test_the_audit_log_never_sees_the_comment_its_name_or_either_translation(monkeypatch, tmp_path):
+REDO_KEYS = ["type", "at", "ok", "why", "same", "had", "translate_ms", "model"]
+ROOM = "https://www.tiktok.com/@ficticia_redo/live"
+
+
+def redo_rows(audit):
+    return rows(audit, "comment_redo")
+
+
+def facts(row):
+    """一条 comment_redo 里不随时钟变的部分。"""
+    return (row["ok"], row["why"], row["same"], row["had"], row["model"])
+
+
+def test_every_click_writes_one_comment_redo_row_and_none_carries_the_comment(monkeypatch, tmp_path):
+    """以前这一节钉的是「审计一条都没多」：弹幕重译不写审计，出了问题无从查起（R2）。现在每次点击一条
+    comment_redo——换了译文、和原来一样、HTTP 错、像回话被丢弃、原文已不在——只有代码、数字和布尔：
+    弹幕原文、观众名、新旧译文、弹幕 id 一个字都不进审计（弹幕与审计隔离照旧），也不借用 translation_strong。"""
     wrapped, _inner, _s = subtitle_engine(monkeypatch)
     p = full_pipeline(monkeypatch, tmp_path, wrapped)
-    p.audit = AuditLog(room_url="https://www.tiktok.com/@x/live", log_dir=tmp_path)
+    p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    chatty = "Could you please provide more context?"
     p.comments._claude_factory = Sibling([reply("旧的译文")])
     p.comments._claude_strong_factory = StrongFactory(
-        [sonnet_reply("新的译文"), Resp(500, {}), sonnet_reply("Could you please provide more context?")])
+        [sonnet_reply("新的译文"), sonnet_reply("新的译文"), Resp(500, {}), sonnet_reply(chatty)])
     p.comments.BATCH_WINDOW_SEC = 0.01
     before = rows(p.audit)
 
     async def scenario():
         await p.comments.accept({"items": [{"id": "c0", "user": USER, "text": SOURCE}]})
         assert await wait_for(lambda: p.server.of("comment_update"))
-        for _ in range(3):                                  # 成了一次、HTTP 错一次、像回话一次
+        for _ in range(4):                                  # 换了译文、和原来一样、HTTP 500、像回话
             p.handle_control({"type": "retranslate_comment", "id": "c0"})
             await drain(p)
         p.handle_control({"type": "retranslate_comment", "id": "nunca"})
         await drain(p)
 
     run(scenario())
-    assert rows(p.audit) == before                          # 一条记录都没多
+    after = rows(p.audit)
+    assert after[:len(before)] == before                    # 已有的行一条没动
+    added = after[len(before):]
+    assert [r["type"] for r in added] == ["comment_redo"] * 5     # Haiku 自己译成了：不写记录
+    assert [list(r) for r in added] == [REDO_KEYS] * 5
+    reply_code = comments_mod.implausible_reason(SOURCE, chatty, "zh-CN")
+    assert reply_code and reply_code.startswith("reply_")
+    sonnet = "claude-sonnet-5-5"
+    assert [facts(r) for r in added] == [
+        (True, None, False, True, sonnet), (True, None, True, True, sonnet),
+        (False, "http_500", None, True, sonnet), (False, reply_code, None, True, sonnet),
+        (False, "gone", None, None, None)]
+    assert all(isinstance(r["translate_ms"], float) and r["translate_ms"] >= 0 for r in added[:4])
+    assert added[4]["translate_ms"] is None                 # 没发请求
     raw = open(p.audit.path, encoding="utf-8").read()
-    for secret in (SOURCE, USER, "旧的译文", "新的译文", "context"):
+    for secret in (SOURCE, USER, "旧的译文", "新的译文", "context", '"c0"', "nunca"):
         assert secret not in raw
     assert "translation_strong" not in raw
+
+
+def test_each_refusal_and_each_kind_of_ending_writes_its_own_code(monkeypatch, tmp_path):
+    """每一条出路一条记录，原因只写代码：消息里没有 id、演示弹幕、原文不在了、这条正在重译、这一分钟用满了、
+    字幕引擎不是 Claude、建不起 Claude 实例、重译里出了意外。拒掉的那几下一个请求都没发。"""
+    audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    holder, _inner, _s = claude_holder(monkeypatch)
+    gated = Gated()
+    clock = {"t": 100.0}
+    ct, sent = make(holder, lambda: gated, _ledger=redo.RedoLedger(clock=lambda: clock["t"]))
+    ct._session = lambda: audit
+    seed(ct, ("c0", SOURCE), ("c1", "buenas noches amigos"), ("c2", "hola amigos"))
+    seed(ct, ("f0", "que bonito color"), translated=False)          # 这条 Haiku 没译出来过
+
+    async def scenario():
+        await ct.retranslate(None)
+        await ct.retranslate(redo.DEMO_ID_PREFIX + "c1")
+        await ct.retranslate("nunca")
+        first = asyncio.ensure_future(ct.retranslate("c0"))
+        assert await wait_for(lambda: gated.calls == 1)
+        await ct.retranslate("c0")                                  # 正在重译
+        ct._ledger._stamps.extend([clock["t"]] * redo.PER_MINUTE)  # 这一分钟用满了
+        await ct.retranslate("c1")
+        ct._ledger._stamps.clear()
+        gated.gate.set()
+        await first
+        await ct.retranslate("f0")                                  # 补译没译出来的那条
+        holder["tr"] = Fast("hymt2")
+        await ct.retranslate("c2")                                  # 字幕引擎不是 Claude
+
+    run(scenario())
+    assert gated.calls == 2                                        # 只有 c0、f0 真的问了
+    got = [facts(r) for r in redo_rows(audit)]
+    assert got == [(False, "bad_id", None, None, None), (False, "demo", None, None, None),
+                   (False, "gone", None, None, None), (False, "busy", None, True, None),
+                   (False, "full", None, True, None), (True, None, False, True, "claude-sonnet-5-5"),
+                   (True, None, False, False, "claude-sonnet-5-5"),
+                   (False, "needs_claude", None, True, None)]
+    assert len(redos(sent)) == 9            # 演示、不在、正在、用满、两次成了（各 pending + ok）、不是 Claude
+
+    def no_key():
+        raise RuntimeError("还没有填 Claude 密钥")
+
+    class Broken(_Same):
+        async def translate(self, *a, **k):
+            raise RuntimeError("意外")
+
+    holder["tr"], _i, _s2 = subtitle_engine(monkeypatch)
+    for factory in (no_key, lambda: Broken("x")):
+        ct2, _sent2 = make(holder, factory)
+        ct2._session = lambda: audit
+        seed(ct2, ("c0", SOURCE))
+        run(ct2.retranslate("c0"))
+    tail = [facts(r) for r in redo_rows(audit)][-2:]
+    assert tail == [(False, "no_key", None, True, None), (False, "exception", None, True, "claude-sonnet-5-5")]
+    raw = audit.path.read_text(encoding="utf-8")
+    for secret in (SOURCE, "buenas noches", "que bonito", "新译文", '"c0"', '"f0"', "nunca"):
+        assert secret not in raw
+
+
+def test_a_cancelled_retranslation_still_leaves_its_row_and_gives_the_slot_back(monkeypatch, tmp_path):
+    """重译到一半任务被取消（程序退出）：照样记一条 cancelled，再把取消往外抛；名额还回去。"""
+    audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    holder, _inner, _s = claude_holder(monkeypatch)
+    gated = Gated()
+    ct, _sent = make(holder, lambda: gated)
+    ct._session = lambda: audit
+    seed(ct, ("c0", SOURCE))
+
+    async def scenario():
+        task = asyncio.ensure_future(ct.retranslate("c0"))
+        assert await wait_for(lambda: gated.calls == 1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return task
+
+    task = run(scenario())
+    assert task.cancelled()
+    (row,) = redo_rows(audit)
+    assert facts(row) == (False, "cancelled", None, True, "claude-sonnet-5-5")
+    assert ct._ledger.begin("c0") is None
+
+
+@pytest.mark.parametrize("quiet", [False, True], ids=["stop", "switch"])
+def test_stop_while_sonnet_is_still_answering_leaves_a_cancelled_row_in_this_sessions_file(
+        monkeypatch, tmp_path, capsys, quiet):
+    """重译在等 Sonnet 时点了停止（quiet=True 是换主播、更新暂停走的那条收尾）：弹幕重译的后台任务登记在本场
+    sess["retranslate_tasks"]，_cancel_retranslates 在关审计之前取消它，这一下记成一条 cancelled，进点它的那一场
+    的文件；late_records 是 0，终端没有「审计文件已经关闭」那一行。取消之后不再广播新译文（以前停止之后 Sonnet
+    回来照样换掉页面和手机上的译文），名额还回去。停止之后再点的那一下没有场次可登记，照常做完、照常回话。
+
+    2026-10-26（b5-recog-input）改的断言：这一条以前钉的是缺口——任务是 Pipeline._spawn 起的、没登记进本场，
+    Sonnet 回来时文件已经关了，comment_redo 只计进 late_records、不进文件（#146 第 1 轮审查记下、顺延）。
+    现在 app/pipeline.py 把它登记进本场（_own_retranslate），按新行为断言。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    audit = p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    sess = p._session_state = p._new_session_state(audit)
+    gated = Gated()
+    p.comments._claude_strong_factory = lambda: gated
+    seed(p.comments, ("c0", SOURCE))
+
+    async def scenario():
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
+        assert await wait_for(lambda: gated.calls == 1)
+        (task,) = sess["retranslate_tasks"]                # 登记进了本场
+        capsys.readouterr()
+        await p.stop_stream(quiet=quiet)
+        stopped_at = len(p.server.sent)
+        gated.gate.set()
+        await drain(p)
+        # 停止之后再点：没有场次，不登记，照常做完
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
+        await drain(p)
+        return task, stopped_at
+
+    task, stopped_at = run(scenario())
+    assert task.cancelled()
+    # 取消之后这条弹幕最后一个按钮状态不是 pending：补发了 cancelled，页面把按钮撤回「重译」（_retranslate_comment）
+    before = [m.get("redo_state") for m in p.server.sent[:stopped_at]
+              if m.get("type") == "comment_redo" and m.get("id") == "c0" and m.get("redo_state")]
+    assert before[-1] != "pending" and before == ["pending", "cancelled"]
+    assert [facts(r) for r in redo_rows(audit)] == [(False, "cancelled", None, True, "claude-sonnet-5-5")]
+    assert rows(audit)[-1]["type"] == "session_end"        # cancelled 在 session_end 之前
+    assert audit.late_records == 0
+    assert "审计文件已经关闭" not in capsys.readouterr().out
+    after = shape(p.server.sent[stopped_at:])
+    assert after[:1] == [("redo", "pending", False)]       # 停止之后点的那一下才有新译文
+    assert after[-2:] == [("update", "ok", "新译文"), ("redo", "ok", True)]
+    assert after.count(("update", "ok", "新译文")) == 1
+    assert len(redo_rows(audit)) == 1                       # 停止之后点的那一下没有文件可写
+    assert sess["retranslate_tasks"] == set() and p.comments._ledger.begin("c0") is None
+
+
+@pytest.mark.parametrize("how", ["stop", "switch", "ended"])
+def test_a_retranslation_cancelled_by_the_session_ending_puts_the_button_back(monkeypatch, tmp_path, how):
+    """在途的弹幕重译被收尾取消（停止、换主播、下播自然结束——三条都走 _cancel_retranslates）：收尾返回之前
+    这条弹幕收到一条 comment_redo(redo_state=cancelled)，不带说明（不新造文字）。以前 comments 那边只记审计
+    就往外抛，最后一个状态停在 pending：web/app.js 的按钮一直灰着停在「重译中…」，点不了第二次，要等页面
+    重连或刷新（b5-recog-input 第 1 轮审查的探针：HEAD 上是 ['pending']，基点上是 ['pending', 'ok']）。
+    页面怎么接这条由 tests/comment-redo-cancelled.test.mjs 钉着。审计照旧是一条 cancelled，在 session_end 之前。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    audit = p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    sess = p._session_state = p._new_session_state(audit)
+    gated = Gated()
+    p.comments._claude_strong_factory = lambda: gated
+    seed(p.comments, ("c0", SOURCE))
+
+    async def scenario():
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
+        assert await wait_for(lambda: gated.calls == 1)
+        if how == "ended":
+            await p._end_session(audit, reason="offline", sess=sess)
+        else:
+            await p.stop_stream(quiet=how == "switch")
+        ended_at = len(p.server.sent)
+        gated.gate.set()
+        await drain(p)
+        return ended_at
+
+    ended_at = run(scenario())
+    redos_c0 = [m for m in p.server.sent if m.get("type") == "comment_redo" and m.get("id") == "c0"]
+    assert [m.get("redo_state") for m in redos_c0] == ["pending", "cancelled"]
+    assert redos_c0[-1] == {"type": "comment_redo", "id": "c0", "redo_state": "cancelled"}
+    assert redos_c0[-1] in p.server.sent[:ended_at]          # 收尾返回之前就发了
+    assert not [m for m in p.server.sent if m.get("type") == "comment_update" and m.get("id") == "c0"]
+    assert [facts(r) for r in redo_rows(audit)] == [(False, "cancelled", None, True, "claude-sonnet-5-5")]
+    assert rows(audit)[-1]["type"] == "session_end"
+    assert p.comments._ledger.begin("c0") is None
+
+
+def test_a_cancelled_overlong_id_is_put_back_under_the_id_the_page_knows(monkeypatch, tmp_path):
+    """id 超长时 comments 那边裁到 MAX_ID 再回话（pending 用的是裁过的）：补发的 cancelled 用同一个裁过的 id，
+    页面才找得到那条弹幕。不是字符串的 id 没有哪条弹幕可撤，不补发。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    audit = p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    p._session_state = p._new_session_state(audit)
+    gated = Gated()
+    p.comments._claude_strong_factory = lambda: gated
+    long_id = "x" * 200
+    seed(p.comments, (long_id[: CommentTranslator.MAX_ID], SOURCE))
+
+    async def scenario():
+        p.handle_control({"type": "retranslate_comment", "id": long_id})
+        p.handle_control({"type": "retranslate_comment", "id": 7})
+        assert await wait_for(lambda: gated.calls == 1)
+        await p.stop_stream()
+        gated.gate.set()
+        await drain(p)
+
+    run(scenario())
+    states = [(m["id"], m.get("redo_state")) for m in p.server.sent if m.get("type") == "comment_redo"]
+    assert states == [("x" * 64, "pending"), ("x" * 64, "cancelled")]
+
+
+def test_after_stop_there_is_no_session_to_write_to_and_a_broken_audit_breaks_nothing(monkeypatch, capsys):
+    """停止之后点的（没有这一场）：照常重译、照常回话，不写；写审计出错只打一行警告，重译照样完成。"""
+    holder, _inner, _s = claude_holder(monkeypatch)
+    ct, sent = make(holder, StrongFactory([sonnet_reply("甲"), sonnet_reply("乙")]))
+    seed(ct, ("c0", SOURCE))
+    run(ct.retranslate("c0"))                               # _session 默认返回 None
+    assert shape(sent)[-1] == ("redo", "ok", True)
+
+    class Broken:
+        def comment_redo(self, *a, **k):
+            raise OSError("磁盘满了")
+
+    ct._session = lambda: Broken()
+    run(ct.retranslate("c0"))
+    assert shape(sent)[-2:] == [("update", "ok", "乙"), ("redo", "ok", True)]
+    assert "弹幕重译审计记录失败" in capsys.readouterr().out
+
+
+def test_the_rows_are_the_same_under_either_interface_language(monkeypatch, tmp_path):
+    """审计永远是中文界面下那一份（CLAUDE.md 第九条，G8）：comment_redo 只有代码、数字和布尔，英文界面下
+    逐字段相同（时刻和用时除外），一个汉字都没有。"""
+    def one_session(lang, folder):
+        audit = AuditLog(room_url=ROOM, log_dir=tmp_path / folder)
+        holder, _inner, _s = claude_holder(monkeypatch)
+        ct, _sent = make(holder, StrongFactory([sonnet_reply("这个多少钱"), Resp(500, {})]))
+        ct._session = lambda: audit
+        seed(ct, ("c0", SOURCE))
+
+        async def scenario():
+            with i18n.use(lang):
+                await ct.retranslate("c0")
+                await ct.retranslate("c0")
+                await ct.retranslate("nunca")
+                holder["tr"] = Fast("gemma")
+                await ct.retranslate("c0")
+
+        run(scenario())
+        got = redo_rows(audit)
+        assert not i18n.CJK.search(json_lines(audit))
+        return [{k: v for k, v in r.items() if k not in ("at", "translate_ms")} for r in got]
+
+    zh = one_session(i18n.ZH, "zh")
+    assert zh == one_session(EN, "en")
+    assert [r["why"] for r in zh] == [None, "http_500", "gone", "needs_claude"]
+
+
+def json_lines(audit):
+    return "".join(line for line in audit.path.read_text(encoding="utf-8").splitlines(keepends=True)
+                   if '"comment_redo"' in line)
 
 
 # ---------------------------------------------------------------------------
@@ -963,3 +1249,158 @@ def test_the_retranslation_instance_is_not_wrapped_in_the_repeat_cache(monkeypat
     assert not isinstance(strong.made[0], CachedTranslator)
     assert len(strong.posts) == 2                          # 同一句点两次，就问两次
     assert [m["translated"] for m in sent if m["type"] == "comment_update"] == ["甲", "乙"]
+
+
+# ---------------------------------------------------------------------------
+# 10. 成了也说一句：「已重译」或「重译结果和原来一样」（R1，2026-10-26 用户要的）
+# ---------------------------------------------------------------------------
+
+def oks(sent):
+    return [m for m in redos(sent) if m.get("redo_state") == "ok"]
+
+
+def test_a_successful_retranslation_says_so_and_whether_the_translation_changed(monkeypatch):
+    """以前成了只换译文、不说话：新译文和原来一样时屏幕上什么都不变，点的人分不清成没成。现在 ok 那条
+    带 same 和一句说明。比的是屏幕上现在那版（上一次重译的结果也算），末尾多个换行算一样。"""
+    holder, _inner, _s = claude_holder(monkeypatch)
+    strong = StrongFactory([sonnet_reply("这个多少钱"), sonnet_reply("这个多少钱"),
+                            sonnet_reply("这个多少钱\n"), sonnet_reply("这个卖多少")])
+    ct, sent = make(holder, strong)
+    ct._ledger.remember("c0", SOURCE)
+    ct._ledger.mark_translated("c0", "多少钱")              # Haiku 当初的译文
+
+    async def scenario():
+        for _ in range(4):
+            await ct.retranslate("c0")
+
+    run(scenario())
+    got = [(m["same"], m["text"]) for m in oks(sent)]
+    assert got == [(False, "已重译"), (True, "重译结果和原来一样"), (True, "重译结果和原来一样"),
+                   (False, "已重译")]
+    assert [en(text) for _same, text in got] == [
+        "Retranslated", "The retranslation is the same as before.",
+        "The retranslation is the same as before.", "Retranslated"]
+    for _same, text in got:
+        check_rule8(text)
+    # 和原来一样也照发 comment_update（留存、手机、字幕记录照旧），说明跟在它后面
+    assert shape(sent)[:3] == [("redo", "pending", False), ("update", "ok", "这个多少钱"), ("redo", "ok", True)]
+    assert ct._ledger.translation("c0") == "这个卖多少"
+    assert all(set(m) == {"type", "id", "redo_state", "same", "text"} for m in oks(sent))
+
+
+def test_the_screen_version_is_read_after_the_wait_so_a_reverted_batch_is_not_called_the_same(monkeypatch):
+    """等 Sonnet 的这段时间里，这条弹幕所在的那一批整批超时，屏幕退回原文（forget_translation）。
+    Sonnet 给的又正好和 Haiku 当初那版一样：屏幕其实从原文换成了译文，所以要说「已重译」，
+    不能拿等之前读到的那版去比、说成「和原来一样」。"""
+    holder, _inner, _s = claude_holder(monkeypatch)
+    gated = Gated()                                          # 放行后给「新译文」
+    ct, sent = make(holder, lambda: gated)
+    ct._ledger.remember("c0", SOURCE)
+    ct._ledger.mark_translated("c0", "新译文")               # Haiku 当初那版，和 Sonnet 要给的一样
+
+    async def scenario():
+        task = asyncio.ensure_future(ct.retranslate("c0"))
+        assert await wait_for(lambda: gated.calls == 1)
+        ct._ledger.forget_translation("c0")                 # 整批超时：屏幕退回原文
+        gated.gate.set()
+        await task
+
+    run(scenario())
+    assert [(m["same"], m["text"]) for m in oks(sent)] == [(False, "已重译")]
+
+
+def test_a_comment_that_never_had_a_translation_is_never_called_the_same(monkeypatch):
+    """原来显示的是原文（Haiku 没译出来）：译出来了就是「已重译」，哪怕译文碰巧和原文一样。"""
+    holder, _inner, _s = claude_holder(monkeypatch)
+    ct, sent = make(holder, StrongFactory([sonnet_reply("hola amigos")]))
+    seed(ct, ("f0", "hola amigos"), translated=False)
+    run(ct.retranslate("f0"))
+    (ok,) = oks(sent)
+    assert (ok["same"], ok["text"]) == (False, redo.note_done(False))
+
+
+def test_the_comparison_uses_what_the_batch_translation_put_on_screen(monkeypatch, tmp_path):
+    """整条路走一遍（Pipeline + 控制消息）：Haiku 当初译的那版进了账本，Sonnet 给出同一句就是「和原来一样」。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    p.comments._claude_factory = Sibling([reply("这个多少钱")])
+    p.comments._claude_strong_factory = StrongFactory([sonnet_reply("这个多少钱")])
+    p.comments.BATCH_WINDOW_SEC = 0.01
+
+    async def scenario():
+        await p.comments.accept({"items": [{"id": "c0", "user": USER, "text": SOURCE}]})
+        assert await wait_for(lambda: p.server.of("comment_update"))
+        with i18n.use(EN):
+            p.handle_control({"type": "retranslate_comment", "id": "c0"})
+            await drain(p)
+
+    run(scenario())
+    (ok,) = oks(p.server.sent)
+    assert ok["same"] is True and en(ok["text"]) == "The retranslation is the same as before."
+
+
+def test_a_batch_that_timed_out_takes_its_translations_back_from_the_ledger(monkeypatch):
+    """整批超时会把已经上屏的译文也改标成失败（页面退回原文）：账本跟着忘掉，之后重译没成时说
+    「仍显示原文」，成了就是「已重译」，不会拿已经不在屏幕上的那版去比。"""
+    holder = {"tr": Fast("hymt2")}
+    ct, sent = make(holder, StrongFactory([Resp(500, {}), sonnet_reply("旧译文")]),
+                    TRANSLATE_TIMEOUT_SEC=0.05)
+
+    async def slow(batch, audit=None, t0=None):
+        for item in batch:
+            ct._ledger.mark_translated(item["id"], "旧译文")      # 先上屏了
+        await asyncio.sleep(5)
+
+    ct._translate_batch = slow
+
+    async def scenario():
+        await ct.accept({"items": [{"id": "c0", "user": USER, "text": SOURCE}]})
+        assert await wait_for(lambda: any(m["type"] == "comment_update" for m in sent))
+        assert not ct._ledger.has_translation("c0") and ct._ledger.translation("c0") is None
+        holder["tr"], _i, _s = subtitle_engine(monkeypatch)
+        await ct.retranslate("c0")
+        await ct.retranslate("c0")
+        ct._worker_task.cancel()
+
+    run(scenario())
+    assert [m["state"] for m in sent if m["type"] == "comment_update"][0] == "failed"
+    failed = [m for m in redos(sent) if m.get("redo_state") == "failed"]
+    assert failed[0]["text"].endswith("这条弹幕仍显示原文")
+    (ok,) = oks(sent)
+    assert (ok["same"], ok["text"]) == (False, "已重译")
+
+
+def test_the_ledger_keeps_the_translation_on_screen_and_drops_it_with_the_original():
+    ledger = redo.RedoLedger()
+    ledger.remember("a", "hola")
+    assert not ledger.has_translation("a") and ledger.translation("a") is None
+    ledger.mark_translated("a", "你好")
+    assert ledger.has_translation("a") and ledger.translation("a") == "你好"
+    ledger.mark_translated("nunca", "x")                     # 账本里没有原文的：不记
+    assert not ledger.has_translation("nunca")
+    ledger.forget_translation("a")
+    assert not ledger.has_translation("a") and ledger.original("a") == "hola"
+    ledger.mark_translated("a", "你好")
+    for i in range(redo.ORIGINAL_KEEP):
+        ledger.remember("c%d" % i, "texto")
+    assert ledger.original("a") is None and not ledger.has_translation("a")
+    assert ledger._translations == {}                        # 跟着原文一起挤出去，不会越攒越多
+
+
+@pytest.mark.parametrize("old,new,same", [
+    ("这个多少钱", "这个多少钱", True),
+    ("这个多少钱", " 这个多少钱\n", True),
+    ("how  much is it", "how much is it", True),
+    ("这个多少钱", "这个卖多少", False),
+    ("这个 多少钱", "这个多少钱", False),          # 原来没有空白的地方多了一个，屏幕上看得出来
+    ("how\tmuch\r\nis it", "how much is it", True),   # 制表、回车换行：CSS 照样折成一个空格
+    ("这个　多少钱", "这个 多少钱", False),    # 全角空格不折叠，比普通空格宽（第 1 轮审查）
+    ("how much", "how much", False),         # 不换行空格也不折叠
+    ("这个　多少钱", "这个　　多少钱", False),
+    ("　这个多少钱", "这个多少钱", False),     # 首尾的全角空格屏幕上也占位，不去掉
+    ("how\x0cmuch", "how much", False),           # 换页符不是 CSS 会折叠的空白
+    (None, "这个多少钱", False),                  # 原来显示的是原文
+    ("", "这个多少钱", False),
+])
+def test_same_translation_compares_the_way_the_page_collapses_whitespace(old, new, same):
+    assert redo.same_translation(old, new) is same

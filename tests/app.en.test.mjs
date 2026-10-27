@@ -232,7 +232,7 @@ function hello(page, extra) {
   page.push({ type: "hello", config: Object.assign({
     status: { state: "live", detail: "" }, room_url: ROOM, alerts_enabled: true,
     alerts_session: { session: "s1", streamer: "maria.ventas", total: 0 },
-    brand_options: [{ id: "b1", name: "Bella" }], brands: {}, active_brand: { id: "b1", name: "Bella" },
+    brand_options: [{ id: "b1", name: "Allura" }], brands: {}, active_brand: { id: "b1", name: "Allura" },
     recent_rooms: [{ streamer: "maria.ventas", url: ROOM }, { streamer: "otra.tienda", url: OTHER }],
     disk: { free: 50 * GB, items: [
       { id: "hf:x", kind: "hf", label: "mlx-community/whisper", size: 3 * GB, role: "app", note: "" },
@@ -275,17 +275,18 @@ test("英文页：状态胶囊、顶栏标签、横幅都是英文", () => {
   hello(page);
   assert.equal(page.el("status-text").textContent, "Live · @maria.ventas");
   assert.equal(page.el("alert-mode-tag").textContent, "Alerts on");
-  assert.equal(page.el("active-brand-tag").textContent, "Brand · Bella");
+  assert.equal(page.el("active-brand-tag").textContent, "Brand · Allura");
   const states = { connecting: "Connecting… · @maria.ventas", ended: "Stream ended", error: "Error",
                    idle: "Ready", offline: "Reconnecting…" };
   for (const [state, text] of Object.entries(states)) {
     page.push({ type: "status", state, detail: "" });
     assert.equal(page.el("status-text").textContent, text, state);
   }
-  // 认不出的输入、连接断开时点开始
+  // 认不出的输入：说明写在输入框下面（专家审查 U9），不再走状态横幅；连接断开时点开始
   page.el("room-input").value = "hola mundo";
   page.el("start-btn").click();
-  assert.match(page.el("status-banner").textContent, /^This isn’t a live link or username\. .*Display names won’t work\.$/);
+  assert.match(page.el("room-input-error").textContent, /^This isn’t a live link or username\. .*Display names won’t work\.$/);
+  assert.doesNotMatch(page.el("status-banner").textContent, /live link or username/);
   page.offline();
   page.el("start-btn").click();
   assert.equal(page.el("status-banner").textContent,
@@ -605,11 +606,11 @@ test("英文页：弹幕面板的状态与空态、统计消息不画", () => {
   assert.equal(sourceShown(), true);
   page.push({ type: "comment", id: "c1", ts: T, user: "Ana", text: "hola", state: "pending" });
   assert.equal(page.el("comment-list").querySelector(".cmt-zh").textContent, "Translating…");
-  // 和主播的关系：互关就不再单独标 Follower；认不出的标签不画
+  // 和主播的关系：不显示 Mutual，带互关的只标一个 Follower；认不出的标签不画
   page.push({ type: "comment", id: "c2", ts: T, user: "Bea", text: "hola", state: "pending",
               rel: ["follower", "mutual", "gifter", "boss"] });
   const chips = [...page.el("comment-list").querySelectorAll(".cmt-rel")].map(c => c.textContent);
-  assert.deepEqual(chips, ["Mutual", "Gifter"]);
+  assert.deepEqual(chips, ["Follower", "Gifter"]);
   page.push({ type: "stats", e2e: {}, asr: { p50: 1100 }, translate: { p50: 2000 }, segment: { p50: 800 },
               detect_worst: { p50: 1900, p95: 3400 }, audio_backlog_sec: 5, audio_segments_dropped: 2,
               asr_overruns: 1, translation_jobs_dropped: 3, asr_queue_depth: 1, translation_queue_depth: 2 });

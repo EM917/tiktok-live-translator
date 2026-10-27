@@ -4,6 +4,7 @@
 的测试词表（红条档全部已确认）；主播名用虚构的 luna_demo，品牌用虚构的 marcaejemplo。纯 CPU，不联网、
 不加载模型、不 import main.py。
 """
+import itertools
 import json
 import math
 import os
@@ -14,7 +15,8 @@ from pathlib import Path
 import pytest
 
 from app import comment_guard as cg
-from tests.guard_perf import budget_ms
+from tests import guard_perf
+from tests.guard_perf import budget_ms, fastest_ms
 
 HERE = Path(__file__).resolve().parent
 FIX = HERE / "fixtures" / "comment_guard"
@@ -430,8 +432,14 @@ def test_nfkc_expansion_is_cut_again_so_a_comment_cannot_grow_to_18k_characters(
     g = guard()
     g.judge("ﷺ" * 1000, user="u", ts=1.0)
     assert all(len(k) <= cg.MAX_CHARS for _, *keys in g.flood.users["u"] for k in keys if k)
-    best = min(_timed(guard(), "ﷺ" * 1000, i) for i in range(5))
-    assert best < budget_ms(guard), "%.1f ms (上限 %.1f ms)" % (best, budget_ms(guard))
+    budget = budget_ms(guard)
+    best, tries = _nfkc_timing(budget)
+    assert best < budget, "最快 %.1f ms（量了 %d 次，上限 %.1f ms）" % (best, tries, budget)
+
+
+def _nfkc_timing(budget):
+    """「ﷺ」×1000 每次一个新守卫，和最快的一次比（tests/guard_perf.py 的 fastest_ms）：(最快毫秒数, 量了几次)。"""
+    return fastest_ms({"nfkc": lambda i: _timed(guard(), "ﷺ" * 1000, i)}, budget)["nfkc"]
 
 
 def _timed(g, text, i):
@@ -813,9 +821,10 @@ def test_fake_is_still_an_accusation_when_it_is_about_the_product():            
     assert lvl("they are fake") == "alert"
 
 
-def test_judge_stays_under_20_ms_when_the_flood_window_is_full():                   # #44
-    """窗口里已经有 600 条互不相似的 1000 字长弹幕（500 个单字词）时，再来的一条仍要在 I3 的
-    20 ms 以内，结构模式（超预算降级）下同样。修复前：普通模式约 24 ms，结构模式约 16 ms。"""
+@pytest.fixture(scope="module")
+def full_flood_window():
+    """窗口里已经有 600 条互不相似的 1000 字长弹幕（500 个单字词）的守卫。灌满要好几秒（机器忙时十几秒），
+    下面的计时测试和它的反证共用这一个；每次量之前 _flood_probe 都核对窗口仍是满的。"""
     rng = random.Random(3)
     pool = ["%c" % (0x4E00 + i) for i in range(3000)]
 
@@ -826,16 +835,61 @@ def test_judge_stays_under_20_ms_when_the_flood_window_is_full():               
     for i in range(600):
         g.judge(long_comment(), user="fill%d" % i, ts=1000.0 + i * 0.02, cid="fill%d" % i)
     assert len(g.flood.recent) >= cg.RECENT_SCAN
-    best = {}
-    for mode in (False, True):
-        times = []
-        for i in range(5):
-            t0 = time.perf_counter()
-            g.judge(long_comment(), user="probe%d" % i, ts=1013.0 + i * 0.01,
-                    structure_only=mode, cid="probe-%s-%d" % (mode, i))
-            times.append((time.perf_counter() - t0) * 1000.0)
-        best[mode] = min(times)
-    assert best[False] < budget_ms(guard) and best[True] < budget_ms(guard), (best, budget_ms(guard))
+    return g, long_comment, itertools.count()
+
+
+def test_judge_stays_under_20_ms_when_the_flood_window_is_full(full_flood_window):   # #44
+    """窗口满了（full_flood_window）时再来的一条仍要在 I3 的 20 ms 以内，结构模式（超预算降级）下同样。
+    修复前：普通模式约 24 ms，结构模式约 16 ms。和最快的一次比，机器忙的时候多量几次（fastest_ms）。"""
+    budget = budget_ms(guard)
+    slow = {("structure_only" if mode else "normal"): (round(best, 1), tries)
+            for mode, (best, tries) in _flood_window_timings(full_flood_window, budget).items() if best >= budget}
+    assert not slow, "最快的一次仍超上限 %.1f ms（毫秒，量了几次）：%s" % (budget, slow)
+
+
+def _flood_window_timings(window, budget):
+    """两种模式整批一起量（tests/guard_perf.py 的 fastest_ms）：{structure_only: (最快毫秒数, 量了几次)}。"""
+    return fastest_ms({mode: _flood_probe(window, mode) for mode in (False, True)}, budget)
+
+
+def _flood_probe(window, structure_only):
+    """量一次：一条新的长弹幕（新用户、新弹幕 id）在满窗口上的判定。两种模式共用一个计数，时间戳一直往后走，
+    每次 1 ms：灌窗口的弹幕在 1000–1012 秒，量几千次也还在 20 秒窗口里。"""
+    g, long_comment, seq = window
+    window_s = g.flood.th["brigade_note"][1]
+
+    def one(i):
+        n = next(seq)
+        text, ts, cid = long_comment(), 1013.0 + n * 0.001, "probe%d" % n
+        # 多量几次不能量出个假快：回看的 RECENT_SCAN 条必须全在窗口里，弹幕 id 也不能撞上去重的快路径
+        assert g.flood.recent[-cg.RECENT_SCAN][0] >= ts - window_s
+        t0 = time.perf_counter()
+        r = g.judge(text, user=cid, ts=ts, structure_only=structure_only, cid=cid)
+        ms = (time.perf_counter() - t0) * 1000.0
+        assert not {"dup_id", "trusted"} & set(r["tags"]), r
+        return ms
+    return one
+
+
+def test_a_judge_that_is_slower_than_the_budget_on_every_run_still_fails(monkeypatch, full_flood_window):
+    """反证：多量几次救不了真变慢的代码。每次判定都多睡（上限 + 5 ms），上面两条计时测试都要红，而且是
+    量了好几次之后。时限压到 0.5 秒（量满时限这件事 tests/test_comment_guard_rules.py 已经钉住了）。
+    上限先在打补丁之前算好（CI 上 budget_ms 要拿真的规则层量参考值）。"""
+    budget = budget_ms(guard)
+    real = cg.CommentGuard.judge
+
+    def slow(self, *a, **kw):
+        time.sleep((budget + 5.0) / 1000.0)
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(cg.CommentGuard, "judge", slow)
+    monkeypatch.setattr(guard_perf, "PATIENCE_S", 0.5)
+    timings = [_nfkc_timing(budget), *_flood_window_timings(full_flood_window, budget).values()]
+    assert all(best >= budget + 5.0 and tries > 1 for best, tries in timings), timings
+    with pytest.raises(AssertionError, match="最快 .* ms（量了 .* 次"):
+        test_nfkc_expansion_is_cut_again_so_a_comment_cannot_grow_to_18k_characters()
+    with pytest.raises(AssertionError, match="最快的一次仍超上限.*normal.*structure_only"):
+        test_judge_stays_under_20_ms_when_the_flood_window_is_full(full_flood_window)
 
 
 def test_similar_prefilter_skips_comments_whose_word_counts_are_too_far_apart():    # #44

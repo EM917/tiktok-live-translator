@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { makeDoc, makeItem, uiTexts } from "./guard-dom.mjs";
+import { loadDesktop, hello as helloDesktop, T } from "./desktop-page.mjs";
 import { ALL_CATS, AMBER_CODES, RV_CODES, STATUS_CODES, STATE, UID_A, UID_B, comment, RED, AMBER, NOTE, entry,
          event } from "./guard-fixtures.mjs";
 
@@ -689,4 +690,72 @@ test("抽屉：redoOf 给了就画「重译」按钮和说明，点了回调 onR
   btn.click();
   assert.deepEqual(clicked, ["c9"]);
   assert.equal(box.querySelector(".gev-redo-note").textContent, "弹幕重译没有成功");
+});
+
+// ---- 接线：重连不算「已看」（专家审查 F2）---------------------------------------------------------
+// 以前每次 hello 都把未读全标成已看：页面任何一次重连（瞬断、手动刷新、切换界面语言的重载）顶部条和浮钮红点
+// 一起消失；断线期间新到的红色事件只随 hello 的 config.guard_events 到达，从头到尾一次都没亮过。补核用真
+// 服务端掐断页面 TCP 复现（0.72 秒自动重连）。现在只有中控点「已看」才往前推 guardSeenTs（存 localStorage）；
+// 唯一的例外是这台浏览器从没记过「已看」时的第一次 hello（刚打开页面不为早先的事件弹条，tests/app.en.test.mjs
+// 钉着）。桌面页在 node:vm 里真跑（tests/desktop-page.mjs）
+const RED_EV = (id, ts) => event({ id: id, ts: ts, first_ts: ts, sample: { cid: "c-" + id, user: "Ana", text: "te voy a matar" } });
+
+function guardShown(page) {
+  const bar = page.el("guard-bar"), fab = page.el("comment-fab-guard");
+  return { bar: !bar.cls.includes("hidden"), fab: !fab.cls.includes("hidden") && fab.textContent,
+           text: page.el("guard-bar-text").textContent };
+}
+function guardHello(page, events) {
+  helloDesktop(page, { guard_state: STATE, guard_events: events || {}, guard_marked: {} });
+}
+
+test("接线：实时来了红色事件，之后页面重连（hello 回放同一件）：顶部条和浮钮红点都还在", () => {
+  const page = loadDesktop({ lang: "zh" });
+  guardHello(page);
+  const seen = page.store.get("guardSeenTs");          // 这台浏览器第一次打开：记下此刻（见下一条用例）
+  page.advance(1500);                                  // 离上一次重画超过 1 秒：这一条立刻画
+  page.push({ type: "guard_event", ev: RED_EV("g1", T + 1) });
+  assert.deepEqual([guardShown(page).bar, guardShown(page).fab], [true, "1"]);
+  page.advance(5000);
+  guardHello(page, { g1: RED_EV("g1", T + 1) });       // 服务端 config 里的事件随 hello 回来
+  const after = guardShown(page);
+  assert.deepEqual([after.bar, after.fab], [true, "1"], "重连不等于中控看过了");
+  assert.match(after.text, /^需要留意 1 件 · 疑似人身威胁 ×1/);
+  assert.equal(page.store.get("guardSeenTs"), seen, "重连的 hello 不往前推「已看」");
+});
+
+test("接线：这台浏览器从没记过「已看」时，第一次打开页面不为早先的事件弹条；记下之后刷新照常算未读", () => {
+  const first = loadDesktop({ lang: "zh", startMs: (T + 60) * 1000 });
+  guardHello(first, { g1: RED_EV("g1", T + 5) });
+  assert.deepEqual([guardShown(first).bar, guardShown(first).fab], [false, false]);
+  assert.equal(first.store.get("guardSeenTs"), String(T + 60));
+  // 刷新（同一台浏览器，localStorage 还在）：刷新前那一刻之后来的事件是没看过的
+  const reload = loadDesktop({ lang: "zh", stored: { guardSeenTs: first.store.get("guardSeenTs") },
+                               startMs: (T + 120) * 1000 });
+  guardHello(reload, { g1: RED_EV("g1", T + 5), g2: RED_EV("g2", T + 90) });
+  assert.deepEqual([guardShown(reload).bar, guardShown(reload).fab], [true, "1"]);
+  assert.equal(reload.store.get("guardSeenTs"), String(T + 60), "刷新的 hello 不往前推");
+});
+
+test("接线：断线期间新到的事件只随回放到达，也算未读；已看之前的那件不算", () => {
+  // 这台机器上一次点「已看」是在 T+10（localStorage 里留着）
+  const page = loadDesktop({ lang: "zh", stored: { guardSeenTs: String(T + 10) }, startMs: (T + 60) * 1000 });
+  guardHello(page, { g1: RED_EV("g1", T + 5), g2: RED_EV("g2", T + 30) });
+  const shown = guardShown(page);
+  assert.deepEqual([shown.bar, shown.fab], [true, "1"]);
+  assert.match(shown.text, /^需要留意 1 件/, "g1 早于已看的时刻，不算；g2 是断线期间来的，算");
+});
+
+test("接线：点了「已看」之后再重连，不再亮", () => {
+  const page = loadDesktop({ lang: "zh" });
+  guardHello(page);
+  page.advance(1500);
+  page.push({ type: "guard_event", ev: RED_EV("g1", T + 1) });
+  assert.equal(guardShown(page).bar, true);
+  page.advance(30000);
+  page.el("guard-bar-seen").click();
+  assert.deepEqual([guardShown(page).bar, guardShown(page).fab], [false, false]);
+  guardHello(page, { g1: RED_EV("g1", T + 1) });
+  assert.deepEqual([guardShown(page).bar, guardShown(page).fab], [false, false]);
+  assert.ok(Number(page.store.get("guardSeenTs")) > T + 1, "已看的时刻记在 localStorage，刷新也在");
 });

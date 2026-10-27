@@ -208,8 +208,8 @@ def test_bom_glossary_keeps_its_first_entry(tmp_path):
 
 def test_bom_profile_option_line_is_honoured(monkeypatch, tmp_path):
     monkeypatch.setattr(glossary, "PROFILE_DIR", tmp_path)
-    (tmp_path / "bella.txt").write_text("vocative_strip: on\n", encoding="utf-8-sig")
-    assert glossary.profile_options("bella") == {"vocative_strip": True}
+    (tmp_path / "brisa.txt").write_text("vocative_strip: on\n", encoding="utf-8-sig")
+    assert glossary.profile_options("brisa") == {"vocative_strip": True}
 
 
 # ---- #6/#17 强模型探测：进线程池、本场只探一次 ------------------------------------

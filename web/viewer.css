@@ -30,6 +30,7 @@
   --green: #34c759;   --green-ink: #1e7b34;   /* 绿底上的文字用 -ink，4.7:1 */
   --orange: #ff9500;  --orange-ink: #c93400;
   --red: #ff3b30;     --fail: #d70015;  --fail-ink: #c8000f;   /* 红底上的文字用 -ink，5.0:1 */
+  --fail-bar: #d70015;                  /* 白字红底的整条提示（出错的持续提示、检测降级）的底：浅色就是 --fail，外观不变 */
   --gray: #8e8e93;
   --warn-bg: #fff6e0;
   --warn-fg: #7a5200;
@@ -47,6 +48,16 @@
   --fs-caption: 12px;
 
   --r-pill: 999px;
+
+  /* 半透明色阶和预先混好的底色（专家审查 F8，同桌面 style.css 的 d3386e7）：以前这几处直接写
+     color-mix(in srgb, var(--x) N%, …)。Safari 15.4–16.1 认 :has 却不认带 var() 的 color-mix，整条声明在
+     计算期失效、不回退——状态胶囊的底色变透明，报警卡片的浅红底整块消失、只剩左边那道红边。跟 transparent
+     混就是 rgba(色, N%)；跟 --bg 混（报警卡片）不是简单的 rgba，按主题预先算好混合结果。深色那一套在下面 */
+  --a-green-16: rgba(52, 199, 89, 0.16);     /* --green #34c759 */
+  --a-orange-16: rgba(255, 149, 0, 0.16);    /* --orange #ff9500 */
+  --a-red-14: rgba(255, 59, 48, 0.14);       /* --red #ff3b30 */
+  --a-fail-15: rgba(215, 0, 21, 0.15);       /* --fail #d70015 */
+  --tint-fail-8: #fcebec;                    /* 8% --fail + 92% --bg（#ffffff） */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -67,6 +78,9 @@
     --green: #30d158;   --green-ink: #30d158;
     --orange: #ff9f0a;  --orange-ink: #ff9f0a;
     --red: #ff453a;     --fail: #ff6961;  --fail-ink: #ff6961;
+    /* 以前红条用深色的 --fail #ff6961，白字只有 2.82:1（12px 要 4.5:1）；#b3000f 配白字 7.18:1，
+       同桌面 style.css 的 --fail-bar（专家审查 V1） */
+    --fail-bar: #b3000f;
     --gray: #8e8e93;
     --warn-bg: #3a2f14;
     --warn-fg: #f0c674;
@@ -74,6 +88,12 @@
     --info-fg: #9dc4f2;                 /* 8.2:1 */
     --tier-variant: #f0b429;
     --tier-fuzzy: #d9bb4a;
+
+    --a-green-16: rgba(48, 209, 88, 0.16);     /* --green #30d158 */
+    --a-orange-16: rgba(255, 159, 10, 0.16);   /* --orange #ff9f0a */
+    --a-red-14: rgba(255, 69, 58, 0.14);       /* --red #ff453a */
+    --a-fail-15: rgba(255, 105, 97, 0.15);     /* --fail #ff6961 */
+    --tint-fail-8: #2e2223;                    /* 8% --fail + 92% --bg（#1c1c1e） */
   }
 }
 
@@ -130,24 +150,32 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
   height: 22px; padding: 0 2px; border-radius: 11px;
   color: var(--label-2);
 }
-.status-pill:has(.dot.connected) { padding: 0 10px 0 8px; background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green-ink); }
-.status-pill:has(.dot.connecting), .status-pill:has(.dot.reconnecting) { padding: 0 10px 0 8px; background: color-mix(in srgb, var(--orange) 16%, transparent); color: var(--orange-ink); }
-.status-pill:has(.dot.denied), .status-pill:has(.dot.off), .status-pill:has(.dot.full) { padding: 0 10px 0 8px; background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--fail-ink); }
+.status-pill:has(.dot.connected) { padding: 0 10px 0 8px; background: var(--a-green-16); color: var(--green-ink); }
+.status-pill:has(.dot.connecting), .status-pill:has(.dot.reconnecting) { padding: 0 10px 0 8px; background: var(--a-orange-16); color: var(--orange-ink); }
+.status-pill:has(.dot.denied), .status-pill:has(.dot.nokey), .status-pill:has(.dot.off), .status-pill:has(.dot.full) { padding: 0 10px 0 8px; background: var(--a-red-14); color: var(--fail-ink); }
 
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gray); flex: none; }
 .dot.connected { background: var(--green); }
 .dot.connecting, .dot.reconnecting { background: var(--orange); }
-.dot.denied, .dot.off, .dot.full { background: var(--red); }
+.dot.denied, .dot.nokey, .dot.off, .dot.full { background: var(--red); }
 
 .conn-text { font-size: var(--fs-footnote); font-weight: 600; white-space: nowrap; color: inherit; overflow: hidden; text-overflow: ellipsis; }
 .sep { color: var(--label-3); }
 .stream-text { font-size: var(--fs-footnote); color: var(--label-2); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.stream-text.stale { color: var(--label-3); }   /* 断线提示：绝不能停在最后一次「直播中」不动，见 viewer.js renderStreamStale */
+/* 重连中给「状态未知」留出 4em（V4）：以前断开拖久时胶囊里塞着整句，「状态未知」在 390/375/320 宽下都被挤成 0 宽。
+   4em 正好放下四个汉字，英文放不下时照样有省略号。只在重连中留：被拒、已满、已关闭时胶囊里的字就是该做的事
+   （「链接已失效，请向中控要新的二维码」），窄屏上让它先放全，320 宽、顶栏还有报警角标时留了 4em 它会被截掉
+   三十多像素（10-22 无头 Chrome 量的）。:has 不支持时退回 0，和以前一样 */
+.status-pill:has(.dot.reconnecting) ~ .stream-text { min-width: 4em; }
+/* 断线提示：绝不能停在最后一次「直播中」不动，见 viewer.js renderStreamStale。以前用 --label-3 调暗（浅色约 2:1、
+   深色约 2.9:1，「状态未知」读不清，专家审查 V2）；字色提到 --label-2，改用斜体表示「这不是当前状态」，
+   同「翻译中…」这类占位提示 */
+.stream-text.stale { color: var(--label-2); font-style: italic; }
 
 .alert-badge { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-footnote); font-weight: 700; color: var(--fail); flex: none; }
 .stale-line { padding: 4px 14px; font-size: var(--fs-caption); color: var(--label-2); }
 
-/* 违禁词警示关闭时的常驻提示：灰底灰字，不抢红色报警的注意力，但也不会被忽略 */
+/* 违禁词报警关闭时的常驻提示：灰底灰字，不抢红色报警的注意力，但也不会被忽略 */
 .alert-mode-line {
   padding: 6px 14px; font-size: var(--fs-footnote); text-align: center; line-height: 1.5;
   color: var(--label-2); background: var(--fill);
@@ -163,8 +191,11 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
   padding: 7px 14px; font-size: var(--fs-footnote); line-height: 1.6;
 }
 .incident.warn, .health-line.lagging { color: var(--warn-fg); background: var(--warn-bg); }
-.incident.error, .health-line.degraded { color: #fff; background: var(--fail); }
+.incident.error, .health-line.degraded { color: #fff; background: var(--fail-bar); }   /* 不用 --fail：深色下配白字不到 3:1（V1） */
 .incident.info { color: var(--info-fg); background: var(--info-bg); }
+/* 持续提示里的换行照着断（同桌面 style.css 的 .incident）：「没有读到 TikTok 登录」那条带完全磁盘访问权限那几步时
+   分了行（app/browser_login.py no_login_notice，路径单独一行），以前手机上换行被折成空格，又挤成一段话 */
+.incident-list .incident { white-space: pre-line; }
 
 /* ---------- 违禁词报警 ---------- */
 .alert-section { padding: 10px 14px 4px; }
@@ -174,11 +205,18 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
   flex: none; min-height: 44px; font-size: var(--fs-caption); padding: 0 12px; font-family: inherit; cursor: pointer;
   border: none; border-radius: var(--r-pill); background: var(--fill); color: var(--label-2);
 }
-.alert-local-note { font-size: var(--fs-caption); color: var(--label-3); margin: -2px 0 6px; }
+/* 这几处是要读的说明和正文（隐藏报警只在本机、字幕时间、弹幕原文、只看模式、提示音），以前用 --label-3
+   （只给占位符/装饰用的那一档，浅色约 2:1、深色约 3:1），提到 --label-2：页面底色上浅色 5.16:1、深色 6.59:1，
+   深色顶栏/底栏的灰底上 5.78:1（专家审查 V2，tests/test_contrast.py 按各自的底色算着）。
+   --label-3 只留给装饰（.sep）和禁用态 */
+.alert-local-note { font-size: var(--fs-caption); color: var(--label-2); margin: -2px 0 6px; }
+/* 报警多了在自己的框里滚（V4）：以前没有高度上限，15 条报警时下面的字幕区只剩 12px 高。
+   弹幕面板（34vh）同时展开时两块加起来仍超过一屏，字幕区还是会被挤得很矮（10-22 在 390x844 下量过） */
+.alert-list { max-height: 40vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .alert-item {
   position: relative;
   border-radius: 10px; padding: 9px 12px; margin-bottom: 8px;
-  background: color-mix(in srgb, var(--fail) 8%, var(--bg));
+  background: var(--tint-fail-8);
   border-left: 3px solid var(--fail);
 }
 /* 分级色：精确命中沿用 --fail，变体/模糊改用不那么刺眼的分级色，跟桌面端
@@ -188,29 +226,34 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 .alert-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .alert-head-label { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-caption); font-weight: 700; color: var(--fail-ink); }
 .alert-tier-icon { display: inline-flex; color: inherit; }
+/* 报警卡片右上角的 ×：以前用 --label-3，浅色卡片底上约 2:1，不到 WCAG 1.4.11 对图形控件要求的 3:1
+   （b2-contrast 第 2 轮审查记下的）。改成 --label-2，浅色、深色都在 4.5:1 以上（tests/viewer.test.mjs 按卡片底色算着） */
 .alert-dismiss {
   position: relative; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; padding: 0; font-family: inherit; cursor: pointer;
-  border: none; border-radius: 999px; background: transparent; color: var(--label-3);
+  border: none; border-radius: 999px; background: transparent; color: var(--label-2);
 }
 /* 可点区域撑到 44px，但不放大视觉尺寸（22 + 11*2 = 44） */
 .alert-dismiss::before { content: ""; position: absolute; inset: -11px; }
-.alert-dismiss:active { background: color-mix(in srgb, var(--fail) 15%, transparent); }
+.alert-dismiss:active { background: var(--a-fail-15); }
 .alert-ctx { font-size: var(--fs-callout); margin-top: 4px; word-break: break-word; }
 .alert-zh { font-size: var(--fs-callout); margin-top: 3px; color: var(--label-2); word-break: break-word; }
-.alert-zh.pending { font-style: italic; color: var(--label-3); }
+.alert-zh.pending { font-style: italic; color: var(--label-2); }   /* 占位提示靠斜体区分，不靠调暗（V2，同桌面） */
 .alert-zh.failed { color: var(--warn-fg); font-style: normal; }   /* 不能只是留白，中控会以为还在等 */
 
 /* ---------- 字幕 ---------- */
 .retranslate-hint { font-size: var(--fs-caption); color: var(--label-2); padding: 6px 14px 0; }
 .caption-section { flex: 1; overflow-y: auto; padding: 6px 14px 6px; -webkit-overflow-scrolling: touch; background: var(--bg); }
 .cap-item { margin-bottom: 14px; }
-.cap-meta { font-size: 11px; color: var(--label-3); }   /* 纯拉丁字母/数字（时间+语言码），11px 不受中文下限约束 */
+.cap-meta { font-size: 11px; color: var(--label-2); }   /* 纯拉丁字母/数字（时间+语言码），11px 不受中文下限约束；字色见 .alert-local-note */
 .cap-orig { font-size: var(--fs-body); margin-top: 2px; color: var(--label-2); word-break: break-word; }
 .cap-trans { font-size: var(--fs-body); margin-top: 2px; color: var(--blue-ink); word-break: break-word; min-height: 1.5em; }
-.cap-trans.pending { color: var(--label-3); font-style: italic; }
+.cap-trans.pending { color: var(--label-2); font-style: italic; }
 .cap-trans.failed { color: var(--warn-fg); font-style: normal; }
+/* 翻译因积压被跳过（dropped）：和桌面的灰角标一样不当成提醒（viewer.js applyCaptionState），用次要文字的颜色；
+   不斜体，斜体留给还在等的「翻译中…」 */
+.cap-trans.skipped { color: var(--label-2); font-style: normal; }
 .cap-retranslate {
   position: relative;
   display: inline-flex; align-items: center; justify-content: center;
@@ -251,13 +294,16 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
   background: none; border: none; color: var(--label); font-family: inherit; cursor: pointer;
 }
 .cmt-source-label { font-size: var(--fs-caption); color: var(--label-2); }
-.comment-list { max-height: 34vh; overflow-y: auto; padding: 0 14px 8px; -webkit-overflow-scrolling: touch; }
+/* overflow-anchor:none（F6）：贴底跟随和「翻上去时从顶上裁掉一条、把 scrollTop 减回去」都由 viewer.js
+   自己做。浏览器自带的滚动锚定（Chromium 有；10-22 在 macOS 的 WKWebView 里看，WebKit 也有）再调一遍
+   就会减两次。关掉之后只剩脚本这一处在调，不随浏览器变 */
+.comment-list { max-height: 34vh; overflow-y: auto; overflow-anchor: none; padding: 0 14px 8px; -webkit-overflow-scrolling: touch; }
 .cmt-item { padding: 6px 0; border-top: 0.5px solid var(--separator); }
 .cmt-item:first-child { border-top: none; }
 .cmt-head { font-size: var(--fs-caption); color: var(--label-2); }
 .cmt-zh { font-size: var(--fs-callout); color: var(--label); word-break: break-word; }
-.cmt-zh.pending { color: var(--label-3); font-style: italic; }
-.cmt-orig { font-size: var(--fs-caption); color: var(--label-3); word-break: break-word; }
+.cmt-zh.pending { color: var(--label-2); font-style: italic; }
+.cmt-orig { font-size: var(--fs-caption); color: var(--label-2); word-break: break-word; }
 
 /* ---------- 底栏 ---------- */
 .bottom-bar {
@@ -266,7 +312,7 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
   padding: 9px 14px calc(env(safe-area-inset-bottom) + 9px);
   background: var(--bar-bg); border-top: 0.5px solid var(--separator);
 }
-.ro-note { font-size: var(--fs-caption); color: var(--label-3); }
+.ro-note { font-size: var(--fs-caption); color: var(--label-2); }
 .ring-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   min-height: 44px; padding: 0 14px; font-size: var(--fs-callout); font-family: inherit; cursor: pointer;
@@ -275,4 +321,4 @@ html[data-i18n="on"]:not(.i18n-done) body { visibility: hidden; animation: i18n-
 .ring-toggle.on { color: #fff; background: var(--blue-fill); }
 /* 语言切换和提示音一起靠右，只看模式提示留在左边 */
 #lang-toggle { margin-left: auto; }
-.ring-note { font-size: var(--fs-caption); color: var(--label-3); text-align: center; padding: 4px 14px 8px; }
+.ring-note { font-size: var(--fs-caption); color: var(--label-2); text-align: center; padding: 4px 14px 8px; }

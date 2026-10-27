@@ -1,6 +1,6 @@
 """主播专属词表（profiles/<主播>.txt）。
 
-商品知识是逐主播的：把 Bella 的品名装进全局表，Elisa 的直播里就会凭空冒出
+商品知识是逐主播的：把 Brisa 的品名装进全局表，Elena 的直播里就会凭空冒出
 别家商品——盲评实测把「esta limonada → 瘦身柠檬水」判成了捏造。全局表只放
 任何西语带货直播都成立的词条，品牌与商品线按直播间地址自动加载。
 """
@@ -26,8 +26,8 @@ def test_profile_entries_win_over_global(monkeypatch, tmp_path):
     会收集所有命中条目，两边各挂一个中文的话会同时进提示词互相打架。"""
     _files(monkeypatch, tmp_path,
            "la limonada => 柠檬水\nel carrito => 小黄车\n",
-           {"bella.txt": "la limonada | skinny lemonade => 瘦身柠檬水\n"})
-    g = G.load(streamer="bella")
+           {"brisa.txt": "la limonada | skinny lemonade => 瘦身柠檬水\n"})
+    g = G.load(streamer="brisa")
     hits = g.matching("me encanta la limonada")
     assert [(h[0], h[1]) for h in hits] == [("la limonada", "瘦身柠檬水")]
     assert g.matching("todo en el carrito")[0][1] == "小黄车"   # 全局条目仍在
@@ -43,12 +43,12 @@ def test_without_a_profile_nothing_changes(monkeypatch, tmp_path):
 def test_first_use_copies_the_profile_example(monkeypatch, tmp_path):
     """和 glossary.txt 一样：模板入库、副本不入库，用户编辑副本。"""
     _files(monkeypatch, tmp_path, "x => y\n")
-    (tmp_path / "profiles" / "bella.example.txt").write_text(
+    (tmp_path / "profiles" / "brisa.example.txt").write_text(
         "D3 K2 => D3 K2 维生素滴剂\n", encoding="utf-8")
-    path = G.profile_path("bella")
-    assert path == tmp_path / "profiles" / "bella.txt"
+    path = G.profile_path("brisa")
+    assert path == tmp_path / "profiles" / "brisa.txt"
     assert path.exists()
-    assert G.load(streamer="bella").matching("D3 K2")[0][1] == "D3 K2 维生素滴剂"
+    assert G.load(streamer="brisa").matching("D3 K2")[0][1] == "D3 K2 维生素滴剂"
 
 
 def test_streamer_name_cannot_escape_the_profile_dir(monkeypatch, tmp_path):
@@ -63,18 +63,18 @@ def test_misplaced_entries_flag_brand_leftovers(monkeypatch, tmp_path):
     """老版全局模板的品牌条目留在用户 glossary.txt 里时要被点名——
     模板升级不会改用户已经复制出去的那份，不提示就永远修不掉。"""
     _files(monkeypatch, tmp_path, "x => y\n")
-    (tmp_path / "profiles" / "bella.example.txt").write_text(
+    (tmp_path / "profiles" / "brisa.example.txt").write_text(
         "D3 K2 | de tres ka dos => D3 K2 维生素滴剂\n", encoding="utf-8")
     entries = G.parse("D3 K2 => D3 K2 维生素滴剂\nel carrito => 小黄车\n")
     out = G.misplaced_entries(entries)
-    assert out == [("bella", "D3 K2", "D3 K2 维生素滴剂")]
+    assert out == [("brisa", "D3 K2", "D3 K2 维生素滴剂")]
 
 
 def test_same_variant_different_meaning_is_not_misplaced(monkeypatch, tmp_path):
     """判据取精确档：中文也要一致。用户自己把同一个词映射成别的意思，
     那是刻意为之，不该被当成遗留品牌条目。"""
     _files(monkeypatch, tmp_path, "x => y\n")
-    (tmp_path / "profiles" / "bella.example.txt").write_text(
+    (tmp_path / "profiles" / "brisa.example.txt").write_text(
         "la limonada => 瘦身柠檬水\n", encoding="utf-8")
     entries = G.parse("la limonada => 柠檬水\n")
     assert G.misplaced_entries(entries) == []
@@ -85,13 +85,13 @@ def test_profile_options_gate_per_streamer_behaviour(monkeypatch, tmp_path):
     身上触发率差 60 倍，没验证过的主播必须默认关。开关写在 profile 里，
     parse() 认不出它（没有 =>），词条解析不受影响。"""
     _files(monkeypatch, tmp_path, "x => y\n",
-           {"susan.txt": "vocative_strip: on\nla crema => 面霜\n",
-            "bella.txt": "la limpieza => 排毒粉\n"})
-    assert G.profile_options("susan") == {"vocative_strip": True}
-    assert G.profile_options("bella") == {}
+           {"sonia.txt": "vocative_strip: on\nla crema => 面霜\n",
+            "brisa.txt": "la limpieza => 排毒粉\n"})
+    assert G.profile_options("sonia") == {"vocative_strip": True}
+    assert G.profile_options("brisa") == {}
     assert G.profile_options("nadie") == {}
     # 开关行不会被当成词条
-    assert len(G.load(streamer="susan").entries) == 2   # la crema + 全局 x
+    assert len(G.load(streamer="sonia").entries) == 2   # la crema + 全局 x
 
 
 def test_pipeline_strips_only_when_the_profile_says_so(monkeypatch, tmp_path):
@@ -135,10 +135,10 @@ def test_three_layer_priority_profile_over_brand_over_global(monkeypatch, tmp_pa
     品牌与全局重叠时品牌赢；三层互不重叠的条目都照常生效。"""
     _files(monkeypatch, tmp_path,
            "la crema => 面霜\nel carrito => 小黄车\n",
-           profiles={"bella.txt": "la crema => 主播特供面霜\n"},
+           profiles={"brisa.txt": "la crema => 主播特供面霜\n"},
            brands={"acme.txt": "la crema | crema acme => ACME 面霜\n"
                                 "el carrito => ACME 小黄车\n"})
-    g = G.load(streamer="bella", brand="acme")
+    g = G.load(streamer="brisa", brand="acme")
     assert g.matching("la crema")[0][1] == "主播特供面霜"      # profile 赢
     assert g.matching("el carrito")[0][1] == "ACME 小黄车"     # 品牌赢过全局
     # 品牌独有的变体也生效
@@ -163,7 +163,7 @@ def test_brand_none_or_empty_leaves_entries_fingerprint_and_asr_prompt_unchanged
     路径在无重叠 fixture 下会凑巧算出同一个值，光靠「和另一次 load() 调用
     比较」测不出这类回归，必须钉一个字面预期。"""
     _files(monkeypatch, tmp_path, "la crema => 面霜\nel carrito => 小黄车\n",
-           profiles={"bella.txt": "la crema => 主播特供面霜\nD3 K2 => D3 K2 滴剂\n"},
+           profiles={"brisa.txt": "la crema => 主播特供面霜\nD3 K2 => D3 K2 滴剂\n"},
            brands={"acme.txt": "algo => 别的东西\n"})
     expected_entries = [(["la crema", "tu crema", "tus crema", "su crema",
                           "sus crema", "mi crema", "mis crema", "nuestro crema",
@@ -173,11 +173,11 @@ def test_brand_none_or_empty_leaves_entries_fingerprint_and_asr_prompt_unchanged
                           "sus carrito", "mi carrito", "mis carrito",
                           "nuestro carrito", "nuestra carrito"], "小黄车")]
     expected_prompt = "Productos: la crema, D3 K2, el carrito."
-    baseline = G.load(streamer="bella")
+    baseline = G.load(streamer="brisa")
     assert baseline.entries == expected_entries
     assert baseline.asr_prompt() == expected_prompt
     for brand in (None, ""):
-        g = G.load(streamer="bella", brand=brand)
+        g = G.load(streamer="brisa", brand=brand)
         assert g.entries == baseline.entries == expected_entries
         assert G.fingerprint(g.entries) == G.fingerprint(baseline.entries)
         assert g.asr_prompt() == baseline.asr_prompt() == expected_prompt
@@ -185,8 +185,8 @@ def test_brand_none_or_empty_leaves_entries_fingerprint_and_asr_prompt_unchanged
 
 def test_brand_path_rejects_bad_ids_without_creating_anything(monkeypatch, tmp_path):
     _files(monkeypatch, tmp_path, "x => y\n")
-    for bad in ("../x", "Bella", "", None, "bella_all_natural", "a" * 41,
-                "-bella", "bella-"):
+    for bad in ("../x", "Allura", "", None, "allura_belt_nalla", "a" * 41,
+                "-allura", "allura-"):
         assert G.brand_path(bad) is None
     assert list((tmp_path / "brands").iterdir()) == []   # 没建出任何文件
 
@@ -208,13 +208,13 @@ def test_asr_hotwords_take_brands_first_three_skipping_profile_claimed_variants(
     没被收全的条目取第一个没被收过的变体。"""
     monkeypatch.setattr(G, "BRAND_ASR_TERMS", 3)
     _files(monkeypatch, tmp_path, "de vuelta => 库存单位\n",
-           profiles={"bella.txt": "b1 nombre | b1 alias => 品一\n"},
+           profiles={"brisa.txt": "b1 nombre | b1 alias => 品一\n"},
            brands={"acme.txt":
                    "b1 nombre | b1 alias => 品一\n"     # 变体全被 profile 收过：跳过
                    "b2 alias1 | b2 alias2 => 品二\n"    # 第一变体没被收过：取 b2 alias1
                    "b3 nombre => 品三\n"                 # 第 3 条，进热词
                    "b4 nombre => 品四\n"})               # 第 4 条，不进热词
-    g = G.load(streamer="bella", brand="acme")
+    g = G.load(streamer="brisa", brand="acme")
     prompt = g.asr_prompt(limit=G.MAX_ASR_TERMS)
     assert prompt == "Productos: b1 nombre, b2 alias1, b3 nombre, de vuelta."
     assert "b4 nombre" not in prompt

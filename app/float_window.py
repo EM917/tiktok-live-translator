@@ -3,7 +3,9 @@
 
 只做显示，不碰识别、检测、审计、翻译：窗口里的页面（web/float.html）自己连 WebSocket、只收不发，
 服务端对它的连接另有一套隔离（app/server.py 的 role=float）。这个模块只管「窗口本身」：
-什么时候建、什么时候销毁、位置和大小怎么记。
+什么时候建、什么时候销毁、位置和大小怎么记；外加一件和窗口有关的事——监听自己停了时页面上的结束卡片
+有个「回到主窗口」按钮，它经 pywebview 的 js_api（FloatApi）调到这里的 focus_main，把主窗口提到最前。
+这条路只在本机两扇窗口之间，不经过 WebSocket，也不碰管线。
 
 放在 app/ 里是为了能测：main.py 导入时会 execv 进虚拟环境，测试不能 import 它；也不 import webview
 （CI 没装），建窗函数由 main.py 注入。
@@ -352,6 +354,66 @@ def mac_float_tweaks(window, wait=5.0, call_after=None, dark_appearance=None):
         return False
 
 
+# ---- 回到主窗口（结束卡片的按钮） ----------------------------------------------------------
+
+def bring_to_front(window, mac=None, call_after=None):
+    """把一扇 pywebview 窗口提到最前、让程序到前台（pywebview 的 show：cocoa 上是 makeKeyAndOrderFront
+    加 activateIgnoringOtherApps，winforms 上是 Show + Activate；两边都自己切到界面线程）。
+
+    macOS 上窗口缩进了 Dock 的先还原。只在真的缩进去了时才调 restore：winforms 的 restore 会把最大化的
+    窗口改回普通大小，所以别的平台只调 show。
+
+    调用方是 pywebview JS 桥的工作线程（FloatApi.focus_main），不是主线程。macOS 上「缩进去没有」要问 AppKit
+    （native.isMiniaturized()），所以整件事——读它、restore、show——交给主线程做（AppHelper.callAfter，
+    call_after 是测试替身用的）；restore / show 在主线程上照样由 pywebview 自己再排一次 callAfter，先后不变。
+    别的平台、或者窗口还没有 native 时，这里不碰原生对象，直接调 show。
+
+    返回是否做成：macOS 上是有没有交给主线程，主线程上那一步出错只打一行警告（见 _front_on_main）；
+    任何一步不行都只打一行警告，不抛。"""
+    if window is None:
+        return False
+    mac = (sys.platform == "darwin") if mac is None else mac
+    try:
+        native = getattr(window, "native", None) if mac else None
+        if native is None:
+            window.show()
+            return True
+        if call_after is None:
+            from PyObjCTools import AppHelper
+            call_after = AppHelper.callAfter
+        call_after(functools.partial(_front_on_main, window, native))
+        return True
+    except Exception as exc:
+        print("[警告] 没能把主窗口提到前面：{}".format(exc))
+        return False
+
+
+def _front_on_main(window, native):
+    """bring_to_front 交给主线程的那一步（macOS）：缩进 Dock 的先还原，再 show。异常不往 AppKit 的
+    事件循环里抛，只打一行警告。pywebview 的 restore / show 要先等窗口的 shown 事件：主窗口早就显示过、
+    这个事件不会再清掉，所以在主线程上调不会干等。"""
+    try:
+        if native.isMiniaturized():
+            window.restore()
+        window.show()
+    except Exception as exc:
+        print("[警告] 没能把主窗口提到前面：{}".format(exc))
+
+
+class FloatApi:
+    """浮窗页的 js_api：页面里是 window.pywebview.api.focus_main()，只有这一个。
+
+    pywebview 把 js_api 对象上不以下划线开头的属性都挂到页面上（属性是对象的还会往里递归），
+    所以宿主存在 _host 里，对页面只露 focus_main。pywebview 每次 JS 调用都新开一个线程执行，
+    这里不碰事件循环。"""
+
+    def __init__(self, host):
+        self._host = host
+
+    def focus_main(self):
+        return self._host.focus_main()
+
+
 # ---- 窗口宿主 ----------------------------------------------------------------------------
 
 def _spawn_thread(fn):
@@ -365,15 +427,16 @@ _DEFAULT_FRAME = object()       # frame_reader 没传：macOS 上用 mac_window_
 class FloatWindowHost:
     """浮窗的建立、销毁和位置记忆。create_window 是 pywebview 的 webview.create_window（main.py 注入）。
 
-    对外只有 request_open / request_close / shutdown / is_open 和 on_change 回调：
+    对外只有 request_open / request_close / shutdown / is_open / focus_main 和 on_change 回调：
     - request_*：不阻塞，记下「最后想要的状态」，由工作线程把窗口调到那个状态（连点开、关、开，
       以最后一条为准）；
     - shutdown：同步，主窗口关了之后调，保证浮窗一起关（否则 GUI 循环不会退出）；
+    - focus_main：浮窗页结束卡片的「回到主窗口」经 js_api 调到这里（FloatApi），把 main_window 提到最前；
     - on_change(is_open, error)：状态变了（任何线程里调），error 是要告诉用户的一句双语话或 None。"""
 
     def __init__(self, create_window, base_url, platform=None, screens=None, load=None, save=None,
                  spawn=None, timer_factory=None, mac_tweaks=_DEFAULT_TWEAKS, on_change=None,
-                 shown_wait=SHOWN_WAIT_SEC, frame_reader=_DEFAULT_FRAME):
+                 shown_wait=SHOWN_WAIT_SEC, frame_reader=_DEFAULT_FRAME, call_after=None):
         self._create = create_window
         self._shown_wait = shown_wait
         self._base_url = str(base_url).rstrip("/")
@@ -397,6 +460,11 @@ class FloatWindowHost:
         self.on_change = on_change
         # 主窗口的 (x, 宽)，macOS 多块屏时第一次开靠它认出主窗口在哪块屏上（main.py 在建好主窗口之后设）
         self.anchor = None
+        # 主窗口本身：focus_main 要把它提到前面。follow_main_window 挂主窗口的 closed 时顺手存在这里，
+        # 不用改 main.py；主窗口关了就清掉
+        self.main_window = None
+        self._call_after = call_after           # 交给主线程的函数（AppHelper.callAfter）；None 是用时再取，测试传替身
+        self._api = FloatApi(self)
         self._lock = threading.Lock()           # 串行化建窗 / 销毁
         self._state = threading.Lock()          # 保护下面几个字段，持有时间极短
         self._window = None
@@ -426,6 +494,12 @@ class FloatWindowHost:
             return              # 没开、也没在开：什么都不用做（每条非直播状态都会来问一次）
         self._spawn(self._reconcile)
 
+    def focus_main(self):
+        """结束卡片的「回到主窗口」（经 FloatApi 从 JS 桥的线程里调）：把主窗口提到最前（macOS 上交给主线程做，
+        见 bring_to_front）。浮窗本身不动——中控接着开下一场时它还在原处。没有主窗口（还没挂上、已经关了）
+        返回 False。"""
+        return bring_to_front(self.main_window, mac=self._mac, call_after=self._call_after)
+
     def shutdown(self):
         """同步收掉浮窗，之后不再接受 request_open。主窗口 closed 的处理函数里调。"""
         self._dead = True
@@ -451,7 +525,10 @@ class FloatWindowHost:
                   "resizable": True, "on_top": True,
                   # 不抢键盘焦点：它只是显示，操作员正在别的窗口里打字
                   "focus": False, "transparent": self._transparent,
-                  "background_color": "#000000" if self._transparent else SOLID_BACKGROUND}
+                  "background_color": "#000000" if self._transparent else SOLID_BACKGROUND,
+                  # 结束卡片的「回到主窗口」：页面里只多一个 pywebview.api.focus_main（见 FloatApi）。
+                  # 不认 js_api 的老版本由 supported_kwargs 去掉，页面就不画这个按钮
+                  "js_api": self._api}
         if self._mac:
             place = self._mac_place(geom, screens)
             if place is not None:
@@ -665,17 +742,22 @@ class FloatWindowHost:
 
 
 def follow_main_window(window, host, stuck=None, delay=STUCK_EXIT_SEC, timer_factory=None):
-    """主窗口关了，浮窗跟着关。
+    """主窗口关了，浮窗跟着关；顺手把主窗口存到 host.main_window 上（结束卡片的「回到主窗口」要用，
+    main.py 只调这一个函数，不用为它再改）。
 
     cocoa / winforms 都是「所有窗口都关了才停 GUI 循环」：浮窗开着时关主窗口，webview.start() 不返回，
     stop_after_close 不执行，直播管线在后台继续跑。所以主窗口 closed 时要把浮窗销毁。
     stuck：销毁了浮窗 delay 秒后 GUI 循环还没退出（start() 一直不返回）才会调的收尾函数——
     正常情况下主线程早就 os._exit 了，这个定时器根本不会走到。返回是否挂上了。"""
+    if host is None:
+        return False
+    host.main_window = window
     closed = getattr(getattr(window, "events", None), "closed", None)
-    if closed is None or host is None:
+    if closed is None:
         return False
 
     def on_main_closed():
+        host.main_window = None     # 关掉的窗口不再往前提
         host.shutdown()
         if stuck is not None:
             timer = (timer_factory or threading.Timer)(delay, stuck)

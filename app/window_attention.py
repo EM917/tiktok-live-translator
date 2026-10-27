@@ -12,7 +12,11 @@ main.py 的 run_with_window 只负责调 expose_attention。
 
 标题交给窗口之前按界面语言渲染成普通 str。页面重载后经 app/window_lang.py 告诉这里自己
 是什么语言（set_lang），标题跟着换：基底加上此刻未看的条数。
+
+request_attention 是另一件事、和报警无关：监听自己停了（下播、出错）时让 Dock 图标跳一次
+（app/pipeline_float.py 调，专家审查 U3）。上面的标题提醒照旧只给报警用，两条路互不经过。
 """
+import sys
 import threading
 
 from . import i18n
@@ -20,6 +24,8 @@ from .i18n import APP_NAME, L
 
 DEFAULT_TITLE = APP_NAME      # 旧名字，保留为 APP_NAME 的别名
 MAX_COUNT = 999
+# AppKit 的 NSInformationalRequest：Dock 图标只跳一下（NSCriticalRequest 是 0，会一直跳到用户切回来）
+NS_INFORMATIONAL_REQUEST = 10
 
 
 def attention_title(count, base=APP_NAME):
@@ -107,3 +113,26 @@ def expose_attention(window, base=APP_NAME):
     except Exception:
         return None
     return attention
+
+
+def request_attention(platform=None, app=None, call_after=None):
+    """让 Dock 图标跳一次，提醒中控回到程序（macOS 的 requestUserAttention_，informational：只跳一下）。
+    程序本来就在前台时系统什么都不做，所以不用自己判断前后台。
+
+    不阻塞：AppKit 的调用交给主线程做（AppHelper.callAfter），调用方可以在事件循环线程上直接调。
+    返回是否交了出去。非 macOS、拿不到 AppKit（--browser 之类没有 GUI 的进程不该调到这里）都只返回
+    False；出错只打一行警告，不抛。app、call_after 是测试替身用的。"""
+    if (sys.platform if platform is None else platform) != "darwin":
+        return False
+    try:
+        if app is None:
+            from AppKit import NSApplication
+            app = NSApplication.sharedApplication()
+        if call_after is None:
+            from PyObjCTools import AppHelper
+            call_after = AppHelper.callAfter
+        call_after(lambda: app.requestUserAttention_(NS_INFORMATIONAL_REQUEST))
+        return True
+    except Exception as exc:
+        print("[警告] Dock 图标提醒没有生效：{}".format(exc))
+        return False

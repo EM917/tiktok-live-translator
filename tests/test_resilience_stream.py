@@ -23,8 +23,8 @@ from app.resolver import ResolveError
 from app.server import CaptionServer
 from tests.helpers import run
 
-ROOM = "https://www.tiktok.com/@bellaallnatural/live"
-ROOM2 = "https://www.tiktok.com/@elisa/live"
+ROOM = "https://www.tiktok.com/@brisafakeperson/live"
+ROOM2 = "https://www.tiktok.com/@elena/live"
 DIRECT = "https://pull-flv-l1.tiktokcdn.com/stage/stream-1.flv"
 SIGNED = DIRECT + "?expire=1790000000&sign=SECRETSIGN"
 SILENT = b"\x00" * FRAME_BYTES
@@ -903,12 +903,13 @@ def test_stopping_during_an_outage_takes_down_the_banners_that_promise_more_list
     calls = []
 
     async def scenario():
-        hang = asyncio.Event()
+        hang, probed_again = asyncio.Event(), asyncio.Event()
 
         async def reachable():
             calls.append(1)
             if len(calls) == 1:
                 return False, "timeout"
+            probed_again.set()
             await hang.wait()
             return True, ""
 
@@ -921,10 +922,9 @@ def test_stopping_during_an_outage_takes_down_the_banners_that_promise_more_list
         monkeypatch.setattr(resolver, "tiktok_reachable", reachable)
         monkeypatch.setattr(p, "_stream_session", fake_session)
         await p.start_stream(ROOM)
-        for _ in range(2000):
-            await asyncio.sleep(0)
-            if len(calls) >= 2:
-                break
+        # 第二次探网时三条持续提示都已挂上。等事件而不是数圈数：走到这里之前要过好几道
+        # 线程（登录、弹幕规则、模型加载），空转 2000 圈在慢的 CI 上只够约 25 毫秒
+        await asyncio.wait_for(probed_again.wait(), 5)
         before = set(server.config.get("incidents") or {})
         await p.handle_control({"type": "stop"})
         return before

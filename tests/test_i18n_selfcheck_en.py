@@ -142,6 +142,14 @@ def _asr(mp, tmp_path):
             rows.append(run(selfcheck.check_asr(args)))
     note["text"] = NOTE                             # 装 GPU 组件放弃过：给手动安装的命令
     rows.append(run(selfcheck.check_asr(args)))
+    # I10：Apple 芯片上跑着 Intel 版 Python（Rosetta）：apple_silicon 为假，单独一句加换 Python 的步骤。
+    # Rosetta 只出现在 macOS 上：步骤固定按 macOS 拼（带「完全磁盘访问权限」那句），跑测试的是
+    # Linux/Windows 跑器也一样；不拼「Windows 上的 Rosetta」这种现实里没有的组合（审查小问题）
+    mp.setattr(hwdetect, "detect", lambda: {"apple_silicon": False, "rosetta": True})
+    with mp.context() as on_macos:
+        on_macos.setattr(selfcheck, "python_switch_steps",
+                         lambda real=selfcheck.python_switch_steps: real(True))
+        rows.append(run(selfcheck.check_asr(args)))
     return rows
 
 
@@ -389,8 +397,10 @@ def _pip(monkeypatch, spec, upgrade):
 
 def test_pip_command_reads_as_the_end_of_a_sentence(monkeypatch, tmp_path):
     fixes = [i18n.text(r["fix"], i18n.EN) for r in _rows("comments", monkeypatch, tmp_path)]
-    assert 'run this in Terminal: "/opt/py/bin/python3" -m pip install "TikTokLive"' in fixes
-    assert ('run this in PowerShell: & "/opt/py/bin/python3" -m pip install -U "TikTokLive"'
+    # I4（b3-deps）：末尾带 -c 和 constraints.txt 的绝对路径，手动装的也是测试过的那一套版本
+    pin = ' -c "{}"'.format(selfcheck.ROOT / "constraints.txt")
+    assert 'run this in Terminal: "/opt/py/bin/python3" -m pip install "TikTokLive"' + pin in fixes
+    assert ('run this in PowerShell: & "/opt/py/bin/python3" -m pip install -U "TikTokLive"' + pin
             in fixes)
 
 
@@ -417,12 +427,78 @@ def test_comments_install_and_update_commands(monkeypatch, tmp_path):
     assert ("The app tries to update it at each launch, at most once an hour. You can also quit "
             "the app and " + i18n.text(_pip(monkeypatch, TIKTOKLIVE_SPEC, upgrade=True), i18n.EN)
             ) in fixes
-    assert "The comments component needs Python 3.10 or later (current: 3.9). Comments aren’t " \
-           "available." in [i18n.text(r["detail"], i18n.EN) for r in rows]
+    # D14（b3-deps）：最低版本提到 3.10 之后，3.9 那一行说的是整个程序需要升级，不再只是弹幕不可用
+    assert "This version of the app needs Python 3.10 or later (current: 3.9). Python needs an " \
+           "upgrade." in [i18n.text(r["detail"], i18n.EN) for r in rows]
     outdated = next(r for r in rows if "7.0.0" in r["detail"])
     assert i18n.text(outdated["detail"], i18n.EN) == (
         "The comments component, TikTokLive 7.0.0, is older than 7.0.1. It can’t connect when "
         "the comment service uses its backup route.")
+
+
+# I10：换 Python 的照做步骤。macOS 上多一句「完全磁盘访问权限」要给新的 Python 重新授权
+SWITCH_ZH = ("从 python.org 下载安装 Python 3.10 或更新版本；装好之后完全退出程序，删掉程序文件夹里的 "
+             ".venv 文件夹，再重新打开程序，它会用新的 Python 重新安装运行组件（约 1.4 GB，需要联网）")
+SWITCH_EN = ("Install Python 3.10 or later from python.org. Then quit the app completely, delete the "
+             ".venv folder in the app folder, and open the app again. It reinstalls its components "
+             "with the new Python (about 1.4 GB, needs an internet connection).")
+FDA_ZH = ("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次，路径和步骤见「浏览器登录态」"
+          "那一行；不加的话，TikTok 要求登录才给流地址的直播间拿不到流")
+FDA_EN = (" After switching, add the new Python to Full Disk Access once more. The Browser Login row "
+          "shows the path and steps. Without it, the app can’t get the stream for live streams where "
+          "TikTok provides the stream URL only to signed-in viewers.")
+
+
+@pytest.mark.parametrize("darwin", [True, False], ids=["macos", "windows"])
+def test_python_switch_steps_read_in_both_languages(darwin):
+    steps = selfcheck.python_switch_steps(darwin)
+    assert steps == SWITCH_ZH + (FDA_ZH if darwin else "")
+    assert i18n.text(steps, i18n.EN) == SWITCH_EN + (FDA_EN if darwin else "")
+
+
+def test_the_python_39_comments_row_says_how_to_switch(monkeypatch, tmp_path):
+    """I10：3.9 上弹幕那一行以前只说「不可用」。现在给照做的步骤：从 python.org 装新版、重开，
+    约 1.4 GB；macOS 上再提醒给新的 Python 重新授「完全磁盘访问权限」。
+
+    D14（b3-deps）：最低版本提到 3.10 之后改成「需要升级」——3.9 上整个程序都不往下跑，不再说
+    「字幕和违禁词报警不受影响」。步骤和升级提示是同一段（bootstrap.python_upgrade_steps）：
+    不叫人删 .venv（第 2 轮审查：以前给的是 python_switch_steps，要删 .venv，和升级提示对不上），
+    这一格不保留换行，所以用 inline 版。"""
+    from app import bootstrap
+    rows = _rows("comments", monkeypatch, tmp_path)
+    row = next(r for r in rows if "3.9" in r["detail"])
+    steps = bootstrap.python_upgrade_steps(inline=True)
+    assert row["detail"] == "这个版本的程序需要 Python 3.10 或更新的版本（当前 3.9），需要升级"
+    assert row["fix"] == steps
+    assert i18n.text(row["fix"], i18n.EN) == i18n.text(steps, i18n.EN)
+    assert ".venv" not in row["fix"] and ".venv" not in i18n.text(row["fix"], i18n.EN)
+    assert "\n" not in row["fix"]
+    assert row["level"] == selfcheck.WARN
+
+
+def test_a_rosetta_python_gets_its_own_asr_row(monkeypatch, tmp_path):
+    """I10：Apple 芯片上跑着 Intel 版 Python 时，以前「语音识别」一行照样是绿的。
+
+    不说「较小的模型」（审查小问题）：--model 显式指定时模型不一定小，用的是哪个，括号里的
+    detail 写着。夹具里的模型是 large-v3-turbo，以前拼出来就是「较小的模型（ct2 + large-v3-turbo…）」。"""
+    rows = [r for r in _rows("asr", monkeypatch, tmp_path) if "Rosetta" in r["detail"]]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["level"] == selfcheck.WARN
+    assert row["detail"] == ("这台 Mac 是 Apple 芯片，但程序在用 Intel 版的 Python（经 Rosetta 转译运行），"
+                             "识别只能用 CPU（ct2 + large-v3-turbo（首次开播需先下载模型））"
+                             "——慢，长时间监听容易积压")
+    english = i18n.text(row["detail"], i18n.EN)
+    assert english == (
+        "This Mac has Apple silicon, but the app is running on an Intel version of Python "
+        "(translated by Rosetta), so recognition can only run on the CPU: ct2 + large-v3-turbo "
+        "(model downloads when you first click Start). It’s slow, and long sessions tend to build "
+        "a backlog.")
+    assert "较小" not in row["detail"] and "smaller" not in english
+    # Rosetta 只在 macOS 上：步骤带「完全磁盘访问权限」那一句
+    assert row["fix"] == "换成 Apple 芯片原生的 Python：" + SWITCH_ZH + FDA_ZH
+    assert i18n.text(row["fix"], i18n.EN) == (
+        "Switch to a Python built for Apple silicon. " + SWITCH_EN + FDA_EN)
 
 
 def test_the_released_model_error_from_asr_reads_as_english():

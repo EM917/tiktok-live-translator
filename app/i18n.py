@@ -457,8 +457,10 @@ UI_FIELDS = {
     "engine": _ENGINE,
     "disk": _DISK,
     "viewer": _VIEWER,
-    # config 的各个键并进 server.config，hello 时整份重放
-    "config": (("status.detail", "incidents.*.text", "comment_detail", "update_check.note")
+    # config 的各个键并进 server.config，hello 时整份重放。health 是 server.broadcast 存下的识别落后提示
+    # （专家审查 F3），和 incidents 一样随 hello 重放
+    "config": (("status.detail", "incidents.*.text", "health.text", "comment_detail",
+                "update_check.note")
                + tuple("selfcheck." + p for p in _CHECKS)
                + tuple("engine." + p for p in _ENGINE)
                + tuple("disk." + p for p in _DISK)

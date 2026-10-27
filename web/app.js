@@ -61,6 +61,7 @@
   var brandsDirBtn = document.getElementById("brands-dir-btn");
   var brandEmptyHint = document.getElementById("brand-empty-hint");
   var startBtn = document.getElementById("start-btn");
+  var roomInputError = document.getElementById("room-input-error");
   var recentRooms = document.getElementById("recent-rooms");
   var recentList = document.getElementById("recent-list");
   var recentClear = document.getElementById("recent-clear");
@@ -355,17 +356,35 @@
   var currentVersion = "";
   var startWatchdog = null;
   var pendingStart = null;   // 已发出但服务器还没回执的「开始」指令（重连后补发）
-  var versionNoticeTimer = null;
   var updateCheckNote = "";  // 很久没连上更新服务器时版本号后面那句话（文字由服务端给）
   var updateConfirmTimer = null;
   var recentClearConfirmTimer = null;
   var liveBarId = null;      // 底部大字幕当前显示的是哪一条（译文回来要就地替换）
+  // 底部大字幕的待译停留（专家审查 U1，用户 10-22 定的「等译文到了再一起换」）：新的一句先不上大字幕，
+  // 大字幕停在上一句；译文到了、或者确定不会有译文了，再整句一起换上。以前每句先放西语、约 0.9 秒后跳成中文，
+  // 中控盯着的那一行每小时闪约 475 次。等满 LIVE_HOLD_MS 还没结果就照以前的样子先放原文（Claude 下 p99 约 3.9 秒）
+  var LIVE_HOLD_MS = 4000;
+  var liveHold = null;       // { msg, at, until, timer }：在等译文的那一句；null 是没有在等
   // 字幕先出原文、译文后补，所以要能按 id 找回已渲染的那张卡片
   var cardsById = {};
   // 布局意义上的「直播中」，供 viewTransition 判断迁移方向；null＝页面刚加载，
   // 还没收到过任何状态——不能当成「已经在待机」，否则首次到达就是 idle 时会被
   // 误判成「没有变化」，进首页该做的动作（大字幕/弹幕面板归位）就漏了
   var homeActive = null;
+  var statusState = "";      // 最近一条 status 的 state（setStatus 记下）：换主播时 config 先到，胶囊据此重画（F5）
+  // 最近一条 status 带的结构化进度（专家审查 U7）：首次下载识别模型时后端带 {kind:"model_download", pct}，
+  // 字幕区中间的卡片据此写下载进度（web/live-ui.js connectHint）。不带就是 null，卡片照旧写「正在连接」
+  var statusProgress = null;
+  // 这一场有没有出过字幕（专家审查 U8）：直播中还没出过时，字幕区中间写「等待第一句字幕…」。
+  // 新的一场（session_break，实时和回放都算）、重连的 hello（回放会按顺序重新走一遍）时归零，来一条字幕置真。
+  // 不按「#history 里有没有本场的 .cap」现算：直播中点了「清空字幕」之后页面上一条也没有，
+  // 那时写「等待第一句」不对——这一场早就出过字幕了，只是被清掉了
+  var sessionCaptionSeen = false;
+  // 回放里的场次分隔线在弹幕栏里的位置（专家审查 F1）。服务端先回放字幕（分隔线夹在字幕中间），最后才回放
+  // 弹幕；分隔线要是在字幕阶段就插进弹幕栏，就跑到所有回放弹幕的最前面，上一位主播的弹幕被标成「以下为
+  // @新主播」。所以回放的分隔线先记在这里，回放弹幕时插到第一条 ts 不早于它的弹幕前面（弹幕的 ts 是本机
+  // 收到的时间，和分隔线同一个钟）；回放之后的第一条实时消息到了，剩下的（换场之后还没有弹幕）补在末尾
+  var pendingCommentBreaks = [];
 
   // ---- 设置 ----
   // 字幕字号。服务端（settings.json）是正本：localStorage 按「协议+主机+端口」隔离，端口一漂移
@@ -465,6 +484,7 @@
     selectBrand(brandSel, defaultBrandFor(streamerFromInput(roomInput.value), brandsMap));
   }
   function onRoomInputChanged() {
+    clearRoomInputError();     // 中控在改了：上一次「认不出」的提示不再说的是现在这一串
     brandState = brandStateAfterRoomInput(brandState, streamerFromInput(roomInput.value));
     applyDefaultBrand();
   }
@@ -617,7 +637,37 @@
       8000);
   }
 
-  clearBtn.addEventListener("click", function () {
+  // 「清空字幕」「清空弹幕」两段式确认（专家审查 V3），做法同首页「清除记录」（resetRecentClear 那一对）：
+  // 第一次点只把按钮改成「再点确认」，CLEAR_CONFIRM_MS 内再点才真的清，到点自动复原。
+  // 以前一点就清：清的不只是这一页，服务端缓存一起清（forgetOnServer），浮窗跟着清，刷新、重连后也拿不回，
+  // 没有撤销；而这两颗按钮直播中一直摆在中控手边。不用 window.confirm——应用窗口（pywebview）里它可能弹不出来。
+  // 窗口 6 秒，和「清除记录」「一键更新」的确认一样长。
+  // 英文武装态写 Clear?，不写「清除记录」那句 Click Again to Clear：顶栏只给这颗按钮留了 Clear 的宽度，
+  // 145px 的那句在 1000px 窗口里把品牌标签挤到 48px（docs/i18n-style.md §3 第 24a 行）。
+  // 中文武装态写「再点确认」（用户 10-23 定）：四个字和「清空字幕」一样宽，武装时顶栏不变；
+  // 以前的「再点一次清空」多 26px，中文直播顶栏武装那 6 秒会截状态胶囊
+  var CLEAR_CONFIRM_MS = 6000;
+  function confirmTwice(btn, idleText, run) {
+    var timer = null;
+    function reset() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      delete btn.dataset.confirm;
+      btn.textContent = idleText;
+    }
+    btn.addEventListener("click", function () {
+      if (btn.dataset.confirm !== "1") {
+        btn.dataset.confirm = "1";
+        btn.textContent = L("再点确认", "Clear?");
+        timer = setTimeout(reset, CLEAR_CONFIRM_MS);
+        return;
+      }
+      reset();
+      run();
+    });
+  }
+
+  confirmTwice(clearBtn, L("清空字幕", "Clear"), function () {
     clearCaptionsView();
     // 直播中点的：和弹幕栏一样，清空之后从最新处接着跟（首页状态不碰，见 following 的说明）
     if (streamActive) following = true;
@@ -685,6 +735,24 @@
     armStartWatchdog();
   }
 
+  // 输错地址的就地提示（专家审查 U9）：一次输入错误不是程序出错，不动全局状态。以前走
+  // setStatus({state:"error"})：状态胶囊变红「出错了」、顶部挂红横幅，开始面板还摆着，看着像整个程序坏了。
+  // 现在只在输入框下面说一句、给输入框标 aria-invalid；再输入、或者下一次认得出的开始，就清掉
+  function showRoomInputError(text) {
+    if (!roomInputError) return;
+    roomInputError.textContent = text;
+    roomInputError.classList.remove("hidden");
+    roomInput.setAttribute("aria-invalid", "true");
+    roomInput.setAttribute("aria-describedby", "room-input-error");
+  }
+  function clearRoomInputError() {
+    if (!roomInputError) return;
+    roomInputError.textContent = "";
+    roomInputError.classList.add("hidden");
+    roomInput.removeAttribute("aria-invalid");
+    roomInput.removeAttribute("aria-describedby");
+  }
+
   function startStream() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setStatus({ state: "offline", detail: L("与本地服务断开，正在重连——稍候再点「开始翻译」",
@@ -694,9 +762,12 @@
     var parsed = parseRoomInput(roomInput.value);
     if (parsed.error === "empty") { roomInput.focus(); return; }
     if (parsed.error) {
-      setStatus({ state: "error", detail: UNRECOGNIZED_INPUT_MSG });
+      showRoomInputError(UNRECOGNIZED_INPUT_MSG);
+      roomInput.focus();
       return;
     }
+    // 最近直播间的 chip 是在背后填好地址再开始的，不经过 input 事件：认得出的这一次也要清掉上一次的提示
+    clearRoomInputError();
     roomInput.value = parsed.media ? parsed.url + " " + parsed.media : parsed.url;
     lsSet("roomUrl", parsed.url);
     lsSet("sourceLang", sourceSel.value);
@@ -788,6 +859,44 @@
     if (migrateBar) migrateBar.classList.toggle("hidden", !migrateOffered || streamActive);
   }
 
+  // ZIP 安装的更新条上多一行：要复制到新文件夹的那几样（专家审查 I2；用户 10-22 选「先补说明，挪数据另外排期」）。
+  // 设置、词表、审计日志（logs/，合规证据）、字幕记录都放在程序文件夹里，直接拿新解压的文件夹替换旧的，这些就
+  // 一起没了。comment_guard 只列 local/ 和 marked/：它的 defaults/ 是随程序发的，整个文件夹盖过去会把新版本的
+  // 默认规则换回旧的。README「更新（ZIP 安装）」一节写的是同一份清单（tests/banner.test.mjs 两边比对）
+  var README_URL = "https://github.com/EM917/tiktok-live-translator";
+  var zipKeepNote = null;
+
+  function showZipKeepNote(on) {
+    if (!on) {
+      if (zipKeepNote) zipKeepNote.classList.add("hidden");
+      return;
+    }
+    if (!zipKeepNote) {
+      zipKeepNote = document.createElement("p");
+      zipKeepNote.className = "update-zip-note";
+      var text = document.createElement("span");
+      // profiles/、brands/ 只拷自己的 .txt：整个文件夹拷过去会把新版本自带的 *.example.txt 和 README 换成旧的
+      // （和 comment_guard 只列 local/、marked/、不碰 defaults/ 同一个道理；README「更新（ZIP 安装）」一节同样写法）
+      text.textContent = L("更新时不要直接替换旧文件夹：先把旧文件夹里的 settings.json、banned_terms.txt、" +
+                           "glossary.txt，logs/、transcripts/、comment_guard/local/、comment_guard/marked/，" +
+                           "以及 profiles/、brands/ 里你自己的 .txt 文件复制到新文件夹。",
+                           "Don’t replace the old folder when you update. First copy settings.json, " +
+                           "banned_terms.txt, glossary.txt, logs/, transcripts/, comment_guard/local/, " +
+                           "comment_guard/marked/ and your own .txt files in profiles/ and brands/ from the old " +
+                           "folder into the new one.");
+      var link = document.createElement("a");
+      link.href = README_URL + "#" + (UI_LANG === "en" ? "en" : "zh") + "-updating-zip";
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = L("怎么更新", "How to Update");
+      zipKeepNote.appendChild(text);
+      zipKeepNote.appendChild(document.createTextNode(" "));
+      zipKeepNote.appendChild(link);
+      updateBar.appendChild(zipKeepNote);
+    }
+    zipKeepNote.classList.remove("hidden");
+  }
+
   function showUpdate(info) {
     if (!info || !info.version) return;
     setIconText(updateText, "arrow-clockwise", L("发现新版本 " + info.version,
@@ -802,6 +911,7 @@
       updateLink.textContent = L("前往下载新版本", "Download New Version");
       updateLink.className = "btn primary";
     }
+    showZipKeepNote(!info.can_auto);
     updateLink.href = info.url || "#";
     updateOffered = true;
     syncNoticeBars();       // 直播中先不摆，回到首页时再露出来（见 syncNoticeBars）
@@ -826,8 +936,9 @@
     }
     manualCheckAt = Date.now();
     // 「检查中…」的恢复定时器要能被随后到达的结果提示接管，
-    // 否则结果刚显示就被这个定时器抹回版本号
-    showVersionNote(L("检查更新中…", "Checking for updates…"), 8000);
+    // 否则结果刚显示就被这个定时器抹回版本号。它是占位：结果（不管是页面自己写的还是服务端的 notice）
+    // 一到就直接换掉它，不排在它后面等 8 秒
+    showVersionNote(L("检查更新中…", "Checking for updates…"), 8000, { placeholder: true });
   });
 
   // 「迁移旧词表」：扫描 → 展示 → 用户确认 → 服务端备份并迁移。
@@ -906,24 +1017,116 @@
     });
   }
 
-  function showVersionNote(text, ms) {
-    if (versionNoticeTimer) clearTimeout(versionNoticeTimer);
-    versionEl.textContent = " · " + text;
-    versionNoticeTimer = setTimeout(restoreVersion, ms);
+  // ---- 页脚版本号旁的一句话（专家审查 U2；用户 10-22 选「先做小改动」） ----
+  // 以前每条都是 showVersionNote(text, 6000)：后一条直接顶掉前一条，6 秒就没，11px 的 --label-3 淡灰，
+  // 页脚又固定一行高，DeepL 改发 Google 那句约 100 字，1000 宽时折出的第二行落在窗口外。现在分两种来路：
+  //   * 页面对一次点击的回应（showVersionNote：「检查更新中…」「未连接到本地服务」「这条弹幕已经不在列表里」
+  //     这类）：点了就要马上看到，照旧立刻显示，停多久由调用方给。顶掉的若是一条服务端提示，那条放回队首，
+  //     之后完整再显示一遍，不丢；
+  //   * 服务端发来的提示（queueNotice：notice 消息，以及找不到那条字幕 / 弹幕时退回页脚的重译说明）：排队，
+  //     一条显示完再显示下一条，不再互相顶掉；每条按字数停 10–12 秒（noticeMs）。
+  // 「检查更新中…」这种占位（placeholder）谁来都直接换掉、不放回队列：结果一到就该看到结果。
+  // 显示提示时页脚可以长高、长句换行（style.css .copyright.noting），字用 --label-2；版权那行字本身不动
+  // （10-15 用户选过不动），提示只写在版本号这个 span 里。顶部已经挂着同一句持续提示时（改发 Google 那条，
+  // 后端 notice 和持续提示各发一次）页脚不再重复这一句，见 incidentSaying。
+  var NOTICE_MIN_MS = 10000;
+  var NOTICE_MAX_MS = 12000;
+  var NOTICE_QUEUE_MAX = 5;      // 排着的超过这么多条，最旧的那条已经过时：丢掉
+  var footerNote = null;         // 正在显示的那条：{ text, ms, server, placeholder }
+  var footerQueue = [];          // 排着的服务端提示
+  var footerTimer = null;
+  var copyrightEl = versionEl ? versionEl.parentNode : null;
+
+  // 停多久：10 秒起，每 50 个字多 1 秒，最多 12 秒，只取整秒。汉字和全角标点按两个字算：同样的意思，中文的字数
+  // 约是英文字母数的一半，不加权的话改发 Google 那句中文（约 100 字）比英文（约 240 个字母）少停一秒
+  function noticeMs(text) {
+    var s = String(text);
+    var wide = (s.match(/[\u3000-\u9fff\uff00-\uffef]/g) || []).length;
+    return Math.min(NOTICE_MAX_MS, NOTICE_MIN_MS + 1000 * Math.floor((s.length + wide) / 50));
+  }
+
+  function showVersionNote(text, ms, opts) {
+    var preempted = footerNote && footerNote.server ? footerNote : null;
+    putFooterNote({ text: String(text), ms: ms, server: false, placeholder: !!(opts && opts.placeholder) });
+    if (preempted) footerQueue.unshift(preempted);
+  }
+
+  function queueNotice(text) {
+    text = String(text == null ? "" : text);
+    if (!text || incidentSaying(text)) return;
+    if (footerNote && footerNote.server && footerNote.text === text) return;
+    for (var i = 0; i < footerQueue.length; i++) if (footerQueue[i].text === text) return;
+    var note = { text: text, ms: noticeMs(text), server: true, placeholder: false };
+    if (!footerNote || footerNote.placeholder) {
+      putFooterNote(note);
+      return;
+    }
+    footerQueue.push(note);
+    if (footerQueue.length > NOTICE_QUEUE_MAX) footerQueue.shift();
+  }
+
+  function putFooterNote(note) {
+    if (footerTimer) clearTimeout(footerTimer);
+    footerNote = note;
+    versionEl.textContent = " · " + note.text;
+    versionEl.classList.add("noting");
+    if (copyrightEl && copyrightEl.classList) copyrightEl.classList.add("noting");
+    syncFootHeight();
+    footerTimer = setTimeout(endFooterNote, note.ms);
+  }
+
+  // 到点（或被顶部的同一句持续提示接过去）：换下一条，没有了就回到版本号
+  function endFooterNote() {
+    if (footerTimer) clearTimeout(footerTimer);
+    footerTimer = null;
+    footerNote = null;
+    while (footerQueue.length) {
+      var next = footerQueue.shift();
+      if (!incidentSaying(next.text)) {
+        putFooterNote(next);
+        return;
+      }
+    }
+    restoreVersion();
   }
 
   function restoreVersion() {
-    if (versionNoticeTimer) clearTimeout(versionNoticeTimer);
-    versionNoticeTimer = null;
+    versionEl.classList.remove("noting");
+    if (copyrightEl && copyrightEl.classList) copyrightEl.classList.remove("noting");
     if (currentVersion) {
       versionEl.textContent = " · v" + currentVersion + (updateCheckNote ? " · " + updateCheckNote : "");
     }
+    syncFootHeight();
+  }
+
+  // ---- 页脚的实测高度 → CSS 变量 --foot-h（#143 审查） ----
+  // 页脚显示一句提示时会长高、长句换行（style.css .copyright.noting）。大字幕条是 fixed 的，以前 bottom 写死 22px：
+  // 760 宽、英文约 260 字的提示折成 3 行，页脚多出来的两行盖住条子最下面一行（西语原文、角标）约 12 秒。现在量页脚
+  // 的真实高度写进变量，条子的 bottom、高度上限和两栏的底部留白都按它算（style.css）。一行（22px 及以下）时不写，
+  // 样式里的退路就是 22px，和以前逐像素一样。变量只挪条子和留白，不影响页脚自己的高度，写一次就停（不会循环）。
+  // 窗口变宽变窄时提示重新折行：有 ResizeObserver 就盯着页脚；没有的环境（老 WebKit、node 测试的假页面）在换字时量。
+  // 页脚取版本号的父元素，量的时候现取（真页面里就是 copyrightEl；node 的假页面不建树，测试量之前才给它挂上父元素）
+  var footH = 0;
+  function syncFootHeight() {
+    var foot = versionEl ? versionEl.parentNode : null;
+    if (!foot || typeof foot.getBoundingClientRect !== "function") return;
+    var h = Math.ceil(foot.getBoundingClientRect().height);
+    if (!(h > 22)) h = 0;
+    if (h === footH) return;
+    footH = h;
+    document.documentElement.style.setProperty("--foot-h", h ? h + "px" : "");   // 空值＝去掉这条声明
+    // 留白变了：正贴底看的人要再贴一次，不然条子往上挪的那一截正好盖住最新一条
+    if (following) scrollToBottomNow();
+    if (commentFollowing) commentsToBottomNow();
+  }
+  if (copyrightEl && typeof ResizeObserver === "function") {
+    new ResizeObserver(function () { syncFootHeight(); }).observe(copyrightEl);
   }
 
   // 连续很多天没连上更新服务器：只在页脚版本号旁边安静地提一句，不进自检、不进横幅
   function renderUpdateCheck(info) {
     updateCheckNote = info && info.note ? String(info.note) : "";
-    if (!versionNoticeTimer) restoreVersion();   // 正在显示的一次性提示到点后会带上它
+    if (!footerNote) restoreVersion();   // 正在显示的提示到点后会带上它
   }
 
   // 滑块一个值带三处：底部大字幕的字号（--sub-size），历史卡片和弹幕栏的比例（--cap-scale）
@@ -932,6 +1135,7 @@
     Object.keys(vars).forEach(function (name) {
       document.documentElement.style.setProperty(name, vars[name]);
     });
+    liveBarChanged();       // 字号变了，大字幕条跟着变高变矮：两栏底部的留白要重新量（见 syncLiveBarHeight）
   }
 
   // ---- WebSocket ----
@@ -944,14 +1148,15 @@
     ws.onopen = function () { retries = 0; offlineSince = 0; stickyOfflineDetail = ""; };
 
     ws.onclose = function () {
-      // 断开 20 秒还连不回来，多半是本地程序被关掉了——告诉用户怎么办，
-      // 而不是永远「重连中…」
+      // 断开 20 秒还连不回来：说看到了什么（20 秒没连上）和程序关了的话怎么办，而不是永远「重连中…」。
+      // 中文以前写「本地程序似乎已经关闭」，替中控认定了原因，英文却只说观察（专家审查 U4）：两边对齐成英文的意思
       if (!offlineSince) offlineSince = Date.now();
       var gone = Date.now() - offlineSince > 20000;
       setStatus({
         state: "offline",
         detail: gone
-          ? L("本地程序似乎已经关闭——请重新双击打开：macOS 双击「TikTok Live Translator.app」，Windows 双击「Start.bat」。",
+          ? L("超过 20 秒没有连上本地服务。如果程序已经关闭，请重新打开：macOS 双击「TikTok Live Translator.app」，" +
+              "Windows 双击「Start.bat」。",
               "No connection to the app’s local service for over 20 seconds. If the app has quit, reopen it. " +
               "On Mac, double-click TikTok Live Translator.app. On Windows, double-click Start.bat.")
           : stickyOfflineDetail,
@@ -981,6 +1186,8 @@
   }
 
   function handle(msg) {
+    // 回放结束（这是回放之后的第一条实时消息）：还没插进弹幕栏的分隔线补在末尾（F1）
+    if (pendingCommentBreaks.length && msg.type !== "hello" && !msg.replay) flushCommentBreaks();
     switch (msg.type) {
       case "hello":
         // 重连成功：上一条连接上可能丢了「开始」指令，在这条新连接上补发
@@ -989,6 +1196,9 @@
           send(pendingStart.payload);
           armStartWatchdog();
         }
+        // 服务端换了一套页面文件（一键更新重启之后旧标签页重连上来，F8）：重新载入，跑新的 JS。这一条 hello
+        // 不再往下画——页面马上就换掉了
+        if (reloadForBuild(msg.config)) break;
         // 重连时服务器会重发历史（含警报），先清掉本地已有的，避免重复
         alertList.innerHTML = "";
         alertCount.textContent = "0";
@@ -999,6 +1209,7 @@
         commentList.innerHTML = "";
         commentById = Object.create(null);
         commentMeta = Object.create(null);
+        pendingCommentBreaks = [];
         resetCommentRedo();         // 断线期间那次重译的结果收不到了：「重译中…」不能一直挂着
         commentFollowing = true;   // 回放重建整个列表：从最新处开始看
         commentsBelow = 0;
@@ -1007,6 +1218,11 @@
         failStreak = 0;
         transBannerOn = false;
         clearCaptionsView();
+        // 这一场出没出过字幕，交给接下来的回放重算（场次分隔线归零、字幕置真，见 sessionCaptionSeen 的说明）。
+        // 回放里带着这一场的分隔线时，这一行和分隔线那次归零是重复的保险；只有回放里没有分隔线时它说了算：
+        // 服务端的字幕缓存被清空过（app/server.py clear_history 连分隔线一起清）。这时重连后的页面和刷新后的
+        // 一样，只按回放判断，不沿用断线前的（tests/ui-states.test.mjs 钉着）
+        sessionCaptionSeen = false;
         if (msg.config) {
           syncCaptionSize(msg.config);
           if (msg.config.comment_backend) backendState = msg.config.comment_backend;
@@ -1025,6 +1241,12 @@
             roomInput.value = msg.config.room_url;
             // 同 fillRoomInput：程序自己回填的，不清 touched，只记主播名
             brandState = brandStateSyncStreamer(brandState, streamerFromInput(msg.config.room_url));
+          } else if (msg.config.room_url && msg.config.status && isListening(msg.config.status.state)
+                     && streamerFromInput(roomInput.value) !== streamerFromInput(msg.config.room_url)) {
+            // 断线期间换了主播（在别的窗口换的，或这一页没收到那条 config）：输入框里还是上一位，下面的
+            // setStatus 会把胶囊画成「直播中 · @上一位」（F5 的重连那一半）。连接中 / 直播中开始面板是
+            // 收着的，输入框里不会有中控正在敲的字，按服务端的回填
+            fillRoomInput(msg.config.room_url);
           }
           // brand_options 要先于 brands 处理：下拉框的选项得先建好，
           // applyDefaultBrand() 才有值可选
@@ -1046,6 +1268,11 @@
           }
           drawIncidents();
           if (msg.config.status) setStatus(msg.config.status);
+          // 识别落后提示同样以服务端为准（专家审查 F3）：先收起，再按 config.health 画。以前 hello 不碰它，
+          // 断线期间那条「已追上」没收到的页面，一直挂着旧的「识别开始落后」到这一场停止。放在 setStatus
+          // 之后：renderHealth 只在这一场还在进行时才揭开它
+          healthBar.classList.add("hidden");
+          if (msg.config.health) renderHealth(msg.config.health);
           if (msg.config.target_lang) showTargetLang(msg.config.target_lang);
           if (msg.config.source_lang && !sourceTouched) selectSourceLang(msg.config.source_lang);
           if (msg.config.glossary_migration) {
@@ -1056,7 +1283,7 @@
             ? String(msg.config.update_check.note) : "";
           if (msg.config.version) {
             currentVersion = msg.config.version;
-            restoreVersion();
+            if (!footerNote) restoreVersion();   // 正在显示的提示不因重连被抹掉，到点后带上版本号
           }
           // 重连/刷新时回放的提示从来不是「新」提示：不许再改标题打扰直播中的中控
           if (msg.config.update) showUpdate(Object.assign({}, msg.config.update, { quiet: true }));
@@ -1099,7 +1326,7 @@
       // 一次性提示（如手动检查更新的结果）：只改版本号处的文案，
       // 不碰状态机——直播中收到它不该影响「停止」按钮等 UI
       case "notice":
-        if (msg.text) showVersionNote(msg.text, 6000);
+        if (msg.text) queueNotice(msg.text);      // 排队、按字数停 10–12 秒（专家审查 U2，见 queueNotice）
         // 字幕记录行的按钮（导出、打开文件夹）：同一句话也写在按钮下面，页脚常常不在视野里
         if (msg.text && msg.where === "transcripts") showTranscriptStatus(msg.text);
         break;
@@ -1117,7 +1344,17 @@
         // 顺序反了就会用上一个主播的房间算出错的默认值（踩过的坑，同 hello 分支）。
         // brand_options 同理要先于 brands：refresh_brands 的回执也走这条分支，
         // 选项要先建好，applyDefaultBrand() 才有值可选
-        if (msg.room_url) fillRoomInput(msg.room_url);
+        if (msg.room_url) {
+          fillRoomInput(msg.room_url);
+          // 换主播（专家审查 F5）：这条 config 是停完上一位之后才到的，新一场的第一条 status 还要再等开场
+          // 那几步。胶囊和「正在连接 @…」的主播名都取自输入框，以前要等那条 status 才改过来，这几秒里
+          // 胶囊写着「连接中… · @上一位」，横幅却已经是「正在切换到 @新的」。现在输入框一换就按最近
+          // 一条 status 的状态重画这两处；横幅的字是服务端写的，不动
+          if (isListening(statusState)) {
+            paintStatusText(statusState);
+            syncConnectHint(statusState);
+          }
+        }
         if (msg.brand_options) renderBrandOptions(msg.brand_options);
         if (msg.brands) { brandsMap = msg.brands; applyDefaultBrand(); }
         // start_stream 开播时、真正停止后都会广播这个字段（后者是显式 null）；
@@ -1149,6 +1386,10 @@
         updateCaption(msg);
         break;
       case "session_break":
+        // 新的一场开始：上一场的识别落后提示作废（专家审查 F3）。换主播走 quiet 停止、不发 idle，新一场的
+        // 统计循环又从 ok 数起、等级不变就不广播，不在这里收起，它会一直挂到下一次等级变化。
+        // 回放里的分隔线是历史，不碰：此刻的状态由 hello 的 config.health 定
+        if (!msg.replay) healthBar.classList.add("hidden");
         renderSessionBreak(msg);
         break;
       // 服务端清掉了一类缓存（这一页或别的本机页面点了「清空」）：这一页也跟着清。
@@ -1230,20 +1471,32 @@
   }
 
   // ---- 渲染 ----
-  function setStatus(msg) {
-    var state = msg.state || "idle";
-    statusDot.className = "dot " + state;
-    if (statusPill) statusPill.dataset.state = state;
-    // 连接中/直播中额外带上正在听谁：「连接中… · @A」「直播中 · @A」。主播名和
-    // 顶栏「换主播」面板认的是同一个来源（config.room_url，经 streamerFromInput
-    // 提取），取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就
-    // 不带这半句。连接中也要带：点错了要等连上才看得出来，而失败的连接中位
-    // 要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）
+  // 连接中 / 直播中：有一位「正在听的主播」
+  function isListening(state) {
+    return state === "connecting" || state === "live";
+  }
+
+  // 连接中/直播中额外带上正在听谁：「连接中… · @A」「直播中 · @A」。主播名和
+  // 顶栏「换主播」面板认的是同一个来源（config.room_url，经 streamerFromInput
+  // 提取），取不到（房间链接还没回填、或本来就是纯直连地址没有主播身份）就
+  // 不带这半句。连接中也要带：点错了要等连上才看得出来，而失败的连接中位
+  // 要等约 28 秒，这段时间里主播名是唯一能核对「点没点对」的线索（pm.md #5）。
+  // 单独成函数：换主播时 config 先于新一场的 status 到，只重画这几个字（F5）
+  function paintStatusText(state) {
     var label = STATUS_TEXT[state] || state;
-    var liveStreamer = (state === "live" || state === "connecting")
-      ? streamerFromInput(roomInput.value) : "";
+    var liveStreamer = isListening(state) ? streamerFromInput(roomInput.value) : "";
     statusText.textContent = liveStreamer ? label + " · " : label;
     if (liveStreamer) statusText.appendChild(nameSpan("@" + liveStreamer));   // 主播名
+  }
+
+  function setStatus(msg) {
+    var state = msg.state || "idle";
+    statusState = state;
+    // 只记最近一条的：下载完、开始识别后的那条 status 不带它，卡片就回到「正在连接」/ 收起
+    statusProgress = msg.progress && typeof msg.progress === "object" ? msg.progress : null;
+    statusDot.className = "dot " + state;
+    if (statusPill) statusPill.dataset.state = state;
+    paintStatusText(state);
 
     // 更新失败/被拒绝后恢复「一键更新」按钮，允许再试
     if (state === "error" || state === "idle") resetUpdateBtn();
@@ -1287,23 +1540,154 @@
       }
     }
 
-    var detail = msg.detail || "";
+    var detail = String(msg.detail || "");
+    statusDetail = detail;
+    // detail 为空只收起横幅，不改写里面的字（tests/notice-trim.test.mjs 钉着）
     if (detail) {
-      statusBanner.textContent = detail;
-      statusBanner.classList.remove("hidden");
+      renderStatusBanner(detail, msg.paths);
       statusBanner.classList.toggle("info", state !== "error");
+    }
+    bannerCoveredBy = detail ? incidentSaying(detail) : null;
+    statusBanner.classList.toggle("hidden", !detail || !!bannerCoveredBy);
+  }
+
+  // ---- 状态横幅（专家审查 U10、I8、U6） ----
+  // detail 按 \n 分成几行画，每行一个块：
+  //   * status 带 paths（「完全磁盘访问权限」那一步要加的解释器路径，app/pipeline.py _fda_paths）时，每条路径
+  //     画成一行可复制的代码行，样式和复制的做法同 #fix-command。哪些是路径只看 paths 这个结构化字段，不从文字里
+  //     认（「以 / 开头、不含空格」认不准：conda、用户目录下的路径可能带空格）。文字里正好是某条路径的那一行
+  //     （pathOfLine）换成代码行，同一个路径不出现两遍；文字里没有的路径接在最后。没有 paths 就全是文字；
+  //   * 超过 BANNER_FOLD_LINES 行时默认只留第一行，行尾跟一个「显示全部步骤」按钮，可以展开、收起。以前整块写进
+  //     横幅，「Safari 被拒 + Chrome 未登录」那种中文 5 行、英文 7 行红字。第一行一定露着：解析失败时那句
+  //     「接口不给流地址」的说明（第八条）就是第一行——app/browser_login.py browser_only_advice 带多行步骤时
+  //     另起一行接在它后面——1000 宽下中英文都在两行以内。只有一两行的变体（没登录、借到登录仍不给）不折叠。
+  // 和某条正在显示的持续提示一字不差时（断网时 app/pipeline.py _wait_for_network 把同一句既挂持续提示、又发
+  // status），横幅收起、状态胶囊照常；那条持续提示撤掉后横幅再露出来（U6）。
+  var BANNER_FOLD_LINES = 3;
+  var statusDetail = "";         // 当前这条 status 的 detail（空串 = 横幅收着）
+  var bannerDrawnKey = null;     // 横幅上画着的那一句（连同 paths）：同一句重发时保留展开与否
+  var bannerExpanded = false;
+  var bannerCoveredBy = null;    // 和横幅说同一句话的那条持续提示的 id
+  // 横幅里现在画着的是不是 status 的字。横幅是共用的：「连续多条字幕翻译失败」那句（trackTranslateHealth）
+  // 整段换掉里面的字，翻译恢复后横幅收起、字却留着。syncBannerCover 只在这里为真时才放出横幅，否则持续提示
+  // 一变（哪怕撤的是一条不存在的 id），就会把那句已经过时的翻译失败重新露出来
+  var bannerHoldsStatus = false;
+
+  function renderStatusBanner(detail, paths) {
+    bannerHoldsStatus = true;
+    var pathList = (Array.isArray(paths) ? paths : []).map(String).filter(function (p) { return p; });
+    var key = detail + "\u0000" + pathList.join("\u0000");
+    if (key !== bannerDrawnKey) bannerExpanded = false;
+    bannerDrawnKey = key;
+    var lines = detail.split("\n").map(function (s) { return s.trim(); })
+                      .filter(function (s) { return s; });
+    var drawn = {};
+    var head = null;
+    statusBanner.textContent = "";
+    lines.forEach(function (line, i) {
+      var el;
+      var path = pathOfLine(line, pathList);
+      if (path !== null && !drawn[path]) {
+        drawn[path] = true;
+        el = bannerPathRow(path);
+      } else {
+        el = document.createElement("div");
+        el.className = "banner-line";
+        el.textContent = line;
+      }
+      if (i > 0) el.classList.add("banner-rest");
+      else if (el.className === "banner-line") head = el;
+      statusBanner.appendChild(el);
+    });
+    pathList.forEach(function (path) {
+      if (drawn[path]) return;
+      drawn[path] = true;
+      var row = bannerPathRow(path);
+      row.classList.add("banner-rest");
+      statusBanner.appendChild(row);
+    });
+    if (lines.length > BANNER_FOLD_LINES) {
+      // 按钮接在第一行的字后面（行内），折着时第一行加按钮在 1000 宽下中英文都是两行；展开后按钮不挪位置
+      var more = document.createElement("button");
+      more.type = "button";
+      more.className = "banner-more";
+      more.addEventListener("click", function () {
+        bannerExpanded = !bannerExpanded;
+        paintBannerFold(more);
+      });
+      (head || statusBanner).appendChild(more);
+      paintBannerFold(more);
     } else {
-      statusBanner.classList.add("hidden");
+      statusBanner.classList.remove("folded");
     }
   }
 
-  // 连接中：字幕区中央的转圈 + 「正在连接 @xxx…」（显示规则见 web/live-ui.js
-  // connectHint）。已有字幕时挪到 #history 末尾当一行，并跟到底部——停止后再开、
-  // 换主播时历史还在，中央那一版会盖在旧字幕上
+  // 这一行是不是 paths 里的某条路径：整行就是它，或者是用「」/“”括起来的它（app/browser_login.py fda_steps
+  // 的写法，自检那一行里手动选中时有个边界）。只拿结构化的 paths 来比，比不上就是普通文字
+  function pathOfLine(line, pathList) {
+    for (var i = 0; i < pathList.length; i++) {
+      var p = pathList[i];
+      if (line === p || line === "「" + p + "」" || line === "“" + p + "”") return p;   // i18n: data（只用来比对，不上界面）
+    }
+    return null;
+  }
+
+  function paintBannerFold(btn) {
+    statusBanner.classList.toggle("folded", !bannerExpanded);
+    btn.textContent = bannerExpanded ? L("收起", "Hide") : L("显示全部步骤", "Show All Steps");
+    btn.setAttribute("aria-expanded", bannerExpanded ? "true" : "false");
+  }
+
+  // 一条路径一行：路径本身（整条可选中）+「复制」，复制做法同 #fix-command（copyCode）
+  function bannerPathRow(path) {
+    var row = document.createElement("div");
+    row.className = "fix-command banner-path";
+    var code = document.createElement("code");
+    code.setAttribute("translate", "no");
+    code.textContent = path;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn small";
+    btn.textContent = L("复制", "Copy");
+    btn.addEventListener("click", function () { copyCode(code, btn); });
+    row.appendChild(code);
+    row.appendChild(btn);
+    return row;
+  }
+
+  // 持续提示里有没有一条和这句话一字不差（去掉开头的状态 emoji 和首尾空白再比）：有就返回它的 id
+  function noteKey(text) {
+    return stripStatusEmoji(text).trim();
+  }
+
+  function incidentSaying(text) {
+    var key = noteKey(text);
+    if (!key || !incidents) return null;
+    for (var id in incidents) {
+      if (noteKey(incidents[id].text) === key) return id;
+    }
+    return null;
+  }
+
+  // 持续提示变了之后：横幅那句话还有没有哪条持续提示在说（U6）。原来那条还在（只是文字随时长变了，断网那条
+  // 每次重试都更新「已 N 分钟没有监听」，紧跟着的 status 又是同一句新话）就继续收着，等下一条 status 再比；
+  // 它撤掉了才重新比一遍，没有一样的就把横幅放出来。「连续多条翻译失败」那句占着横幅时不动它；那句已经收起、
+  // 横幅里留着的还是它（下一条 status 还没来重画）时也不动它：放出来就是一句过时的话（bannerHoldsStatus）
+  function syncBannerCover() {
+    if (!bannerCoveredBy || !incidents[bannerCoveredBy]) {
+      bannerCoveredBy = statusDetail ? incidentSaying(statusDetail) : null;
+    }
+    if (transBannerOn || !bannerHoldsStatus) return;
+    statusBanner.classList.toggle("hidden", !statusDetail || !!bannerCoveredBy);
+  }
+
+  // 连接中：字幕区中央的转圈 + 「正在连接 @xxx…」；首次下载识别模型时写下载进度；直播中这一场还没出过
+  // 字幕时写「等待第一句字幕…」（显示规则见 web/live-ui.js connectHint）。已有字幕时挪到 #history 末尾
+  // 当一行，并跟到底部——停止后再开、换主播时历史还在，中央那一版会盖在旧字幕上
   function syncConnectHint(state) {
     if (!connectHintEl) return;
     var hint = connectHint(state, streamerFromInput(roomInput.value),
-                           !!historyEl.querySelector(".cap"));
+                           !!historyEl.querySelector(".cap"), statusProgress, !sessionCaptionSeen);
     if (!hint) return;
     connectHintEl.classList.toggle("hidden", !hint.show);
     connectHintEl.classList.toggle("inline", hint.inline);
@@ -1318,6 +1702,14 @@
   var failStreak = 0;
   var transBannerOn = false;
 
+  function translateFailText() {
+    return L("连续多条字幕没有译出来，字幕先显示原文（语音识别不受影响）。" +
+             "一直这样的话，点「停止」后可以在「设置 > 翻译引擎」里换一个引擎。",
+             "The last several captions couldn’t be translated, so captions show the original text. " +
+             "Speech recognition isn’t affected. If this continues, you can choose another engine in " +
+             "Settings > Translation Engine after you click Stop.");
+  }
+
   function trackTranslateHealth(msg) {
     if (msg.translate_state === "failed") {
       // 拒答（refused）是接口正常回了话、只是不译这一句：不算进连续失败，否则主播反复说
@@ -1329,11 +1721,12 @@
       // 只要翻译还在持续失败，警告就要顶回来
       if (failStreak >= 4) {
         transBannerOn = true;
-        setIconText(statusBanner, "warn",
-          L("连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。",
-            "The last several captions couldn’t be translated, so captions show the original text. " +
-            "Speech recognition isn’t affected. If this continues, choose another engine in " +
-            "Settings > Translation Engine."));
+        bannerHoldsStatus = false;           // 横幅里不再是 status 的字，见 bannerHoldsStatus
+        statusBanner.classList.remove("folded");
+        // 只写看到的事和能做的事（专家审查 U4）：中文以前写「翻译服务可能暂时连不上」，猜了原因，英文却没猜；
+        // 英文还叫人直接去「设置 > 翻译引擎」，可设置分组在直播中整块收起，所以写明先点「停止」（用户 10-22 定 D2）。
+        // 两臂不含「可能 / 似乎 / might」由 tests/translate-fail-banner.test.mjs 钉着（D3：只管这一条）
+        setIconText(statusBanner, "warn", translateFailText());
         statusBanner.classList.remove("hidden");
         statusBanner.classList.remove("info");
       }
@@ -1341,7 +1734,10 @@
       failStreak = 0;
       if (transBannerOn) {
         transBannerOn = false;
-        statusBanner.classList.add("hidden");
+        // 横幅里还是翻译失败那句：收起。中途来过一条带 detail 的 status、横幅里已经换成它的字（那句 status 还是
+        // 当下的）：照 status 的规则显示，不跟着翻译恢复一起收掉——否则之后持续提示一变又把它放出来，忽隐忽现
+        if (bannerHoldsStatus) syncBannerCover();
+        else statusBanner.classList.add("hidden");
       }
     }
   }
@@ -1422,6 +1818,12 @@
     // 翻上去看的时候，新字幕不会把视野拉走，但按钮上要数出下面攒了多少没看的（回放的不算）。
     // 在 stickToBottom 之前数：贴底跟随时它会把计数归零
     if (!msg.replay && streamActive && !following) captionsBelow++;
+    // 这一场出过字幕了：「等待第一句字幕…」收起（专家审查 U8）。中间那张卡片还露着的时候（连接中）
+    // 重新摆一次：卡片是追加在 #history 里的，新字幕又追加在它后面——页面重连时 hello 的 status 先到、
+    // 回放的字幕后到，「正在连接」被顶到回放字幕的上面、滚出视野。重摆会把它挪回末尾、改成一行并跟到底部。
+    // 卡片收着时不用管：它下次露出来时 syncConnectHint 自己会挪到末尾
+    sessionCaptionSeen = true;
+    if (connectHintEl && !connectHintEl.classList.contains("hidden")) syncConnectHint(statusState);
     // force 只在「重连时回放、且当前确实处于直播中」才为 true：那是唯一
     // 该无视用户滚动状态、强制跳到最新的场景。待机时收到的回放（刚停止/刚
     // 打开就是上一场留下的历史）不该跟着强制滚到底——否则 enterHomeLayout
@@ -1432,18 +1834,60 @@
     // 底部大字幕：回放历史时不逐条更新（避免闪一串旧字幕），最后一条带
     // restore 标记，用它把大字幕恢复成断线前的样子——但只在当前确实处于
     // 直播中才恢复；待机时回放只用来恢复上面的历史卡片，大字幕留隐藏，
-    // 不然停止后大字幕会跟着回放重新冒出来，压住开始面板下半部
+    // 不然停止后大字幕会跟着回放重新冒出来，压住开始面板下半部。
+    // 实时到达、还在翻译的一句先不上（待译停留，见 holdLiveBar）；回放里带 restore 的那一句照旧直接画——
+    // 那是断线前已经在屏幕上的样子，再等一次反而让大字幕在重连后空着
     if ((!msg.replay || msg.restore) && streamActive) {
-      liveBar.classList.remove("hidden");
-      liveTranslated.textContent = msg.translated || msg.original || "";
-      liveOriginal.textContent = msg.translated ? (msg.original || "") : "";
-      liveOriginal.classList.toggle("hidden", !msg.translated);
-      liveBarId = msg.id;
-      paintLiveState(msg);
-      paintLiveAsr(msg);
-      liveAudioEndAt = captionAudioEndAt(msg, Date.now());
-      paintLiveLag();
+      if (!msg.replay && liveHoldWanted(msg)) holdLiveBar(msg);
+      else showOnLiveBar(msg, Date.now());
     }
+  }
+
+  // ---- 底部大字幕：换上一句 / 待译停留 ----
+  // 一句话上大字幕只走 showOnLiveBar：大字放译文（没有译文时放原文），小字放原文（没有译文时收起）。
+  // receivedAt 是这一句到达页面的时刻：等过译文的那一句按到达时算「约 N 秒前」，不按换上去的时刻
+  function showOnLiveBar(msg, receivedAt) {
+    cancelLiveHold();
+    liveBar.classList.remove("hidden");
+    liveTranslated.textContent = msg.translated || msg.original || "";
+    liveOriginal.textContent = msg.translated ? (msg.original || "") : "";
+    liveOriginal.classList.toggle("hidden", !msg.translated);
+    liveBarId = msg.id;
+    paintLiveState(msg);
+    paintLiveAsr(msg);
+    liveAudioEndAt = captionAudioEndAt(msg, receivedAt);
+    paintLiveLag();
+  }
+
+  // 只有「明确在翻译中、还没有译文」的一句才等。skipped（同语言、不用翻译）、一到就带着结局的、
+  // 老版本服务端不带 translate_state 的，都直接上
+  function liveHoldWanted(msg) {
+    return msg.translate_state === "pending" && !msg.translated;
+  }
+
+  // 新的一句在翻译：大字幕停在上一句（第一句之前就还空着）。等待中又来一句就改等新的那句——
+  // 前一句从头到尾不上大字幕（约 0.7% 的句子，译文比下一句原文还晚到），它在上面的字幕记录里照常有。
+  // 等满 LIVE_HOLD_MS 还没结局：照以前的样子先放原文，译文到了再由 updateCaption 就地换成译文。
+  // 改等新句时截止时刻沿用这一轮最早那次（until），不重新数 4 秒：句子一直比译文来得快时（识别积压后
+  // 一串句子集中到达，间隔不到 4 秒、译文又都慢于间隔），每来一句就重数的话大字幕会一直停在旧句。
+  // 这样大字幕停在旧句最多 LIVE_HOLD_MS，到点时放的是还在等的那一句（最新的）
+  function holdLiveBar(msg) {
+    var now = Date.now();
+    var until = liveHold ? liveHold.until : now + LIVE_HOLD_MS;
+    cancelLiveHold();
+    var hold = { msg: msg, at: now, until: until, timer: null };
+    hold.timer = setTimeout(function () {
+      if (liveHold !== hold) return;
+      liveHold = null;
+      if (streamActive) showOnLiveBar(hold.msg, hold.at);
+    }, Math.min(LIVE_HOLD_MS, Math.max(0, until - now)));
+    liveHold = hold;
+  }
+
+  function cancelLiveHold() {
+    if (!liveHold) return;
+    clearTimeout(liveHold.timer);
+    liveHold = null;
   }
 
   // ---- 底部大字幕下面的一小行：翻译状态角标 + 「约 N 秒前」 ----
@@ -1462,6 +1906,7 @@
       || (liveAsr && !liveAsr.classList.contains("hidden"))
       || (liveCov && !liveCov.classList.contains("hidden"));
     liveMeta.classList.toggle("hidden", !any);
+    liveBarChanged();       // 大字幕的每一处改动最后都走到这里：条高可能变了
   }
 
   // 覆盖率角标跟着 stats 走（每 10 秒），不跟着某一句字幕：近几分钟收到的直播音频偏低时才出现
@@ -1513,8 +1958,10 @@
     if (liveBarId != null && !document.hidden) paintLiveLag();
   }, 1000);
 
-  // 收起大字幕：场次分隔、清空字幕、回到首页都走这里，角标和滞后数一起清掉，不留给下一句
+  // 收起大字幕：场次分隔、清空字幕、回到首页都走这里，角标和滞后数一起清掉，不留给下一句。
+  // 在等译文的那一句也一起忘掉：不然计时器到点会把收起的大字幕重新放出来
   function hideLiveBar() {
+    cancelLiveHold();
     liveBar.classList.add("hidden");
     liveBarId = null;
     liveAudioEndAt = null;
@@ -1533,7 +1980,45 @@
       liveCov.classList.add("hidden");
     }
     liveMeta.classList.add("hidden");
+    forgetLiveBarHeight();
   }
+
+  // ---- 大字幕条的实测高度 → CSS 变量 --live-bar-h ----
+  // 大字幕条是 fixed 的，盖在字幕区和弹幕栏的下沿上，两栏底部要留出它那么高的空。以前写死 204px：
+  // 字号调到 48、60 或者句子长时条子比这高，弹幕栏最新一条被整条盖住（专家审查 U1）。现在量条子的真实
+  // 高度写进变量，.history / .comment-list 的底部留白按它算（web/style.css）。
+  // 防布局循环：值没变就不写（ResizeObserver 回调里写样式，值不变也写会白白再触发一轮）；变量只影响两栏的
+  // 内边距，不影响条子自己的高度，所以写一次就停。条子收起时量出来是 0，不写（见 forgetLiveBarHeight）。
+  var liveBarH = 0;
+  function syncLiveBarHeight() {
+    if (liveBar.classList.contains("hidden")) return;
+    var h = Math.ceil(liveBar.getBoundingClientRect().height);
+    if (!(h > 0) || h === liveBarH) return;
+    liveBarH = h;
+    document.documentElement.style.setProperty("--live-bar-h", h + "px");
+    // 留白变了：正贴底看的人要再贴一次，不然条子新长高的那一截正好盖住最新一条
+    if (following) scrollToBottomNow();
+    if (commentFollowing) commentsToBottomNow();
+  }
+  // 条子收起（清空字幕、换场、回首页）：变量清掉，两栏的留白回到没量过时的样子（合起来 204px，同改之前）。
+  // 不留上一次的值：上一场最后一句若是超长句（字号 60 时条子可达 625px），回到首页后两栏底下会多出一大段
+  // 能滚的空白，要等下一场第一句出来才纠正。liveBarH 归零，条子下次出来时一定重新写
+  function forgetLiveBarHeight() {
+    if (!liveBarH) return;
+    liveBarH = 0;
+    document.documentElement.style.setProperty("--live-bar-h", "");   // 空值＝去掉这条声明（CSSOM 规定）
+  }
+  var liveBarObserver = null;
+  if (typeof ResizeObserver === "function") {
+    liveBarObserver = new ResizeObserver(function () { syncLiveBarHeight(); });
+    liveBarObserver.observe(liveBar);
+  }
+  // 条子的内容、字号、窗口宽度变了。有 ResizeObserver 时它自己会报，这里什么都不做；没有它的环境
+  // （老版本 WebKit、node 测试里的假页面）在这些地方直接量一次
+  function liveBarChanged() {
+    if (!liveBarObserver) syncLiveBarHeight();
+  }
+  window.addEventListener("resize", liveBarChanged);
 
   // 点「重译」没有开始或没成功时，服务端发 retranslate_note：显示在被点的那条字幕旁边几秒。
   // 以前这些话走 notice，落在页脚版本号那一行（6 秒、小字），中控点完像是什么都没发生。
@@ -1556,7 +2041,7 @@
     if (!text) return;
     var card = cardsById[id];
     if (!card) {
-      showVersionNote(text, 6000);
+      queueNotice(text);          // 服务端说的话：和 notice 一样排队，不顶掉别的提示
       return;
     }
     clearRedoNote(card);
@@ -1574,6 +2059,15 @@
   function updateCaption(msg) {
     var card = cardsById[msg.id];
     if (card) applyTranslation(card, msg);
+    if (liveHold && liveHold.msg.id === msg.id) {
+      // 在等的那一句有了结局：译文到了，或者确定不会有译文了（failed / dropped / skipped）——
+      // 整句一起换上；没译成的照旧原文大字 + 角标。只带 strong_state 的重译进度消息不是结局，接着等
+      if (msg.translated || (msg.translate_state && msg.translate_state !== "pending")) {
+        showOnLiveBar(Object.assign({}, liveHold.msg, msg), liveHold.at);
+      }
+      trackTranslateHealth(msg);
+      return;
+    }
     if (liveBarId === msg.id && msg.translated) {
       // 小字永远是西语原文（从卡片取）。以前拿当前大字顶上去：第二次译文
       // （重译）到来时大字已经是中文，顶栏就变成两行中文，原文不见了
@@ -1595,6 +2089,10 @@
   // hello 处理会先用 clearCaptionsView() 清场（只清本页，不告诉服务端），之后回放按原始顺序重新触发
   // caption/session_break，历史上的场次边界就这样被原样重建一遍。
   function renderSessionBreak(msg) {
+    // 新的一场还没出过字幕（专家审查 U8）。放在下面「没有字幕就不画线」的提前返回之前：
+    // 直播中点了「清空字幕」再开下一场（停止再开、换主播），页面上一条 .cap 也没有、这里提前返回，
+    // 而上一场留下的「出过」还是真；不在这里归零，新一场就不写「等待第一句字幕…」（tests/ui-states.test.mjs 钉着）
+    sessionCaptionSeen = false;
     var caps = historyEl.querySelectorAll(".cap");
     // 要不要画、画什么字是纯逻辑，抽到 web/session-divider.js 里单独测
     // （见该文件顶部注释）：app.js 这个大 IIFE 顶层就摸 DOM，整份没法被
@@ -1605,8 +2103,16 @@
     // 底部大字幕清空，等新一场第一条字幕自己把它揭开（同 enterHomeLayout
     // 的道理：不主动显示，交给下一条真实字幕）
     hideLiveBar();
-    insertSessionDivider(commentList, msg);
-    syncConnectHint(statusPill ? statusPill.dataset.state : "");
+    // 弹幕栏：实时的分隔线就插在末尾（这一刻之前的弹幕都是上一场的）。回放的先记下，等弹幕回放按 ts
+    // 插到对的位置（见 pendingCommentBreaks 的说明，专家审查 F1）
+    if (msg.replay) pendingCommentBreaks.push(msg);
+    else {
+      insertSessionDivider(commentList, msg);
+      refreshCommentPanel();    // 分隔线之后这一场还没有弹幕：空态那句露出来（U8）
+    }
+    // 状态取 setStatus 记下的 statusState（和胶囊的 data-state 是同一个值，config 那一支也用它），
+    // 不依赖胶囊元素在不在
+    syncConnectHint(statusState);
     stickToBottom(false);
   }
 
@@ -1615,6 +2121,24 @@
     sep.className = "session-sep";
     sep.textContent = sessionDividerText(msg);
     container.appendChild(sep);
+  }
+
+  // 把记下的回放分隔线插进弹幕栏末尾。beforeTs 给了就只插 ts 不晚于它的（下一条弹幕要追加在它们后面）；
+  // 没给就全插（回放结束）。分隔线按发生顺序记的，遇到第一条还不到时候的就停：ts 不是数的那条也停在
+  // 那里，等回放结束补在末尾——不知道它在哪就不猜
+  function flushCommentBreaks(beforeTs) {
+    var all = beforeTs === undefined;
+    var added = false;
+    while (pendingCommentBreaks.length) {
+      var ts = pendingCommentBreaks[0].ts;
+      if (!all && !(typeof ts === "number" && ts <= beforeTs)) break;
+      insertSessionDivider(commentList, pendingCommentBreaks.shift());
+      added = true;
+    }
+    // 回放结束补在末尾的那条：跟随中就让它露出来（回放的弹幕已经贴过底，这一条是后加的）
+    if (all && added && commentFollowing) commentsToBottomNow();
+    // 补在末尾的分隔线之后没有弹幕：这一场还是空的，空态那句要露出来（U8）
+    if (added) refreshCommentPanel();
   }
 
   function applyTranslation(card, msg) {
@@ -1863,13 +2387,26 @@
     commentPanel.classList.add("collapsed");
   }
 
+  // 弹幕栏里这一场有没有弹幕（专家审查 U8）：从末尾往前看，到最近一条场次分隔线为止。
+  // 以前用列表的 children.length 判断空不空：第二场起列表里留着上一场的弹幕、或者只剩那条分隔线，
+  // 空态那句（「已连接，等待观众发评论…」「评论流断开，重连中…」）就再也不出现，要刷新页面才看得到。
+  // 分隔线和上一场的弹幕都不算这一场的
+  function sessionHasComments() {
+    var kids = commentList.children;
+    for (var i = kids.length - 1; i >= 0; i--) {
+      if (kids[i].classList.contains("session-sep")) return false;
+      if (kids[i].classList.contains("cmt-item")) return true;
+    }
+    return false;
+  }
+
   // 面板什么时候露面、空着的时候说什么。直播中面板必须在——否则中控分不清
   // 「今天没人发弹幕」和「评论流压根没连上」，而后者是要去处理的。
   // show 只看 streamActive，不再是「有内容也算」：待机页面（含刚停止那一刻）
   // 不该显示上一场的弹幕面板/小入口，但列表内容本身不清空，下一场开始时
   // streamActive 一变回 true，原样恢复显示。
   function refreshCommentPanel() {
-    var has = commentList.children.length > 0;
+    var has = sessionHasComments();
     var show = streamActive;
     var collapsed = commentPanel.classList.contains("collapsed");
     commentPanel.classList.toggle("hidden", !show);
@@ -1927,17 +2464,21 @@
   }
 
   // 弹幕作者和主播的关系：TikTok 随每条弹幕发的标记（app/comment_source.py _REL_FLAGS）。
-  // 互关就不再单独标「粉丝」；只在电脑上显示，手机页收不到这个字段
+  // 「互关」不显示（2026-10-21 用户定）：中控看到有的标了互关的观众其实不是互关，这个标记本机核实不了。
+  // 带 mutual 的只标「粉丝」（互关里观众那一侧一定关注了主播），和 follower 并成一个。
+  // 抓取端照旧收 mutual（字段统计、审计都不动），只是页面不画。只在电脑上显示，手机页收不到这个字段
   var REL_LABELS = {
     follower: [L("粉丝", "Follower"), L("关注了主播", "Follows the streamer")],
-    mutual: [L("互关", "Mutual"), L("和主播互相关注", "Follows the streamer, and the streamer follows back")],
     gifter: [L("送过礼", "Gifter"), L("给主播送过礼物", "Has sent the streamer a gift")],
     subscriber: [L("订阅", "Subscriber"), L("订阅了主播", "Subscribes to the streamer")],
   };
   function relTags(rel) {
     if (!Array.isArray(rel)) return [];
-    var tags = rel.filter(function (t) { return REL_LABELS[t]; });
-    if (tags.indexOf("mutual") >= 0) tags = tags.filter(function (t) { return t !== "follower"; });
+    var tags = [];
+    rel.forEach(function (t) {
+      if (t === "mutual") t = "follower";
+      if (REL_LABELS.hasOwnProperty(t) && tags.indexOf(t) < 0) tags.push(t);
+    });
     return tags.map(function (t) {
       var chip = document.createElement("span");
       chip.className = "cmt-rel cmt-rel-" + t;
@@ -1981,7 +2522,9 @@
     if (msg.state === "same" || msg.state === "skipped") orig.classList.add("hidden");
     item.appendChild(orig);
 
-    // 正序：新的追加在底部，和字幕列表同一个方向，从上往下读就是时间顺序
+    // 正序：新的追加在底部，和字幕列表同一个方向，从上往下读就是时间顺序。回放时先把发生在这条之前的
+    // 换场分隔线插进去（F1）
+    if (pendingCommentBreaks.length && typeof msg.ts === "number") flushCommentBreaks(msg.ts);
     commentList.appendChild(item);
     commentById[msg.id] = item;
     noteCommentTr(msg.id, msg.state, msg.translated);
@@ -2127,8 +2670,11 @@
     if (old) old.remove();
   }
 
+  // 重译成了，服务端也说一句（app/comment_redo.py note_done，2026-10-26 用户要的）：「已重译」或「重译结果
+  // 和原来一样」（带 same）。和没成的说明走同一套：画在那条弹幕下面、抽屉那一行也有，COMMENT_REDO_NOTE_MS 后收起
   function receiveCommentRedo(msg) {
     var item = commentById[msg.id];
+    var done = msg.redo_state === "ok";
     if (msg.redo_state) {
       var pending = msg.redo_state === "pending";
       var failed = msg.redo_state === "failed";
@@ -2167,14 +2713,17 @@
     guardCommentChanged(msg.id);
     if (!msg.text) return;
     // 那条弹幕已经不在页面上了（清空了、被挤出 100 条）：话退回页脚那一行，不能丢——
-    // 抽屉里正显示着这一行的话就不用了，说明已经在那里
+    // 抽屉里正显示着这一行的话就不用了，说明已经在那里。成了的那句不退回页脚：新译文已经换进留存和
+    // 抽屉，页脚上一句不知道指哪条弹幕的「已重译」没有用，还要在页脚排队、把别的提示往后挤
     if (!item) {
-      if (!guardDrawerShows(msg.id)) showVersionNote(msg.text, 6000);
+      if (!done && !guardDrawerShows(msg.id)) queueNotice(msg.text);
       return;
     }
     clearCommentRedoNote(item, msg.id);
     var note = document.createElement("div");
-    note.className = "redo-note";
+    // .redo-note 是提醒的底色（给没重译成的说明用）；成了不是提醒，多一个 done 类，样子在 style.css 的
+    // .redo-note.done（#146 时先内联在这里，挪进样式表后页面上看起来一样）
+    note.className = done ? "redo-note done" : "redo-note";
     note.setAttribute("role", "status");
     note.textContent = msg.text;
     item.appendChild(note);
@@ -2262,6 +2811,7 @@
   // 只清这一页的弹幕：点「清空」、别的页面点了清空后的同步，都走这里
   function clearCommentsView() {
     commentList.innerHTML = "";
+    pendingCommentBreaks = [];   // 弹幕清空了，还没插进去的分隔线也不再有位置
     commentById = Object.create(null);
     commentMeta = Object.create(null);
     commentFollowing = true;
@@ -2270,7 +2820,8 @@
     updateCommentJump();
   }
 
-  clearCommentsBtn.addEventListener("click", function () {
+  // 两段式确认同「清空字幕」（confirmTwice，专家审查 V3）
+  confirmTwice(clearCommentsBtn, L("清空弹幕", "Clear Comments"), function () {
     clearCommentsView();
     forgetOnServer("comments");   // 服务端缓存也清，刷新后不会又回来
   });
@@ -2348,7 +2899,8 @@
     decorateComment(msg.id);
   }
 
-  // hello / config：整份换掉本地的。hello 里带来的事件是回放，不算新事件：把「已看」推到此刻
+  // hello / config：整份换掉本地的。回放不算已看：哪些看过由 guardSeenTs 定（存在 localStorage 里，刷新也在），
+  // 只有中控点了「已看」才往前推（例外见下面 hello 那几行）
   function applyGuardConfig(cfg, hello) {
     if (!cfg) return;
     var stateChanged = false;
@@ -2370,9 +2922,15 @@
       Object.keys(mk).forEach(function (k) { if (mk[k] && typeof mk[k] === "object") guardMarked[k] = mk[k]; });
       guardMarkIdx = guardMarkIndex(guardMarked);
     }
+    // 以前每次 hello 都在这里 markGuardSeen()（专家审查 F2）：页面任何一次重连——瞬断、手动刷新、切换界面
+    // 语言的重载——都把未读全标成已看，顶部条和浮钮红点一起消失；断线期间新到的红色事件只随回放到达，
+    // 从头到尾一次都没亮过。现在只剩一种情况会标：这台浏览器从没记过「已看」（guardSeenTs 是 0：第一次打开
+    // 页面）。刚打开页面不为这一场早先的事件弹顶部条，这条约定 tests/app.en.test.mjs 钉着；标过一次之后
+    // 时刻就存下了，之后的重连、刷新都不再标。localStorage 用不了的话每次刷新都是「第一次」，断线期间的
+    // 事件仍可能被这样标掉——只剩这一种
     if (hello) {
-      markedSpoke = [];
-      markGuardSeen();
+      markedSpoke = [];      // 回放的弹幕不重新计「关注的人本场发言」
+      if (!guardSeenTs) markGuardSeen();
     }
     if (stateChanged || "guard_marked" in cfg) decorateAllComments();
     drawGuardAll();
@@ -2650,6 +3208,11 @@
   // 和 health（识别积压，会被「已追上」覆盖）、notice（几秒后消失）不同：这类状况中控必须
   // 看到，刷新页面也还在（服务端放在 hello 的 config.incidents 里）。
   var incidents = Object.create(null);
+  // 带 × 的持续提示：只有时钟跳变那一条（2026-10-21 用户决定：一场合盖几十次，那条黄条一直挂着关不掉）。
+  // 跟服务端 Pipeline.DISMISSABLE_INCIDENTS 是同一份（tests/test_clock_gap_dismiss.py 比对）；别的提示照旧
+  // 只由程序自己撤。点 × 是让服务端撤：所有页面、手机同看一起收起，刷新也不再冒出来；又跳一次服务端会
+  // 重新挂出（「本场第 N 次」接着数），10 分钟没再跳服务端也会自己收起
+  var DISMISSABLE_INCIDENTS = ["session:clock_gap"];
 
   function renderIncident(msg) {
     if (!msg || !msg.id) return;
@@ -2657,13 +3220,63 @@
       delete incidents[msg.id];
     } else {
       incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "",
-                            since: msg.since || msg.ts || 0 };
+                            since: msg.since || msg.ts || 0, ts: msg.ts };
     }
     drawIncidents();
   }
 
+  // 带上看到的那一条的 ts：这期间又跳了一次的话服务端不收，新的那次中控还没看到。
+  // 发出去了才先在本页收起（等服务端的 clear 回来也是同样的结果）；连接断着时发不出去，
+  // 就不收——不然这一页看着关掉了，服务端那条还在，重连后又冒出来
+  function dismissIncident(id) {
+    var item = incidents[id];
+    if (!item) return;
+    if (!send({ type: "dismiss_incident", id: id, ts: item.ts })) return;
+    delete incidents[id];
+    drawIncidents();
+  }
+
+  // 超过 3 行的持续提示默认只露第一行，行尾跟「显示全部步骤」，和状态横幅同一个做法（U10，BANNER_FOLD_LINES）。
+  // 眼下只有「没有读到 TikTok 登录」带完全磁盘访问权限那几步的那种（app/browser_login.py no_login_notice，第一行是
+  // 看到了什么、影响哪类直播间、在 Safari 里登录）：它读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
+  // 八九行（审查第 1 轮）。持续提示每变一条整排重画：展开与否按 id 记、连同那段文字，重画时保留，文字变了重新
+  // 折起来。按钮就地切换，不重画（键盘焦点留在按钮上）
+  var incidentOpen = Object.create(null);   // id → 展开时的那段文字
+
+  function foldIncident(span, id, text) {
+    var lines = String(text).split("\n").map(function (s) { return s.trim(); })
+                            .filter(function (s) { return s; });
+    if (!span || lines.length <= BANNER_FOLD_LINES) {
+      delete incidentOpen[id];
+      return;
+    }
+    if (incidentOpen[id] !== undefined && incidentOpen[id] !== text) delete incidentOpen[id];
+    span.textContent = lines[0];
+    var rest = document.createElement("span");
+    rest.className = "incident-rest";
+    rest.textContent = "\n" + lines.slice(1).join("\n");      // .incident > span 是 pre-line：照着换行
+    var more = document.createElement("button");
+    more.type = "button";
+    more.className = "banner-more";
+    function paint() {
+      var open = incidentOpen[id] === text;
+      rest.classList.toggle("hidden", !open);
+      more.textContent = open ? L("收起", "Hide") : L("显示全部步骤", "Show All Steps");
+      more.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    more.addEventListener("click", function () {
+      if (incidentOpen[id] === text) delete incidentOpen[id];
+      else incidentOpen[id] = text;
+      paint();
+    });
+    span.appendChild(more);
+    span.appendChild(rest);
+    paint();
+  }
+
   function drawIncidents() {
     if (!incidentBar) return;
+    for (var gone in incidentOpen) if (!incidents[gone]) delete incidentOpen[gone];
     incidentBar.innerHTML = "";
     var keys = Object.keys(incidents).sort(function (a, b) {
       return (incidents[a].since || 0) - (incidents[b].since || 0);
@@ -2673,10 +3286,27 @@
       var level = incidents[k].level;
       row.className = "incident " + (level === "error" ? "error" : (level === "info" ? "info" : "warn"));
       // 当数据，不当 HTML；开头自带的 🔴⚠️ 换成按级别画的图标
-      setIconText(row, barIconFor(level), stripStatusEmoji(incidents[k].text));
+      var text = stripStatusEmoji(incidents[k].text);
+      setIconText(row, barIconFor(level), text);
+      foldIncident(row.lastChild, k, text);
+      if (DISMISSABLE_INCIDENTS.indexOf(k) !== -1) {
+        row.classList.add("dismissible");
+        var closeBtn = document.createElement("button");
+        closeBtn.type = "button";
+        closeBtn.className = "incident-close";
+        closeBtn.title = L("关闭", "Close");
+        closeBtn.setAttribute("aria-label", L("关闭", "Close"));
+        closeBtn.appendChild(iconEl("xmark"));
+        closeBtn.addEventListener("click", function () { dismissIncident(k); });
+        row.appendChild(closeBtn);
+      }
       incidentBar.appendChild(row);
     });
     incidentBar.classList.toggle("hidden", keys.length === 0);
+    // 同一句话只说一遍：状态横幅（U6）和页脚正在显示的服务端提示（改发 Google 时后端 notice 和持续提示各发
+    // 一次，U2）跟顶部这几条一字不差时让给顶部
+    syncBannerCover();
+    if (footerNote && footerNote.server && incidentSaying(footerNote.text)) endFooterNote();
   }
 
   function renderHealth(msg) {
@@ -3247,7 +3877,8 @@
       } else {
         markName(chip);
         chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
-        chip.title = L("填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）",
+        // 不写「武装」：那是代码里两段式确认的叫法（web/switch.js），不是给中控看的词（专家审查 V5）
+        chip.title = L("填入 @" + e.streamer + "，再点一次确认才会换",
                        "Select @" + e.streamer + ". You’ll still need to confirm.");
         chip.addEventListener("click", function () {
           switchInput.value = e.url;
@@ -3521,30 +4152,34 @@
   }
 
   if (fixCmdCopy) {
-    fixCmdCopy.addEventListener("click", function () {
-      var text = fixCmdText.textContent;
-      var done = function () {
-        fixCmdCopy.textContent = L("已复制", "Copied");
-        setTimeout(function () { fixCmdCopy.textContent = L("复制", "Copy"); }, 2000);
-      };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done, function () {
-          selectCommand();   // 剪贴板被拒（非 https 等）：至少帮用户选中
-        });
-      } else {
-        selectCommand();
-      }
-    });
+    fixCmdCopy.addEventListener("click", function () { copyCode(fixCmdText, fixCmdCopy); });
   }
 
-  function selectCommand() {
+  // 「复制」：整段代码（命令、路径）原样放进剪贴板；剪贴板被拒（非 https 等）时至少帮用户选中。
+  // #fix-command 和状态横幅里的路径行（bannerPathRow）共用
+  function copyCode(codeEl, btn) {
+    var text = codeEl.textContent;
+    var done = function () {
+      btn.textContent = L("已复制", "Copied");
+      setTimeout(function () { btn.textContent = L("复制", "Copy"); }, 2000);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () {
+        selectCode(codeEl, btn);
+      });
+    } else {
+      selectCode(codeEl, btn);
+    }
+  }
+
+  function selectCode(codeEl, btn) {
     var range = document.createRange();
-    range.selectNodeContents(fixCmdText);
+    range.selectNodeContents(codeEl);
     var sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
-    fixCmdCopy.textContent = L("已选中，按 ⌘C", "Selected. Press ⌘C");
-    setTimeout(function () { fixCmdCopy.textContent = L("复制", "Copy"); }, 3000);
+    btn.textContent = L("已选中，按 ⌘C", "Selected. Press ⌘C");
+    setTimeout(function () { btn.textContent = L("复制", "Copy"); }, 3000);
   }
 
   // ---- 字幕跟随 ----
@@ -3642,6 +4277,7 @@
   // 它等第一条真正的字幕到达时由 renderCaption 自己揭开；这里只需要让接下来到达的新字幕照常跟到底部。
   function exitHomeLayout() {
     following = true;
+    clearRoomInputError();  // 开始面板要收起了；回到首页时输入框里多半已是服务端回填的地址，旧提示不再对得上
     syncNoticeBars();       // 开播：「有新版本」「迁移旧词表」两条先收起（更新进行中的除外）
   }
 
@@ -3865,6 +4501,23 @@
       else uiLangSelect.removeAttribute("title");
     }
     if (langSummaryEl) langSummaryEl.textContent = langSummary(langSetting, cfg.ui_lang, cfg.ui_lang_system);
+  }
+
+  // 页面文件的版本（F8）：服务端启动时按 web/ 的内容算出 config.build（app/server.py web_build）。这一页第一次
+  // 连上时记下它；之后哪一次 hello 里的不一样，说明服务端已经换了一套页面文件——浏览器模式下一键更新重启后，
+  // 旧标签页重连上新进程，以前接着跑旧 JS。现在它自己重新载入；程序照旧另开一个新标签页（重启不带 --no-open，
+  // 见 tests/test_updater_relaunch.py），两页跑的都是新 JS。新载入的页面重新记第一次的值，不会一直刷新。
+  // 没有 build（老的服务端、测试里直接起的服务）不比对
+  var pageBuild = null;
+  function reloadForBuild(cfg) {
+    var build = cfg && typeof cfg.build === "string" ? cfg.build : "";
+    if (!build) return false;
+    if (pageBuild === null || pageBuild === build) {
+      pageBuild = build;
+      return false;
+    }
+    location.reload();
+    return true;
   }
 
   // 服务端的界面语言和本页不同（刚在设置里换过，或重连到一个换过语言的程序）：整页重载一次。

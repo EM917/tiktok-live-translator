@@ -6,11 +6,15 @@
 （见 _init_viewer_share）从头到尾只在这 21 个方法里用到，和 Pipeline 其余部分
 只通过 self.server / self._save_setting / self._spawn / self.retranslate /
 self.audit / self._recent 六个稳定通道打交道——边界很干净，天然可以整块搬走。
+
+专家审查 S7 之后，手机点的重译另外只读几样东西：识别健康（_health_shown、_asr_failing、
+_asr_watch、telemetry 的积压、_health_level），这一条的重译状态（_quality、_strong_inflight），
+拒绝时调 _retranslate_refused。见 _recognition_behind、_refuse_viewer_retranslate。
 """
 import asyncio
 from collections import deque
 
-from .i18n import bimap, of
+from .i18n import L, bimap, of
 from .redact import strip_query
 from .settings import load_settings
 
@@ -22,6 +26,11 @@ VIEWER_STOP_TIMEOUT_SEC = 2.0    # 退出收尾时关同看的预算：不得拖
 # 用这个数上限，多出来的安静丢掉——不然一台手机连点十几下能把请求堆成一长队，
 # 而这条队伍会一直占着强模型，跟违禁词报警抢显存
 VIEWER_RETRANSLATE_QUEUE_MAX = 4
+# 识别落后时，手机点的「重译」不开始（S7）。这句话只交给 _retranslate_refused：trigger 是 viewer，
+# 桌面上不冒提示，手机靠按钮上的「重译失败」；写成对是因为它走的是界面那条路
+VIEWER_RETRANSLATE_PAUSED = L("识别落后时，手机上点的重译先不执行",
+                              "Retranslating from a phone is paused while speech recognition is "
+                              "falling behind.")
 
 
 class ViewerShareMixin:
@@ -140,7 +149,7 @@ class ViewerShareMixin:
 
     def _viewer_action_semaphore(self):
         """手机发起的重译一次只跑一条。中控桌面那颗「重译」按钮不受影响——
-        它走 self.retranslate() 本身，不经过这把锁。"""
+        它从 handle_control 进来，怎么排队是那边自己的事，不经过这把锁。"""
         if getattr(self, "_viewer_action_sem_obj", None) is None:
             self._viewer_action_sem_obj = asyncio.Semaphore(1)
         return self._viewer_action_sem_obj
@@ -156,15 +165,89 @@ class ViewerShareMixin:
             return None
         if seq not in self._recent:
             return None           # 程序自己都不认得这条字幕，不必往下传
+        level = self._recognition_behind()
+        if level:
+            # 排在排队上限之前：落后时这次点击要有回音（按钮标成失败），不能被「排满了」安静吞掉。
+            # 当场处理掉的点击也写一条 viewer_action，和排上队的一样：事后要答得出「手机点没点过」
+            self._viewer_audit("viewer_action", action="retranslate", seq=seq, ip=ip)
+            return self._refuse_viewer_retranslate(seq, level)
         if self._viewer_action_pending >= VIEWER_RETRANSLATE_QUEUE_MAX:
             return None           # 排队已经够多了，安静丢掉这次点击
         self._viewer_action_pending += 1
         return self._run_viewer_action(seq, ip)
 
+    def _recognition_behind(self):
+        """手机点的重译此刻要不要先不执行（专家审查 S7）。要的话返回界面上显示着的那个等级
+        （lagging / degraded），不要的话返回 None。重译要动用强模型——本地引擎时它和识别抢同一块
+        显存与算力，识别本来就落后，再让手机点出强模型调用，落后只会更多，报警跟着更晚（CLAUDE.md
+        第六条）。中控桌面上的「重译」不走这里——那是中控自己的判断。
+
+        两头都不是 ok 才拦：
+          1. 显示的：本场审计下最后一次播出的健康等级（_health_shown）。只认属于当前审计的那一条，
+             上一场留下的 lagging 不算数；没在监听（audit 是 None）时没有识别在跑，也不拦。
+          2. 此刻的：识别连续出错的提示还挂着（_asr_failing 是本场的审计），或者有一段识别卡住了
+             （_asr_watch 记着本场 stalled），或者积压按统计循环的同一套阈值（_health_level）算出来
+             不是 ok。
+
+        只看第 1 条的话，显示的落后过时了也会拦。_health_shown 要等有人播报才变，有两段时间它比
+        此刻旧：
+          - 统计循环每 10 秒才按积压算一次，积压已经回落、下一跳还没到时，显示的仍是 lagging。
+          - GPU 识别连续出错、改用 CPU 之后，_on_asr_failures 播一条 lagging（reason=asr_fallback）。
+            CPU 模型第一次识别成功时，asr_worker 调 _asr_calls_recovered 按积压重报，积压正常就回到
+            ok（tests/test_resilience_asr.py 的 test_repeated_mlx_failures_switch_to_the_cached_cpu_turbo
+            钉着 degraded→lagging→ok）。在那之前——比如一直没人说话——没有别的播报：统计循环只在它
+            自己算出的积压等级（_stats_loop 的局部变量 last_level）变了时才播，而它一直是 ok。
+        这两段时间里此刻的积压是 ok，手机点的照常开始。
+
+        显示的是 ok 时不拦，此刻的积压过了「开始落后」也不拦：拦不拦以显示出来的为准，此刻的状态只用来
+        放过过时的落后显示，不另外加拦。_health_shown 在 pipeline.py 里写，这里不改它。"""
+        audit = getattr(self, "audit", None)
+        shown = getattr(self, "_health_shown", None)
+        if audit is None or not isinstance(shown, tuple) or len(shown) < 2:
+            return None
+        if shown[0] is not audit or shown[1] == "ok":
+            return None
+        if getattr(self, "_asr_failing", None) is audit:
+            return shown[1]       # 出错的调用返回得快、积压归零，不等于识别在正常跑
+        watch = getattr(self, "_asr_watch", None)
+        if isinstance(watch, dict) and watch.get("audit") is audit and watch.get("stalled"):
+            return shown[1]       # 卡住的那段还没返回；没人说话时积压也涨不上去
+        backlog = getattr(getattr(self, "telemetry", None), "audio_backlog_sec", 0.0) or 0.0
+        if self._health_level(backlog) == "ok":
+            return None
+        return shown[1]
+
+    def _viewer_retranslate_moot(self, seq):
+        """retranslate() 对这一条本来就不会开始：已经是强模型译的，或者正在重译。这两种它只回一句
+        note，而手机点的（trigger=viewer）连 note 都不发——按钮状态一条不改。"""
+        from .pipeline import QUALITY_STRONG    # 运行时 pipeline 早已载完；放模块顶上会循环导入
+
+        quality = getattr(self, "_quality", None) or {}
+        inflight = getattr(self, "_strong_inflight", None) or ()
+        return quality.get(seq, 0) >= QUALITY_STRONG or seq in inflight
+
+    def _refuse_viewer_retranslate(self, seq, level):
+        """识别落后，这次手机点的重译不执行。返回要等的协程，什么都不用发时返回 None。
+
+        先过 retranslate() 自己的「已是强译 / 正在重译」：这两种照它原来的样子什么都不发。拒绝要广播
+        strong_state=failed，桌面和每台手机都会收到；这一条正由桌面在重译、或者已经是强模型译文时
+        要是也这么发，各处这一条都会被标成「重译失败」，桌面那颗正在等结果的按钮还会被解禁。"""
+        if self._viewer_retranslate_moot(seq):
+            return None
+        print("[同看] 识别健康是 {}，手机点的重译（第 {} 条）没有执行".format(level, seq))
+        return self._retranslate_refused(seq, "viewer", VIEWER_RETRANSLATE_PAUSED)
+
     async def _run_viewer_action(self, seq, ip):
         try:
             self._viewer_audit("viewer_action", action="retranslate", seq=seq, ip=ip)
             async with self._viewer_action_semaphore():
+                # 排队等信号量的这几秒里识别可能开始落后：轮到时再看一次
+                level = self._recognition_behind()
+                if level:
+                    refusal = self._refuse_viewer_retranslate(seq, level)
+                    if refusal is not None:
+                        await refusal
+                    return
                 await self.retranslate(seq, trigger="viewer")
         finally:
             self._viewer_action_pending -= 1

@@ -36,17 +36,81 @@ test("浮窗按钮：服务端提供这个功能 + 正在监听才露出；开�
 });
 
 test("连接中：带主播名；没有主播名用通用文案", () => {
-  assert.deepEqual(connectHint("connecting", "bella", false), { show: true, inline: false, text: "正在连接 @bella…" });
+  assert.deepEqual(connectHint("connecting", "brisa", false), { show: true, inline: false, text: "正在连接 @brisa…" });
   assert.deepEqual(connectHint("connecting", "", false), { show: true, inline: false, text: "正在连接…" });
 });
 test("连接中且已有字幕：改成字幕末尾一行", () => {
-  assert.equal(connectHint("connecting", "bella", true).inline, true);
+  assert.equal(connectHint("connecting", "brisa", true).inline, true);
 });
 test("其余状态隐藏；offline 返回 null（维持原样）", () => {
   for (const s of ["idle", "live", "ended", "error", undefined]) {
-    assert.deepEqual(connectHint(s, "bella", false), { show: false, inline: false, text: "" });
+    assert.deepEqual(connectHint(s, "brisa", false), { show: false, inline: false, text: "" });
   }
-  assert.equal(connectHint("offline", "bella", false), null);
+  assert.equal(connectHint("offline", "brisa", false), null);
+});
+
+// 专家审查 U7：首次下载识别模型时中间卡片写下载进度。只认 status 的结构化 progress，不看 detail
+test("连接中带下载进度：卡片写「正在下载识别模型… 37%」，主播名不再写", () => {
+  const dl = { kind: "model_download", pct: 37 };
+  assert.deepEqual(connectHint("connecting", "luna_demo", false, dl),
+    { show: true, inline: false, text: "正在下载识别模型… 37%" });
+  assert.equal(connectHint("connecting", "luna_demo", true, dl).inline, true, "已有字幕时照旧改成末尾一行");
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: 0 }).text, "正在下载识别模型… 0%");
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: 99.7 }).text, "正在下载识别模型… 99%");
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: 150 }).text, "正在下载识别模型… 100%");
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: -3 }).text, "正在下载识别模型… 0%");
+});
+test("下载进度缺 pct（大小未知）或不是数：只写「正在下载识别模型…」", () => {
+  for (const pct of [undefined, null, "37", NaN, Infinity]) {
+    assert.equal(connectHint("connecting", "luna_demo", false, { kind: "model_download", pct }).text,
+                 "正在下载识别模型…", String(pct));
+  }
+});
+test("大小未知、后端只给了已下载的 mb：写「正在下载识别模型… 已下载 580 MB」", () => {
+  // 后端（app/pipeline.py _model_download_progress）大小未知时发 {kind, pct: null, mb}
+  assert.deepEqual(connectHint("connecting", "luna_demo", false, { kind: "model_download", pct: null, mb: 580 }),
+    { show: true, inline: false, text: "正在下载识别模型… 已下载 580 MB" });
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", mb: 20.6 }).text,
+               "正在下载识别模型… 已下载 21 MB");
+  // 有百分比时只写百分比（横幅里有 MB）
+  assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: 37, mb: 600 }).text,
+               "正在下载识别模型… 37%");
+  // mb 也不是数、或是负数：只写前半句
+  for (const mb of [undefined, null, "580", NaN, Infinity, -1]) {
+    assert.equal(connectHint("connecting", "", false, { kind: "model_download", pct: null, mb }).text,
+                 "正在下载识别模型…", String(mb));
+  }
+});
+test("没有 progress、只有 detail、kind 认不出：照旧「正在连接 @…」（不把横幅那句搬进来）", () => {
+  // connectHint 根本不收 detail：横幅里的「正在解析直播流地址…」之类不会在中间再写一遍
+  for (const progress of [undefined, null, {}, "model_download", { kind: "other", pct: 50 }, { pct: 50 }]) {
+    assert.deepEqual(connectHint("connecting", "luna_demo", false, progress),
+      { show: true, inline: false, text: "正在连接 @luna_demo…" }, JSON.stringify(progress));
+  }
+});
+test("下载进度只在连接中显示：直播中、待机、出错时带着也不写", () => {
+  const dl = { kind: "model_download", pct: 37 };
+  for (const s of ["idle", "live", "ended", "error"]) {
+    assert.deepEqual(connectHint(s, "luna_demo", false, dl), { show: false, inline: false, text: "" }, s);
+  }
+  assert.equal(connectHint("offline", "luna_demo", false, dl), null);
+});
+
+// 专家审查 U8：直播中这一场还没出过字幕时，中间卡片写「等待第一句字幕…」（和浮窗同一句）
+test("直播中、这一场还没出过字幕：写「等待第一句字幕…」；有上一场字幕时改成末尾一行", () => {
+  assert.deepEqual(connectHint("live", "luna_demo", false, null, true),
+    { show: true, inline: false, text: "等待第一句字幕…" });
+  assert.deepEqual(connectHint("live", "luna_demo", true, null, true),
+    { show: true, inline: true, text: "等待第一句字幕…" });
+  assert.deepEqual(connectHint("live", "luna_demo", true, null, false), { show: false, inline: false, text: "" },
+                   "出过字幕就收起");
+});
+test("「等待第一句」只在直播中：连接中照旧写连接，其余状态不写", () => {
+  assert.equal(connectHint("connecting", "luna_demo", false, null, true).text, "正在连接 @luna_demo…");
+  for (const s of ["idle", "ended", "error"]) {
+    assert.deepEqual(connectHint(s, "luna_demo", false, null, true), { show: false, inline: false, text: "" }, s);
+  }
+  assert.equal(connectHint("offline", "luna_demo", false, null, true), null);
 });
 
 test("去掉提示条开头的状态 emoji（含 FE0F 与空格）", () => {
@@ -85,14 +149,15 @@ test("窗口比浮层还窄（浮层宽已按 100vw-24 收过）：两边各 12"
   assert.equal(popoverRight(400, 420, 396, 12), 12);
 });
 
-test("报警分级文字；认不出的按「命中」，原型链上的键也不认", () => {
-  assert.equal(alertTierText("exact"), "命中");
+// exact 档写「精确」，和手机同一套（专家审查 V5）：「命中」在术语表里是 match（「命中时弹出报警」）
+test("报警分级文字：精确 / 变体 / 疑似；认不出的按 exact 那一档，原型链上的键也不认", () => {
+  assert.equal(alertTierText("exact"), "精确");
   assert.equal(alertTierText("variant"), "变体");
   assert.equal(alertTierText("fuzzy"), "疑似");
-  assert.equal(alertTierText("weird"), "命中");
-  assert.equal(alertTierText(undefined), "命中");
-  assert.equal(alertTierText("toString"), "命中");
-  assert.equal(alertTierText("__proto__"), "命中");
+  assert.equal(alertTierText("weird"), "精确");
+  assert.equal(alertTierText(undefined), "精确");
+  assert.equal(alertTierText("toString"), "精确");
+  assert.equal(alertTierText("__proto__"), "精确");
 });
 
 test("「回到最新」：没有新的就只写按钮名，有新的带上条数（字幕写「条新字幕」，弹幕写「条新弹幕」）", () => {

@@ -6,18 +6,22 @@
 就读不到了。.venv 本身是 /opt/anaconda3/bin/python3.13 建的，一点没变。
 
 钉住：没有 .venv（新装机）走原来的顺序；pyvenv.cfg 的 executable 优先，再到 home 下的
-python<主.次>、python3；这几个都不能用（解释器不在了、次版本变了、低于 3.9、cfg 不记版本、
+python<主.次>、python3；这几个都不能用（解释器不在了、次版本变了、低于 3.10、cfg 不记版本、
 相对路径）时，用 .venv/bin/python 链到的项目外那个——conda 的 python3 原地升了次版本时
 就是它，main.py 的 ensure_env 再用它重建 .venv（app/bootstrap.venv_needs_rebuild）；
-那个也不能用（断链、绕圈、--copies 的真文件、低于 3.9）才落回原来的顺序。指回项目自己
+那个也不能用（断链、绕圈、--copies 的真文件、低于 3.10）才落回原来的顺序。指回项目自己
 （.venv / .app 里的链接、项目外的链接指回项目里）的一律不认；路径里有空格、home 是链接都
 照常；/usr/bin 下的垫片（包括链到它的）不确认装过开发者工具绝不执行；两个启动器都把项目根
 传进来，并 exec 选中的那个解释器。
 
 用 /bin/bash 真跑（macOS 上就是系统自带的 3.2）；解释器全是假的 sh 脚本：打印一个版本号，
 并把自己的路径和参数记进日志。find_installed_python 探测的是本机真实的安装位置，这里换成
-只打印 FALLBACK 的假函数——测试不碰本机的任何 Python。"""
+只打印 FALLBACK 的假函数——测试不碰本机的任何 Python。
+
+下限是 3.10（用户 10-22 决定 D14，以前是 3.9）：假解释器只会照 ok 参数给退出码，判断不了版本，
+所以另外把脚本里每一段探测代码拿出来，用测试进程自己的 Python 冒充 3.9 / 3.10 真跑一遍。"""
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -154,13 +158,13 @@ def test_the_venv_creator_wins_over_the_installed_order(w):
     assert w.probed() == [str(exe)]          # 只跑了它一个，兜底一次也没进
 
 
-def test_the_probe_asks_for_the_version_and_the_39_floor(w):
+def test_the_probe_asks_for_the_version_and_the_310_floor(w):
     exe = w.python(w.tmp / "py" / "bin" / "python3.13", "3.13")
     w.venv(_cfg(home=exe.parent, executable=exe))
     w.find(w.root)
     args = w.log.read_text(encoding="utf-8").splitlines()[0].split("\037")[1:]
     assert args[0] == "-c"
-    assert "sys.version_info[:2]" in args[1] and "(3, 9)" in args[1]
+    assert "sys.version_info[:2]" in args[1] and "(3, 10)" in args[1]
 
 
 def test_missing_executable_falls_to_home_python_with_the_version(w):
@@ -259,9 +263,12 @@ def test_minor_version_changed_under_the_same_path_falls_back(w):
     assert w.probed() == [str(py3), str(py3)]   # executable 一次、home/python3 一次
 
 
-def test_python_older_than_39_falls_back(w):
-    exe = w.python(w.tmp / "py" / "bin" / "python3.8", "3.8", ok=False)
-    w.venv(_cfg(home=exe.parent, version="3.8.18", executable=exe))
+@pytest.mark.parametrize("version", ["3.8", "3.9"])
+def test_python_older_than_310_falls_back(w, version):
+    """D14：3.9 建的 .venv 也不再认（探测代码对它退出 1）：跳过它按安装位置找，ensure_env 再用找到的
+    那个重建 .venv。以前选中 3.9 的 .venv，换进去就停在 main.py 的版本检查上。"""
+    exe = w.python(w.tmp / "py" / "bin" / ("python" + version), version, ok=False)
+    w.venv(_cfg(home=exe.parent, version=version + ".18", executable=exe))
     assert w.find(w.root) == (0, FALLBACK)
 
 
@@ -399,7 +406,7 @@ def test_the_venv_link_is_used_when_the_cfg_has_no_version(w):
     assert len(w.probed()) == 1
 
 
-@pytest.mark.parametrize("version, ok", [("3.8", False), ("3.14", False)], ids=["below-3.9", "fails"])
+@pytest.mark.parametrize("version, ok", [("3.9", False), ("3.14", False)], ids=["below-3.10", "fails"])
 def test_a_venv_link_that_is_too_old_or_fails_falls_back(w, version, ok):
     py3 = w.python(w.tmp / "py" / "bin" / "python3", version, ok=ok)
     w.venv(_cfg(home=w.tmp / "gone", executable=w.tmp / "gone" / "python3.13"))
@@ -504,6 +511,42 @@ def test_sourcing_the_finder_runs_nothing(w):
     proc = subprocess.run([BASH, "-c", '. "$1"', "bash", str(FINDER)], env=w.env(),
                           capture_output=True, timeout=30)
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, b"", b"")
+
+
+# ---- 版本下限（D14） --------------------------------------------------------------------------
+
+_PROBE = re.compile(r"-c '([^']*sys\.version_info[^']*)'")
+
+
+def _probes():
+    return _PROBE.findall(FINDER.read_text(encoding="utf-8"))
+
+
+def test_every_probe_in_the_finder_uses_the_310_floor():
+    """三处探测（.venv 的解释器、按安装位置的候选、PATH 上的 python3）都是 3.10，和
+    app/bootstrap.MIN_PYTHON 同一个数。"""
+    from app import bootstrap
+    probes = _probes()
+    assert len(probes) == 3
+    floor = "(3, {})".format(bootstrap.MIN_PYTHON[1])
+    for code in probes:
+        assert floor in code and "(3, 9)" not in code, code
+
+
+@pytest.mark.parametrize("fake, ok", [((3, 9, 18), False), ((3, 10, 0), True), ((3, 13, 5), True)],
+                         ids=["3.9", "3.10", "3.13"])
+def test_the_probes_refuse_39_and_accept_310_when_really_run(fake, ok):
+    """假解释器判断不了版本：把每一段探测代码拿出来，用测试进程自己的 Python 冒充这个版本真跑。"""
+    for code in _probes():
+        wrapper = "import sys; sys.version_info = {!r}\n".format(fake) + code
+        proc = subprocess.run([sys.executable, "-c", wrapper], capture_output=True, timeout=60)
+        assert (proc.returncode == 0) is ok, (code, proc.returncode, proc.stderr)
+
+
+def test_start_bat_uses_the_same_floor():
+    """Windows 的 Start.bat 不 source 这个文件，自己写着两处下限（py 启动器、PATH 上的 python）。"""
+    text = (ROOT / "Start.bat").read_text(encoding="utf-8")
+    assert re.findall(r"sys\.version_info>=\((\d+),(\d+)\)", text) == [("3", "10"), ("3", "10")]
 
 
 def test_no_bash4_only_features():

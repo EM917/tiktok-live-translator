@@ -648,11 +648,107 @@ async def _room_status(session, user):
     return (str(room) if room else None), status
 
 
-def _pick_stream(data):
-    """从 webcast 房间信息里挑一个地址，优先纯音频。
+# ---- 没有纯音频档时挑哪一档（2026-10-23，专家审查 M5）----
+# 专家审查报告 M5：现网历史 119 次成功解析，选中的全是原画（origin）或 _hd，没有一次是纯音频档或低档。房间
+# 不给纯音频档时，_pick_stream 取的是 stream_data 里排在第一个的那一档，现网就是这两档高码率的视频档。
+# 打开 LOW_BITRATE_PICK 后，没有纯音频档就按画质从低到高挑（stream_data 和 flv_pull_url 都这样排）；
+# 有纯音频档时照旧取纯音频档。关着时挑法和改动前逐字节相同（tests/test_resolver_pick.py 拿改动前的函数对拍）。
+#
+# 默认关（计划 D17）：低档的音轨可能是转码的、可能比原画晚几秒，晚了直接拖慢检测延迟。打开之前要先在同一分钟
+# 对同一个在播房间解析 1 次、各 ffprobe 一次低档和原画（只走接口层，绝不开浏览器，CLAUDE.md 第八条），比对音轨
+# 的 codec、采样率、声道、码率和同一时刻的延迟；一致且不更晚，结果给用户看、用户点头才改这里的默认值。
+# 试用不改代码：启动时设 TLT_LOW_BITRATE_STREAM=1 打开，=0 强制关（和 TLT_FFMPEG_LEGACY 一个路数）。
+# 测试要测哪一边就显式 monkeypatch 这一项或环境变量（CLAUDE.md 第九条那次的教训：别靠默认值变绿）
+LOW_BITRATE_PICK = False
+LOW_BITRATE_ENV = "TLT_LOW_BITRATE_STREAM"
 
-    我们只要声音。纯音频档（only_audio=1）省掉整条视频码流——对一个要连着
-    盯几小时的工具，这不是微优化。"""
+# 画质从低到高（键一律按小写比）。键名和高低照 yt-dlp 2026.8.19 TikTok 直播提取器（extractor/tiktok.py 里
+# 的 get_quality）：stream_data 的 data 里是 ld < sd < hd < uhd < origin；flv_pull_url 的键是
+# SD1 < SD2 < HD1 < FULL_HD1 < ORIGION（ORIGION 是 TikTok 原样的拼法）。本机没有留存过完整的接口返回，
+# 现网只见过 origin 和 hd 两档被选中
+SDK_LOW_TO_HIGH = ("ld", "sd", "hd", "uhd", "origin")
+PULL_LOW_TO_HIGH = ("sd1", "sd2", "hd1", "full_hd1", "origion")
+
+_low_bitrate_skip_told = False      # 「开了但这次不生效」那句终端提示一个进程只打一次
+
+
+def low_bitrate_pick(env=None):
+    """这次解析没有纯音频档时，要不要按画质从低到高挑（见 LOW_BITRATE_PICK 上面的说明）。
+
+    开着也有一种情况不生效：拉流 ffmpeg 退回了进程内重连（TLT_FFMPEG_LEGACY=1 或 TLT_RECONNECT_V2=0，
+    见 audio.flv_exits_on_drop）。M1 之前 FLV 断开时 ffmpeg 在进程里自己重连、跳读那 5 MB，低码率下跳读
+    要更久，一定会撞上看门狗（审查 M5 的「注意顺序」）；退回进程内重连就回到了 M1 之前的样子，这时仍按原来
+    的挑法，终端提示一次。
+
+    拉流模块（audio）载入失败、或者问它断开时退不退出抛了异常，同样按原来的挑法；终端照实说看到的是哪一种，
+    不说成是上面那两个应急开关。"""
+    env = os.environ if env is None else env
+    flag = str(env.get(LOW_BITRATE_ENV, "")).strip().lower()
+    if flag in ("1", "on", "true", "yes"):
+        on = True
+    elif flag in ("0", "off", "false", "no"):
+        on = False
+    else:
+        on = bool(LOW_BITRATE_PICK)
+    if not on:
+        return False
+    try:
+        from .audio import flv_exits_on_drop
+    except Exception:
+        return _low_bitrate_skipped("拉流模块没能载入")  # i18n: terminal
+    try:
+        exits = flv_exits_on_drop(env)
+    except Exception:
+        return _low_bitrate_skipped("没能读出拉流 ffmpeg 断开时退不退出")  # i18n: terminal
+    if exits:
+        return True
+    return _low_bitrate_skipped(
+        "拉流 ffmpeg 退回了进程内重连（TLT_FFMPEG_LEGACY=1 或 TLT_RECONNECT_V2=0）")  # i18n: terminal
+
+
+def _low_bitrate_skipped(seen):
+    """开关开着、这次却不按低档挑：终端照实说看到了什么（一个进程只说一次），返回 False。"""
+    global _low_bitrate_skip_told
+    if not _low_bitrate_skip_told:
+        _low_bitrate_skip_told = True
+        print("[信息] {} 已打开，但{}，这次运行低码率挑法不用，仍按原来的挑法选流".format(
+            LOW_BITRATE_ENV, seen))
+    return False
+
+
+def _low_first(keys, ladder):
+    """把档位的键按画质从低到高排。不认得的键排在最高一档（原画）前面、其余认得的后面，彼此保持原来的
+    顺序：原画是主播推上来的源流，转出来的档不会比它高；不认得的档有多高不知道，不抢在认得的低档前面。"""
+    top = len(ladder) - 1
+
+    def rank(key):
+        k = str(key).lower()
+        return ladder.index(k) if k in ladder else top - 0.5
+
+    return sorted(keys, key=rank)            # sorted 是稳定排序：同一档内保持原来的顺序
+
+
+def _tier_shaped(tier):
+    """stream_data 里的一档，形状对不对得上 {"main": {"flv": ...}}：这一档和它的 main 是 dict，或者是空的。
+
+    只在开关开着时用：从低档往上挑会先碰到原来排在后面的档，其中格式坏的一档（比如值是字符串）以前碰不到，
+    现在会让 .get 抛 AttributeError、整层算没拿到。开着就跳过这种档接着往上挑；关着不跳，和改动前逐字节相同。"""
+    if not tier:
+        return True
+    if not isinstance(tier, dict):
+        return False
+    main = tier.get("main")
+    return not main or isinstance(main, dict)
+
+
+def _pick_stream(data, low_first=None):
+    """从 webcast 房间信息里挑一个地址，优先纯音频（ao 档，only_audio=1）。
+
+    我们只要声音，纯音频档省掉整条视频码流。房间不给纯音频档时：默认取 stream_data 里排在第一个的那一档
+    （现网见到的全是原画或 hd，见 LOW_BITRATE_PICK 上面的说明），再退到 flv_pull_url 的第一个、rtmp、hls；
+    开关打开时这两处改成按画质从低到高挑。low_first 为 None 时按 low_bitrate_pick() 定。"""
+    if low_first is None:
+        low_first = low_bitrate_pick()
     su = (data or {}).get("stream_url") or {}
     sdk = ((su.get("live_core_sdk_data") or {}).get("pull_data") or {})
     raw = sdk.get("stream_data")
@@ -666,15 +762,19 @@ def _pick_stream(data):
         flv = ((opts.get(quality) or {}).get("main") or {}).get("flv")
         if flv:
             return flv
-    for val in opts.values():                    # 其次任意档的 flv
-        flv = ((val or {}).get("main") or {}).get("flv")
+    keys = _low_first(list(opts), SDK_LOW_TO_HIGH) if low_first else list(opts)
+    for key in keys:                             # 其次：开关关着取任意档（排第一个的），开着从低档挑
+        tier = opts[key]
+        if low_first and not _tier_shaped(tier):
+            continue
+        flv = ((tier or {}).get("main") or {}).get("flv")
         if flv:
             return flv
     flvs = su.get("flv_pull_url") or {}
     if isinstance(flvs, dict):
-        for v in flvs.values():
-            if v:
-                return v
+        for key in (_low_first(list(flvs), PULL_LOW_TO_HIGH) if low_first else list(flvs)):
+            if flvs[key]:
+                return flvs[key]
     return su.get("rtmp_pull_url") or su.get("hls_pull_url") or None
 
 
@@ -1516,9 +1616,10 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
             return checked
         login_can_retry = _login_retry_applies(login_outcome, login_info)
 
-    # 第 1 层：TikTok 官方接口。放在最前有两个理由——它给的是**纯音频档**
-    # （only_audio=1，省掉整条视频码流），而且它独立于 yt-dlp 的提取器：
+    # 第 1 层：TikTok 官方接口。放在最前，是看中它独立于 yt-dlp 的提取器：
     # 实测一个确实在播的房间，yt-dlp 的三种方式全报「未开播」，这条链路照样通。
+    # 房间给纯音频档（only_audio=1）时它先取纯音频档；现网历史 119 次成功解析，选中的
+    # 全是原画或 _hd，没有一次是纯音频档（专家审查 M5，见 LOW_BITRATE_PICK 上面的说明）。
     api_url, known_offline = None, False
     browser_only = None      # 接口说「这房间的流地址不给程序」——先记着，后面的层可能拿得到
     t0, api_outcome = time.monotonic(), "none"
@@ -1542,7 +1643,7 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         if checked is None:
             api_outcome = "rejected"
         elif await _media_url_works(checked):
-            print("[信息] 已通过 TikTok 直播接口取到纯音频流")
+            print("[信息] 已通过 TikTok 直播接口取到流地址")
             _mark(trace, "官方接口", "url", t0, **_layer_note(api_note))   # i18n: audit
             return checked
         else:
@@ -1722,14 +1823,18 @@ async def _resolve_stream_url(url, cookies=None, cookies_browser="auto", trace=N
         # 而没有任何一条**确认**过房间结束，所以不能替它下这个断言。
         if kind == "offline":
             # 只说做了什么、看到什么、能做什么。不说「多半是被挡了」——我们不知道。
+            # 先让人核对用户名：10-26 一场里用户名少打了一个字母，各层都只说「没找到 / 没在播」。
+            # 这只是一个能做的检查，不是在说原因。
             kind, message = "unknown", L(
                 "试过全部方式都没能拿到这个直播间的音频流，也没有任何一种"
-                "确认直播已结束。可以过一会儿再点「开始翻译」；如果你在浏览器里"
+                "确认直播已结束。先核对一下输入的用户名和浏览器地址栏里的是否一字不差；"
+                "没问题的话，可以过一会儿再点「开始翻译」；如果你在浏览器里"
                 "看得到这个直播，也可以把直播间链接和浏览器里的 .flv 地址一起"
                 "粘进来（中间空格隔开）。",
                 "The app tried every method but couldn’t get the audio stream for this live "
-                "stream, and none of them confirmed that the stream ended. Click Start again in "
-                "a little while. If you can see this live stream in your browser, you can also "
+                "stream, and none of them confirmed that the stream ended. First check that the "
+                "username you entered matches the one in your browser’s address bar letter for "
+                "letter. If it does, click Start again in a little while. If you can see this live stream in your browser, you can also "
                 "paste the live link and the .flv URL from your browser together, separated by "
                 "a space.")
         if browser_only is not None:

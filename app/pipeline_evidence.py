@@ -34,7 +34,7 @@ class AsrEvidenceMixin:
             cfg = asr_evidence.load_config()
             if not cfg["on"]:
                 # 关着（asr_evidence=false、TLT_ASR_EVIDENCE=0、总闸）也按上限清一次：关掉只是不再存，
-                # 已经存下的混音照样过 14 天 / 超 300 MB 就删——文档和「存储」那一行都这么写，
+                # 已经存下的混音照样过 14 天 / 超大小上限就删——文档和「存储」那一行都这么写，
                 # 为了隐私关掉证据的人会当真。在线程池里清，不挡开播；只这一件活、没有写盘要和它排
                 # 先后，用不着这一场的证据线程（证据关着也就没有它）
                 asyncio.get_running_loop().run_in_executor(None, asr_evidence.prune_for, path, cfg)

@@ -217,42 +217,59 @@ def test_macos_parses_the_strings_the_same_way(lang):
     assert json.loads(out.stdout) == _read_strings(path)
 
 
-# 启动器对话框：(中文, English)。中文是 N1 之前的原句，一字不动；段落之间的 \n 是 AppleScript
-# 字符串里的转义，原样出现在 osascript 的参数里
+# 启动器对话框：(中文, English)。段落之间的 \n 是 AppleScript 字符串里的转义，原样出现在
+# osascript 的参数里。NO_MAIN、NO_FINDER 以前叫人放回「tiktok-live-translator 文件夹」，
+# 而 release 的 ZIP 解出来叫「TikTok Live Translator」（release.sh 的 --prefix），I3 改成
+# 「它原来所在的那个文件夹」；别的字没动
 DIALOG_TITLE = "TikTok 直播同传 · TikTok Live Translator"
 NO_MAIN = (
-    "找不到程序文件。\\n\\n请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击。"
+    "找不到程序文件。\\n\\n请把「TikTok Live Translator」放回它原来所在的那个文件夹里再双击。"
     "想常驻可以把它拖到 Dock——但不要把它拖出文件夹。",
     "Couldn’t find the app’s files.\\n\\nPut “TikTok Live Translator” back in the "
-    "tiktok-live-translator folder, then double-click it again. You can drag it to the Dock, "
+    "folder it came from, then double-click it again. You can drag it to the Dock, "
     "but don’t move it out of the folder.")
 NO_FINDER = (
     "缺少程序文件 tools/find_python.sh，项目文件不完整，无法探测 Python。\\n\\n"
-    "请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击，或重新下载完整项目。",
+    "请把「TikTok Live Translator」放回它原来所在的那个文件夹里再双击，或重新下载完整项目。",
     "The file tools/find_python.sh is missing. The project folder is incomplete, so the app "
-    "can’t check for Python.\\n\\nPut “TikTok Live Translator” back in the tiktok-live-translator "
-    "folder and double-click it again, or download a fresh copy of the complete project.")
+    "can’t check for Python.\\n\\nPut “TikTok Live Translator” back in the folder it came "
+    "from and double-click it again, or download a fresh copy of the complete project.")
+# I3：macOS 把 app 放到临时位置运行（App Translocation）时的那一句。补救办法按实测只给 xattr
+# 这一步（启动器里的注释写了实测经过），命令预填在输入框里
+TRANSLOCATED = (
+    "macOS 把本程序放到了一个临时位置运行，在那里找不到它所在文件夹里的其它程序文件。\\n\\n"
+    "请照做一次：打开「终端」，输入下面这行命令和一个空格，再把 app 所在的那个文件夹拖进终端窗口，"
+    "按回车。然后重新双击 app。",
+    "macOS is running the app from a temporary location, where it can’t find the other files in "
+    "its folder.\\n\\nDo this once: open Terminal, type the command below followed by a space, "
+    "drag the folder that contains the app into the Terminal window, and press Return. Then "
+    "double-click the app again.")
+UNQUARANTINE = "xattr -dr com.apple.quarantine"
+# D14（b3-deps）：最低版本提到 3.10，启动器不再认 3.9——只装着 3.9 的 Mac 也会走到这一句，所以写明版本
 NO_PYTHON = (
-    "需要先安装 Python 才能运行本工具（免费，约 2 分钟）。\\n\\n已为你打开下载页面 "
+    "需要先安装 Python 3.10 或更新的版本才能运行本工具（免费，约 2 分钟）。\\n\\n已为你打开下载页面 "
     "python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。",
-    "Python is needed to run this app (free, about 2 minutes).\\n\\nThe python.org/downloads "
-    "page is now open. Download and install the macOS installer, then double-click the app again.")
+    "Python 3.10 or later is needed to run this app (free, about 2 minutes).\\n\\nThe "
+    "python.org/downloads page is now open. Download and install the macOS installer, then "
+    "double-click the app again.")
 PYTHON_PAGE = "https://www.python.org/downloads/"
 
 
-def _dialog(texts, icon):
+def _dialog(texts, icon, answer=None):
     zh, en = texts
-    return ["osascript", "-e", 'display dialog "{}\\n\\n{}" with title "{}" buttons {{"OK"}} '
-            "default button 1 with icon {}".format(zh, en, DIALOG_TITLE, icon)]
+    field = ' default answer "{}"'.format(answer) if answer else ""
+    return ["osascript", "-e", 'display dialog "{}\\n\\n{}"{} with title "{}" buttons {{"OK"}} '
+            "default button 1 with icon {}".format(zh, en, field, DIALOG_TITLE, icon)]
 
 
-@pytest.mark.parametrize("texts", [NO_MAIN, NO_FINDER, NO_PYTHON])
+@pytest.mark.parametrize("texts", [NO_MAIN, NO_FINDER, NO_PYTHON, TRANSLOCATED, (UNQUARANTINE, UNQUARANTINE)])
 def test_each_dialog_is_chinese_then_english(texts):
     """这些对话框在 Python 之前弹出，读不到界面语言设置：两段并列，不按系统语言挑。
     文字直接拼进 AppleScript 的字符串，所以不许有 ASCII 双引号，反斜杠只许是 \\n。"""
     zh, en = texts
-    for part in zh.split("\\n\\n"):
-        assert i18n.CJK.search(part), part
+    if zh != UNQUARANTINE:          # 预填的命令两种语言一样，只查引号和反斜杠
+        for part in zh.split("\\n\\n"):
+            assert i18n.CJK.search(part), part
     assert not i18n.CJK.search(en), en
     for text in texts:
         assert '"' not in text and "\\" not in text.replace("\\n", ""), text
@@ -307,6 +324,36 @@ def test_the_app_launcher_dialogs(tmp_path, main_py, finder, expected):
 
 
 @needs_bash
+@pytest.mark.parametrize("main_py", [False, True], ids=["bundle-only", "with-main-py"])
+def test_a_translocated_launch_says_so_instead_of_asking_to_put_the_app_back(tmp_path, main_py):
+    """I3：从「下载」里直接双击刚解压的 app，macOS 可能把 app 单独放到
+    /private/var/folders/…/AppTranslocation/<UUID>/d/ 下运行，旁边没有 main.py。以前这里弹
+    「找不到程序文件，请放回 tiktok-live-translator 文件夹」——app 本来就在文件夹里，照做没用。
+    现在认出路径里的 /AppTranslocation/，说明是临时位置，给出 xattr 那一步（命令预填在输入框里）。
+    路径里带空格，和真的 app 名一样；旁边就算有 main.py 也不往下跑（临时位置里不该有它）。"""
+    base = tmp_path / "var folders" / "T" / "AppTranslocation" / "6F1C2E0A-0000-4000-8000-000000000001" / "d"
+    macos = base / macbundle.APP_DIR_NAME / "Contents" / "MacOS"
+    macos.mkdir(parents=True)
+    shutil.copy2(LAUNCHER, macos / LAUNCHER.name)
+    if main_py:
+        (base / "main.py").write_text("raise SystemExit('不该跑到这里')\n", encoding="utf-8")
+    proc, calls = _run_launcher(tmp_path, macos / LAUNCHER.name)
+    assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
+    assert calls == [_dialog(TRANSLOCATED, "caution", UNQUARANTINE)]
+
+
+@needs_bash
+def test_a_folder_merely_named_like_translocation_is_not_mistaken_for_it(tmp_path):
+    """只认路径里完整的 /AppTranslocation/ 一节：文件夹名里碰巧带这个词的照旧往下走。"""
+    root = _project(tmp_path, main_py=False, finder=False)
+    odd = tmp_path / "MyAppTranslocationNotes"
+    root.rename(odd)
+    proc, calls = _run_launcher(tmp_path, odd / "app" / "Contents" / "MacOS" / LAUNCHER.name)
+    assert proc.returncode == 1
+    assert calls == [_dialog(NO_MAIN, "caution")]
+
+
+@needs_bash
 def test_start_command_dialog_is_bilingual_but_the_terminal_stays_chinese(tmp_path):
     """用户决定 4：终端说明不英文化，只有缺 Python 的系统对话框中英并列（与启动器同一句）。"""
     root = _project(tmp_path, main_py=True, finder=True)
@@ -314,8 +361,9 @@ def test_start_command_dialog_is_bilingual_but_the_terminal_stays_chinese(tmp_pa
     assert proc.returncode == 1, proc.stderr.decode("utf-8", "replace")
     assert calls == [["open", PYTHON_PAGE], _dialog(NO_PYTHON, "note")]
     out = proc.stdout.decode("utf-8")
-    assert "[未检测到 Python] 需要先安装 Python 才能运行（免费，约 2 分钟）：" in out
-    assert "Python is needed" not in out
+    assert ("[未检测到 Python 3.10 或更新的版本] 需要先安装 Python 3.10 或更新的版本才能运行"
+            "（免费，约 2 分钟）：") in out
+    assert "is needed to run" not in out
 
 
 def test_the_launchers_keep_lf_line_endings_in_every_checkout():
@@ -341,13 +389,15 @@ def test_the_launchers_parse(script):
 
 
 @on_macos
-@pytest.mark.parametrize("texts, icon", [(NO_MAIN, "caution"), (NO_FINDER, "caution"), (NO_PYTHON, "note")],
-                         ids=["no-main-py", "no-find-python", "no-python"])
-def test_the_dialog_scripts_compile_as_applescript(tmp_path, texts, icon):
+@pytest.mark.parametrize("texts, icon, answer", [(NO_MAIN, "caution", None), (NO_FINDER, "caution", None),
+                                                 (NO_PYTHON, "note", None),
+                                                 (TRANSLOCATED, "caution", UNQUARANTINE)],
+                         ids=["no-main-py", "no-find-python", "no-python", "translocated"])
+def test_the_dialog_scripts_compile_as_applescript(tmp_path, texts, icon, answer):
     """osacompile 只编译不运行：不弹框。弯引号、· 和中文都在 AppleScript 字符串里。"""
     if not shutil.which("osacompile"):
         pytest.skip("没有 osacompile")
-    argv = _dialog(texts, icon)
+    argv = _dialog(texts, icon, answer)
     proc = subprocess.run(["osacompile", "-e", argv[2], "-o", str(tmp_path / "dialog.scpt")],
                           capture_output=True, timeout=60)
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")

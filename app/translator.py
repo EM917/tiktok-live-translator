@@ -142,7 +142,7 @@ def restore_engine(cli_value, saved, key_lookup=None):
         # 说人话的引擎名，不露内部代号（deepl/auto）——跟「不猜原因」是同一条规矩：
         # 面向用户的文字里不能有代号，只能有引擎选择菜单里那种名字（engine_label）
         return "auto", (L("上次选的翻译引擎 {} 还没有密钥，本次先用{}——"
-                          "在页面的「翻译引擎」里重新填一次即可",
+                          "在「设置 > 翻译引擎」里重新填一次即可",
                           "The last engine you chose, {}, doesn’t have an API key yet, so {} "
                           "is used for now. Enter the key again in Settings > Translation Engine.")
                         .format(engine_label(name), engine_label("auto")))
@@ -191,6 +191,10 @@ class CachedTranslator:
         return getattr(self.inner, "fail_streak", 0)
 
     @property
+    def last_failure(self):
+        return getattr(self.inner, "last_failure", None)
+
+    @property
     def cooldown_until(self):
         return getattr(self.inner, "cooldown_until", 0.0)
 
@@ -232,6 +236,21 @@ class CachedTranslator:
         await self.inner.close()
 
 
+def failure_kind(exc):
+    """一次请求抛出的异常归到哪一类：timeout（总时限到了，含 aiohttp 的 ServerTimeoutError）/ connect
+    （ClientConnectorError：连接没建起来；ServerDisconnectedError：对方断开了连接）/ other。只看异常的类型，
+    不看原文、不猜原因（CLAUDE.md 第八条）。"""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "timeout"
+    try:
+        import aiohttp
+    except ImportError:
+        return "other"
+    if isinstance(exc, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)):
+        return "connect"
+    return "other"
+
+
 class BaseTranslator:
     name = "base"
     TIMEOUT = 10  # 秒
@@ -248,6 +267,11 @@ class BaseTranslator:
         self.last_error = None
         # 连续几次拿到非 200 的 HTTP 回应；拿到 200 归零。连不上（没有回应）不计也不清
         self.fail_streak = 0
+        # 最近一次失败落在哪一类（目前只有 Claude 记，专家审查 B7）：{"kind": timeout / connect / http / other,
+        # "status": 5xx 的状态码或 None, "error": 异常的类型名或 None}。last_error 只装得下 HTTP 回应，超时、连不上
+        # 时它不动（可能还是更早那一次的），5xx 又不在管线的任何一条规则里——以前这几种审计里只剩 ok=false。
+        # 拿到 200 清空；回了 4xx 也清空（那一次由 last_error 说）
+        self.last_failure = None
 
     @property
     def cooldown_until(self):
@@ -257,6 +281,7 @@ class BaseTranslator:
     def _note_ok(self):
         self.last_error = None
         self.fail_streak = 0
+        self.last_failure = None
 
     def _note_http_error(self, status, text=None):
         self.last_error = (int(status), clean_error_text(text))
@@ -354,7 +379,7 @@ class DeepLTranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("DEEPL_API_KEY")
         if not self.api_key:
-            raise RuntimeError(L("还没有填 DeepL 密钥——在页面上的「翻译引擎」里填一次即可",
+            raise RuntimeError(L("还没有填 DeepL 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No DeepL API key yet. Enter it once in Settings > Translation Engine."))
         self.host = ("https://api-free.deepl.com" if self.api_key.strip().endswith(":fx")
                      else "https://api.deepl.com")
@@ -848,7 +873,7 @@ class ClaudeTranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise RuntimeError(L("还没有填 Claude 密钥——在页面上的「翻译引擎」里填一次即可",
+            raise RuntimeError(L("还没有填 Claude 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No Claude API key yet. Enter it once in Settings > Translation Engine."))
         self.model = ((model or "").strip()
                       or (os.environ.get("CLAUDE_TRANSLATE_MODEL") or "").strip()
@@ -999,6 +1024,9 @@ class ClaudeTranslator(BaseTranslator):
                     said = (await self._error_summary(resp)
                             if resp.status in self.SAYS_WHY_STATUSES else None)
                     self._note_http_error(resp.status, said)
+                    # 5xx（含 529）不在管线的任何一条规则里：记一个 http 类别（B7）。4xx 那几种照原来的规则走
+                    self.last_failure = ({"kind": "http", "status": int(resp.status), "error": None}
+                                         if resp.status >= 500 else None)
                     if resp.status in self.REJECT_STATUSES:
                         self._cooldown_until = time.monotonic() + self.REJECT_COOLDOWN_SEC
                         if self.says_own_rejection:
@@ -1021,7 +1049,10 @@ class ClaudeTranslator(BaseTranslator):
                     return None
                 self._note_ok()
                 data = await resp.json()
-        except Exception:
+        except Exception as exc:
+            # 超时、连不上、读回应出错：以前什么都不留（last_error 不动，也不打印），审计里只有 ok=false。
+            # 记下类别和异常的类型名（不记原文），管线据此写 translation_engine_error 的 kind（B7）
+            self.last_failure = {"kind": failure_kind(exc), "status": None, "error": type(exc).__name__}
             return None
         out, stop, category = self.read_message(data)
         if stop == "refusal":
@@ -1042,7 +1073,7 @@ class OpenAITranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("OPENAI_API_KEY")
         if not self.api_key:
-            raise RuntimeError(L("还没有填 OpenAI 密钥——在页面上的「翻译引擎」里填一次即可",
+            raise RuntimeError(L("还没有填 OpenAI 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No OpenAI API key yet. Enter it once in Settings > Translation Engine."))
         base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.base = base

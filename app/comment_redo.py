@@ -14,9 +14,15 @@
     烧钱）。超了的那一下什么都不翻，在那条弹幕下面说一句；
   * 每一条不重译的出路都要让点的人看见（同字幕重译的 retranslate_note），文字只写观察到的事和
     能做的事，不猜原因（CLAUDE.md 第八条，英文同样适用）；
-  * 不写审计：弹幕的原文和观众名不进审计（comments.py 开头：弹幕不碰检测/审计链路）。
+  * 译出来了也说一句（2026-10-26 用户要的）：以前成功时屏幕上只是译文换了，新译文和原来一样时
+    什么都不变，点的人分不清是成了、没成还是根本没点上。现在在那条弹幕下面说几秒「已重译」或
+    「重译结果和原来一样」（note_done；比的是账本里记着的上一版译文，见 same_translation）；
+  * 每次点击往本场审计写一条 comment_redo（2026-10-26 用户要的，app/audit.py）：只有代码和数字——
+    结局、用时、模型、新旧译文一不一样。弹幕的原文、译文、观众名和弹幕 id 都不进审计，和其它弹幕
+    审计（comment_translation_failed、comment_guard_*）同一口径。
 """
 import math
+import re
 import time
 from collections import OrderedDict, deque
 
@@ -30,7 +36,7 @@ DEMO_ID_PREFIX = "demo-"       # --demo 里虚构弹幕的 id 前缀（app/pipel
 
 
 class RedoLedger:
-    """弹幕重译的账本：最近 ORIGINAL_KEEP 条的原文、在途的 id、最近一分钟的次数。
+    """弹幕重译的账本：最近 ORIGINAL_KEEP 条的原文和屏幕上现在的译文、在途的 id、最近一分钟的次数。
 
     只在事件循环里用（同步方法，没有 await，所以「查是否在途 + 占位」是原子的）。时钟可以注入，
     测试不用等真实的一分钟。"""
@@ -38,7 +44,9 @@ class RedoLedger:
     def __init__(self, clock=None):
         self._clock = clock or time.monotonic
         self._originals = OrderedDict()      # id -> 原文，最近的在后
-        self._translated = set()             # 译出来过的 id（失败了再点重译时，说明的结尾要按这个说）
+        # 译出来过的 id -> 屏幕上现在的那版译文（失败了再点重译时，说明的结尾要按「有没有」说；
+        # 重译成了要拿它比「和原来一样」）。以前只记 id。跟着原文一起挤出去，最多 ORIGINAL_KEEP 条
+        self._translations = {}
         self._inflight = set()
         self._stamps = deque()               # 最近几次重译开始的时刻
 
@@ -47,17 +55,26 @@ class RedoLedger:
         self._originals.move_to_end(cid)
         while len(self._originals) > ORIGINAL_KEEP:
             gone, _ = self._originals.popitem(last=False)
-            self._translated.discard(gone)
+            self._translations.pop(gone, None)
 
     def original(self, cid):
         return self._originals.get(cid)
 
-    def mark_translated(self, cid):
+    def mark_translated(self, cid, text=None):
+        """这条弹幕的译文上屏了（批量翻译、重译都走这里），text 是上屏的那一版。"""
         if cid in self._originals:
-            self._translated.add(cid)
+            self._translations[cid] = text
+
+    def forget_translation(self, cid):
+        """屏幕上这条又退回了原文（整批超时改标失败）：当作没译出来过。"""
+        self._translations.pop(cid, None)
 
     def has_translation(self, cid):
-        return cid in self._translated
+        return cid in self._translations
+
+    def translation(self, cid):
+        """屏幕上现在的那版译文；没译出来过（或不知道是哪一版）返回 None。"""
+        return self._translations.get(cid)
 
     def begin(self, cid):
         """占一个名额。可以开始返回 None（这一次已记账，完事后要调 finish）；
@@ -109,6 +126,36 @@ def note_no_key():
 
 def note_busy():
     return L("这条弹幕正在重译中", "This comment is already being retranslated.")
+
+
+def note_done(same):
+    """译出来了（2026-10-26 用户要的）：新译文和原来那版一样时，屏幕上什么都不变，不说一句就像白点了。
+    「已重译」和手机页重译按钮的那句同一个说法（web/viewer.js retranslateLabel）。"""
+    if same:
+        return L("重译结果和原来一样", "The retranslation is the same as before.")
+    return L("已重译", "Retranslated")
+
+
+# 弹幕栏按 CSS 的空白规则显示译文（.cmt-zh 没有设 white-space，textContent 原样放进去）：会折叠、首尾会去掉的
+# 只有空格、制表符、换行、回车这四种。全角空格（U+3000）、不换行空格（U+00A0）照原样占位，换页符这类控制字符
+# 也不折叠。str.split() 会把它们都当空白（以前就这么比；第 1 轮审查指出，中间隔一个全角空格和隔一个普通空格的
+# 两句屏幕上并不一样，却被判成「和原来一样」）
+_CSS_COLLAPSIBLE = re.compile(r"[ \t\n\r]+")
+
+
+def _as_shown(text):
+    return _CSS_COLLAPSIBLE.sub(" ", text).strip(" ")
+
+
+def same_translation(old, new):
+    """新译文和屏幕上原来那版是不是一样。首尾的空格、换行、连着的几个空格都按一个空格比（只认 CSS 会折叠的
+    那四种，见 _CSS_COLLAPSIBLE）：这几种差别屏幕上看不出来；原来没有空白的地方多了一个，看得出来，
+    算不一样；全角空格、不换行空格和普通空格屏幕上也不一样宽，同样算不一样。
+    原来没有译文（显示的是原文）的，屏幕上确实换成了这一版；不知道原来是哪一版的，不能说「和原来
+    一样」：这两种都算不一样。"""
+    if not old or not new:
+        return False
+    return _as_shown(old) == _as_shown(new)
 
 
 def note_full(wait):
