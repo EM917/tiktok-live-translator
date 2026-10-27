@@ -1,6 +1,6 @@
 # FAQ
 
-*Moved from the README (FAQ). The text is unchanged except for relative links.*
+*Moved from the README (FAQ) and kept up to date here since.*
 
 *An entry that sends you to a README section by name, such as "Disk Space", now means [hardware.md](hardware.md#disk-space).*
 
@@ -16,8 +16,20 @@ was executed, not merely configured.
 **The update button reports that something is blocking it.** The message names
 the affected files and provides a complete command with your project path and a
 Copy button. On builds older than v0.10.4 the machine cannot repair itself, as
-the fix is delivered by the update that is being blocked — run
-`git pull --ff-only` once in the project directory.
+the fix is delivered by the update that is being blocked. Those builds say to
+run `git pull`; don't, because it also brings in changes on the main branch that
+are not released yet. Instead, run these two commands once in the project
+directory, with the tag of the latest release from the
+[releases page](https://github.com/EM917/tiktok-live-translator/releases/latest)
+in place of `vX.Y.Z`:
+
+```bash
+git fetch --tags --force
+git merge --ff-only vX.Y.Z
+```
+
+Current versions use the same two steps in the command they show: they install
+that release and nothing after it.
 
 **Performance degrades and audio begins backing up.** Check `ollama ps`. Ollama
 retains a model in VRAM for 30 minutes after last use, so switching translation
@@ -99,12 +111,17 @@ free endpoint, which `auto` uses when no local model is installed,
 rate-limits per IP and returns 429 under sustained use. The app pauses
 requests for two minutes and recovers automatically, with a banner on the page.
 Speech recognition is unaffected. For extended sessions, install a local Hy-MT2
-model or choose another engine in Settings → Translation Engine. No network
-connection, or a stopped Ollama, produces the same symptom.
+model, or click Stop and choose another engine in Settings → Translation Engine
+(Settings is hidden during a session). No network connection, or a stopped
+Ollama, produces the same symptom.
 
 **The status reads Live but no captions appear for some time.** This is normally
 expected: while the streamer plays music or is not speaking, silent and
-low-confidence segments are discarded deliberately. If the streamer is clearly
+low-confidence segments are discarded deliberately. Audio that stays below the
+speech recognition threshold is not sent to recognition at all; when that is
+all of the audio for 2 minutes, or less than 60% of it is sent in 5 minutes, a
+notice at the top of the window says how much arrived and how much was sent
+([details](fault-tolerance.md#keeping-up)). If the streamer is clearly
 speaking and nothing appears, try `--denoise off` or a different model size.
 
 **Captions stop after closing the laptop lid or switching networks.** When the
@@ -141,8 +158,22 @@ of it was checked. Details: [Keeping the stream](fault-tolerance.md#keeping-the-
 To go back to the previous reconnect rules for one run (look up the stream URL
 on every reconnect, stop after six connection attempts in a row with no audio,
 "attempt N of M" in the status line), start the app with `TLT_RECONNECT_V2=0`.
-The notices above, the limits on how long stopping a stalled stream can take,
-and the audit records stay the same.
+FLV streams then also go back to ffmpeg's own reconnect. The notices above, the
+limits on how long stopping a stalled stream can take, and the audit records
+stay the same. `TLT_FFMPEG_LEGACY=1` is a separate switch: it brings back the
+previous ffmpeg options and leaves the reconnect rules alone. How the two
+combine is in [Keeping the stream](fault-tolerance.md#keeping-the-stream).
+
+**Switches that stay off by default.** `TLT_ASR_TOKEN_CAP=on` (stop decoding a
+segment after 112 tokens), `TLT_ASR_MASK_LANGS=on` (pick the language from the
+Spoken language list during detection instead of decoding an out-of-list
+segment a second time) and
+`TLT_LOW_BITRATE_STREAM=1` (take the lowest quality when TikTok offers no
+audio-only track) are off unless you set them when starting the app. Each can
+change what is recognized, or how soon, so read the evaluation of a switch
+before turning it on. None has been run yet, so leave them off for now. What
+each one changes, and what the evaluation has to check, is in
+[Switches that stay off by default](fault-tolerance.md#switches-that-stay-off-by-default).
 
 <a id="captions-in"></a>**Switching Captions in to English didn't change the interface.** The
 **Captions in** menu in the top bar sets only the language captions are
@@ -259,8 +290,30 @@ captions and alerts — it cannot control the app in any way (no start/stop,
 engine switch, or settings changes). Each phone page is in that phone's own
 language, with a toggle at the bottom. Up to 12 phones can watch at once. The
 link carries a key and should be treated like a password: whoever has it can
-see captions and alerts; clicking **New Link** disconnects every phone
-currently watching, and they need to rescan. When a phone can't connect, the
+see captions and alerts. When a phone opens the link, the page saves the key in
+that phone's browser and then removes it from the address bar; reloading or
+reopening the page on that phone uses the saved key. Whether the browser's own
+history still keeps the address as scanned, key included, has not been checked.
+While this computer's local network address and the Phone Viewing port stay the
+same, the QR code keeps working, and scanning it again saves the key again. If
+either one changes, the panel shows a new QR code: scan that one. A QR code
+printed earlier points to the old address, and the key saved on the phone
+belongs to the old address too. When the browser does not keep the key (the
+page saves it and reads it back to check), for example with site data turned
+off in the browser's settings, the key stays in the address bar and the page
+works as before. Clicking **New Link** disconnects every phone
+currently watching; each phone drops the old key and needs the new QR code.
+
+Two iPhone cases have not been tried on an actual iPhone. A Home Screen icon added
+after the key left the address bar has no key in its own address. If iOS opens
+that icon as a web app, the icon has storage of its own, and scanning again
+saves the key in Safari only, so the icon cannot get it: scan in Safari and
+watch in Safari instead. An icon added while the address still had `#k=` keeps
+working. Separately, Safari may clear a site's saved data when the site has not
+been opened for 7 days; the page then has no key, and scanning the QR code again
+fixes it.
+
+When a phone can't connect, the
 only thing the app knows is that no connection came in; try, in order:
 confirming the phone is on the same Wi-Fi; typing in another address from the
 panel's list; opening the same link in a browser on this computer to confirm
@@ -304,8 +357,9 @@ with `--browser`. (A browser tab opened on the address of a running app window d
 it, and clicking it opens the window in the app.)
 
 <a id="viewer-comments"></a>**Viewer comments.** The app fetches comments itself through TikTokLive,
-which needs Python 3.10 or later; the component installs itself on the first
-start. It usually works signed out, and retries once with the browser's TikTok
+which needs Python 3.10 or later; when it is missing, the app installs it at
+startup or when a stream needs comments ([details](fault-tolerance.md#keeping-the-stream)).
+It usually works signed out, and retries once with the browser's TikTok
 sign-in when TikTok asks for one. Comments are translated only while the active
 engine is a local model (Hy-MT2 1.8B or TranslateGemma) or Claude; with Google,
 DeepL, OpenAI or 7B the panel shows the original text. With Claude, comments
