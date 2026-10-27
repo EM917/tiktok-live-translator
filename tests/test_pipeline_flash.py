@@ -678,6 +678,10 @@ def test_main_attaches_before_the_first_hello_and_stops_on_exit():
     assert len(ready) == 1
     assert restore.lineno < attach.lineno < ready[0].lineno
     assert attach.value.args == [] and attach.value.keywords == []      # 生产里不传平台和位置
+    # 演示模式（--demo，拿来截图验界面）不接闪购：9334 上是真实商品，不能进截图
+    guards = [n for n in ast.walk(fn) if isinstance(n, ast.If) and any(attach in ast.walk(b) for b in n.body)]
+    assert [ast.unparse(g.test) for g in guards] == ["not args.demo"]
+    assert not any(attach in ast.walk(b) for g in guards for b in g.orelse)
     stops = [n for n in ast.walk(fn) if isinstance(n, ast.Try) and n.finalbody
              and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
                      and c.func.attr == "stop_flash_watch" for s in n.finalbody for c in ast.walk(s))]
