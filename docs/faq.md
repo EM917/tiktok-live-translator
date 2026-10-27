@@ -166,7 +166,8 @@ combine is in [Keeping the stream](fault-tolerance.md#keeping-the-stream).
 
 **Switches that stay off by default.** `TLT_ASR_TOKEN_CAP=on` (stop decoding a
 segment after 112 tokens), `TLT_ASR_MASK_LANGS=on` (pick the language from the
-Spoken language list during detection instead of decoding a segment twice) and
+Spoken language list during detection instead of decoding an out-of-list
+segment a second time) and
 `TLT_LOW_BITRATE_STREAM=1` (take the lowest quality when TikTok offers no
 audio-only track) are off unless you set them when starting the app. Each can
 change what is recognized, or how soon, so read the evaluation of a switch
@@ -299,7 +300,7 @@ window, or when the browser does not save it, the key stays in the address bar
 and the page works as before. Clicking **New Link** disconnects every phone
 currently watching; each phone drops the old key and needs the new QR code.
 
-Two cases on iPhones have not been tried on an iPhone. A Home Screen icon added
+Two iPhone cases have not been tried on an actual iPhone. A Home Screen icon added
 after the key left the address bar has no key in its own address. If iOS opens
 that icon as a web app, the icon has storage of its own, and scanning again
 saves the key in Safari only, so the icon cannot get it: scan in Safari and
