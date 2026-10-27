@@ -26,7 +26,7 @@ import asyncio
 import copy
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -709,8 +709,12 @@ def flash_state(now_ms=None):
     doc = json.loads(FLASH_FIXTURE.read_text(encoding="utf-8"))
     updated = flash_sale.parse_iso(doc["updated_at"])
     tracker = flash_sale.StatusTracker()
-    tracker.update("ok", copy.deepcopy(doc), updated + 1, 0.0)
-    state = tracker.update("ok", copy.deepcopy(doc), updated + 1, float(flash_sale.STUCK_SEC))
+    tracker.update("ok", copy.deepcopy(doc), 0.0)
+    # 60 秒后闪购助手早已刷新过 updated_at（每 2 秒一次）：照样盖一个新时刻，不然同一个值停了 60 秒就成了陈旧
+    later = copy.deepcopy(doc)
+    later["updated_at"] = datetime.fromtimestamp(updated + flash_sale.STUCK_SEC, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    state = tracker.update("ok", later, float(flash_sale.STUCK_SEC))
     shift = int(now_ms if now_ms is not None else time.time() * 1000) + 10 * 60 * 1000 - int(round(updated * 1000))
     for product in state["products"]:
         for key in ("ends_ms", "next_ms"):

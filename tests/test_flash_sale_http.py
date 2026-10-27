@@ -112,14 +112,46 @@ def test_a_non_object_json_is_returned_as_is_for_the_tracker_to_reject():
     kind, value = fetch_from(json_handler(b"[1, 2]"))
     assert (kind, value) == ("ok", [1, 2])
     tracker = fs.StatusTracker()
-    assert tracker.update(kind, value, 0.0, 0.0)["conn"] == "bad_response" and tracker.why == "not_object"
+    assert tracker.update(kind, value, 0.0)["conn"] == "bad_response" and tracker.why == "not_object"
 
 
-def test_a_slow_answer_counts_as_unreachable():
+# ---- 连得上、却没拿到回话：bad_response，不是 unreachable ---------------------------------------------
+# 只有连接被拒才算「没在运行」。闪购助手卡住（死锁、被挂起、HTTP 线程堵住）时内核照样完成握手，
+# 我们这边只看到读超时；那正是要人去看的时候，要变色，也不能对外说它没在运行
+
+def test_a_slow_answer_is_no_answer():
     async def handler(request):
         await asyncio.sleep(2.0)
         return web.Response(body=b"{}", content_type="application/json")
-    assert fetch_from(handler, timeout=0.2) == ("unreachable", None)
+    assert fetch_from(handler, timeout=0.2) == ("bad_response", "no_answer")
+
+
+def test_a_frozen_listener_that_never_accepts_is_no_answer():
+    """listen() 了但从不 accept()：像被挂起、死锁的闪购助手。握手由内核完成，之后什么都不回。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(8)
+        port = sock.getsockname()[1]
+        assert port != 9334
+        got = asyncio.run(fs.fetch_status("http://127.0.0.1:%d/status" % port, timeout=0.3))
+    assert got == ("bad_response", "no_answer")
+
+
+async def raw_peer(respond, timeout=1.0):
+    """本机临时端口上的一个裸 TCP 对端：读完请求头，交给 respond(reader, writer) 随便回点什么。"""
+    async def handle(reader, writer):
+        try:
+            await respond(reader, writer)
+        finally:
+            writer.close()
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    assert port != 9334
+    try:
+        return await fs.fetch_status("http://127.0.0.1:%d/status" % port, timeout=timeout)
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 def free_port():
@@ -129,24 +161,33 @@ def free_port():
 
 
 def test_a_port_nobody_listens_on_is_unreachable():
+    """连接被拒：9334 上没人在听。契约里这就是闪购助手没开，只有这一种算 unreachable。"""
     port = free_port()
     assert port != 9334
     got = asyncio.run(fs.fetch_status("http://127.0.0.1:%d/status" % port, timeout=1.0))
     assert got == ("unreachable", None)
 
 
-def test_a_server_that_hangs_up_without_answering_is_unreachable():
-    async def scenario():
-        async def hang_up(reader, writer):
-            writer.close()
-        server = await asyncio.start_server(hang_up, "127.0.0.1", 0)
-        port = server.sockets[0].getsockname()[1]
-        try:
-            return await fs.fetch_status("http://127.0.0.1:%d/status" % port, timeout=1.0)
-        finally:
-            server.close()
-            await server.wait_closed()
-    assert asyncio.run(scenario()) == ("unreachable", None)
+def test_a_server_that_hangs_up_without_answering_is_no_answer():
+    async def hang_up(reader, writer):
+        pass
+    assert asyncio.run(raw_peer(hang_up)) == ("bad_response", "no_answer")
+
+
+def test_an_answer_cut_off_halfway_is_cut_off():
+    async def half(reader, writer):
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"schema\": 1")
+        await writer.drain()
+    assert asyncio.run(raw_peer(half)) == ("bad_response", "cut_off")
+
+
+def test_something_that_does_not_speak_http_is_a_bad_response():
+    async def not_http(reader, writer):
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"SSH-2.0-Example\r\n\r\n")
+        await writer.drain()
+    assert asyncio.run(raw_peer(not_http)) == ("bad_response", "http")
 
 
 def test_cancelling_a_fetch_propagates():

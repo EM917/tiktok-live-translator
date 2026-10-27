@@ -1,5 +1,6 @@
 {
   "conn": "ok",
+  "why": null,
   "stale": false,
   "updated_ms": null,
   "app_version": "0.7.2",

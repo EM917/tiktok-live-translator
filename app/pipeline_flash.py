@@ -27,17 +27,17 @@ class FlashSaleMixin:
         self._flash_task = None         # 轮询任务
         self._flash_last = None         # 上次发布的 dict：没变就不广播（一次广播最坏被卡死的页面拖 2 秒）
         self._flash_conn_prev = None    # 上一次的 conn：终端行只在跳变时打
+        self._flash_why_prev = None     # 上一次 bad_response 的原因：原因变了也算跳变
         self._flash_tracker = flash_sale.StatusTracker()
         self._flash_boost_until = None  # 点「打开」、open 返回 0 之后快查到哪一刻（单调时钟）
         self._flash_wake_ev = None      # 唤醒轮询；首次使用时才建（Python 3.9 构造 Event 就绑事件循环）
         self._flash_opening = False     # 防连点：上一次 open 还没返回
-        self._flash_logged = set()      # 已经打过的异常种类、bad_response 原因、schema：同一种只打一次
+        self._flash_logged = set()      # 已经打过的异常种类、schema：同一种只打一次
         # 可注入（同 _brand_dir_opener）：测试换成假的，绝不碰本机真的 9334，也不真的执行 open
         self._flash_fetch = flash_sale.fetch_status
         self._flash_url = flash_sale.STATUS_URL
         self._flash_exec = None         # None = asyncio.create_subprocess_exec（调用时取）
-        self._flash_wall = time.time
-        self._flash_mono = time.monotonic
+        self._flash_mono = time.monotonic   # 陈旧、卡住都按单调时钟计（合盖睡眠时它不走，见 StatusTracker）
 
     # ---- 启动、停止 ----
 
@@ -88,7 +88,7 @@ class FlashSaleMixin:
 
     async def _flash_tick(self):
         kind, value = await self._flash_fetch(self._flash_url)
-        state = self._flash_tracker.update(kind, value, self._flash_wall(), self._flash_mono())
+        state = self._flash_tracker.update(kind, value, self._flash_mono())
         await self._flash_publish(state)
         self._flash_log_transition(state)
 
@@ -145,6 +145,8 @@ class FlashSaleMixin:
     def _flash_log_transition(self, state):
         conn = state.get("conn")
         prev, self._flash_conn_prev = self._flash_conn_prev, conn
+        why = self._flash_tracker.why if conn == "bad_response" else None
+        prev_why, self._flash_why_prev = self._flash_why_prev, why
         if conn == "ok":
             if prev != "ok":
                 print("[信息] 闪购助手：已连上 {}（版本 {}）".format(
@@ -158,9 +160,11 @@ class FlashSaleMixin:
                 print("[信息] 闪购助手：连不上 {}，之后每 {} 秒查一次".format(
                     self._flash_where(), self._flash_interval()))
         elif conn == "bad_response":
-            why = self._flash_tracker.why
-            self._flash_log_once("bad:{}".format(why),
-                                 "[警告] 闪购助手：{} 返回的内容读不出（{}）".format(self._flash_url, why))
+            # 进入读不出、或原因变了才打一行（同连不上：一直这样就不刷屏）。no_answer 是连得上、没回话：
+            # 只写看到的，不说它卡住了
+            if prev != "bad_response" or prev_why != why:
+                what = "没有回话" if why == "no_answer" else "返回的内容读不出"   # i18n: terminal
+                print("[警告] 闪购助手：{} {}（{}）".format(self._flash_url, what, why))
 
     # ---- 「打开闪购助手」 ----
 

@@ -6,9 +6,10 @@
 接口契约（闪购助手那边定的）：
 - `GET http://127.0.0.1:9334/status`，只监听本机；Host 必须是 127.0.0.1:9334 或 localhost:9334，
   aiohttp 默认发的就是前者。CORS 只放 8765，所以页面不直连，由后端来取（控制端口可能漂到 8766–8774）。
-- 连不上就当作闪购助手没在运行：它和专用 Chrome 同生共死，Chrome 一关它就退出。
+- 连不上（连接被拒）就当作闪购助手没在运行：它和专用 Chrome 同生共死，Chrome 一关它就退出。
+  连得上却不回话不算「没在运行」，见 fetch_status。
 - `updated_at` 每次成功判断都刷新（后台每 2 秒一次），UTC、以 Z 结尾；page=error 时不刷新；
-  还没判断过时为 null。陈旧就靠它判断，见 StatusTracker。
+  还没判断过时为 null。陈旧就看它多久没变，见 StatusTracker。
 - 代码表（page、paused_reason、state、level）以契约为准；认不出的代码原样（清洗后）交给前端显示。
 
 9334 上回话的不一定是闪购助手（本机任何进程都能占这个端口），所以读体限长、宽容解析：
@@ -105,8 +106,12 @@ def open_argv(path=APP_PATH):
 async def fetch_status(url=None, timeout=HTTP_TIMEOUT_SEC, limit=MAX_BYTES):
     """GET 一次，返回 (kind, value)：
     - ("ok", 解析出的 JSON)；
-    - ("unreachable", None)：连不上、超时、连接中途断了；
-    - ("bad_response", 原因代码)：有回话但不能用。原因是 http_<状态码>、too_large、json。
+    - ("unreachable", None)：连不上（连接被拒：9334 上没人在听，契约里这就是闪购助手没在运行）；
+    - ("bad_response", 原因代码)：9334 上有东西，但没拿到能用的回话。原因是
+      no_answer（timeout 秒内没回完，或者没回话就断开：进程卡住、被挂起时内核照样完成握手，我们这边只看到读超时）、
+      cut_off（回到一半断开）、http（回的不是 HTTP）、http_<状态码>、too_large、json。
+    只有连接被拒才算「没在运行」：卡住的闪购助手也是这个端口连得上、却不回话，那正是要人去看的时候，
+    不能和「没开」混成一种、不变色（CLAUDE.md 第八条：只报看到的）。
     取消照样往外抛。每次一个短命 session（同 app/localmodel.is_running），不用管关闭。
     url 缺省时在调用这一刻取 STATUS_URL（不写成默认参数：tests/conftest.py 要能把它换掉）。"""
     import aiohttp
@@ -122,7 +127,17 @@ async def fetch_status(url=None, timeout=HTTP_TIMEOUT_SEC, limit=MAX_BYTES):
                 body = await read_all(resp, limit)
     except asyncio.CancelledError:
         raise
-    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError):
+    # 先后有讲究：ClientConnectorError 是 ClientOSError 的子类；3.11 起 asyncio.TimeoutError 就是内置的
+    # TimeoutError，它又是 OSError 的子类，得排在最后那条 OSError 前面
+    except aiohttp.ClientConnectorError:
+        return "unreachable", None
+    except (asyncio.TimeoutError, aiohttp.ServerDisconnectedError, aiohttp.ClientOSError):
+        return "bad_response", "no_answer"
+    except aiohttp.ClientPayloadError:
+        return "bad_response", "cut_off"
+    except aiohttp.ClientResponseError:
+        return "bad_response", "http"
+    except (aiohttp.ClientError, OSError, ValueError):
         return "unreachable", None
     if body is None:
         return "bad_response", "too_large"
@@ -284,8 +299,8 @@ def attention(state):
     - page：page 是 login_required / captcha / error，或 page=no_list 且 running=true；
     - paused：paused_reason 不是 null 也不是 not_started（认不出的代码也算）；
     - stuck：有商品卡住（stopped 且该续开，连续 STUCK_SEC 秒，见 StatusTracker）；
-    - bad_response：9334 有回话但读不出。
-    不变色：连不上、正在查看、not_started、loading、no_page、enabled=false 的 stopped、
+    - bad_response：9334 上有东西，但没拿到能用的回话（读不出、或者连上了不回话，原因在 why）。
+    不变色：连不上（连接被拒）、正在查看、not_started、loading、no_page、enabled=false 的 stopped、
     ended_by_user、no_sale、unknown。「有没看过的报警」由前端判断，不在这里。"""
     conn = state.get("conn")
     if conn == "bad_response":
@@ -306,12 +321,13 @@ def attention(state):
     return out
 
 
-def empty_state(conn):
-    """conn 不是 ok 时推给页面的形状：商品和记录清空，不留旧数据（免得中控照着几分钟前的状态做事）。"""
+def empty_state(conn, why=None):
+    """conn 不是 ok 时推给页面的形状：商品和记录清空，不留旧数据（免得中控照着几分钟前的状态做事）。
+    why 只在 bad_response 时有：fetch_status 给的原因代码（页面按它挑一句话，no_answer 单独一句）。"""
     state = {
-        "conn": conn, "stale": False, "updated_ms": None, "app_version": None, "page": None,
-        "running": None, "paused_reason": None, "products": [], "products_total": 0, "alerts": [],
-        "stuck_count": 0,
+        "conn": conn, "why": why if conn == "bad_response" else None, "stale": False, "updated_ms": None,
+        "app_version": None, "page": None, "running": None, "paused_reason": None, "products": [],
+        "products_total": 0, "alerts": [], "stuck_count": 0,
     }
     state["attention"] = attention(state)
     return state
@@ -324,43 +340,52 @@ def _rank(product):
 
 
 class StatusTracker:
-    """把每次取 /status 的结果变成推给页面的 dict。跨轮询记着两种计时，都用单调时钟：
+    """把每次取 /status 的结果变成推给页面的 dict。跨轮询记着这几样，计时一律用单调时钟：
 
-    - updated_at 为 null 或认不出时，从哪一刻起一直拿不到（连续超过 STALE_SEC 秒算陈旧）。
-      拿到能认的 updated_at 就改用本机时钟减它：闪购助手和本程序在同一台机器上，用的是同一个系统时钟。
-      差值是负数（时钟往回调过）当新鲜；
-    - 每个商品（按 product_id）从哪一刻起满足「卡住」的条件。条件任一不满足、商品不在表里、
-      或这一次没连上，就清零。没有 product_id 的商品记不了时长，永远不算卡住。
+    - updated_at 这个值（认不出、null 都当 None）从哪一刻起没变过：同一个值连续超过 STALE_SEC 秒算陈旧。
+      不拿本机墙钟去减 updated_at：合盖睡眠时单调时钟不走（macOS 上是 mach_absolute_time）、墙钟照走，
+      醒来第一跳闪购助手多半还没刷新，墙钟一减就是睡了多久，会白白变一次色；墙钟往前往后调也不受影响。
+      代价是刚连上时要先看满 15 秒才判得出陈旧（哪怕它早就停了），比起误报这点晚可以接受；
+    - 每个商品（按 product_id）从哪一刻起满足「卡住」的条件。条件任一不满足、商品不在表里就清零。
+      没有 product_id 的商品记不了时长，永远不算卡住；
+    - 连续几次没查到（连不上、读不出）。连上之后**第一次**没查到先不发布：照旧交回上一份状态，两种计时都留着，
+      调用方照「连上」的节奏 3 秒后再查。连续第二次才发布那份空状态、计时清零。一次抖动（偶尔一次超时、
+      事件循环卡了一下）不至于清空浮层、把按钮染橙、让轮询退到 15 秒、把快满 60 秒的卡住计时清零；
+      真的退出了也只晚 3 秒说。
 
     不广播、不打印。schema / why 留给调用方打终端行。"""
 
     def __init__(self, stale_sec=STALE_SEC, stuck_sec=STUCK_SEC):
         self.stale_sec = stale_sec
         self.stuck_sec = stuck_sec
-        self._null_since = None
+        self._seen = None             # (updated_at 的值, 从哪一刻起一直是它)；None = 还没连上过 / 刚清零
         self._stopped_since = {}
-        self.schema = None        # 最近一次连上时读到的 schema
-        self.why = None           # 最近一次 bad_response 的原因代码
+        self._misses = 0              # 连续几次没查到
+        self._last = None             # 上一次交出去的状态
+        self.schema = None            # 最近一次连上时读到的 schema
+        self.why = None               # 最近一次发布的 bad_response 的原因代码
 
-    def update(self, kind, value, wall, mono):
+    def update(self, kind, value, mono):
         norm = normalize(value) if kind == "ok" else None
         if kind == "ok" and norm is None:
             kind, value = "bad_response", "not_object"
         if kind != "ok":
-            self._null_since = None
+            self._misses += 1
+            if self._misses == 1 and self._last is not None and self._last["conn"] == "ok":
+                return self._last
+            self._seen = None
             self._stopped_since = {}
             self.why = value if kind == "bad_response" else None
-            return empty_state(kind if kind in ("unreachable", "bad_response") else "unreachable")
+            state = empty_state(kind if kind in ("unreachable", "bad_response") else "unreachable", self.why)
+            self._last = state
+            return state
+        self._misses = 0
         self.why = None
         self.schema = norm.pop("_schema")
         updated = norm.pop("_updated_s")
-        if updated is None:
-            if self._null_since is None:
-                self._null_since = mono
-            stale = mono - self._null_since > self.stale_sec
-        else:
-            self._null_since = None
-            stale = wall - updated > self.stale_sec
+        if self._seen is None or self._seen[0] != updated:
+            self._seen = (updated, mono)
+        stale = mono - self._seen[1] > self.stale_sec
         since = {}
         for product in norm["products"]:
             pid = product["id"]
@@ -371,8 +396,9 @@ class StatusTracker:
                 product["stuck"] = False
         self._stopped_since = since
         norm["products"].sort(key=_rank)
-        state = dict(norm, conn="ok", stale=stale,
+        state = dict(norm, conn="ok", why=None, stale=stale,
                      updated_ms=int(round(updated * 1000)) if (stale and updated is not None) else None,
                      stuck_count=sum(1 for p in norm["products"] if p["stuck"]))
         state["attention"] = attention(state)
+        self._last = state
         return state

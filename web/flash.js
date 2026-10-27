@@ -228,12 +228,18 @@ function flashStuckCount(st) {
 function flashLines(st, unread) {
   if (!st || typeof st !== "object") return [];
   var conn = st.conn;
+  // 连不上 = 连接被拒，9334 上没人在听：契约里这就是闪购助手没开，不变色
   if (conn === "unreachable") {
     return [{ text: L("闪购助手没在运行。", "Flash Sale Helper isn’t running."), attn: false },
             { text: L("127.0.0.1:9334 连不上，每 15 秒再查一次。",
-                      "127.0.0.1:9334 isn’t answering. Checking again every 15 sec."), attn: false }];
+                      "Can’t connect to 127.0.0.1:9334. Checking again every 15 sec."), attn: false }];
   }
+  // 9334 上有东西但没拿到能用的回话：要人看。no_answer（后端 why）是连得上、2 秒内没回完——闪购助手卡住时就是这样，
+  // 只写看到的，不说它卡住了、也不说它没在运行
   if (conn === "bad_response") {
+    if (st.why === "no_answer") {
+      return [{ text: L("127.0.0.1:9334 在 2 秒内没有回应。", "127.0.0.1:9334 didn’t answer within 2 sec."), attn: true }];
+    }
     return [{ text: L("127.0.0.1:9334 返回的内容读不出来。", "Couldn’t read the response from 127.0.0.1:9334."), attn: true }];
   }
   if (conn !== "ok") return [{ text: L("正在查看闪购助手的状态…", "Checking Flash Sale Helper…"), attn: false }];

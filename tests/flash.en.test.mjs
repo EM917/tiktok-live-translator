@@ -63,8 +63,9 @@ test("胶囊和按钮：Running / Needs attention / Not started / Not running / 
 test("主句：连不上、读不出、陈旧（带本机时刻）、卡住和未读分单复数、认不出的代码原样", () => {
   assert.deepEqual(lines({ conn: "checking" }), ["Checking Flash Sale Helper…"]);
   assert.deepEqual(lines({ conn: "unreachable" }),
-                   ["Flash Sale Helper isn’t running.", "127.0.0.1:9334 isn’t answering. Checking again every 15 sec."]);
+                   ["Flash Sale Helper isn’t running.", "Can’t connect to 127.0.0.1:9334. Checking again every 15 sec."]);
   assert.deepEqual(lines({ conn: "bad_response" }), ["Couldn’t read the response from 127.0.0.1:9334."]);
+  assert.deepEqual(lines({ conn: "bad_response", why: "no_answer" }), ["127.0.0.1:9334 didn’t answer within 2 sec."]);
   const at = new Date(2026, 9, 27, 21, 36, 7).getTime();
   assert.deepEqual(lines(calm({ stale: true, updated_ms: at, attention: ["stale"] })),
                    ["Flash Sale Helper hasn’t updated its status.", "Last updated at 21:36:07."]);
@@ -106,6 +107,7 @@ test("整张浮层画出来的字：除了数据区（标题 translate=no、记�
     st(), calm({ stale: true, updated_ms: NOW - 20000, attention: ["stale", "zzz"], page: "error", running: false, paused_reason: null }),
     calm({ paused_reason: "user_interaction", attention: ["paused"] }), calm({ paused_reason: "not_started", running: false }),
     { conn: "unreachable", products: [], alerts: [] }, { conn: "bad_response", attention: ["bad_response"] }, { conn: "checking" },
+    { conn: "bad_response", why: "no_answer", attention: ["bad_response"] },
     calm({ products: Array.from({ length: 41 }, (_, i) => product(["live", "stopped", "pending", "odd"][i % 4], { renewals: i % 3 })) }),
   ];
   for (const state of states) {

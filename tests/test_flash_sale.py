@@ -309,35 +309,72 @@ def test_attention_when_not_connected(conn, expected):
 def test_empty_state_has_the_message_shape_and_no_data():
     for conn in ("checking", "unreachable", "bad_response"):
         state = fs.empty_state(conn)
-        assert state == {"conn": conn, "stale": False, "updated_ms": None, "app_version": None,
+        assert state == {"conn": conn, "why": None, "stale": False, "updated_ms": None, "app_version": None,
                          "page": None, "running": None, "paused_reason": None, "products": [],
                          "products_total": 0, "alerts": [], "stuck_count": 0,
                          "attention": ["bad_response"] if conn == "bad_response" else []}
     assert fs.empty_state("checking") is not fs.empty_state("checking")
+    # why 只在 bad_response 时下发（页面按它挑一句话）
+    assert fs.empty_state("bad_response", "no_answer")["why"] == "no_answer"
+    assert fs.empty_state("unreachable", "no_answer")["why"] is None
 
 
 # ---- StatusTracker：陈旧、卡住、排序 -------------------------------------------------------------
 
-def track(tracker, raw, wall=UPDATED_S + 1, mono=1000.0):
-    return tracker.update("ok", copy.deepcopy(raw), wall, mono)
+def stamped(raw, wall):
+    """同一份 /status，updated_at 换成 wall 这个时刻。"""
+    doc = copy.deepcopy(raw)
+    doc["updated_at"] = datetime.fromtimestamp(wall, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return doc
+
+
+def track(tracker, raw, mono=1000.0, fresh=True):
+    """喂一次 /status。fresh（缺省）：updated_at 盖成随单调时钟往前走的时刻——闪购助手每 2 秒刷新一次的样子，
+    隔几十秒喂同一份样例才不会被当成陈旧（陈旧看的是同一个值停了多久）。测陈旧时传 fresh=False，原样喂。
+    updated_at 为 null、认不出的不动。"""
+    doc = copy.deepcopy(raw)
+    if fresh and fs.parse_iso(doc.get("updated_at")) is not None:
+        doc = stamped(doc, UPDATED_S + mono)
+    return tracker.update("ok", doc, mono)
 
 
 def test_the_published_state_has_exactly_the_message_keys():
     state = track(fs.StatusTracker(), sample("running"))
-    assert set(state) == {"conn", "stale", "updated_ms", "app_version", "page", "running", "paused_reason",
+    assert set(state) == {"conn", "why", "stale", "updated_ms", "app_version", "page", "running", "paused_reason",
                           "products", "products_total", "alerts", "attention", "stuck_count"}
     assert set(state["products"][0]) == {"id", "title", "state", "round", "ends_ms", "next_ms", "stock_left",
                                          "stock_total", "renewals", "enabled", "stuck"}
-    assert state["conn"] == "ok" and state["stale"] is False and state["updated_ms"] is None
+    assert state["conn"] == "ok" and state["why"] is None and state["stale"] is False and state["updated_ms"] is None
     assert set(state) == set(fs.empty_state("ok"))
 
 
-@pytest.mark.parametrize("age, stale", [(14, False), (15, False), (15.5, True), (16, True), (-30, False)])
-def test_stale_is_wall_clock_minus_updated_at(age, stale):
-    state = track(fs.StatusTracker(), sample("running"), wall=UPDATED_S + age)
+@pytest.mark.parametrize("age, stale", [(14, False), (15, False), (15.5, True), (16, True), (600, True)])
+def test_stale_is_the_same_updated_at_for_over_fifteen_seconds_of_the_monotonic_clock(age, stale):
+    tracker = fs.StatusTracker()
+    assert track(tracker, sample("running"), mono=100.0, fresh=False)["stale"] is False
+    state = track(tracker, sample("running"), mono=100.0 + age, fresh=False)
     assert state["stale"] is stale
     assert ("stale" in state["attention"]) is stale
-    assert state["updated_ms"] == (int(round(UPDATED_S * 1000)) if stale else None)
+    assert state["updated_ms"] == (int(round(UPDATED_S * 1000)) if stale else None)   # 页面写「上次更新」用的还是它的墙钟时刻
+
+
+def test_a_refreshing_updated_at_is_never_stale_and_the_first_sight_never_is():
+    """闪购助手每 2 秒刷新一次：每一跳的值都不一样，永远新鲜。第一次看到的值不管多旧都先当新鲜（要看满 15 秒才判得出）。"""
+    tracker = fs.StatusTracker()
+    for i in range(20):
+        assert track(tracker, stamped(sample("running"), UPDATED_S + 3 * i), mono=3.0 * i, fresh=False)["stale"] is False
+    assert track(fs.StatusTracker(), stamped(sample("running"), UPDATED_S - 86400), mono=0.0, fresh=False)["stale"] is False
+
+
+def test_waking_from_sleep_with_an_old_updated_at_is_not_stale():
+    """合盖睡眠：单调时钟不走、墙钟照走。醒来第一跳闪购助手还没刷新，updated_at 还是睡前那个；
+    不能拿墙钟去减它（那样差值就是睡了多久），只看同一个值在单调时钟上停了多久。下一跳它刷新了，照常新鲜。"""
+    tracker = fs.StatusTracker()
+    track(tracker, stamped(sample("running"), UPDATED_S), mono=500.0, fresh=False)
+    track(tracker, stamped(sample("running"), UPDATED_S + 2), mono=503.0, fresh=False)
+    woke = track(tracker, stamped(sample("running"), UPDATED_S + 2), mono=506.0, fresh=False)   # 墙钟已过去 1 小时
+    assert woke["stale"] is False and woke["attention"] == []
+    assert track(tracker, stamped(sample("running"), UPDATED_S + 3600), mono=509.0, fresh=False)["stale"] is False
 
 
 def test_a_null_updated_at_turns_stale_after_fifteen_seconds_of_the_monotonic_clock():
@@ -354,13 +391,21 @@ def test_a_null_updated_at_turns_stale_after_fifteen_seconds_of_the_monotonic_cl
     assert track(tracker, raw, mono=132.5)["stale"] is True
 
 
-def test_losing_the_connection_resets_the_null_clock():
+def test_losing_the_connection_twice_in_a_row_resets_the_staleness_clock():
     tracker = fs.StatusTracker()
     raw = dict(sample("running"), updated_at="garbage")
     track(tracker, raw, mono=100.0)
-    tracker.update("unreachable", None, UPDATED_S, 110.0)
+    tracker.update("unreachable", None, 107.0)
+    tracker.update("unreachable", None, 110.0)
     assert track(tracker, raw, mono=120.0)["stale"] is False
     assert track(tracker, raw, mono=136.0)["stale"] is True
+
+
+def test_a_single_missed_poll_keeps_the_staleness_clock():
+    tracker = fs.StatusTracker()
+    track(tracker, sample("running"), mono=100.0, fresh=False)
+    tracker.update("bad_response", "no_answer", 110.0)
+    assert track(tracker, sample("running"), mono=115.5, fresh=False)["stale"] is True
 
 
 def stopped_doc(**over):
@@ -406,12 +451,50 @@ def test_any_broken_condition_resets_the_stuck_clock(breaker):
     assert stuck_of(track(tracker, stopped_doc(), mono=130.0))["3"] is True
 
 
-@pytest.mark.parametrize("kind, value", [("unreachable", None), ("bad_response", "json"), ("ok", [1])])
-def test_a_failed_poll_resets_the_stuck_clock(kind, value):
+FAILURES = [("unreachable", None), ("bad_response", "json"), ("bad_response", "no_answer"), ("ok", [1])]
+
+
+@pytest.mark.parametrize("kind, value", FAILURES)
+def test_two_failed_polls_in_a_row_reset_the_stuck_clock(kind, value):
     tracker = fs.StatusTracker()
     track(tracker, stopped_doc(), mono=0.0)
-    tracker.update(kind, value, UPDATED_S, 30.0)
+    tracker.update(kind, value, 30.0)
+    tracker.update(kind, value, 33.0)
     assert stuck_of(track(tracker, stopped_doc(), mono=61.0))["3"] is False
+
+
+@pytest.mark.parametrize("kind, value", FAILURES)
+def test_a_single_failed_poll_keeps_the_last_state_and_the_stuck_clock(kind, value):
+    """一次抖动（一次超时、读到一半断开、事件循环卡了一下）：交回上一份状态（调用方据此不广播、照 3 秒再查），
+    卡住的计时不清零——57 秒时停着的商品，60 秒那一跳没查到，63 秒照样报卡住，而不是推迟到两分多钟。"""
+    tracker = fs.StatusTracker()
+    for mono in (0.0, 3.0, 54.0):
+        track(tracker, stopped_doc(), mono=mono)
+    before = track(tracker, stopped_doc(), mono=57.0)
+    assert tracker.update(kind, value, 60.0) is before
+    assert tracker.why is None
+    after = track(tracker, stopped_doc(), mono=63.0)
+    assert stuck_of(after)["3"] is True and after["attention"] == ["stuck"]
+
+
+@pytest.mark.parametrize("kind, value", FAILURES)
+def test_the_second_failed_poll_in_a_row_publishes_the_empty_state(kind, value):
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    assert tracker.update(kind, value, 3.0)["conn"] == "ok"
+    second = tracker.update(kind, value, 6.0)
+    expect_conn = "unreachable" if kind == "unreachable" else "bad_response"
+    expect_why = "not_object" if kind == "ok" else value
+    assert second == fs.empty_state(expect_conn, expect_why)
+    # 已经不是连上的状态了：之后每一次没查到都照实发布（不再「先照旧」）
+    assert tracker.update("unreachable", None, 21.0) == fs.empty_state("unreachable")
+
+
+def test_a_failure_with_nothing_connected_before_is_published_at_once():
+    """启动后第一次就没查到、或者上一次也没查到：没有「上一份连上的状态」可留，照实发布。"""
+    tracker = fs.StatusTracker()
+    assert tracker.update("unreachable", None, 0.0) == fs.empty_state("unreachable")
+    assert tracker.update("bad_response", "no_answer", 15.0) == fs.empty_state("bad_response", "no_answer")
 
 
 def test_a_product_without_an_id_is_never_stuck():
@@ -471,7 +554,8 @@ def test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend():
     """前端 web/flash.js 有三处照抄了后端的东西，这里逐项对上，哪边改了另一边没跟就红：
     - flashRank 的排序表和 flash_sale._RANK（卡住的 0 档、认不出的最后一档）；
     - FLASH_ATTN_ORDER（浮层主句的先后）和 attention() 排出来的顺序；
-    - 文案里写死的数：连不上「每 15 秒再查一次」= POLL_DOWN_SEC，「停了超过 1 分钟」= STUCK_SEC。"""
+    - 文案里写死的数：连不上「每 15 秒再查一次」= POLL_DOWN_SEC，「停了超过 1 分钟」= STUCK_SEC，
+      没有回应「在 2 秒内」= HTTP_TIMEOUT_SEC。"""
     js = (Path(__file__).resolve().parent.parent / "web" / "flash.js").read_text(encoding="utf-8")
     body = re.search(r"function flashRank\(p\) \{(.*?)\n\}", js, re.S).group(1)
     assert {code: int(n) for code, n in re.findall(r'case "(\w+)": return (\d+);', body)} == fs._RANK
@@ -482,6 +566,7 @@ def test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend():
                           "products": [{"stuck": True}]})
     assert order == every + fs.attention({"conn": "bad_response"})
     assert fs.POLL_DOWN_SEC == 15 and "每 15 秒再查一次" in js and "Checking again every 15 sec." in js
+    assert fs.HTTP_TIMEOUT_SEC == 2 and "在 2 秒内没有回应" in js and "didn’t answer within 2 sec." in js
     assert fs.STUCK_SEC == 60 and "停了超过 1 分钟" in js and "Stopped for over 1 min" in js
 
 
@@ -493,15 +578,15 @@ def test_the_samples_raise_the_documented_attention():
 
 def test_a_non_object_body_becomes_bad_response():
     tracker = fs.StatusTracker()
-    state = tracker.update("ok", [1, 2], UPDATED_S, 0.0)
-    assert state == fs.empty_state("bad_response") and tracker.why == "not_object"
+    state = tracker.update("ok", [1, 2], 0.0)
+    assert state == fs.empty_state("bad_response", "not_object") and tracker.why == "not_object"
 
 
 def test_failures_publish_empty_states_and_remember_the_reason():
     tracker = fs.StatusTracker()
-    assert tracker.update("unreachable", None, UPDATED_S, 0.0) == fs.empty_state("unreachable")
+    assert tracker.update("unreachable", None, 0.0) == fs.empty_state("unreachable")
     assert tracker.why is None
-    assert tracker.update("bad_response", "http_404", UPDATED_S, 0.0) == fs.empty_state("bad_response")
+    assert tracker.update("bad_response", "http_404", 0.0) == fs.empty_state("bad_response", "http_404")
     assert tracker.why == "http_404"
     track(tracker, sample("running"))
     assert tracker.why is None and tracker.schema == 1
@@ -510,10 +595,10 @@ def test_failures_publish_empty_states_and_remember_the_reason():
 def test_the_same_status_gives_an_equal_state_even_as_updated_at_ticks():
     """去重靠这个：updated_at 每 2 秒变一次，但不下发它，只要内容没变两次的结果就相等。"""
     tracker = fs.StatusTracker()
-    a = track(tracker, sample("running"), wall=UPDATED_S + 1, mono=0.0)
+    a = track(tracker, sample("running"), mono=0.0, fresh=False)
     later = dict(sample("running"), updated_at="2026-10-27T21:36:09.201Z")
-    b = track(tracker, later, wall=UPDATED_S + 3, mono=2.0)
+    b = track(tracker, later, mono=2.0, fresh=False)
     assert a == b
     changed = copy.deepcopy(later)
     changed["products"][0]["stock_left"] = 29
-    assert track(tracker, changed, wall=UPDATED_S + 3, mono=2.0) != b
+    assert track(tracker, changed, mono=2.0, fresh=False) != b

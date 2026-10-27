@@ -171,10 +171,17 @@ const lines = (state, unread = 0) => F.flashLines(state, unread).map(F.flashLine
 const calm = (extra = {}) => st(Object.assign({ attention: [], products: SAMPLE.products.map((p) => Object.assign({}, p, { stuck: false })) },
                                               extra));
 
-test("主句：正在查看、连不上（带每 15 秒再查）、读不出", () => {
+test("主句：正在查看、连不上（带每 15 秒再查）、读不出、连得上没回话（why=no_answer）", () => {
   assert.deepEqual(lines({ conn: "checking" }), ["正在查看闪购助手的状态…"]);
   assert.deepEqual(lines({ conn: "unreachable" }), ["闪购助手没在运行。", "127.0.0.1:9334 连不上，每 15 秒再查一次。"]);
   assert.deepEqual(lines({ conn: "bad_response" }), ["127.0.0.1:9334 返回的内容读不出来。"]);
+  assert.deepEqual(lines({ conn: "bad_response", why: "json" }), ["127.0.0.1:9334 返回的内容读不出来。"]);
+  // 闪购助手卡住时端口照样连得上、只是不回话：要人看（变色），也不能说它「没在运行」
+  const frozen = { conn: "bad_response", why: "no_answer", attention: ["bad_response"] };
+  assert.deepEqual(lines(frozen), ["127.0.0.1:9334 在 2 秒内没有回应。"]);
+  assert.equal(F.flashLines(frozen, 0)[0].attn, true);
+  assert.deepEqual(F.flashChip(frozen, 0), { tone: "attn", text: "要处理" });
+  assert.equal(F.flashButtonState(frozen, 0).attn, true);
   assert.deepEqual(lines(calm({ alerts: [] })), [], "正常：不写主句，只看摘要");
   assert.deepEqual(lines(st({ attention: [], products: [], alerts: [] })), ["商品列表里还没有商品。"]);
 });

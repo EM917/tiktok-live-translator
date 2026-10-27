@@ -72,8 +72,9 @@ class Done(Exception):
 
 
 class Script:
-    """假的抓取和睡眠：fetch 按顺序交出剧本里的结果——dict 是一份 /status（updated_at 盖成此刻，
-    当作闪购助手每 2 秒刷新一次），元组原样交出，异常就抛；sleep 记下间隔、把两个时钟拨快，剧本用完就停。"""
+    """假的抓取和睡眠：fetch 按顺序交出剧本里的结果——dict 是一份 /status（updated_at 盖成此刻的墙钟，
+    当作闪购助手每 2 秒刷新一次），元组原样交出，异常就抛；sleep 记下间隔、把墙钟和单调时钟一起拨快，剧本用完就停。
+    后端只读单调时钟（_flash_mono）；墙钟只用来给 updated_at 盖时刻。"""
 
     def __init__(self, p, steps, wall=START_WALL, mono=1000.0):
         self.steps = list(steps)
@@ -82,7 +83,6 @@ class Script:
         self.p = p
         p._flash_fetch = self.fetch
         p._flash_sleep = self.sleep
-        p._flash_wall = lambda: self.wall
         p._flash_mono = lambda: self.mono
 
     async def fetch(self, url):
@@ -223,12 +223,13 @@ def test_only_changes_are_broadcast_and_the_rhythm_is_three_or_fifteen_seconds(c
     changed = sample("running")
     changed["products"][0]["stock_left"] = 29
     script = Script(p, [sample("running"), sample("running"), changed, ("unreachable", None),
-                        ("unreachable", None), sample("running")])
+                        ("unreachable", None), ("unreachable", None), sample("running")])
     p._flash_conn_prev = "checking"
     run_watch(p)
     sent = p.server.of_type("flash_sale")
     assert [m["conn"] for m in sent] == ["ok", "ok", "unreachable", "ok"]
-    assert script.sleeps == [3, 3, 3, 15, 15, 3]
+    # 连上以后第一次没查到先照旧、3 秒后再查；连续第二次才发布「连不上」，之后每 15 秒
+    assert script.sleeps == [3, 3, 3, 3, 15, 15, 3]
     assert p.server.config["flash_sale"] == {k: v for k, v in sent[-1].items() if k != "type"}
     assert sent[2]["products"] == [] and sent[2]["alerts"] == []        # 连不上：不留旧数据
     assert all("updated_at" not in m and "_schema" not in m and "_updated_s" not in m for m in sent)
@@ -250,14 +251,16 @@ def test_a_product_stuck_for_sixty_seconds_is_broadcast_once_when_it_flips():
     assert script.mono - 1000.0 >= 60
 
 
-def test_bad_responses_are_logged_once_per_reason_and_schema_once(capsys):
+def test_bad_responses_are_logged_when_the_reason_changes_and_schema_once(capsys):
     p = bare_pipeline()
     p._flash_conn_prev = "checking"
     Script(p, [("bad_response", "http_404"), ("bad_response", "http_404"), ("bad_response", "json"),
                ("ok", [1]), dict(sample("running"), schema=2), dict(sample("running"), schema=2)])
     run_watch(p)
-    assert [m["conn"] for m in p.server.of_type("flash_sale")] == ["bad_response", "ok"]
-    assert p.server.of_type("flash_sale")[0]["attention"] == ["bad_response"]
+    sent = p.server.of_type("flash_sale")
+    assert [(m["conn"], m["why"]) for m in sent] == [("bad_response", "http_404"), ("bad_response", "json"),
+                                                     ("bad_response", "not_object"), ("ok", None)]
+    assert sent[0]["attention"] == ["bad_response"]
     assert out_lines(capsys) == [
         "[警告] 闪购助手：http://127.0.0.1:9/status 返回的内容读不出（http_404）",
         "[警告] 闪购助手：http://127.0.0.1:9/status 返回的内容读不出（json）",
@@ -265,6 +268,39 @@ def test_bad_responses_are_logged_once_per_reason_and_schema_once(capsys):
         "[信息] 闪购助手：已连上 127.0.0.1:9（版本 0.7.2）",
         "[信息] 闪购助手：/status 的 schema 是 2，按 1 尽量读",
     ]
+
+
+def test_a_helper_that_connects_but_does_not_answer_turns_the_button_orange(capsys):
+    """卡住的闪购助手：端口连得上、不回话。连续两次才发布（一次可能只是抖动），发布的是 bad_response / no_answer，
+    attention 非空（按钮变色），终端只写看到的（没有回话），不说它没在运行。恢复了照常连上。"""
+    p = bare_pipeline()
+    p._flash_conn_prev = "checking"
+    script = Script(p, [sample("running"), ("bad_response", "no_answer"), ("bad_response", "no_answer"),
+                        ("bad_response", "no_answer"), sample("running")])
+    run_watch(p)
+    sent = p.server.of_type("flash_sale")
+    assert [(m["conn"], m["why"]) for m in sent] == [("ok", None), ("bad_response", "no_answer"), ("ok", None)]
+    assert sent[1]["attention"] == ["bad_response"] and sent[1]["products"] == []
+    assert script.sleeps == [3, 3, 15, 15, 3]
+    assert out_lines(capsys) == [
+        "[信息] 闪购助手：已连上 127.0.0.1:9（版本 0.7.2）",
+        "[警告] 闪购助手：http://127.0.0.1:9/status 没有回话（no_answer）",
+        "[信息] 闪购助手：已连上 127.0.0.1:9（版本 0.7.2）",
+    ]
+
+
+def test_one_missed_poll_broadcasts_nothing_and_keeps_the_stuck_clock():
+    """一次没查到：不广播、照 3 秒再查，卡住的计时照走。running 样例里停着的那个商品还是满 60 秒就报，
+    不会因为中间一次抖动清零、再推迟一分多钟。"""
+    p = bare_pipeline()
+    steps = [sample("running")] * 19 + [("bad_response", "no_answer")] + [sample("running")] * 2
+    script = Script(p, steps)
+    run_watch(p)
+    sent = p.server.of_type("flash_sale")
+    assert len(sent) == 2 and sent[1]["attention"] == ["stuck"]
+    assert set(script.sleeps) == {3}
+    # 第 21 次（60 秒那一跳）就报出来：第 21 次查之前 config 里还没卡住，第 22 次查之前已经是了
+    assert script.seen_config[20]["attention"] == [] and script.seen_config[21]["attention"] == ["stuck"]
 
 
 def test_an_exception_in_one_poll_does_not_stop_the_loop(capsys):
@@ -487,7 +523,7 @@ def published_state():
     tracker = fs.StatusTracker()
     doc = sample("running")
     doc["updated_at"] = iso(START_WALL)
-    return tracker.update("ok", doc, START_WALL + 1, 0.0)
+    return tracker.update("ok", doc, 0.0)
 
 
 def test_the_phone_never_gets_flash_sale():
@@ -599,8 +635,8 @@ def test_terminal_output_is_identical_in_both_ui_languages_and_nothing_is_audite
         p._flash_exec = FakeExec(rc=1)
 
         async def go():
-            Script(p, [sample("running"), ("unreachable", None), ("bad_response", "http_500"),
-                       dict(sample("awaiting"), schema=2)])
+            Script(p, [sample("running"), ("unreachable", None), ("unreachable", None), ("bad_response", "http_500"),
+                       ("bad_response", "no_answer"), dict(sample("awaiting"), schema=2)])
             await p.attach_flash_sale(platform="darwin", candidates=[app])
             with pytest.raises(Done):
                 await p._flash_task
