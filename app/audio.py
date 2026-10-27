@@ -661,6 +661,16 @@ class AudioFlowMeter:
       summary        每 SUMMARY_SEC 一次本轮累计，崩溃了也留得下记录。
       quiet / speech 累计收到 QUIET_AUDIO_SEC 秒音频却一段都没切出来（音量一直低于门限）
                      时报 quiet；之后切出第一段时报 speech。这个计数跨轮累计。
+      gated / gated_more / gated_ok
+                     「送去识别的秒数 ÷ 收到的秒数」（专家审查 M4）。quiet 只管「一段都没切出来」；
+                     同一条音轨小 12 dB 时切段器只送 127/300 秒去识别，quiet 永远不响。每 GATE_WINDOW_SEC
+                     （单调时钟，跨轮累计）算一次：低于 GATE_LOW_RATIO 报 gated；之后每个窗口没回到
+                     GATE_OK_RATIO 以上就报 gated_more（数字跟着更新），回到以上报 gated_ok——中间留回差，
+                     免得来回闪。窗口里收到的不到 GATE_MIN_AUDIO_SEC 不评（音频没怎么到是到达率的事，
+                     见 app/pipeline_stream.py _check_coverage），状态不变。送去识别的秒数是切段器切出来的段长
+                     （feed / cut 的 sent_sec）：没切出来的只有「整段每一帧都低于门限」的那些（见
+                     app/segmenter.py），所以「其余的音量一直低于识别门限」是照实说。收尾时晚到的音频切出来
+                     的段也算进送去识别的（它们确实送去了），收到的那一边不算——比例只会偏高，不会误报。
     """
     WARMUP_SEC = 15.0
     WINDOW_SEC = 60.0
@@ -669,6 +679,10 @@ class AudioFlowMeter:
     LOW_WINDOWS = 2
     SUMMARY_SEC = 300.0
     QUIET_AUDIO_SEC = 120.0
+    GATE_WINDOW_SEC = 300.0
+    GATE_LOW_RATIO = 0.6
+    GATE_OK_RATIO = 0.75
+    GATE_MIN_AUDIO_SEC = 60.0
 
     def __init__(self, speech_rms=300.0, clock=time.monotonic):
         self.speech_rms = speech_rms
@@ -676,6 +690,8 @@ class AudioFlowMeter:
         self.low = False
         self.quiet = False
         self.since_cut = 0.0
+        self.gated = False
+        self._gate = [None, 0.0, 0.0]     # [窗口开始时刻（第一帧到了才有）, 收到的秒数, 送去识别的秒数]
         self.start_round()
 
     def start_round(self):
@@ -693,10 +709,12 @@ class AudioFlowMeter:
         return {"audio_sec": round(self.audio_sec, 1), "segments_cut": self.segments,
                 "peak_rms": round(self.peak_rms, 1)}
 
-    def cut(self, segments):
-        """记下新切出的语音段。feed() 已经包含这一步；流结束时 flush 出来的段走这里。"""
+    def cut(self, segments, sent_sec=0.0):
+        """记下新切出的语音段（段数和总秒数）。feed() 已经包含这一步；流结束时 flush 出来的段、收尾时晚到的
+        音频切出来的段走这里。"""
         if segments <= 0:
             return []
+        self._gate[2] += sent_sec
         self.segments += segments
         self.since_cut = 0.0
         if self.quiet:
@@ -704,8 +722,8 @@ class AudioFlowMeter:
             return [("speech", {})]
         return []
 
-    def feed(self, frame, segments=0):
-        """记一帧（以及这一帧让切段器切出的段数），返回事件列表，通常为空。"""
+    def feed(self, frame, segments=0, sent_sec=0.0):
+        """记一帧（以及这一帧让切段器切出的段数、这几段一共几秒），返回事件列表，通常为空。"""
         now = self._clock()
         rms = frame_rms(frame)
         sec = len(frame) / 2.0 / SAMPLE_RATE
@@ -715,7 +733,8 @@ class AudioFlowMeter:
             self.speech_frames += 1
         if rms > self.peak_rms:
             self.peak_rms = rms
-        events = self.cut(segments)
+        events = self.cut(segments, sent_sec)
+        events.extend(self._gate_feed(now, sec))
         if not segments:
             self.since_cut += sec
             if not self.quiet and self.since_cut >= self.QUIET_AUDIO_SEC:
@@ -737,6 +756,31 @@ class AudioFlowMeter:
         if now - win[0] >= self.WINDOW_SEC:
             events.extend(self._close_window(now))
         return events
+
+    def _gate_feed(self, now, sec):
+        """「送去识别 ÷ 收到」的窗口：记这一帧，满 GATE_WINDOW_SEC 就结算。"""
+        gate = self._gate
+        if gate[0] is None:
+            gate[0] = now
+        gate[1] += sec
+        if now - gate[0] < self.GATE_WINDOW_SEC:
+            return []
+        start, audio, sent = gate
+        self._gate = [now, 0.0, 0.0]
+        if audio < self.GATE_MIN_AUDIO_SEC:
+            return []
+        ratio = min(sent, audio) / audio
+        info = {"audio_sec": round(audio, 1), "sent_sec": round(min(sent, audio), 1),
+                "wall_sec": round(now - start, 1), "ratio": round(ratio, 3)}
+        if not self.gated:
+            if ratio < self.GATE_LOW_RATIO:
+                self.gated = True
+                return [("gated", info)]
+            return []
+        if ratio >= self.GATE_OK_RATIO:
+            self.gated = False
+            return [("gated_ok", info)]
+        return [("gated_more", info)]
 
     def _close_window(self, now):
         start, audio, speech, segments = self._win
