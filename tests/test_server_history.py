@@ -53,7 +53,7 @@ def test_session_break_never_marked_restore_even_when_last():
     """session_break 是场次分隔标记，不是字幕：就算它是 history 里最后一条，
     也不该背 restore——网页端会拿一条没有大字幕字段的消息去恢复底部大字幕。"""
     history = [{"type": "caption", "id": 1, "original": "hola"},
-               {"type": "session_break", "ts": 5.0, "streamer": "bella"}]
+               {"type": "session_break", "ts": 5.0, "streamer": "brisa"}]
     out = replay_payloads(history)
     assert out[0]["restore"] is True
     assert "restore" not in out[1]

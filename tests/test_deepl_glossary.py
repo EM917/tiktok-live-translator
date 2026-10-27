@@ -258,7 +258,7 @@ def test_the_engine_can_be_built_outside_any_event_loop(monkeypatch):
 
 def test_a_streamer_switch_rebuilds_the_glossary(tr):
     """引擎实例跨场次复用。换主播后 active() 词表的内容变了，缓存的表 id
-    不能按语言对直接命中——否则 Elisa 的直播会拿着 Bella 的术语表翻，
+    不能按语言对直接命中——否则 Elena 的直播会拿着 Brisa 的术语表翻，
     profile 系统对默认引擎（DeepL）形同虚设。命中必须比对内容指纹。"""
     from app import glossary as G
 

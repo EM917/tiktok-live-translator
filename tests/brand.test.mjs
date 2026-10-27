@@ -40,19 +40,19 @@ test("记过的主播返回记住的品牌", () => {
 });
 
 test("按小写键查找，与 streamerFromInput 的归一化对齐", () => {
-  assert.equal(defaultBrandFor("Bella", { bella: "acme" }), "acme");
+  assert.equal(defaultBrandFor("Brisa", { brisa: "acme" }), "acme");
 });
 
 test("没记过的主播、没有主播名、brands 不是对象，都退回不限", () => {
-  assert.equal(defaultBrandFor("nadie", { bella: "acme" }), "");
-  assert.equal(defaultBrandFor("", { bella: "acme" }), "");
-  assert.equal(defaultBrandFor("bella", null), "");
-  assert.equal(defaultBrandFor("bella", undefined), "");
-  assert.equal(defaultBrandFor("bella", "not an object"), "");
+  assert.equal(defaultBrandFor("nadie", { brisa: "acme" }), "");
+  assert.equal(defaultBrandFor("", { brisa: "acme" }), "");
+  assert.equal(defaultBrandFor("brisa", null), "");
+  assert.equal(defaultBrandFor("brisa", undefined), "");
+  assert.equal(defaultBrandFor("brisa", "not an object"), "");
 });
 
 test("值不是字符串（settings 被手改过）时按不限处理", () => {
-  assert.equal(defaultBrandFor("bella", { bella: 7 }), "");
+  assert.equal(defaultBrandFor("brisa", { brisa: 7 }), "");
 });
 
 // ---- buildBrandOptionList：由 config.brand_options 生成下拉框选项 ----
@@ -145,8 +145,8 @@ test("回填换了主播也不清 touched（不是中控操作，不能套用换
 });
 
 test("回填时本来没改过下拉：touched 保持 false", () => {
-  assert.deepEqual(brandStateSyncStreamer({ streamer: "", touched: false }, "bella"),
-                   { streamer: "bella", touched: false });
+  assert.deepEqual(brandStateSyncStreamer({ streamer: "", touched: false }, "brisa"),
+                   { streamer: "brisa", touched: false });
 });
 
 test("初始/脏 state 按「没改过」处理，不改入参", () => {
@@ -160,13 +160,13 @@ test("初始/脏 state 按「没改过」处理，不改入参", () => {
 // ---- brandStateAfterStart：发出 start 之后清掉 touched，主播名原样保留 ----
 
 test("发出 start 后 touched 清零，主播名保留", () => {
-  assert.deepEqual(brandStateAfterStart({ streamer: "bella", touched: true }),
-                   { streamer: "bella", touched: false });
+  assert.deepEqual(brandStateAfterStart({ streamer: "brisa", touched: true }),
+                   { streamer: "brisa", touched: false });
 });
 
 test("本来就没改过：保持不变", () => {
-  assert.deepEqual(brandStateAfterStart({ streamer: "bella", touched: false }),
-                   { streamer: "bella", touched: false });
+  assert.deepEqual(brandStateAfterStart({ streamer: "brisa", touched: false }),
+                   { streamer: "brisa", touched: false });
 });
 
 test("脏 state 按空主播处理，不改入参", () => {
@@ -180,14 +180,14 @@ test("脏 state 按空主播处理，不改入参", () => {
 // 品牌 id 同样用虚构的 "acme"/"zeta"：这里钉的是通用规则，不是某个真实品牌。
 
 test("加载后先改下拉，再点同一个主播的 chip：发手选值", () => {
-  const loaded = brandStateSyncStreamer({ streamer: "", touched: false }, "bella");
+  const loaded = brandStateSyncStreamer({ streamer: "", touched: false }, "brisa");
   const edited = { streamer: loaded.streamer, touched: true };   // 中控手动改了下拉
-  const result = brandForChipClick(edited, "bella", "acme", { bella: "zeta" });
-  assert.deepEqual(result, { brand: "acme", state: { streamer: "bella", touched: true } });
+  const result = brandForChipClick(edited, "brisa", "acme", { brisa: "zeta" });
+  assert.deepEqual(result, { brand: "acme", state: { streamer: "brisa", touched: true } });
 });
 
 test("改下拉后点另一个主播的 chip：仍发手选值，不按新主播刷新", () => {
-  const edited = { streamer: "bella", touched: true };
+  const edited = { streamer: "brisa", touched: true };
   const result = brandForChipClick(edited, "daliaflores_", "acme", { daliaflores_: "zeta" });
   assert.deepEqual(result, { brand: "acme", state: { streamer: "daliaflores_", touched: true } });
 });
@@ -206,6 +206,6 @@ test("没改过下拉、这个主播没记住品牌：发不限", () => {
 });
 
 test("初始/脏 state 按「没改过」处理", () => {
-  const result = brandForChipClick(undefined, "bella", "acme", { bella: "zeta" });
-  assert.deepEqual(result, { brand: "zeta", state: { streamer: "bella", touched: false } });
+  const result = brandForChipClick(undefined, "brisa", "acme", { brisa: "zeta" });
+  assert.deepEqual(result, { brand: "zeta", state: { streamer: "brisa", touched: false } });
 });

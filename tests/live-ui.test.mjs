@@ -36,17 +36,17 @@ test("浮窗按钮：服务端提供这个功能 + 正在监听才露出；开�
 });
 
 test("连接中：带主播名；没有主播名用通用文案", () => {
-  assert.deepEqual(connectHint("connecting", "bella", false), { show: true, inline: false, text: "正在连接 @bella…" });
+  assert.deepEqual(connectHint("connecting", "brisa", false), { show: true, inline: false, text: "正在连接 @brisa…" });
   assert.deepEqual(connectHint("connecting", "", false), { show: true, inline: false, text: "正在连接…" });
 });
 test("连接中且已有字幕：改成字幕末尾一行", () => {
-  assert.equal(connectHint("connecting", "bella", true).inline, true);
+  assert.equal(connectHint("connecting", "brisa", true).inline, true);
 });
 test("其余状态隐藏；offline 返回 null（维持原样）", () => {
   for (const s of ["idle", "live", "ended", "error", undefined]) {
-    assert.deepEqual(connectHint(s, "bella", false), { show: false, inline: false, text: "" });
+    assert.deepEqual(connectHint(s, "brisa", false), { show: false, inline: false, text: "" });
   }
-  assert.equal(connectHint("offline", "bella", false), null);
+  assert.equal(connectHint("offline", "brisa", false), null);
 });
 
 // 专家审查 U7：首次下载识别模型时中间卡片写下载进度。只认 status 的结构化 progress，不看 detail

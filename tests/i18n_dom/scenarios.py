@@ -80,7 +80,9 @@ ZH_FLOAT_WIDTHS = (1000, 1100, 1101, 1140, 1399, 1400)
 LIVE_BASES = ("live-full", "live-float", "live-full" + EXTRA, "live-float" + EXTRA)   # LIVE_WIDTHS + NARROW_WIDTHS
 ZH_FULL_BASES = ("live-float-zh", "live-float-zh" + EXTRA)                             # 只量 1000
 ZH_QUIET_BASES = ("live-float-zh-quiet", "live-float-zh-quiet" + EXTRA)                # ZH_FLOAT_WIDTHS
-ZH_QUIET_BRAND = "Bella All Natural"           # §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限
+# §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，和文档里那个真实的基线品牌同宽
+# （同 STREAMER 的做法：同一组字形重新排列，逐 1/64 像素量过）
+ZH_QUIET_BRAND = "Allura Belt Nalla"
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
                    "#float-btn", "#float-btn .btn-label", "#float-btn .i", ".ctl-text", "#target-lang",
                    TARGET_EXTRA_SELECTED)

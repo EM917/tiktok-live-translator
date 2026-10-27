@@ -125,9 +125,9 @@ def test_construction_seeds_config_brands_from_settings_without_defaulting_self_
         monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(settings, "_corrupt", {"backup": None, "announced": False})
-    settings.save_streamer_brand("bella", "acme")
+    settings.save_streamer_brand("brisa", "acme")
     p, server = make_pipeline(monkeypatch, tmp_path)
-    assert server.config["brands"] == {"bella": "acme"}
+    assert server.config["brands"] == {"brisa": "acme"}
     assert not hasattr(p, "brand")
 
 

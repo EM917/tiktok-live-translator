@@ -232,7 +232,7 @@ function hello(page, extra) {
   page.push({ type: "hello", config: Object.assign({
     status: { state: "live", detail: "" }, room_url: ROOM, alerts_enabled: true,
     alerts_session: { session: "s1", streamer: "maria.ventas", total: 0 },
-    brand_options: [{ id: "b1", name: "Bella" }], brands: {}, active_brand: { id: "b1", name: "Bella" },
+    brand_options: [{ id: "b1", name: "Allura" }], brands: {}, active_brand: { id: "b1", name: "Allura" },
     recent_rooms: [{ streamer: "maria.ventas", url: ROOM }, { streamer: "otra.tienda", url: OTHER }],
     disk: { free: 50 * GB, items: [
       { id: "hf:x", kind: "hf", label: "mlx-community/whisper", size: 3 * GB, role: "app", note: "" },
@@ -275,7 +275,7 @@ test("英文页：状态胶囊、顶栏标签、横幅都是英文", () => {
   hello(page);
   assert.equal(page.el("status-text").textContent, "Live · @maria.ventas");
   assert.equal(page.el("alert-mode-tag").textContent, "Alerts on");
-  assert.equal(page.el("active-brand-tag").textContent, "Brand · Bella");
+  assert.equal(page.el("active-brand-tag").textContent, "Brand · Allura");
   const states = { connecting: "Connecting… · @maria.ventas", ended: "Stream ended", error: "Error",
                    idle: "Ready", offline: "Reconnecting…" };
   for (const [state, text] of Object.entries(states)) {

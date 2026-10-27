@@ -96,21 +96,21 @@ def test_source_cli_auto_normalized_to_none():
 
 def test_push_recent_room_keeps_newest_first(monkeypatch, tmp_path):
     _use_tmp(monkeypatch, tmp_path)
-    settings.push_recent_room("bella", "https://www.tiktok.com/@bella/live")
-    settings.push_recent_room("jessy", "https://www.tiktok.com/@jessy/live")
+    settings.push_recent_room("brisa", "https://www.tiktok.com/@brisa/live")
+    settings.push_recent_room("julia", "https://www.tiktok.com/@julia/live")
     got = settings.recent_rooms()
-    assert [x["streamer"] for x in got] == ["jessy", "bella"]
-    assert got[0]["url"] == "https://www.tiktok.com/@jessy/live"
+    assert [x["streamer"] for x in got] == ["julia", "brisa"]
+    assert got[0]["url"] == "https://www.tiktok.com/@julia/live"
     assert got[0]["at"]                       # 带时间戳
 
 
 def test_push_recent_room_dedups_by_streamer(monkeypatch, tmp_path):
     _use_tmp(monkeypatch, tmp_path)
-    settings.push_recent_room("bella", "https://www.tiktok.com/@bella/live")
-    settings.push_recent_room("jessy", "https://www.tiktok.com/@jessy/live")
-    settings.push_recent_room("bella", "https://www.tiktok.com/@bella/live?x=1")
+    settings.push_recent_room("brisa", "https://www.tiktok.com/@brisa/live")
+    settings.push_recent_room("julia", "https://www.tiktok.com/@julia/live")
+    settings.push_recent_room("brisa", "https://www.tiktok.com/@brisa/live?x=1")
     got = settings.recent_rooms()
-    assert [x["streamer"] for x in got] == ["bella", "jessy"]   # bella 回到最前，不重复
+    assert [x["streamer"] for x in got] == ["brisa", "julia"]   # brisa 回到最前，不重复
     assert got[0]["url"].endswith("?x=1")                       # 用最新那次的地址
 
 
@@ -126,7 +126,7 @@ def test_push_recent_room_respects_limit(monkeypatch, tmp_path):
 def test_push_recent_room_ignores_entries_without_a_streamer(monkeypatch, tmp_path):
     _use_tmp(monkeypatch, tmp_path)
     settings.push_recent_room("", "https://cdn.example/a.flv")   # 直连地址没有主播身份
-    settings.push_recent_room("bella", "")                        # 缺地址
+    settings.push_recent_room("brisa", "")                        # 缺地址
     assert settings.recent_rooms() == []
 
 
@@ -157,18 +157,18 @@ def test_save_streamer_brand_roundtrips_and_lowercases_the_key(monkeypatch, tmp_
 
 def test_save_streamer_brand_with_empty_string_deletes_the_key(monkeypatch, tmp_path):
     _use_tmp(monkeypatch, tmp_path)
-    settings.save_streamer_brand("bella", "acme")
+    settings.save_streamer_brand("brisa", "acme")
     settings.save_streamer_brand("irenemartin11", "acme")
-    settings.save_streamer_brand("bella", "")       # 改选「不限」
+    settings.save_streamer_brand("brisa", "")       # 改选「不限」
     got = settings.streamer_brands()
-    assert "bella" not in got                       # 不留一条「不限」的记录
+    assert "brisa" not in got                       # 不留一条「不限」的记录
     assert got == {"irenemartin11": "acme"}
 
 
 def test_save_streamer_brand_preserves_other_settings_keys(monkeypatch, tmp_path):
     _use_tmp(monkeypatch, tmp_path)
     settings.save_setting("target_lang", "ja")
-    settings.save_streamer_brand("bella", "acme")
+    settings.save_streamer_brand("brisa", "acme")
     assert settings.load_settings()["target_lang"] == "ja"
 
 
@@ -186,9 +186,9 @@ def test_streamer_brands_defends_against_bad_shapes(monkeypatch, tmp_path):
     assert settings.streamer_brands() == {}
 
     # JSON 对象的键解析出来总是字符串，值的类型才可能跑偏（如手改成了数字）
-    path.write_text(json.dumps({"brands": {"bella": "acme",
-                                           "elisa": 7}}), encoding="utf-8")
-    assert settings.streamer_brands() == {"bella": "acme"}
+    path.write_text(json.dumps({"brands": {"brisa": "acme",
+                                           "elena": 7}}), encoding="utf-8")
+    assert settings.streamer_brands() == {"brisa": "acme"}
 
 
 def test_streamer_brands_empty_when_missing(monkeypatch, tmp_path):

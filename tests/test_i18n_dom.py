@@ -780,7 +780,7 @@ ZH_FLOAT_SHAPE = {1000: (True, False), 1100: (True, False), 1101: (False, True),
 @pytest.mark.parametrize("base", S.ZH_QUIET_BASES)
 @pytest.mark.parametrize("width", S.ZH_FLOAT_WIDTHS)
 def test_zh_float_button_shows_its_label_where_it_fits(dom, base, width):
-    """报警关着的中文直播顶栏（品牌 Bella All Natural，和 §4.2 的余量表同一个基线）：
+    """报警关着的中文直播顶栏（品牌 Allura Belt Nalla，和 §4.2 余量表的基线品牌同宽）：
     顶栏不溢出、状态字不被截（中文页的品牌标签只比状态胶囊先缩一倍，余量为负时主播名先被截）、品牌标签下限同英文页、
     「浮窗」两个字和图标露不露出符合表里的宽度范围，只有字的按钮约 46px 宽。
     -extra 是同一场景、当前目标是四种以外的 id，下拉约 144px：§4.2 的余量表按它算，1101px 只有图标时只剩约 +2px
@@ -1094,7 +1094,7 @@ def test_every_live_top_bar_scenario_has_a_copy_with_the_widest_caption_menu(tmp
 
 def test_the_chinese_float_scenarios_differ_from_the_chinese_control_only_where_they_say(tmp_path):
     """中文页的浮窗场景（顶栏「浮窗」两个字的 G10）：live-float-zh 是 live-full-zh 加 config.float_window；
-    live-float-zh-quiet 再把报警关掉、品牌换成 §4.1 基线的 Bella All Natural，别的一样。"""
+    live-float-zh-quiet 再把报警关掉、品牌换成和 §4.1 基线同宽的 Allura Belt Nalla，别的一样。"""
     built = S.build(tmp_path)
     control, zh, quiet = built[S.CONTROL_ZH], built["live-float-zh"], built["live-float-zh-quiet"]
     assert zh["lang"] == quiet["lang"] == "zh" and zh["page"] == quiet["page"] == "desktop"

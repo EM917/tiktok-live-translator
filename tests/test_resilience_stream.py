@@ -24,7 +24,7 @@ from app.server import CaptionServer
 from tests.helpers import run
 
 ROOM = "https://www.tiktok.com/@brisadelosandes/live"
-ROOM2 = "https://www.tiktok.com/@elisa/live"
+ROOM2 = "https://www.tiktok.com/@elena/live"
 DIRECT = "https://pull-flv-l1.tiktokcdn.com/stage/stream-1.flv"
 SIGNED = DIRECT + "?expire=1790000000&sign=SECRETSIGN"
 SILENT = b"\x00" * FRAME_BYTES

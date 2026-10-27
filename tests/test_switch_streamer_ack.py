@@ -55,20 +55,20 @@ async def _finish(task):
 def test_first_ever_start_uses_the_default_ack():
     async def scenario():
         p = make_pipeline(room_url=None, stream_task=None)
-        await p._start_with_ack("https://www.tiktok.com/@bella/live")
+        await p._start_with_ack("https://www.tiktok.com/@brisa/live")
         return p
 
     p = asyncio.run(scenario())
     assert p.server.statuses == [("connecting", "已收到指令，正在连接…")]
-    assert p.started == [("https://www.tiktok.com/@bella/live", None)]
+    assert p.started == [("https://www.tiktok.com/@brisa/live", None)]
 
 
 def test_same_streamer_new_address_uses_the_default_ack():
     """同一个主播换了个地址（比如从直播间链接换成带参数的分享链接）：不算切换主播。"""
     async def scenario():
         task = await _live_task()
-        p = make_pipeline(room_url="https://www.tiktok.com/@bella/live", stream_task=task)
-        await p._start_with_ack("https://www.tiktok.com/@bella/live?enter=share")
+        p = make_pipeline(room_url="https://www.tiktok.com/@brisa/live", stream_task=task)
+        await p._start_with_ack("https://www.tiktok.com/@brisa/live?enter=share")
         await _finish(task)
         return p
 
@@ -79,23 +79,23 @@ def test_same_streamer_new_address_uses_the_default_ack():
 def test_switching_to_a_different_streamer_names_both_in_the_ack():
     async def scenario():
         task = await _live_task()
-        p = make_pipeline(room_url="https://www.tiktok.com/@bella/live", stream_task=task)
-        await p._start_with_ack("https://www.tiktok.com/@elisa/live")
+        p = make_pipeline(room_url="https://www.tiktok.com/@brisa/live", stream_task=task)
+        await p._start_with_ack("https://www.tiktok.com/@elena/live")
         await _finish(task)
         return p
 
     p = asyncio.run(scenario())
     assert p.server.statuses == [
-        ("connecting", "正在切换到 @elisa：先停止 @bella 的监听，再连接新的直播间…")]
-    assert p.started == [("https://www.tiktok.com/@elisa/live", None)]
+        ("connecting", "正在切换到 @elena：先停止 @brisa 的监听，再连接新的直播间…")]
+    assert p.started == [("https://www.tiktok.com/@elena/live", None)]
 
 
 def test_no_current_session_does_not_claim_a_switch_even_with_a_stale_room_url():
     """没有正在进行的会话（_stream_task 是 None）时不该说「正在切换」——
     就算 config 里还留着上一场的 room_url。"""
     async def scenario():
-        p = make_pipeline(room_url="https://www.tiktok.com/@bella/live", stream_task=None)
-        await p._start_with_ack("https://www.tiktok.com/@elisa/live")
+        p = make_pipeline(room_url="https://www.tiktok.com/@brisa/live", stream_task=None)
+        await p._start_with_ack("https://www.tiktok.com/@elena/live")
         return p
 
     p = asyncio.run(scenario())
@@ -110,8 +110,8 @@ def test_a_finished_stream_task_does_not_claim_a_switch():
 
         task = asyncio.ensure_future(already_done())
         await task
-        p = make_pipeline(room_url="https://www.tiktok.com/@bella/live", stream_task=task)
-        await p._start_with_ack("https://www.tiktok.com/@elisa/live")
+        p = make_pipeline(room_url="https://www.tiktok.com/@brisa/live", stream_task=task)
+        await p._start_with_ack("https://www.tiktok.com/@elena/live")
         return p
 
     p = asyncio.run(scenario())
@@ -125,7 +125,7 @@ def test_direct_stream_url_without_a_handle_never_claims_a_switch():
         task = await _live_task()
         p = make_pipeline(room_url="https://pull-flv.tiktokcdn.com/stream.flv",
                           stream_task=task)
-        await p._start_with_ack("https://www.tiktok.com/@elisa/live")
+        await p._start_with_ack("https://www.tiktok.com/@elena/live")
         await _finish(task)
         return p
 
