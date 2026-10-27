@@ -231,7 +231,7 @@ If the entry is already in the list with its switch on and the row still says ma
 
 **Captions fall behind and the window warns about a backlog.** In a terminal, run `ollama ps`. If more than one model is loaded, unload the extra one with `ollama stop <model>`. If that does not help, use a smaller speech model, which is a flag, so start the app from a terminal: `python3 main.py --model small`. On a Mac with 8 GB of RAM, `--model large-v3-turbo` or `--model small` fits better than the default.
 
-**The status says Live but no captions appear.** The app skips silent or low-confidence audio on purpose, for example while the streamer plays music or is not speaking. If someone is clearly speaking and nothing appears, start from a terminal with `python3 main.py --denoise off`, or try a different `--model` size.
+**The status says Live but no captions appear.** The app skips silent or low-confidence audio on purpose, for example while the streamer plays music or is not speaking. When much of the audio stays below the speech recognition threshold, a notice at the top of the window says how much arrived and how much was sent to recognition. If someone is clearly speaking and nothing appears, start from a terminal with `python3 main.py --denoise off`, or try a different `--model` size.
 
 **The Comments panel is empty or shows the original text without a translation.** Check these:
 
@@ -548,7 +548,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 **字幕越来越落后，窗口提示有积压。** 在终端里运行 `ollama ps`。如果载入了不止一个模型，用 `ollama stop <模型名>` 卸掉多余的那个。还不行就换小一点的语音模型，这要加启动参数，所以得从终端启动：`python3 main.py --model small`。8 GB 内存的 Mac 上，用 `--model large-v3-turbo` 或 `--model small` 比默认的更合适。
 
-**状态是「直播中」，却没有字幕。** 没声音、或者识别没把握的片段，程序会故意略过，比如主播在放音乐或没说话的时候。明明有人在说话却一直没字幕，试试从终端运行 `python3 main.py --denoise off`，或者用 `--model` 换一个尺寸的语音模型。
+**状态是「直播中」，却没有字幕。** 没声音、或者识别没把握的片段，程序会故意略过，比如主播在放音乐或没说话的时候。很大一部分音频的音量一直低于识别门限时，窗口顶部会有提示，写出收到了多少音频、送去识别的有多少。明明有人在说话却一直没字幕，试试从终端运行 `python3 main.py --denoise off`，或者用 `--model` 换一个尺寸的语音模型。
 
 **「观众弹幕」面板是空的，或者只有原文。** 按这几条查：
 

@@ -154,6 +154,20 @@ valid for about two weeks, so one capture covers a whole stream. See also
   it is 10 s behind, detection is marked degraded at 30 s, and only audio more
   than 60 s behind is dropped, with the count shown on screen and written to
   the audit log.
+- Audio is cut into segments of up to 9 s, and a segment in which no frame
+  reaches the speech recognition threshold is not sent to recognition. Two
+  notices say when that covers much of the stream; the threshold itself does
+  not change. After 120 s of stream audio in a row with no segment sent to
+  recognition, a notice says that the audio arrived but none of it was
+  transcribed; it goes away with the next segment. Every 5 minutes the app
+  also compares the seconds sent to recognition with the seconds that
+  arrived: below 60%, a notice gives both numbers, it is updated every 5
+  minutes while the share stays below 75%, and it goes away at 75% or more.
+  A 5-minute window with less than 60 s of audio is not judged, and while
+  the first notice is up the second one is not shown. When the share drops
+  below 60% and when it is back at 75% or more, a `gated_audio` record with
+  numbers only goes into the session audit. Both notices go away when
+  monitoring stops.
 - Stopping, switching streamers or pausing for an update leaves audio that had
   arrived but wasn't transcribed yet: the queued segments, the one being
   transcribed and the part not yet cut into a segment. Each interruption's

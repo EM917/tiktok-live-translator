@@ -117,7 +117,11 @@ Ollama, produces the same symptom.
 
 **The status reads Live but no captions appear for some time.** This is normally
 expected: while the streamer plays music or is not speaking, silent and
-low-confidence segments are discarded deliberately. If the streamer is clearly
+low-confidence segments are discarded deliberately. Audio that stays below the
+speech recognition threshold is not sent to recognition at all; when that is
+all of the audio for 2 minutes, or less than 60% of it is sent in 5 minutes, a
+notice at the top of the window says how much arrived and how much was sent
+([details](fault-tolerance.md#keeping-up)). If the streamer is clearly
 speaking and nothing appears, try `--denoise off` or a different model size.
 
 **Captions stop after closing the laptop lid or switching networks.** When the
