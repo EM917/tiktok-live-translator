@@ -425,6 +425,7 @@ from .viewer_share import (  # noqa: E402
 from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
 from .pipeline_evidence import AsrEvidenceMixin  # noqa: E402
+from .pipeline_flash import FlashSaleMixin  # noqa: E402
 from .pipeline_float import FloatWindowMixin  # noqa: E402
 from .pipeline_stream import StreamWatchMixin  # noqa: E402
 from .pipeline_guard import GUARD_CONTROL_TYPES, CommentGuardMixin  # noqa: E402
@@ -432,7 +433,7 @@ from .pipeline_transcript import TranscriptMixin  # noqa: E402
 
 
 class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin,
-               TranscriptMixin, FloatWindowMixin, AsrEvidenceMixin, StreamWatchMixin):
+               TranscriptMixin, FloatWindowMixin, FlashSaleMixin, AsrEvidenceMixin, StreamWatchMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -524,6 +525,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._init_comment_guard()       # 弹幕留意的守卫（默认开，可关），见 app/pipeline_guard.py
         self._init_transcript()          # 字幕记录（每场一个本地文件，可导出），见 app/pipeline_transcript.py
         self._init_float_window()        # 浮窗（只显示；桌面应用模式才有宿主），见 app/pipeline_float.py
+        self._init_flash_sale()          # 顶栏「闪购」（只读；main.py 检测到装了才起轮询），见 app/pipeline_flash.py
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:
@@ -709,6 +711,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                  "brands": self.server.config.get("brands", {})})
         elif mtype == "open_brands_dir":
             return self._open_brands_dir()
+        elif mtype == "open_flash_helper":
+            # 顶栏「闪购」浮层里的「打开闪购助手」：不带参数，argv 写死（app/flash_sale.open_argv）。放后台跑、
+            # 立刻返回。只有本机页面发得出来：手机入站只认 retranslate，浮窗页的入站一律丢弃
+            return self._open_flash_helper()
         elif mtype == "open_guard_dir":
             return self._open_guard_dir()      # 弹幕留意的规则文件夹，见 pipeline_guard.py
         elif mtype == "export_transcript":

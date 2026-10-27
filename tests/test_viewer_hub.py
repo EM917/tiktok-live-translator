@@ -480,6 +480,8 @@ def test_inbound_messages_never_reach_on_control():
         text({"type": "open_transcripts_dir"}),
         # 提示条上的 ×（2026-10-21）：关掉时钟跳变那条只有中控本机能点，手机上没有 ×，发来也进不来
         text({"type": "dismiss_incident", "id": "session:clock_gap", "ts": 1790000000.0}),
+        # 顶栏「闪购」浮层里的「打开闪购助手」：只有中控本机能点
+        text({"type": "open_flash_helper"}),
     ])
     run_handshake(hub, ws)
     assert calls == []
@@ -529,6 +531,8 @@ def test_a_lone_retranslate_frame_does_not_trip_the_flood_cap():
     {"type": "export_transcript"},                  # 字幕记录：只有本机控制面能导出、能打开文件夹
     {"type": "open_transcripts_dir"},
     {"type": "dismiss_incident", "id": "session:clock_gap", "ts": 1790000000.0},   # 提示条的 ×：只有本机
+    {"type": "open_flash_helper"},                  # 「打开闪购助手」：只有本机控制面
+    {"type": "open_flash_helper", "id": 7},         # 凑成 {type, id} 的形状也不行
 ])
 def test_malformed_or_irrelevant_inbound_is_silently_ignored(bad):
     """既不解析出动作，也不回消息、不断连接——坏页面和探测本就不该有回音。"""

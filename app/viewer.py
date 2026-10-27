@@ -177,7 +177,9 @@ GUARD_TYPES = frozenset({"comment_guard", "guard_event", "guard_mark"})
 
 # 显式拒绝。viewer 必须单独钉死：它的载荷里带着含 token 的 URL，
 # 一旦漏进 fanout，已经扫过码的人就能看到别人的钥匙。
-DENY = frozenset({"viewer", "config", "hello"}) | GUARD_TYPES
+# flash_sale（顶栏「闪购」，app/pipeline_flash.py）只在中控电脑上显示：它带着本机另一个程序的商品和
+# 运行记录。默认拒绝本来就挡得住，这里再写一遍，道理同 GUARD_TYPES：将来谁往 ALLOW 里加东西也带不出去。
+DENY = frozenset({"viewer", "config", "hello"}) | GUARD_TYPES | {"flash_sale"}
 
 # 弹幕来源状态归一：_publish_comment_source 的取值是 connecting/connected/
 # disconnected/error/unavailable/idle，手机端只需要四档

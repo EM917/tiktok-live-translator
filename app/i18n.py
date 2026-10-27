@@ -473,6 +473,9 @@ DATA_ONLY = frozenset({
     "history_cleared",     # 服务端清掉了字幕或弹幕缓存的回声：只带 kind（captions / comments）
     # 弹幕留意（PR-3）：只带代码、数字和弹幕样例（数据），文案在前端按代码映射
     "comment_guard", "guard_event", "guard_mark",
+    # 顶栏「闪购」（app/pipeline_flash.py）：只带代码、数字和闪购助手给的数据（商品标题、记录正文），
+    # 文案在前端按代码映射。config 里的 flash_sale 键同理，不登记成界面字段
+    "flash_sale",
 })
 # check_outbound 记下的违例：(kind, type, path, text, test)。kind 是 "unregistered"（没登记的
 # 消息类型）或 "plain"（界面字段上的普通中文 str，即漏写了 L()）。tests/conftest.py 汇总。
