@@ -16,8 +16,20 @@ was executed, not merely configured.
 **The update button reports that something is blocking it.** The message names
 the affected files and provides a complete command with your project path and a
 Copy button. On builds older than v0.10.4 the machine cannot repair itself, as
-the fix is delivered by the update that is being blocked — run
-`git pull --ff-only` once in the project directory.
+the fix is delivered by the update that is being blocked. Those builds say to
+run `git pull`; don't, because it also brings in changes on the main branch that
+are not released yet. Instead, run these two commands once in the project
+directory, with the tag of the latest release from the
+[releases page](https://github.com/EM917/tiktok-live-translator/releases/latest)
+in place of `vX.Y.Z`:
+
+```bash
+git fetch --tags --force
+git merge --ff-only vX.Y.Z
+```
+
+Current versions use the same two steps in the command they show: they install
+that release and nothing after it.
 
 **Performance degrades and audio begins backing up.** Check `ollama ps`. Ollama
 retains a model in VRAM for 30 minutes after last use, so switching translation

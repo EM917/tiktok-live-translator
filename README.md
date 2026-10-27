@@ -108,9 +108,9 @@ Flags need a terminal: the `.app` does not take them, while `Start.command` and 
 
 The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen. Click the version number at the bottom of the window to check by hand. During a stream, the answer appears next to the version number.
 
-Update Now installs the release named in the banner, not changes made after it that are not released yet. If the updated app then starts twice in a row without its window connecting, it goes back to the version you had before and a message says so. Opening the app twice at once does not count, and neither does force-quitting it after its window has connected. The app does not go back if files in its folder were changed by hand.
+Update Now installs the release named in the banner, not changes made after it that are not released yet. If the new version then starts twice and its window does not connect either time, the third launch goes back to the version you had before and opens it again. A dialog says which version it went back to, on macOS and on Windows; on a Mac started with `Start.command`, the Terminal window shows that line instead. One crash or force-quit before the window connects does not count, and the next launch runs the new version again. Opening the app twice at once does not count either, and neither does force-quitting it after its window has connected. The app does not go back if files in its folder were changed by hand.
 
-The app also updates yt-dlp, which finds the stream URL, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now.
+The app also updates yt-dlp, which finds the stream URL, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now. When TikTok refuses the comment connection, the app looks for a newer TikTokLive, which fetches viewer comments, under the same rules: only a 7.x version released at least 7 days earlier, and not while monitoring or during Update Now. Refusals come while monitoring, so the Comments panel then says the component isn't updated during monitoring.
 
 <a id="en-updating-zip"></a>
 
@@ -227,7 +227,7 @@ Matching runs on the recognized Spanish text, so an alert does not wait for the 
 
 If the entry is already in the list with its switch on and the row still says macOS did not allow access, select it, click −, and add it again. The permission goes to the Python interpreter, not just this app, so any script run with that Python can read protected data on this computer. When you no longer need it, turn the switch off in the same list. If you start with `Start.command`, add Terminal as well. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
 
-**Update Now does not start or finish.** The message says what went wrong and shows a command with a Copy button. Run it in Terminal. If the message lists app files you changed, the command discards those changes, so skip it if the changes were on purpose.
+**Update Now does not start or finish.** The message says what went wrong and usually shows a command with a Copy button. Run it in Terminal, or in PowerShell on Windows. If the message lists app files you changed, the command discards those changes, so skip it if the changes were on purpose. When the release is not on the branch your copy follows, or that branch has nothing newer, the message gives the download page and no command.
 
 **Captions fall behind and the window warns about a backlog.** In a terminal, run `ollama ps`. If more than one model is loaded, unload the extra one with `ollama stop <model>`. If that does not help, use a smaller speech model, which is a flag, so start the app from a terminal: `python3 main.py --model small`. On a Mac with 8 GB of RAM, `--model large-v3-turbo` or `--model small` fits better than the default.
 
@@ -425,9 +425,9 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示。也可以随时点窗口底部的版本号手动检查，直播中检查的结果写在版本号旁边。
 
-「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。更新后的程序如果连续两次启动、窗口都没连上，会自动退回更新前的版本，并弹窗说明。同时双击打开两次不算，窗口连上之后再强行退出也不算；程序文件夹里的文件被手动改过的话，不会退回。
+「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。新版本如果启动了两次、窗口两次都没连上，第三次打开时会自动退回更新前的版本，再重新打开。退回后会弹窗说明退回到了哪个版本，Mac 和 Windows 都弹；Mac 上用 `Start.command` 启动的话，这句话写在「终端」窗口里。窗口连上之前崩了一次、或者被强行退出一次，不算，下一次打开照常用新版本。同时双击打开两次不算，窗口连上之后再强行退出也不算；程序文件夹里的文件被手动改过的话，不会退回。
 
-程序还会自己更新 yt-dlp（查找直播流地址用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。
+程序还会自己更新 yt-dlp（查找直播流地址用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。TikTok 拒绝弹幕连接时，程序会按同样的规矩找新的 TikTokLive（获取观众弹幕用）：只装发布满 7 天的 7.x 版本，监听中和「一键更新」进行中都不装。拒绝都发生在监听中，所以这时「观众弹幕」面板会写「监听中不更新弹幕组件」。
 
 <a id="zh-updating-zip"></a>
 
@@ -544,7 +544,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 如果列表里已经有这一项、开关也开着，这一行却仍然说 macOS 没有放行，先选中它点「−」删掉，再按上面的步骤加一次。这项权限给的是 Python 解释器，不只是本程序：用这个 Python 运行的任何脚本都能读取这台电脑上受保护的数据。不再需要时，在同一个列表里把开关关掉。用 `Start.command` 启动的话，也要把「终端」加进去。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
 
-**「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，下面有一条带「复制」按钮的命令，复制后在终端里运行。如果提示列出了你改过的程序文件，这条命令会丢掉这些改动，改动是有意的就别运行。
+**「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，多数时候下面有一条带「复制」按钮的命令，复制后在「终端」里运行，Windows 上在 PowerShell 里运行。如果提示列出了你改过的程序文件，这条命令会丢掉这些改动，改动是有意的就别运行。那个发布版本不在这份安装跟踪的分支上，或者那个分支上没有更新的版本时，提示里给的是下载页，没有命令。
 
 **字幕越来越落后，窗口提示有积压。** 在终端里运行 `ollama ps`。如果载入了不止一个模型，用 `ollama stop <模型名>` 卸掉多余的那个。还不行就换小一点的语音模型，这要加启动参数，所以得从终端启动：`python3 main.py --model small`。8 GB 内存的 Mac 上，用 `--model large-v3-turbo` 或 `--model small` 比默认的更合适。
 

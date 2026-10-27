@@ -129,7 +129,16 @@ valid for about two weeks, so one capture covers a whole stream. See also
 - The comment connection can go half-open: the Comments panel shows no
   warning, but no comments arrive. After 15 minutes of silence while
   connected, the app reconnects it and records that in the session audit.
-- yt-dlp is kept current in the background.
+- yt-dlp is updated in the background: the app checks at most once a day,
+  and again when looking up the stream URL has failed twice in a row (a
+  stream that ended or a network error doesn't count), once that session's
+  stream has stopped. It installs
+  only a version released at least 7 days earlier, and never while
+  monitoring or during Update Now; the next Start uses it, with no restart.
+  TikTokLive is looked at only when TikTok refuses the comment connection,
+  under the same rules (a 7.x version at least 7 days old, not while
+  monitoring or during Update Now). Refusals come while monitoring, so the
+  Comments panel says the component isn't updated during monitoring.
 - While monitoring, the computer is kept from going to sleep on its own, and a
   gap where the app did not run at all is recorded and shown on screen. The
   notice has a close button (×) and also goes away by itself after 10 minutes
