@@ -1307,6 +1307,9 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
   font-size: var(--fs-footnote); line-height: 1.45;
   color: var(--warn-fg); background: var(--warn-bg); border-radius: 6px;
 }
+/* 弹幕重译成了（「已重译」「重译结果和原来一样」，app.js receiveCommentRedo）：不是提醒，照抽屉里的
+   .gev-redo-note——次要文字的颜色、没有底色和内边距，和弹幕的字对齐。以前这四样内联写在 app.js 里 */
+.redo-note.done { margin-top: 2px; padding: 0; color: var(--label-2); background: none; }
 
 /* 观众弹幕的「重译」（app.js syncCommentRedo）：和字幕的 .redo 一样悬停才出现，放在 ☆ 按钮（right 8px、
    22px 宽）的左边。译文行和头一行都可能排到这个位置，所以做成不透明的悬浮小胶囊（同「回到最新」），

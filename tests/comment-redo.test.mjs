@@ -1,7 +1,8 @@
 // 弹幕重译完了说一句（2026-10-26 用户要的，R1）：服务端在 redo_state=ok 的 comment_redo 里带上 same 和一句
 // 说明——「已重译」或「重译结果和原来一样」（app/comment_redo.py note_done）。页面把它画在那条弹幕下面几秒，
 // 「弹幕留意」抽屉里那一行也有；和没重译成的说明走同一套（COMMENT_REDO_NOTE_MS），只差两处：
-//   1. 成了不是提醒：不用 .redo-note 的提醒底色（类名多一个 done，颜色先写在 app.js 里）；
+//   1. 成了不是提醒：不用 .redo-note 的提醒底色（类名多一个 done，样子在 style.css 的 .redo-note.done；
+//      #146 时先内联在 app.js 里，b6 挪进样式表——这里钉住样式表里有这条、页面上不再内联）；
 //   2. 那条弹幕已经不在弹幕栏里时，成了的那句不退回页脚（没成的照旧退回，不能丢）。
 // 中英两种页面都真跑 web/app.js（tests/desktop-page.mjs）。same 怎么算、服务端发哪一句由
 // tests/test_comment_redo.py 钉着；这里先核对两边说的是同一句话，再用服务端会发的原样消息驱动页面。
@@ -11,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { loadDesktop, hello, T } from "./desktop-page.mjs";
 
 const py = readFileSync(new URL("../app/comment_redo.py", import.meta.url), "utf8");
+const css = readFileSync(new URL("../web/style.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
 // 服务端按界面语言发的几句（app/comment_redo.py note_done、failure_text）
 const SAID = {
@@ -47,6 +49,16 @@ test("页面上用的几句就是服务端发的那几句（app/comment_redo.py 
   assert.ok(py.includes('L("重译结果和原来一样", "The retranslation is the same as before.")'));
 });
 
+test("样式：成了的那句在 style.css 里是 .redo-note.done——次要文字的颜色、没有提醒底色和内边距", () => {
+  const rule = css.match(/\.redo-note\.done\s*\{([^}]*)\}/);
+  assert.ok(rule, "style.css 里要有 .redo-note.done");
+  const decl = Object.fromEntries(rule[1].split(";").map((d) => d.split(":").map((x) => x.trim()))
+    .filter((kv) => kv[0]));
+  assert.deepEqual(decl, { "margin-top": "2px", padding: "0", color: "var(--label-2)", background: "none" });
+  const base = css.match(/\.redo-note\s*\{([^}]*)\}/)[1];
+  assert.match(base, /background:\s*var\(--warn-bg\)/, "没成的说明照旧是提醒的底色");
+});
+
 for (const lang of ["zh", "en"]) {
   const said = SAID[lang], btn = BUTTON[lang];
 
@@ -62,7 +74,7 @@ for (const lang of ["zh", "en"]) {
     const note = item1.querySelector(".redo-note");
     assert.ok(note.cls.includes("done"), "成了的那句有自己的类名");
     assert.equal(note.getAttribute("role"), "status", "读屏会念出来");
-    assert.deepEqual([note.style.color, note.style.background], ["var(--label-2)", "none"], "不用提醒的底色");
+    assert.deepEqual(Object.keys(note.style), [], "不再内联样式：样子交给 style.css 的 .redo-note.done");
     assert.deepEqual([button(item1).textContent, button(item1).disabled], [btn.idle, false], "按钮回到原样");
     assert.deepEqual(notes(item2), [], "别的弹幕不受影响");
     assert.equal(footer(page), before, "页脚不动");
@@ -92,7 +104,7 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual(notes(item1), [said.failed]);
     const note = item1.querySelector(".redo-note");
     assert.ok(!note.cls.includes("done"));
-    assert.equal(note.style.background, undefined, "没成的说明用 style.css 里的提醒底色");
+    assert.deepEqual(Object.keys(note.style), [], "没成的说明用 style.css 里 .redo-note 的提醒底色");
     assert.equal(button(item1).textContent, btn.failed);
     assert.equal(shown(item1), "多少钱", "原译文不动");
     page.fire(4000);

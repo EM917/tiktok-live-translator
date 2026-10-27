@@ -2695,16 +2695,9 @@
     }
     clearCommentRedoNote(item, msg.id);
     var note = document.createElement("div");
+    // .redo-note 是提醒的底色（给没重译成的说明用）；成了不是提醒，多一个 done 类，样子在 style.css 的
+    // .redo-note.done（#146 时先内联在这里，挪进样式表后页面上看起来一样）
     note.className = done ? "redo-note done" : "redo-note";
-    if (done) {
-      // .redo-note 是提醒的底色（style.css，给没重译成的说明用）；成了不是提醒，照抽屉里的 .gev-redo-note：
-      // 次要文字的颜色、没有底色和内边距，和弹幕的字对齐。style.css 不在这一批的改动清单里，先写在这里；
-      // 以后改 style.css 时挪成 .redo-note.done 一条规则
-      note.style.color = "var(--label-2)";
-      note.style.background = "none";
-      note.style.padding = "0";
-      note.style.marginTop = "2px";
-    }
     note.setAttribute("role", "status");
     note.textContent = msg.text;
     item.appendChild(note);
