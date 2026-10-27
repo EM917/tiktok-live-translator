@@ -1509,45 +1509,8 @@ test("预先算好的半透明色和报警卡片底色：深浅两套都等于�
   assert.match(CSS_NO_COMMENTS, /\.alert-item\s*\{[^}]*background:\s*var\(--tint-fail-8\)/);
 });
 
-// ---- 报警卡片右上角的 ×（顺延事项：图形控件 3:1）----
-// .alert-dismiss 以前用 --label-3：浅色卡片底上 1.91:1、深色 2.94:1，不到 WCAG 1.4.11 对图形控件要求的 3:1
-// （b2-contrast 第 2 轮审查记下）。现在 --label-2：浅色 4.76:1、深色 6.16:1。半透明的字色先按 alpha 叠到卡片底
-// （按主题预先混好的 --tint-fail-8）上再算，算法同 tests/test_contrast.py（那个文件不在本批清单里，这条钉在这里）
-function cssRule(selector) {
-  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const m = new RegExp("(?:^|\\n|\\})\\s*" + esc + "\\s*\\{([^}]*)\\}").exec(CSS_NO_COMMENTS);
-  assert.ok(m, "viewer.css 里找不到 " + selector);
-  return Object.fromEntries([...m[1].matchAll(/([\w-]+)\s*:\s*([^;]+);?/g)].map((d) => [d[1], d[2].trim()]));
-}
-function rgbOver(value, bg) {
-  const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(value);
-  if (!m) return rgbOf(value);
-  const a = m[4] === undefined ? 1 : Number(m[4]);
-  return [1, 2, 3].map((k, i) => Number(m[k]) * a + bg[i] * (1 - a));
-}
-function contrast(fg, bg) {
-  const lum = (rgb) => {
-    const [r, g, b] = rgb.map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  };
-  const [hi, lo] = [lum(fg), lum(bg)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-test("报警卡片的 × 是能点的图形控件：深浅两套在卡片底上都到 3:1（以前 --label-3 不到）", () => {
-  assert.equal(Math.round(contrast([0, 0, 0], [255, 255, 255]) * 100) / 100, 21);   // 公式本身
-  assert.equal(cssRule(".alert-dismiss").color, "var(--label-2)");
-  assert.equal(cssRule(".alert-item").background, "var(--tint-fail-8)");
-  for (const [dark, want, before] of [[false, 4.76, 1.91], [true, 6.16, 2.94]]) {
-    const t = rootTokens(dark);
-    const bg = rgbOf(t["--tint-fail-8"]);
-    const got = contrast(rgbOver(t["--label-2"], bg), bg);
-    assert.ok(got >= 3, (dark ? "深色" : "浅色") + " × 只有 " + got.toFixed(2) + ":1");
-    assert.equal(Math.round(got * 100) / 100, want, dark ? "深色" : "浅色");
-    assert.equal(Math.round(contrast(rgbOver(t["--label-3"], bg), bg) * 100) / 100, before,
-      "审查记下的旧值：--label-3 在卡片底上不到 3:1");
-  }
-});
+// 报警卡片右上角的 ×（.alert-dismiss）要到 3:1（WCAG 1.4.11）：#148 时先钉在这里，现在挪回
+// tests/test_contrast.py 的 test_phone_alert_dismiss_icon_reaches_3_to_1_on_the_alert_card（同一套算法、同样的数）
 
 // ---- 口令记在这台手机上（专家审查 S4，用户决定 D5）----
 // 地址、端口、口令都是虚构的。replaceState 的替身顺手把 location.hash 清掉，和真浏览器一样
