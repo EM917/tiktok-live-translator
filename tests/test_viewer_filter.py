@@ -137,7 +137,7 @@ def test_alert_drops_internal_attribution_and_caps_context():
            "context_zh": "含有胶原蛋白", "failed": False, "why": "",
            "session_total": 7, "replay": True,
            # _alert_stamp() 塞进来的三样
-           "streamer": "brisadelosandes", "session": "session-2026",
+           "streamer": "brisafakeperson", "session": "session-2026",
            "ui_clients": 2,
            # 模糊档的内部分数：不在表里就是不发
            "score": 0.82, "budget": 2}
@@ -298,7 +298,7 @@ def test_session_break_drops_streamer_keeps_ts():
     """主播名是内部归属信息，不给手机——既有取舍，同 alert 里丢掉的
     streamer/session/ui_clients（CLAUDE.md 六）。"""
     out = viewer.filter_payload({"type": "session_break", "ts": 5.0,
-                                 "streamer": "brisadelosandes"})
+                                 "streamer": "brisafakeperson"})
     assert out == {"type": "session_break", "ts": 5.0}
 
 

@@ -48,7 +48,7 @@ def test_pick_stream_survives_garbage():
 # ---- 用户名解析 ----
 
 def test_username_extraction():
-    assert resolver._username("https://www.tiktok.com/@brisadelosandes/live") == "brisadelosandes"
+    assert resolver._username("https://www.tiktok.com/@brisafakeperson/live") == "brisafakeperson"
     assert resolver._username("https://www.tiktok.com/@some.user_1/live") == "some.user_1"
     assert resolver._username("https://example.com/x") is None
 

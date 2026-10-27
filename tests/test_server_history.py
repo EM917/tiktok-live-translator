@@ -80,10 +80,10 @@ def test_session_break_stored_in_history_and_replayed():
 
     server = CaptionServer(port=8765)
     asyncio.run(server.broadcast({"type": "session_break", "ts": 100.0,
-                                  "streamer": "brisadelosandes"}))
+                                  "streamer": "brisafakeperson"}))
     assert len(server.history) == 1
     stored = list(server.history)[0]
-    assert stored["type"] == "session_break" and stored["streamer"] == "brisadelosandes"
+    assert stored["type"] == "session_break" and stored["streamer"] == "brisafakeperson"
 
 
 def test_caption_update_patches_history():

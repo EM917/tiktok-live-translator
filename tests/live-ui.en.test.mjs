@@ -28,8 +28,8 @@ test("手机同看按钮：关着写功能名，开着没人看写 On，有人�
 });
 
 test("连接中提示：带主播名 / 不带；主播名原样放", () => {
-  assert.deepEqual(U.connectHint("connecting", "brisadelosandes", false),
-    { show: true, inline: false, text: "Connecting to @brisadelosandes…" });
+  assert.deepEqual(U.connectHint("connecting", "brisafakeperson", false),
+    { show: true, inline: false, text: "Connecting to @brisafakeperson…" });
   assert.equal(U.connectHint("connecting", "", true).text, "Connecting…");
   assert.deepEqual(U.connectHint("live", "x", true), { show: false, inline: false, text: "" });
   assert.equal(U.connectHint("offline", "x", true), null);

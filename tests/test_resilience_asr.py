@@ -28,7 +28,7 @@ from app.telemetry import Telemetry
 from tests.helpers import run
 
 ROOT = Path(__file__).resolve().parent.parent
-LIVE_URL = "https://www.tiktok.com/@brisadelosandes/live"
+LIVE_URL = "https://www.tiktok.com/@brisafakeperson/live"
 DIRECT_URL = "https://cdn.example.com/s.flv"
 
 

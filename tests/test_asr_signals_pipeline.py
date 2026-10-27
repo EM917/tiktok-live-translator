@@ -23,7 +23,7 @@ from app.audit import AuditLog
 from app.pipeline import Pipeline
 from tests.helpers import run
 
-ROOM = "https://www.tiktok.com/@brisadelosandes/live"
+ROOM = "https://www.tiktok.com/@brisafakeperson/live"
 CAPTION_KEYS = {"type", "id", "ts", "original", "translated", "translate_state", "src_lang",
                 "target_lang", "asr_ms", "e2e_ms"}
 JOB_KEYS = {"id", "text", "lang", "target", "audio_end_ts", "segment_ms"}
