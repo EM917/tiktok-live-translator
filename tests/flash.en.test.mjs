@@ -95,6 +95,7 @@ test("商品行和摘要：倒计时、轮次、库存、续开次数分单复�
                "1 with no flash sale · 1 ended manually");
   assert.equal(F.flashSummary([product("live")]), "1 product: 1 ongoing");
   assert.equal(F.flashSummary([product("live"), product("odd")]), "2 products: 1 ongoing · 1 other");
+  assert.equal(F.flashSummary([product("live"), product("stopped")], 310), "310 products: 1 stopped · 1 ongoing · 308 not listed");
   assert.equal(F.flashMoreText(1), "1 more");
   assert.equal(F.flashMoreText(260), "260 more");
 });

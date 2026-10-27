@@ -295,9 +295,11 @@ function flashLineText(line) {
 
 // ---- 商品 --------------------------------------------------------------------------------------
 
-/* 停着、等闪购助手续开的那种：允许自动续开，闪购助手在运行、没暂停（后端从这时起计 60 秒，到点标 stuck） */
+/* 停着、等闪购助手续开的那种：允许自动续开，闪购助手在运行、没暂停（后端从这时起计 60 秒，到点标 stuck）。
+ * 条件和后端 app/flash_sale.stuck_candidate 一字不差：enabled 只认 true。enabled 读不出（null）的商品后端永远不算卡住，
+ * 这里要是写「等续开」，那句话就会一直挂着、60 秒后也不会变成「停了超过 1 分钟」 */
 function flashWaitingRenewal(p, st) {
-  return !!p && p.state === "stopped" && p.enabled !== false && !!st && st.running === true && !st.paused_reason;
+  return !!p && p.state === "stopped" && p.enabled === true && !!st && st.running === true && !st.paused_reason;
 }
 
 /* 排序的先后（数小的在前），和后端 app/flash_sale.py 的 _rank 同一张表：要人看的排前面——卡住的（停着、该续开、
@@ -326,10 +328,14 @@ function flashSortProducts(list) {
     .map(function (x) { return x.p; });
 }
 
-/* 摘要：「共 9 个商品：已停止 1 · 待开始 1 · …」，只列数量不为 0 的，先后同排序 */
-function flashSummary(list) {
+/* 摘要：「共 9 个商品：已停止 1 · 待开始 1 · …」，只列数量不为 0 的，先后同排序。
+ * total 是后端的 products_total（闪购助手给了多少个，含后端超出 300 个截掉的）：比列表长时，总数按它写，
+ * 末尾再加一项「未列出 n」，各项加起来正好是总数——截掉的不静默丢掉（闪购助手会话 10-27：一场最多 300 个） */
+function flashSummary(list, total) {
   var products = (Array.isArray(list) ? list : []).filter(function (p) { return p && typeof p === "object"; });
-  if (!products.length) return "";
+  var all = flashInt(total);
+  var unlisted = all != null && all > products.length ? all - products.length : 0;
+  if (!products.length && !unlisted) return "";
   var counts = {};
   products.forEach(function (p) {
     var key = flashStateText(p.state) == null ? "other" : p.state;
@@ -345,8 +351,9 @@ function flashSummary(list) {
   add("no_sale", function (n) { return L("没有闪购 " + n, n + " with no flash sale"); });
   add("ended_by_user", function (n) { return L("已手动结束 " + n, n + " ended manually"); });
   add("other", function (n) { return L("其他 " + n, n + " other"); });
-  var total = products.length;
-  return LN(total, "共 " + total + " 个商品：", "1 product: ", total + " products: ") + parts.join(" · ");
+  if (unlisted) parts.push(L("未列出 " + unlisted, unlisted + " not listed"));
+  var count = products.length + unlisted;
+  return LN(count, "共 " + count + " 个商品：", "1 product: ", count + " products: ") + parts.join(" · ");
 }
 
 function flashInt(v) {
@@ -517,7 +524,7 @@ function renderFlashPanel(doc, els, st, view) {
   els.detail.classList.toggle("hidden", lines.length < 2);
 
   var products = st && Array.isArray(st.products) ? flashSortProducts(st.products, st) : [];
-  var summary = flashSummary(products);
+  var summary = flashSummary(products, st && st.products_total);
   els.summary.textContent = summary;
   els.summary.classList.toggle("hidden", !summary);
   flashClear(els.products);

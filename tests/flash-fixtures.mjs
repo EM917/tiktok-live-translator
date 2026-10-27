@@ -4,8 +4,10 @@
 // SAMPLE 是推给页面的那份状态（hello 的 config.flash_sale、type:"flash_sale" 消息，形状见 docs/flash-sale.md），
 // 由闪购助手接口契约的虚构样例 status-sample-running.json 规整而来：时间换成毫秒，product_id → id，
 // 丢掉 shop、page_version；已停止的那个商品标成 stuck（后端计满 60 秒以后的样子），attention 是 ["stuck"]，
-// 另带后端的 products_total、stuck_count（页面不读它们：「还有 N 个」按商品表的长度算，卡住的个数按 stuck 数）。
-// 记录里那条 ❌ 开头的 warn 是「没看过的问题记录」。商品顺序照契约样例：前端会再排一次。
+// 另带后端的 products_total、stuck_count（「还有 N 个」按商品表的长度算，卡住的个数按 stuck 数；products_total 只在
+// 比商品表长时进摘要的「未列出 n」）。记录里那条 ❌ 开头的 warn 是「没看过的问题记录」。商品顺序照契约样例：前端会再排一次。
+// 这份和后端 StatusTracker 对契约样例 running.json 的输出（计满 60 秒后）逐字段相同、只差商品顺序：
+// tests/test_flash_sale.py 的 test_the_node_fixture_is_what_the_tracker_sends 钉着，两边改了形状哪一边都会红。
 import { readFileSync } from "node:fs";
 import { FakeEl, makeDoc } from "./guard-dom.mjs";
 

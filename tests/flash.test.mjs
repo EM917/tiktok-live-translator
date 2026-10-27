@@ -231,6 +231,12 @@ test("摘要：共几个商品，各状态的数量，只列不为 0 的，先�
   assert.equal(F.flashSummary([product("live"), product("mystery")]), "共 2 个商品：进行中 1 · 其他 1");
   assert.equal(F.flashSummary([]), "");
   assert.equal(F.flashSummary(null), "");
+  // 后端的 products_total 比列表长（超出 300 个被截掉）：总数按它写，末尾「未列出 n」，各项加起来是总数
+  assert.equal(F.flashSummary([product("live"), product("stopped")], 310), "共 310 个商品：已停止 1 · 进行中 1 · 未列出 308");
+  assert.equal(F.flashSummary(SAMPLE.products, SAMPLE.products_total), F.flashSummary(SAMPLE.products), "没截过：同不带总数");
+  assert.equal(F.flashSummary([product("live")], 0), "共 1 个商品：进行中 1", "总数比列表短不算数");
+  assert.equal(F.flashSummary([product("live")], "9"), "共 9 个商品：进行中 1 · 未列出 8");
+  assert.equal(F.flashSummary([product("live")], true), "共 1 个商品：进行中 1", "true 不当数字");
 });
 
 test("商品一行的细节：卡住 / 等续开、倒计时、第几轮、库存、续开次数、不自动续开", () => {
@@ -244,6 +250,11 @@ test("商品一行的细节：卡住 / 等续开、倒计时、第几轮、库�
   assert.deepEqual(stuck.detail, ["停了超过 1 分钟", "第 2 轮", "库存 30/30", "续开 3 次"]);
   const waiting = F.flashProductParts(product("stopped"), { running: true, paused_reason: null }, NOW);
   assert.deepEqual(waiting.detail, ["等闪购助手续开"]);
+  // 同后端 stuck_candidate：enabled 只认 true。读不出（null）的后端永远不算卡住，这里也不说「等续开」
+  assert.deepEqual(F.flashProductParts(product("stopped", { enabled: null }), { running: true, paused_reason: null }, NOW).detail, []);
+  assert.equal(F.flashWaitingRenewal(product("stopped", { enabled: null }), { running: true, paused_reason: null }), false);
+  assert.equal(F.flashWaitingRenewal(product("stopped"), { running: true, paused_reason: "awaiting_approval" }), false);
+  assert.equal(F.flashWaitingRenewal(product("stopped"), { running: false, paused_reason: null }), false);
   const off = F.flashProductParts(product("stopped", { enabled: false, stock_left: 4, renewals: 1 }), { running: true }, NOW);
   assert.deepEqual(off.detail, ["库存 4", "续开 1 次", "不自动续开"]);
   const odd = F.flashProductParts(product("paused_by_tiktok", { title: "" }), {}, NOW);

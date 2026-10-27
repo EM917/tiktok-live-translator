@@ -447,6 +447,25 @@ def test_the_running_sample_puts_the_stopped_product_first_once_it_is_stuck():
     assert later["attention"] == ["stuck"]
 
 
+def test_the_node_fixture_is_what_the_tracker_sends():
+    """前端的 node 测试（tests/flash.test.mjs、flash.en.test.mjs、flash-button.test.mjs）吃的是 message-running.json：
+    推给页面的那份状态。
+    它必须就是后端 StatusTracker 对契约样例 running.json 计满 60 秒后的输出——逐字段相同，只有商品顺序不同
+    （那份照契约样例的顺序，前端会再排一次）。两边谁改了形状、谁改了排序，这里就红，不会各测各的。
+    后端排出来的状态先后，和 tests/flash.test.mjs 里前端 flashSortProducts(SAMPLE.products) 的期望是同一张表。"""
+    tracker = fs.StatusTracker()
+    track(tracker, sample("running"), mono=0.0)
+    sent = track(tracker, sample("running"), mono=float(fs.STUCK_SEC))
+    fixture = sample("message-running")
+    assert set(fixture) == set(sent)
+    assert {k: v for k, v in fixture.items() if k != "products"} == {k: v for k, v in sent.items() if k != "products"}
+    by_id = {p["id"]: p for p in fixture["products"]}
+    assert len(by_id) == len(fixture["products"]) == len(sent["products"])
+    assert [by_id[p["id"]] for p in sent["products"]] == sent["products"]
+    assert [p["state"] for p in sent["products"]] == ["stopped", "pending", "unknown", "live", "live", "live",
+                                                      "between_rounds", "no_sale", "ended_by_user"]
+
+
 def test_the_samples_raise_the_documented_attention():
     assert track(fs.StatusTracker(), sample("idle"))["attention"] == []
     assert track(fs.StatusTracker(), sample("running"))["attention"] == []
