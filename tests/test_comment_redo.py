@@ -12,7 +12,8 @@
   6. 译文过 plausible_translation，像回话的丢掉、原译文留着；
   7. 每一条不重译的出路都有说明，中英两句都过第八条（只写观察，不猜原因）；
   8. 每次点击往本场审计写一条 comment_redo（2026-10-26 起）：只有代码、数字和布尔，没有弹幕原文、
-     观众名、译文和弹幕 id；重译在途时停止的那一条目前只计进 late_records（已知缺口，钉住现状）；
+     观众名、译文和弹幕 id；重译在途时停止或换主播，这一下记成 cancelled、进点它的那一场的文件
+     （弹幕重译任务登记在本场，收尾时关审计之前取消；不再只计进 late_records）；
   9. 手机收不到 comment_redo，也发不出 retranslate_comment；
  10. 译出来了也说一句（2026-10-26 起）：「已重译」或「重译结果和原来一样」，消息带 same。
 
@@ -1029,42 +1030,118 @@ def test_a_cancelled_retranslation_still_leaves_its_row_and_gives_the_slot_back(
     assert ct._ledger.begin("c0") is None
 
 
-def test_stop_while_sonnet_is_still_answering_counts_the_row_as_late_not_in_the_file(
-        monkeypatch, tmp_path, capsys):
-    """已知缺口，钉住现状（第 1 轮审查）：重译在等 Sonnet 时点了停止（换主播同理），Pipeline 关掉这一场的
-    审计；弹幕重译是 Pipeline._spawn 起的，没有登记进本场 sess["retranslate_tasks"]，_cancel_retranslates
-    取消不到它（字幕重译的同类问题专家审查 B6 已经修过）。Sonnet 回来之后，这一下的 comment_redo 写不进
-    已经关掉的文件：AuditLog._note_late 计进 late_records（开下一场时进 session_start 的
-    late_records_prev），终端打一行警告。重译本身照常做完、照常回话，不抛异常，名额还回去。
-    app/pipeline.py 不在这一批的文件清单里，顺延给下一个改它的批次：把弹幕重译任务登记进本场、关审计
-    之前取消，cancelled 记进点它的那一场。到那时这条改成「本场文件里有一条 cancelled、late_records 为 0」。"""
-    audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
-    holder, _inner, _s = claude_holder(monkeypatch)
+@pytest.mark.parametrize("quiet", [False, True], ids=["stop", "switch"])
+def test_stop_while_sonnet_is_still_answering_leaves_a_cancelled_row_in_this_sessions_file(
+        monkeypatch, tmp_path, capsys, quiet):
+    """重译在等 Sonnet 时点了停止（quiet=True 是换主播、更新暂停走的那条收尾）：弹幕重译的后台任务登记在本场
+    sess["retranslate_tasks"]，_cancel_retranslates 在关审计之前取消它，这一下记成一条 cancelled，进点它的那一场
+    的文件；late_records 是 0，终端没有「审计文件已经关闭」那一行。取消之后不再广播新译文（以前停止之后 Sonnet
+    回来照样换掉页面和手机上的译文），名额还回去。停止之后再点的那一下没有场次可登记，照常做完、照常回话。
+
+    2026-10-26（b5-recog-input）改的断言：这一条以前钉的是缺口——任务是 Pipeline._spawn 起的、没登记进本场，
+    Sonnet 回来时文件已经关了，comment_redo 只计进 late_records、不进文件（#146 第 1 轮审查记下、顺延）。
+    现在 app/pipeline.py 把它登记进本场（_own_retranslate），按新行为断言。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    audit = p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    sess = p._session_state = p._new_session_state(audit)
     gated = Gated()
-    ct, sent = make(holder, lambda: gated)
-    current = {"audit": audit}
-    ct._session = lambda: current["audit"]
-    seed(ct, ("c0", SOURCE))
+    p.comments._claude_strong_factory = lambda: gated
+    seed(p.comments, ("c0", SOURCE))
 
     async def scenario():
-        task = asyncio.ensure_future(ct.retranslate("c0"))
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
         assert await wait_for(lambda: gated.calls == 1)
-        audit.close(reason="user_stop")         # 停止：这一场的审计关了，场次也没了
-        current["audit"] = None
+        (task,) = sess["retranslate_tasks"]                # 登记进了本场
         capsys.readouterr()
+        await p.stop_stream(quiet=quiet)
+        stopped_at = len(p.server.sent)
         gated.gate.set()
-        await task
-        return task
+        await drain(p)
+        # 停止之后再点：没有场次，不登记，照常做完
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
+        await drain(p)
+        return task, stopped_at
 
-    task = run(scenario())
-    assert not task.cancelled() and task.exception() is None
-    assert redo_rows(audit) == []                          # 文件里没有这一行（缺口）
-    assert rows(audit)[-1]["type"] == "session_end"        # 也没有追加在 session_end 后面
-    assert audit.late_records == 1
-    out = capsys.readouterr().out
-    assert "审计文件已经关闭" in out and "comment_redo" in out
-    assert shape(sent)[-2:] == [("update", "ok", "新译文"), ("redo", "ok", True)]
-    assert ct._ledger.begin("c0") is None
+    task, stopped_at = run(scenario())
+    assert task.cancelled()
+    # 取消之后这条弹幕最后一个按钮状态不是 pending：补发了 cancelled，页面把按钮撤回「重译」（_retranslate_comment）
+    before = [m.get("redo_state") for m in p.server.sent[:stopped_at]
+              if m.get("type") == "comment_redo" and m.get("id") == "c0" and m.get("redo_state")]
+    assert before[-1] != "pending" and before == ["pending", "cancelled"]
+    assert [facts(r) for r in redo_rows(audit)] == [(False, "cancelled", None, True, "claude-sonnet-5-5")]
+    assert rows(audit)[-1]["type"] == "session_end"        # cancelled 在 session_end 之前
+    assert audit.late_records == 0
+    assert "审计文件已经关闭" not in capsys.readouterr().out
+    after = shape(p.server.sent[stopped_at:])
+    assert after[:1] == [("redo", "pending", False)]       # 停止之后点的那一下才有新译文
+    assert after[-2:] == [("update", "ok", "新译文"), ("redo", "ok", True)]
+    assert after.count(("update", "ok", "新译文")) == 1
+    assert len(redo_rows(audit)) == 1                       # 停止之后点的那一下没有文件可写
+    assert sess["retranslate_tasks"] == set() and p.comments._ledger.begin("c0") is None
+
+
+@pytest.mark.parametrize("how", ["stop", "switch", "ended"])
+def test_a_retranslation_cancelled_by_the_session_ending_puts_the_button_back(monkeypatch, tmp_path, how):
+    """在途的弹幕重译被收尾取消（停止、换主播、下播自然结束——三条都走 _cancel_retranslates）：收尾返回之前
+    这条弹幕收到一条 comment_redo(redo_state=cancelled)，不带说明（不新造文字）。以前 comments 那边只记审计
+    就往外抛，最后一个状态停在 pending：web/app.js 的按钮一直灰着停在「重译中…」，点不了第二次，要等页面
+    重连或刷新（b5-recog-input 第 1 轮审查的探针：HEAD 上是 ['pending']，基点上是 ['pending', 'ok']）。
+    页面怎么接这条由 tests/comment-redo-cancelled.test.mjs 钉着。审计照旧是一条 cancelled，在 session_end 之前。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    audit = p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    sess = p._session_state = p._new_session_state(audit)
+    gated = Gated()
+    p.comments._claude_strong_factory = lambda: gated
+    seed(p.comments, ("c0", SOURCE))
+
+    async def scenario():
+        p.handle_control({"type": "retranslate_comment", "id": "c0"})
+        assert await wait_for(lambda: gated.calls == 1)
+        if how == "ended":
+            await p._end_session(audit, reason="offline", sess=sess)
+        else:
+            await p.stop_stream(quiet=how == "switch")
+        ended_at = len(p.server.sent)
+        gated.gate.set()
+        await drain(p)
+        return ended_at
+
+    ended_at = run(scenario())
+    redos_c0 = [m for m in p.server.sent if m.get("type") == "comment_redo" and m.get("id") == "c0"]
+    assert [m.get("redo_state") for m in redos_c0] == ["pending", "cancelled"]
+    assert redos_c0[-1] == {"type": "comment_redo", "id": "c0", "redo_state": "cancelled"}
+    assert redos_c0[-1] in p.server.sent[:ended_at]          # 收尾返回之前就发了
+    assert not [m for m in p.server.sent if m.get("type") == "comment_update" and m.get("id") == "c0"]
+    assert [facts(r) for r in redo_rows(audit)] == [(False, "cancelled", None, True, "claude-sonnet-5-5")]
+    assert rows(audit)[-1]["type"] == "session_end"
+    assert p.comments._ledger.begin("c0") is None
+
+
+def test_a_cancelled_overlong_id_is_put_back_under_the_id_the_page_knows(monkeypatch, tmp_path):
+    """id 超长时 comments 那边裁到 MAX_ID 再回话（pending 用的是裁过的）：补发的 cancelled 用同一个裁过的 id，
+    页面才找得到那条弹幕。不是字符串的 id 没有哪条弹幕可撤，不补发。"""
+    wrapped, _inner, _s = subtitle_engine(monkeypatch)
+    p = full_pipeline(monkeypatch, tmp_path, wrapped)
+    audit = p.audit = AuditLog(room_url=ROOM, log_dir=tmp_path)
+    p._session_state = p._new_session_state(audit)
+    gated = Gated()
+    p.comments._claude_strong_factory = lambda: gated
+    long_id = "x" * 200
+    seed(p.comments, (long_id[: CommentTranslator.MAX_ID], SOURCE))
+
+    async def scenario():
+        p.handle_control({"type": "retranslate_comment", "id": long_id})
+        p.handle_control({"type": "retranslate_comment", "id": 7})
+        assert await wait_for(lambda: gated.calls == 1)
+        await p.stop_stream()
+        gated.gate.set()
+        await drain(p)
+
+    run(scenario())
+    states = [(m["id"], m.get("redo_state")) for m in p.server.sent if m.get("type") == "comment_redo"]
+    assert states == [("x" * 64, "pending"), ("x" * 64, "cancelled")]
 
 
 def test_after_stop_there_is_no_session_to_write_to_and_a_broken_audit_breaks_nothing(monkeypatch, capsys):

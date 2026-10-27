@@ -280,8 +280,12 @@ def test_a_state_the_hook_does_not_know_takes_the_end_card_down_too(attention):
 
 
 def test_the_real_model_download_progress_after_an_end_keeps_the_end_card(attention):
-    """走真的 _provision_note（app/pipeline.py）：没在监听时它发的是 status=idle，主窗口回到待机、显示进度。
-    直播中推迟的模型下载在这场结束后才开始（_pull_after_session），所以紧跟在 ended 后面。"""
+    """走真的 _provision_note（app/pipeline.py）。直播中推迟的模型下载在这场结束后才开始（_pull_after_session），
+    所以紧跟在 ended 后面。
+
+    2026-10-26（b5-recog-input）改的断言：以前这里钉的是「没在监听时发 status=idle，主窗口回到待机、显示进度」
+    （浮窗这边靠「卡片露着时 idle 不关窗」挡住）。现在状态是 ended / error 时 _provision_note 只发 notice：
+    主窗口的「直播已结束」留着，浮窗收不到 idle，卡片照样留着、窗口不关。"""
     host = FakeHost(open_=True)
     p = bare_pipeline(active=False, host=host)
     sent = []
@@ -298,8 +302,9 @@ def test_the_real_model_download_progress_after_an_end_keeps_the_end_card(attent
         await p._provision_note("正在准备本地翻译模型（约 1.1 GB，只需这一次）…")
         await p._provision_note("正在下载本地翻译模型：40%（440 / 1100 MB，只需这一次）…")
     asyncio.run(go())
-    assert [m["state"] for m in sent if m.get("type") == "status"] == ["live", "ended", "idle", "idle"]
-    assert p.server.config["status"]["state"] == "idle"
+    assert [m["state"] for m in sent if m.get("type") == "status"] == ["live", "ended"]
+    assert len([m for m in sent if m.get("type") == "notice"]) == 2
+    assert p.server.config["status"]["state"] == "ended"
     assert host.calls == [] and len(attention) == 1
 
 
