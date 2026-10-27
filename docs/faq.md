@@ -291,13 +291,17 @@ engine switch, or settings changes). Each phone page is in that phone's own
 language, with a toggle at the bottom. Up to 12 phones can watch at once. The
 link carries a key and should be treated like a password: whoever has it can
 see captions and alerts. When a phone opens the link, the page saves the key in
-that phone's browser and then removes it from the address bar, so it does not
-stay in the browsing history; reloading or reopening the page on that phone
-uses the saved key. The QR code keeps working, and scanning it again saves the
-key again. If this computer's local network address or the Phone Viewing port
-changes, scan again: the saved key belongs to the old address. In a private
-window, or when the browser does not save it, the key stays in the address bar
-and the page works as before. Clicking **New Link** disconnects every phone
+that phone's browser and then removes it from the address bar; reloading or
+reopening the page on that phone uses the saved key. Whether the browser's own
+history still keeps the address as scanned, key included, has not been checked.
+While this computer's local network address and the Phone Viewing port stay the
+same, the QR code keeps working, and scanning it again saves the key again. If
+either one changes, the panel shows a new QR code: scan that one. A QR code
+printed earlier points to the old address, and the key saved on the phone
+belongs to the old address too. When the browser does not keep the key (the
+page saves it and reads it back to check), for example with site data turned
+off in the browser's settings, the key stays in the address bar and the page
+works as before. Clicking **New Link** disconnects every phone
 currently watching; each phone drops the old key and needs the new QR code.
 
 Two iPhone cases have not been tried on an actual iPhone. A Home Screen icon added

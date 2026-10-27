@@ -194,11 +194,13 @@ comments; a click it cannot serve gets a short note under that comment, and the
 existing translation (or the original text, for a comment that had none) stays.
 When a retranslation comes back, a note under the comment (and on its row in the
 drawer) says **Retranslated**, or **The retranslation is the same as before.**
-when it matches the translation already shown, for a few seconds. Each click
-writes one `comment_redo` record to the session's audit log with codes and
-numbers only: whether a new translation came back and, if not, a reason code;
+when it matches the translation already shown, for a few seconds. While
+monitoring, each click writes one `comment_redo` record to the session's audit
+log with codes and numbers only: whether a new translation came back and, if
+not, a reason code; whether the comment had a translation when it was clicked;
 how long the model took; which model; and whether the result matched the one
-shown before. Comment text, translations, viewer names and comment ids are not
+shown before. Once monitoring has stopped, a click writes no record: no session
+is open then. Comment text, translations, viewer names and comment ids are not
 written to the audit log.
 
 Measured on the same 259 captions, re-translation with 7B reads more easily
