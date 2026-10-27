@@ -1,0 +1,165 @@
+{
+  "conn": "ok",
+  "stale": false,
+  "updated_ms": null,
+  "app_version": "0.7.2",
+  "page": "ok",
+  "running": true,
+  "paused_reason": null,
+  "products": [
+    {
+      "id": "1000000000000000001",
+      "title": "Glow Serum Trio (Fictional)",
+      "state": "live",
+      "round": 2,
+      "ends_ms": 1793137861000,
+      "next_ms": null,
+      "stock_left": 30,
+      "stock_total": 30,
+      "renewals": 0,
+      "enabled": true,
+      "stuck": false
+    },
+    {
+      "id": "1000000000000000002",
+      "title": "Hydra Cream 100ml (Fictional)",
+      "state": "between_rounds",
+      "round": 2,
+      "ends_ms": null,
+      "next_ms": 1793137030000,
+      "stock_left": 10,
+      "stock_total": 10,
+      "renewals": 0,
+      "enabled": true,
+      "stuck": false
+    },
+    {
+      "id": "1000000000000000003",
+      "title": "Calm Gel Mask x4 (Fictional)",
+      "state": "stopped",
+      "round": 2,
+      "ends_ms": null,
+      "next_ms": null,
+      "stock_left": 30,
+      "stock_total": 30,
+      "renewals": 3,
+      "enabled": true,
+      "stuck": true
+    },
+    {
+      "id": "1000000000000000004",
+      "title": "Barrier Lotion 350ml (Fictional)",
+      "state": "pending",
+      "round": 2,
+      "ends_ms": null,
+      "next_ms": null,
+      "stock_left": 80,
+      "stock_total": 80,
+      "renewals": 0,
+      "enabled": true,
+      "stuck": false
+    },
+    {
+      "id": "1000000000000000005",
+      "title": "Body Wash Duo (Fictional)",
+      "state": "ended_by_user",
+      "round": 12,
+      "ends_ms": null,
+      "next_ms": null,
+      "stock_left": 10,
+      "stock_total": 10,
+      "renewals": 0,
+      "enabled": true,
+      "stuck": false
+    },
+    {
+      "id": "1000000000000000006",
+      "title": "Family Lotion 11oz (Fictional)",
+      "state": "no_sale",
+      "round": null,
+      "ends_ms": null,
+      "next_ms": null,
+      "stock_left": null,
+      "stock_total": null,
+      "renewals": 0,
+      "enabled": true,
+      "stuck": false
+    },
+    {
+      "id": "1000000000000000007",
+      "title": "Advent Calendar Box (Fictional)",
+      "state": "unknown",
+      "round": 14,
+      "ends_ms": null,
+      "next_ms": null,
+      "stock_left": null,
+      "stock_total": 5,
+      "renewals": 0,
+      "enabled": true,
+      "stuck": false
+    },
+    {
+      "id": "1000000000000000008",
+      "title": "3-Step Routine Set (Fictional)",
+      "state": "live",
+      "round": 2,
+      "ends_ms": 1793137069000,
+      "next_ms": null,
+      "stock_left": 10,
+      "stock_total": 10,
+      "renewals": 0,
+      "enabled": true,
+      "stuck": false
+    },
+    {
+      "id": "1000000000000000009",
+      "title": "Toner Mist 250ml (Fictional)",
+      "state": "live",
+      "round": 2,
+      "ends_ms": 1793137280000,
+      "next_ms": null,
+      "stock_left": 3,
+      "stock_total": 3,
+      "renewals": 0,
+      "enabled": true,
+      "stuck": false
+    }
+  ],
+  "products_total": 9,
+  "alerts": [
+    {
+      "at_ms": 1793136662000,
+      "level": "warn",
+      "text": "❌ Toner Mist 250ml (Fictional): 续开后出现提示,已关闭:「Couldn't duplicate ...」(连续失败 1 次)"
+    },
+    {
+      "at_ms": 1793136787309,
+      "level": "warn",
+      "text": "📦 Calm Gel Mask x4 (Fictional): 1 个规格库存不足 5,按可用库存填"
+    },
+    {
+      "at_ms": 1793136790950,
+      "level": "info",
+      "text": "✅ 已批准这组循环闪购设置,以后自动设置(FSA.resetApprovals() 可清空)"
+    },
+    {
+      "at_ms": 1793136792214,
+      "level": "info",
+      "text": "✅ Calm Gel Mask x4 (Fictional): 循环闪购已设置好(还没开始),接着点卡片上的 Start"
+    },
+    {
+      "at_ms": 1793136796988,
+      "level": "info",
+      "text": "✅ 已批准这种弹窗,以后自动确认(FSA.resetApprovals() 可清空)"
+    },
+    {
+      "at_ms": 1793136801516,
+      "level": "info",
+      "text": "✅ Calm Gel Mask x4 (Fictional): 已重新开始循环闪购(本次运行第 1 次)"
+    }
+  ],
+  "attention": [
+    "stuck"
+  ],
+  "stuck_count": 1
+}
