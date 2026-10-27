@@ -1,6 +1,6 @@
 # FAQ
 
-*Moved from the README (FAQ). The text is unchanged except for relative links.*
+*Moved from the README (FAQ) and kept up to date here since.*
 
 *An entry that sends you to a README section by name, such as "Disk Space", now means [hardware.md](hardware.md#disk-space).*
 

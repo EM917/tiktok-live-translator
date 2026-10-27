@@ -1,6 +1,6 @@
 # Translation engines
 
-*Moved from the README (Translation Engines). The text is unchanged except for relative links and heading levels.*
+*Moved from the README (Translation Engines) and kept up to date here since.*
 
 Installing [Ollama](https://ollama.com/download) completes the setup. On the
 next launch the app starts it if required, downloads the 1.1 GB Hy-MT2

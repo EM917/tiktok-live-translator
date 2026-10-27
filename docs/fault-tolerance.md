@@ -1,6 +1,6 @@
 # Fault tolerance
 
-*Moved from the README (Fault Tolerance). The text is unchanged except for relative links and heading levels.*
+*Moved from the README (Fault Tolerance) and kept up to date here since.*
 
 A live session can fail quietly in three places:
 finding the stream URL, keeping the stream, and keeping up with it. Each is

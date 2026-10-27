@@ -108,9 +108,9 @@ Flags need a terminal: the `.app` does not take them, while `Start.command` and 
 
 The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen. Click the version number at the bottom of the window to check by hand. During a stream, the answer appears next to the version number.
 
-Update Now installs the release named in the banner, not changes made after it that are not released yet. If the new version then starts twice and its window does not connect either time, the third launch goes back to the version you had before and opens it again. A dialog says which version it went back to, on macOS and on Windows. On a Mac started from a Terminal window, for example with `Start.command`, that window shows the line instead. One crash or force-quit before the window connects does not count, and the next launch runs the new version again. Opening the app twice at once does not count either, and neither does force-quitting it after its window has connected. The app does not go back if files in its folder were changed by hand.
+Update Now installs the release named in the banner, not changes made after it that are not released yet. If the new version then starts twice and its window does not connect either time, the third launch goes back to the version you had before and opens it again. A dialog says which version it went back to, on macOS and on Windows. On a Mac started from a Terminal window, for example with `Start.command`, that window shows the line instead. A single crash or force-quit before the window connects does not by itself bring the old version back: the next launch runs the new version again. Opening the app twice at once does not count either, and neither does force-quitting it after its window has connected. The app does not go back if files in its folder were changed by hand.
 
-The app also updates yt-dlp, which finds the stream URL, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now. When TikTok refuses the comment connection, the app looks for a newer TikTokLive, which fetches viewer comments, under the same rules: only a 7.x version released at least 7 days earlier, and not while monitoring or during Update Now. Refusals come while monitoring, so in practice this check installs nothing, and the Comments panel says the component isn't updated during monitoring. TikTokLive is also installed in two other ways. When it is missing, the app installs it at startup or when a stream needs comments, and at startup it upgrades a TikTokLive older than 7.0.1. Both take the newest 7.x version whatever its release date, do not wait for monitoring to stop, and are tried at most once an hour. Update Now also installs a newer TikTokLive when the new release requires one. [Details](docs/fault-tolerance.md#keeping-the-stream).
+The app also updates yt-dlp, which finds the stream URL, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now. When TikTok refuses the comment connection, the app looks for a newer TikTokLive, which fetches viewer comments, under the same rules: only a 7.x version released at least 7 days earlier, and not while monitoring or during Update Now. Refusals come while monitoring, so in practice this check installs nothing, and the Comments panel says the component isn't updated during monitoring. TikTokLive is also installed in these other ways. When it is missing, the app installs it at startup or when a stream needs comments, and at startup it upgrades a TikTokLive older than 7.0.1. Both take the newest 7.x version whatever its release date, do not wait for monitoring to stop, and are tried at most once an hour. Update Now also installs a newer TikTokLive when the new release requires one. [Details](docs/fault-tolerance.md#keeping-the-stream).
 
 <a id="en-updating-zip"></a>
 
@@ -168,7 +168,7 @@ Colleagues can follow the captions on their phones. Click the phone icon in the 
 
 A phone shows captions and alerts. It can ask for one line to be retranslated, and it cannot start, stop or change anything. Each page uses the phone's own language, and up to 12 phones can watch at once.
 
-The link contains a key, so treat it like a password. Once a phone opens the link, the key leaves the address bar and is kept in that phone's browser, so the phone can reopen the page without scanning again. The QR code keeps working until you click New Link, which disconnects every phone; they then scan the new code. If the computer's local network address changes, the panel shows a new QR code: scan that one, since a code printed earlier points to the old address. For an iPhone Home Screen icon, see [the FAQ](docs/faq.md#phone-viewing). Sharing is off until you turn it on, and the phone must be on the same network.
+The link contains an access key, so treat it like a password. Once a phone opens the link, the key leaves the address bar and is kept in that phone's browser, so the phone can reopen the page without scanning again. The QR code keeps working until you click New Link, which disconnects every phone; they then scan the new code. If the computer's local network address changes, the panel shows a new QR code: scan that one, since a code printed earlier points to the old address. For an iPhone Home Screen icon, see [the FAQ](docs/faq.md#phone-viewing). Sharing is off until you turn it on, and the phone must be on the same network.
 
 <a id="en-floating-window"></a>
 
@@ -425,9 +425,9 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示。也可以随时点窗口底部的版本号手动检查，直播中检查的结果写在版本号旁边。
 
-「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。新版本如果启动了两次、窗口两次都没连上，第三次打开时会自动退回更新前的版本，再重新打开。退回后会弹窗说明退回到了哪个版本，Mac 和 Windows 都弹；Mac 上从「终端」启动的话（比如用 `Start.command`），这句话写在「终端」窗口里，不弹窗。窗口连上之前崩了一次、或者被强行退出一次，不算，下一次打开照常用新版本。同时双击打开两次不算，窗口连上之后再强行退出也不算；程序文件夹里的文件被手动改过的话，不会退回。
+「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。新版本如果启动了两次、窗口两次都没连上，第三次打开时会自动退回更新前的版本，再重新打开。退回后会弹窗说明退回到了哪个版本，Mac 和 Windows 都弹；Mac 上从「终端」启动的话（比如用 `Start.command`），这句话写在「终端」窗口里，不弹窗。窗口连上之前只崩了一次、或者只被强行退出一次，不会因此退回，下一次打开照常用新版本。同时双击打开两次不算，窗口连上之后再强行退出也不算；程序文件夹里的文件被手动改过的话，不会退回。
 
-程序还会自己更新 yt-dlp（查找直播流地址用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。TikTok 拒绝弹幕连接时，程序会按同样的规矩找新的 TikTokLive（获取观众弹幕用）：只装发布满 7 天的 7.x 版本，监听中和「一键更新」进行中都不装。拒绝都发生在监听中，所以实际上这一步什么也不装，「观众弹幕」面板会写「监听中不更新弹幕组件」。TikTokLive 另外还有两种安装途径：没装的话，启动时、或者一场直播要用弹幕时会装；启动时版本低于 7.0.1 的会升级。这两种装的都是 7.x 里最新的一版，不看发布满不满 7 天，也不等监听停下，一小时最多各试一次。新版本要求更新的 TikTokLive 时，「一键更新」也会装上。[详细说明](docs/fault-tolerance.zh-CN.md#保住直播流)。
+程序还会自己更新 yt-dlp（查找直播流地址用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。TikTok 拒绝弹幕连接时，程序会按同样的规矩找新的 TikTokLive（获取观众弹幕用）：只装发布满 7 天的 7.x 版本，监听中和「一键更新」进行中都不装。拒绝都发生在监听中，所以实际上这一步什么也不装，「观众弹幕」面板会写「监听中不更新弹幕组件」。TikTokLive 另外还有这些安装途径：没装的话，启动时、或者一场直播要用弹幕时会装；启动时版本低于 7.0.1 的会升级。这两种装的都是 7.x 里最新的一版，不看发布满不满 7 天，也不等监听停下，一小时最多各试一次。新版本要求更新的 TikTokLive 时，「一键更新」也会装上。[详细说明](docs/fault-tolerance.zh-CN.md#保住直播流)。
 
 <a id="zh-updating-zip"></a>
 
@@ -485,7 +485,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 手机上能看字幕和报警，也能请求重译某一句，不能开始、停止或改设置。每台手机按自己的语言显示，最多 12 台一起看。
 
-链接里带着密钥，要像密码一样保管。手机打开链接以后，密钥会从地址栏去掉，记在那台手机的浏览器里，之后再打开这个页面不用重新扫码。二维码一直有效，直到你点「换一个链接」：所有手机都会断开，要扫新的二维码。电脑的局域网地址变了，面板上会换成新的二维码，要扫这个新的：之前贴出去的二维码指向原来的地址。从 iPhone 主屏幕图标打开的情况，见[常见问题](docs/faq.zh-CN.md#zh-phone-viewing)。同看默认关闭，只能在同一个局域网里用。
+链接里带着同看钥匙，要像密码一样保管。手机打开链接以后，钥匙会从地址栏去掉，记在那台手机的浏览器里，之后再打开这个页面不用重新扫码。二维码一直有效，直到你点「换一个链接」：所有手机都会断开，要扫新的二维码。电脑的局域网地址变了，面板上会换成新的二维码，要扫这个新的：之前贴出去的二维码指向原来的地址。从 iPhone 主屏幕图标打开的情况，见[常见问题](docs/faq.zh-CN.md#zh-phone-viewing)。同看默认关闭，只能在同一个局域网里用。
 
 <a id="zh-floating-window"></a>
 
