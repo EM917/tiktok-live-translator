@@ -1071,6 +1071,7 @@
     versionEl.textContent = " · " + note.text;
     versionEl.classList.add("noting");
     if (copyrightEl && copyrightEl.classList) copyrightEl.classList.add("noting");
+    syncFootHeight();
     footerTimer = setTimeout(endFooterNote, note.ms);
   }
 
@@ -1095,6 +1096,31 @@
     if (currentVersion) {
       versionEl.textContent = " · v" + currentVersion + (updateCheckNote ? " · " + updateCheckNote : "");
     }
+    syncFootHeight();
+  }
+
+  // ---- 页脚的实测高度 → CSS 变量 --foot-h（#143 审查） ----
+  // 页脚显示一句提示时会长高、长句换行（style.css .copyright.noting）。大字幕条是 fixed 的，以前 bottom 写死 22px：
+  // 760 宽、英文约 260 字的提示折成 3 行，页脚多出来的两行盖住条子最下面一行（西语原文、角标）约 12 秒。现在量页脚
+  // 的真实高度写进变量，条子的 bottom、高度上限和两栏的底部留白都按它算（style.css）。一行（22px 及以下）时不写，
+  // 样式里的退路就是 22px，和以前逐像素一样。变量只挪条子和留白，不影响页脚自己的高度，写一次就停（不会循环）。
+  // 窗口变宽变窄时提示重新折行：有 ResizeObserver 就盯着页脚；没有的环境（老 WebKit、node 测试的假页面）在换字时量。
+  // 页脚取版本号的父元素，量的时候现取（真页面里就是 copyrightEl；node 的假页面不建树，测试量之前才给它挂上父元素）
+  var footH = 0;
+  function syncFootHeight() {
+    var foot = versionEl ? versionEl.parentNode : null;
+    if (!foot || typeof foot.getBoundingClientRect !== "function") return;
+    var h = Math.ceil(foot.getBoundingClientRect().height);
+    if (!(h > 22)) h = 0;
+    if (h === footH) return;
+    footH = h;
+    document.documentElement.style.setProperty("--foot-h", h ? h + "px" : "");   // 空值＝去掉这条声明
+    // 留白变了：正贴底看的人要再贴一次，不然条子往上挪的那一截正好盖住最新一条
+    if (following) scrollToBottomNow();
+    if (commentFollowing) commentsToBottomNow();
+  }
+  if (copyrightEl && typeof ResizeObserver === "function") {
+    new ResizeObserver(function () { syncFootHeight(); }).observe(copyrightEl);
   }
 
   // 连续很多天没连上更新服务器：只在页脚版本号旁边安静地提一句，不进自检、不进横幅

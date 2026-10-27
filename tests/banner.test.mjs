@@ -265,6 +265,41 @@ for (const lang of ["zh", "en"]) {
     assert.equal(moreBtn(page), null);
   });
 
+  // 门槛（BANNER_FOLD_LINES = 3，#143 审查补的）：正好 3 行不折、4 行才折，状态横幅和持续提示是同一个门槛。
+  // 空行和首尾空白不算行（按行画时去掉）
+  test(lang + "：折叠门槛——3 行不折、没有按钮；4 行折起来只露第一行；空行不算（状态横幅，BANNER_FOLD_LINES）", () => {
+    const page = runDesktop(lang);
+    hello(page);
+    const banner = page.el("status-banner");
+    const three = [W.lead, "two", "three"].join("\n");
+    status(page, "error", three);
+    assert.equal(banner.cls.includes("folded"), false, "3 行：不折");
+    assert.equal(moreBtn(page), null);
+    assert.deepEqual(visible(page).map((b) => b.text), [W.lead, "two", "three"]);
+    status(page, "error", three.replace("\n", "\n\n  \n"));
+    assert.equal(banner.cls.includes("folded"), false, "中间夹着空行仍算 3 行");
+    status(page, "error", three + "\nfour");
+    assert.equal(banner.cls.includes("folded"), true, "4 行：折起来");
+    assert.ok(moreBtn(page));
+    assert.deepEqual(visible(page).map((b) => b.text), [W.lead]);
+    assert.equal(blocks(page).length, 4, "折着的那几行还在，只是藏起来");
+  });
+
+  test(lang + "：折叠门槛——持续提示同样 3 行不折、4 行折（BANNER_FOLD_LINES）", () => {
+    const page = runDesktop(lang);
+    hello(page, { status: { state: "live", detail: "" } });
+    const span = () => page.el("incident-bar").children[0].lastChild;
+    const more = () => span().children.find((el) => el.cls.includes("banner-more"));
+    const three = ["one", "two", "three"].join("\n");
+    incident(page, "login-unreadable", "warn", three);
+    assert.equal(more(), undefined, "3 行：不折、没有按钮");
+    assert.equal(page.el("incident-bar").textContent, three);
+    incident(page, "login-unreadable", "warn", three + "\nfour");
+    assert.ok(more(), "4 行：折起来");
+    assert.equal(more().textContent, W.more);
+    assert.equal(span().childNodes.filter((n) => n.nodeType === 3).map((n) => n.textContent).join(""), "one");
+  });
+
   // 「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时，读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下
   // 八九行（审查第 1 轮）：超过 3 行的持续提示和状态横幅一样，默认只露第一行和「显示全部步骤」
   test(lang + "：超过 3 行的持续提示默认只露第一行和「显示全部步骤」，能展开、收起，重画时保留（U10）", () => {

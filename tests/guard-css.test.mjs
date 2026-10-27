@@ -294,11 +294,11 @@ test("大字幕：窗口窄于 1000px 时弹幕栏开着也不让，条子照旧
     assert.equal(declsAt(".live-bar", w).right, "0", w + "px：条子整宽");
     assert.equal(declsAt(".live-bar", w)["min-height"], base["min-height"], w + "px：最小高度照旧两行大字");
     assert.deepEqual(declsAt(PANEL_OPEN + " .comment-list", w), {}, w + "px：弹幕列表的留白不该被盖掉");
-    assert.match(declsAt(".comment-list", w).padding, /calc\(var\(--live-bar-h, [\d.]+px\) \+ 30px\)$/, w + "px");
+    assert.match(declsAt(".comment-list", w).padding, /calc\(var\(--live-bar-h, [\d.]+px\) \+ var\(--foot-h, 22px\) \+ 8px\)$/, w + "px");
   }
   // 1000 起两条一起生效
   assert.ok(declsAt(PANEL_OPEN + " .live-bar", OFFSET_FROM).right);
-  assert.equal(declsAt(PANEL_OPEN + " .comment-list", OFFSET_FROM)["padding-bottom"], "30px");
+  assert.equal(declsAt(PANEL_OPEN + " .comment-list", OFFSET_FROM)["padding-bottom"], "calc(var(--foot-h, 22px) + 8px)");
 });
 
 test("大字幕：让出弹幕栏后条子窄了，最小高度多留一行大字（三行），条高稳定（U1）不因此变差；不超过高度上限", () => {
@@ -319,11 +319,12 @@ test("大字幕：让出弹幕栏后条子窄了，最小高度多留一行大�
   }
 });
 
+// 底部署名平时 22px；显示一句长提示时长高，web/app.js 量了写进 --foot-h，留白跟着多出那一截（#143 审查）
 test("弹幕列表：条子不再盖着弹幕栏时，底部只让出底部署名（22px + 8px），不再按条高空出一大段", () => {
-  assert.equal(declsAt(PANEL_OPEN + " .comment-list", OFFSET_FROM)["padding-bottom"], "30px");
-  assert.equal(parseInt(decls(".copyright").height, 10) + 8, 30, "底部署名 22px + 8px 空隙");
+  assert.equal(declsAt(PANEL_OPEN + " .comment-list", OFFSET_FROM)["padding-bottom"], "calc(var(--foot-h, 22px) + 8px)");
+  assert.equal(parseInt(decls(".copyright").height, 10), 22, "底部署名平时 22px，就是 --foot-h 没写时的退路");
   // 不支持 :has（或窗口窄于 1000px）时两条一起不生效：条子整宽，弹幕列表照旧按条高留白（退路还在）
-  assert.match(decls(".comment-list").padding, /calc\(var\(--live-bar-h, [\d.]+px\) \+ 30px\)$/);
+  assert.match(decls(".comment-list").padding, /calc\(var\(--live-bar-h, [\d.]+px\) \+ var\(--foot-h, 22px\) \+ 8px\)$/);
 });
 
 // 浮窗（web/float.css）：同一列弹幕，没标记的行和标了的行（左边带色条、抻到窗口边缘）文字从同一处起，
