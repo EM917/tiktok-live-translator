@@ -168,7 +168,7 @@ Colleagues can follow the captions on their phones. Click the phone icon in the 
 
 A phone shows captions and alerts. It can ask for one line to be retranslated, and it cannot start, stop or change anything. Each page uses the phone's own language, and up to 12 phones can watch at once.
 
-The link contains a key, so treat it like a password. New Link disconnects every phone. Sharing is off until you turn it on, and the phone must be on the same network.
+The link contains a key, so treat it like a password. Once a phone opens the link, the key leaves the address bar and is kept in that phone's browser, so the phone can reopen the page without scanning again. The QR code keeps working until you click New Link, which disconnects every phone; they then scan the new code. If the computer's local network address changes, scan again. Opening the page from an iPhone Home Screen icon has a catch, see [the FAQ](docs/faq.md#phone-viewing). Sharing is off until you turn it on, and the phone must be on the same network.
 
 <a id="en-floating-window"></a>
 
@@ -485,7 +485,7 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 手机上能看字幕和报警，也能请求重译某一句，不能开始、停止或改设置。每台手机按自己的语言显示，最多 12 台一起看。
 
-链接里带着密钥，要像密码一样保管。点「换一个链接」，所有手机都会断开。同看默认关闭，只能在同一个局域网里用。
+链接里带着密钥，要像密码一样保管。手机打开链接以后，密钥会从地址栏去掉，记在那台手机的浏览器里，之后再打开这个页面不用重新扫码。二维码一直有效，直到你点「换一个链接」：所有手机都会断开，要扫新的二维码。电脑的局域网地址变了，要重新扫一次。从 iPhone 主屏幕图标打开另有一种情况，见[常见问题](docs/faq.zh-CN.md#zh-phone-viewing)。同看默认关闭，只能在同一个局域网里用。
 
 <a id="zh-floating-window"></a>
 

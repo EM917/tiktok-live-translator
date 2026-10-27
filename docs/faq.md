@@ -271,8 +271,26 @@ captions and alerts — it cannot control the app in any way (no start/stop,
 engine switch, or settings changes). Each phone page is in that phone's own
 language, with a toggle at the bottom. Up to 12 phones can watch at once. The
 link carries a key and should be treated like a password: whoever has it can
-see captions and alerts; clicking **New Link** disconnects every phone
-currently watching, and they need to rescan. When a phone can't connect, the
+see captions and alerts. When a phone opens the link, the page saves the key in
+that phone's browser and then removes it from the address bar, so it does not
+stay in the browsing history; reloading or reopening the page on that phone
+uses the saved key. The QR code keeps working, and scanning it again saves the
+key again. If this computer's local network address or the Phone Viewing port
+changes, scan again: the saved key belongs to the old address. In a private
+window, or when the browser does not save it, the key stays in the address bar
+and the page works as before. Clicking **New Link** disconnects every phone
+currently watching; each phone drops the old key and needs the new QR code.
+
+Two cases on iPhones have not been tried on an iPhone. A Home Screen icon added
+after the key left the address bar has no key in its own address. If iOS opens
+that icon as a web app, the icon has storage of its own, and scanning again
+saves the key in Safari only, so the icon cannot get it: scan in Safari and
+watch in Safari instead. An icon added while the address still had `#k=` keeps
+working. Separately, Safari may clear a site's saved data when the site has not
+been opened for 7 days; the page then has no key, and scanning the QR code again
+fixes it.
+
+When a phone can't connect, the
 only thing the app knows is that no connection came in; try, in order:
 confirming the phone is on the same Wi-Fi; typing in another address from the
 panel's list; opening the same link in a browser on this computer to confirm
