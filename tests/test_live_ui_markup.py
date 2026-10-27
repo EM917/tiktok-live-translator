@@ -69,7 +69,8 @@ def header_span():
     return start, HTML.index("</header>", start)
 
 
-@pytest.mark.parametrize("panel,trigger", [("share-panel", "share-btn"), ("switch-panel", "switch-btn")])
+@pytest.mark.parametrize("panel,trigger", [("share-panel", "share-btn"), ("switch-panel", "switch-btn"),
+                                           ("flash-panel", "flash-btn"), ("font-ctl", "font-btn")])
 def test_popovers_live_in_the_topbar_right_after_their_trigger(panel, trigger):
     """浮层挂在顶栏里（top:100% 才是顶栏底边，不推字幕区），并且紧跟在触发按钮
     后面——Tab 顺序：按钮 → 浮层内容 → 下一个顶栏按钮。挪回 <header> 外面就又

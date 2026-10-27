@@ -1259,6 +1259,8 @@
           if (msg.config.engine) renderEngine(msg.config.engine);
           if (msg.config.viewer) renderShare(msg.config.viewer);
           applyFloatConfig(msg.config.float_window);
+          // 闪购按钮：同 float_window，没有这个键 = 没装闪购助手，按钮藏起来
+          applyFlashConfig(msg.config.flash_sale);
           // 持续提示以服务端为准：重连时整份重放，先清掉本地的
           incidents = Object.create(null);
           if (msg.config.incidents) {
@@ -1329,6 +1331,8 @@
         if (msg.text) queueNotice(msg.text);      // 排队、按字数停 10–12 秒（专家审查 U2，见 queueNotice）
         // 字幕记录行的按钮（导出、打开文件夹）：同一句话也写在按钮下面，页脚常常不在视野里
         if (msg.text && msg.where === "transcripts") showTranscriptStatus(msg.text);
+        // 「打开闪购助手」没打开：写在闪购浮层里，点的人正看着那儿
+        if (msg.text && msg.where === "flash") showFlashNote(msg.text);
         break;
       // 点「重译」没有开始或没成功：话显示在被点的那条字幕旁边（不是页脚那一行）
       case "retranslate_note":
@@ -1467,6 +1471,10 @@
       case "viewer":
         renderShare(msg);
         break;
+      // 闪购助手的状态变了（形状同 hello 的 config.flash_sale）
+      case "flash_sale":
+        applyFlashConfig(msg);
+        break;
     }
   }
 
@@ -1515,6 +1523,8 @@
     // 换主播按钮和停止按钮同一处切换：只在直播中/连接中有意义，待机/已结束/
     // 出错/离线时没有「正在监听的主播」可换
     if (switchBtn) switchBtn.classList.toggle("hidden", !active);
+    // 和本地服务断开期间「打开闪购助手」点了也发不出去：先禁用，重连后的 hello 再带回真实状态
+    if (flashOpenBtn) flashOpenBtn.disabled = state === "offline";
     startBtn.disabled = state === "connecting";
     streamActive = active;
     updateFloatBtn();       // 浮窗按钮跟换主播同一条显示规则
@@ -3672,21 +3682,39 @@
     shareOn = on;
   }
 
-  // ---- 顶栏浮层（手机同看 / 换主播）的共用开合 ----
-  // 两个浮层互斥；位置按触发按钮右边缘算（popoverRight）；aria-expanded 跟着走。
+  // ---- 顶栏浮层的共用开合 ----
+  // 浮层互斥（打开一个就关掉其余所有）；位置按触发按钮右边缘算（popoverRight）；aria-expanded 跟着走。
   // 关闭的途径：按钮再点一次、×、Esc、点浮层外。不在窗口失焦（blur/focusout）时
   // 关——中控要切到浏览器复制新主播的地址再回来粘，浮层得还在
   function isPopoverOpen(panel) { return !!panel && !panel.classList.contains("hidden"); }
-  function placePopover(panel, trigger) {
-    if (!isPopoverOpen(panel) || !trigger) return;
-    var r = trigger.getBoundingClientRect();
-    panel.style.right = popoverRight(r.right, window.innerWidth, panel.offsetWidth, 12) + "px";
+  // 登记表：每一项 {panel, trigger, close, isOpen}。互斥、窗口缩放时重新定位、点外面关、Esc 都遍历这张表，
+  // 加一个浮层只在这里登记一行，不再到四处去补硬编码。close 存函数本身：closeSwitchPanel 还要清定时器。
+  // isOpen 缺省就是看 .hidden。登记的顺序就是 Esc 的先后（同一时刻只会开着一个，顺序只是兜底）
+  var popovers = [];
+  function registerPopover(panel, trigger, close, isOpen) {
+    if (!panel) return;
+    popovers.push({ panel: panel, trigger: trigger, close: close,
+                    isOpen: isOpen || function () { return isPopoverOpen(panel); } });
+  }
+  function placePopover(entry) {
+    if (!entry.isOpen() || !entry.trigger) return;
+    var r = entry.trigger.getBoundingClientRect();
+    entry.panel.style.right = popoverRight(r.right, window.innerWidth, entry.panel.offsetWidth, 12) + "px";
+  }
+  function popoverEntry(panel) {
+    for (var i = 0; i < popovers.length; i++) if (popovers[i].panel === panel) return popovers[i];
+    return null;
+  }
+  // 关掉 panel 以外的所有浮层
+  function closeOtherPopovers(panel) {
+    popovers.forEach(function (p) { if (p.panel !== panel) p.close(); });
   }
   function showPopover(panel, trigger) {
-    if (panel === switchPanel) closeSharePanel(); else closeSwitchPanel();
+    closeOtherPopovers(panel);
     panel.classList.remove("hidden");
     if (trigger) trigger.setAttribute("aria-expanded", "true");
-    placePopover(panel, trigger);
+    var entry = popoverEntry(panel);
+    if (entry) placePopover(entry);
   }
   function hidePopover(panel, trigger) {
     if (!panel) return;
@@ -3694,19 +3722,15 @@
     if (trigger) trigger.setAttribute("aria-expanded", "false");
   }
   window.addEventListener("resize", function () {
-    placePopover(sharePanel, shareBtn);
-    placePopover(switchPanel, switchBtn);
+    popovers.forEach(placePopover);
   });
   // 捕获阶段：浮层里的按钮自己的 click 照常触发；点在触发按钮上不算「外面」，
   // 交给按钮自己的切换（否则这里先关、按钮的 click 又打开）
   document.addEventListener("pointerdown", function (e) {
     var t = e.target;
-    if (isPopoverOpen(switchPanel) && !switchPanel.contains(t) && !(switchBtn && switchBtn.contains(t))) {
-      closeSwitchPanel();
-    }
-    if (isPopoverOpen(sharePanel) && !sharePanel.contains(t) && !(shareBtn && shareBtn.contains(t))) {
-      closeSharePanel();
-    }
+    popovers.forEach(function (p) {
+      if (p.isOpen() && !p.panel.contains(t) && !(p.trigger && p.trigger.contains(t))) p.close();
+    });
   }, true);
 
   // 不主动挪焦点：浮层在 DOM 里紧跟着 #share-btn，键盘用户按 Tab 就进去了；
@@ -3981,18 +4005,177 @@
     });
   }
   if (switchConfirmBtn) switchConfirmBtn.addEventListener("click", attemptSwitchConfirm);
-  // Esc 关闭：只在面板确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
+  // 顶栏浮层登记（见上面 registerPopover）：换主播在前，同看在后，Esc 的先后同以前的 if/else 链。
   // 同看面板走 closeSharePanel——只收起，不碰同看开关，跟卡片里的 × 同一个函数（pm.md #3）
-  // 关掉后焦点回到触发按钮，键盘用户不会掉到页面开头
+  registerPopover(switchPanel, switchBtn, closeSwitchPanel);
+  registerPopover(sharePanel, shareBtn, closeSharePanel);
+  // Esc 关闭：只在有浮层确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
+  // 关掉开着的那一个后焦点回到它的触发按钮，键盘用户不会掉到页面开头
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    if (isPopoverOpen(switchPanel)) {
-      closeSwitchPanel();
-      if (switchBtn) switchBtn.focus();
-    } else if (isPopoverOpen(sharePanel)) {
-      closeSharePanel();
-      if (shareBtn) shareBtn.focus();
+    for (var i = 0; i < popovers.length; i++) {
+      var p = popovers[i];
+      if (!p.isOpen()) continue;
+      p.close();
+      if (p.trigger) p.trigger.focus();
+      return;
     }
+  });
+
+  // ---- 闪购（web/flash.js）：顶栏按钮 + 只读浮层 ----
+  // 后端只在 macOS 上装了闪购助手时往 config 里放 flash_sale（照 float_window：没有这个键 = 这个服务端不提供），
+  // 状态变了再推一条 type:"flash_sale"，形状相同。文案、排序、渲染都在 flash.js，这里只接线：存状态、算未读、
+  // 画按钮和浮层、开合、每秒改倒计时、点「打开闪购助手」。首页和直播中都显示（用户 10-27 定），不跟 streamActive 走。
+  // 提醒只走这颗按钮的颜色和浮层，不借报警、状态胶囊、顶部提示条（CLAUDE.md 第六条）
+  var flashBtn = document.getElementById("flash-btn");
+  var flashPanel = document.getElementById("flash-panel");
+  var flashCloseBtn = document.getElementById("flash-close");
+  var flashOpenBtn = document.getElementById("flash-open");
+  var flashNote = document.getElementById("flash-note");
+  var flashMore = document.getElementById("flash-more");
+  var flashEls = {
+    state: document.getElementById("flash-state"),
+    headline: document.getElementById("flash-headline"),
+    detail: document.getElementById("flash-detail"),
+    summary: document.getElementById("flash-summary"),
+    products: document.getElementById("flash-products"),
+    more: flashMore,
+    alertsTitle: document.getElementById("flash-alerts-title"),
+    alerts: document.getElementById("flash-alerts"),
+    version: document.getElementById("flash-version"),
+  };
+  var flashState = null;          // 最近一份状态；null = hello 里没有这个键（没装闪购助手），按钮整颗不出现
+  var flashExpanded = false;      // 「还有 N 个」点开了；浮层关上时收回
+  var flashCountdowns = [];       // 最近一次画出来的倒计时 span，flashTick 每秒只改它们的字
+  // 看过的问题记录：打开浮层时记下，存 localStorage。存不了（隐私模式等）就只在这一页记着——lsGet / lsSet 自己包了 try/catch
+  var FLASH_SEEN_KEY = "flashSeen";
+  var flashSeen = flashParseSeen(lsGet(FLASH_SEEN_KEY));
+
+  function paintFlash() {
+    if (!flashBtn) return;
+    var unread = flashState ? flashUnread(flashState.alerts, flashSeen) : [];
+    var b = flashButtonState(flashState, unread.length);
+    flashBtn.classList.toggle("hidden", b.hidden);
+    flashBtn.classList.toggle("attn", b.attn);
+    flashBtn.title = b.title;
+    flashBtn.setAttribute("aria-label", b.title);
+    // 顶栏多了一颗按钮：样式表据此在窄于 1400px 时把字号滑块收成「Aa」（style.css 的 has-flash-btn）
+    document.body.classList.toggle("has-flash-btn", !b.hidden);
+    if (b.hidden) {
+      closeFlashPanel();
+      closeFontPopover();       // 没有「Aa」了：字号控件回到顶栏里，它的小浮层不能还开着
+      return;
+    }
+    // 收到就画，不等打开（G10 的扫描也扫隐藏的元素）
+    if (flashPanel) {
+      flashCountdowns = renderFlashPanel(document, flashEls, flashState,
+                                         { now: Date.now(), expanded: flashExpanded, unread: unread });
+    }
+  }
+
+  // hello 里整份换（没有这个键：按钮藏起来、浮层关掉），type:"flash_sale" 消息同形
+  function applyFlashConfig(cfg) {
+    flashState = cfg && typeof cfg === "object" ? cfg : null;
+    paintFlash();
+  }
+
+  function markFlashSeen() {
+    var next = flashState ? flashSeenMark(flashState.alerts, flashSeen) : flashSeen;
+    if (!next || JSON.stringify(next) === JSON.stringify(flashSeen)) return;
+    flashSeen = next;
+    lsSet(FLASH_SEEN_KEY, JSON.stringify(next));
+  }
+
+  function showFlashNote(text) {
+    if (!flashNote) return;
+    flashNote.textContent = text;
+    flashNote.classList.remove("hidden");
+  }
+  function clearFlashNote() {
+    if (!flashNote) return;
+    flashNote.textContent = "";
+    flashNote.classList.add("hidden");
+  }
+
+  // 不挪焦点（同手机同看）：浮层紧跟着按钮，键盘用户按 Tab 就进去了。
+  // 打开即算看过了眼下的问题记录（用户 10-27 定）；开着时新来的照样算没看过，下次打开才记
+  function openFlashPanel() {
+    if (!flashPanel || !flashState) return;
+    markFlashSeen();
+    paintFlash();
+    showPopover(flashPanel, flashBtn);
+  }
+  function closeFlashPanel() {
+    if (!flashPanel) return;
+    var wasOpen = isPopoverOpen(flashPanel);
+    hidePopover(flashPanel, flashBtn);
+    if (!wasOpen) return;
+    clearFlashNote();
+    if (flashExpanded) {
+      flashExpanded = false;
+      paintFlash();
+    }
+  }
+
+  if (flashBtn && flashPanel) {
+    flashBtn.addEventListener("click", function () {
+      if (isPopoverOpen(flashPanel)) closeFlashPanel(); else openFlashPanel();
+    });
+  }
+  if (flashCloseBtn) flashCloseBtn.addEventListener("click", closeFlashPanel);
+  if (flashMore) {
+    flashMore.addEventListener("click", function () {
+      flashExpanded = true;
+      paintFlash();
+    });
+  }
+  if (flashOpenBtn) {
+    flashOpenBtn.addEventListener("click", function () {
+      // 没发出去（断线）就不装作点成了，同换主播面板的那一句；成没成由后端的状态和 notice（where=flash）说
+      if (!send({ type: "open_flash_helper" })) {
+        showFlashNote(L("与本地服务断开，正在重连——稍候再试。",
+                        "Lost connection to the local service. Reconnecting… Try again in a moment."));
+        return;
+      }
+      clearFlashNote();
+    });
+  }
+  registerPopover(flashPanel, flashBtn, closeFlashPanel);
+
+  // 倒计时：浮层开着才每秒改字；页面不可见时跳过，同 paintLiveLag
+  setInterval(function () {
+    if (flashCountdowns.length && isPopoverOpen(flashPanel) && !document.hidden) flashTick(flashCountdowns, Date.now());
+  }, 1000);
+
+  // 字号的「Aa」小浮层：装了闪购助手、窗口窄于 1400px 时（body.has-flash-btn），顶栏上的字号滑块收成 #font-btn，
+  // 点开的就是 label#font-ctl 本身（style.css 原地把它改成浮层样式）。开着用 .open 表示、不用 .hidden：
+  // 宽窗口、没装闪购助手时这个 label 照旧在顶栏里，不能被藏起来。不挪焦点：滑块在 DOM 里紧跟着按钮
+  var fontBtn = document.getElementById("font-btn");
+  var fontCtl = document.getElementById("font-ctl");
+  function isFontPopoverOpen() { return !!fontCtl && fontCtl.classList.contains("open"); }
+  function openFontPopover() {
+    if (!fontCtl) return;
+    closeOtherPopovers(fontCtl);
+    fontCtl.classList.add("open");
+    if (fontBtn) fontBtn.setAttribute("aria-expanded", "true");
+    var entry = popoverEntry(fontCtl);
+    if (entry) placePopover(entry);
+  }
+  function closeFontPopover() {
+    if (!fontCtl) return;
+    fontCtl.classList.remove("open");
+    fontCtl.style.right = "";
+    if (fontBtn) fontBtn.setAttribute("aria-expanded", "false");
+  }
+  if (fontBtn) {
+    fontBtn.addEventListener("click", function () {
+      if (isFontPopoverOpen()) closeFontPopover(); else openFontPopover();
+    });
+  }
+  registerPopover(fontCtl, fontBtn, closeFontPopover, isFontPopoverOpen);
+  // 窗口拉宽到 1400px 以上（或别的原因 Aa 不见了）：滑块回到顶栏里，小浮层不再算开着
+  window.addEventListener("resize", function () {
+    if (isFontPopoverOpen() && fontBtn && !fontBtn.offsetWidth) closeFontPopover();
   });
 
   // 违禁词警示开关：本地状态 + 顶栏标签 + 首页描述文案，三处一起同步。
@@ -4268,6 +4451,8 @@
     // 换主播面板只在直播中有意义（按钮本身这时也被隐藏了）：停止之后若还开着，
     // 关掉它，不然会变成一块摆在待机页面上的残留浮层
     closeSwitchPanel();
+    // 字号控件首页不显示（style.css body.home），它的「Aa」小浮层也一样。闪购浮层不关：按钮首页也在
+    closeFontPopover();
     // 直播中收起着的「有新版本」「迁移旧词表」两条，回到首页再露出来
     syncNoticeBars();
   }

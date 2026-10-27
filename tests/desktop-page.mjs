@@ -103,7 +103,7 @@ export const T = 1759000000;                    // 一个固定的 Unix 秒，�
 export const ROOM = "https://www.tiktok.com/@luna_demo/live";
 
 /**
- * 起一个桌面页。lang: "zh" 或 "en"；stored: 预置的 localStorage（{键: 值}）；
+ * 起一个桌面页。lang: "zh" 或 "en"；stored: 预置的 localStorage（{键: 值}）；brokenStorage: localStorage 读写都抛；
  * startMs: 假时钟起点（毫秒）。返回的对象：
  *   el(id) / all()      带 id 的元素
  *   push(msg)           模拟服务端推来一条 WebSocket 消息
@@ -112,8 +112,9 @@ export const ROOM = "https://www.tiktok.com/@luna_demo/live";
  *   cssVars             <html> 上 setProperty 写过的 CSS 变量（{名: 值}）
  *   store               localStorage 的当前内容（Map）
  *   disconnect()/connect()  切断 / 恢复发送
+ *   dispatch(type, event)   触发 document 上登记的监听（Esc、点外面关这类）
  */
-export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {}) {
+export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000, brokenStorage = false } = {}) {
   const html = web("index.html");
   const scripts = [...html.matchAll(/<script src="\/static\/([\w.-]+)\?v=\d+"><\/script>/g)].map((m) => m[1]);
   assert.equal(scripts[0], "i18n.js");
@@ -129,6 +130,7 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {
     byId.set(el.id, el);
   }
   const cssVars = {};
+  const docListeners = {};                      // document.addEventListener 记下来，dispatch() 手动触发
   const root = new FakeEl("html");
   root.lang = lang;                              // i18n.js 读的是 documentElement.lang
   root.style = {
@@ -142,7 +144,8 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {
     createElementNS: (_, tag) => new FakeEl(tag),
     createTextNode: (v) => new FakeText(v),
     createRange: () => ({ selectNodeContents() {} }),
-    addEventListener() {}, querySelector: () => null, querySelectorAll: () => [], hasFocus: () => true,
+    addEventListener: (type, cb) => { (docListeners[type] = docListeners[type] || []).push(cb); },
+    querySelector: () => null, querySelectorAll: () => [], hasFocus: () => true,
   };
   const sockets = [];
   const sent = [];
@@ -151,7 +154,10 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {
   FakeWebSocket.prototype.send = function (data) { sent.push(JSON.parse(data)); };
   FakeWebSocket.prototype.close = function () {};
   const store = new Map(Object.entries(stored));
-  const storage = () => ({ getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) });
+  // brokenStorage：隐私模式、存储被禁时 localStorage 一碰就抛（页面要照常跑，只是记不住）
+  const broken = () => { throw new Error("SecurityError: localStorage 不可用"); };
+  const storage = () => (brokenStorage ? { getItem: broken, setItem: broken }
+    : { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) });
   const timers = [];
   const intervals = [];
   let now = startMs;
@@ -181,6 +187,8 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {
     all: () => [...byId.values()],
     push: (msg) => ws().onmessage({ data: JSON.stringify(msg) }),
     sent, cssVars, store, root, body: document.body,
+    // document 上的监听（捕获阶段的 pointerdown、Esc 的 keydown……）：照登记顺序逐个调，event 原样传进去
+    dispatch: (type, event) => { (docListeners[type] || []).slice().forEach((cb) => cb(event)); },
     advance: (ms) => { now += ms; },
     now: () => now,
     tick: (ms) => { intervals.filter((t) => t.ms === ms).forEach((t) => t.fn()); },

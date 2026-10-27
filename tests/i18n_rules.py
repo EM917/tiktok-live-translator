@@ -46,7 +46,7 @@ UI_FILES = (
     "app/translator.py", "app/update_guard.py", "app/updater.py", "app/viewer.py",
     "app/viewer_share.py",
     "app/window_attention.py", "app/window_close.py", "app/window_lang.py",
-    "web/alerts.js", "web/app.js", "web/brand.js", "web/float.js", "web/guard.js", "web/i18n.js",
+    "web/alerts.js", "web/app.js", "web/brand.js", "web/flash.js", "web/float.js", "web/guard.js", "web/i18n.js",
     "web/live-ui.js",
     "web/session-divider.js", "web/settings-rows.js", "web/switch.js", "web/viewer.js",
     "web/float.html", "web/index.html", "web/viewer.html",

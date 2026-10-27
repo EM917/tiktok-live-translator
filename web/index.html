@@ -20,6 +20,7 @@
     <symbol id="i-bubble" viewBox="0 0 16 16"><path d="M8 2.75c3.45 0 6.25 2.2 6.25 4.9S11.45 12.55 8 12.55c-.68 0-1.33-.08-1.94-.24L3 13.75l.62-2.55C2.4 10.3 1.75 9.03 1.75 7.65 1.75 4.95 4.55 2.75 8 2.75Z"/></symbol>
     <symbol id="i-iphone" viewBox="0 0 16 16"><rect x="4.25" y="1.5" width="7.5" height="13" rx="1.75"/><path d="M7.1 12.1h1.8"/></symbol>
     <symbol id="i-float" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.75"/><rect x="7.25" y="7.25" width="5.25" height="3.75" rx=".75"/></symbol>
+    <symbol id="i-flash" viewBox="0 0 16 16"><path d="M9.1 1.75 3.6 8.9h4.05l-.9 5.35 5.65-7.3H8.25l.85-5.2Z"/></symbol>
     <symbol id="i-arrow-down" viewBox="0 0 16 16"><path d="M8 2.5v11M3.5 9 8 13.5 12.5 9"/></symbol>
     <symbol id="i-xmark" viewBox="0 0 16 16"><path d="M4.25 4.25l7.5 7.5M11.75 4.25l-7.5 7.5"/></symbol>
     <symbol id="i-arrow-clockwise" viewBox="0 0 16 16"><path d="M13.1 9.8a5.4 5.4 0 1 1-1.28-5.62L14.6 6.8M14.6 3.2v3.6H11"/></symbol>
@@ -66,8 +67,15 @@
           <option value="es">Español</option>
         </select>
       </label>
-      <!-- 字号：小 A —— 滑块 —— 大 A（苹果「图书」的做法），省掉「字号」两个字 -->
-      <label class="ctl ctl-font" title="字幕字号" data-en-title="Caption size">
+      <!-- 字号：小 A —— 滑块 —— 大 A（苹果「图书」的做法），省掉「字号」两个字。
+           装了闪购助手、窗口窄于 1400px 时（body.has-flash-btn），顶栏放不下这一整条：收成一颗 28px 的「Aa」按钮，
+           点开的小浮层就是下面这个 label 本身（不挪 DOM，style.css 原地改成浮层样式，开合同另外几个顶栏浮层，
+           app.js registerPopover）。按钮的名字同滑块（字幕字号），Aa 两种语言一样。宽窗口、没装闪购助手时按钮不出现，
+           一切照旧（docs/i18n-style.md §4.2） -->
+      <button id="font-btn" class="btn font-btn" type="button" title="字幕字号" aria-label="字幕字号"
+              data-en-title="Caption size" data-en-aria-label="Caption size"
+              aria-expanded="false" aria-controls="font-ctl"><span aria-hidden="true">Aa</span></button>
+      <label id="font-ctl" class="ctl ctl-font" title="字幕字号" data-en-title="Caption size">
         <span class="a-small" aria-hidden="true">A</span>
         <input type="range" id="font-size" min="20" max="60" step="2" aria-label="字幕字号" data-en-aria-label="Caption size">
         <span class="a-large" aria-hidden="true">A</span>
@@ -173,6 +181,46 @@
         <svg class="i" aria-hidden="true"><use href="#i-float"/></svg>
         <span class="btn-label" data-en="Floating Window">浮窗</span>
       </button>
+      <!-- 闪购：本机另一个程序「闪购助手」的只读状态（app/pipeline_flash.py 每 3 秒查一次它的 127.0.0.1:9334/status，
+           文案在 web/flash.js）。只有 macOS 上装了它，hello 的 config 里才有 flash_sale 这个键，按钮才出现；
+           首页和直播中都显示（开播前就看得到它开没开、要不要登录）。要人处理时按钮变橙色并带一个橙点（形状和颜色一起变），
+           title / aria-label 跟着写「闪购助手 · 要处理」。窄于 1400px 只留图标（文字视觉隐藏，读屏照念，同 #float-btn），
+           中文页放得下时露出「闪购」两个字（style.css）。不放在 #switch-btn 和「停止」之间：那段右边距是专门隔开那两颗的 -->
+      <button id="flash-btn" class="btn flash-btn hidden" type="button" title="闪购助手" data-en-title="Flash Sale Helper"
+              aria-expanded="false" aria-controls="flash-panel">
+        <svg class="i" aria-hidden="true"><use href="#i-flash"/></svg>
+        <span class="btn-label" data-en="Flash Sale">闪购</span>
+      </button>
+      <!-- 闪购浮层：只显示状态，唯一的按钮是「打开闪购助手」（不开始、停止、批准、续开）。内容由 flash.js
+           renderFlashPanel 在收到状态时就画好（不等打开），商品标题标 translate="no"，记录正文带 class i18n-data。
+           报警（违禁词）不借这里：闪购的提醒只走这颗按钮的颜色和这个浮层（CLAUDE.md 第六条） -->
+      <div id="flash-panel" class="flash-panel popover hidden" role="dialog" aria-label="闪购助手" data-en-aria-label="Flash Sale Helper">
+        <div class="share-head">
+          <span class="share-title" data-en="Flash Sale Helper">
+            <svg class="i" aria-hidden="true"><use href="#i-flash"/></svg>闪购助手
+          </span>
+          <div class="share-head-right">
+            <span id="flash-state" class="flash-state" data-tone="checking" data-en="Checking…">正在查看…</span>
+            <button id="flash-close" class="popover-close" type="button" title="关闭" aria-label="关闭"
+                    data-en-title="Close" data-en-aria-label="Close">
+              <svg class="i" aria-hidden="true"><use href="#i-xmark"/></svg>
+            </button>
+          </div>
+        </div>
+        <p id="flash-headline" class="flash-headline hidden"></p>
+        <div id="flash-detail" class="flash-detail hidden"></div>
+        <p id="flash-summary" class="flash-summary hidden"></p>
+        <ul id="flash-products" class="flash-products hidden"></ul>
+        <button id="flash-more" class="btn small flash-more hidden" type="button"></button>
+        <p id="flash-alerts-title" class="flash-sub hidden" role="heading" aria-level="3" data-en="Recent Activity">最近记录</p>
+        <ol id="flash-alerts" class="flash-alerts hidden"></ol>
+        <div class="flash-foot">
+          <button id="flash-open" class="btn small" type="button" data-en="Open Flash Sale Helper">打开闪购助手</button>
+          <span id="flash-version" class="flash-version"></span>
+        </div>
+        <p id="flash-note" class="flash-note hidden" aria-live="polite"></p>
+        <p class="share-desc" data-en="This panel only shows status. Make changes in Flash Sale Helper.">这里只显示状态。要操作，请到闪购助手里。</p>
+      </div>
       <!-- 换主播：只在直播中/连接中露出，和停止按钮同一处切换（见 app.js setStatus）。
            跟停止之间留出明显间距（.switch-btn 的 margin-right），防止手滑点错——
            点错「换主播」是可挽回的（面板里还要再确认一次），点错「停止」是直接断流。 -->
@@ -784,6 +832,7 @@
   <script src="/static/settings-rows.js?v=3"></script>
   <script src="/static/live-ui.js?v=7"></script>
   <script src="/static/guard.js?v=6"></script>
+  <script src="/static/flash.js?v=1"></script>
   <script src="/static/app.js?v=81"></script>
 </body>
 </html>
