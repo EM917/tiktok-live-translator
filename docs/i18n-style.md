@@ -78,6 +78,13 @@
 | 手机同看 | **Phone Viewing** | Phone Viewer, Phone view, Mirror to Phone, Screen Share | README 写的是 “Phone viewer”，但界面里 viewer(s) 还要用来指人；用作功能名会和人数打架。Viewing 跟 Screen Mirroring 的构词一样。建议 README 顺手改成 “Phone viewing” |
 | 浮窗 | **Floating Window** | Float, Mini Player, Pop-out, Overlay, Picture in Picture | 顶栏按钮、窗口标题、页面标题都叫这个。开着的是一个始终在最上面的小窗，放最新一条字幕和最近几条弹幕。Overlay 会被读成盖在直播画面上；Picture in Picture 是苹果的视频画中画；Float 单独做名词不成立 |
 | 主窗口 | **main window**；浮窗结束卡片上的按钮写 **Show Main Window** | main app, control window | 2026-10-26 补进术语表（b3-float-end）：浮窗以外那个大窗口。按钮名 Title Case，动词用 Show（把已经开着的窗口提到最前，不是新开一个） |
+| 闪购 | **Flash Sale** | Flash Deal, Lightning Deal, Flash Sale Status | 2026-10-27 补进术语表：顶栏按钮名（按钮打开的是闪购助手的只读状态浮层）。TikTok Shop 直播里的限时促销就叫 flash sale；Flash Deal 在 TikTok Shop 里指另一种不在直播里的促销，容易混 |
+| 闪购助手 | **Flash Sale Helper** | Flash Sale Assistant, Flash Sale Bot, the helper | 2026-10-27 补进术语表：本机另一个程序，不随本程序分发，本程序只读它的状态、能把它打开。它自己只有中文名（程序坞和访达里显示「闪购助手」），英文界面照这个名字写，打开按钮是 **Open Flash Sale Helper**，正文里不加 the。浮层标题、按钮的 tooltip 也用它 |
+| 专用 Chrome（闪购助手开的那个 Chrome 窗口） | **the dedicated Chrome** | Chrome profile, automation browser | 闪购助手接口契约的叫法。只在闪购浮层里出现 |
+| 商品后台 | **LIVE Manager** | Seller Center, product backend | TikTok 自己的页面名，照抄（大写 LIVE 也照抄）。中文第一次出现时括号里带上英文原名 |
+| 验证码 | **CAPTCHA** | captcha, verification code | 全大写 |
+| 续开（闪购停了以后闪购助手再开一次） | **renew**；次数写 **Renewed once / Renewed {n} times**；关了自动续开写 **Auto-renew off** | restart, relaunch | 闪购助手面板上的勾选项就叫自动续开 |
+| 第 n 轮（循环闪购） | **Round {n}**；两轮之间 **Between rounds** | cycle, loop | |
 | 开始同看 / 停止同看 | **Start Sharing / Stop Sharing** | Turn On / Turn Off | 动词加对象，两个按钮成对 |
 | 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Bella All Natural” 和中文差不多宽 |
 | 不限（默认） | **Any (default)** | None, All brands | None 会被读成「没有品牌」，实际意思是「不限定某一个品牌」 |
@@ -653,6 +660,33 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 142 | index.html #float-btn | 浮窗（悬停：在始终置顶的小窗里看最新字幕和弹幕） | Floating Window（悬停：Show the latest caption and comments in a window that stays on top） | 英文默认只留图标，宽于 1400px 才露文字（英文文字约 110px，放不进 1000px 的顶栏）；图标按钮 28px + 间距 8px。中文在放得下的宽度（1000–1100px、1140–1399px，且「报警开」标签没亮）露出「浮窗」两个字、不带图标，其余窄宽度同英文，见 §4.2 |
 | 143 | float.js floatCaptionMeta（#f-conn、#f-lag） | 连接中… / 约 N 秒前、约 N 分钟前 | Connecting… / About N sec ago, About N min ago | 已经有字幕时字幕上面状态行里的过时信号：同 #137 的「连接中…」（状态是连接中、或浮窗页和程序断了线），和中控页底部大字幕的「约 N 秒前」（live-ui.js captionAgeText，超过 15 秒才有）。只写观察 |
 | 147 | float.js（结束卡片的标题、说明）、float.html #f-end-back | 直播已结束 / 监听已停止 · 详情见主窗口。 · 回到主窗口 | Stream ended / Monitoring stopped · See the main window for details. · **Show Main Window** | 2026-10-26 补进术语表（b3-float-end，专家审查 U3）：下播或出错时浮窗不再自己关，留一张结束卡片。标题是状态文字（sentence case、不加句号；「直播已结束」同 #15），说明是整句，按钮 Title Case（主窗口见 §1.3）。只写看到的结局，不写为什么停（第八条） |
+
+
+### K. 闪购浮层（index.html #flash-btn / #flash-panel、flash.js、pipeline_flash.py）
+
+2026-10-27 新加：顶栏「闪购」按钮和只读浮层，显示本机闪购助手（另一个程序）的状态。后端只发代码、数字和闪购助手的原话，
+文案全在 `web/flash.js` 按代码映射。只写看到的状态，不写原因（同第八条的规矩，flash.js 不在第八条家族里）。
+商品标题标 `translate="no"`，「最近记录」的正文是闪购助手写的，带 class `i18n-data`、原样显示不翻。认不出的代码原样显示（放进 `translate="no"`）。
+
+| # | 位置 | 中文 | English | 备注 |
+|---|---|---|---|---|
+| 150 | index.html #flash-btn `.btn-label` | 闪购 | Flash Sale | 窄于 1400px 只留图标（英文）；中文放得下时露字，见 §4.2 |
+| 151 | index.html #flash-btn title、#flash-panel aria-label 和标题；flash.js flashButtonState | 闪购助手 · {胶囊} | Flash Sale Helper · {chip} | 按钮的 title 同时写进 aria-label：颜色之外读屏也念得到要不要处理 |
+| 152 | flash.js flashChip | 运行中 / 要处理 / 未开始 / 没在运行 / 正在查看… | Running / Needs attention / Not started / Not running / Checking… | 浮层标题旁的胶囊。「未开始」同手机页 #120（Not started） |
+| 153 | flash.js flashLines（连不上） | 闪购助手没在运行。 / 127.0.0.1:9334 连不上，每 15 秒再查一次。 | Flash Sale Helper isn’t running. / 127.0.0.1:9334 isn’t answering. Checking again every 15 sec. | 契约：闪购助手关了接口就连不上。连不上不变色 |
+| 154 | 同上（读不出、正在查看） | 127.0.0.1:9334 返回的内容读不出来。 / 正在查看闪购助手的状态… | Couldn’t read the response from 127.0.0.1:9334. / Checking Flash Sale Helper… | |
+| 155 | 同上（陈旧） | 闪购助手没有更新状态。 / 上次更新 {HH:MM:SS}。 / 还没有收到过状态。 | Flash Sale Helper hasn’t updated its status. / Last updated at {HH:MM:SS}. / No status has come in yet. | 超过 15 秒没更新。时刻是本机时间（§2.4） |
+| 156 | flash.js flashPageText | 专用 Chrome 停在 TikTok 登录页，登录后才能继续。 / 页面上出现了验证码，要人去处理。 / 页面没有回应，或者读取出错。 / 专用 Chrome 里没有打开商品后台（LIVE Manager）。 / 商品后台没在 Buy now 列表上。 / 商品后台正在打开… / 页面状态：{code} | The dedicated Chrome is on the TikTok sign-in page. Sign in to continue. / A CAPTCHA appeared on the page. Someone needs to solve it. / The page isn’t responding, or reading it failed. / LIVE Manager isn’t open in the dedicated Chrome. / LIVE Manager isn’t showing the Buy now list. / LIVE Manager is loading… / Page status: {code} | login_required、captcha、error 七个代码。Buy now 是 TikTok 页面上的标签名，照抄 |
+| 157 | flash.js flashPausedText | 闪购助手开着，但还没开始运行。 / 专用 Chrome 里弹出了确认框，核对后点确定或取消。 / 已暂停：确认框里点了取消。要在闪购助手的面板上点继续。 / 出现验证码，已暂停。 / 连续失败太多次，已暂停。 / 已暂停：{code} | Flash Sale Helper is open but hasn’t started. / A confirmation is waiting in the dedicated Chrome. Check it, then confirm or cancel. / Paused: a confirmation was canceled. Resume it from the Flash Sale Helper panel. / Paused for a CAPTCHA. / Paused after too many failures in a row. / Paused: {code} | |
+| 158 | flash.js flashLines（卡住、未读、认不出的提醒、没有商品） | {n} 个商品停了超过 1 分钟。 / 最近记录里有 {n} 条新的问题。 / 要处理：{code} / 商品列表里还没有商品。 | 1 product has stayed stopped for over 1 min. / {n} products have stayed stopped for over 1 min. · 1 new problem in Recent Activity. / {n} new problems in Recent Activity. · Needs attention: {code} · No products in the list yet. | 「问题」= error 级、或 ❌ 开头的 warn 级记录；打开浮层就记成看过 |
+| 159 | flash.js flashStateText | 进行中 / 两轮之间 / 已停止 / 已手动结束 / 待开始 / 暂时看不准 / 没有闪购 | Ongoing / Between rounds / Stopped / Ended manually / Ready to start / Unclear for now / No flash sale | 「已停止」同手机页 #124（Stopped） |
+| 160 | flash.js flashProductParts | 还剩 {t} / {t} 后开始下一轮 / 第 {n} 轮 / 库存 {a}/{b} / 库存 {a} / 续开 {n} 次 / 不自动续开 / 等闪购助手续开 / 停了超过 1 分钟 | {t} left / Next round in {t} / Round {n} / {a} of {b} in stock / {a} in stock / Renewed once, Renewed {n} times / Auto-renew off / Waiting for Flash Sale Helper to renew / Stopped for over 1 min | 倒计时 m:ss，1 小时以上 h:mm:ss，两种语言写法一样 |
+| 161 | flash.js flashSummary | 共 {n} 个商品：已停止 {n} · 待开始 {n} · 看不准 {n} · 进行中 {n} · 两轮之间 {n} · 没有闪购 {n} · 已手动结束 {n} · 其他 {n} | 1 product: / {n} products: {n} stopped · {n} ready to start · {n} unclear · {n} ongoing · {n} between rounds · {n} with no flash sale · {n} ended manually · {n} other | 只列不为 0 的。已停止合成一项放最前，其余同商品的排序 |
+| 162 | flash.js flashMoreText（#flash-more） | 还有 {n} 个 | 1 more / {n} more | 先列 40 个商品，点它全列 |
+| 163 | index.html #flash-alerts-title；flash.js flashLevel | 最近记录 · 要处理 / 提醒 / 说明 | Recent Activity · Needs attention / Warning / Info | 级别只是图标的读屏名（八角 / 三角 / ⓘ，形状和颜色一起变） |
+| 164 | index.html #flash-open、只读说明；flash.js 版本 | 打开闪购助手 / 这里只显示状态。要操作，请到闪购助手里。 / 版本 {v} | Open Flash Sale Helper / This panel only shows status. Make changes in Flash Sale Helper. / Version {v} | 断线时点「打开」，#flash-note 里写 #80 那句「与本地服务断开，正在重连——稍候再试。」 |
+| 165 | pipeline_flash.py（notice，where=flash） | 没能打开闪购助手（open 返回 {rc}）。 / 没能打开闪购助手。 | Couldn’t open Flash Sale Helper (open returned {rc}). / Couldn’t open Flash Sale Helper. | 后端拼好整句，页面写进浮层里的 #flash-note。只写返回码，不猜原因 |
+| 166 | index.html #font-btn（窄于 1400px 且有闪购按钮时的「Aa」） | 字幕字号（title / aria-label） | Caption size | 同 #22；按钮上的字是 Aa，两种语言一样，点开是原来的字号滑块，见 §4.2 |
 
 ---
 
