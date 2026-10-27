@@ -111,8 +111,9 @@ free endpoint, which `auto` uses when no local model is installed,
 rate-limits per IP and returns 429 under sustained use. The app pauses
 requests for two minutes and recovers automatically, with a banner on the page.
 Speech recognition is unaffected. For extended sessions, install a local Hy-MT2
-model or choose another engine in Settings → Translation Engine. No network
-connection, or a stopped Ollama, produces the same symptom.
+model, or click Stop and choose another engine in Settings → Translation Engine
+(Settings is hidden during a session). No network connection, or a stopped
+Ollama, produces the same symptom.
 
 **The status reads Live but no captions appear for some time.** This is normally
 expected: while the streamer plays music or is not speaking, silent and
