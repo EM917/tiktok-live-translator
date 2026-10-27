@@ -15,6 +15,7 @@ import time
 import traceback
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from inspect import isawaitable
 from pathlib import Path
 
@@ -250,6 +251,23 @@ def _describe_asr(cfg):
     """给人看的识别配置：「ct2/large-v3-turbo/cpu/int8」（auto 的部分省略）。"""
     parts = [cfg.get("backend"), cfg.get("model"), cfg.get("device"), cfg.get("compute_type")]
     return "/".join(str(v) for v in parts if v and v != "auto")  # i18n: data
+
+
+def _set_hotwords(transcriber, hotwords):
+    """这一场的热词提示直接赋到识别器上（专家审查 M7）。两个后端（app/asr.py 的 Transcriber、MLXTranscriber）
+    都在 transcribe 时现读 self.hotwords，赋值之后的下一段就用新的；在识别线程里跑到一半的那一段已经读过了，
+    不受影响。识别器换主播时不再重建：热词不进识别器的 key，换主播只换这一个属性。
+    两个后端走 set_hotwords：热词变了顺带清掉上一位主播的滚动上下文和文字系统历史（以前新建识别器时它们
+    本来就是空的，见 app/asr.py _FilterMixin.set_hotwords）。
+    测试里的替身没有 set_hotwords 就直接赋属性；object() 之类不收属性：不赋，照旧。"""
+    setter = getattr(transcriber, "set_hotwords", None)
+    if callable(setter):
+        setter(hotwords)
+        return
+    try:
+        transcriber.hotwords = hotwords
+    except AttributeError:
+        pass
 
 
 def _term2_limits():
@@ -654,8 +672,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         elif mtype == "retranslate_comment":
             # 弹幕重译（app/comments.py）：Sonnet 要等几秒，放后台跑，不在这个页面的消息循环里
             # 等（同 apply_update）；中控可以接着点别的弹幕，每条自己排队、自己限额。
-            # 只有本机页面发得出来：手机入站只认 retranslate（app/viewer.py _handle_inbound）
-            self._spawn(self.comments.retranslate(msg.get("id")))
+            # 只有本机页面发得出来：手机入站只认 retranslate（app/viewer.py _handle_inbound）。
+            # 登记进本场（同字幕重译）：停止、换主播时关审计之前取消，cancelled 记进点它的那一场；
+            # 被取消时补发终态，把按钮撤回「重译」（_retranslate_comment）
+            self._own_retranslate(self._spawn(self._retranslate_comment(msg.get("id"))))
             return None
         elif mtype == "migrate_glossary":
             return self._migrate_glossary(bool(msg.get("confirm")))
@@ -1967,12 +1987,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     async def _provision_note(self, text):
         """后台备模型的进度：待机时走 status（首页大字），直播中只发 notice。
         这个下载要几分钟，而用户完全可以在它跑着的时候点开始——那时再广播
-        status=idle 会把界面从「直播中」拽回待机、停止按钮消失，每 5% 刷一次。"""
-        if self._stream_active() or self._update_in_progress():
+        status=idle 会把界面从「直播中」拽回待机、停止按钮消失，每 5% 刷一次。
+
+        上一场自己结束了（状态是 ended「直播已结束」或 error「出错了」）时也只发 notice：直播中推迟的下载正是在
+        这时候开始的（_pull_after_session），以前每 5% 一条 status=idle，把主窗口的结束 / 出错状态和那句说明换成
+        待机加下载进度——中控回来看不到这一场是怎么结束的，浮窗结束卡片上「详情见主窗口」也落空（#135 核对、
+        b3-float-end 第 2 轮记下）。只有中控点了停止（状态本来就是 idle）才走 status。"""
+        state = ((getattr(self.server, "config", None) or {}).get("status") or {}).get("state")
+        if self._stream_active() or self._update_in_progress() or state in self.KEEP_END_STATES:
             # 更新期间状态行是「正在更新，监听已暂停」那句，也不能被下载进度盖掉
             await self.server.broadcast({"type": "notice", "text": text})
         else:
             await self.server.status("idle", text)
+
+    # 后台的事（模型下载进度）不能盖掉的结束状态：这一场自己结束了，主窗口要一直说清是怎么结束的
+    KEEP_END_STATES = ("ended", "error")
 
     async def run_selfcheck(self):
         """启动自检：确认每项能力真的在工作，结果推到界面上。
@@ -2666,7 +2695,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     # 停止或一场结束时，各条 session: 提示怎么收（下一场开始时 _clear_session_incidents 全部撤掉）：
     #   撤掉：描述「正在进行」、监听停了就不成立的——「网络恢复后自动重连」、音频到达率、
-    #         「程序继续监听」的安静提示、「已 N 分钟没收到直播音频」（ONGOING_INCIDENTS）
+    #         「程序继续监听」的安静提示和「只有一部分过了识别门限」、「已 N 分钟没收到直播音频」
+    #         （ONGOING_INCIDENTS）
     #   改写：承诺「会继续重试」的——审计写不进去（_settle_audit_incident）、远程引擎被拒
     #         （_settle_engine_incident）。停了就不再重试，改成已经发生的事和下一步
     #   留着：已经发生的事，或停了也成立的话——时钟跳变、识别连续出错（CPU 模型照样在后台
@@ -2674,7 +2704,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     #         时钟跳变那一条另有两条出路（2026-10-21）：中控点 × 关掉（_dismiss_incident），
     #         或 CLOCK_GAP_CLEAR_SEC 秒没再跳自己收起（_arm_clock_gap_clear），停止之后也照样计时
     ONGOING_INCIDENTS = ("session:network", "session:audio_rate", "session:quiet_audio",
-                         "session:no_audio")
+                         "session:no_audio", "session:gated_audio")
 
     async def _clear_ongoing_incidents(self):
         config = getattr(getattr(self, "server", None), "config", None) or {}
@@ -2918,10 +2948,67 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                           "{:.0f} sec of stream audio arrived, but its volume stayed below the "
                           "speech recognition threshold, so none of it was transcribed. "
                           "Monitoring continues.").format(data["audio_sec"]))
+                    # 「一段都没送去识别」比「只有一部分送去了」要紧，同一件事界面上只留这一条。部分送识别那条
+                    # 在切出语音之后、下一个窗口还没回升时重新挂出来（AudioFlowMeter 每个窗口都报 gated_more）
+                    await self._incident(self.GATED_INCIDENT, "clear")
                 elif kind == "speech":
                     await self._incident("session:quiet_audio", "clear")
+                elif kind in ("gated", "gated_more", "gated_ok"):
+                    await self._on_gate_event(sess, kind, data)
         except Exception as exc:
             print("[警告] 音频计数事件处理出错: {}".format(exc))
+
+    GATED_INCIDENT = "session:gated_audio"
+
+    @classmethod
+    def _gated_text(cls, data):
+        """「只有一部分送去了识别」的那一句（专家审查 M4）：只写数字和看到的事，不说音量为什么低（第八条）。
+        没送去识别的那些整段每一帧都低于识别门限（切段器只扔这种），所以「其余的」照实这么说。"""
+        audio = float(data.get("audio_sec") or 0.0)
+        sent = min(float(data.get("sent_sec") or 0.0), audio)
+        return L("近 {}收到 {:.0f} 秒直播音频，只有 {:.0f} 秒送去了识别，其余的音量一直低于识别门限；"
+                 "程序继续监听",
+                 "In the last {}, {:.0f} sec of stream audio arrived, but only {:.0f} sec was sent to "
+                 "speech recognition. The rest stayed below the speech recognition threshold. "
+                 "Monitoring continues.").format(
+            cls._duration_text(data.get("wall_sec") or 0.0), audio, sent)
+
+    @staticmethod
+    def _write_gated_audit(audit, state, data):
+        """跨过门限时一条 gated_audio（进入 low、回到 ok，和 coverage 一样只记跨阈值的那一下）。字段值是英文代码
+        和数字（cross_cutting 7）；已有类型的记录一个字节都不变。app/audit.py 不在这一批的文件清单里，记录直接由
+        AuditLog._write 落盘（照样走写失败计数、补写、关闭后计 late_records 那一套），以后改 audit.py 的批次可以
+        挪成 AuditLog.gated_audio()。"""
+        if audit is None:
+            return
+        try:
+            audit._write({
+                "type": "gated_audio",
+                "at": datetime.now().isoformat(timespec="milliseconds"),
+                "state": state,
+                "audio_sec": round(float(data.get("audio_sec") or 0.0), 1),
+                "sent_sec": round(float(data.get("sent_sec") or 0.0), 1),
+                "wall_sec": round(float(data.get("wall_sec") or 0.0), 1),
+                "ratio": round(float(data.get("ratio") or 0.0), 3),
+            })
+        except Exception as exc:
+            print("[警告] 记录识别门限比例出错: {}".format(exc))
+
+    async def _on_gate_event(self, sess, kind, data):
+        """AudioFlowMeter 的 gated / gated_more / gated_ok：写审计（只在跨阈值时），挂、更新或撤
+        session:gated_audio。「一段都没送去识别」（session:quiet_audio）挂着时不挂这一条：那一条说得更要紧。"""
+        if kind == "gated_ok":
+            self._write_gated_audit(sess.get("audit"), "ok", data)
+            await self._incident(self.GATED_INCIDENT, "clear")
+            return
+        if kind == "gated":
+            self._write_gated_audit(sess.get("audit"), "low", data)
+        if self._incident_shown("session:quiet_audio") is not None:
+            return
+        text = self._gated_text(data)
+        shown = self._incident_shown(self.GATED_INCIDENT) or {}
+        if shown.get("text") != text:
+            await self._incident(self.GATED_INCIDENT, "warn", text)
 
     def _record_stream_break(self, sess, source, reason, error, got_audio, audio_secs,
                              meter, discarded=None):
@@ -3022,6 +3109,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 if audit is not None:
                     audit.network_up(time.time() - since)
                 await self._incident("session:network", "clear")
+                # 状态行上还是上面那句「本机连不上 www.tiktok.com…」：调用方接着去解析，解析要走好几层、可能要
+                # 几十秒，这期间横幅一直说连不上（#143 审查 U6）。撤掉持续提示时一起换成正在做的事
+                await self.server.status("connecting", L("正在解析直播流地址…",
+                                                         "Getting the stream URL…"))
                 print("[网络] 已恢复，继续重连")
                 return True
         await self._incident("session:network", "clear")
@@ -3238,13 +3329,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         temperature = (self.args.asr_temperature
                        if self.args.asr_temperature is not None
                        else DEFAULT_TEMPERATURE)
+        # 热词提示（主播 / 品牌词表）不进 key（专家审查 M7）：以前进了，换一位主播热词一变就新建识别器——ct2 后端
+        # 加载新模型时旧的还在内存里，两份同时驻留（规则三那类事故）；mlx 的权重是类级缓存，只是白白重新预热。
+        # 现在每场拿到识别器之后直接赋 hotwords（_set_hotwords），换主播不重新加载
+        hotwords = self.glossary.asr_prompt()
         key = (backend, model, device, compute, self.args.source,
-               self.args.beam, self.args.context, temperature,
-               self.glossary.asr_prompt())
+               self.args.beam, self.args.context, temperature)
         config = {"backend": backend, "model": model, "device": device,
                   "compute_type": compute, "language": self.args.source,
                   "beam_size": self.args.beam, "use_context": self.args.context,
-                  "temperature": temperature, "hotwords": self.glossary.asr_prompt(),
+                  "temperature": temperature, "hotwords": hotwords,
                   "note": rec["note"]}
         # 加载模型（含等上一场改用 CPU 的那次加载）：首次要下载几 GB，预算放宽，超了只记一条
         self._stage(sess, "model_load", self.STAGE_MODEL_LOAD_SEC)
@@ -3290,7 +3384,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         beam_size=self.args.beam,
                         use_context=self.args.context,
                         temperature=temperature,
-                        hotwords=self.glossary.asr_prompt(),
+                        hotwords=hotwords,
                     ),
                 )
             watcher = asyncio.ensure_future(self._model_download_progress(model))
@@ -3320,6 +3414,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if as_configured:
                 await self._asr_loaded_ok(refresh=dropped_fallback)
         transcriber = self._transcriber
+        # 拿到的可能是上一场（别的主播）留下的、上一场在途的加载、或者上一场改用的 CPU 模型（同一个 key）：
+        # 热词一律换成这一场的，asr_config 记的指纹也就是这一场的
+        _set_hotwords(transcriber, hotwords)
         sess["end"] = None
         self._stage(sess, "other", self.STAGE_OTHER_SEC)
         if my_audit is not None:
@@ -3592,13 +3689,17 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             meta = dict(meta) if isinstance(meta, dict) and len(segments) == 1 else None
             return self._evidence_cut_meta(evidence, meta, segments)
 
+        def _sent_sec(segments):
+            """切出来、送去识别的这几段一共几秒（音频计数的「送识别 ÷ 收到」用，专家审查 M4）。"""
+            return sum(len(segment) for segment in segments) / 2.0 / SAMPLE_RATE
+
         def _flush_rest(last_tail):
             """切段器里剩下的那一截切出来送去识别（别丢掉最后一段话），返回音频计数的事件。"""
             rest = segmenter.flush()
             for segment in rest:
                 meta = _cut_meta(rest)
                 _put((segment, time.time(), _tail_meta(meta) if last_tail else meta))
-            return meter.cut(len(rest))
+            return meter.cut(len(rest), _sent_sec(rest))
 
         async def _late_audio_events(events):
             # reader 收尾时交给后台的计数事件（flush 切出了段，只会是「切出语音」：撤 quiet_audio 提示）。轮到它跑时
@@ -3629,7 +3730,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         segments = segmenter.feed(frame)
                         for segment in segments:
                             _put((segment, time.time(), _tail_meta(_cut_meta(segments))))
-                        events = meter.cut(len(segments))
+                        events = meter.cut(len(segments), _sent_sec(segments))
                         if events:
                             await self._on_audio_events(sess, events)
                         continue
@@ -3651,8 +3752,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                     segments = segmenter.feed(frame)
                     for segment in segments:
                         _put((segment, time.time(), _cut_meta(segments)))
-                    # 实际收到多少音频、有没有切出语音段：每帧只计数，有事件才 await
-                    events = meter.feed(frame, segments=len(segments))
+                    # 实际收到多少音频、有没有切出语音段、切出的有几秒：每帧只计数，有事件才 await
+                    events = meter.feed(frame, segments=len(segments), sent_sec=_sent_sec(segments))
                     if events:
                         await self._on_audio_events(sess, events)
                 events = _flush_rest(last_tail)
@@ -5779,11 +5880,50 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         # 任务开跑前就被取消时它的函数体一行都不执行：完成回调兜底，免得这里一直等
         task.add_done_callback(lambda _t: ready.set())
         if own is not None:
-            tasks = sess.setdefault("retranslate_tasks", set())
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
+            self._own_retranslate(task, sess)
         await ready.wait()
         return None
+
+    def _own_retranslate(self, task, sess=None):
+        """把一次重译的后台任务登记进这一场（sess["retranslate_tasks"]）：收尾时 _cancel_retranslates 在关审计之前
+        取消它，被取消的那一下记进这一场的审计。字幕重译（_retranslate_detached）和弹幕重译（handle_control 的
+        retranslate_comment）都走这里。只认这一场自己的：没有开着的场次（停止之后点的）、或者此刻的会话状态不是
+        这份审计的，不登记——照旧跑完（弹幕重译那边没有场次就不写审计）。
+
+        以前弹幕重译没登记：在等 Sonnet 时点停止或换主播，Sonnet 回来时这一场的审计已经关了，这一下的
+        comment_redo 只计进 late_records（下一场 session_start 的 late_records_prev），不进点它的那一场的文件；
+        停止之后它还广播 comment_update，换掉页面和手机上的译文（#146 审查）。"""
+        if sess is None:
+            sess = getattr(self, "_session_state", None)
+            audit = getattr(self, "audit", None)
+            if not isinstance(sess, dict) or audit is None or sess.get("audit") is not audit:
+                return task
+        tasks = sess.setdefault("retranslate_tasks", set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
+
+    async def _retranslate_comment(self, cid):
+        """弹幕重译的后台任务（handle_control 的 retranslate_comment）：交给 app/comments.py 的 retranslate。
+
+        被取消（停止、换主播、下播收尾，都走 _cancel_retranslates）时补发一条
+        comment_redo(redo_state=cancelled) 再往外抛。comments 那边被取消时只记一条 cancelled 审计就抛出来，
+        不发终态；不补的话，页面上那条弹幕的按钮一直灰着停在「重译中…」，点不了第二次，要等页面重连或刷新
+        才恢复——换主播之后旧弹幕还留在屏幕上，看得见（b5-recog-input 第 1 轮审查）。web/app.js
+        receiveCommentRedo 把 pending、failed 以外的取值都当成复位，按钮回到「重译」，不用改前端（同字幕
+        重译的 strong_state=cancelled）。审计在 comments 那边先记好（同步），这里的广播慢也不影响它。
+        id 照 comments 的规矩裁到 MAX_ID；不是字符串的 id 没有哪条弹幕可撤（comments 那边也不回话）。"""
+        try:
+            await self.comments.retranslate(cid)
+        except asyncio.CancelledError:
+            if isinstance(cid, str) and cid:
+                cid = cid[: getattr(self.comments, "MAX_ID", None) or len(cid)]   # 弹幕 id，不是界面文字
+                try:
+                    await self.server.broadcast({"type": "comment_redo", "id": cid,
+                                                 "redo_state": "cancelled"})
+                except Exception:
+                    pass
+            raise
 
     async def _retranslate_serial(self, seq, ready=None, audit=None):
         """桌面「重译」的后台任务：入队就发 pending，按桌面那把锁排队，轮到了调 retranslate()。
@@ -5874,9 +6014,12 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         return cancelled
 
     async def _cancel_retranslates(self, sess):
-        """这一场桌面点的「重译」还在排队或在等强模型：关审计之前先取消，等它们把 cancelled 记进这一场的
-        审计、撤掉按钮的「重译中…」、放掉 _strong_inflight 和强模型连接（最多等 RETRANSLATE_CANCEL_WAIT_SEC）。
-        以前它们在停止之后接着跑，结果写进已经关掉的审计（静默丢掉，专家审查 B6）。只认这一场自己的 sess。"""
+        """这一场桌面点的「重译」（字幕和弹幕）还在排队或在等强模型：关审计之前先取消，等它们把 cancelled 记进
+        这一场的审计、撤掉按钮的「重译中…」、放掉 _strong_inflight 和强模型连接（最多等 RETRANSLATE_CANCEL_WAIT_SEC）。
+        以前它们在停止之后接着跑，结果写进已经关掉的审计（静默丢掉，专家审查 B6）。只认这一场自己的 sess。
+        撤按钮：字幕重译由 _retranslate_serial 补发 strong_state=cancelled；弹幕重译被取消时 app/comments.py
+        _retranslate 先记一条 comment_redo(why=cancelled) 再往外抛（名额还回去，不再广播新译文），外面那层
+        _retranslate_comment 接住，补发 comment_redo(redo_state=cancelled) 再抛。"""
         tasks = sess.get("retranslate_tasks") if isinstance(sess, dict) else None
         if not tasks:
             return
