@@ -308,7 +308,7 @@ async def _ollama_down_hint():
     from . import localmodel
     if await _to_thread(localmodel.is_installed):
         return L("程序会自动把它启动起来，这一行随后会刷新；一直这样的话，"
-                 "请手动启动 Ollama，再在「翻译引擎」面板点一次「保存」",
+                 "请手动启动 Ollama，再在「设置 > 翻译引擎」里点一次「保存」",
                  "The app starts it automatically, and this row updates shortly. If it stays "
                  "like this, open Ollama yourself, then click Save in Settings > Translation Engine.")
     hint, _url = localmodel.install_hint()
@@ -402,7 +402,7 @@ def _model_missing(label, model):
                     "model {}. Captions will show only the original text. Banned-term alerts "
                     "aren’t affected.").format(label, model),
                   L("不在直播时程序会自动下载它（进度显示在首页），直播中会等停止后再下载；"
-                    "也可以在「翻译引擎」里换一个引擎",
+                    "也可以在「设置 > 翻译引擎」里换一个引擎",
                     "When you’re not monitoring, the app downloads it automatically (progress "
                     "appears on the home screen). During a session, it waits until you click "
                     "Stop. You can also choose another engine in Settings > Translation Engine."))
@@ -423,7 +423,7 @@ async def _check_paid_api(engine, key, translator):
     if not api_key(key):
         return _check(NAMES["translator"], FAIL,
                       L("{} 还没有密钥", "No API key for {} yet.").format(label),
-                      L("在「翻译引擎」里填写密钥；没有密钥的话，把引擎留在默认的「自动」即可",
+                      L("在「设置 > 翻译引擎」里填写密钥；没有密钥的话，把引擎留在默认的「自动」即可",
                         "Enter a key in Settings > Translation Engine. If you don’t have one, "
                         "leave the engine on the default, Automatic."))
     inner = getattr(translator, "inner", translator)
@@ -444,14 +444,14 @@ async def _check_paid_api(engine, key, translator):
         return _check(NAMES["translator"], FAIL,
                       L("{} 拒绝了当前密钥（HTTP {}）",
                         "{} rejected the current API key (HTTP {}).").format(label, status),
-                      L("在「翻译引擎」里重新填写密钥",
+                      L("在「设置 > 翻译引擎」里重新填写密钥",
                         "Enter the key again in Settings > Translation Engine."))
     if status == 404 and getattr(inner, "PROBE_CHECKS_MODEL", False):
         model = getattr(inner, "model", None) or getattr(inner, "MODEL", "?")
         return _check(NAMES["translator"], FAIL,
                       L("{} 接口里找不到模型 {}（HTTP 404）",
                         "The {} API doesn’t have the model {} (HTTP 404).").format(label, model),
-                      L("在「翻译引擎」里换一个引擎",
+                      L("在「设置 > 翻译引擎」里换一个引擎",
                         "Choose another engine in Settings > Translation Engine."))
     if status != 200:
         return _check(NAMES["translator"], WARN,
@@ -490,7 +490,7 @@ async def _check_deepl(args, translator):
         return _check(NAMES["translator"], FAIL,
                       L("DeepL 拒绝了当前密钥（HTTP {}）",
                         "DeepL rejected the current API key (HTTP {}).").format(status),
-                      L("在「翻译引擎」里重新填写密钥",
+                      L("在「设置 > 翻译引擎」里重新填写密钥",
                         "Enter the key again in Settings > Translation Engine."))
     if target not in inner._GLOSSARY_TARGET:
         return _check(NAMES["translator"], WARN,

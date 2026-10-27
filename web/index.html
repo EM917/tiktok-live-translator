@@ -40,7 +40,7 @@
         <span id="status-dot" class="dot idle"></span>
         <span id="status-text" class="status-text" data-en="Starting…">等待连接…</span>
       </span>
-      <!-- 违禁词警示开关的状态：只在连接中/直播中露出，待机时没有场次可言 -->
+      <!-- 违禁词报警开关的状态：只在连接中/直播中露出，待机时没有场次可言 -->
       <span id="alert-mode-tag" class="alert-mode-tag hidden"></span>
       <!-- 本场品牌：同样只在连接中/直播中且这一场选了品牌时露出，见 app.js
            updateActiveBrandTag。中性配色，纯说明性质，不是开关 -->
@@ -97,7 +97,7 @@
 
            这块面板以前放在 #start-panel 里：直播一开始整块面板就被隐藏，
            中控恰恰是在直播中才想扫码给同事看，结果找不到入口。现在挪到顶栏
-           按钮下面、字幕历史上面，跟警报条一个层级，待机和直播中都能打开。 -->
+           按钮下面、字幕历史上面，跟报警条一个层级，待机和直播中都能打开。 -->
       <div id="share-panel" class="share-panel popover hidden" role="dialog" aria-label="手机同看" data-en-aria-label="Phone Viewing">
         <div id="share-card" class="share-card">
           <div class="share-head">
@@ -278,12 +278,12 @@
     </div>
   </section>
 
-  <!-- 违禁词警报：本工具的核心产出，不自动消失，只能手动清空 -->
+  <!-- 违禁词报警：本工具的核心产出，不自动消失，只能手动清空 -->
   <section id="alert-panel" class="alert-panel hidden">
     <div class="alert-bar">
       <span class="alert-title" data-en="Possible Banned Terms "><svg class="i" aria-hidden="true"><use href="#i-alert-fill"/></svg>疑似违禁词
         <span id="alert-count">0</span><span id="alert-note" class="alert-note hidden"></span></span>
-      <button id="clear-alerts" class="btn small" data-en="Clear Alerts">清空警报</button>
+      <button id="clear-alerts" class="btn small" data-en="Clear Alerts">清空报警</button>
     </div>
     <div id="alert-list" class="alert-list"></div>
   </section>
@@ -476,7 +476,7 @@
           </div>
 
           <!-- 违禁词实时报警：功能保留但已搁置，降为设置里的一行，不抢首屏。
-               摘要＝警示开关（#watch-mode）+ 词表条数（#watch-state）。 -->
+               摘要＝报警开关（#watch-mode）+ 词表条数（#watch-state）。 -->
           <div id="watch-card" class="set-item">
             <button id="watch-head" class="set-row" type="button" aria-expanded="false" aria-controls="watch-body">
               <!-- 橙色留给「提醒」这个状态含义（自检/引擎回退），违禁词报警本身
@@ -492,7 +492,7 @@
               <span class="set-chevron" aria-hidden="true"></span>
             </button>
             <div id="watch-body" class="set-body hidden">
-              <!-- 违禁词警示模式：默认关闭。关闭时命中仍会记入审计（不会漏），
+              <!-- 违禁词报警模式：默认关闭。关闭时命中仍会记入审计（不会漏），
                    只是不弹窗、不通知——开不开只影响「要不要报警」，不影响「要不要记」 -->
               <label class="watch-toggle-row">
                 <span data-en="Show alert on match">命中时弹出报警</span>
@@ -504,7 +504,7 @@
               <p class="watch-how"
                  data-en-html="Edit <code>banned_terms.txt</code> in the app folder, one word or phrase per line. Save, then click Stop and Start to apply. Matches show a red alert at the top of the window and are written to the audit log.">
                 编辑项目文件夹里的 <code>banned_terms.txt</code>，一行一个词或短语，
-                保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色警报并写入审计日志。
+                保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色报警并写入审计日志。
               </p>
             </div>
           </div>

@@ -74,6 +74,11 @@ var CONN_TEXT = {
   connected: L("已连接", "Connected"),
   reconnecting: L("已断开，{n} 秒后重连…", "Reconnecting in {n} sec…"),
   denied: L("链接已失效，请向中控要新的二维码", "Link expired · Ask for a new QR code"),
+  // 地址栏和这台手机的存储里都没有口令（顺延事项，#148 / D5 的后果）：从主屏幕图标打开读不到 Safari 存的那份、
+  // 电脑换了地址或端口、Safari 清掉了网站数据。这时链接并没有失效，墙上的二维码照样能用，以前却和 4401（服务端
+  // 不认这把口令）共用「链接已失效」。按第八条只写看到的（这台手机上没有）和能做的（重新扫码），不说为什么没有。
+  // 英文和 denied 一样放在胶囊里，不比它长（R4）
+  nokey: L("手机上没有同看钥匙，请重新扫码", "No access key · Scan the QR code"),
   full: L("同看人数已满（12 人），稍后再试", "Full (12 max) · Try again later"),
   off: L("中控已关闭手机同看", "Operator stopped sharing"),
   stale: L("{n} 秒没有新消息", "No updates for {n} sec"),
@@ -151,11 +156,12 @@ function silentTooLong(connState, lastFrameAt, now) {
   return now - lastFrameAt > VIEWER_SILENT_SEC * 1000;
 }
 
-// 违禁词警示模式的手机端提示文案：中控这场没打开警示时，命中仍会记进审计，
+// 违禁词报警开关的手机端提示文案（界面上只说「报警」，不说「警示」，专家审查 V5）：
+// 中控这场没打开报警时，命中仍会记进审计，
 // 但手机上也看不到报警——不能让手机这边毫无提示，否则同看的人会误以为
 // 「这场很干净」。关闭时给一行常驻灰字；打开时不显示（返回空串，调用方据此隐藏）。
 function alertModeText(on) {
-  return on ? "" : L("违禁词警示已关闭（中控开播时未开启）", "Banned-term alerts are off for this session.");
+  return on ? "" : L("违禁词报警已关闭（中控开播时未开启）", "Banned-term alerts are off for this session.");
 }
 
 // 让「回放的 alert」与「随后实时同 id 的 alert」只渲染一份：只按 alert_id 取键，
@@ -230,8 +236,8 @@ function pickToken(hash, storage, key) {
   return { token: ok ? stored : null, fromHash: false, saved: false };
 }
 
-// 被拒（4401：服务端不认这把口令）时清掉存着的口令：下次打开直接说「链接已失效」，
-// 不再拿同一把口令去连。存储抛错不影响调用方
+// 被拒（4401：服务端不认这把口令）时清掉存着的口令：这一次说「链接已失效」，下次打开存储里没有了，
+// 说「手机上没有同看钥匙，请重新扫码」（nokey），不再拿同一把口令去连。存储抛错不影响调用方
 function forgetToken(storage, key) {
   try { storage.removeItem(key); } catch (e) { /* 存储用不了：本来也没存进去 */ }
 }
@@ -761,7 +767,7 @@ if (typeof document !== "undefined") {
       refreshAllRetranslateButtons();   // 断线/重连都要跟着刷「重译」按钮的可点状态
     }
 
-    // 断线（reconnecting/denied/full/off）时不能让 stream-text 停在最后一次
+    // 断线（reconnecting/denied/nokey/full/off）时不能让 stream-text 停在最后一次
     // 收到的「直播中」不动——那正是 app/server.py:221-225 那条教训的手机版
     // （spec §12：「绝不在断线时继续显示『直播中』」）。之前只有 setConnState
     // 更新 conn-text/conn-dot，stream-text 只由 "status" 消息写，断线期间没人
@@ -791,7 +797,7 @@ if (typeof document !== "undefined") {
     }
 
     function connect() {
-      if (!TOKEN) { setConnState("denied"); return; }   // 拿不到 token：连文案都不发起连接
+      if (!TOKEN) { setConnState("nokey"); return; }   // 拿不到 token：连都不发起连接，说这台手机上没有（不说链接失效）
       setConnState(connState === "reconnecting" || connState === "full" || connState === "off"
         ? connState : "connecting");
       var socket;
@@ -829,7 +835,7 @@ if (typeof document !== "undefined") {
 
     function onSocketDown(code) {
       if (code === 4401) {                                            // 不再重连
-        forgetToken(tokenStore, TOKEN_KEY);   // S4：服务端不认这把口令，存着的清掉，下次打开直接说链接已失效
+        forgetToken(tokenStore, TOKEN_KEY);   // S4：服务端不认这把口令，存着的清掉；下次打开说这台手机上没有（nokey）
         setConnState("denied");
         return;
       }
@@ -1051,8 +1057,8 @@ if (typeof document !== "undefined") {
     // ---- 违禁词报警：最显眼的红卡片，新的插最前，最多 50 条 ----
     // 精确/变体/疑似三档不再靠 emoji 颜色区分，改成卡片左侧的分级色竖线
     // （跟桌面端 .alert-item.tier-variant/.tier-fuzzy 同一套逻辑，见 viewer.css）。
-    // 英文与桌面（web/live-ui.js）统一成 Exact / Variant / Similar；认不出的分级兜底写的「命中」
-    // 在桌面就是 exact 那一档的字，英文同样写 Exact（同一句中文只许有一种英文）
+    // 中英都与桌面（web/live-ui.js）统一：精确 / 变体 / 疑似、Exact / Variant / Similar。认不出的分级
+    // 按 exact 那一档兜底。兜底以前写「命中」（当时桌面 exact 档的字），桌面改叫「精确」以后跟着改（专家审查 V5）
     var TIER_LABEL = { exact: L("精确", "Exact"), variant: L("变体", "Variant"), fuzzy: L("疑似", "Similar") };
     function renderAlert(msg) {
       if (!alertSection || !alertList) return;
@@ -1081,7 +1087,7 @@ if (typeof document !== "undefined") {
       var labelText = document.createElement("span");
       // 词条是名字，单独一截；三截都在 labelText 里，.alert-head-label 的 flex 子项不变
       // 引号跟着语言换：中文「」，英文弯双引号 “”（docs/i18n-style.md §2.2）
-      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || L("命中", "Exact")) + L(" 「", " “")));
+      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || L("精确", "Exact")) + L(" 「", " “")));
       labelText.appendChild(textSpan(msg.term || "", true));
       labelText.appendChild(textSpan(L("」 ", "” ") + hhmmss(msg.ts)));
       headLabel.appendChild(labelText);
@@ -1228,7 +1234,7 @@ if (typeof document !== "undefined") {
       stickCaptions();
     }
     function applyCaptionState(msg, transEl) {
-      transEl.classList.remove("pending", "failed");
+      transEl.classList.remove("pending", "failed", "skipped");
       markBody(transEl, !!msg.translated);   // 译文是正文；失败说明、「翻译中…」是界面提示
       if (msg.translated) {
         transEl.textContent = msg.translated;
@@ -1243,11 +1249,15 @@ if (typeof document !== "undefined") {
         // 发 failed，翻译积压丢掉旧任务时发 dropped），不带 failed/why。以前这里只认 failed/why，
         // 这两种一律写成空串，译文行只剩一行空白，看的人分不出是「还没译」还是「不会有了」。
         // 字与桌面卡片的角标同一句（web/live-ui.js captionStateChip）。拒答、结果不像译文这两种
-        // 细分不在手机白名单里，只能写笼统的「翻译失败」；原文和「重译」按钮还在，可以自己重试
-        transEl.textContent = msg.translate_state === "failed"
+        // 细分不在手机白名单里，只能写笼统的「翻译失败」；原文和「重译」按钮还在，可以自己重试。
+        // 颜色也照桌面角标（captionStateChip 的 fail）：只有 failed 是提醒色（.failed）；dropped 是程序为了跟上
+        // 直播主动跳过的，桌面画成普通的灰角标、不标红，手机以前却和 failed 一样用提醒色，同一件事两边说法不同。
+        // 现在 dropped 用 .skipped（次要文字的颜色，不斜体：斜体留给还在等的「翻译中…」）
+        var failedNow = msg.translate_state === "failed";
+        transEl.textContent = failedNow
           ? L("翻译失败", "Translation failed")
           : L("翻译已跳过（积压）", "Skipped (backlog)");
-        transEl.classList.add("failed");
+        transEl.classList.add(failedNow ? "failed" : "skipped");
       } else if (msg.translate_state === "pending") {
         transEl.textContent = L("翻译中…", "Translating…");
         transEl.classList.add("pending");

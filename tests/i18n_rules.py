@@ -141,8 +141,10 @@ UI_NAMES = {
     "复制链接": "Copy Link",
     "换一个链接": "New Link",
     "清空字幕": "Clear",
+    # 弹幕栏那颗 2026-10-23 起英文是 Clear Comments（专家审查 V3），和顶栏的 Clear 分开；句子里引用它要写全
+    "清空弹幕": "Clear Comments",
     "清除记录": "Clear History",
-    "清空警报": "Clear Alerts",
+    "清空报警": "Clear Alerts",
     "清除已看过的报警": "Clear Seen",
     "回到最新": "Jump to Latest",
     "删除所选": "Delete Selected",

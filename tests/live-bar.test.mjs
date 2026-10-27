@@ -16,7 +16,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { loadDesktop, hello, caption, web, T } from "./desktop-page.mjs";
+import { loadDesktop, hello, caption, web, T, FakeEl } from "./desktop-page.mjs";
+import { runDesktop } from "./desktop-dom.mjs";
 
 // live-ui.js 在浏览器里是全局函数，Node 里 require（它自己会去 require i18n.js）
 const pureModule = () => createRequire(import.meta.url)("../web/live-ui.js");
@@ -642,6 +643,89 @@ for (const lang of ["zh", "en"]) {
     assert.equal(hist.scrollTop, 300);
     assert.deepEqual(bar.writes, ["166px", "220px", "230px", "166px"]);
   });
+
+  // ---- 6. 页脚长高：实测高度 → --foot-h（#143 审查） ------------------------------------------------
+  // 760 宽、英文约 260 字的提示折成 3 行（54px），以前条子 bottom 写死 22px，页脚多出来的 32px 盖住条子最下面一行
+  // （西语原文、角标）约 12 秒。页面量页脚的高度写进 --foot-h，条子和两栏的留白跟着让（样式表那几条）
+  test(L("页脚：显示长提示长高时把实测高度写进 --foot-h，提示到点收回一行时清掉；一行（22px）不写；贴底看的人跟着再贴一次"), () => {
+    const page = loadDesktop({ lang });
+    hello(page, { version: "1.2.3" });
+    const foot = { height: 22, writes: [] };
+    const set = page.root.style.setProperty;
+    page.root.style.setProperty = (k, v) => { if (k === "--foot-h") foot.writes.push(v); set(k, v); };
+    // 假页面不建树：给版本号挂上页脚这个父元素（真页面里 #app-version 就在 .copyright 里），由测试报出高度
+    const footer = new FakeEl("div");
+    footer.className = "copyright";
+    footer.appendChild(page.el("app-version"));
+    footer.getBoundingClientRect = () =>
+      ({ top: 760 - foot.height, bottom: 760, left: 0, right: 760, width: 760, height: foot.height });
+    onBar(page, caption(1, "hola"));
+    const hist = page.el("history");
+    Object.assign(hist, { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500 });
+    // 短提示：一行，不写
+    page.push({ type: "notice", text: "short" });
+    assert.deepEqual(foot.writes, []);
+    assert.ok(page.el("app-version").classList.contains("noting"));
+    page.fire(10000);
+    assert.deepEqual(foot.writes, [], "收回一行：本来就没写，也不写");
+    // 长提示折成三行
+    foot.height = 53.6;
+    hist.scrollHeight = 2032;
+    page.push({ type: "notice", text: "x".repeat(260) });
+    assert.deepEqual(foot.writes, ["54px"], "向上取整到 px");
+    assert.equal(page.cssVars["--foot-h"], "54px");
+    assert.equal(hist.scrollTop, 2032, "留白长了：贴底看的人跟着再贴到底");
+    // 到点：页脚回到一行，变量清掉（空值＝去掉这条声明），样式回到退路 22px
+    foot.height = 22;
+    page.fire(12000);
+    assert.ok(!page.el("app-version").classList.contains("noting"));
+    assert.deepEqual(foot.writes, ["54px", ""]);
+    assert.equal(page.cssVars["--foot-h"], "");
+  });
+}
+
+// ---- 两段式确认（confirmTwice，专家审查 V3）：点了确认之后，武装时排下的复原定时器要撤掉 -------------------
+// #137 核对时记下：reset() 里那句 clearTimeout 删掉，现有用例照样全绿。漏撤的后果：点两下清空之后马上又点一下
+// （重新武装），上一次武装时排下的 6 秒复原到点照样触发，新的这一次没等满自己的 6 秒就被复原，第二下落空。
+// 假页面的定时器不分先后（fire 按时长一次全触发），这里换成按到期时刻排队的时钟，才分得出是哪一个先到
+function clockedPage(lang) {
+  const page = runDesktop(lang);
+  let now = 0;
+  const queue = [];
+  page.sandbox.setTimeout = (fn, ms) => { queue.push({ fn, at: now + (ms || 0) }); return queue.length; };
+  page.sandbox.clearTimeout = (id) => { if (queue[id - 1]) queue[id - 1].fn = null; };
+  const runTo = (t) => {
+    for (;;) {
+      const due = queue.filter((q) => q.fn && q.at <= t).sort((x, y) => x.at - y.at)[0];
+      if (!due) break;
+      now = due.at;
+      const fn = due.fn;
+      due.fn = null;
+      fn();
+    }
+    now = t;
+  };
+  return { page, runTo };
+}
+for (const [lang, armed, idle] of [["zh", "再点确认", "清空字幕"], ["en", "Clear?", "Clear"]]) {
+  test("两段式确认（" + lang + "）：确认清空之后马上再武装，新的一次照样等满自己的 6 秒，不被上一次的复原定时器提前复原", () => {
+    const { page, runTo } = clockedPage(lang);
+    page.push({ type: "hello", config: { status: { state: "live", detail: "" },
+                                         room_url: "https://www.tiktok.com/@luna_demo/live" } });
+    const btn = page.el("clear-btn");
+    btn.click();                                     // t=0 武装，复原排在 6000
+    assert.equal(btn.textContent, armed);
+    runTo(1000);
+    btn.click();                                     // t=1000 确认：清空，按钮复原，6000 那个复原要撤掉
+    assert.equal(btn.textContent, idle);
+    runTo(2000);
+    btn.click();                                     // t=2000 重新武装，复原排在 8000
+    assert.equal(btn.textContent, armed);
+    runTo(6500);
+    assert.equal(btn.textContent, armed, "上一次武装的复原（6000）不该触发：这一次要到 8000 才复原");
+    runTo(8000);
+    assert.equal(btn.textContent, idle, "到点复原");
+  });
 }
 
 // ---- 滑块带动卡片和弹幕：样式表（语言无关） ----------------------------------------------------
@@ -776,12 +860,12 @@ test("样式表：超长句不截断（D13）——大字幕、大字、小字�
 
 test("样式表：条子封顶（#125 审查）——最高到顶栏下面 8px，超出时条内滚动并停在最底下；字号 26–60 都成立", () => {
   const bar = decls(".live-bar");
-  // 上限 = 窗口高 − 底部署名 − 顶栏 − 8px 空隙
-  const m = /^calc\(100vh - ([\d.]+)px - var\(--topbar-room\) - ([\d.]+)px\)$/.exec(bar["max-height"] || "");
+  // 上限 = 窗口高 − 底部署名 − 顶栏 − 8px 空隙。底部署名平时 22px，显示提示时长高，按 --foot-h 算（#143 审查）
+  const m = /^calc\(100vh - var\(--foot-h, ([\d.]+)px\) - var\(--topbar-room\) - ([\d.]+)px\)$/.exec(bar["max-height"] || "");
   assert.ok(m, "max-height：" + bar["max-height"]);
   const copyright = Number(m[1]), gap = Number(m[2]);
-  assert.equal(bar.bottom, copyright + "px", "条子贴着底部署名");
-  assert.equal(decls(".copyright").height, copyright + "px");
+  assert.equal(bar.bottom, "var(--foot-h, " + copyright + "px)", "条子贴着底部署名，页脚长高时跟着往上挪");
+  assert.equal(decls(".copyright").height, copyright + "px", "没写 --foot-h 时的退路就是一行页脚的高度");
   assert.ok(gap >= 4, "和顶栏之间留点空");
   // 顶栏：600px 以上一行（min-height 52px，满编也是 52，b2-contrast 无头 Chrome 量的），600px 及以下折成两行 75px
   assert.equal(bar["--topbar-room"], decls(".topbar")["min-height"]);
@@ -828,15 +912,29 @@ test("样式表：字幕区和弹幕栏的底部留白按大字幕的实测高�
   const hist = bottom(decls(".history").padding);
   const list = bottom(decls(".comment-list").padding);
   for (const [name, value, before] of [[".history", hist, 204], [".comment-list", list, 204]]) {
-    assert.match(value, /^calc\(var\(--live-bar-h, [\d.]+px\) \+ 30px\)$/, name);
+    assert.match(value, /^calc\(var\(--live-bar-h, [\d.]+px\) \+ var\(--foot-h, 22px\) \+ 8px\)$/, name);
     assert.equal(calcPx(value, {}), before, name + "：没量到之前（变量还没写）是以前的 " + before + "px");
     assert.equal(calcPx(value, { "--live-bar-h": 220 }), 250, name + "：条子 + 底部署名 22 + 空隙 8");
+    assert.equal(calcPx(value, { "--live-bar-h": 220, "--foot-h": 54 }), 282,
+                 name + "：页脚长成三行（54px）时条子往上挪了 32px，留白跟着多 32px（#143 审查）");
   }
   // 窄屏（≤640px）那一条同样跟着量出来的高度走，没量到之前是以前的 174px
   const narrow = /@media \(max-width: 640px\) \{[\s\S]*?\n  \.history \{ padding: 4px 12px (calc\([^;]+\)); \}/.exec(css);
   assert.ok(narrow, "窄屏的 .history 留白");
   assert.equal(calcPx(narrow[1], {}), 174);
   assert.equal(calcPx(narrow[1], { "--live-bar-h": 120 }), 150);
+  assert.equal(calcPx(narrow[1], { "--live-bar-h": 120, "--foot-h": 38 }), 166);
+});
+
+// #143 审查：页脚显示一句长提示时长高，以前大字幕条 bottom 写死 22px，页脚多出来的几行盖住条子最下面一行。
+// 条子的 bottom、高度上限、两栏的留白现在都按 --foot-h 算（上面几条钉样式表），这一条钉页面怎么写这个变量
+test("app.js：用 ResizeObserver 盯着页脚写 --foot-h；换字时也直接量一次（没有 ResizeObserver 的环境）", () => {
+  const src = web("app.js");
+  assert.match(src, /new ResizeObserver\(function \(\) \{ syncFootHeight\(\); \}\)\.observe\(copyrightEl\)/);
+  assert.match(src, /setProperty\("--foot-h", h \? h \+ "px" : ""\)/);
+  const html = web("index.html").replace(/<!--[\s\S]*?-->/g, "");
+  assert.match(html, /<div class="copyright">[^<]*(<a [^>]*>[^<]*<\/a>)?<span id="app-version"/,
+               "量的是 #app-version 的父元素，它就是页脚");
 });
 
 test("app.js：用 ResizeObserver 盯着 #live-bar 写 --live-bar-h（字号、内容、窗口宽度一变就量）", () => {

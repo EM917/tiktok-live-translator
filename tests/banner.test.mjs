@@ -42,7 +42,9 @@ const TEXT = {
     zipAnchor: "zh-updating-zip", howTo: "怎么更新",
     // app/pipeline.py 流自然断开时的 status；识别排空期间字幕照常上屏，翻译失败横幅可能在这时顶出来
     reconnect: "直播流中断，正在重连…",
-    transFail: "连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。",
+    // 专家审查 U4 改过：不猜原因、写明先点「停止」（tests/translate-fail-banner.test.mjs 钉着文字本身）
+    transFail: "连续多条字幕没有译出来，字幕先显示原文（语音识别不受影响）。" +
+      "一直这样的话，点「停止」后可以在「设置 > 翻译引擎」里换一个引擎。",
     clockGap: "电脑时钟跳了一下",
     // app/browser_login.py no_login_notice：Safari 被系统拒绝读取（带完全磁盘访问权限那几步，分行）
     loginNotice: "程序没有读到浏览器里的 TikTok 登录——Safari：系统拒绝读取。有的直播间 TikTok 只把流地址给已登录的观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会因此停下。请在 Safari 里登录 TikTok。\n系统不允许本程序读取浏览器数据。到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开（每个路径各做一遍）：\n「/opt/homebrew/bin/python3.14」\n「/Users/demo user/miniconda3/bin/python3.13」\n列表里显示的名字是 python3.14、python3.13，不是本程序的名字。如果列表里已经有这一项、开关也开着，先选中它点「−」删掉，再按上面的步骤加一次。用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。\n这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。\n（这些步骤在自检「浏览器登录态」一行里也有。）读到登录后这条提示自动消失。",
@@ -66,7 +68,8 @@ const TEXT = {
     zipAnchor: "en-updating-zip", howTo: "How to Update",
     reconnect: "The stream was interrupted. Reconnecting…",
     transFail: "The last several captions couldn’t be translated, so captions show the original text. " +
-      "Speech recognition isn’t affected. If this continues, choose another engine in Settings > Translation Engine.",
+      "Speech recognition isn’t affected. If this continues, you can choose another engine in " +
+      "Settings > Translation Engine after you click Stop.",
     clockGap: "The computer clock jumped",
     loginNotice: "The app didn’t find a TikTok sign-in in your browsers. Safari: macOS didn’t allow access. For some live streams, TikTok provides the stream URL only to signed-in viewers, so those live streams may not get a stream URL until a sign-in is found. Other live streams are monitored as usual. Sign in to TikTok in Safari.\nmacOS didn’t allow the app to read browser data. Go to System Settings > Privacy & Security > Full Disk Access and click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on its switch (do this for each path):\n“/opt/homebrew/bin/python3.14”\n“/Users/demo user/miniconda3/bin/python3.13”\nThe list shows python3.14, python3.13, not the app’s name. If it’s already in the list with its switch on, select it, click −, and add it again with the steps above. If you start the app with Start.command, add Terminal too. Then quit the app completely and open it again.\nThis permission goes to the Python interpreter, not just this app, so any script it runs can read protected data on this computer. When you no longer need the TikTok sign-in from your browser, you can turn its switch off in the same list.\n(These steps are also in the Browser Login row of Settings > Startup Check.) This notice disappears once a sign-in is found.",
     loginShort: "The app didn’t find a TikTok sign-in in your browsers. Safari: readable, but no TikTok sign-in cookie (sessionid or similar). For some live streams, TikTok provides the stream URL only to signed-in viewers, so those live streams may not get a stream URL until a sign-in is found. Other live streams are monitored as usual. Sign in to TikTok in Safari. This notice disappears once a sign-in is found.",
@@ -260,6 +263,41 @@ for (const lang of ["zh", "en"]) {
     status(page, "error", W.short);
     assert.equal(banner.cls.includes("folded"), false);
     assert.equal(moreBtn(page), null);
+  });
+
+  // 门槛（BANNER_FOLD_LINES = 3，#143 审查补的）：正好 3 行不折、4 行才折，状态横幅和持续提示是同一个门槛。
+  // 空行和首尾空白不算行（按行画时去掉）
+  test(lang + "：折叠门槛——3 行不折、没有按钮；4 行折起来只露第一行；空行不算（状态横幅，BANNER_FOLD_LINES）", () => {
+    const page = runDesktop(lang);
+    hello(page);
+    const banner = page.el("status-banner");
+    const three = [W.lead, "two", "three"].join("\n");
+    status(page, "error", three);
+    assert.equal(banner.cls.includes("folded"), false, "3 行：不折");
+    assert.equal(moreBtn(page), null);
+    assert.deepEqual(visible(page).map((b) => b.text), [W.lead, "two", "three"]);
+    status(page, "error", three.replace("\n", "\n\n  \n"));
+    assert.equal(banner.cls.includes("folded"), false, "中间夹着空行仍算 3 行");
+    status(page, "error", three + "\nfour");
+    assert.equal(banner.cls.includes("folded"), true, "4 行：折起来");
+    assert.ok(moreBtn(page));
+    assert.deepEqual(visible(page).map((b) => b.text), [W.lead]);
+    assert.equal(blocks(page).length, 4, "折着的那几行还在，只是藏起来");
+  });
+
+  test(lang + "：折叠门槛——持续提示同样 3 行不折、4 行折（BANNER_FOLD_LINES）", () => {
+    const page = runDesktop(lang);
+    hello(page, { status: { state: "live", detail: "" } });
+    const span = () => page.el("incident-bar").children[0].lastChild;
+    const more = () => span().children.find((el) => el.cls.includes("banner-more"));
+    const three = ["one", "two", "three"].join("\n");
+    incident(page, "login-unreadable", "warn", three);
+    assert.equal(more(), undefined, "3 行：不折、没有按钮");
+    assert.equal(page.el("incident-bar").textContent, three);
+    incident(page, "login-unreadable", "warn", three + "\nfour");
+    assert.ok(more(), "4 行：折起来");
+    assert.equal(more().textContent, W.more);
+    assert.equal(span().childNodes.filter((n) => n.nodeType === 3).map((n) => n.textContent).join(""), "one");
   });
 
   // 「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时，读到登录之前一直挂在顶部、直播中也在，全展开 1000 宽下

@@ -12,11 +12,12 @@ const require = createRequire(import.meta.url);
 const V = require("../web/viewer.js");
 
 // ---- statusText ----
-test("statusText 覆盖 7 个状态", () => {
+test("statusText 覆盖 8 个状态", () => {
   assert.equal(V.statusText("connecting"), "连接中…");
   assert.equal(V.statusText("connected"), "已连接");
   assert.equal(V.statusText("reconnecting", 3), "已断开，3 秒后重连…");
   assert.equal(V.statusText("denied"), "链接已失效，请向中控要新的二维码");
+  assert.equal(V.statusText("nokey"), "手机上没有同看钥匙，请重新扫码");
   assert.equal(V.statusText("full"), "同看人数已满（12 人），稍后再试");
   assert.equal(V.statusText("off"), "中控已关闭手机同看");
   assert.equal(V.statusText("stale", 50), "50 秒没有新消息");
@@ -81,7 +82,7 @@ test("后端 server.status() 发出的每一种 state，手机都有自己的字
 
 // ---- alertModeText ----
 test("alertModeText: 关闭时给出常驻提示文案，打开时空串（调用方据此隐藏）", () => {
-  assert.equal(V.alertModeText(false), "违禁词警示已关闭（中控开播时未开启）");
+  assert.equal(V.alertModeText(false), "违禁词报警已关闭（中控开播时未开启）");
   assert.equal(V.alertModeText(true), "");
 });
 
@@ -762,7 +763,7 @@ test("alert_mode 广播：关闭时常驻灰字，打开时隐藏；新场次先
 
     ws.onmessage({ data: JSON.stringify({ type: "alert_mode", on: false }) });
     assert.equal(line.classList.contains("hidden"), false, "关闭时应该显示常驻提示");
-    assert.equal(line.textContent, "违禁词警示已关闭（中控开播时未开启）");
+    assert.equal(line.textContent, "违禁词报警已关闭（中控开播时未开启）");
 
     ws.onmessage({ data: JSON.stringify({ type: "alert_mode", on: true }) });
     assert.equal(line.classList.contains("hidden"), true, "打开时应该隐藏这一行");
@@ -995,7 +996,9 @@ test("字幕的翻译结局：failed、dropped、ok、pending 各显示对应的
     assert.equal(t[2].textContent, "三");
     assert.equal(t[3].textContent, "翻译中…");
     assert.equal(t[0].classList.contains("failed"), true, "套用已有的 .failed 样式");
-    assert.equal(t[1].classList.contains("failed"), true);
+    // 积压跳过不是失败：和桌面的灰角标一样不用提醒色（.failed），用 .skipped（顺延事项 F4，b6 统一）
+    assert.equal(t[1].classList.contains("failed"), false);
+    assert.equal(t[1].classList.contains("skipped"), true);
     assert.equal(t[2].classList.contains("failed") || t[2].classList.contains("pending"), false);
     assert.equal(t[3].classList.contains("pending"), true);
     // 失败、跳过的字是界面提示，不是数据（英文界面的检查不豁免它们）
@@ -1013,6 +1016,11 @@ test("字幕的翻译结局经 caption_update 到达（pipeline 的实际路径�
     send({ type: "caption_update", id: 2, translated: null, translate_state: "dropped" });
     assert.equal(captionTrans(elements, 0).textContent, "翻译失败");
     assert.equal(captionTrans(elements, 1).textContent, "翻译已跳过（积压）");
+    assert.equal(captionTrans(elements, 1).classList.contains("skipped"), true);
+    // 跳过的那条后来重译成了：换成译文，.skipped 一起去掉
+    send({ type: "caption_update", id: 2, strong: true, strong_state: "ok", translated: "二", translate_state: "ok" });
+    assert.equal(captionTrans(elements, 1).textContent, "二");
+    assert.equal(captionTrans(elements, 1).classList.contains("skipped"), false);
     send({ type: "caption_update", id: 1, strong: true, strong_state: "ok", translated: "一", translate_state: "ok" });
     assert.equal(captionTrans(elements, 0).textContent, "一");
     assert.equal(captionTrans(elements, 0).classList.contains("failed"), false);
@@ -1502,45 +1510,8 @@ test("预先算好的半透明色和报警卡片底色：深浅两套都等于�
   assert.match(CSS_NO_COMMENTS, /\.alert-item\s*\{[^}]*background:\s*var\(--tint-fail-8\)/);
 });
 
-// ---- 报警卡片右上角的 ×（顺延事项：图形控件 3:1）----
-// .alert-dismiss 以前用 --label-3：浅色卡片底上 1.91:1、深色 2.94:1，不到 WCAG 1.4.11 对图形控件要求的 3:1
-// （b2-contrast 第 2 轮审查记下）。现在 --label-2：浅色 4.76:1、深色 6.16:1。半透明的字色先按 alpha 叠到卡片底
-// （按主题预先混好的 --tint-fail-8）上再算，算法同 tests/test_contrast.py（那个文件不在本批清单里，这条钉在这里）
-function cssRule(selector) {
-  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const m = new RegExp("(?:^|\\n|\\})\\s*" + esc + "\\s*\\{([^}]*)\\}").exec(CSS_NO_COMMENTS);
-  assert.ok(m, "viewer.css 里找不到 " + selector);
-  return Object.fromEntries([...m[1].matchAll(/([\w-]+)\s*:\s*([^;]+);?/g)].map((d) => [d[1], d[2].trim()]));
-}
-function rgbOver(value, bg) {
-  const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(value);
-  if (!m) return rgbOf(value);
-  const a = m[4] === undefined ? 1 : Number(m[4]);
-  return [1, 2, 3].map((k, i) => Number(m[k]) * a + bg[i] * (1 - a));
-}
-function contrast(fg, bg) {
-  const lum = (rgb) => {
-    const [r, g, b] = rgb.map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  };
-  const [hi, lo] = [lum(fg), lum(bg)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
-test("报警卡片的 × 是能点的图形控件：深浅两套在卡片底上都到 3:1（以前 --label-3 不到）", () => {
-  assert.equal(Math.round(contrast([0, 0, 0], [255, 255, 255]) * 100) / 100, 21);   // 公式本身
-  assert.equal(cssRule(".alert-dismiss").color, "var(--label-2)");
-  assert.equal(cssRule(".alert-item").background, "var(--tint-fail-8)");
-  for (const [dark, want, before] of [[false, 4.76, 1.91], [true, 6.16, 2.94]]) {
-    const t = rootTokens(dark);
-    const bg = rgbOf(t["--tint-fail-8"]);
-    const got = contrast(rgbOver(t["--label-2"], bg), bg);
-    assert.ok(got >= 3, (dark ? "深色" : "浅色") + " × 只有 " + got.toFixed(2) + ":1");
-    assert.equal(Math.round(got * 100) / 100, want, dark ? "深色" : "浅色");
-    assert.equal(Math.round(contrast(rgbOver(t["--label-3"], bg), bg) * 100) / 100, before,
-      "审查记下的旧值：--label-3 在卡片底上不到 3:1");
-  }
-});
+// 报警卡片右上角的 ×（.alert-dismiss）要到 3:1（WCAG 1.4.11）：#148 时先钉在这里，现在挪回
+// tests/test_contrast.py 的 test_phone_alert_dismiss_icon_reaches_3_to_1_on_the_alert_card（同一套算法、同样的数）
 
 // ---- 口令记在这台手机上（专家审查 S4，用户决定 D5）----
 // 地址、端口、口令都是虚构的。replaceState 的替身顺手把 location.hash 清掉，和真浏览器一样
@@ -1661,11 +1632,37 @@ test("没有 history 接口：口令照旧留在地址栏，照常连上", () =>
   });
 });
 
-test("地址栏和存储里都没有（换了地址或端口，或主屏幕图标读不到 Safari 存的那份）：不发起连接，直接说链接已失效", () => {
-  withPhone({ hash: "", stored: { "tlt.viewer.k:8767": "tok-other-port" } }, ({ elements, sockets }) => {
+// 顺延事项（#148 / D5 的后果）：这时链接并没有失效、墙上的二维码照样能用，以前却和 4401 共用「链接已失效」。
+// 现在单独一个状态 nokey，只说这台手机上没有、请重新扫码（第八条：不说为什么没有）；4401 照旧是 denied
+test("地址栏和存储里都没有（换了地址或端口，或主屏幕图标读不到 Safari 存的那份）：不发起连接，说手机上没有、请重新扫码，不说链接已失效", () => {
+  withPhone({ hash: "", stored: { "tlt.viewer.k:8767": "tok-other-port" } }, ({ elements, sockets, timeouts }) => {
     assert.equal(sockets.length, 0);
-    assert.equal(elements["conn-text"].textContent, "链接已失效，请向中控要新的二维码");
+    assert.equal(elements["conn-text"].textContent, "手机上没有同看钥匙，请重新扫码");
+    assert.doesNotMatch(elements["conn-text"].textContent, /失效/);
+    assert.equal(elements["conn-dot"].className, "dot nokey", "胶囊和 denied 一样是红的（viewer.css）");
+    assert.equal(timeouts.length, 0, "不排重连：没有口令，连了也白连");
   });
+});
+
+test("4401 被拒之后再打开：存储里已经清掉了，这次说手机上没有、请重新扫码", () => {
+  let left = null;
+  withPhone({ hash: "", stored: { [KEY]: "tok-rotated-away" } }, ({ elements, store, sockets }) => {
+    authOf(sockets[0]);
+    sockets[0].onclose({ code: 4401 });
+    assert.equal(elements["conn-text"].textContent, "链接已失效，请向中控要新的二维码", "被拒的这一次照旧说失效");
+    left = Object.fromEntries(store);
+  });
+  assert.deepEqual(left, {});
+  withPhone({ hash: "", stored: left }, ({ elements, sockets }) => {
+    assert.equal(sockets.length, 0);
+    assert.equal(elements["conn-text"].textContent, "手机上没有同看钥匙，请重新扫码");
+  });
+});
+
+test("nokey 的胶囊和红色样式同 denied；胶囊不比 denied 长（R4 量过 denied 在 320 宽放得下）", () => {
+  assert.ok(V.statusText("nokey").length <= V.statusText("denied").length);
+  assert.match(CSS_NO_COMMENTS, /\.status-pill:has\(\.dot\.denied\), \.status-pill:has\(\.dot\.nokey\)/);
+  assert.match(CSS_NO_COMMENTS, /\.dot\.denied, \.dot\.nokey,[^{]*\{ background: var\(--red\); \}/);
 });
 
 // ---- 持续提示里的换行（顺延事项：手机上换行被折成空格）----

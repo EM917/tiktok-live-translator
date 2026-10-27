@@ -209,13 +209,15 @@ V2_TEXT = [
     (".alert-zh.pending", ".alert-item"),      # 报警卡片里的「翻译中…」
     (".cap-meta", ".caption-section"),         # 字幕的时间和语言码
     (".cap-trans.pending", ".caption-section"),
+    (".cap-trans.skipped", ".caption-section"),  # 翻译因积压被跳过（F4，同桌面的灰角标，不用提醒色）
     (".cmt-zh.pending", "body"),
     (".cmt-orig", "body"),                     # 弹幕西语原文
     (".ro-note", ".bottom-bar"),               # 「只看模式 · 不能操作」
     (".ring-note", "body"),                    # 提示音说明
 ]
-# --label-3 还能用的地方：装饰（分隔点）、图标按钮（×）、禁用态
-LABEL3_ALLOWED = {".sep", ".alert-dismiss", ".cap-retranslate:disabled"}
+# --label-3 还能用的地方：装饰（分隔点）、禁用态。报警卡片右上角的 ×（.alert-dismiss）以前也在这里，
+# 可它是能点的图形控件，--label-3 在卡片底上不到 WCAG 1.4.11 的 3:1；#148 改成了 --label-2，下面那条按 3:1 钉着
+LABEL3_ALLOWED = {".sep", ".cap-retranslate:disabled"}
 
 
 @pytest.mark.parametrize("selector,_", V2_TEXT)
@@ -237,6 +239,20 @@ def test_phone_body_text_reaches_4_5_to_1_on_its_own_background(selector, block,
     fg = color(decls("viewer.css", selector)["color"], toks, behind=bg)
     got = ratio(fg, bg)
     assert got >= 4.5, "{}（{}，底色 {}）只有 {:.2f}:1".format(selector, "深色" if dark else "浅色", block, got)
+
+
+@pytest.mark.parametrize("dark,want,before", [(False, 4.76, 1.91), (True, 6.16, 2.94)], ids=["light", "dark"])
+def test_phone_alert_dismiss_icon_reaches_3_to_1_on_the_alert_card(dark, want, before):
+    """报警卡片右上角的 ×（.alert-dismiss）是能点的图形控件，WCAG 1.4.11 要 3:1。以前用 --label-3：浅色卡片底上
+    1.91:1、深色 2.94:1（b2-contrast 第 2 轮审查记下）；#148 改成 --label-2。#148 时这个文件不在那一批的清单里，
+    检查先写在 tests/viewer.test.mjs，现在挪回这里（顺延事项）。卡片底是按主题预先混好的 --tint-fail-8"""
+    toks = tokens("viewer.css", dark)
+    assert decls("viewer.css", ".alert-dismiss")["color"] == "var(--label-2)"
+    bg = background("viewer.css", ".alert-item", toks)
+    got = ratio(color("var(--label-2)", toks, behind=bg), bg)
+    assert got >= 3, "{} × 只有 {:.2f}:1".format("深色" if dark else "浅色", got)
+    assert round(got, 2) == want
+    assert round(ratio(color("var(--label-3)", toks, behind=bg), bg), 2) == before
 
 
 def test_phone_label_2_on_the_page_background_matches_the_review_numbers():

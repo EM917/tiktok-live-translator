@@ -142,7 +142,7 @@ def restore_engine(cli_value, saved, key_lookup=None):
         # 说人话的引擎名，不露内部代号（deepl/auto）——跟「不猜原因」是同一条规矩：
         # 面向用户的文字里不能有代号，只能有引擎选择菜单里那种名字（engine_label）
         return "auto", (L("上次选的翻译引擎 {} 还没有密钥，本次先用{}——"
-                          "在页面的「翻译引擎」里重新填一次即可",
+                          "在「设置 > 翻译引擎」里重新填一次即可",
                           "The last engine you chose, {}, doesn’t have an API key yet, so {} "
                           "is used for now. Enter the key again in Settings > Translation Engine.")
                         .format(engine_label(name), engine_label("auto")))
@@ -379,7 +379,7 @@ class DeepLTranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("DEEPL_API_KEY")
         if not self.api_key:
-            raise RuntimeError(L("还没有填 DeepL 密钥——在页面上的「翻译引擎」里填一次即可",
+            raise RuntimeError(L("还没有填 DeepL 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No DeepL API key yet. Enter it once in Settings > Translation Engine."))
         self.host = ("https://api-free.deepl.com" if self.api_key.strip().endswith(":fx")
                      else "https://api.deepl.com")
@@ -873,7 +873,7 @@ class ClaudeTranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise RuntimeError(L("还没有填 Claude 密钥——在页面上的「翻译引擎」里填一次即可",
+            raise RuntimeError(L("还没有填 Claude 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No Claude API key yet. Enter it once in Settings > Translation Engine."))
         self.model = ((model or "").strip()
                       or (os.environ.get("CLAUDE_TRANSLATE_MODEL") or "").strip()
@@ -1073,7 +1073,7 @@ class OpenAITranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("OPENAI_API_KEY")
         if not self.api_key:
-            raise RuntimeError(L("还没有填 OpenAI 密钥——在页面上的「翻译引擎」里填一次即可",
+            raise RuntimeError(L("还没有填 OpenAI 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No OpenAI API key yet. Enter it once in Settings > Translation Engine."))
         base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.base = base

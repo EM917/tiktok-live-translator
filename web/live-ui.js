@@ -106,10 +106,12 @@ function popoverRight(anchorRight, viewportWidth, panelWidth, margin) {
 }
 
 /* 报警分级胶囊上的字。以前是「🔴 命中」这类 emoji 前缀，颜色现在交给 CSS
- * （.alert-item.tier-*），这里只给字；认不出的分级按「命中」处理（同旧逻辑） */
-var ALERT_TIER_TEXT = { exact: L("命中", "Exact"), variant: L("变体", "Variant"), fuzzy: L("疑似", "Similar") };
+ * （.alert-item.tier-*），这里只给字；认不出的分级按 exact 那一档处理（同旧逻辑）。
+ * exact 档中文写「精确」，和手机一样（专家审查 V5）：以前桌面写「命中」，而术语表里「命中」是 match
+ * （「命中时弹出报警」），拿它当分级名会混（docs/i18n-style.md §1.3） */
+var ALERT_TIER_TEXT = { exact: L("精确", "Exact"), variant: L("变体", "Variant"), fuzzy: L("疑似", "Similar") };
 function alertTierText(tier) {
-  return Object.prototype.hasOwnProperty.call(ALERT_TIER_TEXT, tier) ? ALERT_TIER_TEXT[tier] : L("命中", "Exact");
+  return Object.prototype.hasOwnProperty.call(ALERT_TIER_TEXT, tier) ? ALERT_TIER_TEXT[tier] : L("精确", "Exact");
 }
 
 /* 「回到最新」按钮上的字。翻上去看的时候，新来的行不会把视野拉走，但得让人知道下面攒了多少没看的：

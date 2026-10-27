@@ -1071,6 +1071,7 @@
     versionEl.textContent = " · " + note.text;
     versionEl.classList.add("noting");
     if (copyrightEl && copyrightEl.classList) copyrightEl.classList.add("noting");
+    syncFootHeight();
     footerTimer = setTimeout(endFooterNote, note.ms);
   }
 
@@ -1095,6 +1096,31 @@
     if (currentVersion) {
       versionEl.textContent = " · v" + currentVersion + (updateCheckNote ? " · " + updateCheckNote : "");
     }
+    syncFootHeight();
+  }
+
+  // ---- 页脚的实测高度 → CSS 变量 --foot-h（#143 审查） ----
+  // 页脚显示一句提示时会长高、长句换行（style.css .copyright.noting）。大字幕条是 fixed 的，以前 bottom 写死 22px：
+  // 760 宽、英文约 260 字的提示折成 3 行，页脚多出来的两行盖住条子最下面一行（西语原文、角标）约 12 秒。现在量页脚
+  // 的真实高度写进变量，条子的 bottom、高度上限和两栏的底部留白都按它算（style.css）。一行（22px 及以下）时不写，
+  // 样式里的退路就是 22px，和以前逐像素一样。变量只挪条子和留白，不影响页脚自己的高度，写一次就停（不会循环）。
+  // 窗口变宽变窄时提示重新折行：有 ResizeObserver 就盯着页脚；没有的环境（老 WebKit、node 测试的假页面）在换字时量。
+  // 页脚取版本号的父元素，量的时候现取（真页面里就是 copyrightEl；node 的假页面不建树，测试量之前才给它挂上父元素）
+  var footH = 0;
+  function syncFootHeight() {
+    var foot = versionEl ? versionEl.parentNode : null;
+    if (!foot || typeof foot.getBoundingClientRect !== "function") return;
+    var h = Math.ceil(foot.getBoundingClientRect().height);
+    if (!(h > 22)) h = 0;
+    if (h === footH) return;
+    footH = h;
+    document.documentElement.style.setProperty("--foot-h", h ? h + "px" : "");   // 空值＝去掉这条声明
+    // 留白变了：正贴底看的人要再贴一次，不然条子往上挪的那一截正好盖住最新一条
+    if (following) scrollToBottomNow();
+    if (commentFollowing) commentsToBottomNow();
+  }
+  if (copyrightEl && typeof ResizeObserver === "function") {
+    new ResizeObserver(function () { syncFootHeight(); }).observe(copyrightEl);
   }
 
   // 连续很多天没连上更新服务器：只在页脚版本号旁边安静地提一句，不进自检、不进横幅
@@ -1122,14 +1148,15 @@
     ws.onopen = function () { retries = 0; offlineSince = 0; stickyOfflineDetail = ""; };
 
     ws.onclose = function () {
-      // 断开 20 秒还连不回来，多半是本地程序被关掉了——告诉用户怎么办，
-      // 而不是永远「重连中…」
+      // 断开 20 秒还连不回来：说看到了什么（20 秒没连上）和程序关了的话怎么办，而不是永远「重连中…」。
+      // 中文以前写「本地程序似乎已经关闭」，替中控认定了原因，英文却只说观察（专家审查 U4）：两边对齐成英文的意思
       if (!offlineSince) offlineSince = Date.now();
       var gone = Date.now() - offlineSince > 20000;
       setStatus({
         state: "offline",
         detail: gone
-          ? L("本地程序似乎已经关闭——请重新双击打开：macOS 双击「TikTok Live Translator.app」，Windows 双击「Start.bat」。",
+          ? L("超过 20 秒没有连上本地服务。如果程序已经关闭，请重新打开：macOS 双击「TikTok Live Translator.app」，" +
+              "Windows 双击「Start.bat」。",
               "No connection to the app’s local service for over 20 seconds. If the app has quit, reopen it. " +
               "On Mac, double-click TikTok Live Translator.app. On Windows, double-click Start.bat.")
           : stickyOfflineDetail,
@@ -1675,6 +1702,14 @@
   var failStreak = 0;
   var transBannerOn = false;
 
+  function translateFailText() {
+    return L("连续多条字幕没有译出来，字幕先显示原文（语音识别不受影响）。" +
+             "一直这样的话，点「停止」后可以在「设置 > 翻译引擎」里换一个引擎。",
+             "The last several captions couldn’t be translated, so captions show the original text. " +
+             "Speech recognition isn’t affected. If this continues, you can choose another engine in " +
+             "Settings > Translation Engine after you click Stop.");
+  }
+
   function trackTranslateHealth(msg) {
     if (msg.translate_state === "failed") {
       // 拒答（refused）是接口正常回了话、只是不译这一句：不算进连续失败，否则主播反复说
@@ -1688,11 +1723,10 @@
         transBannerOn = true;
         bannerHoldsStatus = false;           // 横幅里不再是 status 的字，见 bannerHoldsStatus
         statusBanner.classList.remove("folded");
-        setIconText(statusBanner, "warn",
-          L("连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。",
-            "The last several captions couldn’t be translated, so captions show the original text. " +
-            "Speech recognition isn’t affected. If this continues, choose another engine in " +
-            "Settings > Translation Engine."));
+        // 只写看到的事和能做的事（专家审查 U4）：中文以前写「翻译服务可能暂时连不上」，猜了原因，英文却没猜；
+        // 英文还叫人直接去「设置 > 翻译引擎」，可设置分组在直播中整块收起，所以写明先点「停止」（用户 10-22 定 D2）。
+        // 两臂不含「可能 / 似乎 / might」由 tests/translate-fail-banner.test.mjs 钉着（D3：只管这一条）
+        setIconText(statusBanner, "warn", translateFailText());
         statusBanner.classList.remove("hidden");
         statusBanner.classList.remove("info");
       }
@@ -2687,16 +2721,9 @@
     }
     clearCommentRedoNote(item, msg.id);
     var note = document.createElement("div");
+    // .redo-note 是提醒的底色（给没重译成的说明用）；成了不是提醒，多一个 done 类，样子在 style.css 的
+    // .redo-note.done（#146 时先内联在这里，挪进样式表后页面上看起来一样）
     note.className = done ? "redo-note done" : "redo-note";
-    if (done) {
-      // .redo-note 是提醒的底色（style.css，给没重译成的说明用）；成了不是提醒，照抽屉里的 .gev-redo-note：
-      // 次要文字的颜色、没有底色和内边距，和弹幕的字对齐。style.css 不在这一批的改动清单里，先写在这里；
-      // 以后改 style.css 时挪成 .redo-note.done 一条规则
-      note.style.color = "var(--label-2)";
-      note.style.background = "none";
-      note.style.padding = "0";
-      note.style.marginTop = "2px";
-    }
     note.setAttribute("role", "status");
     note.textContent = msg.text;
     item.appendChild(note);
@@ -3850,7 +3877,8 @@
       } else {
         markName(chip);
         chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
-        chip.title = L("填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）",
+        // 不写「武装」：那是代码里两段式确认的叫法（web/switch.js），不是给中控看的词（专家审查 V5）
+        chip.title = L("填入 @" + e.streamer + "，再点一次确认才会换",
                        "Select @" + e.streamer + ". You’ll still need to confirm.");
         chip.addEventListener("click", function () {
           switchInput.value = e.url;
