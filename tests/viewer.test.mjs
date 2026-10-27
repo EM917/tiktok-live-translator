@@ -207,7 +207,7 @@ test("shouldRenderSessionDivider：首场（还没有字幕卡片）不画线，
 });
 test("sessionDividerText：固定文案，不带时间、不带主播名（哪怕传了 streamer）", () => {
   assert.equal(V.sessionDividerText(), "── 新的一场 ──");
-  assert.equal(V.sessionDividerText({ ts: 123, streamer: "bella" }), "── 新的一场 ──");
+  assert.equal(V.sessionDividerText({ ts: 123, streamer: "brisa" }), "── 新的一场 ──");
 });
 
 // ---- 取消警报本地存储：loadDismissedAlerts / saveDismissedAlerts / createDismissedStore ----

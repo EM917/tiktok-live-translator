@@ -299,7 +299,7 @@ def _segment_rows(log):
 
 
 def test_audit_segment_omits_relabeled_from_when_not_set(tmp_path):
-    log = AuditLog(room_url="https://www.tiktok.com/@bella/live", log_dir=tmp_path)
+    log = AuditLog(room_url="https://www.tiktok.com/@brisa/live", log_dir=tmp_path)
     result = asr.ASRResult(text="hola", language="es", raw_text="hola")
     log.segment(1, result, 1.0, 5.0, [])
     log.close()
@@ -308,7 +308,7 @@ def test_audit_segment_omits_relabeled_from_when_not_set(tmp_path):
 
 
 def test_audit_segment_carries_relabeled_from_when_set(tmp_path):
-    log = AuditLog(room_url="https://www.tiktok.com/@bella/live", log_dir=tmp_path)
+    log = AuditLog(room_url="https://www.tiktok.com/@brisa/live", log_dir=tmp_path)
     result = asr.ASRResult(text="hola", language="es", raw_text="hola",
                            relabeled_from="ko")
     log.segment(1, result, 1.0, 5.0, [])
@@ -356,7 +356,7 @@ def test_pipeline_start_round_trips_the_list_form_source(monkeypatch, tmp_path):
     p.server = SimpleNamespace(config={})
 
     coro = p.handle_control({"type": "start",
-                             "url": "https://www.tiktok.com/@bella/live",
+                             "url": "https://www.tiktok.com/@brisa/live",
                              "source": "es,en", "alerts": True})
     asyncio.run(coro)
 
@@ -366,7 +366,7 @@ def test_pipeline_start_round_trips_the_list_form_source(monkeypatch, tmp_path):
     assert p.args.source_requested == "es,en"
     assert p.server.config["source_lang"] == "es,en"
     assert settings.load_settings()["source_lang"] == "es,en"
-    assert started == [("https://www.tiktok.com/@bella/live", None)]
+    assert started == [("https://www.tiktok.com/@brisa/live", None)]
 
 
 def test_pipeline_start_source_auto_still_means_unrestricted_detection(monkeypatch, tmp_path):
@@ -387,7 +387,7 @@ def test_pipeline_start_source_auto_still_means_unrestricted_detection(monkeypat
     p.server = SimpleNamespace(config={})
 
     coro = p.handle_control({"type": "start",
-                             "url": "https://www.tiktok.com/@bella/live",
+                             "url": "https://www.tiktok.com/@brisa/live",
                              "source": "auto", "alerts": False})
     asyncio.run(coro)
 

@@ -13,12 +13,12 @@ const { streamerFromInput, defaultBrandFor,
 // ---- streamerFromInput：与 normalizeRoomInput 认的输入一致 ----
 
 const streamerCases = [
-  ["https://www.tiktok.com/@bellaallnatural/live", "bellaallnatural"],
-  ["https://www.tiktok.com/@bellaallnatural/live?enter=share", "bellaallnatural"],
-  ["@daisycabral_", "daisycabral_"],
-  ["daisycabral_", "daisycabral_"],
+  ["https://www.tiktok.com/@brisafakeperson/live", "brisafakeperson"],
+  ["https://www.tiktok.com/@brisafakeperson/live?enter=share", "brisafakeperson"],
+  ["@daliasample_", "daliasample_"],
+  ["daliasample_", "daliasample_"],
   ["  @Spaced  ", "spaced"],           // 归一成小写，好和 settings 里的键对上
-  ["ItzeSantana11", "itzesantana11"],
+  ["IreneFakeid11", "irenefakeid11"],
   ["某个中文昵称", ""],
   ["", ""],
   ["www.tiktok.com/@abc/live", "abc"], // 无协议地址一样能挖出 @ 后面的名字
@@ -36,23 +36,23 @@ for (const [input, expected] of streamerCases) {
 // 会让人误以为这里钉的是某个品牌的行为，而不是通用规则。
 
 test("记过的主播返回记住的品牌", () => {
-  assert.equal(defaultBrandFor("bellaallnatural", { bellaallnatural: "acme" }), "acme");
+  assert.equal(defaultBrandFor("brisafakeperson", { brisafakeperson: "acme" }), "acme");
 });
 
 test("按小写键查找，与 streamerFromInput 的归一化对齐", () => {
-  assert.equal(defaultBrandFor("Bella", { bella: "acme" }), "acme");
+  assert.equal(defaultBrandFor("Brisa", { brisa: "acme" }), "acme");
 });
 
 test("没记过的主播、没有主播名、brands 不是对象，都退回不限", () => {
-  assert.equal(defaultBrandFor("nadie", { bella: "acme" }), "");
-  assert.equal(defaultBrandFor("", { bella: "acme" }), "");
-  assert.equal(defaultBrandFor("bella", null), "");
-  assert.equal(defaultBrandFor("bella", undefined), "");
-  assert.equal(defaultBrandFor("bella", "not an object"), "");
+  assert.equal(defaultBrandFor("nadie", { brisa: "acme" }), "");
+  assert.equal(defaultBrandFor("", { brisa: "acme" }), "");
+  assert.equal(defaultBrandFor("brisa", null), "");
+  assert.equal(defaultBrandFor("brisa", undefined), "");
+  assert.equal(defaultBrandFor("brisa", "not an object"), "");
 });
 
 test("值不是字符串（settings 被手改过）时按不限处理", () => {
-  assert.equal(defaultBrandFor("bella", { bella: 7 }), "");
+  assert.equal(defaultBrandFor("brisa", { brisa: 7 }), "");
 });
 
 // ---- buildBrandOptionList：由 config.brand_options 生成下拉框选项 ----
@@ -110,19 +110,19 @@ test("optionList 不是数组时按不限处理", () => {
 const { brandStateAfterRoomInput } = require("../web/brand.js");
 
 test("同一个主播的地址改写（补贴 .flv 直连地址、加参数）不清掉手动选择", () => {
-  const touched = { streamer: "daisycabral_", touched: true };
+  const touched = { streamer: "daliasample_", touched: true };
   const s = streamerFromInput(
-    "https://www.tiktok.com/@daisycabral_/live https://pull.example.com/x.flv");
+    "https://www.tiktok.com/@daliasample_/live https://pull.example.com/x.flv");
   assert.deepEqual(brandStateAfterRoomInput(touched, s),
-                   { streamer: "daisycabral_", touched: true });
-  assert.deepEqual(brandStateAfterRoomInput(touched, "daisycabral_"),
-                   { streamer: "daisycabral_", touched: true });
+                   { streamer: "daliasample_", touched: true });
+  assert.deepEqual(brandStateAfterRoomInput(touched, "daliasample_"),
+                   { streamer: "daliasample_", touched: true });
 });
 
 test("换了主播就清掉手动选择，改按记住的品牌刷新", () => {
-  const touched = { streamer: "daisycabral_", touched: true };
-  assert.deepEqual(brandStateAfterRoomInput(touched, "jessyjewelry1"),
-                   { streamer: "jessyjewelry1", touched: false });
+  const touched = { streamer: "daliasample_", touched: true };
+  assert.deepEqual(brandStateAfterRoomInput(touched, "juliaexample1"),
+                   { streamer: "juliaexample1", touched: false });
   assert.deepEqual(brandStateAfterRoomInput(touched, ""),
                    { streamer: "", touched: false });
 });
@@ -139,14 +139,14 @@ test("初始/脏 state 按「没改过」处理，不改入参", () => {
 // 不清 touched（和上面 brandStateAfterRoomInput 的唯一区别） ----
 
 test("回填换了主播也不清 touched（不是中控操作，不能套用换主播清空那条规则）", () => {
-  const touched = { streamer: "daisycabral_", touched: true };
-  assert.deepEqual(brandStateSyncStreamer(touched, "jessyjewelry1"),
-                   { streamer: "jessyjewelry1", touched: true });
+  const touched = { streamer: "daliasample_", touched: true };
+  assert.deepEqual(brandStateSyncStreamer(touched, "juliaexample1"),
+                   { streamer: "juliaexample1", touched: true });
 });
 
 test("回填时本来没改过下拉：touched 保持 false", () => {
-  assert.deepEqual(brandStateSyncStreamer({ streamer: "", touched: false }, "bella"),
-                   { streamer: "bella", touched: false });
+  assert.deepEqual(brandStateSyncStreamer({ streamer: "", touched: false }, "brisa"),
+                   { streamer: "brisa", touched: false });
 });
 
 test("初始/脏 state 按「没改过」处理，不改入参", () => {
@@ -160,13 +160,13 @@ test("初始/脏 state 按「没改过」处理，不改入参", () => {
 // ---- brandStateAfterStart：发出 start 之后清掉 touched，主播名原样保留 ----
 
 test("发出 start 后 touched 清零，主播名保留", () => {
-  assert.deepEqual(brandStateAfterStart({ streamer: "bella", touched: true }),
-                   { streamer: "bella", touched: false });
+  assert.deepEqual(brandStateAfterStart({ streamer: "brisa", touched: true }),
+                   { streamer: "brisa", touched: false });
 });
 
 test("本来就没改过：保持不变", () => {
-  assert.deepEqual(brandStateAfterStart({ streamer: "bella", touched: false }),
-                   { streamer: "bella", touched: false });
+  assert.deepEqual(brandStateAfterStart({ streamer: "brisa", touched: false }),
+                   { streamer: "brisa", touched: false });
 });
 
 test("脏 state 按空主播处理，不改入参", () => {
@@ -180,23 +180,23 @@ test("脏 state 按空主播处理，不改入参", () => {
 // 品牌 id 同样用虚构的 "acme"/"zeta"：这里钉的是通用规则，不是某个真实品牌。
 
 test("加载后先改下拉，再点同一个主播的 chip：发手选值", () => {
-  const loaded = brandStateSyncStreamer({ streamer: "", touched: false }, "bella");
+  const loaded = brandStateSyncStreamer({ streamer: "", touched: false }, "brisa");
   const edited = { streamer: loaded.streamer, touched: true };   // 中控手动改了下拉
-  const result = brandForChipClick(edited, "bella", "acme", { bella: "zeta" });
-  assert.deepEqual(result, { brand: "acme", state: { streamer: "bella", touched: true } });
+  const result = brandForChipClick(edited, "brisa", "acme", { brisa: "zeta" });
+  assert.deepEqual(result, { brand: "acme", state: { streamer: "brisa", touched: true } });
 });
 
 test("改下拉后点另一个主播的 chip：仍发手选值，不按新主播刷新", () => {
-  const edited = { streamer: "bella", touched: true };
-  const result = brandForChipClick(edited, "daisycabral_", "acme", { daisycabral_: "zeta" });
-  assert.deepEqual(result, { brand: "acme", state: { streamer: "daisycabral_", touched: true } });
+  const edited = { streamer: "brisa", touched: true };
+  const result = brandForChipClick(edited, "daliasample_", "acme", { daliasample_: "zeta" });
+  assert.deepEqual(result, { brand: "acme", state: { streamer: "daliasample_", touched: true } });
 });
 
 test("没改过下拉点 chip：发这个主播记住的品牌", () => {
   const untouched = { streamer: "", touched: false };
-  const result = brandForChipClick(untouched, "daisycabral_", "无关紧要的当前值",
-    { daisycabral_: "zeta" });
-  assert.deepEqual(result, { brand: "zeta", state: { streamer: "daisycabral_", touched: false } });
+  const result = brandForChipClick(untouched, "daliasample_", "无关紧要的当前值",
+    { daliasample_: "zeta" });
+  assert.deepEqual(result, { brand: "zeta", state: { streamer: "daliasample_", touched: false } });
 });
 
 test("没改过下拉、这个主播没记住品牌：发不限", () => {
@@ -206,6 +206,6 @@ test("没改过下拉、这个主播没记住品牌：发不限", () => {
 });
 
 test("初始/脏 state 按「没改过」处理", () => {
-  const result = brandForChipClick(undefined, "bella", "acme", { bella: "zeta" });
-  assert.deepEqual(result, { brand: "zeta", state: { streamer: "bella", touched: false } });
+  const result = brandForChipClick(undefined, "brisa", "acme", { brisa: "zeta" });
+  assert.deepEqual(result, { brand: "zeta", state: { streamer: "brisa", touched: false } });
 });

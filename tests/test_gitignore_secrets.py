@@ -76,7 +76,7 @@ def test_settings_files_are_ignored(name):
 
 
 @pytest.mark.parametrize("name", [
-    "transcripts/2026-10-16-bella.md",       # 字幕记录：含观众昵称和弹幕
+    "transcripts/2026-10-16-brisa.md",       # 字幕记录：含观众昵称和弹幕
     "logs/session-20261016-101010.jsonl",    # 审计日志
     "brands/my-brand.txt",                   # 品牌词表副本
     "profiles/someone.txt",                  # 主播专属词表副本

@@ -32,8 +32,8 @@ test("带主播名：时间 + 「以下为 @主播」", () => {
   // 本地时间刻意选个三个字段都是个位数的时刻，同时验证补零
   const d = new Date(2024, 0, 1, 3, 4, 5);
   const ts = d.getTime() / 1000;
-  assert.equal(sessionDividerText({ ts: ts, streamer: "bellaallnatural" }),
-    "── 03:04:05 以下为 @bellaallnatural ──");
+  assert.equal(sessionDividerText({ ts: ts, streamer: "brisafakeperson" }),
+    "── 03:04:05 以下为 @brisafakeperson ──");
 });
 
 test("主播名取不到（空串）：通用文案，不编造身份", () => {

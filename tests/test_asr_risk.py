@@ -200,8 +200,8 @@ def test_the_master_switch(value, on):
 
 def test_prompt_fingerprint():
     assert asr_risk.prompt_sha16(None) is None and asr_risk.prompt_sha16("") is None
-    fp = asr_risk.prompt_sha16("Bella All Natural, limpieza")
-    assert len(fp) == 16 and fp == asr_risk.prompt_sha16("Bella All Natural, limpieza")
+    fp = asr_risk.prompt_sha16("Allura Belt Nalla, limpieza")
+    assert len(fp) == 16 and fp == asr_risk.prompt_sha16("Allura Belt Nalla, limpieza")
     assert fp != asr_risk.prompt_sha16("otra cosa")
 
 
@@ -252,7 +252,7 @@ def test_mlx_signals_come_from_the_decoder_segments(monkeypatch):
     fake = install_mlx(monkeypatch, [{"language": "es", "text": "hola amigos que tal", "segments": [
         _mlx_seg("hola amigos", lp=-0.31, nsp=0.02, cr=1.1, start=0.0, end=4.0),
         _mlx_seg("que tal", lp=-0.31, nsp=0.05, cr=1.4, start=4.0, end=7.5)]}])
-    t = asr.MLXTranscriber("large-v3", language="es", hotwords="Bella")
+    t = asr.MLXTranscriber("large-v3", language="es", hotwords="Allura")
     result = t.transcribe(b"\x00\x00" * 16000)
     assert result.text == "hola amigos que tal"
     assert result.signals == {"lp": -0.31, "nsp": 0.05, "cr": 1.4, "tok": 8, "t": 0.0,
@@ -265,7 +265,7 @@ def test_mlx_signals_come_from_the_decoder_segments(monkeypatch):
     assert set(kw) == {"path_or_hf_repo", "language", "temperature",
                        "condition_on_previous_text", "fp16", "initial_prompt"}
     assert kw["temperature"] == 0.0 and kw["condition_on_previous_text"] is False
-    assert kw["fp16"] is True and kw["initial_prompt"] == "Bella" and kw["language"] == "es"
+    assert kw["fp16"] is True and kw["initial_prompt"] == "Allura" and kw["language"] == "es"
 
 
 def test_mlx_relabel_takes_the_second_pass_and_keeps_the_first(monkeypatch):

@@ -48,7 +48,7 @@ def test_pick_stream_survives_garbage():
 # ---- 用户名解析 ----
 
 def test_username_extraction():
-    assert resolver._username("https://www.tiktok.com/@bellaallnatural/live") == "bellaallnatural"
+    assert resolver._username("https://www.tiktok.com/@brisafakeperson/live") == "brisafakeperson"
     assert resolver._username("https://www.tiktok.com/@some.user_1/live") == "some.user_1"
     assert resolver._username("https://example.com/x") is None
 
@@ -147,7 +147,7 @@ def test_page_fallback_always_returns_a_pair_without_cookies(monkeypatch):
 #
 # PR #9 曾把这个码误判成「年龄限制（18+）」专属信号，据此提前抛错。
 # 2026-09-05 实录戳穿了这个假设：一个完全不涉及年龄限制的直播间
-# （@itzesantana11）一样固定收到 4003110。现在的语义是 kind="browser_only"——
+# （一个真实房间）一样固定收到 4003110。现在的语义是 kind="browser_only"——
 # 程序自己拿不到，交给上层隔一会儿自动重试（见 pipeline._resolve_media），
 # 不再编一个不一定成立的「年龄限制」理由。下面三个用例改自 PR #9 的
 # 「年龄限制」用例；「借 cookie 成功」那条语义不变，原样保留。

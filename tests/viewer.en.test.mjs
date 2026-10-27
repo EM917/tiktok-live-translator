@@ -64,7 +64,7 @@ test("重译按钮：各状态的字，可点与否与中文相同", () => {
 });
 
 test("场次分隔线：不带主播名、不带时间", () => {
-  assert.equal(V.sessionDividerText({ streamer: "bella", ts: 1 }), "── New session ──");
+  assert.equal(V.sessionDividerText({ streamer: "brisa", ts: 1 }), "── New session ──");
 });
 
 test("取消记录跟着这一次共享走：英文页同样，重启后重新数到的同一个 id 不被藏", () => {

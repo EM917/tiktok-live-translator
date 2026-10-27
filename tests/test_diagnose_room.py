@@ -34,31 +34,31 @@ def test_history_counts_zero_segment_sessions(tmp_path):
     _session(tmp_path, "2", "gated", 0, "2026-09-05T13:17:45",
              resolves=[{"attempt": 1, "of": 3, "ok": False, "kind": "browser_only", "ms": 43000,
                         "layers": [{"layer": "官方接口", "outcome": "browser_only", "ms": 5000}]}])
-    _session(tmp_path, "3", "bella", 970, "2026-09-04T14:53:52")
+    _session(tmp_path, "3", "brisa", 970, "2026-09-04T14:53:52")
     h = dr.history_by_streamer(tmp_path)
     assert h["gated"]["sessions"] == 2 and h["gated"]["ok_sessions"] == 0
     assert h["gated"]["last_started"] == "2026-09-05T13:17:45"
     assert h["gated"]["last_resolve"][0]["kind"] == "browser_only"
-    assert h["bella"]["ok_sessions"] == 1 and h["bella"]["segments"] == 970
+    assert h["brisa"]["ok_sessions"] == 1 and h["brisa"]["segments"] == 970
 
 
 def test_history_falls_back_to_room_url_for_streamer(tmp_path):
     p = tmp_path / "session-x.jsonl"
     p.write_text(json.dumps({"type": "session_start",
-                             "room_url": "https://www.tiktok.com/@daisy/live",
+                             "room_url": "https://www.tiktok.com/@dalia/live",
                              "started_at": "t"}) + "\n", encoding="utf-8")
-    assert "daisy" in dr.history_by_streamer(tmp_path)
+    assert "dalia" in dr.history_by_streamer(tmp_path)
 
 
 def test_pick_control_prefers_latest_streamer_whose_last_session_worked(tmp_path):
     _session(tmp_path, "1", "gated", 0, "2026-09-06T22:14:01")
-    _session(tmp_path, "2", "bella", 970, "2026-09-04T14:53:52")
-    _session(tmp_path, "3", "daisy", 2672, "2026-08-27T19:22:19")
+    _session(tmp_path, "2", "brisa", 970, "2026-09-04T14:53:52")
+    _session(tmp_path, "3", "dalia", 2672, "2026-08-27T19:22:19")
     _session(tmp_path, "4", "flaky", 500, "2026-09-01T10:00:00")
     _session(tmp_path, "5", "flaky", 0, "2026-09-06T09:00:00")     # 最近一场失败：不当对照
     h = dr.history_by_streamer(tmp_path)
-    assert dr.pick_control(h, exclude="gated") == "bella"
-    assert dr.pick_control(h, exclude="bella") == "daisy"
+    assert dr.pick_control(h, exclude="gated") == "brisa"
+    assert dr.pick_control(h, exclude="brisa") == "dalia"
     assert dr.pick_control({"gated": h["gated"]}, exclude="gated") is None
 
 

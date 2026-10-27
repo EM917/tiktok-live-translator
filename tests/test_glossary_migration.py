@@ -19,7 +19,7 @@ def _files(monkeypatch, tmp_path, global_text):
     monkeypatch.setattr(G, "GLOSSARY_EXAMPLE", tmp_path / "no.example.txt")
     monkeypatch.setattr(G, "PROFILE_DIR", tmp_path / "profiles")
     (tmp_path / "profiles").mkdir()
-    (tmp_path / "profiles" / "bella.example.txt").write_text(
+    (tmp_path / "profiles" / "brisa.example.txt").write_text(
         TEMPLATE_LINE + "\nD3 K2 => D3 K2 维生素滴剂\n", encoding="utf-8")
     (tmp_path / "glossary.txt").write_text(global_text, encoding="utf-8")
     return tmp_path
@@ -57,7 +57,7 @@ def test_plan_only_matches_entries_identical_to_the_template(monkeypatch, tmp_pa
            "la limpieza => 大扫除\n"                       # 中文改过：不迁
            "la limpieza => 排毒粉\n")                      # 变体集不同：不迁
     plan = G.migration_plan()
-    assert [p["streamer"] for p in plan] == ["bella"]
+    assert [p["streamer"] for p in plan] == ["brisa"]
     assert plan[0]["display"].startswith("la limpieza")
 
 
@@ -65,7 +65,7 @@ def test_migrate_backs_up_and_preserves_everything_else(monkeypatch, tmp_path):
     root = _files(monkeypatch, tmp_path,
                   "# 我的注释\nel carrito => 小黄车\n" + TEMPLATE_LINE + "\n")
     result = G.migrate_legacy_entries()
-    assert result["total"] == 1 and result["moved"] == {"bella": 1}
+    assert result["total"] == 1 and result["moved"] == {"brisa": 1}
 
     backups = list(root.glob("glossary.txt.bak-*"))
     assert len(backups) == 1
@@ -76,7 +76,7 @@ def test_migrate_backs_up_and_preserves_everything_else(monkeypatch, tmp_path):
     assert "# 我的注释" in after and "el carrito => 小黄车" in after
 
     # profile 副本由模板生成、本来就含该条 → 不重复追加
-    prof = (root / "profiles" / "bella.txt").read_text(encoding="utf-8")
+    prof = (root / "profiles" / "brisa.txt").read_text(encoding="utf-8")
     assert prof.count("la limpieza | la limpiecita") == 1
 
     assert G.migrate_legacy_entries() is None      # 幂等：第二次无事可做
@@ -86,10 +86,10 @@ def test_migrate_backs_up_and_preserves_everything_else(monkeypatch, tmp_path):
 def test_migrate_appends_when_the_profile_lacks_the_entry(monkeypatch, tmp_path):
     root = _files(monkeypatch, tmp_path, TEMPLATE_LINE + "\n")
     # 用户的 profile 副本已存在但被删掉了这一条
-    (root / "profiles" / "bella.txt").write_text("otra cosa => 别的\n",
+    (root / "profiles" / "brisa.txt").write_text("otra cosa => 别的\n",
                                                  encoding="utf-8")
     G.migrate_legacy_entries()
-    prof = (root / "profiles" / "bella.txt").read_text(encoding="utf-8")
+    prof = (root / "profiles" / "brisa.txt").read_text(encoding="utf-8")
     assert TEMPLATE_LINE in prof
     assert "otra cosa => 别的" in prof             # 用户内容原样保留
 
@@ -111,7 +111,7 @@ def test_profile_copy_failure_keeps_entries_in_the_global_table(monkeypatch, tmp
     after = (root / "glossary.txt").read_text(encoding="utf-8")
     assert TEMPLATE_LINE in after          # 条目还在，没有丢
     assert (root / result["backup"]).exists()               # 只有 profiles/ 写不进去，备份照做
-    assert not (root / "profiles" / "bella.txt").exists()   # 也没留下半个副本
+    assert not (root / "profiles" / "brisa.txt").exists()   # 也没留下半个副本
 
 
 def test_profile_write_failure_keeps_entries_in_the_global_table(monkeypatch, tmp_path):
@@ -122,7 +122,7 @@ def test_profile_write_failure_keeps_entries_in_the_global_table(monkeypatch, tm
     内核层面挡的，不看权限位、不看是不是 root——POSIX 抛 IsADirectoryError、
     Windows 抛 PermissionError，都是 OSError 的子类，三个平台同一个结果。"""
     root = _files(monkeypatch, tmp_path, TEMPLATE_LINE + "\n")
-    prof = root / "profiles" / "bella.txt"
+    prof = root / "profiles" / "brisa.txt"
     prof.mkdir()
 
     result = G.migrate_legacy_entries()
@@ -134,22 +134,22 @@ def test_profile_write_failure_keeps_entries_in_the_global_table(monkeypatch, tm
 
 def test_one_streamer_failing_leaves_only_that_streamer_in_the_global_table(
         monkeypatch, tmp_path):
-    """失败是按主播分组算的：bella 写不进去，既不能把 bella 那条从全局删掉，
-    也不能连累已经写进 elisa 副本的那条留在全局——迁了却不删就是两边都在，
+    """失败是按主播分组算的：brisa 写不进去，既不能把 brisa 那条从全局删掉，
+    也不能连累已经写进 elena 副本的那条留在全局——迁了却不删就是两边都在，
     profile 优先级白设。多主播才是迁移的常态，单主播用例照不到这一层。"""
-    elisa_line = "el colageno => 胶原蛋白"
-    root = _files(monkeypatch, tmp_path, TEMPLATE_LINE + "\n" + elisa_line + "\n")
-    (root / "profiles" / "elisa.example.txt").write_text(
-        elisa_line + "\n", encoding="utf-8")
-    (root / "profiles" / "bella.txt").mkdir()          # 只有 bella 写不进去
+    elena_line = "el colageno => 胶原蛋白"
+    root = _files(monkeypatch, tmp_path, TEMPLATE_LINE + "\n" + elena_line + "\n")
+    (root / "profiles" / "elena.example.txt").write_text(
+        elena_line + "\n", encoding="utf-8")
+    (root / "profiles" / "brisa.txt").mkdir()          # 只有 brisa 写不进去
 
     result = G.migrate_legacy_entries()
-    assert result["moved"] == {"elisa": 1}
+    assert result["moved"] == {"elena": 1}
     assert result["total"] == 1 and result["failed"] == 1
     after = (root / "glossary.txt").read_text(encoding="utf-8")
     assert TEMPLATE_LINE in after          # 失败的原样留着
-    assert elisa_line not in after         # 写成功的才删
-    assert elisa_line in (root / "profiles" / "elisa.txt").read_text(encoding="utf-8")
+    assert elena_line not in after         # 写成功的才删
+    assert elena_line in (root / "profiles" / "elena.txt").read_text(encoding="utf-8")
 
 
 def test_no_plan_touches_nothing(monkeypatch, tmp_path):
@@ -176,7 +176,7 @@ def test_migration_hot_reload_keeps_the_brand_layer(monkeypatch, tmp_path):
     class FakeServer:
         def __init__(self):
             self.sent = []
-            self.config = {"room_url": "https://www.tiktok.com/@bella/live"}
+            self.config = {"room_url": "https://www.tiktok.com/@brisa/live"}
 
         async def broadcast(self, msg):
             self.sent.append(msg)
@@ -185,7 +185,7 @@ def test_migration_hot_reload_keeps_the_brand_layer(monkeypatch, tmp_path):
     p.server = FakeServer()
     p.args = SimpleNamespace(glossary=None)
     p.brand = "acme"
-    p.glossary = G.load(streamer="bella", brand="acme")
+    p.glossary = G.load(streamer="brisa", brand="acme")
     p.detector = None
     assert p.glossary.matching("cosa marca")          # 迁移前：品牌条目命中
 
@@ -232,7 +232,7 @@ def test_pipeline_flow_previews_then_migrates_on_confirm(monkeypatch, tmp_path):
         done = [m for m in p.server.sent if m.get("stage") == "done"][0]
         assert done["result"]["total"] == 1
         assert done["result"]["failed"] == 0
-        # 热重载：全局表里不再有 bella 的条目
+        # 热重载：全局表里不再有 brisa 的条目
         assert not [1 for vs, zh in p.glossary.entries if zh == "排毒粉"]
         # 迁完撤掉入口（重连后 hello 不再带它）
         assert "glossary_migration" not in p.server.config

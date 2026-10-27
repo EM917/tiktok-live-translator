@@ -29,7 +29,7 @@ from app.audit import AuditLog
 from app.pipeline import Pipeline
 from tests.helpers import run
 
-LIVE_URL = "https://www.tiktok.com/@bellaallnatural/live"
+LIVE_URL = "https://www.tiktok.com/@brisafakeperson/live"
 DIRECT_URL = "https://cdn.example.com/s.flv"
 MB = 1024 * 1024
 

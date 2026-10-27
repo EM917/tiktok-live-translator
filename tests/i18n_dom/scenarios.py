@@ -37,8 +37,10 @@ from app.translator import engine_label, mask_key, restore_engine
 from app.updater import RELEASES_URL, update_check_note
 
 FAKE_TOKEN = "fake-token-not-a-real-secret-0000000000"   # viewer.js 只认片段里的 #k=
-STREAMER = "bellaallnatural"
-RECENT = ("bellaallnatural", "lamejorcrema", "tiendadeana", "glowbymaria")
+# 主播名是虚构的，但和 docs/i18n-style.md §4、web/style.css 里量版面用的那个 15 个字母的真实主播名同宽：
+# 同一组字形重新排列，SF 字体 11–20px、400–700 字重、中英两种页面下逐 1/64 像素量过，顶栏的余量数字不变
+STREAMER = "beltranlulaalal"
+RECENT = (STREAMER, "lamejorcrema", "tiendadeana", "glowbymaria")
 BRAND_ID = "acme"
 BRAND_ZH = "艾可美天然护肤旗舰店"              # 中文品牌名（数据，虚构）
 CAPTION_ZH = "这款面霜一周就能淡化色斑"        # target_lang=zh-CN 的一条译文（数据）
@@ -78,7 +80,9 @@ ZH_FLOAT_WIDTHS = (1000, 1100, 1101, 1140, 1399, 1400)
 LIVE_BASES = ("live-full", "live-float", "live-full" + EXTRA, "live-float" + EXTRA)   # LIVE_WIDTHS + NARROW_WIDTHS
 ZH_FULL_BASES = ("live-float-zh", "live-float-zh" + EXTRA)                             # 只量 1000
 ZH_QUIET_BASES = ("live-float-zh-quiet", "live-float-zh-quiet" + EXTRA)                # ZH_FLOAT_WIDTHS
-ZH_QUIET_BRAND = "Bella All Natural"           # §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限
+# §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，和文档里那个真实的基线品牌同宽
+# （同 STREAMER 的做法：同一组字形重新排列，逐 1/64 像素量过）
+ZH_QUIET_BRAND = "Allura Belt Nalla"
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
                    "#float-btn", "#float-btn .btn-label", "#float-btn .i", ".ctl-text", "#target-lang",
                    TARGET_EXTRA_SELECTED)

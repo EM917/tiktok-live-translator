@@ -47,11 +47,11 @@ def make_pipeline(monkeypatch, tmp_path, brand_examples=("acme",)):
 def test_start_with_a_valid_brand_sets_it_and_saves_it_per_streamer(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "url": "https://www.tiktok.com/@daliasample_/live",
                           "brand": "acme"}))
     assert p.brand == "acme"
-    assert settings.streamer_brands() == {"daisycabral_": "acme"}
-    assert server.config["brands"] == {"daisycabral_": "acme"}
+    assert settings.streamer_brands() == {"daliasample_": "acme"}
+    assert server.config["brands"] == {"daliasample_": "acme"}
 
 
 def test_start_with_an_invalid_brand_id_falls_back_to_unrestricted(monkeypatch, tmp_path):
@@ -59,7 +59,7 @@ def test_start_with_an_invalid_brand_id_falls_back_to_unrestricted(monkeypatch, 
     和 alerts 字段缺失时的宽容原则一致，不能因为一个字段解析不出来就让开播失败。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "url": "https://www.tiktok.com/@daliasample_/live",
                           "brand": "no-such-brand"}))
     assert p.brand is None
     assert settings.streamer_brands() == {}    # 不留一条无效品牌的记录
@@ -69,7 +69,7 @@ def test_start_with_an_invalid_brand_id_falls_back_to_unrestricted(monkeypatch, 
 def test_start_with_a_malformed_brand_id_falls_back_to_unrestricted(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "url": "https://www.tiktok.com/@daliasample_/live",
                           "brand": "../etc/passwd"}))
     assert p.brand is None
 
@@ -79,16 +79,16 @@ def test_start_without_the_brand_field_defaults_to_unrestricted(monkeypatch, tmp
     p, server = make_pipeline(monkeypatch, tmp_path)
     p.brand = "acme"       # 上一场选过
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live"}))
+                          "url": "https://www.tiktok.com/@daliasample_/live"}))
     assert p.brand is None
 
 
 def test_start_with_empty_brand_string_records_unrestricted_and_clears_memory(
         monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path)
-    settings.save_streamer_brand("daisycabral_", "acme")    # 上次记住的
+    settings.save_streamer_brand("daliasample_", "acme")    # 上次记住的
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "url": "https://www.tiktok.com/@daliasample_/live",
                           "brand": ""}))
     assert p.brand is None
     assert settings.streamer_brands() == {}     # 这场改选「不限」：记住的这条被清掉
@@ -109,7 +109,7 @@ def test_switching_streamers_updates_brand_before_the_next_start(monkeypatch, tm
     """直播中收到新的 start（换主播）：同一条路径，self.brand 跟着新的一场变。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "url": "https://www.tiktok.com/@daliasample_/live",
                           "brand": "acme"}))
     assert p.brand == "acme"
     run(p.handle_control({"type": "start",
@@ -125,9 +125,9 @@ def test_construction_seeds_config_brands_from_settings_without_defaulting_self_
         monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(settings, "_corrupt", {"backup": None, "announced": False})
-    settings.save_streamer_brand("bella", "acme")
+    settings.save_streamer_brand("brisa", "acme")
     p, server = make_pipeline(monkeypatch, tmp_path)
-    assert server.config["brands"] == {"bella": "acme"}
+    assert server.config["brands"] == {"brisa": "acme"}
     assert not hasattr(p, "brand")
 
 
@@ -149,7 +149,7 @@ def test_a_brand_whose_files_were_deleted_falls_back_with_a_console_note(
     (tmp_path / "brands" / "acme.txt").unlink(missing_ok=True)
     (tmp_path / "brands" / "acme.example.txt").unlink()
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "url": "https://www.tiktok.com/@daliasample_/live",
                           "brand": "acme"}))
     assert p.brand is None
     assert "acme" in capsys.readouterr().out
@@ -241,7 +241,7 @@ def test_starting_with_a_brand_sets_active_brand_with_its_display_name(monkeypat
     (tmp_path / "brands" / "acme.example.txt").write_text(
         "name: ACME 严选\nalgo => 什么\n", encoding="utf-8")
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "url": "https://www.tiktok.com/@daliasample_/live",
                           "brand": "acme"}))
     assert server.config["active_brand"] == {"id": "acme", "name": "ACME 严选"}
 
@@ -251,7 +251,7 @@ def test_starting_without_a_brand_leaves_active_brand_cleared(monkeypatch, tmp_p
     缺字段——前端靠它和「还没连上」区分，见 web/app.js setActiveBrand。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live"}))
+                          "url": "https://www.tiktok.com/@daliasample_/live"}))
     assert server.config["active_brand"] is None
 
 
@@ -261,7 +261,7 @@ def test_stopping_clears_the_active_brand_tag(monkeypatch, tmp_path):
     quiet=False 分支）。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     run(p.handle_control({"type": "start",
-                          "url": "https://www.tiktok.com/@daisycabral_/live",
+                          "url": "https://www.tiktok.com/@daliasample_/live",
                           "brand": "acme"}))
     assert server.config["active_brand"] == {"id": "acme", "name": "acme"}
     run(p.handle_control({"type": "stop"}))

@@ -47,7 +47,7 @@ class Harness:
                                     "translated": "一", "asr_ms": 900})
         self.server.alerts.append({"type": "alert", "alert_id": 1, "term": "colágeno",
                                    "tier": "exact", "context": "…colágeno…",
-                                   "streamer": "bella", "session": "s1",
+                                   "streamer": "brisa", "session": "s1",
                                    "ui_clients": 2})
         self.token = viewer_mod.new_token()
         self.hub = ViewerHub(self.server, ports=[0], token=self.token,
