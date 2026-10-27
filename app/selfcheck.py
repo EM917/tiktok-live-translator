@@ -743,10 +743,11 @@ def _pip_command(spec, upgrade=True):
     会被当成表达式报错，前面必须加 &。
 
     项目根有 constraints.txt 时末尾带 -c 和它的绝对路径（I4）：手动装的也是测试过的那一套版本，
-    和程序自己装的一样（命令在哪个目录里粘贴都能跑）。"""
-    import sys
-
+    和程序自己装的一样（命令在哪个目录里粘贴都能跑）。解释器也和程序自己跑 pip 的一样：在 .app
+    壳里时抄 .venv/bin/python，不抄壳里那个（macbundle.pip_python）。"""
     from .bootstrap import CONSTRAINTS
+    from .macbundle import pip_python
+    python = pip_python(ROOT)
     flag = " -U" if upgrade else ""
     pinned = ROOT / CONSTRAINTS
     pin = ' -c "{}"'.format(pinned) if pinned.is_file() else ""  # i18n: data（命令行参数）
@@ -755,10 +756,10 @@ def _pip_command(spec, upgrade=True):
     if os.name == "nt":
         return L("在 PowerShell 里执行：& \"{}\" -m pip install{} \"{}\"{}",
                  "run this in PowerShell: & \"{}\" -m pip install{} \"{}\"{}").format(
-                     sys.executable, flag, spec, pin)
+                     python, flag, spec, pin)
     return L("在终端里执行：\"{}\" -m pip install{} \"{}\"{}",
              "run this in Terminal: \"{}\" -m pip install{} \"{}\"{}").format(
-                 sys.executable, flag, spec, pin)
+                 python, flag, spec, pin)
 
 
 async def check_comments(args):

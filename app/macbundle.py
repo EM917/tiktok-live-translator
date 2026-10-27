@@ -9,11 +9,12 @@ NSRunningApplication.icon 验证过）。py2app 一类打包对这个项目太�
         MacOS/python  -> ../../../.venv/bin/python      同一个解释器，只是路径在 bundle 里
         pyvenv.cfg    （.venv/pyvenv.cfg 的副本）        CPython 按被调用路径找它，找到就把
         lib           -> ../../.venv/lib                 Contents 当 venv 前缀，site-packages
-                                                          经链接落回 .venv，pip 也装进 .venv
+                                                          经链接落回 .venv，包也装进 .venv
 
 实测（2026-09-08）：经这条路启动，sys.prefix 指向 Contents、是 venv、webview/mlx_whisper
 都能 import、pip 的目标是 .venv、用 sys.executable 起的子进程同样是 venv、
 NSBundle.mainBundle() 就是 .app。后两样文件含本机路径，启动时生成，不入库。
+「pip 的目标是 .venv」只对包本身成立：跑 pip 要换成 .venv 里的 python，见 pip_python。
 
 main.py 启动时若发现自己不在 bundle 里，就用 MacOS/python 重新执行自己一次。
 """
@@ -84,6 +85,31 @@ def _relink(link, target, is_dir=False):
         else:
             link.unlink()
     os.symlink(target, link, target_is_directory=is_dir)
+
+
+def pip_python(root, prefix=None, executable=None):
+    """程序自己跑 pip、或给中控抄的 pip 命令，用哪个解释器：在壳里时是 .venv/bin/python，
+    别处就是 sys.executable。
+
+    壳里的 python sys.prefix 是 Contents，pip 按它摆文件、按它认「本环境」，两样都错：
+      * 命令行脚本和数据文件（bin/yt-dlp、share/man 等）写进 Contents/bin、Contents/share——
+        程序文件夹里多出没跟踪的文件（2026-10-26 启动时的 yt-dlp 自动更新，10-27 快进时看到）；
+      * 要换掉的旧版本，realpath 之后在 .venv 里、不在 Contents 底下，pip 说它「outside
+        environment」不卸：新旧两份 dist-info 并存，importlib.metadata 读到哪份看目录列举顺序
+        （那次之后本机 yt-dlp 2026.8.19 和 2026.10.21 两份并存；离线复现时 pip 自己都报成装了旧版）。
+    换成 .venv/bin/python：同一个解释器、同一个 site-packages，sys.prefix 是 .venv，两样都对。
+    --prefix 只把脚本挪回 .venv，旧版照样不卸（同样复现过），所以换解释器而不是加参数。
+    .venv/bin/python 不在、或判断不了时退回 sys.executable，不比以前差。"""
+    executable = executable or sys.executable
+    try:
+        here = Path(prefix if prefix is not None else sys.prefix).resolve()
+        shell = (Path(root) / APP_DIR_NAME / "Contents").resolve()
+    except (OSError, RuntimeError):
+        return executable
+    if here != shell:
+        return executable
+    venv_python = Path(root) / ".venv" / "bin" / "python"
+    return str(venv_python) if venv_python.exists() else executable
 
 
 def inside_bundle(executable=None):
