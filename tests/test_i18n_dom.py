@@ -1138,8 +1138,9 @@ def test_the_float_button_scenario_differs_from_live_full_only_by_the_config_key
 
 def test_the_flash_scenarios_differ_from_their_base_only_by_the_config_key_and_the_first_click(tmp_path):
     """不开 Chrome：每个带闪购按钮的场景和它的底本只差 hello 里的 config.flash_sale 和打头的那一下 #flash-btn。
-    flash_sale 是推给页面的形状（tests/fixtures/flash_sale/message-running.json）：有卡住的商品、有没看过的 ❌ 记录，
-    按钮是变色的样子；倒计时的时刻在「现在」之后。每档宽度都有。"""
+    flash_sale 是生产代码（flash_sale.StatusTracker）从契约样例 tests/fixtures/flash_sale/running.json 规整出来、
+    计满 60 秒后的样子：有卡住的商品（后端排在最前）、有没看过的 ❌ 记录，按钮是变色的样子；倒计时的时刻在「现在」之后。
+    每档宽度都有。"""
     built = S.build(tmp_path)
     pairs = {"live-flash": "live-float", "live-flash-zh": "live-float-zh", "live-flash-zh-quiet": "live-float-zh-quiet",
              "home-flash": "home-idle", "home-flash-zh": "home-zh"}
@@ -1147,8 +1148,8 @@ def test_the_flash_scenarios_differ_from_their_base_only_by_the_config_key_and_t
     for name, base in pairs.items():
         sc = built[name]
         state = sc["messages"][0]["config"]["flash_sale"]
-        assert state["conn"] == "ok" and state["attention"] == ["stuck"]
-        assert any(p["stuck"] for p in state["products"])
+        assert state["conn"] == "ok" and state["attention"] == ["stuck"] and state["stuck_count"] == 1
+        assert state["products"][0]["stuck"] is True and state["products"][0]["state"] == "stopped"
         assert any(a["level"] == "warn" and a["text"].startswith("❌") for a in state["alerts"])
         assert any(a["text"] == S.FLASH_ZH_ALERT for a in state["alerts"])
         live = [p for p in state["products"] if p["state"] == "live"]

@@ -3,7 +3,8 @@
 界面上会出现的后端文字一律由生产代码生成：browser_only_message、share_note（经
 ViewerHub.state）、自检行与自检提示条（_publish_selfcheck）、_announce_health 三档、
 _check_clock_gap、_translate_alert 的 why、engine_label / restore_engine、update_check_note、
-diskspace.inventory。这里不手写任何一句要上界面的中文或英文——迁移到哪一句，扫描就跟到哪一句。
+diskspace.inventory；闪购助手的状态（config.flash_sale）也走 flash_sale.StatusTracker。这里不手写任何一句
+要上界面的中文或英文——迁移到哪一句，扫描就跟到哪一句。
 
 数据字段（字幕原文、弹幕、词条、主播名）用西语或 ASCII。DATA_ZH 是故意放进去的中文数据
 （一条译成简体中文的字幕、一个中文品牌名、一条报警上下文的中文译文），它们必须落在数据区里：
@@ -30,7 +31,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from app import browser_login, diskspace, i18n, qr, selfcheck, viewer
+from app import browser_login, diskspace, flash_sale, i18n, qr, selfcheck, viewer
 from app.pipeline import LIVE_ENDED_NOTE, Pipeline, browser_only_message
 from app.server import CaptionServer, replay_payloads
 from app.telemetry import Telemetry
@@ -694,19 +695,23 @@ def with_float_button(scenario, name):
     return out
 
 
-# 闪购助手的状态（hello 的 config.flash_sale）：接口契约的虚构样例 running 规整成推给页面的形状
-# （tests/fixtures/flash_sale/message-running.json，node 测试用的同一份）。后端只发代码、数字和闪购助手的原话，
-# 没有要上界面的文字，所以照弹幕留意的场景，不经生产代码渲染。样例里有一个卡住的商品（attention 是 stuck）和一条
-# 没看过的 ❌ 记录：按钮是变色的那个样子（橙点绝对定位、不占宽度）。记录正文里有中文（闪购助手写的），
-# 落在 class i18n-data 里；商品标题是英文。时间整体平移到页面打开时的「现在」之后，倒计时看起来才像真的
-FLASH_FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "flash_sale" / "message-running.json"
-FLASH_SAMPLE_UPDATED_MS = 1793136967165          # 样例 updated_at（2026-10-27T21:36:07.165Z）
+# 闪购助手的状态（hello 的 config.flash_sale）：接口契约的虚构样例 running（tests/fixtures/flash_sale/running.json，
+# 闪购助手 /status 原样的回话）经生产代码 flash_sale.StatusTracker 规整成推给页面的形状——同一个 tracker 先在单调时钟
+# 0 秒、再在 STUCK_SEC 秒各喂一次，已停止的那个商品就成了卡住的（attention 是 stuck），和直播中真实的样子一样。
+# 后端只发代码、数字和闪购助手的原话，没有要上界面的文字，文案由页面的 flash.js 按代码写。
+# 样例里有一个卡住的商品和一条没看过的 ❌ 记录：按钮是变色的那个样子（橙点绝对定位、不占宽度）。记录正文里有中文
+# （闪购助手写的），落在 class i18n-data 里；商品标题是英文。时间整体平移到页面打开时的「现在」之后，倒计时看起来才像真的
+FLASH_FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "flash_sale" / "running.json"
 FLASH_ZH_ALERT = "📦 Calm Gel Mask x4 (Fictional): 1 个规格库存不足 5,按可用库存填"   # 样例里一条带中文的记录正文（数据）
 
 
 def flash_state(now_ms=None):
-    state = json.loads(FLASH_FIXTURE.read_text(encoding="utf-8"))
-    shift = int(now_ms if now_ms is not None else time.time() * 1000) + 10 * 60 * 1000 - FLASH_SAMPLE_UPDATED_MS
+    doc = json.loads(FLASH_FIXTURE.read_text(encoding="utf-8"))
+    updated = flash_sale.parse_iso(doc["updated_at"])
+    tracker = flash_sale.StatusTracker()
+    tracker.update("ok", copy.deepcopy(doc), updated + 1, 0.0)
+    state = tracker.update("ok", copy.deepcopy(doc), updated + 1, float(flash_sale.STUCK_SEC))
+    shift = int(now_ms if now_ms is not None else time.time() * 1000) + 10 * 60 * 1000 - int(round(updated * 1000))
     for product in state["products"]:
         for key in ("ends_ms", "next_ms"):
             if product[key] is not None:
