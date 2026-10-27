@@ -3672,21 +3672,39 @@
     shareOn = on;
   }
 
-  // ---- 顶栏浮层（手机同看 / 换主播）的共用开合 ----
-  // 两个浮层互斥；位置按触发按钮右边缘算（popoverRight）；aria-expanded 跟着走。
+  // ---- 顶栏浮层的共用开合 ----
+  // 浮层互斥（打开一个就关掉其余所有）；位置按触发按钮右边缘算（popoverRight）；aria-expanded 跟着走。
   // 关闭的途径：按钮再点一次、×、Esc、点浮层外。不在窗口失焦（blur/focusout）时
   // 关——中控要切到浏览器复制新主播的地址再回来粘，浮层得还在
   function isPopoverOpen(panel) { return !!panel && !panel.classList.contains("hidden"); }
-  function placePopover(panel, trigger) {
-    if (!isPopoverOpen(panel) || !trigger) return;
-    var r = trigger.getBoundingClientRect();
-    panel.style.right = popoverRight(r.right, window.innerWidth, panel.offsetWidth, 12) + "px";
+  // 登记表：每一项 {panel, trigger, close, isOpen}。互斥、窗口缩放时重新定位、点外面关、Esc 都遍历这张表，
+  // 加一个浮层只在这里登记一行，不再到四处去补硬编码。close 存函数本身：closeSwitchPanel 还要清定时器。
+  // isOpen 缺省就是看 .hidden。登记的顺序就是 Esc 的先后（同一时刻只会开着一个，顺序只是兜底）
+  var popovers = [];
+  function registerPopover(panel, trigger, close, isOpen) {
+    if (!panel) return;
+    popovers.push({ panel: panel, trigger: trigger, close: close,
+                    isOpen: isOpen || function () { return isPopoverOpen(panel); } });
+  }
+  function placePopover(entry) {
+    if (!entry.isOpen() || !entry.trigger) return;
+    var r = entry.trigger.getBoundingClientRect();
+    entry.panel.style.right = popoverRight(r.right, window.innerWidth, entry.panel.offsetWidth, 12) + "px";
+  }
+  function popoverEntry(panel) {
+    for (var i = 0; i < popovers.length; i++) if (popovers[i].panel === panel) return popovers[i];
+    return null;
+  }
+  // 关掉 panel 以外的所有浮层
+  function closeOtherPopovers(panel) {
+    popovers.forEach(function (p) { if (p.panel !== panel) p.close(); });
   }
   function showPopover(panel, trigger) {
-    if (panel === switchPanel) closeSharePanel(); else closeSwitchPanel();
+    closeOtherPopovers(panel);
     panel.classList.remove("hidden");
     if (trigger) trigger.setAttribute("aria-expanded", "true");
-    placePopover(panel, trigger);
+    var entry = popoverEntry(panel);
+    if (entry) placePopover(entry);
   }
   function hidePopover(panel, trigger) {
     if (!panel) return;
@@ -3694,19 +3712,15 @@
     if (trigger) trigger.setAttribute("aria-expanded", "false");
   }
   window.addEventListener("resize", function () {
-    placePopover(sharePanel, shareBtn);
-    placePopover(switchPanel, switchBtn);
+    popovers.forEach(placePopover);
   });
   // 捕获阶段：浮层里的按钮自己的 click 照常触发；点在触发按钮上不算「外面」，
   // 交给按钮自己的切换（否则这里先关、按钮的 click 又打开）
   document.addEventListener("pointerdown", function (e) {
     var t = e.target;
-    if (isPopoverOpen(switchPanel) && !switchPanel.contains(t) && !(switchBtn && switchBtn.contains(t))) {
-      closeSwitchPanel();
-    }
-    if (isPopoverOpen(sharePanel) && !sharePanel.contains(t) && !(shareBtn && shareBtn.contains(t))) {
-      closeSharePanel();
-    }
+    popovers.forEach(function (p) {
+      if (p.isOpen() && !p.panel.contains(t) && !(p.trigger && p.trigger.contains(t))) p.close();
+    });
   }, true);
 
   // 不主动挪焦点：浮层在 DOM 里紧跟着 #share-btn，键盘用户按 Tab 就进去了；
@@ -3981,17 +3995,20 @@
     });
   }
   if (switchConfirmBtn) switchConfirmBtn.addEventListener("click", attemptSwitchConfirm);
-  // Esc 关闭：只在面板确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
+  // 顶栏浮层登记（见上面 registerPopover）：换主播在前，同看在后，Esc 的先后同以前的 if/else 链。
   // 同看面板走 closeSharePanel——只收起，不碰同看开关，跟卡片里的 × 同一个函数（pm.md #3）
-  // 关掉后焦点回到触发按钮，键盘用户不会掉到页面开头
+  registerPopover(switchPanel, switchBtn, closeSwitchPanel);
+  registerPopover(sharePanel, shareBtn, closeSharePanel);
+  // Esc 关闭：只在有浮层确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
+  // 关掉开着的那一个后焦点回到它的触发按钮，键盘用户不会掉到页面开头
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    if (isPopoverOpen(switchPanel)) {
-      closeSwitchPanel();
-      if (switchBtn) switchBtn.focus();
-    } else if (isPopoverOpen(sharePanel)) {
-      closeSharePanel();
-      if (shareBtn) shareBtn.focus();
+    for (var i = 0; i < popovers.length; i++) {
+      var p = popovers[i];
+      if (!p.isOpen()) continue;
+      p.close();
+      if (p.trigger) p.trigger.focus();
+      return;
     }
   });
 

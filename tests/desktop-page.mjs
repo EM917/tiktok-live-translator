@@ -112,6 +112,7 @@ export const ROOM = "https://www.tiktok.com/@luna_demo/live";
  *   cssVars             <html> 上 setProperty 写过的 CSS 变量（{名: 值}）
  *   store               localStorage 的当前内容（Map）
  *   disconnect()/connect()  切断 / 恢复发送
+ *   dispatch(type, event)   触发 document 上登记的监听（Esc、点外面关这类）
  */
 export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {}) {
   const html = web("index.html");
@@ -129,6 +130,7 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {
     byId.set(el.id, el);
   }
   const cssVars = {};
+  const docListeners = {};                      // document.addEventListener 记下来，dispatch() 手动触发
   const root = new FakeEl("html");
   root.lang = lang;                              // i18n.js 读的是 documentElement.lang
   root.style = {
@@ -142,7 +144,8 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {
     createElementNS: (_, tag) => new FakeEl(tag),
     createTextNode: (v) => new FakeText(v),
     createRange: () => ({ selectNodeContents() {} }),
-    addEventListener() {}, querySelector: () => null, querySelectorAll: () => [], hasFocus: () => true,
+    addEventListener: (type, cb) => { (docListeners[type] = docListeners[type] || []).push(cb); },
+    querySelector: () => null, querySelectorAll: () => [], hasFocus: () => true,
   };
   const sockets = [];
   const sent = [];
@@ -181,6 +184,8 @@ export function loadDesktop({ lang = "en", stored = {}, startMs = T * 1000 } = {
     all: () => [...byId.values()],
     push: (msg) => ws().onmessage({ data: JSON.stringify(msg) }),
     sent, cssVars, store, root, body: document.body,
+    // document 上的监听（捕获阶段的 pointerdown、Esc 的 keydown……）：照登记顺序逐个调，event 原样传进去
+    dispatch: (type, event) => { (docListeners[type] || []).slice().forEach((cb) => cb(event)); },
     advance: (ms) => { now += ms; },
     now: () => now,
     tick: (ms) => { intervals.filter((t) => t.ms === ms).forEach((t) => t.fn()); },
