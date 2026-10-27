@@ -230,8 +230,9 @@ Claude Sonnet 5.5，否则是最强的本地模型）；这个按钮按手机做
 （在浏览器里打开一个正在运行的应用窗口的地址，会看到这个按钮，点它会在应用里打开浮窗。）
 
 <a id="zh-viewer-comments"></a>**观众弹幕。** 评论由程序自己通过 TikTokLive 获取，这需要 Python 3.10 或更新版本；
-组件在首次开播时自动安装。一般免登录，TikTok 要求登录时会借用浏览器里的 TikTok 登录态
-重试一次。弹幕只在当前翻译引擎是本地模型（Hy-MT2 1.8B 或 TranslateGemma）或 Claude 时
+没装的话，程序启动时、或者开播要用弹幕时会自动装上（[做法说明](fault-tolerance.zh-CN.md#保住直播流)）。
+一般免登录，TikTok 要求登录时会借用浏览器里的 TikTok 登录态重试一次。
+弹幕只在当前翻译引擎是本地模型（Hy-MT2 1.8B 或 TranslateGemma）或 Claude 时
 翻译，用 Google、DeepL、OpenAI 或 7B 时面板只显示原文。用 Claude 时，弹幕由 Claude Haiku 5.5
 通过另一条连接翻译，并且先让字幕翻译，所以那条连接暂停不会拖慢字幕。弹幕翻译只用于显示，不进报警链路。连接签名经第三方服务，
 见[隐私与使用边界](../README.md#zh-privacy)。

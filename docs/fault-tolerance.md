@@ -132,20 +132,26 @@ valid for about two weeks, so one capture covers a whole stream. See also
 - The comment connection can go half-open: the Comments panel shows no
   warning, but no comments arrive. After 15 minutes of silence while
   connected, the app reconnects it and records that in the session audit.
-- yt-dlp is updated in the background: the app checks at most once a day,
-  and again when looking up the stream URL has failed twice in a row, once
-  that session's stream has stopped, unless a check finished in the last 6
-  hours. A failure where yt-dlp reports that the stream is not live or needs
-  a sign-in starts the count over, and a connection error is not counted. It
-  installs only a version released at least 7 days earlier, and never while
-  monitoring or during Update Now; the next Start uses it, with no restart.
-  TikTokLive is looked at only when TikTok refuses the comment connection,
-  under the same rules (a 7.x version at least 7 days old, not while
-  monitoring or during Update Now). Refusals come while monitoring, so in
-  practice this check installs nothing, and the Comments panel says the
-  component isn't updated during monitoring. A newer TikTokLive comes with
-  the app's own component list instead: Update Now installs one when the new
-  release requires it.
+- yt-dlp is updated in the background: once a check has finished, the app
+  does not check again for a day. It also checks when looking up the stream
+  URL has failed twice in a row, once that session's stream has stopped,
+  unless a check finished in the last 6 hours. A failure that says the
+  stream is not live, or where yt-dlp reports that it needs a sign-in,
+  starts the count over, and a connection error is not counted. It installs
+  only a version released at least 7 days earlier, and never while
+  monitoring or during Update Now. The next Start uses it, with no restart.
+- TikTokLive, which fetches viewer comments, is installed and updated along
+  several paths. If it is missing, the app installs it at startup, or when
+  a stream needs comments, trying at most once an hour. At startup the app
+  also upgrades a TikTokLive older than 7.0.1, again at most once an hour.
+  Both take the newest 7.x version whatever its release date, and neither
+  waits for monitoring to stop. When TikTok refuses the comment connection,
+  the app also looks for a newer TikTokLive, this time under the yt-dlp
+  rules (a 7.x version at least 7 days old, not while monitoring or during
+  Update Now). Refusals come while monitoring, so in practice this check
+  installs nothing, and the Comments panel says the component isn't updated
+  during monitoring. Update Now also installs a newer TikTokLive when the
+  new release requires one.
 - While monitoring, the computer is kept from going to sleep on its own, and a
   gap where the app did not run at all is recorded and shown on screen. The
   notice has a close button (×) and also goes away by itself after 10 minutes

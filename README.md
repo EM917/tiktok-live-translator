@@ -19,7 +19,7 @@
 
 Live captions for Spanish TikTok streams, with the translation under each line. Viewer comments are translated too. Paste a live link and click Start.
 
-It is for teams who follow Spanish live selling without speaking Spanish. One person runs the app on a computer, and colleagues watch on their phones. In the caption list, the Spanish appears as soon as it is recognized and the translation fills in a moment later, so a slow translation never holds a line back. The large caption at the bottom waits up to 4 seconds for the translation and then changes the whole line at once; if no translation has come by then, it shows the Spanish first. Speech recognition runs on your computer, and translation can too once Ollama is installed. You need no account and no API key, and nothing to pay.
+It is for teams who follow Spanish live selling without speaking Spanish. One person runs the app on a computer, and colleagues watch on their phones. In the caption list, the Spanish appears as soon as it is recognized and the translation fills in a moment later, so a slow translation never holds a line back. The large caption at the bottom changes the whole line at once as soon as the translation arrives, waiting at most 4 seconds for it. If none has come by then, or none will come for that line, it shows the Spanish first. Speech recognition runs on your computer, and translation can too once Ollama is installed. You need no account and no API key, and nothing to pay.
 
 It does not work for every stream. For some, TikTok gives the app no stream URL, and then there is nothing to caption. See [Limits](#en-limits).
 
@@ -108,9 +108,9 @@ Flags need a terminal: the `.app` does not take them, while `Start.command` and 
 
 The app checks GitHub for a new version when it starts. A banner at the top of the window then shows an Update Now button if you installed with git, or a download link if you installed from the zip. The banner stays hidden while a stream is running and comes back on the home screen. Click the version number at the bottom of the window to check by hand. During a stream, the answer appears next to the version number.
 
-Update Now installs the release named in the banner, not changes made after it that are not released yet. If the new version then starts twice and its window does not connect either time, the third launch goes back to the version you had before and opens it again. A dialog says which version it went back to, on macOS and on Windows; on a Mac started with `Start.command`, the Terminal window shows that line instead. One crash or force-quit before the window connects does not count, and the next launch runs the new version again. Opening the app twice at once does not count either, and neither does force-quitting it after its window has connected. The app does not go back if files in its folder were changed by hand.
+Update Now installs the release named in the banner, not changes made after it that are not released yet. If the new version then starts twice and its window does not connect either time, the third launch goes back to the version you had before and opens it again. A dialog says which version it went back to, on macOS and on Windows. On a Mac started from a Terminal window, for example with `Start.command`, that window shows the line instead. One crash or force-quit before the window connects does not count, and the next launch runs the new version again. Opening the app twice at once does not count either, and neither does force-quitting it after its window has connected. The app does not go back if files in its folder were changed by hand.
 
-The app also updates yt-dlp, which finds the stream URL, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now. When TikTok refuses the comment connection, the app looks for a newer TikTokLive, which fetches viewer comments, under the same rules: only a 7.x version released at least 7 days earlier, and not while monitoring or during Update Now. Refusals come while monitoring, so in practice this check installs nothing, and the Comments panel says the component isn't updated during monitoring. A newer TikTokLive comes with the app's own component list instead: Update Now installs one when the new release requires it.
+The app also updates yt-dlp, which finds the stream URL, on its own. It installs only versions released at least 7 days earlier, and never while monitoring or during Update Now. When TikTok refuses the comment connection, the app looks for a newer TikTokLive, which fetches viewer comments, under the same rules: only a 7.x version released at least 7 days earlier, and not while monitoring or during Update Now. Refusals come while monitoring, so in practice this check installs nothing, and the Comments panel says the component isn't updated during monitoring. TikTokLive is also installed in two other ways. When it is missing, the app installs it at startup or when a stream needs comments, and at startup it upgrades a TikTokLive older than 7.0.1. Both take the newest 7.x version whatever its release date, do not wait for monitoring to stop, and are tried at most once an hour. Update Now also installs a newer TikTokLive when the new release requires one. [Details](docs/fault-tolerance.md#keeping-the-stream).
 
 <a id="en-updating-zip"></a>
 
@@ -336,7 +336,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 给 TikTok 西语直播加实时字幕，每句话下面是译文，观众弹幕也一起翻。粘贴直播间地址，点「开始翻译」就行。
 
-给不懂西语、又要看西语带货直播的团队用：中控在电脑上开程序，同事用手机跟着看。字幕列表不等译文，识别出来先上屏，译文过一会儿补上；底部的大字幕最多等译文 4 秒，到了整句一起换，4 秒还没到就先显示西语。语音识别在你的电脑上跑，装了 Ollama 之后翻译也在本机，不用注册，不用 API Key，也不用花钱。
+给不懂西语、又要看西语带货直播的团队用：中控在电脑上开程序，同事用手机跟着看。字幕列表不等译文，识别出来先上屏，译文过一会儿补上；底部的大字幕最多等译文 4 秒，到了整句一起换；4 秒还没到、或者这一句不会有译文，就先显示西语。语音识别在你的电脑上跑，装了 Ollama 之后翻译也在本机，不用注册，不用 API Key，也不用花钱。
 
 不是每个直播间都能用：有些直播间 TikTok 不把流地址给程序，程序拿不到声音，就出不了字幕。见[已知限制](#zh-limits)。
 
@@ -425,9 +425,9 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 程序每次启动都会去 GitHub 查有没有新版本。有的话，窗口顶部出现一条横幅：用 git 装的，横幅上是「一键更新」按钮；用 zip 装的，是下载链接。直播进行中不显示这条横幅，停止后回到首页再显示。也可以随时点窗口底部的版本号手动检查，直播中检查的结果写在版本号旁边。
 
-「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。新版本如果启动了两次、窗口两次都没连上，第三次打开时会自动退回更新前的版本，再重新打开。退回后会弹窗说明退回到了哪个版本，Mac 和 Windows 都弹；Mac 上用 `Start.command` 启动的话，这句话写在「终端」窗口里。窗口连上之前崩了一次、或者被强行退出一次，不算，下一次打开照常用新版本。同时双击打开两次不算，窗口连上之后再强行退出也不算；程序文件夹里的文件被手动改过的话，不会退回。
+「一键更新」装的是横幅上写的那个发布版本，不会装它之后还没发布的改动。新版本如果启动了两次、窗口两次都没连上，第三次打开时会自动退回更新前的版本，再重新打开。退回后会弹窗说明退回到了哪个版本，Mac 和 Windows 都弹；Mac 上从「终端」启动的话（比如用 `Start.command`），这句话写在「终端」窗口里，不弹窗。窗口连上之前崩了一次、或者被强行退出一次，不算，下一次打开照常用新版本。同时双击打开两次不算，窗口连上之后再强行退出也不算；程序文件夹里的文件被手动改过的话，不会退回。
 
-程序还会自己更新 yt-dlp（查找直播流地址用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。TikTok 拒绝弹幕连接时，程序会按同样的规矩找新的 TikTokLive（获取观众弹幕用）：只装发布满 7 天的 7.x 版本，监听中和「一键更新」进行中都不装。拒绝都发生在监听中，所以实际上这一步什么也不装，「观众弹幕」面板会写「监听中不更新弹幕组件」。新的 TikTokLive 跟着程序自己的组件清单来：新版本要求更新的 TikTokLive 时，「一键更新」会装上。
+程序还会自己更新 yt-dlp（查找直播流地址用），只装发布满 7 天的版本，监听中和「一键更新」进行中都不装。TikTok 拒绝弹幕连接时，程序会按同样的规矩找新的 TikTokLive（获取观众弹幕用）：只装发布满 7 天的 7.x 版本，监听中和「一键更新」进行中都不装。拒绝都发生在监听中，所以实际上这一步什么也不装，「观众弹幕」面板会写「监听中不更新弹幕组件」。TikTokLive 另外还有两种安装途径：没装的话，启动时、或者一场直播要用弹幕时会装；启动时版本低于 7.0.1 的会升级。这两种装的都是 7.x 里最新的一版，不看发布满不满 7 天，也不等监听停下，一小时最多各试一次。新版本要求更新的 TikTokLive 时，「一键更新」也会装上。[详细说明](docs/fault-tolerance.zh-CN.md#保住直播流)。
 
 <a id="zh-updating-zip"></a>
 

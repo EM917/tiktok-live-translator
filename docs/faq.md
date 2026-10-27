@@ -357,8 +357,9 @@ with `--browser`. (A browser tab opened on the address of a running app window d
 it, and clicking it opens the window in the app.)
 
 <a id="viewer-comments"></a>**Viewer comments.** The app fetches comments itself through TikTokLive,
-which needs Python 3.10 or later; the component installs itself on the first
-start. It usually works signed out, and retries once with the browser's TikTok
+which needs Python 3.10 or later; when it is missing, the app installs it at
+startup or when a stream needs comments ([details](fault-tolerance.md#keeping-the-stream)).
+It usually works signed out, and retries once with the browser's TikTok
 sign-in when TikTok asks for one. Comments are translated only while the active
 engine is a local model (Hy-MT2 1.8B or TranslateGemma) or Claude; with Google,
 DeepL, OpenAI or 7B the panel shows the original text. With Claude, comments
