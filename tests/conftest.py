@@ -62,7 +62,7 @@ def _reconnect_rules_switch_is_not_inherited(monkeypatch):
 
 @pytest.fixture(scope="session")
 def _fresh_dir(tmp_path_factory):
-    """给下面两个 autouse fixture 发目录：每次调用返回一个全新、空、只给这一个用例的目录。会话开始时用
+    """给下面几个 autouse fixture 发目录：每次调用返回一个全新、空、只给这一个用例的目录。会话开始时用
     tmp_path_factory 建一个父目录，之后每次在里面按自增编号 mkdir 一个子目录。
 
     为什么不在每个用例里直接 tmp_path_factory.mktemp()：带编号的 mktemp（_pytest/pathlib.py 的
@@ -212,17 +212,17 @@ def _keep_glossaries_out_of_the_repo(_fresh_dir, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _keep_banned_terms_out_of_the_repo(tmp_path_factory, monkeypatch):
+def _keep_banned_terms_out_of_the_repo(_fresh_dir, monkeypatch):
     """app.pipeline 的违禁词表 TERMS_FILE 指到每个用例自己的一份临时副本，内容是入库模板 TERMS_EXAMPLE。
 
     CI 上 banned_terms.txt 不存在：第一次 load_detector() 从模板复制一份，之后的用例读的都是这份副本。这里
     每个用例开场就按 load_detector 的同一种写法复制好，本机和 CI 读到的就是同一份公开模板，不再是开发者
     本机的真实违禁词表。要别的内容的用例照旧自己 monkeypatch TERMS_FILE（几十个用例本来就这么做）。
-    目录用 tmp_path_factory 另开，理由同上面的词表。那张网记下的碰仓库 banned_terms.txt 由上面的
-    _keep_glossaries_out_of_the_repo 判失败。"""
+    目录由 _fresh_dir 另开，理由同上面的词表（不在 tmp_path 里，也不是每个用例一次带编号的 mktemp）。
+    那张网记下的碰仓库 banned_terms.txt 由上面的 _keep_glossaries_out_of_the_repo 判失败。"""
     from app import pipeline
 
-    terms = tmp_path_factory.mktemp("banned-terms") / "banned_terms.txt"
+    terms = _fresh_dir("banned-terms") / "banned_terms.txt"
     terms.write_text(pipeline.TERMS_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.setattr(pipeline, "TERMS_FILE", terms)
 
