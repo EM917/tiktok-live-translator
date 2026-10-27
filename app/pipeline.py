@@ -2724,7 +2724,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             await self._incident(
                 self.ENGINE_INCIDENT, "error",
                 L("{}，之后的字幕只显示了原文（违禁词报警不受影响）。下一场开始后会再试；"
-                  "可以在「翻译引擎」里{}",
+                  "可以在「设置 > 翻译引擎」里{}",
                   "{}. Captions after that showed only the original text (banned-term alerts "
                   "weren’t affected). The app tries again when the next session starts. In "
                   "Settings > Translation Engine, you can {}.").format(
@@ -5402,13 +5402,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if fallback is None:
                 self._engine_incident_up = True
                 self._engine_rejection = {"what": what, "status": status}   # 停止时改写用
+                # 这一族提示在直播中挂着，而设置分组直播中整块收起：叫人去换引擎、填密钥之前先说「停止」
+                # （专家审查 U4）。位置一律写「设置 > 翻译引擎」（V5，docs/i18n-style.md §1.3）
                 await self._incident(
                     self.ENGINE_INCIDENT, "error",
                     L("{}，字幕先显示原文（违禁词报警不受影响），程序每 {} 秒再试一次；"
-                      "可以在「翻译引擎」里{}",
+                      "点「停止」后可以在「设置 > 翻译引擎」里{}",
                       "{}. Captions show the original text (banned-term alerts aren’t "
-                      "affected). The app tries again every {} sec. In Settings > Translation "
-                      "Engine, you can {}.").format(
+                      "affected). The app tries again every {} sec. After you click Stop, you can "
+                      "{} in Settings > Translation Engine.").format(
                         what, BaseTranslator.REJECT_COOLDOWN_SEC,
                         L("换一个引擎", "choose another engine") if status == 404
                         else L("重新填写密钥，或换一个引擎",
@@ -5430,9 +5432,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             self._engine_rejection = None
             await self._incident(
                 self.ENGINE_INCIDENT, "error",
-                L("{}。字幕先显示原文（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎",
+                L("{}。字幕先显示原文（违禁词报警不受影响）；点「停止」后可以在「设置 > 翻译引擎」里换一个引擎",
                   "{}. Captions show the original text (banned-term alerts aren’t affected). "
-                  "You can choose another engine in Settings > Translation Engine.").format(what))
+                  "After you click Stop, you can choose another engine in Settings > Translation "
+                  "Engine.").format(what))
             return None
         if name in ("hymt2", "hymt2-7b", "gemma") \
                 and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
@@ -5440,10 +5443,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if audit is not None:
                 audit.translation_engine_error(name, status, error=said, model=model)
             text = L("{} 连续 {} 次没有译文，Ollama 返回 HTTP {}{}。字幕先显示原文"
-                     "（违禁词报警不受影响）；可以在「翻译引擎」里换一个引擎",
+                     "（违禁词报警不受影响）；点「停止」后可以在「设置 > 翻译引擎」里换一个引擎",
                      "{} returned no translation {} times in a row. Ollama returned HTTP {}{}. "
                      "Captions show the original text (banned-term alerts aren’t affected). "
-                     "You can choose another engine in Settings > Translation Engine.").format(
+                     "After you click Stop, you can choose another engine in Settings > "
+                     "Translation Engine.").format(
                         label, getattr(tr, "fail_streak", 0), status,
                         L("：", ": ") + said if said else "")
             self._engine_incident_up = True
@@ -5693,12 +5697,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             await old.close()
         except Exception:
             pass
-        back = (L("在「翻译引擎」里换好模型后重选 {} 即可回来。",
-                  "To switch back, change the model in Settings > Translation Engine, then "
-                  "choose {} again.") if status == 404
-                else L("在「翻译引擎」里重新填写密钥后重选 {} 即可回来。",
-                       "To switch back, re-enter the API key in Settings > Translation Engine, "
-                       "then choose {} again.")).format(
+        # 这句在直播中出现，设置分组那时收起着：先说「停止」（专家审查 U4，同 _note_engine_failure）
+        back = (L("点「停止」后在「设置 > 翻译引擎」里换好模型、重选 {} 即可回来。",
+                  "To switch back, click Stop, change the model in Settings > Translation "
+                  "Engine, then choose {} again.") if status == 404
+                else L("点「停止」后在「设置 > 翻译引擎」里重新填写密钥、重选 {} 即可回来。",
+                       "To switch back, click Stop, re-enter the API key in Settings > "
+                       "Translation Engine, then choose {} again.")).format(
                     engine_label(getattr(old, "name", None)))
         note = L("{}，本场已改用{}继续翻译。{}",
                  "{}. This session switched to {} to keep translating. {}").format(

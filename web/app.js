@@ -1122,14 +1122,15 @@
     ws.onopen = function () { retries = 0; offlineSince = 0; stickyOfflineDetail = ""; };
 
     ws.onclose = function () {
-      // 断开 20 秒还连不回来，多半是本地程序被关掉了——告诉用户怎么办，
-      // 而不是永远「重连中…」
+      // 断开 20 秒还连不回来：说看到了什么（20 秒没连上）和程序关了的话怎么办，而不是永远「重连中…」。
+      // 中文以前写「本地程序似乎已经关闭」，替中控认定了原因，英文却只说观察（专家审查 U4）：两边对齐成英文的意思
       if (!offlineSince) offlineSince = Date.now();
       var gone = Date.now() - offlineSince > 20000;
       setStatus({
         state: "offline",
         detail: gone
-          ? L("本地程序似乎已经关闭——请重新双击打开：macOS 双击「TikTok Live Translator.app」，Windows 双击「Start.bat」。",
+          ? L("超过 20 秒没有连上本地服务。如果程序已经关闭，请重新打开：macOS 双击「TikTok Live Translator.app」，" +
+              "Windows 双击「Start.bat」。",
               "No connection to the app’s local service for over 20 seconds. If the app has quit, reopen it. " +
               "On Mac, double-click TikTok Live Translator.app. On Windows, double-click Start.bat.")
           : stickyOfflineDetail,
@@ -1675,6 +1676,14 @@
   var failStreak = 0;
   var transBannerOn = false;
 
+  function translateFailText() {
+    return L("连续多条字幕没有译出来，字幕先显示原文（语音识别不受影响）。" +
+             "一直这样的话，点「停止」后可以在「设置 > 翻译引擎」里换一个引擎。",
+             "The last several captions couldn’t be translated, so captions show the original text. " +
+             "Speech recognition isn’t affected. If this continues, you can choose another engine in " +
+             "Settings > Translation Engine after you click Stop.");
+  }
+
   function trackTranslateHealth(msg) {
     if (msg.translate_state === "failed") {
       // 拒答（refused）是接口正常回了话、只是不译这一句：不算进连续失败，否则主播反复说
@@ -1688,11 +1697,10 @@
         transBannerOn = true;
         bannerHoldsStatus = false;           // 横幅里不再是 status 的字，见 bannerHoldsStatus
         statusBanner.classList.remove("folded");
-        setIconText(statusBanner, "warn",
-          L("连续多条字幕翻译失败——翻译服务可能暂时连不上，字幕先显示原文（语音识别不受影响）。",
-            "The last several captions couldn’t be translated, so captions show the original text. " +
-            "Speech recognition isn’t affected. If this continues, choose another engine in " +
-            "Settings > Translation Engine."));
+        // 只写看到的事和能做的事（专家审查 U4）：中文以前写「翻译服务可能暂时连不上」，猜了原因，英文却没猜；
+        // 英文还叫人直接去「设置 > 翻译引擎」，可设置分组在直播中整块收起，所以写明先点「停止」（用户 10-22 定 D2）。
+        // 两臂不含「可能 / 似乎 / might」由 tests/translate-fail-banner.test.mjs 钉着（D3：只管这一条）
+        setIconText(statusBanner, "warn", translateFailText());
         statusBanner.classList.remove("hidden");
         statusBanner.classList.remove("info");
       }
