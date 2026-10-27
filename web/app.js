@@ -3858,7 +3858,8 @@
       } else {
         markName(chip);
         chip.textContent = "@" + e.streamer;      // textContent：主播名当数据，不当 HTML
-        chip.title = L("填入并武装改听 @" + e.streamer + "（还要再点一次确认才会真的换）",
+        // 不写「武装」：那是代码里两段式确认的叫法（web/switch.js），不是给中控看的词（专家审查 V5）
+        chip.title = L("填入 @" + e.streamer + "，再点一次确认才会换",
                        "Select @" + e.streamer + ". You’ll still need to confirm.");
         chip.addEventListener("click", function () {
           switchInput.value = e.url;

@@ -151,11 +151,12 @@ function silentTooLong(connState, lastFrameAt, now) {
   return now - lastFrameAt > VIEWER_SILENT_SEC * 1000;
 }
 
-// 违禁词警示模式的手机端提示文案：中控这场没打开警示时，命中仍会记进审计，
+// 违禁词报警开关的手机端提示文案（界面上只说「报警」，不说「警示」，专家审查 V5）：
+// 中控这场没打开报警时，命中仍会记进审计，
 // 但手机上也看不到报警——不能让手机这边毫无提示，否则同看的人会误以为
 // 「这场很干净」。关闭时给一行常驻灰字；打开时不显示（返回空串，调用方据此隐藏）。
 function alertModeText(on) {
-  return on ? "" : L("违禁词警示已关闭（中控开播时未开启）", "Banned-term alerts are off for this session.");
+  return on ? "" : L("违禁词报警已关闭（中控开播时未开启）", "Banned-term alerts are off for this session.");
 }
 
 // 让「回放的 alert」与「随后实时同 id 的 alert」只渲染一份：只按 alert_id 取键，
@@ -1051,8 +1052,8 @@ if (typeof document !== "undefined") {
     // ---- 违禁词报警：最显眼的红卡片，新的插最前，最多 50 条 ----
     // 精确/变体/疑似三档不再靠 emoji 颜色区分，改成卡片左侧的分级色竖线
     // （跟桌面端 .alert-item.tier-variant/.tier-fuzzy 同一套逻辑，见 viewer.css）。
-    // 英文与桌面（web/live-ui.js）统一成 Exact / Variant / Similar；认不出的分级兜底写的「命中」
-    // 在桌面就是 exact 那一档的字，英文同样写 Exact（同一句中文只许有一种英文）
+    // 中英都与桌面（web/live-ui.js）统一：精确 / 变体 / 疑似、Exact / Variant / Similar。认不出的分级
+    // 按 exact 那一档兜底。兜底以前写「命中」（当时桌面 exact 档的字），桌面改叫「精确」以后跟着改（专家审查 V5）
     var TIER_LABEL = { exact: L("精确", "Exact"), variant: L("变体", "Variant"), fuzzy: L("疑似", "Similar") };
     function renderAlert(msg) {
       if (!alertSection || !alertList) return;
@@ -1081,7 +1082,7 @@ if (typeof document !== "undefined") {
       var labelText = document.createElement("span");
       // 词条是名字，单独一截；三截都在 labelText 里，.alert-head-label 的 flex 子项不变
       // 引号跟着语言换：中文「」，英文弯双引号 “”（docs/i18n-style.md §2.2）
-      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || L("命中", "Exact")) + L(" 「", " “")));
+      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || L("精确", "Exact")) + L(" 「", " “")));
       labelText.appendChild(textSpan(msg.term || "", true));
       labelText.appendChild(textSpan(L("」 ", "” ") + hhmmss(msg.ts)));
       headLabel.appendChild(labelText);

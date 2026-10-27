@@ -87,13 +87,13 @@
 | 违禁词 | **banned term** | prohibited word, prohibited term, forbidden word, blacklisted word | README 已经在用。term 也覆盖短语 |
 | 违禁词报警 | **Banned-Term Alerts**（设置行名），正文写 **banned-term alerts** | Compliance Alerts, Warnings | |
 | 疑似违禁词 | **possible banned term(s)**；面板标题写 **Possible Banned Terms** | suspected violation | 「疑似」是还没人工确认；violation 是法律判断，不该由程序下 |
-| 报警 | **alert** | alarm, warning | warning 留给自检的「提醒」这一级 |
-| 命中 | **match** | hit, trigger | |
-| 分级：命中 / 变体 / 疑似（手机上叫：精确 / 变体 / 疑似） | **Exact / Variant / Similar** | Fuzzy, Possible | fuzzy 是算法术语；Possible 会跟面板标题撞。手机和桌面统一成同一套 |
+| 报警 | **alert** | alarm, warning | warning 留给自检的「提醒」这一级。界面上「报警」是唯一的说法，不写「警报」「警示」：2026-10-26（专家审查 V5）以前桌面有「清空警报」「红色警报」、手机有「违禁词警示已关闭」，都改成了「报警」。终端那行 `[警报] …` 是终端前缀（`tests/i18n_rules.py` 的 `TERMINAL_PREFIXES`），终端永远中文、不在统一范围内 |
+| 命中 | **match** | hit, trigger | 只说「匹配到了」这件事（「命中时弹出报警 / Show alert on match」），不当分级名（下一行） |
+| 分级：精确 / 变体 / 疑似 | **Exact / Variant / Similar** | Fuzzy, Possible；中文不用「命中」 | fuzzy 是算法术语；Possible 会跟面板标题撞。手机和桌面统一成同一套。2026-10-26 以前桌面的 exact 档叫「命中」、手机叫「精确」（专家审查 V5）：「命中」已经留给 match（上一行），所以两边都叫「精确」 |
 | 自检 / 启动自检 | **Startup Check** | Self-Test, Self-check, Diagnostics, Health Check | health 已经被「识别落后」那条 health 提示占了。README 写的是 “Startup self-check”，界面用更短的写法 |
 | 自检项 | **check** | test, item | |
 | 通过 / 提醒 / 未生效 | **passed / warning / isn’t working** | failed（只在读屏的级别说明里用） | 「未生效」强调的是功能没起作用，不是测试没过。isn’t working 是苹果的常用说法 |
-| 翻译引擎 | **Translation Engine**；短写 **engine** | translator, provider | |
+| 翻译引擎 | **Translation Engine**；短写 **engine** | translator, provider | 提示里指这一行在哪，一律写「在「设置 > 翻译引擎」里」/ **in Settings > Translation Engine**（英文本来就是这一种）。2026-10-26（专家审查 V5）以前中文有五种：「在「翻译引擎」里」「在「设置 > 翻译引擎」里」「在页面上的「翻译引擎」里」「在页面的「翻译引擎」里」「在「翻译引擎」面板」。设置分组在直播中整块收起，所以**直播中**出现、叫人去换引擎或填密钥的提示，前面加「停止后」/ **after you click Stop**（专家审查 U4）。启动自检里那一项（自检的「翻译引擎」一行）是另一个东西，照写「自检的「翻译引擎」一项」 |
 | 回退（引擎） | **fallback**；正文写 **switched to {engine}** | downgrade | |
 | 本地模型 | **local model** | offline model | |
 | 免费额度 | **free quota** | free tier | |
@@ -509,7 +509,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 64 | settings-rows.js:48/49 | 开启 / 关闭 · 词表 {n} 条 / 词表为空 · 检查中… | On / Off · {n} terms / List empty · Checking… | 99 → 86 |
 | 65 | index.html:430 | 命中时弹出报警 | Show alert on match | 开关标签，Sentence case |
 | 66 | settings-rows.js:51/53/54 | 三种说明 | On: Listens to what the streamer says and alerts on a match right away. Translation speed doesn’t affect alerts. · Off: No alerts during the stream. Matches are still written to the audit log. Turn this on to get alerts. · Empty: The banned-term list is empty, so no alerts will be raised. | |
-| 67 | index.html:437 | 编辑项目文件夹里的 banned_terms.txt，一行一个词或短语，保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色警报并写入审计日志。 | Edit banned_terms.txt in the app folder, one word or phrase per line. Save, then click Stop and Start to apply. Matches show a red alert at the top of the window and are written to the audit log. | |
+| 67 | index.html:437 | 编辑项目文件夹里的 banned_terms.txt，一行一个词或短语，保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色报警并写入审计日志。 | Edit banned_terms.txt in the app folder, one word or phrase per line. Save, then click Stop and Start to apply. Matches show a red alert at the top of the window and are written to the audit log. | 2026-10-26 以前中文写「红色警报」（专家审查 V5，见 §1.3「报警」） |
 | 68 | index.html:455 | 磁盘空间 | Storage | 56 → 52 |
 | 69 | app.js:1667 | 剩余 {free} · 本机模型与日志 {total} | {free} available · Models and logs {total} | 238 → 约 250 |
 | 70 | app.js:1676、index.html:462 | 正在用 / 本程序 / 非本程序 + 说明 | In use / This app / Not this app · Items marked In use can’t be deleted. Models marked This app download again when needed. Items marked Not this app may be used by other tools, so check before deleting. | 标签和说明里的用词必须逐字一致。「自动重下」只说模型（中文「标『本程序』的模型删了……」、英文 Models marked）：审计日志和识别音频片段也标「本程序」，删了就没了，各自的说明写着 |
@@ -524,7 +524,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 73 | app.js:2129 | 当前 @x，确认前不会中断 / 确认前不会中断当前监听 | Now monitoring @x. Nothing changes until you confirm. / Monitoring continues until you confirm. | 12px 字号，会折成两行，可以接受 |
 | 74 | index.html:174 | 新主播的直播间地址或 @用户名 | New streamer’s live link or @username | 199 → 245 |
 | 75 | switch.js:94–103 | 确认换主播 / 换到 @B / 再点一次：改听 @B（停止监听 @A）/ 正在监听的就是 @A | Switch Streamer / Switch to @B / **Click Again to Switch to @B** / Already Monitoring @A | 武装态去掉括号那半句（@A 已经写在上面的副标题里）：415 → 283px。中文版这里本身就会溢出，见 §4 R3 |
-| 76 | app.js:2100/2103 | @x（当前）/ 填入并武装改听 @x（还要再点一次确认才会真的换） | @x (current) / Select @x. You’ll still need to confirm. | |
+| 76 | app.js:2100/2103 | @x（当前）/ 填入 @x，再点一次确认才会换 | @x (current) / Select @x. You’ll still need to confirm. | 换主播浮层里最近直播间 chip 的 title。2026-10-26 以前中文写「填入并武装改听 @x（还要再点一次确认才会真的换）」（专家审查 V5）：「武装」是代码里两段式确认的叫法，不是给中控看的词 |
 | 77 | index.html:190 | 沿用：主播语言 {x} | Keeps spoken language: {x} | |
 | 78 | app.js:2035 †index.html:193 | 切换期间两个主播都没有字幕，直到 @B / 新主播出现第一句。 | No captions from either streamer until @B starts speaking. / …until the new streamer starts speaking. | |
 | 79 | app.js:424/2168 | 认不出这个输入：请粘贴直播间链接，或输入主播的英文用户名（到主播主页复制 @ 后面的部分，中文昵称不行）。 | This isn’t a live link or username. Paste the live link, or enter the streamer’s username, which is the part after @ on their profile. Display names won’t work. | 开始面板里写在输入框下面（#room-input-error，输入框标 aria-invalid）。2026-10-23 以前走状态横幅、胶囊同时变红「Error」，专家审查 U9 改成就地提示。换主播浮层里写在 .switch-error |
@@ -547,6 +547,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 91 | app.js:1902、viewer.py:421 | 第一次打开时，系统可能弹出…请选允许。 | The first time you turn this on, macOS may ask to allow incoming network connections, or Windows Firewall may ask for access. Choose Allow. | |
 | 92 | app.js:1891、viewer.py:420 | 本机地址已从 {old} 变为 {new}，之前发出去的链接需要重新扫码 | This computer’s address changed from {old} to {new}. Phones need to scan the new QR code. | |
 | 93 | viewer.py:417 | 端口 {ports} 都没能打开监听，系统返回：{err}。已保持关闭。可以关掉占用这些端口的程序后再打开一次。 | Couldn’t open a port for Phone Viewing (tried {ports}). Details: {err}. Phone Viewing is still off. Quit apps that use those ports, then try again. | `{err}` 可能是系统给的任意语言，放在 Details 后面。`{ports}` 可能只有一个（8766）也可能是一段（8766–8770），所以写成 tried {ports}，不写 ports {ports} |
+| 93a | viewer.py NOTE_NO_IP | 已打开，但没读到本机的局域网地址（只读到回环地址），所以没出二维码。程序每分钟重读一次地址：把这台电脑连上手机所在的 Wi-Fi，读到地址后二维码就会出来；想马上重读，点「停止同看」再点「开始同看」。 | On, but the app couldn’t find this computer’s local network address (only the loopback address), so there’s no QR code. The app checks the address again every minute. Connect this computer to the phones’ Wi-Fi, and the QR code appears once the address is found. To check right away, click Stop Sharing, then Start Sharing. | 2026-10-26（专家审查 V5）以前叫中控在手机上手工输入 `http://<本机地址>:{port}/#k=<没显示的钥匙>`：这时载荷里没有口令、页面上也没有地方显示它，照着做做不成。「每分钟」是同看开着时重读地址的间隔（`IP_REFRESH_SEC`，`tests/test_ui_wording.py` 钉着两边一致）；只写看到了什么和能做的事，不猜为什么读不到 |
 
 ### G. 直播中的字幕区和弹幕列
 
@@ -564,7 +565,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 101 | app.js:1016/1017/1109 | 重译 / 重译中… / 重译失败 / 用更强的模型重新翻译这一条 | Retranslate / Retranslating… / Couldn’t retranslate / Retranslate with the stronger model | 悬停时才出现的按钮，68+16px |
 | 102 | app.js:1138/1146 | 翻译中… / 翻译失败 / 翻译已跳过（积压） | Translating… / Translation failed / Skipped (backlog) | |
 | 103 | session-divider.js:27 | ── 14:01:29 以下为 @x ── / 以下为新的一场 | ── 14:01:29 Now monitoring @x ── / New session | |
-| 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空警报 / 上一场 / 命中·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | |
+| 104 | index.html:225/227、app.js:1222、live-ui.js:62 | 疑似违禁词 / 清空报警 / 上一场 / 精确·变体·疑似 | Possible Banned Terms / Clear Alerts / Previous / Exact · Variant · Similar | 2026-10-26 以前按钮写「清空警报」、exact 档写「命中」（专家审查 V5，见 §1.3） |
 | 105a | live-ui.js captionStateChip / liveBarChip，app.js paintLiveState | （大字幕下面的角标，与历史卡片同一句）翻译失败 / 未翻译（接口拒答） / 未翻译（结果不像译文） / 翻译已跳过（积压） | Translation failed / Not translated (API refusal) / Not translated (the result didn’t look like a translation) / Skipped (backlog) | 2026-10-15 起大字幕也画角标，字取自同一个函数，卡片和大字幕不会分叉。只写看到的结局，不写原因（第八条）。还在等译文（翻译中…）的不画角标：每句都要走几秒，会闪 |
 | 105b | live-ui.js captionAgeText，app.js paintLiveLag | 约 {n} 秒前 / 约 {n} 分钟前（悬停：从这一句的声音结束算起，超过 15 秒才显示） | About {n} sec ago / About {n} min ago（hover: Counted from when the audio for this line ended. Shown after 15 sec） | 按 ts − e2e_ms（这一段音频结束的时刻）算，每秒涨一次。**超过 15 秒才出现**：健康的直播里一句上屏时是 2～3 秒，下一句 8～10 秒后来，换句前最老 12 秒上下（2026-10-13～15 的 3216 次换句：p50 10.4、p99 13.0 秒），所以平时这一行不在，它出现就是这一句停得比平常久（主播停了，或者积压了——只写数字，不猜是哪一种）。不到 15 秒、负数、缺 e2e_ms、超过 6 小时不写。不从最早一个词算：那样上屏就是 10 秒上下、一直在 10～18 秒之间转圈，中控没有基线。数字和单位不变形，不用分单复数 |
 | 105 | app.js:1297、viewer.js:724/819 | 译文失败（{why}）——请看上面的原话 | Couldn’t translate ({why}). See the original above. | 报警译到本场的目标语言，不一定是中文，中文也只说「译文」。手机报警的「译文正在补…」写 Translating…，不提具体语言 |
@@ -624,7 +625,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 129 | 重译会用更强的模型重新翻这一句，稍等几秒 | Retranslation uses a stronger model and takes a few seconds. | 2026-10-13 改：字幕引擎是 Claude 时重译用的是 Claude Sonnet 5.5，不在中控电脑上 |
 | 130 | 最新 / 弹幕 / 只看模式 · 不能操作 / 提示音 | Latest / Comments / View only / Sound | |
 | 131 | 页面切到后台或锁屏后，手机可能停掉提示音。 | Sounds may stop when this page is in the background or the phone is locked. | |
-| 132 | 演示数据，不是真实直播 / 违禁词警示已关闭（中控开播时未开启） | Demo data, not a real stream / Banned-term alerts are off for this session. | |
+| 132 | 演示数据，不是真实直播 / 违禁词报警已关闭（中控开播时未开启） | Demo data, not a real stream / Banned-term alerts are off for this session. | 2026-10-26 以前中文写「违禁词警示已关闭」（专家审查 V5，见 §1.3「报警」） |
 | 133 | 识别开始落后，报警会有延迟 / 检测已降级，识别明显落后 | Recognition is falling behind. Alerts will be delayed. / Detection degraded: recognition is far behind. | |
 
 ### J. 浮窗（float.html / float.js）

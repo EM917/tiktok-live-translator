@@ -220,7 +220,10 @@ def test_no_lan_address_still_opens_but_says_there_is_no_qr(setup):
     assert state["url"] is None
     assert state["qr_rows"] is None
     assert "没读到本机的局域网地址" in state["note"]
-    assert "127.0.0.1" in state["note"]        # 能自己确认服务本身在跑
+    # 专家审查 V5：以前叫中控在手机上手工输入一个页面上没显示的口令（#k=<没显示的钥匙>），照着做做不成。
+    # 现在只说程序会自己重读地址、连上 Wi-Fi 就出二维码，或者停了再开（tests/test_ui_wording.py 钉着全文）
+    assert "#k=" not in state["note"]
+    assert "连上手机所在的 Wi-Fi" in state["note"]
 
 
 def test_several_addresses_are_all_offered(setup):

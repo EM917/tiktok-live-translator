@@ -61,7 +61,7 @@ def test_the_engine_fallback_note_reads_in_both_languages():
     name, note = translator.restore_engine(None, "deepl", key_lookup=lambda env: None)
     assert name == "auto"
     assert note == ("上次选的翻译引擎 DeepL 还没有密钥，本次先用自动——"
-                    "在页面的「翻译引擎」里重新填一次即可")
+                    "在「设置 > 翻译引擎」里重新填一次即可")
     assert en(note) == ("The last engine you chose, DeepL, doesn’t have an API key yet, so "
                         "Automatic is used for now. Enter the key again in Settings > "
                         "Translation Engine.")
@@ -76,7 +76,7 @@ def test_a_missing_api_key_says_where_to_enter_it(monkeypatch, cls, who):
     monkeypatch.setattr(translator, "api_key", lambda name: None)
     with pytest.raises(RuntimeError) as info:
         cls()
-    assert str(info.value) == "还没有填 {} 密钥——在页面上的「翻译引擎」里填一次即可".format(who)
+    assert str(info.value) == "还没有填 {} 密钥——在「设置 > 翻译引擎」里填一次即可".format(who)
     text = of(info.value)
     assert isinstance(text, Bi)
     assert en(text) == "No {} API key yet. Enter it once in Settings > Translation Engine.".format(who)

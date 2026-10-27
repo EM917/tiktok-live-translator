@@ -519,16 +519,17 @@ NOTE_MULTI_IP = L("本机有多个网络地址：{ips}。二维码用的是 {ip}
                   "手机扫了打不开，就换列表里另一个地址手工输入。",
                   "This computer has several network addresses: {ips}. The QR code uses {ip}. If "
                   "a phone can’t open it, type another address from the list.")
+# 拿不到局域网地址时：以前叫中控在手机上手工输入 http://<本机地址>:{port}/#k=<没显示的钥匙>，可这时载荷里
+# 没有口令、页面上也没有地方显示它，照着做做不成（专家审查 V5）。现在只说看到了什么和能做的事：同看开着时
+# _viewer_ip_watch 每 IP_REFRESH_SEC（60 秒）重读一次地址，读到了就发新的二维码，所以写「每分钟」；
+# 不想等就停了再开（_set_viewer_share 开的时候当场读一次）。改了 IP_REFRESH_SEC 要跟着改这句
 NOTE_NO_IP = L("已打开，但没读到本机的局域网地址（只读到回环地址），所以没出二维码。"
-               "手机上手工输入 http://<本机地址>:{port}/#k=<没显示的钥匙> —— "
-               "本机地址可以在系统的网络设置里看到；也可以先在本机浏览器打开 "
-               "http://127.0.0.1:{port}/ 确认服务本身在跑。",
+               "程序每分钟重读一次地址：把这台电脑连上手机所在的 Wi-Fi，读到地址后二维码就会出来；"
+               "想马上重读，点「停止同看」再点「开始同看」。",
                "On, but the app couldn’t find this computer’s local network address (only the "
-               "loopback address), so there’s no QR code. On the phone, type "
-               "http://<this computer’s address>:{port}/#k=<the key not shown here>. This "
-               "computer’s address is in the system’s network settings. You can also open "
-               "http://127.0.0.1:{port}/ in a browser on this computer to check that the "
-               "service is running.")
+               "loopback address), so there’s no QR code. The app checks the address again every "
+               "minute. Connect this computer to the phones’ Wi-Fi, and the QR code appears once "
+               "the address is found. To check right away, click Stop Sharing, then Start Sharing.")
 # {err} 是系统给的原话（数据，可能是任何语言），放在 Details 后面
 NOTE_PORT_BUSY = L("端口 {ports} 都没能打开监听，系统返回：{err}。已保持关闭。"
                    "可以关掉占用这些端口的程序后再打开一次。",
@@ -588,7 +589,7 @@ def share_note(on, port=None, url=None, ip=None, ips=(), viewers=0,
     if url:
         lines.append(NOTE_OPEN.format(url=url))
     else:
-        lines.append(NOTE_NO_IP.format(port=port))
+        lines.append(NOTE_NO_IP)
     lines.append(NOTE_COUNT.format(n=viewers, max=MAX_VIEWERS))
     lines.append(NOTE_KEY)
     if url and len(ips) > 1:

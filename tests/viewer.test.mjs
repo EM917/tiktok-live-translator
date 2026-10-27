@@ -81,7 +81,7 @@ test("后端 server.status() 发出的每一种 state，手机都有自己的字
 
 // ---- alertModeText ----
 test("alertModeText: 关闭时给出常驻提示文案，打开时空串（调用方据此隐藏）", () => {
-  assert.equal(V.alertModeText(false), "违禁词警示已关闭（中控开播时未开启）");
+  assert.equal(V.alertModeText(false), "违禁词报警已关闭（中控开播时未开启）");
   assert.equal(V.alertModeText(true), "");
 });
 
@@ -762,7 +762,7 @@ test("alert_mode 广播：关闭时常驻灰字，打开时隐藏；新场次先
 
     ws.onmessage({ data: JSON.stringify({ type: "alert_mode", on: false }) });
     assert.equal(line.classList.contains("hidden"), false, "关闭时应该显示常驻提示");
-    assert.equal(line.textContent, "违禁词警示已关闭（中控开播时未开启）");
+    assert.equal(line.textContent, "违禁词报警已关闭（中控开播时未开启）");
 
     ws.onmessage({ data: JSON.stringify({ type: "alert_mode", on: true }) });
     assert.equal(line.classList.contains("hidden"), true, "打开时应该隐藏这一行");

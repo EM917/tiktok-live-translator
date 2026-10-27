@@ -149,14 +149,15 @@ test("窗口比浮层还窄（浮层宽已按 100vw-24 收过）：两边各 12"
   assert.equal(popoverRight(400, 420, 396, 12), 12);
 });
 
-test("报警分级文字；认不出的按「命中」，原型链上的键也不认", () => {
-  assert.equal(alertTierText("exact"), "命中");
+// exact 档写「精确」，和手机同一套（专家审查 V5）：「命中」在术语表里是 match（「命中时弹出报警」）
+test("报警分级文字：精确 / 变体 / 疑似；认不出的按 exact 那一档，原型链上的键也不认", () => {
+  assert.equal(alertTierText("exact"), "精确");
   assert.equal(alertTierText("variant"), "变体");
   assert.equal(alertTierText("fuzzy"), "疑似");
-  assert.equal(alertTierText("weird"), "命中");
-  assert.equal(alertTierText(undefined), "命中");
-  assert.equal(alertTierText("toString"), "命中");
-  assert.equal(alertTierText("__proto__"), "命中");
+  assert.equal(alertTierText("weird"), "精确");
+  assert.equal(alertTierText(undefined), "精确");
+  assert.equal(alertTierText("toString"), "精确");
+  assert.equal(alertTierText("__proto__"), "精确");
 });
 
 test("「回到最新」：没有新的就只写按钮名，有新的带上条数（字幕写「条新字幕」，弹幕写「条新弹幕」）", () => {

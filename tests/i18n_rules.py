@@ -142,7 +142,7 @@ UI_NAMES = {
     "换一个链接": "New Link",
     "清空字幕": "Clear",
     "清除记录": "Clear History",
-    "清空警报": "Clear Alerts",
+    "清空报警": "Clear Alerts",
     "清除已看过的报警": "Clear Seen",
     "回到最新": "Jump to Latest",
     "删除所选": "Delete Selected",
