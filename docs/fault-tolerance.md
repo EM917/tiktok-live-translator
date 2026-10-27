@@ -48,7 +48,8 @@ How the sign-in is used:
   sent in clear text.
 - The comment connection starts only after the first resolution returns:
   it opens with an anonymous request for the same page.
-- Reading Safari's cookies needs Full Disk Access for the app (see the
+- Reading Safari's cookies needs Full Disk Access for the Python interpreter
+  the app runs with, not for the app itself (see the
   [Browser Login FAQ](faq.md#browser-login)). Without a readable sign-in, monitoring
   still starts, resolution stays anonymous, and a persistent notice says what
   to do.
