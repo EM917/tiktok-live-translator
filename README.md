@@ -19,7 +19,7 @@
 
 Live captions for Spanish TikTok streams, with the translation under each line. Viewer comments are translated too. Paste a live link and click Start.
 
-It is for teams who follow Spanish live selling without speaking Spanish. One person runs the app on a computer, and colleagues watch on their phones. The Spanish appears as soon as it is recognized and the translation fills in a moment later, so a slow translation never holds a caption back. Speech recognition runs on your computer, and translation can too once Ollama is installed. You need no account and no API key, and nothing to pay.
+It is for teams who follow Spanish live selling without speaking Spanish. One person runs the app on a computer, and colleagues watch on their phones. In the caption list, the Spanish appears as soon as it is recognized and the translation fills in a moment later, so a slow translation never holds a line back. The large caption at the bottom waits up to 4 seconds for the translation and then changes the whole line at once; if no translation has come by then, it shows the Spanish first. Speech recognition runs on your computer, and translation can too once Ollama is installed. You need no account and no API key, and nothing to pay.
 
 It does not work for every stream. For some, TikTok gives the app no stream URL, and then there is nothing to caption. See [Limits](#en-limits).
 
@@ -336,7 +336,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 给 TikTok 西语直播加实时字幕，每句话下面是译文，观众弹幕也一起翻。粘贴直播间地址，点「开始翻译」就行。
 
-给不懂西语、又要看西语带货直播的团队用：中控在电脑上开程序，同事用手机跟着看。字幕不等译文，识别出来先上屏，译文过一会儿补上。语音识别在你的电脑上跑，装了 Ollama 之后翻译也在本机，不用注册，不用 API Key，也不用花钱。
+给不懂西语、又要看西语带货直播的团队用：中控在电脑上开程序，同事用手机跟着看。字幕列表不等译文，识别出来先上屏，译文过一会儿补上；底部的大字幕最多等译文 4 秒，到了整句一起换，4 秒还没到就先显示西语。语音识别在你的电脑上跑，装了 Ollama 之后翻译也在本机，不用注册，不用 API Key，也不用花钱。
 
 不是每个直播间都能用：有些直播间 TikTok 不把流地址给程序，程序拿不到声音，就出不了字幕。见[已知限制](#zh-limits)。
 
