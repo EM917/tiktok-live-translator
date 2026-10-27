@@ -11,7 +11,7 @@ README、FAQ 不提这个功能（公开读者拿不到闪购助手）。英文�
 
 ```
 闪购助手  GET http://127.0.0.1:9334/status
-   │  后端每 3 秒取一次；连不上或读不出时 15 秒；点「打开」成功后 30 秒内一律 3 秒
+   │  后端每 3 秒取一次；连不上或读不出时 15 秒（连上以后第一次没查到先照旧，3 秒后再查）；点「打开」成功后 30 秒内一律 3 秒
    ▼
 app/pipeline_flash.py  FlashSaleMixin._flash_watch
    │  app/flash_sale.py：fetch_status → StatusTracker.update（normalize、判陈旧、计卡住、排序、算 attention）
@@ -33,6 +33,9 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 - 只看两个位置：`/Applications/闪购助手.app`、`~/Applications/闪购助手.app`（`flash_sale.app_candidates`），不跑 mdfind；
   不是 macOS 一律当没装。按**完整路径**判断和打开，检测到的和打开的是同一个东西；不按 bundle id 打开（它不进公开仓库）。
 - 只在启动时判一次：`main.py` 在第一次 hello 之前 `await pipeline.attach_flash_sale()`。运行中装上或删掉，要重启才变。
+- 演示模式（`--demo`）不接：不查 9334、不画按钮。演示模式是拿来截图、录屏验界面的，9334 上是真实店铺的真实商品，
+  不能进截图（`tests/test_pipeline_flash.py` 读 main.py 的语法树钉着这个 `if not args.demo`）。要看按钮和浮层的样子，
+  用 G10 的 `live-flash*` / `home-flash*` 场景（状态由 `StatusTracker` 从契约的虚构样例生成）。
 - 没装：`server.config` 里**没有** `flash_sale` 这个键，页面就不画按钮（同浮窗的 `float_window`）。
 - 装了：先同步写一份 `conn: "checking"` 的空状态（第一次 hello 就带着，按钮不会晚一拍冒出来），再起轮询。
 - 不在 `Pipeline.__init__` 里检测：测试大量构造 Pipeline，开发机上可能真装着闪购助手，放在那里本机和 CI 的结果
@@ -46,7 +49,9 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 
 - `GET http://127.0.0.1:9334/status`，只监听本机。`Host` 必须是 `127.0.0.1:9334` 或 `localhost:9334`，否则 403
   （防 DNS 重绑定）；aiohttp 默认发的就是前者。只有 `/status`，只认 GET、HEAD。
-- 闪购助手和它开的专用 Chrome 同生共死：Chrome 一关它就退出，接口就连不上。**连不上 = 闪购助手没在运行**。
+- 闪购助手和它开的专用 Chrome 同生共死：Chrome 一关它就退出，接口就连不上。**连不上（连接被拒）= 闪购助手没在运行**。
+  连得上却不回话不算：闪购助手卡住（死锁、被挂起、HTTP 线程堵住）时内核照样完成握手，我们这边只看到读超时，
+  那正是要人去看的时候，见 §4 的 `why`。
 - `updated_at`：最后一次成功判断出状态的时刻（UTC，`Z` 结尾），后台每 2 秒刷新一次；`page=error` 时不刷新；
   还没判断过时为 null。
 - 代码表（认不出的代码原样显示，不给通用文案）：
@@ -66,7 +71,8 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 
 | 键 | 含义 |
 |---|---|
-| `conn` | `checking` 启动后还没查到；`ok` 连上并读懂了；`unreachable` 连不上或超过 2 秒没回；`bad_response` 有回话但读不出（非 200、302 不跟、非 JSON、不是对象、超过 1 MiB）。不是 `ok` 时商品和记录全部清空，不留旧数据 |
+| `conn` | `checking` 启动后还没查到；`ok` 连上并读懂了；`unreachable` 连不上（只有连接被拒才算：9334 上没人在听）；`bad_response` 9334 上有东西，但没拿到能用的回话（原因见 `why`）。不是 `ok` 时商品和记录全部清空，不留旧数据。连上以后第一次没查到不发布（§5） |
+| `why` | 只在 `bad_response` 时有，其余为 null：`no_answer`（2 秒内没回完，或者没回话就断开、被重置）、`cut_off`（回到一半断开）、`http`（回的不是 HTTP）、`http_<状态码>`（非 200，302 也不跟）、`too_large`（超过 1 MiB）、`json`（不是 JSON）、`not_object`（JSON 但不是对象）。页面只给 `no_answer` 单独一句「127.0.0.1:9334 在 2 秒内没有回应。」，其余都是「返回的内容读不出来」 |
 | `stale` | 只在 `conn=ok` 时可能为 true，见 §5 |
 | `updated_ms` | 只在 `stale` 为 true、且 `updated_at` 认得出时是 epoch 毫秒（页面写「上次更新 HH:MM:SS」），其余为 null。不下发 `updated_at` 本身：它每 2 秒变一次，下发了去重就失效 |
 | `app_version`、`page`、`running`、`paused_reason` | 照接口，清洗过 |
@@ -85,16 +91,23 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 ## 5. 轮询节奏与陈旧
 
 - 连上：每 3 秒；连不上或读不出：每 15 秒；点「打开闪购助手」、`open` 返回 0 之后 30 秒内一律 3 秒，并马上查一次。
+- **连续两次没查到才发布**：连上以后第一次没查到（连不上、读不出、没回话），`StatusTracker` 交回上一份状态，
+  陈旧和卡住的计时都留着，调用方看到的还是 `ok`，3 秒后再查；连续第二次才发布空状态、计时清零、退到 15 秒。
+  一次抖动（偶尔一次超时、事件循环卡了一下）不至于清空浮层、把按钮染橙 15 秒、把快满 60 秒的卡住计时清零
+  （否则 60 秒该报的卡住要推迟到两分多钟）；真的退出了也只晚 3 秒说。还没连上过、或上一次也没查到时照实发布。
 - 每一跳单独兜异常（一个 `except` 包住整个循环，出一次错轮询就永久停了），同一种异常终端只打一行。
-- 陈旧（`stale`）：`updated_at` 认得出时，`time.time() - updated_at > 15` 秒（差值是负数、时钟往回调过，当新鲜）；
-  `updated_at` 为 null 或认不出时，用单调时钟记「从哪一刻起一直拿不到」，连续超过 15 秒算陈旧。
+  连不上、读不出（原因变了也算）只在跳变时打一行。
+- 陈旧（`stale`）：**同一个 `updated_at` 在单调时钟上停了超过 15 秒**（null、认不出的都当同一个「没有」）。
+  不拿 `time.time()` 去减 `updated_at`：合盖睡眠时单调时钟不走（macOS 上 `time.monotonic` 是 `mach_absolute_time`）、
+  墙钟照走，醒来第一跳闪购助手多半还没刷新，墙钟一减就是睡了多久，会白白变一次色；墙钟往前往后调也不受影响。
+  代价是刚连上时要先看满 15 秒才判得出陈旧（哪怕它早就停了）。`updated_ms` 照旧下发 `updated_at` 的墙钟时刻，给页面写「上次更新」。
   `page=error` 时闪购助手不刷新 `updated_at`，15 秒后自然变成陈旧。
 - `parse_iso` 自己拆 ISO 8601，不用 `datetime.fromisoformat`：CI 最低是 Python 3.10，它不认结尾的 `Z`。
 
 ## 6. 卡住（stuck）与商品排序
 
 - **卡住**：商品 `state=stopped`、`enabled=true`，且闪购助手 `running=true`、`paused_reason=null`，**连续 60 秒**都这样。
-  后端按 `product_id` 用单调时钟记起点；任一条件断了、商品不在表里、这一次没连上，就清零；没有 id 的永远不算。
+  后端按 `product_id` 用单调时钟记起点；任一条件断了、商品不在表里、连续两次没查到，就清零；没有 id 的永远不算。
   60 秒来自闪购助手会话的实测：续开在屏幕上 2–5 秒，循环闪购重设 8–15 秒，商品多、卡片不在可视区时 30–40 秒。
   一停就变色的话，每次正常续开按钮都会闪一下橙色。
 - 浮层里条件满足、还没满 60 秒的商品写「等闪购助手续开」，满了写「停了超过 1 分钟」。前端的条件
@@ -102,23 +115,29 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 - **排序**（要人看的在前，同一档保持闪购助手给的顺序）：卡住的 stopped → pending → unknown → live → between_rounds →
   没卡住的 stopped（还在续开计时里、或不自动续开）→ no_sale → ended_by_user → 认不出的。后端 `flash_sale._rank` 和
   前端 `flash.js flashRank` 是同一张表；前端再排一次是稳定排序，对后端排好的结果没有影响。
-- 浮层先列 40 个，其余收进「还有 N 个」，点开全列（浮层本身可滚动）。
+- 浮层先列 40 个，其余收进「还有 N 个」，点开全列（浮层本身可滚动）。点开后按钮自己藏起来，焦点要是在它身上就挪到
+  商品列表（`#flash-products` 带 `tabindex="-1"`，不滚动），键盘和读屏的人不会掉回页面开头。
 
 ## 7. 什么时候变色
 
-按钮变橙色并带一个 7px 的橙点（形状和颜色一起变），`title` / `aria-label` 跟着写「闪购助手 · 要处理」。任一成立：
+按钮变橙色并带一个 7px 的橙点（形状和颜色一起变；点用 `--orange-ink`，叠在按钮的橙底上浅色 4.64:1、深色 4.98:1，
+过非文字元素的 3:1），`title` / `aria-label` 跟着写「闪购助手 · 要处理」。任一成立：
 
 1. `stale`：连得上，但超过 15 秒没更新；
 2. `page`：page 是 login_required、captcha、error；或 page 是 no_list 且 running 为 true；
 3. `paused`：paused_reason 不是 null 也不是 not_started（awaiting_approval、captcha、user_interaction、error、认不出的都算）；
 4. `stuck`：有商品卡住（§6）；
-5. `bad_response`：9334 有回话但读不出；
+5. `bad_response`：9334 上有东西，但没拿到能用的回话——读不出，或者连得上、2 秒内没回完（`why=no_answer`，
+   闪购助手卡住时就是这样。用户定的规则里只写了「连不上不变色」「回了但读不出变色」，连得上不回话是按「漏报代价大」
+   归到变色这一边的）；
 6. 未读的问题记录（前端算，不在 `attention` 里）：level=error，或 level=warn 且正文以 ❌ 开头，按 `(at_ms, text)`
-   和「已看过」比。打开浮层即记成已看，存 localStorage 的 `flashSeen`（读写都包 try/catch，存不了时只在这一页记着）。
-   浮层开着时新来的问题记录照样算没看过，下次打开才记。
+   和「已看过」比。打开浮层即记成已看（按钮马上恢复原色），存 localStorage 的 `flashSeen`（读写都包 try/catch，
+   存不了时只在这一页记着）。浮层开着期间照**打开前**的「已看过」画：打开那一刻没看过的问题记录照样加粗列着（比最后 5 条早
+   的也列），主句照样写「有 n 条新的问题」，关上再开才收起——不然让按钮变色的那一条一打开就从浮层里不见了。
+   浮层开着时新来的问题记录照样算没看过（按钮再变色），下次打开才记。
 
-不变色：连不上（闪购助手没开）、正在查看、not_started、loading、no_page、`enabled=false` 的 stopped、ended_by_user、
-no_sale、unknown。
+不变色：连不上（连接被拒，闪购助手没开）、正在查看、not_started、loading、no_page、`enabled=false` 的 stopped、
+ended_by_user、no_sale、unknown。
 
 1–5 由后端 `flash_sale.attention()` 算，`attention` 表按上面的顺序排好。浮层顶部第一句写最要紧的那条
 （stale → page → paused → stuck → bad_response → 认不出的提醒代码 → 未读记录），后面跟着只是说明现状的句子
@@ -160,7 +179,8 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
   `fetch_status` 的默认地址在调用时才取 `STATUS_URL`，这张网才兜得住。
 - 要测「装了」：`attach_flash_sale(platform="darwin", candidates=(tmp 目录,))`。
 - 要测「连上了」：`tests/test_flash_sale_http.py` 用 `aiohttp.test_utils.TestServer` 在本机临时端口起假的 `/status`，
-  照契约检查 `Host`（不对就回 403）；`tests/test_pipeline_flash.py` 换掉 `_flash_fetch`、`_flash_exec`、`_flash_wall`、
+  照契约检查 `Host`（不对就回 403）；连得上不回话、回到一半断开、回的不是 HTTP 这几种用本机临时端口上的裸 TCP 对端
+  （或只 `listen()` 不 `accept()` 的套接字）测。`tests/test_pipeline_flash.py` 换掉 `_flash_fetch`、`_flash_exec`、
   `_flash_mono`、`_flash_sleep`，不起真的网络和子进程。
 - 夹具：`tests/fixtures/flash_sale/{idle,running,awaiting}.json` 是契约的虚构样例原样（标题都是「(Fictional)」，
   店铺是 `example_shop`）；`message-running.json` 是推给页面的形状，前端的 node 测试用它。
