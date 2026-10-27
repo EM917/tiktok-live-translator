@@ -153,8 +153,21 @@ of it was checked. Details: [Keeping the stream](fault-tolerance.md#keeping-the-
 To go back to the previous reconnect rules for one run (look up the stream URL
 on every reconnect, stop after six connection attempts in a row with no audio,
 "attempt N of M" in the status line), start the app with `TLT_RECONNECT_V2=0`.
-The notices above, the limits on how long stopping a stalled stream can take,
-and the audit records stay the same.
+FLV streams then also go back to ffmpeg's own reconnect. The notices above, the
+limits on how long stopping a stalled stream can take, and the audit records
+stay the same. `TLT_FFMPEG_LEGACY=1` is a separate switch: it brings back the
+previous ffmpeg options and leaves the reconnect rules alone. How the two
+combine is in [Keeping the stream](fault-tolerance.md#keeping-the-stream).
+
+**Switches that stay off by default.** `TLT_ASR_TOKEN_CAP=on` (stop decoding a
+segment after 112 tokens), `TLT_ASR_MASK_LANGS=on` (pick the language from the
+Spoken language list during detection instead of decoding a segment twice) and
+`TLT_LOW_BITRATE_STREAM=1` (take the lowest quality when TikTok offers no
+audio-only track) are off unless you set them when starting the app. Each can
+change what is recognized, or how soon, so read the evaluation of a switch
+before turning it on. None has been run yet, so leave them off for now. What
+each one changes, and what the evaluation has to check, is in
+[Switches that stay off by default](fault-tolerance.md#switches-that-stay-off-by-default).
 
 <a id="captions-in"></a>**Switching Captions in to English didn't change the interface.** The
 **Captions in** menu in the top bar sets only the language captions are

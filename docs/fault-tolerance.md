@@ -125,7 +125,9 @@ valid for about two weeks, so one capture covers a whole stream. See also
 - How the two switches combine: `TLT_RECONNECT_V2=0` changes only how FLV
   reconnects among the ffmpeg options and keeps the other two new options.
   `TLT_FFMPEG_LEGACY=1` brings back all three, whichever reconnect rules are
-  in use, and does not change the reconnect rules.
+  in use, and does not change the reconnect rules. While either one is set,
+  `TLT_LOW_BITRATE_STREAM=1` ([below](#switches-that-stay-off-by-default))
+  has no effect.
 - The comment connection can go half-open: the Comments panel shows no
   warning, but no comments arrive. After 15 minutes of silence while
   connected, the app reconnects it and records that in the session audit.
@@ -162,3 +164,33 @@ valid for about two weeks, so one capture covers a whole stream. See also
 - Translation never slows recognition. Its queue holds four lines and drops
   the oldest when full; a line whose translation was skipped keeps its
   original text.
+
+## Switches that stay off by default
+
+Three changes are in the code but stay off unless the app is started with an
+environment variable. Each can change what is recognized, or how soon, so each
+needs an evaluation before it is turned on. Read that evaluation first; none
+has been run yet, so leave them off for now. The session audit does not record
+yet whether they are on. Only `on`, `1`, `true` or `yes` turns one on; anything
+else leaves it off.
+
+- `TLT_ASR_TOKEN_CAP=on` stops decoding a segment after 112 tokens. A segment
+  that repeats itself otherwise decodes up to the model's limit (224 tokens
+  with mlx-whisper). In 4,800 segments from earlier sessions, all 112 that
+  reached 112 tokens or more had been dropped as repeats. The evaluation has to show
+  that real speech is not cut short, since banned-term matching reads the same
+  text, and that a shortened repeat does not start showing up as a caption.
+- `TLT_ASR_MASK_LANGS=on` changes what happens to a segment detected in a
+  language outside the Spoken language list. Today it is decoded a second time
+  in the first language of the list. With the switch on, the most likely
+  language from the list is picked during language detection and the segment
+  is decoded once. It applies only when the list has more than one language.
+  The evaluation has to measure the extra detection time and compare the text.
+- `TLT_LOW_BITRATE_STREAM=1` changes which stream is taken when TikTok offers
+  no audio-only track: the lowest quality instead of the first one listed,
+  which so far has always been the original or the HD quality. The WebKit
+  layer still picks as before, and so does a live page whose stream data
+  cannot be read, when addresses are taken from the page text. It has no
+  effect while `TLT_FFMPEG_LEGACY=1` or `TLT_RECONNECT_V2=0` is set. The audio of the lower
+  quality has not been compared with the original yet (format, sample rate,
+  channels and delay, measured in the same minute on a stream that is live).
