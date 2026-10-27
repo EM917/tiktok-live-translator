@@ -5,6 +5,7 @@
 """
 import copy
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -464,6 +465,24 @@ def test_the_node_fixture_is_what_the_tracker_sends():
     assert [by_id[p["id"]] for p in sent["products"]] == sent["products"]
     assert [p["state"] for p in sent["products"]] == ["stopped", "pending", "unknown", "live", "live", "live",
                                                       "between_rounds", "no_sale", "ended_by_user"]
+
+
+def test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend():
+    """前端 web/flash.js 有三处照抄了后端的东西，这里逐项对上，哪边改了另一边没跟就红：
+    - flashRank 的排序表和 flash_sale._RANK（卡住的 0 档、认不出的最后一档）；
+    - FLASH_ATTN_ORDER（浮层主句的先后）和 attention() 排出来的顺序；
+    - 文案里写死的数：连不上「每 15 秒再查一次」= POLL_DOWN_SEC，「停了超过 1 分钟」= STUCK_SEC。"""
+    js = (Path(__file__).resolve().parent.parent / "web" / "flash.js").read_text(encoding="utf-8")
+    body = re.search(r"function flashRank\(p\) \{(.*?)\n\}", js, re.S).group(1)
+    assert {code: int(n) for code, n in re.findall(r'case "(\w+)": return (\d+);', body)} == fs._RANK
+    assert "p.stuck === true) return {};".format(fs._RANK_STUCK) in body
+    assert "default: return {};".format(fs._RANK_OTHER) in body
+    order = json.loads(re.search(r"var FLASH_ATTN_ORDER = (\[[^\]]*\]);", js).group(1))
+    every = fs.attention({"conn": "ok", "stale": True, "page": "captcha", "running": True, "paused_reason": "error",
+                          "products": [{"stuck": True}]})
+    assert order == every + fs.attention({"conn": "bad_response"})
+    assert fs.POLL_DOWN_SEC == 15 and "每 15 秒再查一次" in js and "Checking again every 15 sec." in js
+    assert fs.STUCK_SEC == 60 and "停了超过 1 分钟" in js and "Stopped for over 1 min" in js
 
 
 def test_the_samples_raise_the_documented_attention():
