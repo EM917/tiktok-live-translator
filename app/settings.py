@@ -10,6 +10,10 @@ from datetime import datetime
 from pathlib import Path
 
 SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
+# 设置文件的权限位：只给本账户读写（见 _create_private）。os.open 的 mode 只在新建文件时生效，
+# 还要再被 umask 过一遍——umask 只会把它收得更窄，不会放宽
+_PRIVATE_MODE = 0o600
+_WINDOWS = os.name == "nt"      # Windows 上照旧复用临时文件（见 _create_private）
 
 # 本次运行里发现 settings.json 内容损坏时备份成的文件名，以及界面提示是否已发过
 _corrupt = {"backup": None, "announced": False}
@@ -219,11 +223,37 @@ def save_setting(key, value):
         data[key] = value
         try:
             tmp = SETTINGS_FILE.with_suffix(".json.tmp")
-            with open(str(tmp), "w", encoding="utf-8") as f:
+            fd = _create_private(tmp)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(json.dumps(data, ensure_ascii=False, indent=2))
                 f.flush()
                 # 先落盘再替换：写完就断电时，不至于换上一个 0 字节的 settings.json
                 os.fsync(f.fileno())
+            # 换上去的就是刚建的这个 0600 文件：升级前就是 0644 的 settings.json 随之被替掉，不用再 chmod
             os.replace(tmp, SETTINGS_FILE)
         except OSError:
             pass
+
+
+def _create_private(tmp):
+    """新建临时文件、返回可写的 fd。POSIX 上这个文件从建出来那一刻起就只给本账户读写（0600）：
+    settings.json 里存着 DeepL / Claude 的密钥，以前按默认 umask 建成 0644，同一台电脑上别的账户
+    也读得到。
+
+    不复用旧文件：上次写到一半中断（断电、被强杀）留下的 .json.tmp 是按老办法建的 0644，os.open
+    的 mode 管不到已经存在的文件，带 O_TRUNC 打开它，密钥就会先写进一个 0644 的文件。所以先删掉
+    残留，再用 O_CREAT | O_EXCL 新建：O_EXCL 保证拿到的是这一次新建的文件——删完到建之间被别人
+    抢先建了、或者这个路径是符号链接，都直接报错，这一次不写（save_setting 照旧静默忽略），绝不
+    写进别人建的文件。
+
+    Windows 照旧（O_CREAT | O_TRUNC，复用残留）：那边 mode 只认只读位、权限归 ACL 管，先删再建
+    换不来更窄的权限。O_BINARY（只有 Windows 有）：和 open() 一样让底层 fd 不做换行转换，换行只由
+    文本层处理一次，写出的字节和以前相同。"""
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0)
+    if _WINDOWS:
+        return os.open(str(tmp), flags | os.O_TRUNC, _PRIVATE_MODE)
+    try:
+        os.unlink(str(tmp))
+    except FileNotFoundError:
+        pass
+    return os.open(str(tmp), flags | os.O_EXCL, _PRIVATE_MODE)

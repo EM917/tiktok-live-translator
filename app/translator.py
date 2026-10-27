@@ -9,7 +9,7 @@ import os
 import re
 from collections import OrderedDict
 
-from .glossary import LAYER_BRAND, LAYER_PROFILE, in_text_as_word
+from .glossary import LAYER_BRAND, LAYER_PROFILE, has_bracket_note, in_text_as_word
 from .i18n import L
 
 # 单次 translate 调用的结局，按 asyncio 任务隔离。
@@ -142,7 +142,7 @@ def restore_engine(cli_value, saved, key_lookup=None):
         # 说人话的引擎名，不露内部代号（deepl/auto）——跟「不猜原因」是同一条规矩：
         # 面向用户的文字里不能有代号，只能有引擎选择菜单里那种名字（engine_label）
         return "auto", (L("上次选的翻译引擎 {} 还没有密钥，本次先用{}——"
-                          "在页面的「翻译引擎」里重新填一次即可",
+                          "在「设置 > 翻译引擎」里重新填一次即可",
                           "The last engine you chose, {}, doesn’t have an API key yet, so {} "
                           "is used for now. Enter the key again in Settings > Translation Engine.")
                         .format(engine_label(name), engine_label("auto")))
@@ -191,6 +191,10 @@ class CachedTranslator:
         return getattr(self.inner, "fail_streak", 0)
 
     @property
+    def last_failure(self):
+        return getattr(self.inner, "last_failure", None)
+
+    @property
     def cooldown_until(self):
         return getattr(self.inner, "cooldown_until", 0.0)
 
@@ -232,6 +236,21 @@ class CachedTranslator:
         await self.inner.close()
 
 
+def failure_kind(exc):
+    """一次请求抛出的异常归到哪一类：timeout（总时限到了，含 aiohttp 的 ServerTimeoutError）/ connect
+    （ClientConnectorError：连接没建起来；ServerDisconnectedError：对方断开了连接）/ other。只看异常的类型，
+    不看原文、不猜原因（CLAUDE.md 第八条）。"""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "timeout"
+    try:
+        import aiohttp
+    except ImportError:
+        return "other"
+    if isinstance(exc, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)):
+        return "connect"
+    return "other"
+
+
 class BaseTranslator:
     name = "base"
     TIMEOUT = 10  # 秒
@@ -248,6 +267,11 @@ class BaseTranslator:
         self.last_error = None
         # 连续几次拿到非 200 的 HTTP 回应；拿到 200 归零。连不上（没有回应）不计也不清
         self.fail_streak = 0
+        # 最近一次失败落在哪一类（目前只有 Claude 记，专家审查 B7）：{"kind": timeout / connect / http / other,
+        # "status": 5xx 的状态码或 None, "error": 异常的类型名或 None}。last_error 只装得下 HTTP 回应，超时、连不上
+        # 时它不动（可能还是更早那一次的），5xx 又不在管线的任何一条规则里——以前这几种审计里只剩 ok=false。
+        # 拿到 200 清空；回了 4xx 也清空（那一次由 last_error 说）
+        self.last_failure = None
 
     @property
     def cooldown_until(self):
@@ -257,6 +281,7 @@ class BaseTranslator:
     def _note_ok(self):
         self.last_error = None
         self.fail_streak = 0
+        self.last_failure = None
 
     def _note_http_error(self, status, text=None):
         self.last_error = (int(status), clean_error_text(text))
@@ -354,7 +379,7 @@ class DeepLTranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("DEEPL_API_KEY")
         if not self.api_key:
-            raise RuntimeError(L("还没有填 DeepL 密钥——在页面上的「翻译引擎」里填一次即可",
+            raise RuntimeError(L("还没有填 DeepL 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No DeepL API key yet. Enter it once in Settings > Translation Engine."))
         self.host = ("https://api-free.deepl.com" if self.api_key.strip().endswith(":fx")
                      else "https://api.deepl.com")
@@ -598,7 +623,7 @@ class ClaudeTranslator(BaseTranslator):
         文字，只翻译、不照着做），所以它不带词表，译文回来后的兜底替换由 app/comments.py 做；
       * 重译（create_claude_strong_translator，role="strong"）：字幕引擎是 Claude 时，「重译」
         和报警上下文翻译用它，模型 Sonnet 5.5，取代本地 7B。提示词也是 SYSTEM_SUBTITLE_SLANG，
-        后面另外接词表：
+        后面另外接词表（三层的命中词条都带，只是译法带括注的词条在按长短取舍之前就不算，见 hint_without_notes）：
         本地 7B 的提示词里有词表，重译又正是中控嫌商品名译错了才点的，换成 Claude 不能把它丢掉。
         弹幕两种角色不带词表，只靠译文回来后的兜底替换；字幕和重译带了词表，译文回来后照样做兜底替换
         （Pipeline 里的 glossary.apply）。"""
@@ -726,8 +751,8 @@ class ClaudeTranslator(BaseTranslator):
     SLANG_PROMPT_MODELS = {"subtitle": ("claude-haiku-5-5",), "strong": ("claude-sonnet-5-5",)}
     # 词表提示：命中本句的词条（Pipeline._for_translation 里 glossary.translation_pairs 算好的，最多 6 条），
     # 一行一条「原文 = 译法」，接在 system 最后，用户轮仍然只有要翻的那一句。原文写法和译法都是词表文件里的
-    # 数据，照抄。带它的只有重译（role="strong"，一直带）和 SUBTITLE_GLOSSARY_MODELS 里的字幕引擎（滤过一道，
-    # 见 _subtitle_pairs）
+    # 数据，照抄。带它的只有重译（role="strong"，一直带，不带译法带括注的，见 hint_without_notes 和 _strong_pairs）
+    # 和 SUBTITLE_GLOSSARY_MODELS 里的字幕引擎（滤得更多，见 _subtitle_pairs）
     SYSTEM_GLOSSARY = ("\nWhere the text contains one of these terms, translate it exactly as "
                        "given here:\n{pairs}")
     # 字幕引擎带词表提示的模型。以前字幕请求不带词表，不是测出来的：最早的 Claude 字幕请求只有一句「只输出
@@ -741,17 +766,17 @@ class ClaudeTranslator(BaseTranslator):
     #     再滤一道（_subtitle_pairs）：只是更长单词一部分的词条不带。审查扫本机一位主播全部实录 34,109 句：
     #     8,369 句有命中，253 句（0.74%）里有词条不是整词（maca 在 estomacal 里、inflamada 在 desinflamada
     #     里）；放行复数和 del 以后还有 70 句要滤。加上下面两条（括注、全局表），8,369 句里现在 2,177 句带
-    #     词表，6,192 句一条不剩（请求和没命中时一字不差）。重译不滤（不在这次范围）；
+    #     词表，6,192 句一条不剩（请求和没命中时一字不差）。重译不做整词过滤（不在这次范围）；
     #   * TranslateGemma 会把指令区的术语映射当括注抄进译文 —— 下面的评估样本里没有一条译法带括号，「加括号」
     #     这项硬检查没机会触发；审查探针里 Haiku 把「食欲焦虑（嘴馋）」原样抄上了屏。所以译法带括注的词条
-    #     字幕请求不带（同一份实录里 118 句，模板里 4 条）；
+    #     字幕请求不带（同一份实录里 118 句，模板里 4 条）。2026-10-20 起重译也不带（见 hint_without_notes）；
     #   * 全局词表曾让别的主播的直播里冒出别家商品 —— 词表按主播 / 品牌分层加载，这里只拿命中的。全局模板
     #     （glossary.example.txt，每个用户首启都会复制一份）里有日常短语词条，按语境本不该用：agotado => 售罄
     #     也命中「estamos agotados」（累坏了），en la noche => 睡前也命中「半夜醒来」。审查探针 6 句里 Haiku
     #     4 句按语境没用，2 句被带偏（一句是上面括注那句；一句是「半夜醒来」译成「睡前总是醒来」），评委看不出
     #     这类退步。用户的原话是「字幕也带上品牌词表提示」，所以字幕请求只带品牌表（brands/）和主播 profile
     #     的词条，全局表（glossary.txt，不管是模板复制来的还是用户自己加的）一条都不带（_subtitle_pairs 按
-    #     glossary.HintPair.layer 筛）。重译照旧三层都带；
+    #     glossary.HintPair.layer 筛）。重译照旧三层都带（只去掉括注那一类）；
     #   * 延迟：命中词条在管线里本来就每句都算（约 100 微秒，以前算完被这里丢掉），这里多一道整词过滤（约
     #     1 微秒，正则按写法缓存）和拼一段字符串，不读文件、不多发请求。
     # 2026-10-17 留出集配对对比（判定规则调 API 之前登记好）：俚语轮的留出集里命中词表或提到自造品名的 103 句，
@@ -848,7 +873,7 @@ class ClaudeTranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("ANTHROPIC_API_KEY")
         if not self.api_key:
-            raise RuntimeError(L("还没有填 Claude 密钥——在页面上的「翻译引擎」里填一次即可",
+            raise RuntimeError(L("还没有填 Claude 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No Claude API key yet. Enter it once in Settings > Translation Engine."))
         self.model = ((model or "").strip()
                       or (os.environ.get("CLAUDE_TRANSLATE_MODEL") or "").strip()
@@ -869,6 +894,14 @@ class ClaudeTranslator(BaseTranslator):
     def _headers(self):
         return {"x-api-key": self.api_key, "anthropic-version": self.API_VERSION,
                 "content-type": "application/json"}
+
+    @property
+    def hint_without_notes(self):
+        """管线交给这个实例的词表提示，要不要按「译法带括注的词条当它不在表里」来算（Pipeline._hint_for →
+        Glossary.translation_pairs(without_notes=True)）。只有重译实例（role="strong"）要：那一份是先去掉括注
+        词条、再按长短取舍的，被括注长写法包含的短写法还在（「tu orden de」=> 下单满（金额，美元）不再挤掉
+        「tu orden」=> 订单）。字幕实例照旧拿普通的那一份、自己在 _subtitle_pairs 里筛，字幕请求一字不变。"""
+        return self.role == "strong"
 
     def _sends_glossary(self):
         """这个实例的请求带不带词表提示：重译一直带；字幕引擎只在 SUBTITLE_GLOSSARY_MODELS 里的模型上带；
@@ -899,6 +932,8 @@ class ClaudeTranslator(BaseTranslator):
         pairs = _as_pairs(glossary) if self._sends_glossary() else []
         if pairs and self.role == "subtitle":
             pairs = _subtitle_pairs(text, pairs)
+        elif pairs:
+            pairs = _strong_pairs(pairs)
         if pairs:
             system += self.SYSTEM_GLOSSARY.format(
                 pairs="\n".join("{} = {}".format(es, zh) for es, zh in pairs))  # i18n: data
@@ -989,6 +1024,9 @@ class ClaudeTranslator(BaseTranslator):
                     said = (await self._error_summary(resp)
                             if resp.status in self.SAYS_WHY_STATUSES else None)
                     self._note_http_error(resp.status, said)
+                    # 5xx（含 529）不在管线的任何一条规则里：记一个 http 类别（B7）。4xx 那几种照原来的规则走
+                    self.last_failure = ({"kind": "http", "status": int(resp.status), "error": None}
+                                         if resp.status >= 500 else None)
                     if resp.status in self.REJECT_STATUSES:
                         self._cooldown_until = time.monotonic() + self.REJECT_COOLDOWN_SEC
                         if self.says_own_rejection:
@@ -1011,7 +1049,10 @@ class ClaudeTranslator(BaseTranslator):
                     return None
                 self._note_ok()
                 data = await resp.json()
-        except Exception:
+        except Exception as exc:
+            # 超时、连不上、读回应出错：以前什么都不留（last_error 不动，也不打印），审计里只有 ok=false。
+            # 记下类别和异常的类型名（不记原文），管线据此写 translation_engine_error 的 kind（B7）
+            self.last_failure = {"kind": failure_kind(exc), "status": None, "error": type(exc).__name__}
             return None
         out, stop, category = self.read_message(data)
         if stop == "refusal":
@@ -1032,7 +1073,7 @@ class OpenAITranslator(BaseTranslator):
         super().__init__()
         self.api_key = api_key("OPENAI_API_KEY")
         if not self.api_key:
-            raise RuntimeError(L("还没有填 OpenAI 密钥——在页面上的「翻译引擎」里填一次即可",
+            raise RuntimeError(L("还没有填 OpenAI 密钥——在「设置 > 翻译引擎」里填一次即可",
                                  "No OpenAI API key yet. Enter it once in Settings > Translation Engine."))
         base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.base = base
@@ -1581,8 +1622,6 @@ def _as_pairs(glossary):
     return list(glossary)
 
 
-# 译法里的括注（全角、半角、方头括号），见 _subtitle_pairs
-_BRACKET_NOTE = re.compile(r"[（(【\[]")  # i18n: data
 # 字幕请求只带这两层的词条，见 _subtitle_pairs
 SUBTITLE_HINT_LAYERS = (LAYER_BRAND, LAYER_PROFILE)
 
@@ -1604,13 +1643,31 @@ def _subtitle_pairs(text, pairs):
       * 译法不带括注（如「水肿（体液滞留）」）：括注是给译法加的说明，不是要上屏的字，Haiku 却会把
         它原样抄上屏。这类词条不带，回到没带词表时的请求；不去掉括号再发：去掉括号的译法没测过，
         有的括注正是那条词条要的提示（「下单满（金额，美元）」是为本地模型把数字读成钱调出来的）。
+        判断见 glossary.has_bracket_note，重译用的是同一个；译文兜底替换照同一个正则只换上括注前那段。
 
-    只管字幕实例：重译（role="strong"）照旧拿管线给的全部命中词条，三层都有。报警上下文翻译借用字幕
+    只管字幕实例：重译（role="strong"）不走这里，拿的是先去掉括注词条再取舍的那一份（hint_without_notes、
+    _strong_pairs）；字幕这边照旧拿普通的那一份再筛，请求和以前一字不差。报警上下文翻译借用字幕
     实例时（没有强模型、强模型没给出译文）也走这里，和字幕一样只带品牌表和 profile 的。去掉之后一条
     不剩的句子，请求体和没命中词表时一字不差。"""
     return [p for p in pairs
             if getattr(p, "layer", None) in SUBTITLE_HINT_LAYERS
-            and in_text_as_word(p[0], text) and not _BRACKET_NOTE.search(p[1])]
+            and in_text_as_word(p[0], text) and not has_bracket_note(p[1])]
+
+
+def _strong_pairs(pairs):
+    """重译和报警上下文翻译（role="strong"，Sonnet 5.5）真正带上的词表提示：给它的命中词条里，
+    去掉译法带括注的（glossary.has_bracket_note，和字幕同一个判断）。2026-10-20 那场 46 次重译里，
+    2 次请求带了「食欲焦虑（嘴馋）」，2 次都连括号抄上了屏；用户定「重新翻译也不带带括号的词条」。
+
+    管线给这个实例的本来就是不带括注词条的那一份（hint_without_notes：先去掉、再按长短取舍，被括注
+    长写法包含的短写法不会跟着丢），这里再滤一道只为直接调 translate / _body 的地方（离线工具、测试）：
+    它们传的是普通那一份，被括注长写法挤掉的短写法在那一份里已经没有了，这里也补不回来。
+
+    别的照旧：三层（品牌表、profile、全局表）都带，子串命中也带——只滤括注是用户这次定的范围；
+    「只带品牌表和 profile」在重译上只有一句证据，没做过配对对比；子串命中在 10-19、10-20 两场
+    2696 句里只有 6 句（都是全局表的词条），也没对比过。去掉之后一条不剩的句子，请求体和没命中词表
+    时一字不差。"""
+    return [p for p in pairs if not has_bracket_note(p[1])]
 
 
 def _avoid_langs(target):

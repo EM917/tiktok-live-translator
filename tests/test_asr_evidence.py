@@ -5,7 +5,7 @@
 先做）、不挡事件循环，收尾放掉线程但不丢排着的写盘，进程退出（os._exit）前没写完的再等最多 2 秒、
 事件循环关了之后才写完也不在终端刷 traceback；报警广播在前、证据在后，广播中途被停止也照存；
 自己结束的场次收尾时被停止，session_end 仍由这一场自己写、记真正的原因；写失败只计数并打一行
-中文警告；300 MB / 2000 个文件 / 14 天的上限从最旧的整场删起、当前这场永远不删；磁盘剩不到 1 GB
+中文警告；1024 MB / 6000 个文件 / 14 天的上限从最旧的整场删起、当前这场永远不删；磁盘剩不到 1 GB
 就不存；证据只在 logs/ 底下（不在 web/，.gitignore 盖住）；「存储」那一行看得到、删得掉，界面文字
 成对；中英两种界面下审计和终端逐字节相同（G8）。全程不联网、不起 ffmpeg、不加载模型。
 """
@@ -46,7 +46,7 @@ def frame(i):
 # ---- 设置 --------------------------------------------------------------------------------
 
 def test_evidence_is_on_by_default_with_the_agreed_caps():
-    assert load_config({}, {}) == {"on": True, "max_mb": 300, "max_files": 2000, "days": 14,
+    assert load_config({}, {}) == {"on": True, "max_mb": 1024, "max_files": 6000, "days": 14,
                                    "ring_sec": 600, "control_every": 50}
 
 
@@ -62,7 +62,7 @@ def test_bad_settings_are_ignored_with_one_warning(capsys):
     cfg = load_config({"asr_evidence": "yes", "asr_evidence_max_mb": -5,
                        "asr_evidence_days": True, "asr_evidence_control_every": 0}, {})
     cfg2 = load_config({"asr_evidence": "yes"}, {})
-    assert cfg["on"] is True and cfg["max_mb"] == 300 and cfg["days"] == 14
+    assert cfg["on"] is True and cfg["max_mb"] == 1024 and cfg["days"] == 14
     assert cfg["control_every"] == 0 and cfg2["on"] is True
     out = capsys.readouterr().out
     assert out.count("asr_evidence 的值") == 1 and "asr_evidence_max_mb" in out
@@ -1024,7 +1024,7 @@ def test_a_new_session_prunes_old_ones_at_start(monkeypatch, tmp_path):
                                            ({}, {"TLT_ASR_EVIDENCE": "0"}),
                                            ({}, {"TLT_ASR_SAFEGUARDS": "off"})])
 def test_retention_still_runs_when_saving_is_off(monkeypatch, tmp_path, settings, env):
-    """关掉证据只是不再存：已经存下的混音照样按 14 天 / 300 MB 清（开场时），文档和「存储」那一行
+    """关掉证据只是不再存：已经存下的混音照样按 14 天 / 1024 MB 清（开场时），文档和「存储」那一行
     都是这么写的。为了隐私关掉证据的人会当真。"""
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -1081,7 +1081,7 @@ def test_session_end_counts_the_evidence(monkeypatch, tmp_path):
     end = p._asr_session_end(sess, {"reason": "offline"})
     ev = end["asr_risk"]["evidence"]
     assert ev["on"] is True and ev["saved"] == 1 and ev["by_reason"] == {"flagged": 1}
-    assert ev["max_mb"] == 300 and ev["control_every"] == 50
+    assert ev["max_mb"] == 1024 and ev["control_every"] == 50
     assert sess["evidence"].ring is None                              # 环形缓冲已经放掉
     p.audit.close(**end)
     assert rows(p.audit.path, "session_end")[0]["asr_risk"]["evidence"]["saved"] == 1
@@ -1175,6 +1175,10 @@ def _stuck_stream(monkeypatch, tmp_path, live):
     monkeypatch.setattr(asr_evidence, "_write_wav", stuck)
 
     async def fake_session(media, *a, **k):
+        # 第一轮出那一段；之后的轮次一帧都没有（V2 有声之后先用原地址连一轮，没声音再去查，查到「已结束」；
+        # V1 第二次解析就收到）
+        if state["emitted"]:
+            return False, 0.0
         sess = p._session_state
         recorder = p._evidence_round(sess)
         for i in range(100):
@@ -1287,7 +1291,7 @@ def test_the_storage_row_lists_the_clips_except_this_session(tmp_path):
     assert len(ev) == 1 and ev[0]["id"] == "evidence:all" and ev[0]["role"] == "app"
     assert ev[0]["size"] == 5000
     assert ev[0]["label"] == "识别音频片段（5 段，不含本场）"
-    assert "只存在这台电脑上" in ev[0]["note"] and "300 MB" in ev[0]["note"]
+    assert "只存在这台电脑上" in ev[0]["note"] and "1024 MB" in ev[0]["note"]
     assert "14 天" in ev[0]["note"]
 
 
@@ -1298,7 +1302,7 @@ def test_the_storage_row_reads_in_english(tmp_path):
         ev = [it for it in items if it["kind"] == "evidence"][0]
         label, note = i18n.render(ev["label"], i18n.EN), i18n.render(ev["note"], i18n.EN)
     assert label == "Recognition audio clips (5 clips, not including this session)"
-    assert note.startswith("Mixed stream audio from flagged segments") and "300 MB" in note
+    assert note.startswith("Mixed stream audio from flagged segments") and "1024 MB" in note
     assert not i18n.CJK.search(label + note)
     one = tmp_path / "one" / "logs"
     _old_session(one / "asr-evidence", "session-20261014-100000", 1, 10)

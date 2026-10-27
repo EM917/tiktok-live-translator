@@ -1,6 +1,6 @@
 # FAQ
 
-*Moved from the README (FAQ). The text is unchanged except for relative links.*
+*Moved from the README (FAQ) and kept up to date here since.*
 
 *An entry that sends you to a README section by name, such as "Disk Space", now means [hardware.md](hardware.md#disk-space).*
 
@@ -16,8 +16,20 @@ was executed, not merely configured.
 **The update button reports that something is blocking it.** The message names
 the affected files and provides a complete command with your project path and a
 Copy button. On builds older than v0.10.4 the machine cannot repair itself, as
-the fix is delivered by the update that is being blocked — run
-`git pull --ff-only` once in the project directory.
+the fix is delivered by the update that is being blocked. Those builds say to
+run `git pull`; don't, because it also brings in changes on the main branch that
+are not released yet. Instead, run these two commands once in the project
+directory, with the tag of the latest release from the
+[releases page](https://github.com/EM917/tiktok-live-translator/releases/latest)
+in place of `vX.Y.Z`:
+
+```bash
+git fetch --tags --force
+git merge --ff-only vX.Y.Z
+```
+
+Current versions use the same two steps in the command they show: they install
+that release and nothing after it.
 
 **Performance degrades and audio begins backing up.** Check `ollama ps`. Ollama
 retains a model in VRAM for 30 minutes after last use, so switching translation
@@ -48,10 +60,21 @@ your machine. Open System Settings → Privacy & Security → Full Disk Access,
 press "+", press ⌘⇧G in the file picker, paste the path, press Return, click
 Open, and switch the new entry on; repeat for each path shown. The list shows
 the entry as `python3.x`, not under the app's name. Add Terminal too if you
-launch with Start.command. Then quit the app completely and reopen it. The path
-changes when Python is upgraded or the environment is rebuilt; the row then
-shows the new one. This only matters for rooms whose stream address TikTok
-serves to signed-in viewers. The check looks only at whether the cookie
+launch with Start.command. Then quit the app completely and reopen it. Both
+launchers start the app with the Python that built its environment (`.venv`)
+while that Python is still there at the same version, so installing or
+upgrading a different Python (for example Homebrew pulling in a newer
+`python@3.x` as a dependency) does not change the path. It changes when that
+Python itself is upgraded, moved or removed, or when the environment is
+rebuilt; the row then shows the new one. With an unchanged path, the entry can
+also be in the list with its switch on while the row still says macOS didn't
+allow access. In that case select the entry, click −, and add it again with the
+steps above. The permission belongs to the Python
+interpreter, not just this app: any script run with that Python can read
+protected data on this computer, such as Mail, Messages and Safari data. When
+you no longer need the TikTok sign-in from your browser, switch the entry off in
+the same list. This only matters for rooms whose
+stream address TikTok serves to signed-in viewers. The check looks only at whether the cookie
 store can be read and at login cookie names, across every browser profile; it
 never decrypts and never raises a Keychain prompt. Failed resolutions record one
 of these codes in the audit log: `blocked_by_system`, `no_browser_data`,
@@ -88,23 +111,80 @@ free endpoint, which `auto` uses when no local model is installed,
 rate-limits per IP and returns 429 under sustained use. The app pauses
 requests for two minutes and recovers automatically, with a banner on the page.
 Speech recognition is unaffected. For extended sessions, install a local Hy-MT2
-model or choose another engine in Settings → Translation Engine. No network
-connection, or a stopped Ollama, produces the same symptom.
+model, or click Stop and choose another engine in Settings → Translation Engine
+(Settings is hidden during a session). No network connection, or a stopped
+Ollama, produces the same symptom.
 
 **The status reads Live but no captions appear for some time.** This is normally
 expected: while the streamer plays music or is not speaking, silent and
-low-confidence segments are discarded deliberately. If the streamer is clearly
+low-confidence segments are discarded deliberately. Audio that stays below the
+speech recognition threshold is not sent to recognition at all; when that is
+all of the audio for 2 minutes, or less than 60% of it is sent in 5 minutes, a
+notice at the top of the window says how much arrived and how much was sent
+([details](fault-tolerance.md#keeping-up)). If the streamer is clearly
 speaking and nothing appears, try `--denoise off` or a different model size.
 
 **Captions stop after closing the laptop lid or switching networks.** When the
-stream drops, the app re-resolves the stream URL and reconnects by itself,
-waiting longer between attempts each time (2 s, then 4, 8, 16 and at most
-30 s). While the computer cannot reach TikTok it waits without spending
-attempts, for up to 30 minutes. It gives up only after six connection attempts
-in a row bring no audio at all (two for a pasted stream URL); a connection that
-played any audio resets that count, so a patchy connection keeps reconnecting. If the
-window says the stream was interrupted several times and couldn't reconnect,
-click Start again. Details: [Keeping the stream](fault-tolerance.md#keeping-the-stream).
+stream drops, the app reconnects by itself. After a stretch that had audio it
+first reconnects to the same stream URL, which only contacts the video server
+and not the live page or TikTok's API; if that brings no audio (or the URL
+clearly stops working), it looks up the stream URL again. While no audio
+arrives, the waits grow (2 s, then 4, 8, 16 and at most 30 s; 60 s after 30
+minutes without audio). Any audio resets them. To keep requests to TikTok low,
+the app looks up the stream URL at most 26 times in any hour, and checks of
+the stream status while waiting for it to resume count toward the same limit;
+past it, the app keeps reconnecting to the same stream URL and the status line
+says when the next lookup is. After 30 minutes without audio it looks up at
+most once every 15 minutes. While the computer cannot reach TikTok it waits
+without looking anything up, for up to 30 minutes.
+
+A live link is never given up just because no audio arrives. Monitoring stops
+only when TikTok reports the stream as ended (status 4, checked again if the
+computer was asleep), when TikTok's API hasn't reported it as live for about
+10 minutes, when TikTok can't be reached for 30 minutes, or when looking up the
+stream URL fails six times in a row. A pasted stream URL stops after two
+connection attempts in a row with no audio. The status line counts the
+interruptions in this session ("interruption 7 this session").
+
+Two notices say how much was heard. "No stream audio for N min" appears after
+2 minutes without stream audio and goes away with the first audio. "Only N% of
+stream audio arrived in the last 5 min" appears when less than 70% arrived,
+and goes away above 85%; a small "Last 5 min: N% received" badge under the
+large caption shows the same number. Audio that only arrives late, when the
+app closes a stalled connection, is still transcribed and checked for banned
+terms; it doesn't count as received in real time, and the notices say how much
+of it was checked. Details: [Keeping the stream](fault-tolerance.md#keeping-the-stream).
+
+To go back to the previous reconnect rules for one run (look up the stream URL
+on every reconnect, stop after six connection attempts in a row with no audio,
+"attempt N of M" in the status line), start the app with `TLT_RECONNECT_V2=0`.
+FLV streams then also go back to ffmpeg's own reconnect. The notices above, the
+limits on how long stopping a stalled stream can take, and the audit records
+stay the same. `TLT_FFMPEG_LEGACY=1` is a separate switch: it brings back the
+previous ffmpeg options and leaves the reconnect rules alone. How the two
+combine is in [Keeping the stream](fault-tolerance.md#keeping-the-stream).
+
+**Switches that stay off by default.** `TLT_ASR_TOKEN_CAP=on` (stop decoding a
+segment after 112 tokens), `TLT_ASR_MASK_LANGS=on` (pick the language from the
+Spoken language list during detection instead of decoding an out-of-list
+segment a second time) and
+`TLT_LOW_BITRATE_STREAM=1` (take the lowest quality when TikTok offers no
+audio-only track) are off unless you set them when starting the app. Each can
+change what is recognized, or how soon, so read the evaluation of a switch
+before turning it on. None has been run yet, so leave them off for now. What
+each one changes, and what the evaluation has to check, is in
+[Switches that stay off by default](fault-tolerance.md#switches-that-stay-off-by-default).
+
+<a id="captions-in"></a>**Switching Captions in to English didn't change the interface.** The
+**Captions in** menu in the top bar sets only the language captions are
+translated into: Simplified Chinese, Traditional Chinese, English or Spanish.
+The interface language is a separate setting, **Settings → App Language** on
+the home page ([Interface language](interface-language.md)). If an earlier
+version saved another caption language, or the app starts with `--target` and
+another language code, captions stay in that language and the menu shows it as
+an extra item until you choose one of the four. With Spanish selected,
+segments recognized as Spanish aren't sent for translation and appear as
+said; English segments are translated into Spanish.
 
 **Switching to another streamer during a session.** Click **Switch Streamer**
 in the top bar, paste the new live link or @username, or pick one from Recent
@@ -163,17 +243,18 @@ WAV of the segment plus 2 s before and 1 s after, with a line in `index.jsonl` t
 recognition output. It is the stream's mixed audio, so anyone else on the stream and the
 background music are in it too. The clips stay on this computer: nothing uploads them, sends
 them to an API or puts them in an export, and `logs/` is not in git. Once the folder passes
-300 MB, 2000 files or 14 days, the oldest sessions are removed first; the current session is
-never removed. This is checked when a session starts, so clips older than 14 days stay until
-the next session. Settings → Storage shows the folder and can delete it. Saving runs off the
+1 GB (1024 MB), 6000 files or 14 days, the oldest sessions are removed first; the current
+session is never removed. This is checked when a session starts, so clips older than 14 days
+stay until the next session. Settings → Storage shows the folder and can delete it. Saving runs off the
 recognition path, and a failed write only prints a warning in the terminal. Turn it off with
 `"asr_evidence": false` in `settings.json` or the environment variable `TLT_ASR_EVIDENCE=0`.
 Turning it off stops new clips; clips already saved stay until the limits remove them at a
 session start, or until you delete them in Storage.
-The limits are `asr_evidence_max_mb`, `asr_evidence_max_files`, `asr_evidence_days`,
-`asr_evidence_ring_sec` (recent audio kept in memory, 600 by default) and
-`asr_evidence_control_every` (50; `0` saves no comparison segments). They are read when a
-session starts.
+The limits are `asr_evidence_max_mb` (1024 by default), `asr_evidence_max_files` (6000),
+`asr_evidence_days` (14), `asr_evidence_ring_sec` (recent audio kept in memory, 600 by default)
+and `asr_evidence_control_every` (50; `0` saves no comparison segments). They are read when a
+session starts. To keep less, write a smaller number in `settings.json`, for example
+`"asr_evidence_max_mb": 300`.
 
 <a id="recognition-risk"></a>**Recognition risk records, and switching them off.** Each
 segment in the audit log has an `asr` object that holds only numbers and short codes: segment
@@ -209,8 +290,30 @@ captions and alerts — it cannot control the app in any way (no start/stop,
 engine switch, or settings changes). Each phone page is in that phone's own
 language, with a toggle at the bottom. Up to 12 phones can watch at once. The
 link carries a key and should be treated like a password: whoever has it can
-see captions and alerts; clicking **New Link** disconnects every phone
-currently watching, and they need to rescan. When a phone can't connect, the
+see captions and alerts. When a phone opens the link, the page saves the key in
+that phone's browser and then removes it from the address bar; reloading or
+reopening the page on that phone uses the saved key. Whether the browser's own
+history still keeps the address as scanned, key included, has not been checked.
+While this computer's local network address and the Phone Viewing port stay the
+same, the QR code keeps working, and scanning it again saves the key again. If
+either one changes, the panel shows a new QR code: scan that one. A QR code
+printed earlier points to the old address, and the key saved on the phone
+belongs to the old address too. When the browser does not keep the key (the
+page saves it and reads it back to check), for example with site data turned
+off in the browser's settings, the key stays in the address bar and the page
+works as before. Clicking **New Link** disconnects every phone
+currently watching; each phone drops the old key and needs the new QR code.
+
+Two iPhone cases have not been tried on an actual iPhone. A Home Screen icon added
+after the key left the address bar has no key in its own address. If iOS opens
+that icon as a web app, the icon has storage of its own, and scanning again
+saves the key in Safari only, so the icon cannot get it: scan in Safari and
+watch in Safari instead. An icon added while the address still had `#k=` keeps
+working. Separately, Safari may clear a site's saved data when the site has not
+been opened for 7 days; the page then has no key, and scanning the QR code again
+fixes it.
+
+When a phone can't connect, the
 only thing the app knows is that no connection came in; try, in order:
 confirming the phone is on the same Wi-Fi; typing in another address from the
 panel's list; opening the same link in a browser on this computer to confirm
@@ -223,7 +326,11 @@ operator's computer to redo that one line with the strongest model (Claude
 Sonnet 5.5 when the engine is Claude, otherwise the strongest local model); it's
 rate-limited per phone (at least 3 seconds between taps, at most 10 a minute)
 so one phone tapping repeatedly can't queue up work or slow down the
-operator's computer. Each alert has a ✕ to hide it, plus a **Clear Seen**
+operator's computer. All phones together also share a limit of 20 a minute (up
+to 5 in a burst) that reconnecting doesn't reset; taps beyond it do nothing.
+While speech recognition is falling behind, retranslations asked for from a
+phone aren't run, and the phone's button shows **Couldn't Retranslate · Try
+Again**. Each alert has a ✕ to hide it, plus a **Clear Seen**
 button to hide everything currently shown — both act only on that one phone:
 the operator's alert panel and the audit log are unaffected, and nothing is
 sent to the server.
@@ -237,18 +344,22 @@ labels as the main window ("About N sec ago" once the line is more than 15 secon
 old, "Connecting…" while it reconnects), and the most recent comments with their
 translations (up to five; make the window taller to see all five). Comments
 that Comment Review marks red or amber keep their marks there. It only displays:
-no buttons, no alerts, and it sends nothing to the app. Drag it or resize it; the
+no alerts, and it sends nothing to the app. Drag it or resize it; the
 position and size are saved in `settings.json` (`float_window`) and used the
 next time, unless that spot is no longer on a screen. The first time, a Mac puts it
 near the bottom-right corner of the screen your main window is on; other systems place it themselves. It closes when you click
-its close button, when monitoring stops or ends, or when you close the main
-window. The button exists only when the app runs in its own window, so it is not there
+its close button, when you click **Stop**, or when you close the main window.
+When the stream ends or monitoring stops with an error, it stays open and says
+**Stream ended** or **Monitoring stopped** (see the main window for details),
+with one button, **Show Main Window**, which brings the main window to the
+front; on a Mac, if the app is not the active app, its Dock icon also bounces once. The **Floating Window** button exists only when the app runs in its own window, so it is not there
 with `--browser`. (A browser tab opened on the address of a running app window does show
 it, and clicking it opens the window in the app.)
 
 <a id="viewer-comments"></a>**Viewer comments.** The app fetches comments itself through TikTokLive,
-which needs Python 3.10 or later; the component installs itself on the first
-start. It usually works signed out, and retries once with the browser's TikTok
+which needs Python 3.10 or later; when it is missing, the app installs it at
+startup or when a stream needs comments ([details](fault-tolerance.md#keeping-the-stream)).
+It usually works signed out, and retries once with the browser's TikTok
 sign-in when TikTok asks for one. Comments are translated only while the active
 engine is a local model (Hy-MT2 1.8B or TranslateGemma) or Claude; with Google,
 DeepL, OpenAI or 7B the panel shows the original text. With Claude, comments
@@ -257,6 +368,9 @@ for caption translation first, so a pause on that connection never delays
 captions. Comment translation is for display
 only and never part of the alert path. The connection is signed through a
 third-party service; see [Privacy](../README.md#privacy).
+In the audit log, `session_end.comment_fields` counts, in numbers only, how many comments carried each
+account field, and for now also candidate account-level and badge fields (`level_has`, `level_hist`,
+`level_kinds`); the app shows none of these.
 
 **Exporting captions.** Every session is saved as it happens in the
 `transcripts` folder inside the app folder: each caption with its translation
@@ -266,9 +380,12 @@ at most the line being written. It is separate from the audit log, which never
 holds comment text, and the app never uploads or deletes it.
 
 The page keeps the most recent 300 captions and 100 comments, and the app
-replays the same ones after a reload or reconnection. **Clear** removes them
-from the app as well, so a cleared caption or comment does not come back after
-a reload; the transcript and the audit log are not touched. A phone that
+replays the same ones after a reload or reconnection. **Clear** in the top bar
+(captions) and **Clear Comments** in the comment column remove them from the
+app as well, so a cleared caption or comment does not come back after a reload;
+the transcript and the audit log are not touched. Each takes two clicks: the
+first turns the button into **Clear?**, and a second click within 6 seconds
+clears. A phone that
 connects later gets the last 100 captions and 100 comments. While you are
 scrolled up, the **Jump to Latest** button shows how many new captions have
 arrived since (in the comment column, how many new comments).

@@ -40,10 +40,11 @@ UI_FILES = (
     "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
     "app/pipeline_engine.py", "app/pipeline_float.py", "app/pipeline_guard.py",
-    "app/pipeline_transcript.py", "app/power.py",
+    "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
     "app/resolver.py", "app/selfcheck.py",
     "app/transcript_export.py",
-    "app/translator.py", "app/updater.py", "app/viewer.py", "app/viewer_share.py",
+    "app/translator.py", "app/update_guard.py", "app/updater.py", "app/viewer.py",
+    "app/viewer_share.py",
     "app/window_attention.py", "app/window_close.py", "app/window_lang.py",
     "web/alerts.js", "web/app.js", "web/brand.js", "web/float.js", "web/guard.js", "web/i18n.js",
     "web/live-ui.js",
@@ -71,6 +72,8 @@ NON_UI_CHINESE = {
         "把全局 glossary.txt 里的主播词条迁进 profiles/ 下该主播的词表时，写进那个文件的注释行："
         "文件内容，界面不显示": (
             "\n# 从 glossary.txt 迁移（{}）\n",),
+        "认词表译法里括注的正则（全角、半角、方头括号），只用来判断一条词条带不带括注，是数据": (
+            "[（(【\\[]",),
     },
     "app/i18n.py": {
         "CJK 字符范围的正则本身（界面语言的判定工具，数据）": (
@@ -138,8 +141,10 @@ UI_NAMES = {
     "复制链接": "Copy Link",
     "换一个链接": "New Link",
     "清空字幕": "Clear",
+    # 弹幕栏那颗 2026-10-23 起英文是 Clear Comments（专家审查 V3），和顶栏的 Clear 分开；句子里引用它要写全
+    "清空弹幕": "Clear Comments",
     "清除记录": "Clear History",
-    "清空警报": "Clear Alerts",
+    "清空报警": "Clear Alerts",
     "清除已看过的报警": "Clear Seen",
     "回到最新": "Jump to Latest",
     "删除所选": "Delete Selected",

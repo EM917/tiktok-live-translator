@@ -48,8 +48,15 @@ def records(path):
 
 
 def scripted_session(monkeypatch, p, body):
-    """跑一场：解析一次成功、body 在“拉流”里执行、随后房间已结束。"""
+    """跑一场：解析一次成功、body 在第一轮“拉流”里执行、随后房间已结束。第一轮播了一分钟；之后的轮次
+    一帧都没有——V1 每次都重新解析，第二次解析就收到「已结束」；V2 有声之后先用原地址连一轮，没声音
+    再去查，同样收到「已结束」。"""
+    rounds = []
+
     async def fake_session(media, *a, **k):
+        rounds.append(media)
+        if len(rounds) > 1:
+            return False, 0.0
         await body()
         return True, 60.0
 

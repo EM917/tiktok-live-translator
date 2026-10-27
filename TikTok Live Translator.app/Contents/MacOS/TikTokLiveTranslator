@@ -7,29 +7,50 @@ DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 # 这里还没有 Python，读不到界面语言设置，老装机、新装机都可能走到：每个对话框都是
 # 中文一段、空一行、英文一段，不按系统语言挑（spec §8.5，用户 09-28 决定 4）。
 # 文字里不能有 ASCII 双引号和反斜杠（\n 除外），它们会原样拼进 AppleScript。
-dialog() {  # $1=中文 $2=English $3=图标（note/caution，默认 note）
-  osascript -e "display dialog \"$1\n\n$2\" with title \"TikTok 直播同传 · TikTok Live Translator\" buttons {\"OK\"} default button 1 with icon ${3:-note}" >/dev/null 2>&1
+dialog() {  # $1=中文 $2=English $3=图标（note/caution，默认 note）$4=输入框里预填、可选中复制的一行（可省）
+  local answer=""
+  [ -z "$4" ] || answer=" default answer \"$4\""
+  osascript -e "display dialog \"$1\n\n$2\"$answer with title \"TikTok 直播同传 · TikTok Live Translator\" buttons {\"OK\"} default button 1 with icon ${3:-note}" >/dev/null 2>&1
 }
 
+# App Translocation：从网上下载、还没在访达里挪过的 app，macOS 会把它单独放到一个随机的只读
+# 临时位置运行（路径里带 /AppTranslocation/），旁边没有 main.py。以前这里报「找不到程序文件，
+# 请放回文件夹」，可 app 本来就在文件夹里，照做也没用。
+# 解除办法按实测写（2026-10-22，macOS 27.0.1，问的是 LaunchServices 启动时用的同一个系统函数
+# SecTranslocateURLShouldRunTranslocated）：ZIP 解出来的 app 带着隔离属性 0083 时要放到临时位置
+# 运行；用 mv 挪整个文件夹，属性原样跟着走，照旧要放；xattr -dr 去掉隔离属性之后就不放了。
+# 访达里挪外层文件夹算不算没有实测（访达的挪动没法不弹框地复现）；按 Apple 的公开说明，只有单独
+# 挪 app 本身才算，而单独挪 app 会让上面的 ../../.. 找不到 main.py。所以只给 xattr 这一步，
+# 命令预填在输入框里，可以选中复制
+case "$0" in
+  */AppTranslocation/*)
+    dialog "macOS 把本程序放到了一个临时位置运行，在那里找不到它所在文件夹里的其它程序文件。\n\n请照做一次：打开「终端」，输入下面这行命令和一个空格，再把 app 所在的那个文件夹拖进终端窗口，按回车。然后重新双击 app。" \
+           "macOS is running the app from a temporary location, where it can’t find the other files in its folder.\n\nDo this once: open Terminal, type the command below followed by a space, drag the folder that contains the app into the Terminal window, and press Return. Then double-click the app again." \
+           caution "xattr -dr com.apple.quarantine"
+    exit 1
+    ;;
+esac
+
 if [ ! -f "$DIR/main.py" ]; then
-  dialog "找不到程序文件。\n\n请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击。想常驻可以把它拖到 Dock——但不要把它拖出文件夹。" \
-         "Couldn’t find the app’s files.\n\nPut “TikTok Live Translator” back in the tiktok-live-translator folder, then double-click it again. You can drag it to the Dock, but don’t move it out of the folder." caution
+  dialog "找不到程序文件。\n\n请把「TikTok Live Translator」放回它原来所在的那个文件夹里再双击。想常驻可以把它拖到 Dock——但不要把它拖出文件夹。" \
+         "Couldn’t find the app’s files.\n\nPut “TikTok Live Translator” back in the folder it came from, then double-click it again. You can drag it to the Dock, but don’t move it out of the folder." caution
   exit 1
 fi
 cd "$DIR"
 
-# find_python() 和 Start.command 共用一份，见 tools/find_python.sh。
+# find_python() 和 Start.command 共用一份，见 tools/find_python.sh。传项目根：有 .venv 时
+# 先用建它的那个解释器，「完全磁盘访问权限」才不会因为装了别的 Python 而失效。
 if [ ! -f "$DIR/tools/find_python.sh" ]; then
-  dialog "缺少程序文件 tools/find_python.sh，项目文件不完整，无法探测 Python。\n\n请把「TikTok Live Translator」放回 tiktok-live-translator 文件夹里再双击，或重新下载完整项目。" \
-         "The file tools/find_python.sh is missing. The project folder is incomplete, so the app can’t check for Python.\n\nPut “TikTok Live Translator” back in the tiktok-live-translator folder and double-click it again, or download a fresh copy of the complete project." caution
+  dialog "缺少程序文件 tools/find_python.sh，项目文件不完整，无法探测 Python。\n\n请把「TikTok Live Translator」放回它原来所在的那个文件夹里再双击，或重新下载完整项目。" \
+         "The file tools/find_python.sh is missing. The project folder is incomplete, so the app can’t check for Python.\n\nPut “TikTok Live Translator” back in the folder it came from and double-click it again, or download a fresh copy of the complete project." caution
   exit 1
 fi
 . "$DIR/tools/find_python.sh"
 
-PY="$(find_python)" || {
+PY="$(find_python "$DIR")" || {
   open "https://www.python.org/downloads/"
-  dialog "需要先安装 Python 才能运行本工具（免费，约 2 分钟）。\n\n已为你打开下载页面 python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。" \
-         "Python is needed to run this app (free, about 2 minutes).\n\nThe python.org/downloads page is now open. Download and install the macOS installer, then double-click the app again."
+  dialog "需要先安装 Python 3.10 或更新的版本才能运行本工具（免费，约 2 分钟）。\n\n已为你打开下载页面 python.org/downloads——下载 macOS 安装包并安装，装好后重新双击启动即可。" \
+         "Python 3.10 or later is needed to run this app (free, about 2 minutes).\n\nThe python.org/downloads page is now open. Download and install the macOS installer, then double-click the app again."
   exit 1
 }
 

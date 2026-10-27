@@ -94,13 +94,21 @@ def guard_close(window, pipeline):
     return True
 
 
-async def close_session(pipeline, audit_budget=AUDIT_BUDGET_SEC, total=STOP_TIMEOUT_SEC):
+async def close_session(pipeline, audit_budget=AUDIT_BUDGET_SEC, total=STOP_TIMEOUT_SEC,
+                        reason="window_closed", fields=None):
     """窗口已经关了：留下原因、停管线；停得慢就先把审计收尾。在事件循环上跑，
-    返回停止流程是否在时限内走完。"""
+    返回停止流程是否在时限内走完。
+
+    reason / fields 是写进 session_end 的结束原因和附带的观察。关窗口和 ⌘Q 是 window_closed（先写一条
+    window_closed 记录）；收到退出信号（app/exit_signals.py）是 signal，fields 带 {"signal": "SIGTERM"}
+    这样的信号名，不写 window_closed 记录——窗口没有人关。"""
+    fields = dict(fields or {})
     audit = getattr(pipeline, "audit", None)
-    if audit is not None and stream_active(pipeline):
+    if audit is not None and reason == "window_closed" and stream_active(pipeline):
         audit.window_closed()
-    pipeline._stop_reason = "window_closed"
+    pipeline._stop_reason = reason
+    # 附带的观察跟着结束原因走：被取消的那一场自己收尾时、_stop_locked 代写时都并进 session_end
+    pipeline._stop_fields = fields
     # 手机同看的监听面要随窗口一起关掉：0.0.0.0 上的端口不该比进程活得久。
     # 和停止流程并行起，最后只等一小会儿——它自己带 2 秒预算，且收尾不能为它让路
     share = None
@@ -113,11 +121,18 @@ async def close_session(pipeline, audit_budget=AUDIT_BUDGET_SEC, total=STOP_TIME
     stop = asyncio.ensure_future(pipeline.stop_stream(quiet=True))
     done, _ = await asyncio.wait({stop}, timeout=audit_budget)
     if stop not in done:
-        # 识别线程或弹幕子进程一时退不掉：进程等不到停止流程走完就会退出，先让
-        # session_end 落盘。close 可重入，停止流程稍后再关是空操作
+        # 识别线程、音频源或弹幕子进程一时退不掉：进程等不到停止流程走完就会退出，先让
+        # session_end 落盘。这一场的识别风险、证据和弹幕计数由审计自己的 end_fields 补上
+        # （管线开场时挂的）。close 可重入，停止流程稍后再关是空操作
         audit = getattr(pipeline, "audit", None)
         if audit is not None:
-            audit.close(reason="window_closed")
+            # 这一场在关窗之前已经在自己收尾（下播、预算用尽……）：原因照它自己记下的写（专家审查 B5）
+            end_reason, end_fields = reason, fields
+            ending_of = getattr(pipeline, "_ending_of", None)
+            ending = ending_of(audit) if callable(ending_of) else None
+            if ending is not None:
+                end_reason, end_fields = ending[0] or reason, dict(ending[1])
+            audit.close(reason=end_reason, **end_fields)
         rest = total - audit_budget - 0.2
         if rest > 0:
             done, _ = await asyncio.wait({stop}, timeout=rest)
@@ -130,13 +145,15 @@ async def close_session(pipeline, audit_budget=AUDIT_BUDGET_SEC, total=STOP_TIME
     return stop in done
 
 
-def stop_after_close(loop, pipeline, timeout=STOP_TIMEOUT_SEC, audit_budget=AUDIT_BUDGET_SEC):
-    """窗口线程里调用：webview.start() 返回（窗口关了）之后、os._exit 之前。"""
+def stop_after_close(loop, pipeline, timeout=STOP_TIMEOUT_SEC, audit_budget=AUDIT_BUDGET_SEC,
+                     reason="window_closed", fields=None):
+    """窗口线程里调用：webview.start() 返回（窗口关了）之后、os._exit 之前。也给 ⌘Q（hook_app_terminate）和
+    退出信号（reason="signal"，见 FinishOnce.finish_signal）用：那两条路上 start() 不返回。"""
     if loop is None or pipeline is None:
         return False
     try:
         future = asyncio.run_coroutine_threadsafe(
-            close_session(pipeline, audit_budget, timeout), loop)
+            close_session(pipeline, audit_budget, timeout, reason=reason, fields=fields), loop)
         return future.result(timeout=timeout)
     except Exception:
         return False
@@ -163,6 +180,8 @@ class FinishOnce:
 
     两条路会走到这里：webview.start() 返回之后的主线程（正常路径，finish()），和浮窗的兜底定时器
     （app/float_window.follow_main_window：主窗口关了 10 秒 GUI 循环还没退出，finish_stuck()）。
+    另有两条 start() 不返回的路（专家审查 B5）：⌘Q 在主线程的 willTerminate 通知里调 finish()
+    （hook_app_terminate），退出信号在 exit_signals 的读线程里调 finish_signal()。
     start() 恰好在兜底触发前几秒才返回时，两边会各跑一遍 close_session；第二遍要是赶在第一遍停掉
     直播之前开始，审计里会多一条 window_closed。所以先到的那条路收尾并退出进程：主线程后到就
     等着（先到的那条会退出进程），兜底后到直接返回。"""
@@ -186,10 +205,53 @@ class FinishOnce:
         self._run()
         return True
 
-    def _run(self):
+    def finish_signal(self, name):
+        """收到退出信号（app/exit_signals.py 的读线程调）：收尾时 session_end 记 reason=signal 和信号名。
+        别的路已经在收尾（关了窗口、⌘Q）就什么都不做，返回 False——那条路会退出进程。
+        finish 要认 reason、fields 两个关键字参数（main.py 传的是转给 stop_after_close 的 lambda）。"""
+        if not self._lock.acquire(blocking=False):
+            return False
+        self._run(reason="signal", fields={"signal": str(name)})
+        return True
+
+    def _run(self, **kwargs):
         try:
-            self._finish()
+            self._finish(**kwargs)
         finally:
             # 停止流程收尾时只等了证据写盘 1 秒（Pipeline._evidence_drain）：退出前再给没写完的一点时间
             flush_evidence()
             self._exit(0)
+
+
+def hook_app_terminate(callback, center=None, note_name=None, queue=None):
+    """⌘Q、程序坞里的「退出」：pywebview 的 cocoa 后端里 NSApp terminate: 在 applicationShouldTerminate 同意
+    之后直接 exit()，webview.start() 不返回，start() 之后的收尾（FinishOnce.finish）一步都走不到——2026-10-23
+    用真 pywebview 6.2.1 实测：closing 事件之后进程以 0 退出，atexit 都没跑，这一场的审计没有 session_end。
+    以前这里的注释和 audit.py 都以为 ⌘Q 会写 session_end（专家审查 B5 的复核也这么说）。
+
+    挂在 NSApplicationWillTerminateNotification 上：它在 exit() 之前、在主线程上发出（实测在里面同步等
+    1.5 秒、再 os._exit 都没问题）。callback 在那里同步收尾并退出进程（main.py 给的是 finish.finish）。
+    只在 macOS 上有；拿不到 AppKit 就什么都不做。返回挂没挂上。center / note_name / queue 只给测试注入。"""
+    if center is None:
+        if sys.platform != "darwin":
+            return False
+        try:
+            from AppKit import NSApplicationWillTerminateNotification as note_name
+            from Foundation import NSNotificationCenter, NSOperationQueue
+            center = NSNotificationCenter.defaultCenter()
+            queue = NSOperationQueue.mainQueue()
+        except Exception:
+            return False
+
+    def on_terminate(_note):
+        callback()
+
+    try:
+        token = center.addObserverForName_object_queue_usingBlock_(note_name, None, queue, on_terminate)
+    except Exception:
+        return False
+    _TERMINATE_HOOKS.append((token, on_terminate))      # 别让 GC 把观察者收走
+    return True
+
+
+_TERMINATE_HOOKS = []

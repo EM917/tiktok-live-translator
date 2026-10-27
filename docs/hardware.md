@@ -32,18 +32,21 @@ Where they are stored, if you need to reclaim space:
 ~/.ollama/models             translation models
 <project>/.venv              runtime environment
 <project>/logs               audit logs
-<project>/logs/asr-evidence  recognition audio clips (up to 300 MB)
+<project>/logs/asr-evidence  recognition audio clips (up to 1 GB)
 ```
 
 Audit logs grow by roughly **0.3 MB per hour** of monitoring — about 2 MB for
 an eight-hour day, or 0.1 GB a month. They are plain JSONL and safe to delete
 once a session has been reviewed.
 
-Recognition audio clips are on by default and grow by roughly **15–20 MB per
-hour**: a few seconds of the stream's mixed audio around flagged segments,
-banned-term matches, captions you retranslate and one segment in 50. They are
-capped at 300 MB, 2000 files and 14 days, oldest session first, and
-Settings → Storage can delete them. See [the FAQ](faq.md#recognition-audio).
+Recognition audio clips are on by default and grow by about **40 MB per
+hour**, measured on one session of about five hours (649 clips, about 200 MB);
+the rate varies with how many segments are flagged. They are a few seconds of
+the stream's mixed audio around flagged segments, banned-term matches, captions
+you retranslate and one segment in 50. They are capped at 1 GB (1024 MB), 6000
+files and 14 days, oldest session first, so at that rate the folder holds about
+five five-hour sessions. Settings → Storage can delete them. See
+[the FAQ](faq.md#recognition-audio).
 
 ## Minimum system and the window engine
 

@@ -208,8 +208,8 @@ def test_bom_glossary_keeps_its_first_entry(tmp_path):
 
 def test_bom_profile_option_line_is_honoured(monkeypatch, tmp_path):
     monkeypatch.setattr(glossary, "PROFILE_DIR", tmp_path)
-    (tmp_path / "bella.txt").write_text("vocative_strip: on\n", encoding="utf-8-sig")
-    assert glossary.profile_options("bella") == {"vocative_strip": True}
+    (tmp_path / "brisa.txt").write_text("vocative_strip: on\n", encoding="utf-8-sig")
+    assert glossary.profile_options("brisa") == {"vocative_strip": True}
 
 
 # ---- #6/#17 强模型探测：进线程池、本场只探一次 ------------------------------------
@@ -356,7 +356,9 @@ def test_a_load_that_finished_after_cancel_is_reused(monkeypatch, tmp_path):
 
 # ---- #16 有音频的轮次不算重连失败 --------------------------------------------------------
 
-def test_short_but_audible_reconnects_do_not_exhaust_the_budget(monkeypatch, tmp_path):
+def test_short_but_audible_reconnects_do_not_exhaust_the_budget(monkeypatch, tmp_path, v1_reconnect):
+    """V1 的规则：有声的轮次清零无声计数，连续几轮一帧都没有才放弃。V2 下无声本身不放弃
+    （tests/test_reconnect_v2.py）。"""
     p, server = make_pipeline(monkeypatch, tmp_path)
     import app.resolver
     sessions = []

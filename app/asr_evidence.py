@@ -22,8 +22,12 @@
     还没写完的最多再等 2 秒（flush_pending）；
   * 出错只计数、终端打一行中文 [警告]（一场只打一次），绝不抛给调用方；
   * 磁盘剩不到 1 GB 就不存，空间留给审计；
-  * 保留上限三条（300 MB / 2000 个文件 / 14 天），到了任何一条就从最旧的整场目录删起，
+  * 保留上限三条（1024 MB / 6000 个文件 / 14 天），到了任何一条就从最旧的整场目录删起，
     当前这一场永远不删；当前这一场自己就超了上限，就停止新存。
+    上限原来是 300 MB / 2000 个文件。10-19 那一场（约 4 小时 56 分）存了 649 个 WAV、约 200 MB，
+    即每小时约 40 MB、130 来个文件：300 MB 只装得下一两场长直播，而 2000 个文件约 15 小时就到、
+    比 1 GB 先到，所以两条一起放宽（6000 个文件约 45 小时才到，1 GB 约 25 小时先到）。
+    2026-10-21 用户定；想回到原来的上限，在 settings.json 里写 asr_evidence_max_mb / _max_files。
 
 开关（每场开始时读一次）：settings.json 的 asr_evidence（默认 true），环境变量 TLT_ASR_EVIDENCE=0
 强制关，总闸 TLT_ASR_SAFEGUARDS=off 也会关掉它。上限和缓冲长度也能在 settings.json 里改
@@ -71,7 +75,7 @@ EXIT_FLUSH_SEC = 2.0
 _inflight = set()
 _inflight_lock = threading.Lock()
 
-DEFAULTS = {"on": True, "max_mb": 300, "max_files": 2000, "days": 14, "ring_sec": 600,
+DEFAULTS = {"on": True, "max_mb": 1024, "max_files": 6000, "days": 14, "ring_sec": 600,
             "control_every": 50}
 _INT_KEYS = (("max_mb", "asr_evidence_max_mb", 1, None),
              ("max_files", "asr_evidence_max_files", 1, None),

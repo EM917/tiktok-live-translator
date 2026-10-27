@@ -66,7 +66,7 @@ function applyStatic(root) {
 
 // ============ 一、纯函数 ============
 
-// 连接状态文案。n 用于 reconnecting 的倒计时秒数 / stale 的静默秒数。
+// 连接状态文案。n 用于 reconnecting 的倒计时秒数 / stale 的静默秒数 / offline 的断开秒数。
 // 英文放在窄屏的状态胶囊里，用短写法（docs/i18n-style.md §3 #122–#125、§4.3 R4）；
 // 「12」照写：被拒的手机收不到 max_viewers（spec §7.2）
 var CONN_TEXT = {
@@ -74,15 +74,40 @@ var CONN_TEXT = {
   connected: L("已连接", "Connected"),
   reconnecting: L("已断开，{n} 秒后重连…", "Reconnecting in {n} sec…"),
   denied: L("链接已失效，请向中控要新的二维码", "Link expired · Ask for a new QR code"),
+  // 地址栏和这台手机的存储里都没有口令（顺延事项，#148 / D5 的后果）：从主屏幕图标打开读不到 Safari 存的那份、
+  // 电脑换了地址或端口、Safari 清掉了网站数据。这时链接并没有失效，墙上的二维码照样能用，以前却和 4401（服务端
+  // 不认这把口令）共用「链接已失效」。按第八条只写看到的（这台手机上没有）和能做的（重新扫码），不说为什么没有。
+  // 英文和 denied 一样放在胶囊里，不比它长（R4）
+  nokey: L("手机上没有同看钥匙，请重新扫码", "No access key · Scan the QR code"),
   full: L("同看人数已满（12 人），稍后再试", "Full (12 max) · Try again later"),
   off: L("中控已关闭手机同看", "Operator stopped sharing"),
   stale: L("{n} 秒没有新消息", "No updates for {n} sec"),
+  // 断开超过 STALE_RECONNECT_SEC 之后胶囊里的字（V4）：只放这一个短句。胶囊不换行，
+  // 以前把「请找中控确认…」整句塞进来，英文在 390 宽下后半句整段看不到，「状态未知」被挤成 0 宽
+  offline: L("未连接 {n} 秒", "Not connected for {n} sec"),
 };
 
 function statusText(state, n) {
   var t = CONN_TEXT[state];
   if (!t) return L("状态未知", "Status unknown");
   return t.replace("{n}", String(n == null ? 0 : n));
+}
+
+// 断线拖得够久（A9），光说「N 秒后重连」已经不够：告诉看的人能做什么。这句放在胶囊下面
+// 整宽、能换行的 #stale-line 里（V4）。#stale-line 原来那句「N 秒没有新消息」只在已连接时出现，
+// 两句不会同时出现
+var STALE_RECONNECT_SEC = 60;
+var RECONNECT_HELP = L("请找中控确认同看是否还开着，或重新扫码",
+                       "Ask the operator whether sharing is still on, or scan the QR code again.");
+
+// 重连中时胶囊和 #stale-line 各写什么。offlineSec 是**离断开那一刻**过了多少秒（V7：以前从
+// 上次连上算起，连着 30 分钟后掉线，掉线那一刻就显示「已经 1800 秒没连上」）；这台手机还没
+// 连上过、或者已经重新连上了，传 null。retrySec 是下一次重连的倒计时。line 为空串表示不显示
+function reconnectTexts(offlineSec, retrySec) {
+  if (offlineSec != null && offlineSec > STALE_RECONNECT_SEC) {
+    return { pill: statusText("offline", offlineSec), line: RECONNECT_HELP };
+  }
+  return { pill: statusText("reconnecting", retrySec), line: "" };
 }
 
 // 直播状态文案：与 main.py、app/*.py 里 server.status() 实际用到的取值一致，
@@ -120,11 +145,23 @@ function backoffDelay(n, rand) {
   return Math.max(BACKOFF_MIN, Math.min(BACKOFF_MAX, v));
 }
 
-// 违禁词警示模式的手机端提示文案：中控这场没打开警示时，命中仍会记进审计，
+// ---- 静默断开（专家审查 F8）----
+// 网络在中间静默断掉时浏览器拿不到 onclose，以前只会一直显示「N 秒没有新消息」，不会自己重连。
+// 服务端安静满 20 秒就发一条 viewer_ping（app/viewer.py VIEWER_PING_SEC），所以连得好好的手机
+// 不会超过 20 来秒什么都收不到；已连接状态下 VIEWER_SILENT_SEC 秒一条都没收到（ping 也算），就当这条
+// 连接已经断了，主动断开、走正常的重连。50 秒 = 两次 ping 再留 10 秒余量
+var VIEWER_SILENT_SEC = 50;
+function silentTooLong(connState, lastFrameAt, now) {
+  if (connState !== "connected" || lastFrameAt == null) return false;
+  return now - lastFrameAt > VIEWER_SILENT_SEC * 1000;
+}
+
+// 违禁词报警开关的手机端提示文案（界面上只说「报警」，不说「警示」，专家审查 V5）：
+// 中控这场没打开报警时，命中仍会记进审计，
 // 但手机上也看不到报警——不能让手机这边毫无提示，否则同看的人会误以为
 // 「这场很干净」。关闭时给一行常驻灰字；打开时不显示（返回空串，调用方据此隐藏）。
 function alertModeText(on) {
-  return on ? "" : L("违禁词警示已关闭（中控开播时未开启）", "Banned-term alerts are off for this session.");
+  return on ? "" : L("违禁词报警已关闭（中控开播时未开启）", "Banned-term alerts are off for this session.");
 }
 
 // 让「回放的 alert」与「随后实时同 id 的 alert」只渲染一份：只按 alert_id 取键，
@@ -161,6 +198,48 @@ function tokenFromHash(hash) {
   var h = String(hash || "");
   var m = h.match(/^#k=([^&]+)$/);
   return m ? m[1] : null;
+}
+
+// ---- 口令记在这台手机上（专家审查 S4，用户决定 D5：扫码后从地址栏去掉，记在那台手机里）----
+// 以前口令一直留在地址栏的 #k= 里，进浏览记录、跟着「分享此页」「添加到主屏幕」走。现在扫码进来读出
+// 口令，先存进这台手机浏览器的 localStorage，存成了再把 #k= 从地址栏去掉；之后刷新、从浏览记录打开都从
+// 存储里取。墙上的二维码一直有效（再扫一次就再存一遍）。电脑的局域网地址变了要重扫（存储按地址隔开，
+// 新地址下读不到）。从 iPhone 主屏幕图标打开时可能读不到口令：图标是在 #k= 去掉之后加的，地址里没有口令；
+// 它按书签（和 Safari 共用存储）还是按网页 App（自己一份存储）打开，要看 iOS 版本，这里没有 manifest，也
+// 没在 iPhone 上试过。按网页 App 打开时重扫也补不上——扫码只会在 Safari 里打开、存进 Safari 那一份，这时
+// 请在 Safari 里重新扫码、在 Safari 里看。键里带端口：同一台电脑上换了观众端口也不会拿到另一份口令
+// （地址加端口本来就隔开存储，这里写明，不靠浏览器的这条规矩）。
+// storage 可注入（真 localStorage 或测试里的假存储），读写一律 try/catch：隐私模式下存不进去时
+// 退回只用地址栏里的口令，地址栏也就不清——清了刷新就连不上了
+var TOKEN_KEY_PREFIX = "tlt.viewer.k:";
+function tokenStorageKey(host) {
+  var m = /:(\d+)$/.exec(String(host || ""));
+  return TOKEN_KEY_PREFIX + (m ? m[1] : "");
+}
+
+// 返回 { token, fromHash, saved }：token 为 null 表示地址栏和存储里都没有。saved 只在口令来自地址栏、
+// 而且写进存储又读得回来时为 true——调用方据此决定能不能把地址栏里的口令去掉
+function pickToken(hash, storage, key) {
+  var fromHash = tokenFromHash(hash);
+  if (fromHash) {
+    var saved = false;
+    try {
+      storage.setItem(key, fromHash);
+      saved = storage.getItem(key) === fromHash;
+    } catch (e) { saved = false; }
+    return { token: fromHash, fromHash: true, saved: saved };
+  }
+  var stored = null;
+  try { stored = storage.getItem(key); } catch (e) { stored = null; }
+  // 存储里的东西当不可信：只认和地址栏里一样形状的（非空、不含 &）
+  var ok = typeof stored === "string" && /^[^&]+$/.test(stored);
+  return { token: ok ? stored : null, fromHash: false, saved: false };
+}
+
+// 被拒（4401：服务端不认这把口令）时清掉存着的口令：这一次说「链接已失效」，下次打开存储里没有了，
+// 说「手机上没有同看钥匙，请重新扫码」（nokey），不再拿同一把口令去连。存储抛错不影响调用方
+function forgetToken(storage, key) {
+  try { storage.removeItem(key); } catch (e) { /* 存储用不了：本来也没存进去 */ }
 }
 
 // 重译按钮文案。state 是这条字幕当前的 strong_state（服务端 caption/caption_update
@@ -320,7 +399,7 @@ if (typeof document !== "undefined") {
     var MAX_COMMENTS = 30;    // 手机端默认折叠，只留最近这么多条（负责人定稿：三个待定问题）
     var MAX_CAPTIONS = 200;   // 回放上限 100 条 + 直播中持续追加，留够余量不无限长
     var STALE_MS = 45000;     // 已连接但 45 秒没有新消息：叠加显示，不改变连接状态本身
-    var STALE_RECONNECT_SEC = 60;   // A9：重连超过这么久，文案升级为找中控确认
+    // 断开超过 STALE_RECONNECT_SEC（60 秒，A9）文案升级为找中控确认：常量在上面纯函数段，reconnectTexts 用它
 
     // 图标：描边 1.5、currentColor，跟桌面端设置行同一套画法（见 web/index.html）。
     // 只放这两个——其余（提示音、弹幕、回到最新、报警角标）是静态文案，直接写在
@@ -517,6 +596,62 @@ if (typeof document !== "undefined") {
       });
     }
 
+    // ---- 弹幕区贴底跟随（F6）：规则同上面的字幕区 ----
+    // 弹幕列表自己滚（viewer.css 的 .comment-list：max-height + overflow-y:auto），新的接在底部、
+    // 超过 MAX_COMMENTS 从顶上裁。以前这里没有任何滚动代码：每次展开、每次重连之后都停在保留的
+    // 30 条里最旧的几条，手动滚到底也只看得到一眼，下一条进来就落到视野外（10-19 平均每分钟 31 条）。
+    // 和字幕区一样，「跟随」是用户意图：只有用户自己往上翻才停，滚回底部恢复。另有两处强制回到
+    // 底部：展开面板时（收起前翻到哪儿都不管），重连回放结束时（见 handle 里的 commentReplayStick）。
+    // 列表比字幕区矮得多（34vh），离底部的宽容度取 48px：一条弹幕约 60px，往上翻一条就算翻上去了；
+    // 小数像素和后补的一行译文不算
+    var COMMENT_FOLLOW_SLACK = 48;
+    var commentsFollowing = true;
+    var lastCommentInput = 0;
+    var commentReplayStick = false;   // viewer_hello 之后为 true：回放结束时强制滚到底一次
+    function commentsMeasurable() { return !!(commentList && commentList.clientHeight); }
+    function commentsAtBottom() {
+      return commentList.scrollHeight - commentList.scrollTop - commentList.clientHeight < COMMENT_FOLLOW_SLACK;
+    }
+    function stickCommentsNow() {
+      if (commentList) commentList.scrollTop = commentList.scrollHeight;
+    }
+    function followCommentsNow() {   // 强制：恢复跟随并滚到底
+      commentsFollowing = true;
+      stickCommentsNow();
+    }
+    if (commentList) {
+      ["wheel", "touchstart", "touchmove", "keydown", "mousedown"].forEach(function (name) {
+        commentList.addEventListener(name, function () {
+          lastCommentInput = Date.now();
+          commentReplayStick = false;   // 回放结束前用户已经自己在翻：回放结束时不再替他滚
+        }, { passive: true });
+      });
+      commentList.addEventListener("scroll", function () {
+        // 收起着、量不出来：沿用原意图，同字幕区
+        if (!commentsMeasurable()) return;
+        if (commentsAtBottom()) commentsFollowing = true;
+        else if (Date.now() - lastCommentInput < USER_INPUT_WINDOW_MS) commentsFollowing = false;
+      }, { passive: true });
+    }
+    // 重新可见 / 获得焦点 / 窗口变化时补一次，另有 2 秒一次的兜底：同字幕区，后台期间的滚动请求会落空
+    function resyncComments() {
+      if (document.hidden || !commentsFollowing) return;
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(stickCommentsNow);
+      else stickCommentsNow();
+    }
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", resyncComments);
+    }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      ["focus", "pageshow", "resize", "orientationchange"].forEach(function (name) {
+        window.addEventListener(name, resyncComments);
+      });
+    }
+    setInterval(function () {
+      if (document.hidden || !commentsFollowing || !commentsMeasurable()) return;
+      if (!commentsAtBottom()) stickCommentsNow();
+    }, 2000);
+
     // ---- 弹幕区：默认折叠，展开/收起记忆在 localStorage ----
     var commentsOpen = lsGet("viewerCommentsOpen") === "1";
     function syncCommentPanel() {
@@ -529,52 +664,88 @@ if (typeof document !== "undefined") {
         commentsOpen = !commentsOpen;
         lsSet("viewerCommentsOpen", commentsOpen ? "1" : "0");
         syncCommentPanel();
+        // F6：展开就看最新的。收起时列表是 display:none，期间的滚动请求都不生效
+        if (commentsOpen) followCommentsNow();
       });
     }
 
+    // ---- 口令（S4）：地址栏里有就存进这台手机，存成了就从地址栏去掉；没有就从存储里取（见上面 pickToken）----
+    // 拿 localStorage 本身也可能抛错（Safari 关掉网站数据时），拿不到就当没有存储：只用地址栏里的口令
+    var tokenStore = null;
+    try { tokenStore = typeof localStorage !== "undefined" ? localStorage : null; } catch (e) { tokenStore = null; }
+    var TOKEN_KEY = tokenStorageKey(location.host);
+    var picked = pickToken(location.hash, tokenStore, TOKEN_KEY);
+    var TOKEN = picked.token;
+    // 地址栏只留页面本身（http://地址:端口/）。改不了（没有 history 接口、浏览器拒绝）就算了：
+    // 口令照旧留在 #k= 里，连接不受影响
+    if (picked.fromHash && picked.saved) {
+      try {
+        if (typeof history !== "undefined" && history && typeof history.replaceState === "function") {
+          history.replaceState(history.state, "", (location.pathname || "/") + (location.search || ""));
+        }
+      } catch (e) { /* 忽略 */ }
+    }
+
     // ---- 连接状态机 ----
-    var TOKEN = tokenFromHash(location.hash);
     var ws = null;
     var retryCount = 0;
     var reconnectTimer = null;
     var connState = "connecting";
-    var lastConnectedAt = null;   // 上一次收到 viewer_hello 的时间（ms）
-    var lastMessageAt = null;     // 上一次收到任意消息的时间（ms），驱动 45 秒静默提示
-    var staleReconnectShown = 0;  // 上一次渲染时用的重连累计秒数，避免每次 tick 都重排 DOM
+    // 掉线那一刻（ms）：从「已连接」离开时记下，收到 viewer_hello 时清空。断线的秒数从这里数起（V7）。
+    // 以前记的是上一次收到 viewer_hello 的时间，秒数就把连着的那段也算了进去：连了 30 分钟后掉线，
+    // 掉线那一刻就显示「已经 1800 秒没连上」，还叫看的人去找中控。还没连上过的手机这里是 null，
+    // 一直显示普通的「N 秒后重连」，和以前一样
+    var disconnectedAt = null;
+    var lastMessageAt = null;     // 上一次收到消息的时间（ms，viewer_ping 不算），驱动 45 秒的「N 秒没有新消息」
+    // 上一次收到任何一帧的时间（ms，viewer_ping 也算）：已连接时超过 VIEWER_SILENT_SEC 没变就主动断开重连（F8）。
+    // 两个时间分开记：#stale-line 照旧说的是「没有新内容」（安静的直播间里照样显示），断不断开只看连接本身
+    var lastFrameAt = null;
+
+    // 重连中离掉线那一刻过了多少秒；不在重连中、或者这台手机还没连上过，返回 null
+    function offlineSec() {
+      if (connState !== "reconnecting" || disconnectedAt == null) return null;
+      return Math.round((Date.now() - disconnectedAt) / 1000);
+    }
 
     function renderConnBar() {
       if (!connText || !connDot) return;
       connDot.className = "dot " + connState;
-      var text;
-      if (connState === "reconnecting" && lastConnectedAt) {
-        var elapsedSec = Math.round((Date.now() - lastConnectedAt) / 1000);
-        if (elapsedSec > STALE_RECONNECT_SEC) {
-          // A9：重连拖得够久，普通的「N 秒后重连」已经不够用——告诉人可以做什么
-          text = L("已经 " + elapsedSec + " 秒没连上。请找中控确认同看是否还开着，或重新扫码",
-                   "Not connected for " + elapsedSec + " sec. "
-                   + "Ask the operator whether sharing is still on, or scan the QR code again.");
-          staleReconnectShown = elapsedSec;
-        } else {
-          text = statusText(connState, pendingRetrySec);
-        }
-      } else {
-        text = statusText(connState, pendingRetrySec);
-      }
-      connText.textContent = text;
+      connText.textContent = connState === "reconnecting"
+        ? reconnectTexts(offlineSec(), pendingRetrySec).pill
+        : statusText(connState, pendingRetrySec);
     }
 
     var pendingRetrySec = 0;   // 下一次重连前的倒计时秒数，供 statusText 的 {n} 用
 
-    function tickStaleLine() {
+    // 胶囊下面那一行（整宽、能换行）：已连接时是「N 秒没有新消息」，断开拖久了是「请找中控确认…」
+    // （V4，原来塞在胶囊里），其余时候隐藏。两句的条件互斥：一个要已连接，一个要重连中
+    function renderStaleLine() {
       if (!staleLine) return;
-      if (connState === "connected" && lastMessageAt
-          && Date.now() - lastMessageAt > STALE_MS) {
-        var sec = Math.round((Date.now() - lastMessageAt) / 1000);
-        staleLine.textContent = statusText("stale", sec);
-        staleLine.classList.remove("hidden");
-      } else {
-        staleLine.classList.add("hidden");
+      var text = "";
+      if (connState === "reconnecting") {
+        text = reconnectTexts(offlineSec(), pendingRetrySec).line;
+      } else if (connState === "connected" && lastMessageAt && Date.now() - lastMessageAt > STALE_MS) {
+        text = statusText("stale", Math.round((Date.now() - lastMessageAt) / 1000));
       }
+      staleLine.textContent = text;
+      staleLine.classList.toggle("hidden", !text);
+    }
+
+    // 静默断开（F8）：先撒手再关——网络已经断了的连接，close() 之后 onclose 可能很久才来，来了也不再管它
+    // （onclose 里 ws !== socket 就返回），它万一又送来消息也不处理（onmessage 认 abandonedSocket）。
+    // 然后同没有关闭帧的断开一样走正常的重连退避
+    var abandonedSocket = null;
+    function dropSilentSocket() {
+      var socket = ws;
+      ws = null;
+      abandonedSocket = socket;
+      if (socket) { try { socket.close(); } catch (e) { /* 忽略 */ } }
+      onSocketDown(null);
+    }
+
+    function tickStaleLine() {
+      if (silentTooLong(connState, lastFrameAt, Date.now())) dropSilentSocket();
+      renderStaleLine();
       // 重连状态下的倒计时/累计秒数也要跟着秒表刷新，不能只在状态切换那一刻画一次
       if (connState === "reconnecting") renderConnBar();
     }
@@ -586,13 +757,17 @@ if (typeof document !== "undefined") {
     }
 
     function setConnState(state) {
+      // 从「已连接」离开的那一刻就是掉线的时刻。之后在重连 / 被拒 / 已满之间怎么转都不改它，
+      // 收到 viewer_hello 才清空
+      if (connState === "connected" && state !== "connected") disconnectedAt = Date.now();
       connState = state;
       renderConnBar();
+      renderStaleLine();   // 连上时立刻收起「请找中控确认…」，不等下一秒的秒表
       renderStreamStale();
       refreshAllRetranslateButtons();   // 断线/重连都要跟着刷「重译」按钮的可点状态
     }
 
-    // 断线（reconnecting/denied/full/off）时不能让 stream-text 停在最后一次
+    // 断线（reconnecting/denied/nokey/full/off）时不能让 stream-text 停在最后一次
     // 收到的「直播中」不动——那正是 app/server.py:221-225 那条教训的手机版
     // （spec §12：「绝不在断线时继续显示『直播中』」）。之前只有 setConnState
     // 更新 conn-text/conn-dot，stream-text 只由 "status" 消息写，断线期间没人
@@ -622,7 +797,7 @@ if (typeof document !== "undefined") {
     }
 
     function connect() {
-      if (!TOKEN) { setConnState("denied"); return; }   // 拿不到 token：连文案都不发起连接
+      if (!TOKEN) { setConnState("nokey"); return; }   // 拿不到 token：连都不发起连接，说这台手机上没有（不说链接失效）
       setConnState(connState === "reconnecting" || connState === "full" || connState === "off"
         ? connState : "connecting");
       var socket;
@@ -638,10 +813,15 @@ if (typeof document !== "undefined") {
         catch (e) { try { socket.close(); } catch (e2) { /* 忽略 */ } }
       };
       socket.onmessage = function (evt) {
-        lastMessageAt = Date.now();
-        var msg;
-        try { msg = JSON.parse(evt.data); } catch (e) { return; }
-        handle(msg);
+        // 静默断开时主动撒手的那条旧连接，万一后来又送来消息，不再处理：新连接的回放会把一切补齐
+        if (socket === abandonedSocket) return;
+        lastFrameAt = Date.now();
+        var msg = null;
+        try { msg = JSON.parse(evt.data); } catch (e) { msg = null; }
+        // viewer_ping 只说明连接还活着：不算新消息、不进 handle（不能被数成回放里的一条）
+        if (msg && msg.type === "viewer_ping") return;
+        lastMessageAt = lastFrameAt;
+        if (msg) handle(msg);
       };
       socket.onclose = function (evt) {
         if (ws !== socket) return;   // 旧连接的收尾事件，已经换了新连接
@@ -654,7 +834,11 @@ if (typeof document !== "undefined") {
     }
 
     function onSocketDown(code) {
-      if (code === 4401) { setConnState("denied"); return; }         // 不再重连
+      if (code === 4401) {                                            // 不再重连
+        forgetToken(tokenStore, TOKEN_KEY);   // S4：服务端不认这把口令，存着的清掉；下次打开说这台手机上没有（nokey）
+        setConnState("denied");
+        return;
+      }
       if (code === 4429) { setConnState("full"); scheduleReconnect(true); return; }
       if (code === 4403) { setConnState("off"); scheduleReconnect(true); return; }
       // 4408（鉴权超时）或没有关闭帧（queue_full / send_timeout / inbound_flood 的 abort）：
@@ -672,6 +856,7 @@ if (typeof document !== "undefined") {
 
     function resetForNewSession() {
       following = true;   // 回放会重建整个列表：从最新处开始看
+      commentsFollowing = true;   // 弹幕同理（F6）
       alertsById = Object.create(null);
       captionsById = Object.create(null);
       commentsById = Object.create(null);
@@ -693,28 +878,79 @@ if (typeof document !== "undefined") {
       if (demoBanner) demoBanner.classList.toggle("hidden", !demoMode);
     }
 
+    // 回放窗口：viewer_hello 之后、回放结束之前为 true。回放里的 session_break 过白名单时 replay 键被丢掉
+    // （ALLOW 只给 ts），只能靠它分辨「历史上的换场」和「此刻的换场」。
+    // 回放在哪儿结束：viewer_hello 带着回放条数（replay_len，app/viewer.py 的 replay_snapshot 数好的），
+    // 数够这么多条就结束（replayLeft）。以前只能等「回放之后的第一条实时字幕/弹幕/报警」：安静的直播间里
+    // 那一条可能很久才来，期间紧接着换了主播，这条实时的 session_break 被当成历史，上一场的落后提示就挂过
+    // 整场新直播。hello 没带条数时（老的服务端）退回老办法，靠下面这几种「回放里不带 replay 标记」的类型判断：
+    // replay_snapshot 先发 status、comment_source、alert_mode、incident、health，再加上字幕历史里的
+    // session_break，它们到了不算回放结束；其余消息不带 replay 的，就是回放之后的第一条实时消息
+    var UNMARKED_IN_REPLAY = { status: true, comment_source: true, alert_mode: true, incident: true,
+                               health: true, session_break: true };
+    var replaying = false;
+    var replayLeft = null;   // 回放还剩几条没到；null = 不知道（hello 没带条数），按上面的老办法
+    var streamState = null;  // 最近一条 status 的 state：renderHealth 据此不在停止、下播、出错后揭开落后提示
+    // F6：重连回放结束时把弹幕滚到底一次。回放是一口气压进来的，逐条追加时的跟随本来就会贴底，
+    // 这一下是兜底：回放期间列表被清空、重建，scroll 事件可能把跟随意图改掉
+    function endReplay() {
+      replaying = false;
+      replayLeft = null;
+      if (commentReplayStick) {
+        commentReplayStick = false;
+        followCommentsNow();
+      }
+    }
+
     function handle(msg) {
       if (!msg || typeof msg !== "object") return;
+      var lastOfReplay = false;   // 这一条是回放的最后一条：照回放处理完再结束回放
+      if (msg.type !== "viewer_hello" && replaying) {
+        if (replayLeft === null) {
+          // 老办法：这一条已经是实时的了，先结束回放再按实时处理
+          if (!msg.replay && !UNMARKED_IN_REPLAY[msg.type]) endReplay();
+        } else {
+          replayLeft -= 1;
+          lastOfReplay = replayLeft <= 0;
+        }
+      }
       switch (msg.type) {
         case "viewer_hello":
           retryCount = 0;
-          lastConnectedAt = Date.now();
+          disconnectedAt = null;
+          commentReplayStick = true;
+          replaying = true;
+          replayLeft = typeof msg.replay_len === "number" && msg.replay_len >= 0 ? msg.replay_len : null;
+          lastOfReplay = replayLeft === 0;   // 没有可回放的：hello 本身就是回放的结尾
+          streamState = null;                // 紧随其后的 status 回放把它补上
           // 取消记录先对齐这一次共享，再收回放的报警：程序重启后 alert_id 从头数，
           // 上一次共享里取消过的 7 号不能藏掉这一次的 7 号
           dismissedAlerts.bind(msg.share_since);
           resetForNewSession();
+          // 持续提示和识别落后提示以回放为准（专家审查 F3）：先清掉，紧随其后的回放把此刻还在的重建。
+          // 以前不清，断线期间已经撤掉的提示（「已追上」、clear）没收到，重连后一直挂着
+          incidents = Object.create(null);
+          drawIncidents();
+          renderHealth(null);
           setConnState("connected");
           break;
         case "viewer_denied":
           // 关闭码本身已经决定了最终文案（onSocketDown），这里不用再动状态；
           // 只是不让它落进 default 分支被当成未知消息忽略。
           break;
+        case "viewer_ping":
+          // 走不到这里：onmessage 先把它拦下了（只更新 lastFrameAt，见上）。列在这里，白名单里看得到这一种
+          break;
         case "status":
+          streamState = msg.state;
           if (streamTextEl) streamTextEl.textContent = streamText(msg.state);
           if (msg.state === "live" || msg.state === "connecting") {
             demoMode = false;
             updateDemoBanner();
           }
+          // 停止、下播、出错：这一场的识别落后提示作废（pipeline 停止时不补发「已追上」）。和服务端删
+          // config["health"] 的时机一致（专家审查 F3），连着的手机不必等到重连才收掉它
+          if (msg.state === "idle" || msg.state === "ended" || msg.state === "error") renderHealth(null);
           break;
         case "alert_mode":
           renderAlertMode(msg);
@@ -738,6 +974,9 @@ if (typeof document !== "undefined") {
           updateCaption(msg);
           break;
         case "session_break":
+          // 此刻的换场（不是回放里的历史）：上一场的落后提示作废。换主播走 quiet 停止、不发 idle，新一场
+          // 又不会补发「已追上」，不在这里收掉，它会一直挂着（专家审查 F3，同桌面）
+          if (!replaying) renderHealth(null);
           renderSessionBreak(msg);
           break;
         case "comment":
@@ -752,6 +991,7 @@ if (typeof document !== "undefined") {
         default:
           break;   // 白名单以外的类型服务端本就不会发；未知类型安静忽略
       }
+      if (lastOfReplay) endReplay();
     }
 
     // ---- 违禁词警示开关：中控这场没打开时，常驻一行灰字提醒——命中仍记入
@@ -792,10 +1032,15 @@ if (typeof document !== "undefined") {
       lagging: L("识别开始落后，报警会有延迟", "Recognition is falling behind. Alerts will be delayed."),
       degraded: L("检测已降级，识别明显落后", "Detection degraded: recognition is far behind."),
     };
+    // 这一场已经结束的几种状态（同 app/server.py 的 SESSION_OVER_STATES）：落后提示只说正在进行的那一场。
+    // 停止、下播、出错之后晚到的一条（比如下播之后、统计循环被取消之前的那一跳）不揭开，同桌面的 renderHealth
+    function sessionOver(state) {
+      return state === "idle" || state === "ended" || state === "error";
+    }
     function renderHealth(msg) {
       if (!healthLine) return;
       var text = msg && HEALTH_TEXT[msg.level];
-      if (!text) { healthLine.classList.add("hidden"); return; }
+      if (!text || sessionOver(streamState)) { healthLine.classList.add("hidden"); return; }
       healthLine.innerHTML = "";
       var icon = document.createElement("span");
       icon.className = "icon";
@@ -812,8 +1057,8 @@ if (typeof document !== "undefined") {
     // ---- 违禁词报警：最显眼的红卡片，新的插最前，最多 50 条 ----
     // 精确/变体/疑似三档不再靠 emoji 颜色区分，改成卡片左侧的分级色竖线
     // （跟桌面端 .alert-item.tier-variant/.tier-fuzzy 同一套逻辑，见 viewer.css）。
-    // 英文与桌面（web/live-ui.js）统一成 Exact / Variant / Similar；认不出的分级兜底写的「命中」
-    // 在桌面就是 exact 那一档的字，英文同样写 Exact（同一句中文只许有一种英文）
+    // 中英都与桌面（web/live-ui.js）统一：精确 / 变体 / 疑似、Exact / Variant / Similar。认不出的分级
+    // 按 exact 那一档兜底。兜底以前写「命中」（当时桌面 exact 档的字），桌面改叫「精确」以后跟着改（专家审查 V5）
     var TIER_LABEL = { exact: L("精确", "Exact"), variant: L("变体", "Variant"), fuzzy: L("疑似", "Similar") };
     function renderAlert(msg) {
       if (!alertSection || !alertList) return;
@@ -842,7 +1087,7 @@ if (typeof document !== "undefined") {
       var labelText = document.createElement("span");
       // 词条是名字，单独一截；三截都在 labelText 里，.alert-head-label 的 flex 子项不变
       // 引号跟着语言换：中文「」，英文弯双引号 “”（docs/i18n-style.md §2.2）
-      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || L("命中", "Exact")) + L(" 「", " “")));
+      labelText.appendChild(textSpan((TIER_LABEL[msg.tier] || L("精确", "Exact")) + L(" 「", " “")));
       labelText.appendChild(textSpan(msg.term || "", true));
       labelText.appendChild(textSpan(L("」 ", "” ") + hhmmss(msg.ts)));
       headLabel.appendChild(labelText);
@@ -989,7 +1234,7 @@ if (typeof document !== "undefined") {
       stickCaptions();
     }
     function applyCaptionState(msg, transEl) {
-      transEl.classList.remove("pending", "failed");
+      transEl.classList.remove("pending", "failed", "skipped");
       markBody(transEl, !!msg.translated);   // 译文是正文；失败说明、「翻译中…」是界面提示
       if (msg.translated) {
         transEl.textContent = msg.translated;
@@ -999,6 +1244,20 @@ if (typeof document !== "undefined") {
                                   ? "Couldn’t translate (" + pick(msg, "why") + "). See the original above."
                                   : "Couldn’t translate. See the original above.");
         transEl.classList.add("failed");
+      } else if (msg.translate_state === "failed" || msg.translate_state === "dropped") {
+        // F4：服务端说「这条不会有译文了」用的是 translate_state（pipeline 的 _publish_translation
+        // 发 failed，翻译积压丢掉旧任务时发 dropped），不带 failed/why。以前这里只认 failed/why，
+        // 这两种一律写成空串，译文行只剩一行空白，看的人分不出是「还没译」还是「不会有了」。
+        // 字与桌面卡片的角标同一句（web/live-ui.js captionStateChip）。拒答、结果不像译文这两种
+        // 细分不在手机白名单里，只能写笼统的「翻译失败」；原文和「重译」按钮还在，可以自己重试。
+        // 颜色也照桌面角标（captionStateChip 的 fail）：只有 failed 是提醒色（.failed）；dropped 是程序为了跟上
+        // 直播主动跳过的，桌面画成普通的灰角标、不标红，手机以前却和 failed 一样用提醒色，同一件事两边说法不同。
+        // 现在 dropped 用 .skipped（次要文字的颜色，不斜体：斜体留给还在等的「翻译中…」）
+        var failedNow = msg.translate_state === "failed";
+        transEl.textContent = failedNow
+          ? L("翻译失败", "Translation failed")
+          : L("翻译已跳过（积压）", "Skipped (backlog)");
+        transEl.classList.add(failedNow ? "failed" : "skipped");
       } else if (msg.translate_state === "pending") {
         transEl.textContent = L("翻译中…", "Translating…");
         transEl.classList.add("pending");
@@ -1074,10 +1333,16 @@ if (typeof document !== "undefined") {
       commentsById[msg.id] = { msg: msg, el: item, zhEl: zh };
       while (commentList.children.length > MAX_COMMENTS) {
         var oldest = commentList.firstChild;
+        // 用户翻上去在看的时候，从顶上裁掉一条，下面的内容整体上移一条的高度：把 scrollTop 减回去，
+        // 看着的那几条不动。viewer.css 给 .comment-list 关了浏览器自带的滚动锚定（overflow-anchor:none），
+        // 由这里来做：Chromium 和 WebKit 行为一致，也不会和锚定各减一遍。跟随时最后会滚到底，不用减
+        var shift = commentsFollowing ? 0 : (oldest.offsetHeight || 0);
         delete commentsById[oldest.dataset.id];
         commentList.removeChild(oldest);
+        if (shift) commentList.scrollTop = Math.max(0, commentList.scrollTop - shift);
       }
       if (commentCountEl) commentCountEl.textContent = String(commentList.children.length);
+      if (commentsFollowing) stickCommentsNow();   // F6：追加、裁剪之后，跟随中就滚到底
     }
     function updateComment(msg) {
       var entry = commentsById[msg.id];
@@ -1091,6 +1356,8 @@ if (typeof document !== "undefined") {
         entry.zhEl.textContent = entry.msg.translated || entry.msg.text || "";
         entry.zhEl.classList.remove("pending");
       }
+      // 译文是后补的，这一条会长高：跟随中再贴一次底（同字幕区的 updateCaption）
+      if (commentsFollowing) stickCommentsNow();
     }
 
     // 这行小字紧挨着「弹幕 / Comments」标题：英文不再重复 Comments（同桌面，docs/i18n-style.md §3 #96）
@@ -1120,10 +1387,15 @@ if (typeof module !== "undefined" && module.exports) {
     streamText: streamText,
     alertModeText: alertModeText,
     backoffDelay: backoffDelay,
+    silentTooLong: silentTooLong,
+    VIEWER_SILENT_SEC: VIEWER_SILENT_SEC,
     alertKey: alertKey,
     applyUpdate: applyUpdate,
     shouldRing: shouldRing,
     tokenFromHash: tokenFromHash,
+    tokenStorageKey: tokenStorageKey,
+    pickToken: pickToken,
+    forgetToken: forgetToken,
     retranslateLabel: retranslateLabel,
     canRetranslate: canRetranslate,
     loadDismissedAlerts: loadDismissedAlerts,
@@ -1132,6 +1404,8 @@ if (typeof module !== "undefined" && module.exports) {
     createDismissedStore: createDismissedStore,
     shouldRenderSessionDivider: shouldRenderSessionDivider,
     sessionDividerText: sessionDividerText,
+    reconnectTexts: reconnectTexts,
+    STALE_RECONNECT_SEC: STALE_RECONNECT_SEC,
     UI_LANG: UI_LANG,
     I18N_ON: I18N_ON,
     L: L,

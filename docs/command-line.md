@@ -12,7 +12,7 @@
 
 | Flag | Description | Default |
 |------|------|------|
-| `--target` | Target language (`zh-CN`/`en`/`ja`/`ko`/…; can also be switched anytime in the top bar) | last choice in the UI; otherwise `zh-CN` (`en` on a new install with an English interface) |
+| `--target` | Caption language: the language captions are translated into. Any code the engine accepts (`zh-CN`/`zh-TW`/`en`/`es`/`ja`/…). The Captions in menu in the top bar lists `zh-CN`, `zh-TW`, `en` and `es`; another code given here shows there as an extra item, and choosing one of the four replaces it | last choice in the UI; otherwise `zh-CN` (`en` on a new install with an English interface) |
 | `--source` | Streamer's language(s): a single code (`es`/`en`/`ja`/…), or a comma list to auto-detect within just those (e.g. `es,en`, max 4, first = primary; a detected language outside the list triggers one forced re-run) | last choice in the UI; otherwise `es,en` |
 | `--backend` | Recognition backend: `mlx` (Apple GPU) / `ct2` (faster-whisper) / `auto` | `auto` |
 | `--model` | Whisper model: `tiny`/`base`/`small`/`medium`/`large-v3`/`large-v3-turbo` | auto by hardware |

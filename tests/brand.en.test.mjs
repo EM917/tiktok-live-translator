@@ -15,15 +15,15 @@ test("语言确实是英文（不然下面全是空转）", () => {
 
 test("选项列表：第一项是 Any (default)，品牌名原样", () => {
   assert.deepEqual(B.buildBrandOptionList(undefined), [{ value: "", label: "Any (default)" }]);
-  assert.deepEqual(B.buildBrandOptionList([{ id: "bella", name: "Bella All Natural" }, { id: "mx" }]), [
+  assert.deepEqual(B.buildBrandOptionList([{ id: "allura", name: "Allura Belt Nalla" }, { id: "mx" }]), [
     { value: "", label: "Any (default)" },
-    { value: "bella", label: "Bella All Natural" },
+    { value: "allura", label: "Allura Belt Nalla" },
     { value: "mx", label: "mx" },
   ]);
 });
 
 test("重建之后保留选中值的规则与语言无关", () => {
-  const list = B.buildBrandOptionList([{ id: "bella", name: "Bella All Natural" }]);
-  assert.equal(B.resolveSelectedBrand("bella", list), "bella");
+  const list = B.buildBrandOptionList([{ id: "allura", name: "Allura Belt Nalla" }]);
+  assert.equal(B.resolveSelectedBrand("allura", list), "allura");
   assert.equal(B.resolveSelectedBrand("gone", list), "");
 });

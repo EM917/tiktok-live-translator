@@ -37,7 +37,7 @@ from app.server import CaptionServer
 from tests.helpers import run
 from tests.i18n_rules import EN_CAUSAL, EN_LABELS, RULE8_FAMILY, ZH_CAUSAL, ZH_LABELS
 from tests.test_comment_safeguard import (BLOCKED_200, REJECTED_400, FakeProc, _run_until,
-                                          jline, make_source, make_stale)
+                                          jline, make_source, make_stale, wait_until)
 from tools import i18n_pairs as P
 
 FILES = ("app/resolver.py", "app/browser_login.py", "app/comment_source.py", "app/comments.py")
@@ -181,6 +181,9 @@ def test_the_end_of_the_lookup_chain_names_the_layers_in_english(monkeypatch):
     text = en(i18n.of(exc.value))
     assert_clean_english(text, "chain end")
     assert text.startswith("The app tried every method but couldn’t get the audio stream")
+    # 先让人核对用户名（10-26 一场用户名少打了一个字母），中英两边都要有
+    assert "First check that the username you entered matches the one in your browser’s address bar" in text
+    assert "先核对一下输入的用户名和浏览器地址栏里的是否一字不差" in zh
     assert ("(Other stream URLs were found but failed the safety check: live page fallback: "
             "Refused a stream URL on this computer or the local network (safety check))") in text
     assert ("(Some lookup methods hit an internal error and were skipped: official API. "
@@ -334,13 +337,44 @@ def test_an_upgrade_after_a_blocked_connection_in_english(monkeypatch):
     ([], 6, "Couldn’t find this streamer"),
     ([], 5, "TikTok asked for a sign-in to read comments. Sign in to TikTok in your browser, "
             "then start again."),
-    ([jline({"event": "status", "state": "error", "detail": "RuntimeError: boom"})], 1,
-     "Comments connection error (RuntimeError: boom). Retrying shortly."),
 ])
 def test_other_comment_states_in_english(monkeypatch, lines, returncode, expect):
     cs, state_log, _raw, _calls = make_source(monkeypatch, [FakeProc(lines, returncode=returncode)])
     assert _run_until(cs, lambda: any(en(d) == expect for _, d in state_log), limit=100) is True
     _assert_details_clean(state_log)
+
+
+def test_a_comments_connection_error_ends_without_the_raw_text(monkeypatch):
+    """专家审查 U5：子进程报 error 后退出，等 _supervise 处理完这次退出（已经起了下一个子进程），
+    这时面板停着的那句、以及之前发过的每一句，中英两臂都没有原文；原文只经 raw 走。
+
+    以前这条放在上面的参数表里：只要「出现过」那句英文就算过，剩下只查中文和禁用词。把 _supervise
+    换回「说明（原文）」的写法它照样绿——面板最后停在带括号原文的那句，而括号里的英文异常既不是
+    中文、也不在禁用词里。"""
+    raw = "RuntimeError: boom"
+    err = jline({"event": "status", "state": "error", "detail": raw})
+    cs, state_log, raw_log, calls = make_source(monkeypatch, [FakeProc([err], returncode=1)])
+    shown = []
+
+    async def scenario():
+        cs.start("abc")
+        ok = await wait_until(lambda: len(calls) >= 2, limit=100)
+        shown.extend(state_log)           # 下一个子进程已经起了：这时的最后一句就是这次掉线后面板停着的话
+        await cs.stop()
+        return ok
+
+    assert run(scenario()) is True
+    assert shown, state_log
+    final_state, final_detail = shown[-1]
+    assert final_state == "error"
+    assert final_detail == "评论连接出错，稍后自动重试"
+    assert en(final_detail) == "Comments connection error. Retrying shortly."
+    for _state, detail in shown:
+        for lang in (i18n.ZH, i18n.EN):
+            text = str(i18n.render(detail, lang))
+            assert "RuntimeError" not in text and "boom" not in text, (lang, text)
+    _assert_details_clean(shown)
+    assert [r for _s, _d, r in raw_log] == [raw]
 
 
 def test_a_comment_state_reaches_the_page_in_english_and_the_audit_in_chinese(tmp_path):

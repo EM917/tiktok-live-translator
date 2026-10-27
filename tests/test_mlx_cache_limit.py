@@ -29,7 +29,7 @@ from app.audit import AuditLog
 from app.pipeline import Pipeline
 from tests.helpers import run
 
-LIVE_URL = "https://www.tiktok.com/@bellaallnatural/live"
+LIVE_URL = "https://www.tiktok.com/@brisafakeperson/live"
 DIRECT_URL = "https://cdn.example.com/s.flv"
 MB = 1024 * 1024
 
@@ -89,6 +89,12 @@ def _isolated(monkeypatch, tmp_path):
     monkeypatch.delenv(asr.MLX_CACHE_ENV, raising=False)
     monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(asr, "_mlx_said", set())
+    # 排在前面的文件走真的开场时，hwdetect.detect() 会真的 import mlx_whisper（连带 mlx.core；装了 mlx 的
+    # 本机 .venv 才会），留在 sys.modules 里：先藏起来，用例结束 monkeypatch 原样还回去。下面那条检查就只看
+    # 这条用例自己 import 了什么，不替别的文件背锅。这里真 import 了的话：单跑这个文件是这条断言红；
+    # 跟在已经加载过 mlx 的文件后面，重新加载 mlx.core 会让进程直接 abort（2026-10-22 本机试过），同样是红
+    for name in [n for n in sys.modules if n == "mlx" or n.startswith(("mlx.", "mlx_whisper"))]:
+        monkeypatch.delitem(sys.modules, name)
     yield
     real = getattr(sys.modules.get("mlx.core"), "__file__", None)
     assert real is None, "这些用例不许 import 真的 mlx.core"

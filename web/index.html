@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=46">
+  <link rel="stylesheet" href="/static/style.css?v=52">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -40,33 +40,30 @@
         <span id="status-dot" class="dot idle"></span>
         <span id="status-text" class="status-text" data-en="Starting…">等待连接…</span>
       </span>
-      <!-- 违禁词警示开关的状态：只在连接中/直播中露出，待机时没有场次可言 -->
+      <!-- 违禁词报警开关的状态：只在连接中/直播中露出，待机时没有场次可言 -->
       <span id="alert-mode-tag" class="alert-mode-tag hidden"></span>
       <!-- 本场品牌：同样只在连接中/直播中且这一场选了品牌时露出，见 app.js
            updateActiveBrandTag。中性配色，纯说明性质，不是开关 -->
       <span id="active-brand-tag" class="active-brand-tag hidden"></span>
     </div>
     <div class="controls">
-      <label class="ctl" title="目标语言" data-en-title="Translate to">
-        <span class="ctl-text" data-en="Translate to">目标语言</span>
+      <!-- 字幕译成哪种语言。界面语言不在这里，在「设置 > 界面语言」（#ui-lang-select）：用户 2026-10-20
+           把这个下拉当成界面语言切成过 English，所以标签不叫「目标语言」，改叫「字幕译成」，只列四种
+           （简体中文、繁体中文、英语、西语）。设置里存着别的语言、或者 --target 指定了别的语言时，
+           app.js showTargetLang 补一项把它显示出来（live-ui.js targetLangExtra），后端照旧什么语言都收。
+           标签在直播中窄窗口（≤1080px）省掉，首页一直露出来（style.css） -->
+      <label class="ctl" title="字幕译成这种语言。界面语言在「设置 > 界面语言」里改"
+             data-en-title="Captions are translated into this language. To change the app language, go to Settings > App Language.">
+        <span class="ctl-text" data-en="Captions in">字幕译成</span>
         <!-- 固定 aria-label：.ctl-text 在窄宽度（≤1080px）会被隐藏，不依赖它做可访问名称
              （和同一行 #font-size 的 aria-label="字幕字号" 保持同一种更稳的写法）。
              translate="no"：选项是各语言的自称，属于数据，哪种界面语言都不翻；只豁免选项文字，
              select 自己的 aria-label 照常要英文（spec §4.1 R7） -->
-        <select id="target-lang" aria-label="目标语言" data-en-aria-label="Translate to" translate="no">
+        <select id="target-lang" aria-label="字幕译成" data-en-aria-label="Captions in" translate="no">
           <option value="zh-CN">中文（简体）</option>
           <option value="zh-TW">中文（繁體）</option>
           <option value="en">English</option>
-          <option value="ja">日本語</option>
-          <option value="ko">한국어</option>
           <option value="es">Español</option>
-          <option value="fr">Français</option>
-          <option value="de">Deutsch</option>
-          <option value="ru">Русский</option>
-          <option value="pt">Português</option>
-          <option value="vi">Tiếng Việt</option>
-          <option value="th">ไทย</option>
-          <option value="id">Bahasa Indonesia</option>
         </select>
       </label>
       <!-- 字号：小 A —— 滑块 —— 大 A（苹果「图书」的做法），省掉「字号」两个字 -->
@@ -77,7 +74,9 @@
       </label>
       <!-- 没有字幕（含上一场留下的历史）时按钮没有意义，一直亮着占地方，见
            pm.md #8；显示由 app.js syncCaptionDependentUi 按 #history 里有没有
-           .cap 决定，不跟直播/待机状态本身绑定——停止后只要历史还在就仍可点 -->
+           .cap 决定，不跟直播/待机状态本身绑定——停止后只要历史还在就仍可点。
+           英文按钮上只写 Clear：Clear Captions 在默认 1000px 窗口把品牌标签挤到 100px 以下（G10 实测，
+           docs/i18n-style.md §1.3、§4 R1），「字幕」两个字交给 title 说；弹幕栏那颗在弹幕栏里写全 -->
       <button id="clear-btn" class="btn hidden" title="清空历史字幕" data-en-title="Clear caption history" data-en="Clear">清空字幕</button>
       <!-- 手机同看的入口常驻顶栏：这张卡片曾经放在 #start-panel 里，直播开始后
            整块面板被隐藏，中控恰好在这时候想扫码给同事看，却找不到入口。
@@ -98,7 +97,7 @@
 
            这块面板以前放在 #start-panel 里：直播一开始整块面板就被隐藏，
            中控恰恰是在直播中才想扫码给同事看，结果找不到入口。现在挪到顶栏
-           按钮下面、字幕历史上面，跟警报条一个层级，待机和直播中都能打开。 -->
+           按钮下面、字幕历史上面，跟报警条一个层级，待机和直播中都能打开。 -->
       <div id="share-panel" class="share-panel popover hidden" role="dialog" aria-label="手机同看" data-en-aria-label="Phone Viewing">
         <div id="share-card" class="share-card">
           <div class="share-head">
@@ -279,12 +278,12 @@
     </div>
   </section>
 
-  <!-- 违禁词警报：本工具的核心产出，不自动消失，只能手动清空 -->
+  <!-- 违禁词报警：本工具的核心产出，不自动消失，只能手动清空 -->
   <section id="alert-panel" class="alert-panel hidden">
     <div class="alert-bar">
       <span class="alert-title" data-en="Possible Banned Terms "><svg class="i" aria-hidden="true"><use href="#i-alert-fill"/></svg>疑似违禁词
         <span id="alert-count">0</span><span id="alert-note" class="alert-note hidden"></span></span>
-      <button id="clear-alerts" class="btn small" data-en="Clear Alerts">清空警报</button>
+      <button id="clear-alerts" class="btn small" data-en="Clear Alerts">清空报警</button>
     </div>
     <div id="alert-list" class="alert-list"></div>
   </section>
@@ -328,6 +327,10 @@
                data-en-placeholder="https://www.tiktok.com/@username/live">
         <button id="start-btn" class="btn primary large" data-en="Start">开始翻译</button>
       </div>
+      <!-- 输错地址的就地提示（专家审查 U9）：以前一次输入错误走 setStatus({state:"error"})，整个状态胶囊变红
+           「出错了」、顶部还挂一条红横幅。现在只在输入框下面说一句，胶囊和横幅都不动；再输入就清掉。
+           文字由 app.js 写（UNRECOGNIZED_INPUT_MSG），这里留空 -->
+      <p id="room-input-error" class="field-error hidden" role="alert"></p>
 
       <!-- 原来的两段灰字，收进「?」：只有少数场景用得上，不该常驻首屏 -->
       <div id="input-help" class="sp-help hidden">
@@ -473,7 +476,7 @@
           </div>
 
           <!-- 违禁词实时报警：功能保留但已搁置，降为设置里的一行，不抢首屏。
-               摘要＝警示开关（#watch-mode）+ 词表条数（#watch-state）。 -->
+               摘要＝报警开关（#watch-mode）+ 词表条数（#watch-state）。 -->
           <div id="watch-card" class="set-item">
             <button id="watch-head" class="set-row" type="button" aria-expanded="false" aria-controls="watch-body">
               <!-- 橙色留给「提醒」这个状态含义（自检/引擎回退），违禁词报警本身
@@ -489,7 +492,7 @@
               <span class="set-chevron" aria-hidden="true"></span>
             </button>
             <div id="watch-body" class="set-body hidden">
-              <!-- 违禁词警示模式：默认关闭。关闭时命中仍会记入审计（不会漏），
+              <!-- 违禁词报警模式：默认关闭。关闭时命中仍会记入审计（不会漏），
                    只是不弹窗、不通知——开不开只影响「要不要报警」，不影响「要不要记」 -->
               <label class="watch-toggle-row">
                 <span data-en="Show alert on match">命中时弹出报警</span>
@@ -501,7 +504,7 @@
               <p class="watch-how"
                  data-en-html="Edit <code>banned_terms.txt</code> in the app folder, one word or phrase per line. Save, then click Stop and Start to apply. Matches show a red alert at the top of the window and are written to the audit log.">
                 编辑项目文件夹里的 <code>banned_terms.txt</code>，一行一个词或短语，
-                保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色警报并写入审计日志。
+                保存后点「停止」再「开始翻译」即可生效。命中时页面顶部会弹出红色报警并写入审计日志。
               </p>
             </div>
           </div>
@@ -700,7 +703,9 @@
       <span class="comment-actions">
         <button id="toggle-comments" class="btn small" title="收起弹幕列，字幕独占整行"
                 data-en-title="Hide comments to widen captions" data-en="Hide">收起</button>
-        <button id="clear-comments" class="btn small" data-en="Clear">清空弹幕</button>
+        <!-- 以前没有 title，英文也只写 Clear，和顶栏清空字幕那颗同名（专家审查 V3）。弹幕栏不挤，英文写全 -->
+        <button id="clear-comments" class="btn small" title="清空历史弹幕" data-en-title="Clear comment history"
+                data-en="Clear Comments">清空弹幕</button>
       </span>
     </div>
     <!-- 空态要说清楚是「没人发」还是「评论流没连上」，两者对中控意义完全不同 -->
@@ -737,6 +742,8 @@
     <div id="live-meta" class="live-meta hidden">
       <span id="live-state" class="live-state hidden"></span>
       <span id="live-asr" class="live-state live-asr hidden"></span>
+      <!-- 覆盖率角标（web/live-ui.js coverageChip）：近几分钟收到的直播音频偏低时才出现 -->
+      <span id="live-cov" class="live-state live-cov hidden"></span>
       <span id="live-lag" class="live-lag hidden"></span>
     </div>
   </footer>
@@ -775,8 +782,8 @@
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=3"></script>
-  <script src="/static/live-ui.js?v=4"></script>
+  <script src="/static/live-ui.js?v=7"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/app.js?v=75"></script>
+  <script src="/static/app.js?v=81"></script>
 </body>
 </html>

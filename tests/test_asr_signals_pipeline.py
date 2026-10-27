@@ -23,7 +23,7 @@ from app.audit import AuditLog
 from app.pipeline import Pipeline
 from tests.helpers import run
 
-ROOM = "https://www.tiktok.com/@bellaallnatural/live"
+ROOM = "https://www.tiktok.com/@brisafakeperson/live"
 CAPTION_KEYS = {"type", "id", "ts", "original", "translated", "translate_state", "src_lang",
                 "target_lang", "asr_ms", "e2e_ms"}
 JOB_KEYS = {"id", "text", "lang", "target", "audio_end_ts", "segment_ms"}
@@ -324,7 +324,14 @@ def test_session_end_carries_only_this_sessions_counts(monkeypatch, tmp_path):
     old_sess = p._new_session_state(old_audit)
     meta = {"cut": "max", "frames": 90, "speech_frames": 90, "backend": "mlx", "model": "large-v3"}
 
+    rounds = []
+
     async def fake_session(media, slot, denoise, loop, sess=None):
+        # 第一轮出这三段；之后的轮次一帧都没有（V2 有声之后先用原地址连一轮，没声音再去查，
+        # 查到「已结束」；V1 第二次解析就收到）
+        rounds.append(media)
+        if len(rounds) > 1:
+            return False, 0.0
         await p._emit_original(result("hola"), 100.0, 800, segment_ms=9000, asr_meta=meta,
                                sess=sess)
         await p._emit_original(result("hola a todos como estan hoy les traigo algo muy bonito"),
@@ -354,12 +361,12 @@ def test_session_end_carries_only_this_sessions_counts(monkeypatch, tmp_path):
 def test_the_asr_config_fingerprints_the_prompt_instead_of_copying_it(monkeypatch, tmp_path):
     p, _ = make_pipeline(monkeypatch, tmp_path)
     t = SimpleNamespace(backend="mlx", model_size="large-v3", device="gpu",
-                        compute_type="float16", hotwords="Bella All Natural, limpieza facial")
+                        compute_type="float16", hotwords="Allura Belt Nalla, limpieza facial")
     record = p._asr_config_record({"backend": "mlx", "model": "large-v3", "device": "gpu",
                                    "compute_type": "float16", "language": "es,en",
                                    "temperature": 0.0, "hotwords": t.hotwords}, t)
     assert record["prompt_sha16"] and len(record["prompt_sha16"]) == 16
-    assert "Bella" not in json.dumps(record, ensure_ascii=False)
+    assert "Allura" not in json.dumps(record, ensure_ascii=False)
     assert record["language"] == "es,en"
 
 

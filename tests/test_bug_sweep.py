@@ -63,13 +63,19 @@ class _FakeProc:
 def _run_frames(monkeypatch, url, model=None):
     captured = {}
 
-    async def fake_exec(*cmd, **kw):
-        captured["cmd"] = cmd
+    # 起进程那一步是 FFmpegAudioSource._spawn（2026-10-19 起用 loop.subprocess_exec，拿得到公开的
+    # transport）：换掉它就不会去真起 ffmpeg。以前换的是 asyncio.create_subprocess_exec，改了之后
+    # 那样换已经不生效，会真去找一个叫 ffmpeg 的程序
+    async def fake_spawn(self, cmd):
+        captured["cmd"] = tuple(cmd)
         captured["proc"] = _FakeProc()
         return captured["proc"]
 
     monkeypatch.setattr(audio, "find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(audio.asyncio, "create_subprocess_exec", fake_exec)
+    # 第一次起某份 ffmpeg 之前，frames() 会先探测它一次、结果记进模块级缓存 audio._probed（2026-10-22，M8）。
+    # 换成一份这个用例自己的缓存、预先填好：不去真跑 PATH 上的 ffmpeg -version，结果也不漏到后面的用例
+    monkeypatch.setattr(audio, "_probed", {"ffmpeg": {"tagged": False, "version": None}})
+    monkeypatch.setattr(audio.FFmpegAudioSource, "_spawn", fake_spawn)
     monkeypatch.setattr(audio.FFmpegAudioSource, "STALL_SEC", 0.05)
     src = audio.FFmpegAudioSource(url, denoise_model=model)
 
