@@ -17,6 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { loadDesktop, hello, caption, web, T, FakeEl } from "./desktop-page.mjs";
+import { runDesktop } from "./desktop-dom.mjs";
 
 // live-ui.js 在浏览器里是全局函数，Node 里 require（它自己会去 require i18n.js）
 const pureModule = () => createRequire(import.meta.url)("../web/live-ui.js");
@@ -680,6 +681,50 @@ for (const lang of ["zh", "en"]) {
     assert.ok(!page.el("app-version").classList.contains("noting"));
     assert.deepEqual(foot.writes, ["54px", ""]);
     assert.equal(page.cssVars["--foot-h"], "");
+  });
+}
+
+// ---- 两段式确认（confirmTwice，专家审查 V3）：点了确认之后，武装时排下的复原定时器要撤掉 -------------------
+// #137 核对时记下：reset() 里那句 clearTimeout 删掉，现有用例照样全绿。漏撤的后果：点两下清空之后马上又点一下
+// （重新武装），上一次武装时排下的 6 秒复原到点照样触发，新的这一次没等满自己的 6 秒就被复原，第二下落空。
+// 假页面的定时器不分先后（fire 按时长一次全触发），这里换成按到期时刻排队的时钟，才分得出是哪一个先到
+function clockedPage(lang) {
+  const page = runDesktop(lang);
+  let now = 0;
+  const queue = [];
+  page.sandbox.setTimeout = (fn, ms) => { queue.push({ fn, at: now + (ms || 0) }); return queue.length; };
+  page.sandbox.clearTimeout = (id) => { if (queue[id - 1]) queue[id - 1].fn = null; };
+  const runTo = (t) => {
+    for (;;) {
+      const due = queue.filter((q) => q.fn && q.at <= t).sort((x, y) => x.at - y.at)[0];
+      if (!due) break;
+      now = due.at;
+      const fn = due.fn;
+      due.fn = null;
+      fn();
+    }
+    now = t;
+  };
+  return { page, runTo };
+}
+for (const [lang, armed, idle] of [["zh", "再点确认", "清空字幕"], ["en", "Clear?", "Clear"]]) {
+  test("两段式确认（" + lang + "）：确认清空之后马上再武装，新的一次照样等满自己的 6 秒，不被上一次的复原定时器提前复原", () => {
+    const { page, runTo } = clockedPage(lang);
+    page.push({ type: "hello", config: { status: { state: "live", detail: "" },
+                                         room_url: "https://www.tiktok.com/@luna_demo/live" } });
+    const btn = page.el("clear-btn");
+    btn.click();                                     // t=0 武装，复原排在 6000
+    assert.equal(btn.textContent, armed);
+    runTo(1000);
+    btn.click();                                     // t=1000 确认：清空，按钮复原，6000 那个复原要撤掉
+    assert.equal(btn.textContent, idle);
+    runTo(2000);
+    btn.click();                                     // t=2000 重新武装，复原排在 8000
+    assert.equal(btn.textContent, armed);
+    runTo(6500);
+    assert.equal(btn.textContent, armed, "上一次武装的复原（6000）不该触发：这一次要到 8000 才复原");
+    runTo(8000);
+    assert.equal(btn.textContent, idle, "到点复原");
   });
 }
 
