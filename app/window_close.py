@@ -118,6 +118,13 @@ async def close_session(pipeline, audit_budget=AUDIT_BUDGET_SEC, total=STOP_TIME
             share = asyncio.ensure_future(stopper("shutdown"))
         except Exception:
             share = None
+    # 闪购助手的状态轮询（app/pipeline_flash.py）：同步取消，可重入、绝不抛；没有这一项的替身跳过
+    stop_flash = getattr(pipeline, "stop_flash_watch", None)
+    if callable(stop_flash):
+        try:
+            stop_flash()
+        except Exception:
+            pass
     stop = asyncio.ensure_future(pipeline.stop_stream(quiet=True))
     done, _ = await asyncio.wait({stop}, timeout=audit_budget)
     if stop not in done:

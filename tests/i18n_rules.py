@@ -39,7 +39,7 @@ UI_FILES = (
     "app/diskspace.py", "app/ffmpeg_bin.py", "app/float_window.py", "app/hwdetect.py",
     "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
-    "app/pipeline_engine.py", "app/pipeline_float.py", "app/pipeline_guard.py",
+    "app/pipeline_engine.py", "app/pipeline_flash.py", "app/pipeline_float.py", "app/pipeline_guard.py",
     "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
     "app/resolver.py", "app/selfcheck.py",
     "app/transcript_export.py",
