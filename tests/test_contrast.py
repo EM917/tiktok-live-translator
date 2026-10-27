@@ -287,3 +287,17 @@ def test_flash_panel_orange_text_reaches_4_5_to_1_on_the_popover(selector, dark)
     bg = color("var(--card)", toks)
     got = ratio(color(decls("style.css", selector)["color"], toks, behind=bg), bg)
     assert got >= 4.5, "{}（{}）只有 {:.2f}:1".format(selector, "深色" if dark else "浅色", got)
+
+
+@pytest.mark.parametrize("dark,want", [(False, 4.64), (True, 4.98)], ids=["light", "dark"])
+def test_flash_button_attention_dot_reaches_3_to_1_on_the_orange_tint(dark, want):
+    """右上角的 7px 橙点是颜色以外的那道提示（形状和颜色一起变），色弱的人靠的就是它：非文字元素要 3:1
+    （WCAG 1.4.11），对的是按钮自己的橙底。以前用 --orange，浅色只有 1.93:1。"""
+    toks = tokens("style.css", dark)
+    dot = decls("style.css", "#flash-btn.attn::after")
+    assert dot["background"] == "var(--orange-ink)"
+    bar = color("var(--bar-bg)", toks)
+    bg = color(decls("style.css", "#flash-btn.attn")["background-color"], toks, behind=bar)
+    got = ratio(color(dot["background"], toks, behind=bg), bg)
+    assert got >= 3, "{} 只有 {:.2f}:1".format("深色" if dark else "浅色", got)
+    assert round(got, 2) == want

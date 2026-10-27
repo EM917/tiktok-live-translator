@@ -447,14 +447,15 @@ select:focus-visible, .btn:focus-visible { outline: 2px solid transparent; box-s
 
 /* 闪购（本机闪购助手的只读状态，docs/flash-sale.md）：和浮窗同一种画法（图标 + .btn-label），首页和直播中都在。
    要人处理时（app.js 给它加 .attn）橙字橙底，右上角再加一个 7px 的实心橙点：形状和颜色一起变（designer.md #1），
-   橙点绝对定位、不占宽度。不用红字配淡红底：深色下只有 4.27:1（tests/test_contrast.py 钉着橙色这一对 ≥ 4.5）。
+   橙点绝对定位、不占宽度。点用 --orange-ink 不用 --orange：色弱的人靠的就是这个点，--orange 叠在橙底上浅色只有
+   1.93:1，不到非文字元素的 3:1（tests/test_contrast.py 钉着）。不用红字配淡红底：深色下只有 4.27:1（tests/test_contrast.py 钉着橙色这一对 ≥ 4.5）。
    窄于 1400px 只留图标，文字视觉隐藏（读屏照念，同 #float-btn）；中文页 1000–1399px 露「闪购」两个字，英文页到 1600px
    才露 Flash Sale，见下面两段。宽度账（G10 实测）在 docs/i18n-style.md §4.2 */
 #flash-btn { position: relative; gap: 4px; padding: 0 10px 0 7px; }
 #flash-btn.attn { color: var(--orange-ink); background-color: var(--a-orange-16); }
 #flash-btn.attn::after {
   content: ""; position: absolute; top: 3px; right: 3px;
-  width: 7px; height: 7px; border-radius: 50%; background: var(--orange);
+  width: 7px; height: 7px; border-radius: 50%; background: var(--orange-ink);
 }
 @media (max-width: 1399px) {
   #flash-btn { padding: 0 6px; min-width: 28px; }
