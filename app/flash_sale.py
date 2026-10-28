@@ -32,6 +32,10 @@ POLL_DOWN_SEC = 15       # 连不上或读不出：每 15 秒查一次
 BOOST_SEC = 30           # 点了「打开闪购助手」、open 返回 0 之后这么久里一律 3 秒，好尽快看到它起来
 STALE_SEC = 15           # 连得上但 updated_at 超过这么久没更新：陈旧
 STUCK_SEC = 60           # 商品停着、该续开却一直没续开，连续这么久才算卡住（续开实测最长 30–40 秒）
+# 卡住计时表里不在列表上的商品留多久、表最多记几个（见 StatusTracker）。闪购助手 0.8.0 起每翻完一轮刷新一次
+# Buy now，列表先变短再补回，排在后面的商品会暂时不在 /status 里；10 分钟都没再出现的才丢
+STUCK_FORGET_SEC = 600
+STUCK_TRACK_MAX = 600
 HTTP_TIMEOUT_SEC = 2
 OPEN_TIMEOUT_SEC = 10    # open -a 正常立刻返回；等这么久还没返回就当没打开
 
@@ -358,7 +362,12 @@ class StatusTracker:
       不拿本机墙钟去减 updated_at：合盖睡眠时单调时钟不走（macOS 上是 mach_absolute_time）、墙钟照走，
       醒来第一跳闪购助手多半还没刷新，墙钟一减就是睡了多久，会白白变一次色；墙钟往前往后调也不受影响。
       代价是刚连上时要先看满 15 秒才判得出陈旧（哪怕它早就停了），比起误报这点晚可以接受；
-    - 每个商品（按 product_id）从哪一刻起满足「卡住」的条件。条件任一不满足、商品不在表里就清零。
+    - 每个商品（按 product_id）从哪一刻起满足「卡住」的条件（_stuck_clock）。商品暂时不在列表里时**不清零**，
+      接着计：闪购助手 0.8.0 起每翻完一轮刷新一次 Buy now，列表先变短再补回，按旧做法排在后面的商品
+      每轮都被清零一次，真卡住的永远攒不满 60 秒。清零只在这几种时候：看到它不再满足条件（state 不是 stopped、
+      enabled 不是 true、skip 不为 null）；全局条件不满足（running 不是 true、paused_reason 不是 null），
+      这时不在列表里的也一起清；连续两次没查到（见下一条）。STUCK_FORGET_SEC 秒都没再出现的丢掉
+      （隔了这么久才回来的从头计），表最多记 STUCK_TRACK_MAX 个，多了先丢最久没出现的。
       没有 product_id 的商品记不了时长，永远不算卡住；
     - 连续几次没查到（连不上、读不出）。连上之后**第一次**没查到先不发布：照旧交回上一份状态，两种计时都留着，
       调用方照「连上」的节奏 3 秒后再查。连续第二次才发布那份空状态、计时清零。一次抖动（偶尔一次超时、
@@ -371,7 +380,7 @@ class StatusTracker:
         self.stale_sec = stale_sec
         self.stuck_sec = stuck_sec
         self._seen = None             # (updated_at 的值, 从哪一刻起一直是它)；None = 还没连上过 / 刚清零
-        self._stopped_since = {}
+        self._stopped_since = {}      # product_id → [从哪一刻起满足卡住条件, 最后一次在列表里看到它]
         self._misses = 0              # 连续几次没查到
         self._last = None             # 上一次交出去的状态
         self.schema = None            # 最近一次连上时读到的 schema
@@ -398,15 +407,7 @@ class StatusTracker:
         if self._seen is None or self._seen[0] != updated:
             self._seen = (updated, mono)
         stale = mono - self._seen[1] > self.stale_sec
-        since = {}
-        for product in norm["products"]:
-            pid = product["id"]
-            if pid is not None and stuck_candidate(product, norm):
-                since[pid] = self._stopped_since.get(pid, since.get(pid, mono))
-                product["stuck"] = mono - since[pid] >= self.stuck_sec
-            else:
-                product["stuck"] = False
-        self._stopped_since = since
+        self._stuck_clock(norm, mono)
         norm["products"].sort(key=_rank)
         state = dict(norm, conn="ok", why=None, stale=stale,
                      updated_ms=int(round(updated * 1000)) if (stale and updated is not None) else None,
@@ -414,3 +415,35 @@ class StatusTracker:
         state["attention"] = attention(state)
         self._last = state
         return state
+
+    def _stuck_clock(self, norm, mono):
+        """给这一跳的每个商品标 stuck，顺手维护 _stopped_since（规则见类的文档串）。同一个 id 出现几次时，
+        有一次满足条件就算满足（不让同 id 的另一张卡片把计时清掉）。"""
+        table = self._stopped_since
+        if not (norm.get("running") is True and norm.get("paused_reason") is None):
+            table.clear()                 # 全局条件不满足：不在列表里的也一起清
+        present, candidates = set(), set()
+        for product in norm["products"]:
+            pid = product["id"]
+            if pid is None:
+                continue
+            present.add(pid)
+            if stuck_candidate(product, norm):
+                candidates.add(pid)
+        for pid in present - candidates:
+            table.pop(pid, None)          # 看到它不再满足条件
+        for pid in candidates:
+            entry = table.get(pid)
+            if entry is None or mono - entry[1] > STUCK_FORGET_SEC:
+                table[pid] = [mono, mono]     # 新来的，或隔了太久才回来：从这一刻起计
+            else:
+                entry[1] = mono
+        for product in norm["products"]:
+            pid = product["id"]
+            product["stuck"] = (pid in candidates and stuck_candidate(product, norm)
+                                and mono - table[pid][0] >= self.stuck_sec)
+        for pid in [k for k, (_start, seen) in table.items() if mono - seen > STUCK_FORGET_SEC]:
+            del table[pid]
+        if len(table) > STUCK_TRACK_MAX:
+            keep = sorted(table, key=lambda k: table[k][1], reverse=True)[:STUCK_TRACK_MAX]
+            self._stopped_since = {k: table[k] for k in keep}

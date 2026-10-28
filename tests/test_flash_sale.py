@@ -438,7 +438,8 @@ def test_a_stopped_product_is_stuck_only_after_sixty_seconds():
     {"paused_reason": "awaiting_approval"},
     {"products": [{"product_id": "1000000000000000003", "state": "stopped", "enabled": False}]},
     {"products": [{"product_id": "1000000000000000003", "state": "pending", "enabled": True}]},
-    {"products": []},
+    # 列表空了本身不清零（见下面「暂时不在列表里」那几条）；全局条件断了才连不在列表里的一起清
+    {"running": False, "products": []},
 ])
 def test_any_broken_condition_resets_the_stuck_clock(breaker):
     tracker = fs.StatusTracker()
@@ -495,6 +496,82 @@ def test_a_failure_with_nothing_connected_before_is_published_at_once():
     tracker = fs.StatusTracker()
     assert tracker.update("unreachable", None, 0.0) == fs.empty_state("unreachable")
     assert tracker.update("bad_response", "no_answer", 15.0) == fs.empty_state("bad_response", "no_answer")
+
+
+# ---- 卡住计时：商品暂时不在列表里（decisions-step2 追加第 1 条） --------------------------------------
+# 闪购助手 0.8.0 起每翻完一轮刷新一次 Buy now，列表先变短再补回（102 个先变 30 个）。排在后面的商品每轮都会
+# 暂时不在 /status 里；以前这一跳就把它的计时清零，真卡住的永远攒不满 60 秒、按钮永远不变色
+
+def absent_doc(**over):
+    """stopped_doc 去掉停着的那个（…003），只剩进行中的 …001。"""
+    doc = stopped_doc(**over)
+    doc["products"] = [p for p in doc["products"] if p["product_id"] != "1000000000000000003"]
+    return doc
+
+
+def test_a_product_missing_from_a_poll_keeps_its_stuck_clock():
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    gone = track(tracker, absent_doc(), mono=30.0)
+    assert [p["id"] for p in gone["products"]] == ["1000000000000000001"] and gone["attention"] == []
+    track(tracker, absent_doc(), mono=33.0)
+    assert stuck_of(track(tracker, stopped_doc(), mono=59.9))["3"] is False
+    back = track(tracker, stopped_doc(), mono=60.0)          # 从 0 秒那次接着计，不是从 59.9 秒重新计
+    assert stuck_of(back)["3"] is True and back["attention"] == ["stuck"] and back["stuck_count"] == 1
+
+
+@pytest.mark.parametrize("breaker", [{"running": False}, {"paused_reason": "awaiting_approval"},
+                                     {"paused_reason": "user_interaction"}])
+def test_a_broken_global_condition_also_resets_products_that_are_not_listed(breaker):
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    track(tracker, absent_doc(), mono=20.0)
+    track(tracker, absent_doc(**breaker), mono=30.0)         # 它不在列表里，计时照样清掉
+    track(tracker, absent_doc(), mono=40.0)
+    assert stuck_of(track(tracker, stopped_doc(), mono=61.0))["3"] is False
+    assert stuck_of(track(tracker, stopped_doc(), mono=120.9))["3"] is False     # 从 61 秒重新计
+    assert stuck_of(track(tracker, stopped_doc(), mono=121.0))["3"] is True
+
+
+def test_a_product_unseen_for_ten_minutes_is_dropped_from_the_table():
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    track(tracker, absent_doc(), mono=float(fs.STUCK_FORGET_SEC))       # 正好 10 分钟：还留着
+    assert set(tracker._stopped_since) == {"1000000000000000003"}
+    track(tracker, absent_doc(), mono=fs.STUCK_FORGET_SEC + 0.1)
+    assert tracker._stopped_since == {}
+
+
+@pytest.mark.parametrize("poll_between", [False, True])
+def test_a_product_back_after_ten_minutes_starts_a_new_clock(poll_between):
+    """隔了 10 分钟以上才回来：从回来那一刻重新计，不接着很久以前那次（那样一回来就算卡住）。
+    两条路都走：中间有一跳把它从表里丢了；中间一跳都没有（表里还留着它，回来那一跳才发现隔太久）。"""
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    track(tracker, absent_doc(), mono=3.0)
+    if poll_between:
+        track(tracker, absent_doc(), mono=fs.STUCK_FORGET_SEC + 0.2)
+        assert tracker._stopped_since == {}
+    t = fs.STUCK_FORGET_SEC + 0.5
+    assert stuck_of(track(tracker, stopped_doc(), mono=t))["3"] is False
+    assert stuck_of(track(tracker, stopped_doc(), mono=t + 59.9))["3"] is False
+    assert stuck_of(track(tracker, stopped_doc(), mono=t + 60))["3"] is True
+
+
+def test_the_stuck_table_is_capped_and_drops_the_longest_unseen_first(monkeypatch):
+    monkeypatch.setattr(fs, "STUCK_TRACK_MAX", 3)
+    tracker = fs.StatusTracker()
+
+    def only(pid):
+        return stopped_doc(products=[{"product_id": pid, "state": "stopped", "enabled": True}])
+
+    for mono, pid in enumerate("abcd"):
+        track(tracker, only(pid), mono=float(mono))
+    assert set(tracker._stopped_since) == {"b", "c", "d"}              # a 最久没出现，先丢
+    assert tracker._stopped_since["d"] == [3.0, 3.0]
+    back = track(tracker, only("a"), mono=4.0)                         # a 回来：重新计，不是从 0 秒算
+    assert set(tracker._stopped_since) == {"a", "c", "d"} and tracker._stopped_since["a"] == [4.0, 4.0]
+    assert back["products"][0]["stuck"] is False
 
 
 def test_a_product_without_an_id_is_never_stuck():
