@@ -154,14 +154,14 @@ ended_by_user、no_sale、unknown。
 - 和本地服务断开时按钮置灰；点了没发出去，`#flash-note` 写「与本地服务断开，正在重连——稍候再试。」，不装作点成了。
 - 只有本机控制页能发：手机入站只认 retranslate，浮窗页的入站一律丢弃。
 
-## 9. 顶栏宽度：「Aa」
+## 10. 顶栏宽度：「Aa」
 
 多一颗按钮要 36px，原来的顶栏余量放不下。用户定的方案甲：有闪购按钮（`body.has-flash-btn`）、窗口窄于 1400px 时，
 字号滑块收成一颗 28px 的「Aa」（`#font-btn`），点开的小浮层就是原来的字号控件（`label#font-ctl` 原地改成浮层样式）。
 宽窗口、没装闪购助手时一切照旧。按钮上的字：中文 1000–1399px 只露「闪购」两个字，1400px 起图标加字；英文 1600px 起才露
 Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
 
-## 10. 隔离
+## 11. 隔离
 
 - **手机同看**：`flash_sale` 不在 `app/viewer.py` 的 ALLOW 里，另外显式写进 DENY；`replay_snapshot` 只挑固定几个键。
 - **浮窗**：不在 `app/server.py` 的 `FLOAT_TYPES` / `FLOAT_CONFIG_KEYS` 里；`float.html` 不加载 flash.js。
@@ -170,7 +170,7 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
 - **审计、session 日志**：一条都不写。终端只在状态跳变时打一行中文（已连上、连不上、读不出、schema 不是 1、
   轮询出错、执行 open），不打印商品标题和记录正文。
 
-## 11. 测试
+## 12. 测试
 
 **绝不连真的 127.0.0.1:9334**（开发机上闪购助手可能正开着，返回的是真实商品），也不真的执行 `open`。
 
@@ -191,7 +191,7 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
 - G10（`TLT_DOM_SCAN=1 pytest tests/test_i18n_dom.py`）：`live-flash*`、`live-flash-zh*`、`home-flash*` 场景，
   `config.flash_sale` 由 `flash_sale.StatusTracker` 从 running.json 生成。直播转写进行中不开 Chrome。
 
-## 12. 不做的事
+## 13. 不做的事
 
 - 不控制闪购助手，浮层里没有开始、停止、批准、续开这类按钮。
 - 不显示在手机同看页和浮窗里。
