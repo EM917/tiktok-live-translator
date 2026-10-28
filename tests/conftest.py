@@ -230,18 +230,27 @@ def _keep_banned_terms_out_of_the_repo(_fresh_dir, monkeypatch):
 # 不存在的路径、没人听的本机端口（9 是 discard，macOS / Linux / Windows 上默认都没开）
 _FLASH_SALE_NOWHERE = Path(os.sep, "nonexistent-tlt-test", "flash-sale-helper.app")
 _FLASH_SALE_NO_ONE = "http://127.0.0.1:9/status"
+_FLASH_SALE_NO_CONTROL = "http://127.0.0.1:9"
+_FLASH_SALE_NO_TOKEN = Path(os.sep, "nonexistent-tlt-test", "control-token")
 
 
 @pytest.fixture(autouse=True)
 def _flash_sale_never_reaches_the_real_helper(monkeypatch):
-    """闪购助手（app/flash_sale.py）：开发机上可能真装着它、正开着，127.0.0.1:9334 返回的是真实商品。
-    测试一律看不到它：要看的程序位置换成一个不存在的路径，状态地址换成一个没人听的本机端口。
-    要测「装了」「连上了」的用例自己传 candidates、在本机临时端口起假服务器（tests/test_flash_sale_http.py、
-    tests/test_pipeline_flash.py）。Pipeline 构造时取的是这里换过的值（app/pipeline_flash._init_flash_sale）。"""
+    """闪购助手（app/flash_sale.py）：开发机上可能真装着它、正开着，127.0.0.1:9334 返回的是真实商品，
+    POST /stop 会真的停掉直播里正在续开的闪购。测试一律碰不到它：
+    - 要看的程序位置换成一个不存在的路径；
+    - 状态地址和控制地址都换成一个没人听的本机端口（9334 一个字都不留）；
+    - 控制密钥的位置（flash_sale.control_token_path）换成一个不存在的路径：绝不读本机真的
+      ~/Library/Application Support/FlashSaleHelper/control-token。
+    要测「装了」「连上了」「发出去了」的用例自己传 candidates、在本机临时端口起假服务器、在 tmp_path 里放假密钥
+    （tests/test_flash_sale_http.py、test_flash_sale_control.py、test_pipeline_flash.py）。Pipeline 构造时
+    取的是这里换过的值（app/pipeline_flash._init_flash_sale）。test_flash_sale_control.py 有一条钉着这张网。"""
     from app import flash_sale
 
     monkeypatch.setattr(flash_sale, "app_candidates", lambda home=None: (_FLASH_SALE_NOWHERE,))
     monkeypatch.setattr(flash_sale, "STATUS_URL", _FLASH_SALE_NO_ONE)
+    monkeypatch.setattr(flash_sale, "CONTROL_BASE", _FLASH_SALE_NO_CONTROL)
+    monkeypatch.setattr(flash_sale, "control_token_path", lambda home=None: _FLASH_SALE_NO_TOKEN)
 
 
 @pytest.fixture

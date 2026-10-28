@@ -1,4 +1,5 @@
-"""闪购助手（本机另一个程序）的只读状态：找程序、发 GET /status、把回话规整成推给控制页的那份 dict。
+"""闪购助手（本机另一个程序）：找程序、发 GET /status、把回话规整成推给控制页的那份 dict；
+0.8.0 起另有控制接口，这里读控制密钥、发 POST /start、/stop、/resume（见「控制」一节）。
 
 这里只有纯函数和一个记计时的小类，不依赖 Pipeline，不广播、不打印；接线在 app/pipeline_flash.py。
 不是界面文件：界面文字在前端按代码映射（web/flash.js），这里只产出代码、数字和闪购助手给的数据。
@@ -15,11 +16,25 @@
 
 9334 上回话的不一定是闪购助手（本机任何进程都能占这个端口），所以读体限长、宽容解析：
 不认识的键丢掉，类型不对的当 None，字符串截长、去掉控制字符。
+
+控制（契约「控制(0.8.0 起)」）：
+- 地址写死 127.0.0.1:9334（CONTROL_BASE），动作写死白名单 start / stop / resume（CONTROL_ACTIONS）；
+  页面发来的消息只决定是哪一个动作，进不了地址、请求头和请求体。
+- 防冒充的条件逐条照做：Host 是 127.0.0.1:9334（aiohttp 默认就这么发）；不带 Origin、不带 Sec-Fetch-*
+  （aiohttp 本来就不发）；Authorization: Bearer <密钥>；Content-Type: application/json；请求体 {"source":"tlt"}。
+- 密钥每次发之前读一遍（read_control_token），读不到就不发。密钥的值不进任何返回值以外的地方：这里不打印、
+  不放进异常，调用方也只拿到原因代码。aiohttp 的 ClientResponseError 的 repr 里带着请求头（也就带着
+  Authorization），所以 post_control 自己把 aiohttp 的异常全部换成代码，一个都不往外抛。
+- 不跟随重定向、不读环境变量里的代理（trust_env=False：设了 HTTP_PROXY 的机器上，带密钥的请求不能交给代理）、
+  不存 cookie；连接 2 秒、读 2 秒，总时长最多 4 秒。
 """
 import asyncio
+import errno
 import json
 import math
+import os
 import re
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +54,17 @@ STUCK_FORGET_SEC = 600
 STUCK_TRACK_MAX = 600
 HTTP_TIMEOUT_SEC = 2
 OPEN_TIMEOUT_SEC = 10    # open -a 正常立刻返回；等这么久还没返回就当没打开
+
+# 控制（契约「控制(0.8.0 起)」）。地址写死；tests/conftest.py 把它换成没人听的端口，测试绝不碰真的 9334
+CONTROL_BASE = "http://127.0.0.1:9334"
+CONTROL_ACTIONS = ("start", "stop", "resume")
+CONTROL_BODY = b'{"source":"tlt"}'
+CONTROL_REPLY_MAX = 4096     # 回话只有 {"ok":…,"error":…} 这么一小段
+# 控制密钥：~/Library/Application Support/FlashSaleHelper/control-token，64 位十六进制（32 字节），权限 600
+TOKEN_DIR = ("Library", "Application Support", "FlashSaleHelper")
+TOKEN_NAME = "control-token"
+TOKEN_READ_MAX = 1025        # 最多读这么多：读满了就是文件太长（合法的文件 64 个字符，最多再带个换行）
+_TOKEN = re.compile(r"[0-9A-Fa-f]{64}")
 
 # 一场最多 300 个商品（闪购助手会话 10-27 告知，实际见过 103 个）。300 个带长标题的商品
 # 约 300 KB，读体上限留足余量，挡的只是撑爆内存的回话
@@ -163,6 +189,150 @@ async def fetch_status(url=None, timeout=HTTP_TIMEOUT_SEC, limit=MAX_BYTES):
         return "ok", json.loads(body)
     except (ValueError, RecursionError):
         return "bad_response", "json"
+
+
+# ---- 控制：读密钥、发 POST ------------------------------------------------------------------
+
+def control_token_path(home=None):
+    """控制密钥文件的位置；取不到家目录返回 None。每次调用时现算、不写成模块常量：tests/conftest.py 把这个函数
+    换成指向不存在的路径，测试里任何一条路（包括漏传路径的调用）都读不到本机真的密钥。"""
+    try:
+        base = Path.home() if home is None else Path(home)
+    except (RuntimeError, KeyError, OSError):
+        return None
+    return base.joinpath(*TOKEN_DIR, TOKEN_NAME)
+
+
+def read_control_token(path=None):
+    """读控制密钥 → (密钥, None)，读不到 → (None, 原因代码)。每次发控制请求之前调一次（契约：每次请求前读一遍，
+    删掉文件后闪购助手下次启动会换一个新的）。
+
+    - O_NOFOLLOW 打开：文件本身是符号链接就不读（symlink），免得被换成指向别处的链接；O_NONBLOCK 让管道、
+      设备文件打开时不卡住事件循环，打开后 fstat 确认是普通文件（not_file）；
+    - 最多读 TOKEN_READ_MAX 字节，读满就是太长（too_long）；按 ASCII 解码，去掉首尾空白和换行后必须正好
+      64 位十六进制（format）；
+    - 不存在 missing，取不到家目录 no_home，其余打不开、读出错的 unreadable。
+    原因代码里绝不带文件内容。不查权限位：读的一方查 600 并不能让密钥更安全（能读到这个文件的进程本来就能读）。"""
+    path = control_token_path() if path is None else path
+    if path is None:
+        return None, "no_home"
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_CLOEXEC", 0))
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return None, "missing"
+        if exc.errno in (errno.ELOOP, errno.EMLINK):     # O_NOFOLLOW 碰上符号链接：macOS、Linux 是 ELOOP
+            return None, "symlink"
+        return None, "unreadable"
+    except (TypeError, ValueError):
+        return None, "unreadable"
+    data = b""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, "not_file"
+        while len(data) < TOKEN_READ_MAX:
+            chunk = os.read(fd, TOKEN_READ_MAX - len(data))
+            if not chunk:
+                break
+            data += chunk
+    except OSError:
+        return None, "unreadable"
+    finally:
+        os.close(fd)
+    if len(data) >= TOKEN_READ_MAX:
+        return None, "too_long"
+    try:
+        text = data.decode("ascii").strip(" \t\r\n")
+    except UnicodeDecodeError:
+        return None, "format"
+    if not _TOKEN.fullmatch(text):
+        return None, "format"
+    return text, None
+
+
+def control_url(action, base=None):
+    """动作 → 控制地址。动作只认 CONTROL_ACTIONS 里的原样字符串（大小写、路径、参数一概不认），不认就抛 ValueError
+    （异常文字里不带传进来的东西）。base 缺省时在调用这一刻取 CONTROL_BASE（同 fetch_status 的 STATUS_URL）。"""
+    if not isinstance(action, str) or action not in CONTROL_ACTIONS:
+        raise ValueError("not a control action")
+    return (CONTROL_BASE if base is None else base) + "/" + action
+
+
+def _json_object(body):
+    if not isinstance(body, (bytes, bytearray)):
+        return None
+    try:
+        doc = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def control_reply(status, body, action):
+    """控制请求的回话 → None（已接受）或错误代码：
+    - 200 且 {"ok": true}（带了 accepted 就得是这个动作）→ None；200 但内容不是这样 → bad_reply；
+    - 409 → 闪购助手给的代码（同 /status 的代码字段清洗，认不出的原样交给前端）；没有能读的代码 → http_409；
+    - 404、405 → no_control：这个版本的闪购助手没有控制接口（0.8.0 以前只有 GET /status）；
+    - 其余（403 防冒充没过、3xx 不跟随、5xx……）→ http_<状态码>。"""
+    doc = _json_object(body)
+    if status == 200:
+        if doc is None or doc.get("ok") is not True or doc.get("accepted", action) != action:
+            return "bad_reply"
+        return None
+    if status == 409:
+        return (_code(doc.get("error")) if doc is not None else None) or "http_409"
+    if status in (404, 405):
+        return "no_control"
+    return "http_%d" % status
+
+
+async def post_control(action, token, base=None, timeout=HTTP_TIMEOUT_SEC, limit=CONTROL_REPLY_MAX):
+    """发一次 POST /<action> → None（闪购助手接受了，200）或错误代码。只发不等：契约里接口马上返回，
+    之后的进展看 /status。
+
+    错误代码：control_reply 的那几种；no_token（传进来的不是 64 位十六进制，不发）；unreachable（连不上，
+    或连接阶段就超时）；no_answer（连上了，timeout 秒内没回完，或没回话就断开）；bad_reply（回的不是 HTTP、
+    回到一半断开、太长）。aiohttp 的异常一律在这里换成代码、不往外抛：它们的 repr 里带着请求头，也就带着密钥。
+    动作不在白名单里照样抛 ValueError（调用方先查过，走不到这里）。取消照样往外抛。
+
+    请求：Host 127.0.0.1:<端口>（aiohttp 默认），Authorization: Bearer <密钥>，Content-Type: application/json，
+    请求体 {"source":"tlt"}；不带 Origin、Sec-Fetch-*、Cookie（DummyCookieJar）；不跟随重定向；
+    trust_env=False（不读环境变量里的代理，也不读 .netrc）；连接、读各 timeout 秒，总时长最多 2×timeout。
+    每次一个短命 session，同 fetch_status。"""
+    import aiohttp
+    from .nethttp import read_all
+
+    url = control_url(action, base)
+    if not isinstance(token, str) or not _TOKEN.fullmatch(token):
+        return "no_token"
+    headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+    timeouts = aiohttp.ClientTimeout(total=timeout * 2, connect=timeout, sock_read=timeout)
+    connect_timeout = getattr(aiohttp, "ConnectionTimeoutError", None) or _NeverRaised
+    try:
+        async with aiohttp.ClientSession(timeout=timeouts, trust_env=False,
+                                         cookie_jar=aiohttp.DummyCookieJar()) as session:
+            async with session.post(url, data=CONTROL_BODY, headers=headers, allow_redirects=False) as resp:
+                status = resp.status
+                body = await read_all(resp, limit)
+    except asyncio.CancelledError:
+        raise
+    # 先后同 fetch_status：ClientConnectorError 是 ClientOSError 的子类，ConnectionTimeoutError 是
+    # asyncio.TimeoutError 的子类，都得排在前面
+    except aiohttp.ClientConnectorError:
+        return "unreachable"
+    except connect_timeout:
+        return "unreachable"
+    except (asyncio.TimeoutError, aiohttp.ServerDisconnectedError, aiohttp.ClientOSError):
+        return "no_answer"
+    except (aiohttp.ClientPayloadError, aiohttp.ClientResponseError):
+        return "bad_reply"
+    except (aiohttp.ClientError, OSError, ValueError):
+        return "unreachable"
+    if body is None:
+        return "bad_reply"
+    return control_reply(status, body, action)
 
 
 # ---- 字段规整 ------------------------------------------------------------------------------
