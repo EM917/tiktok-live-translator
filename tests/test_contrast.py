@@ -262,3 +262,42 @@ def test_phone_label_2_on_the_page_background_matches_the_review_numbers():
         bg = color(decls("viewer.css", "body")["background"], toks)
         assert round(ratio(color("var(--label-2)", toks, behind=bg), bg), 2) >= want
         assert round(ratio(color("var(--label-3)", toks, behind=bg), bg), 2) == before
+
+
+# ---- 顶栏「闪购」按钮的提醒态与浮层里的橙字（docs/flash-sale.md） -------------------------------------------
+# 按钮要人处理时橙字配 16% 橙底（叠在顶栏 --bar-bg 上）；不用红字配淡红底：那一对深色只有 4.27:1。
+# 浮层里「要处理」的主句、已停止的药丸是橙字配浮层底 --card。都要正文的 4.5:1
+
+@pytest.mark.parametrize("dark,want", [(False, 4.64), (True, 4.98)], ids=["light", "dark"])
+def test_flash_button_attention_state_reaches_4_5_to_1(dark, want):
+    toks = tokens("style.css", dark)
+    rule = decls("style.css", "#flash-btn.attn")
+    assert rule["color"] == "var(--orange-ink)" and rule["background-color"] == "var(--a-orange-16)"
+    bar = color("var(--bar-bg)", toks)
+    bg = color(rule["background-color"], toks, behind=bar)
+    got = ratio(color(rule["color"], toks, behind=bg), bg)
+    assert got >= 4.5, "{} 只有 {:.2f}:1".format("深色" if dark else "浅色", got)
+    assert round(got, 2) == want
+
+
+@pytest.mark.parametrize("selector", [".flash-headline.attn", ".flash-state[data-tone=\"attn\"]"])
+@pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
+def test_flash_panel_orange_text_reaches_4_5_to_1_on_the_popover(selector, dark):
+    toks = tokens("style.css", dark)
+    bg = color("var(--card)", toks)
+    got = ratio(color(decls("style.css", selector)["color"], toks, behind=bg), bg)
+    assert got >= 4.5, "{}（{}）只有 {:.2f}:1".format(selector, "深色" if dark else "浅色", got)
+
+
+@pytest.mark.parametrize("dark,want", [(False, 4.64), (True, 4.98)], ids=["light", "dark"])
+def test_flash_button_attention_dot_reaches_3_to_1_on_the_orange_tint(dark, want):
+    """右上角的 7px 橙点是颜色以外的那道提示（形状和颜色一起变），色弱的人靠的就是它：非文字元素要 3:1
+    （WCAG 1.4.11），对的是按钮自己的橙底。以前用 --orange，浅色只有 1.93:1。"""
+    toks = tokens("style.css", dark)
+    dot = decls("style.css", "#flash-btn.attn::after")
+    assert dot["background"] == "var(--orange-ink)"
+    bar = color("var(--bar-bg)", toks)
+    bg = color(decls("style.css", "#flash-btn.attn")["background-color"], toks, behind=bar)
+    got = ratio(color(dot["background"], toks, behind=bg), bg)
+    assert got >= 3, "{} 只有 {:.2f}:1".format("深色" if dark else "浅色", got)
+    assert round(got, 2) == want

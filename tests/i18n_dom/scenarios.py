@@ -3,7 +3,8 @@
 界面上会出现的后端文字一律由生产代码生成：browser_only_message、share_note（经
 ViewerHub.state）、自检行与自检提示条（_publish_selfcheck）、_announce_health 三档、
 _check_clock_gap、_translate_alert 的 why、engine_label / restore_engine、update_check_note、
-diskspace.inventory。这里不手写任何一句要上界面的中文或英文——迁移到哪一句，扫描就跟到哪一句。
+diskspace.inventory；闪购助手的状态（config.flash_sale）也走 flash_sale.StatusTracker。这里不手写任何一句
+要上界面的中文或英文——迁移到哪一句，扫描就跟到哪一句。
 
 数据字段（字幕原文、弹幕、词条、主播名）用西语或 ASCII。DATA_ZH 是故意放进去的中文数据
 （一条译成简体中文的字幕、一个中文品牌名、一条报警上下文的中文译文），它们必须落在数据区里：
@@ -24,12 +25,13 @@ G9 运行时网按夹具跳过，场景不会被算进「漏写 L()」的清单�
 import asyncio
 import copy
 import json
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from app import browser_login, diskspace, i18n, qr, selfcheck, viewer
+from app import browser_login, diskspace, flash_sale, i18n, qr, selfcheck, viewer
 from app.pipeline import LIVE_ENDED_NOTE, Pipeline, browser_only_message
 from app.server import CaptionServer, replay_payloads
 from app.telemetry import Telemetry
@@ -77,15 +79,24 @@ TARGET_EXTRA_SELECTED = "#target-lang option[data-extra]:checked"
 # 最紧的是 1101，所以 1117、1139 不另量。英文页「手机同看」到 1200 才露字，1101–1199 宽松（§4.4：品牌标签约 148–160px）
 ZH_FLOAT_WIDTHS = (1000, 1100, 1101, 1140, 1399, 1400)
 # 直播中量顶栏的基础场景（各自再按宽度出「名字@宽度」）：目标在四种之内的，和同一个场景目标换成 EXTRA_TARGET 的
-LIVE_BASES = ("live-full", "live-float", "live-full" + EXTRA, "live-float" + EXTRA)   # LIVE_WIDTHS + NARROW_WIDTHS
-ZH_FULL_BASES = ("live-float-zh", "live-float-zh" + EXTRA)                             # 只量 1000
-ZH_QUIET_BASES = ("live-float-zh-quiet", "live-float-zh-quiet" + EXTRA)                # ZH_FLOAT_WIDTHS
+LIVE_BASES = ("live-full", "live-float", "live-flash",
+              "live-full" + EXTRA, "live-float" + EXTRA, "live-flash" + EXTRA)          # LIVE_WIDTHS + NARROW_WIDTHS
+ZH_FULL_BASES = ("live-float-zh", "live-flash-zh", "live-float-zh" + EXTRA, "live-flash-zh" + EXTRA)   # 只量 1000
+ZH_QUIET_BASES = ("live-float-zh-quiet", "live-flash-zh-quiet",
+                  "live-float-zh-quiet" + EXTRA, "live-flash-zh-quiet" + EXTRA)           # ZH_FLOAT_WIDTHS
+# 顶栏「闪购」按钮（装了闪购助手才有，首页和直播中都在；docs/i18n-style.md §4.2）：live-flash 是 live-float 再加上
+# config.flash_sale，是窗口模式里最满的顶栏；1400px 起「Aa」不出现、字号控件回到顶栏，再量两档 FLASH_WIDE_WIDTHS
+# （英文页 1400px 仍只有图标，1600px 起露出 Flash Sale）。首页的 home-flash（英文）/ home-flash-zh（中文）按 HOME_WIDTHS 量
+FLASH_BASES = ("live-flash", "live-flash" + EXTRA)
+FLASH_WIDE = 1400
+FLASH_WIDE_WIDTHS = (FLASH_WIDE, 1600)
+HOME_BASES = ("home-idle", "home-zh", "home-flash", "home-flash-zh")
 # §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，和文档里那个真实的基线品牌同宽
 # （同 STREAMER 的做法：同一组字形重新排列，逐 1/64 像素量过）
 ZH_QUIET_BRAND = "Allura Belt Nalla"
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
                    "#float-btn", "#float-btn .btn-label", "#float-btn .i", ".ctl-text", "#target-lang",
-                   TARGET_EXTRA_SELECTED)
+                   TARGET_EXTRA_SELECTED, "#flash-btn", "#flash-btn .btn-label", "#flash-btn .i", "#font-btn", "#font-ctl")
 GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
                  ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
@@ -96,7 +107,7 @@ FLOAT_MEASURE = (".f-root", "#f-caption", "#f-comments")
 GUARD_NAMES = ("home-guard", "live-guard", "live-guard-marked", "live-guard-tripped")
 GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
 DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "live-float", "connecting", "offline",
-              "error-4003110", "live-bad", "reconnect-no-audio") + GUARD_NAMES
+              "error-4003110", "live-bad", "reconnect-no-audio", "live-flash", "home-flash") + GUARD_NAMES
 PHONE_EN = ("phone-live", "phone-denied", "phone-full", "phone-local-en")
 FLOAT_EN = ("float-live",)           # 浮窗页（web/float.html）：直播中，有红 / 琥珀 / 关注的弹幕，最新一条字幕没译成
 CONTROL_ZH = "live-full-zh"
@@ -684,6 +695,47 @@ def with_float_button(scenario, name):
     return out
 
 
+# 闪购助手的状态（hello 的 config.flash_sale）：接口契约的虚构样例 running（tests/fixtures/flash_sale/running.json，
+# 闪购助手 /status 原样的回话）经生产代码 flash_sale.StatusTracker 规整成推给页面的形状——同一个 tracker 先在单调时钟
+# 0 秒、再在 STUCK_SEC 秒各喂一次，已停止的那个商品就成了卡住的（attention 是 stuck），和直播中真实的样子一样。
+# 后端只发代码、数字和闪购助手的原话，没有要上界面的文字，文案由页面的 flash.js 按代码写。
+# 样例里有一个卡住的商品和一条没看过的 ❌ 记录：按钮是变色的那个样子（橙点绝对定位、不占宽度）。记录正文里有中文
+# （闪购助手写的），落在 class i18n-data 里；商品标题是英文。时间整体平移到页面打开时的「现在」之后，倒计时看起来才像真的
+FLASH_FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "flash_sale" / "running.json"
+FLASH_ZH_ALERT = "📦 Calm Gel Mask x4 (Fictional): 1 个规格库存不足 5,按可用库存填"   # 样例里一条带中文的记录正文（数据）
+
+
+def flash_state(now_ms=None):
+    doc = json.loads(FLASH_FIXTURE.read_text(encoding="utf-8"))
+    updated = flash_sale.parse_iso(doc["updated_at"])
+    tracker = flash_sale.StatusTracker()
+    tracker.update("ok", copy.deepcopy(doc), 0.0)
+    # 60 秒后闪购助手早已刷新过 updated_at（每 2 秒一次）：照样盖一个新时刻，不然同一个值停了 60 秒就成了陈旧
+    later = copy.deepcopy(doc)
+    later["updated_at"] = datetime.fromtimestamp(updated + flash_sale.STUCK_SEC, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    state = tracker.update("ok", later, float(flash_sale.STUCK_SEC))
+    shift = int(now_ms if now_ms is not None else time.time() * 1000) + 10 * 60 * 1000 - int(round(updated * 1000))
+    for product in state["products"]:
+        for key in ("ends_ms", "next_ms"):
+            if product[key] is not None:
+                product[key] += shift
+    for alert in state["alerts"]:
+        alert["at_ms"] += shift
+    return state
+
+
+def with_flash_button(scenario, name, state):
+    """同一个场景，hello 里加上装了闪购助手才有的 config.flash_sale：顶栏多出「闪购」按钮。
+    点击先点开闪购浮层（浮层里的字收到消息就画好了，扫描照样扫得到），再照原场景的顺序点；
+    直播中的场景最后停在换主播面板开着（#switch-confirm 要量），闪购浮层被互斥关掉。"""
+    out = copy.deepcopy(scenario)
+    out["name"] = name
+    out["messages"][0]["config"]["flash_sale"] = copy.deepcopy(state)
+    out["clicks"] = ["#flash-btn"] + list(scenario["clicks"])
+    return out
+
+
 def zh_quiet(scenario, name):
     """中文的直播中场景，报警关着（顶栏没有「报警开」标签）、品牌是 ZH_QUIET_BRAND：「浮窗」两个字才露得出来。
     live-full-zh 是满编（报警开、BRAND_ZH），顶栏已经满了，按钮在那里是只有图标（has-alert-tag）；
@@ -726,21 +778,32 @@ def build(tmp):
                  _live_full(tmp, "zh"), _live_bad(tmp), _reconnect_no_audio(tmp)]
     scenarios += _guard_scenarios(tmp) + _phone(tmp) + [_float(tmp)]
     out = {sc["name"]: sc for sc in scenarios}
+    flash = flash_state()
     out["live-float"] = with_float_button(out["live-full"], "live-float")
-    for base in ("live-full", "live-float"):
+    out["live-flash"] = with_flash_button(out["live-float"], "live-flash", flash)
+    for base in ("live-full", "live-float", "live-flash"):
         out[base + EXTRA] = with_extra_target(out[base])
     for base in LIVE_BASES:
         for width in LIVE_WIDTHS + NARROW_WIDTHS:
             sc = resized(out[base], width)
             out[sc["name"]] = sc
-    for base in ("home-idle", "home-zh"):
+    for base in FLASH_BASES:
+        for width in FLASH_WIDE_WIDTHS:
+            sc = resized(out[base], width)
+            out[sc["name"]] = sc
+    out["home-flash"] = with_flash_button(out["home-idle"], "home-flash", flash)
+    out["home-flash-zh"] = with_flash_button(out["home-zh"], "home-flash-zh", flash)
+    for base in HOME_BASES:
         for width in HOME_WIDTHS:
             sc = resized(out[base], width)
             out[sc["name"]] = sc
-    # 中文页的浮窗按钮：满编（报警开）的 1000px 一档，和报警关着的六档（ZH_FLOAT_WIDTHS）；各有一份目标在四种以外的
+    # 中文页的浮窗按钮：满编（报警开）的 1000px 一档，和报警关着的六档（ZH_FLOAT_WIDTHS）；各有一份目标在四种以外的。
+    # 再各加一份带闪购按钮的（live-flash-zh*）：「浮窗」两个字的露法和不带的一样，「Aa」省出来的地方只多不少
     out["live-float-zh"] = with_float_button(out[CONTROL_ZH], "live-float-zh")
     out["live-float-zh-quiet"] = zh_quiet(out["live-float-zh"], "live-float-zh-quiet")
-    for base in ("live-float-zh", "live-float-zh-quiet"):
+    out["live-flash-zh"] = with_flash_button(out["live-float-zh"], "live-flash-zh", flash)
+    out["live-flash-zh-quiet"] = with_flash_button(out["live-float-zh-quiet"], "live-flash-zh-quiet", flash)
+    for base in ("live-float-zh", "live-float-zh-quiet", "live-flash-zh", "live-flash-zh-quiet"):
         out[base + EXTRA] = with_extra_target(out[base])
     for base in ZH_FULL_BASES:
         sc = resized(out[base], 1000)

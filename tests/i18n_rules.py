@@ -39,14 +39,14 @@ UI_FILES = (
     "app/diskspace.py", "app/ffmpeg_bin.py", "app/float_window.py", "app/hwdetect.py",
     "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
-    "app/pipeline_engine.py", "app/pipeline_float.py", "app/pipeline_guard.py",
+    "app/pipeline_engine.py", "app/pipeline_flash.py", "app/pipeline_float.py", "app/pipeline_guard.py",
     "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",
     "app/resolver.py", "app/selfcheck.py",
     "app/transcript_export.py",
     "app/translator.py", "app/update_guard.py", "app/updater.py", "app/viewer.py",
     "app/viewer_share.py",
     "app/window_attention.py", "app/window_close.py", "app/window_lang.py",
-    "web/alerts.js", "web/app.js", "web/brand.js", "web/float.js", "web/guard.js", "web/i18n.js",
+    "web/alerts.js", "web/app.js", "web/brand.js", "web/flash.js", "web/float.js", "web/guard.js", "web/i18n.js",
     "web/live-ui.js",
     "web/session-divider.js", "web/settings-rows.js", "web/switch.js", "web/viewer.js",
     "web/float.html", "web/index.html", "web/viewer.html",
@@ -67,6 +67,10 @@ NON_UI_CHINESE = {
         "transcribe 在模型放掉之后又被调用时抛的错。异常原文进终端和审计 asr_failed（中文，照旧）；"
         "连续出错改用 CPU 后它进到自检「语音识别」行的 Details: 后面，由 selfcheck._asr_error 换成"
         "双语，英文界面不露中文。它在识别路径上（不变量 3），这里不改成 L()": ("识别模型已释放",),
+    },
+    "app/flash_sale.py": {
+        "闪购助手的 .app 文件名：拼成 /Applications、~/Applications 下的程序路径，用来判断装没装、"
+        "交给 open -a 打开，是程序路径，不上界面（界面上的名字在前端按术语表写）": ("闪购助手.app",),
     },
     "app/glossary.py": {
         "把全局 glossary.txt 里的主播词条迁进 profiles/ 下该主播的词表时，写进那个文件的注释行："

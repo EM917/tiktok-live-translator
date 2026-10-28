@@ -770,6 +770,11 @@ async def main_async(args, state=None):
     # 它要在界面第一次拿 hello 之前把 config["viewer"] 填好——否则卡片会先闪一下
     # 「关闭」再跳成「已打开」。restore 自己吞掉所有异常，不会挡住启动
     await pipeline.restore_viewer_share()
+    # 顶栏「闪购」：macOS 上装了闪购助手才往 config 里写 flash_sale、起轮询（只读 127.0.0.1:9334/status）。
+    # 同样要赶在第一次 hello 之前，按钮才不会晚一拍冒出来。自己吞掉所有异常，不会挡住启动。
+    # 演示模式不接：--demo 是拿来截图、录屏验界面的，9334 上是真实店铺的真实商品，不能进截图
+    if not args.demo:
+        await pipeline.attach_flash_sale()
     if state is not None:
         state["loop"] = asyncio.get_running_loop()
         state["pipeline"] = pipeline
@@ -841,6 +846,7 @@ async def main_async(args, state=None):
             await pipeline.stop_viewer_share("shutdown")
         except Exception as exc:
             print("[警告] 收尾时关闭手机同看出错: {}".format(exc))
+        pipeline.stop_flash_watch()      # 闪购助手的状态轮询：可重入，绝不抛
 
 
 def main():

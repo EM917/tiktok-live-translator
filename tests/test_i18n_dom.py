@@ -732,7 +732,7 @@ def test_live_top_bar_fits(dom, base, width):
 
 @needs_chrome
 @needs_mac
-@pytest.mark.parametrize("base", ("home-idle", "home-zh"))
+@pytest.mark.parametrize("base", S.HOME_BASES)
 @pytest.mark.parametrize("width", S.HOME_WIDTHS)
 def test_home_top_bar_says_what_the_caption_menu_is_for(dom, base, width):
     """待机首页的顶栏（用户 2026-10-20 在默认 1000px 的首页把这个下拉当成了界面语言）：
@@ -755,11 +755,101 @@ def test_home_top_bar_says_what_the_caption_menu_is_for(dom, base, width):
     need(label and label["width"] > 20, "「字幕译成」标签没露出来 {}".format(label))
     need(label and label["right"] <= result["viewport"]["width"], "「字幕译成」标签出了窗口 {}".format(label))
     extra = got[S.TARGET_EXTRA_SELECTED]
-    if base == "home-zh":
+    if base in ("home-zh", "home-flash-zh"):
         need(extra is not None, "当前目标 {} 不在四种里，下拉该补一项并选中它".format(S.HOME_ZH_TARGET))
     else:
         need(extra is None, "目标在四种之内，下拉不该有补出来的那一项 {}".format(extra))
+    # home-flash*：装了闪购助手，首页也有「闪购」按钮（用户 10-27 定）；首页没有字号控件，「Aa」也不出现
+    flash, font = got["#flash-btn"], got["#font-btn"]
+    if "flash" in base:
+        need(flash and flash["width"] > 0 and flash["right"] <= result["viewport"]["width"], "首页的闪购按钮没露出 {}".format(flash))
+        label, icon = got["#flash-btn .btn-label"], got["#flash-btn .i"]
+        zh_label = base == "home-flash-zh" and width >= 1000          # 中文 1000–1399px 只有字，其余只有图标
+        need(label and (label["width"] >= 20) == zh_label, "「闪购」的字应{}露出 {}".format("" if zh_label else "不", label))
+        need(icon and (icon["width"] > 0) != zh_label, "闪购按钮的图标应{}露出 {}".format("不" if zh_label else "", icon))
+    else:
+        need(flash and flash["width"] == 0, "没装闪购助手，按钮不该出现 {}".format(flash))
+    need(font and font["width"] == 0, "首页不该有「Aa」{}".format(font))
     assert not problems, "\n".join(problems)
+
+
+def _flash_shape_problems(got, width, viewport, lang="en", alert_tag=False):
+    """带闪购按钮的顶栏共用的几条（docs/i18n-style.md §4.2 的表）：按钮露出、在窗口里；
+    - 「Aa」：窄于 1400px（且宽于 720px）时露出、约 28px，字号控件收起（小浮层没开）；1400px 起「Aa」不出现、
+      字号控件回到顶栏；≤720px 两样都不显示（同原来的字号控件）；
+    - 按钮上的字：中文页 1000–1399px 只有字（报警标签亮着时除外），1400px 起图标加字；英文页 1600px 起才露字；
+      其余只有图标（字视觉隐藏，1px）。"""
+    problems = []
+    flash, font_btn, font_ctl = got["#flash-btn"], got["#font-btn"], got["#font-ctl"]
+    label, icon = got["#flash-btn .btn-label"], got["#flash-btn .i"]
+    if not (flash and flash["width"] > 0 and flash["right"] <= viewport["width"]):
+        problems.append("闪购按钮没露出或出了窗口 {}".format(flash))
+    if width <= 720:
+        if not (font_btn and font_btn["width"] == 0 and font_ctl and font_ctl["width"] == 0):
+            problems.append("≤720px：「Aa」和字号控件都该收起 {} {}".format(font_btn, font_ctl))
+    elif width < S.FLASH_WIDE:
+        if not (font_btn and 26 <= font_btn["width"] <= 34):
+            problems.append("窄于 1400px：「Aa」该露出、约 28px 宽 {}".format(font_btn))
+        if not (font_ctl and font_ctl["width"] == 0):
+            problems.append("窄于 1400px：字号控件该收进「Aa」（小浮层没开时不占地方）{}".format(font_ctl))
+    else:
+        if not (font_btn and font_btn["width"] == 0):
+            problems.append("1400px 起不该有「Aa」{}".format(font_btn))
+        if not (font_ctl and font_ctl["width"] > 60):
+            problems.append("1400px 起字号控件该在顶栏里 {}".format(font_ctl))
+    if lang == "zh":
+        label_shown = width >= S.FLASH_WIDE or (width >= 1000 and not alert_tag)
+        icon_shown = width >= S.FLASH_WIDE or not label_shown
+    else:                        # 英文页图标一直在，1600px 起再加上字
+        label_shown, icon_shown = width >= 1600, True
+    if not (label and (label["width"] >= 20) == label_shown):
+        problems.append("按钮上的字应{}露出 {}".format("" if label_shown else "不", label))
+    if not (icon and (icon["width"] > 0) == icon_shown):
+        problems.append("按钮的图标应{}露出 {}".format("" if icon_shown else "不", icon))
+    if lang == "zh" and label_shown and not icon_shown and not (flash and 40 <= flash["width"] <= 52):
+        problems.append("只有字的按钮应约 46px 宽 {}".format(flash))
+    return problems
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("base", S.FLASH_BASES)
+@pytest.mark.parametrize("width", S.LIVE_WIDTHS + S.NARROW_WIDTHS + S.FLASH_WIDE_WIDTHS)
+def test_flash_button_and_the_aa_button_in_the_live_top_bar(dom, base, width):
+    """装了闪购助手的直播顶栏（live-flash：浮窗、闪购都在，英文页）：闪购按钮露出，「Aa」在窄于 1400px 时替下字号控件。
+    版面下限在 test_live_top_bar_fits 里（live-flash 在 LIVE_BASES 里，下限一条没放宽）；这里另量 1400、1600px 两档：
+    「Aa」退场、字号控件回到顶栏，顶栏照样一行放下、状态字不被截，品牌标签不窄于 1101–1199px 那一档的 120px
+    （1400px 时英文仍只有图标，就是为了这一条：露字的话 live-flash-extra@1400 只剩 54px）。"""
+    result = dom.scan("{}@{}".format(base, width))
+    got = result["measure"]
+    problems = _flash_shape_problems(got, width, result["viewport"])
+    if width in S.FLASH_WIDE_WIDTHS:
+        bar, status, brand = got[".topbar"], got[".status-text"], got["#active-brand-tag"]
+        if not (bar and bar["scrollWidth"] <= bar["clientWidth"]):
+            problems.append(".topbar 溢出 {}".format(bar))
+        if not (status and status["textWidth"] <= status["innerWidth"] + 0.01):
+            problems.append(".status-text 文字比盒子宽（省略号已出现） {}".format(status))
+        if not (brand and brand["width"] >= 120):
+            problems.append("#active-brand-tag 窄于 120px {}".format(brand))
+    body = _body_classes(result["dom"])
+    if "has-flash-btn" not in body:
+        problems.append("body 该有 has-flash-btn：{}".format(body))
+    assert not problems, "\n".join(problems)
+
+
+@needs_chrome
+def test_flash_panel_keeps_the_helpers_chinese_text_in_the_data_area(dom):
+    """闪购助手写的记录正文是中文（数据）：英文页上确实画出来了（浮层收到状态就画，不等打开），带 class i18n-data、
+    不标 translate="no"（正文留给浏览器翻译），扫描不许把它算作漏翻。商品标题是名字，在 translate="no" 里。"""
+    for name in ("live-flash", "home-flash"):
+        result = dom.scan(name)
+        html = result["dom"]
+        assert S.FLASH_ZH_ALERT in html, "{}：记录正文没画到页面上".format(name)
+        assert not [x for x in result["cjk"] if S.FLASH_ZH_ALERT in x["text"]], "{}：数据区里的中文被计入了".format(name)
+        holders = _holders(html, S.FLASH_ZH_ALERT)
+        assert holders and all("i18n-data" in _classes(t) and 'translate="no"' not in t for t in holders), holders
+        titles = _holders(html, "Calm Gel Mask x4 (Fictional)")
+        assert titles and all('translate="no"' in t for t in titles), titles
 
 
 # 中文页的「浮窗」按钮（web/style.css 的 html[lang^="zh"] 那一段，docs/i18n-style.md §4.2）：
@@ -813,6 +903,8 @@ def test_zh_float_button_shows_its_label_where_it_fits(dom, base, width):
         need(button and 40 <= button["width"] <= 52, "只有字的按钮应约 46px 宽 {}".format(button))
     body = _body_classes(result["dom"])
     need("has-float-btn" in body and "has-alert-tag" not in body, "body 的类不对（该有 has-float-btn、没有 has-alert-tag）：{}".format(body))
+    if "flash" in base:          # 带闪购按钮的那两份：「浮窗」的露法同上，闪购按钮（露「闪购」两个字）和「Aa」另查
+        problems.extend(_flash_shape_problems(got, width, result["viewport"], lang="zh"))
     problems.extend(_caption_menu_problems(dom, base, width, got))
     assert not problems, "\n".join(problems)
 
@@ -836,6 +928,9 @@ def test_zh_float_button_gives_way_to_the_alert_tag(dom, base):
     assert label and label["width"] < 20, "报警标签亮着，「浮窗」两个字该是视觉隐藏的 {}".format(label)
     assert icon and icon["width"] > 0, "报警标签亮着，图标该露出 {}".format(icon)
     assert brand and brand["width"] >= 100, "#active-brand-tag 窄于 100px {}".format(brand)
+    if "flash" in base:          # 带闪购按钮的那两份：「闪购」同样退回只有图标，「Aa」替下字号控件
+        flash_problems = _flash_shape_problems(got, 1000, result["viewport"], lang="zh", alert_tag=True)
+        assert not flash_problems, "\n".join(flash_problems)
 
 
 @needs_chrome
@@ -1041,6 +1136,41 @@ def test_the_float_button_scenario_differs_from_live_full_only_by_the_config_key
         assert built["live-full@{}".format(width)]["size"][0] == width
 
 
+def test_the_flash_scenarios_differ_from_their_base_only_by_the_config_key_and_the_first_click(tmp_path):
+    """不开 Chrome：每个带闪购按钮的场景和它的底本只差 hello 里的 config.flash_sale 和打头的那一下 #flash-btn。
+    flash_sale 是生产代码（flash_sale.StatusTracker）从契约样例 tests/fixtures/flash_sale/running.json 规整出来、
+    计满 60 秒后的样子：有卡住的商品（后端排在最前）、有没看过的 ❌ 记录，按钮是变色的样子；倒计时的时刻在「现在」之后。
+    每档宽度都有。"""
+    built = S.build(tmp_path)
+    pairs = {"live-flash": "live-float", "live-flash-zh": "live-float-zh", "live-flash-zh-quiet": "live-float-zh-quiet",
+             "home-flash": "home-idle", "home-flash-zh": "home-zh"}
+    now_ms = time.time() * 1000
+    for name, base in pairs.items():
+        sc = built[name]
+        state = sc["messages"][0]["config"]["flash_sale"]
+        assert state["conn"] == "ok" and state["attention"] == ["stuck"] and state["stuck_count"] == 1
+        assert state["products"][0]["stuck"] is True and state["products"][0]["state"] == "stopped"
+        assert any(a["level"] == "warn" and a["text"].startswith("❌") for a in state["alerts"])
+        assert any(a["text"] == S.FLASH_ZH_ALERT for a in state["alerts"])
+        live = [p for p in state["products"] if p["state"] == "live"]
+        assert live and all(p["ends_ms"] > now_ms for p in live)
+        assert sc["clicks"][0] == "#flash-btn"
+        stripped = json.loads(json.dumps(sc))
+        del stripped["messages"][0]["config"]["flash_sale"]
+        stripped["name"] = base
+        stripped["clicks"] = stripped["clicks"][1:]
+        assert stripped == built[base], name
+        assert "flash_sale" not in built[base]["messages"][0]["config"]
+    assert set(S.DESKTOP_MEASURE) >= {"#flash-btn", "#flash-btn .btn-label", "#font-btn", "#font-ctl"}
+    for base in S.FLASH_BASES:
+        for width in S.LIVE_WIDTHS + S.NARROW_WIDTHS + S.FLASH_WIDE_WIDTHS:
+            assert built["{}@{}".format(base, width)]["size"][0] == width
+    for base in ("home-flash", "home-flash-zh"):
+        for width in S.HOME_WIDTHS:
+            assert built["{}@{}".format(base, width)]["size"][0] == width
+    assert "live-flash" in S.DESKTOP_EN and "home-flash" in S.DESKTOP_EN
+
+
 def test_the_home_scenarios_carry_a_target_inside_and_one_outside_the_four(tmp_path):
     """不开 Chrome：首页顶栏那条 G10 的两个基础场景。home-idle 是英文页、目标 en（四种之一）；home-zh 是中文页、
     目标 id（四种以外，web/live-ui.js targetLangExtra 要补的那种）。每档宽度都有，补出来的那一项量得到。"""
@@ -1079,7 +1209,8 @@ def test_every_live_top_bar_scenario_has_a_copy_with_the_widest_caption_menu(tmp
                 sc = built["{}@{}".format(name, width)]
                 assert sc["size"][0] == width
                 assert {S.TARGET_EXTRA_SELECTED, "#target-lang"} <= set(sc["measure"])
-    assert plain_names == ["live-full", "live-float", "live-float-zh", "live-float-zh-quiet"]
+    assert plain_names == ["live-full", "live-float", "live-flash", "live-float-zh", "live-flash-zh",
+                           "live-float-zh-quiet", "live-flash-zh-quiet"]
     for name in plain_names:
         plain, extra = built[name], built[name + S.EXTRA]
         assert plain["messages"][0]["type"] == extra["messages"][0]["type"] == "hello"
