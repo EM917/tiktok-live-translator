@@ -90,6 +90,8 @@ MAX_CODE = 40
 MAX_VERSION = 20
 
 PAGE_ATTENTION = ("login_required", "captcha", "error")
+# 开始、继续被接受后等生效的那 30 秒里不算要人处理的 page（见 attention）
+START_QUIET_PAGES = ("loading", "error", "no_list")
 
 # 推给页面前商品的排序（闪购助手会话 10-27 定的优先级）：要人看的在前。同一档里按卡片序号 position 排、
 # 没有序号的在后，再相同就保持闪购助手给的顺序（product_sort_key）。
@@ -518,6 +520,15 @@ def stuck_candidate(product, state):
             and state.get("running") is True and state.get("paused_reason") is None)
 
 
+def starting(state):
+    """开始或继续已被闪购助手接受、还在等它生效（control 是 {"action": "start" 或 "resume", "phase": "waiting"}；
+    等生效的窗口最多 CONTROL_WAIT_SEC 秒，生效了、或等满了，app/pipeline_flash.py 就把 control 收掉）。
+    前端 flash.js flashStarting 一字不差，tests/fixtures/flash_sale/shared-rules.json 的 attention 两边各测一遍。"""
+    ctl = state.get("control") if isinstance(state, dict) else None
+    return (isinstance(ctl, dict) and ctl.get("phase") == "waiting"
+            and ctl.get("action") in ("start", "resume"))
+
+
 def attention(state):
     """顶栏按钮要不要变色：返回原因代码表，空表表示不提醒。顺序就是浮层顶部主句的优先级
     （闪购助手会话 10-27 定稿）：
@@ -527,17 +538,26 @@ def attention(state):
     - stuck：有商品卡住（stopped 且该续开，连续 STUCK_SEC 秒，见 StatusTracker）；
     - bad_response：9334 上有东西，但没拿到能用的回话（读不出、或者连上了不回话，原因在 why）。
     不变色：连不上（连接被拒）、正在查看、not_started、loading、no_page、enabled=false 的 stopped、
-    ended_by_user、no_sale、unknown。「有没看过的报警」由前端判断，不在这里。"""
+    ended_by_user、no_sale、unknown。「有没看过的报警」由前端判断，不在这里。
+
+    开始、继续被接受后等生效的那 30 秒（starting）里，stale 和 page 是 START_QUIET_PAGES 的不算：POST /start
+    先刷新页面，刷新期间 /status 会短暂报 loading、error（这时 updated_at 不刷新，15 秒后还会变陈旧），列表回来之前
+    是 no_list。用户 10-27 定的：这段时间浮层写「正在开始…」，按钮不变橙、不出红字，免得刚点完开始看到红字又去点
+    停止。等满 30 秒还这样（control 收掉了），照原规则提醒。stale、page 这两个观察照旧留在状态里（stale、page
+    字段不改），只是不进这张表。login_required、captcha、暂停、卡住、读不出照常提醒：那是要人去处理的。"""
     conn = state.get("conn")
     if conn == "bad_response":
         return ["bad_response"]
     if conn != "ok":
         return []
+    quiet = starting(state)
     out = []
-    if state.get("stale"):
+    if state.get("stale") and not quiet:
         out.append("stale")
     page = state.get("page")
-    if page in PAGE_ATTENTION or (page == "no_list" and state.get("running") is True):
+    if quiet and page in START_QUIET_PAGES:
+        pass
+    elif page in PAGE_ATTENTION or (page == "no_list" and state.get("running") is True):
         out.append("page")
     paused = state.get("paused_reason")
     if paused is not None and paused != "not_started":

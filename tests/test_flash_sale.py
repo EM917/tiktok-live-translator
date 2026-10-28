@@ -305,6 +305,23 @@ def test_attention_truth_table(over, expected):
     assert fs.attention(ok_state(**over)) == expected
 
 
+@pytest.mark.parametrize("case", SHARED["attention"], ids=lambda c: c["why"])
+def test_the_start_quiet_window_matches_the_shared_table(case):
+    """开始、继续被接受后等生效的那 30 秒：页面加载中、出错、不在商品列表、超过 15 秒没更新都不算要人处理
+    （用户 10-27 定：显示「正在开始…」，不变橙、不出红字）。后端 starting / attention 和前端 flashStarting、
+    浮层主句的变色吃同一张表。"""
+    assert fs.starting(case["state"]) is case["starting"]
+    assert fs.attention(case["state"]) == case["attention"]
+
+
+@pytest.mark.parametrize("control", [None, "waiting", [], {"action": "start"}, {"phase": "waiting"},
+                                     {"action": "START", "phase": "waiting"}, {"action": "start", "phase": "done"}])
+def test_starting_needs_exactly_an_accepted_start_or_resume(control):
+    assert fs.starting({"control": control}) is False
+    assert fs.starting(None) is False and fs.starting([]) is False
+    assert fs.starting({"control": {"action": "start", "phase": "waiting"}}) is True
+
+
 @pytest.mark.parametrize("conn, expected", [("checking", []), ("unreachable", []),
                                             ("bad_response", ["bad_response"])])
 def test_attention_when_not_connected(conn, expected):

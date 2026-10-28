@@ -1255,3 +1255,90 @@ def test_the_whole_chain_against_a_fake_helper_on_a_local_port(tmp_path):
     p = asyncio.run(go())
     assert [r["path"] for r in seen] == ["/start"] and seen[0]["problems"] == []
     assert results(p) == [dict(ACCEPTED, action="start")]
+
+
+# ---- 开始以后的过渡：30 秒里页面刷新不变色（decisions-step2，用户 10-27 拍板） ---------------------------
+
+WAITING_START = {"action": "start", "phase": "waiting"}
+
+
+def reloading_doc(page):
+    """POST /start 之后闪购助手刷新页面的样子：没在运行、page 是 loading / error / no_list。updated_at 定住不动
+    （page=error 时闪购助手不刷新它），15 秒以后就是陈旧。直接当 fetch 的结果交出去，不让 apoll 改时刻。"""
+    doc = sample("idle")
+    doc.update(page=page, updated_at=iso(START_WALL))
+    return "ok", doc
+
+
+@pytest.mark.parametrize("page, after", [("error", ["stale", "page"]), ("loading", ["stale"]),
+                                         ("no_list", ["stale"])])
+def test_after_start_is_accepted_a_reloading_page_stays_calm_for_thirty_seconds(page, after, tmp_path):
+    """开始被接受后的 30 秒里：页面加载中、出错、不在商品列表，超过 15 秒没更新，都不算要人处理——按钮不变橙、
+    浮层不出红字（状态里 control 是「开始、在等生效」，页面据此写「正在开始…（闪购助手在刷新页面）」）。
+    边界：差 0.1 秒还算；正好 30 秒那一跳 control 收掉，照原规则提醒，另发一条 not_seen。
+    page 和 stale 这两个观察照旧在状态里，只是不进 attention。"""
+    p, clock = control_pipeline(tmp_path)
+    poll(p, clock, sample("idle"))
+    click(p, {"type": "flash_control", "action": "start"})
+    accepted_at = clock["mono"]
+    for t in (3, 6, 21, 27, fs.CONTROL_WAIT_SEC - 0.1):
+        clock["mono"] = accepted_at + t
+        poll(p, clock, reloading_doc(page))
+        state = p.server.config["flash_sale"]
+        assert state["control"] == WAITING_START and state["attention"] == [], t
+        assert state["page"] == page and state["stale"] is (t > 3 + fs.STALE_SEC)
+    clock["mono"] = accepted_at + fs.CONTROL_WAIT_SEC
+    poll(p, clock, reloading_doc(page))
+    state = p.server.config["flash_sale"]
+    assert state["control"] is None and state["attention"] == after
+    assert results(p)[-1] == {"action": "start", "ok": False, "error": "not_seen"}
+
+
+def test_the_quiet_window_ends_as_soon_as_start_takes_effect(tmp_path):
+    """同一个窗口：running 变 true（生效了）就收掉 control，之后页面再出错照原规则提醒，不再安静到 30 秒。"""
+    p, clock = control_pipeline(tmp_path)
+    poll(p, clock, sample("idle"))
+    click(p, {"type": "flash_control", "action": "start"})
+    clock["mono"] += 3
+    poll(p, clock, reloading_doc("error"))
+    assert p.server.config["flash_sale"]["attention"] == []
+    clock["mono"] += 3
+    poll(p, clock, sample("running"))
+    assert p.server.config["flash_sale"]["control"] is None
+    clock["mono"] += 3
+    running_error = sample("running")
+    running_error["page"] = "error"
+    poll(p, clock, running_error)
+    assert p.server.config["flash_sale"]["attention"] == ["page"]
+    assert results(p) == [dict(ACCEPTED, action="start")]
+
+
+def test_while_start_is_still_in_flight_a_page_error_is_not_quiet(tmp_path):
+    """还没接受（在途）不算：过渡只从「闪购助手接受了」开始。"""
+    async def go():
+        gate = asyncio.Event()
+        p, clock = control_pipeline(tmp_path, post=FakePost(gate=gate))
+        await apoll(p, clock, sample("idle"))
+        p.handle_control({"type": "flash_control", "action": "start"})
+        await asyncio.sleep(0.01)
+        clock["mono"] += 3
+        await apoll(p, clock, reloading_doc("error"))
+        state = p.server.config["flash_sale"]
+        gate.set()
+        await asyncio.gather(*list(p._bg_tasks))
+        return state
+
+    state = asyncio.run(go())
+    assert state["control"] == {"action": "start", "phase": "sending"} and state["attention"] == ["page"]
+
+
+def test_stop_has_no_quiet_window(tmp_path):
+    p, clock = control_pipeline(tmp_path)
+    poll(p, clock, sample("running"))
+    click(p, {"type": "flash_control", "action": "stop"})
+    clock["mono"] += 3
+    running_error = sample("running")
+    running_error["page"] = "error"
+    poll(p, clock, running_error)
+    state = p.server.config["flash_sale"]
+    assert state["control"] == {"action": "stop", "phase": "waiting"} and state["attention"] == ["page"]
