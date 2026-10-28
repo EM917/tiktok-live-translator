@@ -316,7 +316,7 @@ def test_empty_state_has_the_message_shape_and_no_data():
         state = fs.empty_state(conn)
         assert state == {"conn": conn, "why": None, "stale": False, "updated_ms": None, "app_version": None,
                          "page": None, "running": None, "paused_reason": None, "products": [],
-                         "products_total": 0, "alerts": [], "stuck_count": 0,
+                         "products_total": 0, "alerts": [], "stuck_count": 0, "control": None,
                          "attention": ["bad_response"] if conn == "bad_response" else []}
     assert fs.empty_state("checking") is not fs.empty_state("checking")
     # why 只在 bad_response 时下发（页面按它挑一句话）
@@ -346,10 +346,11 @@ def track(tracker, raw, mono=1000.0, fresh=True):
 def test_the_published_state_has_exactly_the_message_keys():
     state = track(fs.StatusTracker(), sample("running"))
     assert set(state) == {"conn", "why", "stale", "updated_ms", "app_version", "page", "running", "paused_reason",
-                          "products", "products_total", "alerts", "attention", "stuck_count"}
+                          "products", "products_total", "alerts", "attention", "stuck_count", "control"}
     assert set(state["products"][0]) == {"id", "title", "state", "round", "ends_ms", "next_ms", "stock_left",
                                          "stock_total", "renewals", "enabled", "position", "skip", "stuck"}
     assert state["conn"] == "ok" and state["why"] is None and state["stale"] is False and state["updated_ms"] is None
+    assert state["control"] is None           # 控制指令的进度由 app/pipeline_flash.py 发布前叠上
     assert set(state) == set(fs.empty_state("ok"))
 
 
@@ -636,6 +637,33 @@ def test_an_older_helper_without_skip_or_position_reads_as_null():
 def test_the_stuck_condition_matches_the_shared_table(case):
     """「等续开 / 算卡住」的条件：后端 stuck_candidate 和前端 flashWaitingRenewal 吃同一张表。"""
     assert fs.stuck_candidate(case["product"], case["state"]) is case["expect"]
+
+
+@pytest.mark.parametrize("case", SHARED["control_done"], ids=lambda c: c["why"])
+def test_control_done_matches_the_shared_table(case):
+    """指令生效了没有：后端 control_done（等生效时收掉 control）和前端 flashControlDone（收掉浮层里那句结果）吃同一张表。"""
+    assert fs.control_done(case["action"], case["state"]) is case["expect"]
+
+
+def test_control_done_refuses_anything_that_is_not_a_state():
+    for junk in (None, [], "ok", 3):
+        assert fs.control_done("stop", junk) is False
+
+
+def test_last_ok_is_true_only_right_after_a_poll_that_was_read():
+    """发控制指令之前看的是它：连上以后第一次没查到，交回的照旧是上一份 ok 状态，但 last_ok 已经是 False。"""
+    tracker = fs.StatusTracker()
+    assert tracker.last_ok() is False                               # 还没查过
+    track(tracker, sample("idle"), mono=0.0)
+    assert tracker.last_ok() is True
+    kept = tracker.update("bad_response", "no_answer", 3.0)
+    assert kept["conn"] == "ok" and tracker.last_ok() is False
+    track(tracker, sample("idle"), mono=6.0)
+    assert tracker.last_ok() is True
+    tracker.update("ok", [1], 9.0)                                  # 回的不是对象
+    assert tracker.last_ok() is False
+    tracker.update("unreachable", None, 12.0)
+    assert tracker.last_ok() is False
 
 
 @pytest.mark.parametrize("case", SHARED["sort"], ids=lambda c: c["why"])

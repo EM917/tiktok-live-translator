@@ -1,17 +1,29 @@
 # i18n: done
-"""顶栏「闪购」：查看本机闪购助手的状态（只读），推给控制页；点「打开闪购助手」时执行 open -a。
+"""顶栏「闪购」：查看本机闪购助手的状态，推给控制页；点「打开闪购助手」时执行 open -a；闪购助手 0.8.0 起，
+浮层里的「开始」「停止」「继续」由这里替人按下闪购助手面板上的那个大按钮（POST /start、/stop、/resume）。
 
 只在 macOS、装了闪购助手时才有：main.py 在第一次 hello 之前调 attach_flash_sale，装了才往
 server.config 里写 flash_sale 这个键、起轮询；没装就连这个键都没有，页面据此不画按钮（同浮窗的
 float_window）。是否安装只在启动时判一次。不在 Pipeline.__init__ 里检测：测试大量构造 Pipeline，
 开发机上可能真装着闪购助手，放在那里本机和 CI 的结果就会不一样，轮询还会真的去连本机的 9334。
+演示模式（--demo）不调 attach_flash_sale：不查、不发，flash_control 指令也什么都不做。
 
 隔离：
-- 手机同看收不到：flash_sale 不在 app/viewer.py 的 ALLOW 里，另外显式写进 DENY；replay_snapshot 只挑固定几个键；
-- 浮窗收不到：不在 app/server.py 的 FLOAT_TYPES / FLOAT_CONFIG_KEYS 里；
+- 手机同看收不到：flash_sale、flash_control_result 不在 app/viewer.py 的 ALLOW 里，另外显式写进 DENY；
+  replay_snapshot 只挑固定几个键。手机也发不进 flash_control（_handle_inbound 只认 retranslate）；
+- 浮窗收不到：不在 app/server.py 的 FLOAT_TYPES / FLOAT_CONFIG_KEYS 里；浮窗页的入站一律丢弃；
 - 不借报警、incident、status、顶部提示条来提醒（CLAUDE.md 第六条）：提醒只是顶栏按钮自己变色；
-- 不控制闪购助手，也不碰 TikTok：只发 GET /status，再就是 open -a。
-不写审计、不写 session 日志、不加 settings 键。终端只在状态跳变时打一行（中文），不打印商品标题和记录正文。
+- 不碰 TikTok。控制只替人按开始、停止、继续：不新建闪购、不改价、不加商品，第一次的确认框照旧在专用 Chrome 里点。
+不写审计、不写 session 日志、不加 settings 键。终端只在状态跳变、发控制指令时打一行（中文），不打印商品标题、
+记录正文，也绝不打印控制密钥。
+
+控制（_flash_control）谁能发：本机控制页，以及没带 Origin 的本机进程（curl、本地脚本；app/server.py 把它们
+也当控制面）。所以闪购控制的安全边界是「连得上本机 127.0.0.1 的控制端口」，不是密钥文件的 600 权限。同一用户的
+进程本来就能直接读那个文件、自己去 POST 9334，借这条路不多得什么；多出来的只是连得上回环、却读不到这个用户
+~/Library 的进程（别的账户、带网络权限的沙盒应用），在单用户的中控电脑上可以接受（没带 Origin 的连接现在
+本来就能发 disk_delete、apply_update）。剩下一个契约本身的限制：有进程占了 9334、又能装得像样地回 /status，
+就拿得到密钥（本机回环上的明文 HTTP，客户端没法认证服务端）。这里能做的是只在最近一次 /status 连上并读懂了
+的时候才读密钥、才发（no_status）。
 """
 import asyncio
 import time
@@ -20,24 +32,40 @@ from urllib.parse import urlsplit
 from . import flash_sale
 from .i18n import L
 
+# 终端行里的动作名（终端永远是中文）
+_CTL_NAMES = {"start": "开始", "stop": "停止", "resume": "继续"}   # i18n: terminal
+# 闪购助手没有接受以外的几种结果在终端怎么说（页面拿到的是同一个代码，文案在 web/flash.js）
+_CTL_OUTCOMES = {"no_status": "没有发出", "no_token": "没有发出", "unreachable": "连不上",
+                 "no_answer": "没有回话", "bad_reply": "回话读不出", "failed": "出错"}   # i18n: terminal
+_CTL_REFUSED = "没有接受"   # i18n: terminal
+
 
 class FlashSaleMixin:
     def _init_flash_sale(self):
         self._flash_app = None          # 检测到的 .app 路径；None = 没装（或不是 macOS），整个功能不存在
         self._flash_task = None         # 轮询任务
+        self._flash_base = None         # StatusTracker 最近交出来的状态（还没叠上控制指令的进度）
         self._flash_last = None         # 上次发布的 dict：没变就不广播（一次广播最坏被卡死的页面拖 2 秒）
         self._flash_conn_prev = None    # 上一次的 conn：终端行只在跳变时打
         self._flash_why_prev = None     # 上一次 bad_response 的原因：原因变了也算跳变
         self._flash_tracker = flash_sale.StatusTracker()
-        self._flash_boost_until = None  # 点「打开」、open 返回 0 之后快查到哪一刻（单调时钟）
+        self._flash_boost_until = None  # 点「打开」open 返回 0、或控制指令被接受之后快查到哪一刻（单调时钟）
         self._flash_wake_ev = None      # 唤醒轮询；首次使用时才建（Python 3.9 构造 Event 就绑事件循环）
+        self._flash_pub_lock = None     # (事件循环, asyncio.Lock)：轮询和控制两条路发布状态时排队，见 _flash_refresh
         self._flash_opening = False     # 防连点：上一次 open 还没返回
+        # 控制指令的进度：None，或 {"action", "phase", "until"}。phase 是 sending（在途）或 waiting（已接受、
+        # 等它生效，until 是等到哪一刻，单调时钟）。发布时只带 action 和 phase（见 _flash_compose）
+        self._flash_ctl = None
         self._flash_logged = set()      # 已经打过的异常种类、schema：同一种只打一次
-        # 可注入（同 _brand_dir_opener）：测试换成假的，绝不碰本机真的 9334，也不真的执行 open
+        # 可注入（同 _brand_dir_opener）：测试换成假的，绝不碰本机真的 9334、绝不读本机真的控制密钥，
+        # 也不真的执行 open。地址和密钥位置取的是此刻模块里的值（tests/conftest.py 已换掉）
         self._flash_fetch = flash_sale.fetch_status
         self._flash_url = flash_sale.STATUS_URL
+        self._flash_post = flash_sale.post_control
+        self._flash_ctl_base = flash_sale.CONTROL_BASE
+        self._flash_read_token = flash_sale.read_control_token
         self._flash_exec = None         # None = asyncio.create_subprocess_exec（调用时取）
-        self._flash_mono = time.monotonic   # 陈旧、卡住都按单调时钟计（合盖睡眠时它不走，见 StatusTracker）
+        self._flash_mono = time.monotonic   # 陈旧、卡住、等生效都按单调时钟计（合盖睡眠时它不走，见 StatusTracker）
 
     # ---- 启动、停止 ----
 
@@ -49,6 +77,7 @@ class FlashSaleMixin:
                 return
             self._flash_app = app
             state = flash_sale.empty_state("checking")
+            self._flash_base = state
             self._flash_last = state
             self._flash_conn_prev = "checking"
             self.server.config["flash_sale"] = state
@@ -65,7 +94,10 @@ class FlashSaleMixin:
         self._flash_task = self._spawn(self._flash_watch())
 
     def stop_flash_watch(self):
-        """退出时（main.py 的收尾、关窗口的 close_session）调；也给测试用。可重入，绝不抛。"""
+        """退出时（main.py 的收尾、关窗口的 close_session）调；也给测试用。可重入，绝不抛。
+        只停轮询。在途的控制请求（_flash_control_run）不取消，让它发完：POST 最多 4 秒（连接 2 秒、读 2 秒）。
+        尤其是「停止」：半路取消了，不知道闪购助手收到没有，还不如让它发完。进程等不等得到它看收尾的时限，
+        结果广播不到页面也没关系（页面已经关了）。"""
         task = getattr(self, "_flash_task", None)
         self._flash_task = None
         if task is not None:
@@ -88,9 +120,12 @@ class FlashSaleMixin:
 
     async def _flash_tick(self):
         kind, value = await self._flash_fetch(self._flash_url)
-        state = self._flash_tracker.update(kind, value, self._flash_mono())
-        await self._flash_publish(state)
-        self._flash_log_transition(state)
+        base = self._flash_base = self._flash_tracker.update(kind, value, self._flash_mono())
+        event = self._flash_check_control(base)
+        await self._flash_refresh()
+        self._flash_log_transition(base)
+        if event is not None:
+            await self._flash_control_event(*event)
 
     def _flash_interval(self):
         boost = self._flash_boost_until
@@ -104,7 +139,7 @@ class FlashSaleMixin:
         return self._flash_wake_ev
 
     async def _flash_sleep(self, sec):
-        """睡 sec 秒，或者被 _flash_wake 叫醒（点了「打开」、open 返回 0）。"""
+        """睡 sec 秒，或者被 _flash_wake 叫醒（点了「打开」open 返回 0、控制指令被接受）。"""
         ev = self._flash_wake_event()
         try:
             await asyncio.wait_for(ev.wait(), sec)
@@ -115,6 +150,40 @@ class FlashSaleMixin:
 
     def _flash_wake(self):
         self._flash_wake_event().set()
+
+    # ---- 发布 ----
+
+    def _flash_compose(self):
+        """最近一次查到的状态叠上此刻控制指令的进度：control 换成 {"action", "phase"}（不带 until：它不变，
+        但下发了也没用，页面不自己计时），attention 跟着重算（开始、继续被接受后等生效的那 30 秒里，有几种情况
+        不算要人处理，见 flash_sale.attention）。没有指令时就是 base 本身。每次一个新 dict，不原地改 base。"""
+        base = self._flash_base
+        if base is None:
+            return None
+        ctl = self._flash_ctl
+        shown = None if ctl is None else {"action": ctl["action"], "phase": ctl["phase"]}
+        if base.get("control") == shown:
+            return base
+        state = dict(base, control=shown)
+        state["attention"] = flash_sale.attention(state)
+        return state
+
+    def _flash_lock(self):
+        loop = asyncio.get_running_loop()
+        held = self._flash_pub_lock
+        if held is None or held[0] is not loop:
+            held = self._flash_pub_lock = (loop, asyncio.Lock())
+        return held[1]
+
+    async def _flash_refresh(self):
+        """把此刻的状态（_flash_compose）发出去，没变就不发。轮询和控制两条路都走这里，在一把锁里排队：
+        合成和广播之间有 await，不排队的话先合成的那份可能后到页面——页面停在旧的控制进度上，之后合成出来的
+        又和「上次发的」相等，不会再发。在锁里才合成，所以排在后面的那一次发的一定是最新的。"""
+        async with self._flash_lock():
+            state = self._flash_compose()
+            if state is None:
+                return False
+            return await self._flash_publish(state)
 
     async def _flash_publish(self, state):
         """和上次发布的比，没变就不发。不下发 updated_at（它每 2 秒变一次，下发了去重就失效），
@@ -166,6 +235,16 @@ class FlashSaleMixin:
                 what = "没有回话" if why == "no_answer" else "返回的内容读不出"   # i18n: terminal
                 print("[警告] 闪购助手：{} {}（{}）".format(self._flash_url, what, why))
 
+    def _flash_log_control(self, action, error, detail=None):
+        """终端一行中文：「闪购助手：中控请求开始 → 已接受 / 没有接受（代码）」，没发出、连不上、没回话另有说法。
+        不打密钥、不打商品标题：detail 只会是读密钥的原因代码，或者异常的类型名。"""
+        name = _CTL_NAMES.get(action, action)
+        if error is None:
+            print("[信息] 闪购助手：中控请求{} → 已接受".format(name))
+            return
+        code = error if detail is None else "{}：{}".format(error, detail)   # i18n: terminal
+        print("[警告] 闪购助手：中控请求{} → {}（{}）".format(name, _CTL_OUTCOMES.get(error, _CTL_REFUSED), code))
+
     # ---- 「打开闪购助手」 ----
 
     def _open_flash_helper(self):
@@ -210,3 +289,113 @@ class FlashSaleMixin:
             await self.server.broadcast({"type": "notice", "where": "flash", "text": text})
         finally:
             self._flash_opening = False
+
+    # ---- 开始、停止、继续 ----
+
+    def _flash_control(self, msg):
+        """控制页的 flash_control 指令（handle_control 调，同步，立刻返回）：{"type": "flash_control",
+        "action": "start" | "stop" | "resume"}，别的键一概不看。谁能发、安全边界在哪，见文件头。
+        - 没装（演示模式也是这样）、动作不在白名单里：什么都不做（页面上本来没有这样的按钮）；
+        - 上一个指令还在途（phase=sending）：什么都不做。页面那边按钮是禁用的（发布的状态里 control.phase 是
+          sending），连点、两个控制页同时点，都只发一个；
+        - 最近一次 /status 不是连上并读懂了（连不上、读不出、上一跳没查到、还没查过）：不读密钥、不发，
+          结果 error=no_status。在等生效的上一个指令照旧等着；
+        - 其余放后台发（_flash_control_run），不在这里 await：不挡同一页面后面的消息。"""
+        if self._flash_app is None:
+            return None
+        action = msg.get("action")
+        if not isinstance(action, str) or action not in flash_sale.CONTROL_ACTIONS:
+            return None
+        ctl = self._flash_ctl
+        if ctl is not None and ctl["phase"] == "sending":
+            return None
+        if not self._flash_tracker.last_ok():
+            self._spawn(self._flash_control_refused(action, "no_status"))
+            return None
+        self._flash_ctl = {"action": action, "phase": "sending", "until": None}
+        self._spawn(self._flash_control_run(action, ctl))
+        return None
+
+    async def _flash_control_refused(self, action, error):
+        self._flash_log_control(action, error)
+        await self._flash_send_result(action, error)
+
+    async def _flash_control_run(self, action, prev):
+        """读密钥 → 发 POST → 收结果，结果用 flash_control_result 广播给控制页。
+        - 读不到密钥：不发，error=no_token（终端带原因代码，例如 missing）；
+        - 发出去以后同时把 phase=sending 发布出去（别的控制页也把按钮禁用），不等广播再发：广播最坏被卡住的页面
+          拖 2 秒，「停止」不该跟着晚；
+        - 接受了（200）：phase 换成 waiting，CONTROL_WAIT_SEC 秒里每 3 秒查一次 /status、每一跳看它生效没有
+          （_flash_check_control），并马上查一次；
+        - 没接受、没发出、出错：控制进度换回发之前的那一份（在等生效的上一个指令照旧等着）。
+        密钥只在这里的一个局部变量里待到交给 _flash_post：不打印、不广播、不进 config；出错时终端只打异常的
+        类型名（aiohttp 的 ClientResponseError 的 repr 里带着 Authorization）。退出时不取消，见 stop_flash_watch。"""
+        sending = self._flash_ctl
+        error, detail, finished = None, None, False
+        try:
+            token, why = self._flash_read_token()
+            if token is None:
+                error, detail = "no_token", why
+            else:
+                post = asyncio.ensure_future(self._flash_post(action, token, self._flash_ctl_base))
+                token = None
+                try:
+                    await self._flash_refresh()
+                except Exception:
+                    pass                  # 发布失败不挡指令：下一跳轮询会再发
+                error = await post
+            finished = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error, detail, finished = "failed", type(exc).__name__, True
+        finally:
+            if self._flash_ctl is sending:
+                if finished and error is None:
+                    self._flash_ctl = {"action": action, "phase": "waiting",
+                                       "until": self._flash_mono() + flash_sale.CONTROL_WAIT_SEC}
+                else:
+                    self._flash_ctl = prev
+        self._flash_log_control(action, error, detail)
+        if error is None:
+            self._flash_boost_until = self._flash_mono() + flash_sale.BOOST_SEC
+            self._flash_wake()
+        try:
+            await self._flash_refresh()
+        except Exception:
+            pass
+        await self._flash_send_result(action, error)
+
+    def _flash_check_control(self, base):
+        """每一跳查完、发布之前调：等生效的那个指令生效了（flash_sale.control_done）、或者等满了 CONTROL_WAIT_SEC，
+        就收掉。返回 None、("done", 动作) 或 ("not_seen", 动作)，由调用方打终端行、发结果。
+        指令还在途（phase=sending）时不碰：它还没有「等到哪一刻」，回来以后自己定接下来是什么。"""
+        ctl = self._flash_ctl
+        if ctl is None or ctl["phase"] != "waiting":
+            return None
+        if flash_sale.control_done(ctl["action"], base):
+            self._flash_ctl = None
+            return "done", ctl["action"]
+        if self._flash_mono() >= ctl["until"]:
+            self._flash_ctl = None
+            return "not_seen", ctl["action"]
+        return None
+
+    async def _flash_control_event(self, kind, action):
+        name = _CTL_NAMES.get(action, action)
+        if kind == "done":
+            print("[信息] 闪购助手：中控请求{} → 已生效".format(name))
+            return
+        # 只写看到的：这么久没看到它生效，不猜为什么（第八条）
+        print("[警告] 闪购助手：中控请求{} → {} 秒内没看到生效".format(name, flash_sale.CONTROL_WAIT_SEC))
+        await self._flash_send_result(action, "not_seen")
+
+    async def _flash_send_result(self, action, error):
+        """{type: flash_control_result, action, ok, error} 广播给控制页（手机 DENY、浮窗不收）。只带代码，
+        文案在前端；error 见 flash_sale.CONTROL_OWN_ERRORS。广播出错不往外抛。"""
+        try:
+            await self.server.broadcast({"type": "flash_control_result", "action": action,
+                                         "ok": error is None, "error": error})
+        except Exception as exc:
+            self._flash_log_once("result:" + type(exc).__name__,
+                                 "[警告] 闪购助手：发控制结果出错（{}）".format(type(exc).__name__))

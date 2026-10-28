@@ -482,6 +482,10 @@ def test_inbound_messages_never_reach_on_control():
         text({"type": "dismiss_incident", "id": "session:clock_gap", "ts": 1790000000.0}),
         # 顶栏「闪购」浮层里的「打开闪购助手」：只有中控本机能点
         text({"type": "open_flash_helper"}),
+        # 同一个浮层里的开始、停止、继续（会真的动闪购助手）：只有中控本机能点
+        text({"type": "flash_control", "action": "start"}),
+        text({"type": "flash_control", "action": "stop"}),
+        text({"type": "flash_control", "action": "resume"}),
     ])
     run_handshake(hub, ws)
     assert calls == []
@@ -533,6 +537,8 @@ def test_a_lone_retranslate_frame_does_not_trip_the_flood_cap():
     {"type": "dismiss_incident", "id": "session:clock_gap", "ts": 1790000000.0},   # 提示条的 ×：只有本机
     {"type": "open_flash_helper"},                  # 「打开闪购助手」：只有本机控制面
     {"type": "open_flash_helper", "id": 7},         # 凑成 {type, id} 的形状也不行
+    {"type": "flash_control", "action": "stop"},    # 闪购的开始、停止、继续：只有本机控制面
+    {"type": "flash_control", "id": 7},             # 凑成 {type, id} 的形状也不行
 ])
 def test_malformed_or_irrelevant_inbound_is_silently_ignored(bad):
     """既不解析出动作，也不回消息、不断连接——坏页面和探测本就不该有回音。"""

@@ -180,5 +180,6 @@
   "attention": [
     "stuck"
   ],
-  "stuck_count": 1
+  "stuck_count": 1,
+  "control": null
 }

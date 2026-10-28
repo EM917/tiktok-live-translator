@@ -60,6 +60,19 @@ CONTROL_BASE = "http://127.0.0.1:9334"
 CONTROL_ACTIONS = ("start", "stop", "resume")
 CONTROL_BODY = b'{"source":"tlt"}'
 CONTROL_REPLY_MAX = 4096     # 回话只有 {"ok":…,"error":…} 这么一小段
+# 指令被接受以后最多等这么久看它生效，这期间每 3 秒查一次 /status（契约：开始后真实页面一般 5–15 秒 running
+# 才变 true，超过 30 秒还不是就当这次没成功）
+CONTROL_WAIT_SEC = 30
+# flash_control_result 的 error 里后端自己的代码。其余的要么是 http_<状态码>，要么是闪购助手 409 给的代码
+# （原样、清洗过）。前端按这张表认「是我们这边的」还是「闪购助手没有接受」：
+#   no_status    最近一次 /status 不是连上并读懂了：没读密钥、没发
+#   no_token     控制密钥读不出：没发
+#   unreachable  连不上 9334            no_answer  连上了，没有回话            bad_reply  回话读不出
+#   no_control   404 / 405：这个版本没有控制接口
+#   failed       后端自己出错（终端有异常的类型名）
+#   not_seen     已接受，但 CONTROL_WAIT_SEC 秒内没看到生效（接受之后另发的第二条结果）
+CONTROL_OWN_ERRORS = ("no_status", "no_token", "unreachable", "no_answer", "bad_reply", "no_control",
+                      "failed", "not_seen")
 # 控制密钥：~/Library/Application Support/FlashSaleHelper/control-token，64 位十六进制（32 字节），权限 600
 TOKEN_DIR = ("Library", "Application Support", "FlashSaleHelper")
 TOKEN_NAME = "control-token"
@@ -335,6 +348,23 @@ async def post_control(action, token, base=None, timeout=HTTP_TIMEOUT_SEC, limit
     return control_reply(status, body, action)
 
 
+def control_done(action, state):
+    """推给页面的这份状态说明这个动作已经生效了吗（等生效的那 30 秒里每一跳查一次，生效了就收掉）：
+    - start、resume：running 是 true，且 paused_reason 不是 user_interaction（继续要的就是从这种暂停里出来；
+      开始的时候本来不会是它：暂停着点开始，闪购助手回 409 paused）；
+    - stop：running 是 false。
+    只认 conn=ok 的状态：连不上、读不出时看不到，不算生效。前端 flash.js flashControlDone 一字不差，
+    tests/fixtures/flash_sale/shared-rules.json 的 control_done 两边各测一遍。"""
+    if not isinstance(state, dict) or state.get("conn") != "ok":
+        return False
+    running = state.get("running")
+    if action == "stop":
+        return running is False
+    if action in ("start", "resume"):
+        return running is True and state.get("paused_reason") != "user_interaction"
+    return False
+
+
 # ---- 字段规整 ------------------------------------------------------------------------------
 
 def _code(value, cap=MAX_CODE):
@@ -519,11 +549,13 @@ def attention(state):
 
 def empty_state(conn, why=None):
     """conn 不是 ok 时推给页面的形状：商品和记录清空，不留旧数据（免得中控照着几分钟前的状态做事）。
-    why 只在 bad_response 时有：fetch_status 给的原因代码（页面按它挑一句话，no_answer 单独一句）。"""
+    why 只在 bad_response 时有：fetch_status 给的原因代码（页面按它挑一句话，no_answer 单独一句）。
+    control 是控制指令的进度，这里和 StatusTracker 一律给 None；app/pipeline_flash.py 发布前叠上真的那一份
+    （{"action", "phase"}，见那里的 _flash_compose）。"""
     state = {
         "conn": conn, "why": why if conn == "bad_response" else None, "stale": False, "updated_ms": None,
         "app_version": None, "page": None, "running": None, "paused_reason": None, "products": [],
-        "products_total": 0, "alerts": [], "stuck_count": 0,
+        "products_total": 0, "alerts": [], "stuck_count": 0, "control": None,
     }
     state["attention"] = attention(state)
     return state
@@ -575,6 +607,11 @@ class StatusTracker:
         self.schema = None            # 最近一次连上时读到的 schema
         self.why = None               # 最近一次发布的 bad_response 的原因代码
 
+    def last_ok(self):
+        """最近一次查 /status 连上并读懂了吗。「连上以后第一次没查到」照旧交回的是上一份 ok 状态，但这里是 False：
+        发控制指令（带着密钥）之前看的是这个，密钥只给刚刚还在好好回 /status 的那个对端。"""
+        return self._misses == 0 and self._last is not None and self._last.get("conn") == "ok"
+
     def update(self, kind, value, mono):
         norm = normalize(value) if kind == "ok" else None
         if kind == "ok" and norm is None:
@@ -600,7 +637,7 @@ class StatusTracker:
         norm["products"].sort(key=product_sort_key)
         state = dict(norm, conn="ok", why=None, stale=stale,
                      updated_ms=int(round(updated * 1000)) if (stale and updated is not None) else None,
-                     stuck_count=sum(1 for p in norm["products"] if p["stuck"]))
+                     stuck_count=sum(1 for p in norm["products"] if p["stuck"]), control=None)
         state["attention"] = attention(state)
         self._last = state
         return state
