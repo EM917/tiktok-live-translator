@@ -103,6 +103,10 @@ def open_argv(path=APP_PATH):
 
 # ---- 取 /status ----------------------------------------------------------------------------
 
+class _NeverRaised(Exception):
+    """aiohttp 3.10 以前没有 ConnectionTimeoutError：拿它占位，那条 except 永远不命中。"""
+
+
 async def fetch_status(url=None, timeout=HTTP_TIMEOUT_SEC, limit=MAX_BYTES):
     """GET 一次，返回 (kind, value)：
     - ("ok", 解析出的 JSON)；
@@ -110,8 +114,11 @@ async def fetch_status(url=None, timeout=HTTP_TIMEOUT_SEC, limit=MAX_BYTES):
     - ("bad_response", 原因代码)：9334 上有东西，但没拿到能用的回话。原因是
       no_answer（timeout 秒内没回完，或者没回话就断开：进程卡住、被挂起时内核照样完成握手，我们这边只看到读超时）、
       cut_off（回到一半断开）、http（回的不是 HTTP）、http_<状态码>、too_large、json。
-    只有连接被拒才算「没在运行」：卡住的闪购助手也是这个端口连得上、却不回话，那正是要人去看的时候，
+    只有连不上才算「没在运行」：卡住的闪购助手也是这个端口连得上、却不回话，那正是要人去看的时候，
     不能和「没开」混成一种、不变色（CLAUDE.md 第八条：只报看到的）。
+    连不上包括「连接阶段超时」：Windows 上连本机没人听的端口不是马上被拒，而是重试约 2 秒，超时先到。
+    所以连接和读分开计时：连接阶段超时算 unreachable，连上以后读超时才算 no_answer。aiohttp 3.10 以前
+    没有 ConnectionTimeoutError，分不出两段，一律按 no_answer。
     取消照样往外抛。每次一个短命 session（同 app/localmodel.is_running），不用管关闭。
     url 缺省时在调用这一刻取 STATUS_URL（不写成默认参数：tests/conftest.py 要能把它换掉）。"""
     import aiohttp
@@ -119,8 +126,11 @@ async def fetch_status(url=None, timeout=HTTP_TIMEOUT_SEC, limit=MAX_BYTES):
 
     url = STATUS_URL if url is None else url
 
+    # 连接、每次读各 timeout 秒；总时长再兜一层，挡住一点一点往回滴的对端
+    timeouts = aiohttp.ClientTimeout(total=timeout * 2, connect=timeout, sock_read=timeout)
+    connect_timeout = getattr(aiohttp, "ConnectionTimeoutError", None) or _NeverRaised
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+        async with aiohttp.ClientSession(timeout=timeouts) as session:
             async with session.get(url, allow_redirects=False) as resp:
                 if resp.status != 200:
                     return "bad_response", "http_%d" % resp.status
@@ -130,6 +140,8 @@ async def fetch_status(url=None, timeout=HTTP_TIMEOUT_SEC, limit=MAX_BYTES):
     # 先后有讲究：ClientConnectorError 是 ClientOSError 的子类；3.11 起 asyncio.TimeoutError 就是内置的
     # TimeoutError，它又是 OSError 的子类，得排在最后那条 OSError 前面
     except aiohttp.ClientConnectorError:
+        return "unreachable", None
+    except connect_timeout:    # 是 asyncio.TimeoutError 的子类，得排在下面那条前面
         return "unreachable", None
     except (asyncio.TimeoutError, aiohttp.ServerDisconnectedError, aiohttp.ClientOSError):
         return "bad_response", "no_answer"

@@ -71,8 +71,8 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 
 | 键 | 含义 |
 |---|---|
-| `conn` | `checking` 启动后还没查到；`ok` 连上并读懂了；`unreachable` 连不上（只有连接被拒才算：9334 上没人在听）；`bad_response` 9334 上有东西，但没拿到能用的回话（原因见 `why`）。不是 `ok` 时商品和记录全部清空，不留旧数据。连上以后第一次没查到不发布（§5） |
-| `why` | 只在 `bad_response` 时有，其余为 null：`no_answer`（2 秒内没回完，或者没回话就断开、被重置）、`cut_off`（回到一半断开）、`http`（回的不是 HTTP）、`http_<状态码>`（非 200，302 也不跟）、`too_large`（超过 1 MiB）、`json`（不是 JSON）、`not_object`（JSON 但不是对象）。页面只给 `no_answer` 单独一句「127.0.0.1:9334 在 2 秒内没有回应。」，其余都是「返回的内容读不出来」 |
+| `conn` | `checking` 启动后还没查到；`ok` 连上并读懂了；`unreachable` 连不上（连接被拒，或连接阶段就超时：9334 上没人在听；Windows 上连本机没人听的端口要重试约 2 秒才被拒，所以连接和读分开计时）；`bad_response` 9334 上有东西，但没拿到能用的回话（原因见 `why`）。不是 `ok` 时商品和记录全部清空，不留旧数据。连上以后第一次没查到不发布（§5） |
+| `why` | 只在 `bad_response` 时有，其余为 null：`no_answer`（连上了，但 2 秒内没回话，或者没回话就断开、被重置；总时长上限 4 秒）、`cut_off`（回到一半断开）、`http`（回的不是 HTTP）、`http_<状态码>`（非 200，302 也不跟）、`too_large`（超过 1 MiB）、`json`（不是 JSON）、`not_object`（JSON 但不是对象）。页面只给 `no_answer` 单独一句「127.0.0.1:9334 在 2 秒内没有回应。」，其余都是「返回的内容读不出来」 |
 | `stale` | 只在 `conn=ok` 时可能为 true，见 §5 |
 | `updated_ms` | 只在 `stale` 为 true、且 `updated_at` 认得出时是 epoch 毫秒（页面写「上次更新 HH:MM:SS」），其余为 null。不下发 `updated_at` 本身：它每 2 秒变一次，下发了去重就失效 |
 | `app_version`、`page`、`running`、`paused_reason` | 照接口，清洗过 |

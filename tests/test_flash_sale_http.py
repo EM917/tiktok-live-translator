@@ -209,3 +209,35 @@ def test_the_default_address_in_tests_is_not_the_real_helper():
     """tests/conftest.py 把默认地址换成了没人听的端口：漏传 url 的调用也到不了 9334。"""
     assert fs.STATUS_URL != "http://127.0.0.1:9334/status"
     assert asyncio.run(fs.fetch_status(timeout=1.0)) == ("unreachable", None)
+
+
+class _RaisesOnEnter:
+    def __init__(self, exc):
+        self.exc = exc
+
+    async def __aenter__(self):
+        raise self.exc
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+def test_a_timeout_while_connecting_is_unreachable(monkeypatch):
+    """Windows 上连本机没人听的端口不是马上被拒，要重试约 2 秒，连接阶段的超时先到：这也是连不上，
+    算闪购助手没在运行，不是「连上了不回话」。不真的连：把 session.get 换成进门就抛的假货。"""
+    import aiohttp
+    if not hasattr(aiohttp, "ConnectionTimeoutError"):
+        pytest.skip("aiohttp 3.10 以前分不出连接超时和读超时")
+    monkeypatch.setattr(aiohttp.ClientSession, "get",
+                        lambda self, *a, **k: _RaisesOnEnter(aiohttp.ConnectionTimeoutError("connect")))
+    assert asyncio.run(fs.fetch_status("http://127.0.0.1:9/status", timeout=1.0)) == ("unreachable", None)
+
+
+def test_a_timeout_after_connecting_is_no_answer(monkeypatch):
+    """连上以后读超时：对面在、却不回话（卡住的闪购助手就是这样），要人去看。"""
+    import aiohttp
+    if not hasattr(aiohttp, "SocketTimeoutError"):
+        pytest.skip("aiohttp 3.10 以前分不出连接超时和读超时")
+    monkeypatch.setattr(aiohttp.ClientSession, "get",
+                        lambda self, *a, **k: _RaisesOnEnter(aiohttp.SocketTimeoutError("read")))
+    assert asyncio.run(fs.fetch_status("http://127.0.0.1:9/status", timeout=1.0)) == ("bad_response", "no_answer")
