@@ -10,7 +10,8 @@
   连得上却不回话不算「没在运行」，见 fetch_status。
 - `updated_at` 每次成功判断都刷新（后台每 2 秒一次），UTC、以 Z 结尾；page=error 时不刷新；
   还没判断过时为 null。陈旧就看它多久没变，见 StatusTracker。
-- 代码表（page、paused_reason、state、level）以契约为准；认不出的代码原样（清洗后）交给前端显示。
+- 代码表（page、paused_reason、state、level，0.8.2 起的商品 skip）以契约为准；认不出的代码原样（清洗后）
+  交给前端显示。旧版没有的字段（skip、position）当 null。
 
 9334 上回话的不一定是闪购助手（本机任何进程都能占这个端口），所以读体限长、宽容解析：
 不认识的键丢掉，类型不对的当 None，字符串截长、去掉控制字符。
@@ -51,7 +52,8 @@ MAX_VERSION = 20
 
 PAGE_ATTENTION = ("login_required", "captcha", "error")
 
-# 推给页面前商品的排序（闪购助手会话 10-27 定的优先级）：要人看的在前。同一档保持闪购助手给的顺序。
+# 推给页面前商品的排序（闪购助手会话 10-27 定的优先级）：要人看的在前。同一档里按卡片序号 position 排、
+# 没有序号的在后，再相同就保持闪购助手给的顺序（product_sort_key）。
 # stopped 只有卡住的（stuck）排第一档；还在续开计时里的、不自动续开的排在进行中那几档后面
 _RANK_STUCK = 0
 _RANK = {"pending": 1, "unknown": 2, "live": 3, "between_rounds": 4, "stopped": 5,
@@ -263,6 +265,11 @@ def _product(raw):
         "stock_total": _int(raw.get("stock_total")),
         "renewals": _int(raw.get("renewals")),
         "enabled": _bool(raw.get("enabled")),
+        # 闪购助手 0.8.2 起才有，旧版没有这两个键：都当 null。position 是卡片左边的序号（最后一次在屏幕上
+        # 看到这张卡片时的值），skip 是「故意不续开」的原因代码（slot_1、no_stock、max_renewals、
+        # auto_start_off、no_position，认不出的原样交给前端）
+        "position": _int(raw.get("position")),
+        "skip": _code(raw.get("skip")),
     }
 
 
@@ -275,7 +282,7 @@ def normalize(raw):
     """/status 的 JSON → 规整后的 dict；raw 不是对象返回 None（调用方记成 bad_response / not_object）。
 
     带两个以 _ 开头的内部键，不发给页面：_schema（终端提示用）、_updated_s（判陈旧用）。
-    商品保持闪购助手给的顺序、最多 MAX_PRODUCTS 个（排序由 StatusTracker 做，它要先算 stuck）；
+    商品保持闪购助手给的顺序、最多 MAX_PRODUCTS 个（排序由 StatusTracker 做，它要先算 stuck，见 product_sort_key）；
     products_total 是收到的商品总数（含截掉的）。记录只取最后 MAX_ALERTS 条，最早的在前。
     shop、page_version 和不认识的键一律丢掉。"""
     if not isinstance(raw, dict):
@@ -302,9 +309,12 @@ def normalize(raw):
 # ---- 提醒 ----------------------------------------------------------------------------------
 
 def stuck_candidate(product, state):
-    """这个商品此刻是否满足「卡住」的条件（还没算时长）：state=stopped、enabled=true，
-    且闪购助手在运行（running=true）、没暂停（paused_reason=null）。"""
+    """这个商品此刻是否满足「卡住」的条件（还没算时长）：state=stopped、enabled=true、skip=null，
+    且闪购助手在运行（running=true）、没暂停（paused_reason=null）。skip 不为 null 是闪购助手说了
+    故意不续开（1 号位、没库存……），停着是它定的，不是卡住。前端 flash.js flashWaitingRenewal 和这里一字不差，
+    tests/fixtures/flash_sale/shared-rules.json 的 waiting_renewal 两边各测一遍。"""
     return (product.get("state") == "stopped" and product.get("enabled") is True
+            and product.get("skip") is None
             and state.get("running") is True and state.get("paused_reason") is None)
 
 
@@ -353,6 +363,15 @@ def _rank(product):
     if product.get("stuck"):
         return _RANK_STUCK
     return _RANK.get(product.get("state"), _RANK_OTHER)
+
+
+def product_sort_key(product):
+    """推给页面前商品的先后：先按 _rank 分档；同一档里按 position（卡片序号）从小到大，null 排在最后；
+    再相同就保持闪购助手给的顺序（list.sort 是稳定排序）。前端 flash.js flashSortProducts 照同一个规则排，
+    tests/fixtures/flash_sale/shared-rules.json 的 sort 两边各测一遍。"""
+    position = product.get("position")
+    known = isinstance(position, int) and not isinstance(position, bool)
+    return (_rank(product), not known, position if known else 0)
 
 
 class StatusTracker:
@@ -408,7 +427,7 @@ class StatusTracker:
             self._seen = (updated, mono)
         stale = mono - self._seen[1] > self.stale_sec
         self._stuck_clock(norm, mono)
-        norm["products"].sort(key=_rank)
+        norm["products"].sort(key=product_sort_key)
         state = dict(norm, conn="ok", why=None, stale=stale,
                      updated_ms=int(round(updated * 1000)) if (stale and updated is not None) else None,
                      stuck_count=sum(1 for p in norm["products"] if p["stuck"]))

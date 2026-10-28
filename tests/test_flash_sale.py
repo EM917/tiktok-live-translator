@@ -22,6 +22,10 @@ def sample(name):
     return json.loads((FIXTURES / (name + ".json")).read_text(encoding="utf-8"))
 
 
+# 后端和前端各有一份、必须一字不差的规则：同一张表，这里测后端，node 测试测 web/flash.js
+SHARED = sample("shared-rules")
+
+
 def iso_s(text):
     return datetime.strptime(text, "%Y-%m-%dT%H:%M:%S.%f%z").timestamp()
 
@@ -133,7 +137,8 @@ def test_the_running_sample_normalizes_to_the_documented_shape():
     first = out["products"][0]
     assert first == {"id": "1000000000000000001", "title": "Glow Serum Trio (Fictional)", "state": "live",
                      "round": 2, "ends_ms": int(round(iso_s("2026-10-27T21:51:01.000+0000") * 1000)),
-                     "next_ms": None, "stock_left": 30, "stock_total": 30, "renewals": 0, "enabled": True}
+                     "next_ms": None, "stock_left": 30, "stock_total": 30, "renewals": 0, "enabled": True,
+                     "position": None, "skip": None}      # 样例是 0.7.2 的：没有这两个键，当 null
     between = out["products"][1]
     assert between["state"] == "between_rounds" and between["ends_ms"] is None
     assert between["next_ms"] == int(round(iso_s("2026-10-27T21:37:10.000+0000") * 1000))
@@ -343,7 +348,7 @@ def test_the_published_state_has_exactly_the_message_keys():
     assert set(state) == {"conn", "why", "stale", "updated_ms", "app_version", "page", "running", "paused_reason",
                           "products", "products_total", "alerts", "attention", "stuck_count"}
     assert set(state["products"][0]) == {"id", "title", "state", "round", "ends_ms", "next_ms", "stock_left",
-                                         "stock_total", "renewals", "enabled", "stuck"}
+                                         "stock_total", "renewals", "enabled", "position", "skip", "stuck"}
     assert state["conn"] == "ok" and state["why"] is None and state["stale"] is False and state["updated_ms"] is None
     assert set(state) == set(fs.empty_state("ok"))
 
@@ -597,6 +602,88 @@ def test_products_are_sorted_by_what_needs_a_person_first():
                      ("ended_by_user", False), ("brand_new", False), (None, False)]
     # 同一档保持闪购助手给的顺序
     assert [p["id"] for p in state["products"] if p["state"] == "live"] == ["1", "8"]
+
+
+# ---- 闪购助手 0.8.2 的 skip、position（decisions-step2 最后一节） ------------------------------------
+
+@pytest.mark.parametrize("value, expected", [
+    ("slot_1", "slot_1"), ("no_stock", "no_stock"), ("max_renewals", "max_renewals"),
+    ("auto_start_off", "auto_start_off"), ("no_position", "no_position"),
+    ("brand_new<b>", "brand_newb"), ("x" * 100, "x" * fs.MAX_CODE), ("", None), ("  ", None),
+    (None, None), (7, None), (True, None), (["slot_1"], None),
+])
+def test_skip_is_a_cleaned_code_and_unknown_codes_are_kept(value, expected):
+    assert fs.normalize({"products": [{"product_id": "1", "skip": value}]})["products"][0]["skip"] == expected
+
+
+@pytest.mark.parametrize("value, expected", [
+    (12, 12), (1, 1), (12.0, 12), (0, 0), (12.5, None), ("12", None), (True, None), (None, None),
+    (float("nan"), None), (10**10, None),
+])
+def test_position_is_an_integer_or_null(value, expected):
+    got = fs.normalize({"products": [{"product_id": "1", "position": value}]})["products"][0]["position"]
+    assert got == expected and type(got) is type(expected)
+
+
+def test_an_older_helper_without_skip_or_position_reads_as_null():
+    """0.8.2 以前的闪购助手没有这两个键（契约样例就是 0.7.2 的）：都当 null，什么都不变。"""
+    for name in ("idle", "running", "awaiting"):
+        products = fs.normalize(sample(name))["products"]
+        assert products and all(p["skip"] is None and p["position"] is None for p in products)
+
+
+@pytest.mark.parametrize("case", SHARED["waiting_renewal"], ids=lambda c: c["why"])
+def test_the_stuck_condition_matches_the_shared_table(case):
+    """「等续开 / 算卡住」的条件：后端 stuck_candidate 和前端 flashWaitingRenewal 吃同一张表。"""
+    assert fs.stuck_candidate(case["product"], case["state"]) is case["expect"]
+
+
+@pytest.mark.parametrize("case", SHARED["sort"], ids=lambda c: c["why"])
+def test_the_sort_order_matches_the_shared_table(case):
+    """商品的先后：后端 product_sort_key 和前端 flashSortProducts 吃同一张表。"""
+    products = copy.deepcopy(case["products"])
+    assert [p["id"] for p in sorted(products, key=fs.product_sort_key)] == case["ids"]
+
+
+@pytest.mark.parametrize("skip", ["slot_1", "no_stock", "brand_new_reason"])
+def test_a_product_the_helper_skips_on_purpose_is_never_stuck(skip):
+    """skip 不为 null：闪购助手说了故意不续开（1 号位、没库存……）。停多久都不算卡住，按钮不变色。"""
+    tracker = fs.StatusTracker()
+    doc = stopped_doc()
+    doc["products"][0]["skip"] = skip
+    track(tracker, doc, mono=0.0)
+    state = track(tracker, doc, mono=600.0)
+    assert stuck_of(state)["3"] is False and state["attention"] == [] and state["stuck_count"] == 0
+    assert state["products"][-1]["skip"] == skip
+    assert tracker._stopped_since == {}
+
+
+def test_a_skip_that_appears_clears_the_stuck_clock_and_one_that_goes_away_starts_it_again():
+    tracker = fs.StatusTracker()
+    track(tracker, stopped_doc(), mono=0.0)
+    track(tracker, stopped_doc(), mono=50.0)
+    skipped = stopped_doc()
+    skipped["products"][0]["skip"] = "no_stock"
+    track(tracker, skipped, mono=55.0)
+    assert stuck_of(track(tracker, stopped_doc(), mono=70.0))["3"] is False      # 从 70 秒重新计
+    assert stuck_of(track(tracker, stopped_doc(), mono=129.9))["3"] is False
+    assert stuck_of(track(tracker, stopped_doc(), mono=130.0))["3"] is True
+
+
+def test_the_tracker_sorts_by_card_position_within_a_tier():
+    """同一档（这里都是进行中）按卡片序号从小到大，没有序号的排最后、保持原来的顺序。卡住的照样在最前。"""
+    tracker = fs.StatusTracker()
+    doc = stopped_doc(products=[
+        {"product_id": "1000000000000000011", "state": "live", "enabled": True, "position": 7},
+        {"product_id": "1000000000000000012", "state": "live", "enabled": True},
+        {"product_id": "1000000000000000013", "state": "live", "enabled": True, "position": 2},
+        {"product_id": "1000000000000000014", "state": "live", "enabled": True, "position": None},
+        {"product_id": "1000000000000000015", "state": "stopped", "enabled": True, "position": 30},
+    ])
+    track(tracker, doc, mono=0.0)
+    state = track(tracker, doc, mono=60.0)
+    assert [p["id"][-2:] for p in state["products"]] == ["15", "13", "11", "12", "14"]
+    assert [p["position"] for p in state["products"]] == [30, 2, 7, None, None]
 
 
 def test_the_running_sample_puts_the_stopped_product_first_once_it_is_stuck():

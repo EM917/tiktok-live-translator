@@ -1,0 +1,61 @@
+{
+  "_note": "后端 app/flash_sale.py 和前端 web/flash.js 各有一份、必须一字不差的规则，用同一张表两边各测一遍：tests/test_flash_sale.py 测后端，node 测试测前端。改规则先改这张表，两边跟着改。商品和状态都是推给页面的形状（规整之后），标题、id 都是虚构的。",
+  "waiting_renewal": [
+    {"why": "停着、允许续开、skip 为 null、闪购助手在运行没暂停：等续开（后端从这时起计 60 秒）",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": true, "skip": null},
+     "state": {"running": true, "paused_reason": null}, "expect": true},
+    {"why": "旧版闪购助手没有 skip 这个键：当 null",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": true},
+     "state": {"running": true, "paused_reason": null}, "expect": true},
+    {"why": "1 号位，闪购助手故意不续开",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": true, "skip": "slot_1"},
+     "state": {"running": true, "paused_reason": null}, "expect": false},
+    {"why": "没有库存，不续开",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": true, "skip": "no_stock"},
+     "state": {"running": true, "paused_reason": null}, "expect": false},
+    {"why": "认不出的 skip 代码也算故意不续开",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": true, "skip": "brand_new_reason"},
+     "state": {"running": true, "paused_reason": null}, "expect": false},
+    {"why": "关了自动续开",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": false, "skip": null},
+     "state": {"running": true, "paused_reason": null}, "expect": false},
+    {"why": "enabled 读不出：只认 true",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": null, "skip": null},
+     "state": {"running": true, "paused_reason": null}, "expect": false},
+    {"why": "不是 stopped",
+     "product": {"id": "1000000000000000004", "state": "pending", "enabled": true, "skip": null},
+     "state": {"running": true, "paused_reason": null}, "expect": false},
+    {"why": "闪购助手没在运行",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": true, "skip": null},
+     "state": {"running": false, "paused_reason": "not_started"}, "expect": false},
+    {"why": "闪购助手暂停着",
+     "product": {"id": "1000000000000000003", "state": "stopped", "enabled": true, "skip": null},
+     "state": {"running": true, "paused_reason": "awaiting_approval"}, "expect": false}
+  ],
+  "sort": [
+    {"why": "先按档（卡住的 stopped → pending → unknown → live → between_rounds → 没卡住的 stopped → no_sale → ended_by_user → 认不出的）；同一档里按 position 从小到大，null 和没有这个键的排最后；再相同保持原来的顺序",
+     "products": [
+       {"id": "a", "state": "live", "stuck": false, "position": 5},
+       {"id": "b", "state": "live", "stuck": false, "position": null},
+       {"id": "c", "state": "live", "stuck": false, "position": 2},
+       {"id": "d", "state": "pending", "stuck": false, "position": 9},
+       {"id": "e", "state": "live", "stuck": false, "position": 2},
+       {"id": "f", "state": "stopped", "stuck": true, "position": 40},
+       {"id": "g", "state": "stopped", "stuck": true, "position": 3},
+       {"id": "h", "state": "live", "stuck": false},
+       {"id": "i", "state": "brand_new", "stuck": false, "position": 1},
+       {"id": "j", "state": "stopped", "stuck": false, "position": 1, "skip": "slot_1"},
+       {"id": "k", "state": "between_rounds", "stuck": false, "position": null},
+       {"id": "l", "state": "between_rounds", "stuck": false, "position": 12}
+     ],
+     "ids": ["g", "f", "d", "c", "e", "a", "b", "h", "l", "k", "j", "i"]},
+    {"why": "全都没有 position（旧版闪购助手）：和以前一样，同一档保持原来的顺序",
+     "products": [
+       {"id": "p1", "state": "live", "stuck": false, "position": null},
+       {"id": "p2", "state": "pending", "stuck": false, "position": null},
+       {"id": "p3", "state": "live", "stuck": false, "position": null},
+       {"id": "p4", "state": "pending", "stuck": false, "position": null}
+     ],
+     "ids": ["p2", "p4", "p1", "p3"]}
+  ]
+}
