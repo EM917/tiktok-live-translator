@@ -135,6 +135,10 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 - 浮层里条件满足、还没满 60 秒的商品写「等闪购助手续开」，满了写「停了超过 1 分钟」。前端的条件
   （`flash.js flashWaitingRenewal`）和后端的 `flash_sale.stuck_candidate` 一字不差：`enabled` 只认 true，`skip` 只认 null
   （没有这个键也算 null）。两边吃同一张表 `tests/fixtures/flash_sale/shared-rules.json`（`waiting_renewal`）。
+- `skip` 不为 null 的商品，那一行细节的最前面写闪购助手说的原因（`flash.js flashSkipText`，文案是闪购助手会话给的）：
+  slot_1「1 号位，不续开」、no_stock「没有库存，不续开」、max_renewals「续开次数到上限」、auto_start_off「没开自动开始」、
+  no_position「读不到序号，先不处理」；认不出的写「不续开：」加原样的代码（`translate="no"`）。`position` 写成标题前的
+  「#12」（`.flash-pos`，在会被省略号截掉的标题外面，两种语言一样）；null 就不写。英文见 `docs/i18n-style.md` §3 K #175。
 - **排序**（要人看的在前）：卡住的 stopped → pending → unknown → live → between_rounds →
   没卡住的 stopped（还在续开计时里、不自动续开、故意不续开）→ no_sale → ended_by_user → 认不出的。**同一档里**按
   `position`（卡片序号）从小到大，null 排在最后，再相同保持闪购助手给的顺序（稳定排序）。后端 `flash_sale._rank` 和
@@ -173,12 +177,20 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 照常变色；停止没有这个过渡；还在途（`phase=sending`）也不算。后端 `flash_sale.starting()` / `attention()` 和前端
 吃同一张表 `shared-rules.json` 的 `attention`。
 
+前端那一半（`flash.js`）：`flashStarting` 是后端 `starting()` 的抄本；`stale` 照实是 true，所以 `flashNeedsAttention`
+和 `flashLines` 自己也得照同一条规矩——过渡里不拿 `stale` 变色、不写陈旧那两句，page 是 loading、error、no_list 的那句
+不写（不是写成灰字：主句已经说了在刷新），「闪购助手开着，但还没开始运行。」也不写；要处理的照常排在前面，过渡那一句
+跟在后面。继续被接受后同样不变色，但主句写「正在继续…」，不写「在刷新页面」：契约只说 `POST /start` 会先刷新页面，
+继续没说（不猜）。30 秒的边由后端定：页面没有计时，`control` 一收掉就照原规则画。
+
 1–5 由后端 `flash_sale.attention()` 算，`attention` 表按上面的顺序排好。浮层顶部第一句写最要紧的那条
 （stale → page → paused → stuck → bad_response → 认不出的提醒代码 → 未读记录），后面跟着只是说明现状的句子
 （商品后台正在打开、还没开始运行……）。只写看到的状态，不写原因（同 CLAUDE.md 第八条的规矩）。
 
 ## 8. 「打开闪购助手」
 
+- 2026-10-28 起在浮层顶部那一排的最后（§9.6），不再在最底下：42 个商品时用户在最底下找不到它。连不上、版本太旧时
+  这一排只剩它一颗。
 - 页面发 `{"type": "open_flash_helper"}`，不带参数（带了也不看）。argv 写死成 `open -a <检测到的完整路径>`
   （`flash_sale.open_argv`），页面发什么都进不了 argv。
 - `handle_control` 立刻返回，`open` 放后台跑：不挡同一页面后面的「停止」。上一次还没返回时，连点只跑一次。
@@ -199,7 +211,8 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 | stop | `POST /stop` | 「⏸ 停止」 |
 | resume | `POST /resume` | 暂停（确认框里点了取消，`paused_reason=user_interaction`）后的「▶ 继续」 |
 
-这一节写后端（`app/flash_sale.py` 的控制部分、`app/pipeline_flash.py` 的 `_flash_control*`）。
+§9.1–§9.5 写后端（`app/flash_sale.py` 的控制部分、`app/pipeline_flash.py` 的 `_flash_control*`），§9.6 写页面
+（`web/index.html` 的 `#flash-ctl`、`web/flash.js` 的 `flashControlView` 等、`web/app.js` 的接线）。
 
 ### 9.1 消息
 
@@ -301,6 +314,59 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 闪购助手那边也会把每个控制指令（包括被拒绝的）记一条 info 级的 alert（例如「🖥 中控请求开始」），浮层的「最近记录」里
 看得到。
 
+### 9.6 页面：浮层顶部那一排
+
+`web/index.html` 的 `#flash-ctl`（`tabindex="-1"`）紧跟在浮层标题行下面：`#flash-start`「开始」、`#flash-stop`「停止」、
+`#flash-resume`「继续」、`#flash-open`「打开闪购助手」（从最底下挪上来的，§8）。下面依次是 `#flash-ctl-note`（按钮为什么
+不在、为什么不能点；三颗按钮的 `aria-describedby` 指着它）、`#flash-note`（指令的结果、断线、open 没打开，`aria-live`），
+再往下才是主句、商品表、最近记录。英文和用词见 `docs/i18n-style.md` §1.3、§3 K #167–#175。
+
+**显示什么、能不能点**（`flash.js flashControlView`，纯函数，decisions-step2 的规则）：
+
+| 状态 | 那一排 | 旁边那句（`#flash-ctl-note`） |
+|---|---|---|
+| 连不上、读不出、正在查看 | 只有「打开」 | 不写 |
+| `app_version` 认得出且低于 0.8.0 | 只有「打开」 | 闪购助手 0.8.0 起才能从这里开始、停止。 |
+| `running` 不是 true | 开始、打开；page 不是 ok / no_list 时开始不能点 | 页面准备好以后才能从这里开始、继续。（页面具体状态在下面的主句里，不重复） |
+| `running` 为 true | 停止、打开 | 不写 |
+| 再加 `paused_reason=user_interaction` | 停止、继续、打开 | 不写 |
+| `paused_reason=awaiting_approval` | 停止（不能点）、打开 | 确认框处理完以后才能从这里停止。（契约：这时回 409 awaiting_approval） |
+| 在途（本页刚点的，或 `control.phase=sending`） | 三颗都不能点，按下的那颗写「正在发送…」 | 不写 |
+| 等生效（`control.phase=waiting`，状态还没显示生效） | 按下的那颗写「正在开始…」「正在停止…」「正在继续…」、不能点；开始、继续不能点（闪购助手这时回 busy），停止照样能点（停是安全的方向） | 不写（免得和「正在开始…」打架） |
+| 和本地服务断开 | 三颗都不能点（「打开」本来就禁用） | 不写 |
+
+- **版本**：只认「数字.数字」或「数字.数字.数字」开头的（`0.8.0-rc1` 认得，`v0.8.0`、`0.8.x` 认不出）。认不出的照常出按钮，
+  回来 404 / 405 就是 `no_control`「这个版本的闪购助手没有控制接口。」。不记住这个结果去藏按钮：再点一次就再说一次。
+- **最底下那句**（`#flash-desc`，`renderFlashControls`）：三颗里有一颗露着就写「这里只能开始、停止和继续，其他操作请到
+  闪购助手里。」，一颗都没有时换回第一步那句「这里只显示状态。要操作，请到闪购助手里。」，不和版本那句打架。
+- **「开始」点两下**（`flash.js flashStartClick` + `app.js`）：第一下把字换成「再点一次开始」，6 秒（`FLASH_START_CONFIRM_MS`）
+  内再点才发，到点复原；武装后 400 毫秒（`FLASH_START_GUARD_MS`）内的第二下不算——鼠标双击一次就发出开始的话，专用 Chrome
+  里的页面会被刷新。定时器被节流没跑也按时刻算（满 6 秒的那一下当作重新点第一下）。关上浮层、重连的 hello、「开始」不在了
+  或不能点了，武装都作废。只改这一颗：清空字幕、清空弹幕那套（`confirmTwice`，「再点确认 / Clear?」）不动。停止、继续点一下
+  就发。
+- **发什么**：只发 `{"type": "flash_control", "action": …}`。没发出去（断线）就不装作发出去了：`#flash-note` 写「与本地服务
+  断开，正在重连——稍候再试。」，不进在途。
+- **在途**：点出去马上把这一排禁用（本页记一个 `flashPending`），不等后端把 `phase=sending` 发回来。放开的时机：状态里
+  `control.phase` 成了 sending（之后由状态说了算）、收到任何一条 `flash_control_result`（广播给所有控制页，别的页点的也算）、
+  重连的 hello。后端在途时收到的第二个指令直接丢、不回话（§9.2），页面不能一直等它；后端还没处理到这个指令时推来的那份
+  状态（`control` 还是 null）不放开。
+- **结果**（`flash.js flashResultLine`，写进 `#flash-note`）：接受了（`ok: true`）不写，把上一句收掉——状态自己会变，按钮上
+  有「正在开始…」。没接受：闪购助手 409 的代码写「闪购助手没有接受：」加契约里这个代码的意思（no_page、login_required、
+  captcha 用页面那几句，awaiting_approval 用确认框那句，其余各一句；认不出的原样放进 `translate="no"`）；`http_<状态码>`
+  写「没有接受：127.0.0.1:9334 回了 HTTP {n}。」（9334 上回话的不一定是闪购助手）；本程序这边的代码照后端走到了哪一步写
+  「没有发出：…」「发出了，但…看看状态有没有变。」；`not_seen` 按动作写「30 秒内没看到闪购助手开始运行 / 停下 / 继续运行。」。
+  只写看到的，不猜为什么。
+- **过时的结果自己收掉**（审查第 3 条）：`#flash-note` 记着那句是哪个动作的结果；之后某一份状态让 `flashControlDone`（后端
+  `control_done` 的抄本，`shared-rules.json` 的 `control_done`）说这个动作已经生效，就收掉——浮层开着、关着都一样。最典型的
+  是浮层关着时到的 `not_seen`，之后闪购助手开始运行了，下次打开浮层不会再看到那句旧话。断线、open 没打开那几句不是哪个动作
+  的结果，不跟着状态收（关上浮层照旧都收）。
+- **焦点**（审查第 5 条）：按下的那颗变成不能点（正在发送…）或藏起来（开始运行了，开始换成停止）时，焦点挪到 `#flash-ctl`
+  本身（`focus({preventScroll: true})`，`:focus-visible` 才画焦点环），键盘和读屏的人不会掉出浮层、掉回页面开头。只看重画前
+  焦点在不在那三颗上：鼠标点的（焦点在别处）不去动。
+- **开始后的过渡**：等生效时顶栏按钮不变色，主句「正在开始…（闪购助手在刷新页面）」，见 §7。
+- **版面**：这一排 `flex-wrap: wrap`，放不下折行，不横向撑出浮层（浮层 440px）。G10 的 `flash-ctl-*` 场景在默认 1000px 窗口
+  量：浮层和这一排不溢出、露出来的按钮在同一行、字不被截，顶栏的下限照旧（§12）。
+
 ## 10. 顶栏宽度：「Aa」
 
 多一颗按钮要 36px，原来的顶栏余量放不下。用户定的方案甲：有闪购按钮（`body.has-flash-btn`）、窗口窄于 1400px 时，
@@ -349,9 +415,18 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
   `test_flash_sale.py::test_the_node_fixture_is_what_the_tracker_sends` 钉着它就是 `StatusTracker` 对 running.json
   计满 60 秒后的输出（只差商品顺序），两边谁改了形状都会红。
 - 前端：`tests/flash.test.mjs`、`flash.en.test.mjs`（纯函数 + 假 DOM 渲染）、`flash-button.test.mjs`（整页接线）、
-  `popover.test.mjs`（顶栏浮层登记表）。
+  `popover.test.mjs`（顶栏浮层登记表）。顶部那一排：`tests/flash-control.test.mjs`、`flash-control.en.test.mjs`
+  （`flashControlView` 的每条规则、两次点击的 400 毫秒和 6 秒两条边、结果的每一句、不续开原因和序号；`shared-rules.json`
+  的四节逐条跑前端那一半；过渡 30 秒的边从页面这一边看：等生效时不变色、`control` 收掉以后照原规则）、
+  `flash-control-button.test.mjs`（真跑 `app.js`：在途的放开时机、过时结果收掉、焦点、断线、最底下那句、HTML 结构）。
+  `test_flash_sale.py::test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend` 另钉着页面写死的「30 秒」和
+  `FLASH_ACTIONS`、`FLASH_OWN_ERRORS`、`FLASH_QUIET_PAGES` 三张表与后端一样。
 - G10（`TLT_DOM_SCAN=1 pytest tests/test_i18n_dom.py`）：`live-flash*`、`live-flash-zh*`、`home-flash*` 场景，
-  `config.flash_sale` 由 `flash_sale.StatusTracker` 从 running.json 生成。直播转写进行中不开 Chrome。
+  `config.flash_sale` 由 `flash_sale.StatusTracker` 从 running.json 生成。顶部那一排另有 `flash-ctl-<种类>`（英文，进扫描）
+  和 `flash-ctl-<种类>-zh`：idle、armed（点了一下开始）、running、paused、awaiting、old（0.7.3）、starting（开始被接受、
+  页面出错且陈旧）、skip（五种原因、一个认不出的代码、序号）、rejected（409 busy），默认 1000px 窗口，查哪几颗露出、能不能点、
+  文案，量浮层和这一排不溢出、在同一行，顶栏下限不放宽。截图（`TLT_DOM_SHOTS`）带 `--force-prefers-reduced-motion`
+  （`SHOT_FLAGS`）：浮层弹出动画半路截下来是半透明的（审查第 8 条）。直播转写进行中不开 Chrome。
 
 ## 13. 不做的事
 
