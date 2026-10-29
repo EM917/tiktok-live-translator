@@ -496,21 +496,29 @@ function flashAlertsToShow(alerts, unread) {
 // 页面只发 {type:"flash_control", action}；后端发出去以后把进度写进状态的 control（{action, phase}：sending 在途，
 // waiting 闪购助手接受了、等它生效，最多 30 秒，不带时刻，等多久由后端判），结果另发 flash_control_result（只有代码）
 
-/* app_version 的前三段数字：[主, 次, 修订]。只认「数字.数字」或「数字.数字.数字」开头、后面不再接数字或点的
- * （0.8.0、0.8、0.8.0-rc1 认得；v0.8.0、0.8.x、0.8.0.1 认不出），认不出返回 null */
+/* app_version 开头的数字：[主, 次, 修订, 第四段]，没写的段当 0。只认两到四段数字（「数字.数字」到
+ * 「数字.数字.数字.数字」）开头、后面不再接数字或点的：0.8、0.8.0、0.8.0-rc1、0.9.2.1 认得（闪购助手真的发四段的，
+ * 它的说明里有 0.9.2.1）；v0.8.0、0.8.x、0.9.2.1.5 这种五段的认不出，认不出返回 null */
 function flashVersionParts(v) {
-  var m = typeof v === "string" ? /^(\d{1,6})\.(\d{1,6})(?:\.(\d{1,6}))?(?=$|[^\d.])/.exec(v) : null;
-  return m ? [Number(m[1]), Number(m[2]), m[3] != null ? Number(m[3]) : 0] : null;
+  var m = typeof v === "string"
+    ? /^(\d{1,6})\.(\d{1,6})(?:\.(\d{1,6})(?:\.(\d{1,6}))?)?(?=$|[^\d.])/.exec(v) : null;
+  return m ? [Number(m[1]), Number(m[2]), m[3] != null ? Number(m[3]) : 0, m[4] != null ? Number(m[4]) : 0] : null;
+}
+
+/* 两个版本的数字（flashVersionParts 给的那种，或者 FLASH_CONTROL_SINCE）：a 比 b 旧吗。四段都比，没写的段当 0：
+ * 0.9.2 比 0.9.2.1 旧，0.8.0.0 和 0.8.0 一样，0.7.9.9 仍比 0.8.0 旧 */
+function flashVersionOlder(a, b) {
+  for (var i = 0; i < 4; i++) {
+    var x = a[i] || 0, y = b[i] || 0;
+    if (x !== y) return x < y;
+  }
+  return false;
 }
 
 /* 版本认得出、而且比 0.8.0 旧：那一排只留「打开闪购助手」。认不出的照常出按钮（回来 404 / 405 是 no_control） */
 function flashControlTooOld(st) {
   var v = flashVersionParts(st && st.app_version);
-  if (!v) return false;
-  for (var i = 0; i < 3; i++) {
-    if (v[i] !== FLASH_CONTROL_SINCE[i]) return v[i] < FLASH_CONTROL_SINCE[i];
-  }
-  return false;
+  return !!v && flashVersionOlder(v, FLASH_CONTROL_SINCE);
 }
 
 /* 这份状态说明这个动作已经生效了吗。和后端 app/flash_sale.control_done 一字不差（shared-rules.json 的 control_done）：
@@ -875,7 +883,7 @@ if (typeof module !== "undefined" && module.exports) {
     flashNeedsAttention, flashChip, flashButtonState, flashLines, flashLineText,
     flashWaitingRenewal, flashRank, flashPosition, flashSortProducts, flashSummary, flashProductParts,
     flashRowsToShow, flashMoreText, flashAlertsToShow,
-    flashVersionParts, flashControlTooOld, flashControlDone, flashActiveControl, flashStarting, flashStartingText,
+    flashVersionParts, flashVersionOlder, flashControlTooOld, flashControlDone, flashActiveControl, flashStarting, flashStartingText,
     flashWaitingText, flashNotReadyNote, flashControlView, flashStartClick, flashOwnErrorText, flashRefusedText,
     flashResultLine,
     renderFlashPanel, flashTick, renderFlashControls, renderFlashNote,

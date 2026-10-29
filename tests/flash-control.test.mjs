@@ -198,20 +198,41 @@ test("连不上、读不出、正在查看、没有状态：开始、停止、�
 test("版本门槛：认得出且低于 0.8.0 只留「打开」，旁边写「0.8.0 起才能……」；认不出的照常出按钮", () => {
   assert.deepEqual(F.FLASH_CONTROL_SINCE, [0, 8, 0]);
   const gate = "闪购助手 0.8.0 起才能从这里开始、停止。";
-  for (const v of ["0.7.2", "0.7.10", "0.7", "0.1.0-beta", "0.7.99+build"]) {
+  // 四段的照样比（闪购助手真的发四段版本号，它的说明里有 0.9.2.1）：0.7.0.1、0.7.9.9 都比 0.8.0 旧
+  for (const v of ["0.7.2", "0.7.10", "0.7", "0.1.0-beta", "0.7.99+build", "0.7.0.1", "0.7.9.9", "0.7.999999.999999",
+                   "0.7.9.9-rc1"]) {
     assert.equal(F.flashControlTooOld({ app_version: v }), true, v);
     const got = view(idle({ app_version: v }), {});
     assert.deepEqual(shown(got), [], v);
     assert.equal(got.any, false);
     assert.equal(observed(got.note.text), gate);
   }
-  for (const v of ["0.8.0", "0.8", "0.8.2", "0.9.0", "0.10.0", "1.0.0", "0.8.0-rc1", "v0.7.0", "0.7.x", "0.7.0.1", "", null, 7, "abc"]) {
+  // 认得出且不旧的照常出；认不出的（带 v、带 x、五段、末尾一个点、段太长）也照常出，回来 404 / 405 再说
+  for (const v of ["0.8.0", "0.8", "0.8.2", "0.9.0", "0.9.2", "0.9.2.1", "0.8.0.0", "0.8.0.1", "0.10.0", "1.0.0",
+                   "0.8.0-rc1", "0.9.2.1-rc1", "v0.7.0", "0.7.x", "0.7.0.x", "0.7.0.1.5", "0.7.9.9.", "0.7.0.1234567",
+                   "", null, 7, "abc"]) {
     assert.equal(F.flashControlTooOld({ app_version: v }), false, String(v));
     assert.deepEqual(shown(view(idle({ app_version: v }), {})), ["start"], String(v));
   }
-  assert.deepEqual(F.flashVersionParts("0.8"), [0, 8, 0]);
-  assert.deepEqual(F.flashVersionParts("12.3.45-x"), [12, 3, 45]);
-  assert.equal(F.flashVersionParts("0.8.x"), null);
+  assert.deepEqual(F.flashVersionParts("0.8"), [0, 8, 0, 0]);
+  assert.deepEqual(F.flashVersionParts("0.8.0"), [0, 8, 0, 0]);
+  assert.deepEqual(F.flashVersionParts("12.3.45-x"), [12, 3, 45, 0]);
+  assert.deepEqual(F.flashVersionParts("0.9.2.1"), [0, 9, 2, 1]);
+  assert.deepEqual(F.flashVersionParts("0.9.2.1-rc1"), [0, 9, 2, 1]);
+  assert.deepEqual(F.flashVersionParts("0.8.0.0"), [0, 8, 0, 0]);
+  for (const v of ["0.8.x", "v0.9.2.1", "0.9.2.x", "0.9.2.1.5", "0.9.2.1.", "0.9.2.1234567", "0.9..1", "9"]) {
+    assert.equal(F.flashVersionParts(v), null, v);
+  }
+  // 第四段也比，没写的段当 0
+  const parts = F.flashVersionParts;
+  assert.equal(F.flashVersionOlder(parts("0.9.2"), parts("0.9.2.1")), true, "0.9.2 比 0.9.2.1 旧");
+  assert.equal(F.flashVersionOlder(parts("0.9.2.1"), parts("0.9.2")), false);
+  assert.equal(F.flashVersionOlder(parts("0.9.2.1"), parts("0.9.2.1")), false);
+  assert.equal(F.flashVersionOlder(parts("0.9.2.1"), parts("0.9.2.2")), true);
+  assert.equal(F.flashVersionOlder(parts("0.9.2.9"), parts("0.9.3")), true);
+  assert.equal(F.flashVersionOlder(parts("0.7.9.9"), F.FLASH_CONTROL_SINCE), true, "0.7.9.9 仍比 0.8.0 旧");
+  assert.equal(F.flashVersionOlder(parts("0.8.0.0"), F.FLASH_CONTROL_SINCE), false, "0.8.0.0 就是 0.8.0");
+  assert.equal(F.flashVersionOlder(parts("0.8"), F.FLASH_CONTROL_SINCE), false);
 });
 
 test("没在运行：出「开始」（页面 ok、不在商品列表时能点）；武装后写「再点一次开始」", () => {
