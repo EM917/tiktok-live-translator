@@ -404,12 +404,15 @@ function flashSortProducts(list) {
 
 /* 摘要：「共 9 个商品：已停止 1 · 待开始 1 · …」，只列数量不为 0 的，先后同排序。
  * total 是后端的 products_total（闪购助手给了多少个，含后端超出 300 个截掉的）：比列表长时，总数按它写，
- * 末尾再加一项「未列出 n」，各项加起来正好是总数——截掉的不静默丢掉（闪购助手会话 10-27：一场最多 300 个） */
-function flashSummary(list, total) {
+ * 末尾再加一项「未列出 n」，各项加起来正好是总数——截掉的不静默丢掉（闪购助手会话 10-27：一场最多 300 个）。
+ * 拆成两半给渲染用：{lead: 「共 9 个商品：」, parts: [「已停止 1」, …]}，没有商品返回 null。浮层里每段一个
+ * .flash-summary-part（inline-block，见 renderFlashPanel）：440px 放不下时整段换行，不把「两轮之间 1」
+ * 「1 between rounds」从中间折开 */
+function flashSummaryParts(list, total) {
   var products = (Array.isArray(list) ? list : []).filter(function (p) { return p && typeof p === "object"; });
   var all = flashInt(total);
   var unlisted = all != null && all > products.length ? all - products.length : 0;
-  if (!products.length && !unlisted) return "";
+  if (!products.length && !unlisted) return null;
   var counts = {};
   products.forEach(function (p) {
     var key = flashStateText(p.state) == null ? "other" : p.state;
@@ -427,7 +430,13 @@ function flashSummary(list, total) {
   add("other", function (n) { return L("其他 " + n, n + " other"); });
   if (unlisted) parts.push(L("未列出 " + unlisted, unlisted + " not listed"));
   var count = products.length + unlisted;
-  return LN(count, "共 " + count + " 个商品：", "1 product: ", count + " products: ") + parts.join(" · ");
+  return { lead: LN(count, "共 " + count + " 个商品：", "1 product: ", count + " products: "), parts: parts };
+}
+
+/* 摘要的整句（flashSummaryParts 拼起来）：没有商品是空串 */
+function flashSummary(list, total) {
+  var s = flashSummaryParts(list, total);
+  return s ? s.lead + s.parts.join(" · ") : "";
 }
 
 function flashInt(v) {
@@ -815,8 +824,15 @@ function renderFlashPanel(doc, els, st, view) {
   els.detail.classList.toggle("hidden", lines.length < 2);
 
   var products = st && Array.isArray(st.products) ? flashSortProducts(st.products, st) : [];
-  var summary = flashSummary(products, st && st.products_total);
-  els.summary.textContent = summary;
+  // 摘要每段一个 inline-block（第一段带着「共 n 个商品：」），段之间是「 · 」：只在段与段之间折行
+  var summary = flashSummaryParts(products, st && st.products_total);
+  flashClear(els.summary);
+  if (summary) {
+    summary.parts.forEach(function (part, i) {
+      if (i) els.summary.appendChild(doc.createTextNode(" · "));
+      els.summary.appendChild(flashEl(doc, "span", "flash-summary-part", i ? part : summary.lead + part));
+    });
+  }
   els.summary.classList.toggle("hidden", !summary);
   flashClear(els.products);
   // 陈旧时整张表换成次要文字色（不用 opacity：叠出来的对比度会掉到 AA 以下）
@@ -882,7 +898,7 @@ if (typeof module !== "undefined" && module.exports) {
     flashCountdown, flashClock, flashCountdownText,
     flashIsProblem, flashIsNewer, flashUnread, flashSeenMark, flashParseSeen,
     flashNeedsAttention, flashChip, flashButtonState, flashLines, flashLineText,
-    flashWaitingRenewal, flashRank, flashPosition, flashSortProducts, flashSummary, flashProductParts,
+    flashWaitingRenewal, flashRank, flashPosition, flashSortProducts, flashSummaryParts, flashSummary, flashProductParts,
     flashRowsToShow, flashMoreText, flashAlertsToShow,
     flashVersionParts, flashVersionOlder, flashControlTooOld, flashControlDone, flashActiveControl, flashStarting, flashStartingText,
     flashWaitingText, flashNotReadyNote, flashControlView, flashStartClick, flashOwnErrorText, flashRefusedText,

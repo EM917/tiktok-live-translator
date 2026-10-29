@@ -10,6 +10,7 @@
 // - 商品标题、记录正文是数据：标题标 translate="no"，正文带 class i18n-data；一律 textContent，不用 innerHTML。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { SAMPLE, NOW, makeFlashDoc, makeEls, product, st } from "./flash-fixtures.mjs";
 
@@ -244,6 +245,37 @@ test("摘要：共几个商品，各状态的数量，只列不为 0 的，先�
   assert.equal(F.flashSummary([product("live")], 0), "共 1 个商品：进行中 1", "总数比列表短不算数");
   assert.equal(F.flashSummary([product("live")], "9"), "共 9 个商品：进行中 1 · 未列出 8");
   assert.equal(F.flashSummary([product("live")], true), "共 1 个商品：进行中 1", "true 不当数字");
+});
+
+test("摘要只在段与段之间折行：每段一个 .flash-summary-part（第一段带着「共 n 个商品：」），段之间是「 · 」", () => {
+  // 截图（2026-10-28）：440px 的浮层里摘要会从「两轮之间 1」「没有闪购 1」「已手动结束 1」中间折开。
+  // 每段一个 inline-block（样式见下一条）：放不下时整段换到下一行，一段比一行还宽时才在段里折
+  const PARTS = ["已停止 1", "待开始 1", "看不准 1", "进行中 3", "两轮之间 1", "没有闪购 1", "已手动结束 1"];
+  assert.deepEqual(F.flashSummaryParts(SAMPLE.products), { lead: "共 9 个商品：", parts: PARTS });
+  assert.deepEqual(F.flashSummaryParts([product("live")], 310), { lead: "共 310 个商品：", parts: ["进行中 1", "未列出 309"] });
+  assert.equal(F.flashSummaryParts([]), null);
+  assert.equal(F.flashSummaryParts(null, 0), null);
+  const doc = makeFlashDoc();
+  const els = makeEls(doc);
+  F.renderFlashPanel(doc, els, SAMPLE, { now: NOW });
+  const spans = els.summary.children;
+  assert.deepEqual(spans.map((el) => el.className), PARTS.map(() => "flash-summary-part"));
+  assert.deepEqual(spans.map((el) => el.textContent), ["共 9 个商品：" + PARTS[0], ...PARTS.slice(1)]);
+  assert.equal(els.summary.textContent, F.flashSummary(SAMPLE.products), "拼起来还是同一句");
+  assert.ok(visible(els.summary));
+  // 重画不叠：再画一次还是这几段；没有商品时清空、藏起来
+  F.renderFlashPanel(doc, els, SAMPLE, { now: NOW });
+  assert.equal(els.summary.children.length, PARTS.length);
+  F.renderFlashPanel(doc, els, st({ products: [], products_total: 0 }), { now: NOW });
+  assert.equal(els.summary.textContent, "");
+  assert.ok(!visible(els.summary));
+});
+
+test("样式：摘要的每一段是 inline-block（style.css .flash-summary-part）", () => {
+  const css = readFileSync(new URL("../web/style.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const m = /\n\.flash-summary-part \{([^}]*)\}/.exec(css);
+  assert.ok(m, "style.css 里要有 .flash-summary-part");
+  assert.match(m[1], /display: inline-block/);
 });
 
 test("商品一行的细节：卡住 / 等续开、倒计时、第几轮、库存、续开次数、不自动续开", () => {

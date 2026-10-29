@@ -1248,6 +1248,8 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 .flash-line.attn { color: var(--label); }
 .flash-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .flash-summary { margin-top: 10px; font-size: var(--fs-footnote); color: var(--label-2); font-variant-numeric: tabular-nums; }
+/* 摘要的每一段（flash.js renderFlashPanel）：放不下时整段换到下一行，不从「两轮之间 1」中间折开；一段比一行还宽才在段里折 */
+.flash-summary-part { display: inline-block; }
 .flash-products { list-style: none; margin-top: 6px; }
 /* 点开「还有 N 个」时焦点落在这张表上（app.js；按钮自己藏起来了）：键盘过来的才画焦点环 */
 .flash-products:focus { outline: none; }
