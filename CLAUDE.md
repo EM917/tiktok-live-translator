@@ -142,5 +142,7 @@ python3 tools/replay_alerts.py
   只有一种英文）、G4（覆盖），看退出码；其余的闸在普通 pytest 和 `node --test` 里。
   新的界面文件要在文件头标 `i18n: done`、加进 `tests/i18n_rules.py` 的 `UI_FILES`，
   两边对不上 G4 就红。G10（英文页扫 DOM、量顶栏宽度）要开无头 Chrome：
-  `TLT_DOM_SCAN=1 pytest tests/test_i18n_dom.py -q`。先 `pgrep -f tiktokcdn`，
-  **直播转写进行中不开**，交给 PR 的 CI dom-scan（macOS 跑器）
+  `TLT_DOM_SCAN=1 pytest tests/test_i18n_dom.py -q`。先过直播闸 `tools/livecheck.py`，写在同一条
+  命令里：`python3 -I tools/livecheck.py | grep -q -E "live stream|app main" && { echo GATE-SKIP; exit 0; };`
+  打出 GATE-SKIP（在拉直播流、闪购助手在续开、同传开着）就**不开**，交给 PR 的 CI dom-scan（macOS 跑器）。
+  它问闪购助手时只读 9334 的 `GET /status`：这是 agent 碰 9333、9334 的**唯一例外**，别的请求一律不发
