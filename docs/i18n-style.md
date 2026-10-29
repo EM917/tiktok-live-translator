@@ -446,6 +446,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 5 | window_close.py:10 | 正在监听直播，关闭窗口会停止违禁词监听。确定关闭？ | Close the window? This stops monitoring the live stream, including banned-term detection. | pywebview 的退出确认框 |
 | 6 | window_close.py:11/12 | 关闭 / 取消 | Close / Cancel | |
 | 7 | main.py:146/174 | 知道了 / 好 | OK | 原生对话框的按钮 |
+| 7a | bootstrap.py LAUNCH_TEXT | 正在启动 TikTok 直播同传，窗口准备好后会自己打开。 | Starting TikTok Live Translator. The window opens on its own when it’s ready. | 2026-10-29 加：双击 .app 到窗口出来之间的原生提示，等 4 秒才弹（启动快就不弹），窗口开好时由最终进程关掉。按钮照上一行 |
 | 8 | index.html:543 | 请不要直接打开这个文件 / 回到解压出来的文件夹，双击…启动程序，字幕界面会自动打开。 | Don’t open this file directly. / Go back to the unzipped folder and double-click TikTok Live Translator.app (Mac) or Start.bat (Windows). The caption window opens automatically. | 这段内联脚本跑得最早，什么都还没加载：中英两段并列，不读 `navigator.language` |
 | 9 | viewer.html:6 | 手机同看 · TikTok 直播同传 | Phone Viewing · TikTok Live Translator | |
 | 10 | pipeline.py:1799 | 直播合规监听中 | Monitoring a live stream | macOS 电源断言的原因文字，只在 `pmset` 里看得到 |
