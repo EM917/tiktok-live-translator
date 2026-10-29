@@ -4,6 +4,10 @@
 对面是本机临时端口上的假服务器。最后一条让它照原样去问 9334，看测试总网（tests/socket_net.py）当场拦下。
 """
 import json
+import shlex
+import shutil
+import subprocess
+import sys
 import threading
 import urllib.request
 from contextlib import contextmanager
@@ -49,14 +53,40 @@ def test_the_first_match_decides(monkeypatch, procs, helper, line, code):
     ((r"main\.py", "tiktok-live-translator"), False, True), ((), False, False),
 ])
 def test_main_prints_what_the_gate_greps_for(monkeypatch, capsys, procs, helper, skip):
-    """CLAUDE.md 里那条命令：输出里有 live stream 或 app main 就打 GATE-SKIP、不跑。"""
+    """CLAUDE.md 里那条命令（grep -qx idle）：整行正好是 idle 才往下跑，别的一律 GATE-SKIP。"""
     monkeypatch.setattr(livecheck, "running", fake_ps(*procs))
     monkeypatch.setattr(livecheck, "helper_running", lambda: helper)
     code = livecheck.main()
     out = capsys.readouterr().out
     assert out.count("\n") == 1
     assert (("live stream" in out) or ("app main" in out)) is skip
+    assert (out == "idle\n") is (not skip)
     assert code == (0 if skip else 1)
+
+
+GATE = "python3 -I tools/livecheck.py | grep -qx idle || { echo GATE-SKIP; exit 0; };"
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not (shutil.which("sh") and shutil.which("grep")),
+                    reason="闸命令是 POSIX shell 写法；开发机、直播机是 macOS")
+@pytest.mark.parametrize("prints,runs", [
+    ("idle", True),
+    ("live stream: x", False),
+    ("app main: x", False),
+    (None, False),          # 脚本不在：基点早于它的 worktree、不在仓库根目录
+    ("", False),            # 起来了但什么都没打（崩在半路）
+])
+def test_the_gate_only_lets_tests_run_on_an_explicit_idle(tmp_path, prints, runs):
+    """文件头和 CLAUDE.md 写的那条闸命令照原样跑，脚本换成只打一行的替身（不查进程、不连 9334）。闸自己坏了
+    （脚本不在、什么都没打）要当成不能跑：换回「grep 到 live stream 才停」的写法，None 和 "" 两格就红。"""
+    assert GATE in SOURCE
+    script = tmp_path / "gate.py"
+    if prints is not None:
+        script.write_text("print({!r})\n".format(prints) if prints else "", encoding="utf-8")
+    cmd = GATE.replace("python3", shlex.quote(sys.executable)).replace(
+        "tools/livecheck.py", shlex.quote(str(script)))
+    done = subprocess.run(["sh", "-c", cmd + " echo RAN"], capture_output=True, text=True, timeout=60)
+    assert done.stdout.split() == (["RAN"] if runs else ["GATE-SKIP"]), done.stderr
 
 
 @contextmanager

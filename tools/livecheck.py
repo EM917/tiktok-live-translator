@@ -1,8 +1,9 @@
 """直播闸：直播或同传程序开着时，测试、Chrome、批量任务一律不跑。
 
 用法（写在同一条命令里，在仓库根目录）：
-    python3 -I tools/livecheck.py | grep -q -E "live stream|app main" && { echo GATE-SKIP; exit 0; };
+    python3 -I tools/livecheck.py | grep -qx idle || { echo GATE-SKIP; exit 0; };
 
+只有明确打出 idle 才往下跑：脚本不在、python3 起不来时什么都不打，照样 GATE-SKIP（闸坏了不等于放行）。
 打印一行并用退出码表示：
     live stream ...  退出码 0：闪购助手正在续开闪购，或者同传程序在拉直播流
     app main ...     退出码 0：同传程序（main.py）开着
