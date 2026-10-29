@@ -94,6 +94,7 @@ def _no_claude_key_is_inherited(monkeypatch, _fresh_dir):
     from app import settings
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID", raising=False)   # 开发机上设过的话，请求头里会多出它
     monkeypatch.delenv("TLT_GUARD_CLAUDE_MODEL", raising=False)
     monkeypatch.setattr(settings, "SETTINGS_FILE", _fresh_dir("no-saved-keys") / "settings.json")
 

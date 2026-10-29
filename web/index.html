@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=53">
+  <link rel="stylesheet" href="/static/style.css?v=54">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -528,6 +528,16 @@
                        spellcheck="false" autocomplete="off" placeholder="粘贴 API 密钥" data-en-placeholder="Paste API key">
                 <button id="engine-save" class="btn" data-en="Save">保存</button>
               </div>
+              <!-- 只在选 Claude 时显示：不绑工作区的 Anthropic 密钥要带工作区 ID（app/translator.py WORKSPACE_ENV）。
+                   它不是密钥，框里显示的就是在用的那个；留空就不带 -->
+              <div id="engine-workspace-row" class="engine-row engine-workspace-row hidden">
+                <input id="engine-workspace" type="text" spellcheck="false" autocomplete="off" autocapitalize="off"
+                       placeholder="工作区 ID（选填，wrkspc_ 开头）"
+                       data-en-placeholder="Workspace ID (optional, starts with wrkspc_)"
+                       aria-label="Claude 工作区 ID" data-en-aria-label="Claude workspace ID"
+                       title="只有建密钥时没选工作区的才要填，Claude Console 的 Workspaces 页面上有；绑了工作区的密钥留空即可"
+                       data-en-title="Only needed for an API key that isn’t scoped to a workspace. The ID is listed on the Workspaces page in the Claude Console. Leave it blank for a key scoped to a workspace.">
+              </div>
               <div id="engine-note" class="engine-note"
                    data-en="Uses a local model: fully offline, unlimited, and captions never leave this computer.">
                 默认用本地模型：完全离线、不限量、字幕不出本机。
@@ -845,6 +855,6 @@
   <script src="/static/live-ui.js?v=7"></script>
   <script src="/static/guard.js?v=6"></script>
   <script src="/static/flash.js?v=2"></script>
-  <script src="/static/app.js?v=82"></script>
+  <script src="/static/app.js?v=83"></script>
 </body>
 </html>

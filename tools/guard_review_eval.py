@@ -18,7 +18,8 @@
   * **只认 Haiku 5.5**：价格表只有它的。环境变量 TLT_GUARD_CLAUDE_MODEL 指定了别的模型（那个覆盖是给评估换模型用的），
     花费硬上限就算不准，所以直接拒绝运行（读密钥之前、确认之前、第一个请求之前，退出码 3）。
   * **密钥**从环境变量 ANTHROPIC_API_KEY 或 settings.json 的 api_keys 里读，**不打印、不写日志、不写报告**
-    （连尾四位都不写）。请求只发给 api.anthropic.com，不读 ANTHROPIC_BASE_URL。
+    （连尾四位都不写）。请求只发给 api.anthropic.com，不读 ANTHROPIC_BASE_URL。不绑工作区的密钥要的工作区 ID
+    （ANTHROPIC_WORKSPACE_ID）照同样的顺序找，找到就带上，和程序里一样。
   * 接口出错（密钥被拒、模型找不到、限流、连不上）：记下来、停下来，**不循环重试**。
   * 开跑前打印预估费用并要人确认（`--yes` 跳过确认）。
 
@@ -42,6 +43,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app import comment_review as cr  # noqa: E402
+from app.translator import WORKSPACE_ENV  # noqa: E402
 from app.stdio import harden_stdio  # noqa: E402
 
 harden_stdio()      # 重定向到文件时（Windows 的 GBK 代码页）中文输出不崩
@@ -95,9 +97,10 @@ def load_cases(path):
     return cases
 
 
-def find_key(settings_paths):
-    """(密钥, 来源) —— 来源只写 "env" 或 "settings"，不写密钥的任何一段。没有返回 (None, None)。"""
-    val = (os.environ.get(cr.KEY_NAME) or "").strip()
+def find_key(settings_paths, name=cr.KEY_NAME):
+    """(密钥, 来源) —— 来源只写 "env" 或 "settings"，不写密钥的任何一段。没有返回 (None, None)。
+    name 换成 WORKSPACE_ENV 就是找工作区 ID（同一个顺序）。"""
+    val = (os.environ.get(name) or "").strip()
     if val:
         return val, "env"
     for path in settings_paths:
@@ -106,7 +109,7 @@ def find_key(settings_paths):
         except (OSError, ValueError):
             continue
         keys = data.get("api_keys") if isinstance(data, dict) else None
-        val = str((keys or {}).get(cr.KEY_NAME, "")).strip() if isinstance(keys, dict) else ""
+        val = str((keys or {}).get(name, "")).strip() if isinstance(keys, dict) else ""
         if val:
             return val, "settings"
     return None, None
@@ -347,12 +350,13 @@ def main(argv=None):
         print(problem, file=sys.stderr)
         return 3
 
-    key, source = find_key([Path(p) for p in (args.settings or default_settings_paths())])
+    paths = [Path(p) for p in (args.settings or default_settings_paths())]
+    key, source = find_key(paths)
     if not key:
         print("没有 Claude 密钥（环境变量 ANTHROPIC_API_KEY 和 settings.json 的 api_keys 里都没有），不运行。", file=sys.stderr)
         return 3
     entries, skipped = build_entries(load_cases(args.cases), hints=not args.no_hints)
-    reviewer = cr.ClaudeReviewer(key)
+    reviewer = cr.ClaudeReviewer(key, workspace=find_key(paths, name=WORKSPACE_ENV)[0])
     if reviewer.prompt is None:
         print("读不到提示词 {}，不运行。".format(cr.PROMPT_FILE), file=sys.stderr)
         return 3
