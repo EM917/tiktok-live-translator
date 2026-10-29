@@ -5,12 +5,19 @@
 连接本身从没发出去。这几条用 socket_net_hits 换一张自己的记录表，记下的不算违例。
 """
 import asyncio
+import os
 import socket
+import subprocess
 import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 
 from tests import socket_net as N
+
+ROOT = Path(__file__).resolve().parent.parent
+PROBE = Path(__file__).resolve().with_name("socket_net_probe.py")
 
 
 @pytest.fixture
@@ -148,3 +155,38 @@ def test_a_blocked_connection_is_charged_to_the_test_that_made_it(strict_net, re
     assert N.hits_of("tests/test_other.py::test_x", strict_net) == []
     text = N.failure_text(mine)
     assert "往外连了 1 次" in text and "connect 127.0.0.1:9334" in text
+
+
+def run_probe(tmp_path, *tests, env=None):
+    """在子进程里点名跑 tests/socket_net_probe.py 的几条，用的是真的 tests/conftest.py。返回 (退出码,
+    {用例名: 有没有失败或出错}, 终端输出)。子进程里的连接本进程这张网看不到，拦它们的是子进程自己那张；
+    探针被拦的那次连的是关掉的本机端口，网坏了也碰不到直播开着的端口。"""
+    xml = tmp_path / "probe.xml"
+    environ = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    environ.update(env or {}, PYTHONIOENCODING="utf-8")
+    args = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+            "--basetemp", str(tmp_path / "inner"), "--junitxml", str(xml)]
+    args += ["{}::{}".format(PROBE, name) for name in tests]
+    done = subprocess.run(args, cwd=str(ROOT), env=environ, capture_output=True, timeout=120)
+    out = done.stdout.decode("utf-8", "replace") + done.stderr.decode("utf-8", "replace")
+    assert xml.exists(), out
+    results = {case.get("name"): any(child.tag in ("failure", "error") for child in case)
+               for case in ET.parse(str(xml)).getroot().iter("testcase")}
+    return done.returncode, results, out
+
+
+def test_a_test_that_swallowed_a_blocked_connection_still_fails(tmp_path):
+    """端到端：用例把「连不上」吞掉、自己照样绿，conftest 的 _no_connection_leaves_the_test 也要在用例结束时
+    判它失败；只连哨兵的那条照常通过。这个夹具坏了（不判、判错了表），上面那些只看审计钩子的用例都发现不了。"""
+    code, results, out = run_probe(tmp_path, "test_connects_and_swallows_the_error", "test_only_the_sentinel")
+    assert results == {"test_connects_and_swallows_the_error": True, "test_only_the_sentinel": False}, out
+    assert code == 1, out
+    assert "tests/socket_net.py" in out, out          # 失败说明（failure_text）指着这张网
+
+
+def test_a_connection_outside_any_test_fails_the_whole_run(tmp_path):
+    """导入、收集阶段的连接不属于任何用例：用例全绿，整次运行也要失败（conftest 的 pytest_sessionfinish）。"""
+    code, results, out = run_probe(tmp_path, "test_only_the_sentinel", env={"TLT_SOCKET_NET_PROBE": "import"})
+    assert results == {"test_only_the_sentinel": False}, out
+    assert code == 1, out
+    assert "connect 127.0.0.1:" in out, out           # 终端摘要列出了那次连接
