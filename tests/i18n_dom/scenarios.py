@@ -39,8 +39,8 @@ from app.translator import engine_label, mask_key, restore_engine
 from app.updater import RELEASES_URL, update_check_note
 
 FAKE_TOKEN = "fake-token-not-a-real-secret-0000000000"   # viewer.js 只认片段里的 #k=
-# 主播名是虚构的，但和 docs/i18n-style.md §4、web/style.css 里量版面用的那个 15 个字母的真实主播名同宽：
-# 同一组字形重新排列，SF 字体 11–20px、400–700 字重、中英两种页面下逐 1/64 像素量过，顶栏的余量数字不变
+# 主播名是虚构的。docs/i18n-style.md §4、web/style.css 量版面写的也是这个名字：它和当初量版面用的那个
+# 15 个字母的名字同宽，SF 字体 11–20px、400–700 字重、中英两种页面下逐 1/64 像素量过，顶栏的余量数字不变
 STREAMER = "beltranlulaalal"
 RECENT = (STREAMER, "lamejorcrema", "tiendadeana", "glowbymaria")
 BRAND_ID = "acme"
@@ -91,8 +91,8 @@ FLASH_BASES = ("live-flash", "live-flash" + EXTRA)
 FLASH_WIDE = 1400
 FLASH_WIDE_WIDTHS = (FLASH_WIDE, 1600)
 HOME_BASES = ("home-idle", "home-zh", "home-flash", "home-flash-zh")
-# §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，和文档里那个真实的基线品牌同宽
-# （同 STREAMER 的做法：同一组字形重新排列，逐 1/64 像素量过）
+# §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，文档里的基线品牌也写它，
+# 和当初量 §4.1 用的那个品牌名同宽（同 STREAMER，逐 1/64 像素量过）
 ZH_QUIET_BRAND = "Allura Belt Nalla"
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
                    "#float-btn", "#float-btn .btn-label", "#float-btn .i", ".ctl-text", "#target-lang",

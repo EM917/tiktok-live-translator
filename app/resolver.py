@@ -240,7 +240,7 @@ def _observe_login(browser, code):
 
 
 # ---- 登录优先（2026-09-17 定的）------------------------------------------
-# 实测（macOS 27，房间 @daisycabral_ 在播，中控在 Safari 和 Chrome 里都登录着 TikTok）：
+# 实测（macOS 27，房间 @ofertasdemo_ 在播，中控在 Safari 和 Chrome 里都登录着 TikTok）：
 #   * 不登录：直播页是一道登录门，页面里没有流地址；官方接口带不带登录 cookie 都回 4003110；
 #     yt-dlp 带 cookie 仍报未开播。
 #   * 只做一件事——带 Safari 的登录抓直播页：5 次里 5 次拿到 .flv 地址，0.4–0.8 秒。
@@ -268,7 +268,7 @@ LOGIN_STEP_BUDGET_SEC = 8.0
 LOGIN_GAP_MAX_WAIT_SEC = 3 * LOGIN_AFTER_ANON_GAP_SEC
 
 # ---- 登录直播页重试（2026-09-17 加的）------------------------------------------
-# 一次 @daisycabral_ 的重连实录（logs/session-20260917-185551.jsonl；同一房间当天更早的
+# 一次 @ofertasdemo_ 的重连实录（logs/session-20260917-185551.jsonl；同一房间当天更早的
 # 每一次解析都是第一层 0.6–1.4 秒就拿到地址）：
 #   层1 登录直播页     none          533 毫秒  browser=safari login={'safari': 'ok'}
 #                                             （带 Safari 的登录抓到了页面，页面里没有流地址）

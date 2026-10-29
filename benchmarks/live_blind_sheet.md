@@ -279,11 +279,11 @@
 - **C** 他们都在楼上。这是您要的瘦身冰咖啡。劳拉，有需要请告诉我。
 
 ### 41
-**ES** Hace algo amiga, amigo, como te digo, probá los cafés de Bella All Natural, no te vas a arrepentir, te los puedes estar llevando hoy los 3 por...
+**ES** Hace algo amiga, amigo, como te digo, probá los cafés de Allura Belt Nalla, no te vas a arrepentir, te los puedes estar llevando hoy los 3 por...
 
-- **A** 朋友，试试吧，就像我说的，试试 Bella All Natural 的咖啡，你不会后悔的，今天你可以带三杯回去……
-- **B** 朋友们，正如我之前说的，快试试Bella All Natural的咖啡吧，你绝对不会后悔的，今天只需……就能把这3杯带回家……
-- **C** 做点什么吧，朋友。就像我说的，试试 Bella All Natural 的咖啡，你一定不会后悔的。今天就可以把三款都买回去……
+- **A** 朋友，试试吧，就像我说的，试试 Allura Belt Nalla 的咖啡，你不会后悔的，今天你可以带三杯回去……
+- **B** 朋友们，正如我之前说的，快试试Allura Belt Nalla的咖啡吧，你绝对不会后悔的，今天只需……就能把这3杯带回家……
+- **C** 做点什么吧，朋友。就像我说的，试试 Allura Belt Nalla 的咖啡，你一定不会后悔的。今天就可以把三款都买回去……
 
 ### 42
 **ES** Yo a veces parezco loca, pero en vez estoy sentada un montón, entonces estoy acá, por ejemplo, les digo una cosa chiquita que hago, que no es tan chiquita.
@@ -398,11 +398,11 @@
 - **C** 你马上就要熄灭了。你马上就要熄灭了。家人们，我们又有排毒粉了，一样。
 
 ### 58
-**ES** La sencillez ante todos estos productos porque abrimos la tapita, va a venir con una cucharita que dice Bella All Natural,
+**ES** La sencillez ante todos estos productos porque abrimos la tapita, va a venir con una cucharita que dice Allura Belt Nalla,
 
-- **A** 所有这些产品都非常简单易用——打开盖子后，里面会有一把标有“Bella All Natural”字样的小勺子。
-- **B** 所有这些产品都以简约见长，因为打开一瓶盖后，里面会附带一把印有“Bella All Natural”字样的勺子，
-- **C** 这些产品都非常简单，因为我们打开盖子后，就会用一把标签上写着“Bella All Natural”的勺子来取用。
+- **A** 所有这些产品都非常简单易用——打开盖子后，里面会有一把标有“Allura Belt Nalla”字样的小勺子。
+- **B** 所有这些产品都以简约见长，因为打开一瓶盖后，里面会附带一把印有“Allura Belt Nalla”字样的勺子，
+- **C** 这些产品都非常简单，因为我们打开盖子后，就会用一把标签上写着“Allura Belt Nalla”的勺子来取用。
 
 ### 59
 **ES** Me puse moringa en mi cara. Que lo incorpores y que lo fijes ese hábito y que lo sigas haciendo.
@@ -720,11 +720,11 @@
 - **C** 你可以向它们所有的人申请，当你去支付你想购买的东西时，就会给你相应的优惠券。例如，如果你购买……
 
 ### 104
-**ES** Papaya, me encanta. Le ayuda mucho a mi mami. ¡Ay, qué bueno! Qué bueno, qué bueno Miriamcita Bella. Me encanta.
+**ES** Papaya, me encanta. Le ayuda mucho a mi mami. ¡Ay, qué bueno! Qué bueno, qué bueno Miriamcita Allura. Me encanta.
 
-- **A** 木瓜，我超喜欢。对妈妈帮助很大。哎呀，太好了！太好了，Bella All Natural。我超喜欢。
+- **A** 木瓜，我超喜欢。对妈妈帮助很大。哎呀，太好了！太好了，Allura Belt Nalla。我超喜欢。
 - **B** 木瓜，我超喜欢！它对妈妈的帮助很大。哇，真是太好了！太好了，米里亚姆西塔·贝拉，我真的很喜欢。
-- **C** 木瓜，我非常喜欢它。它对我妈妈很有帮助。啊，太好了！太好了，Miriamcita Bella All Natural。我太喜欢了。
+- **C** 木瓜，我非常喜欢它。它对我妈妈很有帮助。啊，太好了！太好了，Miriamcita Allura Belt Nalla。我太喜欢了。
 
 ### 105
 **ES** No sé, ¿es así? ¿Puedo...?
@@ -741,11 +741,11 @@
 - **C** 三件55，用上那张优惠码，价格可能甚至会降到55以下。哎呀，这洗发水闻起来真香，抱歉，不过你看，我这瓶都快用完了。
 
 ### 107
-**ES** ¿Estás haciendo Bella All Natural?
+**ES** ¿Estás haciendo Allura Belt Nalla?
 
-- **A** 你在做 Bella All Natural 吗？
-- **B** 你在做“Bella All Natural”吗？
-- **C** 你正在制作 Bella All Natural 吗？
+- **A** 你在做 Allura Belt Nalla 吗？
+- **B** 你在做“Allura Belt Nalla”吗？
+- **C** 你正在制作 Allura Belt Nalla 吗？
 
 ### 108
 **ES** Así que quiero saberlo todo. Hola Anita, hola María Bustos. Tenemos por... ¡10 segundos más!
@@ -1301,11 +1301,11 @@
 - **C** 我正在寻找的下一刻……
 
 ### 187
-**ES** Hace algo amiga, amigo, como te digo, probá los cafés de Bella All Natural, no te vas a arrepentir, te los puedes estar llevando hoy los 3 por...
+**ES** Hace algo amiga, amigo, como te digo, probá los cafés de Allura Belt Nalla, no te vas a arrepentir, te los puedes estar llevando hoy los 3 por...
 
-- **A** 朋友，试试吧，就像我说的，试试 Bella All Natural 的咖啡，你不会后悔的，今天你可以带三杯回去……
-- **B** 朋友们，正如我之前说的，快试试Bella All Natural的咖啡吧，你绝对不会后悔的，今天只需……就能把这3杯带回家……
-- **C** 做点什么吧，朋友。就像我说的，试试 Bella All Natural 的咖啡，你一定不会后悔的。今天就可以把三款都买回去……
+- **A** 朋友，试试吧，就像我说的，试试 Allura Belt Nalla 的咖啡，你不会后悔的，今天你可以带三杯回去……
+- **B** 朋友们，正如我之前说的，快试试Allura Belt Nalla的咖啡吧，你绝对不会后悔的，今天只需……就能把这3杯带回家……
+- **C** 做点什么吧，朋友。就像我说的，试试 Allura Belt Nalla 的咖啡，你一定不会后悔的。今天就可以把三款都买回去……
 
 ### 188
 **ES** Así que no lo desaprovechen. Te puedes llevar estos tres productos, estos tres productos por 35 dólares chicos.
@@ -1413,11 +1413,11 @@
 - **C** 我很高兴你们能来这里。Labelin，你好吗？一切都好吗？
 
 ### 203
-**ES** Bella All Natural con entrega de tres días. Quiero un Dito, sí, una maltida de piña. Muy bien, déjame te anclo la limpieza.
+**ES** Allura Belt Nalla con entrega de tres días. Quiero un Dito, sí, una maltida de piña. Muy bien, déjame te anclo la limpieza.
 
-- **A** Bella All Natural，三天内送达。我想要一个Dito，是的，一个菠萝口味的产品。好的，让我给你送一份排毒粉吧。
-- **B** Bella All Natural可三天内送达。我想要一杯Dito，对，还要一份菠萝味的Maltida。好的，我马上为您订购排毒粉。
-- **C** Bella All Natural，三天送达。我要一杯“Dito”，没错，就是菠萝味的。好的，我这就帮你安排排毒粉服务。
+- **A** Allura Belt Nalla，三天内送达。我想要一个Dito，是的，一个菠萝口味的产品。好的，让我给你送一份排毒粉吧。
+- **B** Allura Belt Nalla可三天内送达。我想要一杯Dito，对，还要一份菠萝味的Maltida。好的，我马上为您订购排毒粉。
+- **C** Allura Belt Nalla，三天送达。我要一杯“Dito”，没错，就是菠萝味的。好的，我这就帮你安排排毒粉服务。
 
 ### 204
 **ES** Tienes que comer y tampoco está bueno que no comas, o sea, entonces por eso digo, tomalo después de haberte puesto algo en el estómago, después de haber comido algo en la mañana.
