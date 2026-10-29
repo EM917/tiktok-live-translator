@@ -110,9 +110,10 @@ two weeks.
 **The first start appears stuck downloading the recognition model.** The model
 is being retrieved from Hugging Face (large-v3 is approximately 3 GB). Progress
 is displayed on the page and this occurs only once. To avoid the wait during a
-live stream, download it beforehand: Settings → Startup Check, then Download Now
-on the Speech Recognition row. The button appears only while the model is
-missing and is unavailable while connecting or live.
+live stream, download it beforehand: click Download Now below the input field on
+the home page (the same button is on the Speech Recognition row in Settings →
+Startup Check). The button appears only while the model is missing and is
+unavailable while connecting or live.
 
 **All translations fail and captions show only the source language.** Google's
 free endpoint, which `auto` uses when no local model is installed,

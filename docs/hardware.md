@@ -11,8 +11,8 @@ versions.
 | Component | Size | When |
 |---|---|---|
 | Runtime environment (`.venv`) | 1.4 GB | First launch |
-| Speech model — `large-v3` (Apple Silicon GPU / CUDA) | 2.9 GB | First recognition, or Download Now in Startup Check |
-| Speech model — `large-v3-turbo` (CPU path) | 1.5 GB | First recognition, or Download Now in Startup Check |
+| Speech model — `large-v3` (Apple Silicon GPU / CUDA) | 2.9 GB | First recognition, or Download Now on the home page |
+| Speech model — `large-v3-turbo` (CPU path) | 1.5 GB | First recognition, or Download Now on the home page |
 | Ollama application | 0.2 GB | Manual, once |
 | Translation model — Hy-MT2 1.8B | 1.1 GB | Automatic on first launch after Ollama |
 | Translation model — Hy-MT2 7B (optional) | 4.6 GB | Only if you pull it |
