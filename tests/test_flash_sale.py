@@ -1,4 +1,4 @@
-"""闪购助手的只读状态（app/flash_sale.py）：纯函数和计时器。不开网络、不碰真的 /Applications 和 9334。
+"""闪购助手的状态和控制的规则（app/flash_sale.py）：纯函数和计时器。不开网络、不碰真的 /Applications 和 9334。
 
 夹具是闪购助手那边给的三份契约样例（tests/fixtures/flash_sale/，标题都是虚构的「(Fictional)」，
 店铺是 example_shop），原样拷进来。

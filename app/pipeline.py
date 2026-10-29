@@ -525,7 +525,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._init_comment_guard()       # 弹幕留意的守卫（默认开，可关），见 app/pipeline_guard.py
         self._init_transcript()          # 字幕记录（每场一个本地文件，可导出），见 app/pipeline_transcript.py
         self._init_float_window()        # 浮窗（只显示；桌面应用模式才有宿主），见 app/pipeline_float.py
-        self._init_flash_sale()          # 顶栏「闪购」（只读；main.py 检测到装了才起轮询），见 app/pipeline_flash.py
+        self._init_flash_sale()          # 顶栏「闪购」（main.py 检测到装了才起轮询），见 app/pipeline_flash.py
         if self.detector.enabled:
             print("[信息] 违禁词检测已启用：{} 个词条".format(self.detector.count))
         else:

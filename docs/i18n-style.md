@@ -78,7 +78,7 @@
 | 手机同看 | **Phone Viewing** | Phone Viewer, Phone view, Mirror to Phone, Screen Share | README 写的是 “Phone viewer”，但界面里 viewer(s) 还要用来指人；用作功能名会和人数打架。Viewing 跟 Screen Mirroring 的构词一样。建议 README 顺手改成 “Phone viewing” |
 | 浮窗 | **Floating Window** | Float, Mini Player, Pop-out, Overlay, Picture in Picture | 顶栏按钮、窗口标题、页面标题都叫这个。开着的是一个始终在最上面的小窗，放最新一条字幕和最近几条弹幕。Overlay 会被读成盖在直播画面上；Picture in Picture 是苹果的视频画中画；Float 单独做名词不成立 |
 | 主窗口 | **main window**；浮窗结束卡片上的按钮写 **Show Main Window** | main app, control window | 2026-10-26 补进术语表（b3-float-end）：浮窗以外那个大窗口。按钮名 Title Case，动词用 Show（把已经开着的窗口提到最前，不是新开一个） |
-| 闪购 | **Flash Sale** | Flash Deal, Lightning Deal, Flash Sale Status | 2026-10-27 补进术语表：顶栏按钮名（按钮打开的是闪购助手的只读状态浮层）。TikTok Shop 直播里的限时促销就叫 flash sale；Flash Deal 在 TikTok Shop 里指另一种不在直播里的促销，容易混 |
+| 闪购 | **Flash Sale** | Flash Deal, Lightning Deal, Flash Sale Status | 2026-10-27 补进术语表：顶栏按钮名（按钮打开的是闪购助手的状态浮层；2026-10-28 起，闪购助手 0.8.0 及以上时浮层顶部还能开始、停止、继续，见下面「闪购助手」「开始 / 停止 / 继续」两行）。TikTok Shop 直播里的限时促销就叫 flash sale；Flash Deal 在 TikTok Shop 里指另一种不在直播里的促销，容易混 |
 | 闪购助手 | **Flash Sale Helper** | Flash Sale Assistant, Flash Sale Bot, the helper | 2026-10-27 补进术语表：本机另一个程序，不随本程序分发，本程序读它的状态、能把它打开（2026-10-28 起，闪购助手 0.8.0 及以上时还能替人按开始、停止、继续，见下面「开始 / 停止 / 继续」那一行）。它自己只有中文名（程序坞和访达里显示「闪购助手」），英文界面照这个名字写，打开按钮是 **Open Flash Sale Helper**，正文里不加 the。浮层标题、按钮的 tooltip 也用它 |
 | 专用 Chrome（闪购助手开的那个 Chrome 窗口） | **the dedicated Chrome** | Chrome profile, automation browser | 闪购助手接口契约的叫法。只在闪购浮层里出现 |
 | 商品后台 | **LIVE Manager** | Seller Center, product backend | TikTok 自己的页面名，照抄（大写 LIVE 也照抄）。中文第一次出现时括号里带上英文原名 |
