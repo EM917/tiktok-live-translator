@@ -14,7 +14,7 @@ viewer.js 的前后（`?v=` 查询串与 /static/、/v/ 路径照原样）。场
 390 宽，再从页面里取同样的 DOM（run_chrome_cdp）。
 
 TLT_DOM_SHOTS=<目录> 时同一批场景各出一张 PNG，英文 README 截图从这里来：桌面另用 --screenshot
-再开一次，手机在同一次页面上经 DevTools 截（2 倍像素）。
+再开一次（关掉弹出动画，见 SHOT_FLAGS），手机在同一次页面上经 DevTools 截（2 倍像素）。
 
 文件末尾几条用例不开 Chrome，平时照常跑：场景组得起来、插入点还在、默认确实跳过、到点没结果时
 重试一次。页面结构或场景一变普通 CI 就会红，不用等 dom-scan job。收紧闸（Z0）起 dom-scan 整组
@@ -60,6 +60,10 @@ CHROME_TIMEOUT_SEC = 60
 # Z0 起整个 dom-scan 严格跑，偶发一次就会让 PR 红；真的每次都卡住的话两次都到点，照样红。
 # 重试过的在 pytest 的 warnings 摘要里留一条，连同当时已经端出去的资源，下回好对照。
 CHROME_RETRIES = 1
+# 桌面、浮窗截图（TLT_DOM_SHOTS）另加的参数。--force-prefers-reduced-motion：浮层弹出有 .16 秒的 popover-in 动画
+# （style.css，减少动态效果时关掉），截图可能截在动画半路，整个浮层半透明发灰——闪购「再点一次开始」那张就截成过这样
+# （2026-10-28 审查第 8 条）。关掉动画，截到的就是画好的样子；扫描（--dump-dom）不受影响
+SHOT_FLAGS = ("--hide-scrollbars", "--force-prefers-reduced-motion")
 TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".png": "image/png", ".json": "application/json"}
 EN_SCENARIOS = S.DESKTOP_EN + S.PHONE_EN + S.FLOAT_EN
@@ -473,7 +477,7 @@ class _Runner:
             if shot is not None and sc["page"] in ("desktop", "float"):
                 self._launch(name, lambda profile: run_chrome(
                     self.chrome, url, sc["size"], sc["lang"], profile,
-                    ["--hide-scrollbars", "--screenshot={}".format(shot)], shot_written))
+                    list(SHOT_FLAGS) + ["--screenshot={}".format(shot)], shot_written))
             self._done[name] = result
         return self._done[name]
 
@@ -852,6 +856,137 @@ def test_flash_panel_keeps_the_helpers_chinese_text_in_the_data_area(dom):
         assert titles and all('translate="no"' in t for t in titles), titles
 
 
+# 闪购浮层顶部那一排（S.FLASH_CTL_KINDS，docs/flash-sale.md §9）：种类 -> (露出来的按钮, 能点的按钮)
+FLASH_CTL_BUTTONS = ("start", "stop", "resume", "open")
+FLASH_CTL_EXPECT = {
+    "idle": (("start", "open"), ("start", "open")),
+    "armed": (("start", "open"), ("start", "open")),
+    "running": (("stop", "open"), ("stop", "open")),
+    "paused": (("stop", "resume", "open"), ("stop", "resume", "open")),
+    "awaiting": (("stop", "open"), ("open",)),
+    "old": (("open",), ("open",)),
+    "starting": (("start", "open"), ("open",)),
+    "skip": (("stop", "open"), ("stop", "open")),
+    "rejected": (("start", "open"), ("start", "open")),
+}
+# 各种类在页面上必须看得到的字（中文、英文），按元素 id 找；None 的元素要藏着。flash.js 的文案，docs/i18n-style.md §3 K
+FLASH_CTL_TEXT = {
+    "idle": {"flash-start": ("开始", "Start"), "flash-ctl-note": None,
+             "flash-desc": ("这里只能开始、停止和继续，其他操作请到闪购助手里。",
+                            "Only Start, Stop and Resume work here. Do everything else in Flash Sale Helper.")},
+    "armed": {"flash-start": ("再点一次开始", "Click Again to Start")},
+    "running": {"flash-stop": ("停止", "Stop")},
+    "paused": {"flash-resume": ("继续", "Resume")},
+    "awaiting": {"flash-ctl-note": ("确认框处理完以后才能从这里停止。", "Stop works here once the confirmation is handled.")},
+    "old": {"flash-ctl-note": ("闪购助手 0.8.0 起才能从这里开始、停止。", "Start and Stop need Flash Sale Helper 0.8.0 or later."),
+            "flash-desc": ("这里只显示状态。要操作，请到闪购助手里。", "This panel only shows status. Make changes in Flash Sale Helper.")},
+    "starting": {"flash-start": ("正在开始…", "Starting…"), "flash-ctl-note": None,
+                 "flash-headline": ("正在开始…（闪购助手在刷新页面）", "Starting… (Flash Sale Helper is reloading the page)")},
+    "skip": {"flash-headline": None},
+    "rejected": {"flash-note": ("闪购助手没有接受：正忙，稍等再试。", "Flash Sale Helper declined: It’s busy. Try again in a moment.")},
+}
+FLASH_SKIP_TEXT = (("1 号位，不续开", "Slot 1, not renewed"), ("没有库存，不续开", "Out of stock, not renewed"),
+                   ("续开次数到上限", "Renewal limit reached"), ("没开自动开始", "Auto-start off"),
+                   ("读不到序号，先不处理", "Position unread, skipped for now"))
+
+
+def _tag(html, element_id):
+    m = re.search(r'<[^>]*\bid="{}"[^>]*>'.format(re.escape(element_id)), html)
+    return m.group(0) if m else ""
+
+
+def _inner(html, element_id):
+    """--dump-dom 里这个元素里面的字（去掉标签）。只用在不嵌套同名标签的元素上（按钮、p）。"""
+    m = re.search(r'<([a-z]+)\b[^>]*\bid="{}"[^>]*>(.*?)</\1>'.format(re.escape(element_id)), html, re.S)
+    return re.sub(r"<[^>]+>", "", m.group(2)) if m else None
+
+
+def _flash_ctl_name(kind, lang):
+    return "flash-ctl-" + kind + ("-zh" if lang == "zh" else "")
+
+
+@needs_chrome
+@pytest.mark.parametrize("lang", ("en", "zh"))
+@pytest.mark.parametrize("kind", S.FLASH_CTL_KINDS)
+def test_flash_panel_control_row_shows_what_the_state_says(dom, kind, lang):
+    """闪购浮层顶部那一排在真浏览器里：浮层打开了（场景点了 #flash-btn），露出来、能点的按钮照 flash.js flashControlView 的规则，
+    文案对（武装态「再点一次开始」、过渡「正在开始…」、版本门槛、确认框、409 那一句、最底下那句），开始后的过渡里顶栏按钮
+    不变色，skip 的不续开原因和卡片序号画出来了、认不出的原因代码在 translate="no" 里、同一档按序号排。"""
+    html = dom.scan(_flash_ctl_name(kind, lang))["dom"]
+    problems = []
+
+    def need(ok, what):
+        if not ok:
+            problems.append(what)
+
+    need(not _hidden(html, "flash-panel"), "浮层没打开")
+    want_shown, want_usable = FLASH_CTL_EXPECT[kind]
+    for b in FLASH_CTL_BUTTONS:
+        tag = _tag(html, "flash-" + b)
+        need(tag, "找不到 #flash-{}".format(b))
+        shown = "hidden" not in _classes(tag)
+        usable = shown and not re.search(r"\sdisabled(=|\s|>)", tag)
+        need(shown == (b in want_shown), "#flash-{} 应{}露出：{}".format(b, "" if b in want_shown else "不", tag))
+        need(usable == (b in want_usable), "#flash-{} 应{}能点：{}".format(b, "" if b in want_usable else "不", tag))
+    for element_id, texts in FLASH_CTL_TEXT[kind].items():
+        if texts is None:
+            need(_hidden(html, element_id) or not (_inner(html, element_id) or "").strip(),
+                 "#{} 应该藏着：{}".format(element_id, _inner(html, element_id)))
+            continue
+        want = texts[0] if lang == "zh" else texts[1]
+        need(not _hidden(html, element_id), "#{} 没露出".format(element_id))
+        need(_inner(html, element_id) == want, "#{} 的字不对：{!r}，应为 {!r}".format(element_id, _inner(html, element_id), want))
+    if kind == "starting":
+        need("attn" not in _classes(_tag(html, "flash-btn")), "开始后的过渡里顶栏按钮不该变色")
+        need("attn" not in _classes(_tag(html, "flash-headline")), "开始后的过渡里主句不该是红字")
+    if kind == "skip":
+        for zh, en in FLASH_SKIP_TEXT:
+            need((zh if lang == "zh" else en) in html, "不续开原因没画出来：{}".format(zh if lang == "zh" else en))
+        need(re.search(r'<span[^>]*translate="no"[^>]*>brand_new_reason</span>', html), "认不出的原因代码不在 translate=\"no\" 里")
+        order = [m.group(1) for m in re.finditer(r'<span class="flash-pos">#(\d+)</span>', html)]
+        need(order == ["1", "6", "2", "4", "5", "3", "9"], "卡片序号或排序不对：{}".format(order))
+        need("attn" not in _classes(_tag(html, "flash-btn")), "标了不续开的已停止不算卡住，顶栏按钮不该变色")
+    assert not problems, "\n".join(problems)
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("lang", ("en", "zh"))
+@pytest.mark.parametrize("kind", S.FLASH_CTL_KINDS)
+def test_flash_panel_control_row_fits_at_the_default_window(dom, kind, lang):
+    """默认窗口 1000px：闪购浮层不出窗口、不横向溢出；顶部那一排（最宽的是英文的 Click Again to Start、
+    Open Flash Sale Helper）不溢出、按钮都在浮层里、露出来的排在同一行、字不被截；旁边那句、结果那句、主句、商品表不横向溢出。
+    顶栏照 test_live_top_bar_fits 的下限（1000px 品牌标签不窄于 100px），一条都不放宽：点开浮层不该挤到顶栏。"""
+    result = dom.scan(_flash_ctl_name(kind, lang))
+    got, view = result["measure"], result["viewport"]
+    problems = []
+
+    def need(ok, what):
+        if not ok:
+            problems.append(what)
+
+    need(view["width"] == S.FLASH_CTL_SIZE[0], "窗口不是 {}px 宽：{}".format(S.FLASH_CTL_SIZE[0], view))
+    panel, row = got["#flash-panel"], got["#flash-ctl"]
+    need(panel and panel["width"] > 0, "浮层没打开 {}".format(panel))
+    need(panel and panel["right"] <= view["width"] + 0.5, "浮层出了窗口 {}".format(panel))
+    need(panel and panel["scrollWidth"] <= panel["clientWidth"] + 1, "浮层横向溢出 {}".format(panel))
+    need(row and row["scrollWidth"] <= row["clientWidth"] + 1, "#flash-ctl 横向溢出 {}".format(row))
+    buttons = {b: got["#flash-" + b] for b in FLASH_CTL_BUTTONS if got.get("#flash-" + b) and got["#flash-" + b]["width"] > 0}
+    need(set(buttons) == set(FLASH_CTL_EXPECT[kind][0]), "露出来的按钮 {} 不对".format(sorted(buttons)))
+    for b, m in buttons.items():
+        need(row and m["right"] <= row["right"] + 0.5, "#flash-{} 出了这一排 {}".format(b, m))
+        need(m["scrollWidth"] <= m["clientWidth"] + 1, "#flash-{} 的字被截 {}".format(b, m))
+    need(len({round(m["top"]) for m in buttons.values()}) <= 1, "这一排没排在同一行：{}".format(
+        {b: m["top"] for b, m in buttons.items()}))
+    for sel in ("#flash-ctl-note", "#flash-note", "#flash-headline", "#flash-products"):
+        m = got.get(sel)
+        need(not m or m["width"] == 0 or m["scrollWidth"] <= m["clientWidth"] + 1, "{} 横向溢出 {}".format(sel, m))
+    bar, brand = got[".topbar"], got["#active-brand-tag"]
+    need(bar and bar["scrollWidth"] <= bar["clientWidth"], ".topbar 溢出 {}".format(bar))
+    need(brand and brand["width"] >= 100, "#active-brand-tag 窄于 100px {}".format(brand))
+    assert not problems, "\n".join(problems)
+
+
 # 中文页的「浮窗」按钮（web/style.css 的 html[lang^="zh"] 那一段，docs/i18n-style.md §4.2）：
 # 宽度 -> (两个字露出, 图标露出)。1000–1100 和 1140–1399 去图标露字；1101 起「手机同看」露出文字，
 # 按钮带字会超出余量，仍是只有图标；1400 起图标加文字
@@ -1169,6 +1304,82 @@ def test_the_flash_scenarios_differ_from_their_base_only_by_the_config_key_and_t
         for width in S.HOME_WIDTHS:
             assert built["{}@{}".format(base, width)]["size"][0] == width
     assert "live-flash" in S.DESKTOP_EN and "home-flash" in S.DESKTOP_EN
+
+
+def test_the_flash_control_scenarios_differ_from_live_float_only_where_they_say(tmp_path):
+    """不开 Chrome：flash-ctl-* 和它的底本（英文 live-float、中文满编 live-float-zh）只差 hello 里的 config.flash_sale、
+    点击（只点开闪购浮层，armed 再点一下「开始」）、窗口（默认 1000px）、要量的元素，rejected 另在最后多一条
+    flash_control_result。config.flash_sale 是 StatusTracker 规整的、attention 是 flash_sale.attention 算的；各种类的
+    状态确实是它说的样子；每个种类在 FLASH_CTL_EXPECT / FLASH_CTL_TEXT 里都有预期；英文的几份都进了 G10 的扫描。"""
+    from app import flash_sale
+
+    built = S.build(tmp_path)
+    assert set(FLASH_CTL_EXPECT) == set(FLASH_CTL_TEXT) == set(S.FLASH_CTL_KINDS)
+    assert set(S.FLASH_CTL_NAMES) <= set(S.DESKTOP_EN) and set(S.FLASH_CTL_NAMES) <= set(EN_SCENARIOS)
+    states = {}
+    for kind in S.FLASH_CTL_KINDS:
+        for lang, base in (("en", "live-float"), ("zh", "live-float-zh")):
+            sc = built[_flash_ctl_name(kind, lang)]
+            assert sc["lang"] == lang and sc["page"] == "desktop"
+            assert sc["size"] == list(S.FLASH_CTL_SIZE) and sc["size"][0] == 1000
+            assert sc["clicks"] == ["#flash-btn"] + (["#flash-start"] if kind == "armed" else [])
+            assert set(S.FLASH_CTL_MEASURE) <= set(sc["measure"]) and set(S.DESKTOP_MEASURE) <= set(sc["measure"])
+            state = sc["messages"][0]["config"]["flash_sale"]
+            assert state["conn"] == "ok" and state["attention"] == flash_sale.attention(state), kind
+            assert not [a for a in state["alerts"] if a["level"] == "error" or a["text"].startswith("❌")], kind
+            assert any(a["text"] == S.FLASH_ZH_ALERT for a in state["alerts"]), kind
+            states.setdefault(kind, state)
+            assert state == states[kind], "{}：两种语言的状态不一样".format(kind)
+            stripped = json.loads(json.dumps(sc))
+            del stripped["messages"][0]["config"]["flash_sale"]
+            if kind == "rejected":
+                assert stripped["messages"].pop() == S.FLASH_CTL_REJECT
+            for key in ("name", "clicks", "size", "measure"):
+                stripped[key] = built[base][key]
+            assert stripped == built[base], kind
+    versions = {kind: states[kind]["app_version"] for kind in S.FLASH_CTL_KINDS}
+    assert versions.pop("old") == S.FLASH_CTL_OLD_VERSION and set(versions.values()) == {S.FLASH_CTL_VERSION}
+    for kind in ("idle", "armed", "rejected", "old"):
+        assert (states[kind]["running"], states[kind]["paused_reason"]) == (False, "not_started"), kind
+    assert states["running"]["running"] is True and states["running"]["paused_reason"] is None
+    assert states["paused"]["paused_reason"] == "user_interaction"
+    assert states["awaiting"]["paused_reason"] == "awaiting_approval"
+    starting = states["starting"]
+    assert starting["control"] == {"action": "start", "phase": "waiting"} and flash_sale.starting(starting)
+    assert starting["page"] == "error" and starting["stale"] is True and starting["running"] is False
+    assert starting["attention"] == [], "开始后的过渡：页面出错、陈旧都不算要人处理"
+    assert flash_sale.attention(dict(starting, control=None)) == ["stale", "page"], "过渡一过就该提醒"
+    skip = states["skip"]
+    assert skip["attention"] == [] and not any(p["stuck"] for p in skip["products"])
+    assert {p["skip"] for p in skip["products"]} == {None, "slot_1", "no_stock", "max_renewals", "auto_start_off",
+                                                     "no_position", "brand_new_reason"}
+    assert [p["position"] for p in skip["products"]] == [1, 6, None, 2, 4, None, 5, 3, 9], "后端排好的顺序"
+    for kind in set(S.FLASH_CTL_KINDS) - {"skip"}:
+        assert all(p["position"] is None and p["skip"] is None for p in states[kind]["products"]), kind
+
+
+def test_screenshots_turn_off_the_popover_animation(tmp_path, monkeypatch):
+    """不开 Chrome：截图（TLT_DOM_SHOTS）那一次 Chrome 带 --force-prefers-reduced-motion，浮层不会截在弹出动画半路、
+    半透明发灰（审查第 8 条：「再点确认」那张截图就是这样）；扫描那一次不带。"""
+    site = _Site(WEB_DIR)
+    sc = {"page": "desktop", "page_lang": "en", "lang": "en", "size": [1000, 760]}
+    calls = []
+
+    def fake_run(chrome, url, size, lang, profile, extra, finished):
+        calls.append(list(extra))
+        site.served.extend((path, 200) for path in site.assets(page_html(sc)))
+        return SCAN_DOM
+
+    monkeypatch.setattr(sys.modules[__name__], "run_chrome", fake_run)
+    try:
+        runner = _Runner(site, "chrome", {"x": sc}, tmp_path, shots=tmp_path / "shots")
+        runner.scan("x")
+    finally:
+        site.server_close()
+    assert len(calls) == 2
+    assert calls[0] == ["--dump-dom"]
+    assert "--force-prefers-reduced-motion" in calls[1] and "--hide-scrollbars" in calls[1]
+    assert calls[1][-1] == "--screenshot={}".format(tmp_path / "shots" / "x.png")
 
 
 def test_the_home_scenarios_carry_a_target_inside_and_one_outside_the_four(tmp_path):
