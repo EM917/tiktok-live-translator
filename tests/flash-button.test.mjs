@@ -6,7 +6,8 @@
 //   2. 变色：后端的 attention 非空、或有没看过的问题记录（error、❌ 开头的 warn）就加 .attn，title / aria-label 跟着写；
 //      打开浮层才算看过，记进 localStorage（读写都抛也照常跑，只在这一页记着）；
 //   3. 浮层和同看、换主播、「Aa」互斥；Esc、点外面关；点「打开闪购助手」发 open_flash_helper，断线时不装作发出去了；
-//      notice where=flash 写进浮层；倒计时每秒走；「还有 N 个」点开全列、关上收回；
+//      notice where=flash 写进浮层；倒计时每秒走；「还有 N 个」点开全列、关上收回（浮层顶部那一排开始、停止、继续的
+//      接线在 tests/flash-control-button.test.mjs）；
 //   4. 「Aa」：has-flash-btn 时字号控件收成按钮（样式在 style.css，这里查开合和 aria-expanded）；回首页、没了闪购按钮时关掉。
 // Esc 和点外面关靠 page.dispatch 触发 document 上的监听；真浏览器里的版面由 G10 的 live-flash* / home-flash* 场景量。
 import { test } from "node:test";
@@ -298,7 +299,7 @@ test("按钮在浮窗之后、换主播之前，浮层紧跟着它；文字是�
   assert.match(tag, /<span class="btn-label" data-en="Flash Sale">闪购<\/span>/);
   assert.match(tag, /<svg class="i" aria-hidden="true"><use href="#i-flash"\/><\/svg>/);
   assert.match(html, /<symbol id="i-flash" viewBox="0 0 16 16">/);
-  assert.match(html, /<script src="\/static\/flash\.js\?v=1"><\/script>\n {2}<script src="\/static\/app\.js/);
+  assert.match(html, /<script src="\/static\/flash\.js\?v=2"><\/script>\n {2}<script src="\/static\/app\.js/);
 });
 
 test("「Aa」紧挨着字号控件、名字同滑块（字幕字号 / Caption size），两种语言都写 Aa", () => {

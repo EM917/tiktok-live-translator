@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=52">
+  <link rel="stylesheet" href="/static/style.css?v=53">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -181,8 +181,8 @@
         <svg class="i" aria-hidden="true"><use href="#i-float"/></svg>
         <span class="btn-label" data-en="Floating Window">浮窗</span>
       </button>
-      <!-- 闪购：本机另一个程序「闪购助手」的只读状态（app/pipeline_flash.py 每 3 秒查一次它的 127.0.0.1:9334/status，
-           文案在 web/flash.js）。只有 macOS 上装了它，hello 的 config 里才有 flash_sale 这个键，按钮才出现；
+      <!-- 闪购：本机另一个程序「闪购助手」的状态（app/pipeline_flash.py 每 3 秒查一次它的 127.0.0.1:9334/status，
+           文案在 web/flash.js），闪购助手 0.8.0 起浮层里还能开始、停止、继续。只有 macOS 上装了它，hello 的 config 里才有 flash_sale 这个键，按钮才出现；
            首页和直播中都显示（开播前就看得到它开没开、要不要登录）。要人处理时按钮变橙色并带一个橙点（形状和颜色一起变），
            title / aria-label 跟着写「闪购助手 · 要处理」。窄于 1400px 只留图标（文字视觉隐藏，读屏照念，同 #float-btn），
            中文页放得下时露出「闪购」两个字（style.css）。不放在 #switch-btn 和「停止」之间：那段右边距是专门隔开那两颗的 -->
@@ -191,8 +191,10 @@
         <svg class="i" aria-hidden="true"><use href="#i-flash"/></svg>
         <span class="btn-label" data-en="Flash Sale">闪购</span>
       </button>
-      <!-- 闪购浮层：只显示状态，唯一的按钮是「打开闪购助手」（不开始、停止、批准、续开）。内容由 flash.js
-           renderFlashPanel 在收到状态时就画好（不等打开），商品标题标 translate="no"，记录正文带 class i18n-data。
+      <!-- 闪购浮层：状态，加顶部一排按钮。按钮只替人按下闪购助手面板上的那个大按钮（开始、停止、继续，闪购助手 0.8.0 起，
+           app.js 发 flash_control，后端带着控制密钥 POST 过去）和「打开闪购助手」；不新建闪购、不改价、不加商品、不批准、
+           不续开。哪几颗露出来、能不能点由 flash.js flashControlView 按状态定（连不上、版本认得出且低于 0.8.0 时只剩「打开」）。
+           内容由 flash.js renderFlashPanel 在收到状态时就画好（不等打开），商品标题标 translate="no"，记录正文带 class i18n-data。
            报警（违禁词）不借这里：闪购的提醒只走这颗按钮的颜色和这个浮层（CLAUDE.md 第六条） -->
       <div id="flash-panel" class="flash-panel popover hidden" role="dialog" aria-label="闪购助手" data-en-aria-label="Flash Sale Helper">
         <div class="share-head">
@@ -207,6 +209,18 @@
             </button>
           </div>
         </div>
+        <!-- 顶部一排（42 个商品时用户在最底下找不到「打开闪购助手」，用户 10-27 定挪上来）。「开始」点两下才发，停止、继续
+             点一下。按下的那颗变成不能点或藏起来时，焦点挪到这一排本身（tabindex="-1"，不滚动），键盘和读屏的人不会掉出浮层；
+             三颗为什么不能点写在 #flash-ctl-note 里，用 aria-describedby 连着 -->
+        <div id="flash-ctl" class="flash-ctl" tabindex="-1">
+          <button id="flash-start" class="btn small primary hidden" type="button" aria-describedby="flash-ctl-note" data-en="Start">开始</button>
+          <button id="flash-stop" class="btn small destructive hidden" type="button" aria-describedby="flash-ctl-note" data-en="Stop">停止</button>
+          <button id="flash-resume" class="btn small primary hidden" type="button" aria-describedby="flash-ctl-note" data-en="Resume">继续</button>
+          <button id="flash-open" class="btn small" type="button" data-en="Open Flash Sale Helper">打开闪购助手</button>
+        </div>
+        <p id="flash-ctl-note" class="flash-ctl-note hidden"></p>
+        <!-- 那一句：指令的结果（flash.js flashResultLine）、断线、open 没打开。挨着按钮，点的人正看着那儿 -->
+        <p id="flash-note" class="flash-note hidden" aria-live="polite"></p>
         <p id="flash-headline" class="flash-headline hidden"></p>
         <div id="flash-detail" class="flash-detail hidden"></div>
         <p id="flash-summary" class="flash-summary hidden"></p>
@@ -214,12 +228,10 @@
         <button id="flash-more" class="btn small flash-more hidden" type="button"></button>
         <p id="flash-alerts-title" class="flash-sub hidden" role="heading" aria-level="3" data-en="Recent Activity">最近记录</p>
         <ol id="flash-alerts" class="flash-alerts hidden"></ol>
-        <div class="flash-foot">
-          <button id="flash-open" class="btn small" type="button" data-en="Open Flash Sale Helper">打开闪购助手</button>
-          <span id="flash-version" class="flash-version"></span>
-        </div>
-        <p id="flash-note" class="flash-note hidden" aria-live="polite"></p>
-        <p class="share-desc" data-en="This panel only shows status. Make changes in Flash Sale Helper.">这里只显示状态。要操作，请到闪购助手里。</p>
+        <p id="flash-version" class="flash-version"></p>
+        <!-- 最底下一句随顶部那一排换（flash.js renderFlashControls）：开始、停止、继续一颗都没有时（连不上、版本太旧、
+             正在查看）是第一步那句，有的时候写「这里只能开始、停止和继续……」 -->
+        <p id="flash-desc" class="share-desc" data-en="This panel only shows status. Make changes in Flash Sale Helper.">这里只显示状态。要操作，请到闪购助手里。</p>
       </div>
       <!-- 换主播：只在直播中/连接中露出，和停止按钮同一处切换（见 app.js setStatus）。
            跟停止之间留出明显间距（.switch-btn 的 margin-right），防止手滑点错——
@@ -832,7 +844,7 @@
   <script src="/static/settings-rows.js?v=3"></script>
   <script src="/static/live-ui.js?v=7"></script>
   <script src="/static/guard.js?v=6"></script>
-  <script src="/static/flash.js?v=1"></script>
-  <script src="/static/app.js?v=81"></script>
+  <script src="/static/flash.js?v=2"></script>
+  <script src="/static/app.js?v=82"></script>
 </body>
 </html>
