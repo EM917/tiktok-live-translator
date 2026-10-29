@@ -1088,6 +1088,92 @@ def test_a_poll_while_a_command_is_in_flight_leaves_the_command_alone(doc, tmp_p
     assert results(p) == [dict(ACCEPTED, action="start")]
 
 
+# ---- 慢页面：广播真的让出事件循环 ------------------------------------------------------------------
+# RecordingServer 没有连着的页面，broadcast 从不让出事件循环：拿掉发布那把锁、或者先发布再发 POST，上面的用例照样全绿。
+# 真的页面慢、被卡住时，一次广播最坏拖 2 秒。下面两条用 HeldServer 卡住一条广播，钉住 _flash_control_run 和
+# _flash_refresh 里写着的那两件事。（下播后跑一遍「拿掉锁」「先发布再 POST」两种改法，确认这两条各自会红。）
+
+class HeldServer(RecordingServer):
+    """hold 不为 None 时，下一条 flash_sale 先记进 held，等 hold 放行才真的发出去（后面的照常）。sent 的先后就是真发到
+    页面的先后。"""
+
+    def __init__(self):
+        super().__init__()
+        self.hold = None
+        self.held = []
+
+    async def broadcast(self, msg):
+        hold = self.hold
+        if hold is not None and msg.get("type") == "flash_sale":
+            self.hold = None
+            self.held.append(msg)
+            await hold.wait()
+        return await super().broadcast(msg)
+
+
+def held_pipeline(tmp_path, post):
+    p, clock = control_pipeline(tmp_path, post=post)
+    p.server = HeldServer()
+    return p, clock
+
+
+def test_the_post_goes_out_while_a_slow_page_holds_the_sending_broadcast(tmp_path):
+    """「停止」不等广播：phase=sending 那一份状态的广播被慢页面卡住时，POST 已经发出去了（先起 POST、再发布）。
+    先发布、等发完再发 POST 的话，这时 post.calls 还是空的。结果照旧排在状态之后。"""
+    post = FakePost()
+
+    async def go():
+        p, clock = held_pipeline(tmp_path, post)
+        await apoll(p, clock, sample("running"))
+        hold = p.server.hold = asyncio.Event()
+        assert p.handle_control({"type": "flash_control", "action": "stop"}) is None
+        await asyncio.sleep(0.01)
+        seen = ([m["control"] for m in p.server.held], list(post.calls), results(p))
+        hold.set()
+        await asyncio.gather(*list(p._bg_tasks))
+        return p, seen
+
+    p, (held, calls, said) = asyncio.run(go())
+    assert held == [{"action": "stop", "phase": "sending"}]          # 卡住的是在途那一份
+    assert calls == [("stop", FAKE_TOKEN, "http://127.0.0.1:9")]     # 那时 POST 已经发出去了
+    assert said == []                                                # 结果要等状态发完
+    assert controls(p) == [None, {"action": "stop", "phase": "sending"}, {"action": "stop", "phase": "waiting"}]
+    assert results(p) == [dict(ACCEPTED, action="stop")]
+
+
+def test_a_poll_and_a_command_publishing_at_once_leave_the_page_on_the_newest_phase(tmp_path):
+    """轮询和控制两条路同时发布：轮询那一份（还没有指令）的广播被慢页面卡住时点了停止。两条路在一把锁里排队
+    （_flash_refresh），控制那一路等轮询那一份真发完才合成、才发，页面最后收到的、config 里的都是最新的「在等生效」。
+    不排队的话，控制那两份先发完，旧的那份最后才到，页面停在没有指令的样子（按钮又能点了），config 却是另一份。
+    这把锁只排发布，不挡 POST。"""
+    post = FakePost()
+
+    async def go():
+        p, clock = held_pipeline(tmp_path, post)
+        await apoll(p, clock, sample("idle"))
+        hold = p.server.hold = asyncio.Event()
+        clock["mono"] += 3
+        tick = asyncio.ensure_future(apoll(p, clock, sample("running")))
+        await asyncio.sleep(0.01)
+        held = [m["control"] for m in p.server.held]
+        assert p.handle_control({"type": "flash_control", "action": "stop"}) is None
+        await asyncio.sleep(0.01)
+        calls = list(post.calls)
+        hold.set()
+        await tick
+        await asyncio.gather(*list(p._bg_tasks))
+        return p, held, calls
+
+    p, held, calls = asyncio.run(go())
+    assert held == [None]                                            # 卡住的是轮询那一份
+    assert calls == [("stop", FAKE_TOKEN, "http://127.0.0.1:9")]     # 轮询那份还卡着时 POST 已经发出去了
+    last = p.server.of_type("flash_sale")[-1]
+    assert last["control"] == {"action": "stop", "phase": "waiting"}
+    assert p.server.config["flash_sale"] == {k: v for k, v in last.items() if k != "type"}
+    assert controls(p) == [None, None, {"action": "stop", "phase": "sending"}, {"action": "stop", "phase": "waiting"}]
+    assert results(p) == [dict(ACCEPTED, action="stop")]
+
+
 @pytest.mark.parametrize("action, before, after", [("start", "idle", "running"), ("stop", "running", "idle")])
 def test_once_the_status_shows_the_command_took_effect_the_wait_ends(action, before, after, tmp_path, capsys):
     p, clock = control_pipeline(tmp_path)

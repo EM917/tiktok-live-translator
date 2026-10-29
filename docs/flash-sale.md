@@ -431,7 +431,9 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
   不读环境变量里的代理（本机临时端口上只记账的假代理）都在这里。
 - `tests/test_pipeline_flash.py` 的控制部分换掉 `_flash_post`、`_flash_read_token`（假 POST、假密钥），钉住
   no_status、在途、等生效、30 秒的两条边、过渡不变色、退出不取消、终端两种界面语言下逐字节相同；最后一条整条链走真的
-  `read_control_token` + `post_control` + 上面那个假闪购助手。
+  `read_control_token` + `post_control` + 上面那个假闪购助手。`RecordingServer` 没有连着的页面，广播从不让出事件循环，
+  所以另有两条用 `HeldServer`（卡住一条 `flash_sale` 广播，像慢页面那样）钉住 §9.2 的两件事：在途那一份的广播还卡着时
+  POST 已经发出去了；轮询和控制同时发布时，页面最后收到的、config 里的都是最新的控制进度。
 - 后端和前端各有一份、必须一字不差的规则（卡住的条件、排序、`control_done`、开始后的过渡），两边吃同一张表
   `tests/fixtures/flash_sale/shared-rules.json`：`test_flash_sale.py` 测后端，node 测试测 `web/flash.js`。改规则先改表。
 - 要测「装了」：`attach_flash_sale(platform="darwin", candidates=(tmp 目录,))`。
