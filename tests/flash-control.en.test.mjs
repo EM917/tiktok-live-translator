@@ -82,6 +82,8 @@ test("本程序这边的代码：Not sent / Sent, but… / no control interface 
     bad_reply: "Sent, but the reply couldn’t be read. Check whether the status changes.",
     no_control: "This version of Flash Sale Helper has no control interface.",
     failed: "Couldn’t handle the command: this app hit an error. Details are in the terminal.",
+    local_only: "Not sent: A local script can only stop Flash Sale Helper. Start and Resume have to be clicked in this app.",
+    not_confirmed: "Not sent: Start needs two clicks, the second 0.4 to 6 sec after the first. Click twice again.",
   };
   for (const [code, text] of Object.entries(want)) assert.equal(english(result(code).text), text, code);
   assert.equal(result("no_token").text.includes("token"), false, "术语表：control key，不写 token");

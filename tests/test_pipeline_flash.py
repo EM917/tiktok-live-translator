@@ -6,6 +6,7 @@
 """
 import ast
 import asyncio
+import collections
 import copy
 import json
 from datetime import datetime, timezone
@@ -21,7 +22,7 @@ from app import flash_sale as fs
 from app import i18n, settings, viewer
 from app.i18n import CJK
 from app.pipeline import Pipeline
-from app.server import FLOAT_CONFIG_KEYS, FLOAT_TYPES, CaptionServer
+from app.server import CONTROL_SOURCE, FLOAT_CONFIG_KEYS, FLOAT_TYPES, CaptionServer
 from app.window_close import close_session
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -850,6 +851,27 @@ def poll(p, clock, step):
     asyncio.run(apoll(p, clock, step))
 
 
+ARM_ID = "0123456789abcdef"
+
+
+def tap(p, clock, action, arm_id=ARM_ID):
+    """控制页上点一下这个按钮（同步，不等后台）。开始要点两下、两下都到后端（直播助手平台轮廓 §4.4）：先发
+    step=arm，单调时钟拨快 1 秒，再发同一个编号的 step=fire；停止、继续点一下。返回 None（handle_control 的返回值）。"""
+    if action == "start":
+        assert p.handle_control({"type": "flash_control", "action": "start", "step": "arm", "id": arm_id}) is None
+        clock["mono"] += 1
+        return p.handle_control({"type": "flash_control", "action": "start", "step": "fire", "id": arm_id})
+    return p.handle_control({"type": "flash_control", "action": action})
+
+
+def press(p, clock, action):
+    """tap，再等后台跑完（同 click）。"""
+    async def go():
+        assert tap(p, clock, action) is None
+        await asyncio.gather(*list(p._bg_tasks))
+    asyncio.run(go())
+
+
 def results(p):
     return [{k: v for k, v in m.items() if k != "type"} for m in p.server.of_type("flash_control_result")]
 
@@ -957,7 +979,7 @@ def test_handle_control_routes_flash_control_and_returns_at_once(tmp_path):
 
     async def go():
         await apoll(p, clock, sample("idle"))
-        assert p.handle_control({"type": "flash_control", "action": "start"}) is None
+        assert tap(p, clock, "start") is None
         assert p._flash_ctl == {"action": "start", "phase": "sending", "until": None} and len(p._bg_tasks) == 1
         await asyncio.gather(*list(p._bg_tasks))
 
@@ -970,11 +992,11 @@ def test_an_accepted_command_is_reported_and_then_waited_on(action, tmp_path, ca
     post = FakePost()
     p, clock = control_pipeline(tmp_path, post=post)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": action})
+    press(p, clock, action)
     assert post.calls == [(action, FAKE_TOKEN, "http://127.0.0.1:9")]
     assert results(p) == [dict(ACCEPTED, action=action)]
     assert controls(p) == [None, {"action": action, "phase": "sending"}, {"action": action, "phase": "waiting"}]
-    assert p._flash_ctl == {"action": action, "phase": "waiting", "until": 500.0 + fs.CONTROL_WAIT_SEC}
+    assert p._flash_ctl == {"action": action, "phase": "waiting", "until": clock["mono"] + fs.CONTROL_WAIT_SEC}
     assert p.server.config["flash_sale"]["control"] == {"action": action, "phase": "waiting"}
     # 结果在状态之后：页面收到结果时，状态里已经是「在等生效」
     assert [m["type"] for m in p.server.sent][-2:] == ["flash_sale", "flash_control_result"]
@@ -985,7 +1007,7 @@ def test_an_accepted_command_polls_every_three_seconds_for_thirty_seconds(tmp_pa
     """指令被接受后 30 秒内每 3 秒查一次，并马上查一次；这期间闪购助手连不上了也照样 3 秒。"""
     p, clock = control_pipeline(tmp_path)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     assert p._flash_wake_ev.is_set()
     p._flash_conn_prev = "unreachable"
     assert p._flash_interval() == fs.POLL_OK_SEC
@@ -1031,7 +1053,7 @@ def test_start_and_resume_are_never_sent_again(action, error, said, tmp_path, ca
     post = FakePost(result=error)
     p, clock = control_pipeline(tmp_path, post=post)
     poll(p, clock, paused_doc("user_interaction") if action == "resume" else sample("idle"))
-    click(p, {"type": "flash_control", "action": action})
+    press(p, clock, action)
     assert [c[0] for c in post.calls] == [action] and clock["slept"] == []
     assert results(p) == [{"action": action, "ok": False, "error": error}]
     assert p._flash_ctl is None
@@ -1043,7 +1065,7 @@ def test_no_readable_token_means_nothing_is_sent(why, tmp_path, capsys):
     post = FakePost()
     p, clock = control_pipeline(tmp_path, post=post, token=FakeToken((None, why)))
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     assert post.calls == []
     assert results(p) == [{"action": "start", "ok": False, "error": "no_token"}]
     assert p._flash_ctl is None and controls(p) == [None]
@@ -1070,7 +1092,7 @@ def test_without_a_fresh_status_the_token_is_not_read_and_nothing_is_sent(action
         clock["mono"] += 3
     if steps[-1:] == [("bad_response", "no_answer")] and len(steps) == 2:
         assert p.server.config["flash_sale"]["conn"] == "ok"     # 页面上还画着按钮的那一种
-    click(p, {"type": "flash_control", "action": action})
+    press(p, clock, action)
     assert token.calls == 0 and post.calls == []
     assert results(p) == [{"action": action, "ok": False, "error": "no_status"}]
     assert p._flash_ctl is None
@@ -1091,7 +1113,7 @@ def test_a_status_that_does_not_look_like_the_helpers_gets_no_token(doc, why, tm
     p, clock = control_pipeline(tmp_path, post=post, token=token)
     poll(p, clock, ("ok", copy.deepcopy(doc)))
     assert p.server.config["flash_sale"]["conn"] == "ok"
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     assert token.calls == 0 and post.calls == []
     assert results(p) == [{"action": "start", "ok": False, "error": "no_status"}]
     assert p._flash_ctl is None
@@ -1190,14 +1212,15 @@ def test_stop_that_cannot_get_through_gives_up_after_thirty_seconds(tmp_path, ca
     post = FakePost()
     p, clock = control_pipeline(tmp_path, post=post)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     waiting = dict(p._flash_ctl)
     p._flash_fetch, fetched = _fetches(("unreachable", None))
+    first = clock["mono"]
     click(p, {"type": "flash_control", "action": "stop"})
     tries = fs.STOP_RETRY_SEC // fs.STOP_RETRY_GAP_SEC + 1
     assert tries == 11 and len(fetched) == tries
     assert [c[0] for c in post.calls] == ["start"]                 # 连不上：一次都没发出去
-    assert clock["slept"] == [fs.STOP_RETRY_GAP_SEC] * (tries - 1) and clock["mono"] == 530.0
+    assert clock["slept"] == [fs.STOP_RETRY_GAP_SEC] * (tries - 1) and clock["mono"] == first + fs.STOP_RETRY_SEC
     assert results(p)[-1] == {"action": "stop", "ok": False, "error": "unreachable", "tries": tries}
     assert p._flash_ctl == waiting
     assert out_lines(capsys)[-2:] == ["[警告] 闪购助手：中控请求停止 → 连不上（unreachable），30 秒内每 3 秒再试",
@@ -1280,7 +1303,7 @@ def test_starting_while_stop_waits_to_retry_cancels_the_retries(action, tmp_path
         assert p.handle_control({"type": "flash_control", "action": "stop"}) is None   # 已经在等着再试
         await asyncio.sleep(0.01)
         assert posted == ["stop"]
-        assert p.handle_control({"type": "flash_control", "action": action}) is None
+        assert tap(p, clock, action) is None
         await asyncio.sleep(0.01)
         wake.set()
         await asyncio.gather(*list(p._bg_tasks))
@@ -1315,7 +1338,7 @@ def test_a_refused_start_while_stop_waits_to_retry_still_cancels_the_retries(tmp
         p.handle_control({"type": "flash_control", "action": "stop"})
         await asyncio.sleep(0.01)
         assert p.server.config["flash_sale"]["control"] == {"action": "stop", "phase": "retrying"}
-        p.handle_control({"type": "flash_control", "action": "start"})
+        tap(p, clock, "start")
         await asyncio.sleep(0.01)
         wake.set()
         await asyncio.gather(*list(p._bg_tasks))
@@ -1331,7 +1354,7 @@ def test_losing_the_status_while_start_is_waiting_does_not_hold_stop_back(tmp_pa
     post = FakePost()
     p, clock = control_pipeline(tmp_path, post=post)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     for _ in range(2):
         clock["mono"] += 3
         poll(p, clock, ("unreachable", None))
@@ -1348,7 +1371,7 @@ def test_a_refused_command_while_another_is_waiting_puts_the_wait_back(tmp_path)
     post = FakePost()
     p, clock = control_pipeline(tmp_path, post=post)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     waiting = dict(p._flash_ctl)
     post.result = "awaiting_approval"
     clock["mono"] += 1
@@ -1395,7 +1418,7 @@ def test_a_second_command_while_one_is_in_flight_is_dropped(tmp_path):
         post = FakePost(gate=gate)
         p, clock = control_pipeline(tmp_path, post=post)
         await apoll(p, clock, sample("idle"))
-        assert p.handle_control({"type": "flash_control", "action": "start"}) is None
+        assert tap(p, clock, "start") is None
         await asyncio.sleep(0.01)
         assert p.server.config["flash_sale"]["control"] == {"action": "start", "phase": "sending"}
         for action in ("start", "stop", "resume"):
@@ -1422,7 +1445,7 @@ def test_a_poll_while_a_command_is_in_flight_leaves_the_command_alone(doc, tmp_p
         gate = asyncio.Event()
         p, clock = control_pipeline(tmp_path, post=FakePost(gate=gate))
         await apoll(p, clock, sample("idle"))
-        p.handle_control({"type": "flash_control", "action": "start"})
+        tap(p, clock, "start")
         await asyncio.sleep(0.01)
         clock["mono"] += 3
         await apoll(p, clock, sample(doc))
@@ -1440,6 +1463,157 @@ def test_a_poll_while_a_command_is_in_flight_leaves_the_command_alone(doc, tmp_p
     p = asyncio.run(go())
     assert (p._flash_ctl is None) is (doc == "running")      # running=true：下一跳判出生效；false：接着等
     assert results(p) == [dict(ACCEPTED, action="start")]
+
+
+# ---- 「开始」点两下、两下都到后端；本机脚本只能停（直播助手平台轮廓 §4.4、§5.6，§9.2 第 6 条） ------------------
+
+def fire_msg(arm_id=ARM_ID):
+    return {"type": "flash_control", "action": "start", "step": "fire", "id": arm_id}
+
+
+@pytest.mark.parametrize("gap, sent", [(0.41, True), (1.0, True), (5.99, True),
+                                       (0.0, False), (0.39, False), (6.0, False), (60.0, False)])
+def test_start_is_sent_only_for_a_fire_between_400ms_and_6s_after_its_arm(gap, sent, tmp_path, capsys):
+    """第一下（step=arm）后端只记下编号和时刻、不回话；同一个编号的第二下（step=fire）离它 0.4 秒以上、6 秒以内才转给
+    闪购助手（同页面的 FLASH_START_GUARD_MS、FLASH_START_CONFIRM_MS）。双击一次（太快）、隔太久都不发，结果 not_confirmed。"""
+    post = FakePost()
+    p, clock = control_pipeline(tmp_path, post=post)
+    poll(p, clock, sample("idle"))
+    before = list(p.server.sent)
+    assert p.handle_control({"type": "flash_control", "action": "start", "step": "arm", "id": ARM_ID}) is None
+    assert not p._bg_tasks and p.server.sent == before and post.calls == []
+    clock["mono"] += gap
+    click(p, fire_msg())
+    if sent:
+        assert post.calls == [("start", FAKE_TOKEN, "http://127.0.0.1:9")]
+        assert results(p) == [dict(ACCEPTED, action="start")]
+    else:
+        assert post.calls == [] and p._flash_ctl is None
+        assert results(p) == [{"action": "start", "ok": False, "error": "not_confirmed"}]
+        assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求开始 → 没有发出（not_confirmed：{}）".format(
+            "too_soon" if gap < fs.START_GUARD_SEC else "too_late")
+    assert p._flash_arm is None, "第一下只用一次"
+
+
+@pytest.mark.parametrize("steps, why, starts", [
+    ([{}], "no_step", 0),                                                   # 一条消息就想开始（旧页面、脚本）
+    ([{"step": "fire", "id": ARM_ID}], "no_arm", 0),                        # 没有第一下
+    ([{"step": "arm", "id": ARM_ID}, {"step": "fire", "id": "other"}], "other_arm", 0),
+    ([{"step": "arm", "id": ARM_ID}, {"step": "fire"}], "other_arm", 0),
+    ([{"step": "arm", "id": ARM_ID}, {"step": "arm", "id": "second"}, {"step": "fire", "id": ARM_ID}], "other_arm", 0),
+    ([{"step": "arm", "id": "x" * 65}, {"step": "fire", "id": "x" * 65}], "no_arm", 0),   # 编号不合规：第一下不算
+    ([{"step": "arm", "id": 7}, {"step": "fire", "id": 7}], "no_arm", 0),
+    ([{"step": "arm", "id": "a b"}, {"step": "fire", "id": "a b"}], "no_arm", 0),
+    ([{"step": "arm"}, {"step": "fire"}], "no_arm", 0),
+    ([{"step": "arm", "id": ARM_ID}, {"step": "bogus"}, {"step": "fire", "id": ARM_ID}], "no_arm", 0),
+    ([{"step": "arm", "id": ARM_ID}, {"step": "fire", "id": ARM_ID}, {"step": "fire", "id": ARM_ID}], "no_arm", 1),
+])
+def test_start_without_a_matching_pair_of_clicks_is_not_sent(steps, why, starts, tmp_path, capsys):
+    """对不上的两下一律不转发，结果 not_confirmed，终端带是哪一种：没带 step、前面没有 arm、编号不是最近那次 arm 的
+    （别的控制页又点了第一下也算）、编号不合规的 arm 不算、arm 只用一次（发出去以后再来一个 fire 也不行）。
+    每两条消息之间单调时钟走 1 秒（在 0.4 到 6 秒之间）。"""
+    post = FakePost()
+    p, clock = control_pipeline(tmp_path, post=post)
+    poll(p, clock, sample("idle"))
+    for extra in steps:
+        click(p, dict({"type": "flash_control", "action": "start"}, **extra))
+        clock["mono"] += 1
+    assert len(post.calls) == starts
+    assert results(p)[-1] == {"action": "start", "ok": False, "error": "not_confirmed"}
+    assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求开始 → 没有发出（not_confirmed：{}）".format(why)
+
+
+def test_stop_voids_a_first_click_on_start(tmp_path, capsys):
+    """点了开始的第一下，接着点了停止：第一下作废，之后的 fire 不发。继续点一下就发，不要第一下。"""
+    post = FakePost()
+    p, clock = control_pipeline(tmp_path, post=post)
+    poll(p, clock, sample("idle"))
+    assert p.handle_control({"type": "flash_control", "action": "start", "step": "arm", "id": ARM_ID}) is None
+    click(p, {"type": "flash_control", "action": "stop"})
+    clock["mono"] += 1
+    click(p, fire_msg())
+    assert [c[0] for c in post.calls] == ["stop"]
+    assert results(p)[-1] == {"action": "start", "ok": False, "error": "not_confirmed"}
+    assert out_lines(capsys)[-1].endswith("（not_confirmed：no_arm）")
+    p, clock = control_pipeline(tmp_path / "resume", post=post)
+    poll(p, clock, paused_doc("user_interaction"))
+    click(p, {"type": "flash_control", "action": "resume"})
+    assert results(p) == [dict(ACCEPTED, action="resume")]
+
+
+@pytest.mark.parametrize("msg", [
+    {"type": "flash_control", "action": "start", "step": "arm", "id": ARM_ID},
+    {"type": "flash_control", "action": "start", "step": "fire", "id": ARM_ID},
+    {"type": "flash_control", "action": "start"},
+    {"type": "flash_control", "action": "resume"},
+])
+def test_a_local_script_can_only_stop(msg, tmp_path, capsys):
+    """没带 Origin 的本机进程（app/server.py 的 CONTROL_SOURCE 是 local）发开始、继续：不读密钥、不发，结果 local_only，
+    哪一步都一样（控制页刚点过的第一下它也借不走，也碰不掉）。停止照发（安全的方向）。"""
+    post, token = FakePost(), FakeToken()
+    p, clock = control_pipeline(tmp_path, post=post, token=token)
+    poll(p, clock, paused_doc("user_interaction"))
+    p._flash_arm = page_arm = {"id": ARM_ID, "at": clock["mono"] - 1}   # 控制页 1 秒前点了第一下
+    source = CONTROL_SOURCE.set("local")
+    try:
+        click(p, msg)
+        assert token.calls == 0 and post.calls == []
+        assert results(p) == [{"action": msg["action"], "ok": False, "error": "local_only"}]
+        assert p._flash_arm is page_arm
+        assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求{} → 没有发出（local_only）".format(NAMES[msg["action"]])
+        click(p, {"type": "flash_control", "action": "stop"})
+    finally:
+        CONTROL_SOURCE.reset(source)
+    assert post.calls == [("stop", FAKE_TOKEN, "http://127.0.0.1:9")]
+    assert results(p)[-1] == dict(ACCEPTED, action="stop")
+
+
+def test_the_server_tells_a_page_from_a_local_script(tmp_path):
+    """端到端：真的 CaptionServer._ws 把连接种类交给 handle_control（CONTROL_SOURCE）。没带 Origin 的连接发开始、继续回
+    local_only、发停止照发；带本机同端口 Origin 的页面点两下开始照发。来源只在处理那一条消息时有效：不串到别的连接，
+    也不留在别处（直接调 handle_control 的地方照旧算控制页）。"""
+    post = FakePost()
+    p, clock = control_pipeline(tmp_path, post=post)
+    p.server.port = 8790                       # 只拿来认 Origin 的端口，不监听
+    p.server.on_control = p.handle_control
+
+    async def settle():
+        await asyncio.sleep(0.1)
+        await asyncio.gather(*list(p._bg_tasks))
+
+    async def body(client):
+        await apoll(p, clock, sample("idle"))
+        script = await client.ws_connect("/ws")
+        page = await client.ws_connect("/ws", headers={"Origin": "http://127.0.0.1:8790"})
+        await drain(script)
+        await drain(page)
+        await script.send_json({"type": "flash_control", "action": "start", "step": "arm", "id": ARM_ID})
+        await script.send_json({"type": "flash_control", "action": "start"})
+        await script.send_json({"type": "flash_control", "action": "resume"})
+        await settle()
+        assert post.calls == [] and p._flash_arm is None
+        await page.send_json({"type": "flash_control", "action": "start", "step": "arm", "id": ARM_ID})
+        await settle()
+        clock["mono"] += 1
+        await page.send_json({"type": "flash_control", "action": "start", "step": "fire", "id": ARM_ID})
+        await settle()
+        await script.send_json({"type": "flash_control", "action": "stop"})
+        await settle()
+        assert CONTROL_SOURCE.get() == "page"
+        await script.close()
+        await page.close()
+
+    asyncio.run(with_client(p.server, body))
+    assert [c[0] for c in post.calls] == ["start", "stop"]
+    got = [(r["action"], r["error"]) for r in results(p)]
+    assert collections.Counter(got[:3]) == collections.Counter(
+        [("start", "local_only"), ("start", "local_only"), ("resume", "local_only")])
+    assert got[3:] == [("start", None), ("stop", None)]
+
+
+def test_a_direct_handle_control_counts_as_the_control_page():
+    """不经过 _ws 的调用（测试、老写法）拿到缺省的 page：按控制页算。"""
+    assert CONTROL_SOURCE.get() == "page"
 
 
 # ---- 慢页面：广播真的让出事件循环 ------------------------------------------------------------------
@@ -1532,7 +1706,7 @@ def test_a_poll_and_a_command_publishing_at_once_leave_the_page_on_the_newest_ph
 def test_once_the_status_shows_the_command_took_effect_the_wait_ends(action, before, after, tmp_path, capsys):
     p, clock = control_pipeline(tmp_path)
     poll(p, clock, sample(before))
-    click(p, {"type": "flash_control", "action": action})
+    press(p, clock, action)
     clock["mono"] += 3
     poll(p, clock, sample(before))
     assert p._flash_ctl["phase"] == "waiting"
@@ -1560,7 +1734,7 @@ def test_thirty_seconds_without_effect_is_reported_once_as_not_seen(tmp_path, ca
     边界：差 0.1 秒还在等，正好 30 秒那一跳收掉、发 not_seen；之后不再发。"""
     p, clock = control_pipeline(tmp_path)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     accepted_at = clock["mono"]
     for t in range(3, fs.CONTROL_WAIT_SEC, 3):
         clock["mono"] = accepted_at + t
@@ -1683,13 +1857,13 @@ def test_control_terminal_output_is_identical_in_both_ui_languages(tmp_path, cap
         p, clock = control_pipeline(tmp_path / lang)
         with i18n.use(lang):
             poll(p, clock, sample("idle"))
-            click(p, {"type": "flash_control", "action": "start"})
+            press(p, clock, "start")
             p._flash_post = FakePost(result="busy")
             click(p, {"type": "flash_control", "action": "stop"})
             clock["mono"] += fs.CONTROL_WAIT_SEC
             poll(p, clock, sample("idle"))
             p._flash_read_token = FakeToken((None, "missing"))
-            click(p, {"type": "flash_control", "action": "start"})
+            press(p, clock, "start")
             poll(p, clock, ("unreachable", None))
             click(p, {"type": "flash_control", "action": "stop"})
         return capsys.readouterr().out.encode("utf-8"), [m["type"] for m in p.server.sent], results(p)
@@ -1719,7 +1893,7 @@ def test_the_whole_chain_against_a_fake_helper_on_a_local_port(tmp_path):
                                         token=lambda: fs.read_control_token(token_path))
             p._flash_ctl_base = "http://127.0.0.1:%d" % server.port
             await apoll(p, clock, sample("idle"))
-            assert p.handle_control({"type": "flash_control", "action": "start"}) is None
+            assert tap(p, clock, "start") is None
             await asyncio.gather(*list(p._bg_tasks))
             return p
         finally:
@@ -1752,7 +1926,7 @@ def test_after_start_is_accepted_a_reloading_page_stays_calm_for_thirty_seconds(
     page 和 stale 这两个观察照旧在状态里，只是不进 attention。"""
     p, clock = control_pipeline(tmp_path)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     accepted_at = clock["mono"]
     for t in (3, 6, 21, 27, fs.CONTROL_WAIT_SEC - 0.1):
         clock["mono"] = accepted_at + t
@@ -1771,7 +1945,7 @@ def test_the_quiet_window_ends_as_soon_as_start_takes_effect(tmp_path):
     """同一个窗口：running 变 true（生效了）就收掉 control，之后页面再出错照原规则提醒，不再安静到 30 秒。"""
     p, clock = control_pipeline(tmp_path)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     clock["mono"] += 3
     poll(p, clock, reloading_doc("error"))
     assert p.server.config["flash_sale"]["attention"] == []
@@ -1804,7 +1978,7 @@ def test_start_that_takes_effect_before_the_list_is_back_stays_calm_for_thirty_s
     这段时间照样不变色。30 秒那一跳收掉、照原规则提醒；看到过生效，不发 not_seen。"""
     p, clock = control_pipeline(tmp_path)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     accepted_at = clock["mono"]
     out_lines(capsys)
     for t in (3, 6, 21, 27, fs.CONTROL_WAIT_SEC - 0.1):
@@ -1828,7 +2002,7 @@ def test_after_start_takes_effect_the_window_closes_once_the_list_is_back(tmp_pa
     （no_list）→ 回到列表（ok）。"""
     p, clock = control_pipeline(tmp_path)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     out_lines(capsys)
     clock["mono"] += 3
     poll(p, clock, started_doc("loading"))
@@ -1859,7 +2033,7 @@ def test_after_start_takes_effect_a_stale_or_lost_status_does_not_close_the_wind
     - 生效以后连着两跳查不到（第二跳发布空状态）：看不到页面，不收；再连上时列表还没回来，照样不变色。"""
     p, clock = control_pipeline(tmp_path)
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     accepted_at = clock["mono"]
     clock["mono"] = accepted_at + 3
     poll(p, clock, started_doc("loading"))
@@ -1875,7 +2049,7 @@ def test_after_start_takes_effect_a_stale_or_lost_status_does_not_close_the_wind
 
     p, clock = control_pipeline(tmp_path / "lost")
     poll(p, clock, sample("idle"))
-    click(p, {"type": "flash_control", "action": "start"})
+    press(p, clock, "start")
     clock["mono"] += 3
     poll(p, clock, started_doc("loading"))
     for _ in range(2):
@@ -1898,7 +2072,7 @@ def test_while_start_is_still_in_flight_a_page_error_is_not_quiet(tmp_path):
         gate = asyncio.Event()
         p, clock = control_pipeline(tmp_path, post=FakePost(gate=gate))
         await apoll(p, clock, sample("idle"))
-        p.handle_control({"type": "flash_control", "action": "start"})
+        tap(p, clock, "start")
         await asyncio.sleep(0.01)
         clock["mono"] += 3
         await apoll(p, clock, reloading_doc("error"))

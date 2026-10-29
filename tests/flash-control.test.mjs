@@ -435,6 +435,24 @@ test("「开始」点两下：第一下武装；武装后 400 毫秒内的第二
   assert.equal(F.flashStartClick(t, NaN), "arm");
 });
 
+test("不用浏览器自带的确认框（直播助手平台轮廓 §4.4，R17）：它弹着时整个页面的脚本停住，字幕和报警都不刷新", () => {
+  const { readFileSync } = require("node:fs");
+  const src = readFileSync(require.resolve("../web/flash.js"), "utf8");
+  assert.ok(!/\bconfirm\s*\(/.test(src), "web/flash.js 里不许有 confirm(");
+});
+
+test("「开始」第一下的编号：16 位十六进制，每次新的；和后端 flash_sale.ARM_ID 认的字符对得上", () => {
+  const ids = new Set();
+  for (let i = 0; i < 50; i++) {
+    const id = F.flashNewArmId();
+    assert.match(id, /^[0-9a-f]{16}$/);
+    ids.add(id);
+  }
+  assert.equal(ids.size, 50);
+  assert.equal(F.flashNewArmId(() => 0), "0".repeat(16));
+  assert.equal(F.flashNewArmId(() => 0.9999999), "f".repeat(16));
+});
+
 // ---- 结果的话 ---------------------------------------------------------------------------------
 
 const result = (error, action = "start") => F.flashResultLine({ type: "flash_control_result", action, ok: false, error });
@@ -450,6 +468,8 @@ test("接受了不写（状态自己会说）；本程序这边的代码说走�
     bad_reply: "发出了，但回话读不出来。看看状态有没有变。",
     no_control: "这个版本的闪购助手没有控制接口。",
     failed: "没能处理这个指令：本程序出错，详情在终端里。",
+    local_only: "没有发出：本机脚本只能让闪购助手停止，开始、继续要在本程序里点。",
+    not_confirmed: "没有发出：「开始」要点两下，第二下在第一下之后 0.4 到 6 秒之间才算。请再点两下。",
   };
   for (const [code, text] of Object.entries(want)) {
     assert.deepEqual(result(code), { text }, code);

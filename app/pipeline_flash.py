@@ -18,7 +18,9 @@ float_window）。是否安装只在启动时判一次。不在 Pipeline.__init_
 记录正文，也绝不打印控制密钥。
 
 控制（_flash_control）谁能发：本机控制页，以及没带 Origin 的本机进程（curl、本地脚本；app/server.py 把它们
-也当控制面）。所以闪购控制的安全边界是「连得上本机 127.0.0.1 的控制端口」，不是密钥文件的 600 权限。同一用户的
+也当控制面）。后者只能发停止：开始、继续回 local_only（app/server.py CONTROL_SOURCE，直播助手平台轮廓 §5.6）。
+「开始」还要点两下、两下都到后端（step=arm、step=fire，见 _flash_take_arm）。这两条防的是误触和「只发一条消息的
+脚本」，不是安全边界：所以闪购控制的安全边界仍是「连得上本机 127.0.0.1 的控制端口」，不是密钥文件的 600 权限。同一用户的
 进程本来就能直接读那个文件、自己去 POST 9334，借这条路不多得什么；多出来的只是连得上回环、却读不到这个用户
 ~/Library 的进程（别的账户、带网络权限的沙盒应用），在单用户的中控电脑上可以接受（没带 Origin 的连接现在
 本来就能发 disk_delete、apply_update）。剩下一个契约本身的限制：有进程占了 9334、照着契约回 /status，
@@ -34,12 +36,14 @@ from urllib.parse import urlsplit
 
 from . import flash_sale
 from .i18n import L
+from .server import CONTROL_SOURCE
 
 # 终端行里的动作名（终端永远是中文）
 _CTL_NAMES = {"start": "开始", "stop": "停止", "resume": "继续"}   # i18n: terminal
 # 闪购助手没有接受以外的几种结果在终端怎么说（页面拿到的是同一个代码，文案在 web/flash.js）
 _CTL_OUTCOMES = {"no_status": "没有发出", "no_token": "没有发出", "unreachable": "连不上",
-                 "no_answer": "没有回话", "bad_reply": "回话读不出", "failed": "出错"}   # i18n: terminal
+                 "no_answer": "没有回话", "bad_reply": "回话读不出", "failed": "出错",
+                 "local_only": "没有发出", "not_confirmed": "没有发出"}   # i18n: terminal
 _CTL_REFUSED = "没有接受"   # i18n: terminal
 
 
@@ -62,6 +66,9 @@ class FlashSaleMixin:
         # 发布时只带 action 和 phase（见 _flash_compose）
         self._flash_ctl = None
         self._flash_logged = set()      # 已经打过的异常种类、schema：同一种只打一次
+        # 「开始」的第一下（{"id", "at"}，at 是单调时钟）：控制页发 step=arm 时记下，step=fire 来时取走（只用一次），
+        # 停止也把它清掉。见 _flash_take_arm
+        self._flash_arm = None
         # 可注入（同 _brand_dir_opener）：测试换成假的，绝不碰本机真的 9334、绝不读本机真的控制密钥，
         # 也不真的执行 open。地址和密钥位置取的是此刻模块里的值（tests/conftest.py 已换掉）
         self._flash_fetch = flash_sale.fetch_status
@@ -314,8 +321,12 @@ class FlashSaleMixin:
         - 没装（演示模式也是这样）、动作不在白名单里：什么都不做（页面上本来没有这样的按钮）；
         - 开始、继续，发布闸关着（flash_sale.START_ENABLED）：什么都不做，终端一行（页面上这时没有这两颗按钮）。
           停止不受闸管；
+        - 开始、继续来自没带 Origin 的本机进程（CONTROL_SOURCE 是 local）：不发，结果 error=local_only。停止照发；
         - 上一个指令还在途（phase=sending）：什么都不做。页面那边按钮是禁用的（发布的状态里 control.phase 是
           sending），连点、两个控制页同时点，都只发一个；
+        - 开始：{"step": "arm", "id": 编号} 只记下第一下（_flash_take_arm），不回话；要等同一个编号的 {"step": "fire"}
+          在 START_GUARD_SEC 到 START_CONFIRM_SEC 秒之间到，才往下走。不是这样的（没带 step、没有 arm、编号对不上、
+          太快、太晚）不发，结果 error=not_confirmed，终端带是哪一种。继续点一下就发；
         - 停止：不看上一次轮询读得怎么样，放后台当场读一次 /status 再发，没被接受的按 flash_sale.STOP_RETRY_CODES
           再试（_flash_stop_run）。已经在等着再试（phase=retrying）时再点停止：什么都不做；
         - 开始、继续：停止正在等着再试（phase=retrying）的话，那些还没发的重试作废（直播助手平台轮廓 §5.5：你又点了
@@ -331,10 +342,22 @@ class FlashSaleMixin:
         if action != "stop" and flash_sale.START_ENABLED is not True:
             print("[信息] 闪购助手：中控请求{} → 没有发出（开始、继续还没开放）".format(_CTL_NAMES[action]))
             return None
+        if action != "stop" and CONTROL_SOURCE.get() != "page":
+            self._spawn(self._flash_control_refused(action, "local_only"))
+            return None
         ctl = self._flash_ctl
         if ctl is not None and ctl["phase"] == "sending":
             return None
+        if action == "start":
+            if msg.get("step") == "arm":
+                self._flash_arm_start(msg.get("id"))
+                return None
+            problem = self._flash_take_arm(msg)
+            if problem is not None:
+                self._spawn(self._flash_control_refused(action, "not_confirmed", problem))
+                return None
         if action == "stop":
+            self._flash_arm = None          # 停下了：之前点的第一下作废
             if ctl is not None and ctl["phase"] == "retrying":
                 return None
             self._flash_ctl = {"action": "stop", "phase": "sending", "until": None}
@@ -351,6 +374,31 @@ class FlashSaleMixin:
             return None
         self._flash_ctl = {"action": action, "phase": "sending", "until": None}
         self._spawn(self._flash_control_run(action, ctl))
+        return None
+
+    def _flash_arm_start(self, arm_id):
+        """「开始」的第一下：记下编号和此刻（单调时钟）。编号不是 1–64 个字母、数字、_、- 的不记（之后的 fire 就是 no_arm）。
+        再点一次第一下（这一页或别的控制页）就换成新的这一个。"""
+        if isinstance(arm_id, str) and flash_sale.ARM_ID.fullmatch(arm_id):
+            self._flash_arm = {"id": arm_id, "at": self._flash_mono()}
+
+    def _flash_take_arm(self, msg):
+        """「开始」的第二下（step=fire）对不对得上第一下：None = 对得上；否则是原因（终端用）：no_step（没带 step=fire，
+        比如旧页面、脚本只发一条）、no_arm（前面没有 arm，或已经用掉、被停止清掉了）、other_arm（编号不是最近那次 arm 的）、
+        too_soon（离 arm 不到 START_GUARD_SEC 秒：双击一次）、too_late（满 START_CONFIRM_SEC 秒）。
+        不管对不对得上，arm 都用掉了（只认一次）：要开始就再点两下。"""
+        arm, self._flash_arm = self._flash_arm, None
+        if msg.get("step") != "fire":
+            return "no_step"
+        if arm is None:
+            return "no_arm"
+        if msg.get("id") != arm["id"]:
+            return "other_arm"
+        gap = self._flash_mono() - arm["at"]
+        if gap < flash_sale.START_GUARD_SEC:
+            return "too_soon"
+        if gap >= flash_sale.START_CONFIRM_SEC:
+            return "too_late"
         return None
 
     async def _flash_control_refused(self, action, error, detail=None):

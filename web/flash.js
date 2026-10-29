@@ -42,6 +42,8 @@ var FLASH_ATTN_ORDER = ["stale", "page", "paused", "stuck", "bad_response"];
 // 开始、停止、继续（docs/flash-sale.md §9）
 var FLASH_ACTIONS = ["start", "stop", "resume"];        // 同后端 flash_sale.CONTROL_ACTIONS
 var FLASH_CONTROL_SINCE = [0, 8, 0];                     // 闪购助手从这个版本起才有控制接口（契约「控制(0.8.0 起)」）
+// 「开始」点两下，两下都发给后端（第一下 step=arm、第二下 step=fire，带同一个编号），后端照同样的两个数再判一次
+// （app/flash_sale.py START_CONFIRM_SEC、START_GUARD_SEC，tests/test_flash_sale.py 钉着两边一样）
 var FLASH_START_CONFIRM_MS = 6000;                       // 「开始」点了第一下以后这么久里再点才发，到点复原（同清空字幕）
 var FLASH_START_GUARD_MS = 400;                          // 武装后这么快的第二下不算：双击一次不该就发出去（开始会刷新页面）
 // 停止没被接受时后端再试（同后端 flash_sale.STOP_RETRY_SEC、STOP_RETRY_GAP_SEC，tests/test_flash_sale.py 钉着两边一样）
@@ -49,7 +51,8 @@ var FLASH_STOP_RETRY_SEC = 30;
 var FLASH_STOP_RETRY_GAP_SEC = 3;
 // flash_control_result 的 error 里本程序自己的代码，同后端 flash_sale.CONTROL_OWN_ERRORS（tests/test_flash_sale.py 钉着）；
 // 其余的是 http_<状态码>，或者闪购助手 409 给的代码
-var FLASH_OWN_ERRORS = ["no_status", "no_token", "unreachable", "no_answer", "bad_reply", "no_control", "failed", "not_seen"];
+var FLASH_OWN_ERRORS = ["no_status", "no_token", "unreachable", "no_answer", "bad_reply", "no_control", "failed", "not_seen",
+                        "local_only", "not_confirmed"];
 var FLASH_READY_PAGES = ["ok", "no_list"];               // 能开始、继续的页面状态（decisions-step2：其余的开始不可用）
 // 开始、继续被接受、等生效的那段时间里不算要人处理的页面状态，同后端 flash_sale.START_QUIET_PAGES
 var FLASH_QUIET_PAGES = ["loading", "error", "no_list"];
@@ -670,6 +673,15 @@ function flashStartClick(armedAt, now) {
   return d < FLASH_START_GUARD_MS ? "ignore" : "send";
 }
 
+/* 「开始」第一下的编号：16 位十六进制。只用来让后端把第二下（fire）和这一下（arm）对上，不是口令，Math.random 就够；
+ * rand 给测试换 */
+function flashNewArmId(rand) {
+  var r = typeof rand === "function" ? rand : Math.random;
+  var out = "";
+  for (var i = 0; i < 16; i++) out += "0123456789abcdef".charAt(Math.floor(r() * 16) & 15);
+  return out;
+}
+
 /* 本程序这边的代码（FLASH_OWN_ERRORS）的那句话。「没有发出」「发出了」照后端走到了哪一步写；认不出返回 null */
 function flashOwnErrorText(code, action) {
   switch (code) {
@@ -693,6 +705,12 @@ function flashOwnErrorText(code, action) {
       if (action === "stop") return L("30 秒内没看到闪购助手停下。", "Flash Sale Helper didn’t show as stopped within 30 sec.");
       if (action === "resume") return L("30 秒内没看到闪购助手继续运行。", "Flash Sale Helper didn’t show as resumed within 30 sec.");
       return null;
+    case "local_only":     // 没带 Origin 的本机进程发的开始、继续（后端 app/server.py CONTROL_SOURCE）
+      return L("没有发出：本机脚本只能让闪购助手停止，开始、继续要在本程序里点。",
+               "Not sent: A local script can only stop Flash Sale Helper. Start and Resume have to be clicked in this app.");
+    case "not_confirmed":  // 后端没看到对得上的两下（FLASH_START_GUARD_MS 到 FLASH_START_CONFIRM_MS 之间）
+      return L("没有发出：「开始」要点两下，第二下在第一下之后 0.4 到 6 秒之间才算。请再点两下。",
+               "Not sent: Start needs two clicks, the second 0.4 to 6 sec after the first. Click twice again.");
     default: return null;
   }
 }
@@ -964,7 +982,7 @@ if (typeof module !== "undefined" && module.exports) {
     flashWaitingRenewal, flashRank, flashPosition, flashSortProducts, flashSummaryParts, flashSummary, flashProductParts,
     flashRowsToShow, flashMoreText, flashAlertsToShow,
     flashVersionParts, flashVersionOlder, flashControlTooOld, flashControlDone, flashActiveControl, flashStarting, flashStartingText,
-    flashWaitingText, flashNotReadyNote, flashRetryingNote, flashControlView, flashStartClick, flashOwnErrorText,
+    flashWaitingText, flashNotReadyNote, flashRetryingNote, flashControlView, flashStartClick, flashNewArmId, flashOwnErrorText,
     flashRefusedText, flashStopBlockedText, flashResultLine, FLASH_STOP_RETRY_SEC, FLASH_STOP_RETRY_GAP_SEC,
     renderFlashPanel, flashTick, renderFlashControls, renderFlashNote,
   };

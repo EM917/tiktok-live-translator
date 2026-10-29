@@ -62,6 +62,14 @@ CONTROL_ACTIONS = ("start", "stop", "resume")
 # 第 3 步）都合进来再打开（§9.2 第 8 条，用户 10-29 同意）。关着时页面不画「开始」「继续」，后端也不发；停止不受它管
 # （停是安全的方向）。改成 True 就是开闸；回退就是改回 False。测闸某一边的语义要显式 monkeypatch 它
 START_ENABLED = False
+# 「开始」点两下，两下都要到后端（直播助手平台轮廓 §4.4、§5.6，§9.2 第 6 条，用户 10-29 同意）：页面第一下发
+# {"step": "arm", "id": 编号}，第二下发 {"step": "fire", "id": 同一个编号}；后端记下 arm 到的时刻（单调时钟），fire 离它
+# START_GUARD_SEC 秒以内（双击一次）或 START_CONFIRM_SEC 秒以上的、编号对不上的、前面没有 arm 的，一律不转发
+# （not_confirmed）。同前端 FLASH_START_GUARD_MS、FLASH_START_CONFIRM_MS（tests/test_flash_sale.py 钉着两边一样）。
+# 编号由页面生成，只用来把 fire 和它前面那个 arm 对上，不是口令
+START_GUARD_SEC = 0.4
+START_CONFIRM_SEC = 6
+ARM_ID = re.compile(r"[0-9A-Za-z_-]{1,64}")
 CONTROL_BODY = b'{"source":"tlt"}'
 CONTROL_REPLY_MAX = 4096     # 回话只有 {"ok":…,"error":…} 这么一小段
 # 指令被接受以后最多等这么久看它生效，这期间每 3 秒查一次 /status（契约：开始后真实页面一般 5–15 秒 running
@@ -82,8 +90,10 @@ STOP_RETRY_CODES = ("unreachable", "no_answer", "busy", "loading", "no_response"
 #   no_control   404 / 405：这个版本没有控制接口
 #   failed       后端自己出错（终端有异常的类型名）
 #   not_seen     已接受，但 CONTROL_WAIT_SEC 秒内没看到生效（接受之后另发的第二条结果）
+#   local_only   开始、继续来自没带 Origin 的本机进程（app/server.py CONTROL_SOURCE）：本机脚本只能停，没发
+#   not_confirmed  开始没有对得上的两下（START_GUARD_SEC、START_CONFIRM_SEC）：没发
 CONTROL_OWN_ERRORS = ("no_status", "no_token", "unreachable", "no_answer", "bad_reply", "no_control",
-                      "failed", "not_seen")
+                      "failed", "not_seen", "local_only", "not_confirmed")
 # 控制密钥：~/Library/Application Support/FlashSaleHelper/control-token，64 位十六进制（32 字节），权限 600
 TOKEN_DIR = ("Library", "Application Support", "FlashSaleHelper")
 TOKEN_NAME = "control-token"

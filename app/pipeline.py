@@ -716,9 +716,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 立刻返回。只有本机页面发得出来：手机入站只认 retranslate，浮窗页的入站一律丢弃
             return self._open_flash_helper()
         elif mtype == "flash_control":
-            # 同一个浮层里的「开始」「停止」「继续」（闪购助手 0.8.0 起）：只读 action，动作写死白名单、地址写死
-            # 127.0.0.1:9334，带着控制密钥 POST 过去。放后台发、立刻返回，结果另发 flash_control_result。
-            # 手机入站只认 retranslate，浮窗页的入站一律丢弃；没带 Origin 的本机进程也算控制面，所以安全边界是
+            # 同一个浮层里的「开始」「停止」「继续」（闪购助手 0.8.0 起）：只读 action（开始另读 step、id：点两下，
+            # 两下都到后端），动作写死白名单、地址写死 127.0.0.1:9334，带着控制密钥 POST 过去。放后台发、立刻返回，
+            # 结果另发 flash_control_result。手机入站只认 retranslate，浮窗页的入站一律丢弃；没带 Origin 的本机进程
+            # 也算控制面，但只能发停止（server.CONTROL_SOURCE，开始、继续回 local_only），所以安全边界仍是
             # 「连得上本机控制端口」，不是密钥文件的权限（见 app/pipeline_flash.py 文件头）
             return self._flash_control(msg)
         elif mtype == "open_guard_dir":
