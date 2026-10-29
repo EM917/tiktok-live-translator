@@ -514,45 +514,78 @@ def _space_before(text):
 
 
 SAFARI_LOGIN_STEPS = L("请在 Safari 里登录 TikTok。", "Sign in to TikTok in Safari.")
-# 「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时，最后一行的开头（no_login_notice）
-SELFCHECK_POINTER = L("（这些步骤在自检「浏览器登录态」一行里也有。）",
-                      "(These steps are also in the Browser Login row of Settings > Startup Check.)")
+# 中控点名了别的浏览器时，登录优先那一步读的就是它（resolver._login_first_browsers），叫人去登录的那一步按它写
+_SIGN_IN_STEPS = L("请在 {} 里登录 TikTok。", "Sign in to TikTok in {}.")
+# 读得到（或者还没有 cookie 库）、只是里面没有可用的登录：能照做的一步是去登录
+_SIGN_IN_CODES = (NOT_LOGGED_IN, NO_TIKTOK, NO_DATA, READABLE)
 
 
-def no_login_notice(login):
-    """一个可用的 TikTok 登录都没读到时，挂在界面顶部的那条持续提示（不挡开播，读到登录
-    就撤）。写三件事：看到了什么、这意味着哪类直播间拿不到、能照做的步骤。
+def no_login_notice(login, seen=None):
+    """登录优先那一步（resolver.LOGIN_LAYER）没读到可用的 TikTok 登录时，挂在界面顶部的那条持续提示（不挡开播，
+    那一步读到登录就撤）。写三件事：那一步读了什么、看到了什么；能照做的步骤；这意味着哪类直播间拿不到。
 
-    2026-09-17 实测：有的直播间，TikTok 给未登录访问的直播页里没有流地址，带登录去抓才有。
-    macOS 上程序先读 Safari（见 resolver._installed_browsers），所以步骤说的是 Safari。"""
+    login 是那一步的观察 {浏览器: 代码}：没点名浏览器时只有 Safari（resolver._login_first_browsers）。seen 是同一次
+    解析里各层的观察合在一起（pipeline._login_seen），只用来照实补一句「后面几步借用了 Chrome 里的登录」。
+
+    2026-10-29 新 Mac 上的第一场：这条提示的头一句是「程序没有读到浏览器里的 TikTok 登录——Safari：系统拒绝读取」，
+    第一行的动作是「请在 Safari 里登录 TikTok」；同一时刻自检写着「Chrome：读到了 TikTok 登录」，后面几层也借用了
+    Chrome 的登录。中控 Safari 里早就登录着，照第一行去做是白忙，真正要做的授权几步折在「显示全部步骤」后面；最后
+    一行指向的自检「浏览器登录态」那一行，因为 Chrome 读到了登录是「通过」、不带步骤，直播中设置分组又整块收着。现在：
+      * 头一句只说登录优先那一步读了什么、看到了什么，不再说「没有读到浏览器里的 TikTok 登录」；
+      * 系统拒绝读取时，第一行的动作就是授权：fda_steps 的头一句接在第一行末尾，几步和路径在下面
+        （页面上超过 3 行的持续提示只露第一行和「显示全部步骤」，web/app.js foldIncident）；
+      * 「请在 Safari 里登录」只在那一步读得到、里面没有登录时出现；
+      * 不再指向自检那一行：步骤就在这条提示里。
+    影响哪类直播间和「自动消失」放在最后（分行时单独成最后一行，不接在权限范围那句后面，审查第 1 轮）。"""
     login = {b: c for b, c in (login or {}).items() if c != NOT_READ}
     codes = set(login.values())
-    head = _NO_LOGIN_HEAD.format(observed_text(login) or L("没有找到可读取的浏览器", "No readable browser found"))
+    head = _first_step_head(login) + _space_before(_borrowed_later(login, seen))
     if BLOCKED in codes:
-        # 带「完全磁盘访问权限」那几步时分行写（审查第 1 轮）：第一行是看到了什么、影响哪类直播间、在 Safari 里
-        # 登录——页面上超过 3 行的持续提示默认只露这一行和「显示全部步骤」（web/app.js foldIncident），它读到登录
-        # 之前一直挂在顶部、直播中也在，全展开 1000 宽下八九行。完全磁盘访问权限那几步（fda_steps，最后一行是
-        # 权限范围）、钥匙串各自另起一行；自检指引和「自动消失」放在最后单独一行，不接在权限范围那句后面
-        # （接在后面，「这些步骤」容易被读成是在说权限范围那句）
-        lines = [head + _space_before(SAFARI_LOGIN_STEPS), FDA_OBSERVED + fda_steps()]
+        lines = [head + _space_before(fda_steps())]
         if KEYCHAIN_WAIT in codes:
             lines.append(KEYCHAIN_STEPS)
-        lines.append(SELFCHECK_POINTER + _space_before(_NO_LOGIN_TAIL))
+        lines.append(_NO_LOGIN_IMPACT + _space_before(_NO_LOGIN_TAIL))
         return L("\n", "\n").join(lines)
-    steps = [SAFARI_LOGIN_STEPS]
+    steps = []
+    sign_in = [b for b, c in login.items() if c in _SIGN_IN_CODES]
+    if sign_in:
+        steps.append(SAFARI_LOGIN_STEPS if sign_in == ["safari"]
+                     else _SIGN_IN_STEPS.format(L("、", ", ").join(label(b) for b in sign_in)))
+    if CANNOT_DECRYPT in codes:
+        steps.append(decrypt_steps([b for b, c in login.items() if c == CANNOT_DECRYPT]))
     if KEYCHAIN_WAIT in codes:
         steps.append(KEYCHAIN_STEPS)
     # 只有一行：中文句子直接相连，英文句子之间一个空格
-    return head + _space_before(L("", " ").join(steps)) + _space_before(_NO_LOGIN_TAIL)
+    return (head + _space_before(_NO_LOGIN_IMPACT) + _space_before(L("", " ").join(steps))
+            + _space_before(_NO_LOGIN_TAIL))
 
 
-_NO_LOGIN_HEAD = L("程序没有读到浏览器里的 TikTok 登录——{}。有的直播间 TikTok 只把流地址给已登录的"
-                   "观众，读到登录之前这类直播间可能解析不出流地址；其余直播间照常监听，监听不会"
-                   "因此停下。",
-                   "The app didn’t find a TikTok sign-in in your browsers. {}. For some live streams, "
-                   "TikTok provides the stream URL only to signed-in viewers, so those live streams "
-                   "may not get a stream URL until a sign-in is found. Other live streams are "
-                   "monitored as usual.")
+def _first_step_head(login):
+    """持续提示的头一句：登录优先那一步读了哪个浏览器、看到了什么。"""
+    if not login:
+        return L("解析流地址时，登录优先这一步没有找到可读取的浏览器。",
+                 "When looking up the stream URL, the app’s first step didn’t find a browser it could "
+                 "read a TikTok sign-in from.")
+    return L("解析流地址时，登录优先这一步只读 {} 里的 TikTok 登录——{}。",
+             "When looking up the stream URL, the app first reads the TikTok sign-in from {} only. "
+             "{}.").format(L("、", ", ").join(label(b) for b in login), observed_text(login))
+
+
+def _borrowed_later(login, seen):
+    """同一次解析里，登录优先那一步以外的浏览器读到了登录（后面几步借用了它）：照实说一句。没有就是空串。"""
+    others = [b for b, c in (seen or {}).items() if c == OK and b not in login]
+    if not others:
+        return ""
+    return L("同一次解析里，后面几步借用了 {} 里的 TikTok 登录。",
+             "Later steps of the same lookup used the TikTok sign-in from {}.").format(
+                 L("、", ", ").join(label(b) for b in others))
+
+
+_NO_LOGIN_IMPACT = L("有的直播间 TikTok 只把流地址给已登录的观众，这一步读到登录之前，这类直播间可能解析不出"
+                     "流地址；其余直播间照常监听，监听不会因此停下。",
+                     "For some live streams, TikTok provides the stream URL only to signed-in viewers, so "
+                     "those live streams may not get a stream URL until this step finds a sign-in. Other "
+                     "live streams are monitored as usual.")
 _NO_LOGIN_TAIL = L("读到登录后这条提示自动消失。", "This notice disappears once a sign-in is found.")
 
 

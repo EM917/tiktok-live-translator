@@ -25,7 +25,7 @@ from app import browser_login as bl
 from app import i18n
 from app import pipeline as pipeline_mod
 from app import resolver, selfcheck
-from app.i18n import CJK
+from app.i18n import CJK, L
 from app.pipeline import Pipeline, browser_only_message
 from tests.helpers import run
 from tests.i18n_rules import EN_CAUSAL, EN_LABELS, ZH_CAUSAL
@@ -1056,29 +1056,41 @@ def test_each_step_after_the_permission_scope_starts_a_line(monkeypatch, login, 
     assert i18n.render(bl.steps_text(login), lang).endswith(scope + (("" if lang == "zh" else " ") + nxt if nxt else ""))
 
 
+_ZH_HEAD = "解析流地址时，登录优先这一步只读 Safari 里的 TikTok 登录——Safari：系统拒绝读取。"
+_EN_HEAD = ("When looking up the stream URL, the app first reads the TikTok sign-in from Safari only. "
+            "Safari: macOS didn’t allow access.")
+_ZH_IMPACT_TAIL = ("有的直播间 TikTok 只把流地址给已登录的观众，这一步读到登录之前，这类直播间可能解析不出流地址；"
+                   "其余直播间照常监听，监听不会因此停下。读到登录后这条提示自动消失。")
+_EN_IMPACT_TAIL = ("For some live streams, TikTok provides the stream URL only to signed-in viewers, so those "
+                   "live streams may not get a stream URL until this step finds a sign-in. Other live streams "
+                   "are monitored as usual. This notice disappears once a sign-in is found.")
+
+
 @pytest.mark.parametrize("login", [
     {"safari": "blocked_by_system"},
     {"safari": "blocked_by_system", "chrome": "keychain_wait"},
 ])
 @pytest.mark.parametrize("lang", ["zh", "en"])
 def test_no_login_notice_with_the_fda_steps_is_split_into_lines(monkeypatch, login, lang):
-    """「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时：第一行是看到了什么、影响哪类直播间、在 Safari 里
-    登录（页面折叠时只露这一行，web/app.js foldIncident）；那几步原样连在一起、权限范围单独一行；自检指引和「自动消失」
-    在最后单独一行，不接在权限范围后面（「这些步骤」会被读成是在说权限范围）。"""
+    """「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时：第一行是登录优先那一步看到了什么、加上授权那几步
+    的头一句（页面折叠时只露这一行，web/app.js foldIncident；2026-10-29 以前第一行的动作是「请在 Safari 里登录」，Safari
+    读不了时照做是白忙）；那几步原样连在一起、权限范围单独一行；影响哪类直播间和「自动消失」在最后单独一行，不接在
+    权限范围后面。不再指向自检「浏览器登录态」那一行：别的浏览器读到登录时那一行是「通过」、不带步骤。"""
     monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_SPACED))
     text = bl.no_login_notice(login)
     rendered = i18n.render(text, lang)
     lines = rendered.split("\n")
-    assert lines[0].startswith("程序没有读到浏览器里的 TikTok 登录" if lang == "zh"
-                               else "The app didn’t find a TikTok sign-in in your browsers. ")
-    assert lines[0].endswith(i18n.render(bl.SAFARI_LOGIN_STEPS, lang)), lines[0]
-    assert i18n.render(bl.fda_steps(), lang) in rendered
+    steps = i18n.render(bl.fda_steps(), lang)
+    sep = "" if lang == "zh" else " "
+    assert lines[0] == (_ZH_HEAD if lang == "zh" else _EN_HEAD) + sep + steps.split("\n")[0], lines[0]
+    assert steps in rendered
+    assert i18n.render(bl.SAFARI_LOGIN_STEPS, lang) not in rendered
+    for gone in ("自检", "浏览器登录态", "Startup Check", "Browser Login", "程序没有读到浏览器里的 TikTok 登录",
+                 "didn’t find a TikTok sign-in in your browsers"):
+        assert gone not in rendered, gone
     scope = _ZH_SCOPE if lang == "zh" else _EN_SCOPE
     assert scope in lines, lines
-    pointer = i18n.render(bl.SELFCHECK_POINTER, lang)
-    assert lines[-1].startswith(pointer) and lines[-1].endswith(
-        "读到登录后这条提示自动消失。" if lang == "zh" else " This notice disappears once a sign-in is found."), lines[-1]
-    assert sum(pointer in line for line in lines) == 1
+    assert lines[-1] == (_ZH_IMPACT_TAIL if lang == "zh" else _EN_IMPACT_TAIL), lines[-1]
     if "keychain_wait" in login.values():
         assert lines[-2] == i18n.render(bl.KEYCHAIN_STEPS, lang)
     else:
@@ -1090,18 +1102,50 @@ def test_no_login_notice_with_the_fda_steps_is_split_into_lines(monkeypatch, log
         assert not ZH_CAUSAL.search(str(text)) or "可能解析不出" in str(text)
 
 
-@pytest.mark.parametrize("login", [
-    {"safari": "not_logged_in"}, {"chrome": "keychain_wait"}, {"chrome": "no_tiktok_cookie", "safari": "keychain_wait"},
+@pytest.mark.parametrize("login,steps", [
+    ({"safari": "not_logged_in"}, [bl.SAFARI_LOGIN_STEPS]),
+    ({"safari": "no_tiktok_cookie"}, [bl.SAFARI_LOGIN_STEPS]),
+    ({"safari": "no_browser_data"}, [bl.SAFARI_LOGIN_STEPS]),
+    ({"chrome": "keychain_wait"}, [bl.KEYCHAIN_STEPS]),
+    ({"chrome": "no_tiktok_cookie", "safari": "keychain_wait"},
+     [L("请在 Chrome 里登录 TikTok。", "Sign in to TikTok in Chrome."), bl.KEYCHAIN_STEPS]),
 ])
-def test_no_login_notice_without_the_fda_steps_stays_one_paragraph(login):
-    """没有完全磁盘访问权限那几步的那几种照旧一段话、拼法不变（页面上不折叠）。"""
+def test_no_login_notice_without_the_fda_steps_stays_one_paragraph(login, steps):
+    """没有完全磁盘访问权限那几步的那几种照旧一段话（页面上不折叠）。「请在 Safari 里登录」只在登录优先那一步读得到、
+    里面没有登录时出现；中控点名了别的浏览器时，叫人去那个浏览器里登录。"""
     text = bl.no_login_notice(login)
     for lang in ("zh", "en"):
         rendered = i18n.render(text, lang)
         assert "\n" not in rendered
-    assert str(text).endswith(bl.SAFARI_LOGIN_STEPS + ("" if "keychain_wait" not in login.values()
-                                                      else bl.KEYCHAIN_STEPS) + "读到登录后这条提示自动消失。")
-    assert i18n.render(text, "en").endswith(" This notice disappears once a sign-in is found.")
+    assert str(text).endswith("其余直播间照常监听，监听不会因此停下。" + "".join(steps)
+                              + "读到登录后这条提示自动消失。"), str(text)
+    en = i18n.render(text, "en")
+    assert en.endswith(" Other live streams are monitored as usual. "
+                       + " ".join(i18n.render(step, "en") for step in steps)
+                       + " This notice disappears once a sign-in is found."), en
+    if bl.SAFARI_LOGIN_STEPS not in steps:
+        assert bl.SAFARI_LOGIN_STEPS not in text
+
+
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_no_login_notice_says_what_later_steps_borrowed(monkeypatch, lang):
+    """同一次解析里别的浏览器读到了登录（后面几步借用了它）：照实接一句。只说读到了登录的；登录优先那一步自己的
+    浏览器不重复说；没有就不说。"""
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: ["/opt/x/bin/python3.13"])
+    login = {"safari": bl.BLOCKED}
+    seen = {"safari": bl.BLOCKED, "chrome": bl.OK, "edge": bl.NOT_LOGGED_IN}
+    first = i18n.render(bl.no_login_notice(login, seen), lang).split("\n")[0]
+    borrowed = ("同一次解析里，后面几步借用了 Chrome 里的 TikTok 登录。" if lang == "zh"
+                else "Later steps of the same lookup used the TikTok sign-in from Chrome.")
+    head = _ZH_HEAD if lang == "zh" else _EN_HEAD
+    assert first.startswith(head + ("" if lang == "zh" else " ") + borrowed), first
+    assert "Edge" not in first
+    assert borrowed not in i18n.render(bl.no_login_notice(login, {"safari": bl.BLOCKED}), lang)
+    assert i18n.render(bl.no_login_notice(login, None), lang) == i18n.render(bl.no_login_notice(login), lang)
+    readable = i18n.render(bl.no_login_notice({"safari": bl.NOT_LOGGED_IN}, {"chrome": bl.OK}), lang)
+    assert borrowed in readable and "\n" not in readable
+    if lang == "en":
+        _assert_plain_english(first, seen)
 
 
 def test_launch_python_is_remembered_once_and_survives_the_execs():

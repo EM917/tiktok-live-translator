@@ -142,6 +142,7 @@
 | 浏览器登录态 | **Browser Login** | Cookies, Session | |
 | 登录（动作）/ 登录（名词）/ 已登录、未登录 | **sign in** / **sign-in** / **signed in、signed-out** | log in, login, logged in | 苹果的说法；browser_login、comment_source、resolver、selfcheck 统一这么写。设置行名 Browser Login 照上一行保留；钥匙串对话框里的 login password 是 macOS 自己的叫法，照抄 |
 | 完全磁盘访问权限 | **Full Disk Access** | | 照抄 macOS 里的原名 |
+| 登录优先这一步（解析流地址时先只读一个浏览器里的 TikTok 登录，`resolver.LOGIN_LAYER`） | **the app first reads the TikTok sign-in from {browser} only**；后面借登录的几层写 **later steps of the same lookup** | the login-first layer, signed-in step | 2026-10-29 加（「没有读到 TikTok 登录」那条持续提示的头一句，`browser_login.no_login_notice`）。以前头一句是「程序没有读到浏览器里的 TikTok 登录」/ *The app didn’t find a TikTok sign-in in your browsers*：那一步只读 Safari，Chrome 读到了登录、后面几层也借用了它，这句话就说错了。现在只说那一步读了什么、看到了什么，别的浏览器读到了登录就照实接一句「同一次解析里，后面几步借用了 Chrome 里的 TikTok 登录」/ *Later steps of the same lookup used the TikTok sign-in from Chrome.* |
 | 直播流解析 | **Stream Lookup** | Stream Resolution | 「解析」对用户来说就是去找流地址。Resolution 容易被当成分辨率 |
 | 音频组件 ffmpeg | **Audio (ffmpeg)** | Audio Component | ffmpeg 全小写，是它的品牌写法 |
 

@@ -279,10 +279,14 @@ def test_steps_and_the_no_login_notice_in_english(monkeypatch, login):
         assert_clean_english(steps, login)
     notice = en(bl.no_login_notice(login))
     assert_clean_english(notice, login)
-    assert notice.startswith("The app didn’t find a TikTok sign-in in your browsers. ")
+    # 头一句只说登录优先那一步读了什么（2026-10-29）：不再说「程序没有读到浏览器里的 TikTok 登录」
+    assert notice.startswith("When looking up the stream URL, the app")
+    assert "didn’t find a TikTok sign-in in your browsers" not in notice
     assert notice.endswith(" This notice disappears once a sign-in is found.")
+    # 不再指向自检那一行：别的浏览器读到登录时那一行是「通过」、不带步骤，直播中设置分组也收着
+    assert "Browser Login" not in notice and "Startup Check" not in notice
     if bl.BLOCKED in login.values():
-        assert "(These steps are also in the Browser Login row of Settings > Startup Check.)" in notice
+        assert notice.split("\n")[0].endswith(en(bl.fda_steps()).split("\n")[0])
 
 
 # ---- comment_source：面板上每一种状态说明 ---------------------------------------------------

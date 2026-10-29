@@ -2442,7 +2442,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 self._log_resolve(attempt, False, t0, layers, kind=exc.kind,
                                   reconnect=reconnect, message=str(exc),  # i18n: audit
                                   login=getattr(exc, "login", None))
-                await self._sync_login_incident(layers)
+                await self._sync_login_incident(layers, getattr(exc, "login", None))
                 if exc.kind != "browser_only":
                     raise
                 last = exc
@@ -2485,13 +2485,18 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         except Exception:
             return None
 
-    async def _sync_login_incident(self, layers):
+    async def _sync_login_incident(self, layers, login=None):
         """按这次解析里「登录直播页」那一层的记录，挂上或撤掉「没有读到 TikTok 登录」的提示。
 
-        读到了可用的登录（那一层记着浏览器名）就撤；一个都没读到就挂，文字写各浏览器的
-        观察和能照做的步骤。监听照常开始、照常匿名解析——这条提示不挡任何事。没有那一层
-        的记录（其它平台、--cookies-browser none、用户自带流地址）或什么都没去读（测试环境）
-        时不动它。提示跨场保留，直到读到登录。"""
+        读到了可用的登录（那一层记着浏览器名）就撤；那一步没读到就挂，文字写那一步的观察和能照做的
+        步骤。监听照常开始、照常匿名解析——这条提示不挡任何事。没有那一层的记录（其它平台、
+        --cookies-browser none、用户自带流地址）或什么都没去读（测试环境）时不动它。提示跨场保留，
+        直到读到登录。
+
+        挂不挂只看登录优先那一层（不变）。文字里另外照实说同一次解析里别的层读到了谁的登录：login 是
+        失败时 ResolveError.login（resolver 汇总好的），和各层记录里的 login 合在一起（_login_seen）。
+        2026-10-29 那场 Safari 被系统拒绝读取、后面几层借用了 Chrome 的登录，以前这里只拿那一层的观察，
+        头一句说成了「程序没有读到浏览器里的 TikTok 登录」。"""
         from .browser_login import NOT_READ, no_login_notice
         from .resolver import LOGIN_LAYER
 
@@ -2507,7 +2512,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             observed = {b: c for b, c in (rec.get("login") or {}).items() if c != NOT_READ}
             if not observed:
                 return
-            text = no_login_notice(observed)
+            text = no_login_notice(observed, self._login_seen(layers, login))
             if (incidents.get(self.LOGIN_INCIDENT) or {}).get("text") != text:
                 await self._incident(self.LOGIN_INCIDENT, "warn", text)
         except asyncio.CancelledError:
@@ -2515,6 +2520,24 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         except Exception as exc:
             # 这一步跟在解析结果后面：提示推不出去不能把解析的结果（或它的错误）盖掉
             print("[警告] 「没有读到 TikTok 登录」的提示没能更新: {}".format(type(exc).__name__))
+
+    @staticmethod
+    def _login_seen(layers, login=None):
+        """这次解析里各浏览器的观察合在一起 {浏览器: 代码}：各层记录里的 login，再加上 ResolveError.login。
+        读到过登录（ok）的不被别的结果盖掉，和 resolver._observe_login 同一个规矩。
+
+        解析成功时没有 ResolveError：只有带登录抓直播页的那几层记录里有 login，接口层、直播页兜底只在 why 里
+        写了一句（会被截断，不从里面认）。所以成功时这里可能缺后面几层借用的浏览器——少说一句，不会说错。"""
+        from .browser_login import OK
+
+        seen = {}
+        for source in [rec.get("login") for rec in layers or () if isinstance(rec, dict)] + [login]:
+            if not isinstance(source, dict):
+                continue
+            for browser, code in source.items():
+                if seen.get(browser) != OK:
+                    seen[browser] = code
+        return seen
 
     def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None,
                      reconnect=None, message=None, login=None):
