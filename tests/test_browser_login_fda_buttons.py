@@ -154,9 +154,10 @@ def test_the_page_cannot_put_anything_into_argv(monkeypatch, tmp_path, kind, exp
 
 def test_two_interpreters_get_one_reveal_each_and_one_failure_does_not_stop_the_other(monkeypatch, tmp_path):
     second = "/opt/demo/launch/python3.14"
-    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: [second, PY])
     exe = FakeExec(rc=lambda argv: 1 if argv[-1] == second else 0)
     p, server = darwin_pipeline(monkeypatch, tmp_path, exe)
+    # 在 wire 之后换：wire 自己把 fda_targets 换成只有一个路径
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: [second, PY])
     click(p, {"type": "reveal_python"})
     assert [argv for argv, _kw in exe.calls] == [["open", "-R", second], ["open", "-R", PY]]
     assert notices(server) == [bl.fda_open_failed("reveal_python", 1, second)]
