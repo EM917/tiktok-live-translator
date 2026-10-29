@@ -4373,7 +4373,12 @@
     // 那时若无条件重置，正在看明细的人会被收起来。自检这一行的规则是「签名
     // 一变就无条件同步」——从「有失败」变回「全绿」也要跟着收起，所以直接用
     // r.open，不像引擎回退提示那样还要额外判断（见 nextAutoOpen 的注释）
-    var r = nextAutoOpen(scLastSig, scSum.sig, sum.fail > 0);
+    //
+    // 「语音识别」一行带着「现在下载」时也展开（2026-10-29）：只有提醒时这一行折叠成「通过 · N 项提醒」，
+    // 新装机根本看不到这个按钮，第一次开播才开始下 3.1 GB。签名里带上「有这个按钮」：下载中这一行还带着
+    // action（busy），签名不变、不收起；下完 action 没了，签名变了，照结论收起
+    var canFetch = msg.checks.some(function (c) { return c.action === "download_asr_model"; });
+    var r = nextAutoOpen(scLastSig, scSum.sig + (canFetch ? "/fetch" : ""), sum.fail > 0 || canFetch);
     scLastSig = r.sig;
     if (r.changed) setSelfcheckOpen(r.open);
   }
