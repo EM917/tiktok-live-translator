@@ -105,10 +105,12 @@ function flashStateText(code) {
 /* 闪购助手为什么故意不续开这个商品（契约 products[].skip，0.8.2 起；前五个的文案是闪购助手会话 10-27 给的，
  * next_to_pin 是 0.9.2 起的：置顶商品正下方、下一个要置顶的那个，文案照它的说明写）。0.9.2.1 起有置顶时只标
  * next_to_pin、没置顶（或看不出）时才标 slot_1、no_position（docs/flash-sale.md §3），这里不分版本，每个代码的意思没变。
+ * pinned 是 0.9.2.2 起的：正在置顶的那个商品本身，闪购助手不点 Start、也不重新设置（用户 10-29 定，文案照 slot_1 的句式）。
  * 认不出的返回 null，由调用方写「不续开：」加原样的代码 */
 function flashSkipText(code) {
   switch (code) {
     case "slot_1": return L("1 号位，不续开", "Slot 1, not renewed");
+    case "pinned": return L("正在置顶，不续开", "Pinned, not renewed");
     case "next_to_pin": return L("下一个要置顶，不续开", "Next to pin, not renewed");
     case "no_stock": return L("没有库存，不续开", "Out of stock, not renewed");
     case "max_renewals": return L("续开次数到上限", "Renewal limit reached");
