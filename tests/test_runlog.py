@@ -70,6 +70,7 @@ def _fakes():
         "jwt": "ey" + "J" + _mixed(rng, 20) + "." + _mixed(rng, 30) + "." + _mixed(rng, 40),
         "password": "fake-pass-" + _mixed(rng, 12, ALNUM),
         "csrf": _mixed(rng, 40),
+        "workspace": "wrk" + "spc_" + _mixed(rng, 24, ALNUM),
     }
 
 
@@ -104,6 +105,9 @@ SECRET_LINES = [
     "OpenAI 回 401：Incorrect API key provided: {openai}",
     "x-tt-params: csrf_token={csrf}&session_id={sessionid}",
     "Traceback 里的局部变量 token = '{control}'",
+    "headers={{'x-api-key': '{anthropic}', 'anthropic-workspace-id': '{workspace}'}}",
+    "settings = {{'api_keys': {{'ANTHROPIC_WORKSPACE_ID': '{workspace}'}}}}",
+    "工作区 ID {workspace} 填进去了",
 ]
 
 

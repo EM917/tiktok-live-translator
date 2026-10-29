@@ -417,11 +417,12 @@ macOS, launching that way now also copies them to
 `~/Library/Logs/TikTokLiveTranslator/run.log` (in Finder press ⌘⇧G and paste
 that path, or look under **Log Reports** in the Console app). Each line carries a
 time and a process ID, and every launch starts with a line naming the version and
-the app folder. Before anything is written, API keys, cookies, the Phone Viewing
-link’s key and Flash Sale Helper’s control key are removed, and web addresses
-keep only their path (everything after `?` or `#` is dropped); removed parts read
-`<已抹去>` (the log, like the terminal, is always in Chinese). At 5 MB the file is
-renamed `run.log.1`, and at most 3 older files are kept, about 20 MB in all. The
+the app folder. Before anything is written, API keys (and the Claude workspace
+ID), cookies, the Phone Viewing link’s key and Flash Sale Helper’s control key
+are removed, and web addresses keep only their path (everything after `?` or `#`
+is dropped); removed parts read `<已抹去>` (the log, like the terminal, is always
+in Chinese). At 5 MB the file is renamed `run.log.1`, and at most 3 older files
+are kept, about 20 MB in all. The
 folder is not on the iCloud-synced Desktop, so it is neither synced nor backed up;
 it contains streamer names, and only your own account can read it. Launched from
 `Start.command` or a command line, the lines still appear in the terminal and no

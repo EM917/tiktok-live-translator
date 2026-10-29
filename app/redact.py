@@ -49,6 +49,7 @@ _HEADER_RE = re.compile(
 # 都不算。TikTok 那几个是登录和设备 cookie 的名字（app/browser_login.LOGIN_COOKIE_NAMES 是其中一部分）
 _KEY_NAMES = (
     r"[A-Za-z0-9_-]*api[_-]?keys?",                 # api_key、DEEPL_API_KEY、x-api-key、apikey
+    r"[A-Za-z0-9_-]*workspace[_-]?id",              # ANTHROPIC_WORKSPACE_ID、anthropic-workspace-id 头
     r"auth[_-]?key",
     r"(?:access|refresh|id|auth|bearer|csrf|session|viewer|control)[_-]?token",
     r"token", r"secret", r"client[_-]?secret", r"password", r"passwd",
@@ -68,6 +69,8 @@ _SCHEME_RE = re.compile(r"(?i)\b(bearer|deepl-auth-key)(\s+)[A-Za-z0-9._~+/=:-]{
 _SHAPES = (
     # Anthropic（sk-ant-…）、OpenAI（sk-…、sk-proj-…）
     re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}"),
+    # Anthropic 的工作区 ID（translator.WORKSPACE_ID_RE）：不是密钥，但和密钥一起认得出是哪个账户
+    re.compile(r"(?<![A-Za-z0-9_-])wrkspc_[A-Za-z0-9_-]{8,}"),
     # Google API 密钥
     re.compile(r"(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"),
     # GitHub 令牌
