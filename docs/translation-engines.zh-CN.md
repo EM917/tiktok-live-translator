@@ -29,6 +29,15 @@ ollama pull hf.co/tencent/Hy-MT2-7B-GGUF:Q4_K_M     # 4.6 GB，建议 16 GB 以�
 环境变量。密钥保存在 `settings.json`（已被 git 忽略），**从不回传页面**，界面上只显示
 尾四位，供你确认填的是哪一个。
 
+**没有绑定工作区的 Claude 密钥。** 新版 Claude Console 里建密钥时可以不选工作区。这种密钥
+Anthropic 要求每个请求都带工作区 ID，不带的话翻译会失败，接口返回 HTTP 400
+（`invalid_request_error`，"This API key is not scoped to a workspace…"）。两种办法任选：
+建密钥时选上一个工作区（例如 Default）；或者密钥照用，在选了 Claude 之后密钥框下面的
+「工作区 ID」框里填上（也可用环境变量 `ANTHROPIC_WORKSPACE_ID`）。工作区 ID 以 `wrkspc_`
+开头，在 Console 的 Workspaces 页面（`platform.claude.com/settings/workspaces`）上能找到。
+填了之后每个 Claude 请求（包括弹幕留意的复核）都会带上 `anthropic-workspace-id` 请求头。
+它不是密钥，框里照原样显示；不写进审计日志。
+
 选定的引擎用不了、程序回退到别的引擎时，「翻译引擎」这一行会标出「已回退」并自动
 展开，因此回退至网络引擎的情况可见而非静默发生。
 

@@ -1526,6 +1526,7 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 }
 .engine-row input::placeholder { color: var(--label-3); }
 .engine-row input:focus { box-shadow: var(--focus); }
+.engine-workspace-row { margin-top: 8px; }   /* 选 Claude 时密钥那一行下面的工作区 ID 框 */
 .engine-note {
   margin-top: 8px; font-size: var(--fs-footnote); line-height: 18px; color: var(--label-2);
 }

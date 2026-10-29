@@ -408,6 +408,19 @@ def _model_missing(label, model):
                     "Stop. You can also choose another engine in Settings > Translation Engine."))
 
 
+# 验证 Claude 密钥时接口回 400、原话是「这把密钥没绑工作区，请求里要带工作区 ID」（translator.workspace_missing）。
+# 只说接口说了什么和能做的两件事；工作区 ID 只有「设置 > 翻译引擎」选 Claude 时有框可填
+WORKSPACE_MISSING_TEXT = L("Claude 接口返回 HTTP 400：Anthropic 说这把密钥没有绑定工作区，请求里要带工作区 ID",
+                           "The Claude API returned HTTP 400: Anthropic says this API key isn’t scoped to a "
+                           "workspace, so requests need a workspace ID.")
+WORKSPACE_FIX_ENGINE = L("在 Claude Console 新建一把选了工作区（例如 Default）的密钥、在「设置 > 翻译引擎」里重新填写；"
+                         "或者在「设置 > 翻译引擎」里填上工作区 ID（wrkspc_ 开头，Console 的 Workspaces 页面上有）",
+                         "Create a key with a workspace selected (for example, Default) in the Claude Console "
+                         "and enter it in Settings > Translation Engine, or enter the workspace ID in Settings > "
+                         "Translation Engine. It starts with wrkspc_ and is listed on the Workspaces page in "
+                         "the Console.")
+
+
 async def _check_paid_api(engine, key, translator):
     """Claude / OpenAI。
 
@@ -446,6 +459,8 @@ async def _check_paid_api(engine, key, translator):
                         "{} rejected the current API key (HTTP {}).").format(label, status),
                       L("在「设置 > 翻译引擎」里重新填写密钥",
                         "Enter the key again in Settings > Translation Engine."))
+    if status == 400 and getattr(inner, "probe_workspace_missing", False):
+        return _check(NAMES["translator"], FAIL, WORKSPACE_MISSING_TEXT, WORKSPACE_FIX_ENGINE)
     if status == 404 and getattr(inner, "PROBE_CHECKS_MODEL", False):
         model = getattr(inner, "model", None) or getattr(inner, "MODEL", "?")
         return _check(NAMES["translator"], FAIL,
@@ -893,6 +908,17 @@ async def _comment_review_note(reviewer):
         return (L("Claude 拒绝了当前密钥（HTTP {}），", "Claude rejected the current API key (HTTP {}). ").format(status)
                 + use_rules,
                 L("在设置的「弹幕留意」里重新填写密钥", "Enter the key again under Settings > Comment Review."))
+    if status == 400 and getattr(reviewer, "probe_workspace_missing", False):
+        return (L("Claude 接口返回 HTTP 400：Anthropic 说这把密钥没有绑定工作区，请求里要带工作区 ID，",
+                  "The Claude API returned HTTP 400: Anthropic says this API key isn’t scoped to a workspace, "
+                  "so requests need a workspace ID. ") + use_rules,
+                L("在 Claude Console 新建一把选了工作区（例如 Default）的密钥、在设置的「弹幕留意」里重新填写；"
+                  "或者在「设置 > 翻译引擎」里选 Claude，填上工作区 ID（wrkspc_ 开头，Console 的 Workspaces "
+                  "页面上有）",
+                  "Create a key with a workspace selected (for example, Default) in the Claude Console and "
+                  "enter it under Settings > Comment Review, or choose Claude in Settings > Translation "
+                  "Engine and enter the workspace ID. It starts with wrkspc_ and is listed on the "
+                  "Workspaces page in the Console."))
     if status == 404:
         return (L("Claude 接口里找不到模型 {}（HTTP 404），", "The Claude API doesn’t have the model {} (HTTP 404). ")
                 .format(model) + use_rules, "")
