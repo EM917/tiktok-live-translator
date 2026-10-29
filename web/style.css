@@ -716,8 +716,9 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
 }
 .lang-quick-btn:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
 .lang-quick-btn:disabled { opacity: 0.4; cursor: default; }
-/* 设置行名里带上的另一种语言名（index.html #lang-head）：中文页露 Language，英文页露「界面语言」 */
-html[lang="en"] .zh-page-only,
+/* 设置行名里带上的另一种语言名（index.html #lang-head）：中文页露 Language，英文页露「界面语言」。
+   分成两条写：英文专属的规则不和别的选择器并在一个列表里（tests/test_i18n_layout_css.py） */
+html[lang="en"] .zh-page-only { display: none; }
 html:not([lang="en"]) .en-page-only { display: none; }
 
 /* 展开原来那两段灰字（#input-help）；图标用 SF Symbols「info.circle」而不是

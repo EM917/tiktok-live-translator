@@ -109,7 +109,8 @@ test("style.css：两段切换叠在标题区右上角，不挤动居中的图�
   assert.match(css, /\.lang-quick \{[^}]*position: absolute;[^}]*top: 0;[^}]*right: 0;/);
   assert.match(css, /\.lang-quick-btn\[aria-pressed="true"\] \{/);
   assert.match(css, /\.lang-quick-btn:disabled \{/);
-  assert.match(css, /html\[lang="en"\] \.zh-page-only,\s*html:not\(\[lang="en"\]\) \.en-page-only \{ display: none; \}/);
+  assert.match(css, /\nhtml\[lang="en"\] \.zh-page-only \{ display: none; \}/);
+  assert.match(css, /\nhtml:not\(\[lang="en"\]\) \.en-page-only \{ display: none; \}/);
 });
 
 // ---- 页面里真跑（desktop-page.mjs） -------------------------------------------------------
