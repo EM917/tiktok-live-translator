@@ -5,8 +5,10 @@
 主播账号名、品牌名、店铺名不进仓库，测试样例一律虚构。以前靠推之前手动扫一遍，漏一次就公开了。
 
 名单不在仓库里。每台电脑自己放一份，用环境变量 TLT_REALNAMES 指它的路径：每行一个，空行和
-`#` 开头的行忽略，不分大小写、按子串匹配。没设 TLT_REALNAMES、名单不存在或是空的：只打印一句
-提醒，照常放行（CI、别人的克隆没有名单，推送不受影响）。
+`#` 开头的行忽略，不分大小写、按子串匹配。词内部的分隔符（连字符、下划线、点、空格）彼此通用，
+也可以省掉：名单里写 aaa-bbb，aaa_bbb、aaa.bbb、aaa bbb、AaaBbb 都算命中（代码里的标识符、
+文件名多用下划线，只写连字符和空格两种写法会漏）。没设 TLT_REALNAMES、名单不存在或是空的：
+只打印一句提醒，照常放行（CI、别人的克隆没有名单，推送不受影响）。
 
 扫这次要推、远端还没有的每个提交：
   * 提交说明；
@@ -29,8 +31,12 @@ import os
 import re
 import subprocess
 import sys
+from functools import lru_cache
 
 ENV_VAR = "TLT_REALNAMES"
+# 名单里一个词内部的这几种分隔符彼此通用、也可以没有；词两头的分隔符去掉
+SEPARATORS = "-_. "
+_SEP_RUN = re.compile(r"[-_. ]+")
 ZERO = re.compile(r"^0+$")
 # 普通 diff 是 @@ -a,b +c,d @@；合并提交的 --cc 是 @@@ -a,b -c,d +e,f @@@（@ 比父提交数多一个）
 HUNK = re.compile(r"^(@{2,}) (.*?) @{2,}")
@@ -56,17 +62,35 @@ def say(msg=""):
 
 # ---- 名单与匹配 --------------------------------------------------------------------------------
 
+@lru_cache(maxsize=None)
+def _pattern(name):
+    """名单里一个词的匹配式：词内部每处分隔符换成「这几种分隔符之一，或者没有」。"""
+    parts = [p for p in _SEP_RUN.split(name) if p]
+    if not parts:
+        return re.compile(r"(?!)")                       # 只有分隔符的条目什么也不匹配
+    return re.compile(r"[-_. ]?".join(re.escape(p) for p in parts))
+
+
+def _bare_len(name):
+    return len(_SEP_RUN.sub("", name))
+
+
 def load_names(path):
-    """读名单：去掉空行、注释行和太短的条目，统一 casefold、去重。文件不在返回 None。"""
+    """读名单：去掉空行、注释行和太短的条目，统一 casefold，两头的分隔符去掉；只差在分隔符上的
+    几种写法（aaa-bbb、aaa bbb）匹配起来一样，只留第一条。文件不在返回 None。"""
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as fh:
             lines = fh.read().splitlines()
     except OSError:
         return None
-    names = []
+    names, seen = [], set()
     for line in lines:
-        name = line.strip().casefold()
-        if len(name) >= MIN_NAME_LEN and not name.startswith("#") and name not in names:
+        raw = line.strip()
+        if raw.startswith("#"):
+            continue
+        name = raw.casefold().strip(SEPARATORS)
+        if len(name) >= MIN_NAME_LEN and _pattern(name).pattern not in seen:
+            seen.add(_pattern(name).pattern)
             names.append(name)
     return names
 
@@ -77,16 +101,26 @@ def mask(name):
 
 
 def find_names(text, names):
-    """text 里出现了名单里的哪些词（不分大小写、子串），按名单顺序、不重复。"""
+    """text 里出现了名单里的哪些词，不重复。不分大小写；词内部的分隔符彼此通用、也可以没有。
+
+    同一处只算一个词：长的先认，落在已认出的长词里面的短词（比如名单里既有 aaabbb、又有
+    aaa-bbb 或 aaa）不另算一处。"""
     folded = (text or "").casefold()
-    return [n for n in names if n in folded]
+    claimed, found = [], []
+    for name in sorted(names, key=_bare_len, reverse=True):
+        spans = [m.span() for m in _pattern(name).finditer(folded)]
+        fresh = [s for s in spans if not any(a <= s[0] and s[1] <= b for a, b in claimed)]
+        if fresh:
+            found.append(name)
+            claimed.extend(fresh)
+    return found
 
 
 def mask_text(text, names):
     """把 text 里名单中的词换成 <打码>，用来打印路径。长的先换，免得短词把长词拆开。"""
     out = text or ""
-    for name in sorted(names, key=len, reverse=True):
-        out = re.sub(re.escape(name), "<{}>".format(mask(name)), out, flags=re.IGNORECASE)
+    for name in sorted(names, key=_bare_len, reverse=True):
+        out = re.sub(_pattern(name).pattern, "<{}>".format(mask(name)), out, flags=re.IGNORECASE)
     return out
 
 

@@ -101,6 +101,28 @@ def test_mask_gives_first_letter_and_length_only():
     assert pr.mask_text("profiles/ZorbaFlux.txt", names) == "profiles/<z9>.txt"
 
 
+def test_separators_inside_a_name_are_interchangeable():
+    """名单写空格或连字符，代码里的标识符、文件名写下划线、点或连在一起，照样命中。"""
+    names = ["acme fictional shop"]
+    for text in ("ACME_FICTIONAL_SHOP = 1", "acme-fictional-shop", "class AcmeFictionalShop:",
+                 "acme.fictional shop"):
+        assert pr.find_names(text, names) == names, text
+    assert pr.find_names("acme fictional", names) == []
+    assert pr.mask_text("profiles/Acme_Fictional_Shop.txt", names) == "profiles/<a19>.txt"
+
+
+def test_spellings_of_one_name_collapse_and_one_spot_counts_once(tmp_path):
+    p = tmp_path / "n.txt"
+    p.write_text("Acme-Fictional-Shop\nacme fictional shop\n.zorbaflux\nzorbaflux\nzorba\n--\n",
+                 encoding="utf-8")
+    names = pr.load_names(str(p))
+    assert names == ["acme-fictional-shop", "zorbaflux", "zorba"]
+    assert pr.find_names("zorbaflux sells at AcmeFictionalShop", names) == [
+        "acme-fictional-shop", "zorbaflux"]
+    assert pr.find_names("zorba alone", names) == ["zorba"]
+    assert pr.find_names("anything", ["--"]) == []
+
+
 def test_combined_diff_only_flags_lines_the_merge_itself_wrote():
     patch = ("diff --cc f.txt\nindex a,b..c\n--- a/f.txt\n+++ b/f.txt\n"
              "@@@ -4,0 -3,1 +4,2 @@@\n+ zorbaflux from one side\n++zorbaflux written in the merge\n")
@@ -128,13 +150,15 @@ def test_name_in_added_line_message_and_path_blocks_the_push(world):
     _commit(dev, "docs/x.md", "nothing here\n", "Mention acme fictional shop in the docs")
     _commit(dev, "profiles/zorbaflux.txt", "chile => 辣椒\n")
     _commit(dev, "notes.md", "第一行\n来自虚构小铺的货\n")
+    _commit(dev, "app/shops.py", "\nACME_FICTIONAL_SHOP = 3\n")
     code, out = _hook(world, _new_branch(world))
     assert code == 1
     assert "tests/fixture.py:1  z9" in out
     assert "提交说明  a19" in out
     assert "文件路径 profiles/<z9>.txt  z9" in out
     assert "notes.md:2  虚4" in out
-    assert "命中 4 处" in out and "这次不推" in out
+    assert "app/shops.py:2  a19" in out
+    assert "命中 5 处" in out and "这次不推" in out
     _no_plain_names(out)
 
 
