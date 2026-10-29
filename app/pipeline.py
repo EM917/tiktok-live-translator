@@ -5006,13 +5006,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             changed = True
         if changed:
             save_setting("api_keys", keys)
-            # 弹幕留意的复核用的是同一把密钥和同一个工作区 ID：不在直播就按新的重备后端，下面那次自检问的是新的
-            # （直播中不动，同 _guard_set：这一场的复核后端已经定了，下一场开始时 configure_reviewer 会重备）
-            guard = getattr(self, "guard", None)
-            if hasattr(guard, "configure_reviewer") and not (
-                    self._stream_active()
-                    or (getattr(guard, "_open", False) and getattr(self, "audit", None) is not None)):
-                guard.configure_reviewer()
+            self._anthropic_keys_saved()     # 弹幕留意的复核用同一把密钥和工作区 ID（pipeline_guard.py）
         missing = await self._local_model_missing(engine)
         if missing is not None:
             await self._keep_engine_until_model(engine, missing)
