@@ -205,8 +205,8 @@ RULE8_FAMILY = {
     "web/viewer.js": "*",
     "web/viewer.html": "*",
     "web/index.html": ("#input-help", "#guard-bar", "#guard-drawer", "#guard-card"),
-    "app/pipeline.py": ("browser_only_message", "_resolve_media", "_confirm_offline",
-                        "_host_wait", "_run_session", "_selfcheck_incident_text"),
+    "app/pipeline.py": ("browser_only_message", "_resolve_media", "_first_layer_refused_note",
+                        "_confirm_offline", "_host_wait", "_run_session", "_selfcheck_incident_text"),
 }
 
 # 禁用词例外：中文臂 → 理由。命中这里的对不查两级禁用词。

@@ -85,7 +85,12 @@ not come out of decryption; start again and, if a Keychain dialog asks for
 
 <a id="code-4003110"></a>**"TikTok didn't provide a stream URL for this live stream (code 4003110)."**
 That code is TikTok's generic refusal; the response carries no reason, and the
-app does not invent one. Before concluding anything, run the built-in check:
+app does not invent one. The app retries up to three times, each lookup taking
+about 40 seconds, and the page says which attempt is running. Meanwhile, open
+the live stream in your browser to check whether the streamer is live. If the
+message also says the lookup couldn't read the TikTok sign-in from Safari, the
+Full Disk Access steps are in the notice at the top. Before concluding anything,
+run the built-in check:
 
 ```bash
 python3 tools/diagnose_room.py @streamer --history-only   # your own logs only, no requests

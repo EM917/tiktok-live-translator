@@ -190,14 +190,15 @@ def _accepts_urgent(stop):
         return False
 
 
-def browser_only_message(retries, login=None):
-    """解析以 kind=browser_only 收场时给中控的话。
+def browser_only_message(retries, login=None, first=None):
+    """解析以 kind=browser_only 收场时给中控的话。first 是登录优先那一步要读的浏览器
+    （resolver._login_first_browsers；见 browser_login.fda_needed），不知道是 None。
 
     前半句是一直以来的事实（TikTok 不给、原因它不说明）；中间按这次借浏览器登录时的
     观察（ResolveError.login，{浏览器: 代码}）接上对应的一步——系统拒绝读取就给
     「完全磁盘访问权限」的步骤，没登录就说去登录，借到了登录仍然不给就照实说；
     最后是粘 .flv 地址的办法。只写观察和能照做的事。"""
-    from .browser_login import browser_only_advice
+    from .browser_login import lookup_advice
 
     # 中英文都只写这次真看到的：接口不给、重试了几次、TikTok 不说原因。不写「不是 X 问题」这种
     # 否定句，否定句里也不许出现原因标签；也不写「同一时刻其它直播间正常」——那是 09-05 一次
@@ -216,26 +217,30 @@ def browser_only_message(retries, login=None):
                "Retried {} times. TikTok doesn’t say why. Sometimes it works if you click "
                "Start again a little later. Sometimes it doesn’t work for the whole stream."
                ).format(retries)
-            + browser_only_advice(login)
+            + lookup_advice(login, first)
             + L("想现在就看：把直播间链接和浏览器里的 .flv 地址一起粘进来"
                 "（中间空格隔开），一次约两周有效。",
                 " To watch now, paste the live link and the .flv URL from your browser "
                 "together, separated by a space. A .flv URL usually works for about two "
-                "weeks."))
+                "weeks.")
+            # 2026-10-29：三次一共 156 秒，收场的话里没有一件中控现在就能自己核对的事。放在最后：第一行（4003110
+            # 那句）不能变长，横幅折叠时只露它
+            + L("也可以在浏览器里打开这个直播间，看看主播是不是在播。",
+                " You can also open this live stream in your browser to check whether the streamer is live."))
 
 
 def _fda_paths(exc):
     """解析失败的话里带着「完全磁盘访问权限」那一步时，那一步要加的路径（browser_login.fda_targets，和文字里
-    列的是同一份）；不带就是空列表。带不带照 browser_login.browser_only_advice 的判断：kind=browser_only、借登录
-    时有浏览器被系统拒绝读取（BLOCKED）、又没有哪个浏览器借到了登录（借到了，那段话说的是「借了也不给」）。
-    别的 kind 的话里没有这一步，带了路径页面上就是几行没头没尾的复制框。"""
-    from .browser_login import BLOCKED, NOT_READ, OK, fda_targets
+    列的是同一份）；不带就是空列表。带不带和那段话用同一个判断（browser_login.fda_needed）：kind=browser_only、
+    借登录时有浏览器被系统拒绝读取（BLOCKED），而且没借到任何登录、或者被拒的正是登录优先那一步要读的浏览器
+    （exc.login_first，_resolve_media 收场时记上；2026-10-29 Safari 被拒、Chrome 借到了，以前这里一看到借到了
+    就不给）。别的 kind 的话里没有这一步，带了路径页面上就是几行没头没尾的复制框。"""
+    from .browser_login import fda_needed, fda_targets
 
     login = getattr(exc, "login", None)
     if getattr(exc, "kind", None) != "browser_only" or not isinstance(login, dict):
         return []
-    codes = [c for c in login.values() if c != NOT_READ]
-    if BLOCKED not in codes or OK in codes:
+    if not fda_needed(login, getattr(exc, "login_first", None)):
         return []
     try:
         return list(fda_targets())
@@ -2434,6 +2439,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                       "下一次重连再查".format(tried))
                 break
             tried = attempt
+            if attempt > 1:
+                # 每次重试开始前说一句：一次解析本身就要约 40 秒（2026-10-29 实测 38.6–38.9 秒，WebKit 那层占 25 秒），
+                # 以前只有等待前那句「N 秒后自动重试」，接下来这次解析期间它一直挂着，屏幕上停了约 59 秒
+                await self.server.status(
+                    "connecting", L("正在第 {}/{} 次查流地址（每次约 {} 秒）…",
+                                    "Looking up the stream URL, attempt {} of {} (about {} sec each)…")
+                    .format(attempt, self.BROWSER_ONLY_RETRIES, self.BROWSER_ONLY_LOOKUP_NOTE_SEC))
             layers, t0 = [], time.monotonic()
             try:
                 with self._stage_during(sess, "lookup", self._lookup_stage_budget() if sess else None,
@@ -2458,6 +2470,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 await self._sync_login_incident(layers)
                 return media
             if attempt < self.BROWSER_ONLY_RETRIES and self._lookup_token_left(policy):
+                # 等待那句的事实不变，后面补一件中控现在就能做的事；登录优先那一层这次被系统拒绝读取时，再补一句
+                # 纯观察（读不到哪个浏览器、步骤在顶部那条提示里）。不说是原因
                 await self.server.status(
                     "connecting",
                     L("TikTok 暂时没有把这个直播间的流地址给程序，{:.0f} 秒后自动重试"
@@ -2465,14 +2479,49 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                       "TikTok didn’t provide a stream URL for this live stream. Retrying in "
                       "{:.0f} sec (attempt {} of {})…").format(self.BROWSER_ONLY_RETRY_SEC,
                                                               attempt + 1,
-                                                              self.BROWSER_ONLY_RETRIES))
+                                                              self.BROWSER_ONLY_RETRIES)
+                    # 英文开头带一个空格：接在前一句的「…」后面（中文句子直接相连）
+                    + L("可以先在浏览器里打开这个直播间，看看主播是不是在播。",
+                        " Meanwhile, you can open this live stream in your browser to check whether the "
+                        "streamer is live.")
+                    + self._first_layer_refused_note(layers))
                 with self._stage_during(sess, "lookup_wait",
                                         self.BROWSER_ONLY_RETRY_SEC + self.STAGE_BACKOFF_SLACK_SEC):
                     await asyncio.sleep(self.BROWSER_ONLY_RETRY_SEC)
-        raise ResolveError(browser_only_message(tried or self.BROWSER_ONLY_RETRIES,
-                                                getattr(last, "login", None)),
+        first = self._login_first()
+        err = ResolveError(browser_only_message(tried or self.BROWSER_ONLY_RETRIES,
+                                                getattr(last, "login", None), first),
                            kind="browser_only",
-                           login=getattr(last, "login", None)) from last
+                           login=getattr(last, "login", None))
+        err.login_first = first        # _fda_paths 照同一个判断决定带不带路径
+        raise err from last
+
+    # 重试前那句「每次约 N 秒」：2026-10-29 实测一次解析 38.6–38.9 秒（WebKit 那层 25 秒超时占了大半）
+    BROWSER_ONLY_LOOKUP_NOTE_SEC = 40
+
+    def _login_first(self):
+        """登录优先那一步读哪些浏览器（resolver._login_first_browsers）；查不出来是 None。"""
+        from . import resolver
+        try:
+            return tuple(resolver._login_first_browsers(getattr(self.args, "cookies_browser", "auto")))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _first_layer_refused_note(layers):
+        """这次解析里登录优先那一层（resolver.LOGIN_LAYER）记着某个浏览器被系统拒绝读取时，补在等待那句后面的
+        一句观察；没有就是空串。只说读不到哪个浏览器、步骤在哪儿，不说这就是拿不到流地址的原因。"""
+        from .browser_login import BLOCKED, label
+        from .resolver import LOGIN_LAYER
+
+        rec = next((r for r in layers or () if isinstance(r, dict) and r.get("layer") == LOGIN_LAYER), None)
+        blocked = [b for b, c in ((rec or {}).get("login") or {}).items() if c == BLOCKED]
+        if not blocked:
+            return ""
+        # 英文开头带一个空格：接在等待那句后面（中文句子直接相连）
+        return L("查流地址时没有读到 {} 里的 TikTok 登录，步骤见顶部那条提示。",
+                 " The stream URL lookup couldn’t read the TikTok sign-in from {}. The steps are in the "
+                 "notice at the top.").format(L("、", ", ").join(label(b) for b in blocked))
 
     LOGIN_SOURCE_BUDGET_SEC = 2.0     # 只读几个本地文件；到点没返回就记 null，不挡开播
     LOGIN_INCIDENT = "login-unreadable"   # 不带 "session:"：跨场保留，读到登录才撤
