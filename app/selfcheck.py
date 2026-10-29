@@ -660,20 +660,23 @@ async def check_resolver():
                   L("在 Chrome/Safari 里登录一次 TikTok", "Sign in to TikTok once in Chrome or Safari."))
 
 
-async def check_browser_login():
+async def check_browser_login(cookies_browser="auto"):
     """有的直播间 TikTok 只把流地址给登录了的观众，那时程序要借浏览器里的 TikTok 登录。
     这一行只看两件事：各浏览器的 cookie 库**读不读得到**、里面有没有登录 cookie 的**名字**。
 
     绝不解密、绝不调 yt-dlp 的读取函数：解密 Chrome 的 cookie 值要向钥匙串要密钥，
     启动自检会因此弹对话框。2026-09-17 实测 macOS 27 上两个浏览器都是系统拒绝读取，
-    而当时界面上没有任何一行说这件事。"""
-    return (await browser_login_state())[1]
+    而当时界面上没有任何一行说这件事。
+
+    cookies_browser 是命令行的 --cookies-browser（run_all 照 args 给）：登录优先那一步读哪个浏览器由它和设置里的
+    cookies_browser_only 定，这一行按同一个规矩判（_browser_login_row 的 first）。"""
+    return (await browser_login_state(cookies_browser))[1]
 
 
-async def browser_login_state():
+async def browser_login_state(cookies_browser="auto"):
     """(各浏览器的观察 {浏览器: 代码}, 自检「浏览器登录态」那一行)。启动自检和「我加好了，再查一次」
     （pipeline._recheck_browser_login）共用：只用 browser_login.probe，不解密、不碰钥匙串（读 Safari 实测 0.0 秒）。
-    不是 macOS 时观察为空，那一行是「本机不适用」。"""
+    不是 macOS 时观察为空，那一行是「本机不适用」。cookies_browser 同 check_browser_login。"""
     import sys
 
     from . import browser_login as bl
@@ -683,21 +686,32 @@ async def browser_login_state():
                           L("这一项只检查 macOS 上的浏览器数据读取权限，本机不适用",
                             "This check only covers reading browser data on macOS. It doesn’t apply "
                             "to this computer."))
-    from .resolver import _installed_browsers
+    from .resolver import _installed_browsers, _login_first_browsers
     browsers = await _to_thread(_installed_browsers)
+    first = await _to_thread(_login_first_browsers, cookies_browser)
     observed = {}
     for browser in browsers:
         observed[browser] = await _to_thread(bl.probe, browser)
-    return observed, _browser_login_row(observed)
+    return observed, _browser_login_row(observed, first)
 
 
-def _browser_login_row(observed):
+def _browser_login_row(observed, first=("safari",)):
     """{浏览器: 代码} → 自检的一行。大多数直播间不登录也能解析，所以借不到只是 WARN。
 
-    带「完全磁盘访问权限」那几步时（有浏览器被系统拒绝读取、又没有哪个读到登录）多一个 recheck=True：页面在这一行
-    下面画「我加好了，再查一次」（web/app.js renderSelfcheck），点了发 recheck_browser_login。别的浏览器读到登录时
-    这一行是「通过」、不带步骤，也就不画这个按钮（这时要不要也给步骤还没定）。审计只记名字、
-    等级和详情（audit.selfcheck），这个键不进审计。"""
+    first 是登录优先那一步要读的浏览器（resolver._login_first_browsers：没点名时只有 Safari，点了名就是那一个，
+    --cookies-browser none 时为空）。默认值是没点名时的样子，测试和别处直接拿观察造行时用。
+
+    带「完全磁盘访问权限」那几步时多一个 recheck=True：页面在这一行下面画「我加好了，再查一次」（web/app.js
+    renderSelfcheck），点了发 recheck_browser_login。两种情况带这几步：
+      * 有浏览器被系统拒绝读取、又没有哪个读到登录；
+      * 别的浏览器读到了登录，登录优先那一步要读的却被系统拒绝读取（login-5，用户 2026-10-29 选 A）。以前这时
+        这一行是「通过」、不带步骤：新 Mac 授权之前就是「Safari：系统拒绝读取；Chrome：读到了 TikTok 登录」，
+        登录优先那一步每次解析都跳过，中控点「开始翻译」之前看不到任何授权提示，要等第一次解析完窗口顶部才挂出那条
+        带步骤的提示。现在是「提醒」（摘要「通过 · 1 项提醒」；提醒不自己展开，web/app.js nextAutoOpen）。这种情况
+        步骤只按被拒的那一步给（「在 Chrome（或 Safari）里登录」不相干），之后和第一种走同一段：按钮之类挂在这一行
+        上的东西两种情况都带。detail 照旧列各浏览器，多一句那一步只读谁、读不了就跳过——只写程序自己怎么走，不说
+        Chrome 的登录对哪类直播间管不管用（第八条：那天授权前后两段不是同一分钟配对）。
+    审计只记名字、等级和详情（audit.selfcheck），recheck 不进审计。"""
     from . import browser_login as bl
 
     name = NAMES["browser_login"]
@@ -716,12 +730,27 @@ def _browser_login_row(observed):
                       L("这次运行没有读取浏览器数据（测试环境或 TLT_NO_BROWSER）",
                         "Browser data wasn’t read this run (test environment or TLT_NO_BROWSER)"))
     detail = bl.observed_text(observed)
+    refused = {b: observed[b] for b in first if observed.get(b) == bl.BLOCKED}
+    if refused and bl.OK in observed.values():
+        # 下面只按被拒的那一步判等级、给步骤（login-5）
+        detail += _first_step_skipped(refused)
+        observed = refused
     if any(code == bl.OK for code in observed.values()):
         return _check(name, OK, detail)
     row = _check(name, WARN, detail + scope, bl.steps_text(observed))
     if bl.BLOCKED in observed.values():
         row["recheck"] = True
     return row
+
+
+def _first_step_skipped(refused):
+    """接在 observed_text 后面的那一句：登录优先那一步只读哪个浏览器、读不了就跳过（_browser_login_row）。
+    术语照 docs/i18n-style.md「登录优先这一步」那一行。英文不带句末句号：后面接的 scope 以「. Only…」开头。"""
+    from . import browser_login as bl
+
+    return L("。解析流地址时，登录优先这一步只读 {} 里的 TikTok 登录，读不了就跳过这一步",
+             ". When looking up the stream URL, the app first reads the TikTok sign-in from {} only and skips "
+             "that step when it can’t read it").format(L("、", ", ").join(bl.label(b) for b in refused))
 
 
 def python_switch_steps(darwin=None):
@@ -734,9 +763,10 @@ def python_switch_steps(darwin=None):
     从 python.org 装。重装组件约 1.4 GB（INSTALL_NEED_GB 里「运行环境」那一份）。
     macOS 的「完全磁盘访问权限」按解释器文件登记（browser_login.fda_targets）：换了 Python，新的
     那个不在列表里，TikTok 要求登录才给流地址的直播间就拿不到流——要提醒重新授权一次（审查小问题）。
-    路径和步骤以前指向「浏览器登录态」那一行，可那一行只要别的浏览器读到了登录就是「通过」、不带步骤
+    路径和步骤以前指向「浏览器登录态」那一行，可那一行当时只要别的浏览器读到了登录就是「通过」、不带步骤
     （2026-10-29 新 Mac 上就是这样）。登录优先那一步被系统拒绝读取时，点「开始翻译」后窗口顶部一定会挂出
-    那条带路径和步骤的提示（browser_login.no_login_notice），所以指向它。"""
+    那条带路径和步骤的提示（browser_login.no_login_notice），所以指向它。login-5 之后那一行在这种情况下也带步骤了，
+    指向不改：直播中设置分组整块收着，那一行看不见，顶部那条看得见。"""
     import sys
     darwin = sys.platform == "darwin" if darwin is None else darwin
     steps = L("从 python.org 下载安装 Python 3.10 或更新版本；装好之后完全退出程序，删掉程序文件夹里的 "
@@ -945,7 +975,7 @@ async def run_all(args, detector=None, glossary=None, translator=None, asr_state
         (NAMES["glossary"], check_glossary(glossary)),
         (NAMES["audit"], check_audit()),
         (NAMES["resolver"], check_resolver()),
-        (NAMES["browser_login"], check_browser_login()),
+        (NAMES["browser_login"], check_browser_login(getattr(args, "cookies_browser", "auto"))),
         (NAMES["comments"], check_comments(args)),
         (NAMES["disk"], check_disk()),
     ]

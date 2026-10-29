@@ -737,8 +737,8 @@ def python_upgrade_steps(darwin=None, windows=None, inline=False):
               "{}).").format(need, example)
     if not darwin:
         return steps
-    # 路径和步骤指向窗口顶部那条提示，不指向自检「浏览器登录态」那一行：那一行只要别的浏览器读到了登录就是
-    # 「通过」、不带步骤（2026-10-29，见 selfcheck.python_switch_steps）
+    # 路径和步骤指向窗口顶部那条提示，不指向自检「浏览器登录态」那一行：直播中设置分组整块收着，那一行看不见
+    # （2026-10-29 时那一行在别的浏览器读到登录时还不带步骤，见 selfcheck.python_switch_steps）
     fda = L("换了 Python 之后，要把新的 Python 加进「完全磁盘访问权限」一次：点「开始翻译」后，系统拒绝"
             "读取浏览器数据时，程序窗口顶部那条提示里有路径和步骤；不加的话，TikTok 要求登录才给流地址的"
             "直播间拿不到流。",

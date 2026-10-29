@@ -447,8 +447,7 @@ SWITCH_ZH = ("从 python.org 下载安装 Python 3.10 或更新版本；装好�
 SWITCH_EN = ("Install Python 3.10 or later from python.org. Then quit the app completely, delete the "
              ".venv folder in the app folder, and open the app again. It reinstalls its components "
              "with the new Python (about 1.4 GB, needs an internet connection).")
-# 路径和步骤指向点「开始翻译」后窗口顶部那条提示（2026-10-29）：「浏览器登录态」那一行在别的浏览器读到登录时是
-# 「通过」、不带步骤
+# 路径和步骤指向点「开始翻译」后窗口顶部那条提示（2026-10-29）：直播中设置分组收着，「浏览器登录态」那一行看不见
 FDA_ZH = ("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次：点「开始翻译」后，系统拒绝读取"
           "浏览器数据时，窗口顶部那条提示里有路径和步骤；不加的话，TikTok 要求登录才给流地址的直播间拿不到流")
 FDA_EN = (" After switching, add the new Python to Full Disk Access once more. After you click Start, if "

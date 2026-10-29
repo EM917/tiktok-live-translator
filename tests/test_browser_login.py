@@ -1254,7 +1254,7 @@ def test_no_login_notice_with_the_fda_steps_is_split_into_lines(monkeypatch, log
     """「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时：第一行是登录优先那一步看到了什么、加上授权那几步
     的头一句（页面折叠时只露这一行，web/app.js foldIncident；2026-10-29 以前第一行的动作是「请在 Safari 里登录」，Safari
     读不了时照做是白忙）；那几步原样连在一起、权限范围单独一行；影响哪类直播间和「自动消失」在最后单独一行，不接在
-    权限范围后面。不再指向自检「浏览器登录态」那一行：别的浏览器读到登录时那一行是「通过」、不带步骤。"""
+    权限范围后面。不再指向自检「浏览器登录态」那一行：步骤就在这条提示里，直播中设置分组收着、那一行看不见。"""
     monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_SPACED))
     text = bl.no_login_notice(login)
     rendered = i18n.render(text, lang)
