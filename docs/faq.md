@@ -55,12 +55,17 @@ Full Disk Access. The entry to add is **not** this .app: the app is a launcher
 script that hands over to a Python interpreter, and macOS records the permission
 against the interpreter file's path (measured 2026-09-17 on macOS 27: the TCC
 log shows `identifier_type=Path` with a `python3.x` path and never mentions the
-bundle). The Browser Login row and the error message print the exact path(s) for
-your machine. Open System Settings → Privacy & Security → Full Disk Access,
-press "+", press ⌘⇧G in the file picker, paste the path, press Return, click
-Open, and switch the new entry on; repeat for each path shown. The list shows
-the entry as `python3.x`, not under the app's name. Add Terminal too if you
-launch with Start.command. Then quit the app completely and reopen it. Both
+bundle). The notice at the top of the window after you click Start, the error
+message, and this row (when no browser has a TikTok sign-in) print the exact
+path(s) for your machine. Three steps: 1. open System Settings → Privacy &
+Security → Full Disk Access; 2. press "+", press ⌘⇧G in the file picker, paste
+the path, press Return, click Open, and switch the new entry on, once for each
+path shown (the list shows the entry as `python3.x`, not under the app's name);
+3. press ⌘Q to quit the app completely and reopen it. Only if you start the app
+from a terminal (for example with Start.command), add Terminal
+(`/System/Applications/Utilities/Terminal.app`) the same way in step 2, and
+if macOS asks to quit and reopen Terminal, do that before starting the app
+again. Both
 launchers start the app with the Python that built its environment (`.venv`)
 while that Python is still there at the same version, so installing or
 upgrading a different Python (for example Homebrew pulling in a newer
@@ -68,8 +73,7 @@ upgrading a different Python (for example Homebrew pulling in a newer
 Python itself is upgraded, moved or removed, or when the environment is
 rebuilt; the row then shows the new one. With an unchanged path, the entry can
 also be in the list with its switch on while the row still says macOS didn't
-allow access. In that case select the entry, click −, and add it again with the
-steps above. The permission belongs to the Python
+allow access. In that case select the entry, click −, and do step 2 again. The permission belongs to the Python
 interpreter, not just this app: any script run with that Python can read
 protected data on this computer, such as Mail, Messages and Safari data. When
 you no longer need the TikTok sign-in from your browser, switch the entry off in

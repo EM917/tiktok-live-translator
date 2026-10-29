@@ -388,40 +388,80 @@ def fda_targets(environ=None, executable=None):
     return targets
 
 
-def fda_steps(targets=None):
-    """系统拒绝读取时能照做的几步，分行写（专家审查 I8、S2）：
+# 「终端」这个 app 的位置（macOS 10.15 起在 /System 下）。从终端启动时第 2 步要把它也加进去
+TERMINAL_APP = "/System/Applications/Utilities/Terminal.app"
 
-      * 每个路径单独一行（照旧用「」括起来，自检那一行里手动选中时有个边界）。以前路径夹在一句话的末尾
-        （「…打开：「/opt/…/python3.13」。」），说着「粘贴下面的路径」，下面却什么都没有，选的时候还容易
-        带上句号。解析失败的横幅里这几行由页面换成可复制的代码行（status.paths，app/pipeline.py _fda_paths；
-        web/app.js 只按那个结构化字段认路径行，不从文字里猜），自检那一行和终端里照文字分行显示；
-      * 加一句：列表里已经有这一项、开关也开着时，删掉再加一次。只写看得到的（列表里有、开着，系统仍然
-        拒绝读取——这段话只在系统拒绝读取时出现）和能做的，不写为什么会这样：「解释器原地换了文件，
-        系统按文件指纹认它」没有实测过；
-      * 讲清这项权限管到哪里（D6，用户 10-22 按推荐「维持授权，把范围讲清楚」）：给的是 Python 解释器，
-        用它运行的任何脚本都能读这台电脑上受保护的数据；不再需要借浏览器里的 TikTok 登录时，可以在同一个
-        列表里关掉。这一句单独占最后一行，后面接的别的步骤都另起一行（steps_text、no_login_notice），免得读起来
-        像是在接着讲权限范围（审查第 1 轮）。"""
+
+def started_from_terminal(environ=None):
+    """本程序是不是从终端里启动的（双击 Start.command、在终端里运行 python3 main.py）。
+
+    2026-10-29：中控从「聚焦搜索」点 .app 启动，「完全磁盘访问权限」那几步却照样写着「用 Start.command 启动的话
+    把「终端」也加进去」，照着做不下来。终端会给在它里面跑的程序设 TERM（「终端」和 iTerm2 还设 TERM_PROGRAM），
+    环境变量跟着 exec 一路带到最终进程；从访达、程序坞、聚焦搜索打开 .app 时，系统给的环境里没有这两个。
+    只看环境变量、不看 isatty：`| tee` 这类重定向下 stdout 不是终端，程序照样是从终端启动的。"""
+    env = os.environ if environ is None else environ
+    return bool(env.get("TERM_PROGRAM") or env.get("TERM"))
+
+
+def quit_step(terminal=None):
+    """「完全退出本程序再打开」那一步，按启动方式写。terminal 为 None 时按 started_from_terminal()。"""
+    terminal = started_from_terminal() if terminal is None else terminal
+    if terminal:
+        return L("完全退出本程序，再从终端启动它（比如双击 Start.command）；系统要「终端」退出并重新打开时，照做。",
+                 "Quit the app completely, then start it from a terminal again (for example, with "
+                 "Start.command). If macOS asks to quit and reopen Terminal, do that.")
+    return L("按 ⌘Q 完全退出本程序，再打开它。", "Press ⌘Q to quit the app completely, then open it again.")
+
+
+def fda_steps(targets=None, terminal=None):
+    """系统拒绝读取时能照做的几步：头一句、编号的三步、两行补充。
+
+    2026-10-29 新 Mac 上，中控照着以前那一整段长文（系统设置路径、+、⌘⇧G、粘贴、回车、打开、开关、列表里叫
+    python3.x、已在列表要先删再加、Start.command 要加「终端」、完全退出重开、权限范围）做不下来。现在：
+      * 头一句一行（「照下面三步给 Python 打开…」），「没有读到 TikTok 登录」那条持续提示把它接在第一行末尾
+        （no_login_notice）——页面折叠时只露第一行，动作要在那一行里；
+      * 三步各占一行、带编号：打开那一页；点「+」加 Python（路径在下面，每个路径单独一行）；完全退出再打开；
+      * 「终端」那几句只对从终端启动的人说（started_from_terminal；terminal 显式给的话按给的）：从 .app 启动时
+        系统登记的是解释器的路径（fda_targets 的说明），「终端」不相干；
+      * 后面两行：列表里已经有它、开关也开着还是这样，删掉再做一次第 2 步（专家审查 I8；只写看得到的和能做的，
+        不写为什么，「解释器换了文件，系统按指纹认它」没实测过）；权限范围（D6，用户 10-22 按推荐「维持授权，把
+        范围讲清楚」）一字不改、单独占最后一行，后面接的别的步骤都另起一行（steps_text、no_login_notice）。
+
+    路径行照旧整行就是「路径」（专家审查 I8）：解析失败的横幅里这几行由页面换成可复制的代码行（status.paths，
+    app/pipeline.py _fda_paths；web/app.js 只按那个结构化字段认路径行，不从文字里猜），自检那一行和终端里照文字分行
+    显示。⌘⇧G 手动粘贴是眼下唯一的走法；以后有了「打开设置」「在访达中显示」的按钮，这条走法挪进 README 当备用。"""
     targets = fda_targets() if targets is None else list(targets)
-    return L("到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，点「+」，在选文件的窗口里按 "
-             "⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开{}：\n{}\n"
-             "列表里显示的名字是 {}，不是本程序的名字。如果列表里已经有这一项、开关也开着，先选中它点"
-             "「−」删掉，再按上面的步骤加一次。用 Start.command 启动的话把「终端」也加进去。"
-             "然后完全退出程序再打开。\n"
-             "这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上"
-             "受保护的数据。不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。",
-             "Go to System Settings > Privacy & Security > Full Disk Access and click +. In the "
-             "file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on "
-             "its switch{}:\n{}\nThe list shows {}, not the app’s name. If it’s already in the list "
-             "with its switch on, select it, click −, and add it again with the steps above. If you "
-             "start the app with Start.command, add Terminal too. Then quit the app completely and "
-             "open it again.\n"
-             "This permission goes to the Python interpreter, not just this app, so any script it "
-             "runs can read protected data on this computer. When you no longer need the TikTok "
-             "sign-in from your browser, you can turn its switch off in the same list.").format(
-                L("（每个路径各做一遍）", " (do this for each path)") if len(targets) > 1 else "",
-                L("\n", "\n").join(L("「{}」", "“{}”").format(t) for t in targets),
-                L("、", ", ").join(os.path.basename(t) for t in targets))
+    terminal = started_from_terminal() if terminal is None else terminal
+    names = L("、", ", ").join(os.path.basename(t) for t in targets)
+    paths = L("\n", "\n").join(L("「{}」", "“{}”").format(t) for t in targets)
+    each = L("（每个路径各做一遍）", " (do this for each path)") if len(targets) > 1 else ""
+    lines = [
+        L("照下面三步给 Python 打开「完全磁盘访问权限」：", "Follow these three steps to turn on Full Disk Access for Python:"),
+        L("1. 打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
+          "1. Open System Settings > Privacy & Security > Full Disk Access."),
+        L("2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开{}：",
+          "2. Click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, "
+          "and turn on its switch{}:").format(each),
+        paths,
+        L("列表里显示的名字是 {}，不是本程序的名字。", "The list shows {}, not the app’s name.").format(names),
+    ]
+    if terminal:
+        lines[-1] = lines[-1] + _space_before(
+            L("本程序是从终端启动的：「终端」也照这样加进去，按 ⌘⇧G 时粘贴「{}」。",
+              "The app was started from a terminal. Add Terminal the same way: after ⌘⇧G, paste "
+              "“{}”.").format(TERMINAL_APP))
+    lines += [
+        L("3. ", "3. ") + quit_step(terminal),
+        L("列表里已经有它、开关也开着还是这样：选中它点「−」删掉，再做一次第 2 步。",
+          "If it’s already in the list with its switch on and you still see this, select it, click −, and "
+          "do step 2 again."),
+        L("这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。"
+          "不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。",
+          "This permission goes to the Python interpreter, not just this app, so any script it runs can read "
+          "protected data on this computer. When you no longer need the TikTok sign-in from your browser, you "
+          "can turn its switch off in the same list."),
+    ]
+    return L("\n", "\n").join(lines)
 
 
 def decrypt_steps(browsers):

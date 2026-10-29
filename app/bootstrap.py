@@ -737,13 +737,16 @@ def python_upgrade_steps(darwin=None, windows=None, inline=False):
               "{}).").format(need, example)
     if not darwin:
         return steps
-    fda = L("换了 Python 之后，要把新的 Python 加进「完全磁盘访问权限」一次，路径和步骤见程序"
-            "「启动自检」里「浏览器登录态」那一行；不加的话，TikTok 要求登录才给流地址的直播间"
-            "拿不到流。",
-            "After switching, add the new Python to Full Disk Access once. The Browser "
-            "Login row in the app’s Startup Check shows the path and steps. Without it, the "
-            "app can’t get the stream for live streams where TikTok provides the stream URL "
-            "only to signed-in viewers.")
+    # 路径和步骤指向窗口顶部那条提示，不指向自检「浏览器登录态」那一行：那一行只要别的浏览器读到了登录就是
+    # 「通过」、不带步骤（2026-10-29，见 selfcheck.python_switch_steps）
+    fda = L("换了 Python 之后，要把新的 Python 加进「完全磁盘访问权限」一次：点「开始翻译」后，系统拒绝"
+            "读取浏览器数据时，程序窗口顶部那条提示里有路径和步骤；不加的话，TikTok 要求登录才给流地址的"
+            "直播间拿不到流。",
+            "After switching, add the new Python to Full Disk Access once. After you click "
+            "Start, if macOS doesn’t allow the app to read browser data, the notice at the top "
+            "of the app’s window shows the path and steps. Without it, the app can’t get the "
+            "stream for live streams where TikTok provides the stream URL only to signed-in "
+            "viewers.")
     if inline:
         return L("{}{}", "{} {}").format(steps, fda)
     return steps + "\n" + fda

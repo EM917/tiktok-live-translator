@@ -257,7 +257,8 @@ def test_blocked_names_no_browser_in_english():
 def test_full_disk_access_steps_in_english(targets):
     text = en(bl.fda_steps(targets))
     assert_clean_english(text, targets)
-    assert text.startswith("Go to System Settings > Privacy & Security > Full Disk Access")
+    assert text.startswith("Follow these three steps to turn on Full Disk Access for Python:\n"
+                           "1. Open System Settings > Privacy & Security > Full Disk Access.\n2. Click +.")
     for t in targets:
         assert "“{}”".format(t) in text
     assert ("(do this for each path)" in text) == (len(targets) > 1)
