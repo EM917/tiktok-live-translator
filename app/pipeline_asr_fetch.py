@@ -49,10 +49,14 @@ class AsrPrefetchMixin:
     def _request_asr_prefetch(self):
         """控制页的 download_asr_model（handle_control）。不等结果：几 GB 的下载放后台跑，不在这个页面的消息循环
         里等（同 apply_update）。只有本机页面发得出来：手机入站只认 retranslate（app/viewer.py
-        _handle_inbound），浮窗页的入站一律丢弃（app/server.py）。返回 None。"""
+        _handle_inbound），浮窗页的入站一律丢弃（app/server.py）。返回 None。
+
+        没起下载就返回的几条路也重发那一行（_refresh_asr_check）：页面一点就把按钮置灰成「正在下载…」
+        （web/app.js asrFetchButton），只有服务端重发这一行才把它放回来。不重发，按钮就一直灰着，点不了第二次。"""
         if self._stream_active() or self._update_in_progress():
             # 按钮在这些时候是灰的；还能收到，多半是页面停在旧状态。不下，只在终端留一句
             print("[信息] 正在连接、监听或更新，这次不下载识别模型；停止后再点「现在下载」")
+            self._spawn(self._refresh_asr_check())
             return None
         if self._asr_fetching():
             print("[信息] 识别模型已经在下载了，不再起一份")
@@ -62,6 +66,7 @@ class AsrPrefetchMixin:
             plan = asr_plan(self.args)
         except Exception as exc:
             print("[警告] 没能确定要下载哪个识别模型：{}".format(exc))
+            self._spawn(self._refresh_asr_check())
             return None
         # 同步记下来再起任务：同一拍里连点两下，第二下就看得到第一下
         fetch = self._asr_fetch = {"backend": plan["backend"], "model": plan["model"],
@@ -79,8 +84,9 @@ class AsrPrefetchMixin:
             if not self._asr_session_busy():    # 已经开播了：「可以开始了」这句不对，开播那边自己在说
                 await self._provision_note(L("语音识别模型已下载，可以开始了。",
                                              "The speech model is downloaded. You can start now."))
-        if outcome != "refused":
-            await self._refresh_asr_check()          # 下完：那一行变绿、按钮没了；失败：按钮回来
+        # 下完：那一行变绿、按钮没了；失败、磁盘不够没下：按钮回来。磁盘不够那条也要重发——那句话叫中控「腾出
+        # 空间后再点」，页面上的按钮却还是点击时置灰的「正在下载…」，不重发就再也点不了
+        await self._refresh_asr_check()
 
     async def _fetch_asr_once(self, fetch):
         """真的去下。返回 "cached"（本来就下全了）/ "refused"（磁盘不够，没下）/ "done" / "failed"。"""

@@ -258,6 +258,8 @@ def test_a_click_while_connecting_live_or_updating_downloads_nothing(monkeypatch
     assert fetched == []
     assert statuses(server) == []
     assert "这次不下载识别模型" in capsys.readouterr().out
+    # 页面一点就把按钮置灰成「正在下载…」：没下也要重发那一行，按钮才回得来
+    assert refreshed == [False]
 
 
 def test_a_second_click_while_downloading_starts_nothing_new(monkeypatch, tmp_path, ct2):
@@ -309,9 +311,13 @@ def test_not_enough_storage_downloads_nothing_and_says_how_much_is_needed(monkey
     async def scenario():
         p.handle_control({"type": "download_asr_model"})
         await poll_until(lambda: not p._asr_fetching() and statuses(server), 5, "说明")
+        await poll_until(lambda: refreshed, 5, "重发那一行")
 
     run(scenario())
     assert fetched == []
+    # 那句话叫中控腾出空间后再点：页面上点击时置灰的「正在下载…」要靠重发这一行（不再 busy）放回来，
+    # 不重发就一直灰着，再也点不了（审查 review-launch）
+    assert refreshed == [False]
     (msg,) = statuses(server)
     assert msg["detail"] == ("磁盘剩余 0.8 GB，语音识别模型 small 约 0.5 GB，下载时还要多留 1 GB，这次没有下载。"
                              "腾出空间后再点「现在下载」。")
