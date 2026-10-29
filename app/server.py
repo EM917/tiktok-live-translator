@@ -587,6 +587,10 @@ class CaptionServer:
                     # 不带时和以前逐字节相同。手机同看的白名单（app/viewer.py）不放它过去
                     if msg.get("recheck"):
                         incidents[key]["recheck"] = True
+                    # 「完全磁盘访问权限」那几步旁边的按钮跟在哪几行后面（Pipeline._incident 的 fda，只在 macOS 上带）：
+                    # 同上，带着才留；手机同看的白名单不放它过去（容器一律丢掉）
+                    if isinstance(msg.get("fda"), dict) and msg["fda"]:
+                        incidents[key]["fda"] = dict(msg["fda"])
                     while len(incidents) > INCIDENTS_MAX:
                         oldest = min(incidents.values(), key=lambda x: x["ts"])
                         incidents.pop(oldest["id"], None)

@@ -1012,6 +1012,13 @@ body.home .cap, body.home .session-sep { max-width: 600px; }
   color: inherit; text-decoration: underline; background: none; border: none; border-radius: 4px; cursor: pointer;
 }
 .incident .incident-recheck:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
+/* 「完全磁盘访问权限」那几步旁边的按钮（web/app.js drawFdaLines）：同「我加好了，再查一次」的样子，行内接在那一步的字后面 */
+.incident .incident-fda {
+  margin-left: 4px; padding: 0 6px;
+  font: inherit; font-size: var(--fs-footnote);
+  color: inherit; text-decoration: underline; background: none; border: none; border-radius: 4px; cursor: pointer;
+}
+.incident .incident-fda:focus-visible { outline: 2px solid transparent; box-shadow: var(--focus); }
 .incident.error { color: #fff; background: var(--fail-bar); border-bottom-color: var(--fail-bar); }   /* 同 .health-bar.degraded */
 .incident.info {
   color: var(--label);
@@ -1378,6 +1385,7 @@ html[lang="en"] .sc-item .sc-name { min-width: 128px; }
 .sc-item .sc-fix { display: block; color: var(--label); margin-top: 2px; white-space: pre-line; }   /* 「完全磁盘访问权限」那几步分行写，路径单独一行（I8） */
 .sc-item.fail .sc-detail { color: var(--fail); font-weight: 600; }
 .sc-item .sc-fix .sc-recheck { display: block; margin-top: 6px; white-space: normal; }   /* 「我加好了，再查一次」，在那几步下面 */
+.sc-item .sc-fix .sc-fda { margin-left: 6px; white-space: normal; vertical-align: baseline; }   /* 「打开完全磁盘访问设置」等，行内接在那一步后面 */
 
 /* 视觉隐藏但读屏可读：自检提醒/失败项在文字里补一句级别说明（app.js
    renderSelfcheck），色弱/读屏用户不用只靠圆点颜色猜级别 */
