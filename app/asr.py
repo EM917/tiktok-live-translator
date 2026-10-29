@@ -289,6 +289,46 @@ MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
                   "large-v3": 3100, "large-v3-turbo": 1620}
 
 
+def asr_plan(args):
+    """这台机器按 args 会加载哪一套识别配置：{"backend", "model", "device", "compute", "note"}。
+
+    以前 _run_session（app/pipeline.py）和自检的 check_asr（app/selfcheck.py）各推一遍，写法不完全一样
+    （自检不看 compute_type）；待机时提前下载（app/pipeline_asr_fetch.py）又要推一遍。三处共用这一份，
+    免得自检说的、提前下的、开播时加载的是三个不同的模型。未显式指定的参数用硬件推荐补齐：
+    backend/model/device/compute 是联动的一组，用户锁定 backend/device 时其余字段围绕它重新推导
+    （见 hwdetect.py）。硬件探测失败照常抛出，调用方各自处理。"""
+    from .hwdetect import recommend
+
+    rec = recommend(backend=getattr(args, "backend", "auto"), device=getattr(args, "device", "auto"))
+    compute = getattr(args, "compute_type", "auto")
+    return {"backend": rec["backend"], "model": getattr(args, "model", None) or rec["model"],
+            "device": rec.get("device"),
+            "compute": compute if compute != "auto" else rec.get("compute_type"),
+            "note": rec.get("note")}
+
+
+def fetch_model(backend, model):
+    """只把识别模型的文件下进 HuggingFace 缓存，不加载进内存或显存。返回本地目录。
+
+    待机时提前下载用（app/pipeline_asr_fetch.py）：下的是加载时会去拿的同一份文件——mlx 和
+    mlx_whisper.load_models 一样按仓库名整仓 snapshot_download，ct2 用 faster-whisper 自己的
+    download_model（WhisperModel 构造时调的就是它）——之后 create_transcriber 直接命中缓存，
+    不再下一遍。backend 为 auto 时和 create_transcriber 同样判断。model 是本地文件夹时什么都不下。"""
+    if os.path.isdir(str(model)):
+        return str(model)
+    if backend == "auto":
+        try:
+            import mlx_whisper  # noqa: F401
+            backend = "mlx"
+        except ImportError:
+            backend = "ct2"
+    if backend == "mlx":
+        from huggingface_hub import snapshot_download
+        return snapshot_download(repo_id=_MLX_REPOS.get(model, model))
+    from faster_whisper.utils import download_model
+    return download_model(model)
+
+
 def release_mlx_model():
     """放掉 mlx-whisper 缓存在类属性里的模型（ModelHolder 是类级缓存，新建一个
     MLXTranscriber 也还是同一份模型）。只看已经 import 过的模块：没加载过就没有

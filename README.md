@@ -81,7 +81,7 @@ You need macOS 12.3 or later, or Windows, and about 6 GB of free disk space. The
 
 5. Paste a live link or `@username`, check Spoken language (Spanish + English by default), and click Start. Next time, Recent Streams under the box lists the streamers you opened lately, and one click starts one.
 
-The first launch takes a few minutes. The app sets up its own Python environment and installs what it needs, including ffmpeg and the noise-reduction model. The speech model (up to 3 GB) downloads the first time you click Start, with the progress shown on the page.
+The first launch takes a few minutes. The app sets up its own Python environment and installs what it needs, including ffmpeg and the noise-reduction model. The speech model (up to 3 GB) downloads the first time you click Start, and captions wait until it finishes. To get it before you go live, open Settings → Startup Check and click Download Now on the Speech Recognition row. The progress shows on the page either way.
 
 Choose the language captions are translated into from the Captions in menu in the top bar: Simplified Chinese, Traditional Chinese, English or Spanish. It starts on Chinese, or on English for a new install with an English interface. This menu changes only the captions, not the interface. If an earlier version saved another language here, or the app starts with `--target` and another language code, captions stay in that language and the menu shows it as an extra item.
 
@@ -398,7 +398,7 @@ Copyright © 2026 [Elon Mei (EM917)](https://github.com/EM917). Released under t
 
 5. 粘贴直播间地址或 `@用户名`，确认「主播语言」（默认西语 + 英语），点「开始翻译」。下次可以直接点输入框下面的「最近的直播间」，列出的是你最近打开过的主播，点一下就开始。
 
-第一次启动要几分钟：程序会建好自己的 Python 环境，装上需要的组件，包括 ffmpeg 和降噪模型。语音模型最多约 3 GB，在第一次点「开始翻译」时下载，页面上有进度。
+第一次启动要几分钟：程序会建好自己的 Python 环境，装上需要的组件，包括 ffmpeg 和降噪模型。语音模型最多约 3 GB，在第一次点「开始翻译」时下载，字幕要等它下完。想在开播前就下好，打开「设置 → 启动自检」，在「语音识别」那一行点「现在下载」。两种方式页面上都有进度。
 
 字幕译成哪种语言，在顶栏的「字幕译成」菜单里选：简体中文、繁体中文、英语、西班牙语。默认是中文，新装且界面是英文时默认是英文。这个菜单只改字幕，不改界面。以前的版本在这里存过别的语言，或者用 `--target` 加别的语言代码启动时，字幕照旧译成那种语言，菜单里多出这一项。
 

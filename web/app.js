@@ -1526,6 +1526,7 @@
     // 和本地服务断开期间「打开闪购助手」点了也发不出去：先禁用，重连后的 hello 再带回真实状态
     if (flashOpenBtn) flashOpenBtn.disabled = state === "offline";
     startBtn.disabled = state === "connecting";
+    syncAsrFetchBtn();      // 自检「语音识别」一行的「现在下载」：连接中、直播中置灰
     streamActive = active;
     updateFloatBtn();       // 浮窗按钮跟换主播同一条显示规则
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
@@ -4286,6 +4287,40 @@
   var scLastSig = null;   // 结论没变就别动展开状态
   var SC_LEVEL_SR_TEXT = { warn: L("（提醒）", " (warning)"), fail: L("（未通过）", " (failed)") };
 
+  // 自检「语音识别」一行上的「现在下载」（app/selfcheck.py ACTION_DOWNLOAD_ASR，后端 app/pipeline_asr_fetch.py）：
+  // 待机时提前下载识别模型，不用等第一次开播。连接中、直播中、和本地服务断开、正在下载时置灰——服务端在
+  // 这些时候也不下。下完服务端重发这一行：模型下全了这一行就没有 action，按钮跟着没了
+  var asrFetchBtn = null;
+  var asrFetchBusy = false;
+  var ASR_FETCH_OFF_STATES = { connecting: true, live: true, offline: true };
+
+  function asrFetchLabel(sizeMb) {
+    var mb = Number(sizeMb) || 0;
+    if (!mb) return L("现在下载", "Download Now");
+    if (mb < 1000) return L("现在下载（约 {mb} MB）", "Download Now (about {mb} MB)").replace("{mb}", String(mb));
+    return L("现在下载（约 {gb} GB）", "Download Now (about {gb} GB)").replace("{gb}", (mb / 1000).toFixed(1));
+  }
+
+  function syncAsrFetchBtn() {
+    if (!asrFetchBtn) return;
+    asrFetchBtn.disabled = asrFetchBusy || ASR_FETCH_OFF_STATES[statusState] === true;
+  }
+
+  function asrFetchButton(c) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn small sc-action";
+    asrFetchBusy = !!c.busy;
+    btn.textContent = asrFetchBusy ? L("正在下载…", "Downloading…") : asrFetchLabel(c.size_mb);
+    btn.addEventListener("click", function () {
+      if (!send({ type: "download_asr_model" })) return;    // 断开了：什么都没发出去，按钮照旧
+      asrFetchBusy = true;
+      btn.textContent = L("正在下载…", "Downloading…");
+      syncAsrFetchBtn();
+    });
+    return btn;
+  }
+
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
     var sum = msg.summary || {};
@@ -4299,6 +4334,8 @@
     setSelfcheckIcon(scSum.icon);
     scSummary.title = scSummary.textContent;
     scList.innerHTML = "";
+    asrFetchBtn = null;
+    asrFetchBusy = false;
     msg.checks.forEach(function (c) {
       var li = document.createElement("li");
       li.className = "sc-item " + c.level;
@@ -4323,10 +4360,15 @@
         fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
         detail.appendChild(fix);
       }
+      if (c.action === "download_asr_model") {
+        asrFetchBtn = asrFetchButton(c);
+        detail.appendChild(asrFetchBtn);
+      }
       li.appendChild(name);
       li.appendChild(detail);
       scList.appendChild(li);
     });
+    syncAsrFetchBtn();
     // 只有结论真的变了才自动展开/收起。重连会重放一次 hello，
     // 那时若无条件重置，正在看明细的人会被收起来。自检这一行的规则是「签名
     // 一变就无条件同步」——从「有失败」变回「全绿」也要跟着收起，所以直接用

@@ -101,6 +101,7 @@
 | 自检 / 启动自检 | **Startup Check** | Self-Test, Self-check, Diagnostics, Health Check | health 已经被「识别落后」那条 health 提示占了。README 写的是 “Startup self-check”，界面用更短的写法 |
 | 自检项 | **check** | test, item | |
 | 通过 / 提醒 / 未生效 | **passed / warning / isn’t working** | failed（只在读屏的级别说明里用） | 「未生效」强调的是功能没起作用，不是测试没过。isn’t working 是苹果的常用说法 |
+| 现在下载（自检「语音识别」一行的按钮） | **Download Now**；带大小写 **Download Now (about {n} GB)**；点了以后 **Downloading…** | Download, Prefetch, Get Model | 2026-10-29 加：待机时提前下载识别模型（app/pipeline_asr_fetch.py），只在模型还没下全时出现，连接中、直播中、下载中置灰。Now 说清是现在就下、不等开播；Prefetch 是工程师用词。那一行的说明：「模型还没下载，约 3.1 GB / model not downloaded yet, about 3.1 GB」「正在下载模型 / model downloading」 |
 | 翻译引擎 | **Translation Engine**；短写 **engine** | translator, provider | 提示里指这一行在哪，一律写「在「设置 > 翻译引擎」里」/ **in Settings > Translation Engine**（英文本来就是这一种）。2026-10-26（专家审查 V5）以前中文有五种：「在「翻译引擎」里」「在「设置 > 翻译引擎」里」「在页面上的「翻译引擎」里」「在页面的「翻译引擎」里」「在「翻译引擎」面板」。设置分组在直播中整块收起，所以**直播中**出现、叫人去换引擎、换模型或填密钥的提示，前面加「点「停止」后」/ **after you click Stop**（英文也可以放进句中：To switch back, click Stop, …；专家审查 U4）。启动自检里那一项（自检的「翻译引擎」一行）是另一个东西，照写「自检的「翻译引擎」一项」。**文档**（README、docs/*.md）里写界面路径照旧用 →（「设置 → 翻译引擎」/ Settings → Translation Engine），不跟着界面改成 >：文档里同一种路径还有 macOS 系统设置的多级路径（System Settings → Privacy & Security → Full Disk Access），一直是 →，读者照着点不会走错。界面文字（成对的 L() 和 data-en）一律用 >（2026-10-26 定，b6-wording 第 1 轮审查） |
 | 回退（引擎） | **fallback**；正文写 **switched to {engine}** | downgrade | |
 | 本地模型 | **local model** | offline model | |
@@ -488,7 +489,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 37 | index.html:269 | 开始翻译 | **Start** | 96 → 78（含内边距） |
 | 38 | index.html:274 | 也可以直接粘贴 .flv / .m3u8 流地址。 | You can also paste a .flv or .m3u8 stream URL. | |
 | 39 | index.html:275 | 个别直播间 TikTok 不把流地址给程序。这时把直播间链接和浏览器里的 .flv 地址一起粘进来（中间空格隔开）：前者管弹幕和词表，后者作音频源。 | For some live streams, TikTok doesn’t provide a stream URL to the app. In that case, paste the live link and the .flv URL from your browser together, separated by a space. The link is used for comments and glossaries, and the .flv URL for audio. | 第八条，只写观察和能做的事 |
-| 40 | index.html:276 | 首次识别需下载模型，进度会显示在页面上。 | The speech model downloads the first time you start. Progress appears here. | |
+| 40 | index.html #input-help | 识别模型在第一次点「开始翻译」时下载，字幕要等它下完。想现在就下，在「设置 > 启动自检 > 语音识别」里点「现在下载」。 | The speech model downloads the first time you click Start, and captions wait until it finishes. To download it now, click Download Now in Settings > Startup Check > Speech Recognition. | 2026-10-29 改：以前只说「首次识别需下载」，新装机第一次开播时才下 3.1 GB，直播已经开始了 |
 | 41 | index.html:280 | 主播语言 | Spoken language | 52 → 104 |
 | 42 | index.html:285–299 | 西班牙语 + 英语（默认）/ 西班牙语（只有西语）/ 自动检测 / 英语 / 日语 / 韩语 / 葡萄牙语 / 法语 / 德语 / 俄语 / 阿拉伯语 / 泰语 / 越南语 / 印尼语 / 中文 | Spanish + English (default) / Spanish Only / Detect Automatically / English / Japanese / Korean / Portuguese / French / German / Russian / Arabic / Thai / Vietnamese / Indonesian / Chinese | 这是界面文字，要翻。换主播面板 #switch-source-echo 会回显选中项的文字，自然跟着变 |
 | 43 | index.html:303 †184 | 本场品牌 | Brand | 52 → 36 |

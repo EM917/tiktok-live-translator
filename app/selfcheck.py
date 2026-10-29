@@ -40,8 +40,18 @@ NAMES = {"ffmpeg": L("音频组件 ffmpeg", "Audio (ffmpeg)"), "denoise": L("人
          "disk": L("磁盘空间", "Storage")}
 
 
-def _check(name, level, detail, fix=""):
-    return {"name": name, "level": level, "detail": detail, "fix": fix}
+# 自检行上可以点的那一下：值是页面要发回来的控制指令（handle_control 的 mtype），页面据此画按钮
+ACTION_DOWNLOAD_ASR = "download_asr_model"
+
+
+def _check(name, level, detail, fix="", action=None, size_mb=None, busy=False):
+    """一行自检。action 是这一行上能点的那一下（目前只有 ACTION_DOWNLOAD_ASR：待机时提前下载识别模型，
+    见 app/pipeline_asr_fetch.py）；带 action 时一起带上 size_mb（按钮上写多大，不知道是 None）和
+    busy（正在做，按钮置灰）。没有 action 的行和以前逐字节相同。审计只记 name / level / detail。"""
+    row = {"name": name, "level": level, "detail": detail, "fix": fix}
+    if action:
+        row.update(action=action, size_mb=size_mb, busy=bool(busy))
+    return row
 
 
 async def _to_thread(fn, *args):
@@ -165,17 +175,16 @@ async def check_asr(args, state=None):
                       L("确认网络和磁盘空间后点「开始翻译」重试；若反复出现，关闭程序重新打开",
                         "Check your network connection and available storage, then click Start "
                         "to try again. If this keeps happening, quit and reopen the app."))
-    backend = getattr(args, "backend", "auto")
     try:
-        from .hwdetect import recommend
-        # device 必须一起传：recommend 把 backend/model/device/compute_type 当成
-        # 一组互相牵连的值重算。少传 device，自检算出的就不是待会儿真正要加载的
-        # 那套配置——报「ct2 + large-v3」而管线加载的是别的，等于白检。
-        rec = recommend(backend=backend, device=getattr(args, "device", "auto"))
+        from .asr import asr_plan
+        # 和开播时（_run_session）、待机提前下载（pipeline_asr_fetch）用同一份推导：device 必须一起传，
+        # recommend 把 backend/model/device/compute_type 当成一组互相牵连的值重算。少传 device，自检算出的
+        # 就不是待会儿真正要加载的那套配置——报「ct2 + large-v3」而管线加载的是别的，等于白检。
+        rec = asr_plan(args)
     except Exception as exc:
         return _check(NAMES["asr"], FAIL,
                       L("硬件探测失败：{}", "Couldn’t detect the hardware: {}").format(of(exc)))
-    model = getattr(args, "model", None) or rec["model"]
+    model = rec["model"]
     # 这几个库第一次 import 要几百毫秒到一秒，放线程里做——run_selfcheck 特意
     # 挂在后台就是为了不挡住界面，在协程里同步 import 等于白挂
     if rec["backend"] == "mlx":
@@ -191,10 +200,19 @@ async def check_asr(args, state=None):
                       L("关闭程序后重新打开，会自动补装",
                         "Quit and reopen the app to install it automatically."))
     cached = _model_cached(model, rec["backend"])
-    detail = L("{} + {}（{}）", "{} + {} ({})").format(
-        rec["backend"], model,
-        L("模型已下载", "model downloaded") if cached
-        else L("首次开播需先下载模型", "model downloads when you first click Start"))
+    fetching = bool(state.get("fetching"))
+    size_mb = _model_size_mb(model)
+    size = _size_text(size_mb)
+    if cached:
+        state_text = L("模型已下载", "model downloaded")
+    elif fetching:
+        state_text = (L("正在下载模型，{}", "model downloading, {}").format(size) if size
+                      else L("正在下载模型", "model downloading"))
+    else:
+        # 写上多大（2026-10-29 新装机：large-v3 约 3.1 GB，第一次点开始才下，直播已经开始了）
+        state_text = (L("模型还没下载，{}", "model not downloaded yet, {}").format(size) if size
+                      else L("模型还没下载", "model not downloaded yet"))
+    detail = L("{} + {}（{}）", "{} + {} ({})").format(rec["backend"], model, state_text)
 
     # Apple Silicon 却在用 CPU 后端 = 这台机器的能力只发挥了一小部分。
     # 实测（hwdetect）CPU 跑 turbo 的 RTF 是 0.99——勉强跟得上，跑久了必然积压，
@@ -238,7 +256,32 @@ async def check_asr(args, state=None):
                         "{}. It’s slow, and long sessions tend to build a backlog.").format(detail),
                       L("换成 Apple 芯片原生的 Python：", "Switch to a Python built for Apple silicon. ")
                       + python_switch_steps())
-    return _check(NAMES["asr"], OK if cached else WARN, detail)
+    if cached:
+        return _check(NAMES["asr"], OK, detail)
+    # 待机时就能下：这一行带一个「现在下载」（web/app.js renderSelfcheck 画按钮，点了发 download_asr_model）。
+    # 上面两种 WARN（Apple 芯片却在用 CPU、Rosetta）不带：那时要做的是换后端 / 换 Python，换了之后要的是
+    # 另一个模型，现在下的用不上
+    fix = "" if fetching else L(
+        "开播前在这里点「现在下载」；不点的话，第一次点「开始翻译」时才下载，字幕要等它下完",
+        "Click Download Now here before you go live. Otherwise it downloads the first time you click "
+        "Start, and captions wait until it finishes.")
+    return _check(NAMES["asr"], WARN, detail, fix, action=ACTION_DOWNLOAD_ASR, size_mb=size_mb,
+                  busy=fetching)
+
+
+def _model_size_mb(model):
+    """识别模型的大致下载体积（MB，app/asr.py MODEL_SIZES_MB）；不在表里（直接给的 HF 仓库名）是 None。"""
+    from .asr import MODEL_SIZES_MB
+    return MODEL_SIZES_MB.get(model)
+
+
+def _size_text(size_mb):
+    """「约 3.1 GB」「约 484 MB」；不知道多大是 None。和开播时「正在加载语音识别模型」那句同一种写法。"""
+    if not size_mb:
+        return None
+    if size_mb >= 1000:
+        return L("约 {:.1f} GB", "about {:.1f} GB").format(size_mb / 1000)
+    return L("约 {} MB", "about {} MB").format(size_mb)
 
 
 def _hub_dirs():
@@ -252,7 +295,7 @@ def _hub_dirs():
 
 
 # faster-whisper 的短名→仓库映射：turbo 不在 Systran 名下，猜前缀会查错目录，
-# 模型明明下全了自检却一直 WARN「首次开播需先下载模型」
+# 模型明明下全了自检却一直 WARN「模型还没下载」
 _CT2_REPOS = {"large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
               "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
               "distil-large-v3": "Systran/faster-distil-whisper-large-v3"}

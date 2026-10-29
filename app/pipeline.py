@@ -418,6 +418,7 @@ from .viewer_share import (  # noqa: E402
     VIEWER_STOP_TIMEOUT_SEC,        # noqa: F401
     VIEWER_RETRANSLATE_QUEUE_MAX,   # noqa: F401
 )
+from .pipeline_asr_fetch import AsrPrefetchMixin  # noqa: E402
 from .pipeline_disk import DiskSpaceMixin  # noqa: E402
 from .pipeline_engine import EngineProvisionMixin  # noqa: E402
 from .pipeline_evidence import AsrEvidenceMixin  # noqa: E402
@@ -429,7 +430,8 @@ from .pipeline_transcript import TranscriptMixin  # noqa: E402
 
 
 class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGuardMixin,
-               TranscriptMixin, FloatWindowMixin, FlashSaleMixin, AsrEvidenceMixin, StreamWatchMixin):
+               TranscriptMixin, FloatWindowMixin, FlashSaleMixin, AsrEvidenceMixin, StreamWatchMixin,
+               AsrPrefetchMixin):
     def __init__(self, args, server):
         self.args = args
         self.server = server
@@ -713,6 +715,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return self._open_flash_helper()
         elif mtype == "open_guard_dir":
             return self._open_guard_dir()      # 弹幕留意的规则文件夹，见 pipeline_guard.py
+        elif mtype == "download_asr_model":
+            # 自检「语音识别」一行的「现在下载」：待机时提前下载识别模型（app/pipeline_asr_fetch.py）。放后台跑、
+            # 立刻返回；连接中、直播中、更新中不下。只有本机页面发得出来：手机入站只认 retranslate，浮窗页的
+            # 入站一律丢弃
+            return self._request_asr_prefetch()
         elif mtype == "export_transcript":
             return self._export_transcript()   # 设置里「字幕记录」：导出最近一场，见 pipeline_transcript.py
         elif mtype == "open_transcripts_dir":
@@ -2035,9 +2042,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         await self._publish_selfcheck(checks)
 
     def _asr_check_state(self):
-        """交给自检「语音识别」那一行的实际加载结果（加载失败、出错后改用了 CPU）。"""
+        """交给自检「语音识别」那一行的实际加载结果（加载失败、出错后改用了 CPU），以及待机时的提前下载
+        是不是还没完（fetching：那一行的「现在下载」置灰，见 app/pipeline_asr_fetch.py）。"""
         return {"load_error": getattr(self, "_asr_load_error", None),
-                "fallback": getattr(self, "_asr_fallback", None)}
+                "fallback": getattr(self, "_asr_fallback", None),
+                "fetching": self._asr_fetching()}
 
     async def _publish_selfcheck(self, checks):
         from .selfcheck import summarize
@@ -3317,14 +3326,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         sess["end"] = {"reason": "model_load_failed"}
         loop = asyncio.get_running_loop()
         # 未显式指定的参数用硬件推荐补齐。注意：backend/model/device/compute 是联动
-        # 整体，用户锁定 backend/device 时其余字段围绕它重新推导（见 hwdetect.py）
-        from .hwdetect import recommend
-        rec = recommend(backend=self.args.backend, device=self.args.device)
-        backend = rec["backend"]
-        model = self.args.model or rec["model"]
-        device = rec["device"]
-        compute = (self.args.compute_type if self.args.compute_type != "auto"
-                   else rec["compute_type"])
+        # 整体，用户锁定 backend/device 时其余字段围绕它重新推导（见 hwdetect.py）。
+        # 和自检那一行、待机时提前下载用同一份推导（app/asr.py asr_plan）
+        from .asr import asr_plan
+        rec = asr_plan(self.args)
+        backend, model, device, compute = rec["backend"], rec["model"], rec["device"], rec["compute"]
         print("[信息] 识别配置: backend={} model={} device={} ({})".format(
             backend, model, device, rec["note"]))
 
@@ -3346,6 +3352,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self._stage(sess, "model_load", self.STAGE_MODEL_LOAD_SEC)
         # 上一场「改用 CPU」的加载被停止打断、还在线程里跑：先等它，别和下面的加载同时驻留两份
         await self._settle_fallback_load(key)
+        # 待机时点了「现在下载」、还没下完：先等它下完，下面的加载命中缓存，不并行起第二份下载
+        await self._settle_asr_fetch()
         if self._transcriber is None or self._transcriber_key != key:
             # 正在用的是出错后改用的 CPU 模型：先放掉再加载新配置，两个模型不同时驻留
             dropped_fallback = await self._drop_fallback_transcriber()
@@ -4394,9 +4402,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     MODEL_DOWNLOAD_POLL_SEC = 3.0
 
-    async def _model_download_progress(self, model):
+    async def _model_download_progress(self, model, report=None):
         """模型加载期间轮询 HuggingFace 缓存目录的增量，把下载进度推到 UI。
-        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。每 MODEL_DOWNLOAD_POLL_SEC 秒看一次。"""
+        没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。每 MODEL_DOWNLOAD_POLL_SEC 秒看一次。
+        report 是 async (text, pct, mb) 回调：给了就交给它（待机时提前下载走 _provision_note，见
+        app/pipeline_asr_fetch.py），不给就照旧发 connecting 状态、带结构化的 progress。"""
         try:
             hf_home = os.environ.get("HF_HOME")
             cache = (Path(hf_home) / "hub" if hf_home
@@ -4439,6 +4449,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 # 结构化的进度（专家审查 U7）：页面中间那张「正在连接」卡片只认它，不去解析 detail 的文字——
                 # connecting 状态下 detail 几乎从不为空（本文件里有十来处在发），看到 detail 就显示会和顶部
                 # 横幅重复同一句话。只有这里带：其余 connecting 都不带这个键。pct 在模型大小未知时是 null
+                if report is not None:
+                    await report(text, pct, int(round(done_mb)))
+                    continue
                 await self.server.status("connecting", text, progress={
                     "kind": "model_download", "pct": pct, "mb": int(round(done_mb))})
         except asyncio.CancelledError:
