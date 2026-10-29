@@ -166,6 +166,33 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual(usable(page), ["flash-stop", "flash-open"]);
   });
 
+  test(name("停止在后端等着再试：本页记着的在途放掉，停止写「正在重试…」、旁边说一句（连不上时也说）；最后的结果前面带「试了 n 次」"), () => {
+    const NOTE = T("停止还没被接受，30 秒内每 3 秒再试一次。", "Stop hasn’t been accepted yet. Trying again every 3 sec for up to 30 sec.");
+    const page = opened(calm());
+    page.el("flash-stop").click();
+    assert.deepEqual(usable(page), ["flash-open"]);
+    push(page, calm({ control: { action: "stop", phase: "retrying" } }));
+    assert.equal(text(page, "flash-stop"), T("正在重试…", "Retrying…"));
+    assert.deepEqual(usable(page), ["flash-open"], "后端已经在试：停止不能点");
+    assert.ok(!hidden(page, "flash-ctl-note"));
+    assert.equal(text(page, "flash-ctl-note"), NOTE);
+    push(page, { conn: "unreachable", stale: false, products: [], alerts: [], attention: [],
+                 control: { action: "stop", phase: "retrying" } });
+    assert.deepEqual(visible(page), ["flash-open"]);
+    assert.equal(text(page, "flash-ctl-note"), NOTE, "一颗按钮都不出时那句照样在");
+    push(page, { conn: "unreachable", stale: false, products: [], alerts: [], attention: [], control: null });
+    page.push({ type: "flash_control_result", action: "stop", ok: false, error: "unreachable", tries: 11 });
+    assert.ok(hidden(page, "flash-ctl-note"));
+    assert.equal(text(page, "flash-note"), T("试了 11 次，没有发出：连不上 127.0.0.1:9334。",
+                                            "Tried 11 times. Not sent: Couldn’t connect to 127.0.0.1:9334."));
+    // 状态里的「停止在等着再试」放开本页记着的在途（之后由状态说了算），不用等结果
+    const again = opened(calm());
+    again.el("flash-stop").click();
+    push(again, calm({ control: { action: "stop", phase: "retrying" } }));
+    push(again, calm());
+    assert.deepEqual(usable(again), ["flash-stop", "flash-open"]);
+  });
+
   test(name("重连的 hello：「开始」的武装作废"), () => {
     const page = opened(idle());
     start(page).click();
@@ -310,7 +337,7 @@ test("顶部一排紧跟着标题行：开始、停止、继续、打开闪购�
   }
   assert.match(panel, /<p id="flash-note" class="flash-note hidden" aria-live="polite"><\/p>/);
   assert.match(panel, /<p id="flash-desc" class="share-desc" data-en="This panel only shows status\. Make changes in Flash Sale Helper\.">这里只显示状态。要操作，请到闪购助手里。<\/p>/);
-  assert.match(html, /<script src="\/static\/flash\.js\?v=2"><\/script>\n {2}<script src="\/static\/app\.js\?v=83"><\/script>/);
+  assert.match(html, /<script src="\/static\/flash\.js\?v=3"><\/script>\n {2}<script src="\/static\/app\.js\?v=84"><\/script>/);
 });
 
 test("样式：那一排放不下就折行（不横向撑出浮层），焦点环只给键盘；卡片序号不跟标题一起缩", () => {

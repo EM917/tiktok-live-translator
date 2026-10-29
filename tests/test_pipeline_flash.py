@@ -784,13 +784,21 @@ class FakeToken:
 
 
 def control_pipeline(tmp_path, post=None, token=None):
-    """装了闪购助手、密钥读得到、POST 换成假的，单调时钟手拨。还没查过 /status：要发指令先 poll 一跳。"""
+    """装了闪购助手、密钥读得到、POST 换成假的，单调时钟手拨。还没查过 /status：要发指令先 poll 一跳。
+    停止两次尝试之间的等待换成假的：记下秒数、把单调时钟拨快（clock["slept"]），不真的睡。
+    停止发之前当场读的那一次 /status 走 _flash_fetch：apoll 换上的那个（交出最近 poll 的那一份）照样交给它。"""
     p = bare_pipeline()
     p._flash_app = installed_app(tmp_path)
-    clock = {"mono": 500.0}
+    clock = {"mono": 500.0, "slept": []}
     p._flash_mono = lambda: clock["mono"]
     p._flash_post = post if post is not None else FakePost()
     p._flash_read_token = token if token is not None else FakeToken()
+
+    async def retry_sleep(sec):
+        clock["slept"].append(sec)
+        clock["mono"] += sec
+
+    p._flash_retry_sleep = retry_sleep
     return p, clock
 
 
@@ -904,23 +912,44 @@ def test_an_accepted_command_polls_every_three_seconds_for_thirty_seconds(tmp_pa
 @pytest.mark.parametrize("error, said", [
     ("not_running", "没有接受（not_running）"),
     ("awaiting_approval", "没有接受（awaiting_approval）"),
-    ("busy", "没有接受（busy）"),
+    ("captcha", "没有接受（captcha）"),
     ("brand_new_code", "没有接受（brand_new_code）"),
     ("no_control", "没有接受（no_control）"),
     ("http_403", "没有接受（http_403）"),
-    ("unreachable", "连不上（unreachable）"),
-    ("no_answer", "没有回话（no_answer）"),
     ("bad_reply", "回话读不出（bad_reply）"),
 ])
 def test_a_command_that_was_not_accepted_hands_back_the_code_as_is(error, said, tmp_path, capsys):
-    p, clock = control_pipeline(tmp_path, post=FakePost(result=error))
+    """没被接受、又不是「过一会儿就能收」的那几种（flash_sale.STOP_RETRY_CODES 以外）：停止也只发一次，代码原样交回。
+    awaiting_approval、captcha 要人去专用 Chrome 里处理，不再试（页面那句说去哪儿点）。"""
+    post = FakePost(result=error)
+    p, clock = control_pipeline(tmp_path, post=post)
     poll(p, clock, sample("running"))
     click(p, {"type": "flash_control", "action": "stop"})
+    assert len(post.calls) == 1 and clock["slept"] == []
     assert results(p) == [{"action": "stop", "ok": False, "error": error}]
     assert p._flash_ctl is None and p.server.config["flash_sale"]["control"] is None
     assert controls(p) == [None, {"action": "stop", "phase": "sending"}, None]
     assert p._flash_boost_until is None
     assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求停止 → " + said
+
+
+@pytest.mark.parametrize("error, said", [
+    ("not_running", "没有接受（not_running）"),
+    ("busy", "没有接受（busy）"),
+    ("unreachable", "连不上（unreachable）"),
+    ("no_answer", "没有回话（no_answer）"),
+])
+@pytest.mark.parametrize("action", ["start", "resume"])
+def test_start_and_resume_are_never_sent_again(action, error, said, tmp_path, capsys):
+    """别的指令一律不自动重发（直播助手平台轮廓 §9.2 第 7 条）：开始、继续没被接受，哪怕是停止会再试的那几种，也只发一次。"""
+    post = FakePost(result=error)
+    p, clock = control_pipeline(tmp_path, post=post)
+    poll(p, clock, paused_doc("user_interaction") if action == "resume" else sample("idle"))
+    click(p, {"type": "flash_control", "action": action})
+    assert [c[0] for c in post.calls] == [action] and clock["slept"] == []
+    assert results(p) == [{"action": action, "ok": False, "error": error}]
+    assert p._flash_ctl is None
+    assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求{} → {}".format(NAMES[action], said)
 
 
 @pytest.mark.parametrize("why", ["missing", "symlink", "not_file", "format", "too_long", "unreadable", "no_home"])
@@ -944,9 +973,10 @@ def test_no_readable_token_means_nothing_is_sent(why, tmp_path, capsys):
     ["idle", ("ok", [1])],
     ["idle", ("unreachable", None), ("unreachable", None)],
 ])
-def test_without_a_fresh_status_the_token_is_not_read_and_nothing_is_sent(steps, tmp_path, capsys):
-    """发之前要求最近一次 /status 连上并读懂了：9334 上回话的不一定是闪购助手，密钥只给刚刚还在好好回
-    /status 的那个。不是的话不读密钥、不发，结果 error=no_status。"""
+@pytest.mark.parametrize("action", ["start", "resume"])
+def test_without_a_fresh_status_the_token_is_not_read_and_nothing_is_sent(action, steps, tmp_path, capsys):
+    """开始、继续发之前要求最近一次 /status 连上并读懂了：9334 上回话的不一定是闪购助手，密钥只给刚刚还在好好回
+    /status 的那个。不是的话不读密钥、不发，结果 error=no_status。停止不看这一条（下面 stop 的几条）。"""
     post, token = FakePost(), FakeToken()
     p, clock = control_pipeline(tmp_path, post=post, token=token)
     for step in steps:
@@ -954,11 +984,11 @@ def test_without_a_fresh_status_the_token_is_not_read_and_nothing_is_sent(steps,
         clock["mono"] += 3
     if steps[-1:] == [("bad_response", "no_answer")] and len(steps) == 2:
         assert p.server.config["flash_sale"]["conn"] == "ok"     # 页面上还画着按钮的那一种
-    click(p, {"type": "flash_control", "action": "stop"})
+    click(p, {"type": "flash_control", "action": action})
     assert token.calls == 0 and post.calls == []
-    assert results(p) == [{"action": "stop", "ok": False, "error": "no_status"}]
+    assert results(p) == [{"action": action, "ok": False, "error": "no_status"}]
     assert p._flash_ctl is None
-    assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求停止 → 没有发出（no_status）"
+    assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求{} → 没有发出（no_status）".format(NAMES[action])
 
 
 @pytest.mark.parametrize("doc, why", [
@@ -969,46 +999,276 @@ def test_without_a_fresh_status_the_token_is_not_read_and_nothing_is_sent(steps,
 ])
 def test_a_status_that_does_not_look_like_the_helpers_gets_no_token(doc, why, tmp_path, capsys):
     """连上并读懂了，但不像闪购助手的回话（schema 不是 1、page 不是契约里的代码）：9334 上回话的可能是碰巧占着这个端口的
-    别的服务。不读密钥、不发，页面收到 no_status，终端那一行带着原因（StatusTracker.control_refusal）。"""
+    别的服务。开始不读密钥、不发，页面收到 no_status，终端那一行带着原因（StatusTracker.control_refusal）。
+    停止照这一份当场再读：schema 不对的同样不发、不再试；只是 page 认不出的照发（认不出的 page 只影响显示）。"""
     post, token = FakePost(), FakeToken()
     p, clock = control_pipeline(tmp_path, post=post, token=token)
     poll(p, clock, ("ok", copy.deepcopy(doc)))
     assert p.server.config["flash_sale"]["conn"] == "ok"
-    click(p, {"type": "flash_control", "action": "stop"})
+    click(p, {"type": "flash_control", "action": "start"})
     assert token.calls == 0 and post.calls == []
-    assert results(p) == [{"action": "stop", "ok": False, "error": "no_status"}]
+    assert results(p) == [{"action": "start", "ok": False, "error": "no_status"}]
     assert p._flash_ctl is None
-    assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求停止 → 没有发出（no_status：{}）".format(why)
+    assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求开始 → 没有发出（no_status：{}）".format(why)
+    click(p, {"type": "flash_control", "action": "stop"})
+    assert clock["slept"] == []
+    if why == "page":
+        assert post.calls == [("stop", FAKE_TOKEN, "http://127.0.0.1:9")]
+        assert results(p)[-1] == dict(ACCEPTED, action="stop")
+    else:
+        assert token.calls == 0 and post.calls == []
+        assert results(p)[-1] == {"action": "stop", "ok": False, "error": "no_status"}
+        assert p._flash_ctl is None
+        assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求停止 → 没有发出（no_status：schema）"
 
 
-def test_losing_the_status_while_start_is_waiting_refuses_stop_and_keeps_the_wait(tmp_path):
+@pytest.mark.parametrize("steps", [
+    [],                                                     # 还没查过
+    [("unreachable", None)],
+    [("bad_response", "json")],
+    ["idle", ("bad_response", "no_answer")],                # 连上以后第一次没查到
+    ["running", ("unreachable", None), ("unreachable", None)],
+])
+def test_stop_reads_the_status_itself_instead_of_trusting_the_last_poll(steps, tmp_path, capsys):
+    """停止不受「最近一次轮询读得怎么样」挡（直播助手平台轮廓 §5.5，R1）：读失败一次以后要隔 15 秒才再读，这 15 秒里
+    点停止不该被挡回来。发之前当场读一次 /status：连得上、schema 是 1 就读密钥、发。"""
+    post, token = FakePost(), FakeToken()
+    p, clock = control_pipeline(tmp_path, post=post, token=token)
+    for step in steps:
+        poll(p, clock, sample(step) if isinstance(step, str) else step)
+        clock["mono"] += 3
+    fetched = []
+
+    async def fresh(url):
+        fetched.append(url)
+        return "ok", sample("running")
+
+    p._flash_fetch = fresh
+    click(p, {"type": "flash_control", "action": "stop"})
+    assert fetched == [p._flash_url] and token.calls == 1
+    assert post.calls == [("stop", FAKE_TOKEN, "http://127.0.0.1:9")]
+    assert results(p) == [dict(ACCEPTED, action="stop")]
+    assert p._flash_ctl["phase"] == "waiting"
+    assert out_lines(capsys)[-1] == "[信息] 闪购助手：中控请求停止 → 已接受"
+
+
+def _fetches(*steps):
+    """停止当场读 /status 的那个假 fetch：按顺序交出 steps（dict 是一份 /status，元组原样），用完了一直交最后一个。"""
+    queue = list(steps)
+    seen = []
+
+    async def fetch(url):
+        seen.append(url)
+        step = queue.pop(0) if len(queue) > 1 else queue[0]
+        return ("ok", copy.deepcopy(step)) if isinstance(step, dict) else step
+
+    return fetch, seen
+
+
+@pytest.mark.parametrize("first, said", [
+    ("busy", "没有接受（busy）"), ("loading", "没有接受（loading）"), ("no_response", "没有接受（no_response）"),
+    ("unreachable", "连不上（unreachable）"), ("no_answer", "没有回话（no_answer）"),
+])
+def test_stop_that_was_not_accepted_yet_is_sent_again_every_three_seconds(first, said, tmp_path, capsys):
+    """停止没被接受、而且是过一会儿就能收的那几种（连不上、发出了没回话、闪购助手回 busy、loading、no_response）：
+    隔 3 秒再试，直到收到结果（直播助手平台轮廓 §5.5、§9.2 第 7 条）。每一次都当场读 /status、重读密钥。
+    等着再试的那几秒，状态里是 {stop, retrying}；接受了以后照常等生效。结果只发一条，带 tries。"""
+    post = FakePost(result=first)
+    token = FakeToken()
+    p, clock = control_pipeline(tmp_path, post=post, token=token)
+    poll(p, clock, sample("running"))
+    p._flash_fetch, fetched = _fetches(sample("running"))
+    calls = []
+
+    async def post_then_accept(action, tok, base):
+        calls.append(action)
+        return first if len(calls) < 3 else None
+
+    p._flash_post = post_then_accept
+    click(p, {"type": "flash_control", "action": "stop"})
+    assert calls == ["stop"] * 3 and len(fetched) == 3 and token.calls == 3
+    assert clock["slept"] == [fs.STOP_RETRY_GAP_SEC] * 2
+    assert controls(p) == [None, {"action": "stop", "phase": "sending"}, {"action": "stop", "phase": "retrying"},
+                           {"action": "stop", "phase": "sending"}, {"action": "stop", "phase": "retrying"},
+                           {"action": "stop", "phase": "sending"}, {"action": "stop", "phase": "waiting"}]
+    assert results(p) == [dict(ACCEPTED, action="stop", tries=3)]
+    assert p._flash_ctl == {"action": "stop", "phase": "waiting", "until": 506.0 + fs.CONTROL_WAIT_SEC}
+    assert out_lines(capsys)[-2:] == [
+        "[警告] 闪购助手：中控请求停止 → {}，30 秒内每 3 秒再试".format(said),
+        "[信息] 闪购助手：中控请求停止 → 已接受（第 3 次）"]
+
+
+def test_stop_that_cannot_get_through_gives_up_after_thirty_seconds(tmp_path, capsys):
+    """一直连不上：30 秒内每 3 秒一次（第 0、3……30 秒，一共 11 次），之后只发一条结果，带 tries；在等生效的开始
+    （发停止之前的那个进度）换回来。开始自己等满 30 秒的那一跳照旧判。"""
     post = FakePost()
     p, clock = control_pipeline(tmp_path, post=post)
     poll(p, clock, sample("idle"))
     click(p, {"type": "flash_control", "action": "start"})
     waiting = dict(p._flash_ctl)
+    p._flash_fetch, fetched = _fetches(("unreachable", None))
+    click(p, {"type": "flash_control", "action": "stop"})
+    tries = fs.STOP_RETRY_SEC // fs.STOP_RETRY_GAP_SEC + 1
+    assert tries == 11 and len(fetched) == tries
+    assert [c[0] for c in post.calls] == ["start"]                 # 连不上：一次都没发出去
+    assert clock["slept"] == [fs.STOP_RETRY_GAP_SEC] * (tries - 1) and clock["mono"] == 530.0
+    assert results(p)[-1] == {"action": "stop", "ok": False, "error": "unreachable", "tries": tries}
+    assert p._flash_ctl == waiting
+    assert out_lines(capsys)[-2:] == ["[警告] 闪购助手：中控请求停止 → 连不上（unreachable），30 秒内每 3 秒再试",
+                                      "[警告] 闪购助手：中控请求停止 → 连不上（unreachable），一共试了 11 次"]
+
+
+@pytest.mark.parametrize("second, said", [("awaiting_approval", "没有接受（awaiting_approval）"),
+                                          ("captcha", "没有接受（captcha）"),
+                                          ("not_running", "没有接受（not_running）")])
+def test_stop_retries_end_on_the_first_answer_that_is_not_a_retry_code(second, said, tmp_path, capsys):
+    """再试到一种不再试的回话（要人去专用 Chrome 里处理的确认框、验证码，或者「还没开始运行」）就停，结果是那一种。"""
+    p, clock = control_pipeline(tmp_path)
+    poll(p, clock, sample("running"))
+    answers = ["busy", second]
+
+    async def post(action, tok, base):
+        return answers.pop(0)
+
+    p._flash_post = post
+    click(p, {"type": "flash_control", "action": "stop"})
+    assert answers == [] and clock["slept"] == [fs.STOP_RETRY_GAP_SEC]
+    assert results(p) == [{"action": "stop", "ok": False, "error": second, "tries": 2}]
+    assert p._flash_ctl is None
+    assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求停止 → {}，一共试了 2 次".format(said)
+
+
+@pytest.mark.parametrize("doc", [("bad_response", "no_answer"), ("ok", [1])])
+def test_stop_retries_while_the_status_it_reads_is_unusable(doc, tmp_path, capsys):
+    """当场读的那一次 /status 连上了却没读懂（没回话、不是 JSON 对象）：不读密钥、不发，隔 3 秒再读；读懂了就发。"""
+    post, token = FakePost(), FakeToken()
+    p, clock = control_pipeline(tmp_path, post=post, token=token)
+    poll(p, clock, sample("running"))
+    p._flash_fetch, fetched = _fetches(doc, sample("running"))
+    click(p, {"type": "flash_control", "action": "stop"})
+    assert len(fetched) == 2 and token.calls == 1 and len(post.calls) == 1
+    assert results(p) == [dict(ACCEPTED, action="stop", tries=2)]
+    why = doc[1] if doc[0] == "bad_response" else "not_object"
+    assert out_lines(capsys)[-2:] == ["[警告] 闪购助手：中控请求停止 → 没有发出（no_status：{}），30 秒内每 3 秒再试".format(why),
+                                      "[信息] 闪购助手：中控请求停止 → 已接受（第 2 次）"]
+
+
+def test_stop_is_not_sent_again_after_a_missing_token_or_an_error(tmp_path, capsys):
+    """读不到密钥、后端自己出错：不再试（不是过一会儿就能好的那种）。"""
+    p, clock = control_pipeline(tmp_path, token=FakeToken((None, "missing")))
+    poll(p, clock, sample("running"))
+    click(p, {"type": "flash_control", "action": "stop"})
+    assert clock["slept"] == [] and results(p) == [{"action": "stop", "ok": False, "error": "no_token"}]
+    p, clock = control_pipeline(tmp_path / "x", post=FakePost(raises=RuntimeError("boom")))
+    poll(p, clock, sample("running"))
+    click(p, {"type": "flash_control", "action": "stop"})
+    assert clock["slept"] == [] and results(p) == [{"action": "stop", "ok": False, "error": "failed"}]
+    assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求停止 → 出错（failed：RuntimeError）"
+
+
+@pytest.mark.parametrize("action", ["start", "resume"])
+def test_starting_while_stop_waits_to_retry_cancels_the_retries(action, tmp_path, capsys):
+    """重试期间点了开始（或继续）：还没发的重试立刻作废（直播助手平台轮廓 §5.5），这一下照常发。停止不另发结果。
+    这时再点停止：已经在等着再试，什么都不做。"""
+    async def go():
+        p, clock = control_pipeline(tmp_path)
+        doc = paused_doc("user_interaction") if action == "resume" else sample("idle")
+        await apoll(p, clock, doc)
+        posted = []
+        wake = asyncio.Event()
+
+        async def post(a, tok, base):
+            posted.append(a)
+            return "busy" if a == "stop" else None
+
+        async def held_sleep(sec):
+            await wake.wait()
+            clock["mono"] += sec
+
+        p._flash_post = post
+        p._flash_retry_sleep = held_sleep
+        assert p.handle_control({"type": "flash_control", "action": "stop"}) is None
+        await asyncio.sleep(0.01)
+        assert p._flash_ctl == {"action": "stop", "phase": "retrying", "until": None}
+        assert p.server.config["flash_sale"]["control"] == {"action": "stop", "phase": "retrying"}
+        assert p.handle_control({"type": "flash_control", "action": "stop"}) is None   # 已经在等着再试
+        await asyncio.sleep(0.01)
+        assert posted == ["stop"]
+        assert p.handle_control({"type": "flash_control", "action": action}) is None
+        await asyncio.sleep(0.01)
+        wake.set()
+        await asyncio.gather(*list(p._bg_tasks))
+        return p, posted
+
+    p, posted = asyncio.run(go())
+    assert posted == ["stop", action]
+    assert results(p) == [dict(ACCEPTED, action=action)]
+    assert p._flash_ctl["action"] == action and p._flash_ctl["phase"] == "waiting"
+    lines = out_lines(capsys)
+    assert "[信息] 闪购助手：中控请求{}，停止的重试作废".format(NAMES[action]) in lines
+    assert not any("一共试了" in line for line in lines)
+
+
+def test_a_refused_start_while_stop_waits_to_retry_still_cancels_the_retries(tmp_path, capsys):
+    """点了开始、却没发出去（最近一次轮询没查到）：停止的重试照样作废，页面上的「正在重试…」收掉。"""
+    async def go():
+        p, clock = control_pipeline(tmp_path)
+        await apoll(p, clock, sample("idle"))
+        clock["mono"] += 3
+        await apoll(p, clock, ("unreachable", None))
+        clock["mono"] += 3
+        await apoll(p, clock, ("unreachable", None))
+        p._flash_fetch, _ = _fetches(("unreachable", None))
+        wake = asyncio.Event()
+
+        async def held_sleep(sec):
+            await wake.wait()
+            clock["mono"] += sec
+
+        p._flash_retry_sleep = held_sleep
+        p.handle_control({"type": "flash_control", "action": "stop"})
+        await asyncio.sleep(0.01)
+        assert p.server.config["flash_sale"]["control"] == {"action": "stop", "phase": "retrying"}
+        p.handle_control({"type": "flash_control", "action": "start"})
+        await asyncio.sleep(0.01)
+        wake.set()
+        await asyncio.gather(*list(p._bg_tasks))
+        return p
+
+    p = asyncio.run(go())
+    assert p._flash_ctl is None and p.server.config["flash_sale"]["control"] is None
+    assert results(p) == [{"action": "start", "ok": False, "error": "no_status"}]
+
+
+def test_losing_the_status_while_start_is_waiting_does_not_hold_stop_back(tmp_path):
+    """开始在等生效时轮询连着两跳没查到（发布的已经是连不上）：停止不看这个，当场读，读到了就发。"""
+    post = FakePost()
+    p, clock = control_pipeline(tmp_path, post=post)
+    poll(p, clock, sample("idle"))
+    click(p, {"type": "flash_control", "action": "start"})
     for _ in range(2):
         clock["mono"] += 3
         poll(p, clock, ("unreachable", None))
+    assert p.server.config["flash_sale"]["conn"] == "unreachable"
+    p._flash_fetch, _ = _fetches(sample("idle"))
     click(p, {"type": "flash_control", "action": "stop"})
-    assert [c[0] for c in post.calls] == ["start"]
-    assert results(p)[-1] == {"action": "stop", "ok": False, "error": "no_status"}
-    assert p._flash_ctl == waiting
-    assert p.server.config["flash_sale"]["control"] == {"action": "start", "phase": "waiting"}
+    assert [c[0] for c in post.calls] == ["start", "stop"]
+    assert results(p)[-1] == dict(ACCEPTED, action="stop")
+    assert p.server.config["flash_sale"]["control"] == {"action": "stop", "phase": "waiting"}
 
 
 def test_a_refused_command_while_another_is_waiting_puts_the_wait_back(tmp_path):
-    """开始在等生效，这时点的停止被闪购助手拒了（busy）：开始照旧等着，到点照旧判。"""
+    """开始在等生效，这时点的停止被闪购助手拒了（确认框弹着，不再试）：开始照旧等着，到点照旧判。"""
     post = FakePost()
     p, clock = control_pipeline(tmp_path, post=post)
     poll(p, clock, sample("idle"))
     click(p, {"type": "flash_control", "action": "start"})
     waiting = dict(p._flash_ctl)
-    post.result = "busy"
+    post.result = "awaiting_approval"
     clock["mono"] += 1
     click(p, {"type": "flash_control", "action": "stop"})
     assert p._flash_ctl == waiting
-    assert results(p)[-1] == {"action": "stop", "ok": False, "error": "busy"}
+    assert results(p)[-1] == {"action": "stop", "ok": False, "error": "awaiting_approval"}
     assert controls(p)[-2:] == [{"action": "stop", "phase": "sending"}, {"action": "start", "phase": "waiting"}]
 
 
@@ -1235,14 +1495,19 @@ def test_thirty_seconds_without_effect_is_reported_once_as_not_seen(tmp_path, ca
 
 
 def test_exit_stops_the_poll_but_lets_a_command_in_flight_finish(tmp_path):
-    """退出（stop_flash_watch）只停轮询，在途的控制请求不取消、让它发完（最多 4 秒）。"""
+    """退出（stop_flash_watch）只停轮询，在途的控制请求不取消、让它发完（最多 4 秒）。轮询那一跳卡在 fetch 上；
+    停止自己当场读的那一次照常回话（第二次以后的 fetch）。"""
     async def go():
         gate = asyncio.Event()
         p, clock = control_pipeline(tmp_path, post=FakePost(gate=gate))
         await apoll(p, clock, sample("running"))
+        fetches = []
 
         async def blocking_fetch(url):
-            await asyncio.Event().wait()
+            fetches.append(url)
+            if len(fetches) == 1:
+                await asyncio.Event().wait()
+            return "ok", sample("running")
 
         p._flash_fetch = blocking_fetch
         p._start_flash_watch()
@@ -1346,7 +1611,8 @@ def test_control_terminal_output_is_identical_in_both_ui_languages(tmp_path, cap
     zh = one_run("zh")
     en = one_run("en")
     assert zh == en and zh[0]
-    assert [r["error"] for r in zh[2]] == [None, "busy", "not_seen", "no_token", "no_status"]
+    assert [r["error"] for r in zh[2]] == [None, "busy", "not_seen", "no_token", "unreachable"]
+    assert [r.get("tries") for r in zh[2]] == [None, 11, None, None, 11]
 
 
 def test_the_whole_chain_against_a_fake_helper_on_a_local_port(tmp_path):

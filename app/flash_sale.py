@@ -63,9 +63,16 @@ CONTROL_REPLY_MAX = 4096     # 回话只有 {"ok":…,"error":…} 这么一小�
 # 指令被接受以后最多等这么久看它生效，这期间每 3 秒查一次 /status（契约：开始后真实页面一般 5–15 秒 running
 # 才变 true，超过 30 秒还不是就当这次没成功）
 CONTROL_WAIT_SEC = 30
+# 停止没被接受时再试（直播助手平台轮廓 §5.5、§9.2 第 7 条，用户 10-29 同意）：连不上、发出了没回话、闪购助手回这几种
+# 「过一会儿就能收」的代码，STOP_RETRY_SEC 秒内每 STOP_RETRY_GAP_SEC 秒再试一次（闪购助手两次指令之间要隔 2 秒），
+# 直到收到别的结果。awaiting_approval、captcha 不重试：要人去专用 Chrome 里处理。别的指令一律不自动重发
+STOP_RETRY_SEC = 30
+STOP_RETRY_GAP_SEC = 3
+STOP_RETRY_CODES = ("unreachable", "no_answer", "busy", "loading", "no_response")
 # flash_control_result 的 error 里后端自己的代码。其余的要么是 http_<状态码>，要么是闪购助手 409 给的代码
 # （原样、清洗过）。前端按这张表认「是我们这边的」还是「闪购助手没有接受」：
-#   no_status    最近一次 /status 不是连上并读懂了，或者不像闪购助手的回话（StatusTracker.control_refusal）：没读密钥、没发
+#   no_status    开始、继续：最近一次 /status 不是连上并读懂了，或者不像闪购助手的回话（StatusTracker.control_refusal）；
+#                停止：发之前当场读的那一次没读懂、或 schema 不是 1（stop_precheck）。都没读密钥、没发
 #   no_token     控制密钥读不出：没发
 #   unreachable  连不上 9334            no_answer  连上了，没有回话            bad_reply  回话读不出
 #   no_control   404 / 405：这个版本没有控制接口
@@ -354,6 +361,31 @@ async def post_control(action, token, base=None, timeout=HTTP_TIMEOUT_SEC, limit
     if body is None:
         return "bad_reply"
     return control_reply(status, body, action)
+
+
+def stop_precheck(kind, value):
+    """停止发之前当场读的那一次 /status（fetch_status 的 (kind, value)）→ None（可以读密钥、发）或
+    (错误代码, 终端带的原因, 要不要再试)：
+    - 连不上 → ("unreachable", None, True)；
+    - 连得上，没拿到能用的回话（bad_response，或者回的不是 JSON 对象）→ ("no_status", 原因代码, True)；
+    - 读懂了，schema 不是 CONTROL_SCHEMA（缺了也算）→ ("no_status", "schema", False)：回话不像闪购助手的（同
+      StatusTracker.control_refusal 的 schema 那一条），密钥不给它，也不再试。
+    page 不看：认不出的 page 代码只影响显示，不挡停止（直播助手平台轮廓 §5.5）。不看上一次轮询读得怎么样
+    （StatusTracker.control_refusal 只管开始、继续）：读失败一次以后要隔 15 秒才再读，这 15 秒里停止不该被挡回来。"""
+    if kind == "unreachable":
+        return "unreachable", None, True
+    norm = normalize(value) if kind == "ok" else None
+    if norm is None:
+        why = value if kind == "bad_response" and isinstance(value, str) else "not_object"
+        return "no_status", why, True
+    if norm["_schema"] != CONTROL_SCHEMA:
+        return "no_status", "schema", False
+    return None
+
+
+def stop_should_retry(error):
+    """停止的这个结果要不要再试：STOP_RETRY_CODES 里的才再试（接受了、别的拒绝、出错都不再试）。"""
+    return error in STOP_RETRY_CODES
 
 
 def control_done(action, state):
@@ -657,7 +689,8 @@ class StatusTracker:
         return self._misses == 0 and self._last is not None and self._last.get("conn") == "ok"
 
     def control_refusal(self):
-        """发控制指令（带着密钥）之前看的：None = 可以发；否则是不发的原因代码（终端用，页面一律收到 no_status）：
+        """发开始、继续（带着密钥）之前看的：None = 可以发；否则是不发的原因代码（终端用，页面一律收到 no_status）。
+        停止不看这里，发之前当场读一次（stop_precheck）：
         - not_ok：最近一次查 /status 不是连上并读懂了（last_ok 为 False）。密钥只给刚刚还在好好回 /status 的那个对端；
         - schema：连上读懂了，但 schema 不是 CONTROL_SCHEMA；
         - page：连上读懂了，但 page 不是契约里的代码（PAGE_CODES；缺了也算）。

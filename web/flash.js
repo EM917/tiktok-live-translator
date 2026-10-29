@@ -44,6 +44,9 @@ var FLASH_ACTIONS = ["start", "stop", "resume"];        // 同后端 flash_sale.
 var FLASH_CONTROL_SINCE = [0, 8, 0];                     // 闪购助手从这个版本起才有控制接口（契约「控制(0.8.0 起)」）
 var FLASH_START_CONFIRM_MS = 6000;                       // 「开始」点了第一下以后这么久里再点才发，到点复原（同清空字幕）
 var FLASH_START_GUARD_MS = 400;                          // 武装后这么快的第二下不算：双击一次不该就发出去（开始会刷新页面）
+// 停止没被接受时后端再试（同后端 flash_sale.STOP_RETRY_SEC、STOP_RETRY_GAP_SEC，tests/test_flash_sale.py 钉着两边一样）
+var FLASH_STOP_RETRY_SEC = 30;
+var FLASH_STOP_RETRY_GAP_SEC = 3;
 // flash_control_result 的 error 里本程序自己的代码，同后端 flash_sale.CONTROL_OWN_ERRORS（tests/test_flash_sale.py 钉着）；
 // 其余的是 http_<状态码>，或者闪购助手 409 给的代码
 var FLASH_OWN_ERRORS = ["no_status", "no_token", "unreachable", "no_answer", "bad_reply", "no_control", "failed", "not_seen"];
@@ -543,11 +546,12 @@ function flashControlDone(action, st) {
   return false;
 }
 
-/* 状态里的控制进度（后端 _flash_compose 叠上的 control）：{action, phase}，形状不对就是 null */
+/* 状态里的控制进度（后端 _flash_compose 叠上的 control）：{action, phase}，形状不对就是 null。phase 是 sending（在途）、
+ * waiting（已接受、等生效），或 retrying（只有停止：没被接受，后端隔 3 秒再试，app/pipeline_flash.py _flash_stop_run） */
 function flashActiveControl(st) {
   var c = st && typeof st === "object" ? st.control : null;
   if (!c || typeof c !== "object" || FLASH_ACTIONS.indexOf(c.action) < 0) return null;
-  return c.phase === "sending" || c.phase === "waiting" ? { action: c.action, phase: c.phase } : null;
+  return c.phase === "sending" || c.phase === "waiting" || c.phase === "retrying" ? { action: c.action, phase: c.phase } : null;
 }
 
 /* 开始或继续已被闪购助手接受、后端还没收掉 control（用户 10-27 定的过渡：这段时间页面刷新不变色、不出红字）。
@@ -569,6 +573,13 @@ function flashWaitingText(action) {
   if (action === "stop") return L("正在停止…", "Stopping…");
   if (action === "resume") return L("正在继续…", "Resuming…");
   return L("正在开始…", "Starting…");
+}
+
+/* 停止在后端等着再试时，按钮旁边那句（#flash-ctl-note）。连不上、读不出时那一排一颗按钮都不出，这句照样写 */
+function flashRetryingNote() {
+  return { text: L("停止还没被接受，" + FLASH_STOP_RETRY_SEC + " 秒内每 " + FLASH_STOP_RETRY_GAP_SEC + " 秒再试一次。",
+                   "Stop hasn’t been accepted yet. Trying again every " + FLASH_STOP_RETRY_GAP_SEC + " sec for up to " +
+                   FLASH_STOP_RETRY_SEC + " sec.") };
 }
 
 /* 开始、继续因为页面没准备好不能点时，按钮旁边那句（#flash-ctl-note）：照 decisions-step2（用户 10-27 定的），
@@ -593,6 +604,8 @@ function flashNotReadyNote(page) {
  * - 在途（本页刚点的，或状态里 phase=sending）：三颗都不能点，按下的那颗写「正在发送…」；
  * - 等生效（phase=waiting，状态还没显示生效）：那颗写「正在开始…」之类、不能点；开始、继续也不能点（闪购助手这时回 busy），
  *   停止照样能点（停是安全的方向，闪购助手不拦）；
+ * - 停止在后端等着再试（phase=retrying）：停止写「正在重试…」、不能点（后端已经在试）；开始、继续照常（点了，后端把
+ *   还没发的重试作废）；note 写 flashRetryingNote，连不上、读不出（那一排一颗按钮都不出）时也写；
  * - 断线：三颗都不能点（点了也发不出去） */
 function flashControlView(st, ui) {
   ui = ui || {};
@@ -600,12 +613,17 @@ function flashControlView(st, ui) {
                stop: { shown: false, disabled: true, text: L("停止", "Stop") },
                resume: { shown: false, disabled: true, text: L("继续", "Resume") },
                note: null, any: false };
-  if (!st || typeof st !== "object" || st.conn !== "ok") return view;
+  if (!st || typeof st !== "object") return view;
+  var ctl = flashActiveControl(st);
+  var retrying = ctl && ctl.phase === "retrying" ? ctl.action : null;
+  if (st.conn !== "ok") {
+    if (retrying) view.note = flashRetryingNote();
+    return view;
+  }
   if (flashControlTooOld(st)) {
     view.note = { text: L("闪购助手 0.8.0 起才能从这里开始、停止。", "Start and Stop need Flash Sale Helper 0.8.0 or later.") };
     return view;
   }
-  var ctl = flashActiveControl(st);
   var sending = FLASH_ACTIONS.indexOf(ui.pending) >= 0 ? ui.pending : (ctl && ctl.phase === "sending" ? ctl.action : null);
   var waiting = !sending && ctl && ctl.phase === "waiting" && !flashControlDone(ctl.action, st) ? ctl.action : null;
   var running = st.running === true;
@@ -614,16 +632,19 @@ function flashControlView(st, ui) {
   var awaiting = paused === "awaiting_approval";
   function button(b, action, shown, blocked) {
     b.shown = shown;
-    b.disabled = !!(ui.offline || sending || waiting === action || blocked);
+    b.disabled = !!(ui.offline || sending || waiting === action || retrying === action || blocked);
     if (sending === action) b.text = L("正在发送…", "Sending…");
     else if (waiting === action) b.text = flashWaitingText(action);
+    else if (retrying === action) b.text = L("正在重试…", "Retrying…");
     return b;
   }
   button(view.start, "start", !running, !pageReady || waiting != null);
   if (view.start.shown && !view.start.disabled && ui.armed) view.start.text = L("再点一次开始", "Click Again to Start");
   button(view.stop, "stop", running, awaiting);
   button(view.resume, "resume", running && paused === "user_interaction", !pageReady || waiting != null);
-  if (!sending && !waiting) {
+  if (retrying && !sending) {
+    view.note = flashRetryingNote();
+  } else if (!sending && !waiting) {
     if (view.stop.shown && awaiting) {
       view.note = { text: L("确认框处理完以后才能从这里停止。", "Stop works here once the confirmation is handled.") };
     } else if ((view.start.shown || view.resume.shown) && !pageReady) {
@@ -688,11 +709,36 @@ function flashRefusedText(code) {
   }
 }
 
+/* 停止被闪购助手拒了、而且要人去专用 Chrome 里处理的那两种（后端不再试，直播助手平台轮廓 §5.5）：说清去哪儿点。
+ * 别的代码返回 null */
+function flashStopBlockedText(code) {
+  switch (code) {
+    case "awaiting_approval":
+      return L("闪购助手没有接受停止：专用 Chrome 里弹着确认框。到那里点确定或取消，再点停止。",
+               "Flash Sale Helper declined Stop: A confirmation is open in the dedicated Chrome. Confirm or cancel it there, then click Stop again.");
+    case "captcha":
+      return L("闪购助手没有接受停止：专用 Chrome 的页面上有验证码。到那里处理完验证码，再点停止。",
+               "Flash Sale Helper declined Stop: There’s a CAPTCHA on the page in the dedicated Chrome. Solve it there, then click Stop again.");
+    default: return null;
+  }
+}
+
 /* 一条 flash_control_result 在浮层里（#flash-note）写什么：{text, code} 或 null（接受了：不写，状态自己会说）。
  * error 是 FLASH_OWN_ERRORS 之一（本程序这边的），或 http_<状态码>，或闪购助手 409 给的代码；
- * 认不出的原样放进 code（translate="no"），不给一句通用文案糊过去 */
+ * 认不出的原样放进 code（translate="no"），不给一句通用文案糊过去。
+ * 停止被拒在确认框、验证码上，写 flashStopBlockedText 那句（去专用 Chrome 里点哪儿）。
+ * 后端再试过的停止带 tries（2 起，app/pipeline_flash.py _flash_stop_run）：句子前面加「试了 n 次，」 */
 function flashResultLine(msg) {
   if (!msg || typeof msg !== "object" || msg.ok === true) return null;
+  var line = flashResultBody(msg);
+  var tries = msg.tries;
+  if (typeof tries === "number" && isFinite(tries) && Math.floor(tries) === tries && tries >= 2) {
+    line.text = LN(tries, "试了 " + tries + " 次，", "Tried once. ", "Tried " + tries + " times. ") + line.text;
+  }
+  return line;
+}
+
+function flashResultBody(msg) {
   var code = flashCode(msg.error);
   var own = flashOwnErrorText(code, msg.action);
   if (own != null) return { text: own };
@@ -702,6 +748,8 @@ function flashResultLine(msg) {
     return { text: L("没有接受：127.0.0.1:9334 回了 HTTP " + status + "。",
                      "Not accepted: 127.0.0.1:9334 replied with HTTP " + status + ".") };
   }
+  var blocked = msg.action === "stop" ? flashStopBlockedText(code) : null;
+  if (blocked != null) return { text: blocked };
   var prefix = L("闪购助手没有接受：", "Flash Sale Helper declined: ");
   var why = flashRefusedText(code);
   return why != null ? { text: prefix + why } : { text: prefix, code: code || "?" };
@@ -904,8 +952,8 @@ if (typeof module !== "undefined" && module.exports) {
     flashWaitingRenewal, flashRank, flashPosition, flashSortProducts, flashSummaryParts, flashSummary, flashProductParts,
     flashRowsToShow, flashMoreText, flashAlertsToShow,
     flashVersionParts, flashVersionOlder, flashControlTooOld, flashControlDone, flashActiveControl, flashStarting, flashStartingText,
-    flashWaitingText, flashNotReadyNote, flashControlView, flashStartClick, flashOwnErrorText, flashRefusedText,
-    flashResultLine,
+    flashWaitingText, flashNotReadyNote, flashRetryingNote, flashControlView, flashStartClick, flashOwnErrorText,
+    flashRefusedText, flashStopBlockedText, flashResultLine, FLASH_STOP_RETRY_SEC, FLASH_STOP_RETRY_GAP_SEC,
     renderFlashPanel, flashTick, renderFlashControls, renderFlashNote,
   };
 }

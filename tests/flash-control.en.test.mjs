@@ -115,6 +115,21 @@ test("闪购助手 409 的代码：Flash Sale Helper declined: 加契约里的�
   assert.equal(english(result("http_403").text), "Not accepted: 127.0.0.1:9334 replied with HTTP 403.");
 });
 
+test("停止再试：Retrying… 和旁边那句；拒在确认框、验证码上说去哪儿点；再试过的句子前面加 Tried n times.", () => {
+  const retrying = { action: "stop", phase: "retrying" };
+  const v = F.flashControlView(calm({ control: retrying }), {});
+  assert.equal(v.stop.text, "Retrying…");
+  assert.equal(english(v.note.text), "Stop hasn’t been accepted yet. Trying again every 3 sec for up to 30 sec.");
+  assert.equal(english(F.flashControlView({ conn: "unreachable", control: retrying }, {}).note.text), v.note.text);
+  assert.equal(english(result("awaiting_approval", "stop").text),
+               "Flash Sale Helper declined Stop: A confirmation is open in the dedicated Chrome. Confirm or cancel it there, then click Stop again.");
+  assert.equal(english(result("captcha", "stop").text),
+               "Flash Sale Helper declined Stop: There’s a CAPTCHA on the page in the dedicated Chrome. Solve it there, then click Stop again.");
+  const tried = (error, tries) => F.flashResultLine({ type: "flash_control_result", action: "stop", ok: false, error, tries });
+  assert.equal(english(tried("unreachable", 11).text), "Tried 11 times. Not sent: Couldn’t connect to 127.0.0.1:9334.");
+  assert.equal(english(tried("busy", 2).text), "Tried 2 times. Flash Sale Helper declined: It’s busy. Try again in a moment.");
+});
+
 test("开始后的过渡：Starting… (Flash Sale Helper is reloading the page)；继续是 Resuming…；和后端同一张表", () => {
   assert.equal(F.flashStartingText("start"), STARTING);
   assert.equal(F.flashStartingText("resume"), "Resuming…");

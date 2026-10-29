@@ -326,6 +326,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | live-ui.js jumpLatestCommentsText 弹幕栏那颗按钮上的新弹幕数 | Jump to Latest · 1 new comment | Jump to Latest · {n} new comments |
 | 在看人数（live-ui.js:16、app.js:1869、viewer.py:409） | {n} watching | {n} watching（不变形） |
 | 窗口标题（alerts.js:9、window_attention.py:20） | ({n}) Possible Banned Terms · TikTok Live Translator | 同左（标签式写法，不变形） |
+| flash.js flashResultLine 再试过的停止（§3 K #178） | Tried once. | Tried {n} times.（n 从 2 起，one 用不到） |
 
 ### 2.4 时间与日期
 
@@ -705,6 +706,9 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 173 | 同上（not_seen：已接受，等满 30 秒还没生效） | 30 秒内没看到闪购助手开始运行。 / 30 秒内没看到闪购助手停下。 / 30 秒内没看到闪购助手继续运行。 | Flash Sale Helper didn’t show as running within 30 sec. / Flash Sale Helper didn’t show as stopped within 30 sec. / Flash Sale Helper didn’t show as resumed within 30 sec. | 30 秒是后端 flash_sale.CONTROL_WAIT_SEC（tests/test_flash_sale.py 钉着两边一样）。只写状态里没看到，不说它没执行，更不猜为什么。之后某一份状态显示这个动作生效了，这句自己收掉（浮层开着、关着都一样） |
 | 174 | flash.js flashLines（开始、继续被接受、等生效的那段时间） | 正在开始…（闪购助手在刷新页面） / 正在继续… | Starting… (Flash Sale Helper is reloading the page) / Resuming… | 用户 10-27 定：开始被接受后 30 秒内，页面加载中、出错、不在商品列表、超过 15 秒没更新都不变橙、不出红字，主句写第一句；30 秒后还这样照原规则提醒。继续被接受后同样不变色，主句写「正在继续…」（同 #168）：契约只说 POST /start 会先刷新页面，继续没说，不写「在刷新页面」（不猜） |
 | 175 | flash.js flashSkipText、商品行（闪购助手 0.8.2 的 skip、position） | 1 号位，不续开 / 排在最前面，不续开 / 下一个要置顶，不续开 / 没有库存，不续开 / 续开次数到上限 / 没开自动开始 / 读不到序号，先不处理 / 不续开：{code} · #{n} | Slot 1, not renewed / Top of the list, not renewed / Next to pin, not renewed / Out of stock, not renewed / Renewal limit reached / Auto-start off / Position unread, skipped for now / Not renewed: {code} · #{n} | 依次是 slot_1、top_n、next_to_pin、no_stock、max_renewals、auto_start_off、no_position（top_n 是闪购助手 0.9.2.2 起的：Buy now 列表从上往下的前 N 个，N 在它面板上设、默认 2，不点 Start、也不重新设置；0.9.2.2 起不再发 slot_1、next_to_pin，那两句留给旧版。用户 10-29 定，文案照 slot_1 的句式。英文不写字母 N：中控读不到面板上设的数，写 Top of the list；next_to_pin 是闪购助手 0.9.2 起的：置顶商品正下方、下一个要置顶的那个，文案照它的说明写，和 slot_1 同一个句式；其余是闪购助手会话 10-27 给的。0.9.2.1 改的是哪个商品标哪个代码，见 docs/flash-sale.md §3，每个代码的意思没变），写在那一行细节的最前面；认不出的代码原样。skip 不为 null 的商品不算卡住。#{n} 是卡片序号（position），写在标题前，两种语言一样、不成对；同一档里按它从小到大排 |
+| 176 | flash.js flashControlView（停止在后端等着再试，control.phase=retrying） | 正在重试… / 停止还没被接受，30 秒内每 3 秒再试一次。 | Retrying… / Stop hasn’t been accepted yet. Trying again every 3 sec for up to 30 sec. | 2026-10-29（直播助手平台轮廓 §5.5、§9.2 第 7 条，用户同意推荐）。前一句写在「停止」按钮上（同 #168 的写法，按钮禁用），后一句写在 #flash-ctl-note；连不上、读不出时那一排一颗按钮都不出，后一句照样写。「还没被接受」对连不上（没发出去）和闪购助手回 busy（发出了、被拒）都成立，不说为什么没被接受。30 秒、3 秒是后端 flash_sale.STOP_RETRY_SEC、STOP_RETRY_GAP_SEC（tests/test_flash_sale.py 钉着两边一样） |
+| 177 | flash.js flashStopBlockedText（停止被拒在确认框、验证码上，后端不再试） | 闪购助手没有接受停止：专用 Chrome 里弹着确认框。到那里点确定或取消，再点停止。 / 闪购助手没有接受停止：专用 Chrome 的页面上有验证码。到那里处理完验证码，再点停止。 | Flash Sale Helper declined Stop: A confirmation is open in the dedicated Chrome. Confirm or cancel it there, then click Stop again. / Flash Sale Helper declined Stop: There’s a CAPTCHA on the page in the dedicated Chrome. Solve it there, then click Stop again. | 2026-10-29（同 #176）：awaiting_approval、captcha 要人去处理，后端不再试，这句告诉人去哪儿点。只对停止；开始、继续被拒在这两种上照旧写 #171 那句。「确定或取消」同 #157 的 confirm or cancel；CAPTCHA 同 #156 |
+| 178 | flash.js flashResultLine（再试过的停止，结果带 tries） | 试了 {n} 次，{#171–#173、#177 的那句} | Tried {n} times. {that sentence} | 2026-10-29（同 #176）。n 从 2 起（只试一次的结果不带 tries），写成 LN（英文的 Tried once. 用不到）。接在句子前面：后面那句可能以原样的代码结尾（#171 的 {code}），接在前面才不用补标点。单复数照 §2.3（那张表里也有这一行）。和 §2.3 里 pipeline.py:154 的「已重试」（Retried {n} times.）不是一回事：那边数的是重试，这里数的是一共发了几次 |
 
 ---
 

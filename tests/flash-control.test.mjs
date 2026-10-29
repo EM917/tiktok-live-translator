@@ -362,6 +362,35 @@ test("和本地服务断开：三颗都不能点（点了也发不出去）；�
   }
 });
 
+test("停止在后端等着再试（phase=retrying）：停止写「正在重试…」、不能点；开始、继续照常能点（点了重试作废）；旁边说一句，连不上时也说", () => {
+  const retrying = { action: "stop", phase: "retrying" };
+  const NOTE = "停止还没被接受，30 秒内每 3 秒再试一次。";
+  assert.deepEqual(F.flashActiveControl(calm({ control: retrying })), retrying);
+  let v = view(calm({ control: retrying }), {});
+  assert.deepEqual(shown(v), ["stop"]);
+  assert.deepEqual(usable(v), []);
+  assert.equal(v.stop.text, "正在重试…");
+  assert.deepEqual(v.note, { text: NOTE });
+  observed(NOTE);
+  v = view(calm({ paused_reason: "user_interaction", control: retrying }), {});
+  assert.deepEqual(usable(v), ["resume"], "继续照常能点：后端把还没发的重试作废");
+  v = view(idle({ control: retrying }), {});
+  assert.deepEqual(usable(v), ["start"]);
+  assert.equal(v.start.text, "开始");
+  v = view(calm({ paused_reason: "awaiting_approval", control: retrying }), {});
+  assert.deepEqual(v.note, { text: NOTE }, "重试那句盖过确认框那句");
+  for (const conn of ["unreachable", "bad_response", "checking"]) {
+    v = view({ conn, stale: false, products: [], alerts: [], attention: [], control: retrying }, {});
+    assert.deepEqual(shown(v), [], conn);
+    assert.deepEqual(v.note, { text: NOTE }, "连不上时一颗按钮都不出，这句照样写：" + conn);
+    assert.equal(v.any, false);
+  }
+  v = view(calm({ control: retrying }), { pending: "start" });
+  assert.equal(v.note, null, "本页刚点了开始、还在途：不写重试那句");
+  assert.equal(F.FLASH_STOP_RETRY_SEC, 30);
+  assert.equal(F.FLASH_STOP_RETRY_GAP_SEC, 3);
+});
+
 test("「开始」点两下：第一下武装；武装后 400 毫秒内的第二下不算；400 毫秒到 6 秒之间才发；满 6 秒（或时钟往回走）重新武装", () => {
   assert.equal(F.FLASH_START_CONFIRM_MS, 6000);
   assert.equal(F.FLASH_START_GUARD_MS, 400);
@@ -431,6 +460,37 @@ test("闪购助手 409 的代码：「闪购助手没有接受：」加契约里
   assert.deepEqual(result("x".repeat(60)), { text: "闪购助手没有接受：", code: "x".repeat(40) }, "代码截到 40 个字符");
   assert.deepEqual(result(null), { text: "闪购助手没有接受：", code: "?" });
   assert.deepEqual(result(403), { text: "闪购助手没有接受：", code: "?" });
+});
+
+test("停止被拒在确认框、验证码上（后端不再试）：说清去专用 Chrome 里点哪儿；开始、继续照旧是契约那句", () => {
+  assert.deepEqual(result("awaiting_approval", "stop"),
+                   { text: "闪购助手没有接受停止：专用 Chrome 里弹着确认框。到那里点确定或取消，再点停止。" });
+  assert.deepEqual(result("captcha", "stop"),
+                   { text: "闪购助手没有接受停止：专用 Chrome 的页面上有验证码。到那里处理完验证码，再点停止。" });
+  for (const code of ["awaiting_approval", "captcha"]) {
+    observed(result(code, "stop").text);
+    assert.equal(F.flashStopBlockedText(code), result(code, "stop").text);
+    assert.ok(result(code, "start").text.startsWith("闪购助手没有接受："), code);
+    assert.ok(result(code, "resume").text.startsWith("闪购助手没有接受："), code);
+  }
+  assert.equal(F.flashStopBlockedText("busy"), null);
+  assert.deepEqual(result("busy", "stop"), { text: "闪购助手没有接受：正忙，稍等再试。" });
+});
+
+test("后端再试过的停止（tries 2 起）：句子前面加「试了 n 次，」；认不出的代码照样原样放在后面；tries 不对的不加", () => {
+  const tried = (error, tries) => F.flashResultLine({ type: "flash_control_result", action: "stop", ok: false, error, tries });
+  assert.deepEqual(tried("unreachable", 11), { text: "试了 11 次，没有发出：连不上 127.0.0.1:9334。" });
+  assert.deepEqual(tried("busy", 3), { text: "试了 3 次，闪购助手没有接受：正忙，稍等再试。" });
+  assert.deepEqual(tried("no_status", 11), { text: "试了 11 次，没有发出：刚才没查到闪购助手的状态。" });
+  assert.deepEqual(tried("captcha", 2),
+                   { text: "试了 2 次，闪购助手没有接受停止：专用 Chrome 的页面上有验证码。到那里处理完验证码，再点停止。" });
+  assert.deepEqual(tried("cooldown_x", 2), { text: "试了 2 次，闪购助手没有接受：", code: "cooldown_x" });
+  for (const tries of [undefined, null, 1, 0, -3, 2.5, "3", NaN, Infinity]) {
+    assert.deepEqual(tried("busy", tries), { text: "闪购助手没有接受：正忙，稍等再试。" }, String(tries));
+  }
+  assert.equal(F.flashResultLine({ type: "flash_control_result", action: "stop", ok: true, error: null, tries: 3 }), null,
+               "再试以后接受了：不写，状态自己会说");
+  observed(tried("unreachable", 11).text);
 });
 
 test("别的 HTTP 状态：写 127.0.0.1:9334 回了什么（9334 上回话的不一定是闪购助手）", () => {

@@ -4135,8 +4135,8 @@
   function applyFlashConfig(cfg, fromHello) {
     flashState = cfg && typeof cfg === "object" ? cfg : null;
     var ctl = flashState && flashState.control;
-    // 后端已经把指令记成在途：按钮由状态里的 control 说了算，本页记的那一下放掉
-    if (fromHello || (ctl && typeof ctl === "object" && ctl.phase === "sending")) flashPending = null;
+    // 后端已经把指令记成在途（或停止在等着再试）：按钮由状态里的 control 说了算，本页记的那一下放掉
+    if (fromHello || (ctl && typeof ctl === "object" && (ctl.phase === "sending" || ctl.phase === "retrying"))) flashPending = null;
     if (fromHello) flashDisarm();
     // 浮层里那句控制结果说的事已经生效了（例如 30 秒后才来的 not_seen，之后开始运行了）：收掉，开着关着都一样
     if (flashNoteAction && flashControlDone(flashNoteAction, flashState)) clearFlashNote();
