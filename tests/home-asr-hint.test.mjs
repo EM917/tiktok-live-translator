@@ -161,3 +161,28 @@ for (const lang of ["zh", "en"]) {
     }
   });
 }
+
+// 用户在 launch-2 的三种做法里选的是 A（首页这一行），没选 B（「启动自检」那一行在这种情况下自己展开）。
+// 首页已经在说了，自检那一行照它原来的规矩：只有失败项时才自己展开，只有提醒时收着（tests/settings-rows.test.mjs）
+const scOpen = (page) => !page.el("sc-list").classList.contains("hidden");
+
+for (const lang of ["zh", "en"]) {
+  test("带「现在下载」的提醒不让「启动自检」自己展开，首页这一行在说（" + lang + "）", () => {
+    const page = idlePage(lang, [asrRow(ACTION)]);
+    assert.equal(shown(page), true);
+    assert.equal(scOpen(page), false);
+    assert.equal(page.el("sc-head").getAttribute("aria-expanded"), "false");
+  });
+
+  test("有失败项时照旧自己展开（" + lang + "）", () => {
+    const fail = { name: "FFmpeg", level: "fail", detail: "not found", fix: "" };
+    const page = loadDesktop({ lang });
+    page.push({ type: "hello", config: {
+      status: { state: "idle", detail: "" }, room_url: null, alerts_enabled: false,
+      brand_options: [], brands: {}, active_brand: null, recent_rooms: [],
+      selfcheck: { checks: [fail, asrRow(ACTION)], summary: { total: 2, fail: 1, warn: 1, ok: 0 } },
+    } });
+    assert.equal(scOpen(page), true);
+    assert.equal(shown(page), true);
+  });
+}
