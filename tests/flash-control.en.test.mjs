@@ -50,7 +50,14 @@ test("按钮：Start / Stop / Resume / Click Again to Start，在途、等生效
 test("按钮旁边那句：版本门槛、页面没准备好、确认框弹着", () => {
   assert.equal(english(F.flashControlView(idle({ app_version: "0.7.3" }), {}).note.text),
                "Start and Stop need Flash Sale Helper 0.8.0 or later.");
+  // 页面没准备好：照 /status 的 page 那句（decisions-step2），认不出的代码原样，连 page 都没有时才是通用的那句
   assert.equal(english(F.flashControlView(idle({ page: "login_required", paused_reason: null }), {}).note.text),
+               "The dedicated Chrome is on the TikTok sign-in page. Sign in to continue.");
+  assert.equal(english(F.flashControlView(idle({ page: "loading", paused_reason: null }), {}).note.text),
+               "LIVE Manager is loading…");
+  assert.deepEqual(F.flashControlView(idle({ page: "maintenance", paused_reason: null }), {}).note,
+                   { text: "Page status: ", code: "maintenance" });
+  assert.equal(english(F.flashControlView(idle({ page: null, paused_reason: null }), {}).note.text),
                "Start and Resume work here once the page is ready.");
   assert.equal(english(F.flashControlView(calm({ paused_reason: "awaiting_approval" }), {}).note.text),
                "Stop works here once the confirmation is handled.");
@@ -119,7 +126,20 @@ test("开始后的过渡：Starting… (Flash Sale Helper is reloading the page)
   const s = calm({ page: "error", stale: true, running: false, paused_reason: null, products: [], attention: [],
                    control: { action: "start", phase: "waiting" } });
   assert.deepEqual(F.flashLines(s, 0).map(F.flashLineText), [STARTING]);
-  assert.equal(F.flashButtonState(s, 0).title, "Flash Sale Helper · Not started", "按钮不变色");
+  const button = F.flashButtonState(s, 0);
+  assert.equal(button.attn, false, "按钮不变色");
+  assert.equal(button.title, "Flash Sale Helper · Starting…", "不写 Not started：读起来像没开起来");
+  assert.deepEqual(F.flashChip(s, 0), { tone: "idle", text: "Starting…" });
+  assert.deepEqual(F.flashChip(Object.assign(clone(s), { control: { action: "resume", phase: "waiting" } }), 0),
+                   { tone: "idle", text: "Resuming…" });
+});
+
+test("确认框里点了取消的暂停：浮层顶部有 Resume 时主句只说暂停了；只剩 Open 时照旧指到闪购助手的面板", () => {
+  const paused = calm({ paused_reason: "user_interaction", attention: ["paused"] });
+  assert.deepEqual(F.flashLines(paused, 0).map(F.flashLineText).map(english), ["Paused: a confirmation was canceled."]);
+  const old = calm({ paused_reason: "user_interaction", attention: ["paused"], app_version: "0.7.3" });
+  assert.deepEqual(F.flashLines(old, 0).map(F.flashLineText).map(english),
+                   ["Paused: a confirmation was canceled. Resume it from the Flash Sale Helper panel."]);
 });
 
 test("不续开原因和卡片序号", () => {

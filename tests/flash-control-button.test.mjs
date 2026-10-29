@@ -76,7 +76,9 @@ for (const lang of ["zh", "en"]) {
     const page = opened(idle({ page: "login_required", paused_reason: null, attention: ["page"] }));
     assert.deepEqual(visible(page), ["flash-start", "flash-open"]);
     assert.deepEqual(usable(page), ["flash-open"]);
-    assert.equal(text(page, "flash-ctl-note"), T("页面准备好以后才能从这里开始、继续。", "Start and Resume work here once the page is ready."));
+    // 照 /status 的 page 那句说（decisions-step2），和主句同一句
+    assert.equal(text(page, "flash-ctl-note"), T("专用 Chrome 停在 TikTok 登录页，登录后才能继续。",
+                                                 "The dedicated Chrome is on the TikTok sign-in page. Sign in to continue."));
     for (const id of ["flash-start", "flash-stop", "flash-resume"]) {
       assert.equal(page.el(id).getAttribute("aria-describedby"), "flash-ctl-note", id);
     }
@@ -259,11 +261,14 @@ for (const lang of ["zh", "en"]) {
                            control: { action: "start", phase: "waiting" } });
     push(page, waiting);
     assert.ok(!page.el("flash-btn").classList.contains("attn"), "不变橙");
+    // 胶囊和顶栏按钮的 title / aria-label 也不写「未开始」（读起来像没开起来），写按钮上同一句
+    assert.equal(text(page, "flash-state"), T("正在开始…", "Starting…"));
+    assert.equal(page.el("flash-btn").getAttribute("aria-label"), T("闪购助手 · 正在开始…", "Flash Sale Helper · Starting…"));
     assert.equal(text(page, "flash-headline"), T("正在开始…（闪购助手在刷新页面）", "Starting… (Flash Sale Helper is reloading the page)"));
     assert.ok(!page.el("flash-headline").classList.contains("attn"), "不出红字");
     assert.equal(text(page, "flash-start"), T("正在开始…", "Starting…"));
     assert.equal(start(page).disabled, true);
-    assert.ok(hidden(page, "flash-ctl-note"), "过渡里不写「页面准备好以后……」");
+    assert.ok(hidden(page, "flash-ctl-note"), "过渡里按钮旁边不写页面那句");
     push(page, Object.assign({}, waiting, { control: null, attention: ["stale", "page"] }));
     result(page, "start", "not_seen");
     assert.ok(page.el("flash-btn").classList.contains("attn"), "30 秒后：照原规则变色");

@@ -876,11 +876,14 @@ FLASH_CTL_TEXT = {
                             "Only Start, Stop and Resume work here. Do everything else in Flash Sale Helper.")},
     "armed": {"flash-start": ("再点一次开始", "Click Again to Start")},
     "running": {"flash-stop": ("停止", "Stop")},
-    "paused": {"flash-resume": ("继续", "Resume")},
+    # 顶部有「继续」：主句不再叫人去闪购助手的面板上点
+    "paused": {"flash-resume": ("继续", "Resume"),
+               "flash-headline": ("已暂停：确认框里点了取消。", "Paused: a confirmation was canceled.")},
     "awaiting": {"flash-ctl-note": ("确认框处理完以后才能从这里停止。", "Stop works here once the confirmation is handled.")},
     "old": {"flash-ctl-note": ("闪购助手 0.8.0 起才能从这里开始、停止。", "Start and Stop need Flash Sale Helper 0.8.0 or later."),
             "flash-desc": ("这里只显示状态。要操作，请到闪购助手里。", "This panel only shows status. Make changes in Flash Sale Helper.")},
-    "starting": {"flash-start": ("正在开始…", "Starting…"), "flash-ctl-note": None,
+    # 胶囊也写「正在开始…」，不写「未开始」
+    "starting": {"flash-start": ("正在开始…", "Starting…"), "flash-state": ("正在开始…", "Starting…"), "flash-ctl-note": None,
                  "flash-headline": ("正在开始…（闪购助手在刷新页面）", "Starting… (Flash Sale Helper is reloading the page)")},
     "skip": {"flash-headline": None},
     "rejected": {"flash-note": ("闪购助手没有接受：正忙，稍等再试。", "Flash Sale Helper declined: It’s busy. Try again in a moment.")},

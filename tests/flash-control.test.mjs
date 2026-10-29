@@ -108,7 +108,15 @@ test("过渡 30 秒的边：29.9 秒（control 还在等）不变色、主句「
                       paused_reason: null, products: [] });
   const before = Object.assign(clone(base), { control: { action: "start", phase: "waiting" }, attention: [] });
   assert.equal(F.flashNeedsAttention(before, 0), false);
-  assert.deepEqual(F.flashChip(before, 0), { tone: "idle", text: "未开始" });
+  // 胶囊和顶栏按钮的 title 也不写「未开始」（读成「没开起来」又去点一次），写和按钮上同一句「正在开始…」，颜色不变
+  assert.deepEqual(F.flashChip(before, 0), { tone: "idle", text: "正在开始…" });
+  assert.equal(F.flashButtonState(before, 0).title, "闪购助手 · 正在开始…");
+  assert.deepEqual(F.flashChip(Object.assign(clone(before), { control: { action: "resume", phase: "waiting" } }), 0),
+                   { tone: "idle", text: "正在继续…" });
+  for (const control of [{ action: "start", phase: "sending" }, { action: "stop", phase: "waiting" }, null]) {
+    const s = Object.assign(clone(before), { control, page: "ok", stale: false });
+    assert.deepEqual(F.flashChip(s, 0), { tone: "idle", text: "未开始" }, "只有开始、继续在等生效时换字：" + JSON.stringify(control));
+  }
   assert.deepEqual(lines(before), [STARTING], "只有过渡那一句：没有红字，也没有「还没开始运行」");
   assert.ok(F.flashLines(before, 0).every((l) => !l.attn));
   const doc = makeFlashDoc();
@@ -149,10 +157,30 @@ test("过渡里要人处理的照常排在前面（登录、验证码、暂停�
   assert.deepEqual(lines(stuck, 1), ["1 个商品停了超过 1 分钟。", "最近记录里有 1 条新的问题。", STARTING]);
   const resume = calm({ page: "loading", stale: true, paused_reason: "user_interaction", attention: ["paused"],
                         control: { action: "resume", phase: "waiting" } });
-  assert.deepEqual(lines(resume), ["已暂停：确认框里点了取消。要在闪购助手的面板上点继续。", "正在继续…"]);
+  assert.deepEqual(lines(resume), ["已暂停：确认框里点了取消。", "正在继续…"]);
   assert.equal(F.flashStartingText("start"), STARTING);
   assert.equal(F.flashStartingText("resume"), "正在继续…");
   for (const l of [...lines(login), ...lines(resume)]) observed(l);
+});
+
+test("确认框里点了取消的暂停：浮层顶部有「继续」时主句不再叫人去闪购助手的面板上点；只剩「打开」时照旧指过去", () => {
+  const PAUSED = "已暂停：确认框里点了取消。";
+  const ELSEWHERE = "已暂停：确认框里点了取消。要在闪购助手的面板上点继续。";
+  const paused = calm({ paused_reason: "user_interaction", attention: ["paused"] });
+  assert.equal(view(paused, {}).resume.shown, true);
+  assert.deepEqual(lines(paused), [PAUSED]);
+  // 点了「继续」、等生效的那几秒：同一句，后面跟「正在继续…」，不会同时写着「要在闪购助手的面板上点继续」
+  assert.deepEqual(lines(Object.assign(clone(paused), { control: { action: "resume", phase: "waiting" } })),
+                   [PAUSED, "正在继续…"]);
+  assert.equal(F.flashLines(paused, 0)[0].attn, true, "照旧是要处理的那一句（橙色）");
+  // 版本认得出且低于 0.8.0：这一排只剩「打开」，主句照旧指到闪购助手的面板
+  const old = calm({ paused_reason: "user_interaction", attention: ["paused"], app_version: "0.7.3" });
+  assert.equal(view(old, {}).resume.shown, false);
+  assert.deepEqual(lines(old), [ELSEWHERE]);
+  assert.equal(F.flashPausedText("user_interaction"), ELSEWHERE);
+  assert.equal(F.flashPausedText("user_interaction", true), PAUSED);
+  assert.equal(F.flashPausedText("captcha", true), "出现验证码，已暂停。", "别的暂停原因不受影响");
+  for (const l of [...lines(paused), ...lines(old)]) observed(l);
 });
 
 // ---- 那一排：按状态显示什么、能不能点 ----------------------------------------------------------------
@@ -199,14 +227,32 @@ test("没在运行：出「开始」（页面 ok、不在商品列表时能点�
   assert.equal(view(calm({ running: null, paused_reason: null }), {}).start.shown, true, "running 读不出也当没在运行");
 });
 
-test("页面没准备好（no_page、login_required、captcha、loading、error、认不出的）：开始不能点，旁边说一句；武装的字不出", () => {
-  for (const page of ["no_page", "login_required", "captcha", "loading", "error", "maintenance", null]) {
-    const v = view(idle({ page, paused_reason: null }), { armed: true });
-    assert.deepEqual(shown(v), ["start"], String(page));
-    assert.deepEqual(usable(v), [], String(page));
+test("页面没准备好（no_page、login_required、captcha、loading、error、认不出的）：开始不能点，旁边照 page 说一句；武装的字不出", () => {
+  // decisions-step2（用户 10-27 定）：旁边一句说明为什么，照 /status 的 page 文案——和主句里那句是同一句
+  const want = {
+    no_page: { text: "专用 Chrome 里没有打开商品后台（LIVE Manager）。" },
+    login_required: { text: "专用 Chrome 停在 TikTok 登录页，登录后才能继续。" },
+    captcha: { text: "页面上出现了验证码，要人去处理。" },
+    loading: { text: "商品后台正在打开…" },
+    error: { text: "页面没有回应，或者读取出错。" },
+    maintenance: { text: "页面状态：", code: "maintenance" },          // 认不出的代码原样（translate="no"）
+    "": { text: "页面准备好以后才能从这里开始、继续。" },              // 连 page 都没有
+  };
+  for (const [page, note] of Object.entries(want)) {
+    const state = idle({ page: page || null, paused_reason: null });
+    const v = view(state, { armed: true });
+    assert.deepEqual(shown(v), ["start"], page);
+    assert.deepEqual(usable(v), [], page);
     assert.equal(v.start.text, "开始");
-    assert.equal(observed(v.note.text), "页面准备好以后才能从这里开始、继续。");
+    assert.deepEqual(v.note, note, page);
+    observed(v.note.text);
+    if (page && page !== "maintenance") assert.ok(lines(state).includes(note.text), "和主句里那句同一句：" + page);
   }
+  // 确认框里点了取消的暂停、页面没准备好：继续不能点，旁边同样照 page 说
+  const v = view(calm({ paused_reason: "user_interaction", page: "loading" }), {});
+  assert.deepEqual(shown(v), ["stop", "resume"]);
+  assert.deepEqual(usable(v), ["stop"]);
+  assert.deepEqual(v.note, { text: "商品后台正在打开…" });
 });
 
 test("在运行：出「停止」；确认框里点了取消的暂停另出「继续」；验证码暂停时停止照样能点", () => {
@@ -241,7 +287,7 @@ test("在途：本页刚点的（pending）或状态里 phase=sending，三颗�
   assert.deepEqual(usable(v), []);
   assert.equal(v.start.text, "正在发送…");
   v = view(idle({ page: "loading", paused_reason: null, control: { action: "start", phase: "sending" } }), {});
-  assert.equal(v.note, null, "在途时不写「页面准备好以后……」");
+  assert.equal(v.note, null, "在途时按钮旁边不写页面那句");
   v = view(calm({ paused_reason: "awaiting_approval" }), { pending: "stop" });
   assert.equal(v.note, null);
   assert.deepEqual(usable(view(calm(), { pending: "bogus" })), ["stop"], "认不出的 pending 不算");
@@ -252,7 +298,7 @@ test("等生效：按下的那颗写「正在开始…」「正在停止…」�
   assert.deepEqual(shown(v), ["start"]);
   assert.deepEqual(usable(v), []);
   assert.equal(v.start.text, "正在开始…");
-  assert.equal(v.note, null, "过渡里不写「页面准备好以后……」，免得和「正在开始…」打架");
+  assert.equal(v.note, null, "过渡里按钮旁边不写页面那句，免得和「正在开始…」打架");
   v = view(calm({ control: { action: "stop", phase: "waiting" } }), {});
   assert.deepEqual(usable(v), []);
   assert.equal(v.stop.text, "正在停止…");

@@ -68,16 +68,20 @@ function flashPageText(code) {
   }
 }
 
-/* 闪购助手为什么停着（契约 paused_reason）。null 不说话 */
-function flashPausedText(code) {
+/* 闪购助手为什么停着（契约 paused_reason）。null 不说话。
+ * resumeHere：浮层顶部这时有「继续」（flashControlView 的 resume.shown）。有的话 user_interaction 那句不再叫人去闪购助手的
+ * 面板上点继续——按钮就在上面，点了以后等生效那几秒按钮上还写着「正在继续…」；版本太旧、只剩「打开」时照旧指过去 */
+function flashPausedText(code, resumeHere) {
   switch (code) {
     case "not_started": return L("闪购助手开着，但还没开始运行。", "Flash Sale Helper is open but hasn’t started.");
     case "awaiting_approval":
       return L("专用 Chrome 里弹出了确认框，核对后点确定或取消。",
                "A confirmation is waiting in the dedicated Chrome. Check it, then confirm or cancel.");
     case "user_interaction":
-      return L("已暂停：确认框里点了取消。要在闪购助手的面板上点继续。",
-               "Paused: a confirmation was canceled. Resume it from the Flash Sale Helper panel.");
+      return resumeHere
+        ? L("已暂停：确认框里点了取消。", "Paused: a confirmation was canceled.")
+        : L("已暂停：确认框里点了取消。要在闪购助手的面板上点继续。",
+            "Paused: a confirmation was canceled. Resume it from the Flash Sale Helper panel.");
     case "captcha": return L("出现验证码，已暂停。", "Paused for a CAPTCHA.");
     case "error": return L("连续失败太多次，已暂停。", "Paused after too many failures in a row.");
     default: return null;
@@ -232,12 +236,16 @@ function flashNeedsAttention(st, unread) {
   return flashAttention(st).length > 0 || (st.stale === true && !flashStarting(st)) || unread > 0;
 }
 
-/* 浮层标题旁的状态胶囊：{tone, text}。tone 是 ok、attn、idle、off、checking 之一（style.css .flash-state） */
+/* 浮层标题旁的状态胶囊：{tone, text}。tone 是 ok、attn、idle、off、checking 之一（style.css .flash-state）。
+ * 开始、继续被接受、等生效的那段时间（flashStarting）不写「未开始」：按钮上写着「正在开始…」，胶囊（和顶栏按钮的 title）
+ * 要是写「未开始」，很容易读成「没开起来」，又去点一次——用户 10-27 定这段过渡就是为了免得这样。写同一句「正在开始…」
+ * 「正在继续…」，颜色照 idle 不变；要处理的照常先说 */
 function flashChip(st, unread) {
   var conn = st && st.conn;
   if (conn === "unreachable") return { tone: "off", text: L("没在运行", "Not running") };
   if (flashNeedsAttention(st, unread)) return { tone: "attn", text: L("要处理", "Needs attention") };
   if (conn !== "ok") return { tone: "checking", text: L("正在查看…", "Checking…") };
+  if (flashStarting(st)) return { tone: "idle", text: flashWaitingText(st.control.action) };
   if (st.running !== true) return { tone: "idle", text: L("未开始", "Not started") };
   return { tone: "ok", text: L("运行中", "Running") };
 }
@@ -305,7 +313,7 @@ function flashLines(st, unread) {
   }
   var paused = flashCode(st.paused_reason);
   if (paused && !(quiet && paused === "not_started")) {
-    var pausedText = flashPausedText(paused);
+    var pausedText = flashPausedText(paused, flashControlView(st).resume.shown);
     var pausedLine = pausedText ? { text: pausedText } : { text: L("已暂停：", "Paused: "), code: paused };
     pausedLine.attn = paused !== "not_started";
     if (pausedLine.attn) byCode.paused = [pausedLine]; else info.push(pausedLine);
@@ -539,6 +547,16 @@ function flashWaitingText(action) {
   return L("正在开始…", "Starting…");
 }
 
+/* 开始、继续因为页面没准备好不能点时，按钮旁边那句（#flash-ctl-note）：照 decisions-step2（用户 10-27 定的），
+ * 说的就是 /status 的 page 那句话（flashPageText，和下面主句里那句同一句）；认不出的代码写「页面状态：」加原样的代码；
+ * 连 page 都没有时写「页面准备好以后才能从这里开始、继续。」 */
+function flashNotReadyNote(page) {
+  var code = flashCode(page);
+  if (!code) return { text: L("页面准备好以后才能从这里开始、继续。", "Start and Resume work here once the page is ready.") };
+  var text = flashPageText(code);
+  return text ? { text: text } : { text: L("页面状态：", "Page status: "), code: code };
+}
+
 /* 浮层顶部那一排（除了「打开闪购助手」，它一直在）：{start, stop, resume, note, any}。
  * start / stop / resume 各是 {shown, disabled, text}；note 是按钮旁边那句（#flash-ctl-note，按钮的 aria-describedby），
  * null 就不写；any 是三颗里有没有一颗露出来（没有时浮层最底下那句换回第一步的「这里只显示状态」）。
@@ -546,7 +564,8 @@ function flashWaitingText(action) {
  * 规则（decisions-step2，docs/flash-sale.md §9.6）：
  * - 连不上、读不出、正在查看：三颗都不出；版本认得出且低于 0.8.0：也不出，note 写「0.8.0 起才能……」；
  * - 闪购助手没在运行（running 不是 true）出「开始」，在运行出「停止」，确认框里点了取消的暂停另出「继续」；
- * - page 不是 ok、no_list：开始、继续不能点（契约：闪购助手这时不接）；确认框弹着（awaiting_approval）：停止不能点；
+ * - page 不是 ok、no_list：开始、继续不能点（契约：闪购助手这时不接），note 写 page 那句（flashNotReadyNote）；
+ *   确认框弹着（awaiting_approval）：停止不能点，note 写「确认框处理完以后……」；
  * - 在途（本页刚点的，或状态里 phase=sending）：三颗都不能点，按下的那颗写「正在发送…」；
  * - 等生效（phase=waiting，状态还没显示生效）：那颗写「正在开始…」之类、不能点；开始、继续也不能点（闪购助手这时回 busy），
  *   停止照样能点（停是安全的方向，闪购助手不拦）；
@@ -584,7 +603,7 @@ function flashControlView(st, ui) {
     if (view.stop.shown && awaiting) {
       view.note = { text: L("确认框处理完以后才能从这里停止。", "Stop works here once the confirmation is handled.") };
     } else if ((view.start.shown || view.resume.shown) && !pageReady) {
-      view.note = { text: L("页面准备好以后才能从这里开始、继续。", "Start and Resume work here once the page is ready.") };
+      view.note = flashNotReadyNote(st.page);
     }
   }
   view.any = view.start.shown || view.stop.shown || view.resume.shown;
@@ -854,7 +873,8 @@ if (typeof module !== "undefined" && module.exports) {
     flashWaitingRenewal, flashRank, flashPosition, flashSortProducts, flashSummary, flashProductParts,
     flashRowsToShow, flashMoreText, flashAlertsToShow,
     flashVersionParts, flashControlTooOld, flashControlDone, flashActiveControl, flashStarting, flashStartingText,
-    flashWaitingText, flashControlView, flashStartClick, flashOwnErrorText, flashRefusedText, flashResultLine,
+    flashWaitingText, flashNotReadyNote, flashControlView, flashStartClick, flashOwnErrorText, flashRefusedText,
+    flashResultLine,
     renderFlashPanel, flashTick, renderFlashControls, renderFlashNote,
   };
 }
