@@ -32,6 +32,17 @@ keys are entered too — no terminal and no environment variables. Keys are stor
 in `settings.json`, which is git-ignored, and are never sent back to the page;
 only the last four characters are shown so you can tell which key is in place.
 
+**Claude keys that aren't scoped to a workspace.** In the Claude Console a key can be
+created without choosing a workspace. Anthropic then asks for a workspace ID on every
+request, and translation fails with HTTP 400 (`invalid_request_error`, "This API key is
+not scoped to a workspace…"). Either create the key with a workspace selected (for
+example, Default), or keep the key and enter the workspace ID in the box under the key
+when Claude is selected (or set `ANTHROPIC_WORKSPACE_ID`). The ID starts with `wrkspc_`
+and is listed on the Workspaces page of the Console
+(`platform.claude.com/settings/workspaces`). It is sent as the
+`anthropic-workspace-id` header on every Claude request, including comment review. It
+is not a secret, so the box shows it in full; it is kept out of the audit log.
+
 When the chosen engine cannot be used and the app falls back to another, the
 Translation Engine row says Fallback and opens by itself, so a switch to a
 network engine is visible rather than silent.
