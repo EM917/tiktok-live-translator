@@ -419,6 +419,48 @@ def test_progress_goes_to_the_idle_status_and_stays_quiet_once_a_session_starts(
     assert quiet == []
 
 
+def test_the_session_progress_counts_what_was_already_downloaded_before_start(monkeypatch, tmp_path, ct2):
+    """点了「现在下载」、下到一半点开始：开播那边（_settle_asr_fetch）的进度从提前下载的起点算。以前它自己从
+    点开始那一刻量起点，已经下好的部分不算：large-v3 下了 2.5 GB 再点开始，卡片上从 0% 重新数（审查 review-launch）。"""
+    p, server, fetched, gate, refreshed = _idle_pipeline(monkeypatch, tmp_path, ct2)
+    gate.clear()
+    monkeypatch.setitem(pipeline_mod.MODEL_SIZES_MB, "small", 60)
+    monkeypatch.setattr(Pipeline, "MODEL_DOWNLOAD_POLL_SEC", 0.02)
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True, exist_ok=True)
+    scripted_resolve(monkeypatch, ["http://cdn/s.flv", ResolveError("没开播", kind="offline", status=4)])
+
+    async def session(media, slot, *a, **k):
+        return True, 60.0
+
+    monkeypatch.setattr(p, "_stream_session", session)
+
+    def session_progress():
+        return [m for m in statuses(server) if m["state"] == "connecting" and m.get("progress")]
+
+    async def scenario():
+        p.handle_control({"type": "download_asr_model"})
+        await poll_until(lambda: fetched and "baseline" in p._asr_fetch, 5, "提前下载量好起点")
+        with open(hub / "blob1", "wb") as fh:
+            fh.truncate(30_000_000)                 # 点开始之前已经下好一半
+        await poll_until(lambda: any("%" in str(m["detail"]) for m in statuses(server)), 5, "待机时的进度")
+        run_task = asyncio.ensure_future(p._run_stream_inner(UNO))
+        await poll_until(lambda: any("还在下载" in str(m["detail"]) for m in statuses(server)), 5,
+                         "开播时说在等下载")
+        await real_wait(0.1)
+        with open(hub / "blob2", "wb") as fh:
+            fh.truncate(25_000_000)
+        await poll_until(lambda: any(m["progress"]["mb"] >= 50 for m in session_progress()), 5,
+                         "开播那边的进度算上点开始之前下好的 30 MB")
+        gate.set()
+        await asyncio.wait_for(run_task, 10)
+
+    run(scenario())
+    # 第一条就算上了点开始之前那 30 MB（50% 起）；只算点开始之后的，第一条要等 blob2，是 25 / 60（41%）
+    first = session_progress()[0]
+    assert first["progress"]["pct"] >= 50, first
+
+
 # ---- 只有本机控制页发得进来 ---------------------------------------------------------------------
 
 def test_only_the_control_page_can_send_download_asr_model():

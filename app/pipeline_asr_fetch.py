@@ -119,8 +119,9 @@ class AsrPrefetchMixin:
                         "Downloading speech model {} (only needed once)…").format(model)))
             print("[信息] 开始提前下载识别模型：{}/{}".format(backend, model))
             fetch["future"] = loop.run_in_executor(None, asr.fetch_model, backend, model)
+            # share=fetch：记下这份下载的起点（fetch["baseline"]），下到一半点了开始，开播那边的进度从同一个起点算
             watcher = asyncio.ensure_future(
-                self._model_download_progress(model, report=self._asr_fetch_reporter()))
+                self._model_download_progress(model, report=self._asr_fetch_reporter(), share=fetch))
             try:
                 # shield：这个任务被取消（关程序）时不连带取消线程里的下载——反正也取消不掉
                 await asyncio.shield(fetch["future"])
@@ -176,7 +177,8 @@ class AsrPrefetchMixin:
             "connecting", L("语音识别模型 {} 还在下载，等它下完再开始识别…",
                             "Speech model {} is still downloading. Recognition starts when it finishes…")
             .format(model))
-        watcher = asyncio.ensure_future(self._model_download_progress(model))
+        # 从提前下载记下的起点算（还没量到就自己量）：已经下好的那部分算在进度里，不从 0% 重新开始
+        watcher = asyncio.ensure_future(self._model_download_progress(model, baseline=fetch.get("baseline")))
         try:
             task = fetch.get("task")
             if task is not None and not task.done():

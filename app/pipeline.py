@@ -4451,11 +4451,15 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     MODEL_DOWNLOAD_POLL_SEC = 3.0
 
-    async def _model_download_progress(self, model, report=None):
+    async def _model_download_progress(self, model, report=None, baseline=None, share=None):
         """模型加载期间轮询 HuggingFace 缓存目录的增量，把下载进度推到 UI。
         没有真的在下载（缓存已存在）时增量趋近于零，不会打扰用户。每 MODEL_DOWNLOAD_POLL_SEC 秒看一次。
         report 是 async (text, pct, mb) 回调：给了就交给它（待机时提前下载走 _provision_note，见
-        app/pipeline_asr_fetch.py），不给就照旧发 connecting 状态、带结构化的 progress。"""
+        app/pipeline_asr_fetch.py），不给就照旧发 connecting 状态、带结构化的 progress。
+
+        增量从 baseline（缓存目录的字节数）算起；不给就开头量一次。share 是个 dict：给了就把量到的起点记进
+        share["baseline"]。提前下载用它记下自己的起点，下到一半点了开始，开播那边（_settle_asr_fetch）从同一个
+        起点算——不然进度从点开始那一刻重新从 0% 算，已经下好的几 GB 不算在里面。"""
         try:
             hf_home = os.environ.get("HF_HOME")
             cache = (Path(hf_home) / "hub" if hf_home
@@ -4474,7 +4478,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 return total
 
             loop = asyncio.get_running_loop()
-            baseline = await loop.run_in_executor(None, _du)
+            if baseline is None:
+                baseline = await loop.run_in_executor(None, _du)
+            if share is not None:
+                share["baseline"] = baseline
             expected = MODEL_SIZES_MB.get(model)
             while True:
                 await asyncio.sleep(self.MODEL_DOWNLOAD_POLL_SEC)
