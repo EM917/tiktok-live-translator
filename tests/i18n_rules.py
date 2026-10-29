@@ -87,7 +87,8 @@ NON_UI_CHINESE = {
         "训练侧工具（tools/ 下的 mine、annotate、bench_live 等）读冻结评测清单失败时的说明："
         "strict 时 SystemExit 打到终端，否则拼进以 [警告] 开头的终端行": (
             "eval_holdout.json {}——训练侧管线拒绝在没有冻结清单的情况下运行", "读取失败（{}）",
-            "schema 不合法（缺 dev_eval / sealed_test 两层）", "schema 不合法（{}.{} 必须是对象）"),
+            "schema 不合法（缺 dev_eval / sealed_test 两层）", "schema 不合法（{}.{} 必须是对象）",
+            "schema 不合法（{}.streamers 的哈希写法必须是 sha256:<64 位小写十六进制>）"),
     },
     "app/qr.py": {
         "二维码编码器的参数校验与 `python -m app.qr` 的命令行帮助：app/viewer_share.py 生成二维码时"
