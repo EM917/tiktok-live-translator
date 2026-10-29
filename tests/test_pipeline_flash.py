@@ -1434,6 +1434,73 @@ def test_the_quiet_window_ends_as_soon_as_start_takes_effect(tmp_path):
     assert results(p) == [dict(ACCEPTED, action="start")]
 
 
+def started_doc(page):
+    """刷新以后闪购助手已经接着运行（running=true），页面还没回到 Buy now 列表：刷新期间是 loading（闪购助手的实现在
+    正在运行的那个标签页刷新、脚本还没装好时就这样报），列表回来之前是 no_list。没有商品，updated_at 定住不动
+    （同 reloading_doc，15 秒以后就是陈旧）。"""
+    doc = sample("running")
+    doc.update(page=page, updated_at=iso(START_WALL), products=[])
+    return "ok", doc
+
+
+@pytest.mark.parametrize("page, after", [("no_list", ["stale", "page"]), ("loading", ["stale"]),
+                                         ("error", ["stale", "page"])])
+def test_start_that_takes_effect_before_the_list_is_back_stays_calm_for_thirty_seconds(page, after, tmp_path, capsys):
+    """审查 2026-10-28：只要 running 变 true（control_done）就收掉 control 的话，刷新以后列表回来之前的那段 no_list
+    （加上 running=true）马上变橙、出红字，START_QUIET_PAGES 里的 no_list 对开始等于没用——正是这段过渡要免的。
+    现在：第一次看到生效就在终端说一行「已生效」（只说一次，不另发结果），control 留到页面稳下来，或者等满 30 秒；
+    这段时间照样不变色。30 秒那一跳收掉、照原规则提醒；看到过生效，不发 not_seen。"""
+    p, clock = control_pipeline(tmp_path)
+    poll(p, clock, sample("idle"))
+    click(p, {"type": "flash_control", "action": "start"})
+    accepted_at = clock["mono"]
+    out_lines(capsys)
+    for t in (3, 6, 21, 27, fs.CONTROL_WAIT_SEC - 0.1):
+        clock["mono"] = accepted_at + t
+        poll(p, clock, started_doc(page))
+        state = p.server.config["flash_sale"]
+        assert state["control"] == WAITING_START and state["attention"] == [], t
+        assert state["page"] == page and state["running"] is True and state["stale"] is (t > 3 + fs.STALE_SEC)
+    assert out_lines(capsys) == ["[信息] 闪购助手：中控请求开始 → 已生效"]
+    clock["mono"] = accepted_at + fs.CONTROL_WAIT_SEC
+    poll(p, clock, started_doc(page))
+    state = p.server.config["flash_sale"]
+    assert state["control"] is None and state["attention"] == after
+    assert results(p) == [dict(ACCEPTED, action="start")]
+    assert out_lines(capsys) == []
+
+
+def test_after_start_takes_effect_the_window_closes_once_the_list_is_back(tmp_path, capsys):
+    """同一个窗口：生效以后页面稳下来（不陈旧、page 不是 loading / error / no_list）就收掉，不再安静到 30 秒，
+    之后页面再出错照原规则提醒。照闪购助手的实现走一遍：刷新中（loading，running 已经是 true）→ 列表还没回来
+    （no_list）→ 回到列表（ok）。"""
+    p, clock = control_pipeline(tmp_path)
+    poll(p, clock, sample("idle"))
+    click(p, {"type": "flash_control", "action": "start"})
+    out_lines(capsys)
+    clock["mono"] += 3
+    poll(p, clock, started_doc("loading"))
+    assert p.server.config["flash_sale"]["control"] == WAITING_START
+    assert out_lines(capsys) == ["[信息] 闪购助手：中控请求开始 → 已生效"]
+    clock["mono"] += 3
+    no_list = sample("running")
+    no_list.update(page="no_list", products=[])
+    poll(p, clock, no_list)
+    state = p.server.config["flash_sale"]
+    assert state["control"] == WAITING_START and state["attention"] == [] and state["stale"] is False
+    clock["mono"] += 3
+    poll(p, clock, sample("running"))
+    state = p.server.config["flash_sale"]
+    assert state["control"] is None and state["attention"] == []
+    clock["mono"] += 3
+    running_error = sample("running")
+    running_error["page"] = "error"
+    poll(p, clock, running_error)
+    assert p.server.config["flash_sale"]["attention"] == ["page"]
+    assert results(p) == [dict(ACCEPTED, action="start")]
+    assert out_lines(capsys) == []
+
+
 def test_while_start_is_still_in_flight_a_page_error_is_not_quiet(tmp_path):
     """还没接受（在途）不算：过渡只从「闪购助手接受了」开始。"""
     async def go():

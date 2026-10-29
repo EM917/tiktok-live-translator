@@ -371,6 +371,21 @@ def control_done(action, state):
     return False
 
 
+def control_settled(action, state):
+    """这个动作生效了以后（control_done），等生效的那个窗口能不能收（app/pipeline_flash.py _flash_check_control）：
+    - stop：生效就收（停止没有安静窗口）；
+    - start、resume：还要等页面稳下来，连上了（conn=ok）、不陈旧、page 不在 START_QUIET_PAGES 里。POST /start 刷新
+      页面，闪购助手刷新完自己接着运行，running 会先变 true：刷新期间报 loading（updated_at 可能停着），列表回来之前
+      是 no_list。只看 running 就收的话，no_list 加 running=true 马上变橙、出红字（见 attention），开始后的那段过渡
+      就白设了（2026-10-28 审查）。一直稳不下来的，等满 CONTROL_WAIT_SEC 照样收，之后照原规则提醒。
+    只给后端用：页面不判这个，跟着后端发来的 control 走（control 收掉之前 flashStarting 一直为真）。"""
+    if action not in ("start", "resume"):
+        return True
+    if not isinstance(state, dict) or state.get("conn") != "ok":
+        return False
+    return not state.get("stale") and state.get("page") not in START_QUIET_PAGES
+
+
 # ---- 字段规整 ------------------------------------------------------------------------------
 
 def _code(value, cap=MAX_CODE):
@@ -528,7 +543,8 @@ def stuck_candidate(product, state):
 
 def starting(state):
     """开始或继续已被闪购助手接受、还在等它生效（control 是 {"action": "start" 或 "resume", "phase": "waiting"}；
-    等生效的窗口最多 CONTROL_WAIT_SEC 秒，生效了、或等满了，app/pipeline_flash.py 就把 control 收掉）。
+    等生效的窗口最多 CONTROL_WAIT_SEC 秒：生效了而且页面稳下来了（control_settled）、或等满了，app/pipeline_flash.py
+    就把 control 收掉。running 已经变 true、页面还在刷新的那几秒仍算在里面）。
     前端 flash.js flashStarting 一字不差，tests/fixtures/flash_sale/shared-rules.json 的 attention 两边各测一遍。"""
     ctl = state.get("control") if isinstance(state, dict) else None
     return (isinstance(ctl, dict) and ctl.get("phase") == "waiting"
@@ -549,7 +565,8 @@ def attention(state):
     开始、继续被接受后等生效的那 30 秒（starting）里，stale 和 page 是 START_QUIET_PAGES 的不算：POST /start
     先刷新页面，刷新期间 /status 会短暂报 loading、error（这时 updated_at 不刷新，15 秒后还会变陈旧），列表回来之前
     是 no_list。用户 10-27 定的：这段时间浮层写「正在开始…」，按钮不变橙、不出红字，免得刚点完开始看到红字又去点
-    停止。等满 30 秒还这样（control 收掉了），照原规则提醒。stale、page 这两个观察照旧留在状态里（stale、page
+    停止。running 变 true（生效）不收这个窗口：刷新以后闪购助手接着运行，running 先变 true、列表还没回来，要等页面
+    稳下来（control_settled）。等满 30 秒还这样（control 收掉了），照原规则提醒。stale、page 这两个观察照旧留在状态里（stale、page
     字段不改），只是不进这张表。login_required、captcha、暂停、卡住、读不出照常提醒：那是要人去处理的。"""
     conn = state.get("conn")
     if conn == "bad_response":

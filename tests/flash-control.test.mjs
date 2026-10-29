@@ -139,6 +139,23 @@ test("过渡 30 秒的边：29.9 秒（control 还在等）不变色、主句「
   }
 });
 
+test("开始生效了、列表还没回来（running 已经是 true，后端还没收掉 control）：停止能点，主句照旧是过渡那一句、不变色", () => {
+  // 后端 control_settled：刷新完闪购助手接着运行，running 先变 true，页面稳下来以前 control 照旧是 start waiting
+  for (const page of ["no_list", "loading"]) {
+    const s = calm({ page, stale: false, running: true, paused_reason: null, products: [],
+                     control: { action: "start", phase: "waiting" } });
+    const v = view(s, {});
+    assert.deepEqual(shown(v), ["stop"], page);
+    assert.deepEqual(usable(v), ["stop"], page + "：照「running 为 true」那一行，停是安全的方向");
+    assert.equal(v.stop.text, "停止");
+    assert.equal(v.note, null);
+    assert.deepEqual(lines(s), [STARTING], page);
+    assert.ok(F.flashLines(s, 0).every((l) => !l.attn), page);
+    assert.equal(F.flashNeedsAttention(s, 0), false, page);
+    assert.deepEqual(F.flashChip(s, 0), { tone: "idle", text: "正在开始…" }, page);
+  }
+});
+
 test("过渡只认开始、继续被接受以后：在途（sending）、停止在等生效、没有指令，页面出错照常变色、写红字", () => {
   const base = calm({ page: "error", stale: false, running: false, paused_reason: null, products: [], attention: ["page"] });
   for (const control of [{ action: "start", phase: "sending" }, { action: "stop", phase: "waiting" }, null]) {

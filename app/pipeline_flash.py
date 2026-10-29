@@ -55,7 +55,8 @@ class FlashSaleMixin:
         self._flash_pub_lock = None     # (事件循环, asyncio.Lock)：轮询和控制两条路发布状态时排队，见 _flash_refresh
         self._flash_opening = False     # 防连点：上一次 open 还没返回
         # 控制指令的进度：None，或 {"action", "phase", "until"}。phase 是 sending（在途）或 waiting（已接受、
-        # 等它生效，until 是等到哪一刻，单调时钟）。发布时只带 action 和 phase（见 _flash_compose）
+        # 等它生效，until 是等到哪一刻，单调时钟）；waiting 时看到过生效、还在等页面稳下来，另带 "seen": True
+        # （见 _flash_check_control）。发布时只带 action 和 phase（见 _flash_compose）
         self._flash_ctl = None
         self._flash_logged = set()      # 已经打过的异常种类、schema：同一种只打一次
         # 可注入（同 _brand_dir_opener）：测试换成假的，绝不碰本机真的 9334、绝不读本机真的控制密钥，
@@ -330,8 +331,8 @@ class FlashSaleMixin:
         - 读不到密钥：不发，error=no_token（终端带原因代码，例如 missing）；
         - 发出去以后同时把 phase=sending 发布出去（别的控制页也把按钮禁用），不等广播再发：广播最坏被卡住的页面
           拖 2 秒，「停止」不该跟着晚；
-        - 接受了（200）：phase 换成 waiting，CONTROL_WAIT_SEC 秒里每 3 秒查一次 /status、每一跳看它生效没有
-          （_flash_check_control），并马上查一次；
+        - 接受了（200）：phase 换成 waiting，CONTROL_WAIT_SEC 秒里每 3 秒查一次 /status、每一跳看它生效没有、
+          开始和继续还看页面稳下来没有（_flash_check_control），并马上查一次；
         - 没接受、没发出、出错：控制进度换回发之前的那一份（在等生效的上一个指令照旧等着）。
         密钥只在这里的一个局部变量里待到交给 _flash_post：不打印、不广播、不进 config；出错时终端只打异常的
         类型名（aiohttp 的 ClientResponseError 的 repr 里带着 Authorization）。退出时不取消，见 stop_flash_watch。"""
@@ -372,19 +373,28 @@ class FlashSaleMixin:
         await self._flash_send_result(action, error)
 
     def _flash_check_control(self, base):
-        """每一跳查完、发布之前调：等生效的那个指令生效了（flash_sale.control_done）、或者等满了 CONTROL_WAIT_SEC，
-        就收掉。返回 None、("done", 动作) 或 ("not_seen", 动作)，由调用方打终端行、发结果。
+        """每一跳查完、发布之前调，看等生效的那个指令：
+        - 第一次看到它生效（flash_sale.control_done）：返回 ("done", 动作)，记下 seen（之后不再报）；
+        - 生效过了、页面也稳下来了（flash_sale.control_settled）：收掉。开始、继续生效的时候页面多半还在刷新
+          （running 先变 true，列表回来之前是 no_list）：这时不收，phase 照旧是 waiting，安静窗口接着算
+          （flash_sale.attention）；停止生效就收；
+        - 等满了 CONTROL_WAIT_SEC：收掉。一直没看到生效的返回 ("not_seen", 动作)，看到过的不再报。
+        返回 None、("done", 动作) 或 ("not_seen", 动作)，由调用方打终端行、发结果。
         指令还在途（phase=sending）时不碰：它还没有「等到哪一刻」，回来以后自己定接下来是什么。"""
         ctl = self._flash_ctl
         if ctl is None or ctl["phase"] != "waiting":
             return None
-        if flash_sale.control_done(ctl["action"], base):
+        action, event = ctl["action"], None
+        if not ctl.get("seen") and flash_sale.control_done(action, base):
+            ctl = self._flash_ctl = dict(ctl, seen=True)
+            event = "done", action
+        if ctl.get("seen") and flash_sale.control_settled(action, base):
             self._flash_ctl = None
-            return "done", ctl["action"]
-        if self._flash_mono() >= ctl["until"]:
+        elif self._flash_mono() >= ctl["until"]:
             self._flash_ctl = None
-            return "not_seen", ctl["action"]
-        return None
+            if not ctl.get("seen"):
+                event = "not_seen", action
+        return event
 
     async def _flash_control_event(self, kind, action):
         name = _CTL_NAMES.get(action, action)

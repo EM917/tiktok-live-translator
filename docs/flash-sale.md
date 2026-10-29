@@ -101,7 +101,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 | `alerts[]` | `{at_ms, level, text}`，最后 20 条，最早的在前 |
 | `attention` | 要人处理的原因代码，已按浮层主句的优先级排好，见 §7。空表 = 不变色 |
 | `stuck_count` | 卡住的商品数 |
-| `control` | 控制指令的进度（§9）：null，或 `{action, phase}`。`action` 是 start / stop / resume；`phase` 是 `sending`（在途，按钮禁用）或 `waiting`（闪购助手已接受，等它生效，最多 30 秒）。不带时刻：等多久由后端判，页面不自己计时 |
+| `control` | 控制指令的进度（§9）：null，或 `{action, phase}`。`action` 是 start / stop / resume；`phase` 是 `sending`（在途，按钮禁用）或 `waiting`（闪购助手已接受，等它生效；开始、继续生效以后还要等页面稳下来，§9.3；最多 30 秒）。不带时刻：等多久由后端判，页面不自己计时 |
 
 `title` 和 `alerts[].text` 是**数据**：页面一律 `textContent`，绝不 `innerHTML`；商品标题标 `translate="no"`，
 记录正文带 class `i18n-data`（留给浏览器翻译，界面本身不翻）。终端日志不打印它们。
@@ -180,7 +180,10 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 `{action: start 或 resume, phase: waiting}`，最多 30 秒，见 §9.3），第 1 条不算，第 2 条里 page 是 loading、error、
 no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会短暂报 loading、error（这时 `updated_at` 不刷新，
 15 秒后还会变陈旧），列表回来之前是 no_list。这段时间浮层主句写「正在开始…（闪购助手在刷新页面）」，按钮不变橙、
-不出红字，免得刚点完开始看到红字又去点停止。生效了、或者等满 30 秒还没生效（`control` 收掉了），照上面的原规则。
+不出红字，免得刚点完开始看到红字又去点停止。生效了而且页面稳下来了（连上了、不陈旧、page 不是 loading、error、no_list）、
+或者等满 30 秒（`control` 收掉了），照上面的原规则。只看 `running` 变 true 不够：刷新完闪购助手自己接着运行，`running`
+先变 true，列表回来之前 page 是 no_list——这时就收掉的话，no_list 加 `running=true` 马上变橙，这段过渡对开始等于没有
+（2026-10-28 审查）。
 `stale`、`page` 两个字段照旧是看到的样子，只是不进 `attention`。login_required、captcha、暂停、卡住、读不出这段时间
 照常变色；停止没有这个过渡；还在途（`phase=sending`）也不算。后端 `flash_sale.starting()` / `attention()` 和前端
 吃同一张表 `shared-rules.json` 的 `attention`。
@@ -292,8 +295,11 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 - 每一跳查完、发布之前看指令生效没有（`flash_sale.control_done`）：start、resume 是 `running=true` 且 `paused_reason`
   不是 user_interaction；stop 是 `running=false`；只认 `conn=ok` 的状态（连不上、读不出时看不到，不算）。前端
   `flashControlDone` 一字不差（`shared-rules.json` 的 `control_done`），生效了页面就收掉浮层里那句结果。
-- 生效了：`control` 收掉，终端一行「已生效」，不另发结果（状态自己会变）。
-- 等满 30 秒还没生效：`control` 收掉，另发一条 `{ok: false, error: "not_seen"}`，终端一行。只写看到的，不猜原因。
+- 第一次看到生效：终端一行「已生效」，不另发结果（状态自己会变）。停止这时就收掉 `control`；开始、继续要等页面也稳下来
+  （`flash_sale.control_settled`：连上了、不陈旧、page 不是 loading、error、no_list，§7「开始以后的过渡」）才收，在那之前
+  照旧是 `waiting`。状态已经显示生效，所以按钮那边照「`running` 为 true」那一行画（停止能点，§9.6），主句照旧是过渡那一句。
+- 等满 30 秒：`control` 收掉。一直没看到生效的另发一条 `{ok: false, error: "not_seen"}`，终端一行，只写看到的，不猜原因；
+  看到过生效、只是页面一直没稳下来的不再报，之后照原规则变色。
 - 指令还在途时正好跑了一跳轮询：不拿这一跳判生效（在途的开始碰上 `running=true` 也不提前收掉），回来以后照常进入等生效。
 - 开始、继续在等生效时的变色规则（页面刷新那几秒不变色）见 §7「开始以后的过渡」。
 

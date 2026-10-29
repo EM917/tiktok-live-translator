@@ -538,8 +538,9 @@ function flashActiveControl(st) {
   return c.phase === "sending" || c.phase === "waiting" ? { action: c.action, phase: c.phase } : null;
 }
 
-/* 开始或继续已被闪购助手接受、还在等它生效（用户 10-27 定的过渡：这段时间页面刷新不变色、不出红字）。
- * 和后端 app/flash_sale.starting 一字不差，shared-rules.json 的 attention 两边各测一遍 */
+/* 开始或继续已被闪购助手接受、后端还没收掉 control（用户 10-27 定的过渡：这段时间页面刷新不变色、不出红字）。
+ * 生效了（running 已经是 true）、页面还没稳下来时后端也还不收（app/flash_sale.control_settled），这里不另判，
+ * 跟着 control 走。和后端 app/flash_sale.starting 一字不差，shared-rules.json 的 attention 两边各测一遍 */
 function flashStarting(st) {
   var c = st && typeof st === "object" ? st.control : null;
   return !!c && typeof c === "object" && c.phase === "waiting" && (c.action === "start" || c.action === "resume");
