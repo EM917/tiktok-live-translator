@@ -15,6 +15,7 @@ import json
 import os
 import socket
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -554,6 +555,23 @@ def test_a_directory_is_not_a_file(tmp_path):
     assert fs.read_control_token(folder) == (None, "not_file")
 
 
+class RefusingOs(SpyOs):
+    """open 一律抛 EACCES：Windows 打开目录就是这样（macOS、Linux 打得开目录）。在哪个平台上都能测到这条路。"""
+
+    def open(self, path, flags, *args):
+        self.open_flags.append(flags)
+        raise PermissionError(errno.EACCES, "refused")
+
+
+def test_a_directory_that_refuses_to_open_is_still_not_a_file(tmp_path, monkeypatch):
+    folder = tmp_path / "control-token"
+    folder.mkdir()
+    path = token_file(tmp_path, FAKE_TOKEN, "real")
+    monkeypatch.setattr(fs, "os", RefusingOs())
+    assert fs.read_control_token(folder) == (None, "not_file")
+    assert fs.read_control_token(path) == (None, "unreadable")
+
+
 def test_a_fifo_is_not_a_file_and_does_not_block(tmp_path):
     """没人写的管道：不带 O_NONBLOCK 打开会一直卡着（卡的是事件循环）。打开后 fstat 看出不是普通文件。"""
     if not hasattr(os, "mkfifo"):
@@ -567,6 +585,8 @@ def test_a_fifo_is_not_a_file_and_does_not_block(tmp_path):
 def test_an_unreadable_file_is_unreadable(tmp_path):
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("root 不受权限位限制")
+    if sys.platform == "win32":
+        pytest.skip("Windows 上 chmod(0) 只设只读，文件照样读得出（读不出的路由 RefusingOs 那条测）")
     path = token_file(tmp_path, FAKE_TOKEN)
     path.chmod(0)
     try:

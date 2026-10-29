@@ -227,7 +227,7 @@ def read_control_token(path=None):
     删掉文件后闪购助手下次启动会换一个新的）。
 
     - O_NOFOLLOW 打开：文件本身是符号链接就不读（symlink），免得被换成指向别处的链接；O_NONBLOCK 让管道、
-      设备文件打开时不卡住事件循环，打开后 fstat 确认是普通文件（not_file）；
+      设备文件打开时不卡住事件循环，打开后 fstat 确认是普通文件（not_file；Windows 打开目录直接被拒，也算 not_file）；
     - 最多读 TOKEN_READ_MAX 字节，读满就是太长（too_long）；按 ASCII 解码，去掉首尾空白和换行后必须正好
       64 位十六进制（format）；
     - 不存在 missing，取不到家目录 no_home，其余打不开、读出错的 unreadable。
@@ -244,6 +244,8 @@ def read_control_token(path=None):
             return None, "missing"
         if exc.errno in (errno.ELOOP, errno.EMLINK):     # O_NOFOLLOW 碰上符号链接：macOS、Linux 是 ELOOP
             return None, "symlink"
+        if exc.errno == errno.EACCES and os.path.isdir(path):   # Windows 打开目录是 EACCES（macOS、Linux 打得开，下面 fstat 判）
+            return None, "not_file"
         return None, "unreadable"
     except (TypeError, ValueError):
         return None, "unreadable"
