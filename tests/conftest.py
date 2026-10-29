@@ -12,6 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests import socket_net  # noqa: E402  上一行先把仓库根放进 sys.path
+
 
 @pytest.fixture(autouse=True)
 def _keep_audit_out_of_the_real_log_dir(tmp_path, monkeypatch):
@@ -387,6 +389,7 @@ def pytest_terminal_summary(terminalreporter):
     from app import i18n
 
     _glossary_net_summary(terminalreporter)
+    socket_net.summary(terminalreporter)
     hits = sorted(set(i18n.NET_HITS))           # broadcast 和 fanout 各查同一条消息一次：去重
     counted = [h for h in hits if _net_test_id(h[4]) not in _I18N_FIXTURE_TESTS]
     skipped = len(hits) - len(counted)
@@ -420,3 +423,10 @@ def pytest_terminal_summary(terminalreporter):
         tr.write_line("{}  「{}」".format(where, text) if text else where)
         for name in sorted(names):
             tr.write_line("    " + (name or "（不在用例里）"))
+
+
+# ---- 测试总网（旁线 A，tests/socket_net.py） -------------------------------------------------
+
+# 开发机上开着用户直播用的同传、闪购助手、Ollama：测试进程里的每一个连接都经过这张网。A1 只记录、不拦，
+# 清单在测试结束时的终端摘要里（pytest_terminal_summary）。导入 conftest 时就装上，收集、导入阶段的连接也看得到
+socket_net.install()
