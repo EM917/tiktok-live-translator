@@ -19,6 +19,7 @@ from app import i18n, native_dialog
 from app.fdlimit import raise_nofile_limit
 from app.i18n import APP_NAME, L, of
 from app.macbundle import remember_launch_python
+from app.runlog import start as start_run_log
 from app.stdio import harden_stdio
 
 # 必须是 import 之后的第一句可执行语句：下面的版本检查、ensure_env() 的安装提示、--doctor 的
@@ -27,6 +28,11 @@ from app.stdio import harden_stdio
 # （2026-09-15 中文 Windows 11 实测，见 app/stdio.py）。首次安装后 execv 进 .venv、
 # 一键更新后重启，都会重新从这里跑一遍；窗口模式的后台线程与本进程共用这两个流。
 harden_stdio()
+
+# 运行日志（app/runlog.py）：双击 .app 启动时标准输出、标准错误接在 /dev/null 上，下面几百处 print
+# 哪儿都不留。macOS 上没有终端时另抄一份到 ~/Library/Logs/TikTokLiveTranslator/run.log（落盘前去密钥，
+# 按大小轮转），原来的流照写。紧跟护栏、赶在第一次可能打印之前；每一跳 exec 之后都从这里重新装一遍。永不抛
+start_run_log(Path(__file__).resolve().parent)
 
 # 文件句柄上限（专家审查 S1）：从 Finder 启动的 .app 继承 launchd 的软上限 256，局域网里
 # 一台设备对手机同看端口挂上百条空连接，之后新开的文件、ffmpeg、网络连接就全部 EMFILE。

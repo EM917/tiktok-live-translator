@@ -111,6 +111,19 @@ def _reset_active_glossary(monkeypatch):
     monkeypatch.setattr(glossary, "_ACTIVE", None)
 
 
+@pytest.fixture(scope="session")
+def _run_log_dir(tmp_path_factory):
+    return tmp_path_factory.mktemp("run-log")
+
+
+@pytest.fixture(autouse=True)
+def _keep_the_run_log_out_of_the_real_library(_run_log_dir, monkeypatch):
+    """运行日志（app/runlog.py）在 macOS、没有终端时写 ~/Library/Logs/TikTokLiveTranslator/run.log，而 pytest
+    捕获之下标准流正好都不是终端：哪个用例调了 runlog.start()、或者起了一个跑 main.py 的子进程，都会往开发者
+    自己的运行日志里写夹具行。环境变量指到临时目录，子进程也继承。要测默认位置的用例自己 delenv。"""
+    monkeypatch.setenv("TLT_RUN_LOG_DIR", str(_run_log_dir))
+
+
 # ---- 仓库里的真实词表（brands/、profiles/、glossary.txt、banned_terms.txt）测试一律不碰 ----------
 
 # brands/<品牌>.txt、profiles/<主播>.txt、glossary.txt 是开发者本机的私人词表（不入库，见 .gitignore 与
