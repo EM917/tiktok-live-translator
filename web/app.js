@@ -1263,6 +1263,7 @@
           applyFloatConfig(msg.config.float_window);
           // 闪购按钮：同 float_window，没有这个键 = 没装闪购助手，按钮藏起来。重连后的这一份为准：本页记着的
           // 在途、武装都作废
+          applyFlashGate(msg.config.flash_start_enabled);
           applyFlashConfig(msg.config.flash_sale, true);
           // 持续提示以服务端为准：重连时整份重放，先清掉本地的
           incidents = Object.create(null);
@@ -4055,6 +4056,9 @@
   // 或者重连的 hello 到了，就放掉：后端在途时收到的第二个指令直接丢、不回话，这里不能一直等它
   var flashPending = null;
   var flashArmedAt = null;        // 「开始」点了第一下的时刻（Date.now()）；null = 没武装
+  // 发布闸（后端 flash_sale.START_ENABLED，hello 的 config.flash_start_enabled）：不是 true 就当关着，「开始」「继续」不画。
+  // 只有停止（安全的方向）不受它管
+  var flashStartGated = true;
   var flashArmTimer = null;
   // #flash-note 里那句是哪个动作的结果（start / stop / resume）。之后某一份状态显示它已经生效（flashControlDone），
   // 那句就过时了，收掉——浮层开着、关着都一样。断线、open 没打开那几句不跟着状态收：这里是 null
@@ -4101,7 +4105,7 @@
     if (flashPanel) {
       var shown = flashSeenAtOpen !== undefined ? flashUnread(flashState.alerts, flashSeenAtOpen) : unread;
       flashCountdowns = renderFlashPanel(document, flashEls, flashState,
-                                         { now: Date.now(), expanded: flashExpanded, unread: shown });
+                                         { now: Date.now(), expanded: flashExpanded, unread: shown, gated: flashStartGated });
     }
     paintFlashControls();
   }
@@ -4111,7 +4115,7 @@
   function paintFlashControls() {
     if (!flashCtlEls || !flashCtlEls.start) return;
     var had = document.activeElement;
-    var ui = { armed: flashArmedAt != null, pending: flashPending, offline: statusState === "offline" };
+    var ui = { armed: flashArmedAt != null, pending: flashPending, offline: statusState === "offline", gated: flashStartGated };
     var view = flashControlView(flashState, ui);
     if (ui.armed && (!view.start.shown || view.start.disabled)) {
       // 「开始」不在了或不能点了（开始运行了、页面没准备好、断线、别的控制页点了别的）：武装作废，下次从第一下算
@@ -4128,6 +4132,12 @@
         isPopoverOpen(flashPanel)) {
       flashCtl.focus({ preventScroll: true });
     }
+  }
+
+  // hello 的 config.flash_start_enabled：只有 true 才算开闸（没有这个键、别的值都当关着）。hello 里紧接着就是
+  // applyFlashConfig，由它重画
+  function applyFlashGate(enabled) {
+    flashStartGated = enabled !== true;
   }
 
   // hello 里整份换（没有这个键：按钮藏起来、浮层关掉），type:"flash_sale" 消息同形。fromHello：重连后的第一份，

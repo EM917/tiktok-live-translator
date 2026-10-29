@@ -130,6 +130,19 @@ test("停止再试：Retrying… 和旁边那句；拒在确认框、验证码�
   assert.equal(english(tried("busy", 2).text), "Tried 2 times. Flash Sale Helper declined: It’s busy. Try again in a moment.");
 });
 
+test("发布闸关着：最底下那句 Only Stop works here.、版本那句只说 Stop；主句照旧叫人去面板上点 Resume", () => {
+  const doc = makeFlashDoc();
+  const els = {};
+  for (const k of ["start", "stop", "resume", "note", "desc"]) els[k] = doc.createElement("p");
+  F.renderFlashControls(doc, els, F.flashControlView(calm(), { gated: true }));
+  assert.equal(english(els.desc.textContent), "Only Stop works here. Do everything else in Flash Sale Helper.");
+  assert.equal(english(F.flashControlView(idle({ app_version: "0.7.3" }), { gated: true }).note.text),
+               "Stop needs Flash Sale Helper 0.8.0 or later.");
+  const paused = calm({ paused_reason: "user_interaction", attention: ["paused"] });
+  assert.equal(english(F.flashLines(paused, 0, { gated: true })[0].text),
+               "Paused: a confirmation was canceled. Resume it from the Flash Sale Helper panel.");
+});
+
 test("开始后的过渡：Starting… (Flash Sale Helper is reloading the page)；继续是 Resuming…；和后端同一张表", () => {
   assert.equal(F.flashStartingText("start"), STARTING);
   assert.equal(F.flashStartingText("resume"), "Resuming…");

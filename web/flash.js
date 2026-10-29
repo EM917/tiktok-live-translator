@@ -276,12 +276,13 @@ function flashStuckCount(st) {
 
 /* 浮层顶上的几句话，最要紧的在前：[{text, code, attn}]。code 是要原样显示的代码（放进 translate="no"），
  * attn 表示这一句是要人处理的。先排要处理的（按 FLASH_ATTN_ORDER，再是认不出的提醒代码，最后是未读记录），
- * 再排只是说明现状的（页面正在打开、还没开始运行……）。
+ * 再排只是说明现状的（页面正在打开、还没开始运行……）。ui：{gated}，同 flashControlView（发布闸关着时没有「继续」，
+ * 确认框里点了取消的暂停照旧叫人去闪购助手的面板上点）。
  * 开始、继续被接受、等生效的那段时间（flashStarting，最多 30 秒，用户 10-27 定）：POST /start 先刷新页面，
  * 这时页面会短暂报加载中、出错，列表回来之前不在 Buy now 上，updated_at 也会停下。这几种（同后端
  * START_QUIET_PAGES）和陈旧的那两句都不写、不变色，「还没开始运行」也不写，改写一句「正在开始…（闪购助手在刷新页面）」
  * （继续写「正在继续…」），排在要处理的后面。登录、验证码、暂停、卡住、读不出照常 */
-function flashLines(st, unread) {
+function flashLines(st, unread, ui) {
   if (!st || typeof st !== "object") return [];
   var conn = st.conn;
   // 连不上 = 连接被拒，9334 上没人在听：契约里这就是闪购助手没开，不变色
@@ -322,7 +323,7 @@ function flashLines(st, unread) {
   }
   var paused = flashCode(st.paused_reason);
   if (paused && !(quiet && paused === "not_started")) {
-    var pausedText = flashPausedText(paused, flashControlView(st).resume.shown);
+    var pausedText = flashPausedText(paused, flashControlView(st, { gated: !!(ui && ui.gated) }).resume.shown);
     var pausedLine = pausedText ? { text: pausedText } : { text: L("已暂停：", "Paused: "), code: paused };
     pausedLine.attn = paused !== "not_started";
     if (pausedLine.attn) byCode.paused = [pausedLine]; else info.push(pausedLine);
@@ -595,7 +596,8 @@ function flashNotReadyNote(page) {
 /* 浮层顶部那一排（除了「打开闪购助手」，它一直在）：{start, stop, resume, note, any}。
  * start / stop / resume 各是 {shown, disabled, text}；note 是按钮旁边那句（#flash-ctl-note，按钮的 aria-describedby），
  * null 就不写；any 是三颗里有没有一颗露出来（没有时浮层最底下那句换回第一步的「这里只显示状态」）。
- * ui：{armed: 「开始」点了第一下, pending: 刚点出去、后端还没回话的动作, offline: 和本地服务断开}。
+ * ui：{armed: 「开始」点了第一下, pending: 刚点出去、后端还没回话的动作, offline: 和本地服务断开,
+ *      gated: 发布闸关着（hello 的 config.flash_start_enabled 不是 true，后端 flash_sale.START_ENABLED）}。
  * 规则（decisions-step2，docs/flash-sale.md §9.6）：
  * - 连不上、读不出、正在查看：三颗都不出；版本认得出且低于 0.8.0：也不出，note 写「0.8.0 起才能……」；
  * - 闪购助手没在运行（running 不是 true）出「开始」，在运行出「停止」，确认框里点了取消的暂停另出「继续」；
@@ -606,13 +608,15 @@ function flashNotReadyNote(page) {
  *   停止照样能点（停是安全的方向，闪购助手不拦）；
  * - 停止在后端等着再试（phase=retrying）：停止写「正在重试…」、不能点（后端已经在试）；开始、继续照常（点了，后端把
  *   还没发的重试作废）；note 写 flashRetryingNote，连不上、读不出（那一排一颗按钮都不出）时也写；
- * - 断线：三颗都不能点（点了也发不出去） */
+ * - 断线：三颗都不能点（点了也发不出去）；
+ * - 发布闸关着（gated）：「开始」「继续」都不出（后端这时也不发），只剩停止和打开；版本那句只说停止。
+ *   gated 也记在 view 里，最底下那句跟着换（renderFlashControls） */
 function flashControlView(st, ui) {
   ui = ui || {};
   var view = { start: { shown: false, disabled: true, text: L("开始", "Start") },
                stop: { shown: false, disabled: true, text: L("停止", "Stop") },
                resume: { shown: false, disabled: true, text: L("继续", "Resume") },
-               note: null, any: false };
+               note: null, any: false, gated: !!ui.gated };
   if (!st || typeof st !== "object") return view;
   var ctl = flashActiveControl(st);
   var retrying = ctl && ctl.phase === "retrying" ? ctl.action : null;
@@ -621,7 +625,9 @@ function flashControlView(st, ui) {
     return view;
   }
   if (flashControlTooOld(st)) {
-    view.note = { text: L("闪购助手 0.8.0 起才能从这里开始、停止。", "Start and Stop need Flash Sale Helper 0.8.0 or later.") };
+    view.note = { text: view.gated
+      ? L("闪购助手 0.8.0 起才能从这里停止。", "Stop needs Flash Sale Helper 0.8.0 or later.")
+      : L("闪购助手 0.8.0 起才能从这里开始、停止。", "Start and Stop need Flash Sale Helper 0.8.0 or later.") };
     return view;
   }
   var sending = FLASH_ACTIONS.indexOf(ui.pending) >= 0 ? ui.pending : (ctl && ctl.phase === "sending" ? ctl.action : null);
@@ -638,10 +644,10 @@ function flashControlView(st, ui) {
     else if (retrying === action) b.text = L("正在重试…", "Retrying…");
     return b;
   }
-  button(view.start, "start", !running, !pageReady || waiting != null);
+  button(view.start, "start", !running && !view.gated, !pageReady || waiting != null);
   if (view.start.shown && !view.start.disabled && ui.armed) view.start.text = L("再点一次开始", "Click Again to Start");
   button(view.stop, "stop", running, awaiting);
-  button(view.resume, "resume", running && paused === "user_interaction", !pageReady || waiting != null);
+  button(view.resume, "resume", running && paused === "user_interaction" && !view.gated, !pageReady || waiting != null);
   if (retrying && !sending) {
     view.note = flashRetryingNote();
   } else if (!sending && !waiting) {
@@ -850,7 +856,8 @@ function flashAlertRow(doc, a, isNew) {
 }
 
 /* 把整张浮层按 st 画一遍。els：{state, headline, detail, summary, products, more, alertsTitle, alerts, version}
- * （index.html 里 #flash-panel 的各个节点）；view：{now, expanded, unread}，unread 是没看过的问题记录。
+ * （index.html 里 #flash-panel 的各个节点）；view：{now, expanded, unread, gated}，unread 是没看过的问题记录，gated 是发布闸
+ * 关着（同 flashControlView）。
  * 收到状态就画，不等浮层打开（G10 的扫描也扫隐藏的元素）。返回这次画出来的倒计时 [{el, kind, at}]，
  * app.js 每秒交给 flashTick 只改它们的字 */
 function renderFlashPanel(doc, els, st, view) {
@@ -862,7 +869,7 @@ function renderFlashPanel(doc, els, st, view) {
   els.state.textContent = chip.text;
   els.state.setAttribute("data-tone", chip.tone);
 
-  var lines = flashLines(st, unread.length);
+  var lines = flashLines(st, unread.length, { gated: !!view.gated });
   flashFillLine(doc, els.headline, lines[0]);
   els.headline.classList.toggle("hidden", !lines.length);
   els.headline.classList.toggle("attn", !!(lines[0] && lines[0].attn));
@@ -912,7 +919,7 @@ function flashTick(countdowns, now) {
   (countdowns || []).forEach(function (c) { c.el.textContent = flashCountdownText(c.kind, c.at, now); });
 }
 
-/* 浮层顶部那一排按 flashControlView 的结果画：els 是 {start, stop, resume, note, desc}（index.html 的 #flash-start、
+/* 浮层顶部那一排按 flashControlView 的结果画（发布闸关着时最底下那句只说停止）：els 是 {start, stop, resume, note, desc}（index.html 的 #flash-start、
  * #flash-stop、#flash-resume、#flash-ctl-note、#flash-desc）。按钮只改显隐、禁用和字，节点本身不换（焦点、监听都在上面）。
  * 浮层最底下那句：三颗里有一颗露着就写「这里只能开始、停止和继续……」，一颗都没有时换回第一步那句（不和版本句打架） */
 function renderFlashControls(doc, els, view) {
@@ -929,9 +936,14 @@ function renderFlashControls(doc, els, view) {
     els.note.classList.toggle("hidden", !view.note);
   }
   if (els.desc) {
-    els.desc.textContent = view.any
-      ? L("这里只能开始、停止和继续，其他操作请到闪购助手里。", "Only Start, Stop and Resume work here. Do everything else in Flash Sale Helper.")
-      : L("这里只显示状态。要操作，请到闪购助手里。", "This panel only shows status. Make changes in Flash Sale Helper.");
+    if (!view.any) {
+      els.desc.textContent = L("这里只显示状态。要操作，请到闪购助手里。", "This panel only shows status. Make changes in Flash Sale Helper.");
+    } else if (view.gated) {
+      els.desc.textContent = L("这里只能停止，其他操作请到闪购助手里。", "Only Stop works here. Do everything else in Flash Sale Helper.");
+    } else {
+      els.desc.textContent = L("这里只能开始、停止和继续，其他操作请到闪购助手里。",
+                               "Only Start, Stop and Resume work here. Do everything else in Flash Sale Helper.");
+    }
   }
 }
 

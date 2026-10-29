@@ -35,9 +35,11 @@ for (const lang of ["zh", "en"]) {
   const STATUS_ONLY = T("这里只显示状态。要操作，请到闪购助手里。", "This panel only shows status. Make changes in Flash Sale Helper.");
   const start = (page) => page.el("flash-start");
 
-  function opened(state) {
+  // 开始、继续在发布闸后面（后端 flash_sale.START_ENABLED，出厂关着）：这里测的是开闸以后的接线，hello 显式带上开闸；
+  // 闸关着的样子在「发布闸」那一条
+  function opened(state, cfg = { flash_start_enabled: true }) {
     const page = loadDesktop({ lang });
-    hello(page, { flash_sale: state });
+    hello(page, Object.assign({ flash_sale: state }, cfg));
     page.el("flash-btn").click();
     assert.ok(!hidden(page, "flash-panel"));
     return page;
@@ -59,6 +61,28 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual(visible(page), ["flash-open"], "连不上：只剩「打开」");
     assert.equal(text(page, "flash-desc"), STATUS_ONLY, "一颗都没有：换回第一步那句");
     assert.ok(hidden(page, "flash-ctl-note"));
+  });
+
+  test(name("发布闸：hello 的 flash_start_enabled 不是 true 就当关着，「开始」「继续」不出、最底下那句只说停止；重连的 hello 为准"), () => {
+    const ONLY_STOP = T("这里只能停止，其他操作请到闪购助手里。", "Only Stop works here. Do everything else in Flash Sale Helper.");
+    for (const gate of [undefined, false, "true", 1, null]) {
+      const page = opened(idle(), gate === undefined ? {} : { flash_start_enabled: gate });
+      assert.deepEqual(visible(page), ["flash-open"], String(gate));
+      assert.equal(text(page, "flash-desc"), STATUS_ONLY);
+      push(page, calm({ paused_reason: "user_interaction" }));
+      assert.deepEqual(visible(page), ["flash-stop", "flash-open"], "继续也在闸后面：" + String(gate));
+      assert.deepEqual(usable(page), ["flash-stop", "flash-open"]);
+      assert.equal(text(page, "flash-desc"), ONLY_STOP);
+      assert.equal(text(page, "flash-headline"), T("已暂停：确认框里点了取消。要在闪购助手的面板上点继续。",
+        "Paused: a confirmation was canceled. Resume it from the Flash Sale Helper panel."), "没有「继续」按钮：照旧指到面板上");
+      page.el("flash-stop").click();
+      assert.deepEqual(sent(page), [{ type: "flash_control", action: "stop" }], "停止不受闸管");
+    }
+    const page = opened(idle(), {});
+    hello(page, { flash_sale: idle(), flash_start_enabled: true });
+    assert.deepEqual(visible(page), ["flash-start", "flash-open"], "开闸的 hello 到了：照开闸画");
+    hello(page, { flash_sale: idle() });
+    assert.deepEqual(visible(page), ["flash-open"], "下一次 hello 没带：又当关着");
   });
 
   test(name("版本认得出且低于 0.8.0：只剩「打开」，旁边写「0.8.0 起才能……」，最底下那句不和它打架；认不出的照常出"), () => {

@@ -29,7 +29,17 @@ FIXTURES = ROOT / "tests" / "fixtures" / "flash_sale"
 REAL_FETCH = fs.fetch_status
 # 导入时留下真的那个（导入、收集阶段不在 conftest 的任何夹具里）：用例里拿它算出本机真的密钥位置，和换过的比
 REAL_CONTROL_TOKEN_PATH = fs.control_token_path
+# 发布闸出厂的值（下面的 autouse 夹具会把它打开）
+SHIPPED_START_GATE = fs.START_ENABLED
 START_WALL = datetime(2026, 10, 27, 21, 36, 8, tzinfo=timezone.utc).timestamp()
+
+
+@pytest.fixture(autouse=True)
+def start_gate_open(monkeypatch):
+    """开始、继续藏在发布闸后面（flash_sale.START_ENABLED，出厂关着，直播助手平台轮廓 §9.2 第 8 条）。这个文件里别的用例
+    测的是闸打开以后开始、继续怎么走，所以显式打开；闸关着的样子在 test_the_start_gate_* 那几条里显式关上
+    （CLAUDE.md 第九条：测闸某一边的语义要显式 monkeypatch 它）。"""
+    monkeypatch.setattr(fs, "START_ENABLED", True)
 
 
 def sample(name):
@@ -180,6 +190,26 @@ def test_installed_the_first_hello_already_says_checking(tmp_path, capsys):
     assert lines[1] == "[信息] 闪购助手：已连上 127.0.0.1:9（版本 0.7.2）"
 
 
+@pytest.mark.parametrize("gate", [False, True])
+def test_the_page_learns_from_hello_whether_the_start_gate_is_open(gate, monkeypatch, tmp_path):
+    """装了才有：config 里和 flash_sale 一起写 flash_start_enabled（发布闸开没开），页面据此画不画「开始」「继续」。
+    没装就没有这个键；浮窗的 hello 里没有（FLOAT_CONFIG_KEYS），手机根本收不到 config。"""
+    monkeypatch.setattr(fs, "START_ENABLED", gate)
+    p = bare_pipeline()
+    asyncio.run(p.attach_flash_sale(platform="darwin", candidates=[tmp_path / "nope" / fs.APP_NAME]))
+    assert "flash_start_enabled" not in p.server.config
+    p.stop_flash_watch()
+    Script(p, [sample("idle")])
+
+    async def go():
+        await p.attach_flash_sale(platform="darwin", candidates=[installed_app(tmp_path)])
+        assert p.server.config["flash_start_enabled"] is gate
+        p.stop_flash_watch()
+
+    asyncio.run(go())
+    assert "flash_start_enabled" not in FLOAT_CONFIG_KEYS and "config" in viewer.DENY
+
+
 def test_an_error_while_attaching_never_blocks_startup(monkeypatch, tmp_path, capsys):
     def boom(**_kw):
         raise RuntimeError("disk on fire")
@@ -187,6 +217,7 @@ def test_an_error_while_attaching_never_blocks_startup(monkeypatch, tmp_path, ca
     p = bare_pipeline()
     asyncio.run(p.attach_flash_sale(platform="darwin", candidates=[installed_app(tmp_path)]))
     assert "flash_sale" not in p.server.config and p._flash_task is None
+    assert "flash_start_enabled" not in p.server.config
     assert out_lines(capsys) == ["[警告] 闪购助手：启动时出错（RuntimeError），这一次不显示闪购按钮"]
 
 
@@ -856,6 +887,61 @@ def test_a_pipeline_built_in_tests_points_at_no_real_port_and_no_real_token(tmp_
     token, why = p._flash_read_token()
     assert spy.paths == [path]
     assert why == "missing" and token is None
+
+
+def test_the_start_gate_ships_closed():
+    """开始、继续等第 3 步（动作记录、指令来源）都合进来再打开：出厂关着。开闸的那个 PR 改这一条。"""
+    assert SHIPPED_START_GATE is False
+
+
+@pytest.mark.parametrize("action", ["start", "resume"])
+def test_the_start_gate_closed_means_start_and_resume_are_not_sent(action, monkeypatch, tmp_path, capsys):
+    """闸关着：开始、继续不读密钥、不发、不回结果（页面上本来没有这两颗按钮），终端一行；停止照发（停是安全的方向）。"""
+    monkeypatch.setattr(fs, "START_ENABLED", False)
+    post, token = FakePost(), FakeToken()
+    p, clock = control_pipeline(tmp_path, post=post, token=token)
+    poll(p, clock, paused_doc("user_interaction") if action == "resume" else sample("idle"))
+    before = list(p.server.sent)
+    assert p.handle_control({"type": "flash_control", "action": action}) is None
+    assert not p._bg_tasks and p._flash_ctl is None
+    assert post.calls == [] and token.calls == 0 and p.server.sent == before
+    assert out_lines(capsys)[-1] == "[信息] 闪购助手：中控请求{} → 没有发出（开始、继续还没开放）".format(NAMES[action])
+    click(p, {"type": "flash_control", "action": "stop"})
+    assert post.calls == [("stop", FAKE_TOKEN, "http://127.0.0.1:9")]
+    assert results(p) == [dict(ACCEPTED, action="stop")]
+
+
+def test_the_start_gate_closed_leaves_a_stop_retry_alone(monkeypatch, tmp_path):
+    """闸关着时开始发不出去，也就不会让停止的重试作废。"""
+    monkeypatch.setattr(fs, "START_ENABLED", False)
+
+    async def go():
+        p, clock = control_pipeline(tmp_path)
+        await apoll(p, clock, sample("idle"))
+        answers = ["busy", None]
+
+        async def post(a, tok, base):
+            return answers.pop(0)
+
+        wake = asyncio.Event()
+
+        async def held_sleep(sec):
+            await wake.wait()
+            clock["mono"] += sec
+
+        p._flash_post = post
+        p._flash_retry_sleep = held_sleep
+        p.handle_control({"type": "flash_control", "action": "stop"})
+        await asyncio.sleep(0.01)
+        assert p._flash_ctl["phase"] == "retrying"
+        p.handle_control({"type": "flash_control", "action": "start"})
+        assert p._flash_ctl["phase"] == "retrying"
+        wake.set()
+        await asyncio.gather(*list(p._bg_tasks))
+        return p
+
+    p = asyncio.run(go())
+    assert results(p) == [dict(ACCEPTED, action="stop", tries=2)]
 
 
 def test_without_the_helper_flash_control_does_nothing():

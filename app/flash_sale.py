@@ -58,6 +58,10 @@ OPEN_TIMEOUT_SEC = 10    # open -a 正常立刻返回；等这么久还没返回
 # 控制（契约「控制(0.8.0 起)」）。地址写死；tests/conftest.py 把它换成没人听的端口，测试绝不碰真的 9334
 CONTROL_BASE = "http://127.0.0.1:9334"
 CONTROL_ACTIONS = ("start", "stop", "resume")
+# 发布闸（先例 i18n.I18N_ENABLED）：开始、继续会让闪购助手对观众做事，等动作记录、指令来源这些（直播助手平台轮廓
+# 第 3 步）都合进来再打开（§9.2 第 8 条，用户 10-29 同意）。关着时页面不画「开始」「继续」，后端也不发；停止不受它管
+# （停是安全的方向）。改成 True 就是开闸；回退就是改回 False。测闸某一边的语义要显式 monkeypatch 它
+START_ENABLED = False
 CONTROL_BODY = b'{"source":"tlt"}'
 CONTROL_REPLY_MAX = 4096     # 回话只有 {"ok":…,"error":…} 这么一小段
 # 指令被接受以后最多等这么久看它生效，这期间每 3 秒查一次 /status（契约：开始后真实页面一般 5–15 秒 running

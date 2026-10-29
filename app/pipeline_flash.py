@@ -86,6 +86,8 @@ class FlashSaleMixin:
             self._flash_base = state
             self._flash_last = state
             self._flash_conn_prev = "checking"
+            # 发布闸（flash_sale.START_ENABLED）：页面据此画不画「开始」「继续」。和 flash_sale 一起，装了才有
+            self.server.config["flash_start_enabled"] = flash_sale.START_ENABLED is True
             self.server.config["flash_sale"] = state
             print("[信息] 闪购助手：已装，开始查看 {} 的状态".format(self._flash_where()))
             self._start_flash_watch()
@@ -93,6 +95,7 @@ class FlashSaleMixin:
             print("[警告] 闪购助手：启动时出错（{}），这一次不显示闪购按钮".format(type(exc).__name__))
             self._flash_app = None
             self.server.config.pop("flash_sale", None)
+            self.server.config.pop("flash_start_enabled", None)
 
     def _start_flash_watch(self):
         if self._flash_task is not None:
@@ -309,6 +312,8 @@ class FlashSaleMixin:
         """控制页的 flash_control 指令（handle_control 调，同步，立刻返回）：{"type": "flash_control",
         "action": "start" | "stop" | "resume"}，别的键一概不看。谁能发、安全边界在哪，见文件头。
         - 没装（演示模式也是这样）、动作不在白名单里：什么都不做（页面上本来没有这样的按钮）；
+        - 开始、继续，发布闸关着（flash_sale.START_ENABLED）：什么都不做，终端一行（页面上这时没有这两颗按钮）。
+          停止不受闸管；
         - 上一个指令还在途（phase=sending）：什么都不做。页面那边按钮是禁用的（发布的状态里 control.phase 是
           sending），连点、两个控制页同时点，都只发一个；
         - 停止：不看上一次轮询读得怎么样，放后台当场读一次 /status 再发，没被接受的按 flash_sale.STOP_RETRY_CODES
@@ -322,6 +327,9 @@ class FlashSaleMixin:
             return None
         action = msg.get("action")
         if not isinstance(action, str) or action not in flash_sale.CONTROL_ACTIONS:
+            return None
+        if action != "stop" and flash_sale.START_ENABLED is not True:
+            print("[信息] 闪购助手：中控请求{} → 没有发出（开始、继续还没开放）".format(_CTL_NAMES[action]))
             return None
         ctl = self._flash_ctl
         if ctl is not None and ctl["phase"] == "sending":

@@ -391,6 +391,35 @@ test("停止在后端等着再试（phase=retrying）：停止写「正在重试
   assert.equal(F.FLASH_STOP_RETRY_GAP_SEC, 3);
 });
 
+test("发布闸关着（gated）：「开始」「继续」都不出，只剩停止；版本那句只说停止；确认框里点了取消的暂停照旧叫人去面板上点继续", () => {
+  const gated = { gated: true };
+  let v = view(idle(), gated);
+  assert.deepEqual(shown(v), [], "没在运行：一颗都不出（开始在闸后面）");
+  assert.equal(v.any, false);
+  assert.equal(v.note, null);
+  assert.equal(v.gated, true);
+  v = view(idle({ page: "login_required", paused_reason: null }), gated);
+  assert.equal(v.note, null, "开始不在：页面那句不写在按钮旁边（主句照样说）");
+  v = view(calm(), gated);
+  assert.deepEqual(usable(v), ["stop"]);
+  v = view(calm({ paused_reason: "user_interaction" }), gated);
+  assert.deepEqual(shown(v), ["stop"], "继续也在闸后面");
+  v = view(calm({ paused_reason: "awaiting_approval" }), gated);
+  assert.deepEqual(v.note, { text: "确认框处理完以后才能从这里停止。" });
+  v = view(idle({ app_version: "0.7.3" }), gated);
+  assert.deepEqual(v.note, { text: "闪购助手 0.8.0 起才能从这里停止。" });
+  observed(v.note.text);
+  v = view(idle({ app_version: "0.7.3" }), {});
+  assert.deepEqual(v.note, { text: "闪购助手 0.8.0 起才能从这里开始、停止。" }, "开闸以后照旧");
+  v = view(calm({ control: { action: "stop", phase: "retrying" } }), gated);
+  assert.equal(v.stop.text, "正在重试…");
+  assert.equal(view(calm(), {}).gated, false);
+  // 主句：没有「继续」按钮，照旧叫人去闪购助手的面板上点
+  const paused = calm({ paused_reason: "user_interaction", attention: ["paused"] });
+  assert.equal(lines(paused)[0], "已暂停：确认框里点了取消。");
+  assert.equal(F.flashLines(paused, 0, gated).map(F.flashLineText)[0], "已暂停：确认框里点了取消。要在闪购助手的面板上点继续。");
+});
+
 test("「开始」点两下：第一下武装；武装后 400 毫秒内的第二下不算；400 毫秒到 6 秒之间才发；满 6 秒（或时钟往回走）重新武装", () => {
   assert.equal(F.FLASH_START_CONFIRM_MS, 6000);
   assert.equal(F.FLASH_START_GUARD_MS, 400);
@@ -562,6 +591,26 @@ function ctlEls(doc) {
   for (const k of ["start", "stop", "resume", "note"]) els[k].classList.add("hidden");
   return els;
 }
+
+test("renderFlashControls：发布闸关着时最底下那句只说停止；一颗都没有时照旧是第一步那句", () => {
+  const doc = makeFlashDoc();
+  const els = {};
+  for (const k of ["start", "stop", "resume", "note", "desc"]) els[k] = doc.createElement(k === "note" || k === "desc" ? "p" : "button");
+  F.renderFlashControls(doc, els, view(calm(), { gated: true }));
+  assert.equal(els.desc.textContent, "这里只能停止，其他操作请到闪购助手里。");
+  assert.ok(els.start.classList.contains("hidden") && els.resume.classList.contains("hidden"));
+  F.renderFlashControls(doc, els, view(idle(), { gated: true }));
+  assert.equal(els.desc.textContent, "这里只显示状态。要操作，请到闪购助手里。");
+  F.renderFlashControls(doc, els, view(idle(), {}));
+  assert.equal(els.desc.textContent, "这里只能开始、停止和继续，其他操作请到闪购助手里。");
+  // renderFlashPanel 把 gated 交给主句
+  const pels = makeEls(doc);
+  const paused = calm({ paused_reason: "user_interaction", attention: ["paused"] });
+  F.renderFlashPanel(doc, pels, paused, { now: NOW, gated: true });
+  assert.equal(pels.headline.textContent, "已暂停：确认框里点了取消。要在闪购助手的面板上点继续。");
+  F.renderFlashPanel(doc, pels, paused, { now: NOW });
+  assert.equal(pels.headline.textContent, "已暂停：确认框里点了取消。");
+});
 
 test("renderFlashControls：显隐、禁用、按钮上的字、旁边那句、最底下那句随那一排换", () => {
   const doc = makeFlashDoc();

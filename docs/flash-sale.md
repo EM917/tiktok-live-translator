@@ -234,6 +234,17 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 §9.1–§9.5 写后端（`app/flash_sale.py` 的控制部分、`app/pipeline_flash.py` 的 `_flash_control*`），§9.6 写页面
 （`web/index.html` 的 `#flash-ctl`、`web/flash.js` 的 `flashControlView` 等、`web/app.js` 的接线）。
 
+**发布闸**（`flash_sale.START_ENABLED`，出厂 `False`；先例 `i18n.I18N_ENABLED`）：开始、继续会让闪购助手对观众做事，
+等直播助手平台轮廓第 3 步（动作记录、指令来源、两步确认）都合进来再打开（轮廓 §9.2 第 8 条，用户 10-29 同意）。这样这一步
+合进 main 以后，main 随时还能发 hotfix（hotfix 只能从 main 打），不会把「会动手、没记录」的开始、继续一起带出去。
+- 关着时：后端收到开始、继续什么都不做（终端一行「没有发出（开始、继续还没开放）」，不读密钥、不回结果），也不让停止的重试
+  作废；页面不画「开始」「继续」（§9.6）。**停止不受闸管**（停是安全的方向）。
+- 页面怎么知道：装了闪购助手时，hello 的 config 里和 `flash_sale` 一起带 `flash_start_enabled`（布尔）。只有 `true` 算开闸，
+  没有这个键、别的值都当关着。浮窗不收（不在 `FLOAT_CONFIG_KEYS` 里），手机收不到 config。
+- 开闸：把 `START_ENABLED` 改成 `True`，同时改 `tests/test_pipeline_flash.py::test_the_start_gate_ships_closed`。回退就是改回去。
+  测闸某一边的语义要显式 monkeypatch 它：`tests/test_pipeline_flash.py` 有一个 autouse 夹具把它打开（那个文件测的是开闸以后
+  开始、继续怎么走），闸关着的几条在用例里显式关上；node 测试的整页接线同理，hello 里显式带 `flash_start_enabled: true`。
+
 ### 9.1 消息
 
 - 页面 → 后端：`{"type": "flash_control", "action": "start" | "stop" | "resume"}`。只读 `action`，别的键一概不看
@@ -388,6 +399,7 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 | 等生效（`control.phase=waiting`，状态还没显示生效） | 按下的那颗写「正在开始…」「正在停止…」「正在继续…」、不能点；开始、继续不能点（闪购助手这时回 busy），停止照样能点（停是安全的方向） | 不写（免得和「正在开始…」打架） |
 | 停止等着再试（`control.phase=retrying`） | 停止写「正在重试…」、不能点（后端已经在试）；开始、继续照常（点了，后端把还没发的重试作废） | 停止还没被接受，30 秒内每 3 秒再试一次。（连不上、读不出时那一排一颗按钮都不出，这句照样写） |
 | 和本地服务断开 | 三颗都不能点（「打开」本来就禁用） | 不写 |
+| 发布闸关着（hello 的 `flash_start_enabled` 不是 true，出厂就是这样） | 开始、继续不出；停止照上面的规则 | 版本那句换成「闪购助手 0.8.0 起才能从这里停止。」；其余照上面 |
 
 - **页面没准备好时旁边那句**（`flashNotReadyNote`）：照 decisions-step2（用户 10-27 定的「旁边一句说明为什么，照 /status
   的 page 文案」）写 `flashPageText` 的那句，例如「专用 Chrome 停在 TikTok 登录页，登录后才能继续。」——和下面主句里那句是
@@ -405,7 +417,10 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
   照常出按钮、点了才说没有控制接口，现在和两三段的一样只留「打开」。认不出的照常出按钮，
   回来 404 / 405 就是 `no_control`「这个版本的闪购助手没有控制接口。」。不记住这个结果去藏按钮：再点一次就再说一次。
 - **最底下那句**（`#flash-desc`，`renderFlashControls`）：三颗里有一颗露着就写「这里只能开始、停止和继续，其他操作请到
-  闪购助手里。」，一颗都没有时换回第一步那句「这里只显示状态。要操作，请到闪购助手里。」，不和版本那句打架。
+  闪购助手里。」（发布闸关着时写「这里只能停止，其他操作请到闪购助手里。」），一颗都没有时换回第一步那句「这里只显示状态。
+  要操作，请到闪购助手里。」，不和版本那句打架。
+- **发布闸关着时的主句**：没有「继续」按钮，确认框里点了取消的暂停照旧写长的那句「……要在闪购助手的面板上点继续。」
+  （`flashLines` 的第三个参数、`renderFlashPanel` 的 `gated`）。
 - **「开始」点两下**（`flash.js flashStartClick` + `app.js`）：第一下把字换成「再点一次开始」，6 秒（`FLASH_START_CONFIRM_MS`）
   内再点才发，到点复原；武装后 400 毫秒（`FLASH_START_GUARD_MS`）内的第二下不算——鼠标双击一次就发出开始的话，专用 Chrome
   里的页面会被刷新。定时器被节流没跑也按时刻算（满 6 秒的那一下当作重新点第一下）。关上浮层、重连的 hello、「开始」不在了
@@ -505,7 +520,8 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
 - G10（`TLT_DOM_SCAN=1 pytest tests/test_i18n_dom.py`）：`live-flash*`、`live-flash-zh*`、`home-flash*` 场景，
   `config.flash_sale` 由 `flash_sale.StatusTracker` 从 running.json 生成。顶部那一排另有 `flash-ctl-<种类>`（英文，进扫描）
   和 `flash-ctl-<种类>-zh`：idle、armed（点了一下开始）、running、paused、awaiting、old（0.7.3）、starting（开始被接受、
-  页面出错且陈旧）、skip（五种原因、一个认不出的代码、序号）、rejected（409 busy），默认 1000px 窗口，查哪几颗露出、能不能点、
+  页面出错且陈旧）、skip（五种原因、一个认不出的代码、序号）、rejected（409 busy）、gated（在运行、发布闸关着：只有停止），
+  除了 gated，hello 里都带开闸的 `flash_start_enabled: true`；默认 1000px 窗口，查哪几颗露出、能不能点、
   文案，量浮层和这一排不溢出、在同一行，顶栏下限不放宽。截图（`TLT_DOM_SHOTS`）带 `--force-prefers-reduced-motion`
   （`SHOT_FLAGS`）：浮层弹出动画半路截下来是半透明的（审查第 8 条）。直播转写进行中不开 Chrome。
 

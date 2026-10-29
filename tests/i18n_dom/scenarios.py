@@ -111,8 +111,10 @@ GUARD_ZH = tuple(n + "-zh" for n in GUARD_NAMES)
 # flash_ctl_scenario）。idle 没在运行（出开始）、armed 点了一下开始（「再点一次开始」）、running 在运行（出停止）、
 # paused 确认框里点了取消的暂停（停止加继续）、awaiting 弹着确认框（停止不能点）、old 闪购助手 0.7.3（只剩打开）、
 # starting 开始被接受、页面刷新中（不变色、「正在开始…」）、skip 带 0.8.2 的不续开原因和卡片序号、rejected 闪购助手
-# 回了 409 busy（浮层里那一句）
-FLASH_CTL_KINDS = ("idle", "armed", "running", "paused", "awaiting", "old", "starting", "skip", "rejected")
+# 回了 409 busy（浮层里那一句）、gated 在运行但发布闸关着（只有停止，最底下那句只说停止；出厂就是这样）。
+# 除了 gated，hello 里都带 flash_start_enabled: true（开闸以后的样子，FLASH_CTL_OPEN）
+FLASH_CTL_KINDS = ("idle", "armed", "running", "paused", "awaiting", "old", "starting", "skip", "rejected", "gated")
+FLASH_CTL_OPEN = {"flash_start_enabled": True}
 FLASH_CTL_NAMES = tuple("flash-ctl-" + k for k in FLASH_CTL_KINDS)
 FLASH_CTL_ZH = tuple(n + "-zh" for n in FLASH_CTL_NAMES)
 FLASH_CTL_SIZE = (1000, 760)              # 默认窗口（docs/i18n-style.md §4.1）
@@ -767,7 +769,8 @@ FLASH_CTL_REJECT = {"type": "flash_control_result", "action": "start", "ok": Fal
 def flash_ctl_state(kind, now_ms=None):
     """flash-ctl-<kind> 的 config.flash_sale：契约样例 running.json 改几个闪购助手会报的代码（版本、running、
     paused_reason、page、商品的 position / skip），经 StatusTracker 规整；控制进度照 app/pipeline_flash.py
-    _flash_compose 叠上去，attention 用 flash_sale.attention 重算。不手写界面上的任何一句"""
+    _flash_compose 叠上去，attention 用 flash_sale.attention 重算。不手写界面上的任何一句。gated 的状态同 running
+    （差别只在 hello 里没有开闸那个键，见 flash_ctl_scenario）"""
     doc = json.loads(FLASH_FIXTURE.read_text(encoding="utf-8"))
     doc["app_version"] = FLASH_CTL_OLD_VERSION if kind == "old" else FLASH_CTL_VERSION
     # 样例里那条 ❌ 记录是「没看过的问题记录」：它会让浮层主句变成「有 n 条新的问题」（打开浮层那一刻的还算新的），
@@ -798,12 +801,15 @@ def flash_ctl_state(kind, now_ms=None):
 
 
 def flash_ctl_scenario(base, kind, state):
-    """同一个直播中场景（英文 live-float、中文满编 live-float-zh），hello 里换上 flash-ctl-<kind> 的 config.flash_sale，
+    """同一个直播中场景（英文 live-float、中文满编 live-float-zh），hello 里换上 flash-ctl-<kind> 的 config.flash_sale
+    （gated 以外再加开闸的 flash_start_enabled: true），
     只点开闪购浮层（armed 再点一下「开始」），窗口是默认的 1000px，另量浮层和顶部那一排。rejected 在回放之后多一条
     flash_control_result。名字：flash-ctl-<kind>，中文页加 -zh"""
     out = copy.deepcopy(base)
     out["name"] = "flash-ctl-" + kind + ("-zh" if base["lang"] == "zh" else "")
     out["messages"][0]["config"]["flash_sale"] = copy.deepcopy(state)
+    if kind != "gated":
+        out["messages"][0]["config"].update(FLASH_CTL_OPEN)
     if kind == "rejected":
         out["messages"].append(dict(FLASH_CTL_REJECT))
     out["clicks"] = ["#flash-btn"] + (["#flash-start"] if kind == "armed" else [])
