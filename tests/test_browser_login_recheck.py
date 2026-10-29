@@ -210,6 +210,29 @@ def test_the_control_runs_in_the_background_and_only_one_at_a_time(monkeypatch, 
     assert p._login_rechecking is False
 
 
+def test_the_pages_auto_flag_reaches_the_recheck(monkeypatch, tmp_path):
+    """页面切回窗口时发的 {"type": "recheck_browser_login", "auto": true}（web/app.js sendRecheck）经 handle_control
+    交到 _recheck_browser_login(auto=True)：结果和上一次一样就不再发 notice。只认 true 本身，别的值当手点的。
+    以前这一段只有页面那头（tests/browser-login-recheck.test.mjs）和 _recheck_browser_login(auto=True) 各自钉着，
+    handle_control 把 auto 丢掉也没有哪个用例会红——那样每次切回窗口都弹一句。"""
+    probe = FakeProbe({"safari": bl.BLOCKED, "chrome": bl.OK})
+    p, server = wire(monkeypatch, tmp_path, probe)
+    raise_blocked_notice(p)
+
+    async def send(msg):
+        assert p.handle_control(msg) is None
+        await asyncio.gather(*list(p._bg_tasks))
+
+    run(send({"type": "recheck_browser_login", "auto": True}))
+    assert len(notices(server)) == 1                  # 第一次：没有上一次可比，照说
+    run(send({"type": "recheck_browser_login", "auto": True}))
+    assert len(notices(server)) == 1                  # 结果没变：不说
+    run(send({"type": "recheck_browser_login", "auto": "true"}))
+    assert len(notices(server)) == 2                  # 不是 true 本身：当手点的，照说
+    run(send({"type": "recheck_browser_login"}))
+    assert len(notices(server)) == 3
+
+
 def test_a_failed_probe_is_reported_without_raising(monkeypatch, tmp_path, capsys):
     def broken(browser):
         raise RuntimeError("boom")
