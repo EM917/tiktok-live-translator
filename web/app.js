@@ -77,6 +77,8 @@
   var commentJump = document.getElementById("comment-jump");
   var engineSelect = document.getElementById("engine-select");
   var engineKey = document.getElementById("engine-key");
+  var engineWorkspaceRow = document.getElementById("engine-workspace-row");
+  var engineWorkspace = document.getElementById("engine-workspace");
   var engineSave = document.getElementById("engine-save");
   var engineActive = document.getElementById("engine-active");
   var engineNote = document.getElementById("engine-note");
@@ -4615,6 +4617,9 @@
     none: L("只显示识别原文，不翻译。", "Shows the original text without translating.")
   };
   var engineKeys = {};
+  var engineWorkspaceId = "";   // 在用的 Claude 工作区 ID（不是密钥，服务端照原样给；没填是空串）
+  // 工作区 ID 的样子（app/translator.py WORKSPACE_ID_RE）：不像就不发，免得刚粘贴的密钥跟着白填
+  var WORKSPACE_ID_RE = /^wrkspc_[A-Za-z0-9_-]+$/;
   var engineNoteSig = null;   // 上一次的回退提示；变了才自动展开，重连回放不反复弹开
 
   // 引擎被回退时摘要前面加的小三角（跟 .sc-icon 同一套线性画法，颜色固定橙——
@@ -4629,6 +4634,7 @@
   function renderEngine(info) {
     if (!engineSelect) return;
     engineKeys = info.keys || {};
+    engineWorkspaceId = typeof info.workspace_id === "string" ? info.workspace_id : "";
     engineSelect.value = info.engine || "auto";
     commentRedoEngine = info.active || "";
     syncAllCommentRedo();     // 字幕引擎换了：已经画出来的「重译」按钮跟着变灰或可点
@@ -4680,6 +4686,10 @@
       engineKey.placeholder = have ? L("已填 " + have + "（留空则沿用）", "Saved key " + have + " (leave blank to keep)")
                                    : L("粘贴 API 密钥", "Paste API key");
     }
+    // 工作区 ID 只有 Claude 要（不绑工作区的密钥）：选别的引擎时收起，框里回到在用的那个
+    var claude = engineSelect.value === "claude";
+    if (engineWorkspaceRow) engineWorkspaceRow.classList.toggle("hidden", !claude);
+    if (engineWorkspace) engineWorkspace.value = engineWorkspaceId;
     // 字幕会发到外部服务的几档：前面加三角图标（以前是 ⚠️ 前缀），颜色仍由 .warn 给
     var sendsOut = engineSelect.value in KEY_ENV || engineSelect.value === "google";
     if (sendsOut) setIconText(engineNote, "warn", NOTES[engineSelect.value] || "");
@@ -4690,10 +4700,24 @@
   if (engineSelect) {
     engineSelect.addEventListener("change", syncEngineRow);
     engineSave.addEventListener("click", function () {
+      var claude = engineSelect.value === "claude";
+      var workspace = claude && engineWorkspace ? engineWorkspace.value.trim() : null;
+      if (workspace && !WORKSPACE_ID_RE.test(workspace)) {
+        // 和服务端那句同一句（app/pipeline.py set_engine）：服务端也会拦，这里先拦是为了不清掉密钥框
+        setIconText(engineNote, "warn", L("工作区 ID 是 wrkspc_ 开头的一串字母和数字（Claude Console 的 Workspaces 页面上有），" +
+                                          "这次没有保存，请检查后再点「保存」",
+                                          "A workspace ID starts with wrkspc_ followed by letters and numbers. It’s listed on " +
+                                          "the Workspaces page in the Claude Console. Nothing was saved. Check it and click " +
+                                          "Save again."));
+        engineNote.classList.add("warn");
+        return;
+      }
       engineSave.disabled = true;
       engineSave.textContent = L("切换中…", "Switching…");
-      send({ type: "set_engine", engine: engineSelect.value,
-             api_key: engineKey.value || null });
+      var msg = { type: "set_engine", engine: engineSelect.value,
+                  api_key: engineKey.value || null };
+      if (claude) msg.workspace_id = workspace;
+      send(msg);
       engineKey.value = "";
       setTimeout(function () {
         engineSave.disabled = false;
