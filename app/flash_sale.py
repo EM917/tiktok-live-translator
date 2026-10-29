@@ -473,7 +473,7 @@ def _product(raw):
         "enabled": _bool(raw.get("enabled")),
         # 闪购助手 0.8.2 起才有，旧版没有这两个键：都当 null。position 是卡片左边的序号（最后一次在屏幕上
         # 看到这张卡片时的值），skip 是「故意不续开」的原因代码（slot_1、no_stock、max_renewals、
-        # auto_start_off、no_position，认不出的原样交给前端）
+        # auto_start_off、no_position，0.9.2 起还有 next_to_pin；认不出的原样交给前端）
         "position": _int(raw.get("position")),
         "skip": _code(raw.get("skip")),
     }

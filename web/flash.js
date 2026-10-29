@@ -102,11 +102,13 @@ function flashStateText(code) {
   }
 }
 
-/* 闪购助手为什么故意不续开这个商品（契约 products[].skip，0.8.2 起；文案是闪购助手会话 10-27 给的）。
+/* 闪购助手为什么故意不续开这个商品（契约 products[].skip，0.8.2 起；前五个的文案是闪购助手会话 10-27 给的，
+ * next_to_pin 是 0.9.2 起的：置顶商品正下方、下一个要置顶的那个，文案照它的说明写）。
  * 认不出的返回 null，由调用方写「不续开：」加原样的代码 */
 function flashSkipText(code) {
   switch (code) {
     case "slot_1": return L("1 号位，不续开", "Slot 1, not renewed");
+    case "next_to_pin": return L("下一个要置顶，不续开", "Next to pin, not renewed");
     case "no_stock": return L("没有库存，不续开", "Out of stock, not renewed");
     case "max_renewals": return L("续开次数到上限", "Renewal limit reached");
     case "auto_start_off": return L("没开自动开始", "Auto-start off");

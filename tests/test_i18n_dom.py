@@ -888,7 +888,8 @@ FLASH_CTL_TEXT = {
     "skip": {"flash-headline": None},
     "rejected": {"flash-note": ("闪购助手没有接受：正忙，稍等再试。", "Flash Sale Helper declined: It’s busy. Try again in a moment.")},
 }
-FLASH_SKIP_TEXT = (("1 号位，不续开", "Slot 1, not renewed"), ("没有库存，不续开", "Out of stock, not renewed"),
+FLASH_SKIP_TEXT = (("1 号位，不续开", "Slot 1, not renewed"), ("下一个要置顶，不续开", "Next to pin, not renewed"),
+                   ("没有库存，不续开", "Out of stock, not renewed"),
                    ("续开次数到上限", "Renewal limit reached"), ("没开自动开始", "Auto-start off"),
                    ("读不到序号，先不处理", "Position unread, skipped for now"))
 
@@ -1354,8 +1355,8 @@ def test_the_flash_control_scenarios_differ_from_live_float_only_where_they_say(
     assert flash_sale.attention(dict(starting, control=None)) == ["stale", "page"], "过渡一过就该提醒"
     skip = states["skip"]
     assert skip["attention"] == [] and not any(p["stuck"] for p in skip["products"])
-    assert {p["skip"] for p in skip["products"]} == {None, "slot_1", "no_stock", "max_renewals", "auto_start_off",
-                                                     "no_position", "brand_new_reason"}
+    assert {p["skip"] for p in skip["products"]} == {None, "slot_1", "next_to_pin", "no_stock", "max_renewals",
+                                                     "auto_start_off", "no_position", "brand_new_reason"}
     assert [p["position"] for p in skip["products"]] == [1, 6, None, 2, 4, None, 5, 3, 9], "后端排好的顺序"
     for kind in set(S.FLASH_CTL_KINDS) - {"skip"}:
         assert all(p["position"] is None and p["skip"] is None for p in states[kind]["products"]), kind

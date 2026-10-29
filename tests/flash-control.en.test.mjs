@@ -143,8 +143,9 @@ test("确认框里点了取消的暂停：浮层顶部有 Resume 时主句只说
 });
 
 test("不续开原因和卡片序号", () => {
-  const want = { slot_1: "Slot 1, not renewed", no_stock: "Out of stock, not renewed", max_renewals: "Renewal limit reached",
-                 auto_start_off: "Auto-start off", no_position: "Position unread, skipped for now" };
+  const want = { slot_1: "Slot 1, not renewed", next_to_pin: "Next to pin, not renewed", no_stock: "Out of stock, not renewed",
+                 max_renewals: "Renewal limit reached", auto_start_off: "Auto-start off",
+                 no_position: "Position unread, skipped for now" };
   for (const [code, text] of Object.entries(want)) assert.equal(english(F.flashSkipText(code)), text, code);
   const parts = F.flashProductParts(product("pending", { skip: "brand_new_reason", position: 4 }), { running: true }, NOW);
   assert.deepEqual(parts.detail, [{ text: "Not renewed: ", code: "brand_new_reason" }]);
@@ -164,7 +165,8 @@ test("整张浮层和那一排画出来的字：除了数据区（标题、认�
       else walk(n);
     }
   };
-  const skips = ["slot_1", "no_stock", "max_renewals", "auto_start_off", "no_position", "brand_new_reason", null];
+  const skips = ["slot_1", "next_to_pin", "no_stock", "max_renewals", "auto_start_off", "no_position", "brand_new_reason",
+                 null];
   const states = [
     calm({ products: skips.map((skip, i) => product(["stopped", "pending", "live"][i % 3], { skip, position: i + 1 })) }),
     idle({ page: "error", stale: true, paused_reason: null, control: { action: "start", phase: "waiting" } }),

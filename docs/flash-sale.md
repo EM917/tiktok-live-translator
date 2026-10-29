@@ -66,7 +66,8 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
   - `paused_reason`：null（正常运行）、not_started、awaiting_approval、captcha、user_interaction、error；
   - 商品 `state`：live、between_rounds、stopped、ended_by_user、pending、no_sale、unknown；
   - 商品 `skip`（0.8.2 起）：null 表示闪购助手会续开；不为 null 是「故意不续开」的原因：slot_1（1 号位）、
-    no_stock（没有库存）、max_renewals（续开次数到上限）、auto_start_off（没开自动开始）、no_position（读不到序号）。
+    no_stock（没有库存）、max_renewals（续开次数到上限）、auto_start_off（没开自动开始）、no_position（读不到序号），
+    0.9.2 起还有 next_to_pin（置顶商品正下方、下一个要置顶的那个；没有置顶时只按 slot_1，同一个商品又是 1 号位时报 slot_1）。
     `enabled=false` 的商品不标 skip，只看 enabled；
   - `alerts[].level`：error（报警）、warn（失败、跳过、暂停、等确认）、info。
 - 商品 `position`（0.8.2 起）：卡片左边的序号（整数），取最后一次在屏幕上看到这张卡片时的值；从没出现过、读不到时为 null。
@@ -135,9 +136,10 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
 - 浮层里条件满足、还没满 60 秒的商品写「等闪购助手续开」，满了写「停了超过 1 分钟」。前端的条件
   （`flash.js flashWaitingRenewal`）和后端的 `flash_sale.stuck_candidate` 一字不差：`enabled` 只认 true，`skip` 只认 null
   （没有这个键也算 null）。两边吃同一张表 `tests/fixtures/flash_sale/shared-rules.json`（`waiting_renewal`）。
-- `skip` 不为 null 的商品，那一行细节的最前面写闪购助手说的原因（`flash.js flashSkipText`，文案是闪购助手会话给的）：
-  slot_1「1 号位，不续开」、no_stock「没有库存，不续开」、max_renewals「续开次数到上限」、auto_start_off「没开自动开始」、
-  no_position「读不到序号，先不处理」；认不出的写「不续开：」加原样的代码（`translate="no"`）。`position` 写成标题前的
+- `skip` 不为 null 的商品，那一行细节的最前面写闪购助手说的原因（`flash.js flashSkipText`，前五句的文案是闪购助手会话给的，
+  next_to_pin 那句照它 0.9.2 的说明写）：
+  slot_1「1 号位，不续开」、next_to_pin「下一个要置顶，不续开」、no_stock「没有库存，不续开」、max_renewals「续开次数到上限」、
+  auto_start_off「没开自动开始」、no_position「读不到序号，先不处理」；认不出的写「不续开：」加原样的代码（`translate="no"`）。`position` 写成标题前的
   「#12」（`.flash-pos`，在会被省略号截掉的标题外面，两种语言一样）；null 就不写。英文见 `docs/i18n-style.md` §3 K #175。
 - **排序**（要人看的在前）：卡住的 stopped → pending → unknown → live → between_rounds →
   没卡住的 stopped（还在续开计时里、不自动续开、故意不续开）→ no_sale → ended_by_user → 认不出的。**同一档里**按

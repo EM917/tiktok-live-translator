@@ -746,13 +746,16 @@ def _flash_tracked(doc, now_ms=None, stale=False):
     return state
 
 
-# flash-ctl-* 的闪购助手：带控制接口的版本（契约「控制(0.8.0 起)」），old 那一份是 0.8.0 以前的
-FLASH_CTL_VERSION = "0.9.0"
+# flash-ctl-* 的闪购助手：带控制接口的版本（契约「控制(0.8.0 起)」），而且报得出 next_to_pin（0.9.2 起）；
+# old 那一份是 0.8.0 以前的
+FLASH_CTL_VERSION = "0.9.2"
 FLASH_CTL_OLD_VERSION = "0.7.3"
-# skip 那一份：商品 product_id 的末两位 → (卡片序号, 不续开的原因, 换成的 state)。契约 0.8.2 的五个原因代码各一个，
-# 外加一个认不出的（页面原样显示）；两个没有序号（同一档里排最后）。已停止的那个标了 no_stock，就不算卡住
+# skip 那一份：商品 product_id 的末两位 → (卡片序号, 不续开的原因, 换成的 state)。契约 0.8.2 的五个原因代码、0.9.2 的
+# next_to_pin（1 号位正下方那个）各一个，外加一个认不出的（页面原样显示）；两个没有序号（同一档里排最后）。
+# 已停止的那个标了 no_stock，就不算卡住
 FLASH_CTL_SKIP = {
-    "04": (1, "slot_1", None), "01": (2, None, None), "03": (3, "no_stock", None), "08": (4, "max_renewals", None),
+    "04": (1, "slot_1", None), "01": (2, "next_to_pin", None), "03": (3, "no_stock", None),
+    "08": (4, "max_renewals", None),
     "02": (5, None, None), "06": (6, "auto_start_off", "pending"), "07": (None, "no_position", None),
     "09": (None, None, None), "05": (9, "brand_new_reason", None),
 }
