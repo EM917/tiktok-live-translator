@@ -55,7 +55,7 @@ ALLOWED = ("sentinel", "own", "registered", "unix")
 LABELS = {
     "sentinel": "127.0.0.1:9 哨兵",
     "own": "本进程自己起的服务器（随机端口）",
-    "registered": "登记过的子进程端口（G10 的 Chrome 调试端口）",
+    "registered": "用 allowing() 登记过的端口（子进程的端口、刚关掉要测连不上的端口）",
     "unix": "Unix 套接字（不走网络）",
     "live": "本机上用户直播时开着的端口（8765–8774、9333、9334、11434）",
     "local": "本机上不是本进程起的端口",
@@ -250,6 +250,11 @@ def node_id(current):
 def hits_of(nodeid, hits=None):
     """记下的连接里属于这个用例（它的 setup、call、teardown 阶段）的那些。"""
     return [h for h in (_STATE["hits"] if hits is None else hits) if node_id(h[0]) == nodeid]
+
+
+def record():
+    """现在用着的记录表（列表本身）。"""
+    return _STATE["hits"]
 
 
 def hits_of_anyone():

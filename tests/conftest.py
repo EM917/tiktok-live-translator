@@ -440,9 +440,13 @@ socket_net.install()
 def _no_connection_leaves_the_test(request):
     """这个用例（它的 setup、call 和到这里为止的 teardown）里被测试总网拦下的连接，有就判它失败。被拦的连接在
     被测代码那里已经是「连不上」，它可能把异常吞了、照样绿：所以要在这里另判。autouse：靠每个用例自己记得
-    不连真端口，已经被 conftest 里那几处一处一处换地址的夹具证明会漏。"""
+    不连真端口，已经被 conftest 里那几处一处一处换地址的夹具证明会漏。
+
+    记录表在开场时就拿住：socket_net_hits 换表用的 monkeypatch 要到这里之后才退回，结束时再去取，取到的是
+    专测这张网的用例自己那张。"""
+    hits = socket_net.record()
     yield
-    mine = socket_net.hits_of(request.node.nodeid)
+    mine = socket_net.hits_of(request.node.nodeid, hits)
     if mine:
         pytest.fail(socket_net.failure_text(mine), pytrace=False)
 
