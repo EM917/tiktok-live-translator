@@ -590,13 +590,14 @@
   // 每页只弹一次；TARGET_HINT_MS 后自己收起，不一直盖着字幕区顶上。指针移进来、或焦点进到里面，就不再按时收起
   // （要点按钮的人不会被它躲开），点外面、Esc 照旧收（顶栏浮层那张登记表，见下面 registerPopover）。
   // 界面语言这一行不存在时（闸关着、又没有 --ui-lang 一次性覆盖）不弹：那句话指向的地方不存在。
-  // 按钮只在待机首页、界面语言没被启动参数固定时给：设置分组在连接中、直播中整块藏着，界面语言只在待机时换
-  // （index.html #lang-card 的注释）。直播中要不要也给，等用户定；这时只说那句话
+  // 按钮在待机、连接中、直播中都给（用户 2026-10-29 定，lang-4 选 A）：连接中、直播中设置分组整块藏着，
+  // 这颗按钮是这时切界面语言唯一的入口，顶栏不另加按钮。切换只让页面重载一次，监听不停（app/pipeline.py
+  // _set_ui_lang 的注释）。只有界面语言被启动参数固定时不给，只说那句话
   var TARGET_HINT_MS = 8000;
   var targetHintShown = false;
   var targetHintTimer = null;
   var targetHintLang = null;     // 按钮要切到的界面语言（zh / en）；没弹过时为 null
-  function targetHintCanSwitch() { return !!targetHintLang && !streamActive && !langLocked; }
+  function targetHintCanSwitch() { return !!targetHintLang && !langLocked; }
   function syncTargetHintSwitch() {
     if (targetHintSwitch) targetHintSwitch.classList.toggle("hidden", !targetHintCanSwitch());
   }
@@ -615,11 +616,11 @@
     targetHintLang = lang;
     targetHintText.textContent = L("字幕译成这种语言。界面语言在「设置 > 界面语言」里改",
       "Captions are translated into this language. To change the app language, go to Settings > App Language.");
-    var name = langName(lang);
-    targetHintSwitch.textContent = name;
+    // 按钮的名字就是语言自称本身（同首页的两段切换 #lang-quick），读屏照按钮的 lang 用那种语言的声音念；
+    // 不另写 aria-label——它也会跟着 lang 被念成另一种语言的声音，英文页上还会多一处中文。提示那句话
+    // 由 index.html 上的 aria-describedby 接上
+    targetHintSwitch.textContent = langName(lang);
     targetHintSwitch.setAttribute("lang", lang === "en" ? "en" : "zh-CN");
-    targetHintSwitch.setAttribute("aria-label",
-      L("界面语言改成 {name}", "Set App Language to {name}").replace("{name}", name));
     syncTargetHintSwitch();
     // 不传 trigger：下拉不是开合这个浮层的按钮，不给它挂 aria-expanded（位置仍按登记的下拉算）
     showPopover(targetHint);
@@ -1593,7 +1594,6 @@
     if (flashOpenBtn) flashOpenBtn.disabled = state === "offline";
     startBtn.disabled = state === "connecting";
     streamActive = active;
-    syncTargetHintSwitch(); // 「字幕译成」提示里的切换按钮：连接中、直播中不给
     updateFloatBtn();       // 浮窗按钮跟换主播同一条显示规则
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
     updateActiveBrandTag(); // 本场品牌标签同一个显示条件，见该函数注释

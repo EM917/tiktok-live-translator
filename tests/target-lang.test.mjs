@@ -9,8 +9,12 @@
 //      （语言名是数据，不随界面语言变）。
 //   4. 2026-10-29 同一种误会又来了一次（连接中、默认 1000px 窗口，标签被省掉，只剩一个写着「中文（简体）」的下拉）：
 //      在英文界面选了中文、或在中文界面选了 English 时，下拉下面就地弹一个小浮层，说这个下拉管的是字幕，
-//      并给一颗切换界面的按钮（字是那种语言的自称）。每页只弹一次，几秒后自己收起。连接中、直播中只说那句话、
-//      不给按钮（设置分组这时整块藏着，切换界面要不要放开到直播中，等用户定）。
+//      并给一颗切换界面的按钮（字是那种语言的自称）。每页只弹一次，几秒后自己收起。
+//   5. 用户 2026-10-29 定（lang-4 选 A）：连接中、直播中也给这颗按钮，这是直播中切界面语言唯一的入口（设置分组
+//      这时整块藏着，顶栏不另加按钮）。切换只让页面重载一次，识别、违禁词检测、审计、手机同看都不经过桌面页面，
+//      重连后字幕、报警、弹幕照旧回放（tests/test_i18n_server.py 钉着服务端那一半）。只有 --ui-lang 固定时不给。
+//      按钮的名字就是语言自称本身（同首页的两段切换），不另写 aria-label：aria-label 会跟着按钮的 lang 被念成
+//      另一种语言的声音，英文页上还会多出一处中文；提示那句话由 aria-describedby 接上。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -147,7 +151,7 @@ test("captionsLangHint：英文界面选了中文（简繁都算）、中文界�
   }
 });
 
-test("index.html：提示浮层紧跟在「字幕译成」后面，默认藏着；按钮是数据（translate=\"no\"），字和 aria-label 由 app.js 写", () => {
+test("index.html：提示浮层紧跟在「字幕译成」后面，默认藏着；按钮是数据（translate=\"no\"），字由 app.js 写、提示那句接在 aria-describedby 上", () => {
   const html = web("index.html").replace(/<!--[\s\S]*?-->/g, "");
   const hint = /<div id="target-hint"([^>]*)>([\s\S]*?)<\/div>/.exec(html);
   assert.ok(hint, "index.html 里找不到 #target-hint");
@@ -159,6 +163,8 @@ test("index.html：提示浮层紧跟在「字幕译成」后面，默认藏着�
   assert.match(btn[1], /\stype="button"/);
   assert.match(btn[1], /\stranslate="no"/);
   assert.match(btn[1], /\sclass="[^"]*\bhidden\b[^"]*"/);
+  assert.match(btn[1], /\saria-describedby="target-hint-text"/, "读屏念完按钮名，接着念提示那一句");
+  assert.doesNotMatch(btn[1], /\saria-label=/);
   assert.ok(html.indexOf('id="target-hint"') > html.indexOf('<select id="target-lang"'), "浮层在下拉后面：键盘按 Tab 就进去");
   assert.ok(html.indexOf('id="target-hint"') < html.indexOf('id="font-btn"'), "紧跟在「字幕译成」后面");
   const css = web("style.css").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -171,8 +177,8 @@ const HINT = {
 };
 // 每种界面「选了另一种语言」时：选哪一项、按钮写什么、lang 属性、发什么、aria-label
 const OTHER = {
-  en: { pick: "zh-CN", also: "zh-TW", name: "中文", tag: "zh-CN", send: "zh", aria: "Set App Language to 中文" },
-  zh: { pick: "en", also: null, name: "English", tag: "en", send: "en", aria: "界面语言改成 English" },
+  en: { pick: "zh-CN", also: "zh-TW", name: "中文", tag: "zh-CN", send: "zh" },
+  zh: { pick: "en", also: null, name: "English", tag: "en", send: "en" },
 };
 const HINT_MS = 8000;
 
@@ -203,7 +209,7 @@ for (const lang of ["zh", "en"]) {
     assert.ok(switchShown(p));
     assert.equal(btn.textContent, o.name, "按钮字是那种语言的自称：落进看不懂的界面也认得出");
     assert.equal(btn.getAttribute("lang"), o.tag);
-    assert.equal(btn.getAttribute("aria-label"), o.aria);
+    assert.equal(btn.getAttribute("aria-label"), null, "名字就是自称本身，读屏照按钮的 lang 念");
     assert.deepEqual(uiLangSent(p), [], "弹提示不等于切换");
     btn.click();
     assert.deepEqual(uiLangSent(p), [{ type: "set_ui_lang", value: o.send }]);
@@ -263,10 +269,26 @@ for (const lang of ["zh", "en"]) {
     assert.ok(!hintOpen(gate), "没有可切换的界面语言：那句话指向一个不存在的地方");
   });
 
-  test("[" + lang + "] 连接中、直播中、界面语言被启动参数固定时：只说那句话，不给切换按钮", () => {
-    for (const [state, extra] of [["connecting", {}], ["live", {}], ["idle", { ui_lang_locked: true }]]) {
+  test("[" + lang + "] 连接中、直播中：照样给切换按钮，点了发 set_ui_lang（只让页面重载一次，不停监听）", () => {
+    for (const state of ["connecting", "live"]) {
       const p = page(lang);
-      langHello(p, lang, state, extra);
+      langHello(p, lang, state);
+      pick(p, o.pick);
+      assert.ok(hintOpen(p), state);
+      assert.equal(p.el("target-hint-text").textContent, HINT[lang]);
+      assert.ok(switchShown(p), state + "：这是直播中切界面语言唯一的入口");
+      assert.equal(p.el("target-hint-switch").textContent, o.name);
+      p.el("target-hint-switch").click();
+      assert.deepEqual(uiLangSent(p), [{ type: "set_ui_lang", value: o.send }], state);
+      assert.ok(!hintOpen(p), state);
+      assert.deepEqual(p.sent.filter((m) => m.type === "stop"), [], state + "：不发停止");
+    }
+  });
+
+  test("[" + lang + "] 界面语言被启动参数固定时（待机、直播中都一样）：只说那句话，不给切换按钮", () => {
+    for (const state of ["idle", "live"]) {
+      const p = page(lang);
+      langHello(p, lang, state, { ui_lang_locked: true });
       pick(p, o.pick);
       assert.ok(hintOpen(p), state);
       assert.equal(p.el("target-hint-text").textContent, HINT[lang]);
@@ -276,15 +298,16 @@ for (const lang of ["zh", "en"]) {
     }
   });
 
-  test("[" + lang + "] 提示开着时开始了连接：按钮跟着藏起来，点了也不发", () => {
+  test("[" + lang + "] 提示开着时开始了连接、进了直播：按钮照旧在，点了照发", () => {
     const p = page(lang);
     langHello(p, lang);
     pick(p, o.pick);
     assert.ok(switchShown(p));
     p.push({ type: "status", state: "connecting", detail: "" });
-    assert.ok(!switchShown(p));
+    p.push({ type: "status", state: "live", detail: "" });
+    assert.ok(switchShown(p));
     p.el("target-hint-switch").click();
-    assert.deepEqual(uiLangSent(p), []);
+    assert.deepEqual(uiLangSent(p), [{ type: "set_ui_lang", value: o.send }]);
   });
 
   test("[" + lang + "] 和本地服务断开时点切换：发不出去就照设置行的做法说一声", () => {

@@ -792,7 +792,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         所有桌面页面见到 config.ui_lang 和自己的不一样就重载一次。
 
         闸关着（I18N_ENABLED 为假）一律忽略：那时界面恒为中文，设置行也是隐藏的。
-        设置分组在直播中、连接中整块隐藏，所以只可能在待机时切换，重载不会打断监听。
+        连接中、直播中也会来（用户 2026-10-29 定：「字幕译成」就地提示里的按钮在这时照样给）。这里不看
+        状态、不碰监听：识别、违禁词检测、审计、手机同看都不经过桌面页面。页面重载就是 WebSocket 断开
+        再连上，重连时按此刻的语言回放字幕、报警、弹幕（server._ws），重载那一两秒里来的报警照样补进去。
         不写审计：审计记录的类型和字段一个都不加。"""
         if value not in i18n.CHOICES or not i18n.I18N_ENABLED:
             return None

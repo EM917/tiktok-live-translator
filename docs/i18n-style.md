@@ -424,7 +424,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 选项 1 | 跟随系统（中文） | System (English) |
 | 选项 2 / 3 | 中文 / English | 中文 / English |
 | 行下方的说明 | 切换后窗口会刷新一次。手机同看页按各自手机的语言显示。 | The window reloads once after you switch. Phone Viewing pages follow each phone’s language. |
-| 「字幕译成」就地提示里的按钮（§3 #21a） | 字：English；aria-label：界面语言改成 English | 字：中文；aria-label：Set App Language to 中文 |
+| 「字幕译成」就地提示里的按钮（§3 #21a） | 字：English | 字：中文 |
 | 首页的两段切换（§3 #33a） | 字：中文 / English；组名（aria-label）：界面语言 | 字：中文 / English；组名：App Language |
 
 语言名永远用该语言自己的写法（中文 / English）。这样用户就算落进一个看不懂的界面，也能认出自己的语言，切回去。
@@ -468,7 +468,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 19 | app.js:2240 | 报警开 | Alerts on | 52 → 74（含内边距），见 §4 R6 |
 | 20 | app.js:2262 | 品牌 · {name} | Brand · {name} | 143 → 154 |
 | 21 | index.html:55–62 | 字幕译成（标签 / aria）；title 见 §1 | Captions in | 2026-10-20 由「目标语言 / Translate to」改名。直播中 ≤1080px 时隐藏，首页一直露出；52 → 68（G10 实测，旧的 Translate to 是 74） |
-| 21a | index.html #target-hint、app.js showTargetHint | 正文同 #21 的 title（同一对，不新增句子）；按钮字是那种语言的自称（中文 / English，translate="no"）；按钮 aria-label：界面语言改成 {name} | 正文同 #21 的 title；aria-label：Set App Language to {name} | 2026-10-29 加。英文界面选了中文（简体或繁体）、中文界面选了 English 时，下拉下面弹一次（每页一次，8 秒后自己收起，指针或焦点进去就不再按时收）。按钮只在待机首页给：设置分组在连接中、直播中整块藏着，界面语言只在待机时换。{name} 是语言自称，Title Case 里的 App Language 是设置行的名字（§2.1） |
+| 21a | index.html #target-hint、app.js showTargetHint | 正文同 #21 的 title（同一对，不新增句子）；按钮字是那种语言的自称（中文 / English，translate="no"） | 正文同 #21 的 title；按钮字同左 | 2026-10-29 加。英文界面选了中文（简体或繁体）、中文界面选了 English 时，下拉下面弹一次（每页一次，8 秒后自己收起，指针或焦点进去就不再按时收）。按钮在待机、连接中、直播中都给（用户 10-29 定：直播中设置分组藏着，这是那时唯一的入口；切换只让页面重载一次，不停监听），只有 `--ui-lang` 固定时不给。按钮不另写 aria-label：名字就是自称本身，读屏照按钮的 `lang` 念（aria-label 也会跟着 `lang` 被念成另一种语言的声音，英文页上还多一处中文），提示那句由 aria-describedby 接上。同首页的两段切换（#33a） |
 | 22 | index.html:68–70 | 字幕字号（title / aria） | Caption size | |
 | 23 | index.html:76 | 清空字幕 | **Clear** | 76 → 56。“Clear Captions” 要 114，放不下，见 §4 |
 | 24 | index.html:76 title | 清空历史字幕 | Clear caption history | |

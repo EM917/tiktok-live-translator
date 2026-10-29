@@ -70,11 +70,13 @@
       <!-- 就地提示（2026-10-29）：这一页的人在英文界面里选了中文、或在中文界面里选了 English 时（live-ui.js
            captionsLangHint），下拉下面弹一次，几秒后自己收起（app.js showTargetHint）。正文就是上面 tooltip 那一句，
            由 app.js 按界面语言写进来：role="status" 的内容是弹出时才换的，读屏会念。按钮写那种语言的自称
-           （中文 / English，settings-rows.js langName），是数据，标 translate="no"，点了发 set_ui_lang；
-           连接中、直播中不给按钮（设置分组这时整块藏着，界面语言只在待机时换）。开合登记在顶栏浮层那张表里 -->
+           （中文 / English，settings-rows.js langName），是数据，标 translate="no"，名字就是它，提示那句由
+           aria-describedby 接上；点了发 set_ui_lang。连接中、直播中也给（用户 2026-10-29 定）：这时设置分组
+           整块藏着，这颗按钮是切界面语言唯一的入口，切换只让页面重载一次，不停监听。只有 --ui-lang 固定时不给。
+           开合登记在顶栏浮层那张表里 -->
       <div id="target-hint" class="target-hint popover hidden" role="status">
         <p id="target-hint-text" class="target-hint-text"></p>
-        <button id="target-hint-switch" class="btn small hidden" type="button" translate="no"></button>
+        <button id="target-hint-switch" class="btn small hidden" type="button" translate="no" aria-describedby="target-hint-text"></button>
       </div>
       <!-- 字号：小 A —— 滑块 —— 大 A（苹果「图书」的做法），省掉「字号」两个字。
            装了闪购助手、窗口窄于 1400px 时（body.has-flash-btn），顶栏放不下这一整条：收成一颗 28px 的「Aa」按钮，
@@ -699,7 +701,8 @@
 
           <!-- 界面语言：跟随系统 / 中文 / English。config.ui_lang_available 不为 true 时整行隐藏
                （发布闸关着、又没有 --ui-lang 一次性覆盖时，config 里根本没有这个键），见 app.js
-               renderLang。设置分组只在待机时可见，所以切换后页面重载不会打断监听 -->
+               renderLang。设置分组只在待机时可见；连接中、直播中切界面语言走「字幕译成」的就地提示
+               （#target-hint）。切换只让页面重载一次，不打断监听（app/pipeline.py _set_ui_lang） -->
           <div id="lang-card" class="set-item hidden">
             <button id="lang-head" class="set-row" type="button" aria-expanded="false" aria-controls="lang-body">
               <span class="set-icon indigo" aria-hidden="true">
@@ -856,6 +859,6 @@
   <script src="/static/live-ui.js?v=8"></script>
   <script src="/static/guard.js?v=6"></script>
   <script src="/static/flash.js?v=1"></script>
-  <script src="/static/app.js?v=83"></script>
+  <script src="/static/app.js?v=84"></script>
 </body>
 </html>
