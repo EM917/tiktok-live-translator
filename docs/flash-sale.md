@@ -67,8 +67,14 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
   - 商品 `state`：live、between_rounds、stopped、ended_by_user、pending、no_sale、unknown；
   - 商品 `skip`（0.8.2 起）：null 表示闪购助手会续开；不为 null 是「故意不续开」的原因：slot_1（1 号位）、
     no_stock（没有库存）、max_renewals（续开次数到上限）、auto_start_off（没开自动开始）、no_position（读不到序号），
-    0.9.2 起还有 next_to_pin（置顶商品正下方、下一个要置顶的那个；没有置顶时只按 slot_1，同一个商品又是 1 号位时报 slot_1）。
-    `enabled=false` 的商品不标 skip，只看 enabled；
+    0.9.2 起还有 next_to_pin（置顶商品下面的第一个商品，按列表顺序，也就是下一个要置顶的那个）。`enabled=false` 的商品
+    不标 skip，只看 enabled。本程序不分版本：skip 不为 null 就不算卡住（§6），那一行写闪购助手给的原因，六句短说明
+    两个版本都对。哪个商品标 slot_1、next_to_pin、no_position，0.9.2 和 0.9.2.1 不一样：
+    - 0.9.2：1 号位一直留着（slot_1），有置顶时 next_to_pin 那个也留，两个代码会同时出现；next_to_pin 那个同时又是
+      1 号位时报 slot_1。读不到序号的报 no_position；
+    - 0.9.2.1 起：有置顶时只留 next_to_pin 那一个，1 号位和置顶的商品本身照常处理，也不看序号（不会因为读不到序号报
+      no_position）；没有置顶、看不出有没有置顶、或者置顶的商品不在已加载的列表里时，才按 1 号位留（slot_1），读不到
+      序号的报 no_position；
   - `alerts[].level`：error（报警）、warn（失败、跳过、暂停、等确认）、info。
 - 商品 `position`（0.8.2 起）：卡片左边的序号（整数），取最后一次在屏幕上看到这张卡片时的值；从没出现过、读不到时为 null。
   0.8.2 以前没有 `skip`、`position` 这两个键，都当 null。
@@ -137,7 +143,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
   （`flash.js flashWaitingRenewal`）和后端的 `flash_sale.stuck_candidate` 一字不差：`enabled` 只认 true，`skip` 只认 null
   （没有这个键也算 null）。两边吃同一张表 `tests/fixtures/flash_sale/shared-rules.json`（`waiting_renewal`）。
 - `skip` 不为 null 的商品，那一行细节的最前面写闪购助手说的原因（`flash.js flashSkipText`，前五句的文案是闪购助手会话给的，
-  next_to_pin 那句照它 0.9.2 的说明写）：
+  next_to_pin 那句照它 0.9.2 的说明写；0.9.2.1 改的是哪个商品标哪个代码（§3），每个代码的意思没变，六句照旧）：
   slot_1「1 号位，不续开」、next_to_pin「下一个要置顶，不续开」、no_stock「没有库存，不续开」、max_renewals「续开次数到上限」、
   auto_start_off「没开自动开始」、no_position「读不到序号，先不处理」；认不出的写「不续开：」加原样的代码（`translate="no"`）。`position` 写成标题前的
   「#12」（`.flash-pos`，在会被省略号截掉的标题外面，两种语言一样）；null 就不写。英文见 `docs/i18n-style.md` §3 K #175。

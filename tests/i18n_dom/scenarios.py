@@ -752,7 +752,8 @@ FLASH_CTL_VERSION = "0.9.2"
 FLASH_CTL_OLD_VERSION = "0.7.3"
 # skip 那一份：商品 product_id 的末两位 → (卡片序号, 不续开的原因, 换成的 state)。契约 0.8.2 的五个原因代码、0.9.2 的
 # next_to_pin（1 号位正下方那个）各一个，外加一个认不出的（页面原样显示）；两个没有序号（同一档里排最后）。
-# 已停止的那个标了 no_stock，就不算卡住
+# 已停止的那个标了 no_stock，就不算卡住。slot_1 和 next_to_pin 同时出现是 0.9.2 的样子（有置顶时两个都留）；0.9.2.1 起
+# 有置顶时不再报 slot_1（那个样子在 tests/fixtures/flash_sale/shared-rules.json 的 waiting_renewal 里，这里不加）
 FLASH_CTL_SKIP = {
     "04": (1, "slot_1", None), "01": (2, "next_to_pin", None), "03": (3, "no_stock", None),
     "08": (4, "max_renewals", None),
