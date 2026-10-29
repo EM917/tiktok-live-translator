@@ -1501,6 +1501,45 @@ def test_after_start_takes_effect_the_window_closes_once_the_list_is_back(tmp_pa
     assert out_lines(capsys) == []
 
 
+def test_after_start_takes_effect_a_stale_or_lost_status_does_not_close_the_window(tmp_path):
+    """页面稳下来要三样都对（flash_sale.control_settled）：连上了、不陈旧、page 不是 loading / error / no_list。
+    - 回到了列表，可 updated_at 从刷新起一直没动（陈旧）：不收，安静到 30 秒，之后照原规则提醒陈旧；
+    - 生效以后连着两跳查不到（第二跳发布空状态）：看不到页面，不收；再连上时列表还没回来，照样不变色。"""
+    p, clock = control_pipeline(tmp_path)
+    poll(p, clock, sample("idle"))
+    click(p, {"type": "flash_control", "action": "start"})
+    accepted_at = clock["mono"]
+    clock["mono"] = accepted_at + 3
+    poll(p, clock, started_doc("loading"))
+    clock["mono"] = accepted_at + 3 + fs.STALE_SEC + 1
+    poll(p, clock, started_doc("ok"))
+    state = p.server.config["flash_sale"]
+    assert state["page"] == "ok" and state["stale"] is True
+    assert state["control"] == WAITING_START and state["attention"] == []
+    clock["mono"] = accepted_at + fs.CONTROL_WAIT_SEC
+    poll(p, clock, started_doc("ok"))
+    state = p.server.config["flash_sale"]
+    assert state["control"] is None and state["attention"] == ["stale"]
+
+    p, clock = control_pipeline(tmp_path / "lost")
+    poll(p, clock, sample("idle"))
+    click(p, {"type": "flash_control", "action": "start"})
+    clock["mono"] += 3
+    poll(p, clock, started_doc("loading"))
+    for _ in range(2):
+        clock["mono"] += 3
+        poll(p, clock, ("unreachable", None))
+    state = p.server.config["flash_sale"]
+    assert state["conn"] == "unreachable" and state["control"] == WAITING_START
+    clock["mono"] += 3
+    no_list = sample("running")
+    no_list.update(page="no_list", products=[])
+    poll(p, clock, no_list)
+    state = p.server.config["flash_sale"]
+    assert state["control"] == WAITING_START and state["attention"] == []
+    assert results(p) == [dict(ACCEPTED, action="start")]
+
+
 def test_while_start_is_still_in_flight_a_page_error_is_not_quiet(tmp_path):
     """还没接受（在途）不算：过渡只从「闪购助手接受了」开始。"""
     async def go():
