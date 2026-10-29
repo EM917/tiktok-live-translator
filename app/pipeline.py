@@ -20,7 +20,7 @@ from inspect import isawaitable
 from pathlib import Path
 
 from . import asr_risk, i18n
-from .asr import DEFAULT_TEMPERATURE
+from .asr import DEFAULT_TEMPERATURE, MODEL_SIZES_MB
 from .i18n import LN, L, of
 from .comment_levels import snapshot as level_snapshot
 from .comment_source import CommentSource
@@ -106,10 +106,6 @@ def _open_directory_default(path):
         os.startfile(str(path))          # 只有 Windows 才有这个属性
     else:
         subprocess.Popen(["xdg-open", str(path)])
-
-# whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
-MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
-                  "large-v3": 3100, "large-v3-turbo": 1620}
 
 DENOISE_MODEL = Path(__file__).resolve().parent.parent / "models" / "bd.rnnn"
 DENOISE_MIN_BYTES = 100_000   # 完整模型约 300 KB；明显小于此值 = 下载被截断

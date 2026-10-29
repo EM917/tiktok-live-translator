@@ -284,6 +284,10 @@ _MLX_REPOS = {
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
 }
 
+# whisper 各模型的大致下载体积（MB），用来在 UI 上显示首次下载进度
+MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 484, "medium": 1530,
+                  "large-v3": 3100, "large-v3-turbo": 1620}
+
 
 def release_mlx_model():
     """放掉 mlx-whisper 缓存在类属性里的模型（ModelHolder 是类级缓存，新建一个
