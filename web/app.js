@@ -219,6 +219,9 @@
   var langSummaryEl = document.getElementById("lang-summary");
   var uiLangSelect = document.getElementById("ui-lang-select");
   var uiLangSystemOpt = document.getElementById("ui-lang-system");
+  // 待机首页标题区右上角的「中文 / English」两段切换（用户 2026-10-29，见 renderLangQuick）
+  var langQuick = document.getElementById("lang-quick");
+  var langQuickBtns = { zh: document.getElementById("lang-quick-zh"), en: document.getElementById("lang-quick-en") };
   // 字幕记录行：和违禁词报警、弹幕留意一样默认收起、永不自动展开（CLAUDE.md 第六条）
   var transcriptHead = document.getElementById("transcript-head");
   var transcriptBody = document.getElementById("transcript-body");
@@ -4748,7 +4751,39 @@
   var langAvailable = false;   // 设置里有没有界面语言这一行（「字幕译成」的就地提示看它）
   var langLocked = false;      // 界面语言被 --ui-lang 固定：提示里不给切换按钮
 
+  // 首页两段切换：显隐、按下态、置灰都由 settings-rows.js langQuickState 算。按下态只跟服务端说的
+  // 语言走：点了另一颗不先改按下态，等广播新语言、页面重载（发送失败时也就不用退回）
+  var langQuickNow = null;     // langQuickState(config)；不出现时为 null
+  function renderLangQuick(cfg) {
+    if (!langQuick) return;
+    langQuickNow = langQuickState(cfg);
+    langQuick.classList.toggle("hidden", !langQuickNow);
+    if (!langQuickNow) return;
+    ["zh", "en"].forEach(function (code) {
+      var btn = langQuickBtns[code];
+      if (!btn) return;
+      btn.setAttribute("aria-pressed", langQuickNow.pressed === code ? "true" : "false");
+      btn.disabled = langQuickNow.locked;
+    });
+    if (langQuickNow.locked) langQuick.title = L("由启动参数固定", "Set by a launch option");
+    else langQuick.removeAttribute("title");
+  }
+  ["zh", "en"].forEach(function (code) {
+    var btn = langQuickBtns[code];
+    if (!btn) return;
+    // 和设置行的下拉发同一条 set_ui_lang：服务端存设置、广播新语言，本页见到不一样就重载（reloadForLang）
+    btn.addEventListener("click", function () {
+      var value = langQuickSend(langQuickNow, code);
+      if (!value) return;
+      if (send({ type: "set_ui_lang", value: value })) return;
+      setStatus({ state: "offline",
+                  detail: L("与本地服务断开，正在重连——稍候再试。",
+                            "Lost connection to the local service. Reconnecting… Try again in a moment.") });
+    });
+  });
+
   function renderLang(cfg) {
+    if (cfg) renderLangQuick(cfg);
     if (!langCard || !cfg) return;
     var available = cfg.ui_lang_available === true;
     langAvailable = available;

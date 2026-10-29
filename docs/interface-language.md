@@ -15,7 +15,8 @@ page — is in English or Chinese.
   interface is set to Chinese instead of following the system.
 - An install that was already in use before the English interface existed
   stays in Chinese after updating.
-- To switch, open **Settings → App Language** on the home page and choose
+- To switch, click 中文 or English at the top right of the home page, above
+  the title. Or open **Settings → App Language** on the home page and choose
   System, 中文 or English. The window reloads once. Settings is hidden during
   a session, so switch between sessions.
 - `python3 main.py --ui-lang en` (or `zh`) sets the language for one launch

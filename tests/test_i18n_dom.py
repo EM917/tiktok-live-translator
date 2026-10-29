@@ -773,6 +773,47 @@ def test_home_top_bar_says_what_the_caption_menu_is_for(dom, base, width):
     assert not problems, "\n".join(problems)
 
 
+def _pressed(html, element_id):
+    """--dump-dom 里这个元素的开标签上 aria-pressed="true"（属性先后不论）。"""
+    tag = re.search(r'<[^>]*\bid="{}"[^>]*>'.format(re.escape(element_id)), html)
+    return bool(tag) and 'aria-pressed="true"' in tag.group(0)
+
+
+@needs_chrome
+@needs_mac
+@pytest.mark.parametrize("base", S.HOME_BASES)
+@pytest.mark.parametrize("width", S.HOME_WIDTHS)
+def test_home_language_switch_sits_in_the_title_area_corner(dom, base, width):
+    """待机首页标题区右上角的「中文 / English」两段切换（用户 2026-10-29）：露出来、在窗口里，不压住居中的
+    图标（横向在它右边）和标题（整个在标题上面）；两颗都露全，按下的是本页的语言。设置里界面语言那一行
+    的名字（英文页「App Language · 界面语言」）和摘要都露全，摘要没被省略号截掉。"""
+    result = dom.scan("{}@{}".format(base, width))
+    got, html, lang = result["measure"], result["dom"], dom.scenarios["{}@{}".format(base, width)]["lang"]
+    problems = []
+
+    def need(ok, what):
+        if not ok:
+            problems.append(what)
+
+    quick, glyph, title = got["#lang-quick"], got[".sp-glyph"], got[".sp-title"]
+    need(quick and quick["width"] > 0, "两段切换没露出来 {}".format(quick))
+    if quick and quick["width"] > 0:
+        need(quick["right"] <= result["viewport"]["width"], "两段切换出了窗口 {}".format(quick))
+        need(glyph and quick["right"] - quick["width"] >= glyph["right"] + 8,
+             "两段切换压到了图标 {} / {}".format(quick, glyph))
+        need(title and quick["bottom"] <= title["top"], "两段切换压到了标题 {} / {}".format(quick, title))
+        for code in ("zh", "en"):
+            btn = got["#lang-quick-" + code]
+            need(btn and btn["width"] > 0 and btn["textWidth"] <= btn["innerWidth"] + 0.01,
+                 "「{}」那颗没露全 {}".format(code, btn))
+    need(_pressed(html, "lang-quick-" + lang) and not _pressed(html, "lang-quick-" + ("en" if lang == "zh" else "zh")),
+         "按下的应该是本页的语言 {}".format(lang))
+    name, summary = got["#lang-head .set-name"], got["#lang-summary"]
+    need(name and name["width"] > 0 and name["textWidth"] <= name["innerWidth"] + 0.01, "行名没露全 {}".format(name))
+    need(summary and summary["textWidth"] <= summary["innerWidth"] + 0.01, "摘要被省略号截了 {}".format(summary))
+    assert not problems, "\n".join(problems)
+
+
 def _flash_shape_problems(got, width, viewport, lang="en", alert_tag=False):
     """带闪购按钮的顶栏共用的几条（docs/i18n-style.md §4.2 的表）：按钮露出、在窗口里；
     - 「Aa」：窄于 1400px（且宽于 720px）时露出、约 28px，字号控件收起（小浮层没开）；1400px 起「Aa」不出现、
@@ -1186,6 +1227,19 @@ def test_the_home_scenarios_carry_a_target_inside_and_one_outside_the_four(tmp_p
         for width in S.HOME_WIDTHS:
             sc = built["{}@{}".format(base, width)]
             assert sc["size"][0] == width and S.TARGET_EXTRA_SELECTED in sc["measure"]
+
+
+def test_the_home_scenarios_show_the_language_switch(tmp_path):
+    """不开 Chrome：首页的场景都带着界面语言行的几个键（ui_lang_available 为 true、没被 --ui-lang 固定），
+    页面才会露出两段切换给 G10 量；按下的语言就是场景页面的语言。"""
+    built = S.build(tmp_path)
+    assert set(S.DESKTOP_MEASURE) >= set(S.HOME_LANG_MEASURE)
+    for base in S.HOME_BASES:
+        for width in S.HOME_WIDTHS:
+            sc = built["{}@{}".format(base, width)]
+            config = sc["messages"][0]["config"]
+            assert config["ui_lang_available"] is True and config["ui_lang_locked"] is False, sc["name"]
+            assert config["ui_lang"] == sc["lang"], sc["name"]
 
 
 def test_every_live_top_bar_scenario_has_a_copy_with_the_widest_caption_menu(tmp_path):

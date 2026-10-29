@@ -419,12 +419,13 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 
 | 位置 | 中文界面 | 英文界面 |
 |---|---|---|
-| 设置行名 | 界面语言 · Language（带上英文，困在中文界面里的英文用户也找得到） | App Language |
+| 设置行名 | 界面语言 · Language（带上英文，困在中文界面里的英文用户也找得到） | App Language · 界面语言（2026-10-29 起对称地带上中文，困在英文界面里的中文用户也找得到。带上的那段是名字：`lang` 是它自己的语言、标 translate="no"，按页面语言二选一露出） |
 | 行右侧摘要 | 跟随系统 · 中文 / 中文 / English | System · English / 中文 / English |
 | 选项 1 | 跟随系统（中文） | System (English) |
 | 选项 2 / 3 | 中文 / English | 中文 / English |
 | 行下方的说明 | 切换后窗口会刷新一次。手机同看页按各自手机的语言显示。 | The window reloads once after you switch. Phone Viewing pages follow each phone’s language. |
 | 「字幕译成」就地提示里的按钮（§3 #21a） | 字：English；aria-label：界面语言改成 English | 字：中文；aria-label：Set App Language to 中文 |
+| 首页的两段切换（§3 #33a） | 字：中文 / English；组名（aria-label）：界面语言 | 字：中文 / English；组名：App Language |
 
 语言名永远用该语言自己的写法（中文 / English）。这样用户就算落进一个看不懂的界面，也能认出自己的语言，切回去。
 
@@ -486,6 +487,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | # | 位置 | 中文 | English | 宽度 / 备注 |
 |---|---|---|---|---|
 | 33 | index.html:298 | 输入 TikTok 直播间地址或 @用户名 | Enter a TikTok Live Link or @username | 232 → 约 330（按字符数估算，未实测），在 600 宽的容器里仍是一行。2026-10-15 并进了原 #34；ⓘ（#35 的按钮）挪到标题右边，同在 `.sp-title` 里居中，不放进 `<h2>`（否则读屏会把「输入说明」念进标题） |
+| 33a | index.html #lang-quick | 中文 / English（两颗按钮的字，语言自称）；组名（aria-label）界面语言 | 中文 / English；组名 App Language | 2026-10-29 加（用户：中文用户困在英文界面里认不出设置里的 App Language）。叠在标题区右上角，和图标同一行，不挤动居中的标题：英文标题约 330px，600 宽的一列里两边各只剩约 100px，并排放不下。按钮字是数据（`lang` 各自的语言、translate="no"），不另写 aria-label，读屏用按钮自己的 `lang` 念。只切中文、英文，「跟随系统」只在设置那一行选；按下的是此刻的界面语言，点它什么都不发。G10 的 home-* 场景量它不压图标、不压标题、不出窗口 |
 | 34 | （已删）标题下面的说明行 | — | — | 2026-10-15 并进 #33；原来是「粘贴直播间链接，或只输入主播用户名（如 @somebody）」 |
 | 35 | index.html:255 title | 输入说明 | About links | |
 | 36 | index.html:268 | https://www.tiktok.com/@主播用户名/live | https://www.tiktok.com/@username/live | 占位文字 |

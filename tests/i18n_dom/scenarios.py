@@ -94,9 +94,13 @@ HOME_BASES = ("home-idle", "home-zh", "home-flash", "home-flash-zh")
 # §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，和文档里那个真实的基线品牌同宽
 # （同 STREAMER 的做法：同一组字形重新排列，逐 1/64 像素量过）
 ZH_QUIET_BRAND = "Allura Belt Nalla"
+# 首页标题区右上角的「中文 / English」两段切换（用户 2026-10-29）和它旁边的图标、标题，以及界面语言那一行的名字和摘要
+HOME_LANG_MEASURE = ("#lang-quick", "#lang-quick-zh", "#lang-quick-en", ".sp-glyph", ".sp-title",
+                     "#lang-head .set-name", "#lang-summary")
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
                    "#float-btn", "#float-btn .btn-label", "#float-btn .i", ".ctl-text", "#target-lang",
-                   TARGET_EXTRA_SELECTED, "#flash-btn", "#flash-btn .btn-label", "#flash-btn .i", "#font-btn", "#font-ctl")
+                   TARGET_EXTRA_SELECTED, "#flash-btn", "#flash-btn .btn-label", "#flash-btn .i", "#font-btn",
+                   "#font-ctl") + HOME_LANG_MEASURE
 GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
                  ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
