@@ -953,6 +953,26 @@ def test_without_a_fresh_status_the_token_is_not_read_and_nothing_is_sent(steps,
     assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求停止 → 没有发出（no_status）"
 
 
+@pytest.mark.parametrize("doc, why", [
+    ({"status": "ok"}, "schema"),
+    ({}, "schema"),
+    (dict(sample("running"), schema=2), "schema"),
+    (dict(sample("running"), page="maintenance"), "page"),
+])
+def test_a_status_that_does_not_look_like_the_helpers_gets_no_token(doc, why, tmp_path, capsys):
+    """连上并读懂了，但不像闪购助手的回话（schema 不是 1、page 不是契约里的代码）：9334 上回话的可能是碰巧占着这个端口的
+    别的服务。不读密钥、不发，页面收到 no_status，终端那一行带着原因（StatusTracker.control_refusal）。"""
+    post, token = FakePost(), FakeToken()
+    p, clock = control_pipeline(tmp_path, post=post, token=token)
+    poll(p, clock, ("ok", copy.deepcopy(doc)))
+    assert p.server.config["flash_sale"]["conn"] == "ok"
+    click(p, {"type": "flash_control", "action": "stop"})
+    assert token.calls == 0 and post.calls == []
+    assert results(p) == [{"action": "stop", "ok": False, "error": "no_status"}]
+    assert p._flash_ctl is None
+    assert out_lines(capsys)[-1] == "[警告] 闪购助手：中控请求停止 → 没有发出（no_status：{}）".format(why)
+
+
 def test_losing_the_status_while_start_is_waiting_refuses_stop_and_keeps_the_wait(tmp_path):
     post = FakePost()
     p, clock = control_pipeline(tmp_path, post=post)

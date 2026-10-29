@@ -65,7 +65,7 @@ CONTROL_REPLY_MAX = 4096     # 回话只有 {"ok":…,"error":…} 这么一小�
 CONTROL_WAIT_SEC = 30
 # flash_control_result 的 error 里后端自己的代码。其余的要么是 http_<状态码>，要么是闪购助手 409 给的代码
 # （原样、清洗过）。前端按这张表认「是我们这边的」还是「闪购助手没有接受」：
-#   no_status    最近一次 /status 不是连上并读懂了：没读密钥、没发
+#   no_status    最近一次 /status 不是连上并读懂了，或者不像闪购助手的回话（StatusTracker.control_refusal）：没读密钥、没发
 #   no_token     控制密钥读不出：没发
 #   unreachable  连不上 9334            no_answer  连上了，没有回话            bad_reply  回话读不出
 #   no_control   404 / 405：这个版本没有控制接口
@@ -89,6 +89,10 @@ MAX_TEXT = 500
 MAX_CODE = 40
 MAX_VERSION = 20
 
+# 契约（0.9.0）/status 的 schema 和全部 page 代码。发控制指令（带着密钥）之前拿来认回话的像不像闪购助手
+# （StatusTracker.control_refusal）；别处认不出的 page 照旧原样交给页面显示
+CONTROL_SCHEMA = 1
+PAGE_CODES = ("ok", "no_page", "login_required", "loading", "no_list", "captcha", "error")
 PAGE_ATTENTION = ("login_required", "captcha", "error")
 # 开始、继续被接受后等生效的那 30 秒里不算要人处理的 page（见 attention）
 START_QUIET_PAGES = ("loading", "error", "no_list")
@@ -628,9 +632,25 @@ class StatusTracker:
         self.why = None               # 最近一次发布的 bad_response 的原因代码
 
     def last_ok(self):
-        """最近一次查 /status 连上并读懂了吗。「连上以后第一次没查到」照旧交回的是上一份 ok 状态，但这里是 False：
-        发控制指令（带着密钥）之前看的是这个，密钥只给刚刚还在好好回 /status 的那个对端。"""
+        """最近一次查 /status 连上并读懂了吗。「连上以后第一次没查到」照旧交回的是上一份 ok 状态，但这里是 False。"""
         return self._misses == 0 and self._last is not None and self._last.get("conn") == "ok"
+
+    def control_refusal(self):
+        """发控制指令（带着密钥）之前看的：None = 可以发；否则是不发的原因代码（终端用，页面一律收到 no_status）：
+        - not_ok：最近一次查 /status 不是连上并读懂了（last_ok 为 False）。密钥只给刚刚还在好好回 /status 的那个对端；
+        - schema：连上读懂了，但 schema 不是 CONTROL_SCHEMA；
+        - page：连上读懂了，但 page 不是契约里的代码（PAGE_CODES；缺了也算）。
+        后两条挡的是 9334 上碰巧回了一个 JSON 对象的别的服务：normalize 收任何对象，{"status":"ok"} 甚至 {} 也算
+        「连上并读懂了」，契约的回话却一定带 schema=1 和七个 page 代码之一。挡不住存心冒充的进程（照着契约回就是了），
+        见 docs/flash-sale.md §9.4。代价：闪购助手以后改了 schema、加了 page 代码，控制会一直 no_status，直到这里跟上
+        （终端那一行带着原因；schema 不是 1 另有一行）。"""
+        if not self.last_ok():
+            return "not_ok"
+        if self.schema != CONTROL_SCHEMA:
+            return "schema"
+        if self._last.get("page") not in PAGE_CODES:
+            return "page"
+        return None
 
     def update(self, kind, value, mono):
         norm = normalize(value) if kind == "ok" else None

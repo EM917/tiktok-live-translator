@@ -21,9 +21,10 @@ float_window）。是否安装只在启动时判一次。不在 Pipeline.__init_
 也当控制面）。所以闪购控制的安全边界是「连得上本机 127.0.0.1 的控制端口」，不是密钥文件的 600 权限。同一用户的
 进程本来就能直接读那个文件、自己去 POST 9334，借这条路不多得什么；多出来的只是连得上回环、却读不到这个用户
 ~/Library 的进程（别的账户、带网络权限的沙盒应用），在单用户的中控电脑上可以接受（没带 Origin 的连接现在
-本来就能发 disk_delete、apply_update）。剩下一个契约本身的限制：有进程占了 9334、又能装得像样地回 /status，
-就拿得到密钥（本机回环上的明文 HTTP，客户端没法认证服务端）。这里能做的是只在最近一次 /status 连上并读懂了
-的时候才读密钥、才发（no_status）。
+本来就能发 disk_delete、apply_update）。剩下一个契约本身的限制：有进程占了 9334、照着契约回 /status，
+就拿得到密钥（本机回环上的明文 HTTP，客户端没法认证服务端）。这里能做的是只在最近一次 /status 连上并读懂了、
+而且 schema 是 1、page 是契约里的代码时才读密钥、才发（不然 no_status，见 StatusTracker.control_refusal）：
+挡得住碰巧在 9334 上回 JSON 的别的服务，挡不住存心冒充的进程。
 """
 import asyncio
 import time
@@ -237,7 +238,8 @@ class FlashSaleMixin:
 
     def _flash_log_control(self, action, error, detail=None):
         """终端一行中文：「闪购助手：中控请求开始 → 已接受 / 没有接受（代码）」，没发出、连不上、没回话另有说法。
-        不打密钥、不打商品标题：detail 只会是读密钥的原因代码，或者异常的类型名。"""
+        不打密钥、不打商品标题：detail 只会是读密钥的原因代码、没发的原因（schema、page，见 _flash_control），
+        或者异常的类型名。"""
         name = _CTL_NAMES.get(action, action)
         if error is None:
             print("[信息] 闪购助手：中控请求{} → 已接受".format(name))
@@ -298,8 +300,9 @@ class FlashSaleMixin:
         - 没装（演示模式也是这样）、动作不在白名单里：什么都不做（页面上本来没有这样的按钮）；
         - 上一个指令还在途（phase=sending）：什么都不做。页面那边按钮是禁用的（发布的状态里 control.phase 是
           sending），连点、两个控制页同时点，都只发一个；
-        - 最近一次 /status 不是连上并读懂了（连不上、读不出、上一跳没查到、还没查过）：不读密钥、不发，
-          结果 error=no_status。在等生效的上一个指令照旧等着；
+        - 最近一次 /status 不是连上并读懂了（连不上、读不出、上一跳没查到、还没查过），或者读懂了却不像闪购助手的回话
+          （schema 不是 1、page 不是契约里的代码，见 StatusTracker.control_refusal）：不读密钥、不发，结果 error=no_status，
+          终端在后一种时另带原因（schema、page）。在等生效的上一个指令照旧等着；
         - 其余放后台发（_flash_control_run），不在这里 await：不挡同一页面后面的消息。"""
         if self._flash_app is None:
             return None
@@ -309,15 +312,17 @@ class FlashSaleMixin:
         ctl = self._flash_ctl
         if ctl is not None and ctl["phase"] == "sending":
             return None
-        if not self._flash_tracker.last_ok():
-            self._spawn(self._flash_control_refused(action, "no_status"))
+        refusal = self._flash_tracker.control_refusal()
+        if refusal is not None:
+            detail = None if refusal == "not_ok" else refusal
+            self._spawn(self._flash_control_refused(action, "no_status", detail))
             return None
         self._flash_ctl = {"action": action, "phase": "sending", "until": None}
         self._spawn(self._flash_control_run(action, ctl))
         return None
 
-    async def _flash_control_refused(self, action, error):
-        self._flash_log_control(action, error)
+    async def _flash_control_refused(self, action, error, detail=None):
+        self._flash_log_control(action, error, detail)
         await self._flash_send_result(action, error)
 
     async def _flash_control_run(self, action, prev):

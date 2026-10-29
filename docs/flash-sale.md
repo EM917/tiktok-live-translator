@@ -226,7 +226,7 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 
     | 代码 | 意思 |
     |---|---|
-    | `no_status` | 最近一次查 `/status` 不是连上并读懂了：没读密钥、没发（§9.2） |
+    | `no_status` | 最近一次查 `/status` 不是连上并读懂了，或者读懂了却不像闪购助手的回话：没读密钥、没发（§9.2） |
     | `no_token` | 控制密钥读不出：没发 |
     | `unreachable` | 连不上 9334（连接被拒，或连接阶段就超时） |
     | `no_answer` | 连上了，2 秒内没回完，或者没回话就断开 |
@@ -244,9 +244,13 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 
 ### 9.2 发送
 
-- **发之前看状态**：最近一次查 `/status` 必须连上并读懂了（`StatusTracker.last_ok()`）。「连上以后第一次没查到」时
-  发布的照旧是上一份 ok 状态、页面上按钮还在，但这时也不算。不是就不读密钥、不发，`error=no_status`。
-  9334 上回话的不一定是闪购助手，密钥只给刚刚还在好好回 `/status` 的那个。在等生效的上一个指令照旧等着。
+- **发之前看状态**（`StatusTracker.control_refusal()`）：最近一次查 `/status` 必须连上并读懂了（`last_ok()`），而且
+  `schema` 是 1、`page` 是契约里的七个代码之一（`flash_sale.PAGE_CODES`）。「连上以后第一次没查到」时发布的照旧是上一份
+  ok 状态、页面上按钮还在，但这时也不算。不是就不读密钥、不发，`error=no_status`；后两种终端另带原因（`schema`、`page`）。
+  9334 上回话的不一定是闪购助手：`normalize` 收任何 JSON 对象，`{"status":"ok"}` 甚至 `{}` 都算「连上并读懂了」，
+  页面照样画；密钥只给刚刚还在好好回 `/status`、回话的样子也对得上契约的那个。在等生效的上一个指令照旧等着。
+  代价：闪购助手以后改了 `schema`、加了 `page` 代码，控制会一直 `no_status`，直到这里跟上（终端那一行带着原因，
+  schema 不是 1 另有一行）。
 - **在途时**（`phase=sending`）新的指令不发、不回结果：同一页面连点、另一个控制页同时点，都只发第一个。
   页面按 `control.phase` 把按钮禁用。
 - **密钥**：`~/Library/Application Support/FlashSaleHelper/control-token`，每次发之前读一遍（`flash_sale.read_control_token`，
@@ -290,8 +294,11 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
   （别的 macOS 账户、带网络权限的沙盒应用）。单用户的中控电脑上可以接受：没带 Origin 的连接本来就能发 `disk_delete`、
   `apply_update`，比开始、停止危险。没做「没带 Origin 的连接丢掉 `flash_control`」：非浏览器进程想带什么 Origin
   就带什么，这道检查挡不住真想绕过的进程。
-- 契约本身的限制：有进程占了 9334、又能装得像样地回 `/status`，就拿得到密钥（本机回环上的明文 HTTP，客户端没法认证
-  服务端）。这里能做的是 §9.2 的「发之前看状态」。
+- 契约本身的限制：有进程占了 9334、又照着契约回 `/status`，就拿得到密钥（本机回环上的明文 HTTP，客户端没法认证
+  服务端）。这里能做的是 §9.2 的「发之前看状态」：连上并读懂了、`schema` 是 1、`page` 是契约里的代码才发。这挡得住
+  碰巧占着 9334、回了个 JSON 对象的别的服务（只要是对象就算「读懂了」），挡不住存心冒充的进程——它照着契约回就是了。
+  碰上那种服务，人点按钮本来也发不出去（页面只在 page 是 ok / no_list 时让开始能点，停止、继续只在 `running`、
+  `paused_reason` 这么说时才出现）；这一条挡的是上面说的那些连得上本机控制端口、直接发 `flash_control` 的进程。
 - 密钥只在 `_flash_control_run` 的一个局部变量里待到交给 `post_control`：不打印、不广播、不进 config、不写审计。
   aiohttp 的 `ClientResponseError` 的 repr 里带着请求头（也就带着 `Authorization`），所以 `post_control` 把 aiohttp 的
   异常全部换成代码；后端自己出错时终端只打异常的类型名。
@@ -304,6 +311,7 @@ no_list 的也不算：POST /start 先刷新页面，刷新期间 `/status` 会�
 [信息] 闪购助手：中控请求开始 → 已接受
 [警告] 闪购助手：中控请求停止 → 没有接受（not_running）        409 的代码、no_control、http_<状态码>
 [警告] 闪购助手：中控请求开始 → 没有发出（no_status）
+[警告] 闪购助手：中控请求停止 → 没有发出（no_status：schema）   另有 page：回话不像闪购助手的（§9.2）
 [警告] 闪购助手：中控请求开始 → 没有发出（no_token：missing）
 [警告] 闪购助手：中控请求停止 → 连不上（unreachable）           另有「没有回话（no_answer）」「回话读不出（bad_reply）」
 [警告] 闪购助手：中控请求停止 → 出错（failed：RuntimeError）

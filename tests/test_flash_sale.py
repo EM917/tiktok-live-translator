@@ -683,6 +683,51 @@ def test_last_ok_is_true_only_right_after_a_poll_that_was_read():
     assert tracker.last_ok() is False
 
 
+def with_fields(name, **fields):
+    doc = sample(name)
+    doc.update(fields)
+    return doc
+
+
+@pytest.mark.parametrize("raw, why", [
+    ({"status": "ok"}, "schema"),                     # 9334 上碰巧回了个 JSON 对象的别的服务
+    ({}, "schema"),
+    ({"schema": 1}, "page"),
+    ({"schema": 1, "page": "ok", "running": False}, None),       # 存心冒充的照样挡不住：只认得出字段像不像
+    (with_fields("idle", schema=2), "schema"),
+    (with_fields("idle", schema="1"), "schema"),
+    (with_fields("idle", schema=None), "schema"),
+    (with_fields("idle", page="maintenance"), "page"),
+    (with_fields("idle", page=None), "page"),
+    (with_fields("idle", page="OK"), "page"),
+])
+def test_control_needs_a_status_that_looks_like_the_helpers(raw, why):
+    """发控制指令（带着密钥）之前看的 control_refusal：除了刚刚连上并读懂了（not_ok 那一半见上一条），还要 schema 是 1、
+    page 是契约里的七个代码之一。normalize 收任何 JSON 对象，{} 也算「连上了」：没有这两条，9334 上碰巧回 JSON 的
+    别的服务就拿得到密钥。存心照着契约回的进程挡不住（docs/flash-sale.md §9.4）。"""
+    tracker = fs.StatusTracker()
+    assert tracker.control_refusal() == "not_ok"                    # 还没查过
+    track(tracker, sample("idle"), mono=0.0)
+    assert tracker.control_refusal() is None
+    assert track(tracker, raw, mono=3.0)["conn"] == "ok"            # 页面上照样当连上了画
+    assert tracker.control_refusal() == why
+    tracker.update("bad_response", "no_answer", 6.0)                # 连上以后第一次没查到：交回的照旧是 ok，但不发
+    assert tracker.control_refusal() == "not_ok"
+
+
+def test_every_page_code_of_the_contract_lets_control_through():
+    """契约的七个 page 代码都算像闪购助手的回话（开始、继续能不能按由页面按 page 定，停止在哪种页面上都要能发）；
+    前端 flashPageText 认的也正好是这七个。"""
+    assert fs.PAGE_CODES == ("ok", "no_page", "login_required", "loading", "no_list", "captcha", "error")
+    for i, page in enumerate(fs.PAGE_CODES):
+        tracker = fs.StatusTracker()
+        track(tracker, with_fields("running", page=page), mono=float(i))
+        assert tracker.control_refusal() is None, page
+    js = (Path(__file__).resolve().parent.parent / "web" / "flash.js").read_text(encoding="utf-8")
+    body = re.search(r"function flashPageText\(code\) \{(.*?)\n\}", js, re.S).group(1)
+    assert tuple(re.findall(r'case "(\w+)":', body)) == fs.PAGE_CODES
+
+
 @pytest.mark.parametrize("case", SHARED["sort"], ids=lambda c: c["why"])
 def test_the_sort_order_matches_the_shared_table(case):
     """商品的先后：后端 product_sort_key 和前端 flashSortProducts 吃同一张表。"""
