@@ -27,6 +27,8 @@ from app.window_close import close_session
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures" / "flash_sale"
 REAL_FETCH = fs.fetch_status
+# 导入时留下真的那个（导入、收集阶段不在 conftest 的任何夹具里）：用例里拿它算出本机真的密钥位置，和换过的比
+REAL_CONTROL_TOKEN_PATH = fs.control_token_path
 START_WALL = datetime(2026, 10, 27, 21, 36, 8, tzinfo=timezone.utc).timestamp()
 
 
@@ -829,16 +831,22 @@ ACCEPTED = {"ok": True, "error": None}
 def test_a_pipeline_built_in_tests_points_at_no_real_port_and_no_real_token(tmp_path, monkeypatch):
     """tests/conftest.py 的网在 Pipeline 这一层也兜得住：构造时取的控制地址没有 9334，默认的读密钥函数在调用那一刻
     去读换过的那个不存在的路径。open 换成只记路径、tmp_path 以外一概不打开的替身（tests/test_flash_sale_control.py
-    的 OnlyHereOs）：哪怕缺省路径被改成导入时就取，这里也读不到、印不出本机真的密钥。"""
+    的 OnlyHereOs）：哪怕缺省路径被改成导入时就取，这里也读不到、印不出本机真的密钥。
+    「换过的」要和真函数拼出来的那条比（同 test_flash_sale_control.py 那两条）：只拿 fs.control_token_path() 比，
+    网没了两边就都是真函数、算出同一条真路径，断言恒成立；why == "missing" 也只说明替身没打开 tmp_path 以外的文件。
+    路径在打开任何文件之前就比。"""
     from tests.test_flash_sale_control import OnlyHereOs
 
     p = bare_pipeline()
     assert p._flash_ctl_base == "http://127.0.0.1:9" and ":9334" not in p._flash_url
     assert p._flash_post is fs.post_control and p._flash_read_token is fs.read_control_token
+    path = fs.control_token_path()
+    assert path != REAL_CONTROL_TOKEN_PATH() and "FlashSaleHelper" not in str(path)
+    assert not path.exists()
     spy = OnlyHereOs(tmp_path)
     monkeypatch.setattr(fs, "os", spy)
     token, why = p._flash_read_token()
-    assert spy.paths == [fs.control_token_path()]
+    assert spy.paths == [path]
     assert why == "missing" and token is None
 
 
