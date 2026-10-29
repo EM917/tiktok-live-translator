@@ -109,6 +109,10 @@ def test_separators_inside_a_name_are_interchangeable():
         assert pr.find_names(text, names) == names, text
     assert pr.find_names("acme fictional", names) == []
     assert pr.mask_text("profiles/Acme_Fictional_Shop.txt", names) == "profiles/<a19>.txt"
+    # 名单里连着两个分隔符、或者两头带分隔符的条目，原样和换了写法的都认
+    assert pr.find_names("zorba._flux", ["zorba._flux"]) == ["zorba._flux"]
+    assert pr.find_names("@ZorbaFlux", ["zorba._flux"]) == ["zorba._flux"]
+    assert pr.find_names("by zorbaflux today", [".zorbaflux_"]) == [".zorbaflux_"]
 
 
 def test_spellings_of_one_name_collapse_and_one_spot_counts_once(tmp_path):
@@ -116,9 +120,9 @@ def test_spellings_of_one_name_collapse_and_one_spot_counts_once(tmp_path):
     p.write_text("Acme-Fictional-Shop\nacme fictional shop\n.zorbaflux\nzorbaflux\nzorba\n--\n",
                  encoding="utf-8")
     names = pr.load_names(str(p))
-    assert names == ["acme-fictional-shop", "zorbaflux", "zorba"]
+    assert names == ["acme-fictional-shop", ".zorbaflux", "zorba"]       # 打码照名单原样：.10
     assert pr.find_names("zorbaflux sells at AcmeFictionalShop", names) == [
-        "acme-fictional-shop", "zorbaflux"]
+        "acme-fictional-shop", ".zorbaflux"]
     assert pr.find_names("zorba alone", names) == ["zorba"]
     assert pr.find_names("anything", ["--"]) == []
 

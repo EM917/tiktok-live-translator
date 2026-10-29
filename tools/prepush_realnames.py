@@ -34,7 +34,7 @@ import sys
 from functools import lru_cache
 
 ENV_VAR = "TLT_REALNAMES"
-# 名单里一个词内部的这几种分隔符彼此通用、也可以没有；词两头的分隔符去掉
+# 名单里一个词内部的这几种分隔符（连着几个也算一处）彼此通用、也可以没有；词两头的不算
 SEPARATORS = "-_. "
 _SEP_RUN = re.compile(r"[-_. ]+")
 ZERO = re.compile(r"^0+$")
@@ -64,11 +64,12 @@ def say(msg=""):
 
 @lru_cache(maxsize=None)
 def _pattern(name):
-    """名单里一个词的匹配式：词内部每处分隔符换成「这几种分隔符之一，或者没有」。"""
+    """名单里一个词的匹配式：词内部每处分隔符换成「这几种分隔符，几个都行，或者没有」；
+    两头的分隔符不算（.abc、abc_ 和 abc 一样）。"""
     parts = [p for p in _SEP_RUN.split(name) if p]
     if not parts:
         return re.compile(r"(?!)")                       # 只有分隔符的条目什么也不匹配
-    return re.compile(r"[-_. ]?".join(re.escape(p) for p in parts))
+    return re.compile(r"[-_. ]*".join(re.escape(p) for p in parts))
 
 
 def _bare_len(name):
@@ -76,8 +77,9 @@ def _bare_len(name):
 
 
 def load_names(path):
-    """读名单：去掉空行、注释行和太短的条目，统一 casefold，两头的分隔符去掉；只差在分隔符上的
-    几种写法（aaa-bbb、aaa bbb）匹配起来一样，只留第一条。文件不在返回 None。"""
+    """读名单：去掉空行、注释行和太短的条目，统一 casefold。只差在分隔符上的几种写法（aaa-bbb、
+    aaa bbb、.aaa_bbb）匹配起来一样，只留名单里先出现的那条；条目本身照名单原样（打码按它算，
+    对得上名单里的那一行）。文件不在返回 None。"""
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as fh:
             lines = fh.read().splitlines()
@@ -85,12 +87,12 @@ def load_names(path):
         return None
     names, seen = [], set()
     for line in lines:
-        raw = line.strip()
-        if raw.startswith("#"):
+        name = line.strip().casefold()
+        if name.startswith("#") or len(name.strip(SEPARATORS)) < MIN_NAME_LEN:
             continue
-        name = raw.casefold().strip(SEPARATORS)
-        if len(name) >= MIN_NAME_LEN and _pattern(name).pattern not in seen:
-            seen.add(_pattern(name).pattern)
+        key = _pattern(name).pattern
+        if key not in seen:
+            seen.add(key)
             names.append(name)
     return names
 
