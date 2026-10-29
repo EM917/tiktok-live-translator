@@ -267,11 +267,13 @@ def _browser_login(mp, tmp_path):
     from app import browser_login as bl
     mp.setattr(bl, "LOGIN_STEPS", "Sign in to TikTok in Chrome, then try again.")
     mp.setattr(bl, "observed_text", lambda observed: OBSERVED)
-    mp.setattr(bl, "steps_text", lambda observed: "Sign in to TikTok in Chrome.")
+    mp.setattr(bl, "steps_text", lambda observed, **_kw: "Sign in to TikTok in Chrome.")
     rows = [selfcheck._browser_login_row({}),
             selfcheck._browser_login_row({"Chrome": bl.NOT_READ}),
             selfcheck._browser_login_row({"Chrome": bl.OK, "Safari": bl.BLOCKED}),
-            selfcheck._browser_login_row({"Chrome": bl.BLOCKED})]
+            selfcheck._browser_login_row({"Chrome": bl.BLOCKED}),
+            # macOS 上带「完全磁盘访问权限」那几步时多一个 fda（那几步旁边的按钮跟在哪几行后面），也得是英文
+            selfcheck._browser_login_row({"Chrome": bl.BLOCKED}, buttons=True)]
     with mp.context() as other_os:
         coro = selfcheck.check_browser_login()
         other_os.setattr(sys, "platform", "linux")
@@ -374,9 +376,12 @@ def test_every_selfcheck_row_reads_as_english(scenario, monkeypatch, tmp_path):
             assert not UNFILLED.search(en[key]), (scenario, key, en[key])
             assert "  " not in en[key].strip(), (scenario, key, en[key])    # 拼接处没有多空格
         # recheck：「浏览器登录态」那一行带「完全磁盘访问权限」那几步时多出来的布尔键（页面画「我加好了，再查一次」），
-        # 不是文字，英文界面上不用换
-        assert set(en) - {"recheck"} == {"name", "level", "detail", "fix"} and en["level"] == row["level"]
+        # 不是文字，英文界面上不用换。fda：同一行在 macOS 上多出来的 {按钮: 那一行}，那几行是文字，也得是英文
+        assert set(en) - {"recheck", "fda"} == {"name", "level", "detail", "fix"} and en["level"] == row["level"]
         assert en.get("recheck", True) is True and ("recheck" not in en or scenario == "browser_login")
+        assert "fda" not in en or (scenario == "browser_login" and en.get("recheck") is True)
+        for line in (en.get("fda") or {}).values():
+            assert isinstance(line, str) and line and not CJK.search(line), (scenario, line)
 
 
 def test_the_twelve_row_names_follow_the_glossary():
