@@ -16,7 +16,8 @@
   没密钥、断网、冷却、密钥被拒、模型找不到：只用规则。Claude 后端不走熔断（它不占显存）。
 * **ClaudeReviewer**：和 ClaudeTranslator 一样裸 aiohttp，不引入官方 SDK——requirements 一变，所有用户
   下次启动都要重装一遍依赖，这个先例（translator.py）更重要；偏离 spec §5.9 的「官方 SDK」，理由写进 PR。
-  密钥用 `translator.api_key("ANTHROPIC_API_KEY")`，请求规则抄 ClaudeTranslator.TUNED 里 Haiku 5.5 那一行
+  密钥用 `translator.api_key("ANTHROPIC_API_KEY")`（不绑工作区的密钥另带工作区 ID，请求头和字幕引擎是同一份
+  `ClaudeTranslator.auth_headers`），请求规则抄 ClaudeTranslator.TUNED 里 Haiku 5.5 那一行
   （关思考、effort low；tests/test_comment_review.py 钉着两边一致）。回应的 stop_reason 和块的读法也复用
   `ClaudeTranslator.read_message`。**只记状态码，不记对方原话**。
 
@@ -35,7 +36,7 @@ from collections import OrderedDict, deque
 from pathlib import Path
 
 from . import comment_guard as cg
-from .translator import ClaudeTranslator, api_key
+from .translator import ClaudeTranslator, anthropic_workspace, api_key, says_workspace_missing
 
 GUARD_CLAUDE_MODEL = "claude-haiku-5-5"
 MODEL_ENV = "TLT_GUARD_CLAUDE_MODEL"       # 评估用：覆盖复核用的模型（没调过的模型发通用最小请求体）。
@@ -639,9 +640,13 @@ class ClaudeReviewer:
     INVALID_STREAK = 3
     RATE_LIMIT_DEFAULT_SEC = 30.0
     RATE_LIMIT_MAX_SEC = 300.0
+    workspace = None                    # 没走 __init__ 的替身也有（同 ClaudeTranslator.workspace_id）
+    probe_workspace_missing = False
 
-    def __init__(self, key, model=None, prompt=None, clock=time.monotonic, url=None):
+    def __init__(self, key, model=None, prompt=None, clock=time.monotonic, url=None, workspace=None):
         self.api_key = key
+        self.workspace = workspace      # 工作区 ID（translator.WORKSPACE_ENV）；没填是 None，请求里不带这个头
+        self.probe_workspace_missing = False
         self.model = model or guard_model()
         self.prompt, self.prompt_hash = (prompt, hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]) \
             if prompt is not None else load_prompt()
@@ -688,7 +693,7 @@ class ClaudeReviewer:
 
     # ---- 请求
     def _headers(self):
-        return {"x-api-key": self.api_key, "anthropic-version": API_VERSION, "content-type": "application/json"}
+        return {**ClaudeTranslator.auth_headers(self.api_key, self.workspace), "content-type": "application/json"}
 
     def build_body(self, user_message):
         """这一批的请求体。评估工具直接调它，测的就是要发版的这一份。
@@ -722,13 +727,17 @@ class ClaudeReviewer:
         self._session = None
 
     async def probe_key(self):
-        """不花 token 的探针：GET /v1/models/{模型}，返回 HTTP 状态码；连不上抛异常（自检限时 5 秒）。"""
+        """不花 token 的探针：GET /v1/models/{模型}，返回 HTTP 状态码；连不上抛异常（自检限时 5 秒）。
+        回 400 时只记一个是或否：是不是「密钥没绑工作区」（probe_workspace_missing，自检那一行据此说怎么办），
+        原话不留。"""
         from urllib.parse import quote
 
-        headers = {"x-api-key": self.api_key, "anthropic-version": API_VERSION}
         url = self.url.rsplit("/", 1)[0] + "/models/" + quote(self.model, safe="")
+        self.probe_workspace_missing = False
         session = await self.session()
-        async with session.get(url, headers=headers) as resp:
+        async with session.get(url, headers=ClaudeTranslator.auth_headers(self.api_key, self.workspace)) as resp:
+            if resp.status == 400 and not self.workspace:
+                self.probe_workspace_missing = says_workspace_missing(await ClaudeTranslator._error_summary(resp))
             return resp.status
 
     async def _post(self, body):
@@ -848,14 +857,15 @@ class ClaudeReviewer:
 
 
 def make_reviewer(clock=time.monotonic, existing=None):
-    """按当前密钥造 Claude 复核后端。没有密钥返回 None。同一把密钥且模型没变就沿用 existing（它记着这把密钥
-    被拒过）。提示词读不到：照样造，但它的状态是 prompt_missing（不送、不联网），和「没有密钥」分开说——
-    密钥是好的，让人去重填密钥是错的方向。"""
+    """按当前密钥造 Claude 复核后端。没有密钥返回 None。同一把密钥、同一个工作区 ID 且模型没变就沿用 existing
+    （它记着这把密钥被拒过）。提示词读不到：照样造，但它的状态是 prompt_missing（不送、不联网），和「没有密钥」
+    分开说——密钥是好的，让人去重填密钥是错的方向。"""
     key = api_key(KEY_NAME)
     if not key:
         return None
     model = guard_model()
+    workspace = anthropic_workspace()
     if existing is not None and getattr(existing, "api_key", None) == key and existing.model == model \
-            and existing.prompt is not None:
+            and getattr(existing, "workspace", None) == workspace and existing.prompt is not None:
         return existing
-    return ClaudeReviewer(key, model=model, clock=clock)
+    return ClaudeReviewer(key, model=model, clock=clock, workspace=workspace)

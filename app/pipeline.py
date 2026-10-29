@@ -664,7 +664,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             ids = msg.get("ids")
             return self._disk_delete([str(x) for x in ids] if isinstance(ids, list) else [])
         elif mtype == "set_engine":
-            return self.set_engine(msg.get("engine"), msg.get("api_key"))
+            return self.set_engine(msg.get("engine"), msg.get("api_key"), msg.get("workspace_id"))
         elif mtype == "retranslate":
             # 字幕重译放后台跑（同下面的 retranslate_comment、apply_update）。以前直接把 retranslate() 的协程交回
             # 去，server 在这个页面的消息循环里等强模型：本地强模型最长 60 秒，这期间点的「停止」「换主播」都排在
@@ -4961,12 +4961,16 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     # 定义在 translator.py（启动恢复引擎时也要用），这里保留同名类属性
     ENGINE_KEY_ENV = ENGINE_KEY_ENV
 
-    async def set_engine(self, engine, key=None):
+    async def set_engine(self, engine, key=None, workspace=None):
         """从界面切换翻译引擎、并（可选）存下密钥。
 
         密钥存进 settings.json（已在 .gitignore 里），**从不回传页面**——
         回传的只有打码后的尾四位，够用户确认「我填的是哪一个」，
         又不至于让密钥出现在任何一条 WebSocket 消息里。
+
+        workspace：选 Claude 时页面上工作区 ID 框里的字（不绑工作区的密钥要它，见 translator.WORKSPACE_ENV）。
+        None 表示页面没发（别的引擎），不动；空串表示清掉。不是 wrkspc_ 开头的一串就整次不存、不换引擎，
+        提示一句——存进去也只会让每个请求都 400。
 
         选的是本地引擎、而本机 Ollama（在跑）里没有它的模型时**先不换**：直播中本场
         继续用原来的引擎、停止后自动下载；不在直播就马上开始下载，下好再换上。以前
@@ -4974,16 +4978,41 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         还是绿的。
         """
         from .settings import save_setting
-        from .translator import TRANSLATOR_CHOICES, saved_keys
+        from .translator import TRANSLATOR_CHOICES, WORKSPACE_ENV, WORKSPACE_ID_RE, saved_keys
 
         if engine not in TRANSLATOR_CHOICES:
             return
+        workspace = str(workspace).strip() if isinstance(workspace, str) and engine == "claude" else None
+        if workspace and not WORKSPACE_ID_RE.fullmatch(workspace):
+            await self.server.broadcast({"type": "notice", "text": L(
+                "工作区 ID 是 wrkspc_ 开头的一串字母和数字（Claude Console 的 Workspaces 页面上有），"
+                "这次没有保存，请检查后再点「保存」",
+                "A workspace ID starts with wrkspc_ followed by letters and numbers. It’s listed on "
+                "the Workspaces page in the Claude Console. Nothing was saved. Check it and click "
+                "Save again.")})
+            return
+        keys = saved_keys()
+        changed = False
         if key:
             env = self.ENGINE_KEY_ENV.get(engine)
             if env:
-                keys = saved_keys()
                 keys[env] = key.strip()
-                save_setting("api_keys", keys)
+                changed = True
+        if workspace is not None and keys.get(WORKSPACE_ENV, "") != workspace:
+            if workspace:
+                keys[WORKSPACE_ENV] = workspace
+            else:
+                keys.pop(WORKSPACE_ENV, None)
+            changed = True
+        if changed:
+            save_setting("api_keys", keys)
+            # 弹幕留意的复核用的是同一把密钥和同一个工作区 ID：不在直播就按新的重备后端，下面那次自检问的是新的
+            # （直播中不动，同 _guard_set：这一场的复核后端已经定了，下一场开始时 configure_reviewer 会重备）
+            guard = getattr(self, "guard", None)
+            if hasattr(guard, "configure_reviewer") and not (
+                    self._stream_active()
+                    or (getattr(guard, "_open", False) and getattr(self, "audit", None) is not None)):
+                guard.configure_reviewer()
         missing = await self._local_model_missing(engine)
         if missing is not None:
             await self._keep_engine_until_model(engine, missing)
@@ -5076,7 +5105,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
     async def _publish_engine(self):
         """把当前引擎和各密钥的填写状态告诉页面（密钥只给尾四位）。"""
         from .settings import load_settings
-        from .translator import engine_label, mask_key
+        from .translator import WORKSPACE_ENV, engine_label, mask_key
 
         await self._announce_settings_backup()
         stored = load_settings().get("api_keys", {})
@@ -5102,7 +5131,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 # 终端里 print 过一遍，但窗口应用的用户看不到终端
                 "note": getattr(self.args, "translator_note", None),
                 "keys": {env: mask_key(os.environ.get(env) or stored.get(env, ""))
-                         for env in self.ENGINE_KEY_ENV.values()}}
+                         for env in self.ENGINE_KEY_ENV.values()},
+                # Claude 的工作区 ID 不是密钥：照原样给页面，框里显示的就是在用的那个（环境变量优先，同 api_key）
+                "workspace_id": str(os.environ.get(WORKSPACE_ENV) or stored.get(WORKSPACE_ENV, "")).strip()}
         self.server.config["engine"] = info
         await self.server.broadcast({"type": "engine", **info})
         # 引擎每次换都会走到这里：翻译器已经不是 Google 了，「改发 Google」那条持续提示跟着撤
@@ -5459,7 +5490,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             translation_engine_error 带 kind（timeout / connect / http / other）+ 一行终端。不挂横幅：页面上
             「连续 4 条失败」的通用横幅兜底。同一个引擎、同一场、同一种 kind 只记一次，见 _note_failure_kind。
         返回本场改用的本地引擎，没有就是 None。文字只写回应本身和能做的事，不猜原因。"""
-        from .translator import BaseTranslator, engine_label
+        from .translator import BaseTranslator, engine_label, workspace_missing
 
         if tr is not self.translator:
             return None                 # 这条翻译期间引擎已经换了：旧引擎的事不再报
@@ -5523,10 +5554,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                         else L("重新填写密钥，或换一个引擎",
                                "re-enter the API key or choose another engine")))
             return fallback
+        no_workspace = status == 400 and workspace_missing(tr, said)
         if name == "claude" and status in (400, 402) \
-                and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
+                and (no_workspace or getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK):
             # 接口正常回了话、只是不收这些请求：照抄它的原话（error.type: error.message），
-            # 不替它解释原因。单独一次 400 可能只是某一句，连续几次才说
+            # 不替它解释原因。单独一次 400 可能只是某一句，连续几次才说。
+            # 例外是「密钥没绑工作区」（workspace_missing）：说的是密钥不是这一句，第一次就说，
+            # 横幅换成成对的一句、说清能做的两件事；审计和终端照旧写原话
             self._engine_error_mark = mark
             if audit is not None:
                 audit.translation_engine_error(name, status, error=said, model=model)
@@ -5537,12 +5571,26 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             print("[警告] " + what)
             self._engine_incident_up = True
             self._engine_rejection = None
-            await self._incident(
-                self.ENGINE_INCIDENT, "error",
-                L("{}。字幕先显示原文（违禁词报警不受影响）；点「停止」后可以在「设置 > 翻译引擎」里换一个引擎",
-                  "{}. Captions show the original text (banned-term alerts aren’t affected). "
-                  "After you click Stop, you can choose another engine in Settings > Translation "
-                  "Engine.").format(what))
+            if no_workspace:
+                text = L("{} 返回 HTTP {}：Anthropic 说这把密钥没有绑定工作区，请求里要带工作区 ID。"
+                         "字幕先显示原文（违禁词报警不受影响）。点「停止」后，可以在 Claude Console "
+                         "新建一把选了工作区（例如 Default）的密钥、在「设置 > 翻译引擎」里重新填写；"
+                         "或者在「设置 > 翻译引擎」里填上工作区 ID（wrkspc_ 开头，Console 的 "
+                         "Workspaces 页面上有）",
+                         "{} returned HTTP {}: Anthropic says this API key isn’t scoped to a "
+                         "workspace, so requests need a workspace ID. Captions show the original "
+                         "text (banned-term alerts aren’t affected). After you click Stop, you can "
+                         "create a key with a workspace selected (for example, Default) in the "
+                         "Claude Console and enter it in Settings > Translation Engine, or enter "
+                         "the workspace ID in Settings > Translation Engine. It starts with wrkspc_ "
+                         "and is listed on the Workspaces page in the Console.").format(label, status)
+            else:
+                text = L("{}。字幕先显示原文（违禁词报警不受影响）；点「停止」后可以在「设置 > 翻译引擎」里"
+                         "换一个引擎",
+                         "{}. Captions show the original text (banned-term alerts aren’t affected). "
+                         "After you click Stop, you can choose another engine in Settings > Translation "
+                         "Engine.").format(what)
+            await self._incident(self.ENGINE_INCIDENT, "error", text)
             return None
         if name in ("hymt2", "hymt2-7b", "gemma") \
                 and getattr(tr, "fail_streak", 0) >= self.ENGINE_ERROR_STREAK:
@@ -6198,7 +6246,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
 
     def _retranslate_failure_text(self, strong, error_before, outcome, discarded, had):
         """这次重译没出译文：把观察到的事说出来，后面接上这一条现在是什么样。"""
-        from .translator import model_label
+        from .translator import model_label, said_for_ui
 
         # Claude 这时同时有三个模型在用（字幕 Haiku、弹幕 Haiku、重译 Sonnet），只写「Claude」
         # 看不出是哪一个在报错：写模型名
@@ -6221,10 +6269,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                      "for {} sec").format(engine, error[0], int(round(paused)))
         elif error and error[0] is not None and error is not error_before and error[1]:
             # 400/402 带着接口自己的说明（引擎只在这两种回应里留原话，见 ClaudeTranslator.
-            # SAYS_WHY_STATUSES）：照抄，和引擎横幅一样，不替它解释
+            # SAYS_WHY_STATUSES）：照抄，和引擎横幅一样，不替它解释（「密钥没绑工作区」换成成对的一句，said_for_ui）
             head = L("重译没有成功：{} 返回 HTTP {}（{}）",
                      "Couldn’t retranslate: {} returned HTTP {} ({})").format(
-                engine, error[0], error[1].rstrip(" .。"))  # i18n: data（接口原话，去掉末尾句号）
+                engine, error[0], said_for_ui(strong, error[1]))
         elif error and error[0] is not None and error is not error_before:
             head = L("重译没有成功：{} 返回 HTTP {}",
                      "Couldn’t retranslate: {} returned HTTP {}").format(engine, error[0])
