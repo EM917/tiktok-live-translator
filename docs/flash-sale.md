@@ -390,11 +390,17 @@ Flash Sale。实测余量和 G10 场景在 `docs/i18n-style.md` §4.2。
 **绝不连真的 127.0.0.1:9334**（开发机上闪购助手可能正开着，返回的是真实商品；一个真的 `POST /stop` 会停掉直播里
 正在续开的闪购），**绝不读真的控制密钥**，也不真的执行 `open`。
 
-- `tests/conftest.py` 有一个 autouse 夹具：`flash_sale.app_candidates` 指到不存在的路径、`flash_sale.STATUS_URL`
+- `tests/conftest.py` 有两层 autouse 夹具，换的是同几样：`flash_sale.app_candidates` 指到不存在的路径、`flash_sale.STATUS_URL`
   指到 `http://127.0.0.1:9/status`、`flash_sale.CONTROL_BASE` 指到 `http://127.0.0.1:9`（没人听的端口），
-  `flash_sale.control_token_path` 换成返回一个不存在的路径。任何测试都看不到本机真装的闪购助手、连不到真的 9334、
-  读不到真的密钥。`fetch_status`、`post_control`、`read_control_token` 的默认值都在调用时才取，这张网才兜得住；
-  `test_flash_sale_control.py::test_tests_never_reach_the_real_control_port_or_the_real_token` 钉着它。
+  `flash_sale.control_token_path` 换成返回一个不存在的路径。会话级那一层比任何模块级夹具都先搭好，同是会话级的也排在
+  点名要的那些前面（在那里造的 Pipeline 构造时就取控制地址）；函数级那一层让自己换过这几样的用例结束后退回来。不放进 `pytest_configure`：那样导入测试
+  模块之前就换了，`test_flash_sale_control.py` 留的真函数 `REAL_CONTROL_TOKEN_PATH` 就拿不到。任何测试都看不到本机真装的
+  闪购助手、连不到真的 9334、读不到真的密钥。`fetch_status`、`post_control`、`read_control_token` 的默认值都在调用时才取，
+  这张网才兜得住。`test_flash_sale_control.py` 末尾两条钉着它（一条从模块级夹具里看会话级那一层），
+  `test_pipeline_flash.py::test_a_pipeline_built_in_tests_points_at_no_real_port_and_no_real_token` 钉 Pipeline 这一层。
+  钉的时候也不真的去读、去连：`open` 换成只记路径、`tmp_path` 以外一概不打开的替身，POST、GET 换成只记地址、马上抛异常的
+  替身——缺省值要是被改成导入时就取，CI 上没有真的密钥文件和 9334，照样是绿的；开发机上则会真的读到密钥，断言失败时还会
+  把它印在终端上。
 - 要测「发出去了」：`tests/test_flash_sale_control.py` 在本机临时端口起一个假闪购助手，照契约「控制」一节逐条检查
   （Host、不带 Origin / Sec-Fetch-*、Bearer 密钥、Content-Type、请求体），任一条不满足回 403、什么都不做——所以
   200 回来了就说明我们发的请求每一条都满足；另有一组对照证明它真的会拦。密钥是 `tmp_path` 里的假文件（`7e57` 重复

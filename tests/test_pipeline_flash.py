@@ -826,13 +826,20 @@ def paused_doc(reason):
 ACCEPTED = {"ok": True, "error": None}
 
 
-def test_a_pipeline_built_in_tests_points_at_no_real_port_and_no_real_token():
-    """tests/conftest.py 的网在 Pipeline 这一层也兜得住：构造时取的控制地址没有 9334，默认的读密钥函数读的是
-    不存在的路径。"""
+def test_a_pipeline_built_in_tests_points_at_no_real_port_and_no_real_token(tmp_path, monkeypatch):
+    """tests/conftest.py 的网在 Pipeline 这一层也兜得住：构造时取的控制地址没有 9334，默认的读密钥函数在调用那一刻
+    去读换过的那个不存在的路径。open 换成只记路径、tmp_path 以外一概不打开的替身（tests/test_flash_sale_control.py
+    的 OnlyHereOs）：哪怕缺省路径被改成导入时就取，这里也读不到、印不出本机真的密钥。"""
+    from tests.test_flash_sale_control import OnlyHereOs
+
     p = bare_pipeline()
     assert p._flash_ctl_base == "http://127.0.0.1:9" and ":9334" not in p._flash_url
-    assert p._flash_post is fs.post_control
-    assert p._flash_read_token() == (None, "missing")
+    assert p._flash_post is fs.post_control and p._flash_read_token is fs.read_control_token
+    spy = OnlyHereOs(tmp_path)
+    monkeypatch.setattr(fs, "os", spy)
+    token, why = p._flash_read_token()
+    assert spy.paths == [fs.control_token_path()]
+    assert why == "missing" and token is None
 
 
 def test_without_the_helper_flash_control_does_nothing():

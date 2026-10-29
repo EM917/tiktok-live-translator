@@ -234,6 +234,30 @@ _FLASH_SALE_NO_CONTROL = "http://127.0.0.1:9"
 _FLASH_SALE_NO_TOKEN = Path(os.sep, "nonexistent-tlt-test", "control-token")
 
 
+def _flash_sale_nowhere(patch):
+    """把闪购助手的程序位置、状态地址、控制地址、控制密钥位置都换掉（patch 是一个 MonkeyPatch）。下面两个夹具共用。"""
+    from app import flash_sale
+
+    patch.setattr(flash_sale, "app_candidates", lambda home=None: (_FLASH_SALE_NOWHERE,))
+    patch.setattr(flash_sale, "STATUS_URL", _FLASH_SALE_NO_ONE)
+    patch.setattr(flash_sale, "CONTROL_BASE", _FLASH_SALE_NO_CONTROL)
+    patch.setattr(flash_sale, "control_token_path", lambda home=None: _FLASH_SALE_NO_TOKEN)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _flash_sale_never_reaches_the_real_helper_from_wider_fixtures():
+    """同下面那张网，范围是整个会话：pytest 先搭模块级、会话级的夹具，后搭函数级的 autouse 夹具，只靠下面那一个的话，
+    一个模块级夹具里造的 Pipeline 取到的就是真的 9334（_init_flash_sale 构造时就取），在那里调一次读密钥就读到本机真的
+    control-token。会话级的 autouse 夹具比任何模块级夹具都先搭好；同是会话级的，它也排在用例和别的夹具点名要的
+    那些前面（pytest 先排 autouse，再按范围稳定排序）。
+    不放在 pytest_configure 里：那样收集测试模块之前就换掉了，tests/test_flash_sale_control.py 在导入时留下的
+    REAL_CONTROL_TOKEN_PATH（测真函数拼出的位置对不对）就拿不到真的那个。导入、收集阶段不在任何夹具里：那时
+    不许调读密钥、发请求的函数（现在也没有）。test_flash_sale_control.py 有一条从模块级夹具里钉着这一层。"""
+    with pytest.MonkeyPatch.context() as patch:
+        _flash_sale_nowhere(patch)
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _flash_sale_never_reaches_the_real_helper(monkeypatch):
     """闪购助手（app/flash_sale.py）：开发机上可能真装着它、正开着，127.0.0.1:9334 返回的是真实商品，
@@ -244,13 +268,9 @@ def _flash_sale_never_reaches_the_real_helper(monkeypatch):
       ~/Library/Application Support/FlashSaleHelper/control-token。
     要测「装了」「连上了」「发出去了」的用例自己传 candidates、在本机临时端口起假服务器、在 tmp_path 里放假密钥
     （tests/test_flash_sale_http.py、test_flash_sale_control.py、test_pipeline_flash.py）。Pipeline 构造时
-    取的是这里换过的值（app/pipeline_flash._init_flash_sale）。test_flash_sale_control.py 有一条钉着这张网。"""
-    from app import flash_sale
-
-    monkeypatch.setattr(flash_sale, "app_candidates", lambda home=None: (_FLASH_SALE_NOWHERE,))
-    monkeypatch.setattr(flash_sale, "STATUS_URL", _FLASH_SALE_NO_ONE)
-    monkeypatch.setattr(flash_sale, "CONTROL_BASE", _FLASH_SALE_NO_CONTROL)
-    monkeypatch.setattr(flash_sale, "control_token_path", lambda home=None: _FLASH_SALE_NO_TOKEN)
+    取的是这里换过的值（app/pipeline_flash._init_flash_sale）。test_flash_sale_control.py 有两条钉着这张网。
+    上面那个会话级的夹具早已换过一遍；这里每条用例再换一遍，自己换了这几样的用例结束后就退回这里的值，不会漏给下一条。"""
+    _flash_sale_nowhere(monkeypatch)
 
 
 @pytest.fixture

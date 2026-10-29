@@ -3,13 +3,14 @@
 
 **绝不连 127.0.0.1:9334，绝不读本机真的 ~/Library/Application Support/FlashSaleHelper/control-token**：
 开发机上闪购助手可能正开着，一个真的 POST /stop 会停掉直播里正在续开的闪购。tests/conftest.py 的 autouse 夹具把
-控制地址和密钥位置都换掉了，最后一节有一条钉着这张网。
+控制地址和密钥位置都换掉了（会话级、函数级各一层），最后一节有两条钉着这张网；钉的时候也不真的去读、去连。
 
 假闪购助手照契约「控制(0.8.0 起)」逐条检查（fake_helper / contract_problems），任一条不满足回 403、什么都不做。
 所以「200 回来了」本身就钉住了我们发的请求满足全部防冒充条件；另有一组对照，证明这些检查真的会拦。
 假密钥 FAKE_TOKEN 是虚构的，它的任何一截都不许出现在终端输出里。
 """
 import asyncio
+import errno
 import json
 import os
 import socket
@@ -591,14 +592,93 @@ def test_the_token_lives_in_the_helpers_application_support_folder(tmp_path):
 
 
 # ---- tests/conftest.py 的网：控制地址和密钥位置都换掉了 -------------------------------------------------
+# 这几条要证明「漏传路径、漏传地址的调用也碰不到真的」，所以得走缺省值那条路，但绝不能真的去读、真的去连：要是缺省值
+# 被改成导入时就取（例如 def read_control_token(path=control_token_path())、def post_control(..., base=CONTROL_BASE)），
+# 走缺省值的那一下读的就是本机真的密钥、连的就是真的 9334——CI 上没有那个文件、那个端口，照样是绿的，开发机上断言失败时
+# pytest 还会把读出来的东西印在终端上。所以 open 换成只记路径、只在 tmp_path 里才真的打开的替身（OnlyHereOs），
+# POST、GET 换成只记地址、马上抛异常的替身：不打开 tmp_path 以外的任何文件，一个套接字都不开。
 
-def test_tests_never_reach_the_real_control_port_or_the_real_token():
-    """conftest 的 autouse 夹具：控制地址里没有 9334，密钥位置是一个不存在的路径（不是本机真的那个）。
-    漏传地址、漏传路径的调用也碰不到真的：默认值都是在调用那一刻才取。"""
+SENTINEL_TOKEN = "5e17" * 16      # 哨兵：tmp_path 里的假密钥，用来证明缺省路径是在调用那一刻才取的
+
+
+class OnlyHereOs(SpyOs):
+    """open 记下路径；只在 here 这个目录里才真的打开，别处一律当不存在（ENOENT）：本机真的密钥文件在也不打开。
+    tests/test_pipeline_flash.py 也用它。"""
+
+    def __init__(self, here):
+        super().__init__()
+        self.here, self.paths = Path(here), []
+
+    def open(self, path, flags, *args):
+        self.paths.append(Path(path))
+        if self.here not in Path(path).parents:
+            raise FileNotFoundError(errno.ENOENT, "tests open nothing outside tmp_path")
+        return super().open(path, flags, *args)
+
+
+class Recorded(Exception):
+    """替身的 POST、GET 抛它：post_control、fetch_status 不认这种异常，原样往外抛，连接一个都不建。"""
+
+
+def recording_requests(monkeypatch):
+    """ClientSession 的 post、get 换成只记地址、马上抛 Recorded 的替身，返回记下来的地址表。"""
+    urls = []
+
+    def record(self, url, *args, **kwargs):
+        urls.append(str(url))
+        raise Recorded()
+
+    monkeypatch.setattr(ClientSession, "post", record)
+    monkeypatch.setattr(ClientSession, "get", record)
+    return urls
+
+
+def test_tests_never_reach_the_real_control_port_or_the_real_token(tmp_path, monkeypatch):
+    """conftest 的 autouse 夹具：控制地址、状态地址里没有 9334，密钥位置是一个不存在的路径（不是本机真的那个）。
+    漏传路径、漏传地址的调用走的也是换过的值：缺省值都是在调用那一刻才取（不是导入时）。"""
     assert ":9334" not in fs.CONTROL_BASE and ":9334" not in fs.STATUS_URL
     assert fs.control_url("stop") == fs.CONTROL_BASE + "/stop"
     path = fs.control_token_path()
     assert isinstance(path, Path) and not path.exists()
     assert path != REAL_CONTROL_TOKEN_PATH() and "FlashSaleHelper" not in str(path)
-    assert fs.read_control_token() == (None, "missing")
-    assert asyncio.run(fs.post_control("stop", FAKE_TOKEN, timeout=1.0)) == "unreachable"
+
+    # 不传路径：打开的是 conftest 换过的那个位置。替身不打开 tmp_path 以外的文件，读出来的不可能是真的密钥
+    spy = OnlyHereOs(tmp_path)
+    monkeypatch.setattr(fs, "os", spy)
+    token, why = fs.read_control_token()
+    assert spy.paths == [path]
+    assert why == "missing" and token is None
+    # 调用那一刻才取：把位置换成 tmp_path 里放着哨兵的文件，不传路径读到的就是哨兵。先比路径、再比原因，最后才比值
+    sentinel = token_file(tmp_path, SENTINEL_TOKEN, "sentinel-token")
+    monkeypatch.setattr(fs, "control_token_path", lambda home=None: sentinel)
+    token, why = fs.read_control_token()
+    assert spy.paths[-1] == sentinel
+    assert why is None
+    assert token == SENTINEL_TOKEN
+
+    # 不传地址：POST、GET 去的是 conftest 换过的地址。替身只记地址，套接字一个都不开
+    urls = recording_requests(monkeypatch)
+    with pytest.raises(Recorded):
+        asyncio.run(fs.post_control("stop", FAKE_TOKEN, timeout=1.0))
+    with pytest.raises(Recorded):
+        asyncio.run(fs.fetch_status(timeout=1.0))
+    assert urls == [fs.CONTROL_BASE + "/stop", fs.STATUS_URL]
+
+
+@pytest.fixture(scope="module")
+def seen_from_a_module_fixture():
+    """模块级夹具比函数级的 autouse 夹具先搭好：这里看到的只可能是 conftest 会话级那一层换过的值。只取值、拼路径，
+    不读、不连。"""
+    return {"base": fs.CONTROL_BASE, "status": fs.STATUS_URL, "token": fs.control_token_path(),
+            "apps": tuple(fs.app_candidates())}
+
+
+def test_fixtures_wider_than_one_test_never_see_the_real_port_or_the_real_token(seen_from_a_module_fixture):
+    """conftest 的会话级那一层：模块级、会话级的夹具里（例如在那里造一个 Pipeline，构造时就取控制地址），
+    控制地址、状态地址、密钥位置、程序位置也都是换过的。只有函数级那一层的话，这条是红的。"""
+    seen = seen_from_a_module_fixture
+    assert ":9334" not in seen["base"] and ":9334" not in seen["status"]
+    path = seen["token"]
+    assert isinstance(path, Path) and not path.exists()
+    assert path != REAL_CONTROL_TOKEN_PATH() and "FlashSaleHelper" not in str(path)
+    assert seen["apps"] and not any(Path(app).exists() for app in seen["apps"])
