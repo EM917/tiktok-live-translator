@@ -1500,6 +1500,18 @@ class CommentGuardMixin:
         guard.poll_marks_health()
         await self._send_guard_notices()
 
+    def _anthropic_keys_saved(self):
+        """「设置 > 翻译引擎」刚存了 Claude 密钥或工作区 ID（Pipeline.set_engine）：复核用的是同一把密钥和同一个
+        工作区 ID，不在直播就按新的重备后端，紧接着那次自检问的就是新的。直播中不动（同 _guard_set：这一场的
+        复核后端已经定了，下一场开始时 configure_reviewer 会重备）。名字里不带守卫的字样：pipeline.py 里只许在
+        几处提到守卫（tests/test_comment_guard_pipeline.py），set_engine 只调这一个方法。"""
+        guard = getattr(self, "guard", None)
+        if not hasattr(guard, "configure_reviewer"):
+            return
+        if self._stream_active() or (getattr(guard, "_open", False) and getattr(self, "audit", None) is not None):
+            return
+        guard.configure_reviewer()
+
     async def _guard_set(self, msg):
         """设置里的开关和模型复核选择。只在待机时改：直播中这一场的开关已经定了（同违禁词警示），
         设置分组在直播中也是整块隐藏的。只在改了的时候写一次 settings.json。
