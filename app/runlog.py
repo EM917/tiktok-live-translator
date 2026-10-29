@@ -212,12 +212,15 @@ class RunLog:
 
 class Tee:
     """照旧写原来的流，另把整行抄进 RunLog。不是 io.TextIOBase 的子类：那样 encoding、isatty、fileno 这些会被
-    基类的默认值挡住，这里一律交给原来的流。"""
+    基类的默认值挡住，这里一律交给原来的流。
+
+    没换行的半行按线程分开攒：print 是先写正文、再写换行两次调用，两个线程同时 print 时，终端上可能拼成
+    「甲乙\n\n」，运行日志里各是各的整行。"""
 
     def __init__(self, inner, log):
         self.inner = inner
         self.log = log
-        self._pending = ""
+        self._pending = {}        # {线程号: 还没换行的半行}
 
     def write(self, s):
         if isinstance(s, str) and s:
@@ -249,25 +252,34 @@ class Tee:
             raise AttributeError(name)
         return getattr(inner, name)
 
+    def pending(self, ident=None):
+        """这个线程（默认当前线程）还没换行的半行。"""
+        return self._pending.get(threading.get_ident() if ident is None else ident, "")
+
     def _feed(self, s):
+        ident = threading.get_ident()
         with self.log.lock:
-            parts = (self._pending + s).split("\n")
-            self._pending = parts.pop()
+            parts = (self._pending.pop(ident, "") + s).split("\n")
+            rest = parts.pop()
             for part in parts:
                 self.log.write_line(_overwrite(part))
-            if "\r" in self._pending:
-                self._pending = _compact(self._pending)
-            if len(self._pending) > PENDING_MAX:
-                self.log.write_line(_overwrite(self._pending))
-                self._pending = ""
+            if "\r" in rest:
+                rest = _compact(rest)
+            if len(rest) > PENDING_MAX:
+                self.log.write_line(_overwrite(rest))
+                rest = ""
+            if rest:
+                self._pending[ident] = rest
 
     def finish(self):
-        """没换行的半行写出去（退出、换回原来的流时）。"""
+        """各线程没换行的半行写出去（退出、换回原来的流时）。"""
         try:
             with self.log.lock:
-                rest, self._pending = _overwrite(self._pending), ""
-                if rest:
-                    self.log.write_line(rest)
+                rests, self._pending = list(self._pending.values()), {}
+                for rest in rests:
+                    rest = _overwrite(rest)
+                    if rest:
+                        self.log.write_line(rest)
         except Exception:
             pass
 

@@ -262,7 +262,8 @@ def test_header_and_line_format(tmp_path, clean_runlog, monkeypatch):
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip().splitlines()[0]
     pid = "[{}]".format(os.getpid())
     assert pid in first and "进程 {} 开始".format(os.getpid()) in first
-    assert "版本 " + version in first and "程序目录 " + str(ROOT) in first
+    # 程序目录也过去密钥：放在带 UUID 的临时目录里（比如会话的 scratchpad）时那一段会被抹掉
+    assert "版本 " + version in first and "程序目录 " + scrub_secrets(str(ROOT)) in first
     assert "https://www.tiktok.com/@demo/live --port 8790" in first
     _assert_no_secret(first)
     # 「2026-10-29 13:26:32.123 [4242] 你好」
@@ -276,7 +277,7 @@ def test_a_carriage_return_keeps_only_the_last_version(tmp_path, clean_runlog):
     runlog.install(tmp_path, root=ROOT, target=target)
     for pct in range(0, 101):
         target.stderr.write("\r下载 {}%".format(pct))
-    assert len(target.stderr._pending) < 20       # 进度条不换行也不越攒越长
+    assert len(target.stderr.pending()) < 20      # 进度条不换行也不越攒越长
     target.stderr.write("\n")
     target.stdout.write("Windows 换行\r\n")
     lines = (tmp_path / runlog.FILE_NAME).read_text(encoding="utf-8").splitlines()[1:]
@@ -293,6 +294,7 @@ def test_a_huge_line_is_cut_after_scrubbing(tmp_path, clean_runlog):
 
 
 def test_threads_printing_at_once_keep_every_line_whole(tmp_path, clean_runlog):
+    """print 分两次写（正文、换行）：半行按线程分开攒，别的线程插进来也拼不到一行里。"""
     target = _target()
     runlog.install(tmp_path, root=ROOT, target=target)
 
