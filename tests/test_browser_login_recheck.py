@@ -155,10 +155,35 @@ def test_the_row_carries_the_button_only_with_the_fda_steps():
     blocked = selfcheck._browser_login_row({"safari": bl.BLOCKED, "chrome": bl.NOT_LOGGED_IN})
     assert blocked["level"] == selfcheck.WARN and blocked["recheck"] is True
     assert bl.fda_steps() in blocked["fix"]
-    # 别的浏览器读到了登录：这一行是「通过」、不带步骤，也不带按钮
-    assert "recheck" not in selfcheck._browser_login_row({"safari": bl.BLOCKED, "chrome": bl.OK})
+    # 别的浏览器读到了登录、登录优先那一步要读的 Safari 却被系统拒绝读取（login-5，用户 2026-10-29 选 A）：同样是
+    # 「提醒」，带那几步和按钮
+    refused = selfcheck._browser_login_row({"safari": bl.BLOCKED, "chrome": bl.OK})
+    assert refused["level"] == selfcheck.WARN and refused["recheck"] is True
+    assert refused["fix"] == bl.FDA_OBSERVED + bl.fda_steps()
+    # 那一步读到了登录（Chrome 被拒不相干）、读得到没登录、什么都没找到：不带按钮
+    assert "recheck" not in selfcheck._browser_login_row({"safari": bl.OK, "chrome": bl.BLOCKED})
     assert "recheck" not in selfcheck._browser_login_row({"safari": bl.NOT_LOGGED_IN})
     assert "recheck" not in selfcheck._browser_login_row({})
+
+
+def test_the_recheck_row_follows_the_browser_the_first_step_reads(monkeypatch, tmp_path):
+    """重查算出的那一行和启动自检同一个规矩：登录优先那一步要读的浏览器（没点名时只有 Safari）被系统拒绝读取，Chrome
+    读到了登录也是「提醒」、带按钮，摘要是「通过 · 1 项提醒」；中控用 --cookies-browser 点名了 Chrome，那一步只读
+    Chrome，这一行就是「通过」。"""
+    probe = FakeProbe({"safari": bl.BLOCKED, "chrome": bl.OK})
+    p, server = wire(monkeypatch, tmp_path, probe)
+    publish_startup_check(p, {"safari": bl.BLOCKED, "chrome": bl.OK})
+    run(p._recheck_browser_login())
+    row = server.config["selfcheck"]["checks"][1]
+    assert row["level"] == selfcheck.WARN and row["recheck"] is True
+    assert server.config["selfcheck"]["summary"] == {"total": 3, "fail": 0, "warn": 1, "ok": 2}
+    assert notices(server) == [bl.recheck_notice({"safari": bl.BLOCKED})]
+
+    p.args.cookies_browser = "chrome"
+    run(p._recheck_browser_login())
+    row = server.config["selfcheck"]["checks"][1]
+    assert row["level"] == selfcheck.OK and "recheck" not in row
+    assert notices(server)[-1] == bl.recheck_notice({"chrome": bl.OK})
 
 
 def test_readable_without_a_sign_in_turns_the_notice_into_the_sign_in_kind(monkeypatch, tmp_path):

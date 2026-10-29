@@ -271,7 +271,9 @@ def _browser_login(mp, tmp_path):
     rows = [selfcheck._browser_login_row({}),
             selfcheck._browser_login_row({"Chrome": bl.NOT_READ}),
             selfcheck._browser_login_row({"Chrome": bl.OK, "Safari": bl.BLOCKED}),
-            selfcheck._browser_login_row({"Chrome": bl.BLOCKED})]
+            selfcheck._browser_login_row({"Chrome": bl.BLOCKED}),
+            # 登录优先那一步要读的 Safari 被系统拒绝读取、Chrome 读到了登录（login-5）：detail 多一句那一步只读谁
+            selfcheck._browser_login_row({"chrome": bl.OK, "safari": bl.BLOCKED})]
     with mp.context() as other_os:
         coro = selfcheck.check_browser_login()
         other_os.setattr(sys, "platform", "linux")
