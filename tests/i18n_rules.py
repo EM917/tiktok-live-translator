@@ -37,7 +37,7 @@ UI_FILES = (
     "app/browser_login.py", "app/comment_redo.py", "app/comment_source.py", "app/comments.py",
     "app/detector.py",
     "app/diskspace.py", "app/ffmpeg_bin.py", "app/float_window.py", "app/hwdetect.py",
-    "app/localmodel.py",
+    "app/instance.py", "app/localmodel.py",
     "app/macbrand.py", "app/native_dialog.py", "app/pipeline.py", "app/pipeline_disk.py",
     "app/pipeline_engine.py", "app/pipeline_flash.py", "app/pipeline_float.py", "app/pipeline_guard.py",
     "app/pipeline_stream.py", "app/pipeline_transcript.py", "app/power.py",

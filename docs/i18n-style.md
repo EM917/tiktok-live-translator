@@ -49,6 +49,7 @@
 | 观众（TikTok 直播间里的） | **viewers** | audience | 只指 TikTok 直播的观众 |
 | 手机同看的在看人数 | **watching**（如 “3 watching”） | viewers, people | 避开和 TikTok 观众撞词。YouTube 式的 “N watching” 单复数同形，不用处理复数 |
 | 程序 / 本程序 / 本工具 | **the app** | the program, the tool, the software | 苹果的叫法 |
+| 另一份程序 / 这个文件夹里的这一份（同一台电脑上解压了不止一份） | **another copy of the app** / **the one in this folder** | instance, installation, version | 2026-10-29 加（双击打开时窗口开到了另一份上，§3 #10a）。instance 是开发者的词；version 会被读成「另一个版本号」，而两份可以是同一个版本。指已经开着的那一份写 **the running copy** |
 | 本机 / 这台电脑 | **this computer** | this Mac, this PC, localhost | 要跨平台，Mac 和 Windows 都能用 |
 
 ### 1.2 直播、场次与状态
@@ -449,6 +450,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 8 | index.html:543 | 请不要直接打开这个文件 / 回到解压出来的文件夹，双击…启动程序，字幕界面会自动打开。 | Don’t open this file directly. / Go back to the unzipped folder and double-click TikTok Live Translator.app (Mac) or Start.bat (Windows). The caption window opens automatically. | 这段内联脚本跑得最早，什么都还没加载：中英两段并列，不读 `navigator.language` |
 | 9 | viewer.html:6 | 手机同看 · TikTok 直播同传 | Phone Viewing · TikTok Live Translator | |
 | 10 | pipeline.py:1799 | 直播合规监听中 | Monitoring a live stream | macOS 电源断言的原因文字，只在 `pmset` 里看得到 |
+| 10a | instance.py other_install_text（main.py 双击打开、端口上已有本程序、不是这个文件夹里的这一份时） | 另一份程序（v{ver}，不是这个文件夹里的这一份）已经在运行，这次打开的是它。/ 另一份程序（不是这个文件夹里的这一份）已经在运行，这次打开的是它。/ 程序已经在运行，但它没有说自己是哪个文件夹里的那一份，这次打开的是它。后面都接：要用这个文件夹里的这一份，请先退出正在运行的那一份，再重新打开。 | Another copy of the app (v{ver}, not the one in this folder) is already running, so that copy opened instead. / Another copy of the app (not the one in this folder) is already running, so that copy opened instead. / The app is already running but didn’t report which folder it’s from, so that copy opened instead. + To use the one in this folder, quit the running copy first, then open this one again. | 2026-10-29 加。系统对话框（`_info_dialog`，按钮「知道了 / OK」），照旧打开已有实例，只是说清楚。第三句给加 X-TLT-Install 之前的版本（0.19.0 和更早）：它没说，就照实写没说，不猜它是旧版还是同一份。窗口模式带了 `--url` 时和「这次给的直播间地址没有自动开始」并进同一个框，中间空一行 |
 
 ### B. 顶栏
 
