@@ -373,7 +373,10 @@ def test_every_selfcheck_row_reads_as_english(scenario, monkeypatch, tmp_path):
             assert not CJK.search(en[key]), (scenario, key, en[key])
             assert not UNFILLED.search(en[key]), (scenario, key, en[key])
             assert "  " not in en[key].strip(), (scenario, key, en[key])    # 拼接处没有多空格
-        assert set(en) == {"name", "level", "detail", "fix"} and en["level"] == row["level"]
+        # recheck：「浏览器登录态」那一行带「完全磁盘访问权限」那几步时多出来的布尔键（页面画「我加好了，再查一次」），
+        # 不是文字，英文界面上不用换
+        assert set(en) - {"recheck"} == {"name", "level", "detail", "fix"} and en["level"] == row["level"]
+        assert en.get("recheck", True) is True and ("recheck" not in en or scenario == "browser_login")
 
 
 def test_the_twelve_row_names_follow_the_glossary():

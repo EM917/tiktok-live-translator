@@ -65,7 +65,11 @@ path shown (the list shows the entry as `python3.x`, not under the app's name);
 from a terminal (for example with Start.command), add Terminal
 (`/System/Applications/Utilities/Terminal.app`) the same way in step 2, and
 if macOS asks to quit and reopen Terminal, do that before starting the app
-again. Both
+again. After step 2 you can click Check Again on the notice or on this row:
+the app looks once more right away (it only checks whether the cookie store
+can be read, without decrypting anything) and says whether it can read it now
+or whether you still need step 3. While the notice is showing, switching back
+to the app window from System Settings does the same. Both
 launchers start the app with the Python that built its environment (`.venv`)
 while that Python is still there at the same version, so installing or
 upgrading a different Python (for example Homebrew pulling in a newer

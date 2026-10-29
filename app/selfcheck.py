@@ -667,26 +667,37 @@ async def check_browser_login():
     绝不解密、绝不调 yt-dlp 的读取函数：解密 Chrome 的 cookie 值要向钥匙串要密钥，
     启动自检会因此弹对话框。2026-09-17 实测 macOS 27 上两个浏览器都是系统拒绝读取，
     而当时界面上没有任何一行说这件事。"""
+    return (await browser_login_state())[1]
+
+
+async def browser_login_state():
+    """(各浏览器的观察 {浏览器: 代码}, 自检「浏览器登录态」那一行)。启动自检和「我加好了，再查一次」
+    （pipeline._recheck_browser_login）共用：只用 browser_login.probe，不解密、不碰钥匙串（读 Safari 实测 0.0 秒）。
+    不是 macOS 时观察为空，那一行是「本机不适用」。"""
     import sys
 
     from . import browser_login as bl
 
-    name = NAMES["browser_login"]
     if sys.platform != "darwin":
-        return _check(name, OK,
-                      L("这一项只检查 macOS 上的浏览器数据读取权限，本机不适用",
-                        "This check only covers reading browser data on macOS. It doesn’t apply "
-                        "to this computer."))
+        return {}, _check(NAMES["browser_login"], OK,
+                          L("这一项只检查 macOS 上的浏览器数据读取权限，本机不适用",
+                            "This check only covers reading browser data on macOS. It doesn’t apply "
+                            "to this computer."))
     from .resolver import _installed_browsers
     browsers = await _to_thread(_installed_browsers)
     observed = {}
     for browser in browsers:
         observed[browser] = await _to_thread(bl.probe, browser)
-    return _browser_login_row(observed)
+    return observed, _browser_login_row(observed)
 
 
 def _browser_login_row(observed):
-    """{浏览器: 代码} → 自检的一行。大多数直播间不登录也能解析，所以借不到只是 WARN。"""
+    """{浏览器: 代码} → 自检的一行。大多数直播间不登录也能解析，所以借不到只是 WARN。
+
+    带「完全磁盘访问权限」那几步时（有浏览器被系统拒绝读取、又没有哪个读到登录）多一个 recheck=True：页面在这一行
+    下面画「我加好了，再查一次」（web/app.js renderSelfcheck），点了发 recheck_browser_login。别的浏览器读到登录时
+    这一行是「通过」、不带步骤，也就不画这个按钮（这时要不要也给步骤还没定）。审计只记名字、
+    等级和详情（audit.selfcheck），这个键不进审计。"""
     from . import browser_login as bl
 
     name = NAMES["browser_login"]
@@ -707,7 +718,10 @@ def _browser_login_row(observed):
     detail = bl.observed_text(observed)
     if any(code == bl.OK for code in observed.values()):
         return _check(name, OK, detail)
-    return _check(name, WARN, detail + scope, bl.steps_text(observed))
+    row = _check(name, WARN, detail + scope, bl.steps_text(observed))
+    if bl.BLOCKED in observed.values():
+        row["recheck"] = True
+    return row
 
 
 def python_switch_steps(darwin=None):

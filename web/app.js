@@ -3230,10 +3230,59 @@
       delete incidents[msg.id];
     } else {
       incidents[msg.id] = { level: msg.level || "warn", text: msg.text || "",
-                            since: msg.since || msg.ts || 0, ts: msg.ts };
+                            since: msg.since || msg.ts || 0, ts: msg.ts, recheck: !!msg.recheck };
     }
     drawIncidents();
   }
+
+  // 「我加好了，再查一次」（app/pipeline.py _recheck_browser_login）：「没有读到 TikTok 登录」那条在系统拒绝读取时带
+  // recheck，自检「浏览器登录态」那一行带「完全磁盘访问权限」那几步时也带（app/selfcheck.py _browser_login_row）。
+  // 2026-10-29 新 Mac 上，中控照着做完以后，点「开始翻译」之前没有任何地方告诉他成没成。点了让后端当场重看一次，
+  // 结果走 notice；页面上有这个按钮时，从系统设置切回窗口（先离开、再回来）也自动发一次，两次之间至少隔
+  // RECHECK_GAP_MS。自动发的带 auto：结果和上一次一样，后端就不再发 notice
+  var RECHECK_GAP_MS = 5000;
+  var lastRecheckAt = -Infinity;
+  var scRecheckShown = false;          // 自检那一行此刻带不带这个按钮（renderSelfcheck 记下）
+  var leftWithRecheck = false;         // 按钮在页面上时离开过窗口：回来时自动重查一次
+
+  function sendRecheck(auto) {
+    var msg = { type: "recheck_browser_login" };
+    if (auto) msg.auto = true;
+    if (!send(msg)) return false;
+    lastRecheckAt = Date.now();
+    return true;
+  }
+
+  function recheckButton(cls) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = cls;
+    btn.textContent = L("我加好了，再查一次", "Check Again");
+    btn.addEventListener("click", function () { sendRecheck(false); });
+    return btn;
+  }
+
+  function recheckOnPage() {
+    for (var k in incidents) if (incidents[k].recheck) return true;
+    return scRecheckShown;
+  }
+
+  function leaveWindow() {
+    if (recheckOnPage()) leftWithRecheck = true;
+  }
+
+  function backToWindow() {
+    if (!leftWithRecheck || !recheckOnPage()) return;
+    if (Date.now() - lastRecheckAt < RECHECK_GAP_MS) return;
+    if (sendRecheck(true)) leftWithRecheck = false;
+  }
+
+  window.addEventListener("blur", leaveWindow);
+  window.addEventListener("focus", backToWindow);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") leaveWindow();
+    else backToWindow();
+  });
 
   // 带上看到的那一条的 ts：这期间又跳了一次的话服务端不收，新的那次中控还没看到。
   // 发出去了才先在本页收起（等服务端的 clear 回来也是同样的结果）；连接断着时发不出去，
@@ -3299,6 +3348,11 @@
       var text = stripStatusEmoji(incidents[k].text);
       setIconText(row, barIconFor(level), text);
       foldIncident(row.lastChild, k, text);
+      if (incidents[k].recheck) {
+        // 接在第一行的字（和「显示全部步骤」）后面：折着时也看得见
+        var span = row.lastChild;
+        span.insertBefore(recheckButton("incident-recheck"), span.querySelector(".incident-rest"));
+      }
       if (DISMISSABLE_INCIDENTS.indexOf(k) !== -1) {
         row.classList.add("dismissible");
         var closeBtn = document.createElement("button");
@@ -4288,6 +4342,7 @@
 
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
+    scRecheckShown = msg.checks.some(function (c) { return !!c.recheck; });
     var sum = msg.summary || {};
     scBox.classList.remove("hidden");
     scHead.classList.toggle("has-fail", sum.fail > 0);
@@ -4321,6 +4376,7 @@
         var fix = document.createElement("span");
         fix.className = "sc-fix";
         fix.textContent = c.fix;   // 不再拼「→」：这不是链接，没法点（designer.md #1）
+        if (c.recheck) fix.appendChild(recheckButton("btn small sc-recheck"));   // 「我加好了，再查一次」，在那几步下面
         detail.appendChild(fix);
       }
       li.appendChild(name);

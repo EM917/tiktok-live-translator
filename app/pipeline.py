@@ -690,6 +690,11 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         elif mtype == "check_update":
             if getattr(self, "updater", None) is not None:
                 return self.updater.check_and_notify(delay=0, manual=True)
+        elif mtype == "recheck_browser_login":
+            # 「我加好了，再查一次」（持续提示和自检「浏览器登录态」那一行上的按钮）：不读别的字段，auto 只决定结果
+            # 没变时发不发 notice。放后台跑、立刻返回。只有本机页面发得出来：手机入站只认 retranslate，浮窗页只读
+            self._spawn(self._recheck_browser_login(auto=msg.get("auto") is True))
+            return None
         elif mtype == "float_window":
             # 顶栏「浮窗」按钮：只显示，不碰识别、检测、审计。浏览器模式没有宿主，直接忽略
             return self._set_float_window(bool(msg.get("on")))
@@ -1395,19 +1400,24 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return "lagging"
         return "ok"
 
-    async def _incident(self, key, level, text=""):
+    async def _incident(self, key, level, text="", recheck=False):
         """在界面顶部持续显示、直到明确清除的提示（电脑休眠过、审计日志写不进去、
         识别改用 CPU、网络断了……）。key 相同的覆盖同一条，level="clear" 去掉。
 
         和 health（识别积压，会被「已追上」覆盖）、notice（几秒后消失）不同：这类状况
         中控必须看到，刷新页面也还在。key 以 "session:" 开头的只属于这一场，下一场
-        开始时自动清掉；其余的一直留到发出 clear。文字只写观察到的事实和能做的事。"""
+        开始时自动清掉；其余的一直留到发出 clear。文字只写观察到的事实和能做的事。
+
+        recheck=True：这一条的第一行带「我加好了，再查一次」（web/app.js），点了发 recheck_browser_login。眼下只有
+        「没有读到 TikTok 登录」那条在系统拒绝读取时带（_sync_login_incident）。不带时消息和以前逐字节相同。"""
         if level == "clear":
             print("[提示] {} 已清除".format(key))
         else:
             print("[提示] {}".format(text))
-        await self.server.broadcast({"type": "incident", "id": key, "level": level,
-                                     "text": text, "ts": time.time()})
+        msg = {"type": "incident", "id": key, "level": level, "text": text, "ts": time.time()}
+        if recheck:
+            msg["recheck"] = True
+        await self.server.broadcast(msg)
 
     async def _clear_session_incidents(self):
         incidents = (getattr(self.server, "config", {}) or {}).get("incidents") or {}
@@ -2497,7 +2507,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         失败时 ResolveError.login（resolver 汇总好的），和各层记录里的 login 合在一起（_login_seen）。
         2026-10-29 那场 Safari 被系统拒绝读取、后面几层借用了 Chrome 的登录，以前这里只拿那一层的观察，
         头一句说成了「程序没有读到浏览器里的 TikTok 登录」。"""
-        from .browser_login import NOT_READ, no_login_notice
+        from .browser_login import BLOCKED, NOT_READ, no_login_notice
         from .resolver import LOGIN_LAYER
 
         rec = next((r for r in layers or () if r.get("layer") == LOGIN_LAYER), None)
@@ -2512,9 +2522,13 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             observed = {b: c for b, c in (rec.get("login") or {}).items() if c != NOT_READ}
             if not observed:
                 return
-            text = no_login_notice(observed, self._login_seen(layers, login))
-            if (incidents.get(self.LOGIN_INCIDENT) or {}).get("text") != text:
-                await self._incident(self.LOGIN_INCIDENT, "warn", text)
+            seen = self._login_seen_last = self._login_seen(layers, login)
+            text = no_login_notice(observed, seen)
+            # 系统拒绝读取时，第一行带「我加好了，再查一次」（_recheck_browser_login）
+            recheck = BLOCKED in observed.values()
+            shown = incidents.get(self.LOGIN_INCIDENT) or {}
+            if shown.get("text") != text or bool(shown.get("recheck")) != recheck:
+                await self._incident(self.LOGIN_INCIDENT, "warn", text, **({"recheck": True} if recheck else {}))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -2538,6 +2552,62 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 if seen.get(browser) != OK:
                     seen[browser] = code
         return seen
+
+    async def _recheck_browser_login(self, auto=False):
+        """「我加好了，再查一次」：中控照着「完全磁盘访问权限」那几步做完，回到程序里点了这个按钮（或者页面上有这个
+        按钮时，从系统设置切回窗口，页面自动发一次，见 web/app.js）。
+
+        2026-10-29 新 Mac 上，做完以后在点「开始翻译」之前没有任何地方告诉中控成没成：程序只在启动时、开场时的
+        整轮自检和下一次解析时才重新看权限；持续提示只在内存里，程序一重开就没了，跟权限生没生效无关。现在当场看：
+          * 对装了的浏览器跑一遍 browser_login.probe（不解密、不碰钥匙串，读 Safari 实测 0.0 秒），放进线程；
+          * 照 _refresh_asr_check 的做法只替换自检里「浏览器登录态」那一行，再 _publish_selfcheck（审计照
+            _audit_selfcheck，只记等级变了的行）；
+          * 登录优先那一步要读的浏览器（没点名时只有 Safari）都读到登录：撤掉「没有读到 TikTok 登录」那条提示；
+            读得到、没有登录：那条提示换成叫人去登录的那种（不再带这个按钮）；仍是系统拒绝读取：提示不动；
+          * 发一句 notice（browser_login.recheck_notice），终端打一行代码。
+        要不要重开进程，由这里当场看到的结果决定；对照重查前后终端里那一行，也就量出了不重开能不能生效。
+
+        auto=True（页面在窗口重新拿到焦点时自动发的）：结果和上一次重查一样就不再发 notice，免得每次切回窗口都
+        弹一句。同时只跑一次：上一次还没跑完时来的直接丢掉。只有本机页面发得出来：手机入站只认 retranslate，
+        浮窗页的入站一律丢弃。"""
+        if getattr(self, "_login_rechecking", False):
+            return
+        self._login_rechecking = True
+        try:
+            await self._recheck_browser_login_once(bool(auto))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 浏览器登录态重查失败: {}".format(type(exc).__name__))
+        finally:
+            self._login_rechecking = False
+
+    async def _recheck_browser_login_once(self, auto):
+        from . import browser_login as bl
+        from .resolver import _login_first_browsers
+        from .selfcheck import browser_login_state
+
+        observed, row = await browser_login_state()
+        print("[信息] 浏览器登录态重查：{}".format(
+            " ".join("{}={}".format(b, c) for b, c in observed.items()) or "没有要查的浏览器"))
+        current = self._published_checks()
+        if current and any(c.get("name") == row["name"] for c in current):
+            await self._publish_selfcheck([row if c.get("name") == row["name"] else c for c in current])
+        wanted = await asyncio.get_running_loop().run_in_executor(
+            None, _login_first_browsers, getattr(self.args, "cookies_browser", "auto"))
+        first = {b: observed[b] for b in wanted if b in observed}
+        shown = self._incident_shown(self.LOGIN_INCIDENT)
+        if first and set(first.values()) == {bl.OK}:
+            if shown is not None:
+                await self._incident(self.LOGIN_INCIDENT, "clear")
+        elif first and shown is not None and bl.BLOCKED not in first.values():
+            text = bl.no_login_notice(first, getattr(self, "_login_seen_last", None))
+            if shown.get("text") != text or shown.get("recheck"):
+                await self._incident(self.LOGIN_INCIDENT, "warn", text)
+        last, self._login_recheck_last = getattr(self, "_login_recheck_last", None), dict(first)
+        if auto and last == first:
+            return
+        await self.server.broadcast({"type": "notice", "text": bl.recheck_notice(first)})
 
     def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None,
                      reconnect=None, message=None, login=None):

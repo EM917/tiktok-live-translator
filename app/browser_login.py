@@ -629,6 +629,39 @@ _NO_LOGIN_IMPACT = L("有的直播间 TikTok 只把流地址给已登录的观�
 _NO_LOGIN_TAIL = L("读到登录后这条提示自动消失。", "This notice disappears once a sign-in is found.")
 
 
+def recheck_notice(first, terminal=None):
+    """「我加好了，再查一次」（pipeline._recheck_browser_login）之后的那一句 notice：登录优先那一步要读的浏览器
+    （first，{浏览器: probe 的代码}）现在读不读得到。只写看到的和能做的一步。
+
+    2026-10-29 新 Mac 上，中控照着做完以后，在点「开始翻译」之前没有任何地方告诉他成没成：程序只在启动、开场的
+    整轮自检和下一次解析时才重新看权限，自检那一行在 Chrome 读到登录时本来就是「通过」，开没开权限看起来一样。
+    要不要重开进程，由这里当场看到的结果说：系统仍然拒绝读取，就叫人按 ⌘Q 完全退出再打开。"""
+    if not first:
+        return L("重查了一次，没有找到要读取的浏览器。", "Checked again. No browser to read was found.")
+    names = L("、", ", ").join(label(b) for b in first)
+    codes = set(first.values())
+    if codes == {OK}:
+        return L("现在能读取 {} 的数据了，读到了 TikTok 登录。",
+                 "The app can read {} data now and found a TikTok sign-in.").format(names)
+    if BLOCKED in codes:
+        blocked = L("、", ", ").join(label(b) for b, c in first.items() if c == BLOCKED)
+        return (L("系统仍然拒绝读取 {} 的数据。", "macOS still doesn’t allow the app to read {} data.").format(blocked)
+                + _space_before(quit_step(terminal))
+                + _space_before(L("重新打开后，「设置 > 启动自检」的「浏览器登录态」一行写着现在读到了什么。",
+                                  "After it reopens, the Browser Login row in Settings > Startup Check shows "
+                                  "what the app reads now.")))
+    sign_in = SAFARI_LOGIN_STEPS if list(first) == ["safari"] else _SIGN_IN_STEPS.format(names)
+    if codes <= {NOT_LOGGED_IN, NO_TIKTOK}:
+        # 读得到、里面看得出没有登录 cookie。READABLE（看不出登没登录）、NO_DATA（没找到 cookie 库）不能这么说
+        return (L("现在能读取 {} 的数据了，里面没有 TikTok 登录。",
+                  "The app can read {} data now, but there’s no TikTok sign-in in it.").format(names)
+                + _space_before(sign_in))
+    seen = L("重查了一次——{}。", "Checked again. {}.").format(observed_text(first))
+    if codes <= set(_SIGN_IN_CODES):
+        return seen + _space_before(sign_in)
+    return seen
+
+
 def browser_only_advice(login):
     """解析以 kind=browser_only 收场时，附在固定话术后面的那一段：两个借登录的层
     看到了什么、对应能做什么。没有观察（没试浏览器）返回空串。"""

@@ -225,6 +225,8 @@ Matching runs on the recognized Spanish text, so an alert does not wait for the 
 2. Click +. In the file window press ⌘⇧G, paste the path, press Return, click Open, and turn its switch on. It is listed as `python3.x`, not under the app's name. Repeat for each path shown. Only if you started the app from a terminal (for example with `Start.command`): add Terminal the same way, its path is `/System/Applications/Utilities/Terminal.app`.
 3. Press ⌘Q to quit the app completely and open it again. If you started it from a terminal and macOS asks to quit and reopen Terminal, do that, then start the app again.
 
+After step 2 you can click **Check Again** on the notice or on the Browser Login row: the app looks again right away and says whether it can read Safari now, or whether you still need step 3. When the notice is showing, switching back to the app window does the same.
+
 If the entry is already in the list with its switch on and you still see "macOS didn't allow access", select it, click −, and do step 2 again. The permission goes to the Python interpreter, not just this app, so any script run with that Python can read protected data on this computer. When you no longer need it, turn the switch off in the same list. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
 
 **Update Now does not start or finish.** The message says what went wrong. In most cases it also shows a command with a Copy button. Run it in Terminal, or in PowerShell on Windows. If the message lists app files you changed, the command discards those changes, so skip it if the changes were on purpose. In three cases the message gives the download page and no command: the app cannot recognize the new version's tag, the release is not on the branch your copy follows, or that branch has nothing newer than the version you have. If you were monitoring, the message comes as a notice with no command, and the app stays on the current version.
@@ -541,6 +543,8 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 1. 打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」。
 2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴路径，按回车，点「打开」，再打开它的开关。列表里它叫 `python3.x`。给出几个路径就各加一遍。只有从终端启动程序时（比如双击 `Start.command`）：「终端」也照这样加进去，它的路径是 `/System/Applications/Utilities/Terminal.app`。
 3. 按 ⌘Q 完全退出程序，再打开。从终端启动的，系统要「终端」退出并重新打开时照做，再启动程序。
+
+做完第 2 步，可以点提示或「浏览器登录态」那一行上的「**我加好了，再查一次**」：程序当场再看一次，告诉你现在能不能读取 Safari，还是要做第 3 步。提示挂着时，切回程序窗口也会自动查一次。
 
 如果列表里已经有它、开关也开着，仍然显示「系统拒绝读取」，选中它点「−」删掉，再做一次第 2 步。这项权限给的是 Python 解释器，不只是本程序：用这个 Python 运行的任何脚本都能读取这台电脑上受保护的数据。不再需要时，在同一个列表里把开关关掉。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
 
