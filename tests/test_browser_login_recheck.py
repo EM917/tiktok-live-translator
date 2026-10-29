@@ -167,10 +167,13 @@ def test_readable_without_a_sign_in_turns_the_notice_into_the_sign_in_kind(monke
     raise_blocked_notice(p)
     run(p._recheck_browser_login())
     shown = p._incident_shown(INCIDENT)
-    # 那条提示换成读得到、没登录的那种：叫人去 Safari 里登录，不再带按钮；同一次解析里借用了 Chrome 那句照旧
-    assert shown["text"] == bl.no_login_notice({"safari": bl.NOT_LOGGED_IN},
-                                               {"safari": bl.BLOCKED, "chrome": bl.OK})
+    # 那条提示换成读得到、没登录的那种：叫人去 Safari 里登录，不再带按钮
+    assert shown["text"] == bl.no_login_notice({"safari": bl.NOT_LOGGED_IN})
     assert bl.SAFARI_LOGIN_STEPS in shown["text"] and "recheck" not in shown
+    # 上一次解析里「后面几步借用了 Chrome」那一句不接过来：那次解析里 Safari 是系统拒绝读取，「Safari 读得到、没登录」
+    # 是刚才重查看到的。拼在一起就成了「同一次解析里」从来没出现过的组合
+    assert "同一次解析里" not in shown["text"]
+    assert "same lookup" not in i18n.render(shown["text"], i18n.EN)
     assert notices(server)[-1] == "现在能读取 Safari 的数据了，里面没有 TikTok 登录。请在 Safari 里登录 TikTok。"
 
 

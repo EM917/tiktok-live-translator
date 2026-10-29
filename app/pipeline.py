@@ -2522,8 +2522,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             observed = {b: c for b, c in (rec.get("login") or {}).items() if c != NOT_READ}
             if not observed:
                 return
-            seen = self._login_seen_last = self._login_seen(layers, login)
-            text = no_login_notice(observed, seen)
+            text = no_login_notice(observed, self._login_seen(layers, login))
             # 系统拒绝读取时，第一行带「我加好了，再查一次」（_recheck_browser_login）
             recheck = BLOCKED in observed.values()
             shown = incidents.get(self.LOGIN_INCIDENT) or {}
@@ -2563,7 +2562,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
           * 照 _refresh_asr_check 的做法只替换自检里「浏览器登录态」那一行，再 _publish_selfcheck（审计照
             _audit_selfcheck，只记等级变了的行）；
           * 登录优先那一步要读的浏览器（没点名时只有 Safari）都读到登录：撤掉「没有读到 TikTok 登录」那条提示；
-            读得到、没有登录：那条提示换成叫人去登录的那种（不再带这个按钮）；仍是系统拒绝读取：提示不动；
+            读得到、没有登录：那条提示换成叫人去登录的那种（不再带这个按钮，也不带上一次解析里「后面几步借用了谁」
+            那一句——那是另一次观察）；仍是系统拒绝读取：提示不动；
           * 发一句 notice（browser_login.recheck_notice），终端打一行代码。
         要不要重开进程，由这里当场看到的结果决定；对照重查前后终端里那一行，也就量出了不重开能不能生效。
 
@@ -2601,7 +2601,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             if shown is not None:
                 await self._incident(self.LOGIN_INCIDENT, "clear")
         elif first and shown is not None and bl.BLOCKED not in first.values():
-            text = bl.no_login_notice(first, getattr(self, "_login_seen_last", None))
+            # 不带上一次解析的 seen：「同一次解析里，后面几步借用了 Chrome」说的是那一次解析，这里 first 是刚才 probe
+            # 看到的，两件事拼成一句就成了「同一次解析里 Safari 读得到、Chrome 被借用」，哪一次解析都没这样过。
+            # 下一次解析照它自己的记录再补上那一句
+            text = bl.no_login_notice(first)
             if shown.get("text") != text or shown.get("recheck"):
                 await self._incident(self.LOGIN_INCIDENT, "warn", text)
         last, self._login_recheck_last = getattr(self, "_login_recheck_last", None), dict(first)
