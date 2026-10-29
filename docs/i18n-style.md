@@ -130,7 +130,7 @@
 | 正在用 / 本程序 / 非本程序 | **In use / This app / Not this app** | Other | 「非本程序」的意思是「不一定是别人的」，照字面翻最诚实 |
 | 更新 / 一键更新 / 更新说明 | **Update / Update Now / Release Notes** | Upgrade | |
 | 设置 | **Settings** | Preferences | |
-| 字幕译成（顶栏下拉：字幕译成哪种语言；2026-10-20 以前叫「目标语言」） | **Captions in**（标签、aria-label）；tooltip 写 **Captions are translated into this language. To change the app language, go to Settings > App Language.**；正文写 **the language captions are translated into**，参数说明里可以简写 **caption language** | Translate to, Target Language, Language | 用户 2026-10-20 把旧标签「目标语言 / Translate to」当成了界面语言，切成 English 等界面变。标签要一眼读得出管的是字幕：标签连着选项读就是 “Captions in English”「字幕译成 English」。只写 Language 会和界面语言（App Language）分不开。中文 tooltip 是「字幕译成这种语言。界面语言在「设置 > 界面语言」里改」 |
+| 字幕译成（顶栏下拉：字幕译成哪种语言；2026-10-20 以前叫「目标语言」） | **Captions in**（标签、aria-label）；tooltip 写 **Captions are translated into this language. To change the app language, go to Settings > App Language.**；正文写 **the language captions are translated into**，参数说明里可以简写 **caption language** | Translate to, Target Language, Language | 用户 2026-10-20 把旧标签「目标语言 / Translate to」当成了界面语言，切成 English 等界面变。标签要一眼读得出管的是字幕：标签连着选项读就是 “Captions in English”「字幕译成 English」。只写 Language 会和界面语言（App Language）分不开。中文 tooltip 是「字幕译成这种语言。界面语言在「设置 > 界面语言」里改」。2026-10-29 同一种误会又来了一次（连接中、1000px 窗口里标签被省掉）：英文界面选了中文、中文界面选了 English 时，下拉下面就地弹一次这句 tooltip，外加一颗切换界面的按钮（§2.8、§3 #21a） |
 | 主播语言 | **Spoken language** | Source language, Streamer language | 说的是「识别听哪种语言」，普通用户能懂；source 是翻译行业的行话 |
 | 界面语言（新加的设置） | **App Language** | Language, Display Language | 必须和顶栏的 Captions in 一眼就能分开 |
 | 跟随系统 | **System ({resolved})**，如 “System (English)” | Auto, Default | |
@@ -423,6 +423,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 选项 1 | 跟随系统（中文） | System (English) |
 | 选项 2 / 3 | 中文 / English | 中文 / English |
 | 行下方的说明 | 切换后窗口会刷新一次。手机同看页按各自手机的语言显示。 | The window reloads once after you switch. Phone Viewing pages follow each phone’s language. |
+| 「字幕译成」就地提示里的按钮（§3 #21a） | 字：English；aria-label：界面语言改成 English | 字：中文；aria-label：Set App Language to 中文 |
 
 语言名永远用该语言自己的写法（中文 / English）。这样用户就算落进一个看不懂的界面，也能认出自己的语言，切回去。
 
@@ -464,6 +465,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 19 | app.js:2240 | 报警开 | Alerts on | 52 → 74（含内边距），见 §4 R6 |
 | 20 | app.js:2262 | 品牌 · {name} | Brand · {name} | 143 → 154 |
 | 21 | index.html:55–62 | 字幕译成（标签 / aria）；title 见 §1 | Captions in | 2026-10-20 由「目标语言 / Translate to」改名。直播中 ≤1080px 时隐藏，首页一直露出；52 → 68（G10 实测，旧的 Translate to 是 74） |
+| 21a | index.html #target-hint、app.js showTargetHint | 正文同 #21 的 title（同一对，不新增句子）；按钮字是那种语言的自称（中文 / English，translate="no"）；按钮 aria-label：界面语言改成 {name} | 正文同 #21 的 title；aria-label：Set App Language to {name} | 2026-10-29 加。英文界面选了中文（简体或繁体）、中文界面选了 English 时，下拉下面弹一次（每页一次，8 秒后自己收起，指针或焦点进去就不再按时收）。按钮只在待机首页给：设置分组在连接中、直播中整块藏着，界面语言只在待机时换。{name} 是语言自称，Title Case 里的 App Language 是设置行的名字（§2.1） |
 | 22 | index.html:68–70 | 字幕字号（title / aria） | Caption size | |
 | 23 | index.html:76 | 清空字幕 | **Clear** | 76 → 56。“Clear Captions” 要 114，放不下，见 §4 |
 | 24 | index.html:76 title | 清空历史字幕 | Clear caption history | |
