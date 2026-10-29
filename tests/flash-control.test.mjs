@@ -442,8 +442,8 @@ test("别的 HTTP 状态：写 127.0.0.1:9334 回了什么（9334 上回话的�
 
 // ---- 不续开原因、卡片序号 ---------------------------------------------------------------------
 
-test("不续开原因：七个代码各一句（0.8.2 的五个是闪购助手会话给的，next_to_pin 是 0.9.2 起的，pinned 是 0.9.2.2 起的），认不出的返回 null", () => {
-  const want = { slot_1: "1 号位，不续开", pinned: "正在置顶，不续开", next_to_pin: "下一个要置顶，不续开", no_stock: "没有库存，不续开",
+test("不续开原因：七个代码各一句（0.8.2 的五个是闪购助手会话给的，next_to_pin 是 0.9.2 起的，top_n 是 0.9.2.2 起的），认不出的返回 null", () => {
+  const want = { slot_1: "1 号位，不续开", top_n: "排在最前面，不续开", next_to_pin: "下一个要置顶，不续开", no_stock: "没有库存，不续开",
                  max_renewals: "续开次数到上限", auto_start_off: "没开自动开始", no_position: "读不到序号，先不处理" };
   for (const [code, text] of Object.entries(want)) assert.equal(observed(F.flashSkipText(code)), text, code);
   for (const code of ["", "brand_new_reason", null, 1]) assert.equal(F.flashSkipText(code), null);

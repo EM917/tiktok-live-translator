@@ -627,7 +627,7 @@ def test_products_are_sorted_by_what_needs_a_person_first():
 @pytest.mark.parametrize("value, expected", [
     ("slot_1", "slot_1"), ("no_stock", "no_stock"), ("max_renewals", "max_renewals"),
     ("auto_start_off", "auto_start_off"), ("no_position", "no_position"), ("next_to_pin", "next_to_pin"),
-    ("pinned", "pinned"),
+    ("top_n", "top_n"),
     ("brand_new<b>", "brand_newb"), ("x" * 100, "x" * fs.MAX_CODE), ("", None), ("  ", None),
     (None, None), (7, None), (True, None), (["slot_1"], None),
 ])
@@ -736,7 +736,7 @@ def test_the_sort_order_matches_the_shared_table(case):
     assert [p["id"] for p in sorted(products, key=fs.product_sort_key)] == case["ids"]
 
 
-@pytest.mark.parametrize("skip", ["slot_1", "pinned", "next_to_pin", "no_stock", "brand_new_reason"])
+@pytest.mark.parametrize("skip", ["slot_1", "top_n", "next_to_pin", "no_stock", "brand_new_reason"])
 def test_a_product_the_helper_skips_on_purpose_is_never_stuck(skip):
     """skip 不为 null：闪购助手说了故意不续开（1 号位、没库存……）。停多久都不算卡住，按钮不变色。"""
     tracker = fs.StatusTracker()
