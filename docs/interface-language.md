@@ -10,6 +10,9 @@ page — is in English or Chinese.
   the display language. A Chinese system language (Simplified or Traditional)
   gives the Chinese interface, anything else English, and Chinese if it
   cannot be detected.
+- On a new install, if Chinese is anywhere in the macOS preferred-language
+  list but isn't first (for example English, then Simplified Chinese), the
+  interface is set to Chinese instead of following the system.
 - An install that was already in use before the English interface existed
   stays in Chinese after updating.
 - To switch, open **Settings → App Language** on the home page and choose
