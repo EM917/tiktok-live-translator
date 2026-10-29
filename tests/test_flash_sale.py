@@ -764,7 +764,9 @@ def test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend():
     - flashRank 的排序表和 flash_sale._RANK（卡住的 0 档、认不出的最后一档）；
     - FLASH_ATTN_ORDER（浮层主句的先后）和 attention() 排出来的顺序；
     - 文案里写死的数：连不上「每 15 秒再查一次」= POLL_DOWN_SEC，「停了超过 1 分钟」= STUCK_SEC，
-      没有回应「在 2 秒内」= HTTP_TIMEOUT_SEC。"""
+      没有回应「在 2 秒内」= HTTP_TIMEOUT_SEC，「30 秒内没看到」= CONTROL_WAIT_SEC；
+    - 控制那几张表：FLASH_ACTIONS = CONTROL_ACTIONS，FLASH_OWN_ERRORS = CONTROL_OWN_ERRORS（页面按它分「本程序这边的」和
+      「闪购助手没有接受」），FLASH_QUIET_PAGES = START_QUIET_PAGES（开始后的过渡里不算要人处理的页面状态）。"""
     js = (Path(__file__).resolve().parent.parent / "web" / "flash.js").read_text(encoding="utf-8")
     body = re.search(r"function flashRank\(p\) \{(.*?)\n\}", js, re.S).group(1)
     assert {code: int(n) for code, n in re.findall(r'case "(\w+)": return (\d+);', body)} == fs._RANK
@@ -777,6 +779,12 @@ def test_the_panel_ranks_orders_and_quotes_numbers_like_the_backend():
     assert fs.POLL_DOWN_SEC == 15 and "每 15 秒再查一次" in js and "Checking again every 15 sec." in js
     assert fs.HTTP_TIMEOUT_SEC == 2 and "在 2 秒内没有回应" in js and "didn’t answer within 2 sec." in js
     assert fs.STUCK_SEC == 60 and "停了超过 1 分钟" in js and "Stopped for over 1 min" in js
+    assert fs.CONTROL_WAIT_SEC == 30 and js.count("30 秒内没看到闪购助手") == 3 and js.count("within 30 sec.") == 3
+    assert "在 2 秒内没有回应。看看状态" in js and "didn’t answer within 2 sec. Check" in js
+    for name, want in (("FLASH_ACTIONS", fs.CONTROL_ACTIONS), ("FLASH_OWN_ERRORS", fs.CONTROL_OWN_ERRORS),
+                       ("FLASH_QUIET_PAGES", fs.START_QUIET_PAGES)):
+        got = json.loads(re.search(r"var {} = (\[[^\]]*\]);".format(name), js).group(1))
+        assert got == list(want), name
 
 
 def test_the_samples_raise_the_documented_attention():

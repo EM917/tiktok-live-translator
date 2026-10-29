@@ -13,6 +13,10 @@ import { FakeEl, makeDoc } from "./guard-dom.mjs";
 
 export const SAMPLE = JSON.parse(readFileSync(new URL("./fixtures/flash_sale/message-running.json", import.meta.url), "utf8"));
 
+// 后端 app/flash_sale.py 和 web/flash.js 各有一份、必须一字不差的规则（等续开、排序、指令生效、开始后的过渡）：
+// tests/test_flash_sale.py 测后端，tests/flash-control.test.mjs 测前端，两边吃这同一张表
+export const SHARED = JSON.parse(readFileSync(new URL("./fixtures/flash_sale/shared-rules.json", import.meta.url), "utf8"));
+
 // 渲染函数只许用 textContent：假 DOM 上 innerHTML 一碰就抛
 Object.defineProperty(FakeEl.prototype, "innerHTML", { set() { throw new Error("flash.js 不许用 innerHTML"); } });
 
