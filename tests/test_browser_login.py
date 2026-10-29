@@ -418,8 +418,8 @@ def _assert_plain_english(text, where):
     ({"chrome": "blocked_by_system", "safari": "blocked_by_system"},
      ["Looked for a TikTok sign-in in your browsers. Chrome: macOS didn’t allow access; "
       "Safari: macOS didn’t allow access",
-      "macOS didn’t allow the app to read browser data. Go to System Settings > "
-      "Privacy & Security > Full Disk Access",
+      "macOS didn’t allow the app to read browser data. Follow these three steps to turn on Full Disk "
+      "Access for Python:\n1. Open System Settings > Privacy & Security > Full Disk Access.",
       # 每个路径单独一行（专家审查 I8）；以前是「…(do this for each path): “…”, “…”. The list…」夹在句子里
       "(do this for each path):\n“/opt/homebrew/bin/python3.14”\n“/opt/anaconda3/bin/python3.13”\n"]),
     ({"chrome": "not_logged_in"},
@@ -1155,7 +1155,9 @@ def test_no_login_notice_with_the_fda_steps_is_split_into_lines(monkeypatch, log
     lines = rendered.split("\n")
     steps = i18n.render(bl.fda_steps(), lang)
     sep = "" if lang == "zh" else " "
-    assert lines[0] == (_ZH_HEAD if lang == "zh" else _EN_HEAD) + sep + steps.split("\n")[0], lines[0]
+    assert lines[0] == i18n.render(bl._first_step_head(login), lang) + sep + steps.split("\n")[0], lines[0]
+    if list(login) == ["safari"]:
+        assert lines[0].startswith(_ZH_HEAD if lang == "zh" else _EN_HEAD), lines[0]
     assert steps in rendered
     assert i18n.render(bl.SAFARI_LOGIN_STEPS, lang) not in rendered
     for gone in ("自检", "浏览器登录态", "Startup Check", "Browser Login", "程序没有读到浏览器里的 TikTok 登录",
