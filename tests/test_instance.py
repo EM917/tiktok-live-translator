@@ -13,6 +13,7 @@
 import ast
 import asyncio
 import re
+import unicodedata
 import urllib.request
 from email.message import Message
 from pathlib import Path
@@ -121,6 +122,16 @@ def test_install_id_follows_the_folder_not_how_the_path_was_spelled(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("这台机器建不了符号链接")
     assert install_id(link) == install_id(root), "从软链接进来的还是同一份"
+
+
+def test_install_id_treats_both_unicode_spellings_of_a_folder_as_one(tmp_path):
+    """macOS 的卷也不分 Unicode 的两种写法：「Español」可以是组合形式（é 一个字符，NFC），也可以是分解形式
+    （e 加一个附加符号，NFD），打开的是同一个文件夹。从终端敲出来的路径和访达给的路径可能各是一种。按原样算就成了
+    两份，第二次打开会说「另一份程序……不是这个文件夹里的这一份」——对同一个文件夹说错话。"""
+    nfc, nfd = (unicodedata.normalize(form, "Español") for form in ("NFC", "NFD"))
+    assert nfc != nfd
+    assert install_id(tmp_path / nfc) == install_id(tmp_path / nfd)
+    assert install_id(tmp_path / nfc) != install_id(tmp_path / "Espanol"), "去掉附加符号就是另一个名字"
 
 
 def test_install_headers_carry_the_id_and_the_version(tmp_path):

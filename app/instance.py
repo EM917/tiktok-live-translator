@@ -18,6 +18,7 @@
 import hashlib
 import os
 import re
+import unicodedata
 from collections import namedtuple
 from pathlib import Path
 
@@ -51,8 +52,10 @@ def install_id(root):
 
     按真实路径算：从软链接、带 .. 的路径进来都是同一份。再统一成小写：macOS 默认的卷不分大小写，
     从终端敲成小写起的那一份和从访达双击起的是同一个文件夹。真有两个只差大小写的文件夹（分大小写的卷上），
-    算成同一份的后果只是不弹框、照旧打开已有实例，不会说错话。"""
-    key = os.path.normcase(os.path.realpath(str(root))).casefold()
+    算成同一份的后果只是不弹框、照旧打开已有实例，不会说错话。
+    Unicode 的两种写法同理：macOS 的卷也不分组合形式（NFC，é 一个字符）和分解形式（NFD，e 加附加符号），
+    从终端敲的路径和访达给的路径可能各是一种，所以先统一成 NFC 再小写。"""
+    key = unicodedata.normalize("NFC", os.path.normcase(os.path.realpath(str(root)))).casefold()
     digest = hashlib.sha256(b"tlt-install\0" + key.encode("utf-8", "surrogateescape"))
     return digest.hexdigest()[:12]
 
