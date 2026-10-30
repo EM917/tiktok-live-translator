@@ -361,13 +361,13 @@ def _chinese_ui_on_any_machine(monkeypatch):
     定，用生产里的值：守闸关着或开着某一边语义的用例自己 monkeypatch，这样开闸和把闸改回
     False 回退时，测试都不用跟着改。
 
-    与跑测试的那台机器无关（spec §3.2）：系统语言检测换成「检测不了」，三个 TLT_* 环境变量
+    与跑测试的那台机器无关（spec §3.2）：系统语言检测换成「检测不了」，四个 TLT_* 环境变量
     删掉——CI 的 Windows / macOS 跑器、开发机的系统语言都不该让结果不同。模块级状态
     （生效语言、已经警告过的坏模板）不许在用例之间泄漏。G9 运行时网全程开着。"""
     from app import i18n
 
-    monkeypatch.setattr(i18n, "system_lang", lambda: None)
-    for name in (i18n.ENV_OVERRIDE, i18n.ENV_SYSTEM, i18n.ENV_INSTALL):
+    monkeypatch.setattr(i18n, "system_langs", lambda: [])
+    for name in (i18n.ENV_OVERRIDE, i18n.ENV_SYSTEM, i18n.ENV_SYSTEM_ZH, i18n.ENV_INSTALL):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(i18n, "_state", {"choice": "system", "lang": i18n.ZH, "system": None,
                                          "override": None})

@@ -15,7 +15,8 @@ f-string、普通模板 "…{}".format(bi)、切片、.strip()、re.sub、str(ex
 - boot(ROOT)：每个进程都跑一次，**只读**。记下装机状态与系统语言（跨 exec 用环境变量带着走），
   自己读 settings.json 的字节，不调 load_settings、不改名、不写回——损坏的设置文件要留给
   最终进程去备份，否则「设置文件损坏，已备份为…」的提示和审计里的备份名会随 exec 丢掉。
-- settle(ROOT)：只在最终进程里跑一次。这里才第一次 load_settings，闸开着时才迁移写 ui_lang；
+- settle(ROOT)：只在最终进程里跑一次。这里才第一次 load_settings，闸开着时才迁移写 ui_lang
+  （老装机写 zh；新装的系统首选语言列表里有中文、首项却不是中文写 zh；其余新装写 system）；
   新装且界面是英文时，顺带把没设置过的翻译目标语言默认成 English（提交 T）。结束时把装机状态
   记成 existing：之后 exec 出来的进程（一键更新重启）不再算新装。
 """
@@ -36,7 +37,8 @@ BUNDLE_ID = "io.github.em917.tiktok-live-translator"
 # 4E00–9FFF 基本区、F900–FAFF 兼容区、FF00–FFEF 全角。英文臂里出现它们就是漏翻（spec R3）
 CJK = re.compile("[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯]")
 ENV_OVERRIDE = "TLT_UI_LANG"         # 一次性覆盖（开发、截图）；命令行 --ui-lang 同义
-ENV_SYSTEM = "TLT_SYSTEM_LANG"       # system_lang() 的结果跨 exec 缓存：zh / en / none
+ENV_SYSTEM = "TLT_SYSTEM_LANG"       # 系统首选语言列表的首项，跨 exec 缓存：zh / en / none
+ENV_SYSTEM_ZH = "TLT_SYSTEM_HAS_ZH"  # 同一次检测里，列表里有没有中文：1 / 0。只给新装那一次迁移用
 ENV_INSTALL = "TLT_INSTALL_STATE"    # 第一个进程看到的装机状态：fresh / existing（只记第一次）；
                                     # settle 之后改成 existing
 # 「装成功过」的记号：bootstrap 只在 `pip install -r` 返回 0 之后才往 .venv 里写它（app/bootstrap.py
@@ -199,9 +201,20 @@ def _saved_lang():
 
 
 def _migrated_choice(env):
-    """设置里还没有 ui_lang 时该写什么（用户 09-28 决定 1）：新装跟随系统，其余固定中文。
-    环境变量缺失（比如没经过 boot）也按老装机处理：宁可保持中文，不让界面突然变英文。"""
-    return "system" if env.get(ENV_INSTALL) == "fresh" else ZH
+    """设置里还没有 ui_lang 时该写什么。
+
+    - 老装机固定中文（用户 09-28 决定 1）。环境变量缺失（比如没经过 boot）也按老装机处理：
+      宁可保持中文，不让界面突然变英文。
+    - 新装：系统首选语言列表首项不是中文、但列表里有中文，写 zh（用户 10-29 定）。中文中控的
+      Mac 常把 English 排在第一（10-28 那台是 en-US、简体中文），只看首项就成了英文界面加英文字幕。
+      写 zh 而不是 system：之后系统语言怎么排都还是中文，要英文去设置里改。
+    - 其余新装（首项就是中文、列表里没有中文、检测不了）跟随系统，同以前。
+    「列表里有没有中文」缺失（老版本的进程 execv 过来，环境里没有这个键）当作没有。"""
+    if env.get(ENV_INSTALL) != "fresh":
+        return ZH
+    if env.get(ENV_SYSTEM) != ZH and env.get(ENV_SYSTEM_ZH) == "1":
+        return ZH
+    return "system"
 
 
 def _defaults_to_english_captions(loaded, env):
@@ -270,7 +283,8 @@ def boot(root, argv=None, environ=None):
        会先建出 .venv、装完写记号再 execv。光有 .venv 目录不算：setup.sh / setup.ps1 一开头就建
        .venv，再用它跑 main.py --doctor；第一次启动装到一半失败（断网、中途退出）也会留下 .venv。
        这两种都还没真正用过，按老装机判会把英文系统上的新用户永远固定成中文界面、中文字幕。
-    2. 系统语言每次启动只检测一次，结果写进环境变量，exec 之后的进程直接用。
+    2. 系统首选语言每次启动只检测一次：首项（zh / en / none）和「列表里有没有中文」写进两个环境变量，
+       exec 之后的进程直接用。
     3. 自己读 settings.json 的字节定出语言，供自举期的对话框用。返回生效语言。"""
     env = os.environ if environ is None else environ
     argv = sys.argv if argv is None else argv
@@ -284,7 +298,9 @@ def boot(root, argv=None, environ=None):
         return _state["lang"]
     try:
         if not env.get(ENV_SYSTEM):
-            env[ENV_SYSTEM] = system_lang() or "none"
+            langs = system_langs()
+            env[ENV_SYSTEM] = (langs[0] if langs else None) or "none"
+            env[ENV_SYSTEM_ZH] = "1" if ZH in langs else "0"
     except Exception:            # 检测本身不抛；这里防的是替身。没记下就留给下一个进程再测
         pass
     try:
@@ -300,7 +316,7 @@ def settle(root, environ=None):
     """只在最终进程里跑一次（main() 里 relaunch_inside_bundle 之后、parse_args 之前），绝不抛异常。
 
     这里才第一次 load_settings()：文件损坏就在这个进程里备份，界面提示和审计的备份名都拿得到。
-    闸开着、设置里还没有 ui_lang 时迁移，写一次（新装 system，其余 zh）；闸关着一个字节都不写——
+    闸开着、设置里还没有 ui_lang 时迁移，写一次（_migrated_choice：新装多半是 system，其余 zh）；闸关着一个字节都不写——
     否则闸关着那几周的新装机会被写成 system，闸一开就突然变英文。
     同样只在闸开着时：新装、界面解析为英文、没设置过 target_lang，再写 target_lang="en"。
     这发生在 main.py 读 target_lang 之前，所以第一次启动就是英文字幕。返回生效语言。
@@ -361,11 +377,21 @@ def use(lang):
 # ---- 系统语言（spec §3.2，只在后端做） ------------------------------------------------
 
 # `defaults read … AppleLanguages` 的输出形如 ("en-US", "zh-Hans-US")；不带连字符的标签不加引号
-_APPLE_FIRST = re.compile(r'\(\s*"?([A-Za-z]{2,3}(?:[-_][A-Za-z0-9]+)*)')
+_APPLE_TAG = re.compile(r"[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]+)*")
 
 
-def _mac_lang():
-    """先看系统设置里给这个 App 单独选的语言，再看全局首选语言。都读不到返回 None。"""
+def _apple_tags(out):
+    """`defaults read` 打出的列表 → 标签，按原顺序。读不懂的项跳过；不是列表返回空。"""
+    start, end = out.find("("), out.rfind(")")
+    if start < 0 or end < start:
+        return []
+    items = (item.strip().strip('"').strip() for item in out[start + 1:end].split(","))
+    return [item for item in items if _APPLE_TAG.fullmatch(item)]
+
+
+def _mac_langs():
+    """先看系统设置里给这个 App 单独选的语言，再看全局首选语言；取第一份读得到、不是空的列表。
+    App 单独选过就只看它：用户给本程序选了英文，全局列表里有中文也不算。"""
     for argv in (["defaults", "read", BUNDLE_ID, "AppleLanguages"],
                  ["defaults", "read", "-g", "AppleLanguages"]):
         try:
@@ -375,37 +401,40 @@ def _mac_lang():
             continue
         if proc.returncode != 0:
             continue
-        match = _APPLE_FIRST.search(proc.stdout or "")
-        if match:
-            return _lang_of_tag(match.group(1))
-    return None
+        tags = _apple_tags(proc.stdout or "")
+        if tags:
+            return [_lang_of_tag(tag) for tag in tags]
+    return []
 
 
-def _env_lang(environ):
-    """其它平台：依次看 LANGUAGE、LC_ALL、LC_MESSAGES、LANG；C/POSIX 不算语言，跳过。"""
+def _env_langs(environ):
+    """其它平台：依次看 LANGUAGE、LC_ALL、LC_MESSAGES、LANG，取第一个首项不是 C/POSIX 的变量。
+    LANGUAGE 本身是一串（zh_CN:en），整串按顺序给出；其余变量只有一项。"""
     for name in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):
-        first = next((p.strip() for p in str(environ.get(name) or "").split(":") if p.strip()), "")
-        if not first or first in ("C", "POSIX") or first.startswith("C."):
+        parts = [p.strip() for p in str(environ.get(name) or "").split(":") if p.strip()]
+        plain = [p for p in parts if p not in ("C", "POSIX") and not p.startswith("C.")]
+        if not parts or plain[:1] != parts[:1]:
             continue
-        return _lang_of_tag(first)
-    return None
+        return [_lang_of_tag(p) for p in plain]
+    return []
 
 
-def system_lang():
-    """系统界面语言：zh / en；检测不了返回 None（按中文处理）。绝不抛异常。
+def system_langs():
+    """系统首选语言列表，按顺序，每项是 zh / en；检测不了返回空列表（按中文处理）。绝不抛异常。
+    首项就是系统界面语言；后面几项只用来判断新装时列表里有没有中文（_migrated_choice）。
 
     不用 locale.getdefaultlocale()：3.11 起弃用，而且取的是区域格式，不是界面语言。
-    Windows 取显示语言 GetUserDefaultUILanguage，主语言号 0x04 是中文（简繁都算）。"""
+    Windows 只有一种显示语言 GetUserDefaultUILanguage，主语言号 0x04 是中文（简繁都算），没有列表可看。"""
     try:
         if sys.platform == "darwin":
-            return _mac_lang()
+            return _mac_langs()
         if sys.platform == "win32":
             import ctypes
             code = ctypes.windll.kernel32.GetUserDefaultUILanguage()
-            return ZH if (int(code) & 0x3FF) == 0x04 else EN
-        return _env_lang(os.environ)
+            return [ZH if (int(code) & 0x3FF) == 0x04 else EN]
+        return _env_langs(os.environ)
     except Exception:
-        return None
+        return []
 
 
 def accept_lang(header):

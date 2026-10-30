@@ -123,6 +123,24 @@ function langSystemLabel(system) {
   return L("跟随系统（{name}）", "System ({name})").replace("{name}", langName(system));
 }
 
+/* 待机首页标题区右上角的「中文 / English」两段切换（index.html #lang-quick，用户 2026-10-29）。
+ * 返回 null 表示不出现：config 里没有 ui_lang_available（发布闸关着、又没有 --ui-lang），同设置那一行。
+ * 否则 pressed 是此刻的界面语言（config.ui_lang；跟随系统时就是它解析出的那种，认不出的按中文），
+ * locked 是被 --ui-lang 固定了（两颗都置灰）。 */
+function langQuickState(cfg) {
+  "use strict";
+  if (!cfg || cfg.ui_lang_available !== true) return null;
+  return { pressed: cfg.ui_lang === "en" ? "en" : "zh", locked: cfg.ui_lang_locked === true };
+}
+
+/* 点了 value 那颗之后要发的 set_ui_lang 值；不该发时返回 null：点的就是按下的那颗（设置里的
+ * 「跟随系统」不能被它悄悄改成固定语言）、被固定了、不是 zh / en（「跟随系统」只在设置那一行选）。 */
+function langQuickSend(state, value) {
+  "use strict";
+  if (!state || state.locked || (value !== "zh" && value !== "en") || value === state.pressed) return null;
+  return value;
+}
+
 /* 服务端的界面语言（config.ui_lang）和本页不同时要不要整页重载一次（spec §3.5）。
  * uiLang 是本页加载时的语言（i18n.js 的 UI_LANG），stored 是 sessionStorage 里
  * 上一次重载留下的「目标语言@毫秒时间」。10 秒内已经为同一个目标重载过就不再重载：
@@ -142,5 +160,6 @@ function langReload(target, uiLang, stored, now) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { selfcheckSummary, engineSummary, watchSummary, nextAutoOpen, transcriptSummary,
-                     langName, langSummary, langSystemLabel, langReload, LANG_RELOAD_WINDOW_MS };
+                     langName, langSummary, langSystemLabel, langQuickState, langQuickSend,
+                     langReload, LANG_RELOAD_WINDOW_MS };
 }
