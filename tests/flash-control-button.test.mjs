@@ -395,7 +395,7 @@ test("顶部一排紧跟着标题行：开始、停止、继续、打开闪购�
   }
   assert.match(panel, /<p id="flash-note" class="flash-note hidden" aria-live="polite"><\/p>/);
   assert.match(panel, /<p id="flash-desc" class="share-desc" data-en="This panel only shows status\. Make changes in Flash Sale Helper\.">这里只显示状态。要操作，请到闪购助手里。<\/p>/);
-  assert.match(html, /<script src="\/static\/flash\.js\?v=4"><\/script>\n {2}<script src="\/static\/app\.js\?v=85"><\/script>/);
+  assert.match(html, /<script src="\/static\/flash\.js\?v=5"><\/script>\n {2}<script src="\/static\/app\.js\?v=94"><\/script>/);
 });
 
 test("样式：那一排放不下就折行（不横向撑出浮层），焦点环只给键盘；卡片序号不跟标题一起缩", () => {
