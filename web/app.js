@@ -94,6 +94,10 @@
   var connectHintEl = document.getElementById("connect-hint");
   var connectHintText = document.getElementById("connect-hint-text");
   var targetSel = document.getElementById("target-lang");
+  // 「字幕译成」下面的就地提示（index.html #target-hint，见 showTargetHint）
+  var targetHint = document.getElementById("target-hint");
+  var targetHintText = document.getElementById("target-hint-text");
+  var targetHintSwitch = document.getElementById("target-hint-switch");
   var fontSlider = document.getElementById("font-size");
   var clearBtn = document.getElementById("clear-btn");
   var prevCapsTitle = document.getElementById("prev-caps-title");
@@ -579,7 +583,66 @@
   // 目标语言以服务端为准（跟随 --target 启动参数），UI 切换即时生效但不做本地持久化
   targetSel.addEventListener("change", function () {
     send({ type: "set_target", value: targetSel.value });
+    // 选的是另一种界面语言（英文界面选了中文、中文界面选了 English）：多半是把它当成了界面语言，就地说一声
+    showTargetHint(captionsLangHint(UI_LANG, targetSel.value));
   });
+
+  // ---- 「字幕译成」下面的就地提示（2026-10-29，live-ui.js captionsLangHint） ----
+  // 正文是下拉 tooltip 的同一句，外加一颗按钮，字是那种界面语言的自称（settings-rows.js langName）。
+  // 每页只弹一次；TARGET_HINT_MS 后自己收起，不一直盖着字幕区顶上。指针移进来、或焦点进到里面，就不再按时收起
+  // （要点按钮的人不会被它躲开），点外面、Esc 照旧收（顶栏浮层那张登记表，见下面 registerPopover）。
+  // 界面语言这一行不存在时（闸关着、又没有 --ui-lang 一次性覆盖）不弹：那句话指向的地方不存在。
+  // 按钮只在待机首页、界面语言没被启动参数固定时给：设置分组在连接中、直播中整块藏着，界面语言只在待机时换
+  // （index.html #lang-card 的注释）。直播中要不要也给，等用户定；这时只说那句话
+  var TARGET_HINT_MS = 8000;
+  var targetHintShown = false;
+  var targetHintTimer = null;
+  var targetHintLang = null;     // 按钮要切到的界面语言（zh / en）；没弹过时为 null
+  function targetHintCanSwitch() { return !!targetHintLang && !streamActive && !langLocked; }
+  function syncTargetHintSwitch() {
+    if (targetHintSwitch) targetHintSwitch.classList.toggle("hidden", !targetHintCanSwitch());
+  }
+  function stopTargetHintTimer() {
+    if (targetHintTimer) clearTimeout(targetHintTimer);
+    targetHintTimer = null;
+  }
+  function closeTargetHint() {
+    stopTargetHintTimer();
+    hidePopover(targetHint);
+  }
+  function showTargetHint(lang) {
+    if (!targetHint || !targetHintText || !targetHintSwitch) return;
+    if (targetHintShown || !lang || !langAvailable) return;
+    targetHintShown = true;
+    targetHintLang = lang;
+    targetHintText.textContent = L("字幕译成这种语言。界面语言在「设置 > 界面语言」里改",
+      "Captions are translated into this language. To change the app language, go to Settings > App Language.");
+    var name = langName(lang);
+    targetHintSwitch.textContent = name;
+    targetHintSwitch.setAttribute("lang", lang === "en" ? "en" : "zh-CN");
+    targetHintSwitch.setAttribute("aria-label",
+      L("界面语言改成 {name}", "Set App Language to {name}").replace("{name}", name));
+    syncTargetHintSwitch();
+    // 不传 trigger：下拉不是开合这个浮层的按钮，不给它挂 aria-expanded（位置仍按登记的下拉算）
+    showPopover(targetHint);
+    targetHintTimer = setTimeout(closeTargetHint, TARGET_HINT_MS);
+  }
+  if (targetHint) {
+    targetHint.addEventListener("pointerenter", stopTargetHintTimer);
+    targetHint.addEventListener("focusin", stopTargetHintTimer);
+  }
+  if (targetHintSwitch) {
+    // 和设置行的下拉发同一条 set_ui_lang：服务端存设置、广播新语言，本页见到不一样就重载（reloadForLang）
+    targetHintSwitch.addEventListener("click", function () {
+      if (!targetHintCanSwitch()) return;
+      var value = targetHintLang;
+      closeTargetHint();
+      if (send({ type: "set_ui_lang", value: value })) return;
+      setStatus({ state: "offline",
+                  detail: L("与本地服务断开，正在重连——稍候再试。",
+                            "Lost connection to the local service. Reconnecting… Try again in a moment.") });
+    });
+  }
 
   // 「字幕译成」下拉显示服务端说的当前目标（hello 和 config 广播）。下拉只列四种（index.html）；
   // 当前目标不在里面时（settings.json 里存着以前选的日语、--target ja 启动）照 targetLangExtra
@@ -1533,6 +1596,7 @@
     startBtn.disabled = state === "connecting";
     syncAsrFetchBtn();      // 自检「语音识别」一行的「现在下载」：连接中、直播中置灰
     streamActive = active;
+    syncTargetHintSwitch(); // 「字幕译成」提示里的切换按钮：连接中、直播中不给
     updateFloatBtn();       // 浮窗按钮跟换主播同一条显示规则
     updateAlertModeTag();   // 标签只在连接中/直播中露出，别的状态下退回隐藏
     updateActiveBrandTag(); // 本场品牌标签同一个显示条件，见该函数注释
@@ -4069,6 +4133,8 @@
   // 同看面板走 closeSharePanel——只收起，不碰同看开关，跟卡片里的 × 同一个函数（pm.md #3）
   registerPopover(switchPanel, switchBtn, closeSwitchPanel);
   registerPopover(sharePanel, shareBtn, closeSharePanel);
+  // 「字幕译成」下面的就地提示：位置按下拉算，Esc 之后焦点回到下拉
+  registerPopover(targetHint, targetSel, closeTargetHint);
   // Esc 关闭：只在有浮层确实打开时处理，不吞掉页面别处的 Esc（没有别处在用）。
   // 关掉开着的那一个后焦点回到它的触发按钮，键盘用户不会掉到页面开头
   document.addEventListener("keydown", function (e) {
@@ -4843,10 +4909,14 @@
   // 语言名、摘要、要不要重载都由 settings-rows.js 的纯函数算，这里只管 DOM 和存储
   var LANG_RELOAD_KEY = "tlt.langReload";
   var langSetting = null;   // 服务端此刻存的选择（system / zh / en）：发送失败时下拉退回它
+  var langAvailable = false;   // 设置里有没有界面语言这一行（「字幕译成」的就地提示看它）
+  var langLocked = false;      // 界面语言被 --ui-lang 固定：提示里不给切换按钮
 
   function renderLang(cfg) {
     if (!langCard || !cfg) return;
     var available = cfg.ui_lang_available === true;
+    langAvailable = available;
+    langLocked = available && cfg.ui_lang_locked === true;
     langCard.classList.toggle("hidden", !available);
     if (!available) return;
     langSetting = cfg.ui_lang_setting;

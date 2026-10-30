@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-en="TikTok Live Translator">TikTok 直播同传</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=58">
+  <link rel="stylesheet" href="/static/style.css?v=59">
   <!-- i18n: done -->
 </head>
 <body class="home">
@@ -67,6 +67,15 @@
           <option value="es">Español</option>
         </select>
       </label>
+      <!-- 就地提示（2026-10-29）：这一页的人在英文界面里选了中文、或在中文界面里选了 English 时（live-ui.js
+           captionsLangHint），下拉下面弹一次，几秒后自己收起（app.js showTargetHint）。正文就是上面 tooltip 那一句，
+           由 app.js 按界面语言写进来：role="status" 的内容是弹出时才换的，读屏会念。按钮写那种语言的自称
+           （中文 / English，settings-rows.js langName），是数据，标 translate="no"，点了发 set_ui_lang；
+           连接中、直播中不给按钮（设置分组这时整块藏着，界面语言只在待机时换）。开合登记在顶栏浮层那张表里 -->
+      <div id="target-hint" class="target-hint popover hidden" role="status">
+        <p id="target-hint-text" class="target-hint-text"></p>
+        <button id="target-hint-switch" class="btn small hidden" type="button" translate="no"></button>
+      </div>
       <!-- 字号：小 A —— 滑块 —— 大 A（苹果「图书」的做法），省掉「字号」两个字。
            装了闪购助手、窗口窄于 1400px 时（body.has-flash-btn），顶栏放不下这一整条：收成一颗 28px 的「Aa」按钮，
            点开的小浮层就是下面这个 label 本身（不挪 DOM，style.css 原地改成浮层样式，开合同另外几个顶栏浮层，
@@ -850,9 +859,9 @@
   <script src="/static/switch.js?v=2"></script>
   <script src="/static/session-divider.js?v=1"></script>
   <script src="/static/settings-rows.js?v=3"></script>
-  <script src="/static/live-ui.js?v=7"></script>
+  <script src="/static/live-ui.js?v=8"></script>
   <script src="/static/guard.js?v=6"></script>
   <script src="/static/flash.js?v=1"></script>
-  <script src="/static/app.js?v=87"></script>
+  <script src="/static/app.js?v=89"></script>
 </body>
 </html>

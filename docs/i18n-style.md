@@ -49,6 +49,7 @@
 | 观众（TikTok 直播间里的） | **viewers** | audience | 只指 TikTok 直播的观众 |
 | 手机同看的在看人数 | **watching**（如 “3 watching”） | viewers, people | 避开和 TikTok 观众撞词。YouTube 式的 “N watching” 单复数同形，不用处理复数 |
 | 程序 / 本程序 / 本工具 | **the app** | the program, the tool, the software | 苹果的叫法 |
+| 另一份程序 / 这个文件夹里的这一份（同一台电脑上解压了不止一份） | **another copy of the app** / **the one in this folder** | instance, installation, version | 2026-10-29 加（双击打开时窗口开到了另一份上，§3 #10a）。instance 是开发者的词；version 会被读成「另一个版本号」，而两份可以是同一个版本。指已经开着的那一份写 **the running copy** |
 | 本机 / 这台电脑 | **this computer** | this Mac, this PC, localhost | 要跨平台，Mac 和 Windows 都能用 |
 
 ### 1.2 直播、场次与状态
@@ -132,7 +133,7 @@
 | 正在用 / 本程序 / 非本程序 | **In use / This app / Not this app** | Other | 「非本程序」的意思是「不一定是别人的」，照字面翻最诚实 |
 | 更新 / 一键更新 / 更新说明 | **Update / Update Now / Release Notes** | Upgrade | |
 | 设置 | **Settings** | Preferences | |
-| 字幕译成（顶栏下拉：字幕译成哪种语言；2026-10-20 以前叫「目标语言」） | **Captions in**（标签、aria-label）；tooltip 写 **Captions are translated into this language. To change the app language, go to Settings > App Language.**；正文写 **the language captions are translated into**，参数说明里可以简写 **caption language** | Translate to, Target Language, Language | 用户 2026-10-20 把旧标签「目标语言 / Translate to」当成了界面语言，切成 English 等界面变。标签要一眼读得出管的是字幕：标签连着选项读就是 “Captions in English”「字幕译成 English」。只写 Language 会和界面语言（App Language）分不开。中文 tooltip 是「字幕译成这种语言。界面语言在「设置 > 界面语言」里改」 |
+| 字幕译成（顶栏下拉：字幕译成哪种语言；2026-10-20 以前叫「目标语言」） | **Captions in**（标签、aria-label）；tooltip 写 **Captions are translated into this language. To change the app language, go to Settings > App Language.**；正文写 **the language captions are translated into**，参数说明里可以简写 **caption language** | Translate to, Target Language, Language | 用户 2026-10-20 把旧标签「目标语言 / Translate to」当成了界面语言，切成 English 等界面变。标签要一眼读得出管的是字幕：标签连着选项读就是 “Captions in English”「字幕译成 English」。只写 Language 会和界面语言（App Language）分不开。中文 tooltip 是「字幕译成这种语言。界面语言在「设置 > 界面语言」里改」。2026-10-29 同一种误会又来了一次（连接中、1000px 窗口里标签被省掉）：英文界面选了中文、中文界面选了 English 时，下拉下面就地弹一次这句 tooltip，外加一颗切换界面的按钮（§2.8、§3 #21a） |
 | 主播语言 | **Spoken language** | Source language, Streamer language | 说的是「识别听哪种语言」，普通用户能懂；source 是翻译行业的行话 |
 | 界面语言（新加的设置） | **App Language** | Language, Display Language | 必须和顶栏的 Captions in 一眼就能分开 |
 | 跟随系统 | **System ({resolved})**，如 “System (English)” | Auto, Default | |
@@ -428,6 +429,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 选项 1 | 跟随系统（中文） | System (English) |
 | 选项 2 / 3 | 中文 / English | 中文 / English |
 | 行下方的说明 | 切换后窗口会刷新一次。手机同看页按各自手机的语言显示。 | The window reloads once after you switch. Phone Viewing pages follow each phone’s language. |
+| 「字幕译成」就地提示里的按钮（§3 #21a） | 字：English；aria-label：界面语言改成 English | 字：中文；aria-label：Set App Language to 中文 |
 
 语言名永远用该语言自己的写法（中文 / English）。这样用户就算落进一个看不懂的界面，也能认出自己的语言，切回去。
 
@@ -454,6 +456,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 8 | index.html:543 | 请不要直接打开这个文件 / 回到解压出来的文件夹，双击…启动程序，字幕界面会自动打开。 | Don’t open this file directly. / Go back to the unzipped folder and double-click TikTok Live Translator.app (Mac) or Start.bat (Windows). The caption window opens automatically. | 这段内联脚本跑得最早，什么都还没加载：中英两段并列，不读 `navigator.language` |
 | 9 | viewer.html:6 | 手机同看 · TikTok 直播同传 | Phone Viewing · TikTok Live Translator | |
 | 10 | pipeline.py:1799 | 直播合规监听中 | Monitoring a live stream | macOS 电源断言的原因文字，只在 `pmset` 里看得到 |
+| 10a | instance.py other_install_text（main.py 双击打开、端口上已有本程序、不是这个文件夹里的这一份时） | 另一份程序（v{ver}，不是这个文件夹里的这一份）已经在运行，这次打开的是它。/ 另一份程序（不是这个文件夹里的这一份）已经在运行，这次打开的是它。/ 程序已经在运行，但它没有说自己是哪个文件夹里的那一份，这次打开的是它。后面都接：要用这个文件夹里的这一份，请先退出正在运行的那一份，再重新打开。 | Another copy of the app (v{ver}, not the one in this folder) is already running, so that copy opened instead. / Another copy of the app (not the one in this folder) is already running, so that copy opened instead. / The app is already running but didn’t report which folder it’s from, so that copy opened instead. + To use the one in this folder, quit the running copy first, then open this one again. | 2026-10-29 加。系统对话框（`_info_dialog`，按钮「知道了 / OK」），照旧打开已有实例，只是说清楚。第三句给加 X-TLT-Install 之前的版本（0.19.0 和更早）：它没说，就照实写没说，不猜它是旧版还是同一份。窗口模式带了 `--url` 时和「这次给的直播间地址没有自动开始」并进同一个框，中间空一行 |
 
 ### B. 顶栏
 
@@ -470,6 +473,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 19 | app.js:2240 | 报警开 | Alerts on | 52 → 74（含内边距），见 §4 R6 |
 | 20 | app.js:2262 | 品牌 · {name} | Brand · {name} | 143 → 154 |
 | 21 | index.html:55–62 | 字幕译成（标签 / aria）；title 见 §1 | Captions in | 2026-10-20 由「目标语言 / Translate to」改名。直播中 ≤1080px 时隐藏，首页一直露出；52 → 68（G10 实测，旧的 Translate to 是 74） |
+| 21a | index.html #target-hint、app.js showTargetHint | 正文同 #21 的 title（同一对，不新增句子）；按钮字是那种语言的自称（中文 / English，translate="no"）；按钮 aria-label：界面语言改成 {name} | 正文同 #21 的 title；aria-label：Set App Language to {name} | 2026-10-29 加。英文界面选了中文（简体或繁体）、中文界面选了 English 时，下拉下面弹一次（每页一次，8 秒后自己收起，指针或焦点进去就不再按时收）。按钮只在待机首页给：设置分组在连接中、直播中整块藏着，界面语言只在待机时换。{name} 是语言自称，Title Case 里的 App Language 是设置行的名字（§2.1） |
 | 22 | index.html:68–70 | 字幕字号（title / aria） | Caption size | |
 | 23 | index.html:76 | 清空字幕 | **Clear** | 76 → 56。“Clear Captions” 要 114，放不下，见 §4 |
 | 24 | index.html:76 title | 清空历史字幕 | Clear caption history | |
