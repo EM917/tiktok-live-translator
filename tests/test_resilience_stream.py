@@ -5,7 +5,6 @@
 """
 import asyncio
 import json
-import socket
 import time
 from types import SimpleNamespace
 
@@ -991,11 +990,8 @@ def test_tcp_probe_works_against_a_local_listener_only():
         ok = await resolver._tcp_probe("127.0.0.1", port, 2.0)
         srv.close()
         await srv.wait_closed()
-        s = socket.socket()
-        s.bind(("127.0.0.1", 0))
-        free = s.getsockname()[1]
-        s.close()
-        bad = await resolver._tcp_probe("127.0.0.1", free, 2.0)
+        # 没人听的端口用 127.0.0.1:9 哨兵：绑过又关掉的端口那时谁在听说不准，测试总网也不放行
+        bad = await resolver._tcp_probe("127.0.0.1", 9, 2.0)
         return ok, bad
 
     ok, bad = run(scenario())

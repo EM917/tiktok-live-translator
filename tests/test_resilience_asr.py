@@ -19,6 +19,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+import app.resolver
 from app import asr
 from app import pipeline as pipeline_mod
 from app import selfcheck
@@ -80,6 +81,11 @@ def make_pipeline(monkeypatch, tmp_path, terms=""):
     monkeypatch.setattr(CommentSource, "stop", quiet)
     monkeypatch.setattr(Pipeline, "run_selfcheck", quiet)
     monkeypatch.setattr(Pipeline, "ensure_local_translator", quiet)
+
+    async def gone(url, timeout=None):
+        return False      # 一场结束后问直连地址还出不出数据：答「拉不到」，不发真的请求（以前真去查 cdn.example.com）
+
+    monkeypatch.setattr(app.resolver, "_media_url_works", gone)
     args = SimpleNamespace(
         cookies=None, target="zh-CN", translator="none", source="es", beam=5,
         context=False, asr_temperature=None, glossary=None, backend="auto", model=None,
