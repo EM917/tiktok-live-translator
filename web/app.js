@@ -62,6 +62,9 @@
   var brandEmptyHint = document.getElementById("brand-empty-hint");
   var startBtn = document.getElementById("start-btn");
   var roomInputError = document.getElementById("room-input-error");
+  var asrHint = document.getElementById("asr-model-hint");          // 语音模型还没下载时的一行（renderAsrHint）
+  var asrHintText = document.getElementById("asr-model-hint-text");
+  var asrHintBtn = document.getElementById("asr-model-hint-btn");
   var recentRooms = document.getElementById("recent-rooms");
   var recentList = document.getElementById("recent-list");
   var recentClear = document.getElementById("recent-clear");
@@ -4357,9 +4360,30 @@
     return L("现在下载（约 {gb} GB）", "Download Now (about {gb} GB)").replace("{gb}", (mb / 1000).toFixed(1));
   }
 
+  // 首页那一行的大小：「约 3.1 GB」「约 484 MB」；不知道多大是空串（同 app/selfcheck.py _size_text）
+  function asrSizeText(sizeMb) {
+    var mb = Number(sizeMb) || 0;
+    if (!mb) return "";
+    if (mb < 1000) return L("约 {mb} MB", "about {mb} MB").replace("{mb}", String(mb));
+    return L("约 {gb} GB", "about {gb} GB").replace("{gb}", (mb / 1000).toFixed(1));
+  }
+
+  // 两颗按钮（自检里那颗、首页那颗）同一个置灰规则；首页那颗的字也在这里跟着 asrFetchBusy 变
   function syncAsrFetchBtn() {
-    if (!asrFetchBtn) return;
-    asrFetchBtn.disabled = asrFetchBusy || ASR_FETCH_OFF_STATES[statusState] === true;
+    var off = asrFetchBusy || ASR_FETCH_OFF_STATES[statusState] === true;
+    if (asrFetchBtn) asrFetchBtn.disabled = off;
+    if (asrHintBtn) {
+      asrHintBtn.disabled = off;
+      asrHintBtn.textContent = asrFetchBusy ? L("正在下载…", "Downloading…") : L("现在下载", "Download Now");
+    }
+  }
+
+  // 两颗按钮点的都是这一下：发出去了才把两颗一起变成灰的「正在下载…」，只有服务端重发那一行才放回来
+  function startAsrFetch() {
+    if (!send({ type: "download_asr_model" })) return;    // 断开了：什么都没发出去，按钮照旧
+    asrFetchBusy = true;
+    if (asrFetchBtn) asrFetchBtn.textContent = L("正在下载…", "Downloading…");
+    syncAsrFetchBtn();
   }
 
   function asrFetchButton(c) {
@@ -4368,14 +4392,26 @@
     btn.className = "btn small sc-action";
     asrFetchBusy = !!c.busy;
     btn.textContent = asrFetchBusy ? L("正在下载…", "Downloading…") : asrFetchLabel(c.size_mb);
-    btn.addEventListener("click", function () {
-      if (!send({ type: "download_asr_model" })) return;    // 断开了：什么都没发出去，按钮照旧
-      asrFetchBusy = true;
-      btn.textContent = L("正在下载…", "Downloading…");
-      syncAsrFetchBtn();
-    });
+    btn.addEventListener("click", startAsrFetch);
     return btn;
   }
+
+  // 首页输入框下面那一行（#asr-model-hint，2026-10-29 用户选的 launch-2 A）：自检那一行收在「设置 > 启动自检」里，
+  // 只有提醒时整行折叠成「通过 · N 项提醒」，新装机的中控开播前看不到它。这一行跟自检那一行看同一个 action：
+  // 带着才出现（row 是那一行，没有就是 null），下好后服务端重发那一行、没有 action 了，这一行自己消失。
+  // 下载中这句话不变（确实还没下完），只有按钮变成灰的「正在下载…」；进度在顶部横幅里（_provision_note）。
+  // 连接中、直播中整个开始面板藏着（setStatus），这里不另外判断
+  function renderAsrHint(row) {
+    if (!asrHint) return;
+    asrHint.classList.toggle("hidden", !row);
+    if (!row) return;
+    var size = asrSizeText(row.size_mb);
+    asrHintText.textContent = size
+      ? L("语音模型还没下载（{size}）", "The speech model isn’t downloaded yet ({size})").replace("{size}", size)
+      : L("语音模型还没下载", "The speech model isn’t downloaded yet");
+  }
+
+  if (asrHintBtn) asrHintBtn.addEventListener("click", startAsrFetch);
 
   function renderSelfcheck(msg) {
     if (!scBox || !msg.checks) return;
@@ -4393,6 +4429,7 @@
     scList.innerHTML = "";
     asrFetchBtn = null;
     asrFetchBusy = false;
+    var asrRow = null;
     msg.checks.forEach(function (c) {
       var li = document.createElement("li");
       li.className = "sc-item " + c.level;
@@ -4419,6 +4456,7 @@
         detail.appendChild(fix);
       }
       if (c.action === "download_asr_model") {
+        asrRow = c;
         asrFetchBtn = asrFetchButton(c);
         detail.appendChild(asrFetchBtn);
       }
@@ -4426,17 +4464,16 @@
       li.appendChild(detail);
       scList.appendChild(li);
     });
+    renderAsrHint(asrRow);
     syncAsrFetchBtn();
     // 只有结论真的变了才自动展开/收起。重连会重放一次 hello，
     // 那时若无条件重置，正在看明细的人会被收起来。自检这一行的规则是「签名
     // 一变就无条件同步」——从「有失败」变回「全绿」也要跟着收起，所以直接用
     // r.open，不像引擎回退提示那样还要额外判断（见 nextAutoOpen 的注释）
     //
-    // 「语音识别」一行带着「现在下载」时也展开（2026-10-29）：只有提醒时这一行折叠成「通过 · N 项提醒」，
-    // 新装机根本看不到这个按钮，第一次开播才开始下 3.1 GB。签名里带上「有这个按钮」：下载中这一行还带着
-    // action（busy），签名不变、不收起；下完 action 没了，签名变了，照结论收起
-    var canFetch = msg.checks.some(function (c) { return c.action === "download_asr_model"; });
-    var r = nextAutoOpen(scLastSig, scSum.sig + (canFetch ? "/fetch" : ""), sum.fail > 0 || canFetch);
+    // 「语音识别」一行带着「现在下载」也只是提醒，不展开：首页输入框下面那一行在说（renderAsrHint）。
+    // 2026-10-29 用户在 launch-2 的三种做法里选的是首页这一行（A），不是让这一行自己展开（B）
+    var r = nextAutoOpen(scLastSig, scSum.sig, sum.fail > 0);
     scLastSig = r.sig;
     if (r.changed) setSelfcheckOpen(r.open);
   }
