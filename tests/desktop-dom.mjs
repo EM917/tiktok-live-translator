@@ -137,14 +137,17 @@ export function runDesktop(lang = "en") {
   const root = new FakeEl("html");
   root.setAttribute("lang", lang === "en" ? "en" : "zh-CN");
   root.lang = lang === "en" ? "en" : "zh-CN";                                  // i18n.js 读的是 documentElement.lang
+  const docListeners = {};                          // document 上的监听（visibilitychange 等），docFire() 触发
   const document = {
     documentElement: root, body: new FakeEl("body"), title: "TikTok Live Translator", hidden: false,
+    visibilityState: "visible",
     getElementById: (id) => byId.get(id) || null,
     createElement: (tag) => new FakeEl(tag),
     createElementNS: (_, tag) => new FakeEl(tag),
     createTextNode: (v) => new FakeText(v),
     createRange: () => ({ selectNodeContents() {} }),
-    addEventListener() {}, querySelector: () => null, querySelectorAll: () => [], hasFocus: () => true,
+    addEventListener: (type, cb) => { (docListeners[type] = docListeners[type] || []).push(cb); },
+    querySelector: () => null, querySelectorAll: () => [], hasFocus: () => true,
   };
   const sockets = [];
   const sent = [];                                   // 页面发给后端的消息（JSON 解开）
@@ -194,6 +197,8 @@ export function runDesktop(lang = "en") {
     answerConfirm: (v) => { confirmAnswer = v; },
     advance: (ms) => { now += ms; },
     winFire: (type) => (winListeners[type] || []).slice().forEach((cb) => cb({ type })),
+    // document 上的事件：visibilitychange 之前先改 document.visibilityState
+    docFire: (type) => (docListeners[type] || []).slice().forEach((cb) => cb({ type, target: document })),
     // 跑完当前排着的那一帧（回调里再排的留到下一次）
     nextFrame: () => frames.splice(0).forEach((fn) => fn()),
     // 触发某个时长的定时器（按注册顺序，每个只触发一次）

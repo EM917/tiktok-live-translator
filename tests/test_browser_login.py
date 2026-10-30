@@ -25,7 +25,7 @@ from app import browser_login as bl
 from app import i18n
 from app import pipeline as pipeline_mod
 from app import resolver, selfcheck
-from app.i18n import CJK
+from app.i18n import CJK, L
 from app.pipeline import Pipeline, browser_only_message
 from tests.helpers import run
 from tests.i18n_rules import EN_CAUSAL, EN_LABELS, ZH_CAUSAL
@@ -418,8 +418,8 @@ def _assert_plain_english(text, where):
     ({"chrome": "blocked_by_system", "safari": "blocked_by_system"},
      ["Looked for a TikTok sign-in in your browsers. Chrome: macOS didn’t allow access; "
       "Safari: macOS didn’t allow access",
-      "macOS didn’t allow the app to read browser data. Go to System Settings > "
-      "Privacy & Security > Full Disk Access",
+      "macOS didn’t allow the app to read browser data. Follow these three steps to turn on Full Disk "
+      "Access for Python:\n1. Open System Settings > Privacy & Security > Full Disk Access.",
       # 每个路径单独一行（专家审查 I8）；以前是「…(do this for each path): “…”, “…”. The list…」夹在句子里
       "(do this for each path):\n“/opt/homebrew/bin/python3.14”\n“/opt/anaconda3/bin/python3.13”\n"]),
     ({"chrome": "not_logged_in"},
@@ -605,17 +605,21 @@ def test_selfcheck_row_when_the_system_refuses(monkeypatch, tmp_path):
     monkeypatch.setattr(bl, "open", guarded_open, raising=False)
     monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: [
         "/opt/homebrew/Cellar/python@3.14/3.14.7/bin/python3.14", "/opt/anaconda3/bin/python3.13"])
+    monkeypatch.delenv("TERM", raising=False)          # 从 .app 启动：系统给的环境里没有这两个
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
     row = run(selfcheck.check_browser_login())
     assert row["level"] == "warn"
     assert "Chrome：系统拒绝读取；Safari：系统拒绝读取" in row["detail"]
-    # 路径各占一行、多了「删掉再加」和权限范围两句（专家审查 I8、S2）；自检那一行按换行显示（.sc-fix pre-line）
+    # 编号的三步、路径各占一行，后面是「删掉再做一次第 2 步」和权限范围（专家审查 I8、S2；2026-10-29 缩成三步）；
+    # 自检那一行按换行显示（.sc-fix pre-line）
     assert row["fix"] == (
-        "系统不允许本程序读取浏览器数据。到「系统设置」→「隐私与安全性」→「完全磁盘访问权限」，"
-        "点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开"
+        "系统不允许本程序读取浏览器数据。照下面三步给 Python 打开「完全磁盘访问权限」：\n"
+        "1. 打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。\n"
+        "2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开"
         "（每个路径各做一遍）：\n「/opt/homebrew/Cellar/python@3.14/3.14.7/bin/python3.14」\n"
-        "「/opt/anaconda3/bin/python3.13」\n列表里显示的名字是 python3.14、python3.13，"
-        "不是本程序的名字。如果列表里已经有这一项、开关也开着，先选中它点「−」删掉，再按上面的步骤加一次。"
-        "用 Start.command 启动的话把「终端」也加进去。然后完全退出程序再打开。\n"
+        "「/opt/anaconda3/bin/python3.13」\n列表里显示的名字是 python3.14、python3.13，不是本程序的名字。\n"
+        "3. 按 ⌘Q 完全退出本程序，再打开它。\n"
+        "列表里已经有它、开关也开着还是这样：选中它点「−」删掉，再做一次第 2 步。\n"
         "这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。"
         "不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。")
     _assert_plain(row, calls)
@@ -910,13 +914,81 @@ def test_fda_targets_are_the_interpreter_files_the_system_sees(tmp_path):
 def test_fda_steps_name_the_interpreter_paths_not_the_bundle():
     paths = ["/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/"
              "Versions/3.14/bin/python3.14", "/opt/anaconda3/bin/python3.13"]
-    text = bl.fda_steps(paths)
+    text = bl.fda_steps(paths, terminal=False)
     for path in paths:
         assert "「{}」".format(path) in text
     assert "python3.14、python3.13" in text and "⌘⇧G" in text
-    assert "完全磁盘访问权限" in text and "「终端」" in text and "完全退出程序再打开" in text
+    assert "完全磁盘访问权限" in text and "按 ⌘Q 完全退出本程序，再打开它。" in text
     assert "TikTok Live Translator" not in text and "TikTok 直播同传" not in text
     assert not any(word in text for word in GUESSED_LABELS)
+
+
+_ZH_STEPS = ["照下面三步给 Python 打开「完全磁盘访问权限」：", "1. 打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
+             "2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开（每个路径各做一遍）："]
+_EN_STEPS = ["Follow these three steps to turn on Full Disk Access for Python:",
+             "1. Open System Settings > Privacy & Security > Full Disk Access.",
+             "2. Click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, and turn on "
+             "its switch (do this for each path):"]
+
+
+@pytest.mark.parametrize("terminal", [False, True], ids=["app", "terminal"])
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_fda_steps_are_three_numbered_steps(lang, terminal):
+    """2026-10-29：以前是一整段长文（系统设置路径、+、⌘⇧G、粘贴、回车、打开、开关、列表里的名字、删掉再加、
+    Start.command 要加「终端」、完全退出重开、权限范围），新 Mac 上照着做不下来。现在头一句、编号的三步各占一行，
+    路径单独一行；后面两行是「删掉再做一次第 2 步」和权限范围（D6，一字不改）。"""
+    lines = i18n.render(bl.fda_steps(_SPACED, terminal=terminal), lang).split("\n")
+    want = _ZH_STEPS if lang == "zh" else _EN_STEPS
+    assert lines[:3] == want, lines
+    assert [path_line(line, _SPACED) for line in lines[3:5]] == _SPACED
+    assert lines[5].startswith("列表里显示的名字是 python3.14、python3.13，不是本程序的名字。" if lang == "zh"
+                               else "The list shows python3.14, python3.13, not the app’s name."), lines[5]
+    assert lines[6].startswith("3. "), lines[6]
+    assert lines[7] == (_ZH_REMOVE if lang == "zh" else _EN_REMOVE)
+    assert lines[8] == (_ZH_SCOPE if lang == "zh" else _EN_SCOPE)
+    assert len(lines) == 9, lines
+    assert [line[:3] for line in lines if line[:1].isdigit()] == ["1. ", "2. ", "3. "]
+    if lang == "en":
+        _assert_plain_english("\n".join(lines), terminal)
+
+
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_terminal_is_only_mentioned_to_those_who_started_from_a_terminal(lang):
+    """2026-10-29 中控从「聚焦搜索」点 .app 启动，步骤里照样写着「用 Start.command 启动的话把「终端」也加进去」。
+    「终端」那几句只对从终端启动的人说：第 2 步多一句加「终端」，第 3 步说从终端再启动、系统要「终端」退出并重新
+    打开时照做。从 .app 启动时第 3 步是 ⌘Q 再打开。"""
+    app_text = i18n.render(bl.fda_steps(_SPACED, terminal=False), lang)
+    term_text = i18n.render(bl.fda_steps(_SPACED, terminal=True), lang)
+    for word in ("终端", "Terminal", "Start.command", bl.TERMINAL_APP):
+        assert word not in app_text, word
+    assert bl.TERMINAL_APP in term_text and "Start.command" in term_text
+    if lang == "zh":
+        assert "3. 按 ⌘Q 完全退出本程序，再打开它。" in app_text.split("\n")
+        assert "本程序是从终端启动的：「终端」也照这样加进去，按 ⌘⇧G 时粘贴「{}」。".format(bl.TERMINAL_APP) in term_text
+        assert ("3. 完全退出本程序，再从终端启动它（比如双击 Start.command）；系统要「终端」退出并重新打开时，照做。"
+                in term_text.split("\n"))
+    else:
+        assert "3. Press ⌘Q to quit the app completely, then open it again." in app_text.split("\n")
+        assert ("The app was started from a terminal. Add Terminal the same way: after ⌘⇧G, paste “{}”."
+                .format(bl.TERMINAL_APP)) in term_text
+        assert ("3. Quit the app completely, then start it from a terminal again (for example, with Start.command). "
+                "If macOS asks to quit and reopen Terminal, do that.") in term_text.split("\n")
+    # 「终端」的路径夹在句子里，不单独成行：页面只把 status.paths 里的解释器路径换成可复制的代码行
+    assert not any(path_line(line, [bl.TERMINAL_APP]) for line in term_text.split("\n"))
+
+
+def test_started_from_terminal_reads_the_environment(monkeypatch):
+    """终端会给里面跑的程序设 TERM（「终端」、iTerm2 还设 TERM_PROGRAM），跟着 exec 一路带到最终进程；从访达、
+    程序坞、聚焦搜索打开 .app 时系统给的环境里没有这两个。"""
+    assert bl.started_from_terminal({}) is False
+    assert bl.started_from_terminal({"TERM": "xterm-256color"}) is True
+    assert bl.started_from_terminal({"TERM_PROGRAM": "Apple_Terminal"}) is True
+    assert bl.started_from_terminal({"TERM": "", "PATH": "/usr/bin"}) is False
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    assert "Start.command" not in bl.fda_steps(_SPACED)              # 不给 terminal 就看本进程的环境
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    assert "Start.command" in bl.fda_steps(_SPACED)
 
 
 def test_blocked_message_and_selfcheck_row_use_the_runtime_paths(monkeypatch, tmp_path):
@@ -930,8 +1002,9 @@ def test_blocked_message_and_selfcheck_row_use_the_runtime_paths(monkeypatch, tm
 # ---- 专家审查 I8、S2、U10：步骤分行、路径单独一行、删掉再加、权限范围、4003110 那句单独在第一行 ----
 
 _SPACED = ["/opt/homebrew/bin/python3.14", "/Users/demo user/miniconda3/bin/python3.13"]
-_ZH_REMOVE = "如果列表里已经有这一项、开关也开着，先选中它点「−」删掉，再按上面的步骤加一次。"
-_EN_REMOVE = "If it’s already in the list with its switch on, select it, click −, and add it again with the steps above."
+_ZH_REMOVE = "列表里已经有它、开关也开着还是这样：选中它点「−」删掉，再做一次第 2 步。"
+_EN_REMOVE = ("If it’s already in the list with its switch on and you still see this, select it, click −, and do "
+              "step 2 again.")
 _ZH_SCOPE = ("这项权限给的是 Python 解释器，不只是本程序：用它运行的任何脚本都能读取这台电脑上受保护的数据。"
              "不再需要借用浏览器里的 TikTok 登录时，可以回到同一个列表把它的开关关掉。")
 _EN_SCOPE = ("This permission goes to the Python interpreter, not just this app, so any script it runs can "
@@ -1056,29 +1129,43 @@ def test_each_step_after_the_permission_scope_starts_a_line(monkeypatch, login, 
     assert i18n.render(bl.steps_text(login), lang).endswith(scope + (("" if lang == "zh" else " ") + nxt if nxt else ""))
 
 
+_ZH_HEAD = "解析流地址时，登录优先这一步只读 Safari 里的 TikTok 登录——Safari：系统拒绝读取。"
+_EN_HEAD = ("When looking up the stream URL, the app first reads the TikTok sign-in from Safari only. "
+            "Safari: macOS didn’t allow access.")
+_ZH_IMPACT_TAIL = ("有的直播间 TikTok 只把流地址给已登录的观众，这一步读到登录之前，这类直播间可能解析不出流地址；"
+                   "其余直播间照常监听，监听不会因此停下。读到登录后这条提示自动消失。")
+_EN_IMPACT_TAIL = ("For some live streams, TikTok provides the stream URL only to signed-in viewers, so those "
+                   "live streams may not get a stream URL until this step finds a sign-in. Other live streams "
+                   "are monitored as usual. This notice disappears once a sign-in is found.")
+
+
 @pytest.mark.parametrize("login", [
     {"safari": "blocked_by_system"},
     {"safari": "blocked_by_system", "chrome": "keychain_wait"},
 ])
 @pytest.mark.parametrize("lang", ["zh", "en"])
 def test_no_login_notice_with_the_fda_steps_is_split_into_lines(monkeypatch, login, lang):
-    """「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时：第一行是看到了什么、影响哪类直播间、在 Safari 里
-    登录（页面折叠时只露这一行，web/app.js foldIncident）；那几步原样连在一起、权限范围单独一行；自检指引和「自动消失」
-    在最后单独一行，不接在权限范围后面（「这些步骤」会被读成是在说权限范围）。"""
+    """「没有读到 TikTok 登录」那条持续提示带完全磁盘访问权限那几步时：第一行是登录优先那一步看到了什么、加上授权那几步
+    的头一句（页面折叠时只露这一行，web/app.js foldIncident；2026-10-29 以前第一行的动作是「请在 Safari 里登录」，Safari
+    读不了时照做是白忙）；那几步原样连在一起、权限范围单独一行；影响哪类直播间和「自动消失」在最后单独一行，不接在
+    权限范围后面。不再指向自检「浏览器登录态」那一行：别的浏览器读到登录时那一行是「通过」、不带步骤。"""
     monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: list(_SPACED))
     text = bl.no_login_notice(login)
     rendered = i18n.render(text, lang)
     lines = rendered.split("\n")
-    assert lines[0].startswith("程序没有读到浏览器里的 TikTok 登录" if lang == "zh"
-                               else "The app didn’t find a TikTok sign-in in your browsers. ")
-    assert lines[0].endswith(i18n.render(bl.SAFARI_LOGIN_STEPS, lang)), lines[0]
-    assert i18n.render(bl.fda_steps(), lang) in rendered
+    steps = i18n.render(bl.fda_steps(), lang)
+    sep = "" if lang == "zh" else " "
+    assert lines[0] == i18n.render(bl._first_step_head(login), lang) + sep + steps.split("\n")[0], lines[0]
+    if list(login) == ["safari"]:
+        assert lines[0].startswith(_ZH_HEAD if lang == "zh" else _EN_HEAD), lines[0]
+    assert steps in rendered
+    assert i18n.render(bl.SAFARI_LOGIN_STEPS, lang) not in rendered
+    for gone in ("自检", "浏览器登录态", "Startup Check", "Browser Login", "程序没有读到浏览器里的 TikTok 登录",
+                 "didn’t find a TikTok sign-in in your browsers"):
+        assert gone not in rendered, gone
     scope = _ZH_SCOPE if lang == "zh" else _EN_SCOPE
     assert scope in lines, lines
-    pointer = i18n.render(bl.SELFCHECK_POINTER, lang)
-    assert lines[-1].startswith(pointer) and lines[-1].endswith(
-        "读到登录后这条提示自动消失。" if lang == "zh" else " This notice disappears once a sign-in is found."), lines[-1]
-    assert sum(pointer in line for line in lines) == 1
+    assert lines[-1] == (_ZH_IMPACT_TAIL if lang == "zh" else _EN_IMPACT_TAIL), lines[-1]
     if "keychain_wait" in login.values():
         assert lines[-2] == i18n.render(bl.KEYCHAIN_STEPS, lang)
     else:
@@ -1090,18 +1177,50 @@ def test_no_login_notice_with_the_fda_steps_is_split_into_lines(monkeypatch, log
         assert not ZH_CAUSAL.search(str(text)) or "可能解析不出" in str(text)
 
 
-@pytest.mark.parametrize("login", [
-    {"safari": "not_logged_in"}, {"chrome": "keychain_wait"}, {"chrome": "no_tiktok_cookie", "safari": "keychain_wait"},
+@pytest.mark.parametrize("login,steps", [
+    ({"safari": "not_logged_in"}, [bl.SAFARI_LOGIN_STEPS]),
+    ({"safari": "no_tiktok_cookie"}, [bl.SAFARI_LOGIN_STEPS]),
+    ({"safari": "no_browser_data"}, [bl.SAFARI_LOGIN_STEPS]),
+    ({"chrome": "keychain_wait"}, [bl.KEYCHAIN_STEPS]),
+    ({"chrome": "no_tiktok_cookie", "safari": "keychain_wait"},
+     [L("请在 Chrome 里登录 TikTok。", "Sign in to TikTok in Chrome."), bl.KEYCHAIN_STEPS]),
 ])
-def test_no_login_notice_without_the_fda_steps_stays_one_paragraph(login):
-    """没有完全磁盘访问权限那几步的那几种照旧一段话、拼法不变（页面上不折叠）。"""
+def test_no_login_notice_without_the_fda_steps_stays_one_paragraph(login, steps):
+    """没有完全磁盘访问权限那几步的那几种照旧一段话（页面上不折叠）。「请在 Safari 里登录」只在登录优先那一步读得到、
+    里面没有登录时出现；中控点名了别的浏览器时，叫人去那个浏览器里登录。"""
     text = bl.no_login_notice(login)
     for lang in ("zh", "en"):
         rendered = i18n.render(text, lang)
         assert "\n" not in rendered
-    assert str(text).endswith(bl.SAFARI_LOGIN_STEPS + ("" if "keychain_wait" not in login.values()
-                                                      else bl.KEYCHAIN_STEPS) + "读到登录后这条提示自动消失。")
-    assert i18n.render(text, "en").endswith(" This notice disappears once a sign-in is found.")
+    assert str(text).endswith("其余直播间照常监听，监听不会因此停下。" + "".join(steps)
+                              + "读到登录后这条提示自动消失。"), str(text)
+    en = i18n.render(text, "en")
+    assert en.endswith(" Other live streams are monitored as usual. "
+                       + " ".join(i18n.render(step, "en") for step in steps)
+                       + " This notice disappears once a sign-in is found."), en
+    if bl.SAFARI_LOGIN_STEPS not in steps:
+        assert bl.SAFARI_LOGIN_STEPS not in text
+
+
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_no_login_notice_says_what_later_steps_borrowed(monkeypatch, lang):
+    """同一次解析里别的浏览器读到了登录（后面几步借用了它）：照实接一句。只说读到了登录的；登录优先那一步自己的
+    浏览器不重复说；没有就不说。"""
+    monkeypatch.setattr(bl, "fda_targets", lambda *a, **k: ["/opt/x/bin/python3.13"])
+    login = {"safari": bl.BLOCKED}
+    seen = {"safari": bl.BLOCKED, "chrome": bl.OK, "edge": bl.NOT_LOGGED_IN}
+    first = i18n.render(bl.no_login_notice(login, seen), lang).split("\n")[0]
+    borrowed = ("同一次解析里，后面几步借用了 Chrome 里的 TikTok 登录。" if lang == "zh"
+                else "Later steps of the same lookup used the TikTok sign-in from Chrome.")
+    head = _ZH_HEAD if lang == "zh" else _EN_HEAD
+    assert first.startswith(head + ("" if lang == "zh" else " ") + borrowed), first
+    assert "Edge" not in first
+    assert borrowed not in i18n.render(bl.no_login_notice(login, {"safari": bl.BLOCKED}), lang)
+    assert i18n.render(bl.no_login_notice(login, None), lang) == i18n.render(bl.no_login_notice(login), lang)
+    readable = i18n.render(bl.no_login_notice({"safari": bl.NOT_LOGGED_IN}, {"chrome": bl.OK}), lang)
+    assert borrowed in readable and "\n" not in readable
+    if lang == "en":
+        _assert_plain_english(first, seen)
 
 
 def test_launch_python_is_remembered_once_and_survives_the_execs():

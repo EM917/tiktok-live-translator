@@ -219,13 +219,15 @@ Matching runs on the recognized Spanish text, so an alert does not wait for the 
 
 **A Startup Check row is red.** Open Settings → Startup Check. Each row shows its fix underneath, and a failing check stays in a banner at the top of the window until a later check passes. A common cause is an incomplete noise-reduction model: delete `models/bd.rnnn` and start again.
 
-**Browser Login says macOS did not allow access.** Only streams where TikTok gives the stream URL to signed-in viewers need this step. macOS wants Full Disk Access for the Python interpreter, not for the app, and the Browser Login row shows the path to add.
+**The notice at the top, or the Browser Login row, says macOS did not allow access.** Only streams where TikTok gives the stream URL to signed-in viewers need this step. macOS wants Full Disk Access for the Python interpreter, not for the app. The notice at the top of the window (it appears after you click Start) shows the path to add, and so does the Browser Login row in Settings → Startup Check when no browser has a TikTok sign-in.
 
-1. Open System Settings → Privacy & Security → Full Disk Access and click +.
-2. In the file window press ⌘⇧G, paste the path, press Return, click Open, and turn the entry on. It is listed as `python3.x`, not under the app's name.
-3. Repeat for each path shown, then quit the app completely and reopen it.
+1. Open System Settings → Privacy & Security → Full Disk Access.
+2. Click +. In the file window press ⌘⇧G, paste the path, press Return, click Open, and turn its switch on. It is listed as `python3.x`, not under the app's name. Repeat for each path shown. Only if you started the app from a terminal (for example with `Start.command`): add Terminal the same way, its path is `/System/Applications/Utilities/Terminal.app`.
+3. Press ⌘Q to quit the app completely and open it again. If you started it from a terminal and macOS asks to quit and reopen Terminal, do that, then start the app again.
 
-If the entry is already in the list with its switch on and the row still says macOS did not allow access, select it, click −, and add it again. The permission goes to the Python interpreter, not just this app, so any script run with that Python can read protected data on this computer. When you no longer need it, turn the switch off in the same list. If you start with `Start.command`, add Terminal as well. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
+After step 2 you can click **Check Again** on the notice or on the Browser Login row: the app looks again right away and says whether it can read Safari now, or whether you still need step 3. When the notice is showing, switching back to the app window does the same.
+
+If the entry is already in the list with its switch on and you still see "macOS didn't allow access", select it, click −, and do step 2 again. The permission goes to the Python interpreter, not just this app, so any script run with that Python can read protected data on this computer. When you no longer need it, turn the switch off in the same list. If the audit log shows `cannot_decrypt`, click Start again. If a Keychain dialog then asks for "Chrome Safe Storage", enter your Mac login password and choose Always Allow.
 
 **Update Now does not start or finish.** The message says what went wrong. In most cases it also shows a command with a Copy button. Run it in Terminal, or in PowerShell on Windows. If the message lists app files you changed, the command discards those changes, so skip it if the changes were on purpose. In three cases the message gives the download page and no command: the app cannot recognize the new version's tag, the release is not on the branch your copy follows, or that branch has nothing newer than the version you have. If you were monitoring, the message comes as a notice with no command, and the app stays on the current version.
 
@@ -536,13 +538,15 @@ python3 main.py --ui-lang zh  # 只这一次用中文界面
 
 **「启动自检」有一行是红的。** 打开「设置 → 启动自检」，每一行下面写着怎么处理。没处理好的项会一直在窗口顶部显示提示，直到下一次自检通过。常见的原因是降噪模型没下载完整：删掉 `models/bd.rnnn`，再启动一次。
 
-**「浏览器登录态」说 macOS 没有放行。** 只有 TikTok 要登录才给流地址的直播间需要这一步。要加进「完全磁盘访问权限」的是 Python 解释器，不是程序本身，这一行会显示要加的路径。
+**窗口顶部的提示或「浏览器登录态」说系统拒绝读取。** 只有 TikTok 要登录才给流地址的直播间需要这一步。要加进「完全磁盘访问权限」的是 Python 解释器，不是程序本身。窗口顶部那条提示（点「开始翻译」后出现）里有要加的路径；没有哪个浏览器读到 TikTok 登录时，「设置 → 启动自检」里「浏览器登录态」那一行也有。
 
-1. 打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」，点「+」。
-2. 在选文件的窗口里按 ⌘⇧G，粘贴路径，按回车，点「打开」，再打开这一项的开关。列表里它叫 `python3.x`。
-3. 每个路径都这样加一遍，然后完全退出程序，重新打开。
+1. 打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」。
+2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴路径，按回车，点「打开」，再打开它的开关。列表里它叫 `python3.x`。给出几个路径就各加一遍。只有从终端启动程序时（比如双击 `Start.command`）：「终端」也照这样加进去，它的路径是 `/System/Applications/Utilities/Terminal.app`。
+3. 按 ⌘Q 完全退出程序，再打开。从终端启动的，系统要「终端」退出并重新打开时照做，再启动程序。
 
-如果列表里已经有这一项、开关也开着，这一行却仍然说 macOS 没有放行，先选中它点「−」删掉，再按上面的步骤加一次。这项权限给的是 Python 解释器，不只是本程序：用这个 Python 运行的任何脚本都能读取这台电脑上受保护的数据。不再需要时，在同一个列表里把开关关掉。用 `Start.command` 启动的话，也要把「终端」加进去。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
+做完第 2 步，可以点提示或「浏览器登录态」那一行上的「**我加好了，再查一次**」：程序当场再看一次，告诉你现在能不能读取 Safari，还是要做第 3 步。提示挂着时，切回程序窗口也会自动查一次。
+
+如果列表里已经有它、开关也开着，仍然显示「系统拒绝读取」，选中它点「−」删掉，再做一次第 2 步。这项权限给的是 Python 解释器，不只是本程序：用这个 Python 运行的任何脚本都能读取这台电脑上受保护的数据。不再需要时，在同一个列表里把开关关掉。审计日志里出现 `cannot_decrypt` 的话，再点一次「开始翻译」；如果这时弹出「钥匙串」对话框，要访问「Chrome Safe Storage」，输入这台电脑的登录密码，点「始终允许」。
 
 **「一键更新」启动不了，或者没做完。** 提示里写着哪里出了问题，多数时候下面有一条带「复制」按钮的命令，复制后在「终端」里运行，Windows 上在 PowerShell 里运行。如果提示列出了你改过的程序文件，这条命令会丢掉这些改动，改动是有意的就别运行。有三种情况提示里给的是下载页，没有命令：认不出新版本的标签，那个发布版本不在这份安装跟踪的分支上，或者那个分支上没有比你现在的版本更新的。正在监听时，这句话写在提示里，不给命令，程序继续用当前版本。
 
