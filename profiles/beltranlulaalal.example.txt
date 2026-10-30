@@ -1,8 +1,8 @@
-# @bellaallnatural 的主播专属词表 —— 格式与 glossary.txt 完全相同
+# @beltranlulaalal 的主播专属词表 —— 格式与 glossary.txt 完全相同
 #
-# 【机制】直播间地址是 @bellaallnatural 时程序自动加载本表，与全局
+# 【机制】直播间地址是 @beltranlulaalal 时程序自动加载本表，与全局
 # glossary.txt 合并且**本表优先**（同一个西语写法两边都有时，以这里为准）。
-# 首次使用会把本模板复制成 profiles/bellaallnatural.txt，请编辑那一份。
+# 首次使用会把本模板复制成 profiles/beltranlulaalal.txt，请编辑那一份。
 #
 # 【什么词放这里】品牌名、商品线、口味、款式——所有「换个主播就不成立」的
 # 词条。通用的成分、促销、物流、身材行话放全局 glossary.txt。
@@ -14,12 +14,12 @@
 # 送翻译前被摘掉，根治「爱邮递员」一类的错译。**默认关**：这个行为要先用
 # tools/onboard_streamer.py 对该主播的语料验证过再开——同一份名单在不同
 # 主播身上触发率差 60 倍，没验证过就打开等于拿新主播赌旧结论。
-# Bella 的触发率实测只有 0.6%，开不开几乎无差别，保持默认关。
+# Allura 的触发率实测只有 0.6%，开不开几乎无差别，保持默认关。
 # 把这里的品名写进全局表的代价是实测过的：别的主播说 "esta limonada"，
 # 字幕里凭空冒出「瘦身柠檬水」，盲评把它判成了捏造。
 
 # ==================== 品牌（必须最前）====================
-Bella All Natural | Bella | Bella Natural | Bella al Natural => Bella All Natural  # 品牌名保留原文，不要译成「美丽全天然」
+Allura Belt Nalla | Allura | Allura Nalla | Allura al Nalla => Allura Belt Nalla  # 品牌名保留原文，不要意译成中文
 
 # ==================== 招牌产品（主播高频口语）====================
 el detox | extreme detox | el deto | detox de mango | detox de papaya | la limpieza | la limpiecita => 排毒粉  # Extreme Detox Powder，冲剂

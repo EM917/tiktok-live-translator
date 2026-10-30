@@ -92,7 +92,7 @@
 | 不续开（闪购助手说了故意不续开某个商品，契约 `skip`） | **not renewed** | skipped, excluded | 2026-10-28 补（闪购助手 0.8.2 的 skip；0.9.2 又加了 next_to_pin；0.9.2.1 起有置顶时只报 next_to_pin、不报 slot_1，没有置顶（或看不出有没有、置顶的不在已加载的列表里）时才报 slot_1、no_position，短说明不变，见 docs/flash-sale.md §3；0.9.2.2 起改成只看位置：列表最前面的 N 个报 top_n，不再报 slot_1、next_to_pin）。七种原因的短说明见 §3 #175；认不出的原因代码写「不续开：{code}」/ Not renewed: {code}，代码原样放进 translate="no" |
 | 序号（商品卡片左边的序号，契约 `position`） | 写成 **#12**，两种语言一样 | No. 12, Position 12, Card 12 | 2026-10-28 补：浮层每一行标题前。只是卡片上看得到的那个数，不加字；读不到（null）就不写 |
 | 开始同看 / 停止同看 | **Start Sharing / Stop Sharing** | Turn On / Turn Off | 动词加对象，两个按钮成对 |
-| 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Bella All Natural” 和中文差不多宽 |
+| 本场品牌 | **Brand**（标签），**this stream’s brand**（正文） | Session Brand | 顶栏标签 “Brand · Allura Belt Nalla” 和中文差不多宽 |
 | 不限（默认） | **Any (default)** | None, All brands | None 会被读成「没有品牌」，实际意思是「不限定某一个品牌」 |
 | 品牌词表 | **brand glossary** | brand list | |
 | 粉丝 / 送过礼 / 订阅（弹幕作者旁的小标签） | **Follower / Gifter / Subscriber** | Fan, Friend, Donor | TikTok 随弹幕发的「和主播的关系」。Fan 太泛（粉丝团另有等级），Friend 不等于互关，Donor 带慈善含义。「互关 / Mutual」2026-10-21 起不显示：中控看到有的标了互关的并不是互关，本机核实不了；带互关标记的只标「粉丝 / Follower」 |
@@ -159,7 +159,7 @@
 
 ### 1.4 不翻译、不改写
 
-`TikTok`、`@username`、品牌名（`Bella All Natural`）、`DeepL`、`Claude`、`OpenAI`、`Google`、
+`TikTok`、`@username`、品牌名（`Allura Belt Nalla`）、`DeepL`、`Claude`、`OpenAI`、`Google`、
 `Ollama`、`Hy-MT2 1.8B/7B`、`TranslateGemma`、`MLX Whisper large-v3-turbo`、`faster-whisper`、
 `ffmpeg`、`yt-dlp`、`TikTokLive 7.0.2`、`Safari`、`banned_terms.txt`、`glossary.txt`、
 `profiles/`、`brands/`、`logs/`、`.flv`、`.m3u8`、`HTTP 429`、`code 4003110`、
@@ -260,7 +260,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 **Title Case 细则**：实词首字母大写；冠词（a/an/the）、并列连词（and/or/but）、
 不超过 4 个字母的介词（to/in/on/of/for/with/from/by/at）小写，除非放在开头或结尾。
 带连字符的两部分都大写（Banned-Term Alerts）。专有名词保留原写法（ffmpeg、yt-dlp、iPhone）。
-`@username` 保持原样，前面的 to 照规则小写：**Switch to @itzesantana11**。
+`@username` 保持原样，前面的 to 照规则小写：**Switch to @tiendademo101**。
 
 在正文里提到某个界面元素时，直接写它的 Title Case 名字，不加引号：
 **Click Start.**、**Go to Settings > Translation Engine.**
@@ -275,7 +275,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 | 对话框里的推按钮，点了还要再填东西的，加省略号 | 这个程序目前没有这种按钮；以后加了照这条做 |
 | 截断统一交给 CSS（`text-overflow: ellipsis`） | 不要在 JS 里按字符数截断再补 “…”（见 §4 R10） |
 | 句号 | 完整句子加；按钮、标题、标签、胶囊、占位文字不加。括号里以命令、路径或文件名收尾时，右括号前不加句号：`(Advanced: pip install -r requirements.txt)`，照着复制时句号不会带进命令 |
-| 分隔符 ` · `（U+00B7，两边各一个空格） | 沿用中文界面：Live · @bella、Brand · Bella、Off · 53 terms |
+| 分隔符 ` · `（U+00B7，两边各一个空格） | 沿用中文界面：Live · @allura、Brand · Allura、Off · 53 terms |
 | 破折号 | 中文的「——」优先拆成两句。实在要保留，用不带空格的 em dash `—`，一句最多一个 |
 | 分号 | 不用，拆成两句。唯一例外：冒号后面逐条列 `name: reason` 时，条目之间用 `; ` 分隔（`Chrome: …; Safari: …`） |
 | 冒号 | 标签后接值：`Startup Check: Noise Reduction isn’t working.` 冒号后面除非是专有名词或完整句子，否则小写 |
@@ -737,9 +737,9 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 |---|---:|---:|---|
 | 左右内边距 16+16 | 32 | 32 | |
 | `.brand` 和 `.controls` 之间的 gap | 16 | 16 | |
-| 状态胶囊（点 + 文字 + 内边距） | 170 | 159 | “Live · @bellaallnatural” 比中文还窄 |
+| 状态胶囊（点 + 文字 + 内边距） | 170 | 159 | “Live · @beltranlulaalal” 比中文还窄 |
 | gap | 8 | 8 | |
-| 品牌标签（上限 160） | 143 | 154 | “Brand · Bella All Natural” |
+| 品牌标签（上限 160） | 143 | 154 | “Brand · Allura Belt Nalla” |
 | 「字幕译成」下拉 | 144 | 144 | 选项都是各语言的自称，**不受界面语言影响**。这一列是 2026-10-20 以前 13 种时量的，最宽的一项是 “Bahasa Indonesia”。现在只列四种，下拉是 116（G10 实测）；设置里存着四种以外的语言时会补一项，最宽的补出来的仍是 Bahasa Indonesia，回到 144。所以本表按 144 算的是上限。直播中的 G10 两种都量：`live-full@宽度`、`live-float@宽度` 等目标是 en（116），同名加 `-extra` 的目标是 id（144，下拉补了一项并选中它） |
 | 字号控件（小 A + 滑块 + 大 A + 左右 margin） | 146 | 146 | 如果英文版隐藏两个 A，这里是 112 |
 | 清空字幕 | 76 | **56**（Clear） | “Clear Captions” 要 114 |
@@ -758,7 +758,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 |---|---:|---:|---|
 | Clear + Switch Streamer（推荐） | 623 | +8 | 一行放下，但只剩 8px，和估算误差差不多 |
 | 推荐方案 + 英文版在 ≤1100px 隐藏两个 A（纯装饰，`aria-hidden`） | 589 | **+42** | 稳。README 截图建议用这个 |
-| Clear Captions + Switch Streamer | 681 | −50 | 品牌标签被压到约 104px，变成 “Brand · Bella…” |
+| Clear Captions + Switch Streamer | 681 | −50 | 品牌标签被压到约 104px，变成 “Brand · Allura…” |
 | Clear Captions + Switch Streamer… | 692 | −61 | 同上，更糟 |
 | 再打开报警（多一个 “Alerts on” 标签，74+8） | — | 推荐方案 −74；隐藏 A 后 −40 | 品牌标签被压到约 80–114px。中文版同样场景是 −4 |
 | 连接中（还没有字幕，Clear 隐藏） | 559 | 胶囊变成 211 后仍有 +20 | 放得下 |
@@ -806,7 +806,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
     加字是 −34px。这是这个分支原来就有的情况（浮窗按钮只有图标时，中文 1000px 报警开着是 −16px，主播名最多被截约 6px），
     不是这次引入的；报警目前搁置（默认关），所以这里没有去改版面，只是不让它更糟，**也没有断言它**：
     G10 的 `live-float-zh@1000` 只断言顶栏不溢出、字没露出、品牌标签 ≥100px。
-  - **G10**：`live-float-zh-quiet@宽度`（报警关、品牌 “Bella All Natural”，和上表同一个基线）和目标在四种以外、下拉 144px 的 `live-float-zh-quiet-extra@宽度`（上表就是按 144 算的）在 1000、1100、1101、1140、1399、1400px
+  - **G10**：`live-float-zh-quiet@宽度`（报警关、品牌 “Allura Belt Nalla”，和上表同一个基线）和目标在四种以外、下拉 144px 的 `live-float-zh-quiet-extra@宽度`（上表就是按 144 算的）在 1000、1100、1101、1140、1399、1400px
     量：顶栏不溢出、状态字不被截、品牌标签下限同英文（1000px ≥100，1101–1199px ≥120）、「浮窗」两个字和图标露不露出符合上表、
     只有字的按钮宽度 40–52px。1101–1139px 这一段样式不变、越宽余量越多，最紧的是 1101，所以 1117、1139 不另量。
     `live-float-zh@1000`（和 `live-float-zh-extra@1000`）是满编（报警开、长品牌名）的那一档。**这些宽度只在 CI 的 macOS 跑器上量，
@@ -869,7 +869,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 - **R2 1101–1199px 区间品牌标签被压扁。** 手机同看按钮露出文字的断点，英文版改到 1200，见 §4.2。
 - **R3 换主播的确认按钮会溢出（中文版已经有这个问题）。**
   - `#switch-confirm` 是 `width:100%`，而 `.btn` 设了 `white-space:nowrap`。浮层内宽只有 388px。
-  - 中文武装态「再点一次：改听 @itzesantana11（停止监听 @bellaallnatural）」估算 415px，**现在就会溢出**。
+  - 中文武装态「再点一次：改听 @tiendademo101（停止监听 @beltranlulaalal）」估算 415px，**现在就会溢出**。
   - 英文改成 “Click Again to Switch to @B”，TikTok 用户名最长 24 字符时约 335px，放得下。
   - 建议再加一道 CSS 保险：`#switch-confirm { white-space: normal; height: auto; min-height: 36px; }`，两种语言都受益。
 - **R4 手机页的状态胶囊不会缩。**
@@ -893,7 +893,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 - **R9 开始页的选项行可能折行。**
   - 英文宽度：`Spoken language` 104 + 下拉 199 + 间距 24 + `Brand` 36 + 品牌下拉 119–220 + 文件夹按钮，合计 552–653px。容器是 600px。
   - 品牌名超过约 18 个字符时，品牌那一组会折到第二行。
-  - 折行本身是体面的（`flex-wrap`），不算 bug。中文版不会折行。Bella All Natural 放得下。
+  - 折行本身是体面的（`flex-wrap`），不算 bug。中文版不会折行。Allura Belt Nalla 放得下。
 - **R10 弹幕状态按字符数截断。**
   - app.js:1342/1353 在 80 个字符处截断再补 “…”。
   - 80 个英文字符的像素宽度不到 80 个汉字的一半，而同样的信息英文要多写 1.5–2 倍。结果英文的后端说明会在一半的地方被截掉。
@@ -937,7 +937,7 @@ because / likely / maybe / probably。`pending`（命中的词条还没经业务
 ### 4.4 落地与实测（提交 L1，2026-09-29）
 
 上面 §4.1 的估算按「报警关」算。G10 的 `live-full` 场景是满编（主播 + 报警开 + 品牌 + 2 人在看），
-PR #69 的 CI dom-scan（macOS 跑器）截图逐项量出来：状态胶囊 154px（其中 “Live · @bellaallnatural” 123）、
+PR #69 的 CI dom-scan（macOS 跑器）截图逐项量出来：状态胶囊 154px（其中 “Live · @beltranlulaalal” 123）、
 “Alerts on” 68、品牌标签上限 160；1101px 时控件区 808（“Phone Viewing · 2” 147，两个 A 连间距 34）。
 按比例分摊负空间，五档宽度下主播名都被截（只剩 72–103px），1101px 时品牌标签只剩 58px。
 

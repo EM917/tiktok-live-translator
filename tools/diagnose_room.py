@@ -14,9 +14,9 @@
 绝不开浏览器；每次运行最多 4 次请求；pytest 里禁止联网。
 
 用法：
-    python3 tools/diagnose_room.py @itzesantana11
-    python3 tools/diagnose_room.py @itzesantana11 --control bellaallnatural
-    python3 tools/diagnose_room.py @itzesantana11 --history-only      # 零请求
+    python3 tools/diagnose_room.py @tiendademo101
+    python3 tools/diagnose_room.py @tiendademo101 --control beltranlulaalal
+    python3 tools/diagnose_room.py @tiendademo101 --history-only      # 零请求
 """
 import argparse
 import asyncio

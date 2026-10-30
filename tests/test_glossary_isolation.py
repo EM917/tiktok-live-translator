@@ -65,7 +65,7 @@ def test_a_real_room_session_start_touches_no_repo_glossary(glossary_net):
     """Pipeline() 与 _begin_session 碰词表的每一步：扫品牌目录、按主播和品牌加载、读开关行、
     查全局表里跑错地方的条目、审计头记全局表指纹。
 
-    主播用的是 profiles/ 下有入库模板的那一个真实主播：落点要是没指到临时目录，首启复制会真的从模板
+    主播用的是 profiles/ 下有入库模板的那一个主播（模板以虚构主播命名）：落点要是没指到临时目录，首启复制会真的从模板
     建出 profiles/<主播>.txt，CI 上也会被网抓到；换成没有模板的虚构名，这一步什么都不碰，用例就测空了。
     名字从模板的文件名里取，不写进测试（真实主播名属于本机数据，测试里一律用虚构名）。"""
     rooms = sorted(p.name[:-len(".example.txt")] for p in (REPO / "profiles").glob("*.example.txt"))

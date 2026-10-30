@@ -443,6 +443,25 @@ itself, so closing it quits the app. On macOS, closing the app window quits it
 (during a session it asks first); if launched via `Start.command`, close the
 Terminal window or press Ctrl-C.
 
+**Where the app’s printed lines go (run log).** When you double-click the `.app`
+there is no Terminal window, and the lines the app prints used to go nowhere. On
+macOS, launching that way now also copies them to
+`~/Library/Logs/TikTokLiveTranslator/run.log` (in Finder press ⌘⇧G and paste
+that path, or look under **Log Reports** in the Console app). Each line carries a
+time and a process ID, and every launch starts with a line naming the version and
+the app folder. Before anything is written, API keys (and the Claude workspace
+ID), cookies, the Phone Viewing link’s key and Flash Sale Helper’s control key
+are removed, and web addresses keep only their path (everything after `?` or `#`
+is dropped); removed parts read `<已抹去>` (the log, like the terminal, is always
+in Chinese). At 5 MB the file is renamed `run.log.1`, and at most 3 older files
+are kept, about 20 MB in all. The
+folder is not on the iCloud-synced Desktop, so it is neither synced nor backed up;
+it contains streamer names, and only your own account can read it. Launched from
+`Start.command` or a command line, the lines still appear in the terminal and no
+file is written; the Windows console window and Linux terminals are unchanged.
+For development, `TLT_RUN_LOG_DIR` points the log at another folder, and an
+empty value turns it off.
+
 **Installation fails on a managed computer, or space is insufficient.** The
 initial installation requires about 6 GB and access to PyPI, Hugging Face,
 ollama.com and GitHub; see "Disk Space" for the breakdown. Corporate security policies
