@@ -622,8 +622,11 @@ def test_the_app_launcher_follows_the_venv_link_after_an_in_place_upgrade(w):
 
 
 def test_both_launchers_pass_the_project_root():
+    # 数的是 find_python 这个函数的调用（后面跟空白）：两个启动器在载入之前都会先打开一次
+    # tools/find_python.sh 看读不读得到（tccfix），那一行带着文件名和 $(，但不是调用
+    call = re.compile(r"\bfind_python\s")
     for script in (LAUNCHER, START_COMMAND):
         text = script.read_text(encoding="utf-8")
-        calls = [line.strip() for line in text.splitlines() if "find_python" in line and "$(" in line]
+        calls = [line.strip() for line in text.splitlines() if call.search(line) and "$(" in line]
         assert len(calls) == 1, (script.name, calls)
         assert calls[0].startswith('PY="$(find_python "$'), (script.name, calls[0])
