@@ -493,7 +493,7 @@ class DeepLTranslator(BaseTranslator):
 
         # 词表拿**当前会话生效的**那份（全局 + 主播 profile 合并后）。缓存
         # 必须按内容指纹命中，不能只按语言对：引擎实例跨场次复用，换主播后
-        # 只看 (source, target) 会永远命中旧表——Elisa 的直播拿着 Bella 的
+        # 只看 (source, target) 会永远命中旧表——Noelia 的直播拿着 Allura 的
         # 术语表翻，恰恰是 profile 系统要杜绝的事在 DeepL 这里悄悄复现。
         tsv = self.glossary_tsv(active().entries)
         if not tsv:
@@ -757,10 +757,10 @@ class ClaudeTranslator(BaseTranslator):
     # 在后面接词表，见 SYSTEM_GLOSSARY）。报警上下文翻译用的也是这两个实例，所以也带这一段。弹幕的两个
     # 提示词、用 CLAUDE_TRANSLATE_MODEL 换了模型的字幕都照旧。
     # 2026-10-17 两轮离线对比，生产的模型和参数，一句一请求，新旧同一轮配对、请求顺序打乱：
-    #   * 第一轮（样本内：例词是看了这批字幕才写的）：10-14 两场 bellaallnatural、10-16 一场 daisycabral_；
+    #   * 第一轮（样本内：例词是看了这批字幕才写的）：10-14 两场 beltranlulaalal、10-16 一场 ofertasdemo_；
     #     只有字幕 Haiku；一位评委 Opus 5.5，A/B 对调各评一遍、两遍同向才算胜。俚语 211 句 新:旧 108:17，
     #     普通 200 句 61:19。含 llanta / lonja 的 43 句，旧版 23 句译成轮胎、市场一类，新版 0 句。
-    #   * 第二轮（留出集，提示词和挑句规则冻结后才抽）：10-16 另两场 bellaallnatural，去掉和第一轮重复的句子，
+    #   * 第二轮（留出集，提示词和挑句规则冻结后才抽）：10-16 另两场 beltranlulaalal，去掉和第一轮重复的句子，
     #     俚语 169 句、普通随机 100 句。两位评委：Opus 5.5（第一轮的评委说明）和 Sonnet 5.5（中性说明，不提
     #     墨西哥、不提减肥产品），各看一种 A/B 顺序，两位判同一边才算胜；6 组 Bonferroni，阈值 0.0083。
     #     字幕 Haiku：俚语 74:17（p≈1e-9）显著；普通 22:11（p=0.08）没测出差异，第一轮普通句的结果没有
@@ -838,7 +838,7 @@ class ClaudeTranslator(BaseTranslator):
     #     词表写，不是译得对不对：带词表多出来的 32 句里，至少 2 句是词表用错了地方（一个当动作说的普通词被换成
     #     商品名、llanta 在比喻里），两位评委都判不带的好，还有 1 句一位评委这么判。（现在 52 句发的是不带词表
     #     那份，32 句里的 23 句在其中，llanta 那句也在；当动作说的那句，词条在 profile 层（入库模板
-    #     profiles/bellaallnatural.example.txt 里也有），照带）
+    #     profiles/beltranlulaalal.example.txt 里也有），照带）
     #   * 两位评委盲评（同俚语修正轮，两位判同一边才算胜；评委看得到本句的词表，说明里写了别把照词表写当成
     #     编造、也别因此偏向哪边）：俚语 68 句 19:6（p=0.015）、普通 35 句 4:2（p=0.69），5 组 Bonferroni 阈值
     #     0.01，都没测出差异。Sonnet 评委没照说明做：它判带词表赢的 64 次里 49 次理由是照了词表；两位都判带

@@ -14,7 +14,7 @@
 中控不看这个也完全读得懂。商品名、价格、功效一个字都不能这样处理。
 
 **而且这是按主播生效的，不是西语普适规则。** 1423 句真实语料按主播拆开：
-susanm00 触发 38.7%，bellaallnatural 0.6%，liz.nz 0.3%。同一份名单在不同
+carmendemo07 触发 38.7%，beltranlulaalal 0.6%，lia.demo 0.3%。同一份名单在不同
 主播身上差六十倍——每接一个新主播都要重新核一遍语料，流程见
 tools/onboard_streamer.py。
 

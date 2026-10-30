@@ -304,14 +304,14 @@ html[lang="en"]:not(.i18n-done) body { visibility: hidden; animation: i18n-revea
 }
 /* 英文页：品牌标签缩到底（48px）之前，主播名一个像素都不让（spec §11，L1）。上面的 2 只是
    「比主播名缩得快一点」：负空间按 缩放系数 × 自身宽度 分摊，主播名照样要分走三成左右。
-   CI dom-scan（PR #69）实测：直播满编时英文状态字 "Live · @bellaallnatural" 要 123px，按比例
+   CI dom-scan（PR #69）实测：直播满编时英文状态字 "Live · @beltranlulaalal" 要 123px，按比例
    分摊下来五档窗口宽度都只剩 72–103px，主播名被截掉一截，品牌标签反倒还有余。给 1000 之后，
    同一段负空间里品牌标签分走 99.9% 以上；缩到 48px 冻住以后，剩下的才轮到主播名。
    报警标签（"Alerts on"）照旧不缩：它是开关状态，截成 "Aler…" 就没意义了（R6 的铃铛胶囊
    按 spec §11 第 9 条不做）。中文页不受影响 */
 html[lang="en"] .active-brand-tag { flex-shrink: 1000; }
 /* 但只要主播名还参与收缩，哪怕只分到 0.05px，text-overflow 也会把最后几个字母换成「…」
-   （PR #70 实测：1000px 下 "@bellaallnatural" 显示成 "@bellaallnatu…"，品牌标签还剩 125px）。
+   （PR #70 实测：1000px 下 "@beltranlulaalal" 显示成 "@beltranlulaa…"，品牌标签还剩 125px）。
    默认窗口 1000px 及以上，状态胶囊干脆不缩，缺的全部由品牌标签让出；更窄时仍允许缩，
    否则品牌标签到底以后顶栏会挤爆 */
 @media (min-width: 1000px) {

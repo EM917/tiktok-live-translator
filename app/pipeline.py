@@ -1733,8 +1733,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         self.detector.reset_state()
         # 词表按主播加载：全局表 + profiles/<主播>.txt（后者优先）+ 可选的
         # brands/<品牌>.txt（本场「只卖这个牌子」时才加载，见 handle_control 的
-        # start 分支）。商品知识是逐主播/逐品牌的——Bella 的品名进了全局表，
-        # Elisa 的直播里就会凭空冒出别家商品。set_active 让 DeepL 的原生术语表
+        # start 分支）。商品知识是逐主播/逐品牌的——Allura 的品名进了全局表，
+        # Noelia 的直播里就会凭空冒出别家商品。set_active 让 DeepL 的原生术语表
         # 也拿到同一份合并结果。
         streamer = streamer_of(url)
         # 前端用它在字幕流里画一条分隔线：每场都发（含程序启动后的第一场），

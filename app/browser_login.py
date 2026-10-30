@@ -1,7 +1,7 @@
 # i18n: done
 """借用浏览器里现成的 TikTok 登录：读得到就拼 Cookie 头，读不到就说清楚是哪一种读不到。
 
-2026-09-17 实测（macOS 27，房间 @daisycabral_ 在播）：五层解析全部没拿到地址，
+2026-09-17 实测（macOS 27，房间 @ofertasdemo_ 在播）：五层解析全部没拿到地址，
 两个借登录的层记下的都是「no_cookie」。用同一个库单独量出来的却是两回事：
 Chrome 是 FileNotFoundError（系统不让列它的数据目录，yt-dlp 于是找不到 cookie 库），
 Safari 是 PermissionError。日志写「没有 cookie」，实际是「系统拒绝读取」——中控
