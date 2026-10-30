@@ -5223,6 +5223,26 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
                 and "translator" in load_settings():
             self._settings_notice_shown = False
             await self._incident("settings-corrupt", "clear")
+        await self._announce_settings_unreadable()
+
+    async def _announce_settings_unreadable(self):
+        """settings.json 在、却读不出来（settings.unreadable_settings）：挂一条持续提示，照实写哪个文件、
+        系统怎么说，这期间改的设置不保存；又读得出来就撤下。不说为什么读不了：只有系统那句原话。"""
+        from .settings import load_settings, unreadable_settings
+        load_settings()                  # 按此刻的文件再看一次：用户可能已经弄好了
+        problem = unreadable_settings()
+        shown = getattr(self, "_settings_unreadable_shown", None)
+        if problem and problem != shown:
+            self._settings_unreadable_shown = problem
+            await self._incident("settings-unreadable", "warn",
+                                 L("读不出设置文件 {}：{}。为了不盖掉里面原有的设置，在它能读出来之前，"
+                                   "改的设置都不会保存",
+                                   "Couldn’t read the settings file {}: {}. So that the settings "
+                                   "already in it aren’t overwritten, changes to settings won’t be "
+                                   "saved until it can be read.").format(*problem))
+        elif not problem and shown:
+            self._settings_unreadable_shown = None
+            await self._incident("settings-unreadable", "clear")
 
     # 定义在 translator.py（启动恢复引擎时也要用），这里保留同名类属性
     ENGINE_KEY_ENV = ENGINE_KEY_ENV

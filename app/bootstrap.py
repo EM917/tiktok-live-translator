@@ -178,8 +178,33 @@ def constraints_args(root):
 
 
 def recorded_requirements_digest(root):
-    """上次在 .venv 里 `pip install -r` 装成功的那份清单的指纹；没有记录返回 None。"""
-    return (_read_text(Path(root) / ".venv" / REQ_STAMP) or "").strip() or None
+    """上次在 .venv 里 `pip install -r` 装成功的那份清单的指纹；没有记录、或记录读不了返回 None。"""
+    return _requirements_stamp(root)[0]
+
+
+def _requirements_stamp(root):
+    """(指纹, 读不了时的 OSError)。记录不在、内容不是 UTF-8 文本都算没有记录：(None, None)——
+    后者补装一次、装成功写上新的就好了。记录在却读不了（权限、坏盘）是 (None, 异常)：不知道装没装过。"""
+    path = Path(root) / ".venv" / REQ_STAMP
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, NotADirectoryError, ValueError):
+        return None, None
+    except OSError as exc:
+        return None, exc
+    return text.strip() or None, None
+
+
+_stamp_reported = set()          # 这个进程里已经在终端说过「安装记录读不了」的记录路径
+
+
+def _note_unreadable_stamp(root, exc):
+    """终端里照实说一次：哪个文件、系统的原话（[Errno 13] Permission denied），不猜为什么。"""
+    path = str(Path(root) / ".venv" / REQ_STAMP)
+    if path not in _stamp_reported:
+        _stamp_reported.add(path)
+        print("[初始化] 读不了安装记录 {}：[Errno {}] {}。这次不按清单补装；缺核心组件时照旧会装".format(
+            path, exc.errno, exc.strerror or exc))
 
 
 # 装不上程序照样能跑的组件：mlx-whisper 退回 CPU 识别，TikTokLive 只影响观众弹幕，
@@ -269,7 +294,13 @@ def requirements_pending(root, now=None):
     if current is None:
         return False
     venv = Path(root) / ".venv"
-    if recorded_requirements_digest(root) == current:
+    recorded, unreadable = _requirements_stamp(root)
+    if recorded == current:
+        return False
+    if unreadable:
+        # 记录在却读不了：当成没装过，每次启动都要跑一遍 pip；记录要是也写不进去，就次次如此。
+        # 和清单本身读不了一样不补装（requirements_file_digest 返回 None 那一路）
+        _note_unreadable_stamp(root, unreadable)
         return False
     attempt = _read_json(venv / REQ_ATTEMPT)
     if attempt and attempt.get("digest") == current:

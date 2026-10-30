@@ -17,6 +17,9 @@ _WINDOWS = os.name == "nt"      # Windows 上照旧复用临时文件（见 _cre
 
 # 本次运行里发现 settings.json 内容损坏时备份成的文件名，以及界面提示是否已发过
 _corrupt = {"backup": None, "announced": False}
+# 最近一次读取时 settings.json 在、却读不出来：(路径, 系统或解析器的原话)；读出来了、或文件不在是 None。
+# 这时 save_setting 不写回（见 _load）
+_unreadable = {"problem": None}
 # save_setting 是「读全部 → 改一项 → 整个写回」：两个线程同时写不同的键，后写的会把先写的那一项冲掉。
 # 以前写设置的都在事件循环线程上；浮窗记位置和大小的定时器线程（app/float_window.py）是第二个写手，
 # 所以进程内串行化。跨进程（双击第二次）不在这里管
@@ -30,29 +33,71 @@ def load_settings():
     settings.json.corrupt-<时间>，再返回空 dict。以前直接返回 {}：启动几秒内
     必然有一次 save_setting（更新器记时间戳、开播记房间）在这个 {} 上合并写回，
     DeepL 等密钥、引擎选择、最近直播间被静默抹掉，连原文件都不剩。
-    改名而不是复制：之后的读取看到的是「没有文件」，不会每读一次备份一份。"""
+    改名而不是复制：之后的读取看到的是「没有文件」，不会每读一次备份一份。
+
+    读不了（文件在，系统不让读、路径上是个文件夹……）同样返回空 dict，但不改名，记进
+    unreadable_settings()，save_setting 也不写回——见 _load。"""
+    return _load()[0]
+
+
+def _load():
+    """(设置, 能不能写回)。能不能写回为 False：文件在、却没读出它的内容——读不了，或者解析不了又没能
+    改名备份——这时手里的 {} 不是文件里的设置，拿它合并写回就把文件盖掉了。
+
+    以前读不了也当成没有文件：文件读不了、文件夹却可写（chmod 000 一类）时，下一次 save_setting
+    就把空设置加一项换上去，密钥、引擎、最近直播间全没了。只有「文件不在」才是真的没有设置。"""
     try:
         raw = SETTINGS_FILE.read_bytes()
-    except OSError:
-        return {}
+    except FileNotFoundError:    # 含所在文件夹不在
+        _note_unreadable(None)
+        return {}, True
+    except OSError as exc:
+        _note_unreadable(_os_words(exc))
+        return {}, False
     try:
         # 整段字节交给 json，由它认编码：带 BOM 的 UTF-8（PowerShell 5.1 的
         # Set-Content -Encoding UTF8、老版记事本）和 UTF-16（PowerShell 5.1 的 > 或
         # Out-File、记事本存成「Unicode」）都读得出来。手改粘密钥正是这样存出来的，
         # 合法的文件不能被当成损坏挪走
         data = json.loads(raw)
-    except Exception:            # JSONDecodeError、UnicodeDecodeError……
-        _backup_corrupt(raw)
-        return {}
-    return data if isinstance(data, dict) else {}
+    except Exception as exc:     # JSONDecodeError、UnicodeDecodeError……
+        moved = _backup_corrupt(raw)
+        _note_unreadable(None if moved else str(exc))
+        return {}, moved
+    _note_unreadable(None)
+    return (data if isinstance(data, dict) else {}), True
+
+
+def _os_words(exc):
+    """系统的原话，不带路径（提示里另写路径）：[Errno 13] Permission denied。"""
+    if exc.errno is not None and exc.strerror:
+        return "[Errno {}] {}".format(exc.errno, exc.strerror)
+    return str(exc) or type(exc).__name__
+
+
+def _note_unreadable(detail):
+    problem = None if detail is None else (str(SETTINGS_FILE), detail)
+    if problem is not None and problem != _unreadable["problem"]:
+        print("[警告] 读不出 {}：{}。在它能读出来之前，设置不写回，免得盖掉原有内容".format(*problem))
+    _unreadable["problem"] = problem
+
+
+def unreadable_settings():
+    """最近一次读取时 settings.json 在、却读不出来：返回 (路径, 系统或解析器的原话)；读出来了、或者
+    文件不在，返回 None。这期间 save_setting 不写回。只报观察到的，不说为什么读不了。"""
+    return _unreadable["problem"]
 
 
 def _backup_corrupt(raw):
+    """把解析不了的 settings.json 改名备份。返回原处还有没有这份坏文件：False 是还在（没能挪走），
+    这时写回会把它盖掉。"""
     try:
         if SETTINGS_FILE.read_bytes() != raw:
-            return               # 读完之后文件已被别处改写或备份过：别把新文件当坏的挪走
+            return False         # 读完之后文件已被别处改写过：别把新文件当坏的挪走，这一次也别写
+    except FileNotFoundError:
+        return True              # 并发的另一次读取刚改名备份过
     except OSError:
-        return
+        return False
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     for n in range(1, 100):
         backup = SETTINGS_FILE.with_name("{}.corrupt-{}{}".format(
@@ -61,12 +106,15 @@ def _backup_corrupt(raw):
             continue
         try:
             os.replace(str(SETTINGS_FILE), str(backup))
-        except OSError:          # 含 FileNotFoundError：并发的另一次读取刚改过名
-            return
+        except FileNotFoundError:    # 并发的另一次读取刚改过名
+            return True
+        except OSError:
+            return False
         if _corrupt["backup"] is None:
             _corrupt["backup"] = backup.name
         print("[警告] settings.json 内容损坏，已备份为 {}".format(backup.name))
-        return
+        return True
+    return False
 
 
 def corrupt_backup_name():
@@ -216,10 +264,15 @@ def streamer_brands():
 
 
 def save_setting(key, value):
-    """写入单个设置项（读-合并-原子替换）。写失败静默忽略——
-    持久化是锦上添花，不能因为磁盘/权限问题影响主流程。"""
+    """写入单个设置项（读-合并-原子替换），返回写没写成。写失败不抛——
+    持久化是锦上添花，不能因为磁盘/权限问题影响主流程。
+
+    文件在、却读不出来（unreadable_settings() 不是 None）时不写：手里没有文件里原有的设置，
+    合并写回就把它们盖掉了。界面上的提示见 app/pipeline.py 的 _announce_settings_unreadable。"""
     with _save_lock:
-        data = load_settings()
+        data, writable = _load()
+        if not writable:
+            return False
         data[key] = value
         try:
             tmp = SETTINGS_FILE.with_suffix(".json.tmp")
@@ -232,7 +285,8 @@ def save_setting(key, value):
             # 换上去的就是刚建的这个 0600 文件：升级前就是 0644 的 settings.json 随之被替掉，不用再 chmod
             os.replace(tmp, SETTINGS_FILE)
         except OSError:
-            pass
+            return False
+        return True
 
 
 def _create_private(tmp):
