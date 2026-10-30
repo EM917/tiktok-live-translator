@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import asr_risk, i18n
 from .asr import DEFAULT_TEMPERATURE, MODEL_SIZES_MB
+from .browser_login import FDA_OPEN_TYPES
 from .i18n import LN, L, of
 from .comment_levels import snapshot as level_snapshot
 from .comment_source import CommentSource
@@ -698,6 +699,10 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             # 没变时发不发 notice。放后台跑、立刻返回。只有本机页面发得出来：手机入站只认 retranslate，浮窗页只读
             self._spawn(self._recheck_browser_login(auto=msg.get("auto") is True))
             return None
+        elif mtype in FDA_OPEN_TYPES:
+            # 「完全磁盘访问权限」那几步旁边的按钮：只认类型，别的字段一概不读，argv 写死（_open_fda）。
+            # 只有本机页面发得出来：手机入站只认 retranslate，浮窗页只读
+            return self._open_fda(mtype)
         elif mtype == "float_window":
             # 顶栏「浮窗」按钮：只显示，不碰识别、检测、审计。浏览器模式没有宿主，直接忽略
             return self._set_float_window(bool(msg.get("on")))
@@ -1416,7 +1421,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             return "lagging"
         return "ok"
 
-    async def _incident(self, key, level, text="", recheck=False):
+    async def _incident(self, key, level, text="", recheck=False, fda=None):
         """在界面顶部持续显示、直到明确清除的提示（电脑休眠过、审计日志写不进去、
         识别改用 CPU、网络断了……）。key 相同的覆盖同一条，level="clear" 去掉。
 
@@ -1425,7 +1430,9 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         开始时自动清掉；其余的一直留到发出 clear。文字只写观察到的事实和能做的事。
 
         recheck=True：这一条的第一行带「我加好了，再查一次」（web/app.js），点了发 recheck_browser_login。眼下只有
-        「没有读到 TikTok 登录」那条在系统拒绝读取时带（_sync_login_incident）。不带时消息和以前逐字节相同。"""
+        「没有读到 TikTok 登录」那条在系统拒绝读取时带（_sync_login_incident）。不带时消息和以前逐字节相同。
+        fda（{按钮: 那一行}，browser_login.fda_button_lines）：「完全磁盘访问权限」那几步旁边的按钮跟在哪几行后面，
+        同一条在 macOS 上带（_sync_login_incident）；页面点了发 open_fda_settings 等（_open_fda）。"""
         if level == "clear":
             print("[提示] {} 已清除".format(key))
         else:
@@ -1433,6 +1440,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         msg = {"type": "incident", "id": key, "level": level, "text": text, "ts": time.time()}
         if recheck:
             msg["recheck"] = True
+        if fda:
+            msg["fda"] = dict(fda)
         await self.server.broadcast(msg)
 
     async def _clear_session_incidents(self):
@@ -2569,7 +2578,7 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         失败时 ResolveError.login（resolver 汇总好的），和各层记录里的 login 合在一起（_login_seen）。
         2026-10-29 那场 Safari 被系统拒绝读取、后面几层借用了 Chrome 的登录，以前这里只拿那一层的观察，
         头一句说成了「程序没有读到浏览器里的 TikTok 登录」。"""
-        from .browser_login import BLOCKED, NOT_READ, no_login_notice
+        from .browser_login import BLOCKED, NOT_READ, fda_button_lines, fda_buttons_here, no_login_notice
         from .resolver import LOGIN_LAYER
 
         rec = next((r for r in layers or () if r.get("layer") == LOGIN_LAYER), None)
@@ -2584,12 +2593,21 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
             observed = {b: c for b, c in (rec.get("login") or {}).items() if c != NOT_READ}
             if not observed:
                 return
-            text = no_login_notice(observed, self._login_seen(layers, login))
-            # 系统拒绝读取时，第一行带「我加好了，再查一次」（_recheck_browser_login）
+            # 系统拒绝读取时，第一行带「我加好了，再查一次」（_recheck_browser_login）；在 macOS 上那几步再配上打开
+            # 设置、在访达里选中 Python（和「终端」）的按钮（_open_fda），文字按按钮写
             recheck = BLOCKED in observed.values()
+            buttons = recheck and fda_buttons_here()
+            text = no_login_notice(observed, self._login_seen(layers, login), buttons=buttons)
+            fda = fda_button_lines() if buttons else None
             shown = incidents.get(self.LOGIN_INCIDENT) or {}
-            if shown.get("text") != text or bool(shown.get("recheck")) != recheck:
-                await self._incident(self.LOGIN_INCIDENT, "warn", text, **({"recheck": True} if recheck else {}))
+            if (shown.get("text") != text or bool(shown.get("recheck")) != recheck
+                    or (shown.get("fda") or None) != fda):
+                extra = {}
+                if recheck:
+                    extra["recheck"] = True
+                if fda:
+                    extra["fda"] = fda
+                await self._incident(self.LOGIN_INCIDENT, "warn", text, **extra)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -2649,7 +2667,8 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         from .resolver import _login_first_browsers
         from .selfcheck import browser_login_state
 
-        observed, row = await browser_login_state()
+        # 带上 --cookies-browser：那一行和启动自检按同一个「登录优先那一步读谁」判（selfcheck._browser_login_row 的 first）
+        observed, row = await browser_login_state(getattr(self.args, "cookies_browser", "auto"))
         print("[信息] 浏览器登录态重查：{}".format(
             " ".join("{}={}".format(b, c) for b, c in observed.items()) or "没有要查的浏览器"))
         current = self._published_checks()
@@ -2673,6 +2692,70 @@ class Pipeline(ViewerShareMixin, DiskSpaceMixin, EngineProvisionMixin, CommentGu
         if auto and last == first:
             return
         await self.server.broadcast({"type": "notice", "text": bl.recheck_notice(first)})
+
+    # open 正常立刻返回；等这么久还没返回就当没打开（同 flash_sale.OPEN_TIMEOUT_SEC）
+    FDA_OPEN_TIMEOUT_SEC = 10
+
+    def _open_fda(self, kind):
+        """「完全磁盘访问权限」那几步旁边的按钮（持续提示和自检「浏览器登录态」那一行上，web/app.js fdaButton）：
+        open_fda_settings 打开那一页，reveal_python 在访达里选中解释器，reveal_terminal 在访达里选中「终端」。
+
+        2026-10-29 用户照着黄条的文字做不下来，是我们替他执行了这两条 open，他拖进去才成功。页面只发类型，不读别的
+        字段：argv 写死在 browser_login.fda_open_argvs，只打开系统界面，程序绝不自己改系统设置。放后台跑、立刻返回
+        （同 open_flash_helper）；同一个按钮上一次还没返回时再点什么都不做。只有本机页面发得出来：手机入站只认
+        retranslate（app/viewer.py _handle_inbound），浮窗页的入站一律丢弃（app/server.py _ws）。
+        不是 macOS 时页面上没有这几个按钮（fda 只在 macOS 上带）；硬发过来什么都不执行，只回一句 notice。"""
+        from . import browser_login as bl
+
+        if not bl.fda_buttons_here():
+            print("[信息] 完全磁盘访问权限：本机不是 macOS，{} 什么都没执行".format(kind))
+            return self.server.broadcast({"type": "notice", "text": bl.FDA_NOT_HERE})
+        opening = getattr(self, "_fda_opening", None)
+        if opening is None:
+            opening = self._fda_opening = set()
+        if kind in opening:
+            return None
+        opening.add(kind)
+        self._spawn(self._fda_open_run(kind))
+        return None
+
+    async def _fda_open_run(self, kind):
+        """跑 kind 对应的每条 open，看退出码。0：什么都不说（设置那一页、访达自己会到前面来）。非 0、超时、没能执行：
+        终端一行，再发一句 notice（browser_login.fda_open_failed）——只写 open 的退出码和自己能做的一步，不猜为什么
+        （第八条）。reveal_python 有两个路径时各跑一条，一条没成不挡另一条。"""
+        from . import browser_login as bl
+
+        try:
+            for argv in bl.fda_open_argvs(kind):
+                rc = await self._fda_exec_one(argv)
+                if rc != 0:
+                    await self.server.broadcast(
+                        {"type": "notice", "text": bl.fda_open_failed(kind, rc, argv[-1])})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("[警告] 完全磁盘访问权限：{} 没能执行（{}）".format(kind, type(exc).__name__))
+        finally:
+            self._fda_opening.discard(kind)
+
+    async def _fda_exec_one(self, argv):
+        """一条 open：返回退出码；超时、没能执行时返回 None（终端各打一行）。_fda_exec 是测试换进来的假 exec。"""
+        print("[信息] 完全磁盘访问权限：执行 {}".format(" ".join(argv)))
+        run = getattr(self, "_fda_exec", None) or asyncio.create_subprocess_exec
+        try:
+            proc = await run(*argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            rc = await asyncio.wait_for(proc.wait(), self.FDA_OPEN_TIMEOUT_SEC)
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            print("[警告] 完全磁盘访问权限：open 等了 {} 秒还没返回".format(self.FDA_OPEN_TIMEOUT_SEC))
+            return None
+        except Exception as exc:
+            print("[警告] 完全磁盘访问权限：open 没能执行（{}）".format(type(exc).__name__))
+            return None
+        if rc != 0:
+            print("[警告] 完全磁盘访问权限：open 返回 {}，没有打开".format(rc))
+        return rc
 
     def _log_resolve(self, attempt, ok, t0, layers, kind=None, media=None,
                      reconnect=None, message=None, login=None):

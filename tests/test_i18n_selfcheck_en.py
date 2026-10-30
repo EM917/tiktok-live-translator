@@ -267,11 +267,15 @@ def _browser_login(mp, tmp_path):
     from app import browser_login as bl
     mp.setattr(bl, "LOGIN_STEPS", "Sign in to TikTok in Chrome, then try again.")
     mp.setattr(bl, "observed_text", lambda observed: OBSERVED)
-    mp.setattr(bl, "steps_text", lambda observed: "Sign in to TikTok in Chrome.")
+    mp.setattr(bl, "steps_text", lambda observed, **_kw: "Sign in to TikTok in Chrome.")
     rows = [selfcheck._browser_login_row({}),
             selfcheck._browser_login_row({"Chrome": bl.NOT_READ}),
             selfcheck._browser_login_row({"Chrome": bl.OK, "Safari": bl.BLOCKED}),
-            selfcheck._browser_login_row({"Chrome": bl.BLOCKED})]
+            selfcheck._browser_login_row({"Chrome": bl.BLOCKED}),
+            # 登录优先那一步要读的 Safari 被系统拒绝读取、Chrome 读到了登录（login-5）：detail 多一句那一步只读谁
+            selfcheck._browser_login_row({"chrome": bl.OK, "safari": bl.BLOCKED}),
+            # macOS 上带「完全磁盘访问权限」那几步时多一个 fda（那几步旁边的按钮跟在哪几行后面），也得是英文
+            selfcheck._browser_login_row({"Chrome": bl.BLOCKED}, buttons=True)]
     with mp.context() as other_os:
         coro = selfcheck.check_browser_login()
         other_os.setattr(sys, "platform", "linux")
@@ -375,15 +379,19 @@ def test_every_selfcheck_row_reads_as_english(scenario, monkeypatch, tmp_path):
             assert "  " not in en[key].strip(), (scenario, key, en[key])    # 拼接处没有多空格
         # 两种行多带键，别的行、别的情况都只有这四个键：
         # - recheck：「浏览器登录态」那一行带「完全磁盘访问权限」那几步时多出来的布尔键（页面画「我加好了，再查一次」），
-        #   不是文字，英文界面上不用换
+        #   不是文字，英文界面上不用换。fda：同一行在 macOS 上多出来的 {按钮: 那一行}，只跟着 recheck 出现，
+        #   那几行是文字，也得是英文
         # - action / size_mb / busy：「语音识别」一行模型还没下全时多带「现在下载」那一下（app/selfcheck.py _check）
         extra = set(en) - {"name", "level", "detail", "fix"}
-        assert extra in (set(), {"recheck"}, {"action", "size_mb", "busy"}) and en["level"] == row["level"]
-        if extra == {"recheck"}:
+        assert extra in (set(), {"recheck"}, {"recheck", "fda"}, {"action", "size_mb", "busy"}) \
+            and en["level"] == row["level"]
+        if "recheck" in extra:
             assert en["recheck"] is True and scenario == "browser_login"
         elif extra:
             assert en["action"] == selfcheck.ACTION_DOWNLOAD_ASR and en["name"] == "Speech Recognition"
             assert en["level"] == selfcheck.WARN
+        for line in (en.get("fda") or {}).values():
+            assert isinstance(line, str) and line and not CJK.search(line), (scenario, line)
 
 
 def test_the_twelve_row_names_follow_the_glossary():
@@ -452,8 +460,7 @@ SWITCH_ZH = ("从 python.org 下载安装 Python 3.10 或更新版本；装好�
 SWITCH_EN = ("Install Python 3.10 or later from python.org. Then quit the app completely, delete the "
              ".venv folder in the app folder, and open the app again. It reinstalls its components "
              "with the new Python (about 1.4 GB, needs an internet connection).")
-# 路径和步骤指向点「开始翻译」后窗口顶部那条提示（2026-10-29）：「浏览器登录态」那一行在别的浏览器读到登录时是
-# 「通过」、不带步骤
+# 路径和步骤指向点「开始翻译」后窗口顶部那条提示（2026-10-29）：直播中设置分组收着，「浏览器登录态」那一行看不见
 FDA_ZH = ("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次：点「开始翻译」后，系统拒绝读取"
           "浏览器数据时，窗口顶部那条提示里有路径和步骤；不加的话，TikTok 要求登录才给流地址的直播间拿不到流")
 FDA_EN = (" After switching, add the new Python to Full Disk Access once more. After you click Start, if "

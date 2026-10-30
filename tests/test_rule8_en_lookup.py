@@ -284,7 +284,7 @@ def test_steps_and_the_no_login_notice_in_english(monkeypatch, login):
     assert notice.startswith("When looking up the stream URL, the app")
     assert "didn’t find a TikTok sign-in in your browsers" not in notice
     assert notice.endswith(" This notice disappears once a sign-in is found.")
-    # 不再指向自检那一行：别的浏览器读到登录时那一行是「通过」、不带步骤，直播中设置分组也收着
+    # 不再指向自检那一行：步骤就在这条提示里，直播中设置分组收着、那一行看不见
     assert "Browser Login" not in notice and "Startup Check" not in notice
     if bl.BLOCKED in login.values():
         assert notice.split("\n")[0].endswith(en(bl.fda_steps()).split("\n")[0])

@@ -28,7 +28,7 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from .i18n import L
+from .i18n import LN, L
 
 # TikTok 登录后才有的 cookie 名字
 LOGIN_COOKIE_NAMES = ("sessionid", "sessionid_ss", "sid_tt", "sid_guard")
@@ -413,7 +413,72 @@ def quit_step(terminal=None):
     return L("按 ⌘Q 完全退出本程序，再打开它。", "Press ⌘Q to quit the app completely, then open it again.")
 
 
-def fda_steps(targets=None, terminal=None):
+# ---- 「完全磁盘访问权限」那几步旁边的按钮 -----------------------------------------------------------
+#
+# 2026-10-29 新 Mac 上，用户照着黄条的文字做不下来：是我们替他执行了
+#   open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+#   open -R <解释器的真实路径>
+# 他把访达里选中的那个文件拖进列表才成功。这几个按钮做的就是这两条命令（从终端启动时再加一条选中「终端」），
+# 只打开系统界面，程序绝不自己改系统设置。页面发来的指令只有类型（app/pipeline.py _open_fda），argv 全在这里写死，
+# 不收页面传来的任何路径或参数。只在 macOS 上有（fda_buttons_here）。
+FDA_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+FDA_OPEN_SETTINGS = "open_fda_settings"
+FDA_REVEAL_PYTHON = "reveal_python"
+FDA_REVEAL_TERMINAL = "reveal_terminal"
+FDA_OPEN_TYPES = (FDA_OPEN_SETTINGS, FDA_REVEAL_PYTHON, FDA_REVEAL_TERMINAL)
+# 按钮上的字（web/app.js fdaLabel 同一套）。第 1、2 步和「终端」那一句按这个名字叫人去点（fda_steps(buttons=True)）
+FDA_BUTTON_LABELS = {
+    "settings": L("打开完全磁盘访问设置", "Open Full Disk Access Settings"),
+    "python": L("在访达里选中 Python", "Show Python in Finder"),
+    "terminal": L("在访达里选中终端", "Show Terminal in Finder"),
+}
+# 这台电脑不是 macOS，指令硬发过来时回的那一句：什么都不执行
+FDA_NOT_HERE = L("这个按钮只在 macOS 上用得到，本机什么都没打开。",
+                 "This button is only for macOS. Nothing was opened on this computer.")
+
+
+def fda_buttons_here(platform=None):
+    """这几个按钮只在 macOS 上有：别的平台没有「完全磁盘访问权限」这一页，也没有访达。"""
+    return (sys.platform if platform is None else platform) == "darwin"
+
+
+def fda_open_argvs(kind, targets=None):
+    """按钮对应的 open 命令，每条一个 argv；认不出的 kind 是空列表。
+
+    reveal_python 选中的是 fda_targets() 里的每个路径：和那几步里列的、黄条上写的是同一份，sys.executable 解析
+    符号链接以后的那个一定在里面（另一个是启动用的解释器，和它不同时才多一条）。每个路径单独一条 open -R，
+    一条没成不挡另一条。"""
+    if kind == FDA_OPEN_SETTINGS:
+        return [["open", FDA_SETTINGS_URL]]
+    if kind == FDA_REVEAL_PYTHON:
+        targets = fda_targets() if targets is None else list(targets)
+        return [["open", "-R", path] for path in targets]
+    if kind == FDA_REVEAL_TERMINAL:
+        return [["open", "-R", TERMINAL_APP]]
+    return []
+
+
+def fda_open_failed(kind, rc=None, target=None):
+    """按钮的 open 没成时那一句 notice：只说看到的（open 的退出码；没拿到退出码——超时、没能执行——就不写）和
+    自己能做的一步（第八条：不猜为什么）。target 是这一条 open -R 选中的路径。"""
+    code = L("（open 返回 {}）", " (open returned {})").format(rc) if rc is not None else ""
+    if kind == FDA_OPEN_SETTINGS:
+        return L("没能打开「完全磁盘访问权限」那一页{}。可以自己打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
+                 "Couldn’t open the Full Disk Access page{}. You can open System Settings > Privacy & Security > "
+                 "Full Disk Access yourself.").format(code)
+    return L("没能在访达里选中「{}」{}。可以在「完全磁盘访问权限」的列表下面点「+」，按 ⌘⇧G，粘贴这个路径后回车、"
+             "点「打开」。",
+             "Couldn’t show “{}” in Finder{}. You can click + under the Full Disk Access list, press ⌘⇧G, paste "
+             "this path, press Return, and click Open.").format(target or "", code)
+
+
+def fda_button_lines(targets=None, terminal=None):
+    """带按钮的那几步（fda_steps(buttons=True)）里，每个按钮跟在哪一行后面：{"settings"|"python"|"terminal": 那一行}。
+    「终端」那一个只在从终端启动时有。页面只拿这几行整行比对（web/app.js drawFdaLines，同 pathOfLine），不从文字里猜。"""
+    return _fda_lines(targets, terminal, True)[1]
+
+
+def fda_steps(targets=None, terminal=None, buttons=False):
     """系统拒绝读取时能照做的几步：头一句、编号的三步、两行补充。
 
     2026-10-29 新 Mac 上，中控照着以前那一整段长文（系统设置路径、+、⌘⇧G、粘贴、回车、打开、开关、列表里叫
@@ -429,27 +494,55 @@ def fda_steps(targets=None, terminal=None):
 
     路径行照旧整行就是「路径」（专家审查 I8）：解析失败的横幅里这几行由页面换成可复制的代码行（status.paths，
     app/pipeline.py _fda_paths；web/app.js 只按那个结构化字段认路径行，不从文字里猜），自检那一行和终端里照文字分行
-    显示。⌘⇧G 手动粘贴是眼下唯一的走法；以后有了「打开设置」「在访达中显示」的按钮，这条走法挪进 README 当备用。"""
+    显示。
+
+    buttons=True（持续提示和自检「浏览器登录态」那一行，页面在 macOS 上画按钮，见 fda_button_lines）：第 1 步叫人点
+    「打开完全磁盘访问设置」，第 2 步叫人点「在访达里选中 Python」、把选中的文件拖进列表（2026-10-29 用户就是这样做成
+    的），从终端启动时「终端」那一句单独一行、叫人点「在访达里选中终端」。⌘⇧G 手动粘贴挪进 README / docs/faq 当备用，
+    按钮打开失败时那一句 notice 里也给（fda_open_failed）。buttons=False（解析失败的横幅，那里没有按钮）照旧是
+    ⌘⇧G 的写法。"""
+    return L("\n", "\n").join(_fda_lines(targets, terminal, buttons)[0])
+
+
+def _fda_lines(targets, terminal, buttons):
+    """(fda_steps 的各行, {按钮: 它跟在后面的那一行})。不带按钮时第二项是空的。"""
     targets = fda_targets() if targets is None else list(targets)
     terminal = started_from_terminal() if terminal is None else terminal
     names = L("、", ", ").join(os.path.basename(t) for t in targets)
     paths = L("\n", "\n").join(L("「{}」", "“{}”").format(t) for t in targets)
     each = L("（每个路径各做一遍）", " (do this for each path)") if len(targets) > 1 else ""
-    lines = [
-        L("照下面三步给 Python 打开「完全磁盘访问权限」：", "Follow these three steps to turn on Full Disk Access for Python:"),
-        L("1. 打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
-          "1. Open System Settings > Privacy & Security > Full Disk Access."),
-        L("2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开{}：",
-          "2. Click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, "
-          "and turn on its switch{}:").format(each),
-        paths,
-        L("列表里显示的名字是 {}，不是本程序的名字。", "The list shows {}, not the app’s name.").format(names),
-    ]
-    if terminal:
-        lines[-1] = lines[-1] + _space_before(
-            L("本程序是从终端启动的：「终端」也照这样加进去，按 ⌘⇧G 时粘贴「{}」。",
-              "The app was started from a terminal. Add Terminal the same way: after ⌘⇧G, paste "
-              "“{}”.").format(TERMINAL_APP))
+    named = L("列表里显示的名字是 {}，不是本程序的名字。", "The list shows {}, not the app’s name.").format(names)
+    lines = [L("照下面三步给 Python 打开「完全磁盘访问权限」：", "Follow these three steps to turn on Full Disk Access for Python:")]
+    anchors = {}
+    if buttons:
+        anchors["settings"] = L("1. 点「{}」，会打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
+                                "1. Click {}. It opens System Settings > Privacy & Security > Full Disk Access.").format(
+                                    FDA_BUTTON_LABELS["settings"])
+        anchors["python"] = (L("2. 点「{}」，把访达里选中的文件拖进那一页的列表，再把它的开关打开{}。",
+                               "2. Click {}, drag the selected file into the list on that page, and turn on its "
+                               "switch{}.").format(FDA_BUTTON_LABELS["python"], each)
+                             + _space_before(LN(len(targets), "要加的文件：", "File to add:", "Files to add:")))
+        lines += [anchors["settings"], anchors["python"], paths, named]
+        if terminal:
+            anchors["terminal"] = L("本程序是从终端启动的：点「{}」，把「终端」也拖进那个列表，再打开它的开关。",
+                                    "The app was started from a terminal. Click {}, drag Terminal into the same "
+                                    "list, and turn on its switch.").format(FDA_BUTTON_LABELS["terminal"])
+            lines.append(anchors["terminal"])
+    else:
+        lines += [
+            L("1. 打开「系统设置」→「隐私与安全性」→「完全磁盘访问权限」。",
+              "1. Open System Settings > Privacy & Security > Full Disk Access."),
+            L("2. 点「+」，在选文件的窗口里按 ⌘⇧G，粘贴下面的路径后回车、点「打开」，再把它的开关打开{}：",
+              "2. Click +. In the file window, press ⌘⇧G, paste the path below, press Return, click Open, "
+              "and turn on its switch{}:").format(each),
+            paths,
+            named,
+        ]
+        if terminal:
+            lines[-1] = lines[-1] + _space_before(
+                L("本程序是从终端启动的：「终端」也照这样加进去，按 ⌘⇧G 时粘贴「{}」。",
+                  "The app was started from a terminal. Add Terminal the same way: after ⌘⇧G, paste "
+                  "“{}”.").format(TERMINAL_APP))
     lines += [
         L("3. ", "3. ") + quit_step(terminal),
         L("列表里已经有它、开关也开着还是这样：选中它点「−」删掉，再做一次第 2 步。",
@@ -461,7 +554,7 @@ def fda_steps(targets=None, terminal=None):
           "protected data on this computer. When you no longer need the TikTok sign-in from your browser, you "
           "can turn its switch off in the same list."),
     ]
-    return L("\n", "\n").join(lines)
+    return lines, anchors
 
 
 def decrypt_steps(browsers):
@@ -514,8 +607,8 @@ def observed_text(login):
                              for b, c in (login or {}).items())
 
 
-def steps_text(login, lines=False):
-    """和这些观察对应的、能照做的步骤（可能不止一步）。
+def steps_text(login, lines=False, buttons=False):
+    """和这些观察对应的、能照做的步骤（可能不止一步）。buttons 原样交给 fda_steps（自检那一行在 macOS 上画按钮时为真）。
 
     lines=True（解析失败那段话，browser_only_advice）：带「完全磁盘访问权限」那几步（分了行，最后一行是权限
     范围）时每一步另起一行——「在 Chrome 里登录」「钥匙串」接在权限范围那句后面，读起来像是在接着讲权限（审查
@@ -525,7 +618,7 @@ def steps_text(login, lines=False):
     codes = set(login.values())
     steps = []
     if BLOCKED in codes:
-        steps.append(FDA_OBSERVED + fda_steps())
+        steps.append(FDA_OBSERVED + fda_steps(buttons=buttons))
     if codes & {NOT_LOGGED_IN, NO_TIKTOK, NO_DATA}:
         steps.append(LOGIN_STEPS)
     if CANNOT_DECRYPT in codes:
@@ -560,7 +653,7 @@ _SIGN_IN_STEPS = L("请在 {} 里登录 TikTok。", "Sign in to TikTok in {}.")
 _SIGN_IN_CODES = (NOT_LOGGED_IN, NO_TIKTOK, NO_DATA, READABLE)
 
 
-def no_login_notice(login, seen=None):
+def no_login_notice(login, seen=None, buttons=False):
     """登录优先那一步（resolver.LOGIN_LAYER）没读到可用的 TikTok 登录时，挂在界面顶部的那条持续提示（不挡开播，
     那一步读到登录就撤）。写三件事：那一步读了什么、看到了什么；能照做的步骤；这意味着哪类直播间拿不到。
 
@@ -576,12 +669,15 @@ def no_login_notice(login, seen=None):
         （页面上超过 3 行的持续提示只露第一行和「显示全部步骤」，web/app.js foldIncident）；
       * 「请在 Safari 里登录」只在那一步读得到、里面没有登录时出现；
       * 不再指向自检那一行：步骤就在这条提示里。
-    影响哪类直播间和「自动消失」放在最后（分行时单独成最后一行，不接在权限范围那句后面，审查第 1 轮）。"""
+    影响哪类直播间和「自动消失」放在最后（分行时单独成最后一行，不接在权限范围那句后面，审查第 1 轮）。
+
+    buttons=True（pipeline._sync_login_incident 在 macOS 上给）：那几步按页面上的按钮写（fda_steps(buttons=True)），
+    这条提示同时带 fda_button_lines，页面把按钮接在对应的那一行后面。"""
     login = {b: c for b, c in (login or {}).items() if c != NOT_READ}
     codes = set(login.values())
     head = _first_step_head(login) + _space_before(_borrowed_later(login, seen))
     if BLOCKED in codes:
-        lines = [head + _space_before(fda_steps())]
+        lines = [head + _space_before(fda_steps(buttons=buttons))]
         if KEYCHAIN_WAIT in codes:
             lines.append(KEYCHAIN_STEPS)
         lines.append(_NO_LOGIN_IMPACT + _space_before(_NO_LOGIN_TAIL))
