@@ -725,26 +725,37 @@ async def check_browser_login():
     绝不解密、绝不调 yt-dlp 的读取函数：解密 Chrome 的 cookie 值要向钥匙串要密钥，
     启动自检会因此弹对话框。2026-09-17 实测 macOS 27 上两个浏览器都是系统拒绝读取，
     而当时界面上没有任何一行说这件事。"""
+    return (await browser_login_state())[1]
+
+
+async def browser_login_state():
+    """(各浏览器的观察 {浏览器: 代码}, 自检「浏览器登录态」那一行)。启动自检和「我加好了，再查一次」
+    （pipeline._recheck_browser_login）共用：只用 browser_login.probe，不解密、不碰钥匙串（读 Safari 实测 0.0 秒）。
+    不是 macOS 时观察为空，那一行是「本机不适用」。"""
     import sys
 
     from . import browser_login as bl
 
-    name = NAMES["browser_login"]
     if sys.platform != "darwin":
-        return _check(name, OK,
-                      L("这一项只检查 macOS 上的浏览器数据读取权限，本机不适用",
-                        "This check only covers reading browser data on macOS. It doesn’t apply "
-                        "to this computer."))
+        return {}, _check(NAMES["browser_login"], OK,
+                          L("这一项只检查 macOS 上的浏览器数据读取权限，本机不适用",
+                            "This check only covers reading browser data on macOS. It doesn’t apply "
+                            "to this computer."))
     from .resolver import _installed_browsers
     browsers = await _to_thread(_installed_browsers)
     observed = {}
     for browser in browsers:
         observed[browser] = await _to_thread(bl.probe, browser)
-    return _browser_login_row(observed)
+    return observed, _browser_login_row(observed)
 
 
 def _browser_login_row(observed):
-    """{浏览器: 代码} → 自检的一行。大多数直播间不登录也能解析，所以借不到只是 WARN。"""
+    """{浏览器: 代码} → 自检的一行。大多数直播间不登录也能解析，所以借不到只是 WARN。
+
+    带「完全磁盘访问权限」那几步时（有浏览器被系统拒绝读取、又没有哪个读到登录）多一个 recheck=True：页面在这一行
+    下面画「我加好了，再查一次」（web/app.js renderSelfcheck），点了发 recheck_browser_login。别的浏览器读到登录时
+    这一行是「通过」、不带步骤，也就不画这个按钮（这时要不要也给步骤还没定）。审计只记名字、
+    等级和详情（audit.selfcheck），这个键不进审计。"""
     from . import browser_login as bl
 
     name = NAMES["browser_login"]
@@ -765,7 +776,10 @@ def _browser_login_row(observed):
     detail = bl.observed_text(observed)
     if any(code == bl.OK for code in observed.values()):
         return _check(name, OK, detail)
-    return _check(name, WARN, detail + scope, bl.steps_text(observed))
+    row = _check(name, WARN, detail + scope, bl.steps_text(observed))
+    if bl.BLOCKED in observed.values():
+        row["recheck"] = True
+    return row
 
 
 def python_switch_steps(darwin=None):
@@ -777,7 +791,10 @@ def python_switch_steps(darwin=None):
     Python 不删 .venv 永远轮不到；没有 .venv 时按安装位置挑，python.org 装的排在最前面，所以写明
     从 python.org 装。重装组件约 1.4 GB（INSTALL_NEED_GB 里「运行环境」那一份）。
     macOS 的「完全磁盘访问权限」按解释器文件登记（browser_login.fda_targets）：换了 Python，新的
-    那个不在列表里，TikTok 要求登录才给流地址的直播间就拿不到流——要提醒重新授权一次（审查小问题）。"""
+    那个不在列表里，TikTok 要求登录才给流地址的直播间就拿不到流——要提醒重新授权一次（审查小问题）。
+    路径和步骤以前指向「浏览器登录态」那一行，可那一行只要别的浏览器读到了登录就是「通过」、不带步骤
+    （2026-10-29 新 Mac 上就是这样）。登录优先那一步被系统拒绝读取时，点「开始翻译」后窗口顶部一定会挂出
+    那条带路径和步骤的提示（browser_login.no_login_notice），所以指向它。"""
     import sys
     darwin = sys.platform == "darwin" if darwin is None else darwin
     steps = L("从 python.org 下载安装 Python 3.10 或更新版本；装好之后完全退出程序，删掉程序文件夹里的 "
@@ -787,11 +804,13 @@ def python_switch_steps(darwin=None):
               "components with the new Python (about 1.4 GB, needs an internet connection).")
     if darwin:
         # 英文的上一句已经带句号，这里以空格开头；中文上一句不带句号，这里以「。」开头
-        steps += L("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次，路径和步骤见"
-                   "「浏览器登录态」那一行；不加的话，TikTok 要求登录才给流地址的直播间拿不到流",
-                   " After switching, add the new Python to Full Disk Access once more. The Browser "
-                   "Login row shows the path and steps. Without it, the app can’t get the stream "
-                   "for live streams where TikTok provides the stream URL only to signed-in "
+        steps += L("。换了 Python 之后，要把新的 Python 再加进「完全磁盘访问权限」一次：点「开始翻译」后，系统"
+                   "拒绝读取浏览器数据时，窗口顶部那条提示里有路径和步骤；不加的话，TikTok 要求登录才给流地址的"
+                   "直播间拿不到流",
+                   " After switching, add the new Python to Full Disk Access once more. After you "
+                   "click Start, if macOS doesn’t allow the app to read browser data, the notice at "
+                   "the top of the window shows the path and steps. Without it, the app can’t get the "
+                   "stream for live streams where TikTok provides the stream URL only to signed-in "
                    "viewers.")
     return steps
 

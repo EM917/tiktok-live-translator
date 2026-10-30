@@ -583,6 +583,10 @@ class CaptionServer:
                     incidents[key] = {"id": key, "level": msg.get("level") or "warn",
                                       "text": msg.get("text") or "",
                                       "since": prev["since"] if prev else now, "ts": now}
+                    # 「我加好了，再查一次」（Pipeline._incident 的 recheck）：带着才留，刷新的页面照样画出按钮；
+                    # 不带时和以前逐字节相同。手机同看的白名单（app/viewer.py）不放它过去
+                    if msg.get("recheck"):
+                        incidents[key]["recheck"] = True
                     while len(incidents) > INCIDENTS_MAX:
                         oldest = min(incidents.values(), key=lambda x: x["ts"])
                         incidents.pop(oldest["id"], None)
