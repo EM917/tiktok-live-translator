@@ -809,6 +809,27 @@ def test_guard_set_after_the_settings_file_reads_again_keeps_what_the_file_had(m
     assert server.config["guard_state"]["backend"] == "claude" and server.config["guard_state"]["weak"] is True
 
 
+@pytest.mark.parametrize("on_file, msg, chosen", [
+    ({"enabled": 0, "backend": "claude", "weak": False}, {"enabled": False},
+     {"enabled": False, "backend": "claude", "weak": False}),
+    ({"enabled": True, "backend": "claude", "weak": 1}, {"weak": True},
+     {"enabled": True, "backend": "claude", "weak": True}),
+])
+def test_guard_set_writes_a_switch_the_file_had_as_a_number(monkeypatch, tmp_path, on_file, msg, chosen):
+    """设置文件里手改成 0 / 1 的开关：normalize_settings 按默认读（enabled 当开、weak 当关）。用户在设置里点了开关，
+    要写进文件，重启后才还是用户点的。以前 update_setting 拿 == 比「值没变」：0 == False、1 == True，当成没变不写，
+    重启后开关又回到默认。"""
+    monkeypatch.setattr(settings, "_unreadable", {"problem": None})
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "settings.json").write_text(json.dumps({"comment_guard": on_file}), encoding="utf-8")
+    p, _ = make_pipeline(monkeypatch, tmp_path, enabled=None)
+    assert p.guard.cfg == normalize_settings(on_file) != chosen
+    run(p.handle_control(dict(msg, type="guard_set")))
+    assert p.guard.cfg == chosen
+    again, _ = make_pipeline(monkeypatch, tmp_path, enabled=None)           # 重启
+    assert again.guard.cfg == chosen
+
+
 def test_guard_set_key_right_after_a_passing_read_error_keeps_the_other_keys(monkeypatch, tmp_path):
     """设置行里填 Claude 密钥：以前先 saved_keys() 读一次、整项写回 api_keys，那次读不了就只剩这一把。"""
     monkeypatch.setattr(settings, "_unreadable", {"problem": None})

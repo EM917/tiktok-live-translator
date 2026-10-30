@@ -9,7 +9,10 @@
 装成功记进尝试记录，清单变了照旧补装。
 
 复核补的（2026-10-29）：只改一项里一条的写手（api_keys、最近直播间、品牌）读改写在同一把锁里，读错误一下就过去
-也不会只剩新的一条；一键更新的两个记号写不进去时如实返回、不再承诺「重启后自动恢复监听」。"""
+也不会只剩新的一条；一键更新的两个记号写不进去时如实返回、不再承诺「重启后自动恢复监听」。
+
+第二轮复核（2026-10-30）：update_setting 判「值没变」连类型一起比；尝试记录里的「装成功」只在主记录没变过时算；
+「没记过就补装一次」只在真要补装时说。"""
 import errno
 import json
 import os
@@ -333,6 +336,20 @@ def test_update_setting_reads_changes_and_writes_under_one_lock(settings_file):
     assert settings.load_settings() == dict(COMPOSITE, brands=dict(COMPOSITE["brands"], cola_demo="cola"))
 
 
+@pytest.mark.parametrize("on_file, new", [
+    ({"enabled": 0, "weak": False}, {"enabled": False, "weak": False}),
+    ({"enabled": True, "weak": 1}, {"enabled": True, "weak": True}),
+    ([1, 0], [True, False]),
+    ({"at": 1}, {"at": 1.0}),
+])
+def test_update_setting_counts_a_different_json_type_as_a_change(settings_file, on_file, new):
+    """「值没变就不写」按 JSON 比，类型不同就是变了：Python 的 == 认 0 == False、1 == True、1 == 1.0，拿它比，
+    文件里手改成 0 / 1 的开关在用户点了之后写不进去，重启后又按文件里的读。"""
+    settings_file.write_text(json.dumps({"comment_guard": on_file}), encoding="utf-8")
+    assert settings.update_setting("comment_guard", lambda cur: new) is True
+    assert json.dumps(settings.load_settings()["comment_guard"]) == json.dumps(new)      # 类型也对
+
+
 # ---- 一键更新的两个记号：写不进去就照实说 ----------------------------------------------------------
 
 def test_the_resume_marker_says_when_it_was_not_written(settings_file, monkeypatch, capsys):
@@ -419,22 +436,125 @@ def _project(tmp_path):
 def test_an_unreadable_install_record_installs_once_and_then_not_every_launch(tmp_path, capsys):
     """记录在、却读不了：不知道装没装过，补装一次。装成功了主记录却写不进去：记进尝试记录
     （.requirements-attempt.json），之后的启动认它、不再补装——以前当成没装过，每次启动都跑一遍 pip。
-    终端照实说一次。"""
+    终端照实说一次：同一个启动进程里 ready_fast_path 和 plan_install 各问一次 requirements_pending，两次都走到
+    这句。"""
     root = _project(tmp_path)
     stamp = root / ".venv" / bootstrap.REQ_STAMP
     stamp.write_text("0" * 64 + "\n", encoding="utf-8")
     _lock(stamp)
     try:
-        assert bootstrap.requirements_pending(root) is True
+        assert bootstrap.requirements_pending(root) is True            # ready_fast_path
+        assert bootstrap.plan_install(True, root) is not None          # 同一个进程里 plan_install 再问一次
+        out = capsys.readouterr().out
+        assert out.count(str(stamp)) == 1                               # 一个进程里说一次
+        assert os.strerror(errno.EACCES) in out
         assert bootstrap.write_requirements_stamp(root, bootstrap.requirements_file_digest(root)) is True
         assert bootstrap.requirements_pending(root) is False
         assert bootstrap.requirements_pending(root) is False
         assert bootstrap.plan_install(True, root) is None
-        out = capsys.readouterr().out
-        assert out.count(str(stamp)) == 1                       # 一个进程里说一次
-        assert os.strerror(errno.EACCES) in out
     finally:
         os.chmod(str(stamp), 0o600)
+
+
+@posix_only
+def test_an_unreadable_install_record_says_nothing_about_installing_while_the_failure_cooldown_holds(
+        tmp_path, capsys):
+    """记录读不了、这份清单 24 小时内又装失败过：这次不装（同记录读得了时）。终端那句「没记过就补装一次」只在真要
+    补装时说——以前先说了这句，接着按冷却不装，说的和做的对不上。"""
+    root = _project(tmp_path)
+    stamp = root / ".venv" / bootstrap.REQ_STAMP
+    stamp.write_text("0" * 64 + "\n", encoding="utf-8")
+    _lock(stamp)
+    try:
+        assert bootstrap.record_requirements_failure(root, bootstrap.requirements_file_digest(root), 1, now=1000.0)
+        assert bootstrap.requirements_pending(root, now=1060.0) is False
+        assert bootstrap.plan_install(True, root, now=1060.0) is None
+        assert str(stamp) not in capsys.readouterr().out
+        later = 1000.0 + bootstrap.REQ_RETRY_SEC + 60
+        assert bootstrap.requirements_pending(root, now=later) is True           # 冷却过了：补装，这时才说
+        out = capsys.readouterr().out
+        assert out.count(str(stamp)) == 1 and "补装" in out
+    finally:
+        os.chmod(str(stamp), 0o600)
+
+
+def _stamp_trouble(monkeypatch, root):
+    """让 .venv 里的安装记录读不了（read_text 抛 EACCES）、尝试记录删不掉（unlink 抛 EACCES），各由返回的 dict 开关。
+    不靠 chmod：Windows 上也测得了（那边文件被别的程序占着时就删不掉）。"""
+    stamp = root / ".venv" / bootstrap.REQ_STAMP
+    attempt = root / ".venv" / bootstrap.REQ_ATTEMPT
+    cls = type(stamp)
+    real_read, real_write, real_unlink = cls.read_text, cls.write_text, cls.unlink
+    state = {"read": False, "write": False, "unlink": False}
+
+    def denied(self):
+        return PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(self))
+
+    def read_text(self, *a, **kw):
+        if self == stamp and state["read"]:
+            raise denied(self)
+        return real_read(self, *a, **kw)
+
+    def write_text(self, *a, **kw):
+        if self == stamp and state["write"]:
+            raise denied(self)
+        return real_write(self, *a, **kw)
+
+    def unlink(self, *a, **kw):
+        if self == attempt and state["unlink"]:
+            raise denied(self)
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(cls, "read_text", read_text)
+    monkeypatch.setattr(cls, "write_text", write_text)
+    monkeypatch.setattr(cls, "unlink", unlink)
+    return state
+
+
+def test_a_success_noted_beside_an_unreadable_record_stops_counting_once_the_record_is_rewritten(
+        tmp_path, monkeypatch):
+    """安装记录读不了时装成功，「装成功」记在尝试记录里。后来记录又读得了、装了另一份清单 B 也写进了主记录，
+    只是删尝试记录没删掉（Windows 上文件被占用）。再回到清单 A（自动回退、手动 checkout）：机器上装的是 B 锁的版本，
+    要按 A 补装——以前那条旧的「A 装成功」盖过读得出来的主记录，永远不补装；main 上会补装。"""
+    root = _project(tmp_path)
+    trouble = _stamp_trouble(monkeypatch, root)
+    manifest = root / "requirements.txt"
+    a_text = manifest.read_text(encoding="utf-8")
+    a = bootstrap.requirements_file_digest(root)
+    trouble["read"] = True
+    assert bootstrap.write_requirements_stamp(root, a) is True             # 写了读不回：记进尝试记录
+    assert bootstrap.requirements_pending(root) is False                   # 认它
+    trouble["read"] = False
+    manifest.write_text(a_text + "another>=2\n", encoding="utf-8")         # 清单 B
+    assert bootstrap.requirements_pending(root) is True
+    trouble["unlink"] = True
+    assert bootstrap.write_requirements_stamp(root, bootstrap.requirements_file_digest(root)) is True
+    assert bootstrap.recorded_requirements_digest(root) == bootstrap.requirements_file_digest(root)
+    manifest.write_text(a_text, encoding="utf-8")                          # 回到清单 A
+    assert bootstrap.requirements_pending(root) is True
+    assert bootstrap.plan_install(True, root) is not None
+
+
+def test_a_success_noted_beside_a_record_that_could_not_be_written_still_counts(tmp_path, monkeypatch):
+    """主记录读得了、写不进去（只读文件）：装成功记进尝试记录，之后的启动认它、不再补装；主记录后来被写成了别的，
+    这条就不再算。"""
+    root = _project(tmp_path)
+    trouble = _stamp_trouble(monkeypatch, root)
+    manifest = root / "requirements.txt"
+    a_text = manifest.read_text(encoding="utf-8")
+    a = bootstrap.requirements_file_digest(root)
+    stamp = root / ".venv" / bootstrap.REQ_STAMP
+    stamp.write_text("1" * 64 + "\n", encoding="utf-8")                   # 上一份清单装成功时写的
+    trouble["write"] = True
+    assert bootstrap.write_requirements_stamp(root, a) is True
+    assert bootstrap.requirements_pending(root) is False
+    assert bootstrap.plan_install(True, root) is None
+    trouble["write"] = False
+    manifest.write_text(a_text + "another>=2\n", encoding="utf-8")
+    trouble["unlink"] = True
+    assert bootstrap.write_requirements_stamp(root, bootstrap.requirements_file_digest(root)) is True
+    manifest.write_text(a_text, encoding="utf-8")
+    assert bootstrap.requirements_pending(root) is True
 
 
 @posix_only

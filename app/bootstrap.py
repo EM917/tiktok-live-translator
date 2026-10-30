@@ -58,7 +58,7 @@ CONSTRAINTS = "constraints.txt"                   # 测试过的那一套版本�
 # 再提时同步改 tools/find_python.sh、Start.bat、setup.sh、setup.ps1、README 和 CI 矩阵
 MIN_PYTHON = (3, 10)
 # 最近一次 pip -r 的结果（JSON：digest / at / exit）。装失败时写；装成功却写不进、读不回 REQ_STAMP 时也写，
-# 带 "ok": true（write_requirements_stamp）
+# 带 "ok": true 和当时读到的 REQ_STAMP（"stamp"，读不了是 null；write_requirements_stamp）
 REQ_ATTEMPT = ".requirements-attempt.json"
 # 同一份清单装失败后多久内不再为它重跑 pip -r（真缺核心依赖时不受这个限制）
 REQ_RETRY_SEC = 24 * 3600
@@ -253,15 +253,17 @@ def write_requirements_stamp(root, digest):
         written = True
     except OSError:
         written = False
-    if written and _requirements_stamp(root)[0] == digest:
+    seen = _requirements_stamp(root)[0]
+    if written and seen == digest:
         try:
             (venv / REQ_ATTEMPT).unlink()
         except OSError:
             pass
         return True
     # 记录写不进去、或写了读不回来（chmod 000、路径上是个文件夹……）：把「这份清单装成功了」记进尝试记录。
-    # requirements_pending 认它；不记的话下次启动又当成没装过，次次补装
-    data = {"digest": digest, "at": time.time(), "ok": True}
+    # requirements_pending 认它；不记的话下次启动又当成没装过，次次补装。同时记下此刻读到的主记录（读不了是
+    # null）：主记录后来被写成了别的（又装了另一份清单，只是这个文件没删掉），这条就不再算
+    data = {"digest": digest, "at": time.time(), "ok": True, "stamp": seen}
     try:
         (venv / REQ_ATTEMPT).write_text(json.dumps(data) + "\n", encoding="utf-8")
         return True
@@ -312,19 +314,21 @@ def requirements_pending(root, now=None):
         return False
     attempt = _read_json(venv / REQ_ATTEMPT)
     if attempt and attempt.get("digest") == current and attempt.get("ok") is True:
-        # 这份清单装成功过，只是安装记录没写成、读不回（write_requirements_stamp）
-        return False
-    if unreadable:
-        # 记录在却读不了，尝试记录里也没记过这份清单装成功：不知道装没装过，补装一次。装成功后
-        # write_requirements_stamp 记进尝试记录，之后不再补装；清单再变、或程序缺模块起不来
-        # （forget_requirements_failure 删掉尝试记录）照旧补装。不能一律不装：手动更新带来的新依赖、
-        # 锁的版本变了，就只有这里会装
-        _note_unreadable_stamp(root, unreadable)
-    if attempt and attempt.get("digest") == current:
+        if attempt.get("stamp") == recorded:
+            # 这份清单装成功过，只是安装记录没写成、读不回（write_requirements_stamp）。主记录从那以后没变过
+            return False
+        # 主记录后来被写成了别的：那之后又装过另一份清单，这条旧的「装成功」不算，也不是装失败
+    elif attempt and attempt.get("digest") == current:
         at = _as_float(attempt.get("at"))
         now = time.time() if now is None else now
         if at is not None and 0 <= now - at < REQ_RETRY_SEC:
             return False
+    if unreadable:
+        # 记录在却读不了，尝试记录里也没记过这份清单装成功：不知道装没装过，补装一次。装成功后
+        # write_requirements_stamp 记进尝试记录，之后不再补装；清单再变、或程序缺模块起不来
+        # （forget_requirements_failure 删掉尝试记录）照旧补装。不能一律不装：手动更新带来的新依赖、
+        # 锁的版本变了，就只有这里会装。真要补装时才说：24 小时内装失败过、上面不装时说了就对不上
+        _note_unreadable_stamp(root, unreadable)
     return True
 
 

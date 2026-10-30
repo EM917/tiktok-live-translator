@@ -289,8 +289,8 @@ def save_setting(key, value):
 
 def update_setting(key, change):
     """改单个设置项，读、改、写在同一把锁里一步做完：change 拿到文件里这一项此刻的值（一份拷贝；没有这一项
-    是 None），返回新值。返回写没写成；新值和文件里的一样就不写，也算成。文件在、却读不出来时同 save_setting，
-    不写，change 也不调。
+    是 None），返回新值。返回写没写成；新值和文件里的一样（按 JSON 比，类型也算：0 和 false 不一样）就不写，
+    也算成。文件在、却读不出来时同 save_setting，不写，change 也不调。
 
     给「这一项是个集合、每次只改其中一条」的写手用：api_keys（translator.update_saved_keys）、最近直播间、
     按主播记的品牌、弹幕留意的设置。以前它们先在锁外 load_settings() 读一次，改一条再交给 save_setting
@@ -303,10 +303,22 @@ def update_setting(key, change):
         if not writable:
             return False
         value = change(copy.deepcopy(data.get(key)))
-        if key in data and data[key] == value:
+        if key in data and _same_json(data[key], value):
             return True
         data[key] = value
         return _write(data)
+
+
+def _same_json(a, b):
+    """写进文件是不是一模一样：类型也要一样。Python 的 == 认 0 == False、1 == True、1 == 1.0，拿它判「值没变」，
+    设置文件里手改成 0 / 1 的开关（normalize 按默认读）在用户点了之后写不进去，重启后又按文件里的读。"""
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_same_json(x, y) for x, y in zip(a, b))
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same_json(a[k], b[k]) for k in a)
+    return a == b
 
 
 def _write(data):
