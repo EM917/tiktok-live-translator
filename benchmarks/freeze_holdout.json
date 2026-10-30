@@ -1,5 +1,5 @@
 {
- "purpose": "susanm00 第二场 hold-out：期间不改任何规则",
+ "purpose": "carmendemo07 第二场 hold-out：期间不改任何规则",
  "code_commit": "2cfd307",
  "glossary_hash": "35f0edfb95d6",
  "glossary_entries": 93,
@@ -23,5 +23,5 @@
  "validator_hash": "d3129d410616",
  "validator_mode": "shadow only（任何规则都不触发升级）",
  "translator": "hymt2 (Hy-MT2 1.8B)",
- "dev_set": "logs/session-20260825-102104.jsonl (susanm00 第一场，155 段，已用于规则发现)"
+ "dev_set": "logs/session-20260825-102104.jsonl (carmendemo07 第一场，155 段，已用于规则发现)"
 }

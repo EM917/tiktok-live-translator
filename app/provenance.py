@@ -80,6 +80,27 @@ def session_meta(path):
 
 
 HOLDOUT_FILE = LOG_DIR.parent / "eval_holdout.json"
+# 清单里 streamers 的键可以写成哈希：sha256:<主播用户名 UTF-8 编码的 sha256，64 位小写十六进制>。
+# 仓库是公开的，真实主播名不进仓库，清单里只留哈希；按名字查时明文、哈希两种都认（HoldoutStreamers）。
+STREAMER_HASH_PREFIX = "sha256:"
+_STREAMER_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def streamer_digest(name):
+    """主播用户名在冻结清单里的哈希写法。"""
+    return STREAMER_HASH_PREFIX + hashlib.sha256(name.encode("utf-8")).hexdigest()
+
+
+class HoldoutStreamers(set):
+    """冻结清单里的主播：明文用户名，或 streamer_digest() 的哈希写法。
+
+    训练侧拿它做的只有 `meta["streamer"] in holdout["streamers"]`（和 not in）：先比明文、
+    再比哈希，所以清单里把一个主播从明文换成哈希写法，他照样被排除，一个字都不进训练。"""
+
+    def __contains__(self, name):
+        if set.__contains__(self, name):
+            return True
+        return isinstance(name, str) and set.__contains__(self, streamer_digest(name))
 
 
 def eval_holdout(path=None, strict=False):
@@ -87,6 +108,7 @@ def eval_holdout(path=None, strict=False):
 
     dev_eval 是训练排除的开发基准（调参可看）；sealed_test 是密封终审考卷
     （评级前冻结、定稿前不开）。两层对训练侧的效力相同：都绝不进训练。
+    streamers 是 HoldoutStreamers：清单里写哈希的主播，按名字查也查得到。
 
     strict=True 给训练侧工具（mine / annotate / export / train）用：清单
     缺失、JSON 损坏、schema 不对时**直接退出**——今天生成不了队列，好过
@@ -98,7 +120,7 @@ def eval_holdout(path=None, strict=False):
         if strict:
             raise SystemExit("[错误] " + msg)
         print("[警告] " + msg + "（非训练侧：按空清单继续）")
-        return {"sessions": set(), "streamers": set()}
+        return {"sessions": set(), "streamers": HoldoutStreamers()}
 
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -107,7 +129,7 @@ def eval_holdout(path=None, strict=False):
     if not isinstance(data.get("dev_eval"), dict) \
             or not isinstance(data.get("sealed_test"), dict):
         return fail("schema 不合法（缺 dev_eval / sealed_test 两层）")
-    sessions, streamers = set(), set()
+    sessions, streamers = set(), HoldoutStreamers()
     for tier in ("dev_eval", "sealed_test"):
         block = data[tier]
         # 第二层也要验：手改成 "sessions": "abc" 时 set("abc") 会悄悄变成
@@ -115,6 +137,10 @@ def eval_holdout(path=None, strict=False):
         for key in ("sessions", "streamers"):
             if not isinstance(block.get(key, {}), dict):
                 return fail("schema 不合法（{}.{} 必须是对象）".format(tier, key))
+        # 哈希写错（少一位、大写）就谁也对不上，那个主播会悄悄进训练：同样直接退出
+        if any(k.startswith(STREAMER_HASH_PREFIX) and not _STREAMER_HASH.match(k)
+               for k in block.get("streamers", {})):
+            return fail("schema 不合法（{}.streamers 的哈希写法必须是 sha256:<64 位小写十六进制>）".format(tier))
         sessions |= set(block.get("sessions", {}))
         streamers |= set(block.get("streamers", {}))
     return {"sessions": sessions, "streamers": streamers}

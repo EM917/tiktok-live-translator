@@ -186,7 +186,7 @@ def recent_rooms(limit=RECENT_ROOMS_MAX):
 # 空串表示「不限」，写空串时直接删掉这个键（不留一条「不限」的记录，
 # 没记过和记了「不限」在读取时是同一件事）。读/改/写模式与「最近直播间」
 # 那组函数一致：先读全部设置，取出这一项的映射，改动单个主播的那一条，
-# 再整体写回——不能直接 save_setting("brands.bella", ...)，settings.json
+# 再整体写回——不能直接 save_setting("brands.allura", ...)，settings.json
 # 里没有嵌套路径这种写法。
 def save_streamer_brand(streamer, brand):
     """记住（或清除）某个主播这场选的品牌词表，返回更新后的完整映射。"""

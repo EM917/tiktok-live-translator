@@ -9,7 +9,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from . import i18n
+from . import i18n, instance
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -231,6 +231,8 @@ class CaptionServer:
         # 手机同看的观众面（app/viewer.ViewerHub），中控打开时由 Pipeline 挂上来。
         # 默认 None：这个功能默认关闭，也就默认不存在第二个监听面
         self.viewer = None
+        # 首页响应带的「我是哪一份」（app/instance.py）：双击打开时 main.py 靠它分清端口上的是不是同一个文件夹里的程序
+        self.install_headers = instance.install_headers(WEB_DIR.parent)
 
     def build_app(self):
         """本机控制面的 aiohttp 应用（路由 + 响应头中间件）。单独成方法，测试可以不占固定端口直接拿来起。"""
@@ -268,12 +270,15 @@ class CaptionServer:
 
     async def _index(self, request):
         """桌面页。中文时照旧端文件本身，字节与改造前相同；英文时只把 <html lang> 换成 en，
-        页面里的 web/i18n.js 按它换文字（spec §2.2）。桌面页不加 data-i18n：那是手机页的闸标记。"""
+        页面里的 web/i18n.js 按它换文字（spec §2.2）。桌面页不加 data-i18n：那是手机页的闸标记。
+        两种语言都带 X-TLT-Install / X-TLT-Version 两个头（install_headers）：页面本身不读它们，
+        是给双击第二次时的 main.py 看的。"""
         path = WEB_DIR / "index.html"
         if i18n.current() == i18n.ZH:
-            return web.FileResponse(path)
+            return web.FileResponse(path, headers=dict(self.install_headers))
         html = i18n.inject_lang(path.read_text(encoding="utf-8"), i18n.EN)
-        return web.Response(text=html, content_type="text/html", charset="utf-8")
+        return web.Response(text=html, content_type="text/html", charset="utf-8",
+                            headers=dict(self.install_headers))
 
     async def _float_page(self, request):
         """浮窗页（app/float_window.py 开的那个置顶小窗）。语言的处理同 _index：中文时端文件本身，
@@ -598,6 +603,10 @@ class CaptionServer:
                     # 不带时和以前逐字节相同。手机同看的白名单（app/viewer.py）不放它过去
                     if msg.get("recheck"):
                         incidents[key]["recheck"] = True
+                    # 「完全磁盘访问权限」那几步旁边的按钮跟在哪几行后面（Pipeline._incident 的 fda，只在 macOS 上带）：
+                    # 同上，带着才留；手机同看的白名单不放它过去（容器一律丢掉）
+                    if isinstance(msg.get("fda"), dict) and msg["fda"]:
+                        incidents[key]["fda"] = dict(msg["fda"])
                     while len(incidents) > INCIDENTS_MAX:
                         oldest = min(incidents.values(), key=lambda x: x["ts"])
                         incidents.pop(oldest["id"], None)

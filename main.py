@@ -19,6 +19,7 @@ from app import i18n, native_dialog
 from app.fdlimit import raise_nofile_limit
 from app.i18n import APP_NAME, L, of
 from app.macbundle import remember_launch_python
+from app.runlog import start as start_run_log
 from app.stdio import harden_stdio
 
 # 必须是 import 之后的第一句可执行语句：下面的版本检查、ensure_env() 的安装提示、--doctor 的
@@ -27,6 +28,11 @@ from app.stdio import harden_stdio
 # （2026-09-15 中文 Windows 11 实测，见 app/stdio.py）。首次安装后 execv 进 .venv、
 # 一键更新后重启，都会重新从这里跑一遍；窗口模式的后台线程与本进程共用这两个流。
 harden_stdio()
+
+# 运行日志（app/runlog.py）：双击 .app 启动时标准输出、标准错误接在 /dev/null 上，下面几百处 print
+# 哪儿都不留。macOS 上没有终端时另抄一份到 ~/Library/Logs/TikTokLiveTranslator/run.log（落盘前去密钥，
+# 按大小轮转），原来的流照写。紧跟护栏、赶在第一次可能打印之前；每一跳 exec 之后都从这里重新装一遍。永不抛
+start_run_log(Path(__file__).resolve().parent)
 
 # 文件句柄上限（专家审查 S1）：从 Finder 启动的 .app 继承 launchd 的软上限 256，局域网里
 # 一台设备对手机同看端口挂上百条空连接，之后新开的文件、ffmpeg、网络连接就全部 EMFILE。
@@ -187,6 +193,7 @@ def _has_console():
 
 
 _INFO_DIALOG = None
+_LAUNCH_DIALOG = None     # 第一跳起的「正在启动」提示（osascript 进程），见 _start_launch_dialog
 _FIRST_RUN_SHOWN = False
 
 
@@ -217,10 +224,63 @@ def _close_info_dialog():
     _INFO_DIALOG = None
 
 
+def _start_launch_dialog():
+    """第一跳一开始：「正在启动」的非阻塞提示，osascript 自己等 4 秒再弹（app/bootstrap.launch_dialog_argv）。
+    启动快于 4 秒，窗口出来时它还没弹就被关掉了。只在 macOS、没有终端、不是 CI 时起；上一跳已经起过（环境变量里
+    有它的 PID）就不再起。2026-10-29：从「聚焦搜索」点开 .app 之后半分钟到一分钟没有任何窗口，用户以为没反应。"""
+    global _LAUNCH_DIALOG
+    if os.environ.get("CI") or _has_console() or sys.platform != "darwin":
+        return
+    from app import bootstrap
+    if os.environ.get(bootstrap.LAUNCH_DIALOG_ENV):
+        return
+    try:
+        _LAUNCH_DIALOG = subprocess.Popen(bootstrap.launch_dialog_argv(),
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        _LAUNCH_DIALOG = None
+
+
+def _close_launch_dialog():
+    """关掉「正在启动」的提示：本进程自己起的直接关；上一跳交过来的（exec 前没关，PID 在环境变量里）核对过
+    确实是自己的 osascript 子进程再关（app/bootstrap.close_handed_dialog）。开好窗口、要弹出错对话框、
+    要换成安装说明、进程退出时都走这里，重复调用没有副作用。"""
+    global _LAUNCH_DIALOG
+    if _LAUNCH_DIALOG is not None and _LAUNCH_DIALOG.poll() is None:
+        try:
+            _LAUNCH_DIALOG.terminate()
+        except Exception:
+            pass
+    _LAUNCH_DIALOG = None
+    try:
+        from app import bootstrap
+        bootstrap.close_handed_dialog()
+    except Exception:
+        pass
+
+
+def _hand_off_dialogs():
+    """exec 之前：开着的提示框不关——换进最终进程之后还要 import、起后端、等后端才开窗口，以前这一段什么提示都
+    没有。安装说明开着就交它（它说的「完成后字幕窗口会自动打开」这时照样成立），否则交「正在启动」；PID 放进
+    环境变量（execve 不换 PID，它仍是最终进程的子进程），最终进程开好窗口后关。交不出去的那个关掉。"""
+    global _INFO_DIALOG, _LAUNCH_DIALOG
+    from app import bootstrap
+    alive = [d for d in (_INFO_DIALOG, _LAUNCH_DIALOG) if d is not None and d.poll() is None]
+    keep = alive[0] if alive else None
+    for d in alive[1:]:
+        try:
+            d.terminate()
+        except Exception:
+            pass
+    bootstrap.hand_off_dialog(keep.pid if keep is not None else None)
+    _INFO_DIALOG = _LAUNCH_DIALOG = None
+
+
 def _fail_alert(message):
     """报告致命问题：终端打印之外，无终端时必须弹系统对话框——否则用户只会看到
     程序无声消失。"""
     print("⚠️ " + message)
+    _close_launch_dialog()        # 「正在启动」不能和出错的对话框叠在一起，也不能在出错之后还挂着
     if os.environ.get("CI") or _has_console():
         return
     try:
@@ -257,6 +317,7 @@ def _first_run_dialog(text=None):
     if _FIRST_RUN_SHOWN:
         return
     _FIRST_RUN_SHOWN = True
+    _close_launch_dialog()        # 「正在启动」换成安装说明
     _info_dialog(text or L("首次运行：正在自动安装运行组件（约需 2–5 分钟，取决于网速）。\n"
                            "完成后字幕窗口会自动打开——请耐心等待，不要重复打开程序。",
                            "First launch: installing the app’s components (about 2–5 minutes, "
@@ -266,15 +327,18 @@ def _first_run_dialog(text=None):
 
 
 def _existing_instance_url(base_port):
-    """本程序是否已在运行。是则返回其 UI 地址，否则 None。
+    """本程序是否已在运行。是则返回 app/instance.Found(UI 地址, 是不是这个文件夹里的这一份, 对方的版本号)，
+    否则 None。Found 是非空元组、永远为真，只问「有没有」的几处照旧当真假用。
     用于双击两次的场景：复用已有实例，而不是再起一个后端。
     必须扫完整个自动回退区间（base_port 起 10 个端口）——已有实例可能因
     base_port 被第三方占用而跑在后面的端口上。先用 TCP 探测过滤（本机关闭
-    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。"""
+    端口瞬时拒绝），只对开着的端口发 HTTP 验指纹（app/instance.py），扫描耗时可忽略。
+    是不是这一份看首页的响应头（X-TLT-Install，加这个头之前的版本没有它，这时为 None）：
+    2026-10-29 双击打开时窗口被开到了另一个文件夹里的副本上，看起来像界面自己变了语言。"""
     import socket
     import urllib.request
 
-    from app.instance import PROBE_BYTES, looks_like_us
+    from app.instance import PROBE_BYTES, Found, looks_like_us, peer_version, same_install
     for port in range(base_port, base_port + 10):
         with socket.socket() as probe:
             probe.settimeout(0.3)
@@ -284,7 +348,7 @@ def _existing_instance_url(base_port):
         try:
             with urllib.request.urlopen(url, timeout=1.5) as resp:
                 if looks_like_us(resp.read(PROBE_BYTES).decode(errors="replace")):
-                    return url
+                    return Found(url, same_install(resp.headers, ROOT), peer_version(resp.headers))
         except Exception:
             pass
     return None
@@ -309,6 +373,13 @@ def ensure_env():
     _forget_ready()
     vpy = _venv_python()
     in_project_venv = Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
+    if not in_project_venv:
+        # 第一跳：这一次启动的时间点从这里记起（logs/bootstrap-*.log，之后几跳接着写），没有终端时起「正在启动」
+        # 的提示。2026-10-29 那次半分钟到一分钟没有窗口，日志里却没有一个时间点，花在哪儿查不出来
+        from app import bootstrap as boot
+        boot.start_launch_log(ROOT)
+        boot.launch_mark("第一跳开始（{}）".format(sys.executable))  # i18n: terminal
+        _start_launch_dialog()
     lock = None
     ready = False         # 第一跳确认指纹没变：不再检查、不装，直接换进 .venv（I9）
     deferred = False      # 要装，但本程序已经在跑：这次不装（I7）
@@ -370,16 +441,20 @@ def ensure_env():
         plan = None
         imports_ok = False
         if not ready:
+            bootstrap.launch_mark("import 检查开始")  # i18n: terminal
             check = subprocess.run(
                 [pip_python, "-c",
                  _ready_import()],
                 capture_output=True,
             )
             imports_ok = check.returncode == 0
+            bootstrap.launch_mark("import 检查结束（退出码 {}）".format(check.returncode))  # i18n: terminal
             # 核心模块都在、只是 requirements.txt 和上次装成功的那份不一样（更新带来了
             # 新依赖）：也要补装。以前这一步只看 import，新依赖永远没人装。
             # 装不装、弹什么、过多久弹，在 bootstrap.plan_install 里（这里测不了）
             plan = bootstrap.plan_install(imports_ok, ROOT, recorded, target_version)
+        else:
+            bootstrap.launch_mark("就绪指纹没变，跳过 import 检查")  # i18n: terminal
         # I7：现有的 .venv 能跑、只是清单变了要补装，而端口上已经有本程序在跑（直播中从 Start.command、
         # Start.bat 或命令行又开了一次），它可能正用着这个 .venv：pip 换掉它脚下的包，它之后的延迟导入
         # 可能拿到装了一半的东西。这次不装，照常换进 .venv——最终进程会认出已有实例、把窗口叫到前台；
@@ -406,11 +481,14 @@ def ensure_env():
             print("[初始化] 正在安装依赖（含内置 ffmpeg，可能需要几分钟）…")
             # pip 的输出同时进终端和 logs/bootstrap-*.log：双击 .app 时 stdout 是
             # /dev/null，以前装失败了什么都不留
-            log_path = bootstrap.new_log_path(ROOT, "bootstrap")
+            # 这一次启动的日志已经建了（第一跳）就接着写，时间点和 pip 输出在同一个文件里
+            log_path = bootstrap.launch_log_path() or bootstrap.new_log_path(ROOT, "bootstrap")
+            bootstrap.launch_mark("pip 开始")  # i18n: terminal
             try:
                 bootstrap.install_requirements(pip_python, ROOT, _CORE_DEPS, _optional_deps(),
                                                log_path=log_path)
             finally:
+                bootstrap.launch_mark("pip 结束")  # i18n: terminal
                 if timer is not None:
                     timer.cancel()
         if not in_project_venv:
@@ -420,7 +498,9 @@ def ensure_env():
                 except OSError:
                     pass
                 lock = None
-            _close_info_dialog()      # 马上换进新环境开窗口，安装提示框可以收了
+            # 提示框不关：换进去之后还要 import、起后端、等后端才开窗口。PID 交给最终进程，它开好窗口再关
+            _hand_off_dialogs()
+            bootstrap.launch_mark("换进最终进程（exec）")  # i18n: terminal
             # exec 不替 Python 冲输出缓冲：stdout 不是终端（`| tee`、重定向到文件）时，上面打的
             # [初始化] 几行会跟着丢掉
             from app.relaunch import flush_std
@@ -801,6 +881,7 @@ async def main_async(args, state=None):
     print(f"字幕界面已启动: {url}")
     if state is None and not args.no_open:
         webbrowser.open(url)
+        _close_launch_dialog()
 
     if args.demo:
         await pipeline.start_demo()
@@ -856,8 +937,14 @@ def main():
         from app.macbundle import relaunch_inside_bundle
         relaunch_inside_bundle(ROOT)
     # 推迟安装的记号（I7）到最终进程为止：不传给一键更新的重启和以后起的子进程
-    from app.bootstrap import clear_install_deferred
+    from app.bootstrap import clear_install_deferred, launch_mark
     clear_install_deferred()
+    # 上一跳交过来的「正在启动」提示：开好窗口时关（run_with_window）；走不到那一步（浏览器模式、出错、
+    # 直接退出）也在进程退出时关掉，不留一个挂着的「正在启动」
+    # （双击两次、浏览器模式下打开已有实例那条路，main() 直接 return，就靠这一句关）
+    import atexit
+    atexit.register(_close_launch_dialog)
+    launch_mark("最终进程开始（{}）".format(sys.executable))  # i18n: terminal
     # 到这里一定是最终进程了：本进程第一次读设置（损坏就在这里备份，界面提示和审计都拿得到），
     # 闸开着、设置里还没有 ui_lang 时迁移写一次，然后定下界面语言
     i18n.settle(ROOT)
@@ -924,8 +1011,13 @@ def main():
             if not args.no_open and args.url is None:
                 existing = _existing_instance_url(args.port)
                 if existing:
-                    print("[信息] 检测到程序已在运行，直接打开现有界面 " + existing)
-                    webbrowser.open(existing)
+                    print("[信息] 检测到程序已在运行，直接打开现有界面 " + existing.url)
+                    # 不是这个文件夹里的这一份：照旧打开它，但说一声（同 run_with_window）
+                    from app.instance import other_install_text
+                    note = other_install_text(existing)
+                    if note is not None:
+                        _info_dialog(note)
+                    webbrowser.open(existing.url)
                     return
                 _check_update_guard()
             else:
@@ -978,12 +1070,22 @@ def run_with_window(args):
     existing = _existing_instance_url(args.port)
     if existing:
         print("[信息] 检测到程序已在运行，打开已有实例的窗口")
+        # 端口上那一份不是这个文件夹里的（新下了一版、旧的还开着；或者开着另一个副本）：照旧打开它，
+        # 但说清楚打开的是哪一份，不然看起来像「界面自己变了」（app/instance.py other_install_text）。
+        # 和下面 --url 那句并进同一个框：_info_dialog 同一时刻只管一个
+        from app.instance import other_install_text
+        notes = []
+        other = other_install_text(existing)
+        if other is not None:
+            notes.append(other)
         if args.url:
             # 地址没有送进那个实例：明说，别让用户以为已经在监听
-            _info_dialog(L("程序已经在运行，这次给的直播间地址没有自动开始。\n"
+            notes.append(L("程序已经在运行，这次给的直播间地址没有自动开始。\n"
                            "请在已打开的窗口里粘贴地址后点「开始翻译」。",
                            "The app is already running, so this live link didn’t start "
                            "automatically.\nPaste the link in the open window, then click Start."))
+        if notes:
+            _info_dialog(L("\n\n", "\n\n").join(notes))
         from app.macbrand import brand_mac_app
         from app.window_attention import expose_attention
         from app.window_close import confirm_localization_kwargs
@@ -993,8 +1095,9 @@ def run_with_window(args):
         # 这个窗口不 guard_close（后端在另一个进程里），localization 只给页面里 JS confirm()
         # 的按钮用。今天没传、用 pywebview 自带的文字；关窗表里有了 global.ok（M11）才传，与闸无关
         loc = confirm_localization_kwargs(webview.create_window, lang)
-        window = webview.create_window(i18n.text(APP_NAME, lang), existing,
+        window = webview.create_window(i18n.text(APP_NAME, lang), existing.url,
                                        width=1000, height=760, min_size=(420, 480), **loc)
+        _close_launch_dialog()
         # 语言切换发生在另一个进程里，这个进程收不到：页面重载后经 JS 桥告诉窗口。
         # 建窗时没传 localization 的，切换时也不往里写（app/window_lang.py）
         expose_window_lang(window, expose_attention(window), localized=bool(loc))
@@ -1048,6 +1151,8 @@ def run_with_window(args):
         thread.join()
         return
 
+    from app.bootstrap import end_launch, launch_mark
+    launch_mark("后端就绪（端口 {}）".format(state["ready_port"]))  # i18n: terminal
     url = "http://127.0.0.1:{}".format(state["ready_port"])
     from app.macbrand import brand_mac_app
     from app.window_attention import expose_attention
@@ -1075,6 +1180,9 @@ def run_with_window(args):
         loc = localization_kwargs(webview.create_window, lang)
         window = webview.create_window(i18n.text(APP_NAME, lang), url,
                                        width=1000, height=760, min_size=(420, 480), **loc)
+        launch_mark("窗口创建")  # i18n: terminal
+        end_launch()
+        _close_launch_dialog()    # 窗口马上就出来（webview.start 要等窗口关了才返回，所以在它之前关）
         guard_close(window, state.get("pipeline"))
         if float_host is not None:
             # 主窗口一关浮窗跟着关：否则 GUI 循环不退出，下面的收尾（停管线）不会执行。
@@ -1096,6 +1204,7 @@ def run_with_window(args):
         if float_host is not None:
             state["pipeline"].detach_float_host()    # 浏览器里没有浮窗：别让页面画出按钮
         webbrowser.open(url)
+        _close_launch_dialog()
         thread.join()
         return
 

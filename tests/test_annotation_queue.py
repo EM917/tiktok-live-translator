@@ -44,10 +44,44 @@ def test_holdout_manifest_is_frozen_and_loadable():
     h = eval_holdout()
     assert "session-20260826-133138.jsonl" in h["sessions"]   # 260 对考卷
     assert "session-20260827-192219.jsonl" in h["sessions"]   # 评级前冻结
-    # 泛化参考：那个主播是真实主播，名字不进仓库，用名字 UTF-8 编码的 sha256 前 16 位钉住是谁。
-    # 断言的还是「这一个主播在排除集里」：换掉、写错或删掉这一项都会失败
-    digests = {hashlib.sha256(s.encode("utf-8")).hexdigest()[:16] for s in h["streamers"]}
+    # 泛化参考：那个主播是真实主播，名字不进仓库，清单里只有他用户名的 sha256（sha256:<十六进制>），
+    # 这里用前 16 位钉住是谁。断言的还是「这一个主播在排除集里」：换掉、写错或删掉这一项都会失败
+    digests = {s[len("sha256:"):][:16] if s.startswith("sha256:")
+               else hashlib.sha256(s.encode("utf-8")).hexdigest()[:16] for s in h["streamers"]}
     assert "8c80b6e0ec0aa59d" in digests                      # 泛化参考
+
+
+def test_holdout_streamer_hash_matches_by_name(tmp_path):
+    """清单里的主播写成 sha256:<哈希> 时，训练侧按名字查（in / not in）照样排除；明文写法照旧；
+    哈希写错（少位、大写）直接退出——谁也对不上的哈希等于把那个主播放进训练。名字都是虚构的。"""
+    import hashlib
+    import json
+
+    import pytest
+
+    from app.provenance import eval_holdout, streamer_digest
+
+    def write(streamers):
+        p = tmp_path / "holdout.json"
+        p.write_text(json.dumps({"dev_eval": {"sessions": {}, "streamers": streamers},
+                                 "sealed_test": {"sessions": {}, "streamers": {}}}),
+                     encoding="utf-8")
+        return p
+
+    digest = "sha256:" + hashlib.sha256("demo.streamer_01".encode("utf-8")).hexdigest()
+    assert streamer_digest("demo.streamer_01") == digest
+    h = eval_holdout(path=write({digest: "x", "plain_demo": "y"}), strict=True)
+    assert "demo.streamer_01" in h["streamers"]               # 哈希写法：按名字查得到
+    assert "plain_demo" in h["streamers"]                     # 明文写法照旧
+    assert "other_demo" not in h["streamers"]
+    assert "Demo.Streamer_01" not in h["streamers"]           # 和明文一样逐字比，不折大小写
+    kept = [r for r in ({"streamer": "demo.streamer_01"}, {"streamer": "other_demo"})
+            if r["streamer"] not in h["streamers"]]
+    assert kept == [{"streamer": "other_demo"}]               # build_annotation_queue 的写法
+
+    for bad in (digest[:-1], digest.upper().replace("SHA256:", "sha256:")):
+        with pytest.raises(SystemExit):
+            eval_holdout(path=write({bad: "x"}), strict=True)
 
 
 def test_training_side_holdout_is_fail_closed(tmp_path):

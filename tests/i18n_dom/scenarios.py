@@ -39,8 +39,8 @@ from app.translator import engine_label, mask_key, restore_engine
 from app.updater import RELEASES_URL, update_check_note
 
 FAKE_TOKEN = "fake-token-not-a-real-secret-0000000000"   # viewer.js 只认片段里的 #k=
-# 主播名是虚构的，但和 docs/i18n-style.md §4、web/style.css 里量版面用的那个 15 个字母的真实主播名同宽：
-# 同一组字形重新排列，SF 字体 11–20px、400–700 字重、中英两种页面下逐 1/64 像素量过，顶栏的余量数字不变
+# 主播名是虚构的。docs/i18n-style.md §4、web/style.css 量版面写的也是这个名字：它和当初量版面用的那个
+# 15 个字母的名字同宽，SF 字体 11–20px、400–700 字重、中英两种页面下逐 1/64 像素量过，顶栏的余量数字不变
 STREAMER = "beltranlulaalal"
 RECENT = (STREAMER, "lamejorcrema", "tiendadeana", "glowbymaria")
 BRAND_ID = "acme"
@@ -91,12 +91,18 @@ FLASH_BASES = ("live-flash", "live-flash" + EXTRA)
 FLASH_WIDE = 1400
 FLASH_WIDE_WIDTHS = (FLASH_WIDE, 1600)
 HOME_BASES = ("home-idle", "home-zh", "home-flash", "home-flash-zh")
-# §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，和文档里那个真实的基线品牌同宽
-# （同 STREAMER 的做法：同一组字形重新排列，逐 1/64 像素量过）
+# §4.1 中文列的基线品牌（标签约 143px）；BRAND_ZH 的标签顶到 160px 上限。名字是虚构的，文档里的基线品牌也写它，
+# 和当初量 §4.1 用的那个品牌名同宽（同 STREAMER，逐 1/64 像素量过）
 ZH_QUIET_BRAND = "Allura Belt Nalla"
+# 首页标题区右上角的「中文 / English」两段切换（用户 2026-10-29）和它旁边的图标、标题，以及界面语言那一行的名字和摘要
+HOME_LANG_MEASURE = ("#lang-quick", "#lang-quick-zh", "#lang-quick-en", ".sp-glyph", ".sp-title",
+                     "#lang-head .set-name", "#lang-summary")
+# 「字幕译成」下面的就地提示和里面的切换按钮（用户 2026-10-29：直播中也给按钮）
+HINT_MEASURE = ("#target-hint", "#target-hint-switch")
 DESKTOP_MEASURE = (".topbar", "#active-brand-tag", ".status-text", "#switch-confirm",
                    "#float-btn", "#float-btn .btn-label", "#float-btn .i", ".ctl-text", "#target-lang",
-                   TARGET_EXTRA_SELECTED, "#flash-btn", "#flash-btn .btn-label", "#flash-btn .i", "#font-btn", "#font-ctl")
+                   TARGET_EXTRA_SELECTED, "#flash-btn", "#flash-btn .btn-label", "#flash-btn .i", "#font-btn",
+                   "#font-ctl") + HOME_LANG_MEASURE + HINT_MEASURE
 GUARD_MEASURE = (".guard-bar", ".guard-bar-text", ".guard-drawer", ".guard-panes", ".guard-pane:not(.hidden)", ".comment-list",
                  ".guard-state")
 PHONE_MEASURE = (".status-pill", "#conn-text")
@@ -120,8 +126,18 @@ FLASH_CTL_ZH = tuple(n + "-zh" for n in FLASH_CTL_NAMES)
 FLASH_CTL_SIZE = (1000, 760)              # 默认窗口（docs/i18n-style.md §4.1）
 FLASH_CTL_MEASURE = ("#flash-panel", "#flash-ctl", "#flash-start", "#flash-stop", "#flash-resume", "#flash-open",
                      "#flash-ctl-note", "#flash-note", "#flash-headline", "#flash-products")
+# 直播中在「字幕译成」里选了另一种界面语言（英文页选简体中文、中文页选 English）：下拉下面弹出就地提示，
+# 带切换界面的按钮。窗口模式（带浮窗按钮）默认的 1000px 宽；英文页进扫描，中文页只量。键是场景名，值是
+# (基础场景, 页面上当前的目标, 选哪一项)
+HINT_WIDTH = 1000
+HINTS = {"live-hint": ("live-float", "en", "zh-CN"), "live-hint-zh": ("live-float-zh", "zh-CN", "en")}
 DESKTOP_EN = ("home-idle", "home-selfcheck-fail", "live-full", "live-float", "connecting", "offline",
-              "error-4003110", "live-bad", "reconnect-no-audio", "live-flash", "home-flash") + GUARD_NAMES + FLASH_CTL_NAMES
+              "error-4003110", "live-bad", "reconnect-no-audio", "live-flash", "home-flash",
+              "home-asr-fetch", "live-hint") + GUARD_NAMES + FLASH_CTL_NAMES
+# 新装机、语音模型还没下载的首页（输入框下面那一行 #asr-model-hint 和自检里的「现在下载」）：英文那份进上面的扫描，
+# 两份都量这一行放不放得下（tests/test_i18n_dom.py）
+ASR_FETCH_HOMES = ("home-asr-fetch", "home-asr-fetch-zh")
+ASR_HINT_MEASURE = ("#asr-model-hint", "#asr-model-hint-text", "#asr-model-hint-btn")
 PHONE_EN = ("phone-live", "phone-denied", "phone-full", "phone-local-en")
 FLOAT_EN = ("float-live",)           # 浮窗页（web/float.html）：直播中，有红 / 琥珀 / 关注的弹幕，最新一条字幕没译成
 CONTROL_ZH = "live-full-zh"
@@ -167,9 +183,9 @@ def _produce(server, steps, **attrs):
 
 # ---- 后端文字（全部来自生产代码） ---------------------------------------------------------
 
-def _checks(fail, free_gb):
+def _checks(fail, free_gb, asr=None):
     """自检各行。名字查 NAMES；词表、领域词表、浏览器登录态、磁盘四行直接调真实的检查函数，
-    其余几行的 detail 是版本号、模型名这类 ASCII 数据。"""
+    其余几行的 detail 是版本号、模型名这类 ASCII 数据。asr 给了就用它当「语音识别」那一行（_asr_missing_row）。"""
     names, ok = selfcheck.NAMES, selfcheck.OK
     detector = None if fail else SimpleNamespace(
         enabled=True, count=53, effective_count=53, load_warnings=[], source_path="banned_terms.txt")
@@ -178,13 +194,27 @@ def _checks(fail, free_gb):
         disk = asyncio.run(selfcheck.check_disk())
     return [selfcheck._check(names["ffmpeg"], ok, "ffmpeg 7.1"),
             selfcheck._check(names["denoise"], ok, "rnnoise"),
-            selfcheck._check(names["asr"], ok, "mlx-whisper large-v3-turbo"),
+            asr or selfcheck._check(names["asr"], ok, "mlx-whisper large-v3-turbo"),
             selfcheck._check(names["translator"], ok, engine_label("hymt2")),
             asyncio.run(selfcheck.check_watchlist(detector)),
             asyncio.run(selfcheck.check_glossary(None)),
             selfcheck._browser_login_row({}),
             selfcheck._check(names["comments"], ok, "TikTokLive 7.0.2"),
             disk]
+
+
+def _asr_missing_row():
+    """「语音识别」一行，模型还没下载（带「现在下载」：action / size_mb / busy）。真的跑 selfcheck.check_asr，
+    只替掉硬件推导和缓存查询（同 tests/test_i18n_selfcheck_en.py 的 _asr），文字全部来自生产代码。"""
+    from app import hwdetect
+    args = SimpleNamespace(backend="auto", model=None, device="auto", compute_type="auto")
+    with mock.patch.object(hwdetect, "recommend", return_value={"backend": "mlx", "model": "large-v3"}), \
+            mock.patch.object(hwdetect, "detect", return_value={"apple_silicon": True}), \
+            mock.patch.object(selfcheck, "_importable", return_value=True), \
+            mock.patch.object(selfcheck, "_model_cached", return_value=False):
+        row = asyncio.run(selfcheck.check_asr(args))
+    assert row.get("action") == selfcheck.ACTION_DOWNLOAD_ASR, row
+    return row
 
 
 def _engine(note=None):
@@ -347,7 +377,7 @@ def _alerts():
 
 # ---- 组装 --------------------------------------------------------------------------------
 
-def _server(lang, tmp, *, selfcheck_fail=False, free_gb=120):
+def _server(lang, tmp, *, selfcheck_fail=False, free_gb=120, asr=None):
     """待机时的真 CaptionServer：Pipeline.__init__ 与 main.py 放进 config 的那些键。"""
     server = CaptionServer(port=8765)
     server.config.update({
@@ -364,7 +394,7 @@ def _server(lang, tmp, *, selfcheck_fail=False, free_gb=120):
     # 场景是一台没带 --ui-lang、系统语言就是界面语言的机器。i18n.use() 按一次性覆盖实现，
     # config_info 会说「被启动参数锁定」「系统语言检测不到」——那是开发和截图时的另一种状态
     server.config.update(ui_lang_setting="system", ui_lang_system=lang, ui_lang_locked=False)
-    _produce(server, lambda p: p._publish_selfcheck(_checks(selfcheck_fail, free_gb)))
+    _produce(server, lambda p: p._publish_selfcheck(_checks(selfcheck_fail, free_gb, asr)))
     return server
 
 
@@ -423,6 +453,17 @@ def _home_zh(tmp):
         server = _server("zh", tmp)
         server.config["target_lang"] = HOME_ZH_TARGET
         return _scenario("home-zh", "desktop", "zh", _desktop_messages(server, "zh"))
+
+
+def _home_asr_fetch(tmp, lang):
+    """新装机：语音模型还没下载。首页输入框下面那一行（#asr-model-hint）出现，自检「语音识别」一行带着「现在下载」
+    （自检这一行不点开：扫描连藏着的元素也扫）。中文那份只量版面、出截图，不扫漏翻。"""
+    with i18n.use(lang):
+        server = _server(lang, tmp, asr=_asr_missing_row())
+        name = "home-asr-fetch" + ("" if lang == "en" else "-" + lang)
+        sc = _scenario(name, "desktop", lang, _desktop_messages(server, lang))
+        sc["measure"] += list(ASR_HINT_MEASURE)
+        return sc
 
 
 def _home_selfcheck_fail(tmp):
@@ -851,6 +892,18 @@ def with_extra_target(scenario):
     return out
 
 
+def with_target_hint(scenario, name, target, pick):
+    """同一个直播中场景，窗口 HINT_WIDTH 宽，当前目标换成 target；开页后只做一件事：在「字幕译成」里选 pick
+    （另一种界面语言）。原场景的点击（同看、换主播）不做：那几个浮层和这个提示互斥，开着别的就量不到它。
+    提示 8 秒后才自己收起，扫描在约 2.5 秒时取，还开着。"""
+    out = copy.deepcopy(scenario)
+    out["name"] = name
+    out["size"] = [HINT_WIDTH, scenario["size"][1]]
+    out["messages"][0]["config"]["target_lang"] = target
+    out["clicks"] = [{"select": "#target-lang", "value": pick}]
+    return out
+
+
 def resized(scenario, width, height=None):
     """同一个场景换一个窗口大小：live-full@1100 这样命名。"""
     out = copy.deepcopy(scenario)
@@ -863,6 +916,7 @@ def build(tmp):
     """全部场景：{名字: 场景}。tmp 是一个空的临时目录（磁盘盘点要在里面造文件）。"""
     tmp = Path(tmp)
     scenarios = [_home_idle(tmp), _home_zh(tmp), _home_selfcheck_fail(tmp), _live_full(tmp, "en"),
+                 _home_asr_fetch(tmp, "en"), _home_asr_fetch(tmp, "zh"),
                  _status_only(tmp, "connecting", "connecting"),
                  # 先收到 hello，随即断开：离线横幅。页面每次重连都会再走一遍
                  _status_only(tmp, "offline", "idle", close={"code": 1006}),
@@ -911,4 +965,6 @@ def build(tmp):
         for base in ("live-float", "live-float-zh"):
             sc = flash_ctl_scenario(out[base], kind, state)
             out[sc["name"]] = sc
+    for name, (base, target, pick) in HINTS.items():
+        out[name] = with_target_hint(out[base], name, target, pick)
     return out

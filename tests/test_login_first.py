@@ -737,7 +737,9 @@ def test_no_readable_login_raises_a_persistent_incident_and_monitoring_still_sta
     assert "没有读到浏览器里的 TikTok 登录" not in text
     assert "Chrome" not in text and world.reads() == ["safari"]     # 这一步只读 Safari；Chrome 这次没被读
     assert "只把流地址给已登录的观众" in text and "其余直播间照常监听" in text
-    assert bl.fda_steps() in text and bl.SAFARI_LOGIN_STEPS not in text   # Safari 读不了，叫人去登录是白忙
+    # Safari 读不了，叫人去登录是白忙。wire 把平台定成 macOS：那几步按按钮写（「打开完全磁盘访问设置」等）
+    assert bl.fda_steps(buttons=True) in text and bl.SAFARI_LOGIN_STEPS not in text
+    assert banner["fda"] == bl.fda_button_lines()
     assert "自检" not in text and "浏览器登录态" not in text            # 那一行可能不带步骤，直播中也看不见
     assert not any(word in text for word in GUESSED_LABELS)
     assert not INCIDENT.startswith("session:")

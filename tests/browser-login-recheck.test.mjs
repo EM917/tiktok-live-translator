@@ -7,7 +7,9 @@
 //   * 点了发 {type: "recheck_browser_login"}，不带别的字段；
 //   * 页面上有这颗按钮时，离开窗口再回来（blur→focus、visibilitychange）自动发一次，带 auto；两次之间至少隔 5 秒；
 //     没离开过、按钮不在了，都不发；
-//   * 刷新页面（hello 回放 config.incidents）照样画出按钮。
+//   * 刷新页面（hello 回放 config.incidents）照样画出按钮；
+//   * Safari 被系统拒绝读取、Chrome 读到了登录（login-5，用户 2026-10-29 选 A）：点「开始翻译」之前，自检摘要就是
+//     「通过 · 1 项提醒」，那一行带那几步和这颗按钮。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -30,6 +32,14 @@ const TEXT = {
     row: { name: "浏览器登录态", level: "warn", detail: "Chrome：系统拒绝读取；Safari：系统拒绝读取",
            fix: "系统不允许本程序读取浏览器数据。照下面三步给 Python 打开「完全磁盘访问权限」：\n1. …", recheck: true },
     okRow: { name: "浏览器登录态", level: "ok", detail: "Safari：读到了 TikTok 登录", fix: "" },
+    // 照 app/selfcheck.py _browser_login_row 的样子抄：登录优先那一步要读的 Safari 被拒，Chrome 读到了登录
+    refusedRow: { name: "浏览器登录态", level: "warn",
+                  detail: "Safari：系统拒绝读取；Chrome：读到了 TikTok 登录。解析流地址时，登录优先这一步只读 Safari 里的 " +
+                    "TikTok 登录，读不了就跳过这一步（只有 TikTok 要求登录才给流地址的直播间用得到，其余直播间不受影响）",
+                  fix: "系统不允许本程序读取浏览器数据。照下面三步给 Python 打开「完全磁盘访问权限」：\n1. …", recheck: true },
+    others: [{ name: "语音识别", level: "ok", detail: "large-v3-turbo", fix: "" },
+             { name: "审计日志", level: "ok", detail: "可写入 logs/", fix: "" }],
+    oneWarning: "通过 · 1 项提醒",
   },
   en: {
     notice: "When looking up the stream URL, the app first reads the TikTok sign-in from Safari only. Safari: macOS didn’t allow access. Follow these three steps to turn on Full Disk Access for Python:\n" +
@@ -42,6 +52,15 @@ const TEXT = {
     row: { name: "Browser Login", level: "warn", detail: "Chrome: macOS didn’t allow access; Safari: macOS didn’t allow access",
            fix: "macOS didn’t allow the app to read browser data. Follow these three steps to turn on Full Disk Access for Python:\n1. …", recheck: true },
     okRow: { name: "Browser Login", level: "ok", detail: "Safari: found a TikTok sign-in", fix: "" },
+    refusedRow: { name: "Browser Login", level: "warn",
+                  detail: "Safari: macOS didn’t allow access; Chrome: found a TikTok sign-in. When looking up the stream " +
+                    "URL, the app first reads the TikTok sign-in from Safari only and skips that step when it can’t read " +
+                    "it. Only live streams where TikTok provides the stream URL only to signed-in viewers need this. " +
+                    "Other live streams aren’t affected.",
+                  fix: "macOS didn’t allow the app to read browser data. Follow these three steps to turn on Full Disk Access for Python:\n1. …", recheck: true },
+    others: [{ name: "Speech Recognition", level: "ok", detail: "large-v3-turbo", fix: "" },
+             { name: "Audit Log", level: "ok", detail: "Can write to logs/", fix: "" }],
+    oneWarning: "Passed · 1 warning",
   },
 };
 
@@ -117,6 +136,35 @@ for (const lang of ["zh", "en"]) {
     assert.deepEqual(rechecks(page), [{ type: "recheck_browser_login" }]);
     selfcheck(page, [W.okRow]);
     assert.equal(button(page.el("sc-list").children[0], "sc-recheck"), null, "读到登录：按钮没了");
+    if (lang === "en") assert.deepEqual(leftoverChinese(page), []);
+  });
+
+  test(lang + "：Safari 被拒、Chrome 读到登录（login-5 A）：开始之前摘要就是「通过 · 1 项提醒」，点开那一行有步骤和按钮", () => {
+    const page = runDesktop(lang);
+    hello(page, { status: { state: "idle", detail: "" } });
+    const checks = [W.others[0], W.refusedRow, W.others[1]];
+    page.push({ type: "selfcheck", checks, summary: { total: 3, fail: 0, warn: 1, ok: 2 } });
+    assert.equal(page.el("sc-summary").textContent, W.oneWarning);
+    assert.ok(page.el("sc-head").cls.includes("has-warn") && !page.el("sc-head").cls.includes("has-fail"));
+    // 提醒不自己展开（只有未生效的项才展开，web/app.js nextAutoOpen）：中控点开才看得到那几步
+    assert.equal(shown(page.el("sc-list")), false);
+    page.el("sc-head").click();
+    assert.equal(shown(page.el("sc-list")), true);
+    const li = page.el("sc-list").children[1];
+    assert.ok(li.cls.includes("warn"));
+    const fix = button(li, "sc-fix");
+    assert.ok(fix, "带那几步");
+    assert.ok(fix.textContent.startsWith(W.refusedRow.fix), fix.textContent);
+    const again = button(fix, "sc-recheck");
+    assert.ok(again, "那几步下面有「我加好了，再查一次」");
+    assert.equal(again.textContent, W.again);
+    for (const other of [page.el("sc-list").children[0], page.el("sc-list").children[2]]) {
+      assert.equal(button(other, "sc-fix"), null, "通过的行不带步骤");
+    }
+    // 开始之前、只有这一行带按钮：从系统设置切回窗口也自动重查一次
+    page.winFire("blur");
+    page.winFire("focus");
+    assert.deepEqual(rechecks(page), [{ type: "recheck_browser_login", auto: true }]);
     if (lang === "en") assert.deepEqual(leftoverChinese(page), []);
   });
 
