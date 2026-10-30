@@ -86,7 +86,7 @@ web/app.js（接线、未读、开合） → web/flash.js（文案、排序、�
     no_stock（没有库存）、max_renewals（续开次数到上限）、auto_start_off（没开自动开始）、no_position（读不到序号），
     0.9.2 起还有 next_to_pin（置顶商品下面的第一个商品，按列表顺序，也就是下一个要置顶的那个），0.9.2.2 起还有
     top_n（Buy now 列表从上往下的前 N 个，N 在闪购助手面板上设、默认 2：不点 Start，也不重新设置）。`enabled=false` 的商品
-    不标 skip，只看 enabled（「不自动续开」那句话 0.10.0 起看 `checked`，见下一条）。本程序不分版本：skip 不为 null 就不算卡住（§6），那一行写闪购助手给的原因，七句短说明
+    不标 skip，只看 enabled（「不自动续开」那句话 0.10.0 起看 `checked`，见下面的商品 `checked`）。本程序不分版本：skip 不为 null 就不算卡住（§6），那一行写闪购助手给的原因，七句短说明
     各个版本都对。哪个商品标 slot_1、next_to_pin、no_position、top_n，各版本不一样：
     - 0.9.2：1 号位一直留着（slot_1），有置顶时 next_to_pin 那个也留，两个代码会同时出现；next_to_pin 那个同时又是
       1 号位时报 slot_1。读不到序号的报 no_position；

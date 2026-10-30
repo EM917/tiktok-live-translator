@@ -326,6 +326,16 @@ test("checked 不碰卡住和等续开：只认 enabled", () => {
   assert.deepEqual(F.flashProductParts(stuck, running, NOW).detail, ["停了超过 1 分钟", "不自动续开"]);
 });
 
+test("文档 §3：skip 那条指向商品 checked 的说明时写名字，不写「见下一条」（下一条是 alerts[].level）", () => {
+  const doc = readFileSync(new URL("../docs/flash-sale.md", import.meta.url), "utf8");
+  const skip = doc.indexOf("- 商品 `skip`");
+  const entry = doc.indexOf("\n- 商品 `checked`（0.10.0 起", skip);
+  assert.ok(skip >= 0 && entry > skip);
+  const between = doc.slice(skip, entry);
+  assert.ok(between.includes("「不自动续开」那句话 0.10.0 起看 `checked`，见下面的商品 `checked`"));
+  assert.ok(!between.includes("见下一条"));
+});
+
 test("商品一行的细节：卡住 / 等续开、倒计时、第几轮、库存、续开次数、不自动续开", () => {
   const live = F.flashProductParts(SAMPLE.products[0], SAMPLE, NOW);
   assert.equal(live.title, "Glow Serum Trio (Fictional)");
