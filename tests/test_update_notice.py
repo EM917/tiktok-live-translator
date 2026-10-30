@@ -86,6 +86,17 @@ def test_the_notice_returns_after_the_quiet_window(monkeypatch):
     assert u.server.sent[-1]["quiet"] is False
 
 
+def test_the_quiet_window_holds_within_a_run_when_settings_cannot_be_saved(monkeypatch):
+    """设置文件读不出来时 update_notice_at 记不进去（save_setting 不写），只认文件的话每次检查都醒目弹一次。
+    这个进程里也记一份：同一次运行内照样 6 小时只醒目一次。"""
+    u, store = make(monkeypatch)
+    monkeypatch.setattr(U, "save_setting", lambda k, v: False)
+    run(u.check_and_notify(delay=0))
+    run(u.check_and_notify(delay=0))
+    assert [m["quiet"] for m in u.server.sent if m.get("type") == "update_available"] == [False, True]
+    assert store == {}
+
+
 def test_a_manual_check_always_answers(monkeypatch):
     """用户主动点「检查更新」时不能装没听见。"""
     u, _ = make(monkeypatch, last_notice=time.time() - 60)

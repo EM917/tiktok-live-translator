@@ -88,12 +88,14 @@ class BootOutcome:
 def arm(from_commit, to_commit, from_version, to_version, now=None):
     """一键更新合并成功、execv 之前调用：留下记号。同时把「重启后接着监听」记号抄一份进去——新版本
     第一次启动时可能已经读掉了它（读到即删）、然后才崩，退回旧版本时要把它还回去，暂停中的监听才接得上
-    （过没过期仍由旧版本按原来的 at 判断）。"""
+    （过没过期仍由旧版本按原来的 at 判断）。
+
+    返回记号写没写成：设置文件读不出来时 save_setting 不写，这次更新就没有「起不来自动退回」这层保险。"""
     resume = load_settings().get(RESUME_KEY)
-    save_setting(KEY, {"from": str(from_commit), "to": str(to_commit),
-                       "from_version": str(from_version or ""), "to_version": str(to_version or ""),
-                       "at": time.time() if now is None else now, "boots": 0,
-                       "resume": resume if isinstance(resume, dict) else None})
+    return save_setting(KEY, {"from": str(from_commit), "to": str(to_commit),
+                              "from_version": str(from_version or ""), "to_version": str(to_version or ""),
+                              "at": time.time() if now is None else now, "boots": 0,
+                              "resume": resume if isinstance(resume, dict) else None})
 
 
 def disarm():

@@ -472,6 +472,17 @@ class Updater:
             self._pip_lock = asyncio.Lock()
         return self._pip_lock
 
+    def _cooldown_since(self, key):
+        """记在 settings.json 里的冷却（key 存的是开始的时刻）从什么时候算起：文件里记的和这个进程里记的，
+        取晚的那个。只认文件的话，设置文件读不出来时（save_setting 不写、load_settings 读到空）每次都读到 0，
+        冷却形同虚设：没装上的 TikTokLive 会在每场开播时拉一次 pip，更新提示每次启动都醒目弹一次。"""
+        mine = self.__dict__.get("_cooldowns", {}).get(key, 0.0)
+        return max(_setting_float(key), mine)
+
+    def _start_cooldown(self, key, now):
+        self.__dict__.setdefault("_cooldowns", {})[key] = now
+        save_setting(key, now)
+
     async def watch(self, first_delay=2.0, interval=6 * 3600):
         """启动后检查一次，之后每 6 小时复查——常开不关的用户也能及时看到新版本。"""
         await self._publish_check_health()     # 很久没连上更新服务器的话，页面一打开就能看到
@@ -806,7 +817,8 @@ class Updater:
         这里的「一小时内不重试」持久化进 settings.json——弹幕来源的供给回调
         (`CommentSource.on_provision`) 可能在同一场直播里被反复触发（每次
         `worker_available()` 仍为假），不能靠内存里的时间戳，重启后又能立刻
-        重试是好事，但同一次运行内不该每次都拉一次 pip。
+        重试是好事，但同一次运行内不该每次都拉一次 pip。内存里也记一份
+        （_cooldown_since）：设置文件读不出来、记不进去时，同一次运行内照样一小时一次。
 
         已经装了、但低于 TIKTOKLIVE_MIN 的也在这里升。2026-09-14 实录：这里以前
         只看「装没装」，老安装一直停在 7.0.0；评论服务改走备用线路后每次连接都是
@@ -825,9 +837,9 @@ class Updater:
                 await self._upgrade_outdated_tiktoklive(current, reason)
             return True
         now = time.time()
-        if now - _setting_float("tiktoklive_install_attempted_at") < 3600:
+        if now - self._cooldown_since("tiktoklive_install_attempted_at") < 3600:
             return False
-        save_setting("tiktoklive_install_attempted_at", now)
+        self._start_cooldown("tiktoklive_install_attempted_at", now)
         code = await self._pip_install(
             [TIKTOKLIVE_SPEC], "弹幕组件 TikTokLive 安装（{}）".format(reason))   # i18n: terminal
         if code is None:
@@ -841,11 +853,11 @@ class Updater:
     async def _upgrade_outdated_tiktoklive(self, current, reason):
         """把低于最低版本的 TikTokLive 升上去。一小时冷却持久化，理由同安装。"""
         now = time.time()
-        if now - _setting_float("tiktoklive_upgrade_attempted_at") < 3600:
+        if now - self._cooldown_since("tiktoklive_upgrade_attempted_at") < 3600:
             print("[信息] 弹幕组件 TikTokLive {} 低于最低版本；一小时内已试过升级，这次跳过（{}）"
                   .format(current, reason))
             return False
-        save_setting("tiktoklive_upgrade_attempted_at", now)
+        self._start_cooldown("tiktoklive_upgrade_attempted_at", now)
         need = ".".join(str(x) for x in TIKTOKLIVE_MIN)   # i18n: data
         print("[信息] 弹幕组件 TikTokLive {} 低于 {}，后台升级中（{}）".format(current, need, reason))
         code = await self._pip_install(
@@ -1004,10 +1016,9 @@ class Updater:
         # 那是用户主动问的。
         quiet = False
         if not manual:
-            last = load_settings().get("update_notice_at") or 0
-            quiet = (time.time() - last) < QUIET_NOTICE_SEC
+            quiet = (time.time() - self._cooldown_since("update_notice_at")) < QUIET_NOTICE_SEC
             if not quiet:
-                save_setting("update_notice_at", time.time())
+                self._start_cooldown("update_notice_at", time.time())
 
         payload = dict(self.latest)
         payload["type"] = "update_available"
@@ -1353,9 +1364,12 @@ class Updater:
             return
         try:
             from . import update_guard
-            update_guard.arm(head, target, from_version, to_version)
+            armed = update_guard.arm(head, target, from_version, to_version)
         except Exception as exc:
             print("[警告] 没能留下一键更新的启动检查记号（{}）：新版本起不来时，不会自动退回".format(exc))
+            return
+        if armed is False:
+            print("[警告] 一键更新的启动检查记号没写进设置文件：新版本起不来时，不会自动退回")
 
     async def _wait_for_pip_lock(self):
         """pip 锁被占着时等一会儿（UPDATE_LOCK_WAIT_SEC）：后台的 mlx-whisper 安装看到

@@ -131,6 +131,23 @@ def test_failed_upgrade_still_reports_available(monkeypatch):
     assert len(pip_calls) == 1
 
 
+def test_the_cooldowns_hold_within_a_run_when_settings_cannot_be_saved(monkeypatch):
+    """冷却只记在 settings.json 里时，设置文件读不出来（save_setting 不写、load_settings 读到空）每次都读到 0：
+    没装上的 TikTokLive 每场开播（CommentSource 的 on_provision）都在直播中拉一次 pip。内存里也记一份，同一次
+    运行内照样一小时一次。"""
+    up, store, pip_calls = _updater(monkeypatch, versions=(None,), installed=False, pip_code=1)
+    monkeypatch.setattr(updater_mod, "save_setting", lambda k, v: False)
+    assert run(up.ensure_tiktoklive("startup")) is False
+    assert run(up.ensure_tiktoklive("comments")) is False
+    assert len(pip_calls) == 1 and store == {}
+
+    up, store, pip_calls = _updater(monkeypatch, versions=("7.0.0",), pip_code=1)     # 过旧、升不上去
+    monkeypatch.setattr(updater_mod, "save_setting", lambda k, v: False)
+    assert run(up.ensure_tiktoklive("startup")) is True
+    assert run(up.ensure_tiktoklive("comments")) is True
+    assert len(pip_calls) == 1 and store == {}
+
+
 def test_outdated_upgrade_respects_its_cooldown_and_says_so(monkeypatch, capsys):
     up, store, pip_calls = _updater(
         monkeypatch, settings={"tiktoklive_upgrade_attempted_at": time.time()},

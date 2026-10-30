@@ -737,8 +737,15 @@ def test_notices_are_chinese_and_english_pairs_and_free_of_cause_labels():
 def test_guard_set_persists_once_and_updates_the_state(monkeypatch, tmp_path):
     p, server = make_pipeline(monkeypatch, tmp_path, enabled=False)
     saves = []
-    real = p._save_setting
-    monkeypatch.setattr(p, "_save_setting", lambda k, v: (saves.append((k, dict(v))), real(k, v)))
+    real = p._update_setting
+
+    def recording(key, change):           # 按文件里此刻的值改（_save_guard_changes）：记下交去写的那一项
+        def wrapped(cur):
+            value = change(cur)
+            saves.append((key, dict(value)))
+            return value
+        return real(key, wrapped)
+    monkeypatch.setattr(p, "_update_setting", recording)
 
     async def scenario():
         await p.handle_control({"type": "guard_set", "enabled": True})
@@ -761,6 +768,80 @@ def test_guard_set_persists_once_and_updates_the_state(monkeypatch, tmp_path):
     # 重新构造一个 Pipeline：设置读得回来（重启后还是这个选择）
     again, _ = make_pipeline(monkeypatch, tmp_path, enabled=None)
     assert again.guard.cfg == {"enabled": True, "backend": "claude", "weak": True}
+
+
+def _fail_reads(monkeypatch, path, times=None):
+    """让 path 的 read_bytes 抛 times 次 PermissionError（EACCES），之后照常；times=None 是一直抛，直到把返回的
+    dict 里 "on" 改成 False（同 tests/test_settings_unreadable.py，不靠 chmod，Windows 上也测得了）。"""
+    import errno
+    import os
+    real = type(path).read_bytes
+    state = {"on": True, "left": times}
+
+    def read_bytes(self):
+        if self == path and state["on"] and (state["left"] is None or state["left"] > 0):
+            if state["left"] is not None:
+                state["left"] -= 1
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(self))
+        return real(self)
+
+    monkeypatch.setattr(type(path), "read_bytes", read_bytes)
+    return state
+
+
+def test_guard_set_after_the_settings_file_reads_again_keeps_what_the_file_had(monkeypatch, tmp_path):
+    """guard.cfg 只在启动时读一次：那时设置文件读不出来，它就是默认值（不开复核、不开弱提示）。文件后来又读得
+    出来了（权限改回来、别的程序放开了它），这时在设置里点一下开关，以前拿默认值整项写回，用户原来选的 Claude
+    复核和弱提示被静默清掉。现在以文件里此刻的这一项为底，只改点的那一项。"""
+    monkeypatch.setattr(settings, "_unreadable", {"problem": None})
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "settings.json"
+    chosen = {"enabled": False, "backend": "claude", "weak": True}
+    path.write_text(json.dumps({"comment_guard": chosen, "translator": "deepl"}), encoding="utf-8")
+    blocked = _fail_reads(monkeypatch, path)
+    p, server = make_pipeline(monkeypatch, tmp_path, enabled=None)
+    assert p.guard.cfg == normalize_settings(None)             # 启动时读不出来：默认值
+    blocked["on"] = False                                      # 又读得出来了，没重启
+
+    run(p.handle_control({"type": "guard_set", "enabled": False}))
+    assert settings.load_settings() == {"comment_guard": chosen, "translator": "deepl"}
+    assert p.guard.cfg == chosen                               # 页面跟着改成文件里的
+    assert server.config["guard_state"]["backend"] == "claude" and server.config["guard_state"]["weak"] is True
+
+
+@pytest.mark.parametrize("on_file, msg, chosen", [
+    ({"enabled": 0, "backend": "claude", "weak": False}, {"enabled": False},
+     {"enabled": False, "backend": "claude", "weak": False}),
+    ({"enabled": True, "backend": "claude", "weak": 1}, {"weak": True},
+     {"enabled": True, "backend": "claude", "weak": True}),
+])
+def test_guard_set_writes_a_switch_the_file_had_as_a_number(monkeypatch, tmp_path, on_file, msg, chosen):
+    """设置文件里手改成 0 / 1 的开关：normalize_settings 按默认读（enabled 当开、weak 当关）。用户在设置里点了开关，
+    要写进文件，重启后才还是用户点的。以前 update_setting 拿 == 比「值没变」：0 == False、1 == True，当成没变不写，
+    重启后开关又回到默认。"""
+    monkeypatch.setattr(settings, "_unreadable", {"problem": None})
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "settings.json").write_text(json.dumps({"comment_guard": on_file}), encoding="utf-8")
+    p, _ = make_pipeline(monkeypatch, tmp_path, enabled=None)
+    assert p.guard.cfg == normalize_settings(on_file) != chosen
+    run(p.handle_control(dict(msg, type="guard_set")))
+    assert p.guard.cfg == chosen
+    again, _ = make_pipeline(monkeypatch, tmp_path, enabled=None)           # 重启
+    assert again.guard.cfg == chosen
+
+
+def test_guard_set_key_right_after_a_passing_read_error_keeps_the_other_keys(monkeypatch, tmp_path):
+    """设置行里填 Claude 密钥：以前先 saved_keys() 读一次、整项写回 api_keys，那次读不了就只剩这一把。"""
+    monkeypatch.setattr(settings, "_unreadable", {"problem": None})
+    p, server = make_pipeline(monkeypatch, tmp_path, enabled=True)
+    others = {"DEEPL_API_KEY": "k-deepl", "OPENAI_API_KEY": "k-openai"}
+    settings.save_setting("api_keys", others)
+    key = "sk-ant-test-not-a-real-key-4242"
+    _fail_reads(monkeypatch, settings.SETTINGS_FILE, times=1)
+    run(p.handle_control({"type": "guard_set", "key": key}))
+    assert others.items() <= settings.load_settings()["api_keys"].items()
+    run(p.handle_control({"type": "guard_set", "key": key}))          # 读得出来了：合进去
+    assert settings.load_settings()["api_keys"] == dict(others, ANTHROPIC_API_KEY=key)
 
 
 def test_guard_set_is_ignored_while_a_session_is_running(monkeypatch, tmp_path, capsys):
