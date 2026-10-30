@@ -298,6 +298,31 @@ together, start the app with `TLT_ASR_SAFEGUARDS=off`; the numbers stay in the a
 `app/asr_evidence.py` and the badge; no other code reads the new audit keys, and deleting
 `logs/asr-evidence/` has no effect on the app.
 
+<a id="folder-permission"></a>**Double-clicking the app says Python is needed, but Python is installed.** In 0.19.0
+and earlier, the app said this, and opened python.org, also when macOS didn't let it read the
+files in its own folder: the launcher couldn't load `tools/find_python.sh`, so it never looked for
+Python at all. That is what happened on 2026-10-29 on macOS 26, with the app's folder on the
+iCloud-synced Desktop. Started with Start.command from Terminal, the app ran normally; double-clicked
+in Finder or opened from Spotlight, reading that file returned "Operation not permitted", and the
+system log showed, in the same second, a request for Desktop folder access
+(`kTCCServiceSystemPolicyDesktopFolder`) that got an error back, with no prompt on screen. Now the
+app says what it saw instead: "macOS didn’t let the app read the folder it’s in", with the
+folder's path and what the system returned. The steps in that dialog: 1. click Open System
+Settings, which opens System Settings → Privacy & Security → Files & Folders, find TikTok Live
+Translator and turn on its switch for that folder (Desktop Folder, Documents Folder or Downloads
+Folder); 2. if the app isn't in that list, open Full Disk Access in the same Privacy & Security
+list, click "+", press ⌘⇧G in the file picker, paste the path from the dialog's box (the app itself,
+ending in `TikTok Live Translator.app`), press Return, click Open, and switch the entry on;
+3. double-click the app again. This is a different entry from the one under
+[Browser Login](#browser-login): that one is the Python interpreter reading browser data, this one
+is the app reading its own folder. Whether steps 1 and 2 are enough for a double-click launch
+hasn't been measured. If the dialog comes back, click Open in Terminal, which runs Start.command
+from the same folder in Terminal, or double-click Start.command yourself; that worked on the same
+Mac. The buttons only open System Settings or Terminal, and the app never changes the setting
+itself. A `tools/find_python.sh` that can be read but doesn't contain the Python check (for example
+a cut-off download) now gets a message that the project folder is incomplete, not a request to
+install Python.
+
 **Opening the app showed a different copy.** If the app is already running, opening it again
 (from this folder or from another one) doesn't start a second copy: the window opens on the
 running one. When the running copy isn't the one in the folder you opened, for example an older
